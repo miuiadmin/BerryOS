@@ -9,9 +9,30 @@ pub fn run() {
     test_gic();
     test_frame();
     test_heap();
+    test_syscall();
     bos_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
+}
+
+/// Step 9 信号 + G0 退出 #6：从 EL1 发 `svc #0`（EC=0x15，current-EL sync）→
+/// dispatch 回写 x0=ret、eret 续行。断言 ret==arg 证 syscall 往返。
+/// DAIF 屏蔽不影响同步异常；NZCV 经 SPSR 在 entry/eret 保存/恢复。
+fn test_syscall() {
+    let nr: u64 = bos_hal_aarch64::syscall::NR_TEST_ECHO as u64;
+    let arg: u64 = 0x5a;
+    let ret: u64;
+    // SAFETY: svc #0 触发同步异常；dispatch 写回 x0、eret 回本指令之后。
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inout("x0") nr => ret,
+            in("x1") arg,
+            options(nostack, preserves_flags),
+        );
+    }
+    assert_eq!(ret, arg, "syscall echo 往返");
+    bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
 
 /// Step 7 信号：GICv2 配置读回自检（IRQ27/CNTV：启用 + 优先级 + distributor/CPUif 开）。

@@ -174,7 +174,28 @@ pub unsafe fn init() {
 #[no_mangle]
 pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
     let ec = ((tf.esr >> 26) & 0x3f) as u32;
+    match ec {
+        0x15 => {
+            // SVC：派发，ret 写回 x0，eret 续行（无 dump）。
+            crate::syscall::dispatch(tf);
+            return;
+        }
+        0x3c => {
+            dump(tf, ec);
+            uart_puts(b"  -> BRK recover: ELR+=4, eret\n");
+            tf.elr = tf.elr.wrapping_add(4);
+            return;
+        }
+        _ => {
+            dump(tf, ec);
+            uart_puts(b"  -> fatal, halt\n");
+            halt();
+        }
+    }
+}
 
+/// dump 一个 TrapFrame（EC 名 + 寄存器全集）。
+fn dump(tf: &TrapFrame, ec: u32) {
     uart_puts(b"\n=== EXCEPTION: sync (current-EL SPx) ===\n");
     uart_puts(b"  EC=0x");
     uart_put_hex64(ec as u64);
@@ -190,16 +211,6 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
     for (i, r) in tf.regs.iter().enumerate() {
         put_reg(i, *r);
     }
-
-    // BRK：可恢复（跳过指令、eret 返回）——验证整条 save/restore/eret 链路。
-    if ec == 0x3c {
-        uart_puts(b"  -> BRK recover: ELR+=4, eret\n");
-        tf.elr = tf.elr.wrapping_add(4);
-        return;
-    }
-    // 其余（D-abort/I-abort/未定义/SVC-from-lower…）：本阶段 fatal。
-    uart_puts(b"  -> fatal, halt\n");
-    halt();
 }
 
 /// 不应触发的向量（asm 调）。读 ESR/ELR 打印后 halt。

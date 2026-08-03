@@ -5,6 +5,7 @@
 //! Phase 1 Step 6：异常向量表 + 同步异常/IRQ 处理（见 [`trap`]）。
 //! Phase 1 Step 7：GICv2 中断控制器（见 [`gic`]）。
 //! Phase 1 Step 8：CNTV 虚拟定时器（见 [`timer`]）。
+//! Phase 1 Step 9：SVC syscall 派发（见 [`syscall`]）。
 //! 仅 `#![no_std]`；`panic_handler` / `no_main` 由最终 bin crate（`内核/`）提供。
 #![no_std]
 
@@ -13,6 +14,7 @@ pub mod gic;
 mod mmio;
 mod mmu;
 mod paging;
+pub mod syscall;
 pub mod timer;
 pub mod trap;
 
