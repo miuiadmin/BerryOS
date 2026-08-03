@@ -1,11 +1,21 @@
 //! bos-kernel —— BerryOS 内核镜像。
 //!
-//! Phase 1 Step 3：boot → HAL init → mm init（帧分配器）→ ktest（FRAME ok）→ halt。
+//! Phase 1 Step 5：boot → HAL init（MMU）→ mm init（帧分配器）→ ktest
+//! （FRAME ok / HEAP ok，slab 堆使能 `alloc`）→ halt。
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+mod heap;
 mod ktest;
 mod mm;
+
+use heap::SlabHeap;
+
+/// 全局分配器：内核 slab 堆（小对象走 slab，大对象走整页）。
+#[global_allocator]
+static ALLOC: SlabHeap = SlabHeap::new();
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
