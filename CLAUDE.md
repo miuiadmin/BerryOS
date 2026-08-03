@@ -156,5 +156,5 @@ just check / just clean
 - **syscall 边界无 panic**：跨 syscall 的 Rust 函数返回 `Result`/状态码，绝不 panic（内核态 panic = 系统停）。
 - ARM64 下注意 Cache 一致性、屏障指令（`dmb`/`dsb`/`isb`）、大端小端（默认小端）。
 - **QEMU aarch64 `virt` 起始 EL 随配置而变**：默认 `-machine virt`+`-kernel` ELF 起始 **EL1**（实测 `just run`→`1`）；`-machine virt,virtualization=on` 起始 **EL2**（`just run-el2`→`21`，走 EL2→EL1 eret）。boot 第一行（`global_asm!`）`mrs CurrentEL` 检测并按需降到 EL1（关 MMU/cache、写 `sctlr`、`eret` 到 EL1）——**别假设固定 EL**。
-- **PAC/BTI/MTE day-one 开** target feature（见 `安全与硬件隔离设计.md`）。
+- **PAC/BTI/MTE 目标 day-one 开**，但 Phase 0/1 推迟——`cortex-a72`（ARMv8.0）无此扩展；**v2** 切 `-cpu max` 时开 target feature（源码零改动，见 `安全与硬件隔离设计.md` §3/§6）。
 - 微内核里"把东西塞进内核"是反模式 —— 先问：这能不能做成用户态服务？
