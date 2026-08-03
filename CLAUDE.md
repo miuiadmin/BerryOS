@@ -9,7 +9,7 @@
 - 内核核心：**Rust**（`#![no_std]`，最小特权，只做调度 / IPC / 地址空间 / 能力）
 - 用户态服务与工具：**Rust**
 - 首批目标架构：**ARM64 (AArch64)**，架构上预留 x86_64 / RISC-V 移植位
-- 当前阶段：**绿地 / 脚手架**。仓库目前只有顶层目录骨架与 `参考源码/`，尚未有可构建的内核代码。
+- 当前阶段：**Phase 1（内存与异常）已完成，过关卡 G0**（单核、无抢占、无 demand paging）。内核已可在 QEMU `virt` 上：开 MMU（身份映射）、buddy/slab 分配器、异常向量 + panic dump、GICv2 + CNTV timer IRQ（干净 tick 往返）、SVC syscall 派发（端到端一次 trap）。下一步进 Phase 2（调度/上下文切换/用户态地址空间）。
 - **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `文档/AI调度设计.md`）+ PC 高性能。
 
 ## 架构决策（已定，详见 `文档/架构决策.md`）
@@ -112,7 +112,7 @@ berryos/
 
 ## 构建与测试
 
-Phase 0 已落地：stable Rust + `aarch64-unknown-none`，`cargo build` 通过，`just run` 在 QEMU `virt` 打印 `BerryOS boot`。
+Phase 1（G0）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → 干净 `tick 1..5`（CNTV IRQ，1Hz）→ halt；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（身份映射）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall 派发全通。
 
 **前置（macOS，一次性）**：
 
