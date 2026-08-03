@@ -9,5 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 bos-hal-aarch64 = { path = "../架构相关/aarch64" }
+bos-mm = { path = "../内存管理" }
 
 [build-dependencies]

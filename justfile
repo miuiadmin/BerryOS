@@ -36,3 +36,11 @@ run-release:
 
 clean:
     cargo clean
+
+# host 三元组：.cargo/config.toml 锁了 build.target=aarch64-unknown-none，
+# host 单元测试要用 `--target <host>` 覆盖（否则给 no_std 目标配 std harness）。
+host := `rustc -vV | sed -n 's/^host: //p'`
+
+# host 单元测试：bos-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）。
+test-host:
+    cargo test -p bos-mm --target {{host}}

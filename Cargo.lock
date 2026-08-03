@@ -11,4 +11,9 @@ name = "bos-kernel"
 version = "0.1.0"
 dependencies = [
  "bos-hal-aarch64",
+ "bos-mm",
 ]
+
+[[package]]
+name = "bos-mm"
+version = "0.1.0"

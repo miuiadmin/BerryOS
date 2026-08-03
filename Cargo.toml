@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["内核", "架构相关/aarch64"]
+members = ["内核", "架构相关/aarch64", "内存管理"]
 
 [workspace.package]
 edition = "2021"
@@ -15,3 +15,8 @@ opt-level = 1
 panic = "abort"
 lto = true
 codegen-units = 1
+
+# 不为 test/bench 显式设 panic：Cargo 对 test 强制 unwind（harness 要抓 panic），即便
+# dev/release 是 abort；显式 `[profile.test] panic` 反而被忽略并告警。`.cargo/config.toml`
+# 把 build.target 锁成 aarch64-unknown-none，host 单测须用 `cargo test --target <host>`
+# 覆盖（见 justfile `test-host`）。
