@@ -78,12 +78,12 @@ pub extern "C" fn rust_main() -> ! {
 /// 忙循环任务 A（Step 5/6 demo）：纯忙转、不打 yield——证 timer 驱动。
 /// Step 5：`on_irq` 不 switch → task_a 独占、task_b 饿死（无 `B` 输出）。
 /// Step 6：`on_irq` 接 switch → task_a/task_b 在 slice 下交替。
-/// 每 2M 次打一 `A`（atomic 自增防 optimize 掉；节流免刷屏）。
+/// 每 N 次打一 `A`（atomic 自增防 optimize 掉；节流免刷屏）。
 extern "C" fn task_a(_arg: usize) -> ! {
     static A_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     loop {
         let c = A_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if c >= 2_000_000 {
+        if c >= A_PRINT_EVERY {
             A_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
             bos_hal_aarch64::uart_puts(b"A");
         }
@@ -95,9 +95,14 @@ extern "C" fn task_b(_arg: usize) -> ! {
     static B_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     loop {
         let c = B_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if c >= 2_000_000 {
+        if c >= B_PRINT_EVERY {
             B_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
             bos_hal_aarch64::uart_puts(b"B");
         }
     }
 }
+
+/// A 的打印节流阈值（迭代次数）。小→刷屏（直观见交替）；大→低噪（soak 时虚拟时间
+/// 不被 UART 背压吃掉，switches 计数贴近 wall-clock × SLICE_HZ）。SOAK=1 为低噪 soak。
+const A_PRINT_EVERY: u32 = 2_000_000;
+const B_PRINT_EVERY: u32 = 2_000_000;

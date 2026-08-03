@@ -171,8 +171,10 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 (*next_ptr).slice_left = RR_QUANTUM;
                 CURRENT = next_ptr;
                 SWITCHES = SWITCHES.wrapping_add(1);
-                // 金丝雀：每 25 次切换打一行计数（liveness，免刷屏；Step 7 长 soak 看它涨）。
-                if SWITCHES % 25 == 0 {
+                // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
+                // 过关后移除或 feature 门控（plan Step 7）。
+                const SOAK_PRINT_EVERY: u64 = 100;
+                if SWITCHES % SOAK_PRINT_EVERY == 0 {
                     hal::uart_puts(b"switches=");
                     hal::uart_put_dec(SWITCHES);
                     hal::uart_puts(b"\n");

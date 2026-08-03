@@ -9,7 +9,7 @@
 - 内核核心：**Rust**（`#![no_std]`，最小特权，只做调度 / IPC / 地址空间 / 能力）
 - 用户态服务与工具：**Rust**
 - 首批目标架构：**ARM64 (AArch64)**，架构上预留 x86_64 / RISC-V 移植位
-- 当前阶段：**Phase 1（内存与异常）已完成，过关卡 G0**（单核、无抢占、无 demand paging）。内核已可在 QEMU `virt` 上：开 MMU（身份映射）、buddy/slab 分配器、异常向量 + panic dump、GICv2 + CNTV timer IRQ（干净 tick 往返）、SVC syscall 派发（端到端一次 trap）。下一步进 Phase 2（调度/上下文切换/用户态地址空间）。
+- 当前阶段：**Phase 2a（调度与任务）已完成，过关卡 G1**（单核 + 抢占点）。内核已可在 QEMU `virt` 上：开 MMU（身份映射）、buddy/slab 分配器、异常向量 + panic dump、GICv2 + CNTV timer IRQ、SVC syscall 派发（G0 全过）；**新增内核线程 + 上下文切换（纯叶子 asm）+ 协作/抢占调度器（机制在内核、策略可插拔 trait）+ tickless idle（NO_HZ day-one：空闲 mask CNTV + wfi）+ IRQ 驱动抢占（两忙循环任务在 timer slice 下分时，无 yield）**。下一步进 Phase 2b（高半翻转 → 每进程页表 + ASID → 匿名 VMO/Vmar → 首个 EL0 用户进程）。
 - **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `文档/AI调度设计.md`）+ PC 高性能。
 
 ## 架构决策（已定，详见 `文档/架构决策.md`）
@@ -112,7 +112,7 @@ berryos/
 
 ## 构建与测试
 
-Phase 1（G0）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → 干净 `tick 1..5`（CNTV IRQ，1Hz）→ halt；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（身份映射）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall 派发全通。
+Phase 2a（G1）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 在 CNTV timer slice 下交替（纯 IRQ 驱动抢占，无 yield）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（身份映射）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
 
 **前置（macOS，一次性）**：
 
@@ -157,4 +157,5 @@ just check / just clean
 - ARM64 下注意 Cache 一致性、屏障指令（`dmb`/`dsb`/`isb`）、大端小端（默认小端）。
 - **QEMU aarch64 `virt` 起始 EL 随配置而变**：默认 `-machine virt`+`-kernel` ELF 起始 **EL1**（实测 `just run`→`1`）；`-machine virt,virtualization=on` 起始 **EL2**（`just run-el2`→`21`，走 EL2→EL1 eret）。boot 第一行（`global_asm!`）`mrs CurrentEL` 检测并按需降到 EL1（关 MMU/cache、写 `sctlr`、`eret` 到 EL1）——**别假设固定 EL**。
 - **PAC/BTI/MTE 目标 day-one 开**，但 Phase 0/1 推迟——`cortex-a72`（ARMv8.0）无此扩展；**v2** 切 `-cpu max` 时开 target feature（源码零改动，见 `安全与硬件隔离设计.md` §3/§6）。
+- **QEMU TCG 下 CNTV 实测 tick 率 ≈ SLICE_HZ/2**：`CNTFRQ_EL0`=62.5MHz、`SLICE=FREQ/SLICE_HZ`=6.25M（配置正确，`SLICE_HZ=10` 应得 10Hz），但 `just run` 实测抢占 ~5Hz（200s 稳定 1000 切换、60s 稳定 300）——`CNTVCT` 在 TCG `virt`/`cortex-a72` 下推进速率 ≈ `CNTFRQ/2`。**非内核 bug**：真机或加 `-icount` 应为 10Hz。看 tick 率别被这 2x 误导。
 - 微内核里"把东西塞进内核"是反模式 —— 先问：这能不能做成用户态服务？

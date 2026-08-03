@@ -109,7 +109,7 @@ berryos/
 
 ## 构建与测试
 
-Phase 1（G0）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → 干净 `tick 1..5`（CNTV IRQ，1Hz）→ halt；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（身份映射）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall 派发全通。
+Phase 2a（G1）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 在 CNTV timer slice 下交替（纯 IRQ 驱动抢占，无 yield）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（身份映射）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
 
 **前置（macOS，一次性）**：`brew install qemu just` + `rustup target add aarch64-unknown-none`（stable，无需 nightly/build-std）。
 
