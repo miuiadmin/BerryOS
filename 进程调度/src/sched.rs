@@ -17,6 +17,9 @@ use core::ptr::addr_of_mut;
 /// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
 /// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
 static mut IRQ_TICKS: u64 = 0;
+/// 上下文切换计数（`on_irq_tick` 抢占切一次自增）。里程碑金丝雀：两任务在 timer slice
+/// 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 = switch 坏（卡死/饿死）。
+static mut SWITCHES: u64 = 0;
 
 /// 当前在 CPU 上跑的任务。boot 起 = `&IDLE_TASK`（由 [`init`] 设）。
 static mut CURRENT: *mut Task = core::ptr::null_mut();
@@ -141,21 +144,44 @@ pub fn idle_loop() -> ! {
 
 /// IRQ 派发回调（HAL `exception_irq` 经函数指针槽调，EOIR 之后）。
 ///
-/// **Step 5**：只打 `irq tick N` 并自增计数——**刻意不调 `switch`**。目的是隔离证明
-/// timer/EOIR/dispatch 管线出**规律 tick**（rearm 对、无 EOIR 饿死、无伪 IRQ），把 switch
-/// 完全排除在方程外。于是 Step 6 若坏，爆炸半径恰是「switch-mid-IRQ」路径，而非 timer。
-/// rearm 已由 `timer::handle`（`exception_irq` 内、EOIR 前）完成，此处不重 arm。
+/// **Step 6（里程碑）**：真抢占。`RR.tick` 减当前 `slice_left`；归 0 则 `pick_next`，
+/// 若 `Some(next) != current` 则 `switch`。timer 每 slice（10Hz）落一次 → 两忙循环任务
+/// 在 slice 下交替（**无任何 yield 调用**）= 里程碑「两个内核任务在定时器上分时」。
 ///
-/// Step 6 将把此体替换为真 `RoundRobin::tick(current)`：减 `slice_left`、归 0 则
-/// `pick_next` + `switch`（届时 demo 改忙循环、纯 IRQ 驱动分时——里程碑）。
+/// **切换在中断里正确**（plan 核心正确性 trace）：`switch` 是纯叶子 asm——存的 SP 正是
+/// `load_frame` 所需 SP（cur 栈上 TrapFrame 下方，扣除冻结的 `exception_irq`/本函数帧）。
+/// 切回 cur 时续行于 `context_switch` 之后、经 `exception_irq` 回退到 `load_frame` →
+/// `eret` 回 cur 被中断的 PC。IRQ 路径 `PSTATE.I=1`（硬件入口屏蔽），无需再 disable
+/// （Bug 2 不变式：switch 永不在 `PSTATE.I=0` 到达）。rearm 已由 `timer::handle`（EOIR
+/// 前）完成。
 ///
 /// # Safety
 /// IRQ 上下文（`exception_irq` 调，`PSTATE.I=1`）；C-ABI fn 指针槽。
 pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // SAFETY: IRQ 上下文、单核无并发（IRQ 入口硬件屏蔽，不嵌套）。
     IRQ_TICKS = IRQ_TICKS.wrapping_add(1);
-    let n = IRQ_TICKS;
-    hal::uart_puts(b"irq tick ");
-    hal::uart_put_dec(n);
-    hal::uart_puts(b"\n");
+    let cur = CURRENT;
+    RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left（饱和到 0）
+    if (*cur).slice_left == 0 {
+        if let Some(next) = RR.pick_next(rq(), &TOPO) {
+            let next_ptr: *mut Task = next;
+            if next_ptr != cur {
+                (*cur).state = TaskState::Ready;
+                (*next_ptr).state = TaskState::Running;
+                (*next_ptr).slice_left = RR_QUANTUM;
+                CURRENT = next_ptr;
+                SWITCHES = SWITCHES.wrapping_add(1);
+                // 金丝雀：每 25 次切换打一行计数（liveness，免刷屏；Step 7 长 soak 看它涨）。
+                if SWITCHES % 25 == 0 {
+                    hal::uart_puts(b"switches=");
+                    hal::uart_put_dec(SWITCHES);
+                    hal::uart_puts(b"\n");
+                }
+                // 切出 cur：存 callee-saved+sp，载 next；ret 进 next（首切→trampoline，
+                // 否则→next 上次切出处）。切回 cur 时续行于下一行。
+                // SAFETY: PSTATE.I=1（IRQ 屏蔽）；prev/next 有效、不别名。
+                hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
+            }
+        }
+    }
 }

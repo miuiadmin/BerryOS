@@ -1,11 +1,9 @@
 //! bos-kernel —— BerryOS 内核镜像。
 //!
-//! Phase 2a Step 5：IRQ 派发钩子接线 + timer 管线。boot 注册 `on_irq_tick`（HAL→sched
-//! 函数指针槽反转，避循环依赖）→ 武装 CNTV slice → 解蔽 IRQ。两个**忙循环**任务让 CPU
-//! 永忙，timer 每 slice（10Hz）落 `exception_irq`：`ack → rearm → EOIR → on_irq`，串口
-//! 规律 `irq tick N`（证 rearm 对、无 EOIR 饿死——异于 Phase 1 的 5 自停）。
-//! **本步 `on_irq` 刻意不 switch**：坏则必是 timer/GIC/dispatch，与 switch 无关（Step 6 才接
-//! switch）。故 task_a 独占、task_b 饿死（无 `B` 输出 = 无切换的直接证据）。
+//! Phase 2a Step 6（里程碑）：两内核任务在 CNTV 定时器上**抢占式分时**。`on_irq_tick`
+//! 经 IRQ 派发槽被调，做真 `tick`（减 slice_left）+ 归 0 则 `pick_next` + `switch`。
+//! task_a/task_b 是**忙循环**（不 yield）——A/B 交替**纯由 timer slice 驱动**，即里程碑
+//! 原文「两个内核任务在定时器上分时」。每 50 次切换打一行 `switches=N` 金丝雀（liveness）。
 //! 异常向量已装（HAL `trap`）；panic handler 输出消息 + 位置（file:line:col）（G0 判据），
 //! CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
 #![no_std]
@@ -72,8 +70,8 @@ pub extern "C" fn rust_main() -> ! {
     // SAFETY: 写 CNTV_CTL/TVAL；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { bos_hal_aarch64::timer::arm_slice() };
     bos_hal_aarch64::enable_irq();
-    bos_sched::yield_now(); // idle(main) 让出 → task_a 忙循环永占；timer 打 irq tick N。
-    // 不可达（Step 5 task_a 不 yield）；防御兜底：若被切回则进 tickless idle。
+    bos_sched::yield_now(); // idle(main) 让出 → task_a；timer 每 slice 抢占切到 task_b → A/B 交替。
+    // 不可达（忙循环任务不退出）；防御兜底：若被切回则进 tickless idle。
     bos_sched::idle_loop();
 }
 
