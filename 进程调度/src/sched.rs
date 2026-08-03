@@ -14,6 +14,10 @@ use crate::task::{Task, TaskState};
 use bos_hal_aarch64 as hal;
 use core::ptr::addr_of_mut;
 
+/// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
+/// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
+static mut IRQ_TICKS: u64 = 0;
+
 /// 当前在 CPU 上跑的任务。boot 起 = `&IDLE_TASK`（由 [`init`] 设）。
 static mut CURRENT: *mut Task = core::ptr::null_mut();
 /// 全局 runqueue（G0 单核：一个）。
@@ -133,4 +137,25 @@ pub fn idle_loop() -> ! {
             yield_now();
         }
     }
+}
+
+/// IRQ 派发回调（HAL `exception_irq` 经函数指针槽调，EOIR 之后）。
+///
+/// **Step 5**：只打 `irq tick N` 并自增计数——**刻意不调 `switch`**。目的是隔离证明
+/// timer/EOIR/dispatch 管线出**规律 tick**（rearm 对、无 EOIR 饿死、无伪 IRQ），把 switch
+/// 完全排除在方程外。于是 Step 6 若坏，爆炸半径恰是「switch-mid-IRQ」路径，而非 timer。
+/// rearm 已由 `timer::handle`（`exception_irq` 内、EOIR 前）完成，此处不重 arm。
+///
+/// Step 6 将把此体替换为真 `RoundRobin::tick(current)`：减 `slice_left`、归 0 则
+/// `pick_next` + `switch`（届时 demo 改忙循环、纯 IRQ 驱动分时——里程碑）。
+///
+/// # Safety
+/// IRQ 上下文（`exception_irq` 调，`PSTATE.I=1`）；C-ABI fn 指针槽。
+pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
+    // SAFETY: IRQ 上下文、单核无并发（IRQ 入口硬件屏蔽，不嵌套）。
+    IRQ_TICKS = IRQ_TICKS.wrapping_add(1);
+    let n = IRQ_TICKS;
+    hal::uart_puts(b"irq tick ");
+    hal::uart_put_dec(n);
+    hal::uart_puts(b"\n");
 }

@@ -24,5 +24,5 @@ pub mod task;
 
 pub use class::{RoundRobin, SchedClass, RR_QUANTUM};
 pub use runqueue::{Runqueue, Topo};
-pub use sched::{exit_current, idle_loop, init, spawn, yield_now};
+pub use sched::{exit_current, idle_loop, init, on_irq_tick, spawn, yield_now};
 pub use task::{Task, TaskState, STACK_SIZE};

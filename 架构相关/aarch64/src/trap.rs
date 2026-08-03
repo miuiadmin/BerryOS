@@ -228,19 +228,31 @@ pub extern "C" fn exception_unexpected() {
 ///
 /// **GIC 协议**：ack（IAR 取 ID）→ 分发 → end（EOIR 同 ID）。spurious（1023）不写 EOIR。
 /// CNTV（IRQ 27）电平触发：[`timer::handle`] 内先 rearm（去活电平）再回这里 EOIR。
+///
+/// **顺序（plan Bug 1）**：`ack → rearm(timer::handle) → EOIR → dispatch`。dispatch/switch
+/// 必须在 EOIR **之后**——若 switch 跑在 ack 与 EOIR 之间，IRQ 在 GIC 里保持 active（优先级
+/// 未降），电平触发的 CNTV 下次发不出来（EOIR 饿死）。dispatch 经 [`crate::irq_dispatch`]
+/// 函数指针槽调调度器（HAL 不依赖 sched）。Step 5 dispatch 只打 tick + 已由 handle rearm，
+/// 不 switch；Step 6 才在槽里调真 `tick` 抢占。
 #[no_mangle]
-pub extern "C" fn exception_irq(_tf: &mut TrapFrame) {
+pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
     let id = crate::gic::acknowledge();
     if id == crate::gic::SPURIOUS {
         return;
     }
     if id as usize == crate::gic::IRQ_CNTV {
         // rearm（去活电平）在 EOIR 前：电平触发的 CNTV 须先重写 TVAL 再 EOIR，
-        // 否则 EOIR 后电平仍高立即重投。dispatch/switch 接在 EOIR 后（Step 5）。
+        // 否则 EOIR 后电平仍高立即重投。
         crate::timer::handle();
     }
     // 未知 IRQ：忽略（G0 单源）。
     crate::gic::end(id);
+    // dispatch 在 EOIR 后（Bug 1）：经函数指针槽通知调度器。Step 5 只打 tick，不 switch。
+    // SAFETY: IRQ 上下文（PSTATE.I=1）；槽由内核 boot 时注册（enable_irq 前）。
+    if let Some(f) = unsafe { crate::irq_dispatch() } {
+        // SAFETY: f 是 C-ABI fn 指针；tf 是当前 IRQ 栈上的异常帧。
+        unsafe { f(tf) };
+    }
 }
 
 unsafe fn read_esr_elr() -> (u64, u64) {

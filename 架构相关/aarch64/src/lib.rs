@@ -47,6 +47,33 @@ pub fn init() {
     unsafe { gic::init() };
 }
 
+// ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
+//
+// HAL 是叶子 crate，**不依赖** bos-sched（否则循环依赖：sched → hal → sched）。
+// 但 timer/IRQ 抖动需要通知调度器（Step 5 打印 tick、Step 6 驱动抢占）——用**函数指针
+// 槽**把调用反转：调度器不进 HAL 的依赖图，`内核` 在 boot 时注册回调（`set_irq_dispatch`），
+// `exception_irq` 经槽调。HAL 永不知 scheduler 之名（plan 循环依赖规避 + R10）。
+
+/// IRQ 派发回调类型（EOIR 之后、`eret` 之前调；C-ABI 约定——ADR #18 syscall/FFI 边界）。
+pub type IrqDispatch = unsafe extern "C" fn(&mut trap::TrapFrame);
+
+static mut IRQ_DISPATCH: Option<IrqDispatch> = None;
+
+/// 注册 IRQ 派发回调。须在**任何 `enable_irq` 之前**调用一次（否则首 IRQ 落空槽——
+/// 由下方 `if let Some` 平凡处理，但 boot 期就该注册好）。
+pub fn set_irq_dispatch(f: IrqDispatch) {
+    // SAFETY: 启动单线程、DAIF 屏蔽（enable_irq 前）；无并发 IRQ、无竞态。
+    unsafe { IRQ_DISPATCH = Some(f) };
+}
+
+/// 取已注册的 IRQ 派发回调（`exception_irq` 用）。未注册时返回 `None`。
+///
+/// # Safety
+/// 读 `static mut`。仅 IRQ 上下文（单核顺序）调用。
+pub unsafe fn irq_dispatch() -> Option<IrqDispatch> {
+    IRQ_DISPATCH
+}
+
 /// 输出一个字节到 UART0。
 #[inline]
 pub fn uart_putc(c: u8) {

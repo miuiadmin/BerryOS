@@ -106,6 +106,11 @@ global_asm!(
     // 把 arg 移到 x0（C-ABI 第一参），blr 调 entry。entry 须 `-> !`；
     // 若误返回，落到 task_exited_trap（halt）——Step 1 乒乓 fn 切回前不会返回。
     "    mov x0, x20",
+    // 新任务起步即解蔽 IRQ：首次 switch 经 `ret` 进此 trampoline（非 eret），继承了
+    // switch 时刻的 `PSTATE.I=1`（yield_now/IRQ 路径都先屏蔽）。不在此解蔽 → 新任务
+    // 永跑在屏蔽态（如 Step 5 忙循环任务收不到 timer tick）。**不违 Bug 2 不变式**：
+    // switch 本身仍在 `PSTATE.I=1` 完成；解蔽发生在 switch 之后的 trampoline 里。
+    "    msr daifclr, #2",
     "    blr x19",
     "    bl task_exited_trap",
     ".size task_entry_trampoline, . - task_entry_trampoline",

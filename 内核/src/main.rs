@@ -1,8 +1,11 @@
 //! bos-kernel —— BerryOS 内核镜像。
 //!
-//! Phase 2a Step 4：协作调度 + tickless timer。spawn 两个内核线程 task_a/task_b 在
-//! `yield_now` 抢占点上分时（`ABABAB`），退出后进 idle_loop（runqueue 空 → mask CNTV
-//! + wfi，tickless 干净停）。IRQ 驱动抢占在 Step 6。
+//! Phase 2a Step 5：IRQ 派发钩子接线 + timer 管线。boot 注册 `on_irq_tick`（HAL→sched
+//! 函数指针槽反转，避循环依赖）→ 武装 CNTV slice → 解蔽 IRQ。两个**忙循环**任务让 CPU
+//! 永忙，timer 每 slice（10Hz）落 `exception_irq`：`ack → rearm → EOIR → on_irq`，串口
+//! 规律 `irq tick N`（证 rearm 对、无 EOIR 饿死——异于 Phase 1 的 5 自停）。
+//! **本步 `on_irq` 刻意不 switch**：坏则必是 timer/GIC/dispatch，与 switch 无关（Step 6 才接
+//! switch）。故 task_a 独占、task_b 饿死（无 `B` 输出 = 无切换的直接证据）。
 //! 异常向量已装（HAL `trap`）；panic handler 输出消息 + 位置（file:line:col）（G0 判据），
 //! CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
 #![no_std]
@@ -56,32 +59,47 @@ pub extern "C" fn rust_main() -> ! {
 
     ktest::run();
 
-    // Phase 2a Step 4：协作调度 + tickless timer（primitives 已就绪；IRQ 驱动在 Step 5+）。
+    // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
     unsafe { bos_hal_aarch64::timer::init() };
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     bos_sched::init();
     bos_sched::spawn(task_a, 0, b"task_a");
     bos_sched::spawn(task_b, 0, b"task_b");
-    bos_sched::yield_now(); // idle(main) 让出 → task_a，协作分时 ABABAB。
-    // demo 退出 → 进 idle_loop（runqueue 空 → mask CNTV + wfi = 干净 tickless halt）。
+    // 注册 IRQ 派发（HAL→sched 反转，避循环依赖；须在 enable_irq 前）。Step 5 只打 tick。
+    bos_hal_aarch64::set_irq_dispatch(bos_sched::on_irq_tick);
+    // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
+    // SAFETY: 写 CNTV_CTL/TVAL；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
+    unsafe { bos_hal_aarch64::timer::arm_slice() };
+    bos_hal_aarch64::enable_irq();
+    bos_sched::yield_now(); // idle(main) 让出 → task_a 忙循环永占；timer 打 irq tick N。
+    // 不可达（Step 5 task_a 不 yield）；防御兜底：若被切回则进 tickless idle。
     bos_sched::idle_loop();
 }
 
-/// 协作 demo 任务 A：打 `A` 并 `yield_now` 三次后退出。
+/// 忙循环任务 A（Step 5/6 demo）：纯忙转、不打 yield——证 timer 驱动。
+/// Step 5：`on_irq` 不 switch → task_a 独占、task_b 饿死（无 `B` 输出）。
+/// Step 6：`on_irq` 接 switch → task_a/task_b 在 slice 下交替。
+/// 每 2M 次打一 `A`（atomic 自增防 optimize 掉；节流免刷屏）。
 extern "C" fn task_a(_arg: usize) -> ! {
-    for _ in 0..3 {
-        bos_hal_aarch64::uart_puts(b"A");
-        bos_sched::yield_now();
+    static A_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    loop {
+        let c = A_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if c >= 2_000_000 {
+            A_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+            bos_hal_aarch64::uart_puts(b"A");
+        }
     }
-    bos_sched::exit_current();
 }
 
-/// 协作 demo 任务 B：打 `B` 并 `yield_now` 三次后退出。
+/// 忙循环任务 B（同 A，打 `B`）。Step 5 饿死（无切换）；Step 6 被调起。
 extern "C" fn task_b(_arg: usize) -> ! {
-    for _ in 0..3 {
-        bos_hal_aarch64::uart_puts(b"B");
-        bos_sched::yield_now();
+    static B_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    loop {
+        let c = B_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if c >= 2_000_000 {
+            B_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+            bos_hal_aarch64::uart_puts(b"B");
+        }
     }
-    bos_sched::exit_current();
 }
