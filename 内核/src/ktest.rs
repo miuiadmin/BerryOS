@@ -1,7 +1,7 @@
 //! 内核内最小测试骨架（关卡 G0 判据辅助）：在 QEMU 串口打印 PASS/FAIL。
 //!
-//! 单核、无抢占（G0）下同步直跑；断言失败 → panic（panic handler 现仅打 `PANIC`，
-//! Step 6 升级为寄存器/PC/ESR/FAR dump + 回溯）。SMP（G2）后需每核隔离。
+//! 单核、无抢占（G0）下同步直跑；断言失败 → panic（panic handler 打消息 + file:line:col；
+//! CPU 异常寄存器/PC/ESR/FAR dump 在 HAL `trap::exception_sync`）。SMP（G2）后需每核隔离。
 
 use bos_mm::va::{phys_to_virt, PAGE_SHIFT};
 
@@ -9,6 +9,19 @@ pub fn run() {
     test_frame();
     test_heap();
     bos_hal_aarch64::uart_puts(b"ktest done\n");
+    // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
+    test_exc();
+}
+
+/// Step 6 信号：注入 `brk` → 同步异常（current-EL SPx @0x200）→ exception_sync
+/// dump 寄存器/PC/ESR/FAR → BRK 可恢复（ELR+=4）→ eret 返回。
+/// 见 `ktest done` 之后的 `=== EXCEPTION ... BRK recover ... [exc] brk recovered`。
+fn test_exc() {
+    bos_hal_aarch64::uart_puts(b"\n[exc] inject brk #0x42\n");
+    // SAFETY: brk 触发同步异常（EC=0x3C）；exception_sync dump 后跳过本指令、eret 返回。
+    // DAIF 屏蔽不影响同步异常（brk 非 IRQ）。
+    unsafe { core::arch::asm!("brk #0x42", options(nostack, preserves_flags)) };
+    bos_hal_aarch64::uart_puts(b"[exc] brk recovered (eret ok)\n");
 }
 
 /// 帧分配器往返 + 读写哨兵 + 回收 + 合并。

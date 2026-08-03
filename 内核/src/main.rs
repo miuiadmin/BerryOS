@@ -1,7 +1,8 @@
 //! bos-kernel —— BerryOS 内核镜像。
 //!
-//! Phase 1 Step 5：boot → HAL init（MMU）→ mm init（帧分配器）→ ktest
-//! （FRAME ok / HEAP ok，slab 堆使能 `alloc`）→ halt。
+//! Phase 1 Step 6：异常向量已装（HAL `trap`）；panic handler 升级为
+//! 消息 + 位置（file:line:col）输出（G0 判据），CPU 异常的寄存器/ESR/FAR dump
+//! 在 HAL `trap::exception_sync`（经 brk 注入触发）。
 #![no_std]
 #![no_main]
 
@@ -17,10 +18,27 @@ use heap::SlabHeap;
 #[global_allocator]
 static ALLOC: SlabHeap = SlabHeap::new();
 
+/// 把 `core::fmt` 格式串直接打到 UART（无缓冲、逐字节）——panic 消息/位置用。
+struct UartWriter;
+
+impl core::fmt::Write for UartWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        bos_hal_aarch64::uart_puts(s.as_bytes());
+        Ok(())
+    }
+}
+
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // Step 6 升级为寄存器/PC/ESR/FAR dump + 回溯（G0 判据）。
-    bos_hal_aarch64::uart_puts(b"\nPANIC\n");
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    use core::fmt::Write;
+    // G0 判据：panic 必须有人可读的 dump。消息 + file:line:col。
+    // （CPU 异常的寄存器/PC/ESR/FAR dump 另走 HAL `trap::exception_sync`。）
+    let _ = writeln!(UartWriter, "\nKERNEL PANIC");
+    if let Some(loc) = info.location() {
+        let _ = writeln!(UartWriter, "  at {}:{}:{}", loc.file(), loc.line(), loc.column());
+    }
+    // PanicMessage 实现了 Display（1.95 起 message() 不再返回 Option）。
+    let _ = writeln!(UartWriter, "  {}", info.message());
     bos_hal_aarch64::halt();
 }
 
