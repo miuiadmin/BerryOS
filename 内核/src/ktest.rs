@@ -10,6 +10,7 @@ pub fn run() {
     test_frame();
     test_heap();
     test_syscall();
+    test_switch();
     bos_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -108,4 +109,54 @@ fn test_heap() {
     drop(big2);
 
     bos_hal_aarch64::uart_puts(b"HEAP ok\n");
+}
+
+// ---- Phase 2a Step 1：上下文切换 asm 乒乓（无调度器、无 IRQ）----
+
+use bos_hal_aarch64::task::TaskContext;
+
+/// 16 对齐的 4KiB 内核栈（`new_kernel` 要求栈顶 16 对齐——风险 R2）。
+#[repr(C, align(16))]
+struct TestStack4096([u8; 4096]);
+
+/// MAIN 的上下文：首切出时由 `context_switch` 把当前 callee-saved+sp 存进来。
+/// 初始 ZERO（内容无所谓，被首次 switch 覆盖）。
+static mut SWITCH_CTX_MAIN: TaskContext = TaskContext::ZERO;
+/// OTHER 的上下文：`new_kernel` 预设指向 `switch_ping_fn`。
+static mut SWITCH_CTX_OTHER: TaskContext = TaskContext::ZERO;
+static mut SWITCH_OTHER_STACK: TestStack4096 = TestStack4096([0; 4096]);
+
+/// 乒乓对端：打 `PING ` 后切回 MAIN。Step 1 不会被切回（MAIN 不再切它），故以
+/// `halt()` 收尾满足 `-> !`。
+extern "C" fn switch_ping_fn(_arg: usize) -> ! {
+    // SAFETY: 当前 DAIF 屏蔽（boot 起 IRQ 未解蔽，ktest 在 enable_irq 之前），
+    // 满足 context_switch 的 `PSTATE.I==1` 不变式。两 ctx 不别名。
+    unsafe {
+        bos_hal_aarch64::uart_puts(b"PING ");
+        bos_hal_aarch64::task::context_switch(
+            &raw mut SWITCH_CTX_OTHER,
+            &raw const SWITCH_CTX_MAIN,
+        );
+    }
+    bos_hal_aarch64::halt();
+}
+
+/// Step 1 信号：构造 OTHER(`new_kernel` 指向 `switch_ping_fn`) → 从 MAIN 切到 OTHER
+/// → OTHER 打 `PING ` 切回 → 这里续行打 `TASK ok`。证 switch asm 存/取 callee-saved
+/// + sp、新任务首切经 trampoline 接线正确（风险 R1）。
+fn test_switch() {
+    // SAFETY: DAIF 屏蔽（在 enable_irq 之前）；两 ctx 静态、不别名；栈顶 16 对齐。
+    unsafe {
+        let stack_top =
+            (&raw const SWITCH_OTHER_STACK) as *const u8 as usize + core::mem::size_of::<TestStack4096>();
+        SWITCH_CTX_OTHER = TaskContext::new_kernel(switch_ping_fn, 0, stack_top);
+        // 从当前（MAIN）切到 OTHER：当前 callee-saved+sp 落 SWITCH_CTX_MAIN，
+        // 载 SWITCH_CTX_OTHER → 经 trampoline 进 switch_ping_fn。
+        bos_hal_aarch64::task::context_switch(
+            &raw mut SWITCH_CTX_MAIN,
+            &raw const SWITCH_CTX_OTHER,
+        );
+        // <- switch_ping_fn 切回 SWITCH_CTX_MAIN 时续行于此。
+    }
+    bos_hal_aarch64::uart_puts(b"TASK ok\n");
 }

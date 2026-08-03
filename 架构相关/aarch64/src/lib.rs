@@ -6,6 +6,7 @@
 //! Phase 1 Step 7：GICv2 中断控制器（见 [`gic`]）。
 //! Phase 1 Step 8：CNTV 虚拟定时器（见 [`timer`]）。
 //! Phase 1 Step 9：SVC syscall 派发（见 [`syscall`]）。
+//! Phase 2a Step 1：任务上下文 + 上下文切换 asm（见 [`task`]）。
 //! 仅 `#![no_std]`；`panic_handler` / `no_main` 由最终 bin crate（`内核/`）提供。
 #![no_std]
 
@@ -15,6 +16,7 @@ mod mmio;
 mod mmu;
 mod paging;
 pub mod syscall;
+pub mod task;
 pub mod timer;
 pub mod trap;
 
