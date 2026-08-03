@@ -8,8 +8,12 @@
 //! `static_mut_refs` 在 G0 下是良定义的（唯一可变访问、启动单线程）；SMP 后整体重构。
 #![allow(static_mut_refs)]
 
+use bos_hal_aarch64::{RAM_BASE, RAM_TOP};
 use bos_mm::frame::FrameAllocator;
-use bos_mm::va::{MAX_PAGES, RAM_TOP};
+use bos_mm::va::PAGE_SIZE;
+
+/// buddy 后备定容：按整段 RAM 计（RAM 几何来自 HAL 平台常量）。
+const MAX_PAGES: usize = (RAM_TOP - RAM_BASE) / PAGE_SIZE; // 32768
 
 /// buddy 后备：每页一个 bool（是否空闲块头）。
 static mut FRAME_FREE: [bool; MAX_PAGES] = [false; MAX_PAGES];
