@@ -1,0 +1,109 @@
+//! 协作调度器核心（plan Phase 2a Step 3）。
+//!
+//! 单核、抢占点（G0 协作式）：`yield_now` / `exit_current` 是唯一切换点，**无 timer
+//! 驱动**（Step 4/6 起）。`current` 指向当前任务；`IDLE_TASK` 是 boot 上下文
+//! （`rust_main` 的活栈——Bug 4 懒捕获，首切出时由 `switch` 把活 callee-saved+sp
+//! 存进它的 ctx）。
+//!
+//! 承载不变式（plan Bug 2）：`switch` 永不在 `PSTATE.I=0`（中断解蔽）时到达——
+//! `yield_now`/`exit_current` 均先 `disable_irq` 再切。
+
+use crate::class::{RoundRobin, SchedClass, RR_QUANTUM};
+use crate::runqueue::{Runqueue, Topo};
+use crate::task::{Task, TaskState};
+use bos_hal_aarch64 as hal;
+use core::ptr::addr_of_mut;
+
+/// 当前在 CPU 上跑的任务。boot 起 = `&IDLE_TASK`（由 [`init`] 设）。
+static mut CURRENT: *mut Task = core::ptr::null_mut();
+/// 全局 runqueue（G0 单核：一个）。
+static mut RUNQUEUE: Runqueue = Runqueue::new();
+/// CPU 拓扑（单核）。
+static TOPO: Topo = Topo::single();
+/// 调度类（round-robin，G0/G1 默认）。
+static RR: RoundRobin = RoundRobin;
+
+/// idle / 初始任务 = `rust_main` 的活上下文（boot 栈 `__stack_top`）。**不分配栈**
+/// （Bug 4）：`kstack=None`、`ctx` 留零——首切出时由 `switch` 覆盖为活的 callee-saved
+/// + boot 栈 SP。idle 永不在 runqueue 上（runqueue 空时停在此）。
+static mut IDLE_TASK: Task = Task {
+    ctx: hal::task::TaskContext::ZERO,
+    kstack: None,
+    name: b"idle",
+    state: TaskState::Running,
+    slice_left: 0,
+    rq_prev: core::cell::Cell::new(None),
+    rq_next: core::cell::Cell::new(None),
+};
+
+/// 取全局 runqueue 的 `&mut`（静态单例；单核顺序访问，借用不重叠）。
+#[inline]
+unsafe fn rq() -> &'static mut Runqueue {
+    &mut *addr_of_mut!(RUNQUEUE)
+}
+
+/// 初始化调度器：`current = &IDLE_TASK`。须在 `spawn` / `yield_now` 前、`mm::init`
+/// 后调用一次。
+pub fn init() {
+    // SAFETY: 启动单线程、init 仅调用一次。
+    unsafe {
+        CURRENT = addr_of_mut!(IDLE_TASK);
+    }
+}
+
+/// 生成一个内核线程：分配 16KiB 栈 + 接线 + 入 runqueue。
+///
+/// **调用方须保证 IRQ 屏蔽**（alloc/enqueue 不可被打断——plan「IRQ 热路径零分配」）：
+/// Step 3 main 在 boot 屏蔽态调用；Step 6+ 若从任务体 spawn，需自行 disable/enable 包络。
+/// v1 不回收栈（leak；Step 7+ 加 reap）。
+pub fn spawn(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8]) {
+    // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
+    let task: &'static mut Task = alloc::boxed::Box::leak(Task::new_kernel(entry, arg, name));
+    unsafe {
+        RR.enqueue(task, rq());
+    }
+}
+
+/// 协作让出：切到 `pick_next` 选出的下一个任务（若有且非自己）。
+/// Bug 2：`disable_irq` → `switch` → （被切回时）`enable_irq`。
+pub fn yield_now() {
+    hal::disable_irq();
+    // SAFETY: IRQ 已屏蔽；CURRENT/RUNQUEUE 单核顺序访问。
+    unsafe {
+        let prev = CURRENT;
+        if let Some(next) = RR.pick_next(rq(), &TOPO) {
+            let next_ptr: *mut Task = next;
+            if next_ptr != prev {
+                (*prev).state = TaskState::Ready;
+                (*next_ptr).state = TaskState::Running;
+                (*next_ptr).slice_left = RR_QUANTUM;
+                CURRENT = next_ptr;
+                hal::task::context_switch(&raw mut (*prev).ctx, &raw const (*next_ptr).ctx);
+                // <- 被切回 prev 时续行于此（CURRENT==prev）。
+            }
+        }
+    }
+    hal::enable_irq();
+}
+
+/// 当前任务退出：出 runqueue + 切到下一个（或 idle）。永不返回。
+pub fn exit_current() -> ! {
+    hal::disable_irq();
+    // SAFETY: IRQ 已屏蔽；cur 已 dequeue 后无人切回它。
+    unsafe {
+        let cur = CURRENT;
+        debug_assert!((*cur).state != TaskState::Exited, "double exit");
+        RR.dequeue(&mut *cur, rq());
+        let next_ptr: *mut Task = match RR.pick_next(rq(), &TOPO) {
+            Some(n) => n,
+            None => addr_of_mut!(IDLE_TASK),
+        };
+        (*next_ptr).state = TaskState::Running;
+        (*next_ptr).slice_left = RR_QUANTUM;
+        CURRENT = next_ptr;
+        // prev=cur（已出 runqueue、将废弃）；切走后永不回到 cur。
+        hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
+    }
+    // 不可达：cur 已 dequeue，无人切回。halt 兜底。
+    hal::halt();
+}

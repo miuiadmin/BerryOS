@@ -1,8 +1,9 @@
 //! bos-kernel —— BerryOS 内核镜像。
 //!
-//! Phase 1 Step 8：ktest 后武装 CNTV + 解蔽 IRQ（里程碑「干净 timer IRQ」）。
-//! 异常向量已装（HAL `trap`）；panic handler 升级为消息 + 位置（file:line:col）输出
-//! （G0 判据），CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
+//! Phase 2a Step 3：ktest 后启动协作调度器——spawn 两个内核线程 task_a/task_b，
+//! 在 `yield_now` 抢占点上分时（串口 `ABABAB`），无 timer 驱动（Step 4 起 tickless）。
+//! 异常向量已装（HAL `trap`）；panic handler 输出消息 + 位置（file:line:col）（G0 判据），
+//! CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
 #![no_std]
 #![no_main]
 
@@ -54,14 +55,31 @@ pub extern "C" fn rust_main() -> ! {
 
     ktest::run();
 
-    // Step 8 解蔽序最后两步：武装 CNTV timer → daifclr（VBAR→GIC→timer→此）。
-    // SAFETY: EL1；GIC 已配 IRQ27；此时 DAIF 仍屏蔽（首 IRQ 在 daifclr 后）。
-    let freq = unsafe { bos_hal_aarch64::timer::init() };
-    bos_hal_aarch64::uart_puts(b"timer armed freq=");
-    bos_hal_aarch64::uart_put_dec(freq);
-    bos_hal_aarch64::uart_puts(b"\n");
-    bos_hal_aarch64::enable_irq();
-
-    // idle：wfi 睡眠，timer IRQ（1Hz）唤醒打 tick，eret 回此循环。到 5 tick 自停。
+    // Phase 2a Step 3：协作调度器（timer 暂不武装——Step 4 起 tickless）。
+    // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
+    bos_sched::init();
+    bos_sched::spawn(task_a, 0, b"task_a");
+    bos_sched::spawn(task_b, 0, b"task_b");
+    bos_sched::yield_now(); // idle(main) 让出 → task_a，协作分时 ABABAB。
+    // 所有任务退出后切回 idle(main)。
+    bos_hal_aarch64::uart_puts(b"\nsched: cooperative demo done\n");
     bos_hal_aarch64::halt();
+}
+
+/// 协作 demo 任务 A：打 `A` 并 `yield_now` 三次后退出。
+extern "C" fn task_a(_arg: usize) -> ! {
+    for _ in 0..3 {
+        bos_hal_aarch64::uart_puts(b"A");
+        bos_sched::yield_now();
+    }
+    bos_sched::exit_current();
+}
+
+/// 协作 demo 任务 B：打 `B` 并 `yield_now` 三次后退出。
+extern "C" fn task_b(_arg: usize) -> ! {
+    for _ in 0..3 {
+        bos_hal_aarch64::uart_puts(b"B");
+        bos_sched::yield_now();
+    }
+    bos_sched::exit_current();
 }

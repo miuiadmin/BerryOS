@@ -19,8 +19,10 @@ extern crate alloc;
 
 pub mod class;
 pub mod runqueue;
+pub mod sched;
 pub mod task;
 
 pub use class::{RoundRobin, SchedClass, RR_QUANTUM};
 pub use runqueue::{Runqueue, Topo};
+pub use sched::{exit_current, init, spawn, yield_now};
 pub use task::{Task, TaskState, STACK_SIZE};

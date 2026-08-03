@@ -28,11 +28,14 @@ pub enum TaskState {
 ///
 /// **所有权/稳定性**：`Task` 由调度器以 `Box<Task>` 拥有、地址稳定（runqueue 与
 /// `current` 持有的裸指针即源自该 Box——须在其被引用期间保持存活、不移动）。
+///
+/// **idle/初始任务例外**（plan Bug 4）：复用 boot 栈、`kstack=None`，作为 `const`
+/// 静态存在（首切出时由 `switch` 把活 callee-saved+boot 栈 SP 覆盖进 `ctx`）。
 pub struct Task {
     /// 协作者切换上下文（HAL 的 callee-saved 子集）。
     pub ctx: TaskContext,
-    /// 该任务私有内核栈（栈顶 16 对齐，由分配器页对齐保证）。
-    pub kstack: Box<[u8]>,
+    /// 该任务私有内核栈（栈顶 16 对齐）。`None` = 复用 boot 栈（仅 idle/初始任务）。
+    pub kstack: Option<Box<[u8]>>,
     /// 调试名（串口打印）。
     pub name: &'static [u8],
     pub state: TaskState,
@@ -61,7 +64,7 @@ impl Task {
         let ctx = TaskContext::new_kernel(entry, arg, stack_top);
         Box::new(Task {
             ctx,
-            kstack,
+            kstack: Some(kstack),
             name,
             state: TaskState::Ready,
             slice_left: 0,
