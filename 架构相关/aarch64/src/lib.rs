@@ -3,10 +3,12 @@
 //! Phase 0：boot 入口（EL2→EL1 降级，见 `boot.rs`）+ PL011 UART 输出 + halt。
 //! Phase 1 Step 4：stage-1 页表 + 开 MMU（见 [`mmu`]、[`paging`]）。
 //! Phase 1 Step 6：异常向量表 + 同步异常处理（见 [`trap`]）。
+//! Phase 1 Step 7：GICv2 中断控制器（见 [`gic`]）。
 //! 仅 `#![no_std]`；`panic_handler` / `no_main` 由最终 bin crate（`内核/`）提供。
 #![no_std]
 
 mod boot;
+pub mod gic;
 mod mmio;
 mod mmu;
 mod paging;
@@ -26,7 +28,8 @@ pub const GICD_BASE: usize = 0x0800_0000;
 /// GICv2 CPU interface 基址（QEMU `virt`）。
 pub const GICC_BASE: usize = 0x0801_0000;
 
-/// 启动早期初始化：开 MMU（Step 4）→ 装异常向量表（Step 6）。后续串入 gic/timer（Step 7–8）。
+/// 启动早期初始化：开 MMU（Step 4）→ 装异常向量表（Step 6）→ 初始化 GIC（Step 7）。
+/// 后续串入 timer 武装（Step 8）。
 ///
 /// 必须在 `rust_main`、单核、EL1、MMU 关时调用一次。
 pub fn init() {
@@ -34,6 +37,8 @@ pub fn init() {
     unsafe { mmu::init() };
     // SAFETY: EL1、MMU 已开（向量表在身份映射的内核镜像内）；任何 DAIF 解蔽之前。
     unsafe { trap::init() };
+    // SAFETY: MMIO（Device 映射区）；EL1、单核、DAIF 仍屏蔽。
+    unsafe { gic::init() };
 }
 
 /// 输出一个字节到 UART0。

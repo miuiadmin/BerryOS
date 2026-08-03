@@ -6,11 +6,18 @@
 use bos_mm::va::{phys_to_virt, PAGE_SHIFT};
 
 pub fn run() {
+    test_gic();
     test_frame();
     test_heap();
     bos_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
+}
+
+/// Step 7 信号：GICv2 配置读回自检（IRQ27/CNTV：启用 + 优先级 + distributor/CPUif 开）。
+fn test_gic() {
+    assert!(bos_hal_aarch64::gic::verify(), "GIC IRQ27 配置读回不符");
+    bos_hal_aarch64::uart_puts(b"GIC ok\n");
 }
 
 /// Step 6 信号：注入 `brk` → 同步异常（current-EL SPx @0x200）→ exception_sync
