@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["内核", "架构相关/aarch64", "内存管理"]
+members = ["内核", "架构相关/aarch64", "内存管理", "进程调度"]
 
 [workspace.package]
 edition = "2021"

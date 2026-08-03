@@ -1,0 +1,117 @@
+//! Runqueue（侵入式双向环形链表，`NonNull<Task>` 裸指针）+ CPU 拓扑（`Topo`）。
+
+use crate::task::Task;
+use core::cell::Cell;
+use core::ptr::NonNull;
+
+/// 单 CPU 的运行队列。G0 单核：全局一个。
+///
+/// 链表游标 `head` 用 `Cell`：使 [`crate::class::SchedClass::pick_next`] 在
+/// `&Runqueue`（不可变）下仍能旋转游标（round-robin），**无需改冻结合约为
+/// `&mut Runqueue`**（plan Bug 5）。
+///
+/// 环形：尾节点的 `rq_next == head`、`head.rq_prev == 尾`。`head` 是「下一个将被
+/// pick 的任务」；`rotate()` 返回旧 head 并把游标前移到 `head.next`。
+pub struct Runqueue {
+    head: Cell<Option<NonNull<Task>>>,
+}
+
+impl Runqueue {
+    pub const fn new() -> Self {
+        Runqueue {
+            head: Cell::new(None),
+        }
+    }
+
+    /// 队列是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.head.get().is_none()
+    }
+
+    /// 把 `task` 插到环尾（head 的前驱）——新任务排到最后被 pick。
+    ///
+    /// # Safety
+    /// `task` 须当前不在任何 runqueue 上（`rq_prev`/`rq_next` 均为 `None`），且
+    /// 在被摘下前地址保持稳定（调度器拥有其 `Box`）。
+    pub(crate) unsafe fn link_back(&self, task: NonNull<Task>) {
+        let t = task.as_ptr();
+        match self.head.get() {
+            None => {
+                // 单元素环：prev=next=self。
+                (*t).rq_prev.set(Some(task));
+                (*t).rq_next.set(Some(task));
+                self.head.set(Some(task));
+            }
+            Some(head) => {
+                let h = head.as_ptr();
+                let prev = (*h).rq_prev.get().expect("环非空 → head 有前驱");
+                let p = prev.as_ptr();
+                // 在 prev 与 head 之间插入 task（成为新尾）。head 不变。
+                (*p).rq_next.set(Some(task));
+                (*t).rq_prev.set(Some(prev));
+                (*t).rq_next.set(Some(head));
+                (*h).rq_prev.set(Some(task));
+            }
+        }
+    }
+
+    /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
+    /// 不在环上（`rq_prev==None`）则幂等返回。
+    ///
+    /// # Safety
+    /// 同 [`link_back`]。
+    pub(crate) unsafe fn unlink(&self, task: NonNull<Task>) {
+        let t = task.as_ptr();
+        let Some(prev) = (*t).rq_prev.get() else {
+            return; // 不在环上
+        };
+        let next = (*t).rq_next.get().expect("环上必同时有 next");
+
+        if prev == next {
+            // 单元素环 → 空。
+            self.head.set(None);
+        } else {
+            (*prev.as_ptr()).rq_next.set(Some(next));
+            (*next.as_ptr()).rq_prev.set(Some(prev));
+            if self.head.get() == Some(task) {
+                self.head.set(Some(next));
+            }
+        }
+        (*t).rq_prev.set(None);
+        (*t).rq_next.set(None);
+    }
+
+    /// round-robin：返回当前 `head`（要跑的任务）并把游标前移到 `head.next`。
+    /// 队列空返回 `None`。经 `Cell` 改游标——满足冻结 `pick_next(&Runqueue)`。
+    ///
+    /// # Safety
+    /// 返回的 `NonNull` 指向调度器拥有、仍在环上的任务；调用方须保证「一任务至多在
+    /// 一个 runqueue、至多被一个核 pick」（G0 单核平凡成立）再解引用为 `&mut`。
+    pub(crate) unsafe fn rotate(&self) -> Option<NonNull<Task>> {
+        let h = self.head.get()?;
+        let next = (*h.as_ptr()).rq_next.get().expect("环上 head 必有 next");
+        self.head.set(Some(next)); // 单元素环时 next==h，游标不变（保持指向它）
+        Some(h)
+    }
+}
+
+/// CPU 拓扑（capacity 表占位）。G0 单核：一个条目。多核（G2+）由 HAL 填表，
+/// 核心逻辑架构无关（`调度器设计.md` §3.1 的 capacity(0..1023) 抽象 v3 落地）。
+#[derive(Clone, Copy)]
+pub struct Topo {
+    /// CPU 数。G0 = 1。
+    pub nr_cpus: u32,
+}
+
+impl Topo {
+    /// 单核拓扑（G0/G1）。
+    pub const fn single() -> Self {
+        Topo { nr_cpus: 1 }
+    }
+}
+
+impl Default for Topo {
+    fn default() -> Self {
+        Self::single()
+    }
+}

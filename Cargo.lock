@@ -12,8 +12,16 @@ version = "0.1.0"
 dependencies = [
  "bos-hal-aarch64",
  "bos-mm",
+ "bos-sched",
 ]
 
 [[package]]
 name = "bos-mm"
 version = "0.1.0"
+
+[[package]]
+name = "bos-sched"
+version = "0.1.0"
+dependencies = [
+ "bos-hal-aarch64",
+]
