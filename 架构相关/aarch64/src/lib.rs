@@ -104,6 +104,12 @@ pub fn disable_irq() {
     unsafe { core::arch::asm!("msr daifset, #2", options(nostack, preserves_flags)) };
 }
 
+/// 单次 `wfi`（等中断唤醒一次）。idle 循环用——区别于 [`halt`] 的死循环 wfi。
+pub fn wfi() {
+    // SAFETY: 特权指令；EL1。
+    unsafe { core::arch::asm!("wfi", options(nostack, preserves_flags)) };
+}
+
 /// 永久挂起（`wfi` 循环）。DAIF 屏蔽时无中断唤醒 → 真正停；
 /// 解蔽后 IRQ 唤醒 wfi、走完向量再回此循环（idle 主循环）。
 pub fn halt() -> ! {

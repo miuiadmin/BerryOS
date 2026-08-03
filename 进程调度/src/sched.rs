@@ -107,3 +107,30 @@ pub fn exit_current() -> ! {
     // 不可达：cur 已 dequeue，无人切回。halt 兜底。
     hal::halt();
 }
+
+/// idle 主循环（tickless）：runqueue 空时屏蔽 CNTV + `wfi`（空闲核不收周期中断）；
+/// 有 runnable 任务时武装 slice + 让出。Step 4 跑空分支（mask+wfi = 干净 tickless
+/// halt，无 IRQ 源）；Step 5+ 被 IRQ 唤醒后回顶重检 runqueue。
+///
+/// **先 `disable_irq` 再判/`mask`**：保证 mask 与解蔽之间无窗口漏进早 IRQ（风险 R6）。
+pub fn idle_loop() -> ! {
+    loop {
+        hal::disable_irq();
+        // SAFETY: IRQ 已屏蔽；单核顺序访问 RUNQUEUE。
+        let empty = unsafe { rq().is_empty() };
+        if empty {
+            // tickless：空闲不 arm、屏蔽 CNTV，wfi 睡。
+            // SAFETY: 写 CNTV_CTL；EL1。
+            unsafe { hal::timer::mask() };
+            hal::enable_irq(); // 允许 IRQ 唤醒 wfi（Step 4 无源 → 永睡 = 干净 halt）
+            hal::wfi();
+            // 被唤醒（Step 5+）→ 回 loop 顶重检 runqueue。
+        } else {
+            // 有活：武装一个时间片，让给 runnable 任务（Step 6 起由 IRQ 驱动抢占）。
+            // SAFETY: 写 CNTV 系统寄存器；EL1。
+            unsafe { hal::timer::arm_slice() };
+            hal::enable_irq();
+            yield_now();
+        }
+    }
+}

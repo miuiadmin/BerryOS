@@ -235,9 +235,9 @@ pub extern "C" fn exception_irq(_tf: &mut TrapFrame) {
         return;
     }
     if id as usize == crate::gic::IRQ_CNTV {
-        if !crate::timer::handle() {
-            crate::timer::disable(); // 到上限：关 timer 停刷屏
-        }
+        // rearm（去活电平）在 EOIR 前：电平触发的 CNTV 须先重写 TVAL 再 EOIR，
+        // 否则 EOIR 后电平仍高立即重投。dispatch/switch 接在 EOIR 后（Step 5）。
+        crate::timer::handle();
     }
     // 未知 IRQ：忽略（G0 单源）。
     crate::gic::end(id);

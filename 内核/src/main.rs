@@ -1,7 +1,8 @@
 //! bos-kernel —— BerryOS 内核镜像。
 //!
-//! Phase 2a Step 3：ktest 后启动协作调度器——spawn 两个内核线程 task_a/task_b，
-//! 在 `yield_now` 抢占点上分时（串口 `ABABAB`），无 timer 驱动（Step 4 起 tickless）。
+//! Phase 2a Step 4：协作调度 + tickless timer。spawn 两个内核线程 task_a/task_b 在
+//! `yield_now` 抢占点上分时（`ABABAB`），退出后进 idle_loop（runqueue 空 → mask CNTV
+//! + wfi，tickless 干净停）。IRQ 驱动抢占在 Step 6。
 //! 异常向量已装（HAL `trap`）；panic handler 输出消息 + 位置（file:line:col）（G0 判据），
 //! CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
 #![no_std]
@@ -55,15 +56,16 @@ pub extern "C" fn rust_main() -> ! {
 
     ktest::run();
 
-    // Phase 2a Step 3：协作调度器（timer 暂不武装——Step 4 起 tickless）。
+    // Phase 2a Step 4：协作调度 + tickless timer（primitives 已就绪；IRQ 驱动在 Step 5+）。
+    // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
+    unsafe { bos_hal_aarch64::timer::init() };
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     bos_sched::init();
     bos_sched::spawn(task_a, 0, b"task_a");
     bos_sched::spawn(task_b, 0, b"task_b");
     bos_sched::yield_now(); // idle(main) 让出 → task_a，协作分时 ABABAB。
-    // 所有任务退出后切回 idle(main)。
-    bos_hal_aarch64::uart_puts(b"\nsched: cooperative demo done\n");
-    bos_hal_aarch64::halt();
+    // demo 退出 → 进 idle_loop（runqueue 空 → mask CNTV + wfi = 干净 tickless halt）。
+    bos_sched::idle_loop();
 }
 
 /// 协作 demo 任务 A：打 `A` 并 `yield_now` 三次后退出。

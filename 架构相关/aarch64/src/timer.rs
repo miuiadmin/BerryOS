@@ -1,67 +1,91 @@
-//! Generic virtual timer（CNTV）驱动 — Phase 1 里程碑「干净 timer IRQ」。
+//! CNTV 虚拟定时器 — tickless（NO_HZ）驱动（plan Phase 2a Step 4 重写）。
 //!
 //! 用 CNTV（PPI IRQ 27），**非物理定时器**：CNTV 不经 `CNTHCTL_EL2`（EL1 直访），
-//! `run`（起 EL1）/`run-el2`（起 EL2 降 EL1）统一工作。频率读 `CNTFRQ_EL0`
-//! （QEMU `virt` 62.5MHz，**勿硬编码**）。周期 = `freq / HZ`。
+//! `run`/`run-el2` 统一工作。频率读 `CNTFRQ_EL0`（QEMU `virt` 62.5MHz，**不硬编码**）。
 //!
-//! **热路径零分配**（设计约束）：[`handle`] 不碰堆、无锁（G0 单核）。
-//! **电平触发 + 解蔽序**：arm → `daifclr #2`（在 `rust_main` 收尾）；handler 内
-//! 先 [`rearm`]（写 TVAL 去活电平）再 `EOIR`，避免电平仍高时 EOIR 后立即重投。
+//! **Tickless（day-one）**：空闲（runqueue 空）时 [`mask`] 屏蔽 + `wfi`——空闲核不收
+//! 周期中断（续航第一杠杆，非后期补丁）；有 runnable 任务时 [`arm_slice`] 武装一个
+//! 时间片（Step 6 驱动抢占）。替代 Phase 1 的 1Hz 自停 demo。
+//!
+//! **电平触发 + rearm-before-EOIR**：IRQ handler 须在 EOIR 前 [`arm_slice`]（重写
+//! TVAL 去活电平），否则 EOIR 后电平仍高立即重投。`exception_irq`（Step 5）保此序。
+//!
+//! **热路径零分配**：本模块无堆、无锁（G0 单核）。
 
-use crate::{uart_put_dec, uart_puts};
+/// 时间片频率（每秒切片数）。10Hz → 每 100ms 一 tick（slice=6.25M cycles @62.5MHz）。
+/// 调小→切片长（切换少、开销低）；调大→更公平但切换多。Step 6 demo 以此驱动抢占。
+pub const SLICE_HZ: u64 = 10;
 
-/// tick 频率：1Hz——每秒一 tick，肉眼可验周期。
-const HZ: u64 = 1;
-/// 打到上限即关 timer 停刷屏（证周期往返即可，避免无限刷）。
-const MAX_TICKS: u64 = 5;
+static mut FREQ: u64 = 0;
+static mut SLICE: u64 = 0;
 
-static mut PERIOD: u64 = 0;
-static mut TICK_COUNT: u64 = 0;
+/// 读 `CNTFRQ_EL0` + 缓存 FREQ/SLICE。返回频率（供上层打印验）。**不武装**——
+/// 武装由 [`arm_slice`] 显式（tickless：空闲不 arm）。
+///
+/// # Safety
+/// 写模块静态 + 系统寄存器；EL1、单核启动期、仅一次。
+pub unsafe fn init() -> u64 {
+    FREQ = read_cntfrq();
+    SLICE = FREQ / SLICE_HZ;
+    FREQ
+}
 
-/// 读 `CNTFRQ_EL0` + 武装 CNTV（周期 = `freq/HZ`）。返回频率（供上层打印验）。
+/// 武装一个时间片：写 TVAL（重置倒计 = 去活电平）+ ENABLE + 不屏蔽（0b01）。
+/// 兼任 IRQ handler 内的 rearm（rearm-before-EOIR）。
 ///
 /// # Safety
 /// 写 CNTV 系统寄存器；EL1。
-pub unsafe fn init() -> u64 {
-    let freq = read_cntfrq();
-    PERIOD = if HZ > 0 { freq / HZ } else { freq };
-    arm(PERIOD);
-    freq
-}
-
-/// IRQ handler：重武装（去活电平）+ 打 `tick N`。返回 `false` = 到上限、调方应 [`disable`]。
-pub fn handle() -> bool {
-    // SAFETY: G0 单核、IRQ 上下文无并发。
-    unsafe {
-        rearm(PERIOD);
-        TICK_COUNT += 1;
-        uart_puts(b"tick ");
-        uart_put_dec(TICK_COUNT);
-        uart_puts(b"\n");
-        TICK_COUNT < MAX_TICKS
-    }
-}
-
-/// 关 CNTV（到上限停刷屏）。
-pub fn disable() {
-    let ctl: u64 = 0; // bit0(enable) 清零
-    unsafe {
-        core::arch::asm!("msr cntv_ctl_el0, {0}", in(reg) ctl, options(nostack, preserves_flags));
-        core::arch::asm!("isb", options(nostack, preserves_flags));
-    }
-}
-
-unsafe fn arm(period: u64) {
-    core::arch::asm!("msr cntv_tval_el0, {0}", in(reg) period, options(nostack, preserves_flags));
-    // CNTV_CTL: bit0=ENABLE、bit1=IMASK（1=屏蔽）。故开+不屏蔽 = 0b01（非 0b11）。
+pub unsafe fn arm_slice() {
+    let slice = SLICE;
+    core::arch::asm!(
+        "msr cntv_tval_el0, {0}",
+        in(reg) slice,
+        options(nostack, preserves_flags)
+    );
+    // CNTV_CTL: bit0=ENABLE、bit1=IMASK（1=屏蔽）。开+不屏蔽 = 0b01（非 0b11）。
     let ctl: u64 = 0b01;
-    core::arch::asm!("msr cntv_ctl_el0, {0}", in(reg) ctl, options(nostack, preserves_flags));
+    core::arch::asm!(
+        "msr cntv_ctl_el0, {0}",
+        in(reg) ctl,
+        options(nostack, preserves_flags)
+    );
     core::arch::asm!("isb", options(nostack, preserves_flags));
 }
 
-unsafe fn rearm(period: u64) {
-    core::arch::asm!("msr cntv_tval_el0, {0}", in(reg) period, options(nostack, preserves_flags));
+/// 屏蔽 CNTV 中断（IMASK=1，ENABLE 保持）——tickless idle 用。倒计仍在跑，但中断不投。
+///
+/// # Safety
+/// 写 CNTV_CTL；EL1。
+pub unsafe fn mask() {
+    let ctl: u64 = 0b11; // ENABLE=1, IMASK=1
+    core::arch::asm!(
+        "msr cntv_ctl_el0, {0}",
+        in(reg) ctl,
+        options(nostack, preserves_flags)
+    );
     core::arch::asm!("isb", options(nostack, preserves_flags));
+}
+
+/// 关 CNTV（ENABLE=0）——彻底停（区别于 [`mask`] 的仅屏蔽）。
+///
+/// # Safety
+/// 写 CNTV_CTL；EL1。
+#[allow(dead_code)]
+pub unsafe fn disable() {
+    let ctl: u64 = 0b00;
+    core::arch::asm!(
+        "msr cntv_ctl_el0, {0}",
+        in(reg) ctl,
+        options(nostack, preserves_flags)
+    );
+    core::arch::asm!("isb", options(nostack, preserves_flags));
+}
+
+/// IRQ handler 钩子（`exception_irq` 在 EOIR 前调）：rearm 时间片（去活电平）。
+/// Step 4 不触发（IRQ 未解蔽）；Step 5 起规律调用。
+pub fn handle() {
+    // SAFETY: IRQ 上下文、单核无并发。
+    unsafe { arm_slice() }
 }
 
 fn read_cntfrq() -> u64 {
