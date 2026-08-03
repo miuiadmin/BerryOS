@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["内核", "架构相关/aarch64"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+# panic=abort 消除对 eh_personality 语言项的依赖（no_std 内核不需要 unwind）。
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

@@ -1,0 +1,13 @@
+[package]
+name = "bos-kernel"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "bos-kernel"
+path = "src/main.rs"
+
+[dependencies]
+bos-hal-aarch64 = { path = "../架构相关/aarch64" }
+
+[build-dependencies]

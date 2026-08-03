@@ -1,0 +1,8 @@
+[package]
+name = "bos-hal-aarch64"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "bos_hal_aarch64"
+path = "src/lib.rs"

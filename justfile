@@ -1,0 +1,38 @@
+# BerryOS Phase 0 构建脚本
+# 非交互 shell 的 PATH 不含 ~/.cargo/bin，这里固化。
+
+export PATH := env_var("HOME") + "/.cargo/bin:" + env_var("PATH")
+
+# cargo 的 target 目录可能被全局 ~/.cargo/config.toml 的 target-dir 覆盖
+# （本机指向 ~/.cargo-target），故动态解析，不硬编码 target/。
+target_dir := `cargo metadata --no-deps --format-version=1 2>/dev/null | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4`
+KERNEL := target_dir + "/aarch64-unknown-none/debug/bos-kernel"
+KERNEL_RELEASE := target_dir + "/aarch64-unknown-none/release/bos-kernel"
+
+# 不用 `-bios none`：QEMU ≥11.x 把 "none" 当文件名，报
+# `Could not find ROM image 'none'`。virt + -kernel ELF 直加载即可。
+MACH   := "-machine virt -cpu cortex-a72 -m 128M -nographic"
+QEMU   := "qemu-system-aarch64"
+
+default: run
+
+build:
+    cargo build
+
+check:
+    cargo check
+
+# 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot
+run: build
+    {{QEMU}} {{MACH}} -kernel {{KERNEL}}
+
+# virtualization=on：强制起始 EL2，测 boot.asm 的 EL2→EL1 eret 降级。期望输出: 21BerryOS boot
+run-el2: build
+    {{QEMU}} -machine virt,virtualization=on -cpu cortex-a72 -m 128M -nographic -kernel {{KERNEL}}
+
+run-release:
+    cargo build --release
+    {{QEMU}} {{MACH}} -kernel {{KERNEL_RELEASE}}
+
+clean:
+    cargo clean
