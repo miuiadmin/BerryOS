@@ -1,8 +1,8 @@
 //! bos-kernel —— BerryOS 内核镜像。
 //!
-//! Phase 1 Step 6：异常向量已装（HAL `trap`）；panic handler 升级为
-//! 消息 + 位置（file:line:col）输出（G0 判据），CPU 异常的寄存器/ESR/FAR dump
-//! 在 HAL `trap::exception_sync`（经 brk 注入触发）。
+//! Phase 1 Step 8：ktest 后武装 CNTV + 解蔽 IRQ（里程碑「干净 timer IRQ」）。
+//! 异常向量已装（HAL `trap`）；panic handler 升级为消息 + 位置（file:line:col）输出
+//! （G0 判据），CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
 #![no_std]
 #![no_main]
 
@@ -54,5 +54,14 @@ pub extern "C" fn rust_main() -> ! {
 
     ktest::run();
 
+    // Step 8 解蔽序最后两步：武装 CNTV timer → daifclr（VBAR→GIC→timer→此）。
+    // SAFETY: EL1；GIC 已配 IRQ27；此时 DAIF 仍屏蔽（首 IRQ 在 daifclr 后）。
+    let freq = unsafe { bos_hal_aarch64::timer::init() };
+    bos_hal_aarch64::uart_puts(b"timer armed freq=");
+    bos_hal_aarch64::uart_put_dec(freq);
+    bos_hal_aarch64::uart_puts(b"\n");
+    bos_hal_aarch64::enable_irq();
+
+    // idle：wfi 睡眠，timer IRQ（1Hz）唤醒打 tick，eret 回此循环。到 5 tick 自停。
     bos_hal_aarch64::halt();
 }

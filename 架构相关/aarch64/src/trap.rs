@@ -6,9 +6,9 @@
 //! （非 0x000——那是 SP0）。
 //!
 //! **Phase 1 单核**：内核跑在 EL1h（`SP_EL1`，见 `boot.rs` 的 `spsr=0x3c5`），故
-//! current-EL 同步异常落到 0x200、handler 用 SP_EL1（内核栈），不搞专用异常栈
-//! （那是 G2+/SMP 细化）。只有 0x200 装完整 save/restore；其余 15 槽路由到
-//! [`exception_unexpected`]（读 ESR/ELR 打印后 halt）。
+//! current-EL 异常落到 0x200（sync）/0x280（irq）、handler 用 SP_EL1（内核栈），不搞
+//! 专用异常栈（那是 G2+/SMP 细化）。0x200/0x280 各装完整 save/restore；其余 14 槽
+//! 路由到 [`exception_unexpected`]（读 ESR/ELR 打印后 halt）。
 //!
 //! **G0 判据**：异常/panic 必须能 dump 寄存器/PC/ESR/FAR。BRK（EC=0x3C）在本阶段
 //! 做成**可恢复**：dump 后 `ELR += 4` 跳过 brk 指令、`eret` 返回——以此一次性验证
@@ -55,7 +55,7 @@ global_asm!(
     "    .balign 128",
     "    b exc_sync_spx",        // 0x200  current EL, SPx, Sync   ← 真正的处理器
     "    .balign 128",
-    "    b exc_unexpected",      // 0x280  IRQ   (Step 8 填 timer)
+    "    b exc_irq_spx",         // 0x280  IRQ   ← Step 8 timer
     "    .balign 128",
     "    b exc_unexpected",      // 0x300  FIQ
     "    .balign 128",
@@ -139,6 +139,14 @@ global_asm!(
     "    load_frame",
     "    eret",
 
+    // ---- current-EL SPx IRQ：同 save/restore；调 exception_irq（ack/EOIR）----
+    "exc_irq_spx:",
+    "    save_frame",
+    "    mov x0, sp",
+    "    bl exception_irq",
+    "    load_frame",
+    "    eret",
+
     // ---- 其余向量：不应发生。直接调 Rust 读 ESR/ELR 打印 + halt（不存帧）。----
     "exc_unexpected:",
     "    bl exception_unexpected",
@@ -203,6 +211,25 @@ pub extern "C" fn exception_unexpected() {
     put_kv(b"  ELR=0x", elr);
     uart_puts(b"  -> fatal, halt\n");
     halt();
+}
+
+/// current-EL SPx IRQ 入口（asm 调）。
+///
+/// **GIC 协议**：ack（IAR 取 ID）→ 分发 → end（EOIR 同 ID）。spurious（1023）不写 EOIR。
+/// CNTV（IRQ 27）电平触发：[`timer::handle`] 内先 rearm（去活电平）再回这里 EOIR。
+#[no_mangle]
+pub extern "C" fn exception_irq(_tf: &mut TrapFrame) {
+    let id = crate::gic::acknowledge();
+    if id == crate::gic::SPURIOUS {
+        return;
+    }
+    if id as usize == crate::gic::IRQ_CNTV {
+        if !crate::timer::handle() {
+            crate::timer::disable(); // 到上限：关 timer 停刷屏
+        }
+    }
+    // 未知 IRQ：忽略（G0 单源）。
+    crate::gic::end(id);
 }
 
 unsafe fn read_esr_elr() -> (u64, u64) {

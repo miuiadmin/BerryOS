@@ -2,8 +2,9 @@
 //!
 //! Phase 0：boot 入口（EL2→EL1 降级，见 `boot.rs`）+ PL011 UART 输出 + halt。
 //! Phase 1 Step 4：stage-1 页表 + 开 MMU（见 [`mmu`]、[`paging`]）。
-//! Phase 1 Step 6：异常向量表 + 同步异常处理（见 [`trap`]）。
+//! Phase 1 Step 6：异常向量表 + 同步异常/IRQ 处理（见 [`trap`]）。
 //! Phase 1 Step 7：GICv2 中断控制器（见 [`gic`]）。
+//! Phase 1 Step 8：CNTV 虚拟定时器（见 [`timer`]）。
 //! 仅 `#![no_std]`；`panic_handler` / `no_main` 由最终 bin crate（`内核/`）提供。
 #![no_std]
 
@@ -12,6 +13,7 @@ pub mod gic;
 mod mmio;
 mod mmu;
 mod paging;
+pub mod timer;
 pub mod trap;
 
 // ---- 平台内存图（QEMU `virt`）----
@@ -66,10 +68,43 @@ pub fn uart_put_hex64(v: u64) {
     uart_puts(&buf);
 }
 
-/// 永久挂起（`wfe` 循环）。
+/// 以十进制输出 u64（无符号，无前导空格）。供 tick 计数等复用。
+pub fn uart_put_dec(v: u64) {
+    if v == 0 {
+        uart_putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut n = v;
+    let mut i = 0usize;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        uart_putc(buf[i]);
+    }
+}
+
+/// 解蔽 IRQ（`daifclr #2`，清 DAIF.I）。解蔽序的最后一步（VBAR→GIC→timer→此）。
+pub fn enable_irq() {
+    // SAFETY: 写 DAIF 标志位；EL1。
+    unsafe { core::arch::asm!("msr daifclr, #2", options(nostack, preserves_flags)) };
+}
+
+/// 屏蔽 IRQ（`daifset #2`，置 DAIF.I）。
+#[allow(dead_code)]
+pub fn disable_irq() {
+    unsafe { core::arch::asm!("msr daifset, #2", options(nostack, preserves_flags)) };
+}
+
+/// 永久挂起（`wfi` 循环）。DAIF 屏蔽时无中断唤醒 → 真正停；
+/// 解蔽后 IRQ 唤醒 wfi、走完向量再回此循环（idle 主循环）。
 pub fn halt() -> ! {
     loop {
         // unsafe 收敛在此：特权指令。
-        unsafe { core::arch::asm!("wfe") };
+        unsafe { core::arch::asm!("wfi") };
     }
 }
