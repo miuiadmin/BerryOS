@@ -185,6 +185,46 @@ pub extern "C" fn rust_main() -> ! {
                           ht_waiter as *mut HandleTable as usize);
     berry_sched::spawn(task_waker2, h_ev_kernel as usize, b"waker2");
 
+    // 4-2 验收（`IPC设计.md` Phase 4 拆步表 4-2）：pinger/ponger 两 EL0 进程经
+    // channel 阻塞链对打——pinger（endA：RIGHT_SEND）send 灌到 -EBUSY →
+    // wait_one(WRITABLE) 阻塞 → ponger（endB：RIGHT_RECV）recv 腾位唤醒 →
+    // 补发成功打 `CHAIN ok`（smoke 第 16 标记）。两端各进**对方进程的表**
+    //（`channel_create` 建对语义的 boot 手搭版：两表 insert + `pair` 互钉）。
+    let up_pinger =
+        user::UserProcess::build(mm::frames(), user::user_pinger_code(), user::USER_MAGIC);
+    let up_ponger =
+        user::UserProcess::build(mm::frames(), user::user_ponger_code(), user::USER_MAGIC);
+    let ht_pinger: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let ht_ponger: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    use crate::channel::ChannelEnd;
+    use handle::{RIGHT_RECV, RIGHT_SEND};
+    let h_end_a = ht_pinger
+        .insert(
+            KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endA")),
+            RIGHT_SEND,
+        )
+        .expect("main: endA 进 pinger 表");
+    let h_end_b = ht_ponger
+        .insert(
+            KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endB")),
+            RIGHT_RECV,
+        )
+        .expect("main: endB 进 ponger 表");
+    let (pa, pb) = (
+        ht_pinger.get_raw(h_end_a, ObjType::Channel, 0).expect("main: 取 endA ObjRef").0,
+        ht_ponger.get_raw(h_end_b, ObjType::Channel, 0).expect("main: 取 endB ObjRef").0,
+    );
+    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+    unsafe { ChannelEnd::pair(pa, pb) };
+    berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
+                          b"user_pinger", up_pinger.ttbr0_pa, up_pinger.asid,
+                          ht_pinger as *mut HandleTable as usize);
+    berry_sched::spawn_user(user::USER_CODE_VA, h_end_b as usize, user::USER_STACK_TOP,
+                          b"user_ponger", up_ponger.ttbr0_pa, up_ponger.asid,
+                          ht_ponger as *mut HandleTable as usize);
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -329,7 +369,7 @@ fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
 }
 
 /// 4-1 waker2：等 waiter 挂上路 3 长睡（3 slice 时延），经**真 SVC** 对内核侧
-/// 表 handle 发 `object_signal(h, 0, bit3)`——唤醒链全真：EL1 SVC 入口 →
+/// 表 handle 发 `object_signal(h, 0, U3)`——唤醒链全真：EL1 SVC 入口 →
 /// 语义层 signal → `wake_matching` → waiter 醒来重验命中。再睡 1 slice 让
 /// waiter 跑完三路进稳态，打关卡标记 `WAIT ok`（smoke 第 15）。waiter 断链
 /// 被杀 → 杀数超 1 → watchdog 错杀断言拦下（无需本任务二次确认）。
@@ -349,11 +389,12 @@ extern "C" fn task_waker2(arg: usize) -> ! {
         0,
         "waker2: thread_sleep 3 slice"
     );
-    // waiter 路 3 已挂队（bit3）→ 置位唤醒（清 0、置 bit3）。
+    // waiter 路 3 已挂队（U3）→ 置位唤醒（清 0、置 U3=1<<35——4-2 位空间起
+    // Event 用户位在高 32 半）。
     assert_eq!(
-        svc4(NR_OBJECT_SIGNAL as u64, h_kernel as u64, 0, 0x8),
+        svc4(NR_OBJECT_SIGNAL as u64, h_kernel as u64, 0, 1 << 35),
         0,
-        "waker2: object_signal bit3"
+        "waker2: object_signal U3"
     );
     assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "waker2: clock_read 2");
     assert_eq!(

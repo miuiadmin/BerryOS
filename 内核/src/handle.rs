@@ -80,6 +80,16 @@ pub const ERR_TIMEDOUT: i32 = -110;
 /// EOVERFLOW-style：offset/len 越出对象容量或区间管辖界。
 pub const ERR_OUT_OF_RANGE: i32 = -34;
 
+// ---- 对象信号位空间（4-2 wait 面 ABI v0；Zircon 界：低 32 内核派生 + 高 32 用户）----
+
+/// Channel 端点可读：**本端**队列非空（内核派生位——用户 signal 不出此位）。
+pub const SIGNAL_READABLE: u64 = 1 << 0;
+/// Channel 端点可写：**对端**队列未满（内核派生位）。
+pub const SIGNAL_WRITABLE: u64 = 1 << 1;
+/// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
+/// 内核派生信号 READABLE/WRITABLE——位面冲突由内核执法拒绝）。
+pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
+
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
 
 /// 槽位号位宽（低 16 位 = 每表最多 65536 槽）。
@@ -207,15 +217,16 @@ impl KernelObj {
         }
     }
 
-    /// 只读取 Event 本体（object_wait_one 查掩码）。
-    pub fn as_event_ref(&self) -> Option<&crate::event::Event> {
+    /// 只读取 Channel 端点本体（wait 面信号状态查询——4-2）。
+    pub fn as_channel(&self) -> Option<&crate::channel::ChannelEnd> {
         match self {
-            KernelObj::Event(e) => Some(e),
+            KernelObj::Channel(c) => Some(c),
             _ => None,
         }
     }
 
-    /// 可变取 Event 本体（object_signal 置/清位；同上防御性）。
+    /// 可变取 Event 本体（object_signal 置/清位；同上防御性——wait 面统一走
+    /// syscall.rs `signal_state`，Event 只读路径不再单独取本体）。
     pub fn as_event_mut(&mut self) -> Option<&mut crate::event::Event> {
         match self {
             KernelObj::Event(e) => Some(e),

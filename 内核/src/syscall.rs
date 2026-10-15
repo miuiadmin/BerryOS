@@ -45,8 +45,8 @@ use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
     ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
-    RIGHT_READ,
-    RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE,
+    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
+    SIGNAL_USER_MASK, SIGNAL_WRITABLE,
 };
 use crate::vmar::{Perm, Vmar, VmarError};
 use crate::vmo::{Vmo, VmoError};
@@ -955,7 +955,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             return ERR_BAD_HANDLE as i64;
         };
         if peer_end.queue_full() {
-            return ERR_BUSY as i64; // v1 非阻塞：满即返（等待排队留 P4 object_wait）
+            return ERR_BUSY as i64; // 非阻塞：满即返（阻塞等空位 = wait_one WRITABLE，4-2）
         }
         peer
     };
@@ -1009,6 +1009,9 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         };
         peer_end.push(msg);
     }
+    // 4-2：消息落对端队列 → 对端 READABLE 置位，唤醒等「对端可读」的睡眠者
+    //（键 = 对端 ObjRef 地址；等价于 Zircon send 侧的可读信号）。
+    berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
     0
 }
 
@@ -1058,7 +1061,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         };
         match end.front() {
             Some(_) => end.pop(),
-            None => return ERR_AGAIN as i64, // v1 非阻塞：空即返（等待排队留 P4）
+            None => return ERR_AGAIN as i64, // 非阻塞：空即返（阻塞等消息 = wait_one READABLE，4-2）
         }
     };
     let cap_bytes = match copy_in_u64(el1, nbytesp) {
@@ -1119,11 +1122,18 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
     }
+    // 4-2：本端弹出一条 → 对端队列腾出一个槽 → 对端 WRITABLE 置位，唤醒等
+    //「对端未满」的睡眠者（A 的可写性由 B 的队列决定——键 = 对端 ObjRef 地址；
+    // 仅成功路径唤醒：回滚路径状态全复原，唤醒即虚假）。
+    // SAFETY: 本端门控过、互钉在活；只读对端指针。
+    if let Some(peer) = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).and_then(|e| e.peer()) {
+        berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
+    }
     drop(msg); // 消费：令牌已入表（Message 定长内联——drop 无堆动作，不碰 refs）
     0
 }
 
-// ---- event（3-4c；对象 = `event.rs` 纯位掩码；阻塞等待留 P4）----
+// ---- event_create（3-4c；对象 = `event.rs` 纯用户位掩码）----
 
 /// `event_create(options, *out)`：建一个 Event（出生信号全零）。`options` v1
 /// 恒 0（非 0 → -EINVAL，ABI §8.3 注记）；授 **SIGNAL|DUPLICATE**——持有者可
@@ -1148,9 +1158,44 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+// ---- object_wait/signal 面（3-4c 事件三号 → 4-1 阻塞化 → 4-2 扩 Channel）----
+
+/// 对象当前信号状态（4-2 wait 面统一查询点）：
+/// - Event → 用户位掩码原样；
+/// - Channel → 内核派生：`READABLE`（**本端**队列非空）| `WRITABLE`（**对端**
+///   队列未满；未配对端点对端恒「满」——运行期不可达，create 即配对）；
+/// - 其余类型 → `None`（wait 面只收 Event|Channel）。
+///
+/// # Safety
+/// `obj` 须为在表/钉住的活对象；Channel 分支解引用互钉对端（互钉保活）。
+/// 只读；调用点均在 IRQ 屏蔽串行语境。
+unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
+    unsafe {
+        match &(*obj.as_ptr()).obj {
+            KernelObj::Event(e) => Some(e.signals),
+            KernelObj::Channel(c) => {
+                let mut s = if c.has_message() { SIGNAL_READABLE } else { 0 };
+                if let Some(peer) = c.peer() {
+                    if let KernelObj::Channel(pe) = &(*peer.as_ptr()).obj {
+                        if !pe.queue_full() {
+                            s |= SIGNAL_WRITABLE;
+                        }
+                    }
+                }
+                Some(s)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// `object_signal(h, clear_mask, set_mask)`：`signals = (signals & !clear) | set`
 /// （置/清一条原子）。v1 仅 **Event** 可 signal（thread/process 信号面随后续
 /// 步）；门控 RIGHT_SIGNAL。返回 0（非错误面不回写掩码新值——读用 wait_one）。
+///
+/// 4-2 位空间：clear/set 掩码**只收高 32 位用户位**（低 32 位保留给内核派生
+/// READABLE/WRITABLE）——越界 → -EINVAL（检在 get_raw 门控**之后**：坏 handle
+/// /类型不符仍 -EBADF，错误面优先级不变）。
 ///
 /// 4-1：置位后经 `wake_matching` 唤醒等本对象、请求位与**新置位集**相交的
 /// 睡眠者（清位不唤醒——位没新增）。匹配键 = ObjRef 地址（同一 Event 的
@@ -1163,6 +1208,9 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 SIGNAL 位 -EACCES
     };
+    if (clear | set) & !SIGNAL_USER_MASK != 0 {
+        return ERR_INVALID_ARG as i64; // 低 32 位内核派生保留（4-2 位空间）
+    }
     // SAFETY: get_raw 已三门控（在表、类型 Event、权利足）；单核 IRQ 屏蔽。
     unsafe {
         let Some(ev) = (*obj.as_ptr()).obj.as_event_mut() else {
@@ -1175,10 +1223,16 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
     0
 }
 
-/// `object_wait_one(h, signals, deadline, *observed)`（4-1 阻塞化）：
-/// 等待 `current & signals != 0`。命中 → `*observed = current`（**全满足集**，
-/// Zircon 同形）返 0；poll（`deadline==0`）未命中 → -EAGAIN；`deadline≠0`
-/// （MONOTONIC 绝对时刻）未命中 → 挂 [`berry_sched::block_current`] 睡到点。
+/// `object_wait_one(h, signals, deadline, *observed)`（4-1 阻塞化；4-2 扩
+/// Channel）：等待 `current & signals != 0`。命中 → `*observed = current`
+/// （**全满足集**，Zircon 同形）返 0；poll（`deadline==0`）未命中 → -EAGAIN；
+/// `deadline≠0`（MONOTONIC 绝对时刻）未命中 → 挂 [`berry_sched::block_current`]
+/// 睡到点。
+///
+/// **wait 面对象 = Event | Channel**（4-2）：Event 状态 = 用户位掩码；Channel
+/// 状态 = 内核派生 READABLE/WRITABLE（[`signal_state`] 统一查询——用户 signal
+/// 不出 Channel 的位，等用户位 = 等一个永不置位的位，poll -EAGAIN / 到点
+/// -ETIMEDOUT，同 Zircon 不设门）。
 ///
 /// **poll-first**：信号已到即返不睡（无丢信号）。醒来**重验条件**（醒因 ≠
 /// 结果：Timeout 时位可能刚被置、Signaled 时位可能又被清——清位竞态下重验
@@ -1207,9 +1261,14 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         0
     };
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 4-2：wait 面扩 Channel——Event 未中再查 Channel（权利面同形：wait 不需
+    // 权利位）。两拒合并回**首个**错误（-EBADF/-EACCES 原样透传）。
     let obj = match t.get_raw(h, ObjType::Event, 0) {
         Ok((o, _)) => o,
-        Err(e) => return e as i64,
+        Err(e) => match t.get_raw(h, ObjType::Channel, 0) {
+            Ok((o, _)) => o,
+            Err(_) => return e as i64,
+        },
     };
     // 统一循环：挂队前 + 每次醒来都重验（醒因不等于结果）。钉住**一次覆盖
     // 全部睡眠轮次**（清位竞态下可能再睡多轮），release 收口在唯一出口——
@@ -1218,12 +1277,10 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
     //（3-3 钉住纪律的跨睡眠版）。
     unsafe { (*obj.as_ptr()).retain() };
     let ret = loop {
-        // SAFETY: 钉住在身对象必活；只读（signal 写路径与本读点同为屏蔽串行）。
-        let current = unsafe {
-            match (*obj.as_ptr()).obj.as_event_ref() {
-                Some(ev) => ev.signals,
-                None => break ERR_BAD_HANDLE as i64, // 不可达防御面
-            }
+        // SAFETY: 钉住在身对象必活；只读（signal/send/recv 写路径与本读点同
+        // 为屏蔽串行）。
+        let Some(current) = (unsafe { signal_state(obj) }) else {
+            break ERR_BAD_HANDLE as i64; // 不可达防御面
         };
         if current & signals != 0 {
             break match copy_out_u64(el1, observed, current) {
@@ -1254,7 +1311,8 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
 
 /// 注册已实现号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 + channel 三号 +
 /// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号；4-1 wait_one
-/// 阻塞化为改板（非新号，仍 23 号）。0x05 wait_many 与 0x33/0x35/0x36 退出随后续步）。
+/// 阻塞化 / 4-2 wait 面扩 Channel 均为改板（非新号，仍 23 号）。0x05 wait_many
+/// 与 0x33/0x35/0x36 退出随后续步）。
 /// 未列号走 HAL 默认 `-ENOTSUP`。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;

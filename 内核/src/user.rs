@@ -503,12 +503,16 @@ core::arch::global_asm!(
     // 4-1 waiter：阻塞 object_wait_one 的 EL0 三路验收（拆步表：超时/命中双路）。
     // 入口 x0 = 本进程表里的 Event handle（boot 双表挂同一 ObjRef——waker2 持
     // 内核侧表 handle，signal 置位经 wake_matching 唤醒本进程）。三路：
-    //   ① 超时：清掩码 → wait(bit3, t0+100ms) → -ETIMEDOUT + observed==0 +
+    //   ① 超时：清掩码 → wait(U3, t0+100ms) → -ETIMEDOUT + observed==0 +
     //      t1 ≥ deadline（真睡到点——TCG tick 粗粒度由 deadline 绝对时刻兜住）；
-    //   ② poll 命中：signal(!0, 0x20) 置恰 bit5 → wait(0x220 超集, 有 deadline)
-    //      → 即刻返 0 + observed==0x20（**全满足集**＝当前掩码，非请求子集）；
-    //   ③ 长睡被唤醒：清掩码 → wait(bit3, t2+10s) 真睡 → waker2 经真 SVC
-    //      signal(内核表 handle, bit3) → 醒来重验命中 → 0 + observed==0x8。
+    //   ② poll 命中：signal(UMASK, U2) 置恰 bit1(用户半) → wait(U2|U6 超集,
+    //      有 deadline) → 即刻返 0 + observed==U2（**全满足集**＝当前掩码，
+    //      非请求子集）；
+    //   ③ 长睡被唤醒：清掩码 → wait(U3, t2+10s) 真睡 → waker2 经真 SVC
+    //      signal(内核表 handle, U3) → 醒来重验命中 → 0 + observed==U3。
+    // 4-2 位空间：Event 位面迁高 32 半——U2=1<<37（0x20<<32）、U3=1<<35
+    // （0x8<<32）、超集 = 0x220<<32；清零掩码 = 0xFFFF_FFFF_0000_0000（用户
+    // 半全集——低半越界掩码 4-2 起 -EINVAL，旧 !0 清零不再合法）。
     // 槽：0x2008 时钟、0x2010 observed。寄存器纪律：svc 只回写 x0，x1..x6 保
     // 留传入值（路 1 的 deadline 留 x3、δ 留 x6 直接复用）。
     ".balign 16",
@@ -516,9 +520,10 @@ core::arch::global_asm!(
     "__user_waiter:",
     "    mov  x20, x0",                 // x20 常驻：Event handle（waiter 表）
     // ---- 路 1：超时自醒 ----
-    "    movz x0, #0x06",               // signal(h, !0, 0) 清零（出生必零，防御位）
+    "    movz x0, #0x06",               // signal(h, UMASK, 0) 清零（出生必零，防御位）
     "    mov  x1, x20",
-    "    movn x2, #0",                  // x2 = !0
+    "    movz x2, #0xFFFF, lsl #32",    // x2 = 用户半全集掩码
+    "    movk x2, #0xFFFF, lsl #48",
     "    mov  x3, xzr",
     "    svc  #0",
     "    cbnz x0, 3f",
@@ -531,9 +536,9 @@ core::arch::global_asm!(
     "    movz x6, #0xE100",             // x6 = δ = 1e8 ns（100ms ≥ 1 slice）
     "    movk x6, #0x05F5, lsl #16",
     "    add  x3, x5, x6",              // deadline = t0 + δ
-    "    movz x0, #0x04",               // wait_one(h, 0x8, deadline, *obs=0x2010)
+    "    movz x0, #0x04",               // wait_one(h, U3, deadline, *obs=0x2010)
     "    mov  x1, x20",
-    "    movz x2, #0x8",
+    "    movz x2, #0x8, lsl #32",       // U3 = 1<<35
     "    movz x4, #0x2010",
     "    svc  #0",                      // x3 = deadline 值（派发保留）
     "    cmn  x0, #110",                // 须 -ETIMEDOUT（-110）
@@ -549,27 +554,29 @@ core::arch::global_asm!(
     "    cmp  x9, x3",                  // t1 ≥ deadline（真睡到点，非空转早返）
     "    b.lo 3f",
     // ---- 路 2：poll 即刻命中 + 全满足集 ----
-    "    movz x0, #0x06",               // signal(h, !0, 0x20)：清全部再置恰 bit5
+    "    movz x0, #0x06",               // signal(h, UMASK, U2)：清全部再置恰 bit1
     "    mov  x1, x20",
-    "    movn x2, #0",
-    "    movz x3, #0x20",
+    "    movz x2, #0xFFFF, lsl #32",
+    "    movk x2, #0xFFFF, lsl #48",
+    "    movz x3, #0x20, lsl #32",      // U2 = 1<<37
     "    svc  #0",
     "    cbnz x0, 3f",
-    "    movz x0, #0x04",               // wait_one(h, 0x220, t1+δ, *obs)
+    "    movz x0, #0x04",               // wait_one(h, U2|U6, t1+δ, *obs)
     "    mov  x1, x20",
-    "    movz x2, #0x220",              // 请求 bit5|bit9（超集——验回写非子集）
+    "    movz x2, #0x220, lsl #32",     // 请求 U2|U6（超集——验回写非子集）
     "    add  x3, x9, x6",              // deadline（x9=t1、x6=δ 均未传保留）
     "    movz x4, #0x2010",
     "    svc  #0",                      // 信号已到：poll-first 即刻命中不睡
     "    cbnz x0, 3f",
     "    ldr  x8, [x4]",                // observed
-    "    movz x9, #0x20",
-    "    cmp  x8, x9",                  // 须恰 0x20（全满足集 = current）
+    "    movz x9, #0x20, lsl #32",
+    "    cmp  x8, x9",                  // 须恰 U2（全满足集 = current）
     "    b.ne 3f",
     // ---- 路 3：长睡被 waker2 signal 唤醒 ----
-    "    movz x0, #0x06",               // signal(h, !0, 0) 再清零（waker2 最早
+    "    movz x0, #0x06",               // signal(h, UMASK, 0) 再清零（waker2 最早
     "    mov  x1, x20",                 //   3 slice 后才置——此刻必无残留位）
-    "    movn x2, #0",
+    "    movz x2, #0xFFFF, lsl #32",
+    "    movk x2, #0xFFFF, lsl #48",
     "    mov  x3, xzr",
     "    svc  #0",
     "    cbnz x0, 3f",
@@ -583,15 +590,15 @@ core::arch::global_asm!(
     "    cbnz x0, 3f",
     "    ldr  x5, [x2]",
     "    add  x3, x5, x3",              // deadline = t2 + 10s
-    "    movz x0, #0x04",               // wait_one(h, 0x8, far, *obs)
+    "    movz x0, #0x04",               // wait_one(h, U3, far, *obs)
     "    mov  x1, x20",
-    "    movz x2, #0x8",
+    "    movz x2, #0x8, lsl #32",       // U3
     "    movz x4, #0x2010",
-    "    svc  #0",                      // 真睡 → waker2 signal(bit3) 唤醒重验
+    "    svc  #0",                      // 真睡 → waker2 signal(U3) 唤醒重验
     "    cbnz x0, 3f",                  // （waker2 先 signal → poll 命中同过；真睡由路 1 验）
     "    ldr  x8, [x4]",
-    "    movz x9, #0x8",
-    "    cmp  x8, x9",                  // observed == bit3（全满足集）
+    "    movz x9, #0x8, lsl #32",
+    "    cmp  x8, x9",                  // observed == U3（全满足集）
     "    b.ne 3f",
     // ---- 稳态循环：节流 + canary + 'W' ----
     "    movz x9, #0x30, lsl #16",      // 节流阈值（与诸位用户进程同量级）
@@ -612,6 +619,155 @@ core::arch::global_asm!(
     "    b    .",
     ".globl __user_waiter_end",
     "__user_waiter_end:",
+
+    // 4-2 pinger：channel 阻塞链的 EL0 生产者验收（`IPC设计.md` Phase 4 拆步
+    // 4-2）。入口 x0 = 本进程表里的 endA handle（boot 直插 RIGHT_SEND；对端
+    // endB 在 ponger 表）。验收链（**EBUSY 驱动**——满即证明，不赌精确计数：
+    // timer 抢占可能让 ponger 中途腾位）：send 灌到 -EBUSY → wait_one(WRITABLE,
+    // now+10s) **必须命中**（ponger recv 腾位唤醒——超时 = 链断 FAIL）→ 补发
+    // 一条须成功 → 首圈打 `CHAIN ok`（smoke 第 16 标记）、此后每圈节流打 'p'。
+    // 稳态 = 生产者常态阻塞在 WRITABLE——「send 满 → 对端 recv 腾位唤醒」两
+    // 进程阻塞链的活证。槽：0x2008 时钟、0x2010 observed、0x2020 PING 载荷、
+    // 0x2030 首圈旗标（显式清零——新页不保证净）。
+    ".balign 16",
+    ".globl __user_pinger",
+    "__user_pinger:",
+    "    mov  x20, x0",                 // x20 常驻 endA handle
+    "    movz x4, #0x0E10",             // PING 载荷 = 0x00C0FFEE_0000_0E10 @0x2020
+    "    movk x4, #0xE000, lsl #16",
+    "    movk x4, #0xFFEE, lsl #32",
+    "    movk x4, #0x00C0, lsl #48",
+    "    movz x5, #0x2020",
+    "    str  x4, [x5]",
+    "    movz x7, #0x2030",             // 首圈旗标槽
+    "    str  xzr, [x7]",
+    "    movz x9, #0x30, lsl #16",      // 节流阈值（稳态每圈 'p'）
+    "0:  movz x0, #0x52",               // send(endA, PING@0x2020, 8, 0, 0)
+    "    mov  x1, x20",
+    "    movz x2, #0x2020",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 0b",                  // 未满继续灌
+    "    cmn  x0, #16",                 // -EBUSY = 满（阻塞链前置证明）
+    "    b.ne 3f",
+    "    movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",             // δ = 1e10 ns（10s，远超 ponger 节流周期）
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",              // deadline = now + 10s
+    "    movz x0, #0x04",               // wait_one(endA, WRITABLE, deadline, *obs)
+    "    mov  x1, x20",
+    "    movz x2, #2",                  // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2010",
+    "    svc  #0",                      // 阻塞 → ponger recv 腾位唤醒重验命中
+    "    cbnz x0, 3f",                  // 超时 = 链断（banner 缺失即 smoke FAIL）
+    "    movz x0, #0x52",               // 补发一条（刚验过的空位）
+    "    mov  x1, x20",
+    "    movz x2, #0x2020",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x8, [x7]",                // 首圈打 CHAIN ok，此后节流 'p'
+    "    cbnz x8, 2f",
+    "    movz x8, #1",
+    "    str  x8, [x7]",
+    "    adr  x5, 4f",                  // banner 字节（同页 adr——拷贝安全同 spawner）
+    "    movz x6, #9",
+    "5:  ldrb w1, [x5], #1",
+    "    movz x0, #0xFF",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    subs x6, x6, #1",
+    "    b.ne 5b",
+    "    b    0b",
+    "2:  mov  x10, xzr",                // 节流
+    "1:  add  x10, x10, #1",
+    "    cmp  x10, x9",
+    "    b.lo 1b",
+    "    movz x0, #0xFF",               // 'p' = pinger 活证
+    "    movz x1, #0x70",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    b    0b",
+    "3:  movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀 → CHAIN 缺失 = smoke FAIL
+    "    ldr  x5, [x4]",
+    "    b    .",
+    "4:  .ascii \"CHAIN ok\\n\"",
+    "    .balign 4",                   // 尾部补齐（模板长度须 4 字节对齐）
+    ".globl __user_pinger_end",
+    "__user_pinger_end:",
+
+    // 4-2 ponger：channel 阻塞链的 EL0 消费者验收。入口 x0 = 本进程表里的
+    // endB handle（boot 直插 RIGHT_RECV）。循环：recv → 空 -EAGAIN →
+    // wait_one(READABLE, now+10s) 阻塞（pinger send 唤醒）→ 醒来重 recv（重验
+    // ——必命中）；收到 → 验 PING 载荷低 32 位（数据完整性）→ 节流打 'P'。
+    // 任一步非预期（超时/载荷错）→ 自陷被杀（pinger 侧 wait 随之超时 → CHAIN
+    // 缺失）。槽：0x2008 时钟、0x2010 observed、0x2020 收件 buf、0x2028/0x2030
+    // 容量 in-out（自复原型：载荷恒 8B/0 handle）、0x2038 随行数组。
+    ".balign 16",
+    ".globl __user_ponger",
+    "__user_ponger:",
+    "    mov  x20, x0",                 // x20 常驻 endB handle
+    "    movz x4, #8",                  // 容量槽：nbytes=8 / nhandles=0
+    "    movz x5, #0x2028",
+    "    str  x4, [x5]",
+    "    str  xzr, [x5, #8]",
+    "    movz x8, #0x0E10",             // PING 低 32 位常驻（载荷比对）
+    "    movk x8, #0xE000, lsl #16",
+    "    movz x9, #0x30, lsl #16",      // 节流阈值
+    "0:  movz x0, #0x53",               // recv(endB, 0x2020, *8, 0x2038, *0)
+    "    mov  x1, x20",
+    "    movz x2, #0x2020",
+    "    movz x3, #0x2028",
+    "    movz x4, #0x2038",
+    "    movz x5, #0x2030",
+    "    svc  #0",
+    "    cbz  x0, 1f",                  // 收到 → 验载荷
+    "    cmn  x0, #11",                 // -EAGAIN（pinger 未发/未灌满一圈）→ 阻塞等
+    "    b.ne 3f",
+    "    movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",             // δ = 1e10 ns（10s）
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(endB, READABLE, deadline, *obs)
+    "    mov  x1, x20",
+    "    movz x2, #1",                  // SIGNAL_READABLE（内核派生位）
+    "    movz x4, #0x2010",
+    "    svc  #0",                      // 阻塞 → pinger send 唤醒重验
+    "    cbnz x0, 3f",                  // 超时 = pinger 断供 FAIL
+    "    b    0b",                      // 醒来重 recv（重验——必命中）
+    "1:  ldr  w6, [x2]",                // 载荷低 32 位（x2 = buf 地址，派发保留）
+    "    cmp  w6, w8",
+    "    b.ne 3f",
+    "    mov  x10, xzr",                // 节流
+    "2:  add  x10, x10, #1",
+    "    cmp  x10, x9",
+    "    b.lo 2b",
+    "    movz x0, #0xFF",               // 'P' = ponger 活证
+    "    movz x1, #0x50",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    b    0b",
+    "3:  movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀 → CHAIN 缺失 = smoke FAIL
+    "    ldr  x5, [x4]",
+    "    b    .",
+    ".globl __user_ponger_end",
+    "__user_ponger_end:",
 );
 
 extern "C" {
@@ -625,6 +781,10 @@ extern "C" {
     static __user_spawner_end: u8;
     static __user_waiter: u8;
     static __user_waiter_end: u8;
+    static __user_pinger: u8;
+    static __user_pinger_end: u8;
+    static __user_ponger: u8;
+    static __user_ponger_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -667,6 +827,20 @@ pub fn user_spawner_code() -> &'static [u8] {
 pub fn user_waiter_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_waiter, &__user_waiter_end) }
+}
+
+/// pinger 用户程序模板（4-2 验收：channel 阻塞链生产者——send 满 → wait
+/// WRITABLE 阻塞 → ponger recv 腾位唤醒 → 补发成功打 `CHAIN ok`）。
+pub fn user_pinger_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_pinger, &__user_pinger_end) }
+}
+
+/// ponger 用户程序模板（4-2 验收：channel 阻塞链消费者——recv 空 → wait
+/// READABLE 阻塞 → pinger send 唤醒 → 重验收得 PING）。
+pub fn user_ponger_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_ponger, &__user_ponger_end) }
 }
 
 /// 一个用户进程的装配结果：表根 + ASID（交给 `spawn_user`）+ 地址空间根。

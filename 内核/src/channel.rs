@@ -2,8 +2,11 @@
 //!
 //! v1 语义 = **非阻塞有界队列**（syscall 主体不可抢占 → 无阻塞路径）：
 //! - `send`：门控 RIGHT_SEND，消息压**对端**队列；满 → -EBUSY；
-//! - `recv`：门控 RIGHT_RECV，从**本端**队列弹；空 → -EAGAIN（v1 无等待，
-//!   object_wait 阻塞留 P4）；
+//! - `recv`：门控 RIGHT_RECV，从**本端**队列弹；空 → -EAGAIN；
+//!   ——send/recv 本身 v1 恒非阻塞；**阻塞等空/满走 `object_wait_one`**
+//!   （4-2 起支持 Channel：READABLE=本端队列非空 / WRITABLE=对端队列未满，
+//!   内核派生位——send 成功唤醒对端 READABLE 等待者、recv 成功唤醒对端
+//!   WRITABLE 等待者，见 syscall.rs 两唤醒点）；
 //! - 消息 = inline 字节（≤[`CHAN_MSG_MAX`]）+ handle 令牌（≤[`CHAN_HND_MAX`]，
 //!   发送方 `take` 出表、接收方 `insert_ref` 入表——能力随消息迁移，能力模型 §4）。
 //!
@@ -98,6 +101,11 @@ impl ChannelEnd {
     /// 队列是否已满（send 前置检查 → -EBUSY）。
     pub fn queue_full(&self) -> bool {
         self.queue.len() >= CHAN_DEPTH
+    }
+
+    /// 队列是否有消息（wait 面 READABLE 信号状态——4-2 内核派生位）。
+    pub fn has_message(&self) -> bool {
+        !self.queue.is_empty()
     }
 
     /// 压一条消息进**本端**队列（send 侧实际调的是对端的这个方法）。

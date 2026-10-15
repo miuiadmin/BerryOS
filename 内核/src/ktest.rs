@@ -633,10 +633,15 @@ fn test_syscall() {
     // I. 3-4c event 三号：位掩码语义 + SIGNAL 权利面；4-1 wait_one 阻塞化后
     //    deadline≠0 → 到点未命中 -ETIMEDOUT（ktest 在 sched::init 前不能睡，
     //    用远古时刻 deadline=1 验「已过点立即返」路径；真睡的 EL0 正向验收 =
-    //    user_waiter 三路 + waker2，见 main.rs/user.rs）。
-    use crate::handle::{RIGHT_DUPLICATE, RIGHT_SIGNAL};
+    //    user_waiter 三路 + waker2，见 main.rs/user.rs）；4-2 位空间 = Event
+    //    用户位迁高 32 半（U1/U2/U3）+ 低 32 位拒面 + wait 面扩 Channel（I7）。
+    use crate::handle::{RIGHT_DUPLICATE, RIGHT_SIGNAL, SIGNAL_READABLE, SIGNAL_WRITABLE};
     use crate::syscall::{NR_EVENT_CREATE, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE};
     static mut I_OBS: u64 = 0; // *observed 出参
+    // 4-2 位空间：Event 用户位一律高 32 半（低 32 位内核派生保留——I6 拒面）。
+    const U1: u64 = 1 << 33;
+    const U2: u64 = 1 << 34;
+    const U3: u64 = 1 << 35;
 
     // I0. create：options≠0 → -EINVAL；正常建 → handle 非零、SIGNAL|DUPLICATE
     //     三门控可查。
@@ -664,60 +669,60 @@ fn test_syscall() {
     // SAFETY: 同上。
     unsafe { I_OBS = 0 };
     assert_eq!(
-        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0110, 0, &raw mut I_OBS as u64),
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, U1 | U2, 0, &raw mut I_OBS as u64),
         -11,
         "SYSCALL：未命中 wait 须 -EAGAIN"
     );
     assert_eq!(
-        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0110, 1, &raw mut I_OBS as u64),
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, U1 | U2, 1, &raw mut I_OBS as u64),
         -110,
         "SYSCALL：deadline 已过未命中须 -ETIMEDOUT（不睡）"
     );
 
     // I2. signal 置位 → wait 命中回写**全满足集**（非请求子集——Zircon 同形）。
     assert_eq!(
-        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, 0b0110),
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, U1 | U2),
         0,
         "SYSCALL：object_signal 置位"
     );
     // SAFETY: 同上。
     unsafe { I_OBS = 0 };
     assert_eq!(
-        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0010, 0, &raw mut I_OBS as u64),
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, U2, 0, &raw mut I_OBS as u64),
         0,
         "SYSCALL：命中 wait"
     );
-    assert_eq!(unsafe { I_OBS }, 0b0110, "SYSCALL：observed 须回写全满足集");
+    assert_eq!(unsafe { I_OBS }, U1 | U2, "SYSCALL：observed 须回写全满足集");
 
-    // I3. 请求位未置 → -EAGAIN（掩码里没有 0b1000）；signal 清位后再查原位
+    // I3. 请求位未置 → -EAGAIN（掩码里没有 U3）；signal 清位后再查原位
     //     → -EAGAIN（clear 生效）。
     // SAFETY: 同上。
     unsafe { I_OBS = 0 };
     assert_eq!(
-        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b1000, 0, &raw mut I_OBS as u64),
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, U3, 0, &raw mut I_OBS as u64),
         -11,
         "SYSCALL：请求未置位须 -EAGAIN"
     );
     assert_eq!(
-        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0b0010, 0),
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, U2, 0),
         0,
         "SYSCALL：object_signal 清位"
     );
     // SAFETY: 同上。
     unsafe { I_OBS = 0 };
     assert_eq!(
-        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0010, 0, &raw mut I_OBS as u64),
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, U2, 0, &raw mut I_OBS as u64),
         -11,
         "SYSCALL：清位后原位须 -EAGAIN"
     );
 
     // I4. 权利面：dup 收紧到仅 DUPLICATE（无 SIGNAL——零权利 dup 会被表拒，
     //     这是 duplicate 的空 rights 拒面，非本段对象）→ signal 拒 -EACCES；
-    //     wait 不需权利位——同一对象剩余位 0b0100 照常可查。
+    //     wait 不需权利位——同一对象剩余位 U2 照常可查。
     assert_eq!(
-        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, 0b0100),
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, U2),
         0,
-        "SYSCALL：signal 补置 0b0100"
+        "SYSCALL：signal 补置 U2"
     );
     // SAFETY: 同上。
     unsafe { OUT = 0 };
@@ -728,14 +733,14 @@ fn test_syscall() {
     );
     let he_ro = unsafe { OUT } as u32;
     assert_eq!(
-        svc4(NR_OBJECT_SIGNAL as u64, he_ro as u64, 0, 0b1000),
+        svc4(NR_OBJECT_SIGNAL as u64, he_ro as u64, 0, U3),
         -13,
         "SYSCALL：无 SIGNAL 位须 -EACCES"
     );
     // SAFETY: 同上。
     unsafe { I_OBS = 0 };
     assert_eq!(
-        svc5(NR_OBJECT_WAIT_ONE as u64, he_ro as u64, 0b0100, 0, &raw mut I_OBS as u64),
+        svc5(NR_OBJECT_WAIT_ONE as u64, he_ro as u64, U2, 0, &raw mut I_OBS as u64),
         0,
         "SYSCALL：wait 不需权利位（共享对象可见）"
     );
@@ -764,6 +769,28 @@ fn test_syscall() {
         0,
         "SYSCALL：close hv_e"
     );
+
+    // I6. 4-2 位空间拒面：signal clear/set 越出高 32 位用户半 → -EINVAL（低
+    //     32 位保留给内核派生 READABLE/WRITABLE）；检在 get_raw **之后**——
+    //     I5 的 VMO/坏值仍 -EBADF（错误面优先级不乱）。Event 上 wait 低 32 位
+    //     = 等一个 signal 不出的位 → poll 永不命中 -EAGAIN。
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, SIGNAL_READABLE),
+        -22,
+        "SYSCALL：signal 低 32 位掩码须 -EINVAL"
+    );
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, SIGNAL_WRITABLE, 0),
+        -22,
+        "SYSCALL：clear 低 32 位掩码须 -EINVAL"
+    );
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, SIGNAL_READABLE, 0, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：Event 低 32 位请求永不命中（位面在用户半）"
+    );
     // 清场（别名先关、本体后关——refs 归零释放）。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, he_ro as u64, 0, 0), 0, "SYSCALL：close he_ro");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, he as u64, 0, 0), 0, "SYSCALL：close he");
@@ -772,6 +799,98 @@ fn test_syscall() {
         -9,
         "SYSCALL：close 后 signal 须 -EBADF"
     );
+
+    // I7. 4-2 wait 面扩 Channel（poll 面——真睡的跨进程阻塞链验收 =
+    //     user_pinger/user_ponger 对打）：READABLE = 本端队列非空、WRITABLE =
+    //     对端队列未满（内核派生——poll/命中全满足集语义与 Event 同形）。
+    //     面序：空 → READABLE -EAGAIN；出生未满 → WRITABLE 命中；send 一条 →
+    //     对端 READABLE 命中；灌满 → WRITABLE -EAGAIN；recv 腾位 → WRITABLE 命中。
+    // SAFETY: 同上（I7 复用 H 段的 HBUF/H_NB/H_NH——H 已清场完毕，无别名）。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, &raw mut OUT as u64, &raw mut CHILD_OUT as u64, 0),
+        0,
+        "SYSCALL：channel_create（wait 面用例）"
+    );
+    let (hw0, hw1) = (unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32);
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, hw1 as u64, SIGNAL_READABLE, 0, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：空队 READABLE 须 -EAGAIN"
+    );
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, hw0 as u64, SIGNAL_WRITABLE, 0, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：出生未满 WRITABLE 须命中"
+    );
+    assert_eq!(unsafe { I_OBS }, SIGNAL_WRITABLE, "SYSCALL：WRITABLE 全满足集");
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hw0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+        0,
+        "SYSCALL：wait 面用例 send 一条"
+    );
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, hw1 as u64, SIGNAL_READABLE, 0, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：send 后对端 READABLE 须命中"
+    );
+    // 全满足集 = 本端非空(READABLE) + 对端队列空(WRITABLE)——非请求子集的活证。
+    assert_eq!(
+        unsafe { I_OBS },
+        SIGNAL_READABLE | SIGNAL_WRITABLE,
+        "SYSCALL：READABLE 命中回写全满足集"
+    );
+    for _ in 0..7 {
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, hw0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+            0,
+            "SYSCALL：wait 面用例灌满 send"
+        );
+    }
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, hw0 as u64, SIGNAL_WRITABLE, 0, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：满队 WRITABLE 须 -EAGAIN"
+    );
+    // SAFETY: 同上。
+    unsafe { H_NB = 8; H_NH = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hw1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        0,
+        "SYSCALL：wait 面用例 recv 腾位"
+    );
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, hw0 as u64, SIGNAL_WRITABLE, 0, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：recv 腾位后 WRITABLE 须命中"
+    );
+    // 混合位请求（READABLE|WRITABLE）：此刻 hw1 本端 7 条（READABLE=1）且对端
+    // 队列空（WRITABLE=1）→ 命中且全满足集 = 两派生位之并。
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, hw1 as u64,
+             SIGNAL_READABLE | SIGNAL_WRITABLE, 0, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：混合位请求须命中"
+    );
+    assert_eq!(
+        unsafe { I_OBS },
+        SIGNAL_READABLE | SIGNAL_WRITABLE,
+        "SYSCALL：全满足集须 READABLE|WRITABLE"
+    );
+    // 清场（两端 close——互钉环泄漏，channel.rs 安全向政策；队内消息无令牌）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw0 as u64, 0, 0), 0, "SYSCALL：close hw0");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw1 as u64, 0, 0), 0, "SYSCALL：close hw1");
 
     berry_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }

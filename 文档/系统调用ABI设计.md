@@ -232,19 +232,27 @@ berry_status_t berry_handle_replace(berry_handle_t h, berry_handle_t replacement
                                 berry_handle_t *out);              /* 原子换槽 */
 berry_status_t berry_object_wait_one(berry_handle_t h, uint64_t signals,
                                  berry_time_t deadline, uint64_t *observed);
-                               /* 3-4c v1：poll-only——命中 *observed=全满足集
-                                  （非请求子集，Zircon 同形）；未命中 -EAGAIN；
-                                  deadline≠0 一律 -ENOTSUP（阻塞排队留 P4）；
+                               /* 4-1 阻塞化：poll-first + 醒来重验；命中
+                                  *observed=全满足集（非请求子集，Zircon 同形）；
+                                  poll（deadline==0）未命中 -EAGAIN；deadline≠0
+                                  （MONOTONIC 绝对时刻）未命中睡到点 -ETIMEDOUT；
                                   不需权利位（12 位 rights 表无 WAIT 位）；
-                                  v1 仅 Event 对象（它类型 -EBADF） */
+                                  4-2 wait 面 = Event|Channel——Channel 信号 =
+                                  内核派生 READABLE(1<<0)/WRITABLE(1<<1)，低 32
+                                  位内核派生 + 高 32 位用户（Zircon 界，4-2 定） */
 berry_status_t berry_object_wait_many(const berry_handle_t *handles,
                                   const uint64_t *signals, size_t n,
                                   berry_time_t deadline,
                                   size_t *idx, uint64_t *observed);
+                               /* P4 阻塞等待批（4-2b）：命中 *idx=命中间序 +
+                                  *observed=该对象全满足集；WAIT_ANY 哨兵留档 */
 berry_status_t berry_object_signal(berry_handle_t h, uint64_t clear, uint64_t set);
-                               /* 3-4c v1：signals=(s&~clear)|set；门控
-                                  RIGHT_SIGNAL；仅 Event（thread/process
-                                  信号面随后续步） */
+                               /* signals=(s&~clear)|set；门控 RIGHT_SIGNAL；
+                                  仅 Event（thread/process 信号面随后续步）；
+                                  4-2 位空间：clear/set 须 ⊆ 高 32 位用户位
+                                  （SIGNAL_USER_MASK=0xFFFF_FFFF_0000_0000），
+                                  低 32 位内核派生保留 → -EINVAL（检在 get_raw
+                                  后——坏 handle/类型仍 -EBADF 优先） */
 
 /* —— VMO / Vmar —— */
 berry_status_t berry_vmo_create(uint64_t size, uint32_t options, berry_handle_t *out);
