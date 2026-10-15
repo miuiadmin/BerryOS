@@ -23,7 +23,9 @@ pub fn run() {
 /// → HAL dispatch → 语义层 handler（`内核/src/syscall.rs`）→ 回写 x0、eret 续行。
 /// 用例：调试 echo 往返（G0 原始判据）；未知号 0x99 / 未实现真号 0x11 一律
 /// -ENOTSUP（3-1 政策：错误码自理、永不杀调用者）；clock_read（MONOTONIC）两次
-/// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）。
+/// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）；
+/// 3-4a per-process 表拆分（G 段）：两表隔离 + take/insert_ref 迁移原语 + 子进程
+/// 出生自带空表。
 #[allow(clippy::result_unwrap_used)]
 fn test_syscall() {
     use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
@@ -301,12 +303,14 @@ fn test_syscall() {
         "SYSCALL：thread_create 坏 handle 须 -EBADF"
     );
 
-    // F3. process_start 参数面（在归属/状态检查之前，故不 spawn）：bootstrap≠0 /
-    //     entry=0 / sp 未 16 对齐 → -EINVAL。
+    // F3. process_start 参数面（在归属/状态检查之前，故不 spawn）：entry=0 /
+    //     sp 未 16 对齐 → -EINVAL；3-4a 起 bootstrap 是**迁移源 handle**——垃圾
+    //     值 → -EBADF（take 自调用者表、子表不动；迁移的正向验收在 user_child
+    //     ——ktest 无 CURRENT 标签，spawn 路径不可测）。
     assert_eq!(
-        svc6(NR_PROCESS_START as u64, hp as u64, hth as u64, 0x1000, 0x4000, 1, 0),
-        -22,
-        "SYSCALL：process_start bootstrap≠0 须 -EINVAL（v1 约定）"
+        svc6(NR_PROCESS_START as u64, hp as u64, hth as u64, 0x1000, 0x4000, 0xDEAD_BEEF, 0),
+        -9,
+        "SYSCALL：process_start 垃圾 bootstrap 须 -EBADF（取自调用者表）"
     );
     assert_eq!(
         svc6(NR_PROCESS_START as u64, hp as u64, hth as u64, 0, 0x4000, 0, 0),
@@ -345,6 +349,62 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv2 as u64, 0, 0), 0, "SYSCALL：close child vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close process 2");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv3 as u64, 0, 0), 0, "SYSCALL：close child vmar 2");
+
+    // G. 3-4a per-process 表拆分：两表隔离 + take/insert_ref 迁移原语 + 子进程
+    //    出生自带空表（纯表对象面；EL0 派发链 + bootstrap 迁移的正向验收在
+    //    user_spawner/user_child——ktest 在 sched::init 前无 CURRENT 标签）。
+    use crate::handle::{HandleTable, ERR_BAD_HANDLE};
+
+    // G0. 隔离与迁移：内核表 insert → 他表同值必 -EBADF（表间不可见）；take
+    //     后原值立即作废（代号 +1——迁移非共享）；insert_ref 落新表 → 新值
+    //     三门控可查（权利随槽迁移）；close 新值即最终 close（refs 不变——
+    //     引用令牌随槽迁移，对象销毁路径走通）。
+    let mut t2 = HandleTable::new();
+    let hm = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .expect("SYSCALL：insert hm");
+    assert_eq!(
+        t2.get(hm, ObjType::Vmo, 0).err(),
+        Some(ERR_BAD_HANDLE),
+        "SYSCALL：他表 handle 不可见（per-process 隔离）"
+    );
+    let (mobj, mrights) = ht.take(hm).expect("SYSCALL：take hm");
+    assert_eq!(
+        ht.get(hm, ObjType::Vmo, 0).err(),
+        Some(ERR_BAD_HANDLE),
+        "SYSCALL：take 后原值立即作废（代号推进）"
+    );
+    let hm2 = t2.insert_ref(mobj, mrights).expect("SYSCALL：insert_ref 迁入 t2");
+    assert!(
+        t2.get(hm2, ObjType::Vmo, RIGHT_WRITE).is_ok(),
+        "SYSCALL：迁移后新值三门控可查"
+    );
+    assert!(
+        t2.close(hm2).is_ok(),
+        "SYSCALL：close 迁移值（refs 未增——最终 close 走销毁）"
+    );
+
+    // G1. 子进程出生自带空表：process_create 出的 Process 有自己的 ht（出生为
+    //     空——一切能力待父进程授入）；父表 handle 在子表不可见。
+    // SAFETY: 同上（OUT/CHILD_OUT 为本函数私有静态）。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc5(NR_PROCESS_CREATE as u64, 0, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        0,
+        "SYSCALL：process_create（G1 子表）"
+    );
+    let hp3 = unsafe { OUT } as u32;
+    let hv4 = unsafe { CHILD_OUT } as u32;
+    let (pobj, _) = ht.get(hp3, ObjType::Process, 0).expect("SYSCALL：get hp3");
+    let child_proc = pobj.as_process().expect("SYSCALL：hp3 须指 Process");
+    assert_eq!(
+        child_proc.ht.get(hp3, ObjType::Process, 0).err(),
+        Some(ERR_BAD_HANDLE),
+        "SYSCALL：子表出生为空（父 handle 不可见）"
+    );
+    // 清场（close hp3 → Process Drop 释放对 root Vmar 的钉住；再关 hv4 归零）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp3 as u64, 0, 0), 0, "SYSCALL：close hp3");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv4 as u64, 0, 0), 0, "SYSCALL：close hv4");
 
     bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }

@@ -51,7 +51,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x22 | `pager_op_range` | 脏页/换出通知 | v3 |
 | **进程 / 线程** ||||
 | 0x31 | `process_create` | 建进程 + 出 root Vmar（双出参；job v1 恒 0） | v1 |
-| 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap v1 恒 0） | v1 |
+| 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 |
 | 0x33 | `process_exit` | 退出 | v1 |
 | 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 |
 | 0x35 | `thread_start` | 投入运行 | v1 |
@@ -256,9 +256,11 @@ bos_status_t bos_process_create(bos_handle_t job, uint32_t options,
                                 bos_handle_t *process, bos_handle_t *vmar);
 bos_status_t bos_process_start(bos_handle_t process, bos_handle_t thread,
                                uintptr_t entry, uintptr_t sp,
-                               bos_handle_t bootstrap);  /* v1 恒 0：per-process
-                               handle 表落地（3-4+）前无「移入子进程固定槽」
-                               载体，子入口 x0=0 */
+                               bos_handle_t bootstrap);  /* 3-4a 转正：非 0 时从
+                               调用者表 take 出该 handle、insert 进子进程表——
+                               子入口 x0 = 子表内新 handle 值（Zircon zx_process_start
+                               同形）；迁移后调用者原值立即作废（-EBADF），
+                               坏 bootstrap → -EBADF */
 bos_status_t bos_process_exit(int code);
 bos_status_t bos_thread_create(bos_handle_t process, uint32_t options,
                                bos_handle_t *out);        /* 未启动描述；入口/sp

@@ -57,6 +57,11 @@ pub struct Task {
     pub ttbr0: usize,
     /// 2b-2：`ttbr0` 对应的 ASID（0 = 无 AS）。
     pub asid: u16,
+    /// 3-4a：任务所属进程的标签（调用方传入的不透明指针，0 = 无——内核任务/
+    /// 早期 boot）。语义归 `内核` crate（syscall 层解释为该任务的 handle 表指针，
+    /// per-process 表的派发载体）；sched 层只存取、不解释——保持 crate 边界
+    /// 干净（进程调度不反向依赖内核）。
+    pub proc_tag: usize,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
     // Phase 兑现——RR 不消费，为 EAS/PI/AI 调度预埋，免后改 TCB 布局返工）----
@@ -102,13 +107,14 @@ impl Task {
     ) -> Box<Task> {
         let (kstack, stack_top) = Self::alloc_kstack();
         let ctx = TaskContext::new_kernel(entry, arg, stack_top);
-        Self::assemble(ctx, kstack, name, ttbr0, asid)
+        Self::assemble(ctx, kstack, name, ttbr0, asid, 0)
     }
 
     /// 用户线程版（2b-4 首个 EL0）：`entry_va`/`sp0_va` 为**用户 VA**（须已在
     /// `ttbr0` 页表映射、AP 放行 EL0——`Perm::UserRw`），内核侧仍走 trampoline
     /// 接线（首切 `eret` 降 EL0，见 HAL `user_entry_trampoline`）。内核栈同
-    /// 16KiB（EL0 异常帧 + handler 都跑在它上面）。
+    /// 16KiB（EL0 异常帧 + handler 都跑在它上面）。`proc_tag` = 所属进程标签
+    /// （3-4a：syscall 层映射为该进程的 handle 表指针；0 = 无表——内核任务）。
     pub fn new_user_with_as(
         entry_va: usize,
         arg: usize,
@@ -116,10 +122,11 @@ impl Task {
         name: &'static [u8],
         ttbr0: usize,
         asid: u16,
+        proc_tag: usize,
     ) -> Box<Task> {
         let (kstack, stack_top) = Self::alloc_kstack();
         let ctx = TaskContext::new_user(entry_va, arg, sp0_va, stack_top);
-        Self::assemble(ctx, kstack, name, ttbr0, asid)
+        Self::assemble(ctx, kstack, name, ttbr0, asid, proc_tag)
     }
 
     /// 出 16KiB 内核栈 + 栈顶地址（栈向下长，顶 = 最高地址；页对齐 → 16 对齐）。
@@ -136,6 +143,7 @@ impl Task {
         name: &'static [u8],
         ttbr0: usize,
         asid: u16,
+        proc_tag: usize,
     ) -> Box<Task> {
         Box::new(Task {
             ctx,
@@ -145,6 +153,7 @@ impl Task {
             slice_left: 0,
             ttbr0,
             asid,
+            proc_tag,
             prio_base: 0,
             prio_effective: 0,
             duration_hint_ns: 0,

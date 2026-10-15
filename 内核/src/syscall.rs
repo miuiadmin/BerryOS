@@ -1,4 +1,5 @@
-//! 真 syscall 语义层（Phase 3-2：VMO/Vmar 全量门控，`系统调用ABI设计.md` §4/§8）。
+//! 真 syscall 语义层（Phase 3-4a：per-process handle 表 + bootstrap 迁移，
+//! `系统调用ABI设计.md` §4/§8）。
 //!
 //! 分层：HAL [`syscall`]（`架构相关/aarch64/`）只做 nr 界检 + 派发 + 统一错误面；
 //! 真语义 handler 在本模块，boot 期经 [`install`] 注册进 HAL 表（同 IRQ 槽反转：
@@ -16,11 +17,13 @@
 //! AP 位，校验后直拷。**无 TOCTOU**：SVC 异常入口硬件置 DAIF 屏蔽 IRQ 且
 //! handler 不解蔽 → syscall 主体天然不可抢占（单核）。
 //!
-//! **并发说明（v1 免锁的边界）**：引导表 [`BOOTSTRAP_HT`] 仍是全局单表（3-3
-//! 决策：per-process 表延后——3-4 channel 的 handle 迁移才是拆表的硬前置，
-//! 3-3 只过对象面不欠表语义）；表的一切访问都在 syscall 同步异常路径
-//! （IRQ 屏蔽，单核无并发）或 boot 期（IRQ 未开）。`process_create` 产出的
-//! 子进程 handle 也暂居本表（诚实边界：v1 子进程与父共享 handle 名字空间）。
+//! **per-process 表（3-4a 拆表）**：全局单表退役——每个 Process 拥有自己的
+//! [`HandleTable`]（`process.rs`），EL0 syscall 经任务 `proc_tag` 派发到所属
+//! 进程的表（[`caller_table`]）；boot 期手搭的用户进程各领一张 leak 常驻表。
+//! [`BOOTSTRAP_HT`] 降格为**内核侧表**（ktest 的 EL1 测试面 + 未来 init 的
+//! 表雏形，能力模型 §5）。**bootstrap 迁移转正**：`process_start` 的
+//! `bootstrap` 参数不再恒 0——从调用者表 `take` 出 handle、`insert_ref` 进
+//! 子进程表，子入口 x0 = 子表内的新 handle 值（能力随创建流动，Zircon 同形）。
 
 use crate::handle::{
     HandleTable, KernelObj, ObjType, Rights, ERR_ACCESS_DENIED, ERR_BAD_HANDLE, ERR_BUSY,
@@ -86,13 +89,13 @@ const CLOCK_MONOTONIC: u64 = 0;
 /// `内存管理设计.md` §4；copy_out 的界检同源）。
 const USER_VA_END: u64 = 1 << 39;
 
-// ---- 引导 handle 表（3-1 全局单表雏形）----
+// ---- 表派发（3-4a per-process 拆分）----
 
-/// 引导表：v1 预期它是 init 进程表的雏形（能力模型 §5「第一个能力从哪来」）；
-/// 3-2 起挂到进程对象、随 `process_create` 拆分。lazy init（首次内核侧使用）。
+/// 内核侧表：ktest 的 EL1 测试面 + 未来 init 进程表的雏形（能力模型 §5「第一
+/// 个能力从哪来」——它将随 boot 拆分移交 init）。lazy init（首次内核侧使用）。
 static mut BOOTSTRAP_HT: Option<HandleTable> = None;
 
-/// 取引导表（**仅 EL1 内核路径**：ktest/boot 插对象用；懒初始化需要堆）。
+/// 取内核侧表（**仅 EL1 内核路径**：ktest/boot 插对象用；懒初始化需要堆）。
 pub fn bootstrap_table() -> &'static mut HandleTable {
     // SAFETY: 单核；调用点全在 EL1 同步上下文，ktest/boot 期 IRQ 未开、无并发。
     unsafe {
@@ -104,11 +107,28 @@ pub fn bootstrap_table() -> &'static mut HandleTable {
     }
 }
 
-/// 只读窥表（handler 用）：表未建 = 一切 handle 无效（-EBADF），**不触发初始化**
-/// （EL0 垃圾 handle 路径不碰堆）。
-fn table_peek() -> Option<&'static mut HandleTable> {
-    // SAFETY: 单核顺序访问；syscall 为同步异常路径、无嵌套（见模块并发说明）。
-    unsafe { (*(&raw mut BOOTSTRAP_HT)).as_mut() }
+/// 调用方 handle 表派发（3-4a）：
+/// - **EL1 调用方**（ktest/内核自调）→ 内核侧表 [`BOOTSTRAP_HT`]；
+/// - **EL0 调用方** → 当前任务 `proc_tag` 指向的**所属进程表**（`spawn_user`
+///   时注入；0 = 无表任务（内核线程/早期 boot）→ 一切 handle 无效）。
+///
+/// SAFETY（裸指针的三个不变量）：① tag 来源只有两处——boot 期 `Box::leak` 的
+/// 常驻表（main.rs 手搭用户进程）与 `Process::ht`（Box'd ObjRef 内、地址稳定，
+/// 且运行中的任务钉住 Process → 表随任务同寿）；② 单核 syscall 全程 IRQ 屏蔽
+/// → 同一表无并发访问；③ 每个 handler 同一时刻至多持一张表的 `&mut`（跨表
+/// 操作如 bootstrap 迁移是**两张不同表**的借用，无别名）。
+fn caller_table(tf: &TrapFrame) -> Result<&'static mut HandleTable, i64> {
+    if caller_is_el1(tf) {
+        Ok(bootstrap_table())
+    } else {
+        let tag = bos_sched::current_tag();
+        if tag == 0 {
+            Err(ERR_BAD_HANDLE as i64) // 无表任务：没有 handle 可言
+        } else {
+            // SAFETY: 见函数注释三不变量。
+            Ok(unsafe { &mut *(tag as *mut HandleTable) })
+        }
+    }
 }
 
 // ---- copy_from/to_user（3-2 全量；copy_out_u64 为 out 参数种子保留）----
@@ -213,12 +233,12 @@ fn copy_out_u64(caller_el1: bool, ptr: u64, val: u64) -> Result<(), i32> {
 /// `handle_close(h)`：关 handle（引用 -1，归零释放；代号 +1 旧值作废）。
 extern "C" fn sys_handle_close(tf: &mut TrapFrame) -> i64 {
     let h = tf.regs[1] as u32;
-    match table_peek() {
-        Some(t) => match t.close(h) {
+    match caller_table(tf) {
+        Ok(t) => match t.close(h) {
             Ok(()) => 0,
             Err(e) => e as i64,
         },
-        None => ERR_BAD_HANDLE as i64, // 表未建：一切 handle 无效
+        Err(e) => e,
     }
 }
 
@@ -229,15 +249,15 @@ extern "C" fn sys_handle_duplicate(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u64(caller_is_el1(tf), out, 0) {
         return e as i64;
     }
-    match table_peek() {
-        Some(t) => match t.duplicate(h, rights) {
+    match caller_table(tf) {
+        Ok(t) => match t.duplicate(h, rights) {
             Ok(nh) => match copy_out_u64(caller_is_el1(tf), out, nh as u64) {
                 Ok(()) => 0,
                 Err(e) => e as i64,
             },
             Err(e) => e as i64,
         },
-        None => ERR_BAD_HANDLE as i64,
+        Err(e) => e,
     }
 }
 
@@ -247,15 +267,15 @@ extern "C" fn sys_handle_replace(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u64(caller_is_el1(tf), out, 0) {
         return e as i64;
     }
-    match table_peek() {
-        Some(t) => match t.replace(h, repl) {
+    match caller_table(tf) {
+        Ok(t) => match t.replace(h, repl) {
             Ok(nh) => match copy_out_u64(caller_is_el1(tf), out, nh as u64) {
                 Ok(()) => 0,
                 Err(e) => e as i64,
             },
             Err(e) => e as i64,
         },
-        None => ERR_BAD_HANDLE as i64,
+        Err(e) => e,
     }
 }
 
@@ -303,15 +323,6 @@ fn vme(e: VmarError) -> i32 {
     }
 }
 
-/// 表未建的统一拒绝面（表 lazy init 只在 EL1 boot 路径触发——EL0 垃圾 handle
-/// 不该有能力把堆带起来）。
-fn table_or_ebadf() -> Result<&'static mut HandleTable, i64> {
-    match table_peek() {
-        Some(t) => Ok(t),
-        None => Err(ERR_BAD_HANDLE as i64),
-    }
-}
-
 /// `vmo_create(size, options, *out)`：建匿名 VMO。新对象授 READ|WRITE|MAP|
 /// DUPLICATE（全 Rights 面减 TRANSFER——transfer 随 3-4 channel 落地）；v1
 /// options 恒 0。`size` 上限 [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
@@ -330,7 +341,7 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u64(el1, out, 0) {
         return e as i64;
     }
-    match table_or_ebadf() {
+    match caller_table(tf) {
         Ok(t) => match t.insert(
             KernelObj::Vmo(Vmo::create(size)),
             RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE,
@@ -349,7 +360,7 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
 /// 门控：handle 类型 Vmo + **WRITE**（提交即写入清零内容）。
 extern "C" fn sys_vmo_commit(tf: &mut TrapFrame) -> i64 {
     let (h, off, len) = (tf.regs[1] as u32, tf.regs[2] as usize, tf.regs[3] as usize);
-    match table_or_ebadf() {
+    match caller_table(tf) {
         Ok(t) => match t.get_raw(h, ObjType::Vmo, RIGHT_WRITE) {
             Ok((obj, _)) => {
                 let Some(vmo) = obj_vmo_mut(&obj) else { return ERR_BAD_HANDLE as i64 };
@@ -368,7 +379,7 @@ extern "C" fn sys_vmo_commit(tf: &mut TrapFrame) -> i64 {
 /// -EBUSY，先 unmap——悬空 PTE 防线）。门控同 commit（WRITE）。
 extern "C" fn sys_vmo_decommit(tf: &mut TrapFrame) -> i64 {
     let (h, off, len) = (tf.regs[1] as u32, tf.regs[2] as usize, tf.regs[3] as usize);
-    match table_or_ebadf() {
+    match caller_table(tf) {
         Ok(t) => match t.get_raw(h, ObjType::Vmo, RIGHT_WRITE) {
             Ok((obj, _)) => {
                 let Some(vmo) = obj_vmo_mut(&obj) else { return ERR_BAD_HANDLE as i64 };
@@ -391,7 +402,7 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     if !access_ok(el1, buf, len as u64, true) {
         return ERR_FAULT as i64;
     }
-    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let vmo = match t.get(h, ObjType::Vmo, RIGHT_READ) {
         Ok((obj, _)) => match obj.as_vmo() {
             Some(v) => v,
@@ -421,7 +432,7 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
     if !access_ok(el1, buf, len as u64, false) {
         return ERR_FAULT as i64;
     }
-    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let vmo = match t.get_raw(h, ObjType::Vmo, RIGHT_WRITE) {
         Ok((obj, _)) => {
             let Some(v) = obj_vmo_mut(&obj) else { return ERR_BAD_HANDLE as i64 };
@@ -480,7 +491,7 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
         Ok(v) => v,
         Err(e) => return e as i64,
     };
-    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     // 双对象同借：两 get_raw 类型门控互异 → 必不同对象 → &mut 无别名（论证
     // 见 HandleTable::get_raw 文档）。
     let vr = match t.get_raw(vh, ObjType::Vmar, RIGHT_MAP) {
@@ -510,7 +521,7 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
 /// `vmar_unmap(vmar, vaddr, len)`：解除映射（精确匹配）。门控：vmar **MAP**。
 extern "C" fn sys_vmar_unmap(tf: &mut TrapFrame) -> i64 {
     let (vh, vaddr, len) = (tf.regs[1] as u32, tf.regs[2] as usize, tf.regs[3] as usize);
-    match table_or_ebadf() {
+    match caller_table(tf) {
         Ok(t) => match t.get_raw(vh, ObjType::Vmar, RIGHT_MAP) {
             Ok((obj, _)) => {
                 // SAFETY: get_raw 已门控；单核 IRQ 屏蔽。
@@ -539,7 +550,7 @@ extern "C" fn sys_vmar_protect(tf: &mut TrapFrame) -> i64 {
     if rights != RIGHT_READ | RIGHT_WRITE {
         return ERR_NOT_SUPPORTED as i64;
     }
-    match table_or_ebadf() {
+    match caller_table(tf) {
         Ok(t) => match t.get_raw(vh, ObjType::Vmar, RIGHT_MANAGE) {
             Ok((obj, _)) => {
                 // SAFETY: 同上。
@@ -575,7 +586,7 @@ extern "C" fn sys_vmar_allocate(tf: &mut TrapFrame) -> i64 {
         Ok(v) => v,
         Err(e) => return e as i64,
     };
-    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let (obj, parent_rights) = match t.get_raw(vh, ObjType::Vmar, RIGHT_MANAGE) {
         Ok(x) => x,
         Err(e) => return e as i64,
@@ -625,7 +636,7 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u64(el1, v_out, 0) {
         return e as i64;
     }
-    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let vmar = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid());
     let (ttbr0, asid) = (vmar.ttbr0_pa(), vmar.asid());
     let hv = match t.insert(
@@ -667,7 +678,7 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u64(el1, out, 0) {
         return e as i64;
     }
-    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let Ok((pobj, _)) = t.get_raw(ph, ObjType::Process, RIGHT_MANAGE) else {
         return ERR_BAD_HANDLE as i64;
     };
@@ -684,28 +695,34 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
 
 /// `process_start(process, thread, entry, sp, bootstrap)`：启动首线程
 /// （把 thread 的执行流放进 process 的地址空间）。门控：process 与 thread
-/// 各 **MANAGE**。v1 参数面：`bootstrap` 恒 0（per-process handle 表落地
-/// （3-4+）前无「移入子进程固定槽」的载体；子进程入口 x0 = 0）。
+/// 各 **MANAGE**。
 ///
-/// 校验序：`bootstrap`≠0 → -EINVAL；`entry`==0 / `sp` 非 16 对齐 → -EINVAL；
-/// thread 非本 process 所属 → -EACCES；已启动 → -EBADSTATE。全过后
+/// **bootstrap 迁移（3-4a 转正，v1 不再恒 0）**：非 0 时从**调用者表** `take`
+/// 出该 handle、`insert_ref` 进**子进程表**——子入口 x0 = 子表内的新 handle
+/// 值（能力随创建流动，Zircon `zx_process_start` 同形；3-3「恒 0」过渡约定
+/// 退役）。迁移原子性：take 失败（-EBADF）时子表未动；insert 失败（表满，
+/// v1 不可达）回滚重插调用者表（handle **值**可能变化——代际推进，语义仍活）。
+///
+/// 校验序：`entry`==0 / `sp` 非 16 对齐 → -EINVAL；bootstrap 非 0 但无效 →
+/// -EBADF；thread 非本 process 所属 → -EACCES；已启动 → -EBADSTATE。全过后
 /// `started=true`、**替运行中的任务再钉一次 Process**（v1 任务不退出，
-/// 永不释放——防 handle 全关后页表根被销毁），`spawn_user` 入队。
+/// 永不释放——防 handle 全关后页表根被销毁），`spawn_user` 入队（tag =
+/// 子进程表指针——子的 EL0 syscall 从此派发到自己的表）。
 extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     let (ph, th, entry, sp, bootstrap) = (
         tf.regs[1] as u32,
         tf.regs[2] as u32,
         tf.regs[3],
         tf.regs[4],
-        tf.regs[5],
+        tf.regs[5] as u32,
     );
-    if bootstrap != 0 {
-        return ERR_INVALID_ARG as i64;
-    }
     if entry == 0 || sp == 0 || sp % 16 != 0 {
         return ERR_INVALID_ARG as i64;
     }
-    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let t = match caller_table(tf) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
     // 双对象同借：类型互异 → 两指针必不同对象 → 无别名（论证同 vmar_map）。
     let vr = match t.get_raw(ph, ObjType::Process, RIGHT_MANAGE) {
         Ok((o, _)) => o,
@@ -715,9 +732,9 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    // SAFETY: 双 get_raw 门控过；单核 IRQ 屏蔽。
+    // SAFETY: 双 get_raw 门控过；单核 IRQ 屏蔽。proc 取 &mut（要写子表 ht）。
     let (proc, thrd) = unsafe {
-        ((*vr.as_ptr()).obj.as_process(), (*vt.as_ptr()).obj.as_thread_mut())
+        ((*vr.as_ptr()).obj.as_process_mut(), (*vt.as_ptr()).obj.as_thread_mut())
     };
     let (Some(proc), Some(thrd)) = (proc, thrd) else {
         return ERR_BAD_HANDLE as i64; // 类型门控后不可达；防御面
@@ -728,12 +745,39 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     if thrd.started {
         return ERR_BAD_STATE as i64;
     }
+    // bootstrap 迁移：调用者表 → 子进程表（子入口 x0 = 子表新值）。
+    // 两张不同表的 &mut（t = 调用者表、proc.ht = 子表）无别名。
+    let child_x0: usize = if bootstrap != 0 {
+        match t.take(bootstrap) {
+            Ok((obj, rights)) => match proc.ht.insert_ref(obj, rights) {
+                Ok(h) => h as usize,
+                Err(e) => {
+                    // 表满回滚（v1 不可达）：重插调用者表；handle 值或变（代号
+                    // 推进）但语义存活——错误码原样上抛。
+                    let _ = t.insert_ref(obj, rights);
+                    return e as i64;
+                }
+            },
+            Err(e) => return e as i64, // 坏 handle：子表未动（原子）
+        }
+    } else {
+        0
+    };
     thrd.entry = entry as usize;
     thrd.sp = sp as usize;
     thrd.started = true;
     // SAFETY: vr 在表（get_raw 过）；任务钉住（v1 永不释放，见上）。
     unsafe { (*vr.as_ptr()).retain() };
-    bos_sched::spawn_user(entry as usize, 0, sp as usize, b"user_child", proc.ttbr0_pa, proc.asid);
+    let ht_ptr = &raw mut proc.ht as *mut HandleTable as usize;
+    bos_sched::spawn_user(
+        entry as usize,
+        child_x0,
+        sp as usize,
+        b"user_child",
+        proc.ttbr0_pa,
+        proc.asid,
+        ht_ptr,
+    );
     0
 }
 

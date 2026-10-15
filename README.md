@@ -18,7 +18,7 @@
 ## 现状（诚实版）
 
 - ✅ **Phase 2b / 出口关卡 G1.5 已完成（2026-10，2b-0~2b-4 全落地）**：内核主体链高半（TTBR1 canonical、低半身份表已退役，boot 打 `KVA ok` 自校验）、每进程页表 + ASID（16 位实测、回卷全量失效）、匿名 VMO/Vmar、首个 EL0 用户进程（ktest `ASPACE ok` / `VMO ok` / `HANDLE ok` / `SYSCALL ok`；用户进程野指针只死自己，坏 handle/未知 syscall 一律错误码返回不杀——watchdog 打 `G1.5 ok`）。其下是 Phase 2a（G1）：buddy/slab 堆、异常向量 + panic dump、GICv2 + CNTV timer、内核线程 + 上下文切换、协作/抢占调度（机制在内核、策略可插拔 trait）、tickless idle（空闲 mask CNTV + `wfi`）、IRQ 驱动抢占。
-- 🚧 **Phase 3 能力与系统调用进行中（3-0 handle 表 / 3-1 syscall ABI 骨架 / 3-2 VMO/Vmar 全量门控 / 3-3 process 最小对象已落地）**：v1 27 个 syscall 编号在册；handle 三操作 + `clock_read` + **VMO/Vmar 九号全链**（rights 位执法 + `copy_from/to_user` 界检 + 悬空 PTE 防线）+ **process/thread 三号**（`process_create` 双出参——Zircon 同形；对象间钉住防悬空）——**用户进程已能创建第二个进程**（`user_spawner` 经真 syscall 装配并启动子进程 `user_child`）；下一步 3-4 channel/event + per-process handle 表；出口增项 = 遥测环 instrumentation + 空策略表等价测试。
+- 🚧 **Phase 3 能力与系统调用进行中（3-0 handle 表 / 3-1 syscall ABI 骨架 / 3-2 VMO/Vmar 全量门控 / 3-3 process 最小对象 / 3-4a per-process handle 表已落地）**：v1 27 个 syscall 编号在册；handle 三操作 + `clock_read` + **VMO/Vmar 九号全链**（rights 位执法 + `copy_from/to_user` 界检 + 悬空 PTE 防线）+ **process/thread 三号**（`process_create` 双出参——Zircon 同形；对象间钉住防悬空）——**用户进程已能创建第二个进程**（`user_spawner` 经真 syscall 装配并启动子进程 `user_child`）；**3-4a 起每进程自有 handle 表 + bootstrap 迁移**（`process_start` 把礼物 VMO handle 迁进子进程表，子进程凭自己表里的 handle 读出内容——跨进程能力流动闭环）；下一步 3-4b channel / 3-4c event + 遥测环 + 空策略表等价测试。
 - 关卡式验证 G0–G5（`文档/测试策略.md`）：单核正确 → 抢占 → SMP → 全抢占 → demand paging，逐关推进。**尚未到** SMP / 全抢占 / demand paging——文档描述始终与实际阶段一致。
 
 ## 快速开始（macOS）

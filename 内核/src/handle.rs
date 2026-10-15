@@ -169,6 +169,14 @@ impl KernelObj {
         }
     }
 
+    /// 可变取 Process 本体（process_start 写子进程 handle 表 / spawn 派发标签）。
+    pub fn as_process_mut(&mut self) -> Option<&mut crate::process::Process> {
+        match self {
+            KernelObj::Process(p) => Some(p),
+            _ => None,
+        }
+    }
+
     /// 可变取 Thread 本体（process_start 写 started/entry/sp）。
     pub fn as_thread_mut(&mut self) -> Option<&mut crate::process::Thread> {
         match self {
@@ -216,7 +224,8 @@ enum SlotState {
     Used { gen: u32, obj: NonNull<ObjRef>, rights: Rights },
 }
 
-/// handle 表（能力模型 §4：每进程一张；3-0 先内核自用，3-2 起挂进程）。
+/// handle 表（能力模型 §4：每进程一张——3-4a 起真拆分：Process 拥有自己的表，
+/// EL0 syscall 经任务标签派发到所属进程表；本类型另作内核侧表供 ktest/boot）。
 ///
 /// 单核顺序访问（v1 无 SMP；IRQ 上下文不碰表——syscall 均同步异常路径）。
 pub struct HandleTable {
@@ -328,6 +337,29 @@ impl HandleTable {
         self.slots[slot] = SlotState::Used { gen, obj, rights };
         // h 按 close 处理（可能 drop 其原对象）。
         self.close(h)?;
+        Ok(encode(slot as u32, gen))
+    }
+
+    /// **取出**（3-4a：handle 迁移原语）：把槽整体摘走——对象引用数**不变**
+    /// （引用令牌随槽迁移，非销毁），槽位代号 +1（原 handle 值立即作废）。
+    /// 消费者：`process_start` 的 bootstrap 迁移（3-4a）、`channel_send` 的
+    /// handle 随消息迁移（3-4b）。取出后对象由调用方经 [`Self::insert_ref`]
+    /// 落进目标表（或暂挂消息里）。**不做销毁性检查**（refs 不减、无 drop——
+    /// 映射中 VMO 照样可迁：对象不死，EPTE 防线由最终 close 把守）。
+    pub fn take(&mut self, h: Handle) -> Result<(NonNull<ObjRef>, Rights), i32> {
+        let (slot, gen, obj, rights) = self.lookup_at(h)?;
+        self.slots[slot] = SlotState::Free { next_gen: gen + 1 };
+        Ok((obj, rights))
+    }
+
+    /// **放入既有对象**（[`Self::take`] 的对侧）：已 Boxing 的 [`ObjRef`] 挂进
+    /// 新槽并授予 rights，返回新 handle。引用数**不变**——调用方移交的引用
+    /// 令牌由本槽接管（与 [`Self::insert`] 的差别：insert 新建对象 refs=1，
+    /// insert_ref 接管既有令牌）。
+    pub fn insert_ref(&mut self, obj: NonNull<ObjRef>, rights: Rights) -> Result<Handle, i32> {
+        let slot = self.alloc_slot()?;
+        let gen = self.take_gen(slot)?;
+        self.slots[slot] = SlotState::Used { gen, obj, rights };
         Ok(encode(slot as u32, gen))
     }
 

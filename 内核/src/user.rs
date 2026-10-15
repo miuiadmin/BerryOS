@@ -15,11 +15,13 @@
 //! - `abuser`（原 rogue_svc，3-1 改板）：**真号 + 垃圾 handle 滥用**——`handle_close`
 //!   (0x01) 传 0xDEAD_BEEF → 必须 -EBADF 且**存活**（syscall 层错误一律错误码自理，
 //!   撤 2b-4 杀政策）；打 'S' 作存活金丝雀；
-//! - `spawner`（3-3 验收）：**用户进程创建第二个进程**——`process_create` 拿双
-//!   handle（process + 子 root Vmar）→ vmo_create/commit/write（写入内嵌子代码
-//!   字节）→ `vmar_map` 把代码+栈映进子空间 → `thread_create` → `process_start`；
-//!   子进程打 'C'（`user_child`），spawner 稳态打 's'。任一步错 → 自陷被杀 →
-//!   watchdog 错杀断言 FAIL（kills != 1 即暴露）。
+//! - `spawner`（3-3/3-4a 验收）：**用户进程创建第二个进程 + bootstrap 迁移**——
+//!   `process_create` 拿双 handle（process + 子 root Vmar）→ vmo_create/commit/
+//!   write（写入内嵌子代码字节）→ `vmar_map` 把代码+栈映进子空间 → 建礼物 VMO
+//!   写魔数 → `thread_create` → `process_start(…, bootstrap=礼物)`（take 出本表
+//!   handle、insert 进子表）；迁移后 close 原值必 -EBADF（发送方失去）。子进程
+//!   （`user_child`）凭**自己表里**的 handle `vmo_read` 出魔数比对 → 打 'C'；
+//!   spawner 稳态打 's'。任一步错 → 自陷被杀 → watchdog 错杀断言 FAIL。
 //! rogue_ptr 应被杀且**只死自己**（`user_fault_exit`）；abuser 与 good 全程存活。
 //! [`watchdog`] 内核任务断言杀数==1 + switches/putchar 金丝雀仍在涨 → 打 `G1.5 ok`
 //! （smoke 固化标记）后退出。
@@ -222,10 +224,12 @@ core::arch::global_asm!(
     ".globl __user_abuser_end",
     "__user_abuser_end:",
 
-    // 3-3 spawner：经真 syscall 创建第二个进程。入口 x0=0（无需引导能力——
-    // process_create 双出参自带子 root Vmar）。暂存：x16=hp(进程)、x17=hv
-    // (子 Vmar)、x18=hvmo、x19=ht(线程)；槽：0x2010/0x2018 handle 双出参、
-    // 0x2020 vmo/线程 out、0x2028 vaddr in-out。
+    // 3-3/3-4 spawner：经真 syscall 创建第二个进程 + **bootstrap 迁移**（3-4a）。
+    // 入口 x0=0（无需引导能力——process_create 双出参自带子 root Vmar；给子的
+    // 能力经 process_start 的 bootstrap 参数送入子进程表）。暂存：x16=hp(进程)、
+    // x17=hv(子 Vmar)、x18=hvmo(子代码+栈)、x19=ht(线程)、x20=hgift(礼物 VMO)；
+    // 槽：0x2010/0x2018 handle 双出参、0x2020 vmo/线程 out、0x2028 vaddr in-out、
+    // 0x2030 礼物 out、0x2038 礼物魔数 8 字节。
     ".balign 16",
     ".globl __user_spawner",
     "__user_spawner:",
@@ -254,11 +258,11 @@ core::arch::global_asm!(
     "    movz x3, #0x2000",
     "    svc  #0",
     "    cbnz x0, 3f",
-    "    movz x0, #0x15",               // vmo_write(hvmo, buf=内嵌子代码, 0, 36)
+    "    movz x0, #0x15",               // vmo_write(hvmo, buf=内嵌子代码, 0, 100)
     "    mov  x1, x18",
     "    adr  x2, 4f",                  // 本页内自相对取址（搬迁安全，见模块注）
     "    mov  x3, xzr",
-    "    movz x4, #36",                 // 子代码 9 指令
+    "    movz x4, #100",                // 子代码 25 指令（字节数精确——尾随零垃圾勿拷）
     "    svc  #0",
     "    cbnz x0, 3f",
     "    movz x5, #0x2028",             // vaddr 槽 ← 请求子代码 VA 0x1000
@@ -273,6 +277,34 @@ core::arch::global_asm!(
     "    mov  x6, #3",
     "    svc  #0",
     "    cbnz x0, 3f",
+    // ---- 礼物 VMO（3-4a bootstrap 迁移）：写魔数，start 时送进子进程表 ----
+    "    movz x0, #0x11",               // vmo_create(1 页, 0, *out=0x2030)
+    "    movz x1, #0x1000",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2030",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x20, [x3]",               // hgift
+    "    cbz  x20, 3f",
+    "    movz x0, #0x12",               // vmo_commit(hgift, 0, 1 页)
+    "    mov  x1, x20",
+    "    mov  x2, xzr",
+    "    movz x3, #0x1000",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x4, #0x0E10",             // x4 = USER_MAGIC（与 good 数据页魔数同源）
+    "    movk x4, #0xE000, lsl #16",
+    "    movk x4, #0xFFEE, lsl #32",
+    "    movk x4, #0x00C0, lsl #48",
+    "    movz x6, #0x2038",
+    "    str  x4, [x6]",
+    "    movz x0, #0x15",               // vmo_write(hgift, 0x2038, 0, 8)
+    "    mov  x1, x20",
+    "    mov  x2, x6",
+    "    mov  x3, xzr",
+    "    mov  x4, #8",
+    "    svc  #0",
+    "    cbnz x0, 3f",
     "    movz x0, #0x34",               // thread_create(hp, 0, *out=0x2020)
     "    mov  x1, x16",
     "    mov  x2, xzr",
@@ -281,14 +313,19 @@ core::arch::global_asm!(
     "    cbnz x0, 3f",
     "    ldr  x19, [x3]",               // ht
     "    cbz  x19, 3f",
-    "    movz x0, #0x32",               // process_start(hp, ht, entry=0x1000, sp=0x3000, 0)
+    "    movz x0, #0x32",               // process_start(hp, ht, entry=0x1000, sp=0x3000, hgift)
     "    mov  x1, x16",
     "    mov  x2, x19",
     "    movz x3, #0x1000",             // 子入口 = 映进的代码页
     "    movz x4, #0x3000",             // 子 sp0 = 映射顶（栈向下长，首写 0x2FF8）
-    "    mov  x5, xzr",                 // bootstrap = 0（v1 约定）
+    "    mov  x5, x20",                 // bootstrap = 礼物（迁入子表，子 x0 收到）
     "    svc  #0",
     "    cbnz x0, 3f",
+    "    movz x0, #0x01",               // 迁移后发送方必须失去：close(x20) → -EBADF
+    "    mov  x1, x20",
+    "    svc  #0",
+    "    cmn  x0, #9",
+    "    b.ne 3f",
     // ---- 稳态循环：节流 + 's'（spawner 存活金丝雀；子进程并行打 'C'）----
     "    movz x9, #0x30, lsl #16",
     "0:  mov  x10, xzr",
@@ -303,15 +340,35 @@ core::arch::global_asm!(
     "    ldr  x5, [x4]",
     "    b    .",
     // ---- 子进程代码（数据形态嵌在 spawner 模板内；vmo_write 拷进子 0x1000）----
-    "4:  movz x9, #0x30, lsl #16",      // 节流阈值（与诸位用户进程同量级）
+    // 3-4a：x0 = bootstrap（礼物 VMO 在**子表**内的 handle）——节流后 vmo_read
+    // 出魔数比对：父建对象、迁 handle、子凭**自己表里**的 handle 读出内容 =
+    // 跨进程能力流动自证（per-process 表 + 迁移的完整闭环）。链断 → 自陷被杀
+    // → watchdog 错杀断言 FAIL。
+    "4:  mov  x19, x0",                 // 保存 bootstrap handle
+    "    movz x9, #0x30, lsl #16",      // 节流阈值（与诸位用户进程同量级）
     "5:  mov  x10, xzr",
     "6:  add  x10, x10, #1",
     "    cmp  x10, x9",
     "    b.lo 6b",
+    "    movz x0, #0x14",               // vmo_read(h, buf=0x2FF8, 0, 8)——栈页内
+    "    mov  x1, x19",
+    "    movz x2, #0x2FF8",
+    "    mov  x3, xzr",
+    "    movz x4, #8",
+    "    svc  #0",
+    "    cbnz x0, 8f",
+    "    ldr  w4, [x2]",                // 低 4 字节 = USER_MAGIC 低 32 位（x2=buf 派发保留）
+    "    movz w5, #0x0E10",
+    "    movk w5, #0xE000, lsl #16",
+    "    cmp  w4, w5",
+    "    b.ne 8f",
     "    movz x0, #0xFF",               // NR_DEBUG_PUTCHAR：'C' = 子进程活证
     "    movz x1, #0x43",
     "    svc  #0",
     "    b    5b",
+    "8:  movz x4, #0x4000, lsl #16",    // 自陷：迁移/读链断 → 被杀 → watchdog FAIL
+    "    ldr  x5, [x4]",
+    "    b    .",
     ".globl __user_spawner_end",
     "__user_spawner_end:",
 );

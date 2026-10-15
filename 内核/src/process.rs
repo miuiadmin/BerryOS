@@ -1,7 +1,9 @@
 //! Process / Thread 最小内核对象（3-3；能力模型 §3）。
 //!
 //! v1 最小面：Process = **root Vmar 的壳**（地址空间 + ASID 的拥有者，自身不
-//! 分配任务）；Thread = 挂在某 Process 下的可调度执行流**描述**（入口/栈在
+//! 分配任务）+ **自己的 handle 表**（3-4a：per-process 表——EL0 syscall 经
+//! 任务标签派发到所属进程的表；bootstrap/IPC 的 handle 迁移以此为载体）；
+//! Thread = 挂在某 Process 下的可调度执行流**描述**（入口/栈在
 //! `process_start` 给出——Zircon 同形的首线程启动路径），`started` 前不可运行。
 //!
 //! **对象间钉住（防悬空）**：Thread 存所属 Process 的 `NonNull<ObjRef>`、
@@ -11,10 +13,11 @@
 //! （v1 任务不退出，永不释放——与 `UserProcess` 泄漏持有同政策）。
 //!
 //! v1 裁剪：无 Job（process_create 的 job 参数恒 0——创建权未设防的已知豁口，
-//! Job 落地 v2 后收紧）；无 per-process handle 表（全局单表过渡，见
-//! `syscall.rs` 并发说明）；进程退出/杀死路径未实现（v1 任务不退出）。
+//! Job 落地 v2 后收紧）；boot 期手搭的用户进程（`UserProcess`）只有裸
+//! `HandleTable`（leak 常驻）无 Process 对象——它们不经 syscall 创建；进程
+//! 退出/杀死路径未实现（v1 任务不退出，进程死亡时其表的回收随退出路径落地）。
 
-use crate::handle::ObjRef;
+use crate::handle::{HandleTable, ObjRef};
 use core::ptr::NonNull;
 
 /// 进程 = 地址空间容器：root Vmar（页表树 + ASID）+ 供调度器用的表根快照。
@@ -25,6 +28,9 @@ pub struct Process {
     pub ttbr0_pa: usize,
     /// ASID 快照。
     pub asid: u16,
+    /// **本进程的 handle 表**（3-4a per-process 拆分；出生为空——一切能力由
+    /// 父进程经 `process_start` bootstrap / channel 迁移授入，能力模型 §4/§5）。
+    pub ht: HandleTable,
 }
 
 impl Process {
@@ -36,7 +42,7 @@ impl Process {
     /// 其不可被销毁（已 retain 保证）。
     pub unsafe fn new(vmar_ref: NonNull<ObjRef>, ttbr0_pa: usize, asid: u16) -> Self {
         (*vmar_ref.as_ptr()).retain();
-        Self { vmar: vmar_ref, ttbr0_pa, asid }
+        Self { vmar: vmar_ref, ttbr0_pa, asid, ht: HandleTable::new() }
     }
 
 }

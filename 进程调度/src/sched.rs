@@ -46,6 +46,7 @@ static mut IDLE_TASK: Task = Task {
     duration_hint_ns: 0,
     epp: crate::task::EppHint::Efficiency,
     preempt_threshold: 0,
+    proc_tag: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
 };
@@ -88,14 +89,29 @@ pub fn spawn_as(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8
 
 /// 生成一个**用户**线程（2b-4 首个 EL0）：内核栈 + `new_user` 上下文（首切经
 /// trampoline `eret` 降 EL0）+ 入 runqueue。`entry_va`/`sp0_va` 是用户 VA（该 AS
-/// 已映射、AP 放行 EL0）。前置同 [`spawn`]（IRQ 屏蔽态）。
+/// 已映射、AP 放行 EL0）。`proc_tag` = 所属进程标签（3-4a：syscall 层解释为该
+/// 进程的 handle 表指针——EL0 syscall 按任务派发到自己的表；0 = 无表）。
+/// 前置同 [`spawn`]（IRQ 屏蔽态）。
 pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
-                  ttbr0: usize, asid: u16) {
+                  ttbr0: usize, asid: u16, proc_tag: usize) {
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
     let task: &'static mut Task =
-        alloc::boxed::Box::leak(Task::new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid));
+        alloc::boxed::Box::leak(Task::new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag));
     unsafe {
         RR.enqueue(task, rq());
+    }
+}
+
+/// 当前任务的进程标签（3-4a per-process handle 表派发用）。0 = 无（内核任务/
+/// `init` 之前的 boot 期——ktest 在 `init` 前跑，此时 CURRENT 为 null → 0）。
+/// 语义归 `内核` crate；本函数只透传，单核只读。
+pub fn current_tag() -> usize {
+    // SAFETY: 只读；单核顺序访问（写点全在 IRQ 屏蔽路径）。
+    let cur = unsafe { CURRENT };
+    if cur.is_null() {
+        0
+    } else {
+        unsafe { (*cur).proc_tag }
     }
 }
 

@@ -114,25 +114,40 @@ pub extern "C" fn rust_main() -> ! {
     let up_spawner =
         user::UserProcess::build(mm::frames(), user::user_spawner_code(), user::USER_MAGIC);
 
-    // 3-2：good 的 root Vmar 进引导表 = **首能力**（能力模型 §5「第一个能力从
-    // 哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle 作
-    // spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的 VMO。
-    use handle::{KernelObj, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP};
+    // 3-4a：per-process 表拆分——每个 boot 手搭用户进程一张 leak 常驻表
+    //（任务 tag 指向它，EL0 syscall 派发到自己的表；v1 无进程退出，表同寿）。
+    use handle::{HandleTable, KernelObj, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP};
+    let ht_good: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let ht_rogue: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let ht_abuser: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let ht_spawner: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let (tag_good, tag_rogue, tag_abuser, tag_spawner) = (
+        ht_good as *mut HandleTable as usize,
+        ht_rogue as *mut HandleTable as usize,
+        ht_abuser as *mut HandleTable as usize,
+        ht_spawner as *mut HandleTable as usize,
+    );
+
+    // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
+    // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
+    // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
+    // VMO（全链落在 good 自己的表里——per-process 拆分后其余进程看不见）。
     let good_vmar = up_good.vmar.take().expect("main: good vmar");
-    let good_vmar_h = syscall::bootstrap_table()
+    let good_vmar_h = ht_good
         .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
-        .expect("main: 插 root Vmar 进引导表");
+        .expect("main: 插 root Vmar 进 good 表");
 
     bos_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
-                          b"user_good", up_good.ttbr0_pa, up_good.asid);
+                          b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
     bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
-                          b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid);
+                          b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid, tag_rogue);
     bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
-                          b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid);
-    // 3-3 验收：spawner 经真 syscall 创建第二个进程（子进程打 'C'）。x0=0——
-    // 它不需要引导能力，process_create 双出参自带子 root Vmar。
+                          b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid, tag_abuser);
+    // 3-3/3-4 验收：spawner 经真 syscall 创建第二个进程；process_start 的
+    // bootstrap 迁移把「礼物 VMO」handle 送进子进程表（子入口 x0 收到后读出
+    // 魔数自证——跨进程能力流动，见 user.rs spawner 模板注释）。
     bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
-                          b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid);
+                          b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
     bos_sched::spawn(user::watchdog, 0, b"watchdog");
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
