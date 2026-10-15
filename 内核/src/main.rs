@@ -155,6 +155,11 @@ pub extern "C" fn rust_main() -> ! {
     berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
     berry_sched::spawn(user::watchdog, 0, b"watchdog");
+    // 4-0 验收（`IPC设计.md` Phase 4 拆步表）：sleeper/waker 对打——超时自醒
+    // （'T'）+ 条件唤醒（'K'）双路径全绿打 `BLOCK ok`（smoke 第 14 标记）。
+    // ktest 在 sched::init 前跑不能睡，睡眠面只能走 boot spawn 活证。
+    berry_sched::spawn(task_sleeper, 0, b"sleeper");
+    berry_sched::spawn(task_waker, 0, b"waker");
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
@@ -215,3 +220,58 @@ const B_PRINT_EVERY: u32 = 2_000_000;
 /// task_a/task_b 私有页 magic（2b-2 隔离金丝雀；互异且非零）。
 const TASK_A_MAGIC: u64 = 0x00A5_C0DE_AAAA_0001;
 const TASK_B_MAGIC: u64 = 0x00B6_C0DE_BBBB_0002;
+
+/// 4-0 睡眠/唤醒验收的等待对象标识（静态地址 = `wake_matching` 的 obj 匹配键，
+/// 不透明 token——4-1 起该语义交给 Event/Channel 的 ObjRef 地址）。
+static SLEEP_OBJ: u8 = 0;
+
+/// 4-0 sleeper：两条唤醒路径各验一遍，全绿打 `BLOCK ok`。
+///
+/// - 路径 1（超时自醒 'T'）：纯 sleep 1 slice——醒因必 Timeout 且实际醒来
+///   ≥ deadline（tick 粗粒度扫描：到期后最迟一个 slice 被摘）。
+/// - 路径 2（条件唤醒 'K'）：挂 SLEEP_OBJ 无限等（deadline=MAX），由 waker 的
+///   `wake_matching` 摘醒——醒因必 Signaled（单核屏蔽窗原子：唤醒方只在匹配
+///   时摘队，不存在虚假唤醒；醒后重验条件的兜底语义归 4-1 调用方）。
+///
+/// block_current 契约：内核任务显式 disable → block → 续行后 enable（对称
+/// 包络，同 yield_now 模式；SVC 语境无此步——eret 自然解蔽）。
+extern "C" fn task_sleeper(_arg: usize) -> ! {
+    use berry_sched::WakeReason;
+    let slice = berry_hal_aarch64::timer::slice_cycles();
+    // 路径 1：超时自醒。
+    berry_hal_aarch64::disable_irq();
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    let r = berry_sched::block_current(0, 0, t0 + slice);
+    berry_hal_aarch64::enable_irq();
+    let elapsed = berry_hal_aarch64::timer::cntvct() - t0;
+    assert!(r == WakeReason::Timeout, "sleeper: 超时路径醒因非 Timeout");
+    assert!(elapsed >= slice, "sleeper: 超时醒来早于 deadline");
+    berry_hal_aarch64::uart_puts(b"T");
+    // 路径 2：条件唤醒（无限等——无哨兵，deadline=MAX 等价）。
+    berry_hal_aarch64::disable_irq();
+    let r2 = berry_sched::block_current(&SLEEP_OBJ as *const u8 as usize, !0, u64::MAX);
+    berry_hal_aarch64::enable_irq();
+    assert!(r2 == WakeReason::Signaled, "sleeper: 条件路径醒因非 Signaled");
+    berry_hal_aarch64::uart_puts(b"K BLOCK ok\n");
+    berry_sched::exit_current()
+}
+
+/// 4-0 waker：轮询 `wake_matching(SLEEP_OBJ, !0)` 直到摘到 sleeper（返回 1）。
+/// 未挂上时返回 0 且零副作用——单核屏蔽窗原子保证无丢唤醒：要么本循环先扫
+/// （0，sleeper 稍后挂上，下轮摘到）、要么 sleeper 已挂（本轮即摘）。轮询体
+/// IRQ 基本解蔽 → tick 正常抢占 → sleeper 得以上 CPU 挂队。命中即收工退出。
+extern "C" fn task_waker(_arg: usize) -> ! {
+    loop {
+        berry_hal_aarch64::disable_irq();
+        let n = berry_sched::wake_matching(&SLEEP_OBJ as *const u8 as usize, !0);
+        berry_hal_aarch64::enable_irq();
+        if n == 1 {
+            break;
+        }
+        // 降频小忙转（可被 tick 抢占）。
+        for _ in 0..100_000 {
+            core::hint::spin_loop();
+        }
+    }
+    berry_sched::exit_current()
+}

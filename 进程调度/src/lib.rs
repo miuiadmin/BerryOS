@@ -26,8 +26,8 @@ pub mod task;
 pub use class::{RoundRobin, SchedClass};
 pub use runqueue::{Runqueue, Topo};
 pub use sched::{
-    current_tag, exit_current, idle_loop, init, last_killed, on_irq_tick, set_switch_hook,
-    spawn, spawn_as, spawn_user, switches, try_spawn_user, user_fault_exit, user_kills,
-    yield_now, SwitchHook, SwitchKind,
+    block_current, current_tag, exit_current, idle_loop, init, last_killed, on_irq_tick,
+    set_switch_hook, spawn, spawn_as, spawn_user, switches, try_spawn_user, user_fault_exit,
+    user_kills, wake_matching, yield_now, SwitchHook, SwitchKind,
 };
-pub use task::{EppHint, Task, TaskState, STACK_SIZE};
+pub use task::{EppHint, Task, TaskState, WakeReason, STACK_SIZE};

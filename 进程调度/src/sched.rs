@@ -10,9 +10,10 @@
 
 use crate::class::{RoundRobin, SchedClass};
 use crate::runqueue::{Runqueue, Topo};
-use crate::task::{Task, TaskState};
+use crate::task::{Task, TaskState, WakeReason};
 use berry_hal_aarch64 as hal;
-use core::ptr::addr_of_mut;
+use core::cell::Cell;
+use core::ptr::{addr_of_mut, NonNull};
 
 /// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
 /// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
@@ -49,6 +50,12 @@ static mut IDLE_TASK: Task = Task {
     proc_tag: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
+    sleep_prev: core::cell::Cell::new(None),
+    sleep_next: core::cell::Cell::new(None),
+    wait_obj: 0,
+    wait_signals: 0,
+    wait_deadline: 0,
+    wakeup: core::cell::Cell::new(crate::task::WakeReason::Pending),
 };
 
 /// 取全局 runqueue 的 `&mut`（静态单例；单核顺序访问，借用不重叠）。
@@ -244,6 +251,8 @@ pub enum SwitchKind {
     Preempt,
     /// 任务退出/被杀后切走（`switch_away_forever`——exit 与 kill 共用）。
     Exit,
+    /// 受控睡眠切走（`block_current`——4-0；被唤醒/超时后经 Ready 入队切回）。
+    Block,
 }
 
 /// 切换钩子签名。**调用契约**：IRQ 屏蔽路径调用（三切换位全程 PSTATE.I=1）
@@ -271,6 +280,219 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     }
 }
 
+// ---- 睡眠/唤醒原语（4-0；`IPC设计.md` 阶段化目标 Phase 4 拆步表步 4-0）----
+
+/// 全局睡眠队列（SLEEPQ）：侵入式双向 + 按 `wait_deadline` 升序（最近到期在头
+/// ——超时扫描头未到期即早停）。
+///
+/// v1 **单队列匹配唤醒**而非「每对象一个 waitq + 超时队列双挂」：Task 只有一对
+/// 睡眠链接字段，双挂一致性易错；唤醒方按 `wait_obj`+`wait_signals` 遍历匹配
+/// （等待者通常个位数，O(n) 无忧）。§2.1「等待队列按优先级」语义随 4-3 在唤醒
+/// 选择侧兑现（遍历选优），队列改 prio 序留优化。
+///
+/// **非环形**双向链表（与 runqueue 的环形不同）：单元素时 head==tail==该任务、
+/// 其 prev/next 均 `None`——与「不在队上」无法靠链接字段区分，故 [`SleepQueue::unlink`]
+/// **不做幂等**（调用方契约：只在确知在队时摘——三个调用点都满足）。
+struct SleepQueue {
+    head: Cell<Option<NonNull<Task>>>,
+    tail: Cell<Option<NonNull<Task>>>,
+    /// 队长（idle_loop 的「有无睡眠者」判定只读；屏蔽窗内读写，Cell 以便
+    /// `&self` 方法维护——同 head/tail）。
+    len: Cell<usize>,
+}
+
+static mut SLEEPQ: SleepQueue = SleepQueue {
+    head: Cell::new(None),
+    tail: Cell::new(None),
+    len: Cell::new(0),
+};
+
+/// 取全局 SLEEPQ 的 `&mut`（静态单例；单核顺序访问，借用不重叠）。
+#[inline]
+unsafe fn sleepq() -> &'static mut SleepQueue {
+    &mut *addr_of_mut!(SLEEPQ)
+}
+
+impl SleepQueue {
+    /// 按 `wait_deadline` 升序插入；相等插相等段**尾**（同 deadline FIFO——
+    /// 先睡先醒，扫描顺序可复现）。
+    ///
+    /// # Safety
+    /// IRQ 屏蔽窗内；`task` 不在 SLEEPQ 上（链接字段均 `None`）且地址稳定。
+    unsafe fn insert_sorted(&self, task: NonNull<Task>) {
+        let t = task.as_ptr();
+        // 从头找第一个 `deadline > 新者` 的节点，插它前面；到尾则插尾。
+        let mut cur = self.head.get();
+        let before = loop {
+            match cur {
+                None => break false, // 走到尾 → 插尾
+                Some(c) => {
+                    if (*c.as_ptr()).wait_deadline > (*t).wait_deadline {
+                        break true; // c 是第一个更远者 → 插 c 前
+                    }
+                    cur = (*c.as_ptr()).sleep_next.get();
+                }
+            }
+        };
+        if before {
+            // SAFETY: 调用方契约（在队节点有效）；此处以 cur 的 prev/next 接线。
+            let n = cur.unwrap_unchecked().as_ptr();
+            let prev = (*n).sleep_prev.get();
+            (*t).sleep_prev.set(prev);
+            (*t).sleep_next.set(cur);
+            match prev {
+                Some(p) => (*p.as_ptr()).sleep_next.set(Some(task)),
+                None => self.head.set(Some(task)),
+            }
+            (*n).sleep_prev.set(Some(task));
+        } else {
+            match self.tail.get() {
+                Some(old) => {
+                    (*old.as_ptr()).sleep_next.set(Some(task));
+                    (*t).sleep_prev.set(Some(old));
+                }
+                None => self.head.set(Some(task)), // 空队 → 新头
+            }
+            (*t).sleep_next.set(None);
+            self.tail.set(Some(task));
+        }
+        self.len.set(self.len.get() + 1);
+    }
+
+    /// O(1) 双向摘除。**不幂等**（非环形链表无法廉价判在队，见类型注释）——
+    /// 调用方须确知 `task` 在 SLEEPQ 上；对不在队者调用会扬掉整队（head/tail
+    /// 被误清）。`prev`/`next` 为 `None` 合法（队长/队尾——单元素时两者皆
+    /// `None` 但在队上，正是无法幂等判定的根源）。
+    ///
+    /// # Safety
+    /// IRQ 屏蔽窗内；`task` 当前在 SLEEPQ 上。
+    unsafe fn unlink(&self, task: NonNull<Task>) {
+        let t = task.as_ptr();
+        let prev = (*t).sleep_prev.get();
+        let next = (*t).sleep_next.get();
+        match prev {
+            Some(p) => (*p.as_ptr()).sleep_next.set(next),
+            None => self.head.set(next),
+        }
+        match next {
+            Some(n) => (*n.as_ptr()).sleep_prev.set(prev),
+            None => self.tail.set(prev),
+        }
+        (*t).sleep_prev.set(None);
+        (*t).sleep_next.set(None);
+        self.len.set(self.len.get() - 1);
+    }
+}
+
+/// 受控睡眠（4-0）：当前任务挂上 SLEEPQ 等待「`obj` 上出现与 `signals` 相交的
+/// 信号」或 `deadline_vct` 超时（`u64::MAX` = 无限等），切走；被唤醒方/超时扫描
+/// 摘队入 runqueue、此后被调度切回，返回唤醒原因。
+///
+/// **调用方须保证 IRQ 屏蔽窗**（SVC 上下文天然满足；内核任务显式 `disable_irq`）
+/// ——与 `yield_now` 同款承载不变式（模块注释 Bug 2）。单核屏蔽窗原子 =
+/// 「入队+Blocked+切走」不可分割，唤醒方「摘队+Ready+入环」同窗——无丢唤醒/
+/// 虚假唤醒（SMP(G2) 重做）。
+///
+/// **调用方须已验条件不满足**（本函数不验——验条件与入队之间的窗口正是屏蔽窗
+/// 要消灭的竞态，条件语义归调用方）；唤醒后**必须重验条件**（Timeout 时条件
+/// 可能已真——signal 与到期竞争、先到先摘）。
+///
+/// **续行时的 IRQ 状态**：屏蔽续行（切回点在唤醒方的屏蔽窗或 IRQ 窗口内）。
+/// SVC 语境勿解蔽（eret 自然恢复 SPSR——syscall 主体不可抢占免锁根基）；
+/// 内核任务语境续行后自行 `enable_irq`（或走 `yield_now` 出口解蔽）。
+pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason {
+    // SAFETY: 调用方契约 = IRQ 屏蔽窗；CURRENT 有效；SLEEPQ 单核顺序访问。
+    unsafe {
+        let cur = CURRENT;
+        // 填等待描述（唤醒方 wake_matching 的匹配依据）。
+        (*cur).wait_obj = obj;
+        (*cur).wait_signals = signals;
+        (*cur).wait_deadline = deadline_vct;
+        (*cur).wakeup.set(WakeReason::Pending);
+        // 入 SLEEPQ（升序）+ 出 runqueue 环 + 置 Blocked。Blocked 任务绝不能
+        // 留在环上（rotate 会选中它）——RR.dequeue 会置 Exited（语义不符），
+        // 故直接 Runqueue::unlink + 手置 Blocked。
+        let nn = NonNull::new_unchecked(cur);
+        sleepq().insert_sorted(nn);
+        rq().unlink(nn);
+        (*cur).state = TaskState::Blocked;
+        // 切走：next = pick（runqueue 空 → idle——idle_loop 已按「SLEEPQ 有货则
+        // arm tick 扫超时」改板，睡眠者不会被永睡饿死）。
+        let next_ptr: *mut Task = match RR.pick_next(rq(), &TOPO) {
+            Some(n) => n,
+            None => addr_of_mut!(IDLE_TASK),
+        };
+        (*next_ptr).state = TaskState::Running;
+        // 授片即重编（`调度器设计.md` §4.1 绝对截止时间纪律；同
+        // switch_away_forever：切去 idle 不 arm——idle_loop 自管 CNTV）。
+        if next_ptr != addr_of_mut!(IDLE_TASK) {
+            (*next_ptr).slice_left = hal::timer::slice_cycles();
+            // SAFETY: IRQ 已屏蔽；写 CNTV 系统寄存器；EL1。
+            hal::timer::arm_slice();
+        }
+        CURRENT = next_ptr;
+        activate_if_changed(cur, next_ptr);
+        note_switch(cur, next_ptr, SwitchKind::Block);
+        // SAFETY: IRQ 已屏蔽（调用方契约）；prev/next 有效、不别名。
+        hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
+        // <- 被唤醒方/超时扫描摘队入 runqueue、此后被 pick 切回，续行于此
+        // （此刻 CURRENT==cur，IRQ 仍屏蔽——语义见函数注释）。
+        (*cur).wakeup.get()
+    }
+}
+
+/// 条件方唤醒（4-0）：摘除所有「`wait_obj == obj` 且请求位与 `set_signals`
+/// 相交」的睡眠者——置 Signaled、入 runqueue（**不立即抢占**：等 tick/yield
+/// 再切，v1 RR 无优先级抢占）。返回唤醒数。**IRQ 屏蔽窗内调用**（signal /
+/// 数据到达路径——4-1 起 Event signal、Channel send/recv；4-0 消费者 = boot
+/// waker 验收任务）。
+///
+/// `obj == 0` 非法（0 = 纯 sleep，只能超时自醒）——直接返回 0。纯 sleep 者
+/// `wait_signals == 0`，与任何掩码不相交，本就不会被误摘。
+pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
+    if obj == 0 {
+        return 0;
+    }
+    let mut n = 0;
+    // SAFETY: IRQ 屏蔽窗（调用方契约）；SLEEPQ 单核顺序访问；遍历中摘除的
+    // 节点仍有效（调度器拥有其 Box）。
+    unsafe {
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
+            if (*t).wait_obj == obj && ((*t).wait_signals & set_signals) != 0 {
+                sleepq().unlink(c);
+                (*t).wakeup.set(WakeReason::Signaled);
+                RR.enqueue(&mut *t, rq()); // 置 Ready + 入环
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// SLEEPQ 超时扫描（`on_irq_tick` 开头调；tick 粗粒度——deadline 过后最迟一个
+/// slice 被摘，tickless 精确 arm 到最近 deadline 留后）。升序队列头未到期即
+/// 早停（空队近零开销）。
+///
+/// # Safety
+/// IRQ 屏蔽窗内（on_irq_tick 调用）。
+unsafe fn expire_timeouts() {
+    let now = hal::timer::cntvct();
+    loop {
+        let Some(h) = sleepq().head.get() else { break };
+        if (*h.as_ptr()).wait_deadline > now {
+            break; // 头未到期 → 后面更远，早停
+        }
+        // 摘头 → Timeout → 入 runqueue（enqueue 置 Ready）。
+        let t = h.as_ptr();
+        sleepq().unlink(h);
+        (*t).wakeup.set(WakeReason::Timeout);
+        RR.enqueue(&mut *t, rq());
+    }
+}
+
 /// 用户任务致死计数只读访问（G1.5 watchdog 断言用）。
 pub fn user_kills() -> u64 {
     // SAFETY: 只读；单核顺序访问。
@@ -283,16 +505,20 @@ pub fn last_killed() -> &'static [u8] {
     unsafe { LAST_KILLED }
 }
 
-/// idle 主循环（tickless）：runqueue 空时屏蔽 CNTV + `wfi`（空闲核不收周期中断）；
-/// 有 runnable 任务时武装 slice + 让出。Step 4 跑空分支（mask+wfi = 干净 tickless
-/// halt，无 IRQ 源）；Step 5+ 被 IRQ 唤醒后回顶重检 runqueue。
+/// idle 主循环（tickless）：runqueue 空且**无睡眠者**时屏蔽 CNTV + `wfi`
+/// （空闲核不收周期中断）；有 runnable 任务时武装 slice + 让出。
+///
+/// **4-0：睡眠者在队时不能 mask 永睡**——超时扫描靠 on_irq_tick 驱动，SLEEPQ
+/// 非空而 runqueue 空（全阻塞）时改为 arm slice + 空转等 tick：tick 扫出超时者
+/// 入 runqueue → 下轮即正常分时（粗粒度扫描；tickless 精确 arm 到最近 deadline
+/// 留后）。
 ///
 /// **先 `disable_irq` 再判/`mask`**：保证 mask 与解蔽之间无窗口漏进早 IRQ（风险 R6）。
 pub fn idle_loop() -> ! {
     loop {
         hal::disable_irq();
-        // SAFETY: IRQ 已屏蔽；单核顺序访问 RUNQUEUE。
-        let empty = unsafe { rq().is_empty() };
+        // SAFETY: IRQ 已屏蔽；单核顺序访问 RUNQUEUE/SLEEPQ。
+        let empty = unsafe { rq().is_empty() && sleepq().len.get() == 0 };
         if empty {
             // tickless：空闲不 arm、屏蔽 CNTV，wfi 睡。
             // SAFETY: 写 CNTV_CTL；EL1。
@@ -301,7 +527,8 @@ pub fn idle_loop() -> ! {
             hal::wfi();
             // 被唤醒（Step 5+）→ 回 loop 顶重检 runqueue。
         } else {
-            // 有活：武装一个时间片，让给 runnable 任务（Step 6 起由 IRQ 驱动抢占）。
+            // 有活（runnable 或睡眠者）：武装一个时间片，让给 runnable 任务或
+            // 空 tick 扫超时（Step 6 起由 IRQ 驱动抢占）。
             // SAFETY: 写 CNTV 系统寄存器；EL1。
             unsafe { hal::timer::arm_slice() };
             hal::enable_irq();
@@ -328,6 +555,9 @@ pub fn idle_loop() -> ! {
 pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // SAFETY: IRQ 上下文、单核无并发（IRQ 入口硬件屏蔽，不嵌套）。
     IRQ_TICKS = IRQ_TICKS.wrapping_add(1);
+    // 4-0：先扫 SLEEPQ 超时（到期者置 Timeout 入 runqueue——本 tick 后续的
+    // pick 即可能选中它们；头未到期早停，空队近零开销）。
+    expire_timeouts();
     let cur = CURRENT;
     RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left（饱和到 0）
     if (*cur).slice_left == 0 {

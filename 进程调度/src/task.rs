@@ -44,8 +44,24 @@ pub enum TaskState {
     Ready,
     /// 正在 CPU 上跑（`current`）。
     Running,
+    /// 在睡眠队列上等待条件/超时（4-0；`sched::block_current` 置入，唤醒方/
+    /// 超时扫描置回 Ready 再入 runqueue）。
+    Blocked,
     /// 已从入口返回 / 主动退出；v1 暂不回收（idle 循环不 free，见 plan Step 3）。
     Exited,
+}
+
+/// 睡眠唤醒原因（4-0）。v1 单核屏蔽窗下无丢唤醒：唤醒方只在条件真满足时摘队，
+/// 故 Signaled 必条件真；Timeout 时条件也可能**已**真（signal 与到期同窗竞争、
+/// 先到先摘）——调用方唤醒后一律重验条件（惊群安全兜底）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeReason {
+    /// 尚未唤醒（入队初值；睡眠者被调度续行时必非此值）。
+    Pending,
+    /// 条件方唤醒（signal / 数据到达——4-1 起 Event/Channel 唤醒路径）。
+    Signaled,
+    /// 超时扫描摘除（deadline 到）。
+    Timeout,
 }
 
 /// 内核线程。拥有自己的内核栈；`ctx` 存协作者切换所需的 callee-saved（HAL）。
@@ -99,6 +115,23 @@ pub struct Task {
     // ---- 侵入式双向环形链表链接（runqueue 用；`Cell` 以支持 `&Runqueue` 下旋转）----
     pub(crate) rq_prev: Cell<Option<NonNull<Task>>>,
     pub(crate) rq_next: Cell<Option<NonNull<Task>>>,
+
+    // ---- 4-0 睡眠/等待字段（`sched::block_current`；SLEEPQ 侵入式链接）----
+    /// 睡眠队列链接（SLEEPQ 双向、按 `wait_deadline` 升序——最近到期在头，
+    /// 超时扫描可早停）。与 runqueue 链接**互斥使用**：Blocked 任务不在
+    /// runqueue 上、Ready/Running 任务不在 SLEEPQ 上。
+    pub(crate) sleep_prev: Cell<Option<NonNull<Task>>>,
+    pub(crate) sleep_next: Cell<Option<NonNull<Task>>>,
+    /// 等待对象标识（0 = 纯 sleep（thread_sleep）；非 0 = 对象地址（4-1 起
+    /// Event/Channel 的 ObjRef 地址）——唤醒方 `wake_matching` 按此匹配）。
+    pub wait_obj: usize,
+    /// 等待的信号位请求（唤醒方须 `wait_obj` 匹配**且**与本掩码相交才摘）。
+    pub wait_signals: u64,
+    /// 等待截止（CNTVCT 周期；`u64::MAX` = 无限等）。超时扫描摘除置 Timeout。
+    pub wait_deadline: u64,
+    /// 唤醒原因（`block_current` 的返回值来源；唤醒方/超时扫描写入，
+    /// 睡眠者续行时读取即消费）。
+    pub wakeup: Cell<WakeReason>,
 }
 
 impl Task {
@@ -214,6 +247,12 @@ impl Task {
             preempt_threshold: 0,
             rq_prev: Cell::new(None),
             rq_next: Cell::new(None),
+            sleep_prev: Cell::new(None),
+            sleep_next: Cell::new(None),
+            wait_obj: 0,
+            wait_signals: 0,
+            wait_deadline: 0,
+            wakeup: Cell::new(WakeReason::Pending),
         })
     }
 }

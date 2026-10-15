@@ -6,11 +6,13 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 27 号编号全部在册（下方 NR_* 常量组）；3-4b 实现 19 个——handle 三操作 +
+//! v1 27 号编号全部在册（下方 NR_* 常量组）；4-0 实现 23 个——handle 三操作 +
 //! clock_read（3-1）+ VMO/Vmar 九号（3-2）+ process_create/thread_create/
 //! process_start（3-3）+ channel_create/send/recv（3-4b，全部经 [`HandleTable`]
-//! 能力门控——**权限在 handle 不在对象**）。其余（wait/signal、process/thread
-//! 退出与睡眠、event）留后续步，未注册槽由 HAL 默认返 `-ENOTSUP`。
+//! 能力门控——**权限在 handle 不在对象**）+ event 三号（3-4c）+ thread_sleep
+//!（4-0，首个阻塞 syscall——睡眠原语 `berry_sched::block_current` 的 EL0 入口）。
+//! 其余（wait 阻塞化、process/thread 退出）留后续步，未注册槽由 HAL 默认返
+//! `-ENOTSUP`。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
@@ -309,6 +311,32 @@ extern "C" fn sys_clock_read(tf: &mut TrapFrame) -> i64 {
         Ok(()) => 0,
         Err(e) => e as i64,
     }
+}
+
+/// `thread_sleep(deadline)`（0x37，4-0 首个阻塞 syscall）：睡到绝对时刻
+/// `deadline` 纳秒（MONOTONIC——`clock_read` 同坐标系，无「无限等」哨兵，
+/// 客户端传 `clock_read()+δ`；`IPC设计.md` Phase 4 前置对齐 2）。
+///
+/// ns→CNTVCT 换算与 [`sys_clock_read`] 对称（先商后余防中间溢出——
+/// `deadline_ns × 62.5MHz` 直乘在 ~29 年处溢 u64，拆两项后安全）；时刻已过
+/// = 立即返回（poll 语义）。睡眠经 `berry_sched::block_current`（纯 sleep：
+/// obj=0 只能超时自醒）；SVC 语境天然屏蔽窗，续行后经 eret 自然解蔽——
+/// syscall 主体不可抢占（免锁根基）不被破坏。
+extern "C" fn sys_thread_sleep(tf: &mut TrapFrame) -> i64 {
+    let deadline_ns = tf.regs[1] as u64;
+    // SAFETY: 只读 CNTFRQ（timer::init 后恒有效）。
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    if freq == 0 {
+        return ERR_NOT_SUPPORTED as i64; // 频率不可读（真机异常，同 clock_read）
+    }
+    let target_vct = (deadline_ns / 1_000_000_000) * freq
+        + ((deadline_ns % 1_000_000_000) * freq) / 1_000_000_000;
+    // SAFETY: 只读 CNTVCT。
+    if target_vct > berry_hal_aarch64::timer::cntvct() {
+        // 未到点才睡：已过点立即返回（屏蔽窗契约由 SVC 入口满足）。
+        berry_sched::block_current(0, 0, target_vct);
+    }
+    0
 }
 
 // ---- VMO / Vmar（3-2；rights 矩阵见各 handler 注释）----
@@ -1173,9 +1201,9 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
 
 // ---- boot 期注册（rust_main 在 ktest 之前调用；HAL install 见其 # Panics）----
 
-/// 注册 3-4c 已实现的 22 号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 +
-/// channel 三号 + event/object 三号——0x04 wait_one/0x06 signal/0x54 create；
-/// 0x05 wait_many 与 0x33/0x35..0x37 退出/睡眠随后续步）。未列号走 HAL 默认
+/// 注册已实现号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 + channel 三号 +
+/// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号。
+/// 0x05 wait_many 与 0x33/0x35/0x36 退出随后续步）。未列号走 HAL 默认
 /// `-ENOTSUP`。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
@@ -1197,6 +1225,7 @@ pub fn install() {
     reg(NR_PROCESS_CREATE, sys_process_create);
     reg(NR_PROCESS_START, sys_process_start);
     reg(NR_THREAD_CREATE, sys_thread_create);
+    reg(NR_THREAD_SLEEP, sys_thread_sleep);
     reg(NR_CHANNEL_CREATE, sys_channel_create);
     reg(NR_CHANNEL_SEND, sys_channel_send);
     reg(NR_CHANNEL_RECV, sys_channel_recv);

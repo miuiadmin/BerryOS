@@ -67,6 +67,7 @@ fn kind_code(kind: SwitchKind) -> u8 {
         SwitchKind::Yield => 0,
         SwitchKind::Preempt => 1,
         SwitchKind::Exit => 2,
+        SwitchKind::Block => 3,
     }
 }
 
