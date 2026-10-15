@@ -10,6 +10,16 @@ use core::ptr::NonNull;
 /// 够用；守卫页 TODO（plan R7）。
 pub const STACK_SIZE: usize = 16 * 1024;
 
+/// 能效倾向 hint（EPP，`调度器设计.md` §6）：指引大小核放置与改频。字段先落地
+/// （2b-4），消费语义随放置路径（M1b）/PM 服务（M3）兑现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EppHint {
+    /// 效率优先（默认——省电是身份支柱）。
+    Efficiency,
+    /// 性能优先。
+    Perf,
+}
+
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -39,13 +49,30 @@ pub struct Task {
     /// 调试名（串口打印）。
     pub name: &'static [u8],
     pub state: TaskState,
-    /// 剩余时间片（timer tick 计数）；0 表示该被重调度。Step 6 起由 `tick` 递减。
-    pub slice_left: u32,
+    /// 剩余时间片（**周期数**，2b-4 起）：由 `tick` 按 CNTVCT 增量递减（DVFS 后
+    /// 实际时长不随频率漂移）；0 表示该被重调度。授予量 = `timer::slice_cycles()`。
+    pub slice_left: u64,
     /// 2b-2：任务地址空间 = TTBR0 页表 PA + ASID。`ttbr0 == 0` = 无 AS（内核空表，
     /// 低半必然 fault——身份表已退役）。switch 时经 HAL 激活（变化才写寄存器）。
     pub ttbr0: usize,
     /// 2b-2：`ttbr0` 对应的 ASID（0 = 无 AS）。
     pub asid: u16,
+
+    // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
+    // Phase 兑现——RR 不消费，为 EAS/PI/AI 调度预埋，免后改 TCB 布局返工）----
+    /// 基础优先级（越大越高；`class_rt`/`class_deadline` 用，RR 不用）。
+    pub prio_base: i32,
+    /// 有效优先级 = max(base, 继承)（§3.6 PI 双优先级：判定一律看 effective）。
+    /// v1 无 IPC/继承，恒等于 `prio_base`；P4 channel 落地后开始分叉。
+    pub prio_effective: i32,
+    /// 预期运行时长 hint（纳秒；0 = 未指定）——AI 调度慢/快循环切分词汇
+    /// （`AI调度设计.md`）。
+    pub duration_hint_ns: u64,
+    /// 能效倾向（EPP，§6）。
+    pub epp: EppHint,
+    /// 抢占阈值（ThreadX 语义：优先级不高于阈值者不抢占本任务；0 = 不设）——
+    /// v3 AI 护栏词汇（`AI调度设计.md` 护栏节）。
+    pub preempt_threshold: i32,
 
     // ---- 侵入式双向环形链表链接（runqueue 用；`Cell` 以支持 `&Runqueue` 下旋转）----
     pub(crate) rq_prev: Cell<Option<NonNull<Task>>>,
@@ -86,6 +113,11 @@ impl Task {
             slice_left: 0,
             ttbr0,
             asid,
+            prio_base: 0,
+            prio_effective: 0,
+            duration_hint_ns: 0,
+            epp: EppHint::Efficiency,
+            preempt_threshold: 0,
             rq_prev: Cell::new(None),
             rq_next: Cell::new(None),
         })

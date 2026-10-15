@@ -88,6 +88,23 @@ pub fn handle() {
     unsafe { arm_slice() }
 }
 
+/// 读虚拟计数器 `CNTVCT_EL0`（周期数）。调度器时间片按**周期数记账**（2b-4 起，
+/// 路线图 Phase 2b：LiteOS-M `OsSchedTimeConvertFreq` 式——DVFS 改频后按新频率
+/// 重新换算，时间片实际时长不随频率漂移）。
+pub fn cntvct() -> u64 {
+    let v: u64;
+    // SAFETY: 只读计数器。
+    unsafe { core::arch::asm!("mrs {0}, cntvct_el0", out(reg) v, options(nostack, preserves_flags)) };
+    v
+}
+
+/// 一个时间片的周期数（`FREQ / SLICE_HZ`；[`init`](fn.init.html) 后有效）。
+/// 时间片授予量（grant）的唯一来源——class 层不再持有 tick 数常量。
+pub fn slice_cycles() -> u64 {
+    // SAFETY: 单核顺序读；init 先于一切调度路径。
+    unsafe { SLICE }
+}
+
 fn read_cntfrq() -> u64 {
     let v: u64;
     unsafe { core::arch::asm!("mrs {0}, cntfrq_el0", out(reg) v, options(nostack, preserves_flags)) };

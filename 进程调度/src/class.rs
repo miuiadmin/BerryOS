@@ -2,6 +2,7 @@
 
 use crate::runqueue::{Runqueue, Topo};
 use crate::task::{Task, TaskState};
+use bos_hal_aarch64 as hal;
 use core::ptr::NonNull;
 
 /// 调度策略接口（**冻结**——签名一字不改，见 `调度器设计.md` §3.2 / plan）。
@@ -23,10 +24,16 @@ pub trait SchedClass {
     fn priority(&self) -> i32;
 }
 
-/// round-robin 默认时间片（timer tick 数）。1 = 每 tick 切一次（最公平、便于压测）。
-pub const RR_QUANTUM: u32 = 1;
+/// 上次 tick 的 CNTVCT 快照（周期数记账基准）。G0 单核静态例外——与 `sched.rs`
+/// 的计数器同款纪律：仅 IRQ 上下文顺序访问。
+static mut LAST_VCT: u64 = 0;
 
 /// 简单轮转调度类（G0/G1 默认）。侵入式环形 FIFO 游标 + 固定时间片。
+///
+/// 时间片授予量自 2b-4 起不再用本 crate 常量（原 `RR_QUANTUM` tick 数退役）：
+/// grant = `hal::timer::slice_cycles()`（= FREQ/SLICE_HZ，随探测频率换算——
+/// DVFS 改频后重新换算即可，时间片实际时长不随频率漂移；LiteOS-M
+/// `OsSchedTimeConvertFreq` 式）。
 ///
 /// pick 旋转游标、**不摘除**任务（runnable 任务常驻环；当前任务也在环里）——故
 /// 协作 `yield_now` / 抢占 `tick` 只需调一次 `pick_next`，无需每次 enqueue/dequeue
@@ -55,8 +62,14 @@ impl SchedClass for RoundRobin {
     }
 
     fn tick(&self, t: &mut Task, _rq: &mut Runqueue) {
-        // 时间片递减（饱和到 0）；scheduler 读 `slice_left == 0` 决定重调度。
-        t.slice_left = t.slice_left.saturating_sub(1);
+        // 周期数记账（2b-4）：按 CNTVCT 增量递减时间片（饱和到 0）；scheduler 读
+        // `slice_left == 0` 决定重调度。基准 0 起步 → 首次 tick 增量巨大 → 必切
+        // （与旧「每 tick 减 1、quantum=1」行为等价：仍一次 slice 一换）。
+        let now = hal::timer::cntvct();
+        // SAFETY: IRQ 上下文、单核无并发（IRQ 入口硬件屏蔽，不嵌套）。
+        let last = unsafe { LAST_VCT };
+        unsafe { LAST_VCT = now };
+        t.slice_left = t.slice_left.saturating_sub(now.wrapping_sub(last));
     }
 
     fn priority(&self) -> i32 {

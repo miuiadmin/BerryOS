@@ -22,7 +22,7 @@ pub mod runqueue;
 pub mod sched;
 pub mod task;
 
-pub use class::{RoundRobin, SchedClass, RR_QUANTUM};
+pub use class::{RoundRobin, SchedClass};
 pub use runqueue::{Runqueue, Topo};
 pub use sched::{exit_current, idle_loop, init, on_irq_tick, spawn, spawn_as, yield_now};
-pub use task::{Task, TaskState, STACK_SIZE};
+pub use task::{EppHint, Task, TaskState, STACK_SIZE};

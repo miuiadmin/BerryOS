@@ -8,7 +8,7 @@
 //! 承载不变式（plan Bug 2）：`switch` 永不在 `PSTATE.I=0`（中断解蔽）时到达——
 //! `yield_now`/`exit_current` 均先 `disable_irq` 再切。
 
-use crate::class::{RoundRobin, SchedClass, RR_QUANTUM};
+use crate::class::{RoundRobin, SchedClass};
 use crate::runqueue::{Runqueue, Topo};
 use crate::task::{Task, TaskState};
 use bos_hal_aarch64 as hal;
@@ -41,6 +41,11 @@ static mut IDLE_TASK: Task = Task {
     slice_left: 0,
     ttbr0: 0,
     asid: 0,
+    prio_base: 0,
+    prio_effective: 0,
+    duration_hint_ns: 0,
+    epp: crate::task::EppHint::Efficiency,
+    preempt_threshold: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
 };
@@ -104,7 +109,7 @@ pub fn yield_now() {
             if next_ptr != prev {
                 (*prev).state = TaskState::Ready;
                 (*next_ptr).state = TaskState::Running;
-                (*next_ptr).slice_left = RR_QUANTUM;
+                (*next_ptr).slice_left = hal::timer::slice_cycles();
                 CURRENT = next_ptr;
                 activate_if_changed(prev, next_ptr);
                 hal::task::context_switch(&raw mut (*prev).ctx, &raw const (*next_ptr).ctx);
@@ -128,7 +133,7 @@ pub fn exit_current() -> ! {
             None => addr_of_mut!(IDLE_TASK),
         };
         (*next_ptr).state = TaskState::Running;
-        (*next_ptr).slice_left = RR_QUANTUM;
+        (*next_ptr).slice_left = hal::timer::slice_cycles();
         CURRENT = next_ptr;
         activate_if_changed(cur, next_ptr);
         // prev=cur（已出 runqueue、将废弃）；切走后永不回到 cur。
@@ -191,7 +196,7 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             if next_ptr != cur {
                 (*cur).state = TaskState::Ready;
                 (*next_ptr).state = TaskState::Running;
-                (*next_ptr).slice_left = RR_QUANTUM;
+                (*next_ptr).slice_left = hal::timer::slice_cycles();
                 CURRENT = next_ptr;
                 SWITCHES = SWITCHES.wrapping_add(1);
                 activate_if_changed(cur, next_ptr);
