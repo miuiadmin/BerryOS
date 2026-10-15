@@ -36,25 +36,25 @@ pub const GICC_BASE: usize = 0x0801_0000;
 
 /// 内核高半基址 = 39-bit VA 高半的底（T1SZ=25 → TTBR1 区 = `[此值, 2^64)`）。
 /// `KERNEL_VA_BASE + pa` 是内核 direct map 的**唯一规则**（RAM 与 MMIO 统一，见
-/// `内存管理设计.md` §5）；bits[38:0]=0 使 KVA 表索引 == PA 表索引。身份交换点在
-/// `bos_mm::va::phys_to_virt`（2b-1 翻转时与此值对齐；x86_64 最小集移植时按目标另定）。
+/// `内存管理设计.md` §5）；bits[38:0]=0 使 KVA 表索引 == PA 表索引。2b-1 起
+/// 内核主体已链高半；`bos_mm::va` 的交换点由 `rust_main` 注入此值（x86_64 最小
+/// 集移植时按目标另定，注入 0 = 恒等）。
 pub const KERNEL_VA_BASE: usize = 0xFFFF_FF80_0000_0000;
 
-/// 启动早期初始化：开 MMU（Step 4）→ 装异常向量表（Step 6）→ 初始化 GIC（Step 7）。
-/// 后续串入 timer 武装（Step 8）。
+/// 启动后期初始化：装异常向量表 + 初始化 GIC。
+/// （MMU/页表已在 boot 期由 `.text.boot` 的 `build_boot_pt`/`enable_mmu` 就绪，
+/// 2b-1 起 `rust_main` 进来时内核已在高半执行。）
 ///
-/// 必须在 `rust_main`、单核、EL1、MMU 关时调用一次。
+/// 必须在 `rust_main`、单核、EL1、MMU 开时调用一次。
 pub fn init() {
-    // SAFETY: 启动单线程早期、EL1、MMU 关；boot.asm 已清 BSS、降 EL。
-    unsafe { mmu::init() };
-    // SAFETY: EL1、MMU 已开（向量表在身份映射的内核镜像内）；任何 DAIF 解蔽之前。
+    // SAFETY: EL1、MMU 已开（向量表在直映的内核镜像内）；任何 DAIF 解蔽之前。
     unsafe { trap::init() };
     // SAFETY: MMIO（Device 映射区）；EL1、单核、DAIF 仍屏蔽。
     unsafe { gic::init() };
 }
 
-/// 2b-0 自校验：TTBR1 高半别名探针（RAM 魔数经 `KERNEL_VA_BASE` 别名读回 +
-/// GIC PIDR2 双别名一致）。证高半表在翻译——2b-1 重链高半 VMA 的地基。
+/// 高半别名自校验：RAM 魔数 + GIC PIDR2 双别名（低半身份 × 高半直映）。
+/// 证两套翻译一致生效——2b-2 逐进程页表 / 低半退役的地基。
 pub fn kva_ok() -> bool {
     mmu::kva_alias_probe()
 }

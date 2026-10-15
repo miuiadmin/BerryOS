@@ -29,6 +29,11 @@ QEMU=${QEMU:-qemu-system-aarch64}
 command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke: FAIL: 找不到 $QEMU" >&2; exit 1; }
 [ -f "$KERNEL" ] || { echo "smoke: FAIL: 内核未构建（先 just build）：$KERNEL" >&2; exit 1; }
 
+# 2b-1 高半翻转程序头断言（内存管理设计 §5.1：VMA≠LMA 防漂移哨兵——
+# boot 段 vaddr==paddr、主体 vaddr-paddr==KERNEL_VA_BASE，任一漂移即 FAIL）。
+python3 "$(dirname "$0")/size.py" --assert-flip "$KERNEL" \
+  || { echo "smoke: FAIL: 高半程序头断言失败" >&2; exit 1; }
+
 DEADLINE_BOOT=120    # 秒：boot 全部标记到齐
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ktest done")

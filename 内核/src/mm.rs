@@ -23,7 +23,10 @@ static mut FRAME_ORDER: [u8; MAX_PAGES] = [0; MAX_PAGES];
 /// 全局帧分配器（`init()` 后可用）。
 static mut FRAMES: Option<FrameAllocator<'static>> = None;
 
-/// 用链接脚本导出的 `__kernel_end` 初始化帧分配器，接管 `[__kernel_end, RAM_TOP)`。
+/// 用链接脚本导出的 `__kernel_end`（高半 VMA）减 `KERNEL_VA_BASE` 得 PA 侧下界，
+/// 初始化帧分配器接管 `[kernel_end_pa, RAM_TOP)`。
+/// （不直接导入 `__kernel_end_pa`：高半代码 ADRP 引用低半绝对符号会越界，
+/// 高半符号 + 运行时减法才是同半寻址。）
 ///
 /// # Safety
 /// 仅在启动单线程、`rust_main` 入口调用一次；之后只经 [`frames`] 访问。
@@ -31,7 +34,8 @@ pub unsafe fn init() {
     extern "C" {
         static __kernel_end: u8;
     }
-    let kernel_end = core::ptr::addr_of!(__kernel_end) as usize;
+    let kernel_end =
+        core::ptr::addr_of!(__kernel_end) as usize - bos_hal_aarch64::KERNEL_VA_BASE;
     // SAFETY: 单核启动期，无并发；后备数组生命周期 'static。
     let fa = FrameAllocator::new(kernel_end, RAM_TOP, &mut FRAME_FREE, &mut FRAME_ORDER);
     // SAFETY: 同上。

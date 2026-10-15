@@ -11,12 +11,22 @@
 
 只报数、不设阈值——基线先有数据，回归门禁等基线稳定后再定
 （Tock 192KB 教训：Rust 体积劣化是无声发生的，得先能看见）。
+
+`--assert-flip <elf>`：2b-1 高半翻转程序头断言（smoke 固化，内存管理设计 §5.1
+「VMA≠LMA 调试地狱」的防漂移哨兵）：
+  - e_entry 在低半（boot 段内）；
+  - 每个 PT_LOAD 满足 vaddr==paddr（低半 boot：.text.boot/.bss.boot/.boot_stack）
+    或 vaddr-paddr==0xFFFFFF8000000000（高半主体 = KERNEL_VA_BASE 镜像）；
+  - 全部 paddr 落在 QEMU virt RAM [0x40000000, 0x80000000)。
 """
 import os
 import struct
 import sys
 
 EI_NIDENT = 16
+
+KERNEL_VA_BASE = 0xFFFFFF8000000000
+RAM_BASE, RAM_TOP = 0x40000000, 0x80000000
 
 
 def u(buf, off, size):
@@ -79,7 +89,51 @@ def main(path):
             print(f"berryos-size:   {name:12s} file={file_sz:8d}B mem={mem_sz:8d}B")
 
 
+def assert_flip(path):
+    """2b-1 高半翻转程序头断言（见模块文档）。失败非零退出（smoke FAIL）。"""
+    with open(path, "rb") as f:
+        elf = f.read()
+    if elf[:4] != b"\x7fELF":
+        sys.exit(f"size.py: 不是 ELF 文件：{path}")
+    e_entry = u(elf, 24, 8)
+    e_phoff, e_phentsize, e_phnum = u(elf, 32, 8), u(elf, 54, 2), u(elf, 56, 2)
+
+    problems = []
+    if e_entry >= 1 << 39:
+        problems.append(f"e_entry=0x{e_entry:016x} 不在低半（boot 段丢了？）")
+
+    boot_any = body_any = False
+    for i in range(e_phnum):
+        ph = elf[e_phoff + i * e_phentsize: e_phoff + (i + 1) * e_phentsize]
+        if u(ph, 0, 4) != 1:  # PT_LOAD
+            continue
+        p_vaddr, p_paddr = u(ph, 16, 8), u(ph, 24, 8)
+        diff = (p_vaddr - p_paddr) & 0xFFFFFFFFFFFFFFFF
+        if diff == 0:
+            boot_any = True
+        elif diff == KERNEL_VA_BASE:
+            body_any = True
+        else:
+            problems.append(f"PT_LOAD vaddr=0x{p_vaddr:016x} paddr=0x{p_paddr:016x} "
+                            f"v-p=0x{diff:016x} 既非 0 也非 KERNEL_VA_BASE（镜像漂移）")
+        if not (RAM_BASE <= p_paddr < RAM_TOP):
+            problems.append(f"PT_LOAD paddr=0x{p_paddr:016x} 不在 QEMU RAM 内")
+    if not boot_any:
+        problems.append("没有 vaddr==paddr 的 PT_LOAD（.text.boot 不在低半？）")
+    if not body_any:
+        problems.append("没有 vaddr-paddr==KERNEL_VA_BASE 的 PT_LOAD（主体不在高半？）")
+
+    if problems:
+        for p in problems:
+            print(f"berryos-size: assert-flip FAIL: {p}")
+        sys.exit(1)
+    print(f"berryos-size: assert-flip OK（boot 低半 + 主体高半镜像，entry=0x{e_entry:x}）")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit(f"用法：{sys.argv[0]} <kernel-elf>")
-    main(sys.argv[1])
+    if len(sys.argv) == 3 and sys.argv[1] == "--assert-flip":
+        assert_flip(sys.argv[2])
+    elif len(sys.argv) == 2:
+        main(sys.argv[1])
+    else:
+        sys.exit(f"用法：{sys.argv[0]} <kernel-elf> | {sys.argv[0]} --assert-flip <kernel-elf>")

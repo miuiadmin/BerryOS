@@ -34,7 +34,7 @@ const AP_EL1_RW: u64 = 0 << 6;
 pub const MAIR_EL1: u64 = 0x00 | (0xFF << 8) | (0x44 << 16);
 
 /// 构造 L1/L2 **表描述符**（指向下一级表）。bits[1:0]=0b11。
-#[inline]
+#[inline(always)]
 pub const fn table_descriptor(next_table_addr: usize) -> u64 {
     (next_table_addr as u64) | VALID | TABLE_OR_PAGE
 }
@@ -42,14 +42,14 @@ pub const fn table_descriptor(next_table_addr: usize) -> u64 {
 /// 构造 2MiB **块描述符**（L2 叶子）。bits[1:0]=0b01。
 ///
 /// `pa` 须 2MiB 对齐（低位归零，与 bits[11:0] 的属性字段不重叠）。
-#[inline]
+#[inline(always)]
 pub const fn block_descriptor(pa: usize, attr: u64, shareability: u64) -> u64 {
     (pa as u64) | VALID | attr | AP_EL1_RW | shareability | AF
 }
 
 /// 构造 4KiB **页描述符**（L3 叶子）。bits[1:0]=0b11。boot 表暂不用，Phase 2 动态映射用。
 #[allow(dead_code)]
-#[inline]
+#[inline(always)]
 pub const fn page_descriptor(pa: usize, attr: u64, shareability: u64) -> u64 {
     (pa as u64) | VALID | TABLE_OR_PAGE | attr | AP_EL1_RW | shareability | AF
 }

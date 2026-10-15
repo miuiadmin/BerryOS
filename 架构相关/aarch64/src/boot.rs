@@ -1,7 +1,9 @@
-//! 内核启动入口 `_start`：检测异常级别，从 EL2/EL3 降到 EL1，设栈、清 `.bss`，调用 `rust_main`。
+//! 内核启动入口 `_start`：检测异常级别，从 EL2/EL3 降到 EL1，设早期低半栈、
+//! 清 `.bss.boot` 与主体 `.bss`（PA 侧），建表开 MMU（`build_boot_pt`/`enable_mmu`），
+//! 换高半主栈后 `br rust_main`——2b-1 起内核主体在高半执行（`内存管理设计.md` §5.1）。
 //!
 //! 经链接脚本 `ENTRY(_start)` + `KEEP(.text.boot)` 根化；
-//! HAL↔kernel 入口 `rust_main` 用 C-ABI 约定（ADR #18），符号名与 `bl rust_main` 精确匹配。
+//! HAL↔kernel 入口 `rust_main` 用 C-ABI 约定（ADR #18），符号名与 asm 精确匹配。
 //! 串口标记：走 EL2 路径打 `'2'`、到达 EL1 打 `'1'`（EL3 罕见，桩打 `'3'`）。
 use core::arch::global_asm;
 
@@ -55,17 +57,30 @@ global_asm!(
     "    movz x0, #0x30, lsl #16",     // CPACR_EL1.FPEN=0b11：显式开 EL1 FP/SIMD（ADR #34）
     "    msr cpacr_el1, x0",           // 消 reset 依赖：QEMU 8.2 reset=FPEN 0（架构值），
     "    isb",                         // 编译器 SIMD memset 一执行即 EC=0x07 陷阱（CI 实测）；
-    "    ldr x0, =__stack_top",        // QEMU 11 reset 宽容。用户态 FP 陷+保存归 Phase 2b。
-    "    mov sp, x0",
-    "    ldr x0, =__bss_start",        // 清 .bss
-    "    ldr x1, =__bss_end",
+    "    ldr x0, =__boot_stack_top",   // QEMU 11 reset 宽容。用户态 FP 陷+保存归 Phase 2b。
+    "    mov sp, x0",                  // 早期低半栈（VMA==LMA）：EL 检测到此全程用它
+    "    ldr x0, =__boot_bss_start",   // 清 .bss.boot（4 张页表，低半 VMA==PA）
+    "    ldr x1, =__boot_bss_end",
+    ".Lbss_boot:",
+    "    cmp x0, x1",
+    "    b.ge .Lbss_boot_done",
+    "    str xzr, [x0], #8",
+    "    b .Lbss_boot",
+    ".Lbss_boot_done:",
+    "    ldr x0, =__bss_start_pa",     // 清主体 .bss：其 VMA 在高半，MMU 未开 → 走 PA 侧
+    "    ldr x1, =__bss_end_pa",       // （镜像布局：PA = VMA - KERNEL_VA_BASE = LMA）
     ".Lbss:",
     "    cmp x0, x1",
     "    b.ge .Lbss_done",
     "    str xzr, [x0], #8",
     "    b .Lbss",
     ".Lbss_done:",
-    "    bl rust_main",
+    "    bl build_boot_pt",            // 建表（mmu.rs，#[link_section .text.boot]；
+    "    bl enable_mmu",               //  表在 .bss.boot 低半 → 函数内低半寻址即可）
+    "    ldr x0, =__stack_top",        // 换高半主栈 + 跳高半入口（此后不再回低半执行；
+    "    mov sp, x0",                  //  本段 VA==PA 走身份 TTBR0，开 MMU 无缝衔接）
+    "    ldr x0, =rust_main",
+    "    br x0",
     ".Lhang:",                         // 绝不返回
     "    wfe",
     "    b .Lhang",
