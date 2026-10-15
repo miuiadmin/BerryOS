@@ -35,7 +35,8 @@ pub use sched::{
     block_current, current_tag, exit_current, fast_wake, find_single_waiter, for_each_sleeper,
     idle_loop, init, intent_settle_current, intent_snapshot_current, last_killed, on_irq_tick,
     refresh_effective, set_sleepq_hook, set_switch_hook, set_wake_hook, sleepq_insert,
-    sleepq_unlink, spawn, spawn_as, spawn_intent, spawn_user, spawn_with, switches,
+    sleepq_unlink, spawn, spawn_as, spawn_intent, spawn_user, spawn_with, spawn_with_tag,
+    switches,
     try_preempt, try_spawn_user, user_fault_exit, user_kills, wake_matching, yield_now,
     SleepqHook, SwitchHook, SwitchKind, WakeHook, WAIT_ANY,
 };

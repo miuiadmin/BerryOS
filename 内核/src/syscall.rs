@@ -127,27 +127,35 @@ pub fn bootstrap_table() -> &'static mut HandleTable {
     }
 }
 
-/// 调用方 handle 表派发（3-4a）：
-/// - **EL1 调用方**（ktest/内核自调）→ 内核侧表 [`BOOTSTRAP_HT`]；
-/// - **EL0 调用方** → 当前任务 `proc_tag` 指向的**所属进程表**（`spawn_user`
-///   时注入；0 = 无表任务（内核线程/早期 boot）→ 一切 handle 无效）。
+/// 调用方 handle 表派发（3-4a；4-5 前置补丁：tag 优先，与 pi::holder_table 同源）：
+/// - **tag ≠ 0**（EL0 所属进程表 / EL1 `spawn_with_tag` 常驻内核服务私有表）→
+///   `proc_tag` 指向的 leak 常驻表（`spawn_user`/`spawn_with_tag` 时注入）；
+/// - **EL1 + tag == 0**（ktest/内核自调/共享表短命任务）→ 内核侧表 [`BOOTSTRAP_HT`]；
+/// - **EL0 + tag == 0** → 一切 handle 无效。
 ///
-/// SAFETY（裸指针的三个不变量）：① tag 来源只有两处——boot 期 `Box::leak` 的
-/// 常驻表（main.rs 手搭用户进程）与 `Process::ht`（Box'd ObjRef 内、地址稳定，
-/// 且运行中的任务钉住 Process → 表随任务同寿）；② 单核 syscall 全程 IRQ 屏蔽
-/// → 同一表无并发访问；③ 每个 handler 同一时刻至多持一张表的 `&mut`（跨表
-/// 操作如 bootstrap 迁移是**两张不同表**的借用，无别名）。
+/// SAFETY（裸指针的三个不变量）：① tag 来源只有三处——boot 期 `Box::leak` 的
+/// 常驻表（main.rs 手搭用户进程 + `spawn_with_tag` 的常驻内核服务）与
+/// `Process::ht`（Box'd ObjRef 内、地址稳定，且运行中的任务钉住 Process →
+/// 表随任务同寿）；② 单核 syscall 全程 IRQ 屏蔽 → 同一表无并发访问；
+/// ③ 每个 handler 同一时刻至多持一张表的 `&mut`（跨表操作如 bootstrap 迁移
+/// 是**两张不同表**的借用，无别名）。
 fn caller_table(tf: &TrapFrame) -> Result<&'static mut HandleTable, i64> {
+    // tag 优先（与 pi::holder_table 同派发）：EL1 常驻内核服务（spawn_with_tag
+    // 挂私有表）→ 其表；tag==0（ktest/boot 期/共享表短命任务）→ 内核侧表。
+    // ktest 在 sched::init 前跑 → current_tag()==0 → 落共享表，既有 EL1 面不变。
+    let tag = berry_sched::current_tag();
     if caller_is_el1(tf) {
-        Ok(bootstrap_table())
-    } else {
-        let tag = berry_sched::current_tag();
-        if tag == 0 {
-            Err(ERR_BAD_HANDLE as i64) // 无表任务：没有 handle 可言
-        } else {
+        if tag != 0 {
             // SAFETY: 见函数注释三不变量。
             Ok(unsafe { &mut *(tag as *mut HandleTable) })
+        } else {
+            Ok(bootstrap_table())
         }
+    } else if tag == 0 {
+        Err(ERR_BAD_HANDLE as i64) // 无表任务：没有 handle 可言
+    } else {
+        // SAFETY: 见函数注释三不变量。
+        Ok(unsafe { &mut *(tag as *mut HandleTable) })
     }
 }
 

@@ -395,6 +395,36 @@ pub extern "C" fn rust_main() -> ! {
     berry_sched::spawn_with(task_fast_ponger, h_fb as usize, b"fa_pong", 32);
     berry_sched::spawn_with(task_fast_pinger, h_fa as usize, b"fa_ping", 16);
 
+    // ---- 4-5 前置：常驻内核服务私有表使能自证（spawn_with_tag + caller_table
+    // EL1 tag≠0 分支，修 4-3b 共享表粒度的错捐级联——常驻服务须挂私有表）----
+    // svc_tag 持 leak 私有表里的通道端 + 拿共享表真 handle（fa B 端，fa 任务
+    // 不 close 恒有效）作负向判别样本：poll-only 不入 SLEEPQ，PI/intent 零纠缠。
+    {
+        let st: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_own = st
+            .insert(KernelObj::Channel(
+                ChannelEnd::try_unpaired(false).expect("main: 建 tag A 端")),
+                RIGHT_SEND | RIGHT_RECV)
+            .expect("main: tag A 端进私有表");
+        let h_peer = syscall::bootstrap_table()
+            .insert(KernelObj::Channel(
+                ChannelEnd::try_unpaired(false).expect("main: 建 tag B 端")),
+                RIGHT_SEND | RIGHT_RECV)
+            .expect("main: tag B 端进内核侧表");
+        let (pa, pb) = (
+            st.get_raw(h_own, ObjType::Channel, 0).expect("main: 取 tag A ObjRef").0,
+            syscall::bootstrap_table().get_raw(h_peer, ObjType::Channel, 0)
+                .expect("main: 取 tag B ObjRef").0,
+        );
+        // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+        unsafe { ChannelEnd::pair(pa, pb) };
+        // arg 打包双 handle：低 32 = 自己表的端，高 32 = 共享表的 fa B 端。
+        let packed = h_own as usize | ((h_fb as usize) << 32);
+        berry_sched::spawn_with_tag(task_svc_tag, packed, b"svc_tag", 0,
+                                    st as *mut HandleTable as usize);
+    }
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -1072,5 +1102,32 @@ extern "C" fn task_fast_pinger(arg: usize) -> ! {
     berry_hal_aarch64::uart_puts(b" direct=");
     berry_hal_aarch64::uart_put_dec(direct);
     berry_hal_aarch64::uart_puts(b"\n");
+    berry_sched::exit_current()
+}
+
+/// svc_tag（4-5 前置自证，prio 0）：私有表 tag 任务——两断言判别
+/// `caller_table` 的 EL1 tag 路由：① 自己表 handle poll 空队列 → -EAGAIN
+/// （表内有效；-EBADF 即误路由共享表）；② 共享表真 handle（fa B 端）→
+/// -EBADF（自己表查无；-EAGAIN 即还在走共享表）。poll-only 不睡，验完即
+/// exit（断言炸 = KERNEL PANIC → 后续标记缺失 = smoke FAIL，fail loud）。
+extern "C" fn task_svc_tag(arg: usize) -> ! {
+    use crate::handle::SIGNAL_READABLE;
+    use crate::syscall::NR_OBJECT_WAIT_ONE;
+    let h_own = arg as u32;
+    let h_shared = (arg >> 32) as u32;
+    let mut observed = 0u64;
+    // SAFETY: 本任务内核栈局部变量，活过调用。
+    let pobs = core::ptr::addr_of_mut!(observed) as u64;
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_ONE as u64, h_own as u64, SIGNAL_READABLE, 0, pobs, 0, 0),
+        -11, // -EAGAIN：自己表 handle 有效、队列空（误路由共享表则 -EBADF=-9）
+        "svc_tag: 自己表 handle poll 空队列须 -EAGAIN"
+    );
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_ONE as u64, h_shared as u64, SIGNAL_READABLE, 0, pobs, 0, 0),
+        -9, // -EBADF：共享表 handle 在自己表查无（返 -EAGAIN 即还在走共享表）
+        "svc_tag: 共享表 handle 须 -EBADF（tag 路由活证）"
+    );
+    berry_hal_aarch64::uart_puts(b"TAGTAB ok\n");
     berry_sched::exit_current()
 }

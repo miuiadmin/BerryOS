@@ -118,9 +118,11 @@ fn donor_edge(t: &Task) -> Option<(NonNull<ObjRef>, Rights)> {
     Some((peer, need))
 }
 
-/// 任务 `t` 的 handle 表（受捐判定的持有面）。内核任务（`proc_tag == 0`）→
-/// 内核侧表 BOOTSTRAP_HT（与 `caller_table` 的 EL1 分支同派发）；用户任务 →
-/// `proc_tag` 指向的所属进程 leak 常驻表（3-4a）。
+/// 任务 `t` 的 handle 表（受捐判定的持有面）。`proc_tag != 0`（EL0 所属进程表
+/// 或 `spawn_with_tag` 常驻内核服务的私有表）→ 指向的 leak 常驻表（3-4a）；
+/// 内核任务（`proc_tag == 0`，ktest/共享表短命任务）→ 内核侧表
+/// `BOOTSTRAP_HT`（与 `caller_table` 的 tag 优先派发同源）——共享表睡眠者被
+/// 视作持有表内一切 handle（v1 粒度，短命 bench 任务无害；常驻服务勿用）。
 fn holder_table(t: &Task) -> Option<&'static HandleTable> {
     if t.proc_tag != 0 {
         // SAFETY: proc_tag 由 spawn_user/process 语义层填入——非 0 即指向该

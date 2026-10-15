@@ -116,6 +116,26 @@ pub fn spawn_with(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [
     }
 }
 
+/// 同 [`spawn_with`]，但挂内核侧**私有 handle 表** tag（4-5 前置：常驻内核服务
+/// 不进共享内核侧表——PI 受捐判定按持有表反查，共享表上的睡眠者会被视作持有
+/// 表内一切 handle（4-3b v1 粒度），常驻任务 = 每轮捐赠周期错捐 + 级联）。
+/// `tag` 须为 boot 侧 `Box::leak` 常驻 `HandleTable` 指针（内核 crate 分配，
+/// 此处不透明 usize；语义层 `caller_table` EL1 分支与 `pi::holder_table` 均按
+/// 非 0 tag 走私有表——与 EL0 每进程表同粒度）。
+pub fn spawn_with_tag(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
+                      prio: i32, tag: usize) {
+    assert!(tag != 0, "spawn_with_tag：tag 不得为 0（共享表任务用 spawn/spawn_with）");
+    // SAFETY: 同 spawn_as（CURRENT 已设、allocator 就绪）。
+    let task: &'static mut Task =
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, 0, 0));
+    task.prio_base = prio;
+    task.prio_effective = prio;
+    task.proc_tag = tag;
+    unsafe {
+        RR.enqueue(task, rq());
+    }
+}
+
 /// 生成一个**用户**线程（2b-4 首个 EL0）：内核栈 + `new_user` 上下文（首切经
 /// trampoline `eret` 降 EL0）+ 入 runqueue。`entry_va`/`sp0_va` 是用户 VA（该 AS
 /// 已映射、AP 放行 EL0）。`proc_tag` = 所属进程标签（3-4a：syscall 层解释为该
