@@ -18,6 +18,7 @@
 extern crate alloc;
 
 pub mod class;
+pub mod policy;
 pub mod runqueue;
 pub mod sched;
 pub mod task;

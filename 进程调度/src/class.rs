@@ -58,7 +58,12 @@ impl SchedClass for RoundRobin {
         // 「一任务至多在一个 runqueue、至多被一个核 pick」（G0 单核平凡成立）保证
         // 返回的 &mut 不与别的活跃借用别名。
         let p = unsafe { rq.rotate()? };
-        Some(unsafe { &mut *p.as_ptr() })
+        let t = unsafe { &mut *p.as_ptr() };
+        // AI 策略注入留桩（3-4c，`AI调度设计.md` §2/§9）：出选后查表——未绑/空表
+        // 零写入，与接口缺席逐位等价（ktest POLICY 段断言）；真消费（权重/EPP 进
+        // class_fair）随 v3 策略源落地。
+        crate::policy::apply(t);
+        Some(t)
     }
 
     fn tick(&self, t: &mut Task, _rq: &mut Runqueue) {
