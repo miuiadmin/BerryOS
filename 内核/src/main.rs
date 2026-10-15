@@ -52,6 +52,13 @@ pub extern "C" fn rust_main() -> ! {
     bos_hal_aarch64::init();
     bos_hal_aarch64::uart_puts(b"BerryOS boot\n");
 
+    // 2b-0：TTBR1 高半表自校验（RAM 魔数 + GIC PIDR2 双别名，见 HAL `mmu`）。
+    // 不过 = 高半翻译未生效，2b-1 重链前必须在此暴露——panic 停机优于带病前进。
+    if !bos_hal_aarch64::kva_ok() {
+        panic!("KVA alias check failed: TTBR1 high-half not translating");
+    }
+    bos_hal_aarch64::uart_puts(b"KVA ok\n");
+
     // SAFETY: 启动单线程、`rust_main` 入口仅调用一次。
     unsafe { mm::init() };
 

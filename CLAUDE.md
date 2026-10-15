@@ -9,7 +9,7 @@
 - 内核核心：**Rust**（`#![no_std]`，最小特权，只做调度 / IPC / 地址空间 / 能力）
 - 用户态服务与工具：**Rust**
 - 首批主线架构：**ARM64 (AArch64)**（v1 主战场 = 手表/穿戴 rich 档单线走到底，ADR #39）；**x86_64 提前启动 QEMU 最小集移植**（串口+定时器+异常向量+上下文切换+SVC 入口，范围盒子 + kill criteria，ADR #41）；RISC-V 留位。MCU 档（KB 级内存）v1 排除（ADR #40，覆盖面 = MMU 设备 MB 级起）
-- 当前阶段：**Phase 2a（调度与任务）已完成，过关卡 G1**（单核 + 抢占点）。内核已可在 QEMU `virt` 上：开 MMU（身份映射）、buddy/slab 分配器、异常向量 + panic dump、GICv2 + CNTV timer IRQ、SVC syscall 派发（G0 全过）；**新增内核线程 + 上下文切换（纯叶子 asm）+ 协作/抢占调度器（机制在内核、策略可插拔 trait）+ tickless idle（NO_HZ day-one：空闲 mask CNTV + wfi）+ IRQ 驱动抢占（两忙循环任务在 timer slice 下分时，无 yield）**。下一步进 Phase 2b（高半翻转 → 每进程页表 + ASID → 匿名 VMO/Vmar → 首个 EL0 用户进程）。
+- 当前阶段：**Phase 2b（地址空间 + 首个 EL0）进行中——2b-0 已落地**（TTBR1 独立内核表 `KERNEL_L1` 与身份 L1 共享同一对 L2；boot 串口新增 `KVA ok` = RAM 魔数 + GIC PIDR2 双别名自校验；内核本体仍跑低半身份映射）。此前 Phase 2a（调度与任务）已完成、过关卡 G1（单核 + 抢占点）：内核线程 + 上下文切换（纯叶子 asm）+ 协作/抢占调度器（机制在内核、策略可插拔 trait）+ tickless idle（NO_HZ day-one）+ IRQ 驱动抢占（两忙循环任务 timer slice 分时，无 yield）；buddy/slab、异常向量 + panic dump、GICv2 + CNTV、SVC syscall（G0 全过）。下一步 2b-1 切 TTBR1 重链镜像 VMA 到高半 → 每进程页表 + ASID → 匿名 VMO/Vmar → 首个 EL0 用户进程（五步拆步见 `内存管理设计.md` §5.1）。
 - **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `文档/AI调度设计.md`）+ PC 高性能。
 
 ## 架构决策（已定，详见 `文档/架构决策.md`）
@@ -113,7 +113,7 @@ berryos/
 
 ## 构建与测试
 
-Phase 2a（G1）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 在 CNTV timer slice 下交替（纯 IRQ 驱动抢占，无 yield）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（身份映射）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
+Phase 2a（G1）已落地 + Phase 2b-0（高半准备）：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `KVA ok`（2b-0：TTBR1 高半别名自校验）→ `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 在 CNTV timer slice 下交替（纯 IRQ 驱动抢占，无 yield）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（低半身份 + 高半 TTBR1 内核表 `KERNEL_VA_BASE`）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
 
 **前置（macOS，一次性）**：
 

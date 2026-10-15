@@ -34,6 +34,12 @@ pub const GICD_BASE: usize = 0x0800_0000;
 /// GICv2 CPU interface 基址（QEMU `virt`）。
 pub const GICC_BASE: usize = 0x0801_0000;
 
+/// 内核高半基址 = 39-bit VA 高半的底（T1SZ=25 → TTBR1 区 = `[此值, 2^64)`）。
+/// `KERNEL_VA_BASE + pa` 是内核 direct map 的**唯一规则**（RAM 与 MMIO 统一，见
+/// `内存管理设计.md` §5）；bits[38:0]=0 使 KVA 表索引 == PA 表索引。身份交换点在
+/// `bos_mm::va::phys_to_virt`（2b-1 翻转时与此值对齐；x86_64 最小集移植时按目标另定）。
+pub const KERNEL_VA_BASE: usize = 0xFFFF_FF80_0000_0000;
+
 /// 启动早期初始化：开 MMU（Step 4）→ 装异常向量表（Step 6）→ 初始化 GIC（Step 7）。
 /// 后续串入 timer 武装（Step 8）。
 ///
@@ -45,6 +51,12 @@ pub fn init() {
     unsafe { trap::init() };
     // SAFETY: MMIO（Device 映射区）；EL1、单核、DAIF 仍屏蔽。
     unsafe { gic::init() };
+}
+
+/// 2b-0 自校验：TTBR1 高半别名探针（RAM 魔数经 `KERNEL_VA_BASE` 别名读回 +
+/// GIC PIDR2 双别名一致）。证高半表在翻译——2b-1 重链高半 VMA 的地基。
+pub fn kva_ok() -> bool {
+    mmu::kva_alias_probe()
 }
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----

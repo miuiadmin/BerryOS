@@ -31,7 +31,7 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke: FAIL: 找不到 $QEMU" >&2;
 
 DEADLINE_BOOT=120    # 秒：boot 全部标记到齐
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
-MARKERS=("BerryOS boot" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ktest done")
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ktest done")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
 QEMU_PID=""

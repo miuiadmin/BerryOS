@@ -1,11 +1,14 @@
 //! ARM64 stage-1 **boot 页表** + 开启 MMU（plan Step 4，命门）。
 //!
-//! 身份映射（plan 裁决 #3）：`TTBR0_EL1 == TTBR1_EL1 == &BOOT_L1`，`VA == PA`。
+//! 低半身份映射（plan 裁决 #3）：`TTBR0_EL1 == &BOOT_L1`，`VA == PA`。
+//! 高半内核表（**2b-0**，`内存管理设计.md` §5.1 拆步第一步）：`TTBR1_EL1 == &KERNEL_L1`，
+//! 按 `KERNEL_VA_BASE` 索引同一对 L2 表——内核已可在高半别名访问全 RAM + MMIO，
+//! 但本体仍跑低半；2b-1 重链镜像 VMA 到高半后身份表退役。
 //! 39-bit VA（T0SZ=T1SZ=25）、4KiB granule、3 级（L1→L2→L3）；boot 表用 L2 2MiB 块。
 //!
-//! 映射：
-//!  - RAM `[RAM_BASE, RAM_TOP)`（含内核镜像 + 空闲 RAM）：**Normal WB**，identity；
-//!  - UART `0x0900_0000`、GIC `0x0800_0000` 各所在 2MiB 块：**Device-nGnRnE**，identity。
+//! 映射（低半 PA 与高半 `KERNEL_VA_BASE+pa` 两个别名同此规则）：
+//!  - RAM `[RAM_BASE, RAM_TOP)`（含内核镜像 + 空闲 RAM）：**Normal WB**；
+//!  - UART `0x0900_0000`、GIC `0x0800_0000` 各所在 2MiB 块：**Device-nGnRnE**。
 //!
 //! **最高风险点（任一漏=静默挂死无输出）**：开 MMU **前**设备 MMIO 必须先映进来——
 //! 否则开启后下一次 `uart_putc` 写 VA 0x0900_0000 会同步外部中止、静默挂死。
@@ -13,7 +16,7 @@
 //! 只需 `dsb ish` 保证表写入对页表遍历可见，再置 `sctlr_el1 = M|C|I`、`isb`。
 
 use crate::paging::*;
-use crate::{GICD_BASE, RAM_BASE, RAM_TOP, UART0_BASE};
+use crate::{GICD_BASE, KERNEL_VA_BASE, RAM_BASE, RAM_TOP, UART0_BASE};
 use core::arch::asm;
 
 const TWO_MB: usize = 1 << 21;
@@ -32,6 +35,12 @@ static mut BOOT_L1: L1Table = L1Table([0; PTES_PER_TABLE]);
 static mut BOOT_L2_LOW: L2Table = L2Table([0; PTES_PER_TABLE]);
 /// L1[1]：RAM 区（`[0x4000_0000, 0x8000_0000)`，实际映 `[RAM_BASE, RAM_TOP)`）。
 static mut BOOT_L2_RAM: L2Table = L2Table([0; PTES_PER_TABLE]);
+
+/// TTBR1 内核表（**2b-0**）。条目与 BOOT_L1 同构——指向**同一对 L2 表**：
+/// 描述符输出的是 PA，与从哪张 L1 走查无关；`KERNEL_VA_BASE` bits[38:0]=0，
+/// 故 KVA[38:30] == PA[38:30]，高半 L1 索引镜像身份 L1 索引。2b-2 低半退役后
+/// 这张表成为内核唯一页表根。
+static mut KERNEL_L1: L1Table = L1Table([0; PTES_PER_TABLE]);
 
 /// TCR_EL1：4KiB granule、39-bit VA（T0SZ=T1SZ=25）、inner shareable、WB 页表走查、IPS=0。
 ///
@@ -90,6 +99,11 @@ unsafe fn build_boot_pt() {
         pa += TWO_MB;
     }
 
+    // 2b-0：TTBR1 内核表——高半 KVA 与低半 PA 走同一对 L2（见 KERNEL_L1 文档）。
+    let k_l1 = &raw mut KERNEL_L1;
+    (*k_l1).0[0] = table_descriptor(l2_low as usize);
+    (*k_l1).0[1] = table_descriptor(l2_ram as usize);
+
     // 表写入对页表遍历可见。
     dsb_ish();
 }
@@ -97,16 +111,35 @@ unsafe fn build_boot_pt() {
 unsafe fn enable_mmu() {
     write_mair_el1(MAIR_EL1);
     write_tcr_el1(TCR_EL1);
-    // 身份映射：TTBR0 == TTBR1 == 同一表（单表无切分）。
-    let l1_addr = (&raw const BOOT_L1) as u64;
-    write_ttbr0_el1(l1_addr);
-    write_ttbr1_el1(l1_addr);
+    // TTBR0 = 身份表（临时，2b-2 退役）；TTBR1 = 高半内核表（2b-0 起）。
+    // 两表此刻地址即 PA（镜像低半加载，VA==PA）——2b-1 重链后 TTBR1 须写 virt_to_phys。
+    write_ttbr0_el1((&raw const BOOT_L1) as u64);
+    write_ttbr1_el1((&raw const KERNEL_L1) as u64);
     isb();
     // TTBR / 表写入全部落定后再开 MMU。
     dsb_ish();
     // 切换点：M|C|I 一齐开。身份映射 → 下一条取指的 VA==PA 已映，无缝衔接。
     write_sctlr_el1(SCTLR_ENABLE);
     isb();
+}
+
+/// 2b-0 自校验：经 `KERNEL_VA_BASE` 别名访问 RAM 与设备，证 TTBR1 高半表在翻译。
+///
+/// RAM 探针 = 静态魔数高半别名读回比对；设备探针 = GICD_PIDR2（只读外设 ID 寄存器，
+/// 读无副作用）低半/高半双别名读值一致。任一不符 → 高半翻译未生效
+/// （TTBR1/TCR/表内容有错），2b-1 之前必须在此暴露。
+pub(crate) fn kva_alias_probe() -> bool {
+    static PROBE_MAGIC: u64 = 0x0B05_2B0B_5A5C_0FF0;
+    // 身份阶段本体地址即 PA；2b-1 后别名侧改 KERNEL_VA_BASE + virt_to_phys(本体)。
+    let here = (&raw const PROBE_MAGIC) as usize;
+    // SAFETY: init() 已完成（高半表已装）；本体与别名走同一 L2 Normal 块，读无副作用。
+    let ram_ok =
+        unsafe { ((KERNEL_VA_BASE + here) as *const u64).read_volatile() } == PROBE_MAGIC;
+    const GICD_PIDR2: usize = GICD_BASE + 0x0FE8;
+    // SAFETY: 只读外设 ID 寄存器；两别名走同一 L2 Device 块（同一 BOOT_L2_LOW）。
+    let v_pa = unsafe { crate::mmio::read(GICD_PIDR2) };
+    let v_kva = unsafe { crate::mmio::read(KERNEL_VA_BASE + GICD_PIDR2) };
+    ram_ok && v_pa == v_kva
 }
 
 // ---- 系统寄存器读写（unsafe 收敛地，裸 asm）----
