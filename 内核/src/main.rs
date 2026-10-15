@@ -206,13 +206,13 @@ pub extern "C" fn rust_main() -> ! {
     use handle::{RIGHT_RECV, RIGHT_SEND};
     let h_end_a = ht_pinger
         .insert(
-            KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endA")),
+            KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA")),
             RIGHT_SEND,
         )
         .expect("main: endA 进 pinger 表");
     let h_end_b = ht_ponger
         .insert(
-            KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endB")),
+            KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB")),
             RIGHT_RECV,
         )
         .expect("main: endB 进 ponger 表");
@@ -251,11 +251,11 @@ pub extern "C" fn rust_main() -> ! {
     //（RIGHT_SEND/RECV、ChannelEnd、ObjType、RIGHT_SIGNAL 均已在本函数
     // 更早的 use 里。）
     let h_end_c = syscall::bootstrap_table()
-        .insert(KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endC")),
+        .insert(KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endC")),
                 RIGHT_SEND)
         .expect("main: endC 进内核侧表");
     let h_end_s = syscall::bootstrap_table()
-        .insert(KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endS")),
+        .insert(KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endS")),
                 RIGHT_RECV)
         .expect("main: endS 进内核侧表");
     let (pc, ps) = (
@@ -275,6 +275,88 @@ pub extern "C" fn rust_main() -> ! {
         ((h_ev_pi as usize) << 32) | h_end_s as usize, b"pi_server");
     berry_sched::spawn(task_pi_probe, h_ev_pi as usize, b"pi_probe");
     berry_sched::spawn_with(task_pi_client, h_end_c as usize, b"pi_client", 32);
+
+    // 4-3c 验收（`IPC设计.md` Phase 4 拆步表 4-3 后半，intent 五件套落地）：
+    // 六内核任务全真 SVC——driver(0x02) 三发 → mid(0x04) recv 借入 0x02 / 借入
+    // 转发 hop+1 / opt-out 通道 recv 回落 → sinkA(0x03) 收转发件（hop==1 = mid
+    // 借入转发的活证，eff==0x02）→ slow(0x04) 借入后睡 200ms 超每跳预算 50ms，
+    // 转发降级（装自己的 0x04；借入字段保持——无回落事件）→ sinkB(0x03) 吃
+    // 两条 boot 伪造超帽消息（hop 帽 / 链累计封顶，拒传播回落）→ probe 睡
+    // 8 slice 遍历 SLEEPQ 断言四睡眠者字段 + 遥测三计数器，打 `INTENT ok`
+    //（smoke 第 19 标记）后 exit。通道全走内核侧表（boot 手搭版，单核 IRQ
+    // 屏蔽窗 = 无竞态）；CH3 置 options bit0（opt-out）；伪造消息绕过 send 直
+    // 压收端队列——超帽样本的确定性触发（队列 boot 期必空不满）。
+    let mk_it_chan = |no_intent: bool| -> (u32, u32) {
+        let hs = syscall::bootstrap_table()
+            .insert(KernelObj::Channel(
+                ChannelEnd::try_unpaired(no_intent).expect("main: 建 it send 端")),
+                RIGHT_SEND)
+            .expect("main: it send 端进内核侧表");
+        let hr = syscall::bootstrap_table()
+            .insert(KernelObj::Channel(
+                ChannelEnd::try_unpaired(no_intent).expect("main: 建 it recv 端")),
+                RIGHT_RECV)
+            .expect("main: it recv 端进内核侧表");
+        let (ps, pr) = (
+            syscall::bootstrap_table().get_raw(hs, ObjType::Channel, 0)
+                .expect("main: 取 it send ObjRef").0,
+            syscall::bootstrap_table().get_raw(hr, ObjType::Channel, 0)
+                .expect("main: 取 it recv ObjRef").0,
+        );
+        // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+        unsafe { ChannelEnd::pair(ps, pr) };
+        (hs, hr)
+    };
+    let (h_d1, h_m1) = mk_it_chan(false);   // CH1 driver → mid（首手 0x02）
+    let (h_m2, h_a2) = mk_it_chan(false);   // CH2 mid → sinkA（借入转发 hop=1）
+    let (h_d3, h_m3) = mk_it_chan(true);    // CH3 opt-out（bit0）——拒借回落面
+    let (_h_x4a, h_b4a) = mk_it_chan(false); // CH4a 伪造 hop 帽样本（发送端闲置）
+    let (_h_x4b, h_b4b) = mk_it_chan(false); // CH4b 伪造链累计封顶样本
+    let (h_d5, h_l5) = mk_it_chan(false);   // CH5 driver → slow（借入后超预算）
+    let (h_l6, h_b6) = mk_it_chan(false);   // CH6 slow → sinkB（降级转发件）
+    // 伪造消息直压收端队列（LC 档 0x01 载荷——帽子拦下才不至抬档）：
+    // hop=8 恰顶跳数帽；acc = 链封顶 +1ns 恰超累计帽。两道帽的 recv 结算
+    // 拒传播路径由此确定性触发（不赌 send 快照路径）。
+    let push_forged = |hr: u32, meta: berry_sched::MsgIntent| {
+        let p = syscall::bootstrap_table().get_raw(hr, ObjType::Channel, 0)
+            .expect("main: 取伪造收端 ObjRef").0;
+        let mut m = crate::channel::Message::new();
+        m.bytes[..4].copy_from_slice(b"ITK!");
+        m.nbytes = 4;
+        m.meta = meta;
+        // SAFETY: 刚 get_raw 过（在表、类型 Channel）；boot 单线程。
+        unsafe { (*p.as_ptr()).obj.as_channel_mut().unwrap().push(m) };
+    };
+    push_forged(h_b4a, berry_sched::MsgIntent {
+        intent: berry_sched::INTENT_LATENCY_CRITICAL,
+        hop: berry_sched::INTENT_HOP_MAX,
+        acc_ns: 0,
+    });
+    push_forged(h_b4b, berry_sched::MsgIntent {
+        intent: berry_sched::INTENT_LATENCY_CRITICAL,
+        hop: 0,
+        acc_ns: berry_sched::INTENT_CHAIN_BUDGET_NS + 1,
+    });
+    // handle 传递槽（spawn 单 usize 参装不下 12 个 handle）：boot 写入先于一切
+    // 任务启动（单核屏蔽窗）。槽位：0=d1 1=m1 2=m2 3=a2 4=d3 5=m3 6=b4a
+    // 7=b6 8=b4b 9=d5 10=l5 11=l6。
+    {
+        let slots = [h_d1, h_m1, h_m2, h_a2, h_d3, h_m3,
+                     h_b4a, h_b6, h_b4b, h_d5, h_l5, h_l6];
+        // SAFETY: boot 单线程写入，先于任何任务读。
+        unsafe {
+            for (i, &h) in slots.iter().enumerate() {
+                *core::ptr::addr_of_mut!(INTENT_H).cast::<u32>().add(i) = h;
+            }
+        }
+    }
+    berry_sched::spawn_intent(task_intent_driver, 0, b"it_driver",
+                              berry_sched::INTENT_INTERACTIVE);
+    berry_sched::spawn_intent(task_intent_mid, 0, b"it_mid", berry_sched::INTENT_BACKGROUND);
+    berry_sched::spawn_intent(task_intent_sink_a, 0, b"it_sinkA", berry_sched::INTENT_UTILITY);
+    berry_sched::spawn_intent(task_intent_sink_b, 0, b"it_sinkB", berry_sched::INTENT_UTILITY);
+    berry_sched::spawn_intent(task_intent_slow, 0, b"it_slow", berry_sched::INTENT_BACKGROUND);
+    berry_sched::spawn(task_intent_probe, 0, b"it_probe");
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
@@ -613,5 +695,227 @@ extern "C" fn task_pi_client(arg: usize) -> ! {
         0,
         "pi_client: 腾位后补发"
     );
+    berry_sched::exit_current()
+}
+
+// ---- 4-3c intent 验收六任务（全真 SVC；ADR #42 五件套，`berry_sched::intent`）----
+
+/// 4-3c handle 传递槽（spawn 只有单 usize 参——多 handle 走静态槽传递）。
+/// boot 在 spawn 前写入、先于一切任务读（单核 IRQ 屏蔽窗 = 无竞态）；槽位
+/// 表见 main 的 4-3c 段注释。
+static mut INTENT_H: [u32; 12] = [0; 12];
+
+/// 读 4-3c 传递槽（任务侧）。
+fn it_h(i: usize) -> u32 {
+    // SAFETY: 只读；全部写点先于任务启动（boot 顺序）。
+    unsafe { *core::ptr::addr_of!(INTENT_H).cast::<u32>().add(i) }
+}
+
+/// it_driver（declared INTERACTIVE 0x02，首手）：三发——CH1 借出 0x02 给
+/// mid、CH3 opt-out 通道照发（拒借在收方结算侧）、CH5 借出 0x02 给 slow。
+/// driver 先入队（spawn FIFO）→ 收方 recv 必不空。发完即退。
+extern "C" fn task_intent_driver(_arg: usize) -> ! {
+    use crate::syscall::NR_CHANNEL_SEND;
+    let msg = *b"ITK!\0\0\0\0";
+    for &slot in &[0usize, 4, 9] {
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, it_h(slot) as u64,
+                 msg.as_ptr() as u64, 8, 0, 0, 0),
+            0,
+            "it_driver: send 槽 {} 须成功（driver 先于收方入队）", slot
+        );
+    }
+    berry_sched::exit_current()
+}
+
+/// it_mid（declared BACKGROUND 0x04）：recv CH1 借入 0x02（hop=0 结算）→
+/// send CH2 借入转发（快照 hop+1/acc+持有段——sinkA 的 hop==1 即本跳活证）→
+/// recv CH3（opt-out 通道：不结算，回落 declared 0x04，含清掉他途借入）。
+/// 此后纯睡不醒（deadline=MAX），留 SLEEPQ 供 probe 断言。
+extern "C" fn task_intent_mid(_arg: usize) -> ! {
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND};
+    let mut buf = [0u8; 8];
+    let (mut n, mut nh): (u64, u64) = (8, 0);
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, it_h(1) as u64, buf.as_mut_ptr() as u64,
+             core::ptr::addr_of_mut!(n) as u64, 0,
+             core::ptr::addr_of_mut!(nh) as u64, 0),
+        0,
+        "it_mid: recv CH1（借入 0x02）"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, it_h(2) as u64, buf.as_ptr() as u64, 8, 0, 0, 0),
+        0,
+        "it_mid: 转发 CH2（借入快照 hop+1）"
+    );
+    n = 8; // 容量 in-out 每次 recv 前重置
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, it_h(5) as u64, buf.as_mut_ptr() as u64,
+             core::ptr::addr_of_mut!(n) as u64, 0,
+             core::ptr::addr_of_mut!(nh) as u64, 0),
+        0,
+        "it_mid: recv CH3（opt-out 拒借回落）"
+    );
+    berry_sched::block_current(0, 0, u64::MAX); // 纯睡永不醒：留 SLEEPQ 供 probe 断言
+    unreachable!("it_mid: u64::MAX 不到期")
+}
+
+/// it_sinkA（declared UTILITY 0x03）：recv CH2——mid 借入转发的消息
+///（intent 0x02 / hop 1 / acc>0）结算借入生效。此后纯睡，字段定格供 probe
+/// 断言（eff==0x02、hop==1）。
+extern "C" fn task_intent_sink_a(_arg: usize) -> ! {
+    use crate::syscall::NR_CHANNEL_RECV;
+    let mut buf = [0u8; 8];
+    let (mut n, mut nh): (u64, u64) = (8, 0);
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, it_h(3) as u64, buf.as_mut_ptr() as u64,
+             core::ptr::addr_of_mut!(n) as u64, 0,
+             core::ptr::addr_of_mut!(nh) as u64, 0),
+        0,
+        "it_sinkA: recv CH2（两跳链尾）"
+    );
+    berry_sched::block_current(0, 0, u64::MAX);
+    unreachable!("it_sinkA: u64::MAX 不到期")
+}
+
+/// it_sinkB（declared UTILITY 0x03）：三连收——CH4a 伪造 hop 帽（拒传播回
+/// 落）→ wait_one(CH6, READABLE) 阻塞等 slow 睡 200ms 后发出（4-2 阻塞链
+/// 复用，不赌时序）→ recv CH6（slow 的降级转发件，Own 不计数）→ recv CH4b
+/// 伪造链累计封顶（拒传播回落）。终态 eff==declared 0x03。
+extern "C" fn task_intent_sink_b(_arg: usize) -> ! {
+    use crate::handle::SIGNAL_READABLE;
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CLOCK_READ, NR_OBJECT_WAIT_ONE};
+    let mut buf = [0u8; 8];
+    let (mut n, mut nh): (u64, u64) = (8, 0);
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, it_h(6) as u64, buf.as_mut_ptr() as u64,
+             core::ptr::addr_of_mut!(n) as u64, 0,
+             core::ptr::addr_of_mut!(nh) as u64, 0),
+        0,
+        "it_sinkB: recv CH4a（hop 帽拒传播）"
+    );
+    let mut now: u64 = 0;
+    // SAFETY: 本任务内核栈局部变量，活过调用。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "it_sinkB: clock_read");
+    let mut observed = 0u64;
+    // SAFETY: 同上。
+    let pobs = core::ptr::addr_of_mut!(observed) as u64;
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_ONE as u64, it_h(7) as u64, SIGNAL_READABLE,
+             now + 100 * 1_000_000_000, pobs, 0, 0),
+        0,
+        "it_sinkB: wait CH6 READABLE（slow 发出唤醒）"
+    );
+    assert!(observed & SIGNAL_READABLE != 0, "it_sinkB: observed 须含 READABLE");
+    n = 8;
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, it_h(7) as u64, buf.as_mut_ptr() as u64,
+             core::ptr::addr_of_mut!(n) as u64, 0,
+             core::ptr::addr_of_mut!(nh) as u64, 0),
+        0,
+        "it_sinkB: recv CH6（降级转发件）"
+    );
+    n = 8;
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, it_h(8) as u64, buf.as_mut_ptr() as u64,
+             core::ptr::addr_of_mut!(n) as u64, 0,
+             core::ptr::addr_of_mut!(nh) as u64, 0),
+        0,
+        "it_sinkB: recv CH4b（链累计封顶拒传播）"
+    );
+    berry_sched::block_current(0, 0, u64::MAX);
+    unreachable!("it_sinkB: u64::MAX 不到期")
+}
+
+/// it_slow（declared BACKGROUND 0x04）：recv CH5 借入 0x02 → 睡 200ms（超
+/// 每跳预算 50ms）→ send CH6：快照降级——借来的 0x02 不再传播，装自己的
+/// declared 0x04（budget_capped 计数 + trace 行）。**借入字段保持**（无回
+/// 落事件——转发降级不清自身借入，probe 断言 eff==0x02）。
+extern "C" fn task_intent_slow(_arg: usize) -> ! {
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_THREAD_SLEEP};
+    let mut buf = [0u8; 8];
+    let (mut n, mut nh): (u64, u64) = (8, 0);
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, it_h(10) as u64, buf.as_mut_ptr() as u64,
+             core::ptr::addr_of_mut!(n) as u64, 0,
+             core::ptr::addr_of_mut!(nh) as u64, 0),
+        0,
+        "it_slow: recv CH5（借入 0x02）"
+    );
+    let mut now: u64 = 0;
+    // SAFETY: 本任务内核栈局部变量，活过调用。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "it_slow: clock_read");
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + 200_000_000, 0, 0),
+        0,
+        "it_slow: 睡 200ms（超每跳预算 50ms）"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, it_h(11) as u64, buf.as_ptr() as u64, 8, 0, 0, 0),
+        0,
+        "it_slow: send CH6（降级转发）"
+    );
+    berry_sched::block_current(0, 0, u64::MAX);
+    unreachable!("it_slow: u64::MAX 不到期")
+}
+
+/// it_probe（验收司机）：睡 8 slice（slice_ns 换算同 waker2——clock 域
+/// 确定性）等全链落定 → 遍历 SLEEPQ 断言四睡眠者 intent 字段 + 遥测三计数
+/// 器（borrows≥3 / hop_capped≥1 / budget_capped≥2——send 降级 + recv 封顶
+/// 两路）→ 打 `INTENT ok`（smoke 第 19 标记）→ exit。字段即机器关卡：借入
+/// 生效 / opt-out 回落 / hop==1 转发活证 / 双帽拒传播 / 降级转发不清借入，
+/// 全链一次断言。
+extern "C" fn task_intent_probe(_arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_THREAD_SLEEP};
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    let slice_ns = berry_hal_aarch64::timer::slice_cycles() * 1_000_000_000 / freq;
+    let mut now: u64 = 0;
+    // SAFETY: 本任务内核栈局部变量，活过调用。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "it_probe: clock_read");
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + 8 * slice_ns, 0, 0),
+        0,
+        "it_probe: thread_sleep 8 slice（等全链落定）"
+    );
+    let (mut saw_mid, mut saw_a, mut saw_b, mut saw_slow) = (false, false, false, false);
+    berry_sched::for_each_sleeper(|t| {
+        match t.name {
+            b"it_mid" => {
+                saw_mid = true;
+                assert_eq!(t.intent_effective, berry_sched::INTENT_BACKGROUND,
+                           "it_probe: mid 须 opt-out 回落 0x04");
+            }
+            b"it_sinkA" => {
+                saw_a = true;
+                assert_eq!(t.intent_effective, berry_sched::INTENT_INTERACTIVE,
+                           "it_probe: sinkA 须借入 0x02");
+                assert_eq!(t.intent_hop, 1,
+                           "it_probe: sinkA hop==1（mid 借入转发活证）");
+            }
+            b"it_sinkB" => {
+                saw_b = true;
+                assert_eq!(t.intent_effective, berry_sched::INTENT_UTILITY,
+                           "it_probe: sinkB 须双帽+降级后回落 0x03");
+            }
+            b"it_slow" => {
+                saw_slow = true;
+                assert_eq!(t.intent_effective, berry_sched::INTENT_INTERACTIVE,
+                           "it_probe: slow 借入须保持（转发降级不清借入）");
+            }
+            _ => {}
+        }
+    });
+    assert!(saw_mid && saw_a && saw_b && saw_slow,
+           "it_probe: 四睡眠者未同时在线（时序未达）");
+    assert!(crate::telemetry::intent_borrows() >= 3,
+           "it_probe: 借入计数须 ≥3（mid/sinkA/slow 三次结算）");
+    assert!(crate::telemetry::intent_hop_capped_total() >= 1,
+           "it_probe: hop 帽计数须 ≥1（CH4a）");
+    assert!(crate::telemetry::intent_budget_capped_total() >= 2,
+           "it_probe: 时间帽计数须 ≥2（slow send 降级 + CH4b 结算封顶）");
+    berry_hal_aarch64::uart_puts(b"I INTENT ok\n");
     berry_sched::exit_current()
 }

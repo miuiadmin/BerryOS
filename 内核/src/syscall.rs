@@ -93,6 +93,10 @@ pub const NR_THREAD_SLEEP: usize = 0x37;
 pub const NR_CHANNEL_CREATE: usize = 0x51;
 pub const NR_CHANNEL_SEND: usize = 0x52;
 pub const NR_CHANNEL_RECV: usize = 0x53;
+/// `channel_create` options bit0（4-3c，五件套之 4）：intent opt-out——置位通道
+/// 的 recv 不结算 intent（QNX `_NTO_CHF_FIXED_PRIORITY` 等价，系统服务/看门狗
+/// 类 server 逃生门）。其余位保留（非 0 尾 → -EINVAL，options 纪律）。
+pub const CHAN_OPT_NO_INTENT: u64 = 1 << 0;
 /// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
 pub const NR_EVENT_CREATE: usize = 0x54;
 // 时间（1）
@@ -332,6 +336,18 @@ fn ns_to_vct(ns: u64) -> Option<u64> {
         return None;
     }
     Some((ns / 1_000_000_000) * freq + ((ns % 1_000_000_000) * freq) / 1_000_000_000)
+}
+
+/// CNTVCT → MONOTONIC 纳秒（`sys_clock_read` 同式抽出；4-3c intent 两道时间帽
+/// 的计时源）。`freq==0` → 0（真机异常语境——帽永不触发，方向安全）。
+fn vct_ns() -> u64 {
+    // SAFETY: 只读 CNTVCT/CNTFRQ（timer::init 后恒有效）。
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    if freq == 0 {
+        return 0;
+    }
+    let ticks = berry_hal_aarch64::timer::cntvct();
+    (ticks / freq) * 1_000_000_000 + ((ticks % freq) * 1_000_000_000) / freq
 }
 
 /// `thread_sleep(deadline)`（0x37，4-0 首个阻塞 syscall）：睡到绝对时刻
@@ -869,11 +885,18 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
 
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
 
-/// `channel_create(*out0, *out1)`：一次建一对端点（`channel.rs` 两端互指互钉
-/// ——一端活则对端对象必活）。两端均授 **SEND|RECV|DUPLICATE**（对称权利；
-/// TRANSFER 位同 DUPLICATE 的 vocab 政策：已定义不执法）。
+/// `channel_create(options, *out0, *out1)`（4-3c 起 options 首参，Zircon/
+/// `event_create` 同形）：一次建一对端点（`channel.rs` 两端互指互钉——一端
+/// 活则对端对象必活）。两端均授 **SEND|RECV|DUPLICATE**（对称权利；TRANSFER
+/// 位同 DUPLICATE 的 vocab 政策：已定义不执法）。options：bit0 =
+/// [`CHAN_OPT_NO_INTENT`]（intent opt-out，两端同置——通道级不传播）；其余位
+/// → -EINVAL（options 纪律）。
 extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
-    let (out0, out1) = (tf.regs[1], tf.regs[2]);
+    let (options, out0, out1) = (tf.regs[1], tf.regs[2], tf.regs[3]);
+    if options & !CHAN_OPT_NO_INTENT != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let no_intent = options & CHAN_OPT_NO_INTENT != 0;
     let el1 = caller_is_el1(tf);
     if let Err(e) = copy_out_u64(el1, out0, 0) {
         return e as i64;
@@ -885,7 +908,9 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
     let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE;
     // 端点装配 try 化（3b3 H2）：队列预储 CHAN_DEPTH × Message ≈ 2.7KB/端，
     // 失败先于一切入表——零回滚面，折 -ENOMEM。
-    let (Some(end0), Some(end1)) = (ChannelEnd::try_unpaired(), ChannelEnd::try_unpaired()) else {
+    let (Some(end0), Some(end1)) =
+        (ChannelEnd::try_unpaired(no_intent), ChannelEnd::try_unpaired(no_intent))
+    else {
         return ERR_NO_MEMORY as i64;
     };
     let h0 = match t.insert(KernelObj::Channel(end0), rights) {
@@ -1008,6 +1033,17 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     msg.nbytes = nbytes;
     msg.handles[..nhandles].copy_from_slice(&toks[..nhandles]);
     msg.nhandles = nhandles;
+    // 4-3c：消息头快照发送者 intent_effective（ADR #42 五件套——fastpath 增量
+    // = 一次结构体填充；记账/帽判定全在 recv 结算 slowpath，「fastpath 零记账」）。
+    // CURRENT 无效（ktest/init 前语境）→ 零值头（UNSPECIFIED 首手）照常发送。
+    if let Some((meta, snap)) = berry_sched::intent_snapshot_current(vct_ns()) {
+        msg.meta = meta;
+        if snap == berry_sched::SnapOut::Capped {
+            // 每跳预算帽：降级为不传播（消息头已装自己的 declared）+ 计数 + trace。
+            crate::telemetry::intent_budget_capped();
+            berry_hal_aarch64::uart_puts(b"intent: hop budget cap (send)\n");
+        }
+    }
     // SAFETY: peer_ptr 互钉在活；队列有界（满检过，单核无并发插队）。
     unsafe {
         let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
@@ -1134,6 +1170,24 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     // SAFETY: 本端门控过、互钉在活；只读对端指针。
     if let Some(peer) = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).and_then(|e| e.peer()) {
         berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
+    }
+    // 4-3c slowpath 记账：dequeue 即结算 intent（每消息重导——借入/opt-out/
+    // 超帽的语义与遥测见 `berry_sched::intent`；CURRENT 无效则跳过不记）。
+    // SAFETY: 本端门控过；只读 no_intent 标志。
+    let opt_out = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).map_or(false, |e| e.no_intent());
+    if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
+        match out {
+            berry_sched::SettleOut::Borrowed => crate::telemetry::intent_borrowed(),
+            berry_sched::SettleOut::CappedHop => {
+                crate::telemetry::intent_hop_capped_inc();
+                berry_hal_aarch64::uart_puts(b"intent: hop cap (recv)\n");
+            }
+            berry_sched::SettleOut::CappedBudget => {
+                crate::telemetry::intent_budget_capped();
+                berry_hal_aarch64::uart_puts(b"intent: chain budget cap (recv)\n");
+            }
+            berry_sched::SettleOut::Own => {}
+        }
     }
     drop(msg); // 消费：令牌已入表（Message 定长内联——drop 无堆动作，不碰 refs）
     0

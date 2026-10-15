@@ -120,6 +120,21 @@ pub struct Task {
     /// v3 AI 护栏词汇（`AI调度设计.md` 护栏节）。
     pub preempt_threshold: i32,
 
+    // ---- 4-3c intent 字段（ADR #42 / `调度器设计.md` §3.8；编码 `intent.rs`
+    // 冻结 0x00–0x05。v1 无调度消费点——字段先于消费者落地，免 TCB 返工）----
+    /// 声明档（创建者定；0x00=UNSPECIFIED 不设限；pledge 只降不升——入口随
+    /// 声明入口落地）。**u8 越小档越高**。
+    pub intent_declared: u8,
+    /// 有效档 = min(declared, 消息借来的)（**每消息重导**，`intent.rs::settle`
+    /// ——非单调累积，弱消息自然回落）。
+    pub intent_effective: u8,
+    /// 当前借入 intent 的消息链跳数（借入时随消息头记录；转发快照 +1）。
+    pub intent_hop: u8,
+    /// 本次借入开始时刻（纳秒，结算侧戳——每跳执行预算帽的计时起点）。
+    pub intent_since: u64,
+    /// 借入消息携带的链累计持有时长（纳秒；转发快照累加自己持有段）。
+    pub intent_acc: u64,
+
     // ---- 侵入式双向环形链表链接（runqueue 用；`Cell` 以支持 `&Runqueue` 下旋转）----
     pub(crate) rq_prev: Cell<Option<NonNull<Task>>>,
     pub(crate) rq_next: Cell<Option<NonNull<Task>>>,
@@ -257,6 +272,11 @@ impl Task {
             duration_hint_ns: 0,
             epp: EppHint::Efficiency,
             preempt_threshold: 0,
+            intent_declared: 0,
+            intent_effective: 0,
+            intent_hop: 0,
+            intent_since: 0,
+            intent_acc: 0,
             rq_prev: Cell::new(None),
             rq_next: Cell::new(None),
             sleep_prev: Cell::new(None),

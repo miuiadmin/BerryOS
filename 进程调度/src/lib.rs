@@ -18,18 +18,24 @@
 extern crate alloc;
 
 pub mod class;
+pub mod intent;
 pub mod policy;
 pub mod runqueue;
 pub mod sched;
 pub mod task;
 
 pub use class::{RoundRobin, SchedClass};
+pub use intent::{
+    intent_valid, settle, snapshot, MsgIntent, SettleOut, SnapOut, INTENT_BACKGROUND,
+    INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS, INTENT_HOP_MAX, INTENT_INTERACTIVE,
+    INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED, INTENT_UTILITY,
+};
 pub use runqueue::{Runqueue, Topo};
 pub use sched::{
-    block_current, current_tag, exit_current, for_each_sleeper, idle_loop, init, last_killed,
-    on_irq_tick, refresh_effective, set_sleepq_hook, set_switch_hook, set_wake_hook, sleepq_insert,
-    sleepq_unlink, spawn, spawn_as, spawn_user, spawn_with, switches, try_spawn_user,
-    user_fault_exit, user_kills, wake_matching, yield_now, SleepqHook, SwitchHook, SwitchKind,
-    WakeHook, WAIT_ANY,
+    block_current, current_tag, exit_current, for_each_sleeper, idle_loop, init,
+    intent_settle_current, intent_snapshot_current, last_killed, on_irq_tick, refresh_effective,
+    set_sleepq_hook, set_switch_hook, set_wake_hook, sleepq_insert, sleepq_unlink, spawn,
+    spawn_as, spawn_intent, spawn_user, spawn_with, switches, try_spawn_user, user_fault_exit,
+    user_kills, wake_matching, yield_now, SleepqHook, SwitchHook, SwitchKind, WakeHook, WAIT_ANY,
 };
 pub use task::{EppHint, Task, TaskState, WakeReason, STACK_SIZE};

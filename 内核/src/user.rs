@@ -312,9 +312,11 @@ core::arch::global_asm!(
     "    svc  #0",
     "    cbnz x0, 3f",
     // ---- channel 对（3-4b）：PING+礼物随消息迁给子，回信走另一向 ----
-    "    movz x0, #0x51",               // channel_create(*out0=0x2040, *out1=0x2048)
-    "    movz x1, #0x2040",
-    "    movz x2, #0x2048",
+    //（4-3c 起 create 带 options 首参——options=0 常规通道；ABI 见 系统调用ABI设计 §8）
+    "    movz x0, #0x51",               // channel_create(0, *out0=0x2040, *out1=0x2048)
+    "    mov  x1, xzr",
+    "    movz x2, #0x2040",
+    "    movz x3, #0x2048",
     "    svc  #0",
     "    cbnz x0, 3f",
     "    movz x5, #0x2040",

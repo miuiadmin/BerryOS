@@ -48,6 +48,11 @@ static mut IDLE_TASK: Task = Task {
     duration_hint_ns: 0,
     epp: crate::task::EppHint::Efficiency,
     preempt_threshold: 0,
+    intent_declared: 0,
+    intent_effective: 0,
+    intent_hop: 0,
+    intent_since: 0,
+    intent_acc: 0,
     proc_tag: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
@@ -149,6 +154,48 @@ pub fn current_tag() -> usize {
         0
     } else {
         unsafe { (*cur).proc_tag }
+    }
+}
+
+/// 同 [`spawn`]，但带声明档（4-3c intent 验收：借入/拒借的档位差源）。
+/// `intent` 直落 `intent_declared`/`intent_effective` 双字段——boot 可信语境
+/// 一步到位；非法值（编码域外）直接 panic（同 `new_kernel` 系 expect 政策）。
+pub fn spawn_intent(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
+                    intent: u8) {
+    assert!(crate::intent::intent_valid(intent), "spawn_intent：编码域外");
+    // SAFETY: 同 spawn_as（CURRENT 已设、allocator 就绪）。
+    let task: &'static mut Task =
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, 0, 0));
+    task.intent_declared = intent;
+    task.intent_effective = intent;
+    unsafe {
+        RR.enqueue(task, rq());
+    }
+}
+
+/// 4-3c：send 侧 intent 快照（syscall 层调用；语义在 [`crate::intent`]）。
+/// CURRENT 无效（ktest 在 `init` 前跑）→ `None`——调用方按零值打包消息头，
+/// 不记遥测。IRQ 屏蔽窗内单核访问。
+pub fn intent_snapshot_current(now_ns: u64) -> Option<(crate::intent::MsgIntent, crate::intent::SnapOut)> {
+    // SAFETY: 只读 CURRENT；写点全在 IRQ 屏蔽路径（单核顺序）。
+    let cur = unsafe { CURRENT };
+    if cur.is_null() {
+        None
+    } else {
+        Some(crate::intent::snapshot(unsafe { &*cur }, now_ns))
+    }
+}
+
+/// 4-3c：recv 侧 intent 结算（slowpath；语义在 [`crate::intent`]）。CURRENT
+/// 无效 → `None`（消息照常投递，不结算不记遥测）。IRQ 屏蔽窗内单核访问。
+pub fn intent_settle_current(m: crate::intent::MsgIntent, opt_out: bool,
+                             now_ns: u64) -> Option<crate::intent::SettleOut> {
+    // SAFETY: CURRENT 可写；syscall 主体 IRQ 屏蔽（免锁根基），单核顺序。
+    let cur = unsafe { CURRENT };
+    if cur.is_null() {
+        None
+    } else {
+        Some(crate::intent::settle(unsafe { &mut *cur }, m, opt_out, now_ns))
     }
 }
 

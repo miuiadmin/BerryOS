@@ -278,3 +278,50 @@ pub fn wake_check() -> bool {
     }
     true
 }
+
+// ---- 4-3c intent 传播计数器（`IPC设计.md` §2.1 五件套之 5；IRQ 屏蔽路径
+// 静态计数，零分配零拷贝——「值通胀」的可观测信号）----
+
+/// 借入生效次数（msg_intent 抬升 server 档位的每次结算；高频公共服务被
+/// 高档客户端触达即此数飙升 = 「一切皆顶带 = 没有 band」的早期信号）。
+static mut INTENT_BORROWS: u64 = 0;
+/// 消息链跳数帽拒绝传播次数（`intent::INTENT_HOP_MAX`）。
+static mut INTENT_HOP_CAPPED: u64 = 0;
+/// 时间帽拒绝传播次数（每跳预算 + 链累计封顶两路合计）。
+static mut INTENT_BUDGET_CAPPED: u64 = 0;
+
+/// 记一次借入生效（recv 结算 slowpath）。
+pub fn intent_borrowed() {
+    // SAFETY: 写点全程 IRQ 屏蔽（syscall 主体），单核串行。
+    unsafe { INTENT_BORROWS += 1 };
+}
+
+/// 记一次跳数帽拒绝（recv 结算 slowpath）。
+pub fn intent_hop_capped_inc() {
+    // SAFETY: 同上。
+    unsafe { INTENT_HOP_CAPPED += 1 };
+}
+
+/// 记一次时间帽拒绝（send 快照降级 / recv 结算拒传播）。
+pub fn intent_budget_capped() {
+    // SAFETY: 同上。
+    unsafe { INTENT_BUDGET_CAPPED += 1 };
+}
+
+/// 借入生效累计。
+pub fn intent_borrows() -> u64 {
+    // SAFETY: 只读。
+    unsafe { INTENT_BORROWS }
+}
+
+/// 跳数帽累计。
+pub fn intent_hop_capped_total() -> u64 {
+    // SAFETY: 只读。
+    unsafe { INTENT_HOP_CAPPED }
+}
+
+/// 时间帽累计。
+pub fn intent_budget_capped_total() -> u64 {
+    // SAFETY: 只读。
+    unsafe { INTENT_BUDGET_CAPPED }
+}

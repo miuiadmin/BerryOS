@@ -16,6 +16,7 @@ pub fn run() {
     test_handle();
     test_policy();
     test_pi();
+    test_intent();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -426,7 +427,7 @@ fn test_syscall() {
     // SAFETY: svc 同步异常；H 系列静态均本函数私有。
     unsafe { OUT = 0; CHILD_OUT = 0 };
     assert_eq!(
-        svc4(NR_CHANNEL_CREATE as u64, &raw mut OUT as u64, &raw mut CHILD_OUT as u64, 0),
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
         0,
         "SYSCALL：channel_create"
     );
@@ -523,7 +524,7 @@ fn test_syscall() {
     // SAFETY: 同上。
     unsafe { OUT = 0; CHILD_OUT = 0 };
     assert_eq!(
-        svc4(NR_CHANNEL_CREATE as u64, &raw mut OUT as u64, &raw mut CHILD_OUT as u64, 0),
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
         0,
         "SYSCALL：channel_create（满队用例）"
     );
@@ -812,7 +813,7 @@ fn test_syscall() {
     // SAFETY: 同上（I7 复用 H 段的 HBUF/H_NB/H_NH——H 已清场完毕，无别名）。
     unsafe { OUT = 0; CHILD_OUT = 0 };
     assert_eq!(
-        svc4(NR_CHANNEL_CREATE as u64, &raw mut OUT as u64, &raw mut CHILD_OUT as u64, 0),
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
         0,
         "SYSCALL：channel_create（wait 面用例）"
     );
@@ -1582,7 +1583,7 @@ fn test_pi() {
         let ht = unsafe { &mut *(ht as *mut HandleTable) };
         let h = ht
             .insert(
-                KernelObj::Channel(ChannelEnd::try_unpaired().expect("PI：建端点")),
+                KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("PI：建端点")),
                 rights,
             )
             .expect("PI：端点进表");
@@ -1768,3 +1769,166 @@ fn test_pi() {
     berry_sched::for_each_sleeper(|_| panic!("PI：清场后 SLEEPQ 须空"));
     berry_hal_aarch64::uart_puts(b"PI-K ok\n");
 }
+
+/// 4-3c：intent 随消息传播（ADR #42 五件套，`berry_sched::intent`；ktest 在
+/// `sched::init` 前跑 → 无 CURRENT/SLEEPQ 干扰，纯函数面 K0–K8 直测
+/// settle/snapshot + 三道帽 + 每消息重导；K9 走真 SVC 验 channel_create
+/// options 面）。EL0 全链验收在 main.rs 六任务对打（`INTENT ok`）。
+#[allow(clippy::result_unwrap_used)]
+fn test_intent() {
+    use berry_sched::intent::{settle, snapshot, MsgIntent, SettleOut, SnapOut};
+    use berry_sched::{Task, INTENT_BACKGROUND, INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS,
+                      INTENT_HOP_MAX, INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL,
+                      INTENT_UNSPECIFIED, INTENT_UTILITY, intent_valid};
+    use crate::handle::{ObjType, RIGHT_RECV, RIGHT_SEND};
+    use crate::syscall::{bootstrap_table, NR_CHANNEL_CREATE};
+
+    /// 占位入口（纯函数面 Task 永不执行；halt 兜底）。
+    extern "C" fn it_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭任务（只动 intent 字段，prio/状态无关本面）。
+    fn it_task(declared: u8, effective: u8) -> Task {
+        let mut t = *Task::new_kernel(it_dummy, 0, b"it_k");
+        t.intent_declared = declared;
+        t.intent_effective = effective;
+        t
+    }
+
+    const NOW: u64 = 1_000_000_000; // 任意基准（vct_ns 域）
+
+    // K0. 编码域冻结：0x00–0x05 合法、0x06 起拒绝（含 0xFF）。
+    for v in [INTENT_UNSPECIFIED, INTENT_LATENCY_CRITICAL, INTENT_INTERACTIVE,
+              INTENT_UTILITY, INTENT_BACKGROUND, 0x05u8] {
+        assert!(intent_valid(v), "INTENT：K0 {} 须合法", v);
+    }
+    assert!(!intent_valid(0x06), "INTENT：K0 0x06 保留须拒");
+    assert!(!intent_valid(0xFF), "INTENT：K0 野值须拒");
+
+    // K1. 首手快照：未借入（eff==declared）→ Fresh，装 declared、hop/acc 清零
+    //     （「首手」定义 = 不是别人借来的转发放大）。
+    let t = it_task(INTENT_UTILITY, INTENT_UTILITY);
+    let (m, s) = snapshot(&t, NOW);
+    assert_eq!((m.intent, m.hop, m.acc_ns), (INTENT_UTILITY, 0, 0), "INTENT：K1 首手载荷");
+    assert_eq!(s, SnapOut::Fresh, "INTENT：K1 Fresh");
+
+    // K2. 借入转发快照：eff 0x02 < declared 0x04、持有 10ms < 预算 →
+    //     Forwarded（装借来的 0x02、hop+1、acc 累加持有段）。
+    let mut t = it_task(INTENT_BACKGROUND, INTENT_INTERACTIVE);
+    t.intent_hop = 0;
+    t.intent_acc = 1000;
+    t.intent_since = NOW - 10_000_000;
+    let (m, s) = snapshot(&t, NOW);
+    assert_eq!((m.intent, m.hop, m.acc_ns),
+               (INTENT_INTERACTIVE, 1, 1000 + 10_000_000),
+               "INTENT：K2 转发载荷（hop+1、acc 累加）");
+    assert_eq!(s, SnapOut::Forwarded, "INTENT：K2 Forwarded");
+
+    // K3. 每跳预算帽（send 侧）：持有 60ms > 50ms → Capped 降级（装自己的
+    //     declared、hop/acc 清零——借来的档不再传播）。
+    let mut t = it_task(INTENT_BACKGROUND, INTENT_INTERACTIVE);
+    t.intent_since = NOW - (INTENT_HOP_BUDGET_NS + 10_000_000);
+    let (m, s) = snapshot(&t, NOW);
+    assert_eq!((m.intent, m.hop, m.acc_ns), (INTENT_BACKGROUND, 0, 0),
+               "INTENT：K3 超预算降级载荷");
+    assert_eq!(s, SnapOut::Capped, "INTENT：K3 Capped");
+
+    // K4. 借入生效（数值越小档越高）：declared 0x03 收 0x01 → eff 0x01、
+    //     hop/since/acc 全记（转发快照与时间帽的数据源）。
+    let mut t = it_task(INTENT_UTILITY, INTENT_UTILITY);
+    let out = settle(&mut t, MsgIntent { intent: INTENT_LATENCY_CRITICAL, hop: 2, acc_ns: 500 },
+                     false, NOW);
+    assert_eq!(out, SettleOut::Borrowed, "INTENT：K4 借入生效");
+    assert_eq!(t.intent_effective, INTENT_LATENCY_CRITICAL, "INTENT：K4 eff 须 0x01");
+    assert_eq!((t.intent_hop, t.intent_since, t.intent_acc), (2, NOW, 500),
+               "INTENT：K4 随消息头记录");
+
+    // K5. 未声明 = 最强档（XNU 式）+ 每消息重导（非单调累积）：declared 0x04
+    //     收 0x00 → 借入到 0x00（未分类不设限的保守方向）；再收弱消息 0x04 →
+    //     Own 回落 declared（QNX 粘性膨胀在机制上不可能）。
+    let mut t = it_task(INTENT_BACKGROUND, INTENT_LATENCY_CRITICAL);
+    let out = settle(&mut t, MsgIntent { intent: INTENT_UNSPECIFIED, hop: 0, acc_ns: 0 },
+                     false, NOW);
+    assert_eq!(out, SettleOut::Borrowed, "INTENT：K5 未声明须借入");
+    assert_eq!(t.intent_effective, INTENT_UNSPECIFIED,
+               "INTENT：K5 未声明须借入到最强档（保守方向）");
+    let out = settle(&mut t, MsgIntent { intent: INTENT_BACKGROUND, hop: 0, acc_ns: 0 },
+                     false, NOW);
+    assert_eq!(out, SettleOut::Own, "INTENT：K5 弱消息");
+    assert_eq!(t.intent_effective, INTENT_BACKGROUND,
+               "INTENT：K5 弱消息自然回落（每消息重导）");
+
+    // K6. opt-out（五件套之 4）：拒借 + 重导回落（含清掉他途借入）。
+    let mut t = it_task(INTENT_UTILITY, INTENT_LATENCY_CRITICAL); // 他途借入 0x01
+    let out = settle(&mut t, MsgIntent { intent: INTENT_LATENCY_CRITICAL, hop: 0, acc_ns: 0 },
+                     true, NOW);
+    assert_eq!(out, SettleOut::Own, "INTENT：K6 opt-out Own");
+    assert_eq!(t.intent_effective, INTENT_UTILITY,
+               "INTENT：K6 opt-out 须回落 declared（清掉借入）");
+
+    // K7. 跳数帽：hop=8 恰顶 → CappedHop 拒传播回落；hop=7 放行。
+    let mut t = it_task(INTENT_UTILITY, INTENT_UTILITY);
+    let out = settle(&mut t, MsgIntent { intent: INTENT_LATENCY_CRITICAL,
+                                         hop: INTENT_HOP_MAX, acc_ns: 0 },
+                     false, NOW);
+    assert_eq!(out, SettleOut::CappedHop, "INTENT：K7 hop 帽拒");
+    assert_eq!(t.intent_effective, INTENT_UTILITY, "INTENT：K7 回落 declared");
+    let out = settle(&mut t, MsgIntent { intent: INTENT_LATENCY_CRITICAL,
+                                         hop: INTENT_HOP_MAX - 1, acc_ns: 0 },
+                     false, NOW);
+    assert_eq!(out, SettleOut::Borrowed, "INTENT：K7 hop=7 须放行");
+
+    // K8. 链累计封顶：acc > 封顶 → CappedBudget；acc == 封顶恰不触发（>
+    //     判据——含边界值语义与文档一致）。
+    let mut t = it_task(INTENT_UTILITY, INTENT_UTILITY);
+    let out = settle(&mut t, MsgIntent { intent: INTENT_LATENCY_CRITICAL, hop: 0,
+                                         acc_ns: INTENT_CHAIN_BUDGET_NS + 1 },
+                     false, NOW);
+    assert_eq!(out, SettleOut::CappedBudget, "INTENT：K8 链累计帽拒");
+    assert_eq!(t.intent_effective, INTENT_UTILITY, "INTENT：K8 回落 declared");
+    let mut t = it_task(INTENT_UTILITY, INTENT_UTILITY);
+    let out = settle(&mut t, MsgIntent { intent: INTENT_LATENCY_CRITICAL, hop: 0,
+                                         acc_ns: INTENT_CHAIN_BUDGET_NS },
+                     false, NOW);
+    assert_eq!(out, SettleOut::Borrowed, "INTENT：K8 恰在封顶须放行");
+
+    // K9. SVC options 面：channel_create(options, *out0, *out1)——bit0 opt-out
+    //     合法（端点 no_intent 可查）、bit1 起及 !0 拒 -EINVAL（event_create
+    //     的 options 拒面同款门）。两端点 leak 不回收（ktest 政策）。
+    let mut out0: u64 = 0;
+    let mut out1: u64 = 0;
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut out0 as u64, &raw mut out1 as u64),
+        0,
+        "INTENT：K9 常规 create（options=0）"
+    );
+    assert!(out0 != 0 && out1 != 0 && out0 != out1, "INTENT：K9 双端 handle");
+    let (mut o2, mut o3): (u64, u64) = (0, 0);
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, 1, &raw mut o2 as u64, &raw mut o3 as u64),
+        0,
+        "INTENT：K9 bit0 opt-out create"
+    );
+    let ht = bootstrap_table();
+    let ni = ht.get_raw(o2 as u32, ObjType::Channel, 0)
+        .expect("INTENT：K9 取 opt 端点")
+        .0;
+    // SAFETY: 刚 get_raw 过（在表、类型 Channel）；ktest 单核顺序。
+    assert!(unsafe { (*ni.as_ptr()).obj.as_channel().unwrap().no_intent() },
+            "INTENT：K9 bit0 端点须 no_intent");
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, 2, &raw mut o2 as u64, &raw mut o3 as u64),
+        crate::handle::ERR_INVALID_ARG as i64,
+        "INTENT：K9 bit1 未定义须拒"
+    );
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, !0, &raw mut o2 as u64, &raw mut o3 as u64),
+        crate::handle::ERR_INVALID_ARG as i64,
+        "INTENT：K9 野 options 须拒"
+    );
+    let _ = (RIGHT_SEND, RIGHT_RECV); // 面上引用（rights 门控面 H 段已盖）
+
+    berry_hal_aarch64::uart_puts(b"INTENT-K ok\n");
+}
+

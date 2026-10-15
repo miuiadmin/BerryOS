@@ -40,6 +40,10 @@ pub struct Message {
     pub nbytes: usize,
     pub handles: [(NonNull<ObjRef>, Rights); CHAN_HND_MAX],
     pub nhandles: usize,
+    /// 4-3c intent 消息头（`IPC设计.md` §2：内核可见元数据槽，ADR #42）：
+    /// send 侧快照发送者 `intent_effective`、recv 侧结算——用户不可见不传参，
+    /// 纯内核随行数据（recv ABI 不回写）。
+    pub meta: berry_sched::intent::MsgIntent,
 }
 
 impl Message {
@@ -50,6 +54,7 @@ impl Message {
             nbytes: 0,
             handles: [(NonNull::dangling(), 0); CHAN_HND_MAX],
             nhandles: 0,
+            meta: berry_sched::intent::MsgIntent::default(),
         }
     }
 }
@@ -62,6 +67,10 @@ pub struct ChannelEnd {
     peer: Option<NonNull<ObjRef>>,
     /// 本端收件队列（对端 send 压这里；本端 recv 从这里弹）。
     queue: Vec<Message>,
+    /// 4-3c opt-out（五件套之 4，QNX `_NTO_CHF_FIXED_PRIORITY` 等价）：
+    /// `channel_create` options bit0——置位端 recv **不结算 intent**（固定优先级
+    /// server 逃生门）。对称建对 API 下「通道级」语义 = 两端同置、双向皆不传播。
+    no_intent: bool,
 }
 
 impl ChannelEnd {
@@ -70,10 +79,16 @@ impl ChannelEnd {
     /// **队列预储 [`CHAN_DEPTH`] 容量**（3b3 审查 H2 try 化：send 压队列/recv
     /// 回滚 push_front 曾在 take 之后分配——OOM abort 于迁移中途；预储后运行
     /// 期零增长）。预储失败返 None（调用方折 -ENOMEM，先于一切入表——零回滚面）。
-    pub fn try_unpaired() -> Option<Self> {
+    /// `no_intent` = opt-out 标志（见字段注）。
+    pub fn try_unpaired(no_intent: bool) -> Option<Self> {
         let mut queue = Vec::new();
         queue.try_reserve_exact(CHAN_DEPTH).ok()?;
-        Some(Self { peer: None, queue })
+        Some(Self { peer: None, queue, no_intent })
+    }
+
+    /// opt-out 标志（recv 结算侧查询）。
+    pub fn no_intent(&self) -> bool {
+        self.no_intent
     }
 
     /// 把两个已入表的端点互指互钉（`channel_create` 的收尾步骤）。

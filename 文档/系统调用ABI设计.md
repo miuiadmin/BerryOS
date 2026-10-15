@@ -307,8 +307,14 @@ berry_status_t berry_thread_exit(void);
 berry_status_t berry_thread_sleep(berry_time_t deadline);     /* nanosleep 等价 */
 
 /* —— IPC / event —— */
-berry_status_t berry_channel_create(berry_handle_t *out0, berry_handle_t *out1);
-                               /* 一次建一对端点，两端均授 SEND|RECV|DUPLICATE；
+berry_status_t berry_channel_create(uint32_t options,
+                                    berry_handle_t *out0, berry_handle_t *out1);
+                               /* 4-3c 起 options 首参（event_create 同形）：
+                                  bit0 = CHAN_OPT_NO_INTENT——opt-out 通道，
+                                  置位端 recv 不结算 msg_intent（QNX
+                                  _NTO_CHF_FIXED_PRIORITY 等价，IPC设计 §2.1）；
+                                  其余位保留，非 0 拒 -EINVAL；
+                                  一次建一对端点，两端均授 SEND|RECV|DUPLICATE；
                                   出参先置 0 再写新值（create 种子约定） */
 berry_status_t berry_channel_send(berry_handle_t ch,
                               const void *bytes, size_t nbytes,
@@ -384,7 +390,7 @@ extern "C" {
     pub fn berry_thread_exit() -> ! ;
     pub fn berry_thread_sleep(deadline: Time) -> Status;
 
-    pub fn berry_channel_create(out0: *mut Handle, out1: *mut Handle) -> Status;
+    pub fn berry_channel_create(options: u32, out0: *mut Handle, out1: *mut Handle) -> Status;
     pub fn berry_channel_send(ch: Handle, bytes: *const u8, nbytes: usize,
                             handles: *const Handle, nhandles: usize) -> Status;
     pub fn berry_channel_recv(ch: Handle, bytes: *mut u8, nbytes: *mut usize,
