@@ -499,6 +499,119 @@ core::arch::global_asm!(
     "    b    .",
     ".globl __user_spawner_end",
     "__user_spawner_end:",
+
+    // 4-1 waiter：阻塞 object_wait_one 的 EL0 三路验收（拆步表：超时/命中双路）。
+    // 入口 x0 = 本进程表里的 Event handle（boot 双表挂同一 ObjRef——waker2 持
+    // 内核侧表 handle，signal 置位经 wake_matching 唤醒本进程）。三路：
+    //   ① 超时：清掩码 → wait(bit3, t0+100ms) → -ETIMEDOUT + observed==0 +
+    //      t1 ≥ deadline（真睡到点——TCG tick 粗粒度由 deadline 绝对时刻兜住）；
+    //   ② poll 命中：signal(!0, 0x20) 置恰 bit5 → wait(0x220 超集, 有 deadline)
+    //      → 即刻返 0 + observed==0x20（**全满足集**＝当前掩码，非请求子集）；
+    //   ③ 长睡被唤醒：清掩码 → wait(bit3, t2+10s) 真睡 → waker2 经真 SVC
+    //      signal(内核表 handle, bit3) → 醒来重验命中 → 0 + observed==0x8。
+    // 槽：0x2008 时钟、0x2010 observed。寄存器纪律：svc 只回写 x0，x1..x6 保
+    // 留传入值（路 1 的 deadline 留 x3、δ 留 x6 直接复用）。
+    ".balign 16",
+    ".globl __user_waiter",
+    "__user_waiter:",
+    "    mov  x20, x0",                 // x20 常驻：Event handle（waiter 表）
+    // ---- 路 1：超时自醒 ----
+    "    movz x0, #0x06",               // signal(h, !0, 0) 清零（出生必零，防御位）
+    "    mov  x1, x20",
+    "    movn x2, #0",                  // x2 = !0
+    "    mov  x3, xzr",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x61",               // t0 = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x5, [x2]",                // x5 = t0
+    "    movz x6, #0xE100",             // x6 = δ = 1e8 ns（100ms ≥ 1 slice）
+    "    movk x6, #0x05F5, lsl #16",
+    "    add  x3, x5, x6",              // deadline = t0 + δ
+    "    movz x0, #0x04",               // wait_one(h, 0x8, deadline, *obs=0x2010)
+    "    mov  x1, x20",
+    "    movz x2, #0x8",
+    "    movz x4, #0x2010",
+    "    svc  #0",                      // x3 = deadline 值（派发保留）
+    "    cmn  x0, #110",                // 须 -ETIMEDOUT（-110）
+    "    b.ne 3f",
+    "    ldr  x8, [x4]",                // observed（x4 = 0x2010 派发保留）
+    "    cbnz x8, 3f",                  // 未命中不得回写（入口预写 0）
+    "    movz x0, #0x61",               // t1 = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x9, [x2]",                // x9 = t1
+    "    cmp  x9, x3",                  // t1 ≥ deadline（真睡到点，非空转早返）
+    "    b.lo 3f",
+    // ---- 路 2：poll 即刻命中 + 全满足集 ----
+    "    movz x0, #0x06",               // signal(h, !0, 0x20)：清全部再置恰 bit5
+    "    mov  x1, x20",
+    "    movn x2, #0",
+    "    movz x3, #0x20",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x04",               // wait_one(h, 0x220, t1+δ, *obs)
+    "    mov  x1, x20",
+    "    movz x2, #0x220",              // 请求 bit5|bit9（超集——验回写非子集）
+    "    add  x3, x9, x6",              // deadline（x9=t1、x6=δ 均未传保留）
+    "    movz x4, #0x2010",
+    "    svc  #0",                      // 信号已到：poll-first 即刻命中不睡
+    "    cbnz x0, 3f",
+    "    ldr  x8, [x4]",                // observed
+    "    movz x9, #0x20",
+    "    cmp  x8, x9",                  // 须恰 0x20（全满足集 = current）
+    "    b.ne 3f",
+    // ---- 路 3：长睡被 waker2 signal 唤醒 ----
+    "    movz x0, #0x06",               // signal(h, !0, 0) 再清零（waker2 最早
+    "    mov  x1, x20",                 //   3 slice 后才置——此刻必无残留位）
+    "    movn x2, #0",
+    "    mov  x3, xzr",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x3, #0xE400",             // δ_far = 1e10 ns（10s，远超 waker2 时延）
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    movz x0, #0x61",               // t2 = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x5, [x2]",
+    "    add  x3, x5, x3",              // deadline = t2 + 10s
+    "    movz x0, #0x04",               // wait_one(h, 0x8, far, *obs)
+    "    mov  x1, x20",
+    "    movz x2, #0x8",
+    "    movz x4, #0x2010",
+    "    svc  #0",                      // 真睡 → waker2 signal(bit3) 唤醒重验
+    "    cbnz x0, 3f",                  // （waker2 先 signal → poll 命中同过；真睡由路 1 验）
+    "    ldr  x8, [x4]",
+    "    movz x9, #0x8",
+    "    cmp  x8, x9",                  // observed == bit3（全满足集）
+    "    b.ne 3f",
+    // ---- 稳态循环：节流 + canary + 'W' ----
+    "    movz x9, #0x30, lsl #16",      // 节流阈值（与诸位用户进程同量级）
+    "0:  mov  x10, xzr",
+    "1:  add  x10, x10, #1",
+    "    cmp  x10, x9",
+    "    b.lo 1b",
+    "    movz x3, #0x2000",             // 数据页 canary
+    "    ldr  x4, [x3]",
+    "    cbz  x4, 3f",
+    "    movz x0, #0xFF",               // NR_DEBUG_PUTCHAR：'W' = waiter 活证
+    "    movz x1, #0x57",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    b    0b",
+    "3:  movz x4, #0x4000, lsl #16",    // 自陷：三路断链 → 被杀 → watchdog 错杀断言 FAIL
+    "    ldr  x5, [x4]",
+    "    b    .",
+    ".globl __user_waiter_end",
+    "__user_waiter_end:",
 );
 
 extern "C" {
@@ -510,6 +623,8 @@ extern "C" {
     static __user_abuser_end: u8;
     static __user_spawner: u8;
     static __user_spawner_end: u8;
+    static __user_waiter: u8;
+    static __user_waiter_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -545,6 +660,13 @@ pub fn user_abuser_code() -> &'static [u8] {
 pub fn user_spawner_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_spawner, &__user_spawner_end) }
+}
+
+/// waiter 用户程序模板（4-1 验收：阻塞 object_wait_one 三路——超时/poll 命中/
+/// 真睡被 signal 唤醒；时序对手方 = main.rs 的 waker2 内核任务）。
+pub fn user_waiter_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_waiter, &__user_waiter_end) }
 }
 
 /// 一个用户进程的装配结果：表根 + ASID（交给 `spawn_user`）+ 地址空间根。

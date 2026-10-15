@@ -161,6 +161,30 @@ pub extern "C" fn rust_main() -> ! {
     berry_sched::spawn(task_sleeper, 0, b"sleeper");
     berry_sched::spawn(task_waker, 0, b"waker");
 
+    // 4-1 验收（`IPC设计.md` Phase 4 拆步表 4-1）：阻塞 object_wait_one——
+    // waiter（EL0）三路（超时 -ETIMEDOUT / poll 命中回写全满足集 / 真睡被
+    // signal 唤醒）+ waker2（内核任务）经真 SVC signal 内核侧表 handle。
+    // 同一 Event **双表挂同一 ObjRef**（insert_ref）——signal 侧与 wait 侧各
+    // 持自己表的 handle（能力跨表互通的活证，匹配键 = ObjRef 地址）。
+    let up_waiter =
+        user::UserProcess::build(mm::frames(), user::user_waiter_code(), user::USER_MAGIC);
+    let ht_waiter: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    use handle::{ObjType, RIGHT_SIGNAL};
+    let h_ev_kernel = syscall::bootstrap_table()
+        .insert(KernelObj::Event(event::Event::new()), RIGHT_SIGNAL)
+        .expect("main: Event 进内核侧表");
+    let (ev_ptr, _) = syscall::bootstrap_table()
+        .get_raw(h_ev_kernel, ObjType::Event, 0)
+        .expect("main: 取 Event ObjRef");
+    let h_ev_waiter = ht_waiter
+        .insert_ref(ev_ptr, RIGHT_SIGNAL)
+        .expect("main: Event 进 waiter 表（同一 ObjRef）");
+    berry_sched::spawn_user(user::USER_CODE_VA, h_ev_waiter as usize, user::USER_STACK_TOP,
+                          b"user_waiter", up_waiter.ttbr0_pa, up_waiter.asid,
+                          ht_waiter as *mut HandleTable as usize);
+    berry_sched::spawn(task_waker2, h_ev_kernel as usize, b"waker2");
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -282,5 +306,61 @@ extern "C" fn task_waker(_arg: usize) -> ! {
             core::hint::spin_loop();
         }
     }
+    berry_sched::exit_current()
+}
+
+/// 4-1 waker2 的 EL1 真 SVC 往返（ktest `svc6` 同款裁 4 参）：x0=nr（进）/
+/// ret（出）、x1..x3=参。走 current-EL SVC 向量 → HAL dispatch → 语义层——
+/// 全真 syscall 链（非直调 handler）。
+fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
+    let ret: u64;
+    // SAFETY: 同步异常；dispatch 只回写 x0。
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inout("x0") nr => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            options(nostack, preserves_flags),
+        );
+    }
+    ret as i64
+}
+
+/// 4-1 waker2：等 waiter 挂上路 3 长睡（3 slice 时延），经**真 SVC** 对内核侧
+/// 表 handle 发 `object_signal(h, 0, bit3)`——唤醒链全真：EL1 SVC 入口 →
+/// 语义层 signal → `wake_matching` → waiter 醒来重验命中。再睡 1 slice 让
+/// waiter 跑完三路进稳态，打关卡标记 `WAIT ok`（smoke 第 15）。waiter 断链
+/// 被杀 → 杀数超 1 → watchdog 错杀断言拦下（无需本任务二次确认）。
+extern "C" fn task_waker2(arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_OBJECT_SIGNAL, NR_THREAD_SLEEP};
+    let h_kernel = arg as u32;
+    // SAFETY: 只读 CNTFRQ / slice 常量（timer::init 后恒有效）。
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    assert!(freq != 0, "waker2: CNTFRQ 异常");
+    let slice_ns = berry_hal_aarch64::timer::slice_cycles() * 1_000_000_000 / freq;
+    let mut now: u64 = 0;
+    // SAFETY: svc 同步异常；now 为本任务私有栈变量（内核高半，copy_out 直拷）。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "waker2: clock_read");
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + 3 * slice_ns, 0, 0),
+        0,
+        "waker2: thread_sleep 3 slice"
+    );
+    // waiter 路 3 已挂队（bit3）→ 置位唤醒（清 0、置 bit3）。
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, h_kernel as u64, 0, 0x8),
+        0,
+        "waker2: object_signal bit3"
+    );
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "waker2: clock_read 2");
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + slice_ns, 0, 0),
+        0,
+        "waker2: thread_sleep 1 slice（让 waiter 收尾）"
+    );
+    berry_hal_aarch64::uart_puts(b"W WAIT ok\n");
     berry_sched::exit_current()
 }

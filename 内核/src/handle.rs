@@ -75,6 +75,8 @@ pub const ERR_NOT_FOUND: i32 = -2;
 pub const ERR_BAD_STATE: i32 = -37;
 /// EAGAIN：非阻塞操作当下无货可取（channel recv 空——3-4b；posix-ish）。
 pub const ERR_AGAIN: i32 = -11;
+/// ETIMEDOUT：阻塞等待到点未命中（object_wait_one deadline 到期——4-1）。
+pub const ERR_TIMEDOUT: i32 = -110;
 /// EOVERFLOW-style：offset/len 越出对象容量或区间管辖界。
 pub const ERR_OUT_OF_RANGE: i32 = -34;
 

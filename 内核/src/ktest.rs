@@ -630,8 +630,10 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "SYSCALL：close hc0");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "SYSCALL：close hc1");
 
-    // I. 3-4c event 三号：poll-only 位掩码语义 + SIGNAL 权利面（阻塞等待留
-    //    P4——deadline≠0 → -ENOTSUP；EL0 正向用例不做，验收 = 内核侧全语义面）。
+    // I. 3-4c event 三号：位掩码语义 + SIGNAL 权利面；4-1 wait_one 阻塞化后
+    //    deadline≠0 → 到点未命中 -ETIMEDOUT（ktest 在 sched::init 前不能睡，
+    //    用远古时刻 deadline=1 验「已过点立即返」路径；真睡的 EL0 正向验收 =
+    //    user_waiter 三路 + waker2，见 main.rs/user.rs）。
     use crate::handle::{RIGHT_DUPLICATE, RIGHT_SIGNAL};
     use crate::syscall::{NR_EVENT_CREATE, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE};
     static mut I_OBS: u64 = 0; // *observed 出参
@@ -657,8 +659,8 @@ fn test_syscall() {
         "SYSCALL：Event rights 须含 SIGNAL|DUPLICATE"
     );
 
-    // I1. poll 未命中 → -EAGAIN（出生全零）；deadline≠0 → -ENOTSUP（poll-only，
-    //     参检先于表查——坏参不碰表）。
+    // I1. poll 未命中 → -EAGAIN（出生全零）；deadline=1（远古时刻，poll 语义
+    //     下未命中）→ -ETIMEDOUT **不睡**（参检先于表查——坏参不碰表）。
     // SAFETY: 同上。
     unsafe { I_OBS = 0 };
     assert_eq!(
@@ -668,8 +670,8 @@ fn test_syscall() {
     );
     assert_eq!(
         svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0110, 1, &raw mut I_OBS as u64),
-        -95,
-        "SYSCALL：deadline≠0 须 -ENOTSUP（阻塞留 P4）"
+        -110,
+        "SYSCALL：deadline 已过未命中须 -ETIMEDOUT（不睡）"
     );
 
     // I2. signal 置位 → wait 命中回写**全满足集**（非请求子集——Zircon 同形）。

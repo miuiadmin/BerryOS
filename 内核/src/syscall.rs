@@ -6,13 +6,12 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 27 号编号全部在册（下方 NR_* 常量组）；4-0 实现 23 个——handle 三操作 +
+//! v1 27 号编号全部在册（下方 NR_* 常量组）；4-1 实现 23 个——handle 三操作 +
 //! clock_read（3-1）+ VMO/Vmar 九号（3-2）+ process_create/thread_create/
 //! process_start（3-3）+ channel_create/send/recv（3-4b，全部经 [`HandleTable`]
-//! 能力门控——**权限在 handle 不在对象**）+ event 三号（3-4c）+ thread_sleep
-//!（4-0，首个阻塞 syscall——睡眠原语 `berry_sched::block_current` 的 EL0 入口）。
-//! 其余（wait 阻塞化、process/thread 退出）留后续步，未注册槽由 HAL 默认返
-//! `-ENOTSUP`。
+//! 能力门控——**权限在 handle 不在对象**）+ event 三号（3-4c；4-1 wait_one
+//! 阻塞化）+ thread_sleep（4-0，首个阻塞 syscall）。其余（wait_many、
+//! process/thread 退出）留后续步，未注册槽由 HAL 默认返 `-ENOTSUP`。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
@@ -32,17 +31,21 @@
 //! 互钉、环泄漏政策）；本模块只做门控 + 拷贝 + 原子序（任一失败 = 调用者表
 //! 与队列零变化的复原承诺）。
 //!
-//! **event（3-4c）**：`event.rs` 纯位掩码 + poll-only（wait_one 查一次命中
-//! 回写全满足集 / 未命中 -EAGAIN；`deadline≠0` 一律 -ENOTSUP——阻塞排队留
-//! P4，与 channel 的非阻塞政策同源）。signal 门控 RIGHT_SIGNAL；wait 不需
-//! 权利位（12 位 rights 表无 WAIT 位，持有 handle 即可查）。
+//! **event（3-4c + 4-1）**：`event.rs` 纯位掩码。wait_one **阻塞化**（4-1）：
+//! poll-first（命中即返不睡）→ 未命中且 `deadline≠0` 挂 [`berry_sched::block_current`]
+//! 到绝对时刻，醒来**重验条件**（Timeout 时位可能刚被置——醒因不等于结果）；
+//! 到点未命中 `-ETIMEDOUT`、poll（`deadline==0`）未命中 -EAGAIN。signal 置位后
+//! 经 [`berry_sched::wake_matching`] 唤醒等同一对象、请求位与新置位集相交的
+//! 睡眠者。signal 门控 RIGHT_SIGNAL；wait 不需权利位（12 位 rights 表无 WAIT
+//! 位，持有 handle 即可查）。
 
 use crate::channel::{Message, CHAN_HND_MAX, CHAN_MSG_MAX, ChannelEnd};
 use crate::event::Event;
 use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
-    ERR_NO_MEMORY, ERR_OUT_OF_RANGE, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ,
+    ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
+    RIGHT_READ,
     RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE,
 };
 use crate::vmar::{Perm, Vmar, VmarError};
@@ -313,24 +316,29 @@ extern "C" fn sys_clock_read(tf: &mut TrapFrame) -> i64 {
     }
 }
 
-/// `thread_sleep(deadline)`（0x37，4-0 首个阻塞 syscall）：睡到绝对时刻
-/// `deadline` 纳秒（MONOTONIC——`clock_read` 同坐标系，无「无限等」哨兵，
-/// 客户端传 `clock_read()+δ`；`IPC设计.md` Phase 4 前置对齐 2）。
-///
-/// ns→CNTVCT 换算与 [`sys_clock_read`] 对称（先商后余防中间溢出——
-/// `deadline_ns × 62.5MHz` 直乘在 ~29 年处溢 u64，拆两项后安全）；时刻已过
-/// = 立即返回（poll 语义）。睡眠经 `berry_sched::block_current`（纯 sleep：
-/// obj=0 只能超时自醒）；SVC 语境天然屏蔽窗，续行后经 eret 自然解蔽——
-/// syscall 主体不可抢占（免锁根基）不被破坏。
-extern "C" fn sys_thread_sleep(tf: &mut TrapFrame) -> i64 {
-    let deadline_ns = tf.regs[1] as u64;
+/// MONOTONIC 纳秒 → CNTVCT 周期（先商后余防中间溢出，与 [`sys_clock_read`]
+/// 对称——`deadline_ns × 62.5MHz` 直乘在 ~29 年处溢 u64，拆两项后安全）。
+/// `freq==0` → `None`（真机异常，调用方折 -ENOTSUP）。
+fn ns_to_vct(ns: u64) -> Option<u64> {
     // SAFETY: 只读 CNTFRQ（timer::init 后恒有效）。
     let freq = berry_hal_aarch64::timer::cntfrq();
     if freq == 0 {
-        return ERR_NOT_SUPPORTED as i64; // 频率不可读（真机异常，同 clock_read）
+        return None;
     }
-    let target_vct = (deadline_ns / 1_000_000_000) * freq
-        + ((deadline_ns % 1_000_000_000) * freq) / 1_000_000_000;
+    Some((ns / 1_000_000_000) * freq + ((ns % 1_000_000_000) * freq) / 1_000_000_000)
+}
+
+/// `thread_sleep(deadline)`（0x37，4-0 首个阻塞 syscall）：睡到绝对时刻
+/// `deadline` 纳秒（MONOTONIC——`clock_read` 同坐标系，无「无限等」哨兵，
+/// 客户端传 `clock_read()+δ`；`IPC设计.md` Phase 4 前置对齐 2）。
+/// 时刻已过 = 立即返回（poll 语义）。睡眠经 `berry_sched::block_current`（纯
+/// sleep：obj=0 只能超时自醒）；SVC 语境天然屏蔽窗，续行后经 eret 自然解蔽——
+/// syscall 主体不可抢占（免锁根基）不被破坏。
+extern "C" fn sys_thread_sleep(tf: &mut TrapFrame) -> i64 {
+    let deadline_ns = tf.regs[1] as u64;
+    let Some(target_vct) = ns_to_vct(deadline_ns) else {
+        return ERR_NOT_SUPPORTED as i64; // 频率不可读（真机异常，同 clock_read）
+    };
     // SAFETY: 只读 CNTVCT。
     if target_vct > berry_hal_aarch64::timer::cntvct() {
         // 未到点才睡：已过点立即返回（屏蔽窗契约由 SVC 入口满足）。
@@ -1143,6 +1151,11 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
 /// `object_signal(h, clear_mask, set_mask)`：`signals = (signals & !clear) | set`
 /// （置/清一条原子）。v1 仅 **Event** 可 signal（thread/process 信号面随后续
 /// 步）；门控 RIGHT_SIGNAL。返回 0（非错误面不回写掩码新值——读用 wait_one）。
+///
+/// 4-1：置位后经 `wake_matching` 唤醒等本对象、请求位与**新置位集**相交的
+/// 睡眠者（清位不唤醒——位没新增）。匹配键 = ObjRef 地址（同一 Event 的
+/// handle 跨表 insert_ref 共享同一 ObjRef，双表 signal/wait 天然互通）。
+/// 被唤醒者**重验条件**兜底（重置已置位等边角 → 假唤醒无害，见 wait_one）。
 extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
     let (h, clear, set) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3]);
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
@@ -1157,54 +1170,92 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
         };
         ev.signal(clear, set);
     }
+    // 纯清位（set=0）无新增位 → 无人该醒（wake_matching 对掩码 0 无命中）。
+    berry_sched::wake_matching(obj.as_ptr() as usize, set);
     0
 }
 
-/// `object_wait_one(h, signals, deadline, *observed)`——**poll-only**（3-4c）：
-/// 非阻塞查一次当前掩码。命中（`current & signals != 0`）→ `*observed =
-/// current`（**全满足集**，Zircon 同形）返 0；未命中 → -EAGAIN。
-/// `deadline != 0` → -ENOTSUP（阻塞等待排队留 P4——v1 syscall 主体不可抢占
-/// 的免锁根基下没有安全睡眠路径，诚实缺口按号拒而非静默忙转）。
+/// `object_wait_one(h, signals, deadline, *observed)`（4-1 阻塞化）：
+/// 等待 `current & signals != 0`。命中 → `*observed = current`（**全满足集**，
+/// Zircon 同形）返 0；poll（`deadline==0`）未命中 → -EAGAIN；`deadline≠0`
+/// （MONOTONIC 绝对时刻）未命中 → 挂 [`berry_sched::block_current`] 睡到点。
+///
+/// **poll-first**：信号已到即返不睡（无丢信号）。醒来**重验条件**（醒因 ≠
+/// 结果：Timeout 时位可能刚被置、Signaled 时位可能又被清——清位竞态下重验
+/// 未命中且未到点则**再睡**，循环兜底）；到点未命中 → -ETIMEDOUT（时刻已过
+/// 的 deadline 走同一路径立即返，不睡）。
+///
+/// **睡眠钉住**：进入循环前 `ObjRef::retain` 一次、覆盖全部睡眠轮次——睡眠
+/// 期间调用者表乃至全表的 handle 可能被关光（waker 只持有另一表的 handle），
+/// 裸 ObjRef 悬空 = use-after-free（3-3 钉住纪律的跨睡眠版）；唯一出口
+/// release（若期间归零，此处 drop——屏蔽窗内、Drop 链不回表，安全）。
+///
 /// 等待**不需权利位**（12 位 rights 表本无 WAIT 位；持有 handle 即可查）。
 extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
     let (h, signals, deadline, observed) =
         (tf.regs[1] as u32, tf.regs[2], tf.regs[3], tf.regs[4]);
-    if deadline != 0 {
-        return ERR_NOT_SUPPORTED as i64;
-    }
     let el1 = caller_is_el1(tf);
     if let Err(e) = copy_out_u64(el1, observed, 0) {
         return e as i64;
     }
+    let deadline_vct = if deadline != 0 {
+        match ns_to_vct(deadline) {
+            Some(v) => v,
+            None => return ERR_NOT_SUPPORTED as i64, // 频率不可读（真机异常）
+        }
+    } else {
+        0
+    };
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let obj = match t.get_raw(h, ObjType::Event, 0) {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    // SAFETY: get_raw 已门控；只读（signal 写路径与本读点同为 IRQ 屏蔽串行）。
-    let current = unsafe {
-        let r = &*obj.as_ptr();
-        match r.obj.as_event_ref() {
-            Some(ev) => ev.signals,
-            None => return ERR_BAD_HANDLE as i64, // 不可达防御面
+    // 统一循环：挂队前 + 每次醒来都重验（醒因不等于结果）。钉住**一次覆盖
+    // 全部睡眠轮次**（清位竞态下可能再睡多轮），release 收口在唯一出口——
+    // release 后不再触 obj。
+    // SAFETY: 活对象（表内 handle 钉着）；睡眠期间全表 handle 被关光也不销毁
+    //（3-3 钉住纪律的跨睡眠版）。
+    unsafe { (*obj.as_ptr()).retain() };
+    let ret = loop {
+        // SAFETY: 钉住在身对象必活；只读（signal 写路径与本读点同为屏蔽串行）。
+        let current = unsafe {
+            match (*obj.as_ptr()).obj.as_event_ref() {
+                Some(ev) => ev.signals,
+                None => break ERR_BAD_HANDLE as i64, // 不可达防御面
+            }
+        };
+        if current & signals != 0 {
+            break match copy_out_u64(el1, observed, current) {
+                Ok(()) => 0,
+                Err(e) => e as i64,
+            };
         }
+        if deadline == 0 {
+            break ERR_AGAIN as i64; // poll 语义（3-4c 不变）
+        }
+        // SAFETY: 只读 CNTVCT。
+        if deadline_vct <= berry_hal_aarch64::timer::cntvct() {
+            break ERR_TIMEDOUT as i64; // 到点未命中（含传入即已过——不睡）
+        }
+        // 匹配键 = ObjRef 地址；请求位 = signals（signal 侧以新置位集匹配）。
+        // 醒因丢弃：Signaled/Timeout 都只信重验——Timeout 时位可能刚被置、
+        // Signaled 时位可能又被清；未命中且未到点则再睡，循环兜底。
+        let _reason =
+            berry_sched::block_current(obj.as_ptr() as usize, signals, deadline_vct);
     };
-    if current & signals != 0 {
-        match copy_out_u64(el1, observed, current) {
-            Ok(()) => 0,
-            Err(e) => e as i64,
-        }
-    } else {
-        ERR_AGAIN as i64
-    }
+    // SAFETY: 与上面的 retain 成对（唯一出口）；若等待期间 handle 全关光，
+    // 此处归零 drop（屏蔽窗内、Drop 链纯指针操作不回表）。
+    unsafe { ObjRef::release(obj) };
+    ret
 }
 
 // ---- boot 期注册（rust_main 在 ktest 之前调用；HAL install 见其 # Panics）----
 
 /// 注册已实现号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 + channel 三号 +
-/// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号。
-/// 0x05 wait_many 与 0x33/0x35/0x36 退出随后续步）。未列号走 HAL 默认
-/// `-ENOTSUP`。
+/// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号；4-1 wait_one
+/// 阻塞化为改板（非新号，仍 23 号）。0x05 wait_many 与 0x33/0x35/0x36 退出随后续步）。
+/// 未列号走 HAL 默认 `-ENOTSUP`。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
     reg(NR_HANDLE_CLOSE, sys_handle_close);
