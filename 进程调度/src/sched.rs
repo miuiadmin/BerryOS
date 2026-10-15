@@ -55,6 +55,7 @@ static mut IDLE_TASK: Task = Task {
     wait_obj: 0,
     wait_signals: 0,
     wait_deadline: 0,
+    wait_since: 0,
     wakeup: core::cell::Cell::new(crate::task::WakeReason::Pending),
 };
 
@@ -280,6 +281,34 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     }
 }
 
+// ---- 唤醒遥测钩子（4-0 配套；`telemetry.rs` 唤醒环的注入点）----
+
+/// 唤醒钩子签名。**调用契约**与 [`SwitchHook`] 同：IRQ 屏蔽路径调用（两个
+/// 唤醒位：`wake_matching`（Signaled）/ `expire_timeouts`（Timeout））→ 钩子
+/// 本身无需加锁，但必须**零分配、零切换、短平快**（IRQ 热路径纪律同 3-4c）。
+pub type WakeHook = fn(task: &Task, reason: WakeReason);
+
+/// 钩子槽（`None` = 无遥测；`telemetry::init` 注册）。
+static mut WAKE_HOOK: Option<WakeHook> = None;
+
+/// 注册/注销唤醒钩子。仅 boot 期（IRQ 屏蔽、首个切换发生前）调用。
+pub fn set_wake_hook(hook: Option<WakeHook>) {
+    // SAFETY: 写点仅 boot 期（单核、IRQ 屏蔽、无并发唤醒）。
+    unsafe { WAKE_HOOK = hook };
+}
+
+/// 两个唤醒位共用的遥测发射点：在任务**摘队、置因、入 runqueue 之后**调
+///（此刻状态字段定型；`wait_obj`/`wait_since` 唤醒不清除，钩子可读——正是
+/// block→wake 延迟与等待对象的记录来源）。`None` 钩子 = 一次静态读 + 分支。
+#[inline]
+unsafe fn note_wake(t: *mut Task, reason: WakeReason) {
+    // SAFETY: 指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
+    let hook = unsafe { WAKE_HOOK };
+    if let Some(h) = hook {
+        h(unsafe { &*t }, reason);
+    }
+}
+
 // ---- 睡眠/唤醒原语（4-0；`IPC设计.md` 阶段化目标 Phase 4 拆步表步 4-0）----
 
 /// 全局睡眠队列（SLEEPQ）：侵入式双向 + 按 `wait_deadline` 升序（最近到期在头
@@ -404,10 +433,12 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
     // SAFETY: 调用方契约 = IRQ 屏蔽窗；CURRENT 有效；SLEEPQ 单核顺序访问。
     unsafe {
         let cur = CURRENT;
-        // 填等待描述（唤醒方 wake_matching 的匹配依据）。
+        // 填等待描述（唤醒方 wake_matching 的匹配依据）+ 入睡时刻戳（唤醒
+        // 遥测环记 block→wake 延迟——`wait_since` 与 deadline 同窗填，无竞态）。
         (*cur).wait_obj = obj;
         (*cur).wait_signals = signals;
         (*cur).wait_deadline = deadline_vct;
+        (*cur).wait_since = hal::timer::cntvct();
         (*cur).wakeup.set(WakeReason::Pending);
         // 入 SLEEPQ（升序）+ 出 runqueue 环 + 置 Blocked。Blocked 任务绝不能
         // 留在环上（rotate 会选中它）——RR.dequeue 会置 Exited（语义不符），
@@ -465,6 +496,7 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
                 sleepq().unlink(c);
                 (*t).wakeup.set(WakeReason::Signaled);
                 RR.enqueue(&mut *t, rq()); // 置 Ready + 入环
+                note_wake(t, WakeReason::Signaled);
                 n += 1;
             }
         }
@@ -490,6 +522,7 @@ unsafe fn expire_timeouts() {
         sleepq().unlink(h);
         (*t).wakeup.set(WakeReason::Timeout);
         RR.enqueue(&mut *t, rq());
+        note_wake(t, WakeReason::Timeout);
     }
 }
 

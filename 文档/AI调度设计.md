@@ -98,7 +98,7 @@
 ## 9. 阶段化目标（对照 `架构决策.md` #20 / #21）
 
 - **v1 / v2**：埋遥测 instrumentation（util / 唤醒 / cache 基础计数写环）；策略注入接口**留桩**（内核查空表 → 等价于无 AI）；**intent + 标注来源 + 值通胀计数器进遥测落盘（ADR #42——M4 映射表与 kill criteria 的实测依据）**。（关卡 G0–G3）
-  - **v1 落地注记（2026-10，Phase 3-4c）**：①留桩已落地——`进程调度/src/policy.rs`（词汇表 = §2 四类动作封顶）+ `RoundRobin::pick_next` 出选后查表；②**空表等价是断言不是口号**——ktest `POLICY ok`（smoke 第 13 标记）：绑空表 12 轮 pick 与未绑基线逐项全等 + 对照表字段真变但选人序列不变（v1 护栏：注入面只写 TCB 表示法字段，不碰机制决策）；③遥测环第一级已落地——`内核/src/telemetry.rs` 静态预储 64 槽切换环（vct/任务 id/切换分型/idle 判据，零分配写入），watchdog 周期断言环在涨 + vct 单调；**消费路径（telemetry_open 映射）与唤醒事件（v1 无阻塞原语）留 v3/P4**。
+  - **v1 落地注记（2026-10，Phase 3-4c）**：①留桩已落地——`进程调度/src/policy.rs`（词汇表 = §2 四类动作封顶）+ `RoundRobin::pick_next` 出选后查表；②**空表等价是断言不是口号**——ktest `POLICY ok`（smoke 第 13 标记）：绑空表 12 轮 pick 与未绑基线逐项全等 + 对照表字段真变但选人序列不变（v1 护栏：注入面只写 TCB 表示法字段，不碰机制决策）；③遥测环第一级已落地——`内核/src/telemetry.rs` 静态预储 64 槽切换环（vct/任务 id/切换分型/idle 判据，零分配写入），watchdog 周期断言环在涨 + vct 单调；**唤醒事件已随 Phase 4-0 配套落地（2026-10）**——同文件第二环 `WAKE_RING` 64 槽（唤醒时刻/入睡时刻/等待对象/任务 id/醒因 Signaled|Timeout，`#[repr(C)]` 32B 定型），`sched.rs` 唤醒钩子在两个唤醒位（`wake_matching`/`expire_timeouts`）发射，block→wake 延迟即 §4 第一级「唤醒模式」分布数据；watchdog 附加断言（boot 双路径门槛 `BLOCK_BOOT_DONE` 放行后：计数 ≥ 2/延迟非负/vct 单调/双醒因覆盖）；**消费路径（telemetry_open 映射）仍留 v3**。
 - **v3**：(B) 启发式分类 advisor 服务上线（**与 intent band 化同窗 M4 交付**，只对 UNSPECIFIED 定档）；注入 / 遥测 / 护栏打通；**护栏不变量**（RT 屏蔽、越界拒收）随 G4–G5 调度器正确性一起验证（但非关卡通过条件，见末条与 `测试策略.md` §8）；**kill criteria 复核点（ADR #42）**：可复现 A/B 无可测收益 → AI 永久 hint-only。
 - **v4+**：(A) 学习策略；管家核；完整离线训练管线。（G5 之后）
 - **AI 不进任何正确性关卡**：它是 G5 之后的性能 / 能效增强，不是正确性前置条件。

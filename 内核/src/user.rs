@@ -630,6 +630,19 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 let tel = crate::telemetry::total();
                 assert!(tel >= switches, "G1.5 FAIL: 遥测环未跟上（total={} < switches={}）", tel, switches);
                 assert!(crate::telemetry::check(), "G1.5 FAIL: 遥测环 vct 非单调");
+                // 4-0 配套唤醒环断言：sleeper 双路径全过（BLOCK_BOOT_DONE 置位
+                // 前提 = 两条 boot 记录已落环）后才验——①计数 ≥ 2；②健康自检
+                // （单调/非负延迟/原因合法）；③环未淘汰期（total ≤ 容量）加验
+                // 两类原因都见过（淘汰后掩码只反映环内现状，不再断言）。
+                if crate::BLOCK_BOOT_DONE.load(core::sync::atomic::Ordering::Relaxed) {
+                    let wt = crate::telemetry::wake_total();
+                    assert!(wt >= 2, "G1.5 FAIL: 唤醒环未记满 boot 双路径（wake_total={}）", wt);
+                    assert!(crate::telemetry::wake_check(), "G1.5 FAIL: 唤醒环非单调/负延迟/非法原因");
+                    if wt <= crate::telemetry::WAKE_RING_LEN as u64 {
+                        let mask = crate::telemetry::wake_reason_mask();
+                        assert!(mask == 0b11, "G1.5 FAIL: 唤醒环缺路径（mask={:#b}，须 Signaled|Timeout 双覆盖）", mask);
+                    }
+                }
                 berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
                 berry_sched::exit_current()
             }

@@ -225,6 +225,12 @@ const TASK_B_MAGIC: u64 = 0x00B6_C0DE_BBBB_0002;
 /// 不透明 token——4-1 起该语义交给 Event/Channel 的 ObjRef 地址）。
 static SLEEP_OBJ: u8 = 0;
 
+/// sleeper 双路径全过标志（唤醒环 watchdog 断言的门槛——置位即两条 boot
+/// 唤醒记录已落 `telemetry::WAKE_RING`，断言才不赌 boot 时序）。单核 v1
+/// Relaxed 足够（读写都在屏蔽窗/单核串行语境）。
+pub static BLOCK_BOOT_DONE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// 4-0 sleeper：两条唤醒路径各验一遍，全绿打 `BLOCK ok`。
 ///
 /// - 路径 1（超时自醒 'T'）：纯 sleep 1 slice——醒因必 Timeout 且实际醒来
@@ -252,6 +258,9 @@ extern "C" fn task_sleeper(_arg: usize) -> ! {
     let r2 = berry_sched::block_current(&SLEEP_OBJ as *const u8 as usize, !0, u64::MAX);
     berry_hal_aarch64::enable_irq();
     assert!(r2 == WakeReason::Signaled, "sleeper: 条件路径醒因非 Signaled");
+    // 双路径全过——置门槛放行 watchdog 唤醒环断言（此刻两条 boot 唤醒记录必
+    // 已落环：钩子在唤醒时刻发射，先于 sleeper 续行到这里）。
+    BLOCK_BOOT_DONE.store(true, core::sync::atomic::Ordering::Relaxed);
     berry_hal_aarch64::uart_puts(b"K BLOCK ok\n");
     berry_sched::exit_current()
 }

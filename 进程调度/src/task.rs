@@ -129,6 +129,9 @@ pub struct Task {
     pub wait_signals: u64,
     /// 等待截止（CNTVCT 周期；`u64::MAX` = 无限等）。超时扫描摘除置 Timeout。
     pub wait_deadline: u64,
+    /// 入睡时刻 CNTVCT（`block_current` 戳；唤醒遥测环记 block→wake 延迟用
+    /// ——`AI调度设计.md` §4 第一级「唤醒模式」数据源）。
+    pub wait_since: u64,
     /// 唤醒原因（`block_current` 的返回值来源；唤醒方/超时扫描写入，
     /// 睡眠者续行时读取即消费）。
     pub wakeup: Cell<WakeReason>,
@@ -252,6 +255,7 @@ impl Task {
             wait_obj: 0,
             wait_signals: 0,
             wait_deadline: 0,
+            wait_since: 0,
             wakeup: Cell::new(WakeReason::Pending),
         })
     }
