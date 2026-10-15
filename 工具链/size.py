@@ -5,8 +5,12 @@
 一切体积讨论的基线从 day-one 建起。零依赖解析 ELF64 头：
 
   - 文件总量（ROM/镜像体积）
-  - PT_LOAD 汇总：filesz = 镜像内实占，memsz = 运行时静态内存
-    （memsz - filesz ≈ .bss，即不占镜像但占 RAM 的部分）
+  - PT_LOAD 汇总：filesz = 镜像内实占，ram = memsz 静态内存**小计**
+    （memsz - filesz ≈ .bss，即不占镜像但占 RAM 的部分；
+    不含链接脚本裸 `.` 递增保留的 boot/主栈——它们不进任何段）
+  - ram_total = __kernel_end - RAM_BASE：**真实静态内存占用** = memsz 小计
+    + 保留栈（boot 32KiB + 主栈 256KiB），体积基线口径以此为准；
+    symtab 缺失/找不到符号时优雅降级为提示行（strip 产物），不阻断
   - alloc 段明细（.text / .rodata / .data / .bss / …）
 
 只报数、不设阈值——基线先有数据，回归门禁等基线稳定后再定
@@ -17,7 +21,7 @@
   - e_entry 在低半（boot 段内）；
   - 每个 PT_LOAD 满足 vaddr==paddr（低半 boot：.text.boot/.bss.boot/.boot_stack）
     或 vaddr-paddr==0xFFFFFF8000000000（高半主体 = KERNEL_VA_BASE 镜像）；
-  - 全部 paddr 落在 QEMU virt RAM [0x40000000, 0x80000000)。
+  - 全部 paddr 落在 QEMU virt RAM [0x40000000, 0x48000000)（-m 128M）。
 """
 import os
 import struct
@@ -26,21 +30,49 @@ import sys
 EI_NIDENT = 16
 
 KERNEL_VA_BASE = 0xFFFFFF8000000000
-RAM_BASE, RAM_TOP = 0x40000000, 0x80000000
+# QEMU virt RAM 顶：基址 0x40000000，实跑配置 -m 128M（justfile 的 MACH/run-el2
+# 与 工具链/smoke.sh 一致）→ 顶 = 0x40000000 + 128MiB = 0x48000000。
+RAM_BASE, RAM_TOP = 0x40000000, 0x48000000
 
 
 def u(buf, off, size):
     return int.from_bytes(buf[off:off + size], "little")
 
 
-def main(path):
-    with open(path, "rb") as f:
-        elf = f.read()
-
+def require_elf64_le(elf, path):
+    """入口共用校验：魔数 + class（64 位）+ 小端——防 32 位/大端伪造产物
+    混过任一入口（main 与 assert_flip 都要先过这一关）。"""
     if elf[:4] != b"\x7fELF":
         sys.exit(f"size.py: 不是 ELF 文件：{path}")
     if elf[4] != 2 or elf[5] != 1:
         sys.exit(f"size.py: 只支持 ELF64 小端：{path}")
+
+
+def find_symbol(elf, e_shoff, e_shentsize, e_shnum, name):
+    """在第一个 SHT_SYMTAB 里按名找符号，返回 st_value；无 symtab 或
+    找不到返回 None（调用方负责降级，别崩）。"""
+    sh = lambda i: elf[e_shoff + i * e_shentsize: e_shoff + (i + 1) * e_shentsize]
+    for i in range(e_shnum):
+        s = sh(i)
+        if u(s, 4, 4) != 2:  # SHT_SYMTAB
+            continue
+        sym_off, sym_size = u(s, 24, 8), u(s, 32, 8)
+        entsize = u(s, 56, 8) or 24  # Elf64_Sym
+        strtab_off = u(sh(u(s, 40, 4)), 24, 8)  # sh_link → 关联字符串表
+        for j in range(sym_size // entsize):
+            sym = elf[sym_off + j * entsize: sym_off + (j + 1) * entsize]
+            st_name = u(sym, 0, 4)
+            end = elf.index(b"\0", strtab_off + st_name)
+            if elf[strtab_off + st_name:end].decode() == name:
+                return u(sym, 8, 8)  # st_value
+    return None
+
+
+def main(path):
+    with open(path, "rb") as f:
+        elf = f.read()
+
+    require_elf64_le(elf, path)
 
     # ELF64 头字段偏移（e_ident[16] 之后：e_type/e_machine/e_version 各 4B，
     # e_entry/e_phoff/e_shoff 各 8B，再 e_flags 4B + 6 个 u16）
@@ -81,7 +113,21 @@ def main(path):
     print(f"berryos-size: {path}")
     print(f"berryos-size: file={len(elf)}B ({kib(len(elf))})")
     print(f"berryos-size: PT_LOAD rom={rom}B ({kib(rom)}) ram={ram}B ({kib(ram)})"
-          f"  # ram-rom={ram - rom}B 为 .bss 类零填充")
+          f"  # ram-rom={ram - rom}B 为 .bss 类零填充；ram 为 memsz 小计"
+          f"（不含链接脚本裸 . 保留的 boot/主栈）")
+    # —— 真实静态内存：__kernel_end 是链接脚本镜像末端符号（linker-aarch64.ld，
+    #    含裸 `.` 保留的 boot 栈 0x8000 + 主栈 0x40000，PT_LOAD 看不见这部分）。
+    #    高半符号先减 KERNEL_VA_BASE 折算 PA 再减 RAM_BASE。——
+    kend = find_symbol(elf, e_shoff, e_shentsize, e_shnum, "__kernel_end")
+    if kend is not None:
+        kend_pa = kend - KERNEL_VA_BASE if kend >= KERNEL_VA_BASE else kend
+        print(f"berryos-size: ram_total={kend_pa - RAM_BASE}B "
+              f"({kib(kend_pa - RAM_BASE)})"
+              f"  # __kernel_end-RAM_BASE 真实静态内存"
+              f"（memsz 小计 + boot 栈 32KiB + 主栈 256KiB）")
+    else:
+        print("berryos-size: ram_total 未知：无 SHT_SYMTAB 或找不到 __kernel_end"
+              "（strip 过的产物？）——降级只报 memsz 小计")
     for vaddr, filesz, memsz, flags in loads:
         print(f"berryos-size:   LOAD vaddr=0x{vaddr:012x} filesz={filesz}B memsz={memsz}B flags=0x{flags:x}")
     for name, file_sz, mem_sz in sections:
@@ -93,8 +139,7 @@ def assert_flip(path):
     """2b-1 高半翻转程序头断言（见模块文档）。失败非零退出（smoke FAIL）。"""
     with open(path, "rb") as f:
         elf = f.read()
-    if elf[:4] != b"\x7fELF":
-        sys.exit(f"size.py: 不是 ELF 文件：{path}")
+    require_elf64_le(elf, path)
     e_entry = u(elf, 24, 8)
     e_phoff, e_phentsize, e_phnum = u(elf, 32, 8), u(elf, 54, 2), u(elf, 56, 2)
 

@@ -123,6 +123,11 @@ pub fn yield_now() {
                 (*prev).state = TaskState::Ready;
                 (*next_ptr).state = TaskState::Running;
                 (*next_ptr).slice_left = hal::timer::slice_cycles();
+                // 授片即重编（`调度器设计.md` §4.1 绝对截止时间纪律）：以授片时刻的
+                // CNTVCT 现读重算绝对截止——新任务从授片时刻起拿满片，不继承 prev
+                // 的残余倒计。
+                // SAFETY: IRQ 已被 disable_irq 屏蔽；写 CNTV 系统寄存器；EL1。
+                hal::timer::arm_slice();
                 CURRENT = next_ptr;
                 activate_if_changed(prev, next_ptr);
                 hal::task::context_switch(&raw mut (*prev).ctx, &raw const (*next_ptr).ctx);
@@ -172,6 +177,12 @@ unsafe fn switch_away_forever() -> ! {
     };
     (*next_ptr).state = TaskState::Running;
     (*next_ptr).slice_left = hal::timer::slice_cycles();
+    // 授片即重编（同 yield_now；`调度器设计.md` §4.1 绝对截止时间纪律）——授片给
+    // 真任务才 arm：切去 idle 不 arm（idle_loop 会 mask CNTV，arm 反引入一次空 tick）。
+    // SAFETY: IRQ 已屏蔽（disable_irq 或异常入口硬件屏蔽）；写 CNTV 系统寄存器；EL1。
+    if next_ptr != addr_of_mut!(IDLE_TASK) {
+        hal::timer::arm_slice();
+    }
     CURRENT = next_ptr;
     activate_if_changed(cur, next_ptr);
     // prev=cur（已出 runqueue、将废弃）；切走后永不回到 cur。
@@ -246,6 +257,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 (*cur).state = TaskState::Ready;
                 (*next_ptr).state = TaskState::Running;
                 (*next_ptr).slice_left = hal::timer::slice_cycles();
+                // 授片重编已由 timer::handle 的 rearm-before-EOIR 在 IRQ 入口覆盖
+                // （同一中断上下文、微秒级差）——CVAL 已是满片终点，此处不再 arm。
                 CURRENT = next_ptr;
                 SWITCHES = SWITCHES.wrapping_add(1);
                 activate_if_changed(cur, next_ptr);

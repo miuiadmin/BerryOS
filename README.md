@@ -4,6 +4,8 @@
 
 自研**微内核 + 跨平台操作系统**。Rust 从内核到用户态，ARM64（AArch64）首发，QEMU `virt` 机型验证。
 
+端定位（ADR #39–#41）：v1 主战场 = **手表/穿戴 rich 档（MB 级内存），ARM64 单线走到底**；MCU 档（KB 级）v1 排除；v2 攻工业 RT；x86_64 提前启动 QEMU 最小集移植（XNU 同源分端模式：同一内核源、分端用户态）。
+
 ## 四根支柱
 
 | 支柱 | 一句话 |
@@ -15,8 +17,8 @@
 
 ## 现状（诚实版）
 
-- ✅ **Phase 2a / 关卡 G1 已完成**：MMU 身份映射、buddy/slab 堆、异常向量 + panic dump、GICv2 + CNTV timer、SVC syscall 派发、内核线程 + 上下文切换、协作/抢占调度（机制在内核、策略可插拔 trait）、tickless idle（空闲 mask CNTV + `wfi`）、IRQ 驱动抢占（两忙循环任务在 timer slice 下分时，无 yield）。
-- ⏭️ **下一步 Phase 2b**：高半翻转 → 每进程页表 + ASID → 匿名 VMO/Vmar → 首个 EL0 用户进程。
+- ✅ **Phase 2b / 出口关卡 G1.5 已完成（2026-10，2b-0~2b-4 全落地）**：内核主体链高半（TTBR1 canonical、低半身份表已退役，boot 打 `KVA ok` 自校验）、每进程页表 + ASID（16 位实测、回卷全量失效）、匿名 VMO/Vmar、首个 EL0 用户进程（ktest `ASPACE ok` / `VMO ok` / `HANDLE ok` / `SYSCALL ok`；用户进程野指针只死自己，坏 handle/未知 syscall 一律错误码返回不杀——watchdog 打 `G1.5 ok`）。其下是 Phase 2a（G1）：buddy/slab 堆、异常向量 + panic dump、GICv2 + CNTV timer、内核线程 + 上下文切换、协作/抢占调度（机制在内核、策略可插拔 trait）、tickless idle（空闲 mask CNTV + `wfi`）、IRQ 驱动抢占。
+- 🚧 **Phase 3 能力与系统调用进行中（3-0 handle 表 / 3-1 syscall ABI 骨架已落地）**：v1 27 个 syscall 编号在册，`handle_close/duplicate/replace` 经 handle 表门控（syscall 全链路能力检查首次打通）+ `clock_read`；下一步 3-2 VMO/Vmar syscall 全量门控；出口增项 = 遥测环 instrumentation + 空策略表等价测试。
 - 关卡式验证 G0–G5（`文档/测试策略.md`）：单核正确 → 抢占 → SMP → 全抢占 → demand paging，逐关推进。**尚未到** SMP / 全抢占 / demand paging——文档描述始终与实际阶段一致。
 
 ## 快速开始（macOS）
@@ -27,7 +29,7 @@ rustup target add aarch64-unknown-none      # stable，拉预编译 core
 just run                                    # QEMU virt 冷启动
 ```
 
-串口依次打印 `BerryOS boot` → `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok` → `ktest done` → 忙循环任务 `A`/`B` 在 timer slice 下交替，并周期打 `switches=N` 金丝雀。
+串口从 `BerryOS boot` 起，经 `KVA ok`（高半自校验）、`ASPACE ok` / `VMO ok` 到 `G1.5 ok`（用户进程跑飞只死自己）；忙循环任务 `A`/`B` 与 EL0 用户进程（打 `u`）在 timer slice 下交替，并周期打 `switches=N` 金丝雀。完整标记序列以 `工具链/smoke.sh` 为准（`just smoke` 逐一断言）。
 
 | 命令 | 说明 |
 |------|------|
@@ -55,7 +57,7 @@ just run                                    # QEMU virt 冷启动
 ## 文档入口
 
 - `文档/路线图.md` —— Phase 0–8，每阶段一个 QEMU 里程碑
-- `文档/架构决策.md` —— **ADR #1–#38 单一事实来源**
+- `文档/架构决策.md` —— **ADR 单一事实来源**（决策总表 + 重议触发器，编号以该文件为准）
 - `文档/战略裁决-2026-10-15.md` —— 21 份调研 + AIOS 外部调研的双视角对抗裁决（22 提案 / 19 采纳）
 - `文档/调度器设计.md` / `AI调度设计.md` —— 机制/策略分离、tickless、AI 护栏
 - `文档/测试策略.md` —— 关卡 G0–G5

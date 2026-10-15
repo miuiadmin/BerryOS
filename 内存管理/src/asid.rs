@@ -4,7 +4,7 @@
 //! 空间 / 内核空表，与 TTBR0 ASID 字段零值语义一致）。
 //!
 //! 架构无关约束：分配器不碰硬件——宽度（8/16 位）由调用方探测后注入；回卷信号由
-//! 调用方消费并做全量失效（aarch64 上是 `tlbi aside1all`，见 HAL）。
+//! 调用方消费并做全量失效（aarch64 上是 `tlbi vmalle1is`，见 HAL）。
 
 /// ASID 分配器（轮转计数器）。
 ///
@@ -26,11 +26,12 @@ impl AsidAllocator {
 
     /// 分配一个 ASID。返回 `(asid, rolled)`：
     /// - `rolled == false`：常规递增；
-    /// - `rolled == true`：计数器在本轮末尾回卷——调用方须**全量 ASID 失效**
-    ///   （`tlbi aside1all`）再启用新值，防上一轮同号映射经 TLB 复活。
+    /// - `rolled == true`：计数器在本轮末尾回卷——调用方须**全量失效**
+    ///   （`tlbi vmalle1is`）再启用新值，防上一轮同号映射经 TLB 复活。
     ///
-    /// 回卷语义：信号随本轮**最后一个** ASID 发出，其后的全量失效覆盖整个新轮次
-    /// （旧号在新轮次里的残留已随该次失效清空）。
+    /// 回卷语义：信号随本轮**最后一个** ASID 发出，其后的全量失效覆盖整个新轮次。
+    /// 全量失效是**兜底**——日常真正拦住同号残留的，是激活路径每次切换 TTBR0 后的
+    /// 无条件按号失效（HAL `activate_aspace` → `tlbi aside1is`）。
     pub fn alloc(&mut self) -> (u16, bool) {
         let a = self.next;
         let max: u16 = if self.width == 8 { 0xff } else { 0xffff };

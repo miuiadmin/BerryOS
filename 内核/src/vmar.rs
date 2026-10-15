@@ -142,6 +142,12 @@ impl Vmar {
     /// 把 VMO 的 `[vmo_offset, vmo_offset+len)` 映射到 `[vaddr, vaddr+len)`
     /// （`map 即填用户页表`——§5.1 第 4 步主交付）。v1 要求显式 vaddr（ASLR 留 v2）、
     /// 整页粒度、VMO 覆盖页已全部 commit。返回映射基 VA。
+    ///
+    /// 失败语义：中途建表失败（`NoFrames`）时已写叶全部回滚（清叶 + `dsb ish` +
+    /// 按号失效），返回错误后无残留翻译；regions 未登记该区间，同 VA 重试 map
+    /// 可干净重建——中途新建的中间表帧被重试复用（`next_table` 见 TABLE_BIT
+    /// 即用、不重复分配），即便不复用也只是 v1 已接受的「不回收页表帧」政策
+    /// （见模块头）。
     pub fn map(
         &mut self,
         fa: &mut FrameAllocator,
@@ -163,17 +169,35 @@ impl Vmar {
                 return Err(VmarError::VmoNotCommitted);
             }
         }
-        // 填叶（nG=1 内建于 page_descriptor；AP 按权限 OR 上）。
+        // 填叶（nG=1 内建于 page_descriptor；AP 按权限 OR 上）。filled 计已写
+        // 叶数：中途建表失败时 0..filled 页叶已入表而 regions 未登记——残留
+        // PTE 是查不到区间的有效翻译（unmap/protect 永远 NotMapped、同 VA
+        // 重 map 绕过重叠检测、已激活 AS 即刻可见半填映射），须先回滚再报错。
+        let mut filled = 0;
         for i in 0..npages {
             let pa = vmo.page_pa(first_page + i).expect("上已校验");
             let va = vaddr + i * PAGE_SIZE;
-            let slot = self.l3_slot_create(fa, va)?;
+            let slot = match self.l3_slot_create(fa, va) {
+                Ok(slot) => slot,
+                Err(e) => {
+                    // 回滚已写叶（这些页的中间表失败前已建好，peek 必得槽位）；
+                    // 本路径不分配帧、不可失败，filled==0 时空循环照走屏障无害。
+                    // 回滚后 regions 无此区间，同 VA 重试 map 可干净重建（语义
+                    // 见上文档注释）。
+                    self.clear_leaves(vaddr, filled);
+                    // SAFETY: 特权指令；EL1。回滚叶对走查可见 + 旧 TLB 项作废。
+                    unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+                    hal::tlbi_aside1(self.asid);
+                    return Err(e);
+                }
+            };
             // SAFETY: 槽位属本表树独占；volatile 防重排。
             unsafe {
                 slot.write_volatile(
                     hal::page_descriptor(pa, hal::ATTR_NORMAL, hal::SH_INNER) | perm.ap(),
                 );
             }
+            filled += 1;
         }
         // SAFETY: 特权指令；EL1。表写入对页表走查可见。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
@@ -186,13 +210,7 @@ impl Vmar {
     /// 区间须与本 Vmar 登记的映射**精确匹配**（子区间解映射留 v2）。
     pub fn unmap(&mut self, vaddr: usize, len: usize) -> Result<(), VmarError> {
         let idx = self.find_mapped(vaddr, len)?;
-        for i in 0..len / PAGE_SIZE {
-            let va = vaddr + i * PAGE_SIZE;
-            if let Some(slot) = self.l3_slot_peek(va) {
-                // SAFETY: 槽位属本表树独占。
-                unsafe { slot.write_volatile(0) };
-            }
-        }
+        self.clear_leaves(vaddr, len / PAGE_SIZE);
         // SAFETY: 特权指令；EL1。改叶对走查可见 + 旧 TLB 项作废。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
         hal::tlbi_aside1(self.asid);
@@ -292,5 +310,17 @@ impl Vmar {
         }
         let l3 = Self::table_of((e1 as usize) & ADDR_MASK as usize);
         Some(unsafe { l3.add((va >> 12) & IDX_MASK) })
+    }
+
+    /// 清一段区间的 L3 叶（逐槽写 0；不建表、不分配帧，中间表缺失的页静默
+    /// 跳过）。unmap 与 map 失败回滚共用；屏障/失效/区间记账由调用方收尾。
+    fn clear_leaves(&self, vaddr: usize, npages: usize) {
+        for i in 0..npages {
+            let va = vaddr + i * PAGE_SIZE;
+            if let Some(slot) = self.l3_slot_peek(va) {
+                // SAFETY: 槽位属本表树独占。
+                unsafe { slot.write_volatile(0) };
+            }
+        }
     }
 }

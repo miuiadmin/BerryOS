@@ -144,9 +144,10 @@ unsafe extern "C" fn enable_mmu() {
 
 /// 高半自校验（2b-0 引入；2b-2 起**只走高半**——低半身份已退役，PA 别名侧探针
 /// 移交 ktest 的期望故障正向断言）：
-/// - RAM 探针 = 静态魔数经高半直映读回；
-/// - 设备探针 = GICD_PIDR2（只读外设 ID 寄存器）经高半 Device 块读。
-/// 任一翻译坏了都不是读到错值，而是**同步异常挂死**——能读回即证 TTBR1 生效。
+/// - RAM 探针 = 静态魔数经高半直映读回并比对；
+/// - 设备探针 = GICD_PIDR2（只读外设 ID 寄存器）经高半 Device 块读回，比对
+///   GICv2 架构修订号——不只证「翻译不 fault」，还证读到的确是该外设。
+/// 翻译坏了通常根本读不回（同步异常挂死）；值比对再兜一层「读回值正确」。
 pub(crate) fn kva_alias_probe() -> bool {
     static PROBE_MAGIC: u64 = 0x0B05_2B0B_5A5C_0FF0;
     // 主体符号已链高半：本体 VMA 在高半直映区。
@@ -155,8 +156,10 @@ pub(crate) fn kva_alias_probe() -> bool {
     let ram_ok = unsafe { (va as *const u64).read_volatile() } == PROBE_MAGIC;
     const GICD_PIDR2: usize = GICD_BASE + 0x0FE8;
     // SAFETY: 只读外设 ID 寄存器（高半 Device 块；翻译坏则异常挂死，即失败信号）。
-    let _dev = unsafe { crate::mmio::read(KERNEL_VA_BASE + GICD_PIDR2) };
-    ram_ok
+    let pidr2 = unsafe { crate::mmio::read(KERNEL_VA_BASE + GICD_PIDR2) };
+    // PIDR2 bits[7:4] = 架构修订号，GICv2 = 0b0010（ARM IHI 0048）。
+    let gic_ok = (pidr2 >> 4) & 0xf == 0b0010;
+    ram_ok && gic_ok
 }
 
 // ---- 2b-2：ASID + 每任务 TTBR0 激活 + 低半退役（内存管理设计 §5.1/§5.2）----
