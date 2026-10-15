@@ -1,15 +1,15 @@
-//! 最小用户地址空间（2b-2）：三级页表帧 + 一页数据 + ASID。
-//!
-//! 「帧分配器出页 → 填表 → TTBR0 激活」的地基（`内存管理设计.md` §5.1 第 3 步）；
-//! 2b-3 的 VMO/Vmar 接管映射管理后，本模块的填表部分由正式映射路径取代，
-//! ASID 记账与激活约定不变。
+//! 每任务用户地址空间的组装层（2b-2 引入；2b-3 起填表改走 **Vmar/Vmo 正式映射
+//! 路径**，手工 L2/L3 填表退役）。ASID 记账与激活约定不变（`内存管理设计.md`
+//! §5.1/§5.2）。
 
-use bos_hal_aarch64 as hal;
+use crate::vmar::{Perm, Vmar};
+use crate::vmo::Vmo;
 use bos_mm::asid::AsidAllocator;
 use bos_mm::frame::FrameAllocator;
-use bos_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
+use bos_mm::va::PAGE_SIZE;
 
-/// 测试/任务私有页的低半 VA（页 1——页 0 留作 NULL 解引用保护区，2b-4 起对用户禁 0 页）。
+/// 测试/任务私有页的低半 VA（页 1——Vmar root 管辖界 `[0x1000, USER_VA_TOP)`，
+/// 页 0 留作 NULL 解引用保护区，2b-4 起对用户禁 0 页）。
 pub const USER_VA: usize = 0x1000;
 
 /// 全局 ASID 分配器（单核顺序使用；回卷时全量失效）。宽度首用时探测注入。
@@ -21,65 +21,46 @@ pub fn alloc_asid() -> u16 {
     unsafe {
         let slot = &raw mut ASIDS;
         if (*slot).is_none() {
-            *slot = Some(AsidAllocator::new(hal::asid_bits()));
+            *slot = Some(AsidAllocator::new(bos_hal_aarch64::asid_bits()));
         }
         let (asid, rolled) = (*slot).as_mut().unwrap().alloc();
         if rolled {
-            hal::flush_all_asid();
+            bos_hal_aarch64::flush_all_asid();
         }
         asid
     }
 }
 
-/// 从帧分配器取一页并清零，返回 **PA**（`FrameAllocator::alloc` 给的是 PFN，这里
-/// 左移折算；帧内容不保证干净——buddy 只管元数据，前手可能写过哨兵）。
-fn zero_page(fa: &mut FrameAllocator) -> usize {
-    let pfn = fa.alloc().expect("MiniAspace: 无空闲帧");
-    let pa = pfn << PAGE_SHIFT;
-    // SAFETY: 独占新分配帧（尚无别名引用）；Normal WB，同核写后 dsb 可见。
-    unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, PAGE_SIZE) };
-    pa
-}
-
-/// 一个最小地址空间：L1[0]→L2[0]→L3[1]→数据页（VA `0x1000`，Normal RW，nG=1）。
+/// 一个最小任务地址空间：root Vmar + 一页 VMO 映在 `USER_VA`（Normal RW，nG=1）。
+///
+/// 2b-3 起内部为「`Vmar::new_root` + `Vmo::create/commit/write` + `map`」——
+/// 即 2b-4 进程组装的同一条路径；`ttbr0_pa`/`asid`/`activate` 对外不变。
 pub struct MiniAspace {
     /// L1 表 PA——`hal::activate_aspace` / `Task::ttbr0` 用的就是它。
     pub ttbr0_pa: usize,
     /// 本空间 ASID。
     pub asid: u16,
-    /// 所有权记账（v1 不归还；下划线前缀 = 只在 Drop-less 所有权语义里被持有）。
-    _l2_pa: usize,
-    _l3_pa: usize,
-    _page_pa: usize,
+    /// 表树属主（`ttbr0_pa` 即其根）。
+    vmar: Vmar,
+    /// 私有页后备所有权（页归 VMO；v1 对象不销毁故无读取点——查询接口留 2b-4+）。
+    _vmo: Vmo,
 }
 
 impl MiniAspace {
-    /// 建表并在数据页首写 `magic`（任务体/测试用来自证「我在自己的空间里」）。
+    /// 建空间并在私有页首写 `magic`（任务体/测试用来自证「我在自己的空间里」）。
     pub fn new(fa: &mut FrameAllocator, asid: u16, magic: u64) -> Self {
-        let l1_pa = zero_page(fa);
-        let l2_pa = zero_page(fa);
-        let l3_pa = zero_page(fa);
-        let page_pa = zero_page(fa);
-
-        // 填表：描述符输出 PA；经高半直映写表内容。
-        // SAFETY: 独占帧；volatile 防重排，dsb 保证对页表走查可见。
-        unsafe {
-            let l1 = phys_to_virt(l1_pa) as *mut u64;
-            let l2 = phys_to_virt(l2_pa) as *mut u64;
-            let l3 = phys_to_virt(l3_pa) as *mut u64;
-            l1.add(0).write_volatile(hal::table_descriptor(l2_pa));
-            l2.add(0).write_volatile(hal::table_descriptor(l3_pa));
-            l3.add(1).write_volatile(hal::page_descriptor(page_pa, hal::ATTR_NORMAL, hal::SH_INNER));
-            (phys_to_virt(page_pa) as *mut u64).write_volatile(magic);
-            core::arch::asm!("dsb ish", options(nostack, preserves_flags));
-        }
-
-        Self { ttbr0_pa: l1_pa, asid, _l2_pa: l2_pa, _l3_pa: l3_pa, _page_pa: page_pa }
+        let mut vmar = Vmar::new_root(fa, asid);
+        let mut vmo = Vmo::create(PAGE_SIZE);
+        vmo.commit(fa, 0, PAGE_SIZE).expect("MiniAspace: commit 私有页");
+        vmo.write(0, &magic.to_le_bytes()).expect("MiniAspace: 写 magic");
+        vmar.map(fa, &vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
+            .expect("MiniAspace: map 私有页");
+        Self { ttbr0_pa: vmar.ttbr0_pa(), asid: vmar.asid(), vmar, _vmo: vmo }
     }
 
     /// 激活本空间（TTBR0+CONTEXTIDR+`tlbi aside1is`，见 HAL）。
     pub fn activate(&self) {
-        hal::activate_aspace(self.ttbr0_pa, self.asid);
+        self.vmar.activate();
     }
 
     /// 经**当前 TTBR0** 读 `USER_VA`（证翻译——须已激活本空间或等价表）。

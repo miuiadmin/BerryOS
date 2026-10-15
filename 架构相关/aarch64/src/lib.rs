@@ -86,8 +86,15 @@ pub fn flush_all_asid() {
     unsafe { mmu::flush_all_asid() };
 }
 
+/// 2b-3：按 ASID 失效 TLB——Vmar `unmap`/`protect` 改叶后调用（用户叶 nG=1，
+/// 按号可达；boot 时代 global 项与此无关）。
+pub fn tlbi_aside1(asid: u16) {
+    // SAFETY: EL1。
+    unsafe { mmu::tlbi_aside1(asid) };
+}
+
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
-pub use paging::{page_descriptor, table_descriptor, ATTR_NORMAL, SH_INNER};
+pub use paging::{page_descriptor, table_descriptor, AP_RO, ATTR_NORMAL, SH_INNER};
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
 //

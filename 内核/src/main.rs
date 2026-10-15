@@ -15,6 +15,8 @@ mod aspace;
 mod heap;
 mod ktest;
 mod mm;
+mod vmar;
+mod vmo;
 
 use heap::SlabHeap;
 

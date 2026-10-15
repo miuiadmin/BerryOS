@@ -180,6 +180,15 @@ fn asid_shift() -> u32 {
     if asid_bits() == 16 { 48 } else { 56 }
 }
 
+/// 按 ASID 失效（`tlbi aside1is`；IS 口径——单核下与非 IS 等价，多核语义先立对）。
+/// Vmar 的 unmap/protect 改叶后调用（2b-3 起独立出口，激活路径复用）。
+pub(crate) unsafe fn tlbi_aside1(asid: u16) {
+    let shift = asid_shift();
+    asm!("tlbi aside1is, {0}", in(reg) (asid as u64) << shift, options(nostack, preserves_flags));
+    dsb_ish();
+    isb();
+}
+
 /// 激活任务地址空间：TTBR0 ← `ttbr0_pa` + ASID（`ttbr0_pa == 0` = 无 AS → 内核
 /// 空表，低半必然 fault）；CONTEXTIDR.PROCID = asid（可观测性——硬件 ASID 恒取
 /// TTBR0，A1=0）；`tlbi aside1is` 防上一轮同号映射经 TLB 残留（§5.1 坑「TLB」）。
@@ -202,10 +211,8 @@ pub(crate) unsafe fn activate_ttbr0(ttbr0_pa: usize, asid: u16) {
         in(reg) (asid as u64) << 13,
         options(nostack, preserves_flags)
     );
-    // 同号旧映射失效（IS 口径——单核下与非 IS 等价，多核语义先立对）。
-    asm!("tlbi aside1is, {0}", in(reg) (asid as u64) << shift, options(nostack, preserves_flags));
-    dsb_ish();
-    isb();
+    // 同号旧映射失效。
+    tlbi_aside1(asid);
 }
 
 /// 低半身份表退役（2b-2）：TTBR0 ← 内核空表（ASID 0）+ **全量 TLB 失效**。

@@ -12,6 +12,7 @@ pub fn run() {
     test_syscall();
     test_switch();
     test_aspace();
+    test_vmo();
     bos_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -208,4 +209,91 @@ fn test_aspace() {
     bos_hal_aarch64::uart_puts(b"ASPACE ok (asid=");
     bos_hal_aarch64::uart_put_dec(width as u64);
     bos_hal_aarch64::uart_puts(b"b, low-half faulted)\n");
+}
+
+/// 2b-3：匿名 VMO/Vmar 六操作（create/commit/map/unmap/protect/allocate，
+/// `内存管理设计.md` §5.1 第 4 步）——map 即填用户页表；§5.1 验收行：
+/// **内核任务经 VMO 映射读写一页**。fault 侧均走期望故障通道正向断言。
+#[allow(clippy::result_unwrap_used)]
+fn test_vmo() {
+    use crate::aspace::{alloc_asid, USER_VA};
+    use crate::vmar::{Perm, Vmar, VmarError};
+    use crate::vmo::{Vmo, VmoError};
+    use bos_hal_aarch64 as hal;
+    use bos_mm::va::PAGE_SIZE;
+
+    const MAGIC: u64 = 0x00C0_FFEE_0000_0033;
+    const MAGIC2: u64 = 0x00C0_FFEE_0000_0044;
+    let fa = crate::mm::frames();
+
+    // A. 对象语义：create/commit/read/write + 未提交页拒绝。
+    let mut vmo = Vmo::create(PAGE_SIZE * 2);
+    assert_eq!(vmo.size(), PAGE_SIZE * 2, "VMO：容量应页对齐");
+    vmo.commit(fa, 0, PAGE_SIZE).expect("VMO：commit 页 0");
+    vmo.write(0, &MAGIC.to_le_bytes()).expect("VMO：write");
+    let mut buf = [0u8; 8];
+    vmo.read(0, &mut buf).expect("VMO：read");
+    assert_eq!(u64::from_le_bytes(buf), MAGIC, "VMO：读写往返");
+    assert_eq!(
+        vmo.read(PAGE_SIZE, &mut buf),
+        Err(VmoError::NotCommitted),
+        "VMO：未提交页必须拒读（v1 无 demand paging）"
+    );
+
+    // B. map 即填表 + §5.1 验收：内核经 VMO 映射读写一页（VA 视角）。
+    let mut root = Vmar::new_root(fa, alloc_asid());
+    root.map(fa, &vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
+        .expect("VMO：map");
+    root.activate();
+    // SAFETY: 读已映射 Normal 页（root 已激活）。
+    let v = unsafe { core::ptr::read_volatile(USER_VA as *const u64) };
+    assert_eq!(v, MAGIC, "VMO：经映射读到 VMO 内容");
+    // SAFETY: 写同一物理页——VMO 视角应立即可见（别名一致性）。
+    unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC2) };
+    vmo.read(0, &mut buf).expect("VMO：read after write");
+    assert_eq!(u64::from_le_bytes(buf), MAGIC2, "VMO：VA 写 → VMO 读一致");
+
+    // C. unmap：此后该 VA 必 fault（期望故障正向断言）。
+    root.unmap(USER_VA, PAGE_SIZE).expect("VMO：unmap");
+    hal::trap::arm_expected_fault(USER_VA);
+    // SAFETY: 预期同步异常（期望故障槽已 arm，FAR 命中即恢复）；值无意义。
+    let _ = unsafe { core::ptr::read_volatile(USER_VA as *const u64) };
+    assert!(!hal::trap::fault_armed(), "VMO：unmap 后读居然没 fault");
+
+    // D. 权限：map 只读 → 写必 fault；protect 提回 RW → 写通。
+    root.map(fa, &vmo, USER_VA, 0, PAGE_SIZE, Perm::Ro)
+        .expect("VMO：map RO");
+    // SAFETY: 读已映射页。
+    let v = unsafe { core::ptr::read_volatile(USER_VA as *const u64) };
+    assert_eq!(v, MAGIC2, "VMO：RO 读应通");
+    hal::trap::arm_expected_fault(USER_VA);
+    // SAFETY: 预期 Permission fault（期望故障槽已 arm）。
+    unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC) };
+    assert!(!hal::trap::fault_armed(), "VMO：RO 页写居然没 fault");
+    root.protect(USER_VA, PAGE_SIZE, Perm::Rw).expect("VMO：protect→RW");
+    // SAFETY: protect 已提权 + 按号失效，写应通。
+    unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC) };
+    vmo.read(0, &mut buf).expect("VMO：read");
+    assert_eq!(u64::from_le_bytes(buf), MAGIC, "VMO：protect 后写生效");
+
+    // E. allocate 子 Vmar：越子界拒、父撞预留拒、子映射共享同表根。
+    let mut child = root.allocate(0x20_0000, PAGE_SIZE * 2).expect("VMO：allocate");
+    child.map(fa, &vmo, 0x20_0000, 0, PAGE_SIZE, Perm::Rw).expect("VMO：子 map");
+    assert_eq!(
+        child.map(fa, &vmo, 0x30_0000, 0, PAGE_SIZE, Perm::Rw),
+        Err(VmarError::OutOfBounds),
+        "VMO：子 Vmar 越界映射必须拒"
+    );
+    assert_eq!(
+        root.map(fa, &vmo, 0x20_1000, 0, PAGE_SIZE, Perm::Rw),
+        Err(VmarError::Overlap),
+        "VMO：父撞子预留必须拒"
+    );
+    // SAFETY: 读子 Vmar 映射页（同一 L1 表根，root 仍激活）。
+    let v = unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) };
+    assert_eq!(v, MAGIC, "VMO：子映射经共享表根可读（同 PA 双 VA 别名）");
+
+    // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
+    hal::activate_aspace(0, 0);
+    bos_hal_aarch64::uart_puts(b"VMO ok\n");
 }
