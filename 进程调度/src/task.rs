@@ -41,6 +41,11 @@ pub struct Task {
     pub state: TaskState,
     /// 剩余时间片（timer tick 计数）；0 表示该被重调度。Step 6 起由 `tick` 递减。
     pub slice_left: u32,
+    /// 2b-2：任务地址空间 = TTBR0 页表 PA + ASID。`ttbr0 == 0` = 无 AS（内核空表，
+    /// 低半必然 fault——身份表已退役）。switch 时经 HAL 激活（变化才写寄存器）。
+    pub ttbr0: usize,
+    /// 2b-2：`ttbr0` 对应的 ASID（0 = 无 AS）。
+    pub asid: u16,
 
     // ---- 侵入式双向环形链表链接（runqueue 用；`Cell` 以支持 `&Runqueue` 下旋转）----
     pub(crate) rq_prev: Cell<Option<NonNull<Task>>>,
@@ -57,6 +62,17 @@ impl Task {
         arg: usize,
         name: &'static [u8],
     ) -> Box<Task> {
+        Self::new_kernel_with_as(entry, arg, name, 0, 0)
+    }
+
+    /// 同 [`Task::new_kernel`]，但挂地址空间（2b-2：`ttbr0`/`asid`，0/0 = 无 AS）。
+    pub fn new_kernel_with_as(
+        entry: extern "C" fn(usize) -> !,
+        arg: usize,
+        name: &'static [u8],
+        ttbr0: usize,
+        asid: u16,
+    ) -> Box<Task> {
         let kstack: Box<[u8]> = vec![0u8; STACK_SIZE].into_boxed_slice();
         // 栈向下长，初始 sp = 栈顶（最高地址）。>2KiB 走分配器页路径，页对齐 →
         // 栈顶天然 16 对齐（TaskContext::new_kernel 内仍有断言兜底）。
@@ -68,6 +84,8 @@ impl Task {
             name,
             state: TaskState::Ready,
             slice_left: 0,
+            ttbr0,
+            asid,
             rq_prev: Cell::new(None),
             rq_next: Cell::new(None),
         })

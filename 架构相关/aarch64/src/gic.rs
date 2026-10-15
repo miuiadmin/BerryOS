@@ -18,7 +18,12 @@
 //! 写 level 与读回一致。
 
 use crate::mmio;
-use crate::{GICD_BASE, GICC_BASE};
+use crate::{GICD_BASE, GICC_BASE, KERNEL_VA_BASE};
+
+/// MMIO 走高半直映别名（2b-2 低半退役：低半身份不再可用）。物理基址常量留在
+/// `lib.rs` 供 boot 建表（表内容须 PA）。
+const GICD: usize = KERNEL_VA_BASE + GICD_BASE;
+const GICC: usize = KERNEL_VA_BASE + GICC_BASE;
 
 /// IRQ 编号：CNTV 虚拟定时器（PPI 11，GICv2 ID 27）。
 pub const IRQ_CNTV: usize = 27;
@@ -53,10 +58,10 @@ const PRIO_CNTV: u8 = 0xa0;
 /// MMIO 写（Device 映射区）；EL1、启动早期、单核。
 pub unsafe fn init() {
     // ---- distributor：先关，再清状态 ----
-    mmio::write(GICD_BASE + GICD_CTLR, 0);
-    mmio::write(GICD_BASE + GICD_ICENABLER0, !0); // 禁用 ID 0..31
-    mmio::write(GICD_BASE + GICD_ICPENDR0, !0); // 清 pending
-    mmio::write(GICD_BASE + GICD_ICACTIVER0, !0); // 去活
+    mmio::write(GICD + GICD_CTLR, 0);
+    mmio::write(GICD + GICD_ICENABLER0, !0); // 禁用 ID 0..31
+    mmio::write(GICD + GICD_ICPENDR0, !0); // 清 pending
+    mmio::write(GICD + GICD_ICACTIVER0, !0); // 去活
 
     // IRQ27 配置。
     set_priority(IRQ_CNTV, PRIO_CNTV);
@@ -66,22 +71,22 @@ pub unsafe fn init() {
     set_config(IRQ_CNTV, 0b01);
 
     // 启用 IRQ27 + 开 distributor。
-    mmio::write(GICD_BASE + GICD_ISENABLER0, 1 << IRQ_CNTV);
-    mmio::write(GICD_BASE + GICD_CTLR, 1);
+    mmio::write(GICD + GICD_ISENABLER0, 1 << IRQ_CNTV);
+    mmio::write(GICD + GICD_CTLR, 1);
 
     // ---- CPU interface：全优先级放行 + 开 ----
-    mmio::write(GICC_BASE + GICC_PMR, 0xff);
-    mmio::write(GICC_BASE + GICC_CTLR, 1);
+    mmio::write(GICC + GICC_PMR, 0xff);
+    mmio::write(GICC + GICC_CTLR, 1);
 }
 
 /// 读回 IRQ27 配置自检（Step 7 信号）。
 pub fn verify() -> bool {
     unsafe {
-        let en = mmio::read(GICD_BASE + GICD_ISENABLER0) & (1 << IRQ_CNTV) != 0;
-        let dist = mmio::read(GICD_BASE + GICD_CTLR) & 1 != 0;
-        let cpuif = mmio::read(GICC_BASE + GICC_CTLR) & 1 != 0;
-        let pmr = mmio::read(GICC_BASE + GICC_PMR);
-        let prio = mmio::read_u8(GICD_BASE + GICD_IPRIORITYR + IRQ_CNTV);
+        let en = mmio::read(GICD + GICD_ISENABLER0) & (1 << IRQ_CNTV) != 0;
+        let dist = mmio::read(GICD + GICD_CTLR) & 1 != 0;
+        let cpuif = mmio::read(GICC + GICC_CTLR) & 1 != 0;
+        let pmr = mmio::read(GICC + GICC_PMR);
+        let prio = mmio::read_u8(GICD + GICD_IPRIORITYR + IRQ_CNTV);
         en && dist && cpuif && pmr == 0xff && prio == PRIO_CNTV
     }
 }
@@ -89,30 +94,30 @@ pub fn verify() -> bool {
 /// 读 IAR 应答并取 IRQ ID（1023=无/spurious）。
 #[allow(dead_code)]
 pub fn acknowledge() -> u32 {
-    unsafe { mmio::read(GICC_BASE + GICC_IAR) & 0x3ff }
+    unsafe { mmio::read(GICC + GICC_IAR) & 0x3ff }
 }
 
 /// 写 EOIR 结束（必须传 [`acknowledge`] 读到的同一 ID）。
 #[allow(dead_code)]
 pub fn end(irq_id: u32) {
-    unsafe { mmio::write(GICC_BASE + GICC_EOIR, irq_id & 0x3ff) };
+    unsafe { mmio::write(GICC + GICC_EOIR, irq_id & 0x3ff) };
 }
 
 // ---- 单 IRQ 配置原语 ----
 
 unsafe fn set_priority(irq: usize, prio: u8) {
-    mmio::write_u8(GICD_BASE + GICD_IPRIORITYR + irq, prio);
+    mmio::write_u8(GICD + GICD_IPRIORITYR + irq, prio);
 }
 
 unsafe fn set_target(irq: usize, target: u8) {
-    mmio::write_u8(GICD_BASE + GICD_ITARGETSR + irq, target);
+    mmio::write_u8(GICD + GICD_ITARGETSR + irq, target);
 }
 
 /// `cfg`：0b01=level、0b10=edge（见模块注释，定时器用 level）。
 unsafe fn set_config(irq: usize, cfg: u32) {
     // ICFGR1 覆盖 IRQ 16..31，每 IRQ 占 2 bit。IRQ 27 → bits[23:22]。
     let shift = 2 * (irq - 16);
-    let off = GICD_BASE + GICD_ICFGR1;
+    let off = GICD + GICD_ICFGR1;
     let mut v = mmio::read(off);
     v &= !(0b11u32 << shift);
     v |= (cfg & 0b11) << shift;

@@ -110,7 +110,7 @@ berryos/
 
 ## 构建与测试
 
-Phase 2a（G1）+ Phase 2b-0/2b-1（高半翻转）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `KVA ok`（TTBR1 高半别名自校验）→ `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 在 CNTV timer slice 下交替（纯 IRQ 驱动抢占，无 yield）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（低半身份 + 高半 TTBR1 内核表 `KERNEL_VA_BASE`；**2b-1 起内核主体高半执行**，异常 dump PC 应为 `0xffffff80…`；smoke 固化程序头断言 `size.py --assert-flip`）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
+Phase 2a（G1）+ Phase 2b-0/2b-1（高半翻转）+ 2b-2（每进程页表/ASID/低半退役）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `KVA ok`（TTBR1 高半别名自校验，2b-2 起只走高半）→ `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ 低半读期望故障恢复 → `ASPACE ok`（两张用户页表同 VA 隔离 + asid=16b）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 各带自己的地址空间在 CNTV timer slice 下交替（每次打印先读私有页断言隔离）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（高半 TTBR1 内核表 `KERNEL_VA_BASE`，**2b-1 起内核主体高半执行**、异常 dump PC 应为 `0xffffff80…`；**2b-2 起低半身份表退役**——低半访问必 fault；GIC/UART MMIO 全走高半别名；smoke 固化程序头断言 `size.py --assert-flip`）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
 
 **前置（macOS，一次性）**：`brew install qemu just` + `rustup target add aarch64-unknown-none`（stable，无需 nightly/build-std）。
 

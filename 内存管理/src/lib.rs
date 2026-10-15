@@ -13,6 +13,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(clippy::result_unit_err)]
 
+pub mod asid;
 pub mod buddy;
 pub mod frame;
 pub mod va;

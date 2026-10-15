@@ -39,6 +39,8 @@ static mut IDLE_TASK: Task = Task {
     name: b"idle",
     state: TaskState::Running,
     slice_left: 0,
+    ttbr0: 0,
+    asid: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
 };
@@ -58,16 +60,35 @@ pub fn init() {
     }
 }
 
-/// 生成一个内核线程：分配 16KiB 栈 + 接线 + 入 runqueue。
+/// 生成一个内核线程：分配 16KiB 栈 + 接线 + 入 runqueue（无地址空间）。
 ///
 /// **调用方须保证 IRQ 屏蔽**（alloc/enqueue 不可被打断——plan「IRQ 热路径零分配」）：
 /// Step 3 main 在 boot 屏蔽态调用；Step 6+ 若从任务体 spawn，需自行 disable/enable 包络。
 /// v1 不回收栈（leak；Step 7+ 加 reap）。
 pub fn spawn(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8]) {
+    spawn_as(entry, arg, name, 0, 0);
+}
+
+/// 同 [`spawn`]，但挂地址空间（2b-2）：`ttbr0` 页表 PA + `asid`（0/0 = 无 AS）。
+/// 表须已填好且对页表走查可见（调用方 `dsb ish`），activate 只管寄存器。
+pub fn spawn_as(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
+                ttbr0: usize, asid: u16) {
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
-    let task: &'static mut Task = alloc::boxed::Box::leak(Task::new_kernel(entry, arg, name));
+    let task: &'static mut Task =
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, ttbr0, asid));
     unsafe {
         RR.enqueue(task, rq());
+    }
+}
+
+/// 2b-2：任务地址空间激活——`ttbr0`/`asid` **变化才**写 TTBR0+CONTEXTIDR+`tlbi`
+/// （`内存管理设计.md` §5.1：switch 必带按号失效；同 AS 连续切换零额外开销）。
+/// 调用点：三个切换位（yield/exit/IRQ 抢占）在 `CURRENT = next` 之后、
+/// `context_switch` 之前——先换表再切栈，全程高半执行，无低半依赖。
+#[inline]
+unsafe fn activate_if_changed(prev: *mut Task, next: *mut Task) {
+    if (*prev).ttbr0 != (*next).ttbr0 || (*prev).asid != (*next).asid {
+        hal::activate_aspace((*next).ttbr0, (*next).asid);
     }
 }
 
@@ -85,6 +106,7 @@ pub fn yield_now() {
                 (*next_ptr).state = TaskState::Running;
                 (*next_ptr).slice_left = RR_QUANTUM;
                 CURRENT = next_ptr;
+                activate_if_changed(prev, next_ptr);
                 hal::task::context_switch(&raw mut (*prev).ctx, &raw const (*next_ptr).ctx);
                 // <- 被切回 prev 时续行于此（CURRENT==prev）。
             }
@@ -108,6 +130,7 @@ pub fn exit_current() -> ! {
         (*next_ptr).state = TaskState::Running;
         (*next_ptr).slice_left = RR_QUANTUM;
         CURRENT = next_ptr;
+        activate_if_changed(cur, next_ptr);
         // prev=cur（已出 runqueue、将废弃）；切走后永不回到 cur。
         hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
     }
@@ -171,6 +194,7 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 (*next_ptr).slice_left = RR_QUANTUM;
                 CURRENT = next_ptr;
                 SWITCHES = SWITCHES.wrapping_add(1);
+                activate_if_changed(cur, next_ptr);
                 // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
                 // 过关后移除或 feature 门控（plan Step 7）。
                 const SOAK_PRINT_EVERY: u64 = 100;

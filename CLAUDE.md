@@ -9,7 +9,7 @@
 - 内核核心：**Rust**（`#![no_std]`，最小特权，只做调度 / IPC / 地址空间 / 能力）
 - 用户态服务与工具：**Rust**
 - 首批主线架构：**ARM64 (AArch64)**（v1 主战场 = 手表/穿戴 rich 档单线走到底，ADR #39）；**x86_64 提前启动 QEMU 最小集移植**（串口+定时器+异常向量+上下文切换+SVC 入口，范围盒子 + kill criteria，ADR #41）；RISC-V 留位。MCU 档（KB 级内存）v1 排除（ADR #40，覆盖面 = MMU 设备 MB 级起）
-- 当前阶段：**Phase 2b（地址空间 + 首个 EL0）进行中——2b-0/2b-1 已落地**。2b-1 高半翻转：内核主体已链到 `KERNEL_VA_BASE` 高半（镜像布局 VMA=KBASE+LMA → `.data/.bss` 零拷贝）；`.text.boot` + 早期栈 + `.bss.boot`（4 张 boot 表）留低半；`phys_to_virt` 翻为加基址（va.rs 运行时注入）；boot 串口 `KVA ok` = RAM 魔数 + GIC PIDR2 双别名自校验；smoke 固化程序头断言（`size.py --assert-flip`）。**外部行为与 2b-0 零变化（本步验收线）**。此前 Phase 2a（调度与任务）已完成、过关卡 G1（单核 + 抢占点）：内核线程 + 上下文切换（纯叶子 asm）+ 协作/抢占调度器（机制在内核、策略可插拔 trait）+ tickless idle（NO_HZ day-one）+ IRQ 驱动抢占（两忙循环任务 timer slice 分时，无 yield）；buddy/slab、异常向量 + panic dump、GICv2 + CNTV、SVC syscall（G0 全过）。下一步 2b-2 每进程页表 + ASID + 低半退役 → 2b-3 匿名 VMO/Vmar → 2b-4 首个 EL0 + G1.5（五步拆步见 `内存管理设计.md` §5.1）。
+- 当前阶段：**Phase 2b（地址空间 + 首个 EL0）进行中——2b-0/2b-1/2b-2 已落地**。2b-1 高半翻转：内核主体已链到 `KERNEL_VA_BASE` 高半（镜像布局 VMA=KBASE+LMA → `.data/.bss` 零拷贝）；`.text.boot` + 早期栈 + `.bss.boot`（4 张 boot 表）留低半；`phys_to_virt` 翻为加基址（va.rs 运行时注入）；boot 串口 `KVA ok` = RAM 魔数 + GIC PIDR2 双别名自校验；smoke 固化程序头断言（`size.py --assert-flip`）。2b-2 每进程页表 + ASID：帧分配器出页建用户三级页表（`MiniAspace`，私有页 `0x1000`、叶 nG=1）+ ASID 轮转分配器（实测 16 位、0 保留、回卷全量失效）；调度器切任务按需写 TTBR0/CONTEXTIDR/`tlbi aside1is`；**低半身份表退役**（TTBR0←空表 + `tlbi vmalle1is`）——任何低半访问必 fault（ktest 期望故障正向断言）；GIC/UART MMIO 全改走高半别名。此前 Phase 2a（调度与任务）已完成、过关卡 G1（单核 + 抢占点）：内核线程 + 上下文切换（纯叶子 asm）+ 协作/抢占调度器（机制在内核、策略可插拔 trait）+ tickless idle（NO_HZ day-one）+ IRQ 驱动抢占（两忙循环任务 timer slice 分时，无 yield）；buddy/slab、异常向量 + panic dump、GICv2 + CNTV、SVC syscall（G0 全过）。下一步 2b-3 匿名 VMO/Vmar → 2b-4 首个 EL0 + G1.5（五步拆步见 `内存管理设计.md` §5.1）。
 - **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `文档/AI调度设计.md`）+ PC 高性能。
 
 ## 架构决策（已定，详见 `文档/架构决策.md`）
@@ -113,7 +113,7 @@ berryos/
 
 ## 构建与测试
 
-Phase 2a（G1）已落地 + Phase 2b-0（高半准备）：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `KVA ok`（2b-0：TTBR1 高半别名自校验）→ `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 在 CNTV timer slice 下交替（纯 IRQ 驱动抢占，无 yield）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（低半身份 + 高半 TTBR1 内核表 `KERNEL_VA_BASE`；**2b-1 起内核主体高半执行**，异常 dump PC 应为 `0xffffff80…`）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
+Phase 2a（G1）+ Phase 2b-0/2b-1（高半翻转）+ 2b-2（每进程页表/ASID/低半退役）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `KVA ok`（TTBR1 高半别名自校验，2b-2 起只走高半）→ `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ 低半读期望故障恢复（`-> expected D-abort`）→ `ASPACE ok`（两张用户页表同 VA 隔离 + asid=16b）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 各带自己的地址空间在 CNTV timer slice 下交替（每次打印先读私有页断言隔离）**，并周期打 `switches=N` 金丝雀；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（高半 TTBR1 内核表 `KERNEL_VA_BASE`，**2b-1 起内核主体高半执行**、异常 dump PC 应为 `0xffffff80…`；**2b-2 起低半身份表退役**——TTBR0 常态为空表或用户表，低半访问必 fault）、buddy/slab 堆、异常向量 + panic dump、GICv2、SVC syscall、内核线程 + 上下文切换 + tickless idle + IRQ 抢占全通。
 
 **前置（macOS，一次性）**：
 
@@ -162,4 +162,7 @@ just check / just clean
 - **PAC/BTI/MTE 目标 day-one 开**，但 Phase 0/1 推迟——`cortex-a72`（ARMv8.0）无此扩展；**v2** 切 `-cpu max` 时开 target feature（源码零改动，见 `安全与硬件隔离设计.md` §3/§6）。
 - **QEMU TCG 下 CNTV 实测 tick 率 ≈ SLICE_HZ/2**：`CNTFRQ_EL0`=62.5MHz、`SLICE=FREQ/SLICE_HZ`=6.25M（配置正确，`SLICE_HZ=10` 应得 10Hz），但 `just run` 实测抢占 ~5Hz（200s 稳定 1000 切换、60s 稳定 300）——`CNTVCT` 在 TCG `virt`/`cortex-a72` 下推进速率 ≈ `CNTFRQ/2`。**非内核 bug**：真机或加 `-icount` 应为 10Hz。看 tick 率别被这 2x 误导。
 - **2b-1 起内核主体链在高半（VMA = `KERNEL_VA_BASE` + LMA 镜像）**：符号/PC 显示 `0xffffff80…` 而镜像实加载在低半（QEMU `-kernel` ELF 按 **p_paddr** 落内存）——看布局跑 `python3 工具链/size.py --assert-flip`（smoke 已固化断言）。**ADRP 只有 ±4GB、双向坑**：低半早期代码（`.text.boot`）引用不了高半静态量（故 4 张 boot 表放 `.bss.boot` 低半）；高半代码取低半绝对符号地址同样越界（故 mm.rs 导入高半 `__kernel_end` 运行时减基址）。
+- **2b-2 起低半已退役**：MMIO（GIC/UART）一律走高半别名（gic.rs/uart 内部常量 `KERNEL_VA_BASE + PA`），**PA 直访必 fault**——只有 boot asm 的早期打印例外（开 MMU 前直写 PA）。内核空表 `NULL_L1` 放普通 `.bss`（高半 VMA），TTBR0 写入按 `VMA - KERNEL_VA_BASE` 折算 PA。
+- **用户页表叶必须 nG=1，全量失效用 `tlbi vmalle1is`**：`tlbi aside1*` 按号失效**够不着 global 项**（boot 块描述符全 nG=0）——用户叶不标 nG 则同 VA 映射跨 ASID 经 TLB 泄漏；退役/回卷要清 global 项只能全量 `vmalle1is`（`aside1all` 不是真实指令，设计文档 §5.2 原写法已更正）。
+- **`FrameAllocator::alloc()` 返回 PFN 不是 PA**（PA = pfn << PAGE_SHIFT），且帧内容不保证干净（buddy 只管元数据）——新页先清零再用。
 - 微内核里"把东西塞进内核"是反模式 —— 先问：这能不能做成用户态服务？

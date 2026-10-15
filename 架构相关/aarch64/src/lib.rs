@@ -53,11 +53,41 @@ pub fn init() {
     unsafe { gic::init() };
 }
 
-/// 高半别名自校验：RAM 魔数 + GIC PIDR2 双别名（低半身份 × 高半直映）。
-/// 证两套翻译一致生效——2b-2 逐进程页表 / 低半退役的地基。
+/// 高半别名自校验（2b-2 起只走高半——低半身份已退役）：RAM 魔数 + GIC PIDR2
+/// 经高半直映读回。证 TTBR1 翻译生效——逐进程页表 / 低半退役的地基。
 pub fn kva_ok() -> bool {
     mmu::kva_alias_probe()
 }
+
+/// 2b-2：探测 ASID 位宽（8/16；`ID_AA64MMFR0_EL1.ASIDBits`）。实测值打进关卡记录
+/// （`内存管理设计.md` §5.2）。
+pub fn asid_bits() -> u32 {
+    mmu::asid_bits()
+}
+
+/// 2b-2：激活任务地址空间——TTBR0 ← 表+ASID、CONTEXTIDR、`tlbi aside1is`
+/// （变化才调，比较由调度器做）。`ttbr0_pa == 0` = 无 AS → 内核空表（低半必然
+/// fault——身份表已退役）。填表方须先 `dsb ish`（本函数只管寄存器）。
+pub fn activate_aspace(ttbr0_pa: usize, asid: u16) {
+    // SAFETY: EL1、单核、切换临界区（IRQ 屏蔽）内调用。
+    unsafe { mmu::activate_ttbr0(ttbr0_pa, asid) };
+}
+
+/// 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何
+/// 访问必然 fault（ktest 期望故障正向断言）。回退开关见 `mmu::RETIRE_IDENTITY`。
+pub fn retire_low_half() {
+    // SAFETY: EL1、启动单线程、任何任务切走之前调用一次。
+    unsafe { mmu::retire_low_half() };
+}
+
+/// 全量 ASID 失效（ASID 分配器回卷时调用；用户叶 nG=1，按号失效可达）。
+pub fn flush_all_asid() {
+    // SAFETY: EL1。
+    unsafe { mmu::flush_all_asid() };
+}
+
+// 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
+pub use paging::{page_descriptor, table_descriptor, ATTR_NORMAL, SH_INNER};
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
 //
@@ -86,11 +116,12 @@ pub unsafe fn irq_dispatch() -> Option<IrqDispatch> {
     IRQ_DISPATCH
 }
 
-/// 输出一个字节到 UART0。
+/// 输出一个字节到 UART0（2b-2 起走高半直映别名——低半身份已退役，PA 直写必 fault；
+/// boot asm 早期打印不走这里，是 asm 里直写 PA）。
 #[inline]
 pub fn uart_putc(c: u8) {
     // unsafe 收敛在此：MMIO 写。
-    unsafe { mmio::write(UART0_BASE, c as u32) };
+    unsafe { mmio::write(KERNEL_VA_BASE + UART0_BASE, c as u32) };
 }
 
 /// 输出一段字节串。

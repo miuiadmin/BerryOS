@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+mod aspace;
 mod heap;
 mod ktest;
 mod mm;
@@ -61,6 +62,11 @@ pub extern "C" fn rust_main() -> ! {
     }
     bos_hal_aarch64::uart_puts(b"KVA ok\n");
 
+    // 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何
+    // 访问必然 fault（ktest ASPACE 用例正向断言）；UART/GIC MMIO 已走高半直映，
+    // 内核对低半零依赖。回退开关见 HAL `mmu::RETIRE_IDENTITY`。
+    bos_hal_aarch64::retire_low_half();
+
     // SAFETY: 启动单线程、`rust_main` 入口仅调用一次。
     unsafe { mm::init() };
 
@@ -69,10 +75,21 @@ pub extern "C" fn rust_main() -> ! {
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
     unsafe { bos_hal_aarch64::timer::init() };
+
+    // 2b-2：两忙循环任务各挂一个私有地址空间——timer 抢占切任务 = 切 TTBR0/ASID
+    // （switch 路径真 churn），任务体每次打印节流点自证私有页内容（隔离金丝雀）。
+    // `Box::leak`：AS 须与任务同寿（v1 任务不退出）。
+    let as_a: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+        aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_A_MAGIC),
+    ));
+    let as_b: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+        aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_B_MAGIC),
+    ));
+
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     bos_sched::init();
-    bos_sched::spawn(task_a, 0, b"task_a");
-    bos_sched::spawn(task_b, 0, b"task_b");
+    bos_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
+    bos_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
     // 注册 IRQ 派发（HAL→sched 反转，避循环依赖；须在 enable_irq 前）。Step 5 只打 tick。
     bos_hal_aarch64::set_irq_dispatch(bos_sched::on_irq_tick);
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
@@ -87,31 +104,44 @@ pub extern "C" fn rust_main() -> ! {
 /// 忙循环任务 A（Step 5/6 demo）：纯忙转、不打 yield——证 timer 驱动。
 /// Step 5：`on_irq` 不 switch → task_a 独占、task_b 饿死（无 `B` 输出）。
 /// Step 6：`on_irq` 接 switch → task_a/task_b 在 slice 下交替。
-/// 每 N 次打一 `A`（atomic 自增防 optimize 掉；节流免刷屏）。
-extern "C" fn task_a(_arg: usize) -> ! {
+/// 2b-2：arg = 本任务私有页 magic；每次打印节流点经当前 TTBR0 读私有页自证
+/// （隔离金丝雀——切错表/泄漏立即 panic 暴露）。
+extern "C" fn task_a(arg: usize) -> ! {
+    let magic = arg as u64;
     static A_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     loop {
         let c = A_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         if c >= A_PRINT_EVERY {
             A_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+            // SAFETY: 读自身 AS 的私有页（Normal 映射）；错值非安全问题是正确性问题。
+            let v = unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) };
+            assert_eq!(v, magic, "task_a AS 隔离破坏：私有页读到对端内容");
             bos_hal_aarch64::uart_puts(b"A");
         }
     }
 }
 
 /// 忙循环任务 B（同 A，打 `B`）。Step 5 饿死（无切换）；Step 6 被调起。
-extern "C" fn task_b(_arg: usize) -> ! {
+extern "C" fn task_b(arg: usize) -> ! {
+    let magic = arg as u64;
     static B_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     loop {
         let c = B_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         if c >= B_PRINT_EVERY {
             B_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+            // SAFETY: 同 task_a。
+            let v = unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) };
+            assert_eq!(v, magic, "task_b AS 隔离破坏：私有页读到对端内容");
             bos_hal_aarch64::uart_puts(b"B");
         }
     }
 }
 
-/// A 的打印节流阈值（迭代次数）。小→刷屏（直观见交替）；大→低噪（soak 时虚拟时间
+/// A/B 的打印节流阈值（迭代次数）。小→刷屏（直观见交替）；大→低噪（soak 时虚拟时间
 /// 不被 UART 背压吃掉，switches 计数贴近 wall-clock × SLICE_HZ）。SOAK=1 为低噪 soak。
 const A_PRINT_EVERY: u32 = 2_000_000;
 const B_PRINT_EVERY: u32 = 2_000_000;
+
+/// task_a/task_b 私有页 magic（2b-2 隔离金丝雀；互异且非零）。
+const TASK_A_MAGIC: u64 = 0x00A5_C0DE_AAAA_0001;
+const TASK_B_MAGIC: u64 = 0x00B6_C0DE_BBBB_0002;

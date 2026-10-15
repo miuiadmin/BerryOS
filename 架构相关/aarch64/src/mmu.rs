@@ -48,6 +48,15 @@ static mut BOOT_L2_RAM: L2Table = L2Table([0; PTES_PER_TABLE]);
 #[link_section = ".bss.boot"]
 static mut KERNEL_L1: L1Table = L1Table([0; PTES_PER_TABLE]);
 
+/// 内核空表（2b-2 低半退役）：TTBR0 的「无 AS」落点——全零 → 任何低半访问必然
+/// fault（身份表退役的正向断言即由此而来）。放普通 `.bss`（高半 VMA，boot 期已清零；
+/// 仅供高半代码经直映访问）；TTBR0 写入时按 `VMA - KERNEL_VA_BASE` 折算 PA。
+static NULL_L1: L1Table = L1Table([0; PTES_PER_TABLE]);
+
+/// 2b-2 回退开关（§5.1「保留身份表分支」）：`false` 时 [`retire_low_half`] 不动
+/// TTBR0（低半身份继续可用），供问题定位时快速回退。
+const RETIRE_IDENTITY: bool = true;
+
 /// TCR_EL1：4KiB granule、39-bit VA（T0SZ=T1SZ=25）、inner shareable、WB 页表走查、IPS=0。
 ///
 /// 逐字段拼（cortex-a72 / ARMv8.0）。TG1 编码与 TG0 不同（4KiB: TG0=00、TG1=10）。
@@ -133,26 +142,92 @@ unsafe extern "C" fn enable_mmu() {
     isb();
 }
 
-/// 高半别名自校验：同一物理位置经低半身份（TTBR0）与高半直映（TTBR1）两个
-/// 窗口读，证两套翻译一致且生效（2b-0 引入；2b-1 起主体高半执行，双别名 =
-/// 低半 PA × 高半 VMA）。
-///
-/// RAM 探针 = 静态魔数双别名读回比对；设备探针 = GICD_PIDR2（只读外设 ID 寄存器，
-/// 读无副作用）双别名读值一致。任一不符 → 翻译有错（TTBRx/TCR/表内容），
-/// 必须在推进 2b-2 前暴露。2b-2 低半退役时本探针改为只走高半 + 断言低半 fault。
+/// 高半自校验（2b-0 引入；2b-2 起**只走高半**——低半身份已退役，PA 别名侧探针
+/// 移交 ktest 的期望故障正向断言）：
+/// - RAM 探针 = 静态魔数经高半直映读回；
+/// - 设备探针 = GICD_PIDR2（只读外设 ID 寄存器）经高半 Device 块读。
+/// 任一翻译坏了都不是读到错值，而是**同步异常挂死**——能读回即证 TTBR1 生效。
 pub(crate) fn kva_alias_probe() -> bool {
     static PROBE_MAGIC: u64 = 0x0B05_2B0B_5A5C_0FF0;
-    // 主体符号已链高半：本体 VMA 在高半，PA = VMA - KERNEL_VA_BASE（镜像布局）。
+    // 主体符号已链高半：本体 VMA 在高半直映区。
     let va = (&raw const PROBE_MAGIC) as usize;
-    let pa = va - KERNEL_VA_BASE;
-    // SAFETY: 两别名指向同一物理页（身份 TTBR0 / 高半 TTBR1 直映），读无副作用。
-    let ram_ok = unsafe { (va as *const u64).read_volatile() } == PROBE_MAGIC
-        && unsafe { (pa as *const u64).read_volatile() } == PROBE_MAGIC;
+    // SAFETY: 只读自身静态量（Normal 直映），读无副作用。
+    let ram_ok = unsafe { (va as *const u64).read_volatile() } == PROBE_MAGIC;
     const GICD_PIDR2: usize = GICD_BASE + 0x0FE8;
-    // SAFETY: 只读外设 ID 寄存器；两别名走同一 L2 Device 块（同一 BOOT_L2_LOW）。
-    let v_pa = unsafe { crate::mmio::read(GICD_PIDR2) };
-    let v_kva = unsafe { crate::mmio::read(KERNEL_VA_BASE + GICD_PIDR2) };
-    ram_ok && v_pa == v_kva
+    // SAFETY: 只读外设 ID 寄存器（高半 Device 块；翻译坏则异常挂死，即失败信号）。
+    let _dev = unsafe { crate::mmio::read(KERNEL_VA_BASE + GICD_PIDR2) };
+    ram_ok
+}
+
+// ---- 2b-2：ASID + 每任务 TTBR0 激活 + 低半退役（内存管理设计 §5.1/§5.2）----
+
+/// 探测 ASID 位宽：`ID_AA64MMFR0_EL1.ASIDBits`（bits[7:4]）——0 → 8 位、2 → 16 位；
+/// 其余为架构保留值，保守取 8。QEMU `virt`/cortex-a72 实测值由 ktest 打进关卡记录。
+pub(crate) fn asid_bits() -> u32 {
+    let v: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {0}, id_aa64mmfr0_el1", out(reg) v, options(nostack, preserves_flags)) };
+    match (v >> 4) & 0xf {
+        2 => 16,
+        _ => 8, // 0 → 8 位；保留值保守取 8
+    }
+}
+
+/// ASID 在 TTBR0 / `tlbi aside1` 操作数里的移位量：16 位 → [63:48]、8 位 → [63:56]
+/// （TCR.A1=0：硬件 ASID 取自 TTBR0，与 TCR.AS=0 的 8 位取位一致）。
+#[inline(always)]
+fn asid_shift() -> u32 {
+    if asid_bits() == 16 { 48 } else { 56 }
+}
+
+/// 激活任务地址空间：TTBR0 ← `ttbr0_pa` + ASID（`ttbr0_pa == 0` = 无 AS → 内核
+/// 空表，低半必然 fault）；CONTEXTIDR.PROCID = asid（可观测性——硬件 ASID 恒取
+/// TTBR0，A1=0）；`tlbi aside1is` 防上一轮同号映射经 TLB 残留（§5.1 坑「TLB」）。
+///
+/// 只做寄存器操作，**不负责页表内容屏障**——填表方须在调用前 `dsb ish`
+/// （见内核 `aspace` 模块）。
+pub(crate) unsafe fn activate_ttbr0(ttbr0_pa: usize, asid: u16) {
+    let table = if ttbr0_pa == 0 {
+        (&raw const NULL_L1) as usize - KERNEL_VA_BASE
+    } else {
+        ttbr0_pa
+    };
+    let shift = asid_shift();
+    let ttbr = (asid as u64) << shift | table as u64;
+    write_ttbr0_el1(ttbr);
+    isb();
+    // CONTEXTIDR_EL1：PROCID = asid（调试/trace 关联用；A1=0 下非功能位）。
+    asm!(
+        "msr contextidr_el1, {0}",
+        in(reg) (asid as u64) << 13,
+        options(nostack, preserves_flags)
+    );
+    // 同号旧映射失效（IS 口径——单核下与非 IS 等价，多核语义先立对）。
+    asm!("tlbi aside1is, {0}", in(reg) (asid as u64) << shift, options(nostack, preserves_flags));
+    dsb_ish();
+    isb();
+}
+
+/// 低半身份表退役（2b-2）：TTBR0 ← 内核空表（ASID 0）+ **全量 TLB 失效**。
+/// 此后低半任何访问必然 fault——ktest 以期望故障正向断言之。
+/// 用 `vmalle1is`：身份时代的低半 TLB 项是 global（boot 块描述符 nG=0），按号
+/// 失效够不着 global 项；全量清（高半内核项随后经 TTBR1 重走查，无害）。
+/// 回退开关：[`RETIRE_IDENTITY`]。
+pub(crate) unsafe fn retire_low_half() {
+    if !RETIRE_IDENTITY {
+        return;
+    }
+    activate_ttbr0(0, 0);
+    flush_all_asid();
+}
+
+/// 全量失效（ASID 分配器回卷 / 低半退役用）。注意：正确的「全量」指令是
+/// `vmalle1is`（含 global 项；`aside1` 家族只按号失效、够不着 global）。
+/// 设计文档 §5.2 原文写的 `tlbi aside1all` 并非真实助记符，此处即更正。
+pub(crate) unsafe fn flush_all_asid() {
+    asm!("tlbi vmalle1is", options(nostack, preserves_flags));
+    dsb_ish();
+    isb();
 }
 
 // ---- 系统寄存器读写（unsafe 收敛地，裸 asm）----

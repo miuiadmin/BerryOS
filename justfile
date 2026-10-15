@@ -5,7 +5,9 @@ export PATH := env_var("HOME") + "/.cargo/bin:" + env_var("PATH")
 
 # cargo 的 target 目录可能被全局 ~/.cargo/config.toml 的 target-dir 覆盖
 # （本机指向 ~/.cargo-target），故动态解析，不硬编码 target/。
-target_dir := `cargo metadata --no-deps --format-version=1 2>/dev/null | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4`
+# 与下方 host 同因：`export PATH :=` 只进 recipe 环境、不进属性背引号——
+# 背引号里自行前插 ~/.cargo/bin。
+target_dir := `PATH="${HOME}/.cargo/bin:${PATH}" cargo metadata --no-deps --format-version=1 2>/dev/null | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4`
 KERNEL := target_dir + "/aarch64-unknown-none/debug/bos-kernel"
 KERNEL_RELEASE := target_dir + "/aarch64-unknown-none/release/bos-kernel"
 
@@ -39,7 +41,9 @@ clean:
 
 # host 三元组：.cargo/config.toml 锁了 build.target=aarch64-unknown-none，
 # host 单元测试要用 `--target <host>` 覆盖（否则给 no_std 目标配 std harness）。
-host := `rustc -vV | sed -n 's/^host: //p'`
+# 注意：`export PATH :=` 只进 recipe 环境、不进属性背引号（实测 just 此行为），
+# 故这里显式找 ~/.cargo/bin/rustc，找不到再退回 PATH 里的 rustc。
+host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.cargo/bin/rustc" -vV || rustc -vV; } | sed -n 's/^host: //p'`
 
 # host 单元测试：bos-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）。
 test-host:

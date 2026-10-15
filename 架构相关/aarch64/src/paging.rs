@@ -47,9 +47,15 @@ pub const fn block_descriptor(pa: usize, attr: u64, shareability: u64) -> u64 {
     (pa as u64) | VALID | attr | AP_EL1_RW | shareability | AF
 }
 
-/// 构造 4KiB **页描述符**（L3 叶子）。bits[1:0]=0b11。boot 表暂不用，Phase 2 动态映射用。
+/// nG（non-Global，bit[11]）：用户叶子必置 1——per-ASID 语义的地基。global（0）项
+/// **不参与** `tlbi aside1*` 按号失效（§5.1 坑「TLB」），用户映射若 global 会跨 ASID
+/// 泄漏（同 VA 两 ASID 互见旧映射）。
+const NG: u64 = 1 << 11;
+
+/// 构造 4KiB **页描述符**（L3 叶子，用户映射——nG=1、per-ASID）。boot 表暂不用，
+/// Phase 2 动态映射用。
 #[allow(dead_code)]
 #[inline(always)]
 pub const fn page_descriptor(pa: usize, attr: u64, shareability: u64) -> u64 {
-    (pa as u64) | VALID | TABLE_OR_PAGE | attr | AP_EL1_RW | shareability | AF
+    (pa as u64) | VALID | TABLE_OR_PAGE | attr | AP_EL1_RW | shareability | AF | NG
 }

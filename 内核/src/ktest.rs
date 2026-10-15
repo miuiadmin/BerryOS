@@ -11,6 +11,7 @@ pub fn run() {
     test_heap();
     test_syscall();
     test_switch();
+    test_aspace();
     bos_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -159,4 +160,52 @@ fn test_switch() {
         // <- switch_ping_fn 切回 SWITCH_CTX_MAIN 时续行于此。
     }
     bos_hal_aarch64::uart_puts(b"TASK ok\n");
+}
+
+/// 2b-2：每进程页表 + ASID 互切 + 低半退役正向断言（`内存管理设计.md` §5.1 第 3 步）。
+/// 低半退役本身在 `rust_main` 早期已完成（`retire_low_half`），本用例验证其效果。
+fn test_aspace() {
+    use crate::aspace::MiniAspace;
+    use bos_hal_aarch64 as hal;
+
+    const MAGIC_A: u64 = 0x00A5_C0DE_0000_0001;
+    const MAGIC_B: u64 = 0x00B6_C0DE_0000_0002;
+
+    // 关卡记录（§5.2）：ASID 实测宽度（QEMU virt/cortex-a72）。
+    let width = hal::asid_bits();
+
+    let a = MiniAspace::new(crate::mm::frames(), crate::aspace::alloc_asid(), MAGIC_A);
+    let b = MiniAspace::new(crate::mm::frames(), crate::aspace::alloc_asid(), MAGIC_B);
+
+    // 激活 A：读到自己的 magic；写入改值、读回。
+    a.activate();
+    assert_eq!(a.read_va(), MAGIC_A, "ASPACE：A 初值不符");
+    a.write_va(0x00A5_DEAD_0000_0011);
+    assert_eq!(a.read_va(), 0x00A5_DEAD_0000_0011, "ASPACE：A 写读不符");
+
+    // 切 B：**同一 VA** 读到 B 的 magic（≠ A 刚写的值）→ 两表隔离；B 写自己的值。
+    b.activate();
+    assert_eq!(b.read_va(), MAGIC_B, "ASPACE：B 下同 VA 应是 B 的内容（隔离）");
+    b.write_va(0x00B6_DEAD_0000_0022);
+
+    // 切回 A：A 的写入保留 → 切换不破坏对端表。
+    a.activate();
+    assert_eq!(a.read_va(), 0x00A5_DEAD_0000_0011, "ASPACE：切回 A 后 A 的写入须保留");
+
+    // 低半退役**正向断言**：读已退役的身份地址必须 fault 且可恢复。
+    // arm 期望故障 → ldr（若低半仍有映射则不 fault → 槽仍武装 → 断言失败）。
+    hal::trap::arm_expected_fault(bos_hal_aarch64::RAM_BASE);
+    // SAFETY: 预期同步异常（期望故障槽已 arm，FAR 命中即恢复）；值本身无意义。
+    let _ = unsafe { core::ptr::read_volatile(bos_hal_aarch64::RAM_BASE as *const u64) };
+    assert!(
+        !hal::trap::fault_armed(),
+        "ASPACE：低半读居然没 fault——身份映射没退役干净"
+    );
+
+    // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
+    hal::activate_aspace(0, 0);
+
+    bos_hal_aarch64::uart_puts(b"ASPACE ok (asid=");
+    bos_hal_aarch64::uart_put_dec(width as u64);
+    bos_hal_aarch64::uart_puts(b"b, low-half faulted)\n");
 }

@@ -15,7 +15,24 @@
 //! save→dump→改 ELR→restore→eret 全链路与 TrapFrame/asm 偏移一致（Step 9 SVC 同此路径）。
 
 use core::arch::global_asm;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{halt, uart_put_hex64, uart_puts};
+
+/// 期望故障槽（2b-2 低半退役正向断言）：非 0 = 期望下一次 current-EL **D-abort**
+/// 的 FAR。命中 → 恢复（ELR+=4，4 字节 ldr/str 假设）并清槽；未 arm 或 FAR 不符 →
+/// 原 fatal 路径。调用方读回 [`fault_armed`] 判「确实 fault 了」（槽被消费 = 异常真
+/// 发生过；没 fault 反而是断言失败——映射没退役干净）。
+static EXPECTED_FAULT_FAR: AtomicUsize = AtomicUsize::new(0);
+
+/// 武装期望故障（ktest 专用；单核、IRQ 屏蔽下 arm→触发之间无他人插队）。
+pub fn arm_expected_fault(far: usize) {
+    EXPECTED_FAULT_FAR.store(far, Ordering::Release);
+}
+
+/// 期望故障槽是否仍处于武装态（未武装 = 已被消费 = 异常确实发生过）。
+pub fn fault_armed() -> bool {
+    EXPECTED_FAULT_FAR.load(Ordering::Acquire) != 0
+}
 
 /// 异常帧（`#[repr(C)]`，与下方 asm 的存取偏移严格对应）。
 ///
@@ -185,6 +202,19 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
             uart_puts(b"  -> BRK recover: ELR+=4, eret\n");
             tf.elr = tf.elr.wrapping_add(4);
             return;
+        }
+        0x25 => {
+            // D-abort(current-EL)：先查期望故障槽（2b-2 低半退役正向断言）——
+            // arm 且 FAR 命中 → 恢复（证「该地址确实无映射」）；否则原 fatal 路径。
+            let want = EXPECTED_FAULT_FAR.swap(0, Ordering::AcqRel);
+            if want != 0 && tf.far as usize == want {
+                uart_puts(b"  -> expected D-abort, recover: ELR+=4\n");
+                tf.elr = tf.elr.wrapping_add(4); // 假设 4 字节 ldr/str（ktest 用 ldr x0,[x1]）
+                return;
+            }
+            dump(tf, ec);
+            uart_puts(b"  -> fatal, halt\n");
+            halt();
         }
         _ => {
             dump(tf, ec);
