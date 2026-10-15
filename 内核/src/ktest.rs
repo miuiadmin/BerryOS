@@ -40,11 +40,12 @@ fn test_syscall() {
     // A. 调试 echo 往返（G0 原始判据；0xFE 调试槽，非 ABI）。
     assert_eq!(svc4(NR_DEBUG_ECHO as u64, 0x5a, 0, 0), 0x5a, "SYSCALL：echo 往返");
 
-    // B. 未知号（越界 0x99）与未实现真号（vmo_create 0x11，3-2 落地）一律
-    //    -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言。
+    // B. 未知号（越界 0x99）与未实现真号（object_wait_one 0x04，3-4 落地）一律
+    //    -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言（3-2 起 0x11
+    //    已实现，未实现样本换成 0x04）。
     assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
     assert_eq!(
-        svc4(NR_VMO_CREATE as u64, 0, 0, 0),
+        svc4(0x04, 0, 0, 0),
         -95,
         "SYSCALL：未实现真号须 -ENOTSUP"
     );
@@ -99,6 +100,153 @@ fn test_syscall() {
         "SYSCALL：坏 handle 须 -EBADF"
     );
 
+    // E. 3-2 VMO/Vmar syscall 全链（EL1 侧；rights 矩阵 + 错误映射 + 映射计数
+    //    防线）。缓冲均为内核静态（EL1 copy 走高半直映区）。
+    use crate::handle::{ObjType, RIGHT_MANAGE, RIGHT_MAP};
+    use crate::syscall::{
+        NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT,
+        NR_VMO_DECOMMIT, NR_VMO_READ, NR_VMO_WRITE,
+    };
+    use crate::vmar::Vmar;
+    static mut EBUF: [u8; 16] = [0; 16]; // write 源 / read 目的（内核直映区）
+    const PATTERN: u64 = 0x00C0_FFEE_0000_0055;
+
+    // E0. 参数面：size=0 / options≠0 → -EINVAL；超尺寸 → -ENOMEM（no-panic 防线）。
+    assert_eq!(svc6(NR_VMO_CREATE as u64, 0, 0, &raw mut OUT as u64, 0, 0, 0), -22,
+        "SYSCALL：vmo_create size=0 须 -EINVAL");
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 1, &raw mut OUT as u64, 0, 0, 0), -22,
+        "SYSCALL：vmo_create options≠0 须 -EINVAL");
+    assert_eq!(
+        svc6(NR_VMO_CREATE as u64, u64::MAX, 0, &raw mut OUT as u64, 0, 0, 0),
+        -12,
+        "SYSCALL：巨 size 须 -ENOMEM（防堆分配 abort）"
+    );
+
+    // E1. create→commit→write→read 往返（WRITE/READ 门控）。
+    // SAFETY: svc 同步异常；OUT/EBUF 为本函数私有静态。
+    unsafe { OUT = 0 };
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0, &raw mut OUT as u64, 0, 0, 0), 0,
+        "SYSCALL：vmo_create");
+    let hv = unsafe { OUT } as u32;
+    assert_ne!(hv, 0, "SYSCALL：vmo_create 须回填非零 handle");
+    assert_eq!(svc6(NR_VMO_COMMIT as u64, hv as u64, 0, PAGE_SIZE as u64, 0, 0, 0), 0,
+        "SYSCALL：vmo_commit");
+    // SAFETY: 同上。
+    unsafe { EBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
+    assert_eq!(
+        svc6(NR_VMO_WRITE as u64, hv as u64, &raw const EBUF as u64, 0, 8, 0, 0),
+        0,
+        "SYSCALL：vmo_write"
+    );
+    // SAFETY: 同上。
+    unsafe { EBUF = [0; 16] };
+    assert_eq!(
+        svc6(NR_VMO_READ as u64, hv as u64, &raw mut EBUF as u64, 0, 8, 0, 0),
+        0,
+        "SYSCALL：vmo_read"
+    );
+    // SAFETY: 只读比对。
+    assert_eq!(unsafe { u64::from_le_bytes(EBUF[..8].try_into().unwrap()) }, PATTERN,
+        "SYSCALL：write→read 往返");
+
+    // E2. 错误映射：未提交页 read → -EBADSTATE(-37)；未对齐 commit → -EINVAL；
+    //     RO 收紧后 write → -EACCES(-13)。
+    let hv_nc = {
+        // SAFETY: 同上。
+        unsafe { OUT = 0 };
+        assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0, &raw mut OUT as u64, 0, 0, 0), 0);
+        unsafe { OUT as u32 }
+    };
+    assert_eq!(
+        svc6(NR_VMO_READ as u64, hv_nc as u64, &raw mut EBUF as u64, 0, 8, 0, 0),
+        -37,
+        "SYSCALL：未提交页读须 -EBADSTATE"
+    );
+    assert_eq!(svc6(NR_VMO_COMMIT as u64, hv as u64, 0x10, 0x10, 0, 0, 0), -22,
+        "SYSCALL：未对齐 commit 须 -EINVAL");
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, hv as u64, 1 /* READ */, &raw mut OUT as u64),
+        0,
+        "SYSCALL：dup 收紧到 READ"
+    );
+    let hro = unsafe { OUT } as u32;
+    assert_eq!(
+        svc6(NR_VMO_WRITE as u64, hro as u64, &raw const EBUF as u64, 0, 8, 0, 0),
+        -13,
+        "SYSCALL：RO handle 写须 -EACCES（权限在 handle 不在对象）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hro as u64, 0, 0), 0, "SYSCALL：close RO");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv_nc as u64, 0, 0), 0, "SYSCALL：close 空提交 VMO");
+
+    // E3. vmar 链：插一张 root Vmar 进引导表（MAP|MANAGE）→ map（含映射中
+    //     close 拒 -EBUSY、读别名一致、protect rights 面）→ unmap → decommit →
+    //     close 全绿。EL0 侧同链在 user_good（3-2 验收本体）。
+    let hvm = ht
+        .insert(
+            KernelObj::Vmar(Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid())),
+            RIGHT_MAP | RIGHT_MANAGE,
+        )
+        .expect("SYSCALL：insert root vmar");
+    // SAFETY: 同上。
+    unsafe { OUT = crate::aspace::USER_VA as u64 }; // 请求 VA = 0x1000
+    assert_eq!(
+        svc6(NR_VMAR_MAP as u64, hvm as u64, hv as u64, 0, &raw mut OUT as u64,
+             PAGE_SIZE as u64, 3 /* READ|WRITE */),
+        0,
+        "SYSCALL：vmar_map"
+    );
+    assert_eq!(unsafe { OUT } as usize, crate::aspace::USER_VA, "SYSCALL：vmar_map 须回写实际 VA");
+    // 映射中 close 拒（悬空 PTE 防线）；unmap 后即放行。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), -16,
+        "SYSCALL：映射中 close 须 -EBUSY");
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 1, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        -95,
+        "SYSCALL：protect 缺 WRITE 须 -ENOTSUP（v1 只支持 R|W）"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 5, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        -22,
+        "SYSCALL：protect 外位 rights 须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_UNMAP as u64, hvm as u64, 0x9000, PAGE_SIZE as u64, 0, 0, 0),
+        -2,
+        "SYSCALL：unmap 未映射区间须 -ENOENT"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_UNMAP as u64, hvm as u64, crate::aspace::USER_VA as u64, PAGE_SIZE as u64, 0, 0, 0),
+        0,
+        "SYSCALL：vmar_unmap"
+    );
+    assert_eq!(svc6(NR_VMO_DECOMMIT as u64, hv as u64, 0, PAGE_SIZE as u64, 0, 0, 0), 0,
+        "SYSCALL：vmo_decommit（映射已解除）");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), 0, "SYSCALL：close 已 decommit VMO");
+
+    // E4. vmar_allocate：子 Vmar 入表授父 rights；子界内 map 成功面（只验状态，
+    //     映射本体 E3 已覆盖）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0x20_0000 }; // 请求子区间基 0x20_0000
+    static mut CHILD_OUT: u64 = 0;
+    // SAFETY: 同上。
+    unsafe { CHILD_OUT = 0 };
+    assert_eq!(
+        svc6(NR_VMAR_ALLOCATE as u64, hvm as u64, 0, &raw mut OUT as u64,
+             (PAGE_SIZE * 2) as u64, &raw mut CHILD_OUT as u64, 0),
+        0,
+        "SYSCALL：vmar_allocate"
+    );
+    let hchild = unsafe { CHILD_OUT } as u32;
+    assert_ne!(hchild, 0, "SYSCALL：allocate 须回填子 handle");
+    let (_, child_rights) = ht.get(hchild, ObjType::Vmar, 0).expect("SYSCALL：get 子 vmar");
+    assert_eq!(child_rights, RIGHT_MAP | RIGHT_MANAGE, "SYSCALL：子 vmar 授父 rights 全集");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hchild as u64, 0, 0), 0, "SYSCALL：close 子 vmar");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm as u64, 0, 0), 0, "SYSCALL：close root vmar");
+
     bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
 
@@ -115,6 +263,27 @@ fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
             in("x1") a1,
             in("x2") a2,
             in("x3") a3,
+            options(nostack, preserves_flags),
+        );
+    }
+    ret as i64
+}
+
+/// `svc #0` 六参往返（ktest 专用；3-2 VMO/Vmar 全链用）：x0=nr（进）/ret（出）、
+/// x1..x6=参（ABI §2 上限 6 参）。
+fn svc6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64 {
+    let ret: u64;
+    // SAFETY: 同 svc4（同步异常；dispatch 只回写 x0）。
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inout("x0") nr => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
+            in("x5") a5,
+            in("x6") a6,
             options(nostack, preserves_flags),
         );
     }
@@ -325,7 +494,7 @@ fn test_vmo() {
 
     // B. map 即填表 + §5.1 验收：内核经 VMO 映射读写一页（VA 视角）。
     let mut root = Vmar::new_root(fa, alloc_asid());
-    root.map(fa, &vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
+    root.map(fa, &mut vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
         .expect("VMO：map");
     root.activate();
     // SAFETY: 读已映射 Normal 页（root 已激活）。
@@ -344,7 +513,7 @@ fn test_vmo() {
     assert!(!hal::trap::fault_armed(), "VMO：unmap 后读居然没 fault");
 
     // D. 权限：map 只读 → 写必 fault；protect 提回 RW → 写通。
-    root.map(fa, &vmo, USER_VA, 0, PAGE_SIZE, Perm::Ro)
+    root.map(fa, &mut vmo, USER_VA, 0, PAGE_SIZE, Perm::Ro)
         .expect("VMO：map RO");
     // SAFETY: 读已映射页。
     let v = unsafe { core::ptr::read_volatile(USER_VA as *const u64) };
@@ -361,14 +530,14 @@ fn test_vmo() {
 
     // E. allocate 子 Vmar：越子界拒、父撞预留拒、子映射共享同表根。
     let mut child = root.allocate(0x20_0000, PAGE_SIZE * 2).expect("VMO：allocate");
-    child.map(fa, &vmo, 0x20_0000, 0, PAGE_SIZE, Perm::Rw).expect("VMO：子 map");
+    child.map(fa, &mut vmo, 0x20_0000, 0, PAGE_SIZE, Perm::Rw).expect("VMO：子 map");
     assert_eq!(
-        child.map(fa, &vmo, 0x30_0000, 0, PAGE_SIZE, Perm::Rw),
+        child.map(fa, &mut vmo, 0x30_0000, 0, PAGE_SIZE, Perm::Rw),
         Err(VmarError::OutOfBounds),
         "VMO：子 Vmar 越界映射必须拒"
     );
     assert_eq!(
-        root.map(fa, &vmo, 0x20_1000, 0, PAGE_SIZE, Perm::Rw),
+        root.map(fa, &mut vmo, 0x20_1000, 0, PAGE_SIZE, Perm::Rw),
         Err(VmarError::Overlap),
         "VMO：父撞子预留必须拒"
     );

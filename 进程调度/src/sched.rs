@@ -148,6 +148,10 @@ pub fn exit_current() -> ! {
 /// 用户任务致死计数（G1.5 验收：watchdog 断言 == 期望杀数）。
 static mut USER_KILLS: u64 = 0;
 
+/// 最近被杀用户任务名（G1.5 验收：watchdog 断言**杀的是 rogue**——杀数==1 但错杀
+/// good/abuser 不得过关；单核 IRQ 屏蔽路径写，watchdog 只读）。
+static mut LAST_KILLED: &[u8] = b"";
+
 /// 当前用户任务因致命故障被杀（HAL `exception_sync_el0` 经函数指针槽调；2b-4
 /// G1.5——**只死自己**，内核与其余任务无恙）。打印 + 计数 + 切走，永不返回：
 /// 被弃的是故障帧所在的内核栈（同步异常入口 PSTATE.I=1，无 GIC 状态要收拾）。
@@ -157,6 +161,7 @@ static mut USER_KILLS: u64 = 0;
 pub unsafe extern "C" fn user_fault_exit() -> ! {
     let cur = CURRENT;
     USER_KILLS = USER_KILLS.wrapping_add(1);
+    LAST_KILLED = (*cur).name;
     hal::uart_puts(b"\nG1.5: kill user task '");
     hal::uart_puts((*cur).name);
     hal::uart_puts(b"'\n");
@@ -201,6 +206,12 @@ pub fn switches() -> u64 {
 pub fn user_kills() -> u64 {
     // SAFETY: 只读；单核顺序访问。
     unsafe { USER_KILLS }
+}
+
+/// 最近被杀用户任务名只读访问（watchdog 断言「杀对了人」用；空串 = 尚无杀）。
+pub fn last_killed() -> &'static [u8] {
+    // SAFETY: 只读；单核顺序访问。
+    unsafe { LAST_KILLED }
 }
 
 /// idle 主循环（tickless）：runqueue 空时屏蔽 CNTV + `wfi`（空闲核不收周期中断）；

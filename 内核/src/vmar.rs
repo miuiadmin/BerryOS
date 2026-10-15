@@ -72,6 +72,13 @@ struct Region {
     start: usize,
     len: usize,
     kind: RegionKind,
+    /// `Mapped`：指向映射的 Vmo（`map` 经 `&mut` 传入）。**指针有效性依托两层
+    /// 政策**：handle 表路径 close 对映射中 VMO 拒 -EBUSY（对象不可销毁）；
+    /// boot/ktest 直构对象由调用方保证生存期（v1 泄漏持有——见 `user.rs`）。
+    /// `Reserved` 恒 null。
+    vmo: *mut Vmo,
+    /// `Mapped`：本区间对应 VMO 内偏移（unmap 回调映射计数用）。
+    vmo_off: usize,
 }
 
 /// `Mapped` 带权限是为 Phase 3 `query`（§3 操作之一）留数据；v1 无读取点。
@@ -129,7 +136,13 @@ impl Vmar {
     /// 表根/ASID、管辖界收窄的新 Vmar。
     pub fn allocate(&mut self, vaddr: usize, len: usize) -> Result<Vmar, VmarError> {
         self.check_slot(vaddr, len)?;
-        self.regions.push(Region { start: vaddr, len, kind: RegionKind::Reserved });
+        self.regions.push(Region {
+            start: vaddr,
+            len,
+            kind: RegionKind::Reserved,
+            vmo: core::ptr::null_mut(),
+            vmo_off: 0,
+        });
         Ok(Vmar {
             l1_pa: self.l1_pa,
             asid: self.asid,
@@ -141,7 +154,9 @@ impl Vmar {
 
     /// 把 VMO 的 `[vmo_offset, vmo_offset+len)` 映射到 `[vaddr, vaddr+len)`
     /// （`map 即填用户页表`——§5.1 第 4 步主交付）。v1 要求显式 vaddr（ASLR 留 v2）、
-    /// 整页粒度、VMO 覆盖页已全部 commit。返回映射基 VA。
+    /// 整页粒度、VMO 覆盖页已全部 commit。返回映射基 VA。成功后回调
+    /// `vmo.track_map`（3-2 映射计数——decommit/销毁的悬空 PTE 防线），故收
+    /// `&mut Vmo`。
     ///
     /// 失败语义：中途建表失败（`NoFrames`）时已写叶全部回滚（清叶 + `dsb ish` +
     /// 按号失效），返回错误后无残留翻译；regions 未登记该区间，同 VA 重试 map
@@ -151,7 +166,7 @@ impl Vmar {
     pub fn map(
         &mut self,
         fa: &mut FrameAllocator,
-        vmo: &Vmo,
+        vmo: &mut Vmo,
         vaddr: usize,
         vmo_offset: usize,
         len: usize,
@@ -201,15 +216,29 @@ impl Vmar {
         }
         // SAFETY: 特权指令；EL1。表写入对页表走查可见。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
-        self.regions.push(Region { start: vaddr, len, kind: RegionKind::Mapped(perm) });
+        vmo.track_map(vmo_offset, len);
+        self.regions.push(Region {
+            start: vaddr,
+            len,
+            kind: RegionKind::Mapped(perm),
+            vmo: vmo as *mut Vmo,
+            vmo_off: vmo_offset,
+        });
         Ok(vaddr)
     }
 
-    /// 解除映射：清 L3 叶（此后访问该 VA 必 fault）+ 按号失效。**不退物理页**
-    /// （页属 VMO；v1 也不回收中间表帧——Phase 3 对象销毁统一处理）。
-    /// 区间须与本 Vmar 登记的映射**精确匹配**（子区间解映射留 v2）。
+    /// 解除映射：清 L3 叶（此后访问该 VA 必 fault）+ 按号失效 + 回调 VMO 映射
+    /// 计数 -1（此后该页可 decommit/销毁）。**不退物理页**（页属 VMO；v1 也不
+    /// 回收中间表帧）。区间须与本 Vmar 登记的映射**精确匹配**（子区间解映射留 v2）。
     pub fn unmap(&mut self, vaddr: usize, len: usize) -> Result<(), VmarError> {
         let idx = self.find_mapped(vaddr, len)?;
+        // SAFETY: Region 的 vmo 指针经 map 的 &mut 传入；两层政策保有效（见
+        // Region 注释：handle 层 close 拒绝面 + 直构对象泄漏持有），且单核 +
+        // syscall 全程 IRQ 屏蔽（无并发销毁窗口）。
+        unsafe {
+            let r = &self.regions[idx];
+            (*r.vmo).untrack_map(r.vmo_off, r.len);
+        }
         self.clear_leaves(vaddr, len / PAGE_SIZE);
         // SAFETY: 特权指令；EL1。改叶对走查可见 + 旧 TLB 项作废。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
@@ -269,7 +298,7 @@ impl Vmar {
 
     /// 表 PA → 经 direct map 的表基指针。
     fn table_of(pa: usize) -> *mut u64 {
-        phys_to_virt(pa) as *mut u64
+        table_base(pa)
     }
 
     /// 读槽位；无效则建新表（清零帧）写入，返回下一级表 PA。
@@ -323,4 +352,33 @@ impl Vmar {
             }
         }
     }
+}
+
+/// 只读走查任意表树的 L3 叶描述符（3-2：syscall copy 路径的用户缓冲校验——
+/// 经**当前 TTBR0**（= 调用者自身表）逐页查 AP 位）。L1/L2 只可能是表描述符
+/// （bit1=1；用户树由 `next_table` 独家产出），L3 须页描述符（bit0=1）；任一层
+/// 缺失/形态不符 → `None`。AP 位 [7:6] 由调用方解读（00/01=EL1 可写、10=EL1
+/// 只读、11=EL0 专属）。
+pub(crate) fn walk_leaf(l1_pa: usize, va: usize) -> Option<u64> {
+    /// L3 页描述符有效位（bit0）。
+    const PAGE_VALID: u64 = 1;
+    let l1 = table_base(l1_pa);
+    let e0 = unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() };
+    if e0 & TABLE_BIT == 0 {
+        return None;
+    }
+    let l2 = table_base((e0 as usize) & ADDR_MASK as usize);
+    let e1 = unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() };
+    if e1 & TABLE_BIT == 0 {
+        return None;
+    }
+    let l3 = table_base((e1 as usize) & ADDR_MASK as usize);
+    let leaf = unsafe { l3.add((va >> 12) & IDX_MASK).read_volatile() };
+    (leaf & PAGE_VALID != 0).then_some(leaf)
+}
+
+/// 表 PA → 经 direct map 的表基指针（walk_leaf 用——walk 不持 Vmar 对象，
+/// 不能走 `Vmar::table_of`）。
+fn table_base(pa: usize) -> *mut u64 {
+    phys_to_virt(pa) as *mut u64
 }

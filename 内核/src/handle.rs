@@ -13,9 +13,10 @@
 //!   （引用计数 = 持有它的 handle 数，最后 close 释放）。
 //! - 权限只能收紧：`duplicate` 要求新 rights ⊆ 原（防提权，永不增权）。
 //!
-//! v1 裁剪：对象销毁不回收物理页/页表帧（`内存管理设计.md` §5.1 落地记录——
-//! 统一随 3-2 `vmo_decommit`/对象销毁落地）；`RIGHT_DUPLICATE` 位已定义但
-//! 不门控 `duplicate`（Zircon 同款：位留 vocab、暂不执法）。
+//! v1 裁剪：页表帧不回收（v1 政策）；`RIGHT_DUPLICATE` 位已定义但不门控
+//! `duplicate`（Zircon 同款：位留 vocab、暂不执法）。3-2 起 Vmo 销毁回收
+//! 未映射物理页（`Vmo::Drop`），映射未解除的 VMO 拒 close（悬空 PTE 防线，
+//! 见 [`HandleTable::close`]）。
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -60,10 +61,20 @@ pub const ERR_BAD_HANDLE: i32 = -9;
 pub const ERR_ACCESS_DENIED: i32 = -13;
 /// EINVAL：参数非法（如 replace 两值相同）。
 pub const ERR_INVALID_ARG: i32 = -22;
-/// ENOMEM：无空间（表满 / gen 耗尽）。
+/// ENOMEM：无空间（表满 / gen 耗尽 / 超尺寸）。
 pub const ERR_NO_MEMORY: i32 = -12;
 /// ENOTSUP：未知/未实现编号或能力（ABI §8.4「永不 panic」统一错误面）。
 pub const ERR_NOT_SUPPORTED: i32 = -95;
+/// EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用户区）——3-2 copy 路径。
+pub const ERR_FAULT: i32 = -14;
+/// EBUSY：资源占用（映射未解除的 VMO 不能 close/decommit——悬空 PTE 防线）。
+pub const ERR_BUSY: i32 = -16;
+/// ENOENT：区间不存在（unmap/protect 找不到精确匹配）。
+pub const ERR_NOT_FOUND: i32 = -2;
+/// EBADSTATE：对象状态不满足（读/映射未提交页——v1 无 demand paging）。
+pub const ERR_BAD_STATE: i32 = -37;
+/// EOVERFLOW-style：offset/len 越出对象容量或区间管辖界。
+pub const ERR_OUT_OF_RANGE: i32 = -34;
 
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
 
@@ -119,6 +130,31 @@ impl KernelObj {
         match self {
             KernelObj::Vmo(_) => ObjType::Vmo,
             KernelObj::Vmar(_) => ObjType::Vmar,
+        }
+    }
+
+    /// 只读取 Vmo 本体（类型门控后的防御性解包——不符返 None，调用方折错误码
+    /// 而非 panic，守 syscall 边界无 panic 纪律）。
+    pub fn as_vmo(&self) -> Option<&crate::vmo::Vmo> {
+        match self {
+            KernelObj::Vmo(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// 可变取 Vmo 本体（syscall 写路径；同上防御性）。
+    pub fn as_vmo_mut(&mut self) -> Option<&mut crate::vmo::Vmo> {
+        match self {
+            KernelObj::Vmo(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// 可变取 Vmar 本体（vmar_* syscall；同上防御性）。
+    pub fn as_vmar_mut(&mut self) -> Option<&mut crate::vmar::Vmar> {
+        match self {
+            KernelObj::Vmar(v) => Some(v),
+            _ => None,
         }
     }
 }
@@ -184,8 +220,26 @@ impl HandleTable {
 
     /// 关闭 handle：引用 -1，归零则释放对象。旧 handle 值此后必
     /// [`ERR_BAD_HANDLE`]（槽 `next_gen` 已 +1）。
+    ///
+    /// 3-2 拒绝面：**本次 close 会销毁独体（refs==1）且 VMO 映射未解除 → 拒**
+    /// （-EBUSY）——归零销毁 Vmo 有两个后患：Vmar Region 存着该对象指针（unmap
+    /// 回调映射计数）→ 悬空；仍被映射的物理页若归还 → PA 复用经残留 PTE 静默
+    /// 腐败。**别名 close（refs≥2）放行**——对象不死，存活句柄继续钉住它；
+    /// 先 unmap（或先 close 别名）再 close 最后一个。Vmar 带 live 映射时 close
+    /// 只留残留 PTE 与泄漏页（v1 已接受政策），不拒。
     pub fn close(&mut self, h: Handle) -> Result<(), i32> {
         let (slot, gen, obj, _) = self.lookup_at(h)?;
+        // SAFETY: 指针在表、refs ≥ 1；只读探测（close 拒绝面——只拦销毁性 close）。
+        unsafe {
+            let r = &*obj.as_ptr();
+            if r.refs == 1 {
+                if let KernelObj::Vmo(v) = &r.obj {
+                    if v.any_mapped() {
+                        return Err(ERR_BUSY);
+                    }
+                }
+            }
+        }
         // SAFETY: 指针在表、refs ≥ 1；单核顺序访问。
         let refs = unsafe {
             let r = &mut *obj.as_ptr();
@@ -208,8 +262,22 @@ impl HandleTable {
             return Err(ERR_INVALID_ARG);
         }
         // 先验两值（原子性：任一无效则表不动）。
-        self.lookup_at(h)?;
+        let (_, _, hobj, _) = self.lookup_at(h)?;
         let (r_slot, r_gen, obj, rights) = self.lookup_at(repl)?;
+        // 同 close 拒绝面：h 的对象**销毁性**（refs==1）且映射未解除时结尾的
+        // close 段会拒——先拒，保证「任一拒绝则表不动」的原子承诺（别名 replace
+        // 不销毁对象，放行；repl 对象只搬迁不销毁，无需查）。
+        // SAFETY: 指针在表（lookup_at 过）；只读探测。
+        unsafe {
+            let r = &*hobj.as_ptr();
+            if r.refs == 1 {
+                if let KernelObj::Vmo(v) = &r.obj {
+                    if v.any_mapped() {
+                        return Err(ERR_BUSY);
+                    }
+                }
+            }
+        }
         // repl 槽先腾空（对象仍被本 handle 引用着，不 drop）。
         self.slots[r_slot] = SlotState::Free { next_gen: r_gen + 1 };
         let slot = self.alloc_slot()?;
@@ -228,8 +296,24 @@ impl HandleTable {
         ty: ObjType,
         need: Rights,
     ) -> Result<(&KernelObj, Rights), i32> {
-        let (obj, rights) = self.lookup(h)?;
+        let (obj, rights) = self.get_raw(h, ty, need)?;
         // SAFETY: 槽在表、gen 匹配 → 指针有效；`&self` 下只读借用。
+        Ok((&unsafe { &*obj.as_ptr() }.obj, rights))
+    }
+
+    /// [`Self::get`] 的裸指针底层：查表 → 类型 → 权限后返回对象引用指针 + 权利。
+    /// **可变访问的正规入口**（syscall 写路径 `as_*_mut`）与**双对象同借**
+    /// （`vmar_map` 的 vmar + vmo）用——两个 `get_raw` 指针类型门控互异 ⇒ 必指
+    /// 不同对象 ⇒ `&mut` 无别名（同 handle 值不可能既是 Vmar 又是 Vmo；
+    /// duplicate 不跨类型）。
+    pub fn get_raw(
+        &self,
+        h: Handle,
+        ty: ObjType,
+        need: Rights,
+    ) -> Result<(NonNull<ObjRef>, Rights), i32> {
+        let (obj, rights) = self.lookup(h)?;
+        // SAFETY: 槽在表、gen 匹配 → 指针有效；类型/权限只读探测。
         let r = unsafe { &*obj.as_ptr() };
         if r.obj.obj_type() != ty {
             return Err(ERR_BAD_HANDLE); // 类型不符按坏 handle（ABI §8.2 注）
@@ -237,7 +321,7 @@ impl HandleTable {
         if need != 0 && rights & need != need {
             return Err(ERR_ACCESS_DENIED);
         }
-        Ok((&r.obj, rights))
+        Ok((obj, rights))
     }
 
     /// 查表（gen 校验）：槽空 / 越界 / 代号不符 → [`ERR_BAD_HANDLE`]。

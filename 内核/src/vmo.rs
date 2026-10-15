@@ -1,8 +1,9 @@
 //! 匿名 VMO（内存对象，`内存管理设计.md` §2；2b-3 物理页后备先行）。
 //!
 //! v1 范围（ADR #20 无 demand paging）：`create/commit/read/write`——commit
-//! **立即**从帧分配器出页并清零（启动时全映射）；`decommit/share/CoW/pager`
-//! 与 5 类后备全集（ADR #29）留 Phase 3 对象/能力层，pager 接口留空。
+//! **立即**从帧分配器出页并清零（启动时全映射）；`decommit`（3-2）归还已提交
+//! 且**未被映射**的物理页；`share/CoW/pager` 与 5 类后备全集（ADR #29）留
+//! Phase 3+，pager 接口留空。
 //!
 //! 放置说明（与 ADR #29「直接落 `内存管理/`」的偏差，已记设计文档落地记录）：
 //! VMO 是内核对象（Ziron 务实派，ADR #4），页记账 `Vec` 需堆——落 `内核/`
@@ -25,6 +26,9 @@ pub enum VmoError {
     NotCommitted,
     /// 帧分配器无空闲页。
     NoFrames,
+    /// 区间内仍有页被映射（decommit 前须先 unmap——归还仍被映射的页 = PA 复用
+    /// 后经残留 PTE 静默写坏别人，3-2 映射计数防线）。
+    Mapped,
 }
 
 /// 匿名 VMO：`size` 字节、按页提交的物理页后备（§2 后备类①「物理页（匿名）」）。
@@ -33,6 +37,10 @@ pub struct Vmo {
     size: usize,
     /// 每页后备 PA；`None` = 未提交。索引 = offset / PAGE_SIZE。
     pages: alloc::vec::Vec<Option<usize>>,
+    /// 每页映射计数（vmar `map` +1 / `unmap` -1，3-2）。**悬空 PTE 防线**：
+    /// 归还仍被映射的物理页 → PA 被 buddy 复用 → 残留 PTE 经旧 VA 静默写坏
+    /// 新主人。本计数让 `decommit`/对象销毁拒绝（或泄漏）此类页。
+    mapcnt: alloc::vec::Vec<u16>,
 }
 
 impl Vmo {
@@ -41,7 +49,11 @@ impl Vmo {
     pub fn create(size: usize) -> Self {
         assert!(size > 0, "VMO size 须 > 0");
         let npages = size.div_ceil(PAGE_SIZE);
-        Self { size: npages * PAGE_SIZE, pages: alloc::vec![None; npages] }
+        Self {
+            size: npages * PAGE_SIZE,
+            pages: alloc::vec![None; npages],
+            mapcnt: alloc::vec![0; npages],
+        }
     }
 
     /// 提交页区间：立即出页 + 清零。幂等（已提交页跳过）；整页粒度。
@@ -59,6 +71,35 @@ impl Vmo {
             if self.pages[page].is_none() {
                 self.pages[page] = Some(zero_frame(fa)?);
             }
+        }
+        Ok(())
+    }
+
+    /// 归还已提交页（3-2）：先整段验「全已提交且**无映射**」再逐页释放（先查后
+    /// 动——不留半截副作用）。映射中的页拒绝（[`VmoError::Mapped`]）——先 unmap。
+    pub fn decommit(
+        &mut self,
+        fa: &mut FrameAllocator,
+        offset: usize,
+        len: usize,
+    ) -> Result<(), VmoError> {
+        if offset % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {
+            return Err(VmoError::Unaligned);
+        }
+        check_bounds(self.size, offset, len)?;
+        let pages = offset / PAGE_SIZE..(offset + len) / PAGE_SIZE;
+        for page in pages.clone() {
+            if self.pages[page].is_none() {
+                return Err(VmoError::NotCommitted);
+            }
+            if self.mapcnt[page] > 0 {
+                return Err(VmoError::Mapped);
+            }
+        }
+        for page in pages {
+            let pa = self.pages[page].take().expect("上已校验全提交");
+            // SAFETY: 该页独占（mapcnt==0 → 无映射别名）且 PA 来自 alloc。
+            let _ = fa.free(pa >> PAGE_SHIFT, 0); // 元数据异常只泄漏不 panic
         }
         Ok(())
     }
@@ -113,6 +154,28 @@ impl Vmo {
         self.pages.get(page_idx).copied().flatten()
     }
 
+    // ---- 映射计数（vmar map/unmap 回调；悬空 PTE 防线，见结构体注释）----
+
+    /// 区间映射计数 +1（vmar `map` 成功后回调）。饱和加：计数是防线不是账本，
+    /// 溢出方向的保守错误（多泄漏一页）可接受。
+    pub(crate) fn track_map(&mut self, offset: usize, len: usize) {
+        for c in self.mapcnt[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE].iter_mut() {
+            *c = c.saturating_add(1);
+        }
+    }
+
+    /// 区间映射计数 -1（vmar `unmap` 成功后回调，经 Region 存的对象指针）。
+    pub(crate) fn untrack_map(&mut self, offset: usize, len: usize) {
+        for c in self.mapcnt[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE].iter_mut() {
+            *c = c.saturating_sub(1);
+        }
+    }
+
+    /// 任一页仍被映射？（handle close 拒绝面：映射未解除的 VMO 不许销毁。）
+    pub fn any_mapped(&self) -> bool {
+        self.mapcnt.iter().any(|&c| c > 0)
+    }
+
     /// 校验 `[offset, offset+len)` 全部落已提交页（read/write 前置）。
     fn ensure_committed(&self, offset: usize, len: usize) -> Result<(), VmoError> {
         for page in offset / PAGE_SIZE..(offset + len).div_ceil(PAGE_SIZE) {
@@ -129,6 +192,23 @@ impl Vmo {
         let off = pos % PAGE_SIZE;
         let n = core::cmp::min(PAGE_SIZE - off, remaining);
         (self.pages[page].unwrap(), off, n)
+    }
+}
+
+impl Drop for Vmo {
+    /// 对象销毁回收物理页（补 3-0 裁剪项）：归还 mapcnt==0 的已提交页；**仍被
+    /// 映射的页泄漏不还**（悬空 PTE 防线的最后一环）。handle 表路径到不了这里
+    /// （close 对映射中 VMO 拒 -EBUSY）；本 Drop 只兜 boot/ktest 直构对象——
+    /// 其映射常驻不解除（如用户进程 code/data/stack 页），泄漏即 v1 政策。
+    fn drop(&mut self) {
+        for (page, &backing) in self.pages.iter().enumerate() {
+            if let Some(pa) = backing {
+                if self.mapcnt[page] == 0 {
+                    // SAFETY: 独占页（无映射别名）；PA 来自 FrameAllocator::alloc。
+                    let _ = crate::mm::frames().free(pa >> PAGE_SHIFT, 0);
+                }
+            }
+        }
     }
 }
 

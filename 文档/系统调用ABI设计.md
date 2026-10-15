@@ -89,7 +89,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 5. 错误码
 
-统一 C 风格负数（posix-ish）：`-EINVAL` / `-ENOENT` / `-EACCES` / `-EBUSY` / `-ENOMEM` / `-ETIMEDOUT` / `-EBADF`（坏 handle）/ `-ENOTSUP`。跨 FFI 安全（无异常、无 panic）。
+统一 C 风格负数（posix-ish）：`-EINVAL` / `-ENOENT` / `-EACCES` / `-EBUSY` / `-ENOMEM` / `-ETIMEDOUT` / `-EBADF`（坏 handle）/ `-ENOTSUP` / `-EFAULT`（用户指针界检失败，3-2 起 `copy_from/to_user` 执法）。跨 FFI 安全（无异常、无 panic）。
 
 ## 6. POSIX 兼容库的子集边界（内核无 fork）
 
@@ -202,6 +202,7 @@ enum bos_obj_type {
 #define BOS_ERR_BUSY           (-16)   /* EBUSY：channel 满 / 资源占用 */
 #define BOS_ERR_NOT_SUPPORTED  (-95)   /* ENOTSUP：阶段未实现 */
 #define BOS_ERR_OUT_OF_RANGE   (-34)   /* ERANGE：offset/len 越界 */
+#define BOS_ERR_FAULT          (-14)   /* EFAULT：用户指针界检失败（3-2 起 copy_from/to_user 执法） */
 ```
 
 ### 8.3 v1 syscall 原型（`bos/syscalls.h`）
@@ -225,8 +226,10 @@ bos_status_t bos_object_signal(bos_handle_t h, uint64_t clear, uint64_t set);
 
 /* —— VMO / Vmar —— */
 bos_status_t bos_vmo_create(uint64_t size, uint32_t options, bos_handle_t *out);
+                               /* v1：options 须 0；size ∈ (0, 16MiB]，超限 -ENOMEM（no-panic 防线） */
 bos_status_t bos_vmo_commit(bos_handle_t vmo, uint64_t offset, uint64_t len);
 bos_status_t bos_vmo_decommit(bos_handle_t vmo, uint64_t offset, uint64_t len);
+                               /* 映射中页 -EBUSY（悬空 PTE 防线，先 unmap） */
 bos_status_t bos_vmo_read (bos_handle_t vmo, void *buf,
                            uint64_t offset, size_t len);          /* 内核中介读 */
 bos_status_t bos_vmo_write(bos_handle_t vmo, const void *buf,
@@ -234,6 +237,10 @@ bos_status_t bos_vmo_write(bos_handle_t vmo, const void *buf,
 bos_status_t bos_vmar_map(bos_handle_t vmar, uint32_t options,
                           bos_handle_t vmo, uint64_t vmo_offset,
                           uintptr_t *vaddr, size_t len, bos_rights_t rights);
+                               /* v1：options 恒 0——bos-sys stub 折叠为内核 6 参形态
+                                  （x1..x6：vmar/vmo/vmo_offset/*vaddr/len/rights）；
+                                  rights 须恰为 READ|WRITE（v1 只支持 UserRw，缺/多位
+                                  -ENOTSUP/-EINVAL，UserRo 留 v2 AP=11） */
 bos_status_t bos_vmar_unmap(bos_handle_t vmar, uintptr_t vaddr, size_t len);
 bos_status_t bos_vmar_protect(bos_handle_t vmar, bos_rights_t rights,
                               uintptr_t vaddr, size_t len);

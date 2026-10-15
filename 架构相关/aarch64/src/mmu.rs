@@ -218,6 +218,16 @@ pub(crate) unsafe fn activate_ttbr0(ttbr0_pa: usize, asid: u16) {
     tlbi_aside1(asid);
 }
 
+/// 读当前 TTBR0_EL1 的表基 PA（bits[47:12]，ASID 位剔除；无 AS 时 = 内核空表
+/// PA）。3-2：syscall copy 路径逐页走查**调用者自身表**用——EL0 svc 时异常
+/// 不切 AS，TTBR0 仍是调用者页表。
+pub(crate) fn current_ttbr0_pa() -> usize {
+    let ttbr: u64;
+    // SAFETY: 特权读；EL1，无副作用。
+    unsafe { asm!("mrs {0}, ttbr0_el1", out(reg) ttbr, options(nostack, preserves_flags)) };
+    ttbr as usize & 0x0000_FFFF_FFFF_F000
+}
+
 /// 低半身份表退役（2b-2）：TTBR0 ← 内核空表（ASID 0）+ **全量 TLB 失效**。
 /// 此后低半任何访问必然 fault——ktest 以期望故障正向断言之。
 /// 用 `vmalle1is`：身份时代的低半 TLB 项是 global（boot 块描述符 nG=0），按号

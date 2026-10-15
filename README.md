@@ -18,7 +18,7 @@
 ## 现状（诚实版）
 
 - ✅ **Phase 2b / 出口关卡 G1.5 已完成（2026-10，2b-0~2b-4 全落地）**：内核主体链高半（TTBR1 canonical、低半身份表已退役，boot 打 `KVA ok` 自校验）、每进程页表 + ASID（16 位实测、回卷全量失效）、匿名 VMO/Vmar、首个 EL0 用户进程（ktest `ASPACE ok` / `VMO ok` / `HANDLE ok` / `SYSCALL ok`；用户进程野指针只死自己，坏 handle/未知 syscall 一律错误码返回不杀——watchdog 打 `G1.5 ok`）。其下是 Phase 2a（G1）：buddy/slab 堆、异常向量 + panic dump、GICv2 + CNTV timer、内核线程 + 上下文切换、协作/抢占调度（机制在内核、策略可插拔 trait）、tickless idle（空闲 mask CNTV + `wfi`）、IRQ 驱动抢占。
-- 🚧 **Phase 3 能力与系统调用进行中（3-0 handle 表 / 3-1 syscall ABI 骨架已落地）**：v1 27 个 syscall 编号在册，`handle_close/duplicate/replace` 经 handle 表门控（syscall 全链路能力检查首次打通）+ `clock_read`；下一步 3-2 VMO/Vmar syscall 全量门控；出口增项 = 遥测环 instrumentation + 空策略表等价测试。
+- 🚧 **Phase 3 能力与系统调用进行中（3-0 handle 表 / 3-1 syscall ABI 骨架 / 3-2 VMO/Vmar 全量门控已落地）**：v1 27 个 syscall 编号在册；handle 三操作 + `clock_read` + **VMO/Vmar 九号全链**（create/commit/decommit/read/write/map/unmap/protect/allocate，rights 位执法 + `copy_from/to_user` 界检 + 悬空 PTE 防线：映射中页拒 decommit、销毁性 close 拒 -EBUSY）；`user_good` 经真 syscall map 读写自己的 VMO（首能力 = root Vmar 经引导表交用户）——Phase 3 里程碑完全体；下一步 3-3 process/thread 最小对象；出口增项 = 遥测环 instrumentation + 空策略表等价测试。
 - 关卡式验证 G0–G5（`文档/测试策略.md`）：单核正确 → 抢占 → SMP → 全抢占 → demand paging，逐关推进。**尚未到** SMP / 全抢占 / demand paging——文档描述始终与实际阶段一致。
 
 ## 快速开始（macOS）

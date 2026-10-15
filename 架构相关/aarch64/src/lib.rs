@@ -93,6 +93,12 @@ pub fn tlbi_aside1(asid: u16) {
     unsafe { mmu::tlbi_aside1(asid) };
 }
 
+/// 3-2：读当前 TTBR0_EL1 表基 PA——syscall copy 路径走查调用者自身表用
+/// （EL0 svc 时 TTBR0 仍是调用者页表）。
+pub fn current_ttbr0_pa() -> usize {
+    mmu::current_ttbr0_pa()
+}
+
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
 pub use paging::{page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_NORMAL, SH_INNER};
 

@@ -104,13 +104,23 @@ pub extern "C" fn rust_main() -> ! {
     // （syscall 往返在 EL0 生效的活证）；rogue_ptr 野指针自作死 → 只死自己
     // （user_fault_exit）；abuser 坏 handle 滥用 → **-EBADF 存活**（3-1 撤
     // 「畸形号杀」政策：syscall 层错误一律错误码自理）。watchdog 断言后打关卡标记。
-    let up_good =
+    let mut up_good =
         user::UserProcess::build(mm::frames(), user::user_good_code(), user::USER_MAGIC);
     let up_rogue_ptr =
         user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
     let up_abuser =
         user::UserProcess::build(mm::frames(), user::user_abuser_code(), user::USER_MAGIC);
-    bos_sched::spawn_user(user::USER_CODE_VA, USER_PRINT_EVERY, user::USER_STACK_TOP,
+
+    // 3-2：good 的 root Vmar 进引导表 = **首能力**（能力模型 §5「第一个能力从
+    // 哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle 作
+    // spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的 VMO。
+    use handle::{KernelObj, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP};
+    let good_vmar = up_good.vmar.take().expect("main: good vmar");
+    let good_vmar_h = syscall::bootstrap_table()
+        .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
+        .expect("main: 插 root Vmar 进引导表");
+
+    bos_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
                           b"user_good", up_good.ttbr0_pa, up_good.asid);
     bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid);
@@ -171,9 +181,8 @@ extern "C" fn task_b(arg: usize) -> ! {
 /// 不被 UART 背压吃掉，switches 计数贴近 wall-clock × SLICE_HZ）。SOAK=1 为低噪 soak。
 const A_PRINT_EVERY: u32 = 2_000_000;
 const B_PRINT_EVERY: u32 = 2_000_000;
-
-/// good 用户进程的打印节流阈值（与 A/B 同量级——'u' 与 A/B 同节奏出现）。
-const USER_PRINT_EVERY: usize = 2_000_000;
+// good 的节流阈值 3-2 起 baked 进用户模板（movz x9, #0x30, lsl #16 ≈ 3.1M）——
+// 入口 x0 改传 root Vmar handle（首能力）。
 
 /// task_a/task_b 私有页 magic（2b-2 隔离金丝雀；互异且非零）。
 const TASK_A_MAGIC: u64 = 0x00A5_C0DE_AAAA_0001;

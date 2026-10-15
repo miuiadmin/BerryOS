@@ -53,7 +53,7 @@ impl MiniAspace {
         let mut vmo = Vmo::create(PAGE_SIZE);
         vmo.commit(fa, 0, PAGE_SIZE).expect("MiniAspace: commit 私有页");
         vmo.write(0, &magic.to_le_bytes()).expect("MiniAspace: 写 magic");
-        vmar.map(fa, &vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
+        vmar.map(fa, &mut vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
             .expect("MiniAspace: map 私有页");
         Self { ttbr0_pa: vmar.ttbr0_pa(), asid: vmar.asid(), vmar, _vmo: vmo }
     }
