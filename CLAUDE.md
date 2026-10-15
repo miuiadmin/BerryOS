@@ -9,8 +9,14 @@
 - 内核核心：**Rust**（`#![no_std]`，最小特权，只做调度 / IPC / 地址空间 / 能力）
 - 用户态服务与工具：**Rust**
 - 首批主线架构：**ARM64 (AArch64)**（v1 主战场 = 手表/穿戴 rich 档单线走到底，ADR #39）；**x86_64 提前启动 QEMU 最小集移植**（串口+定时器+异常向量+上下文切换+SVC 入口，范围盒子 + kill criteria，ADR #41）；RISC-V 留位。MCU 档（KB 级内存）v1 排除（ADR #40，覆盖面 = MMU 设备 MB 级起）
-- 当前阶段：**Phase 2b（地址空间 + 首个 EL0）已完成——2b-0 ~ 2b-4 全落地，出口关卡 G1.5 已过（2026-10）**。高半翻转：内核主体链到 `KERNEL_VA_BASE` 高半（镜像布局 VMA=KBASE+LMA → `.data/.bss` 零拷贝；`.text.boot` + 早期栈 + `.bss.boot` 留低半；`phys_to_virt` 加基址、va.rs 运行时注入；boot 串口 `KVA ok` 自校验 + smoke 程序头断言）。每进程页表 + ASID（16 位实测、0 保留、回卷全量失效）+ **低半身份表退役**（低半访问必 fault）。匿名 VMO/Vmar（`内核/src/vmo.rs`/`vmar.rs`，map 即填用户页表）。**2b-4 首个 EL0 + G1.5（收官）**：`TaskContext::new_user` 弹床 eret 降 EL0（SPSR=EL0t + DAIF 解蔽 → 用户态可被 timer 抢占）；异常走 lower-EL 向量 0x400/0x480（帧宏 `*_el0` 的 sp 槽=SP_EL0）；用户页 AP=0b01；三用户进程矩阵——`user_good` 打 'u'（syscall 往返 + 数据 canary），`user_rogue_ptr`/`user_rogue_svc` 各自 dump 后经 `user_fault_exit` 槽**只死自己**，watchdog 打 `G1.5 ok`（smoke 第 11 标记）。TCB 表示法字段（prio 双份/duration-hint/EPP/preemption-threshold）+ 时间片**周期数记账**（CNTVCT 增量扣减，DVFS 预埋）随 2b-4 落地。此前 Phase 2a（调度与任务，G1）/Phase 0-1（G0）已完成。下一步 **Phase 3 能力与系统调用**（capability 表 + 真 syscall ABI + 遥测环 + 空策略表等价测试）。
+- 当前阶段：**Phase 2b（地址空间 + 首个 EL0）已完成——2b-0 ~ 2b-4 全落地，出口关卡 G1.5 已过（2026-10）**。高半翻转：内核主体链到 `KERNEL_VA_BASE` 高半（镜像布局 VMA=KBASE+LMA → `.data/.bss` 零拷贝；`.text.boot` + 早期栈 + `.bss.boot` 留低半；`phys_to_virt` 加基址、va.rs 运行时注入；boot 串口 `KVA ok` 自校验 + smoke 程序头断言）。每进程页表 + ASID（16 位实测、0 保留、回卷全量失效）+ **低半身份表退役**（低半访问必 fault）。匿名 VMO/Vmar（`内核/src/vmo.rs`/`vmar.rs`，map 即填用户页表）。**2b-4 首个 EL0 + G1.5（收官）**：`TaskContext::new_user` 弹床 eret 降 EL0（SPSR=EL0t + DAIF 解蔽 → 用户态可被 timer 抢占）；异常走 lower-EL 向量 0x400/0x480（帧宏 `*_el0` 的 sp 槽=SP_EL0）；用户页 AP=0b01；三用户进程矩阵——`user_good` 打 'u'（syscall 往返 + 数据 canary），`user_rogue_ptr`/`user_rogue_svc` 各自 dump 后经 `user_fault_exit` 槽**只死自己**，watchdog 打 `G1.5 ok`（smoke 第 11 标记）。TCB 表示法字段（prio 双份/duration-hint/EPP/preemption-threshold）+ 时间片**周期数记账**（CNTVCT 增量扣减，DVFS 预埋）随 2b-4 落地。此前 Phase 2a（调度与任务，G1）/Phase 0-1（G0）已完成。**Phase 3（能力与系统调用）进行中——3-0 已落地**：`内核/src/handle.rs` 内核对象壳 + handle 表（位域 = 槽号 16 位 + 代号 14 位、bit31 预留、槽 0 恒空；rights 12 位 + `RIGHTS_SAME` 哨兵；`KernelObj` 壳 v1 先 Vmo/Vmar + `ObjRef` 引用计数；五操作 insert/duplicate/close/replace/get——**权限在 handle 不在对象**、dup 只紧不松、close 后代号 +1 旧值不复活；门控顺序 查表→类型→权限）——纯内核层、外部行为零变化，ktest `HANDLE ok`（smoke 第 10 标记）。下一步 3-1 真 syscall ABI 骨架（v1 27 号编号表 + 未知号 -ENOTSUP 撤「畸形号杀」政策），拆步表见 `文档/能力模型设计.md` 阶段化目标。
 - **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `文档/AI调度设计.md`）+ PC 高性能。
+
+## 设计总原则（三条，钦定）
+
+1. **人无我有，人有我强**：博采众长的落地口诀——别人验证过的优点学过来，别人踩过的坑绕开。证据库 = `调研报告/`（各家好在哪/不好在哪/怎么做的）；借鉴任何参考前先过 `文档/架构综合纲领.md` 排除 8 问，防杂糅。软件行业积累到今天是做 OS 最好的时代：成熟参考实现全部开源可得，站在巨人肩上是常态而非例外。
+2. **AI 友好化**：把 AI 当系统的一等公民——不止 AI 原生调度（`文档/AI调度设计.md`），一切接口对 AI 可读、可推断：ABI 单一事实源生成（`文档/系统调用ABI设计.md` §8）、结构化 tracing（`文档/可观测性设计.md`）、语义化错误码、机器可读文档。
+3. **AI 测试友好化**：为"以后都是 AI 测软件"的时代预埋基建——测试基建是产品的一部分，不是附属品：确定性可复现（同输入同输出）、可编程故障注入、机器可读遥测/断言、QEMU 自动化关卡（`文档/测试策略.md` G0–G5）；目标是 AI agent 能独立跑测试、读结果、报 bug。
 
 ## 架构决策（已定，详见 `文档/架构决策.md`）
 
@@ -113,7 +119,7 @@ berryos/
 
 ## 构建与测试
 
-Phase 2b 已收官（G1.5 过关）：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `KVA ok`（TTBR1 高半别名自校验，2b-2 起只走高半）→ `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ 低半读期望故障恢复（`-> expected D-abort`）→ `ASPACE ok`（两张用户页表同 VA 隔离 + asid=16b）→ `VMO ok`（VMO/Vmar 六操作 + unmap 后读 fault、RO 写 fault 两次期望故障）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 与 EL0 用户进程 `user_good`（打 'u'）在 CNTV timer slice 下交替（A/B 每次打印先读私有页断言隔离）**，周期打 `switches=N` 金丝雀；两个恶意用户进程（野指针 / 畸形 SVC）各自 dump + 被杀，watchdog 打 `G1.5 ok`；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（高半 TTBR1 内核表 `KERNEL_VA_BASE`，**2b-1 起内核主体高半执行**、异常 dump PC 应为 `0xffffff80…`；**2b-2 起低半身份表退役**——TTBR0 常态为空表或用户表，低半访问必 fault）、buddy/slab 堆、异常向量（current-EL + lower-EL 双路）+ panic dump、GICv2、SVC syscall（EL1/EL0 双入口）、内核线程 + 上下文切换 + tickless idle + IRQ 抢占（含 EL0 运行中抢占）全通。
+Phase 2b 已收官（G1.5 过关）、Phase 3-0（handle 表）已落地：stable Rust + `aarch64-unknown-none`，`just run` 在 QEMU `virt` 串口依次打印 `BerryOS boot` → `KVA ok`（TTBR1 高半别名自校验，2b-2 起只走高半）→ `GIC ok / FRAME ok / HEAP ok / SYSCALL ok` → `PING TASK ok`（switch asm 乒乓）→ 低半读期望故障恢复（`-> expected D-abort`）→ `ASPACE ok`（两张用户页表同 VA 隔离 + asid=16b）→ `VMO ok`（VMO/Vmar 六操作 + unmap 后读 fault、RO 写 fault 两次期望故障）→ `HANDLE ok`（3-0 handle 表五操作 + 槽位重用代号 +1）→ `ktest done` + brk 可恢复 dump → **两忙循环任务 `A`/`B` 与 EL0 用户进程 `user_good`（打 'u'）在 CNTV timer slice 下交替（A/B 每次打印先读私有页断言隔离）**，周期打 `switches=N` 金丝雀；两个恶意用户进程（野指针 / 畸形 SVC）各自 dump + 被杀，watchdog 打 `G1.5 ok`；`just run-el2` 同（EL2→EL1 eret 降级路径）。MMU 开（高半 TTBR1 内核表 `KERNEL_VA_BASE`，**2b-1 起内核主体高半执行**、异常 dump PC 应为 `0xffffff80…`；**2b-2 起低半身份表退役**——TTBR0 常态为空表或用户表，低半访问必 fault）、buddy/slab 堆、异常向量（current-EL + lower-EL 双路）+ panic dump、GICv2、SVC syscall（EL1/EL0 双入口）、内核线程 + 上下文切换 + tickless idle + IRQ 抢占（含 EL0 运行中抢占）全通。smoke 12 标记（`HANDLE ok` 第 10）+ switches 金丝雀严格递增。
 
 **前置（macOS，一次性）**：
 

@@ -13,6 +13,7 @@ pub fn run() {
     test_switch();
     test_aspace();
     test_vmo();
+    test_handle();
     bos_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -296,4 +297,119 @@ fn test_vmo() {
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
     bos_hal_aarch64::uart_puts(b"VMO ok\n");
+}
+
+/// 3-0：handle 表 + rights 语义（`能力模型设计.md` §2/§4，决策 #28 位域）——
+/// insert/get（查表→类型→权限三门控）、duplicate 只紧不松、close 后旧值必拒
+/// （引用共享仍在）、槽位重用代号 +1（旧 handle 不复活）、replace 原子搬迁、
+/// 坏 handle 面（0/野值）。
+#[allow(clippy::result_unwrap_used)]
+fn test_handle() {
+    use crate::handle::{
+        HandleTable, KernelObj, ObjType, Rights, ERR_ACCESS_DENIED, ERR_BAD_HANDLE,
+        ERR_INVALID_ARG, RIGHT_DUPLICATE, RIGHT_READ, RIGHT_SET_POLICY, RIGHT_WRITE,
+        RIGHTS_SAME,
+    };
+    use crate::vmo::Vmo;
+    use bos_mm::va::PAGE_SIZE;
+
+    // handle 位域（handle.rs 私有实现，此处按 ABI §8.1 注释断言：低 16 位槽号）。
+    const SLOT_MASK: u32 = 0xFFFF;
+
+    let mut ht = HandleTable::new();
+
+    // A. insert + get 过三门：Vmo 授 READ|WRITE|DUPLICATE，get 要 READ 放行。
+    let rw: Rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+    let h1 = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), rw)
+        .expect("HANDLE：insert");
+    assert_ne!(h1, 0, "HANDLE：handle 0 非法（槽 0 保留）");
+    let (obj, rights) = ht.get(h1, ObjType::Vmo, RIGHT_READ).expect("HANDLE：get");
+    match obj {
+        KernelObj::Vmo(v) => assert_eq!(v.size(), PAGE_SIZE, "HANDLE：对象本体"),
+        _ => unreachable!(),
+    }
+    assert_eq!(rights, rw, "HANDLE：get 回授予权利");
+
+    // B. 门控拒绝面：类型不符 → BAD_HANDLE；权限不足 → ACCESS_DENIED。
+    assert_eq!(
+        ht.get(h1, ObjType::Vmar, 0).err(),
+        Some(ERR_BAD_HANDLE),
+        "HANDLE：类型不符须按坏 handle 拒"
+    );
+    assert_eq!(
+        ht.get(h1, ObjType::Vmo, RIGHT_SET_POLICY).err(),
+        Some(ERR_ACCESS_DENIED),
+        "HANDLE：未授权限须拒"
+    );
+
+    // C. duplicate：SAME=全集；收紧 OK；提权 / 空 rights 一律拒。
+    let h2 = ht.duplicate(h1, RIGHT_READ).expect("HANDLE：dup 收紧");
+    let h2b = ht.duplicate(h1, RIGHTS_SAME).expect("HANDLE：dup SAME");
+    let (_, rights_b) = ht.get(h2b, ObjType::Vmo, 0).expect("HANDLE：get h2b");
+    assert_eq!(rights_b, rw, "HANDLE：SAME 须取原全集");
+    assert_eq!(
+        ht.duplicate(h1, RIGHT_READ | RIGHT_SET_POLICY).err(),
+        Some(ERR_ACCESS_DENIED),
+        "HANDLE：dup 提权必须拒"
+    );
+    assert_eq!(
+        ht.duplicate(h1, 0).err(),
+        Some(ERR_ACCESS_DENIED),
+        "HANDLE：dup 空 rights 必须拒"
+    );
+
+    // D. close + 引用共享：close h1 → 旧值必拒；h2/h2b 仍活（对象 refs > 0）。
+    ht.close(h1).expect("HANDLE：close h1");
+    assert_eq!(
+        ht.get(h1, ObjType::Vmo, 0).err(),
+        Some(ERR_BAD_HANDLE),
+        "HANDLE：close 后旧值必须失效"
+    );
+    ht.get(h2, ObjType::Vmo, RIGHT_READ).expect("HANDLE：dup 持有的对象须仍活");
+
+    // E. 槽位重用代号 +1：新 insert 复用 h1 的最低空槽，但代号已进——
+    //    旧值 h1 不复活（gen 是守卫，不是「槽恰好空着」）。
+    let h3 = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE * 2)), RIGHT_READ)
+        .expect("HANDLE：insert 重用槽");
+    assert_eq!(
+        h3 & SLOT_MASK,
+        h1 & SLOT_MASK,
+        "HANDLE：最低空槽应被复用"
+    );
+    assert_ne!(h3, h1, "HANDLE：重用槽代号必须 +1");
+    assert_eq!(
+        ht.get(h1, ObjType::Vmo, 0).err(),
+        Some(ERR_BAD_HANDLE),
+        "HANDLE：旧代号不得复活"
+    );
+
+    // F. replace 原子搬迁：两旧值均失效；新值指 repl 对象（2 页）+ repl 权利。
+    let h4 = ht.replace(h2, h3).expect("HANDLE：replace");
+    assert_ne!(h4, h2);
+    assert_ne!(h4, h3);
+    assert_eq!(ht.get(h2, ObjType::Vmo, 0).err(), Some(ERR_BAD_HANDLE));
+    assert_eq!(ht.get(h3, ObjType::Vmo, 0).err(), Some(ERR_BAD_HANDLE));
+    let (obj, rights) = ht.get(h4, ObjType::Vmo, 0).expect("HANDLE：get h4");
+    match obj {
+        KernelObj::Vmo(v) => assert_eq!(v.size(), PAGE_SIZE * 2, "HANDLE：replace 后应是 repl 对象"),
+        _ => unreachable!(),
+    }
+    assert_eq!(rights, RIGHT_READ, "HANDLE：权利随 repl 搬迁");
+    assert_eq!(
+        ht.replace(h4, h4).err(),
+        Some(ERR_INVALID_ARG),
+        "HANDLE：replace 两值相同须拒"
+    );
+
+    // G. 坏 handle 面：0 与野值一律拒（含越界槽号）。
+    assert_eq!(ht.get(0, ObjType::Vmo, 0).err(), Some(ERR_BAD_HANDLE));
+    assert_eq!(ht.close(0xDEAD_BEEF).err(), Some(ERR_BAD_HANDLE));
+
+    // 收尾：全关——h2b 的 close 使第一对象引用归零（走最后释放路径）。
+    ht.close(h2b).expect("HANDLE：close h2b");
+    ht.close(h4).expect("HANDLE：close h4");
+
+    bos_hal_aarch64::uart_puts(b"HANDLE ok\n");
 }

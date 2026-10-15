@@ -12,6 +12,7 @@
 extern crate alloc;
 
 mod aspace;
+mod handle;
 mod heap;
 mod ktest;
 mod mm;
