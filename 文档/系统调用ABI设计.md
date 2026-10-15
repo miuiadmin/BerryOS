@@ -57,7 +57,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x35 | `thread_start` | 投入运行 | v1 |
 | 0x36 | `thread_exit` | 线程退出 | v1 |
 | 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
-| 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY） | v2 |
+| 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 |
 | 0x39 | `thread_set_deadline` | 设截止期（软实时） | v2 |
 | **异常** ||||
 | 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 |
@@ -118,7 +118,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 7. 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1（~26 syscall）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。（测试关卡 G0–G2）
+- **v1（~26 syscall）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
 - **v2**：pager（demand paging）、futex、timer、异常通道、调度策略、设备 syscall。（G3–G4）
 - **v3**：namespace（open/mount）、**AI 策略注入/遥测控制 syscall**（`policy_bind`/`telemetry_open`，见 `AI调度设计.md`）、完整 POSIX 兼容库（含受限 fork 探索）。（G4+）
 
@@ -149,6 +149,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 大块数据 | 经 VMO 或用户指针（内核 `copy_from/to_user` 校验） | 不在寄存器里传大缓冲 |
 | 布局稳定性 | 跨边界结构 `#[repr(C)]` + 显式对齐 | ABI 一旦发布不破坏布局；加字段走新 syscall 或 `object_get_info` 的 topic |
 | options/flags 语义 | 未知位**拒绝**（返回 `-EINVAL`） | 输入严格拒绝，演进走「新 flag + 能力发现」。「静默忽略」看着兼容性好，实则让日后启用该位前必须先清点全生态是否有人误传——等于永久放弃那个位 |
+| `thread_create`/`process_create` options **intent 域** | **低 8 位 = `berry_intent` 值域**（P3 占位，ADR #42） | 值域而非独立位掩码：0x00–0x05 已定义、0x06..0x0F 保留、未知值 `-EINVAL`（与未知位纪律同构）。位 add-only 安全的前提 = 占位先于对外层冻结——首个外部消费者（G-eco）随时触发冻结，先落缺省再改 0=UNSPECIFIED 是「值不变义变」的静默 ABI 破坏，比改值更糟 |
 | 结构体版本化 | 尺寸进出（`in_size` / `out_size`） | v2 `object_get_info` 的 info 结构是首个尺寸敏感 ABI：读方容忍更大尺寸、写方未知尾部清零；缓冲不足返回 `-EINVAL` 并回写所需尺寸（Win32 `cbSize` / Linux size-in-out 同款惯例） |
 | padding / 保留字段 | 显式命名 + 内核 copyout 前整体清零 | `#[repr(C)]` **不保证** padding 清零；垃圾 padding = 内核信息泄露（Linux 真实 CVE 先例）+ 破坏逐字节比较/哈希 |
 
@@ -188,6 +189,18 @@ enum bos_obj_type {
 #define BOS_RIGHT_MANAGE      (1ULL << 10)
 #define BOS_RIGHT_SET_POLICY  (1ULL << 11)
 #define BOS_RIGHT_SAME_RIGHTS (-1LL)   /* duplicate 时取全集的哨兵 */
+
+/* intent 调度档（ADR #42；thread/process options 低 8 位域；#[repr(C)] 随 P3 冻结） */
+enum berry_intent {
+    BERRY_INTENT_UNSPECIFIED      = 0x00, /* 未声明：不设限（XNU 式最高可用档），
+                                            可被角色表/分类器定档（pledge 豁免） */
+    BERRY_INTENT_LATENCY_CRITICAL = 0x01, /* 需 Job 级授权；timer slack=0 exact；AI 屏蔽 */
+    BERRY_INTENT_INTERACTIVE      = 0x02,
+    BERRY_INTENT_UTILITY          = 0x03, /* 推断缺省落点 */
+    BERRY_INTENT_BACKGROUND       = 0x04, /* maintenance_eligible 门控 */
+    BERRY_INTENT_MAINTENANCE      = 0x05, /* 编码冻结、v1 不启用 */
+    /* 0x06..0x0F 保留：内核拒绝（-EINVAL） */
+};
 
 /* 错误码（posix-ish 负数；跨 FFI 不抛异常） */
 #define BOS_OK                 0
@@ -265,7 +278,9 @@ bos_status_t bos_process_start(bos_handle_t process, bos_handle_t thread,
 bos_status_t bos_process_exit(int code);
 bos_status_t bos_thread_create(bos_handle_t process, uint32_t options,
                                bos_handle_t *out);        /* 未启动描述；入口/sp
-                               随 process_start（首线程启动路径，Zircon 同形） */
+                               随 process_start（首线程启动路径，Zircon 同形）；
+                               options 低 8 位 = berry_intent（ADR #42，P3 占位，
+                               未知值 -EINVAL；0x00=UNSPECIFIED 不设限） */
 bos_status_t bos_thread_start(bos_handle_t thread);
 bos_status_t bos_thread_exit(void);
 bos_status_t bos_thread_sleep(bos_time_t deadline);     /* nanosleep 等价 */
