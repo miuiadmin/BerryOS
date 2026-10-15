@@ -126,9 +126,10 @@ just run-release / just check / just clean
 
 ## 参考项目与协议注意
 
-- 优先对照 **Rust OS（MIT/Apache，语言匹配）**：Redox、Theseus、rCore、hubris。
-- seL4 / Fuchsia Zircon 作**思路参考**（C/C++，机制通用，不复制代码）。
-- **GPL 项目（Linux、xv6）只作思路参考，不复制代码**，以免协议传染。
+- 优先对照 **Rust OS（MIT，语言匹配）**：Redox、Theseus、zCore（zCore=MIT 可对照；rCore-Tutorial=GPL 只看思路）。
+- hubris = **MPL-2.0**：监督重启等语义可借、文件不搬。
+- seL4 / Fuchsia Zircon 作**思路参考**（C/C++，机制通用，不复制代码；seL4 内核 GPL-2.0-only，代码一字不进）。
+- **GPL/AGPL 项目（Linux、xv6、Genode、rCore-Tutorial）只作思路参考，不复制代码**，以免协议传染。本仓库许可证 Apache-2.0（ADR #37）。
 - 详细对照建议见 `参考源码/README.md`。
 
 ## Do / Don't
@@ -143,4 +144,4 @@ just run-release / just check / just clean
 - 不要在内核里散落 `unsafe`（收敛到页表/上下文切换/MMIO/分配器）。
 - 不要跨 syscall 边界 panic。
 - 不要假设 QEMU 启动在固定 EL：默认 `-machine virt`+`-kernel` ELF 起始 EL1，`virtualization=on` 起始 EL2——boot 第一行 `mrs CurrentEL` 检测并按需 eret 降级到 EL1。
-- 不要复制 GPL 代码进自研内核（主参考用 Rust OS：Redox/Theseus/rCore/hubris）。
+- 不要复制 GPL/AGPL/MPL 文件进自研内核（主参考用 Rust OS：Redox/Theseus/zCore；hubris 只借语义）。

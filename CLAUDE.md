@@ -144,7 +144,7 @@ just check / just clean
 1. **先查参考**：涉及某子系统（IPC、调度、页表…）时，先看 `参考源码/` 是否已有对应对照项目，参照成熟实现再写。
 2. **小步提交**：OS 调试极难，每个改动尽量小且可独立验证；能在 QEMU 跑通的里程碑单独成一个提交。
 3. **不污染内核态**：内核 `#![no_std]`，禁用 `std`/`alloc`（在自有分配器就绪前）；用内核自有的分配器/日志；新增 crate 前确认 `no_std` 兼容。
-4. **协议洁净**：主参考是 **Rust OS**（Redox / Theseus / rCore / hubris，全 MIT/Apache）；参照 seL4/Zircon/Linux（C/C++/GPL）时只看思路、不复制实质代码。
+4. **协议洁净**：主参考是 **Rust OS**（Redox / Theseus / zCore，MIT 可对照）；hubris = **MPL-2.0 语义可借、文件不搬**；rCore-Tutorial = GPL 只看思路；参照 seL4/Zircon/Linux（C/C++/GPL）时只看思路、不复制实质代码。本仓库许可证 Apache-2.0（ADR #37）。
 5. **架构无关优先**：新功能先写成架构无关 Rust，确实需要特权指令时再落到 `架构相关/aarch64/` 并留好接口。
 6. **博采众长不杂糅**：中心 = **可注入的「机制/策略分离」+ 硬件信任边界**；借鉴任何参考前先过 `架构综合纲领.md` 的**排除 8 问**（轴 PICK？冲突中心？Theseus 仅进程内？IPC 不统管？seL4 只锁不变量？hubris 静态只借 boot 层？GPL 不进？哪关 G0–G5 验证？）。
 7. **改了约定就更新本文件**：新增目标架构、改变语言边界、确定构建命令时，同步回写 `CLAUDE.md` 与 `AGENTS.md`。
