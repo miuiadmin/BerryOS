@@ -405,6 +405,9 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
     // 未知 IRQ：忽略（G0 单源）。
     crate::gic::end(id);
     // dispatch 在 EOIR 后（Bug 1）：经函数指针槽通知调度器。Step 5 只打 tick，不 switch。
+    // **单源假设（3b3 审查 L8）**：dispatch 对一切非 spurious IRQ 无条件进 on_irq_tick，
+    // 而 rearm 只在 CNTV 分支——v1 GIC 仅使能 CNTV 单源故成立；v2 接第二个 IRQ 源时
+    // 须先按 id 分流（或让 on_irq_tick 授片处兜底 arm），否则授片与 CVAL 绝对编程脱钩。
     // SAFETY: IRQ 上下文（PSTATE.I=1）；槽由内核 boot 时注册（enable_irq 前）。
     if let Some(f) = unsafe { crate::irq_dispatch() } {
         // SAFETY: f 是 C-ABI fn 指针；tf 是当前 IRQ 栈上的异常帧。

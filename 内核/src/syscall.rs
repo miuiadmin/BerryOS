@@ -504,7 +504,10 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    let vo = match t.get_raw(oh, ObjType::Vmo, RIGHT_MAP | RIGHT_WRITE) {
+    // VMO 门控逐位要求（3b3 M6）：映射产出可读 UserRw 叶 → READ 必须在句柄上，
+    // 否则 duplicate 合法收紧掉 READ 后仍能经映射读（READ 权逃逸）。v1 恒
+    // READ|WRITE 映射，故等价 MAP|READ|WRITE；UserRo 映射留 v2 再按权限拆。
+    let vo = match t.get_raw(oh, ObjType::Vmo, RIGHT_MAP | RIGHT_READ | RIGHT_WRITE) {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
@@ -643,14 +646,19 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let vmar = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid());
+    // 帧耗尽折 -ENOMEM（3b3 H1：new_root 曾内嵌 expect——EL0 一次 process_create
+    // 即可让内核 panic 停机）。
+    let vmar = match Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()) {
+        Ok(v) => v,
+        Err(e) => return vme(e) as i64,
+    };
     let (ttbr0, asid) = (vmar.ttbr0_pa(), vmar.asid());
     let hv = match t.insert(
         KernelObj::Vmar(vmar),
         RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE,
     ) {
         Ok(h) => h,
-        Err(e) => return e as i64, // 表满/gen 尽：Vmar 连 Box 泄漏（v1 不可达，安全向）
+        Err(e) => return e as i64, // 表满/gen 尽：-ENOMEM，vmar 正常 drop（先占槽后装箱，无泄漏）
     };
     let Ok((vobj, _)) = t.get_raw(hv, ObjType::Vmar, 0) else {
         // 刚插入即取失败 = 不可达防御面；关掉防泄漏。
@@ -668,7 +676,7 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
                 (Err(e), _) | (_, Err(e)) => e as i64, // 出参失效：两 handle 已建，调用方重试态自理
             }
         }
-        Err(e) => e as i64, // 同上泄漏向（v1 不可达）
+        Err(e) => e as i64, // Process 入表失败：对象正常 drop（先占槽后装箱，无泄漏）
     }
 }
 
@@ -695,7 +703,7 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
             Ok(()) => 0,
             Err(e) => e as i64,
         },
-        Err(e) => e as i64, // Thread 已钉 Process；泄漏向同上（v1 不可达）
+        Err(e) => e as i64, // Thread 入表失败：对象 drop 时 release 钉住计数，无泄漏
     }
 }
 
@@ -828,8 +836,8 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
             }
         }
         Err(e) => {
-            // 第二端入表失败（表满/gen 尽，v1 不可达）：回滚第一端——未配对端点
-            // Drop 走 None 分支不碰任何指针（channel.rs），安全。
+            // 第二端入表失败（表满/gen 尽——真实可达，敌意/失控进程可自刷本表）：
+            // 回滚第一端——未配对端点 Drop 走 None 分支不碰任何指针（channel.rs），安全。
             let _ = t.close(h0);
             e as i64
         }

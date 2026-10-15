@@ -17,13 +17,22 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 berryos_target_dir() {
-  cargo metadata --no-deps --format-version=1 2>/dev/null \
-    | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4
+  local td
+  td="$(cargo metadata --no-deps --format-version=1 2>/dev/null \
+    | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4)"
+  if [[ -z "$td" ]]; then
+    # cargo 不可用/异常配置：不吐残缺根路径，凭退出码让下游感知（3b3 审查 M4）。
+    echo "paths.sh: cargo 不可用或无法解析 target 目录" >&2
+    return 1
+  fi
+  printf '%s\n' "$td"
 }
 
 # $1 = debug|release（默认 debug）。
 berryos_kernel() {
-  echo "$(berryos_target_dir)/aarch64-unknown-none/${1:-debug}/bos-kernel"
+  local td
+  td="$(berryos_target_dir)" || return 1
+  echo "$td/aarch64-unknown-none/${1:-debug}/bos-kernel"
 }
 
 # 直接执行时按参数出路径；被 source 时不做任何事（只定义函数）。

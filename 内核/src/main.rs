@@ -156,7 +156,7 @@ pub extern "C" fn rust_main() -> ! {
     bos_hal_aarch64::set_irq_dispatch(bos_sched::on_irq_tick);
     bos_hal_aarch64::set_user_fault_exit(bos_sched::user_fault_exit);
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
-    // SAFETY: 写 CNTV_CTL/TVAL；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
+    // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { bos_hal_aarch64::timer::arm_slice() };
     bos_hal_aarch64::enable_irq();
     bos_sched::yield_now(); // idle(main) 让出 → task_a；timer 每 slice 抢占切到 task_b → A/B 交替。

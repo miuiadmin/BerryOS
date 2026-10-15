@@ -106,15 +106,18 @@ pub struct Vmar {
 
 impl Vmar {
     /// 建 root Vmar：出一帧清零作 L1 表根。ASID 由调用方分配（`aspace::alloc_asid`）。
-    pub fn new_root(fa: &mut FrameAllocator, asid: u16) -> Self {
-        let l1_pa = zero_frame(fa).expect("Vmar root: 无空闲帧");
-        Self {
+    /// 帧耗尽返 [`VmarError::NoFrames`]——boot/ktest 可信调用方 `.expect`；EL0 路径
+    /// （`sys_process_create`）折 -ENOMEM（3b3 审查 H1：expect 曾是 EL0 可触发的
+    /// 内核停机点，违 ABI §8.0「永不 panic」）。
+    pub fn new_root(fa: &mut FrameAllocator, asid: u16) -> Result<Self, VmarError> {
+        let l1_pa = zero_frame(fa).map_err(|_| VmarError::NoFrames)?;
+        Ok(Self {
             l1_pa,
             asid,
             base: PAGE_SIZE,
             len: USER_VA_TOP - PAGE_SIZE,
             regions: Vec::new(),
-        }
+        })
     }
 
     /// 表根 PA（`Task::ttbr0` / 激活用）。

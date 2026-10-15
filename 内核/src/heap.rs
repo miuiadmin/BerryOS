@@ -13,7 +13,9 @@
 //! **G0 单核**：freelist/帧源用 `UnsafeCell` + `unsafe impl Sync`；无真并发，SMP(G2)
 //! 后需加锁或改每核 slab。
 //!
-//! **IRQ 热路径零分配**（设计约束）：本堆不在异常/IRQ 上下文使用。
+//! **分配上下文纪律**：IRQ 热路径零分配（timer/GIC 异常路径不碰堆）；SVC
+//! **同步异常上下文允许**分配（syscall handler：入口硬件置 DAIF、单核、
+//! 不解蔽——无重入/并发窗口；分配失败的 no-panic 纪律见 3b3 审查 H2 try 化）。
 
 use alloc::alloc::{GlobalAlloc, Layout};
 use bos_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};

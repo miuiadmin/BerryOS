@@ -188,7 +188,10 @@ fn test_syscall() {
     //     close 全绿。EL0 侧同链在 user_good（3-2 验收本体）。
     let hvm = ht
         .insert(
-            KernelObj::Vmar(Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid())),
+            KernelObj::Vmar(
+                Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid())
+                    .expect("SYSCALL：建 root Vmar（ktest 可信语境）"),
+            ),
             RIGHT_MAP | RIGHT_MANAGE,
         )
         .expect("SYSCALL：insert root vmar");
@@ -891,7 +894,7 @@ fn test_vmo() {
     );
 
     // B. map 即填表 + §5.1 验收：内核经 VMO 映射读写一页（VA 视角）。
-    let mut root = Vmar::new_root(fa, alloc_asid());
+    let mut root = Vmar::new_root(fa, alloc_asid()).expect("VMO：建 root Vmar（ktest 可信语境）");
     root.map(fa, &mut vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
         .expect("VMO：map");
     root.activate();

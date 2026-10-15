@@ -100,6 +100,12 @@ fn decode_gen(h: Handle) -> u32 {
     (h >> SLOT_BITS) & GEN_MASK
 }
 
+/// bit30/31 = ABI §8.1 预留位（v1 内核从不发行非零值）。lookup 对非零一律拒
+/// （3b3 审查 M5）——否则 X 与 X|0x8000_0000 被解码成同一 handle，replace 的
+/// 裸值 `h == repl` 挡不住这种别名，「任一无效则表不动」的原子承诺即被打破
+/// （调用者收错误码却已永久丢失合法能力）。
+const RESERVED_MASK: Handle = 0xC000_0000;
+
 /// 对象类型（镜像 `bos_obj_type` 枚举值，ABI §8.2 冻结）。
 /// Process/Channel 等暂无构造点——3-3/3-4 增补对象时启用，全表先冻结在册。
 #[allow(dead_code)]
@@ -253,14 +259,15 @@ impl HandleTable {
         Self { slots }
     }
 
-    /// 放入对象并授予 rights，返回新 handle（取最低空槽）。
+    /// 放入对象并授予 rights，返回新 handle（取最低可用空槽）。**先占槽后
+    /// 装箱**（3b3 审查 H3）：入表失败路径发生在任何分配之前，无对象可泄漏。
     pub fn insert(&mut self, obj: KernelObj, rights: Rights) -> Result<Handle, i32> {
+        let slot = self.alloc_slot()?;
+        let gen = self.take_gen(slot)?;
         // SAFETY: 刚 into_raw 的裸指针，非空。
         let obj = unsafe {
             NonNull::new_unchecked(Box::into_raw(Box::new(ObjRef { refs: 1, obj })))
         };
-        let slot = self.alloc_slot()?;
-        let gen = self.take_gen(slot)?;
         self.slots[slot] = SlotState::Used { gen, obj, rights };
         Ok(encode(slot as u32, gen))
     }
@@ -274,10 +281,11 @@ impl HandleTable {
         if new_rights == 0 || new_rights & !orig_rights != 0 {
             return Err(ERR_ACCESS_DENIED); // 空 rights / 提权尝试一律拒
         }
-        // SAFETY: lookup 已验指针在表且 refs ≥ 1；单核顺序访问。
-        unsafe { (*obj.as_ptr()).refs += 1 };
+        // 先占槽、后 +1 引用（3b3 审查 H3）：失败路径零副作用，无需回滚。
         let slot = self.alloc_slot()?;
         let gen = self.take_gen(slot)?;
+        // SAFETY: lookup 已验指针在表且 refs ≥ 1；单核顺序访问。
+        unsafe { (*obj.as_ptr()).refs += 1 };
         self.slots[slot] = SlotState::Used { gen, obj, rights: new_rights };
         Ok(encode(slot as u32, gen))
     }
@@ -411,8 +419,12 @@ impl HandleTable {
         Ok((obj, rights))
     }
 
-    /// 查表（gen 校验）：槽空 / 越界 / 代号不符 → [`ERR_BAD_HANDLE`]。
+    /// 查表（gen 校验）：槽空 / 越界 / 代号不符 / **预留位非零** →
+    /// [`ERR_BAD_HANDLE`]。
     fn lookup(&self, h: Handle) -> Result<(NonNull<ObjRef>, Rights), i32> {
+        if h & RESERVED_MASK != 0 {
+            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
+        }
         let slot = decode_slot(h) as usize;
         match self.slots.get(slot) {
             Some(SlotState::Used { gen, obj, rights }) if *gen == decode_gen(h) => {
@@ -434,6 +446,9 @@ impl HandleTable {
         &self,
         h: Handle,
     ) -> Result<(usize, u32, NonNull<ObjRef>, Rights), i32> {
+        if h & RESERVED_MASK != 0 {
+            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
+        }
         let slot = decode_slot(h) as usize;
         match self.slots.get(slot) {
             Some(SlotState::Used { gen, obj, rights }) if *gen == decode_gen(h) => {
@@ -443,14 +458,15 @@ impl HandleTable {
         }
     }
 
-    /// 取最低空槽下标（槽 0 永久保留给 `BOS_HANDLE_INVALID`，从 1 起找；
-    /// 无空槽且未满则尾插）。
+    /// 取最低可用空槽下标（槽 0 永久保留给 `BOS_HANDLE_INVALID`，从 1 起找；
+    /// **跳过代号耗尽的槽**——`next_gen > GEN_MASK` 的空槽过不了 `take_gen`，
+    /// 选中即白堵一个插入位，3b3 审查 H3；无可用槽且未满则尾插）。
     fn alloc_slot(&mut self) -> Result<usize, i32> {
         if let Some(off) = self
             .slots
             .iter()
             .skip(1)
-            .position(|s| matches!(s, SlotState::Free { .. }))
+            .position(|s| matches!(s, SlotState::Free { next_gen } if *next_gen <= GEN_MASK))
         {
             return Ok(off + 1);
         }
@@ -462,7 +478,8 @@ impl HandleTable {
     }
 
     /// 空槽取出 `next_gen` 作本槽代号。gen 耗尽（> [`GEN_MASK`]）拒绝——
-    /// 防回卷复活旧 handle（14 位 ≈ 1.6 万次重用，v1 实际打不满）。
+    /// 防回卷复活旧 handle（14 位 ≈ 1.6 万次重用；EL0 循环 create/close 可打满
+    /// 单槽，耗尽槽由 [`Self::alloc_slot`] 跳过、不再堵插入——3b3 审查 H3）。
     fn take_gen(&mut self, slot: usize) -> Result<u32, i32> {
         match self.slots[slot] {
             SlotState::Free { next_gen } => {

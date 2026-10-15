@@ -569,7 +569,7 @@ impl UserProcess {
         assert!(code.len() <= PAGE_SIZE, "用户代码模板须单页");
         assert!(code.len() % 4 == 0, "用户代码模板须 4 字节对齐长度");
         let asid = alloc_asid();
-        let mut vmar = Vmar::new_root(fa, asid);
+        let mut vmar = Vmar::new_root(fa, asid).expect("user: 建 root Vmar（boot 可信语境）");
 
         let mut code_vmo = Vmo::create(PAGE_SIZE);
         code_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit code");
