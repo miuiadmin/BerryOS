@@ -138,6 +138,78 @@ pub extern "C" fn rust_main() -> ! {
         ht_spawner as *mut HandleTable as usize,
     );
 
+    // 4-5a：console 服务通道——**首个服务循环**（v1 留内核任务形态：用户态无
+    // MMIO 映射，输出须经内核代劳，ADR「启动关键暂留内核」；4-5b svcmgr 落地
+    // 后用户服务的通道面/循环形状与此同构）。**console 挂 leak 私有表**
+    // （spawn_with_tag——4-4 随附「4-5 前置补丁」方向：常驻内核服务不睡共享
+    // BOOTSTRAP_HT，PI 受捐判定只看自己的表）+ 稳态等待走 **wait_many
+    // （WAIT_ANY）**——PI 双保险（私有表断错捐喷洒、哨兵断 donor 边，详见
+    // spawn 处说明，勿改回 wait_one(endK)）。endU（发端 ObjRef）以 insert_ref
+    // 落各用户表（RIGHT_SEND）——**用户打印全部改走真 IPC**（HAL 调试槽
+    // 0xFE/0xFF 退役）。通道 opt-out（4-3c 五件套之 4）：固定优先级系统服务
+    // 不借入调用方 intent。发送侧 -EBUSY/-EAGAIN 重试（用户模板，EL0 可抢占
+    // 有界）、服务侧 wait READABLE → drain 循环。
+    let ct: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let h_end_k = ct
+        .insert(
+            KernelObj::Channel(
+                crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 console 收端"),
+            ),
+            handle::RIGHT_RECV,
+        )
+        .expect("main: console 收端进私有表");
+    let h_end_u = syscall::bootstrap_table()
+        .insert(
+            KernelObj::Channel(
+                crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 console 发端"),
+            ),
+            handle::RIGHT_SEND,
+        )
+        .expect("main: console 发端进内核侧表");
+    let (pk, pu) = (
+        ct.get_raw(h_end_k, handle::ObjType::Channel, 0)
+            .expect("main: 取 console 收端 ObjRef")
+            .0,
+        syscall::bootstrap_table()
+            .get_raw(h_end_u, handle::ObjType::Channel, 0)
+            .expect("main: 取 console 发端 ObjRef")
+            .0,
+    );
+    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+    unsafe { crate::channel::ChannelEnd::pair(pk, pu) };
+    // 先于用户矩阵入队（RR 序早 → 早起服务）；消息纯字节不携带 handle。
+    //
+    // **稳态等待走 wait_many（WAIT_ANY）而非 wait_one(endK)——PI donor 边规避**
+    // （4-5a 排障实证）：4-3b 的受捐判定对内核任务取**共享内核侧表**粒度
+    // （ktest J 段「共享表粒度」固化的设计语义）——pi_client(32) 阻塞期间，
+    // 凡睡着的内核任务（含当时挂共享表的 console）都「名义持有」其 peer 端而
+    // 受捐 32；若 console 直睡 endK:READABLE（内核派生位），它自己又构成
+    // donor 边（peer=endU、need SEND），把受捐额**级联给所有持 console 发端的
+    // 用户进程**——waiter 冻结 32 后永不入睡，4-3a 严格优先把永不入睡的
+    // prio-0 waker 永久饿死（sleeper 路径 2 无人唤、BLOCK ok 永不出现）。
+    // 两道修法正交共存：①私有表（spawn_with_tag——受捐只看自己的表，错捐
+    // 喷洒断根，fa bench/其他共享表 donor 不再波及 console）；②`donor_edge`
+    // 对 WAIT_ANY 一律 None（4-2b「v2 收口」既有语义）——console 借
+    // wait_many+哑 Event（ponger 4-2b 同款对照项习语）主动退出 v1 donor 面；
+    // 高优 client 阻塞 console-full 时对本服务的真实捐赠不受影响（受捐方向
+    // 不经 wait 对象）。
+    let h_dummy_ev = ct
+        .insert(
+            KernelObj::Event(crate::event::Event::new()),
+            handle::RIGHT_SIGNAL,
+        )
+        .expect("main: console 哑 Event 进私有表");
+    // arg 打包（pi_server 同款）：高 32 位哑 Event、低 32 位 endK——均 console
+    // 私有表本地值（SVC 经 caller_table tag≠0 分支落到本表解析）。
+    berry_sched::spawn_with_tag(
+        task_console,
+        ((h_dummy_ev as usize) << 32) | h_end_k as usize,
+        b"console",
+        0,
+        ct as *mut HandleTable as usize,
+    );
+
     // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
     // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
     // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
@@ -146,17 +218,31 @@ pub extern "C" fn rust_main() -> ! {
     let good_vmar_h = ht_good
         .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
         .expect("main: 插 root Vmar 进 good 表");
+    // 4-5a：console 发端 append 进 good 表（vmar 后首插 = 槽 2/代号 1）——
+    // good 模板硬编码依赖，boot 断言即防线（漂移 → boot 期炸响）。
+    let h_cu_good = ht_good
+        .insert_ref(pu, handle::RIGHT_SEND)
+        .expect("main: console 发端进 good 表");
+    assert_eq!(h_cu_good, 0x0001_0002, "main: good 表 console 须槽 2/代号 1（模板硬编码）");
 
+    // 4-5a：abuser/spawner 的 console 发端 = 各表**首插**（0x0001_0001）——入口
+    // x0 改传之（原 0；两模板自带 handle 都在运行期创建，首插槽位无既有依赖）。
+    let h_cu_abuser = ht_abuser
+        .insert_ref(pu, handle::RIGHT_SEND)
+        .expect("main: console 发端进 abuser 表");
+    let h_cu_spawner = ht_spawner
+        .insert_ref(pu, handle::RIGHT_SEND)
+        .expect("main: console 发端进 spawner 表");
     berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
                           b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
     berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid, tag_rogue);
-    berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_abuser as usize, user::USER_STACK_TOP,
                           b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid, tag_abuser);
     // 3-3/3-4 验收：spawner 经真 syscall 创建第二个进程；process_start 的
     // bootstrap 迁移把「礼物 VMO」handle 送进子进程表（子入口 x0 收到后读出
     // 魔数自证——跨进程能力流动，见 user.rs spawner 模板注释）。
-    berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_spawner as usize, user::USER_STACK_TOP,
                           b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
     berry_sched::spawn(user::watchdog, 0, b"watchdog");
     // 4-0 验收（`IPC设计.md` Phase 4 拆步表）：sleeper/waker 对打——超时自醒
@@ -184,6 +270,11 @@ pub extern "C" fn rust_main() -> ! {
     let h_ev_waiter = ht_waiter
         .insert_ref(ev_ptr, RIGHT_SIGNAL)
         .expect("main: Event 进 waiter 表（同一 ObjRef）");
+    // 4-5a：console 发端 append（Event 后首插 = 槽 2/代号 1）——waiter 模板硬编码。
+    let h_cu_waiter = ht_waiter
+        .insert_ref(pu, handle::RIGHT_SEND)
+        .expect("main: console 发端进 waiter 表");
+    assert_eq!(h_cu_waiter, 0x0001_0002, "main: waiter 表 console 须槽 2/代号 1（模板硬编码）");
     berry_sched::spawn_user(user::USER_CODE_VA, h_ev_waiter as usize, user::USER_STACK_TOP,
                           b"user_waiter", up_waiter.ttbr0_pa, up_waiter.asid,
                           ht_waiter as *mut HandleTable as usize);
@@ -210,6 +301,11 @@ pub extern "C" fn rust_main() -> ! {
             RIGHT_SEND,
         )
         .expect("main: endA 进 pinger 表");
+    // 4-5a：console 发端 append（endA 后首插 = 槽 2/代号 1）——pinger 模板硬编码。
+    let h_cu_pinger = ht_pinger
+        .insert_ref(pu, RIGHT_SEND)
+        .expect("main: console 发端进 pinger 表");
+    assert_eq!(h_cu_pinger, 0x0001_0002, "main: pinger 表 console 须槽 2/代号 1（模板硬编码）");
     let h_end_b = ht_ponger
         .insert(
             KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB")),
@@ -233,6 +329,11 @@ pub extern "C" fn rust_main() -> ! {
         h_evt_ponger, 0x0001_0002,
         "main: ponger 表哑 Event 须为槽 2/代号 1（ponger 模板硬编码依赖）"
     );
+    // 4-5a：console 发端 append（endB + 哑 Event 后 = 槽 3/代号 1）——ponger 模板硬编码。
+    let h_cu_ponger = ht_ponger
+        .insert_ref(pu, RIGHT_SEND)
+        .expect("main: console 发端进 ponger 表");
+    assert_eq!(h_cu_ponger, 0x0001_0003, "main: ponger 表 console 须槽 3/代号 1（模板硬编码）");
     berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
                           b"user_pinger", up_pinger.ttbr0_pa, up_pinger.asid,
                           ht_pinger as *mut HandleTable as usize);
@@ -533,20 +634,23 @@ extern "C" fn task_sleeper(_arg: usize) -> ! {
     berry_sched::exit_current()
 }
 
-/// 4-0 waker：轮询 `wake_matching(SLEEP_OBJ, 1<<33)` 直到摘到 sleeper（返回
-/// 1）。未挂上时返回 0 且零副作用——单核屏蔽窗原子保证无丢唤醒：要么本循环
-/// 先扫（0，sleeper 稍后挂上，下轮摘到）、要么 sleeper 已挂（本轮即摘）。轮
-/// 询体 IRQ 基本解蔽 → tick 正常抢占 → sleeper 得以上 CPU 挂队。命中即收工
-/// 退出。（置位集与 sleeper 的请求位同步收窄到用户位 1<<33——理由见路径 2
-/// 注释。）
+/// 4-0 waker：轮询 `wake_matching(SLEEP_OBJ, 1<<33)` 直到 sleeper 双路径全过。
+/// 未挂上时零副作用——单核屏蔽窗原子保证无丢唤醒：要么本循环先扫（sleeper
+/// 稍后挂上，下轮摘到）、要么 sleeper 已挂（本轮即摘）。轮询体 IRQ 基本解蔽
+/// → tick 正常抢占 → sleeper 得以上 CPU 挂队。（置位集与 sleeper 的请求位
+/// 同步收窄到用户位 1<<33——理由见路径 2 注释。）
+///
+/// **收工判据 = sleeper 侧 `BLOCK_BOOT_DONE`**（4-5a 修正）：4-2b 起
+/// `wake_matching` 对 `WAIT_ANY` 哨兵睡眠者（wait_many）「任何对象、任何
+/// 非零位」都命中——ponger 稳态全程挂哨兵，本循环的定向轮询会误摘它一票，
+/// 返回计数混入哨兵误醒（可能 1 也可能 ≥2），不再可信。改看 sleeper 置的
+/// 完成标志：定向唤醒语义不变（SLEEP_OBJ+1<<33 的精确匹配只可能来自本循
+/// 环）；被误醒的哨兵者由其重验循环自行回睡（4-2b 设计内行为，无害）。
 extern "C" fn task_waker(_arg: usize) -> ! {
-    loop {
+    while !BLOCK_BOOT_DONE.load(core::sync::atomic::Ordering::Relaxed) {
         berry_hal_aarch64::disable_irq();
-        let n = berry_sched::wake_matching(&SLEEP_OBJ as *const u8 as usize, 1 << 33);
+        berry_sched::wake_matching(&SLEEP_OBJ as *const u8 as usize, 1 << 33);
         berry_hal_aarch64::enable_irq();
-        if n == 1 {
-            break;
-        }
         // 降频小忙转（可被 tick 抢占）。
         for _ in 0..100_000 {
             core::hint::spin_loop();
@@ -763,6 +867,92 @@ extern "C" fn task_pi_client(arg: usize) -> ! {
         "pi_client: 腾位后补发"
     );
     berry_sched::exit_current()
+}
+
+// ---- 4-5a console 服务（首个服务循环，`IPC设计.md` Phase 4 拆步表 4-5 前半）----
+
+/// console 已落串口字节数——4-5a 起 watchdog 金丝雀（替 0xFF 调试槽的
+/// USER_PUTCNT：打印异步化后「发出」与「落串口」分离，活证取**服务侧**计数）。
+static CONSOLE_DRAINED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// 读 console 服务排水计数（watchdog 用）。
+pub fn console_drained() -> u64 {
+    CONSOLE_DRAINED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// 4-5a console 服务任务：**首个服务循环**——wait_many [endK:READABLE, 哑
+/// Event:1<<32]（任一命中；10s 心跳帽，空等超时非错误、回环重等）→ drain
+/// recv 排空本端队列 → 逐字节 UART + 计数。全真 SVC 链（EL1 入口与 EL0 同权，
+/// 3-1）；消息纯字节、不携带 handle（recv cap 0）。opt-out 通道 = 固定优先级
+/// 系统服务（recv 不结算 intent 借入——4-3c 五件套之 4 的常驻消费面）。
+///
+/// **为何 wait_many 而非 wait_one(endK)**：多对象等待者挂 WAIT_ANY 哨兵 →
+/// `pi::donor_edge` 返回 None（4-2b「v2 收口」）——console 退出 v1 PI donor
+/// 面，否则（共享内核侧表的受捐粒度下）它把受捐额级联给全体持发端用户、
+/// 冻结 boost + 4-3a 严格优先 = 永不入睡任务的饥饿死锁（见 boot spawn 处
+/// 完整因果链）。哑 Event 永不 signal → 命中必 idx==0（idx==1 即自陷被
+/// watchdog 错杀断言拦下）。console 是常驻服务**不退出**（与 sleeper/waker
+/// 等验收任务不同）；4-5b svcmgr 落地后用户态服务与此同构。
+extern "C" fn task_console(arg: usize) -> ! {
+    use crate::handle::{ERR_AGAIN, ERR_TIMEDOUT, SIGNAL_READABLE};
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CLOCK_READ, NR_OBJECT_WAIT_MANY};
+    let h_end_k = arg as u32;
+    let h_dummy = (arg >> 32) as u32;
+    // wait_many 两数组（栈上、EL1 内核高半——copy_from_user 的 EL1 分支收）。
+    let hs = [h_end_k, h_dummy];
+    let sigs = [SIGNAL_READABLE, 1u64 << 32];
+    let mut now: u64 = 0;
+    // SAFETY: svc 同步异常；栈变量私有（内核高半，copy 直拷）。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    let (mut idx, mut observed): (u64, u64) = (0, 0);
+    let (pidx, pobs) = (
+        core::ptr::addr_of_mut!(idx) as u64,
+        core::ptr::addr_of_mut!(observed) as u64,
+    );
+    let mut buf = [0u8; 256];
+    let (mut n, mut nh): (u64, u64);
+    loop {
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "console: clock_read");
+        let r = svc6(
+            NR_OBJECT_WAIT_MANY as u64,
+            hs.as_ptr() as u64,
+            sigs.as_ptr() as u64,
+            2,
+            now + 10 * 1_000_000_000,
+            pidx,
+            pobs,
+        );
+        assert!(
+            r == 0 || r == ERR_TIMEDOUT as i64,
+            "console: wait_many 异常 ret={}",
+            r
+        );
+        if r == 0 {
+            assert_eq!(idx, 0, "console: 须命中 endK（哑 Event 永不置位）");
+        }
+        // drain：排空本端队列（发送侧重试 + 深度 8 → 批量有界）。
+        loop {
+            n = 256;
+            nh = 0;
+            let r2 = svc6(
+                NR_CHANNEL_RECV as u64,
+                h_end_k as u64,
+                buf.as_mut_ptr() as u64,
+                core::ptr::addr_of_mut!(n) as u64,
+                0,
+                core::ptr::addr_of_mut!(nh) as u64,
+                0,
+            );
+            if r2 == ERR_AGAIN as i64 {
+                break; // 排空——回外层阻塞等
+            }
+            assert_eq!(r2, 0, "console: recv 异常");
+            for i in 0..n as usize {
+                berry_hal_aarch64::uart_putc(buf[i]);
+                CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 // ---- 4-3c intent 验收六任务（全真 SVC；ADR #42 五件套，`berry_sched::intent`）----

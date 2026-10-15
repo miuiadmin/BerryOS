@@ -27,8 +27,15 @@
 //!   消息**；非阻塞：空 -EAGAIN / 满 -EBUSY 双侧容忍，无死锁）。任一步错 →
 //!   自陷被杀 → watchdog 错杀断言 FAIL。
 //! rogue_ptr 应被杀且**只死自己**（`user_fault_exit`）；abuser 与 good 全程存活。
-//! [`watchdog`] 内核任务断言杀数==1 + switches/putchar 金丝雀仍在涨 → 打 `G1.5 ok`
-//! （smoke 固化标记）后退出。
+//! [`watchdog`] 内核任务断言杀数==1 + switches/console 排水金丝雀仍在涨 → 打
+//! `G1.5 ok`（smoke 固化标记）后退出。
+//!
+//! 4-5a：**EL0 打印全部改走真 IPC**——各模板 0xFF 调试槽 putchar 退役，改
+//! `channel_send(console 发端, buf, len)`（console 服务任务排空落串口；满
+//! -EBUSY 重试，EL0 可抢占有界）。console handle 来源：good/waiter/pinger 表
+//! append 定值 0x0001_0002、ponger 0x0001_0003（boot 断言 + 模板硬编互为防线）、
+//! abuser/spawner 入口 x0（首插 0x0001_0001）、child 经首条 PING 随行令牌
+//! （运行期值）。
 
 use crate::aspace::alloc_asid;
 use crate::vmar::{Perm, Vmar};
@@ -184,11 +191,22 @@ core::arch::global_asm!(
     "    ldr  x6, [x2]",                // t2
     "    cmp  x6, x5",
     "    b.lo 3f",                      // 单调性破坏 → 自陷路径
-    "    mov  x0, #0xFF",               // NR_DEBUG_PUTCHAR（调试槽，非 ABI）
-    "    mov  x1, #0x75",               // 'u'
+    "    movz x6, #0x75",               // 'u' → 数据页 0x2030（链槽之后再占）
+    "    movz x5, #0x2030",
+    "    str  x6, [x5]",
+    "4:  movz x0, #0x52",               // send(console, 0x2030, 1, 0, 0)——4-5a
+    "    movz x1, #2",                  // console handle 0x0001_0002（boot 断言定值）
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #0x2030",
+    "    mov  x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    cbnz x0, 3f",                  // putchar 失败 → 自陷路径
-    "    b    0b",
+    "    cbz  x0, 5f",
+    "    cmn  x0, #16",                 // -EBUSY：console 消费慢，重试（可抢占）
+    "    b.ne 3f",
+    "    b    4b",
+    "5:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 0x4000_0000 未映射 → D-abort → 杀
     "    ldr  x5, [x4]",
     "    b    .",
@@ -207,6 +225,7 @@ core::arch::global_asm!(
     ".balign 16",
     ".globl __user_abuser",
     "__user_abuser:",
+    "    mov  x22, x0",                 // x22 常驻：console 发端（4-5a 首插 0x0001_0001）
     "    movz x9, #0x30, lsl #16",     // 节流阈值 ~3.1M（与 good 的 arg 同量级）
     "0:  mov  x10, xzr",
     "1:  add  x10, x10, #1",
@@ -218,10 +237,21 @@ core::arch::global_asm!(
     "    svc  #0",                     // x0 必须 = -EBADF（能力门控拒绝面）
     "    cmn  x0, #9",                 // x0 + 9 == 0 ⟺ x0 == -9
     "    b.ne 3f",                     // 返回值异常 → 自陷（kills>期望 → watchdog FAIL）
-    "    mov  x0, #0xFF",              // NR_DEBUG_PUTCHAR：'S' = 存活金丝雀
-    "    mov  x1, #0x53",
+    "    movz x6, #0x53",              // 'S' → 数据页 0x2010（4-5a：真 IPC 打印）
+    "    movz x5, #0x2010",
+    "    str  x6, [x5]",
+    "4:  movz x0, #0x52",              // send(console, 0x2010, 1, 0, 0)
+    "    mov  x1, x22",
+    "    movz x2, #0x2010",
+    "    mov  x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    b    0b",
+    "    cbz  x0, 5f",
+    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    b.ne 3f",
+    "    b    4b",
+    "5:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",   // 自陷路径（被杀 = FAIL 暴露）
     "    ldr  x5, [x4]",
     "    b    .",
@@ -231,7 +261,8 @@ core::arch::global_asm!(
     // 3-3/3-4 spawner：经真 syscall 创建第二个进程 + **双向能力迁移**（3-4a
     // bootstrap 随 start + 3-4b handle 随消息）。暂存：x16=hp(进程)、x17=hv(子
     // Vmar)、x18=hvmo(子代码+栈)、x19=ht(线程)、x20=hgift(礼物 VMO，send 后
-    // 失去)、x21=end0(channel 自留端)、x22=end1(作 bootstrap 迁子)；槽：
+    // 失去)、x21=end0(channel 自留端)、x22=end1(作 bootstrap 迁子)、x23=console
+    // 发端（4-5a 入口 x0，随首条 PING 转赠子进程）；槽：
     // 0x2010/0x2018 handle 双出参、0x2020 vmo/线程 out、0x2028 vaddr in-out、
     // 0x2030 礼物 out、0x2038 礼物魔数、0x2040/0x2048 channel 双出参、0x2050
     // PING 载荷、0x2058 回信 buf、0x2060/0x2068 recv 容量 in-out、0x2070 随行
@@ -239,6 +270,7 @@ core::arch::global_asm!(
     ".balign 16",
     ".globl __user_spawner",
     "__user_spawner:",
+    "    mov  x23, x0",                 // x23 常驻：console 发端（4-5a 首插 0x0001_0001）
     "    movz x0, #0x31",               // process_create(job=0, options=0, *p, *v)
     "    mov  x1, xzr",
     "    mov  x2, xzr",
@@ -268,7 +300,7 @@ core::arch::global_asm!(
     "    mov  x1, x18",
     "    adr  x2, 4f",                  // 本页内自相对取址（搬迁安全，见模块注）
     "    mov  x3, xzr",
-    "    movz x4, #324",                // 子代码 81 指令（字节数精确——尾随零垃圾勿拷）
+    "    movz x4, #376",                // 子代码 94 指令（字节数精确——尾随零垃圾勿拷）
     "    svc  #0",
     "    cbnz x0, 3f",
     "    movz x5, #0x2028",             // vaddr 槽 ← 请求子代码 VA 0x1000
@@ -331,13 +363,19 @@ core::arch::global_asm!(
     "    movz x6, #0x2050",
     "    str  x4, [x6]",
     "    movz x6, #0x2070",
-    "    str  w20, [x6]",               // 随行 handle 数组（u32 LE）= 礼物
-    "    movz x0, #0x52",               // send(end0, PING, 8, &礼物, 1)——handle 随消息迁出本表
+    "    str  w20, [x6]",               // 随行 handle 数组（u32 LE）[0] = 礼物
+    "    movz x0, #0x02",               // handle_duplicate(console, SEND, *out=&数组[1])
+    "    mov  x1, x23",
+    "    movz x2, #0x100",              // RIGHT_SEND（1<<8）——别名随消息转赠，原件自留打印
+    "    add  x3, x6, #4",              // *out = 0x2074：新 handle 直落数组 [1] 槽
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x52",               // send(end0, PING, 8, &随行, 2)——handle 随消息迁出本表
     "    mov  x1, x21",
     "    movz x2, #0x2050",
     "    movz x3, #8",
     "    movz x4, #0x2070",
-    "    movz x5, #1",
+    "    movz x5, #2",
     "    svc  #0",
     "    cbnz x0, 3f",
     "    movz x0, #0x01",               // 礼物已随消息送走：close(x20) 必 -EBADF
@@ -402,10 +440,21 @@ core::arch::global_asm!(
     "9:  ldr  w4, [x2]",                // 收到回信：低 32 位 == REPLY 魔数
     "    cmp  w4, w8",
     "    b.ne 3f",
-    "10: movz x0, #0xFF",
-    "    movz x1, #0x73",               // 's' = spawner 存活金丝雀
+    "10: movz x6, #0x73",              // 's' → 数据页 0x2080（4-5a：真 IPC 打印）
+    "    movz x5, #0x2080",
+    "    str  x6, [x5]",
+    "13: movz x0, #0x52",              // send(console, 0x2080, 1, 0, 0)
+    "    mov  x1, x23",
+    "    movz x2, #0x2080",
+    "    mov  x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    b    0b",
+    "    cbz  x0, 14f",
+    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    b.ne 3f",
+    "    b    13b",
+    "14: b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷路径（被杀 = FAIL 暴露）
     "    ldr  x5, [x4]",
     "    b    .",
@@ -414,7 +463,8 @@ core::arch::global_asm!(
     // PING（验 USER_MAGIC）+ 随行礼物 handle → 凭**自己表里**的 handle vmo_read
     // 出魔数比对（能力随消息跨表流动自证）。稳态：收 PING → 回 REPLY → 打 'C'
     // （空 -EAGAIN / 满 -EBUSY 容忍，与父节流同量级，无死锁）。链断 → 自陷被杀
-    // → watchdog 错杀断言 FAIL。子暂存：x19=end1、x8=PING 低 32 位常驻；槽（栈
+    // → watchdog 错杀断言 FAIL。子暂存：x19=end1、x20=console 发端（4-5a 随行
+    // 令牌 [1]）、x8=PING 低 32 位常驻；槽（栈
     // 页 [0x2000,0x3000) 内）：0x2F90 REPLY 载荷、0x2FA0 收件 buf、0x2FA8/0x2FB0
     // 容量 in-out、0x2FB8 随行 handle 数组、0x2FC0 礼物读出 buf。
     "4:  mov  x19, x0",                 // 保存 end1（子表 handle）
@@ -424,9 +474,9 @@ core::arch::global_asm!(
     "    movk x4, #0x00C0, lsl #48",
     "    movz x5, #0x2F90",
     "    str  x4, [x5]",
-    "    movz x4, #8",                  // 首链 caps：nbytes=8 / nhandles=1
+    "    movz x4, #8",                  // 首链 caps：nbytes=8 / nhandles=2（礼物+console）
     "    str  x4, [x5, #24]",
-    "    movz x4, #1",
+    "    movz x4, #2",
     "    str  x4, [x5, #32]",
     "7:  movz x0, #0x53",               // recv(end1, 0x2FA0, *8, 0x2FB8, *1)
     "    mov  x1, x19",
@@ -444,10 +494,10 @@ core::arch::global_asm!(
     "    cmp  w6, w7",
     "    b.ne 8f",
     "    movz x6, #0x2FB0",
-    "    ldr  x7, [x6]",                // 实收 nhandles 必须 == 1
-    "    cmp  x7, #1",
+    "    ldr  x7, [x6]",                // 实收 nhandles 必须 == 2（礼物 + console）
+    "    cmp  x7, #2",
     "    b.ne 8f",
-    "    ldr  w7, [x6, #8]",            // 礼物 handle（u32，零扩进 x7）
+    "    ldr  w7, [x6, #8]",            // 随行 [0] = 礼物 handle（u32，零扩进 x7）
     "    movz x0, #0x14",               // vmo_read(礼物, 0x2FC0, 0, 8)
     "    mov  x1, x7",
     "    movz x2, #0x2FC0",
@@ -460,6 +510,8 @@ core::arch::global_asm!(
     "    movk w6, #0xE000, lsl #16",
     "    cmp  w5, w6",
     "    b.ne 8f",
+    "    movz x6, #0x2FB8",
+    "    ldr  w20, [x6, #4]",           // 随行 [1] = console 发端（x20 常驻，4-5a）
     // ---- 稳态循环：节流 + 收 PING → 回 REPLY + 'C' ----
     "    movz x8, #0x0E10",             // PING 低 32 位常驻（载荷比对用）
     "    movk x8, #0xE000, lsl #16",
@@ -492,10 +544,21 @@ core::arch::global_asm!(
     "    cbz  x0, 12f",
     "    cmn  x0, #16",                 // 回信队列满（父消费慢）容忍
     "    b.ne 8f",
-    "12: movz x0, #0xFF",               // NR_DEBUG_PUTCHAR：'C' = 子进程活证
-    "    movz x1, #0x43",
+    "12: movz x6, #0x43",              // 'C' → 栈页 0x2FD0（4-5a：真 IPC 打印）
+    "    movz x5, #0x2FD0",
+    "    str  x6, [x5]",
+    "15: movz x0, #0x52",              // send(console, 0x2FD0, 1, 0, 0)
+    "    mov  x1, x20",
+    "    movz x2, #0x2FD0",
+    "    mov  x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    b    5b",
+    "    cbz  x0, 16f",
+    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    b.ne 8f",
+    "    b    15b",
+    "16: b    5b",
     "8:  movz x4, #0x4000, lsl #16",    // 自陷：迁移/读链断 → 被杀 → watchdog FAIL
     "    ldr  x5, [x4]",
     "    b    .",
@@ -611,11 +674,22 @@ core::arch::global_asm!(
     "    movz x3, #0x2000",             // 数据页 canary
     "    ldr  x4, [x3]",
     "    cbz  x4, 3f",
-    "    movz x0, #0xFF",               // NR_DEBUG_PUTCHAR：'W' = waiter 活证
-    "    movz x1, #0x57",
+    "    movz x6, #0x57",              // 'W' → 数据页 0x2018（4-5a：真 IPC 打印）
+    "    movz x5, #0x2018",
+    "    str  x6, [x5]",
+    "4:  movz x0, #0x52",              // send(console, 0x2018, 1, 0, 0)
+    "    movz x1, #2",                 // console handle 0x0001_0002（boot 断言定值）
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #0x2018",
+    "    mov  x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    cbnz x0, 3f",
-    "    b    0b",
+    "    cbz  x0, 5f",
+    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    b.ne 3f",
+    "    b    4b",
+    "5:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷：三路断链 → 被杀 → watchdog 错杀断言 FAIL
     "    ldr  x5, [x4]",
     "    b    .",
@@ -682,24 +756,40 @@ core::arch::global_asm!(
     "    cbnz x8, 2f",
     "    movz x8, #1",
     "    str  x8, [x7]",
-    "    adr  x5, 4f",                  // banner 字节（同页 adr——拷贝安全同 spawner）
-    "    movz x6, #9",
-    "5:  ldrb w1, [x5], #1",
-    "    movz x0, #0xFF",
+    "6:  adr  x5, 4f",                  // banner 整段一条消息（4-5a：真 IPC 打印）
+    "    movz x0, #0x52",               // send(console, banner, 9, 0, 0)
+    "    movz x1, #2",                  // console handle 0x0001_0002（boot 断言定值）
+    "    movk x1, #1, lsl #16",
+    "    mov  x2, x5",
+    "    movz x3, #9",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    cbnz x0, 3f",
-    "    subs x6, x6, #1",
-    "    b.ne 5b",
-    "    b    0b",
+    "    cbz  x0, 7f",
+    "    cmn  x0, #16",                 // -EBUSY：console 消费慢，重试（可抢占）
+    "    b.ne 3f",
+    "    b    6b",
+    "7:  b    0b",
     "2:  mov  x10, xzr",                // 节流
     "1:  add  x10, x10, #1",
     "    cmp  x10, x9",
     "    b.lo 1b",
-    "    movz x0, #0xFF",               // 'p' = pinger 活证
-    "    movz x1, #0x70",
+    "    movz x6, #0x70",              // 'p' → 数据页 0x2040（4-5a：真 IPC 打印）
+    "    movz x5, #0x2040",
+    "    str  x6, [x5]",
+    "8:  movz x0, #0x52",              // send(console, 0x2040, 1, 0, 0)
+    "    movz x1, #2",                 // console handle 0x0001_0002（boot 断言定值）
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #0x2040",
+    "    mov  x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    cbnz x0, 3f",
-    "    b    0b",
+    "    cbz  x0, 9f",
+    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    b.ne 3f",
+    "    b    8b",
+    "9:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀 → CHAIN 缺失 = smoke FAIL
     "    ldr  x5, [x4]",
     "    b    .",
@@ -720,6 +810,10 @@ core::arch::global_asm!(
     // 0x2020 收件 buf、0x2028/0x2030 容量 in-out（自复原型：载荷恒 8B/0 handle）、
     // 0x2038 随行数组、0x2040 handles 数组（endB + 哑 Event——boot 断言
     // 0x0001_0002 定值）、0x2050 signals 数组、0x2060 idx、0x2068 首圈旗标。
+    // 4-5a 加固：MANY 标记改在**入口**先发一次 wait_many（队空 → 睡到 pinger
+    // 首发唤醒；非空 → poll 即中——两路 ret==0/idx==0 必然）。稳态 -EAGAIN 何时
+    // 来是排水/补灌速率的时序竞速（打印改走 console 往返后曾出现 120s 队列恒
+    // 非空、一次 -EAGAIN 都不来的 run），不再作标记前提。
     ".balign 16",
     ".globl __user_ponger",
     "__user_ponger:",
@@ -743,6 +837,28 @@ core::arch::global_asm!(
     "    movz x8, #0x0E10",             // PING 低 32 位常驻（载荷比对）
     "    movk x8, #0xE000, lsl #16",
     "    movz x9, #0x30, lsl #16",      // 节流阈值
+    "    movz x0, #0x61",               // 入口先等一条：now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",             // δ = 1e10 ns（10s，首发必早于此）
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x4, x5, x3",              // deadline = now + 10s
+    "    movz x0, #0x05",               // wait_many(0x2040, 0x2050, 2, deadline,
+    "    movz x1, #0x2040",             //          *idx=0x2060, *obs=0x2010)
+    "    movz x2, #0x2050",
+    "    movz x3, #2",
+    "    movz x5, #0x2060",
+    "    movz x6, #0x2010",
+    "    svc  #0",                      // 队空睡到 pinger 首发 / 非空 poll 即中
+    "    cbnz x0, 3f",                  // 10s 无首发 = pinger 断供 FAIL
+    "    movz x4, #0x2060",
+    "    ldr  x6, [x4]",
+    "    cbnz x6, 3f",                  // idx≠0 = 命中哑 Event = 断链（永不 signal）
+    "    b    5f",                      // 共用旗标/打印段（首圈旗标=0 → 打 MANY ok）
     "0:  movz x0, #0x53",               // recv(endB, 0x2020, *8, 0x2038, *0)
     "    mov  x1, x20",
     "    movz x2, #0x2020",
@@ -774,18 +890,23 @@ core::arch::global_asm!(
     "    movz x4, #0x2060",
     "    ldr  x6, [x4]",
     "    cbnz x6, 3f",                  // idx≠0 = 命中哑 Event = 断链（永不 signal）
-    "    ldr  x11, [x7]",               // 首圈打 MANY ok，此后直接重验
+    "5:  ldr  x11, [x7]",               // 首圈打 MANY ok，此后直接重验（入口/稳态两路共用）
     "    cbnz x11, 6f",
     "    movz x11, #1",
     "    str  x11, [x7]",
-    "    adr  x5, 4f",                  // banner 字节（同页 adr——拷贝安全同 spawner）
-    "    movz x6, #8",
-    "5:  ldrb w1, [x5], #1",
-    "    movz x0, #0xFF",
+    "7:  adr  x5, 4f",                  // banner 整段一条消息（4-5a：真 IPC 打印）
+    "    movz x0, #0x52",               // send(console, banner, 8, 0, 0)
+    "    movz x1, #3",                  // console handle 0x0001_0003（boot 断言定值）
+    "    movk x1, #1, lsl #16",
+    "    mov  x2, x5",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    cbnz x0, 3f",
-    "    subs x6, x6, #1",
-    "    b.ne 5b",
+    "    cbz  x0, 6f",
+    "    cmn  x0, #16",                 // -EBUSY：console 消费慢，重试（可抢占）
+    "    b.ne 3f",
+    "    b    7b",
     "6:  b    0b",                      // 醒来重 recv（重验——必命中）
     "1:  ldr  w6, [x2]",                // 载荷低 32 位（x2 = buf 地址，派发保留）
     "    cmp  w6, w8",
@@ -794,11 +915,22 @@ core::arch::global_asm!(
     "2:  add  x10, x10, #1",
     "    cmp  x10, x9",
     "    b.lo 2b",
-    "    movz x0, #0xFF",               // 'P' = ponger 活证
-    "    movz x1, #0x50",
+    "    movz x6, #0x50",              // 'P' → 数据页 0x2070（4-5a：真 IPC 打印）
+    "    movz x5, #0x2070",
+    "    str  x6, [x5]",
+    "8:  movz x0, #0x52",              // send(console, 0x2070, 1, 0, 0)
+    "    movz x1, #3",                 // console handle 0x0001_0003（boot 断言定值）
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #0x2070",
+    "    mov  x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
     "    svc  #0",
-    "    cbnz x0, 3f",
-    "    b    0b",
+    "    cbz  x0, 9f",
+    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    b.ne 3f",
+    "    b    8b",
+    "9:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀 → CHAIN 缺失 = smoke FAIL
     "    ldr  x5, [x4]",
     "    b    .",
@@ -934,12 +1066,14 @@ impl UserProcess {
 }
 
 /// G1.5 验收看门狗（内核任务）：等 rogue_ptr 被杀、abuser（坏 handle 滥用）与
-/// good 的 putchar / switches 金丝雀仍在涨 → 打关卡标记 `G1.5 ok` 后 `exit_current`
-/// 退场（A/B/good/abuser 继续分时）。杀数超期望（abuser 被误杀 = 3-1 错误码政策
-/// 破坏）或超时未达成 → panic（系统停 = 关卡失败）。
+/// good 的 console 排水 / switches 金丝雀仍在涨 → 打关卡标记 `G1.5 ok` 后
+/// `exit_current` 退场（A/B/good/abuser 继续分时）。杀数超期望（abuser 被误杀
+/// = 3-1 错误码政策破坏）或超时未达成 → panic（系统停 = 关卡失败）。
+/// 4-5a 起金丝雀 = console 服务排水计数（EL0 打印异步化：send 入队 ≠ 落串口，
+/// 活证取**服务侧**——console 任务活着且在排空 = 用户打印链整体活着）。
 pub extern "C" fn watchdog(_arg: usize) -> ! {
     const TRIES: u32 = 2_000;
-    let mut last_puts = berry_hal_aarch64::syscall::user_putcnt();
+    let mut last_puts = crate::console_drained();
     let mut last_switches = berry_sched::switches();
     for _ in 0..TRIES {
         // 忙等一拍（无 sleep 原语——Phase 4 通知落地前的土法；轮到别的任务跑）。
@@ -947,7 +1081,7 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
             core::hint::spin_loop();
         }
         let kills = berry_sched::user_kills();
-        let puts = berry_hal_aarch64::syscall::user_putcnt();
+        let puts = crate::console_drained();
         let switches = berry_sched::switches();
         if kills > 1 {
             panic!("G1.5 FAIL: 杀数 {} > 1（abuser/good 被误杀 = 错误码政策或验收链破坏）", kills);
@@ -984,5 +1118,5 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
         last_puts = puts;
         last_switches = switches;
     }
-    panic!("G1.5 FAIL: 超时（kills={} puts={}）", berry_sched::user_kills(), last_puts);
+    panic!("G1.5 FAIL: 超时（kills={} drained={}）", berry_sched::user_kills(), last_puts);
 }

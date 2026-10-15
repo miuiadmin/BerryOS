@@ -25,7 +25,8 @@ pub fn run() {
 
 /// Step 9 信号 + G0 退出 #6 + **3-1 真 ABI 骨架**：从 EL1 发 `svc #0`（EC=0x15）
 /// → HAL dispatch → 语义层 handler（`内核/src/syscall.rs`）→ 回写 x0、eret 续行。
-/// 用例：调试 echo 往返（G0 原始判据）；未知号 0x99 / 未实现真号 0x04 一律
+/// 用例：调试槽退役面（4-5a：0xFE/0xFF 随 console 服务落地回落 -ENOTSUP——
+/// EL0 输出改走 channel_send 真 IPC）；未知号 0x99 / 未实现真号 0x33 一律
 /// -ENOTSUP（3-1 政策：错误码自理、永不杀调用者）；clock_read（MONOTONIC）两次
 /// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）；
 /// 3-4a per-process 表拆分（G 段）：两表隔离 + take/insert_ref 迁移原语 + 子进程
@@ -38,14 +39,15 @@ fn test_syscall() {
         bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_VMO_CREATE,
     };
     use crate::vmo::Vmo;
-    use berry_hal_aarch64::syscall::NR_DEBUG_ECHO;
     use berry_mm::va::PAGE_SIZE;
 
     // out 参数缓冲（内核地址；EL1 调用方 → copy_out 走高半直映区）。
     static mut OUT: u64 = 0;
 
-    // A. 调试 echo 往返（G0 原始判据；0xFE 调试槽，非 ABI）。
-    assert_eq!(svc4(NR_DEBUG_ECHO as u64, 0x5a, 0, 0), 0x5a, "SYSCALL：echo 往返");
+    // A. 调试槽退役面（4-5a）：0xFE/0xFF 原调试 echo/putchar 槽随 console 服务
+    //    落地退役——一律 -ENOTSUP 存活（EL0 打印改走 channel_send 真 IPC）。
+    assert_eq!(svc4(0xFE, 0x5a, 0, 0), -95, "SYSCALL：0xFE 调试槽须已退役");
+    assert_eq!(svc4(0xFF, 0x75, 0, 0), -95, "SYSCALL：0xFF 调试槽须已退役");
 
     // B. 未知号（越界 0x99）与未实现真号（process_exit 0x33，进程退出路径随后续
     //    步）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言

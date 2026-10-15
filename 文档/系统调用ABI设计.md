@@ -85,7 +85,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 **计数**：v1 ≈ 26；v2 增 ~12；v3 增 ~5（namespace + 策略注入/遥测）；**总数 ~43**。落在"中等偏上 ~30–45"。
 
-> **调试范围（非 ABI）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**，P4 kernellog 落地后退役。真号一律 ≤ `0x85`；未知/未实现号（含调试槽退役后的引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
+> **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x85`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
 
 ## 5. 错误码
 
