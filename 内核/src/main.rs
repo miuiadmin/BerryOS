@@ -358,6 +358,43 @@ pub extern "C" fn rust_main() -> ! {
     berry_sched::spawn_intent(task_intent_slow, 0, b"it_slow", berry_sched::INTENT_BACKGROUND);
     berry_sched::spawn(task_intent_probe, 0, b"it_probe");
 
+    // ---- 4-4 fastpath/slowpath 分层验收（`IPC设计.md` §7）----
+    // 专用点对点 bench 对（方法论语：量 cycle 别拿稳态矩阵当基线——console
+    // 排队是噪声源）。fa_ping(16)/fa_pong(32) 各持一端 SEND|RECV 双权
+    //（`mk_it_chan` 只授单端单权，不适用）。prio 16/32 > 矩阵/intent 全 0 →
+    // bench 独占 CPU 至完成（ms 级；且此刻其余任务全 Ready 未睡 → SLEEPQ 只有
+    // pong 短暂在队，PI 共享表粒度零外溢）。稳态每轮：pong 先睡 wait READABLE
+    // → ping send = 检查链全过 fastpath + 直切（32>16）→ pong 醒 recv+回 send
+    //（ping 尚 Ready 未睡 → miss 走 slowpath）→ pong 循环回 wait 阻塞 → 切回
+    // ping → ping wait poll 即命中（reply 已在队）→ recv 验回显。每轮
+    // hits=1/miss=1/direct=1；ping 收尾断言三计数器 + RT（CNTVCT 差均值，
+    // 参考 cycle = ticks×1e9/CNTFRQ；TCG 先出量级、真机复测标注）打 `FAST ok`
+    //（smoke 第 20 标记）后双双 exit。
+    let mk_fast_chan = || -> (u32, u32) {
+        let hs = syscall::bootstrap_table()
+            .insert(KernelObj::Channel(
+                ChannelEnd::try_unpaired(false).expect("main: 建 fa A 端")),
+                RIGHT_SEND | RIGHT_RECV)
+            .expect("main: fa A 端进内核侧表");
+        let hr = syscall::bootstrap_table()
+            .insert(KernelObj::Channel(
+                ChannelEnd::try_unpaired(false).expect("main: 建 fa B 端")),
+                RIGHT_SEND | RIGHT_RECV)
+            .expect("main: fa B 端进内核侧表");
+        let (ps, pr) = (
+            syscall::bootstrap_table().get_raw(hs, ObjType::Channel, 0)
+                .expect("main: 取 fa A ObjRef").0,
+            syscall::bootstrap_table().get_raw(hr, ObjType::Channel, 0)
+                .expect("main: 取 fa B ObjRef").0,
+        );
+        // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+        unsafe { ChannelEnd::pair(ps, pr) };
+        (hs, hr)
+    };
+    let (h_fa, h_fb) = mk_fast_chan();
+    berry_sched::spawn_with(task_fast_ponger, h_fb as usize, b"fa_pong", 32);
+    berry_sched::spawn_with(task_fast_pinger, h_fa as usize, b"fa_ping", 16);
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -917,5 +954,123 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
     assert!(crate::telemetry::intent_budget_capped_total() >= 2,
            "it_probe: 时间帽计数须 ≥2（slow send 降级 + CH4b 结算封顶）");
     berry_hal_aarch64::uart_puts(b"I INTENT ok\n");
+    berry_sched::exit_current()
+}
+
+// ---- 4-4 fastpath/slowpath 验收 bench（表见 main 的 4-4 段注释）----
+
+/// bench 轮数：128 轮 × 每轮 µs–ms 级 = 整体 ms 级完成（prio 16/32 独占，
+/// 先于一切矩阵/intent 任务跑完退出）。
+const FAST_ROUNDS: u64 = 128;
+
+/// fa_pong（prio 32，持 B 端）：每轮 wait READABLE 阻塞（正常路径被 ping 的
+/// send fastpath 定点唤醒 + 直切上 CPU）→ recv 验 PING → 回 PONG（此刻 ping
+/// 尚 Ready 未睡 → 这条 send 恒走 slowpath，bench 的 miss 来源）。N 轮后
+/// exit——末轮回件后即退，不在 SLEEPQ 留尾。
+extern "C" fn task_fast_ponger(arg: usize) -> ! {
+    use crate::handle::SIGNAL_READABLE;
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_ONE};
+    let hb = arg as u32;
+    let mut buf = [0u8; 8];
+    for _ in 0..FAST_ROUNDS {
+        let mut now: u64 = 0;
+        // SAFETY: 本任务内核栈局部变量，活过调用。
+        let pnow = core::ptr::addr_of_mut!(now) as u64;
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "fa_pong: clock_read");
+        let mut observed = 0u64;
+        // SAFETY: 同上。
+        let pobs = core::ptr::addr_of_mut!(observed) as u64;
+        // 10s 帽兜底：断链（fastpath 漏醒）则到点 -ETIMEDOUT 断言失败 = smoke
+        // FAIL（fail loud，不静默挂死拖 DEADLINE_BOOT）。
+        assert_eq!(
+            svc6(NR_OBJECT_WAIT_ONE as u64, hb as u64, SIGNAL_READABLE,
+                 now + 10_000_000_000, pobs, 0, 0),
+            0,
+            "fa_pong: wait READABLE（ping send 定点唤醒）"
+        );
+        assert!(observed & SIGNAL_READABLE != 0, "fa_pong: observed 须含 READABLE");
+        let (mut n, mut nh): (u64, u64) = (8, 0); // 容量 in-out（recv 前备好）
+        assert_eq!(
+            svc6(NR_CHANNEL_RECV as u64, hb as u64, buf.as_mut_ptr() as u64,
+                 core::ptr::addr_of_mut!(n) as u64, 0,
+                 core::ptr::addr_of_mut!(nh) as u64, 0),
+            0,
+            "fa_pong: recv PING"
+        );
+        assert!(buf[..4] == *b"PING", "fa_pong: 载荷须 PING");
+        buf[..4].copy_from_slice(b"PONG"); // 回件换文（PING→PONG）
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, hb as u64, buf.as_ptr() as u64, 4, 0, 0, 0),
+            0,
+            "fa_pong: 回 PONG"
+        );
+    }
+    berry_sched::exit_current()
+}
+
+/// fa_ping（prio 16，持 A 端）：每轮计 t0 → send PING（fastpath 检查链全过 →
+/// 直切到 pong）→ 被切回（pong 回件后 block）→ wait poll 即命中 PONG 在队
+///（deadline=0 纯 poll——断链 -EAGAIN 秒失败）→ recv 验回显 → 累计 RT。收尾
+/// 断言三计数器（hits/miss/direct，弹性 N-2 容 tick 边角）+ 打 `FAST ok`
+///（smoke 第 20 标记）与 RT 数字（ticks 均值 + 1GHz 参考 cycle = ticks×1e9/
+/// CNTFRQ——TCG 先出量级，真机复测标注）。
+extern "C" fn task_fast_pinger(arg: usize) -> ! {
+    use crate::handle::SIGNAL_READABLE;
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_OBJECT_WAIT_ONE};
+    let ha = arg as u32;
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    let mut buf = [0u8; 8];
+    let mut rt_ticks: u64 = 0;
+    for _ in 0..FAST_ROUNDS {
+        buf[..4].copy_from_slice(b"PING");
+        let t0 = berry_hal_aarch64::timer::cntvct();
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, ha as u64, buf.as_ptr() as u64, 4, 0, 0, 0),
+            0,
+            "fa_ping: send PING（fastpath：pong 在睡等 READABLE）"
+        );
+        let mut observed = 0u64;
+        // SAFETY: 本任务内核栈局部变量，活过调用。
+        let pobs = core::ptr::addr_of_mut!(observed) as u64;
+        // poll-first 命中：pong 回件先于切回 ping 落队（确定性时序），零阻塞。
+        assert_eq!(
+            svc6(NR_OBJECT_WAIT_ONE as u64, ha as u64, SIGNAL_READABLE, 0, pobs, 0, 0),
+            0,
+            "fa_ping: wait poll 命中（PONG 已在队；断链 -EAGAIN 即 FAIL）"
+        );
+        let (mut n, mut nh): (u64, u64) = (8, 0); // 容量 in-out（recv 前备好）
+        assert_eq!(
+            svc6(NR_CHANNEL_RECV as u64, ha as u64, buf.as_mut_ptr() as u64,
+                 core::ptr::addr_of_mut!(n) as u64, 0,
+                 core::ptr::addr_of_mut!(nh) as u64, 0),
+            0,
+            "fa_ping: recv PONG"
+        );
+        assert!(buf[..4] == *b"PONG", "fa_ping: 载荷须 PONG");
+        rt_ticks += berry_hal_aarch64::timer::cntvct() - t0;
+    }
+    let (hits, miss, direct) = (
+        crate::telemetry::ipc_fast_hits(),
+        crate::telemetry::ipc_fast_misses(),
+        crate::telemetry::ipc_direct_total(),
+    );
+    assert!(hits >= FAST_ROUNDS - 2,
+            "fa_ping: fastpath 命中须 ≥N-2（实跑 {}）", hits);
+    assert!(miss >= 1, "fa_ping: slowpath 须有走数（pong 回件时 ping Ready 未睡）");
+    assert!(direct >= FAST_ROUNDS - 2,
+            "fa_ping: 直切须 ≥N-2（32>16 每轮必切；实跑 {}）", direct);
+    let avg_ticks = rt_ticks / FAST_ROUNDS;
+    let ref_cyc = avg_ticks * 1_000_000_000 / freq; // 1GHz 参考 cycle（数值 = ns）
+    berry_hal_aarch64::uart_puts(b"F FAST ok\n  rt_ticks=");
+    berry_hal_aarch64::uart_put_dec(avg_ticks);
+    berry_hal_aarch64::uart_puts(b" ref_cyc=");
+    berry_hal_aarch64::uart_put_dec(ref_cyc);
+    berry_hal_aarch64::uart_puts(b" hits=");
+    berry_hal_aarch64::uart_put_dec(hits);
+    berry_hal_aarch64::uart_puts(b" miss=");
+    berry_hal_aarch64::uart_put_dec(miss);
+    berry_hal_aarch64::uart_puts(b" direct=");
+    berry_hal_aarch64::uart_put_dec(direct);
+    berry_hal_aarch64::uart_puts(b"\n");
     berry_sched::exit_current()
 }

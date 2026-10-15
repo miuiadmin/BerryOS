@@ -16,7 +16,9 @@
 //! 收割的 handle 令牌随队列一起泄漏（refs 不减、永不释放——同安全方向）。
 //!
 //! v1 裁剪：对端关闭检测不做（需 DEAD 检测，v3——诚实缺口：send/recv 对死端
-//! 表现如常，不报 -EBADSTATE）；无 PI/fastpath（P4 分层）。
+//! 表现如常，不报 -EBADSTATE）。PI 捐赠（4-3b `内核/src/pi.rs`）与 send 侧
+//! fastpath/slowpath 分层（4-4 `sys_channel_send` 尾部 fork）已落地——本文件
+//! 只做端点/消息本体，分层决策在调用方。
 
 use crate::handle::{ObjRef, Rights};
 use alloc::vec::Vec;

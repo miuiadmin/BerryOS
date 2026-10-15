@@ -570,11 +570,30 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
     }
 }
 
+/// 单等待者唤醒内部序列（4-4 抽取）：摘队→置因→入环→唤醒遥测——`wake_matching`
+/// 的每匹配者与 fastpath 定点唤醒（[`fast_wake`]）**共用此一处**（「分层不是
+/// 特例，不长第二套」——两路唤醒序列一字不差，PI 收尾重推同样经调用方各自
+/// 发射 [`note_sleepq_changed`]）。
+///
+/// # Safety
+/// IRQ 屏蔽窗内；`t` 当前在 SLEEPQ 上（调用方契约同 `SleepQueue::unlink`——
+/// 对不在队者调用会扬掉整队）。
+unsafe fn wake_one_inner(t: NonNull<Task>) {
+    // SAFETY: 契约如上；SLEEPQ 单核顺序访问。
+    unsafe {
+        let p = t.as_ptr();
+        sleepq().unlink(t);
+        (*p).wakeup.set(WakeReason::Signaled);
+        RR.enqueue(&mut *p, rq()); // 置 Ready + 入环
+        note_wake(p, WakeReason::Signaled);
+    }
+}
+
 /// 条件方唤醒（4-0）：摘除所有「`wait_obj == obj` 且请求位与 `set_signals`
 /// 相交」的睡眠者——置 Signaled、入 runqueue（**不立即抢占**：唤醒方自身不切
 /// 换，等 tick/yield 再切；4-3a 起 pick 按 `prio_effective` 出选——被唤醒/
-/// boost 者下一轮 pick 自然优先，无优先级抢占点）。返回唤醒数。**IRQ 屏蔽窗
-/// 内调用**（signal /
+/// boost 者下一轮 pick 自然优先，无优先级抢占点；4-4 fastpath 例外——见
+/// [`try_preempt`] 的直切点）。返回唤醒数。**IRQ 屏蔽窗内调用**（signal /
 /// 数据到达路径——4-1 起 Event signal、Channel send/recv；4-0 消费者 = boot
 /// waker 验收任务）。
 ///
@@ -599,10 +618,7 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
             let key_match =
                 (*t).wait_obj == obj || (*t).wait_obj == WAIT_ANY; // 4-2b 哨兵
             if key_match && ((*t).wait_signals & set_signals) != 0 {
-                sleepq().unlink(c);
-                (*t).wakeup.set(WakeReason::Signaled);
-                RR.enqueue(&mut *t, rq()); // 置 Ready + 入环
-                note_wake(t, WakeReason::Signaled);
+                wake_one_inner(c);
                 n += 1;
             }
         }
@@ -611,6 +627,93 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
     // SAFETY: IRQ 屏蔽窗（调用方契约，见函数注释）。
     unsafe { note_sleepq_changed() };
     n
+}
+
+// ---- fastpath/slowpath 分层原语（4-4；`IPC设计.md` §7 检查链的调度侧）----
+
+/// 4-4 fastpath 检查链的 SLEEPQ 侧：找「睡单一对象 `obj` 等与 `signals` 相交
+/// 位」的等待者。`Some(t)` = 恰有一个非哨兵匹配者；`None` = 零/多个匹配者，
+/// 或队列上任一处存在 [`WAIT_ANY`] 哨兵等待者（哨兵被任何非零唤醒命中——
+/// 单点唤醒的集合 ≠ `wake_matching` 的全匹配集，一律退 slowpath 保两路语义
+/// 逐条对齐）。**IRQ 屏蔽窗内调用**；返回指针仅在**同一屏蔽窗内**有效（单核
+/// 无插队——[`fast_wake`] 的契约）。
+pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
+    if obj == 0 || signals == 0 {
+        return None;
+    }
+    let mut found: Option<NonNull<Task>> = None;
+    // SAFETY: IRQ 屏蔽窗（调用方契约）；只读遍历、不摘除。
+    unsafe {
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            if (*t).wait_obj == WAIT_ANY {
+                return None; // 哨兵在场：唤醒集不可约 → slowpath
+            }
+            if (*t).wait_obj == obj && ((*t).wait_signals & signals) != 0 {
+                if found.is_some() {
+                    return None; // 多匹配者 → slowpath（wake_matching 全摘）
+                }
+                found = Some(c);
+            }
+        }
+    }
+    found
+}
+
+/// 4-4 fastpath 定点唤醒：唤醒同窗 [`find_single_waiter`] 找到的唯一等待者
+///（内部序列与 `wake_matching` 每匹配者共用 [`wake_one_inner`] + 同款收尾
+/// PI 全图重推）。供 `sys_channel_send` fastpath 调用——检查链命中即
+/// 「一次 SLEEPQ 定点查找替代全队列匹配扫描」。
+///
+/// # Safety
+/// `t` 须为**同一 IRQ 屏蔽窗内** `find_single_waiter` 的返回值（单核无插队 ⇒
+/// 此刻仍在 SLEEPQ 上）。
+pub unsafe fn fast_wake(t: NonNull<Task>) {
+    // SAFETY: 契约如上。
+    unsafe {
+        wake_one_inner(t);
+        note_sleepq_changed();
+    }
+}
+
+/// 4-4 直切点（§7「直切投递」，seL4 direct switch 的 v1 形态）：fastpath 唤醒
+/// 后调用——若 `pick_next` 出选者 `prio_effective` **严格高于**当前任务，立即
+/// 切过去（高优等待者被投递后不必等 tick/yield 才上 CPU——4-0 唤醒「不立即
+/// 抢占」在 fastpath 的例外出口）；否则原样返回（同层 FIFO：等/低优先等待者
+/// 不因 IPC 插队——4-3a 语义）。返回是否真的发生直切。
+///
+/// **调用方保证 IRQ 屏蔽窗**（SVC 天然满足；内核任务自行 `disable_irq`）——
+/// 协议同 [`block_current`]：可从 syscall 主体中途切走（当前任务留在其内核
+/// 栈上的异常帧不动），切回点续行于此、IRQ 仍屏蔽，SVC 语境 eret 自然恢复
+/// SPSR。遥测记 `SwitchKind::Preempt`（同 tick 抢占分型；4-4 直切次数另有
+/// telemetry 专用计数器区分）。
+pub fn try_preempt() -> bool {
+    // SAFETY: 契约如上；CURRENT/RUNQUEUE 单核顺序访问。
+    unsafe {
+        let cur = CURRENT;
+        if let Some(next) = RR.pick_next(rq(), &TOPO) {
+            let next_ptr: *mut Task = next;
+            if next_ptr != cur && (*next_ptr).prio_effective > (*cur).prio_effective {
+                (*cur).state = TaskState::Ready;
+                (*next_ptr).state = TaskState::Running;
+                (*next_ptr).slice_left = hal::timer::slice_cycles();
+                // 授片即重编（同 yield_now——`调度器设计.md` §4.1 绝对截止时间
+                // 纪律）：直切即授满片，以现读 CNTVCT 重算绝对截止。
+                // SAFETY: IRQ 已屏蔽（调用方契约）；写 CNTV 系统寄存器；EL1。
+                hal::timer::arm_slice();
+                CURRENT = next_ptr;
+                activate_if_changed(cur, next_ptr);
+                note_switch(cur, next_ptr, SwitchKind::Preempt);
+                // SAFETY: IRQ 已屏蔽；prev/next 有效、不别名。
+                hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
+                // <- 被切回时续行于此（IRQ 仍屏蔽——SVC eret 自然恢复）。
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// SLEEPQ 超时扫描（`on_irq_tick` 开头调；tick 粗粒度——deadline 过后最迟一个

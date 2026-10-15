@@ -75,6 +75,8 @@
   - I/O 数据面（块/网络/图形）不走 channel 逐消息，统一 **SPSC 无锁共享环 + 批量描述符 + 单次通知**（LionsOS 模式，12号 §10.5）——与 PM 环同哲学。
   - seL4 检查链仅作思路参照（GPL，不复制代码）。
 
+> **4-4 已落地（2026-10，BerryOS v1 形态——检查链按前置对齐 #1 裁剪）**：recv 恒非阻塞（阻塞收敛到 `object_wait` 面）⇒ seL4「无队列直递」不可照搬——消息必入队。检查链 = 「无随行 handle（迁移面留 slowpath）+ 对端队列空 + `find_single_waiter` 恰一非哨兵 READABLE 等待者且全队无哨兵」→ 定点唤醒（`fast_wake`，与 `wake_matching` 每匹配者共用同一 `wake_one_inner` 序列）+ 直切判定（`try_preempt`：pick 出选者 `prio_effective` **严格高于**当前才切，seL4 direct-switch 同款；等/低不切——4-3a 同层 FIFO 不因 IPC 插队）；任一不满足 → slowpath（`wake_matching` 全匹配原样）。**两路语义恒等论证**：push 共享、错误码由共享前缀天然一致、**唤醒集恒等**（多匹配者/任一哨兵在场一律退 slowpath——单点唤醒集合恰等于全匹配集时才走快路）＝「不长第二套」。intent 增量 = 一次结构体快照（结算全在 recv slowpath），fastpath 零记账——不破线。cycle 实测：**QEMU TCG 量级参考**（专用点对点 bench：fa_ping(16)/fa_pong(32) 双端 SEND|RECV、128 轮阻塞 ping-pong，RT = send+直切+唤醒+回件+切回全程）RT ≈ 28.4k 参考 cycle（ticks×1e9/CNTFRQ；TCG 含翻译开销非真 cycle）、fastpath 命中/直切 128/128——**真机 <1200/<500 验收线留 G 卡复测标注**（TCG 出不了真 cycle，只定基线量级）。
+
 ## 8. 参照
 
 - 同步端点 + badge：seL4 endpoint、Zircon channel。
@@ -83,9 +85,9 @@
 
 ## 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1**：同步 Channel（`send/recv` + handle 迁移）+ Event 异步通知；**先用纯能力传递**做服务互联（不经 namespace）；TCB 双优先级字段随 Phase 2b 预留（§2.1 PI 前置）。（G0–G2）——**非阻塞有界队列已落地**（3-4b：空 recv -EAGAIN / 满 send -EBUSY，深度 8 / inline ≤256B / 随行 handle ≤4；阻塞等待 + PI + fastpath 随 P4）。
+- **v1**：同步 Channel（`send/recv` + handle 迁移）+ Event 异步通知；**先用纯能力传递**做服务互联（不经 namespace）；TCB 双优先级字段随 Phase 2b 预留（§2.1 PI 前置）。（G0–G2）——**非阻塞有界队列已落地**（3-4b：空 recv -EAGAIN / 满 send -EBUSY，深度 8 / inline ≤256B / 随行 handle ≤4）；阻塞等待（4-0/4-1/4-2）+ PI（4-3b）+ intent 传播（4-3c）+ fastpath/slowpath 分层（4-4）**均已随 P4 落地**。
 - **v2**：共享 VMO 零拷贝；futex 用户态同步。（G2–G3）
-- **v3**：路径式命名空间（namespace 服务 + mount）——作为可用性层后加；badge；**优先级继承语义随 P4 channel 落地（§2.1）+ fastpath/slowpath 分层（§7）**。（G3+）
+- **v3**：路径式命名空间（namespace 服务 + mount）——作为可用性层后加；badge。（优先级继承 §2.1 与 fastpath/slowpath §7 已随 P4 完成，不占 v3。）（G3+）
 
 ### Phase 4 拆步（2026-10 计划）
 
@@ -112,5 +114,7 @@
 
 > **4-3c 已落地（2026-10，intent 五件套——`进程调度/src/intent.rs` + channel/send-recv 全链，4-3 收官）**：**编码冻结**（berry_intent 随 ADR #42：0x00 UNSPECIFIED=不设限为顶（XNU 式「未声明 ≠ 声明低档」，未声明任务发消息 = 借出最强档的保守方向）/0x01 LC/0x02 交互/0x03 UTILITY（推断缺省）/0x04 BG/0x05 MAINTENANCE 冻结不启用；0x06..0x0F 保留拒绝——`intent_valid` 判别先冻结、入口治理随声明入口 syscall）。**数值约定 u8 越小档越高 → 「max(own, 借来的)」数值上即 min**。**传播机制**：消息头 `Message.meta = MsgIntent{intent, hop, acc_ns}`（内核可见元数据槽，用户不传参、recv ABI 不回写）；send fastpath = 一次结构体快照（未借入 → Fresh(declared,0,0)；借入且持有 ≤ 预算 → Forwarded(eff, hop+1, acc+持有段)；持有 > 每跳预算 → Capped 降级(declared,0,0)）——**零记账，结算全在 recv slowpath**（每消息重导 `eff = min(declared, msg_intent)`；借入生效记 TCB `intent_hop/since/acc` 作转发快照与时间帽数据源；**非单调累积** → QNX MsgReply 粘性膨胀机制上不可能；两消息之间保持 = 「server 处理该消息期间持有」，与 4-3b PI 冻结随行同义）。**三道帽**（超顶一律降级为不传播、绝不 panic）：消息链跳数 `INTENT_HOP_MAX=8`（与 PI 阻塞链轮帽 8 数值巧合、语义独立）；每跳预算 `INTENT_HOP_BUDGET_NS=50ms`（借入方持有超预算 → 转发快照降级为自己的 declared，**借入字段本身保持**——转发降级≠自身回落）；链累计 `INTENT_CHAIN_BUDGET_NS=400ms`（消息头 acc 超值 → 结算侧拒传播）。**opt-out**（五件套之 4）：`channel_create` 改 options 首参（Zircon/event_create 同形，ABI §8 修正），bit0 = `CHAN_OPT_NO_INTENT`（QNX `_NTO_CHF_FIXED_PRIORITY` 等价）→ 置位端 recv 不结算且回落 declared（含清掉他途借入）；对称建对两端同置；其余位 -EINVAL。**通胀计数器**（五件套之 5 的可观测半）：telemetry 三计数器 `intent_borrows/hop_capped/budget_capped`（IRQ 屏蔽静态计数零分配）+ 三条 uart trace 行；共享内存 VMO 不自动传播 = 机制上免费（msg_intent 只随消息走）。**v1 无调度消费点**：字段+传播机制落地，IntentProfile→latency-nice/EPP 第一消费者随 EEVDF/v2（「查表键先于消费者落地」= ADR #42 第一段形状）；既有矩阵零行为漂移（全员 declared 0x00 → min(0x00,0x00) = Own 不计数）。**ABI 迁移面**：`channel_create(options, *out0, *out1)`（regs[1..3]，不新增编号）；ktest H/F 段 3 处改参数序、spawner 模板 +1 条指令（adr 自适应安全）。验收 = boot 六内核任务全真 SVC 对打（driver(0x02) 三发 → mid(0x04) recv 借入 0x02/借入转发 hop+1/opt-out 回落 → sinkA(0x03) 收转发件 eff==0x02 且 hop==1（**mid 借入转发的活证**）→ slow(0x04) 借入后睡 200ms 超预算、send 降级装自己的 0x04 但借入保持 → sinkB(0x03) 吃两条 boot 伪造超帽消息（hop=8 恰顶/acc=400ms+1 恰超）双帽拒传播 → probe 睡 8 slice 遍历 SLEEPQ 断言四睡眠者字段 + 三计数器（borrows≥3/hop≥1/budget≥2）打 `INTENT ok`，smoke 第 19 标记）+ ktest K 段 `INTENT-K ok` 十用例（K0 编码域/K1 首手快照/K2 转发快照 hop+1 acc 累加/K3 send 侧预算帽/K4 借入生效记三源字段/K5 未声明借入最强档+弱消息每消息重导回落/K6 opt-out 清他途借入/K7 hop=8 拒 7 放行/K8 链封顶 >拒 =放行/K9 SVC options 面 bit0 可查 bit1 起拒）。**伪造消息绕过 send 直压收端队列** = 超帽样本确定性触发（boot 单线程队列必空不满）。
 | 4-4 | fastpath/slowpath 分层（§7 检查链：队列空 + 对端已在 wait → 直切投递；两路语义逐条对齐，不长第二套）+ cycle 实测（QEMU TCG 先出量级、真机复测标注） | 验收线 <1200/<500 cycle 实测复核；intent cmp+sel 增量不破线 |
+
+> **4-4 已落地（2026-10，fastpath/slowpath 分层——`进程调度/src/sched.rs` 三原语 + `内核/src/syscall.rs` send 尾部 fork + telemetry 三计数器）**：①`find_single_waiter(obj, signals)` 纯函数面（哨兵在场即 None、多匹配者 None——唤醒集不可约时整体退 slowpath）；②`fast_wake`（定点唤醒 = `wake_one_inner` + PI 全图重推，与 `wake_matching` 每匹配者逐字共用）；③`try_preempt`（直切点：协议同 `block_current`/`yield_now`——SVC 屏蔽窗内可中途切走、切回续行、eret 恢复 SPSR；授片即重编 arm_slice；遥测记 Preempt，直切次数另有 `ipc_direct` 计数器）。send 尾部：push 共享后按检查链 fork——hit = fast_wake + hit 计数 + try_preempt（切走才 direct 计数）；miss = 慢路原样（wake_matching）+ miss 计数（**快慢路配比的可观测信号**）。验收 = boot bench 对 fa_ping(16)/fa_pong(32)（`spawn_with` 双端各 SEND|RECV，稳态每轮 hits=1/miss=1/direct=1，ping 收尾断言三计数器 ≥N-2 + RT 计量打 `FAST ok`——smoke 第 20 标记）+ ktest L 段 `FAST-K ok`（L0 非法参/L1 恰一匹配指针身份/L2 双匹配退一恢复/L3 哨兵在场/L4 不相交位不挡真匹配/L5 异对象不匹配 + L6 SVC 慢路回归：无等待者 send miss+1 hit 不动、坏 handle -EBADF、recv 收回不留尾）。**ktest 纪律（新增 Gotcha）**：手搭睡眠者在 SLEEPQ 期间绝不可走 SVC send——fastpath 会把睡眠者 fast_wake 进 sched::init 前未启用的全局 RUNQUEUE + try_preempt 解引用 null CURRENT = 挂死；SVC 面只在清场后跑。cycle 数字与真机复测留位见 §7 blockquote。
 | 4-5 | 服务框架（用户态）：init/svcmgr 骨架 + 服务循环（wait READABLE → recv → 处理 → reply）；纯能力互联（3-4a bootstrap 迁移已有，namespace 留 v3）；调试槽 0xFE/0xFF 退役（user 矩阵改走真 IPC） | 里程碑：服务管理器拉起一个服务 |
 | 4-6 | Phase 4 出口：两用户态服务交换消息全链演示 + AI 最小演示（**滑移出口**：IPC/调度未稳则顺延 P5 首项，不重开 P4） | smoke 全绿 + 演示串口活证 |

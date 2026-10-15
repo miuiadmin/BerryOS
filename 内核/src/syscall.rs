@@ -955,6 +955,19 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
 /// 对端满检 → 随行值全量预检（活值 + 数组内无重复——重复值先 take 会作废后值，
 /// 回滚也换值）→ 载荷拷入 → 全量 take → 压队列。take 失败仅剩不可达防御面
 /// （预检后单核无插队），回滚重插（值或变、语义活）。
+///
+/// **4-4 fastpath/slowpath 分层**（`IPC设计.md` §7 检查链）：共享前缀（上列
+/// 全部错误面）之后按检查链 fork——「无随行 handle（迁移面留 slowpath）+
+/// 对端队列空 + 恰一个非哨兵 READABLE 等待者且无哨兵在场」全过 → fastpath
+/// 定点唤醒（`fast_wake`，与 slowpath 共用同一内部唤醒序列）+ 直切判定
+///（`try_preempt`：严格更高 eff 才切，seL4 direct switch 的 v1 形态）；
+/// 任一不满足 → slowpath（`wake_matching` 全匹配唤醒）。**两路语义逐条对齐，
+/// 不长第二套**：错误码由共享前缀天然恒等；唤醒集恒等（多匹配者/任一哨兵
+/// 在场一律退 slowpath——单点唤醒的集合恰等于全匹配集时才走快路）；消息
+/// 可见性/顺序恒等（两路都 push 对端队列，recv 侧无感知）。链项中「单次
+/// handle 查找 / 消息 ≤ inline 上限（nargs 前置检）/ 同核（v1 单核）/ 无
+/// fault 挂起（v1 无 pager）」= v1 结构性成立。intent 快照两路同代码
+/// （一次 cmp+sel，零记账——§7「intent 传播不破线」）。
 extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     let (h, bytes, nbytes, handles, nhandles) = (
         tf.regs[1] as u32,
@@ -972,10 +985,11 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    // 对端指针 + 满检（对端与本端是不同对象——pair 互指保证，&mut 无别名）。
+    // 对端指针 + 满检 + 队列空快照（4-4 检查链项——对端与本端是不同对象，
+    // pair 互指保证，&mut 无别名；满检过且此刻空 = 「队列空」链项成立）。
     // SAFETY: get_raw 已门控；对端由互钉保活（本端活 ⇒ 对端对象必在堆）；
     // 单核 IRQ 屏蔽无并发。
-    let peer_ptr = unsafe {
+    let (peer_ptr, peer_empty) = unsafe {
         let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
@@ -988,7 +1002,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         if peer_end.queue_full() {
             return ERR_BUSY as i64; // 非阻塞：满即返（阻塞等空位 = wait_one WRITABLE，4-2）
         }
-        peer
+        (peer, !peer_end.has_message())
     };
     // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。
     let mut hbuf = [0u8; CHAN_HND_MAX * 4];
@@ -1044,6 +1058,15 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             berry_hal_aarch64::uart_puts(b"intent: hop budget cap (send)\n");
         }
     }
+    // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核 IRQ
+    // 屏蔽无插队）：无随行 handle + 队列空 + 恰一个非哨兵 READABLE 等待者且
+    // 无哨兵在场 → fastpath；否则 slowpath（检查链其余项 v1 结构性成立，见
+    // 函数注释）。
+    let waiter = if nhandles == 0 && peer_empty {
+        berry_sched::find_single_waiter(peer_ptr.as_ptr() as usize, SIGNAL_READABLE)
+    } else {
+        None
+    };
     // SAFETY: peer_ptr 互钉在活；队列有界（满检过，单核无并发插队）。
     unsafe {
         let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
@@ -1051,9 +1074,25 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         };
         peer_end.push(msg);
     }
-    // 4-2：消息落对端队列 → 对端 READABLE 置位，唤醒等「对端可读」的睡眠者
-    //（键 = 对端 ObjRef 地址；等价于 Zircon send 侧的可读信号）。
-    berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
+    match waiter {
+        Some(t) => {
+            // fastpath：定点唤醒（同一内部唤醒序列 + PI 收尾重推）→ 直切判定
+            //（严格更高 eff 才切——切走后从 try_preempt 续行、IRQ 仍屏蔽）。
+            // SAFETY: t 来自同一屏蔽窗 find_single_waiter（此刻仍在 SLEEPQ 上）。
+            unsafe { berry_sched::fast_wake(t) };
+            crate::telemetry::ipc_fast_hit();
+            if berry_sched::try_preempt() {
+                crate::telemetry::ipc_direct_switch();
+            }
+        }
+        None => {
+            // slowpath：4-2 唤醒点原样——消息落对端队列 → 对端 READABLE 置位，
+            // 唤醒等「对端可读」的全部睡眠者（键 = 对端 ObjRef 地址；等价于
+            // Zircon send 侧的可读信号；无等待者时本遍历近零开销）。
+            crate::telemetry::ipc_fast_miss();
+            berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
+        }
+    }
     0
 }
 

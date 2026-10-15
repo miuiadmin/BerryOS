@@ -325,3 +325,50 @@ pub fn intent_budget_capped_total() -> u64 {
     // SAFETY: 只读。
     unsafe { INTENT_BUDGET_CAPPED }
 }
+
+// ---- 4-4 IPC fastpath/slowpath 计数器（`IPC设计.md` §7——快/慢路配比的
+// 可观测信号；IRQ 屏蔽路径静态计数，零分配）----
+
+/// fastpath 命中数（检查链全过 → 定点唤醒 + 直切判定）。
+static mut IPC_FAST_HITS: u64 = 0;
+/// slowpath 走数（检查链任一不满足 → `wake_matching` 全匹配——含「无等待者」
+/// 的常态流水线 send；配比 = 快路覆盖率）。
+static mut IPC_FAST_MISSES: u64 = 0;
+/// 直切发生数（fastpath 唤醒后 `try_preempt` 真的切走——严格更高 eff 才切）。
+static mut IPC_DIRECT: u64 = 0;
+
+/// 记一次 fastpath 命中（send 检查链全过）。
+pub fn ipc_fast_hit() {
+    // SAFETY: 写点全程 IRQ 屏蔽（syscall 主体），单核串行。
+    unsafe { IPC_FAST_HITS += 1 };
+}
+
+/// 记一次 slowpath（检查链不满足或无等待者）。
+pub fn ipc_fast_miss() {
+    // SAFETY: 同上。
+    unsafe { IPC_FAST_MISSES += 1 };
+}
+
+/// 记一次直切（`try_preempt` 切走）。
+pub fn ipc_direct_switch() {
+    // SAFETY: 同上。
+    unsafe { IPC_DIRECT += 1 };
+}
+
+/// fastpath 命中累计。
+pub fn ipc_fast_hits() -> u64 {
+    // SAFETY: 只读。
+    unsafe { IPC_FAST_HITS }
+}
+
+/// slowpath 累计。
+pub fn ipc_fast_misses() -> u64 {
+    // SAFETY: 只读。
+    unsafe { IPC_FAST_MISSES }
+}
+
+/// 直切累计。
+pub fn ipc_direct_total() -> u64 {
+    // SAFETY: 只读。
+    unsafe { IPC_DIRECT }
+}

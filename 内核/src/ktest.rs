@@ -17,6 +17,7 @@ pub fn run() {
     test_policy();
     test_pi();
     test_intent();
+    test_fast();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -1930,5 +1931,144 @@ fn test_intent() {
     let _ = (RIGHT_SEND, RIGHT_RECV); // 面上引用（rights 门控面 H 段已盖）
 
     berry_hal_aarch64::uart_puts(b"INTENT-K ok\n");
+}
+
+/// 4-4：fastpath 检查链的 SLEEPQ 侧纯函数面（`find_single_waiter`）+ send 尾部
+/// fork 的慢路回归。**ktest 纪律（sched::init 前跑）**：手搭睡眠者在 SLEEPQ
+/// 期间绝不可走 SVC send——fastpath 分支会 `fast_wake` 进尚未启用的全局
+/// RUNQUEUE + `try_preempt` 解引用 null CURRENT = 挂死；SVC 面只在清场后跑
+///（慢路分支无等待者，安全）。EL0 全链 + fastpath/直切/RT 实测在 main.rs
+/// fa_ping/fa_pong 对打（`FAST ok`）。
+#[allow(clippy::result_unwrap_used)]
+fn test_fast() {
+    use alloc::boxed::Box;
+    use berry_sched::{find_single_waiter, sleepq_insert, sleepq_unlink, Task, WAIT_ANY};
+    use crate::channel::ChannelEnd;
+    use crate::handle::{
+        KernelObj, ObjRef, ObjType, RIGHT_RECV, RIGHT_SEND, SIGNAL_READABLE,
+    };
+    use crate::syscall::{bootstrap_table, NR_CHANNEL_SEND};
+
+    /// 占位入口（手搭睡眠者永不执行；halt 兜底）。
+    extern "C" fn fast_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭睡眠者：睡 `obj` 等 `signals`（无限期），入 SLEEPQ 后返回——永不
+    /// 执行（同 test_pi 的 sleeper，砍掉 PI 侧字段）。
+    fn sleeper(obj: usize, signals: u64) -> &'static mut Task {
+        let mut t = Task::new_kernel(fast_dummy, 0, b"l_slp");
+        t.wait_obj = obj;
+        t.wait_signals = signals;
+        t.wait_deadline = u64::MAX;
+        let t: &'static mut Task = Box::leak(t);
+        sleepq_insert(t);
+        t
+    }
+
+    /// 建端点进内核侧表（返回 handle + ObjRef 地址——SVC 回归要用 handle）。
+    fn chan_end(rights: crate::handle::Rights) -> (u32, usize) {
+        let ht = bootstrap_table();
+        let h = ht
+            .insert(
+                KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("FAST：建端点")),
+                rights,
+            )
+            .expect("FAST：端点进表");
+        (h, ht.get_raw(h, ObjType::Channel, 0).expect("FAST：取端点").0.as_ptr() as usize)
+    }
+
+    // 派生位纪律照守：等 READABLE 的睡眠者 wait_obj 用真 ObjRef（本纯函数面
+    // 不解引用，但 4-3b 不变量不给测试开口子）。
+    let (ha, ea) = chan_end(RIGHT_SEND);
+    let (hb, eb) = chan_end(RIGHT_RECV);
+    {
+        let a = core::ptr::NonNull::new(ea as *mut ObjRef).expect("FAST：端点 A 指针");
+        let b = core::ptr::NonNull::new(eb as *mut ObjRef).expect("FAST：端点 B 指针");
+        // SAFETY: 两端刚 insert + get_raw——鲜活且互不重复；pair 只写 peer 并互钉。
+        unsafe { ChannelEnd::pair(a, b) };
+    }
+
+    // L0. 非法参 + 空队 → None（send 侧调用点 obj 恒真端点非 0、signals 恒
+    //     READABLE 非 0——守门是函数自包含的，纯函数面直测）。
+    assert!(find_single_waiter(ea, SIGNAL_READABLE).is_none(), "FAST：L0 空队须 None");
+    assert!(find_single_waiter(0, SIGNAL_READABLE).is_none(), "FAST：L0 obj=0 须 None");
+    assert!(find_single_waiter(ea, 0).is_none(), "FAST：L0 signals=0 须 None");
+
+    // L1. 恰一匹配 → Some（返回的正是那一个——指针身份断言）。
+    let w1 = sleeper(ea, SIGNAL_READABLE);
+    assert_eq!(
+        find_single_waiter(ea, SIGNAL_READABLE).map(|p| p.as_ptr() as usize),
+        Some(w1 as *mut Task as usize),
+        "FAST：L1 恰一匹配须返该等待者"
+    );
+
+    // L2. 双匹配者 → None（单点唤醒集 ≠ 全匹配集——退 slowpath 全摘）；
+    //     退一恢复恰一。
+    let w2 = sleeper(ea, SIGNAL_READABLE);
+    assert!(find_single_waiter(ea, SIGNAL_READABLE).is_none(), "FAST：L2 双匹配须 None");
+    sleepq_unlink(w2);
+    assert!(find_single_waiter(ea, SIGNAL_READABLE).is_some(), "FAST：L2 退一须恢复恰一");
+
+    // L3. 哨兵在场 → None（排头与否无关——漏醒哨兵 = missed wakeup，整队退
+    //     slowpath 由 wake_matching 谓词的哨兵分支兜住）。
+    let wa = sleeper(WAIT_ANY, u64::MAX);
+    assert!(find_single_waiter(ea, SIGNAL_READABLE).is_none(), "FAST：L3 哨兵在场须 None");
+    sleepq_unlink(wa);
+
+    // L4. 不相交位不算匹配、也不挡别处的唯一真匹配（user 位等合成 obj 合法
+    //     ——内核永不置位；同 obj 派生位探测与之无交集）。
+    let ux = sleeper(0x5000, 1 << 33);
+    assert!(find_single_waiter(0x5000, SIGNAL_READABLE).is_none(), "FAST：L4 不相交位不匹配");
+    assert!(find_single_waiter(ea, SIGNAL_READABLE).is_some(), "FAST：L4 不挡真匹配");
+    sleepq_unlink(ux);
+
+    // L5. obj 是匹配键的另一半：不同对象等同位 → 不匹配、不挡。
+    let w5 = sleeper(eb, SIGNAL_READABLE);
+    assert_eq!(
+        find_single_waiter(ea, SIGNAL_READABLE).map(|p| p.as_ptr() as usize),
+        Some(w1 as *mut Task as usize),
+        "FAST：L5 异对象等待者不匹配不挡"
+    );
+    sleepq_unlink(w5);
+    sleepq_unlink(w1);
+
+    // 清场（SVC 面的前提）。
+    berry_sched::for_each_sleeper(|_| panic!("FAST：清场后 SLEEPQ 须空"));
+
+    // L6. SVC 慢路回归（SLEEPQ 空——ktest 纪律前提）：无等待者 send 恒走
+    //     slowpath（miss 计数 +1、hit 不动——快慢路配比计数器的机器断言）；
+    //     fork 前半错误面不变：坏 handle -EBADF。recv 收回不留队列尾。
+    static mut LBUF: [u8; 8] = [0x46; 8];
+    let (m0, h0) = (crate::telemetry::ipc_fast_misses(), crate::telemetry::ipc_fast_hits());
+    // SAFETY: svc 同步异常；L 系列静态均本函数私有。
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, ha as u64, &raw const LBUF as u64, 8, 0, 0, 0),
+        0,
+        "FAST：L6 无等待者 send（慢路）"
+    );
+    assert_eq!(crate::telemetry::ipc_fast_misses(), m0 + 1,
+               "FAST：L6 须计 slowpath（miss +1）");
+    assert_eq!(crate::telemetry::ipc_fast_hits(), h0,
+               "FAST：L6 不得计 fastpath");
+    // SAFETY: 同上。
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, 0xDEAD_BEEF, &raw const LBUF as u64, 8, 0, 0, 0),
+        crate::handle::ERR_BAD_HANDLE as i64,
+        "FAST：L6 坏 handle 须 -EBADF（fork 前半不变）"
+    );
+    // SAFETY: 同上（recv 三出参——只取载荷，容量/handle 数照抄 H 段形制）。
+    static mut LNB: u64 = 8;
+    static mut LNH: u64 = 0;
+    static mut LHND: [u32; 4] = [0; 4];
+    assert_eq!(
+        svc6(crate::syscall::NR_CHANNEL_RECV as u64, hb as u64, &raw mut LBUF as u64,
+             &raw mut LNB as u64, &raw mut LHND as u64, &raw mut LNH as u64, 0),
+        0,
+        "FAST：L6 recv 收回（队列不留尾）"
+    );
+    let _ = (RIGHT_SEND, RIGHT_RECV); // 面上引用（rights 门控面 H 段已盖）
+
+    berry_hal_aarch64::uart_puts(b"FAST-K ok\n");
 }
 
