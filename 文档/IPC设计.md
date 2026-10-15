@@ -86,3 +86,21 @@
 - **v1**：同步 Channel（`send/recv` + handle 迁移）+ Event 异步通知；**先用纯能力传递**做服务互联（不经 namespace）；TCB 双优先级字段随 Phase 2b 预留（§2.1 PI 前置）。（G0–G2）——**非阻塞有界队列已落地**（3-4b：空 recv -EAGAIN / 满 send -EBUSY，深度 8 / inline ≤256B / 随行 handle ≤4；阻塞等待 + PI + fastpath 随 P4）。
 - **v2**：共享 VMO 零拷贝；futex 用户态同步。（G2–G3）
 - **v3**：路径式命名空间（namespace 服务 + mount）——作为可用性层后加；badge；**优先级继承语义随 P4 channel 落地（§2.1）+ fastpath/slowpath 分层（§7）**。（G3+）
+
+### Phase 4 拆步（2026-10 计划）
+
+前置设计对齐（三条，实现期不变量）：
+
+1. **阻塞语义统一收敛到 `object_wait` 面**：`channel_send/recv` 原语本身保持非阻塞（ABI 签名冻结无 flags 位）——阻塞 = 非阻塞原语 + `object_wait` 可读/可写信号（Zircon「非阻塞 channel + wait READABLE」同形；§8.3 recv 注释已预埋「等待排队留 P4 object_wait」）。
+2. **deadline 全系绝对时刻**（MONOTONIC 纳秒；`0` = poll 立即查——与 3-4c 语义无缝衔接；无「无限等」哨兵，v1 客户端传 `clock_read()+δ`）。`thread_sleep`(0x37) 同口径。
+3. **睡眠切换的 PSTATE 承接沿用现有协议**：切换恒在屏蔽窗（`context_switch` #Safety 契约）、各续行点自理解蔽（首跑 trampoline `daifclr` / yield 出口 `enable_irq` / 异常帧 eret）——`block_on` 续行段屏蔽续行到 SVC eret 自然解蔽，**零新增协议**。
+
+| 步 | 内容 | 验收 |
+|----|------|------|
+| **4-0** | 睡眠/唤醒原语（机制层）：`TaskState::Blocked` + 侵入式 `WaitQueue`（Task 预埋双向链接字段，零分配；按 `prio_effective` 插入——§2.1/§3.6 PI 前置，同优先级 FIFO）+ 受控睡眠 `block_on`（屏蔽窗内「验条件→入队→Blocked→切走」；唤醒方同窗「改条件→摘队→置 Ready 入 runqueue」——单核屏蔽窗原子 = 无丢唤醒/虚假唤醒，SMP(G2) 重做）+ tick 扫超时（粗粒度，tickless 精化留后）+ `thread_sleep`(0x37) 最小消费者 | 内核任务 sleeper/waker 对：超时自醒 + 被唤醒双路径（ktest 在 `sched::init` 前跑不能睡——验收走 boot spawn 对打 `BLOCK ok`，smoke 第 14 标记） |
+| 4-1 | 阻塞 `object_wait_one`（deadline≠0 绝对时刻阻塞；命中回写全满足集、超时 `-ETIMEDOUT`）；`object_signal` 遍历唤醒等待者 | EL0 用户进程 wait 超时/命中双路 |
+| 4-2 | wait 面 ABI v0：信号位空间（低 32 位内核对象信号 READABLE/WRITABLE + 高 32 位用户——Zircon 界；Event 用户位迁移核对）+ wait_one 扩 Channel（队列非空=READABLE / 未满=WRITABLE）+ `wait_many`(0x05) | 两进程阻塞链：send 满 → wait WRITABLE → 对端 recv 腾位唤醒 |
+| 4-3 | PI 捐赠 + intent 五件套（§2.1/§3.6：wait 阻塞方捐赠给解锁方、链式 ≤8 层不 panic、解除即回落；`msg_intent` 消息头位布局随本步 ABI v0 定、slowpath 记账、每跳预算帽 + 累计时间封顶、channel opt-out；boost 即按 effective 重排 runqueue） | 三任务链（高优 client → 慢 server ← 低优干扰者）client 唤醒延迟上界（G 卡用例） |
+| 4-4 | fastpath/slowpath 分层（§7 检查链：队列空 + 对端已在 wait → 直切投递；两路语义逐条对齐，不长第二套）+ cycle 实测（QEMU TCG 先出量级、真机复测标注） | 验收线 <1200/<500 cycle 实测复核；intent cmp+sel 增量不破线 |
+| 4-5 | 服务框架（用户态）：init/svcmgr 骨架 + 服务循环（wait READABLE → recv → 处理 → reply）；纯能力互联（3-4a bootstrap 迁移已有，namespace 留 v3）；调试槽 0xFE/0xFF 退役（user 矩阵改走真 IPC） | 里程碑：服务管理器拉起一个服务 |
+| 4-6 | Phase 4 出口：两用户态服务交换消息全链演示 + AI 最小演示（**滑移出口**：IPC/调度未稳则顺延 P5 首项，不重开 P4） | smoke 全绿 + 演示串口活证 |
