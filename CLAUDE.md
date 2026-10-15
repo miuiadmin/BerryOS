@@ -87,6 +87,8 @@ berryos/
 ## 设计文档
 
 - `文档/路线图.md` —— 宏观开发路线（Phase 0–8，每阶段一个 QEMU 里程碑）。
+- `文档/开发体验.md` —— Mac 上的运行/安装四级阶梯（QEMU 直加载 → initrd → fat:rw → 自举镜像）+ 交叉编译日常循环 + hvf/TCG 双模式；P4 G-eco / P5 shell / P6 镜像的体验路线。
+- `文档/shell设计.md` —— P5 交互 shell（bsh）：不搬 bash/zsh（GPL/fork 依赖/太重），命令三梯队（uutils MIT 基础 + 自研开发 + berryctl/powertop 独有）、channel 即 pipe、`--json` AI 友好输出。
 - `文档/调度器设计.md` —— 调度器与电源管理详细设计（机制/策略/capacity/tickless/PM 服务）。
 - `文档/架构决策.md` —— 全部决策的单一事实来源（ADR）。
 - `文档/能力模型设计.md` —— 纯能力 + Zircon handle。
@@ -98,7 +100,7 @@ berryos/
 - `文档/安全与硬件隔离设计.md` —— IOMMU/SMMU + PAC/BTI/MTE + 度量启动（能力安全的硬件后盾）。
 - `文档/可观测性设计.md` —— day-one 内置 tracing（静态点 + per-CPU 无锁环 + trace 服务）。
 - `文档/文件系统设计.md` —— FAT 仅 MVP；目标现代 FS（CoW/日志/校验）。
-- `文档/架构综合纲领.md` —— **综合视角（博采众长不杂糅）**：六个参考（Redox/Theseus/rCore/hubris/seL4/Zircon）的取/留、矛盾矩阵 10 轴的唯一 PICK、防杂糅的排除 8 问。借鉴任何参考前先读。
+- `文档/架构综合纲领.md` —— **综合视角（博采众长不杂糅）**：六个参考（Redox/Theseus/rCore/hubris/seL4/Zircon）的取/留、矛盾矩阵 10 轴的唯一 PICK、防杂糅的排除 8 问；开篇 §0 系统四层速览图（层/目录/时点 + 两条微内核铁律）。借鉴任何参考前先读。
 
 ## 语言策略与 syscall 边界（全 Rust）
 
@@ -111,7 +113,7 @@ berryos/
 约定：
 - **`unsafe` 策略**：`unsafe` 收敛到小块——页表、上下文切换/寄存器保存、MMIO、分配器、硬件原子操作；外层包安全 API。内核 = "安全 Rust 外壳 + 小 unsafe 核"。
 - Rust 侧绝不持有跨 syscall 边界的引用生命周期假设；跨越边界的数据按拥有的/复制的传递。
-- 公共 ABI（`bos_*` + 结构）用 `#[repr(C)]`，内核与 `bos-sys` 镜像同步（见 `系统调用ABI设计.md`）。
+- 公共 ABI（`berry_*` + 结构）用 `#[repr(C)]`，内核与 `berry-sys` 镜像同步（见 `系统调用ABI设计.md`）。
 
 ## ARM64 目标约定
 
@@ -174,7 +176,7 @@ just check / just clean
 - **用户页表叶必须 nG=1，全量失效用 `tlbi vmalle1is`**：`tlbi aside1*` 按号失效**够不着 global 项**（boot 块描述符全 nG=0）——用户叶不标 nG 则同 VA 映射跨 ASID 经 TLB 泄漏；退役/回卷要清 global 项只能全量 `vmalle1is`（`aside1all` 不是真实指令，设计文档 §5.2 原写法已更正）。
 - **2b-4 起 EL0 异常走 lower-EL 向量 0x400（sync）/0x480（IRQ）**，帧宏 `save/load_frame_el0` 与 current-EL 版**仅 `sp` 槽差异**（存取 **SP_EL0** = 用户 SP；异常自 EL0 入 EL1 硬件强制 SPsel=1，帧仍落内核栈）。不变量：**EL0 运行期间 SP_EL1 留着本任务内核栈位置**（trampoline/上下文切换装入），lower-EL 异常入口才能精确落回该栈。
 - **3-1 起 syscall 错误一律错误码自理、永不杀调用者**：未知/越界/未实现编号 → `-ENOTSUP`，坏 handle → `-EBADF`，EL0/EL1 同权（ABI §8.0「永不 panic」承诺的内核执法；2b-4「畸形号杀」临时政策已撤——杀只留给 CPU 故障：D-abort/I-abort/BRK 走 `user_fault_exit`）。用户页 AP=0b01 且未设 UXN = **用户页当前可执行**（NX/只读档留 v2）。
-- **内核字节串 `b"..."` 只能 ASCII**：塞中文直接编译错，且下游 crate 可能耗旧 rlib 报出**误导性错误**（如 "cannot find xxx in crate bos_sched"）——见到莫名符号缺失先查上游 crate 真实编译输出；中文文案用 `println!`/`uart_puts(str.as_bytes())` 路径。
+- **内核字节串 `b"..."` 只能 ASCII**：塞中文直接编译错，且下游 crate 可能耗旧 rlib 报出**误导性错误**（如 "cannot find xxx in crate berry_sched"）——见到莫名符号缺失先查上游 crate 真实编译输出；中文文案用 `println!`/`uart_puts(str.as_bytes())` 路径。
 - **2b-4 起时间片按周期数记账**（`slice_left` 存 CNTVCT 周期、tick 按增量扣减）：TCG 的 2× tick 率效应原样继承（观测仍 ~5Hz/slice），行为与 tick 计数版一致。
 - **`FrameAllocator::alloc()` 返回 PFN 不是 PA**（PA = pfn << PAGE_SHIFT），且帧内容不保证干净（buddy 只管元数据）——新页先清零再用。
 - **3-2 起映射中 VMO 的「销毁性 close」拒 -EBUSY、别名 close 放行**：只有 refs==1（本次 close 会 drop 对象）且 mapcnt>0 才拒；dup 出的别名 close 不死对象、正常放行——写成「映射中一律拒」会把合法别名链（RO dup→close RO）误伤（3-2 调试期实踩）。decommit 同理拒映射中页；`Vmo::Drop` 对映射中页只泄漏。
@@ -183,6 +185,6 @@ just check / just clean
 - **user_good 的 3-2 验收链是一次性的**（进稳态循环前跑一遍）：14 位代号经不起循环 create/close 耗 gen；改链时记住 `movz x3,#0x2018` 槽基会被 commit 步的 len 参数借走，须重载（曾因此把 pattern 写进自己代码页 0x1008——恰好自洽没炸，纯运气）。
 - **spawner 内嵌子代码的 `movz x4, #<len>` 必须精确等于子模板字节数**（3-4b 起 324 = 81 指令）：改子模板后重数指令（每行字符串 = 1 指令 ×4B）再改常量——拷多带尾随零垃圾、拷少截断尾部，两种错都静默（vmo_write 只管拷不管语义）。ktest 的 `svc6` 是 nr+6 参共 7 形参——5 参 syscall（channel_send/recv 等）末尾要补 0 占位（3-4b 实踩 22 处）。
 - **用户模板 svc 后复用参数寄存器，先想清值是什么**（3-4a 实踩）：派发只回写 x0、x1..x6 保留的是**你传进去的参数值**——vmo_read 后拿缓冲地址要用 x2（buf 参数），拿 x3 得到的是 offset（=0，野读被杀，watchdog `杀数 2 > 1` panic 拦下）。套路口诀：哪个寄存器装的什么，svc 前后一个样。
-- **3-3 起内核对象间跨界引用必须 `ObjRef::retain/release` 钉住**（Thread 钉 Process、Process 钉 root Vmar、运行中任务钉 Process）：只存裸指针 = 父 handle 关光后 use-after-free。Drop 链（close→drop Thread→release Process→drop Process→release Vmar）纯指针操作不回表，无重入。另一边界：**ktest 在 `bos_sched::init` 之前跑 → 任何会 spawn 的成功路径（如 process_start）不能在 ktest 验**，只能盖参数/归属/状态错误面，happy path 交 EL0 用户进程 + watchdog 错杀断言兜底。
+- **3-3 起内核对象间跨界引用必须 `ObjRef::retain/release` 钉住**（Thread 钉 Process、Process 钉 root Vmar、运行中任务钉 Process）：只存裸指针 = 父 handle 关光后 use-after-free。Drop 链（close→drop Thread→release Process→drop Process→release Vmar）纯指针操作不回表，无重入。另一边界：**ktest 在 `berry_sched::init` 之前跑 → 任何会 spawn 的成功路径（如 process_start）不能在 ktest 验**，只能盖参数/归属/状态错误面，happy path 交 EL0 用户进程 + watchdog 错杀断言兜底。
 - **用户模板可用 `adr` 取同页内嵌数据**（3-3 spawner 的子代码字节）：自相对寻址整块搬迁后偏移不变，与「仅局部数字标号 + movz 绝对地址」的拷贝安全约定同源——但仅限**同页**内（adr ±1MiB 且不得跨模板边界引用）。
 - 微内核里"把东西塞进内核"是反模式 —— 先问：这能不能做成用户态服务？
