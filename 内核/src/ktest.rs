@@ -44,12 +44,12 @@ fn test_syscall() {
     // A. 调试 echo 往返（G0 原始判据；0xFE 调试槽，非 ABI）。
     assert_eq!(svc4(NR_DEBUG_ECHO as u64, 0x5a, 0, 0), 0x5a, "SYSCALL：echo 往返");
 
-    // B. 未知号（越界 0x99）与未实现真号（object_wait_many 0x05，P4 阻塞等待
-    //    同批）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言
-    //    （3-2 起 0x11 已实现、3-4c 起 0x04/0x06/0x54 已实现，未实现样本换 0x05）。
+    // B. 未知号（越界 0x99）与未实现真号（process_exit 0x33，进程退出路径随后续
+    //    步）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言
+    //    （3-2 起 0x11、3-4c 起 0x04/0x06/0x54、4-2b 起 0x05 已实现，样本换 0x33）。
     assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
     assert_eq!(
-        svc4(0x05, 0, 0, 0),
+        svc4(0x33, 0, 0, 0),
         -95,
         "SYSCALL：未实现真号须 -ENOTSUP"
     );
@@ -636,8 +636,11 @@ fn test_syscall() {
     //    user_waiter 三路 + waker2，见 main.rs/user.rs）；4-2 位空间 = Event
     //    用户位迁高 32 半（U1/U2/U3）+ 低 32 位拒面 + wait 面扩 Channel（I7）。
     use crate::handle::{RIGHT_DUPLICATE, RIGHT_SIGNAL, SIGNAL_READABLE, SIGNAL_WRITABLE};
-    use crate::syscall::{NR_EVENT_CREATE, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE};
+    use crate::syscall::{NR_EVENT_CREATE, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE};
     static mut I_OBS: u64 = 0; // *observed 出参
+    static mut WM_H: [u32; 2] = [0; 2]; // wait_many handles 入参数组
+    static mut WM_S: [u64; 2] = [0, 0]; // wait_many signals 入参数组
+    static mut WM_IDX: u64 = 0; // *idx 出参
     // 4-2 位空间：Event 用户位一律高 32 半（低 32 位内核派生保留——I6 拒面）。
     const U1: u64 = 1 << 33;
     const U2: u64 = 1 << 34;
@@ -891,6 +894,87 @@ fn test_syscall() {
     // 清场（两端 close——互钉环泄漏，channel.rs 安全向政策；队内消息无令牌）。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw0 as u64, 0, 0), 0, "SYSCALL：close hw0");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw1 as u64, 0, 0), 0, "SYSCALL：close hw1");
+
+    // I8. 4-2b wait_many 错误面 + poll 面（真睡归 ponger 稳态 MANY 验收，user.rs）：
+    //     面序：n=0 / n=17 → -EINVAL；数组内坏 handle → -EBADF（首错透传）；
+    //     poll 未命中 -EAGAIN 且 *idx 留预清哨兵 u64::MAX；远古 deadline →
+    //     -ETIMEDOUT 不睡（同 I1 纪律——ktest 在 sched::init 前不能睡）；命中 →
+    //     *idx = 入参序最前命中项 + *observed = 该对象全满足集。
+    // SAFETY: svc 同步异常；WM_* 为本函数私有静态（I7 已清场，无别名）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_EVENT_CREATE as u64, 0, &raw mut OUT as u64, 0),
+        0,
+        "SYSCALL：wait_many 用例 event_create"
+    );
+    let hw_ev = unsafe { OUT } as u32;
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, hw_ev as u64, 0, U1),
+        0,
+        "SYSCALL：wait_many 用例置 U1"
+    );
+    unsafe { WM_IDX = 0 };
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+             &raw const WM_S as u64, 0, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+        -22,
+        "SYSCALL：n=0 须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+             &raw const WM_S as u64, 17, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+        -22,
+        "SYSCALL：n>16 须 -EINVAL"
+    );
+    // SAFETY: 数组布置：首项坏 handle（3 号槽典型野值）——解析即拒、首错透传。
+    unsafe { WM_H = [3, hw_ev]; WM_S = [U1, U1] };
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+             &raw const WM_S as u64, 2, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+        -9,
+        "SYSCALL：数组内坏 handle 须 -EBADF"
+    );
+    // poll 未命中（U1 已置、请求 U2）→ -EAGAIN；idx 留预清哨兵 u64::MAX。
+    // SAFETY: 同上。
+    unsafe { WM_H = [hw_ev, hw_ev]; WM_S = [U2, U2]; WM_IDX = 0 };
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+             &raw const WM_S as u64, 2, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：poll 未命中须 -EAGAIN"
+    );
+    assert_eq!(unsafe { WM_IDX }, u64::MAX, "SYSCALL：未命中 idx 须留哨兵 MAX");
+    // SAFETY: 同上（远古 deadline——「已过点立即返」路径，不睡）。
+    unsafe { WM_IDX = 0 };
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+             &raw const WM_S as u64, 2, 1, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+        -110,
+        "SYSCALL：到点未命中须 -ETIMEDOUT"
+    );
+    // 命中序：首项请求 U2（未置）、次项 U1（已置）→ idx=1；再交换 → idx=0
+    //（入参序最前命中项，两向活证）。
+    // SAFETY: 同上。
+    unsafe { WM_H = [hw_ev, hw_ev]; WM_S = [U2, U1]; WM_IDX = 0; I_OBS = 0 };
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+             &raw const WM_S as u64, 2, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：次项命中须返 0"
+    );
+    assert_eq!(unsafe { WM_IDX }, 1, "SYSCALL：idx 须指次项");
+    assert_eq!(unsafe { I_OBS }, U1, "SYSCALL：observed 须该对象全满足集");
+    // SAFETY: 同上。
+    unsafe { WM_S = [U1, U2]; WM_IDX = 0; I_OBS = 0 };
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+             &raw const WM_S as u64, 2, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：首项命中须返 0"
+    );
+    assert_eq!(unsafe { WM_IDX }, 0, "SYSCALL：idx 须指首项（入参序最前）");
+    // 清场。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw_ev as u64, 0, 0), 0, "SYSCALL：close hw_ev");
 
     berry_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }

@@ -61,9 +61,9 @@ use core::ptr::NonNull;
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;
-/// 3-4c 落地：poll-only（deadline≠0 → -ENOTSUP；阻塞排队留 P4）。
+/// 4-1 阻塞化（poll-first + 醒来重验 + -ETIMEDOUT）；4-2 扩 Event|Channel。
 pub const NR_OBJECT_WAIT_ONE: usize = 0x04;
-#[allow(dead_code)] // 多对象等待（P4 阻塞等待同批）
+/// 4-2b 落地：任一命中 → *idx + *observed；WAIT_ANY 哨兵睡眠。
 pub const NR_OBJECT_WAIT_MANY: usize = 0x05;
 /// 3-4c 落地：v1 仅 Event 可 signal（thread/process 信号面随后续步）。
 pub const NR_OBJECT_SIGNAL: usize = 0x06;
@@ -1307,12 +1307,147 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
     ret
 }
 
+/// `object_wait_many(handles, signals, n, deadline, *idx, *observed)`（4-2b）：
+/// 等 n 个对象中**任一**满足 `current & signals[i] != 0`。命中 → `*idx = i`
+/// （入参序——多对象同时就绪取最前）+ `*observed = 该对象全满足集`，返 0；
+/// poll（`deadline==0`）未命中 -EAGAIN；`deadline≠0` 未命中睡到点 -ETIMEDOUT。
+/// wait 面（Event|Channel）/位空间/醒来重验/睡眠钉住纪律与
+/// [`sys_object_wait_one`] 同源——钉住 = **全部**对象各 retain 一次、唯一出口
+/// 逐个 release。
+///
+/// **[`berry_sched::WAIT_ANY`] 哨兵**：Task 只有单一 `wait_obj` 匹配键，多对象
+/// 等待者挂哨兵——任何对象的 wake_matching 都命中（虚假唤醒由重验循环兜底；
+/// v1 等待者个位数，全队列误醒开销可忽略）。
+///
+/// n ∈ [1, [`WAIT_MANY_MAX`]=16]（栈上定长数组零分配、no-panic；越界 -EINVAL）。
+/// handles/signals 两数组**先整段拷入内核栈**再解析（copy_from_user 界检整段
+/// 走查；syscall 全程 IRQ 屏蔽 → 校验与解析间无 TOCTOU）。数组内重复 handle
+/// 合法（各项独立 retain/release，引用计数守恒）。
+/// wait_many 的 n 上限（ABI §8.3；栈上定长数组零分配的边界——v1 无堆路径，
+/// 16 与 Zircon 同量级）。
+const WAIT_MANY_MAX: usize = 16;
+
+extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
+    let (handles_p, signals_p, n, deadline, idx_p, observed_p) = (
+        tf.regs[1],
+        tf.regs[2],
+        tf.regs[3] as usize,
+        tf.regs[4],
+        tf.regs[5],
+        tf.regs[6],
+    );
+    let el1 = caller_is_el1(tf);
+    if n == 0 || n > WAIT_MANY_MAX {
+        return ERR_INVALID_ARG as i64;
+    }
+    // 出参预清（失败路径调用方拿确定值；命中覆盖为真值。idx=usize::MAX=未命中）。
+    if let Err(e) = copy_out_u64(el1, observed_p, 0).and_then(|()| copy_out_u64(el1, idx_p, u64::MAX)) {
+        return e as i64;
+    }
+    let deadline_vct = if deadline != 0 {
+        match ns_to_vct(deadline) {
+            Some(v) => v,
+            None => return ERR_NOT_SUPPORTED as i64, // 频率不可读（真机异常）
+        }
+    } else {
+        0
+    };
+    // 两数组整段拷入（同 channel_send 的随行值拷入模式：字节缓冲 + 逐项小端拼）。
+    let mut hraw = [0u8; WAIT_MANY_MAX * 4];
+    if let Err(e) = copy_from_user(el1, handles_p, &mut hraw[..n * 4]) {
+        return e as i64;
+    }
+    let mut sraw = [0u8; WAIT_MANY_MAX * 8];
+    if let Err(e) = copy_from_user(el1, signals_p, &mut sraw[..n * 8]) {
+        return e as i64;
+    }
+    let mut hbuf = [0u32; WAIT_MANY_MAX];
+    for i in 0..n {
+        hbuf[i] = u32::from_le_bytes([
+            hraw[i * 4],
+            hraw[i * 4 + 1],
+            hraw[i * 4 + 2],
+            hraw[i * 4 + 3],
+        ]);
+    }
+    let mut sbuf = [0u64; WAIT_MANY_MAX];
+    for i in 0..n {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&sraw[i * 8..i * 8 + 8]);
+        sbuf[i] = u64::from_le_bytes(b);
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 解析全部对象（Event|Channel 双类型，同 wait_one；wait 不需权利位）；任一
+    // 失败 = 整体拒绝、首错透传——此时尚无 retain，无回滚面。
+    let mut objs: [Option<NonNull<ObjRef>>; WAIT_MANY_MAX] = [None; WAIT_MANY_MAX];
+    for i in 0..n {
+        let o = match t.get_raw(hbuf[i], ObjType::Event, 0) {
+            Ok((o, _)) => o,
+            Err(e) => match t.get_raw(hbuf[i], ObjType::Channel, 0) {
+                Ok((o, _)) => o,
+                Err(_) => return e as i64,
+            },
+        };
+        objs[i] = Some(o);
+    }
+    // 钉住全部对象一次、覆盖全部睡眠轮次（wait_one 纪律的多数组版——睡眠期间
+    // 全表 handle 被关光也不销毁）。
+    for o in objs[..n].iter().flatten() {
+        // SAFETY: 活对象（表内 handle 钉着）。
+        unsafe { (*o.as_ptr()).retain() };
+    }
+    let ret = loop {
+        // 逐项重验（醒来从头扫——醒因 ≠ 结果；多对象同时就绪取入参序最前者）。
+        let mut hit: Option<Result<(usize, u64), i64>> = None;
+        for i in 0..n {
+            let o = objs[i].unwrap();
+            // SAFETY: 钉住在身对象必活；只读（signal/send/recv 写路径与本读点
+            // 同为屏蔽串行）。
+            let Some(current) = (unsafe { signal_state(o) }) else {
+                hit = Some(Err(ERR_BAD_HANDLE as i64)); // 不可达防御面
+                break;
+            };
+            if current & sbuf[i] != 0 {
+                hit = Some(Ok((i, current)));
+                break;
+            }
+        }
+        match hit {
+            Some(Ok((i, current))) => {
+                break match copy_out_u64(el1, idx_p, i as u64)
+                    .and_then(|()| copy_out_u64(el1, observed_p, current))
+                {
+                    Ok(()) => 0,
+                    Err(e) => e as i64,
+                };
+            }
+            Some(Err(code)) => break code, // 防御面 -EBADF
+            None => {}                     // 全未命中 → 走睡眠/超时判定
+        }
+        if deadline == 0 {
+            break ERR_AGAIN as i64; // poll 语义（同 wait_one）
+        }
+        // SAFETY: 只读 CNTVCT。
+        if deadline_vct <= berry_hal_aarch64::timer::cntvct() {
+            break ERR_TIMEDOUT as i64; // 到点未命中（含传入即已过——不睡）
+        }
+        // 哨兵 + 全位掩码：任何对象的任何新置位都唤醒本任务，醒来重验定夺。
+        let _reason =
+            berry_sched::block_current(berry_sched::WAIT_ANY, !0, deadline_vct);
+    };
+    for o in objs[..n].iter().flatten() {
+        // SAFETY: 与上面的 retain 成对（唯一出口）；release 后不再触 obj。
+        unsafe { ObjRef::release(*o) };
+    }
+    ret
+}
+
 // ---- boot 期注册（rust_main 在 ktest 之前调用；HAL install 见其 # Panics）----
 
 /// 注册已实现号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 + channel 三号 +
 /// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号；4-1 wait_one
-/// 阻塞化 / 4-2 wait 面扩 Channel 均为改板（非新号，仍 23 号）。0x05 wait_many
-/// 与 0x33/0x35/0x36 退出随后续步）。
+/// 阻塞化 / 4-2 wait 面扩 Channel 均为改板；4-2b 加 wait_many(0x05) = **24 号**。
+/// 0x33/0x35/0x36 退出随后续步）。
 /// 未列号走 HAL 默认 `-ENOTSUP`。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
@@ -1320,6 +1455,7 @@ pub fn install() {
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate);
     reg(NR_HANDLE_REPLACE, sys_handle_replace);
     reg(NR_OBJECT_WAIT_ONE, sys_object_wait_one);
+    reg(NR_OBJECT_WAIT_MANY, sys_object_wait_many);
     reg(NR_OBJECT_SIGNAL, sys_object_signal);
     reg(NR_CLOCK_READ, sys_clock_read);
     reg(NR_VMO_CREATE, sys_vmo_create);

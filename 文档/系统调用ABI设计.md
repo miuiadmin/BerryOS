@@ -244,8 +244,13 @@ berry_status_t berry_object_wait_many(const berry_handle_t *handles,
                                   const uint64_t *signals, size_t n,
                                   berry_time_t deadline,
                                   size_t *idx, uint64_t *observed);
-                               /* P4 阻塞等待批（4-2b）：命中 *idx=命中间序 +
-                                  *observed=该对象全满足集；WAIT_ANY 哨兵留档 */
+                               /* 4-2b 落地：等 n∈[1,16] 对象任一命中——*idx=入参
+                                  序最前命中项 + *observed=该对象全满足集；poll
+                                  （deadline==0）未命中 -EAGAIN / 到点 -ETIMEDOUT
+                                  （同 wait_one 口径）；睡眠挂 WAIT_ANY 哨兵
+                                  （berry_sched::WAIT_ANY——任何对象的唤醒都命中，
+                                  醒来重验兜底）；数组内重复 handle 合法（各项独立
+                                  钉住）；坏 handle 首错透传 -EBADF */
 berry_status_t berry_object_signal(berry_handle_t h, uint64_t clear, uint64_t set);
                                /* signals=(s&~clear)|set；门控 RIGHT_SIGNAL；
                                   仅 Event（thread/process 信号面随后续步）；

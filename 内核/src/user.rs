@@ -706,13 +706,18 @@ core::arch::global_asm!(
     ".globl __user_pinger_end",
     "__user_pinger_end:",
 
-    // 4-2 ponger：channel 阻塞链的 EL0 消费者验收。入口 x0 = 本进程表里的
-    // endB handle（boot 直插 RIGHT_RECV）。循环：recv → 空 -EAGAIN →
-    // wait_one(READABLE, now+10s) 阻塞（pinger send 唤醒）→ 醒来重 recv（重验
-    // ——必命中）；收到 → 验 PING 载荷低 32 位（数据完整性）→ 节流打 'P'。
-    // 任一步非预期（超时/载荷错）→ 自陷被杀（pinger 侧 wait 随之超时 → CHAIN
-    // 缺失）。槽：0x2008 时钟、0x2010 observed、0x2020 收件 buf、0x2028/0x2030
-    // 容量 in-out（自复原型：载荷恒 8B/0 handle）、0x2038 随行数组。
+    // 4-2 ponger：channel 阻塞链的 EL0 消费者验收；4-2b 稳态等待改
+    // **wait_many**（0x05——多对象等待）。入口 x0 = 本进程表里的 endB handle
+    //（boot 直插 RIGHT_RECV；表内另有一枚 boot 直插的哑 Event——只入数组、
+    // 永不 signal，作为 wait_many「多对象里挑命中项」的对照项）。循环：recv →
+    // 空 -EAGAIN → wait_many([endB:READABLE, evt:1<<32], now+10s) 阻塞（pinger
+    // send 唤醒）→ 醒来核 *idx==0（命中 endB——哑 Event 位永不置、idx==1 即断链）
+    // → 首次打 `MANY ok`（smoke 第 17 标记）→ 重 recv（重验——必命中）→ 验 PING
+    // 载荷低 32 位 → 节流打 'P'。任一步非预期（超时/载荷错/idx 错）→ 自陷被杀
+    //（pinger 侧 wait 随之超时 → CHAIN 缺失）。槽：0x2008 时钟、0x2010 observed、
+    // 0x2020 收件 buf、0x2028/0x2030 容量 in-out（自复原型：载荷恒 8B/0 handle）、
+    // 0x2038 随行数组、0x2040 handles 数组（endB + 哑 Event——boot 断言
+    // 0x0001_0002 定值）、0x2050 signals 数组、0x2060 idx、0x2068 首圈旗标。
     ".balign 16",
     ".globl __user_ponger",
     "__user_ponger:",
@@ -721,6 +726,18 @@ core::arch::global_asm!(
     "    movz x5, #0x2028",
     "    str  x4, [x5]",
     "    str  xzr, [x5, #8]",
+    "    movz x4, #0x2040",             // wait_many handles[2]：endB + 哑 Event
+    "    str  w20, [x4]",
+    "    movz x5, #2",                  // 哑 Event handle = 0x0001_0002（boot 断言定值）
+    "    movk x5, #1, lsl #16",
+    "    str  w5, [x4, #4]",
+    "    movz x5, #0x2050",             // wait_many signals[2]：READABLE + 1<<32（永不置）
+    "    movz x6, #1",
+    "    str  x6, [x5]",
+    "    movz x6, #1, lsl #32",
+    "    str  x6, [x5, #8]",
+    "    movz x7, #0x2068",             // 首圈旗标槽（显式清零——新页不保证净）
+    "    str  xzr, [x7]",
     "    movz x8, #0x0E10",             // PING 低 32 位常驻（载荷比对）
     "    movk x8, #0xE000, lsl #16",
     "    movz x9, #0x30, lsl #16",      // 节流阈值
@@ -743,14 +760,31 @@ core::arch::global_asm!(
     "    movz x3, #0xE400",             // δ = 1e10 ns（10s）
     "    movk x3, #0x540B, lsl #16",
     "    movk x3, #0x2, lsl #32",
-    "    add  x3, x5, x3",
-    "    movz x0, #0x04",               // wait_one(endB, READABLE, deadline, *obs)
-    "    mov  x1, x20",
-    "    movz x2, #1",                  // SIGNAL_READABLE（内核派生位）
-    "    movz x4, #0x2010",
+    "    add  x4, x5, x3",              // deadline = now + 10s
+    "    movz x0, #0x05",               // wait_many(0x2040, 0x2050, 2, deadline,
+    "    movz x1, #0x2040",             //          *idx=0x2060, *obs=0x2010)
+    "    movz x2, #0x2050",
+    "    movz x3, #2",
+    "    movz x5, #0x2060",
+    "    movz x6, #0x2010",
     "    svc  #0",                      // 阻塞 → pinger send 唤醒重验
     "    cbnz x0, 3f",                  // 超时 = pinger 断供 FAIL
-    "    b    0b",                      // 醒来重 recv（重验——必命中）
+    "    movz x4, #0x2060",
+    "    ldr  x6, [x4]",
+    "    cbnz x6, 3f",                  // idx≠0 = 命中哑 Event = 断链（永不 signal）
+    "    ldr  x11, [x7]",               // 首圈打 MANY ok，此后直接重验
+    "    cbnz x11, 6f",
+    "    movz x11, #1",
+    "    str  x11, [x7]",
+    "    adr  x5, 4f",                  // banner 字节（同页 adr——拷贝安全同 spawner）
+    "    movz x6, #8",
+    "5:  ldrb w1, [x5], #1",
+    "    movz x0, #0xFF",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    subs x6, x6, #1",
+    "    b.ne 5b",
+    "6:  b    0b",                      // 醒来重 recv（重验——必命中）
     "1:  ldr  w6, [x2]",                // 载荷低 32 位（x2 = buf 地址，派发保留）
     "    cmp  w6, w8",
     "    b.ne 3f",
@@ -766,6 +800,8 @@ core::arch::global_asm!(
     "3:  movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀 → CHAIN 缺失 = smoke FAIL
     "    ldr  x5, [x4]",
     "    b    .",
+    "4:  .ascii \"MANY ok\\n\"",
+    "    .balign 4",                   // 尾部补齐（模板长度须 4 字节对齐）
     ".globl __user_ponger_end",
     "__user_ponger_end:",
 );

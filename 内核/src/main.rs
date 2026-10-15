@@ -218,6 +218,17 @@ pub extern "C" fn rust_main() -> ! {
     );
     // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
     unsafe { ChannelEnd::pair(pa, pb) };
+    // 4-2b：哑 Event 进 ponger 表——wait_many 稳态等待的对照项（只入数组、
+    // 永不 signal；等 1<<32 位 = 永不命中）。boot 直插定值断言：ponger 模板把
+    // 该 handle 硬编为 0x0001_0002（表内第 2 插 = 槽 2/代号 1）——表序有变须同步
+    // 模板（断言即防线，错值 → wait_many -EBADF → ponger 自陷被杀 → MANY 缺失）。
+    let h_evt_ponger = ht_ponger
+        .insert(KernelObj::Event(crate::event::Event::new()), RIGHT_SIGNAL)
+        .expect("main: 哑 Event 进 ponger 表");
+    assert_eq!(
+        h_evt_ponger, 0x0001_0002,
+        "main: ponger 表哑 Event 须为槽 2/代号 1（ponger 模板硬编码依赖）"
+    );
     berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
                           b"user_pinger", up_pinger.ttbr0_pa, up_pinger.asid,
                           ht_pinger as *mut HandleTable as usize);

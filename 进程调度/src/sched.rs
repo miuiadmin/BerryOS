@@ -311,6 +311,11 @@ unsafe fn note_wake(t: *mut Task, reason: WakeReason) {
 
 // ---- 睡眠/唤醒原语（4-0；`IPC设计.md` 阶段化目标 Phase 4 拆步表步 4-0）----
 
+/// `wait_many` 的等待键哨兵（4-2b）：Task 只有单一 `wait_obj` 匹配键，多对象
+/// 等待者挂本哨兵——`wake_matching` 对其「任何对象、任何新置位」都命中，醒来
+/// 由调用方重验循环定夺（虚假唤醒无害；v1 等待者个位数，全队列误醒开销可忽略）。
+pub const WAIT_ANY: usize = usize::MAX;
+
 /// 全局睡眠队列（SLEEPQ）：侵入式双向 + 按 `wait_deadline` 升序（最近到期在头
 /// ——超时扫描头未到期即早停）。
 ///
@@ -480,6 +485,10 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
 ///
 /// `obj == 0` 非法（0 = 纯 sleep，只能超时自醒）——直接返回 0。纯 sleep 者
 /// `wait_signals == 0`，与任何掩码不相交，本就不会被误摘。
+///
+/// [`WAIT_ANY`] 等待者（wait_many，4-2b）无条件命中任何 `set_signals != 0` 的
+/// 唤醒——醒来重验归调用方（哨兵 ≠ 真对象地址，永不与 `obj` 相等，靠谓词的
+/// 哨兵分支命中）。
 pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
     if obj == 0 {
         return 0;
@@ -492,7 +501,9 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
-            if (*t).wait_obj == obj && ((*t).wait_signals & set_signals) != 0 {
+            let key_match =
+                (*t).wait_obj == obj || (*t).wait_obj == WAIT_ANY; // 4-2b 哨兵
+            if key_match && ((*t).wait_signals & set_signals) != 0 {
                 sleepq().unlink(c);
                 (*t).wakeup.set(WakeReason::Signaled);
                 RR.enqueue(&mut *t, rq()); // 置 Ready + 入环
