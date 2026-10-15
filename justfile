@@ -45,6 +45,16 @@ host := `rustc -vV | sed -n 's/^host: //p'`
 test-host:
     cargo test -p bos-mm --target {{host}}
 
+# 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
+# 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
+# 只报数不设门禁——阈值等基线稳定后再定（Tock 192KB 教训）。
+size: build
+    python3 工具链/size.py {{KERNEL}}
+
+size-release:
+    cargo build --release
+    python3 工具链/size.py {{KERNEL_RELEASE}}
+
 # 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
 smoke: build
