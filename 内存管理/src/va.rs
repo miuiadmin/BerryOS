@@ -5,7 +5,7 @@
 //! x86_64 最小集 = 0 → 恒等，行为不变）。架构无关代码**绝不** baked `VA == PA`，
 //! 统一走这里——换架构/换布局只改注入值，不改调用方。
 //!
-//! 平台 RAM 几何（RAM_BASE/RAM_TOP）属 HAL（arch 层），见 `bos_hal_aarch64`；
+//! 平台 RAM 几何（RAM_BASE/RAM_TOP）属 HAL（arch 层），见 `berry_hal_aarch64`；
 //! 帧分配器在构造时由调用方传入 `ram_top`。
 
 use core::sync::atomic::{AtomicUsize, Ordering};

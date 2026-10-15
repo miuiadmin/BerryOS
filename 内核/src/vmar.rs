@@ -14,9 +14,9 @@
 
 use crate::vmo::{zero_frame, Vmo};
 use alloc::vec::Vec;
-use bos_hal_aarch64 as hal;
-use bos_mm::frame::FrameAllocator;
-use bos_mm::va::{phys_to_virt, PAGE_SIZE};
+use berry_hal_aarch64 as hal;
+use berry_mm::frame::FrameAllocator;
+use berry_mm::va::{phys_to_virt, PAGE_SIZE};
 
 /// 用户 VA 上界：T0SZ=25 → TTBR0 区 = `[0, 2^39)`。
 pub const USER_VA_TOP: usize = 1 << 39;

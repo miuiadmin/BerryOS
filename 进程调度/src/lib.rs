@@ -1,4 +1,4 @@
-//! bos-sched —— 调度器核心（架构无关 Rust + HAL 的 TaskContext/switch）。
+//! berry-sched —— 调度器核心（架构无关 Rust + HAL 的 TaskContext/switch）。
 //!
 //! Phase 2a Step 2 落地的是**类型骨架**：`Task` / `Runqueue` / `Topo` /
 //! `SchedClass`(trait) / `RoundRobin`。能编、最小运行时；Step 3 起接调度循环。

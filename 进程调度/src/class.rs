@@ -2,7 +2,7 @@
 
 use crate::runqueue::{Runqueue, Topo};
 use crate::task::{Task, TaskState};
-use bos_hal_aarch64 as hal;
+use berry_hal_aarch64 as hal;
 use core::ptr::NonNull;
 
 /// 调度策略接口（**冻结**——签名一字不改，见 `调度器设计.md` §3.2 / plan）。

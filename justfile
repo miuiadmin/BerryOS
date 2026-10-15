@@ -44,9 +44,9 @@ clean:
 # 故这里显式找 ~/.cargo/bin/rustc，找不到再退回 PATH 里的 rustc。
 host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.cargo/bin/rustc" -vV || rustc -vV; } | sed -n 's/^host: //p'`
 
-# host 单元测试：bos-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）。
+# host 单元测试：berry-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）。
 test-host:
-    cargo test -p bos-mm --target {{host}}
+    cargo test -p berry-mm --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

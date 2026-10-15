@@ -11,7 +11,7 @@
 use crate::class::{RoundRobin, SchedClass};
 use crate::runqueue::{Runqueue, Topo};
 use crate::task::{Task, TaskState};
-use bos_hal_aarch64 as hal;
+use berry_hal_aarch64 as hal;
 use core::ptr::addr_of_mut;
 
 /// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康

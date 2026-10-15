@@ -1,4 +1,4 @@
-//! bos-kernel —— BerryOS 内核镜像。
+//! berry-kernel —— BerryOS 内核镜像。
 //!
 //! Phase 2a Step 6（里程碑）：两内核任务在 CNTV 定时器上**抢占式分时**。`on_irq_tick`
 //! 经 IRQ 派发槽被调，做真 `tick`（减 slice_left）+ 归 0 则 `pick_next` + `switch`。
@@ -34,7 +34,7 @@ struct UartWriter;
 
 impl core::fmt::Write for UartWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        bos_hal_aarch64::uart_puts(s.as_bytes());
+        berry_hal_aarch64::uart_puts(s.as_bytes());
         Ok(())
     }
 }
@@ -50,7 +50,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
     // PanicMessage 实现了 Display（1.95 起 message() 不再返回 Option）。
     let _ = writeln!(UartWriter, "  {}", info.message());
-    bos_hal_aarch64::halt();
+    berry_hal_aarch64::halt();
 }
 
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
@@ -58,21 +58,21 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
     // 2b-1：注入 direct map 基址——必须先于任何 phys_to_virt 消费者（mm/heap）。
-    bos_mm::va::set_kernel_va_base(bos_hal_aarch64::KERNEL_VA_BASE);
-    bos_hal_aarch64::init();
-    bos_hal_aarch64::uart_puts(b"BerryOS boot\n");
+    berry_mm::va::set_kernel_va_base(berry_hal_aarch64::KERNEL_VA_BASE);
+    berry_hal_aarch64::init();
+    berry_hal_aarch64::uart_puts(b"BerryOS boot\n");
 
     // 2b-0：TTBR1 高半表自校验（RAM 魔数 + GIC PIDR2 双别名，见 HAL `mmu`）。
     // 不过 = 高半翻译未生效，2b-1 重链前必须在此暴露——panic 停机优于带病前进。
-    if !bos_hal_aarch64::kva_ok() {
+    if !berry_hal_aarch64::kva_ok() {
         panic!("KVA alias check failed: TTBR1 high-half not translating");
     }
-    bos_hal_aarch64::uart_puts(b"KVA ok\n");
+    berry_hal_aarch64::uart_puts(b"KVA ok\n");
 
     // 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何
     // 访问必然 fault（ktest ASPACE 用例正向断言）；UART/GIC MMIO 已走高半直映，
     // 内核对低半零依赖。回退开关见 HAL `mmu::RETIRE_IDENTITY`。
-    bos_hal_aarch64::retire_low_half();
+    berry_hal_aarch64::retire_low_half();
 
     // SAFETY: 启动单线程、`rust_main` 入口仅调用一次。
     unsafe { mm::init() };
@@ -85,7 +85,7 @@ pub extern "C" fn rust_main() -> ! {
 
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
-    unsafe { bos_hal_aarch64::timer::init() };
+    unsafe { berry_hal_aarch64::timer::init() };
 
     // 2b-2：两忙循环任务各挂一个私有地址空间——timer 抢占切任务 = 切 TTBR0/ASID
     // （switch 路径真 churn），任务体每次打印节流点自证私有页内容（隔离金丝雀）。
@@ -98,9 +98,9 @@ pub extern "C" fn rust_main() -> ! {
     ));
 
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
-    bos_sched::init();
-    bos_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
-    bos_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
+    berry_sched::init();
+    berry_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
+    berry_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
 
     // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡。good 打 'u'
     // （syscall 往返在 EL0 生效的活证）；rogue_ptr 野指针自作死 → 只死自己
@@ -138,30 +138,30 @@ pub extern "C" fn rust_main() -> ! {
         .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
         .expect("main: 插 root Vmar 进 good 表");
 
-    bos_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
+    berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
                           b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
-    bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+    berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid, tag_rogue);
-    bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+    berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid, tag_abuser);
     // 3-3/3-4 验收：spawner 经真 syscall 创建第二个进程；process_start 的
     // bootstrap 迁移把「礼物 VMO」handle 送进子进程表（子入口 x0 收到后读出
     // 魔数自证——跨进程能力流动，见 user.rs spawner 模板注释）。
-    bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+    berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
-    bos_sched::spawn(user::watchdog, 0, b"watchdog");
+    berry_sched::spawn(user::watchdog, 0, b"watchdog");
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
-    bos_hal_aarch64::set_irq_dispatch(bos_sched::on_irq_tick);
-    bos_hal_aarch64::set_user_fault_exit(bos_sched::user_fault_exit);
+    berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
+    berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
-    unsafe { bos_hal_aarch64::timer::arm_slice() };
-    bos_hal_aarch64::enable_irq();
-    bos_sched::yield_now(); // idle(main) 让出 → task_a；timer 每 slice 抢占切到 task_b → A/B 交替。
+    unsafe { berry_hal_aarch64::timer::arm_slice() };
+    berry_hal_aarch64::enable_irq();
+    berry_sched::yield_now(); // idle(main) 让出 → task_a；timer 每 slice 抢占切到 task_b → A/B 交替。
     // 不可达（忙循环任务不退出）；防御兜底：若被切回则进 tickless idle。
-    bos_sched::idle_loop();
+    berry_sched::idle_loop();
 }
 
 /// 忙循环任务 A（Step 5/6 demo）：纯忙转、不打 yield——证 timer 驱动。
@@ -179,7 +179,7 @@ extern "C" fn task_a(arg: usize) -> ! {
             // SAFETY: 读自身 AS 的私有页（Normal 映射）；错值非安全问题是正确性问题。
             let v = unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) };
             assert_eq!(v, magic, "task_a AS 隔离破坏：私有页读到对端内容");
-            bos_hal_aarch64::uart_puts(b"A");
+            berry_hal_aarch64::uart_puts(b"A");
         }
     }
 }
@@ -195,7 +195,7 @@ extern "C" fn task_b(arg: usize) -> ! {
             // SAFETY: 同 task_a。
             let v = unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) };
             assert_eq!(v, magic, "task_b AS 隔离破坏：私有页读到对端内容");
-            bos_hal_aarch64::uart_puts(b"B");
+            berry_hal_aarch64::uart_puts(b"B");
         }
     }
 }

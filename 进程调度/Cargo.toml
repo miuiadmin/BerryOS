@@ -1,13 +1,13 @@
 [package]
-name = "bos-sched"
+name = "berry-sched"
 edition.workspace = true
 version.workspace = true
 
 [lib]
-name = "bos_sched"
+name = "berry_sched"
 path = "src/lib.rs"
 
 # 依赖 HAL（TaskContext/switch）+ alloc。仅 aarch64-unknown-none 构建（HAL 有 ARM
 # global_asm，不在 host 测）；调度逻辑正确性靠 QEMU demo（Step 3/6）+ ktest 验证。
 [dependencies]
-bos-hal-aarch64 = { path = "../架构相关/aarch64" }
+berry-hal-aarch64 = { path = "../架构相关/aarch64" }

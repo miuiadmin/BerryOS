@@ -33,8 +33,8 @@
 use crate::aspace::alloc_asid;
 use crate::vmar::{Perm, Vmar};
 use crate::vmo::Vmo;
-use bos_mm::frame::FrameAllocator;
-use bos_mm::va::PAGE_SIZE;
+use berry_mm::frame::FrameAllocator;
+use berry_mm::va::PAGE_SIZE;
 
 /// 用户 VA 布局（每个用户进程同构）：code @0x1000、data @0x2000、stack @
 /// [0x3000, 0x4000)。全 UserRw、可执行（无 NX——v2 批次开，见安全设计）。
@@ -605,32 +605,32 @@ impl UserProcess {
 /// 破坏）或超时未达成 → panic（系统停 = 关卡失败）。
 pub extern "C" fn watchdog(_arg: usize) -> ! {
     const TRIES: u32 = 2_000;
-    let mut last_puts = bos_hal_aarch64::syscall::user_putcnt();
-    let mut last_switches = bos_sched::switches();
+    let mut last_puts = berry_hal_aarch64::syscall::user_putcnt();
+    let mut last_switches = berry_sched::switches();
     for _ in 0..TRIES {
         // 忙等一拍（无 sleep 原语——Phase 4 通知落地前的土法；轮到别的任务跑）。
         for _ in 0..200_000 {
             core::hint::spin_loop();
         }
-        let kills = bos_sched::user_kills();
-        let puts = bos_hal_aarch64::syscall::user_putcnt();
-        let switches = bos_sched::switches();
+        let kills = berry_sched::user_kills();
+        let puts = berry_hal_aarch64::syscall::user_putcnt();
+        let switches = berry_sched::switches();
         if kills > 1 {
             panic!("G1.5 FAIL: 杀数 {} > 1（abuser/good 被误杀 = 错误码政策或验收链破坏）", kills);
         }
         if kills == 1 {
             // 杀对了人才能过关：kills==1 但死的是 good/abuser（如 3-2 验收链断链
             // 自陷）不算 PASS——只认 rogue_ptr。
-            if bos_sched::last_killed() != b"user_rogue_ptr".as_slice() {
+            if berry_sched::last_killed() != b"user_rogue_ptr".as_slice() {
                 panic!("G1.5 FAIL: 错杀（须只杀 rogue_ptr；死者看上一条 kill dump）");
             }
             if puts > last_puts && switches > last_switches {
-                bos_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
-                bos_sched::exit_current()
+                berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
+                berry_sched::exit_current()
             }
         }
         last_puts = puts;
         last_switches = switches;
     }
-    panic!("G1.5 FAIL: 超时（kills={} puts={}）", bos_sched::user_kills(), last_puts);
+    panic!("G1.5 FAIL: 超时（kills={} puts={}）", berry_sched::user_kills(), last_puts);
 }

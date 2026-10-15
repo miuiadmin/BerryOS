@@ -2,7 +2,7 @@
 //!
 //! Phase 3-0：纯内核层——尚无 syscall 接线（3-1 起 v1 27 号经此门控），本步
 //! ktest `HANDLE ok` 验证语义，外部行为零变化（语义用例见 `ktest::test_handle`；
-//! 内核 bin 是 no_std 无 host test 入口，bos-mm 式 host 单测不适用）。
+//! 内核 bin 是 no_std 无 host test 入口，berry-mm 式 host 单测不适用）。
 //!
 //! - handle = **槽位号[15:0] | 代号 gen[29:16]**（bit31 预留类型编码，v2 可选，
 //!   `系统调用ABI设计.md` §8.1）。`0` = 非法（槽 0 恒空）。
@@ -22,12 +22,12 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 
-/// handle（`bos_handle_t`，u32；位域见模块注释）。
+/// handle（`berry_handle_t`，u32；位域见模块注释）。
 pub type Handle = u32;
-/// rights（`bos_rights_t`，u64 位掩码）。
+/// rights（`berry_rights_t`，u64 位掩码）。
 pub type Rights = u64;
 
-// ---- rights 位（`系统调用ABI设计.md` §8.2，数值冻结；镜像 bos-sys）----
+// ---- rights 位（`系统调用ABI设计.md` §8.2，数值冻结；镜像 berry-sys）----
 // EXECUTE/MAP/… 消费者在 3-2（vmo_map 门控）/3-4（channel/event）落地——
 // 位表是 ABI 冻结值，先全量定义（内核 bin 无 cfg(test)，dead_code 需显式豁免）。
 pub const RIGHT_READ: Rights = 1 << 0;
@@ -50,7 +50,7 @@ pub const RIGHT_RECV: Rights = 1 << 9;
 #[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
 pub const RIGHT_MANAGE: Rights = 1 << 10;
 pub const RIGHT_SET_POLICY: Rights = 1 << 11;
-/// `handle_duplicate`「取原权利全集」哨兵（= `BOS_RIGHT_SAME_RIGHTS`，全 1）。
+/// `handle_duplicate`「取原权利全集」哨兵（= `BERRY_RIGHT_SAME_RIGHTS`，全 1）。
 pub const RIGHTS_SAME: Rights = u64::MAX;
 
 // ---- 错误码（ABI §8.2 数值冻结，posix-ish 负数；3-1 syscall 层共用）----
@@ -106,7 +106,7 @@ fn decode_gen(h: Handle) -> u32 {
 /// （调用者收错误码却已永久丢失合法能力）。
 const RESERVED_MASK: Handle = 0xC000_0000;
 
-/// 对象类型（镜像 `bos_obj_type` 枚举值，ABI §8.2 冻结）。
+/// 对象类型（镜像 `berry_obj_type` 枚举值，ABI §8.2 冻结）。
 /// Process/Channel 等暂无构造点——3-3/3-4 增补对象时启用，全表先冻结在册。
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -247,7 +247,7 @@ enum SlotState {
 ///
 /// 单核顺序访问（v1 无 SMP；IRQ 上下文不碰表——syscall 均同步异常路径）。
 pub struct HandleTable {
-    /// 槽 0 恒 `Free`（handle 0 = `BOS_HANDLE_INVALID`）。
+    /// 槽 0 恒 `Free`（handle 0 = `BERRY_HANDLE_INVALID`）。
     slots: Vec<SlotState>,
 }
 
@@ -462,7 +462,7 @@ impl HandleTable {
         }
     }
 
-    /// 取最低可用空槽下标（槽 0 永久保留给 `BOS_HANDLE_INVALID`，从 1 起找；
+    /// 取最低可用空槽下标（槽 0 永久保留给 `BERRY_HANDLE_INVALID`，从 1 起找；
     /// **跳过代号耗尽的槽**——`next_gen > GEN_MASK` 的空槽过不了 `take_gen`，
     /// 选中即白堵一个插入位，3b3 审查 H3；无可用槽且未满则尾插）。
     fn alloc_slot(&mut self) -> Result<usize, i32> {

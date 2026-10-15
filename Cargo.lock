@@ -3,25 +3,25 @@
 version = 4
 
 [[package]]
-name = "bos-hal-aarch64"
+name = "berry-hal-aarch64"
 version = "0.1.0"
 
 [[package]]
-name = "bos-kernel"
+name = "berry-kernel"
 version = "0.1.0"
 dependencies = [
- "bos-hal-aarch64",
- "bos-mm",
- "bos-sched",
+ "berry-hal-aarch64",
+ "berry-mm",
+ "berry-sched",
 ]
 
 [[package]]
-name = "bos-mm"
+name = "berry-mm"
 version = "0.1.0"
 
 [[package]]
-name = "bos-sched"
+name = "berry-sched"
 version = "0.1.0"
 dependencies = [
- "bos-hal-aarch64",
+ "berry-hal-aarch64",
 ]

@@ -3,7 +3,7 @@
 //! 单核、无抢占（G0）下同步直跑；断言失败 → panic（panic handler 打消息 + file:line:col；
 //! CPU 异常寄存器/PC/ESR/FAR dump 在 HAL `trap::exception_sync`）。SMP（G2）后需每核隔离。
 
-use bos_mm::va::{phys_to_virt, PAGE_SHIFT};
+use berry_mm::va::{phys_to_virt, PAGE_SHIFT};
 
 pub fn run() {
     test_gic();
@@ -14,7 +14,7 @@ pub fn run() {
     test_aspace();
     test_vmo();
     test_handle();
-    bos_hal_aarch64::uart_puts(b"ktest done\n");
+    berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
 }
@@ -34,8 +34,8 @@ fn test_syscall() {
         bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_VMO_CREATE,
     };
     use crate::vmo::Vmo;
-    use bos_hal_aarch64::syscall::NR_DEBUG_ECHO;
-    use bos_mm::va::PAGE_SIZE;
+    use berry_hal_aarch64::syscall::NR_DEBUG_ECHO;
+    use berry_mm::va::PAGE_SIZE;
 
     // out 参数缓冲（内核地址；EL1 调用方 → copy_out 走高半直映区）。
     static mut OUT: u64 = 0;
@@ -253,7 +253,7 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hchild as u64, 0, 0), 0, "SYSCALL：close 子 vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm as u64, 0, 0), 0, "SYSCALL：close root vmar");
 
-    // F. 3-3 process/thread：对象面 + 错误面（ktest 在 bos_sched::init 之前跑，
+    // F. 3-3 process/thread：对象面 + 错误面（ktest 在 berry_sched::init 之前跑，
     //    process_start 成功路径会 spawn → 不能在此验——happy path 由 EL0
     //    `user_spawner` 承担，watchdog 错杀断言兜底）。
     use crate::syscall::{NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE};
@@ -629,7 +629,7 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "SYSCALL：close hc0");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "SYSCALL：close hc1");
 
-    bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
+    berry_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
 
 /// `svc #0` 四参往返（ktest 专用）：x0=nr（进）/ret（出）、x1..x3=参。
@@ -693,19 +693,19 @@ fn svc6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64 {
 
 /// Step 7 信号：GICv2 配置读回自检（IRQ27/CNTV：启用 + 优先级 + distributor/CPUif 开）。
 fn test_gic() {
-    assert!(bos_hal_aarch64::gic::verify(), "GIC IRQ27 配置读回不符");
-    bos_hal_aarch64::uart_puts(b"GIC ok\n");
+    assert!(berry_hal_aarch64::gic::verify(), "GIC IRQ27 配置读回不符");
+    berry_hal_aarch64::uart_puts(b"GIC ok\n");
 }
 
 /// Step 6 信号：注入 `brk` → 同步异常（current-EL SPx @0x200）→ exception_sync
 /// dump 寄存器/PC/ESR/FAR → BRK 可恢复（ELR+=4）→ eret 返回。
 /// 见 `ktest done` 之后的 `=== EXCEPTION ... BRK recover ... [exc] brk recovered`。
 fn test_exc() {
-    bos_hal_aarch64::uart_puts(b"\n[exc] inject brk #0x42\n");
+    berry_hal_aarch64::uart_puts(b"\n[exc] inject brk #0x42\n");
     // SAFETY: brk 触发同步异常（EC=0x3C）；exception_sync dump 后跳过本指令、eret 返回。
     // DAIF 屏蔽不影响同步异常（brk 非 IRQ）。
     unsafe { core::arch::asm!("brk #0x42", options(nostack, preserves_flags)) };
-    bos_hal_aarch64::uart_puts(b"[exc] brk recovered (eret ok)\n");
+    berry_hal_aarch64::uart_puts(b"[exc] brk recovered (eret ok)\n");
 }
 
 /// 帧分配器往返 + 读写哨兵 + 回收 + 合并。
@@ -738,7 +738,7 @@ fn test_frame() {
     let big = f.alloc_order(5).expect("FRAME alloc_order(5) 合并失败");
     f.free(big, 5).expect("FRAME free big");
 
-    bos_hal_aarch64::uart_puts(b"FRAME ok\n");
+    berry_hal_aarch64::uart_puts(b"FRAME ok\n");
 }
 
 /// 内核堆（`alloc` crate / slab）：slab 路径（Vec 增长 + realloc）+ 整页路径（> 2KiB）。
@@ -763,12 +763,12 @@ fn test_heap() {
     drop(big);
     drop(big2);
 
-    bos_hal_aarch64::uart_puts(b"HEAP ok\n");
+    berry_hal_aarch64::uart_puts(b"HEAP ok\n");
 }
 
 // ---- Phase 2a Step 1：上下文切换 asm 乒乓（无调度器、无 IRQ）----
 
-use bos_hal_aarch64::task::TaskContext;
+use berry_hal_aarch64::task::TaskContext;
 
 /// 16 对齐的 4KiB 内核栈（`new_kernel` 要求栈顶 16 对齐——风险 R2）。
 #[repr(C, align(16))]
@@ -787,13 +787,13 @@ extern "C" fn switch_ping_fn(_arg: usize) -> ! {
     // SAFETY: 当前 DAIF 屏蔽（boot 起 IRQ 未解蔽，ktest 在 enable_irq 之前），
     // 满足 context_switch 的 `PSTATE.I==1` 不变式。两 ctx 不别名。
     unsafe {
-        bos_hal_aarch64::uart_puts(b"PING ");
-        bos_hal_aarch64::task::context_switch(
+        berry_hal_aarch64::uart_puts(b"PING ");
+        berry_hal_aarch64::task::context_switch(
             &raw mut SWITCH_CTX_OTHER,
             &raw const SWITCH_CTX_MAIN,
         );
     }
-    bos_hal_aarch64::halt();
+    berry_hal_aarch64::halt();
 }
 
 /// Step 1 信号：构造 OTHER(`new_kernel` 指向 `switch_ping_fn`) → 从 MAIN 切到 OTHER
@@ -807,20 +807,20 @@ fn test_switch() {
         SWITCH_CTX_OTHER = TaskContext::new_kernel(switch_ping_fn, 0, stack_top);
         // 从当前（MAIN）切到 OTHER：当前 callee-saved+sp 落 SWITCH_CTX_MAIN，
         // 载 SWITCH_CTX_OTHER → 经 trampoline 进 switch_ping_fn。
-        bos_hal_aarch64::task::context_switch(
+        berry_hal_aarch64::task::context_switch(
             &raw mut SWITCH_CTX_MAIN,
             &raw const SWITCH_CTX_OTHER,
         );
         // <- switch_ping_fn 切回 SWITCH_CTX_MAIN 时续行于此。
     }
-    bos_hal_aarch64::uart_puts(b"TASK ok\n");
+    berry_hal_aarch64::uart_puts(b"TASK ok\n");
 }
 
 /// 2b-2：每进程页表 + ASID 互切 + 低半退役正向断言（`内存管理设计.md` §5.1 第 3 步）。
 /// 低半退役本身在 `rust_main` 早期已完成（`retire_low_half`），本用例验证其效果。
 fn test_aspace() {
     use crate::aspace::MiniAspace;
-    use bos_hal_aarch64 as hal;
+    use berry_hal_aarch64 as hal;
 
     const MAGIC_A: u64 = 0x00A5_C0DE_0000_0001;
     const MAGIC_B: u64 = 0x00B6_C0DE_0000_0002;
@@ -848,9 +848,9 @@ fn test_aspace() {
 
     // 低半退役**正向断言**：读已退役的身份地址必须 fault 且可恢复。
     // arm 期望故障 → ldr（若低半仍有映射则不 fault → 槽仍武装 → 断言失败）。
-    hal::trap::arm_expected_fault(bos_hal_aarch64::RAM_BASE);
+    hal::trap::arm_expected_fault(berry_hal_aarch64::RAM_BASE);
     // SAFETY: 预期同步异常（期望故障槽已 arm，FAR 命中即恢复）；值本身无意义。
-    let _ = unsafe { core::ptr::read_volatile(bos_hal_aarch64::RAM_BASE as *const u64) };
+    let _ = unsafe { core::ptr::read_volatile(berry_hal_aarch64::RAM_BASE as *const u64) };
     assert!(
         !hal::trap::fault_armed(),
         "ASPACE：低半读居然没 fault——身份映射没退役干净"
@@ -859,9 +859,9 @@ fn test_aspace() {
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
 
-    bos_hal_aarch64::uart_puts(b"ASPACE ok (asid=");
-    bos_hal_aarch64::uart_put_dec(width as u64);
-    bos_hal_aarch64::uart_puts(b"b, low-half faulted)\n");
+    berry_hal_aarch64::uart_puts(b"ASPACE ok (asid=");
+    berry_hal_aarch64::uart_put_dec(width as u64);
+    berry_hal_aarch64::uart_puts(b"b, low-half faulted)\n");
 }
 
 /// 2b-3：匿名 VMO/Vmar 六操作（create/commit/map/unmap/protect/allocate，
@@ -872,8 +872,8 @@ fn test_vmo() {
     use crate::aspace::{alloc_asid, USER_VA};
     use crate::vmar::{Perm, Vmar, VmarError};
     use crate::vmo::{Vmo, VmoError};
-    use bos_hal_aarch64 as hal;
-    use bos_mm::va::PAGE_SIZE;
+    use berry_hal_aarch64 as hal;
+    use berry_mm::va::PAGE_SIZE;
 
     const MAGIC: u64 = 0x00C0_FFEE_0000_0033;
     const MAGIC2: u64 = 0x00C0_FFEE_0000_0044;
@@ -948,7 +948,7 @@ fn test_vmo() {
 
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
-    bos_hal_aarch64::uart_puts(b"VMO ok\n");
+    berry_hal_aarch64::uart_puts(b"VMO ok\n");
 }
 
 /// 3-0：handle 表 + rights 语义（`能力模型设计.md` §2/§4，决策 #28 位域）——
@@ -963,7 +963,7 @@ fn test_handle() {
         RIGHTS_SAME,
     };
     use crate::vmo::Vmo;
-    use bos_mm::va::PAGE_SIZE;
+    use berry_mm::va::PAGE_SIZE;
 
     // handle 位域（handle.rs 私有实现，此处按 ABI §8.1 注释断言：低 16 位槽号）。
     const SLOT_MASK: u32 = 0xFFFF;
@@ -1063,5 +1063,5 @@ fn test_handle() {
     ht.close(h2b).expect("HANDLE：close h2b");
     ht.close(h4).expect("HANDLE：close h4");
 
-    bos_hal_aarch64::uart_puts(b"HANDLE ok\n");
+    berry_hal_aarch64::uart_puts(b"HANDLE ok\n");
 }

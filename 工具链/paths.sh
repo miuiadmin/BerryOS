@@ -32,7 +32,7 @@ berryos_target_dir() {
 berryos_kernel() {
   local td
   td="$(berryos_target_dir)" || return 1
-  echo "$td/aarch64-unknown-none/${1:-debug}/bos-kernel"
+  echo "$td/aarch64-unknown-none/${1:-debug}/berry-kernel"
 }
 
 # 直接执行时按参数出路径；被 source 时不做任何事（只定义函数）。

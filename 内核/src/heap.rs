@@ -19,7 +19,7 @@
 
 use alloc::alloc::{GlobalAlloc, Layout};
 use alloc::boxed::Box;
-use bos_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
+use berry_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
 use core::cell::UnsafeCell;
 use core::ptr;
 

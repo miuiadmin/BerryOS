@@ -4,9 +4,9 @@
 
 use crate::vmar::{Perm, Vmar};
 use crate::vmo::Vmo;
-use bos_mm::asid::AsidAllocator;
-use bos_mm::frame::FrameAllocator;
-use bos_mm::va::PAGE_SIZE;
+use berry_mm::asid::AsidAllocator;
+use berry_mm::frame::FrameAllocator;
+use berry_mm::va::PAGE_SIZE;
 
 /// 测试/任务私有页的低半 VA（页 1——Vmar root 管辖界 `[0x1000, USER_VA_TOP)`，
 /// 页 0 留作 NULL 解引用保护区，2b-4 起对用户禁 0 页）。
@@ -21,11 +21,11 @@ pub fn alloc_asid() -> u16 {
     unsafe {
         let slot = &raw mut ASIDS;
         if (*slot).is_none() {
-            *slot = Some(AsidAllocator::new(bos_hal_aarch64::asid_bits()));
+            *slot = Some(AsidAllocator::new(berry_hal_aarch64::asid_bits()));
         }
         let (asid, rolled) = (*slot).as_mut().unwrap().alloc();
         if rolled {
-            bos_hal_aarch64::flush_all_asid();
+            berry_hal_aarch64::flush_all_asid();
         }
         asid
     }

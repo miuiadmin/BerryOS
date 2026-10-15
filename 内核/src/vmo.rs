@@ -7,13 +7,13 @@
 //!
 //! 放置说明（与 ADR #29「直接落 `内存管理/`」的偏差，已记设计文档落地记录）：
 //! VMO 是内核对象（Ziron 务实派，ADR #4），页记账 `Vec` 需堆——落 `内核/`
-//! 对象层；物理页仍走 bos-mm `FrameAllocator`，bos-mm 保持 no-alloc/no-HAL
+//! 对象层；物理页仍走 berry-mm `FrameAllocator`，berry-mm 保持 no-alloc/no-HAL
 //! 纯度（host 可测核心不因对象壳失守）。5 类后备/PageInfo 重构时再评估下沉。
 //!
 //! 全 API 返回 `Result`（syscall 边界无 panic 纪律——Phase 3 直接折状态码）。
 
-use bos_mm::frame::FrameAllocator;
-use bos_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
+use berry_mm::frame::FrameAllocator;
+use berry_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
 
 /// VMO 错误。
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

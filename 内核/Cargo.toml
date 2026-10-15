@@ -1,15 +1,15 @@
 [package]
-name = "bos-kernel"
+name = "berry-kernel"
 edition.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "bos-kernel"
+name = "berry-kernel"
 path = "src/main.rs"
 
 [dependencies]
-bos-hal-aarch64 = { path = "../架构相关/aarch64" }
-bos-mm = { path = "../内存管理" }
-bos-sched = { path = "../进程调度" }
+berry-hal-aarch64 = { path = "../架构相关/aarch64" }
+berry-mm = { path = "../内存管理" }
+berry-sched = { path = "../进程调度" }
 
 [build-dependencies]

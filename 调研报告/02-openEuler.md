@@ -100,7 +100,7 @@ src/core/kernel/
 ## 7. 对 BerryOS 的借鉴与警示（对照四支柱）
 
 **微内核支柱**
-- 借鉴：UniProton 的 `src/kal/posix` KAL 分层——内核原生 API 与 POSIX 兼容层解耦，与 BerryOS「自有 ABI + POSIX 兼容库」完全同构，可对照其 `src/include/uapi` 与 `src/include/posix` 的头文件组织方式设计 bos-sys 镜像；其「单进程多线程、task 即线程」的裁剪也说明：轻量系统的 POSIX 子集必须一开始就划边界（哪些 API 静默不支持），而不是事后补。
+- 借鉴：UniProton 的 `src/kal/posix` KAL 分层——内核原生 API 与 POSIX 兼容层解耦，与 BerryOS「自有 ABI + POSIX 兼容库」完全同构，可对照其 `src/include/uapi` 与 `src/include/posix` 的头文件组织方式设计 berry-sys 镜像；其「单进程多线程、task 即线程」的裁剪也说明：轻量系统的 POSIX 子集必须一开始就划边界（哪些 API 静默不支持），而不是事后补。
 - 借鉴：MCS 的「部署+隔离+调度」三步走验证了 BerryOS 在嵌入式形态的正确路径——用隔离（地址空间/能力）而非特权级混部解决实时性。
 - 警示：openEuler 本体是宏内核，其混部调度补丁直接长在 CFS 和内核锁上，**照搬实现无意义**；该学的是场景定义（在线/离线混部、抖动抑制、业务优先级 OOM）。
 

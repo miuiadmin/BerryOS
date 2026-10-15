@@ -39,12 +39,12 @@ use crate::handle::{
 };
 use crate::vmar::{Perm, Vmar, VmarError};
 use crate::vmo::{Vmo, VmoError};
-use bos_hal_aarch64::trap::TrapFrame;
-use bos_hal_aarch64::KERNEL_VA_BASE;
-use bos_mm::va::PAGE_SIZE;
+use berry_hal_aarch64::trap::TrapFrame;
+use berry_hal_aarch64::KERNEL_VA_BASE;
+use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 27 号编号表（ABI §4「阶段 = v1」行；镜像 bos-sys）----
+// ---- v1 27 号编号表（ABI §4「阶段 = v1」行；镜像 berry-sys）----
 
 // handle / 通用对象（6）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
@@ -87,7 +87,7 @@ pub const NR_EVENT_CREATE: usize = 0x54;
 // 时间（1）
 pub const NR_CLOCK_READ: usize = 0x61;
 
-/// `clock_read` 的 clock_id：v1 只有单调钟（`bos_time_t` = 纳秒；壁钟留 v2）。
+/// `clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。
 const CLOCK_MONOTONIC: u64 = 0;
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
@@ -126,7 +126,7 @@ fn caller_table(tf: &TrapFrame) -> Result<&'static mut HandleTable, i64> {
     if caller_is_el1(tf) {
         Ok(bootstrap_table())
     } else {
-        let tag = bos_sched::current_tag();
+        let tag = berry_sched::current_tag();
         if tag == 0 {
             Err(ERR_BAD_HANDLE as i64) // 无表任务：没有 handle 可言
         } else {
@@ -168,7 +168,7 @@ fn access_ok(caller_el1: bool, ptr: u64, len: u64, write: bool) -> bool {
         if ptr < 0x1000 || end > USER_VA_END {
             return false;
         }
-        let l1 = bos_hal_aarch64::current_ttbr0_pa();
+        let l1 = berry_hal_aarch64::current_ttbr0_pa();
         let first = (ptr as usize) & !(PAGE_SIZE - 1);
         let last = (end as usize - 1) & !(PAGE_SIZE - 1);
         let mut va = first;
@@ -293,8 +293,8 @@ extern "C" fn sys_clock_read(tf: &mut TrapFrame) -> i64 {
         return ERR_NOT_SUPPORTED as i64; // 壁钟等 id 留 v2
     }
     let out = tf.regs[2];
-    let ticks = bos_hal_aarch64::timer::cntvct();
-    let freq = bos_hal_aarch64::timer::cntfrq();
+    let ticks = berry_hal_aarch64::timer::cntvct();
+    let freq = berry_hal_aarch64::timer::cntfrq();
     if freq == 0 {
         return ERR_NOT_SUPPORTED as i64; // 频率不可读（真机异常）
     }
@@ -479,7 +479,7 @@ fn obj_vmo_mut(obj: &core::ptr::NonNull<crate::handle::ObjRef>) -> Option<&'stat
 }
 
 /// `vmar_map`：内核 6 参形态 `(vmar, vmo, vmo_offset, *vaddr, len, rights)`
-/// （x1..x6）——C 原型 7 参（ABI §8.3），options 由 bos-sys stub 折叠（v1 恒 0，
+/// （x1..x6）——C 原型 7 参（ABI §8.3），options 由 berry-sys stub 折叠（v1 恒 0，
 /// stub 校验后不放行非 0）。`*vaddr` 为 in-out：进 = 请求 VA（v1 须显式、页
 /// 对齐），出 = 实际映射基 VA。
 ///
@@ -793,7 +793,7 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     // 回滚迁移（take 回子表令牌、重插调用者表——值或变、语义存活，同 insert
     // 失败回滚）→ -ENOMEM；thrd/started/retain 全未动。单核 IRQ 屏蔽：已入队
     // 任务在 eret 前不会运行，下面字段补写无竞态。
-    if bos_sched::try_spawn_user(
+    if berry_sched::try_spawn_user(
         entry as usize,
         child_x0,
         sp as usize,
@@ -1087,7 +1087,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
 /// channel 三号；0x04–0x06 等待/信号留 3-4c，0x33/0x35..0x37 退出与睡眠随后续
 /// 步）。未列号走 HAL 默认 `-ENOTSUP`。
 pub fn install() {
-    use bos_hal_aarch64::syscall::install as reg;
+    use berry_hal_aarch64::syscall::install as reg;
     reg(NR_HANDLE_CLOSE, sys_handle_close);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate);
     reg(NR_HANDLE_REPLACE, sys_handle_replace);

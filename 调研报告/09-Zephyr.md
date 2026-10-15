@@ -139,7 +139,7 @@ struct device {
 ## 7. 对 BerryOS 的借鉴与警示（对照四支柱）
 
 **微内核支柱**
-- 借鉴：z_impl/z_vrfy 分层——BerryOS 每个 `bos_*` syscall 应有独立 verify 函数（handle 类型/权限检查先行），验证代码生成而非手写。
+- 借鉴：z_impl/z_vrfy 分层——BerryOS 每个 `berry_*` syscall 应有独立 verify 函数（handle 类型/权限检查先行），验证代码生成而非手写。
 - 借鉴：内核对象 + 按线程权限位图证明"最小能力"在 RTOS 尺度可落地；BerryOS 用可传递 handle 更强，但位图可作 v1 简化参考。
 - 警示：驱动/协议栈编进同一映像 = 270 个 CVE 的放大器；BerryOS 驱动/FS/网络留用户态是正确取舍，别因"性能方便"回退。
 

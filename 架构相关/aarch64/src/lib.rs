@@ -1,4 +1,4 @@
-//! bos-hal-aarch64 —— ARM64 HAL（arch 层，unsafe 收敛地）。
+//! berry-hal-aarch64 —— ARM64 HAL（arch 层，unsafe 收敛地）。
 //!
 //! Phase 0：boot 入口（EL2→EL1 降级，见 `boot.rs`）+ PL011 UART 输出 + halt。
 //! Phase 1 Step 4：stage-1 页表 + 开 MMU（见 [`mmu`]、[`paging`]）。
@@ -21,7 +21,7 @@ pub mod timer;
 pub mod trap;
 
 // ---- 平台内存图（QEMU `virt`）----
-// RAM 几何原在 bos-mm，现挪进 HAL（平台层；bos-mm 保持 arch 无关，由调用方传入）。
+// RAM 几何原在 berry-mm，现挪进 HAL（平台层；berry-mm 保持 arch 无关，由调用方传入）。
 
 /// 物理内存起点（QEMU `virt` RAM）。
 pub const RAM_BASE: usize = 0x4000_0000;
@@ -37,7 +37,7 @@ pub const GICC_BASE: usize = 0x0801_0000;
 /// 内核高半基址 = 39-bit VA 高半的底（T1SZ=25 → TTBR1 区 = `[此值, 2^64)`）。
 /// `KERNEL_VA_BASE + pa` 是内核 direct map 的**唯一规则**（RAM 与 MMIO 统一，见
 /// `内存管理设计.md` §5）；bits[38:0]=0 使 KVA 表索引 == PA 表索引。2b-1 起
-/// 内核主体已链高半；`bos_mm::va` 的交换点由 `rust_main` 注入此值（x86_64 最小
+/// 内核主体已链高半；`berry_mm::va` 的交换点由 `rust_main` 注入此值（x86_64 最小
 /// 集移植时按目标另定，注入 0 = 恒等）。
 pub const KERNEL_VA_BASE: usize = 0xFFFF_FF80_0000_0000;
 
@@ -104,7 +104,7 @@ pub use paging::{page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_NORM
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
 //
-// HAL 是叶子 crate，**不依赖** bos-sched（否则循环依赖：sched → hal → sched）。
+// HAL 是叶子 crate，**不依赖** berry-sched（否则循环依赖：sched → hal → sched）。
 // 但 timer/IRQ 抖动需要通知调度器（Step 5 打印 tick、Step 6 驱动抢占）——用**函数指针
 // 槽**把调用反转：调度器不进 HAL 的依赖图，`内核` 在 boot 时注册回调（`set_irq_dispatch`），
 // `exception_irq` 经槽调。HAL 永不知 scheduler 之名（plan 循环依赖规避 + R10）。
