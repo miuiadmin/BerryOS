@@ -44,6 +44,7 @@ static mut IDLE_TASK: Task = Task {
     asid: 0,
     prio_base: 0,
     prio_effective: 0,
+    pi_inherited: 0,
     duration_hint_ns: 0,
     epp: crate::task::EppHint::Efficiency,
     preempt_threshold: 0,
@@ -90,6 +91,21 @@ pub fn spawn_as(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
     let task: &'static mut Task =
         alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, ttbr0, asid));
+    unsafe {
+        RR.enqueue(task, rq());
+    }
+}
+
+/// 同 [`spawn`]，但带基础优先级（4-3b PI 验收：高优 client 的捐赠源）。
+/// `prio` 直接落 `prio_base`/`prio_effective` 双字段（pick 出选看 effective，
+/// 4-3a）——boot 可信语境一步到位。
+pub fn spawn_with(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
+                  prio: i32) {
+    // SAFETY: 同 spawn_as（CURRENT 已设、allocator 就绪）。
+    let task: &'static mut Task =
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, 0, 0));
+    task.prio_base = prio;
+    task.prio_effective = prio;
     unsafe {
         RR.enqueue(task, rq());
     }
@@ -309,6 +325,33 @@ unsafe fn note_wake(t: *mut Task, reason: WakeReason) {
     }
 }
 
+// ---- SLEEPQ 变更钩子（4-3b PI；内核 crate 全图重推的注入点）----
+
+/// SLEEPQ 变更钩子：`block_current` 睡下后（切走前）与两个唤醒位
+/// （`wake_matching`/`expire_timeouts`）摘队完成后各发射一次——此刻睡眠者
+/// 集合已定型。与 [`WakeHook`] 同纪律：**零分配、零切换、短平快**（IRQ
+/// 屏蔽热路径）。消费者 = 内核 crate 的 PI 全图重推（`内核/src/pi.rs`）。
+pub type SleepqHook = fn();
+
+/// 钩子槽（`None` = 无 PI；`pi::init` 注册）。
+static mut SLEEPQ_HOOK: Option<SleepqHook> = None;
+
+/// 注册/注销 SLEEPQ 变更钩子。仅 boot 期（IRQ 屏蔽、首个切换发生前）调用。
+pub fn set_sleepq_hook(hook: Option<SleepqHook>) {
+    // SAFETY: 写点仅 boot 期（单核、IRQ 屏蔽、无并发睡眠）。
+    unsafe { SLEEPQ_HOOK = hook };
+}
+
+/// 睡眠者集合变更的发射点（见 [`SleepqHook`] 契约）。`None` 钩子 = 一次静态
+/// 读 + 分支。
+#[inline]
+unsafe fn note_sleepq_changed() {
+    let hook = unsafe { SLEEPQ_HOOK };
+    if let Some(h) = hook {
+        h();
+    }
+}
+
 // ---- 睡眠/唤醒原语（4-0；`IPC设计.md` 阶段化目标 Phase 4 拆步表步 4-0）----
 
 /// `wait_many` 的等待键哨兵（4-2b）：Task 只有单一 `wait_obj` 匹配键，多对象
@@ -469,6 +512,9 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         CURRENT = next_ptr;
         activate_if_changed(cur, next_ptr);
         note_switch(cur, next_ptr, SwitchKind::Block);
+        // 4-3b：新睡眠者已入队、状态定型——PI 全图重推（写 pi/eff 字段，不碰
+        // 链接；屏蔽窗内零分配）后才切走。
+        note_sleepq_changed();
         // SAFETY: IRQ 已屏蔽（调用方契约）；prev/next 有效、不别名。
         hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
         // <- 被唤醒方/超时扫描摘队入 runqueue、此后被 pick 切回，续行于此
@@ -514,6 +560,9 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
             }
         }
     }
+    // 4-3b：摘队完成 = 睡眠者集合定型（离队者冻结 boost、在队者重算捐赠图）。
+    // SAFETY: IRQ 屏蔽窗（调用方契约，见函数注释）。
+    unsafe { note_sleepq_changed() };
     n
 }
 
@@ -537,6 +586,51 @@ unsafe fn expire_timeouts() {
         RR.enqueue(&mut *t, rq());
         note_wake(t, WakeReason::Timeout);
     }
+    // 4-3b：超时摘队也改变睡眠者集合（纯 sleep 者超时离队 → 冻结其 boost）。
+    unsafe { note_sleepq_changed() };
+}
+
+// ---- PI 图推导支撑原语（4-3b；消费者 = `内核/src/pi.rs`，图语义在那侧）----
+
+/// 遍历全局 SLEEPQ 上所有睡眠者（head → tail）。**调用契约**：IRQ 屏蔽窗内
+/// （block/wake/syscall 尾路径天然满足）；回调中不得改动任何任务的睡眠链接
+/// 字段（`sleep_prev`/`sleep_next`——遍历中接线会扬队）、不得 block/wake。
+/// 只读字段或写 `pi_inherited`/`prio_*` 等非链接字段安全（PI 重推的用法）。
+pub fn for_each_sleeper(mut f: impl FnMut(&mut Task)) {
+    // SAFETY: 契约如上；SLEEPQ 单核顺序访问；摘除中的节点由调度器拥有。
+    unsafe {
+        let mut cur = sleepq().head.get();
+        while let Some(n) = cur {
+            let t = &mut *n.as_ptr();
+            cur = t.sleep_next.get(); // 先存 next 再交给回调（回调可能改其它字段）
+            f(t);
+        }
+    }
+}
+
+/// 重算 `t` 的有效优先级（4-3b 统一合成公式）：
+/// `prio_effective = max(prio_base + 策略权重, pi_inherited)`——与 pick 侧
+/// [`crate::policy::apply`] 同公式（两写入者不互踩）。冻结语义见
+/// [`Task::pi_inherited`]：只对 SLEEPQ 在队者调用，runnable 者保持冻结值。
+pub fn refresh_effective(t: &mut Task) {
+    let w = crate::policy::weight_of(t);
+    t.prio_effective = (t.prio_base + w).max(t.pi_inherited);
+}
+
+/// 把 `t` 按 deadline 升序压入全局 SLEEPQ。**ktest 手搭睡眠者专用**（生产
+/// 路径一律走 [`block_current`]——本函数不切走、不置 Blocked）。契约同
+/// `SleepQueue::insert_sorted`：IRQ 屏蔽窗内、`t` 不在队（链接字段均
+/// `None`）且地址稳定（ktest `Box::leak`）。
+pub fn sleepq_insert(t: &mut Task) {
+    // SAFETY: 契约如上。
+    unsafe { sleepq().insert_sorted(NonNull::from(t)) };
+}
+
+/// 把 `t` 摘出全局 SLEEPQ（ktest 清理专用）。**不幂等**——对不在队者调用会
+/// 扬队（`SleepQueue::unlink` 注释）；调用方须确知 `t` 在队。
+pub fn sleepq_unlink(t: &mut Task) {
+    // SAFETY: 契约如上。
+    unsafe { sleepq().unlink(NonNull::from(t)) };
 }
 
 /// 用户任务致死计数只读访问（G1.5 watchdog 断言用）。

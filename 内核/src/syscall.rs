@@ -253,7 +253,13 @@ extern "C" fn sys_handle_close(tf: &mut TrapFrame) -> i64 {
     let h = tf.regs[1] as u32;
     match caller_table(tf) {
         Ok(t) => match t.close(h) {
-            Ok(()) => 0,
+            Ok(()) => {
+                // 4-3b：持有面变化——睡眠者可能刚关掉受捐边的 peer handle，
+                // 全图重推让边消失（stale boost 上界 = 到下一个 block/wake
+                // 事件；close 即时收口）。屏蔽窗内零分配。
+                crate::pi::recompute();
+                0
+            }
             Err(e) => e as i64,
         },
         Err(e) => e,

@@ -34,7 +34,7 @@
   3. **每跳执行预算帽 + 累计时间封顶**（seL4 Johnston 2022：仅限跳数不够，恶意/失控服务链能吃光调用方预算），超顶降级为不传播并打 trace。注意 §2.1 的 8 层限的是**阻塞链**深，intent 传播限的是**消息链**的预算与时间——两条链不重合。
   4. **channel 级 opt-out** 逃生门（系统服务/看门狗类 server，QNX `_NTO_CHF_FIXED_PRIORITY` 等价物）。
   5. **共享内存 VMO 不自动传播**（需要时经显式 API）+ **值通胀计数器进遥测**（max 每跳单调不降，高频公共服务被 LC 客户端触达后整条链向顶带收敛 = 「一切皆顶带 = 没有 band」，计数器是它的可观测信号）。
-- **阶段化**：v1 只预留 TCB 双优先级字段（成本≈0，随 Phase 2b 表示法字段落地）；语义实现随 P4；验收 = 三任务链（高优先级 client → 慢 server ← 低优先级干扰者）下测 client 唤醒延迟上界（G 卡用例）。
+- **阶段化**：v1 只预留 TCB 双优先级字段（成本≈0，随 Phase 2b 表示法字段落地）；**PI 捐赠已随 4-3b 落地（2026-10，v1 形态 = 阻塞期捐赠 + 冻结随行近似「处理期间持有」+ 持有者 handle 表反查，细节见 Phase 4 拆步表注记）**；intent 五件套随 4-3c；验收 = 三任务链（高优先级 client → 慢 server ← 低优先级干扰者）下测 client 唤醒延迟上界（G 卡用例）。
 
 ## 3. 异步通知（Event / EventPair）
 
@@ -105,6 +105,10 @@
 
 > **4-2b 已落地（2026-10，4-2 收官）**：`object_wait_many`(0x05)——n∈[1,16] 任一命中出 `*idx`(入参序最前命中项)+`*observed`(该对象全满足集)；poll/-ETIMEDOUT 口径同 wait_one；**WAIT_ANY 哨兵**（`berry_sched::WAIT_ANY`——Task 只有单一 wait_obj 匹配键，多对象等待者挂哨兵，`wake_matching` 谓词加哨兵分支：任何对象的唤醒都命中，醒来重验兜底；v1 等待者个位数误醒开销可忽略）；两数组先整段 copy_from_user 拷入内核栈再解析（无 TOCTOU）；**钉住纪律多数组版**——全部对象各 retain 一次、唯一出口逐个 release。ktest I8 错误面+poll 面（n=0/17 -EINVAL、坏 handle 首错 -EBADF、poll 未命中 -EAGAIN 且 idx 留哨兵 u64::MAX、远古 deadline -ETIMEDOUT 不睡、命中 idx 两向活证）。验收 = ponger 稳态等待改 wait_many n=2（[endB:READABLE, boot 哑 Event:1<<32 永不 signal]）——命中须 idx==0（哑 Event 位永不置、idx==1 即断链自陷），首次打 `MANY ok`（smoke 第 17 标记；哑 Event handle 0x0001_0002 boot 断言定值）；ktest B 段未实现样本 0x05→0x33。syscall 23→**24** 号。
 | 4-3 | PI 捐赠 + intent 五件套（§2.1/§3.6：wait 阻塞方捐赠给解锁方、链式 ≤8 层不 panic、解除即回落；`msg_intent` 消息头位布局随本步 ABI v0 定、slowpath 记账、每跳预算帽 + 累计时间封顶、channel opt-out；boost 即按 effective 重排 runqueue） | 三任务链（高优 client → 慢 server ← 低优干扰者）client 唤醒延迟上界（G 卡用例） |
+
+> **4-3a 已落地（2026-10）**：`RoundRobin::pick_next` 改按 `prio_effective` 出选（两圈扫描 + 同高 FIFO + 选中后 advance_past；同 eff 层内轮转、跨层严格优先）——「boost 即按 effective 重排 runqueue」的消费点先行就位（`调度器设计.md` §3.6 v1 兑现），PI/AI 权重共用。POLICY C 用例断言升级为严格优先。
+
+> **4-3b 已落地（2026-10，PI 捐赠——`内核/src/pi.rs`）**：**捐赠边靠 handle 表反查**（QNX「send/recv 双方同睡一个 channel」被 BerryOS 有界队列解耦——接收方持 peer 端点 handle、可阻塞在任何对象上）：donor = SLEEPQ 上睡**单一 channel** 等**内核派生位**（READABLE/WRITABLE）者；受捐 = 同在队、其 handle 表持 peer 端点且带对应**解锁 right**（等 WRITABLE 需 RECV、等 READABLE 需 SEND、多持有者全捐）的任务（`holder_has` 反查；内核任务 proc_tag=0 → 内核侧共享表 = 所有内核睡眠者都算持有的 v1 粒度，EL0 每进程表才反查到人）；WAIT_ANY 哨兵 / Event 等待 / 纯 sleep / 只等用户位均无边（诚实缺口：Event 捐赠 v2 再议）。**全图重推、零增量簿记**：SLEEPQ 变更（block 睡下后 / wake 摘队后，`set_sleepq_hook`）+ handle close 后从零推导——清零在队者 → 不动点迭代 ≤8 轮（每轮传播一跳；**d_eff 实时读 `pi_inherited`**——只读尾趟才刷的 effective 会把链截死一跳）→ 尾趟刷 effective；持有环 max 单调有界不发散。**冻结语义 = 「server 处理消息期间持有」的 v1 形态**：重推只清/算在队者，受捐方唤醒离队时冻结 `pi_inherited` 随行（boost 带进 runqueue，4-3a pick 消费），下次入睡被重推清零回落（=「reply 即回退」五件套之 1 的无 reply 等价物）；长跑不睡者 boost 挂着（QNX 语义本就如此，v1 接受）。**连带不变量**：请求位含内核派生位 ⟹ wait_obj 必须是真 channel ObjRef——4-0 合成对象 SLEEP_OBJ 曾以 `!0` 睡（含派生位）被 PI 图解引用炸对齐 panic（run 实跑抓到），改等用户位 1<<33。验收 = pi_client(32)/pi_server(0)/pi_probe(0) 三内核任务全真 SVC 对打（probe 断言 server pi==32 且 eff==32 后 signal 放行打 `PI ok`，smoke 第 18 标记）+ ktest J 段 `PI-K ok` 八用例（单跳判别/rights 门控两向/链式两跳/持有环收敛/11 节点链轮帽截断（倒序入队每轮恰一跳：L8 达、L9/L10 超帽落 0）/哨兵与 Event 跳过/冻结随行 + 重入队回落/共享表粒度含自捐无害面）。**G 卡用例的 client 唤醒延迟上界验收留正式关卡**（本步验收 = 字段断言 + 功能闭环）。intent 五件套（msg_intent/slowpath 记账/预算帽/opt-out/通胀计数器）留 4-3c。
 | 4-4 | fastpath/slowpath 分层（§7 检查链：队列空 + 对端已在 wait → 直切投递；两路语义逐条对齐，不长第二套）+ cycle 实测（QEMU TCG 先出量级、真机复测标注） | 验收线 <1200/<500 cycle 实测复核；intent cmp+sel 增量不破线 |
 | 4-5 | 服务框架（用户态）：init/svcmgr 骨架 + 服务循环（wait READABLE → recv → 处理 → reply）；纯能力互联（3-4a bootstrap 迁移已有，namespace 留 v3）；调试槽 0xFE/0xFF 退役（user 矩阵改走真 IPC） | 里程碑：服务管理器拉起一个服务 |
 | 4-6 | Phase 4 出口：两用户态服务交换消息全链演示 + AI 最小演示（**滑移出口**：IPC/调度未稳则顺延 P5 首项，不重开 P4） | smoke 全绿 + 演示串口活证 |

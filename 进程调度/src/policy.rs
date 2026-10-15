@@ -74,9 +74,10 @@ fn lookup(tbl: &'static [Entry], task_key: u64) -> Option<&'static Directive> {
 }
 
 /// 决策路径挂钩：pick_next 出选后调用。查到指令 → 写 TCB 表示法字段
-/// （**幂等**：`prio_effective = prio_base + 夹紧权重` 自基线重算、EPP 直接
-/// 赋值——非累积，重复 pick 不漂移）；查不到 → **零写入**，字段保持基线，
-/// 与接口缺席逐位等价（ktest `POLICY ok` 断言对象）。IRQ 热路径零分配。
+/// （**幂等**：`prio_effective = max(prio_base + 夹紧权重, pi_inherited)`
+/// 自基线重算、EPP 直接赋值——非累积，重复 pick 不漂移）；查不到 → **零
+/// 写入**，字段保持基线，与接口缺席逐位等价（ktest `POLICY ok` 断言对象）。
+/// IRQ 热路径零分配。
 pub fn apply(task: &mut Task) {
     // SAFETY: 只读 TABLE；写点（bind/unbind）仅在 IRQ 屏蔽的 boot/ktest 期。
     let tbl = match unsafe { TABLE } {
@@ -91,8 +92,23 @@ pub fn apply(task: &mut Task) {
         None => return,
     };
     let w = d.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX);
-    task.prio_effective = task.prio_base + w;
+    // 4-3b：策略权重与 PI 捐赠同合成（冻结的 boost 不被 apply 抹平）。
+    task.prio_effective = (task.prio_base + w).max(task.pi_inherited);
     if let Some(e) = d.epp {
         task.epp = e;
+    }
+}
+
+/// 该任务当前绑定的夹紧权重（未绑/无表/空表 → 0）。[`crate::sched::
+/// refresh_effective`] 的合成分量——PI 重推刷 effective 时与 pick 侧 apply
+/// 用同一份权重，两写入者公式一致才不会互相踩（4-3b）。
+pub(crate) fn weight_of(task: &Task) -> i32 {
+    // SAFETY: 只读 TABLE（写点仅 IRQ 屏蔽的 boot/ktest 期）。
+    match unsafe { TABLE } {
+        Some(t) if !t.is_empty() => match lookup(t, task.proc_tag as u64) {
+            Some(d) => d.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX),
+            None => 0,
+        },
+        _ => 0,
     }
 }

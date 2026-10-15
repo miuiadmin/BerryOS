@@ -431,6 +431,20 @@ impl HandleTable {
         Ok((&unsafe { &*obj.as_ptr() }.obj, rights))
     }
 
+    /// 本表是否持有 `obj`（ObjRef 指针相等）且 rights 含 `any` 中**任一位**
+    /// （4-3b PI 图推导：受捐者 = 持有 channel peer 端点且带解锁 right 的阻塞
+    /// 任务——等 WRITABLE 找带 RECV 者、等 READABLE 找带 SEND 者，任一解锁
+    /// 动作可用即构成捐赠边）。遍历全部槽，v1 表个位数槽——O(槽) 可忽略。
+    pub fn holder_has(&self, obj: NonNull<ObjRef>, any: Rights) -> bool {
+        if any == 0 || self.slots.is_empty() {
+            return false;
+        }
+        self.slots.iter().any(|s| match s {
+            SlotState::Used { obj: o, rights, .. } => o == &obj && rights & any != 0,
+            SlotState::Free { .. } => false,
+        })
+    }
+
     /// [`Self::get`] 的裸指针底层：查表 → 类型 → 权限后返回对象引用指针 + 权利。
     /// **可变访问的正规入口**（syscall 写路径 `as_*_mut`）与**双对象同借**
     /// （`vmar_map` 的 vmar + vmo）用——两个 `get_raw` 指针类型门控互异 ⇒ 必指
@@ -457,8 +471,7 @@ impl HandleTable {
     /// 查表（gen 校验）：槽空 / 越界 / 代号不符 / **预留位非零** →
     /// [`ERR_BAD_HANDLE`]。
     fn lookup(&self, h: Handle) -> Result<(NonNull<ObjRef>, Rights), i32> {
-        if h & RESERVED_MASK != 0 {
-            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
+        if h & RESERVED_MASK != 0 {            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
         }
         let slot = decode_slot(h) as usize;
         match self.slots.get(slot) {

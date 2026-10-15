@@ -18,6 +18,7 @@ mod handle;
 mod heap;
 mod ktest;
 mod mm;
+mod pi;
 mod process;
 mod syscall;
 mod telemetry;
@@ -104,6 +105,9 @@ pub extern "C" fn rust_main() -> ! {
     // 3-4c 遥测环：注册切换钩子（init 后、首个切换前——rust_main 尾部的
     // yield_now 即产生首条记录；watchdog 断言环在涨 + vct 单调）。
     telemetry::init();
+    // 4-3b PI：注册 SLEEPQ 变更钩子（block 睡下后 / wake 摘队后全图重推；
+    // 与 telemetry 同位——均须在首个切换前）。
+    pi::init();
     berry_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
     berry_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
 
@@ -236,6 +240,42 @@ pub extern "C" fn rust_main() -> ! {
                           b"user_ponger", up_ponger.ttbr0_pa, up_ponger.asid,
                           ht_ponger as *mut HandleTable as usize);
 
+    // 4-3b 验收（`IPC设计.md` Phase 4 拆步表 4-3 前半）：PI 捐赠三任务链——
+    // pi_client（prio 32，donor）send 灌满后 wait WRITABLE 阻塞；pi_server
+    //（prio 0，持 recv 端 endS）阻塞在 Event E 上（受捐方——有界队列把 QNX
+    //「双方同睡一个 channel」解耦，接收方持 handle 可睡任何对象，捐赠边靠
+    // handle 表反查）；pi_probe 睡 5 slice 后断言 server 被捐到 eff=32、
+    // signal E 放行，打 `PI ok`（smoke 第 18 标记）。三者全走真 SVC（EL1
+    // 入口与 EL0 同权，3-1）；边闭合时序：client(32) 先跑睡 send-wait →
+    // server 跑睡 E（block 钩子重推成边）→ probe 醒断言。
+    //（RIGHT_SEND/RECV、ChannelEnd、ObjType、RIGHT_SIGNAL 均已在本函数
+    // 更早的 use 里。）
+    let h_end_c = syscall::bootstrap_table()
+        .insert(KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endC")),
+                RIGHT_SEND)
+        .expect("main: endC 进内核侧表");
+    let h_end_s = syscall::bootstrap_table()
+        .insert(KernelObj::Channel(ChannelEnd::try_unpaired().expect("main: 建 endS")),
+                RIGHT_RECV)
+        .expect("main: endS 进内核侧表");
+    let (pc, ps) = (
+        syscall::bootstrap_table().get_raw(h_end_c, ObjType::Channel, 0)
+            .expect("main: 取 endC ObjRef").0,
+        syscall::bootstrap_table().get_raw(h_end_s, ObjType::Channel, 0)
+            .expect("main: 取 endS ObjRef").0,
+    );
+    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+    unsafe { ChannelEnd::pair(pc, ps) };
+    let h_ev_pi = syscall::bootstrap_table()
+        .insert(KernelObj::Event(event::Event::new()), RIGHT_SIGNAL)
+        .expect("main: PI Event 进内核侧表");
+    // arg 打包（spawn 只有单 usize 参）：server = (h_ev_pi << 32) | h_end_s；
+    // probe = h_ev_pi；client = h_end_c。
+    berry_sched::spawn(task_pi_server,
+        ((h_ev_pi as usize) << 32) | h_end_s as usize, b"pi_server");
+    berry_sched::spawn(task_pi_probe, h_ev_pi as usize, b"pi_probe");
+    berry_sched::spawn_with(task_pi_client, h_end_c as usize, b"pi_client", 32);
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -328,9 +368,13 @@ extern "C" fn task_sleeper(_arg: usize) -> ! {
     assert!(r == WakeReason::Timeout, "sleeper: 超时路径醒因非 Timeout");
     assert!(elapsed >= slice, "sleeper: 超时醒来早于 deadline");
     berry_hal_aarch64::uart_puts(b"T");
-    // 路径 2：条件唤醒（无限等——无哨兵，deadline=MAX 等价）。
+    // 路径 2：条件唤醒（无限等——无哨兵，deadline=MAX 等价）。**只等用户位**
+    // 1<<33（内核永不置位）——4-3b 起 `donor_edge` 的不变量是「请求位含内核
+    // 派生位（READABLE/WRITABLE）⟹ wait_obj 是真 channel ObjRef」：SLEEP_OBJ
+    // 是不透明 token（u8 静态，非对象），带派生位睡它 = 让 PI 图解引用垃圾
+    // 指针（曾以 !0 触发 pi.rs 对齐 panic 实证）。
     berry_hal_aarch64::disable_irq();
-    let r2 = berry_sched::block_current(&SLEEP_OBJ as *const u8 as usize, !0, u64::MAX);
+    let r2 = berry_sched::block_current(&SLEEP_OBJ as *const u8 as usize, 1 << 33, u64::MAX);
     berry_hal_aarch64::enable_irq();
     assert!(r2 == WakeReason::Signaled, "sleeper: 条件路径醒因非 Signaled");
     // 双路径全过——置门槛放行 watchdog 唤醒环断言（此刻两条 boot 唤醒记录必
@@ -340,14 +384,16 @@ extern "C" fn task_sleeper(_arg: usize) -> ! {
     berry_sched::exit_current()
 }
 
-/// 4-0 waker：轮询 `wake_matching(SLEEP_OBJ, !0)` 直到摘到 sleeper（返回 1）。
-/// 未挂上时返回 0 且零副作用——单核屏蔽窗原子保证无丢唤醒：要么本循环先扫
-/// （0，sleeper 稍后挂上，下轮摘到）、要么 sleeper 已挂（本轮即摘）。轮询体
-/// IRQ 基本解蔽 → tick 正常抢占 → sleeper 得以上 CPU 挂队。命中即收工退出。
+/// 4-0 waker：轮询 `wake_matching(SLEEP_OBJ, 1<<33)` 直到摘到 sleeper（返回
+/// 1）。未挂上时返回 0 且零副作用——单核屏蔽窗原子保证无丢唤醒：要么本循环
+/// 先扫（0，sleeper 稍后挂上，下轮摘到）、要么 sleeper 已挂（本轮即摘）。轮
+/// 询体 IRQ 基本解蔽 → tick 正常抢占 → sleeper 得以上 CPU 挂队。命中即收工
+/// 退出。（置位集与 sleeper 的请求位同步收窄到用户位 1<<33——理由见路径 2
+/// 注释。）
 extern "C" fn task_waker(_arg: usize) -> ! {
     loop {
         berry_hal_aarch64::disable_irq();
-        let n = berry_sched::wake_matching(&SLEEP_OBJ as *const u8 as usize, !0);
+        let n = berry_sched::wake_matching(&SLEEP_OBJ as *const u8 as usize, 1 << 33);
         berry_hal_aarch64::enable_irq();
         if n == 1 {
             break;
@@ -414,5 +460,158 @@ extern "C" fn task_waker2(arg: usize) -> ! {
         "waker2: thread_sleep 1 slice（让 waiter 收尾）"
     );
     berry_hal_aarch64::uart_puts(b"W WAIT ok\n");
+    berry_sched::exit_current()
+}
+
+/// 4-3b 三任务的 EL1 真 SVC 往返（waker2 `svc4` 同款扩到 6 参）：channel_send/
+/// recv（5 参）与 object_wait_one（4 参）的载体，x0=nr（进）/ret（出）。
+fn svc6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64 {
+    let ret: u64;
+    // SAFETY: 同步异常；dispatch 只回写 x0（ktest `svc6` 同款）。
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inout("x0") nr => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
+            in("x5") a5,
+            in("x6") a6,
+            options(nostack, preserves_flags),
+        );
+    }
+    ret as i64
+}
+
+/// 4-3b pi_server（prio 0，受捐方）：先挂 Event E（用户位 1<<35，100s 帽）睡
+/// ——client 的 8 条 PING 此刻已在 endS 队列堆着（server 没人 recv），本任务
+/// 的「处理慢」由睡 E 模拟（下游依赖）。被 probe 的 signal 唤醒后醒来 recv
+/// ×8 腾位（第一条即唤醒 client 的 WRITABLE）→ exit。醒来时 `pi_inherited`
+/// 冻结随行（「server 处理消息期间持有」的 v1 形态——冻结面由 ktest J 段
+/// 机器断言，本任务只走功能闭环）。
+extern "C" fn task_pi_server(arg: usize) -> ! {
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CLOCK_READ, NR_OBJECT_WAIT_ONE};
+    let h_end_s = arg as u32;
+    let h_ev = (arg >> 32) as u32;
+    let mut now: u64 = 0;
+    // SAFETY: svc 同步异常；now 为本任务私有栈变量（内核高半，copy_out 直拷）。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pi_server: clock_read");
+    let mut observed = 0u64;
+    let pobs = core::ptr::addr_of_mut!(observed) as u64;
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_ONE as u64, h_ev as u64, 1 << 35,
+             now + 100 * 1_000_000_000, pobs, 0, 0),
+        0,
+        "pi_server: wait E（被 probe signal 唤醒）"
+    );
+    // 醒来（冻结 boost 随行）：清空 endS 队列——第一条 recv 即 wake client。
+    let mut buf = [0u8; 8];
+    let mut hs = [0u32; 4];
+    let (mut n, mut nh): (u64, u64);
+    for i in 0..8 {
+        // 容量 in-out：每次 recv 前重置（实际值出参回写）。
+        n = 8;
+        nh = 4;
+        assert_eq!(
+            svc6(NR_CHANNEL_RECV as u64, h_end_s as u64, buf.as_mut_ptr() as u64,
+                 core::ptr::addr_of_mut!(n) as u64, hs.as_mut_ptr() as u64,
+                 core::ptr::addr_of_mut!(nh) as u64, 0),
+            0,
+            "pi_server: recv 第 {} 条（腾位）", i + 1
+        );
+    }
+    berry_sched::exit_current()
+}
+
+/// 4-3b pi_probe（prio 0，验收司机）：睡 5 slice 等 server/client 双双挂队
+/// （client(32) 先跑睡 send-wait、server 随后睡 E——block 钩子重推成边），醒
+/// 来遍历 SLEEPQ 断言捐赠字段（server pi_inherited==32 且 eff==32；client 自身
+/// eff==32）→ signal E 放行 → 打 `PI ok`（smoke 第 18 标记）→ exit。字段断言
+/// 即机器关卡；「醒来冻结随行 + 4-3a 严格优先」的行为面交 ktest J 段与既有
+/// POLICY 面（G 卡用例的延迟上界验收留正式关卡）。
+extern "C" fn task_pi_probe(arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_OBJECT_SIGNAL, NR_THREAD_SLEEP};
+    let h_ev = arg as u32;
+    // SAFETY: 同 pi_server。
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    let slice_ns = berry_hal_aarch64::timer::slice_cycles() * 1_000_000_000 / freq;
+    let mut now: u64 = 0;
+    // SAFETY: 同 pi_server。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pi_probe: clock_read");
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + 5 * slice_ns, 0, 0),
+        0,
+        "pi_probe: thread_sleep 5 slice（等双睡者挂队）"
+    );
+    // 断言捐赠图：server（睡 E）受捐 32；client（睡 endC:WRITABLE）自身 32。
+    let (mut saw_server, mut saw_client) = (false, false);
+    berry_sched::for_each_sleeper(|t| {
+        if t.name == b"pi_server" {
+            saw_server = true;
+            assert_eq!(t.pi_inherited, 32, "pi_probe: server 须受捐到 32");
+            assert_eq!(t.prio_effective, 32, "pi_probe: server eff 须被抬到 32");
+        }
+        if t.name == b"pi_client" {
+            saw_client = true;
+            assert_eq!(t.prio_effective, 32, "pi_probe: client(donor) 自身 eff");
+        }
+    });
+    assert!(saw_server && saw_client, "pi_probe: 双睡眠者未同时在线（时序未达）");
+    // 放行：signal E → server 醒（冻结 boost）→ recv 腾位 → client 醒。
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, h_ev as u64, 0, 1 << 35),
+        0,
+        "pi_probe: signal E 放行"
+    );
+    berry_hal_aarch64::uart_puts(b"I PI ok\n");
+    berry_sched::exit_current()
+}
+
+/// 4-3b pi_client（prio 32，donor）：send×8 灌满 endS 队列（每条成功即
+/// wake peer READABLE——无人等，无害）→ 第 9 条 -EBUSY → wait_one(endC,
+/// WRITABLE, 100s 帽) 睡——**block 钩子触发 PI 全图重推**（server 尚未睡 E
+/// 时无边；server 睡 E 的 block 重推才闭合边——两种时序都收敛到同一图）。
+/// server recv 腾位唤醒后：补发一条须成功（腾位自证）→ exit。
+extern "C" fn task_pi_client(arg: usize) -> ! {
+    use crate::handle::ERR_BUSY;
+    use crate::syscall::{NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_ONE};
+    let h_end_c = arg as u32;
+    let msg = *b"PI!\0";
+    let mut saw_full = false;
+    for i in 0..9 {
+        let r = svc6(NR_CHANNEL_SEND as u64, h_end_c as u64,
+                     msg.as_ptr() as u64, 4, 0, 0, 0);
+        if r == ERR_BUSY as i64 {
+            saw_full = true; // 第 i+1 条撞满（i==8 为正常路径；早满也收敛）
+            break;
+        }
+        assert_eq!(r, 0, "pi_client: send 第 {} 条", i + 1);
+    }
+    assert!(saw_full, "pi_client: 9 条未撞满（队列深 8——异常）");
+    let mut now: u64 = 0;
+    // SAFETY: 同 pi_server。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pi_client: clock_read");
+    let mut observed = 0u64;
+    let pobs = core::ptr::addr_of_mut!(observed) as u64;
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_ONE as u64, h_end_c as u64,
+             crate::handle::SIGNAL_WRITABLE, now + 100 * 1_000_000_000, pobs, 0, 0),
+        0,
+        "pi_client: wait WRITABLE（server recv 腾位唤醒）"
+    );
+    assert!(
+        observed & crate::handle::SIGNAL_WRITABLE != 0,
+        "pi_client: observed 须含 WRITABLE"
+    );
+    // 腾位自证：补发一条须成功。
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, h_end_c as u64, msg.as_ptr() as u64, 4, 0, 0, 0),
+        0,
+        "pi_client: 腾位后补发"
+    );
     berry_sched::exit_current()
 }

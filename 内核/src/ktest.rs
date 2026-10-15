@@ -15,6 +15,7 @@ pub fn run() {
     test_vmo();
     test_handle();
     test_policy();
+    test_pi();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -1519,4 +1520,251 @@ fn test_policy() {
 
     // 任务体 16KiB 栈 × 9 泄漏不回收（ktest 语境同 sched spawn 政策——v1 无 reap）。
     berry_hal_aarch64::uart_puts(b"POLICY ok\n");
+}
+
+/// 4-3b PI 捐赠图推导（`内核/src/pi.rs` 全图重推）：donor = 睡 channel 等内核
+/// 派生位（READABLE/WRITABLE）者；受捐 = SLEEPQ 上持 peer 端点且带解锁 right
+///（等 WRITABLE 需 RECV、等 READABLE 需 SEND）的睡眠者。ktest 在
+/// `berry_sched::init` 之前跑——睡眠者经 `sleepq_insert` 手搭（不 block 不
+/// 切走，字段直填）、`pi::recompute` 直调；持有面用 **leak 私有表**（proc_tag
+/// 指针约定与 3-4a「EL0 每进程表」同语义——ktest 无 Process，借字段直指）。
+/// 触发钩子的全真路径在 main.rs pi_client/pi_server/pi_probe 三任务 +
+/// `PI ok`（smoke 第 18 标记）。覆盖面：单跳 EL0 式判别 / rights 门控两向 /
+/// 链式两跳（d_eff 实时读 pi——只读 prio_effective 会截死一跳）/ 持有环收敛
+/// / 11 节点链 × 轮帽 8（倒序入队每轮恰好一跳，第 9/10 跳到不了）/ WAIT_ANY
+/// 与 Event donor 跳过 / 冻结随行（离队不清）+ 重入队回落 / 共享表粒度
+/// （内核任务持有面 = 内核侧共享表，boot 场景同款语义）。
+#[allow(clippy::result_unwrap_used)]
+fn test_pi() {
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+    use berry_sched::{sleepq_insert, sleepq_unlink, Task, WAIT_ANY};
+    use crate::channel::ChannelEnd;
+    use crate::handle::{
+        HandleTable, KernelObj, ObjRef, ObjType, RIGHT_RECV, RIGHT_SEND, SIGNAL_READABLE,
+        SIGNAL_WRITABLE,
+    };
+    use crate::syscall::bootstrap_table;
+
+    /// 占位入口（手搭睡眠者永不执行；halt 兜底）。
+    extern "C" fn pi_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭睡眠者：prio base/effective、睡 `obj` 等 `signals`（无限期；obj=0 =
+    /// 纯睡，wait_signals 无效）、持有面 = `tag`（0 → 内核侧共享表；非 0 →
+    /// 私有表指针）。入 SLEEPQ 后返回——**永不执行**。
+    fn sleeper(name: &'static [u8], prio: i32, obj: usize, signals: u64, tag: usize)
+        -> &'static mut Task {
+        let mut t = Task::new_kernel(pi_dummy, 0, name);
+        t.prio_base = prio;
+        t.prio_effective = prio;
+        t.proc_tag = tag;
+        t.wait_obj = obj;
+        t.wait_signals = signals;
+        t.wait_deadline = u64::MAX;
+        let t: &'static mut Task = Box::leak(t);
+        sleepq_insert(t);
+        t
+    }
+
+    /// 私有 handle 表（leak 常驻；返回裸指针兼作 sleeper 的 proc_tag——3-4a
+    /// 「proc_tag → 所属进程表指针」同一约定）。
+    fn priv_table() -> usize {
+        Box::leak(Box::new(HandleTable::new())) as *mut HandleTable as usize
+    }
+
+    /// 建一个 channel 端点放进 `ht` 指的表（rights 只影响受捐判定），返回
+    /// ObjRef 地址。
+    fn chan_end(ht: usize, rights: crate::handle::Rights) -> usize {
+        // SAFETY: ht 来自 priv_table/bootstrap_table 的 leak 常驻表——ktest
+        // 单核顺序访问，无别名。
+        let ht = unsafe { &mut *(ht as *mut HandleTable) };
+        let h = ht
+            .insert(
+                KernelObj::Channel(ChannelEnd::try_unpaired().expect("PI：建端点")),
+                rights,
+            )
+            .expect("PI：端点进表");
+        ht.get_raw(h, ObjType::Channel, 0).expect("PI：取端点").0.as_ptr() as usize
+    }
+
+    /// 配对两端（SAFETY：两个端点各自刚 insert + get_raw——鲜活且互不重复）。
+    fn pair_up(a: usize, b: usize) {
+        let a = core::ptr::NonNull::new(a as *mut ObjRef).expect("PI：端点 A 指针");
+        let b = core::ptr::NonNull::new(b as *mut ObjRef).expect("PI：端点 B 指针");
+        // SAFETY: 同上——pair 只写两端的 peer 字段并互钉 retain。
+        unsafe { ChannelEnd::pair(a, b) };
+    }
+
+    /// 一个 Event 进内核侧表（非 channel 等待对象样本），返回 ObjRef 地址。
+    fn ev_obj() -> usize {
+        let ht = bootstrap_table();
+        let h = ht
+            .insert(KernelObj::Event(crate::event::Event::new()), crate::handle::RIGHT_SIGNAL)
+            .expect("PI：Event 进表");
+        ht.get_raw(h, ObjType::Event, 0).expect("PI：取 Event").0.as_ptr() as usize
+    }
+
+    let ktbl = bootstrap_table() as *mut HandleTable as usize; // 内核侧共享表
+
+    // J0. 单跳（EL0 式判别）：client(32) 睡 endC:WRITABLE（tag=0）；server 纯睡、
+    //     私有表持 endS:RECV。→ server 受捐 32、eff 抬 32；client 的共享表只有
+    //     endC:SEND——不持 endS，不受捐。
+    let ht_s0 = priv_table();
+    let c0e = chan_end(ktbl, RIGHT_SEND);
+    let s0e = chan_end(ht_s0, RIGHT_RECV);
+    pair_up(c0e, s0e);
+    let c0 = sleeper(b"j0_cli", 32, c0e, SIGNAL_WRITABLE, 0);
+    let s0 = sleeper(b"j0_srv", 0, 0, 0, ht_s0);
+    crate::pi::recompute();
+    assert_eq!(s0.pi_inherited, 32, "PI：J0 server 须受捐 32");
+    assert_eq!(s0.prio_effective, 32, "PI：J0 server eff 须 32");
+    assert_eq!(c0.pi_inherited, 0, "PI：J0 client（不持 peer）不受捐");
+
+    // J6. 冻结随行 + 解除回落（复用 J0 的对象）：离队（= 唤醒，重推只清在队
+    //     者）→ boost 冻结随行；重入队（= 下次入睡）且 donor 已退场 → 清零回落。
+    sleepq_unlink(s0);
+    crate::pi::recompute();
+    assert_eq!(s0.pi_inherited, 32, "PI：J6 离队冻结：boost 随行不清");
+    assert_eq!(s0.prio_effective, 32, "PI：J6 离队冻结：eff 保持");
+    sleepq_insert(s0);
+    sleepq_unlink(c0); // donor 退场（send 阻塞被解除的形态）
+    crate::pi::recompute();
+    assert_eq!(s0.pi_inherited, 0, "PI：J6 重入队重算：无边须回落 0");
+    assert_eq!(s0.prio_effective, 0, "PI：J6 重入队重算：eff 回落 base");
+    sleepq_unlink(s0);
+
+    // J1. rights 门控（两向）：等 WRITABLE 的 donor 只认 RECV 持有者；等
+    //     READABLE 的 donor 只认 SEND 持有者。各建「持有者私有表只有错向
+    //     right」的对——受捐侧落 0。
+    let ht1 = priv_table();
+    let c1e = chan_end(ktbl, RIGHT_SEND);
+    let s1e = chan_end(ht1, RIGHT_SEND); // 只有 SEND——不满足 WRITABLE donor 的 RECV 需求
+    pair_up(c1e, s1e);
+    let c1 = sleeper(b"j1_cli", 24, c1e, SIGNAL_WRITABLE, 0);
+    let v1 = sleeper(b"j1_v", 0, 0, 0, ht1);
+    let ht2 = priv_table();
+    let c2e = chan_end(ktbl, RIGHT_RECV);
+    let s2e = chan_end(ht2, RIGHT_RECV); // 只有 RECV——不满足 READABLE donor 的 SEND 需求
+    pair_up(c2e, s2e);
+    let c2 = sleeper(b"j1r_cli", 20, c2e, SIGNAL_READABLE, 0);
+    let v2 = sleeper(b"j1r_v", 0, 0, 0, ht2);
+    crate::pi::recompute();
+    assert_eq!(v1.pi_inherited, 0, "PI：J1 SEND-only 持有者不被 WRITABLE donor 捐");
+    assert_eq!(v2.pi_inherited, 0, "PI：J1 RECV-only 持有者不被 READABLE donor 捐");
+    sleepq_unlink(c1);
+    sleepq_unlink(v1);
+    sleepq_unlink(c2);
+    sleepq_unlink(v2);
+
+    // J2. 链式两跳：L1(32) 睡 e1:WRITABLE；L2 睡 e2:WRITABLE 且私有表持
+    //     peer(e1):RECV；L3 纯睡、私有表持 peer(e2):RECV。第 2 跳依赖 d_eff
+    //     **实时读 pi_inherited**（prio_effective 尾趟才刷——只读它会截死一跳）。
+    let ht_l2 = priv_table();
+    let ht_l3 = priv_table();
+    let e1 = chan_end(ktbl, RIGHT_SEND);
+    let s1p = chan_end(ht_l2, RIGHT_RECV);
+    pair_up(e1, s1p);
+    let e2 = chan_end(ktbl, RIGHT_SEND);
+    let s2p = chan_end(ht_l3, RIGHT_RECV);
+    pair_up(e2, s2p);
+    let l1 = sleeper(b"j2_l1", 32, e1, SIGNAL_WRITABLE, 0);
+    let l2 = sleeper(b"j2_l2", 0, e2, SIGNAL_WRITABLE, ht_l2);
+    let l3 = sleeper(b"j2_l3", 0, 0, 0, ht_l3);
+    crate::pi::recompute();
+    assert_eq!(l2.pi_inherited, 32, "PI：J2 第 1 跳 L2 须到 32");
+    assert_eq!(l3.pi_inherited, 32, "PI：J2 第 2 跳 L3 须到 32（链式实时传播）");
+    sleepq_unlink(l1);
+    sleepq_unlink(l2);
+    sleepq_unlink(l3);
+
+    // J3. 持有环：A(5) 睡 cA:WRITABLE、私有表持 peer(cB)；B(3) 睡 cB:WRITABLE、
+    //     私有表持 peer(cA)——A→B→A 成环。max 语义下单调有界收敛（终态双 5），
+    //     轮帽兜底防发散——不 panic 即「环有界」的活证。
+    let ht_a = priv_table();
+    let ht_b = priv_table();
+    let cae = chan_end(ktbl, RIGHT_SEND);
+    let sae = chan_end(ht_b, RIGHT_RECV); // A 的边指向 B（B 持 peer(cA)）
+    pair_up(cae, sae);
+    let cbe = chan_end(ktbl, RIGHT_SEND);
+    let sbe = chan_end(ht_a, RIGHT_RECV); // B 的边指向 A（A 持 peer(cB)）
+    pair_up(cbe, sbe);
+    let t3a = sleeper(b"j3_a", 5, cae, SIGNAL_WRITABLE, ht_a);
+    let t3b = sleeper(b"j3_b", 3, cbe, SIGNAL_WRITABLE, ht_b);
+    crate::pi::recompute();
+    assert_eq!(t3a.pi_inherited, 5, "PI：J3 环须收敛（A 收 max=5）");
+    assert_eq!(t3b.pi_inherited, 5, "PI：J3 环须收敛（B 收 5）");
+    sleepq_unlink(t3a);
+    sleepq_unlink(t3b);
+
+    // J4. 轮帽截断：11 节点线性链 L0(40) → L1 → … → L10——L_k 睡第 k 对
+    //     client 端等 WRITABLE，L_{k+1} 的私有表持该对 server 端（RECV）。
+    //     **倒序入队**（L10 先、L0 最后；deadline 全 MAX 相等 FIFO）→ donor
+    //     访问序 L10..L0，每轮恰好传播一跳：轮 k 到 L_k。轮帽 8 → L1..L8
+    //     达 40、L9/L10 按「已达 boost 处理」落 0——不 panic 的机器断言。
+    let hts: Vec<usize> = (0..10).map(|_| priv_table()).collect(); // L1..L10 的表
+    let mut c_ends = [0usize; 11];
+    for k in 0..11 {
+        let c = chan_end(ktbl, RIGHT_SEND);
+        let s_tbl = if k < 10 { hts[k] } else { ktbl }; // S10 无 L11——落共享表（无害）
+        let s = chan_end(s_tbl, RIGHT_RECV);
+        pair_up(c, s);
+        c_ends[k] = c;
+    }
+    let mut chain: Vec<&'static mut Task> = Vec::new();
+    for k in (0..11).rev() {
+        let tag = if k == 0 { 0 } else { hts[k - 1] };
+        let prio = if k == 0 { 40 } else { 0 };
+        chain.push(sleeper(b"j4_lk", prio, c_ends[k], SIGNAL_WRITABLE, tag));
+    }
+    crate::pi::recompute();
+    // chain 倒序下标：chain[10]=L0 … chain[0]=L10。
+    assert_eq!(chain[9].pi_inherited, 40, "PI：J4 第 1 跳 L1 须达 40");
+    assert_eq!(chain[2].pi_inherited, 40, "PI：J4 第 8 跳 L8 须恰达轮帽");
+    assert_eq!(chain[1].pi_inherited, 0, "PI：J4 L9 超帽按已达处理（0）");
+    assert_eq!(chain[0].pi_inherited, 0, "PI：J4 L10 超帽按已达处理（0）");
+    for t in chain.iter_mut() {
+        sleepq_unlink(t);
+    }
+
+    // J5. donor 跳过面：WAIT_ANY 哨兵（多对象等待无单一键，v2 收口）与纯
+    //     Event 等待者（用户位）都不构成捐赠边——受捐侧持 peer 也无人可捐。
+    let ht5 = priv_table();
+    let c5e = chan_end(ktbl, RIGHT_SEND);
+    let s5e = chan_end(ht5, RIGHT_RECV);
+    pair_up(c5e, s5e);
+    let ev = ev_obj();
+    let wa = sleeper(b"j5_wa", 50, WAIT_ANY, SIGNAL_WRITABLE, 0);
+    let evd = sleeper(b"j5_ev", 50, ev, 1 << 34, 0);
+    let vic = sleeper(b"j5_v", 0, 0, 0, ht5);
+    crate::pi::recompute();
+    assert_eq!(vic.pi_inherited, 0, "PI：J5 哨兵/Event donor 须无边");
+    sleepq_unlink(wa);
+    sleepq_unlink(evd);
+    sleepq_unlink(vic);
+
+    // J7. 共享表粒度（boot 场景 pi_server 同款 v1 语义）：内核任务 proc_tag=0
+    //     → 持有面 = 内核侧共享表——端点在其中 = **所有**内核任务睡眠者都算
+    //     持有（EL0 每进程表才反查到人）。donor 自捐 = 同一面的推论（数值
+    //     无害：pi ≤ 自身 d_eff，不膨胀）。
+    let c7e = chan_end(ktbl, RIGHT_SEND);
+    let s7e = chan_end(ktbl, RIGHT_RECV);
+    pair_up(c7e, s7e);
+    let d7 = sleeper(b"j7_cli", 28, c7e, SIGNAL_WRITABLE, 0);
+    let k7 = sleeper(b"j7_k", 0, 0, 0, 0); // 内核任务 → 共享表 → 持有
+    let p7t = priv_table();
+    let u7 = sleeper(b"j7_priv", 0, 0, 0, p7t); // 私有空表 → 不持有
+    crate::pi::recompute();
+    assert_eq!(k7.pi_inherited, 28, "PI：J7 共享表：内核任务睡眠者算持有");
+    assert_eq!(u7.pi_inherited, 0, "PI：J7 私有空表：不持有不受捐");
+    assert_eq!(d7.pi_inherited, 28, "PI：J7 自捐（共享表面推论，数值无害）");
+    sleepq_unlink(d7);
+    sleepq_unlink(k7);
+    sleepq_unlink(u7);
+
+    // 清场：SLEEPQ 还给 boot（真睡眠者按 deadline 升序入队——脏节点会破坏
+    // 超时扫描早停）。任务体/私有表 leak 不回收（ktest 语境同 spawn 政策）。
+    berry_sched::for_each_sleeper(|_| panic!("PI：清场后 SLEEPQ 须空"));
+    berry_hal_aarch64::uart_puts(b"PI-K ok\n");
 }
