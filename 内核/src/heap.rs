@@ -18,6 +18,7 @@
 //! 不解蔽——无重入/并发窗口；分配失败的 no-panic 纪律见 3b3 审查 H2 try 化）。
 
 use alloc::alloc::{GlobalAlloc, Layout};
+use alloc::boxed::Box;
 use bos_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
 use core::cell::UnsafeCell;
 use core::ptr;
@@ -89,6 +90,24 @@ unsafe impl GlobalAlloc for SlabHeap {
             }
         }
     }
+}
+
+/// Fallible 装箱（3b3 审查 H2 try 化基础件）：`Box::new` 在分配失败时 abort
+/// （= 内核停机）——EL0 可经 vmo_create/process_start/channel_create 触发，违
+/// ABI §8.0「永不 panic」。syscall 可达路径的装箱一律走本助手，失败折
+/// -ENOMEM；boot/ktest 可信语境仍可用 `Box::new`/`expect`。
+pub fn try_box<T>(val: T) -> Option<Box<T>> {
+    let layout = core::alloc::Layout::for_value(&val);
+    // SAFETY: layout 非零（T 至少 1 字节）；走本模块的全局分配器。
+    let ptr = unsafe { alloc::alloc::alloc(layout) } as *mut T;
+    if ptr.is_null() {
+        return None; // OOM：不 abort（Box::new 走 handle_alloc_error 即 abort）
+    }
+    // SAFETY: ptr 有效未初始化——write 转移所有权。
+    unsafe { ptr.write(val) };
+    // SAFETY: 该块按全局分配器 + for_value 布局分配，from_raw 收回构成合法 Box
+    // （std `Box::try_new` 内部实现同构；try_new 本体仍锁 allocator_api）。
+    Some(unsafe { Box::from_raw(ptr) })
 }
 
 // ---- freelist（侵入式：槽首存 next 指针）----

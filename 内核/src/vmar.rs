@@ -65,6 +65,10 @@ pub enum VmarError {
     VmoNotCommitted,
     /// 帧分配器无空闲页（建中间表/提交页）。
     NoFrames,
+    /// regions Vec 预留失败（堆 OOM）。allocate/map 的 `regions.push` try 化
+    /// （3b3 审查 H2）：push 增长 OOM 曾是 abort 点（EL0 经 vmar_map/allocate
+    /// 可触发，违 ABI §8.0）；预留前置到一切副作用之前，失败时零残留。
+    NoMem,
 }
 
 /// 区间登记项。
@@ -139,6 +143,8 @@ impl Vmar {
     /// 表根/ASID、管辖界收窄的新 Vmar。
     pub fn allocate(&mut self, vaddr: usize, len: usize) -> Result<Vmar, VmarError> {
         self.check_slot(vaddr, len)?;
+        // regions 预留先于 push（3b3 H2）：失败点落在纯校验后、零副作用。
+        self.regions.try_reserve_exact(1).map_err(|_| VmarError::NoMem)?;
         self.regions.push(Region {
             start: vaddr,
             len,
@@ -187,6 +193,9 @@ impl Vmar {
                 return Err(VmarError::VmoNotCommitted);
             }
         }
+        // regions 预留前置到一切副作用之前（3b3 H2）：若在收尾 push 时才失败，
+        // 叶已填 + track_map 已加——须整链回滚；前置后失败点全在纯校验区。
+        self.regions.try_reserve_exact(1).map_err(|_| VmarError::NoMem)?;
         // 填叶（nG=1 内建于 page_descriptor；AP 按权限 OR 上）。filled 计已写
         // 叶数：中途建表失败时 0..filled 页叶已入表而 regions 未登记——残留
         // PTE 是查不到区间的有效翻译（unmap/protect 永远 NotMapped、同 VA

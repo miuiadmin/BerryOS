@@ -1,10 +1,27 @@
 //! 任务（内核线程）对象 + 状态。
 
 use alloc::boxed::Box;
-use alloc::vec;
 use bos_hal_aarch64::task::TaskContext;
 use core::cell::Cell;
 use core::ptr::NonNull;
+
+/// Fallible 装箱（3b3 审查 H2 try 化；与 `内核/src/heap.rs` 的 `try_box` 同义
+/// ——本 crate 不依赖内核 crate，故本地一份）：`Box::new` OOM 即 abort，EL0
+/// 经 `process_start` 装配任务可触发，违 ABI §8.0；syscall 可达路径一律走
+/// try 变体，boot/ktest 可信语境仍可 expect。
+fn try_box<T>(val: T) -> Option<Box<T>> {
+    let layout = core::alloc::Layout::for_value(&val);
+    // SAFETY: layout 非零（T 至少 1 字节）；走全局分配器。
+    let ptr = unsafe { alloc::alloc::alloc(layout) } as *mut T;
+    if ptr.is_null() {
+        return None; // OOM：不 abort（Box::new 走 handle_alloc_error 即 abort）
+    }
+    // SAFETY: ptr 有效未初始化——write 转移所有权。
+    unsafe { ptr.write(val) };
+    // SAFETY: 该块按全局分配器 + for_value 布局分配，from_raw 收回构成合法 Box
+    // （std `Box::try_new` 内部实现同构；try_new 本体仍锁 allocator_api）。
+    Some(unsafe { Box::from_raw(ptr) })
+}
 
 /// 内核线程的默认栈大小（16KiB）。v1 切换在 IRQ-mask 中（无嵌套 IRQ）、无深递归，
 /// 够用；守卫页 TODO（plan R7）。
@@ -89,6 +106,7 @@ impl Task {
     ///
     /// 返回的 `Box<Task>` 地址即 runqueue / `current` 持有的裸指针来源。`entry` 须
     /// `-> !`（`exit` 原语或 loop 收尾；误返回经 trampoline 落 `task_exited_trap`）。
+    /// **可信语境便捷包装**（OOM 直接 expect）；EL0 可达路径用 try 系。
     pub fn new_kernel(
         entry: extern "C" fn(usize) -> !,
         arg: usize,
@@ -105,9 +123,22 @@ impl Task {
         ttbr0: usize,
         asid: u16,
     ) -> Box<Task> {
-        let (kstack, stack_top) = Self::alloc_kstack();
+        Self::try_new_kernel_with_as(entry, arg, name, ttbr0, asid)
+            .expect("内核线程装配（boot/ktest 可信语境）")
+    }
+
+    /// [`Task::new_kernel_with_as`] 的 try 版（3b3 H2）：栈/TCB 任一分配失败返
+    /// `None` 而非 abort。
+    pub fn try_new_kernel_with_as(
+        entry: extern "C" fn(usize) -> !,
+        arg: usize,
+        name: &'static [u8],
+        ttbr0: usize,
+        asid: u16,
+    ) -> Option<Box<Task>> {
+        let (kstack, stack_top) = Self::try_alloc_kstack()?;
         let ctx = TaskContext::new_kernel(entry, arg, stack_top);
-        Self::assemble(ctx, kstack, name, ttbr0, asid, 0)
+        Self::try_assemble(ctx, kstack, name, ttbr0, asid, 0)
     }
 
     /// 用户线程版（2b-4 首个 EL0）：`entry_va`/`sp0_va` 为**用户 VA**（须已在
@@ -115,6 +146,7 @@ impl Task {
     /// 接线（首切 `eret` 降 EL0，见 HAL `user_entry_trampoline`）。内核栈同
     /// 16KiB（EL0 异常帧 + handler 都跑在它上面）。`proc_tag` = 所属进程标签
     /// （3-4a：syscall 层映射为该进程的 handle 表指针；0 = 无表——内核任务）。
+    /// **可信语境便捷包装**（boot 直构用户进程用；OOM 直接 expect）。
     pub fn new_user_with_as(
         entry_va: usize,
         arg: usize,
@@ -124,28 +156,49 @@ impl Task {
         asid: u16,
         proc_tag: usize,
     ) -> Box<Task> {
-        let (kstack, stack_top) = Self::alloc_kstack();
+        Self::try_new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)
+            .expect("用户线程装配（boot 可信语境）")
+    }
+
+    /// [`Task::new_user_with_as`] 的 try 版（3b3 H2）：16KiB 栈 + TCB 装箱任一
+    /// OOM 返 `None`——EL0 经 `process_start` 触发时内核侧折 -ENOMEM（原
+    /// `vec!`/`Box::new` 直接 abort = EL0 可触发 panic，违 ABI §8.0）。
+    pub fn try_new_user_with_as(
+        entry_va: usize,
+        arg: usize,
+        sp0_va: usize,
+        name: &'static [u8],
+        ttbr0: usize,
+        asid: u16,
+        proc_tag: usize,
+    ) -> Option<Box<Task>> {
+        let (kstack, stack_top) = Self::try_alloc_kstack()?;
         let ctx = TaskContext::new_user(entry_va, arg, sp0_va, stack_top);
-        Self::assemble(ctx, kstack, name, ttbr0, asid, proc_tag)
+        Self::try_assemble(ctx, kstack, name, ttbr0, asid, proc_tag)
     }
 
     /// 出 16KiB 内核栈 + 栈顶地址（栈向下长，顶 = 最高地址；页对齐 → 16 对齐）。
-    fn alloc_kstack() -> (Box<[u8]>, usize) {
-        let kstack: Box<[u8]> = vec![0u8; STACK_SIZE].into_boxed_slice();
+    /// try 化（3b3 H2）：原 `vec![0u8; 16KiB]` 分配 OOM 即 abort——EL0 经
+    /// `process_start` 可触发；先 `try_reserve_exact` 再填充，失败返 `None`。
+    fn try_alloc_kstack() -> Option<(Box<[u8]>, usize)> {
+        let mut v: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        v.try_reserve_exact(STACK_SIZE).ok()?;
+        v.resize(STACK_SIZE, 0);
+        let kstack: Box<[u8]> = v.into_boxed_slice();
         let top = kstack.as_ptr() as usize + STACK_SIZE;
-        (kstack, top)
+        Some((kstack, top))
     }
 
-    /// 装配 Task 主体（两种入口共用；表示法字段全默认值）。
-    fn assemble(
+    /// 装配 Task 主体（两种入口共用；表示法字段全默认值）。try 化（3b3 H2）。
+    fn try_assemble(
         ctx: TaskContext,
         kstack: Box<[u8]>,
         name: &'static [u8],
         ttbr0: usize,
         asid: u16,
         proc_tag: usize,
-    ) -> Box<Task> {
-        Box::new(Task {
+    ) -> Option<Box<Task>> {
+        try_box(Task {
             ctx,
             kstack: Some(kstack),
             name,

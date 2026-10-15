@@ -16,7 +16,6 @@
 //! 表现如常，不报 -EBADSTATE）；无 PI/fastpath（P4 分层）。
 
 use crate::handle::{ObjRef, Rights};
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 
@@ -28,10 +27,28 @@ pub const CHAN_HND_MAX: usize = 4;
 pub const CHAN_DEPTH: usize = 8;
 
 /// 一条消息：inline 字节 + 迁移中的 handle 令牌（`take` 出表、未入新表——
-/// 引用计数随令牌走，`insert_ref` 不动 refs）。
+/// 引用计数随令牌走，`insert_ref` 不动 refs）。**定长内联**（3b3 审查 H2 try
+/// 化）：曾为双 `Box`（bytes/handles 各一分配且在 take **之后**构造——EL0 可
+/// 触发 OOM abort 于迁移中途）；内联后 send/recv 全链零分配（队列容量由
+/// [`ChannelEnd::try_unpaired`] 预储，push/push_front 不再增长）。多余槽位以
+/// dangling 占位，仅前 `nbytes`/`nhandles` 项有效。
 pub struct Message {
-    pub bytes: Box<[u8]>,
-    pub handles: Box<[(NonNull<ObjRef>, Rights)]>,
+    pub bytes: [u8; CHAN_MSG_MAX],
+    pub nbytes: usize,
+    pub handles: [(NonNull<ObjRef>, Rights); CHAN_HND_MAX],
+    pub nhandles: usize,
+}
+
+impl Message {
+    /// 空消息（零分配）。
+    pub fn new() -> Self {
+        Self {
+            bytes: [0; CHAN_MSG_MAX],
+            nbytes: 0,
+            handles: [(NonNull::dangling(), 0); CHAN_HND_MAX],
+            nhandles: 0,
+        }
+    }
 }
 
 /// channel 端点（`channel_create` 一次建一对，两端的 `peer` 互指）。
@@ -47,8 +64,13 @@ pub struct ChannelEnd {
 impl ChannelEnd {
     /// 建未配对端点（peer 占位 None——**必须**随即经 [`Self::pair`] 完成互钉才
     /// 可用；唯一调用方 `sys_channel_create` 建对后立刻配对，无中间观察窗口）。
-    pub fn unpaired() -> Self {
-        Self { peer: None, queue: Vec::new() }
+    /// **队列预储 [`CHAN_DEPTH`] 容量**（3b3 审查 H2 try 化：send 压队列/recv
+    /// 回滚 push_front 曾在 take 之后分配——OOM abort 于迁移中途；预储后运行
+    /// 期零增长）。预储失败返 None（调用方折 -ENOMEM，先于一切入表——零回滚面）。
+    pub fn try_unpaired() -> Option<Self> {
+        let mut queue = Vec::new();
+        queue.try_reserve_exact(CHAN_DEPTH).ok()?;
+        Some(Self { peer: None, queue })
     }
 
     /// 把两个已入表的端点互指互钉（`channel_create` 的收尾步骤）。

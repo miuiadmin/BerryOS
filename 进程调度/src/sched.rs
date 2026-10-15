@@ -94,12 +94,25 @@ pub fn spawn_as(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8
 /// 前置同 [`spawn`]（IRQ 屏蔽态）。
 pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
                   ttbr0: usize, asid: u16, proc_tag: usize) {
-    // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
-    let task: &'static mut Task =
-        alloc::boxed::Box::leak(Task::new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag));
+    // boot 可信语境一步到位；EL0 路径（process_start）走 [`try_spawn_user`]
+    // 折 -ENOMEM（3b3 H2——原 Task 装配内嵌 vec!/Box::new，OOM 直接 abort）。
+    try_spawn_user(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)
+        .expect("spawn_user：用户任务装配（boot 可信语境）")
+}
+
+/// 同 [`spawn_user`] 但 try 化（3b3 审查 H2）：16KiB 栈 / TCB 装箱任一 OOM 返
+/// `None`、**不入队、零副作用**——EL0 经 `process_start` 触发时内核侧折
+/// -ENOMEM（原路径 abort = EL0 可触发内核 panic，违 ABI §8.0）。前置同
+/// [`spawn`]（IRQ 屏蔽态）。
+pub fn try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
+                      ttbr0: usize, asid: u16, proc_tag: usize) -> Option<()> {
+    let task = Task::try_new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)?;
+    // SAFETY: CURRENT 已由 init 设好；allocator 已就绪；IRQ 屏蔽态。
+    let task: &'static mut Task = alloc::boxed::Box::leak(task);
     unsafe {
         RR.enqueue(task, rq());
     }
+    Some(())
 }
 
 /// 当前任务的进程标签（3-4a per-process handle 表派发用）。0 = 无（内核任务/

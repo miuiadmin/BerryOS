@@ -75,7 +75,7 @@ fn test_syscall() {
     //    out 回写走 copy_out（EL1 内核直映区分支）。
     let ht = bootstrap_table();
     let h1 = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert h1");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h1 as u64, 0, 0), 0, "SYSCALL：close h1");
     assert_eq!(
@@ -84,7 +84,7 @@ fn test_syscall() {
         "SYSCALL：close 旧值须 -EBADF"
     );
     let h2 = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert h2");
     unsafe { OUT = 0 };
     assert_eq!(
@@ -365,7 +365,7 @@ fn test_syscall() {
     //     引用令牌随槽迁移，对象销毁路径走通）。
     let mut t2 = HandleTable::new();
     let hm = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hm");
     assert_eq!(
         t2.get(hm, ObjType::Vmo, 0).err(),
@@ -562,7 +562,7 @@ fn test_syscall() {
     //     表）、对端 recv 落回**本表新值**（同表演示；跨表链在 EL0 spawner/
     //     child），新值三门控可查且对象可用（rights 随令牌走）。
     let hsrc = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hsrc");
     // SAFETY: 同上。
     unsafe { H_HND = [hsrc, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
@@ -602,7 +602,7 @@ fn test_syscall() {
     // H7. 原子序：随行 [好 handle, 垃圾值] → -EBADF 且好 handle **原值仍活**
     //     （预检全量、take 零发生）；随行重复值 → -EINVAL（防首 take 作废次值）。
     let hgd = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hgd");
     // SAFETY: 同上。
     unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0] };
@@ -880,7 +880,7 @@ fn test_vmo() {
     let fa = crate::mm::frames();
 
     // A. 对象语义：create/commit/read/write + 未提交页拒绝。
-    let mut vmo = Vmo::create(PAGE_SIZE * 2);
+    let mut vmo = Vmo::create(PAGE_SIZE * 2).expect("ktest：装配 VMO（可信语境）");
     assert_eq!(vmo.size(), PAGE_SIZE * 2, "VMO：容量应页对齐");
     vmo.commit(fa, 0, PAGE_SIZE).expect("VMO：commit 页 0");
     vmo.write(0, &MAGIC.to_le_bytes()).expect("VMO：write");
@@ -973,7 +973,7 @@ fn test_handle() {
     // A. insert + get 过三门：Vmo 授 READ|WRITE|DUPLICATE，get 要 READ 放行。
     let rw: Rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
     let h1 = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), rw)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), rw)
         .expect("HANDLE：insert");
     assert_ne!(h1, 0, "HANDLE：handle 0 非法（槽 0 保留）");
     let (obj, rights) = ht.get(h1, ObjType::Vmo, RIGHT_READ).expect("HANDLE：get");
@@ -1023,7 +1023,7 @@ fn test_handle() {
     // E. 槽位重用代号 +1：新 insert 复用 h1 的最低空槽，但代号已进——
     //    旧值 h1 不复活（gen 是守卫，不是「槽恰好空着」）。
     let h3 = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE * 2)), RIGHT_READ)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE * 2).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ)
         .expect("HANDLE：insert 重用槽");
     assert_eq!(
         h3 & SLOT_MASK,

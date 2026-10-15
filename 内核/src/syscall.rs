@@ -39,7 +39,6 @@ use crate::handle::{
 };
 use crate::vmar::{Perm, Vmar, VmarError};
 use crate::vmo::{Vmo, VmoError};
-use alloc::boxed::Box;
 use bos_hal_aarch64::trap::TrapFrame;
 use bos_hal_aarch64::KERNEL_VA_BASE;
 use bos_mm::va::PAGE_SIZE;
@@ -144,9 +143,11 @@ fn caller_is_el1(tf: &TrapFrame) -> bool {
     (tf.spsr >> 2) & 0x3 == 1
 }
 
-/// `vmo_create` 尺寸上限（v1）：页记账 Vec ≈ size/4096×10B，巨参会把堆分配
-/// 推向 abort（分配失败 = 内核 panic——**EL0 可触发**，违 no-panic 纪律）；
-/// 上限内 Vec ≤ 40KB 恒可分配。真机/堆扩大后上调（ABI 注记）。
+/// `vmo_create` 尺寸上限（v1）：页记账 ≈ **18B/页**（pages = `Option<usize>`
+/// 无 niche 占 16B + mapcnt u16 2B——旧注释 10B/页 ≤40KB 系算术错，3b3 H2 勘
+/// 误），16MiB 上限对应 4096 页 ≈ 72KiB 记账。上限只拦巨参滥用；分配本身已
+/// try 化（`Vmo::create` 折 -ENOMEM——上限内 OOM 也不再 abort）。真机/堆扩
+/// 大后上调（ABI 注记）。
 const VMO_MAX_SIZE: usize = 16 * 1024 * 1024;
 
 /// 栈上拷贝分块（防长缓冲吃内核栈）。
@@ -314,6 +315,7 @@ fn voe(e: VmoError) -> i32 {
         VmoError::NotCommitted => ERR_BAD_STATE,
         VmoError::NoFrames => ERR_NO_MEMORY,
         VmoError::Mapped => ERR_BUSY,
+        VmoError::NoMem => ERR_NO_MEMORY, // 页记账 try 化（3b3 H2）
     }
 }
 
@@ -326,6 +328,7 @@ fn vme(e: VmarError) -> i32 {
         VmarError::NotMapped => ERR_NOT_FOUND,
         VmarError::VmoNotCommitted => ERR_BAD_STATE,
         VmarError::NoFrames => ERR_NO_MEMORY,
+        VmarError::NoMem => ERR_NO_MEMORY, // regions try 化（3b3 H2）
     }
 }
 
@@ -347,9 +350,15 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u64(el1, out, 0) {
         return e as i64;
     }
+    // create try 化（3b3 H2）：NoMem → -ENOMEM（原 create 内嵌 vec! 双分配，
+    // OOM abort 曾是 EL0 可触发 panic）。
+    let vmo = match Vmo::create(size) {
+        Ok(v) => v,
+        Err(e) => return voe(e) as i64,
+    };
     match caller_table(tf) {
         Ok(t) => match t.insert(
-            KernelObj::Vmo(Vmo::create(size)),
+            KernelObj::Vmo(vmo),
             RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE,
         ) {
             Ok(h) => match copy_out_u64(el1, out, h as u64) {
@@ -779,11 +788,12 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     };
     thrd.entry = entry as usize;
     thrd.sp = sp as usize;
-    thrd.started = true;
-    // SAFETY: vr 在表（get_raw 过）；任务钉住（v1 永不释放，见上）。
-    unsafe { (*vr.as_ptr()).retain() };
     let ht_ptr = &raw mut proc.ht as *mut HandleTable as usize;
-    bos_sched::spawn_user(
+    // 任务装配 try 化 + **前置于一切不可逆变更**（3b3 H2 重排）：栈/TCB OOM →
+    // 回滚迁移（take 回子表令牌、重插调用者表——值或变、语义存活，同 insert
+    // 失败回滚）→ -ENOMEM；thrd/started/retain 全未动。单核 IRQ 屏蔽：已入队
+    // 任务在 eret 前不会运行，下面字段补写无竞态。
+    if bos_sched::try_spawn_user(
         entry as usize,
         child_x0,
         sp as usize,
@@ -791,7 +801,21 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         proc.ttbr0_pa,
         proc.asid,
         ht_ptr,
-    );
+    )
+    .is_none()
+    {
+        if bootstrap != 0 {
+            // 回滚迁移（子表刚插入、单核无插队 → take 必成；防御面下令牌泄漏，
+            // 安全向）。
+            if let Ok((obj, rights)) = proc.ht.take(child_x0 as u32) {
+                let _ = t.insert_ref(obj, rights);
+            }
+        }
+        return ERR_NO_MEMORY as i64;
+    }
+    thrd.started = true;
+    // SAFETY: vr 在表（get_raw 过）；任务钉住（v1 永不释放，见上）。
+    unsafe { (*vr.as_ptr()).retain() };
     0
 }
 
@@ -811,11 +835,16 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE;
-    let h0 = match t.insert(KernelObj::Channel(ChannelEnd::unpaired()), rights) {
+    // 端点装配 try 化（3b3 H2）：队列预储 CHAN_DEPTH × Message ≈ 2.7KB/端，
+    // 失败先于一切入表——零回滚面，折 -ENOMEM。
+    let (Some(end0), Some(end1)) = (ChannelEnd::try_unpaired(), ChannelEnd::try_unpaired()) else {
+        return ERR_NO_MEMORY as i64;
+    };
+    let h0 = match t.insert(KernelObj::Channel(end0), rights) {
         Ok(h) => h,
         Err(e) => return e as i64,
     };
-    match t.insert(KernelObj::Channel(ChannelEnd::unpaired()), rights) {
+    match t.insert(KernelObj::Channel(end1), rights) {
         Ok(h1) => {
             let (p0, p1) = (
                 t.get_raw(h0, ObjType::Channel, 0).ok().map(|(o, _)| o),
@@ -924,10 +953,13 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             }
         }
     }
-    let msg = Message {
-        bytes: Box::from(&bbuf[..nbytes]),
-        handles: Box::from(&toks[..nhandles]),
-    };
+    // 定长内联消息（3b3 H2 try 化：曾在此双 Box 分配——take 之后 OOM 即 abort
+    // 于迁移中途；内联 + 队列预储后 send 全链零分配）。
+    let mut msg = Message::new();
+    msg.bytes[..nbytes].copy_from_slice(&bbuf[..nbytes]);
+    msg.nbytes = nbytes;
+    msg.handles[..nhandles].copy_from_slice(&toks[..nhandles]);
+    msg.nhandles = nhandles;
     // SAFETY: peer_ptr 互钉在活；队列有界（满检过，单核无并发插队）。
     unsafe {
         let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
@@ -1003,19 +1035,19 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             return e as i64;
         }
     };
-    if msg.bytes.len() > cap_bytes || msg.handles.len() > cap_hnd {
+    if msg.nbytes > cap_bytes || msg.nhandles > cap_hnd {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return ERR_INVALID_ARG as i64;
     }
-    if let Err(e) = copy_to_user(el1, bytes, &msg.bytes) {
+    if let Err(e) = copy_to_user(el1, bytes, &msg.bytes[..msg.nbytes]) {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return e as i64;
     }
     // 令牌入调用者表（新值收集；任一失败全量回滚——表里已入的 take 回）。
     let mut newvals = [0u32; CHAN_HND_MAX];
-    for i in 0..msg.handles.len() {
+    for i in 0..msg.nhandles {
         match t.insert_ref(msg.handles[i].0, msg.handles[i].1) {
             Ok(nh) => newvals[i] = nh,
             Err(e) => {
@@ -1025,7 +1057,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             }
         }
     }
-    let n = msg.handles.len();
+    let n = msg.nhandles;
     let mut obuf = [0u8; CHAN_HND_MAX * 4];
     for i in 0..n {
         obuf[i * 4..i * 4 + 4].copy_from_slice(&newvals[i].to_le_bytes());
@@ -1035,7 +1067,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
     }
-    if let Err(e) = copy_out_u64(el1, nbytesp, msg.bytes.len() as u64) {
+    if let Err(e) = copy_out_u64(el1, nbytesp, msg.nbytes as u64) {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
@@ -1045,7 +1077,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
     }
-    drop(msg); // 消费：令牌已入表（Message 的 Box 只释放数组内存，不碰 refs）
+    drop(msg); // 消费：令牌已入表（Message 定长内联——drop 无堆动作，不碰 refs）
     0
 }
 

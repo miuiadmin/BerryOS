@@ -27,6 +27,6 @@ pub use class::{RoundRobin, SchedClass};
 pub use runqueue::{Runqueue, Topo};
 pub use sched::{
     current_tag, exit_current, idle_loop, init, last_killed, on_irq_tick, spawn, spawn_as,
-    spawn_user, switches, user_fault_exit, user_kills, yield_now,
+    spawn_user, switches, try_spawn_user, user_fault_exit, user_kills, yield_now,
 };
 pub use task::{EppHint, Task, TaskState, STACK_SIZE};

@@ -29,6 +29,10 @@ pub enum VmoError {
     /// 区间内仍有页被映射（decommit 前须先 unmap——归还仍被映射的页 = PA 复用
     /// 后经残留 PTE 静默写坏别人，3-2 映射计数防线）。
     Mapped,
+    /// 页记账 Vec 预留失败（堆 OOM）。[`Vmo::create`] try 化（3b3 审查 H2）：
+    /// 原 `vec!` 双分配 OOM 直接 abort——EL0 经 `vmo_create` 可触发，违
+    /// ABI §8.0「永不 panic」；现折 Err 由调用方映射 -ENOMEM。
+    NoMem,
 }
 
 /// 匿名 VMO：`size` 字节、按页提交的物理页后备（§2 后备类①「物理页（匿名）」）。
@@ -44,16 +48,26 @@ pub struct Vmo {
 }
 
 impl Vmo {
-    /// 建空 VMO（不占物理页）。`size` 向上取整到页。对象层 API：非法 size 断言
-    /// （Phase 3 syscall 化时折 Err）。
-    pub fn create(size: usize) -> Self {
-        assert!(size > 0, "VMO size 须 > 0");
-        let npages = size.div_ceil(PAGE_SIZE);
-        Self {
-            size: npages * PAGE_SIZE,
-            pages: alloc::vec![None; npages],
-            mapcnt: alloc::vec![0; npages],
+    /// 建空 VMO（不占物理页）。`size` 向上取整到页。size==0 → [`VmoError::OutOfRange`]；
+    /// 页记账双 Vec **try 化**（3b3 审查 H2）：预留失败返 [`VmoError::NoMem`]
+    /// 而非 abort——`Option<usize>` 无 niche 占 16B/页 + mapcnt 2B/页，16MiB
+    /// 上限即 4096 页 ≈ 72KiB 记账，OOM 是真实可达路径（EL0 可触发）。
+    pub fn create(size: usize) -> Result<Self, VmoError> {
+        if size == 0 {
+            return Err(VmoError::OutOfRange); // syscall 面已前置 -EINVAL，此处兜底
         }
+        let npages = size.div_ceil(PAGE_SIZE);
+        let mut pages = alloc::vec::Vec::new();
+        pages.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        pages.resize(npages, None);
+        let mut mapcnt = alloc::vec::Vec::new();
+        mapcnt.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        mapcnt.resize(npages, 0);
+        Ok(Self {
+            size: npages * PAGE_SIZE,
+            pages,
+            mapcnt,
+        })
     }
 
     /// 提交页区间：立即出页 + 清零。幂等（已提交页跳过）；整页粒度。

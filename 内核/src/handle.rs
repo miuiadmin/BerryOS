@@ -254,9 +254,10 @@ pub struct HandleTable {
 impl HandleTable {
     /// 建空表（槽 0 保留）。
     pub fn new() -> Self {
-        let mut slots = Vec::with_capacity(8);
-        slots.push(SlotState::Free { next_gen: 1 });
-        Self { slots }
+        // 零分配惰性（3b3 审查 H2 try 化）：曾 `Vec::with_capacity(8)`——EL0 经
+        // `process_create` 建 Process 即触堆分配，OOM abort。保留槽 0 与首扩都
+        // 延迟到首次 insert 的 `alloc_slot`（其内 try_reserve）。
+        Self { slots: Vec::new() }
     }
 
     /// 放入对象并授予 rights，返回新 handle（取最低可用空槽）。**先占槽后
@@ -264,10 +265,13 @@ impl HandleTable {
     pub fn insert(&mut self, obj: KernelObj, rights: Rights) -> Result<Handle, i32> {
         let slot = self.alloc_slot()?;
         let gen = self.take_gen(slot)?;
-        // SAFETY: 刚 into_raw 的裸指针，非空。
-        let obj = unsafe {
-            NonNull::new_unchecked(Box::into_raw(Box::new(ObjRef { refs: 1, obj })))
+        // 装箱 try 化（3b3 H2）：失败时槽仍 Free 未写、gen 未发行——零副作用
+        // 返 -ENOMEM（原 Box::new OOM 直接 abort）。
+        let Some(boxed) = crate::heap::try_box(ObjRef { refs: 1, obj }) else {
+            return Err(ERR_NO_MEMORY);
         };
+        // SAFETY: 刚 into_raw 的裸指针，非空。
+        let obj = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
         self.slots[slot] = SlotState::Used { gen, obj, rights };
         Ok(encode(slot as u32, gen))
     }
@@ -462,6 +466,11 @@ impl HandleTable {
     /// **跳过代号耗尽的槽**——`next_gen > GEN_MASK` 的空槽过不了 `take_gen`，
     /// 选中即白堵一个插入位，3b3 审查 H3；无可用槽且未满则尾插）。
     fn alloc_slot(&mut self) -> Result<usize, i32> {
+        // 惰性铺保留槽 0（表出生零分配——首插才落 0 号 Free 槽，3b3 H2）。
+        if self.slots.is_empty() {
+            self.slots.try_reserve(1).map_err(|_| ERR_NO_MEMORY)?;
+            self.slots.push(SlotState::Free { next_gen: 1 }); // 槽 0 恒空 = INVALID
+        }
         if let Some(off) = self
             .slots
             .iter()
@@ -473,6 +482,8 @@ impl HandleTable {
         if self.slots.len() > SLOT_MASK as usize {
             return Err(ERR_NO_MEMORY); // 表满（65536 槽）
         }
+        // 尾插前预留（3b3 H2 try 化：push 增长的 OOM 曾是 abort 点）。
+        self.slots.try_reserve(1).map_err(|_| ERR_NO_MEMORY)?;
         self.slots.push(SlotState::Free { next_gen: 1 });
         Ok(self.slots.len() - 1)
     }

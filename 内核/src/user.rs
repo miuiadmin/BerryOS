@@ -571,15 +571,15 @@ impl UserProcess {
         let asid = alloc_asid();
         let mut vmar = Vmar::new_root(fa, asid).expect("user: 建 root Vmar（boot 可信语境）");
 
-        let mut code_vmo = Vmo::create(PAGE_SIZE);
+        let mut code_vmo = Vmo::create(PAGE_SIZE).expect("user: 装 code VMO（boot 可信语境）");
         code_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit code");
         code_vmo.write(0, code).expect("user: 拷代码");
 
-        let mut data_vmo = Vmo::create(PAGE_SIZE);
+        let mut data_vmo = Vmo::create(PAGE_SIZE).expect("user: 装 data VMO（boot 可信语境）");
         data_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit data");
         data_vmo.write(0, &data_magic.to_le_bytes()).expect("user: 数据页魔数");
 
-        let mut stack_vmo = Vmo::create(PAGE_SIZE);
+        let mut stack_vmo = Vmo::create(PAGE_SIZE).expect("user: 装 stack VMO（boot 可信语境）");
         stack_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit stack");
 
         vmar.map(fa, &mut code_vmo, USER_CODE_VA, 0, PAGE_SIZE, Perm::UserRw)

@@ -50,7 +50,7 @@ impl MiniAspace {
     /// 建空间并在私有页首写 `magic`（任务体/测试用来自证「我在自己的空间里」）。
     pub fn new(fa: &mut FrameAllocator, asid: u16, magic: u64) -> Self {
         let mut vmar = Vmar::new_root(fa, asid).expect("MiniAspace: 建 root Vmar（boot 可信语境）");
-        let mut vmo = Vmo::create(PAGE_SIZE);
+        let mut vmo = Vmo::create(PAGE_SIZE).expect("MiniAspace: 装 VMO（boot 可信语境）");
         vmo.commit(fa, 0, PAGE_SIZE).expect("MiniAspace: commit 私有页");
         vmo.write(0, &magic.to_le_bytes()).expect("MiniAspace: 写 magic");
         vmar.map(fa, &mut vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
