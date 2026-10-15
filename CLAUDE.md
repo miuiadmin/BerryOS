@@ -128,6 +128,7 @@ just build          # = cargo build（内核 ELF，target=aarch64-unknown-none�
 just run            # QEMU virt 冷启动 → 串口打印 1BerryOS boot（默认起始 EL1），halt
 just run-el2        # -machine virt,virtualization=on → 21BerryOS boot（强制 EL2→EL1 eret 降级路径）
 just run-release    # release 构建 + 同样 QEMU
+just smoke          # 无人值守冒烟（CI 同款）：boot 标记断言 + switches 金丝雀严格递增；SMOKE_KEEP_LOG=1 留日志
 just check / just clean
 ```
 
@@ -137,7 +138,7 @@ just check / just clean
 - **QEMU ≥11.x 不接受 `-bios none`**（报 `Could not find ROM image 'none'`）；`virt -kernel <ELF>` 直加载即可，故 justfile / `.cargo/config.toml` 都不带 `-bios`。
 - **QEMU halt 后不退出**：内核 `wfe` 死循环，串口打印完即停在那。退出 QEMU 用 `Ctrl-A` 然后 `X`（macOS 无 GNU `timeout`，自动化里用后台 + `kill`）。
 - 调试：`-s -S` + lldb 单步；`-d cpu_reset -D qemu.log` 看启动 CurrentEL。
-- 测试入口（待建）：host `cargo test`（单元，不依赖 QEMU）+ QEMU 集成（`ktest` 框架，见 `文档/测试策略.md`）。
+- 测试入口：`just smoke`（QEMU 无人值守冒烟，CI 同款，`工具链/smoke.sh`）+ `just test-host`（host 单元，不依赖 QEMU）+ QEMU 集成（`ktest` 框架，见 `文档/测试策略.md`）。
 
 ## Claude 在本仓库的工作方式
 

@@ -44,3 +44,8 @@ host := `rustc -vV | sed -n 's/^host: //p'`
 # host 单元测试：bos-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）。
 test-host:
     cargo test -p bos-mm --target {{host}}
+
+# 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
+# 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
+smoke: build
+    bash 工具链/smoke.sh

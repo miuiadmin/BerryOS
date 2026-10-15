@@ -119,6 +119,7 @@ Phase 2a（G1）已落地：stable Rust + `aarch64-unknown-none`，`just run` �
 just build          # = cargo build（内核 ELF）
 just run            # QEMU virt → 1BerryOS boot（默认起始 EL1），halt
 just run-el2        # virt,virtualization=on → 21BerryOS boot（EL2→EL1 eret 降级路径）
+just smoke          # 无人值守冒烟（CI 同款）：boot 标记断言 + switches 金丝雀严格递增
 just run-release / just check / just clean
 ```
 
