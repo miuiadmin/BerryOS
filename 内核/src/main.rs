@@ -15,6 +15,7 @@ mod aspace;
 mod heap;
 mod ktest;
 mod mm;
+mod user;
 mod vmar;
 mod vmo;
 
@@ -92,8 +93,28 @@ pub extern "C" fn rust_main() -> ! {
     bos_sched::init();
     bos_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
     bos_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
-    // 注册 IRQ 派发（HAL→sched 反转，避循环依赖；须在 enable_irq 前）。Step 5 只打 tick。
+
+    // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡。good 打 'u'
+    // （AP=01 + syscall 往返在 EL0 生效的活证）；两个 rogue 各自作死（野指针 /
+    // 畸形 SVC）→ 只死自己（user_fault_exit），watchdog 断言后打关卡标记。
+    let up_good =
+        user::UserProcess::build(mm::frames(), user::user_good_code(), user::USER_MAGIC);
+    let up_rogue_ptr =
+        user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
+    let up_rogue_svc =
+        user::UserProcess::build(mm::frames(), user::user_rogue_svc_code(), user::USER_MAGIC);
+    bos_sched::spawn_user(user::USER_CODE_VA, USER_PRINT_EVERY, user::USER_STACK_TOP,
+                          b"user_good", up_good.ttbr0_pa, up_good.asid);
+    bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+                          b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid);
+    bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+                          b"user_rogue_svc", up_rogue_svc.ttbr0_pa, up_rogue_svc.asid);
+    bos_sched::spawn(user::watchdog, 0, b"watchdog");
+
+    // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
+    // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     bos_hal_aarch64::set_irq_dispatch(bos_sched::on_irq_tick);
+    bos_hal_aarch64::set_user_fault_exit(bos_sched::user_fault_exit);
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/TVAL；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { bos_hal_aarch64::timer::arm_slice() };
@@ -143,6 +164,9 @@ extern "C" fn task_b(arg: usize) -> ! {
 /// 不被 UART 背压吃掉，switches 计数贴近 wall-clock × SLICE_HZ）。SOAK=1 为低噪 soak。
 const A_PRINT_EVERY: u32 = 2_000_000;
 const B_PRINT_EVERY: u32 = 2_000_000;
+
+/// good 用户进程的打印节流阈值（与 A/B 同量级——'u' 与 A/B 同节奏出现）。
+const USER_PRINT_EVERY: usize = 2_000_000;
 
 /// task_a/task_b 私有页 magic（2b-2 隔离金丝雀；互异且非零）。
 const TASK_A_MAGIC: u64 = 0x00A5_C0DE_AAAA_0001;

@@ -66,6 +66,34 @@ impl TaskContext {
         ctx.sp = kstack_top as u64;
         ctx
     }
+
+    /// 构造一个新**用户**线程的初始上下文（2b-4 首个 EL0）。
+    ///
+    /// 首次 `switch` 进它时：`ret` 跳 [`user_entry_trampoline`]，后者设
+    /// `ELR_EL1 = entry_va`、`SPSR_EL1 = EL0t`（0——DAIF 全解蔽，用户态可被 timer
+    /// 抢占）、`SP_EL0 = sp0_va`、`x0 = arg`，`eret` 降到 EL0 跳用户入口。参向量
+    /// 同 [`TaskContext::new_kernel`] trick：`x19=entry_va`、`x20=arg`、`x21=sp0_va`。
+    ///
+    /// EL0 运行期间 SP_EL1 恒留本任务内核栈（eret 前的栈位）——用户态异常/IRQ 入口
+    /// （向量 0x400/0x480）硬件强制 SPsel=1，落到的正是该栈，`save_frame_el0` 直接可用。
+    ///
+    /// `kstack_top`/`sp0_va` 均须 **16 字节对齐**（SP-align EC=0x26）。
+    pub fn new_user(
+        entry_va: usize,
+        arg: usize,
+        sp0_va: usize,
+        kstack_top: usize,
+    ) -> TaskContext {
+        assert!(kstack_top & 0xF == 0, "kstack_top 必须 16 字节对齐");
+        assert!(sp0_va & 0xF == 0, "用户栈顶必须 16 字节对齐");
+        let mut ctx = TaskContext::ZERO;
+        ctx.r[0] = entry_va as u64; // x19 = 用户入口 VA
+        ctx.r[1] = arg as u64; // x20 = arg
+        ctx.r[2] = sp0_va as u64; // x21 = 用户 sp_el0
+        ctx.lr = user_entry_trampoline as *const () as usize as u64; // x30 = trampoline
+        ctx.sp = kstack_top as u64;
+        ctx
+    }
 }
 
 global_asm!(
@@ -116,9 +144,27 @@ global_asm!(
     ".size task_entry_trampoline, . - task_entry_trampoline",
 );
 
+global_asm!(
+    ".text",
+    ".globl user_entry_trampoline",
+    ".type user_entry_trampoline,%function",
+    "user_entry_trampoline:",
+    // 首次 switch 进新用户任务：x19=entry_va、x20=arg、x21=sp0_va（new_user 设）。
+    // 解蔽 IRQ（同内核 trampoline 的理由：switch 继承 PSTATE.I=1）；SPSR 另设 0
+    //（EL0t、DAIF 解蔽）→ eret 后用户态可被 timer 抢占（向量 0x480）。
+    "    msr daifclr, #2",
+    "    mov x0, x20",           // 用户入口第一参（eret 不动 GP 寄存器）
+    "    msr sp_el0, x21",       // 用户栈顶
+    "    msr elr_el1, x19",      // 用户入口 PC
+    "    msr spsr_el1, xzr",     // EL0t、DAIF 全解蔽
+    "    eret",                  // 降 EL0，跳 entry(arg)；不归——任务死走 kill 路径
+    ".size user_entry_trampoline, . - user_entry_trampoline",
+);
+
 extern "C" {
     fn switch(prev: *mut TaskContext, next: *const TaskContext);
     fn task_entry_trampoline();
+    fn user_entry_trampoline();
 }
 
 /// 切换出去：把**当前** callee-saved+sp 存入 `*prev`，载入 `*next` 并 `ret` 进它。

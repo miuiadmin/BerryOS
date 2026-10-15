@@ -86,6 +86,19 @@ pub fn spawn_as(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8
     }
 }
 
+/// 生成一个**用户**线程（2b-4 首个 EL0）：内核栈 + `new_user` 上下文（首切经
+/// trampoline `eret` 降 EL0）+ 入 runqueue。`entry_va`/`sp0_va` 是用户 VA（该 AS
+/// 已映射、AP 放行 EL0）。前置同 [`spawn`]（IRQ 屏蔽态）。
+pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
+                  ttbr0: usize, asid: u16) {
+    // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
+    let task: &'static mut Task =
+        alloc::boxed::Box::leak(Task::new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid));
+    unsafe {
+        RR.enqueue(task, rq());
+    }
+}
+
 /// 2b-2：任务地址空间激活——`ttbr0`/`asid` **变化才**写 TTBR0+CONTEXTIDR+`tlbi`
 /// （`内存管理设计.md` §5.1：switch 必带按号失效；同 AS 连续切换零额外开销）。
 /// 调用点：三个切换位（yield/exit/IRQ 抢占）在 `CURRENT = next` 之后、
@@ -124,23 +137,59 @@ pub fn yield_now() {
 pub fn exit_current() -> ! {
     hal::disable_irq();
     // SAFETY: IRQ 已屏蔽；cur 已 dequeue 后无人切回它。
-    unsafe {
-        let cur = CURRENT;
-        debug_assert!((*cur).state != TaskState::Exited, "double exit");
-        RR.dequeue(&mut *cur, rq());
-        let next_ptr: *mut Task = match RR.pick_next(rq(), &TOPO) {
-            Some(n) => n,
-            None => addr_of_mut!(IDLE_TASK),
-        };
-        (*next_ptr).state = TaskState::Running;
-        (*next_ptr).slice_left = hal::timer::slice_cycles();
-        CURRENT = next_ptr;
-        activate_if_changed(cur, next_ptr);
-        // prev=cur（已出 runqueue、将废弃）；切走后永不回到 cur。
-        hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
-    }
+    unsafe { switch_away_forever() }
+}
+
+/// 用户任务致死计数（G1.5 验收：watchdog 断言 == 期望杀数）。
+static mut USER_KILLS: u64 = 0;
+
+/// 当前用户任务因致命故障被杀（HAL `exception_sync_el0` 经函数指针槽调；2b-4
+/// G1.5——**只死自己**，内核与其余任务无恙）。打印 + 计数 + 切走，永不返回：
+/// 被弃的是故障帧所在的内核栈（同步异常入口 PSTATE.I=1，无 GIC 状态要收拾）。
+///
+/// # Safety
+/// 同步异常上下文（PSTATE.I=1）；C-ABI fn 指针槽；CURRENT 是用户任务。
+pub unsafe extern "C" fn user_fault_exit() -> ! {
+    let cur = CURRENT;
+    USER_KILLS = USER_KILLS.wrapping_add(1);
+    hal::uart_puts(b"\nG1.5: kill user task '");
+    hal::uart_puts((*cur).name);
+    hal::uart_puts(b"'\n");
+    switch_away_forever()
+}
+
+/// exit/kill 共用尾部：当前任务出 runqueue + 切到下一个（或 idle），永不回到它。
+///
+/// # Safety
+/// IRQ 已屏蔽（显式 disable_irq 或异常入口硬件屏蔽）；CURRENT 有效。
+unsafe fn switch_away_forever() -> ! {
+    let cur = CURRENT;
+    debug_assert!((*cur).state != TaskState::Exited, "double exit");
+    RR.dequeue(&mut *cur, rq());
+    let next_ptr: *mut Task = match RR.pick_next(rq(), &TOPO) {
+        Some(n) => n,
+        None => addr_of_mut!(IDLE_TASK),
+    };
+    (*next_ptr).state = TaskState::Running;
+    (*next_ptr).slice_left = hal::timer::slice_cycles();
+    CURRENT = next_ptr;
+    activate_if_changed(cur, next_ptr);
+    // prev=cur（已出 runqueue、将废弃）；切走后永不回到 cur。
+    hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
     // 不可达：cur 已 dequeue，无人切回。halt 兜底。
     hal::halt();
+}
+
+/// switches 金丝雀只读访问（watchdog / 遥测读；单核顺序）。
+pub fn switches() -> u64 {
+    // SAFETY: 只读；单核顺序访问。
+    unsafe { SWITCHES }
+}
+
+/// 用户任务致死计数只读访问（G1.5 watchdog 断言用）。
+pub fn user_kills() -> u64 {
+    // SAFETY: 只读；单核顺序访问。
+    unsafe { USER_KILLS }
 }
 
 /// idle 主循环（tickless）：runqueue 空时屏蔽 CNTV + `wfi`（空闲核不收周期中断）；

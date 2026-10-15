@@ -7,8 +7,10 @@
 //!
 //! **Phase 1 单核**：内核跑在 EL1h（`SP_EL1`，见 `boot.rs` 的 `spsr=0x3c5`），故
 //! current-EL 异常落到 0x200（sync）/0x280（irq）、handler 用 SP_EL1（内核栈），不搞
-//! 专用异常栈（那是 G2+/SMP 细化）。0x200/0x280 各装完整 save/restore；其余 14 槽
-//! 路由到 [`exception_unexpected`]（读 ESR/ELR 打印后 halt）。
+//! 专用异常栈（那是 G2+/SMP 细化）。0x200/0x280 各装完整 save/restore；0x400/0x480
+//! 自 2b-4 起装 lower-EL（EL0 用户态）sync/IRQ——帧宏 `*_el0` 差异仅在 `sp` 槽
+//! 存取 **SP_EL0**（用户 SP）；其余 12 槽路由到 [`exception_unexpected`]（读 ESR/ELR
+//! 打印后 halt）。
 //!
 //! **G0 判据**：异常/panic 必须能 dump 寄存器/PC/ESR/FAR。BRK（EC=0x3C）在本阶段
 //! 做成**可恢复**：dump 后 `ELR += 4` 跳过 brk 指令、`eret` 返回——以此一次性验证
@@ -78,9 +80,9 @@ global_asm!(
     "    .balign 128",
     "    b exc_unexpected",      // 0x380  SError
     "    .balign 128",
-    "    b exc_unexpected",      // 0x400  lower EL, AArch64, Sync (Phase 2 用户 SVC)
+    "    b exc_sync_el0",       // 0x400  lower EL, AArch64, Sync  ← 2b-4 用户 SVC/fault
     "    .balign 128",
-    "    b exc_unexpected",      // 0x480
+    "    b exc_irq_el0",        // 0x480  lower EL, AArch64, IRQ  ← timer 抢占用户态
     "    .balign 128",
     "    b exc_unexpected",      // 0x500
     "    .balign 128",
@@ -148,6 +150,64 @@ global_asm!(
     "    add sp, sp, #288",
     ".endm",
 
+    // ---- lower-EL（EL0 用户态）帧宏：sp 槽语义不同 ----
+    // 异常自 EL0 入 EL1 时硬件强制 SPsel=1 → SP=SP_EL1（eret 进 EL0 前留在那的
+    // 本任务内核栈），栈帧仍落在内核栈上；但帧的 `sp` 字段应存**用户 SP**（SP_EL0，
+    // 唯一记录处——恢复时写回）。其余存取与 save/load_frame 逐字节同构。
+    ".macro save_frame_el0",
+    "    sub sp, sp, #288",
+    "    stp x0,  x1,  [sp, #0]",
+    "    stp x2,  x3,  [sp, #16]",
+    "    stp x4,  x5,  [sp, #32]",
+    "    stp x6,  x7,  [sp, #48]",
+    "    stp x8,  x9,  [sp, #64]",
+    "    stp x10, x11, [sp, #80]",
+    "    stp x12, x13, [sp, #96]",
+    "    stp x14, x15, [sp, #112]",
+    "    stp x16, x17, [sp, #128]",
+    "    stp x18, x19, [sp, #144]",
+    "    stp x20, x21, [sp, #160]",
+    "    stp x22, x23, [sp, #176]",
+    "    stp x24, x25, [sp, #192]",
+    "    stp x26, x27, [sp, #208]",
+    "    stp x28, x29, [sp, #224]",
+    "    str x30,      [sp, #240]",
+    "    mrs x0, esr_el1",
+    "    mrs x1, far_el1",
+    "    mrs x2, elr_el1",
+    "    mrs x3, spsr_el1",
+    "    mrs x4, sp_el0",           // 用户 SP（非异常入口内核 SP）
+    "    stp x0, x1, [sp, #248]",   // esr, far
+    "    stp x2, x3, [sp, #264]",   // elr, spsr
+    "    str x4,     [sp, #280]",   // sp = 用户 SP
+    ".endm",
+
+    ".macro load_frame_el0",
+    "    ldr x0, [sp, #264]",
+    "    msr elr_el1, x0",
+    "    ldr x0, [sp, #272]",
+    "    msr spsr_el1, x0",
+    "    ldr x0, [sp, #280]",
+    "    msr sp_el0, x0",           // 恢复用户 SP
+    "    ldp x0,  x1,  [sp, #0]",
+    "    ldp x2,  x3,  [sp, #16]",
+    "    ldp x4,  x5,  [sp, #32]",
+    "    ldp x6,  x7,  [sp, #48]",
+    "    ldp x8,  x9,  [sp, #64]",
+    "    ldp x10, x11, [sp, #80]",
+    "    ldp x12, x13, [sp, #96]",
+    "    ldp x14, x15, [sp, #112]",
+    "    ldp x16, x17, [sp, #128]",
+    "    ldp x18, x19, [sp, #144]",
+    "    ldp x20, x21, [sp, #160]",
+    "    ldp x22, x23, [sp, #176]",
+    "    ldp x24, x25, [sp, #192]",
+    "    ldp x26, x27, [sp, #208]",
+    "    ldp x28, x29, [sp, #224]",
+    "    ldr x30,      [sp, #240]",
+    "    add sp, sp, #288",
+    ".endm",
+
     // ---- current-EL SPx 同步异常：存帧 → 调 Rust → 取帧 → eret ----
     "exc_sync_spx:",
     "    save_frame",
@@ -162,6 +222,24 @@ global_asm!(
     "    mov x0, sp",
     "    bl exception_irq",
     "    load_frame",
+    "    eret",
+
+    // ---- lower-EL（EL0）同步异常：SVC 派发 / 故障 → 杀当前任务（G1.5）----
+    // handler 可能经 kill 槽 switch 走不归（帧所在栈被弃）——与 IRQ 路径 switch
+    // 同一复合规则：switch 是纯叶子 asm。
+    "exc_sync_el0:",
+    "    save_frame_el0",
+    "    mov x0, sp",
+    "    bl exception_sync_el0",
+    "    load_frame_el0",
+    "    eret",
+
+    // ---- lower-EL（EL0）IRQ：GIC 协议复用 exception_irq（含抢占 switch）----
+    "exc_irq_el0:",
+    "    save_frame_el0",
+    "    mov x0, sp",
+    "    bl exception_irq",
+    "    load_frame_el0",
     "    eret",
 
     // ---- 其余向量：不应发生。直接调 Rust 读 ESR/ELR 打印 + halt（不存帧）。----
@@ -224,9 +302,58 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
     }
 }
 
+/// lower-EL（EL0 用户态）同步异常入口（asm 调；2b-4 首个 EL0 + G1.5）。
+///
+/// SVC → 派发（ret 写回 x0、eret 续行于 svc 下一句）；**v1 政策**：EL0 调越界/
+/// 未实现编号（[`ERR_NOT_SUPPORTED`](crate::syscall::ERR_NOT_SUPPORTED)）= 畸形
+/// syscall → 杀（Phase 3 真 ABI 落地后改回错误码由用户态自理）。其余一切 EC
+/// （D-abort 0x24 野指针 / I-abort 0x20 / BRK 0x3C / 未知）→ dump 后杀当前任务
+/// ——经 [`crate::user_fault_exit`] 函数指针槽（HAL 不依赖 sched，同 IRQ 槽反转）。
+/// 期望故障槽（ktest 专用 current-EL 通道）不参与：用户态故障一律真死。
+///
+/// # Safety（FFI）
+/// 由异常向量 asm 以 `x0 = &mut TrapFrame` 调用；C-ABI。
+#[no_mangle]
+pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
+    let ec = ((tf.esr >> 26) & 0x3f) as u32;
+    match ec {
+        0x15 => {
+            let ret = crate::syscall::dispatch(tf);
+            if ret != crate::syscall::ERR_NOT_SUPPORTED {
+                return; // 正常往返
+            }
+            dump_el0(tf, ec);
+            uart_puts(b"  -> bad syscall nr (v1 policy: kill)\n");
+        }
+        _ => {
+            dump_el0(tf, ec);
+            uart_puts(b"  -> user fault (G1.5: kill current task)\n");
+        }
+    }
+    // 杀当前任务：切走永不回（被弃的是本故障帧所在的栈）。槽未注册（调度器没起，
+    // 理论不可达——main 在 spawn 用户任务前注册）则 halt 兜底。
+    // SAFETY: 槽由内核 boot 时注册；同步异常上下文（PSTATE.I=1）。
+    if let Some(f) = unsafe { crate::user_fault_exit() } {
+        // SAFETY: f 是 C-ABI `-> !` fn 指针。
+        unsafe { f() }
+    }
+    halt();
+}
+
 /// dump 一个 TrapFrame（EC 名 + 寄存器全集）。
 fn dump(tf: &TrapFrame, ec: u32) {
-    uart_puts(b"\n=== EXCEPTION: sync (current-EL SPx) ===\n");
+    dump_hdr(tf, ec, b"=== EXCEPTION: sync (current-EL SPx) ===");
+}
+
+/// 同 [`dump`]，lower-EL（用户态）帧抬头。
+fn dump_el0(tf: &TrapFrame, ec: u32) {
+    dump_hdr(tf, ec, b"=== EXCEPTION: sync (from EL0, user) ===");
+}
+
+fn dump_hdr(tf: &TrapFrame, ec: u32, hdr: &[u8]) {
+    uart_puts(b"\n");
+    uart_puts(hdr);
+    uart_puts(b"\n");
     uart_puts(b"  EC=0x");
     uart_put_hex64(ec as u64);
     uart_puts(b" (");

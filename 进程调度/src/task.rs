@@ -100,11 +100,43 @@ impl Task {
         ttbr0: usize,
         asid: u16,
     ) -> Box<Task> {
-        let kstack: Box<[u8]> = vec![0u8; STACK_SIZE].into_boxed_slice();
-        // 栈向下长，初始 sp = 栈顶（最高地址）。>2KiB 走分配器页路径，页对齐 →
-        // 栈顶天然 16 对齐（TaskContext::new_kernel 内仍有断言兜底）。
-        let stack_top = kstack.as_ptr() as usize + STACK_SIZE;
+        let (kstack, stack_top) = Self::alloc_kstack();
         let ctx = TaskContext::new_kernel(entry, arg, stack_top);
+        Self::assemble(ctx, kstack, name, ttbr0, asid)
+    }
+
+    /// 用户线程版（2b-4 首个 EL0）：`entry_va`/`sp0_va` 为**用户 VA**（须已在
+    /// `ttbr0` 页表映射、AP 放行 EL0——`Perm::UserRw`），内核侧仍走 trampoline
+    /// 接线（首切 `eret` 降 EL0，见 HAL `user_entry_trampoline`）。内核栈同
+    /// 16KiB（EL0 异常帧 + handler 都跑在它上面）。
+    pub fn new_user_with_as(
+        entry_va: usize,
+        arg: usize,
+        sp0_va: usize,
+        name: &'static [u8],
+        ttbr0: usize,
+        asid: u16,
+    ) -> Box<Task> {
+        let (kstack, stack_top) = Self::alloc_kstack();
+        let ctx = TaskContext::new_user(entry_va, arg, sp0_va, stack_top);
+        Self::assemble(ctx, kstack, name, ttbr0, asid)
+    }
+
+    /// 出 16KiB 内核栈 + 栈顶地址（栈向下长，顶 = 最高地址；页对齐 → 16 对齐）。
+    fn alloc_kstack() -> (Box<[u8]>, usize) {
+        let kstack: Box<[u8]> = vec![0u8; STACK_SIZE].into_boxed_slice();
+        let top = kstack.as_ptr() as usize + STACK_SIZE;
+        (kstack, top)
+    }
+
+    /// 装配 Task 主体（两种入口共用；表示法字段全默认值）。
+    fn assemble(
+        ctx: TaskContext,
+        kstack: Box<[u8]>,
+        name: &'static [u8],
+        ttbr0: usize,
+        asid: u16,
+    ) -> Box<Task> {
         Box::new(Task {
             ctx,
             kstack: Some(kstack),

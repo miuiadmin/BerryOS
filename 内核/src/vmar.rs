@@ -30,12 +30,13 @@ const ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 /// AP 字段（bits[7:6]）掩码——protect 改权用。
 const AP_MASK: u64 = 0b11 << 6;
 
-/// 映射权限（v1 两档；AP 编码见 `paging.rs`——Rw=00 仅 EL1 读写，Ro=10 只读。
-/// 2b-4 用户页放宽为 01/11）。
+/// 映射权限（v1 三档；AP 编码见 `paging.rs`——Rw=00 仅 EL1 读写、Ro=10 只读、
+/// UserRw=01 EL0/EL1 读写——2b-4 首个 EL0 用户页。UserRo=11 留 v2 按需）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Perm {
     Rw,
     Ro,
+    UserRw,
 }
 
 impl Perm {
@@ -44,6 +45,7 @@ impl Perm {
         match self {
             Perm::Rw => 0,
             Perm::Ro => hal::AP_RO,
+            Perm::UserRw => hal::AP_USER_RW,
         }
     }
 }

@@ -94,7 +94,7 @@ pub fn tlbi_aside1(asid: u16) {
 }
 
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
-pub use paging::{page_descriptor, table_descriptor, AP_RO, ATTR_NORMAL, SH_INNER};
+pub use paging::{page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_NORMAL, SH_INNER};
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
 //
@@ -121,6 +121,31 @@ pub fn set_irq_dispatch(f: IrqDispatch) {
 /// 读 `static mut`。仅 IRQ 上下文（单核顺序）调用。
 pub unsafe fn irq_dispatch() -> Option<IrqDispatch> {
     IRQ_DISPATCH
+}
+
+// ---- 用户故障击杀回调（HAL→sched，函数指针槽反转；同上避循环依赖）----
+//
+// 2b-4 G1.5：EL0 用户任务致命故障（野指针/畸形 syscall/brk）→ `exception_sync_el0`
+// 经此槽让**调度器**杀当前任务（出 runqueue + 切走，只死自己）。HAL 永不知
+// scheduler 之名。
+
+/// 用户故障击杀回调类型（同步异常上下文调用；`-> !`——切走永不回）。
+pub type UserFaultExit = unsafe extern "C" fn() -> !;
+
+static mut USER_FAULT_EXIT: Option<UserFaultExit> = None;
+
+/// 注册用户故障击杀回调。须在**首个用户任务被调度之前**调用一次。
+pub fn set_user_fault_exit(f: UserFaultExit) {
+    // SAFETY: 启动单线程、DAIF 屏蔽；无并发 IRQ、无竞态。
+    unsafe { USER_FAULT_EXIT = Some(f) };
+}
+
+/// 取已注册的用户故障击杀回调（`exception_sync_el0` 用）。未注册时返回 `None`。
+///
+/// # Safety
+/// 读 `static mut`。仅同步异常上下文（单核顺序）调用。
+pub unsafe fn user_fault_exit() -> Option<UserFaultExit> {
+    USER_FAULT_EXIT
 }
 
 /// 输出一个字节到 UART0（2b-2 起走高半直映别名——低半身份已退役，PA 直写必 fault；
