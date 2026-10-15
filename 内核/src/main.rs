@@ -13,12 +13,14 @@ extern crate alloc;
 
 mod aspace;
 mod channel;
+mod event;
 mod handle;
 mod heap;
 mod ktest;
 mod mm;
 mod process;
 mod syscall;
+mod telemetry;
 mod user;
 mod vmar;
 mod vmo;
@@ -99,6 +101,9 @@ pub extern "C" fn rust_main() -> ! {
 
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     berry_sched::init();
+    // 3-4c 遥测环：注册切换钩子（init 后、首个切换前——rust_main 尾部的
+    // yield_now 即产生首条记录；watchdog 断言环在涨 + vct 单调）。
+    telemetry::init();
     berry_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
     berry_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
 

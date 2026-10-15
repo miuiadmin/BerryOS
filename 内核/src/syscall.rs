@@ -29,13 +29,19 @@
 //! -EAGAIN——等待排队留 P4 object_wait）。对象本体在 `channel.rs`（端点对
 //! 互钉、环泄漏政策）；本模块只做门控 + 拷贝 + 原子序（任一失败 = 调用者表
 //! 与队列零变化的复原承诺）。
+//!
+//! **event（3-4c）**：`event.rs` 纯位掩码 + poll-only（wait_one 查一次命中
+//! 回写全满足集 / 未命中 -EAGAIN；`deadline≠0` 一律 -ENOTSUP——阻塞排队留
+//! P4，与 channel 的非阻塞政策同源）。signal 门控 RIGHT_SIGNAL；wait 不需
+//! 权利位（12 位 rights 表无 WAIT 位，持有 handle 即可查）。
 
 use crate::channel::{Message, CHAN_HND_MAX, CHAN_MSG_MAX, ChannelEnd};
+use crate::event::Event;
 use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
     ERR_NO_MEMORY, ERR_OUT_OF_RANGE, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ,
-    RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE,
+    RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE,
 };
 use crate::vmar::{Perm, Vmar, VmarError};
 use crate::vmo::{Vmo, VmoError};
@@ -50,11 +56,11 @@ use core::ptr::NonNull;
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;
-#[allow(dead_code)] // 3-4（object 等待/信号）落地
+/// 3-4c 落地：poll-only（deadline≠0 → -ENOTSUP；阻塞排队留 P4）。
 pub const NR_OBJECT_WAIT_ONE: usize = 0x04;
-#[allow(dead_code)] // 同上
+#[allow(dead_code)] // 多对象等待（P4 阻塞等待同批）
 pub const NR_OBJECT_WAIT_MANY: usize = 0x05;
-#[allow(dead_code)] // 同上
+/// 3-4c 落地：v1 仅 Event 可 signal（thread/process 信号面随后续步）。
 pub const NR_OBJECT_SIGNAL: usize = 0x06;
 // VMO / Vmar（9；3-2 全部实现——下方 handlers）
 pub const NR_VMO_CREATE: usize = 0x11;
@@ -82,7 +88,7 @@ pub const NR_THREAD_SLEEP: usize = 0x37;
 pub const NR_CHANNEL_CREATE: usize = 0x51;
 pub const NR_CHANNEL_SEND: usize = 0x52;
 pub const NR_CHANNEL_RECV: usize = 0x53;
-#[allow(dead_code)] // 3-4c 落地
+/// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
 pub const NR_EVENT_CREATE: usize = 0x54;
 // 时间（1）
 pub const NR_CLOCK_READ: usize = 0x61;
@@ -1081,16 +1087,103 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     0
 }
 
+// ---- event（3-4c；对象 = `event.rs` 纯位掩码；阻塞等待留 P4）----
+
+/// `event_create(options, *out)`：建一个 Event（出生信号全零）。`options` v1
+/// 恒 0（非 0 → -EINVAL，ABI §8.3 注记）；授 **SIGNAL|DUPLICATE**——持有者可
+/// 置/清位、可复制授权给同伴（等的一方 dup 到只读即可，wait 不需权利位）。
+extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
+    let (options, out) = (tf.regs[1], tf.regs[2]);
+    if options != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u64(el1, out, 0) {
+        return e as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let h = match t.insert(KernelObj::Event(Event::new()), RIGHT_SIGNAL | RIGHT_DUPLICATE) {
+        Ok(h) => h,
+        Err(e) => return e as i64, // 表满/gen 尽/装箱 OOM——对象未入表，零回滚面
+    };
+    match copy_out_u64(el1, out, h as u64) {
+        Ok(()) => 0,
+        Err(e) => e as i64, // 对象已入表——调用方重试态自理（同 channel_create 政策）
+    }
+}
+
+/// `object_signal(h, clear_mask, set_mask)`：`signals = (signals & !clear) | set`
+/// （置/清一条原子）。v1 仅 **Event** 可 signal（thread/process 信号面随后续
+/// 步）；门控 RIGHT_SIGNAL。返回 0（非错误面不回写掩码新值——读用 wait_one）。
+extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
+    let (h, clear, set) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3]);
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let obj = match t.get_raw(h, ObjType::Event, RIGHT_SIGNAL) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 SIGNAL 位 -EACCES
+    };
+    // SAFETY: get_raw 已三门控（在表、类型 Event、权利足）；单核 IRQ 屏蔽。
+    unsafe {
+        let Some(ev) = (*obj.as_ptr()).obj.as_event_mut() else {
+            return ERR_BAD_HANDLE as i64; // 不可达防御面（类型刚验过）
+        };
+        ev.signal(clear, set);
+    }
+    0
+}
+
+/// `object_wait_one(h, signals, deadline, *observed)`——**poll-only**（3-4c）：
+/// 非阻塞查一次当前掩码。命中（`current & signals != 0`）→ `*observed =
+/// current`（**全满足集**，Zircon 同形）返 0；未命中 → -EAGAIN。
+/// `deadline != 0` → -ENOTSUP（阻塞等待排队留 P4——v1 syscall 主体不可抢占
+/// 的免锁根基下没有安全睡眠路径，诚实缺口按号拒而非静默忙转）。
+/// 等待**不需权利位**（12 位 rights 表本无 WAIT 位；持有 handle 即可查）。
+extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
+    let (h, signals, deadline, observed) =
+        (tf.regs[1] as u32, tf.regs[2], tf.regs[3], tf.regs[4]);
+    if deadline != 0 {
+        return ERR_NOT_SUPPORTED as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u64(el1, observed, 0) {
+        return e as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let obj = match t.get_raw(h, ObjType::Event, 0) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64,
+    };
+    // SAFETY: get_raw 已门控；只读（signal 写路径与本读点同为 IRQ 屏蔽串行）。
+    let current = unsafe {
+        let r = &*obj.as_ptr();
+        match r.obj.as_event_ref() {
+            Some(ev) => ev.signals,
+            None => return ERR_BAD_HANDLE as i64, // 不可达防御面
+        }
+    };
+    if current & signals != 0 {
+        match copy_out_u64(el1, observed, current) {
+            Ok(()) => 0,
+            Err(e) => e as i64,
+        }
+    } else {
+        ERR_AGAIN as i64
+    }
+}
+
 // ---- boot 期注册（rust_main 在 ktest 之前调用；HAL install 见其 # Panics）----
 
-/// 注册 3-4b 已实现的 19 号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 +
-/// channel 三号；0x04–0x06 等待/信号留 3-4c，0x33/0x35..0x37 退出与睡眠随后续
-/// 步）。未列号走 HAL 默认 `-ENOTSUP`。
+/// 注册 3-4c 已实现的 22 号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 +
+/// channel 三号 + event/object 三号——0x04 wait_one/0x06 signal/0x54 create；
+/// 0x05 wait_many 与 0x33/0x35..0x37 退出/睡眠随后续步）。未列号走 HAL 默认
+/// `-ENOTSUP`。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
     reg(NR_HANDLE_CLOSE, sys_handle_close);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate);
     reg(NR_HANDLE_REPLACE, sys_handle_replace);
+    reg(NR_OBJECT_WAIT_ONE, sys_object_wait_one);
+    reg(NR_OBJECT_SIGNAL, sys_object_signal);
     reg(NR_CLOCK_READ, sys_clock_read);
     reg(NR_VMO_CREATE, sys_vmo_create);
     reg(NR_VMO_COMMIT, sys_vmo_commit);
@@ -1107,4 +1200,5 @@ pub fn install() {
     reg(NR_CHANNEL_CREATE, sys_channel_create);
     reg(NR_CHANNEL_SEND, sys_channel_send);
     reg(NR_CHANNEL_RECV, sys_channel_recv);
+    reg(NR_EVENT_CREATE, sys_event_create);
 }

@@ -159,6 +159,7 @@ pub fn yield_now() {
                 hal::timer::arm_slice();
                 CURRENT = next_ptr;
                 activate_if_changed(prev, next_ptr);
+                note_switch(prev, next_ptr, SwitchKind::Yield);
                 hal::task::context_switch(&raw mut (*prev).ctx, &raw const (*next_ptr).ctx);
                 // <- 被切回 prev 时续行于此（CURRENT==prev）。
             }
@@ -219,6 +220,7 @@ unsafe fn switch_away_forever() -> ! {
     }
     CURRENT = next_ptr;
     activate_if_changed(cur, next_ptr);
+    note_switch(cur, next_ptr, SwitchKind::Exit);
     // prev=cur（已出 runqueue、将废弃）；切走后永不回到 cur。
     hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
     // 不可达：cur 已 dequeue，无人切回。halt 兜底。
@@ -229,6 +231,44 @@ unsafe fn switch_away_forever() -> ! {
 pub fn switches() -> u64 {
     // SAFETY: 只读；单核顺序访问。
     unsafe { SWITCHES }
+}
+
+// ---- 切换遥测钩子（3-4c；`可观测性设计.md` per-CPU 无锁环的注入点）----
+
+/// 切换原因分型（遥测环 `kind` 字段的语义；v1 三值 = 三个切换位一一对应）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchKind {
+    /// 协作让出（`yield_now`）。
+    Yield,
+    /// 时间片到期抢占（`on_irq_tick`）。
+    Preempt,
+    /// 任务退出/被杀后切走（`switch_away_forever`——exit 与 kill 共用）。
+    Exit,
+}
+
+/// 切换钩子签名。**调用契约**：IRQ 屏蔽路径调用（三切换位全程 PSTATE.I=1）
+/// → 钩子本身无需加锁，但必须**零分配、零切换、短平快**（IRQ 热路径纪律，
+/// `heap.rs`「分配上下文纪律」——try 化批堵住的 OOM-panic 面不得从这里重开）。
+pub type SwitchHook = fn(prev: &Task, next: &Task, kind: SwitchKind);
+
+/// 钩子槽（`None` = 无遥测——boot 期零开销；`telemetry::init` 注册）。
+static mut SWITCH_HOOK: Option<SwitchHook> = None;
+
+/// 注册/注销切换钩子。仅 boot 期（IRQ 屏蔽、首个切换发生前）调用。
+pub fn set_switch_hook(hook: Option<SwitchHook>) {
+    // SAFETY: 写点仅 boot 期（单核、IRQ 屏蔽、无并发切换）。
+    unsafe { SWITCH_HOOK = hook };
+}
+
+/// 切换位点共用的遥测发射点：在 `CURRENT = next` 之后、`context_switch` 之前
+/// 调（此刻 prev/next 的状态字段都已定型）。`None` 钩子 = 一次静态读 + 分支。
+#[inline]
+unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
+    // SAFETY: 两指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
+    let hook = unsafe { SWITCH_HOOK };
+    if let Some(h) = hook {
+        h(unsafe { &*prev }, unsafe { &*next }, kind);
+    }
 }
 
 /// 用户任务致死计数只读访问（G1.5 watchdog 断言用）。
@@ -302,6 +342,7 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 CURRENT = next_ptr;
                 SWITCHES = SWITCHES.wrapping_add(1);
                 activate_if_changed(cur, next_ptr);
+                note_switch(cur, next_ptr, SwitchKind::Preempt);
                 // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
                 // 过关后移除或 feature 门控（plan Step 7）。
                 const SOAK_PRINT_EVERY: u64 = 100;

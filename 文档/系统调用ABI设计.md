@@ -232,11 +232,19 @@ berry_status_t berry_handle_replace(berry_handle_t h, berry_handle_t replacement
                                 berry_handle_t *out);              /* 原子换槽 */
 berry_status_t berry_object_wait_one(berry_handle_t h, uint64_t signals,
                                  berry_time_t deadline, uint64_t *observed);
+                               /* 3-4c v1：poll-only——命中 *observed=全满足集
+                                  （非请求子集，Zircon 同形）；未命中 -EAGAIN；
+                                  deadline≠0 一律 -ENOTSUP（阻塞排队留 P4）；
+                                  不需权利位（12 位 rights 表无 WAIT 位）；
+                                  v1 仅 Event 对象（它类型 -EBADF） */
 berry_status_t berry_object_wait_many(const berry_handle_t *handles,
                                   const uint64_t *signals, size_t n,
                                   berry_time_t deadline,
                                   size_t *idx, uint64_t *observed);
 berry_status_t berry_object_signal(berry_handle_t h, uint64_t clear, uint64_t set);
+                               /* 3-4c v1：signals=(s&~clear)|set；门控
+                                  RIGHT_SIGNAL；仅 Event（thread/process
+                                  信号面随后续步） */
 
 /* —— VMO / Vmar —— */
 berry_status_t berry_vmo_create(uint64_t size, uint32_t options, berry_handle_t *out);
@@ -307,6 +315,8 @@ berry_status_t berry_channel_recv(berry_handle_t ch,
                                   消息保原样；随行令牌入调用者表、新值写 handles
                                   数组；失败全程回滚（表 + 队列复原） */
 berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
+                               /* 3-4c v1：options 须 0（非 0 -EINVAL）；
+                                  授 SIGNAL|DUPLICATE；出生信号全零 */
 
 /* —— 时间 —— */
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
@@ -316,7 +326,7 @@ berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 
 ### 8.4 Rust FFI 镜像（`用户态/berry-sys`，raw 绑定）
 
-raw FFI 只暴露 `extern "C"` + 裸类型，**绝不 panic**；上层 `bos` crate 把 `berry_status_t` 包成 `Result<(), Status>`。
+raw FFI 只暴露 `extern "C"` + 裸类型，**绝不 panic**；上层 `berry` crate 把 `berry_status_t` 包成 `Result<(), Status>`。
 
 ```rust
 //! v1 raw syscall 绑定。两端 Rust `#[repr(C)]`，布局与内核侧一一对应；`.h` 为派生产物。

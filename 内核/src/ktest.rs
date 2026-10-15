@@ -14,6 +14,7 @@ pub fn run() {
     test_aspace();
     test_vmo();
     test_handle();
+    test_policy();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -43,12 +44,12 @@ fn test_syscall() {
     // A. 调试 echo 往返（G0 原始判据；0xFE 调试槽，非 ABI）。
     assert_eq!(svc4(NR_DEBUG_ECHO as u64, 0x5a, 0, 0), 0x5a, "SYSCALL：echo 往返");
 
-    // B. 未知号（越界 0x99）与未实现真号（object_wait_one 0x04，3-4 落地）一律
-    //    -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言（3-2 起 0x11
-    //    已实现，未实现样本换成 0x04）。
+    // B. 未知号（越界 0x99）与未实现真号（object_wait_many 0x05，P4 阻塞等待
+    //    同批）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言
+    //    （3-2 起 0x11 已实现、3-4c 起 0x04/0x06/0x54 已实现，未实现样本换 0x05）。
     assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
     assert_eq!(
-        svc4(0x04, 0, 0, 0),
+        svc4(0x05, 0, 0, 0),
         -95,
         "SYSCALL：未实现真号须 -ENOTSUP"
     );
@@ -629,6 +630,147 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "SYSCALL：close hc0");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "SYSCALL：close hc1");
 
+    // I. 3-4c event 三号：poll-only 位掩码语义 + SIGNAL 权利面（阻塞等待留
+    //    P4——deadline≠0 → -ENOTSUP；EL0 正向用例不做，验收 = 内核侧全语义面）。
+    use crate::handle::{RIGHT_DUPLICATE, RIGHT_SIGNAL};
+    use crate::syscall::{NR_EVENT_CREATE, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE};
+    static mut I_OBS: u64 = 0; // *observed 出参
+
+    // I0. create：options≠0 → -EINVAL；正常建 → handle 非零、SIGNAL|DUPLICATE
+    //     三门控可查。
+    assert_eq!(
+        svc4(NR_EVENT_CREATE as u64, 1, &raw mut OUT as u64, 0),
+        -22,
+        "SYSCALL：event_create options≠0 须 -EINVAL"
+    );
+    // SAFETY: svc 同步异常；I 系列静态均本函数私有。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_EVENT_CREATE as u64, 0, &raw mut OUT as u64, 0),
+        0,
+        "SYSCALL：event_create"
+    );
+    let he = unsafe { OUT } as u32;
+    assert_ne!(he, 0, "SYSCALL：event_create 须回填 handle");
+    assert!(
+        ht.get(he, ObjType::Event, RIGHT_SIGNAL | RIGHT_DUPLICATE).is_ok(),
+        "SYSCALL：Event rights 须含 SIGNAL|DUPLICATE"
+    );
+
+    // I1. poll 未命中 → -EAGAIN（出生全零）；deadline≠0 → -ENOTSUP（poll-only，
+    //     参检先于表查——坏参不碰表）。
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0110, 0, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：未命中 wait 须 -EAGAIN"
+    );
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0110, 1, &raw mut I_OBS as u64),
+        -95,
+        "SYSCALL：deadline≠0 须 -ENOTSUP（阻塞留 P4）"
+    );
+
+    // I2. signal 置位 → wait 命中回写**全满足集**（非请求子集——Zircon 同形）。
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, 0b0110),
+        0,
+        "SYSCALL：object_signal 置位"
+    );
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0010, 0, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：命中 wait"
+    );
+    assert_eq!(unsafe { I_OBS }, 0b0110, "SYSCALL：observed 须回写全满足集");
+
+    // I3. 请求位未置 → -EAGAIN（掩码里没有 0b1000）；signal 清位后再查原位
+    //     → -EAGAIN（clear 生效）。
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b1000, 0, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：请求未置位须 -EAGAIN"
+    );
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0b0010, 0),
+        0,
+        "SYSCALL：object_signal 清位"
+    );
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, he as u64, 0b0010, 0, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：清位后原位须 -EAGAIN"
+    );
+
+    // I4. 权利面：dup 收紧到仅 DUPLICATE（无 SIGNAL——零权利 dup 会被表拒，
+    //     这是 duplicate 的空 rights 拒面，非本段对象）→ signal 拒 -EACCES；
+    //     wait 不需权利位——同一对象剩余位 0b0100 照常可查。
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, 0b0100),
+        0,
+        "SYSCALL：signal 补置 0b0100"
+    );
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, he as u64, RIGHT_DUPLICATE as u64, &raw mut OUT as u64),
+        0,
+        "SYSCALL：dup Event 到仅 DUPLICATE"
+    );
+    let he_ro = unsafe { OUT } as u32;
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, he_ro as u64, 0, 0b1000),
+        -13,
+        "SYSCALL：无 SIGNAL 位须 -EACCES"
+    );
+    // SAFETY: 同上。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, he_ro as u64, 0b0100, 0, &raw mut I_OBS as u64),
+        0,
+        "SYSCALL：wait 不需权利位（共享对象可见）"
+    );
+
+    // I5. 类型/坏值门：signal 与 wait 对 VMO handle → -EBADF；野值同拒。
+    let hv_e = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
+        .expect("SYSCALL：insert hv_e");
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, hv_e as u64, 0, 1),
+        -9,
+        "SYSCALL：signal 非 Event 须 -EBADF"
+    );
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, hv_e as u64, 1, 0, &raw mut I_OBS as u64),
+        -9,
+        "SYSCALL：wait 非 Event 须 -EBADF"
+    );
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, 0xDEAD_BEEF, 0, 1),
+        -9,
+        "SYSCALL：signal 野值须 -EBADF"
+    );
+    assert_eq!(
+        svc4(NR_HANDLE_CLOSE as u64, hv_e as u64, 0, 0),
+        0,
+        "SYSCALL：close hv_e"
+    );
+    // 清场（别名先关、本体后关——refs 归零释放）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, he_ro as u64, 0, 0), 0, "SYSCALL：close he_ro");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, he as u64, 0, 0), 0, "SYSCALL：close he");
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, he as u64, 0, 1),
+        -9,
+        "SYSCALL：close 后 signal 须 -EBADF"
+    );
+
     berry_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
 
@@ -1064,4 +1206,111 @@ fn test_handle() {
     ht.close(h4).expect("HANDLE：close h4");
 
     berry_hal_aarch64::uart_puts(b"HANDLE ok\n");
+}
+
+/// 3-4c 空策略表等价测试（`AI调度设计.md` §2「AI 不在线时表为空/默认，等价
+/// 于纯启发式」的**机器断言**，非口号；smoke 第 13 标记）。
+///
+/// 本地 `Runqueue` + `RoundRobin` 实例（不动全局 `RUNQUEUE`——ktest 在
+/// `berry_sched::init` 之前跑、CURRENT 尚 null，本测试自建三任务 12 轮 pick
+/// 记录序列逐项比对）：
+/// - **A 基线（未绑）**：`policy::bound() == false`；
+/// - **B 空表**：绑定后 12 轮的（选中者， prio_effective, epp）与 A **逐项
+///   全等**——接口在位、表空 = 零写入 = 与「接口缺席」逐位等价；
+/// - **C 对照表**（p7 权重 +32 / EPP=Perf）：p7 被选中时字段**必须真的变了**
+///   （apply 的反向控制——防留桩成死代码的假等价），但**选人序列与基线全同**
+///   （RR 不看优先级 = v1 护栏：注入面只写 TCB 表示法字段，绝不碰机制决策）；
+/// - **收尾 unbind**：恢复全局缺席态——之后 smoke 稳态全程在未绑态跑。
+///
+/// 进程调度 crate 无 host 测试面（HAL aarch64 asm），QEMU ktest 是唯一家。
+#[allow(clippy::result_unwrap_used)]
+fn test_policy() {
+    use alloc::vec::Vec;
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{EppHint, RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn pol_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 单轮观测（比对单位）：选中者名 + 两个被注入面字段。
+    type Obs = (&'static [u8], i32, EppHint);
+
+    const ROUNDS: usize = 12;
+
+    /// 建本地 runqueue + 三任务（proc_tag = 7/8/9 = 策略表 key 域；boot/ktest
+    /// 可信语境走 expect 包装——3b3 try 化的裁定点）。
+    fn setup() -> (Runqueue, RoundRobin, Topo, Vec<&'static mut Task>) {
+        let mut rq = Runqueue::new();
+        let rr = RoundRobin;
+        let topo = Topo::single();
+        let mut tasks = Vec::new();
+        for (tag, name) in [(7usize, b"p7".as_slice()), (8, b"p8".as_slice()), (9, b"p9".as_slice())] {
+            let mut t = Task::new_kernel_with_as(pol_dummy, tag, name, 0, 0);
+            t.proc_tag = tag; // 策略表 key（v1 = proc_tag；new_kernel 默认 0）
+            let t: &'static mut Task = alloc::boxed::Box::leak(t);
+            rr.enqueue(t, &mut rq);
+            tasks.push(t);
+        }
+        (rq, rr, topo, tasks)
+    }
+
+    /// 跑 ROUNDS 轮 pick_next 记录观测序列。
+    fn probe(rq: &Runqueue, rr: &RoundRobin, topo: &Topo) -> [Obs; ROUNDS] {
+        let mut seq: [Obs; ROUNDS] = [(b"", 0, EppHint::Efficiency); ROUNDS];
+        for s in seq.iter_mut() {
+            let t = rr.pick_next(rq, topo).expect("POLICY：非空 runqueue 必有出选");
+            *s = (t.name, t.prio_effective, t.epp);
+        }
+        seq
+    }
+
+    // A. 基线：接口缺席。
+    policy::unbind(); // 前序状态防御性清零（ktest 期望 boot 期即未绑）
+    assert!(!policy::bound(), "POLICY：A 前提须未绑");
+    let (rq_a, rr_a, topo_a, _ta) = setup();
+    let base = probe(&rq_a, &rr_a, &topo_a);
+
+    // B. 空表：接口在位、表空 → 零写入 = 逐位等价（本测试的主断言）。
+    static EMPTY: [Entry; 0] = [];
+    policy::bind(&EMPTY);
+    assert!(policy::bound(), "POLICY：B 前提须已绑");
+    let (rq_b, rr_b, topo_b, _tb) = setup();
+    let blank = probe(&rq_b, &rr_b, &topo_b);
+    for i in 0..ROUNDS {
+        assert_eq!(base[i].0, blank[i].0, "POLICY：空表第 {} 轮选人须与基线全同", i);
+        assert_eq!(base[i].1, blank[i].1, "POLICY：空表第 {} 轮 prio_effective 须零写入", i);
+        assert_eq!(base[i].2, blank[i].2, "POLICY：空表第 {} 轮 epp 须零写入", i);
+    }
+
+    // C. 对照表：p7 权重 +32 / EPP=Perf——字段真变（反向控制）+ 序列不变（护栏）。
+    static CTRL: [Entry; 1] = [Entry {
+        task_key: 7,
+        directive: Directive { placement: 0, weight: 32, epp: Some(EppHint::Perf) },
+    }];
+    policy::bind(&CTRL);
+    let (rq_c, rr_c, topo_c, _tc) = setup();
+    let ctrl = probe(&rq_c, &rr_c, &topo_c);
+    let mut p7_seen = 0;
+    for i in 0..ROUNDS {
+        assert_eq!(base[i].0, ctrl[i].0, "POLICY：注入不得改 RR 选人序列（第 {} 轮）", i);
+        let (name, eff, epp) = ctrl[i];
+        if name == b"p7".as_slice() {
+            p7_seen += 1;
+            assert_eq!(eff, 32, "POLICY：p7 被选中时 prio_effective 须 = base+32（第 {} 轮）", i);
+            assert_eq!(epp, EppHint::Perf, "POLICY：p7 的 EPP 覆盖须生效（第 {} 轮）", i);
+        } else {
+            assert_eq!(eff, 0, "POLICY：未命中者零写入（第 {} 轮 {}）", i, core::str::from_utf8(name).unwrap_or("?"));
+            assert_eq!(epp, EppHint::Efficiency, "POLICY：未命中者 EPP 保持默认（第 {} 轮）", i);
+        }
+    }
+    assert!(p7_seen >= 3, "POLICY：12 轮三轮转 p7 至少被选 3 次（实得 {}）", p7_seen);
+
+    // 收尾：恢复缺席态（之后 smoke 稳态全程未绑——等价性延续到真实调度路径）。
+    policy::unbind();
+    assert!(!policy::bound(), "POLICY：收尾须回到未绑");
+
+    // 任务体 16KiB 栈 × 9 泄漏不回收（ktest 语境同 sched spawn 政策——v1 无 reap）。
+    berry_hal_aarch64::uart_puts(b"POLICY ok\n");
 }

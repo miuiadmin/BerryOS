@@ -625,6 +625,11 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 panic!("G1.5 FAIL: 错杀（须只杀 rogue_ptr；死者看上一条 kill dump）");
             }
             if puts > last_puts && switches > last_switches {
+                // 3-4c 遥测环存活断言：环计**全部**三型切换 ≥ SWITCHES（只计抢占），
+                // 且环内 vct 从旧到新单调（乱序 = 写路径并发/覆盖 bug）。
+                let tel = crate::telemetry::total();
+                assert!(tel >= switches, "G1.5 FAIL: 遥测环未跟上（total={} < switches={}）", tel, switches);
+                assert!(crate::telemetry::check(), "G1.5 FAIL: 遥测环 vct 非单调");
                 berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
                 berry_sched::exit_current()
             }

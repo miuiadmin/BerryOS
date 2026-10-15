@@ -41,7 +41,7 @@ pub const RIGHT_DUPLICATE: Rights = 1 << 4;
 pub const RIGHT_TRANSFER: Rights = 1 << 5;
 #[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
 pub const RIGHT_INSPECT: Rights = 1 << 6;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
+/// 3-4c 起消费：`object_signal` 门控（Event 置/清位）。
 pub const RIGHT_SIGNAL: Rights = 1 << 7;
 /// 3-4b 起消费：`channel_send` 门控。
 pub const RIGHT_SEND: Rights = 1 << 8;
@@ -133,6 +133,7 @@ pub enum KernelObj {
     Process(crate::process::Process),
     Thread(crate::process::Thread),
     Channel(crate::channel::ChannelEnd),
+    Event(crate::event::Event),
 }
 
 impl KernelObj {
@@ -143,6 +144,7 @@ impl KernelObj {
             KernelObj::Process(_) => ObjType::Process,
             KernelObj::Thread(_) => ObjType::Thread,
             KernelObj::Channel(_) => ObjType::Channel,
+            KernelObj::Event(_) => ObjType::Event,
         }
     }
 
@@ -199,6 +201,22 @@ impl KernelObj {
     pub fn as_channel_mut(&mut self) -> Option<&mut crate::channel::ChannelEnd> {
         match self {
             KernelObj::Channel(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// 只读取 Event 本体（object_wait_one 查掩码）。
+    pub fn as_event_ref(&self) -> Option<&crate::event::Event> {
+        match self {
+            KernelObj::Event(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// 可变取 Event 本体（object_signal 置/清位；同上防御性）。
+    pub fn as_event_mut(&mut self) -> Option<&mut crate::event::Event> {
+        match self {
+            KernelObj::Event(e) => Some(e),
             _ => None,
         }
     }
