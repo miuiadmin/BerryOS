@@ -526,6 +526,33 @@ pub extern "C" fn rust_main() -> ! {
                                     st as *mut HandleTable as usize);
     }
 
+    // ---- 4-5b 验收（`IPC设计.md` Phase 4 拆步表 4-5 后半）：svcmgr（EL0）经
+    // 真 syscall 全链拉起 echo 服务（用户态进程）——里程碑「服务管理器拉起
+    // 一个服务」。svcmgr 自身 boot 手搭（spawner 同形）；echo 由 svcmgr 运行期
+    // 创建：process_create → vmo_create/commit/write(内嵌模板) → vmar_map →
+    // channel_create → thread_create → process_start(end1 迁 echo 表)。验收
+    // 往返（send ECHO_REQ → wait READABLE → recv 验回显）打 `SVC ok`（smoke
+    // 第 21 标记）、稳态每圈 'v'（每个 'v' = 一次实证往返）。echo 静默（无
+    // console handle——boot 无法预知运行期建表的 handle 值；断链由 svcmgr
+    // 侧标记缺失/watchdog 错杀断言兜底）。PI：两 EL0 各持私有表、全 prio 0
+    // ——互为 donor/受捐的捐赠额恒 0，无级联面。----
+    let up_svcmgr =
+        user::UserProcess::build(mm::frames(), user::user_svcmgr_code(), user::USER_MAGIC);
+    let ht_svcmgr: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    // console 发端 = svcmgr 表**首插**（0x0001_0001）——入口 x0 传入（模板
+    // 硬编码依赖，boot 断言拦表序漂移）。
+    let h_cu_svcmgr = ht_svcmgr
+        .insert_ref(pu, RIGHT_SEND)
+        .expect("main: console 发端进 svcmgr 表");
+    assert_eq!(
+        h_cu_svcmgr, 0x0001_0001,
+        "main: svcmgr 表 console 须首插 0x0001_0001（模板硬编码）"
+    );
+    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, user::USER_STACK_TOP,
+                          b"user_svcmgr", up_svcmgr.ttbr0_pa, up_svcmgr.asid,
+                          ht_svcmgr as *mut HandleTable as usize);
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
