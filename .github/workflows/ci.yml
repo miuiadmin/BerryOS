@@ -25,7 +25,7 @@ jobs:
         run: cargo build --locked
 
       - name: 内核体积基线（12号报告 §10.1；解析失败即 CI 红——体积数值本身无门禁）
-        run: python3 工具链/size.py "$(cargo metadata --no-deps --format-version=1 | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4)/aarch64-unknown-none/debug/bos-kernel"
+        run: python3 工具链/size.py "$(bash 工具链/paths.sh kernel)"
 
       - name: 冒烟测试（QEMU 串口断言）
         run: bash 工具链/smoke.sh

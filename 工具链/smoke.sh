@@ -11,19 +11,11 @@
 # 调试：SMOKE_KEEP_LOG=1 just smoke 保留串口日志不删。
 set -u
 
+# 内核路径解析收敛在 paths.sh（单一事实源，justfile/CI 同源；含非交互 PATH 修补）。
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$SCRIPT_DIR/.."
-
-# 非交互 shell 常缺 ~/.cargo/bin（与 justfile 开头同病），补上再找 cargo。
-if ! command -v cargo >/dev/null 2>&1; then
-  export PATH="$HOME/.cargo/bin:$PATH"
-fi
-
-# 与 justfile 同法解析 target 目录（本机 ~/.cargo/config.toml 可能把 target-dir
-# 指到全局 ~/.cargo-target，CI 上则是仓库 ./target——cargo metadata 两边都对）。
-TARGET_DIR=$(cargo metadata --no-deps --format-version=1 2>/dev/null \
-  | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4)
-KERNEL="$TARGET_DIR/aarch64-unknown-none/debug/bos-kernel"
+source "$SCRIPT_DIR/paths.sh"
+KERNEL=$(berryos_kernel debug)
 
 QEMU=${QEMU:-qemu-system-aarch64}
 command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke: FAIL: 找不到 $QEMU" >&2; exit 1; }
@@ -75,7 +67,8 @@ while :; do
     || fail "QEMU 提前退出（崩溃？）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   missing=""
   for m in "${MARKERS[@]}"; do
-    grep -qF "$m" "$LOG" || missing="$m"
+    # 累积全部缺失（旧写法 missing="$m" 只剩最后一个，诊断误导）。
+    grep -qF "$m" "$LOG" || missing="${missing:+$missing }$m"
   done
   [ -z "$missing" ] && break
   [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] && fail "boot 标记 ${DEADLINE_BOOT}s 未到齐，缺：$missing"

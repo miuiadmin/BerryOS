@@ -3,13 +3,12 @@
 
 export PATH := env_var("HOME") + "/.cargo/bin:" + env_var("PATH")
 
-# cargo 的 target 目录可能被全局 ~/.cargo/config.toml 的 target-dir 覆盖
-# （本机指向 ~/.cargo-target），故动态解析，不硬编码 target/。
-# 与下方 host 同因：`export PATH :=` 只进 recipe 环境、不进属性背引号——
-# 背引号里自行前插 ~/.cargo/bin。
-target_dir := `PATH="${HOME}/.cargo/bin:${PATH}" cargo metadata --no-deps --format-version=1 2>/dev/null | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4`
-KERNEL := target_dir + "/aarch64-unknown-none/debug/bos-kernel"
-KERNEL_RELEASE := target_dir + "/aarch64-unknown-none/release/bos-kernel"
+# 内核产物路径收敛在 工具链/paths.sh（单一事实源，smoke.sh/CI 同源）：
+# target 目录可能被全局 ~/.cargo/config.toml 的 target-dir 覆盖（本机指向
+# ~/.cargo-target），故动态解析不硬编码；PATH 修补也在脚本内自足——
+# `export PATH :=` 只进 recipe 环境、不进属性背引号（实测 just 此行为）。
+KERNEL := `bash 工具链/paths.sh kernel`
+KERNEL_RELEASE := `bash 工具链/paths.sh kernel-release`
 
 # 不用 `-bios none`：QEMU ≥11.x 把 "none" 当文件名，报
 # `Could not find ROM image 'none'`。virt + -kernel ELF 直加载即可。

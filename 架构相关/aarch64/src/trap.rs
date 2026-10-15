@@ -398,8 +398,8 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
         return;
     }
     if id as usize == crate::gic::IRQ_CNTV {
-        // rearm（去活电平）在 EOIR 前：电平触发的 CNTV 须先重写 TVAL 再 EOIR，
-        // 否则 EOIR 后电平仍高立即重投。
+        // rearm（去活电平）在 EOIR 前：电平触发的 CNTV 须先重编程 CVAL（绝对截止
+        // ——读 CNTVCT 现值 + SLICE，见 timer.rs）再 EOIR，否则 EOIR 后电平仍高立即重投。
         crate::timer::handle();
     }
     // 未知 IRQ：忽略（G0 单源）。
