@@ -52,7 +52,10 @@ global_asm!(
     "    ldr x1, =0x09000000",         // 串口标记 '1'：到达 EL1
     "    mov x0, #0x31",
     "    str w0, [x1]",
-    "    ldr x0, =__stack_top",        // 设栈
+    "    movz x0, #0x30, lsl #16",     // CPACR_EL1.FPEN=0b11：显式开 EL1 FP/SIMD（ADR #34）
+    "    msr cpacr_el1, x0",           // 消 reset 依赖：QEMU 8.2 reset=FPEN 0（架构值），
+    "    isb",                         // 编译器 SIMD memset 一执行即 EC=0x07 陷阱（CI 实测）；
+    "    ldr x0, =__stack_top",        // QEMU 11 reset 宽容。用户态 FP 陷+保存归 Phase 2b。
     "    mov sp, x0",
     "    ldr x0, =__bss_start",        // 清 .bss
     "    ldr x1, =__bss_end",

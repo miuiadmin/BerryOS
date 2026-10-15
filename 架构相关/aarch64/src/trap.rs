@@ -266,6 +266,7 @@ unsafe fn read_esr_elr() -> (u64, u64) {
 fn ec_name(ec: u32) -> &'static [u8] {
     match ec {
         0x00 => b"Unknown",
+        0x07 => b"FP/SIMD-trap",
         0x0d => b"FP/trap",
         0x15 => b"SVC",
         0x20 => b"I-abort(lower)",
