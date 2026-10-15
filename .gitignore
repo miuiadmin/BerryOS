@@ -10,3 +10,6 @@
 
 # python 脚本字节码缓存（size.py 被工具链调用时产生）
 __pycache__/
+
+# Claude Code 会话/工作树目录（本地工具产物，不入库）
+.claude/
