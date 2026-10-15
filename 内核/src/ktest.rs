@@ -1422,9 +1422,11 @@ fn test_handle() {
 /// - **A 基线（未绑）**：`policy::bound() == false`；
 /// - **B 空表**：绑定后 12 轮的（选中者， prio_effective, epp）与 A **逐项
 ///   全等**——接口在位、表空 = 零写入 = 与「接口缺席」逐位等价；
-/// - **C 对照表**（p7 权重 +32 / EPP=Perf）：p7 被选中时字段**必须真的变了**
-///   （apply 的反向控制——防留桩成死代码的假等价），但**选人序列与基线全同**
-///   （RR 不看优先级 = v1 护栏：注入面只写 TCB 表示法字段，绝不碰机制决策）；
+/// - **C 对照表**（p7 权重 +32 / EPP=Perf）：4-3a 起 pick 按 `prio_effective`
+///   出选（§3.6「调度决策一律看 effective」），注入**真消费**——首轮（三任务
+///   eff 同 0，出选同基线 head）apply 写入 p7 eff=32 后，后续各轮 p7 以最高
+///   effective **独占出选**（跨层严格优先的机器断言；apply 的反向控制——
+///   防留桩成死代码的假等价）。字段断言：p7 恒 = base+32 / EPP=Perf；
 /// - **收尾 unbind**：恢复全局缺席态——之后 smoke 稳态全程在未绑态跑。
 ///
 /// 进程调度 crate 无 host 测试面（HAL aarch64 asm），QEMU ktest 是唯一家。
@@ -1489,7 +1491,7 @@ fn test_policy() {
         assert_eq!(base[i].2, blank[i].2, "POLICY：空表第 {} 轮 epp 须零写入", i);
     }
 
-    // C. 对照表：p7 权重 +32 / EPP=Perf——字段真变（反向控制）+ 序列不变（护栏）。
+    // C. 对照表：p7 权重 +32 / EPP=Perf——注入真消费（4-3a pick 看 effective）。
     static CTRL: [Entry; 1] = [Entry {
         task_key: 7,
         directive: Directive { placement: 0, weight: 32, epp: Some(EppHint::Perf) },
@@ -1497,20 +1499,19 @@ fn test_policy() {
     policy::bind(&CTRL);
     let (rq_c, rr_c, topo_c, _tc) = setup();
     let ctrl = probe(&rq_c, &rr_c, &topo_c);
-    let mut p7_seen = 0;
+    // 首轮：三任务 eff 同 0（apply 尚未跑过）→ 出选同基线 head（p7）。
+    assert_eq!(base[0].0, ctrl[0].0, "POLICY：首轮（全 eff=0）出选须同基线 head");
+    // 第 2 轮起：p7 eff=32 为环上最高 → 独占出选（严格优先）。
+    for i in 1..ROUNDS {
+        assert_eq!(ctrl[i].0, b"p7".as_slice(), "POLICY：eff=32 者须独占出选（第 {} 轮，严格优先）", i);
+    }
     for i in 0..ROUNDS {
-        assert_eq!(base[i].0, ctrl[i].0, "POLICY：注入不得改 RR 选人序列（第 {} 轮）", i);
         let (name, eff, epp) = ctrl[i];
         if name == b"p7".as_slice() {
-            p7_seen += 1;
             assert_eq!(eff, 32, "POLICY：p7 被选中时 prio_effective 须 = base+32（第 {} 轮）", i);
             assert_eq!(epp, EppHint::Perf, "POLICY：p7 的 EPP 覆盖须生效（第 {} 轮）", i);
-        } else {
-            assert_eq!(eff, 0, "POLICY：未命中者零写入（第 {} 轮 {}）", i, core::str::from_utf8(name).unwrap_or("?"));
-            assert_eq!(epp, EppHint::Efficiency, "POLICY：未命中者 EPP 保持默认（第 {} 轮）", i);
         }
     }
-    assert!(p7_seen >= 3, "POLICY：12 轮三轮转 p7 至少被选 3 次（实得 {}）", p7_seen);
 
     // 收尾：恢复缺席态（之后 smoke 稳态全程未绑——等价性延续到真实调度路径）。
     policy::unbind();

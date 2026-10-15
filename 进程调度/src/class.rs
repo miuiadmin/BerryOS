@@ -35,7 +35,13 @@ static mut LAST_VCT: u64 = 0;
 /// DVFS 改频后重新换算即可，时间片实际时长不随频率漂移；LiteOS-M
 /// `OsSchedTimeConvertFreq` 式）。
 ///
-/// pick 旋转游标、**不摘除**任务（runnable 任务常驻环；当前任务也在环里）——故
+/// **4-3a 起 pick 按 `prio_effective` 出选**（`调度器设计.md` §3.6「调度决策
+/// 一律看 effective」的 v1 兑现——PI 捐赠与 AI 权重微调的共同消费点）：两圈
+/// 扫描（一圈记最高、一圈从 head 起取第一个 == 最高者），选中后游标前移到
+/// 其后继——**同 effective 层内轮转、跨层严格优先**。全员同 effective
+/// （v1 常态：prio 全 0）时与纯 rotate 逐轮等价，既有矩阵零扰动。
+///
+/// pick 扫描、**不摘除**任务（runnable 任务常驻环；当前任务也在环里）——故
 /// 协作 `yield_now` / 抢占 `tick` 只需调一次 `pick_next`，无需每次 enqueue/dequeue
 /// 翻动。仅 `spawn`(enqueue) 与 `exit`(dequeue) 动环。
 pub struct RoundRobin;
@@ -54,14 +60,33 @@ impl SchedClass for RoundRobin {
     }
 
     fn pick_next(&self, rq: &Runqueue, _topo: &Topo) -> Option<&mut Task> {
-        // SAFETY: rotate 返回的 NonNull 指向调度器拥有、仍在环上的任务；调度器不变式
-        // 「一任务至多在一个 runqueue、至多被一个核 pick」（G0 单核平凡成立）保证
-        // 返回的 &mut 不与别的活跃借用别名。
-        let p = unsafe { rq.rotate()? };
-        let t = unsafe { &mut *p.as_ptr() };
+        // SAFETY: 环上任务均调度器拥有且在环（rotate 同款不变式）；单核无并发
+        // pick（IRQ 屏蔽切换位互斥）——扫描期间无并发出/入环。
+        let chosen = unsafe {
+            let h = rq.head()?;
+            // 一圈记最高 effective（环上节点必有 next——环形不变式）。
+            let mut max = (*h.as_ptr()).prio_effective;
+            let mut cur = (*h.as_ptr()).rq_next.get().expect("环上节点必有 next");
+            while cur != h {
+                let e = (*cur.as_ptr()).prio_effective;
+                if e > max {
+                    max = e;
+                }
+                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+            }
+            // 二圈从 head 起取第一个 == 最高者（同高 FIFO——head 侧即等待最久者，
+            // 层内轮转公平保持）。max 必在环上（来自第一圈），循环至多一圈终止。
+            let mut cur = h;
+            while (*cur.as_ptr()).prio_effective != max {
+                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+            }
+            rq.advance_past(cur);
+            cur
+        };
+        let t = unsafe { &mut *chosen.as_ptr() };
         // AI 策略注入留桩（3-4c，`AI调度设计.md` §2/§9）：出选后查表——未绑/空表
-        // 零写入，与接口缺席逐位等价（ktest POLICY 段断言）；真消费（权重/EPP 进
-        // class_fair）随 v3 策略源落地。
+        // 零写入，与接口缺席逐位等价（ktest POLICY 段断言）。4-3a 起注入的权重
+        // 真消费（pick 看 effective——写进 TCB 即影响下一轮出选）。
         crate::policy::apply(t);
         Some(t)
     }

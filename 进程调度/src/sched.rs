@@ -478,8 +478,10 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
 }
 
 /// 条件方唤醒（4-0）：摘除所有「`wait_obj == obj` 且请求位与 `set_signals`
-/// 相交」的睡眠者——置 Signaled、入 runqueue（**不立即抢占**：等 tick/yield
-/// 再切，v1 RR 无优先级抢占）。返回唤醒数。**IRQ 屏蔽窗内调用**（signal /
+/// 相交」的睡眠者——置 Signaled、入 runqueue（**不立即抢占**：唤醒方自身不切
+/// 换，等 tick/yield 再切；4-3a 起 pick 按 `prio_effective` 出选——被唤醒/
+/// boost 者下一轮 pick 自然优先，无优先级抢占点）。返回唤醒数。**IRQ 屏蔽窗
+/// 内调用**（signal /
 /// 数据到达路径——4-1 起 Event signal、Channel send/recv；4-0 消费者 = boot
 /// waker 验收任务）。
 ///

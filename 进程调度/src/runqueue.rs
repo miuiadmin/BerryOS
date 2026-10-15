@@ -81,17 +81,25 @@ impl Runqueue {
         (*t).rq_next.set(None);
     }
 
-    /// round-robin：返回当前 `head`（要跑的任务）并把游标前移到 `head.next`。
-    /// 队列空返回 `None`。经 `Cell` 改游标——满足冻结 `pick_next(&Runqueue)`。
+    /// 环游标（4-3a：`RoundRobin::pick_next` 环形扫描的起点）。crate 内策略
+    /// 实现细节——环形链表的遍历原语，不承载调度语义。
+    /// （旧 `rotate()` =「取 head + 游标前移」的纯 FIFO 出选原语，4-3a 起
+    /// pick 按 `prio_effective` 环形扫描取代之——语义拆为 `head()` +
+    /// `advance_past()` 两半，见 `class.rs`。）
+    pub(crate) fn head(&self) -> Option<NonNull<Task>> {
+        self.head.get()
+    }
+
+    /// 把游标前移到 `node` 的后继（4-3a：pick 选中 `node` 后调用——环形扫描
+    /// 出选可不命中 head；对 head 调用即旧 `rotate` 的游标前移，语义不变）。
+    /// 选中者留在环上（runnable 常驻环），仅游标移动。
     ///
     /// # Safety
-    /// 返回的 `NonNull` 指向调度器拥有、仍在环上的任务；调用方须保证「一任务至多在
-    /// 一个 runqueue、至多被一个核 pick」（G0 单核平凡成立）再解引用为 `&mut`。
-    pub(crate) unsafe fn rotate(&self) -> Option<NonNull<Task>> {
-        let h = self.head.get()?;
-        let next = (*h.as_ptr()).rq_next.get().expect("环上 head 必有 next");
-        self.head.set(Some(next)); // 单元素环时 next==h，游标不变（保持指向它）
-        Some(h)
+    /// `node` 须当前在本环上（环上节点必有 next）。
+    pub(crate) unsafe fn advance_past(&self, node: NonNull<Task>) {
+        // SAFETY: 调用方契约（在环节点）；环非空必有 next。
+        let next = (*node.as_ptr()).rq_next.get().expect("环上节点必有 next");
+        self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
 }
 
