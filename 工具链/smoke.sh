@@ -49,7 +49,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-fail() { echo "smoke: FAIL: $1" >&2; exit 1; }
+fail() {
+  echo "smoke: FAIL: $1" >&2
+  # 失败必带现场：串口日志尾部直接进 stderr（CI 里即是诊断依据）。
+  echo "---- 串口日志尾部（$LOG）----" >&2
+  tail -40 "$LOG" >&2
+  echo "--------------------------------" >&2
+  exit 1
+}
 
 echo "smoke: QEMU 启动（$KERNEL）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
