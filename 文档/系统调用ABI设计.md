@@ -50,10 +50,10 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x21 | `pager_supply_pages` | 用户态 pager 给 VMO 填页 | v2 |
 | 0x22 | `pager_op_range` | 脏页/换出通知 | v3 |
 | **进程 / 线程** ||||
-| 0x31 | `process_create` | 建进程（在 Job 下） | v1 |
-| 0x32 | `process_start` | 设入口 + 传 bootstrap handle 包 | v1 |
+| 0x31 | `process_create` | 建进程 + 出 root Vmar（双出参；job v1 恒 0） | v1 |
+| 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap v1 恒 0） | v1 |
 | 0x33 | `process_exit` | 退出 | v1 |
-| 0x34 | `thread_create` | 建线程 | v1 |
+| 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 |
 | 0x35 | `thread_start` | 投入运行 | v1 |
 | 0x36 | `thread_exit` | 线程退出 | v1 |
 | 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
@@ -249,14 +249,20 @@ bos_status_t bos_vmar_allocate(bos_handle_t vmar, uint32_t options,
                                bos_handle_t *child);
 
 /* —— 进程 / 线程 —— */
+/* 3-3 修正（发布前，v1 落地实测）：加 root Vmar 第二出参（Zircon
+   zx_process_create 同形）——父进程必须拿到子地址空间根才能映代码/栈，
+   单出参 *out 时子进程无法被装配。job v1 恒 0（Job 对象 v2）。 */
 bos_status_t bos_process_create(bos_handle_t job, uint32_t options,
-                                bos_handle_t *out);
+                                bos_handle_t *process, bos_handle_t *vmar);
 bos_status_t bos_process_start(bos_handle_t process, bos_handle_t thread,
                                uintptr_t entry, uintptr_t sp,
-                               bos_handle_t bootstrap);  /* bootstrap 移入子进程固定槽 */
+                               bos_handle_t bootstrap);  /* v1 恒 0：per-process
+                               handle 表落地（3-4+）前无「移入子进程固定槽」
+                               载体，子入口 x0=0 */
 bos_status_t bos_process_exit(int code);
 bos_status_t bos_thread_create(bos_handle_t process, uint32_t options,
-                               bos_handle_t *out);
+                               bos_handle_t *out);        /* 未启动描述；入口/sp
+                               随 process_start（首线程启动路径，Zircon 同形） */
 bos_status_t bos_thread_start(bos_handle_t thread);
 bos_status_t bos_thread_exit(void);
 bos_status_t bos_thread_sleep(bos_time_t deadline);     /* nanosleep 等价 */
@@ -314,7 +320,8 @@ extern "C" {
     pub fn bos_vmar_allocate(vmar: Handle, options: u32, vaddr: *mut usize, len: usize,
                              child: *mut Handle) -> Status;
 
-    pub fn bos_process_create(job: Handle, options: u32, out: *mut Handle) -> Status;
+    pub fn bos_process_create(job: Handle, options: u32,
+                              process: *mut Handle, vmar: *mut Handle) -> Status;
     pub fn bos_process_start(process: Handle, thread: Handle, entry: usize, sp: usize,
                              bootstrap: Handle) -> Status;
     pub fn bos_process_exit(code: i32) -> ! ;

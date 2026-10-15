@@ -5,28 +5,29 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 27 号编号全部在册（下方 NR_* 常量组）；3-2 实现 13 个——handle 三操作 +
-//! clock_read（3-1）+ VMO/Vmar 九号（create/commit/decommit/read/write/map/
-//! unmap/protect/allocate，全部经 [`HandleTable`] 能力门控——**权限在 handle
-//! 不在对象**）。其余（wait/signal、process/thread、channel/event）留 3-3..3-4，
-//! 未注册槽由 HAL 默认返 `-ENOTSUP`。
+//! v1 27 号编号全部在册（下方 NR_* 常量组）；3-3 实现 16 个——handle 三操作 +
+//! clock_read（3-1）+ VMO/Vmar 九号（3-2）+ process_create/thread_create/
+//! process_start（3-3，全部经 [`HandleTable`] 能力门控——**权限在 handle
+//! 不在对象**）。其余（wait/signal、process/thread 退出与睡眠、channel/event）
+//! 留后续步，未注册槽由 HAL 默认返 `-ENOTSUP`。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
 //! AP 位，校验后直拷。**无 TOCTOU**：SVC 异常入口硬件置 DAIF 屏蔽 IRQ 且
 //! handler 不解蔽 → syscall 主体天然不可抢占（单核）。
 //!
-//! **并发说明（v1 免锁的边界）**：引导表 [`BOOTSTRAP_HT`] 是全局单表（3-2 起
-//! good 的 root Vmar 入表 = 首能力）；表的一切访问都在 syscall 同步异常路径
-//! （IRQ 屏蔽，单核无并发）或 boot 期（IRQ 未开）。3-3 `process_create` 拆
-//! per-process 表时本模块同步重构。
+//! **并发说明（v1 免锁的边界）**：引导表 [`BOOTSTRAP_HT`] 仍是全局单表（3-3
+//! 决策：per-process 表延后——3-4 channel 的 handle 迁移才是拆表的硬前置，
+//! 3-3 只过对象面不欠表语义）；表的一切访问都在 syscall 同步异常路径
+//! （IRQ 屏蔽，单核无并发）或 boot 期（IRQ 未开）。`process_create` 产出的
+//! 子进程 handle 也暂居本表（诚实边界：v1 子进程与父共享 handle 名字空间）。
 
 use crate::handle::{
-    HandleTable, KernelObj, ObjType, Rights, ERR_BAD_HANDLE, ERR_BUSY, ERR_BAD_STATE, ERR_FAULT,
-    ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED, ERR_NO_MEMORY, ERR_OUT_OF_RANGE,
-    RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_WRITE,
+    HandleTable, KernelObj, ObjType, Rights, ERR_ACCESS_DENIED, ERR_BAD_HANDLE, ERR_BUSY,
+    ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED, ERR_NO_MEMORY,
+    ERR_OUT_OF_RANGE, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_WRITE,
 };
-use crate::vmar::{Perm, VmarError};
+use crate::vmar::{Perm, Vmar, VmarError};
 use crate::vmo::{Vmo, VmoError};
 use bos_hal_aarch64::trap::TrapFrame;
 use bos_hal_aarch64::KERNEL_VA_BASE;
@@ -55,13 +56,10 @@ pub const NR_VMAR_UNMAP: usize = 0x17;
 pub const NR_VMAR_PROTECT: usize = 0x18;
 pub const NR_VMAR_ALLOCATE: usize = 0x19;
 // 进程 / 线程（7）
-#[allow(dead_code)] // 3-3 落地
 pub const NR_PROCESS_CREATE: usize = 0x31;
-#[allow(dead_code)] // 3-3
 pub const NR_PROCESS_START: usize = 0x32;
-#[allow(dead_code)] // 3-3
+#[allow(dead_code)] // 进程退出路径（杀死/回收）随后续步落地
 pub const NR_PROCESS_EXIT: usize = 0x33;
-#[allow(dead_code)] // 3-3
 pub const NR_THREAD_CREATE: usize = 0x34;
 #[allow(dead_code)] // 3-3
 pub const NR_THREAD_START: usize = 0x35;
@@ -607,10 +605,143 @@ extern "C" fn sys_vmar_allocate(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+// ---- process / thread（3-3；对象 = `process.rs`，钉住语义见其模块注释）----
+
+/// `process_create(job, options, *process, *vmar)`：建空进程。**双出参**
+/// （Zircon `zx_process_create` 同形——ABI §8.3 v1 修正）：父进程靠返回的
+/// root Vmar handle 才能向子地址空间映射代码/栈，只给 process handle 不够用。
+/// 出权：process = MANAGE|DUPLICATE，root Vmar = MAP|MANAGE|DUPLICATE（与
+/// boot root 同面）。v1 参数面：`job` 恒 0（Job 对象 v2——**创建权未设防的
+/// 已知豁口**，落地记录见能力模型）、`options` 恒 0。
+extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
+    let (job, options, p_out, v_out) = (tf.regs[1], tf.regs[2] as u32, tf.regs[3], tf.regs[4]);
+    if job != 0 || options != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u64(el1, p_out, 0) {
+        return e as i64;
+    }
+    if let Err(e) = copy_out_u64(el1, v_out, 0) {
+        return e as i64;
+    }
+    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let vmar = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid());
+    let (ttbr0, asid) = (vmar.ttbr0_pa(), vmar.asid());
+    let hv = match t.insert(
+        KernelObj::Vmar(vmar),
+        RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE,
+    ) {
+        Ok(h) => h,
+        Err(e) => return e as i64, // 表满/gen 尽：Vmar 连 Box 泄漏（v1 不可达，安全向）
+    };
+    let Ok((vobj, _)) = t.get_raw(hv, ObjType::Vmar, 0) else {
+        // 刚插入即取失败 = 不可达防御面；关掉防泄漏。
+        let _ = t.close(hv);
+        return ERR_BAD_HANDLE as i64;
+    };
+    // SAFETY: vobj 在表（刚插入且类型 Vmar）；Process 构造即钉住 vmar。
+    let proc = unsafe { crate::process::Process::new(vobj, ttbr0, asid) };
+    match t.insert(KernelObj::Process(proc), RIGHT_MANAGE | RIGHT_DUPLICATE) {
+        Ok(hp) => {
+            let r1 = copy_out_u64(el1, p_out, hp as u64);
+            let r2 = copy_out_u64(el1, v_out, hv as u64);
+            match (r1, r2) {
+                (Ok(()), Ok(())) => 0,
+                (Err(e), _) | (_, Err(e)) => e as i64, // 出参失效：两 handle 已建，调用方重试态自理
+            }
+        }
+        Err(e) => e as i64, // 同上泄漏向（v1 不可达）
+    }
+}
+
+/// `thread_create(process, options, *out)`：在进程下建**未启动**线程描述
+/// （入口/栈留给 `process_start`——首线程启动路径，Zircon 同形）。门控：
+/// process **MANAGE**。Thread 构造即钉住 Process（父 handle 关光仍可 start）。
+extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
+    let (ph, options, out) = (tf.regs[1] as u32, tf.regs[2] as u32, tf.regs[3]);
+    if options != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u64(el1, out, 0) {
+        return e as i64;
+    }
+    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    let Ok((pobj, _)) = t.get_raw(ph, ObjType::Process, RIGHT_MANAGE) else {
+        return ERR_BAD_HANDLE as i64;
+    };
+    // SAFETY: get_raw 已验在表且类型 Process；Thread 构造即钉住它。
+    let thrd = unsafe { crate::process::Thread::new(pobj) };
+    match t.insert(KernelObj::Thread(thrd), RIGHT_MANAGE | RIGHT_DUPLICATE) {
+        Ok(h) => match copy_out_u64(el1, out, h as u64) {
+            Ok(()) => 0,
+            Err(e) => e as i64,
+        },
+        Err(e) => e as i64, // Thread 已钉 Process；泄漏向同上（v1 不可达）
+    }
+}
+
+/// `process_start(process, thread, entry, sp, bootstrap)`：启动首线程
+/// （把 thread 的执行流放进 process 的地址空间）。门控：process 与 thread
+/// 各 **MANAGE**。v1 参数面：`bootstrap` 恒 0（per-process handle 表落地
+/// （3-4+）前无「移入子进程固定槽」的载体；子进程入口 x0 = 0）。
+///
+/// 校验序：`bootstrap`≠0 → -EINVAL；`entry`==0 / `sp` 非 16 对齐 → -EINVAL；
+/// thread 非本 process 所属 → -EACCES；已启动 → -EBADSTATE。全过后
+/// `started=true`、**替运行中的任务再钉一次 Process**（v1 任务不退出，
+/// 永不释放——防 handle 全关后页表根被销毁），`spawn_user` 入队。
+extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
+    let (ph, th, entry, sp, bootstrap) = (
+        tf.regs[1] as u32,
+        tf.regs[2] as u32,
+        tf.regs[3],
+        tf.regs[4],
+        tf.regs[5],
+    );
+    if bootstrap != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    if entry == 0 || sp == 0 || sp % 16 != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let Ok(t) = table_or_ebadf() else { return ERR_BAD_HANDLE as i64 };
+    // 双对象同借：类型互异 → 两指针必不同对象 → 无别名（论证同 vmar_map）。
+    let vr = match t.get_raw(ph, ObjType::Process, RIGHT_MANAGE) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64,
+    };
+    let vt = match t.get_raw(th, ObjType::Thread, RIGHT_MANAGE) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64,
+    };
+    // SAFETY: 双 get_raw 门控过；单核 IRQ 屏蔽。
+    let (proc, thrd) = unsafe {
+        ((*vr.as_ptr()).obj.as_process(), (*vt.as_ptr()).obj.as_thread_mut())
+    };
+    let (Some(proc), Some(thrd)) = (proc, thrd) else {
+        return ERR_BAD_HANDLE as i64; // 类型门控后不可达；防御面
+    };
+    if thrd.owner() != vr {
+        return ERR_ACCESS_DENIED as i64; // thread 不归该 process 管
+    }
+    if thrd.started {
+        return ERR_BAD_STATE as i64;
+    }
+    thrd.entry = entry as usize;
+    thrd.sp = sp as usize;
+    thrd.started = true;
+    // SAFETY: vr 在表（get_raw 过）；任务钉住（v1 永不释放，见上）。
+    unsafe { (*vr.as_ptr()).retain() };
+    bos_sched::spawn_user(entry as usize, 0, sp as usize, b"user_child", proc.ttbr0_pa, proc.asid);
+    0
+}
+
 // ---- boot 期注册（rust_main 在 ktest 之前调用；HAL install 见其 # Panics）----
 
-/// 注册 3-2 已实现的 13 号（3-1 四号 + VMO/Vmar 九号）。未列号走 HAL 默认
-/// `-ENOTSUP`（3-3..3-4 逐批增补）。
+/// 注册 3-3 已实现的 16 号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号：
+/// create/start/thread_create；0x33/0x35..0x37 退出与睡眠随后续步）。未列号
+/// 走 HAL 默认 `-ENOTSUP`。
 pub fn install() {
     use bos_hal_aarch64::syscall::install as reg;
     reg(NR_HANDLE_CLOSE, sys_handle_close);
@@ -626,4 +757,7 @@ pub fn install() {
     reg(NR_VMAR_UNMAP, sys_vmar_unmap);
     reg(NR_VMAR_PROTECT, sys_vmar_protect);
     reg(NR_VMAR_ALLOCATE, sys_vmar_allocate);
+    reg(NR_PROCESS_CREATE, sys_process_create);
+    reg(NR_PROCESS_START, sys_process_start);
+    reg(NR_THREAD_CREATE, sys_thread_create);
 }

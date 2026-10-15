@@ -118,11 +118,12 @@ pub enum ObjType {
 }
 
 /// 内核对象壳（Zircon 务实派，ADR #4：对象在内核、用户态只见整数 handle）。
-/// v1 先两种（3-3/3-4 增补 Process/Thread/Channel/Event）。
-#[allow(dead_code)] // Vmar 变体的首个构造点随 3-2 vmar_create 接线
+/// 3-3 起 Process/Thread 入壳（`process.rs`；对象间钉住见 [`ObjRef::retain`]）。
 pub enum KernelObj {
     Vmo(crate::vmo::Vmo),
     Vmar(crate::vmar::Vmar),
+    Process(crate::process::Process),
+    Thread(crate::process::Thread),
 }
 
 impl KernelObj {
@@ -130,6 +131,8 @@ impl KernelObj {
         match self {
             KernelObj::Vmo(_) => ObjType::Vmo,
             KernelObj::Vmar(_) => ObjType::Vmar,
+            KernelObj::Process(_) => ObjType::Process,
+            KernelObj::Thread(_) => ObjType::Thread,
         }
     }
 
@@ -157,14 +160,54 @@ impl KernelObj {
             _ => None,
         }
     }
+
+    /// 只读取 Process 本体（process_start 校验归属等）。
+    pub fn as_process(&self) -> Option<&crate::process::Process> {
+        match self {
+            KernelObj::Process(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// 可变取 Thread 本体（process_start 写 started/entry/sp）。
+    pub fn as_thread_mut(&mut self) -> Option<&mut crate::process::Thread> {
+        match self {
+            KernelObj::Thread(t) => Some(t),
+            _ => None,
+        }
+    }
 }
 
 /// 共享对象体：引用计数 + 对象本体。`Box` 进堆、槽持裸指针；引用计数归零
 /// 的 drop 是本模块唯一释放点（unsafe 收敛：指针有效性由表全程维护）。
 pub struct ObjRef {
-    /// 持有本对象的 handle 数（dup +1 / close -1）。
+    /// 持有本对象的引用数（handle 计 + **内部钉住计**，见 [`ObjRef::retain`]）。
     refs: usize,
     pub obj: KernelObj,
+}
+
+impl ObjRef {
+    /// **内部钉住**（3-3）：对象间跨界引用（Thread→Process、Process→root
+    /// Vmar、运行中任务→Process）+1 引用——持有者 handle 关光后被引用对象
+    /// 仍存活。`retain`/`release` 成对，与 handle 计共用同一归零释放点。
+    pub fn retain(&mut self) {
+        self.refs += 1;
+    }
+
+    /// 钉住释放：-1，归零则销毁（与 close 归零同路）。Drop 链安全：内部钉
+    /// 住的对象销毁时其 Drop 再 release 它钉住的对象（纯指针操作，不回表，
+    /// 无重入）。
+    ///
+    /// # Safety
+    /// `ptr` 须来自一次成功的 `retain`（表内活对象），且此后不再使用。
+    pub unsafe fn release(ptr: NonNull<Self>) {
+        // SAFETY: 调用方契约（retain 过、单核顺序——对象仅在 IRQ 屏蔽路径销毁）。
+        let r = &mut *ptr.as_ptr();
+        r.refs -= 1;
+        if r.refs == 0 {
+            drop(Box::from_raw(ptr.as_ptr()));
+        }
+    }
 }
 
 /// 槽状态：空槽记住 `next_gen`（重用时代号单调 +1——旧 handle 值自然作废）。

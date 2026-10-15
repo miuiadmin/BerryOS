@@ -247,6 +247,105 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hchild as u64, 0, 0), 0, "SYSCALL：close 子 vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm as u64, 0, 0), 0, "SYSCALL：close root vmar");
 
+    // F. 3-3 process/thread：对象面 + 错误面（ktest 在 bos_sched::init 之前跑，
+    //    process_start 成功路径会 spawn → 不能在此验——happy path 由 EL0
+    //    `user_spawner` 承担，watchdog 错杀断言兜底）。
+    use crate::syscall::{NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE};
+    // F0. process_create 双出参：process + root Vmar 两 handle 均非零。
+    // SAFETY: 同上（OUT/CHILD_OUT 为本函数私有静态）。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc5(NR_PROCESS_CREATE as u64, 0, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        0,
+        "SYSCALL：process_create"
+    );
+    let hp = unsafe { OUT } as u32;
+    let hv2 = unsafe { CHILD_OUT } as u32;
+    assert_ne!(hp, 0, "SYSCALL：process_create 须回填 process handle");
+    assert_ne!(hv2, 0, "SYSCALL：process_create 须回填 root Vmar handle");
+    // 类型断言：两 handle 各指其类型对象（三门控走查）。
+    assert!(ht.get(hp, ObjType::Process, 0).is_ok(), "SYSCALL：hp 须指 Process");
+    assert!(ht.get(hv2, ObjType::Vmar, 0).is_ok(), "SYSCALL：hv2 须指 Vmar");
+
+    // F1. 参数面：job≠0 / options≠0 → -EINVAL（v1 无 Job、无 options 位）。
+    assert_eq!(
+        svc5(NR_PROCESS_CREATE as u64, 1, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        -22,
+        "SYSCALL：process_create job≠0 须 -EINVAL"
+    );
+    assert_eq!(
+        svc5(NR_PROCESS_CREATE as u64, 0, 1, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        -22,
+        "SYSCALL：process_create options≠0 须 -EINVAL"
+    );
+
+    // F2. thread_create：挂 hp 下建线程；类型门控（对 Vmar handle / 野值须 -EBADF）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc5(NR_THREAD_CREATE as u64, hp as u64, 0, &raw mut OUT as u64, 0),
+        0,
+        "SYSCALL：thread_create"
+    );
+    let hth = unsafe { OUT } as u32;
+    assert_ne!(hth, 0, "SYSCALL：thread_create 须回填 handle");
+    assert!(ht.get(hth, ObjType::Thread, 0).is_ok(), "SYSCALL：hth 须指 Thread");
+    assert_eq!(
+        svc5(NR_THREAD_CREATE as u64, hv2 as u64, 0, &raw mut OUT as u64, 0),
+        -9,
+        "SYSCALL：thread_create 对 Vmar 须 -EBADF（类型门控）"
+    );
+    assert_eq!(
+        svc5(NR_THREAD_CREATE as u64, 0xDEAD_BEEF, 0, &raw mut OUT as u64, 0),
+        -9,
+        "SYSCALL：thread_create 坏 handle 须 -EBADF"
+    );
+
+    // F3. process_start 参数面（在归属/状态检查之前，故不 spawn）：bootstrap≠0 /
+    //     entry=0 / sp 未 16 对齐 → -EINVAL。
+    assert_eq!(
+        svc6(NR_PROCESS_START as u64, hp as u64, hth as u64, 0x1000, 0x4000, 1, 0),
+        -22,
+        "SYSCALL：process_start bootstrap≠0 须 -EINVAL（v1 约定）"
+    );
+    assert_eq!(
+        svc6(NR_PROCESS_START as u64, hp as u64, hth as u64, 0, 0x4000, 0, 0),
+        -22,
+        "SYSCALL：process_start entry=0 须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_PROCESS_START as u64, hp as u64, hth as u64, 0x1000, 0x4001, 0, 0),
+        -22,
+        "SYSCALL：process_start sp 未 16 对齐须 -EINVAL"
+    );
+
+    // F4. 归属面：ht 属 proc(hp)，拿 hp2 的 handle 去 start → -EACCES（参数面
+    //     全过才走到归属检查）。第二个进程同时把「进程可批量创建」过了。
+    // SAFETY: 同上。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc5(NR_PROCESS_CREATE as u64, 0, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        0,
+        "SYSCALL：process_create 第二个"
+    );
+    let hp2 = unsafe { OUT } as u32;
+    let hv3 = unsafe { CHILD_OUT } as u32;
+    assert_ne!(hp2, 0, "SYSCALL：第二个进程 handle");
+    assert_eq!(
+        svc6(NR_PROCESS_START as u64, hp2 as u64, hth as u64, 0x1000, 0x4000, 0, 0),
+        -13,
+        "SYSCALL：跨进程 start 须 -EACCES（thread 不归该 process）"
+    );
+
+    // F5. 清场（顺带覆盖钉住释放链：close 线程 → 释放对 Process 的钉住；
+    //     close 进程 → 释放对 root Vmar 的钉住；空进程无映射，close 不受
+    //     -EBUSY 面影响）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hth as u64, 0, 0), 0, "SYSCALL：close thread");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp as u64, 0, 0), 0, "SYSCALL：close process");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv2 as u64, 0, 0), 0, "SYSCALL：close child vmar");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close process 2");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv3 as u64, 0, 0), 0, "SYSCALL：close child vmar 2");
+
     bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
 
@@ -263,6 +362,25 @@ fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
             in("x1") a1,
             in("x2") a2,
             in("x3") a3,
+            options(nostack, preserves_flags),
+        );
+    }
+    ret as i64
+}
+
+/// `svc #0` 五参往返（ktest 专用；3-3 process_create/thread_create 用）：
+/// x0=nr（进）/ret（出）、x1..x4=参。
+fn svc5(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> i64 {
+    let ret: u64;
+    // SAFETY: 同 svc4（同步异常；dispatch 只回写 x0）。
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inout("x0") nr => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
             options(nostack, preserves_flags),
         );
     }

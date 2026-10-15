@@ -16,6 +16,7 @@ mod handle;
 mod heap;
 mod ktest;
 mod mm;
+mod process;
 mod syscall;
 mod user;
 mod vmar;
@@ -110,6 +111,8 @@ pub extern "C" fn rust_main() -> ! {
         user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
     let up_abuser =
         user::UserProcess::build(mm::frames(), user::user_abuser_code(), user::USER_MAGIC);
+    let up_spawner =
+        user::UserProcess::build(mm::frames(), user::user_spawner_code(), user::USER_MAGIC);
 
     // 3-2：good 的 root Vmar 进引导表 = **首能力**（能力模型 §5「第一个能力从
     // 哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle 作
@@ -126,6 +129,10 @@ pub extern "C" fn rust_main() -> ! {
                           b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid);
     bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid);
+    // 3-3 验收：spawner 经真 syscall 创建第二个进程（子进程打 'C'）。x0=0——
+    // 它不需要引导能力，process_create 双出参自带子 root Vmar。
+    bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+                          b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid);
     bos_sched::spawn(user::watchdog, 0, b"watchdog");
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
