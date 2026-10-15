@@ -16,6 +16,7 @@ mod handle;
 mod heap;
 mod ktest;
 mod mm;
+mod syscall;
 mod user;
 mod vmar;
 mod vmo;
@@ -74,6 +75,10 @@ pub extern "C" fn rust_main() -> ! {
     // SAFETY: 启动单线程、`rust_main` 入口仅调用一次。
     unsafe { mm::init() };
 
+    // 3-1：注册真 syscall 语义 handler（handle 三操作 + clock_read）进 HAL 表。
+    // 必须先于 ktest::run（SYSCALL 用例）与一切用户进程。
+    syscall::install();
+
     ktest::run();
 
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
@@ -96,20 +101,21 @@ pub extern "C" fn rust_main() -> ! {
     bos_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
 
     // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡。good 打 'u'
-    // （AP=01 + syscall 往返在 EL0 生效的活证）；两个 rogue 各自作死（野指针 /
-    // 畸形 SVC）→ 只死自己（user_fault_exit），watchdog 断言后打关卡标记。
+    // （syscall 往返在 EL0 生效的活证）；rogue_ptr 野指针自作死 → 只死自己
+    // （user_fault_exit）；abuser 坏 handle 滥用 → **-EBADF 存活**（3-1 撤
+    // 「畸形号杀」政策：syscall 层错误一律错误码自理）。watchdog 断言后打关卡标记。
     let up_good =
         user::UserProcess::build(mm::frames(), user::user_good_code(), user::USER_MAGIC);
     let up_rogue_ptr =
         user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
-    let up_rogue_svc =
-        user::UserProcess::build(mm::frames(), user::user_rogue_svc_code(), user::USER_MAGIC);
+    let up_abuser =
+        user::UserProcess::build(mm::frames(), user::user_abuser_code(), user::USER_MAGIC);
     bos_sched::spawn_user(user::USER_CODE_VA, USER_PRINT_EVERY, user::USER_STACK_TOP,
                           b"user_good", up_good.ttbr0_pa, up_good.asid);
     bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
                           b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid);
     bos_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
-                          b"user_rogue_svc", up_rogue_svc.ttbr0_pa, up_rogue_svc.asid);
+                          b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid);
     bos_sched::spawn(user::watchdog, 0, b"watchdog");
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被

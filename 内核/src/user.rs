@@ -1,15 +1,19 @@
-//! 首个 EL0 用户进程（2b-4 收官步 + G1.5 隔离关卡，`内存管理设计.md` §5.1 第 5 步）。
+//! 首个 EL0 用户进程（2b-4 收官步 + G1.5 隔离关卡，`内存管理设计.md` §5.1 第 5 步；
+//! 3-1 改板：syscall 政策撤「畸形号杀」）。
 //!
 //! 用户程序 = 内核 rodata 里的机器码模板（`global_asm!` 生成，boot 期整块拷进 VMO
 //! 代码页后执行——程序内分支全为短距局部跳转/`movz` 绝对地址，无 PC 相对越界引用，
 //! 整块搬迁不破坏寻址）。三个角色：
-//! - `good`：节流循环——读私有数据页 canary（非零才继续）+ `NR_USER_PUTCHAR` 打 'u'
-//!   + `NR_TEST_ECHO` 自检（坏即故意自陷 wild 读 → 被杀 → watchdog 见杀数>期望 →
-//!   G1.5 FAIL 暴露）；
+//! - `good`：节流循环——读私有数据页 canary（非零才继续）+ `clock_read`（0x61，真
+//!   ABI 号）两次读单调性自检 + `NR_DEBUG_PUTCHAR` 打 'u'（坏即故意自陷 wild 读 →
+//!   被杀 → watchdog 见杀数>期望 → G1.5 FAIL 暴露）；
 //! - `rogue_ptr`：读未映射 VA 0x4000_0000（D-abort from EL0 → 杀）；
-//! - `rogue_svc`：调越界编号 0x99 的 SVC（v1 政策：EL0 畸形 syscall → 杀）。
-//! 两个 rogue 应被杀且**只死自己**（`user_fault_exit`）；[`watchdog`] 内核任务断言
-//! 杀数==2 + switches/putchar 金丝雀仍在涨 → 打 `G1.5 ok`（smoke 固化标记）后退出。
+//! - `abuser`（原 rogue_svc，3-1 改板）：**真号 + 垃圾 handle 滥用**——`handle_close`
+//!   (0x01) 传 0xDEAD_BEEF → 必须 -EBADF 且**存活**（syscall 层错误一律错误码自理，
+//!   撤 2b-4 杀政策）；打 'S' 作存活金丝雀。
+//! rogue_ptr 应被杀且**只死自己**（`user_fault_exit`）；abuser 与 good 全程存活。
+//! [`watchdog`] 内核任务断言杀数==1 + switches/putchar 金丝雀仍在涨 → 打 `G1.5 ok`
+//! （smoke 固化标记）后退出。
 
 use crate::aspace::alloc_asid;
 use crate::vmar::{Perm, Vmar};
@@ -44,12 +48,21 @@ core::arch::global_asm!(
     "    movz x3, #0x2000",            // 数据页 canary
     "    ldr  x4, [x3]",
     "    cbz  x4, 3f",                 // 页内容坏 → 自陷路径（被杀 = FAIL 暴露）
-    "    mov  x0, #0x61",              // NR_TEST_ECHO
-    "    mov  x1, #0x5a",
-    "    svc  #0",                     // x0 = echo(0x5a)
-    "    cmp  x0, #0x5a",
-    "    b.ne 3f",                     // 往返坏 → 自陷路径
-    "    mov  x0, #0x62",              // NR_USER_PUTCHAR
+    "    movz x2, #0x2008",            // clock_read 的 out = 数据页+8（x2 = 第 2 参）
+    "    mov  x0, #0x61",              // NR_CLOCK_READ（真 ABI 号）
+    "    mov  x1, xzr",                // CLOCK_MONOTONIC（x1 = 第 1 参）
+    "    svc  #0",                     // x0 = status
+    "    cbnz x0, 3f",
+    "    ldr  x5, [x2]",               // t1（纳秒）
+    "    cbz  x5, 3f",
+    "    mov  x0, #0x61",              // 再读一次（dispatch 只回写 x0，x1/x2 未变）
+    "    mov  x1, xzr",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x6, [x2]",               // t2
+    "    cmp  x6, x5",
+    "    b.lo 3f",                     // 单调性破坏 → 自陷路径
+    "    mov  x0, #0xFF",              // NR_DEBUG_PUTCHAR（调试槽，非 ABI）
     "    mov  x1, #0x75",              // 'u'
     "    svc  #0",
     "    cbnz x0, 3f",                 // putchar 失败 → 自陷路径
@@ -70,13 +83,28 @@ core::arch::global_asm!(
     "__user_rogue_ptr_end:",
 
     ".balign 16",
-    ".globl __user_rogue_svc",
-    "__user_rogue_svc:",
-    "    mov  x0, #0x99",              // 越界 nr → v1 政策：EL0 畸形 syscall → 杀
+    ".globl __user_abuser",
+    "__user_abuser:",
+    "    movz x9, #0x30, lsl #16",     // 节流阈值 ~3.1M（与 good 的 arg 同量级）
+    "0:  mov  x10, xzr",
+    "1:  add  x10, x10, #1",
+    "    cmp  x10, x9",
+    "    b.lo 1b",
+    "    mov  x0, #0x01",              // NR_HANDLE_CLOSE（真 ABI 号）
+    "    movz x1, #0xBEEF",            // 垃圾 handle 0xDEAD_BEEF
+    "    movk x1, #0xDEAD, lsl #16",
+    "    svc  #0",                     // x0 必须 = -EBADF（能力门控拒绝面）
+    "    cmn  x0, #9",                 // x0 + 9 == 0 ⟺ x0 == -9
+    "    b.ne 3f",                     // 返回值异常 → 自陷（kills>期望 → watchdog FAIL）
+    "    mov  x0, #0xFF",              // NR_DEBUG_PUTCHAR：'S' = 存活金丝雀
+    "    mov  x1, #0x53",
     "    svc  #0",
+    "    b    0b",
+    "3:  movz x4, #0x4000, lsl #16",   // 自陷路径（被杀 = FAIL 暴露）
+    "    ldr  x5, [x4]",
     "    b    .",
-    ".globl __user_rogue_svc_end",
-    "__user_rogue_svc_end:",
+    ".globl __user_abuser_end",
+    "__user_abuser_end:",
 );
 
 extern "C" {
@@ -84,8 +112,8 @@ extern "C" {
     static __user_good_end: u8;
     static __user_rogue_ptr: u8;
     static __user_rogue_ptr_end: u8;
-    static __user_rogue_svc: u8;
-    static __user_rogue_svc_end: u8;
+    static __user_abuser: u8;
+    static __user_abuser_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -108,10 +136,10 @@ pub fn user_rogue_ptr_code() -> &'static [u8] {
     unsafe { blob(&__user_rogue_ptr, &__user_rogue_ptr_end) }
 }
 
-/// rogue_svc 用户程序模板。
-pub fn user_rogue_svc_code() -> &'static [u8] {
+/// abuser 用户程序模板（真号 + 垃圾 handle 滥用 → -EBADF 存活）。
+pub fn user_abuser_code() -> &'static [u8] {
     // SAFETY: 同上。
-    unsafe { blob(&__user_rogue_svc, &__user_rogue_svc_end) }
+    unsafe { blob(&__user_abuser, &__user_abuser_end) }
 }
 
 /// 一个用户进程的装配结果：表根 + ASID（交给 `spawn_user`）。
@@ -155,9 +183,10 @@ impl UserProcess {
     }
 }
 
-/// G1.5 验收看门狗（内核任务）：等两个 rogue 被杀、good 的 putchar 与 switches
-/// 金丝雀仍在涨 → 打关卡标记 `G1.5 ok` 后 `exit_current` 退场（A/B/good 继续
-/// 分时）。杀数超期望（好用户被误杀）或超时未达成 → panic（系统停 = 关卡失败）。
+/// G1.5 验收看门狗（内核任务）：等 rogue_ptr 被杀、abuser（坏 handle 滥用）与
+/// good 的 putchar / switches 金丝雀仍在涨 → 打关卡标记 `G1.5 ok` 后 `exit_current`
+/// 退场（A/B/good/abuser 继续分时）。杀数超期望（abuser 被误杀 = 3-1 错误码政策
+/// 破坏）或超时未达成 → panic（系统停 = 关卡失败）。
 pub extern "C" fn watchdog(_arg: usize) -> ! {
     const TRIES: u32 = 2_000;
     let mut last_puts = bos_hal_aarch64::syscall::user_putcnt();
@@ -170,11 +199,11 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
         let kills = bos_sched::user_kills();
         let puts = bos_hal_aarch64::syscall::user_putcnt();
         let switches = bos_sched::switches();
-        if kills > 2 {
-            panic!("G1.5 FAIL: 杀数 {} > 2（好用户或内核任务被误杀）", kills);
+        if kills > 1 {
+            panic!("G1.5 FAIL: 杀数 {} > 1（abuser 被误杀 = 错误码政策破坏）", kills);
         }
-        if kills == 2 && puts > last_puts && switches > last_switches {
-            bos_hal_aarch64::uart_puts(b"\nG1.5 ok (2 rogues dead, canaries alive)\n");
+        if kills == 1 && puts > last_puts && switches > last_switches {
+            bos_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
             bos_sched::exit_current()
         }
         last_puts = puts;

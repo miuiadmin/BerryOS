@@ -19,24 +19,106 @@ pub fn run() {
     test_exc();
 }
 
-/// Step 9 信号 + G0 退出 #6：从 EL1 发 `svc #0`（EC=0x15，current-EL sync）→
-/// dispatch 回写 x0=ret、eret 续行。断言 ret==arg 证 syscall 往返。
-/// DAIF 屏蔽不影响同步异常；NZCV 经 SPSR 在 entry/eret 保存/恢复。
+/// Step 9 信号 + G0 退出 #6 + **3-1 真 ABI 骨架**：从 EL1 发 `svc #0`（EC=0x15）
+/// → HAL dispatch → 语义层 handler（`内核/src/syscall.rs`）→ 回写 x0、eret 续行。
+/// 用例：调试 echo 往返（G0 原始判据）；未知号 0x99 / 未实现真号 0x11 一律
+/// -ENOTSUP（3-1 政策：错误码自理、永不杀调用者）；clock_read（MONOTONIC）两次
+/// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）。
+#[allow(clippy::result_unwrap_used)]
 fn test_syscall() {
-    let nr: u64 = bos_hal_aarch64::syscall::NR_TEST_ECHO as u64;
-    let arg: u64 = 0x5a;
+    use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
+    use crate::syscall::{
+        bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_VMO_CREATE,
+    };
+    use crate::vmo::Vmo;
+    use bos_hal_aarch64::syscall::NR_DEBUG_ECHO;
+    use bos_mm::va::PAGE_SIZE;
+
+    // out 参数缓冲（内核地址；EL1 调用方 → copy_out 走高半直映区）。
+    static mut OUT: u64 = 0;
+
+    // A. 调试 echo 往返（G0 原始判据；0xFE 调试槽，非 ABI）。
+    assert_eq!(svc4(NR_DEBUG_ECHO as u64, 0x5a, 0, 0), 0x5a, "SYSCALL：echo 往返");
+
+    // B. 未知号（越界 0x99）与未实现真号（vmo_create 0x11，3-2 落地）一律
+    //    -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言。
+    assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
+    assert_eq!(
+        svc4(NR_VMO_CREATE as u64, 0, 0, 0),
+        -95,
+        "SYSCALL：未实现真号须 -ENOTSUP"
+    );
+
+    // C. clock_read：MONOTONIC 两次读单调递增；非法 id -ENOTSUP。
+    // SAFETY: svc 同步异常；OUT 为本函数私有静态。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_CLOCK_READ as u64, 0, &raw mut OUT as u64, 0),
+        0,
+        "SYSCALL：clock_read 状态"
+    );
+    let t1 = unsafe { OUT };
+    assert!(t1 > 0, "SYSCALL：clock_read 应得正纳秒");
+    assert_eq!(
+        svc4(NR_CLOCK_READ as u64, 1, &raw mut OUT as u64, 0),
+        -95,
+        "SYSCALL：非法 clock_id 须 -ENOTSUP"
+    );
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, &raw mut OUT as u64, 0), 0);
+    assert!(unsafe { OUT } >= t1, "SYSCALL：单调钟不单调");
+
+    // D. handle 门控全链路（EL1 svc → 语义层 → 引导表）。duplicate/replace 的
+    //    out 回写走 copy_out（EL1 内核直映区分支）。
+    let ht = bootstrap_table();
+    let h1 = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .expect("SYSCALL：insert h1");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h1 as u64, 0, 0), 0, "SYSCALL：close h1");
+    assert_eq!(
+        svc4(NR_HANDLE_CLOSE as u64, h1 as u64, 0, 0),
+        -9,
+        "SYSCALL：close 旧值须 -EBADF"
+    );
+    let h2 = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .expect("SYSCALL：insert h2");
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, h2 as u64, RIGHT_READ as u64, &raw mut OUT as u64),
+        0,
+        "SYSCALL：duplicate 收紧"
+    );
+    let hd = unsafe { OUT } as u32;
+    assert_ne!(hd, 0, "SYSCALL：duplicate 须回填新 handle");
+    assert_ne!(hd, h2, "SYSCALL：duplicate 须新槽位");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hd as u64, 0, 0), 0, "SYSCALL：close dup");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h2 as u64, 0, 0), 0, "SYSCALL：close h2");
+    assert_eq!(
+        svc4(NR_HANDLE_CLOSE as u64, 0xDEAD_BEEF, 0, 0),
+        -9,
+        "SYSCALL：坏 handle 须 -EBADF"
+    );
+
+    bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
+}
+
+/// `svc #0` 四参往返（ktest 专用）：x0=nr（进）/ret（出）、x1..x3=参。
+/// DAIF 屏蔽不影响同步异常；NZCV 经 SPSR 在 entry/eret 保存/恢复。
+/// 安全外壳：3-1 起 syscall 派发不 panic、永不杀调用者（错误码自理）。
+fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     let ret: u64;
-    // SAFETY: svc #0 触发同步异常；dispatch 写回 x0、eret 回本指令之后。
+    // SAFETY: svc 触发同步异常；dispatch 只回写 x0（eret 回本指令之后）。
     unsafe {
         core::arch::asm!(
             "svc #0",
             inout("x0") nr => ret,
-            in("x1") arg,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
             options(nostack, preserves_flags),
         );
     }
-    assert_eq!(ret, arg, "syscall echo 往返");
-    bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
+    ret as i64
 }
 
 /// Step 7 信号：GICv2 配置读回自检（IRQ27/CNTV：启用 + 优先级 + distributor/CPUif 开）。

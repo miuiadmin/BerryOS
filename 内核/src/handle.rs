@@ -62,6 +62,8 @@ pub const ERR_ACCESS_DENIED: i32 = -13;
 pub const ERR_INVALID_ARG: i32 = -22;
 /// ENOMEM：无空间（表满 / gen 耗尽）。
 pub const ERR_NO_MEMORY: i32 = -12;
+/// ENOTSUP：未知/未实现编号或能力（ABI §8.4「永不 panic」统一错误面）。
+pub const ERR_NOT_SUPPORTED: i32 = -95;
 
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
 

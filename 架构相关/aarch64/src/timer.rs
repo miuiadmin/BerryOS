@@ -8,7 +8,13 @@
 //! 时间片（Step 6 驱动抢占）。替代 Phase 1 的 1Hz 自停 demo。
 //!
 //! **电平触发 + rearm-before-EOIR**：IRQ handler 须在 EOIR 前 [`arm_slice`]（重写
-//! TVAL 去活电平），否则 EOIR 后电平仍高立即重投。`exception_irq`（Step 5）保此序。
+//! 未来时刻的 CVAL 去活电平，语义不变），否则 EOIR 后电平仍高立即重投。
+//! `exception_irq`（Step 5）保此序。
+//!
+//! **绝对截止时间重编程（纪律，非可选 · `调度器设计.md` §4.1）**：定时器永远编程到
+//! 绝对到期时刻——[`arm_slice`] 以计数器现读（CNTVCT）重算，绝不基于上次编程值外推。
+//! v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；Phase 4+ 有
+//! 超时事件后在授片处取 min。
 //!
 //! **热路径零分配**：本模块无堆、无锁（G0 单核）。
 
@@ -30,16 +36,21 @@ pub unsafe fn init() -> u64 {
     FREQ
 }
 
-/// 武装一个时间片：写 TVAL（重置倒计 = 去活电平）+ ENABLE + 不屏蔽（0b01）。
-/// 兼任 IRQ handler 内的 rearm（rearm-before-EOIR）。
+/// 武装一个时间片：**绝对编程**（`调度器设计.md` §4.1「绝对截止时间重编程」纪律，
+/// 非可选）——读 `CNTVCT` 现值、写 `CNTV_CVAL_EL0 = now + SLICE`（显式 CVAL 绝对
+/// 截止是该纪律的落地形态；写未来时刻的 CVAL 同样去活电平触发），绝不基于上次编程
+/// 值外推。随后写 CTL = ENABLE + 不屏蔽（0b01）。兼任 IRQ handler 内的 rearm
+/// （rearm-before-EOIR）。
+/// v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；Phase 4+ 有
+/// 超时事件后在授片处取 min。
 ///
 /// # Safety
-/// 写 CNTV 系统寄存器；EL1。
+/// 读 CNTVCT + 写 CNTV 系统寄存器；EL1。
 pub unsafe fn arm_slice() {
-    let slice = SLICE;
+    let deadline = cntvct() + SLICE;
     core::arch::asm!(
-        "msr cntv_tval_el0, {0}",
-        in(reg) slice,
+        "msr cntv_cval_el0, {0}",
+        in(reg) deadline,
         options(nostack, preserves_flags)
     );
     // CNTV_CTL: bit0=ENABLE、bit1=IMASK（1=屏蔽）。开+不屏蔽 = 0b01（非 0b11）。
@@ -90,11 +101,21 @@ pub fn handle() {
 
 /// 读虚拟计数器 `CNTVCT_EL0`（周期数）。调度器时间片按**周期数记账**（2b-4 起，
 /// 路线图 Phase 2b：LiteOS-M `OsSchedTimeConvertFreq` 式——DVFS 改频后按新频率
-/// 重新换算，时间片实际时长不随频率漂移）。
+/// 重新换算，时间片实际时长不随频率漂移）；`clock_read`（3-1）由此换算纳秒。
 pub fn cntvct() -> u64 {
     let v: u64;
     // SAFETY: 只读计数器。
     unsafe { core::arch::asm!("mrs {0}, cntvct_el0", out(reg) v, options(nostack, preserves_flags)) };
+    v
+}
+
+/// 读计数器频率 `CNTFRQ_EL0`（Hz；QEMU virt 实测 62.5MHz，**不硬编码**）。
+/// 独立于 [`init`](fn.init.html) 的缓存——`clock_read` 在 boot 早期（timer init
+/// 前）也可能被调，直接读寄存器无顺序依赖。
+pub fn cntfrq() -> u64 {
+    let v: u64;
+    // SAFETY: 只读计数器频率寄存器。
+    unsafe { core::arch::asm!("mrs {0}, cntfrq_el0", out(reg) v, options(nostack, preserves_flags)) };
     v
 }
 

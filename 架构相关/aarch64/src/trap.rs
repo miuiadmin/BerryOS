@@ -252,7 +252,9 @@ global_asm!(
 /// 安装异常向量表。须在 EL1、任何 DAIF 解蔽**之前**调用。
 ///
 /// # Safety
-/// EL1、启动早期；`__vectors` 位于身份映射的内核镜像内。
+/// EL1、启动早期（MMU 已开、TTBR1 高半表就绪）；`__vectors` 链在高半 `.text`
+/// （2b-1 起镜像布局，VMA = `KERNEL_VA_BASE` + LMA，经 TTBR1 内核表直映翻译——
+/// 低半身份映射是已退役体制，向量表寻址与其无关）。
 pub unsafe fn init() {
     extern "C" {
         static __vectors: u8;
@@ -304,11 +306,12 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
 
 /// lower-EL（EL0 用户态）同步异常入口（asm 调；2b-4 首个 EL0 + G1.5）。
 ///
-/// SVC → 派发（ret 写回 x0、eret 续行于 svc 下一句）；**v1 政策**：EL0 调越界/
-/// 未实现编号（[`ERR_NOT_SUPPORTED`](crate::syscall::ERR_NOT_SUPPORTED)）= 畸形
-/// syscall → 杀（Phase 3 真 ABI 落地后改回错误码由用户态自理）。其余一切 EC
-/// （D-abort 0x24 野指针 / I-abort 0x20 / BRK 0x3C / 未知）→ dump 后杀当前任务
-/// ——经 [`crate::user_fault_exit`] 函数指针槽（HAL 不依赖 sched，同 IRQ 槽反转）。
+/// SVC → 派发（ret 写回 x0、eret 续行于 svc 下一句）——**3-1 政策**（撤 2b-4
+/// 临时杀政策，对齐 ABI §8.0/§8.4「永不 panic」）：未知/未实现编号返
+/// [`ERR_NOT_SUPPORTED`](crate::syscall::ERR_NOT_SUPPORTED)，**一律存活**、错误
+/// 由用户态自理；EL0/EL1 同权。其余一切 EC（D-abort 0x24 野指针 / I-abort
+/// 0x20 / BRK 0x3C / 未知）→ dump 后杀当前任务——经 [`crate::user_fault_exit`]
+/// 函数指针槽（HAL 不依赖 sched，同 IRQ 槽反转）。
 /// 期望故障槽（ktest 专用 current-EL 通道）不参与：用户态故障一律真死。
 ///
 /// # Safety（FFI）
@@ -318,12 +321,9 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
     let ec = ((tf.esr >> 26) & 0x3f) as u32;
     match ec {
         0x15 => {
-            let ret = crate::syscall::dispatch(tf);
-            if ret != crate::syscall::ERR_NOT_SUPPORTED {
-                return; // 正常往返
-            }
-            dump_el0(tf, ec);
-            uart_puts(b"  -> bad syscall nr (v1 policy: kill)\n");
+            // 未知/未实现号 → -ENOTSUP 存活（3-1 政策；滥用面如坏 handle → -EBADF）。
+            crate::syscall::dispatch(tf);
+            return; // 一切 SVC 正常往返（含错误码）
         }
         _ => {
             dump_el0(tf, ec);
