@@ -75,6 +75,6 @@
 
 ## 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1**：同步 Channel（`send/recv` + handle 迁移）+ Event 异步通知；**先用纯能力传递**做服务互联（不经 namespace）；TCB 双优先级字段随 Phase 2b 预留（§2.1 PI 前置）。（G0–G2）
+- **v1**：同步 Channel（`send/recv` + handle 迁移）+ Event 异步通知；**先用纯能力传递**做服务互联（不经 namespace）；TCB 双优先级字段随 Phase 2b 预留（§2.1 PI 前置）。（G0–G2）——**非阻塞有界队列已落地**（3-4b：空 recv -EAGAIN / 满 send -EBUSY，深度 8 / inline ≤256B / 随行 handle ≤4；阻塞等待 + PI + fastpath 随 P4）。
 - **v2**：共享 VMO 零拷贝；futex 用户态同步。（G2–G3）
 - **v3**：路径式命名空间（namespace 服务 + mount）——作为可用性层后加；badge；**优先级继承语义随 P4 channel 落地（§2.1）+ fastpath/slowpath 分层（§7）**。（G3+）

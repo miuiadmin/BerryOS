@@ -15,13 +15,17 @@
 //! - `abuser`（原 rogue_svc，3-1 改板）：**真号 + 垃圾 handle 滥用**——`handle_close`
 //!   (0x01) 传 0xDEAD_BEEF → 必须 -EBADF 且**存活**（syscall 层错误一律错误码自理，
 //!   撤 2b-4 杀政策）；打 'S' 作存活金丝雀；
-//! - `spawner`（3-3/3-4a 验收）：**用户进程创建第二个进程 + bootstrap 迁移**——
+//! - `spawner`（3-3/3-4 验收）：**用户进程创建第二个进程 + 双向能力迁移**——
 //!   `process_create` 拿双 handle（process + 子 root Vmar）→ vmo_create/commit/
 //!   write（写入内嵌子代码字节）→ `vmar_map` 把代码+栈映进子空间 → 建礼物 VMO
-//!   写魔数 → `thread_create` → `process_start(…, bootstrap=礼物)`（take 出本表
-//!   handle、insert 进子表）；迁移后 close 原值必 -EBADF（发送方失去）。子进程
-//!   （`user_child`）凭**自己表里**的 handle `vmo_read` 出魔数比对 → 打 'C'；
-//!   spawner 稳态打 's'。任一步错 → 自陷被杀 → watchdog 错杀断言 FAIL。
+//!   写魔数 → `channel_create` 建端点对 → `channel_send` 把 **PING + 礼物
+//!   handle** 随消息发进对端队列（**handle 随消息迁出本表**——close 原值必
+//!   -EBADF）→ `thread_create` → `process_start(…, bootstrap=end1)`（端点 handle
+//!   迁入子表，close 原值必 -EBADF）。子进程（`user_child`）凭**自己表里**的
+//!   端点 recv 出 PING+礼物 → `vmo_read` 出魔数比对 → 回 REPLY → 打 'C'；
+//!   spawner 稳态发 PING、收 REPLY 验魔数 + 打 's'（**两进程经 channel 交换
+//!   消息**；非阻塞：空 -EAGAIN / 满 -EBUSY 双侧容忍，无死锁）。任一步错 →
+//!   自陷被杀 → watchdog 错杀断言 FAIL。
 //! rogue_ptr 应被杀且**只死自己**（`user_fault_exit`）；abuser 与 good 全程存活。
 //! [`watchdog`] 内核任务断言杀数==1 + switches/putchar 金丝雀仍在涨 → 打 `G1.5 ok`
 //! （smoke 固化标记）后退出。
@@ -224,12 +228,14 @@ core::arch::global_asm!(
     ".globl __user_abuser_end",
     "__user_abuser_end:",
 
-    // 3-3/3-4 spawner：经真 syscall 创建第二个进程 + **bootstrap 迁移**（3-4a）。
-    // 入口 x0=0（无需引导能力——process_create 双出参自带子 root Vmar；给子的
-    // 能力经 process_start 的 bootstrap 参数送入子进程表）。暂存：x16=hp(进程)、
-    // x17=hv(子 Vmar)、x18=hvmo(子代码+栈)、x19=ht(线程)、x20=hgift(礼物 VMO)；
-    // 槽：0x2010/0x2018 handle 双出参、0x2020 vmo/线程 out、0x2028 vaddr in-out、
-    // 0x2030 礼物 out、0x2038 礼物魔数 8 字节。
+    // 3-3/3-4 spawner：经真 syscall 创建第二个进程 + **双向能力迁移**（3-4a
+    // bootstrap 随 start + 3-4b handle 随消息）。暂存：x16=hp(进程)、x17=hv(子
+    // Vmar)、x18=hvmo(子代码+栈)、x19=ht(线程)、x20=hgift(礼物 VMO，send 后
+    // 失去)、x21=end0(channel 自留端)、x22=end1(作 bootstrap 迁子)；槽：
+    // 0x2010/0x2018 handle 双出参、0x2020 vmo/线程 out、0x2028 vaddr in-out、
+    // 0x2030 礼物 out、0x2038 礼物魔数、0x2040/0x2048 channel 双出参、0x2050
+    // PING 载荷、0x2058 回信 buf、0x2060/0x2068 recv 容量 in-out、0x2070 随行
+    // handle 数组（u32）。
     ".balign 16",
     ".globl __user_spawner",
     "__user_spawner:",
@@ -262,7 +268,7 @@ core::arch::global_asm!(
     "    mov  x1, x18",
     "    adr  x2, 4f",                  // 本页内自相对取址（搬迁安全，见模块注）
     "    mov  x3, xzr",
-    "    movz x4, #100",                // 子代码 25 指令（字节数精确——尾随零垃圾勿拷）
+    "    movz x4, #324",                // 子代码 81 指令（字节数精确——尾随零垃圾勿拷）
     "    svc  #0",
     "    cbnz x0, 3f",
     "    movz x5, #0x2028",             // vaddr 槽 ← 请求子代码 VA 0x1000
@@ -305,6 +311,38 @@ core::arch::global_asm!(
     "    mov  x4, #8",
     "    svc  #0",
     "    cbnz x0, 3f",
+    // ---- channel 对（3-4b）：PING+礼物随消息迁给子，回信走另一向 ----
+    "    movz x0, #0x51",               // channel_create(*out0=0x2040, *out1=0x2048)
+    "    movz x1, #0x2040",
+    "    movz x2, #0x2048",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x5, #0x2040",
+    "    ldr  x21, [x5]",               // end0（自留收件）
+    "    cbz  x21, 3f",
+    "    ldr  x22, [x5, #8]",           // end1（作 bootstrap 迁子）
+    "    cbz  x22, 3f",
+    "    movz x4, #0x0E10",             // PING 载荷 = USER_MAGIC @0x2050
+    "    movk x4, #0xE000, lsl #16",
+    "    movk x4, #0xFFEE, lsl #32",
+    "    movk x4, #0x00C0, lsl #48",
+    "    movz x6, #0x2050",
+    "    str  x4, [x6]",
+    "    movz x6, #0x2070",
+    "    str  w20, [x6]",               // 随行 handle 数组（u32 LE）= 礼物
+    "    movz x0, #0x52",               // send(end0, PING, 8, &礼物, 1)——handle 随消息迁出本表
+    "    mov  x1, x21",
+    "    movz x2, #0x2050",
+    "    movz x3, #8",
+    "    movz x4, #0x2070",
+    "    movz x5, #1",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x01",               // 礼物已随消息送走：close(x20) 必 -EBADF
+    "    mov  x1, x20",
+    "    svc  #0",
+    "    cmn  x0, #9",
+    "    b.ne 3f",
     "    movz x0, #0x34",               // thread_create(hp, 0, *out=0x2020)
     "    mov  x1, x16",
     "    mov  x2, xzr",
@@ -313,56 +351,146 @@ core::arch::global_asm!(
     "    cbnz x0, 3f",
     "    ldr  x19, [x3]",               // ht
     "    cbz  x19, 3f",
-    "    movz x0, #0x32",               // process_start(hp, ht, entry=0x1000, sp=0x3000, hgift)
+    "    movz x0, #0x32",               // process_start(hp, ht, entry=0x1000, sp=0x3000, end1)
     "    mov  x1, x16",
     "    mov  x2, x19",
     "    movz x3, #0x1000",             // 子入口 = 映进的代码页
     "    movz x4, #0x3000",             // 子 sp0 = 映射顶（栈向下长，首写 0x2FF8）
-    "    mov  x5, x20",                 // bootstrap = 礼物（迁入子表，子 x0 收到）
+    "    mov  x5, x22",                 // bootstrap = end1（channel 端点迁入子表，子 x0 收到）
     "    svc  #0",
     "    cbnz x0, 3f",
-    "    movz x0, #0x01",               // 迁移后发送方必须失去：close(x20) → -EBADF
-    "    mov  x1, x20",
+    "    movz x0, #0x01",               // 迁移后发送方必须失去：close(x22) → -EBADF
+    "    mov  x1, x22",
     "    svc  #0",
     "    cmn  x0, #9",
     "    b.ne 3f",
-    // ---- 稳态循环：节流 + 's'（spawner 存活金丝雀；子进程并行打 'C'）----
+    // ---- 稳态循环：节流 + 发 PING + 收 REPLY（验魔数）+ 's'（与子进程 'C' 交替）----
+    "    movz x8, #0x0E20",             // REPLY 魔数低 32 位常驻（0x…0E20）
+    "    movk x8, #0xE000, lsl #16",
     "    movz x9, #0x30, lsl #16",
+    "    movz x4, #8",                  // recv caps：nbytes=8 @0x2060 / nhandles=0 @0x2068
+    "    movz x5, #0x2060",
+    "    str  x4, [x5]",
+    "    str  xzr, [x5, #8]",
     "0:  mov  x10, xzr",
     "1:  add  x10, x10, #1",
     "    cmp  x10, x9",
     "    b.lo 1b",
-    "    movz x0, #0xFF",
-    "    movz x1, #0x73",               // 's'
+    "    movz x0, #0x52",               // send(end0, PING@0x2050, 8, 0, 0)——稳态心跳
+    "    mov  x1, x21",
+    "    movz x2, #0x2050",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 2f",
+    "    cmn  x0, #16",                 // -EBUSY（子消费慢，队列满）容忍
+    "    b.ne 3f",
+    "2:  movz x0, #0x53",               // recv(end0, 0x2058, *8, 0, *0)
+    "    mov  x1, x21",
+    "    movz x2, #0x2058",
+    "    movz x3, #0x2060",
+    "    mov  x4, xzr",
+    "    movz x5, #0x2068",
+    "    svc  #0",
+    "    cbz  x0, 9f",
+    "    cmn  x0, #11",                 // -EAGAIN（子未回）容忍
+    "    b.ne 3f",
+    "    b    10f",
+    "9:  ldr  w4, [x2]",                // 收到回信：低 32 位 == REPLY 魔数
+    "    cmp  w4, w8",
+    "    b.ne 3f",
+    "10: movz x0, #0xFF",
+    "    movz x1, #0x73",               // 's' = spawner 存活金丝雀
     "    svc  #0",
     "    b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷路径（被杀 = FAIL 暴露）
     "    ldr  x5, [x4]",
     "    b    .",
     // ---- 子进程代码（数据形态嵌在 spawner 模板内；vmo_write 拷进子 0x1000）----
-    // 3-4a：x0 = bootstrap（礼物 VMO 在**子表**内的 handle）——节流后 vmo_read
-    // 出魔数比对：父建对象、迁 handle、子凭**自己表里**的 handle 读出内容 =
-    // 跨进程能力流动自证（per-process 表 + 迁移的完整闭环）。链断 → 自陷被杀
-    // → watchdog 错杀断言 FAIL。
-    "4:  mov  x19, x0",                 // 保存 bootstrap handle
+    // 3-4b：x0 = bootstrap（end1 在**子表**内的 handle）。一次性首链：recv 出
+    // PING（验 USER_MAGIC）+ 随行礼物 handle → 凭**自己表里**的 handle vmo_read
+    // 出魔数比对（能力随消息跨表流动自证）。稳态：收 PING → 回 REPLY → 打 'C'
+    // （空 -EAGAIN / 满 -EBUSY 容忍，与父节流同量级，无死锁）。链断 → 自陷被杀
+    // → watchdog 错杀断言 FAIL。子暂存：x19=end1、x8=PING 低 32 位常驻；槽（栈
+    // 页 [0x2000,0x3000) 内）：0x2F90 REPLY 载荷、0x2FA0 收件 buf、0x2FA8/0x2FB0
+    // 容量 in-out、0x2FB8 随行 handle 数组、0x2FC0 礼物读出 buf。
+    "4:  mov  x19, x0",                 // 保存 end1（子表 handle）
+    "    movz x4, #0x0E20",             // REPLY 载荷 = 0x00C0FFEE_0000_0E20 @0x2F90
+    "    movk x4, #0xE000, lsl #16",
+    "    movk x4, #0xFFEE, lsl #32",
+    "    movk x4, #0x00C0, lsl #48",
+    "    movz x5, #0x2F90",
+    "    str  x4, [x5]",
+    "    movz x4, #8",                  // 首链 caps：nbytes=8 / nhandles=1
+    "    str  x4, [x5, #24]",
+    "    movz x4, #1",
+    "    str  x4, [x5, #32]",
+    "7:  movz x0, #0x53",               // recv(end1, 0x2FA0, *8, 0x2FB8, *1)
+    "    mov  x1, x19",
+    "    movz x2, #0x2FA0",
+    "    movz x3, #0x2FA8",
+    "    movz x4, #0x2FB8",
+    "    movz x5, #0x2FB0",
+    "    svc  #0",
+    "    cmn  x0, #11",                 // 空重试（消息已预排队——理论立即到）
+    "    b.eq 7b",
+    "    cbnz x0, 8f",
+    "    ldr  w6, [x2]",                // PING 低 32 位 == USER_MAGIC 低 32 位
+    "    movz w7, #0x0E10",
+    "    movk w7, #0xE000, lsl #16",
+    "    cmp  w6, w7",
+    "    b.ne 8f",
+    "    movz x6, #0x2FB0",
+    "    ldr  x7, [x6]",                // 实收 nhandles 必须 == 1
+    "    cmp  x7, #1",
+    "    b.ne 8f",
+    "    ldr  w7, [x6, #8]",            // 礼物 handle（u32，零扩进 x7）
+    "    movz x0, #0x14",               // vmo_read(礼物, 0x2FC0, 0, 8)
+    "    mov  x1, x7",
+    "    movz x2, #0x2FC0",
+    "    mov  x3, xzr",
+    "    movz x4, #8",
+    "    svc  #0",
+    "    cbnz x0, 8f",
+    "    ldr  w5, [x2]",                // 礼物内容低 32 位（x2 派发保留）
+    "    movz w6, #0x0E10",
+    "    movk w6, #0xE000, lsl #16",
+    "    cmp  w5, w6",
+    "    b.ne 8f",
+    // ---- 稳态循环：节流 + 收 PING → 回 REPLY + 'C' ----
+    "    movz x8, #0x0E10",             // PING 低 32 位常驻（载荷比对用）
+    "    movk x8, #0xE000, lsl #16",
     "    movz x9, #0x30, lsl #16",      // 节流阈值（与诸位用户进程同量级）
     "5:  mov  x10, xzr",
     "6:  add  x10, x10, #1",
     "    cmp  x10, x9",
     "    b.lo 6b",
-    "    movz x0, #0x14",               // vmo_read(h, buf=0x2FF8, 0, 8)——栈页内
+    "    movz x0, #0x53",               // recv(end1, 0x2FA0, *8, 0x2FB8, *1)
     "    mov  x1, x19",
-    "    movz x2, #0x2FF8",
-    "    mov  x3, xzr",
-    "    movz x4, #8",
+    "    movz x2, #0x2FA0",
+    "    movz x3, #0x2FA8",
+    "    movz x4, #0x2FB8",
+    "    movz x5, #0x2FB0",
     "    svc  #0",
-    "    cbnz x0, 8f",
-    "    ldr  w4, [x2]",                // 低 4 字节 = USER_MAGIC 低 32 位（x2=buf 派发保留）
-    "    movz w5, #0x0E10",
-    "    movk w5, #0xE000, lsl #16",
-    "    cmp  w4, w5",
+    "    cbz  x0, 11f",                 // 收到 PING → 验 + 回信
+    "    cmn  x0, #11",                 // 空（父未发）容忍
     "    b.ne 8f",
-    "    movz x0, #0xFF",               // NR_DEBUG_PUTCHAR：'C' = 子进程活证
+    "    b    12f",
+    "11: ldr  w6, [x2]",
+    "    cmp  w6, w8",
+    "    b.ne 8f",
+    "    movz x0, #0x52",               // send(end1, REPLY@0x2F90, 8, 0, 0)
+    "    mov  x1, x19",
+    "    movz x2, #0x2F90",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 12f",
+    "    cmn  x0, #16",                 // 回信队列满（父消费慢）容忍
+    "    b.ne 8f",
+    "12: movz x0, #0xFF",               // NR_DEBUG_PUTCHAR：'C' = 子进程活证
     "    movz x1, #0x43",
     "    svc  #0",
     "    b    5b",

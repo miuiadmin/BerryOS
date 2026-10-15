@@ -21,11 +21,12 @@ pub fn run() {
 
 /// Step 9 信号 + G0 退出 #6 + **3-1 真 ABI 骨架**：从 EL1 发 `svc #0`（EC=0x15）
 /// → HAL dispatch → 语义层 handler（`内核/src/syscall.rs`）→ 回写 x0、eret 续行。
-/// 用例：调试 echo 往返（G0 原始判据）；未知号 0x99 / 未实现真号 0x11 一律
+/// 用例：调试 echo 往返（G0 原始判据）；未知号 0x99 / 未实现真号 0x04 一律
 /// -ENOTSUP（3-1 政策：错误码自理、永不杀调用者）；clock_read（MONOTONIC）两次
 /// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）；
 /// 3-4a per-process 表拆分（G 段）：两表隔离 + take/insert_ref 迁移原语 + 子进程
-/// 出生自带空表。
+/// 出生自带空表；3-4b channel 三号（H 段）：非阻塞队列语义 + handle 随消息迁移
+/// 的原子序（「两进程交换一句消息」的 EL0 正向验收在 user_spawner/user_child）。
 #[allow(clippy::result_unwrap_used)]
 fn test_syscall() {
     use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
@@ -405,6 +406,225 @@ fn test_syscall() {
     // 清场（close hp3 → Process Drop 释放对 root Vmar 的钉住；再关 hv4 归零）。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp3 as u64, 0, 0), 0, "SYSCALL：close hp3");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv4 as u64, 0, 0), 0, "SYSCALL：close hv4");
+
+    // H. 3-4b channel 三号：非阻塞队列语义 + handle 随消息迁移的原子序（EL1
+    //    对象面全链；EL0「两进程对答」正向验收在 user_spawner/user_child）。
+    use crate::channel::CHAN_MSG_MAX;
+    use crate::handle::{RIGHT_RECV, RIGHT_SEND};
+    use crate::syscall::{NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND};
+    static mut HBUF: [u8; 320] = [0; 320]; // send 源 / recv 目的（超限值只作参数不拷）
+    static mut H_NB: u64 = 0; // *nbytes in-out（进 = 容量、出 = 实际）
+    static mut H_NH: u64 = 0; // *nhandles in-out
+    static mut H_HND: [u32; 4] = [0; 4]; // 随行 handle 数组（u32 × CHAN_HND_MAX）
+
+    // H0. create：两端 handle 均非零互异；rights 面 SEND|RECV 可门控查得。
+    // SAFETY: svc 同步异常；H 系列静态均本函数私有。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, &raw mut OUT as u64, &raw mut CHILD_OUT as u64, 0),
+        0,
+        "SYSCALL：channel_create"
+    );
+    let (hc0, hc1) = (unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32);
+    assert_ne!(hc0, 0, "SYSCALL：channel_create 须回填 end0");
+    assert_ne!(hc1, 0, "SYSCALL：channel_create 须回填 end1");
+    assert_ne!(hc0, hc1, "SYSCALL：两端 handle 须互异");
+    assert!(
+        ht.get(hc0, ObjType::Channel, RIGHT_SEND | RIGHT_RECV).is_ok(),
+        "SYSCALL：端点 rights 须含 SEND|RECV"
+    );
+
+    // H1. 空队 recv → -EAGAIN（v1 非阻塞；空队先检——零用户内存读 = 零 fault 面）。
+    // SAFETY: 同上。
+    unsafe { H_NB = 8; H_NH = 4 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        -11,
+        "SYSCALL：空队 recv 须 -EAGAIN"
+    );
+
+    // H2. send→recv 往返：载荷比对 + nbytes/nhandles 回写（in-out 的出侧）+
+    //     消费后空队再 recv → -EAGAIN。
+    // SAFETY: 同上。
+    unsafe { HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+        0,
+        "SYSCALL：channel_send（无随行 handle）"
+    );
+    // SAFETY: 同上。
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 4; H_HND = [0; 4] };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        0,
+        "SYSCALL：channel_recv"
+    );
+    // SAFETY: 只读比对。
+    assert_eq!(unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) }, PATTERN,
+        "SYSCALL：channel 载荷往返");
+    assert_eq!(unsafe { H_NB }, 8, "SYSCALL：recv 须回写实际字节数");
+    assert_eq!(unsafe { H_NH }, 0, "SYSCALL：recv 须回写实际 handle 数");
+    // SAFETY: 同上。
+    unsafe { H_NB = 8; H_NH = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        -11,
+        "SYSCALL：消费后空队 recv 须 -EAGAIN"
+    );
+
+    // H3. 参数面上限：nbytes/nhandles 超限 → -EINVAL（no-panic 前置，先于拷贝）；
+    //     容量不足（8B vs cap=4）→ -EINVAL 且**消息保原样**（cap 复原后收得同条）。
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64,
+             CHAN_MSG_MAX as u64 + 1, 0, 0, 0),
+        -22,
+        "SYSCALL：nbytes 超限须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 0,
+             &raw const H_HND as u64, 5, 0),
+        -22,
+        "SYSCALL：nhandles 超限须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+        0,
+        "SYSCALL：容量用例 send"
+    );
+    // SAFETY: 同上。
+    unsafe { H_NB = 4; H_NH = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        -22,
+        "SYSCALL：容量不足须 -EINVAL"
+    );
+    // SAFETY: 同上。
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        0,
+        "SYSCALL：容量复原后须收得同条消息"
+    );
+    // SAFETY: 只读比对。
+    assert_eq!(unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) }, PATTERN,
+        "SYSCALL：容量不足失败不得消费消息（保原样）");
+
+    // H4. 满队：新端点对 8 连发填满（CHAN_DEPTH）→ 第 9 发 -EBUSY（非阻塞）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, &raw mut OUT as u64, &raw mut CHILD_OUT as u64, 0),
+        0,
+        "SYSCALL：channel_create（满队用例）"
+    );
+    let (hq0, hq1) = (unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32);
+    for _ in 0..8 {
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, hq0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+            0,
+            "SYSCALL：填队 send"
+        );
+    }
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hq0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+        -16,
+        "SYSCALL：满队 send 须 -EBUSY"
+    );
+    // 清场：两端 close（互钉成环 → 对象泄漏，channel.rs 安全向政策）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hq0 as u64, 0, 0), 0, "SYSCALL：close end0");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hq1 as u64, 0, 0), 0, "SYSCALL：close end1");
+
+    // H5. rights 门控：dup 收紧到 RECV-only → send 须 -EACCES（权限在 handle）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, hc0 as u64, RIGHT_RECV as u64, &raw mut OUT as u64),
+        0,
+        "SYSCALL：dup 收紧到 RECV"
+    );
+    let hro = unsafe { OUT } as u32;
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hro as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+        -13,
+        "SYSCALL：RECV-only send 须 -EACCES"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hro as u64, 0, 0), 0, "SYSCALL：close RO");
+
+    // H6. handle 随消息迁移：VMO 令牌随消息过通道——原值立即 -EBADF（take 出
+    //     表）、对端 recv 落回**本表新值**（同表演示；跨表链在 EL0 spawner/
+    //     child），新值三门控可查且对象可用（rights 随令牌走）。
+    let hsrc = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .expect("SYSCALL：insert hsrc");
+    // SAFETY: 同上。
+    unsafe { H_HND = [hsrc, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
+             &raw const H_HND as u64, 1, 0),
+        0,
+        "SYSCALL：send 带随行 handle"
+    );
+    assert_eq!(
+        svc4(NR_HANDLE_CLOSE as u64, hsrc as u64, 0, 0),
+        -9,
+        "SYSCALL：迁移后原值须 -EBADF（发送方失去）"
+    );
+    // SAFETY: 同上。
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 4; H_HND = [0; 4] };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        0,
+        "SYSCALL：recv 带随行 handle"
+    );
+    let hnew = unsafe { H_HND[0] };
+    assert_eq!(unsafe { H_NH }, 1, "SYSCALL：recv 须回写 1 个随行 handle");
+    assert_ne!(hnew, 0, "SYSCALL：随行 handle 须非零");
+    assert!(
+        ht.get(hnew, ObjType::Vmo, RIGHT_READ).is_ok(),
+        "SYSCALL：迁移新值三门控可查"
+    );
+    assert_eq!(
+        svc6(NR_VMO_COMMIT as u64, hnew as u64, 0, PAGE_SIZE as u64, 0, 0, 0),
+        0,
+        "SYSCALL：迁移后的 VMO handle 仍可用（对象随令牌走）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hnew as u64, 0, 0), 0, "SYSCALL：close 迁移值");
+
+    // H7. 原子序：随行 [好 handle, 垃圾值] → -EBADF 且好 handle **原值仍活**
+    //     （预检全量、take 零发生）；随行重复值 → -EINVAL（防首 take 作废次值）。
+    let hgd = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE)), RIGHT_READ | RIGHT_WRITE)
+        .expect("SYSCALL：insert hgd");
+    // SAFETY: 同上。
+    unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0] };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
+             &raw const H_HND as u64, 2, 0),
+        -9,
+        "SYSCALL：坏随行值须 -EBADF"
+    );
+    assert!(
+        ht.get(hgd, ObjType::Vmo, 0).is_ok(),
+        "SYSCALL：原子序——同批好 handle 须原值仍活"
+    );
+    // SAFETY: 同上。
+    unsafe { H_HND = [hgd, hgd, 0, 0] };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
+             &raw const H_HND as u64, 2, 0),
+        -22,
+        "SYSCALL：随行数组重复值须 -EINVAL"
+    );
+    // 清场（两端 close → 互钉环泄漏，安全向）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgd as u64, 0, 0), 0, "SYSCALL：close hgd");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "SYSCALL：close hc0");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "SYSCALL：close hc1");
 
     bos_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }

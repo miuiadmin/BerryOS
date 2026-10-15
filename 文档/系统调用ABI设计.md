@@ -89,7 +89,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 5. 错误码
 
-统一 C 风格负数（posix-ish）：`-EINVAL` / `-ENOENT` / `-EACCES` / `-EBUSY` / `-ENOMEM` / `-ETIMEDOUT` / `-EBADF`（坏 handle）/ `-ENOTSUP` / `-EFAULT`（用户指针界检失败，3-2 起 `copy_from/to_user` 执法）。跨 FFI 安全（无异常、无 panic）。
+统一 C 风格负数（posix-ish）：`-EINVAL` / `-ENOENT` / `-EACCES` / `-EBUSY` / `-ENOMEM` / `-ETIMEDOUT` / `-EBADF`（坏 handle）/ `-ENOTSUP` / `-EFAULT`（用户指针界检失败，3-2 起 `copy_from/to_user` 执法）/ `-EAGAIN`（非阻塞操作当下无货，3-4b 起 `channel_recv` 空队执法）。跨 FFI 安全（无异常、无 panic）。
 
 ## 6. POSIX 兼容库的子集边界（内核无 fork）
 
@@ -200,6 +200,7 @@ enum bos_obj_type {
 #define BOS_ERR_BAD_STATE      (-37)   /* 对象状态不对（未 start / 已关） */
 #define BOS_ERR_TIMED_OUT      (-110)  /* ETIMEDOUT */
 #define BOS_ERR_BUSY           (-16)   /* EBUSY：channel 满 / 资源占用 */
+#define BOS_ERR_AGAIN          (-11)   /* EAGAIN：非阻塞操作当下无货（channel_recv 空队，3-4b） */
 #define BOS_ERR_NOT_SUPPORTED  (-95)   /* ENOTSUP：阶段未实现 */
 #define BOS_ERR_OUT_OF_RANGE   (-34)   /* ERANGE：offset/len 越界 */
 #define BOS_ERR_FAULT          (-14)   /* EFAULT：用户指针界检失败（3-2 起 copy_from/to_user 执法） */
@@ -271,12 +272,25 @@ bos_status_t bos_thread_sleep(bos_time_t deadline);     /* nanosleep 等价 */
 
 /* —— IPC / event —— */
 bos_status_t bos_channel_create(bos_handle_t *out0, bos_handle_t *out1);
+                               /* 一次建一对端点，两端均授 SEND|RECV|DUPLICATE；
+                                  出参先置 0 再写新值（create 种子约定） */
 bos_status_t bos_channel_send(bos_handle_t ch,
                               const void *bytes, size_t nbytes,
                               const bos_handle_t *handles, size_t nhandles);
+                               /* v1 非阻塞：消息压对端队列（深度 8），满 → -EBUSY；
+                                  nbytes ≤ 256 / nhandles ≤ 4（超 → -EINVAL）；
+                                  随行 handle 逐个迁出调用者表（原值立即 -EBADF）、
+                                  令牌随消息挂起——接收方 recv 时落入它的表；
+                                  数组内重复 handle 值 → -EINVAL（原子性预检）；
+                                  任一步失败 = 调用者表零变化 */
 bos_status_t bos_channel_recv(bos_handle_t ch,
                               void *bytes, size_t *nbytes,
                               bos_handle_t *handles, size_t *nhandles);
+                               /* v1 非阻塞：弹本端队首，空 → -EAGAIN（等待排队
+                                  留 P4 object_wait）；*nbytes/*nhandles in-out：
+                                  进 = 容量、出 = 实际值，容量不足 → -EINVAL 且
+                                  消息保原样；随行令牌入调用者表、新值写 handles
+                                  数组；失败全程回滚（表 + 队列复原） */
 bos_status_t bos_event_create(uint32_t options, bos_handle_t *out);
 
 /* —— 时间 —— */

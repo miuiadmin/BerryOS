@@ -43,9 +43,9 @@ pub const RIGHT_TRANSFER: Rights = 1 << 5;
 pub const RIGHT_INSPECT: Rights = 1 << 6;
 #[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
 pub const RIGHT_SIGNAL: Rights = 1 << 7;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
+/// 3-4b 起消费：`channel_send` 门控。
 pub const RIGHT_SEND: Rights = 1 << 8;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
+/// 3-4b 起消费：`channel_recv` 门控。
 pub const RIGHT_RECV: Rights = 1 << 9;
 #[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
 pub const RIGHT_MANAGE: Rights = 1 << 10;
@@ -73,6 +73,8 @@ pub const ERR_BUSY: i32 = -16;
 pub const ERR_NOT_FOUND: i32 = -2;
 /// EBADSTATE：对象状态不满足（读/映射未提交页——v1 无 demand paging）。
 pub const ERR_BAD_STATE: i32 = -37;
+/// EAGAIN：非阻塞操作当下无货可取（channel recv 空——3-4b；posix-ish）。
+pub const ERR_AGAIN: i32 = -11;
 /// EOVERFLOW-style：offset/len 越出对象容量或区间管辖界。
 pub const ERR_OUT_OF_RANGE: i32 = -34;
 
@@ -124,6 +126,7 @@ pub enum KernelObj {
     Vmar(crate::vmar::Vmar),
     Process(crate::process::Process),
     Thread(crate::process::Thread),
+    Channel(crate::channel::ChannelEnd),
 }
 
 impl KernelObj {
@@ -133,6 +136,7 @@ impl KernelObj {
             KernelObj::Vmar(_) => ObjType::Vmar,
             KernelObj::Process(_) => ObjType::Process,
             KernelObj::Thread(_) => ObjType::Thread,
+            KernelObj::Channel(_) => ObjType::Channel,
         }
     }
 
@@ -181,6 +185,14 @@ impl KernelObj {
     pub fn as_thread_mut(&mut self) -> Option<&mut crate::process::Thread> {
         match self {
             KernelObj::Thread(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// 可变取 Channel 端点本体（channel_send/recv 队列操作；同上防御性）。
+    pub fn as_channel_mut(&mut self) -> Option<&mut crate::channel::ChannelEnd> {
+        match self {
+            KernelObj::Channel(c) => Some(c),
             _ => None,
         }
     }
@@ -408,6 +420,13 @@ impl HandleTable {
             }
             _ => Err(ERR_BAD_HANDLE),
         }
+    }
+
+    /// 探活（3-4b `channel_send` 预检）：handle 在表且代号匹配即活——不验类型/
+    /// 权限（随行迁移的是对象令牌本身，资格随槽走）。供「先验全部、后 take」
+    /// 的原子序：任一预检失败时调用者表零变化。
+    pub fn alive(&self, h: Handle) -> bool {
+        self.lookup(h).is_ok()
     }
 
     /// 同 [`Self::lookup`]，另带 (槽位下标, gen)（close/replace 改槽用）。

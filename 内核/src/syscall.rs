@@ -1,16 +1,16 @@
-//! 真 syscall 语义层（Phase 3-4a：per-process handle 表 + bootstrap 迁移，
-//! `系统调用ABI设计.md` §4/§8）。
+//! 真 syscall 语义层（Phase 3-4b：channel 三号——非阻塞消息 + handle 随消息
+//! 迁移，`系统调用ABI设计.md` §4/§8）。
 //!
 //! 分层：HAL [`syscall`]（`架构相关/aarch64/`）只做 nr 界检 + 派发 + 统一错误面；
 //! 真语义 handler 在本模块，boot 期经 [`install`] 注册进 HAL 表（同 IRQ 槽反转：
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 27 号编号全部在册（下方 NR_* 常量组）；3-3 实现 16 个——handle 三操作 +
+//! v1 27 号编号全部在册（下方 NR_* 常量组）；3-4b 实现 19 个——handle 三操作 +
 //! clock_read（3-1）+ VMO/Vmar 九号（3-2）+ process_create/thread_create/
-//! process_start（3-3，全部经 [`HandleTable`] 能力门控——**权限在 handle
-//! 不在对象**）。其余（wait/signal、process/thread 退出与睡眠、channel/event）
-//! 留后续步，未注册槽由 HAL 默认返 `-ENOTSUP`。
+//! process_start（3-3）+ channel_create/send/recv（3-4b，全部经 [`HandleTable`]
+//! 能力门控——**权限在 handle 不在对象**）。其余（wait/signal、process/thread
+//! 退出与睡眠、event）留后续步，未注册槽由 HAL 默认返 `-ENOTSUP`。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
@@ -24,17 +24,26 @@
 //! 表雏形，能力模型 §5）。**bootstrap 迁移转正**：`process_start` 的
 //! `bootstrap` 参数不再恒 0——从调用者表 `take` 出 handle、`insert_ref` 进
 //! 子进程表，子入口 x0 = 子表内的新 handle 值（能力随创建流动，Zircon 同形）。
+//!
+//! **channel（3-4b）**：v1 = 非阻塞有界队列（send 满拒 -EBUSY / recv 空返
+//! -EAGAIN——等待排队留 P4 object_wait）。对象本体在 `channel.rs`（端点对
+//! 互钉、环泄漏政策）；本模块只做门控 + 拷贝 + 原子序（任一失败 = 调用者表
+//! 与队列零变化的复原承诺）。
 
+use crate::channel::{Message, CHAN_HND_MAX, CHAN_MSG_MAX, ChannelEnd};
 use crate::handle::{
-    HandleTable, KernelObj, ObjType, Rights, ERR_ACCESS_DENIED, ERR_BAD_HANDLE, ERR_BUSY,
-    ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED, ERR_NO_MEMORY,
-    ERR_OUT_OF_RANGE, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_WRITE,
+    HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
+    ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
+    ERR_NO_MEMORY, ERR_OUT_OF_RANGE, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ,
+    RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE,
 };
 use crate::vmar::{Perm, Vmar, VmarError};
 use crate::vmo::{Vmo, VmoError};
+use alloc::boxed::Box;
 use bos_hal_aarch64::trap::TrapFrame;
 use bos_hal_aarch64::KERNEL_VA_BASE;
 use bos_mm::va::PAGE_SIZE;
+use core::ptr::NonNull;
 
 // ---- v1 27 号编号表（ABI §4「阶段 = v1」行；镜像 bos-sys）----
 
@@ -70,14 +79,11 @@ pub const NR_THREAD_START: usize = 0x35;
 pub const NR_THREAD_EXIT: usize = 0x36;
 #[allow(dead_code)] // 3-3
 pub const NR_THREAD_SLEEP: usize = 0x37;
-// IPC / event（4）
-#[allow(dead_code)] // 3-4 落地
+// IPC / event（4；3-4b 实现 channel 三号）
 pub const NR_CHANNEL_CREATE: usize = 0x51;
-#[allow(dead_code)] // 3-4（handle 迁移经此，能力模型 §4）
 pub const NR_CHANNEL_SEND: usize = 0x52;
-#[allow(dead_code)] // 3-4
 pub const NR_CHANNEL_RECV: usize = 0x53;
-#[allow(dead_code)] // 3-4
+#[allow(dead_code)] // 3-4c 落地
 pub const NR_EVENT_CREATE: usize = 0x54;
 // 时间（1）
 pub const NR_CLOCK_READ: usize = 0x61;
@@ -781,11 +787,265 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     0
 }
 
+// ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
+
+/// `channel_create(*out0, *out1)`：一次建一对端点（`channel.rs` 两端互指互钉
+/// ——一端活则对端对象必活）。两端均授 **SEND|RECV|DUPLICATE**（对称权利；
+/// TRANSFER 位同 DUPLICATE 的 vocab 政策：已定义不执法）。
+extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
+    let (out0, out1) = (tf.regs[1], tf.regs[2]);
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u64(el1, out0, 0) {
+        return e as i64;
+    }
+    if let Err(e) = copy_out_u64(el1, out1, 0) {
+        return e as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE;
+    let h0 = match t.insert(KernelObj::Channel(ChannelEnd::unpaired()), rights) {
+        Ok(h) => h,
+        Err(e) => return e as i64,
+    };
+    match t.insert(KernelObj::Channel(ChannelEnd::unpaired()), rights) {
+        Ok(h1) => {
+            let (p0, p1) = (
+                t.get_raw(h0, ObjType::Channel, 0).ok().map(|(o, _)| o),
+                t.get_raw(h1, ObjType::Channel, 0).ok().map(|(o, _)| o),
+            );
+            match (p0, p1) {
+                (Some(a), Some(b)) => {
+                    // SAFETY: 两指针刚 get_raw 过（在表、类型 Channel）。
+                    unsafe { ChannelEnd::pair(a, b) };
+                    let r0 = copy_out_u64(el1, out0, h0 as u64);
+                    let r1 = copy_out_u64(el1, out1, h1 as u64);
+                    match (r0, r1) {
+                        (Ok(()), Ok(())) => 0,
+                        (Err(e), _) | (_, Err(e)) => e as i64, // 两端已建——调用方重试态自理
+                    }
+                }
+                _ => ERR_BAD_HANDLE as i64, // 刚插入即取失败 = 不可达防御面；两端泄漏（安全向）
+            }
+        }
+        Err(e) => {
+            // 第二端入表失败（表满/gen 尽，v1 不可达）：回滚第一端——未配对端点
+            // Drop 走 None 分支不碰任何指针（channel.rs），安全。
+            let _ = t.close(h0);
+            e as i64
+        }
+    }
+}
+
+/// `channel_send(ch, bytes, nbytes, handles, nhandles)`：消息压**对端**队列
+/// （非阻塞：满 → -EBUSY）。门控：本端 **SEND**。随行 handle 逐个 `take` 出
+/// 调用者表（发送方失去原值）、令牌随消息挂起，接收方 recv 时 `insert_ref`
+/// 落进**它的**表——能力随消息跨表迁移（能力模型 §4）。
+///
+/// 原子序（任一步失败 = 调用者表零变化）：参数上限（no-panic 前置）→ 门控 →
+/// 对端满检 → 随行值全量预检（活值 + 数组内无重复——重复值先 take 会作废后值，
+/// 回滚也换值）→ 载荷拷入 → 全量 take → 压队列。take 失败仅剩不可达防御面
+/// （预检后单核无插队），回滚重插（值或变、语义活）。
+extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
+    let (h, bytes, nbytes, handles, nhandles) = (
+        tf.regs[1] as u32,
+        tf.regs[2],
+        tf.regs[3] as usize,
+        tf.regs[4],
+        tf.regs[5] as usize,
+    );
+    if nbytes > CHAN_MSG_MAX || nhandles > CHAN_HND_MAX {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let self_ptr = match t.get_raw(h, ObjType::Channel, RIGHT_SEND) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64,
+    };
+    // 对端指针 + 满检（对端与本端是不同对象——pair 互指保证，&mut 无别名）。
+    // SAFETY: get_raw 已门控；对端由互钉保活（本端活 ⇒ 对端对象必在堆）；
+    // 单核 IRQ 屏蔽无并发。
+    let peer_ptr = unsafe {
+        let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        let Some(peer) = end.peer() else {
+            return ERR_BAD_STATE as i64; // 未配对（v1 不可达——create 即配对）
+        };
+        let Some(peer_end) = (*peer.as_ptr()).obj.as_channel_mut() else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        if peer_end.queue_full() {
+            return ERR_BUSY as i64; // v1 非阻塞：满即返（等待排队留 P4 object_wait）
+        }
+        peer
+    };
+    // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。
+    let mut hbuf = [0u8; CHAN_HND_MAX * 4];
+    if let Err(e) = copy_from_user(el1, handles, &mut hbuf[..nhandles * 4]) {
+        return e as i64;
+    }
+    let mut hvals = [0u32; CHAN_HND_MAX];
+    for i in 0..nhandles {
+        hvals[i] = u32::from_le_bytes([hbuf[i * 4], hbuf[i * 4 + 1], hbuf[i * 4 + 2], hbuf[i * 4 + 3]]);
+    }
+    for i in 0..nhandles {
+        if !t.alive(hvals[i]) {
+            return ERR_BAD_HANDLE as i64;
+        }
+        for j in 0..i {
+            if hvals[j] == hvals[i] {
+                return ERR_INVALID_ARG as i64; // 数组内重复值（见函数注释原子序论证）
+            }
+        }
+    }
+    let mut bbuf = [0u8; CHAN_MSG_MAX];
+    if let Err(e) = copy_from_user(el1, bytes, &mut bbuf[..nbytes]) {
+        return e as i64;
+    }
+    // 全量 take（bounded ≤4——占位数组免堆分配；slice 进消息只取前 n 项）。
+    let mut toks: [(NonNull<ObjRef>, Rights); CHAN_HND_MAX] = [(NonNull::dangling(), 0); CHAN_HND_MAX];
+    for i in 0..nhandles {
+        match t.take(hvals[i]) {
+            Ok(tok) => toks[i] = tok,
+            Err(e) => {
+                for tok in &toks[..i] {
+                    let _ = t.insert_ref(tok.0, tok.1); // 回滚（v1 不可达防御面）
+                }
+                return e as i64;
+            }
+        }
+    }
+    let msg = Message {
+        bytes: Box::from(&bbuf[..nbytes]),
+        handles: Box::from(&toks[..nhandles]),
+    };
+    // SAFETY: peer_ptr 互钉在活；队列有界（满检过，单核无并发插队）。
+    unsafe {
+        let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
+            return ERR_BAD_HANDLE as i64; // 上面刚解包过——不可达防御面（消息泄漏，安全向）
+        };
+        peer_end.push(msg);
+    }
+    0
+}
+
+/// recv 失败回滚：`inserted` 里的新 handle 值逐个 take 回（调用者表复原——
+/// 令牌本就还在消息里，insert_ref 不搬走它），消息压回**队首**（FIFO 序复原）。
+/// 令牌引用计数全程未动（take/insert_ref 都不碰 refs）→ 复原后系统与调用前一致。
+///
+/// # Safety
+/// `endp` 须为本端在表对象（get_raw 门控过）；`msg` 须为从该端队列 pop 出的
+/// 消息；单核 IRQ 屏蔽上下文。
+unsafe fn recv_rollback(t: &mut HandleTable, endp: NonNull<ObjRef>, msg: Message, inserted: &[u32]) {
+    for &nh in inserted {
+        let _ = t.take(nh);
+    }
+    // SAFETY: 见函数注释；解包失败 = 不可达防御面（消息泄漏，安全向）。
+    if let Some(end) = (*endp.as_ptr()).obj.as_channel_mut() {
+        end.push_front(msg);
+    }
+}
+
+/// `channel_recv(ch, bytes, *nbytes, handles, *nhandles)`：弹**本端**队首
+/// （非阻塞：空 → -EAGAIN）。门控：本端 **RECV**。`*nbytes`/`*nhandles`
+/// in-out：进 = 调用方容量，出 = 实际字节数 / 随行 handle 数；容量不足 →
+/// -EINVAL 且消息保原样（v1 无「回写所需尺寸」面，ABI §8.3 注）。随行令牌
+/// `insert_ref` 落调用者表、**新值**写 `handles` 数组（值必变——表不同/槽不同）。
+///
+/// 原子序：空队先检（空时零用户内存读 = 零 fault 面）→ pop 消费 → 容量/载荷/
+/// 令牌入表/回写各步任一失败 → [`recv_rollback`]（表 + 队列全复原）。
+extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
+    let (h, bytes, nbytesp, handles, nhandlesp) = (
+        tf.regs[1] as u32,
+        tf.regs[2],
+        tf.regs[3],
+        tf.regs[4],
+        tf.regs[5],
+    );
+    let el1 = caller_is_el1(tf);
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let self_ptr = match t.get_raw(h, ObjType::Channel, RIGHT_RECV) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64,
+    };
+    // SAFETY: get_raw 已门控；单核 IRQ 屏蔽。pop 消费，失败路径经回滚压回队首。
+    let msg = unsafe {
+        let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        match end.front() {
+            Some(_) => end.pop(),
+            None => return ERR_AGAIN as i64, // v1 非阻塞：空即返（等待排队留 P4）
+        }
+    };
+    let cap_bytes = match copy_in_u64(el1, nbytesp) {
+        Ok(v) => v as usize,
+        Err(e) => {
+            // SAFETY: 见 recv_rollback 契约（endp 门控过、msg 刚 pop、无令牌入表）。
+            unsafe { recv_rollback(t, self_ptr, msg, &[]) };
+            return e as i64;
+        }
+    };
+    let cap_hnd = match copy_in_u64(el1, nhandlesp) {
+        Ok(v) => v as usize,
+        Err(e) => {
+            // SAFETY: 同上。
+            unsafe { recv_rollback(t, self_ptr, msg, &[]) };
+            return e as i64;
+        }
+    };
+    if msg.bytes.len() > cap_bytes || msg.handles.len() > cap_hnd {
+        // SAFETY: 同上。
+        unsafe { recv_rollback(t, self_ptr, msg, &[]) };
+        return ERR_INVALID_ARG as i64;
+    }
+    if let Err(e) = copy_to_user(el1, bytes, &msg.bytes) {
+        // SAFETY: 同上。
+        unsafe { recv_rollback(t, self_ptr, msg, &[]) };
+        return e as i64;
+    }
+    // 令牌入调用者表（新值收集；任一失败全量回滚——表里已入的 take 回）。
+    let mut newvals = [0u32; CHAN_HND_MAX];
+    for i in 0..msg.handles.len() {
+        match t.insert_ref(msg.handles[i].0, msg.handles[i].1) {
+            Ok(nh) => newvals[i] = nh,
+            Err(e) => {
+                // SAFETY: 同上（msg 内令牌未动，回滚只需压回）。
+                unsafe { recv_rollback(t, self_ptr, msg, &[]) };
+                return e as i64;
+            }
+        }
+    }
+    let n = msg.handles.len();
+    let mut obuf = [0u8; CHAN_HND_MAX * 4];
+    for i in 0..n {
+        obuf[i * 4..i * 4 + 4].copy_from_slice(&newvals[i].to_le_bytes());
+    }
+    if let Err(e) = copy_to_user(el1, handles, &obuf[..n * 4]) {
+        // SAFETY: 同上（回滚含 take 回已入表的 n 个令牌）。
+        unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
+        return e as i64;
+    }
+    if let Err(e) = copy_out_u64(el1, nbytesp, msg.bytes.len() as u64) {
+        // SAFETY: 同上。
+        unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
+        return e as i64;
+    }
+    if let Err(e) = copy_out_u64(el1, nhandlesp, n as u64) {
+        // SAFETY: 同上。
+        unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
+        return e as i64;
+    }
+    drop(msg); // 消费：令牌已入表（Message 的 Box 只释放数组内存，不碰 refs）
+    0
+}
+
 // ---- boot 期注册（rust_main 在 ktest 之前调用；HAL install 见其 # Panics）----
 
-/// 注册 3-3 已实现的 16 号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号：
-/// create/start/thread_create；0x33/0x35..0x37 退出与睡眠随后续步）。未列号
-/// 走 HAL 默认 `-ENOTSUP`。
+/// 注册 3-4b 已实现的 19 号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 +
+/// channel 三号；0x04–0x06 等待/信号留 3-4c，0x33/0x35..0x37 退出与睡眠随后续
+/// 步）。未列号走 HAL 默认 `-ENOTSUP`。
 pub fn install() {
     use bos_hal_aarch64::syscall::install as reg;
     reg(NR_HANDLE_CLOSE, sys_handle_close);
@@ -804,4 +1064,7 @@ pub fn install() {
     reg(NR_PROCESS_CREATE, sys_process_create);
     reg(NR_PROCESS_START, sys_process_start);
     reg(NR_THREAD_CREATE, sys_thread_create);
+    reg(NR_CHANNEL_CREATE, sys_channel_create);
+    reg(NR_CHANNEL_SEND, sys_channel_send);
+    reg(NR_CHANNEL_RECV, sys_channel_recv);
 }
