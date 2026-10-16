@@ -1,0 +1,12 @@
+[package]
+name = "berry-libc"
+version = "0.1.0"
+edition = "2021"
+
+# G-eco-d d-1a：musl std 面的 libc shim（文档/G-eco编译侧设计草案.md 附录 A
+# 189 强未定义全定义——shim 全定义 ⇒ musl libc.a 成员永不入选，零 musl 字节进产物）。
+# 本 crate 需同时在 aarch64-unknown-none（主工作区 pass2，纯编译检查）与
+# aarch64-unknown-linux-musl（stdhello 依赖）两个 target 下编译——只用 core，无链接面。
+
+[dependencies]
+berry-sys = { path = "../berry-sys" }

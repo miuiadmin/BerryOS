@@ -51,6 +51,13 @@ build-user:
     # 非 include_bytes 内嵌；产物在仓库根 = `run-rootfs` 既有约定）。
     python3 ../工具链/mkcpio.py ../rootfs.cpio \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello
+    # G-eco-d：std 面——stdhello（musl target + berry-libc shim + berry-ld
+    # 剥 musl crt；-zmax-page-size=4096 压 PT_LOAD 间隙，G-eco-a 同款教训）。
+    # ELF 本体进 cpio（d-1c 接 mkcpio/装载面；此刻只验链接 + 残留审计）。
+    ROOT=$(cd .. && pwd)
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/stdhello/Cargo.toml \
+        --target aarch64-unknown-linux-musl
 
 build: build-user
     cargo build

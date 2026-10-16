@@ -9,7 +9,11 @@
 # 时 svcmgr 编译期炸响（loud not silent）；编排见 justfile build-user。
 # G-eco-c：berry-loader（rootfs 纯函数解析，host 测试）+ hello（首个
 # rootfs 拉起程序——ELF 本体进 cpio，不走 elf2flat/include_bytes）。
-members = ["berry-sys", "berry-loader", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+# G-eco-d：berry-libc（musl std 的 libc shim——本工作区编 none target 只是
+# 编译检查，真消费者 stdhello 在自己的独立小工作区编 musl target，故
+# excluded；链接编排见 justfile build-user 的 std 面 pass）。
+members = ["berry-sys", "berry-loader", "berry-libc", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+exclude = ["bins/stdhello"]
 resolver = "2"
 
 # 用户程序平像：体积优先（单页墙由 工具链/elf2flat.py --max 执法）。
