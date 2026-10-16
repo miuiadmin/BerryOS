@@ -183,19 +183,16 @@ fn run_rootfs_child(console: Handle) {
             Ok(berry_loader::StepOutcome::End) => break,
             Ok(berry_loader::StepOutcome::Entry(s)) => {
                 let (name, data_off, data_len, next) = (s.name, s.data_off, s.data_len, s.next_off);
-                let mut hboot = 0 as Handle;
-                // console 别名作 bootstrap：hello/stdhello 各凭**自己表里**的
-                // handle 打字（先复制：start 会迁走句柄，console 原值留稳态）。
-                if berry_handle_duplicate(console, RIGHT_SEND, &mut hboot) != 0 {
-                    eco_skip(b"dup failed");
-                } else if name == "bin/hello" {
-                    match spawn_rootfs_elf(data_off, data_len, hboot, 1) {
+                // 名字从步进窗借引用：下一轮 cpio_step 前用完（spawn 内的
+                // env 发送即消费点，之后只碰 ELF_WIN/PUMP_WIN）。
+                if name == "bin/hello" {
+                    match spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 1) {
                         Ok(()) => send_spin(console, ECO_OK.as_ptr(), ECO_OK.len()),
                         Err(()) => eco_skip(b"elf bad"),
                     }
                 } else if name == "bin/stdhello" {
                     // std 栈 8 页：std::fmt/environ 机制栈深超平像程序。
-                    if spawn_rootfs_elf(data_off, data_len, hboot, 8).is_err() {
+                    if spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 8).is_err() {
                         eco_skip(b"elf bad");
                     }
                 }
@@ -218,12 +215,17 @@ const ECO_OK: &[u8; 7] = b"ECO ok\n";
 /// `[floor页(min), +ceil页(span))` 一次 commit/map → 各段文件字节按 4KiB
 /// 泵窗从 rootfs VMO 直送子 VMO 相对偏移（**ELF 本体永不整档驻留**——
 /// stdhello ~283KB 只经 4KiB 中转）→ 栈页映其上（页数按程序面）→
-/// process_start(entry, sp, bootstrap)。解析/首窗读失败返 Err（调用方
-/// 可见降级续走归档）；syscall 面失败自陷——链断 loud（标记缺失兜底）。
+/// **env 块**（d-3a，BerryOS processargs v1）：channel 建 env 对 →
+/// `send(env_s, argv0\0, [console 别名])`（console 能力随消息迁移）→
+/// `process_start(bootstrap=env_c)`——子进程入口 x0 = env 端，凭**自己
+/// 表里**收到的 console handle 打字（Zircon processargs 同形的最小面）。
+/// 解析/首窗读失败返 Err（调用方可见降级续走归档）；syscall 面失败自陷
+/// ——链断 loud（标记缺失兜底）。
 fn spawn_rootfs_elf(
+    name: &[u8],
     data_off: u64,
     data_len: u64,
-    bootstrap: Handle,
+    console: Handle,
     stack_pages: u64,
 ) -> Result<(), ()> {
     let want = (data_len.min(4096u64)) as usize;
@@ -297,11 +299,28 @@ fn spawn_rootfs_elf(
     if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
         trap();
     }
-    if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, bootstrap) != 0 {
+    // —— env 块（start 前压队，确定性先行）：argv0 = cpio 名 + NUL；
+    //    handles = [console 别名]（先复制：send 会 take 走句柄，console
+    //    原值留稳态——G-eco-b 交接消息同款）。
+    let (env_s, env_c) = channel_pair();
+    let mut gift = [0 as Handle; 1];
+    if berry_handle_duplicate(console, RIGHT_SEND, &mut gift[0]) != 0 {
         trap();
     }
-    if berry_handle_close(bootstrap) != BERRY_ERR_BAD_HANDLE {
+    let mut blob = [0u8; 64];
+    let n = name.len().min(63);
+    blob[..n].copy_from_slice(&name[..n]);
+    if berry_channel_send(env_s, blob.as_ptr(), n + 1, gift.as_ptr(), 1) != 0 {
+        trap();
+    }
+    if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c) != 0 {
+        trap();
+    }
+    if berry_handle_close(env_c) != BERRY_ERR_BAD_HANDLE {
         trap(); // 迁移自证：原值必须已作废
+    }
+    if berry_handle_close(env_s) != 0 {
+        trap(); // 发端使命已毕（消息已入队、对端互钉保队列）；关不掉即泄漏面
     }
     Ok(())
 }

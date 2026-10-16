@@ -1,8 +1,8 @@
 //! 输出/stdio —— fd 0/1/2 → console channel（真实现档）
 //!
-//! fd 模型（v1）：只有 0/1/2，全指向**同一个** console 发端别名（bootstrap
-//! 传入、crt0 落种）；其余 fd 一律 -EBADF。读方向 v1 无（stdin 恒 EOF，
-//! d-3 bootstrap 消息协议再开）。
+//! fd 模型（v1）：只有 0/1/2；1/2 = console 发端别名、0 = env 块 stdin 端
+//! （d-3b 开输入方向前恒 EOF），都经 **env 块**交付（d-3a，见
+//! `berry_libc_boot`）；其余 fd 一律 -EBADF。
 //!
 //! 发送契约（G-eco-b 教训的适用面）：**自旋重发**——`-EBUSY`（console 队列
 //! 满）原地自旋重试，不睡不等（EL0 可抢占 = 自旋有界；asm svcmgr 本体
@@ -10,23 +10,76 @@
 
 use core::ptr;
 
-use berry_sys::berry_channel_send;
+use berry_sys::{berry_channel_recv, berry_channel_send};
 
 use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
 static mut CONSOLE_H: u32 = 0;
+static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随后开）
 static mut STACK_TOP: usize = 0;
 
-/// crt0 落种口（`_start` 汇编直调）：bootstrap handle = console 发端别名
-/// + 初始栈顶（attr 谎报面数据源）。`stderr`/`stdout` 指针一并落位
-/// （const 求值里取 static mut 地址不稳，运行期一次赋值最直白）。
+// —— argv 面（d-3a env 块）：静态落位（名区 256B + 16 槽 + NULL 终结）——
+static mut ARGV_STR: [u8; 256] = [0; 256];
+static mut ARGV_PTR: [*const c_char; 17] = [ptr::null(); 17];
+
+/// crt0 装配口：`_start` 汇编 `ldr x1, [BERRY_ARGV]` 取 argv 数组基址。
 #[no_mangle]
-pub extern "C" fn berry_libc_boot(console: u32, sp0: usize) {
+pub static mut BERRY_ARGV: *const *const c_char = ptr::null();
+
+/// crt0 落种口（`_start` 汇编直调）：x0 = **env 通道端**（bootstrap），
+/// x1 = 初始栈顶（attr 谎报面数据源）。
+///
+/// env 块协议（BerryOS processargs v1，Q2 之答——Zircon 同形的最小面）：
+/// svcmgr 在 `process_start` **前**把环境消息压进 env 端队列（确定性先行，
+/// 无竞速）——payload = NUL 分隔 argv 字节串（首项 = 程序名）、随行
+/// handles 按位语义：[0] = console 发端别名（stdout/stderr）、[1] = stdin
+/// 端（d-3b）。解析落 static 后返回 argc（argv 基址经 `BERRY_ARGV` 交汇编）。
+/// 协议破缺（recv 失败/无 handle）→ argc=0 + console=0：后续任何打印在
+/// handle 0 上自旋死 → 标记缺失 = smoke FAIL 兜底（loud 不静默）。
+#[no_mangle]
+pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
     unsafe {
-        CONSOLE_H = console;
         STACK_TOP = sp0;
         stderr = ptr::addr_of_mut!(STDERR_FILE);
         stdout = ptr::addr_of_mut!(STDOUT_FILE);
+        let mut blob = [0u8; 256];
+        let mut nb = blob.len();
+        let mut hs = [0u32; 2];
+        let mut nh = hs.len();
+        if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0 {
+            return 0;
+        }
+        if nh >= 1 {
+            CONSOLE_H = hs[0];
+        }
+        if nh >= 2 {
+            STDIN_H = hs[1];
+        }
+        // argv 解析：NUL 分隔字节串逐个拷进名区、记指针。
+        let (mut argc, mut i, mut o) = (0usize, 0usize, 0usize);
+        while i < nb && argc < 16 {
+            let start = o;
+            while i < nb && blob[i] != 0 {
+                if o < ARGV_STR.len() {
+                    ARGV_STR[o] = blob[i];
+                    o += 1;
+                }
+                i += 1;
+            }
+            if i >= nb {
+                break; // 尾串无 NUL：不完整，丢弃（svcmgr 侧恒补 NUL）
+            }
+            if o < ARGV_STR.len() {
+                ARGV_STR[o] = 0;
+                o += 1;
+            }
+            i += 1;
+            ARGV_PTR[argc] = ARGV_STR.as_ptr().add(start);
+            argc += 1;
+        }
+        ARGV_PTR[argc] = ptr::null();
+        BERRY_ARGV = ARGV_PTR.as_ptr();
+        argc as c_int
     }
 }
 

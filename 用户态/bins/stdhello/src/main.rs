@@ -9,7 +9,7 @@
 //! - 分配：Vec collect/push、String、Box<[u8]>（malloc/realloc/free）
 //! - fmt：format! + writeln! + flush（write/writev 路径）
 //! - eprintln!（stderr 路径）
-//! - env::args（argv 合成面）
+//! - env::args（d-3a env 块真 argv——argv0 断言 = cpio 名）
 //! - is_terminal（ioctl→syscall 桩路径）
 //! - Instant/Duration（clock_gettime）+ thread::sleep（clock_nanosleep）
 
@@ -52,8 +52,11 @@ fn main() {
     assert_eq!(b.len(), s.len());
 
     // —— argv / tty 面 ——
+    // d-3a 起 crt0 从 env 块收真 argv（svcmgr 送 cpio 名作 argv0）。
+    let arg0 = std::env::args().next();
+    assert_eq!(arg0.as_deref(), Some("bin/stdhello"));
     let argc = std::env::args().count();
-    assert_eq!(argc, 1, "crt0 合成 argv = [argv0, NULL]");
+    assert_eq!(argc, 1, "env 块 argv = [argv0, NULL]");
     let _tty = std::io::stdout().is_terminal();
 
     // —— clock 面（先睡 1ms 让 clock_nanosleep 真过一次）——

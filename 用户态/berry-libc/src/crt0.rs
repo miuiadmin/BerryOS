@@ -1,18 +1,19 @@
 //! crt0 —— std 程序的用户态自举（G-eco-d：musl crt1.o/`__libc_start_main` 全免）
 //!
-//! 职责（`_start`，经 `process_start` 进入，`x0` = bootstrap handle = console 别名）：
+//! 职责（`_start`，经 `process_start` 进入，`x0` = bootstrap = **env 通道端**，
+//! d-3a 起协议见 io.rs `berry_libc_boot` 头注）：
 //! 1. 抢救 bootstrap handle 与初始栈顶；
 //! 2. `berry_tls_setup`：经 `__ehdr_start` 自走 phdr 表找 PT_TLS，
 //!    **用户态自设 TPIDR_EL0**（EL0 可写寄存器，零内核 seam）；静态 ELF 的
 //!    init image 本就加载在 `p_vaddr` 原位（.tbss 孔洞由装载端页铺平零页
 //!    覆盖），**免拷贝**，一条 `msr` 完事；
-//! 3. `berry_libc_boot`：console handle 落 fd 表种子；
-//! 4. 直调 `main(argc=1, argv)`（argv = 静态合成，真 argv 是 d-3 bootstrap
-//!    消息协议的事）；不归则 park。
+//! 3. `berry_libc_boot`：recv env 块 → console/stdin handle 落种 + **真
+//!    argv**（NUL 分隔字节串 → static 数组）→ 返 argc；
+//! 4. 直调 `main(argc, argv)`（argv 从 `BERRY_ARGV` 全局交汇编取址）；
+//!    不归则 park。
 //!
 //! 跳过项（诚实缺口，非疏漏）：
-//! - `.init_array` 不走——Rust 静态量经 const 求值初始化，无 C++ 构造面；
-//! - argv[0] 固定 `berry-std`（d-3 换真名）。
+//! - `.init_array` 不走——Rust 静态量经 const 求值初始化，无 C++ 构造面。
 //!
 //! TP 偏移口径：LLD 的 AArch64 TLSLE 重定位把 `tprel` 解成「符号地址 − TP」；
 //! `TP_ADJ` 是 PT_TLS `p_vaddr` 到 TP 的修正量，**值经链接产物反汇编实证**
@@ -20,21 +21,12 @@
 
 use core::arch::{asm, global_asm};
 
-use crate::c_char;
-
 /// 链接种子（rlib 按需提取的活门）：`_start` 是 global_asm——不产生任何
 /// 引用面，无人引用本模块时 crt0 目标件整件不进链接（实踩：lld 警告
 /// `cannot find entry symbol _start`）。消费者对它取一次址（`#[used]`
 /// static，见 stdhello）即把本件拉进来。本体空操作、无 ABI 面。
 #[no_mangle]
 pub extern "C" fn berry_crt0_anchor() {}
-
-// —— argv 静态合成面（d-1：argv0 固定；d-3 bootstrap 消息协议换真值）——
-
-/// argv[0] 字面量（`_start` 在栈上拼 `[argv0, NULL]` 传 main——真 crt0 同形，
-/// 免去裸指针进 static 的 Sync 面）。
-#[no_mangle]
-static BERRY_ARGV0: [c_char; 10] = *b"berry-std\0";
 
 // TLS 探针不在 shim 侧：`#[thread_local]` 在 no_std crate 面有 feature gate，
 // 且要测的本来就是 **std 自己** 的 TLS codegen 惯例——探针在 stdhello
@@ -81,17 +73,17 @@ extern "C" {
 global_asm!(
     ".globl _start",
     "_start:",
-    "    mov x19, x0",        // 抢救 bootstrap handle（console 别名）
+    "    mov x19, x0",        // 抢救 bootstrap handle（env 通道端）
     "    mov x20, sp",        // 初始栈顶留档（attr 谎报面数据源）
     "    bl  berry_tls_setup",
     "    mov x0, x19",
     "    mov x1, x20",
-    "    bl  berry_libc_boot",
-    "    adrp x0, BERRY_ARGV0",
-    "    add  x0, x0, :lo12:BERRY_ARGV0",
-    "    stp  x0, xzr, [sp, #-16]!", // 栈上拼 argv = [argv0, NULL]（真 crt0 同形）
-    "    mov  x1, sp",
-    "    mov  x0, #1",         // argc = 1
+    "    bl  berry_libc_boot", // recv env 块：console/argv 落种 → x0 = argc
+    "    mov x19, x0",
+    "    adrp x0, BERRY_ARGV",
+    "    add  x0, x0, :lo12:BERRY_ARGV",
+    "    ldr  x1, [x0]",      // argv 基址（io.rs 静态数组）
+    "    mov  x0, x19",
     "    bl  main",           // std 生成的 C-ABI main（内部走 lang_start）
     "    bl  berry_libc_park_after_main", // main 不归；归了也 park
 );
