@@ -12,8 +12,9 @@ global_asm!(
     ".globl _start",
     ".type _start,%function",
     "_start:",
-    "    mrs x0, CurrentEL",
-    "    lsr x0, x0, #2",              // x0 = 异常级别 (1/2/3)
+    "    mov x19, x0",              // 存 QEMU 传入 x0（DTB PA——G-eco 入机侧）：
+    "    mrs x0, CurrentEL",        // EL 检测要占 x0；x19 为 AAPCS callee-saved，
+    "    lsr x0, x0, #2",           // x0 = 异常级别 (1/2/3)
     "    cmp x0, #2",
     "    b.eq .Lfrom_el2",
     "    cmp x0, #3",
@@ -77,10 +78,11 @@ global_asm!(
     ".Lbss_done:",
     "    bl build_boot_pt",            // 建表（mmu.rs，#[link_section .text.boot]；
     "    bl enable_mmu",               //  表在 .bss.boot 低半 → 函数内低半寻址即可）
-    "    ldr x0, =__stack_top",        // 换高半主栈 + 跳高半入口（此后不再回低半执行；
-    "    mov sp, x0",                  //  本段 VA==PA 走身份 TTBR0，开 MMU 无缝衔接）
-    "    ldr x0, =rust_main",
-    "    br x0",
+    "    ldr x1, =__stack_top",     // 换高半主栈 + 跳高半入口（此后不再回低半执行；
+    "    mov sp, x1",               //  本段 VA==PA 走身份 TTBR0，开 MMU 无缝衔接）
+    "    ldr x1, =rust_main",       // C-ABI 首参 = 入口 x0（DTB PA）：x19 跨
+    "    mov x0, x19",              // build_boot_pt/enable_mmu 两个 extern "C" bl 存活
+    "    br x1",
     ".Lhang:",                         // 绝不返回
     "    wfe",
     "    b .Lhang",

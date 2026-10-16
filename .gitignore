@@ -1,6 +1,9 @@
 /target
 **/*.rs.bk
 
+# G-eco initrd 镜像（编译侧产物，不入库）
+/rootfs.cpio
+
 # Claude Code 本地/会话态（不提交；共享的 agents/settings.json 若需入库再单独 force-add）
 .claude/settings.local.json
 .claude/scheduled_tasks.lock

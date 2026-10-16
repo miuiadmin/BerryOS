@@ -18,6 +18,7 @@ pub fn run() {
     test_pi();
     test_intent();
     test_fast();
+    test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -2072,5 +2073,118 @@ fn test_fast() {
     let _ = (RIGHT_SEND, RIGHT_RECV); // 面上引用（rights 门控面 H 段已盖）
 
     berry_hal_aarch64::uart_puts(b"FAST-K ok\n");
+}
+
+/// G-eco 入机侧第一刀（M 段）：`dtb::find_initrd` 纯函数面——手搓最小 FDT
+/// fixture（10 字头 + struct + strings；无 memrsvmap——解析器不消费）盖正反面。
+/// QEMU 侧活证 = boot 的 `INITRD ok [..) len=..` trace（`-initrd` 启动、len ==
+/// 文件大小），本段只锁纯函数语义（确定性、无 QEMU 依赖）。
+fn test_dtb() {
+    use alloc::vec::Vec;
+    use crate::dtb::find_initrd;
+
+    fn push_u32(v: &mut Vec<u8>, w: u32) {
+        v.extend_from_slice(&w.to_be_bytes());
+    }
+    /// BEGIN_NODE + 名（NUL 结尾、4 对齐）。
+    fn push_node(v: &mut Vec<u8>, name: &str) {
+        push_u32(v, 1);
+        v.extend_from_slice(name.as_bytes());
+        v.push(0);
+        while v.len() % 4 != 0 {
+            v.push(0);
+        }
+    }
+    /// 搓最小 FDT：root → 可选深层包一层（"foo" → "chosen"，depth 3 不应命中）
+    /// → 可选真 chosen（initrd-start/end，cells=4|8；可缺 end）。
+    fn fixture(with_chosen: bool, deep: bool, cells: usize, with_end: bool) -> Vec<u8> {
+        const MAGIC: u32 = 0xD00D_FEED;
+        const END_NODE: u32 = 2;
+        const PROP: u32 = 3;
+        const FDT_END: u32 = 9;
+        const HDR: usize = 40;
+        let (start, end) = (0x4800_0000u64, 0x4800_0400u64);
+        let mut st: Vec<u8> = Vec::new();
+        let mut strings: Vec<u8> = Vec::new();
+        push_node(&mut st, "");
+        if with_chosen {
+            if deep {
+                push_node(&mut st, "foo");
+            }
+            push_node(&mut st, "chosen");
+            for (nm, val) in [
+                ("linux,initrd-start", start),
+                ("linux,initrd-end", end),
+            ] {
+                if !with_end && nm.ends_with("end") {
+                    continue;
+                }
+                let nameoff = strings.len() as u32;
+                strings.extend_from_slice(nm.as_bytes());
+                strings.push(0);
+                push_u32(&mut st, PROP);
+                push_u32(&mut st, cells as u32);
+                push_u32(&mut st, nameoff);
+                if cells == 4 {
+                    st.extend_from_slice(&(val as u32).to_be_bytes());
+                } else {
+                    st.extend_from_slice(&val.to_be_bytes());
+                }
+            }
+            push_u32(&mut st, END_NODE); // chosen
+            if deep {
+                push_u32(&mut st, END_NODE); // foo
+            }
+        }
+        push_u32(&mut st, END_NODE); // root
+        push_u32(&mut st, FDT_END);
+        let mut dtb = Vec::new();
+        push_u32(&mut dtb, MAGIC);
+        push_u32(&mut dtb, (HDR + st.len() + strings.len()) as u32);
+        push_u32(&mut dtb, 0); // off_mem_rsvmap（不消费）
+        push_u32(&mut dtb, HDR as u32); // off_dt_struct
+        push_u32(&mut dtb, (HDR + st.len()) as u32); // off_dt_strings
+        push_u32(&mut dtb, 17); // version
+        push_u32(&mut dtb, 16); // last_comp_version
+        push_u32(&mut dtb, 0); // boot_cpuid_phys
+        push_u32(&mut dtb, strings.len() as u32);
+        push_u32(&mut dtb, st.len() as u32);
+        dtb.extend_from_slice(&st);
+        dtb.extend_from_slice(&strings);
+        dtb
+    }
+
+    // M1 完整（u64 cells）：区间原值命中。
+    assert_eq!(
+        find_initrd(&fixture(true, false, 8, true)),
+        Some((0x4800_0000, 0x4800_0400)),
+        "DTB：u64 cells 完整面"
+    );
+    // M2 u32 cells 变体（QEMU 小内存机型写 1 cell）。
+    assert_eq!(
+        find_initrd(&fixture(true, false, 4, true)),
+        Some((0x4800_0000, 0x4800_0400)),
+        "DTB：u32 cells 变体"
+    );
+    // M3 无 chosen 节点 → None。
+    assert_eq!(find_initrd(&fixture(false, false, 8, true)), None, "DTB：无 chosen");
+    // M4 start 有 end 无 → None（半区间不产出）。
+    assert_eq!(find_initrd(&fixture(true, false, 8, false)), None, "DTB：缺 end");
+    // M5 坏魔数 → None（no-panic 面）。
+    let mut bad = fixture(true, false, 8, true);
+    bad[0] ^= 0xFF;
+    assert_eq!(find_initrd(&bad), None, "DTB：坏魔数");
+    // M6 totalsize 声明超实长（截断）→ None。
+    let mut over = fixture(true, false, 8, true);
+    let sz = u32::from_be_bytes([over[4], over[5], over[6], over[7]]);
+    over[4..8].copy_from_slice(&(sz + 0x100).to_be_bytes());
+    assert_eq!(find_initrd(&over), None, "DTB：totalsize 超实长");
+    // M7 深层 chosen（depth 3，非根直接子节点）→ None。
+    assert_eq!(find_initrd(&fixture(true, true, 8, true)), None, "DTB：深层 chosen 不命中");
+    // M8 中途截断（只剩头半）→ None。
+    let trunc: Vec<u8> = fixture(true, false, 8, true)[..24].to_vec();
+    assert_eq!(find_initrd(&trunc), None, "DTB：截断");
+
+    berry_hal_aarch64::uart_puts(b"DTB-K ok\n");
 }
 

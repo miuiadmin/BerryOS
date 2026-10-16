@@ -24,3 +24,9 @@ pub unsafe fn write_u8(addr: usize, val: u8) {
 pub unsafe fn read_u8(addr: usize) -> u8 {
     (addr as *const u8).read_volatile()
 }
+
+/// 向 `addr` 写一个 16 位字（fw_cfg selector 等 u16 MMIO 口）。
+#[inline]
+pub unsafe fn write_u16(addr: usize, val: u16) {
+    (addr as *mut u16).write_volatile(val);
+}

@@ -11,6 +11,7 @@
 #![no_std]
 
 mod boot;
+pub mod fwcfg;
 pub mod gic;
 mod mmio;
 mod mmu;

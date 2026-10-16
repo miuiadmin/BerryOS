@@ -13,6 +13,7 @@ extern crate alloc;
 
 mod aspace;
 mod channel;
+mod dtb;
 mod event;
 mod handle;
 mod heap;
@@ -26,7 +27,17 @@ mod user;
 mod vmar;
 mod vmo;
 
+use berry_mm::va::phys_to_virt;
 use heap::SlabHeap;
+
+/// G-eco 入机侧：boot 期装载的 rootfs 原字节（fw_cfg / DTB 双源合一产物）。
+/// 消费点随下一步「包只读 VMO 交 svcmgr bootstrap」；boot 单线程写、之后
+/// 只读，不进并发路径。
+static mut ROOTFS: Option<alloc::vec::Vec<u8>> = None;
+
+/// rootfs 大小上限——与 `vmo_create` 的 16MiB 同口径（no-panic：巨 blob 的
+/// 分配 abort 是 boot 期可触发 panic，超限降级为「无 rootfs」存活）。
+const ROOTFS_MAX: usize = 16 << 20;
 
 /// 全局分配器：内核 slab 堆（小对象走 slab，大对象走整页）。
 #[global_allocator]
@@ -57,9 +68,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
-/// C-ABI 约定（ADR #18），符号名与 asm 精确匹配。
+/// C-ABI 约定（ADR #18），符号名与 asm 精确匹配；首参 = 入口 x0（QEMU 传入的
+/// DTB 物理地址——G-eco 入机侧，boot asm 的 x19 抢救）。
 #[no_mangle]
-pub extern "C" fn rust_main() -> ! {
+pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
     // 2b-1：注入 direct map 基址——必须先于任何 phys_to_virt 消费者（mm/heap）。
     berry_mm::va::set_kernel_va_base(berry_hal_aarch64::KERNEL_VA_BASE);
     berry_hal_aarch64::init();
@@ -79,6 +91,54 @@ pub extern "C" fn rust_main() -> ! {
 
     // SAFETY: 启动单线程、`rust_main` 入口仅调用一次。
     unsafe { mm::init() };
+
+    // G-eco 入机侧第一刀：rootfs（initrd 角色）装载，两源按序——
+    // ① 入口 x0 的 DTB `/chosen` initrd 物理区间 → 高半直映拷出（真机/
+    //    Linux boot 协议路径；QEMU 非 Linux ELF 直加载实测 x0=0、RAM 无
+    //    DTB、`-initrd` 整体不加载——initrd/dtb/cmdline 机制全在 QEMU
+    //    hw/arm/boot.c 的 is_linux 分支，2026-10 实证）；
+    // ② QEMU fw_cfg 具名文件 `-fw_cfg name=opt/berry/rootfs,file=…`
+    //    （目录自描述名字+大小、无魔法地址；justfile run-rootfs 配方）。
+    // 装进 boot 期缓冲，下一步包只读 VMO 交 svcmgr（cpio/ELF 解析全在
+    // 用户态——微内核只补「字节流变对象」原语）。无 rootfs = 正常降级
+    // （不带 -fw_cfg 的既有 run/smoke 零扰动）。
+    let rootfs: Option<(&[u8], alloc::vec::Vec<u8>)> = dtb::boot_probe(dtb_pa)
+        .map(|(s, e)| {
+            // SAFETY: boot_probe 已界检区间在 [RAM_BASE, RAM_TOP)——高半
+            // 直映 L2 全覆盖，from_raw_parts 读取必落在已映射块内。
+            let pa = phys_to_virt(s as usize) as *const u8;
+            let bytes = unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) };
+            (b"dtb" as &[u8], bytes.to_vec())
+        })
+        .or_else(|| {
+            use berry_hal_aarch64::fwcfg;
+            let entry = fwcfg::find_file(fwcfg::ROOTFS_NAME)?;
+            let size = entry.size as usize;
+            // no-panic：与 vmo_create 16MiB 同口径——巨 blob 分配 abort 是
+            // boot 期可触发 panic，超限/空文件一律降级为「无 rootfs」存活。
+            if size == 0 || size > ROOTFS_MAX {
+                return None;
+            }
+            let mut buf = alloc::vec![0u8; size];
+            if !fwcfg::read_to(&entry, &mut buf) {
+                return None;
+            }
+            Some((b"fwcfg" as &[u8], buf))
+        });
+    match rootfs {
+        Some((src, buf)) => {
+            let bytes = buf.len();
+            // SAFETY: boot 单线程写入、此后只读；消费点随下一步「包只读
+            // VMO 交 svcmgr」——不进任何并发路径。
+            unsafe { *(&raw mut ROOTFS) = Some(buf) };
+            berry_hal_aarch64::uart_puts(b"ROOTFS ok src=");
+            berry_hal_aarch64::uart_puts(src);
+            berry_hal_aarch64::uart_puts(b" bytes=");
+            berry_hal_aarch64::uart_put_dec(bytes as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        }
+        None => berry_hal_aarch64::uart_puts(b"ROOTFS absent\n"),
+    }
 
     // 3-1：注册真 syscall 语义 handler（handle 三操作 + clock_read）进 HAL 表。
     // 必须先于 ktest::run（SYSCALL 用例）与一切用户进程。
