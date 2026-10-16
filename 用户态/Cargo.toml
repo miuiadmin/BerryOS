@@ -1,0 +1,6 @@
+[workspace]
+# G-eco 编译侧（文档/G-eco编译侧设计草案.md）：用户态 crate 独立工作区——
+# 不进内核 root workspace（members 显式列表），自带 .cargo/config.toml
+# 中和根 config 的 build.target 钉死（nearest-wins）。
+members = ["berry-sys"]
+resolver = "2"
