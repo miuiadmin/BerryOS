@@ -959,6 +959,17 @@ core::arch::global_asm!(
     // handle 双出参、0x2020 vmo/线程 out、0x2028 vaddr in-out、0x2040/0x2048
     // channel 双出参、0x2050 ECHO_REQ 载荷、0x2058 回显 buf、0x2060/0x2068
     // recv 容量 in-out、0x2070 observed、0x2078 'v' 打印槽。
+    // 4-6 A 半追加段（`SVC ok` 后、稳态 `7:` 前，直线无环）：同形拉起
+    // talker（内嵌模板 936B = 232 指令 + 8B banner）与 echo2（复用同一份
+    // echo 模板 268B——位置无关，一份字节两实例）各一对 channel；末段
+    // duplicate(console, RIGHT_SEND=0x100) 出别名（**必须先复制**：send 会
+    // take 走句柄，原值 x23 须留给稳态 'v'），send(s1, [别名, t2], 2) 把
+    // console 能力 + echo2 对端**随消息**迁入 talker 表——服务间授权不经
+    // 全局名，能力即权限。talker 凭收到的别名打 `DEMO ok`（smoke 第 22
+    // 标记）。追加段槽：0x2100/0x2108 p2/v2、0x2110 hv2、0x2118 vaddr、
+    // 0x2120/0x2128 s1/t1、0x2130 ht2、0x2138/0x2140 p3/v3、0x2148 hv3、
+    // 0x2150 vaddr、0x2158/0x2160 t2/e2、0x2168 ht3、0x2178 随行数组
+    //（u32 LE ×2：[0]=别名 dup out 直落、[1]=t2）、0x2188 payload。
     ".balign 16",
     ".globl __user_svcmgr",
     "__user_svcmgr:",
@@ -1098,10 +1109,179 @@ core::arch::global_asm!(
     "    mov  x4, xzr",
     "    mov  x5, xzr",
     "    svc  #0",
-    "    cbz  x0, 7f",
+    "    cbz  x0, 16f",                // 成功 → 16：A 半链（EBUSY 重试环的正常出口）
     "    cmn  x0, #16",                 // -EBUSY 重试（console 消费慢）
     "    b.ne 3f",
     "    b    6b",
+    // ---- A 半（4-6）：`SVC ok` 后再拉 talker + echo2——两个 EL0 服务互联， ----
+    // ---- console 能力经消息迁移交给 talker（能力即权限的跨服务授权活证）。 ----
+    // ---- 入口 = banner send 成功（16f）；链尾顺落 7: 稳态。 --------------------
+    "16: movz x0, #0x31",               // process_create(0, 0, *p2, *v2) —— talker
+    "    mov  x1, xzr",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2100",
+    "    movz x4, #0x2108",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x16, [x3]",
+    "    cbz  x16, 3f",
+    "    ldr  x17, [x4]",
+    "    cbz  x17, 3f",
+    "    movz x0, #0x11",               // vmo_create(0x2000, 0, *hv2)：代码 @off0 + 栈 @off1
+    "    movz x1, #0x2000",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2110",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x18, [x3]",
+    "    cbz  x18, 3f",
+    "    movz x0, #0x12",               // vmo_commit(hv2, 0, 0x2000)
+    "    mov  x1, x18",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2000",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x15",               // vmo_write(hv2, 内嵌 talker 模板, 0, LEN)
+    "    mov  x1, x18",
+    "    adr  x2, 8f",                  // 同页 adr 取址（整块搬迁偏移不变）
+    "    mov  x3, xzr",
+    "    movz x4, #936",                // talker 模板字节数（改模板重数指令再改此值）
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x5, #0x2118",             // vaddr 槽预写 0x1000
+    "    movz x6, #0x1000",
+    "    str  x6, [x5]",
+    "    movz x0, #0x16",               // vmar_map(v2, hv2, 0, *vaddr, 0x2000, RW)
+    "    mov  x1, x17",
+    "    mov  x2, x18",
+    "    mov  x3, xzr",
+    "    mov  x4, x5",
+    "    movz x5, #0x2000",
+    "    movz x6, #3",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x51",               // channel_create(0, *s1, *t1) —— svcmgr↔talker
+    "    mov  x1, xzr",
+    "    movz x2, #0x2120",
+    "    movz x3, #0x2128",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x34",               // thread_create(p2, 0, *ht2)
+    "    mov  x1, x16",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2130",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x11, [x3]",
+    "    cbz  x11, 3f",
+    "    movz x5, #0x2120",
+    "    ldr  x12, [x5, #8]",           // t1 = bootstrap（随 start 迁入 talker 表）
+    "    cbz  x12, 3f",
+    "    movz x0, #0x32",               // process_start(p2, ht2, 0x1000, 0x3000, t1)
+    "    mov  x1, x16",
+    "    mov  x2, x11",
+    "    movz x3, #0x1000",
+    "    movz x4, #0x3000",
+    "    mov  x5, x12",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x01",               // 迁移自证：close(t1) 必 -EBADF
+    "    mov  x1, x12",
+    "    svc  #0",
+    "    cmn  x0, #9",
+    "    b.ne 3f",
+    "    movz x0, #0x31",               // process_create(0, 0, *p3, *v3) —— echo2
+    "    mov  x1, xzr",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2138",
+    "    movz x4, #0x2140",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x16, [x3]",
+    "    cbz  x16, 3f",
+    "    ldr  x17, [x4]",
+    "    cbz  x17, 3f",
+    "    movz x0, #0x11",               // vmo_create(0x2000, 0, *hv3)
+    "    movz x1, #0x2000",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2148",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x18, [x3]",
+    "    cbz  x18, 3f",
+    "    movz x0, #0x12",               // vmo_commit(hv3, 0, 0x2000)
+    "    mov  x1, x18",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2000",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x15",               // vmo_write(hv3, 同一份 echo 模板字节, 0, 268)
+    "    mov  x1, x18",
+    "    adr  x2, 4f",                  // echo 模板位置无关——echo1/echo2 共用一份字节
+    "    mov  x3, xzr",
+    "    movz x4, #268",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x5, #0x2150",             // vaddr 槽预写 0x1000
+    "    movz x6, #0x1000",
+    "    str  x6, [x5]",
+    "    movz x0, #0x16",               // vmar_map(v3, hv3, 0, *vaddr, 0x2000, RW)
+    "    mov  x1, x17",
+    "    mov  x2, x18",
+    "    mov  x3, xzr",
+    "    mov  x4, x5",
+    "    movz x5, #0x2000",
+    "    movz x6, #3",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x51",               // channel_create(0, *t2, *e2) —— talker↔echo2
+    "    mov  x1, xzr",
+    "    movz x2, #0x2158",
+    "    movz x3, #0x2160",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x34",               // thread_create(p3, 0, *ht3)
+    "    mov  x1, x16",
+    "    mov  x2, xzr",
+    "    movz x3, #0x2168",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x11, [x3]",
+    "    cbz  x11, 3f",
+    "    movz x5, #0x2160",
+    "    ldr  x12, [x5]",               // e2 = bootstrap（随 start 迁入 echo2 表）
+    "    cbz  x12, 3f",
+    "    movz x0, #0x32",               // process_start(p3, ht3, 0x1000, 0x3000, e2)
+    "    mov  x1, x16",
+    "    mov  x2, x11",
+    "    movz x3, #0x1000",
+    "    movz x4, #0x3000",
+    "    mov  x5, x12",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    movz x0, #0x01",               // 迁移自证：close(e2) 必 -EBADF
+    "    mov  x1, x12",
+    "    svc  #0",
+    "    cmn  x0, #9",
+    "    b.ne 3f",
+    "    movz x6, #0x2178",             // 随行数组 = [console 别名, t2]（u32 LE 紧排）
+    "    movz x0, #0x02",               // duplicate(console, RIGHT_SEND) → *out = 数组[0]
+    "    mov  x1, x23",                 // 先复制再送：send 会 take 走句柄，原值须留给稳态
+    "    movz x2, #0x100",              // RIGHT_SEND = 1<<8（权利只紧不松）
+    "    mov  x3, x6",                  // *out = 0x2178：新别名直落数组 [0] 槽（spawner 同形）
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  w11, [x6, #-0x20]",       // t2 @0x2158（echo2 对端，随消息交 talker）
+    "    str  w11, [x6, #4]",
+    "    str  xzr, [x6, #16]",          // payload 8B 清零 @0x2188（纯载体，talker 不看内容）
+    "    movz x0, #0x52",               // send(s1, 0x2188, 8, 0x2178, 2)——能力经消息迁移
+    "    ldr  x1, [x6, #-0x58]",        // s1 @0x2120（自留端）
+    "    add  x2, x6, #16",
+    "    movz x3, #8",
+    "    mov  x4, x6",
+    "    movz x5, #2",
+    "    svc  #0",
+    "    cbnz x0, 3f",                  // 交接件未入队 = A 半链断
     // ---- 稳态：节流 + 实证往返 + 'v' ----
     "7:  movz x8, #0x0E30",             // ECHO_REQ 低 32 位常驻（稳态比对）
     "    movk x8, #0xE000, lsl #16",
@@ -1265,6 +1445,251 @@ core::arch::global_asm!(
     "23: movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀（echo 无标记，svcmgr 侧兜底）
     "    ldr  x5, [x4]",
     "    b    .",
+
+    // 4-6 A 半 talker：svcmgr 拉起的第二个用户态服务——凭 bootstrap t1 收
+    // 交接件（[console 别名 RIGHT_SEND, t2 echo2 对端] 随消息迁入自己表），
+    // 与 echo2（同一份 echo 模板字节的第二实例）直接往返，不经 svcmgr 中
+    // 转；首圈验回显后凭**收到的** console handle 打 `DEMO ok`（smoke 第 22
+    // 标记）——「服务经 channel 全链互联 + 能力经消息授权」的出口演示。
+    // 寄存器：x20=t1、x21=console 别名（消息送来）、x22=t2、x8=DEMO_REQ 低
+    // 32 位、x9=节流阈值；槽：0x2F90 载荷 buf、0x2F98/0x2FA0 recv 容量
+    // in-out、0x2FA8 时钟、0x2FB0 observed、0x2FC0/0x2FC4 随行 handle 数
+    // 组（u32 LE 紧排——recv 新值回写同宽）、0x2FD0 'd' 打印槽。断链自陷
+    // 被杀（标记缺失 = smoke FAIL 兜底）。
+    "8:  mov  x20, x0",                 // t1：bootstrap 迁入 talker 表
+    "    movz x4, #8",
+    "    movz x5, #0x2F98",
+    "    str  x4, [x5]",
+    "    movz x4, #2",
+    "    str  x4, [x5, #8]",            // caps 预装：nbytes=8 / nhandles=2（交接件）
+    "50: movz x0, #0x53",               // recv(t1, buf, *8, hbuf, *2)
+    "    mov  x1, x20",
+    "    movz x2, #0x2F90",
+    "    movz x3, #0x2F98",
+    "    movz x4, #0x2FC0",
+    "    movz x5, #0x2FA0",
+    "    svc  #0",
+    "    cbz  x0, 51f",
+    "    cmn  x0, #11",                 // 空（交接件未到）→ wait READABLE
+    "    b.ne 69f",
+    "    movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FA8",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(t1, READABLE, now+10s, *obs)
+    "    mov  x1, x20",
+    "    movz x2, #1",                  // SIGNAL_READABLE = 1<<0
+    "    movz x4, #0x2FB0",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    b    50b",
+    "51: movz x5, #0x2FA0",             // 随行 handle 数必须恰 2（console 别名 + t2）
+    "    ldr  x6, [x5]",
+    "    cmp  x6, #2",
+    "    b.ne 69f",
+    "    ldr  w21, [x5, #0x20]",        // console 别名 @0x2FC0（u32 LE 紧排）——进了自己表
+    "    cbz  x21, 69f",
+    "    ldr  w22, [x5, #0x24]",        // t2 @0x2FC4（echo2 对端）
+    "    cbz  x22, 69f",
+    "    movz x8, #0x0D30",             // DEMO_REQ 低 32 位（区别 echo1 的 0x0E30）
+    "    movk x8, #0xE000, lsl #16",
+    "    movz x9, #0x30, lsl #16",      // 节流阈值
+    "    movz x5, #0x2F90",
+    "    str  x8, [x5]",
+    "52: movz x0, #0x52",               // send(t2, buf, 8, 0, 0) —— 首圈验收
+    "    mov  x1, x22",
+    "    movz x2, #0x2F90",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 53f",
+    "    cmn  x0, #16",                 // -EBUSY（echo2 消费慢）→ wait WRITABLE
+    "    b.ne 69f",
+    "    movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FA8",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(t2, WRITABLE, now+10s, *obs)
+    "    mov  x1, x22",
+    "    movz x2, #2",
+    "    movz x4, #0x2FB0",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    b    52b",
+    "53: movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FA8",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(t2, READABLE, now+10s, *obs)
+    "    mov  x1, x22",
+    "    movz x2, #1",
+    "    movz x4, #0x2FB0",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "54: movz x0, #0x53",               // recv(t2, buf, *8, 0, *0) —— 收回显
+    "    mov  x1, x22",
+    "    movz x2, #0x2F90",
+    "    movz x3, #0x2F98",
+    "    mov  x4, xzr",
+    "    movz x5, #0x2FA0",
+    "    svc  #0",
+    "    cbz  x0, 55f",
+    "    cmn  x0, #11",                 // -EAGAIN → 回 53b 重等（醒来重验）
+    "    b.ne 69f",
+    "    b    53b",
+    "55: ldr  w6, [x2]",                // 回显低 32 位 == DEMO_REQ 低 32 位
+    "    cmp  w6, w8",
+    "    b.ne 69f",
+    "    movz x4, #8",                  // caps 恢复（稳态 recv 复用）
+    "    movz x5, #0x2F98",
+    "    str  x4, [x5]",
+    "    movz x4, #0x64",               // 'd' @0x2FD0（稳态字）
+    "    movz x5, #0x2FD0",
+    "    str  x4, [x5]",
+    "56: movz x0, #0x52",               // send(console 别名, `DEMO ok\n`, 8, 0, 0)
+    "    mov  x1, x21",
+    "    adr  x2, 9f",                  // banner 在模板内（随整块搬迁，adr 偏移不变）
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 57f",
+    "    cmn  x0, #16",                 // -EBUSY（console 消费慢）→ wait WRITABLE
+    "    b.ne 69f",
+    "    movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FA8",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(console, WRITABLE, now+10s, *obs)
+    "    mov  x1, x21",
+    "    movz x2, #2",
+    "    movz x4, #0x2FB0",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    b    56b",
+    "57: mov  x10, xzr",                // 稳态：节流 + 往返验回显 + 'd'
+    "58: add  x10, x10, #1",
+    "    cmp  x10, x9",
+    "    b.lo 58b",
+    "    movz x5, #0x2F90",
+    "    str  x8, [x5]",                // 重写 req（recv 覆写后保险）
+    "60: movz x0, #0x52",               // send(t2, buf, 8, 0, 0)
+    "    mov  x1, x22",
+    "    movz x2, #0x2F90",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 61f",
+    "    cmn  x0, #16",                 // -EBUSY → wait WRITABLE 再试
+    "    b.ne 69f",
+    "    movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FA8",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(t2, WRITABLE, now+10s, *obs)
+    "    mov  x1, x22",
+    "    movz x2, #2",
+    "    movz x4, #0x2FB0",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    b    60b",
+    "61: movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FA8",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(t2, READABLE, now+10s, *obs)
+    "    mov  x1, x22",
+    "    movz x2, #1",
+    "    movz x4, #0x2FB0",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "62: movz x0, #0x53",               // recv(t2, buf, *8, 0, *0)
+    "    mov  x1, x22",
+    "    movz x2, #0x2F90",
+    "    movz x3, #0x2F98",
+    "    mov  x4, xzr",
+    "    movz x5, #0x2FA0",
+    "    svc  #0",
+    "    cbz  x0, 63f",
+    "    cmn  x0, #11",                 // -EAGAIN → 回 61b 重等
+    "    b.ne 69f",
+    "    b    61b",
+    "63: ldr  w6, [x2]",                // 回显低 32 位 == DEMO_REQ 低 32 位
+    "    cmp  w6, w8",
+    "    b.ne 69f",
+    "    movz x4, #8",                  // caps 恢复
+    "    movz x5, #0x2F98",
+    "    str  x4, [x5]",
+    "64: movz x0, #0x52",               // send(console 别名, 'd', 1, 0, 0)
+    "    mov  x1, x21",
+    "    movz x2, #0x2FD0",
+    "    movz x3, #1",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 57b",                 // 成功 → 下一圈
+    "    cmn  x0, #16",                 // -EBUSY → wait WRITABLE 重试
+    "    b.ne 69f",
+    "    movz x0, #0x61",               // now = clock_read()
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FA8",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    ldr  x5, [x2]",
+    "    movz x3, #0xE400",
+    "    movk x3, #0x540B, lsl #16",
+    "    movk x3, #0x2, lsl #32",
+    "    add  x3, x5, x3",
+    "    movz x0, #0x04",               // wait_one(console, WRITABLE, now+10s, *obs)
+    "    mov  x1, x21",
+    "    movz x2, #2",
+    "    movz x4, #0x2FB0",
+    "    svc  #0",
+    "    cbnz x0, 69f",
+    "    b    64b",
+    "69: movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀（DEMO ok 缺失兜底）
+    "    ldr  x5, [x4]",
+    "    b    .",
+    "9:  .ascii \"DEMO ok\\n\"",
+    "    .balign 4",
     ".globl __user_svcmgr_end",
     "__user_svcmgr_end:",
 );
