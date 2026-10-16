@@ -564,8 +564,10 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_vmo_get_size(tf: &mut TrapFrame) -> i64 {
     let (h, out) = (tf.regs[1] as u32, tf.regs[2]);
     let el1 = caller_is_el1(tf);
-    if let Err(e) = copy_out_u32(el1, out, 0) {
-        return e as i64; // 出参预清 + 界检（fail-fast，同 vmo_create）
+    // 出参预清 + 界检（fail-fast，同 vmo_create）。size 是 u64 出参——预清
+    // 宽度跟 ABI 类型走（G-eco-c 宽度纪律的例外提醒：0x1A 返回的不是 handle）。
+    if let Err(e) = copy_out_u64(el1, out, 0) {
+        return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     let vmo = match t.get(h, ObjType::Vmo, 0) {
