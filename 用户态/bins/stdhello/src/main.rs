@@ -12,8 +12,9 @@
 //! - env::args（d-3a env 块真 argv——argv0 断言 = cpio 名）
 //! - is_terminal（ioctl→syscall 桩路径）
 //! - Instant/Duration（clock_gettime）+ thread::sleep（clock_nanosleep）
+//! - stdin read_to_end（d-3b：read → channel recv + 零长 EOF + 残段缓冲）
 
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 
 // TLS 探针（build 侧一次性实证，d-1a）：反汇编 std_tls_probe 读
 // `mrs tpidr_el0` 后的地址运算，对照 PROBE 符号地址与 PT_TLS p_vaddr，
@@ -64,9 +65,18 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_millis(1));
     assert!(t0.elapsed().as_nanos() > 0);
 
+    // —— stdin 面（d-3b：env 块 stdin 端 + channel recv + 零长 EOF）——
+    // feeder（svcmgr）泵 8×"berryos!" = 64B + EOF 标记；read_to_end 的
+    // 逐次 read 会以小于消息长的粒度要数据——libc 残段缓冲面的活证。
+    let mut stdin_buf = Vec::new();
+    std::io::stdin().read_to_end(&mut stdin_buf).unwrap();
+    assert_eq!(stdin_buf.len(), 64, "stdin = feeder 64B pattern");
+    assert!(stdin_buf.chunks(8).all(|c| c == b"berryos!"));
+
     // —— 输出面（标记最后打：全部自检过了才轮到它）——
     let mut out = std::io::stdout();
-    writeln!(out, "STD ok: sum={} heap_use={} argc={}", sum, b.len(), argc).unwrap();
+    writeln!(out, "STD ok: sum={} heap_use={} argc={} in={}", sum, b.len(), argc, stdin_buf.len())
+        .unwrap();
     out.flush().unwrap();
     eprintln!("STD err ok");
 }

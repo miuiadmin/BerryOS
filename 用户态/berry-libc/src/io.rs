@@ -1,8 +1,8 @@
 //! 输出/stdio —— fd 0/1/2 → console channel（真实现档）
 //!
-//! fd 模型（v1）：只有 0/1/2；1/2 = console 发端别名、0 = env 块 stdin 端
-//! （d-3b 开输入方向前恒 EOF），都经 **env 块**交付（d-3a，见
-//! `berry_libc_boot`）；其余 fd 一律 -EBADF。
+//! fd 模型（v1）：只有 0/1/2；1/2 = console 发端别名（写方向）、0 = env
+//! 块 stdin 端（d-3b 起真输入——channel recv，零长消息 = EOF 约定），都经
+//! **env 块**交付（d-3a，见 `berry_libc_boot`）；其余 fd 一律 -EBADF。
 //!
 //! 发送契约（G-eco-b 教训的适用面）：**自旋重发**——`-EBUSY`（console 队列
 //! 满）原地自旋重试，不睡不等（EL0 可抢占 = 自旋有界；asm svcmgr 本体
@@ -10,7 +10,8 @@
 
 use core::ptr;
 
-use berry_sys::{berry_channel_recv, berry_channel_send};
+use berry_sys::{berry_channel_recv, berry_channel_send, berry_clock_read,
+                berry_object_wait_one, CLOCK_MONOTONIC, SIGNAL_READABLE};
 
 use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
@@ -158,13 +159,72 @@ pub struct Iovec {
     pub len: size_t,
 }
 
+// —— stdin 面（d-3b）：fd 0 → env 块 stdin 端（channel recv）——
+// EOF 约定 = **零长消息**（feeder 发完数据压一条 0 字节消息；v1 无对端
+// 关闭检测——3-4b 诚实缺口，消息层约定补）。消息粒度 ≠ read 粒度：一次
+// read 要得少，残段留 PEND 静态缓冲下次先出。
+static mut PEND: [u8; 256] = [0; 256];
+static mut PEND_LEN: usize = 0;
+static mut PEND_OFF: usize = 0;
+
 #[no_mangle]
-pub extern "C" fn read(fd: c_int, _buf: *mut c_void, _n: size_t) -> ssize_t {
-    if !fd_ok(fd) {
-        crate::set_errno(crate::EBADF);
-        return -1;
+pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
+    unsafe {
+        if fd != 0 {
+            crate::set_errno(crate::EBADF); // 1/2 只写：读方向诚拒
+            return -1;
+        }
+        if n == 0 {
+            return 0;
+        }
+        // 残段优先（上一条消息没读完的部分）。
+        if PEND_LEN > PEND_OFF {
+            let avail = PEND_LEN - PEND_OFF;
+            let c = core::cmp::min(n, avail);
+            ptr::copy_nonoverlapping(PEND.as_ptr().add(PEND_OFF), buf as *mut u8, c);
+            PEND_OFF += c;
+            return c as ssize_t;
+        }
+        let h = STDIN_H;
+        if h == 0 {
+            return 0; // env 块无 stdin 端 = /dev/null 语义
+        }
+        let mut msg = [0u8; 256];
+        let mut nhd = 0usize;
+        let mut deadline = 0u64;
+        loop {
+            let mut nb = msg.len();
+            let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, ptr::null_mut(), &mut nhd);
+            if s == 0 {
+                if nb == 0 {
+                    return 0; // EOF 约定：零长消息
+                }
+                let c = core::cmp::min(n, nb);
+                ptr::copy_nonoverlapping(msg.as_ptr(), buf as *mut u8, c);
+                if nb > c {
+                    let rest = nb - c; // ≤ 256 = PEND 容量
+                    PEND[..rest].copy_from_slice(&msg[c..nb]);
+                    PEND_LEN = rest;
+                    PEND_OFF = 0;
+                }
+                return c as ssize_t;
+            }
+            // 空队：阻塞等 READABLE（10s 帽）。超时 = feeder 断供（协议破缺）
+            // → EOF 化返 0：调用方读短 → 断言炸 → 标记缺失兜底（loud）。
+            if deadline == 0 {
+                let mut now = 0u64;
+                if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+                    crate::set_errno(crate::EINVAL);
+                    return -1;
+                }
+                deadline = now + 10_000_000_000;
+            }
+            let mut obs = 0u64;
+            if berry_object_wait_one(h, SIGNAL_READABLE, deadline, &mut obs) != 0 {
+                return 0;
+            }
+        }
     }
-    0 // stdin 恒 EOF（d-3 开输入方向）
 }
 
 #[no_mangle]

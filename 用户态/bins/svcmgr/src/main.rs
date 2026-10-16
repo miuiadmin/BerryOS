@@ -186,13 +186,26 @@ fn run_rootfs_child(console: Handle) {
                 // 名字从步进窗借引用：下一轮 cpio_step 前用完（spawn 内的
                 // env 发送即消费点，之后只碰 ELF_WIN/PUMP_WIN）。
                 if name == "bin/hello" {
-                    match spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 1) {
+                    match spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 1, None) {
                         Ok(()) => send_spin(console, ECO_OK.as_ptr(), ECO_OK.len()),
                         Err(()) => eco_skip(b"elf bad"),
                     }
                 } else if name == "bin/stdhello" {
                     // std 栈 8 页：std::fmt/environ 机制栈深超平像程序。
-                    if spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 8).is_err() {
+                    // stdin 面（d-3b）：feeder 泵 64B 确定性 pattern + EOF。
+                    const STDIN_DATA: [u8; 64] =
+                        *b"berryos!berryos!berryos!berryos!berryos!berryos!berryos!berryos!";
+                    let stdin: &[u8] = &STDIN_DATA;
+                    if spawn_rootfs_elf(
+                        name.as_bytes(),
+                        data_off,
+                        data_len,
+                        console,
+                        8,
+                        Some(stdin),
+                    )
+                    .is_err()
+                    {
                         eco_skip(b"elf bad");
                     }
                 }
@@ -216,9 +229,11 @@ const ECO_OK: &[u8; 7] = b"ECO ok\n";
 /// 泵窗从 rootfs VMO 直送子 VMO 相对偏移（**ELF 本体永不整档驻留**——
 /// stdhello ~283KB 只经 4KiB 中转）→ 栈页映其上（页数按程序面）→
 /// **env 块**（d-3a，BerryOS processargs v1）：channel 建 env 对 →
-/// `send(env_s, argv0\0, [console 别名])`（console 能力随消息迁移）→
-/// `process_start(bootstrap=env_c)`——子进程入口 x0 = env 端，凭**自己
-/// 表里**收到的 console handle 打字（Zircon processargs 同形的最小面）。
+/// `send(env_s, argv0\0, [console 别名, (stdin 端)])`（能力随消息迁移）→
+/// `process_start(bootstrap=env_c)`——子进程入口 x0 = env 端。`stdin`
+/// = Some(data) 时再建一对，读端随 env 块迁移、`process_start` 后本进程
+/// 作 feeder 泵数据 + 零长 EOF 标记（libc `read` 的 EOF 约定——队列深 8，
+/// 2 条无阻塞面）。
 /// 解析/首窗读失败返 Err（调用方可见降级续走归档）；syscall 面失败自陷
 /// ——链断 loud（标记缺失兜底）。
 fn spawn_rootfs_elf(
@@ -227,6 +242,7 @@ fn spawn_rootfs_elf(
     data_len: u64,
     console: Handle,
     stack_pages: u64,
+    stdin: Option<&[u8]>,
 ) -> Result<(), ()> {
     let want = (data_len.min(4096u64)) as usize;
     // SAFETY: 独占首窗；boot 后单线程顺序读写。
@@ -300,17 +316,22 @@ fn spawn_rootfs_elf(
         trap();
     }
     // —— env 块（start 前压队，确定性先行）：argv0 = cpio 名 + NUL；
-    //    handles = [console 别名]（先复制：send 会 take 走句柄，console
-    //    原值留稳态——G-eco-b 交接消息同款）。
+    //    handles = [console 别名, (stdin 端)]（先复制 console：send 会
+    //    take 走句柄，原值留稳态——G-eco-b 交接消息同款）。
     let (env_s, env_c) = channel_pair();
-    let mut gift = [0 as Handle; 1];
+    let mut gift = [0 as Handle; 2];
     if berry_handle_duplicate(console, RIGHT_SEND, &mut gift[0]) != 0 {
         trap();
     }
+    let stdin_pair = stdin.map(|_| channel_pair());
+    if let Some((_, in_c)) = stdin_pair {
+        gift[1] = in_c; // stdin 读端随 env 块迁移（handle 数组按位语义）
+    }
+    let nhandles = if stdin_pair.is_some() { 2 } else { 1 };
     let mut blob = [0u8; 64];
     let n = name.len().min(63);
     blob[..n].copy_from_slice(&name[..n]);
-    if berry_channel_send(env_s, blob.as_ptr(), n + 1, gift.as_ptr(), 1) != 0 {
+    if berry_channel_send(env_s, blob.as_ptr(), n + 1, gift.as_ptr(), nhandles) != 0 {
         trap();
     }
     if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c) != 0 {
@@ -321,6 +342,18 @@ fn spawn_rootfs_elf(
     }
     if berry_handle_close(env_s) != 0 {
         trap(); // 发端使命已毕（消息已入队、对端互钉保队列）；关不掉即泄漏面
+    }
+    // —— feeder：数据 + 零长 EOF 标记（libc read 的 EOF 约定，d-3b）。
+    if let (Some((in_s, _)), Some(data)) = (stdin_pair, stdin) {
+        if berry_channel_send(in_s, data.as_ptr(), data.len(), core::ptr::null(), 0) != 0 {
+            trap();
+        }
+        if berry_channel_send(in_s, data.as_ptr(), 0, core::ptr::null(), 0) != 0 {
+            trap();
+        }
+        if berry_handle_close(in_s) != 0 {
+            trap();
+        }
     }
     Ok(())
 }
