@@ -547,11 +547,19 @@ core::arch::global_asm!(
     //   ② poll 命中：signal(UMASK, U2) 置恰 bit1(用户半) → wait(U2|U6 超集,
     //      有 deadline) → 即刻返 0 + observed==U2（**全满足集**＝当前掩码，
     //      非请求子集）；
-    //   ③ 长睡被唤醒：清掩码 → wait(U3, t2+10s) 真睡 → waker2 经真 SVC
-    //      signal(内核表 handle, U3) → 醒来重验命中 → 0 + observed==U3。
+    //   ③ 长睡被唤醒：清掩码 → wait(U4, t2+10s) → waker2 经真 SVC
+    //      signal(内核表 handle, U4) → 醒来重验命中 → 0 + observed==U4。
     // 4-2 位空间：Event 位面迁高 32 半——U2=1<<37（0x20<<32）、U3=1<<35
-    // （0x8<<32）、超集 = 0x220<<32；清零掩码 = 0xFFFF_FFFF_0000_0000（用户
-    // 半全集——低半越界掩码 4-2 起 -EINVAL，旧 !0 清零不再合法）。
+    // （0x8<<32）、超集 = 0x220<<32；清零掩码 = 用户半全集（低半越界掩码
+    // 4-2 起 -EINVAL，旧 !0 清零不再合法）。
+    // P5-0 位拆分（P4 收官审计修复）：握手信号专用位 U4=1<<38（0x40<<32），
+    // 三处清位豁免 U4（0xFFFF_FFBF_0000_0000）——waker2 的一次性 signal 相对
+    // waiter 三路是**任意相位**（原模板烤死「最早 3 slice 后才置」的调度时序
+    // 假设：早到信号被清位抹掉 → 路 3 十秒空等超时 / 未抹掉则路 1 意外命中
+    // 严断 -110 炸自陷——dump 相位随 run 漂移）。豁免后早到信号任一路无害：
+    // 路 1/2 等 U3/U2 不看 U4，路 2 observed 先掩 bit38 再断言，路 3 等/验
+    // U4——poll 即中或睡到置位，两相位同过。模板纪律：**握手信号用专用位、
+    // 清位豁免——模板不烤调度时序假设**。
     // 槽：0x2008 时钟、0x2010 observed。寄存器纪律：svc 只回写 x0，x1..x6 保
     // 留传入值（路 1 的 deadline 留 x3、δ 留 x6 直接复用）。
     ".balign 16",
@@ -561,7 +569,7 @@ core::arch::global_asm!(
     // ---- 路 1：超时自醒 ----
     "    movz x0, #0x06",               // signal(h, UMASK, 0) 清零（出生必零，防御位）
     "    mov  x1, x20",
-    "    movz x2, #0xFFFF, lsl #32",    // x2 = 用户半全集掩码
+    "    movz x2, #0xFFBF, lsl #32",    // x2 = 用户半全集掩码～U4（bit38 豁免，头注）
     "    movk x2, #0xFFFF, lsl #48",
     "    mov  x3, xzr",
     "    svc  #0",
@@ -595,7 +603,7 @@ core::arch::global_asm!(
     // ---- 路 2：poll 即刻命中 + 全满足集 ----
     "    movz x0, #0x06",               // signal(h, UMASK, U2)：清全部再置恰 bit1
     "    mov  x1, x20",
-    "    movz x2, #0xFFFF, lsl #32",
+    "    movz x2, #0xFFBF, lsl #32",
     "    movk x2, #0xFFFF, lsl #48",
     "    movz x3, #0x20, lsl #32",      // U2 = 1<<37
     "    svc  #0",
@@ -608,13 +616,14 @@ core::arch::global_asm!(
     "    svc  #0",                      // 信号已到：poll-first 即刻命中不睡
     "    cbnz x0, 3f",
     "    ldr  x8, [x4]",                // observed
+    "    bfc  x8, #38, #1",             // 掩掉早到 U4（全满足集含它——非断言面）
     "    movz x9, #0x20, lsl #32",
     "    cmp  x8, x9",                  // 须恰 U2（全满足集 = current）
     "    b.ne 3f",
     // ---- 路 3：长睡被 waker2 signal 唤醒 ----
-    "    movz x0, #0x06",               // signal(h, UMASK, 0) 再清零（waker2 最早
-    "    mov  x1, x20",                 //   3 slice 后才置——此刻必无残留位）
-    "    movz x2, #0xFFFF, lsl #32",
+    "    movz x0, #0x06",               // signal(h, UMASK, 0) 再清零（U4 豁免——
+    "    mov  x1, x20",                 //   早到的 waker2 置位须存活到路 3）
+    "    movz x2, #0xFFBF, lsl #32",
     "    movk x2, #0xFFFF, lsl #48",
     "    mov  x3, xzr",
     "    svc  #0",
@@ -629,15 +638,15 @@ core::arch::global_asm!(
     "    cbnz x0, 3f",
     "    ldr  x5, [x2]",
     "    add  x3, x5, x3",              // deadline = t2 + 10s
-    "    movz x0, #0x04",               // wait_one(h, U3, far, *obs)
+    "    movz x0, #0x04",               // wait_one(h, U4, far, *obs)
     "    mov  x1, x20",
-    "    movz x2, #0x8, lsl #32",       // U3
+    "    movz x2, #0x40, lsl #32",      // U4 = 1<<38（握手专用位，头注）
     "    movz x4, #0x2010",
-    "    svc  #0",                      // 真睡 → waker2 signal(U3) 唤醒重验
-    "    cbnz x0, 3f",                  // （waker2 先 signal → poll 命中同过；真睡由路 1 验）
+    "    svc  #0",                      // 睡到 waker2 signal(U4) 或 poll 即中
+    "    cbnz x0, 3f",                  // （早到相位 poll 命中同过；真睡由路 1 验）
     "    ldr  x8, [x4]",
-    "    movz x9, #0x8, lsl #32",
-    "    cmp  x8, x9",                  // observed == U3（全满足集）
+    "    movz x9, #0x40, lsl #32",
+    "    cmp  x8, x9",                  // observed == U4（全满足集）
     "    b.ne 3f",
     // ---- 稳态循环：节流 + canary + 'W' ----
     "    movz x9, #0x30, lsl #16",      // 节流阈值（与诸位用户进程同量级）

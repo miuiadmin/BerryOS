@@ -878,11 +878,15 @@ fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     ret as i64
 }
 
-/// 4-1 waker2：等 waiter 挂上路 3 长睡（3 slice 时延），经**真 SVC** 对内核侧
-/// 表 handle 发 `object_signal(h, 0, U3)`——唤醒链全真：EL1 SVC 入口 →
-/// 语义层 signal → `wake_matching` → waiter 醒来重验命中。再睡 1 slice 让
-/// waiter 跑完三路进稳态，打关卡标记 `WAIT ok`（smoke 第 15）。waiter 断链
-/// 被杀 → 杀数超 1 → watchdog 错杀断言拦下（无需本任务二次确认）。
+/// 4-1 waker2：boot 期睡 3 slice 后经**真 SVC** 对内核侧表 handle 发
+/// `object_signal(h, 0, U4)`——唤醒链全真：EL1 SVC 入口 → 语义层 signal →
+/// `wake_matching` → waiter 醒来重验命中。再睡 1 slice 让 waiter 跑完三路进
+/// 稳态，打关卡标记 `WAIT ok`（smoke 第 15）。waiter 断链被杀 → 杀数超 1 →
+/// watchdog 错杀断言拦下（无需本任务二次确认）。
+/// P5-0 位拆分（P4 收官审计修复）：signal 用握手专用位 U4=1<<38 且 waiter
+/// 三处清位豁免之——本信号相对 waiter 三路是**任意相位**（3 slice 只是 boot
+/// 常态时延，非契约；PI 错捐等放大器可让相位漂移，早到/迟到两相位都须过，
+/// 见 user.rs waiter 头注）。
 extern "C" fn task_waker2(arg: usize) -> ! {
     use crate::syscall::{NR_CLOCK_READ, NR_OBJECT_SIGNAL, NR_THREAD_SLEEP};
     let h_kernel = arg as u32;
@@ -899,12 +903,12 @@ extern "C" fn task_waker2(arg: usize) -> ! {
         0,
         "waker2: thread_sleep 3 slice"
     );
-    // waiter 路 3 已挂队（U3）→ 置位唤醒（清 0、置 U3=1<<35——4-2 位空间起
-    // Event 用户位在高 32 半）。
+    // 置位握手专用位 U4=1<<38（4-2 位空间起 Event 用户位在高 32 半；waiter
+    // 清位豁免 U4——本信号任意相位无竞速，见 user.rs waiter 头注）。
     assert_eq!(
-        svc4(NR_OBJECT_SIGNAL as u64, h_kernel as u64, 0, 1 << 35),
+        svc4(NR_OBJECT_SIGNAL as u64, h_kernel as u64, 0, 1 << 38),
         0,
-        "waker2: object_signal U3"
+        "waker2: object_signal U4"
     );
     assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "waker2: clock_read 2");
     assert_eq!(
