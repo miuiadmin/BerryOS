@@ -101,6 +101,33 @@ impl Runqueue {
         let next = (*node.as_ptr()).rq_next.get().expect("环上节点必有 next");
         self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
+
+    /// 只读探峰：环上是否存在 `prio_effective` 严格高于 `v` 的任务（至多一圈，
+    /// 不动游标、不做出选）。供 [`crate::sched::try_preempt`] 的前置判定——
+    /// 「不可能切走就根本不 pick」（pick_next 会 `advance_past` 消耗 head 槽位：
+    /// 出选后不切走 = 幻影出选，见 try_preempt 注释）。
+    pub(crate) fn has_eff_above(&self, v: i32) -> bool {
+        let Some(h) = self.head.get() else {
+            return false; // 空环
+        };
+        // SAFETY: 环上任务均调度器拥有且在环（pick_next 扫描同款不变式）；
+        // 单核无并发 pick（IRQ 屏蔽切换位互斥）——只读扫描无并发出/入环。
+        unsafe {
+            let mut cur = h;
+            loop {
+                if (*cur.as_ptr()).prio_effective > v {
+                    return true;
+                }
+                cur = (*cur.as_ptr())
+                    .rq_next
+                    .get()
+                    .expect("环上节点必有 next");
+                if cur == h {
+                    return false; // 整圈扫完
+                }
+            }
+        }
+    }
 }
 
 /// CPU 拓扑（capacity 表占位）。G0 单核：一个条目。多核（G2+）由 HAL 填表，

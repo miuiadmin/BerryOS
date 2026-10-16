@@ -704,6 +704,15 @@ pub unsafe fn fast_wake(t: NonNull<Task>) {
 /// 抢占」在 fastpath 的例外出口）；否则原样返回（同层 FIFO：等/低优先等待者
 /// 不因 IPC 插队——4-3a 语义）。返回是否真的发生直切。
 ///
+/// **幻影出选防线（4-6 修）**：先 [`Runqueue::has_eff_above`] 只读探峰——环上
+/// 无严格更高者**根本不调 `pick_next`** 再判不切。`pick_next` 不是纯查询：选中
+/// 即 `advance_past` 消耗 head 槽位——「出选后不切走」= 幻影出选，游标被白耗
+/// 一格。稳态矩阵全员 eff 相同（4-3a 同层）时每条 fastpath send 都幻影消耗一格，
+/// 而真实出选（block/yield/tick）只认 head——重复性 IPC 节奏会把真实出选相位
+/// 锁死在环上固定节点集，其余节点**结构性饿死**（4-6 实测：echo 服务被饿死
+/// 永久冻结——出选:切入 = 29:1，其 client svcmgr 10s 等超时自陷）。
+/// 探峰是只读一圈 O(n)，n = 环长；不可能切走时零副作用返回。
+///
 /// **调用方保证 IRQ 屏蔽窗**（SVC 天然满足；内核任务自行 `disable_irq`）——
 /// 协议同 [`block_current`]：可从 syscall 主体中途切走（当前任务留在其内核
 /// 栈上的异常帧不动），切回点续行于此、IRQ 仍屏蔽，SVC 语境 eret 自然恢复
@@ -713,6 +722,10 @@ pub fn try_preempt() -> bool {
     // SAFETY: 契约如上；CURRENT/RUNQUEUE 单核顺序访问。
     unsafe {
         let cur = CURRENT;
+        // 幻影出选防线：环上无严格更高 eff → 必不直切 → 不消耗 head 槽位。
+        if !rq().has_eff_above((*cur).prio_effective) {
+            return false;
+        }
         if let Some(next) = RR.pick_next(rq(), &TOPO) {
             let next_ptr: *mut Task = next;
             if next_ptr != cur && (*next_ptr).prio_effective > (*cur).prio_effective {
