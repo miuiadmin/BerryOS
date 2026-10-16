@@ -115,7 +115,7 @@ fn test_syscall() {
     use crate::handle::{ObjType, RIGHT_MANAGE, RIGHT_MAP};
     use crate::syscall::{
         NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT,
-        NR_VMO_DECOMMIT, NR_VMO_READ, NR_VMO_WRITE,
+        NR_VMO_DECOMMIT, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
     };
     use crate::vmar::Vmar;
     static mut EBUF: [u8; 16] = [0; 16]; // write 源 / read 目的（内核直映区）
@@ -259,6 +259,50 @@ fn test_syscall() {
     assert_eq!(child_rights, RIGHT_MAP | RIGHT_MANAGE, "SYSCALL：子 vmar 授父 rights 全集");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hchild as u64, 0, 0), 0, "SYSCALL：close 子 vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm as u64, 0, 0), 0, "SYSCALL：close root vmar");
+
+    // E5. vmo_get_size（0x1A，G-eco 入机侧：svcmgr 消费 rootfs 需要 cpio 总长；
+    //     add-only 顺延）。盖四路：往返 + 页对齐语义（create 即取整，非 blob
+    //     实长——消费端 cpio 遍历以 newc 头自描述长度为准）/ 坏 handle /
+    //     类型门控（Event 非 Vmo）/ need=0 面（仅类型不查权利位——零 READ
+    //     观察者可查几何，同 object_wait「等待不需权利」惯例）。
+    // SAFETY: svc 同步异常；OUT 为本函数私有静态。
+    unsafe { OUT = 0 };
+    assert_eq!(svc6(NR_VMO_GET_SIZE as u64, 0xDEAD_BEEF, &raw mut OUT as u64, 0, 0, 0, 0), -9,
+        "SYSCALL：get_size 坏 handle 须 -EBADF");
+    let hev = ht
+        .insert(KernelObj::Event(crate::event::Event::new()), crate::handle::RIGHT_SIGNAL)
+        .expect("SYSCALL：insert event（get_size 类型面）");
+    assert_eq!(svc6(NR_VMO_GET_SIZE as u64, hev as u64, &raw mut OUT as u64, 0, 0, 0, 0), -9,
+        "SYSCALL：get_size 对 Event 须 -EBADF（类型门控）");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hev as u64, 0, 0), 0, "SYSCALL：close event");
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(svc6(NR_VMO_CREATE as u64, 0x1800, 0, &raw mut OUT as u64, 0, 0, 0), 0,
+        "SYSCALL：vmo_create 非 4K 整倍 size");
+    let hgs = unsafe { OUT } as u32;
+    // SAFETY: 同上（预置哨兵值，验回写真发生）。
+    unsafe { OUT = u64::MAX };
+    assert_eq!(svc6(NR_VMO_GET_SIZE as u64, hgs as u64, &raw mut OUT as u64, 0, 0, 0, 0), 0,
+        "SYSCALL：get_size");
+    assert_eq!(unsafe { OUT }, PAGE_SIZE as u64 * 2,
+        "SYSCALL：get_size 须回页对齐容量（0x1800 → 0x2000）");
+    // need=0 面：dup 收紧到仅 DUPLICATE（无 READ）仍可查。
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, hgs as u64, crate::handle::RIGHT_DUPLICATE,
+             &raw mut OUT as u64),
+        0,
+        "SYSCALL：dup 收紧到仅 DUPLICATE"
+    );
+    let hobs = unsafe { OUT } as u32;
+    // SAFETY: 同上。
+    unsafe { OUT = u64::MAX };
+    assert_eq!(svc6(NR_VMO_GET_SIZE as u64, hobs as u64, &raw mut OUT as u64, 0, 0, 0, 0), 0,
+        "SYSCALL：无 READ handle 查 size 须放行（need=0 不查权利位）");
+    assert_eq!(unsafe { OUT }, PAGE_SIZE as u64 * 2, "SYSCALL：零 READ 别名 size 同值");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hobs as u64, 0, 0), 0, "SYSCALL：close 零 READ 别名");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgs as u64, 0, 0), 0, "SYSCALL：close get_size VMO");
 
     // F. 3-3 process/thread：对象面 + 错误面（ktest 在 berry_sched::init 之前跑，
     //    process_start 成功路径会 spawn → 不能在此验——happy path 由 EL0

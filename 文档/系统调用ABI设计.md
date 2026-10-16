@@ -46,6 +46,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x17 | `vmar_unmap` | 解除映射 | v1 |
 | 0x18 | `vmar_protect` | 改权限 | v1 |
 | 0x19 | `vmar_allocate` | 建子区间 | v1 |
+| 0x1A | `vmo_get_size` | 查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长） | v1 |
 | **pager** ||||
 | 0x21 | `pager_supply_pages` | 用户态 pager 给 VMO 填页 | v2 |
 | 0x22 | `pager_op_range` | 脏页/换出通知 | v3 |

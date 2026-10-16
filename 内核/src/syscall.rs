@@ -77,6 +77,8 @@ pub const NR_VMAR_MAP: usize = 0x16;
 pub const NR_VMAR_UNMAP: usize = 0x17;
 pub const NR_VMAR_PROTECT: usize = 0x18;
 pub const NR_VMAR_ALLOCATE: usize = 0x19;
+/// G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。
+pub const NR_VMO_GET_SIZE: usize = 0x1A;
 // 进程 / 线程（7）
 pub const NR_PROCESS_CREATE: usize = 0x31;
 pub const NR_PROCESS_START: usize = 0x32;
@@ -540,6 +542,31 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
         pos += n;
     }
     0
+}
+
+/// `vmo_get_size(vmo, *size)`：查 VMO 容量（G-eco 入机侧：svcmgr 消费 rootfs
+/// 需要 cpio 总长；add-only 0x1A 顺延）。门控：**仅类型不查权利位**（need=0）
+/// ——size 是对象几何非内容，同 `object_wait`「等待不需权利」惯例（12 位
+/// rights 无 SIZE 位；零权利 handle 本就进不了表）。注意返回**页对齐容量**
+/// （create 即取整）——cpio 遍历以 newc 头自描述长度为准，别当 blob 实长。
+extern "C" fn sys_vmo_get_size(tf: &mut TrapFrame) -> i64 {
+    let (h, out) = (tf.regs[1] as u32, tf.regs[2]);
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u64(el1, out, 0) {
+        return e as i64; // 出参预清 + 界检（fail-fast，同 vmo_create）
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let vmo = match t.get(h, ObjType::Vmo, 0) {
+        Ok((obj, _)) => match obj.as_vmo() {
+            Some(v) => v,
+            None => return ERR_BAD_HANDLE as i64, // 类型门控后不可达；防御面
+        },
+        Err(e) => return e as i64,
+    };
+    match copy_out_u64(el1, out, vmo.size() as u64) {
+        Ok(()) => 0,
+        Err(e) => e as i64,
+    }
 }
 
 /// 门控后的 Vmo `&mut` 解包（get_raw 类型门控后防御性取本体，不符折 None →
@@ -1570,6 +1597,7 @@ pub fn install() {
     reg(NR_VMO_DECOMMIT, sys_vmo_decommit);
     reg(NR_VMO_READ, sys_vmo_read);
     reg(NR_VMO_WRITE, sys_vmo_write);
+    reg(NR_VMO_GET_SIZE, sys_vmo_get_size);
     reg(NR_VMAR_MAP, sys_vmar_map);
     reg(NR_VMAR_UNMAP, sys_vmar_unmap);
     reg(NR_VMAR_PROTECT, sys_vmar_protect);

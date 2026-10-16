@@ -609,6 +609,43 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
         h_cu_svcmgr, 0x0001_0001,
         "main: svcmgr 表 console 须首插 0x0001_0001（模板硬编码）"
     );
+
+    // ---- G-eco 入机侧第二刀：rootfs 字节 → 只读 VMO 交 svcmgr（编译侧
+    // G-eco-c 消费端的 seam：cpio/ELF 解析全在用户态，内核只交字节流对象）。
+    // 传递 = 表内**第 2 插定值 0x0001_0002**——svcmgr 是 boot 手搭进程，x0
+    // bootstrap 槽已被 console 发端占用（4-5b），走 4-2b ponger 哑 Event /
+    // 4-5a console endU 同款「boot 直插 + 定值断言」惯例；缺席语义 = 表内
+    // 无此 handle → 消费端查表 -EBADF 即「无 rootfs」降级（裸 run/smoke 零
+    // 扰动）。rights 仅 READ——vmo_read/vmo_get_size 可用，map/write/dup
+    // 放宽面拒（权限在 handle 不在对象）。数据面 = 第一刀的 ROOTFS static
+    // 整段搬进标准匿名 VMO（create+commit+write 内核侧三连，页模型零新
+    // 变体——物理不连续无碍，vmo_read 本就按页走 direct map）；搬运完原
+    // 缓冲即释放（峰值 ≈ 2× rootfs，16MiB 帽 × 128MiB RAM 可容）。----
+    // SAFETY: boot 单线程；take 取走后置 None（字节已移交 VMO，源缓冲释放）。
+    let h_rootfs = unsafe { (*(&raw mut ROOTFS)).take() }.map(|bytes| {
+        let mut vmo =
+            vmo::Vmo::create(bytes.len()).expect("main: rootfs Vmo create");
+        let committed = vmo.size(); // create 已页对齐
+        vmo.commit(mm::frames(), 0, committed)
+            .expect("main: rootfs Vmo commit");
+        vmo.write(0, &bytes).expect("main: rootfs Vmo write");
+        drop(bytes); // 先释放源缓冲再入表
+        ht_svcmgr
+            .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ)
+            .expect("main: rootfs VMO 进 svcmgr 表")
+    });
+    match h_rootfs {
+        Some(h) => {
+            assert_eq!(
+                h, 0x0001_0002,
+                "main: svcmgr 表 rootfs VMO 须第 2 插 0x0001_0002（编译侧硬编码）"
+            );
+            berry_hal_aarch64::uart_puts(b"ROOTFS vmo=");
+            berry_hal_aarch64::uart_put_hex64(h as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        }
+        None => berry_hal_aarch64::uart_puts(b"ROOTFS vmo=none\n"),
+    }
     berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, user::USER_STACK_TOP,
                           b"user_svcmgr", up_svcmgr.ttbr0_pa, up_svcmgr.asid,
                           ht_svcmgr as *mut HandleTable as usize);
