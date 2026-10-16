@@ -1,0 +1,14 @@
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2021"
+# G-eco-c：首个经 rootfs 全链拉起的程序（fw_cfg → ROOTFS static → 只读
+# VMO → svcmgr cpio/ELF 加载 → process_start）。与其他 bin 不同：**产物是
+# ELF 本体**（非 elf2flat 平像）——cpio 里躺的就是这张 ELF，装载语义
+# （p_vaddr/e_entry/.bss）由 berry-loader + svcmgr 消费，走 G-eco-d 第三方
+# 程序的同一条路。入口 x0 = bootstrap = console 发端别名（RIGHT_SEND）。
+description = "BerryOS first rootfs-loaded program (ELF in cpio, not flat)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }

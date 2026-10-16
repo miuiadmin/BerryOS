@@ -12,3 +12,5 @@ license = "Apache-2.0"
 
 [dependencies]
 berry-sys = { path = "../../berry-sys" }
+# G-eco-c：rootfs 消费（cpio walk + ELF 解析 = 纯函数，host 测试盖）。
+berry-loader = { path = "../../berry-loader" }

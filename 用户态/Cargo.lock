@@ -10,6 +10,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-loader"
+version = "0.1.0"
+
+[[package]]
 name = "berry-sys"
 version = "0.1.0"
 
@@ -21,9 +25,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hello"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
 name = "svcmgr"
 version = "0.1.0"
 dependencies = [
+ "berry-loader",
  "berry-sys",
 ]
 

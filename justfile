@@ -47,6 +47,10 @@ build-user:
     python3 ../工具链/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/svcmgr \
         ../内核/src/userbins/svcmgr.bin --max 65536
+    # G-eco-c：rootfs.cpio（hello ELF 本体——装载走 svcmgr cpio/ELF 链，
+    # 非 include_bytes 内嵌；产物在仓库根 = `run-rootfs` 既有约定）。
+    python3 ../工具链/mkcpio.py ../rootfs.cpio \
+        bin/hello=cargo-target/aarch64-unknown-none/release/hello
 
 build: build-user
     cargo build
@@ -84,9 +88,11 @@ clean:
 # 故这里显式找 ~/.cargo/bin/rustc，找不到再退回 PATH 里的 rustc。
 host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.cargo/bin/rustc" -vV || rustc -vV; } | sed -n 's/^host: //p'`
 
-# host 单元测试：berry-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）。
+# host 单元测试：berry-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）
+# + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 用户态/berry-loader）。
 test-host:
     cargo test -p berry-mm --target {{host}}
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-loader --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

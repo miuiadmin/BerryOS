@@ -99,6 +99,7 @@ mod nr {
     pub(super) const VMAR_UNMAP: usize = 0x17;
     pub(super) const VMAR_PROTECT: usize = 0x18;
     pub(super) const VMAR_ALLOCATE: usize = 0x19;
+    pub(super) const VMO_GET_SIZE: usize = 0x1A; // G-eco 入机侧第二刀（add-only）
 
     pub(super) const PROCESS_CREATE: usize = 0x31;
     pub(super) const PROCESS_START: usize = 0x32;
@@ -246,6 +247,13 @@ pub extern "C" fn berry_vmo_read(vmo: Handle, buf: *mut u8, offset: u64, len: us
 #[no_mangle]
 pub extern "C" fn berry_vmo_write(vmo: Handle, buf: *const u8, offset: u64, len: usize) -> Status {
     unsafe { sys(nr::VMO_WRITE, vmo as usize, buf as usize, offset as usize, len, 0, 0) }
+}
+
+/// VMO **页对齐容量**（add-only 0x1A，G-eco 入机侧第二刀）。注意非 blob
+/// 实长——cpio 遍历以 newc 头自描述长度为准（尾零页 = 页垫）。
+#[no_mangle]
+pub extern "C" fn berry_vmo_get_size(vmo: Handle, out: *mut u64) -> Status {
+    unsafe { sys(nr::VMO_GET_SIZE, vmo as usize, out as usize, 0, 0, 0, 0) }
 }
 
 /// v1 rights 须恰 READ|WRITE（UserRo 留 v2）；options 折叠（见段首注）。

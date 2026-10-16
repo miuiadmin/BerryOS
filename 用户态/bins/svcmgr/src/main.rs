@@ -23,8 +23,9 @@ use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_create,
     berry_process_start, berry_thread_create, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
+    BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE,
+    SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
@@ -70,6 +71,12 @@ pub extern "C" fn _start(console: Handle) -> ! {
     if berry_channel_send(s1, payload.to_le_bytes().as_ptr(), 8, gift.as_ptr(), 2) != 0 {
         trap(); // 交接件未入队 = A 半链断
     }
+
+    // ---- G-eco-c：rootfs VMO 消费（cpio → ELF → 首个 rootfs 程序）----
+    // 裸跑（just run / smoke 相）无 rootfs：get_size -EBADF → 静默跳过，
+    // 上述 4-5b/4-6 契约零扰动；带 rootfs（just run-rootfs / smoke rootfs
+    // 相）→ hello 拉起 + `ECO ok`（smoke 第 24 标记）。
+    run_rootfs_child(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
     let v = [b'v'];
@@ -120,6 +127,155 @@ fn spawn_child(image: &[u8], bootstrap: Handle) {
         trap();
     }
     if berry_process_start(hp, ht, CHILD_ENTRY, CHILD_SP, bootstrap) != 0 {
+        trap();
+    }
+    if berry_handle_close(bootstrap) != BERRY_ERR_BAD_HANDLE {
+        trap(); // 迁移自证：原值必须已作废
+    }
+}
+
+// ---- G-eco-c：rootfs 消费（草案 G-eco-c 行）----
+
+/// rootfs VMO 定值 = boot 第 2 插（main.rs `assert_eq!` 同源硬编——
+/// console endU 首插 0x0001_0001 之后）。rights 仅 READ（vmo_read/get_size 面）。
+const H_ROOTFS: Handle = 0x0001_0002;
+/// rootfs 暂存帽：cpio 一次读入 .bss 静态缓冲（svcmgr 平像 +16KiB 零页，
+/// 仍在 USER_CODE_MAX=64KiB 内）。v1 单程序 rootfs 量级；越帽 = 诚实跳过。
+const ROOTFS_MAX: usize = 16 * 1024;
+static mut ROOTFS_BUF: [u8; ROOTFS_MAX] = [0; ROOTFS_MAX];
+
+/// rootfs 全链：get_size（裸跑 -EBADF 静默跳过）→ vmo_read 整段入 .bss →
+/// cpio walk 找 `bin/hello` → berry-loader ELF 解析 → spawn_elf（console
+/// 别名作 bootstrap）→ `ECO ok`。有 rootfs 而链断 = 打一行原因后跳过
+/// （可见降级，不静默吞——AI 测试友好化）。
+fn run_rootfs_child(console: Handle) {
+    let mut cap = 0u64;
+    if berry_vmo_get_size(H_ROOTFS, &mut cap) != 0 {
+        return; // 裸跑：vmo=none → -EBADF，零扰动
+    }
+    let cap = cap as usize;
+    // SAFETY: boot 后本进程独占 ROOTFS_BUF；写在前、共享引用在后，单线程。
+    let buf: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(ROOTFS_BUF) as *mut u8, ROOTFS_MAX)
+    };
+    let eco_skip = |why: &[u8]| {
+        let mut line = [0u8; 24];
+        line[..4].copy_from_slice(b"eco:");
+        line[4] = b' ';
+        let n = 5 + why.len();
+        line[5..n].copy_from_slice(why);
+        line[n] = b'\n';
+        send_spin(console, line.as_ptr(), n + 1);
+    };
+    if cap > ROOTFS_MAX {
+        eco_skip(b"rootfs too big");
+        return;
+    }
+    if berry_vmo_read(H_ROOTFS, buf.as_mut_ptr(), 0, cap) != 0 {
+        eco_skip(b"vmo_read failed");
+        return;
+    }
+    let buf: &[u8] = &buf[..cap]; // cpio 视角（容量含尾零页，walk 被 trailer 截住）
+    let mut hello: Option<&[u8]> = None;
+    for e in berry_loader::cpio_walk(buf) {
+        match e {
+            Ok(en) if en.name == "bin/hello" => hello = Some(en.data),
+            Ok(_) => {}
+            Err(_) => {
+                eco_skip(b"cpio bad");
+                return;
+            }
+        }
+    }
+    let elf = match hello {
+        Some(b) => b,
+        None => {
+            eco_skip(b"no bin/hello");
+            return;
+        }
+    };
+    let img = match berry_loader::elf_parse(elf) {
+        Ok(i) => i,
+        Err(_) => {
+            eco_skip(b"elf bad");
+            return;
+        }
+    };
+    // console 别名作 bootstrap：hello 凭它自己打 `rootfs hello`（链活证与
+    // `ECO ok` 互证——smoke rootfs 相两条都断言）。先复制：send 会 take 走
+    // 句柄，console 原值须留给 ECO ok 与稳态 'v'。
+    let mut hboot = 0 as Handle;
+    if berry_handle_duplicate(console, RIGHT_SEND, &mut hboot) != 0 {
+        eco_skip(b"dup failed");
+        return;
+    }
+    spawn_elf(&img, hboot);
+    send_spin(console, ECO_OK.as_ptr(), ECO_OK.len());
+}
+
+/// smoke 第 24 标记（7 字节，尾插随合并序）。
+const ECO_OK: &[u8; 7] = b"ECO ok\n";
+
+/// ELF 拉起（与 spawn_child 的平像路径同构——**页铺平单 VMO**，同
+/// `工具链/elf2flat.py` 语义）：真实 ld 的 PT_LOAD 不页对齐（rust-lld 实测
+/// RO 段 vaddr=0x10c0 与 text 段共享页），逐段独立映射会撞已映页——
+/// 故一枚 VMO 覆盖 `[floor页(min vaddr), ceil页(max end))`，各段文件字节
+/// 按相对偏移写入（.bss 尾部由零页覆盖），一次 vmar_map 映整幅，栈页
+/// 映其上，entry = e_entry。vaddr in-out 槽回写须 == 请求基址（v1 无重排）。
+fn spawn_elf(img: &berry_loader::ElfImage, bootstrap: Handle) {
+    use berry_loader::PAGE_SIZE;
+    let mut hp = 0 as Handle;
+    let mut hv = 0 as Handle;
+    if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
+        trap();
+    }
+    // 页铺平几何：跨段并集的单幅映射。
+    let lo = img.segments().iter().map(|s| s.vaddr).min().unwrap();
+    let hi = img.segments().iter().map(|s| s.vaddr + s.memsz).max().unwrap();
+    let base = lo & !(PAGE_SIZE - 1);
+    let len = (hi - base + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+    let mut vmo = 0 as Handle;
+    if berry_vmo_create(len, 0, &mut vmo) != 0 || vmo == 0 {
+        trap();
+    }
+    if berry_vmo_commit(vmo, 0, len) != 0 {
+        trap();
+    }
+    for seg in img.segments() {
+        if !seg.data.is_empty()
+            && berry_vmo_write(vmo, seg.data.as_ptr(), (seg.vaddr - base) as u64,
+                               seg.data.len()) != 0
+        {
+            trap();
+        }
+    }
+    let mut vaddr = base as usize; // 映射基址提示（in-out 槽预写）
+    if berry_vmar_map(hv, 0, vmo, 0, &mut vaddr, len as usize, RIGHT_READ | RIGHT_WRITE) != 0
+        || vaddr != base as usize
+    {
+        trap();
+    }
+    // 栈页映在映幅之上。
+    let stack_va = base + len;
+    let mut svmo = 0 as Handle;
+    if berry_vmo_create(PAGE_SIZE, 0, &mut svmo) != 0 || svmo == 0 {
+        trap();
+    }
+    if berry_vmo_commit(svmo, 0, PAGE_SIZE) != 0 {
+        trap();
+    }
+    let mut saddr = stack_va as usize;
+    if berry_vmar_map(hv, 0, svmo, 0, &mut saddr, PAGE_SIZE as usize, RIGHT_READ | RIGHT_WRITE)
+        != 0
+        || saddr != stack_va as usize
+    {
+        trap();
+    }
+    let mut ht = 0 as Handle;
+    if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
+        trap();
+    }
+    if berry_process_start(hp, ht, img.entry as usize, saddr + PAGE_SIZE as usize, bootstrap) != 0 {
         trap();
     }
     if berry_handle_close(bootstrap) != BERRY_ERR_BAD_HANDLE {

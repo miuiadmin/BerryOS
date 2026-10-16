@@ -1,0 +1,13 @@
+[package]
+name = "berry-loader"
+version = "0.1.0"
+edition = "2021"
+# G-eco-c（文档/G-eco编译侧设计草案.md D5）：cpio newc / ELF64 解析器 =
+# 用户态服务逻辑（微内核原则），纯函数 crate 零依赖。`cfg_attr(not(test),
+# no_std)`——库本体 no_std（svcmgr 等 aarch64-unknown-none 消费者直接链），
+# test 构建放开 std 仅为默认测试挂具（AI 测试友好化：恶意/截断/对齐野值面
+# host 单测全盖，`just test-host` 入口）。
+description = "BerryOS rootfs loader: pure cpio-newc walker + ELF64 parser (host-tested)"
+license = "Apache-2.0"
+
+[dependencies]

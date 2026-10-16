@@ -260,6 +260,18 @@ fn copy_out_u64(caller_el1: bool, ptr: u64, val: u64) -> Result<(), i32> {
     copy_to_user(caller_el1, ptr, &val.to_le_bytes())
 }
 
+/// handle 出参写回（**4 字节**——ABI §8 冻结基础类型宽度 handle=u32，见
+/// `文档/系统调用ABI设计.md`「冻结的是形状」节）。G-eco-c 实踩：曾用
+/// `copy_out_u64` 写 8 字节，砸穿调用方 4 字节 `Handle` 槽的**邻接局部**——
+/// 编译 Rust（编译器紧排局部）下 svcmgr 的 `saddr` 槽被 thread_create 出参
+/// 低半清零，hello 以 sp0=0x1000（应 0x3000）入 EL0 即写 0xff0 自陷；asm
+/// 模板槽位 8 字节间距手排、ktest 出参静态零置 + `as u32` 截读，两者碰巧
+/// 免疫。**非 handle 的出参（ns/size/vaddr/nbytes/idx/observed）仍 8 字节**
+/// ——宽度跟着 ABI 类型走，不跟着「凑巧能跑」走。
+fn copy_out_u32(caller_el1: bool, ptr: u64, val: u32) -> Result<(), i32> {
+    copy_to_user(caller_el1, ptr, &val.to_le_bytes())
+}
+
 // ---- handlers（x0=号、x1..x6=参、x0=返回）----
 
 /// `handle_close(h)`：关 handle（引用 -1，归零释放；代号 +1 旧值作废）。
@@ -284,12 +296,12 @@ extern "C" fn sys_handle_close(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_handle_duplicate(tf: &mut TrapFrame) -> i64 {
     let (h, rights, out) = (tf.regs[1] as u32, tf.regs[2] as Rights, tf.regs[3]);
     // 先验 out 指针（界检不过不浪费槽位/引用）。
-    if let Err(e) = copy_out_u64(caller_is_el1(tf), out, 0) {
+    if let Err(e) = copy_out_u32(caller_is_el1(tf), out, 0) {
         return e as i64;
     }
     match caller_table(tf) {
         Ok(t) => match t.duplicate(h, rights) {
-            Ok(nh) => match copy_out_u64(caller_is_el1(tf), out, nh as u64) {
+            Ok(nh) => match copy_out_u32(caller_is_el1(tf), out, nh) {
                 Ok(()) => 0,
                 Err(e) => e as i64,
             },
@@ -302,12 +314,12 @@ extern "C" fn sys_handle_duplicate(tf: &mut TrapFrame) -> i64 {
 /// `handle_replace(h, replacement, *out)`：原子换槽（两旧值均失效）。
 extern "C" fn sys_handle_replace(tf: &mut TrapFrame) -> i64 {
     let (h, repl, out) = (tf.regs[1] as u32, tf.regs[2] as u32, tf.regs[3]);
-    if let Err(e) = copy_out_u64(caller_is_el1(tf), out, 0) {
+    if let Err(e) = copy_out_u32(caller_is_el1(tf), out, 0) {
         return e as i64;
     }
     match caller_table(tf) {
         Ok(t) => match t.replace(h, repl) {
-            Ok(nh) => match copy_out_u64(caller_is_el1(tf), out, nh as u64) {
+            Ok(nh) => match copy_out_u32(caller_is_el1(tf), out, nh) {
                 Ok(()) => 0,
                 Err(e) => e as i64,
             },
@@ -421,7 +433,7 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     if size > VMO_MAX_SIZE {
         return ERR_NO_MEMORY as i64;
     }
-    if let Err(e) = copy_out_u64(el1, out, 0) {
+    if let Err(e) = copy_out_u32(el1, out, 0) {
         return e as i64;
     }
     // create try 化（3b3 H2）：NoMem → -ENOMEM（原 create 内嵌 vec! 双分配，
@@ -435,7 +447,7 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
             KernelObj::Vmo(vmo),
             RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE,
         ) {
-            Ok(h) => match copy_out_u64(el1, out, h as u64) {
+            Ok(h) => match copy_out_u32(el1, out, h) {
                 Ok(()) => 0,
                 Err(e) => e as i64,
             },
@@ -552,7 +564,7 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_vmo_get_size(tf: &mut TrapFrame) -> i64 {
     let (h, out) = (tf.regs[1] as u32, tf.regs[2]);
     let el1 = caller_is_el1(tf);
-    if let Err(e) = copy_out_u64(el1, out, 0) {
+    if let Err(e) = copy_out_u32(el1, out, 0) {
         return e as i64; // 出参预清 + 界检（fail-fast，同 vmo_create）
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
@@ -696,7 +708,7 @@ extern "C" fn sys_vmar_allocate(tf: &mut TrapFrame) -> i64 {
         return ERR_INVALID_ARG as i64;
     }
     let el1 = caller_is_el1(tf);
-    if let Err(e) = copy_out_u64(el1, child_out, 0) {
+    if let Err(e) = copy_out_u32(el1, child_out, 0) {
         return e as i64;
     }
     let req = match copy_in_u64(el1, vaddrp) {
@@ -723,7 +735,7 @@ extern "C" fn sys_vmar_allocate(tf: &mut TrapFrame) -> i64 {
         Ok(ch) => {
             // vaddr/child 双回写（两指针上面各验过一遍，此处失败面为不可达防御）。
             let r1 = copy_out_u64(el1, vaddrp, req);
-            let r2 = copy_out_u64(el1, child_out, ch as u64);
+            let r2 = copy_out_u32(el1, child_out, ch);
             match (r1, r2) {
                 (Ok(()), Ok(())) => 0,
                 (Err(e), _) | (_, Err(e)) => e as i64,
@@ -747,10 +759,10 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
         return ERR_INVALID_ARG as i64;
     }
     let el1 = caller_is_el1(tf);
-    if let Err(e) = copy_out_u64(el1, p_out, 0) {
+    if let Err(e) = copy_out_u32(el1, p_out, 0) {
         return e as i64;
     }
-    if let Err(e) = copy_out_u64(el1, v_out, 0) {
+    if let Err(e) = copy_out_u32(el1, v_out, 0) {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
@@ -777,8 +789,8 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     let proc = unsafe { crate::process::Process::new(vobj, ttbr0, asid) };
     match t.insert(KernelObj::Process(proc), RIGHT_MANAGE | RIGHT_DUPLICATE) {
         Ok(hp) => {
-            let r1 = copy_out_u64(el1, p_out, hp as u64);
-            let r2 = copy_out_u64(el1, v_out, hv as u64);
+            let r1 = copy_out_u32(el1, p_out, hp);
+            let r2 = copy_out_u32(el1, v_out, hv);
             match (r1, r2) {
                 (Ok(()), Ok(())) => 0,
                 (Err(e), _) | (_, Err(e)) => e as i64, // 出参失效：两 handle 已建，调用方重试态自理
@@ -797,7 +809,7 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
         return ERR_INVALID_ARG as i64;
     }
     let el1 = caller_is_el1(tf);
-    if let Err(e) = copy_out_u64(el1, out, 0) {
+    if let Err(e) = copy_out_u32(el1, out, 0) {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
@@ -807,7 +819,7 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
     // SAFETY: get_raw 已验在表且类型 Process；Thread 构造即钉住它。
     let thrd = unsafe { crate::process::Thread::new(pobj) };
     match t.insert(KernelObj::Thread(thrd), RIGHT_MANAGE | RIGHT_DUPLICATE) {
-        Ok(h) => match copy_out_u64(el1, out, h as u64) {
+        Ok(h) => match copy_out_u32(el1, out, h) {
             Ok(()) => 0,
             Err(e) => e as i64,
         },
@@ -933,10 +945,10 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
     }
     let no_intent = options & CHAN_OPT_NO_INTENT != 0;
     let el1 = caller_is_el1(tf);
-    if let Err(e) = copy_out_u64(el1, out0, 0) {
+    if let Err(e) = copy_out_u32(el1, out0, 0) {
         return e as i64;
     }
-    if let Err(e) = copy_out_u64(el1, out1, 0) {
+    if let Err(e) = copy_out_u32(el1, out1, 0) {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
@@ -962,8 +974,8 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
                 (Some(a), Some(b)) => {
                     // SAFETY: 两指针刚 get_raw 过（在表、类型 Channel）。
                     unsafe { ChannelEnd::pair(a, b) };
-                    let r0 = copy_out_u64(el1, out0, h0 as u64);
-                    let r1 = copy_out_u64(el1, out1, h1 as u64);
+                    let r0 = copy_out_u32(el1, out0, h0);
+                    let r1 = copy_out_u32(el1, out1, h1);
                     match (r0, r1) {
                         (Ok(()), Ok(())) => 0,
                         (Err(e), _) | (_, Err(e)) => e as i64, // 两端已建——调用方重试态自理
@@ -1278,7 +1290,7 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
         return ERR_INVALID_ARG as i64;
     }
     let el1 = caller_is_el1(tf);
-    if let Err(e) = copy_out_u64(el1, out, 0) {
+    if let Err(e) = copy_out_u32(el1, out, 0) {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
@@ -1286,7 +1298,7 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
         Ok(h) => h,
         Err(e) => return e as i64, // 表满/gen 尽/装箱 OOM——对象未入表，零回滚面
     };
-    match copy_out_u64(el1, out, h as u64) {
+    match copy_out_u32(el1, out, h) {
         Ok(()) => 0,
         Err(e) => e as i64, // 对象已入表——调用方重试态自理（同 channel_create 政策）
     }

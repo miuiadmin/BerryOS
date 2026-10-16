@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # BerryOS 无人值守冒烟测试 —— CI 与本地同一入口（just smoke）。
 #
-# 做三件事：
+# 做四件事：
 #   1. 后台拉起 QEMU virt（-kernel ELF 直加载），串口重定向到临时日志；
 #   2. 断言 boot 标记全部出现（BerryOS boot / GIC ok / … / ktest done）；
-#   3. 断言 switches=N 金丝雀 ≥3 条且严格递增（IRQ 抢占分时活着、计数不冻）。
+#   3. 断言 switches=N 金丝雀 ≥3 条且严格递增（IRQ 抢占分时活着、计数不冻）；
+#   4. G-eco rootfs 相（G-eco-c 起）：重拉 QEMU 带 -fw_cfg rootfs.cpio，断言
+#      入机侧（ROOTFS ok/vmo 行）+ 编译侧全链（rootfs hello = hello 进程
+#      自打、ECO ok = svcmgr cpio/ELF 拉起成功）标记到齐——「rootfs 程序
+#      经全链跑通出字」的关卡化（裸跑相 rootfs 缺席 = svcmgr 静默降级，
+#      23 标记零扰动，两相互证）。
 #
 # 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 CLAUDE.md 陷阱节），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
@@ -93,4 +98,38 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 ' || fail "switches 序列非严格递增：$(grep -o 'switches=[0-9]*' "$LOG" | tr '\n' ' ')"
 
 last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke: PASS（金丝雀 ${n} 条严格递增，最新 switches=$last）"
+
+# —— 阶段 3：G-eco rootfs 全链（G-eco-c 起）——
+# rootfs.cpio 由 build-user 产出（justfile mkcpio 步）；缺席 = 回归（loud）。
+[ -f rootfs.cpio ] || fail "缺 rootfs.cpio（build-user 应产出——G-eco-c 编排回归）"
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+: > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
+echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+# 入机侧两行 + 编译侧全链两条：hello 自打 = 装载的程序真的在跑且能 syscall。
+ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok")
+t2=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 提前退出（rootfs 相）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+  missing=""
+  for m in "${ROOTFS_MARKERS[@]}"; do
+    grep -qF "$m" "$LOG" || missing="${missing:+$missing }$m"
+  done
+  # vmo 行须非降级形态（=none 即 seam 断：内核没把 rootfs 包进 VMO）。
+  if [ -z "$missing" ] && grep -q 'ROOTFS vmo=none' "$LOG"; then
+    fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
+  fi
+  [ -z "$missing" ] && break
+  [ $(( $(date +%s) - t2 )) -gt $DEADLINE_BOOT ] \
+    && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
+  sleep 1
+done
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok）"
+
+echo "smoke: PASS（金丝雀 ${n} 条严格递增，最新 switches=$last + rootfs 相全链）"

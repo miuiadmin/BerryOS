@@ -7,7 +7,9 @@
 # G-eco-b 两遍构建：svcmgr include_bytes! 内嵌 echo/talker 平像（产物在
 # 用户态/userbins/，gitignored）——直接整仓 `cargo build` 且无 staged 平像
 # 时 svcmgr 编译期炸响（loud not silent）；编排见 justfile build-user。
-members = ["berry-sys", "bins/abuser", "bins/echo", "bins/talker", "bins/svcmgr"]
+# G-eco-c：berry-loader（rootfs 纯函数解析，host 测试）+ hello（首个
+# rootfs 拉起程序——ELF 本体进 cpio，不走 elf2flat/include_bytes）。
+members = ["berry-sys", "berry-loader", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 resolver = "2"
 
 # 用户程序平像：体积优先（单页墙由 工具链/elf2flat.py --max 执法）。
