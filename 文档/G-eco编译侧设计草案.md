@@ -1,6 +1,6 @@
 # G-eco 编译侧设计草案（认领半：编译侧 + svcmgr 消费端）
 
-> 状态：草案随实施修订（2026-10-16 创建；同日随入机侧第一刀 9ff9258 修订；**G-eco-0/G-eco-a 已落地（2026-10-16），§0/D1 按实施发现修订为 stable 免 nightly 路线**；**G-eco-b 已落地（2026-10-16）——D3 定型为动态布局 + §3 增补 console 发送形态契约修正**）。对口会话分工：**B 半会话认领入机侧内核半**（rootfs 递送：QEMU **fw_cfg 具名文件** `-fw_cfg name=opt/berry/rootfs` / DTB `/chosen` 双源 → 内核 static `ROOTFS`（16MiB no-panic 帽）→ 下一步包**只读 VMO（rights 仅 READ）boot 直插 svcmgr 表**——svcmgr 是 boot 手搭进程不走 process_start bootstrap，零 ABI 变化；handle 定值 boot 断言后硬编，同 console endU 模式）；**本草案 = 编译侧 + svcmgr 消费半**。两侧 seam = 「内核交付一个可读的 rootfs VMO」，可并行。四层实证（9ff9258）：QEMU 非 Linux ELF `-kernel` 直加载不走 Linux boot 协议（x0=0 / RAM 无 DTB / `-initrd` 整体不加载）——**`-initrd` 死路勿再用**，入机载体 = `just run-rootfs`。
+> 状态：草案随实施修订（2026-10-16 创建；同日随入机侧第一刀 9ff9258 修订；**G-eco-0/G-eco-a 已落地（2026-10-16），§0/D1 按实施发现修订为 stable 免 nightly 路线**；**G-eco-b 已落地（2026-10-16）——D3 定型为动态布局 + §3 增补 console 发送形态契约修正**；**G-eco-c 已落地（2026-10-16，5bfffb7）；G-eco-d 第一步 d-0 符号面审计已过（2026-10-16，附录 A——D4 路线① 存活，无 kill criteria 触发）**）。对口会话分工：**B 半会话认领入机侧内核半**（rootfs 递送：QEMU **fw_cfg 具名文件** `-fw_cfg name=opt/berry/rootfs` / DTB `/chosen` 双源 → 内核 static `ROOTFS`（16MiB no-panic 帽）→ 下一步包**只读 VMO（rights 仅 READ）boot 直插 svcmgr 表**——svcmgr 是 boot 手搭进程不走 process_start bootstrap，零 ABI 变化；handle 定值 boot 断言后硬编，同 console endU 模式）；**本草案 = 编译侧 + svcmgr 消费半**。两侧 seam = 「内核交付一个可读的 rootfs VMO」，可并行。四层实证（9ff9258）：QEMU 非 Linux ELF `-kernel` 直加载不走 Linux boot 协议（x0=0 / RAM 无 DTB / `-initrd` 整体不加载）——**`-initrd` 死路勿再用**，入机载体 = `just run-rootfs`。
 >
 > 硬验收锚（`路线图.md` G-eco 生态关）：**未经修改的第三方 Rust 程序（ripgrep/hexyl 级）交叉编译后在 BerryOS 上跑通**。全部死于没人写程序——本关是「系统从 demo 变平台」的临界点。
 
@@ -28,7 +28,7 @@
 - **D1 target 形态（G-eco-a 修订）**：**builtin `aarch64-unknown-none` 复用**——bin crate 各自 build.rs 注入 `link-user.ld`（`-T` 绝对路径 + `-zmax-page-size=4096`：rust-lld AArch64 默认 64K max-page 会把 PT_LOAD 对齐抬到 0x10000，0x1000 基址表达不了）。**不先做 PIE/动态链接**（v1 无加载基址随机化诉求；ASLR 留 v2）；custom `aarch64-unknown-berry` JSON 推迟到确需 target 级差异（届时接受 nightly）。
 - **D2 flat binary 约定**：`.text/.rodata/.data` 进文件；**`.bss` 由 `工具链/elf2flat.py` 补零到页再交付**（解 PT_LOAD 铺平，尾部按 `max(p_vaddr+p_memsz)` 相对长度取整页）——VMO 页虽零初始化，但把 bss 覆盖兑现在文件侧最直白、`UserProcess::build` 零特判。链接基址 0x1000（`USER_CODE_VA`）；单页程序栈约定不变（0x3000 顶），多页镜像 data/stack 随代码页数上移（D3）。
 - **D3 多页代码（G-eco-b 已定型）**：`build()` 断言从 `≤ PAGE_SIZE` 放宽到 `USER_CODE_MAX`=64 KiB（elf2flat `--max 65536` 同值执法；断言防手滑传整段 ELF）。**动态布局**：code 占 `ceil(len/页)*页` @0x1000、data/stack 顺次上移、新 `pub stack_top` 字段（svcmgr spawn 改读字段，其余单页进程仍读常量）；**单页程序与旧固定三页布局逐位相同** = 既有 8 进程零扰动。实测 svcmgr 平像 3 页（9975B→页补零 12288B，data@0x4000、stack [0x5000,0x6000)）。**只动 UserProcess 这一条路**，syscall 面（vmar_map）不动。
-- **D4 std 路线三选一**：①musl target + 自建 libc shim（**主选**：不 fork std，Redox-lite；先审计 std 链接符号面，`nm` 清单进本草案附录）；②vendored std 打 patch（Redox 全量模式，维护成本高，**备选**）；③std 面整体推迟 P5 POSIX（**fallback**）。**kill criteria**：若 hexyl 链接拖进无法 shim 的符号（线程/futex/mmap 语义级依赖），①降级 ③、拆「no_std+alloc 第三方库」为 P4 验收降档并回报路线图修订。
+- **D4 std 路线三选一**：①musl target + 自建 libc shim（**主选**：不 fork std，Redox-lite；~~先审计 std 链接符号面~~ **审计已过（附录 A，工具 `工具链/shim_audit.py`）**：hello 探针真实面 41、全 rlib 上界 189——全可 shim，路线① 存活）；②vendored std 打 patch（Redox 全量模式，维护成本高，**备选**）；③std 面整体推迟 P5 POSIX（**fallback**）。**kill criteria**：若 hexyl 链接拖进无法 shim 的符号（线程/futex/mmap 语义级依赖），①降级 ③、拆「no_std+alloc 第三方库」为 P4 验收降档并回报路线图修订。
 - **D5 解析器即产品**：cpio newc / ELF64 解析是**用户态服务逻辑**（微内核原则），写成 `#![no_std]` 纯函数 crate（`用户态/berry-loader`），host 单元测试全盖（截断/坏魔数/奇名长/多 PT_LOAD/p_vaddr 未对齐）——这是「AI 测试友好化」在生态关的落点。**G-eco-c 落地补课**：解析器**不收页对齐**（`off ≡ vaddr (mod align)` 即合法——rust-lld RO 段 0x10c0 实测），页对齐是消费端策略（svcmgr 页铺平消化）；cpio 变体位在 h[5]（`070701`/`070702`，CRC 变体同收）。
 - **D6 编排（G-eco-a 已落）**：用户程序 crate 在 `用户态/bins/*`（独立工作区成员）；`just build-user`（stable + builtin target + elf2flat.py）产出 `内核/src/userbins/*.bin`（gitignored）→ 内核 `include_bytes!`；**`build`/`check`/`run-release`/`size-release` 依赖 `build-user`**（缺产物 = include_bytes 编译期炸响，不静默）。CI（smoke）自动覆盖；`just test-host` 增 `berry-loader` 面（G-eco-c 起）。**两遍构建（G-eco-b 起）**：pass1 先编 leaf bin（echo/talker）平像落 `用户态/userbins/` 中转区，pass2 全 workspace 编 svcmgr（include_bytes! 内嵌两平像）——svcmgr build.rs rerun-if-changed 显式盖全（link-user.ld + 自身源 + 两 staged 平像；**任何 rerun-if 指令都替换 cargo 默认全量重编行为，漏列 = 改了子程序、内核还嵌旧字节静默上线**）。
 
@@ -43,3 +43,34 @@
 
 - **Q1**（已答，随 9ff9258 + VMO 形状通报）：rights **只 READ** 确认（v1 copy 经 vmo_read，MAP 面 v2）；交付 = **boot 直插 svcmgr 表**（非 bootstrap 通道，零 ABI 变化），handle 定值待对面 boot 断言后硬编。
 - **Q2**（本侧）：第三方程序的 argv/stdin 协议形状（bootstrap 消息即「环境块」）——G-eco-d 前定，草案届时随实现细化。
+
+## 附录 A：musl 符号面审计（G-eco-d 第一步 d-0，2026-10-16）
+
+工具：`工具链/shim_audit.py` 双模式——`rlib-surface`（上界：全 rlib + self-contained/libunwind.a 的「未定义 − 已定义」全局符号集）与 `elf-surface`（程序面：剥 `crt*.o` 与 `-lc` 后驱动 rust-lld（`--error-limit=0`）一次报全未解析 = 该程序真实 libc 面；llvm-nm 即 macOS `/usr/bin/nm`）。
+
+**链接咒语（D1 补充，macOS 交叉 musl 的关键一环）**：musl target 默认 linker=`cc` 走 Xcode clang→Apple ld 报 unknown options（`--as-needed`/`-Bstatic` 全不认）——**`-C linker=rust-lld -C linker-flavor=ld.lld`**（rustup 内置 lld 直驱，无 `-Wl,` 包装层；binary 在 `lib/rustlib/<host>/bin/rust-lld`）。stable 可用，与内核 `aarch64-unknown-none` 的裸链接同族。
+
+**hello 探针真实面 = 41**（探针 = fmt 输出 + Vec/String/Box 分配 + is_terminal + env::args + flush，近似 hexyl 级 std 使用）：
+
+| 类 | 符号 |
+|----|------|
+| 内存（VMO 堆） | malloc free realloc calloc posix_memalign |
+| 字节串 | memcpy memmove memset bcmp strlen snprintf |
+| 输出（fd 表→console channel） | write writev fwrite fprintf fflush stderr close |
+| 输入/FS（v1 ENOSYS/ENOENT 桩） | read open fstat lseek readlink getcwd realpath stat |
+| errno/杂 | __errno_location __assert_fail abort getenv getauxval dl_iterate_phdr dladdr syscall |
+| mmap | mmap munmap（引用点待首跑定位——非启动关键则成功桩） |
+| 线程/锁（无竞争成功桩） | pthread_key_create pthread_key_delete pthread_setspecific pthread_rwlock_rdlock pthread_rwlock_unlock pthread_rwlock_wrlock |
+
+**上界 = 189 强未定义**（全 std 模块并集；shim 按「全定义」交付 = 任何 std 程序永不因符号缺失拒链）。分档：
+
+- **真实现（~25）**：malloc 族（berry-sys VMO 堆）、write 族（fd 0/1/2 ↔ console handle 表）、mem/str 族、`__errno_location`（静态 int）、`abort`（打一行 + trap）；
+- **成功桩**：锁族（单线程无竞争返 0）、`syscall`（futex 路径返 -1——std 无竞争快路径 CAS 不经此）、`getauxval`/`dl_*`（返 0，backtrace 静默降级）、`sigaction`/`sigaltstack`/`signal`（谎报安装成功——v1 无信号机制，栈溢出 = EL0 fault 被杀可接受）、`environ`（空表）；
+- **ENOSYS 桩**：FS 面（open/stat/unlink/…）、socket 族、fork/exec/posix_spawn 族、kill 族、setuid 类、uname/getuid/getpid（信息假值）；
+- **非 shim 面**：`__rust_alloc` 族 5 个（rustc `symbols.o` 自动注入，hello 链接实证由本侧对象满足）；`__ehdr_start`（链接器自供）；weak 24（`__dso_handle`/`__cxa_thread_atexit_impl`/`getrandom` 等——未满足按 0 解析合法，getrandom=0 时 RandomState 走弱种子回退）。
+
+**PT_TLS 实测在**（hello：filesz=0x20 memsz=0x50 align=8，std 即使最小程序也用 TLS）——但 **TPIDR_EL0 是 EL0 可写寄存器**：crt0 用户态自设（定位自身 ELF 头→PT_TLS→init image 拷入 `.bss` 块→`msr tpidr_el0`），**零内核改动**。同理由 crt0 自走 `.init_array`、直调 `main(argc,argv)`——musl crt1.o/`__libc_start_main` 全免，shim 不链接 musl 任何产物。
+
+**装载面**：musl 默认基址 **0x200000**、PT_LOAD `p_align=0x10000`（64K——G-eco-a `-zmax-page-size=4096` 教训的复现点，std 线构建也要带）；`spawn_elf` 页铺平天然消化任意基址/对齐（间隙零页，浪费不碍事）；std hello PT_LOAD 幅 ~620KiB（含 unwind/backtrace 全家）——rootfs 路径无 64KiB 帽（`USER_CODE_MAX` 只辖 include_bytes 内嵌产物；rootfs 子进程仅受 `vmo_create` 16MiB 帽辖）。
+
+**结论：D4 路线① 存活**。真实面 41 全可 shim；线程/futex/mmap 语义墙未现（锁族仅无竞争路径、futex 仅多线程竞争、mmap 引用点在 lazy 路径的概率高）。kill criteria 未触发——若首跑实证 mmap 在启动关键路径上再调档（真 VMO 实现或路线降级）。
