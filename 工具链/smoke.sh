@@ -7,9 +7,10 @@
 #   3. 断言 switches=N 金丝雀 ≥3 条且严格递增（IRQ 抢占分时活着、计数不冻）；
 #   4. G-eco rootfs 相（G-eco-c 起）：重拉 QEMU 带 -fw_cfg rootfs.cpio，断言
 #      入机侧（ROOTFS ok/vmo 行）+ 编译侧全链（rootfs hello = hello 进程
-#      自打、ECO ok = svcmgr cpio/ELF 拉起成功）标记到齐——「rootfs 程序
-#      经全链跑通出字」的关卡化（裸跑相 rootfs 缺席 = svcmgr 静默降级，
-#      23 标记零扰动，两相互证）。
+#      自打、ECO ok = svcmgr 流式 cpio/ELF 拉起成功、STD ok/STD err ok =
+#      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
+#      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
+#      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #
 # 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 CLAUDE.md 陷阱节），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
@@ -111,8 +112,10 @@ echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs）"
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 入机侧两行 + 编译侧全链两条：hello 自打 = 装载的程序真的在跑且能 syscall。
-ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok")
+# 入机侧两行 + 编译侧全链四条：hello 自打 = 装载的程序真的在跑且能 syscall；
+# stdhello 自打 STD 双标记 = **std 程序经 musl target + berry-libc shim +
+# 流式装载全链跑通**（G-eco-d d-1c——sum/heap/argc 自检过了才轮到标记）。
+ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -130,6 +133,6 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记）"
 
 echo "smoke: PASS（金丝雀 ${n} 条严格递增，最新 switches=$last + rootfs 相全链）"

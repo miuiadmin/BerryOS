@@ -47,17 +47,18 @@ build-user:
     python3 ../工具链/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/svcmgr \
         ../内核/src/userbins/svcmgr.bin --max 65536
-    # G-eco-c：rootfs.cpio（hello ELF 本体——装载走 svcmgr cpio/ELF 链，
-    # 非 include_bytes 内嵌；产物在仓库根 = `run-rootfs` 既有约定）。
-    python3 ../工具链/mkcpio.py ../rootfs.cpio \
-        bin/hello=cargo-target/aarch64-unknown-none/release/hello
     # G-eco-d：std 面——stdhello（musl target + berry-libc shim + berry-ld
     # 剥 musl crt；-zmax-page-size=4096 压 PT_LOAD 间隙，G-eco-a 同款教训）。
-    # ELF 本体进 cpio（d-1c 接 mkcpio/装载面；此刻只验链接 + 残留审计）。
     ROOT=$(cd .. && pwd)
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/stdhello/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # G-eco-c/d：rootfs.cpio（hello + stdhello ELF 本体——装载走 svcmgr
+    # 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 = `run-rootfs`
+    # 既有约定；条目按名排序 = 确定性输出）。
+    python3 ../工具链/mkcpio.py ../rootfs.cpio \
+        bin/hello=cargo-target/aarch64-unknown-none/release/hello \
+        bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello
 
 build: build-user
     cargo build

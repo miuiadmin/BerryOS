@@ -72,10 +72,11 @@ pub extern "C" fn _start(console: Handle) -> ! {
         trap(); // 交接件未入队 = A 半链断
     }
 
-    // ---- G-eco-c：rootfs VMO 消费（cpio → ELF → 首个 rootfs 程序）----
+    // ---- G-eco-c/d：rootfs VMO 消费（流式步进 → ELF 泵送 → rootfs 程序）----
     // 裸跑（just run / smoke 相）无 rootfs：get_size -EBADF → 静默跳过，
     // 上述 4-5b/4-6 契约零扰动；带 rootfs（just run-rootfs / smoke rootfs
-    // 相）→ hello 拉起 + `ECO ok`（smoke 第 24 标记）。
+    // 相）→ hello + stdhello 各自拉起（`ECO ok` 第 24 标记 / 子自打
+    // `STD ok`、`STD err ok`——G-eco-d d-1c）。
     run_rootfs_child(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
@@ -134,30 +135,30 @@ fn spawn_child(image: &[u8], bootstrap: Handle) {
     }
 }
 
-// ---- G-eco-c：rootfs 消费（草案 G-eco-c 行）----
+// ---- G-eco-c/d：rootfs 消费（流式步进 + 段泵送——d-1b 纯函数面的消费端） ----
 
 /// rootfs VMO 定值 = boot 第 2 插（main.rs `assert_eq!` 同源硬编——
 /// console endU 首插 0x0001_0001 之后）。rights 仅 READ（vmo_read/get_size 面）。
 const H_ROOTFS: Handle = 0x0001_0002;
-/// rootfs 暂存帽：cpio 一次读入 .bss 静态缓冲（svcmgr 平像 +16KiB 零页，
-/// 仍在 USER_CODE_MAX=64KiB 内）。v1 单程序 rootfs 量级；越帽 = 诚实跳过。
-const ROOTFS_MAX: usize = 16 * 1024;
-static mut ROOTFS_BUF: [u8; ROOTFS_MAX] = [0; ROOTFS_MAX];
 
-/// rootfs 全链：get_size（裸跑 -EBADF 静默跳过）→ vmo_read 整段入 .bss →
-/// cpio walk 找 `bin/hello` → berry-loader ELF 解析 → spawn_elf（console
-/// 别名作 bootstrap）→ `ECO ok`。有 rootfs 而链断 = 打一行原因后跳过
-/// （可见降级，不静默吞——AI 测试友好化）。
+/// cpio 步进窗：头 110B + 名（mkcpio 名 ≤ 56B 绰绰有余，盖不住 = 诚实拒）。
+static mut STEP_WIN: [u8; 512] = [0; 512];
+/// ELF 首窗：ehdr + 全部 phdr（真实 lld 产物 phnum ≤ 10 量级，4KiB 绰绰）。
+static mut ELF_WIN: [u8; 4096] = [0; 4096];
+/// 段字节泵窗：rootfs VMO → 子 VMO 的 4KiB 中转（std 镜像 ~283KB ≈ 70 泵）。
+static mut PUMP_WIN: [u8; 4096] = [0; 4096];
+
+/// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
+/// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
+/// 驻留**，旧 16KiB 整档帽随 std 镜像 ~283KB 一并退役）→ 命中 `bin/hello`
+/// / `bin/stdhello` 各自流式拉起。hello 后打 `ECO ok`（smoke 第 24 标记）；
+/// stdhello 自打 `STD ok`/`STD err ok`（smoke rootfs 相断言，d-1c 接线）。
+/// 有 rootfs 而链断 = 打一行原因后跳过（可见降级，不静默吞）。
 fn run_rootfs_child(console: Handle) {
     let mut cap = 0u64;
     if berry_vmo_get_size(H_ROOTFS, &mut cap) != 0 {
         return; // 裸跑：vmo=none → -EBADF，零扰动
     }
-    let cap = cap as usize;
-    // SAFETY: boot 后本进程独占 ROOTFS_BUF；写在前、共享引用在后，单线程。
-    let buf: &mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(ROOTFS_BUF) as *mut u8, ROOTFS_MAX)
-    };
     let eco_skip = |why: &[u8]| {
         let mut line = [0u8; 24];
         line[..4].copy_from_slice(b"eco:");
@@ -167,73 +168,83 @@ fn run_rootfs_child(console: Handle) {
         line[n] = b'\n';
         send_spin(console, line.as_ptr(), n + 1);
     };
-    if cap > ROOTFS_MAX {
-        eco_skip(b"rootfs too big");
-        return;
-    }
-    if berry_vmo_read(H_ROOTFS, buf.as_mut_ptr(), 0, cap) != 0 {
-        eco_skip(b"vmo_read failed");
-        return;
-    }
-    let buf: &[u8] = &buf[..cap]; // cpio 视角（容量含尾零页，walk 被 trailer 截住）
-    let mut hello: Option<&[u8]> = None;
-    for e in berry_loader::cpio_walk(buf) {
-        match e {
-            Ok(en) if en.name == "bin/hello" => hello = Some(en.data),
-            Ok(_) => {}
+    // SAFETY: boot 后本进程独占步进窗；顺序写/读，单线程（G-eco-c 同款口径）。
+    let step: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(STEP_WIN) as *mut u8, 512)
+    };
+    let mut pos = 0u64;
+    while pos < cap {
+        let want = ((cap - pos).min(step.len() as u64)) as usize;
+        if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), pos, want) != 0 {
+            eco_skip(b"vmo_read failed");
+            return;
+        }
+        match berry_loader::cpio_step(&step[..want], pos, cap) {
+            Ok(berry_loader::StepOutcome::End) => break,
+            Ok(berry_loader::StepOutcome::Entry(s)) => {
+                let (name, data_off, data_len, next) = (s.name, s.data_off, s.data_len, s.next_off);
+                let mut hboot = 0 as Handle;
+                // console 别名作 bootstrap：hello/stdhello 各凭**自己表里**的
+                // handle 打字（先复制：start 会迁走句柄，console 原值留稳态）。
+                if berry_handle_duplicate(console, RIGHT_SEND, &mut hboot) != 0 {
+                    eco_skip(b"dup failed");
+                } else if name == "bin/hello" {
+                    match spawn_rootfs_elf(data_off, data_len, hboot, 1) {
+                        Ok(()) => send_spin(console, ECO_OK.as_ptr(), ECO_OK.len()),
+                        Err(()) => eco_skip(b"elf bad"),
+                    }
+                } else if name == "bin/stdhello" {
+                    // std 栈 8 页：std::fmt/environ 机制栈深超平像程序。
+                    if spawn_rootfs_elf(data_off, data_len, hboot, 8).is_err() {
+                        eco_skip(b"elf bad");
+                    }
+                }
+                pos = next;
+            }
             Err(_) => {
                 eco_skip(b"cpio bad");
                 return;
             }
         }
     }
-    let elf = match hello {
-        Some(b) => b,
-        None => {
-            eco_skip(b"no bin/hello");
-            return;
-        }
-    };
-    let img = match berry_loader::elf_parse(elf) {
-        Ok(i) => i,
-        Err(_) => {
-            eco_skip(b"elf bad");
-            return;
-        }
-    };
-    // console 别名作 bootstrap：hello 凭它自己打 `rootfs hello`（链活证与
-    // `ECO ok` 互证——smoke rootfs 相两条都断言）。先复制：send 会 take 走
-    // 句柄，console 原值须留给 ECO ok 与稳态 'v'。
-    let mut hboot = 0 as Handle;
-    if berry_handle_duplicate(console, RIGHT_SEND, &mut hboot) != 0 {
-        eco_skip(b"dup failed");
-        return;
-    }
-    spawn_elf(&img, hboot);
-    send_spin(console, ECO_OK.as_ptr(), ECO_OK.len());
 }
 
 /// smoke 第 24 标记（7 字节，尾插随合并序）。
 const ECO_OK: &[u8; 7] = b"ECO ok\n";
 
-/// ELF 拉起（与 spawn_child 的平像路径同构——**页铺平单 VMO**，同
-/// `工具链/elf2flat.py` 语义）：真实 ld 的 PT_LOAD 不页对齐（rust-lld 实测
-/// RO 段 vaddr=0x10c0 与 text 段共享页），逐段独立映射会撞已映页——
-/// 故一枚 VMO 覆盖 `[floor页(min vaddr), ceil页(max end))`，各段文件字节
-/// 按相对偏移写入（.bss 尾部由零页覆盖），一次 vmar_map 映整幅，栈页
-/// 映其上，entry = e_entry。vaddr in-out 槽回写须 == 请求基址（v1 无重排）。
-fn spawn_elf(img: &berry_loader::ElfImage, bootstrap: Handle) {
-    use berry_loader::PAGE_SIZE;
+/// rootfs ELF 流式拉起（页铺平单 VMO，同 `工具链/elf2flat.py` 语义）：
+/// ELF 首窗 `elf_head` 解析（**跨度按 p_memsz**——std RW 段 memsz 0x41241
+/// = 静态堆 + .bss 计入；入口入映像检在装载端拦）→ 子 VMO
+/// `[floor页(min), +ceil页(span))` 一次 commit/map → 各段文件字节按 4KiB
+/// 泵窗从 rootfs VMO 直送子 VMO 相对偏移（**ELF 本体永不整档驻留**——
+/// stdhello ~283KB 只经 4KiB 中转）→ 栈页映其上（页数按程序面）→
+/// process_start(entry, sp, bootstrap)。解析/首窗读失败返 Err（调用方
+/// 可见降级续走归档）；syscall 面失败自陷——链断 loud（标记缺失兜底）。
+fn spawn_rootfs_elf(
+    data_off: u64,
+    data_len: u64,
+    bootstrap: Handle,
+    stack_pages: u64,
+) -> Result<(), ()> {
+    let want = (data_len.min(4096u64)) as usize;
+    // SAFETY: 独占首窗；boot 后单线程顺序读写。
+    let win: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(ELF_WIN) as *mut u8, 4096)
+    };
+    if berry_vmo_read(H_ROOTFS, win.as_mut_ptr(), data_off, want) != 0 {
+        return Err(());
+    }
+    let h = match berry_loader::elf_head(&win[..want], data_len) {
+        Ok(h) => h,
+        Err(_) => return Err(()), // 截断/野值/不收面：可见降级，不杀 svcmgr
+    };
+    let base = berry_loader::page_floor(h.image_min);
+    let len = berry_loader::page_ceil(h.image_span);
     let mut hp = 0 as Handle;
     let mut hv = 0 as Handle;
     if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
         trap();
     }
-    // 页铺平几何：跨段并集的单幅映射。
-    let lo = img.segments().iter().map(|s| s.vaddr).min().unwrap();
-    let hi = img.segments().iter().map(|s| s.vaddr + s.memsz).max().unwrap();
-    let base = lo & !(PAGE_SIZE - 1);
-    let len = (hi - base + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
     let mut vmo = 0 as Handle;
     if berry_vmo_create(len, 0, &mut vmo) != 0 || vmo == 0 {
         trap();
@@ -241,31 +252,42 @@ fn spawn_elf(img: &berry_loader::ElfImage, bootstrap: Handle) {
     if berry_vmo_commit(vmo, 0, len) != 0 {
         trap();
     }
-    for seg in img.segments() {
-        if !seg.data.is_empty()
-            && berry_vmo_write(vmo, seg.data.as_ptr(), (seg.vaddr - base) as u64,
-                               seg.data.len()) != 0
-        {
-            trap();
+    // 段文件字节泵：rootfs VMO [data_off+file_off, +filesz) → 子 VMO。
+    // SAFETY: 独占泵窗（同上）。
+    let pump: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PUMP_WIN) as *mut u8, 4096)
+    };
+    for seg in h.segments() {
+        let mut off = 0u64;
+        while off < seg.filesz {
+            let n = ((seg.filesz - off).min(pump.len() as u64)) as usize;
+            if berry_vmo_read(H_ROOTFS, pump.as_mut_ptr(), data_off + seg.file_off + off, n) != 0 {
+                trap();
+            }
+            if berry_vmo_write(vmo, pump.as_ptr(), seg.vaddr - base + off, n) != 0 {
+                trap();
+            }
+            off += n as u64;
         }
     }
     let mut vaddr = base as usize; // 映射基址提示（in-out 槽预写）
     if berry_vmar_map(hv, 0, vmo, 0, &mut vaddr, len as usize, RIGHT_READ | RIGHT_WRITE) != 0
         || vaddr != base as usize
     {
-        trap();
+        trap(); // v1 无重排：回写须 == 请求基址
     }
     // 栈页映在映幅之上。
+    let stack_len = stack_pages * berry_loader::PAGE_SIZE;
     let stack_va = base + len;
     let mut svmo = 0 as Handle;
-    if berry_vmo_create(PAGE_SIZE, 0, &mut svmo) != 0 || svmo == 0 {
+    if berry_vmo_create(stack_len, 0, &mut svmo) != 0 || svmo == 0 {
         trap();
     }
-    if berry_vmo_commit(svmo, 0, PAGE_SIZE) != 0 {
+    if berry_vmo_commit(svmo, 0, stack_len) != 0 {
         trap();
     }
     let mut saddr = stack_va as usize;
-    if berry_vmar_map(hv, 0, svmo, 0, &mut saddr, PAGE_SIZE as usize, RIGHT_READ | RIGHT_WRITE)
+    if berry_vmar_map(hv, 0, svmo, 0, &mut saddr, stack_len as usize, RIGHT_READ | RIGHT_WRITE)
         != 0
         || saddr != stack_va as usize
     {
@@ -275,12 +297,13 @@ fn spawn_elf(img: &berry_loader::ElfImage, bootstrap: Handle) {
     if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
         trap();
     }
-    if berry_process_start(hp, ht, img.entry as usize, saddr + PAGE_SIZE as usize, bootstrap) != 0 {
+    if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, bootstrap) != 0 {
         trap();
     }
     if berry_handle_close(bootstrap) != BERRY_ERR_BAD_HANDLE {
         trap(); // 迁移自证：原值必须已作废
     }
+    Ok(())
 }
 
 /// 对端回显验收：wait READABLE → recv（-EAGAIN 重等）→ 低 32 位比对。

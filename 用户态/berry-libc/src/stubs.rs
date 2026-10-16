@@ -117,7 +117,6 @@ neg_int!(
     sendto => crate::ENOSYS,
     sendmsg => crate::ENOSYS,
     recvmsg => crate::ENOSYS,
-    poll => crate::ENOSYS,
     pipe2 => crate::ENOSYS,
 );
 
@@ -215,6 +214,33 @@ pub extern "C" fn readdir() -> *mut c_void {
 #[no_mangle]
 pub extern "C" fn posix_spawnp() -> c_int {
     crate::ENOSYS
+}
+
+// —— poll：std 启动关键路径，必须真实现（d-1c 实踩）——
+// `sys::init` → `sanitize_standard_fds` 先 poll(3 fds) 验 0/1/2 有效性：
+// 失败且非 EINTR → **`libc::abort()` 直接静默死**（不走 panic 机制、零
+// 输出——首个 std 程序 bare `abort` 实跑抓到，errno=38 内联写入即此桩）。
+// console 模型 fd 恒有效：返 0（无就绪事件、无 POLLNVAL），后续的
+// /dev/null 开补循环天然跳过。
+
+/// pollfd（AArch64 musl：fd/events/revents = int/short/short）。
+#[repr(C)]
+pub struct PollFd {
+    pub fd: c_int,
+    pub events: i16,
+    pub revents: i16,
+}
+
+#[no_mangle]
+pub extern "C" fn poll(fds: *mut PollFd, nfds: u64, _timeout: c_int) -> c_int {
+    if !fds.is_null() {
+        unsafe {
+            for i in 0..nfds as usize {
+                (*fds.add(i)).revents = 0;
+            }
+        }
+    }
+    0
 }
 
 // —— environ/getenv（空环境：environ = NULL 表）——
