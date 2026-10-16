@@ -553,6 +553,80 @@ pub extern "C" fn rust_main() -> ! {
                           b"user_svcmgr", up_svcmgr.ttbr0_pa, up_svcmgr.asid,
                           ht_svcmgr as *mut HandleTable as usize);
 
+    // ---- 4-6 B 半（AI 最小演示，`文档/4-6出口演示设计草案.md` B 半管线）：
+    // 遥测 dump（`tele:` 行）→ host 侧 advisor.py（`工具链/`，工具非关卡）规则
+    // 出建议 → 构建期回填注入表（演示级通道，v3 policy_bind 随 ADR #21 实验
+    // 轨道再立运行时协议）→ 内核执法活证（越界 +200 被 clamp 到 ±64——apply/
+    // weight_of 双点既有包络、热路径零改动，probe 读在队字段做机器断言）+
+    // F9① 开销不变量最小兑现（bind 前后 bench RT 同量级，容差 2x——TCG 噪声
+    // 界，-icount 精确版/真机 p99 随 FAST 线留 G 卡复测）。三张 leak 表：
+    // tag_D（ai_demo 私有——睡 Event 等用户位，无 channel 受捐面）、tag_P
+    //（bench 对两轮共用、bind 合法项 key）、tag_pr（probe 私有——**长命睡眠
+    // 内核任务不睡共享表**，4-5 纪律：pi 窗错捐 eff 32 冻结随行、严格优先反
+    // 噬 prio-0 轮转、probe 唤醒周期反把 demo 轮次推过自身重试预算，本步
+    // bisect 实踩；表内仅 E_rel 一个 Event、无 channel 端点 → 零受捐面）。----
+    let ht_ai: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let ht_ab: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    // bench 通道对（fa 同款：双端各 SEND|RECV，两轮复用——每轮 send/recv 严格
+    // 配对，轮末两队列必空回原始态）。
+    let h_ab_a = ht_ab
+        .insert(KernelObj::Channel(
+            ChannelEnd::try_unpaired(false).expect("main: 建 ai A 端")),
+            RIGHT_SEND | RIGHT_RECV)
+        .expect("main: ai A 端进 bench 表");
+    let h_ab_b = ht_ab
+        .insert(KernelObj::Channel(
+            ChannelEnd::try_unpaired(false).expect("main: 建 ai B 端")),
+            RIGHT_SEND | RIGHT_RECV)
+        .expect("main: ai B 端进 bench 表");
+    let (pab_a, pab_b) = (
+        ht_ab.get_raw(h_ab_a, ObjType::Channel, 0).expect("main: 取 ai A ObjRef").0,
+        ht_ab.get_raw(h_ab_b, ObjType::Channel, 0).expect("main: 取 ai B ObjRef").0,
+    );
+    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+    unsafe { ChannelEnd::pair(pab_a, pab_b) };
+    // E_done（bench 完成事件）：demo 表原件（等 1<<34）+ bench 表 insert_ref
+    //（pinger 收尾 signal 用——跨表同一 ObjRef，匹配键互通）。
+    let h_done_d = ht_ai
+        .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+        .expect("main: E_done 进 demo 表");
+    let p_done = ht_ai
+        .get_raw(h_done_d, ObjType::Event, 0)
+        .expect("main: 取 E_done ObjRef").0;
+    let h_done_p = ht_ab
+        .insert_ref(p_done, handle::RIGHT_SIGNAL)
+        .expect("main: E_done 落 bench 表");
+    // E_rel（probe 放行事件）：demo 表原件（等 1<<36）+ probe 私有表
+    // insert_ref（probe signal 用——跨表同一 ObjRef，匹配键互通）。
+    let h_rel_d = ht_ai
+        .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+        .expect("main: E_rel 进 demo 表");
+    let p_rel = ht_ai
+        .get_raw(h_rel_d, ObjType::Event, 0)
+        .expect("main: 取 E_rel ObjRef").0;
+    let ht_pr: &'static mut HandleTable =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    let h_rel_p = ht_pr
+        .insert_ref(p_rel, handle::RIGHT_SIGNAL)
+        .expect("main: E_rel 落 probe 表");
+    // demo 上下文（spawn arg 单指针携带；tag 值是运行期表指针，注入表只能
+    // 运行期构造——key 编译期不可知）。
+    let ai_ctx: &'static AiDemoCtx =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(AiDemoCtx {
+            h_done: h_done_d,
+            h_rel: h_rel_d,
+            h_ping_arg: h_ab_a as usize | (h_done_p as usize) << 32,
+            h_pong_arg: h_ab_b as usize,
+            tag_p: ht_ab as *mut HandleTable as usize,
+            tag_d: ht_ai as *mut HandleTable as usize,
+        }));
+    berry_sched::spawn_with_tag(task_ai_demo, ai_ctx as *const AiDemoCtx as usize,
+                                b"ai_demo", 0, ht_ai as *mut HandleTable as usize);
+    berry_sched::spawn_with_tag(task_ai_probe, h_rel_p as usize, b"ai_probe", 0,
+                                ht_pr as *mut HandleTable as usize);
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -1346,5 +1420,357 @@ extern "C" fn task_svc_tag(arg: usize) -> ! {
         "svc_tag: 共享表 handle 须 -EBADF（tag 路由活证）"
     );
     berry_hal_aarch64::uart_puts(b"TAGTAB ok\n");
+    berry_sched::exit_current()
+}
+
+// ---- 4-6 B 半：AI 最小演示（boot spawn 块见 main 尾段；设计 =
+// `文档/4-6出口演示设计草案.md` B 半管线：遥测 → advisor → 注入 → 执法活证）----
+
+/// bench 完成事件 E_done 的用户位（4-2 位面纪律：Event 用户位 1<<32 起编、
+/// 与既有全部等待位零碰撞——1<<34 仅 ktest 瞬态用过（ktest 在 sched::init 前
+/// 跑、运行期不在场），且本事件是独立 ObjRef，位空间互不干扰）。
+const AI_EV_DONE_BIT: u64 = 1 << 34;
+/// probe 放行事件 E_rel 的用户位（1<<36 全库未用）。
+const AI_EV_REL_BIT: u64 = 1 << 36;
+
+/// ai_demo ↔ ai_probe 握手标志：demo bind 注入表后、睡 E_rel 前置位——probe
+/// 只在该窗口内做 clamp 断言（E_done 等待期 demo 同样在队但 eff=0，flag 区分
+/// 两窗）。单核 v1 Relaxed 足够（读写都在单核串行语境）。
+static AI_BOUND: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// 最近一轮 bench 的均轮 RT（CNTVCT ticks）：pinger 收尾写、demo 醒来读——
+/// 单核串行天然有序（先写后 signal、醒来必读到本轮值）。
+static AI_RT_LAST: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// bench 轮数（fa 128 的一半：两轮 + 探针窗都压在秒级虚拟时间内）。
+const AI_ROUNDS: u64 = 64;
+
+/// ai_demo 上下文（boot 构造、leak 常驻；spawn arg 单指针携带）。
+struct AiDemoCtx {
+    /// demo 表：E_done handle（bench 完成等待）。
+    h_done: u32,
+    /// demo 表：E_rel handle（probe 放行等待）。
+    h_rel: u32,
+    /// pinger arg（低 32 = bench 表通道 A 端、高 32 = bench 表 E_done）。
+    h_ping_arg: usize,
+    /// ponger arg（bench 表通道 B 端）。
+    h_pong_arg: usize,
+    /// bench 对共享表 tag（注入表合法项 key）。
+    tag_p: usize,
+    /// demo 自己的 tag（注入表越界探针项 key）。
+    tag_d: usize,
+}
+
+/// 遥测摘要 dump（管线第 1 段）：固定 `tele:` 前缀、`k=v` 空格分隔——host 侧
+/// `工具链/advisor.py` 的输入面（F6 第一级 schema：切换分型 + 唤醒分型，环内
+/// 样本口径）。只读既有环（total/span/last/wake_*），不碰热路径（读点在 demo
+/// 任务里，遥测写入的零分配纪律不约束消费侧）。
+fn tele_dump() {
+    let (mut y, mut p, mut e, mut b) = (0u64, 0u64, 0u64, 0u64);
+    for i in 0..crate::telemetry::span() {
+        match crate::telemetry::last(i).expect("span 内必有").kind {
+            0 => y += 1,
+            1 => p += 1,
+            2 => e += 1,
+            _ => b += 1,
+        }
+    }
+    berry_hal_aarch64::uart_puts(b"tele: sw total=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::total());
+    berry_hal_aarch64::uart_puts(b" span=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::span() as u64);
+    berry_hal_aarch64::uart_puts(b" y=");
+    berry_hal_aarch64::uart_put_dec(y);
+    berry_hal_aarch64::uart_puts(b" p=");
+    berry_hal_aarch64::uart_put_dec(p);
+    berry_hal_aarch64::uart_puts(b" e=");
+    berry_hal_aarch64::uart_put_dec(e);
+    berry_hal_aarch64::uart_puts(b" b=");
+    berry_hal_aarch64::uart_put_dec(b);
+    berry_hal_aarch64::uart_puts(b"\n");
+    let (mut s, mut t) = (0u64, 0u64);
+    for i in 0..crate::telemetry::wake_span() {
+        match crate::telemetry::wake_last(i).expect("span 内必有").reason {
+            crate::telemetry::REASON_SIGNALED => s += 1,
+            _ => t += 1,
+        }
+    }
+    berry_hal_aarch64::uart_puts(b"tele: wake total=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::wake_total());
+    berry_hal_aarch64::uart_puts(b" span=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::wake_span() as u64);
+    berry_hal_aarch64::uart_puts(b" sig=");
+    berry_hal_aarch64::uart_put_dec(s);
+    berry_hal_aarch64::uart_puts(b" tmo=");
+    berry_hal_aarch64::uart_put_dec(t);
+    berry_hal_aarch64::uart_puts(b"\n");
+}
+
+/// ai_demo 私助：clock_read → wait_one(h, bit, now+cap) → 断言命中 → 清用户
+/// 半。清位是复用前提（Event 位不自动清——不清则次轮 poll 秒中，demo 醒着
+/// 高优饿死 bench）；4-2 纪律：clear 掩码用用户半全集。
+fn ai_wait_ev(h: u32, bit: u64, cap_ns: u64) {
+    use crate::syscall::{NR_CLOCK_READ, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE};
+    let mut now: u64 = 0;
+    // SAFETY: 本任务内核栈局部变量，活过调用。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "ai_wait_ev: clock_read");
+    let mut observed = 0u64;
+    // SAFETY: 同上。
+    let pobs = core::ptr::addr_of_mut!(observed) as u64;
+    assert_eq!(
+        svc6(NR_OBJECT_WAIT_ONE as u64, h as u64, bit, now + cap_ns, pobs, 0, 0),
+        0,
+        "ai_wait_ev: wait（断链超时 -ETIMEDOUT 即 FAIL，fail loud）"
+    );
+    assert!(observed & bit != 0, "ai_wait_ev: observed 须含请求位");
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, h as u64, crate::handle::SIGNAL_USER_MASK, 0),
+        0,
+        "ai_wait_ev: 清用户半"
+    );
+}
+
+/// ai_demo 私助：spawn bench 对（tag_P 表，fa 同序——pong 先入队先睡等，ping
+/// 首 send 走快路）。**运行期 spawn 须 IRQ 屏蔽**：boot 期 spawn 天然屏蔽，
+/// 运行期 runqueue 链接中途被 tick 抢占 = 半链接表被 pick_next 走——手动包络。
+fn ai_bench_round(ctx: &AiDemoCtx) {
+    berry_hal_aarch64::disable_irq();
+    berry_sched::spawn_with_tag(task_ai_pong, ctx.h_pong_arg, b"ai_pong", 32, ctx.tag_p);
+    berry_sched::spawn_with_tag(task_ai_ping, ctx.h_ping_arg, b"ai_ping", 16, ctx.tag_p);
+    berry_hal_aarch64::enable_irq();
+}
+
+/// ai_demo（4-6 B 半主角，prio 0，tag_D 私有表）：F1 管线一次走完——①睡
+/// 2 slice（boot 期任务先跑、遥测积累）→ ②tele dump → ③bench 轮 1（无表
+/// 基线 rt1）→ ④bind 注入表（合法 +8 / 越界 +200 探针；IRQ 屏蔽窗写点）→
+/// ⑤睡 E_rel（bind 后睡入 SLEEPQ，PI 尾趟 refresh_effective 经 weight_of 同
+/// clamp 把本任务 eff 刷到 0+64——probe 的断言窗口，醒来由 probe signal 放行）
+/// → ⑥bench 轮 2（表在：16+8/32+8=24/40 同层相对序保持；demo 照睡不抢 CPU）
+/// → ⑦unbind → ⑧开销断言（F9① 最小兑现：rt2 ≤ 2×rt1，TCG 噪声容差）→
+/// ⑨打 `AIDEMO ok`（smoke 第 22 标记）→ exit。
+extern "C" fn task_ai_demo(arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_THREAD_SLEEP};
+    // SAFETY: ctx 由 boot Box::leak 常驻（活过本任务全程）。
+    let ctx = unsafe { &*(arg as *const AiDemoCtx) };
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    let slice_ns = berry_hal_aarch64::timer::slice_cycles() * 1_000_000_000 / freq;
+    let mut now: u64 = 0;
+    // SAFETY: 本任务内核栈局部变量，活过调用。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "ai_demo: clock_read");
+    // ① 睡 2 slice（bench 对 prio 16/32 严格优先本就先完成，此睡更稳）。
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + 2 * slice_ns, 0, 0),
+        0,
+        "ai_demo: thread_sleep 2 slice"
+    );
+    // ② 遥测 dump（advisor 输入面）。
+    tele_dump();
+    // ③ bench 轮 1（无表基线）。
+    ai_bench_round(ctx);
+    ai_wait_ev(ctx.h_done, AI_EV_DONE_BIT, 100 * 1_000_000_000);
+    let rt1 = AI_RT_LAST.load(core::sync::atomic::Ordering::Relaxed);
+    // ④ bind 注入表（advisor.py 产出快照——见 boot 4-6 段与 工具链/advisor.py；
+    // 表运行期 Box::leak：key 是运行期表指针）。越界项 = 拒收面探针：内核在
+    // apply/weight_of 双点夹到 ±64（F9② 单调收窄——夹取是唯一方向，无提权
+    // 路径），机器断言交 probe。
+    let tbl: &'static [berry_sched::policy::Entry] =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new([
+            berry_sched::policy::Entry {
+                task_key: ctx.tag_p as u64,
+                directive: berry_sched::policy::Directive {
+                    placement: 0, weight: 8, epp: None,
+                },
+            },
+            berry_sched::policy::Entry {
+                task_key: ctx.tag_d as u64,
+                directive: berry_sched::policy::Directive {
+                    placement: 0, weight: 200, epp: None,
+                },
+            },
+        ]));
+    // 写点 IRQ 屏蔽（policy 契约：bind/unbind 仅屏蔽窗——决策路径只读）。
+    berry_hal_aarch64::disable_irq();
+    berry_sched::policy::bind(tbl);
+    berry_hal_aarch64::enable_irq();
+    // 拒收 trace（demo 侧打——apply 是 IRQ 热路径不得加打印，F9①；机器断言
+    // 交 probe 读字段）。
+    berry_hal_aarch64::uart_puts(b"  policy: reject w=+200 -> clamp +64 (envelope +-64)\n");
+    // ⑤ 睡 E_rel：probe 断言窗口（醒来由 probe signal 放行）。
+    AI_BOUND.store(true, core::sync::atomic::Ordering::Relaxed);
+    ai_wait_ev(ctx.h_rel, AI_EV_REL_BIT, 100 * 1_000_000_000);
+    // ⑥ bench 轮 2（表在）。
+    ai_bench_round(ctx);
+    ai_wait_ev(ctx.h_done, AI_EV_DONE_BIT, 100 * 1_000_000_000);
+    let rt2 = AI_RT_LAST.load(core::sync::atomic::Ordering::Relaxed);
+    // ⑦ unbind（恢复接口缺席态）。
+    berry_hal_aarch64::disable_irq();
+    berry_sched::policy::unbind();
+    berry_hal_aarch64::enable_irq();
+    // ⑧ 开销断言（F9① 最小兑现：注入表在场时 bench RT 须同量级——热路径增
+    // 量 = 2 条目线性查表 + 权重算术，TCG 下远低于噪声；容差 2x 是噪声界非
+    // 精度断言，-icount 精确版/真机 p99 随 FAST 线留 G 卡复测）。
+    assert!(rt1 > 0, "ai_demo: rt1 须非零");
+    assert!(
+        rt2 <= rt1 * 2,
+        "ai_demo: 注入后 bench RT 须同量级（rt1={} rt2={}，容差 2x）", rt1, rt2
+    );
+    // ⑨ 收官标记（smoke 第 22）。
+    berry_hal_aarch64::uart_puts(b"J AIDEMO ok: rt1=");
+    berry_hal_aarch64::uart_put_dec(rt1);
+    berry_hal_aarch64::uart_puts(b" rt2=");
+    berry_hal_aarch64::uart_put_dec(rt2);
+    berry_hal_aarch64::uart_puts(b" clamp=64\n");
+    berry_sched::exit_current()
+}
+
+/// ai_probe（4-6 B 半验收司机，prio 0，挂第三张私有表）：1 slice 步进重试
+/// （≤64 次）等 `AI_BOUND` 窗口内的 ai_demo 在队 → 断言其 `prio_effective
+/// == 64` 且 `wait_signals == AI_EV_REL_BIT`（raw 指令 +200、在队字段 64
+/// ——内核 clamp 执法的机器活证）→ signal E_rel 放行 → exit。步进重试而非
+/// 一次长睡：boot 期任务次序不定，「标记不得建立在时序竞速上」——条件
+/// （flag && 在队）满足才前进，窗口由 demo 的 100s 帽保持敞开、预算 64
+/// slice ≈ 6.4s 远超最慢轮转。**私有表纪律（4-5 同款，本步实踩）**：probe
+/// 是长命睡眠内核任务，睡共享表会被 pi 窗错捐 eff 32（冻结随行、严格优先
+/// 反噬 prio-0 轮转）——自己的唤醒周期反而把 ai_demo 的轮次推过自身重试
+/// 预算（bisect 实测：demo 第二轮 ~830ms 才到、8×1 slice 预算 ~816ms 先
+/// 尽，panic「时序未达」）。挂私有表断根：pi 受捐反查只看自己的表。另
+/// for_each_sleeper 契约须 IRQ 屏蔽窗内调用（tick 超时摘队会动睡眠链接，
+/// 遍历中接线即扬队）——probe 任务体经 SVC eret 后 IRQ 已解蔽，扫描窗手动
+/// 包络（it_probe 未包络属侥幸窗口小；本 probe 扫描最多 64 次不赌）。
+extern "C" fn task_ai_probe(arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_OBJECT_SIGNAL, NR_THREAD_SLEEP};
+    let h_rel = arg as u32;
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    let slice_ns = berry_hal_aarch64::timer::slice_cycles() * 1_000_000_000 / freq;
+    let mut now: u64 = 0;
+    // SAFETY: 本任务内核栈局部变量，活过调用。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    let mut saw = false;
+    for _ in 0..64u64 {
+        if AI_BOUND.load(core::sync::atomic::Ordering::Relaxed) {
+            berry_hal_aarch64::disable_irq();
+            berry_sched::for_each_sleeper(|t| {
+                match t.name {
+                    b"ai_demo" => {
+                        saw = true;
+                        assert_eq!(t.wait_signals, AI_EV_REL_BIT,
+                                   "ai_probe: demo 须睡 E_rel 位（AI_BOUND 窗口）");
+                        assert_eq!(t.prio_effective, 64,
+                                   "ai_probe: demo eff 须为 clamp 后的 64（+200 越界探针）");
+                    }
+                    _ => {}
+                }
+            });
+            berry_hal_aarch64::enable_irq();
+            if saw {
+                break;
+            }
+        }
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "ai_probe: clock_read");
+        assert_eq!(
+            svc4(NR_THREAD_SLEEP as u64, now + slice_ns, 0, 0),
+            0,
+            "ai_probe: thread_sleep 1 slice（步进重试）"
+        );
+    }
+    assert!(saw, "ai_probe: 64 次重试未见 bind 窗口内的 ai_demo 在队（时序未达）");
+    // 放行：signal E_rel（probe 私有表 handle——与 demo 表同一 ObjRef，跨表互通）。
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, h_rel as u64, 0, AI_EV_REL_BIT),
+        0,
+        "ai_probe: signal E_rel 放行"
+    );
+    berry_sched::exit_current()
+}
+
+/// ai_pong（prio 32，bench 对 B 端）：fa_pong 同构、AI_ROUNDS 轮、不触
+/// ipc_fast 三计数器断言（demo bench 与 fa 口径分离——fa 断言虽已先过，别混
+/// 进 demo 轮次的计数）。
+extern "C" fn task_ai_pong(arg: usize) -> ! {
+    use crate::handle::SIGNAL_READABLE;
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_ONE};
+    let hb = arg as u32;
+    let mut buf = [0u8; 8];
+    for _ in 0..AI_ROUNDS {
+        let mut now: u64 = 0;
+        // SAFETY: 本任务内核栈局部变量，活过调用。
+        let pnow = core::ptr::addr_of_mut!(now) as u64;
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "ai_pong: clock_read");
+        let mut observed = 0u64;
+        // SAFETY: 同上。
+        let pobs = core::ptr::addr_of_mut!(observed) as u64;
+        // 10s 帽兜底（fa_pong 同款：断链则 -ETIMEDOUT 断言失败 = smoke FAIL）。
+        assert_eq!(
+            svc6(NR_OBJECT_WAIT_ONE as u64, hb as u64, SIGNAL_READABLE,
+                 now + 10_000_000_000, pobs, 0, 0),
+            0,
+            "ai_pong: wait READABLE"
+        );
+        assert!(observed & SIGNAL_READABLE != 0, "ai_pong: observed 须含 READABLE");
+        let (mut n, mut nh): (u64, u64) = (8, 0);
+        assert_eq!(
+            svc6(NR_CHANNEL_RECV as u64, hb as u64, buf.as_mut_ptr() as u64,
+                 core::ptr::addr_of_mut!(n) as u64, 0,
+                 core::ptr::addr_of_mut!(nh) as u64, 0),
+            0,
+            "ai_pong: recv"
+        );
+        assert!(buf[..3] == *b"AIP", "ai_pong: 载荷须 AIP");
+        buf[..3].copy_from_slice(b"AIR");
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, hb as u64, buf.as_ptr() as u64, 4, 0, 0, 0),
+            0,
+            "ai_pong: 回件"
+        );
+    }
+    berry_sched::exit_current()
+}
+
+/// ai_ping（prio 16，bench 对 A 端）：fa_ping 同构 + 收尾写 AI_RT_LAST →
+/// signal E_done（bench 表 handle）通知 demo。RT 计量同 fa（CNTVCT 差累计/
+/// 轮均）——bind 前后两轮同法，差分即 F9① 断言对象（先写 RT 再 signal：单
+/// 核串行，demo 醒来读到的必是本轮值）。
+extern "C" fn task_ai_ping(arg: usize) -> ! {
+    use crate::handle::SIGNAL_READABLE;
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE};
+    let ha = arg as u32;
+    let h_done = (arg >> 32) as u32;
+    let mut buf = [0u8; 8];
+    let mut rt_ticks: u64 = 0;
+    for _ in 0..AI_ROUNDS {
+        buf[..4].copy_from_slice(b"AIP0");
+        let t0 = berry_hal_aarch64::timer::cntvct();
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, ha as u64, buf.as_ptr() as u64, 4, 0, 0, 0),
+            0,
+            "ai_ping: send（pong 在睡等 READABLE）"
+        );
+        let mut observed = 0u64;
+        // SAFETY: 本任务内核栈局部变量，活过调用。
+        let pobs = core::ptr::addr_of_mut!(observed) as u64;
+        assert_eq!(
+            svc6(NR_OBJECT_WAIT_ONE as u64, ha as u64, SIGNAL_READABLE, 0, pobs, 0, 0),
+            0,
+            "ai_ping: wait poll 命中（断链 -EAGAIN 即 FAIL）"
+        );
+        let (mut n, mut nh): (u64, u64) = (8, 0);
+        assert_eq!(
+            svc6(NR_CHANNEL_RECV as u64, ha as u64, buf.as_mut_ptr() as u64,
+                 core::ptr::addr_of_mut!(n) as u64, 0,
+                 core::ptr::addr_of_mut!(nh) as u64, 0),
+            0,
+            "ai_ping: recv 回件"
+        );
+        assert!(buf[..3] == *b"AIR", "ai_ping: 载荷须 AIR");
+        rt_ticks += berry_hal_aarch64::timer::cntvct() - t0;
+    }
+    AI_RT_LAST.store(rt_ticks / AI_ROUNDS, core::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        svc4(NR_OBJECT_SIGNAL as u64, h_done as u64, 0, AI_EV_DONE_BIT),
+        0,
+        "ai_ping: signal E_done"
+    );
     berry_sched::exit_current()
 }
