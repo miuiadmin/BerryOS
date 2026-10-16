@@ -53,9 +53,11 @@ pub const USER_STACK_TOP: usize = 0x4000; // sp0（16 对齐）
 /// 数据页 canary（非零——good 的「页内容正确」自检依据）。
 pub const USER_MAGIC: u64 = 0x00C0_FFEe_E000_0E10;
 
-// ---- 用户程序机器码模板（global_asm 生成；ARM64）----
+// ---- 用户程序机器码模板（ARM64）----
 //
-// 约定：入口 x0=arg。good 的 arg = root Vmar handle（3-2 首能力，boot 从引导
+// 两种产源（G-eco-a 起）：编译产物（用户态/bins/* 经 just build-user 出
+// flat binary，`include_bytes!` 直嵌——abuser 是首个换轨者）与 global_asm
+// 手写（其余模板，逐个换轨中）。约定：入口 x0=arg。good 的 arg = root Vmar handle（3-2 首能力，boot 从引导
 // 表插出）；节流阈值改 baked 常量（x0 不再当阈值用）。数字标签（0:/1:/3:）均为
 // 函数内短距跳转，模板搬迁后依然成立；spawner 另用 `adr` 取**同页**内嵌数据
 // （自相对、不越页——搬迁安全性同源，见 `user_spawner_code`）。
@@ -222,41 +224,8 @@ core::arch::global_asm!(
     ".globl __user_rogue_ptr_end",
     "__user_rogue_ptr_end:",
 
-    ".balign 16",
-    ".globl __user_abuser",
-    "__user_abuser:",
-    "    mov  x22, x0",                 // x22 常驻：console 发端（4-5a 首插 0x0001_0001）
-    "    movz x9, #0x30, lsl #16",     // 节流阈值 ~3.1M（与 good 的 arg 同量级）
-    "0:  mov  x10, xzr",
-    "1:  add  x10, x10, #1",
-    "    cmp  x10, x9",
-    "    b.lo 1b",
-    "    mov  x0, #0x01",              // NR_HANDLE_CLOSE（真 ABI 号）
-    "    movz x1, #0xBEEF",            // 垃圾 handle 0xDEAD_BEEF
-    "    movk x1, #0xDEAD, lsl #16",
-    "    svc  #0",                     // x0 必须 = -EBADF（能力门控拒绝面）
-    "    cmn  x0, #9",                 // x0 + 9 == 0 ⟺ x0 == -9
-    "    b.ne 3f",                     // 返回值异常 → 自陷（kills>期望 → watchdog FAIL）
-    "    movz x6, #0x53",              // 'S' → 数据页 0x2010（4-5a：真 IPC 打印）
-    "    movz x5, #0x2010",
-    "    str  x6, [x5]",
-    "4:  movz x0, #0x52",              // send(console, 0x2010, 1, 0, 0)
-    "    mov  x1, x22",
-    "    movz x2, #0x2010",
-    "    mov  x3, #1",
-    "    mov  x4, xzr",
-    "    mov  x5, xzr",
-    "    svc  #0",
-    "    cbz  x0, 5f",
-    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
-    "    b.ne 3f",
-    "    b    4b",
-    "5:  b    0b",
-    "3:  movz x4, #0x4000, lsl #16",   // 自陷路径（被杀 = FAIL 暴露）
-    "    ldr  x5, [x4]",
-    "    b    .",
-    ".globl __user_abuser_end",
-    "__user_abuser_end:",
+    // （abuser 模板 G-eco-a 起退役为编译产物：用户态/bins/abuser →
+    //  just build-user → 内核/src/userbins/abuser.bin，见 user_abuser_code()。）
 
     // 3-3/3-4 spawner：经真 syscall 创建第二个进程 + **双向能力迁移**（3-4a
     // bootstrap 随 start + 3-4b handle 随消息）。暂存：x16=hp(进程)、x17=hv(子
@@ -1699,8 +1668,6 @@ extern "C" {
     static __user_good_end: u8;
     static __user_rogue_ptr: u8;
     static __user_rogue_ptr_end: u8;
-    static __user_abuser: u8;
-    static __user_abuser_end: u8;
     static __user_spawner: u8;
     static __user_spawner_end: u8;
     static __user_waiter: u8;
@@ -1734,9 +1701,13 @@ pub fn user_rogue_ptr_code() -> &'static [u8] {
 }
 
 /// abuser 用户程序模板（真号 + 垃圾 handle 滥用 → -EBADF 存活）。
+///
+/// **G-eco-a 起为编译产物**：`用户态/bins/abuser`（no_std + berry-sys）经
+/// `just build-user` 出 flat binary——契约与原 asm 模板逐字一致（节流 →
+/// close 0xDEAD_BEEF 必须 -EBADF → 'S' 经 console send/-EBUSY 重试 →
+/// 异常自陷）。缺产物 = `include_bytes!` 编译期炸响（D6：loud not silent）。
 pub fn user_abuser_code() -> &'static [u8] {
-    // SAFETY: 同上。
-    unsafe { blob(&__user_abuser, &__user_abuser_end) }
+    include_bytes!("userbins/abuser.bin")
 }
 
 /// spawner 用户程序模板（3-3 验收：经真 syscall 创建第二个进程）。

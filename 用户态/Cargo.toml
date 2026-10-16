@@ -1,6 +1,16 @@
 [workspace]
 # G-eco 编译侧（文档/G-eco编译侧设计草案.md）：用户态 crate 独立工作区——
-# 不进内核 root workspace（members 显式列表），自带 .cargo/config.toml
-# 中和根 config 的 build.target 钉死（nearest-wins）。
-members = ["berry-sys"]
+# 不进内核 root workspace（members 显式列表）。目标沿用 builtin
+# aarch64-unknown-none（stable 预编译 core，免 nightly——custom target
+# 推迟到确需 target 级差异再上，草案 D1 修订）；各 bin 自带链接脚本
+# （build.rs 绝对路径注入），与根 config 的 build.target 同值无冲突。
+members = ["berry-sys", "bins/abuser"]
 resolver = "2"
+
+# 用户程序平像：体积优先（单页墙由 工具链/elf2flat.py --max 执法）。
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

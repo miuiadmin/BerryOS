@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "abuser"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
 name = "berry-sys"
 version = "0.1.0"

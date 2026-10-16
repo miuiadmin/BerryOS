@@ -4,6 +4,13 @@
 # G-eco initrd 镜像（编译侧产物，不入库）
 /rootfs.cpio
 
+# G-eco 用户程序编译产物（just build-user 产出；缺产物 = 内核 include_bytes
+# 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
+/内核/src/userbins/
+
+# 用户态独立工作区 target（build-user 显式 CARGO_TARGET_DIR）
+/用户态/cargo-target/
+
 # Claude Code 本地/会话态（不提交；共享的 agents/settings.json 若需入库再单独 force-add）
 .claude/settings.local.json
 .claude/scheduled_tasks.lock

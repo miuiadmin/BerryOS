@@ -17,10 +17,27 @@ QEMU   := "qemu-system-aarch64"
 
 default: run
 
-build:
+# G-eco 编译侧：用户程序 → flat binary（草案 D6）。builtin aarch64-unknown-none
+# + 各 bin 自带链接脚本（build.rs 绝对路径注入）——**免 nightly**（custom target
+# 推迟到确需 target 级差异再上，草案 D1 修订）。elf2flat.py 解 PT_LOAD 出平像
+# 并补零到页（.bss 覆盖在文件侧兑现）+ 单页墙 --max 4096（放宽随 G-eco-b/D3）。
+# 产物 内核/src/userbins/*.bin gitignored：缺产物 = 内核 include_bytes 编译期
+# 炸响（loud not silent），故 build/check/run-release/size-release 都依赖本配方。
+# CARGO_TARGET_DIR 显式钉 用户态/cargo-target：防交互环境（全局 target-dir
+# 覆盖）把产物漂到内核共享 target。
+build-user:
+    #!/bin/sh
+    cd 用户态
+    CARGO_TARGET_DIR=cargo-target cargo build --release
+    mkdir -p ../内核/src/userbins
+    python3 ../工具链/elf2flat.py \
+        cargo-target/aarch64-unknown-none/release/abuser \
+        ../内核/src/userbins/abuser.bin --max 4096
+
+build: build-user
     cargo build
 
-check:
+check: build-user
     cargo check
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot
@@ -40,7 +57,7 @@ run-rootfs: build
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio
 
-run-release:
+run-release: build-user
     cargo build --release
     {{QEMU}} {{MACH}} -kernel {{KERNEL_RELEASE}}
 
@@ -63,7 +80,7 @@ test-host:
 size: build
     python3 工具链/size.py {{KERNEL}}
 
-size-release:
+size-release: build-user
     cargo build --release
     python3 工具链/size.py {{KERNEL_RELEASE}}
 
