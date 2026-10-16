@@ -67,8 +67,11 @@ impl Runqueue {
         };
         let next = (*t).rq_next.get().expect("环上必同时有 next");
 
-        if prev == next {
-            // 单元素环 → 空。
+        if prev == task && next == task {
+            // 单元素环 → 空。判据必须锚定 task 自身：两元环 {X,Y} 上
+            // X.rq_prev == X.rq_next == Y，旧判据 `prev == next` 同样为真——
+            // 会误走空环分支把 head 清 None，幸存者 Y 带 stale 链静默失联
+            // （P4 收官审计实踩；现矩阵常驻环 ≥6 打不中，矩阵收缩即踩中）。
             self.head.set(None);
         } else {
             (*prev.as_ptr()).rq_next.set(Some(next));

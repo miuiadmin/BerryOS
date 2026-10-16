@@ -15,6 +15,7 @@ pub fn run() {
     test_vmo();
     test_handle();
     test_policy();
+    test_rq_ring2();
     test_pi();
     test_intent();
     test_fast();
@@ -1569,6 +1570,82 @@ fn test_policy() {
 
     // 任务体 16KiB 栈 × 9 泄漏不回收（ktest 语境同 sched spawn 政策——v1 无 reap）。
     berry_hal_aarch64::uart_puts(b"POLICY ok\n");
+}
+
+/// P4 收官审计实踩的 runqueue 摘环回归：`unlink` 旧单元素判据 `prev == next`
+/// 在**两元环** {X,Y} 上同样为真（X.rq_prev == X.rq_next == Y）→ 摘 X 误走
+/// 空环分支把 head 清 None，幸存者 Y 带 stale 链**静默失联**（「已就绪却不再
+/// 被调度」）。现矩阵常驻环 ≥6 打不中；矩阵收缩（任务批量 exit）即踩中。
+/// 判据已改锚定 task 自身（`prev == task && next == task`），本用例机器断言
+/// 兜底。本地环手搭（不动全局 RUNQUEUE——ktest 在 `berry_sched::init` 前）；
+/// 非 smoke 标记（TAGTAB 模式：断言炸 = panic = 后续标记缺失兜底）。
+#[allow(clippy::result_unwrap_used)]
+fn test_rq_ring2() {
+    use berry_sched::{RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn rq_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8]) -> &'static mut Task {
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(rq_dummy, 0, name, 0, 0))
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = RoundRobin;
+    let topo = Topo::single();
+
+    // —— 两元环：摘其一，幸存者必须仍可出选（bug 下 head=None → pick None）。
+    let tx = mk(b"rX".as_slice());
+    let ty = mk(b"rY".as_slice());
+    rr.enqueue(&mut *tx, &mut rq);
+    rr.enqueue(&mut *ty, &mut rq);
+    // sanity：同 eff 层 FIFO 轮转（游标恰停在 X → 先出 X 后出 Y）。
+    assert_eq!(rr.pick_next(&rq, &topo).unwrap().name, b"rX".as_slice(), "RING2：摘除前首轮出选须 X");
+    assert_eq!(rr.pick_next(&rq, &topo).unwrap().name, b"rY".as_slice(), "RING2：摘除前次轮出选须 Y");
+    // 游标此刻停在 X；摘 X（两元环 head 侧）→ 环退单元素 {Y}。
+    rr.dequeue(&mut *tx, &mut rq);
+    assert!(!rq.is_empty(), "RING2：摘 X 后环上须仍有 Y（旧判据误清 head）");
+    for i in 0..3 {
+        assert_eq!(
+            rr.pick_next(&rq, &topo).unwrap().name,
+            b"rY".as_slice(),
+            "RING2：摘 X 后 Y 须可持续出选（第 {} 轮）",
+            i
+        );
+    }
+    // 摘最后一个 → 空环（真·单元素路径）。
+    rr.dequeue(&mut *ty, &mut rq);
+    assert!(rq.is_empty(), "RING2：摘 Y 后环须空");
+    assert!(rr.pick_next(&rq, &topo).is_none(), "RING2：空环出选须 None");
+
+    // —— 三元素环中删回归（else 分支邻接缝）：摘中位 B 后 A/C 轮转、B 不复出选。
+    let ta = mk(b"rA".as_slice());
+    let tb = mk(b"rB".as_slice());
+    let tc = mk(b"rC".as_slice());
+    rr.enqueue(&mut *ta, &mut rq);
+    rr.enqueue(&mut *tb, &mut rq);
+    rr.enqueue(&mut *tc, &mut rq);
+    rr.dequeue(&mut *tb, &mut rq); // head=A，B 为中位（非 head 摘除路径）
+    for i in 0..4 {
+        let want = if i % 2 == 0 { b"rA".as_slice() } else { b"rC".as_slice() };
+        assert_eq!(
+            rr.pick_next(&rq, &topo).unwrap().name,
+            want,
+            "RING2：摘中位后须只剩 A/C 轮转（第 {} 轮）",
+            i
+        );
+    }
+    // 收缩到两元 {A,C} 再摘一：幸存者仍出选（两元路径二次覆盖，游标在非 head 侧）。
+    rr.dequeue(&mut *tc, &mut rq); // 上轮游标停在 A → C 为非 head 摘除
+    assert!(!rq.is_empty(), "RING2：两元环摘 C 后须仍有 A");
+    assert_eq!(rr.pick_next(&rq, &topo).unwrap().name, b"rA".as_slice(), "RING2：摘 C 后 A 须仍出选");
+    rr.dequeue(&mut *ta, &mut rq);
+    assert!(rq.is_empty(), "RING2：收尾环须空");
+
+    // 任务体泄漏不回收（同 test_policy 政策——v1 无 reap）。
+    berry_hal_aarch64::uart_puts(b"RING2 ok\n");
 }
 
 /// 4-3b PI 捐赠图推导（`内核/src/pi.rs` 全图重推）：donor = 睡 channel 等内核
