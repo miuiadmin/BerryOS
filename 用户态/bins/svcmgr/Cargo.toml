@@ -1,0 +1,14 @@
+[package]
+name = "svcmgr"
+version = "0.1.0"
+edition = "2021"
+# G-eco-b：svcmgr 服务管理器 Rust 化（替换 内核/src/user.rs 的 svcmgr asm
+# 模板）。契约逐字保留（4-5b/4-6 A 半验收链 = smoke 第 21/23 标记）：
+# 拉起 echo（SVC ok）→ 拉起 talker/echo2 + 交接双 handle（DEMO ok）→
+# 稳态 'v'。内嵌 echo/talker 平像（两遍构建，见 justfile build-user 与
+# 本 crate build.rs 的 rerun-if-changed seam 注）。
+description = "BerryOS service manager (compiled flat binary, replaces asm template)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }

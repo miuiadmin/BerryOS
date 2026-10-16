@@ -646,7 +646,9 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
         }
         None => berry_hal_aarch64::uart_puts(b"ROOTFS vmo=none\n"),
     }
-    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, user::USER_STACK_TOP,
+    // D3（G-eco-b）：svcmgr 是首个多页镜像（编译产物内嵌 echo/talker 平像），
+    // data/stack 上移——sp 从 `stack_top` 取，不读单页常量。
+    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, up_svcmgr.stack_top,
                           b"user_svcmgr", up_svcmgr.ttbr0_pa, up_svcmgr.asid,
                           ht_svcmgr as *mut HandleTable as usize);
 

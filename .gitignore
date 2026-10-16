@@ -8,6 +8,9 @@
 # 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
 /内核/src/userbins/
 
+# G-eco-b 子程序平像中转区（svcmgr include_bytes! 的输入；两遍构建 pass 1 产物）
+/用户态/userbins/
+
 # 用户态独立工作区 target（build-user 显式 CARGO_TARGET_DIR）
 /用户态/cargo-target/
 

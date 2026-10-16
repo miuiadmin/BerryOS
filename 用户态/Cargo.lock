@@ -12,3 +12,24 @@ dependencies = [
 [[package]]
 name = "berry-sys"
 version = "0.1.0"
+
+[[package]]
+name = "echo"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
+name = "svcmgr"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
+name = "talker"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]

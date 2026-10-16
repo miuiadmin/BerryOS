@@ -4,7 +4,10 @@
 # aarch64-unknown-none（stable 预编译 core，免 nightly——custom target
 # 推迟到确需 target 级差异再上，草案 D1 修订）；各 bin 自带链接脚本
 # （build.rs 绝对路径注入），与根 config 的 build.target 同值无冲突。
-members = ["berry-sys", "bins/abuser"]
+# G-eco-b 两遍构建：svcmgr include_bytes! 内嵌 echo/talker 平像（产物在
+# 用户态/userbins/，gitignored）——直接整仓 `cargo build` 且无 staged 平像
+# 时 svcmgr 编译期炸响（loud not silent）；编排见 justfile build-user。
+members = ["berry-sys", "bins/abuser", "bins/echo", "bins/talker", "bins/svcmgr"]
 resolver = "2"
 
 # 用户程序平像：体积优先（单页墙由 工具链/elf2flat.py --max 执法）。

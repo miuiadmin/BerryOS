@@ -20,19 +20,33 @@ default: run
 # G-eco 编译侧：用户程序 → flat binary（草案 D6）。builtin aarch64-unknown-none
 # + 各 bin 自带链接脚本（build.rs 绝对路径注入）——**免 nightly**（custom target
 # 推迟到确需 target 级差异再上，草案 D1 修订）。elf2flat.py 解 PT_LOAD 出平像
-# 并补零到页（.bss 覆盖在文件侧兑现）+ 单页墙 --max 4096（放宽随 G-eco-b/D3）。
-# 产物 内核/src/userbins/*.bin gitignored：缺产物 = 内核 include_bytes 编译期
-# 炸响（loud not silent），故 build/check/run-release/size-release 都依赖本配方。
+# 并补零到页（.bss 覆盖在文件侧兑现）。两遍构建（G-eco-b）：pass 1 先产
+# echo/talker 平像进 用户态/userbins/，pass 2 svcmgr 才 include_bytes! 内嵌
+# （单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序 4096
+# （2 页映射 [0x1000,0x3000) 里首页装镜像、次页是栈——越页即吃栈）；
+# svcmgr 65536 = UserProcess::build 的 D3 帽。内核侧产物 内核/src/userbins/
+# *.bin gitignored：缺产物 = 内核 include_bytes 编译期炸响（loud not
+# silent），故 build/check/run-release/size-release 都依赖本配方。
 # CARGO_TARGET_DIR 显式钉 用户态/cargo-target：防交互环境（全局 target-dir
 # 覆盖）把产物漂到内核共享 target。
 build-user:
     #!/bin/sh
     cd 用户态
+    CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker
+    mkdir -p userbins ../内核/src/userbins
+    python3 ../工具链/elf2flat.py \
+        cargo-target/aarch64-unknown-none/release/echo \
+        userbins/echo.bin --max 4096
+    python3 ../工具链/elf2flat.py \
+        cargo-target/aarch64-unknown-none/release/talker \
+        userbins/talker.bin --max 4096
     CARGO_TARGET_DIR=cargo-target cargo build --release
-    mkdir -p ../内核/src/userbins
     python3 ../工具链/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/abuser \
         ../内核/src/userbins/abuser.bin --max 4096
+    python3 ../工具链/elf2flat.py \
+        cargo-target/aarch64-unknown-none/release/svcmgr \
+        ../内核/src/userbins/svcmgr.bin --max 65536
 
 build: build-user
     cargo build
