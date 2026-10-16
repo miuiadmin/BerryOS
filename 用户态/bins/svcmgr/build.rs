@@ -11,4 +11,5 @@ fn main() {
     println!("cargo:rerun-if-changed={dir}/Cargo.toml");
     println!("cargo:rerun-if-changed={dir}/../../../userbins/echo.bin");
     println!("cargo:rerun-if-changed={dir}/../../../userbins/talker.bin");
+    println!("cargo:rerun-if-changed={dir}/src/hexyl-plain.bin");
 }

@@ -32,6 +32,10 @@ use berry_sys::{
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
 /// talker 镜像。
 const TALKER_BIN: &[u8] = include_bytes!("../../../userbins/talker.bin");
+/// hexyl 终验基准（d-3c）：上游 0.17.0（`用户态/bins/hexyl` 逐字内嵌）在
+/// 宿主以 `--color=never` 管道跑同样 256B 输入的**逐字节输出快照**（版本随
+/// Cargo.toml 钉死——升版须重产此文件，比对不等即 FAIL 是故意的）。
+const HEXYL_PLAIN: &[u8] = include_bytes!("hexyl-plain.bin");
 
 /// ECHO_REQ（4-5b 验收载荷；回显比对取低 32 位 0xE000_0E30）。
 const ECHO_REQ: u64 = 0x00C0_FFEE_E000_0E30;
@@ -147,12 +151,15 @@ static mut STEP_WIN: [u8; 512] = [0; 512];
 static mut ELF_WIN: [u8; 4096] = [0; 4096];
 /// 段字节泵窗：rootfs VMO → 子 VMO 的 4KiB 中转（std 镜像 ~283KB ≈ 70 泵）。
 static mut PUMP_WIN: [u8; 4096] = [0; 4096];
+/// hexyl 终验收齐窗：子 stdout 全量（基准 2156B + 版本漂移余量）。
+static mut HEX_WIN: [u8; 4096] = [0; 4096];
 
 /// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
 /// 驻留**，旧 16KiB 整档帽随 std 镜像 ~283KB 一并退役）→ 命中 `bin/hello`
-/// / `bin/stdhello` 各自流式拉起。hello 后打 `ECO ok`（smoke 第 24 标记）；
-/// stdhello 自打 `STD ok`/`STD err ok`（smoke rootfs 相断言，d-1c 接线）。
+/// / `bin/stdhello`/`bin/hexyl` 各自流式拉起。hello 后打 `ECO ok`（smoke
+/// 第 24 标记）；stdhello 自打 `STD ok`/`STD err ok`（d-1c 接线）；hexyl
+/// 走私有 stdout 终验后打 `HEXYL ok`（d-3c，见 `verify_hexyl`）。
 /// 有 rootfs 而链断 = 打一行原因后跳过（可见降级，不静默吞）。
 fn run_rootfs_child(console: Handle) {
     let mut cap = 0u64;
@@ -186,7 +193,7 @@ fn run_rootfs_child(console: Handle) {
                 // 名字从步进窗借引用：下一轮 cpio_step 前用完（spawn 内的
                 // env 发送即消费点，之后只碰 ELF_WIN/PUMP_WIN）。
                 if name == "bin/hello" {
-                    match spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 1, None) {
+                    match spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 1, None, None) {
                         Ok(()) => send_spin(console, ECO_OK.as_ptr(), ECO_OK.len()),
                         Err(()) => eco_skip(b"elf bad"),
                     }
@@ -203,10 +210,60 @@ fn run_rootfs_child(console: Handle) {
                         console,
                         8,
                         Some(stdin),
+                        None,
                     )
                     .is_err()
                     {
                         eco_skip(b"elf bad");
+                    }
+                } else if name == "bin/hexyl" {
+                    // d-3c：D4 路线①最终验证——上游 main.rs 逐字未动的生态
+                    // 程序。argv 追加 `--color=never`（0.17 默认 Color=Always
+                    // 会打 ANSI 码；plain 输出 = 宿主同版管道对照可逐字比）
+                    // ——clap 真解析面，多 argv 首例。stdin = 0x00..=0xff
+                    // 全字节 pattern（256B 恰一条消息 = inline 帽边界活证）。
+                    // 栈 32 页：clap/Once/fmt 链实测深 ≈64KB——8 页栈用穿后
+                    // **下行栈静默扎进自己映像 RW 页**，首中 0x30a000 页的
+                    // `__aarch64_have_lse_atomics` 翻非零 → cortex-a72（无
+                    // LSE）上 `casa` = UNDEFINED 自陷（d-3c 排障实录）。
+                    // musl 默认 128KiB 栈同此口径。
+                    const HEXYL_STDIN: [u8; 256] = {
+                        let mut a = [0u8; 256];
+                        let mut i = 0;
+                        while i < 256 {
+                            a[i] = i as u8;
+                            i += 1;
+                        }
+                        a
+                    };
+                    let stdin: &[u8] = &HEXYL_STDIN;
+                    // 私有 stdout 终验通道（d-3c）：fd1/2 交接本对 `out_c` 而
+                    // 非共享 console——稳态矩阵的打印会在 192B 分片边界间插花
+                    // （实跑：0xa0 行被 A/B 循环 + `DEMO ok` 撕开），对表行做
+                    // grep 标记 = 时序竞速；svcmgr 收齐全量逐字节比对基准后打
+                    // **单消息原子** `HEXYL ok`（每 boot 确定性成立）。
+                    let (out_s, out_c) = channel_pair();
+                    if spawn_rootfs_elf(
+                        name.as_bytes(),
+                        data_off,
+                        data_len,
+                        out_c,
+                        32,
+                        Some(stdin),
+                        Some(b"--color=never"),
+                    )
+                    .is_err()
+                    {
+                        eco_skip(b"elf bad");
+                    } else {
+                        verify_hexyl(out_s, console);
+                    }
+                    // out_c 原值：子表已持 SEND 别名（dup 迁移），本表副本使命已毕
+                    if berry_handle_close(out_c) != 0 {
+                        trap();
+                    }
+                    if berry_handle_close(out_s) != 0 {
+                        trap();
                     }
                 }
                 pos = next;
@@ -229,20 +286,29 @@ const ECO_OK: &[u8; 7] = b"ECO ok\n";
 /// 泵窗从 rootfs VMO 直送子 VMO 相对偏移（**ELF 本体永不整档驻留**——
 /// stdhello ~283KB 只经 4KiB 中转）→ 栈页映其上（页数按程序面）→
 /// **env 块**（d-3a，BerryOS processargs v1）：channel 建 env 对 →
-/// `send(env_s, argv0\0, [console 别名, (stdin 端)])`（能力随消息迁移）→
+/// `send(env_s, argv0\0, [stdout 端别名, (stdin 端)])`（能力随消息迁移）→
 /// `process_start(bootstrap=env_c)`——子进程入口 x0 = env 端。`stdin`
 /// = Some(data) 时再建一对，读端随 env 块迁移、`process_start` 后本进程
 /// 作 feeder 泵数据 + 零长 EOF 标记（libc `read` 的 EOF 约定——队列深 8，
 /// 2 条无阻塞面）。
 /// 解析/首窗读失败返 Err（调用方可见降级续走归档）；syscall 面失败自陷
 /// ——链断 loud（标记缺失兜底）。
+///
+/// `extra_arg`（d-3c）：argv[1] 追加项（None = argv 只有 argv0）——env 块
+/// payload 即 `argv0\0[extra\0]`，libc 侧 NUL 分隔逐串入 argv；hexyl 的
+/// `--color=never` 走这条（clap 真解析面）。
+///
+/// `stdout_end`（d-3c）：随 env 块交给子进程当 fd1/2 的通道端（dup 成
+/// RIGHT_SEND）——传 console 发端 = 子直打串口（hello/stdhello）；传私有
+/// 对端 = svcmgr 侧收齐终验（hexyl，见 `verify_hexyl`）。
 fn spawn_rootfs_elf(
     name: &[u8],
     data_off: u64,
     data_len: u64,
-    console: Handle,
+    stdout_end: Handle,
     stack_pages: u64,
     stdin: Option<&[u8]>,
+    extra_arg: Option<&[u8]>,
 ) -> Result<(), ()> {
     let want = (data_len.min(4096u64)) as usize;
     // SAFETY: 独占首窗；boot 后单线程顺序读写。
@@ -294,9 +360,13 @@ fn spawn_rootfs_elf(
     {
         trap(); // v1 无重排：回写须 == 请求基址
     }
-    // 栈页映在映幅之上。
+    // 栈页映在映像之上——中间隔一页**保护页**：栈用穿 = 踩未映射页 → 干净
+    // D-abort 被杀（dump SP/FAR 直指祸首）；无保护页时下行栈会静默扎进
+    // 映像 RW 页腐化 .bss/堆簿记，死状与死因南辕北辙（d-3c hexyl 实踩：
+    // 栈穿 32KiB 覆写 `__aarch64_have_lse_atomics` → LSE 误判 → `casa`
+    // UNDEFINED）。映幅尾 = ceil 页，+1 页即页对齐保护页。
     let stack_len = stack_pages * berry_loader::PAGE_SIZE;
-    let stack_va = base + len;
+    let stack_va = base + len + berry_loader::PAGE_SIZE;
     let mut svmo = 0 as Handle;
     if berry_vmo_create(stack_len, 0, &mut svmo) != 0 || svmo == 0 {
         trap();
@@ -315,12 +385,12 @@ fn spawn_rootfs_elf(
     if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
         trap();
     }
-    // —— env 块（start 前压队，确定性先行）：argv0 = cpio 名 + NUL；
-    //    handles = [console 别名, (stdin 端)]（先复制 console：send 会
-    //    take 走句柄，原值留稳态——G-eco-b 交接消息同款）。
+    // —— env 块（start 前压队，确定性先行）：argv0 = cpio 名 + NUL（+ 可选
+    //    argv1）；handles = [stdout 端别名, (stdin 端)]（先复制 stdout 端：
+    //    send 会 take 走句柄，原值留调用方——G-eco-b 交接消息同款）。
     let (env_s, env_c) = channel_pair();
     let mut gift = [0 as Handle; 2];
-    if berry_handle_duplicate(console, RIGHT_SEND, &mut gift[0]) != 0 {
+    if berry_handle_duplicate(stdout_end, RIGHT_SEND, &mut gift[0]) != 0 {
         trap();
     }
     let stdin_pair = stdin.map(|_| channel_pair());
@@ -331,7 +401,13 @@ fn spawn_rootfs_elf(
     let mut blob = [0u8; 64];
     let n = name.len().min(63);
     blob[..n].copy_from_slice(&name[..n]);
-    if berry_channel_send(env_s, blob.as_ptr(), n + 1, gift.as_ptr(), nhandles) != 0 {
+    let mut plen = n + 1;
+    if let Some(arg) = extra_arg {
+        let m = arg.len().min(63 - plen);
+        blob[plen..plen + m].copy_from_slice(&arg[..m]);
+        plen += m + 1;
+    }
+    if berry_channel_send(env_s, blob.as_ptr(), plen, gift.as_ptr(), nhandles) != 0 {
         trap();
     }
     if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c) != 0 {
@@ -356,6 +432,74 @@ fn spawn_rootfs_elf(
         }
     }
     Ok(())
+}
+
+/// hexyl 终验（d-3c，D4 路线①终验）：收齐子 stdout 全量 → 与宿主基准
+/// `HEXYL_PLAIN` 逐字节比对 → 全等才打 `HEXYL ok`（smoke rootfs 相标记）。
+/// **EOF = libc `park` 前的零长消息**（d-3b 约定的写侧对称面）——确定性
+/// 终点，不赌超时；10s **活动帽**（每次收包刷新）兜底 abort/断链路径
+/// （无 EOF → 打可见降级行，标记缺失 = smoke FAIL）。
+/// 比对通过后全表回放 console（人类可读面；与稳态矩阵插花无碍——已非
+/// 标记）。
+fn verify_hexyl(h: Handle, console: Handle) {
+    // SAFETY: svcmgr 单线程独占（同 ELF_WIN/PUMP_WIN 纪律）。
+    let cap: &mut [u8] =
+        unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(HEX_WIN) as *mut u8, 4096) };
+    let mut got = 0usize;
+    let mut msg = [0u8; 256];
+    let mut eof = false;
+    while !eof {
+        let mut nb = msg.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        if s == 0 {
+            if nb == 0 {
+                eof = true;
+            } else {
+                if got + nb > cap.len() {
+                    send_spin(console, b"hexyl overflow\n".as_ptr(), 15);
+                    return; // 超收 = 输出面已不等，比对无意义
+                }
+                cap[got..got + nb].copy_from_slice(&msg[..nb]);
+                got += nb;
+            }
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        // 空队：阻塞等 READABLE（10s 活动帽，收包刷新——慢而不僵不误杀）
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
+            send_spin(console, b"hexyl: no EOF\n".as_ptr(), 14);
+            return; // EOF 永不来 = 子进程异常路径（abort 无 EOF）——loud 降级
+        }
+    }
+    if got == HEXYL_PLAIN.len() && cap[..got] == HEXYL_PLAIN[..got] {
+        send_spin(console, b"HEXYL ok\n".as_ptr(), 9);
+    } else {
+        // 首差诊断行（hex4 两数：got/want 长度；逐字节定位交给离线复盘）
+        let mut line = *b"hexyl mismatch got=0000 want=0000\n";
+        put_hex4(&mut line[19..23], got);
+        put_hex4(&mut line[30..34], HEXYL_PLAIN.len());
+        send_spin(console, line.as_ptr(), line.len());
+        return; // 不回放错表（错表 + 回放 = 两个混淆源）
+    }
+    // 全表回放（12×192B 分片，与稳态矩阵插花无碍——终验已过，纯展示）
+    let mut off = 0usize;
+    while off < got {
+        let n = core::cmp::min(192, got - off);
+        // SAFETY: cap 只读视图的分片指针。
+        send_spin(console, unsafe { cap.as_ptr().add(off) }, n);
+        off += n;
+    }
+}
+
+/// 4 位十六进制落字（got/want 诊断行用；值 < 0x10000 由 4KiB 窗保证）。
+fn put_hex4(out: &mut [u8], v: usize) {
+    for i in 0..4 {
+        out[i] = b"0123456789abcdef"[(v >> (4 * (3 - i))) & 0xf];
+    }
 }
 
 /// 对端回显验收：wait READABLE → recv（-EAGAIN 重等）→ 低 32 位比对。

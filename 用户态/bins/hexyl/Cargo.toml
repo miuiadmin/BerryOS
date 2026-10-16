@@ -1,0 +1,39 @@
+[package]
+name = "hexyl"
+version = "0.17.0"
+edition = "2021"
+
+# G-eco-d d-3c：D4 路线① 最终验证——**未经修改的 crates.io 生态程序**
+# （hexyl 0.17.0 上游 main.rs 逐字搬运，仅尾部追加 CRT0_SEED）。真实依赖树
+# 全量拉入：clap 4（derive+wrap_help）/ anyhow / thiserror / owo-colors /
+# supports-color / terminal_size / const_format / clap_complete——musl target
+# + berry-libc shim + berry-ld 链路能否吃下生态 std 程序，本 bin 即判据
+# （kill criteria：链接期拖出不可 shim 的语义依赖（线程/futex/mmap）则
+# 路线①降档，见草案 D4）。
+
+[workspace]
+
+[dependencies]
+hexyl = "=0.17.0"
+berry-libc = { path = "../../berry-libc" }
+# 上游 main.rs 的直接 use 面（版本钉死 = 上游 Cargo.lock 同值——搬运的
+# 代码在本 crate 编译，依赖面由本 crate 提供）。
+anyhow = "=1.0.91"
+clap = { version = "=4.5.20", features = ["derive", "wrap_help"] }
+clap_complete = "=4.5.55"
+const_format = "=0.2.33"
+supports-color = "=3.0.1"
+terminal_size = "=0.4.0"
+thiserror = "=1.0.65"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# 链接残留/死亡排障需要符号表（release 剥了就没得看；stdhello 同款）
+[profile.audit]
+inherits = "release"
+strip = false

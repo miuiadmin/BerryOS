@@ -124,6 +124,7 @@ pub extern "C" fn malloc(n: size_t) -> *mut c_void {
     let p = unsafe { inner_malloc(if n == 0 { 1 } else { n }) };
     if p.is_null() {
         crate::set_errno(crate::ENOMEM);
+        return ptr::null_mut();
     }
     p as *mut c_void
 }

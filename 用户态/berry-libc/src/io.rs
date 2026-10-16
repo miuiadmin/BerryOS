@@ -11,7 +11,7 @@
 use core::ptr;
 
 use berry_sys::{berry_channel_recv, berry_channel_send, berry_clock_read,
-                berry_object_wait_one, CLOCK_MONOTONIC, SIGNAL_READABLE};
+                berry_object_wait_one, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE};
 
 use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
@@ -88,6 +88,26 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
 #[no_mangle]
 pub extern "C" fn berry_libc_park_after_main() -> ! {
     crate::park()
+}
+
+/// stdout 端零长 EOF（d-3c）：`park` 前一次性补发——d-3b「零长消息 = EOF」
+/// 约定的**写侧**对称面。hexyl 的 stdout 是 svcmgr 交接的私有通道端，
+/// svcmgr 收到 EOF 才知输出终了（确定性验收，不赌超时）；对真 console 端
+/// （stdhello 等）只是 0 字节消息，console 排水写 0 字节无扰。满队自旋
+/// （同 `console_write` 契约——收端常驻必排水）；其余错误码放弃（协议
+/// 破缺面自有更 loud 的死法）。
+pub fn send_stdout_eof() {
+    let h = unsafe { CONSOLE_H };
+    if h == 0 {
+        return;
+    }
+    let z = 0u8;
+    loop {
+        let s = berry_channel_send(h, &z, 0, ptr::null(), 0);
+        if s == 0 || s != BERRY_ERR_BUSY {
+            return;
+        }
+    }
 }
 
 pub fn stack_top() -> usize {

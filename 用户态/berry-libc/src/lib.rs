@@ -106,8 +106,10 @@ pub fn get_errno() -> c_int {
     unsafe { ERRNO }
 }
 
-/// 死亡面统一收口：10s 周期睡眠（trap = watchdog 错杀断言违约，勿改）。
+/// 死亡面统一收口：stdout 零长 EOF（d-3c，见 `io::send_stdout_eof`）+
+/// 10s 周期睡眠（trap = watchdog 错杀断言违约，勿改）。
 pub fn park() -> ! {
+    crate::io::send_stdout_eof();
     loop {
         let mut now: berry_sys::Time = 0;
         if berry_sys::berry_clock_read(berry_sys::CLOCK_MONOTONIC, &mut now) == 0 {

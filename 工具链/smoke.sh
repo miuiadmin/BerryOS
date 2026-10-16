@@ -112,10 +112,17 @@ echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs）"
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 入机侧两行 + 编译侧全链四条：hello 自打 = 装载的程序真的在跑且能 syscall；
+# 入机侧两行 + 编译侧全链：hello 自打 = 装载的程序真的在跑且能 syscall；
 # stdhello 自打 STD 双标记 = **std 程序经 musl target + berry-libc shim +
-# 流式装载全链跑通**（G-eco-d d-1c——sum/heap/argc 自检过了才轮到标记）。
-ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok")
+# 流式装载全链跑通**（G-eco-d d-1c——sum/heap/argc 自检过了才轮到标记）；
+# HEXYL ok = **上游逐字未动的生态程序跑通**（d-3c，D4 路线①终验）——
+# svcmgr 经私有 stdout 通道收齐 hexyl 全量输出（EOF = libc park 零长
+# 消息，d-3b 约定写侧），与内嵌宿主基准（上游 0.17.0 --color=never 同
+# 输入管道输出）**逐字节比对全等**才打此标记（单消息原子、每 boot
+# 确定性——直接 grep 表行会被稳态矩阵在 192B 分片边界插花，属时序
+# 竞速，不可为标记）。
+ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
+  "HEXYL ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -133,6 +140,6 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok）"
 
 echo "smoke: PASS（金丝雀 ${n} 条严格递增，最新 switches=$last + rootfs 相全链）"
