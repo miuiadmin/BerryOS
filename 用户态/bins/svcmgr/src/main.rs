@@ -243,10 +243,15 @@ fn run_rootfs_child(console: Handle) {
                         },
                     ) {
                         Ok(child) => {
-                            if child.reap().is_err() {
-                                eco_skip(b"exit reap");
-                            } else {
-                                send_retry(console, EXIT_OK.as_ptr(), EXIT_OK.len());
+                            // P5：reap 返真退出码——`EXIT ok` 只在 code==0 打
+                            // （stdhello 恒 main 返 0；非 0/回收链断 = loud 缺失
+                            // 交 smoke，可见降级行带原因）。
+                            match child.reap() {
+                                Err(()) => eco_skip(b"exit reap"),
+                                Ok(0) => {
+                                    send_retry(console, EXIT_OK.as_ptr(), EXIT_OK.len());
+                                }
+                                Ok(_) => eco_skip(b"exit code"),
                             }
                         }
                         Err(()) => eco_skip(b"elf bad"),

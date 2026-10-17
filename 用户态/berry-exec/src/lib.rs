@@ -28,11 +28,11 @@
 
 use berry_sys::{
     berry_channel_create, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_handle_duplicate, berry_object_wait_one, berry_process_create, berry_process_start,
-    berry_thread_create, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE,
-    BERRY_ERR_BUSY, BERRY_ERR_NO_MEMORY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE,
-    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    berry_handle_duplicate, berry_object_wait_one, berry_process_create,
+    berry_process_get_exit_code, berry_process_start, berry_thread_create, berry_vmar_map,
+    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
+    berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY, BERRY_ERR_NO_MEMORY,
+    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 
 /// ELF 首窗：ehdr + 全部 phdr（真实 lld 产物 phnum ≤ 10 量级，4KiB 绰绰）。
@@ -75,13 +75,17 @@ pub struct ChildHandles {
 }
 
 impl ChildHandles {
-    /// 回收已退出的子进程（Plan B v0.5）：wait `SIGNAL_TERMINATED`（30s
-    /// 绝对帽——EOF 先行约定下常态瞬回）→ unmap 映像/栈（mapcnt 归零）
-    /// → close 栈/映像 VMO（destroy-close 不再拒，Drop 还帧）→ close
-    /// thread/vmar/process（对象 Box 释放；root Vmar 的 L1/PT 帧与 ASID
-    /// v1 仍泄漏——`process.rs` PROCESS_MAX 注释同口径）。任一步失败返
-    /// `Err`（句柄留存 = 有界泄漏，死法交调用方：标记缺失 / 续走警告）。
-    pub fn reap(&self) -> Result<(), ()> {
+    /// 回收已退出的子进程（Plan B v0.5；P5 起**返退出码**——`&&`/`$?` 的
+    /// 真值源）：wait `SIGNAL_TERMINATED`（30s 绝对帽——EOF 先行约定下常态
+    /// 瞬回）→ **read exit code（0x3A，wait 后 close 前读——close hp 即销毁
+    /// Process 对象，读完码才许放）** → unmap 映像/栈（mapcnt 归零）→ close
+    /// 栈/映像 VMO（destroy-close 不再拒，Drop 还帧）→ close thread/vmar/
+    /// process（对象 Box 释放；root Vmar 的 L1/PT 帧与 ASID v1 仍泄漏——
+    /// `process.rs` PROCESS_MAX 注释同口径）。任一步失败返 `Err`（句柄留存
+    /// = 有界泄漏，死法交调用方：标记缺失 / 续走警告）。wait 已过但读码失败
+    /// （0x3A 异常面）= `Err`：子已死句柄照收（后续 close 仍执行）…… 简化
+    /// 起见读码失败即整链 Err 返（句柄留存有界，不二段收）。
+    pub fn reap(&self) -> Result<i32, ()> {
         let mut now = 0u64;
         if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
             return Err(());
@@ -89,6 +93,12 @@ impl ChildHandles {
         let mut obs = 0u64;
         if berry_object_wait_one(self.hp, SIGNAL_TERMINATED, now + REAP_TIMEOUT_NS, &mut obs) != 0 {
             return Err(()); // 未按期退出（挂死/帽尽）：不冒险回收
+        }
+        // wait 命中 = Exited 已落账（mark_exited 先于 wake TERMINATED——退出
+        // 钩子语义序），0x3A 必成功；防御面返 Err（未读码不放对象）。
+        let mut code: i32 = 0;
+        if berry_process_get_exit_code(self.hp, &mut code) != 0 {
+            return Err(());
         }
         if berry_vmar_unmap(self.hv, self.img_base as usize, self.img_len as usize) != 0
             || berry_vmar_unmap(self.hv, self.stack_va as usize, self.stack_len as usize) != 0
@@ -103,7 +113,7 @@ impl ChildHandles {
         {
             return Err(());
         }
-        Ok(())
+        Ok(code)
     }
 }
 

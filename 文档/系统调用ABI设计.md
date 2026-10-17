@@ -61,6 +61,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
 | 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 |
 | 0x39 | `thread_set_deadline` | 设截止期（软实时） | v2 |
+| 0x3A | `process_get_exit_code` | 查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查） | v1 |
 | **异常** ||||
 | 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 |
 | **IPC / event / futex** ||||
@@ -283,6 +284,10 @@ berry_status_t berry_vmo_read (berry_handle_t vmo, void *buf,
                            uint64_t offset, size_t len);          /* 内核中介读 */
 berry_status_t berry_vmo_write(berry_handle_t vmo, const void *buf,
                            uint64_t offset, size_t len);          /* 内核中介写 */
+berry_status_t berry_vmo_get_size(berry_handle_t vmo, uint64_t *out);
+                               /* G-eco（0x1A）：仅类型门控（need=0——size 是
+                                  对象几何非内容）；返回页对齐容量（create 即
+                                  取整——末页尾零是 padding） */
 berry_status_t berry_vmar_map(berry_handle_t vmar, uint32_t options,
                           berry_handle_t vmo, uint64_t vmo_offset,
                           uintptr_t *vaddr, size_t len, berry_rights_t rights);
@@ -316,6 +321,11 @@ berry_status_t berry_process_exit(int code);                    /* Plan B v0.5
                                drain 子进程 handle 表（能力随退出回收）；
                                fault 杀同钩子同位（码 0）——统一退出路径；
                                EL1 无钉住 Process 的调用者 = 任务体级退出 */
+berry_status_t berry_process_get_exit_code(berry_handle_t process, int32_t *code);
+                               /* P5（0x3A）：bsh `&&` / `$?` 的真码源；
+                                  need=0 仅类型门控；state != Exited →
+                                  -EAGAIN（poll 语义——先 wait TERMINATED
+                                  再查）；出参 i32 4B（宽度跟 ABI 类型走） */
 berry_status_t berry_thread_create(berry_handle_t process, uint32_t options,
                                berry_handle_t *out);        /* 未启动描述；入口/sp
                                随 process_start（首线程启动路径，Zircon 同形）；
@@ -362,7 +372,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 28**（handle/object 6 + VMO/Vmar 10（含 0x1A `vmo_get_size`，G-eco）+ 进程线程 7 + channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 29**（handle/object 6 + VMO/Vmar 10（含 0x1A `vmo_get_size`，G-eco）+ 进程线程 8（含 0x3A `process_get_exit_code`，P5）+ channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
 
 ### 8.4 Rust FFI 镜像（`用户态/berry-sys`，raw 绑定）
 
@@ -393,6 +403,7 @@ extern "C" {
     pub fn berry_vmo_decommit(vmo: Handle, offset: u64, len: u64) -> Status;
     pub fn berry_vmo_read(vmo: Handle, buf: *mut u8, offset: u64, len: usize) -> Status;
     pub fn berry_vmo_write(vmo: Handle, buf: *const u8, offset: u64, len: usize) -> Status;
+    pub fn berry_vmo_get_size(vmo: Handle, out: *mut u64) -> Status;
     pub fn berry_vmar_map(vmar: Handle, options: u32, vmo: Handle, vmo_offset: u64,
                         vaddr: *mut usize, len: usize, rights: Rights) -> Status;
     pub fn berry_vmar_unmap(vmar: Handle, vaddr: usize, len: usize) -> Status;
@@ -405,6 +416,7 @@ extern "C" {
     pub fn berry_process_start(process: Handle, thread: Handle, entry: usize, sp: usize,
                              bootstrap: Handle) -> Status;
     pub fn berry_process_exit(code: i32) -> ! ;
+    pub fn berry_process_get_exit_code(process: Handle, code: *mut i32) -> Status;
     pub fn berry_thread_create(process: Handle, options: u32, out: *mut Handle) -> Status;
     pub fn berry_thread_start(thread: Handle) -> Status;
     pub fn berry_thread_exit() -> ! ;

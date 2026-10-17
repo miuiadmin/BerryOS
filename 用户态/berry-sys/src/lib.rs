@@ -14,7 +14,7 @@
 //! 纯 raw 层：**绝不 panic、绝不分配**；上层 `berry` crate 负责
 //! `Status → Result<(), Status>` 包装与运行时（console/argv 等随 G-eco-d）。
 //!
-//! 数值事实与内核侧对账（2026-10，Plan B v0.5 起 28 号在册 27 号已实现——
+//! 数值事实与内核侧对账（2026-10，P5 v0.5 起 29 号在册 28 号已实现——
 //! 余 0x35 `thread_start`（v2 多线程）内核回落 `-ENOTSUP`，wrapper 照发；
 //! 0x33/0x36 已真实现且 `-> !` 不返，「调用者存活」对它们不成立）。
 
@@ -296,6 +296,14 @@ pub extern "C" fn berry_process_exit(code: i32) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// 0x3A（P5 shell v0 收官）：查进程退出码。未退出 → -EAGAIN（poll 语义——
+/// 调用方先 `berry_object_wait_one(SIGNAL_TERMINATED)` 再查）。`*code` 预清
+/// 由内核出参路径保证；code 宽 = i32（4B，宽度跟 ABI 类型走）。
+#[no_mangle]
+pub extern "C" fn berry_process_get_exit_code(process: Handle, code: *mut i32) -> Status {
+    unsafe { sys(nr::PROCESS_GET_EXIT_CODE, process as usize, code as usize, 0, 0, 0, 0) }
 }
 
 /// options 低 8 位 = berry_intent（ADR #42 占位；v1 内核只收 0）。

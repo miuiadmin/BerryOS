@@ -413,6 +413,31 @@ fn test_syscall() {
     );
     assert_eq!(unsafe { I_OBS }, 0, "SYSCALL：未命中 observed 须保持 0");
 
+    // F4c. process_get_exit_code（P5 0x3A）：错误/未退面——坏 handle / 类型
+    //      不符（Vmar）→ -EBADF；Alive（创建未启动，两进程皆然）→ -EAGAIN
+    //      （poll 语义——**先 wait TERMINATED 再查**）。Exited 成功路径 ktest
+    //      造不出（无 spawn 面），由运行期 bsh `&&` 自验（`run fail` 真码 42）
+    //      / svcmgr `EXIT ok`（Ok(0) 才打；非 0 码走 `eco: exit code` 降级行）
+    //      承担——诚实注记同 F4b。
+    // SAFETY: OUT 复用 F 段纪律（预清；code 是 i32 出参，低 4 字节写入）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_GET_EXIT_CODE as u64, 0xDEAD_BEEF, &raw mut OUT as u64, 0),
+        -9,
+        "SYSCALL：get_exit_code 坏 handle 须 -EBADF"
+    );
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_GET_EXIT_CODE as u64, hv2 as u64, &raw mut OUT as u64, 0),
+        -9,
+        "SYSCALL：get_exit_code 对 Vmar 须 -EBADF（类型门控）"
+    );
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_GET_EXIT_CODE as u64, hp2 as u64, &raw mut OUT as u64, 0),
+        -11,
+        "SYSCALL：Alive 进程 get_exit_code 须 -EAGAIN（poll）"
+    );
+    assert_eq!(unsafe { OUT }, 0, "SYSCALL：未退 code 出参须保持 0");
+
     // F5. 清场（顺带覆盖钉住释放链：close 线程 → 释放对 Process 的钉住；
     //     close 进程 → 释放对 root Vmar 的钉住；空进程无映射，close 不受
     //     -EBUSY 面影响）。

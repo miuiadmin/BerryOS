@@ -16,8 +16,8 @@
 
 [meta]
 stage = "v1"
-nr_total = 28        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
-implemented = 27     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
+nr_total = 29        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
+implemented = 28     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。
@@ -359,6 +359,12 @@ num = 0x39
 name = "thread_set_deadline"
 desc = '设截止期（软实时）'
 stage = "v2"
+[[group.syscall]]
+num = 0x3A
+name = "process_get_exit_code"
+desc = '查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查）'
+stage = "v1"
+note = 'P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。'
 
 [[group]]
 title = "**异常**"

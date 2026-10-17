@@ -11,13 +11,19 @@
 #      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
-#   5. P5 A-1 RX 交互相：三拉 QEMU 以 FIFO 为 stdin（holder 子进程占住写端
-#      防 EOF），23 标记到齐后**逐字节慢速注入** `rx\n`（FEN=0 FIFO 深 1 字节
-#      ——慢速 = 单字节-per-handler 的标记确定性，消竞速；状态谓词门控注入
-#      时机，不赌 boot 秒数。QEMU chardev 流控押住输入不 overrun——真机才
-#      有突发丢字），断言 console 收齐行 token 才打的 `RX ok`；随后再验
-#      switches 金丝雀严格递增（IRQ 分流破坏屏蔽态/EOI 漏发类 bug 的死状
-#      = 冻而不死，kill -0 活性检抓不到）。
+#   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 v0 起四跑）：三拉 QEMU 带
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），33 标记
+#      （boot 23 + rootfs 10——PIPE ok 在列 = bsh 已进交互读循环，状态谓词
+#      门控注入时机，不赌 boot 秒数）后**逐字节慢速注入**编辑序列（FEN=0
+#      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
+#      QEMU chardev 流控押住输入不 overrun——真机才有突发丢字）：
+#        a. `rx\n` → console token 面 `RX ok`（A-1）；
+#        b. `helll\x7f`+`o\n` → 退格编辑得 `hello` → 转发 bsh →
+#           `bsh: hello: not found`（A-2 行编辑 + 转发 + bsh 应答）；
+#        c. `\x1b[A`+`!\n` → 历史召回 `hello` + `!` → 转发 →
+#           `bsh: hello!: not found`（P5 v0 mini-readline：ESC[A 上翻）。
+#      两断言互非子串。随后再验 switches 金丝雀严格递增（IRQ 分流破坏
+#      屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #
 # 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 CLAUDE.md 陷阱节），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
@@ -82,6 +88,19 @@ fail() {
   exit 1
 }
 
+# 标记断言：DEMO ok 是 AIDEMO ok 的子串（4-6 起既有混叠）——裸 grep -qF 会被
+# 先行的「J AIDEMO ok: …」行满足，DEMO ok 缺失时验收盲区（talker 链唯一关卡
+# 失去鉴别力）。对该一项负向断言（前缀非 I 即真 DEMO）；其余标记两两互非
+# 子串，裸 grep 足够。RX ok n= / ROOTFS ok src= 等行前缀形态不可上通用词
+# 边界（会误杀）——只特判 DEMO ok（P5 对抗审查实抓）。
+assert_marker() {
+  if [ "$1" = "DEMO ok" ]; then
+    grep -qE '(^|[^I])DEMO ok' "$LOG"
+  else
+    grep -qF "$1" "$LOG"
+  fi
+}
+
 echo "smoke: QEMU 启动（$KERNEL）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   < /dev/null > "$LOG" 2>&1 &
@@ -95,7 +114,7 @@ while :; do
   missing=""
   for m in "${MARKERS[@]}"; do
     # 累积全部缺失（旧写法 missing="$m" 只剩最后一个，诊断误导）。
-    grep -qF "$m" "$LOG" || missing="${missing:+$missing }$m"
+    assert_marker "$m" || missing="${missing:+$missing }$m"
   done
   [ -z "$missing" ] && break
   [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] && fail "boot 标记 ${DEADLINE_BOOT}s 未到齐，缺：$missing"
@@ -174,14 +193,19 @@ while :; do
 done
 echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok）"
 
-# —— 阶段 4：P5 A-1 RX 交互相（内核 RX 中断 + console 输入消费）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 标记到齐后（状态
-# 谓词门控——不赌 boot 秒数）经 fd3 逐字节注入 `rx\n`，每字节隔 0.5s（FEN=0
-# FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；QEMU 流控不丢字，
-# 真机才有 overrun 面）。`RX ok` 由 console 任务**收齐行 token 才打**（内核侧状态断言，非注入即达回声）；`r`/`x` 的
-# echo 与标记行同日志可肉眼对账。注入后仍跑金丝雀——RX 中断若破坏 IRQ
-# 屏蔽契约（在屏蔽窗内置 Event/唤醒却漏 EOIR/漏开关），死状常为「冻而不死」
-# （活性检盲区），只有切换序列还动才真活着。
+# —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
+# + bsh stdin 转发 + bsh 应答）——
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 10 = 33
+# 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
+# 有人收；状态谓词门控——不赌 boot 秒数）后经 fd3 逐字节注入编辑序列，每
+# 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
+# QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
+# 行 token 才打——内核侧状态断言，非注入即达回声）；b. `helll\x7f`+`o\n` →
+# 退格编辑得 `hello` → endK2 转发 bsh → `bsh: hello: not found`；c. `\x1b[A`
+# +`!\n` → ESC[A 历史召回 `hello`+`!` → `bsh: hello!: not found`（与 b 互非
+# 子串，各自独立断言）。注入后仍跑金丝雀——RX 中断若破坏 IRQ 屏蔽契约
+# （在屏蔽窗内置 Event/唤醒却漏 EOIR/漏开关），死状常为「冻而不死」（活性
+# 检盲区），只有切换序列还动才真活着。
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"
@@ -190,31 +214,37 @@ rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 ( sleep 900 ) > "$RX_FIFO" &
 RX_HOLDER=$!
-echo "smoke: QEMU 启动（RX 交互相：FIFO stdin）"
+echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：boot 标记全到 = QEMU 已在正常跑（exec 3> 对
-# FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
+# 注入口先备好读端存在的证据：33 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
+ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
     || fail "QEMU 提前退出（RX 相）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   missing=""
-  for m in "${MARKERS[@]}"; do
-    grep -qF "$m" "$LOG" || missing="${missing:+$missing }$m"
+  for m in "${ALL_MARKERS[@]}"; do
+    assert_marker "$m" || missing="${missing:+$missing }$m"
   done
+  # vmo 行非降级形态（与 rootfs 相同款守卫）。
+  if [ -z "$missing" ] && grep -q 'ROOTFS vmo=none' "$LOG"; then
+    fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
+  fi
   [ -z "$missing" ] && break
-  [ $(( $(date +%s) - t3 )) -gt "$DEADLINE_BOOT" ] && fail "RX 相 boot ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
+  [ $(( $(date +%s) - t3 )) -gt "$DEADLINE_BOOT" ] && fail "RX 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: RX 相 boot ${#MARKERS[@]}/${#MARKERS[@]} 到齐，注入 rx\\n（逐字节 0.5s 间隔）"
+echo "smoke: RX 相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入编辑序列（逐字节 0.5s 间隔）"
 exec 3> "$RX_FIFO"
+# a. token 行：RX ok（A-1 console token 面；`rx` 行入历史但不转发）。
 printf 'r' >&3; sleep 0.5
 printf 'x' >&3; sleep 0.5
 printf '\n' >&3
-
 t4=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 RX ok 阶段退出（注入链断？）"
@@ -224,6 +254,41 @@ while :; do
   sleep 1
 done
 echo "smoke: RX ok 到齐"
+# b. 退格编辑：`helll` + \x7f（回退 → `hell`）+ `o` + \n → 完整行 `hello` →
+# 转发 bsh → `bsh: hello: not found`。
+printf 'h' >&3; sleep 0.5
+printf 'e' >&3; sleep 0.5
+printf 'l' >&3; sleep 0.5
+printf 'l' >&3; sleep 0.5
+printf 'l' >&3; sleep 0.5
+printf '\x7f' >&3; sleep 0.5
+printf 'o' >&3; sleep 0.5
+printf '\n' >&3
+t4=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 hello 应答阶段退出"
+  grep -qF 'bsh: hello: not found' "$LOG" && break
+  [ $(( $(date +%s) - t4 )) -gt 60 ] \
+    && fail "bsh: hello: not found 60s 未出现（转发链断？查 echo 字节与 fdrop 计数）"
+  sleep 1
+done
+echo "smoke: bsh hello 应答到齐"
+# c. 历史召回：ESC [ A（上翻 → 最新历史 `hello`）+ `!` + \n → `hello!` →
+# 转发 → `bsh: hello!: not found`。
+printf '\x1b' >&3; sleep 0.5
+printf '[' >&3; sleep 0.5
+printf 'A' >&3; sleep 0.5
+printf '!' >&3; sleep 0.5
+printf '\n' >&3
+t4=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 hello! 应答阶段退出"
+  grep -qF 'bsh: hello!: not found' "$LOG" && break
+  [ $(( $(date +%s) - t4 )) -gt 60 ] \
+    && fail "bsh: hello!: not found 60s 未出现（ESC[A 历史召回链断？）"
+  sleep 1
+done
+echo "smoke: bsh hello! 应答到齐（退格 + ESC[A 召回双验过）"
 
 # 注入后金丝雀（fresh 日志从 RX 相起算，无需清）。
 t5=$(date +%s)
@@ -241,4 +306,4 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 ' || fail "RX 相 switches 非严格递增：$(grep -o 'switches=[0-9]*' "$LOG" | tr '\n' ' ')"
 
 exec 3>&-
-echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相）"
+echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回双应答））"

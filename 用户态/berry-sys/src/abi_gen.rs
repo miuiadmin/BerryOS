@@ -107,6 +107,8 @@ pub(crate) mod nr {
     /// Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。
     pub(crate) const THREAD_EXIT: usize = 0x36;
     pub(crate) const THREAD_SLEEP: usize = 0x37;
+    /// P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。
+    pub(crate) const PROCESS_GET_EXIT_CODE: usize = 0x3A;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;

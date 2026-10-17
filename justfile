@@ -61,11 +61,16 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/bsh/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh ELF 本体——装载走
+    # P5 shell v0：fail（`&&` 自验的确定性 exit 42——stdhello 同链）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/fail/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出）。
     python3 ../工具链/mkcpio.py ../rootfs.cpio \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
+        bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello

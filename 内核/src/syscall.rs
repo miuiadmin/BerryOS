@@ -6,9 +6,10 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 28 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`工具链/abi.toml`）；**Plan B v0.5 起 27 号已实现**——
+//! v1 29 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`工具链/abi.toml`）；**P5 起 28 号已实现**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十号（3-2 + G-eco get_size）+
-//! process_create/start/exit + thread_create/exit（3-3 + Plan B 退出路径）+
+//! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
+//! thread_create/exit（3-3 + Plan B 退出路径）+
 //! channel 三号（3-4b）+ event 三号（3-4c；4-1 wait_one 阻塞化）+ wait_many
 //! （4-2b）+ thread_sleep（4-0，首个阻塞 syscall），全部经 [`HandleTable`]
 //! 能力门控——**权限在 handle 不在对象**。余 0x35 thread_start（v2 多线程），
@@ -69,9 +70,9 @@ pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_PROCESS_EXIT,
-    NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP, NR_THREAD_START,
-    NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE,
-    NR_VMO_DECOMMIT, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
+    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
+    NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT,
+    NR_VMO_CREATE, NR_VMO_DECOMMIT, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
 use crate::abi_gen::CLOCK_MONOTONIC;
 
@@ -967,6 +968,35 @@ extern "C" fn sys_thread_exit(_tf: &mut TrapFrame) -> i64 {
     berry_sched::exit_current_with(0)
 }
 
+/// `process_get_exit_code(process, *code)`（0x3A，P5 shell v0 收官——`&&` 的
+/// 真退出码源；**ABI 单源管线首次真实扩号**）。门控仅类型不查权利位（need=0，
+/// `vmo_get_size`「对象几何非内容」惯例——退出码是生命周期事实非受保护内容，
+/// 12 位 rights 无对应位）。未退出 → **-EAGAIN（poll 语义）**：调用方先
+/// `object_wait_one(SIGNAL_TERMINATED)` 再查——与 wait 面 poll-first 哲学一致，
+/// 内核不做第二个阻塞位。`*code` = i32（status 宽 4B，`copy_out_u32`）。
+extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
+    let (h, out) = (tf.regs[1] as u32, tf.regs[2]);
+    let el1 = caller_is_el1(tf);
+    // 出参预清 + 界检（fail-fast，同 vmo_get_size；code 是 i32 = status 宽 4B）。
+    if let Err(e) = copy_out_u32(el1, out, 0) {
+        return e as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let Ok((obj, _)) = t.get(h, ObjType::Process, 0) else {
+        return ERR_BAD_HANDLE as i64;
+    };
+    let Some(p) = obj.as_process() else {
+        return ERR_BAD_HANDLE as i64; // 类型门控后不可达；防御面
+    };
+    if p.state != crate::process::ProcState::Exited {
+        return ERR_AGAIN as i64; // poll 语义：先 wait TERMINATED 再查
+    }
+    match copy_out_u32(el1, out, p.exit_code as u32) {
+        Ok(()) => 0,
+        Err(e) => e as i64,
+    }
+}
+
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
 
 /// `channel_create(options, *out0, *out1)`（4-3c 起 options 首参，Zircon/
@@ -1649,7 +1679,8 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号；4-1 wait_one
 /// 阻塞化 / 4-2 wait 面扩 Channel 均为改板；4-2b 加 wait_many(0x05) = 24 号；
 /// G-eco 加 vmo_get_size(0x1A) = 25 号；**Plan B v0.5 加 process_exit(0x33) /
-/// thread_exit(0x36) = 27 号**（余 0x35 thread_start v2 多线程面）。
+/// thread_exit(0x36) = 27 号**；**P5 加 process_get_exit_code(0x3A) = 28 号**
+/// （余 0x35 thread_start v2 多线程面）。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
 /// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住——见 [`task_exit_hook`]）。
 pub fn install() {
@@ -1675,6 +1706,7 @@ pub fn install() {
     reg(NR_PROCESS_CREATE, sys_process_create);
     reg(NR_PROCESS_START, sys_process_start);
     reg(NR_PROCESS_EXIT, sys_process_exit);
+    reg(NR_PROCESS_GET_EXIT_CODE, sys_process_get_exit_code);
     reg(NR_THREAD_CREATE, sys_thread_create);
     reg(NR_THREAD_EXIT, sys_thread_exit);
     reg(NR_THREAD_SLEEP, sys_thread_sleep);

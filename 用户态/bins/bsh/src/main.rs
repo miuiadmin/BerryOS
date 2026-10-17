@@ -18,9 +18,21 @@
 //! 直喂 `hexyl` 参照**逐字节全等**（证明管道把 A 的 stdout 原样递到 B 的
 //! stdin）+ 全链 EOF 到齐才打标。`>` 重定向依赖 FS（/svc/fs），随 P6。
 //!
-//! v1 内建：help / echo / run / exit（Plan B v0.5：`exit` 经 std::process::exit
+//! v1 内建：help / echo / env / run / exit（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
+//!
+//! P5 v0 收官（`shell设计.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
+//! `$NAME`/`$?` 展开 + `env` 内建；子进程 env 传递 defer v2——argv 块无 env
+//! 面，POSIX `export` 语义随之）+ **`&&` 短路链**（`|` 优先级更高：先按 &&
+//! 切行、各 part 再分派处理 `|`；每 part **执行时**才展开变量——
+//! `A=1 && echo $A` 的求值序正确）。**操作符识别（&&/|/赋值形）一律在展开
+//! 前的原始文本上**——展开结果只是数据、不当语法重解析（POSIX 分词先于
+//! 展开；对抗审查实抓：`P=a|b` 后 `echo $P` 曾被展开文本里的 `|` 切成管道
+//! 误报 usage、`P=hexyl|hexyl` 后裸 `$P` 会把变量值当语法执行）。状态码 sh
+//! 惯例：0 成功 / 2 usage / 126 spawn failed / 127 not found / run|pipe =
+//! 末段子进程真码（reap Err → 1——真码源 = 0x3A `process_get_exit_code`，
+//! P5 扩号）。
 
 use std::io::{BufRead, Write};
 
@@ -69,7 +81,7 @@ struct RunOut {
 fn main() {
     // —— 自驱自验：内部 `run hexyl`，全链（cpio 查询 → 流式拉起 → feeder →
     //    私有 stdout 收齐）即交互 `run` 的同一台机器——自验过 = 交互面可信。
-    if let Some(o) = run_capture("hexyl", Some(&HEXYL_STDIN), Some("--color=never")) {
+    if let Some((o, _)) = run_capture("hexyl", Some(&HEXYL_STDIN), Some("--color=never")) {
         if !(o.eof && o.dropped == 0 && o.data.len() == HEXYL_PLAIN_LEN) {
             eprintln!(
                 "bsh: selftest bad: eof={} len={} want={} dropped={}",
@@ -85,6 +97,10 @@ fn main() {
         berry_libc::park();
     }
     println!("BSH ok");
+    // —— P5 v0：变量/状态壳（`&&` 自验与交互循环共享——`$?` 跨行语义）。
+    let mut vars: Vec<(String, String)> = Vec::new();
+    let mut status: i32 = 0;
+    and_selftest(&mut vars, &mut status);
     pipe_selftest();
 
     // —— 交互循环（化妆面）：prompt 只挂命令完成；空读（fd0 的 10s 帽超时
@@ -103,53 +119,195 @@ fn main() {
         if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
             continue; // 空读噪声：不重刷 prompt、不睡（下轮 read 再阻塞 10s）
         }
-        dispatch(line.trim_end_matches(['\n', '\r']), &mut out);
+        run_line(line.trim_end_matches(['\n', '\r']), &mut vars, &mut status, &mut out);
         prompt_pending = true;
     }
 }
 
-/// 命令分派（v1 四内建 + 管道 + not found）。
-fn dispatch(cmd: &str, out: &mut std::io::Stdout) {
-    if cmd.is_empty() {
-        return;
+/// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码
+/// 上断言，唯一子进程 `run fail` 零输出）。失败 eprintln + park（PIPE ok
+/// 缺失 → smoke FAIL 兜底；置于 BSH ok 后、pipe_selftest 前）。
+///
+/// ① `X=1 && Y=2` 双置（&& 链上赋值连续求值）；② `run fail && Z=99` →
+/// status=42（`fail` = exit 42 的 rootfs 程序，0x3A 真码链）**且 Z 未置**
+/// ——若短路失效：Z 被置 99 且 status 被尾段赋值改写为 0，双证同时崩；
+/// ③ `RC=$?` → RC=="42"（`$?` 展开 = 上一步真码）。
+fn and_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
+    let mut out = std::io::stdout();
+    run_line("X=1 && Y=2", vars, status, &mut out);
+    run_line("run fail && Z=99", vars, status, &mut out);
+    run_line("RC=$?", vars, status, &mut out);
+    let get = |n: &str| get_var(vars, n).map(|s| s.to_string());
+    if *status != 0
+        || get("X").as_deref() != Some("1")
+        || get("Y").as_deref() != Some("2")
+        || get("Z").is_some()
+        || get("RC").as_deref() != Some("42")
+    {
+        eprintln!(
+            "bsh: && selftest bad: status={} X={:?} Y={:?} Z={:?} RC={:?}",
+            status,
+            get("X"),
+            get("Y"),
+            get("Z"),
+            get("RC")
+        );
+        berry_libc::park();
     }
-    if cmd.contains('|') {
-        do_pipe(cmd, out); // 管道优先于内建名匹配（`a | b` 整体不是内建名）
-    } else if cmd == "help" {
+}
+
+/// 变量表查询（后写覆盖：`rev` 找最新——线性表 + 覆盖写，shell 变量量级）。
+fn get_var<'a>(vars: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    vars.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
+/// `A=1` 赋值形检测（**原始** trimmed part 上——赋值优先于管道/命令分派；
+/// 值域可含 `|` 等语法字符，落表时才展开）：`[A-Za-z_][A-Za-z0-9_]*=`
+/// 前缀 → Some((name, value))。`echo X=1` 不匹配（名后非 `=`——扫描停在
+/// 空格）。
+fn assignment_of(s: &str) -> Option<(&str, &str)> {
+    let b = s.as_bytes();
+    if b.is_empty() || !(b[0].is_ascii_alphabetic() || b[0] == b'_') {
+        return None;
+    }
+    let mut j = 1;
+    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+        j += 1;
+    }
+    if j < b.len() && b[j] == b'=' {
+        Some((&s[..j], &s[j + 1..]))
+    } else {
+        None
+    }
+}
+
+/// `$NAME` / `$?` 展开（未定义变量 → 空串，sh 惯例；无 `${}`/引号/转义面
+/// ——v1）。按字节扫描：多字节 UTF-8 连续字节 ≥0x80 不撞 ASCII 语法位。
+fn expand(s: &str, vars: &[(String, String)], status: i32) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'$' && i + 1 < b.len() {
+            let c = b[i + 1];
+            if c == b'?' {
+                out.extend_from_slice(status.to_string().as_bytes());
+                i += 2;
+                continue;
+            }
+            if c.is_ascii_alphabetic() || c == b'_' {
+                let (st, mut j) = (i + 1, i + 2);
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                    j += 1;
+                }
+                if let Some(v) = get_var(vars, &s[st..j]) {
+                    out.extend_from_slice(v.as_bytes());
+                }
+                i = j;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// 一行命令：按 `&&` 切段顺序执行，**非零短路**（sh 语义）。`|` 优先级更
+/// 高——各 part 进 [`exec_one`] 后再分派处理管道；**每 part 执行时才展开
+/// 变量**（`A=1 && echo $A` 的求值序）。`$?` 跨 part/跨行共享（`status`
+/// 由调用方持有）。空 part = 无操作（status 0——v1 不做语法错误面）。
+fn run_line(line: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out: &mut std::io::Stdout) {
+    for part in line.split("&&") {
+        if part.trim().is_empty() {
+            continue;
+        }
+        *status = exec_one(part, vars, status, out);
+        if *status != 0 {
+            return; // 短路：后续 part 不求值（含其中的赋值/展开）
+        }
+    }
+}
+
+/// 单段命令：trim → 赋值形检测（**原始文本**；值展开后落表——`RC=$?`）→
+/// `|` 管道检测（**原始文本**——展开结果只是数据、永不产操作符）→ 展开
+/// （用**进入时**的 `$?`）→ 分派。返回段状态码：0 成功 / 2 usage / 126
+/// spawn failed / 127 not found / run|pipe = 子进程真码（reap Err → 1）。
+fn exec_one(part: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out: &mut std::io::Stdout) -> i32 {
+    let raw = part.trim();
+    if raw.is_empty() {
+        return 0;
+    }
+    // 赋值（原始文本上检测，优先于管道——`P=a|b` 的 | 进值域；值在落表时
+    // 才展开——`RC=$?`）。覆盖写 = 同名尾置（get_var rev 找最新）。
+    if let Some((name, value)) = assignment_of(raw) {
+        let value = expand(value, vars, *status);
+        vars.push((name.to_string(), value));
+        return 0;
+    }
+    // 管道（原始文本上检测，优先于内建名匹配——`a | b` 整体不是内建名）。
+    // 若在展开后文本上重解析：`P=a|b` 后 `echo $P` 被值里的 | 切成管道误报
+    // usage、`P=hexyl|hexyl` 后裸 `$P` 会把变量值当语法执行（对抗审查实抓）。
+    // `&&` 切行同在 run_line 的展开前做。
+    if raw.contains('|') {
+        return do_pipe(raw, vars, *status, out);
+    }
+    let cmd = expand(raw, vars, *status);
+    if cmd.is_empty() {
+        return 0;
+    }
+    let code = if cmd == "help" {
         writeln!(
             out,
-            "bsh 内建：help | echo <text> | run <name> | A | B（rootfs 管道）| exit"
+            "bsh 内建：help | echo <text> | env | run <name> | A | B（rootfs 管道）| A && B | exit"
         )
         .unwrap();
+        0
     } else if cmd == "exit" {
         out.flush().unwrap();
         std::process::exit(0); // → libc exit → EOF + berry_process_exit(0x33)
+    } else if cmd == "env" {
+        // P5 v0：变量表回显（插入序；覆盖写的旧值也列——get 取最新，回显
+        // 面向人不做去重）。
+        for (k, v) in vars.iter() {
+            writeln!(out, "{}={}", k, v).unwrap();
+        }
+        0
     } else if let Some(text) = cmd.strip_prefix("echo ") {
         writeln!(out, "{}", text.trim()).unwrap();
-    } else if let Some(rest) = cmd.strip_prefix("run") {
-        if rest.is_empty() {
-            writeln!(out, "usage: run <name>").unwrap();
-        } else {
-            do_run(rest.trim(), out);
-        }
+        0
+    } else if cmd == "echo" {
+        writeln!(out).unwrap();
+        0
+    } else if cmd == "run" {
+        writeln!(out, "usage: run <name>").unwrap();
+        2
+    } else if let Some(rest) = cmd.strip_prefix("run ") {
+        // 词边界：`runfoo` 是未知命令（127），不是 `run foo`（对抗审查实抓
+        // ——echo 分支同款双边界：`run ` 带空格才算 run + 参数）。
+        do_run(rest.trim(), out)
     } else {
         writeln!(out, "bsh: {}: not found", cmd).unwrap();
-    }
+        127
+    };
     out.flush().unwrap();
+    code
 }
 
 /// `run <name>`：cpio 查 `bin/<name>` → 私有 stdout 对拉起（32 页栈 = musl
 /// 128KiB 口径，盖住 clap 级栈深）→ 收齐 EOF → 回放 console。
 /// 子进程无 stdin（env 块单 gift，libc /dev/null 语义——read 即 EOF）。
-fn do_run(name: &str, out: &mut std::io::Stdout) {
+/// 返回状态码：127 not found / 126 spawn failed / 2 usage / 其余 = 子真码
+/// （reap Err → 1——真码源 0x3A）。
+fn do_run(name: &str, out: &mut std::io::Stdout) -> i32 {
     if name.is_empty() || name.contains([' ', '/']) {
         writeln!(out, "usage: run <name>").unwrap();
-        return;
+        return 2;
     }
     let full = format!("bin/{}", name);
     let Some((data_off, data_len)) = cpio_find(rootfs_h(), full.as_bytes()) else {
         writeln!(out, "bsh: run: {}: not found", name).unwrap();
-        return;
+        return 127;
     };
     let (out_s, out_c) = channel_pair();
     let spec = SpawnSpec {
@@ -163,7 +321,7 @@ fn do_run(name: &str, out: &mut std::io::Stdout) {
         extra_arg: None,
         extra_gift: None,
     };
-    if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
+    let code = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
         let o = collect(out_s);
         out.write_all(&o.data).unwrap();
         if !o.eof {
@@ -174,20 +332,26 @@ fn do_run(name: &str, out: &mut std::io::Stdout) {
         }
         out.flush().unwrap();
         // Plan B：收完输出后回收子进程（挂死/帽尽 = 句柄留存有界泄漏，警告
-        // 不死 shell——终验面在 svcmgr `EXIT ok`）。
-        if child.reap().is_err() {
-            writeln!(out, "[bsh: run {}: reap failed]", name).unwrap();
-            out.flush().unwrap();
+        // 不死 shell——终验面在 svcmgr `EXIT ok`）。reap 返真退出码（P5）。
+        match child.reap() {
+            Ok(c) => c,
+            Err(()) => {
+                writeln!(out, "[bsh: run {}: reap failed]", name).unwrap();
+                out.flush().unwrap();
+                1
+            }
         }
     } else {
         // Err = ELF 坏或资源耗尽（-ENOMEM 降级，PROCESS_MAX 出帽不杀 shell）。
         writeln!(out, "bsh: run: {}: spawn failed", name).unwrap();
-    }
+        126
+    };
     // out_c 原值：子表已持 SEND 别名（spawn 内 dup 迁移），本表副本使命已毕
     // （svcmgr verify_hexyl 同款）。
     if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
         berry_libc::park(); // 关不掉 = 泄漏面，loud 死（不 trap：交互面不死 shell）
     }
+    code
 }
 
 /// `A | B | …` 交互面（v1：各段裸名——无参数无 `/`，参数面随 v2 argv 展开）。
@@ -197,18 +361,22 @@ fn do_run(name: &str, out: &mut std::io::Stdout) {
 /// `hello | …`，hello 10s 周期睡眠永循环）= 10s collect 帽 + 30s reap 帽/段
 /// 的可见冻结 + 僵尸留存（v1 无 kill syscall，PROCESS_MAX=64 出帽时新管
 /// spawn failed 拒绝但 shell 活）——kill/监督随 v2。
-fn do_pipe(cmd: &str, out: &mut std::io::Stdout) {
+fn do_pipe(cmd: &str, vars: &[(String, String)], status: i32, out: &mut std::io::Stdout) -> i32 {
+    // 段名执行时展开（`$X | hexyl` 的 X 也是数据面）；展开注入的 `|`/空格
+    // 只会撞下方校验或 not found——不当语法（切段已在 exec_one 的原始文本
+    // 上完成）。
+    let owned: Vec<String> = cmd.split('|').map(|p| expand(p.trim(), vars, status)).collect();
     let mut segs: Vec<PipeSeg> = Vec::new();
-    for part in cmd.split('|') {
-        let name = part.trim();
-        if name.is_empty() || name.contains([' ', '/']) {
+    for name in owned.iter() {
+        let name = name.trim();
+        if name.is_empty() || name.contains([' ', '/', '|']) {
             writeln!(out, "usage: <name> | <name>（rootfs bin/ 裸名）").unwrap();
-            return;
+            return 2;
         }
         segs.push(PipeSeg { name, arg: None });
     }
-    match pipe_capture(&segs, None) {
-        Ok(o) => {
+    let code = match pipe_capture(&segs, None) {
+        Ok((o, c)) => {
             out.write_all(&o.data).unwrap();
             if !o.eof {
                 writeln!(out, "[bsh: pipe: no EOF (timeout)]").unwrap();
@@ -216,15 +384,19 @@ fn do_pipe(cmd: &str, out: &mut std::io::Stdout) {
             if o.dropped > 0 {
                 writeln!(out, "[bsh: pipe: {}B dropped]", o.dropped).unwrap();
             }
+            c
         }
         Err(PipeFail::NotFound(n)) => {
             writeln!(out, "bsh: pipe: {}: not found", n).unwrap();
+            127
         }
         Err(PipeFail::SpawnFail(n)) => {
             writeln!(out, "bsh: pipe: {}: spawn failed（先前段有界泄漏）", n).unwrap();
+            126
         }
-    }
+    };
     out.flush().unwrap();
+    code
 }
 
 /// 管道段：程序名 + argv[1]（自验传 `--color=never`，交互 v1 裸名 None）。
@@ -258,7 +430,10 @@ enum PipeFail {
 /// 几何前置检 + process_create -ENOMEM，均无已建对象、未 take 任何
 /// handle），先前段写无读者管道 = 永堵（libc 写侧 10s 重臂）——跳过 30s
 /// reap 白等，关本表副本，有界泄漏交调用方警告。
-fn pipe_capture(segs: &[PipeSeg], first_feed: Option<&[u8]>) -> Result<RunOut, PipeFail> {
+fn pipe_capture(
+    segs: &[PipeSeg],
+    first_feed: Option<&[u8]>,
+) -> Result<(RunOut, i32), PipeFail> {
     // fail-fast：全段查档（拼错名 = 零 spawn 零泄漏）。
     let mut found: Vec<(String, (u64, u64))> = Vec::with_capacity(segs.len());
     for s in segs {
@@ -314,16 +489,28 @@ fn pipe_capture(segs: &[PipeSeg], first_feed: Option<&[u8]>) -> Result<RunOut, P
     let o = collect(out_s);
     // ……再逐段 reap（此时全员应已退出，30s 帽只兜挂死面；失败 = 句柄
     // 留存有界泄漏 + 子进程僵尸（v1 无 kill，见 do_pipe 边界注），警告不死
-    // shell——终验面在 svcmgr `EXIT ok`）。
+    // shell——终验面在 svcmgr `EXIT ok`）。末段 reap Ok = 管道状态码（P5
+    // `&&`/`$?` 真码源；reap Err → 1）。
+    let mut code = 1;
     for (i, c) in children.iter().enumerate() {
-        if c.reap().is_err() {
-            eprintln!("bsh: pipe: seg {} reap failed (leak)", i);
+        match c.reap() {
+            Ok(cc) => {
+                if i == last {
+                    code = cc;
+                }
+            }
+            Err(()) => {
+                eprintln!("bsh: pipe: seg {} reap failed (leak)", i);
+                if i == last {
+                    code = 1;
+                }
+            }
         }
     }
     if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
         berry_libc::park();
     }
-    Ok(o)
+    Ok((o, code))
 }
 
 /// 管道自验（三跑对拍，`PIPE ok` = rootfs 相第 10 标记）：
@@ -343,8 +530,8 @@ fn pipe_capture(segs: &[PipeSeg], first_feed: Option<&[u8]>) -> Result<RunOut, P
 fn pipe_selftest() {
     let pat = &HEXYL_STDIN[..64];
     let a1 = match run_capture("hexyl", Some(pat), Some("--color=never")) {
-        Some(o) if o.eof && o.dropped == 0 && !o.data.is_empty() => o.data,
-        Some(o) => {
+        Some((o, _)) if o.eof && o.dropped == 0 && !o.data.is_empty() => o.data,
+        Some((o, _)) => {
             eprintln!(
                 "bsh: pipe selftest: ref input bad: eof={} len={} dropped={}",
                 o.eof,
@@ -363,7 +550,7 @@ fn pipe_selftest() {
         PipeSeg { name: "hexyl", arg: Some("--color=never") },
     ];
     let piped = match pipe_capture(&segs, Some(pat)) {
-        Ok(o) => o,
+        Ok((o, _)) => o,
         Err(PipeFail::NotFound(n)) => {
             eprintln!("bsh: pipe selftest: {} not found", n);
             berry_libc::park();
@@ -374,7 +561,7 @@ fn pipe_selftest() {
         }
     };
     let out3 = match run_capture("hexyl", Some(&a1), Some("--color=never")) {
-        Some(o) => o,
+        Some((o, _)) => o,
         None => {
             eprintln!("bsh: pipe selftest: ref run failed");
             berry_libc::park();
@@ -402,8 +589,10 @@ fn pipe_selftest() {
 }
 
 /// 拉起 + 收集（自验/交互共用）：查档 → spawn → collect → 回收 → 关对端。
-/// None = 档未命中或 ELF 坏（调用方 not found / elf bad）。
-fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Option<RunOut> {
+/// None = 档未命中（调用方 not found）；Some((RunOut, code)) 的 code = 子
+/// 真退出码（reap Err → 1——P5 `&&`/`$?` 真码源；spawn Err 仍 park = 自验
+/// 面 loud 死，交互 not-found 面在 do_run 不经此）。
+fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Option<(RunOut, i32)> {
     let full = format!("bin/{}", name);
     let (data_off, data_len) = cpio_find(rootfs_h(), full.as_bytes())?;
     let (out_s, out_c) = channel_pair();
@@ -424,14 +613,18 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Opt
     };
     let o = collect(out_s);
     // Plan B：reap 失败 ≠ run 链断（终验面在 svcmgr `EXIT ok`）——诊断可见
-    // 即可，BSH ok 语义仍只锚定输出面。
-    if child.reap().is_err() {
-        eprintln!("bsh: selftest: reap failed");
-    }
+    // 即可，BSH ok 语义仍只锚定输出面；真码面 Err → 1（P5）。
+    let code = match child.reap() {
+        Ok(c) => c,
+        Err(()) => {
+            eprintln!("bsh: selftest: reap failed");
+            1
+        }
+    };
     if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
         berry_libc::park();
     }
-    Some(o)
+    Some((o, code))
 }
 
 /// 收子进程 stdout 至 EOF / 活动帽（verify_hexyl 同构：满 192B 分片逐条
