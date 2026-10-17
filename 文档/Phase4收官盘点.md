@@ -205,6 +205,8 @@
 
 ### 轨 2：pinger / s·C·P 早停（根因未定位——调查轨，非修复宣称）
 
+> **【2026-10-17 结案——82fe305】**本轨已收口，标题保留写作时点状态。真因 = **console 通道槽位饿死**：全体 EL0 纯打印生产者用自旋 send（满队 -EBUSY 即重试），自旋者从不阻塞 → RR 环序冻结 → console 每轮排水窗口（drain 8 槽）被环相位占优者（good/svcmgr/talker）垄断，五任务每片只见满队、零成功发送；pinger 的 -110 是下游（ponger 自旋卡死不排空 endA → 10s WRITABLE 帽到点自陷）。本文「已就绪却不再被调度」的推断被仪器证伪（逐切换 trace：五任务每轮照被调度；逐 tick EL0 PC：全员钉在 send 重试点）；「批量退出级联窗口」是 console 饱和起始时刻的相关性巧合，非因果。修法 = 八 asm 站点 + abuser 编译版自旋全量换阻塞 wait（EBUSY → clock+wait_one(console, WRITABLE, now+10s) → 重发，-ETIMEDOUT 重臂 = 与自旋同耐心）；验证 = smoke 双相全绿 + 30s 裸跑 ×3 确定性全过（S=173/s=145/C=116/W=154/P=166/p=36 流动到底、死者恰 rogue_ptr、G1.5 后零新 dump）。全链见 `文档/战役复盘-2026-10.md` §3 雷 2。下方取证计划保留存档（未执行）。
+
 1. **立即落地（独立提交）**：`进程调度/src/runqueue.rs:70` 一行修——`if prev == next` → `if prev == task && next == task`（两元环 unlink 误走空环分支的潜伏 bug；现矩阵 ≥6 常驻成员零行为扰动）＋ ktest 新用例：两元环 unlink X 后 Y 自环且 head 正确、再 unlink Y 归空。
 2. **取证遥测**：unlink/exit/link_back 只读计数 + 环尺寸快照原语（零分配零切换纪律，对齐遥测环先例）→ 150s 复跑比对环尺寸轨迹，定位四进程（abuser/spawner/child/ponger）失联时刻的环操作序列。
 3. **候选排查方向（按验证建议序）**：批量退出级联窗口（ai_demo/ai_probe/it_*/sleeper/waker exit + CHAIN/SVC/DEMO 簇，~5-6s）的 tick/SVC 交错重放；EL0 异常入口 SP_EL1 不变量（「EL0 运行期间 SP_EL1 留本任务内核栈位」被破坏则该任务帧丢、永不可切回且无 dump——症状形状吻合）；金丝雀口径核实（见 §1 两说 2）。退出路径批（P5-B v0.5 落 0x33 时）天然重对 exit 环操作，可与本轨合流。
