@@ -154,6 +154,12 @@ static mut PUMP_WIN: [u8; 4096] = [0; 4096];
 /// hexyl 终验收齐窗：子 stdout 全量（基准 2156B + 版本漂移余量）。
 static mut HEX_WIN: [u8; 4096] = [0; 4096];
 
+/// ELF 映幅帽 = 内核 `VMO_MAX_SIZE`（16MiB）同值（复盘雷 8 残留面）：
+/// `elf_head` 只挡 >2^39 野值，(16MiB, 2^39) 区间的合法巨段会走到
+/// vmo_create 才 -ENOMEM → 自陷——span 属 rootfs **输入面**（非内核契约
+/// 面），按解析侧同款契约 Err 降级；真实 std 镜像 ~283KB，余量充足。
+const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
+
 /// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
 /// 驻留**，旧 16KiB 整档帽随 std 镜像 ~283KB 一并退役）→ 命中 `bin/hello`
@@ -324,6 +330,9 @@ fn spawn_rootfs_elf(
     };
     let base = berry_loader::page_floor(h.image_min);
     let len = berry_loader::page_ceil(h.image_span);
+    if len > ELF_MAP_MAX {
+        return Err(()); // 段幅前置（雷 8）：巨段在几何层即降级，不等到 vmo_create
+    }
     let mut hp = 0 as Handle;
     let mut hv = 0 as Handle;
     if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
