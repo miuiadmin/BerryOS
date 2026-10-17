@@ -1529,11 +1529,39 @@ extern "C" fn task_svc_tag(arg: usize) -> ! {
 // ---- 4-6 B 半：AI 最小演示（boot spawn 块见 main 尾段；设计 =
 // `文档/4-6出口演示设计草案.md` B 半管线：遥测 → advisor → 注入 → 执法活证）----
 
-/// bench 完成事件 E_done 的用户位（4-2 位面纪律：Event 用户位 1<<32 起编、
-/// 与既有全部等待位零碰撞——1<<34 仅 ktest 瞬态用过（ktest 在 sched::init 前
-/// 跑、运行期不在场），且本事件是独立 ObjRef，位空间互不干扰）。
+// ---- 用户半信号位登记表（单一事实源——挑新位前必查；新增必登记）----
+// 高 32 位用户位（SIGNAL_USER_MASK）的占用登记。此前唯一「登记」是散布各处
+// 的散文注释（含「1<<36 全库未用」这类只反映写注释当天的口头声明），多会话
+// 并行下已发生真实冲突——a27eb9c 为 waiter 修复新占 1<<38 时 HEAD 无从得知。
+// asm 模板魔数无法引用本表，表的价值 = 人查的集中清单 + 编译期去重断言；
+// 同位双用途 = 互相清位/误唤醒（waiter 雷的同型成因），显形即 missed wakeup
+// 级排障成本。ktest 瞬态位（sched::init 前跑、运行期不在场）不登记。
+const USER_SIGNAL_BITS: &[(u64, &str)] = &[
+    (1 << 32, "哑 Event 对照项（console/ponger wait_many，永不 signal）"),
+    (1 << 33, "SLEEP_OBJ（4-0 sleeper 条件唤醒）"),
+    (1 << 34, "AI_EV_DONE（4-6B bench 完成事件）"),
+    (1 << 35, "waiter U3（4-1 路③ 长睡握手）"),
+    (1 << 36, "AI_EV_REL（4-6B probe 放行事件）"),
+    (1 << 37, "waiter U2（4-1 路② poll 命中）"),
+    (1 << 38, "waiter U4（a27eb9c 握手位拆分——合入即生效）"),
+];
+// 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
+const _: () = {
+    let bits = USER_SIGNAL_BITS;
+    let mut i = 0;
+    while i < bits.len() {
+        let mut j = i + 1;
+        while j < bits.len() {
+            assert!(bits[i].0 != bits[j].0, "user signal bit collision");
+            j += 1;
+        }
+        i += 1;
+    }
+};
+
+/// bench 完成事件 E_done 的用户位（占用登记见 [`USER_SIGNAL_BITS`]）。
 const AI_EV_DONE_BIT: u64 = 1 << 34;
-/// probe 放行事件 E_rel 的用户位（1<<36 全库未用）。
+/// probe 放行事件 E_rel 的用户位（占用登记见 [`USER_SIGNAL_BITS`]）。
 const AI_EV_REL_BIT: u64 = 1 << 36;
 
 /// ai_demo ↔ ai_probe 握手标志：demo bind 注入表后、睡 E_rel 前置位——probe
