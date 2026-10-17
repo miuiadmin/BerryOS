@@ -19,6 +19,24 @@
 
 use crate::handle::{HandleTable, ObjRef};
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// 活进程帽（`sys_process_create` 门控）：v1 无退出路径 + 创建权未设防
+/// （`job` 恒 0）——每次成功 create 的 root Vmar 帧与 Process/Vmar Box 永不
+/// 释放（ASID 可回收、帧/Box 纯泄漏）。无帽则单 EL0 循环 create 可把全系统
+/// 耗到 -ENOMEM 停摆（no-panic 守住不死、但一切服务停摆）；计数把无界封为
+/// 有界——`vmo_create` 的 `VMO_MAX_SIZE` 帽同哲学。per-caller 配额随 v2 Job
+/// 收口（届时按调用方分账）。
+pub const PROCESS_MAX: usize = 64;
+
+/// 活 Process 对象计数（`Process::new` 增、`Drop` 减）。单核顺序（对象仅在
+/// IRQ 屏蔽路径创建/销毁）——Relaxed 足够，用原子只为免 unsafe static mut。
+static PROCESS_LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// 当前活进程数（帽门控与观测面）。
+pub fn process_live() -> usize {
+    PROCESS_LIVE.load(Ordering::Relaxed)
+}
 
 /// 进程 = 地址空间容器：root Vmar（页表树 + ASID）+ 供调度器用的表根快照。
 pub struct Process {
@@ -42,6 +60,7 @@ impl Process {
     /// 其不可被销毁（已 retain 保证）。
     pub unsafe fn new(vmar_ref: NonNull<ObjRef>, ttbr0_pa: usize, asid: u16) -> Self {
         (*vmar_ref.as_ptr()).retain();
+        PROCESS_LIVE.fetch_add(1, Ordering::Relaxed);
         Self { vmar: vmar_ref, ttbr0_pa, asid, ht: HandleTable::new() }
     }
 
@@ -51,6 +70,7 @@ impl Drop for Process {
     fn drop(&mut self) {
         // SAFETY: 构造时 retain 过；单核顺序（对象仅在 IRQ 屏蔽路径销毁）。
         unsafe { ObjRef::release(self.vmar) };
+        PROCESS_LIVE.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

@@ -768,6 +768,11 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 活进程帽（复盘雷 4）：无退出路径 + 创建权未设防 → 循环 create 的
+    // 帧/Box 永不释放——超帽拒 -ENOMEM（`PROCESS_MAX` 见 process.rs）。
+    if crate::process::process_live() >= crate::process::PROCESS_MAX {
+        return ERR_NO_MEMORY as i64;
+    }
     // 帧耗尽折 -ENOMEM（3b3 H1：new_root 曾内嵌 expect——EL0 一次 process_create
     // 即可让内核 panic 停机）。
     let vmar = match Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()) {
