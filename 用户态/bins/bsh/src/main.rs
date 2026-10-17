@@ -12,8 +12,9 @@
 //! stdin=/dev/null）。交互循环是化妆面：prompt `bsh> ` 只挂命令完成；fd0
 //! 空读（libc 10s 帽超时 EOF 化）= 噪声，静默续读不重刷 prompt。
 //!
-//! v1 内建：help / echo / run；`exit` 留 Plan B（0x33 退出路径落地后接）。
-//! 每次 `run` 泄漏一个 park 中的子进程（无退出 syscall，v1 接受）。
+//! v1 内建：help / echo / run / exit（Plan B v0.5：`exit` 经 std::process::exit
+//! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
+//! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 
 use std::io::{BufRead, Write};
 
@@ -99,7 +100,7 @@ fn main() {
     }
 }
 
-/// 命令分派（v1 三内建 + not found；`exit` 留 Plan B）。
+/// 命令分派（v1 四内建 + not found）。
 fn dispatch(cmd: &str, out: &mut std::io::Stdout) {
     if cmd.is_empty() {
         return;
@@ -107,9 +108,12 @@ fn dispatch(cmd: &str, out: &mut std::io::Stdout) {
     if cmd == "help" {
         writeln!(
             out,
-            "bsh 内建：help | echo <text> | run <name>（rootfs bin/ 下程序）"
+            "bsh 内建：help | echo <text> | run <name> | exit（rootfs bin/ 下程序）"
         )
         .unwrap();
+    } else if cmd == "exit" {
+        out.flush().unwrap();
+        std::process::exit(0); // → libc exit → EOF + berry_process_exit(0x33)
     } else if let Some(text) = cmd.strip_prefix("echo ") {
         writeln!(out, "{}", text.trim()).unwrap();
     } else if let Some(rest) = cmd.strip_prefix("run") {
@@ -149,9 +153,7 @@ fn do_run(name: &str, out: &mut std::io::Stdout) {
         extra_arg: None,
         extra_gift: None,
     };
-    if spawn_rootfs_elf(rootfs_h(), &spec).is_err() {
-        writeln!(out, "bsh: run: {}: elf bad", name).unwrap();
-    } else {
+    if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
         let o = collect(out_s);
         out.write_all(&o.data).unwrap();
         if !o.eof {
@@ -161,6 +163,14 @@ fn do_run(name: &str, out: &mut std::io::Stdout) {
             writeln!(out, "[bsh: run {}: {}B dropped]", name, o.dropped).unwrap();
         }
         out.flush().unwrap();
+        // Plan B：收完输出后回收子进程（挂死/帽尽 = 句柄留存有界泄漏，警告
+        // 不死 shell——终验面在 svcmgr `EXIT ok`）。
+        if child.reap().is_err() {
+            writeln!(out, "[bsh: run {}: reap failed]", name).unwrap();
+            out.flush().unwrap();
+        }
+    } else {
+        writeln!(out, "bsh: run: {}: elf bad", name).unwrap();
     }
     // out_c 原值：子表已持 SEND 别名（spawn 内 dup 迁移），本表副本使命已毕
     // （svcmgr verify_hexyl 同款）。
@@ -169,7 +179,7 @@ fn do_run(name: &str, out: &mut std::io::Stdout) {
     }
 }
 
-/// 拉起 + 收集（自验/交互共用）：查档 → spawn → collect → 关对端。
+/// 拉起 + 收集（自验/交互共用）：查档 → spawn → collect → 回收 → 关对端。
 /// None = 档未命中或 ELF 坏（调用方 not found / elf bad）。
 fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Option<RunOut> {
     let full = format!("bin/{}", name);
@@ -186,10 +196,16 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Opt
         extra_arg: extra_arg.map(|a| a.as_bytes()),
         extra_gift: None,
     };
-    if spawn_rootfs_elf(rootfs_h(), &spec).is_err() {
-        berry_libc::park(); // 自验面：链断 loud（标记缺失兜底）
-    }
+    let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
+        Ok(c) => c,
+        Err(_) => berry_libc::park(), // 自验面：链断 loud（标记缺失兜底）
+    };
     let o = collect(out_s);
+    // Plan B：reap 失败 ≠ run 链断（终验面在 svcmgr `EXIT ok`）——诊断可见
+    // 即可，BSH ok 语义仍只锚定输出面。
+    if child.reap().is_err() {
+        eprintln!("bsh: selftest: reap failed");
+    }
     if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
         berry_libc::park();
     }

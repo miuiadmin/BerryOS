@@ -29,7 +29,7 @@ pub fn run() {
 /// Step 9 信号 + G0 退出 #6 + **3-1 真 ABI 骨架**：从 EL1 发 `svc #0`（EC=0x15）
 /// → HAL dispatch → 语义层 handler（`内核/src/syscall.rs`）→ 回写 x0、eret 续行。
 /// 用例：调试槽退役面（4-5a：0xFE/0xFF 随 console 服务落地回落 -ENOTSUP——
-/// EL0 输出改走 channel_send 真 IPC）；未知号 0x99 / 未实现真号 0x33 一律
+/// EL0 输出改走 channel_send 真 IPC）；未知号 0x99 / 未实现真号 0x35 一律
 /// -ENOTSUP（3-1 政策：错误码自理、永不杀调用者）；clock_read（MONOTONIC）两次
 /// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）；
 /// 3-4a per-process 表拆分（G 段）：两表隔离 + take/insert_ref 迁移原语 + 子进程
@@ -52,12 +52,13 @@ fn test_syscall() {
     assert_eq!(svc4(0xFE, 0x5a, 0, 0), -95, "SYSCALL：0xFE 调试槽须已退役");
     assert_eq!(svc4(0xFF, 0x75, 0, 0), -95, "SYSCALL：0xFF 调试槽须已退役");
 
-    // B. 未知号（越界 0x99）与未实现真号（process_exit 0x33，进程退出路径随后续
-    //    步）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言
-    //    （3-2 起 0x11、3-4c 起 0x04/0x06/0x54、4-2b 起 0x05 已实现，样本换 0x33）。
+    // B. 未知号（越界 0x99）与未实现真号（thread_start 0x35，v2 多线程面）
+    //    一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言
+    //    （3-2 起 0x11、3-4c 起 0x04/0x06/0x54、4-2b 起 0x05、Plan B 起 0x33/0x36
+    //    已实现——**勿再拿 0x33 当样本：已实现后会真退出杀掉 ktest**）。
     assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
     assert_eq!(
-        svc4(0x33, 0, 0, 0),
+        svc4(0x35, 0, 0, 0),
         -95,
         "SYSCALL：未实现真号须 -ENOTSUP"
     );
@@ -398,6 +399,20 @@ fn test_syscall() {
         "SYSCALL：跨进程 start 须 -EACCES（thread 不归该 process）"
     );
 
+    // F4b. Process 可等待面（Plan B v0.5）：Alive 进程 wait TERMINATED（poll，
+    //      deadline=0）→ -EAGAIN（Plan B 前对 Process wait 是 -EBADF——类型
+    //      未入 wait 链）；Exited 置位的正向验收在 svcmgr reap 链（EXIT ok
+    //      标记）——ktest 无 spawn 面造不出真退出。*observed 出参复用 I_OBS
+    //      纪律（预清 + 未命中保持 0）。
+    // SAFETY: I_OBS 为本函数私有静态（I 段同源纪律）。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(crate::syscall::NR_OBJECT_WAIT_ONE as u64, hp2 as u64, SIGNAL_TERMINATED, 0, &raw mut I_OBS as u64),
+        -11,
+        "SYSCALL：Alive 进程 wait TERMINATED 须 -EAGAIN（poll）"
+    );
+    assert_eq!(unsafe { I_OBS }, 0, "SYSCALL：未命中 observed 须保持 0");
+
     // F5. 清场（顺带覆盖钉住释放链：close 线程 → 释放对 Process 的钉住；
     //     close 进程 → 释放对 root Vmar 的钉住；空进程无映射，close 不受
     //     -EBUSY 面影响）。
@@ -687,7 +702,7 @@ fn test_syscall() {
     //    用远古时刻 deadline=1 验「已过点立即返」路径；真睡的 EL0 正向验收 =
     //    user_waiter 三路 + waker2，见 main.rs/user.rs）；4-2 位空间 = Event
     //    用户位迁高 32 半（U1/U2/U3）+ 低 32 位拒面 + wait 面扩 Channel（I7）。
-    use crate::handle::{RIGHT_DUPLICATE, RIGHT_SIGNAL, SIGNAL_READABLE, SIGNAL_WRITABLE};
+    use crate::handle::{RIGHT_DUPLICATE, RIGHT_SIGNAL, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE};
     use crate::syscall::{NR_EVENT_CREATE, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE};
     static mut I_OBS: u64 = 0; // *observed 出参
     static mut WM_H: [u32; 2] = [0; 2]; // wait_many handles 入参数组

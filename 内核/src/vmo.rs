@@ -212,8 +212,9 @@ impl Vmo {
 impl Drop for Vmo {
     /// 对象销毁回收物理页（补 3-0 裁剪项）：归还 mapcnt==0 的已提交页；**仍被
     /// 映射的页泄漏不还**（悬空 PTE 防线的最后一环）。handle 表路径到不了这里
-    /// （close 对映射中 VMO 拒 -EBUSY）；本 Drop 只兜 boot/ktest 直构对象——
-    /// 其映射常驻不解除（如用户进程 code/data/stack 页），泄漏即 v1 政策。
+    /// （close/replace 对映射中 VMO 拒 -EBUSY；drain 对映射中 VMO 整对象泄漏
+    /// 不递减——Plan B 对抗审查修，见 handle.rs）；本 Drop 只兜 boot/ktest 直构
+    /// 对象——其映射常驻不解除（如用户进程 code/data/stack 页），泄漏即 v1 政策。
     fn drop(&mut self) {
         for (page, &backing) in self.pages.iter().enumerate() {
             if let Some(pa) = backing {

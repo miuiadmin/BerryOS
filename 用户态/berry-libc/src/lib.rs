@@ -27,8 +27,11 @@
 //!   返回值再看 errno）。
 //! - **单线程根基**：pthread_create 返 EAGAIN（永不产线程）⇒ 全 crate 无锁、
 //!   `static mut` 直写合法；线程真支持是 v2 面。
-//! - **死= park 不= trap**：`exit`/`abort`/`_exit` 进 10s 周期睡眠——
-//!   trap 会被 watchdog 计入错杀断言（G-eco 家族契约）。
+//! - **死= 真退出（Plan B v0.5）不= trap**：`exit`/`_exit`/`abort` =
+//!   stdout 零长 EOF 先行 + `berry_process_exit`（0x33 真路径：内核置
+//!   Exited + 唤醒 TERMINATED 等待者 + drain + REAPQ 回收任务体）；trap
+//!   仍会被 watchdog 计入错杀断言（G-eco 家族契约不变）。`park` 降格为
+//!   协议破缺面的兜底（boot 破缺语境不敢假设表内 handle 可用）。
 
 #![no_std]
 #![allow(static_mut_refs)]

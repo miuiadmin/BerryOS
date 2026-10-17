@@ -122,6 +122,11 @@ size-release: build-user
     cargo build --release
     python3 工具链/size.py {{KERNEL_RELEASE}}
 
+# ABI 镜像断言：内核 NR/RIGHT/SIGNAL/ERR/CLOCK 常量 ↔ berry-sys ↔ ABI 文档
+# 编号表三方逐值对账（IDL 单源生成前的临时关卡，smoke 亦内嵌同款）。
+abi-check:
+    python3 工具链/abi_check.py
+
 # 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
 smoke: build

@@ -157,8 +157,11 @@ static mut HEX_WIN: [u8; 4096] = [0; 4096];
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
 /// 驻留**，旧 16KiB 整档帽随 std 镜像 ~283KB 一并退役）→ 命中 `bin/hello`
 /// / `bin/stdhello`/`bin/hexyl` 各自流式拉起。hello 后打 `ECO ok`（smoke
-/// 第 24 标记）；stdhello 自打 `STD ok`/`STD err ok`（d-1c 接线）；hexyl
-/// 走私有 stdout 终验后打 `HEXYL ok`（d-3c，见 `verify_hexyl`）。
+/// 第 24 标记）；stdhello 自打 `STD ok`/`STD err ok`（d-1c 接线）+ **Plan B
+/// v0.5：main 返回真退出（0x33）→ svcmgr reap 全回收后打 `EXIT ok`（rootfs
+/// 相第 9 标记）**；hexyl 走私有 stdout 终验后打 `HEXYL ok`（d-3c，见
+/// `verify_hexyl`）+ best-effort reap。hello（10s 周期睡眠）/bsh（交互）
+/// 常驻不回收（句柄留存 = 有界泄漏，v1 政策）。
 /// 有 rootfs 而链断 = 打一行原因后跳过（可见降级，不静默吞）。
 fn run_rootfs_child(console: Handle) {
     let mut cap = 0u64;
@@ -209,7 +212,7 @@ fn run_rootfs_child(console: Handle) {
                             extra_gift: None,
                         },
                     ) {
-                        Ok(()) => send_retry(console, ECO_OK.as_ptr(), ECO_OK.len()),
+                        Ok(_) => send_retry(console, ECO_OK.as_ptr(), ECO_OK.len()),
                         Err(()) => eco_skip(b"elf bad"),
                     }
                 } else if name == "bin/stdhello" {
@@ -218,7 +221,14 @@ fn run_rootfs_child(console: Handle) {
                     const STDIN_DATA: [u8; 64] =
                         *b"berryos!berryos!berryos!berryos!berryos!berryos!berryos!berryos!";
                     let stdin: &[u8] = &STDIN_DATA;
-                    if spawn_rootfs_elf(
+                    // Plan B v0.5：stdhello main 返回 → std lang_start → libc
+                    // `exit` → 0x33 真退出（EOF 先行）——svcmgr wait TERMINATED
+                    // 后完整回收（reap：unmap×2 + close×5），成功打 `EXIT ok`
+                    // （rootfs 相第 9 标记——「子进程退出 + 父回收」全链的
+                    // 确定性验收面；stdhello 恒从 main 返回，不赌交互输入）。
+                    // mkcpio 名序 stdhello 末位——本 arm 的阻塞等待不挡
+                    // 任何后续 arm（其后再无 arm）。
+                    match spawn_rootfs_elf(
                         H_ROOTFS,
                         &SpawnSpec {
                             name: name.as_bytes(),
@@ -231,10 +241,15 @@ fn run_rootfs_child(console: Handle) {
                             extra_arg: None,
                             extra_gift: None,
                         },
-                    )
-                    .is_err()
-                    {
-                        eco_skip(b"elf bad");
+                    ) {
+                        Ok(child) => {
+                            if child.reap().is_err() {
+                                eco_skip(b"exit reap");
+                            } else {
+                                send_retry(console, EXIT_OK.as_ptr(), EXIT_OK.len());
+                            }
+                        }
+                        Err(()) => eco_skip(b"elf bad"),
                     }
                 } else if name == "bin/hexyl" {
                     // d-3c：D4 路线①最终验证——上游 main.rs 逐字未动的生态
@@ -263,7 +278,7 @@ fn run_rootfs_child(console: Handle) {
                     // grep 标记 = 时序竞速；svcmgr 收齐全量逐字节比对基准后打
                     // **单消息原子** `HEXYL ok`（每 boot 确定性成立）。
                     let (out_s, out_c) = channel_pair();
-                    if spawn_rootfs_elf(
+                    match spawn_rootfs_elf(
                         H_ROOTFS,
                         &SpawnSpec {
                             name: name.as_bytes(),
@@ -276,12 +291,15 @@ fn run_rootfs_child(console: Handle) {
                             extra_arg: Some(b"--color=never"),
                             extra_gift: None,
                         },
-                    )
-                    .is_err()
-                    {
-                        eco_skip(b"elf bad");
-                    } else {
-                        verify_hexyl(out_s, console);
+                    ) {
+                        Err(()) => eco_skip(b"elf bad"),
+                        Ok(child) => {
+                            verify_hexyl(out_s, console);
+                            // Plan B：终验后 best-effort 回收（Err 静默跳过——
+                            // HEXYL ok 语义只锚定输出面，不叠回收成败；30s 帽
+                            // 内 EOF 已收 = 子进程退出在即，常态瞬回）。
+                            let _ = child.reap();
+                        }
                     }
                     // out_c 原值：子表已持 SEND 别名（dup 迁移），本表副本使命已毕
                     if berry_handle_close(out_c) != 0 {
@@ -351,14 +369,19 @@ fn run_rootfs_child(console: Handle) {
 /// smoke 第 24 标记（7 字节，尾插随合并序）。
 const ECO_OK: &[u8; 7] = b"ECO ok\n";
 
+/// rootfs 相第 9 标记（Plan B v0.5，8 字节）：stdhello 真退出（0x33）+
+/// svcmgr reap 全回收链的确定性验收面（`ChildHandles::reap` 成功才打）。
+const EXIT_OK: &[u8; 8] = b"EXIT ok\n";
+
 // rootfs ELF 流式拉起 = `berry_exec::spawn_rootfs_elf`（A-2 迁出：ELF 首窗
 // 解析 → 页铺平单 VMO → 段泵送 → 栈+保护页 → env 块交接；签名 SpawnSpec
 // 化 + h_rootfs 参数化——语义纪律与契约文档见 berry-exec/src/lib.rs）。
 
 /// hexyl 终验（d-3c，D4 路线①终验）：收齐子 stdout 全量 → 与宿主基准
 /// `HEXYL_PLAIN` 逐字节比对 → 全等才打 `HEXYL ok`（smoke rootfs 相标记）。
-/// **EOF = libc `park` 前的零长消息**（d-3b 约定的写侧对称面）——确定性
-/// 终点，不赌超时；10s **活动帽**（每次收包刷新）兜底 abort/断链路径
+/// **EOF = libc exit 族的 `send_stdout_eof` 零长消息**（d-3b 写侧约定；Plan B
+/// v0.5 起 exit/_exit/abort 真退出 0x33 前必发——EOF 后子进程即退出）——确定性
+/// 终点，不赌超时；10s **活动帽**（每次收包刷新）兜底断链/卡死路径
 /// （无 EOF → 打可见降级行，标记缺失 = smoke FAIL）。
 /// 比对通过后全表回放 console（人类可读面；与稳态矩阵插花无碍——已非
 /// 标记）。
@@ -393,7 +416,7 @@ fn verify_hexyl(h: Handle, console: Handle) {
         let mut obs = 0u64;
         if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
             send_retry(console, b"hexyl: no EOF\n".as_ptr(), 14);
-            return; // EOF 永不来 = 子进程异常路径（abort 无 EOF）——loud 降级
+            return; // EOF 永不来 = 子进程断链/卡死（Plan B 起 exit 族必经 EOF——abort 亦先行）——loud 降级
         }
     }
     if got == HEXYL_PLAIN.len() && cap[..got] == HEXYL_PLAIN[..got] {

@@ -6,12 +6,15 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 27 号编号全部在册（下方 NR_* 常量组）；4-1 实现 23 个——handle 三操作 +
-//! clock_read（3-1）+ VMO/Vmar 九号（3-2）+ process_create/thread_create/
-//! process_start（3-3）+ channel_create/send/recv（3-4b，全部经 [`HandleTable`]
-//! 能力门控——**权限在 handle 不在对象**）+ event 三号（3-4c；4-1 wait_one
-//! 阻塞化）+ thread_sleep（4-0，首个阻塞 syscall）。其余（wait_many、
-//! process/thread 退出）留后续步，未注册槽由 HAL 默认返 `-ENOTSUP`。
+//! v1 28 号编号全部在册（下方 NR_* 常量组）；**Plan B v0.5 起 27 号已实现**——
+//! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十号（3-2 + G-eco get_size）+
+//! process_create/start/exit + thread_create/exit（3-3 + Plan B 退出路径）+
+//! channel 三号（3-4b）+ event 三号（3-4c；4-1 wait_one 阻塞化）+ wait_many
+//! （4-2b）+ thread_sleep（4-0，首个阻塞 syscall），全部经 [`HandleTable`]
+//! 能力门控——**权限在 handle 不在对象**。余 0x35 thread_start（v2 多线程），
+//! 未注册槽由 HAL 默认返 `-ENOTSUP`。**任务退出钩子**（Plan B）：任一任务
+//! 退出（含 fault 杀，码 0）经 [`task_exit_hook`] 置 Process Exited + 唤醒
+//! TERMINATED 等待者 + drain 子表 + release 钉住——见下方 hook 注释。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
@@ -46,8 +49,9 @@ use crate::handle::{
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
     ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_USER_MASK, SIGNAL_WRITABLE,
+    SIGNAL_TERMINATED, SIGNAL_USER_MASK, SIGNAL_WRITABLE,
 };
+use crate::process::ProcState;
 use crate::vmar::{Perm, Vmar, VmarError};
 use crate::vmo::{Vmo, VmoError};
 use berry_hal_aarch64::trap::TrapFrame;
@@ -82,14 +86,13 @@ pub const NR_VMO_GET_SIZE: usize = 0x1A;
 // 进程 / 线程（7）
 pub const NR_PROCESS_CREATE: usize = 0x31;
 pub const NR_PROCESS_START: usize = 0x32;
-#[allow(dead_code)] // 进程退出路径（杀死/回收）随后续步落地
+/// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
 pub const NR_PROCESS_EXIT: usize = 0x33;
 pub const NR_THREAD_CREATE: usize = 0x34;
-#[allow(dead_code)] // 3-3
+#[allow(dead_code)] // thread_start：v2 多线程面（v1 单线程，start 即随 process_start）
 pub const NR_THREAD_START: usize = 0x35;
-#[allow(dead_code)] // 3-3
+/// Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。
 pub const NR_THREAD_EXIT: usize = 0x36;
-#[allow(dead_code)] // 3-3
 pub const NR_THREAD_SLEEP: usize = 0x37;
 // IPC / event（4；3-4b 实现 channel 三号）
 pub const NR_CHANNEL_CREATE: usize = 0x51;
@@ -883,7 +886,11 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     if thrd.owner() != vr {
         return ERR_ACCESS_DENIED as i64; // thread 不归该 process 管
     }
-    if thrd.started {
+    // 对抗审查修（Plan B）：per-Process 单次执法——只查 per-Thread 时
+    // thread_create×2 + start×2 可造共享同一 ht 的双任务（首任务退出即
+    // drain 活兄弟的表）；`state != Alive` 同时封「对已退出进程再 start」。
+    // Zircon zx_process_start 的 ZX_ERR_BAD_STATE 同形。
+    if thrd.started || proc.started || proc.state != ProcState::Alive {
         return ERR_BAD_STATE as i64;
     }
     // bootstrap 迁移：调用者表 → 子进程表（子入口 x0 = 子表新值）。
@@ -911,7 +918,7 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     // 回滚迁移（take 回子表令牌、重插调用者表——值或变、语义存活，同 insert
     // 失败回滚）→ -ENOMEM；thrd/started/retain 全未动。单核 IRQ 屏蔽：已入队
     // 任务在 eret 前不会运行，下面字段补写无竞态。
-    if berry_sched::try_spawn_user(
+    let task_ptr = match berry_sched::try_spawn_user(
         entry as usize,
         child_x0,
         sp as usize,
@@ -919,22 +926,80 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         proc.ttbr0_pa,
         proc.asid,
         ht_ptr,
-    )
-    .is_none()
-    {
-        if bootstrap != 0 {
-            // 回滚迁移（子表刚插入、单核无插队 → take 必成；防御面下令牌泄漏，
-            // 安全向）。
-            if let Ok((obj, rights)) = proc.ht.take(child_x0 as u32) {
-                let _ = t.insert_ref(obj, rights);
+    ) {
+        Some(p) => p,
+        None => {
+            if bootstrap != 0 {
+                // 回滚迁移（子表刚插入、单核无插队 → take 必成；防御面下令牌泄漏，
+                // 安全向）。
+                if let Ok((obj, rights)) = proc.ht.take(child_x0 as u32) {
+                    let _ = t.insert_ref(obj, rights);
+                }
             }
+            return ERR_NO_MEMORY as i64;
         }
-        return ERR_NO_MEMORY as i64;
-    }
+    };
     thrd.started = true;
-    // SAFETY: vr 在表（get_raw 过）；任务钉住（v1 永不释放，见上）。
+    proc.started = true; // per-Process 单次执法（见上方对抗审查修注释）
+    // Plan B v0.5：替运行中的任务钉一次 Process（retain），并把 ObjRef 地址落
+    // Task.pinned——退出钩子据此置 Exited/唤醒/drain/成对 release。写点在
+    // spawn 后（任务未跑，无竞态）。
+    // SAFETY: vr 在表（get_raw 过）；retain 与 pinned 写同点成对（任务已入队
+    // 未运行，无竞态）。
     unsafe { (*vr.as_ptr()).retain() };
+    berry_sched::set_task_pinned(task_ptr, vr.as_ptr() as usize);
     0
+}
+
+// ---- process/thread 退出（Plan B v0.5：0x33/0x36 真实现）----
+
+/// 任务退出钩子（sched `switch_away_forever_with` 在切走前调；`set_exit_hook`
+/// 注册于 [`install`]）。语义序 = 安全序（**顺序即正确性——颠倒即 UAF/漏醒**）：
+/// ①Process 置 Exited + exit_code（幂等）→ ②`wake_matching(TERMINATED)` 唤醒
+/// 父进程等待者 → ③drain 该 Process 的 handle 表（释放子侧全部能力）→
+/// ④release `process_start` 的运行钉住（**最后**：此后 Process 生死交还 handle
+/// 引用计数——父 close hp 归零即 drop；release 前 drain 防 Process 已 drop 还
+/// 触其 ht）。pinned=0（内核任务 / boot 手搭裸表用户进程）直通——**绝不 drain
+/// 私有表**：ai bench ping/pong 共享一张 tag 表，退出 drain 会扬活任务的句柄
+/// （4-6 共享表粒度坑的退出版）。
+unsafe extern "C" fn task_exit_hook(pinned: usize, code: i32) {
+    if pinned == 0 {
+        return;
+    }
+    let obj = pinned as *mut ObjRef;
+    // SAFETY: pinned 来自 process_start 的 retain（运行钉住 ≥1——本钩子期间
+    // 对象必活）；IRQ 屏蔽窗内（钩子调用点契约）。
+    unsafe {
+        let r = &mut *obj;
+        let Some(proc) = r.obj.as_process_mut() else { return }; // 防御面（不可达）
+        if proc.mark_exited() {
+            proc.exit_code = code;
+            // 唤醒等本 Process TERMINATED 的睡眠者（匹配键 = ObjRef 地址，同
+            // Event/Channel 面；SLEEPQ 钩子自动触发 PI 重推）。
+            berry_sched::wake_matching(pinned, SIGNAL_TERMINATED);
+        }
+        proc.ht.drain();
+        // SAFETY: 与 process_start 的 retain 成对；此后不再触 obj。
+        ObjRef::release(NonNull::new_unchecked(obj));
+    }
+}
+
+/// `process_exit(code) -> !`（0x33，Plan B v0.5）：退出**当前任务**——v1 进程
+/// 单线程，末线程退出 = 进程终止（Zircon last-thread 同义）。钩子置 Exited +
+/// 唤醒 TERMINATED 等待者 + drain 子表 + release 钉住；Task Box/内核栈入
+/// REAPQ。**ABI `-> !`**：实现永不返回（切走即不再回来）——HAL 派发回写 x0
+/// 的路径天然不可达（`exit_current_with` 内部 `context_switch` 不归）。
+/// EL1 无 Process 调用者（ktest 禁测 0x33——会杀 ktest）= 只退任务自身，
+/// 合法面（Zircon thread_exit 同义兜底）。
+extern "C" fn sys_process_exit(tf: &mut TrapFrame) -> i64 {
+    let code = tf.regs[1] as i32;
+    berry_sched::exit_current_with(code)
+}
+
+/// `thread_exit() -> !`（0x36，Plan B v0.5）：v1 单线程进程——末线程退出 =
+/// 进程终止（`process_exit(0)` 同义；多线程 + 保留进程随 v2 thread_start）。
+extern "C" fn sys_thread_exit(_tf: &mut TrapFrame) -> i64 {
+    berry_sched::exit_current_with(0)
 }
 
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
@@ -1337,6 +1402,12 @@ unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
                 }
                 Some(s)
             }
+            // Plan B v0.5：TERMINATED 单调置位（Exited 后永不清——同 Zircon
+            // TASK_TERMINATED；等其它位（READABLE 等）= 永不命中，同 Channel
+            // 用户位的不设门口径）。
+            KernelObj::Process(p) => {
+                Some(if p.state == ProcState::Exited { SIGNAL_TERMINATED } else { 0 })
+            }
             _ => None,
         }
     }
@@ -1376,16 +1447,33 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
     0
 }
 
+/// wait 面取对象（wait_one/wait_many 共用，Plan B 起三类型链）：Event →
+/// Channel → Process（wait 不需权利位，need=0）。全拒回**首个**（Event 的）
+/// 错误——与 4-2 的两类型链语义逐字一致（-EBADF/-EACCES 原样透传）。
+fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>, i32> {
+    match t.get_raw(h, ObjType::Event, 0) {
+        Ok((o, _)) => Ok(o),
+        Err(e) => match t.get_raw(h, ObjType::Channel, 0) {
+            Ok((o, _)) => Ok(o),
+            Err(_) => match t.get_raw(h, ObjType::Process, 0) {
+                Ok((o, _)) => Ok(o),
+                Err(_) => Err(e),
+            },
+        },
+    }
+}
+
 /// `object_wait_one(h, signals, deadline, *observed)`（4-1 阻塞化；4-2 扩
 /// Channel）：等待 `current & signals != 0`。命中 → `*observed = current`
 /// （**全满足集**，Zircon 同形）返 0；poll（`deadline==0`）未命中 → -EAGAIN；
 /// `deadline≠0`（MONOTONIC 绝对时刻）未命中 → 挂 [`berry_sched::block_current`]
 /// 睡到点。
 ///
-/// **wait 面对象 = Event | Channel**（4-2）：Event 状态 = 用户位掩码；Channel
-/// 状态 = 内核派生 READABLE/WRITABLE（[`signal_state`] 统一查询——用户 signal
-/// 不出 Channel 的位，等用户位 = 等一个永不置位的位，poll -EAGAIN / 到点
-/// -ETIMEDOUT，同 Zircon 不设门）。
+/// **wait 面对象 = Event | Channel | Process**（4-2 / Plan B）：Event 状态 =
+/// 用户位掩码；Channel 状态 = 内核派生 READABLE/WRITABLE；Process 状态 =
+/// 内核派生 TERMINATED（Exited 单调置位——父进程 wait 后 unmap/close 回收，
+/// [`berry_exec`] 的 reap 链）。查询点 [`signal_state`]；等不出的位
+/// （Channel 用户位 / Process 非 TERMINATED 位）永不命中，同 Zircon 不设门。
 ///
 /// **poll-first**：信号已到即返不睡（无丢信号）。醒来**重验条件**（醒因 ≠
 /// 结果：Timeout 时位可能刚被置、Signaled 时位可能又被清——清位竞态下重验
@@ -1414,14 +1502,11 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         0
     };
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // 4-2：wait 面扩 Channel——Event 未中再查 Channel（权利面同形：wait 不需
-    // 权利位）。两拒合并回**首个**错误（-EBADF/-EACCES 原样透传）。
-    let obj = match t.get_raw(h, ObjType::Event, 0) {
-        Ok((o, _)) => o,
-        Err(e) => match t.get_raw(h, ObjType::Channel, 0) {
-            Ok((o, _)) => o,
-            Err(_) => return e as i64,
-        },
+    // 4-2/Plan B：三类型链（Event|Channel|Process）——wait 不需权利位；全拒回
+    // 首个错误（-EBADF/-EACCES 原样透传）。
+    let obj = match wait_get(t, h) {
+        Ok(o) => o,
+        Err(e) => return e as i64,
     };
     // 统一循环：挂队前 + 每次醒来都重验（醒因不等于结果）。钉住**一次覆盖
     // 全部睡眠轮次**（清位竞态下可能再睡多轮），release 收口在唯一出口——
@@ -1530,16 +1615,14 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
         sbuf[i] = u64::from_le_bytes(b);
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // 解析全部对象（Event|Channel 双类型，同 wait_one；wait 不需权利位）；任一
-    // 失败 = 整体拒绝、首错透传——此时尚无 retain，无回滚面。
+    // 解析全部对象（Event|Channel|Process 三类型链 [`wait_get`]，同 wait_one；
+    // wait 不需权利位）；任一失败 = 整体拒绝、首错透传——此时尚无 retain，
+    // 无回滚面。
     let mut objs: [Option<NonNull<ObjRef>>; WAIT_MANY_MAX] = [None; WAIT_MANY_MAX];
     for i in 0..n {
-        let o = match t.get_raw(hbuf[i], ObjType::Event, 0) {
-            Ok((o, _)) => o,
-            Err(e) => match t.get_raw(hbuf[i], ObjType::Channel, 0) {
-                Ok((o, _)) => o,
-                Err(_) => return e as i64,
-            },
+        let o = match wait_get(t, hbuf[i]) {
+            Ok(o) => o,
+            Err(e) => return e as i64,
         };
         objs[i] = Some(o);
     }
@@ -1599,11 +1682,14 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 
 /// 注册已实现号（3-1 四号 + VMO/Vmar 九号 + process/thread 三号 + channel 三号 +
 /// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号；4-1 wait_one
-/// 阻塞化 / 4-2 wait 面扩 Channel 均为改板；4-2b 加 wait_many(0x05) = **24 号**。
-/// 0x33/0x35/0x36 退出随后续步）。
-/// 未列号走 HAL 默认 `-ENOTSUP`。
+/// 阻塞化 / 4-2 wait 面扩 Channel 均为改板；4-2b 加 wait_many(0x05) = 24 号；
+/// G-eco 加 vmo_get_size(0x1A) = 25 号；**Plan B v0.5 加 process_exit(0x33) /
+/// thread_exit(0x36) = 27 号**（余 0x35 thread_start v2 多线程面）。
+/// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
+/// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住——见 [`task_exit_hook`]）。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
+    berry_sched::set_exit_hook(task_exit_hook);
     reg(NR_HANDLE_CLOSE, sys_handle_close);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate);
     reg(NR_HANDLE_REPLACE, sys_handle_replace);
@@ -1623,7 +1709,9 @@ pub fn install() {
     reg(NR_VMAR_ALLOCATE, sys_vmar_allocate);
     reg(NR_PROCESS_CREATE, sys_process_create);
     reg(NR_PROCESS_START, sys_process_start);
+    reg(NR_PROCESS_EXIT, sys_process_exit);
     reg(NR_THREAD_CREATE, sys_thread_create);
+    reg(NR_THREAD_EXIT, sys_thread_exit);
     reg(NR_THREAD_SLEEP, sys_thread_sleep);
     reg(NR_CHANNEL_CREATE, sys_channel_create);
     reg(NR_CHANNEL_SEND, sys_channel_send);

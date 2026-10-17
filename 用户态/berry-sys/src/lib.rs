@@ -11,8 +11,9 @@
 //! 纯 raw 层：**绝不 panic、绝不分配**；上层 `berry` crate 负责
 //! `Status → Result<(), Status>` 包装与运行时（console/argv 等随 G-eco-d）。
 //!
-//! 数值事实与内核侧对账（2026-10，24 号已实现；0x33/0x35/0x36 内核回落
-//! `-ENOTSUP`，wrapper 照发——内核执法，调用者存活）。
+//! 数值事实与内核侧对账（2026-10，Plan B v0.5 起 28 号在册 27 号已实现——
+//! 余 0x35 `thread_start`（v2 多线程）内核回落 `-ENOTSUP`，wrapper 照发；
+//! 0x33/0x36 已真实现且 `-> !` 不返，「调用者存活」对它们不成立）。
 
 #![no_std]
 #![allow(clippy::missing_safety_doc)] // FFI 边界：指针语义在 ABI 文档成文
@@ -49,6 +50,7 @@ pub const RIGHTS_SAME: Rights = u64::MAX;
 
 pub const SIGNAL_READABLE: u64 = 1 << 0; // Channel 派生：本端队列非空
 pub const SIGNAL_WRITABLE: u64 = 1 << 1; // Channel 派生：对端队列未满
+pub const SIGNAL_TERMINATED: u64 = 1 << 2; // Process 派生：已退出（Plan B v0.5，永久置位）
 pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000; // Event/object_signal 专用
 
 // —— options 位 ——
@@ -103,10 +105,10 @@ mod nr {
 
     pub(super) const PROCESS_CREATE: usize = 0x31;
     pub(super) const PROCESS_START: usize = 0x32;
-    pub(super) const PROCESS_EXIT: usize = 0x33; // 未实现（-ENOTSUP）
+    pub(super) const PROCESS_EXIT: usize = 0x33; // Plan B v0.5 已实现（真退出）
     pub(super) const THREAD_CREATE: usize = 0x34;
-    pub(super) const THREAD_START: usize = 0x35; // 未实现（-ENOTSUP）
-    pub(super) const THREAD_EXIT: usize = 0x36; // 未实现（-ENOTSUP）
+    pub(super) const THREAD_START: usize = 0x35; // 未实现（-ENOTSUP，v2 多线程）
+    pub(super) const THREAD_EXIT: usize = 0x36; // Plan B v0.5 已实现（= process_exit(0)）
     pub(super) const THREAD_SLEEP: usize = 0x37;
 
     pub(super) const CHANNEL_CREATE: usize = 0x51;
@@ -361,8 +363,9 @@ pub extern "C" fn berry_process_start(
     }
 }
 
-/// ABI 形状 `-> !`（§8.4：不返回）。内核 0x33 v1 未实现（-ENOTSUP）——
-/// 到达此分支即自旋（不 panic：raw 层纪律；实现落地后不可达）。
+/// ABI 形状 `-> !`（§8.4：不返回）。内核 0x33 已随 Plan B v0.5 实现：置
+/// Process Exited + 唤醒 TERMINATED 等待者 + drain 子表，任务不返。svc 后
+/// 的自旋仅防御面（内核执法正确即不可达；raw 层不 panic）。
 #[no_mangle]
 pub extern "C" fn berry_process_exit(code: i32) -> ! {
     unsafe { sys(nr::PROCESS_EXIT, code as usize, 0, 0, 0, 0, 0) };
@@ -383,7 +386,8 @@ pub extern "C" fn berry_thread_start(thread: Handle) -> Status {
     unsafe { sys(nr::THREAD_START, thread as usize, 0, 0, 0, 0, 0) }
 }
 
-/// ABI 形状 `-> !`；内核 0x36 v1 未实现（同 `process_exit` 自旋留桩）。
+/// ABI 形状 `-> !`；内核 0x36 已随 Plan B v0.5 实现（v1 单线程 ⇒ 等价
+/// process_exit(0)，Zircon last-thread 语义——任务不返）。自旋同上仅防御。
 #[no_mangle]
 pub extern "C" fn berry_thread_exit() -> ! {
     unsafe { sys(nr::THREAD_EXIT, 0, 0, 0, 0, 0, 0) };

@@ -16,15 +16,20 @@
 //! - env 块 gift 位语义（libc `berry_libc_boot` 镜像）：[0] = stdout 端
 //!   RIGHT_SEND dup、[1] = stdin 读端、[2] = extra_gift（A-2：rootfs VMO
 //!   READ dup 等）。**随行 handle 被 send take**——调用方需保留原值者先
-//!   duplicate。
+//!   duplicate；
+//! - **回收（Plan B v0.5）**：成功返 [`ChildHandles`]，调用方收完输出后
+//!   `reap()`（wait TERMINATED → unmap×2 → close×5）——完整回收映像/栈
+//!   帧与对象 Box；不 reap = 有界泄漏（root Vmar L1/PT 帧与 ASID v1 恒
+//!   泄漏，见 [`ChildHandles::reap`] 注释）。
 
 #![no_std]
 
 use berry_sys::{
-    berry_channel_create, berry_channel_send, berry_handle_close, berry_handle_duplicate,
-    berry_process_create, berry_process_start, berry_thread_create, berry_vmar_map,
-    berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read, berry_vmo_write,
-    Handle, BERRY_ERR_BAD_HANDLE, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE,
+    berry_channel_create, berry_channel_send, berry_clock_read, berry_handle_close,
+    berry_handle_duplicate, berry_object_wait_one, berry_process_create, berry_process_start,
+    berry_thread_create, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
+    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE,
+    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE, SIGNAL_TERMINATED,
 };
 
 /// ELF 首窗：ehdr + 全部 phdr（真实 lld 产物 phnum ≤ 10 量级，4KiB 绰绰）。
@@ -39,6 +44,65 @@ static mut STEP_WIN: [u8; 512] = [0; 512];
 /// vmo_create 才 -ENOMEM → 自陷——span 属 rootfs **输入面**（非内核契约
 /// 面），按解析侧同款契约 Err 降级；真实 std 镜像 ~283KB，余量充足。
 const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
+
+/// `ChildHandles::reap` 的等待帽（绝对）：EOF 先行约定下子进程退出在
+/// EOF 后微秒量级，30s 帽只兜挂死面（未退出 = Err 交调用方定死法）。
+const REAP_TIMEOUT_NS: u64 = 30 * 1_000_000_000;
+
+/// [`spawn_rootfs_elf`] 的产物（Plan B v0.5）：回收面所需的全部子进程
+/// 句柄 + 几何。**所有权归调用方**——不回收 = 有界泄漏（v1 前 `run` 一次
+/// 漏一个子进程的旧常态）；`reap()` = 完整回收链。
+pub struct ChildHandles {
+    /// process handle（wait TERMINATED 用；最后关）。
+    pub hp: Handle,
+    /// root Vmar handle（unmap 用）。
+    pub hv: Handle,
+    /// thread handle。
+    pub ht: Handle,
+    /// 映像 VMO（unmap 后 close = destroy → Drop 还帧）。
+    pub vmo: Handle,
+    /// 栈 VMO（同上）。
+    pub svmo: Handle,
+    /// 映像映射基址/幅（unmap 精确匹配用）。
+    pub img_base: u64,
+    pub img_len: u64,
+    /// 栈映射基址/幅。
+    pub stack_va: u64,
+    pub stack_len: u64,
+}
+
+impl ChildHandles {
+    /// 回收已退出的子进程（Plan B v0.5）：wait `SIGNAL_TERMINATED`（30s
+    /// 绝对帽——EOF 先行约定下常态瞬回）→ unmap 映像/栈（mapcnt 归零）
+    /// → close 栈/映像 VMO（destroy-close 不再拒，Drop 还帧）→ close
+    /// thread/vmar/process（对象 Box 释放；root Vmar 的 L1/PT 帧与 ASID
+    /// v1 仍泄漏——`process.rs` PROCESS_MAX 注释同口径）。任一步失败返
+    /// `Err`（句柄留存 = 有界泄漏，死法交调用方：标记缺失 / 续走警告）。
+    pub fn reap(&self) -> Result<(), ()> {
+        let mut now = 0u64;
+        if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+            return Err(());
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(self.hp, SIGNAL_TERMINATED, now + REAP_TIMEOUT_NS, &mut obs) != 0 {
+            return Err(()); // 未按期退出（挂死/帽尽）：不冒险回收
+        }
+        if berry_vmar_unmap(self.hv, self.img_base as usize, self.img_len as usize) != 0
+            || berry_vmar_unmap(self.hv, self.stack_va as usize, self.stack_len as usize) != 0
+        {
+            return Err(());
+        }
+        if berry_handle_close(self.svmo) != 0
+            || berry_handle_close(self.vmo) != 0
+            || berry_handle_close(self.ht) != 0
+            || berry_handle_close(self.hv) != 0
+            || berry_handle_close(self.hp) != 0
+        {
+            return Err(());
+        }
+        Ok(())
+    }
+}
 
 /// 建通道对（两端均授 SEND|RECV|DUPLICATE；返回 (本端, 交接端)）。syscall
 /// 失败自陷（通道是启动关键原语——失败 = 系统级异常）。
@@ -93,8 +157,9 @@ pub struct SpawnSpec<'a> {
 /// -EBADF（迁移自证）。
 ///
 /// 解析/首窗读失败返 Err（调用方可见降级续走归档）；syscall 面失败自陷
-/// ——链断 loud（标记缺失兜底）。
-pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<(), ()> {
+/// ——链断 loud（标记缺失兜底）。成功返 [`ChildHandles`]（Plan B v0.5：
+/// 调用方收完输出后 `reap()` 完整回收；不回收 = 有界泄漏）。
+pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandles, ()> {
     let SpawnSpec {
         name,
         data_off,
@@ -261,7 +326,17 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<(), ()> {
             trap();
         }
     }
-    Ok(())
+    Ok(ChildHandles {
+        hp,
+        hv,
+        ht,
+        vmo,
+        svmo,
+        img_base: base,
+        img_len: len,
+        stack_va,
+        stack_len,
+    })
 }
 
 /// cpio 单点查询（bsh 的 `run <name>`）：全档步进找 `name`（如

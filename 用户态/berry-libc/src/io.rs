@@ -96,10 +96,12 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
     }
 }
 
-/// main 意外返回后的收口（crt0 跳入）。
+/// main 意外返回后的收口（crt0 跳入）。`bl main` 返回后 x0 仍持 main 返回码
+/// （`bl` 不清 x0——零参桩读首参的合法面，见 lib.rs「ABI 口径」）；std 正路
+/// 在 lang_start 内已 `libc::exit`，到这里的都是旁路，语义照走真退出。
 #[no_mangle]
-pub extern "C" fn berry_libc_park_after_main() -> ! {
-    crate::park()
+pub extern "C" fn berry_libc_park_after_main(code: c_int) -> ! {
+    exit(code)
 }
 
 /// stdout 端零长 EOF（d-3c）：`park` 前一次性补发——d-3b「零长消息 = EOF」
@@ -400,22 +402,28 @@ pub extern "C" fn ftell(_f: *mut FILE) -> c_long {
     -1
 }
 
-// —— 死亡面（exit 族：park 不 trap——watchdog 错杀断言契约）——
+// —— 死亡面（Plan B v0.5：exit 族接真 0x33——EOF 先行 + `berry_process_exit`。
+// EOF 在退出**前**补发（d-3c 收端约定不变：收端收齐零长消息即知输出终了，
+// 不赌进程死序）；`park` 保留给「协议破缺面」的兜底（argc=0/console=0 类
+// boot 破缺——退出路径依赖表内 handle，破缺语境不敢假设可用）——
 
 #[no_mangle]
-pub extern "C" fn exit(_code: c_int) -> ! {
-    crate::park()
+pub extern "C" fn exit(code: c_int) -> ! {
+    send_stdout_eof();
+    berry_sys::berry_process_exit(code)
 }
 
 #[no_mangle]
-pub extern "C" fn _exit(_code: c_int) -> ! {
-    crate::park()
+pub extern "C" fn _exit(code: c_int) -> ! {
+    send_stdout_eof();
+    berry_sys::berry_process_exit(code)
 }
 
 #[no_mangle]
 pub extern "C" fn abort() -> ! {
     console_write(b"abort\n");
-    crate::park()
+    send_stdout_eof();
+    berry_sys::berry_process_exit(134) // 128+SIGABRT 惯例码
 }
 
 /// atexit 注册表（32 槽，登记不执行——std 的 flush 在 lang_start 收尾侧，
@@ -456,5 +464,5 @@ pub extern "C" fn __assert_fail(
     let s = crate::vprintf::utoa_dec(line as u64, &mut buf);
     console_write(s);
     console_write(b"\n");
-    crate::park()
+    exit(134) // assert 失败 = abort 同码（glibc 语义）
 }

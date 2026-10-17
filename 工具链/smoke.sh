@@ -39,6 +39,12 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke: FAIL: 找不到 $QEMU" >&2;
 python3 "$(dirname "$0")/size.py" --assert-flip "$KERNEL" \
   || { echo "smoke: FAIL: 高半程序头断言失败" >&2; exit 1; }
 
+# ABI 镜像断言（Plan B v0.5 挂账项的临时关卡，IDL 单源生成前的过渡）：
+# 内核 NR/RIGHT/SIGNAL/ERR/CLOCK 常量 ↔ berry-sys 镜像 ↔ ABI 文档编号表
+# 三方逐值对账——便宜（纯文本解析）且早响（QEMU 之前）。
+python3 "$(dirname "$0")/abi_check.py" \
+  || { echo "smoke: FAIL: ABI 镜像断言失败" >&2; exit 1; }
+
 DEADLINE_BOOT=120    # 秒：boot 全部标记到齐
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
@@ -139,8 +145,12 @@ QEMU_PID=$!
 # BSH ok = **交互 shell 自驱自验**（P5 A-2）：bsh 启动即内部 `run hexyl`
 # （同 256B 输入 + --color=never + 私有 stdout + EOF 收齐），字节数 ==
 # 2156 基准才自打——rootfs 相第 8 标记，不赌交互输入（stdin=/dev/null）。
+# EXIT ok = **子进程真退出 + 父回收全链**（Plan B v0.5）：stdhello main
+# 返回 → libc exit → 0x33（内核置 Exited + 唤醒 TERMINATED + drain + REAPQ
+# 回收任务体）→ svcmgr wait TERMINATED → reap（unmap×2 + close×5，映像/
+# 栈帧真还）——rootfs 相第 9 标记（确定性：stdhello 恒从 main 返回）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok")
+  "HEXYL ok" "BSH ok" "EXIT ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -158,7 +168,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok）"
 
 # —— 阶段 4：P5 A-1 RX 交互相（内核 RX 中断 + console 输入消费）——
 # stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 标记到齐后（状态

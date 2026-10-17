@@ -76,9 +76,11 @@ struct Region {
     start: usize,
     len: usize,
     kind: RegionKind,
-    /// `Mapped`：指向映射的 Vmo（`map` 经 `&mut` 传入）。**指针有效性依托两层
-    /// 政策**：handle 表路径 close 对映射中 VMO 拒 -EBUSY（对象不可销毁）；
-    /// boot/ktest 直构对象由调用方保证生存期（v1 泄漏持有——见 `user.rs`）。
+    /// `Mapped`：指向映射的 Vmo（`map` 经 `&mut` 传入）。**指针有效性依托三条
+    /// 政策**：handle 表路径 close/replace 对映射中 VMO 拒 -EBUSY（对象不可
+    /// 销毁）；drain（进程退出清表）对 refs 将归零的映射中 VMO **整对象泄漏**
+    /// 不递减（handle.rs 对抗审查修——无拒面则用泄漏兜住本指针）；boot/ktest
+    /// 直构对象由调用方保证生存期（v1 泄漏持有——见 `user.rs`）。
     /// `Reserved` 恒 null。
     vmo: *mut Vmo,
     /// `Mapped`：本区间对应 VMO 内偏移（unmap 回调映射计数用）。

@@ -95,6 +95,12 @@ pub struct Task {
     /// per-process 表的派发载体）；sched 层只存取、不解释——保持 crate 边界
     /// 干净（进程调度不反向依赖内核）。
     pub proc_tag: usize,
+    /// Plan B v0.5：本任务钉住的 Process `ObjRef` 地址（`process_start` 成功
+    /// 时由 syscall 层写入——与那次 `retain` 同点成对；0 = 无（内核任务 /
+    /// boot 手搭用户进程）。**退出钩子消费**：任务退出时置 Exited + 唤醒
+    /// TERMINATED 等待者 + drain 该 Process 的表 + release 本钉住。语义归
+    /// `内核` crate，sched 只存取（同 `proc_tag` 的 crate 边界纪律）。
+    pub pinned: usize,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
     // Phase 兑现——RR 不消费，为 EAS/PI/AI 调度预埋，免后改 TCB 布局返工）----
@@ -266,6 +272,7 @@ impl Task {
             ttbr0,
             asid,
             proc_tag,
+            pinned: 0,
             prio_base: 0,
             prio_effective: 0,
             pi_inherited: 0,

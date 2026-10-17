@@ -86,8 +86,11 @@ pub const ERR_OUT_OF_RANGE: i32 = -34;
 pub const SIGNAL_READABLE: u64 = 1 << 0;
 /// Channel 端点可写：**对端**队列未满（内核派生位）。
 pub const SIGNAL_WRITABLE: u64 = 1 << 1;
+/// Process 已退出（Plan B v0.5 内核派生位；Exited 置位时唤醒，永久置位——
+/// 同 Zircon TASK_TERMINATED 口径；父进程 wait 到该位后 unmap/close 回收）。
+pub const SIGNAL_TERMINATED: u64 = 1 << 2;
 /// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
-/// 内核派生信号 READABLE/WRITABLE——位面冲突由内核执法拒绝）。
+/// 内核派生信号 READABLE/WRITABLE/TERMINATED——位面冲突由内核执法拒绝）。
 pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
@@ -416,6 +419,47 @@ impl HandleTable {
         let gen = self.take_gen(slot)?;
         self.slots[slot] = SlotState::Used { gen, obj, rights };
         Ok(encode(slot as u32, gen))
+    }
+
+    /// **清空整表**（Plan B v0.5：进程退出钩子 drain 死亡进程的表）。逐槽走
+    /// [`Self::close`] 的释放语义（引用 -1、归零 drop Box、槽代号 +1），但
+    /// **不做销毁性拒检**——close 的 -EBUSY 拒面保护的是**活进程**的映射
+    /// 一致性；表主已死，其表内映射中 VMO 的页由 `Vmo::Drop` 的「映射中页
+    /// 只泄漏」政策兜底（安全向：不还帧 = 无 PA 复用经残留 PTE 腐败）。
+    /// **对象本体亦不销毁**（对抗审查修）：`Region.vmo` 裸指针的有效性依托
+    /// 「close 拒 -EBUSY 保对象存活」（vmar.rs Region 注释）——drain 无拒
+    /// 面，照常 drop Box 会让存活 Vmar 的 unmap/protect 解引用悬空（UAF 写）
+    /// ；故 refs 将归零且仍被映射的 VMO 整档跳过递减（令牌随死表泄漏、对象
+    /// 保活；mapcnt==0 ⟺ 无 Region 指着它，判据精确）。drop 链纯指针操作
+    /// 不回表（无重入）；**仅 IRQ 屏蔽的退出路径调用**（对象释放窗口内不可
+    /// 被切走）。
+    pub fn drain(&mut self) {
+        for slot in self.slots.iter_mut() {
+            if let SlotState::Used { gen, obj, .. } = *slot {
+                // SAFETY: 指针在表；只读探测（any_mapped 只扫 mapcnt，零分配）。
+                let leak = unsafe {
+                    let r = &*obj.as_ptr();
+                    r.refs == 1
+                        && match &r.obj {
+                            KernelObj::Vmo(v) => v.any_mapped(),
+                            _ => false,
+                        }
+                };
+                if !leak {
+                    // SAFETY: 指针在表、refs ≥ 1；单核顺序（屏蔽窗内）。
+                    let refs = unsafe {
+                        let r = &mut *obj.as_ptr();
+                        r.refs -= 1;
+                        r.refs
+                    };
+                    if refs == 0 {
+                        // SAFETY: 引用归零、无别名——归还 Box（drop 对象本体）。
+                        unsafe { drop(Box::from_raw(obj.as_ptr())) };
+                    }
+                }
+                *slot = SlotState::Free { next_gen: gen + 1 };
+            }
+        }
     }
 
     /// 查表取对象（syscall 门控入口：查表 → 类型 → 权限，能力模型 §7）。

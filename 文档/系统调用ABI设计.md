@@ -240,7 +240,12 @@ berry_status_t berry_object_wait_one(berry_handle_t h, uint64_t signals,
                                   不需权利位（12 位 rights 表无 WAIT 位）；
                                   4-2 wait 面 = Event|Channel——Channel 信号 =
                                   内核派生 READABLE(1<<0)/WRITABLE(1<<1)，低 32
-                                  位内核派生 + 高 32 位用户（Zircon 界，4-2 定） */
+                                  位内核派生 + 高 32 位用户（Zircon 界，4-2 定）；
+                                  Plan B v0.5 wait 面扩 Process——内核派生
+                                  TERMINATED(1<<2)：退出后永久置位（单调不
+                                  清，Zircon TASK_TERMINATED 口径），父进程
+                                  轮询/阻塞等它 = reap 语义（回收链见
+                                  berry-libc/berry-exec reap） */
 berry_status_t berry_object_wait_many(const berry_handle_t *handles,
                                   const uint64_t *signals, size_t n,
                                   berry_time_t deadline,
@@ -297,14 +302,21 @@ berry_status_t berry_process_start(berry_handle_t process, berry_handle_t thread
                                子入口 x0 = 子表内新 handle 值（Zircon zx_process_start
                                同形）；迁移后调用者原值立即作废（-EBADF），
                                坏 bootstrap → -EBADF */
-berry_status_t berry_process_exit(int code);
+berry_status_t berry_process_exit(int code);                    /* Plan B v0.5
+                               已实现：真退出（不返）——内核经任务退出钩子
+                               置 Process Exited + 唤醒 TERMINATED 等待者 +
+                               drain 子进程 handle 表（能力随退出回收）；
+                               fault 杀同钩子同位（码 0）——统一退出路径；
+                               EL1 无钉住 Process 的调用者 = 任务体级退出 */
 berry_status_t berry_thread_create(berry_handle_t process, uint32_t options,
                                berry_handle_t *out);        /* 未启动描述；入口/sp
                                随 process_start（首线程启动路径，Zircon 同形）；
                                options 低 8 位 = berry_intent（ADR #42，P3 占位，
                                未知值 -EINVAL；0x00=UNSPECIFIED 不设限） */
 berry_status_t berry_thread_start(berry_handle_t thread);
-berry_status_t berry_thread_exit(void);
+berry_status_t berry_thread_exit(void);                         /* Plan B v0.5
+                               已实现：v1 单线程 ⇒ 等价 process_exit(0)
+                               （Zircon last-thread 语义，多线程留 v2） */
 berry_status_t berry_thread_sleep(berry_time_t deadline);     /* nanosleep 等价 */
 
 /* —— IPC / event —— */
@@ -342,7 +354,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 27**（handle 6 + VMO/Vmar 9 + 进程线程 7 + channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 28**（handle/object 6 + VMO/Vmar 10（含 0x1A `vmo_get_size`，G-eco）+ 进程线程 7 + channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
 
 ### 8.4 Rust FFI 镜像（`用户态/berry-sys`，raw 绑定）
 

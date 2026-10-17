@@ -54,6 +54,7 @@ static mut IDLE_TASK: Task = Task {
     intent_since: 0,
     intent_acc: 0,
     proc_tag: 0,
+    pinned: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
     sleep_prev: core::cell::Cell::new(None),
@@ -145,23 +146,29 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
                   ttbr0: usize, asid: u16, proc_tag: usize) {
     // boot 可信语境一步到位；EL0 路径（process_start）走 [`try_spawn_user`]
     // 折 -ENOMEM（3b3 H2——原 Task 装配内嵌 vec!/Box::new，OOM 直接 abort）。
+    // 返回的任务指针 boot 手搭场景不消费（无 Process 钉住——UserProcess 裸表
+    // 形态），丢弃即可。
     try_spawn_user(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)
-        .expect("spawn_user：用户任务装配（boot 可信语境）")
+        .expect("spawn_user：用户任务装配（boot 可信语境）");
 }
 
 /// 同 [`spawn_user`] 但 try 化（3b3 审查 H2）：16KiB 栈 / TCB 装箱任一 OOM 返
 /// `None`、**不入队、零副作用**——EL0 经 `process_start` 触发时内核侧折
 /// -ENOMEM（原路径 abort = EL0 可触发内核 panic，违 ABI §8.0）。前置同
 /// [`spawn`]（IRQ 屏蔽态）。
+///
+/// Plan B v0.5：返回新任务的裸指针（usize 不透明值——语义层写入 `pinned`
+/// 钉住字段；crate 边界纪律同 `proc_tag`）。任务已入 runqueue，指针即
+/// `&'static mut Task` 的地址（Box::leak）。
 pub fn try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
-                      ttbr0: usize, asid: u16, proc_tag: usize) -> Option<()> {
+                      ttbr0: usize, asid: u16, proc_tag: usize) -> Option<usize> {
     let task = Task::try_new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)?;
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪；IRQ 屏蔽态。
     let task: &'static mut Task = alloc::boxed::Box::leak(task);
     unsafe {
         RR.enqueue(task, rq());
     }
-    Some(())
+    Some(task as *mut Task as usize)
 }
 
 /// 当前任务的进程标签（3-4a per-process handle 表派发用）。0 = 无（内核任务/
@@ -175,6 +182,16 @@ pub fn current_tag() -> usize {
     } else {
         unsafe { (*cur).proc_tag }
     }
+}
+
+/// Plan B v0.5：写任务的 `pinned` 钉住字段（`process_start` 成功路径调用——
+/// 与语义层的 `ObjRef::retain` 同点成对；退出钩子消费）。`task` =
+/// [`try_spawn_user`] 返回的 usize（Box::leak 指针）。sched 只存取不解释
+/// （crate 边界纪律同 `proc_tag`）。
+pub fn set_task_pinned(task: usize, pinned: usize) {
+    // SAFETY: task 为 try_spawn_user 刚返回的任务指针（已入队、调用时尚未
+    // 运行）；单核 IRQ 屏蔽窗内调用。
+    unsafe { (*(task as *mut Task)).pinned = pinned };
 }
 
 /// 同 [`spawn`]，但带声明档（4-3c intent 验收：借入/拒借的档位差源）。
@@ -256,14 +273,27 @@ pub fn yield_now() {
             }
         }
     }
+    // Plan B：切回后顺手回收退出任务（drop Box + 内核栈）——本上下文非被回收
+    // 者自身栈；无切换发生时也 drain（环形忙转下 idle 可能长期不来）。
+    reap_drain();
     hal::enable_irq();
 }
 
 /// 当前任务退出：出 runqueue + 切到下一个（或 idle）。永不返回。
+/// Plan B v0.5：经 [`switch_away_forever_with`]（退出码 0——fault/kill 与
+///「无 Process」路径的码面；真退出码走 [`exit_current_with`]）。
 pub fn exit_current() -> ! {
     hal::disable_irq();
     // SAFETY: IRQ 已屏蔽；cur 已 dequeue 后无人切回它。
-    unsafe { switch_away_forever() }
+    unsafe { switch_away_forever_with(0) }
+}
+
+/// 当前任务带退出码退出（Plan B v0.5：`process_exit`/`thread_exit` 的
+/// syscall 语义层调用）。钩子把码落进 Process 账面再切走，永不返回。
+pub fn exit_current_with(code: i32) -> ! {
+    hal::disable_irq();
+    // SAFETY: 同 exit_current（SVC 语境 IRQ 本就屏蔽——disable_irq 幂等）。
+    unsafe { switch_away_forever_with(code) }
 }
 
 /// 用户任务致死计数（G1.5 验收：watchdog 断言 == 期望杀数）。
@@ -286,17 +316,30 @@ pub unsafe extern "C" fn user_fault_exit() -> ! {
     hal::uart_puts(b"\nG1.5: kill user task '");
     hal::uart_puts((*cur).name);
     hal::uart_puts(b"'\n");
-    switch_away_forever()
+    // Plan B：fault 杀也走退出钩子（Process 置 Exited——exit_code 0 是诚实
+    // 注释面：杀因观察缺位，码面留给 v2 get_info）；码 0 与旧 exit_current 同。
+    switch_away_forever_with(0)
 }
 
 /// exit/kill 共用尾部：当前任务出 runqueue + 切到下一个（或 idle），永不回到它。
+/// Plan B v0.5 扩两刀：①退出前调**任务退出钩子**（`内核` crate 注册——Process
+/// Exited 落账 + TERMINATED 唤醒 + drain 子表 + release 运行钉住；未注册/
+/// pinned=0 空转）；②cur 的 Task Box + 16KiB 内核栈压 **REAPQ**（退出即泄漏
+/// 不可接受——bsh `run` 子进程无界；真正释放在其它上下文的 [`reap_drain`]，
+/// 此刻还在 cur 栈上跑，不能自己拆自己的栈）。
 ///
 /// # Safety
 /// IRQ 已屏蔽（显式 disable_irq 或异常入口硬件屏蔽）；CURRENT 有效。
-unsafe fn switch_away_forever() -> ! {
+unsafe fn switch_away_forever_with(code: i32) -> ! {
     let cur = CURRENT;
     debug_assert!((*cur).state != TaskState::Exited, "double exit");
+    if let Some(hook) = EXIT_HOOK {
+        // 语义层钩子：pinned=0（内核任务/boot 裸表进程）直通。钩子内可能
+        // wake_matching（唤醒者入 runqueue——下方 pick 自然可见）。
+        hook((*cur).pinned, code);
+    }
     RR.dequeue(&mut *cur, rq());
+    reapq_push(cur);
     let next_ptr: *mut Task = match RR.pick_next(rq(), &TOPO) {
         Some(n) => n,
         None => addr_of_mut!(IDLE_TASK),
@@ -316,6 +359,58 @@ unsafe fn switch_away_forever() -> ! {
     hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
     // 不可达：cur 已 dequeue，无人切回。halt 兜底。
     hal::halt();
+}
+
+// ---- Plan B v0.5：任务退出钩子 + 待回收队列 ----
+
+/// 任务退出钩子槽（反转通知，`set_user_fault_exit` 同模式——sched 不依赖
+/// `内核` crate）。签名 `(pinned, code)`：pinned = Task 钉住的 Process ObjRef
+/// 地址（0 = 无）；code = 退出码（fault/kill 路径 0）。**在 cur 出 runqueue
+/// 之前、IRQ 屏蔽窗内调用**——钩子内唤醒/表操作与 syscall 主体同纪律。
+static mut EXIT_HOOK: Option<unsafe extern "C" fn(pinned: usize, code: i32)> = None;
+
+/// 注册任务退出钩子（`内核` crate 语义层 boot 期调用，见 `syscall::install`）。
+pub fn set_exit_hook(f: unsafe extern "C" fn(pinned: usize, code: i32)) {
+    // SAFETY: boot 单线程注册；此后只读。
+    unsafe { EXIT_HOOK = Some(f) };
+}
+
+/// 待回收任务队列（cap 32 ≈ 一个 bsh 会话的并发退出上限量级）。溢出 = 泄漏
+/// + 首 4 个 loud 打印（`irq? id=` 同款防风暴）——回收是资源回收非正确性
+/// 关卡，泄漏可见可接受。
+static mut REAPQ: [*mut Task; REAPQ_CAP] = [core::ptr::null_mut(); REAPQ_CAP];
+static mut REAPQ_LEN: usize = 0;
+static mut REAPQ_WARNED: usize = 0;
+const REAPQ_CAP: usize = 32;
+
+/// 压队（退出路径，IRQ 屏蔽窗内；cur 还在自家栈上——只入队不释放）。
+unsafe fn reapq_push(t: *mut Task) {
+    if REAPQ_LEN < REAPQ_CAP {
+        REAPQ[REAPQ_LEN] = t;
+        REAPQ_LEN += 1;
+    } else if REAPQ_WARNED < 4 {
+        REAPQ_WARNED += 1;
+        hal::uart_puts(b"reapq overflow (leak)\n");
+    }
+}
+
+/// 回收退出任务的 Task Box + 内核栈（16KiB/个）。调用面 = `idle_loop` 稳态与
+/// `yield_now` 切回后——**永不在被回收者自身上下文**。退出者已出 runqueue/
+/// SLEEPQ（exit 只从 Running 态发生）+ 钩子已清 pinned 引用，无悬挂指针。
+/// drop 纯释放零分配；单核无并发（IRQ 上下文不碰分配器）。
+pub fn reap_drain() {
+    // SAFETY: REAPQ 写点全在 IRQ 屏蔽退出路径；本读点单核顺序；drain 后清零。
+    unsafe {
+        let n = REAPQ_LEN;
+        for i in 0..n {
+            let p = REAPQ[i];
+            REAPQ[i] = core::ptr::null_mut();
+            if !p.is_null() {
+                drop(alloc::boxed::Box::from_raw(p));
+            }
+        }
+        REAPQ_LEN = 0;
+    }
 }
 
 /// switches 金丝雀只读访问（watchdog / 遥测读；单核顺序）。
@@ -907,6 +1002,9 @@ fn integrity_check() {
 pub fn idle_loop() -> ! {
     loop {
         hal::disable_irq();
+        // Plan B：idle 是天然回收点（退出者已不可能在任何执行上下文）——
+        // drop Task Box + 内核栈，纯释放零分配。
+        reap_drain();
         // SAFETY: IRQ 已屏蔽；单核顺序访问 RUNQUEUE/SLEEPQ。
         let empty = unsafe { rq().is_empty() && sleepq().len.get() == 0 };
         if empty {
