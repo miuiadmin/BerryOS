@@ -6,7 +6,10 @@
 //! `nr` 模块私有常量，只在本文件封 `svc` 时出现（§8.3 头注）。
 //!
 //! 镜像纪律（§8.4 约定）：改任何签名 = 同时改 ABI 文档与内核侧；两端
-//! `#[repr(C)]`/C-ABI 保证布局一致。v1 手写，IDL 单源生成是终态（欠债挂注）。
+//! `#[repr(C)]`/C-ABI 保证布局一致。**常量层（号/位/码/宽度）已单源化**：
+//! 本 crate 的 `abi_gen` 与内核 `内核/src/abi_gen.rs` 同由 `工具链/abi.toml`
+//! 生成（`just abi-gen` 再生、`just abi-check` 守卫）；原型层（`berry_*`
+//! 签名）仍手写双镜像——v2 挂账（见 ABI 文档 §8 引言）。
 //!
 //! 纯 raw 层：**绝不 panic、绝不分配**；上层 `berry` crate 负责
 //! `Status → Result<(), Status>` 包装与运行时（console/argv 等随 G-eco-d）。
@@ -27,96 +30,17 @@ pub type Rights = u64;
 pub type Status = i32; // 0 = Ok，负 = 错误码
 pub type Time = u64; // MONOTONIC 纳秒
 
-pub const INVALID_HANDLE: Handle = 0;
-
-// —— rights 位（镜像 内核/src/handle.rs：12 位，权限在 handle 不在对象）——
-
-pub const RIGHT_READ: Rights = 1 << 0;
-pub const RIGHT_WRITE: Rights = 1 << 1;
-pub const RIGHT_EXECUTE: Rights = 1 << 2;
-pub const RIGHT_MAP: Rights = 1 << 3;
-pub const RIGHT_DUPLICATE: Rights = 1 << 4;
-pub const RIGHT_TRANSFER: Rights = 1 << 5;
-pub const RIGHT_INSPECT: Rights = 1 << 6;
-pub const RIGHT_SIGNAL: Rights = 1 << 7;
-pub const RIGHT_SEND: Rights = 1 << 8;
-pub const RIGHT_RECV: Rights = 1 << 9;
-pub const RIGHT_MANAGE: Rights = 1 << 10;
-pub const RIGHT_SET_POLICY: Rights = 1 << 11;
-/// duplicate 的「不裁剪」哨兵（内核同值 u64::MAX；实际授权仍受 handle 既有位约束）。
-pub const RIGHTS_SAME: Rights = u64::MAX;
-
-// —— wait 信号位（4-2 位空间：低 32 位内核派生 + 高 32 位用户）——
-
-pub const SIGNAL_READABLE: u64 = 1 << 0; // Channel 派生：本端队列非空
-pub const SIGNAL_WRITABLE: u64 = 1 << 1; // Channel 派生：对端队列未满
-pub const SIGNAL_TERMINATED: u64 = 1 << 2; // Process 派生：已退出（Plan B v0.5，永久置位）
-pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000; // Event/object_signal 专用
-
-// —— options 位 ——
-
-/// `channel_create`：opt-out 通道（置位端 recv 不结算 msg_intent；4-3c）。
-pub const CHAN_OPT_NO_INTENT: u32 = 1 << 0;
-
-/// `clock_read` 的 clock_id：v1 只有单调钟（壁钟留 v2）。
-pub const CLOCK_MONOTONIC: u32 = 0;
-
-// —— 错误码（数值 = G2 冻结面，镜像 内核/src/handle.rs ERR_*）——
-
-pub const BERRY_ERR_NOT_FOUND: Status = -2;
-pub const BERRY_ERR_BAD_HANDLE: Status = -9;
-pub const BERRY_ERR_NO_MEMORY: Status = -12;
-pub const BERRY_ERR_ACCESS_DENIED: Status = -13;
-pub const BERRY_ERR_FAULT: Status = -14;
-pub const BERRY_ERR_BUSY: Status = -16;
-pub const BERRY_ERR_OUT_OF_RANGE: Status = -34;
-pub const BERRY_ERR_BAD_STATE: Status = -37;
-pub const BERRY_ERR_INVALID_ARG: Status = -22;
-pub const BERRY_ERR_NOT_SUPPORTED: Status = -95;
-pub const BERRY_ERR_AGAIN: Status = -11;
-pub const BERRY_ERR_TIMEDOUT: Status = -110;
+// —— ABI 常量层（生成文件 `src/abi_gen.rs`，单源 = `工具链/abi.toml`）——
+// glob 转发维持既有路径（`berry_sys::RIGHT_*`/`BERRY_ERR_*` 等）；`nr` 模块
+// 是 pub(crate)——glob 不带出，编号仍只在下方 wrapper 的 `svc` 里出现（§8.3）。
+mod abi_gen;
+pub use crate::abi_gen::*;
+use crate::abi_gen::nr;
 
 /// `Status` → 是否成功（raw 层不建 Result 类型，上层 `berry` crate 包）。
 #[inline]
 pub const fn is_ok(s: Status) -> bool {
     s == 0
-}
-
-// —— syscall 号（私有：用户程序不直接写编号，§8.3）——
-
-mod nr {
-    pub(super) const HANDLE_CLOSE: usize = 0x01;
-    pub(super) const HANDLE_DUPLICATE: usize = 0x02;
-    pub(super) const HANDLE_REPLACE: usize = 0x03;
-    pub(super) const OBJECT_WAIT_ONE: usize = 0x04;
-    pub(super) const OBJECT_WAIT_MANY: usize = 0x05;
-    pub(super) const OBJECT_SIGNAL: usize = 0x06;
-
-    pub(super) const VMO_CREATE: usize = 0x11;
-    pub(super) const VMO_COMMIT: usize = 0x12;
-    pub(super) const VMO_DECOMMIT: usize = 0x13;
-    pub(super) const VMO_READ: usize = 0x14;
-    pub(super) const VMO_WRITE: usize = 0x15;
-    pub(super) const VMAR_MAP: usize = 0x16;
-    pub(super) const VMAR_UNMAP: usize = 0x17;
-    pub(super) const VMAR_PROTECT: usize = 0x18;
-    pub(super) const VMAR_ALLOCATE: usize = 0x19;
-    pub(super) const VMO_GET_SIZE: usize = 0x1A; // G-eco 入机侧第二刀（add-only）
-
-    pub(super) const PROCESS_CREATE: usize = 0x31;
-    pub(super) const PROCESS_START: usize = 0x32;
-    pub(super) const PROCESS_EXIT: usize = 0x33; // Plan B v0.5 已实现（真退出）
-    pub(super) const THREAD_CREATE: usize = 0x34;
-    pub(super) const THREAD_START: usize = 0x35; // 未实现（-ENOTSUP，v2 多线程）
-    pub(super) const THREAD_EXIT: usize = 0x36; // Plan B v0.5 已实现（= process_exit(0)）
-    pub(super) const THREAD_SLEEP: usize = 0x37;
-
-    pub(super) const CHANNEL_CREATE: usize = 0x51;
-    pub(super) const CHANNEL_SEND: usize = 0x52;
-    pub(super) const CHANNEL_RECV: usize = 0x53;
-    pub(super) const EVENT_CREATE: usize = 0x54;
-
-    pub(super) const CLOCK_READ: usize = 0x61;
 }
 
 /// SVC 封装：`x0` = 号（入）/返回值（出），`x1..x6` = 参。

@@ -11,6 +11,10 @@
 
 extern crate alloc;
 
+// ABI 常量层（生成文件）：`工具链/abi.toml` 单源——syscall/handle 经 pub use
+// 转发消费；冻结位全量在册（未消费位 + 0x35 在册未实现号）故整体豁免 dead_code。
+#[allow(dead_code)]
+mod abi_gen;
 mod aspace;
 mod channel;
 mod dtb;

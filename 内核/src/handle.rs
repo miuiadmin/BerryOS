@@ -27,71 +27,22 @@ pub type Handle = u32;
 /// rights（`berry_rights_t`，u64 位掩码）。
 pub type Rights = u64;
 
-// ---- rights 位（`系统调用ABI设计.md` §8.2，数值冻结；镜像 berry-sys）----
-// EXECUTE/MAP/… 消费者在 3-2（vmo_map 门控）/3-4（channel/event）落地——
-// 位表是 ABI 冻结值，先全量定义（内核 bin 无 cfg(test)，dead_code 需显式豁免）。
-pub const RIGHT_READ: Rights = 1 << 0;
-pub const RIGHT_WRITE: Rights = 1 << 1;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
-pub const RIGHT_EXECUTE: Rights = 1 << 2;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
-pub const RIGHT_MAP: Rights = 1 << 3;
-pub const RIGHT_DUPLICATE: Rights = 1 << 4;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
-pub const RIGHT_TRANSFER: Rights = 1 << 5;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
-pub const RIGHT_INSPECT: Rights = 1 << 6;
-/// 3-4c 起消费：`object_signal` 门控（Event 置/清位）。
-pub const RIGHT_SIGNAL: Rights = 1 << 7;
-/// 3-4b 起消费：`channel_send` 门控。
-pub const RIGHT_SEND: Rights = 1 << 8;
-/// 3-4b 起消费：`channel_recv` 门控。
-pub const RIGHT_RECV: Rights = 1 << 9;
-#[allow(dead_code)] // 消费者 3-2/3-4 落地（ABI 冻结位，先全量定义）
-pub const RIGHT_MANAGE: Rights = 1 << 10;
-pub const RIGHT_SET_POLICY: Rights = 1 << 11;
-/// `handle_duplicate`「取原权利全集」哨兵（= `BERRY_RIGHT_SAME_RIGHTS`，全 1）。
-pub const RIGHTS_SAME: Rights = u64::MAX;
-
-// ---- 错误码（ABI §8.2 数值冻结，posix-ish 负数；3-1 syscall 层共用）----
-
-/// EBADF：坏 handle / 类型不符 / 代号过期。
-pub const ERR_BAD_HANDLE: i32 = -9;
-/// EACCES：权限位不足（能力拒绝）。
-pub const ERR_ACCESS_DENIED: i32 = -13;
-/// EINVAL：参数非法（如 replace 两值相同）。
-pub const ERR_INVALID_ARG: i32 = -22;
-/// ENOMEM：无空间（表满 / gen 耗尽 / 超尺寸）。
-pub const ERR_NO_MEMORY: i32 = -12;
-/// ENOTSUP：未知/未实现编号或能力（ABI §8.4「永不 panic」统一错误面）。
-pub const ERR_NOT_SUPPORTED: i32 = -95;
-/// EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用户区）——3-2 copy 路径。
-pub const ERR_FAULT: i32 = -14;
-/// EBUSY：资源占用（映射未解除的 VMO 不能 close/decommit——悬空 PTE 防线）。
-pub const ERR_BUSY: i32 = -16;
-/// ENOENT：区间不存在（unmap/protect 找不到精确匹配）。
-pub const ERR_NOT_FOUND: i32 = -2;
-/// EBADSTATE：对象状态不满足（读/映射未提交页——v1 无 demand paging）。
-pub const ERR_BAD_STATE: i32 = -37;
-/// EAGAIN：非阻塞操作当下无货可取（channel recv 空——3-4b；posix-ish）。
-pub const ERR_AGAIN: i32 = -11;
-/// ETIMEDOUT：阻塞等待到点未命中（object_wait_one deadline 到期——4-1）。
-pub const ERR_TIMEDOUT: i32 = -110;
-/// EOVERFLOW-style：offset/len 越出对象容量或区间管辖界。
-pub const ERR_OUT_OF_RANGE: i32 = -34;
-
-// ---- 对象信号位空间（4-2 wait 面 ABI v0；Zircon 界：低 32 内核派生 + 高 32 用户）----
-
-/// Channel 端点可读：**本端**队列非空（内核派生位——用户 signal 不出此位）。
-pub const SIGNAL_READABLE: u64 = 1 << 0;
-/// Channel 端点可写：**对端**队列未满（内核派生位）。
-pub const SIGNAL_WRITABLE: u64 = 1 << 1;
-/// Process 已退出（Plan B v0.5 内核派生位；Exited 置位时唤醒，永久置位——
-/// 同 Zircon TASK_TERMINATED 口径；父进程 wait 到该位后 unmap/close 回收）。
-pub const SIGNAL_TERMINATED: u64 = 1 << 2;
-/// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
-/// 内核派生信号 READABLE/WRITABLE/TERMINATED——位面冲突由内核执法拒绝）。
-pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
+// ---- rights / 错误码 / 信号位（ABI §8.2 数值冻结）——单源生成 ----
+// 常量本体在 `crate::abi_gen`（`工具链/abi.toml` 生成文件）；此处 re-export
+// 维持既有路径（`crate::handle::RIGHT_*`/`ERR_*`/`SIGNAL_*` 被 syscall/ktest
+// 直接引用）。位表是 ABI 冻结值、未消费位全量在册（dead_code 由 main.rs 的
+// `mod abi_gen` 整体豁免）。改值/加位先改 abi.toml 再 `just abi-gen`。
+// `mod abi_gen` 的 dead_code 豁免盖常量本体；`pub use` 转发的未消费冻结位
+// （EXECUTE/INSPECT/TRANSFER 等）另触发 unused_imports——同样整体豁免。
+#[allow(unused_imports)]
+pub use crate::abi_gen::{
+    ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE, ERR_BAD_STATE, ERR_BUSY, ERR_FAULT,
+    ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED, ERR_NO_MEMORY, ERR_OUT_OF_RANGE,
+    ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_EXECUTE, RIGHT_INSPECT, RIGHT_MANAGE, RIGHT_MAP,
+    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SET_POLICY, RIGHT_SIGNAL, RIGHTS_SAME,
+    RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_USER_MASK,
+    SIGNAL_WRITABLE,
+};
 
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
 

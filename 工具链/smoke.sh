@@ -39,11 +39,11 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke: FAIL: 找不到 $QEMU" >&2;
 python3 "$(dirname "$0")/size.py" --assert-flip "$KERNEL" \
   || { echo "smoke: FAIL: 高半程序头断言失败" >&2; exit 1; }
 
-# ABI 镜像断言（Plan B v0.5 挂账项的临时关卡，IDL 单源生成前的过渡）：
-# 内核 NR/RIGHT/SIGNAL/ERR/CLOCK 常量 ↔ berry-sys 镜像 ↔ ABI 文档编号表
-# 三方逐值对账——便宜（纯文本解析）且早响（QEMU 之前）。
-python3 "$(dirname "$0")/abi_check.py" \
-  || { echo "smoke: FAIL: ABI 镜像断言失败" >&2; exit 1; }
+# ABI 单源守卫：abi.toml 生成的三面产物（内核 abi_gen.rs / berry-sys abi_gen.rs /
+# ABI 文档 marker 块）逐字节比对——改了源忘再生成 / 手改产物即 FAIL（便宜且早响，
+# QEMU 之前）。
+python3 "$(dirname "$0")/gen_abi.py" --check \
+  || { echo "smoke: FAIL: ABI 单源守卫失败（改了 abi.toml 跑 just abi-gen）" >&2; exit 1; }
 
 DEADLINE_BOOT=120    # 秒：boot 全部标记到齐
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀

@@ -26,6 +26,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 > "阶段"列对照 `架构决策.md` #20：v1=单核+抢占点+无 demand paging。
 
+<!-- @gen:syscalls begin -->
 | 号 | syscall | 说明 | 阶段 |
 |----|---------|------|------|
 | **handle / 通用对象** ||||
@@ -83,6 +84,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`） ||||
 | 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 |
 | 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 |
+<!-- @gen:syscalls end -->
 
 **计数**：v1 ≈ 26；v2 增 ~12；v3 增 ~5（namespace + 策略注入/遥测）；**总数 ~43**。落在"中等偏上 ~30–45"。
 
@@ -127,6 +129,8 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 编号表是"概念名"。真正落地是带 `berry_` 前缀的符号：**两端皆 Rust**，合约源是 Rust 的 `extern "C"` + `#[repr(C)]` 定义（内核侧 + `用户态/berry-sys` 镜像）；`.h` 是派生产物（供 C 程序 / POSIX 库侧用）。本节是 **v1 的冻结合约**——P3 开工时从单一 IDL（Idol 思路）生成内核原型 + `berry-sys` 镜像 + `syscalls.h`，CI 用结构体布局断言 + bindgen 单向生成比对，消灭手写不同步（见 `架构综合纲领.md`）。
 
+> **单源落地状态（2026-10）**：**常量层已单源化**——`工具链/abi.toml` 是号/位/码/宽度的唯一事实源，`工具链/gen_abi.py` 生成内核 `abi_gen.rs` + berry-sys `abi_gen.rs` + 本文档 §4 编号表与 §8.2 C 定义列（marker 块逐字节再生）；`just abi-check`（`--check` 产物比对）挂 build/check/smoke 前置，改源忘再生成即 FAIL。宽度冻结由生成物两端的 `const _: () = assert!(size_of…)` 机器执法——「CI 结构体布局断言」的 v1 标量层，真 ABI 结构体出现即入册同源。**原型层（§8.3 `berry_*` 签名与 `.h`）仍手写双镜像——v2 挂账**；Plan B v0.5 的临时三方对账关卡 `abi_check.py` 随之退役（生成即一致，无需对账）。
+
 ### 8.0 冻结纪律：两层冻结（战略裁决 S8 落地）
 
 > 判例：DOS 四个月拼装的接口被市场冻结成几代人的标准（进化史 14 号）；a.out 被推翻后遗骸支持拖了 27 年才删干净（进化史 13 号）；Linux 靠「对外零 ABI 承诺 + 内部无限重构自由」换得 35 年翻案能力（进化史 13/17 号）。ABI 纪律的核心是**分清哪一层是四十年合同、哪一层必须保持自由**。
@@ -136,7 +140,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **对外层（四十年合同）** | `berry_*` 符名与签名、`#[repr(C)]` 布局、syscall 编号、错误码数值、rights 位义 | **首个外部消费者出现时**（G-eco 第三方样例或公开发布，先到者） | 编号永不复用（废弃号留坑）；未知/未实现编号一律 `-ENOTSUP`（unknown-op，为 v2/v3 扩展留位，永不 panic）；加字段 = 新 syscall 或 `object_get_info` 新 topic，**不改旧结构**；保留位 v1 即预留：handle 代号位（§8.1）、rights 高位、`options` 高位、`x7` 寄存器 |
 | **内部层（显式不稳定）** | 内核内部接口（含 `SchedClass` trait、内核内数据结构、crate 边界 API） | **不冻结**——显式声明「首个外部消费者前不稳定」 | 冻结没人用的接口只锁死自己的重构自由（Linux 反面教训）；消费者真实出现时按需逐条升格入对外层 |
 
-- **镜像同步**：内核侧与 `用户态/berry-sys` 出同一合约源（IDL）生成 + CI 结构体布局断言兜底（见本节引言）——手写两份迟早漂移。
+- **镜像同步**：内核侧与 `用户态/berry-sys` 出同一合约源（IDL）生成 + CI 结构体布局断言兜底——手写两份迟早漂移。**常量层 2026-10 已落地**（`工具链/abi.toml` 单源，见本节引言状态注）；原型层 v2。
 - **预写反转触发器（决策 #14）**：若出现生态压力的**真实证据**（G-eco 第三方样例长期因「非 POSIX / 非 Linux」不可移植、且用户态薄库无解），重开「软件兼容」决策——**只许用户态兼容服务或 VM 内嵌真内核**（WSL2 判例），**内核 syscall 翻译层一票否决**（NT 子系统/翻译层六连败 + WSL1，进化史 14 号）。已录 `架构决策.md` 重议触发器表。
 
 ### 8.1 命名与表示决策（带取舍，越早定越好）
@@ -177,19 +181,21 @@ enum berry_obj_type {
 };
 
 /* rights 位（对照 `能力模型设计.md` §2） */
-#define BERRY_RIGHT_READ        (1ULL << 0)
-#define BERRY_RIGHT_WRITE       (1ULL << 1)
-#define BERRY_RIGHT_EXECUTE     (1ULL << 2)
-#define BERRY_RIGHT_MAP         (1ULL << 3)
-#define BERRY_RIGHT_DUPLICATE   (1ULL << 4)
-#define BERRY_RIGHT_TRANSFER    (1ULL << 5)
-#define BERRY_RIGHT_INSPECT     (1ULL << 6)
-#define BERRY_RIGHT_SIGNAL      (1ULL << 7)
-#define BERRY_RIGHT_SEND        (1ULL << 8)
-#define BERRY_RIGHT_RECV        (1ULL << 9)
-#define BERRY_RIGHT_MANAGE      (1ULL << 10)
-#define BERRY_RIGHT_SET_POLICY  (1ULL << 11)
-#define BERRY_RIGHT_SAME_RIGHTS (-1LL)   /* duplicate 时取全集的哨兵 */
+/* @gen:rights-c begin */
+#define BERRY_RIGHT_READ         (1ULL << 0)
+#define BERRY_RIGHT_WRITE        (1ULL << 1)
+#define BERRY_RIGHT_EXECUTE      (1ULL << 2)
+#define BERRY_RIGHT_MAP          (1ULL << 3)
+#define BERRY_RIGHT_DUPLICATE    (1ULL << 4)
+#define BERRY_RIGHT_TRANSFER     (1ULL << 5)
+#define BERRY_RIGHT_INSPECT      (1ULL << 6)
+#define BERRY_RIGHT_SIGNAL       (1ULL << 7)
+#define BERRY_RIGHT_SEND         (1ULL << 8)
+#define BERRY_RIGHT_RECV         (1ULL << 9)
+#define BERRY_RIGHT_MANAGE       (1ULL << 10)
+#define BERRY_RIGHT_SET_POLICY   (1ULL << 11)
+#define BERRY_RIGHT_SAME_RIGHTS  (-1LL)        /* duplicate 时取全集的哨兵 */
+/* @gen:rights-c end */
 
 /* intent 调度档（ADR #42；thread/process options 低 8 位域；#[repr(C)] 随 P3 冻结） */
 enum berry_intent {
@@ -204,6 +210,7 @@ enum berry_intent {
 };
 
 /* 错误码（posix-ish 负数；跨 FFI 不抛异常） */
+/* @gen:errno-c begin */
 #define BERRY_OK                 0
 #define BERRY_ERR_BAD_HANDLE     (-9)    /* EBADF 等价：坏 handle / 类型不符 */
 #define BERRY_ERR_DEAD           (-52)   /* 代号作废：对象/服务已死（旧代 handle），决策 #28 */
@@ -212,12 +219,13 @@ enum berry_intent {
 #define BERRY_ERR_ACCESS_DENIED  (-13)   /* EACCES：权限位不足 */
 #define BERRY_ERR_NOT_FOUND      (-2)    /* ENOENT */
 #define BERRY_ERR_BAD_STATE      (-37)   /* 对象状态不对（未 start / 已关） */
-#define BERRY_ERR_TIMED_OUT      (-110)  /* ETIMEDOUT */
+#define BERRY_ERR_TIMEDOUT       (-110)  /* ETIMEDOUT */
 #define BERRY_ERR_BUSY           (-16)   /* EBUSY：channel 满 / 资源占用 */
 #define BERRY_ERR_AGAIN          (-11)   /* EAGAIN：非阻塞操作当下无货（channel_recv 空队，3-4b） */
 #define BERRY_ERR_NOT_SUPPORTED  (-95)   /* ENOTSUP：阶段未实现 */
 #define BERRY_ERR_OUT_OF_RANGE   (-34)   /* ERANGE：offset/len 越界 */
 #define BERRY_ERR_FAULT          (-14)   /* EFAULT：用户指针界检失败（3-2 起 copy_from/to_user 执法） */
+/* @gen:errno-c end */
 ```
 
 ### 8.3 v1 syscall 原型（`berry/syscalls.h`）
@@ -361,15 +369,14 @@ berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 raw FFI 只暴露 `extern "C"` + 裸类型，**绝不 panic**；上层 `berry` crate 把 `berry_status_t` 包成 `Result<(), Status>`。
 
 ```rust
-//! v1 raw syscall 绑定。两端 Rust `#[repr(C)]`，布局与内核侧一一对应；`.h` 为派生产物。
 #![no_std]
+// 常量层（NR/RIGHT/SIGNAL/ERR/CLOCK/宽度断言）不在本列表——`src/abi_gen.rs`
+// 由 工具链/abi.toml 单源生成（见 §8 引言状态注），经 `pub use` 转发。
 
 pub type Handle = u32;
 pub type Rights = u64;
 pub type Status = i32;   // 0 = Ok, 负 = 错误码
 pub type Time   = u64;
-
-pub const INVALID_HANDLE: Handle = 0;
 
 extern "C" {
     pub fn berry_handle_close(h: Handle) -> Status;

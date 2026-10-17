@@ -6,7 +6,7 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 28 号编号全部在册（下方 NR_* 常量组）；**Plan B v0.5 起 27 号已实现**——
+//! v1 28 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`工具链/abi.toml`）；**Plan B v0.5 起 27 号已实现**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十号（3-2 + G-eco get_size）+
 //! process_create/start/exit + thread_create/exit（3-3 + Plan B 退出路径）+
 //! channel 三号（3-4b）+ event 三号（3-4c；4-1 wait_one 阻塞化）+ wait_many
@@ -59,56 +59,21 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 27 号编号表（ABI §4「阶段 = v1」行；镜像 berry-sys）----
-
-// handle / 通用对象（6）
-pub const NR_HANDLE_CLOSE: usize = 0x01;
-pub const NR_HANDLE_DUPLICATE: usize = 0x02;
-pub const NR_HANDLE_REPLACE: usize = 0x03;
-/// 4-1 阻塞化（poll-first + 醒来重验 + -ETIMEDOUT）；4-2 扩 Event|Channel。
-pub const NR_OBJECT_WAIT_ONE: usize = 0x04;
-/// 4-2b 落地：任一命中 → *idx + *observed；WAIT_ANY 哨兵睡眠。
-pub const NR_OBJECT_WAIT_MANY: usize = 0x05;
-/// 3-4c 落地：v1 仅 Event 可 signal（thread/process 信号面随后续步）。
-pub const NR_OBJECT_SIGNAL: usize = 0x06;
-// VMO / Vmar（9；3-2 全部实现——下方 handlers）
-pub const NR_VMO_CREATE: usize = 0x11;
-pub const NR_VMO_COMMIT: usize = 0x12;
-pub const NR_VMO_DECOMMIT: usize = 0x13;
-pub const NR_VMO_READ: usize = 0x14;
-pub const NR_VMO_WRITE: usize = 0x15;
-pub const NR_VMAR_MAP: usize = 0x16;
-pub const NR_VMAR_UNMAP: usize = 0x17;
-pub const NR_VMAR_PROTECT: usize = 0x18;
-pub const NR_VMAR_ALLOCATE: usize = 0x19;
-/// G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。
-pub const NR_VMO_GET_SIZE: usize = 0x1A;
-// 进程 / 线程（7）
-pub const NR_PROCESS_CREATE: usize = 0x31;
-pub const NR_PROCESS_START: usize = 0x32;
-/// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
-pub const NR_PROCESS_EXIT: usize = 0x33;
-pub const NR_THREAD_CREATE: usize = 0x34;
-#[allow(dead_code)] // thread_start：v2 多线程面（v1 单线程，start 即随 process_start）
-pub const NR_THREAD_START: usize = 0x35;
-/// Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。
-pub const NR_THREAD_EXIT: usize = 0x36;
-pub const NR_THREAD_SLEEP: usize = 0x37;
-// IPC / event（4；3-4b 实现 channel 三号）
-pub const NR_CHANNEL_CREATE: usize = 0x51;
-pub const NR_CHANNEL_SEND: usize = 0x52;
-pub const NR_CHANNEL_RECV: usize = 0x53;
-/// `channel_create` options bit0（4-3c，五件套之 4）：intent opt-out——置位通道
-/// 的 recv 不结算 intent（QNX `_NTO_CHF_FIXED_PRIORITY` 等价，系统服务/看门狗
-/// 类 server 逃生门）。其余位保留（非 0 尾 → -EINVAL，options 纪律）。
-pub const CHAN_OPT_NO_INTENT: u64 = 1 << 0;
-/// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
-pub const NR_EVENT_CREATE: usize = 0x54;
-// 时间（1）
-pub const NR_CLOCK_READ: usize = 0x61;
-
-/// `clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。
-const CLOCK_MONOTONIC: u64 = 0;
+// ---- v1 28 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// 常量本体在 `crate::abi_gen`（`工具链/abi.toml` 生成文件）；此处 re-export
+// 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
+// abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
+// 在册未实现号（0x35）随转发触发 unused_imports——同冻结位纪律整体豁免。
+#[allow(unused_imports)]
+pub use crate::abi_gen::{
+    CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
+    NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
+    NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_PROCESS_EXIT,
+    NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP, NR_THREAD_START,
+    NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE,
+    NR_VMO_DECOMMIT, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
+};
+use crate::abi_gen::CLOCK_MONOTONIC;
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
 /// `内存管理设计.md` §4；copy_out 的界检同源）。

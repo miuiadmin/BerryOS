@@ -70,10 +70,10 @@ build-user:
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello
 
-build: build-user
+build: abi-check build-user
     cargo build
 
-check: build-user
+check: abi-check build-user
     cargo check
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot
@@ -93,7 +93,7 @@ run-rootfs: build
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio
 
-run-release: build-user
+run-release: abi-check build-user
     cargo build --release
     {{QEMU}} {{MACH}} -kernel {{KERNEL_RELEASE}}
 
@@ -118,14 +118,22 @@ test-host:
 size: build
     python3 工具链/size.py {{KERNEL}}
 
-size-release: build-user
+size-release: abi-check build-user
     cargo build --release
     python3 工具链/size.py {{KERNEL_RELEASE}}
 
-# ABI 镜像断言：内核 NR/RIGHT/SIGNAL/ERR/CLOCK 常量 ↔ berry-sys ↔ ABI 文档
-# 编号表三方逐值对账（IDL 单源生成前的临时关卡，smoke 亦内嵌同款）。
+# ABI 单源工具链（`工具链/abi.toml` = 常量层唯一事实源）：
+#   abi-gen    —— 再生三面产物（内核 abi_gen.rs / berry-sys abi_gen.rs / 文档
+#                marker 块）；改 ABI 后跑它，产物 diff 随源一起入册。
+#   abi-check  —— 逐字节比对守卫（挂 build/check/smoke 前置）：忘再生成 /
+#                手改产物即 FAIL。Plan B v0.5 的 abi_check.py 三方对账随之退役
+#                （生成即一致，无需对账）。需 Python ≥3.11（tomllib）——
+#                CLT 自带 /usr/bin/python3(3.9) 不够，brew python3 可。
+abi-gen:
+    python3 工具链/gen_abi.py
+
 abi-check:
-    python3 工具链/abi_check.py
+    python3 工具链/gen_abi.py --check
 
 # 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke

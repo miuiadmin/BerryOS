@@ -133,7 +133,8 @@ just build-user     # G-eco：用户程序编译 → flat binary（内核/src/us
 just run            # QEMU virt → 1BerryOS boot（默认起始 EL1），halt
 just run-el2        # virt,virtualization=on → 21BerryOS boot（EL2→EL1 eret 降级路径）
 just smoke          # 无人值守冒烟（CI 同款）：boot 标记断言 + switches 金丝雀严格递增；三相（裸 + rootfs 9 标记 + RX 交互——P5 A-1 起）
-just abi-check      # ABI 镜像断言：内核 ↔ berry-sys ↔ ABI 文档三方对账（Plan B v0.5 起，smoke 亦内嵌同款）
+just abi-check      # ABI 单源守卫：gen_abi.py --check 逐字节比对 abi.toml 三面产物（忘再生成/手改产物即 FAIL）
+just abi-gen        # ABI 再生：abi.toml → 内核/berry-sys abi_gen.rs + 文档 marker 块（改 ABI = 改源 → abi-gen → diff 入册）
 just size           # 内核体积基线报告（文件量 / PT_LOAD 镜像与静态内存 / 段明细；CI 同步打印）
 just run-rootfs     # G-eco：带 rootfs 启动（-fw_cfg name=opt/berry/rootfs,file=rootfs.cpio）——svcmgr 消费链 `rootfs hello` + `ECO ok`（裸跑降级 ROOTFS absent/vmo=none）
 just run-release / just check / just clean
