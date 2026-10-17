@@ -9,7 +9,9 @@
 //!
 //! 语义纪律（迁自 svcmgr，勿漂移）：
 //! - 解析/首窗读失败返 `Err`（调用方可见降级续走）；**syscall 面失败自陷**
-//!   （真 syscall 失败 = 系统级异常，标记缺失 loud 兜底）；
+//!   （真 syscall 失败 = 系统级异常，标记缺失 loud 兜底）——例外：资源耗尽
+//!   （`process_create` -ENOMEM，PROCESS_MAX 出帽）= ABI 合法运行时条件，
+//!   Err 降级不杀调用方（P5 v0.5 对抗审查）；
 //! - 段幅前置 `ELF_MAP_MAX`（复盘雷 8）：巨段在几何层即降级；
 //! - 栈与映像之间隔**保护页**（`stack_va = base + len + PAGE_SIZE`）——栈用
 //!   穿 = 干净 D-abort（hexyl 栈溢出实踩，d-3c）；
@@ -29,7 +31,8 @@ use berry_sys::{
     berry_handle_duplicate, berry_object_wait_one, berry_process_create, berry_process_start,
     berry_thread_create, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
     berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE,
-    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE, SIGNAL_TERMINATED,
+    BERRY_ERR_BUSY, BERRY_ERR_NO_MEMORY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE,
+    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 
 /// ELF 首窗：ehdr + 全部 phdr（真实 lld 产物 phnum ≤ 10 量级，4KiB 绰绰）。
@@ -113,6 +116,34 @@ pub fn channel_pair() -> (Handle, Handle) {
         trap();
     }
     (a, b)
+}
+
+/// feeder 发送（P5 v0.5）：-EBUSY（对端满队）→ 阻塞等 WRITABLE 10s 重臂
+/// （libc `console_write` 同款契约——`recv` 腾位经 `wake_matching(对端,
+/// WRITABLE)` 唤醒，匹配键 = ObjRef 地址，跨 handle 别名互通）；其余非 0
+/// 错误自陷（feeder 链断 = 系统级异常，标记缺失 loud 兜底）。零长发送
+/// （EOF 标记）同路——满队时 EOF 也要排队。
+fn send_retry(h: Handle, p: *const u8, n: usize) {
+    let mut deadline = 0u64;
+    loop {
+        let s = berry_channel_send(h, p, n, core::ptr::null(), 0);
+        if s == 0 {
+            return;
+        }
+        if s != BERRY_ERR_BUSY {
+            trap();
+        }
+        if deadline == 0 {
+            let mut now = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+                trap();
+            }
+            deadline = now + 10_000_000_000;
+        }
+        let mut obs = 0u64;
+        let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs);
+        deadline = 0; // 重臂（命中后若仍满则续等——公平排队）
+    }
 }
 
 /// [`spawn_rootfs_elf`] 的参数面（A-2 SpawnSpec 化——9 参位置列表易错位，
@@ -210,7 +241,17 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     }
     let mut hp = 0 as Handle;
     let mut hv = 0 as Handle;
-    if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
+    let s = berry_process_create(0, 0, &mut hp, &mut hv);
+    if s == BERRY_ERR_NO_MEMORY {
+        // 资源耗尽 = ABI 合法运行时条件（内核 PROCESS_MAX=64 出帽返 -ENOMEM），
+        // 非系统级异常——Err 降级不杀调用方（P5 v0.5 对抗审查：管道不退出段
+        // 僵尸累积到帽后，trap 反杀 bsh = 交互 shell 死亡；出参在帽检前预清
+        // 0，此刻零已建对象，直接返回零清理面）。其余站点（vmo/commit/map/
+        // thread）的帧耗尽在 64 帽内不可达（64×~0.7MB ≈ 45MB ≪ 128M）仍
+        // trap——PROCESS_MAX 提高时（v2）须同步扩这条降级。
+        return Err(());
+    }
+    if s != 0 || hp == 0 || hv == 0 {
         trap();
     }
     let mut vmo = 0 as Handle;
@@ -314,14 +355,27 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     if berry_handle_close(env_s) != 0 {
         trap(); // 发端使命已毕（消息已入队、对端互钉保队列）；关不掉即泄漏面
     }
-    // —— feeder：数据 + 零长 EOF 标记（libc read 的 EOF 约定，d-3b）。
+    // —— feeder：数据分片 + 零长 EOF 标记（libc read 的 EOF 约定，d-3b）。
+    //    P5 v0.5 分片化：消息 inline 帽 256 且队列深 8——>256B 输入（管道自验
+    //    参照要喂 ~659B）单发即 -EINVAL / 多发必中途满队 -EBUSY。按 192B
+    //    分片（libc `console_write` 同粒度）+ EBUSY 阻塞等 WRITABLE（10s 重
+    //    臂，A-2 修订同款——自旋是雷 2 形态）：子进程 recv 腾位即唤醒公平
+    //    续泵。EOF 同一重试（满队时 EOF 也得排队）。
+    //    **互锁门限（对抗审查核实，改此块前必读）**：feeder 内联于本函数、
+    //    返回前调用方进不了 collect——子进程 stdout 队（8×192B）先满则双侧
+    //    互等死锁。安全前提 = 子进程在 stdout 灌满前消费到 feeder 收尾
+    //    （≈ L−1536B）；hexyl 8KB BufWriter 下实测门限 L≥2689B（首 flush 点
+    //    ≈ 已收 1344B）。**stdin 面调用方喂 >2KB 量级前先核此账**；根修 =
+    //    feeder 移出 spawn + 收发交错泵（v2，随多线程/关闭检测）。
     if let (Some((in_s, _)), Some(data)) = (stdin_pair, stdin_feed) {
-        if berry_channel_send(in_s, data.as_ptr(), data.len(), core::ptr::null(), 0) != 0 {
-            trap();
+        let mut off = 0usize;
+        while off < data.len() {
+            let n = core::cmp::min(192, data.len() - off);
+            let p = unsafe { data.as_ptr().add(off) };
+            send_retry(in_s, p, n);
+            off += n;
         }
-        if berry_channel_send(in_s, data.as_ptr(), 0, core::ptr::null(), 0) != 0 {
-            trap();
-        }
+        send_retry(in_s, core::ptr::null(), 0);
         if berry_handle_close(in_s) != 0 {
             trap();
         }

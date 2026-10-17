@@ -149,8 +149,12 @@ QEMU_PID=$!
 # 返回 → libc exit → 0x33（内核置 Exited + 唤醒 TERMINATED + drain + REAPQ
 # 回收任务体）→ svcmgr wait TERMINATED → reap（unmap×2 + close×5，映像/
 # 栈帧真还）——rootfs 相第 9 标记（确定性：stdhello 恒从 main 返回）。
+# PIPE ok = **channel 即 pipe 管道全链**（P5 v0.5）：bsh 自驱三跑对拍——
+# `hexyl | hexyl` 管道输出 vs 同字节直喂 hexyl 参照**逐字节全等**（EOF 链
+# = 前段 exit 零长消息逐级传导；feeder 192B 分片阻塞泵）——rootfs 相第
+# 10 标记（hexyl 纯函数 + isatty 恒 false = 确定性，不赌竞速）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -168,7 +172,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok）"
 
 # —— 阶段 4：P5 A-1 RX 交互相（内核 RX 中断 + console 输入消费）——
 # stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 标记到齐后（状态

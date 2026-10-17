@@ -84,8 +84,8 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 |------|------|------|
 | P5 第一刀 | PL011 RX 中断 + mini-readline | 串口双向：能打字回显、历史 |
 | P5 v0 | bsh：内建命令 + `run` 外部程序 + 环境变量 + `&&` | 串口跑 `run hello`（`开发体验.md` §3 场景成真） |
-| P5 v0.5 | channel 管道 `\|` + 重定向 `>` | `ls \| grep boot` 端到端 |
-| P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 | `berryctl --json` 遥测可读 |
+| P5 v0.5 | channel 管道 `\|`（已落地 2026-10：`PIPE ok` = rootfs 相第 10 标记，bsh 三跑对拍自验）；重定向 `>` 依赖 FS（/svc/fs），随 P6 | `hexyl \| hexyl` 端到端 |
+| P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向 | `berryctl --json` 遥测可读 |
 | 远期 | 更丰富脚本语法；受限 fork（v3+ 探索）后评估更多 POSIX 面 | — |
 
 ## 6. 与既有文档的挂钩
