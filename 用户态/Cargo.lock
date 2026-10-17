@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-exec"
+version = "0.1.0"
+dependencies = [
+ "berry-loader",
+ "berry-sys",
+]
+
+[[package]]
 name = "berry-libc"
 version = "0.1.0"
 dependencies = [
@@ -42,6 +50,7 @@ dependencies = [
 name = "svcmgr"
 version = "0.1.0"
 dependencies = [
+ "berry-exec",
  "berry-loader",
  "berry-sys",
 ]

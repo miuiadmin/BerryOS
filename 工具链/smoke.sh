@@ -136,8 +136,11 @@ QEMU_PID=$!
 # 输入管道输出）**逐字节比对全等**才打此标记（单消息原子、每 boot
 # 确定性——直接 grep 表行会被稳态矩阵在 192B 分片边界插花，属时序
 # 竞速，不可为标记）。
+# BSH ok = **交互 shell 自驱自验**（P5 A-2）：bsh 启动即内部 `run hexyl`
+# （同 256B 输入 + --color=never + 私有 stdout + EOF 收齐），字节数 ==
+# 2156 基准才自打——rootfs 相第 8 标记，不赌交互输入（stdin=/dev/null）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok")
+  "HEXYL ok" "BSH ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -155,7 +158,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok）"
 
 # —— 阶段 4：P5 A-1 RX 交互相（内核 RX 中断 + console 输入消费）——
 # stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 标记到齐后（状态

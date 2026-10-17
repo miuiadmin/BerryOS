@@ -303,6 +303,29 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
         *core::ptr::addr_of_mut!(RX_EV_REF) = Some(p_rx);
     }
 
+    // P5 A-2：bsh stdin 通道对的 console 面（endK2）——console 私有表**第 4
+    // 插**（endK=1/哑 Event=2/RX Event=3 之后，定值断言惯例）。console 持
+    // RIGHT_SEND（键盘完整行转发给 bsh）；对端 endB2 落 svcmgr 表（svcmgr 段
+    // 插入并 pair——两表异地、配对延到后插入侧；boot 单线程，中间无人能发）。
+    // spawn arg 已满 → handle 走静态槽 `BSH_IN_H`（RX_EV_H 同款惯例）。
+    // 通道 opt-out（console 对同款）：系统服务转发键盘不借出 intent。
+    let h_end_k2 = ct
+        .insert(
+            KernelObj::Channel(
+                crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 bsh-stdin console 端"),
+            ),
+            handle::RIGHT_SEND,
+        )
+        .expect("main: bsh-stdin console 端进私有表");
+    assert_eq!(
+        h_end_k2, 0x0001_0004,
+        "main: console 表 endK2 须第 4 插 0x0001_0004（console 读静态槽依赖）"
+    );
+    // SAFETY: boot 单线程写、先于 console 任务读（同 RX_EV_H 口径）。
+    unsafe {
+        *core::ptr::addr_of_mut!(BSH_IN_H) = h_end_k2;
+    }
+
     // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
     // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
     // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
@@ -667,6 +690,8 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
             .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ)
             .expect("main: rootfs VMO 进 svcmgr 表")
     });
+    // （A-2）rootfs 相位标记——endB2 插序断言用：rootfs 槽缺席 = 少一插。
+    let rootfs_present = h_rootfs.is_some();
     match h_rootfs {
         Some(h) => {
             assert_eq!(
@@ -679,6 +704,39 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
         }
         None => berry_hal_aarch64::uart_puts(b"ROOTFS vmo=none\n"),
     }
+
+    // P5 A-2：bsh stdin 对端的 svcmgr 面（endB2）——console(1)/rootfs VMO(有则
+    // 2) 之后插入。**带 rootfs = 第 3 插 0x0001_0003**（svcmgr 编译侧硬编码
+    // 依赖——spawn bsh 时随 env 块 gift[1] 迁交，仅 rootfs 相消费故只对
+    // rootfs 相定值）；裸跑 rootfs 槽缺席 = 第 2 插 0x0001_0002（无人读——
+    // console 转发进 8 深队列灌满后丢弃计数，零扰动）。svcmgr 仅中转不自读；
+    // RIGHTS_RECV 随迁移原样进 bsh 表（fd0 = libc d-3b 既有链）。此处
+    // pair——两端 ObjRef 齐活（endK2 已在 console 表，互钉 retain）。
+    let h_end_b2 = ht_svcmgr
+        .insert(
+            KernelObj::Channel(
+                crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 bsh-stdin svcmgr 端"),
+            ),
+            handle::RIGHT_RECV,
+        )
+        .expect("main: bsh-stdin 端进 svcmgr 表");
+    assert_eq!(
+        h_end_b2,
+        if rootfs_present { 0x0001_0003 } else { 0x0001_0002 },
+        "main: svcmgr 表 endB2 插序（rootfs 相须 0x0001_0003——编译侧硬编码）"
+    );
+    let (pk2, pu2) = (
+        ct.get_raw(h_end_k2, handle::ObjType::Channel, 0)
+            .expect("main: 取 endK2 ObjRef")
+            .0,
+        ht_svcmgr
+            .get_raw(h_end_b2, handle::ObjType::Channel, 0)
+            .expect("main: 取 endB2 ObjRef")
+            .0,
+    );
+    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+    unsafe { crate::channel::ChannelEnd::pair(pk2, pu2) };
+
     // D3（G-eco-b）：svcmgr 是首个多页镜像（编译产物内嵌 echo/talker 平像），
     // data/stack 上移——sp 从 `stack_top` 取，不读单页常量。
     berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, up_svcmgr.stack_top,
@@ -1149,6 +1207,16 @@ fn rx_ev_h() -> u32 {
     unsafe { *core::ptr::addr_of!(RX_EV_H) }
 }
 
+/// bsh stdin 发端（endK2）handle 静态槽（console 任务读；spawn arg 已满走
+/// 静态槽——RX_EV_H 同款惯例；写点 = boot 接线段，先于一切任务）。P5 A-2。
+static mut BSH_IN_H: u32 = 0;
+
+/// 读 endK2 handle 静态槽（console 任务侧）。
+fn bsh_in_h() -> u32 {
+    // SAFETY: 只读；全部写点先于任务启动（boot 顺序）。
+    unsafe { *core::ptr::addr_of!(BSH_IN_H) }
+}
+
 /// 「RX 到数据」通知（HAL `exception_irq` → `uart::rx_irq` 经槽调；IRQ 上下文
 /// PSTATE.I=1）。置位 RX Event（用户半位）+ `wake_matching`（匹配键 = ObjRef
 /// 地址，同 4-1 `sys_object_signal` 唤醒路径；console 的 wait_many 挂
@@ -1207,15 +1275,23 @@ unsafe fn rx_ev_clear() {
 /// 是违约）。包络外做 echo（QEMU `-nographic` 不回显——软件自做）+ 行缓冲
 /// token：首条恰为 `rx` 的行打 `RX ok n=… lost=…`（smoke 第 25 标记，
 /// **直接 uart 打**——console 自己就是排水者，不能再给自己发消息）。
+///
+/// **P5 A-2 交互面**：wait_many 再扩第四项 [endK2:WRITABLE]（bsh stdin
+/// 发端；队列腾位即 pending 重发窗）。行缓冲 96B + 退格（\x7f/\x08 → 回显
+/// "\b \b"）、其它控制字节忽略；完整行非 token → `send(endK2)` 转发 bsh
+/// （行末归一 \n）；满 -EBUSY 保持 pending 重发、新行覆盖旧 pending（丢弃
+/// 计数入 `fdrop=`——bsh 缺席/死 = 8 深队列灌满后丢，打字速率下不触发）。
+/// n=4 仍 wait_many（WAIT_ANY 哨兵 + 私有表——PI 双保险纪律不因扩项破）。
 extern "C" fn task_console(arg: usize) -> ! {
-    use crate::handle::{ERR_AGAIN, ERR_TIMEDOUT, SIGNAL_READABLE};
-    use crate::syscall::{NR_CHANNEL_RECV, NR_CLOCK_READ, NR_OBJECT_WAIT_MANY};
+    use crate::handle::{ERR_AGAIN, ERR_BUSY, ERR_TIMEDOUT, SIGNAL_READABLE, SIGNAL_WRITABLE};
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_MANY};
     let h_end_k = arg as u32;
     let h_dummy = (arg >> 32) as u32;
     let h_rx = rx_ev_h();
-    // wait_many 三数组（栈上、EL1 内核高半——copy_from_user 的 EL1 分支收）。
-    let hs = [h_end_k, h_dummy, h_rx];
-    let sigs = [SIGNAL_READABLE, 1u64 << 32, RX_EV_BIT];
+    let h_bsh = bsh_in_h();
+    // wait_many 四数组（栈上、EL1 内核高半——copy_from_user 的 EL1 分支收）。
+    let hs = [h_end_k, h_dummy, h_rx, h_bsh];
+    let sigs = [SIGNAL_READABLE, 1u64 << 32, RX_EV_BIT, SIGNAL_WRITABLE];
     let mut now: u64 = 0;
     // SAFETY: svc 同步异常；栈变量私有（内核高半，copy 直拷）。
     let pnow = core::ptr::addr_of_mut!(now) as u64;
@@ -1227,18 +1303,34 @@ extern "C" fn task_console(arg: usize) -> ! {
     let mut buf = [0u8; 256];
     // P5 A-1：RX 消费面——搬出缓冲（= 环容量 → 包络内必搬空）、行缓冲、计数。
     let mut rxbuf = [0u8; berry_hal_aarch64::uart::RX_RING_SIZE];
-    let mut line = [0u8; 16]; // 行 token 缓冲（溢出 = li 钉在 len，断行时必不匹配）
+    // P5 A-2：行缓冲 96B（bsh 命令行量级；溢出 = li 钉在 len，断行时必不完整
+    // 转发——token 检查同理不匹配）。
+    let mut line = [0u8; 96];
     let mut li = 0usize;
+    // P5 A-2：待转发行（pending）——完整行非 token → 压这里 send(endK2)；满
+    // -EBUSY 保持 pending 等 idx==3（WRITABLE，bsh 队列腾位/10s 心跳）重发；
+    // 新行覆盖旧 pending（被覆盖 = 丢弃计数 fwd_drop——bsh 缺席/断供面，RX
+    // lost= 同哲学：打字速率下永不触发，计数仅供诊断）。含 \n 共 97B 上限。
+    let mut pend = [0u8; 97];
+    let mut plen = 0usize;
+    let mut fwd_drop: u64 = 0;
     let mut rx_total: u64 = 0;
     let mut rx_ok_done = false;
     let (mut n, mut nh): (u64, u64);
     loop {
         assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "console: clock_read");
+        // 第 4 项（endK2 WRITABLE）**只在有待转发行时入列**——bsh 缺席/无键盘
+        // 输入时 endB2 队列恒空 = 该项恒满足 → wait_many 立即返 idx==3 → console
+        // 永不入睡：既违 tickless 纪律，更把 drain 相位钉死在 RR 环上（环序固定
+        // 后，填槽序末位的自旋生产者结构性饿死——A-2 实踩，svcmgr send_spin
+        // 「SVC ok」每片只见满队）。无 pending = 3 项真睡（A-1 形态，相位随
+        // 发送方唤醒旋转）；有 pending = 4 项入列，idx==3 即重发窗。
+        let n_items: u64 = if plen > 0 { 4 } else { 3 };
         let r = svc6(
             NR_OBJECT_WAIT_MANY as u64,
             hs.as_ptr() as u64,
             sigs.as_ptr() as u64,
-            3,
+            n_items,
             now + 10 * 1_000_000_000,
             pidx,
             pobs,
@@ -1249,10 +1341,11 @@ extern "C" fn task_console(arg: usize) -> ! {
             r
         );
         if r == 0 {
-            // 哑 Event（idx==1）永不置位 = 命中它即接线错乱；endK(0)/RX(2) 合法。
+            // 哑 Event（idx==1）永不置位 = 命中它即接线错乱；endK(0)/RX(2)/
+            // endK2-WRITABLE(3) 合法（idx==3 = bsh 队列腾位——pending 重发窗）。
             assert!(
-                idx == 0 || idx == 2,
-                "console: wait 命中须 endK(0)/RX(2)，得 {}",
+                idx == 0 || idx == 2 || idx == 3,
+                "console: wait 命中须 endK(0)/RX(2)/endK2(3)，得 {}",
                 idx
             );
         }
@@ -1267,28 +1360,79 @@ extern "C" fn task_console(arg: usize) -> ! {
         berry_hal_aarch64::enable_irq();
         for i in 0..nrx {
             let b = rxbuf[i];
-            berry_hal_aarch64::uart_putc(b); // echo（-nographic 无硬件回显）
             rx_total += 1;
             if b == b'\n' || b == b'\r' {
+                berry_hal_aarch64::uart_putc(b); // echo（-nographic 无硬件回显）
                 if !rx_ok_done && li == 2 && line[..2] == *b"rx" {
                     rx_ok_done = true;
                     // 直接 uart（console 即排水者，不走自家通道）；标记条件 =
-                    // 收到完整行 token（状态谓词，非注入即达的回声）。
+                    // 收到完整行 token（状态谓词，非注入即达的回声）。token 行
+                    // console 自营不转发（后续同名行非 token、照常转发）。
                     berry_hal_aarch64::uart_puts(b"RX ok n=");
                     berry_hal_aarch64::uart_put_dec(rx_total);
                     berry_hal_aarch64::uart_puts(b" lost=");
                     berry_hal_aarch64::uart_put_dec(
                         berry_hal_aarch64::uart::rx_lost() as u64,
                     );
+                    // A-2：转发丢弃计数（bsh 断供面诊断位；正常恒 0——smoke
+                    // 只 grep "RX ok" 前缀，行尾追加零扰动）。
+                    berry_hal_aarch64::uart_puts(b" fdrop=");
+                    berry_hal_aarch64::uart_put_dec(fwd_drop);
                     berry_hal_aarch64::uart_puts(b"\n");
+                } else {
+                    // A-2：完整行非 token → 待转发（含空行——bsh 空命令回
+                    // prompt）；行末归一 \n（终端 \r 入、bsh 见 \n）。旧 pending
+                    // 未发走即被覆盖 = 丢弃计数。
+                    if plen > 0 {
+                        fwd_drop += 1;
+                    }
+                    pend[..li].copy_from_slice(&line[..li]);
+                    pend[li] = b'\n';
+                    plen = li + 1;
                 }
                 li = 0;
+            } else if b == 0x7f || b == 0x08 {
+                // 退格（\x7f=DEL / \x08=BS）：行缓冲回退 + 回显 "\b \b" 三连
+                // （退一格、抹字符、归位）；空行退格无操作。
+                if li > 0 {
+                    li -= 1;
+                }
+                berry_hal_aarch64::uart_putc(b'\x08');
+                berry_hal_aarch64::uart_putc(b' ');
+                berry_hal_aarch64::uart_putc(b'\x08');
+            } else if b < 0x20 {
+                // 其他控制字节（非 \n\r/退格）：忽略——不回显不缓冲（Ctrl-C
+                // 等信号语义 v1 无）。
             } else {
+                berry_hal_aarch64::uart_putc(b); // echo
                 if li < line.len() {
                     line[li] = b;
                     li += 1;
                 }
-                // else：行溢出——丢字节、li 钉在 len（断行时 li != 2 必不匹配）。
+                // else：行溢出——丢字节、li 钉在 len（断行时转发截断行）。
+            }
+        }
+        // A-2：pending 行转发（bsh stdin）——非空即试发；满 -EBUSY 保持
+        // pending（等 idx==3 WRITABLE / 心跳唤醒重发；bsh 缺席/死 = 8 深队列
+        // 灌满后丢弃，见 fwd_drop）。其它错码 = 接线错乱（boot 定值 + SEND
+        // right 在手），panic 兜底。
+        if plen > 0 {
+            let rs = svc6(
+                NR_CHANNEL_SEND as u64,
+                h_bsh as u64,
+                pend.as_ptr() as u64,
+                plen as u64,
+                0,
+                0,
+                0,
+            );
+            assert!(
+                rs == 0 || rs == ERR_BUSY as i64,
+                "console: bsh-stdin send ret={}",
+                rs
+            );
+            if rs == 0 {
+                plen = 0;
             }
         }
         // drain：排空本端队列（发送侧重试 + 深度 8 → 批量有界）。

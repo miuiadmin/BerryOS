@@ -12,7 +12,10 @@
 # G-eco-d：berry-libc（musl std 的 libc shim——本工作区编 none target 只是
 # 编译检查，真消费者 stdhello 在自己的独立小工作区编 musl target，故
 # excluded；链接编排见 justfile build-user 的 std 面 pass）。
-members = ["berry-sys", "berry-loader", "berry-libc", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+# A-2：berry-exec（rootfs 程序拉起链——spawn_rootfs_elf/cpio_find 自 svcmgr
+# 抽取，svcmgr（none target，本工作区成员）与 bsh（musl target，独立小工作
+# 区经 path 依赖）双消费，「不长第二套」）。
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello"]
 resolver = "2"
 

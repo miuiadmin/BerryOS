@@ -20,13 +20,15 @@
 #![no_main]
 
 use berry_sys::{
-    berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
-    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_create,
-    berry_process_start, berry_thread_create, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
-    BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE,
-    SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
+    berry_handle_duplicate, berry_object_wait_one, berry_process_create, berry_process_start,
+    berry_thread_create, berry_vmar_map, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
+    berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
+    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
+// A-2：拉起链换轨 berry-exec（「不长第二套」——spawn_rootfs_elf/channel_pair
+// 迁出，bsh 的 run 同链消费；行为逐字等价）。
+use berry_exec::{channel_pair, spawn_rootfs_elf, SpawnSpec};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -59,7 +61,7 @@ pub extern "C" fn _start(console: Handle) -> ! {
     let req = ECHO_REQ.to_le_bytes();
     send_retry(end0, req.as_ptr(), 8);
     roundtrip(end0, &mut buf, &req);
-    send_spin(console, SVC_OK.as_ptr(), 7);
+    send_retry(console, SVC_OK.as_ptr(), 7);
 
     // ---- A 半：talker + echo2，交接双 handle ----
     let (s1, t1) = channel_pair();
@@ -89,19 +91,12 @@ pub extern "C" fn _start(console: Handle) -> ! {
         throttle();
         send_retry(end0, req.as_ptr(), 8);
         roundtrip(end0, &mut buf, &req);
-        send_spin(console, v.as_ptr(), 1);
+        send_retry(console, v.as_ptr(), 1);
     }
 }
 
-/// 建通道对（两端均授 SEND|RECV|DUPLICATE；返回 (本端, 交接端)）。
-fn channel_pair() -> (Handle, Handle) {
-    let mut a = 0 as Handle;
-    let mut b = 0 as Handle;
-    if berry_channel_create(0, &mut a, &mut b) != 0 {
-        trap();
-    }
-    (a, b)
-}
+/// 建通道对 = `berry_exec::channel_pair`（A-2 迁出；两端均授
+/// SEND|RECV|DUPLICATE，返回 (本端, 交接端)）。
 
 /// 拉起一个子进程：process_create 双出参 → 2 页 VMO（镜像首页 + 零栈页）
 /// → vmar_map@0x1000（rights 恰 READ|WRITE）→ thread_create →
@@ -145,20 +140,18 @@ fn spawn_child(image: &[u8], bootstrap: Handle) {
 /// console endU 首插 0x0001_0001 之后）。rights 仅 READ（vmo_read/get_size 面）。
 const H_ROOTFS: Handle = 0x0001_0002;
 
+/// bsh stdin 端（endB2）= boot 第 3 插定值（console 首插 / rootfs VMO 第 2
+/// 插之后；main.rs `assert_eq` 同源硬编）。**仅 rootfs 相有效**——裸跑
+/// rootfs 槽缺席顺延为 0x0001_0002，但本 arm 在无 rootfs 时早退永不走
+/// （run_rootfs_child 开头 get_size 即返）。rights RECV 随 env 块迁移原样
+/// 进 bsh 表（fd0）。A-2。
+const H_BSH_STDIN: Handle = 0x0001_0003;
+
 /// cpio 步进窗：头 110B + 名（mkcpio 名 ≤ 56B 绰绰有余，盖不住 = 诚实拒）。
+/// （ELF_WIN/PUMP_WIN/ELF_MAP_MAX 随 spawn_rootfs_elf 迁 berry-exec——A-2。）
 static mut STEP_WIN: [u8; 512] = [0; 512];
-/// ELF 首窗：ehdr + 全部 phdr（真实 lld 产物 phnum ≤ 10 量级，4KiB 绰绰）。
-static mut ELF_WIN: [u8; 4096] = [0; 4096];
-/// 段字节泵窗：rootfs VMO → 子 VMO 的 4KiB 中转（std 镜像 ~283KB ≈ 70 泵）。
-static mut PUMP_WIN: [u8; 4096] = [0; 4096];
 /// hexyl 终验收齐窗：子 stdout 全量（基准 2156B + 版本漂移余量）。
 static mut HEX_WIN: [u8; 4096] = [0; 4096];
-
-/// ELF 映幅帽 = 内核 `VMO_MAX_SIZE`（16MiB）同值（复盘雷 8 残留面）：
-/// `elf_head` 只挡 >2^39 野值，(16MiB, 2^39) 区间的合法巨段会走到
-/// vmo_create 才 -ENOMEM → 自陷——span 属 rootfs **输入面**（非内核契约
-/// 面），按解析侧同款契约 Err 降级；真实 std 镜像 ~283KB，余量充足。
-const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
 
 /// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
@@ -179,13 +172,16 @@ fn run_rootfs_child(console: Handle) {
         let n = 5 + why.len();
         line[5..n].copy_from_slice(why);
         line[n] = b'\n';
-        send_spin(console, line.as_ptr(), n + 1);
+        send_retry(console, line.as_ptr(), n + 1);
     };
     // SAFETY: boot 后本进程独占步进窗；顺序写/读，单线程（G-eco-c 同款口径）。
     let step: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(STEP_WIN) as *mut u8, 512)
     };
     let mut pos = 0u64;
+    // bsh 一次性标志（对抗审查）：H_BSH_STDIN 是单用 handle（take 中转），
+    // 重复 `bin/bsh` 条目重入 arm 会以死值自陷——见 arm 内注释。
+    let mut bsh_spawned = false;
     while pos < cap {
         let want = ((cap - pos).min(step.len() as u64)) as usize;
         if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), pos, want) != 0 {
@@ -199,8 +195,21 @@ fn run_rootfs_child(console: Handle) {
                 // 名字从步进窗借引用：下一轮 cpio_step 前用完（spawn 内的
                 // env 发送即消费点，之后只碰 ELF_WIN/PUMP_WIN）。
                 if name == "bin/hello" {
-                    match spawn_rootfs_elf(name.as_bytes(), data_off, data_len, console, 1, None, None) {
-                        Ok(()) => send_spin(console, ECO_OK.as_ptr(), ECO_OK.len()),
+                    match spawn_rootfs_elf(
+                        H_ROOTFS,
+                        &SpawnSpec {
+                            name: name.as_bytes(),
+                            data_off,
+                            data_len,
+                            stdout: console,
+                            stack_pages: 1,
+                            stdin_feed: None,
+                            stdin_handle: None,
+                            extra_arg: None,
+                            extra_gift: None,
+                        },
+                    ) {
+                        Ok(()) => send_retry(console, ECO_OK.as_ptr(), ECO_OK.len()),
                         Err(()) => eco_skip(b"elf bad"),
                     }
                 } else if name == "bin/stdhello" {
@@ -210,13 +219,18 @@ fn run_rootfs_child(console: Handle) {
                         *b"berryos!berryos!berryos!berryos!berryos!berryos!berryos!berryos!";
                     let stdin: &[u8] = &STDIN_DATA;
                     if spawn_rootfs_elf(
-                        name.as_bytes(),
-                        data_off,
-                        data_len,
-                        console,
-                        8,
-                        Some(stdin),
-                        None,
+                        H_ROOTFS,
+                        &SpawnSpec {
+                            name: name.as_bytes(),
+                            data_off,
+                            data_len,
+                            stdout: console,
+                            stack_pages: 8,
+                            stdin_feed: Some(stdin),
+                            stdin_handle: None,
+                            extra_arg: None,
+                            extra_gift: None,
+                        },
                     )
                     .is_err()
                     {
@@ -250,13 +264,18 @@ fn run_rootfs_child(console: Handle) {
                     // **单消息原子** `HEXYL ok`（每 boot 确定性成立）。
                     let (out_s, out_c) = channel_pair();
                     if spawn_rootfs_elf(
-                        name.as_bytes(),
-                        data_off,
-                        data_len,
-                        out_c,
-                        32,
-                        Some(stdin),
-                        Some(b"--color=never"),
+                        H_ROOTFS,
+                        &SpawnSpec {
+                            name: name.as_bytes(),
+                            data_off,
+                            data_len,
+                            stdout: out_c,
+                            stack_pages: 32,
+                            stdin_feed: Some(stdin),
+                            stdin_handle: None,
+                            extra_arg: Some(b"--color=never"),
+                            extra_gift: None,
+                        },
                     )
                     .is_err()
                     {
@@ -270,6 +289,53 @@ fn run_rootfs_child(console: Handle) {
                     }
                     if berry_handle_close(out_s) != 0 {
                         trap();
+                    }
+                } else if name == "bin/bsh" {
+                    // A-2：交互 shell bsh——stdhello/hexyl 同链（musl target +
+                    // berry-libc shim）。gift 三元：[0] console 别名（spawn 内
+                    // dup）/ [1] **endB2 = H_BSH_STDIN（被 take 中转，svcmgr
+                    // 自此不再持有——fd0 = console 键盘行转发对端）** /
+                    // [2] rootfs VMO READ dup（bsh 的 `run <name>` 流式取 ELF，
+                    // libc `rootfs_h()` 消费）。栈 16 页（无 clap 链）。
+                    // `BSH ok` 由 bsh 自打（自驱自验：内部 `run hexyl` 收齐
+                    // 2156B——rootfs 相第 8 标记）；prompt/交互为化妆面。
+                    if bsh_spawned {
+                        // 对抗审查：cpio 重复名合法——重入本 arm 会以已被 take
+                        // 的 H_BSH_STDIN 调 send → 预检 -EBADF → 自陷杀 svcmgr。
+                        // 一次性 handle 的单用性不能押在「归档每名恰一条」上
+                        // （其它 arm 幂等：fresh dup/channel_pair；唯本 arm 有
+                        // 单用 handle）。可见降级续走归档。
+                        eco_skip(b"bsh dup");
+                    } else {
+                        bsh_spawned = true;
+                        let mut rootfs_dup = 0 as Handle;
+                        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+                            trap();
+                        }
+                        if spawn_rootfs_elf(
+                            H_ROOTFS,
+                            &SpawnSpec {
+                                name: name.as_bytes(),
+                                data_off,
+                                data_len,
+                                stdout: console,
+                                stack_pages: 16,
+                                stdin_feed: None,
+                                stdin_handle: Some(H_BSH_STDIN),
+                                extra_arg: None,
+                                extra_gift: Some(rootfs_dup),
+                            },
+                        )
+                        .is_err()
+                        {
+                            // Err 三路（首窗读/elf_head/几何前置）全在 env send
+                            // 前——rootfs_dup 未被 take，显式回收防表槽泄漏
+                            // （Ok 路径已被 take，关旧值必 -EBADF，勿在此关）。
+                            if berry_handle_close(rootfs_dup) != 0 {
+                                trap();
+                            }
+                            eco_skip(b"elf bad");
+                        }
                     }
                 }
                 pos = next;
@@ -285,163 +351,9 @@ fn run_rootfs_child(console: Handle) {
 /// smoke 第 24 标记（7 字节，尾插随合并序）。
 const ECO_OK: &[u8; 7] = b"ECO ok\n";
 
-/// rootfs ELF 流式拉起（页铺平单 VMO，同 `工具链/elf2flat.py` 语义）：
-/// ELF 首窗 `elf_head` 解析（**跨度按 p_memsz**——std RW 段 memsz 0x41241
-/// = 静态堆 + .bss 计入；入口入映像检在装载端拦）→ 子 VMO
-/// `[floor页(min), +ceil页(span))` 一次 commit/map → 各段文件字节按 4KiB
-/// 泵窗从 rootfs VMO 直送子 VMO 相对偏移（**ELF 本体永不整档驻留**——
-/// stdhello ~283KB 只经 4KiB 中转）→ 栈页映其上（页数按程序面）→
-/// **env 块**（d-3a，BerryOS processargs v1）：channel 建 env 对 →
-/// `send(env_s, argv0\0, [stdout 端别名, (stdin 端)])`（能力随消息迁移）→
-/// `process_start(bootstrap=env_c)`——子进程入口 x0 = env 端。`stdin`
-/// = Some(data) 时再建一对，读端随 env 块迁移、`process_start` 后本进程
-/// 作 feeder 泵数据 + 零长 EOF 标记（libc `read` 的 EOF 约定——队列深 8，
-/// 2 条无阻塞面）。
-/// 解析/首窗读失败返 Err（调用方可见降级续走归档）；syscall 面失败自陷
-/// ——链断 loud（标记缺失兜底）。
-///
-/// `extra_arg`（d-3c）：argv[1] 追加项（None = argv 只有 argv0）——env 块
-/// payload 即 `argv0\0[extra\0]`，libc 侧 NUL 分隔逐串入 argv；hexyl 的
-/// `--color=never` 走这条（clap 真解析面）。
-///
-/// `stdout_end`（d-3c）：随 env 块交给子进程当 fd1/2 的通道端（dup 成
-/// RIGHT_SEND）——传 console 发端 = 子直打串口（hello/stdhello）；传私有
-/// 对端 = svcmgr 侧收齐终验（hexyl，见 `verify_hexyl`）。
-fn spawn_rootfs_elf(
-    name: &[u8],
-    data_off: u64,
-    data_len: u64,
-    stdout_end: Handle,
-    stack_pages: u64,
-    stdin: Option<&[u8]>,
-    extra_arg: Option<&[u8]>,
-) -> Result<(), ()> {
-    let want = (data_len.min(4096u64)) as usize;
-    // SAFETY: 独占首窗；boot 后单线程顺序读写。
-    let win: &mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(ELF_WIN) as *mut u8, 4096)
-    };
-    if berry_vmo_read(H_ROOTFS, win.as_mut_ptr(), data_off, want) != 0 {
-        return Err(());
-    }
-    let h = match berry_loader::elf_head(&win[..want], data_len) {
-        Ok(h) => h,
-        Err(_) => return Err(()), // 截断/野值/不收面：可见降级，不杀 svcmgr
-    };
-    let base = berry_loader::page_floor(h.image_min);
-    let len = berry_loader::page_ceil(h.image_span);
-    if len > ELF_MAP_MAX {
-        return Err(()); // 段幅前置（雷 8）：巨段在几何层即降级，不等到 vmo_create
-    }
-    let mut hp = 0 as Handle;
-    let mut hv = 0 as Handle;
-    if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
-        trap();
-    }
-    let mut vmo = 0 as Handle;
-    if berry_vmo_create(len, 0, &mut vmo) != 0 || vmo == 0 {
-        trap();
-    }
-    if berry_vmo_commit(vmo, 0, len) != 0 {
-        trap();
-    }
-    // 段文件字节泵：rootfs VMO [data_off+file_off, +filesz) → 子 VMO。
-    // SAFETY: 独占泵窗（同上）。
-    let pump: &mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PUMP_WIN) as *mut u8, 4096)
-    };
-    for seg in h.segments() {
-        let mut off = 0u64;
-        while off < seg.filesz {
-            let n = ((seg.filesz - off).min(pump.len() as u64)) as usize;
-            if berry_vmo_read(H_ROOTFS, pump.as_mut_ptr(), data_off + seg.file_off + off, n) != 0 {
-                trap();
-            }
-            if berry_vmo_write(vmo, pump.as_ptr(), seg.vaddr - base + off, n) != 0 {
-                trap();
-            }
-            off += n as u64;
-        }
-    }
-    let mut vaddr = base as usize; // 映射基址提示（in-out 槽预写）
-    if berry_vmar_map(hv, 0, vmo, 0, &mut vaddr, len as usize, RIGHT_READ | RIGHT_WRITE) != 0
-        || vaddr != base as usize
-    {
-        trap(); // v1 无重排：回写须 == 请求基址
-    }
-    // 栈页映在映像之上——中间隔一页**保护页**：栈用穿 = 踩未映射页 → 干净
-    // D-abort 被杀（dump SP/FAR 直指祸首）；无保护页时下行栈会静默扎进
-    // 映像 RW 页腐化 .bss/堆簿记，死状与死因南辕北辙（d-3c hexyl 实踩：
-    // 栈穿 32KiB 覆写 `__aarch64_have_lse_atomics` → LSE 误判 → `casa`
-    // UNDEFINED）。映幅尾 = ceil 页，+1 页即页对齐保护页。
-    let stack_len = stack_pages * berry_loader::PAGE_SIZE;
-    let stack_va = base + len + berry_loader::PAGE_SIZE;
-    let mut svmo = 0 as Handle;
-    if berry_vmo_create(stack_len, 0, &mut svmo) != 0 || svmo == 0 {
-        trap();
-    }
-    if berry_vmo_commit(svmo, 0, stack_len) != 0 {
-        trap();
-    }
-    let mut saddr = stack_va as usize;
-    if berry_vmar_map(hv, 0, svmo, 0, &mut saddr, stack_len as usize, RIGHT_READ | RIGHT_WRITE)
-        != 0
-        || saddr != stack_va as usize
-    {
-        trap();
-    }
-    let mut ht = 0 as Handle;
-    if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
-        trap();
-    }
-    // —— env 块（start 前压队，确定性先行）：argv0 = cpio 名 + NUL（+ 可选
-    //    argv1）；handles = [stdout 端别名, (stdin 端)]（先复制 stdout 端：
-    //    send 会 take 走句柄，原值留调用方——G-eco-b 交接消息同款）。
-    let (env_s, env_c) = channel_pair();
-    let mut gift = [0 as Handle; 2];
-    if berry_handle_duplicate(stdout_end, RIGHT_SEND, &mut gift[0]) != 0 {
-        trap();
-    }
-    let stdin_pair = stdin.map(|_| channel_pair());
-    if let Some((_, in_c)) = stdin_pair {
-        gift[1] = in_c; // stdin 读端随 env 块迁移（handle 数组按位语义）
-    }
-    let nhandles = if stdin_pair.is_some() { 2 } else { 1 };
-    let mut blob = [0u8; 64];
-    let n = name.len().min(63);
-    blob[..n].copy_from_slice(&name[..n]);
-    let mut plen = n + 1;
-    if let Some(arg) = extra_arg {
-        let m = arg.len().min(63 - plen);
-        blob[plen..plen + m].copy_from_slice(&arg[..m]);
-        plen += m + 1;
-    }
-    if berry_channel_send(env_s, blob.as_ptr(), plen, gift.as_ptr(), nhandles) != 0 {
-        trap();
-    }
-    if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c) != 0 {
-        trap();
-    }
-    if berry_handle_close(env_c) != BERRY_ERR_BAD_HANDLE {
-        trap(); // 迁移自证：原值必须已作废
-    }
-    if berry_handle_close(env_s) != 0 {
-        trap(); // 发端使命已毕（消息已入队、对端互钉保队列）；关不掉即泄漏面
-    }
-    // —— feeder：数据 + 零长 EOF 标记（libc read 的 EOF 约定，d-3b）。
-    if let (Some((in_s, _)), Some(data)) = (stdin_pair, stdin) {
-        if berry_channel_send(in_s, data.as_ptr(), data.len(), core::ptr::null(), 0) != 0 {
-            trap();
-        }
-        if berry_channel_send(in_s, data.as_ptr(), 0, core::ptr::null(), 0) != 0 {
-            trap();
-        }
-        if berry_handle_close(in_s) != 0 {
-            trap();
-        }
-    }
-    Ok(())
-}
+// rootfs ELF 流式拉起 = `berry_exec::spawn_rootfs_elf`（A-2 迁出：ELF 首窗
+// 解析 → 页铺平单 VMO → 段泵送 → 栈+保护页 → env 块交接；签名 SpawnSpec
+// 化 + h_rootfs 参数化——语义纪律与契约文档见 berry-exec/src/lib.rs）。
 
 /// hexyl 终验（d-3c，D4 路线①终验）：收齐子 stdout 全量 → 与宿主基准
 /// `HEXYL_PLAIN` 逐字节比对 → 全等才打 `HEXYL ok`（smoke rootfs 相标记）。
@@ -466,7 +378,7 @@ fn verify_hexyl(h: Handle, console: Handle) {
                 eof = true;
             } else {
                 if got + nb > cap.len() {
-                    send_spin(console, b"hexyl overflow\n".as_ptr(), 15);
+                    send_retry(console, b"hexyl overflow\n".as_ptr(), 15);
                     return; // 超收 = 输出面已不等，比对无意义
                 }
                 cap[got..got + nb].copy_from_slice(&msg[..nb]);
@@ -480,18 +392,18 @@ fn verify_hexyl(h: Handle, console: Handle) {
         // 空队：阻塞等 READABLE（10s 活动帽，收包刷新——慢而不僵不误杀）
         let mut obs = 0u64;
         if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
-            send_spin(console, b"hexyl: no EOF\n".as_ptr(), 14);
+            send_retry(console, b"hexyl: no EOF\n".as_ptr(), 14);
             return; // EOF 永不来 = 子进程异常路径（abort 无 EOF）——loud 降级
         }
     }
     if got == HEXYL_PLAIN.len() && cap[..got] == HEXYL_PLAIN[..got] {
-        send_spin(console, b"HEXYL ok\n".as_ptr(), 9);
+        send_retry(console, b"HEXYL ok\n".as_ptr(), 9);
     } else {
         // 首差诊断行（hex4 两数：got/want 长度；逐字节定位交给离线复盘）
         let mut line = *b"hexyl mismatch got=0000 want=0000\n";
         put_hex4(&mut line[19..23], got);
         put_hex4(&mut line[30..34], HEXYL_PLAIN.len());
-        send_spin(console, line.as_ptr(), line.len());
+        send_retry(console, line.as_ptr(), line.len());
         return; // 不回放错表（错表 + 回放 = 两个混淆源）
     }
     // 全表回放（12×192B 分片，与稳态矩阵插花无碍——终验已过，纯展示）
@@ -499,7 +411,7 @@ fn verify_hexyl(h: Handle, console: Handle) {
     while off < got {
         let n = core::cmp::min(192, got - off);
         // SAFETY: cap 只读视图的分片指针。
-        send_spin(console, unsafe { cap.as_ptr().add(off) }, n);
+        send_retry(console, unsafe { cap.as_ptr().add(off) }, n);
         off += n;
     }
 }
@@ -545,22 +457,12 @@ fn send_retry(h: Handle, buf: *const u8, len: usize) {
     }
 }
 
-/// console 发送——**自旋重发**（asm 同形：`SVC ok`/稳态 'v' 的 EBUSY 环是
-/// `b 6b`/`b 14b` 纯重发、无 wait）。启动期 console 队列饱和窗口内阻塞等
-/// WRITABLE 会被自旋友商（abuser/spawner 等）持续抢槽——唤醒后须等一整圈
-/// 轮转才拿到片，三场竞速即耗尽 10s 帽（G-eco-b 实踩：SVC ok 从未落串口、
-/// echo1 连带饿死）；自旋者由轮转兜底必达。EL0 可抢占 = 自旋有界。
-fn send_spin(h: Handle, buf: *const u8, len: usize) {
-    loop {
-        let s = berry_channel_send(h, buf, len, core::ptr::null(), 0);
-        if s == 0 {
-            return;
-        }
-        if s != BERRY_ERR_BUSY {
-            trap();
-        }
-    }
-}
+/// console 发送 = [`send_retry`] 阻塞形态（P5 A-2 起——asm 时代的自旋豁免
+/// 撤销）：82fe305 后全场生产者皆阻塞、WRITABLE 唤醒队列公平；自旋者在大半
+/// 任务阻塞的稳态下反而被 RR 环相位锁死在填槽序末位（A-2 实踩：console
+/// wait_many 恒满足项使其永不入睡、drain 相位钉死 → 自旋的 `SVC ok` 每片只
+/// 见满队、结构性饿死）。G-eco-b 的「boot 竞速」前提（自旋友商抢槽）已随
+/// 82fe305 全场阻塞化消失。
 
 /// 阻塞等信号（10s 绝对帽；超时/错码自陷——对端断供即链断）。
 fn wait(h: Handle, signals: u64) {

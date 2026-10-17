@@ -1,0 +1,13 @@
+[package]
+name = "berry-exec"
+version = "0.1.0"
+edition = "2021"
+
+# A-2：rootfs 程序拉起链（spawn_rootfs_elf + cpio_find）——svcmgr/bsh 共享
+# （「不长第二套」）。no_std：none target（svcmgr，主工作区成员）与 musl
+# target（bsh，独立小工作区经 path 依赖）双消费。
+
+[dependencies]
+berry-sys = { path = "../berry-sys" }
+berry-loader = { path = "../berry-loader" }
+# （release profile 沿用工作区根定义——成员内 profile 不生效。）

@@ -4,19 +4,25 @@
 //! 块 stdin 端（d-3b 起真输入——channel recv，零长消息 = EOF 约定），都经
 //! **env 块**交付（d-3a，见 `berry_libc_boot`）；其余 fd 一律 -EBADF。
 //!
-//! 发送契约（G-eco-b 教训的适用面）：**自旋重发**——`-EBUSY`（console 队列
-//! 满）原地自旋重试，不睡不等（EL0 可抢占 = 自旋有界；asm svcmgr 本体
-//! `send_spin` 同形）。分片 ≤192B（channel inline 帽 256）。
+//! 发送契约（雷 2 教训 + A-2 修订）：**阻塞重发**——`-EBUSY`（console 队列
+//! 满）→ `clock_read` + `wait_one(console, WRITABLE, 10s)` 睡等重试（超时
+//! 重臂）。纯自旋曾是 G-eco-d 的短命验收程序可容忍形态（自旋窗有界），
+//! A-2 起常驻 std 服务（bsh）上线——自旋者永不出 runqueue，RR 环序冻结、
+//! 排水窗口被占优者垄断 = 长跑饱和下结构性饿死（雷 2，`user.rs` 八站点
+//! 同款修法）；阻塞者经 recv 侧 `wake_matching` 公平分槽。分片 ≤192B
+//! （channel inline 帽 256）。
 
 use core::ptr;
 
 use berry_sys::{berry_channel_recv, berry_channel_send, berry_clock_read,
-                berry_object_wait_one, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE};
+                berry_object_wait_one, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE,
+                SIGNAL_WRITABLE};
 
 use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
 static mut CONSOLE_H: u32 = 0;
 static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随后开）
+static mut ROOTFS_H: u32 = 0; // A-2：env 块 gift[2]（rootfs VMO READ dup）
 static mut STACK_TOP: usize = 0;
 
 // —— argv 面（d-3a env 块）：静态落位（名区 256B + 16 槽 + NULL 终结）——
@@ -45,7 +51,10 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         stdout = ptr::addr_of_mut!(STDOUT_FILE);
         let mut blob = [0u8; 256];
         let mut nb = blob.len();
-        let mut hs = [0u32; 2];
+        // A-2：容量 2→3——gift 位语义 [0]=console 发端别名、[1]=stdin 端、
+        // [2]=rootfs VMO READ dup（bsh 的 run 流式取 ELF 用；svcmgr 系老
+        // 程序照送 1-2 位，按实收 nhandles 落种，向后兼容）。
+        let mut hs = [0u32; 3];
         let mut nh = hs.len();
         if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0 {
             return 0;
@@ -55,6 +64,9 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         }
         if nh >= 2 {
             STDIN_H = hs[1];
+        }
+        if nh >= 3 {
+            ROOTFS_H = hs[2];
         }
         // argv 解析：NUL 分隔字节串逐个拷进名区、记指针。
         let (mut argc, mut i, mut o) = (0usize, 0usize, 0usize);
@@ -91,42 +103,81 @@ pub extern "C" fn berry_libc_park_after_main() -> ! {
 }
 
 /// stdout 端零长 EOF（d-3c）：`park` 前一次性补发——d-3b「零长消息 = EOF」
-/// 约定的**写侧**对称面。hexyl 的 stdout 是 svcmgr 交接的私有通道端，
+/// 约定的**写侧**对称面。（hexyl 的 stdout 是 svcmgr 交接的私有通道端，
 /// svcmgr 收到 EOF 才知输出终了（确定性验收，不赌超时）；对真 console 端
-/// （stdhello 等）只是 0 字节消息，console 排水写 0 字节无扰。满队自旋
-/// （同 `console_write` 契约——收端常驻必排水）；其余错误码放弃（协议
-/// 破缺面自有更 loud 的死法）。
+/// （stdhello 等）只是 0 字节消息，console 排水写 0 字节无扰。满队阻塞等
+/// WRITABLE（`console_write` 同款，A-2 修订——自旋是雷 2 形态）；其余错误
+/// 码放弃（协议破缺面自有更 loud 的死法）。
 pub fn send_stdout_eof() {
     let h = unsafe { CONSOLE_H };
     if h == 0 {
         return;
     }
     let z = 0u8;
+    let mut deadline = 0u64;
     loop {
         let s = berry_channel_send(h, &z, 0, ptr::null(), 0);
         if s == 0 || s != BERRY_ERR_BUSY {
             return;
         }
+        if deadline == 0 {
+            let mut now = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+                continue;
+            }
+            deadline = now + 10_000_000_000;
+        }
+        let mut obs = 0u64;
+        let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs);
+        deadline = 0;
     }
+}
+
+/// env 块 gift[2] 的 rootfs VMO handle（A-2：0 = 无第三位——svcmgr 系老
+/// 程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
+pub fn rootfs_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { ROOTFS_H }
 }
 
 pub fn stack_top() -> usize {
     unsafe { STACK_TOP }
 }
 
-/// console 发送：分片 + EBUSY 自旋（见模块头契约）。
+/// console 发送：分片 + EBUSY 阻塞等 WRITABLE（见模块头契约，A-2 修订）。
 pub fn console_write(bytes: &[u8]) {
     let mut off = 0usize;
     while off < bytes.len() {
         let n = core::cmp::min(192, bytes.len() - off);
         let p = unsafe { bytes.as_ptr().add(off) };
+        let mut deadline = 0u64;
         loop {
             let s = berry_channel_send(unsafe { CONSOLE_H }, p, n, ptr::null(), 0);
             if s == 0 {
                 break;
             }
-            // -EBUSY（满）自旋重试；-EAGAIN 对 send 不发生；其余错误码
-            // （如 handle 失效）自旋也无害——park 前无更好出路。
+            if s != BERRY_ERR_BUSY {
+                // -EAGAIN 对 send 不发生；其余错误码（handle 失效等）阻塞
+                // 等也无出路——原地重试（协议破缺面自有更 loud 的死法）。
+                continue;
+            }
+            // -EBUSY（满）：阻塞等 WRITABLE（10s 帽，醒来/超时都重臂）——
+            // 雷 2：自旋者永不出 runqueue，长跑饱和下结构性饿死。
+            if deadline == 0 {
+                let mut now = 0u64;
+                if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+                    continue; // 时钟不可用：退化为自旋（EL0 可抢占 = 有界）
+                }
+                deadline = now + 10_000_000_000;
+            }
+            let mut obs = 0u64;
+            let _ = berry_object_wait_one(
+                unsafe { CONSOLE_H },
+                SIGNAL_WRITABLE,
+                deadline,
+                &mut obs,
+            );
+            deadline = 0; // 重臂（命中后若仍满则续等——公平排队）
         }
         off += n;
     }
