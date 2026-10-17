@@ -722,6 +722,14 @@ pub fn try_preempt() -> bool {
     // SAFETY: 契约如上；CURRENT/RUNQUEUE 单核顺序访问。
     unsafe {
         let cur = CURRENT;
+        // ktest 护栏（复盘雷 3）：`sched::init` 前 CURRENT=null——fastpath 若在
+        // 手搭睡眠者在队时被走到（ktest 纪律明令禁止、但仅注释执法），下行的
+        // has_eff_above 解引用会直接挂死在 boot 期、难归因。null 早退把违约
+        // 显形为「无直切」；正常运行期 CURRENT 恒非 null（SVC/IRQ 上下文），
+        // 本分支零成本。
+        if cur.is_null() {
+            return false;
+        }
         // 幻影出选防线：环上无严格更高 eff → 必不直切 → 不消耗 head 槽位。
         if !rq().has_eff_above((*cur).prio_effective) {
             return false;
