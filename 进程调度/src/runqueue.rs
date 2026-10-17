@@ -14,12 +14,69 @@ use core::ptr::NonNull;
 /// pick 的任务」；`rotate()` 返回旧 head 并把游标前移到 `head.next`。
 pub struct Runqueue {
     head: Cell<Option<NonNull<Task>>>,
+    /// 环长记账（link_back 增 / unlink 减——均在实际接线后）。`ring_check`
+    /// 以「走查步数 == len」执法：**孤儿段形态下从 head 走圈仍闭合**（活圈
+    /// 自闭合），只有对账才能显形「有成员不在头可达圈上」（复盘雷 2 残留
+    /// 诊断——五任务静默失联的确诊机制即此形态）。
+    len: Cell<usize>,
+}
+
+/// 环走查步数帽：远大于合法环长（现矩阵 runnable ≤~20），只挡断链死循环
+/// （走不回 head 的形态）——超帽即断言违约。
+pub const RING_WALK_CAP: usize = 128;
+
+/// 入环前置判据：`t` 的链接字段须均 `None`（不在任何环上）。对在环者
+/// `link_back` 会**覆盖写**其 prev/next——把环劈成「头可达活圈 + 孤儿段」
+/// 的唯一结构原语（被劈出的任务 Ready 却永不被 pick = 静默失联；其
+/// 「不在环上」契约此前只有文档零执法）。生产执法 = `link_back` 入口
+/// assert 同一判据；独立导出供 ktest RING3 直测判据本身（真触发断言 =
+/// panic = halt，ktest 只能测判据不能测炸）。
+pub fn linkable(t: &Task) -> bool {
+    t.rq_prev.get().is_none() && t.rq_next.get().is_none()
 }
 
 impl Runqueue {
     pub const fn new() -> Self {
         Runqueue {
             head: Cell::new(None),
+            len: Cell::new(0),
+        }
+    }
+
+    /// 环长（走查对账用）。
+    pub fn len(&self) -> usize {
+        self.len.get()
+    }
+
+    /// 环完整性走查（复盘雷 2 残留诊断）：从 head 沿 `rq_next` 走一圈须回到
+    /// head 且步数 ≤ `RING_WALK_CAP`。**只读、零分配**；返回步数——调用方
+    ///（ktest / `on_irq_tick` 金丝雀分支）对账「步数 == [`len`](Self::len)」：
+    /// 步数 < len = 有成员不在头可达圈上（孤儿段）；步数到帽 = 断链。
+    /// 调用契约：环变更屏蔽窗内或其串行等价（IRQ 上下文 / ktest 本地环）。
+    pub fn ring_check(&self) -> usize {
+        let Some(h) = self.head.get() else {
+            return 0;
+        };
+        // SAFETY: 环上任务均调度器拥有（pick_next 扫描同款不变式）；调用方
+        // 契约保证走查期间无并发出/入环。
+        unsafe {
+            let mut cur = h;
+            let mut steps = 0;
+            loop {
+                steps += 1;
+                assert!(
+                    steps <= RING_WALK_CAP,
+                    "ring_check: ring walk exceeds cap (broken links?)"
+                );
+                let next = (*cur.as_ptr())
+                    .rq_next
+                    .get()
+                    .expect("ring_check: on-ring node must have next");
+                cur = next;
+                if cur == h {
+                    return steps;
+                }
+            }
         }
     }
 
@@ -35,6 +92,15 @@ impl Runqueue {
     /// 在被摘下前地址保持稳定（调度器拥有其 `Box`）。
     pub(crate) unsafe fn link_back(&self, task: NonNull<Task>) {
         let t = task.as_ptr();
+        // 入环执法断言（复盘雷 2 残留诊断）：对在环者再 link_back 是唯一能把
+        // 环劈成「头可达活圈 + 孤儿段」的结构原语（覆盖写 prev/next 造子环，
+        // 被劈出者 Ready 却永不被 pick——30s 长跑五任务静默失联的确诊机制）。
+        // 契约此前只有文档零执法；断言把静默分裂变成当场、带位置的响亮失败。
+        // 成本 = 两次 load + branch（IRQ 屏蔽热路径、零分配纪律不破）。
+        assert!(
+            (*t).rq_prev.get().is_none() && (*t).rq_next.get().is_none(),
+            "link_back: task already in-ring (ring-split hazard)"
+        );
         match self.head.get() {
             None => {
                 // 单元素环：prev=next=self。
@@ -53,6 +119,7 @@ impl Runqueue {
                 (*h).rq_prev.set(Some(task));
             }
         }
+        self.len.set(self.len.get() + 1);
     }
 
     /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
@@ -82,6 +149,7 @@ impl Runqueue {
         }
         (*t).rq_prev.set(None);
         (*t).rq_next.set(None);
+        self.len.set(self.len.get() - 1);
     }
 
     /// 环游标（4-3a：`RoundRobin::pick_next` 环形扫描的起点）。crate 内策略

@@ -16,6 +16,7 @@ pub fn run() {
     test_handle();
     test_policy();
     test_rq_ring2();
+    test_rq_ring3();
     test_pi();
     test_intent();
     test_fast();
@@ -1646,6 +1647,115 @@ fn test_rq_ring2() {
 
     // 任务体泄漏不回收（同 test_policy 政策——v1 无 reap）。
     berry_hal_aarch64::uart_puts(b"RING2 ok\n");
+}
+
+/// 雷 2 残留诊断的环完整性回归（RING3）：d4dcf6a 修的「两元环 unlink 误判」
+/// 之外，30s 长跑确诊的另一分裂形态 =「对在环任务再 link_back」——覆盖写
+/// prev/next 把环劈成**头可达活圈 + 孤儿段**，被劈出者 Ready 却永不被 pick
+///（五任务静默失联、无 dump 无退出）。执法面两道，本用例全部拉进机器断言：
+/// ①判据直测——`linkable`/`sleepq_insertable` 在环/队状态翻转（ktest 不能
+/// 真触发 link_back 入口断言：炸 = panic = halt，只能测断言所依据的判据）；
+/// ②`ring_check` 走查步数对账 `len` 记账——孤儿段形态下从 head 走圈**仍
+/// 闭合**（活圈自闭合），只有「步数 < len」能显形有成员不在头可达圈上；
+/// ③固定 LCG 序列 fuzz：8 任务混合 enqueue/dequeue/pick_next，每步后
+/// 走查 == len == 影子账本三对账（把 d4dcf6a 家族的收缩拓扑误判全圈进
+/// 回归面）。本地环手搭（不动全局 RUNQUEUE——ktest 在 `berry_sched::init`
+/// 前）；非 smoke 标记（RING2 模式：断言炸 = panic = 后续标记缺失兜底）。
+fn test_rq_ring3() {
+    use berry_sched::{linkable, RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn rq3_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk() -> &'static mut Task {
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(rq3_dummy, 0, b"r3".as_slice(), 0, 0))
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = RoundRobin;
+    let topo = Topo::single();
+
+    // —— ① 判据直测（执法断言的判据本身）。
+    let t = mk();
+    assert!(linkable(t), "RING3：新任务须可入环（链接字段 None）");
+    assert!(berry_sched::sleepq_insertable(t), "RING3：新任务须可入 SLEEPQ");
+    rr.enqueue(&mut *t, &mut rq);
+    assert!(!linkable(t), "RING3：在环任务 linkable 须 false（双入环判据）");
+    assert_eq!(rq.len(), 1, "RING3：单元素环 len 记账须 1");
+    assert_eq!(rq.ring_check(), 1, "RING3：单元素环走查步数须 1");
+    rr.dequeue(&mut *t, &mut rq);
+    assert!(linkable(t), "RING3：摘环后 linkable 须复原");
+    assert_eq!(rq.ring_check(), 0, "RING3：空环走查须 0");
+
+    // —— ② SLEEPQ 判据往返（insert_sorted 入口断言同款判据；单元素队成员
+    // prev/next 均 None——判据须含 head 分支，本往返机器覆盖该例外）。
+    let s = mk();
+    berry_sched::sleepq_insert(s);
+    assert!(!berry_sched::sleepq_insertable(s), "RING3：在队（单元素=队头）insertable 须 false");
+    assert!(linkable(s), "RING3：在 SLEEPQ 不涉环字段（两判据互不干扰）");
+    let s2 = mk();
+    berry_sched::sleepq_insert(s2); // 第二元素入队 → s 不再是单元素队头
+    assert!(!berry_sched::sleepq_insertable(s2), "RING3：在队（非头）insertable 须 false");
+    assert!(!berry_sched::sleepq_insertable(s), "RING3：队头成员 insertable 仍须 false");
+    berry_sched::sleepq_unlink(s2);
+    assert!(berry_sched::sleepq_insertable(s2), "RING3：摘队后须复原");
+    berry_sched::sleepq_unlink(s);
+    assert!(berry_sched::sleepq_insertable(s), "RING3：收尾摘头后须复原");
+
+    // —— ③ 固定 LCG fuzz：每步随机选任务/操作，只按影子账本选合法目标
+    //（对在环者 enqueue = 生产代码里 link_back 断言要拦的违约，fuzz 不做）。
+    // 影子与 linkable 每步互证 = 判据回归；走查/len/影子三对账 = 结构回归。
+    const N: usize = 8;
+    let tasks: [&'static mut Task; N] = [(); N].map(|()| mk());
+    let mut on_ring = [false; N];
+    let mut rng: u64 = 0x243F_6A88_85A3_08D3; // 固定种子 LCG——确定性复现
+    let (mut picks, mut max_len) = (0usize, 0usize);
+    for step in 0..300 {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let i = ((rng >> 33) as usize) % N;
+        assert_eq!(
+            linkable(tasks[i]),
+            !on_ring[i],
+            "RING3：linkable 与影子账本不一致（step {}）",
+            step
+        );
+        match (rng >> 13) % 3 {
+            0 if !on_ring[i] => {
+                rr.enqueue(&mut *tasks[i], &mut rq);
+                on_ring[i] = true;
+            }
+            1 if on_ring[i] => {
+                rr.dequeue(&mut *tasks[i], &mut rq);
+                on_ring[i] = false;
+            }
+            _ => {
+                if !rq.is_empty() {
+                    let _ = rr.pick_next(&rq, &topo); // 游标前移（advance_past 面）
+                    picks += 1;
+                }
+            }
+        }
+        let want = on_ring.iter().filter(|x| **x).count();
+        assert_eq!(rq.len(), want, "RING3：len 记账须==影子（step {}）", step);
+        assert_eq!(rq.ring_check(), want, "RING3：走查步数须==影子（step {}）", step);
+        max_len = max_len.max(want);
+    }
+    assert!(picks > 0, "RING3：fuzz 须真覆盖 pick_next 路径");
+    assert!(max_len >= 3, "RING3：fuzz 须覆盖 ≥3 元环（实测 {}）", max_len);
+
+    // —— ④ 收尾清环（全体摘除 → 空环三对账）。
+    for i in 0..N {
+        if on_ring[i] {
+            rr.dequeue(&mut *tasks[i], &mut rq);
+        }
+    }
+    assert!(rq.is_empty(), "RING3：收尾须空环");
+    assert_eq!(rq.ring_check(), 0, "RING3：收尾走查须 0");
+
+    // 任务体泄漏不回收（同 test_policy 政策——v1 无 reap）。
+    berry_hal_aarch64::uart_puts(b"RING3 ok\n");
 }
 
 /// 4-3b PI 捐赠图推导（`内核/src/pi.rs` 全图重推）：donor = 睡 channel 等内核

@@ -358,9 +358,11 @@ pub fn set_switch_hook(hook: Option<SwitchHook>) {
 #[inline]
 unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     // SAFETY: 两指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
-    let hook = unsafe { SWITCH_HOOK };
-    if let Some(h) = hook {
-        h(unsafe { &*prev }, unsafe { &*next }, kind);
+    unsafe {
+        let hook = SWITCH_HOOK;
+        if let Some(h) = hook {
+            h(&*prev, &*next, kind);
+        }
     }
 }
 
@@ -465,6 +467,15 @@ impl SleepQueue {
     /// IRQ 屏蔽窗内；`task` 不在 SLEEPQ 上（链接字段均 `None`）且地址稳定。
     unsafe fn insert_sorted(&self, task: NonNull<Task>) {
         let t = task.as_ptr();
+        // 入队执法断言（复盘雷 2 残留诊断，同 runqueue link_back 面）：对在队
+        // 者重复插入会覆盖写 sleep_prev/sleep_next——非环形链表上直接扬队
+        //（被覆盖的旧邻接缝指向失效）。契约「不在 SLEEPQ 上」此前零执法。
+        // **单元素例外**（类型注释）：单元素队成员 prev/next 均 None——字段
+        // 判据对它失效，须并上「head == 自己」才完整。
+        let in_q = (*t).sleep_prev.get().is_some()
+            || (*t).sleep_next.get().is_some()
+            || self.head.get() == Some(task);
+        assert!(!in_q, "sleepq insert: task already in queue");
         // 从头找第一个 `deadline > 新者` 的节点，插它前面；到尾则插尾。
         let mut cur = self.head.get();
         let before = loop {
@@ -808,6 +819,16 @@ pub fn refresh_effective(t: &mut Task) {
     t.prio_effective = (t.prio_base + w).max(t.pi_inherited);
 }
 
+/// 入队前置判据（ktest RING3 直测用；生产执法 = `SleepQueue::insert_sorted`
+/// 入口 assert 同一判据）：`sleep_prev`/`sleep_next` 均 `None` **且** 自己
+/// 不是队头——单元素队成员两字段均 None（`SleepQueue` 类型注释），字段判据
+/// 单用对它失效。
+pub fn sleepq_insertable(t: &Task) -> bool {
+    // SAFETY: 只读全局 SLEEPQ head（单核顺序；ktest 在 init 前读 const 初值）。
+    let is_head = unsafe { sleepq().head.get() == Some(core::ptr::NonNull::from(t)) };
+    !(t.sleep_prev.get().is_some() || t.sleep_next.get().is_some() || is_head)
+}
+
 /// 把 `t` 按 deadline 升序压入全局 SLEEPQ。**ktest 手搭睡眠者专用**（生产
 /// 路径一律走 [`block_current`]——本函数不切走、不置 Blocked）。契约同
 /// `SleepQueue::insert_sorted`：IRQ 屏蔽窗内、`t` 不在队（链接字段均
@@ -834,6 +855,44 @@ pub fn user_kills() -> u64 {
 pub fn last_killed() -> &'static [u8] {
     // SAFETY: 只读；单核顺序访问。
     unsafe { LAST_KILLED }
+}
+
+/// 环/SLEEPQ 完整性周期走查（复盘雷 2 残留诊断）：环分裂成「头可达活圈 +
+/// 孤儿段」对 pick 完全不可见——smoke 标记全部分裂前打完，30s 长跑五任务
+/// 静默失联由此漏网。本检查对账两笔：①runqueue 走查步数 == len 记账
+///（步数 < len = 孤儿段；到帽 = 断链）；②SLEEPQ 链走计数 == len 记账。
+/// 消费点 = `on_irq_tick` 金丝雀分支（每 100 切换一次，O(n) 极小）与 ktest。
+/// **零分配、成功路径零输出**；违约即 panic 带时刻响亮失败（失败路径才
+/// 格式化）。调用契约：IRQ 上下文（环/队变更屏蔽窗的串行等价）。
+fn integrity_check() {
+    // SAFETY: IRQ 上下文（调用方保证——环/队变更只在屏蔽窗，与本检查串行）；
+    // 只读走查 + Cell 记账读。
+    unsafe {
+        let steps = rq().ring_check();
+        let want = rq().len();
+        assert!(
+            steps == want,
+            "integrity: ring walk {} != len {} (orphan segment or broken links)",
+            steps,
+            want
+        );
+        let mut n = 0;
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            n += 1;
+            assert!(
+                n <= crate::runqueue::RING_WALK_CAP,
+                "integrity: sleepq walk exceeds cap (broken links?)"
+            );
+            cur = (*c.as_ptr()).sleep_next.get();
+        }
+        assert!(
+            n == sleepq().len.get(),
+            "integrity: sleepq walk {} != len {}",
+            n,
+            sleepq().len.get()
+        );
+    }
 }
 
 /// idle 主循环（tickless）：runqueue 空且**无睡眠者**时屏蔽 CNTV + `wfi`
@@ -908,6 +967,10 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 // 过关后移除或 feature 门控（plan Step 7）。
                 const SOAK_PRINT_EVERY: u64 = 100;
                 if SWITCHES % SOAK_PRINT_EVERY == 0 {
+                    // 完整性走查（复盘雷 2 残留诊断）：金丝雀拍点顺带对账环/
+                    // SLEEPQ（integrity_check 注释——孤儿段形态对 pick 不可见，
+                    // 只有记账对账显形）。成功路径零输出零分配。
+                    integrity_check();
                     hal::uart_puts(b"switches=");
                     hal::uart_put_dec(SWITCHES);
                     hal::uart_puts(b"\n");

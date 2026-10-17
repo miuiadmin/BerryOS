@@ -210,9 +210,28 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 5f",
-    "    cmn  x0, #16",                 // -EBUSY：console 消费慢，重试（可抢占）
-    "    b.ne 3f",
-    "    b    4b",
+    "    cmn  x0, #16",                 // -EBUSY：阻塞等 WRITABLE 再重试（雷 2 残留
+    "    b.ne 3f",                      //   修复——纯自旋在饱和下被排水窗口结构性饿死）
+    "6:  movz x0, #0x61",               // clock_read() → 0x2008
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x3, [x2]",                // now
+    "    movz x6, #0xE400",             // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",              // deadline = now + 10s
+    "    movz x0, #0x04",               // wait_one(console, WRITABLE, deadline, *obs)
+    "    movz x1, #2",
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #2",                  // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2008",             // obs 槽（时钟值已消费，覆盖安全）
+    "    svc  #0",
+    "    cbz  x0, 4b",                  // 命中（poll-first 可即中）→ 重发
+    "    cmn  x0, #110",                // -ETIMEDOUT：重臂再等（打印路径无限耐心——
+    "    b.eq 6b",                      //   与原自旋同耐心，只换阻塞不烧片）
+    "    b    3f",                      // 其它错 = 断链
     "5:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 0x4000_0000 未映射 → D-abort → 杀
     "    ldr  x5, [x4]",
@@ -270,11 +289,11 @@ core::arch::global_asm!(
     "    movz x3, #0x2000",
     "    svc  #0",
     "    cbnz x0, 3f",
-    "    movz x0, #0x15",               // vmo_write(hvmo, buf=内嵌子代码, 0, 100)
+    "    movz x0, #0x15",               // vmo_write(hvmo, buf=内嵌子代码, 0, 452)
     "    mov  x1, x18",
     "    adr  x2, 4f",                  // 本页内自相对取址（搬迁安全，见模块注）
     "    mov  x3, xzr",
-    "    movz x4, #376",                // 子代码 94 指令（字节数精确——尾随零垃圾勿拷）
+    "    movz x4, #452",                // 子代码 113 指令（字节数精确——尾随零垃圾勿拷）
     "    svc  #0",
     "    cbnz x0, 3f",
     "    movz x5, #0x2028",             // vaddr 槽 ← 请求子代码 VA 0x1000
@@ -425,9 +444,27 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 14f",
-    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
-    "    b.ne 3f",
-    "    b    13b",
+    "    cmn  x0, #16",                // -EBUSY：阻塞等 WRITABLE 再重试（雷 2 残留修
+    "    b.ne 3f",                     //   复——纯自旋在饱和下被排水窗口结构性饿死）
+    "17: movz x0, #0x61",              // clock_read() → 0x2088（本页空闲槽）
+    "    mov  x1, xzr",
+    "    movz x2, #0x2088",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x3, [x2]",               // now
+    "    movz x6, #0xE400",            // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",             // deadline = now + 10s
+    "    movz x0, #0x04",              // wait_one(console, WRITABLE, deadline, *obs)
+    "    mov  x1, x23",
+    "    movz x2, #2",                 // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2088",            // obs 槽（时钟值已消费，覆盖安全）
+    "    svc  #0",
+    "    cbz  x0, 13b",                // 命中（poll-first 可即中）→ 重发
+    "    cmn  x0, #110",               // -ETIMEDOUT：重臂再等（打印路径无限耐心）
+    "    b.eq 17b",
+    "    b    3f",                     // 其它错 = 断链
     "14: b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷路径（被杀 = FAIL 暴露）
     "    ldr  x5, [x4]",
@@ -529,9 +566,27 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 16f",
-    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
-    "    b.ne 8f",
-    "    b    15b",
+    "    cmn  x0, #16",                // -EBUSY：阻塞等 WRITABLE 再重试（雷 2 残留修
+    "    b.ne 8f",                     //   复——纯自旋在饱和下被排水窗口结构性饿死）
+    "18: movz x0, #0x61",              // clock_read() → 0x2FD8（栈页空闲槽）
+    "    mov  x1, xzr",
+    "    movz x2, #0x2FD8",
+    "    svc  #0",
+    "    cbnz x0, 8f",
+    "    ldr  x3, [x2]",               // now
+    "    movz x6, #0xE400",            // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",             // deadline = now + 10s
+    "    movz x0, #0x04",              // wait_one(console, WRITABLE, deadline, *obs)
+    "    mov  x1, x20",
+    "    movz x2, #2",                 // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2FD8",            // obs 槽（时钟值已消费，覆盖安全）
+    "    svc  #0",
+    "    cbz  x0, 15b",                // 命中（poll-first 可即中）→ 重发
+    "    cmn  x0, #110",               // -ETIMEDOUT：重臂再等（打印路径无限耐心）
+    "    b.eq 18b",
+    "    b    8f",                     // 其它错 = 断链
     "16: b    5b",
     "8:  movz x4, #0x4000, lsl #16",    // 自陷：迁移/读链断 → 被杀 → watchdog FAIL
     "    ldr  x5, [x4]",
@@ -669,9 +724,28 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 5f",
-    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
-    "    b.ne 3f",
-    "    b    4b",
+    "    cmn  x0, #16",                // -EBUSY：阻塞等 WRITABLE 再重试（雷 2 残留修
+    "    b.ne 3f",                     //   复——纯自旋在饱和下被排水窗口结构性饿死）
+    "6:  movz x0, #0x61",              // clock_read() → 0x2008
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x3, [x2]",               // now
+    "    movz x6, #0xE400",            // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",             // deadline = now + 10s
+    "    movz x0, #0x04",              // wait_one(console, WRITABLE, deadline, *obs)
+    "    movz x1, #2",
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #2",                 // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2010",            // obs 槽（握手已毕，稳态可覆盖）
+    "    svc  #0",
+    "    cbz  x0, 4b",                 // 命中（poll-first 可即中）→ 重发
+    "    cmn  x0, #110",               // -ETIMEDOUT：重臂再等（打印路径无限耐心）
+    "    b.eq 6b",
+    "    b    3f",                     // 其它错 = 断链
     "5:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷：三路断链 → 被杀 → watchdog 错杀断言 FAIL
     "    ldr  x5, [x4]",
@@ -749,9 +823,28 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 7f",
-    "    cmn  x0, #16",                 // -EBUSY：console 消费慢，重试（可抢占）
-    "    b.ne 3f",
-    "    b    6b",
+    "    cmn  x0, #16",                 // -EBUSY：阻塞等 WRITABLE 再重试（雷 2 残留
+    "    b.ne 3f",                      //   修复——纯自旋在饱和下被排水窗口结构性饿死）
+    "10: movz x0, #0x61",               // clock_read() → 0x2008
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x3, [x2]",                // now
+    "    movz x6, #0xE400",             // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",              // deadline = now + 10s
+    "    movz x0, #0x04",               // wait_one(console, WRITABLE, deadline, *obs)
+    "    movz x1, #2",
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #2",                  // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2010",             // obs 槽（验收已毕，稳态可覆盖）
+    "    svc  #0",
+    "    cbz  x0, 6b",                  // 命中（poll-first 可即中）→ 重发
+    "    cmn  x0, #110",                // -ETIMEDOUT：重臂再等（打印路径无限耐心）
+    "    b.eq 10b",
+    "    b    3f",                      // 其它错 = 断链
     "7:  b    0b",
     "2:  mov  x10, xzr",                // 节流
     "1:  add  x10, x10, #1",
@@ -769,9 +862,28 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 9f",
-    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    cmn  x0, #16",                // -EBUSY：阻塞等 WRITABLE 再重试（同 banner 站）
     "    b.ne 3f",
-    "    b    8b",
+    "11: movz x0, #0x61",              // clock_read() → 0x2008
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x3, [x2]",               // now
+    "    movz x6, #0xE400",            // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",             // deadline = now + 10s
+    "    movz x0, #0x04",              // wait_one(console, WRITABLE, deadline, *obs)
+    "    movz x1, #2",
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #2",                 // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2010",            // obs 槽（验收已毕，稳态可覆盖）
+    "    svc  #0",
+    "    cbz  x0, 8b",                 // 命中 → 重发
+    "    cmn  x0, #110",               // -ETIMEDOUT：重臂再等
+    "    b.eq 11b",
+    "    b    3f",                     // 其它错 = 断链
     "9:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀 → CHAIN 缺失 = smoke FAIL
     "    ldr  x5, [x4]",
@@ -887,9 +999,28 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 6f",
-    "    cmn  x0, #16",                 // -EBUSY：console 消费慢，重试（可抢占）
-    "    b.ne 3f",
-    "    b    7b",
+    "    cmn  x0, #16",                 // -EBUSY：阻塞等 WRITABLE 再重试（雷 2 残留
+    "    b.ne 3f",                      //   修复——纯自旋在饱和下被排水窗口结构性饿死）
+    "10: movz x0, #0x61",               // clock_read() → 0x2008
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x3, [x2]",                // now
+    "    movz x6, #0xE400",             // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",              // deadline = now + 10s
+    "    movz x0, #0x04",               // wait_one(console, WRITABLE, deadline, *obs)
+    "    movz x1, #3",                  // console handle 0x0001_0003
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #2",                  // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2010",             // obs 槽（wait_many 每次重写，覆盖安全）
+    "    svc  #0",
+    "    cbz  x0, 7b",                  // 命中（poll-first 可即中）→ 重发
+    "    cmn  x0, #110",                // -ETIMEDOUT：重臂再等（打印路径无限耐心）
+    "    b.eq 10b",
+    "    b    3f",                      // 其它错 = 断链
     "6:  b    0b",                      // 醒来重 recv（重验——必命中）
     "1:  ldr  w6, [x2]",                // 载荷低 32 位（x2 = buf 地址，派发保留）
     "    cmp  w6, w8",
@@ -910,9 +1041,28 @@ core::arch::global_asm!(
     "    mov  x5, xzr",
     "    svc  #0",
     "    cbz  x0, 9f",
-    "    cmn  x0, #16",                // -EBUSY 重试（console 消费慢）
+    "    cmn  x0, #16",                // -EBUSY：阻塞等 WRITABLE 再重试（同 banner 站）
     "    b.ne 3f",
-    "    b    8b",
+    "11: movz x0, #0x61",              // clock_read() → 0x2008
+    "    mov  x1, xzr",
+    "    movz x2, #0x2008",
+    "    svc  #0",
+    "    cbnz x0, 3f",
+    "    ldr  x3, [x2]",               // now
+    "    movz x6, #0xE400",            // δ = 1e10 ns（10s 帽）
+    "    movk x6, #0x540B, lsl #16",
+    "    movk x6, #0x2, lsl #32",
+    "    add  x3, x3, x6",             // deadline = now + 10s
+    "    movz x0, #0x04",              // wait_one(console, WRITABLE, deadline, *obs)
+    "    movz x1, #3",
+    "    movk x1, #1, lsl #16",
+    "    movz x2, #2",                 // SIGNAL_WRITABLE（内核派生位）
+    "    movz x4, #0x2010",            // obs 槽（wait_many 每次重写，覆盖安全）
+    "    svc  #0",
+    "    cbz  x0, 8b",                 // 命中 → 重发
+    "    cmn  x0, #110",               // -ETIMEDOUT：重臂再等
+    "    b.eq 11b",
+    "    b    3f",                     // 其它错 = 断链
     "9:  b    0b",
     "3:  movz x4, #0x4000, lsl #16",    // 自陷：链断 → 被杀 → CHAIN 缺失 = smoke FAIL
     "    ldr  x5, [x4]",

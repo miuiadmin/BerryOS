@@ -1004,7 +1004,11 @@ extern "C" fn task_pi_probe(arg: usize) -> ! {
         "pi_probe: thread_sleep 5 slice（等双睡者挂队）"
     );
     // 断言捐赠图：server（睡 E）受捐 32；client（睡 endC:WRITABLE）自身 32。
+    // 契约包络（复盘雷 2 残留诊断）：for_each_sleeper 须 IRQ 屏蔽窗内调用
+    //（tick 超时摘队会动睡眠链接——见 sched.rs 契约注释）；thread_sleep 的
+    // SVC eret 后 IRQ 已解蔽，故显式包络（ai_probe 同款）。
     let (mut saw_server, mut saw_client) = (false, false);
+    berry_hal_aarch64::disable_irq();
     berry_sched::for_each_sleeper(|t| {
         if t.name == b"pi_server" {
             saw_server = true;
@@ -1016,6 +1020,7 @@ extern "C" fn task_pi_probe(arg: usize) -> ! {
             assert_eq!(t.prio_effective, 32, "pi_probe: client(donor) 自身 eff");
         }
     });
+    berry_hal_aarch64::enable_irq();
     assert!(saw_server && saw_client, "pi_probe: 双睡眠者未同时在线（时序未达）");
     // 放行：signal E → server 醒（冻结 boost）→ recv 腾位 → client 醒。
     assert_eq!(
@@ -1217,6 +1222,11 @@ extern "C" fn task_intent_mid(_arg: usize) -> ! {
         0,
         "it_mid: recv CH3（opt-out 拒借回落）"
     );
+    // 契约包络（复盘雷 2 残留诊断）：block_current 须 IRQ 屏蔽窗内调用（SVC
+    // 语境天然满足；内核任务显式 disable——sched.rs 契约）。裸调时入 SLEEPQ→
+    // 摘环→置 Blocked→切走 各步间可被 tick 闯入（身份错乱/Blocked 覆写等窗口）。
+    // 本睡 MAX 帽永不醒（obj=0 唤不醒），无续行侧 enable 面。
+    berry_hal_aarch64::disable_irq();
     berry_sched::block_current(0, 0, u64::MAX); // 纯睡永不醒：留 SLEEPQ 供 probe 断言
     unreachable!("it_mid: u64::MAX 不到期")
 }
@@ -1235,6 +1245,8 @@ extern "C" fn task_intent_sink_a(_arg: usize) -> ! {
         0,
         "it_sinkA: recv CH2（两跳链尾）"
     );
+    // 契约包络同 it_mid（block_current 屏蔽窗纪律；本睡永不醒）。
+    berry_hal_aarch64::disable_irq();
     berry_sched::block_current(0, 0, u64::MAX);
     unreachable!("it_sinkA: u64::MAX 不到期")
 }
@@ -1285,6 +1297,8 @@ extern "C" fn task_intent_sink_b(_arg: usize) -> ! {
         0,
         "it_sinkB: recv CH4b（链累计封顶拒传播）"
     );
+    // 契约包络同 it_mid（block_current 屏蔽窗纪律；本睡永不醒）。
+    berry_hal_aarch64::disable_irq();
     berry_sched::block_current(0, 0, u64::MAX);
     unreachable!("it_sinkB: u64::MAX 不到期")
 }
@@ -1318,6 +1332,8 @@ extern "C" fn task_intent_slow(_arg: usize) -> ! {
         0,
         "it_slow: send CH6（降级转发）"
     );
+    // 契约包络同 it_mid（block_current 屏蔽窗纪律；本睡永不醒）。
+    berry_hal_aarch64::disable_irq();
     berry_sched::block_current(0, 0, u64::MAX);
     unreachable!("it_slow: u64::MAX 不到期")
 }
@@ -1342,6 +1358,9 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
         "it_probe: thread_sleep 8 slice（等全链落定）"
     );
     let (mut saw_mid, mut saw_a, mut saw_b, mut saw_slow) = (false, false, false, false);
+    // 契约包络（复盘雷 2 残留诊断）：for_each_sleeper 须 IRQ 屏蔽窗内调用
+    //（thread_sleep 的 SVC eret 后 IRQ 已解蔽；ai_probe 同款显式包络）。
+    berry_hal_aarch64::disable_irq();
     berry_sched::for_each_sleeper(|t| {
         match t.name {
             b"it_mid" => {
@@ -1369,6 +1388,7 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
             _ => {}
         }
     });
+    berry_hal_aarch64::enable_irq();
     assert!(saw_mid && saw_a && saw_b && saw_slow,
            "it_probe: 四睡眠者未同时在线（时序未达）");
     assert!(crate::telemetry::intent_borrows() >= 3,
