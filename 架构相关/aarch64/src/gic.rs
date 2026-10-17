@@ -27,6 +27,10 @@ const GICC: usize = KERNEL_VA_BASE + GICC_BASE;
 
 /// IRQ 编号：CNTV 虚拟定时器（PPI 11，GICv2 ID 27）。
 pub const IRQ_CNTV: usize = 27;
+/// IRQ 编号：PL011 UART0 RX（SPI 1 + 16 SGI + 16 PPI，P5 A-1）。QEMU `virt`
+/// 接线活证双源：zCore 同板 `irq_enable(33)` + QEMU 自产 DTB `LEVEL_HIGH`。
+/// 若接线有误，`exception_irq` 未知源分支 loud 打 `irq? id=N`（bring-up 面）。
+pub const IRQ_PL011_RX: usize = 33;
 /// IAR 读到的「无中断」值。
 pub const SPURIOUS: u32 = 1023;
 
@@ -38,10 +42,11 @@ const GICD_ICPENDR0: usize = 0x280;
 const GICD_ICACTIVER0: usize = 0x380;
 /// 每 IRQ 一字节。
 const GICD_IPRIORITYR: usize = 0x400;
-/// 每 IRQ 一字节（PPI/SGI 段只读、固定指向当前 CPU）。
+/// 每 IRQ 一字节（PPI/SGI 段只读、固定指向当前 CPU；**SPI 段可写且复位 0**）。
 const GICD_ITARGETSR: usize = 0x800;
-/// IRQ 16..31（PPI）的 2-bit 触发配置寄存器。
-const GICD_ICFGR1: usize = 0xc04;
+/// 2-bit 触发配置寄存器组基址（每 16 IRQ 一个寄存器：ICFGR0=SGI 0..15、
+/// ICFGR1=PPI 16..31、ICFGR2=SPI 32..47…）。
+const GICD_ICFGR: usize = 0xc00;
 
 // ---- GICC 寄存器偏移 ----
 const GICC_CTLR: usize = 0x000;
@@ -113,13 +118,33 @@ unsafe fn set_target(irq: usize, target: u8) {
     mmio::write_u8(GICD + GICD_ITARGETSR + irq, target);
 }
 
-/// `cfg`：0b01=level、0b10=edge（见模块注释，定时器用 level）。
+/// `cfg`：0b01=level、0b10=edge（见模块注释，定时器/PL011 均电平）。ICFGR 组
+/// 寻址按 `irq/16` 泛化（P5 A-1 前硬编码 PPI 段；SPI 33 → 33/16=2 落 ICFGR2、
+/// 33%16=1 即 **bits[3:2]**（bits[1:0] 是 IRQ 32 的）。irq=27 时 idx=1/shift=22，
+/// 与旧硬编码恒等）。
 unsafe fn set_config(irq: usize, cfg: u32) {
-    // ICFGR1 覆盖 IRQ 16..31，每 IRQ 占 2 bit。IRQ 27 → bits[23:22]。
-    let shift = 2 * (irq - 16);
-    let off = GICD + GICD_ICFGR1;
+    let shift = 2 * (irq % 16);
+    let off = GICD + GICD_ICFGR + 4 * (irq / 16);
     let mut v = mmio::read(off);
     v &= !(0b11u32 << shift);
     v |= (cfg & 0b11) << shift;
     mmio::write(off, v);
+}
+
+/// 使能一个 SPI（≥32；P5 A-1：PL011 RX=33，GICv2 第二个 IRQ 源）。
+/// distributor/CPU interface 已由 [`init`] 开启，本函数只配该线：优先级 /
+/// target / 触发 + **清历史 pending**（GIC 对 disable 的线照样锁存 pending——
+/// boot 前 UART 线若有粘滞先擦掉，防使能即吃旧中断）+ ISENABLER。
+///
+/// **SPI 段 ITARGETSR 可写且复位 0（= 不投任何核）**——与 PPI 段只读不同，
+/// target 必须真写：漏写 = 中断永远不上 CPU 且无任何报错（静默丢）。
+///
+/// # Safety
+/// MMIO 写；boot 单线程、DAIF 屏蔽窗内调用（使能后首中断须 handler 已就绪）。
+pub unsafe fn enable_spi(irq: usize, prio: u8, target: u8, cfg: u32) {
+    set_priority(irq, prio);
+    set_target(irq, target);
+    set_config(irq, cfg);
+    mmio::write(GICD + GICD_ICPENDR0 + 4 * (irq / 32), 1 << (irq % 32));
+    mmio::write(GICD + GICD_ISENABLER0 + 4 * (irq / 32), 1 << (irq % 32));
 }

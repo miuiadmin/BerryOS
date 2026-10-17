@@ -20,6 +20,11 @@ pub mod syscall;
 pub mod task;
 pub mod timer;
 pub mod trap;
+pub mod uart;
+
+// P5 A-1：UART TX 四函数迁入 `uart` 模块——crate root 重导出转发，crate 内
+// 既有 `use crate::uart_putc` 与下游 `berry_hal_aarch64::uart_putc` 均零改动。
+pub use uart::{uart_put_dec, uart_put_hex64, uart_putc, uart_puts};
 
 // ---- 平台内存图（QEMU `virt`）----
 // RAM 几何原在 berry-mm，现挪进 HAL（平台层；berry-mm 保持 arch 无关，由调用方传入）。
@@ -153,52 +158,6 @@ pub fn set_user_fault_exit(f: UserFaultExit) {
 /// 读 `static mut`。仅同步异常上下文（单核顺序）调用。
 pub unsafe fn user_fault_exit() -> Option<UserFaultExit> {
     USER_FAULT_EXIT
-}
-
-/// 输出一个字节到 UART0（2b-2 起走高半直映别名——低半身份已退役，PA 直写必 fault；
-/// boot asm 早期打印不走这里，是 asm 里直写 PA）。
-#[inline]
-pub fn uart_putc(c: u8) {
-    // unsafe 收敛在此：MMIO 写。
-    unsafe { mmio::write(KERNEL_VA_BASE + UART0_BASE, c as u32) };
-}
-
-/// 输出一段字节串。
-pub fn uart_puts(s: &[u8]) {
-    for &b in s {
-        uart_putc(b);
-    }
-}
-
-/// 以十六进制输出 u64（固定 16 位，无 `0x` 前缀）。供 trap dump / panic 格式化复用。
-pub fn uart_put_hex64(v: u64) {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut buf = [0u8; 16];
-    for i in 0..16 {
-        let shift = (15 - i) * 4;
-        buf[i] = DIGITS[((v >> shift) & 0xf) as usize];
-    }
-    uart_puts(&buf);
-}
-
-/// 以十进制输出 u64（无符号，无前导空格）。供 tick 计数等复用。
-pub fn uart_put_dec(v: u64) {
-    if v == 0 {
-        uart_putc(b'0');
-        return;
-    }
-    let mut buf = [0u8; 20];
-    let mut n = v;
-    let mut i = 0usize;
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        uart_putc(buf[i]);
-    }
 }
 
 /// 解蔽 IRQ（`daifclr #2`，清 DAIF.I）。解蔽序的最后一步（VBAR→GIC→timer→此）。

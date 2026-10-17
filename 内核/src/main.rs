@@ -270,6 +270,39 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
         ct as *mut HandleTable as usize,
     );
 
+    // P5 A-1：内核 RX 中断接线——console 的 wait_many 扩第三项（RX Event），
+    // IRQ 侧「RX 到数据」→ 置位 + wake_matching 唤醒 console 消费（HAL
+    // `uart.rs` 静态环 + `set_rx_notify` 槽；使能在 main 尾注册块）。RX
+    // Event = console 私有表**第 3 插**（endK 首插/哑 Event 第 2 插之后），
+    // 表序定值断言（4-2b/4-5a 惯例——错值 boot 期炸响，非静默错 handle）。
+    let h_rx_ev = ct
+        .insert(
+            KernelObj::Event(crate::event::Event::new()),
+            handle::RIGHT_SIGNAL,
+        )
+        .expect("main: RX Event 进 console 私有表");
+    assert_eq!(
+        h_rx_ev, 0x0001_0003,
+        "main: console 表 RX Event 须槽 3/代号 1（第 3 插定值，console 读静态槽依赖）"
+    );
+    let p_rx = ct
+        .get_raw(h_rx_ev, handle::ObjType::Event, 0)
+        .expect("main: 取 RX Event ObjRef")
+        .0;
+    // 钉住（4-1 睡眠钉住纪律的静态版）：IRQ 侧裸用 ObjRef——retain 后永不
+    // release = 有意泄漏（同 Box::leak 表惯例）。睡眠钉住防「全表 handle 被
+    // 关光后 waker 解引用悬空」；本对象永不 close、_IRQ 也永不撒手，双保险。
+    // SAFETY: boot 单线程；刚 get_raw 过（在表、类型 Event）。
+    unsafe { (*p_rx.as_ptr()).retain() };
+    // 静态槽传递（spawn arg 已满：hi32 哑 Event + lo32 endK——INTENT_H 同款
+    // 惯例）：handle 给 console 任务读、ObjRef 给 IRQ 通知（rx_irq_notify 置位）
+    // 与 console 清位（rx_ev_clear）共用。
+    // SAFETY: boot 单线程写、先于一切任务与 IRQ 读（单核 DAIF 屏蔽窗 = 无竞态）。
+    unsafe {
+        *core::ptr::addr_of_mut!(RX_EV_H) = h_rx_ev;
+        *core::ptr::addr_of_mut!(RX_EV_REF) = Some(p_rx);
+    }
+
     // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
     // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
     // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
@@ -730,6 +763,13 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
+    // P5 A-1：RX 通知槽 + 使能 PL011 RX（SPI 33）——均在 DAIF 屏蔽窗内
+    // （enable_irq 前）。次序硬约束：通知槽须先注册（槽空时 rx_irq 平凡
+    // 跳过——首字节静默落环无人唤醒）；rx_init 的 IMSC.RXIM 最后开（线一拉
+    // 高 pending 即真数据，此前 GIC/粘滞已清干净）。
+    berry_hal_aarch64::uart::set_rx_notify(rx_irq_notify);
+    // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽。
+    unsafe { berry_hal_aarch64::uart::rx_init() };
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { berry_hal_aarch64::timer::arm_slice() };
@@ -1089,6 +1129,63 @@ pub fn console_drained() -> u64 {
     CONSOLE_DRAINED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+// ---- P5 A-1：console 输入面（内核 RX 中断的等待/消费侧）----
+
+/// RX Event 的用户位（占用登记见 [`USER_SIGNAL_BITS`]——1<<32..1<<38 已满，
+/// 顺延 1<<39）。IRQ 侧置位（`rx_irq_notify`）、console 侧包络内清位
+/// （`rx_ev_clear`）。
+const RX_EV_BIT: u64 = 1 << 39;
+
+/// RX Event handle 静态传递槽（console 任务读；spawn arg 已满走静态槽——
+/// INTENT_H 同款惯例；写点 = boot 接线段，先于一切任务）。
+static mut RX_EV_H: u32 = 0;
+/// RX Event 的 ObjRef（`rx_irq_notify` 置位 / `rx_ev_clear` 清位共用；boot
+/// 写入后不变，boot 侧 retain 钉住永不 release——IRQ 语境无 UAF 面）。
+static mut RX_EV_REF: Option<core::ptr::NonNull<handle::ObjRef>> = None;
+
+/// 读 RX Event handle 静态槽（console 任务侧）。
+fn rx_ev_h() -> u32 {
+    // SAFETY: 只读；全部写点先于任务启动（boot 顺序）。
+    unsafe { *core::ptr::addr_of!(RX_EV_H) }
+}
+
+/// 「RX 到数据」通知（HAL `exception_irq` → `uart::rx_irq` 经槽调；IRQ 上下文
+/// PSTATE.I=1）。置位 RX Event（用户半位）+ `wake_matching`（匹配键 = ObjRef
+/// 地址，同 4-1 `sys_object_signal` 唤醒路径；console 的 wait_many 挂
+/// WAIT_ANY 哨兵——任何非零 set 命中，醒来重验定夺）。**不立即抢占**（v1
+/// `wake_matching` 契约——醒者等 tick/yield，交互延迟 ≤ 1 slice）；也不可
+/// 在 IRQ 语境碰 fast_wake/try_preempt。写 Event 与遥测环同纪律：零分配、
+/// 纯指针写字段。
+unsafe extern "C" fn rx_irq_notify() {
+    // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
+    let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
+        .expect("rx_irq_notify: RX_EV_REF 未初始化（boot 接线缺失）");
+    unsafe {
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(0, RX_EV_BIT);
+        }
+        berry_sched::wake_matching(p.as_ptr() as usize, RX_EV_BIT);
+    }
+}
+
+/// 清 RX Event 位（console 消费包络内调）。位由 IRQ 置、由消费侧清——与
+/// waiter U4 握手位同款「专用位 + 豁免清位」模式：早到/晚到任意相位皆成立
+/// （IRQ 在包络内被屏蔽，位只可能在包络外被置——置后 console 下轮 wait 的
+/// poll-first 必命中，无丢唤醒）。
+///
+/// # Safety
+/// 须在 `disable_irq` 包络内调（与 RX IRQ 生产者串行）；RX_EV_REF 不变。
+unsafe fn rx_ev_clear() {
+    // SAFETY: 调用方保证屏蔽包络 + 引用不变。
+    let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
+        .expect("rx_ev_clear: RX_EV_REF 未初始化");
+    unsafe {
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(RX_EV_BIT, 0);
+        }
+    }
+}
+
 /// 4-5a console 服务任务：**首个服务循环**——wait_many [endK:READABLE, 哑
 /// Event:1<<32]（任一命中；10s 心跳帽，空等超时非错误、回环重等）→ drain
 /// recv 排空本端队列 → 逐字节 UART + 计数。全真 SVC 链（EL1 入口与 EL0 同权，
@@ -1099,17 +1196,26 @@ pub fn console_drained() -> u64 {
 /// `pi::donor_edge` 返回 None（4-2b「v2 收口」）——console 退出 v1 PI donor
 /// 面，否则（共享内核侧表的受捐粒度下）它把受捐额级联给全体持发端用户、
 /// 冻结 boost + 4-3a 严格优先 = 永不入睡任务的饥饿死锁（见 boot spawn 处
-/// 完整因果链）。哑 Event 永不 signal → 命中必 idx==0（idx==1 即自陷被
+/// 完整因果链）。哑 Event 永不 signal → 命中必 idx∈{0,2}（idx==1 即自陷被
 /// watchdog 错杀断言拦下）。console 是常驻服务**不退出**（与 sleeper/waker
 /// 等验收任务不同）；4-5b svcmgr 落地后用户态服务与此同构。
+///
+/// **P5 A-1 输入面**：wait_many 扩第三项 [RX Event:1<<39]——内核 RX 中断
+/// （SPI 33）drain UART FIFO 进 HAL 静态环后经通知槽置位唤醒本任务。消费 =
+/// `disable_irq` 包络内 `rx_pop_all`（搬空环）+ `rx_ev_clear`（清位）——
+/// 「位 0 ⟺ 环空」不变量在包络内闭环（包络内**无 SVC/阻塞**：屏蔽窗内切走
+/// 是违约）。包络外做 echo（QEMU `-nographic` 不回显——软件自做）+ 行缓冲
+/// token：首条恰为 `rx` 的行打 `RX ok n=… lost=…`（smoke 第 25 标记，
+/// **直接 uart 打**——console 自己就是排水者，不能再给自己发消息）。
 extern "C" fn task_console(arg: usize) -> ! {
     use crate::handle::{ERR_AGAIN, ERR_TIMEDOUT, SIGNAL_READABLE};
     use crate::syscall::{NR_CHANNEL_RECV, NR_CLOCK_READ, NR_OBJECT_WAIT_MANY};
     let h_end_k = arg as u32;
     let h_dummy = (arg >> 32) as u32;
-    // wait_many 两数组（栈上、EL1 内核高半——copy_from_user 的 EL1 分支收）。
-    let hs = [h_end_k, h_dummy];
-    let sigs = [SIGNAL_READABLE, 1u64 << 32];
+    let h_rx = rx_ev_h();
+    // wait_many 三数组（栈上、EL1 内核高半——copy_from_user 的 EL1 分支收）。
+    let hs = [h_end_k, h_dummy, h_rx];
+    let sigs = [SIGNAL_READABLE, 1u64 << 32, RX_EV_BIT];
     let mut now: u64 = 0;
     // SAFETY: svc 同步异常；栈变量私有（内核高半，copy 直拷）。
     let pnow = core::ptr::addr_of_mut!(now) as u64;
@@ -1119,6 +1225,12 @@ extern "C" fn task_console(arg: usize) -> ! {
         core::ptr::addr_of_mut!(observed) as u64,
     );
     let mut buf = [0u8; 256];
+    // P5 A-1：RX 消费面——搬出缓冲（= 环容量 → 包络内必搬空）、行缓冲、计数。
+    let mut rxbuf = [0u8; berry_hal_aarch64::uart::RX_RING_SIZE];
+    let mut line = [0u8; 16]; // 行 token 缓冲（溢出 = li 钉在 len，断行时必不匹配）
+    let mut li = 0usize;
+    let mut rx_total: u64 = 0;
+    let mut rx_ok_done = false;
     let (mut n, mut nh): (u64, u64);
     loop {
         assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "console: clock_read");
@@ -1126,7 +1238,7 @@ extern "C" fn task_console(arg: usize) -> ! {
             NR_OBJECT_WAIT_MANY as u64,
             hs.as_ptr() as u64,
             sigs.as_ptr() as u64,
-            2,
+            3,
             now + 10 * 1_000_000_000,
             pidx,
             pobs,
@@ -1137,7 +1249,47 @@ extern "C" fn task_console(arg: usize) -> ! {
             r
         );
         if r == 0 {
-            assert_eq!(idx, 0, "console: 须命中 endK（哑 Event 永不置位）");
+            // 哑 Event（idx==1）永不置位 = 命中它即接线错乱；endK(0)/RX(2) 合法。
+            assert!(
+                idx == 0 || idx == 2,
+                "console: wait 命中须 endK(0)/RX(2)，得 {}",
+                idx
+            );
+        }
+        // P5 A-1：RX 消费——包络内搬空环 + 清位（不变量闭环）；包络内无
+        // SVC/阻塞。**每次唤醒无条件执行**（不只 RX 命中时）：wait 返回与
+        // IRQ 置位间的任意交错（早到/迟到/心跳超时顺带）都收敛到「环搬空 +
+        // 位清零」，无丢唤醒窗口。
+        berry_hal_aarch64::disable_irq();
+        let nrx = berry_hal_aarch64::uart::rx_pop_all(&mut rxbuf);
+        // SAFETY: 包络内与 RX IRQ 生产者串行；RX_EV_REF boot 后不变。
+        unsafe { rx_ev_clear() };
+        berry_hal_aarch64::enable_irq();
+        for i in 0..nrx {
+            let b = rxbuf[i];
+            berry_hal_aarch64::uart_putc(b); // echo（-nographic 无硬件回显）
+            rx_total += 1;
+            if b == b'\n' || b == b'\r' {
+                if !rx_ok_done && li == 2 && line[..2] == *b"rx" {
+                    rx_ok_done = true;
+                    // 直接 uart（console 即排水者，不走自家通道）；标记条件 =
+                    // 收到完整行 token（状态谓词，非注入即达的回声）。
+                    berry_hal_aarch64::uart_puts(b"RX ok n=");
+                    berry_hal_aarch64::uart_put_dec(rx_total);
+                    berry_hal_aarch64::uart_puts(b" lost=");
+                    berry_hal_aarch64::uart_put_dec(
+                        berry_hal_aarch64::uart::rx_lost() as u64,
+                    );
+                    berry_hal_aarch64::uart_puts(b"\n");
+                }
+                li = 0;
+            } else {
+                if li < line.len() {
+                    line[li] = b;
+                    li += 1;
+                }
+                // else：行溢出——丢字节、li 钉在 len（断行时 li != 2 必不匹配）。
+            }
         }
         // drain：排空本端队列（发送侧重试 + 深度 8 → 批量有界）。
         loop {
@@ -1564,6 +1716,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 36, "AI_EV_REL（4-6B probe 放行事件）"),
     (1 << 37, "waiter U2（4-1 路② poll 命中）"),
     (1 << 38, "waiter U4（a27eb9c 握手位拆分——合入即生效）"),
+    (1 << 39, "RX Event（P5 A-1 console 输入——内核 RX 中断到数据置位）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
