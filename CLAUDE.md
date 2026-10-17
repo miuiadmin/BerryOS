@@ -87,6 +87,7 @@ berryos/
 ## 设计文档
 
 - `文档/路线图.md` —— 宏观开发路线（Phase 0–8，每阶段一个 QEMU 里程碑）。
+- `文档/优化议程.md` —— 五道弱题的「及格线 → 拉开差距」动作表（IPC 拳头 / 生态伺候 / 驱动热换 / 性能 scoreboard / AI 攒数据），13 号报告导出，按 Phase 挂钩。
 - `文档/开发体验.md` —— Mac 上的运行/安装四级阶梯（QEMU 直加载 → initrd → fat:rw → 自举镜像）+ 交叉编译日常循环 + hvf/TCG 双模式；P4 G-eco / P5 shell / P6 镜像的体验路线。
 - `文档/shell设计.md` —— P5 交互 shell（bsh）：不搬 bash/zsh（GPL/fork 依赖/太重），命令三梯队（uutils MIT 基础 + 自研开发 + berryctl/powertop 独有）、channel 即 pipe、`--json` AI 友好输出。
 - `文档/调度器设计.md` —— 调度器与电源管理详细设计（机制/策略/capacity/tickless/PM 服务）。
