@@ -378,6 +378,7 @@ fn run_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         stdin_handle: None,
         extra_arg: None,
         extra_gifts: &[],
+        mmio_vmo: None,
     };
     let (data, code) = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
         let o = collect(out_s);
@@ -821,6 +822,7 @@ fn pipe_capture(
             stdin_handle: if i > 0 { Some(pipes[i - 1].1) } else { None },
             extra_arg: segs[i].arg.map(|a| a.as_bytes()),
             extra_gifts: &[],
+            mmio_vmo: None,
         };
         match spawn_rootfs_elf(rootfs_h(), &spec) {
             Ok(c) => children.push(c),
@@ -965,6 +967,7 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Opt
         stdin_handle: None,
         extra_arg: extra_arg.map(|a| a.as_bytes()),
         extra_gifts: &[],
+        mmio_vmo: None,
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,

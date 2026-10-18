@@ -11,10 +11,12 @@
 #      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
-#   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 v0 起四跑）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），34 标记
-#      （boot 23 + rootfs 11——PIPE ok 在列 = bsh 已进交互读循环，状态谓词
-#      门控注入时机，不赌 boot 秒数）后**逐字节慢速注入**编辑序列（FEN=0
+#   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
+#      P5 v0 起扩为编辑三段）：三拉 QEMU 带
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），35 标记
+#      （boot 23 + rootfs 12——PIPE ok/VIRTIO ok 在列 = bsh 已进交互读循环/
+#      virtio 探测全链过，状态谓词门控注入时机，不赌 boot 秒数）后
+#      **逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
 #      QEMU chardev 流控押住输入不 overrun——真机才有突发丢字）：
 #        a. `rx\n` → console token 面 `RX ok`（A-1）；
@@ -145,12 +147,20 @@ last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
 # —— 阶段 3：G-eco rootfs 全链（G-eco-c 起）——
 # rootfs.cpio 由 build-user 产出（justfile mkcpio 步）；缺席 = 回归（loud）。
 [ -f rootfs.cpio ] || fail "缺 rootfs.cpio（build-user 应产出——G-eco-c 编排回归）"
+# P6 A-2：virtio-blk 盘（vprobe 的探测对象——设备在席 = `-device
+# virtio-blk-device` 落位的充要条件；缺席现场造 1MiB 空盘，gitignored。
+# 盘内容 v1 不读——设备在席即可。force-legacy=false = 传输层报现代版
+# Version=2（QEMU 默认报 1，vprobe 断言 ver==2 不收 legacy））。
+[ -f disk.img ] || dd if=/dev/zero of=disk.img bs=1m count=1 status=none
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
-echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs）"
+echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs + virtio-blk）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  -global virtio-mmio.force-legacy=false \
+  -drive if=none,id=drv0,format=raw,file=disk.img \
+  -device virtio-blk-device,drive=drv0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -180,8 +190,15 @@ QEMU_PID=$!
 # （协议 berry-fsproto，数据 = hexyl 输出纯函数快照，无竞速面）——rootfs
 # 相第 11 标记。标记取「FS ok n=」带参形态（bsh 实打 `FS ok n=2156`）——
 # 裸「FS ok」是 boot 行 `ROOTFS ok src=` 的子串，零鉴别力（对抗审查实抓）。
+# VIRTIO ok = **用户态驱动地基第一刀**（P6 A-2）：boot 授能 MMIO 窗口 VMO
+# （`VIRTIO vmo=` 行 = 第 4 插定值交付面）→ svcmgr 经 SpawnSpec 映进子空间
+# 固定 VA → vprobe 扫 32 槽窗定位设备（QEMU 倒序建总线、首个 -device 落
+# 最高槽且落位随 -device 顺序漂移——绑死槽号首版实踩空槽）——每槽验规范
+# magic、恰一占用槽且 version=2（-global force-legacy=false 的现代版）/
+# device_id=2（block）才自打——**设备探测全在用户态**，内核只授窗口——
+# rootfs 相第 12 标记（短于 192B 分片界，单消息原子，无竞速面）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -199,13 +216,14 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n=）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 11 = 34
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 12 = 35
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
-# 有人收；状态谓词门控——不赌 boot 秒数）后经 fd3 逐字节注入编辑序列，每
+# 有人收；VIRTIO ok 在列 = MMIO 探测全链过；状态谓词门控——不赌 boot 秒数）
+# 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
 # QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
 # 行 token 才打——内核侧状态断言，非注入即达回声）；b. `helll\x7f`+`o\n` →
@@ -222,13 +240,16 @@ rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 ( sleep 900 ) > "$RX_FIFO" &
 RX_HOLDER=$!
-echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin）"
+echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  -global virtio-mmio.force-legacy=false \
+  -drive if=none,id=drv0,format=raw,file=disk.img \
+  -device virtio-blk-device,drive=drv0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：34 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：35 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)

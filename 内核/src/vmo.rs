@@ -33,12 +33,24 @@ pub enum VmoError {
     /// 原 `vec!` 双分配 OOM 直接 abort——EL0 经 `vmo_create` 可触发，违
     /// ABI §8.0「永不 panic」；现折 Err 由调用方映射 -ENOMEM。
     NoMem,
+    /// MMIO 物理窗口 VMO 的内容面拒绝（P6 A-2）：设备窗口只能经映射访问
+    /// （volatile 设备读不可经 direct map 拷贝语义中介——commit/read/write/
+    /// decommit 一律拒，-ENOTSUP）。映射/unmap/映射计数照常。
+    NotSupported,
 }
 
 /// 匿名 VMO：`size` 字节、按页提交的物理页后备（§2 后备类①「物理页（匿名）」）。
+/// P6 A-2 起第二种后备：**MMIO 物理窗口**（`mmio_pa = Some(pa_base)`）——
+/// Zircon `zx_vmo_create_physical` 的收紧版（无 syscall 面，boot-only 构造
+/// [`Vmo::create_mmio`]——物理窗口是 boot 授的能力，EL0 不可自造）。
 pub struct Vmo {
     /// 容量（字节，向上取整到页）。
     size: usize,
+    /// MMIO 窗口基 PA（`Some` = 设备物理窗口后备；`None` = 匿名页后备）。
+    /// 窗口后备下 `pages` **恒空**：设备 PA 绝不进帧记账——`Drop` 的还帧循环
+    /// 天然零动作（误填会把设备地址 free 进 buddy = 灾难），`mapcnt` 照建
+    /// （track/untrack/any_mapped 悬空 PTE 防线对设备窗口同样成立）。
+    mmio_pa: Option<usize>,
     /// 每页后备 PA；`None` = 未提交。索引 = offset / PAGE_SIZE。
     pages: alloc::vec::Vec<Option<usize>>,
     /// 每页映射计数（vmar `map` +1 / `unmap` -1，3-2）。**悬空 PTE 防线**：
@@ -65,9 +77,47 @@ impl Vmo {
         mapcnt.resize(npages, 0);
         Ok(Self {
             size: npages * PAGE_SIZE,
+            mmio_pa: None,
             pages,
             mapcnt,
         })
+    }
+
+    /// 建 MMIO 物理窗口 VMO（P6 A-2，**boot-only**——无 syscall 面：物理窗口
+    /// 是 boot 授的能力，EL0 不可自造；Zircon `zx_vmo_create_physical` 收紧
+    /// 版）。`[pa_base, +size)` 须页对齐（窗口按页交付）；`pages` 恒空、
+    /// `mapcnt` 照建——`commit/read/write/decommit` 一律 [`VmoError::NotSupported`]
+    /// （设备只能经映射 volatile 访问），`map/unmap/映射计数` 照常。`Drop` 对
+    /// 空页表天然零动作（设备 PA 永不进还帧路径）。
+    pub fn create_mmio(pa_base: usize, size: usize) -> Result<Self, VmoError> {
+        if size == 0 {
+            return Err(VmoError::OutOfRange);
+        }
+        if pa_base % PAGE_SIZE != 0 {
+            return Err(VmoError::Unaligned);
+        }
+        // size 页对齐同执法（对抗审查补）：匿名 create 的取整是成文设计
+        // （多授零页无害），MMIO 相反——静默取整会把请求范围外的相邻设备
+        // PA 经 Device 映射漏给 EL0，能力过授不告警（比 Zircon 更严是
+        // 有意的收紧版）。
+        if size % PAGE_SIZE != 0 {
+            return Err(VmoError::Unaligned);
+        }
+        let npages = size.div_ceil(PAGE_SIZE);
+        let mut mapcnt = alloc::vec::Vec::new();
+        mapcnt.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        mapcnt.resize(npages, 0);
+        Ok(Self {
+            size: npages * PAGE_SIZE,
+            mmio_pa: Some(pa_base),
+            pages: alloc::vec::Vec::new(),
+            mapcnt,
+        })
+    }
+
+    /// MMIO 物理窗口后备？（vmar map 的 attr 分派用：Device-nGnRnE + SH_NONE）。
+    pub fn is_mmio(&self) -> bool {
+        self.mmio_pa.is_some()
     }
 
     /// 提交页区间：立即出页 + 清零。幂等（已提交页跳过）；整页粒度。
@@ -77,6 +127,9 @@ impl Vmo {
         offset: usize,
         len: usize,
     ) -> Result<(), VmoError> {
+        if self.mmio_pa.is_some() {
+            return Err(VmoError::NotSupported);
+        }
         if offset % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {
             return Err(VmoError::Unaligned);
         }
@@ -97,6 +150,9 @@ impl Vmo {
         offset: usize,
         len: usize,
     ) -> Result<(), VmoError> {
+        if self.mmio_pa.is_some() {
+            return Err(VmoError::NotSupported);
+        }
         if offset % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {
             return Err(VmoError::Unaligned);
         }
@@ -120,6 +176,9 @@ impl Vmo {
 
     /// 经内核 direct map 读已提交区（字节粒度；先查后拷——不留半截副作用）。
     pub fn read(&self, offset: usize, out: &mut [u8]) -> Result<(), VmoError> {
+        if self.mmio_pa.is_some() {
+            return Err(VmoError::NotSupported); // 设备读不可经拷贝语义中介
+        }
         check_bounds(self.size, offset, out.len())?;
         self.ensure_committed(offset, out.len())?;
         let mut pos = offset;
@@ -140,6 +199,9 @@ impl Vmo {
 
     /// 经内核 direct map 写已提交区（字节粒度；同上，先查后拷）。
     pub fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), VmoError> {
+        if self.mmio_pa.is_some() {
+            return Err(VmoError::NotSupported);
+        }
         check_bounds(self.size, offset, data.len())?;
         self.ensure_committed(offset, data.len())?;
         let mut pos = offset;
@@ -164,7 +226,16 @@ impl Vmo {
     }
 
     /// 第 `page_idx` 页的后备 PA（未提交 → `None`）。Vmar map 逐页取用。
+    /// MMIO 窗口后备：页 PA = `pa_base + idx*PAGE_SIZE`（连续设备物理区间，
+    /// 恒「已提交」——无 commit 语义）。
     pub fn page_pa(&self, page_idx: usize) -> Option<usize> {
+        if let Some(pa) = self.mmio_pa {
+            return if page_idx < self.mapcnt.len() {
+                Some(pa + page_idx * PAGE_SIZE)
+            } else {
+                None
+            };
+        }
         self.pages.get(page_idx).copied().flatten()
     }
 
@@ -215,6 +286,8 @@ impl Drop for Vmo {
     /// （close/replace 对映射中 VMO 拒 -EBUSY；drain 对映射中 VMO 整对象泄漏
     /// 不递减——Plan B 对抗审查修，见 handle.rs）；本 Drop 只兜 boot/ktest 直构
     /// 对象——其映射常驻不解除（如用户进程 code/data/stack 页），泄漏即 v1 政策。
+    /// MMIO 窗口后备（P6 A-2）：`pages` 恒空 → 本循环天然零动作——设备 PA 从
+    /// 不进帧记账，无「还设备页进 buddy」面。
     fn drop(&mut self) {
         for (page, &backing) in self.pages.iter().enumerate() {
             if let Some(pa) = backing {

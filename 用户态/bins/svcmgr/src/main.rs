@@ -149,6 +149,14 @@ const H_ROOTFS: Handle = 0x0001_0002;
 /// 进 bsh 表（fd0）。A-2。
 const H_BSH_STDIN: Handle = 0x0001_0003;
 
+/// MMIO 窗口 VMO（virtio-mmio 整窗 32 槽 = 4 页）= boot 第 4 插定值（P6
+/// A-2，rootfs_present 门内——main.rs `assert_eq!` 同源硬编；console 首插
+/// / rootfs VMO 第 2 / endB2 第 3 之后）。rights R|W|MAP（vmar_map 的 vmo
+/// 侧门 = MAP|READ|WRITE 恰集）。**map 不 take**——本表恒持原值（子进程
+/// 只拿映射不拿 handle；子退出 reap unmap 后 mapcnt 归零，本表不关 = v1
+/// 常驻泄漏政策，防销毁性 close -EBUSY 面纠缠）。A-2。
+const H_MMIO: Handle = 0x0001_0004;
+
 /// cpio 步进窗：头 110B + 名（mkcpio 名 ≤ 56B 绰绰有余，盖不住 = 诚实拒）。
 /// （ELF_WIN/PUMP_WIN/ELF_MAP_MAX 随 spawn_rootfs_elf 迁 berry-exec——A-2。）
 static mut STEP_WIN: [u8; 512] = [0; 512];
@@ -219,6 +227,7 @@ fn run_rootfs_child(console: Handle) {
                 stdin_handle: None,
                 extra_arg: None,
                 extra_gifts: &[fs_b],
+                mmio_vmo: None,
             },
         ) {
             Ok(_) => {
@@ -266,6 +275,7 @@ fn run_rootfs_child(console: Handle) {
                             stdin_handle: None,
                             extra_arg: None,
                             extra_gifts: &[],
+                            mmio_vmo: None,
                         },
                     ) {
                         Ok(_) => send_retry(console, ECO_OK.as_ptr(), ECO_OK.len()),
@@ -282,8 +292,8 @@ fn run_rootfs_child(console: Handle) {
                     // 后完整回收（reap：unmap×2 + close×5），成功打 `EXIT ok`
                     // （rootfs 相第 9 标记——「子进程退出 + 父回收」全链的
                     // 确定性验收面；stdhello 恒从 main 返回，不赌交互输入）。
-                    // mkcpio 名序 stdhello 末位——本 arm 的阻塞等待不挡
-                    // 任何后续 arm（其后再无 arm）。
+                    // mkcpio 名序 stdhello 倒数第二（P6 A-2 起末位是 vprobe）
+                    // ——本 arm 的阻塞等待只延迟 vprobe arm，不挡正确性。
                     match spawn_rootfs_elf(
                         H_ROOTFS,
                         &SpawnSpec {
@@ -296,6 +306,7 @@ fn run_rootfs_child(console: Handle) {
                             stdin_handle: None,
                             extra_arg: None,
                             extra_gifts: &[],
+                            mmio_vmo: None,
                         },
                     ) {
                         Ok(child) => {
@@ -351,6 +362,7 @@ fn run_rootfs_child(console: Handle) {
                             stdin_handle: None,
                             extra_arg: Some(b"--color=never"),
                             extra_gifts: &[],
+                            mmio_vmo: None,
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -413,6 +425,7 @@ fn run_rootfs_child(console: Handle) {
                                 stdin_handle: Some(H_BSH_STDIN),
                                 extra_arg: None,
                                 extra_gifts: gifts,
+                                mmio_vmo: None,
                             },
                         )
                         .is_err()
@@ -439,6 +452,46 @@ fn run_rootfs_child(console: Handle) {
                                 trap();
                             }
                             fs_a_h = 0;
+                        }
+                    }
+                } else if name == "bin/vprobe" {
+                    // P6 A-2：virtio-mmio 探测（用户态驱动地基第一刀）——
+                    // H_MMIO 经 `SpawnSpec::mmio_vmo` 映进子空间固定 VA
+                    // （berry-exec `VIRTIO_MMIO_VA` 单源），子程序读规范头
+                    // 四字断言 transport 在席自打 `VIRTIO ok`（rootfs 相第
+                    // 12 标记，vprobe 自有输出面）。防御：窗口缺席（旧 boot
+                    // 无 P6 拓扑）= get_size -EBADF → 可见降级不 spawn（本
+                    // arm 在 rootfs 相必过——新内核下 handle 恒在）。reap
+                    // Err → 降级行（标记锚 vprobe 输出不受 reap 成败影响，
+                    // hexyl best-effort 同口径）；Ok(_) 码不判（vprobe 断言
+                    // 失败走 trap——fault 杀码 0，码无区分度，诊断靠 vprobe
+                    // 自打 bad regs 行）。mkcpio 名序 vprobe 末位（v > s）
+                    // ——stdhello arm 的阻塞 reap 在前，只延迟不挡本 arm。
+                    let mut msz = 0u64;
+                    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+                        eco_skip(b"mmio absent");
+                    } else {
+                        match spawn_rootfs_elf(
+                            H_ROOTFS,
+                            &SpawnSpec {
+                                name: name.as_bytes(),
+                                data_off,
+                                data_len,
+                                stdout: console,
+                                stack_pages: 8,
+                                stdin_feed: None,
+                                stdin_handle: None,
+                                extra_arg: None,
+                                extra_gifts: &[],
+                                mmio_vmo: Some(H_MMIO),
+                            },
+                        ) {
+                            Ok(child) => {
+                                if child.reap().is_err() {
+                                    eco_skip(b"vprobe reap");
+                                }
+                            }
+                            Err(()) => eco_skip(b"vprobe spawn"),
                         }
                     }
                 }

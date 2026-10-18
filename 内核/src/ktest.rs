@@ -307,6 +307,154 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hobs as u64, 0, 0), 0, "SYSCALL：close 零 READ 别名");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgs as u64, 0, 0), 0, "SYSCALL：close get_size VMO");
 
+    // E6. MMIO 物理窗口 VMO（P6 A-2，boot-only `Vmo::create_mmio`——无 syscall
+    //     构造面，ktest 直构对象盖内核面）：几何（size 页对齐 / is_mmio /
+    //     page_pa 窗口基 + 越界 None）+ 内容面四拒（commit/read/write/decommit
+    //     → NotSupported——设备窗口只能经映射 volatile 访问，杜绝把设备 PA
+    //     当内存帧的路径）+ syscall 面（voe 折 -95）+ vmar_map Device attr
+    //     分派成功 + 映射中 close -EBUSY + unmap/close 全链（E3 的 hvm 已关，
+    //     此处新建 root Vmar）。
+    assert!(
+        matches!(
+            Vmo::create_mmio(berry_hal_aarch64::VIRTIO_MMIO0_PA, 0),
+            Err(crate::vmo::VmoError::OutOfRange)
+        ),
+        "MMIO：size=0 须 OutOfRange"
+    );
+    assert!(
+        matches!(
+            Vmo::create_mmio(berry_hal_aarch64::VIRTIO_MMIO0_PA + 0x100, 0x200),
+            Err(crate::vmo::VmoError::Unaligned)
+        ),
+        "MMIO：非页对齐基须 Unaligned"
+    );
+    assert!(
+        matches!(
+            Vmo::create_mmio(berry_hal_aarch64::VIRTIO_MMIO0_PA, 0x2200),
+            Err(crate::vmo::VmoError::Unaligned)
+        ),
+        "MMIO：非页对齐 size 须 Unaligned（静默取整即漏授相邻设备 PA）"
+    );
+    let mut mv = Vmo::create_mmio(
+        berry_hal_aarch64::VIRTIO_MMIO0_PA,
+        berry_hal_aarch64::VIRTIO_MMIO_LEN,
+    )
+    .expect("MMIO：建窗口 VMO");
+    assert_eq!(
+        mv.size(),
+        berry_hal_aarch64::VIRTIO_MMIO_LEN,
+        "MMIO：整窗 32 槽 × 0x200 = 0x4000（页对齐 4 页）"
+    );
+    assert!(mv.is_mmio(), "MMIO：is_mmio");
+    assert_eq!(
+        mv.page_pa(0),
+        Some(berry_hal_aarch64::VIRTIO_MMIO0_PA),
+        "MMIO：page_pa(0) = 窗口基"
+    );
+    assert_eq!(
+        mv.page_pa(3),
+        Some(berry_hal_aarch64::VIRTIO_MMIO0_PA + 3 * PAGE_SIZE),
+        "MMIO：page_pa(3) = 窗口基 + 3 页"
+    );
+    assert_eq!(mv.page_pa(4), None, "MMIO：page_pa 越界 None（幅 4 页）");
+    // 局部栈缓冲即可（NotSupported 检查先于任何访问——缓冲内容不参与）。
+    let mut rbuf = [0u8; 16];
+    let wbuf = [0u8; 16];
+    assert!(
+        matches!(
+            mv.commit(crate::mm::frames(), 0, PAGE_SIZE),
+            Err(crate::vmo::VmoError::NotSupported)
+        ),
+        "MMIO：commit 须 NotSupported"
+    );
+    assert!(
+        matches!(
+            mv.decommit(crate::mm::frames(), 0, PAGE_SIZE),
+            Err(crate::vmo::VmoError::NotSupported)
+        ),
+        "MMIO：decommit 须 NotSupported"
+    );
+    assert!(
+        matches!(mv.read(0, &mut rbuf), Err(crate::vmo::VmoError::NotSupported)),
+        "MMIO：read 须 NotSupported"
+    );
+    assert!(
+        matches!(mv.write(0, &wbuf), Err(crate::vmo::VmoError::NotSupported)),
+        "MMIO：write 须 NotSupported"
+    );
+    let hmm = ht
+        .insert(
+            KernelObj::Vmo(mv),
+            RIGHT_READ | RIGHT_WRITE | RIGHT_MAP, // boot 授能形态（vmar_map vmo 侧门 = MAP|R|W 恰集）
+        )
+        .expect("MMIO：insert 窗口 VMO");
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc6(NR_VMO_GET_SIZE as u64, hmm as u64, &raw mut OUT as u64, 0, 0, 0, 0),
+        0,
+        "MMIO：get_size（need=0 放行）"
+    );
+    assert_eq!(
+        unsafe { OUT },
+        berry_hal_aarch64::VIRTIO_MMIO_LEN as u64,
+        "MMIO：get_size 回页对齐幅（整窗 4 页）"
+    );
+    assert_eq!(
+        svc6(NR_VMO_COMMIT as u64, hmm as u64, 0, PAGE_SIZE as u64, 0, 0, 0),
+        -95,
+        "MMIO：syscall commit 须 -ENOTSUP（NotSupported 经 voe）"
+    );
+    let hvm2 = ht
+        .insert(
+            KernelObj::Vmar(
+                Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid())
+                    .expect("MMIO：建 root Vmar"),
+            ),
+            RIGHT_MAP | RIGHT_MANAGE,
+        )
+        .expect("MMIO：insert root vmar");
+    // vmo 侧 MAP 门：R|W 别名（无 MAP）→ map -EACCES。
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, hmm as u64, 3 /* READ|WRITE */, &raw mut OUT as u64),
+        0,
+        "MMIO：dup 收紧到 R|W"
+    );
+    let hmw = unsafe { OUT } as u32;
+    // SAFETY: 同上。
+    unsafe { OUT = crate::aspace::USER_VA as u64 };
+    assert_eq!(
+        svc6(NR_VMAR_MAP as u64, hvm2 as u64, hmw as u64, 0, &raw mut OUT as u64,
+             berry_hal_aarch64::VIRTIO_MMIO_LEN as u64, 3 /* READ|WRITE */),
+        -13,
+        "MMIO：无 MAP 别名映射须 -EACCES（vmo 侧门控）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hmw as u64, 0, 0), 0, "MMIO：close R|W 别名");
+    // 全权 handle 映射成功（Device-nGnRnE attr 分派在 vmar map 内——成功即分派不炸）。
+    // SAFETY: 同上。
+    unsafe { OUT = crate::aspace::USER_VA as u64 };
+    assert_eq!(
+        svc6(NR_VMAR_MAP as u64, hvm2 as u64, hmm as u64, 0, &raw mut OUT as u64,
+             berry_hal_aarch64::VIRTIO_MMIO_LEN as u64, 3 /* READ|WRITE */),
+        0,
+        "MMIO：vmar_map（Device attr 分派）"
+    );
+    assert_eq!(unsafe { OUT }, crate::aspace::USER_VA as u64, "MMIO：map 回写基址不变");
+    // 映射中销毁性 close 拒 -EBUSY（mapcnt 防线对窗口同样成立）→ unmap 后放行。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hmm as u64, 0, 0), -16,
+        "MMIO：映射中 close 须 -EBUSY");
+    assert_eq!(
+        svc6(NR_VMAR_UNMAP as u64, hvm2 as u64, crate::aspace::USER_VA as u64,
+             berry_hal_aarch64::VIRTIO_MMIO_LEN as u64, 0, 0, 0),
+        0,
+        "MMIO：vmar_unmap"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hmm as u64, 0, 0), 0,
+        "MMIO：close 窗口 VMO（Drop 空页零动作——设备 PA 永不进 buddy）");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm2 as u64, 0, 0), 0, "MMIO：close root vmar");
+
     // F. 3-3 process/thread：对象面 + 错误面（ktest 在 berry_sched::init 之前跑，
     //    process_start 成功路径会 spawn → 不能在此验——happy path 由 EL0
     //    `user_spawner` 承担，watchdog 错杀断言兜底）。

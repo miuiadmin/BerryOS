@@ -20,9 +20,9 @@
 //!   READ dup；P6 A-1：fsmgr 端/fs 客户端端）。**随行 handle 被 send
 //!   take**——调用方需保留原值者先 duplicate；
 //! - **回收（Plan B v0.5）**：成功返 [`ChildHandles`]，调用方收完输出后
-//!   `reap()`（wait TERMINATED → unmap×2 → close×5）——完整回收映像/栈
-//!   帧与对象 Box；不 reap = 有界泄漏（root Vmar L1/PT 帧与 ASID v1 恒
-//!   泄漏，见 [`ChildHandles::reap`] 注释）。
+//!   `reap()`（wait TERMINATED → unmap×3 → close×5——P6 A-2 起含 MMIO 窗口）
+//!   ——完整回收映像/栈帧与对象 Box；不 reap = 有界泄漏（root Vmar L1/PT
+//!   帧与 ASID v1 恒泄漏，见 [`ChildHandles::reap`] 注释）。
 
 #![no_std]
 
@@ -52,6 +52,21 @@ const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
 /// EOF 后微秒量级，30s 帽只兜挂死面（未退出 = Err 交调用方定死法）。
 const REAP_TIMEOUT_NS: u64 = 30 * 1_000_000_000;
 
+/// MMIO 窗口映射 VA（P6 A-2）：[`SpawnSpec::mmio_vmo`] 的落位——远离映像
+/// /栈区（0x1000 起的低带）的高带定值，驱动探测/编程面读它。与内核
+/// `USER_VA_TOP = 1<<39` 界内相安（vmar_map 的 OutOfBounds 兜底）。
+pub const VIRTIO_MMIO_VA: u64 = 0x7000_0000;
+
+/// virtio-mmio 窗口扫描几何（QEMU `virt` 板，与内核 HAL
+/// `VIRTIO_MMIO0_PA/LEN` 对读维护——两工作区不共享 crate，靠注释互指）：
+/// 32 槽 × 槽距 0x200。板子按槽 31→0 倒序建总线、首个 `-device` 落最高槽
+/// （QEMU monitor 实证）——**设备落位随 `-device` 顺序漂移，消费端扫窗
+/// 定位、不可绑死槽号**（P6 A-2 首版绑 transport[0] 实踩：读到空槽
+/// ver=1/did=0，`VIRTIO ok` 缺失）。
+pub const VIRTIO_MMIO_SLOTS: usize = 32;
+/// 单槽寄存器组幅（virtio 1.x 规范）。
+pub const VIRTIO_MMIO_STRIDE: usize = 0x200;
+
 /// [`spawn_rootfs_elf`] 的产物（Plan B v0.5）：回收面所需的全部子进程
 /// 句柄 + 几何。**所有权归调用方**——不回收 = 有界泄漏（v1 前 `run` 一次
 /// 漏一个子进程的旧常态）；`reap()` = 完整回收链。
@@ -72,13 +87,19 @@ pub struct ChildHandles {
     /// 栈映射基址/幅。
     pub stack_va: u64,
     pub stack_len: u64,
+    /// MMIO 窗口映射基址/幅（P6 A-2；幅 0 = 无窗口——`SpawnSpec::mmio_vmo`
+    /// 为 None 时）。reap 第三 unmap 用（mapcnt 归零，设备窗口不受影响——
+    /// 只清叶失效 TLB）。
+    pub mmio_base: u64,
+    pub mmio_len: u64,
 }
 
 impl ChildHandles {
     /// 回收已退出的子进程（Plan B v0.5；P5 起**返退出码**——`&&`/`$?` 的
     /// 真值源）：wait `SIGNAL_TERMINATED`（30s 绝对帽——EOF 先行约定下常态
     /// 瞬回）→ **read exit code（0x3A，wait 后 close 前读——close hp 即销毁
-    /// Process 对象，读完码才许放）** → unmap 映像/栈（mapcnt 归零）→ close
+    /// Process 对象，读完码才许放）** → unmap 映像/栈/MMIO 窗口（mapcnt 归零；
+    /// 窗口幅 0 = 无第三刀）→ close
     /// 栈/映像 VMO（destroy-close 不再拒，Drop 还帧）→ close thread/vmar/
     /// process（对象 Box 释放；root Vmar 的 L1/PT 帧与 ASID v1 仍泄漏——
     /// `process.rs` PROCESS_MAX 注释同口径）。任一步失败返 `Err`（句柄留存
@@ -104,6 +125,11 @@ impl ChildHandles {
             || berry_vmar_unmap(self.hv, self.stack_va as usize, self.stack_len as usize) != 0
         {
             return Err(());
+        }
+        if self.mmio_len != 0
+            && berry_vmar_unmap(self.hv, self.mmio_base as usize, self.mmio_len as usize) != 0
+        {
+            return Err(()); // 设备窗口 unmap 失败 = 叶残留（AS 将销毁，只脏死表）
         }
         if berry_handle_close(self.svmo) != 0
             || berry_handle_close(self.vmo) != 0
@@ -186,6 +212,11 @@ pub struct SpawnSpec<'a> {
     /// 端端（bsh 的 `>`/`cat`/`ls`，P6 A-1）。**全被 send take**，调用方
     /// 保留原值者先 duplicate。空片 = 老两/三元 gift（hello/stdhello/hexyl）。
     pub extra_gifts: &'a [Handle],
+    /// MMIO 物理窗口 VMO（P6 A-2，boot 授能面——virtio-mmio 窗口）：Some 时
+    /// 在栈页之后把它映到 [`VIRTIO_MMIO_VA`]（rights 恰 READ|WRITE，v1
+    /// vmar_map 唯一档）——子进程驱动探测/编程面。调用方自留原值（map 不
+    /// take 句柄；回收 unmap 由 [`ChildHandles::reap`] 按 `mmio_len` 执行）。
+    pub mmio_vmo: Option<Handle>,
 }
 
 /// rootfs ELF 流式拉起（页铺平单 VMO，同 `工具链/elf2flat.py` 语义）：
@@ -212,6 +243,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         stdin_handle,
         extra_arg,
         extra_gifts,
+        mmio_vmo,
     } = spec;
     assert!(
         stdin_feed.is_none() || stdin_handle.is_none(),
@@ -249,6 +281,25 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         .and_then(|s| (base + len + berry_loader::PAGE_SIZE).checked_add(s));
     if stack_end.map_or(true, |e| e > berry_loader::USER_TOP) {
         return Err(());
+    }
+    // —— MMIO 固定 VA 前置（对抗审查补，栈顶前置同族第三块几何约束）：
+    //    [base, stack_end) 与 [VIRTIO_MMIO_VA, +窗口幅) 相交的 ELF（rootfs
+    //    输入面可达：PT_LOAD vaddr 落 0x7000_0000 完全合法过 loader/exec
+    //    既有界检）此前会走到 vmar_map 才 Overlap 拒 → 自陷杀调用方
+    //    （svcmgr 死 = watchdog 错杀 panic 连坐 halt）。前置 Err 降级走
+    //    eco_skip 面；窗口幅 get_size 失败仍 trap（boot 授能契约，非输入面）。
+    let mut mmio_len = 0u64;
+    if let Some(mh) = *mmio_vmo {
+        if berry_vmo_get_size(mh, &mut mmio_len) != 0 || mmio_len == 0 {
+            trap(); // 窗口几何是 boot 授能契约——查不到即链断
+        }
+        let hit = match VIRTIO_MMIO_VA.checked_add(mmio_len) {
+            Some(me) => base < me && VIRTIO_MMIO_VA < stack_end.unwrap_or(u64::MAX),
+            None => true, // 窗口幅越界溢出：同族保守降级
+        };
+        if hit {
+            return Err(());
+        }
     }
     let mut hp = 0 as Handle;
     let mut hv = 0 as Handle;
@@ -316,6 +367,20 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         || saddr != stack_va as usize
     {
         trap();
+    }
+    // —— MMIO 物理窗口（P6 A-2）：boot 授能的 virtio-mmio VMO 映到固定 VA
+    //    （高带定值；与映像/栈带的重叠已在 process_create 前置 Err 降级——
+    //    rootfs 输入面纪律，栈顶前置同族）。rights 恰 READ|WRITE（v1
+    //    vmar_map 唯一档）。map 不 take 句柄（调用方自留）；子进程只拿
+    //    映射、不拿 handle——设备窗口能力不出 svcmgr 表。窗口幅 mmio_len
+    //    来自前置 get_size（boot 授能契约面）。
+    if let Some(mh) = *mmio_vmo {
+        let mut maddr = VIRTIO_MMIO_VA as usize;
+        if berry_vmar_map(hv, 0, mh, 0, &mut maddr, mmio_len as usize, RIGHT_READ | RIGHT_WRITE) != 0
+            || maddr != VIRTIO_MMIO_VA as usize
+        {
+            trap();
+        }
     }
     let mut ht = 0 as Handle;
     if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
@@ -408,6 +473,8 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         img_len: len,
         stack_va,
         stack_len,
+        mmio_base: VIRTIO_MMIO_VA,
+        mmio_len,
     })
 }
 

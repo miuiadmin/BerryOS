@@ -202,6 +202,14 @@ impl Vmar {
         // 叶数：中途建表失败时 0..filled 页叶已入表而 regions 未登记——残留
         // PTE 是查不到区间的有效翻译（unmap/protect 永远 NotMapped、同 VA
         // 重 map 绕过重叠检测、已激活 AS 即刻可见半填映射），须先回滚再报错。
+        // 内存属性按后备分派（P6 A-2）：MMIO 窗口 = Device-nGnRnE + 不共享
+        // （内核直映 MMIO 同款，`mmu.rs` 惯例——设备访问不可缓存不可推测，
+        // 无一致性与共享语义）；匿名页 = Normal WB + inner-shareable。
+        let (attr, sh) = if vmo.is_mmio() {
+            (hal::ATTR_DEVICE, hal::SH_NONE)
+        } else {
+            (hal::ATTR_NORMAL, hal::SH_INNER)
+        };
         let mut filled = 0;
         for i in 0..npages {
             let pa = vmo.page_pa(first_page + i).expect("上已校验");
@@ -222,9 +230,7 @@ impl Vmar {
             };
             // SAFETY: 槽位属本表树独占；volatile 防重排。
             unsafe {
-                slot.write_volatile(
-                    hal::page_descriptor(pa, hal::ATTR_NORMAL, hal::SH_INNER) | perm.ap(),
-                );
+                slot.write_volatile(hal::page_descriptor(pa, attr, sh) | perm.ap());
             }
             filled += 1;
         }

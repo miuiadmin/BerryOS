@@ -31,6 +31,10 @@ default: run
 # 覆盖）把产物漂到内核共享 target。
 build-user:
     #!/bin/sh
+    # set -e：任一 cargo/elf2flat 失败即中止——无它时失败被吞、mkcpio 拿陈旧
+    # 产物继续走（P6 A-2 实踩：bsh 漏补 mmio_vmo 字段，E0063 静默、smoke 跑
+    # 的是旧 bsh——「缺产物编译期炸响」的 D6 纪律只护了内核侧，这边失守）。
+    set -e
     cd 用户态
     CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker
     mkdir -p userbins ../内核/src/userbins
@@ -69,7 +73,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fsmgr/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr ELF 本体——装载走
+    # P6 A-2：vprobe（virtio-mmio 探测——MMIO 窗口 VMO 的用户态消费者，
+    # stdhello 同链；扫 32 槽窗定位设备——QEMU 倒序建总线、首 -device 落
+    # 最高槽且随 -device 顺序漂移，绑死槽号不可为）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/vprobe/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出）。
     python3 ../工具链/mkcpio.py ../rootfs.cpio \
@@ -78,7 +88,8 @@ build-user:
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
-        bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello
+        bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
+        bin/vprobe=cargo-target/aarch64-unknown-linux-musl/release/vprobe
 
 build: abi-check build-user
     cargo build
@@ -98,10 +109,18 @@ run-el2: build
 # 直加载不走 Linux boot 协议：x0=0/RAM 无 DTB/-initrd 整体不加载，2026-10 实证；
 # 名字 opt/berry/rootfs 与 HAL fwcfg::ROOTFS_NAME 单一事实源对读）。
 # 期望输出多一行 ROOTFS ok src=fwcfg bytes=<文件大小>。rootfs.cpio 由 G-eco 编译侧产出。
+# P6 A-2：挂 virtio-blk（QEMU virt 板倒序建总线、首个 -device 落最高槽——
+# vprobe 扫 32 槽窗定位；disk.img 缺席则现场造 1MiB 空盘，gitignored）。
+# force-legacy=false = 传输层报现代版 Version=2（QEMU 默认 force-legacy=true
+# 报 1——vprobe 断言 ver==2，legacy v1 不收）。
 run-rootfs: build
     #!/bin/sh
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
-    {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio
+    test -f disk.img || dd if=/dev/zero of=disk.img bs=1m count=1 status=none
+    {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+        -global virtio-mmio.force-legacy=false \
+        -drive if=none,id=drv0,format=raw,file=disk.img \
+        -device virtio-blk-device,drive=drv0
 
 run-release: abi-check build-user
     cargo build --release

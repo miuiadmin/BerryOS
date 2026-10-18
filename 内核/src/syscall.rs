@@ -371,6 +371,8 @@ fn voe(e: VmoError) -> i32 {
         VmoError::NoFrames => ERR_NO_MEMORY,
         VmoError::Mapped => ERR_BUSY,
         VmoError::NoMem => ERR_NO_MEMORY, // 页记账 try 化（3b3 H2）
+        // MMIO 窗口内容面（P6 A-2）：设备只能经映射访问。
+        VmoError::NotSupported => ERR_NOT_SUPPORTED,
     }
 }
 

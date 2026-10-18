@@ -741,6 +741,39 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
     // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
     unsafe { crate::channel::ChannelEnd::pair(pk2, pu2) };
 
+    // ---- P6 A-2：virtio-mmio 物理窗口 VMO（用户态驱动地基第一刀）。QEMU
+    // virt 板 virtio-mmio 整窗（HAL 板级常量：32 槽 × 0x200 = [0x0A00_0000,
+    // 0x0A00_4000)——槽 31→0 倒序建总线、首个 -device 落最高槽，**设备落位
+    // 随 -device 顺序漂移，消费端扫窗定位**；DTB 枚举随 v2 真机路径）包成
+    // MMIO VMO 进 svcmgr 表——**仅 rootfs 相**（rootfs_present gate：裸相零
+    // 扰动，缺席 = svcmgr 查表 -EBADF → eco 降级）**第 4 插定值 0x0001_0004**
+    // （console 1 / rootfs VMO 2 / endB2 3 之后，boot assert 拦表序漂移——
+    // svcmgr 编译侧硬编码同款惯例）。
+    // rights = READ|WRITE|MAP：vmar_map 面恰 R|W + 映射权（3-2 门控）。
+    // `create_mmio` 是 boot-only 构造——物理窗口是 boot 授的能力，无 syscall
+    // 面（Zircon `zx_vmo_create_physical` 收紧版）；commit/read/write/decommit
+    // 对它一律 -ENOTSUP（设备只能经映射 volatile 访问），map/unmap 照常。----
+    if rootfs_present {
+        let vmo = vmo::Vmo::create_mmio(
+            berry_hal_aarch64::VIRTIO_MMIO0_PA,
+            berry_hal_aarch64::VIRTIO_MMIO_LEN,
+        )
+        .expect("main: mmio Vmo create");
+        let h_mmio = ht_svcmgr
+            .insert(
+                handle::KernelObj::Vmo(vmo),
+                handle::RIGHT_READ | handle::RIGHT_WRITE | handle::RIGHT_MAP,
+            )
+            .expect("main: mmio VMO 进 svcmgr 表");
+        assert_eq!(
+            h_mmio, 0x0001_0004,
+            "main: svcmgr 表 mmio VMO 须第 4 插 0x0001_0004（编译侧硬编码）"
+        );
+        berry_hal_aarch64::uart_puts(b"VIRTIO vmo=");
+        berry_hal_aarch64::uart_put_hex64(h_mmio as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    }
+
     // D3（G-eco-b）：svcmgr 是首个多页镜像（编译产物内嵌 echo/talker 平像），
     // data/stack 上移——sp 从 `stack_top` 取，不读单页常量。
     berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, up_svcmgr.stack_top,

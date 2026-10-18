@@ -39,6 +39,17 @@ pub const UART0_BASE: usize = 0x0900_0000;
 pub const GICD_BASE: usize = 0x0800_0000;
 /// GICv2 CPU interface 基址（QEMU `virt`）。
 pub const GICC_BASE: usize = 0x0801_0000;
+/// virtio-mmio 传输层窗口基 PA（QEMU `virt` 板 32 槽之槽 0）。板子按槽
+/// 31→0 倒序创建总线、首个 `-device` 落**最高槽**（monitor `info qtree`
+/// 实证：virtio-blk 挂 virtio-mmio-bus.31 = 0x0A00_3E00）——**设备落位随
+/// `-device` 顺序漂移，消费端须扫窗定位、不可绑死槽号**（DTB 枚举随 v2
+/// 真机路径——`dtb.rs` 已留位）。P6 A-2 起用户态驱动地基：boot 把
+/// `[此值, +VIRTIO_MMIO_LEN)` 整窗包成 MMIO VMO 授 svcmgr。
+pub const VIRTIO_MMIO0_PA: usize = 0x0A00_0000;
+/// virtio-mmio 传输层整窗幅：32 槽 × 槽距 0x200（QEMU 11 `virt` 板
+/// monitor `info mtree` 实证：`[0x0A00_0000, 0x0A00_4000)` 连续 32 个
+/// virtio-mmio 区域，空槽也在席应答规范 ID 头）。VMO 页对齐交付 = 4 页。
+pub const VIRTIO_MMIO_LEN: usize = 0x4000;
 
 /// 内核高半基址 = 39-bit VA 高半的底（T1SZ=25 → TTBR1 区 = `[此值, 2^64)`）。
 /// `KERNEL_VA_BASE + pa` 是内核 direct map 的**唯一规则**（RAM 与 MMIO 统一，见
@@ -106,7 +117,12 @@ pub fn current_ttbr0_pa() -> usize {
 }
 
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
-pub use paging::{page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_NORMAL, SH_INNER};
+// P6 A-2 起加 ATTR_DEVICE/SH_NONE：用户侧 MMIO 窗口叶（Device-nGnRnE + 不
+// 共享——内核直映 MMIO 同款，见 mmu.rs）。
+pub use paging::{
+    page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL, SH_INNER,
+    SH_NONE,
+};
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
 //
