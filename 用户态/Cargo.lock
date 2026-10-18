@@ -37,6 +37,10 @@ name = "berry-sys"
 version = "0.1.0"
 
 [[package]]
+name = "berry-virtio"
+version = "0.1.0"
+
+[[package]]
 name = "echo"
 version = "0.1.0"
 dependencies = [

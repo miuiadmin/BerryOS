@@ -48,6 +48,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x18 | `vmar_protect` | 改权限 | v1 |
 | 0x19 | `vmar_allocate` | 建子区间 | v1 |
 | 0x1A | `vmo_get_size` | 查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长） | v1 |
+| 0x1B | `vmo_get_phys` | 查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽） | v1 |
 | **pager** ||||
 | 0x21 | `pager_supply_pages` | 用户态 pager 给 VMO 填页 | v2 |
 | 0x22 | `pager_op_range` | 脏页/换出通知 | v3 |
@@ -288,6 +289,18 @@ berry_status_t berry_vmo_get_size(berry_handle_t vmo, uint64_t *out);
                                /* G-eco（0x1A）：仅类型门控（need=0——size 是
                                   对象几何非内容）；返回页对齐容量（create 即
                                   取整——末页尾零是 padding） */
+berry_status_t berry_vmo_get_phys(berry_handle_t vmo, uint64_t offset, uint64_t *pa);
+                               /* P6 A-3（0x1B）：查字节物理地址（*pa = 所在页
+                                  后备 PA + 页内偏移，字节精确）；offset ∈
+                                  [0, size) 否则 -EOVERANGE(-34)，该页未
+                                  commit（匿名 VMO）→ -EBADSTATE(-37)（MMIO
+                                  窗口无 commit 概念恒可查）；仅类型门控
+                                  （need=0，同 get_size 几何惯例）；DMA 描述
+                                  符地址的用户态来源（vblk virtqueue）。
+                                  **v1 披露面注记**：板上无 IOMMU = 已授 MMIO
+                                  窗口的设备本可 DMA 全内存，本号不新增攻击
+                                  面；IOMMU/SMMU 随 v2 收口（`安全与硬件隔离
+                                  设计.md`） */
 berry_status_t berry_vmar_map(berry_handle_t vmar, uint32_t options,
                           berry_handle_t vmo, uint64_t vmo_offset,
                           uintptr_t *vaddr, size_t len, berry_rights_t rights);
@@ -372,7 +385,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 29**（handle/object 6 + VMO/Vmar 10（含 0x1A `vmo_get_size`，G-eco）+ 进程线程 8（含 0x3A `process_get_exit_code`，P5）+ channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 30**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 8（含 0x3A `process_get_exit_code`，P5）+ channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
 
 ### 8.4 Rust FFI 镜像（`用户态/berry-sys`，raw 绑定）
 
@@ -404,6 +417,7 @@ extern "C" {
     pub fn berry_vmo_read(vmo: Handle, buf: *mut u8, offset: u64, len: usize) -> Status;
     pub fn berry_vmo_write(vmo: Handle, buf: *const u8, offset: u64, len: usize) -> Status;
     pub fn berry_vmo_get_size(vmo: Handle, out: *mut u64) -> Status;
+    pub fn berry_vmo_get_phys(vmo: Handle, offset: u64, pa: *mut u64) -> Status;
     pub fn berry_vmar_map(vmar: Handle, options: u32, vmo: Handle, vmo_offset: u64,
                         vaddr: *mut usize, len: usize, rights: Rights) -> Status;
     pub fn berry_vmar_unmap(vmar: Handle, vaddr: usize, len: usize) -> Status;

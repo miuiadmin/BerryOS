@@ -79,7 +79,14 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vprobe/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe ELF 本体——装载走
+    # P6 A-3：vblk（virtio-blk 块设备驱动——真设备 IO 第一刀；vprobe 同链
+    # + berry-virtio split-ring 纯函数 crate。DMA 面 = vmo_create/commit +
+    # get_phys 查后备，不映射；LBA0 读 justfile/smoke 落盘印章 + LBA1 写/
+    # 读回对拍自打 `VBLK ok`）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/vblk/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe + vblk ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出）。
     python3 ../工具链/mkcpio.py ../rootfs.cpio \
@@ -89,6 +96,7 @@ build-user:
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
+        bin/vblk=cargo-target/aarch64-unknown-linux-musl/release/vblk \
         bin/vprobe=cargo-target/aarch64-unknown-linux-musl/release/vprobe
 
 build: abi-check build-user
@@ -113,10 +121,14 @@ run-el2: build
 # vprobe 扫 32 槽窗定位；disk.img 缺席则现场造 1MiB 空盘，gitignored）。
 # force-legacy=false = 传输层报现代版 Version=2（QEMU 默认 force-legacy=true
 # 报 1——vprobe 断言 ver==2，legacy v1 不收）。
+# P6 A-3：每次启动前把 LBA0 印章 `BERRYOSVBLK!` 落进盘首（notrunc 只写
+# 12B——vblk 读 LBA0 对拍；写 LBA1 由 vblk 自写自读，盘跨相残留无扰）。
 run-rootfs: build
     #!/bin/sh
+    set -e
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
     test -f disk.img || dd if=/dev/zero of=disk.img bs=1m count=1 status=none
+    printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img \
@@ -137,11 +149,13 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 
 # host 单元测试：berry-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）
 # + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 用户态/berry-loader）
-# + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 用户态/berry-fsproto）。
+# + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 用户态/berry-fsproto）
+# + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 用户态/berry-virtio）。
 test-host:
     cargo test -p berry-mm --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-loader --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-fsproto --target {{host}}
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-virtio --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

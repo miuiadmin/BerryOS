@@ -13,9 +13,10 @@
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），35 标记
-#      （boot 23 + rootfs 12——PIPE ok/VIRTIO ok 在列 = bsh 已进交互读循环/
-#      virtio 探测全链过，状态谓词门控注入时机，不赌 boot 秒数）后
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），36 标记
+#      （boot 23 + rootfs 13——PIPE ok/VIRTIO ok/VBLK ok 在列 = bsh 已进
+#      交互读循环/virtio 探测与块设备 IO 全链过，状态谓词门控注入时机，
+#      不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
 #      QEMU chardev 流控押住输入不 overrun——真机才有突发丢字）：
@@ -151,7 +152,10 @@ last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
 # virtio-blk-device` 落位的充要条件；缺席现场造 1MiB 空盘，gitignored。
 # 盘内容 v1 不读——设备在席即可。force-legacy=false = 传输层报现代版
 # Version=2（QEMU 默认报 1，vprobe 断言 ver==2 不收 legacy））。
+# P6 A-3：每次启动前落 LBA0 印章 `BERRYOSVBLK!`（notrunc 只写 12B——vblk
+# 读 LBA0 对拍；写 LBA1 由 vblk 自写自读，盘跨相残留无扰）。
 [ -f disk.img ] || dd if=/dev/zero of=disk.img bs=1m count=1 status=none
+printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
@@ -197,8 +201,14 @@ QEMU_PID=$!
 # magic、恰一占用槽且 version=2（-global force-legacy=false 的现代版）/
 # device_id=2（block）才自打——**设备探测全在用户态**，内核只授窗口——
 # rootfs 相第 12 标记（短于 192B 分片界，单消息原子，无竞速面）。
+# VBLK ok = **真块设备 IO 全链**（P6 A-3）：vblk 用户态驱动——modern v2
+# 特性协商（收 VERSION_1）+ split virtqueue（qsize=16 单页环，三址经
+# 0x1B `vmo_get_phys` 查自建 VMO 页后备）+ LBA0 读 justfile/smoke 落盘
+# 印章逐字节对拍 + LBA1 写/读回 pattern 对拍（poll used ring，10s 帽）
+# 全过才自打——**DMA 缓冲从不进地址空间**（vmo_read/write + get_phys
+# 三件套，零 vmar 面）——rootfs 相第 13 标记（状态谓词，无竞速面）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -216,13 +226,14 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 12 = 35
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 13 = 36
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
-# 有人收；VIRTIO ok 在列 = MMIO 探测全链过；状态谓词门控——不赌 boot 秒数）
+# 有人收；VIRTIO/VBLK ok 在列 = MMIO 探测与块设备 IO 全链过；状态谓词门控
+# ——不赌 boot 秒数）
 # 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
 # QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
@@ -240,6 +251,9 @@ rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 ( sleep 900 ) > "$RX_FIFO" &
 RX_HOLDER=$!
+# LBA0 印章重落（每相自足：rootfs 相若写脏 LBA0 不跨相残留——v1 vblk 只写
+# LBA1，此行是面向未来测试的确定性防线）。
+printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
@@ -249,7 +263,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：35 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：36 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)

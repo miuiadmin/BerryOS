@@ -6,7 +6,7 @@
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 29 号在册、28 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 30 号在册、29 已实现）----
 // 在册未实现：0x35 thread_start（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -28,6 +28,8 @@ pub const NR_VMAR_PROTECT: usize = 0x18;
 pub const NR_VMAR_ALLOCATE: usize = 0x19;
 /// G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。
 pub const NR_VMO_GET_SIZE: usize = 0x1A;
+/// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
+pub const NR_VMO_GET_PHYS: usize = 0x1B;
 pub const NR_PROCESS_CREATE: usize = 0x31;
 pub const NR_PROCESS_START: usize = 0x32;
 /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。

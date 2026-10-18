@@ -118,7 +118,7 @@ fn test_syscall() {
     use crate::handle::{ObjType, RIGHT_MANAGE, RIGHT_MAP};
     use crate::syscall::{
         NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT,
-        NR_VMO_DECOMMIT, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
+        NR_VMO_DECOMMIT, NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
     };
     use crate::vmar::Vmar;
     static mut EBUF: [u8; 16] = [0; 16]; // write 源 / read 目的（内核直映区）
@@ -454,6 +454,73 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hmm as u64, 0, 0), 0,
         "MMIO：close 窗口 VMO（Drop 空页零动作——设备 PA 永不进 buddy）");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm2 as u64, 0, 0), 0, "MMIO：close root vmar");
+
+    // E7. vmo_get_phys（0x1B，P6 A-3 用户态 DMA 面——virtqueue 描述符地址是
+    //     guest PA，驱动须能查自己 VMO 页后备）。盖六路：坏 handle / 类型门控
+    //     （Event）/ 字节语义（off 越 size 拒、页内偏移直拼——mid-page 精确到
+    //     字节）/ 未提交页 -EBADSTATE / commit 后 PA 落 RAM 界 + 页对齐 /
+    //     need=0 放行（同 get_size 几何惯例）。MMIO 窗口后备面（pa_base+off
+    //     恒可查）经裸对象 page_pa 已在 E6 盖，syscall 面同 page_pa 取值不再
+    //     重铺。
+    // SAFETY: svc 同步异常；OUT 为本函数私有静态。
+    unsafe { OUT = 0 };
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, 0xDEAD_BEEF, 0, &raw mut OUT as u64, 0, 0, 0), -9,
+        "SYSCALL：get_phys 坏 handle 须 -EBADF");
+    let hev = ht
+        .insert(KernelObj::Event(crate::event::Event::new()), crate::handle::RIGHT_SIGNAL)
+        .expect("SYSCALL：insert event（get_phys 类型面）");
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hev as u64, 0, &raw mut OUT as u64, 0, 0, 0), -9,
+        "SYSCALL：get_phys 对 Event 须 -EBADF（类型门控）");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hev as u64, 0, 0), 0, "SYSCALL：close event");
+    // 未提交页：无后备可查（-EBADSTATE，voe NotCommitted 同码语义）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0, &raw mut OUT as u64, 0, 0, 0), 0,
+        "SYSCALL：vmo_create（get_phys 面）");
+    let hgp = unsafe { OUT } as u32;
+    // SAFETY: 同上。
+    unsafe { OUT = u64::MAX };
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, 0, &raw mut OUT as u64, 0, 0, 0), -37,
+        "SYSCALL：get_phys 未提交页须 -EBADSTATE");
+    // commit 后：PA 落 RAM 界（virt 板 [0x4000_0000, +128M)）且页对齐；页内
+    // 偏移精确到字节（mid-page = 页基 + 偏移，描述符 addr 直用语义）。
+    assert_eq!(svc6(NR_VMO_COMMIT as u64, hgp as u64, 0, PAGE_SIZE as u64, 0, 0, 0), 0,
+        "SYSCALL：commit（get_phys 面）");
+    // SAFETY: 同上（预置哨兵值，验回写真发生）。
+    unsafe { OUT = u64::MAX };
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, 0, &raw mut OUT as u64, 0, 0, 0), 0,
+        "SYSCALL：get_phys 页基");
+    let pa0 = unsafe { OUT };
+    assert!(pa0 >= 0x4000_0000 && pa0 < 0x4000_0000 + 128 * 1024 * 1024,
+        "SYSCALL：get_phys 须落 RAM 界（得 {pa0:#x}）");
+    assert_eq!(pa0 % PAGE_SIZE as u64, 0, "SYSCALL：get_phys 页基页对齐");
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, 0x123, &raw mut OUT as u64, 0, 0, 0), 0,
+        "SYSCALL：get_phys mid-page");
+    assert_eq!(unsafe { OUT }, pa0 + 0x123,
+        "SYSCALL：get_phys 字节语义（页基 + 页内偏移）");
+    // 字节域右端：offset == size 拒（[0, size)，尾后一字节也越界）。
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, PAGE_SIZE as u64, &raw mut OUT as u64, 0, 0, 0),
+        -34,
+        "SYSCALL：get_phys offset==size 须 -EOVERANGE");
+    // need=0 面：dup 收紧到仅 DUPLICATE（无 READ）仍可查（get_size 同惯例）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, hgp as u64, crate::handle::RIGHT_DUPLICATE,
+             &raw mut OUT as u64),
+        0,
+        "SYSCALL：dup 收紧到仅 DUPLICATE（get_phys 面）"
+    );
+    let hgo = unsafe { OUT } as u32;
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgo as u64, 0x123, &raw mut OUT as u64, 0, 0, 0), 0,
+        "SYSCALL：无 READ handle 查 phys 须放行（need=0 不查权利位）");
+    assert_eq!(unsafe { OUT }, pa0 + 0x123, "SYSCALL：零 READ 别名 phys 同值");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgo as u64, 0, 0), 0, "SYSCALL：close 观察别名");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgp as u64, 0, 0), 0, "SYSCALL：close get_phys VMO");
 
     // F. 3-3 process/thread：对象面 + 错误面（ktest 在 berry_sched::init 之前跑，
     //    process_start 成功路径会 spawn → 不能在此验——happy path 由 EL0

@@ -6,17 +6,23 @@
 //! 次页全零 = 栈，sp0=0x3000）；入口 x0 = end1（bootstrap 迁入本表的
 //! channel 端点）。服务循环（契约与 asm 逐字对齐）：
 //! - recv(end1) → 原样回显 8 字节；
-//! - 空 -EAGAIN → clock+wait READABLE（10s 帽）→ 重 recv；
+//! - 空 -EAGAIN → clock+wait READABLE（10s 帽）→ 重 recv；**帽到点重臂不自杀**
+//!   （P6 A-3 改板：svcmgr rootfs 走查 ~15s+ 对本服务零往来，空闲自陷 = 常驻
+//!   服务早夭，echo 一死稳态 'v' 往返连坐 svcmgr——安静是合法态，守门权交还
+//!   发问方的 roundtrip 超时）；
 //! - 回显 send -EBUSY（理论不至——对端每圈收一件）→ wait WRITABLE 重试；
-//! - 超时/错码自陷（echo 静默无 console，死 = svcmgr 侧标记缺失 +
-//!   watchdog 错杀断言暴露）。
+//! - 错码自陷（echo 静默无 console，死 = svcmgr 侧标记缺失 + watchdog 错杀
+//!   断言暴露）。
+//!
+//! 同镜像亦作 echo2（talker 的对端）——talker 稳态持续投喂，长空闲重臂无扰。
 
 #![no_std]
 #![no_main]
 
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_object_wait_one, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, SIGNAL_READABLE,
+    SIGNAL_WRITABLE,
 };
 
 /// 等待帽（原模板 0x2_540B_E400 = 1e10 ns）。
@@ -33,6 +39,9 @@ pub extern "C" fn _start(end1: Handle) -> ! {
 }
 
 /// 收一件 8 字节消息（空 -EAGAIN → wait READABLE 重收；其余自陷）。
+///
+/// 空闲帽到点（-ETIMEDOUT）重臂续等：常驻服务的合法长空闲（svcmgr 走查期）；
+/// 非 -EAGAIN 错码仍自陷（真链断 loud——svcmgr 侧 roundtrip 超时 + 标记缺失）。
 fn recv_blocking(h: Handle, buf: &mut [u8; 8]) {
     loop {
         let mut nb = 8usize;
@@ -44,7 +53,12 @@ fn recv_blocking(h: Handle, buf: &mut [u8; 8]) {
         if s != BERRY_ERR_AGAIN {
             trap();
         }
-        wait(h, SIGNAL_READABLE);
+        let mut obs = 0u64;
+        let w = berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs);
+        if w != 0 && w != BERRY_ERR_TIMEDOUT {
+            trap();
+        }
+        // 命中/超时一律回循环重 recv（醒来重验是 wait 面纪律；超时=继续空闲）。
     }
 }
 

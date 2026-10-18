@@ -292,8 +292,8 @@ fn run_rootfs_child(console: Handle) {
                     // 后完整回收（reap：unmap×2 + close×5），成功打 `EXIT ok`
                     // （rootfs 相第 9 标记——「子进程退出 + 父回收」全链的
                     // 确定性验收面；stdhello 恒从 main 返回，不赌交互输入）。
-                    // mkcpio 名序 stdhello 倒数第二（P6 A-2 起末位是 vprobe）
-                    // ——本 arm 的阻塞等待只延迟 vprobe arm，不挡正确性。
+                    // mkcpio 名序 stdhello 之后还有 vblk/vprobe（P6 A-3 起）
+                    // ——本 arm 的阻塞等待只延迟它们，不挡正确性。
                     match spawn_rootfs_elf(
                         H_ROOTFS,
                         &SpawnSpec {
@@ -452,6 +452,45 @@ fn run_rootfs_child(console: Handle) {
                                 trap();
                             }
                             fs_a_h = 0;
+                        }
+                    }
+                } else if name == "bin/vblk" {
+                    // P6 A-3：virtio-blk 用户态块设备驱动（真设备 IO 第一
+                    // 刀）。vprobe 同形（H_MMIO 经 `SpawnSpec::mmio_vmo` 映
+                    // 入固定 VA）；子程序自建 DMA 缓冲 VMO（vmo_create/
+                    // commit + 0x1B get_phys 查后备——**不映射**，零 vmar
+                    // 面），modern v2 协商 + split virtqueue + LBA0 魔数读
+                    // 验 + LBA1 写/读回对拍，自打 `VBLK ok`（rootfs 相第
+                    // 13 标记）。防御同 vprobe：窗口缺席 → 可见降级不 spawn；
+                    // reap Err → 降级行；Ok(_) 码不判（断言失败走 trap，诊断
+                    // 靠 vblk 自打行）。mkcpio 名序 vblk 在 stdhello 与
+                    // vprobe 之间（s < vblk < vprobe）——本 arm 阻塞 reap
+                    // 只延迟后续 arm，不挡正确性。
+                    let mut msz = 0u64;
+                    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+                        eco_skip(b"mmio absent");
+                    } else {
+                        match spawn_rootfs_elf(
+                            H_ROOTFS,
+                            &SpawnSpec {
+                                name: name.as_bytes(),
+                                data_off,
+                                data_len,
+                                stdout: console,
+                                stack_pages: 8,
+                                stdin_feed: None,
+                                stdin_handle: None,
+                                extra_arg: None,
+                                extra_gifts: &[],
+                                mmio_vmo: Some(H_MMIO),
+                            },
+                        ) {
+                            Ok(child) => {
+                                if child.reap().is_err() {
+                                    eco_skip(b"vblk reap");
+                                }
+                            }
+                            Err(()) => eco_skip(b"vblk spawn"),
                         }
                     }
                 } else if name == "bin/vprobe" {

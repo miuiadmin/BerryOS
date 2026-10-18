@@ -182,6 +182,15 @@ pub extern "C" fn berry_vmo_get_size(vmo: Handle, out: *mut u64) -> Status {
     unsafe { sys(nr::VMO_GET_SIZE, vmo as usize, out as usize, 0, 0, 0, 0) }
 }
 
+/// 查字节物理地址（P6 A-3 用户态 DMA 面——virtqueue 描述符地址是 guest PA）：
+/// `*pa = 所在页后备 PA + 页内偏移`（精确到字节，描述符 addr 直用）。匿名
+/// VMO 该页须已 commit（-EBADSTATE）；MMIO 窗口 = pa_base+offset 恒可查。
+/// 门控仅类型 need=0（get_size 同「几何非内容」惯例）；pa 是 u64 出参。
+#[no_mangle]
+pub extern "C" fn berry_vmo_get_phys(vmo: Handle, offset: u64, out: *mut u64) -> Status {
+    unsafe { sys(nr::VMO_GET_PHYS, vmo as usize, offset as usize, out as usize, 0, 0, 0) }
+}
+
 /// v1 rights 须恰 READ|WRITE（UserRo 留 v2）；options 折叠（见段首注）。
 #[no_mangle]
 pub extern "C" fn berry_vmar_map(

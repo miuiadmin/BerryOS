@@ -16,8 +16,8 @@
 
 [meta]
 stage = "v1"
-nr_total = 29        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
-implemented = 28     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
+nr_total = 30        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
+implemented = 29     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。
@@ -294,6 +294,13 @@ name = "vmo_get_size"
 desc = '查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长）'
 stage = "v1"
 note = 'G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。'
+
+[[group.syscall]]
+num = 0x1B
+name = "vmo_get_phys"
+desc = '查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽）'
+stage = "v1"
+note = 'P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。'
 
 [[group]]
 title = "**pager**"

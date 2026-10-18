@@ -13,9 +13,9 @@
 
 use core::arch::global_asm;
 
-/// 任务切换上下文（callee-saved 子集，`#[repr(C)]`，与下方 asm 偏移严格对应）。
+/// 任务切换上下文（callee-saved 子集 + TLS 基址，`#[repr(C)]`，与下方 asm 偏移严格对应）。
 ///
-/// 布局：`x19..x29`（11×8=88）+ `lr`(x30)（8）+ `sp`（8）= **104** 字节。
+/// 布局：`x19..x29`（11×8=88）+ `lr`(x30)（8）+ `sp`（8）+ `tpidr`（8）= **112** 字节。
 #[repr(C)]
 pub struct TaskContext {
     /// x19..x29（callee-saved，11 个）。r[0]=x19、…、r[10]=x29。
@@ -26,14 +26,22 @@ pub struct TaskContext {
     pub lr: u64,
     /// sp_el1。新任务首切时指向其内核栈顶（16 对齐）。
     pub sp: u64,
+    /// tpidr_el0——**每任务**用户 TLS 基址（P6 A-3 实踩补上）：crt0 在 EL0 自设，
+    /// 但寄存器本身每 CPU 一份，不随任务切换保存 = 抢占后拿**别人**的 TLS 指针
+    /// 裸奔（vblk 首次 TLS 访问在数秒设备 IO 之后，期间 hexyl 改写过 TPIDR_EL0
+    /// → 醒来读 [hexyl_TP+0x20] 落未映射区 D-abort；stdhello/hexyl/bsh 幸存只因
+    /// 首次 TLS 访问（首个 println 惰性初始化）距自设只有微秒级窗口）。内核任务
+    /// 不用 TLS，随行携带的值无害；新任务出生 0（切断残留泄漏的根）。
+    pub tpidr: u64,
 }
 
 // 编译期校 TaskContext 与 asm 偏移一致（仿 trap.rs 的 TrapFrame 断言，防「asm/
 // #[repr(C)] 错位」风险 R1）。
-const _: () = assert!(core::mem::size_of::<TaskContext>() == 104);
+const _: () = assert!(core::mem::size_of::<TaskContext>() == 112);
 const _: () = assert!(core::mem::offset_of!(TaskContext, r) == 0);
 const _: () = assert!(core::mem::offset_of!(TaskContext, lr) == 88);
 const _: () = assert!(core::mem::offset_of!(TaskContext, sp) == 96);
+const _: () = assert!(core::mem::offset_of!(TaskContext, tpidr) == 104);
 
 impl TaskContext {
     /// 零值（供静态未初始化上下文占位，如被首次 switch 覆盖的 idle / main）。
@@ -41,6 +49,7 @@ impl TaskContext {
         r: [0; 11],
         lr: 0,
         sp: 0,
+        tpidr: 0,
     };
 
     /// 构造一个新内核线程的初始上下文。
@@ -112,6 +121,8 @@ global_asm!(
     "    str x30,      [x0, #88]",   // lr
     "    mov x2, sp",
     "    str x2,       [x0, #96]",   // sp
+    "    mrs x2, tpidr_el0",
+    "    str x2,       [x0, #104]",  // tpidr_el0（每任务 TLS 基址——先存 prev 再动寄存器）
     "    ldp x19, x20, [x1, #0]",
     "    ldp x21, x22, [x1, #16]",
     "    ldp x23, x24, [x1, #32]",
@@ -121,6 +132,8 @@ global_asm!(
     "    ldr x30,      [x1, #88]",   // 新 lr：首切时=trampoline
     "    ldr x2,       [x1, #96]",
     "    mov sp, x2",                // 切到新任务的内核栈
+    "    ldr x2,       [x1, #104]",
+    "    msr tpidr_el0, x2",         // 恢复新任务自己的 TLS 基址（新任务=0）
     "    ret",                       // 首切：跳 task_entry_trampoline；否则回新任务上次切出处
     ".size switch, . - switch",
 );

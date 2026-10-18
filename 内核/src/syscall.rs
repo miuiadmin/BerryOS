@@ -6,8 +6,9 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 29 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`工具链/abi.toml`）；**P5 起 28 号已实现**——
-//! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十号（3-2 + G-eco get_size）+
+//! v1 30 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`工具链/abi.toml`）；**P6 A-3 起 29 号已实现**——
+//! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
+//! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
 //! thread_create/exit（3-3 + Plan B 退出路径）+
 //! channel 三号（3-4b）+ event 三号（3-4c；4-1 wait_one 阻塞化）+ wait_many
@@ -60,7 +61,7 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 28 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// ---- v1 30 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
 // 常量本体在 `crate::abi_gen`（`工具链/abi.toml` 生成文件）；此处 re-export
 // 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
 // abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
@@ -72,7 +73,8 @@ pub use crate::abi_gen::{
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_PROCESS_EXIT,
     NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
     NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT,
-    NR_VMO_CREATE, NR_VMO_DECOMMIT, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
+    NR_VMO_CREATE, NR_VMO_DECOMMIT, NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ,
+    NR_VMO_WRITE,
 };
 use crate::abi_gen::CLOCK_MONOTONIC;
 
@@ -551,6 +553,42 @@ extern "C" fn sys_vmo_get_size(tf: &mut TrapFrame) -> i64 {
     match copy_out_u64(el1, out, vmo.size() as u64) {
         Ok(()) => 0,
         Err(e) => e as i64,
+    }
+}
+
+/// `vmo_get_phys(vmo, offset, *pa)`：查字节物理地址（P6 A-3 用户态 DMA 面：
+/// virtqueue 描述符地址是 guest PA，用户态驱动须能查自己 VMO 页的后备）。
+/// 门控同 [`sys_vmo_get_size`]：**仅类型不查权利位**（need=0）——后备几何
+/// 非内容（12 位 rights 无 INSPECT 消费语义，零权利观察者同 get_size 可查）。
+/// 语义：`*pa = 所在页后备 PA + 页内偏移`（精确到字节——描述符 addr 直用，
+/// 免调用方再拼）；匿名 VMO 该页须已 commit（-EBADSTATE，voe NotCommitted
+/// 同码）——未提交页无后备可查；MMIO 窗口后备 = `pa_base + offset` 恒可查
+/// （`page_pa` 统一取）。offset ∈ [0, size)（-EOVERANGE）；pa 是 u64 出参
+/// 8 字节宽（宽度跟 ABI 类型走）。
+extern "C" fn sys_vmo_get_phys(tf: &mut TrapFrame) -> i64 {
+    let (h, off, out) = (tf.regs[1] as u32, tf.regs[2] as usize, tf.regs[3]);
+    let el1 = caller_is_el1(tf);
+    // 出参预清 + 界检（fail-fast，同 get_size；pa 是 u64 非 handle——8 字节）。
+    if let Err(e) = copy_out_u64(el1, out, 0) {
+        return e as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let vmo = match t.get(h, ObjType::Vmo, 0) {
+        Ok((obj, _)) => match obj.as_vmo() {
+            Some(v) => v,
+            None => return ERR_BAD_HANDLE as i64, // 类型门控后不可达；防御面
+        },
+        Err(e) => return e as i64,
+    };
+    if off >= vmo.size() {
+        return ERR_OUT_OF_RANGE as i64; // 字节语义：[0, size)，尾后一字节也拒
+    }
+    match vmo.page_pa(off / PAGE_SIZE) {
+        Some(pa) => match copy_out_u64(el1, out, (pa + off % PAGE_SIZE) as u64) {
+            Ok(()) => 0,
+            Err(e) => e as i64,
+        },
+        None => ERR_BAD_STATE as i64, // 未提交页：无后备（MMIO 恒有——page_pa 恒 Some）
     }
 }
 
@@ -1681,8 +1719,8 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// event 三号 = 3-4c 起 22 号；4-0 加 thread_sleep(0x37) = 23 号；4-1 wait_one
 /// 阻塞化 / 4-2 wait 面扩 Channel 均为改板；4-2b 加 wait_many(0x05) = 24 号；
 /// G-eco 加 vmo_get_size(0x1A) = 25 号；**Plan B v0.5 加 process_exit(0x33) /
-/// thread_exit(0x36) = 27 号**；**P5 加 process_get_exit_code(0x3A) = 28 号**
-/// （余 0x35 thread_start v2 多线程面）。
+/// thread_exit(0x36) = 27 号**；**P5 加 process_get_exit_code(0x3A) = 28 号**；
+/// **P6 A-3 加 vmo_get_phys(0x1B) = 29 号**（余 0x35 thread_start v2 多线程面）。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
 /// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住——见 [`task_exit_hook`]）。
 pub fn install() {
@@ -1701,6 +1739,7 @@ pub fn install() {
     reg(NR_VMO_READ, sys_vmo_read);
     reg(NR_VMO_WRITE, sys_vmo_write);
     reg(NR_VMO_GET_SIZE, sys_vmo_get_size);
+    reg(NR_VMO_GET_PHYS, sys_vmo_get_phys);
     reg(NR_VMAR_MAP, sys_vmar_map);
     reg(NR_VMAR_UNMAP, sys_vmar_unmap);
     reg(NR_VMAR_PROTECT, sys_vmar_protect);
