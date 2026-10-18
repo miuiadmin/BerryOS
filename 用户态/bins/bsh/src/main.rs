@@ -126,6 +126,7 @@ fn main() {
     and_selftest(&mut vars, &mut status);
     pipe_selftest();
     fs_selftest(&hexyl_out);
+    fat_selftest();
 
     // —— 交互循环（化妆面）：prompt 只挂命令完成；空读（fd0 的 10s 帽超时
     //    EOF 化）= 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也
@@ -712,6 +713,46 @@ fn fs_selftest(hexyl_out: &[u8]) {
         }
     }
     println!("FS ok n={}", hexyl_out.len());
+}
+
+/// FAT 自验（P6 A-5，`FAT ok n=` = rootfs 相第 15 标记——确定性状态谓词）：
+/// 走真 fs RPC 面（= 交互 `cat HELLO.TXT` 同一台机器）端到端读 mkfat 落盘
+/// 卷——HELLO.TXT 28B 全等 + PATTERN.BIN 5000B 逐字节对拍（(i*31+7)%256，
+/// mkfat/berry-fatfs fixture 同源 pattern）——FAT 兜底 → vblk 服务 RPC →
+/// FAT12 簇链 + more 链全盖。盘内容是 mkfat 确定性字节，无竞速面；失败
+/// eprintln + park（标记缺失 → smoke FAIL 兜底）。
+fn fat_selftest() {
+    let h = fs_h();
+    match fs_get(h, b"HELLO.TXT") {
+        Ok(d) if d == b"berryos fat read-only hello\n" => {}
+        Ok(d) => {
+            eprintln!("bsh: fat selftest: hello len={} want=28", d.len());
+            berry_libc::park();
+        }
+        Err(e) => {
+            eprintln!("bsh: fat selftest: hello {}", e.text());
+            berry_libc::park();
+        }
+    }
+    match fs_get(h, b"PATTERN.BIN") {
+        Ok(d) => {
+            if d.len() != 5000 {
+                eprintln!("bsh: fat selftest: pattern len={} want=5000", d.len());
+                berry_libc::park();
+            }
+            for (i, &b) in d.iter().enumerate() {
+                if b as usize != (i * 31 + 7) % 256 {
+                    eprintln!("bsh: fat selftest: pattern byte {i} mismatch");
+                    berry_libc::park();
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("bsh: fat selftest: pattern {}", e.text());
+            berry_libc::park();
+        }
+    }
+    println!("FAT ok n=5000");
 }
 
 /// `A | B | …` 交互面（v1：各段裸名——无参数无 `/`，参数面随 v2 argv 展开）。

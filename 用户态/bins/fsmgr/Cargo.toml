@@ -5,10 +5,13 @@ edition = "2021"
 
 # P6 A-1：RAM-fs 服务（/svc/fs 最小面——`文档/文件系统设计.md` §6 P6 注记）。
 # stdhello/bsh 同构独立小工作区（musl target + berry-libc shim）。通道拓扑：
-# svcmgr 建 fs 对，本服务持 gift[2]（libc `gift2_h()`——fs 服务端端）；bsh 持
-# 对端 dup（gift[3]，`fs_h()`）发请求。协议 = berry-fsproto（PUT/TRUNC/GET/
-# LIST，严格串行 RPC）；存储 = `Vec<(名, 内容)>` 线性表（RAM-fs——块设备/
-# FAT/virtio 随 P6 后续）。静默无输出（诊断走应答 st 码——服务不吵）。
+# svcmgr 建 fs 对，本服务持 gift[2]（libc `gift2_h()`——fs 服务端端）+ gift[3]
+# （libc `blk_h()`——A-5 起 vblk 的 blk 服务端端，svcmgr 预拉+自验门后经 env
+# 块交付）；bsh 持对端 dup（gift[3]，`fs_h()`）发请求。协议 = berry-fsproto
+# （PUT/TRUNC/GET/LIST，严格串行 RPC）；存储 = `Vec<(名, 内容)>` 线性表（RAM
+# 写通道）+ FAT12 只读底座（berry-fatfs 解析 + berry-blkproto 块 RPC，覆盖层
+# 语义见 src/fat.rs）。静默无输出（诊断走应答 st 码——FAT init 失败/会话
+# 毒化各一行例外）。
 
 [workspace]
 
@@ -16,6 +19,8 @@ edition = "2021"
 berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-fsproto = { path = "../../berry-fsproto" }
+berry-blkproto = { path = "../../berry-blkproto" }
+berry-fatfs = { path = "../../berry-fatfs" }
 
 [profile.release]
 opt-level = "z"

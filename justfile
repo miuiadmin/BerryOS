@@ -70,6 +70,8 @@ build-user:
         cargo build --release --manifest-path bins/fail/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P6 A-1：fsmgr（RAM-fs 服务——bsh `>`/cat/ls 的对端，stdhello 同链）。
+    # P6 A-5：+ berry-fatfs 依赖——RAM 写通道之上叠 FAT12 只读底座（blk 端
+    # 经 env 块 gift[3] 交付，`>` 命中 FAT 名先物化进 RAM）。
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fsmgr/Cargo.toml \
         --target aarch64-unknown-linux-musl
@@ -120,18 +122,23 @@ run-el2: build
 # 名字 opt/berry/rootfs 与 HAL fwcfg::ROOTFS_NAME 单一事实源对读）。
 # 期望输出多一行 ROOTFS ok src=fwcfg bytes=<文件大小>。rootfs.cpio 由 G-eco 编译侧产出。
 # P6 A-2：挂 virtio-blk（QEMU virt 板倒序建总线、首个 -device 落最高槽——
-# vprobe 扫 32 槽窗定位；disk.img 缺席则现场造 1MiB 空盘，gitignored）。
+# vprobe 扫 32 槽窗定位；disk.img 缺席则现场造 1MiB 空盘，gitignored——该
+# 兜底 A-5 起被 mkfat 每次重造取代，仅余路径常量意义）。
 # force-legacy=false = 传输层报现代版 Version=2（QEMU 默认 force-legacy=true
 # 报 1——vprobe 断言 ver==2，legacy v1 不收）。
 # P6 A-3：每次启动前把 LBA0 印章 `BERRYOSVBLK!` 落进盘首（notrunc 只写
 # 12B——vblk 读 LBA0 对拍；写 LBA1 由 vblk 自写自读，盘跨相残留无扰）。
 # P6 A-4：vblk 自验毕转常驻服务——svcmgr 消费自验（经 berry-blkproto RPC
 # 写/读 LBA5 对拍）随后打 `BLKD ok n=512`（rootfs 相第 14 标记）。
+# P6 A-5：盘源 = mkfat.py 确定性 FAT12 卷（[16 扇区保留区][卷 @LBA16]，
+# HELLO.TXT/PATTERN.BIN——fsmgr FAT 只读层的读对象，每次重造零残留；
+# LBA0 印章落保留区）；bsh 自驱 fs GET 两文件对拍全过打 `FAT ok n=5000`
+# （rootfs 相第 15 标记）。
 run-rootfs: build
     #!/bin/sh
     set -e
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
-    test -f disk.img || dd if=/dev/zero of=disk.img bs=1m count=1 status=none
+    python3 工具链/mkfat.py disk.img
     printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
         -global virtio-mmio.force-legacy=false \
@@ -155,13 +162,18 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 # + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 用户态/berry-loader）
 # + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 用户态/berry-fsproto）
 # + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 用户态/berry-virtio）
-# + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 用户态/berry-blkproto）。
+# + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 用户态/berry-blkproto）
+# + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 用户态/berry-fatfs）。
+# fixture 守卫在 berry-fatfs 测试前置：mkfat --check-fixture 重产比对——
+# 改 mkfat 忘重产 --fixture 时共识测试对陈旧基准假绿（A-5 对抗审查实抓）。
 test-host:
     cargo test -p berry-mm --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-loader --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-fsproto --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-blkproto --target {{host}}
+    python3 工具链/mkfat.py --check-fixture 用户态/berry-fatfs/tests/volume_fixture.bin
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-fatfs --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

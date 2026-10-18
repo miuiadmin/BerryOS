@@ -1,0 +1,16 @@
+[package]
+name = "berry-fatfs"
+version = "0.1.0"
+edition = "2021"
+# P6 A-5（文件系统设计.md「MVP 用 FAT」/ 开发体验.md L2 fat:rw 第一刀）：
+# FAT12 只读解析纯函数 crate，`berry-loader`/`berry-fsproto`/`berry-blkproto`
+# 先例（D5「解析器即产品」第 4 例）——`cfg_attr(not(test), no_std)`：库本体
+# no_std（用户态 workspace 成员在 aarch64-unknown-none 下构建），test 构建
+# 放开 std 仅为默认测试挂具 + 读 fixture。单消费：fsmgr FAT 只读层（经
+# path 依赖）。host 测试对 `tests/volume_fixture.bin`（mkfat.py --fixture
+# 产物，确定性字节进 git）做跨实现共识——python 造盘器与 Rust 解析器互不
+# 借码、双绿即两实现独立收敛（AIDEMO/BLKD 同款对拍纪律）。
+description = "BerryOS FAT12 read-only parser: pure BPB/FAT/dir-entry decoding for the P6 A-5 fsmgr layer"
+license = "Apache-2.0"
+
+[dependencies]

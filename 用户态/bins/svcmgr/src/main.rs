@@ -197,13 +197,83 @@ fn run_rootfs_child(console: Handle) {
     // bsh 一次性标志（对抗审查）：H_BSH_STDIN 是单用 handle（take 中转），
     // 重复 `bin/bsh` 条目重入 arm 会以死值自陷——见 arm 内注释。
     let mut bsh_spawned = false;
-    // ---- P6 A-1：fsmgr（RAM-fs 服务）预拉起 ----
+    // ---- P6 A-5：vblk（常驻块设备服务）预拉起——先于 fsmgr ----
+    // A-4 时 vblk 在主走查 arm 拉起（mkcpio 名序靠后，仅 svcmgr 自验消费）；
+    // A-5 起 fsmgr 的 FAT 层要 blk 服务端端（env gift[3]），而 fsmgr 预拉在
+    // 主走查前 ⇒ vblk 必须更早。迁出主走查（arm 退役，条目自然跳过）。
+    // 拓扑：channel_pair 得 (blk_a, blk_b)——blk_b 随 env 块 gift[2] 迁入
+    // vblk（libc `gift2_h()`，每进程 env 块独立）；本表暂持 blk_a，自验门
+    // （blk_selftest——BLKD ok 第 14 标记）过了才作为 `blk_cli` 交给下方
+    // fsmgr 预拉段（take 迁移进 fsmgr 表 = env gift[3]，libc `blk_h()`）
+    // ——此后 fsmgr 是 vblk 唯一 client，串行 RPC 无回复抢答面。
+    // 缺席/失败 = blk_cli=0 → fsmgr gift 三元（RAM-only 降级，fat.rs init
+    // 对 blk_h()==0 静默 None）。
+    let mut blk_cli: Handle = 0;
+    let mut msz = 0u64;
+    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+        eco_skip(b"mmio absent");
+    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vblk") {
+        let (blk_a, blk_b) = channel_pair();
+        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
+        // dummy（空 feeder + 立即 EOF；vblk 服务永不读 stdin，EOF 留队无害）。
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/vblk",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                extra_arg: None,
+                extra_gifts: &[blk_b],
+                mmio_vmo: Some(H_MMIO),
+            },
+        ) {
+            Ok(_child) => {
+                // 常驻服务：**不 reap**——reap 首步 wait TERMINATED 30s 绝对
+                // 帽对「不退出的服务」必超时返 Err、回收链零执行（未确认退
+                // 出绝不 unmap/close）；child 的 ht/hv/hp/vmo 留表即留命
+                // （表槽有界 = 服务生命周期）。
+                match blk_selftest(blk_a) {
+                    Ok(()) => {
+                        send_retry(console, BLKD_OK.as_ptr(), BLKD_OK.len());
+                        blk_cli = blk_a; // 端点留给 fsmgr（下方预拉段交付）
+                    }
+                    Err(why) => {
+                        eco_skip(why);
+                        // 未交付即无人持有服务端——close 止损（vblk 进程经
+                        // pair 互钉常活，BLKD 标记已缺 = smoke FAIL 兜底）。
+                        if berry_handle_close(blk_a) != 0 {
+                            trap();
+                        }
+                    }
+                }
+            }
+            Err(()) => {
+                // Err 全在 env send 前——blk_b 未被 take，两新鲜端显式回收
+                // 防表槽泄漏。
+                if berry_handle_close(blk_b) != 0 {
+                    trap();
+                }
+                if berry_handle_close(blk_a) != 0 {
+                    trap();
+                }
+                eco_skip(b"vblk spawn");
+            }
+        }
+    }
+    // ---- P6 A-1：fsmgr（RAM-fs 服务）预拉起（A-5：+ gift[3] blk 端）----
     // mkcpio 名序 bsh 首位、fsmgr 第 3——但 bsh 的 gift[3]（fs 客户端端）
     // 依赖 fsmgr 先起：主走查前 cpio_find 直查先拉（主走查无 fsmgr arm，
     // 条目自然跳过）。拓扑：本表持 fs_a → dup 出 SEND|RECV 交 bsh（bsh
-    // arm 内）；fs_b 随 env 块 gift[2] 迁入 fsmgr（libc `gift2_h()`）。
-    // 无 bin/fsmgr / spawn 失败 = fs_client=0 → bsh 退回三元 gift（libc
-    // `fs_h()==0` → 「fs not available」降级不死 shell，向后兼容）。
+    // arm 内）；fs_b 随 env 块 gift[2] 迁入 fsmgr（libc `gift2_h()`）；
+    // A-5：blk_cli（vblk 服务端端，自验门已过）随 gift[3] 一并 take 迁入
+    // （libc `blk_h()`）——fsmgr 启动即 eager FAT init（vblk 已在服务，
+    // 首读不候）。无 bin/fsmgr / spawn 失败 = fs_client=0 → bsh 退回三元
+    // gift（libc `fs_h()==0` → 「fs not available」降级不死 shell，向后
+    // 兼容）。
     let mut fs_a_h: Handle = 0;
     let mut fs_client: Handle = 0;
     if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/fsmgr") {
@@ -214,9 +284,19 @@ fn run_rootfs_child(console: Handle) {
         if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
             trap();
         }
+        // A-5 gift 数组：blk_cli==0（vblk 缺席/未过自验）= 三元（RAM-only）。
+        let mut fgifts = [0 as Handle; 2];
+        fgifts[0] = fs_b;
+        let fgifts: &[Handle] = if blk_cli != 0 {
+            fgifts[1] = blk_cli;
+            &fgifts
+        } else {
+            &fgifts[..1]
+        };
         // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
         // dummy（空 feeder + 立即 EOF；fsmgr 永不读 stdin，EOF 留队无害）。
-        // 栈 8 页（stdhello 同款 std 小程序档；服务无深递归）。
+        // 栈 8 页（stdhello 同款 std 小程序档；A-5 Fat 结构体 ≈3.6KB 在 main
+        // 栈 + init 局部 ≈2.5KB，32KiB 余量足）。
         match spawn_rootfs_elf(
             H_ROOTFS,
             &SpawnSpec {
@@ -228,17 +308,20 @@ fn run_rootfs_child(console: Handle) {
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
                 extra_arg: None,
-                extra_gifts: &[fs_b],
+                extra_gifts: fgifts,
                 mmio_vmo: None,
             },
         ) {
             Ok(_) => {
                 fs_a_h = fs_a;
                 fs_client = fs_dup;
+                // blk_cli 已被 take 迁移（旧值必 -EBADF，勿关）——清零防
+                // 尾部兜底误关。
+                blk_cli = 0;
             }
             Err(()) => {
-                // Err 路全在 env send 前——fs_b 未被 take、fs_dup 是 fresh
-                // dup 非 take 产物，显式回收防表槽泄漏。
+                // Err 路全在 env send 前——fs_b/blk_cli 均未被 take、fs_dup
+                // 是 fresh dup 非 take 产物，显式回收防表槽泄漏。
                 if berry_handle_close(fs_dup) != 0 {
                     trap();
                 }
@@ -248,6 +331,10 @@ fn run_rootfs_child(console: Handle) {
                 if berry_handle_close(fs_a) != 0 {
                     trap();
                 }
+                if blk_cli != 0 && berry_handle_close(blk_cli) != 0 {
+                    trap();
+                }
+                blk_cli = 0;
                 eco_skip(b"fs spawn");
             }
         }
@@ -456,79 +543,6 @@ fn run_rootfs_child(console: Handle) {
                             fs_a_h = 0;
                         }
                     }
-                } else if name == "bin/vblk" {
-                    // P6 A-4：vblk 服务化——常驻块设备驱动服务（启动序 =
-                    // A-3 自验原样打 `VBLK ok` 第 13 标记，**此后进服务循
-                    // 环不再退出**——A-3 的 exit+reap 退役）。拓扑：
-                    // channel_pair 得 (blk_a, blk_b)——blk_b 随 env 块
-                    // gift[2] 迁入 vblk（libc `gift2_h()`，fsmgr 同槽惯例；
-                    // 每进程 env 块独立），本表持 blk_a 为 client。消费自
-                    // 验 = 写 LBA5 pattern → 读回 → 逐字节对拍（berry-
-                    // blkproto RPC + **VMO 随行数据面**全链——512B 扇区 >
-                    // inline 帽 256B，数据走能力迁移不走消息）→ `BLKD ok
-                    // n=512`（rootfs 相第 14 标记）。防御同 vprobe：窗口缺
-                    // 席 → 可见降级不 spawn；spawn Err → close 新鲜对端；
-                    // 自验 Err → `eco: blkd …` 降级行（标记缺失 = smoke
-                    // FAIL 兜底）。mkcpio 名序 vblk 在 stdhello 与 vprobe
-                    // 之间——本 arm 的 30s 应答帽只延迟后续 arm，不挡正确
-                    // 性。
-                    let mut msz = 0u64;
-                    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
-                        eco_skip(b"mmio absent");
-                    } else {
-                        let (blk_a, blk_b) = channel_pair();
-                        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec
-                        // assert）——占位 dummy（fsmgr 同款；vblk 服务永不
-                        // 读 stdin，EOF 留队无害）。
-                        match spawn_rootfs_elf(
-                            H_ROOTFS,
-                            &SpawnSpec {
-                                name: name.as_bytes(),
-                                data_off,
-                                data_len,
-                                stdout: console,
-                                stack_pages: 8,
-                                stdin_feed: Some(&[]),
-                                stdin_handle: None,
-                                extra_arg: None,
-                                extra_gifts: &[blk_b],
-                                mmio_vmo: Some(H_MMIO),
-                            },
-                        ) {
-                            Ok(_child) => {
-                                // 常驻服务：**不 reap**——reap 首步 wait
-                                // TERMINATED 30s 绝对帽对「不退出的服务」
-                                // 必超时返 Err、回收链零执行（未确认退出
-                                // 绝不 unmap/close——不会抽走运行中的地址
-                                // 空间）；不 reap = 免 30s 白等，child 的
-                                // ht/hv/hp/vmo 留表即留命（表槽有界 =
-                                // 服务生命周期）。
-                                match blk_selftest(blk_a) {
-                                    Ok(()) => {
-                                        send_retry(console, BLKD_OK.as_ptr(), BLKD_OK.len())
-                                    }
-                                    Err(why) => eco_skip(why),
-                                }
-                                // 自验毕 close client 端（服务端经 pair 互钉
-                                // 常活；v1 无后续 RPC——A-5 FS 服务接棒时换
-                                // 新对端拓扑）。
-                                if berry_handle_close(blk_a) != 0 {
-                                    trap();
-                                }
-                            }
-                            Err(()) => {
-                                // Err 全在 env send 前——blk_b 未被 take，
-                                // 两新鲜端显式回收防表槽泄漏。
-                                if berry_handle_close(blk_b) != 0 {
-                                    trap();
-                                }
-                                if berry_handle_close(blk_a) != 0 {
-                                    trap();
-                                }
-                                eco_skip(b"vblk spawn");
-                            }
-                        }
-                    }
                 } else if name == "bin/vprobe" {
                     // P6 A-2：virtio-mmio 探测（用户态驱动地基第一刀）——
                     // H_MMIO 经 `SpawnSpec::mmio_vmo` 映进子空间固定 VA
@@ -580,6 +594,8 @@ fn run_rootfs_child(console: Handle) {
     }
     // P6 A-1 兜底：归档无 bin/bsh（fs 面无消费者）——fs_client/fs_a 留表
     // 无害但关掉更干净；fsmgr 常驻不受影响（fs_b 互钉 + 子表自持）。
+    // A-5：归档无 bin/fsmgr 时 blk_cli 未被 take——同兜底关（vblk 经
+    // pair 互钉常活，无 client 只是闲置）。
     if fs_client != 0 {
         if berry_handle_close(fs_client) != 0 {
             trap();
@@ -587,6 +603,11 @@ fn run_rootfs_child(console: Handle) {
     }
     if fs_a_h != 0 {
         if berry_handle_close(fs_a_h) != 0 {
+            trap();
+        }
+    }
+    if blk_cli != 0 {
+        if berry_handle_close(blk_cli) != 0 {
             trap();
         }
     }

@@ -1,13 +1,16 @@
-//! fsmgr —— P6 A-1 RAM-fs 服务（`文档/文件系统设计.md` §6 P6 注记：
-//! tmpfs before disk——块设备/FAT/virtio-blk 随 P6 后续）。
+//! fsmgr —— P6 A-1 RAM-fs 服务 + A-5 FAT 只读层（`文档/文件系统设计.md`
+//! §6 P6 注记：tmpfs before disk——A-5 起 disk 到位）。
 //!
 //! stdhello/bsh 同链（musl target + berry-libc shim）。通道拓扑（svcmgr
 //! P6 段搭）：本服务持 env 块 gift[2]（libc `gift2_h()`——fs 服务端端
-//! fs_b）；bsh 持对端 fs_a 的 SEND|RECV dup（gift[3]，libc `fs_h()`）发
-//! 请求。协议 = berry-fsproto（PUT/TRUNC/GET/LIST，**严格串行 RPC**——
-//! 一请求一应答，队列深 1 用量，无乱序死锁面）；存储 = `Vec<(名, 内容)>`
-//! 线性表（RAM-fs：FILE_COUNT_MAX=8 × FILE_SIZE_MAX=16KiB = 128KiB <
-//! libc 静态堆 256KiB）。
+//! fs_b）+ gift[3]（libc `blk_h()`——A-5 起 blk 服务端端 blk_a，vblk 经
+//! svcmgr 预拉+自验门后交付）；bsh 持对端 fs_a 的 SEND|RECV dup（gift[3]，
+//! libc `fs_h()`）发请求。协议 = berry-fsproto（PUT/TRUNC/GET/LIST，
+//! **严格串行 RPC**——一请求一应答，队列深 1 用量，无乱序死锁面）；
+//! 存储 = `Vec<(名, 内容)>` 线性表（RAM-fs：FILE_COUNT_MAX=8 ×
+//! FILE_SIZE_MAX=16KiB = 128KiB < libc 静态堆 256KiB）+ **FAT12 只读底座**
+//! （`fat.rs`——GET 先 RAM 后 FAT、PUT/TRUNC 物化、LIST 合并，覆盖层语义
+//! 见该模块头）。
 //!
 //! 服务循环 = echo 同形但 **wait 超时重臂**（关键差异）：echo 的 client
 //! （svcmgr）每节流拍必 ping——10s 帽到点 = 断链，trap；本服务的 client
@@ -15,11 +18,14 @@
 //! 不烧 CPU；真断链面 = recv 非 -EAGAIN 错码，照 trap）。
 //!
 //! **静默无输出**（服务不吵）：诊断走应答 st 码（ST_NOENT/ST_FULL/
-//! ST_BAD）；链断 → trap 只死自己（`FS ok` 缺失 = smoke FAIL 兜底）。
-//! stdin 是 svcmgr 占位 dummy（空 feeder + EOF——gift[2] 位前的占位项，
-//! 见 berry-exec gift 注），留队无害、永不读。
+//! ST_BAD）；例外 = FAT 层 init 失败/会话毒化各打一行（链断级事件，
+//! `FAT ok` 缺失是 smoke 面，原因先行）。链断 → trap 只死自己（`FS ok`
+//! 缺失 = smoke FAIL 兜底）。stdin 是 svcmgr 占位 dummy（空 feeder + EOF
+//! ——gift[2] 位前的占位项，见 berry-exec gift 注），留队无害、永不读。
 
-use berry_libc::io::gift2_h;
+mod fat;
+
+use berry_libc::io::{blk_h, gift2_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_object_wait_one, Handle,
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
@@ -28,6 +34,8 @@ use berry_fsproto::{
     encode_reply_get, encode_reply_list, encode_reply_status, parse_request, FILE_COUNT_MAX,
     FILE_SIZE_MAX, LIST_MAX, Req, CHUNK, ST_BAD,
 };
+
+use fat::{Fat, GetRes};
 
 // 链接种子（stdhello/bsh 同款）：rlib/LTO 按需保留——无引用则 berry-libc
 // 的 crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -46,6 +54,10 @@ fn main() {
         berry_libc::park();
     }
     let mut files: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    // A-5：FAT 只读层 eager init（vblk 由 svcmgr 预拉且自验已过，此刻必在
+    // 服务——FAT init 的首读不会撞服务未起）；blk_h()==0 = 无块设备面，
+    // RAM-only 降级续走（init 失败同理，诊断行见 fat.rs）。
+    let mut fat: Option<Fat> = fat::init(blk_h());
     let mut msg = [0u8; 256];
     let mut rep = [0u8; 256];
     loop {
@@ -63,22 +75,48 @@ fn main() {
         }
         let rep_len: usize = match parse_request(&msg[..nb]) {
             Some(Req::Put { name, off, data }) => {
-                let st = do_put(&mut files, name, off, data);
+                // FAT-only 名先物化进 RAM（覆盖层写语义），再走 RAM 通道；
+                // 物化拒（尺寸/计数帽、会话毒化）= st 直接回。
+                let st = match fat.as_mut().and_then(|f| f.materialize(&mut files, name)) {
+                    None => do_put(&mut files, name, off, data),
+                    Some(st) => st,
+                };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
             }
             Some(Req::Trunc { name, size }) => {
-                let st = do_trunc(&mut files, name, size);
+                // 同 Put：物化后 truncate（`echo > FAT名` 的建/截断面）。
+                let st = match fat.as_mut().and_then(|f| f.materialize(&mut files, name)) {
+                    None => do_trunc(&mut files, name, size),
+                    Some(st) => st,
+                };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
             }
             Some(Req::Get { name, off }) => match handle_get(&files, name, off, &mut rep) {
                 Some(n) => n, // rep 已编码（handle_get 内部落字）
-                None => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
+                None => match fat.as_mut().map(|f| f.handle_get(name, off, &mut rep)) {
+                    Some(GetRes::Served(n)) => n,
+                    Some(GetRes::Full) => encode_reply_status(&mut rep, berry_fsproto::ST_FULL)
+                        .unwrap_or_else(|| trap()),
+                    Some(GetRes::Bad) => {
+                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                    }
+                    // RAM/FAT 双未命中（或 FAT 层缺席）——NOENT。
+                    Some(GetRes::Miss) | None => encode_reply_status(
+                        &mut rep,
+                        berry_fsproto::ST_NOENT,
+                    )
                     .unwrap_or_else(|| trap()),
+                },
             },
             Some(Req::List) => {
-                // 名列暂存走独立 scratch（msg 的借用跨整个 match 存活）。
+                // 名列暂存走独立 scratch（msg 的借用跨整个 match 存活）；
+                // FAT 未影子名续列（LIST_MAX 同帽）。
                 let mut names = [0u8; 256];
                 let n = render_list(&files, &mut names);
+                let n = match fat.as_ref() {
+                    Some(f) => f.append_names(&files, &mut names, n),
+                    None => n,
+                };
                 encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
             }
             None => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
@@ -208,9 +246,10 @@ fn now() -> u64 {
 }
 
 /// 自陷：读未映射地址 → D-abort(lower) → `user_fault_exit` 只死自己
-/// （svcmgr/bsh 同款——链断 loud，`FS ok` 缺失 = smoke FAIL 兜底）。
+/// （svcmgr/bsh 同款——链断 loud，`FS ok` 缺失 = smoke FAIL 兜底；
+/// fat.rs 经 `crate::trap` 共用）。
 #[cold]
-fn trap() -> ! {
+pub(crate) fn trap() -> ! {
     // SAFETY: 故意触发的未映射读（0x4000_0000 与用户布局无交集——家族惯例值）。
     unsafe { core::ptr::read_volatile(0x4000_0000usize as *const u64) };
     loop {

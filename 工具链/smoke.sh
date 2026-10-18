@@ -13,9 +13,10 @@
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），37 标记
-#      （boot 23 + rootfs 14——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok 在列 = bsh
-#      已进交互读循环/virtio 探测与块设备 IO/块设备服务消费链全过，状态谓词
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），38 标记
+#      （boot 23 + rootfs 15——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok 在列
+#      = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务消费链/FAT
+#      只读底座全过，状态谓词
 #      门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
@@ -149,12 +150,16 @@ last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
 # rootfs.cpio 由 build-user 产出（justfile mkcpio 步）；缺席 = 回归（loud）。
 [ -f rootfs.cpio ] || fail "缺 rootfs.cpio（build-user 应产出——G-eco-c 编排回归）"
 # P6 A-2：virtio-blk 盘（vprobe 的探测对象——设备在席 = `-device
-# virtio-blk-device` 落位的充要条件；缺席现场造 1MiB 空盘，gitignored。
-# 盘内容 v1 不读——设备在席即可。force-legacy=false = 传输层报现代版
-# Version=2（QEMU 默认报 1，vprobe 断言 ver==2 不收 legacy））。
-# P6 A-3：每次启动前落 LBA0 印章 `BERRYOSVBLK!`（notrunc 只写 12B——vblk
-# 读 LBA0 对拍；写 LBA1 由 vblk 自写自读，盘跨相残留无扰）。
-[ -f disk.img ] || dd if=/dev/zero of=disk.img bs=1m count=1 status=none
+# virtio-blk-device` 落位的充要条件；缺席现场造，gitignored。
+# force-legacy=false = 传输层报现代版 Version=2（QEMU 默认报 1，vprobe
+# 断言 ver==2 不收 legacy））。
+# P6 A-5：盘源 = mkfat.py 确定性 FAT12 卷（2048 扇区 = [16 扇区零保留区]
+# [卷 @LBA16]——HELLO.TXT 28B + PATTERN.BIN 5000B 簇链，fsmgr FAT 只读层
+# 的读对象；每次重造 = 跨相/跨 run 零残留、PATTERN 逐字节可对拍）。
+# P6 A-3：LBA0 印章 `BERRYOSVBLK!`（notrunc 只写 12B 落保留区——vblk
+# 读 LBA0 对拍；写 LBA1/BLKD LBA5 同在保留区，FAT 卷面（LBA16+）测试
+# 永不写）。
+python3 工具链/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -214,8 +219,17 @@ QEMU_PID=$!
 # 写 LBA5 确定性 pattern → 读回 → 独立缓冲逐字节对拍全等才打——
 # 「驱动服务化」分层（A-5 FS 服务的前一层）活证——rootfs 相第 14 标记
 # （状态谓词，无竞速面；30s 应答帽盖 vblk 启动自验在途）。
+# FAT ok n= = **FAT12 只读底座全链**（P6 A-5）：svcmgr 预拉 vblk（自验门
+# BLKD 后端点交 fsmgr，blk 服务唯一 client）→ fsmgr eager init（探测
+# LBA0/LBA16 + BPB hidden 对账定位卷、整读 FAT0 + 根目录）→ bsh 自驱
+# fs GET：HELLO.TXT 28B 全等 + PATTERN.BIN 5000B 逐字节对拍（(i*31+7)%256
+# ——mkfat 生产者/ berry-fatfs fixture/bsh 对拍三面同源 pattern）全过才自打
+# ——**盘上真文件系统的读路径全在用户态服务栈**（bsh→fsmgr→vblk→盘），
+# rootfs 相第 15 标记（状态谓词；盘内容确定性字节，无竞速面。标记取带参
+# 形态防子串混叠（与「FS ok n=」/「ROOTFS ok」两族互非子串已核——
+# grep -qF 全标记两两互非子串纪律）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -233,14 +247,14 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n=）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n=）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 14 = 37
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 15 = 38
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
-# 有人收；VIRTIO/VBLK/BLKD ok 在列 = MMIO 探测、块设备 IO 与块设备服务
-# 消费链全过；状态谓词门控——不赌 boot 秒数）
+# 有人收；VIRTIO/VBLK/BLKD/FAT ok 在列 = MMIO 探测、块设备 IO、块设备服务
+# 消费链与 FAT 只读底座全过；状态谓词门控——不赌 boot 秒数）
 # 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
 # QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
@@ -258,8 +272,9 @@ rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 ( sleep 900 ) > "$RX_FIFO" &
 RX_HOLDER=$!
-# LBA0 印章重落（每相自足：rootfs 相若写脏 LBA0 不跨相残留——v1 vblk 只写
-# LBA1，此行是面向未来测试的确定性防线）。
+# 盘重造 + LBA0 印章重落（每相自足：mkfat 确定性重产——rootfs 相若有写
+# 脏盘（vblk LBA1/BLKD LBA5 均在保留区，FAT 卷面只读）不跨相残留）。
+python3 工具链/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
@@ -270,7 +285,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：37 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：38 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)

@@ -19,8 +19,11 @@
 # vblk 在独立小工作区编 musl target，故同 stdhello 不入 members）。
 # A-4：berry-blkproto（块设备服务 RPC 协议纯函数 crate，host 测试；双消费
 # = vblk 服务端（独立小工作区）+ svcmgr 消费自验方（本工作区成员））。
+# A-5：berry-fatfs（FAT12 只读解析纯函数 crate，host 测试对 fixture 做跨
+# 实现共识；消费 = fsmgr FAT 只读层（独立小工作区编 musl target，同
+# stdhello/bsh 不入 members））。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-blkproto",
-    "berry-virtio", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+    "berry-virtio", "berry-fatfs", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello"]
 resolver = "2"
 

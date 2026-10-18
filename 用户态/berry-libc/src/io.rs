@@ -164,6 +164,16 @@ pub fn fs_h() -> u32 {
     unsafe { GIFT_H[1] }
 }
 
+/// env 块 gift[3] 的同槽访问器（P6 A-5：fsmgr 的块设备服务端——svcmgr
+/// 预拉 vblk 后把 blk_a 经 fsmgr 的 env 块第四位交付，fsmgr 据此读 FAT
+/// 卷；0 = 未交付 = 无 FAT 层，RAM-only 降级续走）。与 [`fs_h`] 同槽不同
+/// 名：spawn 侧同一 gift 位对两种程序承载不同对象（bsh 拿 fs 端 / fsmgr
+/// 拿 blk 端，每进程 env 块独立无冲突——gift[2] 的 rootfs/gift2 同款惯例）。
+pub fn blk_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
 pub fn stack_top() -> usize {
     unsafe { STACK_TOP }
 }
