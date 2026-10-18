@@ -12,8 +12,8 @@
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 v0 起四跑）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），33 标记
-#      （boot 23 + rootfs 10——PIPE ok 在列 = bsh 已进交互读循环，状态谓词
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），34 标记
+#      （boot 23 + rootfs 11——PIPE ok 在列 = bsh 已进交互读循环，状态谓词
 #      门控注入时机，不赌 boot 秒数）后**逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
 #      QEMU chardev 流控押住输入不 overrun——真机才有突发丢字）：
@@ -92,7 +92,9 @@ fail() {
 # 先行的「J AIDEMO ok: …」行满足，DEMO ok 缺失时验收盲区（talker 链唯一关卡
 # 失去鉴别力）。对该一项负向断言（前缀非 I 即真 DEMO）；其余标记两两互非
 # 子串，裸 grep 足够。RX ok n= / ROOTFS ok src= 等行前缀形态不可上通用词
-# 边界（会误杀）——只特判 DEMO ok（P5 对抗审查实抓）。
+# 边界（会误杀）——只特判 DEMO ok（P5 对抗审查实抓）。FS 标记用
+# 「FS ok n=」真实打印形态避 `ROOTFS ok src=` 子串混叠（P6 A-1 对抗审查
+# 实抓，DEMO ok 同族——不改用特判，改用带参形态即恢复鉴别力）。
 assert_marker() {
   if [ "$1" = "DEMO ok" ]; then
     grep -qE '(^|[^I])DEMO ok' "$LOG"
@@ -172,8 +174,14 @@ QEMU_PID=$!
 # `hexyl | hexyl` 管道输出 vs 同字节直喂 hexyl 参照**逐字节全等**（EOF 链
 # = 前段 exit 零长消息逐级传导；feeder 192B 分片阻塞泵）——rootfs 相第
 # 10 标记（hexyl 纯函数 + isatty 恒 false = 确定性，不赌竞速）。
+# FS ok n= = **RAM-fs 服务全链**（P6 A-1）：fsmgr（svcmgr 预拉起，fs 通道
+# 经 env 块 gift 交付）+ bsh 自驱双写读——PUT 64B 单片 → GET 全等；
+# PUT 2156B 多片（12×192 + TRUNC）→ GET 逐字节全等（more 链全盖）才自打
+# （协议 berry-fsproto，数据 = hexyl 输出纯函数快照，无竞速面）——rootfs
+# 相第 11 标记。标记取「FS ok n=」带参形态（bsh 实打 `FS ok n=2156`）——
+# 裸「FS ok」是 boot 行 `ROOTFS ok src=` 的子串，零鉴别力（对抗审查实抓）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -191,11 +199,11 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n=）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 10 = 33
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 11 = 34
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；状态谓词门控——不赌 boot 秒数）后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
@@ -220,7 +228,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin）"
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：33 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：34 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)

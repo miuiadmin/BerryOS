@@ -22,7 +22,10 @@ use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
 static mut CONSOLE_H: u32 = 0;
 static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随后开）
-static mut ROOTFS_H: u32 = 0; // A-2：env 块 gift[2]（rootfs VMO READ dup）
+// A-2/P6：env 块 gift[2..] 双槽——[0] = rootfs VMO READ dup（bsh）、
+// [1] = P6 A-1 第三/四位（fsmgr 得服务端端 `gift2_h()`、bsh 得 fs 客户
+// 端端 `fs_h()`——同槽两位经 spawn 侧的 gift 排布区分，见 berry-exec 注）。
+static mut GIFT_H: [u32; 2] = [0; 2];
 static mut STACK_TOP: usize = 0;
 
 // —— argv 面（d-3a env 块）：静态落位（名区 256B + 16 槽 + NULL 终结）——
@@ -51,10 +54,11 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         stdout = ptr::addr_of_mut!(STDOUT_FILE);
         let mut blob = [0u8; 256];
         let mut nb = blob.len();
-        // A-2：容量 2→3——gift 位语义 [0]=console 发端别名、[1]=stdin 端、
-        // [2]=rootfs VMO READ dup（bsh 的 run 流式取 ELF 用；svcmgr 系老
-        // 程序照送 1-2 位，按实收 nhandles 落种，向后兼容）。
-        let mut hs = [0u32; 3];
+        // A-2：容量 2→3；P6 A-1：3→4——gift 位语义 [0]=console 发端别名、
+        // [1]=stdin 端、[2]=rootfs VMO READ dup 或 fsmgr 端、[3]=fs 客户端
+        // 端（按 spawn 侧排布区分，落 `GIFT_H` 双槽；svcmgr 系老程序照送
+        // 1-2 位，按实收 nhandles 落种，向后兼容）。
+        let mut hs = [0u32; 4];
         let mut nh = hs.len();
         if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0 {
             return 0;
@@ -66,7 +70,10 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
             STDIN_H = hs[1];
         }
         if nh >= 3 {
-            ROOTFS_H = hs[2];
+            GIFT_H[0] = hs[2];
+        }
+        if nh >= 4 {
+            GIFT_H[1] = hs[3];
         }
         // argv 解析：NUL 分隔字节串逐个拷进名区、记指针。
         let (mut argc, mut i, mut o) = (0usize, 0usize, 0usize);
@@ -139,7 +146,22 @@ pub fn send_stdout_eof() {
 /// 程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
 pub fn rootfs_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
-    unsafe { ROOTFS_H }
+    unsafe { GIFT_H[0] }
+}
+
+/// env 块 gift[2] 的同槽访问器（P6 A-1：fsmgr 的 fs 服务端端——svcmgr 建
+/// fs 对后经 env 块第三位交付；0 = 未交付 = park 挂起）。与 [`rootfs_h`]
+/// 同槽不同名：spawn 侧同一 gift 位对两种程序承载不同对象。
+pub fn gift2_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
+/// env 块 gift[3] 的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
+/// RPC；0 = 无第四位 = fs 未拉起，调用方降级「fs not available」不死）。
+pub fn fs_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
 }
 
 pub fn stack_top() -> usize {

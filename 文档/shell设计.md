@@ -85,7 +85,7 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 | P5 第一刀 | PL011 RX 中断 + mini-readline（**已落地 2026-10，A-1/A-2 两步**：A-1 = UART RX 面 + GIC SPI 33 + console 三项 wait_many，`RX ok` = smoke 交互相标记；A-2 = 键盘行转发端 + bsh 挂载。mini-readline（P5 v0 收官补齐）= console 行编辑归属：退格/上下键历史（8×96B newest-first 环 + ESC 序列状态机）/Ctrl-U，**Tab 补全 defer v2**——补全需 rootfs 知识（编辑会话归属随 v2 留档 §2.4）；smoke RX 相注入退格 + `ESC[A` 召回双验） | 串口双向：能打字回显、历史（smoke 三跑注入序列断言） |
 | P5 v0 | bsh：内建命令 + `run` 外部程序 + 环境变量 + `&&`（**已落地 2026-10**：环境变量 = shell 局部 vars + `$NAME`/`$?` 展开 + `env` 内建（子进程 env 传递 defer v2——argv 块无 env 面，`export` 随之）；`&&` = 切行短路 + 每段执行时展开（`A=1 && echo $A` 求值序）；状态码 sh 惯例 0/2/126/127/子真码——真码源 = **0x3A `process_get_exit_code`（P5 扩号，ABI 单源管线首次真实扩号 28→29）**，`ChildHandles::reap` 改 `Result<i32>`；`fail`（exit 42）= rootfs 确定性非零源；自验 = and_selftest 三步断言 + smoke `EXIT ok` 强化 code==0） | 串口跑 `run hello`（`开发体验.md` §3 场景成真；bsh `&&` 自验内嵌 `run fail` 真码 42） |
 | P5 v0.5 | channel 管道 `\|`（已落地 2026-10：`PIPE ok` = rootfs 相第 10 标记，bsh 三跑对拍自验）；重定向 `>` 依赖 FS（/svc/fs），随 P6 | `hexyl \| hexyl` 端到端 |
-| P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向 | `berryctl --json` 遥测可读 |
+| P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向（A-1 最小面已落地 2026-10：fsmgr RAM-fs 服务 + berry-fsproto 协议 + bsh `>`/cat/ls，`FS ok n=` = rootfs 相第 11 标记；uutils 全家与三件套随后续子步） | `berryctl --json` 遥测可读 |
 | 远期 | 更丰富脚本语法；受限 fork（v3+ 探索）后评估更多 POSIX 面 | — |
 
 ## 6. 与既有文档的挂钩

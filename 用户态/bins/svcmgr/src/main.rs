@@ -24,11 +24,13 @@ use berry_sys::{
     berry_handle_duplicate, berry_object_wait_one, berry_process_create, berry_process_start,
     berry_thread_create, berry_vmar_map, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
     berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE,
+    SIGNAL_WRITABLE,
 };
 // A-2：拉起链换轨 berry-exec（「不长第二套」——spawn_rootfs_elf/channel_pair
-// 迁出，bsh 的 run 同链消费；行为逐字等价）。
-use berry_exec::{channel_pair, spawn_rootfs_elf, SpawnSpec};
+// 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
+// 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
+use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, SpawnSpec};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -185,6 +187,60 @@ fn run_rootfs_child(console: Handle) {
     // bsh 一次性标志（对抗审查）：H_BSH_STDIN 是单用 handle（take 中转），
     // 重复 `bin/bsh` 条目重入 arm 会以死值自陷——见 arm 内注释。
     let mut bsh_spawned = false;
+    // ---- P6 A-1：fsmgr（RAM-fs 服务）预拉起 ----
+    // mkcpio 名序 bsh 首位、fsmgr 第 3——但 bsh 的 gift[3]（fs 客户端端）
+    // 依赖 fsmgr 先起：主走查前 cpio_find 直查先拉（主走查无 fsmgr arm，
+    // 条目自然跳过）。拓扑：本表持 fs_a → dup 出 SEND|RECV 交 bsh（bsh
+    // arm 内）；fs_b 随 env 块 gift[2] 迁入 fsmgr（libc `gift2_h()`）。
+    // 无 bin/fsmgr / spawn 失败 = fs_client=0 → bsh 退回三元 gift（libc
+    // `fs_h()==0` → 「fs not available」降级不死 shell，向后兼容）。
+    let mut fs_a_h: Handle = 0;
+    let mut fs_client: Handle = 0;
+    if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/fsmgr") {
+        let (fs_a, fs_b) = channel_pair();
+        // fs 客户端端双权利：SEND（发请求）+ RECV（收应答）——bsh 的
+        // `>`/`cat`/`ls` 双向面。
+        let mut fs_dup = 0 as Handle;
+        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+            trap();
+        }
+        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
+        // dummy（空 feeder + 立即 EOF；fsmgr 永不读 stdin，EOF 留队无害）。
+        // 栈 8 页（stdhello 同款 std 小程序档；服务无深递归）。
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/fsmgr",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                extra_arg: None,
+                extra_gifts: &[fs_b],
+            },
+        ) {
+            Ok(_) => {
+                fs_a_h = fs_a;
+                fs_client = fs_dup;
+            }
+            Err(()) => {
+                // Err 路全在 env send 前——fs_b 未被 take、fs_dup 是 fresh
+                // dup 非 take 产物，显式回收防表槽泄漏。
+                if berry_handle_close(fs_dup) != 0 {
+                    trap();
+                }
+                if berry_handle_close(fs_b) != 0 {
+                    trap();
+                }
+                if berry_handle_close(fs_a) != 0 {
+                    trap();
+                }
+                eco_skip(b"fs spawn");
+            }
+        }
+    }
     while pos < cap {
         let want = ((cap - pos).min(step.len() as u64)) as usize;
         if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), pos, want) != 0 {
@@ -209,7 +265,7 @@ fn run_rootfs_child(console: Handle) {
                             stdin_feed: None,
                             stdin_handle: None,
                             extra_arg: None,
-                            extra_gift: None,
+                            extra_gifts: &[],
                         },
                     ) {
                         Ok(_) => send_retry(console, ECO_OK.as_ptr(), ECO_OK.len()),
@@ -239,7 +295,7 @@ fn run_rootfs_child(console: Handle) {
                             stdin_feed: Some(stdin),
                             stdin_handle: None,
                             extra_arg: None,
-                            extra_gift: None,
+                            extra_gifts: &[],
                         },
                     ) {
                         Ok(child) => {
@@ -294,7 +350,7 @@ fn run_rootfs_child(console: Handle) {
                             stdin_feed: Some(stdin),
                             stdin_handle: None,
                             extra_arg: Some(b"--color=never"),
-                            extra_gift: None,
+                            extra_gifts: &[],
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -315,13 +371,16 @@ fn run_rootfs_child(console: Handle) {
                     }
                 } else if name == "bin/bsh" {
                     // A-2：交互 shell bsh——stdhello/hexyl 同链（musl target +
-                    // berry-libc shim）。gift 三元：[0] console 别名（spawn 内
+                    // berry-libc shim）。gift 三/四元：[0] console 别名（spawn 内
                     // dup）/ [1] **endB2 = H_BSH_STDIN（被 take 中转，svcmgr
                     // 自此不再持有——fd0 = console 键盘行转发对端）** /
                     // [2] rootfs VMO READ dup（bsh 的 `run <name>` 流式取 ELF，
-                    // libc `rootfs_h()` 消费）。栈 16 页（无 clap 链）。
-                    // `BSH ok` 由 bsh 自打（自驱自验：内部 `run hexyl` 收齐
-                    // 2156B——rootfs 相第 8 标记）；prompt/交互为化妆面。
+                    // libc `rootfs_h()` 消费）/ [3] P6 A-1：fs 客户端端（fs_a
+                    // 的 SEND|RECV dup——`>`/`cat`/`ls` 的 RPC 端，libc
+                    // `fs_h()`；fs_client==0 = fsmgr 未起，退回三元）。栈 16
+                    // 页（无 clap 链）。`BSH ok` 由 bsh 自打（自驱自验：内部
+                    // `run hexyl` 收齐 2156B——rootfs 相第 8 标记）；prompt/
+                    // 交互为化妆面。
                     if bsh_spawned {
                         // 对抗审查：cpio 重复名合法——重入本 arm 会以已被 take
                         // 的 H_BSH_STDIN 调 send → 预检 -EBADF → 自陷杀 svcmgr。
@@ -335,6 +394,13 @@ fn run_rootfs_child(console: Handle) {
                         if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
                             trap();
                         }
+                        let mut gifts = [rootfs_dup, 0 as Handle];
+                        let gifts: &[Handle] = if fs_client != 0 {
+                            gifts[1] = fs_client;
+                            &gifts
+                        } else {
+                            &gifts[..1]
+                        };
                         if spawn_rootfs_elf(
                             H_ROOTFS,
                             &SpawnSpec {
@@ -346,18 +412,33 @@ fn run_rootfs_child(console: Handle) {
                                 stdin_feed: None,
                                 stdin_handle: Some(H_BSH_STDIN),
                                 extra_arg: None,
-                                extra_gift: Some(rootfs_dup),
+                                extra_gifts: gifts,
                             },
                         )
                         .is_err()
                         {
                             // Err 三路（首窗读/elf_head/几何前置）全在 env send
-                            // 前——rootfs_dup 未被 take，显式回收防表槽泄漏
-                            // （Ok 路径已被 take，关旧值必 -EBADF，勿在此关）。
+                            // 前——rootfs_dup/fs_client 均未被 take，显式回收防
+                            // 表槽泄漏（Ok 路径已被 take，关旧值必 -EBADF，勿在
+                            // 此关）。
                             if berry_handle_close(rootfs_dup) != 0 {
                                 trap();
                             }
+                            if fs_client != 0 && berry_handle_close(fs_client) != 0 {
+                                trap();
+                            }
+                            fs_client = 0;
                             eco_skip(b"elf bad");
+                        } else {
+                            // Ok：fs_client 已被 take 迁移（旧值必 -EBADF，勿关）；
+                            // 本表 fs_a 用毕关——bsh 的 dup 与本表别名共享同一
+                            // ObjRef 队列，关别名只减引用（队列由 bsh 侧撑着），
+                            // bsh 自此是 fs_a 队列唯一读者（防回复混流）。
+                            fs_client = 0;
+                            if fs_a_h != 0 && berry_handle_close(fs_a_h) != 0 {
+                                trap();
+                            }
+                            fs_a_h = 0;
                         }
                     }
                 }
@@ -367,6 +448,18 @@ fn run_rootfs_child(console: Handle) {
                 eco_skip(b"cpio bad");
                 return;
             }
+        }
+    }
+    // P6 A-1 兜底：归档无 bin/bsh（fs 面无消费者）——fs_client/fs_a 留表
+    // 无害但关掉更干净；fsmgr 常驻不受影响（fs_b 互钉 + 子表自持）。
+    if fs_client != 0 {
+        if berry_handle_close(fs_client) != 0 {
+            trap();
+        }
+    }
+    if fs_a_h != 0 {
+        if berry_handle_close(fs_a_h) != 0 {
+            trap();
         }
     }
 }

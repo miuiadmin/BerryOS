@@ -18,6 +18,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-fsproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.1.0"
 dependencies = [

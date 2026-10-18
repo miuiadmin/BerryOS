@@ -15,7 +15,7 @@
 # A-2：berry-exec（rootfs 程序拉起链——spawn_rootfs_elf/cpio_find 自 svcmgr
 # 抽取，svcmgr（none target，本工作区成员）与 bsh（musl target，独立小工作
 # 区经 path 依赖）双消费，「不长第二套」）。
-members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello"]
 resolver = "2"
 

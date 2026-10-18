@@ -65,12 +65,17 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fail/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail ELF 本体——装载走
+    # P6 A-1：fsmgr（RAM-fs 服务——bsh `>`/cat/ls 的对端，stdhello 同链）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/fsmgr/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出）。
     python3 ../工具链/mkcpio.py ../rootfs.cpio \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
         bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
+        bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello
@@ -112,10 +117,12 @@ clean:
 host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.cargo/bin/rustc" -vV || rustc -vV; } | sed -n 's/^host: //p'`
 
 # host 单元测试：berry-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）
-# + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 用户态/berry-loader）。
+# + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 用户态/berry-loader）
+# + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 用户态/berry-fsproto）。
 test-host:
     cargo test -p berry-mm --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-loader --target {{host}}
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-fsproto --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

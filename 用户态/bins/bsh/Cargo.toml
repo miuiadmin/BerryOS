@@ -16,6 +16,7 @@ edition = "2021"
 berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-exec = { path = "../../berry-exec" }
+berry-fsproto = { path = "../../berry-fsproto" }
 
 [profile.release]
 opt-level = "z"

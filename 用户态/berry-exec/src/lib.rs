@@ -16,9 +16,9 @@
 //! - 栈与映像之间隔**保护页**（`stack_va = base + len + PAGE_SIZE`）——栈用
 //!   穿 = 干净 D-abort（hexyl 栈溢出实踩，d-3c）；
 //! - env 块 gift 位语义（libc `berry_libc_boot` 镜像）：[0] = stdout 端
-//!   RIGHT_SEND dup、[1] = stdin 读端、[2] = extra_gift（A-2：rootfs VMO
-//!   READ dup 等）。**随行 handle 被 send take**——调用方需保留原值者先
-//!   duplicate；
+//!   RIGHT_SEND dup、[1] = stdin 读端、[2..] = extra_gifts（A-2：rootfs VMO
+//!   READ dup；P6 A-1：fsmgr 端/fs 客户端端）。**随行 handle 被 send
+//!   take**——调用方需保留原值者先 duplicate；
 //! - **回收（Plan B v0.5）**：成功返 [`ChildHandles`]，调用方收完输出后
 //!   `reap()`（wait TERMINATED → unmap×2 → close×5）——完整回收映像/栈
 //!   帧与对象 Box；不 reap = 有界泄漏（root Vmar L1/PT 帧与 ASID v1 恒
@@ -181,10 +181,11 @@ pub struct SpawnSpec<'a> {
     pub stdin_handle: Option<Handle>,
     /// argv[1] 追加项（hexyl 的 `--color=never` 走这条）。
     pub extra_arg: Option<&'a [u8]>,
-    /// env 块 gift[2]（A-2：rootfs VMO READ dup——bsh 的 run 需要它流式取
-    /// ELF）。**被 send take**，调用方保留原值者先 duplicate。None = 老
-    /// 两元 gift（hello/stdhello/hexyl）。
-    pub extra_gift: Option<Handle>,
+    /// env 块 gift[2..]（P6 A-1 起切片 ≤2 项）：[2] = rootfs VMO READ dup
+    /// （bsh 的 run 流式取 ELF）/ P6 的 fsmgr 服务端端 fs_b；[3] = fs 客户
+    /// 端端（bsh 的 `>`/`cat`/`ls`，P6 A-1）。**全被 send take**，调用方
+    /// 保留原值者先 duplicate。空片 = 老两/三元 gift（hello/stdhello/hexyl）。
+    pub extra_gifts: &'a [Handle],
 }
 
 /// rootfs ELF 流式拉起（页铺平单 VMO，同 `工具链/elf2flat.py` 语义）：
@@ -193,7 +194,7 @@ pub struct SpawnSpec<'a> {
 /// 一次 commit/map → 各段文件字节按 4KiB 泵窗从 rootfs VMO 直送子 VMO 相对
 /// 偏移（**ELF 本体永不整档驻留**）→ 栈页映其上（隔一页保护页）→ **env 块**
 /// （d-3a，BerryOS processargs v1）：channel 建 env 对 → `send(env_s,
-/// argv0\0…, [stdout 端别名, (stdin 端), (extra_gift)])`（能力随消息迁移）→
+/// argv0\0…, [stdout 端别名, (stdin 端), (extra_gifts…)])`（能力随消息迁移）→
 /// `process_start(bootstrap=env_c)`——子进程入口 x0 = env 端，close 原值必
 /// -EBADF（迁移自证）。
 ///
@@ -210,7 +211,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         stdin_feed,
         stdin_handle,
         extra_arg,
-        extra_gift,
+        extra_gifts,
     } = spec;
     assert!(
         stdin_feed.is_none() || stdin_handle.is_none(),
@@ -324,7 +325,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     //    按位 [stdout 端别名, (stdin 端), (extra_gift)]（先 dup stdout：
     //    send 会 take 走句柄，原值留调用方——G-eco-b 交接消息同款）。
     let (env_s, env_c) = channel_pair();
-    let mut gift = [0 as Handle; 3];
+    let mut gift = [0 as Handle; 4];
     if berry_handle_duplicate(stdout, RIGHT_SEND, &mut gift[0]) != 0 {
         trap();
     }
@@ -338,11 +339,18 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         gift[1] = *h; // 被 send take（迁移语义同上）
         nhandles = nhandles.max(2);
     }
-    if let Some(g) = extra_gift {
+    assert!(extra_gifts.len() <= 2, "spawn: extra_gifts ≤ 2（gift 数组容量 4）");
+    for (i, g) in extra_gifts.iter().enumerate() {
+        gift[2 + i] = *g; // 被 send take（迁移语义同上）
+    }
+    if !extra_gifts.is_empty() {
         // gift[2] 前要求 gift[1] 已在位（0 空位随行会被 send 预检 -EBADF 自陷
-        // ——现调用面 stdin 面/extra_gift 恒同现，纪律注释非运行时检）。
-        gift[2] = *g;
-        nhandles = 3;
+        // ——运行时断言拦调用面漂移，老注释的纪律检升级）。
+        assert!(
+            stdin_pair.is_some() || stdin_handle.is_some(),
+            "spawn: extra_gifts 需 stdin 在位"
+        );
+        nhandles = nhandles.max(2 + extra_gifts.len());
     }
     let mut blob = [0u8; 64];
     let n = name.len().min(63);

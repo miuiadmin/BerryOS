@@ -16,7 +16,20 @@
 //! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`shell设计.md` §2.2
 //! 「channel 即 pipe」）——自验三跑对拍：`hexyl | hexyl` 管道输出 == 同字节
 //! 直喂 `hexyl` 参照**逐字节全等**（证明管道把 A 的 stdout 原样递到 B 的
-//! stdin）+ 全链 EOF 到齐才打标。`>` 重定向依赖 FS（/svc/fs），随 P6。
+//! stdin）+ 全链 EOF 到齐才打标。
+//!
+//! P6 A-1：fs 面（`FS ok` = rootfs 相第 11 标记）——`>` 重定向 + `cat`/
+//! `ls` 内建，走 env 块 gift[3]（fs 客户端端 = fs_a 的 SEND|RECV dup，
+//! libc `fs_h()`；对端 fsmgr = svcmgr 预拉起的 RAM-fs 服务，协议
+//! berry-fsproto：PUT/TRUNC/GET/LIST 严格串行 RPC）。自验：PUT 64B 单片
+//! → GET 全等；PUT 2156B（hexyl 首验输出，12 片 + TRUNC）→ GET 逐字节
+//! 全等（more 链全盖）。**操作符识别纪律不变**：`>` 检测在展开前的原始
+//! 文本上（`|`/赋值前置，`>>` 被 `>` 计数 >1 自然排除）；**诊断/usage/
+//! not-found 打真 stdout（stderr 语义——不随 `>` 进文件）**，数据字节经
+//! render_cmd 返调用方定向（直出 = 打 stdout，重定向 = fs_put 入文件）。
+//! v1 面：简单命令重定向（`|`+`>` 组合、`>>` 追加随 v2）；空命令（展开
+//! 后空）不建文件（POSIX `> f` 建空文件——v2 再议）；无 fsmgr =
+//! `fs not available` 降级不死 shell。
 //!
 //! v1 内建：help / echo / env / run / exit（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
@@ -35,13 +48,19 @@
 //! P5 扩号）。
 
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use berry_libc::io::rootfs_h;
+use berry_libc::io::{fs_h, rootfs_h};
 use berry_sys::{
-    berry_channel_recv, berry_clock_read, berry_handle_close, berry_object_wait_one, Handle,
-    BERRY_ERR_AGAIN, CLOCK_MONOTONIC, SIGNAL_READABLE,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
+    berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
+    SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec};
+use berry_fsproto::{
+    encode_get, encode_list, encode_put, encode_trunc, parse_reply_get, parse_reply_list, CHUNK,
+    FILE_SIZE_MAX, NAME_MAX, ST_FULL, ST_NOENT, ST_OK,
+};
 
 // 链接种子（stdhello 同款）：rlib/LTO 按需保留——无引用则 berry-libc 的
 // crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -81,7 +100,10 @@ struct RunOut {
 fn main() {
     // —— 自驱自验：内部 `run hexyl`，全链（cpio 查询 → 流式拉起 → feeder →
     //    私有 stdout 收齐）即交互 `run` 的同一台机器——自验过 = 交互面可信。
-    if let Some((o, _)) = run_capture("hexyl", Some(&HEXYL_STDIN), Some("--color=never")) {
+    //    输出绑 `hexyl_out` 留用：fs 自验的 2156B 多片写入样本（P6 A-1）。
+    let hexyl_out: Vec<u8> = if let Some((o, _)) =
+        run_capture("hexyl", Some(&HEXYL_STDIN), Some("--color=never"))
+    {
         if !(o.eof && o.dropped == 0 && o.data.len() == HEXYL_PLAIN_LEN) {
             eprintln!(
                 "bsh: selftest bad: eof={} len={} want={} dropped={}",
@@ -92,16 +114,18 @@ fn main() {
             );
             berry_libc::park();
         }
+        o.data
     } else {
         eprintln!("bsh: selftest: hexyl not found");
         berry_libc::park();
-    }
+    };
     println!("BSH ok");
     // —— P5 v0：变量/状态壳（`&&` 自验与交互循环共享——`$?` 跨行语义）。
     let mut vars: Vec<(String, String)> = Vec::new();
     let mut status: i32 = 0;
     and_selftest(&mut vars, &mut status);
     pipe_selftest();
+    fs_selftest(&hexyl_out);
 
     // —— 交互循环（化妆面）：prompt 只挂命令完成；空读（fd0 的 10s 帽超时
     //    EOF 化）= 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也
@@ -230,9 +254,10 @@ fn run_line(line: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out:
 }
 
 /// 单段命令：trim → 赋值形检测（**原始文本**；值展开后落表——`RC=$?`）→
-/// `|` 管道检测（**原始文本**——展开结果只是数据、永不产操作符）→ 展开
-/// （用**进入时**的 `$?`）→ 分派。返回段状态码：0 成功 / 2 usage / 126
-/// spawn failed / 127 not found / run|pipe = 子进程真码（reap Err → 1）。
+/// `|` 管道检测（**原始文本**——展开结果只是数据、永不产操作符）→ `>`
+/// 重定向检测（原始文本，P6 A-1）→ 展开（用**进入时**的 `$?`）→ 分派
+/// （render_cmd）。返回段状态码：0 成功 / 2 usage / 126 spawn failed /
+/// 127 not found / run|pipe = 子进程真码（reap Err → 1）。
 fn exec_one(part: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out: &mut std::io::Stdout) -> i32 {
     let raw = part.trim();
     if raw.is_empty() {
@@ -252,62 +277,95 @@ fn exec_one(part: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out:
     if raw.contains('|') {
         return do_pipe(raw, vars, *status, out);
     }
-    let cmd = expand(raw, vars, *status);
-    if cmd.is_empty() {
-        return 0;
+    // 重定向（原始文本上检测，同纪律；`|`+`>` 组合先撞管道分支的段校验
+    // ——`b > c` 段含空格 → usage，v1 面文档化）。`>>` 追加与多点 `>` 被
+    // 计数 >1 自然排除为 usage（`a >> b`/`a > b > c`）。
+    if raw.contains('>') {
+        return do_redirect(raw, vars, *status, out);
     }
-    let code = if cmd == "help" {
-        writeln!(
-            out,
-            "bsh 内建：help | echo <text> | env | run <name> | A | B（rootfs 管道）| A && B | exit"
-        )
-        .unwrap();
-        0
-    } else if cmd == "exit" {
-        out.flush().unwrap();
-        std::process::exit(0); // → libc exit → EOF + berry_process_exit(0x33)
-    } else if cmd == "env" {
-        // P5 v0：变量表回显（插入序；覆盖写的旧值也列——get 取最新，回显
-        // 面向人不做去重）。
-        for (k, v) in vars.iter() {
-            writeln!(out, "{}={}", k, v).unwrap();
-        }
-        0
-    } else if let Some(text) = cmd.strip_prefix("echo ") {
-        writeln!(out, "{}", text.trim()).unwrap();
-        0
-    } else if cmd == "echo" {
-        writeln!(out).unwrap();
-        0
-    } else if cmd == "run" {
-        writeln!(out, "usage: run <name>").unwrap();
-        2
-    } else if let Some(rest) = cmd.strip_prefix("run ") {
-        // 词边界：`runfoo` 是未知命令（127），不是 `run foo`（对抗审查实抓
-        // ——echo 分支同款双边界：`run ` 带空格才算 run + 参数）。
-        do_run(rest.trim(), out)
-    } else {
-        writeln!(out, "bsh: {}: not found", cmd).unwrap();
-        127
-    };
+    let (data, code) = render_cmd(raw, vars, *status, out);
+    out.write_all(&data).unwrap();
     out.flush().unwrap();
     code
 }
 
-/// `run <name>`：cpio 查 `bin/<name>` → 私有 stdout 对拉起（32 页栈 = musl
-/// 128KiB 口径，盖住 clap 级栈深）→ 收齐 EOF → 回放 console。
-/// 子进程无 stdin（env 块单 gift，libc /dev/null 语义——read 即 EOF）。
-/// 返回状态码：127 not found / 126 spawn failed / 2 usage / 其余 = 子真码
-/// （reap Err → 1——真码源 0x3A）。
-fn do_run(name: &str, out: &mut std::io::Stdout) -> i32 {
+/// 内建/外部命令统一渲染（P6 A-1 起 `>` 重定向与直出共道）：返回
+/// (数据字节, 状态码)。**诊断/usage/not-found/警告打 `out`**（stderr 语义
+/// ——不随 `>` 进文件），数据面字节交调用方定向（直出 = 打 stdout；
+/// 重定向 = fs_put 入文件）。`exit` 不重定向照常执行（v1：先于 fs_put——
+/// POSIX 的 open-before-exec 面随 v2）。词边界纪律：`run `/`echo `/`cat `
+/// 带空格才算命令 + 参数（`runfoo` = 未知命令 127）。
+fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let cmd = expand(cmd_s, vars, status);
+    if cmd.is_empty() {
+        return (Vec::new(), 0);
+    }
+    if cmd == "help" {
+        writeln!(
+            out,
+            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | A | B（rootfs 管道）| A && B | A > file | exit"
+        )
+        .unwrap();
+        (Vec::new(), 0)
+    } else if cmd == "exit" {
+        out.flush().unwrap();
+        // → libc exit → EOF + berry_process_exit(0x33)
+        std::process::exit(0)
+    } else if cmd == "env" {
+        // P5 v0：变量表回显（插入序；覆盖写的旧值也列——get 取最新，回显
+        // 面向人不做去重）。
+        let mut d = Vec::new();
+        for (k, v) in vars.iter() {
+            d.extend_from_slice(k.as_bytes());
+            d.push(b'=');
+            d.extend_from_slice(v.as_bytes());
+            d.push(b'\n');
+        }
+        (d, 0)
+    } else if let Some(text) = cmd.strip_prefix("echo ") {
+        let mut d = text.trim().as_bytes().to_vec();
+        d.push(b'\n');
+        (d, 0)
+    } else if cmd == "echo" {
+        (b"\n".to_vec(), 0)
+    } else if cmd == "run" {
+        writeln!(out, "usage: run <name>").unwrap();
+        (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("run ") {
+        run_output(rest.trim(), out)
+    } else if cmd == "cat" {
+        writeln!(out, "usage: cat <file>").unwrap();
+        (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("cat ") {
+        cat_output(rest.trim(), out)
+    } else if cmd == "ls" {
+        ls_output(out)
+    } else if cmd.starts_with("ls ") {
+        // 带参 ls：v1 无参数面——usage 2（与 cat/run「已知命令+坏参数」口径
+        // 一致；落 not-found 127 会误报命令缺失，P6 A-1 对抗审查实抓）。
+        writeln!(out, "usage: ls").unwrap();
+        (Vec::new(), 2)
+    } else {
+        writeln!(out, "bsh: {}: not found", cmd).unwrap();
+        (Vec::new(), 127)
+    }
+}
+
+/// `run <name>` 的渲染面（P6 A-1 拆 do_run——直出与 `>` 重定向共道）：
+/// cpio 查 `bin/<name>` → 私有 stdout 对拉起（32 页栈 = musl 128KiB 口径，
+/// 盖住 clap 级栈深）→ 收齐 EOF → **数据字节返回**交调用方定向；警告照打
+/// `out`（stderr 语义）。子进程无 stdin（env 块单 gift，libc /dev/null 语义
+/// ——read 即 EOF）。返回 (数据, 状态码)：127 not found / 126 spawn failed /
+/// 2 usage / 其余 = 子真码（reap Err → 1——真码源 0x3A）。
+fn run_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
     if name.is_empty() || name.contains([' ', '/']) {
         writeln!(out, "usage: run <name>").unwrap();
-        return 2;
+        return (Vec::new(), 2);
     }
     let full = format!("bin/{}", name);
     let Some((data_off, data_len)) = cpio_find(rootfs_h(), full.as_bytes()) else {
         writeln!(out, "bsh: run: {}: not found", name).unwrap();
-        return 127;
+        return (Vec::new(), 127);
     };
     let (out_s, out_c) = channel_pair();
     let spec = SpawnSpec {
@@ -319,11 +377,10 @@ fn do_run(name: &str, out: &mut std::io::Stdout) -> i32 {
         stdin_feed: None,
         stdin_handle: None,
         extra_arg: None,
-        extra_gift: None,
+        extra_gifts: &[],
     };
-    let code = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
+    let (data, code) = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
         let o = collect(out_s);
-        out.write_all(&o.data).unwrap();
         if !o.eof {
             writeln!(out, "[bsh: run {}: no EOF (timeout)]", name).unwrap();
         }
@@ -333,25 +390,327 @@ fn do_run(name: &str, out: &mut std::io::Stdout) -> i32 {
         out.flush().unwrap();
         // Plan B：收完输出后回收子进程（挂死/帽尽 = 句柄留存有界泄漏，警告
         // 不死 shell——终验面在 svcmgr `EXIT ok`）。reap 返真退出码（P5）。
-        match child.reap() {
+        let code = match child.reap() {
             Ok(c) => c,
             Err(()) => {
                 writeln!(out, "[bsh: run {}: reap failed]", name).unwrap();
                 out.flush().unwrap();
                 1
             }
-        }
+        };
+        (o.data, code)
     } else {
         // Err = ELF 坏或资源耗尽（-ENOMEM 降级，PROCESS_MAX 出帽不杀 shell）。
         writeln!(out, "bsh: run: {}: spawn failed", name).unwrap();
-        126
+        (Vec::new(), 126)
     };
     // out_c 原值：子表已持 SEND 别名（spawn 内 dup 迁移），本表副本使命已毕
     // （svcmgr verify_hexyl 同款）。
     if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
         berry_libc::park(); // 关不掉 = 泄漏面，loud 死（不 trap：交互面不死 shell）
     }
-    code
+    (data, code)
+}
+
+// —— fs 面（P6 A-1）：`>` 重定向 + cat/ls，走 env 块 gift[3]（fs_a 的
+// SEND|RECV dup——libc `fs_h()`）对端 fsmgr 的严格串行 RPC ——
+
+/// fs RPC 错误面。NoFs = fsmgr 未拉起（fs_h()==0——降级不死 shell）；
+/// Rpc = 通道/协议断链（wait 超时/解析失败/发送失败——服务死或拓扑破缺）。
+enum FsErr {
+    NoFs,
+    Noent,
+    Full,
+    Rpc,
+}
+
+impl FsErr {
+    fn text(&self) -> &'static str {
+        match self {
+            FsErr::NoFs => "fs not available",
+            FsErr::Noent => "not found",
+            FsErr::Full => "no space",
+            FsErr::Rpc => "fs unreachable",
+        }
+    }
+    fn code(&self) -> i32 {
+        match self {
+            FsErr::NoFs => 1,
+            FsErr::Noent => 127,
+            FsErr::Full => 1,
+            FsErr::Rpc => 1,
+        }
+    }
+}
+
+/// 应答 st 码 → FsErr（未知码 = Rpc——协议面只认四个常量）。
+fn st_err(st: u8) -> FsErr {
+    match st {
+        ST_NOENT => FsErr::Noent,
+        ST_FULL => FsErr::Full,
+        _ => FsErr::Rpc,
+    }
+}
+
+/// 严格串行 RPC 单趟（PUT/TRUNC 面——应答恰 1 字节 st）：发请求（EBUSY →
+/// wait WRITABLE 10s 重臂——console_write 同款契约）→ 等应答（READABLE
+/// 10s 帽）→ 校 st。buf 复用为请求/应答缓冲（256B 栈上，与 fsmgr 的 msg
+/// 对称）。超时/错码 = Rpc（fsmgr 微秒级回件，10s 帽尽 = 服务死/链断——
+/// 交互面不死 shell，调用方打警告降级）。
+fn fs_rpc_status(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Result<(), FsErr> {
+    let n = fs_rpc(h, buf, reqlen).ok_or(FsErr::Rpc)?;
+    if n == 1 {
+        if buf[0] == ST_OK {
+            return Ok(());
+        }
+        return Err(st_err(buf[0]));
+    }
+    Err(FsErr::Rpc) // 应答长度破缺 = 协议面
+}
+
+/// 严格串行 RPC 单趟（返回应答长度入 buf；None = 断链）。
+///
+/// **会话毒化**（P6 A-1 对抗审查实抓）：v1 协议无请求序号——收侧超时返
+/// None 后，fsmgr 的迟到应答仍会入队，下一 RPC 的 poll-first 收侧会把它
+/// 错配成自己的应答（GET 面 = 静默错数据，off-by-one 永不自愈）。故任一
+/// **收侧**超时即作废整个 fs 会话：后续 fs 命令确定性降级「fs unreachable」
+/// （确定性失败优于无告警错数据；迟到应答无人消费、滞留队列无害）。发送
+/// 侧超时不毒化——请求未发出、无迟到应答。恢复面（fsmgr 重拉 / 协议加
+/// 请求序号 + 重同步）随 v2。
+fn fs_rpc(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Option<usize> {
+    if !FS_SESSION_OK.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut deadline = 0u64;
+    loop {
+        let s = berry_channel_send(h, buf.as_ptr(), reqlen, core::ptr::null(), 0);
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            return None;
+        }
+        if deadline == 0 {
+            deadline = now() + TIMEOUT_NS;
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
+            return None;
+        }
+        deadline = 0; // 重臂（命中后若仍满则续等——公平排队）
+    }
+    // 应答：空队阻塞等 READABLE（10s 帽——严格串行下一请求一应答，应答
+    // 必先于下一请求到队）。
+    loop {
+        let mut nb = buf.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(h, buf.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        if s == 0 {
+            return Some(nb);
+        }
+        if s != BERRY_ERR_AGAIN {
+            return None;
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
+            FS_SESSION_OK.store(false, Ordering::Relaxed); // 收侧超时 = 会话作废
+            return None;
+        }
+    }
+}
+
+/// fs 会话健康位：任一收侧超时即作废（见 [`fs_rpc`] 文档注释）。v1 交互
+/// shell 单进程长驻——静态位即会话位。
+static FS_SESSION_OK: AtomicBool = AtomicBool::new(true);
+
+/// 全量写：192B 分片 + 尾随 TRUNC(len) 定长（PUT off 超现长零填充扩容；
+/// 空数据 = 零片 + TRUNC(0) = 建空文件——`echo > f` 面）。尺寸帽在服务端
+/// 统一检（>FILE_SIZE_MAX → ST_FULL → Err(Full)）。
+fn fs_put(h: Handle, name: &[u8], data: &[u8]) -> Result<(), FsErr> {
+    if h == 0 {
+        return Err(FsErr::NoFs);
+    }
+    let mut buf = [0u8; 256];
+    let mut off = 0usize;
+    while off < data.len() {
+        let n = core::cmp::min(CHUNK, data.len() - off);
+        let l = encode_put(&mut buf, name, off as u32, &data[off..off + n]).ok_or(FsErr::Rpc)?;
+        fs_rpc_status(h, &mut buf, l)?;
+        off += n;
+    }
+    let l = encode_trunc(&mut buf, name, data.len() as u32).ok_or(FsErr::Rpc)?;
+    fs_rpc_status(h, &mut buf, l)
+}
+
+/// 全量读：GET off 循环拼到 more=0。双防御（协议不变量破缺面）：more 且
+/// 空片 → Rpc；累计超 FILE_SIZE_MAX → Rpc（more 链失控兜底，不再续拉）。
+fn fs_get(h: Handle, name: &[u8]) -> Result<Vec<u8>, FsErr> {
+    if h == 0 {
+        return Err(FsErr::NoFs);
+    }
+    let mut buf = [0u8; 256];
+    let mut out: Vec<u8> = Vec::new();
+    let mut off = 0u32;
+    loop {
+        let l = encode_get(&mut buf, name, off).ok_or(FsErr::Rpc)?;
+        let n = fs_rpc(h, &mut buf, l).ok_or(FsErr::Rpc)?;
+        match parse_reply_get(&buf[..n]).ok_or(FsErr::Rpc)? {
+            Ok(g) => {
+                if g.more && g.data.is_empty() {
+                    return Err(FsErr::Rpc); // 服务端不变量：more=true ⇒ dlen ≥ 1
+                }
+                out.extend_from_slice(g.data);
+                if !g.more {
+                    return Ok(out);
+                }
+                off += g.data.len() as u32; // more ⇒ ≥1：off 恒前进无死循环
+                if out.len() > FILE_SIZE_MAX {
+                    return Err(FsErr::Rpc);
+                }
+            }
+            Err(st) => return Err(st_err(st)),
+        }
+    }
+}
+
+/// 名列（原始名区 = 空白连接的字节串；渲染归调用方）。
+fn fs_list(h: Handle) -> Result<Vec<u8>, FsErr> {
+    if h == 0 {
+        return Err(FsErr::NoFs);
+    }
+    let mut buf = [0u8; 256];
+    let l = encode_list(&mut buf).ok_or(FsErr::Rpc)?;
+    let n = fs_rpc(h, &mut buf, l).ok_or(FsErr::Rpc)?;
+    match parse_reply_list(&buf[..n]).ok_or(FsErr::Rpc)? {
+        Ok(names) => Ok(names.to_vec()),
+        Err(st) => Err(st_err(st)),
+    }
+}
+
+/// 重定向目标名白名单：非空 ≤NAME_MAX、字符集 [A-Za-z0-9._-]、无空白
+/// （含空格名随 v2 引号面）。名字即 fs 键——无路径语义（v1 无目录，fsmgr
+/// 平面表）。
+fn valid_fs_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= NAME_MAX
+        && s
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+/// `A > f` 切分：恰一个 `>`、两侧 trim、目标名过白名单。None = usage 面
+/// （`>>`/多点 `>` 被计数排除；坏名被白名单排除）。
+fn split_redirect(raw: &str) -> Option<(&str, &str)> {
+    if raw.matches('>').count() != 1 {
+        return None;
+    }
+    let (a, b) = raw.split_once('>')?;
+    let (cmd, file) = (a.trim(), b.trim());
+    if !valid_fs_name(file) {
+        return None;
+    }
+    Some((cmd, file))
+}
+
+/// `A > f` 重定向（P6 A-1）：渲染命令（数据字节**不进 out**）→ fs_put 全
+/// 量入文件。诊断/警告照打 out（stderr 语义）；fs 错误 → 警告 + FsErr 码。
+/// v1 文档化面：空命令（展开后空）不建文件（POSIX `> f` 建空文件——v2）；
+/// 命令失败仍落已产出的部分数据（先渲染后写，非 open-before-exec）。
+fn do_redirect(
+    raw: &str,
+    vars: &[(String, String)],
+    status: i32,
+    out: &mut std::io::Stdout,
+) -> i32 {
+    let Some((cmd_s, file_s)) = split_redirect(raw) else {
+        writeln!(out, "usage: <command> > <file>").unwrap();
+        return 2;
+    };
+    if expand(cmd_s, vars, status).is_empty() {
+        return 0; // v1：空命令不建文件（`> f` 裸重定向——文档化面）
+    }
+    let (data, code) = render_cmd(cmd_s, vars, status, out);
+    out.flush().unwrap(); // 诊断先落（stderr 语义——数据进文件）
+    match fs_put(fs_h(), file_s.as_bytes(), &data) {
+        Ok(()) => code,
+        Err(e) => {
+            writeln!(out, "bsh: {}: {}", file_s, e.text()).unwrap();
+            out.flush().unwrap();
+            e.code()
+        }
+    }
+}
+
+/// `cat <file>`：fs_get 全量 → 数据字节（fs 错误 → 诊断打 out + FsErr 码）。
+fn cat_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    if !valid_fs_name(name) {
+        writeln!(out, "usage: cat <file>").unwrap();
+        return (Vec::new(), 2);
+    }
+    match fs_get(fs_h(), name.as_bytes()) {
+        Ok(d) => (d, 0),
+        Err(e) => {
+            writeln!(out, "bsh: cat: {}: {}", name, e.text()).unwrap();
+            (Vec::new(), e.code())
+        }
+    }
+}
+
+/// `ls`：fs_list → 每名一行（空表 = 空输出 0）。
+fn ls_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    match fs_list(fs_h()) {
+        Ok(names) => {
+            let mut d = Vec::new();
+            for n in names.split(|&c| c == b' ') {
+                if !n.is_empty() {
+                    d.extend_from_slice(n);
+                    d.push(b'\n');
+                }
+            }
+            (d, 0)
+        }
+        Err(e) => {
+            writeln!(out, "bsh: ls: {}", e.text()).unwrap();
+            (Vec::new(), e.code())
+        }
+    }
+}
+
+/// fs 自验（P6 A-1，`FS ok` = rootfs 相第 11 标记——确定性状态谓词）：
+/// PUT 64B pattern（HEXYL_STDIN 前缀——单片路径）→ GET 全等；PUT 2156B
+/// （hexyl 首验输出——12 片 + TRUNC 的多片路径）→ GET 逐字节全等（more
+/// 链全盖）。数据是 hexyl 输出的纯函数快照，无竞速面；失败 eprintln +
+/// park（标记缺失 → smoke FAIL 兜底）。
+fn fs_selftest(hexyl_out: &[u8]) {
+    let h = fs_h();
+    let a = &HEXYL_STDIN[..64];
+    match fs_put(h, b"t64.bin", a).and_then(|_| fs_get(h, b"t64.bin")) {
+        Ok(d) if d == a => {}
+        Ok(d) => {
+            eprintln!("bsh: fs selftest: get64 len={} want={}", d.len(), a.len());
+            berry_libc::park();
+        }
+        Err(e) => {
+            eprintln!("bsh: fs selftest: rw64 {}", e.text());
+            berry_libc::park();
+        }
+    }
+    match fs_put(h, b"h.hex", hexyl_out).and_then(|_| fs_get(h, b"h.hex")) {
+        Ok(d) if d == hexyl_out => {}
+        Ok(d) => {
+            eprintln!(
+                "bsh: fs selftest: get2156 len={} want={}",
+                d.len(),
+                hexyl_out.len()
+            );
+            berry_libc::park();
+        }
+        Err(e) => {
+            eprintln!("bsh: fs selftest: rw2156 {}", e.text());
+            berry_libc::park();
+        }
+    }
+    println!("FS ok n={}", hexyl_out.len());
 }
 
 /// `A | B | …` 交互面（v1：各段裸名——无参数无 `/`，参数面随 v2 argv 展开）。
@@ -461,7 +820,7 @@ fn pipe_capture(
             stdin_feed: if i == 0 { first_feed } else { None },
             stdin_handle: if i > 0 { Some(pipes[i - 1].1) } else { None },
             extra_arg: segs[i].arg.map(|a| a.as_bytes()),
-            extra_gift: None,
+            extra_gifts: &[],
         };
         match spawn_rootfs_elf(rootfs_h(), &spec) {
             Ok(c) => children.push(c),
@@ -605,7 +964,7 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Opt
         stdin_feed: stdin,
         stdin_handle: None,
         extra_arg: extra_arg.map(|a| a.as_bytes()),
-        extra_gift: None,
+        extra_gifts: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
