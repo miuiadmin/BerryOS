@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-blkproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-exec"
 version = "0.1.0"
 dependencies = [
@@ -33,6 +37,7 @@ version = "0.1.0"
 name = "vblk"
 version = "0.1.0"
 dependencies = [
+ "berry-blkproto",
  "berry-exec",
  "berry-libc",
  "berry-sys",

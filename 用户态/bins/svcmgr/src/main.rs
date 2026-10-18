@@ -31,6 +31,8 @@ use berry_sys::{
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
 // 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
 use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, SpawnSpec};
+// P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
+use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -455,21 +457,29 @@ fn run_rootfs_child(console: Handle) {
                         }
                     }
                 } else if name == "bin/vblk" {
-                    // P6 A-3：virtio-blk 用户态块设备驱动（真设备 IO 第一
-                    // 刀）。vprobe 同形（H_MMIO 经 `SpawnSpec::mmio_vmo` 映
-                    // 入固定 VA）；子程序自建 DMA 缓冲 VMO（vmo_create/
-                    // commit + 0x1B get_phys 查后备——**不映射**，零 vmar
-                    // 面），modern v2 协商 + split virtqueue + LBA0 魔数读
-                    // 验 + LBA1 写/读回对拍，自打 `VBLK ok`（rootfs 相第
-                    // 13 标记）。防御同 vprobe：窗口缺席 → 可见降级不 spawn；
-                    // reap Err → 降级行；Ok(_) 码不判（断言失败走 trap，诊断
-                    // 靠 vblk 自打行）。mkcpio 名序 vblk 在 stdhello 与
-                    // vprobe 之间（s < vblk < vprobe）——本 arm 阻塞 reap
-                    // 只延迟后续 arm，不挡正确性。
+                    // P6 A-4：vblk 服务化——常驻块设备驱动服务（启动序 =
+                    // A-3 自验原样打 `VBLK ok` 第 13 标记，**此后进服务循
+                    // 环不再退出**——A-3 的 exit+reap 退役）。拓扑：
+                    // channel_pair 得 (blk_a, blk_b)——blk_b 随 env 块
+                    // gift[2] 迁入 vblk（libc `gift2_h()`，fsmgr 同槽惯例；
+                    // 每进程 env 块独立），本表持 blk_a 为 client。消费自
+                    // 验 = 写 LBA5 pattern → 读回 → 逐字节对拍（berry-
+                    // blkproto RPC + **VMO 随行数据面**全链——512B 扇区 >
+                    // inline 帽 256B，数据走能力迁移不走消息）→ `BLKD ok
+                    // n=512`（rootfs 相第 14 标记）。防御同 vprobe：窗口缺
+                    // 席 → 可见降级不 spawn；spawn Err → close 新鲜对端；
+                    // 自验 Err → `eco: blkd …` 降级行（标记缺失 = smoke
+                    // FAIL 兜底）。mkcpio 名序 vblk 在 stdhello 与 vprobe
+                    // 之间——本 arm 的 30s 应答帽只延迟后续 arm，不挡正确
+                    // 性。
                     let mut msz = 0u64;
                     if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
                         eco_skip(b"mmio absent");
                     } else {
+                        let (blk_a, blk_b) = channel_pair();
+                        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec
+                        // assert）——占位 dummy（fsmgr 同款；vblk 服务永不
+                        // 读 stdin，EOF 留队无害）。
                         match spawn_rootfs_elf(
                             H_ROOTFS,
                             &SpawnSpec {
@@ -478,19 +488,45 @@ fn run_rootfs_child(console: Handle) {
                                 data_len,
                                 stdout: console,
                                 stack_pages: 8,
-                                stdin_feed: None,
+                                stdin_feed: Some(&[]),
                                 stdin_handle: None,
                                 extra_arg: None,
-                                extra_gifts: &[],
+                                extra_gifts: &[blk_b],
                                 mmio_vmo: Some(H_MMIO),
                             },
                         ) {
-                            Ok(child) => {
-                                if child.reap().is_err() {
-                                    eco_skip(b"vblk reap");
+                            Ok(_child) => {
+                                // 常驻服务：**不 reap**——reap 首步 wait
+                                // TERMINATED 30s 绝对帽对「不退出的服务」
+                                // 必超时返 Err、回收链零执行（未确认退出
+                                // 绝不 unmap/close——不会抽走运行中的地址
+                                // 空间）；不 reap = 免 30s 白等，child 的
+                                // ht/hv/hp/vmo 留表即留命（表槽有界 =
+                                // 服务生命周期）。
+                                match blk_selftest(blk_a) {
+                                    Ok(()) => {
+                                        send_retry(console, BLKD_OK.as_ptr(), BLKD_OK.len())
+                                    }
+                                    Err(why) => eco_skip(why),
+                                }
+                                // 自验毕 close client 端（服务端经 pair 互钉
+                                // 常活；v1 无后续 RPC——A-5 FS 服务接棒时换
+                                // 新对端拓扑）。
+                                if berry_handle_close(blk_a) != 0 {
+                                    trap();
                                 }
                             }
-                            Err(()) => eco_skip(b"vblk spawn"),
+                            Err(()) => {
+                                // Err 全在 env send 前——blk_b 未被 take，
+                                // 两新鲜端显式回收防表槽泄漏。
+                                if berry_handle_close(blk_b) != 0 {
+                                    trap();
+                                }
+                                if berry_handle_close(blk_a) != 0 {
+                                    trap();
+                                }
+                                eco_skip(b"vblk spawn");
+                            }
                         }
                     }
                 } else if name == "bin/vprobe" {
@@ -562,6 +598,24 @@ const ECO_OK: &[u8; 7] = b"ECO ok\n";
 /// rootfs 相第 9 标记（Plan B v0.5，8 字节）：stdhello 真退出（0x33）+
 /// svcmgr reap 全回收链的确定性验收面（`ChildHandles::reap` 成功才打）。
 const EXIT_OK: &[u8; 8] = b"EXIT ok\n";
+
+/// rootfs 相第 14 标记（P6 A-4）：vblk 常驻块设备服务的消费自验——512B
+/// 确定性 pattern 经服务写 LBA5 → 读回 → 逐字节对拍全等才打（带参形态
+/// 防子串混叠——`FS ok n=` 同款惯例；**状态谓词，无竞速面**）。
+const BLKD_OK: &[u8] = b"BLKD ok n=512\n";
+
+/// BLKD 应答帽：30s（vblk 启动自验在服务循环**之前**——boot 期在途可达
+/// 数秒；超帽 = 降级行 + 标记缺失 = smoke FAIL，不重发[请求可能仍在途，
+/// 重发 = 重复写]）。
+const BLKD_REPLY_CAP: u64 = 30 * 1_000_000_000;
+
+/// BLKD 自验扇区（LBA5——避开 justfile/smoke 落盘印章 LBA0 与 vblk 启动
+/// 自验 LBA1；确定性 pattern 跨相幂等重写，对拍恒过）。
+const BLKD_TEST_LBA: u64 = 5;
+
+/// commit 整页粒度（内核 `Vmo::commit` 的 Unaligned 执法——offset/len 都
+/// 须页对齐；512B 扇区 → 取整到 4096，vmo_create 容量本就取整同值）。
+const BLKD_COMMIT_LEN: u64 = ((SECTOR_SZ as u64 + 4095) / 4096) * 4096;
 
 // rootfs ELF 流式拉起 = `berry_exec::spawn_rootfs_elf`（A-2 迁出：ELF 首窗
 // 解析 → 页铺平单 VMO → 段泵送 → 栈+保护页 → env 块交接；签名 SpawnSpec
@@ -692,6 +746,101 @@ fn now() -> u64 {
         trap();
     }
     t
+}
+
+/// P6 A-4：vblk 服务消费自验——512B 确定性 pattern 经服务写 LBA5 → 读回
+/// → 逐字节对拍（Err(why) = 降级行素材；Ok 才打标记）。数据面 = VMO 随行
+/// 迁移：dup 别名随请求 send（take 走）、本体留本表供读回对拍，driver
+/// bounce-buffer 后 close 别名——「能力经消息交付」在数据面的第一用。
+fn blk_selftest(blk: Handle) -> Result<(), &'static [u8]> {
+    let mut pat = [0u8; SECTOR_SZ];
+    for (i, b) in pat.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(31).wrapping_add(7);
+    }
+    let mut vmo = 0 as Handle;
+    if berry_vmo_create(SECTOR_SZ as u64, 0, &mut vmo) != 0 || vmo == 0 {
+        return Err(b"blkd vmo");
+    }
+    let r = blk_stages(blk, vmo, &pat);
+    let _ = berry_handle_close(vmo);
+    r
+}
+
+/// 自验三段：预填 pattern → 写 LBA5 → **VMO 本体置反值 0xA5** → 读 LBA5 →
+/// 读回对拍（反值刷本体 = 假绿防线的主位：服务 Read 臂若回 ST_OK 而未回
+/// 填别名，读回的是写段残留的 pattern 旧值——先把本体刷成反值才能显形；
+/// got 栈缓冲预置 0xA5 只是纵深，成功读回必然全量覆写它）。
+fn blk_stages(blk: Handle, vmo: Handle, pat: &[u8; SECTOR_SZ]) -> Result<(), &'static [u8]> {
+    if berry_vmo_commit(vmo, 0, BLKD_COMMIT_LEN) != 0
+        || berry_vmo_write(vmo, pat.as_ptr(), 0, SECTOR_SZ) != 0
+    {
+        return Err(b"blkd stage");
+    }
+    match blk_rpc(blk, OP_WRITE, BLKD_TEST_LBA, vmo) {
+        Ok(ST_OK) => {}
+        _ => return Err(b"blkd write"),
+    }
+    // 假绿防线（对抗审查实抓：原防线错位在会被全量覆写的 got 栈缓冲上）
+    // ——严格串行 RPC 下此刻写段已毕（driver 早已从别名读走 pattern），
+    // 刷本体不扰落盘数据。
+    let inv = [0xA5u8; SECTOR_SZ];
+    if berry_vmo_write(vmo, inv.as_ptr(), 0, SECTOR_SZ) != 0 {
+        return Err(b"blkd stage");
+    }
+    match blk_rpc(blk, OP_READ, BLKD_TEST_LBA, vmo) {
+        Ok(ST_OK) => {}
+        _ => return Err(b"blkd read"),
+    }
+    let mut got = [0xA5u8; SECTOR_SZ];
+    if berry_vmo_read(vmo, got.as_mut_ptr(), 0, SECTOR_SZ) != 0 {
+        return Err(b"blkd verify");
+    }
+    if got != *pat {
+        return Err(b"blkd cmp");
+    }
+    Ok(())
+}
+
+/// 严格串行 RPC（一请求一应答，`berry-blkproto` 约定）：dup VMO 别名随请求
+/// send（EBUSY → wait WRITABLE 重试；take 只发生在成功路径——EBUSY 时别名
+/// 未被取走，可原值重发）→ 30s 应答帽 wait READABLE → recv 恰 1B 解析。
+/// 应答帽超时/错码 → Err（请求可能仍在途，**不重发**——重发 = 重复写）。
+fn blk_rpc(h: Handle, op: u8, sector: u64, vmo: Handle) -> Result<u8, ()> {
+    let mut req = [0u8; 16];
+    let n = match encode_request(&mut req, op, sector) {
+        Some(n) => n,
+        None => return Err(()),
+    };
+    let mut dup = 0 as Handle;
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE, &mut dup) != 0 {
+        return Err(());
+    }
+    let hs = [dup];
+    loop {
+        let s = berry_channel_send(h, req.as_ptr(), n, hs.as_ptr(), 1);
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            // 非 EBUSY 失败：别名未被 take——显式回收防表槽泄漏。
+            let _ = berry_handle_close(dup);
+            return Err(());
+        }
+        wait(h, SIGNAL_WRITABLE);
+    }
+    // 应答帽 30s（vblk 启动自验在服务循环前——boot 在途可达数秒；普通
+    // wait 是 10s，这里宽帽）。
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + BLKD_REPLY_CAP, &mut obs) != 0 {
+        return Err(());
+    }
+    let mut rep = [0u8; 8];
+    let mut nb = rep.len();
+    let mut nh = 0usize;
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh) != 0 {
+        return Err(());
+    }
+    parse_reply(&rep[..nb]).ok_or(())
 }
 
 #[inline(never)]

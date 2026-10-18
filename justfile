@@ -83,6 +83,8 @@ build-user:
     # + berry-virtio split-ring 纯函数 crate。DMA 面 = vmo_create/commit +
     # get_phys 查后备，不映射；LBA0 读 justfile/smoke 落盘印章 + LBA1 写/
     # 读回对拍自打 `VBLK ok`）。
+    # P6 A-4：+ berry-blkproto 协议依赖——自验毕转常驻服务（RPC + VMO 随行
+    # 数据面；svcmgr 消费自验打 `BLKD ok`）。
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vblk/Cargo.toml \
         --target aarch64-unknown-linux-musl
@@ -123,6 +125,8 @@ run-el2: build
 # 报 1——vprobe 断言 ver==2，legacy v1 不收）。
 # P6 A-3：每次启动前把 LBA0 印章 `BERRYOSVBLK!` 落进盘首（notrunc 只写
 # 12B——vblk 读 LBA0 对拍；写 LBA1 由 vblk 自写自读，盘跨相残留无扰）。
+# P6 A-4：vblk 自验毕转常驻服务——svcmgr 消费自验（经 berry-blkproto RPC
+# 写/读 LBA5 对拍）随后打 `BLKD ok n=512`（rootfs 相第 14 标记）。
 run-rootfs: build
     #!/bin/sh
     set -e
@@ -150,12 +154,14 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 # host 单元测试：berry-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）
 # + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 用户态/berry-loader）
 # + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 用户态/berry-fsproto）
-# + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 用户态/berry-virtio）。
+# + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 用户态/berry-virtio）
+# + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 用户态/berry-blkproto）。
 test-host:
     cargo test -p berry-mm --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-loader --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-fsproto --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-virtio --target {{host}}
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-blkproto --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

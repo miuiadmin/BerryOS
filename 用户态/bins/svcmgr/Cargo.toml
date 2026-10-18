@@ -17,3 +17,5 @@ berry-loader = { path = "../../berry-loader" }
 # A-2：rootfs 拉起链（spawn_rootfs_elf/channel_pair）自本 crate 抽出共享
 # （bsh 的 run 同链）——本 crate 改为消费者，行为等价重构。
 berry-exec = { path = "../../berry-exec" }
+# A-4：vblk 块设备服务消费自验（BLKD ok）——请求/应答编解码纯函数。
+berry-blkproto = { path = "../../berry-blkproto" }

@@ -13,10 +13,10 @@
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），36 标记
-#      （boot 23 + rootfs 13——PIPE ok/VIRTIO ok/VBLK ok 在列 = bsh 已进
-#      交互读循环/virtio 探测与块设备 IO 全链过，状态谓词门控注入时机，
-#      不赌 boot 秒数）后
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），37 标记
+#      （boot 23 + rootfs 14——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok 在列 = bsh
+#      已进交互读循环/virtio 探测与块设备 IO/块设备服务消费链全过，状态谓词
+#      门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
 #      QEMU chardev 流控押住输入不 overrun——真机才有突发丢字）：
@@ -207,8 +207,15 @@ QEMU_PID=$!
 # 印章逐字节对拍 + LBA1 写/读回 pattern 对拍（poll used ring，10s 帽）
 # 全过才自打——**DMA 缓冲从不进地址空间**（vmo_read/write + get_phys
 # 三件套，零 vmar 面）——rootfs 相第 13 标记（状态谓词，无竞速面）。
+# BLKD ok n= = **块设备驱动服务消费链**（P6 A-4）：vblk 自验毕转常驻
+# 服务（channel 一端随 env 块 gift[2] 迁入，fsmgr 同槽）——svcmgr 作
+# client 经 berry-blkproto 严格串行 RPC（请求 9B + 随行 1 枚 VMO 别名
+# = **数据面走能力迁移**：单扇区 512B > inline 帽 256B，数据不走消息）
+# 写 LBA5 确定性 pattern → 读回 → 独立缓冲逐字节对拍全等才打——
+# 「驱动服务化」分层（A-5 FS 服务的前一层）活证——rootfs 相第 14 标记
+# （状态谓词，无竞速面；30s 应答帽盖 vblk 启动自验在途）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -226,14 +233,14 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n=）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 13 = 36
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 14 = 37
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
-# 有人收；VIRTIO/VBLK ok 在列 = MMIO 探测与块设备 IO 全链过；状态谓词门控
-# ——不赌 boot 秒数）
+# 有人收；VIRTIO/VBLK/BLKD ok 在列 = MMIO 探测、块设备 IO 与块设备服务
+# 消费链全过；状态谓词门控——不赌 boot 秒数）
 # 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
 # QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
@@ -263,7 +270,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：36 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：37 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)

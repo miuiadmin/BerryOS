@@ -17,7 +17,10 @@
 # 区经 path 依赖）双消费，「不长第二套」）。
 # A-3：berry-virtio（virtio split-ring 纯函数 crate，host 测试；真消费者
 # vblk 在独立小工作区编 musl target，故同 stdhello 不入 members）。
-members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-virtio", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+# A-4：berry-blkproto（块设备服务 RPC 协议纯函数 crate，host 测试；双消费
+# = vblk 服务端（独立小工作区）+ svcmgr 消费自验方（本工作区成员））。
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-blkproto",
+    "berry-virtio", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello"]
 resolver = "2"
 

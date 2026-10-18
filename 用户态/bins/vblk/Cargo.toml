@@ -13,6 +13,12 @@ edition = "2021"
 # 微内核「机制在内核、策略与 IO 在用户态」的完整形态）。验收 = LBA0 读
 # 魔数（justfile/smoke 落盘印章）+ LBA1 写/读回逐字节对拍 → `VBLK ok`
 # （rootfs 相第 13 标记），后 main 返回 = exit(0)，svcmgr reap。
+# P6 A-4（服务化收口）：自验毕**不再退出**——进常驻服务循环（协议 =
+# `berry-blkproto`：请求 9B + 随行 VMO 数据面 + 应答 1B，严格串行 RPC；
+# svcmgr 持对端做消费自验 `BLKD ok`，rootfs 相第 14 标记）。数据面 =
+# channel inline 帽 256B < 单扇区 512B——client dup VMO 别名随请求迁移，
+# 本驱动 bounce-buffer 后 close。单设备单主人：negotiate 的 STATUS=0
+# 复位会掀翻既有 virtqueue，第二实例 = 杀服务（v1 文档化，v2 独占执法）。
 
 [workspace]
 
@@ -21,6 +27,8 @@ berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-exec = { path = "../../berry-exec" }
 berry-virtio = { path = "../../berry-virtio" }
+# A-4：服务协议（请求/应答编解码，纯函数 host 测试盖）。
+berry-blkproto = { path = "../../berry-blkproto" }
 
 [profile.release]
 opt-level = "z"
