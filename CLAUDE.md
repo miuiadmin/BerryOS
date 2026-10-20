@@ -90,6 +90,7 @@ berryos/
 - `文档/优化议程.md` —— 五道弱题的「及格线 → 拉开差距」动作表（IPC 拳头 / 生态伺候 / 驱动热换 / 性能 scoreboard / AI 攒数据），13 号报告导出，按 Phase 挂钩。
 - `文档/开发体验.md` —— Mac 上的运行/安装四级阶梯（QEMU 直加载 → initrd → fat:rw → 自举镜像）+ 交叉编译日常循环 + hvf/TCG 双模式；P4 G-eco / P5 shell / P6 镜像的体验路线。
 - `文档/shell设计.md` —— P5 交互 shell（bsh）：不搬 bash/zsh（GPL/fork 依赖/太重），命令三梯队（uutils MIT 基础 + 自研开发 + berryctl/powertop 独有）、channel 即 pipe、`--json` AI 友好输出。
+- `文档/应用模型设计.md` —— 应用 = 包 + 清单 + 能力 + 生命周期（纯用户态协议约定，内核不识「应用」）；层 = IPC 边界非代码模块（硬边界唯一 = 内核/用户，执法三规则：跳数预算 / 依赖方向 / **中间不设稳定 ABI**——冻结面仅 `berry_*` + 各服务 wire 协议，工具包随应用静态链接）；**能力决定形态**——GUI 可整体拔除；生命周期分级 active→freeze(v2)→**墓碑**（v1 纯用户态可造：pause+存档+杀+读档复活）+ **intent 单一消费轴**（调度/生命周期/电源三处共用一个声明，替代安卓 oom_adj/sched/cgroup 三本账）；帧预算触摸→像素 ~1.5 帧（TCG 量不了，真机 G 卡复测）；app-0/app-1（manifest+mkapp+appd / 墓碑协议 v0）暂挂 P6 尾（ADR #43/#44）。
 - `文档/兼容子系统设计.md` —— 外来生态以**可插拔扩展包**运行（Linux 程序 / Wine / APK），内核零魔改：三层扩展模型（T1 原生重编译 / T2 翻译子系统 Starnix 式人格 / T3 虚机兜底 WSL2 式）+ 四个预 ADR 槽位（S1 syscall 人格注册转发 / S2 异常通道→信号 / S3 路径命名空间落地=决策 #6 实施面 / S4 EL2 虚机化+IOMMU 直通）；扩展包 = 应用包同源 manifest（ADR #43）；按端安装（手表仅 T1，手机/PC 装 T2/T3）；v2+ 议程、v1 无代码面。
 - `文档/调度器设计.md` —— 调度器与电源管理详细设计（机制/策略/capacity/tickless/PM 服务）。
 - `文档/架构决策.md` —— 全部决策的单一事实来源（ADR）。
