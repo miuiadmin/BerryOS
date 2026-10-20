@@ -13,9 +13,9 @@
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），39 标记
-#      （boot 23 + rootfs 16——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
-#      FATW ok 在列
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），40 标记
+#      （boot 23 + rootfs 17——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      FATW ok/NET ok ping= 在列
 #      = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务消费链/FAT
 #      只读底座与**落盘写**全过，状态谓词
 #      门控注入时机，不赌 boot 秒数）后
@@ -35,7 +35,7 @@
 #      b/c/d 三断言互非子串。随后再验 switches 金丝雀严格递增（IRQ 分流
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. P6 A-6 FAT 持久化相（第四跑）：**不重造盘**（复用第 5 相已写盘——
-#      mkfat 重产 = 持久化零验收），39 标记载明写过的盘再起（bsh FATW
+#      mkfat 重产 = 持久化零验收），40 标记载明写过的盘再起（bsh FATW
 #      自验走覆写路径 = 旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT`
 #      → grep 'f42t'——`>` 落的是真扇区、跨 boot 存活。盘 cache
 #      writeback=off：QEMU 由 SIGTERM 终止，writeback 模式可能不刷页
@@ -181,12 +181,13 @@ printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
-echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs + virtio-blk）"
+echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs + virtio-blk + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
+  -netdev user,id=n0 -device virtio-net-device,netdev=n0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -251,8 +252,15 @@ QEMU_PID=$!
 # OP_WRITE）→ fs_get 读回逐字节对拍才自打——`>` 重定向从此对 8.3 大写名
 # 是**真落盘**（RAM 物化退役）——rootfs 相第 16 标记（状态谓词；每次
 # boot 重写 = 覆写路径幂等：旧链 collect → 新链分配 → 旧链释放）。
+# NET ok ping= = **网络面第一刀全链**（P6 A-7）：vnet 用户态驱动——扫窗
+# 按设备类认领 net 槽（did=1 恰一，block 槽合法同席不扰——A-7 起多 virtio
+# 设备同窗）→ modern v2 协商（收 NET_F_MAC + VERSION_1）→ config 读 MAC →
+# 双队列（rx q0 + tx q1）+ 16 个 rx 单描述符缓冲 → ARP 解 SLIRP 网关
+# （10.0.2.2）MAC → ICMP echo 32B payload 往返逐字节对拍全过才自打——
+# `-netdev user`（SLIRP）对用户态驱动的应答活证，零内核网络栈——rootfs
+# 相第 17 标记（状态谓词；协议解析 berry-netproto 恰长执法，无竞速面）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -272,14 +280,15 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n=）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping=）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 16 = 39
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 17 = 40
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
-# 有人收；VIRTIO/VBLK/BLKD/FAT/FATW ok 在列 = MMIO 探测、块设备 IO、块设备
-# 服务消费链与 FAT 只读底座+落盘写全过；状态谓词门控——不赌 boot 秒数）
+# 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块设备
+# 服务消费链、FAT 只读底座+落盘写与网络往返全过；状态谓词门控——不赌
+# boot 秒数）
 # 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
 # QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
@@ -306,16 +315,17 @@ RX_HOLDER=$!
 # SIGTERM 终止前扇区已同步落宿主盘。
 python3 工具链/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
-echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
+echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
+  -netdev user,id=n0 -device virtio-net-device,netdev=n0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：39 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：40 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -432,7 +442,7 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 
 # —— 阶段 5：P6 A-6 FAT 持久化相（第四跑：写过的盘再起）——
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收）；
-# 不关 fd3（阶段 5 还要注入 cat 行，exec 3>&- 移到本阶段尾）。39 标记载明
+# 不关 fd3（阶段 5 还要注入 cat 行，exec 3>&- 移到本阶段尾）。40 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读。
 # 注入 `cat OUT.TXT` → grep 'f42t'：上一相 `>` 落的扇区跨 boot 存活——
@@ -440,12 +450,13 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"
-echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin）"
+echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
+  -netdev user,id=n0 -device virtio-net-device,netdev=n0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)

@@ -543,6 +543,42 @@ fn run_rootfs_child(console: Handle) {
                             fs_a_h = 0;
                         }
                     }
+                } else if name == "bin/vnet" {
+                    // P6 A-7：virtio-net 驱动（网络面第一刀）——vprobe arm
+                    // 同形（瞬态探针：ARP/ICMP 往返自打 `NET ok ping=32
+                    // slot=N` = rootfs 相第 17 标记后 main 返回 = exit(0)，
+                    // 阻塞 reap 回收）。窗口缺席 → 同款可见降级不 spawn；
+                    // reap Err → 降级行；Ok(_) 码不判（断言失败走 trap——
+                    // 诊断靠 vnet 自打行）。网络往返 worst ~20s（ARP/ICMP
+                    // 各 10s poll 帽）在 reap 30s 帽内；mkcpio 名序 vnet
+                    // 恰在 vprobe 前（n < p）。
+                    let mut msz = 0u64;
+                    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+                        eco_skip(b"mmio absent");
+                    } else {
+                        match spawn_rootfs_elf(
+                            H_ROOTFS,
+                            &SpawnSpec {
+                                name: name.as_bytes(),
+                                data_off,
+                                data_len,
+                                stdout: console,
+                                stack_pages: 8,
+                                stdin_feed: None,
+                                stdin_handle: None,
+                                extra_arg: None,
+                                extra_gifts: &[],
+                                mmio_vmo: Some(H_MMIO),
+                            },
+                        ) {
+                            Ok(child) => {
+                                if child.reap().is_err() {
+                                    eco_skip(b"vnet reap");
+                                }
+                            }
+                            Err(()) => eco_skip(b"vnet spawn"),
+                        }
+                    }
                 } else if name == "bin/vprobe" {
                     // P6 A-2：virtio-mmio 探测（用户态驱动地基第一刀）——
                     // H_MMIO 经 `SpawnSpec::mmio_vmo` 映进子空间固定 VA

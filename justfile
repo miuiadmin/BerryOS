@@ -93,7 +93,14 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vblk/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe + vblk ELF 本体——装载走
+    # P6 A-7：vnet（virtio-net 驱动——网络面第一刀：ARP/ICMP ping 通；
+    # vprobe/vblk 同链 + berry-netproto 最小以太网/ARP/IPv4/ICMP-echo 编解码
+    # 纯函数 crate。瞬态探针：ARP 解 SLIRP 网关 MAC + ICMP echo 32B 往返
+    # 对拍自打 `NET ok ping=32 slot=N` 后 exit(0) + svcmgr reap）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/vnet/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出）。
     python3 ../工具链/mkcpio.py ../rootfs.cpio \
@@ -104,6 +111,7 @@ build-user:
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
         bin/vblk=cargo-target/aarch64-unknown-linux-musl/release/vblk \
+        bin/vnet=cargo-target/aarch64-unknown-linux-musl/release/vnet \
         bin/vprobe=cargo-target/aarch64-unknown-linux-musl/release/vprobe
 
 build: abi-check build-user
@@ -143,6 +151,9 @@ run-el2: build
 # boot 持久化验证**不可经本 recipe**：上面 mkfat 每次启动整盘重造，上
 # 一 boot 的落盘必被抹——持久化验收走 `just smoke` 持久化相（不重造
 # 盘；对抗审查实抓本注释曾把结构性不可达的工作流写成可用）。
+# P6 A-7：挂 virtio-net（SLIRP user 网——网关 10.0.2.2 应答 ARP/回 ICMP
+# echo；vnet 按设备类扫描认领 net 槽（block 槽合法同席不扰），自打
+# `NET ok ping=32 slot=N` = rootfs 相第 17 标记）。
 run-rootfs: build
     #!/bin/sh
     set -e
@@ -152,7 +163,8 @@ run-rootfs: build
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
-        -device virtio-blk-device,drive=drv0
+        -device virtio-blk-device,drive=drv0 \
+        -netdev user,id=n0 -device virtio-net-device,netdev=n0
 
 run-release: abi-check build-user
     cargo build --release
@@ -174,7 +186,9 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 # + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 用户态/berry-blkproto）
 # + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 用户态/berry-fatfs；
 #   A-6 起含写基元——fat12_set/find_free_cluster/encode_file_entry，fixture
-#   共识基准同时钉住读面与写面编码一致性）。
+#   共识基准同时钉住读面与写面编码一致性）
+# + berry-netproto 的最小以太网/ARP/IPv4/ICMP-echo 编解码纯函数面（P6 A-7
+#   起，见 用户态/berry-netproto——vnet 驱动的协议面）。
 # fixture 守卫在 berry-fatfs 测试前置：mkfat --check-fixture 重产比对——
 # 改 mkfat 忘重产 --fixture 时共识测试对陈旧基准假绿（A-5 对抗审查实抓）。
 test-host:
@@ -185,6 +199,7 @@ test-host:
     cargo test --manifest-path 用户态/Cargo.toml -p berry-blkproto --target {{host}}
     python3 工具链/mkfat.py --check-fixture 用户态/berry-fatfs/tests/volume_fixture.bin
     cargo test --manifest-path 用户态/Cargo.toml -p berry-fatfs --target {{host}}
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-netproto --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

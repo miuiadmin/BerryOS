@@ -110,28 +110,38 @@ static mut IOB: [u8; 544] = [0; 544];
 /// `blk_op` 再拷进 IOB——独立缓冲，免同体别名拷贝）。
 static mut CLI: [u8; SECTOR_SZ] = [0; SECTOR_SZ];
 
-/// 扫 32 槽定位唯一 block 设备（vprobe 同款判据；细节见 vprobe 头注）。
+/// 扫 32 槽定位唯一 block 设备（vprobe 同款判据——**按设备类计数**：只认
+/// did==block 恰一，其它占用槽不算；A-7 起同窗的 net 槽合法同席，未知 did
+/// 的 loud 面由 vprobe 全窗扫描兜）。细节见 vprobe 头注。
 fn find_device() -> usize {
     // SAFETY: 窗口经 spawn 映射（Device-nGnRnE）；逐字 volatile；只读
     // ID 头四字 + 特性/队列寄存器（写面在协商序内，见 main）。
     let base = VIRTIO_MMIO_VA as *const u32;
     let mut occupied: Option<usize> = None;
     let mut n = 0usize;
+    let mut n_occupied = 0usize;
     for slot in 0..VIRTIO_MMIO_SLOTS {
         let regs = unsafe { base.add(slot * (VIRTIO_MMIO_STRIDE / 4)) };
         if unsafe { core::ptr::read_volatile(regs) } != vio::mmio::MAGIC_VAL {
             println!("vblk: slot {} bad magic", slot);
             trap();
         }
-        if unsafe { core::ptr::read_volatile(regs.add(2)) } != 0 {
-            n += 1;
-            occupied = Some(slot);
+        let did = unsafe { core::ptr::read_volatile(regs.add(2)) };
+        if did != 0 {
+            n_occupied += 1;
+            if did == vio::mmio::DEVICE_ID_BLOCK {
+                n += 1;
+                occupied = Some(slot);
+            }
         }
     }
     let slot = match (n, occupied) {
         (1, Some(s)) => s,
         _ => {
-            println!("vblk: occupied slots = {}（须恰 1）", n);
+            println!(
+                "vblk: block slots = {}（占用共 {}，block 须恰 1）",
+                n, n_occupied
+            );
             trap();
         }
     };

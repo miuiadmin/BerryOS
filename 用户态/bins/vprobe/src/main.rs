@@ -16,8 +16,11 @@
 //! - Version@+0x004：占用槽须 2（virtio 1.x 现代版；QEMU 默认 force-legacy
 //!   =true 报 1，启动参数 `-global virtio-mmio.force-legacy=false` 显式要
 //!   现代版——v1 不收 legacy）
-//! - DeviceID@+0x008：占用槽须 2（block；smoke/run-rootfs 挂
-//!   `-device virtio-blk-device`——**恰一个占用槽**，多占/非 block 都断链）
+//! - DeviceID@+0x008 **按设备类判读**（A-7 起同窗可挂多 virtio 设备——
+//!   占用槽不再「须恰一」而是分类计数）：did=2（block）须**恰一**
+//!   （smoke/run-rootfs 挂 `-device virtio-blk-device`）；did=1（net）
+//!   A-7 起合法同席（`-device virtio-net-device`，vnet 自认领）；其它
+//!   did = 挂载面漂移，loud trap（未知设备类无消费者，静默漏检更糟）
 //! - VendorID@+0x00C 只打印不断言（0x554D4551 "QEMU" 是仿真器特有值——
 //!   真机/其它仿真器合法取值不同，断言它 = 把 QEMU 特例焊进标记）
 //!
@@ -39,6 +42,8 @@ const VIRTIO_MAGIC: u32 = 0x7472_6976;
 const VIRTIO_VERSION: u32 = 2;
 /// DeviceID = 2（block 设备）。
 const VIRTIO_DEV_BLOCK: u32 = 2;
+/// DeviceID = 1（net 设备——A-7 起合法同席，vnet 自认领）。
+const VIRTIO_DEV_NET: u32 = 1;
 
 fn main() {
     // SAFETY: 窗口经 spawn 映射（Device-nGnRnE + SH_NONE——设备访问不可
@@ -46,7 +51,8 @@ fn main() {
     // （VA 页对齐、槽内偏移 4 的倍数）。只读 ID 头四字（0x000–0x00F 全
     // RO、无副作用——不碰队列/中断类寄存器）。
     let base = VIRTIO_MMIO_VA as *const u32;
-    let mut occupied: Option<(usize, u32, u32, u32)> = None; // (slot, ver, did, ven)
+    let mut block: Option<(usize, u32, u32)> = None; // (slot, did, ven)——ver 环内已验
+    let mut n_block = 0usize;
     let mut n_occupied = 0usize;
     for slot in 0..VIRTIO_MMIO_SLOTS {
         let regs = unsafe { base.add(slot * (VIRTIO_MMIO_STRIDE / 4)) };
@@ -63,25 +69,34 @@ fn main() {
         }
         if device_id != 0 {
             n_occupied += 1;
-            occupied = Some((slot, version, device_id, vendor_id));
+            if version != VIRTIO_VERSION {
+                println!("vprobe: slot {} ver={}（占用槽须 2）", slot, version);
+                trap(); // legacy 模式（缺 -global force-legacy=false）——占用槽环内验
+            }
+            if device_id == VIRTIO_DEV_BLOCK {
+                n_block += 1;
+                block = Some((slot, device_id, vendor_id));
+            } else if device_id == VIRTIO_DEV_NET {
+                // A-7 起合法同席（vnet 扫描自认领）——不算 block 槽。
+            } else {
+                println!("vprobe: slot {} did={}（未知设备类）", slot, device_id);
+                trap();
+            }
         }
     }
-    let (slot, version, device_id, vendor_id) = match (n_occupied, occupied) {
-        // 恰一个占用槽：smoke/run-rootfs 只挂一个 virtio-blk——多占 = 命令
-        // 行面漂移，零占用 = 设备/盘缺席（传输层在而设备没接上）。
+    let (slot, device_id, vendor_id) = match (n_block, block) {
+        // block 恰一：smoke/run-rootfs 挂一个 virtio-blk——多 block = 命令
+        // 行面漂移，零 = 设备/盘缺席（传输层在而设备没接上）；net 槽不扰
+        // 本判据（合法同席，占用总数只进诊断行）。
         (1, Some(found)) => found,
         _ => {
-            println!("vprobe: occupied slots = {}（须恰 1）", n_occupied);
+            println!(
+                "vprobe: block slots = {}（占用共 {}，block 须恰 1）",
+                n_block, n_occupied
+            );
             trap();
         }
     };
-    if version != VIRTIO_VERSION || device_id != VIRTIO_DEV_BLOCK {
-        println!(
-            "vprobe: slot {} bad regs ver={} did={}",
-            slot, version, device_id
-        );
-        trap(); // 占用槽内容不符 = legacy 模式（缺 -global force-legacy=false）或非 block
-    }
     println!(
         "VIRTIO ok did={} ven={:#x} slot={}",
         device_id, vendor_id, slot

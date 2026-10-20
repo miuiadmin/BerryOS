@@ -1,0 +1,25 @@
+[package]
+name = "vnet"
+version = "0.1.0"
+edition = "2021"
+
+# P6 A-7：virtio-net 用户态驱动（网络面第一刀：ARP/ICMP ping 通）。
+# 瞬态探针（vprobe/vblk-A-3 同款：main 返回 = exit(0) + svcmgr reap）；
+# 网络服务化随 v2。musl target + berry-libc shim，独立小工作区
+# （[workspace] 空——不入 用户态/ members，stdhello/bsh/vblk 同款豁免）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-exec = { path = "../../berry-exec" }
+berry-virtio = { path = "../../berry-virtio" }
+berry-netproto = { path = "../../berry-netproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

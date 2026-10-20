@@ -50,6 +50,22 @@ pub const BLK_T_IN: u32 = 0;
 pub const BLK_T_OUT: u32 = 1;
 pub const BLK_SECTOR_SZ: usize = 512;
 
+/// virtio-net 特性位（规范 §6.5）：页 0 bit5 = VIRTIO_NET_F_MAC（config
+/// 区的 MAC 地址有效）——vnet 协商收它 + MRG_RXBUF + VERSION_1（页 1）。
+pub const NET_F_MAC: u32 = 1 << 5;
+/// VIRTIO_NET_F_MRG_RXBUF（规范 §6.5 页 0 bit15）：协商后 net 头恒为 mrg
+/// 变体 12B（num_buffers 字段在场——TX 侧驱动置 0、RX 侧设备写实际合并
+/// 缓冲数，小帧恒 1）。**必须协商**：QEMU virtio-net 在 VERSION_1 路径下
+/// `vnet_hdr_len` 即按 12 剥头——只按 10B 组 TX 包 = 帧被斩头 2B、SLIRP
+/// 静默丢弃、rx 永假超时（A-7 filter-dump 实证：捕获帧恰为发帧 [2..]）。
+/// 协商它把 12B 从「QEMU 实现行为」升为规范保证，跨版本稳。
+pub const NET_F_MRG_RXBUF: u32 = 1 << 15;
+/// virtio-net 请求头（规范 §5.1.6 mrg 变体，协商 MRG_RXBUF 后收发同形）：
+/// flags/gso_type/hdr_len/gso_size/csum_start/csum_offset 六 u16 + num_buffers
+/// u16 = 12B——非 checksum/gso 驱动（v1 vnet）恒写全零，帧本体紧随其后同
+/// 缓冲（rx 同形：设备写 12B 头再写帧，num_buffers = 实际合并缓冲数）。
+pub const NET_HDR_SZ: usize = 12;
+
 /// split ring 布局（单页内偏移）：desc @0，avail @256（desc[16] 恰 256B，
 /// 天然分界），used @512（对 avail 尾取整到 512——纯为算术显式，规范对
 /// modern 环无对齐要求）。全链 = 512 + 6 + 8*16 + 2 = 646B ≤ 4KiB。
@@ -210,6 +226,9 @@ pub mod mmio {
     pub const VERSION_MODERN: u32 = 2;
     /// virtio-blk 设备 ID（规范 §5.2）。
     pub const DEVICE_ID_BLOCK: u32 = 2;
+    /// virtio-net 设备 ID（规范 §5.1；A-7 起同窗挂 virtio-net-device——
+    /// 占用槽按设备类判读，见 vprobe/vnet/vblk 扫描面）。
+    pub const DEVICE_ID_NETWORK: u32 = 1;
 }
 
 /// 编 virtio-blk 请求头（type/reserved/sector → 16B）。
