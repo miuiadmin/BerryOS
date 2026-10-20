@@ -90,6 +90,7 @@ berryos/
 - `文档/优化议程.md` —— 五道弱题的「及格线 → 拉开差距」动作表（IPC 拳头 / 生态伺候 / 驱动热换 / 性能 scoreboard / AI 攒数据），13 号报告导出，按 Phase 挂钩。
 - `文档/开发体验.md` —— Mac 上的运行/安装四级阶梯（QEMU 直加载 → initrd → fat:rw → 自举镜像）+ 交叉编译日常循环 + hvf/TCG 双模式；P4 G-eco / P5 shell / P6 镜像的体验路线。
 - `文档/shell设计.md` —— P5 交互 shell（bsh）：不搬 bash/zsh（GPL/fork 依赖/太重），命令三梯队（uutils MIT 基础 + 自研开发 + berryctl/powertop 独有）、channel 即 pipe、`--json` AI 友好输出。
+- `文档/兼容子系统设计.md` —— 外来生态以**可插拔扩展包**运行（Linux 程序 / Wine / APK），内核零魔改：三层扩展模型（T1 原生重编译 / T2 翻译子系统 Starnix 式人格 / T3 虚机兜底 WSL2 式）+ 四个预 ADR 槽位（S1 syscall 人格注册转发 / S2 异常通道→信号 / S3 路径命名空间落地=决策 #6 实施面 / S4 EL2 虚机化+IOMMU 直通）；扩展包 = 应用包同源 manifest（ADR #43）；按端安装（手表仅 T1，手机/PC 装 T2/T3）；v2+ 议程、v1 无代码面。
 - `文档/调度器设计.md` —— 调度器与电源管理详细设计（机制/策略/capacity/tickless/PM 服务）。
 - `文档/架构决策.md` —— 全部决策的单一事实来源（ADR）。
 - `文档/能力模型设计.md` —— 纯能力 + Zircon handle。
