@@ -1,5 +1,5 @@
-//! fsmgr —— P6 A-1 RAM-fs 服务 + A-5 FAT 只读层（`文档/文件系统设计.md`
-//! §6 P6 注记：tmpfs before disk——A-5 起 disk 到位）。
+//! fsmgr —— P6 A-1 RAM-fs 服务 + A-5/A-6 FAT 读写层（`文档/文件系统设计.md`
+//! §6 P6 注记：tmpfs before disk——A-5 起读、A-6 起写）。
 //!
 //! stdhello/bsh 同链（musl target + berry-libc shim）。通道拓扑（svcmgr
 //! P6 段搭）：本服务持 env 块 gift[2]（libc `gift2_h()`——fs 服务端端
@@ -8,9 +8,9 @@
 //! libc `fs_h()`）发请求。协议 = berry-fsproto（PUT/TRUNC/GET/LIST，
 //! **严格串行 RPC**——一请求一应答，队列深 1 用量，无乱序死锁面）；
 //! 存储 = `Vec<(名, 内容)>` 线性表（RAM-fs：FILE_COUNT_MAX=8 ×
-//! FILE_SIZE_MAX=16KiB = 128KiB < libc 静态堆 256KiB）+ **FAT12 只读底座**
-//! （`fat.rs`——GET 先 RAM 后 FAT、PUT/TRUNC 物化、LIST 合并，覆盖层语义
-//! 见该模块头）。
+//! FILE_SIZE_MAX=16KiB = 128KiB < libc 静态堆 256KiB）+ **FAT12 读写层**
+//! （`fat.rs`——A-6 起 8.3 大写名 staging + TRUNC 即 commit 真写扇区、
+//! 小写名走 RAM 表；分层路由与 commit 序见该模块头）。
 //!
 //! 服务循环 = echo 同形但 **wait 超时重臂**（关键差异）：echo 的 client
 //! （svcmgr）每节流拍必 ping——10s 帽到点 = 断链，trap；本服务的 client
@@ -75,17 +75,20 @@ fn main() {
         }
         let rep_len: usize = match parse_request(&msg[..nb]) {
             Some(Req::Put { name, off, data }) => {
-                // FAT-only 名先物化进 RAM（覆盖层写语义），再走 RAM 通道；
-                // 物化拒（尺寸/计数帽、会话毒化）= st 直接回。
-                let st = match fat.as_mut().and_then(|f| f.materialize(&mut files, name)) {
+                // A-6 路由：8.3 大写名 → FAT 层 staging（TRUNC 点落盘）；其余
+                // RAM 表不变。and_then 展平——无 FAT 层（fat==None，RAM-only
+                // 降级）与非 FAT 名（stage_put 返 None）同走 RAM 通道。
+                let st = match fat.as_mut().and_then(|f| f.stage_put(name, off, data)) {
                     None => do_put(&mut files, name, off, data),
-                    Some(st) => st,
+                    Some(fat::StageRes::Staged) => berry_fsproto::ST_OK,
+                    Some(fat::StageRes::Deny(st)) => st,
                 };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
             }
             Some(Req::Trunc { name, size }) => {
-                // 同 Put：物化后 truncate（`echo > FAT名` 的建/截断面）。
-                let st = match fat.as_mut().and_then(|f| f.materialize(&mut files, name)) {
+                // TRUNC = FAT 名的 commit 触发点（bsh fs_put 尾随 TRUNC 恰合：
+                // 分片 PUT 累积 → TRUNC(len) 落盘）；RAM 名照旧。
+                let st = match fat.as_mut().and_then(|f| f.stage_trunc(name, size)) {
                     None => do_trunc(&mut files, name, size),
                     Some(st) => st,
                 };

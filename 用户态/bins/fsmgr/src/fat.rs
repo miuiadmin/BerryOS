@@ -1,4 +1,5 @@
-//! fat.rs —— P6 A-5 FAT12 只读层（消费 `berry-fatfs` 纯解析 + vblk 块服务）。
+//! fat.rs —— P6 A-5 FAT12 只读底座 / A-6 落盘读写层（消费 `berry-fatfs`
+//! 纯编解码 + vblk 块服务）。
 //!
 //! 拓扑（svcmgr A-5 预拉序）：vblk 由 svcmgr **先于本服务**拉起且自验已过
 //! （BLKD 门），blk 服务端端 blk_a 经本服务的 env 块 gift[3] 交付（libc
@@ -6,11 +7,24 @@
 //! 回复抢答面）。eager init：服务启动即定几何、整读 FAT0 + 根目录（≈6 扇
 //! 区）；此后数据 GET 按簇读盘（单簇缓存，顺序读零重复 RPC）。
 //!
-//! 覆盖层（overlay）语义：RAM 表 = 写通道（do_put/do_trunc 不变），FAT =
-//! 只读底座——GET 先 RAM 后 FAT；PUT/TRUNC 命中 FAT-only 名先**物化**整文
-//! 件进 RAM（此后 RAM 副本影子 FAT 项，`>` 覆盖语义成立）；LIST = RAM 名
-//! + 未被影子的 FAT 名。名字空间按构造隔离（`name_to_fat11` 只收 [A-Z0-9]
-//! 8.3 形）：RAM 小写名（t64.bin 等）永不落 FAT 面，反向同然。
+//! 分层路由（A-6）：`name_to_fat11` 认的 8.3 大写名 → FAT 层（盘上真文件）；
+//! 其余（小写等 RAM 名）→ RAM 表（do_put/do_trunc 不变）——名字空间按构造
+//! 隔离，同一名字按写法天然只命中一层。**staging + TRUNC 即 commit**（与
+//! bsh fs_put 的「分片 PUT + 尾随 TRUNC」协议恰合）：PUT 分片累积进单一
+//! staging 槽、TRUNC(len) 触发落盘（近原子——commit 前读者只见旧版/无文
+//! 件）；跨名写自动先 commit 旧槽（bsh 串行 client 每段重定向一个目标）。
+//! GET 先 staging 后盘（读到正在写的文件）；LIST = RAM 名 + FAT 名 + 未落
+//! 盘的 staging 名。
+//!
+//! commit 序（crash 窗口 v1 文档化——FAT 无原子多扇区写）：**工作副本**
+//! fat2/root2 上 collect 旧链 →（旧链标记未释放下）分配新链（防重用）→
+//! 写数据扇区（簇尾零填）→ 释放旧链 → 写双 FAT → 写根目录项（同名覆写/
+//! 首个 End·删除槽/无槽 = ST_FULL）→ 根扇区回读对账 → 全过才安装内存态。
+//! 任一步失败 = 内存态零变化（client 重 PUT 重试）；盘上只多孤儿数据簇
+//! （FAT/根未更新的写入，无簇号泄漏）。掉电落在「FAT 已写、根未写」窗口
+//! = 单文件可坏（旧链已释放仍被根引用）——跨文件不传染，覆写路径下次
+//! commit 自愈（旧链从盘面 collect 到 Free 即止）；v1 接受，journaling 非
+//! 本阶段面。
 //!
 //! 会话纪律（bsh fs_rpc 同款）：**收侧**超时/错码 = 会话毒化（迟到应答会
 //! 错配下一请求 → 静默错数据；确定性降级 ST_BAD loud 优于无告警错数据）；
@@ -18,19 +32,17 @@
 //! `hidden` 一致性对账（mkfat 卷恒 @16、hidden=16；LBA0 保留区按构造无
 //! 55AA 签名，parse_bpb 必拒）。
 
-use berry_blkproto::{encode_request, parse_reply, OP_READ, SECTOR_SZ, ST_OK};
+use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
 use berry_fatfs::{
-    dir_entry, fat11_display, fat12_entry, name_to_fat11, parse_bpb, Bpb, DirFile, DirKind,
-    Fat12Entry,
+    dir_entry, encode_file_entry, fat11_display, fat12_entry, fat12_set, find_free_cluster,
+    name_to_fat11, parse_bpb, Bpb, DirFile, DirKind, Fat12Entry, FAT12_EOC,
 };
-use berry_fsproto::{
-    encode_reply_get, CHUNK, FILE_COUNT_MAX, FILE_SIZE_MAX, LIST_MAX, ST_BAD, ST_FULL,
-};
+use berry_fsproto::{encode_reply_get, CHUNK, FILE_SIZE_MAX, LIST_MAX, ST_BAD, ST_FULL};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_handle_duplicate, berry_object_wait_one, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_read, Handle, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
-    BERRY_ERR_BUSY, CLOCK_MONOTONIC,
+    berry_vmo_read, berry_vmo_write, Handle, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE,
+    SIGNAL_WRITABLE, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
 };
 
 use crate::trap;
@@ -60,6 +72,14 @@ pub enum GetRes {
     Bad,
 }
 
+/// FAT 层 PUT 分片结果（None = 非 FAT 名——调用方回落 RAM 通道）。
+pub enum StageRes {
+    /// 已入 staging 槽（TRUNC 点 commit 落盘）。
+    Staged,
+    /// 拒（st 直接回 client：ST_FULL/ST_BAD）。
+    Deny(u8),
+}
+
 /// FAT 只读层（单例，fsmgr main 持有；几何静态化在 init）。
 pub struct Fat {
     /// blk 服务端端（blk_a 经 env 块迁移，本表唯一持有）。
@@ -76,6 +96,9 @@ pub struct Fat {
     cache: [u8; CLUS_CAP],
     /// 单簇缓存当前簇号（0 = 无效——簇号域 ≥ 2）。
     cache_clus: u32,
+    /// 单槽 staging（A-6：FAT 名的 PUT 分片累积；TRUNC = commit 触发点，
+    /// 槽内 (8.3 名, 内容)——跨名写自动先落盘旧槽）。
+    staging: Option<([u8; 11], Vec<u8>)>,
 }
 
 /// eager init：vmo bounce → 探测卷 → 整读 FAT0 + 根目录。失败 = None
@@ -162,6 +185,7 @@ pub fn init(h: Handle) -> Option<Fat> {
         root: root_buf,
         cache: [0u8; CLUS_CAP],
         cache_clus: 0,
+        staging: None,
     })
 }
 
@@ -229,17 +253,72 @@ fn rpc_read(h: Handle, vmo: Handle, lba: u64, out: &mut [u8; SECTOR_SZ]) -> RpcR
     RpcRes::Ok
 }
 
-impl Fat {
-    /// GET 兜底：FAT 名查找 + 簇界分片服务（chunk = 协议窗、文件尾、簇界
-    /// 三取小——dlen < CHUNK 合法，more 链由 client 侧 off 前进收敛）。
-    pub fn handle_get(&mut self, name: &[u8], off: u32, rep: &mut [u8; 256]) -> GetRes {
-        if !self.sess_ok {
-            return GetRes::Bad;
+/// 严格串行 RPC 写一扇区（rpc_read 的写侧镜像）：数据**先**入 VMO 本体
+/// （driver 收别名后才从别名读——send 后再写 = driver 可能读旧字节）→
+/// dup 别名随 send 迁移（EBUSY → wait WRITABLE 重臂；非 EBUSY 失败 = 别名
+/// 未 take，显式回收防表槽泄漏）→ 应答帽 → ST_OK。
+fn rpc_write(h: Handle, vmo: Handle, lba: u64, src: &[u8; SECTOR_SZ]) -> RpcRes {
+    let mut req = [0u8; 16];
+    let n = match encode_request(&mut req, OP_WRITE, lba) {
+        Some(n) => n,
+        None => return RpcRes::Fail, // 扇区域恒合法——编码失败 = 调用方 bug 面
+    };
+    if berry_vmo_write(vmo, src.as_ptr(), 0, SECTOR_SZ) != 0 {
+        return RpcRes::Fail; // 数据未离表——干净失败，不毒化
+    }
+    let mut dup = 0 as Handle;
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE, &mut dup) != 0 {
+        return RpcRes::Fail;
+    }
+    let hs = [dup];
+    loop {
+        let s = berry_channel_send(h, req.as_ptr(), n, hs.as_ptr(), 1);
+        if s == 0 {
+            break;
         }
+        if s != BERRY_ERR_BUSY {
+            let _ = berry_handle_close(dup); // 未被 take——回收
+            return RpcRes::Fail;
+        }
+        let mut obs = 0u64;
+        let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, now() + RPC_CAP_NS, &mut obs);
+        // 超时重臂（常驻服务不自杀——真死由应答帽判）
+    }
+    let mut obs = 0u64;
+    let ws = berry_object_wait_one(h, SIGNAL_READABLE, now() + RPC_CAP_NS, &mut obs);
+    if ws != 0 {
+        return RpcRes::Poison; // 应答帽到点：请求在途，会话状态不可知
+    }
+    let mut rep = [0u8; 8];
+    let mut nb = rep.len();
+    let mut nh = 0usize;
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh) != 0 {
+        return RpcRes::Poison;
+    }
+    if parse_reply(&rep[..nb]) != Some(ST_OK) {
+        return RpcRes::Fail; // ST_RANGE/ST_BAD/野值：应答已收，会话仍干净
+    }
+    RpcRes::Ok
+}
+
+impl Fat {
+    /// GET：staging 优先（读到正在写的文件；staged 名不经盘——会话毒化
+    /// 下也照常服务，数据在内存）→ 盘上 FAT 面 + 簇界分片服务（chunk =
+    /// 协议窗、文件尾、簇界三取小——dlen < CHUNK 合法，more 链由 client
+    /// 侧 off 前进收敛）。
+    pub fn handle_get(&mut self, name: &[u8], off: u32, rep: &mut [u8; 256]) -> GetRes {
         let n11 = match name_to_fat11(name) {
             Some(n) => n,
             None => return GetRes::Miss, // RAM 名字空间（小写等）——非 FAT 面
         };
+        if let Some((n, buf)) = self.staging.as_ref() {
+            if *n == n11 {
+                return self.serve_slice(buf, off, rep);
+            }
+        }
+        if !self.sess_ok {
+            return GetRes::Bad;
+        }
         let f = match self.lookup11(&n11) {
             Some(f) => f,
             None => return GetRes::Miss,
@@ -250,32 +329,245 @@ impl Fat {
         self.serve(&f, off as usize, f.size as usize, rep)
     }
 
-    /// PUT/TRUNC 前置：FAT-only 名先物化整文件进 RAM（RAM = 写通道，此后
-    /// RAM 副本影子 FAT 项）。None = 可继续正常 do_put/do_trunc（已在 RAM
-    /// / 非 FAT 名 / 盘上无此名）；Some(st) = 拒（st 直接回 client——物化
-    /// 不了还硬走会静默建空文件影子真数据，诚实拒）。
-    pub fn materialize(&mut self, files: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8]) -> Option<u8> {
-        if files.iter().any(|(n, _)| n.as_slice() == name) {
-            return None;
+    /// FAT 名 PUT 分片入 staging 槽。None = 非 FAT 名（调用方回落 RAM 通道
+    /// do_put）；跨名写先自动 commit 旧槽（当前 buf 长即终长——串行 client
+    /// 一段重定向一个目标的节奏；commit 失败 = 旧槽保留 + 新写拒）。
+    pub fn stage_put(&mut self, name: &[u8], off: u32, data: &[u8]) -> Option<StageRes> {
+        let n11 = name_to_fat11(name)?;
+        let end = off as usize + data.len(); // u32 + ≤CHUNK：64 位下无溢出
+        if end > FILE_SIZE_MAX {
+            // 尺寸帽先于一切槽操作拒（不触碰既有 staging——拒绝语义干净）。
+            return Some(StageRes::Deny(ST_FULL));
         }
-        let on_disk = name_to_fat11(name).and_then(|n11| self.lookup11(&n11));
-        if !self.sess_ok {
-            // 会话毒化但名字在盘上——内容不可知，拒；不在盘上 → 正常新建。
-            return match on_disk {
-                Some(_) => Some(ST_BAD),
-                None => None,
-            };
+        match self.staging.take() {
+            Some((cur, buf)) if cur == n11 => {
+                let mut buf = buf;
+                if end > buf.len() {
+                    buf.resize(end, 0); // off 超现长 = 零填充扩容（PUT 语义）
+                }
+                buf[off as usize..end].copy_from_slice(data);
+                self.staging = Some((cur, buf));
+                Some(StageRes::Staged)
+            }
+            Some((cur, buf)) => {
+                let st = self.commit(cur, &buf);
+                if st != berry_fsproto::ST_OK {
+                    self.staging = Some((cur, buf)); // 旧槽保留，新写拒
+                    return Some(StageRes::Deny(st));
+                }
+                self.staging = Some((n11, stage_buf(off, data, end)));
+                Some(StageRes::Staged)
+            }
+            None => {
+                self.staging = Some((n11, stage_buf(off, data, end)));
+                Some(StageRes::Staged)
+            }
         }
-        let f = on_disk?;
-        if f.size as usize > FILE_SIZE_MAX || files.len() >= FILE_COUNT_MAX {
+    }
+
+    /// FAT 名 TRUNC = commit 触发点。None = 非 FAT 名（RAM 通道 do_trunc）。
+    /// 同名 staged → resize 后落盘（len = 终长，`echo > F` 的截断/建空面）；
+    /// 跨名 → 旧槽先落盘再处理目标；未 staged → 盘上现内容 apply 截断后
+    /// 落盘（盘上无此名 = 建空文件——`echo > NEWF` 的 PUT 先行场景）。
+    pub fn stage_trunc(&mut self, name: &[u8], size: u32) -> Option<u8> {
+        let n11 = name_to_fat11(name)?;
+        let size = size as usize;
+        if size > FILE_SIZE_MAX {
             return Some(ST_FULL);
         }
-        let data = match self.read_all(&f) {
-            Some(d) => d,
-            None => return Some(ST_BAD), // 链断/RPC 失败
+        match self.staging.take() {
+            Some((cur, buf)) if cur == n11 => {
+                let mut buf = buf;
+                buf.resize(size, 0); // 截断或零扩（TRUNC 语义，do_trunc 同形）
+                let st = self.commit(cur, &buf);
+                if st != berry_fsproto::ST_OK {
+                    self.staging = Some((cur, buf)); // 落盘失败槽保留
+                }
+                Some(st)
+            }
+            Some((cur, buf)) => {
+                let st = self.commit(cur, &buf);
+                if st != berry_fsproto::ST_OK {
+                    self.staging = Some((cur, buf));
+                    return Some(st);
+                }
+                Some(self.stage_trunc_fresh(n11, size))
+            }
+            None => Some(self.stage_trunc_fresh(n11, size)),
+        }
+    }
+
+    /// 未 staged 名的 TRUNC：盘上现文件读全 → 截断 → 落盘；盘上无此名 =
+    /// 空内容落盘（建空文件）。盘上内容读不出（链断/RPC 失败）= 诚实拒
+    /// ST_BAD——内容不可知时不盲写。
+    fn stage_trunc_fresh(&mut self, n11: [u8; 11], size: usize) -> u8 {
+        let mut buf = Vec::new();
+        if let Some(f) = self.lookup11(&n11) {
+            // 盘上目录项 size 帽（handle_get 同款守卫）：野值直读全量 =
+            // Vec::with_capacity(f.size) 巨分配——berry-libc 静态堆耗尽
+            // malloc null → abort 杀常驻服务。A-5 materialize 原有此帽，
+            // A-6 换轨时丢了（对抗审查实抓回归）。
+            if f.size as usize > FILE_SIZE_MAX {
+                return ST_FULL;
+            }
+            match self.read_all(&f) {
+                Some(mut d) => {
+                    d.resize(size, 0);
+                    buf = d;
+                }
+                None => {
+                    return ST_BAD;
+                }
+            }
+        }
+        self.commit(n11, &buf)
+    }
+
+    /// staging 落盘（commit 点；序与 crash 窗口见模块头）。工作副本
+    /// fat2/root2 全程不改 self——任一步失败内存态零变化（client 重 PUT
+    /// 重试路径成立）。返回 ST_OK / ST_FULL（数据簇·根目录满）/ ST_BAD。
+    fn commit(&mut self, n11: [u8; 11], data: &[u8]) -> u8 {
+        if !self.sess_ok {
+            return ST_BAD;
+        }
+        let csz = self.cluster_sz();
+        let nclus = if data.is_empty() {
+            0 // 空文件 first=0 无链（mkfat 空文件占簇惯例不采用——两端都解析）
+        } else {
+            (data.len() + csz - 1) / csz
         };
-        files.push((name.to_vec(), data));
-        None
+        let max = 2 + self.bpb.cluster_count;
+        let mut fat2 = self.fat;
+        let mut root2 = self.root;
+        // ① 旧链 collect（覆写面；新建/空文件无链。环状 FAT 被 max 轮钉死，
+        // 重复项释放幂等无害）。
+        let old_first = self
+            .lookup11(&n11)
+            .map(|f| f.first_clus)
+            .filter(|&c| c >= 2);
+        let mut old_chain: Vec<u32> = Vec::new();
+        if let Some(mut c) = old_first {
+            for _ in 0..max {
+                old_chain.push(c);
+                match fat12_entry(&self.fat, c) {
+                    Some(Fat12Entry::Next(v)) if (2..max).contains(&v) => c = v,
+                    _ => break, // EOC 链尾（正常）/Free/Bad/畸形——collect 止
+                }
+            }
+        }
+        // ② 新链分配（旧链标记未释放 → 不重用旧簇；每簇先标 EOC 占位再回填
+        // prev 链接；find 从 last+1 续扫 = 簇号升序确定性）。
+        let mut chain: Vec<u32> = Vec::with_capacity(nclus);
+        for _ in 0..nclus {
+            let from = chain.last().map(|&c| c + 1).unwrap_or(2);
+            let c = match find_free_cluster(&fat2, from, self.bpb.cluster_count) {
+                Some(c) => c,
+                None => return ST_FULL, // 数据簇耗尽——内存态未动
+            };
+            if fat12_set(&mut fat2, c, FAT12_EOC).is_none() {
+                return ST_BAD; // 域内簇号必在 FAT_CAP 内——内部不变量破
+            }
+            if let Some(&prev) = chain.last() {
+                if fat12_set(&mut fat2, prev, c).is_none() {
+                    return ST_BAD;
+                }
+            }
+            chain.push(c);
+        }
+        // ③ 数据扇区落盘（簇尾零填；空文件零簇零写）。
+        for (i, &c) in chain.iter().enumerate() {
+            let lba = self.clus_lba(c);
+            for s in 0..self.bpb.spc as u64 {
+                let src = i * csz + s as usize * SECTOR_SZ;
+                let mut sec = [0u8; SECTOR_SZ];
+                let take = data.len().saturating_sub(src).min(SECTOR_SZ);
+                // take==0 = src 已越过数据尾（尾簇零填扇区）——零长切片也
+                // 要求 start ≤ len，跳过拷贝（sec 预零）。
+                if take > 0 {
+                    sec[..take].copy_from_slice(&data[src..src + take]);
+                }
+                if !self.write_sector(lba + s, &sec) {
+                    return ST_BAD;
+                }
+            }
+        }
+        // ④ 旧链释放（新链已占且数据已落——旧簇此后可再分配）。
+        for &c in &old_chain {
+            if fat12_set(&mut fat2, c, 0).is_none() {
+                return ST_BAD;
+            }
+        }
+        // ⑤ 双 FAT 落盘（FAT1 不读不核——mkfat 双副本同写惯例，v1 信任面）。
+        let fat_base = self.bpb.hidden as u64 + self.bpb.fat_sector as u64;
+        for k in 0..self.bpb.nfats as u64 {
+            for i in 0..self.bpb.fat_sz as u64 {
+                let o = i as usize * SECTOR_SZ;
+                let mut sec = [0u8; SECTOR_SZ];
+                sec.copy_from_slice(&fat2[o..o + SECTOR_SZ]);
+                if !self.write_sector(fat_base + k * self.bpb.fat_sz as u64 + i, &sec) {
+                    return ST_BAD;
+                }
+            }
+        }
+        // ⑥ 根目录项：同名覆写 → 首个 End·删除槽 → 无槽 = ST_FULL（写入
+        // End 槽后其后者仍为 0x00——目录终结标记不丢；末槽无后继 = 目录
+        // 边界即止，lookup 迭代同界）。
+        let mut slot = None;
+        for i in 0..self.bpb.root_entries as usize {
+            let e = &self.root[i * 32..i * 32 + 32];
+            if let Some(DirKind::File(f)) = dir_entry(e) {
+                if &f.name == &n11 {
+                    slot = Some(i);
+                    break;
+                }
+            }
+        }
+        if slot.is_none() {
+            for i in 0..self.bpb.root_entries as usize {
+                let e = &self.root[i * 32..i * 32 + 32];
+                if e[0] == 0x00 || e[0] == 0xE5 {
+                    slot = Some(i);
+                    break;
+                }
+            }
+        }
+        let slot = match slot {
+            Some(s) => s,
+            None => return ST_FULL, // 根目录满（16 项）
+        };
+        let first = chain.first().copied().unwrap_or(0);
+        let mut e32 = [0u8; 32];
+        if encode_file_entry(&n11, first, data.len() as u32, &mut e32).is_none() {
+            trap(); // first 域内簇号 + 尺寸帽已检——内部不变量破，不静默
+        }
+        root2[slot * 32..slot * 32 + 32].copy_from_slice(&e32);
+        // ⑥′ 根扇区落盘（整扇区写回——root2 该段的同扇区邻槽一并带上，
+        // 内存副本与盘面唯一的落盘交汇点；此前只写 ③ 数据 ⑤ FAT，根目录
+        // 缺写盘 = ⑦ 回读旧扇区必 mismatch，首版实踩）。
+        let root_lba = self.bpb.hidden as u64
+            + self.bpb.root_sector as u64
+            + (slot * 32 / SECTOR_SZ) as u64;
+        let o = slot * 32 / SECTOR_SZ * SECTOR_SZ;
+        let mut sec = [0u8; SECTOR_SZ];
+        sec.copy_from_slice(&root2[o..o + SECTOR_SZ]);
+        if !self.write_sector(root_lba, &sec) {
+            return ST_BAD;
+        }
+        // ⑦ 根扇区回读对账（写路径便宜一致性验——错位写立即显形 ST_BAD）。
+        let root_lba = self.bpb.hidden as u64
+            + self.bpb.root_sector as u64
+            + (slot * 32 / SECTOR_SZ) as u64;
+        let o = slot * 32 / SECTOR_SZ * SECTOR_SZ;
+        let mut back = [0u8; SECTOR_SZ];
+        if !self.read_sector(root_lba, &mut back) || back[..] != root2[o..o + SECTOR_SZ] {
+            return ST_BAD;
+        }
+        // ⑧ 全过——安装内存态（此刻起读面见新文件；簇缓存失效——簇内容
+        // 已变）。staging 槽的处置归调用方（commit 不知调用语境）。
+        self.fat = fat2;
+        self.root = root2;
+        self.cache_clus = 0;
+        berry_fsproto::ST_OK
     }
 
     /// LIST 续列：未被 RAM 影子的 FAT 文件名（显示形）接在 RAM 名后，
@@ -308,6 +600,25 @@ impl Fat {
             }
             buf[n..n + disp.len()].copy_from_slice(disp);
             n += disp.len();
+        }
+        // 未落盘的 staging 名（盘上无此名才列——已 commit 的不重复；staged
+        // 名恒 8.3 显示形，与 RAM 名字空间按构造不相交）。
+        if let Some((n11, _)) = self.staging.as_ref() {
+            if self.lookup11(n11).is_none() {
+                let mut tmp = [0u8; 12];
+                if let Some(dn) = fat11_display(n11, &mut tmp) {
+                    let disp = &tmp[..dn];
+                    let need = disp.len() + if n > 0 { 1 } else { 0 };
+                    if n + need <= LIST_MAX {
+                        if n > 0 {
+                            buf[n] = b' ';
+                            n += 1;
+                        }
+                        buf[n..n + disp.len()].copy_from_slice(disp);
+                        n += disp.len();
+                    }
+                }
+            }
         }
         n
     }
@@ -353,7 +664,24 @@ impl Fat {
         }
     }
 
-    /// 整文件读出（物化用；簇界步进——与 serve 同几何，无 CHUNK 限）。
+    /// staging GET 切片（RAM handle_get 同语义：off ≥ len → 空片收尾；
+    /// 否则 ≤CHUNK 窗 + more。服务端不变量 more=true ⇒ dlen ≥ 1）。
+    /// 编码 None（算术出界）= 服务端 bug → trap（不静默）。
+    fn serve_slice(&self, buf: &[u8], off: u32, rep: &mut [u8; 256]) -> GetRes {
+        let off = off as usize;
+        let (slice, more) = if off >= buf.len() {
+            (&buf[buf.len()..], false) // 空片收尾
+        } else {
+            let end = (off + CHUNK).min(buf.len());
+            (&buf[off..end], end < buf.len())
+        };
+        match encode_reply_get(rep, off as u32, slice, more) {
+            Some(n) => GetRes::Served(n),
+            None => trap(),
+        }
+    }
+
+    /// 整文件读出（stage_trunc 截断面用；簇界步进——与 serve 同几何）。
     fn read_all(&mut self, f: &DirFile) -> Option<Vec<u8>> {
         let size = f.size as usize;
         let csz = self.cluster_sz();
@@ -397,9 +725,7 @@ impl Fat {
         if !(2..max).contains(&clus) {
             return false;
         }
-        let first = self.bpb.hidden as u64
-            + self.bpb.data_sector as u64
-            + (clus as u64 - 2) * self.bpb.spc as u64;
+        let first = self.clus_lba(clus);
         let mut sec = [0u8; SECTOR_SZ];
         for i in 0..self.bpb.spc as u64 {
             if !self.read_sector(first + i, &mut sec) {
@@ -431,6 +757,38 @@ impl Fat {
     fn cluster_sz(&self) -> usize {
         self.bpb.spc as usize * SECTOR_SZ
     }
+
+    /// 经 vblk 写一个扇区（毒化语义同 read_sector：Poison → sess_ok=false
+    /// + loud 一行，此后 FAT 写面确定性 ST_BAD）。
+    fn write_sector(&mut self, lba: u64, src: &[u8; SECTOR_SZ]) -> bool {
+        if !self.sess_ok {
+            return false;
+        }
+        match rpc_write(self.h, self.vmo, lba, src) {
+            RpcRes::Ok => true,
+            RpcRes::Fail => false, // 干净失败——会话仍同步，不毒化
+            RpcRes::Poison => {
+                self.sess_ok = false;
+                println!("fsmgr: fat rpc lost"); // loud 一次（此后 ST_BAD 降级）
+                false
+            }
+        }
+    }
+
+    /// 簇号 → 盘绝对 LBA（hidden 前缀 + 卷 data 区 + 簇偏；load_clus 同式
+    /// 收敛于此——commit 数据落盘与簇读单一折算点）。
+    fn clus_lba(&self, clus: u32) -> u64 {
+        self.bpb.hidden as u64
+            + self.bpb.data_sector as u64
+            + (clus as u64 - 2) * self.bpb.spc as u64
+    }
+}
+
+/// 新 staging 槽内容（off 起写 data，前段零填）。
+fn stage_buf(off: u32, data: &[u8], end: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; end];
+    buf[off as usize..end].copy_from_slice(data);
+    buf
 }
 
 /// now = clock_read（失败 trap——时钟是启动关键原语，main 同款）。

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # BerryOS 无人值守冒烟测试 —— CI 与本地同一入口（just smoke）。
 #
-# 做五件事：
+# 做六件事：
 #   1. 后台拉起 QEMU virt（-kernel ELF 直加载），串口重定向到临时日志；
 #   2. 断言 boot 标记全部出现（BerryOS boot / GIC ok / … / ktest done）；
 #   3. 断言 switches=N 金丝雀 ≥3 条且严格递增（IRQ 抢占分时活着、计数不冻）；
@@ -12,11 +12,12 @@
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
-#      P5 v0 起扩为编辑三段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），38 标记
-#      （boot 23 + rootfs 15——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok 在列
+#      P5 v0 起扩为编辑三段、P6 A-6 起四段）：三拉 QEMU 带
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），39 标记
+#      （boot 23 + rootfs 16——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      FATW ok 在列
 #      = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务消费链/FAT
-#      只读底座全过，状态谓词
+#      只读底座与**落盘写**全过，状态谓词
 #      门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
@@ -25,9 +26,20 @@
 #        b. `helll\x7f`+`o\n` → 退格编辑得 `hello` → 转发 bsh →
 #           `bsh: hello: not found`（A-2 行编辑 + 转发 + bsh 应答）；
 #        c. `\x1b[A`+`!\n` → 历史召回 `hello` + `!` → 转发 →
-#           `bsh: hello!: not found`（P5 v0 mini-readline：ESC[A 上翻）。
-#      两断言互非子串。随后再验 switches 金丝雀严格递增（IRQ 分流破坏
-#      屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
+#           `bsh: hello!: not found`（P5 v0 mini-readline：ESC[A 上翻）；
+#        d. `run fail\n` → `$?`=42 → `echo f$?t > OUT.TXT\n`（大写 8.3 名
+#           → FAT 层落盘，内容 "f42t\n"）→ `cat OUT.TXT\n` 读回——断言
+#           grep 'f42t'：命令文本只含未展开的 `f$?t`，串口回显逐字节散布
+#           非连续，f42t 只能来自真实文件内容（A-6 `$?` 展开造内容 =
+#           消回声歧义的确定性状态谓词）。
+#      b/c/d 三断言互非子串。随后再验 switches 金丝雀严格递增（IRQ 分流
+#      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
+#   6. P6 A-6 FAT 持久化相（第四跑）：**不重造盘**（复用第 5 相已写盘——
+#      mkfat 重产 = 持久化零验收），39 标记载明写过的盘再起（bsh FATW
+#      自验走覆写路径 = 旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT`
+#      → grep 'f42t'——`>` 落的是真扇区、跨 boot 存活。盘 cache
+#      writeback=off：QEMU 由 SIGTERM 终止，writeback 模式可能不刷页
+#      缓存（所有 -drive 行统一，含 justfile run-rootfs）。
 #
 # 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 CLAUDE.md 陷阱节），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
@@ -55,7 +67,10 @@ python3 "$(dirname "$0")/size.py" --assert-flip "$KERNEL" \
 python3 "$(dirname "$0")/gen_abi.py" --check \
   || { echo "smoke: FAIL: ABI 单源守卫失败（改了 abi.toml 跑 just abi-gen）" >&2; exit 1; }
 
-DEADLINE_BOOT=120    # 秒：boot 全部标记到齐
+DEADLINE_BOOT=120    # 秒：boot 全部标记到齐（裸相）
+DEADLINE_ROOTFS=240  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
+                     # 自验含整链 commit（fsmgr 侧 ~13 次串行扇区 RPC，TCG
+                     # 下每次 ~0.8s）+ GET 读回 ≈ +30-40s，120s 结构性不够
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
@@ -158,7 +173,9 @@ last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
 # 的读对象；每次重造 = 跨相/跨 run 零残留、PATTERN 逐字节可对拍）。
 # P6 A-3：LBA0 印章 `BERRYOSVBLK!`（notrunc 只写 12B 落保留区——vblk
 # 读 LBA0 对拍；写 LBA1/BLKD LBA5 同在保留区，FAT 卷面（LBA16+）测试
-# 永不写）。
+# 永不写——A-6 起卷面有 FATW/RW.TXT 落盘写，保留区与卷面仍零交集）。
+# P6 A-6：-drive 全线 cache.writeback=off——QEMU 由 SIGTERM 终止，writeback
+# 模式可能不刷页缓存；本相盘随后重造无持久化需求，但与 RX/持久化相统一。
 python3 工具链/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 kill "$QEMU_PID" 2>/dev/null
@@ -168,7 +185,7 @@ echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs + virtio-blk）
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
   -global virtio-mmio.force-legacy=false \
-  -drive if=none,id=drv0,format=raw,file=disk.img \
+  -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
@@ -228,8 +245,14 @@ QEMU_PID=$!
 # rootfs 相第 15 标记（状态谓词；盘内容确定性字节，无竞速面。标记取带参
 # 形态防子串混叠（与「FS ok n=」/「ROOTFS ok」两族互非子串已核——
 # grep -qF 全标记两两互非子串纪律）。
+# FATW ok n= = **FAT 落盘写全链**（P6 A-6）：RW.TXT 3000B pattern
+# （(i*17+3)%256，跨 2 簇）经 bsh fs_put → fsmgr staging + 尾随 TRUNC 即
+# commit——簇分配/数据扇区/双 FAT/根目录项真写盘（rpc_write 经 vblk
+# OP_WRITE）→ fs_get 读回逐字节对拍才自打——`>` 重定向从此对 8.3 大写名
+# 是**真落盘**（RAM 物化退役）——rootfs 相第 16 标记（状态谓词；每次
+# boot 重写 = 覆写路径幂等：旧链 collect → 新链分配 → 旧链释放）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -243,25 +266,29 @@ while :; do
     fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
   fi
   [ -z "$missing" ] && break
-  [ $(( $(date +%s) - t2 )) -gt $DEADLINE_BOOT ] \
-    && fail "rootfs 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
+  # 相内含 FATW 整链 commit（TCG ~+30-40s）——比较须用 DEADLINE_ROOTFS
+  #（240s；与文案一致。写 BOOT 是笔误：比较 120s 文案 240s，>120s 到齐会被误杀）。
+  [ $(( $(date +%s) - t2 )) -gt "$DEADLINE_ROOTFS" ] \
+    && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n=）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n=）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 15 = 38
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 16 = 39
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
-# 有人收；VIRTIO/VBLK/BLKD/FAT ok 在列 = MMIO 探测、块设备 IO、块设备服务
-# 消费链与 FAT 只读底座全过；状态谓词门控——不赌 boot 秒数）
+# 有人收；VIRTIO/VBLK/BLKD/FAT/FATW ok 在列 = MMIO 探测、块设备 IO、块设备
+# 服务消费链与 FAT 只读底座+落盘写全过；状态谓词门控——不赌 boot 秒数）
 # 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
 # QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
 # 行 token 才打——内核侧状态断言，非注入即达回声）；b. `helll\x7f`+`o\n` →
 # 退格编辑得 `hello` → endK2 转发 bsh → `bsh: hello: not found`；c. `\x1b[A`
 # +`!\n` → ESC[A 历史召回 `hello`+`!` → `bsh: hello!: not found`（与 b 互非
-# 子串，各自独立断言）。注入后仍跑金丝雀——RX 中断若破坏 IRQ 屏蔽契约
+# 子串，各自独立断言）；d. `run fail\n` → `echo f$?t > OUT.TXT\n` →
+# `cat OUT.TXT\n` → grep 'f42t'（A-6 FAT 落盘链，见头部段 d 注）。注入后
+# 仍跑金丝雀——RX 中断若破坏 IRQ 屏蔽契约
 # （在屏蔽窗内置 Event/唤醒却漏 EOIR/漏开关），死状常为「冻而不死」（活性
 # 检盲区），只有切换序列还动才真活着。
 kill "$QEMU_PID" 2>/dev/null
@@ -272,20 +299,23 @@ rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 ( sleep 900 ) > "$RX_FIFO" &
 RX_HOLDER=$!
-# 盘重造 + LBA0 印章重落（每相自足：mkfat 确定性重产——rootfs 相若有写
-# 脏盘（vblk LBA1/BLKD LBA5 均在保留区，FAT 卷面只读）不跨相残留）。
+# 盘重造 + LBA0 印章重落（rootfs 相的 FATW 落盘写（RW.TXT）会脏卷面——
+# 持久化相的基线须从确定性盘起：本相重造保证段 d 的 OUT.TXT 落在已知的
+# 簇位（8）与根目录槽位；vblk LBA1/BLKD LBA5 仍在保留区）。**本相写过的
+# 盘直接喂阶段 5**（持久化相不再重造）——cache.writeback=off 保证
+# SIGTERM 终止前扇区已同步落宿主盘。
 python3 工具链/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
   -global virtio-mmio.force-legacy=false \
-  -drive if=none,id=drv0,format=raw,file=disk.img \
+  -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：38 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：39 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -301,10 +331,21 @@ while :; do
     fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
   fi
   [ -z "$missing" ] && break
-  [ $(( $(date +%s) - t3 )) -gt "$DEADLINE_BOOT" ] && fail "RX 相 ${DEADLINE_BOOT}s 标记未到齐，缺：$missing"
+  # 比较用 DEADLINE_ROOTFS（同上 rootfs 相注——RX 相含 FATW 落盘写）。
+  [ $(( $(date +%s) - t3 )) -gt "$DEADLINE_ROOTFS" ] && fail "RX 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
 echo "smoke: RX 相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入编辑序列（逐字节 0.5s 间隔）"
+# 逐字节注入助手（段 d 专用——a/b/c 保留既有显式 printf 形态）：单引号传参
+# 保字面（`$?` 不在 smoke 侧展开）；每字节 0.5s（FEN=0 深 1 字节确定性）。
+inject_line() {
+  local s=$1 i
+  for ((i = 0; i < ${#s}; i++)); do
+    printf '%s' "${s:i:1}" >&3
+    sleep 0.5
+  done
+  printf '\n' >&3
+}
 exec 3> "$RX_FIFO"
 # a. token 行：RX ok（A-1 console token 面；`rx` 行入历史但不转发）。
 printf 'r' >&3; sleep 0.5
@@ -354,6 +395,25 @@ while :; do
   sleep 1
 done
 echo "smoke: bsh hello! 应答到齐（退格 + ESC[A 召回双验过）"
+# d. FAT 落盘链（P6 A-6）：`run fail`（bin/fail exit 42 → $?=42）→
+# `echo f$?t > OUT.TXT`（大写 8.3 名 → fsmgr FAT 层 staging + TRUNC 即
+# commit 落盘，内容 "f42t\n"）→ `cat OUT.TXT` 读回打印 f42t。断言
+# grep -a 'f42t'：注入/回显文本只含未展开的 `f$?t`（console 逐字节回显
+# 散布在稳态矩阵输出间，本就非连续），f42t 只能来自真实文件内容——
+# `$?` 展开造内容 = 消回声歧义的确定性状态谓词（标记不建在竞速上的
+# 注入版）。行间不等待：FIFO/通道排队天然串行，bsh 逐行处理。
+inject_line 'run fail'
+inject_line 'echo f$?t > OUT.TXT'
+inject_line 'cat OUT.TXT'
+t4=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 FAT 落盘链阶段退出"
+  grep -aq 'f42t' "$LOG" && break
+  [ $(( $(date +%s) - t4 )) -gt 60 ] \
+    && fail "f42t 60s 未出现（FAT 写链断？查 bsh: 行与 fsmgr: fat 诊断）"
+  sleep 1
+done
+echo "smoke: FAT 落盘链到齐（run fail + \$? 展开 > OUT.TXT + cat 读回）"
 
 # 注入后金丝雀（fresh 日志从 RX 相起算，无需清）。
 t5=$(date +%s)
@@ -370,5 +430,52 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
   END { exit (bad || n<3) ? 1 : 0 }
 ' || fail "RX 相 switches 非严格递增：$(grep -o 'switches=[0-9]*' "$LOG" | tr '\n' ' ')"
 
+# —— 阶段 5：P6 A-6 FAT 持久化相（第四跑：写过的盘再起）——
+# **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收）；
+# 不关 fd3（阶段 5 还要注入 cat 行，exec 3>&- 移到本阶段尾）。39 标记载明
+# 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
+# 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读。
+# 注入 `cat OUT.TXT` → grep 'f42t'：上一相 `>` 落的扇区跨 boot 存活——
+# fat:rw 关卡的「w」半边（读 = FAT ok，写 = FATW ok + 本断言）。
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+: > "$LOG"
+echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  -global virtio-mmio.force-legacy=false \
+  -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
+  -device virtio-blk-device,drive=drv0 \
+  < "$RX_FIFO" > "$LOG" 2>&1 &
+QEMU_PID=$!
+t6=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 提前退出（FAT 持久化相）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+  missing=""
+  for m in "${ALL_MARKERS[@]}"; do
+    assert_marker "$m" || missing="${missing:+$missing }$m"
+  done
+  if [ -z "$missing" ] && grep -q 'ROOTFS vmo=none' "$LOG"; then
+    fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
+  fi
+  [ -z "$missing" ] && break
+  # 比较用 DEADLINE_ROOTFS（同 rootfs 相注——持久化相含 FATW 覆写路径）。
+  [ $(( $(date +%s) - t6 )) -gt "$DEADLINE_ROOTFS" ] \
+    && fail "FAT 持久化相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
+  sleep 1
+done
+echo "smoke: FAT 持久化相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入 cat OUT.TXT"
+inject_line 'cat OUT.TXT'
+t6=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在持久化 cat 阶段退出"
+  grep -aq 'f42t' "$LOG" && break
+  [ $(( $(date +%s) - t6 )) -gt 60 ] \
+    && fail "持久化 f42t 60s 未出现（盘写没落/没跨 boot 存活？查 cache.writeback 与 FATW ok）"
+  sleep 1
+done
+echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t）"
+
 exec 3>&-
-echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回双应答））"
+echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回/落盘三应答）+ FAT 持久化相（跨 boot 读回 f42t））"

@@ -88,6 +88,19 @@ const COLLECT_MAX: usize = 32 * 1024;
 /// 通道等待帽（活动帽：每次收包刷新——慢而活着不误杀；超时无 EOF = 断链面）。
 const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
 
+/// fs 写请求（分片 PUT + TRUNC——FAT 层 commit 载体）的收侧帽：commit 在
+/// fsmgr 侧是一串**串行扇区 RPC**（数据扇区 + 双 FAT + 根目录 + 读回——
+/// 3000B/2 簇 ≈ 13 次，16KiB 帽文件 worst ≈ 22 次），TCG 下每次往返 ~0.8s
+/// （收发两手同层 IPC 无直切 + timer tick 200ms 粒度），10s 常规帽**结构性
+/// 误杀**（P6 A-6 实踩：bsh 放弃打 fs unreachable 时 fsmgr 仍在走完整
+/// commit——服务没死只是慢，晚到的应答还会毒化会话）。TRUNC 直接触发
+/// commit；**跨名 PUT 也会先对保留的旧 staging 槽隐式重跑同款 commit**
+/// （落盘失败槽保留的重试设计面）——故 PUT 分片同帽（对抗审查实抓首版
+/// 只给 TRUNC 扩帽漏了 PUT 面）。90s 覆盖帽文件 worst 仍有 4x 余量；真挂
+/// 死由 smoke 侧标记/f42t 帽兜底，交互面 v1 接受单命令阻塞（异步 commit/
+/// 后台 flush 随 v2）。
+const FS_COMMIT_CAP_NS: u64 = 90 * 1_000_000_000;
+
 /// 一次 `run` 的产物。
 struct RunOut {
     data: Vec<u8>,
@@ -127,6 +140,7 @@ fn main() {
     pipe_selftest();
     fs_selftest(&hexyl_out);
     fat_selftest();
+    fatw_selftest();
 
     // —— 交互循环（化妆面）：prompt 只挂命令完成；空读（fd0 的 10s 帽超时
     //    EOF 化）= 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也
@@ -456,11 +470,17 @@ fn st_err(st: u8) -> FsErr {
 
 /// 严格串行 RPC 单趟（PUT/TRUNC 面——应答恰 1 字节 st）：发请求（EBUSY →
 /// wait WRITABLE 10s 重臂——console_write 同款契约）→ 等应答（READABLE
-/// 10s 帽）→ 校 st。buf 复用为请求/应答缓冲（256B 栈上，与 fsmgr 的 msg
-/// 对称）。超时/错码 = Rpc（fsmgr 微秒级回件，10s 帽尽 = 服务死/链断——
-/// 交互面不死 shell，调用方打警告降级）。
-fn fs_rpc_status(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Result<(), FsErr> {
-    let n = fs_rpc(h, buf, reqlen).ok_or(FsErr::Rpc)?;
+/// `cap` 帽）→ 校 st。buf 复用为请求/应答缓冲（256B 栈上，与 fsmgr 的 msg
+/// 对称）。超时/错码 = Rpc（fsmgr 微秒级回件——**除 TRUNC/commit 外**，
+/// 见 [`FS_COMMIT_CAP_NS`]；帽尽 = 服务死/链断——交互面不死 shell，
+/// 调用方打警告降级）。
+fn fs_rpc_status(
+    h: Handle,
+    buf: &mut [u8; 256],
+    reqlen: usize,
+    cap: u64,
+) -> Result<(), FsErr> {
+    let n = fs_rpc(h, buf, reqlen, cap).ok_or(FsErr::Rpc)?;
     if n == 1 {
         if buf[0] == ST_OK {
             return Ok(());
@@ -470,7 +490,8 @@ fn fs_rpc_status(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Result<(), Fs
     Err(FsErr::Rpc) // 应答长度破缺 = 协议面
 }
 
-/// 严格串行 RPC 单趟（返回应答长度入 buf；None = 断链）。
+/// 严格串行 RPC 单趟（返回应答长度入 buf；None = 断链）。`cap` = 收侧
+/// READABLE 帽（常规 TIMEOUT_NS；TRUNC/commit 走 [`FS_COMMIT_CAP_NS`]）。
 ///
 /// **会话毒化**（P6 A-1 对抗审查实抓）：v1 协议无请求序号——收侧超时返
 /// None 后，fsmgr 的迟到应答仍会入队，下一 RPC 的 poll-first 收侧会把它
@@ -479,7 +500,7 @@ fn fs_rpc_status(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Result<(), Fs
 /// （确定性失败优于无告警错数据；迟到应答无人消费、滞留队列无害）。发送
 /// 侧超时不毒化——请求未发出、无迟到应答。恢复面（fsmgr 重拉 / 协议加
 /// 请求序号 + 重同步）随 v2。
-fn fs_rpc(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Option<usize> {
+fn fs_rpc(h: Handle, buf: &mut [u8; 256], reqlen: usize, cap: u64) -> Option<usize> {
     if !FS_SESSION_OK.load(Ordering::Relaxed) {
         return None;
     }
@@ -501,7 +522,7 @@ fn fs_rpc(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Option<usize> {
         }
         deadline = 0; // 重臂（命中后若仍满则续等——公平排队）
     }
-    // 应答：空队阻塞等 READABLE（10s 帽——严格串行下一请求一应答，应答
+    // 应答：空队阻塞等 READABLE（cap 帽——严格串行下一请求一应答，应答
     // 必先于下一请求到队）。
     loop {
         let mut nb = buf.len();
@@ -514,7 +535,7 @@ fn fs_rpc(h: Handle, buf: &mut [u8; 256], reqlen: usize) -> Option<usize> {
             return None;
         }
         let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
+        if berry_object_wait_one(h, SIGNAL_READABLE, now() + cap, &mut obs) != 0 {
             FS_SESSION_OK.store(false, Ordering::Relaxed); // 收侧超时 = 会话作废
             return None;
         }
@@ -527,7 +548,12 @@ static FS_SESSION_OK: AtomicBool = AtomicBool::new(true);
 
 /// 全量写：192B 分片 + 尾随 TRUNC(len) 定长（PUT off 超现长零填充扩容；
 /// 空数据 = 零片 + TRUNC(0) = 建空文件——`echo > f` 面）。尺寸帽在服务端
-/// 统一检（>FILE_SIZE_MAX → ST_FULL → Err(Full)）。
+/// 统一检（>FILE_SIZE_MAX → ST_FULL → Err(Full)）。**分片 PUT 与尾随
+/// TRUNC 的收侧帽都走 [`FS_COMMIT_CAP_NS`]**——FAT 名的 TRUNC 在服务端
+/// 触发整链 commit，且跨名 PUT 也会先对**保留的旧 staging 槽**隐式重跑
+/// 同款 commit 才应答（落盘失败槽保留的设计面：根目录满/ST_BAD 后槽
+/// 留存，下一跨名 PUT 分片要在其后排队秒级——10s 帽同族误杀 + 毒化
+/// 会话，对抗审查实抓 PUT 隐式 commit 面漏帽）。
 fn fs_put(h: Handle, name: &[u8], data: &[u8]) -> Result<(), FsErr> {
     if h == 0 {
         return Err(FsErr::NoFs);
@@ -537,11 +563,11 @@ fn fs_put(h: Handle, name: &[u8], data: &[u8]) -> Result<(), FsErr> {
     while off < data.len() {
         let n = core::cmp::min(CHUNK, data.len() - off);
         let l = encode_put(&mut buf, name, off as u32, &data[off..off + n]).ok_or(FsErr::Rpc)?;
-        fs_rpc_status(h, &mut buf, l)?;
+        fs_rpc_status(h, &mut buf, l, FS_COMMIT_CAP_NS)?;
         off += n;
     }
     let l = encode_trunc(&mut buf, name, data.len() as u32).ok_or(FsErr::Rpc)?;
-    fs_rpc_status(h, &mut buf, l)
+    fs_rpc_status(h, &mut buf, l, FS_COMMIT_CAP_NS)
 }
 
 /// 全量读：GET off 循环拼到 more=0。双防御（协议不变量破缺面）：more 且
@@ -555,7 +581,7 @@ fn fs_get(h: Handle, name: &[u8]) -> Result<Vec<u8>, FsErr> {
     let mut off = 0u32;
     loop {
         let l = encode_get(&mut buf, name, off).ok_or(FsErr::Rpc)?;
-        let n = fs_rpc(h, &mut buf, l).ok_or(FsErr::Rpc)?;
+        let n = fs_rpc(h, &mut buf, l, TIMEOUT_NS).ok_or(FsErr::Rpc)?;
         match parse_reply_get(&buf[..n]).ok_or(FsErr::Rpc)? {
             Ok(g) => {
                 if g.more && g.data.is_empty() {
@@ -582,7 +608,7 @@ fn fs_list(h: Handle) -> Result<Vec<u8>, FsErr> {
     }
     let mut buf = [0u8; 256];
     let l = encode_list(&mut buf).ok_or(FsErr::Rpc)?;
-    let n = fs_rpc(h, &mut buf, l).ok_or(FsErr::Rpc)?;
+    let n = fs_rpc(h, &mut buf, l, TIMEOUT_NS).ok_or(FsErr::Rpc)?;
     match parse_reply_list(&buf[..n]).ok_or(FsErr::Rpc)? {
         Ok(names) => Ok(names.to_vec()),
         Err(st) => Err(st_err(st)),
@@ -753,6 +779,36 @@ fn fat_selftest() {
         }
     }
     println!("FAT ok n=5000");
+}
+
+/// FAT 写自验（P6 A-6，`FATW ok n=` = rootfs 相第 16 标记——确定性状态
+/// 谓词）：RW.TXT 3000B pattern（(i*17+3)%256，跨 2 簇）经 fs_put 落盘
+/// （fsmgr staging + TRUNC 即 commit 真写扇区）→ fs_get 逐字节对拍才自打。
+/// 每次 boot 重写 = 覆写路径幂等（旧链 collect → 新链分配 → 旧链释放）；
+/// HELLO.TXT/PATTERN.BIN 是 mkfat 只读基准，本验永不触碰。失败 eprintln +
+/// park（标记缺失 → smoke FAIL 兜底）。
+fn fatw_selftest() {
+    let h = fs_h();
+    let data: Vec<u8> = (0..3000u32).map(|i| ((i * 17 + 3) % 256) as u8).collect();
+    match fs_put(h, b"RW.TXT", &data).and_then(|_| fs_get(h, b"RW.TXT")) {
+        Ok(d) => {
+            if d.len() != 3000 {
+                eprintln!("bsh: fatw selftest: len={} want=3000", d.len());
+                berry_libc::park();
+            }
+            for (i, &b) in d.iter().enumerate() {
+                if b as usize != (i * 17 + 3) % 256 {
+                    eprintln!("bsh: fatw selftest: byte {i} mismatch");
+                    berry_libc::park();
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("bsh: fatw selftest: {}", e.text());
+            berry_libc::park();
+        }
+    }
+    println!("FATW ok n=3000");
 }
 
 /// `A | B | …` 交互面（v1：各段裸名——无参数无 `/`，参数面随 v2 argv 展开）。

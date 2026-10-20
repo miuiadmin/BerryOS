@@ -2,10 +2,10 @@
 //! `berry-fsproto`/`berry-blkproto` 先例「解析器即产品」第 4 例：零分配、
 //! 零 unsafe、零依赖，输入只借用）。
 //!
-//! 职责边界：本库只做**字节 → 结构**的无状态解码（BPB 几何 / FAT12 表
-//! 项 / 根目录项 / 8.3 名转换）；扇区读写（vblk 经 `berry-blkproto` RPC）、
-//! 簇链缓存、RAM 覆盖层全在消费方 fsmgr（`用户态/bins/fsmgr/src/fat.rs`）。
-//! 只读：PUT/TRUNC 写路径不在本库（A-6 FAT 读写再议扩展点）。
+//! 职责边界：本库只做**字节 ↔ 结构**的无状态编解码（BPB 几何 / FAT12 表
+//! 项 / 根目录项 / 8.3 名转换 + A-6 写基元 `fat12_set`/`find_free_cluster`/
+//! `encode_file_entry`）；扇区读写（vblk 经 `berry-blkproto` RPC）、簇链
+//! 缓存、staging/commit 编排全在消费方 fsmgr（`用户态/bins/fsmgr/src/fat.rs`）。
 //!
 //! 卷几何约定：本库一切扇区号**卷相对**（boot 扇区 = 0）；盘绝对 LBA 由
 //! 消费方加 BPB 的 `hidden`（卷前缀扇区数）折算——mkfat 盘 = 16 扇区
@@ -39,6 +39,12 @@ pub const FAT12_MAX_CLUSTERS: u32 = 4085;
 pub const FAT12_EOC_MIN: u32 = 0xFF8;
 /// 坏簇标记值。
 pub const FAT12_BAD: u32 = 0xFF7;
+/// 本库写侧恒用的链尾标记（0xFF8..=0xFFF 皆合法 EOC；写读跨实现共识——
+/// mkfat `fat12_set(fat, …, 0xFFF)` 同值钉死）。
+pub const FAT12_EOC: u32 = 0xFFF;
+/// 文件项日期字段定值（2020-01-01 = (40<<9)|(1<<5)|1，mkfat DATE 同值——
+/// 确定性纪律：无时刻输入，归档字节只随内容变）。
+const FAT_ENTRY_DATE: u16 = 0x5021;
 
 /// 卷几何（[`parse_bpb`] 产物；一切扇区号卷相对）。
 #[derive(Debug, PartialEq, Eq)]
@@ -210,6 +216,42 @@ pub fn fat12_entry(fat: &[u8], clus: u32) -> Option<Fat12Entry> {
     }
 }
 
+/// 写 FAT12 表项（[`fat12_entry`] 的写侧镜像——12 位紧包逆运算；簇 < 2 /
+/// 值 > 0xFFF / 切片不够长 → None，None 拒绝契约：写不出就拒绝）。mkfat
+/// `fat12_set` 同式——python/Rust 双实现写读共识。
+pub fn fat12_set(fat: &mut [u8], clus: u32, v: u32) -> Option<()> {
+    if clus < 2 || v > 0xFFF {
+        return None;
+    }
+    let off = (clus as usize * 3) / 2;
+    if fat.len() < off + 2 {
+        return None;
+    }
+    if clus % 2 == 0 {
+        fat[off] = (v & 0xFF) as u8;
+        fat[off + 1] = (fat[off + 1] & 0xF0) | ((v >> 8) as u8 & 0x0F);
+    } else {
+        fat[off] = (fat[off] & 0x0F) | (((v & 0x0F) as u8) << 4);
+        fat[off + 1] = (v >> 4) as u8;
+    }
+    Some(())
+}
+
+/// 从 `from` 起找首个空簇（Free）；`from < 2` 钳到 2（保留项不是分配
+/// 域），扫描界 = `2 + cluster_count`（开区间）。None = 域内无空簇（调用
+/// 方诚实拒—— fsmgr 侧 ST_FULL）。
+pub fn find_free_cluster(fat: &[u8], from: u32, cluster_count: u32) -> Option<u32> {
+    let max = 2 + cluster_count;
+    let mut c = if from < 2 { 2 } else { from };
+    while c < max {
+        if let Some(Fat12Entry::Free) = fat12_entry(fat, c) {
+            return Some(c);
+        }
+        c += 1;
+    }
+    None
+}
+
 /// 解析 32B 根目录项（长度 != 32 → None）。
 pub fn dir_entry(e: &[u8]) -> Option<DirKind> {
     if e.len() != 32 {
@@ -229,12 +271,35 @@ pub fn dir_entry(e: &[u8]) -> Option<DirKind> {
             name.copy_from_slice(&e[0..11]);
             let first = u16le(e, 26) as u32;
             let size = u32le(e, 28);
-            if first < 2 {
-                return None; // 空文件首簇 0 合法（0 长度）——但 v1 无空文件
-            }              // 面；簇 0/1 落文件位按畸形拒
+            if first == 1 || (first == 0 && size > 0) {
+                return None; // 簇 1 保留；首簇 0 仅配 size=0（空文件——A-6
+            }              // `>` 建空文件面），带长度即畸形
             Some(DirKind::File(DirFile { name, first_clus: first, size }))
         }
     }
+}
+
+/// 编码 32B 根目录文件项（A-6 写基元）：attr = 0x20 ARCHIVE、日期定值
+/// `FAT_ENTRY_DATE`、时间戳零——与 mkfat `dir_entry` **逐字节同形**（写读
+/// 跨实现共识的可对拍面）。`first_clus` 1 / > 0xFF6（标记值域）/ 0 配
+/// size>0 → None——与 [`dir_entry`] 拒面互为镜像；输出可被 [`dir_entry`]
+/// 原样认回。
+pub fn encode_file_entry(
+    name11: &[u8; 11],
+    first_clus: u32,
+    size: u32,
+    out: &mut [u8; 32],
+) -> Option<()> {
+    if first_clus == 1 || first_clus > 0xFF6 || (first_clus == 0 && size > 0) {
+        return None;
+    }
+    *out = [0u8; 32];
+    out[..11].copy_from_slice(name11);
+    out[11] = 0x20; // ATTR_ARCHIVE
+    out[24..26].copy_from_slice(&FAT_ENTRY_DATE.to_le_bytes());
+    out[26..28].copy_from_slice(&(first_clus as u16).to_le_bytes());
+    out[28..32].copy_from_slice(&size.to_le_bytes());
+    Some(())
 }
 
 /// 8.3 名（"NAME    EXT"）→ 显示名（"NAME.EXT"，去基名/扩展名尾随空格；
@@ -295,6 +360,20 @@ mod tests {
 
     fn root() -> &'static [u8] {
         &FX[5 * 512..6 * 512] // 根目录 @ 卷扇区 5
+    }
+
+    /// mkfat `fat12_set` 同式写侧（**独立于** [`fat12_set`] 的钉板实现——
+    /// 双绿即跨实现写侧共识；被 `fat12_set_consensus_and_bounds` 对拍、
+    /// `fat12_parity_and_exact_fit`/`find_free_cluster_scan` 复用）。
+    fn pack(fat: &mut [u8], n: u32, v: u32) {
+        let off = (n as usize * 3) / 2;
+        if n % 2 == 0 {
+            fat[off] = (v & 0xFF) as u8;
+            fat[off + 1] = (fat[off + 1] & 0xF0) | ((v >> 8) as u8 & 0x0F);
+        } else {
+            fat[off] = (fat[off] & 0x0F) | (((v & 0x0F) as u8) << 4);
+            fat[off + 1] = (v >> 4) as u8;
+        }
     }
 
     #[test]
@@ -449,16 +528,6 @@ mod tests {
         // 奇偶打包钉板：pack = mkfat `fat12_set` 同式写侧（写读两侧独立实现
         // 共识）；解析按 偶 = b0|(b1&0xF)<<8 / 奇 = b0>>4|b1<<4 折开。
         let mut fat = [0u8; 12]; // 项 7 @ off 10 触及 byte 11——恰合切片用
-        let pack = |fat: &mut [u8], n: u32, v: u32| {
-            let off = (n as usize * 3) / 2;
-            if n % 2 == 0 {
-                fat[off] = (v & 0xFF) as u8;
-                fat[off + 1] = (fat[off + 1] & 0xF0) | ((v >> 8) as u8 & 0x0F);
-            } else {
-                fat[off] = (fat[off] & 0x0F) | (((v & 0x0F) as u8) << 4);
-                fat[off + 1] = (v >> 4) as u8;
-            }
-        };
         for (n, v) in [(2u32, 0xABCu32), (3, 0x123), (4, 5), (5, 0xFF8), (7, 0xFF7)] {
             pack(&mut fat, n, v);
         }
@@ -491,8 +560,23 @@ mod tests {
         assert_eq!(dir_entry(&mk(b'A', 0x0F)), Some(DirKind::Skip)); // LFN
         assert_eq!(dir_entry(&mk(b'A', 0x08)), Some(DirKind::Skip)); // 卷标
         assert_eq!(dir_entry(&mk(b'A', 0x10)), Some(DirKind::Skip)); // 子目录
-        // 文件项：首簇 0（空文件）→ v1 无空文件面按畸形拒。
-        assert_eq!(dir_entry(&mk(b'A', 0x20)), None);
+        // 文件项：首簇 0 + size 0 = 空文件（A-6 `>` 建空文件面）——合法。
+        match dir_entry(&mk(b'A', 0x20)).unwrap() {
+            DirKind::File(f) => {
+                assert_eq!(f.first_clus, 0);
+                assert_eq!(f.size, 0);
+                assert_eq!(f.name[0], b'A');
+            }
+            other => panic!("应为空文件项：{:?}", other),
+        }
+        // 首簇 0 配 size>0 → 畸形（无簇却带声明长度）。
+        let mut e01 = mk(b'A', 0x20);
+        e01[28..32].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(dir_entry(&e01), None);
+        // 首簇 1（保留项）→ 畸形（即使 size=0）。
+        let mut e1 = mk(b'A', 0x20);
+        e1[26..28].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(dir_entry(&e1), None);
         // 长度面：31/33 → None。
         assert_eq!(dir_entry(&[0u8; 31]), None);
         assert_eq!(dir_entry(&[0u8; 33]), None);
@@ -547,5 +631,108 @@ mod tests {
         let mut out = [0u8; 7];
         assert_eq!(fat11_display(&n11, &mut out), Some(7));
         assert_eq!(&out, b"READMEX");
+    }
+
+    #[test]
+    fn fat12_set_consensus_and_bounds() {
+        // 写侧共识：与 pack（mkfat 同式独立实现）逐字节全等 + fat12_entry
+        // 往返认回（写 → 读闭环）。
+        for (n, v) in [
+            (2u32, 0x345u32),
+            (3, 0x678),
+            (4, 2),
+            (5, FAT12_EOC),
+            (6, 0), // Free 写（commit 的旧链释放路径）
+            (7, FAT12_BAD),
+            (9, 0xFFF),
+            (10, 0x00A),
+        ] {
+            let mut a = [0u8; 20];
+            let mut b = [0u8; 20];
+            fat12_set(&mut a, n, v).unwrap();
+            pack(&mut b, n, v);
+            assert_eq!(a, b, "写侧双实现分歧 @ ({n}, {v:#x})");
+            let expect = match v {
+                0 => Fat12Entry::Free,
+                FAT12_BAD => Fat12Entry::Bad,
+                FAT12_EOC_MIN..=0xFFF => Fat12Entry::Eoc,
+                _ => Fat12Entry::Next(v),
+            };
+            assert_eq!(fat12_entry(&a, n), Some(expect));
+        }
+        // 邻居独立（12 位紧包只动自家 nibble）：奇项写不扰两侧偶项、后写
+        // 偶项的共享字节半位不扰先写奇项。
+        let mut fat = [0u8; 20];
+        fat12_set(&mut fat, 2, 0x123).unwrap();
+        fat12_set(&mut fat, 4, 0x456).unwrap();
+        fat12_set(&mut fat, 3, 0x789).unwrap(); // 奇项 3 夹在偶项 2/4 间
+        assert_eq!(fat12_entry(&fat, 2), Some(Fat12Entry::Next(0x123)));
+        assert_eq!(fat12_entry(&fat, 4), Some(Fat12Entry::Next(0x456)));
+        fat12_set(&mut fat, 5, 0xABC).unwrap(); // 奇项 5 与偶项 4 共享 byte 7
+        assert_eq!(fat12_entry(&fat, 4), Some(Fat12Entry::Next(0x456)));
+        assert_eq!(fat12_entry(&fat, 5), Some(Fat12Entry::Next(0xABC)));
+        // 拒面：簇 0/1、值 > 0xFFF、切片短；恰合（exact fit）双向过。
+        assert_eq!(fat12_set(&mut [0u8; 20], 0, 2), None);
+        assert_eq!(fat12_set(&mut [0u8; 20], 1, 2), None);
+        assert_eq!(fat12_set(&mut [0u8; 20], 2, 0x1000), None);
+        let mut short = [0u8; 4]; // 项 2 @ off 3 需 5 字节
+        assert_eq!(fat12_set(&mut short, 2, 3), None);
+        let mut exact = [0u8; 5]; // 恰合：项 2 需 [3,5) 两字节
+        assert_eq!(fat12_set(&mut exact, 2, 3), Some(()));
+        assert_eq!(fat12_entry(&exact, 2), Some(Fat12Entry::Next(3)));
+    }
+
+    #[test]
+    fn encode_entry_roundtrip() {
+        // encode → dir_entry 往返认回（含空文件面）。
+        let n11 = name_to_fat11(b"RW.TXT").unwrap();
+        let mut e = [0u8; 32];
+        encode_file_entry(&n11, 6, 3000, &mut e).unwrap();
+        match dir_entry(&e).unwrap() {
+            DirKind::File(f) => {
+                assert_eq!(&f.name, b"RW      TXT");
+                assert_eq!(f.first_clus, 6);
+                assert_eq!(f.size, 3000);
+            }
+            other => panic!("应为文件项：{:?}", other),
+        }
+        // 空文件：首簇 0 + size 0。
+        let mut e = [0u8; 32];
+        encode_file_entry(&n11, 0, 0, &mut e).unwrap();
+        match dir_entry(&e).unwrap() {
+            DirKind::File(f) => assert_eq!((f.first_clus, f.size), (0, 0)),
+            other => panic!("应为空文件项：{:?}", other),
+        }
+        // 拒面（与 dir_entry 镜像）：簇 1 / 簇 0 配 size>0 / 标记值域。
+        let mut e = [0u8; 32];
+        assert_eq!(encode_file_entry(&n11, 1, 0, &mut e), None);
+        assert_eq!(encode_file_entry(&n11, 0, 1, &mut e), None);
+        assert_eq!(encode_file_entry(&n11, 0xFF7, 0, &mut e), None);
+        assert_eq!(encode_file_entry(&n11, 0xFFF, 0, &mut e), None);
+        // 逐字节共识：Rust 编码器产 HELLO.TXT 项 == mkfat 造的 fixture 项
+        // （attr/时间戳定值/字段偏移全同形——python 写 Rust 读再写回去）。
+        let mut e = [0u8; 32];
+        encode_file_entry(b"HELLO   TXT", 2, 28, &mut e).unwrap();
+        assert_eq!(&e, &root()[32..64]);
+    }
+
+    #[test]
+    fn find_free_cluster_scan() {
+        // fixture：簇 2..5 占用 → 首空 = 6；from 钳位与越过语义。
+        assert_eq!(find_free_cluster(fat0(), 2, 506), Some(6));
+        assert_eq!(find_free_cluster(fat0(), 0, 506), Some(6));
+        assert_eq!(find_free_cluster(fat0(), 6, 506), Some(6));
+        assert_eq!(find_free_cluster(fat0(), 7, 506), Some(7));
+        // 域界 = 2 + cluster_count（开区间）：count 收窄后扫描界随之。
+        let mut fat = [0u8; 16]; // 覆盖项 2..9（项 8 @ off 12 需 14B）
+        fat12_set(&mut fat, 2, FAT12_EOC).unwrap();
+        assert_eq!(find_free_cluster(&fat, 2, 7), Some(3)); // 界 9 → 3..8 域内
+        assert_eq!(find_free_cluster(&fat, 3, 1), None); // 界 3 → 域空
+        // 盘满：域内全 EOC → None。
+        let mut full = [0u8; 16];
+        for c in 2..9u32 {
+            fat12_set(&mut full, c, FAT12_EOC).unwrap();
+        }
+        assert_eq!(find_free_cluster(&full, 2, 7), None);
     }
 }

@@ -72,6 +72,9 @@ build-user:
     # P6 A-1：fsmgr（RAM-fs 服务——bsh `>`/cat/ls 的对端，stdhello 同链）。
     # P6 A-5：+ berry-fatfs 依赖——RAM 写通道之上叠 FAT12 只读底座（blk 端
     # 经 env 块 gift[3] 交付，`>` 命中 FAT 名先物化进 RAM）。
+    # P6 A-6：物化退役——8.3 大写名走 FAT 层 staging + TRUNC 即 commit 真写
+    # 扇区（簇分配/双 FAT/根目录项，rpc_write 经 vblk OP_WRITE）；小写名
+    # 仍走 RAM 表（名字空间按构造隔离）。
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fsmgr/Cargo.toml \
         --target aarch64-unknown-linux-musl
@@ -134,6 +137,12 @@ run-el2: build
 # HELLO.TXT/PATTERN.BIN——fsmgr FAT 只读层的读对象，每次重造零残留；
 # LBA0 印章落保留区）；bsh 自驱 fs GET 两文件对拍全过打 `FAT ok n=5000`
 # （rootfs 相第 15 标记）。
+# P6 A-6：`>` 对 8.3 大写名真落盘（bsh FATW 自验 RW.TXT 写读对拍打
+# `FATW ok n=3000`，rootfs 相第 16 标记）；盘加 cache.writeback=off——
+# SIGTERM/退出前扇区已同步落宿主盘（writeback 模式可丢页缓存）。跨
+# boot 持久化验证**不可经本 recipe**：上面 mkfat 每次启动整盘重造，上
+# 一 boot 的落盘必被抹——持久化验收走 `just smoke` 持久化相（不重造
+# 盘；对抗审查实抓本注释曾把结构性不可达的工作流写成可用）。
 run-rootfs: build
     #!/bin/sh
     set -e
@@ -142,7 +151,7 @@ run-rootfs: build
     printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
         -global virtio-mmio.force-legacy=false \
-        -drive if=none,id=drv0,format=raw,file=disk.img \
+        -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
         -device virtio-blk-device,drive=drv0
 
 run-release: abi-check build-user
@@ -163,7 +172,9 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 # + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 用户态/berry-fsproto）
 # + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 用户态/berry-virtio）
 # + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 用户态/berry-blkproto）
-# + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 用户态/berry-fatfs）。
+# + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 用户态/berry-fatfs；
+#   A-6 起含写基元——fat12_set/find_free_cluster/encode_file_entry，fixture
+#   共识基准同时钉住读面与写面编码一致性）。
 # fixture 守卫在 berry-fatfs 测试前置：mkfat --check-fixture 重产比对——
 # 改 mkfat 忘重产 --fixture 时共识测试对陈旧基准假绿（A-5 对抗审查实抓）。
 test-host:
