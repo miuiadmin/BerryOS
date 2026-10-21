@@ -228,3 +228,35 @@ abi-check:
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
 smoke: build
     bash 工具链/smoke.sh
+
+# ---------- P7 x86_64 最小集（ADR #41：范围盒子 = 串口/定时器/异常向量/
+# 上下文切换/SVC 入口；SMP/APIC/ACPI/PCIe 不在盒内）----------
+# 独立小工作区（同 用户态/ 模式——根 workspace 不含本目录）。构建必须显式
+# --target：根 .cargo/config.toml 锁了 build.target=aarch64-unknown-none，
+# config 发现按 CWD 向上走、跨 workspace 边界照样命中（CLI --target 才能盖）。
+X86_DIR := "架构相关/x86_64"
+X86_TARGET := "x86_64-unknown-none"
+X86_KERNEL := X86_DIR / "cargo-target" / X86_TARGET / "release" / "berry-x86"
+
+# x86 内核构建（PVH 引导 ELF64；缺 x86_64-unknown-none target 先
+# `rustup target add x86_64-unknown-none`——stable 预编译 core，免 nightly）
+build-x86:
+    #!/bin/sh
+    set -e
+    cd {{X86_DIR}}
+    CARGO_TARGET_DIR=cargo-target cargo build --release --target {{X86_TARGET}}
+
+# x86 QEMU 启动（pc 机 + PVH ELF；-no-reboot：早期三重故障直接退出，不刷
+# SeaBIOS 重启循环污染日志）。期望：BerryOS boot (x86_64) → PVH ok → X86 ok。
+# 退出同 aarch64：Ctrl-A X。
+run-x86: build-x86
+    qemu-system-x86_64 -m 128M -nographic -no-reboot -kernel {{X86_KERNEL}}
+
+# x86 独立冒烟（五原语收官前不并入主 smoke——ARM64 四跑零扰动；
+# 收官时随最小集 gate 一并挂进 CI 面详见 smoke-x86.sh 头注）。
+# 内核路径经 X86_KERNEL 传参（单一事实源——对抗审查实抓 smoke-x86.sh
+# 曾自带第二份硬编码：cargo-target 是 gitignored 本地长存目录，后续切片
+# 改名/挪 bin 时只改 justfile 一侧会让冒烟继续跑旧 ELF 假绿，G-eco-b
+# 「陈旧产物静默上线」同族）。
+smoke-x86: build-x86
+    bash 工具链/smoke-x86.sh "{{X86_KERNEL}}"

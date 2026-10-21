@@ -1,0 +1,9 @@
+# P7-x0 x86_64 工作区自有配置（config 发现按 CWD 向上合并、就近键优先）：
+# 本文件出 rustflags；根 .cargo/config.toml 的 build.target=aarch64-unknown-none
+# 仍会合并进来——构建一律显式 --target x86_64-unknown-none（justfile build-x86）。
+#
+# relocation-model=static：x86_64-unknown-none 默认 PIC，`.long _start`（PVH
+# note）与 `mov $sym, %esp`（弹床）等 R_X86_64_32/32S 对 local symbol 直接
+# 拒链（"recompile with -fPIC"）——内核静态链接 @0x100000，钉死 static。
+[build]
+rustflags = ["-C", "relocation-model=static"]

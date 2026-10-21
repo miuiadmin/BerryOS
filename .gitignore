@@ -17,6 +17,9 @@
 # 用户态独立工作区 target（build-user 显式 CARGO_TARGET_DIR）
 /用户态/cargo-target/
 
+# P7 x86_64 独立工作区 target（build-x86 显式 CARGO_TARGET_DIR）
+/架构相关/x86_64/cargo-target/
+
 # Claude Code 本地/会话态（不提交；共享的 agents/settings.json 若需入库再单独 force-add）
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
