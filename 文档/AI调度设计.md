@@ -49,6 +49,18 @@
 - **两级分层（战略裁决）**：**第一级（QEMU 可靠）**= util / 唤醒模式 / 运行时长分布 / 切换计数；**第二级（真机门控）**= cache miss / 能耗计数 / 温度——QEMU 数值无意义。**v3 分类器只准用第一级特征**：保证无真机时即可开发验证，也不被虚拟环境噪声污染（见 `测试策略.md` §8）。
 - **关键纪律**：这条管道 **v1/v2 就埋好** instrumentation（哪怕先不接 AI）。事后 retrofit 极痛，且遥测同时是 profiling / 调试 / 性能基准的副产品收益。
 
+**按 app 资源账（per-process stats 查询面，2026-10 增补——Agent 观察侧的补面）**：遥测环是**按任务**的事件流账（切换/唤醒）；「Agent 看 app 用了多少资源、据此调配省电」还需要**按进程聚合**的快照账，三笔：
+
+| 账 | 数据源 | 形态与时点 |
+|---|---|---|
+| CPU 时长 | 切换环 vct 差分（数据已在环里，缺聚合） | stats 查询面 v2 |
+| 内存 | 内核全知（Process→VMO 页统计），**查询接口缺** | v2：按进程 stats 查询（Zircon `zx_task_stats` 先例；门控 = 查自己 need=0 / 查别人持 MANAGE） |
+| 能耗 | PM 服务记账（DVFS 档位 × 时长） | v2 随 PM 落地 |
+
+- **形态纪律：一个 stats 查询 + berryctl `--json`，不做散 syscall**——消费者是 AI/工具，机器可读面就是产品（设计总原则 2/3）；环与 stats 同源两视图（事件流 vs 聚合快照），不建第二套数据。
+- **Agent 与本设计的关系**：Agent 就是「用户态 AI 策略服务」的实例/驱动者——读遥测 + stats → 推理 → 带内注入（§3 词汇表封顶）；ADR #21 修订与 #38 三不赌原样管着，**Agent 永不凌驾调度器**。内存调配的 BerryOS 答案不是传统 reclaim/swap，是墓碑 + freeze（`应用模型设计.md` §4.1/§4.2，intent 单一消费轴）——Agent 的角色是**消费遥测决定何时上收压力**（喂给 appd/PM 的输入），不是直接伸手拿内存。
+- **注入权本身也是能力**：`SET_POLICY` handle 可经 `duplicate` 收紧后委托、`close` 吊销——进委托链审计（设置服务能列出「谁把调权重的能力给了哪个 Agent」，`能力模型设计.md` §4 / `应用模型设计.md` §8.2）。
+
 ## 5. 安全护栏（内核强制，AI 越界即拒）
 
 "干涉"不是"失控"。**AI 提议，内核在包络内处置**：
@@ -98,7 +110,7 @@
 ## 9. 阶段化目标（对照 `架构决策.md` #20 / #21）
 
 - **v1 / v2**：埋遥测 instrumentation（util / 唤醒 / cache 基础计数写环）；策略注入接口**留桩**（内核查空表 → 等价于无 AI）；**intent + 标注来源 + 值通胀计数器进遥测落盘（ADR #42——M4 映射表与 kill criteria 的实测依据）**。（关卡 G0–G3）
-  - **v1 落地注记（2026-10，Phase 3-4c）**：①留桩已落地——`进程调度/src/policy.rs`（词汇表 = §2 四类动作封顶）+ `RoundRobin::pick_next` 出选后查表；②**空表等价是断言不是口号**——ktest `POLICY ok`（smoke 第 13 标记）：绑空表 12 轮 pick 与未绑基线逐项全等 + 对照表字段真变但选人序列不变（v1 护栏：注入面只写 TCB 表示法字段，不碰机制决策）；③遥测环第一级已落地——`内核/src/telemetry.rs` 静态预储 64 槽切换环（vct/任务 id/切换分型/idle 判据，零分配写入），watchdog 周期断言环在涨 + vct 单调；**唤醒事件已随 Phase 4-0 配套落地（2026-10）**——同文件第二环 `WAKE_RING` 64 槽（唤醒时刻/入睡时刻/等待对象/任务 id/醒因 Signaled|Timeout，`#[repr(C)]` 32B 定型），`sched.rs` 唤醒钩子在两个唤醒位（`wake_matching`/`expire_timeouts`）发射，block→wake 延迟即 §4 第一级「唤醒模式」分布数据；watchdog 附加断言（boot 双路径门槛 `BLOCK_BOOT_DONE` 放行后：计数 ≥ 2/延迟非负/vct 单调/双醒因覆盖）；**消费路径（telemetry_open 映射）仍留 v3**。
+  - **v1 落地注记（2026-10，Phase 3-4c）**：①留桩已落地——`进程调度/src/policy.rs`（词汇表 = §2 四类动作封顶）+ `RoundRobin::pick_next` 出选后查表；②**空表等价是断言不是口号**——ktest `POLICY ok`（smoke 第 13 标记）：绑空表 12 轮 pick 与未绑基线逐项全等 + 对照表字段真变但选人序列不变（v1 护栏：注入面只写 TCB 表示法字段，不碰机制决策）；③遥测环第一级已落地——`内核/src/telemetry.rs` 静态预储 64 槽切换环（vct/任务 id/切换分型/idle 判据，零分配写入），watchdog 周期断言环在涨 + vct 单调；**唤醒事件已随 Phase 4-0 配套落地（2026-10）**——同文件第二环 `WAKE_RING` 64 槽（唤醒时刻/入睡时刻/等待对象/任务 id/醒因 Signaled|Timeout，`#[repr(C)]` 32B 定型），`sched.rs` 唤醒钩子在两个唤醒位（`wake_matching`/`expire_timeouts`）发射，block→wake 延迟即 §4 第一级「唤醒模式」分布数据；watchdog 附加断言（boot 双路径门槛 `BLOCK_BOOT_DONE` 放行后：计数 ≥ 2/延迟非负/vct 单调/双醒因覆盖）；**消费路径（telemetry_open 映射）仍留 v3**；**按-app stats 查询面（§4 资源账）v2 落**——CPU/内存两笔先，能耗账随 PM。
 - **v3**：(B) 启发式分类 advisor 服务上线（**与 intent band 化同窗 M4 交付**，只对 UNSPECIFIED 定档）；注入 / 遥测 / 护栏打通；**护栏不变量**（RT 屏蔽、越界拒收）随 G4–G5 调度器正确性一起验证（但非关卡通过条件，见末条与 `测试策略.md` §8）；**kill criteria 复核点（ADR #42）**：可复现 A/B 无可测收益 → AI 永久 hint-only。
 - **v4+**：(A) 学习策略；管家核；完整离线训练管线。（G5 之后）
 - **AI 不进任何正确性关卡**：它是 G5 之后的性能 / 能效增强，不是正确性前置条件。

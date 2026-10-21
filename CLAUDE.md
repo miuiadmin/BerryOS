@@ -103,6 +103,9 @@ berryos/
 - `文档/安全与硬件隔离设计.md` —— IOMMU/SMMU + PAC/BTI/MTE + 度量启动（能力安全的硬件后盾）。
 - `文档/可观测性设计.md` —— day-one 内置 tracing（静态点 + per-CPU 无锁环 + trace 服务）。
 - `文档/文件系统设计.md` —— FAT 仅 MVP；目标现代 FS（CoW/日志/校验）。
+- `文档/存储布局与沙箱设计.md` —— 零分区（卷=命名空间挂载点）+ 四棵树所有权布局（sys/apps/user/tmp）+ app 树沙箱（$appdata=handle）+ 树即登记簿（ADR #45）；外来生态存储面（Wine/T2/T3）与程序形态三轴。
+- `文档/驱动模型设计.md` —— 驱动=持证应用（ADR #46）：.bap 同链装卸 + devmgr（DTB 枚举→MMIO 窗/IRQ→channel/IOMMU DMA 授权）+ 代号热换 + boot 关键豁免清单；vblk 为现役证据。
+- `文档/更新与OTA设计.md` —— 四层刀法（ADR #47）：L0 boot slot 计数回退 / L1 sys 目录级 A/B+指针原子翻 / L2 appd 换树 / L3 固件随驱动包；user/ 永不动。
 - `文档/架构综合纲领.md` —— **综合视角（博采众长不杂糅）**：六个参考（Redox/Theseus/rCore/hubris/seL4/Zircon）的取/留、矛盾矩阵 10 轴的唯一 PICK、防杂糅的排除 8 问；开篇 §0 系统四层速览图（层/目录/时点 + 两条微内核铁律）。借鉴任何参考前先读。
 
 ## 语言策略与 syscall 边界（全 Rust）
