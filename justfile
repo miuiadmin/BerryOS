@@ -247,13 +247,14 @@ build-x86:
     CARGO_TARGET_DIR=cargo-target cargo build --release --target {{X86_TARGET}}
 
 # x86 QEMU 启动（pc 机 + PVH ELF；-no-reboot：早期三重故障直接退出，不刷
-# SeaBIOS 重启循环污染日志）。期望：BerryOS boot (x86_64) → PVH ok → X86 ok。
+# SeaBIOS 重启循环污染日志）。期望：BerryOS boot (x86_64) → PVH ok →
+# TIMER ok → X86 ok（P7-x1 起定时器链 100Hz 真中断 100 拍）。
 # 退出同 aarch64：Ctrl-A X。
 run-x86: build-x86
     qemu-system-x86_64 -m 128M -nographic -no-reboot -kernel {{X86_KERNEL}}
 
-# x86 独立冒烟（五原语收官前不并入主 smoke——ARM64 四跑零扰动；
-# 收官时随最小集 gate 一并挂进 CI 面详见 smoke-x86.sh 头注）。
+# x86 独立冒烟（4 标记恰一次；五原语收官前不并入主 smoke——ARM64 四跑零
+# 扰动；收官时随最小集 gate 一并挂进 CI 面详见 smoke-x86.sh 头注）。
 # 内核路径经 X86_KERNEL 传参（单一事实源——对抗审查实抓 smoke-x86.sh
 # 曾自带第二份硬编码：cargo-target 是 gitignored 本地长存目录，后续切片
 # 改名/挪 bin 时只改 justfile 一侧会让冒烟继续跑旧 ELF 假绿，G-eco-b
