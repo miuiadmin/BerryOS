@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # BerryOS x86_64 最小集冒烟（P7-x0 起，ADR #41）。
 #
-# 独立关卡——五原语（串口✓→定时器→异常向量→上下文切换→SVC 入口）收官前
+# 独立关卡——五原语（串口✓→定时器✓→异常向量✓→上下文切换→SVC 入口）收官前
 # 不并入主 smoke.sh：主 smoke 的四跑是 ARM64 回归基线，x86 面以独立入口
 # 并行存在（加法零扰）；收官时把本脚本挂进 CI 面（届时五原语各有标记）。
 #
-# 断言四标记（状态谓词，非竞速）：
+# 断言五标记（状态谓词，非竞速）：
 #   1. "BerryOS boot (x86_64)" —— 32 位入口 → 长模式 → Rust main 全通；
 #   2. "PVH ok" —— hvm_start_info magic/version 校验过（引导协议握手内容
 #      活证，非仅串口能出字）；
 #   3. "TIMER ok" —— PIT 100Hz → 8259 IRQ0 → IDT 0x20 → sti 全链真中断
 #      收满 100 拍（拍数只能来自 handler 递增——定时器链内容活证）；
-#   4. "X86 ok" —— 刀验收标记。
-# 任何 FAIL 行出现即 FAIL（比标记缺失更快定位）。
+#   4. "EXC ok" —— ud2 触发 #UD(6)：dump 落串口后 rip+2 恢复续行 + rax 金丝
+#      雀往返不变（异常门/桩帧/全量保存恢复三环的机器断言——恢复判定
+#      EXC_RECOVERED 是状态谓词；EXC dump vec=6 行先于标记、形态可区分）；
+#   5. "X86 ok" —— 刀验收标记。
+# 任何 FAIL 行 / "EXC panic" 出现即 FAIL（比标记缺失更快定位——意外向量走
+# #GP(13) dump 后 halt，真异常 loud 死不给假绿）。
 #
 # QEMU 生命周期同 smoke.sh 纪律：后台拉起 + 按记录 PID kill（多会话共享本机，
 # 禁 pkill）；-no-reboot 让早期三重故障直接退出（否则 SeaBIOS 重启循环刷日志）。
@@ -59,12 +63,13 @@ echo "smoke-x86: QEMU 启动（$KERNEL）"
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-MARKERS=("BerryOS boot (x86_64)" "PVH ok" "TIMER ok" "X86 ok")
+MARKERS=("BerryOS boot (x86_64)" "PVH ok" "TIMER ok" "EXC ok" "X86 ok")
 t0=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
     || fail "QEMU 提前退出（引导崩/拒收？）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   grep -q "X86 FAIL" "$LOG" && fail "内核自报 FAIL：$(grep 'X86 FAIL' "$LOG" | tail -1)"
+  grep -q "EXC panic" "$LOG" && fail "异常面 panic：$(grep 'EXC panic' "$LOG" | tail -1)"
   missing=""
   for m in "${MARKERS[@]}"; do
     grep -qF "$m" "$LOG" || missing="${missing:+$missing }$m"
@@ -83,4 +88,4 @@ done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
-echo "smoke-x86: PASS（4 标记恰一次到齐）"
+echo "smoke-x86: PASS（5 标记恰一次到齐）"
