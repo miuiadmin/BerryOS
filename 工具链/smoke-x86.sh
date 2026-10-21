@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # BerryOS x86_64 最小集冒烟（P7-x0 起，ADR #41）。
 #
-# 独立关卡——五原语（串口✓→定时器✓→异常向量✓→上下文切换→SVC 入口）收官前
+# 独立关卡——五原语（串口✓→定时器✓→异常向量✓→上下文切换✓→SVC 入口）收官前
 # 不并入主 smoke.sh：主 smoke 的四跑是 ARM64 回归基线，x86 面以独立入口
 # 并行存在（加法零扰）；收官时把本脚本挂进 CI 面（届时五原语各有标记）。
 #
-# 断言五标记（状态谓词，非竞速）：
+# 断言六标记（状态谓词，非竞速）：
 #   1. "BerryOS boot (x86_64)" —— 32 位入口 → 长模式 → Rust main 全通；
 #   2. "PVH ok" —— hvm_start_info magic/version 校验过（引导协议握手内容
 #      活证，非仅串口能出字）；
@@ -14,7 +14,10 @@
 #   4. "EXC ok" —— ud2 触发 #UD(6)：dump 落串口后 rip+2 恢复续行 + rax 金丝
 #      雀往返不变（异常门/桩帧/全量保存恢复三环的机器断言——恢复判定
 #      EXC_RECOVERED 是状态谓词；EXC dump vec=6 行先于标记、形态可区分）；
-#   5. "X86 ok" —— 刀验收标记。
+#   5. "CTX ok" —— A/B 两内核任务在独立 .bss 栈上经 context_switch 严格
+#      乒乓 128 轮：每轮双方互验对方计数，计数值只能来自真实交替切换而非
+#      两个独立自增（callee-saved/rsp 保存恢复 + ret 弹入口的机器断言）；
+#   6. "X86 ok" —— 刀验收标记。
 # 任何 FAIL 行 / "EXC panic" 出现即 FAIL（比标记缺失更快定位——意外向量走
 # #GP(13) dump 后 halt，真异常 loud 死不给假绿）。
 #
@@ -63,7 +66,7 @@ echo "smoke-x86: QEMU 启动（$KERNEL）"
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-MARKERS=("BerryOS boot (x86_64)" "PVH ok" "TIMER ok" "EXC ok" "X86 ok")
+MARKERS=("BerryOS boot (x86_64)" "PVH ok" "TIMER ok" "EXC ok" "CTX ok" "X86 ok")
 t0=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -88,4 +91,4 @@ done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
-echo "smoke-x86: PASS（5 标记恰一次到齐）"
+echo "smoke-x86: PASS（6 标记恰一次到齐）"

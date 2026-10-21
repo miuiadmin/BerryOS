@@ -1,6 +1,7 @@
 // P7-x0（ADR #41 x86_64 最小集第一刀）：PVH 引导 + 32→64 长模式 + COM1 串口。
 // P7-x1（第二刀）：PIT 100Hz + 8259 PIC 重映射 + 最小 IDT——五原语之 2/5 定时器。
 // P7-x2（第三刀）：异常向量 0..31 dump 面 + #UD 自证恢复——五原语之 3/5 异常向量。
+// P7-x3（第四刀）：内核任务上下文切换 + A/B 乒乓自证——五原语之 4/5。
 //
 // 引导协议（G-eco fw_cfg 同款方法论：四层实证收敛，QEMU 11.0.3 源码核实）：
 //  - multiboot 路对 ELF64 明确拒收（hw/core/loader.c：EM_X86_64 直接报
@@ -18,10 +19,12 @@
 // 非仅「串口能出字」）+ `TIMER ok n=`（PIT→PIC→IDT→ sti 全链真中断收满 100 拍——
 // 拍数只能来自 handler 递增，内容活证）+ `EXC ok vec=6`（ud2 触发 #UD → dump 落
 // 串口 → rip+2 恢复续行 + rax 金丝雀往返不变——异常门/桩帧/全量保存恢复三环的
-// 机器断言）+ `X86 ok`。
+// 机器断言）+ `CTX ok n=`（A/B 两内核任务在独立 .bss 栈上经 context_switch
+// 严格乒乓 128 轮——每轮双方互验对方计数，计数值只能来自真实交替切换而非
+// 两个独立自增）+ `X86 ok`。
 //
-// 范围盒子（ADR #41）：串口 + 定时器 + 异常向量已落地；上下文切换/SVC 入口随
-// 后续切片——IDT 装 0..31 异常门 + 0x20 定时器门，意外向量（32..255 无门）→
+// 范围盒子（ADR #41）：串口 + 定时器 + 异常向量 + 上下文切换已落地；SVC 入口
+// 随最后一刀——IDT 装 0..31 异常门 + 0x20 定时器门，意外向量（32..255 无门）→
 // #GP(13) → dump + `EXC panic` halt（smoke 快败 grep；三重故障路退役为有门可
 // 观测）。SMP/ACPI/PCIe/APIC 永不进 v1 盒。
 
@@ -744,6 +747,160 @@ extern "C" fn x86_exception(frame: &mut ExcFrame) {
     park();
 }
 
+// ---------- P7-x3：内核任务上下文切换（ADR #41 五原语之 4/5）----------
+// SysV 协作式切换的最小契约集：callee-saved GP + rsp。不保存 caller-saved
+// （调用边界约定本就可破坏）、不保存 XMM（builtin target -sse 软浮点，二进制
+// 零 xmm 指令——P7-x1 纪律）、不保存 rflags/IF（单核协作式切换，任务间共享
+// 中断使能态；timer 中断落在当前栈上、iretq 原样返回，与切换 asm 无交织）。
+// ARM64 task.rs TaskContext 的 x86 对位面。
+
+/// 字段序 = 内存升序，与 context_switch asm 的偏移逐一对齐（0..=6 × 8B）。
+#[repr(C)]
+struct TaskContext {
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rsp: u64, // 保存点 = call 压入的返回地址槽——切回时 ret 弹它在此续行
+}
+
+// wire 形状编译期钉板（GateEntry/Idtr/ExcFrame 同款惯例）：布局错 = 静默
+// 错切换，单侧漂移须在编译期炸响。
+const _: () = assert!(core::mem::size_of::<TaskContext>() == 56);
+
+impl TaskContext {
+    const ZERO: TaskContext =
+        TaskContext { rbx: 0, rbp: 0, r12: 0, r13: 0, r14: 0, r15: 0, rsp: 0 };
+}
+
+// 保存当前任务的 callee-saved + rsp 进 *cur，载入 *next 的同名并 ret。对
+// 「被切走的任务」这是一次正常的函数调用往返（SysV callee-saved 契约按逻辑
+// 任务成立）；对新任务，ret 从其栈顶弹入口/续行点（call 帧仿真）。rdi/rsi
+// 自身 caller-saved——先读后破坏安全（ret 前无再读）。
+global_asm!(
+    ".section .text, \"ax\"",
+    ".globl context_switch",
+    ".type context_switch, @function",
+    "context_switch:",
+    "    movq %rbx, 0(%rdi)",
+    "    movq %rbp, 8(%rdi)",
+    "    movq %r12, 16(%rdi)",
+    "    movq %r13, 24(%rdi)",
+    "    movq %r14, 32(%rdi)",
+    "    movq %r15, 40(%rdi)",
+    "    movq %rsp, 48(%rdi)",
+    "    movq 0(%rsi), %rbx",
+    "    movq 8(%rsi), %rbp",
+    "    movq 16(%rsi), %r12",
+    "    movq 24(%rsi), %r13",
+    "    movq 32(%rsi), %r14",
+    "    movq 40(%rsi), %r15",
+    "    movq 48(%rsi), %rsp",
+    "    ret",
+    ".size context_switch, . - context_switch",
+    options(att_syntax)
+);
+
+// 伪返回地址 gadget：entry 意外 ret 的落点。用 ud2 而非写 0（P7-x3 对抗
+// 审查实抓）：地址 0 被自身恒等映射覆盖（PD[0] 2MiB supervisor RW、EFER
+// 无 NXE），near-ret 到 0 无异常——执行的是物理 0 的 SeaBIOS IVT 残留字节
+// （53 ff 00 f0… = push rbx; incl (%rax)（rax 落映射内时静默写穿 4B）→
+// lock push → #UD(6) rip=0x3），向量/rip/机理全错。gadget 是 .text 内
+// 符号：#UD(6) dump rip=ctx_bad_ret 精确直指，零栈操作零寄存器假设；
+// EXC_SELFTEST 未 armed 时 #UD 走 EXC panic 分支（dump + halt loud），
+// smoke-x86 的 "EXC panic" 快败 grep 兜底。
+global_asm!(
+    ".section .text, \"ax\"",
+    ".globl ctx_bad_ret",
+    ".type ctx_bad_ret, @function",
+    "ctx_bad_ret:",
+    "    ud2",
+    ".size ctx_bad_ret, . - ctx_bad_ret",
+    options(att_syntax)
+);
+
+unsafe extern "C" {
+    /// # Safety
+    /// 切走当前执行流（换栈 + 换 callee-saved）：cur 须指向当前任务的
+    /// TaskContext（现场将存入）；next 须指向已 ctx_init 或此前保存过的
+    /// TaskContext，且其背后栈内存有效。
+    fn context_switch(cur: *mut TaskContext, next: *const TaskContext);
+    /// 永不返回（ud2 → #UD → dump + halt）——ctx_init 伪返回槽的唯一合法落点。
+    fn ctx_bad_ret() -> !;
+}
+
+/// 任务栈（.bss 静态，16 对齐——ret 仿真 call 入口的 ABI 前提）。16KiB =
+/// boot 栈同尺寸。v1 无 guard 页：栈溢出 = 越界写 .bss 相邻区（栈可被腐化
+/// 的真实触发面——动态栈/用户内存/深递归——随 P7-x4 SVC 引入用户任务才
+/// 出现，届时 IST 面/独立中断栈一并议；P7-x2 对抗审查 refuted 留档的
+/// 复议结论：本刀仍是静态栈恒等映射内，ist=0 加固项继续挂账）。
+#[repr(C, align(16))]
+struct TaskStack([u8; 16384]);
+
+static mut STACK_A: TaskStack = TaskStack([0; 16384]);
+static mut STACK_B: TaskStack = TaskStack([0; 16384]);
+static mut MAIN_CTX: TaskContext = TaskContext::ZERO;
+static mut CTX_A: TaskContext = TaskContext::ZERO;
+static mut CTX_B: TaskContext = TaskContext::ZERO;
+
+static CTX_TICKS_A: AtomicUsize = AtomicUsize::new(0);
+static CTX_TICKS_B: AtomicUsize = AtomicUsize::new(0);
+static CTX_FAULT: AtomicBool = AtomicBool::new(false);
+const CTX_PINGS: usize = 128;
+
+/// 新任务上下文 + 栈排布。栈顶 16B = [entry][ctx_bad_ret]：entry 槽 16 对齐
+/// （top 对齐 − 16 仍对齐），context_switch 的 ret 弹 entry 后
+/// rsp ≡ 8 (mod 16)——与真 call 入口同形（编译器按 SysV 入口假设生成
+/// prologue）。entry 槽下方 = ctx_bad_ret（ud2 gadget）伪返回地址：entry
+/// 按契约永不返回（循环/切走），意外 ret → #UD(6) dump rip=ctx_bad_ret
+/// 符号直指（loud 兜底；为何不用 0 见 gadget 定义处的审查实录）。
+fn ctx_init(ctx: *mut TaskContext, stack: *const TaskStack, entry: extern "C" fn()) {
+    unsafe {
+        let top = stack as usize + core::mem::size_of::<TaskStack>();
+        let sp = (top - 16) as *mut u64; // entry 槽（16 对齐）
+        sp.write_volatile(entry as usize as u64);
+        sp.add(1).write_volatile(ctx_bad_ret as *const () as usize as u64); // 伪返回地址
+        (*ctx) = TaskContext::ZERO;
+        (*ctx).rsp = sp as u64;
+    }
+}
+
+/// 任务 A：第 k 轮断言 B == k−1（严格乒乓——计数值只能来自对方上一轮的
+/// 真实切换推进，不是两个独立自增），置 A = k，切 B。N 轮毕切回 MAIN。
+extern "C" fn ctx_task_a() {
+    for k in 1..=CTX_PINGS {
+        if CTX_TICKS_B.load(Ordering::Relaxed) != k - 1 {
+            CTX_FAULT.store(true, Ordering::Relaxed);
+        }
+        CTX_TICKS_A.store(k, Ordering::Relaxed);
+        unsafe {
+            context_switch(core::ptr::addr_of_mut!(CTX_A), core::ptr::addr_of!(CTX_B));
+        }
+    }
+    unsafe {
+        // 收官切回 main——本任务自此悬停在该 context_switch 内（现场已存
+        // CTX_A，无人再切回）。
+        context_switch(core::ptr::addr_of_mut!(CTX_A), core::ptr::addr_of!(MAIN_CTX));
+    }
+}
+
+/// 任务 B：第 k 轮断言 A == k 后置 B = k 切回 A。N 轮全由 A 的循环驱动；
+/// 末次切走后永不再被切回——尾部 park 兜底防裸 ret（不可达路径）。
+extern "C" fn ctx_task_b() {
+    for k in 1..=CTX_PINGS {
+        if CTX_TICKS_A.load(Ordering::Relaxed) != k {
+            CTX_FAULT.store(true, Ordering::Relaxed);
+        }
+        CTX_TICKS_B.store(k, Ordering::Relaxed);
+        unsafe {
+            context_switch(core::ptr::addr_of_mut!(CTX_B), core::ptr::addr_of!(CTX_A));
+        }
+    }
+    park();
+}
+
 #[no_mangle]
 pub extern "C" fn x86_main() -> ! {
     serial_init();
@@ -801,6 +958,28 @@ pub extern "C" fn x86_main() -> ! {
         serial_puts(b"EXC ok vec=6\n");
     } else {
         serial_puts(b"X86 FAIL: exc selftest (recovered/canary mismatch)\n");
+        park();
+    }
+
+    // P7-x3：上下文切换自证——A/B 两内核任务在独立 .bss 栈上严格乒乓 128
+    // 轮（每轮双方互验对方计数——计数只能来自真实交替切换）；毕后 A 切回
+    // MAIN_CTX，此处续行（main 的 callee-saved/rsp 在首次切走时保存）。
+    // 状态谓词非竞速；恰一次由单次直线驱动保证。全程中断敞开（timer ISR 落
+    // 当前栈 iretq 原样返回，与切换无交织——切走时被打断的现场含在 callee-
+    // saved/rsp 里，ISR 帧在其下方不触达）。
+    unsafe {
+        ctx_init(core::ptr::addr_of_mut!(CTX_A), core::ptr::addr_of!(STACK_A), ctx_task_a);
+        ctx_init(core::ptr::addr_of_mut!(CTX_B), core::ptr::addr_of!(STACK_B), ctx_task_b);
+        context_switch(core::ptr::addr_of_mut!(MAIN_CTX), core::ptr::addr_of!(CTX_A));
+    }
+    let na = CTX_TICKS_A.load(Ordering::Relaxed);
+    let nb = CTX_TICKS_B.load(Ordering::Relaxed);
+    if !CTX_FAULT.load(Ordering::Relaxed) && na == CTX_PINGS && nb == CTX_PINGS {
+        serial_puts(b"CTX ok n=");
+        put_dec(na as u32);
+        serial_puts(b"\n");
+    } else {
+        serial_puts(b"X86 FAIL: ctx selftest (alternation/count mismatch)\n");
         park();
     }
     serial_puts(b"X86 ok\n");
