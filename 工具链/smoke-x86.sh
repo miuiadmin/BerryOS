@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# BerryOS x86_64 最小集冒烟（P7-x0 起，ADR #41）。
+# BerryOS x86_64 最小集冒烟（P7-x0 起，ADR #41；P7-x4 五原语收官）。
 #
-# 独立关卡——五原语（串口✓→定时器✓→异常向量✓→上下文切换✓→SVC 入口）收官前
-# 不并入主 smoke.sh：主 smoke 的四跑是 ARM64 回归基线，x86 面以独立入口
-# 并行存在（加法零扰）；收官时把本脚本挂进 CI 面（届时五原语各有标记）。
+# 独立关卡——不并入主 smoke.sh：主 smoke 的四跑是 ARM64 回归基线，x86 面以
+# 独立入口并行存在（加法零扰）。P7-x4 收官起挂进 CI 面（ci.yml：cargo 直调
+# 构建 + 本脚本，与 ARM64 smoke 同 job 串行）。
 #
-# 断言六标记（状态谓词，非竞速）：
+# 断言七标记（状态谓词，非竞速）：
 #   1. "BerryOS boot (x86_64)" —— 32 位入口 → 长模式 → Rust main 全通；
 #   2. "PVH ok" —— hvm_start_info magic/version 校验过（引导协议握手内容
 #      活证，非仅串口能出字）；
@@ -17,7 +17,12 @@
 #   5. "CTX ok" —— A/B 两内核任务在独立 .bss 栈上经 context_switch 严格
 #      乒乓 128 轮：每轮双方互验对方计数，计数值只能来自真实交替切换而非
 #      两个独立自增（callee-saved/rsp 保存恢复 + ret 弹入口的机器断言）；
-#   6. "X86 ok" —— 刀验收标记。
+#   6. "SYS ok" —— SYSCALL/SYSRET 全链：CPL3 用户程序 128 轮 syscall(1)
+#      对拍回显 3i+7（错配即 ud2 → CPL3 #UD → EXC panic loud 快败），末轮
+#      syscall(2) DONE 哨兵经 sys_kern_return 内核恢复路径归位 main——
+#      SYS_COUNT/SYS_USER_OK 只能来自真实 CPL3↔CPL0 往返（MSR/TSS/用户段
+#      U/S 授权任一环断则标记缺失）；
+#   7. "X86 ok" —— 刀验收标记。
 # 任何 FAIL 行 / "EXC panic" 出现即 FAIL（比标记缺失更快定位——意外向量走
 # #GP(13) dump 后 halt，真异常 loud 死不给假绿）。
 #
@@ -66,7 +71,7 @@ echo "smoke-x86: QEMU 启动（$KERNEL）"
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-MARKERS=("BerryOS boot (x86_64)" "PVH ok" "TIMER ok" "EXC ok" "CTX ok" "X86 ok")
+MARKERS=("BerryOS boot (x86_64)" "PVH ok" "TIMER ok" "EXC ok" "CTX ok" "SYS ok" "X86 ok")
 t0=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -91,4 +96,4 @@ done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
-echo "smoke-x86: PASS（6 标记恰一次到齐）"
+echo "smoke-x86: PASS（7 标记恰一次到齐）"

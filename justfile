@@ -248,15 +248,17 @@ build-x86:
 
 # x86 QEMU 启动（pc 机 + PVH ELF；-no-reboot：早期三重故障直接退出，不刷
 # SeaBIOS 重启循环污染日志）。期望：BerryOS boot (x86_64) → PVH ok →
-# TIMER ok → EXC dump vec=6 + EXC ok → CTX ok n=128 → X86 ok（P7-x1 定时器
-# 100Hz 真中断 100 拍；P7-x2 ud2 触发 #UD dump 后 rip+2 恢复续行；P7-x3
-# A/B 两内核任务在独立 .bss 栈上严格乒乓 128 轮互验计数）。
+# TIMER ok → EXC dump vec=6 + EXC ok → CTX ok n=128 → SYS ok n=128 →
+# X86 ok 七标记（P7-x1 定时器 100Hz 真中断 100 拍；P7-x2 ud2 触发 #UD
+# dump 后 rip+2 恢复续行；P7-x3 A/B 两内核任务在独立 .bss 栈上严格乒乓
+# 128 轮互验计数；P7-x4 CPL3 用户程序 SYSCALL/SYSRET 128 轮对拍 + DONE
+# 哨兵经内核恢复路径归位）。
 # 退出同 aarch64：Ctrl-A X。
 run-x86: build-x86
     qemu-system-x86_64 -m 128M -nographic -no-reboot -kernel {{X86_KERNEL}}
 
-# x86 独立冒烟（6 标记恰一次；五原语收官前不并入主 smoke——ARM64 四跑零
-# 扰动；收官时随最小集 gate 一并挂进 CI 面详见 smoke-x86.sh 头注）。
+# x86 独立冒烟（7 标记恰一次；不并入主 smoke——ARM64 四跑零扰动；P7-x4
+# 收官起已挂 CI：ci.yml 两条 x86 步 = cargo 直调构建 + 本脚本）。
 # 内核路径经 X86_KERNEL 传参（单一事实源——对抗审查实抓 smoke-x86.sh
 # 曾自带第二份硬编码：cargo-target 是 gitignored 本地长存目录，后续切片
 # 改名/挪 bin 时只改 justfile 一侧会让冒烟继续跑旧 ELF 假绿，G-eco-b

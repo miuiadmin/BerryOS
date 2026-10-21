@@ -23,10 +23,13 @@ PHDRS {
 SECTIONS {
     . = 0x100000;
 
-    /* boot32 弹床置首（PVH 32 位入口；顺序非协议要求，集中可读性） */
+    /* boot32 弹床置首（PVH 32 位入口；顺序非协议要求，集中可读性）。
+     * .usrprog（P7-x4 CPL3 用户自证程序）显式并入——拒绝孤儿段漂移：运行期
+     * 拷到 0x200000 执行，但字节源必须在镜像内且随 PT_LOAD 装载到位。 */
     .text : {
         KEEP(*(.text.boot))
         *(.text .text.*)
+        *(.usrprog)
     } :text
 
     . = ALIGN(0x1000);

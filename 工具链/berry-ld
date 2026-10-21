@@ -24,4 +24,7 @@ while [ "$n" -gt 0 ]; do
 done
 RUSTC=$(command -v rustc || echo "$HOME/.cargo/bin/rustc")
 SYSROOT=$("$RUSTC" --print sysroot)
-exec "$SYSROOT/lib/rustlib/aarch64-apple-darwin/bin/rust-lld" "$@"
+# 宿主三元组动态取（勿硬编码 aarch64-apple-darwin——CI 是 linux 宿主；rust-lld
+# 由 rustup 随宿主工具链分发，路径只差三元组一段）。
+HOST=$("$RUSTC" -vV | sed -n 's/^host: //p')
+exec "$SYSROOT/lib/rustlib/$HOST/bin/rust-lld" "$@"
