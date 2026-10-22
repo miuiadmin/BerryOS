@@ -5,6 +5,8 @@
 > （同 A-8 草案体例：先裁决接缝与拆步，实施刀落地时逐条兑现）。
 > 积木现状：A-7/A-8 已落 virtio-net 驱动（vnet 常驻服务）+ berry-netproto
 > （eth/ARP/IPv4/ICMP/UDP/DNS 编解码，17 测）+ berry-netdproto（DNS RPC，14 测）。
+> **执行结果（2026-10-23 补记）**：T-a..T-d 四刀全落（2026-10-22）——`TCP ok echo=64`（T-c 客户端全链）/ `TCPS ok echo=64`（T-d netdproto 服务化）进 smoke rootfs 相；host 面 berry-tcp 30 测 + netdproto 14→26 测；DEADLINE_ROOTFS 随 T-d 240s→300s。
+> **冻结（2026-10-23）**：使命完成——本文自此为实施实录冻结档，后续演进不再回写（新变化进 `阶段沿革.md` 与现行规范文档）；文件位置不动，归档移动待另行裁决。
 
 ## 0. 目标与非目标
 

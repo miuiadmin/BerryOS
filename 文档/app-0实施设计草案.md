@@ -3,6 +3,7 @@
 > 状态：**对抗审查已收官（2026-10-21，workflow 26 agents：4 维度找 → 逐 finding 对抗核实；22 raw → 19 confirmed（跨维去重 14 根因）全修入文 / 3 refuted 留档）**。输入 = `应用模型设计.md` §7 app-0 行（「manifest v0 + `mkapp`（mkcpio 同纪律确定性打包）+ appd 雏形（svcmgr 演化：读 manifest → 授权集 → 拉起 → 监督 reap）| smoke 标记 `APP ok`」）；决策依据 = ADR #43（应用 = 纯用户态协议约定，内核永不认识「应用」）/ #44（cpio 容器 + TOML manifest，安装 = 翻译成 handle 授权集，启动 = env 块 gift 授能）/ #45（apps/ 树 = v2 安装面）。
 > 时点：P6 A-7 已收官、x86 会话占 P7-x 线——app-0 的「P6 尾/P7 初」窗口即现在。路径面 = `用户态/` + `工具链/` + smoke/计数锚，与 x86 会话（`架构相关/x86_64/`、smoke-x86）零重叠。
 > 形态先例：`G-eco编译侧设计草案.md`（草案 → workflow 对抗审查 → 拆步实施，每步独立提交）。
+> **执行结果 + 冻结（2026-10-23）**：a-0..a-3 全落（2026-10：berry-manifest host 23 测 + mkapp 门禁自检 + svcmgr appd 雏形 `APP ok n=2` = rootfs 相第 21 标记；两义风险回写同日收口——父文档 §3/§4.2 落地注 + 外围位补齐）。本文自此为实施实录冻结档，后续演进不再回写（新变化进 `阶段沿革.md` 与 `应用模型设计.md`）；文件位置不动，归档移动待另行裁决。
 
 ## 0. 目标与范围盒子
 
