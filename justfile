@@ -234,6 +234,10 @@ test-host:
     cargo test --manifest-path 用户态/Cargo.toml -p berry-netproto --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-netdproto --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-tcp --target {{host}}
+    # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
+    # 第 8 例，host 22 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
+    # manifest fixture 共识/intent 判别值钉板）。
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-manifest --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

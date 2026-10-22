@@ -30,9 +30,14 @@
 # T-c：berry-tcp（最小 TCP 客户端状态机纯函数 crate，「解析器即产品」第 7 例；
 # 消费 = vnet tcp.rs 会话循环（独立小工作区编 musl target，同 vblk 不入
 # members）——host 测试经 justfile test-host 显式行跑）。
+# app-0：berry-manifest（.bap 应用清单 v0 纯函数解析 crate，「解析器即产品」
+# 第 8 例；双消费 = svcmgr appd arm（本工作区成员，none target）+
+# 工具链/mkapp.py build 期门卫（python 侧帽值对账锚）——host 测试经
+# justfile test-host 显式行跑；demo 双 app（appdemo/appquiet）编 musl
+# target，同 stdhello 不入 members 进 exclude）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-blkproto",
-    "berry-virtio", "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
-exclude = ["bins/stdhello"]
+    "berry-virtio", "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 
 # 用户程序平像：体积优先（单页墙由 工具链/elf2flat.py --max 执法）。

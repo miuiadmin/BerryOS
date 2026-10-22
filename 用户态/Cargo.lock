@@ -41,6 +41,10 @@ name = "berry-loader"
 version = "0.1.0"
 
 [[package]]
+name = "berry-manifest"
+version = "0.1.0"
+
+[[package]]
 name = "berry-netdproto"
 version = "0.1.0"
 
