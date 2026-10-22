@@ -275,11 +275,13 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     // 自陷杀调用方（svcmgr 死 = watchdog 错杀 panic 连坐 halt）。映像+
     // 栈几何同属 rootfs 输入面，前置 Err 降级；`stack_pages` 是消费方参数
     // （bsh 32/svcmgr 8），故检在 berry-exec 而非 loader。checked 链防
-    // 调用方巨值溢出绕检。
+    // 调用方巨值溢出绕检；stack_pages==0 只过上限不过下限——原值会走到
+    // vmo_create(0) -EINVAL → trap() 杀调用方（a-2 面由 manifest 域检
+    // 1..=64 挡住，此检护全族其它调用方——app-0 a-3 U3）。
     let stack_end = stack_pages
         .checked_mul(berry_loader::PAGE_SIZE)
         .and_then(|s| (base + len + berry_loader::PAGE_SIZE).checked_add(s));
-    if stack_end.map_or(true, |e| e > berry_loader::USER_TOP) {
+    if stack_pages == 0 || stack_end.map_or(true, |e| e > berry_loader::USER_TOP) {
         return Err(());
     }
     // —— MMIO 固定 VA 前置（对抗审查补，栈顶前置同族第三块几何约束）：

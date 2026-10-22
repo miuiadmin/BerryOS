@@ -36,7 +36,7 @@ use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, 
 // P6 A-8c：vnet 网络服务消费自验（DNS ok）的协议面。
 use berry_netdproto as ndp;
 // app-0 a-2：.bap manifest v0 解析面（纯函数 crate，host 23 测同源）。
-use berry_manifest::{APP_SLOTS, ENTRY_MAX, ID_MAX, MANIFEST_MAX};
+use berry_manifest::{APP_SLOTS, BAP_MAX, ENTRY_MAX, ID_MAX, MANIFEST_MAX};
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -697,12 +697,16 @@ fn run_rootfs_child(console: Handle) {
                     // app-0 a-2：app 包整条目收集（'a'<'b' 排序在一切 bin/
                     // 前——收集完 bin/ arms 才轮到，启动批在主走查毕统一走）。
                     // mkapp 门禁已保形状，但 rootfs 是外部输入面——防御照旧：
-                    // id 域/槽满 = 可见降级不炸 svcmgr（单 app 坏不连坐）。
+                    // id 域/BAP_MAX/槽满 = 可见降级不炸 svcmgr（单 app 坏不
+                    // 连坐）。BAP_MAX 双端执法（mkapp 生产侧 + 本消费侧同值
+                    // ——berry-manifest 单源，a-3 对抗审查 U2）。
                     let id = &name[4..name.len() - 4]; // ASCII 前后缀剥除
                     if id.is_empty() {
                         eco_skip(b"app id empty");
                     } else if id.len() > ID_MAX {
                         eco_skip(b"app id long");
+                    } else if data_len > BAP_MAX as u64 {
+                        eco_skip(b"app bap big");
                     } else if app_n >= APP_SLOTS {
                         eco_skip(b"app too many");
                     } else {
@@ -759,8 +763,10 @@ fn run_rootfs_child(console: Handle) {
             }
         }
         if ok == app_n {
-            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS=4 →
-            // 单位数字。
+            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 单
+            // 位数字——抬 APP_SLOTS ≥ 10 前先扩带参宽度（b'0'+ok 会溢出
+            // ASCII 数字域；TCPS_PATTERN 定值钉板同款编译期拦）。
+            const _: () = assert!(APP_SLOTS < 10, "APP ok n= 单数字位形态");
             let mut line = [0u8; 11];
             line[..9].copy_from_slice(b"APP ok n=");
             line[9] = b'0' + ok as u8;
@@ -1097,15 +1103,24 @@ const APP_EOF_CAP: u64 = 30 * 1_000_000_000;
 
 /// 收集端等零长 EOF（`verify_hexyl` 的 drain 骨架去内容面）：s==0 且
 /// nb==0 → true；有数据照收丢弃（appquiet 契约输出为零——防御面：万一
-/// 多打不炸，EOF 终会来）；非 -EAGAIN 错码 = 端点/表异常 → trap（链断
-/// loud，verify_hexyl 同口径）；空队 wait READABLE 超帽返 false。
+/// 多打不炸，EOF 终会来）；nh>0 = 坏 .bap 多带 handle——按数据面处置：
+/// 令牌已入本表，全量 close 丢弃（P6 A-4 纪律：收口容量给「协议定值 +
+/// 富余」——channel 随行上限 4，容量 4 = 任何消息不 -EINVAL；恰按 0 收
+/// 时坏消息容量不足回滚返 -EINVAL，会误入链断 trap 杀 svcmgr——「常驻
+/// 服务被单个坏 .bap 杀死」是最差死法）；非 -EAGAIN 错码 = 端点/表异常
+/// → trap（链断 loud，verify_hexyl 同口径）；空队 wait READABLE 超帽返
+/// false。
 fn collect_eof(h: Handle) -> bool {
     let mut msg = [0u8; 256];
+    let mut hh = [0 as Handle; 4]; // 随行收口容量 = channel 上限（富余非协议值）
     loop {
         let mut nb = msg.len();
-        let mut nh = 0usize;
-        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        let mut nh = hh.len();
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh);
         if s == 0 {
+            for i in 0..nh {
+                let _ = berry_handle_close(hh[i]); // 多带 handle：丢弃勿 trap
+            }
             if nb == 0 {
                 return true; // 零长消息 = EOF 约定（d-3b）
             }
@@ -1281,13 +1296,15 @@ fn app_launch(
         }
         Ok(child) => {
             if out_s != 0 {
-                // console=false：spawn 侧端已随 env 块 take 迁子表（勿关）；
-                // 先收 EOF（d-3b 写侧对称面——libc exit 族 EOF 先行，Plan B
-                // 起 abort 亦然）再关收集端。帽内未到 = 断链/卡死。
+                // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
+                // RIGHT_SEND 随 env 块迁移），原值 c 留本表——先收 EOF（d-3b
+                // 写侧对称面——libc exit 族 EOF 先行，Plan B 起 abort 亦然）
+                // 再关两端（hexyl 臂同款：收集端 + 本表原值副本）。帽内未到
+                // = 断链/卡死。
                 if !collect_eof(out_s) {
                     eco_app(console, id, b"no EOF");
                 }
-                if berry_handle_close(out_s) != 0 {
+                if berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0 {
                     trap();
                 }
             }

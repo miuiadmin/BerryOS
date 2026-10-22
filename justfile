@@ -260,6 +260,9 @@ test-host:
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。
     cargo test --manifest-path 用户态/Cargo.toml -p berry-manifest --target {{host}}
+    # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
+    # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
+    python3 工具链/mkapp.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

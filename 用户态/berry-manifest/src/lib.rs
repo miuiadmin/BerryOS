@@ -1,8 +1,8 @@
 //! # berry-manifest —— BerryOS 应用清单 v0 纯函数解析器
 //!
 //! `文档/app-0实施设计草案.md` §2/§3（ADR #43/#44：应用 = 纯用户态协议
-//! 约定 + cpio 容器 + TOML manifest）。「解析器即产品」家族第 6 例
-//! （loader/fsproto/virtio/blkproto/fatfs/netproto 之后）：**零分配、零
+//! 约定 + cpio 容器 + TOML manifest）。「解析器即产品」家族第 8 例
+//! （loader/fsproto/virtio/blkproto/fatfs/netproto/netdproto/tcp 之后）：**零分配、零
 //! unsafe、零依赖、输入只借用、no_std**——宿主 svcmgr 是 none target 平像
 //! 程序（aarch64-unknown-none，无 std 无 alloc），带 std/alloc 依赖即
 //! workspace 构建链编译失败。

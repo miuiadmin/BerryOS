@@ -3,7 +3,8 @@ r"""mkapp——.bap 应用包打包器（app-0，`文档/app-0实施设计草案
 ADR #43/#44：应用 = 纯用户态协议约定，包 = cpio(newc) 容器，内核零概念）。
 
 用法：mkapp.py <out.bap> <app-dir>        # 打包（app-dir = {manifest.toml, bin/}
-      mkapp.py --selftest                 # 门禁自检（零依赖，CI/手跑）
+      mkapp.py --selftest                 # 门禁自检（零依赖；挂 just test-host，
+                                          #          mkfat --check-fixture 同位）
 
 包格式（§1 冻结）：cpio newc 恰两条目——`manifest.toml` + 唯一 `bin/`
 前缀条目（ELF 本体，条目名 = manifest entry）；进 rootfs.cpio 时整体作
