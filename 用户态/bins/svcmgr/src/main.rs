@@ -33,6 +33,10 @@ use berry_sys::{
 use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, SpawnSpec};
 // P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
+// P6 A-8c：vnet 网络服务消费自验（DNS ok）的协议面。
+use berry_netdproto as ndp;
+// A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -88,6 +92,11 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // 相）→ hello + stdhello 各自拉起（`ECO ok` 第 24 标记 / 子自打
     // `STD ok`、`STD err ok`——G-eco-d d-1c）。
     run_rootfs_child(console);
+
+    // ---- P6 A-8c：vnet 服务消费自验（`DNS ok addr=127.0.0.1`，rootfs 相
+    // 第 18 标记）。此刻 vnet 预拉已久（即便自验未毕，请求入队深度 8，
+    // serve() 起来即收）；裸跑 NET_A==0 静默跳过零扰动。----
+    dns_selftest(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
     let v = [b'v'];
@@ -164,6 +173,10 @@ const H_MMIO: Handle = 0x0001_0004;
 static mut STEP_WIN: [u8; 512] = [0; 512];
 /// hexyl 终验收齐窗：子 stdout 全量（基准 2156B + 版本漂移余量）。
 static mut HEX_WIN: [u8; 4096] = [0; 4096];
+/// vnet（常驻网络服务）client 端（A-8b）：vnet 预拉 Ok 后本表留持的
+/// net_a——A-8c 起作 DNS 自验的 client 端消费；本步只保活（唯一 client
+/// 端 close = 服务端孤儿端，v1 无对端关闭检测，留表即留命）。
+static NET_A: AtomicU32 = AtomicU32::new(0);
 
 /// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
@@ -336,6 +349,55 @@ fn run_rootfs_child(console: Handle) {
                 }
                 blk_cli = 0;
                 eco_skip(b"fs spawn");
+            }
+        }
+    }
+    // ---- P6 A-8b：vnet（常驻网络服务）预拉起——fsmgr 之后、主走查前 ----
+    // A-7 时 vnet 在主走查 arm 拉起（瞬态探针：`NET ok` 自打后 exit(0) +
+    // svcmgr 阻塞 reap 回收）；A-8b 起自验毕转 serve() 常驻（berry-netdproto
+    // DNS_QUERY RPC）⇒ 改预拉（主走查 arm 退役，条目自然跳过）。拓扑：
+    // channel_pair 得 (net_a, net_b)——net_b 随 env 块 gift[2] 迁入 vnet
+    // （libc `gift2_h()`）；net_a 留本表存 NET_A（A-8c 起作 DNS 自验
+    // client）。窗口缺席 → vblk 同款可见降级不 spawn；常驻子不 reap
+    // （vblk A-4 同款：wait TERMINATED 30s 帽必超时空烧）。
+    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+        eco_skip(b"mmio absent");
+    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vnet") {
+        let (net_a, net_b) = channel_pair();
+        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
+        // dummy（空 feeder + 立即 EOF；vnet 服务永不读 stdin，vblk/fsmgr
+        // 同款）。
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/vnet",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                extra_arg: None,
+                extra_gifts: &[net_b],
+                mmio_vmo: Some(H_MMIO),
+            },
+        ) {
+            Ok(_child) => {
+                // 常驻不 reap。`NET ok` 标记仍由 vnet 自打（自验在 serve()
+                // 前，rootfs 相第 17 标记零扰动）；DNS ok（A-8c）起本端
+                // 转 client 消费。
+                NET_A.store(net_a, Ordering::Relaxed);
+            }
+            Err(()) => {
+                // Err 全在 env send 前——net_b 未被 take，两新鲜端显式回收
+                // 防表槽泄漏（vblk 同款）。
+                if berry_handle_close(net_b) != 0 {
+                    trap();
+                }
+                if berry_handle_close(net_a) != 0 {
+                    trap();
+                }
+                eco_skip(b"net spawn");
             }
         }
     }
@@ -543,42 +605,6 @@ fn run_rootfs_child(console: Handle) {
                             fs_a_h = 0;
                         }
                     }
-                } else if name == "bin/vnet" {
-                    // P6 A-7：virtio-net 驱动（网络面第一刀）——vprobe arm
-                    // 同形（瞬态探针：ARP/ICMP 往返自打 `NET ok ping=32
-                    // slot=N` = rootfs 相第 17 标记后 main 返回 = exit(0)，
-                    // 阻塞 reap 回收）。窗口缺席 → 同款可见降级不 spawn；
-                    // reap Err → 降级行；Ok(_) 码不判（断言失败走 trap——
-                    // 诊断靠 vnet 自打行）。网络往返 worst ~20s（ARP/ICMP
-                    // 各 10s poll 帽）在 reap 30s 帽内；mkcpio 名序 vnet
-                    // 恰在 vprobe 前（n < p）。
-                    let mut msz = 0u64;
-                    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
-                        eco_skip(b"mmio absent");
-                    } else {
-                        match spawn_rootfs_elf(
-                            H_ROOTFS,
-                            &SpawnSpec {
-                                name: name.as_bytes(),
-                                data_off,
-                                data_len,
-                                stdout: console,
-                                stack_pages: 8,
-                                stdin_feed: None,
-                                stdin_handle: None,
-                                extra_arg: None,
-                                extra_gifts: &[],
-                                mmio_vmo: Some(H_MMIO),
-                            },
-                        ) {
-                            Ok(child) => {
-                                if child.reap().is_err() {
-                                    eco_skip(b"vnet reap");
-                                }
-                            }
-                            Err(()) => eco_skip(b"vnet spawn"),
-                        }
-                    }
                 } else if name == "bin/vprobe" {
                     // P6 A-2：virtio-mmio 探测（用户态驱动地基第一刀）——
                     // H_MMIO 经 `SpawnSpec::mmio_vmo` 映进子空间固定 VA
@@ -673,6 +699,20 @@ const BLKD_TEST_LBA: u64 = 5;
 /// commit 整页粒度（内核 `Vmo::commit` 的 Unaligned 执法——offset/len 都
 /// 须页对齐；512B 扇区 → 取整到 4096，vmo_create 容量本就取整同值）。
 const BLKD_COMMIT_LEN: u64 = ((SECTOR_SZ as u64 + 4095) / 4096) * 4096;
+
+/// rootfs 相第 18 标记（P6 A-8c）：vnet 常驻网络服务的消费自验——
+/// `DNS_QUERY("localhost")` RPC 往返 st==ST_OK 且 addr==[127,0,0,1]（SLIRP
+/// 虚拟 DNS 10.0.2.3 → 宿主 /etc/hosts，离线确定无外网依赖）才打（带参
+/// 形态防子串混叠——`BLKD ok n=` 同款惯例；状态谓词，无竞速面）。
+const DNS_OK: &[u8] = b"DNS ok addr=127.0.0.1\n";
+
+/// DNS 应答帽：60s。worst 路径 = vnet 启动自验尾巴（ARP+ICMP 在 serve()
+/// **之前**，早到的请求入队等待——主走查的阻塞 reap 通常已覆盖这段，但
+/// 帽不押时序）+ 服务端 DNS 整体帽 20s（vnet `DNS_CAP_NS`——SLIRP 失联
+/// 时 ST_TIMEOUT 应答 20s 到点，慢 ≠ 死由本帽兜底）+ 余量。超帽 = 降级行
+/// + 标记缺失 = smoke FAIL（请求可能仍在途，**不重发**——v1 无请求序号，
+/// blk_rpc 同款纪律）。
+const DNS_REPLY_CAP: u64 = 60 * 1_000_000_000;
 
 // rootfs ELF 流式拉起 = `berry_exec::spawn_rootfs_elf`（A-2 迁出：ELF 首窗
 // 解析 → 页铺平单 VMO → 段泵送 → 栈+保护页 → env 块交接；签名 SpawnSpec
@@ -898,6 +938,62 @@ fn blk_rpc(h: Handle, op: u8, sector: u64, vmo: Handle) -> Result<u8, ()> {
         return Err(());
     }
     parse_reply(&rep[..nb]).ok_or(())
+}
+
+/// eco 降级行（run_rootfs_child 内 `eco_skip` 闭包的独立 fn 版——A-8c 的
+/// DNS 自验在 `_start` 语境（闭包作用域外）消费，形态逐字同源）。
+fn eco_line(console: Handle, why: &[u8]) {
+    let mut line = [0u8; 24];
+    line[..4].copy_from_slice(b"eco:");
+    line[4] = b' ';
+    let n = 5 + why.len();
+    line[5..n].copy_from_slice(why);
+    line[n] = b'\n';
+    send_retry(console, line.as_ptr(), n + 1);
+}
+
+/// P6 A-8c：vnet 服务消费自验——`DNS_QUERY("localhost")` 严格串行 RPC 往返
+/// → st==ST_OK 且 addr==[127,0,0,1] 才打标记（blk_selftest 的 RPC 版样
+/// 板：无 VMO 数据面，名字/地址全 inline）。NET_A==0（预拉失败/裸拓扑）
+/// 静默跳过——降级行已由预拉段打过（`eco: net spawn`），勿重复。
+fn dns_selftest(console: Handle) {
+    let net = NET_A.load(Ordering::Relaxed);
+    if net == 0 {
+        return;
+    }
+    match dns_rpc(net, b"localhost") {
+        Ok(rep) if rep.st == ndp::ST_OK && rep.addr == [127, 0, 0, 1] => {
+            send_retry(console, DNS_OK.as_ptr(), DNS_OK.len());
+        }
+        // 应答到了但不是 127.0.0.1/非 OK——链路活着答案错，与链路断分诊。
+        Ok(_) => eco_line(console, b"dns reply"),
+        Err(()) => eco_line(console, b"dns rpc"),
+    }
+}
+
+/// DNS 查询 RPC（严格串行，`berry-netdproto` 约定；blk_rpc 同款纪律）：
+/// encode → send（EBUSY → wait WRITABLE 重试——**无随行 handle**，重发零
+/// take 副作用）→ [`DNS_REPLY_CAP`] 应答帽 wait READABLE → recv 恰 5B
+/// 解析。应答帽超时/错码 → Err（请求可能仍在途不重发；收口容量富余 +
+/// 协议恰长由 parse_reply 把关——blk_rpc 8/1 同款）。
+fn dns_rpc(h: Handle, name: &[u8]) -> Result<ndp::Reply, ()> {
+    let mut req = [0u8; ndp::REQ_LEN_MAX];
+    let n = match ndp::encode_request(&mut req, ndp::OP_DNS_QUERY, name) {
+        Some(n) => n,
+        None => return Err(()),
+    };
+    send_retry(h, req.as_ptr(), n);
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + DNS_REPLY_CAP, &mut obs) != 0 {
+        return Err(());
+    }
+    let mut rep = [0u8; 16];
+    let mut nb = rep.len();
+    let mut nh = 0usize;
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh) != 0 {
+        return Err(());
+    }
+    ndp::parse_reply(&rep[..nb]).ok_or(())
 }
 
 #[inline(never)]

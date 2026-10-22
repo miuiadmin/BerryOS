@@ -19,3 +19,5 @@ berry-loader = { path = "../../berry-loader" }
 berry-exec = { path = "../../berry-exec" }
 # A-4：vblk 块设备服务消费自验（BLKD ok）——请求/应答编解码纯函数。
 berry-blkproto = { path = "../../berry-blkproto" }
+# A-8c：vnet 网络服务消费自验（DNS ok）——DNS_QUERY 请求/应答编解码纯函数。
+berry-netdproto = { path = "../../berry-netdproto" }

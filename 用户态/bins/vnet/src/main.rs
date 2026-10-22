@@ -1,4 +1,6 @@
-//! vnet —— P6 A-7 virtio-net 用户态驱动（网络面第一刀：ARP/ICMP ping 通）。
+//! vnet —— P6 A-7 virtio-net 用户态驱动（ARP/ICMP ping 通）+ P6 A-8b 起
+//! **常驻网络服务**（DNS 查询 RPC）+ T-c 起 TCP 自验会话（主动 connect
+//! SLIRP 宿主回显服务，握手/双向/挥手全链——[`tcp`]，`TCP ok echo=`）。
 //!
 //! vprobe/vblk 同链（musl target + berry-libc shim；MMIO 窗口经
 //! `SpawnSpec::mmio_vmo` 映到 [`VIRTIO_MMIO_VA`]，berry-exec 单源）。扫 32
@@ -7,13 +9,18 @@
 //! MAC → 双队列建制（rx q0 + tx q1，qsize=16）→ 挂 16 个 rx 单描述符缓冲 →
 //! DRIVER_OK → **ARP 解网关 MAC**（SLIRP user 网的 10.0.2.2 应答 broadcast
 //! 请求）→ **ICMP echo 往返对拍**（32B payload 逐字节全等）→ 自打
-//! `NET ok ping=32 slot=N`（rootfs 相第 17 标记，单消息原子）后 main 返回
-//! = exit(0) + svcmgr reap（vprobe 同款瞬态探针——网络服务化随 v2）。
+//! `NET ok ping=32 slot=N`（rootfs 相第 17 标记，单消息原子）后**转常驻**
+//! （A-8b，vblk A-4 同款纪律）：serve() 经 berry-netdproto 应答 DNS_QUERY
+//! RPC（name → UDP:53 → SLIRP 虚拟 DNS 10.0.2.3 代答 → addr），空队 wait
+//! READABLE 10s 帽超时重臂、client 侧一切错误 ST_BAD/ST_TIMEOUT 应答**服务
+//! 不死**；无退出路径（A-7 瞬态探针的 STATUS=0 退出复位义务随之消失——
+//! 复位只在 negotiate 起点用）。
 //!
 //! **virtio-net 请求头**（12B mrg 变体，[`vio::NET_HDR_SZ`]——协商
 //! MRG_RXBUF 后收发同形，见 negotiate 注）：非 checksum/gso 驱动恒写全零，
 //! 帧本体紧随同缓冲——rx 单描述符即整收（设备写 12B 头再写帧进
-//! 同一 160B 缓冲；拆 hdr→frame 链式两 desc 需 32 个 > qsize 16 放不下，
+//! 同一 256B 缓冲（T-c TCP 扩容后仍单 desc：12+66+128=206 ≤ 256）；拆
+//! hdr→frame 链式两 desc 需 32 个 > qsize 16 放不下，
 //! 单 desc 是几何结论）。
 //!
 //! **SLIRP user 网事实**（`-netdev user` + `-device virtio-net-device`）：
@@ -24,12 +31,14 @@
 //! 收紧回恰长执法**）。net 也吃 force-legacy=false（ver==2）。
 //!
 //! **DMA 面**（vblk 同款纯 VMO 机制——4 页从不进任何地址空间）：页 0 rx
-//! ring / 页 1 tx ring / 页 2 rx 缓冲 16×160B / 页 3 tx 缓冲。[`TXRING`]
+//! ring / 页 1 tx ring / 页 2 rx 缓冲 16×256B（恰满单页，§5）/ 页 3 tx
+//! 缓冲。[`TXRING`]
 //! 暂存是 tx ring 的驱动侧权威副本（avail.idx 跨帧续用——vblk RING 同款；
 //! 整页写在门铃前、上一帧已 poll 完成后——同步单在途纪律下设备对 tx ring
 //! 空闲，无并发写面）；rx ring 的 used 环设备拥有，驱动只读（2B 短读 idx +
-//! 整页读入 [`RXSTAGE`] 取 used 项）。**不回填已用 rx 缓冲**（16 挂 2-3
-//! 用，v1 探针面；常驻化随 v2）。
+//! 整页读入 [`RXSTAGE`] 取 used 项）。**rx 缓冲收割即回填**（A-8b——v1
+//! 探针不回填、16 缓冲耗尽即假死；常驻面靠 [`refill_rx`] 字节粒度续挂同
+//! id 重发布，见 refill 注）。
 //!
 //! 一致性口径（vblk 同款诚实缺口）：门铃前 `dmb ish`（publish() 调用方
 //! 契约）；cache 维护（dc cvac/ivac）留 v2 DMA API；中断面 = poll used
@@ -39,12 +48,22 @@
 
 use berry_exec::{VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
 use berry_sys::{
-    berry_clock_read, berry_thread_sleep, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle, CLOCK_MONOTONIC,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
+    berry_object_wait_one, berry_thread_sleep, berry_vmo_commit, berry_vmo_create,
+    berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
+    BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_virtio as vio;
 // A-7：最小以太网/ARP/IPv4/ICMP-echo 编解码（「解析器即产品」第 5 例）。
 use berry_netproto as np;
+// A-8：网络服务 RPC 协议（DNS_QUERY 单 op 严格串行——服务端侧）。
+use berry_netdproto as ndp;
+use berry_libc::io::gift2_h;
+use core::sync::atomic::{AtomicU16, Ordering};
+
+// T-c：TCP 自验会话模块（berry-tcp 状态机 × 本 crate IO 驱动——插入点在
+// main 的 `NET ok` 之后、serve 之前）。
+mod tcp;
 
 // 链接种子（vprobe/vblk 同款）：无引用则 berry-libc 的 crt0 不进链接。
 #[used]
@@ -55,8 +74,11 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 const QSIZE: u16 = 16;
 /// rx 缓冲数（= qsize：每缓冲一描述符整收一帧）。
 const RX_BUFS: usize = 16;
-/// rx 缓冲幅：12B net 头 + ≤148B 帧（ARP 42 / ICMP 74——v1 控制帧面）。
-const RX_BUF_SZ: usize = 160;
+/// rx 缓冲幅：12B net 头 + ≤244B 帧（T-c TCP 扩容：帧开销 66（vnet_hdr
+/// + eth + IP + TCP 头）+ MSS 128 = 194 上限 + 选项余量；16×256 = 4096
+/// 恰满 RX_BUF_PAGE 单页——DMA 四页排布零重排，「rx 单描述符整收」几何
+/// 结论不变）。消费侧 tcp.rs const assert 机器钉住（T-c ③）。
+pub(crate) const RX_BUF_SZ: usize = 256;
 /// DMA VMO 几何：页 0 rx ring / 页 1 tx ring / 页 2 rx 缓冲带 / 页 3 tx
 /// 缓冲（各结构单页内——desc 地址域不跨页，vblk 同前提）。
 const DMA_LEN: u64 = 16384;
@@ -78,6 +100,26 @@ const BROADCAST_MAC: [u8; 6] = [0xff; 6];
 const ICMP_PAYLOAD: &[u8; 32] = b"berryos-vnet-ping-0123456789abcd";
 const ICMP_ID: u16 = 0x6265;
 const _: () = assert!(ICMP_PAYLOAD.len() == 32);
+/// SLIRP user 网：虚拟 DNS = **10.0.2.3**（非网关——guest 发往它的 UDP:53
+/// 由宿主网栈代答；A-8 标记的地基："localhost" → 宿主 /etc/hosts →
+/// 127.0.0.1 离线确定，无外部网络依赖）。
+const DNS_IP: [u8; 4] = [10, 0, 2, 3];
+const DNS_PORT: u16 = 53;
+/// DNS 查询源端口（固定——过滤链按四元组 + sport/dport 精确匹配，SLIRP
+/// 原路回发）。
+const DNS_SPORT: u16 = 5353;
+/// DNS 查询整体帽（服务侧 20s < client 侧 60s 应答帽（A-8c svcmgr
+/// `DNS_REPLY_CAP` 实定——worst 路径含本服务自验尾巴 + 本帽 + 余量）——
+/// ST_TIMEOUT 应答先于 client 超时到达，vblk BLKD「服务帽 < client 帽」
+/// 同款纪律）。
+const DNS_CAP_NS: u64 = 20_000_000_000;
+/// serve() 空闲/wait 重臂帽：10s（常驻服务空闲合法面——vblk SVC_IDLE
+/// 同款，超时重臂非链断）。
+const SVC_IDLE_NS: u64 = 10_000_000_000;
+/// DNS 查询 id 计数器（每查询 fetch_add——应答按 id 精确匹配，杂散/迟到
+/// 应答天然滤除；u16 回卷 = id 空间复用，与「id 匹配」过滤共存）。Relaxed
+/// 单消费者足够。
+static DNS_ID: AtomicU16 = AtomicU16::new(0);
 
 // SAFETY: 调用方单线程（main 顺序流），三窗各自独占；static 免大栈帧。
 /// tx ring 驱动侧权威暂存（desc 0 + avail 跨帧续用——vblk RING 同款）。
@@ -85,8 +127,11 @@ static mut TXRING: [u8; 4096] = [0; 4096];
 /// rx ring 暂存（初始挂缓冲时组页；收割时整页读入取 used 项——只读面，
 /// used 环设备拥有）。
 static mut RXSTAGE: [u8; 4096] = [0; 4096];
-/// 帧暂存（tx 组 12B 头 + 帧 / rx 收帧；512 ≥ 12+150）。
-static mut IOB: [u8; 512] = [0; 512];
+/// 帧暂存尺寸常量（静态数组与 tcp.rs 消费侧 const assert 同源——T-c ③）。
+pub(crate) const IOB_SZ: usize = 512;
+/// 帧暂存（tx 组 12B 头 + 帧 / rx 收帧；512 ≥ 12+186——TCP 段最大帧 =
+/// eth 14 + IP 20 + 段 152（头 20 + MSS 选项 4 + 载荷 128））。
+static mut IOB: [u8; IOB_SZ] = [0; IOB_SZ];
 
 /// DMA VMO + 双环几何（vblk Dma 同形扩双队列）。
 struct Dma {
@@ -98,6 +143,8 @@ struct Dma {
     tx_buf_pa: u64,
     /// rx 已收割数（与设备 used.idx 对账的自由运行 u16）。
     rx_harvested: u16,
+    /// rx 已发布数（avail.idx 的驱动侧权威——refill 续挂对账用）。
+    rx_posted: u16,
 }
 
 fn main() {
@@ -115,7 +162,7 @@ fn main() {
     // 队列 0 = rx（DRIVER_OK 前先挂缓冲——设备从此有缓冲可写）；1 = tx。
     setup_queue(regs, 0, d.rx_ring_pa, &d.lay);
     setup_queue(regs, 1, d.tx_ring_pa, &d.lay);
-    post_rx(&d);
+    post_rx(&mut d);
     wr(
         regs,
         vio::mmio::STATUS,
@@ -129,17 +176,16 @@ fn main() {
     let gw_mac = arp_roundtrip(&mut d, regs, &mac);
     icmp_roundtrip(&mut d, regs, &mac, &gw_mac);
     println!("NET ok ping={} slot={}", ICMP_PAYLOAD.len(), slot);
-    // 退出前 STATUS=0 复位撤队列（对抗审查实抓 medium）：不复位则设备
-    // 保持 DRIVER_OK、rx avail 仍挂 13-14 个指向 DMA VMO 页的缓冲——退出
-    // 钩子 drain 后这些页还回 buddy 被后续分配复用，而 SLIRP 会周期性推
-    // IPv6 RA（filter-dump 实证 ~200-600s 一发、无需 guest 发任何 IPv6）
-    // 令设备把帧 DMA 进已复用页 = 静默腐化无关进程（vblk A-3「退出不复
-    // 位」以『无外部写者』refute——net 的写者是宿主网栈，前提不转移）。
-    // 复位后设备撤队列，对已还帧零后续访问。
-    reset_device(regs);
-    // main 返回 = exit(0)（libc exit 族 EOF 先行 + 0x33 真退出），svcmgr
-    // reap（vprobe 同款）；DMA VMO 随退出 drain 表槽归零 Drop 还帧
-    // （从不映射——无 EPTE 清理面）。
+    // T-c：TCP 自验会话（主动 connect 10.0.2.2:18080——QEMU user 网 10.0.2.2
+    // = host 本机，SLIRP 转发宿主 127.0.0.1 同端口，`工具链/echod.py` 回显；
+    // 打 `TCP ok echo=64` = rootfs 相第 19 标记；失败 println 诊断 + trap
+    // loud）。
+    tcp::selftest(&mut d, regs, &mac, &gw_mac);
+    // A-8b：自验毕**转常驻**（不再退出——A-7 瞬态探针的 STATUS=0 退出复位
+    // 随退出路径消失，复位只在 negotiate 起点用；DMA VMO 服务存续恒用不
+    // 回收）。svcmgr 预拉后不 reap（vblk A-4 同款取舍：wait TERMINATED 30s
+    // 帽对不退出的服务必超时空烧，表槽有界 = 服务生命周期）。
+    serve(&mut d, regs, &mac, &gw_mac);
 }
 
 /// 扫 32 槽认领唯一 net 设备（vblk find_device 对称面——**按设备类计数**：
@@ -213,11 +259,13 @@ fn now() -> u64 {
     t
 }
 
-/// STATUS=0 复位 + 回读确认（1s 帽）：协商序起点（真机复位异步、未完成
-/// 即置位可致状态机错乱——Linux virtio_mmio 同款回读等）与**退出序终点**
-/// （撤队列断设备的 DMA 面——vnet 退出后 rx avail 仍挂指向 DMA VMO 页的
-/// 缓冲，而 SLIRP 周期性 IPv6 RA 会不请自来，不复位 = 设备 DMA 写已还帧；
-/// 见 main 尾注）共用。
+/// STATUS=0 复位 + 回读确认（1s 帽）。A-8b 起**唯一调用点 = negotiate()
+/// 协商序起点**（真机复位异步、未完成即置位可致状态机错乱——Linux
+/// virtio_mmio 同款回读等）；A-7 的「退出序终点复位」已随退出路径删除
+/// （serve() 常驻 `-> !` 不退出，见模块头注）。**未来若加退出/重启路径
+/// （v2 服务监督方向），退出前必须复用本函数撤队列断 DMA 面**——rx
+/// avail 挂着指向 DMA VMO 页的缓冲，SLIRP 周期性 IPv6 RA 会不请自来，
+/// 不复位 = 设备 DMA 写已还帧（A-7 对抗审查 medium 实抓形态）。
 fn reset_device(regs: *mut u32) {
     wr(regs, vio::mmio::STATUS, 0);
     let mut t = now();
@@ -329,6 +377,7 @@ fn setup_dma() -> Dma {
         rx_buf_pa,
         tx_buf_pa,
         rx_harvested: 0,
+        rx_posted: 0,
     }
 }
 
@@ -357,11 +406,11 @@ fn setup_queue(regs: *mut u32, qsel: u32, ring_pa: u64, lay: &vio::RingLayout) {
     }
 }
 
-/// 挂 16 个 rx 单描述符缓冲（页 2 逐 160B 一格，DESC_F_WRITE——设备写）：
+/// 挂 16 个 rx 单描述符缓冲（页 2 逐 256B 一格，DESC_F_WRITE——设备写）：
 /// RXSTAGE 零基（fresh commit 页内核保证清零——.bss 同款依赖；整页写与
 /// 设备侧零页一致）组 desc 表 + avail 环（avail.ring[i] = i——第 i 次
 /// publish 落 head=i）→ 整页落盘。
-fn post_rx(d: &Dma) {
+fn post_rx(d: &mut Dma) {
     // SAFETY: 单线程独占窗；RXSTAGE 首次使用即零基。
     let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(RXSTAGE) };
     for i in 0..RX_BUFS {
@@ -384,6 +433,34 @@ fn post_rx(d: &Dma) {
     if berry_vmo_write(d.vmo, ring.as_ptr(), RX_RING_PAGE, 4096) != 0 {
         trap();
     }
+    d.rx_posted = RX_BUFS as u16;
+}
+
+/// 收割后回填 rx 缓冲（A-8b 常驻面的关键——v1 探针不回填、16 缓冲耗尽
+/// 即 rx 永久假死）：**同 id 重发布**（desc 表 addr/len/WRITE 恒有效不重
+/// 写），只动 avail 区两处 2B——`avail.ring[posted % qsize] = id` 槽 +
+/// `avail.idx = posted+1`（**次序 = 正确性**：槽先落、idx 后进——设备按
+/// idx 变化消费新项）→ `dmb ish` → 门铃 q0。**不可整页写回**：RXSTAGE
+/// 快照含设备拥有的 used 环，读写窗之间设备新写的完成项会被陈旧快照砸掉
+/// （丢完成 → 假死）——字节粒度 vmo_write 只碰 avail 区是唯一安全窗
+/// （avail 环驱动拥有，desc/used 各归其主，virtio split ring 所有权分界）。
+fn refill_rx(d: &mut Dma, regs: *mut u32, id: u16) {
+    let slot = (d.rx_posted % d.lay.qsize as u16) as usize;
+    let b = [id as u8, (id >> 8) as u8];
+    let off = RX_RING_PAGE + d.lay.avail_off as u64 + 4 + (slot as u64) * 2;
+    if berry_vmo_write(d.vmo, b.as_ptr(), off, 2) != 0 {
+        trap();
+    }
+    d.rx_posted = d.rx_posted.wrapping_add(1);
+    let b = [d.rx_posted as u8, (d.rx_posted >> 8) as u8];
+    let off = RX_RING_PAGE + d.lay.avail_off as u64 + 2;
+    if berry_vmo_write(d.vmo, b.as_ptr(), off, 2) != 0 {
+        trap();
+    }
+    // 发布屏障（publish 同款调用方契约）：avail 两写在门铃前排序。
+    // SAFETY: 纯屏障指令，无内存操作数。
+    unsafe { core::arch::asm!("dmb ish") };
+    wr(regs, vio::mmio::Q_NOTIFY, 0);
 }
 
 /// 发一帧（同步单在途，vblk blk_op 同纪律）：**帧字节由调用方预先组在
@@ -401,7 +478,7 @@ fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
     let total = vio::NET_HDR_SZ + frame_len;
     if total > iob.len() {
         println!("vnet: tx 帧超幅 {}B", total);
-        trap(); // 调用方帧幅由常量约束（≤74B）；防御面
+        trap(); // 调用方帧幅由常量约束（TCP 段最大 total ≤198B）；防御面
     }
     iob[..vio::NET_HDR_SZ].fill(0); // 非 checksum/gso 驱动恒零头（规范 §5.1.6）
     if berry_vmo_write(d.vmo, iob.as_ptr(), TX_BUF_PAGE, total) != 0 {
@@ -451,13 +528,14 @@ fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
     }
 }
 
-/// 收一帧（阻塞至有新完成项，10s 帽）：poll rx used.idx 前进（2B 短读）→
-/// 整页读 rx ring 入暂存（只读——used 环设备拥有）→ used_ent 取 (id,len)
-/// → 短读对应缓冲 → 返 [`IOB`] 的帧视图（跳过 12B net 头；调用方即用即
-/// 弃——下一次收帧覆盖，单线程独占窗纪律）。
-fn recv_frame(d: &mut Dma) -> &'static [u8] {
-    let mut now = now();
-    let deadline = now + POLL_CAP_NS;
+/// 收一帧（阻塞至有新完成项或 deadline 到点）：poll rx used.idx 前进（2B
+/// 短读）→ 整页读 rx ring 入暂存（只读——used 环设备拥有）→ used_ent 取
+/// (id,len) → 短读对应缓冲 → **refill 回填**（A-8b 常驻面——见
+/// [`refill_rx`]）→ 返 [`IOB`] 的帧视图（跳过 12B net 头；调用方即用即
+/// 弃——下一次收帧覆盖，单线程独占窗纪律）。到点返 None——超时语义由
+/// 调用方定夺（自验路径带上下文 trap / DNS 路径映射 ST_TIMEOUT）；clock
+/// 面失败仍 trap（时钟 = 启动关键原语，真断链）。
+fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8]> {
     loop {
         let mut u = [0u8; 2];
         if berry_vmo_read(d.vmo, u.as_mut_ptr(), RX_RING_PAGE + d.lay.used_off as u64 + 2, 2) != 0 {
@@ -493,12 +571,17 @@ fn recv_frame(d: &mut Dma) -> &'static [u8] {
                 trap();
             }
             d.rx_harvested = d.rx_harvested.wrapping_add(1);
+            // id 已过 < RX_BUFS 界检——u32→u16 收窄安全。
+            refill_rx(d, regs, id as u16);
             let iob: &[u8; 512] = unsafe { &*core::ptr::addr_of!(IOB) };
-            return &iob[vio::NET_HDR_SZ..len as usize];
+            return Some(&iob[vio::NET_HDR_SZ..len as usize]);
         }
-        if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 || now >= deadline {
-            println!("vnet: rx used ring 超时（harvested={}）", d.rx_harvested);
+        let mut now = now();
+        if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
             trap();
+        }
+        if now >= deadline {
+            return None;
         }
         if berry_thread_sleep(now + POLL_STEP_NS) != 0 {
             trap();
@@ -533,10 +616,15 @@ fn arp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6]) -> [u8; 6] {
     // 帧字节已在 IOB[NET_HDR_SZ..] 连续（上段就地编码）——tx_send 只补
     // 零头 + 暂存/门铃，不再搬移（自重叠拷贝 = UB，对抗审查实抓后撤）。
     tx_send(d, regs, frame_len);
-    let mut t = now();
-    let deadline = t + POLL_CAP_NS;
+    let deadline = now() + POLL_CAP_NS;
     loop {
-        let f = recv_frame(d);
+        let f = match recv_frame(d, regs, deadline) {
+            Some(f) => f,
+            None => {
+                println!("vnet: ARP 应答超时");
+                trap();
+            }
+        };
         if let Some(e) = np::parse_eth(f) {
             if e.ethertype == np::ET_ARP {
                 if let Some(a) = np::parse_arp(e.payload) {
@@ -545,11 +633,6 @@ fn arp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6]) -> [u8; 6] {
                     }
                 }
             }
-        }
-        t = now();
-        if t >= deadline {
-            println!("vnet: ARP 应答超时");
-            trap();
         }
     }
 }
@@ -589,10 +672,15 @@ fn icmp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) 
     let frame_len = np::ETH_HDR_SZ + np::IPV4_HDR_SZ + icmp.len();
     // 帧字节已在 IOB[NET_HDR_SZ..] 连续（同 ARP 段）。
     tx_send(d, regs, frame_len);
-    let mut t = now();
-    let deadline = t + POLL_CAP_NS;
+    let deadline = now() + POLL_CAP_NS;
     loop {
-        let f = recv_frame(d);
+        let f = match recv_frame(d, regs, deadline) {
+            Some(f) => f,
+            None => {
+                println!("vnet: ICMP 应答超时");
+                trap();
+            }
+        };
         if let Some(e) = np::parse_eth(f) {
             if e.ethertype == np::ET_IPV4 {
                 if let Some(ip) = np::parse_ipv4(e.payload) {
@@ -610,10 +698,163 @@ fn icmp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) 
                 }
             }
         }
-        t = now();
-        if t >= deadline {
-            println!("vnet: ICMP 应答超时");
-            trap();
+    }
+}
+
+/// DNS 查询结果三态（服务应答映射：Ok → ST_OK+addr / Bad → ST_BAD /
+/// Timeout → ST_TIMEOUT）。
+enum DnsRes {
+    Ok([u8; 4]),
+    Bad,
+    Timeout,
+}
+
+/// DNS A 查询往返（A-8b 服务路径）：`encode_dns_query_a`（DNS_ID 计数器
+/// 发号——应答按 id 精确匹配滤杂散）→ UDP（src 10.0.2.15:5353 → dst
+/// 10.0.2.3:53，SLIRP 虚拟 DNS）→ IPv4 → eth（网关 MAC——10.0.2.3 非
+/// 链路内直连，帧仍走网关转发）→ tx_send；等应答整体帽 [`DNS_CAP_NS`]
+/// （< client 侧 60s 收侧帽 svcmgr `DNS_REPLY_CAP`——见上方 [`DNS_CAP_NS`]
+/// 注；服务慢 ≠ 服务死由 client 帽兜底），按
+/// src==10.0.2.3 + sport==53 + dport==5353 + id 匹配收
+/// `parse_dns_a_reply`；非目标帧（杂散 ARP/ICMP、IPv6 RA 等）跳过重收。
+/// 超幅应答（>rx 256B 缓冲）在 recv_frame 完成项检查处已拒——DNS 应答
+/// localhost 实测 ~70B 安全；诚实缺口文档化：巨型应答 = Timeout 非 Bad。
+fn dns_roundtrip(
+    d: &mut Dma,
+    regs: *mut u32,
+    mac: &[u8; 6],
+    gw_mac: &[u8; 6],
+    name: &str,
+) -> DnsRes {
+    let id = DNS_ID.fetch_add(1, Ordering::Relaxed);
+    let mut q = [0u8; 128];
+    let qlen = match np::encode_dns_query_a(&mut q, id, name) {
+        Some(n) => n,
+        None => return DnsRes::Bad, // 名越 wire 帽（NAME_MAX=64 已拦大头）；防御面
+    };
+    let mut u = [0u8; 128];
+    let udp_len = np::UDP_HDR_SZ + qlen;
+    if np::encode_udp(&mut u, OUR_IP, DNS_IP, DNS_SPORT, DNS_PORT, &q[..qlen]).is_none() {
+        return DnsRes::Bad;
+    }
+    {
+        // SAFETY: 单线程独占窗。
+        let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+        if np::encode_eth(&mut iob[vio::NET_HDR_SZ..], gw_mac, mac, np::ET_IPV4).is_none() {
+            return DnsRes::Bad;
+        }
+        if np::encode_ipv4(
+            &mut iob[vio::NET_HDR_SZ + np::ETH_HDR_SZ..],
+            64,
+            np::IP_PROTO_UDP,
+            OUR_IP,
+            DNS_IP,
+            &u[..udp_len],
+        )
+        .is_none()
+        {
+            return DnsRes::Bad;
+        }
+    }
+    // 帧字节已在 IOB[NET_HDR_SZ..] 连续（同 ARP/ICMP 段——不再搬移）。
+    tx_send(d, regs, np::ETH_HDR_SZ + np::IPV4_HDR_SZ + udp_len);
+    let deadline = now() + DNS_CAP_NS;
+    loop {
+        let f = match recv_frame(d, regs, deadline) {
+            Some(f) => f,
+            None => return DnsRes::Timeout,
+        };
+        if let Some(e) = np::parse_eth(f) {
+            if e.ethertype == np::ET_IPV4 {
+                if let Some(ip) = np::parse_ipv4(e.payload) {
+                    if ip.src == DNS_IP && ip.dst == OUR_IP && ip.proto == np::IP_PROTO_UDP {
+                        if let Some(ud) = np::parse_udp(ip.payload, ip.src, ip.dst) {
+                            if ud.sport == DNS_PORT && ud.dport == DNS_SPORT {
+                                if let Some(addr) = np::parse_dns_a_reply(ud.payload, id) {
+                                    return DnsRes::Ok(addr);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 非目标帧/解析失败 = 杂散（SLIRP IPv6 RA 等）——跳过重收
+    }
+}
+
+/// 常驻服务循环（A-8b，vblk A-4 同款纪律）：env 块 gift[2] 端点收
+/// berry-netdproto DNS_QUERY 请求 → 真网卡往返 → 应答。空队 = 合法空闲
+/// （wait READABLE 10s 帽**超时重臂**——链断判定交发问方 roundtrip 超时，
+/// 「常驻服务 wait 超时是心跳不是死线」）；client 错误一律 ST_BAD/
+/// ST_TIMEOUT 应答**服务不死**；多带 handle 逐个 close（EBUSY → ST 降级
+/// 不死、其余非 0 → trap）；协议无随行面（nh != 0 = 坏请求）。
+fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
+    let h = gift2_h();
+    if h == 0 {
+        // gift 缺席 = boot 预拉链断——park 挂起（fsmgr/vblk 同款：不 spin
+        // 烧 CPU，标记缺失 = smoke FAIL 兜底）。
+        berry_libc::park();
+    }
+    let mut msg = [0u8; 256];
+    let mut rep = [0u8; ndp::REPLY_LEN];
+    let mut hs = [0 as Handle; 4];
+    loop {
+        let mut nb = msg.len();
+        let mut nh = hs.len();
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh);
+        if s != 0 {
+            if s == BERRY_ERR_AGAIN {
+                let mut obs = 0u64;
+                let _ = berry_object_wait_one(h, SIGNAL_READABLE, now() + SVC_IDLE_NS, &mut obs);
+                continue;
+            }
+            trap(); // 非空队错码 = 链断（fsmgr/vblk 同口径）
+        }
+        let (mut st, mut addr) = (ndp::ST_BAD, [0u8; 4]);
+        if nh == 0 {
+            match ndp::parse_request(&msg[..nb]) {
+                Some(ndp::Req::DnsQuery { name }) => match core::str::from_utf8(name) {
+                    // encode_dns_query_a 收 &str——字节面桥接；DNS 名是
+                    // ASCII 域，非 UTF-8 即坏请求（ST_BAD 不发包）。
+                    Ok(nm) => match dns_roundtrip(d, regs, mac, gw_mac, nm) {
+                        DnsRes::Ok(a) => {
+                            st = ndp::ST_OK;
+                            addr = a;
+                        }
+                        DnsRes::Bad => st = ndp::ST_BAD,
+                        DnsRes::Timeout => st = ndp::ST_TIMEOUT,
+                    },
+                    Err(_) => st = ndp::ST_BAD,
+                },
+                None => st = ndp::ST_BAD,
+            }
+        }
+        // 协议无随行面：多带 handle 全部回收（EBUSY = client 送了映射中
+        // 唯一 handle——降级 ST_BAD 服务不死；其余错 = 链断 trap）。
+        for i in 0..nh {
+            if hs[i] != 0 {
+                let s = berry_handle_close(hs[i]);
+                if s == BERRY_ERR_BUSY {
+                    st = ndp::ST_BAD;
+                } else if s != 0 {
+                    trap();
+                }
+            }
+        }
+        if ndp::encode_reply(&mut rep, st, addr).is_none() {
+            trap(); // st ∈ {OK,BAD,TIMEOUT} + 非 OK 恒零 addr 恒过；防御面
+        }
+        let mut obs = 0u64;
+        loop {
+            let s = berry_channel_send(h, rep.as_ptr(), rep.len(), core::ptr::null(), 0);
+            if s == 0 {
+                break;
+            }
+            if s != BERRY_ERR_BUSY {
+                trap();
+            }
+            let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, now() + SVC_IDLE_NS, &mut obs);
         }
     }
 }

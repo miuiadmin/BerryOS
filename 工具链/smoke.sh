@@ -13,11 +13,11 @@
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），40 标记
-#      （boot 23 + rootfs 17——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
-#      FATW ok/NET ok ping= 在列
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），42 标记
+#      （boot 23 + rootfs 19——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo= 在列
 #      = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务消费链/FAT
-#      只读底座与**落盘写**全过，状态谓词
+#      只读底座与**落盘写**/网络往返与网络服务全过，状态谓词
 #      门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
@@ -35,7 +35,7 @@
 #      b/c/d 三断言互非子串。随后再验 switches 金丝雀严格递增（IRQ 分流
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. P6 A-6 FAT 持久化相（第四跑）：**不重造盘**（复用第 5 相已写盘——
-#      mkfat 重产 = 持久化零验收），40 标记载明写过的盘再起（bsh FATW
+#      mkfat 重产 = 持久化零验收），42 标记载明写过的盘再起（bsh FATW
 #      自验走覆写路径 = 旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT`
 #      → grep 'f42t'——`>` 落的是真扇区、跨 boot 存活。盘 cache
 #      writeback=off：QEMU 由 SIGTERM 终止，writeback 模式可能不刷页
@@ -78,6 +78,9 @@ LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
 QEMU_PID=""
 RX_FIFO=""
 RX_HOLDER=""
+# T-c：宿主 TCP 回显服务（echod.py）进程与日志（cleanup 兜底收）。
+ECHO_PID=""
+ECHO_LOG=""
 
 cleanup() {
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -90,10 +93,19 @@ cleanup() {
     wait "$RX_HOLDER" 2>/dev/null
   fi
   [ -n "$RX_FIFO" ] && rm -f "$RX_FIFO"
+  # T-c：echod 三相共用，统一在此收（正常流四跑毕也走 trap）。
+  if [ -n "$ECHO_PID" ] && kill -0 "$ECHO_PID" 2>/dev/null; then
+    kill "$ECHO_PID" 2>/dev/null
+    wait "$ECHO_PID" 2>/dev/null
+  fi
   if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
     echo "smoke: 串口日志保留：$LOG" >&2
+    # T-c 对抗审查实抓：ECHO_LOG 同为失败现场（echod traceback 只落它）——
+    # SMOKE_KEEP_LOG=1 只保串口日志时宿主侧死因恒被抹。
+    [ -n "$ECHO_LOG" ] && echo "smoke: echod 日志保留：$ECHO_LOG" >&2
   else
     rm -f "$LOG"
+    [ -n "$ECHO_LOG" ] && rm -f "$ECHO_LOG"
   fi
 }
 trap cleanup EXIT
@@ -103,6 +115,12 @@ fail() {
   # 失败必带现场：串口日志尾部直接进 stderr（CI 里即是诊断依据）。
   echo "---- 串口日志尾部（$LOG）----" >&2
   tail -40 "$LOG" >&2
+  # T-c 对抗审查补：echod 宿主侧死因（无异常处理，traceback 只落 ECHO_LOG）——
+  # 无 SMOKE_KEEP_LOG 的 CI 失败 run 也要看见，随失败即打印不留文件。
+  if [ -n "$ECHO_LOG" ] && [ -s "$ECHO_LOG" ]; then
+    echo "---- echod 日志尾部（$ECHO_LOG）----" >&2
+    tail -10 "$ECHO_LOG" >&2
+  fi
   echo "--------------------------------" >&2
   exit 1
 }
@@ -178,6 +196,20 @@ last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
 # 模式可能不刷页缓存；本相盘随后重造无持久化需求，但与 RX/持久化相统一。
 python3 工具链/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
+# T-c：宿主 TCP 回显服务（vnet TCP 自验的对端——guest 主动 connect 10.0.2.2
+# 由 SLIRP 转发宿主 127.0.0.1:18080）。三相共用（每相一个连接、用完被动
+# 关闭，单线程串行 accept 无冲突）。启动确认 = 轮询 listening 行——端口被
+# 占（手动实证残留）/脚本报错即 loud，不静默续跑。
+ECHO_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-echod.XXXXXX")
+python3 工具链/echod.py > "$ECHO_LOG" 2>&1 &
+ECHO_PID=$!
+te=$(date +%s)
+while ! grep -q 'listening on' "$ECHO_LOG" 2>/dev/null; do
+  kill -0 "$ECHO_PID" 2>/dev/null \
+    || fail "echod 启动失败（18080 被占？）：$(cat "$ECHO_LOG")"
+  [ $(( $(date +%s) - te )) -gt 5 ] && fail "echod 5s 未 listening"
+  sleep 0.2
+done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
@@ -259,8 +291,22 @@ QEMU_PID=$!
 # （10.0.2.2）MAC → ICMP echo 32B payload 往返逐字节对拍全过才自打——
 # `-netdev user`（SLIRP）对用户态驱动的应答活证，零内核网络栈——rootfs
 # 相第 17 标记（状态谓词；协议解析 berry-netproto 恰长执法，无竞速面）。
+# DNS ok addr= = **网络服务消费链**（P6 A-8）：vnet 自验毕转常驻服务
+# （A-8b，vblk A-4 同款）——svcmgr 作 client 经 berry-netdproto 严格串行
+# RPC（DNS_QUERY("localhost") → st==ST_OK 且 addr==127.0.0.1——SLIRP
+# 虚拟 DNS 10.0.2.3 → 宿主 /etc/hosts，离线确定无外网依赖）往返对拍全过
+# 才打——「驱动服务化」网络版分层活证——rootfs 相第 18 标记（状态谓词，
+# 无竞速面；60s 应答帽盖 vnet 自验尾巴 + 服务端 20s DNS 帽，帽不押时序）。
+# TCP ok echo= = **最小 TCP 客户端全链**（T-c，`文档/TCP栈设计草案.md`）：
+# vnet 自验（NET ok）后、转常驻服务前，guest 主动 connect SLIRP 宿主
+# echod（10.0.2.2:18080）——berry-tcp 状态机（握手/序号/RTO/TIME_WAIT
+# 纯函数）+ tcp.rs IO 驱动：三次握手（我方 MSS 128 通告）→ 64B pattern
+# 回显逐字节对拍 → 主动 FIN 四次挥手到 Closed 才自打——**连接建立/数据
+# 可靠交付/连接拆除三阶段全在用户态**，零内核 TCP——rootfs 相第 19 标记
+# （状态谓词；对端 echod 由本相前脚本拉起，pcap 实证 SLIRP 遵守我方
+# MSS：64B 回显单段不分片；无竞速面）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -280,14 +326,15 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping=）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo=）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 17 = 40
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 19 = 42
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块设备
-# 服务消费链、FAT 只读底座+落盘写与网络往返全过；状态谓词门控——不赌
+# 服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络服务
+# 消费链、TCP ok echo= = TCP 客户端全链，同批）；状态谓词门控——不赌
 # boot 秒数）
 # 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
@@ -325,7 +372,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + vir
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：40 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：42 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -442,7 +489,7 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 
 # —— 阶段 5：P6 A-6 FAT 持久化相（第四跑：写过的盘再起）——
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收）；
-# 不关 fd3（阶段 5 还要注入 cat 行，exec 3>&- 移到本阶段尾）。40 标记载明
+# 不关 fd3（阶段 5 还要注入 cat 行，exec 3>&- 移到本阶段尾）。42 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读。
 # 注入 `cat OUT.TXT` → grep 'f42t'：上一相 `>` 落的扇区跨 boot 存活——

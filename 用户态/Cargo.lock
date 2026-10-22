@@ -41,11 +41,19 @@ name = "berry-loader"
 version = "0.1.0"
 
 [[package]]
+name = "berry-netdproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-netproto"
 version = "0.1.0"
 
 [[package]]
 name = "berry-sys"
+version = "0.1.0"
+
+[[package]]
+name = "berry-tcp"
 version = "0.1.0"
 
 [[package]]
@@ -73,6 +81,7 @@ dependencies = [
  "berry-blkproto",
  "berry-exec",
  "berry-loader",
+ "berry-netdproto",
  "berry-sys",
 ]
 

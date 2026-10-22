@@ -95,8 +95,10 @@ build-user:
         --target aarch64-unknown-linux-musl
     # P6 A-7：vnet（virtio-net 驱动——网络面第一刀：ARP/ICMP ping 通；
     # vprobe/vblk 同链 + berry-netproto 最小以太网/ARP/IPv4/ICMP-echo 编解码
-    # 纯函数 crate。瞬态探针：ARP 解 SLIRP 网关 MAC + ICMP echo 32B 往返
-    # 对拍自打 `NET ok ping=32 slot=N` 后 exit(0) + svcmgr reap）。
+    # 纯函数 crate。自验：ARP 解 SLIRP 网关 MAC + ICMP echo 32B 往返对拍
+    # 自打 `NET ok ping=32 slot=N`。
+    # P6 A-8：+ berry-netdproto 协议依赖——自验毕转常驻服务（DNS_QUERY
+    # 严格串行 RPC；svcmgr 消费自验打 `DNS ok addr=`；不再退出，不 reap）。
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vnet/Cargo.toml \
         --target aarch64-unknown-linux-musl
@@ -154,12 +156,31 @@ run-el2: build
 # P6 A-7：挂 virtio-net（SLIRP user 网——网关 10.0.2.2 应答 ARP/回 ICMP
 # echo；vnet 按设备类扫描认领 net 槽（block 槽合法同席不扰），自打
 # `NET ok ping=32 slot=N` = rootfs 相第 17 标记）。
+# P6 A-8：vnet 自验毕转常驻 DNS 服务（berry-netdproto DNS_QUERY 严格串行
+# RPC，不退出不 reap）——svcmgr 消费自验（"localhost" → 127.0.0.1 对拍，
+# SLIRP 虚拟 DNS 10.0.2.3 离线确定）打 `DNS ok addr=127.0.0.1` =
+# rootfs 相第 18 标记。
+# T-c：NET ok 后 vnet 跑 TCP 自验会话（berry-tcp 状态机 + tcp.rs IO——
+# guest 主动 connect 10.0.2.2:18080 = SLIRP 转发宿主 echod，握手/64B 回显
+# 对拍/主动 FIN 挥手到 Closed）打 `TCP ok echo=64` = rootfs 相第 19 标记。
+# echod 由本 recipe 起（QEMU 前）/收（trap EXIT）；smoke.sh 同款自足。
 run-rootfs: build
     #!/bin/sh
     set -e
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
     python3 工具链/mkfat.py disk.img
     printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
+    # T-c：宿主 TCP 回显服务（vnet TCP 自验对端；QEMU 退出后 trap 统一收）。
+    ECHO_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-echod.XXXXXX")
+    python3 工具链/echod.py > "$ECHO_LOG" 2>&1 &
+    ECHO_PID=$!
+    trap 'kill "$ECHO_PID" 2>/dev/null; rm -f "$ECHO_LOG"' EXIT
+    i=0
+    until grep -q 'listening on' "$ECHO_LOG" 2>/dev/null; do
+        kill -0 "$ECHO_PID" 2>/dev/null || { cat "$ECHO_LOG"; exit 1; }
+        i=$((i+1)); [ "$i" -gt 25 ] && { echo "echod 5s 未 listening（18080 被占？）"; exit 1; }
+        sleep 0.2
+    done
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
@@ -187,8 +208,13 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 # + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 用户态/berry-fatfs；
 #   A-6 起含写基元——fat12_set/find_free_cluster/encode_file_entry，fixture
 #   共识基准同时钉住读面与写面编码一致性）
-# + berry-netproto 的最小以太网/ARP/IPv4/ICMP-echo 编解码纯函数面（P6 A-7
-#   起，见 用户态/berry-netproto——vnet 驱动的协议面）。
+# + berry-netproto 的以太网/ARP/IPv4/ICMP-echo/UDP/DNS 编解码纯函数面
+#   （P6 A-7 起、A-8a 扩 UDP/DNS——vnet 驱动的协议面：ICMP ping 自验 +
+#   DNS 查询往返，见 用户态/berry-netproto）
+# + berry-netdproto 的网络服务 RPC 协议编解码纯函数面（P6 A-8 起，见
+#   用户态/berry-netdproto——vnet 常驻服务化后的 DNS 查询协议面）
+# + berry-tcp 的最小 TCP 客户端状态机纯函数面（T-c 起，见 用户态/berry-tcp
+#   ——握手/序号推进/RTO/TIME_WAIT 状态转移，IO 驱动在 vnet tcp.rs）。
 # fixture 守卫在 berry-fatfs 测试前置：mkfat --check-fixture 重产比对——
 # 改 mkfat 忘重产 --fixture 时共识测试对陈旧基准假绿（A-5 对抗审查实抓）。
 test-host:
@@ -200,6 +226,8 @@ test-host:
     python3 工具链/mkfat.py --check-fixture 用户态/berry-fatfs/tests/volume_fixture.bin
     cargo test --manifest-path 用户态/Cargo.toml -p berry-fatfs --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-netproto --target {{host}}
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-netdproto --target {{host}}
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-tcp --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
