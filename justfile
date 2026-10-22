@@ -104,10 +104,32 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vnet/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # G-eco-c/d：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
+    # app-0（ADR #43/#44）：demo 双 app（appdemo console=true / appquiet
+    # console=false——能力授予/缺席两半活证）musl 同链 → staging 组装
+    # {manifest.toml, bin/<名>} → mkapp 门禁五道产 .bap（cpio(newc) 包 =
+    # manifest + 唯一 bin/ 条目）。staging 与产物都在 userbins/（gitignored）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/appdemo/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/appquiet/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    rm -rf userbins/app-stage userbins/app
+    mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
+    cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
+    cp cargo-target/aarch64-unknown-linux-musl/release/appdemo userbins/app-stage/APPDEMO/bin/
+    cp bins/appquiet/manifest.toml userbins/app-stage/APPQUIET/
+    cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
+    python3 ../工具链/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
+    python3 ../工具链/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
+    # G-eco-c/d + app-0：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
-    # `run-rootfs` 既有约定；条目按名排序 = 确定性输出）。
+    # `run-rootfs` 既有约定；条目按名排序 = 确定性输出。app-0 起加
+    # app/<ID>.bap 整包条目（'a' < 'b' 排序在 bin/ 前；a-1 阶段 svcmgr
+    # 主走查对未知名算术跳过 = 零消费、零行为变化——appd 消费随 a-2）。
     python3 ../工具链/mkcpio.py ../rootfs.cpio \
+        app/APPDEMO.bap=userbins/app/APPDEMO.bap \
+        app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
         bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
@@ -235,7 +257,7 @@ test-host:
     cargo test --manifest-path 用户态/Cargo.toml -p berry-netdproto --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-tcp --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
-    # 第 8 例，host 22 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
+    # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。
     cargo test --manifest-path 用户态/Cargo.toml -p berry-manifest --target {{host}}
 
