@@ -341,7 +341,7 @@ stage = "v1"
 [[group.syscall]]
 num = 0x35
 name = "thread_start"
-desc = '投入运行'
+desc = '投入运行（**在册未实现**——30 在册 29 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本）'
 stage = "v1"
 implemented = false
 note = 'thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。'

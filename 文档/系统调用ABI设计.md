@@ -57,7 +57,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 |
 | 0x33 | `process_exit` | 退出 | v1 |
 | 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 |
-| 0x35 | `thread_start` | 投入运行 | v1 |
+| 0x35 | `thread_start` | 投入运行（**在册未实现**——30 在册 29 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本） | v1 |
 | 0x36 | `thread_exit` | 线程退出 | v1 |
 | 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
 | 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 |
@@ -139,11 +139,11 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 | 层 | 范围 | 冻结时点 | 纪律 |
 |----|------|----------|------|
-| **对外层（四十年合同）** | `berry_*` 符名与签名、`#[repr(C)]` 布局、syscall 编号、错误码数值、rights 位义 | **首个外部消费者出现时**（G-eco 第三方样例或公开发布，先到者） | 编号永不复用（废弃号留坑）；未知/未实现编号一律 `-ENOTSUP`（unknown-op，为 v2/v3 扩展留位，永不 panic）；加字段 = 新 syscall 或 `object_get_info` 新 topic，**不改旧结构**；保留位 v1 即预留：handle 代号位（§8.1）、rights 高位、`options` 高位、`x7` 寄存器 |
+| **对外层（四十年合同）** | `berry_*` 符名与签名、`#[repr(C)]` 布局、syscall 编号、错误码数值、rights 位义 | **首个外部消费者出现时**（G-eco 第三方样例或公开发布，先到者）——**已触发（2026-10，hexyl 0.17.0 经 berry-libc shim 全链跑通）** | 编号永不复用（废弃号留坑）；未知/未实现编号一律 `-ENOTSUP`（unknown-op，为 v2/v3 扩展留位，永不 panic）；加字段 = 新 syscall 或 `object_get_info` 新 topic，**不改旧结构**；保留位 v1 即预留：handle 代号位（§8.1）、rights 高位、`options` 高位、`x7` 寄存器 |
 | **内部层（显式不稳定）** | 内核内部接口（含 `SchedClass` trait、内核内数据结构、crate 边界 API） | **不冻结**——显式声明「首个外部消费者前不稳定」 | 冻结没人用的接口只锁死自己的重构自由（Linux 反面教训）；消费者真实出现时按需逐条升格入对外层 |
 
 - **镜像同步**：内核侧与 `用户态/berry-sys` 出同一合约源（IDL）生成 + CI 结构体布局断言兜底——手写两份迟早漂移。**常量层 2026-10 已落地**（`工具链/abi.toml` 单源，见本节引言状态注）；原型层 v2。
-- **预写反转触发器（决策 #14）**：若出现生态压力的**真实证据**（G-eco 第三方样例长期因「非 POSIX / 非 Linux」不可移植、且用户态薄库无解），重开「软件兼容」决策——**只许用户态兼容服务或 VM 内嵌真内核**（WSL2 判例），**内核 syscall 翻译层一票否决**（NT 子系统/翻译层六连败 + WSL1，进化史 14 号）。已录 `架构决策.md` 重议触发器表。
+- **预写反转触发器（决策 #14）**：若出现生态压力的**真实证据**（G-eco 第三方样例长期因「非 POSIX / 非 Linux」不可移植、且用户态薄库无解），重开「软件兼容」决策——**只许用户态兼容服务或 VM 内嵌真内核**（WSL2 判例），**内核 syscall 翻译层一票否决**（NT 子系统/翻译层六连败 + WSL1，进化史 14 号）。已录 `架构决策.md` 重议触发器表。两形态（用户态兼容服务 / VM 内嵌真内核）的展开见 `兼容子系统设计.md` §0。
 
 ### 8.1 命名与表示决策（带取舍，越早定越好）
 
@@ -156,7 +156,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 大块数据 | 经 VMO 或用户指针（内核 `copy_from/to_user` 校验） | 不在寄存器里传大缓冲 |
 | 布局稳定性 | 跨边界结构 `#[repr(C)]` + 显式对齐 | ABI 一旦发布不破坏布局；加字段走新 syscall 或 `object_get_info` 的 topic |
 | options/flags 语义 | 未知位**拒绝**（返回 `-EINVAL`） | 输入严格拒绝，演进走「新 flag + 能力发现」。「静默忽略」看着兼容性好，实则让日后启用该位前必须先清点全生态是否有人误传——等于永久放弃那个位 |
-| `thread_create`/`process_create` options **intent 域** | **低 8 位 = `berry_intent` 值域**（P3 占位，ADR #42） | 值域而非独立位掩码：0x00–0x05 已定义、0x06..0x0F 保留、未知值 `-EINVAL`（与未知位纪律同构）。位 add-only 安全的前提 = 占位先于对外层冻结——首个外部消费者（G-eco）随时触发冻结，先落缺省再改 0=UNSPECIFIED 是「值不变义变」的静默 ABI 破坏，比改值更糟 |
+| `thread_create`/`process_create` options **intent 域** | **低 8 位 = `berry_intent` 值域**（P3 占位，ADR #42） | 值域而非独立位掩码：0x00–0x05 已定义、0x06..0x0F 保留、未知值 `-EINVAL`（与未知位纪律同构）。位 add-only 安全的前提 = 占位先于对外层冻结——首个外部消费者（G-eco——已于 2026-10 出现）触发冻结，先落缺省再改 0=UNSPECIFIED 是「值不变义变」的静默 ABI 破坏，比改值更糟 |
 | 结构体版本化 | 尺寸进出（`in_size` / `out_size`） | v2 `object_get_info` 的 info 结构是首个尺寸敏感 ABI：读方容忍更大尺寸、写方未知尾部清零；缓冲不足返回 `-EINVAL` 并回写所需尺寸（Win32 `cbSize` / Linux size-in-out 同款惯例） |
 | padding / 保留字段 | 显式命名 + 内核 copyout 前整体清零 | `#[repr(C)]` **不保证** padding 清零；垃圾 padding = 内核信息泄露（Linux 真实 CVE 先例）+ 破坏逐字节比较/哈希 |
 
@@ -461,8 +461,8 @@ extern "C" {
 
 | 阶段 | 状态 | 规则 |
 |------|------|------|
-| 现在 ~ G1（尚无外部用户态消费者） | **UNSTABLE** | §8 可自由修改——这是把错误改对的唯一窗口，别怕改；但 gen 位、类型宽度这类「日后补=破坏 ABI」的预留（§8.1）从第一版就位 |
-| G2（首个用户进程 + `berry-sys` 首次发布给内核外程序） | **FROZEN(v1)** | 冻结范围见下，此后 add-only |
+| G-eco 前（时相已过，2026-10 翻页） | **已进入 FROZEN(v1)** | 对外层冻结触发条件已满足：hexyl 0.17.0 上游逐字未动经 berry-libc shim 全链跑通 = §8.0 定义的 G-eco 第三方样例；G2 条件（首个用户进程 2b-4 + berry-sys 发布给内核外程序 G-eco-0）亦已达成——此后 add-only |
+| G2（首个用户进程 + `berry-sys` 首次发布给内核外程序，已达成） | **FROZEN(v1)** | 冻结范围见下，此后 add-only |
 | 之后所有版本 | FROZEN 累积 | 只增不改；deprecated 条目保留不删 |
 
 **冻结的是形状**：syscall 编号与段分配、寄存器约定（`x0`=号 / `x1..x7`=参 / 返回 `x0`）、基础类型宽度（handle u32 / rights u64 / status i32 / time u64 纳秒）、错误码**数值**、跨边界结构体布局。
