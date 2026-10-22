@@ -35,6 +35,8 @@ use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, SpawnSpec};
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
 // P6 A-8c：vnet 网络服务消费自验（DNS ok）的协议面。
 use berry_netdproto as ndp;
+// app-0 a-2：.bap manifest v0 解析面（纯函数 crate，host 23 测同源）。
+use berry_manifest::{APP_SLOTS, ENTRY_MAX, ID_MAX, MANIFEST_MAX};
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -184,6 +186,31 @@ static mut HEX_WIN: [u8; 4096] = [0; 4096];
 /// 端 close = 服务端孤儿端，v1 无对端关闭检测，留表即留命）。
 static NET_A: AtomicU32 = AtomicU32::new(0);
 
+// ---- app-0 a-2：.bap 消费面（appd 雏形——ADR #43/#44：应用 = 纯用户态
+// 协议约定，svcmgr 兼任 appd；内核零「应用」概念）----
+
+/// 走查收集的 app 槽：`app/<ID>.bap` 条目的包体几何（id = 文件名去
+/// `app/` 前缀与 `.bap` 后缀）。主走查只收集不拉起——启动统一在走查毕
+/// （STEP_WIN 闲置后复用作 .bap 内层 cpio 步进），槽序 = mkcpio 名序 =
+/// 确定性启动序。
+struct AppSlot {
+    id: [u8; ID_MAX],
+    id_len: usize,
+    bap_off: u64,
+    bap_len: u64,
+}
+
+const APP_SLOT_ZERO: AppSlot =
+    AppSlot { id: [0; ID_MAX], id_len: 0, bap_off: 0, bap_len: 0 };
+
+/// app 槽表（APP_SLOTS 帽）：超帽条目 `eco: app too many` 可见降级——
+/// v1 单 boot 批 4 app 绰绰有余，扩容随 appd 正式化（v2）。
+static mut APP_SLOTS_TBL: [AppSlot; APP_SLOTS] = [APP_SLOT_ZERO; APP_SLOTS];
+
+/// manifest 读窗（MANIFEST_MAX）：.bss 静态——1KiB 级缓冲不进栈
+/// （STEP_WIN/HEX_WIN 同款纪律；svcmgr 用户栈薄）。
+static mut APP_MF_WIN: [u8; MANIFEST_MAX] = [0; MANIFEST_MAX];
+
 /// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
 /// 驻留**，旧 16KiB 整档帽随 std 镜像 ~283KB 一并退役）→ 命中 `bin/hello`
@@ -212,6 +239,21 @@ fn run_rootfs_child(console: Handle) {
     let step: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(STEP_WIN) as *mut u8, 512)
     };
+    // SAFETY: app 槽表/manifest 窗同款——本进程独占、单线程顺序读写
+    // （走查收集 + 启动两段共用；MANIFEST_MAX 同窗长）。
+    let apps: &mut [AppSlot] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_SLOTS_TBL) as *mut AppSlot,
+            APP_SLOTS,
+        )
+    };
+    let mf: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_MF_WIN) as *mut u8,
+            MANIFEST_MAX,
+        )
+    };
+    let mut app_n = 0usize;
     let mut pos = 0u64;
     // bsh 一次性标志（对抗审查）：H_BSH_STDIN 是单用 handle（take 中转），
     // 重复 `bin/bsh` 条目重入 arm 会以死值自陷——见 arm 内注释。
@@ -651,6 +693,25 @@ fn run_rootfs_child(console: Handle) {
                             Err(()) => eco_skip(b"vprobe spawn"),
                         }
                     }
+                } else if name.starts_with("app/") && name.ends_with(".bap") {
+                    // app-0 a-2：app 包整条目收集（'a'<'b' 排序在一切 bin/
+                    // 前——收集完 bin/ arms 才轮到，启动批在主走查毕统一走）。
+                    // mkapp 门禁已保形状，但 rootfs 是外部输入面——防御照旧：
+                    // id 域/槽满 = 可见降级不炸 svcmgr（单 app 坏不连坐）。
+                    let id = &name[4..name.len() - 4]; // ASCII 前后缀剥除
+                    if id.is_empty() {
+                        eco_skip(b"app id empty");
+                    } else if id.len() > ID_MAX {
+                        eco_skip(b"app id long");
+                    } else if app_n >= APP_SLOTS {
+                        eco_skip(b"app too many");
+                    } else {
+                        apps[app_n].id[..id.len()].copy_from_slice(id.as_bytes());
+                        apps[app_n].id_len = id.len();
+                        apps[app_n].bap_off = data_off;
+                        apps[app_n].bap_len = data_len;
+                        app_n += 1;
+                    }
                 }
                 pos = next;
             }
@@ -677,6 +738,34 @@ fn run_rootfs_child(console: Handle) {
     if blk_cli != 0 {
         if berry_handle_close(blk_cli) != 0 {
             trap();
+        }
+    }
+    // ---- app-0 a-2：.bap 启动批（收集槽全量拉起；`APP ok n=` = rootfs
+    // 相第 21 标记）——确定性状态谓词：每槽 bap_scan → manifest parse →
+    // 双守卫 → 拉起 → EOF/reap 真码 0，全过才打（任一降级 = 标记缺失 =
+    // smoke FAIL；裸跑 app_n==0 零扰动）。
+    if app_n > 0 {
+        let mut ok = 0usize;
+        for i in 0..app_n {
+            if app_launch(
+                console,
+                &apps[i].id[..apps[i].id_len],
+                apps[i].bap_off,
+                apps[i].bap_len,
+                step,
+                mf,
+            ) {
+                ok += 1;
+            }
+        }
+        if ok == app_n {
+            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS=4 →
+            // 单位数字。
+            let mut line = [0u8; 11];
+            line[..9].copy_from_slice(b"APP ok n=");
+            line[9] = b'0' + ok as u8;
+            line[10] = b'\n';
+            send_retry(console, line.as_ptr(), line.len());
         }
     }
 }
@@ -980,6 +1069,236 @@ fn eco_line(console: Handle, why: &[u8]) {
     line[5..n].copy_from_slice(why);
     line[n] = b'\n';
     send_retry(console, line.as_ptr(), n + 1);
+}
+
+/// app 降级行 `eco: app <id> <why>`——与 eco_skip/eco_line 分立：那两窗
+/// 24B 装不下带 id 的形态，本行独立 64B 窗（最大 9+24+1+24+1 = 59）。
+/// id ≤ ID_MAX=24（收集臂执法）、why ≤ 24B（现役理由全 ASCII 短语 +
+/// `reason_str()` 截断契约 ≤24B）——min 双防御 = eco 面永不 panic。
+fn eco_app(console: Handle, id: &[u8], why: &[u8]) {
+    let mut line = [0u8; 64];
+    line[..9].copy_from_slice(b"eco: app ");
+    let mut n = 9;
+    let id = &id[..id.len().min(24)];
+    line[n..n + id.len()].copy_from_slice(id);
+    n += id.len();
+    line[n] = b' ';
+    n += 1;
+    let why = &why[..why.len().min(24)];
+    line[n..n + why.len()].copy_from_slice(why);
+    n += why.len();
+    line[n] = b'\n';
+    send_retry(console, line.as_ptr(), n + 1);
+}
+
+/// app EOF 收集帽：30s。worst 路径 = 子 main 全程 + EOF 排队（demo app
+/// 毫秒级；30s = 断链/卡死兜底——超帽 `no EOF` 降级行，reap 兜底收口）。
+const APP_EOF_CAP: u64 = 30 * 1_000_000_000;
+
+/// 收集端等零长 EOF（`verify_hexyl` 的 drain 骨架去内容面）：s==0 且
+/// nb==0 → true；有数据照收丢弃（appquiet 契约输出为零——防御面：万一
+/// 多打不炸，EOF 终会来）；非 -EAGAIN 错码 = 端点/表异常 → trap（链断
+/// loud，verify_hexyl 同口径）；空队 wait READABLE 超帽返 false。
+fn collect_eof(h: Handle) -> bool {
+    let mut msg = [0u8; 256];
+    loop {
+        let mut nb = msg.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        if s == 0 {
+            if nb == 0 {
+                return true; // 零长消息 = EOF 约定（d-3b）
+            }
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_READABLE, now() + APP_EOF_CAP, &mut obs) != 0 {
+            return false;
+        }
+    }
+}
+
+/// .bap 内层走查产物：manifest 实长 + 包内 bin/ 条目名长 + ELF 包内几何
+/// （`bap_off` 相对偏移——spawn 直用 `bap_off + elf_off`）。
+struct BapScan {
+    mf_len: usize,
+    entry_len: usize,
+    elf_off: u64,
+    elf_len: u64,
+}
+
+/// .bap 内层 cpio 走查（mkapp 生产形状：恰 `manifest.toml` + 唯一 `bin/`
+/// 条目 + TRAILER 自终止）。rootfs 是外部输入面——消费侧独立执法（mkapp
+/// 门禁只约束本仓产物，拼装盘上的 .bap 不凭生产端承诺）：重复/第三/未知
+/// 条目一律 `bap shape` 拒。manifest 可达 1KiB > 步进窗 512B——**专用
+/// vmo_read 直读进 mf 窗**（步进窗只须盖头+名）；ELF 只记几何（段泵送在
+/// spawn_rootfs_elf，归档永不整档驻留）。
+fn bap_scan(
+    step: &mut [u8],
+    mf: &mut [u8],
+    entry: &mut [u8],
+    bap_off: u64,
+    bap_len: u64,
+) -> Result<BapScan, &'static [u8]> {
+    let mut pos = 0u64;
+    let mut seen_mf = false;
+    let mut seen_bin = false;
+    let mut out = BapScan { mf_len: 0, entry_len: 0, elf_off: 0, elf_len: 0 };
+    while pos < bap_len {
+        let want = ((bap_len - pos).min(step.len() as u64)) as usize;
+        if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), bap_off + pos, want) != 0 {
+            return Err(b"bap read");
+        }
+        match berry_loader::cpio_step(&step[..want], pos, bap_len) {
+            Ok(berry_loader::StepOutcome::End) => break,
+            Ok(berry_loader::StepOutcome::Entry(s)) => {
+                let (name, data_off, data_len, next) =
+                    (s.name, s.data_off, s.data_len, s.next_off);
+                if name == "manifest.toml" {
+                    if seen_mf {
+                        return Err(b"bap shape");
+                    }
+                    if data_len > mf.len() as u64 {
+                        return Err(b"bap mf big");
+                    }
+                    // manifest 直读进专用窗（内层偏移 + 包基址）。
+                    if berry_vmo_read(
+                        H_ROOTFS,
+                        mf.as_mut_ptr(),
+                        bap_off + data_off,
+                        data_len as usize,
+                    ) != 0 {
+                        return Err(b"bap read");
+                    }
+                    out.mf_len = data_len as usize;
+                    seen_mf = true;
+                } else if name.len() > 4 && name.starts_with("bin/") {
+                    if seen_bin {
+                        return Err(b"bap shape");
+                    }
+                    if name.len() > entry.len() {
+                        return Err(b"bap entry long");
+                    }
+                    entry[..name.len()].copy_from_slice(name.as_bytes());
+                    out.entry_len = name.len();
+                    out.elf_off = data_off;
+                    out.elf_len = data_len;
+                    seen_bin = true;
+                } else {
+                    return Err(b"bap shape");
+                }
+                pos = next;
+            }
+            Err(_) => return Err(b"bap cpio"),
+        }
+    }
+    if !seen_mf || !seen_bin {
+        return Err(b"bap shape");
+    }
+    Ok(out)
+}
+
+/// 单 app 拉起（ADR #43 能力面 + §4.3 生命周期 v0：拉起 → 收口 → reap）。
+/// console=true → stdout 直打串口（子自证输出，无收集面）；false → 私有对
+/// 端作 fd1/2（hexyl 同形：`channel_pair` 的 spawn 侧交付、收集端留本表
+/// ——appquiet 静默活证）。**先 collect 后 reap**（PIPE 死锁序铁律——反序
+/// = 子堵收集队 + 父等退出三方互等）。reap 真码 0 才算过：argv0 断言错 →
+/// abort(134) → 非零 → 降级行 + `APP ok` 缺失 loud。任何失败 = `eco: app`
+/// 行 + false，svcmgr 存活续走（失败隔离：单 app 坏不连坐整批）。
+fn app_launch(
+    console: Handle,
+    id: &[u8],
+    bap_off: u64,
+    bap_len: u64,
+    step: &mut [u8],
+    mf: &mut [u8],
+) -> bool {
+    let mut entry = [0u8; ENTRY_MAX];
+    let sc = match bap_scan(step, mf, &mut entry, bap_off, bap_len) {
+        Ok(sc) => sc,
+        Err(why) => {
+            eco_app(console, id, why);
+            return false;
+        }
+    };
+    let man = match berry_manifest::parse(&mf[..sc.mf_len]) {
+        Ok(m) => m,
+        Err(e) => {
+            eco_app(console, id, e.reason_str().as_bytes());
+            return false;
+        }
+    };
+    // 双守卫：manifest.id ↔ .bap 文件名（走查名 = 真理源）、manifest.entry
+    // ↔ 包内条目名（mkapp 门禁 3 的消费侧镜像——rootfs 可被拼装）。
+    if man.id.as_bytes() != id {
+        eco_app(console, id, b"id mismatch");
+        return false;
+    }
+    if man.entry.as_bytes() != &entry[..sc.entry_len] {
+        eco_app(console, id, b"entry mismatch");
+        return false;
+    }
+    // 能力面：console=false 才建私有对（spawn 内 dup RIGHT_SEND 交付 spawn
+    // 侧端，原值留本表作收集端）。stack_pages 按 manifest；intent v1 解析
+    // 面记录、调度零消费（消费点随 v2 EEVDF，ADR #42 两段式）。
+    let mut out_s: Handle = 0;
+    let stdout: Handle = if man.console {
+        console
+    } else {
+        let (s, c) = channel_pair();
+        out_s = s;
+        c
+    };
+    match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: man.entry.as_bytes(),
+            data_off: bap_off + sc.elf_off,
+            data_len: sc.elf_len,
+            stdout,
+            stack_pages: man.stack_pages as u64,
+            // stdin 无数据面（hello/vprobe 同款 None——appdemo/appquiet
+            // 都不读 fd0；空 gift 数组不触发 gift[1] 在位 assert）。
+            stdin_feed: None,
+            stdin_handle: None,
+            extra_arg: None,
+            extra_gifts: &[],
+            mmio_vmo: None,
+        },
+    ) {
+        Err(()) => {
+            // spawn Err 全在 env send 前（berry-exec 契约）：本表零 take，
+            // fresh 私有对原值都在——关掉（vblk Err-path close 同款纪律）。
+            eco_app(console, id, b"elf bad");
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+        }
+        Ok(child) => {
+            if out_s != 0 {
+                // console=false：spawn 侧端已随 env 块 take 迁子表（勿关）；
+                // 先收 EOF（d-3b 写侧对称面——libc exit 族 EOF 先行，Plan B
+                // 起 abort 亦然）再关收集端。帽内未到 = 断链/卡死。
+                if !collect_eof(out_s) {
+                    eco_app(console, id, b"no EOF");
+                }
+                if berry_handle_close(out_s) != 0 {
+                    trap();
+                }
+            }
+            match child.reap() {
+                Ok(0) => return true,
+                Ok(_) => eco_app(console, id, b"exit code"),
+                Err(()) => eco_app(console, id, b"app reap"),
+            }
+        }
+    }
+    false
 }
 
 /// P6 A-8c：vnet 服务消费自验——`DNS_QUERY("localhost")` 严格串行 RPC 往返

@@ -85,6 +85,7 @@ dependencies = [
  "berry-blkproto",
  "berry-exec",
  "berry-loader",
+ "berry-manifest",
  "berry-netdproto",
  "berry-sys",
 ]
