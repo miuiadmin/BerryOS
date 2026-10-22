@@ -125,19 +125,19 @@ stack_pages = 8             # 可省，缺省 8（std 小程序口径）；1..=6
 
 ## 6. smoke / 计数接线
 
-- rootfs 相标记 **17 → 18**（+`APP ok n=2`）；RX 相 **40 → 41**；持久化相 **40 → 41**（对抗审查修正：原「39 → 40」照抄了 CLAUDE.md A-6 段陈旧锚——smoke.sh 现役 `ALL_MARKERS` = 23 boot + 17 rootfs = **40 是地面真值**，RX 相与持久化相共用同一数组；app 每次 boot 照拉——持久化相复用已写盘、不动 rootfs.cpio，标记照到）。
-- 附加串口断言：`app APPDEMO up` 以**独立 grep**（f42t 同款判例——console 通道异步排水但必达，DEADLINE_ROOTFS=240s 帽远大于必达时延）挂 rootfs 相标记循环**之后**；**不入 `ROOTFS_MARKERS` 数组**（对抗审查：入数组则三处计数变 19/42/42 与上条推演矛盾——独立 grep 与数组计数是两个断言位，rootfs 相 18 + 独立 1 不冲突）；RX / 持久化相不重复断言（`rootfs hello` 只在 rootfs 相断言的先例）。
-- EL2 `21` 前缀同绿；host 计数 131 + berry-manifest ≈18（精确数 a-0 定）。
-- 标记互非子串全表核验（a-3 动作）：`APP ok n=` 与既有**全部 40 枚**标记两两互非子串（boot 23 + rootfs 17 = `ALL_MARKERS` 实际断言集——对抗审查修正：只对 17 枚 rootfs 标记核验漏了 boot 面，`DEMO ok` ⊂ `AIDEMO ok` 正是 **boot 标记间**的历史混叠先例；`APP ok` 前缀与 `ROOTFS ok` 族不同首词，初核通过；带参形态维持鉴别力）。
+- rootfs 相标记 **20 → 21**（+`APP ok n=2`）；RX 相 **43 → 44**；持久化相 **43 → 44**（**落地值**：草案期基线 17/40/40 为 A-8 后锚，a-0 动工前 TCP 四刀 T-c/T-d 先行落地把基线推至 20/43/43——`ALL_MARKERS` = 23 boot + rootfs 相数组，RX 相与持久化相共用；app 每次 boot 照拉——持久化相复用已写盘、不动 rootfs.cpio，标记照到）。
+- 附加串口断言：`app APPDEMO up` 以**独立 grep**（f42t 同款判例——console 通道异步排水但必达，DEADLINE_ROOTFS=300s 帽远大于必达时延，T-d 起 240→300）挂 rootfs 相标记循环**之后**；**不入 `ROOTFS_MARKERS` 数组**（对抗审查：独立 grep 与数组计数是两个断言位，rootfs 相 21 + 独立 1 不冲突）；RX / 持久化相不重复断言（`rootfs hello` 只在 rootfs 相断言的先例）。
+- EL2 `21` 前缀同绿；host 计数 200 + berry-manifest 23 = **223** + `mkapp.py --selftest` 挂 `just test-host` 前置（a-3 U4；mkfat `--check-fixture` 同位）。
+- 标记互非子串全表核验（a-3 已核）：`APP ok n=` 与既有**全部 44 枚**标记两两互非子串（boot 23 + rootfs 21 = `ALL_MARKERS` 实际断言集——对抗审查修正：只对 rootfs 标记核验漏了 boot 面，`DEMO ok` ⊂ `AIDEMO ok` 正是 **boot 标记间**的历史混叠先例；`APP ok` 前缀与 `ROOTFS ok` 族不同首词，核验通过；带参形态维持鉴别力）。
 
 ## 7. 拆步与各步验收（小步提交）
 
 | 步 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
-| **a-0** | `berry-manifest` crate + host 测试 | `用户态/berry-manifest/`、`用户态/Cargo.toml`（members 增项）、justfile（test-host 行 + 计数注释）——对抗审查补：test-host 是逐 crate 显式枚举 recipe，缺这两处 N 无从跑起 | `just test-host` 全绿（131+N）、build 零 warning；零 QEMU 行为变化 |
+| **a-0** | `berry-manifest` crate + host 测试 | `用户态/berry-manifest/`、`用户态/Cargo.toml`（members 增项）、justfile（test-host 行 + 计数注释）——对抗审查补：test-host 是逐 crate 显式枚举 recipe，缺这两处 N 无从跑起 | `just test-host` 全绿（200+23=223 落地值）、build 零 warning；零 QEMU 行为变化 |
 | **a-1** | mkcpio 抽 `build_archive`（含头注修正）+ `mkapp.py`（canonical 比对 + 负例自测）+ appdemo/appquiet + build-user 接线 | `工具链/`、`用户态/bins/{appdemo,appquiet}/`、justfile | smoke 四跑全绿**零漂移**（app/ 条目被主走查跳过）+ host 不回退 + **构建后 `git status` 零新增未跟踪产物**（中转区 ignore 覆盖机器验证） |
-| **a-2** | svcmgr appd arm（≥64B 发射窗）+ `APP ok` + smoke 计数/断言接线 + EL2 | svcmgr、`工具链/smoke.sh`（ROOTFS_MARKERS +1、ALL_MARKERS 联动、`app APPDEMO up` 独立 grep +1、头注计数同步） | smoke 四跑 **18/41/41** + EL2 `21` 同绿 + 手动 `just run-rootfs` 全标记（含 `app APPDEMO up` 与 `APP ok n=2`）+ host + **坏输入手动验证**（装 id=24B + 坏 ELF——过 `\x7fELF` 门卫但 loader 拒——的 .bap 进 rootfs：断言 `eco: app` 降级行落串口、svcmgr 存活、`APP ok` 缺失不连坐 halt；CI 不可达路径纳入人工验收面） |
-| **a-3** | workflow 对抗审查（本草案 + 实现）→ confirmed 全修 + 文档回写 | 修复 + 文档 | 审查 finding 全闭环 + 回写三件：①CLAUDE/AGENTS app-0 段 + **A-6 叙事段「39 标记载明写过的盘再起」陈旧值修正为 40**（smoke.sh 地面真值——对抗审查实抓 CLAUDE.md 自相矛盾：39 与 40 并存）+ smoke 计数锚；②`应用模型设计.md` §3/§4.2 改写（§3 v0 样例改写为本 schema 形态、原样例标注 v2 目标态；§4.2「intent 缺省按 type 角色表定档」前提加注）；③smoke.sh 头注计数 |
+| **a-2** | svcmgr appd arm（≥64B 发射窗）+ `APP ok` + smoke 计数/断言接线 + EL2 | svcmgr、`工具链/smoke.sh`（ROOTFS_MARKERS +1、ALL_MARKERS 联动、`app APPDEMO up` 独立 grep +1、头注计数同步） | smoke 四跑 **21/44/44**（落地值——草案期 18/41/41 为 A-8 后基线，TCP 四刀 T-c/T-d 先行落地推至 20/43/43）+ EL2 `21` 同绿 + 手动 `just run-rootfs` 全标记（含 `app APPDEMO up` 与 `APP ok n=2`）+ host + **坏输入手动验证**（装 id=24B + 坏 ELF——过 `\x7fELF` 门卫但 loader 拒——的 .bap 进 rootfs：断言 `eco: app` 降级行落串口、svcmgr 存活、`APP ok` 缺失不连坐 halt；CI 不可达路径纳入人工验收面） |
+| **a-3** | workflow 对抗审查（本草案 + 实现）→ confirmed 全修 + 文档回写 | 修复 + 文档 | 审查 finding 全闭环（workflow 10 agents 四维：6 confirmed C1/C2/U1–U4 全修；U5/U6 以扩展探针五臂实测闭环——BADBAD/BADTRUNC/BIGAPP/MISMATCH/THISID 五降级行 + 好槽照起 + `APP ok` 缺失不连坐 + svcmgr 存活金丝雀绿）+ 回写四件：①CLAUDE/AGENTS app-0 段 + smoke/host 计数锚（rootfs 21 / RX·持久化 44 / host 223）+ **A-6 段「40 标记」复位 39**（git 考古：A-6 时 ALL = 23+16 = 39、与同段「RX 相 39 标记」自洽——审查所见 39/40 并存实为历史段 vs 现役段之别，历史段记录当时验收值不随后续漂移）；②`应用模型设计.md` §3/§4.2 改写（§3 样例改写为落地 v0 schema、原样例标注 v2 目标态；§4.2「intent 缺省按 type 角色表定档」加 v0 必填前提注）；③smoke.sh 头注计数（a-2 随步落地）；④本草案 §6/§7 地面真值化 |
 
 多会话纪律：justfile/smoke.sh/CLAUDE.md/AGENTS.md 为共享文件——每次提交前重查 `git status` + 逐 hunk 归属，只暂存本会话拥有的改动；x86 会话的 WIP（`工具链/patch_doc_*.py` 等）严格只读。
 
