@@ -295,3 +295,67 @@ RST 面：收 RST → 任意状态直转 Closed（会话作废标记）；对「
   10s 级出标记。
 - **下一步**：T-d（可缓）——netdproto TCP 三 op（OPEN/ECHO/CLOSE 单会话
   独占 ST_BUSY）+ svcmgr 消费自验 `TCPS ok` = 第 20 标记。
+
+### T-d（2026-10-22 已落地）：TCP 服务化——netdproto 三 op + svcmgr 消费自验，`TCPS ok echo=64` = rootfs 相第 20 标记（§9「栈服务」话术闭环，Phase 6 收官刀）
+
+- **代码面三件**：①**`用户态/berry-netdproto` TCP 三 op 扩面**（host 14→26 测）：
+  OPEN `[op][port u16 LE]` 3B（port 0 拒）/ ROUNDTRIP `[op][dlen][data]`
+  2+dlen（dlen ∈ 1..=128 = berry-tcp MSS 通告值——对端遵守我方通告，回显
+  单段不超帽；0 拒）/ CLOSE `[op]` 1B；应答按形状分两形——**1B `[st]`**
+  （OPEN/CLOSE 应答 + 一切非 OK 错误应答）与 **`[st][dlen][data]`**（仅
+  ROUNDTRIP 成功，回传服务端**真实收到的字节**——对拍归 client，「DNS
+  addr 该是多少归 svcmgr」同款分工）；`TCP_DATA_MAX=128`/`REQ_LEN_MAX=
+  TCP_REP_MAX=130`；**烘焙线 TCP 版**：非 OK 状态恒不携 data，编码/解析
+  两侧对称执法（线上不存在「超时了但带数据」的歧义形态）；st 合法域含
+  `ST_BUSY`（仅 TCP 面——DNS 面编码器不收，无会话语义）；编码器 None
+  拒绝契约 day-one（fsproto 对抗审查同族坑前置免疫）。②**vnet serve()
+  扩 TCP 三臂**（A-8b 常驻纪律零新面）：`tcp_op` 分派——OPEN 撞在席会话
+  → `ST_BUSY`（§8 单会话独占文档化语义）→ miss 时 `TCP_SPORT_NEXT`
+  AtomicU16 发号（48081 起，与自验口 48080 错开）`Sess::connect` 新会话
+  （**T-c 驱动原样复用——「不长第二套」**）；ROUNDTRIP 无会话 = 协议面
+  ST_BAD / `Sess::roundtrip`（`RtRes::Timeout` 会话保命不销毁——
+  in-flight 可能仍在途，后续 op 自见分晓）；CLOSE `sess.take()` 无论
+  成败弃置（Sess 无 Drop 面纯内存几何，对端超时自收）+ `shutdown` 全
+  挥手。服务帽 OPEN 20s / RT 30s / CLOSE 30s 逐 op 各等各的——恒 <
+  client 帽 60s（blk_rpc「服务帽 < client 帽」纪律：「服务活着只是慢」
+  时 ST_TIMEOUT 应答最迟 ~30s 到，client 帽只兜服务整个挂死面）；**回复
+  路径 EBUSY 三清**——随行 handle 回收撞 BERRY_ERR_BUSY 降级 ST_BAD 时
+  连带清 addr/dl（「非 OK 恒全零/恒不携 data」烘焙线在服务侧也不许残留
+  成功值——DNS 成功后撞 EBUSY 时 addr 不清 → encode_reply None → trap
+  服务死，防御面顺带修复）；未知 op / parse 拒一律 DNS 形 ST_BAD（旧
+  垃圾消息行为零改动）。③**svcmgr 消费自验**（dns_rpc 样板）：`tcp_rpc`
+  三 op 严格串行（encode → send_retry 无随行 → wait READABLE 60s 帽 →
+  recv 富余收口 → parse——`TcpReply.data` 借用 recv 缓冲，**拷出 owned
+  返回**后缓冲即被下一 op 复用）；`tcp_selftest` = OPEN(18080) →
+  ROUNDTRIP 64B PATTERN（与 vnet tcp.rs `PATTERN` 两端各自内嵌同串——
+  改任一侧须同步重验）逐字节对拍 → CLOSE **无论 RT 成败必收口**（vnet
+  侧 Timeout 不销毁会话，不 CLOSE = 会话泄漏至下轮 OPEN 撞 ST_BUSY）→
+  三步全 ST_OK 才打 `TCPS ok echo=64`（NET_A==0 静默跳过 = 裸跑零扰动；
+  失败分诊 `eco: tcps rpc` 链路断 / `eco: tcps reply` 链路活答案错）。
+  **标记互非子串**：`TCPS ok echo=` vs 自验 `TCP ok echo=` 第 4 字符
+  'S' vs ' ' 区分——「栈本身能跑」（T-c，Sess 直连）与「栈经服务化 RPC
+  面能被消费」（T-d，netdproto 三 op）两半口径的机器可辨面。接线：
+  smoke.sh ROOTFS_MARKERS 19→20（`TCPS ok echo=` 尾插）+ RX/持久化
+  42→43 五处 + `DEADLINE_ROOTFS` 240→300s（三 op TCG 逐 op 握手/挥手
+  全走真网卡 ≈+15-25s 叠 FATW commit 后 240s 余量见底）。
+- **对抗审查（workflow 9 agents 四维 proto/vnet-serve/svcmgr-client/wiring
+  × 逐 finding 对抗核实，4 confirmed 全 low 全修 / 0 refuted）**：①TCP
+  应答面缺 wire 黄金字节钉板（request/DNS reply 钉板在册、reply 面
+  roundtrip 闭环对对称漂移不设防）→ 补 `tcp_reply_wire_pinned`（1B 非 OK
+  形 + `[st][dlen][data]` 成功形，25→26 测）；②`TCP_DATA_MAX=128` 与
+  `bt::MSS=128` 弹道交汇双定值只活在注释——单侧抬 TCP_DATA_MAX = parse
+  放行而 `conn.send` 被 berry-tcp `len > MSS` 拒 → RtRes::Bad → 静默
+  ST_BAD 零诊断（MSS 方向另有 consts_pinned 字面钉板把守）→ vnet tcp.rs
+  消费侧 const assert 绑定（A-4 SECTOR_SZ 同族）；③「Timeout 会话保命
+  ——后续 op 自见分晓」注释与行为相悖（in-flight 占位使后续 ROUNDTRIP
+  恒 ST_BAD，仅 CLOSE 可收口：FIN 覆盖单槽）→ main.rs/tcp.rs 两处注释
+  对齐实现（A-3 errno 先例）；④DEADLINE_ROOTFS 240→300 改值扫尾漏一处
+  smoke.sh 注释 → 历史化（「当时 240s」）。svcmgr-client 维度零 finding。
+- **验收**：host **200 测**全绿（11+51+18+13+13+14+24+**26**+30——
+  netdproto TCP 三 op 面 14→26）+ smoke 四跑全绿（裸 23 零漂移 +
+  rootfs 20 含 `TCPS ok echo=` + RX 43 注入四段 + 持久化 43 跨 boot
+  f42t + 金丝雀 10 条严格递增）+ EL2 手动同绿（21 前缀 + TCP ok 与
+  TCPS ok 各恰一次 + DNS 零回归，20 标记全到）。
+- **下一步**：无——本刀为 TCP 四刀收官，§9 话术限定（「最小 TCP 客户端
+  单会话跑通 ≠ 完整 TCP/IP 栈」+「栈经服务化 RPC 面能被消费」）完整
+  兑现；多会话/并发 client/被动打开/请求序号防重随 v2。

@@ -163,6 +163,10 @@ run-el2: build
 # T-c：NET ok 后 vnet 跑 TCP 自验会话（berry-tcp 状态机 + tcp.rs IO——
 # guest 主动 connect 10.0.2.2:18080 = SLIRP 转发宿主 echod，握手/64B 回显
 # 对拍/主动 FIN 挥手到 Closed）打 `TCP ok echo=64` = rootfs 相第 19 标记。
+# T-d：vnet 常驻服务扩 TCP 三 op（netdproto OPEN/ROUNDTRIP/CLOSE，单会话
+# 独占 ST_BUSY）——svcmgr 作 client 三 op 一轮回显（同一 echod）全 ST_OK
+# 才打 `TCPS ok echo=64` = rootfs 相第 20 标记（「栈本身能跑」与「栈经
+# 服务化 RPC 面能被消费」两半，§9 话术闭环）。
 # echod 由本 recipe 起（QEMU 前）/收（trap EXIT）；smoke.sh 同款自足。
 run-rootfs: build
     #!/bin/sh

@@ -13,12 +13,12 @@
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），42 标记
-#      （boot 23 + rootfs 19——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
-#      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo= 在列
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），43 标记
+#      （boot 23 + rootfs 20——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/TCPS ok echo= 在列
 #      = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务消费链/FAT
-#      只读底座与**落盘写**/网络往返与网络服务全过，状态谓词
-#      门控注入时机，不赌 boot 秒数）后
+#      只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP 服务全过，
+#      状态谓词门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
 #      FIFO 深 1 字节——慢速 = 单字节-per-handler 的标记确定性，消竞速；
 #      QEMU chardev 流控押住输入不 overrun——真机才有突发丢字）：
@@ -35,7 +35,7 @@
 #      b/c/d 三断言互非子串。随后再验 switches 金丝雀严格递增（IRQ 分流
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. P6 A-6 FAT 持久化相（第四跑）：**不重造盘**（复用第 5 相已写盘——
-#      mkfat 重产 = 持久化零验收），42 标记载明写过的盘再起（bsh FATW
+#      mkfat 重产 = 持久化零验收），43 标记载明写过的盘再起（bsh FATW
 #      自验走覆写路径 = 旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT`
 #      → grep 'f42t'——`>` 落的是真扇区、跨 boot 存活。盘 cache
 #      writeback=off：QEMU 由 SIGTERM 终止，writeback 模式可能不刷页
@@ -68,9 +68,12 @@ python3 "$(dirname "$0")/gen_abi.py" --check \
   || { echo "smoke: FAIL: ABI 单源守卫失败（改了 abi.toml 跑 just abi-gen）" >&2; exit 1; }
 
 DEADLINE_BOOT=120    # 秒：boot 全部标记到齐（裸相）
-DEADLINE_ROOTFS=240  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
+DEADLINE_ROOTFS=300  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
                      # 自验含整链 commit（fsmgr 侧 ~13 次串行扇区 RPC，TCG
-                     # 下每次 ~0.8s）+ GET 读回 ≈ +30-40s，120s 结构性不够
+                     # 下每次 ~0.8s）+ GET 读回 ≈ +30-40s，120s 结构性不够；
+                     # T-d 起 svcmgr TCPS 三 op（每 op 一轮 TCP 会话相位，
+                     # TCG 下三 op ≈ +15-25s）叠加，240s 余量见底 → 300s
+                     #（帽只兜结构性挂死，常态全链 ~150s 内到齐）
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
@@ -305,8 +308,16 @@ QEMU_PID=$!
 # 可靠交付/连接拆除三阶段全在用户态**，零内核 TCP——rootfs 相第 19 标记
 # （状态谓词；对端 echod 由本相前脚本拉起，pcap 实证 SLIRP 遵守我方
 # MSS：64B 回显单段不分片；无竞速面）。
+# TCPS ok echo= = **TCP 服务化消费链**（T-d，`文档/TCP栈设计草案.md` §7）：
+# svcmgr 作 client 经 berry-netdproto TCP 三 op 严格串行 RPC——
+# OPEN(18080)（在席会话 ST_BUSY 单会话独占）→ ROUNDTRIP(64B pattern) 逐
+# 字节对拍 → CLOSE（TIME_WAIT 收口）三步全 ST_OK 才打；与 vnet 自验
+# `TCP ok` 打的是同一宿主 echod——「TCP ok = 栈本身能跑，TCPS ok = 栈经
+# 服务化 RPC 面能被消费」（§9 话术「最小 TCP/IP 栈服务」的两半）——
+# rootfs 相第 20 标记（状态谓词，无竞速面；两标记互非子串已核：第 4 字符
+# 'S' vs ' '）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -320,22 +331,23 @@ while :; do
     fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
   fi
   [ -z "$missing" ] && break
-  # 相内含 FATW 整链 commit（TCG ~+30-40s）——比较须用 DEADLINE_ROOTFS
-  #（240s；与文案一致。写 BOOT 是笔误：比较 120s 文案 240s，>120s 到齐会被误杀）。
+  # 相内含 FATW 整链 commit + T-d TCP 三 op 全走真网卡——比较须用
+  # DEADLINE_ROOTFS（现 300s；与文案一致。历史上写 BOOT 是笔误：比较 120s
+  # 文案当时 240s，>120s 到齐会被误杀）。
   [ $(( $(date +%s) - t2 )) -gt "$DEADLINE_ROOTFS" ] \
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo=）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + TCPS ok echo=）"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 19 = 42
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 23 + rootfs 20 = 43
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块设备
 # 服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络服务
-# 消费链、TCP ok echo= = TCP 客户端全链，同批）；状态谓词门控——不赌
-# boot 秒数）
+# 消费链、TCP ok echo= = TCP 客户端全链、TCPS ok echo= = TCP 服务化消费链，
+# 同批）；状态谓词门控——不赌 boot 秒数）
 # 后经 fd3 逐字节注入编辑序列，每
 # 字节隔 0.5s（FEN=0 FIFO 深 1 字节——慢速 = 单字节-per-handler 标记确定性；
 # QEMU 流控不丢字，真机才有 overrun 面）：a. `rx\n` → `RX ok`（console 收齐
@@ -372,7 +384,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + vir
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：42 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：43 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -489,7 +501,7 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 
 # —— 阶段 5：P6 A-6 FAT 持久化相（第四跑：写过的盘再起）——
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收）；
-# 不关 fd3（阶段 5 还要注入 cat 行，exec 3>&- 移到本阶段尾）。42 标记载明
+# 不关 fd3（阶段 5 还要注入 cat 行，exec 3>&- 移到本阶段尾）。43 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读。
 # 注入 `cat OUT.TXT` → grep 'f42t'：上一相 `>` 落的扇区跨 boot 存活——

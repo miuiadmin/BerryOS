@@ -98,6 +98,12 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // serve() 起来即收）；裸跑 NET_A==0 静默跳过零扰动。----
     dns_selftest(console);
 
+    // ---- T-d：TCP 服务化消费自验（`TCPS ok echo=64`，rootfs 相第 20 标记）
+    // ——netdproto 三 op OPEN/ROUNDTRIP/CLOSE 经 vnet 常驻服务走一轮回显
+    // （echod 由 recipe 起，与 vnet 自验 `TCP ok` 同一宿主服务）；裸跑
+    // NET_A==0 静默跳过零扰动。----
+    tcp_selftest(console);
+
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
     let v = [b'v'];
     loop {
@@ -714,6 +720,30 @@ const DNS_OK: &[u8] = b"DNS ok addr=127.0.0.1\n";
 /// blk_rpc 同款纪律）。
 const DNS_REPLY_CAP: u64 = 60 * 1_000_000_000;
 
+/// rootfs 相第 20 标记（T-d，`文档/TCP栈设计草案.md` §7）：vnet TCP 三 op
+/// 服务消费自验——OPEN(18080) → ROUNDTRIP 64B 逐字节对拍 → CLOSE 三步全
+/// ST_OK 才打。**与 vnet 自验标记 `TCP ok echo=` 互非子串**（第 4 字符
+/// 'S' vs ' '——自验走 `Sess` 直连、本标记走 netdproto RPC 服务链，「栈
+/// 服务」口径的区分面）；状态谓词，无竞速面。
+const TCPS_OK: &[u8] = b"TCPS ok echo=64\n";
+
+/// TCP 应答帽：60s（DNS 同值。「client 帽 > 服务帽」纪律：vnet 侧三 op
+/// 各相位帽 OPEN 20s / ROUNDTRIP 30s / CLOSE 30s，逐 op 各等各的应答——
+/// 服务活着只是慢时 ST_TIMEOUT 应答最迟 ~30s 到，本帽只兜 vnet 整个挂死
+/// 的面）。超帽 = 降级行 + 标记缺失 = smoke FAIL（不重发——串行 RPC 队列
+/// 里可能滞留迟到应答错配下一请求，v1 无请求序号，blk_rpc 同款纪律）。
+const TCPS_REPLY_CAP: u64 = 60 * 1_000_000_000;
+
+/// 宿主回显服务端口（`工具链/echod.py` bind 127.0.0.1:18080 定值——SLIRP
+/// guest 主动出站 10.0.2.2 同端口转发；vnet tcp.rs `ECHO_PORT` 镜像值）。
+const TCPS_ECHO_PORT: u16 = 18080;
+
+/// TCP 回显 pattern（64B，与 vnet tcp.rs `PATTERN` 同串——两端各自内嵌，
+/// 改任一侧须同步重验）。
+const TCPS_PATTERN: &[u8; 64] =
+    b"berryos-tcp-probe-0123456789012345678901234567890123456789abcdef";
+const _: () = assert!(TCPS_PATTERN.len() == 64);
+
 // rootfs ELF 流式拉起 = `berry_exec::spawn_rootfs_elf`（A-2 迁出：ELF 首窗
 // 解析 → 页铺平单 VMO → 段泵送 → 栈+保护页 → env 块交接；签名 SpawnSpec
 // 化 + h_rootfs 参数化——语义纪律与契约文档见 berry-exec/src/lib.rs）。
@@ -994,6 +1024,84 @@ fn dns_rpc(h: Handle, name: &[u8]) -> Result<ndp::Reply, ()> {
         return Err(());
     }
     ndp::parse_reply(&rep[..nb]).ok_or(())
+}
+
+/// TCP 面 RPC（T-d，dns_rpc 同款纪律）：encode → send（无随行 handle）→
+/// [`TCPS_REPLY_CAP`] 应答帽 wait READABLE → recv 容量富余收口 →
+/// parse_tcp_reply。**回显 data 借用 recv 缓冲——拷出 owned 返回**（返回
+/// 后缓冲即被下一 op 复用；调用方拿 `(st, data, len)` 三件套）。应答帽
+/// 超时/错码 → Err 不重发（串行 RPC 队列里可能滞留迟到应答，v1 无请求
+/// 序号，blk_rpc 同款；自验序列即终，迟到应答滞留无害）。
+fn tcp_rpc(h: Handle, req: ndp::TcpReq<'_>) -> Result<(u8, [u8; ndp::TCP_DATA_MAX], usize), ()> {
+    let mut reqb = [0u8; ndp::REQ_LEN_MAX];
+    let n = match ndp::encode_tcp_request(&mut reqb, req) {
+        Some(n) => n,
+        None => return Err(()),
+    };
+    send_retry(h, reqb.as_ptr(), n);
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + TCPS_REPLY_CAP, &mut obs) != 0 {
+        return Err(());
+    }
+    let mut rep = [0u8; ndp::TCP_REP_MAX];
+    let mut nb = rep.len();
+    let mut nh = 0usize;
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh) != 0 {
+        return Err(());
+    }
+    let pr = ndp::parse_tcp_reply(&rep[..nb]).ok_or(())?;
+    let mut out = [0u8; ndp::TCP_DATA_MAX];
+    if pr.data.len() > out.len() {
+        return Err(());
+    }
+    out[..pr.data.len()].copy_from_slice(pr.data);
+    Ok((pr.st, out, pr.data.len()))
+}
+
+/// T-d：vnet TCP 三 op 服务消费自验（`TCPS ok echo=64`，rootfs 相第 20
+/// 标记）——OPEN(18080) → ROUNDTRIP(PATTERN) 逐字节对拍 → CLOSE 三步全
+/// ST_OK 才打（dns_selftest 样板：NET_A==0 静默跳过裸跑零扰动；失败分诊
+/// `tcps rpc` 链路断 / `tcps reply` 链路活答案错）。ROUNDTRIP 失败照走
+/// CLOSE——vnet 侧 Timeout 不销毁会话，收口撤会话不留言体。
+fn tcp_selftest(console: Handle) {
+    let net = NET_A.load(Ordering::Relaxed);
+    if net == 0 {
+        return;
+    }
+    // ① OPEN：建会话（失败 = 链路断/宿主 echod 缺席，后续 op 无意义）。
+    match tcp_rpc(net, ndp::TcpReq::Open { port: TCPS_ECHO_PORT }) {
+        Ok((st, _, _)) if st == ndp::ST_OK => {}
+        Ok(_) => {
+            eco_line(console, b"tcps reply");
+            return;
+        }
+        Err(()) => {
+            eco_line(console, b"tcps rpc");
+            return;
+        }
+    }
+    // ② ROUNDTRIP 对拍（回显字节只能来自宿主 echod 真回程——状态谓词）。
+    let rt_ok = match tcp_rpc(net, ndp::TcpReq::Roundtrip { data: &TCPS_PATTERN[..] }) {
+        Ok((st, data, n)) if st == ndp::ST_OK && n == TCPS_PATTERN.len() && data[..n] == TCPS_PATTERN[..] => true,
+        Ok(_) => {
+            eco_line(console, b"tcps reply");
+            false
+        }
+        Err(()) => {
+            eco_line(console, b"tcps rpc");
+            false
+        }
+    };
+    // ③ CLOSE 无论 ② 成败都收口；三步全绿才打标记。
+    match tcp_rpc(net, ndp::TcpReq::Close) {
+        Ok((st, _, _)) if st == ndp::ST_OK => {
+            if rt_ok {
+                send_retry(console, TCPS_OK.as_ptr(), TCPS_OK.len());
+            }
+        }
+        Ok(_) => eco_line(console, b"tcps reply"),
+        Err(()) => eco_line(console, b"tcps rpc"),
+    }
 }
 
 #[inline(never)]
