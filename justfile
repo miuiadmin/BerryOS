@@ -12,6 +12,8 @@ KERNEL_RELEASE := `bash 工具链/paths.sh kernel-release`
 
 # 不用 `-bios none`：QEMU ≥11.x 把 "none" 当文件名，报
 # `Could not find ROM image 'none'`。virt + -kernel ELF 直加载即可。
+# 不带 `-smp`（QEMU 默认 1 核）是 v1 有意定值：免锁根基 = 单核串行
+# （SMP设计草案 §1.1）；S-1 起双核只进 smoke-smp 线（`-smp 2`）。
 MACH   := "-machine virt -cpu cortex-a72 -m 128M -nographic"
 QEMU   := "qemu-system-aarch64"
 

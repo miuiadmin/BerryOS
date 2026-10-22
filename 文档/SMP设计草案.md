@@ -275,3 +275,14 @@ TLB shootdown v1 保持**同步 IS 广播**（S-4 在页表锁内做，异步 sh
 ## 执行结果（追加区）
 
 （S-0 起逐刀追加：实测记录/落地清单/对抗审查结论/验收证据。）
+
+### S-0（2026-10-22 已完成）：`-smp 2` 副核启动通道实证——纯 PSCI/HVC 钉死，调查刀零内核代码面
+
+- **静态证据（dumpdtb，QEMU 11.0.3）**：`qemu-system-aarch64 -machine virt,dumpdtb=… -cpu cortex-a72 -m 128M -smp 2` → dtc 反编译：
+  - **PSCI node**：`compatible = "arm,psci-1.0", "arm,psci-0.2", "arm,psci"`、`method = "hvc"`、`cpu_on = <0xc4000003>`、`cpu_off = <0x84000002>`、`cpu_suspend = <0xc4000001>`、`migrate = <0xc4000005>`——§3.1 外部核实（HVC 默认 / 0xC4000003）就此被 QEMU 自产 DTB 钉死，假设变实证；
+  - **cpus node**：cpu@0 `reg=<0x00>` / cpu@1 `reg=<0x01>`（MPIDR Aff0 = 核号）、双 `enable-method = "psci"`、cpu-map socket0/cluster0/core0+core1（双核同簇）；
+  - **零 spin-table / cpu-release-addr**——纯 PSCI 通道：CPU_ON 的 entry 由调用方传入、副核由 QEMU 内部管理，**guest RAM 无停车场邮箱结构** → §3.1 碰撞风险在此配置下不存在；DTB blob 本就不递（G-eco 实证 x0=0/魔数零命中）→ `[__kernel_end_pa, RAM_TOP)` 全空闲的既有假设在 `-smp 2` 下维持成立（四问之④收口）。
+- **动态证据（live boot + monitor）**：既有内核 ELF 以 `-smp 2` 启动跑 ~3min——**boot 23 标记恰一次 + 稳态矩阵流动 + switches 金丝雀 100→1600 严格递增**，主核零扰动；monitor `info registers -a`：CPU#0 PC=`0xffffff804001aee4`（高半稳态）；**CPU#1 PC=`0x40000000`、X00/X01 全零**——恰等于内核 ELF entry（`PT_LOAD paddr=0x40000000`，python 解 ELF 头钉板）：**复位 PC 落在 `_start` 但副核 powered-off 未执行过任何指令**（寄存器原始零 + 若执行过 _start 数微秒内 bss 重清即毁系统——全程零毁即反证未执行）。
+- **§1.2 HAL 行「所有核同跑 `_start` 全面灾难」限定收口**：PSCI 模型下该场景**不触发**（副核 halted 等 CPU_ON）；但复位 PC 恰是 `_start`——S-1 的 MPIDR 分流仍是防御性必做（非 PSCI conduit / 真机 spin-table 路径直接踩中该行）。
+- **钉板值（S-1 消费）**：conduit = **HVC**；`CPU_ON = 0xC4000003`（x0=target_cpu MPIDR、x1=entry PA、x2=context_id）；`CPU_OFF = 0x84000002`；副核 MPIDR Aff0 = 1。**S-1 首步动态检查**（静态钉不死、须真调 HVC 后断言的两项）：①CPU_ON 返回码（成功 0/失败负 errno，DEN0022 口径）②副核入口 EL 与寄存器初值（SMP 启动协议：入口 MMU off、entry 传 PA、x0=context_id——x0 是否真带 context_id 以实测为准，不照规范想象写死）。
+- **`-smp` 显式化**：justfile `MACH` 定值行补注「不带 `-smp` = QEMU 默认 1 核是 v1 有意定值（免锁根基单核串行）；S-1 起双核只进 smoke-smp 线」——隐式事实转注释；smoke-smp 脚本本体随 S-1 落地。
