@@ -1,5 +1,5 @@
-//! berryboot——BerryOS 引导应用（V-0a 刀 2：横幅增强——固件版本行 +
-//! GOP QueryMode 信息行）。
+//! berryboot——BerryOS 引导应用（V-0a 刀 3：SFS 开卷读 HELLO.TXT 逐字节
+//! 对拍——`BERRYBOOT ok` 验收标记）。
 //!
 //! 形态：`crate-type=staticlib` → rust-lld 静态全链接（berryboot.ld 单 .img
 //! @0x1000 + --image-base 0 + --emit-relocs）→ 工具链/elf2pe.py 转 PE32+
@@ -9,25 +9,35 @@
 //! 刀 2 面：横幅三行——骨架行（刀 1）+ `fw:` 固件厂商/修订行（SystemTable
 //! 直读，UCS-2 → ASCII 有损）+ `gop:` 模式信息行（BootServices
 //! LocateProtocol(GOP) → QueryMode 当前模式——裁决 C：只信息行不画像素）。
-//! 刀 3 加 SFS 开卷读 HELLO.TXT 打 BERRYBOOT ok。
+//! 刀 3 面：行 4 `fs:` + 验收标记——LoadedImage(image handle) →
+//! DeviceHandle → SFS → OpenVolume → 根 Open(HELLO.TXT, READ) → Read →
+//! 与内嵌基准逐字节对拍，全链过 + 字节全等才打 `BERRYBOOT ok`（状态谓词，
+//! 非 README 式装饰）。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
 //! **状态码诊断行**（机器可读缺席报告——AI 测试友好：`locate fail r=0x…e`
 //! = EFI_NOT_FOUND 即「此固件配置无 GOP 实例」），不炸链；横幅首行本身
 //! 即「镜像被执行」的阳证。
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 use berry_efi::{
     fmt_u32_dec, fmt_u64_hex, utf16_encode, utf16_to_ascii, EfiGraphicsOutputModeInfo,
-    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, EFI_BOOT_SERVICES_SIGNATURE,
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
+    EfiGraphicsOutputProtocol, EfiLoadedImageProtocol, EfiSimpleFileSystemProtocol, EfiStatus,
+    EfiSystemTable, EFI_BOOT_SERVICES_SIGNATURE, EFI_FILE_MODE_READ,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
 };
 use core::ffi::c_void;
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+/// 刀 3 基准：HELLO.TXT 的期望字节（与仓库 fixture `../hello.txt` 单源
+/// 对拍——host 测试 hello_fixture_consensus 钉同步）。
+const EXPECTED_HELLO: &[u8] = b"BERRYBOOT HELLO FIXTURE v0a\n";
 
 /// 刀 1 骨架行：ASCII + CRLF（EFI ConOut 惯例——部分终端只认 CRLF）。
 const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
@@ -100,7 +110,7 @@ unsafe fn ucs2_cstr_slice(ptr: *const u16) -> &'static [u16] {
 
 #[no_mangle]
 pub extern "C" fn efi_main(
-    _image_handle: *const c_void,
+    image_handle: *mut c_void,
     system_table: *mut EfiSystemTable,
 ) -> EfiStatus {
     // 引导语境的防御式：表指针空/签名不符 → 静默成功返回（横幅首行本身
@@ -202,5 +212,127 @@ pub extern "C" fn efi_main(
             l.push_u32_dec(bs.is_null() as u32);
         });
     }
+
+    // 行 4 + 验收标记：SFS 开卷读 HELLO.TXT 逐字节对拍（刀 3）——
+    // LoadedImage(image handle) → DeviceHandle → SFS → OpenVolume →
+    // 根 Open(READ) → Read → 对拍 → Close。全链过 + 字节全等才打
+    // `BERRYBOOT ok`（V-0a 验收标记 = 状态谓词）；任一步失败打
+    // `fs: <step> r=0x…` 诊断行。
+    if !bs.is_null() && unsafe { (*bs).hdr.signature } == EFI_BOOT_SERVICES_SIGNATURE {
+        let hp = unsafe { (*bs).handle_protocol };
+        let mut li: *mut c_void = core::ptr::null_mut();
+        let r_li = unsafe {
+            hp(
+                image_handle,
+                &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *mut _,
+                &mut li,
+            )
+        };
+        let device = if r_li == EFI_SUCCESS && !li.is_null() {
+            unsafe { (*(li as *mut EfiLoadedImageProtocol)).device_handle }
+        } else {
+            core::ptr::null_mut()
+        };
+        if !device.is_null() {
+            let mut sfs: *mut c_void = core::ptr::null_mut();
+            let r_sfs = unsafe {
+                hp(
+                    device,
+                    &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *mut _,
+                    &mut sfs,
+                )
+            };
+            if r_sfs == EFI_SUCCESS && !sfs.is_null() {
+                let sfs_ref = unsafe { &*(sfs as *mut EfiSimpleFileSystemProtocol) };
+                let mut root = core::ptr::null_mut();
+                let r_vol = unsafe { (sfs_ref.open_volume)(sfs as *mut _, &mut root) };
+                if r_vol == EFI_SUCCESS && !root.is_null() {
+                    let root_ref = unsafe { &*root };
+                    let mut name16 = [0u16; 16];
+                    let name = utf16_encode_bytes(b"HELLO.TXT", &mut name16);
+                    let mut file = core::ptr::null_mut();
+                    let r_open = unsafe {
+                        (root_ref.open)(root, &mut file, name.as_ptr(), EFI_FILE_MODE_READ, 0)
+                    };
+                    if r_open == EFI_SUCCESS && !file.is_null() {
+                        let file_ref = unsafe { &*file };
+                        let mut buf = [0u8; 256];
+                        let mut n = buf.len();
+                        let r_read = unsafe {
+                            (file_ref.read)(file, &mut n, buf.as_mut_ptr() as *mut c_void)
+                        };
+                        // 判读前先收句柄（错误路径也不漏 close——句柄生命周期
+                        // 与判定解耦）。
+                        unsafe { (root_ref.close)(root) };
+                        unsafe { (file_ref.close)(file) };
+                        if r_read == EFI_SUCCESS
+                            && n == EXPECTED_HELLO.len()
+                            && &buf[..n] == EXPECTED_HELLO
+                        {
+                            print_line(con_out, |l| {
+                                l.push_str("fs: HELLO.TXT ");
+                                l.push_u32_dec(n as u32);
+                                l.push_str("B match");
+                            });
+                            print_line(con_out, |l| l.push_str("BERRYBOOT ok"));
+                        } else {
+                            print_line(con_out, |l| {
+                                l.push_str("fs: mismatch read=");
+                                l.push_u32_dec(n as u32);
+                                l.push_str(" expect=");
+                                l.push_u32_dec(EXPECTED_HELLO.len() as u32);
+                                l.push_str(" r=0x");
+                                let mut t = [0u8; 16];
+                                l.push(fmt_u64_hex(r_read as u64, &mut t));
+                            });
+                        }
+                    } else {
+                        print_line(con_out, |l| {
+                            l.push_str("fs: open r=0x");
+                            let mut t = [0u8; 16];
+                            l.push(fmt_u64_hex(r_open as u64, &mut t));
+                        });
+                    }
+                } else {
+                    print_line(con_out, |l| {
+                        l.push_str("fs: open_volume r=0x");
+                        let mut t = [0u8; 16];
+                        l.push(fmt_u64_hex(r_vol as u64, &mut t));
+                    });
+                }
+            } else {
+                print_line(con_out, |l| {
+                    l.push_str("fs: sfs r=0x");
+                    let mut t = [0u8; 16];
+                    l.push(fmt_u64_hex(r_sfs as u64, &mut t));
+                });
+            }
+        } else {
+            print_line(con_out, |l| {
+                l.push_str("fs: device null li r=0x");
+                let mut t = [0u8; 16];
+                l.push(fmt_u64_hex(r_li as u64, &mut t));
+            });
+        }
+    } else {
+        print_line(con_out, |l| l.push_str("fs: bs absent"));
+    }
     EFI_SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    /// 单源纪律：仓库 fixture hello.txt 与内嵌 EXPECTED_HELLO 逐字节一致
+    /// （改任一侧忘同步 = 此处炸——mkfat fixture 共识基准同族，A-5 纪律；
+    /// 挂 just test-host 前置）。
+    #[test]
+    fn hello_fixture_consensus() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../hello.txt");
+        let disk = std::fs::read(path).expect("读 fixture hello.txt 失败");
+        assert_eq!(
+            disk.as_slice(),
+            super::EXPECTED_HELLO,
+            "hello.txt 与 EXPECTED_HELLO 漂移——两侧须同步改"
+        );
+    }
 }

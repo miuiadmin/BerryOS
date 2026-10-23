@@ -102,6 +102,27 @@ pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: EfiGuid = EfiGuid {
     data4: [0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A],
 };
 
+/// SIMPLE_FILE_SYSTEM_PROTOCOL GUID（964E5B22-6459-11D2-8E39-00A0C969723B）
+/// ——刀 3 SFS 定位（挂在引导卷的 DeviceHandle 上）。
+pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: EfiGuid = EfiGuid {
+    data1: 0x964E_5B22,
+    data2: 0x6459,
+    data3: 0x11D2,
+    data4: [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B],
+};
+
+/// LOADED_IMAGE_PROTOCOL GUID（5B1B31A1-9562-11D2-8E3F-00A0C969723B）——
+/// 经 image handle 反查本镜像装载信息（DeviceHandle = SFS 路由起点）。
+pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: EfiGuid = EfiGuid {
+    data1: 0x5B1B_31A1,
+    data2: 0x9562,
+    data3: 0x11D2,
+    data4: [0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B],
+};
+
+/// EFI_FILE_PROTOCOL 的 open_mode 位（只收用到的）。
+pub const EFI_FILE_MODE_READ: u64 = 0x0000_0000_0000_0001;
+
 /// BOOT_SERVICES——刀 2 只类型化用到的入口（locate_protocol / 刀 3 的
 /// handle_protocol），其余槽以具名 `*const c_void` 占位（同 SystemTable
 /// 的 con_in 纪律：保偏移可审计，不描无用签名）。376B 全表，host 测试钉板。
@@ -199,6 +220,54 @@ pub struct EfiGraphicsOutputModeInfo {
     pub pixels_per_scan_line: u32,  // @32
 }
 
+/// SIMPLE_FILE_SYSTEM_PROTOCOL（16B）——OpenVolume 出根目录文件句柄。
+#[repr(C)]
+pub struct EfiSimpleFileSystemProtocol {
+    pub revision: u64, // @0
+    pub open_volume: unsafe extern "C" fn(
+        this: *mut EfiSimpleFileSystemProtocol,
+        root: *mut *mut EfiFileProtocol,
+    ) -> EfiStatus, // @8
+}
+
+/// EFI_FILE_PROTOCOL（88B 全表）——open/close/read 类型化（刀 3 用面），
+/// 其余槽具名 `*mut c_void` 占位（同 EfiBootServices 纪律：保偏移可审计）。
+#[repr(C)]
+pub struct EfiFileProtocol {
+    pub revision: u64, // @0
+    pub open: unsafe extern "C" fn(
+        this: *mut EfiFileProtocol,
+        new_handle: *mut *mut EfiFileProtocol,
+        filename: *const u16,
+        open_mode: u64,
+        attributes: u64,
+    ) -> EfiStatus, // @8
+    pub close: unsafe extern "C" fn(this: *mut EfiFileProtocol) -> EfiStatus, // @16
+    pub delete: *mut c_void,        // @24
+    pub read: unsafe extern "C" fn(
+        this: *mut EfiFileProtocol,
+        buffer_size: *mut usize,
+        buffer: *mut c_void,
+    ) -> EfiStatus, // @32
+    pub write: *mut c_void,        // @40
+    pub get_position: *mut c_void, // @48
+    pub set_position: *mut c_void, // @56
+    pub get_info: *mut c_void,     // @64
+    pub set_info: *mut c_void,     // @72
+    pub flush: *mut c_void,        // @80
+}
+
+/// LOADED_IMAGE_PROTOCOL——v0 只描到 device_handle @24（32B 截断，后续
+/// 阶段按需再描；保偏移可审计纪律同 EfiSystemTable 的 con_in 注）。
+#[repr(C)]
+pub struct EfiLoadedImageProtocol {
+    pub revision: u32,              // @0
+    _pad0: u32,                     // @4（usize 对齐垫）
+    pub parent_handle: *mut c_void, // @8
+    pub system_table: *mut c_void,  // @16（*mut EfiSystemTable）
+    pub device_handle: *mut c_void, // @24——SFS 定位路由的目标
+}
+
 /// UTF-16 → ASCII 有损解码：`src` 逐 u16 映射进 `out`（≥0x80 → '?'，
 /// 与 utf16_encode 的 BMP 外策略对称）。返回写满的子切片。纯函数。
 pub fn utf16_to_ascii<'a>(src: &[u16], out: &'a mut [u8]) -> &'a [u8] {
@@ -293,6 +362,9 @@ mod tests {
         assert_eq!(size_of::<EfiGraphicsOutputProtocol>(), 32);
         assert_eq!(size_of::<EfiGraphicsOutputMode>(), 40);
         assert_eq!(size_of::<EfiGraphicsOutputModeInfo>(), 36);
+        assert_eq!(size_of::<EfiSimpleFileSystemProtocol>(), 16);
+        assert_eq!(size_of::<EfiFileProtocol>(), 88);
+        assert_eq!(size_of::<EfiLoadedImageProtocol>(), 32);
     }
 
     #[test]
@@ -369,6 +441,42 @@ mod tests {
         assert_eq!(g.data4, [0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A]);
         // 小端整读：data1 在线上的首 4B（协议面 LocateProtocol 对拍的基准）。
         assert_eq!(g.data1.to_le_bytes(), [0xDE, 0xA9, 0x42, 0x90]);
+    }
+
+    #[test]
+    fn sfs_and_file_offsets() {
+        let s = 0x1000usize as *const EfiSimpleFileSystemProtocol;
+        assert_eq!(off!(s, revision), 0);
+        assert_eq!(off!(s, open_volume), 8);
+        let f = 0x1000usize as *const EfiFileProtocol;
+        assert_eq!(off!(f, revision), 0);
+        assert_eq!(off!(f, open), 8);
+        assert_eq!(off!(f, close), 16);
+        assert_eq!(off!(f, delete), 24);
+        assert_eq!(off!(f, read), 32);
+        assert_eq!(off!(f, write), 40);
+        assert_eq!(off!(f, get_position), 48);
+        assert_eq!(off!(f, set_position), 56);
+        assert_eq!(off!(f, get_info), 64);
+        assert_eq!(off!(f, set_info), 72);
+        assert_eq!(off!(f, flush), 80);
+        let li = 0x1000usize as *const EfiLoadedImageProtocol;
+        assert_eq!(off!(li, revision), 0);
+        assert_eq!(off!(li, parent_handle), 8);
+        assert_eq!(off!(li, system_table), 16);
+        assert_eq!(off!(li, device_handle), 24);
+    }
+
+    #[test]
+    fn sfs_and_loaded_image_guid_bytes() {
+        let s = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+        assert_eq!(s.data1, 0x964E5B22);
+        assert_eq!(s.data4, [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B]);
+        assert_eq!(s.data1.to_le_bytes(), [0x22, 0x5B, 0x4E, 0x96]);
+        let li = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+        assert_eq!(li.data1, 0x5B1B31A1);
+        assert_eq!(li.data4, [0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B]);
+        assert_eq!(li.data1.to_le_bytes(), [0xA1, 0x31, 0x1B, 0x5B]);
     }
 
     #[test]

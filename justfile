@@ -275,6 +275,9 @@ test-host:
     # + mkfat --selftest（--put 引导盘构造面：链回读/嵌套目录/负样本——此前
     # 只手跑，门禁化同 a-3 U4 纪律）。
     cargo test --manifest-path 引导加载器/berryboot/Cargo.toml -p berry-efi --target {{host}}
+    # V-0a 刀 3：berryboot app 单源共识——内嵌 HELLO.TXT 基准 ↔ 仓库 fixture
+    # hello.txt 逐字节对拍（mkfat fixture 共识基准同族，改一侧忘同步即炸）。
+    cargo test --manifest-path 引导加载器/berryboot/Cargo.toml -p berryboot --target {{host}}
     python3 工具链/elf2pe.py --selftest
     python3 工具链/mkfat.py --selftest
 
@@ -376,13 +379,16 @@ build-boot:
         -o out/berryboot.elf cargo-target/{{BOOT_TARGET}}/release/libberryboot.a
     python3 ../../工具链/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
     python3 ../../工具链/mkfat.py out/boot.img \
-        --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI"
+        --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI" \
+        --put "hello.txt:/HELLO.TXT"
 
 # AAVMF 引导验收（V-0a）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。期望串口：BdsDxe starting Boot0001 …USB HARDDRIVE →
-# 三行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
-# `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…`（我们的 PE32+ 被 DXE 加载
-# 执行、ConOut 落 PL011 串口）→ 返回后固件续行进 UiApp 前台页。
+# 四行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
+# `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…` / `fs: HELLO.TXT 28B match`
+# → **`BERRYBOOT ok`**（V-0a 验收标记：SFS 开卷读 HELLO.TXT 与内嵌基准
+# 逐字节对拍全等——状态谓词）。我们的 PE32+ 被 DXE 加载执行、ConOut 落
+# PL011 串口；返回后固件续行进 UiApp 前台页。
 # -device ramfb：virt -nographic 默认**无任何显示设备** → 固件不装 GOP
 # 实例 → gop 行只会打 `locate fail r=EFI_NOT_FOUND`（刀 2 实证；ramfb =
 # edk2 RamfbDxe 驱动面，GOP 查询的确定性供给）。vars.fd 每次 fresh 拷贝
