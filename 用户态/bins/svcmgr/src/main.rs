@@ -449,6 +449,76 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
+    // ---- C-1 刀 3：stdhello 预拉起——vnet 之后、主走查（bsh spawn）前 ----
+    // 原 arm 位置（名序 stdhello 在 bsh/hexyl 后）与 bsh 启动自验（fs 自验
+    // PUT/GET + FAT/FATW 链 = 秒级多轮 RPC）并发共用 fs 通道 = 回复混流面
+    // （fsproto 严格串行、无请求号——两客户交叠请求即跨客户错配，断言炸
+    // = FAIL）。预拉到 bsh spawn 前 = fs_a 队列本窗口单活跃客户（机制性
+    // 排除交叠，非时序赌注——「标记不得建立在竞速上」）。fs gift = fs_a
+    // 的 SEND|RECV 新 dup，gifts [rootfs dup, fs 端]（gift[3] 位语义同
+    // bsh，libc `fs_h()` 消费；rootfs 位占位兼 gift[1] 在位约束）；
+    // fs_a_h==0（fsmgr 未起）→ 三元 gift，stdhello 自降级（FILE skip 行，
+    // 标记缺失交 smoke）。stdin feeder 64B / EXIT ok 语义原 arm 原样迁居
+    // （阻塞 reap 只延迟 walk，vprobe 同口径）。arm 退役为跳过。
+    // 旗在此声明兼立（spawn Err 也不给 walk arm 双拉口——bsh_spawned
+    // 同款纪律；恒真到 walk arm = 预拉必然先于 walk 执行）。
+    let stdhello_spawned = true;
+    if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/stdhello") {
+        // d-3b 同款：feeder 泵 64B 确定性 pattern + EOF（read_to_end 残段
+        // 缓冲面的活证）。
+        const STDIN_DATA: [u8; 64] =
+            *b"berryos!berryos!berryos!berryos!berryos!berryos!berryos!berryos!";
+        let stdin: &[u8] = &STDIN_DATA;
+        let mut rootfs_dup = 0 as Handle;
+        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+            trap();
+        }
+        let mut fs_std = 0 as Handle;
+        if fs_a_h != 0 && berry_handle_duplicate(fs_a_h, RIGHT_SEND | RIGHT_RECV, &mut fs_std) != 0
+        {
+            trap();
+        }
+        let gifts = [rootfs_dup, fs_std];
+        let gifts: &[Handle] = if fs_std != 0 { &gifts } else { &gifts[..1] };
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/stdhello",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(stdin),
+                stdin_handle: None,
+                extra_arg: None,
+                extra_gifts: gifts,
+                mmio_vmo: None,
+            },
+        ) {
+            Ok(child) => {
+                // Plan B v0.5 原语义：reap 返真退出码，`EXIT ok` 只在
+                // code==0 打（stdhello 恒 main 返 0）。
+                match child.reap() {
+                    Err(()) => eco_skip(b"exit reap"),
+                    Ok(0) => {
+                        send_retry(console, EXIT_OK.as_ptr(), EXIT_OK.len());
+                    }
+                    Ok(_) => eco_skip(b"exit code"),
+                }
+            }
+            Err(()) => {
+                // Err 三路全在 env send 前——gift dup 未被 take，显式回收防
+                // 表槽泄漏（bsh arm 同款）。
+                if berry_handle_close(rootfs_dup) != 0 {
+                    trap();
+                }
+                if fs_std != 0 && berry_handle_close(fs_std) != 0 {
+                    trap();
+                }
+                eco_skip(b"elf bad");
+            }
+        }
+    }
     while pos < cap {
         let want = ((cap - pos).min(step.len() as u64)) as usize;
         if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), pos, want) != 0 {
@@ -481,46 +551,13 @@ fn run_rootfs_child(console: Handle) {
                         Err(()) => eco_skip(b"elf bad"),
                     }
                 } else if name == "bin/stdhello" {
-                    // std 栈 8 页：std::fmt/environ 机制栈深超平像程序。
-                    // stdin 面（d-3b）：feeder 泵 64B 确定性 pattern + EOF。
-                    const STDIN_DATA: [u8; 64] =
-                        *b"berryos!berryos!berryos!berryos!berryos!berryos!berryos!berryos!";
-                    let stdin: &[u8] = &STDIN_DATA;
-                    // Plan B v0.5：stdhello main 返回 → std lang_start → libc
-                    // `exit` → 0x33 真退出（EOF 先行）——svcmgr wait TERMINATED
-                    // 后完整回收（reap：unmap×2 + close×5），成功打 `EXIT ok`
-                    // （rootfs 相第 9 标记——「子进程退出 + 父回收」全链的
-                    // 确定性验收面；stdhello 恒从 main 返回，不赌交互输入）。
-                    // mkcpio 名序 stdhello 之后还有 vblk/vprobe（P6 A-3 起）
-                    // ——本 arm 的阻塞等待只延迟它们，不挡正确性。
-                    match spawn_rootfs_elf(
-                        H_ROOTFS,
-                        &SpawnSpec {
-                            name: name.as_bytes(),
-                            data_off,
-                            data_len,
-                            stdout: console,
-                            stack_pages: 8,
-                            stdin_feed: Some(stdin),
-                            stdin_handle: None,
-                            extra_arg: None,
-                            extra_gifts: &[],
-                            mmio_vmo: None,
-                        },
-                    ) {
-                        Ok(child) => {
-                            // P5：reap 返真退出码——`EXIT ok` 只在 code==0 打
-                            // （stdhello 恒 main 返 0；非 0/回收链断 = loud 缺失
-                            // 交 smoke，可见降级行带原因）。
-                            match child.reap() {
-                                Err(()) => eco_skip(b"exit reap"),
-                                Ok(0) => {
-                                    send_retry(console, EXIT_OK.as_ptr(), EXIT_OK.len());
-                                }
-                                Ok(_) => eco_skip(b"exit code"),
-                            }
-                        }
-                        Err(()) => eco_skip(b"elf bad"),
+                    // C-1 刀 3：预拉段（vnet 后、walk 前）已 spawn + 阻塞
+                    // reap + EXIT ok——fs gift 单客户窗口须在 bsh spawn 前
+                    // （fsproto 无请求号，与 bsh 启动自验并发 = 回复混流），
+                    // 见预拉段注。本 arm 退役为跳过；旗未立 = 预拉段被跳过
+                    // 的对抗面，可见降级行。
+                    if !stdhello_spawned {
+                        eco_skip(b"stdhello not pre-pulled");
                     }
                 } else if name == "bin/hexyl" {
                     // d-3c：D4 路线①最终验证——上游 main.rs 逐字未动的生态
@@ -665,7 +702,8 @@ fn run_rootfs_child(console: Handle) {
                     // hexyl best-effort 同口径）；Ok(_) 码不判（vprobe 断言
                     // 失败走 trap——fault 杀码 0，码无区分度，诊断靠 vprobe
                     // 自打 bad regs 行）。mkcpio 名序 vprobe 末位（v > s）
-                    // ——stdhello arm 的阻塞 reap 在前，只延迟不挡本 arm。
+                    // ——stdhello 预拉段的阻塞 reap 在 walk 前，只延迟不挡
+                    // 本 arm。
                     let mut msz = 0u64;
                     if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
                         eco_skip(b"mmio absent");

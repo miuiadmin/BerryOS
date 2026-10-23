@@ -13,6 +13,8 @@
 //! - is_terminal（ioctl→syscall 桩路径）
 //! - Instant/Duration（clock_gettime）+ thread::sleep（clock_nanosleep）
 //! - stdin read_to_end（d-3b：read → channel recv + 零长 EOF + 残段缓冲）
+//! - File::* 往返（C-1 刀 3：open/write/close→commit/read 的 fd 3+ fs 面，
+//!   `FILE ok` 标记；RA 预读 + close 即 commit 两裁决的活证）
 
 use std::io::{IsTerminal, Read, Write};
 
@@ -72,6 +74,33 @@ fn main() {
     std::io::stdin().read_to_end(&mut stdin_buf).unwrap();
     assert_eq!(stdin_buf.len(), 64, "stdin = feeder 64B pattern");
     assert!(stdin_buf.chunks(8).all(|c| c == b"berryos!"));
+
+    // —— fs 面（C-1 刀 3：fd 3+ 文件面端到端自验，`FILE ok` = rootfs 相新
+    // 标记）—— std File::* → berry-libc open/write/close/read（fs.rs fd 表
+    // 游标 + close 即 commit 两裁决）→ berry-fsclient RPC → fsmgr。名取
+    // `stdfile`（小写多字符 = 非 8.3 大写单段 → RAM 路由——默认 FAT 盘
+    // 字节零漂移硬线不破）；svcmgr 预拉本程序于 bsh spawn 前 = fs 通道本
+    // 窗口单客户（无与 bsh 启动自验的回复混流面）。roundtrip 全等 + unlink
+    // 还原树（bsh 后续自验零扰动）才自打；失败 unwrap/断言 = panic = park
+    // → 标记缺失兜底（G-eco 家族惯例）。read_to_string 的小粒度探针读 =
+    // libc RA 预读面的活证。
+    if berry_libc::io::fs_h() != 0 {
+        const FILE_BODY: &str = "berryos std file io roundtrip 42\n";
+        {
+            let mut f = std::fs::File::create("stdfile").unwrap();
+            f.write_all(FILE_BODY.as_bytes()).unwrap();
+        } // 块尾 drop = close = commit（裁决 2：TRUNC 游标提交）
+        let mut back = String::new();
+        std::fs::File::open("stdfile")
+            .unwrap()
+            .read_to_string(&mut back)
+            .unwrap();
+        assert_eq!(back, FILE_BODY, "fs roundtrip mismatch");
+        std::fs::remove_file("stdfile").unwrap(); // 还原 RAM 树
+        println!("FILE ok");
+    } else {
+        eprintln!("FILE skip: no fs gift");
+    }
 
     // —— 输出面（标记最后打：全部自检过了才轮到它）——
     let mut out = std::io::stdout();
