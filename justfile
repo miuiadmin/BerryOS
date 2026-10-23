@@ -249,6 +249,9 @@ test-host:
     cargo test -p berry-mm --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-loader --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-fsproto --target {{host}}
+    # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数面——v1 单段语义
+    # 零漂移 + v2 五 op 面，host 17 测）。
+    cargo test --manifest-path 用户态/Cargo.toml -p berry-fstree --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path 用户态/Cargo.toml -p berry-blkproto --target {{host}}
     python3 工具链/mkfat.py --check-fixture 用户态/berry-fatfs/tests/volume_fixture.bin

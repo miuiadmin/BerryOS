@@ -8,9 +8,11 @@ edition = "2021"
 # svcmgr 建 fs 对，本服务持 gift[2]（libc `gift2_h()`——fs 服务端端）+ gift[3]
 # （libc `blk_h()`——A-5 起 vblk 的 blk 服务端端，svcmgr 预拉+自验门后经 env
 # 块交付）；bsh 持对端 dup（gift[3]，`fs_h()`）发请求。协议 = berry-fsproto
-# （PUT/TRUNC/GET/LIST，严格串行 RPC）；存储 = `Vec<(名, 内容)>` 线性表（RAM
-# 写通道）+ FAT12 只读底座（berry-fatfs 解析 + berry-blkproto 块 RPC，覆盖层
-# 语义见 src/fat.rs）。静默无输出（诊断走应答 st 码——FAT init 失败/会话
+# （PUT/TRUNC/GET/LIST + C-0 v2 五 op LOOKUP/MKDIR/UNLINK/READDIR/STAT，
+# 严格串行 RPC）；存储 = berry-fstree 目录树（RAM 写通道——C-0 刀 2 起多
+# 段路径，单段名 v1 语义零漂移）+ FAT12 读写层（berry-fatfs 解析 +
+# berry-blkproto 块 RPC，覆盖层语义见 src/fat.rs）。静默无输出（诊断走
+# 应答 st 码——FAT init 失败/会话
 # 毒化各一行例外）。
 
 [workspace]
@@ -21,6 +23,7 @@ berry-sys = { path = "../../berry-sys" }
 berry-fsproto = { path = "../../berry-fsproto" }
 berry-blkproto = { path = "../../berry-blkproto" }
 berry-fatfs = { path = "../../berry-fatfs" }
+berry-fstree = { path = "../../berry-fstree" }
 
 [profile.release]
 opt-level = "z"

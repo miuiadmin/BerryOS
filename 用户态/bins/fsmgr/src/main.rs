@@ -5,12 +5,16 @@
 //! P6 段搭）：本服务持 env 块 gift[2]（libc `gift2_h()`——fs 服务端端
 //! fs_b）+ gift[3]（libc `blk_h()`——A-5 起 blk 服务端端 blk_a，vblk 经
 //! svcmgr 预拉+自验门后交付）；bsh 持对端 fs_a 的 SEND|RECV dup（gift[3]，
-//! libc `fs_h()`）发请求。协议 = berry-fsproto（PUT/TRUNC/GET/LIST，
-//! **严格串行 RPC**——一请求一应答，队列深 1 用量，无乱序死锁面）；
-//! 存储 = `Vec<(名, 内容)>` 线性表（RAM-fs：FILE_COUNT_MAX=8 ×
-//! FILE_SIZE_MAX=16KiB = 128KiB < libc 静态堆 256KiB）+ **FAT12 读写层**
-//! （`fat.rs`——A-6 起 8.3 大写名 staging + TRUNC 即 commit 真写扇区、
-//! 小写名走 RAM 表；分层路由与 commit 序见该模块头）。
+//! libc `fs_h()`）发请求。协议 = berry-fsproto（PUT/TRUNC/GET/LIST + v2
+//! 五 op LOOKUP/MKDIR/UNLINK/READDIR/STAT，**严格串行 RPC**——一请求一
+//! 应答，队列深 1 用量，无乱序死锁面）；存储 = berry-fstree 目录树
+//! （RAM-fs——C-0 刀 2 起多段 NUL 路径，单段名 v1 语义零漂移；
+//! FILE_COUNT_MAX=8 × FILE_SIZE_MAX=16KiB + DIR_COUNT_MAX=16 静态堆
+//! 预算内）+ **FAT12 读写层**（`fat.rs`——A-6 起 8.3 大写名 staging +
+//! TRUNC 即 commit 真写扇区，小写名/多段名走 RAM 树；分层路由与 commit
+//! 序见该模块头；v2 五 op 中 LOOKUP/STAT 未命中回落 FAT 根面 stat11——
+//! RAM 名与 FAT 名同一查询单义，MKDIR/UNLINK/READDIR 纯 RAM 面：FAT
+//! 建删目录不在 C-0 盒、FAT 文件删除留 v2）。
 //!
 //! 服务循环 = echo 同形但 **wait 超时重臂**（关键差异）：echo 的 client
 //! （svcmgr）每节流拍必 ping——10s 帽到点 = 断链，trap；本服务的 client
@@ -18,7 +22,8 @@
 //! 不烧 CPU；真断链面 = recv 非 -EAGAIN 错码，照 trap）。
 //!
 //! **静默无输出**（服务不吵）：诊断走应答 st 码（ST_NOENT/ST_FULL/
-//! ST_BAD）；例外 = FAT 层 init 失败/会话毒化各打一行（链断级事件，
+//! ST_BAD/ST_EXISTS/ST_NOEMPTY）；例外 = FAT 层 init 失败/会话毒化各打一
+//! 行（链断级事件，
 //! `FAT ok` 缺失是 smoke 面，原因先行）。链断 → trap 只死自己（`FS ok`
 //! 缺失 = smoke FAIL 兜底）。stdin 是 svcmgr 占位 dummy（空 feeder + EOF
 //! ——gift[2] 位前的占位项，见 berry-exec gift 注），留队无害、永不读。
@@ -31,9 +36,10 @@ use berry_sys::{
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_fsproto::{
-    encode_reply_get, encode_reply_list, encode_reply_status, parse_request, FILE_COUNT_MAX,
-    FILE_SIZE_MAX, LIST_MAX, Req, CHUNK, ST_BAD,
+    encode_reply_get, encode_reply_list, encode_reply_stat, encode_reply_status, parse_request,
+    Req, ST_BAD, TYPE_FILE,
 };
+use berry_fstree::{ReadDirRes, ReadRes, StatRes, Tree};
 
 use fat::{Fat, GetRes};
 
@@ -53,7 +59,7 @@ fn main() {
         // park 挂起（标记缺失 loud 兜底，不 trap 污染 dump）。
         berry_libc::park();
     }
-    let mut files: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut tree = Tree::new();
     // A-5：FAT 只读层 eager init（vblk 由 svcmgr 预拉且自验已过，此刻必在
     // 服务——FAT init 的首读不会撞服务未起）；blk_h()==0 = 无块设备面，
     // RAM-only 降级续走（init 失败同理，诊断行见 fat.rs）。
@@ -76,10 +82,11 @@ fn main() {
         let rep_len: usize = match parse_request(&msg[..nb]) {
             Some(Req::Put { path: name, off, data }) => {
                 // A-6 路由：8.3 大写名 → FAT 层 staging（TRUNC 点落盘）；其余
-                // RAM 表不变。and_then 展平——无 FAT 层（fat==None，RAM-only
-                // 降级）与非 FAT 名（stage_put 返 None）同走 RAM 通道。
+                // （小写/多段）RAM 树不变。and_then 展平——无 FAT 层（fat==None，
+                // RAM-only 降级）与非 FAT 名（stage_put 返 None——多段 NUL 串
+                // 构造性落此）同走 RAM 通道。
                 let st = match fat.as_mut().and_then(|f| f.stage_put(name, off, data)) {
-                    None => do_put(&mut files, name, off, data),
+                    None => tree.put(name, off, data),
                     Some(fat::StageRes::Staged) => berry_fsproto::ST_OK,
                     Some(fat::StageRes::Deny(st)) => st,
                 };
@@ -89,15 +96,21 @@ fn main() {
                 // TRUNC = FAT 名的 commit 触发点（bsh fs_put 尾随 TRUNC 恰合：
                 // 分片 PUT 累积 → TRUNC(len) 落盘）；RAM 名照旧。
                 let st = match fat.as_mut().and_then(|f| f.stage_trunc(name, size)) {
-                    None => do_trunc(&mut files, name, size),
+                    None => tree.trunc(name, size),
                     Some(st) => st,
                 };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
             }
-            Some(Req::Get { path: name, off }) => match handle_get(&files, name, off, &mut rep) {
-                Some(n) => n, // rep 已编码（handle_get 内部落字）
-                None => match fat.as_mut().map(|f| f.handle_get(name, off, &mut rep)) {
-                    Some(GetRes::Served(n)) => n,
+            Some(Req::Get { path: name, off }) => match tree.read(name, off) {
+                // 服务端不变量（fstree read 构造保证）：more=true ⇒ dlen ≥ 1；
+                // 编码 None（算术出界）= 服务端 bug → trap（不静默）。
+                ReadRes::Win(slice, more) => {
+                    encode_reply_get(&mut rep, off, slice, more).unwrap_or_else(|| trap())
+                }
+                // RAM Miss → FAT 回落（v1 流不变——单段 8.3 名由 name_to_fat11
+                // 门自筛进 FAT，多段 NUL 串构造性 Miss 到底 → NOENT）。
+                ReadRes::Miss => match fat.as_mut().map(|f| f.handle_get(name, off, &mut rep)) {
+                    Some(GetRes::Served(n)) => n, // rep 已编码（handle_get 内部落字）
                     Some(GetRes::Full) => encode_reply_status(&mut rep, berry_fsproto::ST_FULL)
                         .unwrap_or_else(|| trap()),
                     Some(GetRes::Bad) => {
@@ -110,122 +123,76 @@ fn main() {
                     )
                     .unwrap_or_else(|| trap()),
                 },
+                // 目录不是读面（类型冲突，协议头 v2 注）。
+                ReadRes::IsDir => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
             },
             Some(Req::List) => {
                 // 名列暂存走独立 scratch（msg 的借用跨整个 match 存活）；
-                // FAT 未影子名续列（LIST_MAX 同帽）。
+                // FAT 未影子名续列（LIST_MAX 同帽——影子源 = 根名全表**含
+                // 目录**，overlay 上层遮下层：RAM 目录名同影子 FAT 同名项）。
                 let mut names = [0u8; 256];
-                let n = render_list(&files, &mut names);
+                let n = tree.list_root(&mut names);
                 let n = match fat.as_ref() {
-                    Some(f) => f.append_names(&files, &mut names, n),
+                    Some(f) => f.append_names(&tree.root_names(), &mut names, n),
                     None => n,
                 };
                 encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
             }
-            // v2 路径型五 op（C-0 刀 1 协议面先行）：服务面刀 2 接树
-            // handler，先统一拒面占位（保穷尽匹配编译；bsh 刀 4 前无人
-            // 发这些 op，占位不可达于现网行为）。
-            Some(
-                Req::Lookup { .. }
-                | Req::Mkdir { .. }
-                | Req::Unlink { .. }
-                | Req::Readdir { .. }
-                | Req::Stat { .. },
-            ) => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
+            // v2 五 op（C-0 刀 2 服务面接树）：LOOKUP/STAT 的 RAM Miss 回落
+            // FAT 根 8.3 面（fat.rs stat11——与 GET/LIST 的分层同构：RAM 名
+            // 与 FAT 名同一查询单义）；MKDIR/UNLINK/READDIR 纯 RAM 面（FAT
+            // 建删目录不在 C-0 盒、FAT 文件删除留 v2——刀 3 只做 FAT 子目录
+            // 读面）。
+            Some(Req::Lookup { path: name }) => {
+                let st = match tree.stat(name) {
+                    StatRes::Ok(..) => berry_fsproto::ST_OK,
+                    StatRes::Noent => match fat.as_ref().and_then(|f| f.stat11(name)) {
+                        Some(_) => berry_fsproto::ST_OK,
+                        None => berry_fsproto::ST_NOENT,
+                    },
+                };
+                encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
+            }
+            Some(Req::Mkdir { path: name }) => {
+                encode_reply_status(&mut rep, tree.mkdir(name)).unwrap_or_else(|| trap())
+            }
+            Some(Req::Unlink { path: name }) => {
+                encode_reply_status(&mut rep, tree.unlink(name)).unwrap_or_else(|| trap())
+            }
+            Some(Req::Readdir { path: name }) => {
+                let mut names = [0u8; 256];
+                match tree.readdir(name, &mut names) {
+                    // NUL 连接子名（READDIR 应答 blob = LIST 同形）。
+                    ReadDirRes::Names(n) => {
+                        encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
+                    }
+                    ReadDirRes::Noent => encode_reply_status(
+                        &mut rep,
+                        berry_fsproto::ST_NOENT,
+                    )
+                    .unwrap_or_else(|| trap()),
+                    ReadDirRes::NotDir => {
+                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                    }
+                }
+            }
+            Some(Req::Stat { path: name }) => match tree.stat(name) {
+                StatRes::Ok(ty, size) => {
+                    encode_reply_stat(&mut rep, ty, size).unwrap_or_else(|| trap())
+                }
+                // FAT 回落面恒 TYPE_FILE（FAT 根只有文件——子目录刀 3）。
+                StatRes::Noent => match fat.as_ref().and_then(|f| f.stat11(name)) {
+                    Some(sz) => {
+                        encode_reply_stat(&mut rep, TYPE_FILE, sz).unwrap_or_else(|| trap())
+                    }
+                    None => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
+                        .unwrap_or_else(|| trap()),
+                },
+            },
             None => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
         };
         send_reply(h, &rep, rep_len);
     }
-}
-
-/// 分片写：off 起写入 data（off 超现长 = 零填充扩容）；未命中 = 建（文件
-/// 数帽内）。尺寸帽在两端统一检（end = off+len > FILE_SIZE_MAX → ST_FULL）。
-fn do_put(files: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], off: u32, data: &[u8]) -> u8 {
-    let off = off as usize;
-    let end = off + data.len(); // u32 + ≤CHUNK：64 位下无溢出面
-    if end > FILE_SIZE_MAX {
-        return berry_fsproto::ST_FULL;
-    }
-    match files.iter_mut().find(|(n, _)| n.as_slice() == name) {
-        Some((_, c)) => {
-            if end > c.len() {
-                c.resize(end, 0); // 零填充扩容（PUT 语义）
-            }
-            c[off..end].copy_from_slice(data);
-            berry_fsproto::ST_OK
-        }
-        None => {
-            if files.len() >= FILE_COUNT_MAX {
-                return berry_fsproto::ST_FULL;
-            }
-            let mut c = vec![0u8; end];
-            c[off..end].copy_from_slice(data);
-            files.push((name.to_vec(), c));
-            berry_fsproto::ST_OK
-        }
-    }
-}
-
-/// 定长（size=0 兼 create——`echo > f` 的建文件面，open(O_TRUNC) 式
-/// create-or-resize；POSIX truncate-fails-vs-open(O_TRUNC) 取后者，v1）。
-fn do_trunc(files: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], size: u32) -> u8 {
-    let size = size as usize;
-    if size > FILE_SIZE_MAX {
-        return berry_fsproto::ST_FULL;
-    }
-    match files.iter_mut().find(|(n, _)| n.as_slice() == name) {
-        Some((_, c)) => {
-            c.resize(size, 0);
-            berry_fsproto::ST_OK
-        }
-        None => {
-            if files.len() >= FILE_COUNT_MAX {
-                return berry_fsproto::ST_FULL;
-            }
-            files.push((name.to_vec(), vec![0u8; size]));
-            berry_fsproto::ST_OK
-        }
-    }
-}
-
-/// 分片读：off ≥ len → 空片 + more=0（文件尾/空文件面）；否则 ≤CHUNK 窗 +
-/// more。命中落 GET 应答返 `Some(len)`（rep 已落字）；未命中返 None（调用方
-/// 打 ST_NOENT）。编码 None（算术出界）= 服务端 bug → trap（不静默）。
-fn handle_get(
-    files: &[(Vec<u8>, Vec<u8>)],
-    name: &[u8],
-    off: u32,
-    rep: &mut [u8; 256],
-) -> Option<usize> {
-    let (_, c) = files.iter().find(|(n, _)| n.as_slice() == name)?;
-    let off = off as usize;
-    let (slice, more) = if off >= c.len() {
-        (&c[c.len()..], false) // 空片收尾
-    } else {
-        let end = (off + CHUNK).min(c.len());
-        (&c[off..end], end < c.len())
-    };
-    // 服务端不变量：more=true ⇒ dlen ≥ 1（end>off 依构造成立）。
-    encode_reply_get(rep, off as u32, slice, more).or_else(|| trap())
-}
-
-/// 名列渲染（空白连接，LIST_MAX=200 容纳截断——截断 = 后续文件不列，
-/// 调用方可见）。
-fn render_list(files: &[(Vec<u8>, Vec<u8>)], buf: &mut [u8; 256]) -> usize {
-    let mut n = 0usize;
-    for (name, _) in files {
-        let need = name.len() + if n > 0 { 1 } else { 0 };
-        if n + need > LIST_MAX {
-            break; // 截断：帽内尽量多列
-        }
-        if n > 0 {
-            buf[n] = b' ';
-            n += 1;
-        }
-        buf[n..n + name.len()].copy_from_slice(name);
-        n += name.len();
-    }
-    n
 }
 
 /// 应答发送（EBUSY → wait WRITABLE 10s 重臂——严格串行 RPC 下应答队列

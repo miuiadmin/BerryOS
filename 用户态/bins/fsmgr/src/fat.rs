@@ -571,8 +571,10 @@ impl Fat {
     }
 
     /// LIST 续列：未被 RAM 影子的 FAT 文件名（显示形）接在 RAM 名后，
-    /// LIST_MAX 同帽截断（截断可见，client 侧不误判穷尽）。
-    pub fn append_names(&self, files: &[(Vec<u8>, Vec<u8>)], buf: &mut [u8], n0: usize) -> usize {
+    /// LIST_MAX 同帽截断（截断可见，client 侧不误判穷尽）。影子源 =
+    /// RAM 根名全表**含目录**（C-0 刀 2 起 mkdir 可建 8.3 形目录名——
+    /// overlay 上层遮下层通则，LIST 去重不破）。
+    pub fn append_names(&self, ram_root: &[&[u8]], buf: &mut [u8], n0: usize) -> usize {
         let mut n = n0;
         for i in 0..self.bpb.root_entries as usize {
             let e = &self.root[i * 32..i * 32 + 32];
@@ -587,8 +589,8 @@ impl Fat {
                 None => continue,
             };
             let disp = &tmp[..dn];
-            if files.iter().any(|(rn, _)| rn.as_slice() == disp) {
-                continue; // RAM 副本已影子
+            if ram_root.iter().any(|rn| *rn == disp) {
+                continue; // RAM 副本（文件/目录）已影子
             }
             let need = disp.len() + if n > 0 { 1 } else { 0 };
             if n + need > LIST_MAX {
@@ -602,25 +604,42 @@ impl Fat {
             n += disp.len();
         }
         // 未落盘的 staging 名（盘上无此名才列——已 commit 的不重复；staged
-        // 名恒 8.3 显示形，与 RAM 名字空间按构造不相交）。
+        // 名恒 8.3 显示形，RAM 根目录名（含 8.3 形目录——刀 2 起新面）同样
+        // 影子它：staging 撞 RAM 目录名时不双列）。
         if let Some((n11, _)) = self.staging.as_ref() {
             if self.lookup11(n11).is_none() {
                 let mut tmp = [0u8; 12];
                 if let Some(dn) = fat11_display(n11, &mut tmp) {
                     let disp = &tmp[..dn];
-                    let need = disp.len() + if n > 0 { 1 } else { 0 };
-                    if n + need <= LIST_MAX {
-                        if n > 0 {
-                            buf[n] = b' ';
-                            n += 1;
+                    if !ram_root.iter().any(|rn| *rn == disp) {
+                        let need = disp.len() + if n > 0 { 1 } else { 0 };
+                        if n + need <= LIST_MAX {
+                            if n > 0 {
+                                buf[n] = b' ';
+                                n += 1;
+                            }
+                            buf[n..n + disp.len()].copy_from_slice(disp);
+                            n += disp.len();
                         }
-                        buf[n..n + disp.len()].copy_from_slice(disp);
-                        n += disp.len();
                     }
                 }
             }
         }
         n
+    }
+
+    /// v2 STAT/LOOKUP 回落面（C-0 刀 2）：单段 8.3 名在 FAT 层的尺寸
+    /// （staged 优先于已 commit——读写一致性按最新内容计；None = 非 FAT
+    /// 名或盘上无此名）。只查内存态（staging + init 期整读的根目录副本），
+    /// 零块 RPC——会话毒化面天然不涉及。
+    pub fn stat11(&self, name: &[u8]) -> Option<u32> {
+        let n11 = name_to_fat11(name)?;
+        if let Some((sn, buf)) = self.staging.as_ref() {
+            if *sn == n11 {
+                return Some(buf.len() as u32);
+            }
+        }
+        Some(self.lookup11(&n11)?.size)
     }
 
     /// 根目录 8.3 名查找（End 即停；畸形项跳过）。

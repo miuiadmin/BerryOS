@@ -30,7 +30,8 @@
 //! 块 argv 字节串先例）；**单段路径与 v1 名逐字节同形（D2 零迁移）**，多
 //! 段 NUL 串即新形态。新五 op 请求均 `[op][nlen][path]` 恰好（无尾随字段）：
 //! - LOOKUP(5)：存在性 → 状态应答（1 字节）
-//! - MKDIR(6)：建目录 → 状态应答（父缺 = ST_NOENT / 帽尽 = ST_FULL）
+//! - MKDIR(6)：建目录 → 状态应答（父缺 = ST_NOENT / 目标已在（文件或目录
+//!   同拒）= ST_EXISTS / 帽尽 = ST_FULL）
 //! - UNLINK(7)：删文件/空目录 → 状态应答（非空目录 = [`ST_NOEMPTY`]）
 //! - READDIR(8)：目录项列 → LIST 同形 `[0][dlen][names]`（names = NUL 连接
 //!   ——段内无 NUL 由路径校验构造保证，可分性免检）
@@ -72,6 +73,9 @@ pub const ST_BAD: u8 = 3;
 /// 应答状态：目录非空（UNLINK 删非空目录的专属拒面——与 ST_BAD 分立，
 /// 「请求合法但语义拒绝」与「请求畸形」不混谈）。
 pub const ST_NOEMPTY: u8 = 4;
+/// 应答状态：目标已存在（MKDIR 建已存在的文件/目录——刀 2 起在册；
+/// 与 ST_BAD 分立同理：语义拒绝 ≠ 畸形请求）。
+pub const ST_EXISTS: u8 = 5;
 
 /// 数据分片粒度：单消息数据上限（channel inline 帽 256 − 协议头 7 − 名帽）。
 pub const CHUNK: usize = 192;
@@ -90,6 +94,9 @@ pub const FILE_COUNT_MAX: usize = 8;
 /// LIST 应答名区帽（8 文件 × 名帽最坏 392B 超单消息——按容纳截断，截断 =
 /// 后续文件不列，调用方可见）。
 pub const LIST_MAX: usize = 200;
+/// 目录数帽（刀 2：RAM overlay 树全局 Dir 节点计数，服务端执法——文件帽
+/// 的目录同族：树深/广度有界，深树 Vec 开销不失控）。
+pub const DIR_COUNT_MAX: usize = 16;
 
 /// STAT 应答类型位：文件。
 pub const TYPE_FILE: u8 = 0;
@@ -828,5 +835,18 @@ mod tests {
         // 空目录：空 blob 合法。
         let n = encode_reply_list(&mut b, b"").unwrap();
         assert_eq!(parse_reply_list(&b[..n]), Some(Ok(&[] as &[u8])));
+    }
+
+    #[test]
+    fn st_codes_unique() {
+        // 状态码不撞号（语义按值钉板——AI 可读面：新增码必过此断言再入册）。
+        let all = [ST_OK, ST_NOENT, ST_FULL, ST_BAD, ST_NOEMPTY, ST_EXISTS];
+        for i in 0..all.len() {
+            for j in i + 1..all.len() {
+                assert_ne!(all[i], all[j], "状态码撞号：{} vs {}", all[i], all[j]);
+            }
+        }
+        // 刀 2 帽常量在册（双侧同步义务的服务端锚）。
+        assert_eq!(DIR_COUNT_MAX, 16);
     }
 }
