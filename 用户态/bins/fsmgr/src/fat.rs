@@ -655,7 +655,9 @@ impl Fat {
     /// RAM 名后，LIST_MAX 同帽截断（截断可见，client 侧不误判穷尽）。
     /// 影子源 = RAM 根名全表**含目录**（C-0 刀 2 起 mkdir 可建 8.3 形目录
     /// 名——overlay 上层遮下层通则，LIST 去重不破）。
-    pub fn append_names(&self, ram_root: &[&[u8]], buf: &mut [u8], n0: usize) -> usize {
+    /// `sep` = 续列分隔符：LIST 面 `b' '`（v1 同形）；READDIR 根面 NUL
+    /// （C-1 刀 4——与调用方首段渲染的分隔符一致）。
+    pub fn append_names(&self, ram_root: &[&[u8]], buf: &mut [u8], n0: usize, sep: u8) -> usize {
         let mut n = n0;
         for i in 0..self.bpb.root_entries as usize {
             let e = &self.root[i * 32..i * 32 + 32];
@@ -681,7 +683,7 @@ impl Fat {
                 break;
             }
             if n > 0 {
-                buf[n] = b' ';
+                buf[n] = sep;
                 n += 1;
             }
             buf[n..n + disp.len()].copy_from_slice(disp);

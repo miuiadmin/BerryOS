@@ -19,27 +19,25 @@
 //! stdin）+ 全链 EOF 到齐才打标。
 //!
 //! P6 A-1：fs 面（`FS ok` = rootfs 相第 11 标记）——`>` 重定向 + `cat`/
-//! `ls` 内建，走 env 块 gift[3]（fs 客户端端 = fs_a 的 SEND|RECV dup，
-//! libc `fs_h()`；对端 fsmgr = svcmgr 预拉起的 RAM-fs 服务，协议
-//! berry-fsproto：PUT/TRUNC/GET/LIST 严格串行 RPC）。自验：PUT 64B 单片
-//! → GET 全等；PUT 2156B（hexyl 首验输出，12 片 + TRUNC）→ GET 逐字节
-//! 全等（more 链全盖）。**操作符识别纪律不变**：`>` 检测在展开前的原始
-//! 文本上（`|`/赋值前置，`>>` 被 `>` 计数 >1 自然排除）；**诊断/usage/
-//! not-found 打真 stdout（stderr 语义——不随 `>` 进文件）**，数据字节经
-//! render_cmd 返调用方定向（直出 = 打 stdout，重定向 = fs_put 入文件）。
-//! v1 面：简单命令重定向（`|`+`>` 组合、`>>` 追加随 v2）；空命令（展开
-//! 后空）不建文件（POSIX `> f` 建空文件——v2 再议）；无 fsmgr =
-//! `fs not available` 降级不死 shell。
+//! `ls` 内建。**C-1 刀 4 起全量走 berry-libc 文件面**（open/read/write/
+//! close/opendir/readdir/stat/mkdir/unlink 直调——与 stdhello 的 std::fs
+//! 同一条 libc 路，自有 RPC/协议会话机退役迁 berry-fsclient/libc，不再长
+//! 第二套）。**操作符识别纪律不变**：`>` 检测在展开前的原始文本上（`|`/
+//! 赋值前置，`>>` 被 `>` 计数 >1 自然排除）；**诊断/usage/not-found 打真
+//! stdout（stderr 语义——不随 `>` 进文件）**，数据字节经 render_cmd 返
+//! 调用方定向（直出 = 打 stdout，重定向 = 写入文件）。v1 面：简单命令重
+//! 定向（`|`+`>` 组合、`>>` 追加随 v2）；空命令（展开后空）不建文件
+//! （POSIX `> f` 建空文件——v2 再议）；无 fsmgr = `fs not available`
+//! 降级不死 shell。
 //!
-//! C-0 刀 4（bsh 路径适配，v2 同路不长第二套）：cat/`>`/带参 ls 迁多段
-//! 路径——shell 路径 `/` 分段 → wire NUL 分段（`fs_wire_path`，段字符集
-//! 与 v1 白名单同、帽 NAME_MAX/DEPTH/PATH_MAX 与 fsproto `path_valid`
-//! 双侧同步），单段输入与 v1 名同形同规则（零漂移）；新增内建 mkdir/rm
-//!（MKDIR/UNLINK——fsmgr 纯 RAM 面）与带参 ls（READDIR——RAM 目录树 +
-//! FAT 目录回落，服务端分层）；GET/STAT/LOOKUP 客户端零语义改动即得多段
-//!（fsmgr 已分层）。自验 `DIR ok` = v2 五 op + 多段读写 RAM 全链（FAT
-//! 子目录 QEMU 活覆盖在 smoke FAT 子目录相注入段——cat DATA/NOTE.TXT /
-//! ls DATA）。
+//! C-0 刀 4（多段路径面，C-1 刀 4 继承）：cat/`>`/带参 ls 多段——libc
+//! resolve 同规则同帽（段字符集白名单、NAME_MAX/DEPTH/PATH_MAX——usage
+//! 预检在 bsh 侧镜像一份，保「坏路径 usage 2 vs 服务错误 1」的旧区分零
+//! 漂移，双侧同步纪律第三镜）；内建 mkdir/rm 与带参 ls（READDIR——RAM
+//! 目录树 + FAT 目录回落，服务端分层）；裸 `ls` = opendir("/")（fsmgr
+//! READDIR 根 = LIST 同源 overlay 全景——RAM + FAT 并合，C-1 刀 4 服务
+//! 侧对齐）。自验 `DIR ok` = 多段读写 RAM 全链（FAT 子目录 QEMU 活覆盖
+//! 在 smoke FAT 子目录相注入段——cat DATA/NOTE.TXT / ls DATA）。
 //!
 //! v1 内建：help / echo / env / run / exit（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
@@ -58,21 +56,22 @@
 //! P5 扩号）。
 
 use std::io::{BufRead, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use berry_libc::io::{fs_h, rootfs_h};
+use berry_libc::io::{close, fs_h, read, rootfs_h, write};
+use berry_libc::{
+    EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
+};
+use berry_libc::fs::{
+    closedir, mkdir, open, opendir, readdir, stat, unlink, O_CREAT, O_RDONLY, O_WRONLY, Stat,
+};
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
-    SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_channel_recv, berry_clock_read, berry_handle_close, berry_object_wait_one, Handle,
+    BERRY_ERR_AGAIN, CLOCK_MONOTONIC, SIGNAL_READABLE,
 };
 use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec};
-use berry_fsproto::{
-    encode_get, encode_list, encode_lookup, encode_mkdir, encode_put, encode_readdir,
-    encode_stat, encode_trunc, encode_unlink, parse_reply_get, parse_reply_list,
-    parse_reply_stat, CHUNK, FILE_SIZE_MAX, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX, ST_BAD,
-    ST_EXISTS, ST_FULL, ST_NOENT, ST_NOEMPTY, ST_OK, TYPE_DIR, TYPE_FILE,
-};
+// C-1 刀 4：fsproto 只余帽常量（usage 预检 + 读面失控兜底）——协议面
+// （encode/parse/ST_*）随自有 RPC 退役，全部走 berry-libc。
+use berry_fsproto::{FILE_SIZE_MAX, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX};
 
 // 链接种子（stdhello 同款）：rlib/LTO 按需保留——无引用则 berry-libc 的
 // crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -99,19 +98,6 @@ const HEXYL_STDIN: [u8; 256] = {
 const COLLECT_MAX: usize = 32 * 1024;
 /// 通道等待帽（活动帽：每次收包刷新——慢而活着不误杀；超时无 EOF = 断链面）。
 const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
-
-/// fs 写请求（分片 PUT + TRUNC——FAT 层 commit 载体）的收侧帽：commit 在
-/// fsmgr 侧是一串**串行扇区 RPC**（数据扇区 + 双 FAT + 根目录 + 读回——
-/// 3000B/2 簇 ≈ 13 次，16KiB 帽文件 worst ≈ 22 次），TCG 下每次往返 ~0.8s
-/// （收发两手同层 IPC 无直切 + timer tick 200ms 粒度），10s 常规帽**结构性
-/// 误杀**（P6 A-6 实踩：bsh 放弃打 fs unreachable 时 fsmgr 仍在走完整
-/// commit——服务没死只是慢，晚到的应答还会毒化会话）。TRUNC 直接触发
-/// commit；**跨名 PUT 也会先对保留的旧 staging 槽隐式重跑同款 commit**
-/// （落盘失败槽保留的重试设计面）——故 PUT 分片同帽（对抗审查实抓首版
-/// 只给 TRUNC 扩帽漏了 PUT 面）。90s 覆盖帽文件 worst 仍有 4x 余量；真挂
-/// 死由 smoke 侧标记/f42t 帽兜底，交互面 v1 接受单命令阻塞（异步 commit/
-/// 后台 flush 随 v2）。
-const FS_COMMIT_CAP_NS: u64 = 90 * 1_000_000_000;
 
 /// 一次 `run` 的产物。
 struct RunOut {
@@ -320,7 +306,7 @@ fn exec_one(part: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out:
 /// 内建/外部命令统一渲染（P6 A-1 起 `>` 重定向与直出共道）：返回
 /// (数据字节, 状态码)。**诊断/usage/not-found/警告打 `out`**（stderr 语义
 /// ——不随 `>` 进文件），数据面字节交调用方定向（直出 = 打 stdout；
-/// 重定向 = fs_put 入文件）。`exit` 不重定向照常执行（v1：先于 fs_put——
+/// 重定向 = put_file 入文件）。`exit` 不重定向照常执行（v1：先于写文件——
 /// POSIX 的 open-before-exec 面随 v2）。词边界纪律：`run `/`echo `/`cat `
 /// 带空格才算命令 + 参数（`runfoo` = 未知命令 127）。
 fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
@@ -370,7 +356,7 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
         ls_output(out)
     } else if let Some(rest) = cmd.strip_prefix("ls ") {
         // 刀 4：带参 ls = READDIR（RAM 目录树 + FAT 目录回落，同一条
-        // fs_rpc 通道——不长第二套）；坏路径 usage 2（「已知命令+坏参数」
+        // libc 路——不长第二套）；坏路径 usage 2（「已知命令+坏参数」
         // 口径不变，P6 A-1 对抗审查纪律）。
         ls_path_output(rest.trim(), out)
     } else if cmd == "mkdir" {
@@ -451,284 +437,55 @@ fn run_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
     (data, code)
 }
 
-// —— fs 面（P6 A-1）：`>` 重定向 + cat/ls，走 env 块 gift[3]（fs_a 的
-// SEND|RECV dup——libc `fs_h()`）对端 fsmgr 的严格串行 RPC ——
+// —— fs 面（P6 A-1）：`>` 重定向 + cat/ls 内建。C-1 刀 4 起全量走
+// berry-libc 文件面（fd 3+ 客户端游标 + close 即 commit 两裁决，RPC/
+// 会话机在 berry-fsclient/libc——会话毒化/双帽语义在那侧逐字保真）——
 
-/// fs RPC 错误面。NoFs = fsmgr 未拉起（fs_h()==0——降级不死 shell）；
-/// Rpc = 通道/协议断链（wait 超时/解析失败/发送失败——服务死或拓扑破缺）；
-/// 刀 4 起三新面（v2 五 op 的语义错误码）：Bad = 路径坏/类型冲突（ST_BAD
-/// ——目录当文件 GET、目录链断）、Exists = MKDIR 目标已在（ST_EXISTS）、
-/// NotEmpty = UNLINK 目录有子项（ST_NOEMPTY）。
-#[derive(Debug)]
-enum FsErr {
-    NoFs,
-    Noent,
-    Full,
-    Bad,
-    Exists,
-    NotEmpty,
-    Rpc,
+/// errno 读（TLS 直读——失败返回后**立即**取，中间不夹其它可能写 errno
+/// 的调用；诊断/状态码两用）。
+fn errno() -> i32 {
+    // SAFETY: __errno_location 返回本线程 TLS errno 槽（libc 契约）。
+    unsafe { *berry_libc::sys::__errno_location() }
 }
 
-impl FsErr {
-    fn text(&self) -> &'static str {
-        match self {
-            FsErr::NoFs => "fs not available",
-            FsErr::Noent => "not found",
-            FsErr::Full => "no space",
-            FsErr::Bad => "bad path",
-            FsErr::Exists => "exists",
-            FsErr::NotEmpty => "dir not empty",
-            FsErr::Rpc => "fs unreachable",
-        }
-    }
-    fn code(&self) -> i32 {
-        match self {
-            FsErr::NoFs => 1,
-            FsErr::Noent => 127,
-            FsErr::Full => 1,
-            FsErr::Bad => 1,
-            FsErr::Exists => 1,
-            FsErr::NotEmpty => 1,
-            FsErr::Rpc => 1,
-        }
+/// errno → 诊断文本（v1 `FsErr::text` 逐字同形——零漂移）：NoFs 面
+/// （fs_h()==0 预检）不在此表（独立常量「fs not available」，见各内建）；
+/// ENOENT 覆盖 Noent；EINVAL 覆盖 Bad（libc 把 ST_BAD 与客户端坏路径同报
+/// EINVAL——usage 预检已把 bsh 侧坏路径先拦，到这里的 EINVAL 即服务面）；
+/// EIO 覆盖 Rpc（断链族）；未见面按断链族显示。
+fn errno_text(e: i32) -> &'static str {
+    match e {
+        ENOENT => "not found",
+        EISDIR | ENOTDIR | EINVAL => "bad path",
+        ENOSPC => "no space",
+        EEXIST => "exists",
+        ENOTEMPTY => "dir not empty",
+        _ => "fs unreachable",
     }
 }
 
-/// 应答 st 码 → FsErr（未知码 = Rpc——协议面只认在册常量）。
-fn st_err(st: u8) -> FsErr {
-    match st {
-        ST_NOENT => FsErr::Noent,
-        ST_FULL => FsErr::Full,
-        ST_BAD => FsErr::Bad,
-        ST_EXISTS => FsErr::Exists,
-        ST_NOEMPTY => FsErr::NotEmpty,
-        _ => FsErr::Rpc,
+/// errno → 状态码（v1 `FsErr::code` 同值：ENOENT=127 not found，其余 1）。
+fn errno_code(e: i32) -> i32 {
+    if e == ENOENT {
+        127
+    } else {
+        1
     }
 }
 
-/// 严格串行 RPC 单趟（PUT/TRUNC 面——应答恰 1 字节 st）：发请求（EBUSY →
-/// wait WRITABLE 10s 重臂——console_write 同款契约）→ 等应答（READABLE
-/// `cap` 帽）→ 校 st。buf 复用为请求/应答缓冲（256B 栈上，与 fsmgr 的 msg
-/// 对称）。超时/错码 = Rpc（fsmgr 微秒级回件——**除 TRUNC/commit 外**，
-/// 见 [`FS_COMMIT_CAP_NS`]；帽尽 = 服务死/链断——交互面不死 shell，
-/// 调用方打警告降级）。
-fn fs_rpc_status(
-    h: Handle,
-    buf: &mut [u8; 256],
-    reqlen: usize,
-    cap: u64,
-) -> Result<(), FsErr> {
-    let n = fs_rpc(h, buf, reqlen, cap).ok_or(FsErr::Rpc)?;
-    if n == 1 {
-        if buf[0] == ST_OK {
-            return Ok(());
-        }
-        return Err(st_err(buf[0]));
-    }
-    Err(FsErr::Rpc) // 应答长度破缺 = 协议面
-}
-
-/// 严格串行 RPC 单趟（返回应答长度入 buf；None = 断链）。`cap` = 收侧
-/// READABLE 帽（常规 TIMEOUT_NS；TRUNC/commit 走 [`FS_COMMIT_CAP_NS`]）。
-///
-/// **会话毒化**（P6 A-1 对抗审查实抓）：v1 协议无请求序号——收侧超时返
-/// None 后，fsmgr 的迟到应答仍会入队，下一 RPC 的 poll-first 收侧会把它
-/// 错配成自己的应答（GET 面 = 静默错数据，off-by-one 永不自愈）。故任一
-/// **收侧**超时即作废整个 fs 会话：后续 fs 命令确定性降级「fs unreachable」
-/// （确定性失败优于无告警错数据；迟到应答无人消费、滞留队列无害）。发送
-/// 侧超时不毒化——请求未发出、无迟到应答。恢复面（fsmgr 重拉 / 协议加
-/// 请求序号 + 重同步）随 v2。
-fn fs_rpc(h: Handle, buf: &mut [u8; 256], reqlen: usize, cap: u64) -> Option<usize> {
-    if !FS_SESSION_OK.load(Ordering::Relaxed) {
-        return None;
-    }
-    let mut deadline = 0u64;
-    loop {
-        let s = berry_channel_send(h, buf.as_ptr(), reqlen, core::ptr::null(), 0);
-        if s == 0 {
-            break;
-        }
-        if s != BERRY_ERR_BUSY {
-            return None;
-        }
-        if deadline == 0 {
-            deadline = now() + TIMEOUT_NS;
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            return None;
-        }
-        deadline = 0; // 重臂（命中后若仍满则续等——公平排队）
-    }
-    // 应答：空队阻塞等 READABLE（cap 帽——严格串行下一请求一应答，应答
-    // 必先于下一请求到队）。
-    loop {
-        let mut nb = buf.len();
-        let mut nh = 0usize;
-        let s = berry_channel_recv(h, buf.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
-        if s == 0 {
-            return Some(nb);
-        }
-        if s != BERRY_ERR_AGAIN {
-            return None;
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_READABLE, now() + cap, &mut obs) != 0 {
-            FS_SESSION_OK.store(false, Ordering::Relaxed); // 收侧超时 = 会话作废
-            return None;
-        }
-    }
-}
-
-/// fs 会话健康位：任一收侧超时即作废（见 [`fs_rpc`] 文档注释）。v1 交互
-/// shell 单进程长驻——静态位即会话位。
-static FS_SESSION_OK: AtomicBool = AtomicBool::new(true);
-
-/// 全量写：192B 分片 + 尾随 TRUNC(len) 定长（PUT off 超现长零填充扩容；
-/// 空数据 = 零片 + TRUNC(0) = 建空文件——`echo > f` 面）。尺寸帽在服务端
-/// 统一检（>FILE_SIZE_MAX → ST_FULL → Err(Full)）。**分片 PUT 与尾随
-/// TRUNC 的收侧帽都走 [`FS_COMMIT_CAP_NS`]**——FAT 名的 TRUNC 在服务端
-/// 触发整链 commit，且跨名 PUT 也会先对**保留的旧 staging 槽**隐式重跑
-/// 同款 commit 才应答（落盘失败槽保留的设计面：根目录满/ST_BAD 后槽
-/// 留存，下一跨名 PUT 分片要在其后排队秒级——10s 帽同族误杀 + 毒化
-/// 会话，对抗审查实抓 PUT 隐式 commit 面漏帽）。
-fn fs_put(h: Handle, name: &[u8], data: &[u8]) -> Result<(), FsErr> {
-    if h == 0 {
-        return Err(FsErr::NoFs);
-    }
-    let mut buf = [0u8; 256];
-    let mut off = 0usize;
-    while off < data.len() {
-        let n = core::cmp::min(CHUNK, data.len() - off);
-        let l = encode_put(&mut buf, name, off as u32, &data[off..off + n]).ok_or(FsErr::Rpc)?;
-        fs_rpc_status(h, &mut buf, l, FS_COMMIT_CAP_NS)?;
-        off += n;
-    }
-    let l = encode_trunc(&mut buf, name, data.len() as u32).ok_or(FsErr::Rpc)?;
-    fs_rpc_status(h, &mut buf, l, FS_COMMIT_CAP_NS)
-}
-
-/// 全量读：GET off 循环拼到 more=0。双防御（协议不变量破缺面）：more 且
-/// 空片 → Rpc；累计超 FILE_SIZE_MAX → Rpc（more 链失控兜底，不再续拉）。
-fn fs_get(h: Handle, name: &[u8]) -> Result<Vec<u8>, FsErr> {
-    if h == 0 {
-        return Err(FsErr::NoFs);
-    }
-    let mut buf = [0u8; 256];
-    let mut out: Vec<u8> = Vec::new();
-    let mut off = 0u32;
-    loop {
-        let l = encode_get(&mut buf, name, off).ok_or(FsErr::Rpc)?;
-        let n = fs_rpc(h, &mut buf, l, TIMEOUT_NS).ok_or(FsErr::Rpc)?;
-        match parse_reply_get(&buf[..n]).ok_or(FsErr::Rpc)? {
-            Ok(g) => {
-                if g.more && g.data.is_empty() {
-                    return Err(FsErr::Rpc); // 服务端不变量：more=true ⇒ dlen ≥ 1
-                }
-                out.extend_from_slice(g.data);
-                if !g.more {
-                    return Ok(out);
-                }
-                off += g.data.len() as u32; // more ⇒ ≥1：off 恒前进无死循环
-                if out.len() > FILE_SIZE_MAX {
-                    return Err(FsErr::Rpc);
-                }
-            }
-            Err(st) => return Err(st_err(st)),
-        }
-    }
-}
-
-/// 名列（原始名区 = 空白连接的字节串；渲染归调用方）。
-fn fs_list(h: Handle) -> Result<Vec<u8>, FsErr> {
-    if h == 0 {
-        return Err(FsErr::NoFs);
-    }
-    let mut buf = [0u8; 256];
-    let l = encode_list(&mut buf).ok_or(FsErr::Rpc)?;
-    let n = fs_rpc(h, &mut buf, l, TIMEOUT_NS).ok_or(FsErr::Rpc)?;
-    match parse_reply_list(&buf[..n]).ok_or(FsErr::Rpc)? {
-        Ok(names) => Ok(names.to_vec()),
-        Err(st) => Err(st_err(st)),
-    }
-}
-
-/// v2 纯状态 op 单趟（应答恰 1 字节 st）：MKDIR/UNLINK 纯 RAM 面
-/// （fsmgr 不回落 FAT——秒级扇区链不可达）→ TIMEOUT_NS；LOOKUP 的 RAM
-/// Miss 回落 FAT stat（多段 = 子目录链走查，每簇一次扇区 RPC）→
-/// [`FS_COMMIT_CAP_NS`]（服务慢 ≠ 服务死，P6 A-6 定帽纪律）。
-fn fs_status_op(
-    h: Handle,
-    encode: fn(&mut [u8], &[u8]) -> Option<usize>,
-    path: &[u8],
-    cap: u64,
-) -> Result<(), FsErr> {
-    if h == 0 {
-        return Err(FsErr::NoFs);
-    }
-    let mut buf = [0u8; 256];
-    let l = encode(&mut buf, path).ok_or(FsErr::Rpc)?;
-    fs_rpc_status(h, &mut buf, l, cap)
-}
-
-/// MKDIR `<path>`（RAM 目录树；已存在 → Exists）。
-fn fs_mkdir(h: Handle, path: &[u8]) -> Result<(), FsErr> {
-    fs_status_op(h, encode_mkdir, path, TIMEOUT_NS)
-}
-
-/// UNLINK `<path>`：文件或**空**目录（非空目录 → NotEmpty）。
-fn fs_unlink(h: Handle, path: &[u8]) -> Result<(), FsErr> {
-    fs_status_op(h, encode_unlink, path, TIMEOUT_NS)
-}
-
-/// LOOKUP `<path>`（存在性探针；RAM 树 → FAT 回落，帽按链走查 worst）。
-fn fs_lookup(h: Handle, path: &[u8]) -> Result<(), FsErr> {
-    fs_status_op(h, encode_lookup, path, FS_COMMIT_CAP_NS)
-}
-
-/// READDIR `<dir>`：子名 blob（NUL 连接——LIST 同形，渲染归调用方）。
-/// FAT 目录回落 = fsmgr 侧链走查（每簇一次扇区 RPC，TCG ~0.8s/次）→
-/// [`FS_COMMIT_CAP_NS`]。
-fn fs_readdir(h: Handle, path: &[u8]) -> Result<Vec<u8>, FsErr> {
-    if h == 0 {
-        return Err(FsErr::NoFs);
-    }
-    let mut buf = [0u8; 256];
-    let l = encode_readdir(&mut buf, path).ok_or(FsErr::Rpc)?;
-    let n = fs_rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
-    match parse_reply_list(&buf[..n]).ok_or(FsErr::Rpc)? {
-        Ok(names) => Ok(names.to_vec()),
-        Err(st) => Err(st_err(st)),
-    }
-}
-
-/// STAT `<path>`：(TYPE_FILE, 字节数) / (TYPE_DIR, 子项数)；帽同 READDIR
-/// （FAT 回落 = 同一链走查）。
-fn fs_stat(h: Handle, path: &[u8]) -> Result<(u8, u32), FsErr> {
-    if h == 0 {
-        return Err(FsErr::NoFs);
-    }
-    let mut buf = [0u8; 256];
-    let l = encode_stat(&mut buf, path).ok_or(FsErr::Rpc)?;
-    let n = fs_rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
-    match parse_reply_stat(&buf[..n]).ok_or(FsErr::Rpc)? {
-        Ok(r) => Ok(r),
-        Err(st) => Err(st_err(st)),
-    }
-}
-
-/// shell 路径（`/` 分段）→ wire 路径（NUL 分段，fsproto v2）：段字符集与
-/// v1 白名单同（`[A-Za-z0-9._-]`——无空白/`$`/`/`，未引号 token 面，引号
-/// 随 v2）；帽 NAME_MAX/段、PATH_DEPTH_MAX 段数、PATH_MAX 总长，与
-/// fsproto `path_valid` 双侧同步（encode 侧再检——双侧同步纪律）。单段
-/// 输入与 v1 名同形同规则（零漂移：`d1/Z.TXT` → `d1\0Z.TXT`，`Z.TXT` →
-/// `Z.TXT`）。
-fn fs_wire_path(s: &str) -> Option<Vec<u8>> {
-    let mut wire: Vec<u8> = Vec::with_capacity(s.len());
-    for (i, seg) in s.split('/').enumerate() {
-        if i >= PATH_DEPTH_MAX {
-            return None;
+/// shell 路径合法面（usage 预检）：段字符集白名单 `[A-Za-z0-9._-]`（无
+/// 空白/`$`/`/`——未引号 token 面，引号随 v2）+ 帽 NAME_MAX/段、
+/// PATH_DEPTH_MAX 段数、PATH_MAX 总长。与 libc（berry-fsclient
+/// `resolve_path`）/ fsproto `path_valid` 双侧同步纪律第三镜：bsh 侧镜像
+/// 只为保「坏路径 usage 2 vs 服务错误 1」的旧区分零漂移（EINVAL 双义——
+/// 客户端坏路径 vs 服务 ST_BAD——在显示层解歧）。
+fn valid_path(s: &str) -> bool {
+    let mut segs = 0usize;
+    let mut total = 0usize;
+    for seg in s.split('/') {
+        segs += 1;
+        if segs > PATH_DEPTH_MAX {
+            return false;
         }
         if seg.is_empty()
             || seg.len() > NAME_MAX
@@ -736,41 +493,189 @@ fn fs_wire_path(s: &str) -> Option<Vec<u8>> {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
         {
-            return None;
+            return false;
         }
-        if i > 0 {
-            wire.push(0);
-        }
-        wire.extend_from_slice(seg.as_bytes());
+        total += seg.len();
     }
-    (wire.len() <= PATH_MAX).then_some(wire)
+    total <= PATH_MAX
 }
 
-/// `A > f` 切分：恰一个 `>`、两侧 trim、目标路径过 [`fs_wire_path`]（刀 4
+/// 路径 → NUL 结尾 C 串（`valid_path` 已过——无内嵌 NUL/超长；libc 面
+/// 恒收 C 串）。
+fn cpath(path: &str) -> Vec<u8> {
+    let mut v = Vec::with_capacity(path.len() + 1);
+    v.extend_from_slice(path.as_bytes());
+    v.push(0);
+    v
+}
+
+/// 全量读（cat/自验读面）：open(O_RDONLY) → read 循环至 EOF → close。
+/// Err(errno)：open 失败（Noent→ENOENT / IsDir→EISDIR——libc open_core
+/// 已检）或读失败；累计超 FILE_SIZE_MAX = 失控链兜底（服务端同帽，防御
+/// 面——文本落「fs unreachable」族）。读 fd 的 close 无 commit 面（错误
+/// 照 close 恒消费——fd 表槽回收优先）。
+fn get_file(path: &str) -> Result<Vec<u8>, i32> {
+    let p = cpath(path);
+    // SAFETY: p 是 NUL 结尾路径串；fd 按 libc 契约使用。
+    let fd = unsafe { open(p.as_ptr() as *const _, O_RDONLY) };
+    if fd < 0 {
+        return Err(errno());
+    }
+    let mut data: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        // read 是安全 fn（io.rs——fd≥3 走 fs::read_fd）；<0 错 / 0 EOF。
+        let n = read(fd, buf.as_mut_ptr() as *mut _, buf.len());
+        if n < 0 {
+            let e = errno();
+            close(fd);
+            return Err(e);
+        }
+        if n == 0 {
+            break; // EOF（libc read_fd：EOF 不前移游标——close 幂等）
+        }
+        data.extend_from_slice(&buf[..n as usize]);
+        if data.len() > FILE_SIZE_MAX {
+            close(fd);
+            return Err(EIO);
+        }
+    }
+    close(fd);
+    Ok(data)
+}
+
+/// 全量写（`>`/自验写面）：open(O_WRONLY|O_CREAT) → write 循环（libc
+/// write_fd 内部按 192B 分片 PUT）→ **close 即 commit**（TRUNC(游标)——
+/// C-1 裁决 2，与 v1「分片 PUT + 尾随 TRUNC」同款落盘点）。中途写失败仍
+/// close（POSIX close 恒消费——部分数据照旧提交；v1 失败面 TRUNC 不发、
+/// 文件同为部分态，边缘同形）。空数据 = 零 write + close = 建空文件面
+/// （`echo > f`）。O_TRUNC 省略 = 覆写幂等（v1 同形：PUT off 0 覆写 +
+/// TRUNC(len) 截到新长——旧长于新时残留被 TRUNC 截断，语义同 v1）。
+fn put_file(path: &str, data: &[u8]) -> Result<(), i32> {
+    let p = cpath(path);
+    // SAFETY: 同上。
+    let fd = unsafe { open(p.as_ptr() as *const _, O_WRONLY | O_CREAT) };
+    if fd < 0 {
+        return Err(errno());
+    }
+    let mut off = 0usize;
+    while off < data.len() {
+        // write 安全 fn（io.rs——fd≥3 走 fs::write_fd 内部分片）；部分写按
+        // 返回量续写。
+        let n = write(fd, data[off..].as_ptr() as *const _, data.len() - off);
+        if n < 0 {
+            let e = errno();
+            close(fd); // 部分 commit（文档化取舍）
+            return Err(e);
+        }
+        if n == 0 {
+            close(fd);
+            return Err(EIO); // 零写非 EOF = 协议破缺面
+        }
+        off += n as usize;
+    }
+    // close 安全 fn（io.rs——fd≥3 走 fs::close_fd）：出错 = commit（TRUNC）
+    // 失败面——errno 透传。
+    if close(fd) != 0 {
+        return Err(errno());
+    }
+    Ok(())
+}
+
+/// 目录列名（裸 `ls`/`ls <dir>`）：opendir → readdir 迭代 → 每名一行 →
+/// closedir。Err(errno)：opendir 失败（Noent→ENOENT / 文件目标→ENOTDIR
+/// /目录链断→EINVAL——libc opendir 契约）；**目录尾 null 无 errno 语义**
+/// （libc 契约——直调 berry-libc 而非 std::fs::read_dir 的原因：std 尾检
+/// 胶水的 stale-errno 面不可证，两个消费方共用同一条确定性的 libc 路）。
+fn dir_lines(path: &str) -> Result<Vec<u8>, i32> {
+    let p = cpath(path);
+    // SAFETY: p 同上；DIR 指针按 libc 目录族契约使用。
+    let d = unsafe { opendir(p.as_ptr() as *const _) };
+    if d.is_null() {
+        return Err(errno());
+    }
+    let mut out = Vec::new();
+    loop {
+        // SAFETY: 返回指向 DIR 内部 Dirent（下次调用前有效——即拷即用）；
+        // null = 目录尾。
+        let ent = unsafe { readdir(d) };
+        if ent.is_null() {
+            break;
+        }
+        // SAFETY: ent 有效；d_name 为 NUL 结尾名区，名长按 NUL 定界。
+        let name = unsafe { &(*ent).d_name };
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        out.extend_from_slice(&name[..len]);
+        out.push(b'\n');
+    }
+    unsafe { closedir(d) };
+    Ok(out)
+}
+
+/// 单点 stat（自验用）：Ok((is_dir, size))——v1 fs_stat 的 (TYPE, n) 同义
+/// （dir 的 size = 子项数，fstree 语义；libc fill_stat 同源）。S_IFMT/
+/// S_IFDIR = aarch64 musl 同值（berry-fsclient `st_mode_of` 同源）。
+fn stat_of(path: &str) -> Result<(bool, i64), i32> {
+    const S_IFMT: u32 = 0o170000;
+    const S_IFDIR: u32 = 0o040000;
+    let p = cpath(path);
+    // SAFETY: Stat 是纯数据 repr(C) 结构；stat 写 out、路径串只读。
+    let mut st: Stat = unsafe { core::mem::zeroed() };
+    if unsafe { stat(p.as_ptr() as *const _, &mut st) } != 0 {
+        return Err(errno());
+    }
+    Ok((st.st_mode & S_IFMT == S_IFDIR, st.st_size))
+}
+
+/// mkdir 薄封装（内建/自验共用）：Err(errno)——Exists→EEXIST、帽满→
+/// ENOSPC（fsmgr 纯 RAM 面，libc 同映射）。
+fn mkdir_of(path: &str) -> Result<(), i32> {
+    let p = cpath(path);
+    // SAFETY: p 同上；mode 位被 fsmgr 忽略（0755 形参——POSIX 形面）。
+    if unsafe { mkdir(p.as_ptr() as *const _, 0o755) } == 0 {
+        Ok(())
+    } else {
+        Err(errno())
+    }
+}
+
+/// unlink 薄封装（内建/自验共用）：文件或**空**目录（非空目录 →
+/// ENOTEMPTY）。
+fn unlink_of(path: &str) -> Result<(), i32> {
+    let p = cpath(path);
+    // SAFETY: p 同上。
+    if unsafe { unlink(p.as_ptr() as *const _) } == 0 {
+        Ok(())
+    } else {
+        Err(errno())
+    }
+}
+
+/// `A > f` 切分：恰一个 `>`、两侧 trim、目标路径过 [`valid_path`]（刀 4
 /// 起多段——`echo x > d1/Z.TXT`；单段与 v1 同形零漂移）。None = usage 面
 /// （`>>`/多点 `>` 被计数排除；坏路径被段校验排除）。
-fn split_redirect(raw: &str) -> Option<(&str, &str, Vec<u8>)> {
+fn split_redirect(raw: &str) -> Option<(&str, &str)> {
     if raw.matches('>').count() != 1 {
         return None;
     }
     let (a, b) = raw.split_once('>')?;
     let (cmd, file) = (a.trim(), b.trim());
-    let wire = fs_wire_path(file)?;
-    Some((cmd, file, wire))
+    valid_path(file).then_some((cmd, file))
 }
 
-/// `A > f` 重定向（P6 A-1）：渲染命令（数据字节**不进 out**）→ fs_put 全
-/// 量入文件。诊断/警告照打 out（stderr 语义）；fs 错误 → 警告 + FsErr 码。
-/// v1 文档化面：空命令（展开后空）不建文件（POSIX `> f` 建空文件——v2）；
-/// 命令失败仍落已产出的部分数据（先渲染后写，非 open-before-exec）。
-/// 刀 4：目标可多段（RAM 树写；FAT 名仍只落根——fsmgr 分层路由）。
+/// `A > f` 重定向（P6 A-1）：渲染命令（数据字节**不进 out**）→ put_file
+/// 全量入文件（libc open/write/close——close 即 commit）。诊断/警告照打
+/// out（stderr 语义）；fs 错误 → 警告 + errno 码。v1 文档化面：空命令
+/// （展开后空）不建文件（POSIX `> f` 建空文件——v2）；命令失败仍落已产出
+/// 的部分数据（先渲染后写，非 open-before-exec）。刀 4：目标可多段（RAM
+/// 树写；FAT 名仍只落根——fsmgr 分层路由）。
 fn do_redirect(
     raw: &str,
     vars: &[(String, String)],
     status: i32,
     out: &mut std::io::Stdout,
 ) -> i32 {
-    let Some((cmd_s, file_s, wire)) = split_redirect(raw) else {
+    let Some((cmd_s, file_s)) = split_redirect(raw) else {
         writeln!(out, "usage: <command> > <file>").unwrap();
         return 2;
     };
@@ -779,130 +684,148 @@ fn do_redirect(
     }
     let (data, code) = render_cmd(cmd_s, vars, status, out);
     out.flush().unwrap(); // 诊断先落（stderr 语义——数据进文件）
-    match fs_put(fs_h(), &wire, &data) {
+    if fs_h() == 0 {
+        // NoFs 预检（libc 无 gift 面会把 open 降级 ENOENT——文本漂移，故
+        // bsh 侧预检保「fs not available」旧文案）。
+        writeln!(out, "bsh: {}: fs not available", file_s).unwrap();
+        out.flush().unwrap();
+        return 1;
+    }
+    match put_file(file_s, &data) {
         Ok(()) => code,
         Err(e) => {
-            writeln!(out, "bsh: {}: {}", file_s, e.text()).unwrap();
+            writeln!(out, "bsh: {}: {}", file_s, errno_text(e)).unwrap();
             out.flush().unwrap();
-            e.code()
+            errno_code(e)
         }
     }
 }
 
-/// `cat <path>`：fs_get 全量 → 数据字节（fs 错误 → 诊断打 out + FsErr 码）。
-/// 刀 4 起多段（RAM 树 → FAT 子目录链，fsmgr 分层）；目录目标 → fsmgr
-/// IsDir → Bad（「bad path」——目录不是读面）。
+/// `cat <path>`：get_file 全量 → 数据字节（fs 错误 → 诊断打 out + errno
+/// 码）。刀 4 起多段（RAM 树 → FAT 子目录链，fsmgr 分层）；目录目标 →
+/// libc open EISDIR（「bad path」——目录不是读面，v1 同文案）。
 fn cat_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
-    let Some(wire) = fs_wire_path(name) else {
+    if !valid_path(name) {
         writeln!(out, "usage: cat <file>").unwrap();
         return (Vec::new(), 2);
-    };
-    match fs_get(fs_h(), &wire) {
+    }
+    if fs_h() == 0 {
+        writeln!(out, "bsh: cat: {}: fs not available", name).unwrap();
+        return (Vec::new(), 1);
+    }
+    match get_file(name) {
         Ok(d) => (d, 0),
         Err(e) => {
-            writeln!(out, "bsh: cat: {}: {}", name, e.text()).unwrap();
-            (Vec::new(), e.code())
+            writeln!(out, "bsh: cat: {}: {}", name, errno_text(e)).unwrap();
+            (Vec::new(), errno_code(e))
         }
     }
 }
 
-/// `ls`：fs_list → 每名一行（空表 = 空输出 0）。
+/// `ls`：dir_lines("/") → 每名一行（空表 = 空输出 0）。裸 `ls` 的根列名
+/// = opendir("/") → fsmgr READDIR 根并合（RAM 根 + FAT 未影子名——与
+/// v1 LIST 同源同序，C-1 刀 4 服务侧对齐）。
 fn ls_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
-    match fs_list(fs_h()) {
-        Ok(names) => {
-            let mut d = Vec::new();
-            for n in names.split(|&c| c == b' ') {
-                if !n.is_empty() {
-                    d.extend_from_slice(n);
-                    d.push(b'\n');
-                }
-            }
-            (d, 0)
-        }
+    if fs_h() == 0 {
+        writeln!(out, "bsh: ls: fs not available").unwrap();
+        return (Vec::new(), 1);
+    }
+    match dir_lines("/") {
+        Ok(d) => (d, 0),
         Err(e) => {
-            writeln!(out, "bsh: ls: {}", e.text()).unwrap();
-            (Vec::new(), e.code())
+            writeln!(out, "bsh: ls: {}", errno_text(e)).unwrap();
+            (Vec::new(), errno_code(e))
         }
     }
 }
 
-/// `ls <dir>`（刀 4）：READDIR 子名 blob（NUL 连接）→ 每名一行（空目录 =
-/// 空输出 0）。文件目标 → fsmgr NotDir → Bad。
+/// `ls <dir>`（刀 4）：READDIR 子名 → 每名一行（空目录 = 空输出 0）。
+/// 文件目标 → libc opendir ENOTDIR（「bad path」——v1 同文案）。
 fn ls_path_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
-    let Some(wire) = fs_wire_path(name) else {
+    if !valid_path(name) {
         writeln!(out, "usage: ls <dir>").unwrap();
         return (Vec::new(), 2);
-    };
-    match fs_readdir(fs_h(), &wire) {
-        Ok(names) => {
-            let mut d = Vec::new();
-            for n in names.split(|&c| c == 0) {
-                if !n.is_empty() {
-                    d.extend_from_slice(n);
-                    d.push(b'\n');
-                }
-            }
-            (d, 0)
-        }
+    }
+    if fs_h() == 0 {
+        writeln!(out, "bsh: ls: {}: fs not available", name).unwrap();
+        return (Vec::new(), 1);
+    }
+    match dir_lines(name) {
+        Ok(d) => (d, 0),
         Err(e) => {
-            writeln!(out, "bsh: ls: {}: {}", name, e.text()).unwrap();
-            (Vec::new(), e.code())
+            writeln!(out, "bsh: ls: {}: {}", name, errno_text(e)).unwrap();
+            (Vec::new(), errno_code(e))
         }
     }
 }
 
-/// `mkdir <path>`（刀 4）：MKDIR——RAM 目录树（fsmgr 纯 RAM 面）；已存在
-/// → Exists。静默成功（POSIX 口径；失败才诊断）。
+/// `mkdir <path>`（刀 4）：RAM 目录树（fsmgr 纯 RAM 面）；已存在 →
+/// EEXIST。静默成功（POSIX 口径；失败才诊断）。
 fn mkdir_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
-    let Some(wire) = fs_wire_path(name) else {
+    if !valid_path(name) {
         writeln!(out, "usage: mkdir <dir>").unwrap();
         return (Vec::new(), 2);
-    };
-    match fs_mkdir(fs_h(), &wire) {
+    }
+    if fs_h() == 0 {
+        writeln!(out, "bsh: mkdir: {}: fs not available", name).unwrap();
+        return (Vec::new(), 1);
+    }
+    match mkdir_of(name) {
         Ok(()) => (Vec::new(), 0),
         Err(e) => {
-            writeln!(out, "bsh: mkdir: {}: {}", name, e.text()).unwrap();
-            (Vec::new(), e.code())
+            writeln!(out, "bsh: mkdir: {}: {}", name, errno_text(e)).unwrap();
+            (Vec::new(), errno_code(e))
         }
     }
 }
 
-/// `rm <path>`（刀 4）：UNLINK——文件或**空**目录（非空目录 → NotEmpty；
+/// `rm <path>`（刀 4）：UNLINK——文件或**空**目录（非空目录 → ENOTEMPTY；
 /// 目录链上文件先逐个 rm）。静默成功（POSIX 口径）。
 fn rm_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
-    let Some(wire) = fs_wire_path(name) else {
+    if !valid_path(name) {
         writeln!(out, "usage: rm <path>").unwrap();
         return (Vec::new(), 2);
-    };
-    match fs_unlink(fs_h(), &wire) {
+    }
+    if fs_h() == 0 {
+        writeln!(out, "bsh: rm: {}: fs not available", name).unwrap();
+        return (Vec::new(), 1);
+    }
+    match unlink_of(name) {
         Ok(()) => (Vec::new(), 0),
         Err(e) => {
-            writeln!(out, "bsh: rm: {}: {}", name, e.text()).unwrap();
-            (Vec::new(), e.code())
+            writeln!(out, "bsh: rm: {}: {}", name, errno_text(e)).unwrap();
+            (Vec::new(), errno_code(e))
         }
     }
 }
 
 /// fs 自验（P6 A-1，`FS ok` = rootfs 相第 11 标记——确定性状态谓词）：
-/// PUT 64B pattern（HEXYL_STDIN 前缀——单片路径）→ GET 全等；PUT 2156B
-/// （hexyl 首验输出——12 片 + TRUNC 的多片路径）→ GET 逐字节全等（more
-/// 链全盖）。数据是 hexyl 输出的纯函数快照，无竞速面；失败 eprintln +
-/// park（标记缺失 → smoke FAIL 兜底）。
+/// put_file 64B pattern（HEXYL_STDIN 前缀——单片路径）→ get_file 全等；
+/// put_file 2156B（hexyl 首验输出——多片 + close 即 commit 的多片路径）→
+/// get_file 逐字节全等（分片链全盖）。数据是 hexyl 输出的纯函数快照，无
+/// 竞速面；失败 eprintln + park（标记缺失 → smoke FAIL 兜底）。
 fn fs_selftest(hexyl_out: &[u8]) {
-    let h = fs_h();
     let a = &HEXYL_STDIN[..64];
-    match fs_put(h, b"t64.bin", a).and_then(|_| fs_get(h, b"t64.bin")) {
+    if let Err(e) = put_file("t64.bin", a) {
+        eprintln!("bsh: fs selftest: rw64 {}", errno_text(e));
+        berry_libc::park();
+    }
+    match get_file("t64.bin") {
         Ok(d) if d == a => {}
         Ok(d) => {
             eprintln!("bsh: fs selftest: get64 len={} want={}", d.len(), a.len());
             berry_libc::park();
         }
         Err(e) => {
-            eprintln!("bsh: fs selftest: rw64 {}", e.text());
+            eprintln!("bsh: fs selftest: rw64 {}", errno_text(e));
             berry_libc::park();
         }
     }
-    match fs_put(h, b"h.hex", hexyl_out).and_then(|_| fs_get(h, b"h.hex")) {
+    if let Err(e) = put_file("h.hex", hexyl_out) {
+        eprintln!("bsh: fs selftest: rw2156 {}", errno_text(e));
+        berry_libc::park();
+    }
+    match get_file("h.hex") {
         Ok(d) if d == hexyl_out => {}
         Ok(d) => {
             eprintln!(
@@ -913,7 +836,7 @@ fn fs_selftest(hexyl_out: &[u8]) {
             berry_libc::park();
         }
         Err(e) => {
-            eprintln!("bsh: fs selftest: rw2156 {}", e.text());
+            eprintln!("bsh: fs selftest: rw2156 {}", errno_text(e));
             berry_libc::park();
         }
     }
@@ -921,25 +844,24 @@ fn fs_selftest(hexyl_out: &[u8]) {
 }
 
 /// FAT 自验（P6 A-5，`FAT ok n=` = rootfs 相第 15 标记——确定性状态谓词）：
-/// 走真 fs RPC 面（= 交互 `cat HELLO.TXT` 同一台机器）端到端读 mkfat 落盘
+/// 走 libc 文件面（= 交互 `cat HELLO.TXT` 同一台机器）端到端读 mkfat 落盘
 /// 卷——HELLO.TXT 28B 全等 + PATTERN.BIN 5000B 逐字节对拍（(i*31+7)%256，
 /// mkfat/berry-fatfs fixture 同源 pattern）——FAT 兜底 → vblk 服务 RPC →
-/// FAT12 簇链 + more 链全盖。盘内容是 mkfat 确定性字节，无竞速面；失败
+/// FAT12 簇链 + 分片链全盖。盘内容是 mkfat 确定性字节，无竞速面；失败
 /// eprintln + park（标记缺失 → smoke FAIL 兜底）。
 fn fat_selftest() {
-    let h = fs_h();
-    match fs_get(h, b"HELLO.TXT") {
+    match get_file("HELLO.TXT") {
         Ok(d) if d == b"berryos fat read-only hello\n" => {}
         Ok(d) => {
             eprintln!("bsh: fat selftest: hello len={} want=28", d.len());
             berry_libc::park();
         }
         Err(e) => {
-            eprintln!("bsh: fat selftest: hello {}", e.text());
+            eprintln!("bsh: fat selftest: hello {}", errno_text(e));
             berry_libc::park();
         }
     }
-    match fs_get(h, b"PATTERN.BIN") {
+    match get_file("PATTERN.BIN") {
         Ok(d) => {
             if d.len() != 5000 {
                 eprintln!("bsh: fat selftest: pattern len={} want=5000", d.len());
@@ -953,7 +875,7 @@ fn fat_selftest() {
             }
         }
         Err(e) => {
-            eprintln!("bsh: fat selftest: pattern {}", e.text());
+            eprintln!("bsh: fat selftest: pattern {}", errno_text(e));
             berry_libc::park();
         }
     }
@@ -961,15 +883,14 @@ fn fat_selftest() {
 }
 
 /// FAT 写自验（P6 A-6，`FATW ok n=` = rootfs 相第 16 标记——确定性状态
-/// 谓词）：RW.TXT 3000B pattern（(i*17+3)%256，跨 2 簇）经 fs_put 落盘
-/// （fsmgr staging + TRUNC 即 commit 真写扇区）→ fs_get 逐字节对拍才自打。
+/// 谓词）：RW.TXT 3000B pattern（(i*17+3)%256，跨 2 簇）经 put_file 落盘
+/// （fsmgr staging + close 即 commit 真写扇区）→ get_file 逐字节对拍才自打。
 /// 每次 boot 重写 = 覆写路径幂等（旧链 collect → 新链分配 → 旧链释放）；
 /// HELLO.TXT/PATTERN.BIN 是 mkfat 只读基准，本验永不触碰。失败 eprintln +
 /// park（标记缺失 → smoke FAIL 兜底）。
 fn fatw_selftest() {
-    let h = fs_h();
     let data: Vec<u8> = (0..3000u32).map(|i| ((i * 17 + 3) % 256) as u8).collect();
-    match fs_put(h, b"RW.TXT", &data).and_then(|_| fs_get(h, b"RW.TXT")) {
+    match put_file("RW.TXT", &data).and_then(|_| get_file("RW.TXT")) {
         Ok(d) => {
             if d.len() != 3000 {
                 eprintln!("bsh: fatw selftest: len={} want=3000", d.len());
@@ -983,7 +904,7 @@ fn fatw_selftest() {
             }
         }
         Err(e) => {
-            eprintln!("bsh: fatw selftest: {}", e.text());
+            eprintln!("bsh: fatw selftest: {}", errno_text(e));
             berry_libc::park();
         }
     }
@@ -991,75 +912,74 @@ fn fatw_selftest() {
 }
 
 /// 目录自验（C-0 刀 4，`DIR ok n=` = rootfs 相第 22 标记——确定性状态
-/// 谓词）：v2 五 op + 多段读写全链 RAM 面——MKDIR `bdir` → 多段 PUT
-/// （`bdir/n.bin` 64B pattern）→ 多段 GET 逐字节全等 → READDIR 恰一名 →
-/// LOOKUP 命中 → STAT 双面（TYPE_DIR 子项数 / TYPE_FILE 字节数）→ UNLINK
-/// 文件 → 空目录 READDIR → UNLINK 空目录 → LOOKUP Noent 收口。读面全 RAM
-/// 命中（`bdir` 在树上——不触 FAT 链走查；FAT 子目录 QEMU 活覆盖在 smoke
+/// 谓词）：libc 目录/stat 面 + 多段读写全链 RAM 面——mkdir `bdir` →
+/// 多段写（`bdir/n.bin` 64B pattern）→ 多段读逐字节全等 → READDIR 恰一
+/// 名 → stat 双面（目录=true 子项数 1 / 文件=false 64B）→ unlink 文件 →
+/// 空目录 READDIR → unlink 空目录 → stat ENOENT 收口。读面全 RAM 命中
+/// （`bdir` 在树上——不触 FAT 链走查；FAT 子目录 QEMU 活覆盖在 smoke
 /// FAT 子目录相注入段 `cat DATA/NOTE.TXT`/`ls DATA`）。失败 eprintln +
 /// park（标记缺失 → smoke FAIL 兜底）。
 fn dir_selftest() {
-    let h = fs_h();
     let a = &HEXYL_STDIN[..64];
-    if let Err(e) = fs_mkdir(h, b"bdir") {
-        eprintln!("bsh: dir selftest: mkdir {}", e.text());
+    if let Err(e) = mkdir_of("bdir") {
+        eprintln!("bsh: dir selftest: mkdir {}", errno_text(e));
         berry_libc::park();
     }
-    match fs_put(h, b"bdir\0n.bin", a).and_then(|_| fs_get(h, b"bdir\0n.bin")) {
+    if let Err(e) = put_file("bdir/n.bin", a) {
+        eprintln!("bsh: dir selftest: rw64 {}", errno_text(e));
+        berry_libc::park();
+    }
+    match get_file("bdir/n.bin") {
         Ok(d) if d == a => {}
         Ok(d) => {
             eprintln!("bsh: dir selftest: get64 len={} want=64", d.len());
             berry_libc::park();
         }
         Err(e) => {
-            eprintln!("bsh: dir selftest: rw64 {}", e.text());
+            eprintln!("bsh: dir selftest: rw64 {}", errno_text(e));
             berry_libc::park();
         }
     }
-    match fs_readdir(h, b"bdir") {
-        Ok(names) if names == &b"n.bin"[..] => {}
+    match dir_lines("bdir") {
+        Ok(d) if d == b"n.bin\n" => {}
         r => {
-            eprintln!("bsh: dir selftest: readdir {:?}", r);
+            eprintln!("bsh: dir selftest: readdir {:?}", r.map(|v| v.len()));
             berry_libc::park();
         }
     }
-    if let Err(e) = fs_lookup(h, b"bdir\0n.bin") {
-        eprintln!("bsh: dir selftest: lookup {}", e.text());
-        berry_libc::park();
-    }
-    match fs_stat(h, b"bdir") {
-        Ok((ty, n)) if ty == TYPE_DIR && n == 1 => {}
+    match stat_of("bdir") {
+        Ok((true, 1)) => {}
         r => {
             eprintln!("bsh: dir selftest: stat dir {:?}", r);
             berry_libc::park();
         }
     }
-    match fs_stat(h, b"bdir\0n.bin") {
-        Ok((ty, n)) if ty == TYPE_FILE && n == 64 => {}
+    match stat_of("bdir/n.bin") {
+        Ok((false, 64)) => {}
         r => {
             eprintln!("bsh: dir selftest: stat file {:?}", r);
             berry_libc::park();
         }
     }
-    // UNLINK 双面：先文件（目录转空——READDIR 空证）→ 空目录可删 → 双查
-    // Noent 收口。
-    if let Err(e) = fs_unlink(h, b"bdir\0n.bin") {
-        eprintln!("bsh: dir selftest: unlink file {}", e.text());
+    // UNLINK 双面：先文件（目录转空——READDIR 空证）→ 空目录可删 → stat
+    // ENOENT 收口（存在性终查与 v1 LOOKUP Noent 同义）。
+    if let Err(e) = unlink_of("bdir/n.bin") {
+        eprintln!("bsh: dir selftest: unlink file {}", errno_text(e));
         berry_libc::park();
     }
-    match fs_readdir(h, b"bdir") {
-        Ok(names) if names.is_empty() => {}
+    match dir_lines("bdir") {
+        Ok(d) if d.is_empty() => {}
         r => {
-            eprintln!("bsh: dir selftest: readdir empty {:?}", r);
+            eprintln!("bsh: dir selftest: readdir empty {:?}", r.map(|v| v.len()));
             berry_libc::park();
         }
     }
-    if let Err(e) = fs_unlink(h, b"bdir") {
-        eprintln!("bsh: dir selftest: unlink dir {}", e.text());
+    if let Err(e) = unlink_of("bdir") {
+        eprintln!("bsh: dir selftest: unlink dir {}", errno_text(e));
         berry_libc::park();
     }
-    match fs_lookup(h, b"bdir") {
-        Err(FsErr::Noent) => {}
+    match stat_of("bdir") {
+        Err(e) if e == ENOENT => {}
         r => {
             eprintln!("bsh: dir selftest: lookup gone {:?}", r);
             berry_libc::park();

@@ -139,7 +139,7 @@ fn main() {
                 let mut names = [0u8; 256];
                 let n = tree.list_root(&mut names);
                 let n = match fat.as_ref() {
-                    Some(f) => f.append_names(&tree.root_names(), &mut names, n),
+                    Some(f) => f.append_names(&tree.root_names(), &mut names, n, b' '),
                     None => n,
                 };
                 encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
@@ -168,31 +168,47 @@ fn main() {
             }
             Some(Req::Readdir { path: name }) => {
                 let mut names = [0u8; 256];
-                match tree.readdir(name, &mut names) {
-                    // NUL 连接子名（READDIR 应答 blob = LIST 同形）。
-                    ReadDirRes::Names(n) => {
-                        encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
-                    }
-                    // RAM 未命中 → FAT 目录回落（刀 3：FAT 卷挂 / 的子目录
-                    // 读面；RAM 同名项在树上时恒走上面 Names 臂——overlay
-                    // 上层遮下层，目录内容不并合）。
-                    ReadDirRes::Noent => {
-                        match fat.as_mut().map(|f| f.readdir(name, &mut names)) {
-                            Some(FatList::Names(n)) => {
-                                encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
-                            }
-                            Some(FatList::NotDir) | Some(FatList::Bad) => {
-                                encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
-                            }
-                            Some(FatList::Noent) | None => encode_reply_status(
-                                &mut rep,
-                                berry_fsproto::ST_NOENT,
-                            )
-                            .unwrap_or_else(|| trap()),
+                // C-1 刀 4：根（空路径）= overlay 全景——RAM 根 + FAT 未影子
+                // 名续列（与 LIST 同源同序，分隔 NUL = READDIR blob 形）。
+                // bsh 裸 `ls` 迁 libc opendir("/") 后 READDIR 是根列名的
+                // 唯一活路径（LIST 无客户端留守——协议冻结不删）；fstree
+                // resolve 把空段当名查 → 根恒 Noent，故根并合在此执法
+                // 而非树层。
+                if name.is_empty() {
+                    let n = tree.list_root_nul(&mut names);
+                    let n = match fat.as_ref() {
+                        Some(f) => f.append_names(&tree.root_names(), &mut names, n, 0),
+                        None => n,
+                    };
+                    encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
+                } else {
+                    match tree.readdir(name, &mut names) {
+                        // NUL 连接子名（READDIR 应答 blob = LIST 同形）。
+                        ReadDirRes::Names(n) => {
+                            encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
                         }
-                    }
-                    ReadDirRes::NotDir => {
-                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                        // RAM 未命中 → FAT 目录回落（刀 3：FAT 卷挂 / 的子目录
+                        // 读面；RAM 同名项在树上时恒走上面 Names 臂——overlay
+                        // 上层遮下层，目录内容不并合）。
+                        ReadDirRes::Noent => {
+                            match fat.as_mut().map(|f| f.readdir(name, &mut names)) {
+                                Some(FatList::Names(n)) => {
+                                    encode_reply_list(&mut rep, &names[..n])
+                                        .unwrap_or_else(|| trap())
+                                }
+                                Some(FatList::NotDir) | Some(FatList::Bad) => {
+                                    encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                                }
+                                Some(FatList::Noent) | None => encode_reply_status(
+                                    &mut rep,
+                                    berry_fsproto::ST_NOENT,
+                                )
+                                .unwrap_or_else(|| trap()),
+                            }
+                        }
+                        ReadDirRes::NotDir => {
+                            encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                        }
                     }
                 }
             }

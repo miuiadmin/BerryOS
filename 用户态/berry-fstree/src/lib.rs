@@ -224,6 +224,13 @@ impl Tree {
         render(&self.root, buf, b' ')
     }
 
+    /// 根名 **NUL 连接**（C-1 刀 4 READDIR 根面）：与 [`list_root`] 同序同帽
+    /// 仅分隔符不同——fsmgr READDIR 空路径 = overlay 全景（RAM 根 + FAT 未
+    /// 影子名续列），libc `opendir("/")` 的目录 blob 供应源。
+    pub fn list_root_nul(&self, buf: &mut [u8]) -> usize {
+        render(&self.root, buf, 0)
+    }
+
     /// 根名借用表（FAT 影子去重用——文件与目录都算：RAM 任意根名（含
     /// 8.3 形目录名）影子 FAT 同名 display 项，overlay 上层遮下层的通则）。
     pub fn root_names(&self) -> Vec<&[u8]> {
@@ -611,6 +618,21 @@ mod tests {
         let n2 = t2.list_root(&mut buf2);
         assert!(n2 <= LIST_MAX);
         assert_eq!(n2, 4 * 49 - 1); // 4 项恰容（4×48+3=195 ≤ 200 < 5×48+4）
+    }
+
+    #[test]
+    fn list_root_nul_shape() {
+        // C-1 刀 4：READDIR 根 blob = 与 list_root 同序同帽、NUL 连接。
+        let mut t = Tree::new();
+        assert_eq!(t.put(b"a", 0, b"1"), ST_OK);
+        assert_eq!(t.put(b"b", 0, b"1"), ST_OK);
+        assert_eq!(t.mkdir(b"d"), ST_OK);
+        let mut buf = [0u8; 256];
+        let n = t.list_root_nul(&mut buf);
+        assert_eq!(&buf[..n], b"a\x00b\x00d");
+        // 空根 = 空 blob（opendir("/") 于空系统 → 空列）。
+        let mut buf2 = [0u8; 256];
+        assert_eq!(Tree::new().list_root_nul(&mut buf2), 0);
     }
 
     #[test]
