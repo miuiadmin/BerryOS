@@ -74,7 +74,7 @@ fn main() {
             trap(); // 非 -EAGAIN 错码 = 通道链断（真死亡面，不重臂）
         }
         let rep_len: usize = match parse_request(&msg[..nb]) {
-            Some(Req::Put { name, off, data }) => {
+            Some(Req::Put { path: name, off, data }) => {
                 // A-6 路由：8.3 大写名 → FAT 层 staging（TRUNC 点落盘）；其余
                 // RAM 表不变。and_then 展平——无 FAT 层（fat==None，RAM-only
                 // 降级）与非 FAT 名（stage_put 返 None）同走 RAM 通道。
@@ -85,7 +85,7 @@ fn main() {
                 };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
             }
-            Some(Req::Trunc { name, size }) => {
+            Some(Req::Trunc { path: name, size }) => {
                 // TRUNC = FAT 名的 commit 触发点（bsh fs_put 尾随 TRUNC 恰合：
                 // 分片 PUT 累积 → TRUNC(len) 落盘）；RAM 名照旧。
                 let st = match fat.as_mut().and_then(|f| f.stage_trunc(name, size)) {
@@ -94,7 +94,7 @@ fn main() {
                 };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
             }
-            Some(Req::Get { name, off }) => match handle_get(&files, name, off, &mut rep) {
+            Some(Req::Get { path: name, off }) => match handle_get(&files, name, off, &mut rep) {
                 Some(n) => n, // rep 已编码（handle_get 内部落字）
                 None => match fat.as_mut().map(|f| f.handle_get(name, off, &mut rep)) {
                     Some(GetRes::Served(n)) => n,
@@ -122,6 +122,16 @@ fn main() {
                 };
                 encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
             }
+            // v2 路径型五 op（C-0 刀 1 协议面先行）：服务面刀 2 接树
+            // handler，先统一拒面占位（保穷尽匹配编译；bsh 刀 4 前无人
+            // 发这些 op，占位不可达于现网行为）。
+            Some(
+                Req::Lookup { .. }
+                | Req::Mkdir { .. }
+                | Req::Unlink { .. }
+                | Req::Readdir { .. }
+                | Req::Stat { .. },
+            ) => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
             None => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
         };
         send_reply(h, &rep, rep_len);

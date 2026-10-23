@@ -24,6 +24,21 @@
 //! 下无全局回复判别字；`parse_reply_get`/`parse_reply_list` 分立函数）。
 //! 错误面（截断/野值/尾随字节）host 单测全盖——「AI 测试友好化」：协议
 //! 正确性不依赖 QEMU 就能验证。
+//!
+//! v2（C-0）：名域从「单名」升 **NUL 分段路径整串**（总长 ≤[`PATH_MAX`]、
+//! 段数 ≤[`PATH_DEPTH_MAX`]、每段 ≤[`NAME_MAX`]，空段/首尾 NUL 拒——env
+//! 块 argv 字节串先例）；**单段路径与 v1 名逐字节同形（D2 零迁移）**，多
+//! 段 NUL 串即新形态。新五 op 请求均 `[op][nlen][path]` 恰好（无尾随字段）：
+//! - LOOKUP(5)：存在性 → 状态应答（1 字节）
+//! - MKDIR(6)：建目录 → 状态应答（父缺 = ST_NOENT / 帽尽 = ST_FULL）
+//! - UNLINK(7)：删文件/空目录 → 状态应答（非空目录 = [`ST_NOEMPTY`]）
+//! - READDIR(8)：目录项列 → LIST 同形 `[0][dlen][names]`（names = NUL 连接
+//!   ——段内无 NUL 由路径校验构造保证，可分性免检）
+//! - STAT(9)：→ `[0][type u8][size u32]` 恰 6 字节（type = [`TYPE_FILE`]/
+//!   [`TYPE_DIR`]）
+//!
+//! PUT/TRUNC/GET 名域同升路径（多段 = 子目录内文件——服务端树 C-0 刀 2）。
+//! 严格串行 RPC、编码器 None 拒绝契约、帽常量双侧同步义务三纪律照旧。
 
 #![cfg_attr(not(test), no_std)]
 
@@ -35,6 +50,16 @@ pub const OP_TRUNC: u8 = 2;
 pub const OP_GET: u8 = 3;
 /// LIST：名列（空白连接，≤200B 容纳截断）。
 pub const OP_LIST: u8 = 4;
+/// LOOKUP：存在性探询（v2 路径面）。
+pub const OP_LOOKUP: u8 = 5;
+/// MKDIR：建目录（父须存在）。
+pub const OP_MKDIR: u8 = 6;
+/// UNLINK：删文件/空目录。
+pub const OP_UNLINK: u8 = 7;
+/// READDIR：目录项列。
+pub const OP_READDIR: u8 = 8;
+/// STAT：类型 + 尺寸。
+pub const OP_STAT: u8 = 9;
 
 /// 应答状态：成功。
 pub const ST_OK: u8 = 0;
@@ -44,11 +69,19 @@ pub const ST_NOENT: u8 = 1;
 pub const ST_FULL: u8 = 2;
 /// 应答状态：请求坏（解析失败——长度/野值/尾随字节）。
 pub const ST_BAD: u8 = 3;
+/// 应答状态：目录非空（UNLINK 删非空目录的专属拒面——与 ST_BAD 分立，
+/// 「请求合法但语义拒绝」与「请求畸形」不混谈）。
+pub const ST_NOEMPTY: u8 = 4;
 
 /// 数据分片粒度：单消息数据上限（channel inline 帽 256 − 协议头 7 − 名帽）。
 pub const CHUNK: usize = 192;
-/// 文件名帽（含 NUL 不允许——nlen 定界，名内字节原样透明）。
+/// 段名帽（路径单段长度上界；段内 NUL 天然不可——NUL 即分隔符。v1 名 =
+/// 单段路径，同形同帽——D2 兼容根基）。
 pub const NAME_MAX: usize = 48;
+/// 路径总长帽（v2：NUL 分段整串含分隔符；nlen u8 上界 255 内的执法位）。
+pub const PATH_MAX: usize = 128;
+/// 路径深度帽（段数上限，根不计——`a\0b\0c` 深 3）。
+pub const PATH_DEPTH_MAX: usize = 8;
 /// 单文件尺寸帽（服务端执法；客户端 GET 循环同值兜底 more 失控面）。
 pub const FILE_SIZE_MAX: usize = 16 * 1024;
 /// 文件数帽（服务端执法；静态堆 256KiB 预算内 8×16KiB=128KiB 稳态 + Vec
@@ -58,6 +91,37 @@ pub const FILE_COUNT_MAX: usize = 8;
 /// 后续文件不列，调用方可见）。
 pub const LIST_MAX: usize = 200;
 
+/// STAT 应答类型位：文件。
+pub const TYPE_FILE: u8 = 0;
+/// STAT 应答类型位：目录。
+pub const TYPE_DIR: u8 = 1;
+
+/// v2 路径校验：NUL 分段整串。拒：空路径 / 总长超 [`PATH_MAX`] / 空段
+/// （前导、尾随、连续 NUL）/ 任一段超 [`NAME_MAX`] / 段数超
+/// [`PATH_DEPTH_MAX`]。单段（无 NUL）≤NAME_MAX 与 v1 名同形同规则。
+fn path_valid(path: &[u8]) -> bool {
+    if path.is_empty() || path.len() > PATH_MAX {
+        return false;
+    }
+    let mut depth = 1usize;
+    let mut seg = 0usize;
+    for &b in path {
+        if b == 0 {
+            if seg == 0 || seg > NAME_MAX {
+                return false; // 空段 / 段超帽（中段在其 NUL 边界判）
+            }
+            depth += 1;
+            if depth > PATH_DEPTH_MAX {
+                return false;
+            }
+            seg = 0;
+        } else {
+            seg += 1;
+        }
+    }
+    seg != 0 && seg <= NAME_MAX // 末段非空（尾随 NUL 拒）且不超帽
+}
+
 fn put_u32(out: &mut [u8], at: usize, v: u32) {
     out[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
@@ -66,19 +130,20 @@ fn get_u32(m: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([m[at], m[at + 1], m[at + 2], m[at + 3]])
 }
 
-/// 请求编码（PUT）：失败 = 参数越帽（名空/名超 [`NAME_MAX`]/片超 [`CHUNK`]）
-/// 或 out 容量不足——**编不出就拒绝，不截断**（截断的请求是语义静默错）。
-pub fn encode_put(out: &mut [u8], name: &[u8], off: u32, data: &[u8]) -> Option<usize> {
-    if name.is_empty() || name.len() > NAME_MAX || data.len() > CHUNK {
+/// 请求编码（PUT）：失败 = 路径坏（空/超帽/空段，[`path_valid`]）或片超
+/// [`CHUNK`] 或 out 容量不足——**编不出就拒绝，不截断**（截断的请求是
+/// 语义静默错）。
+pub fn encode_put(out: &mut [u8], path: &[u8], off: u32, data: &[u8]) -> Option<usize> {
+    if !path_valid(path) || data.len() > CHUNK {
         return None;
     }
-    let mut i = 2 + name.len();
+    let mut i = 2 + path.len();
     if i + 5 + data.len() > out.len() {
         return None;
     }
     out[0] = OP_PUT;
-    out[1] = name.len() as u8;
-    out[2..i].copy_from_slice(name);
+    out[1] = path.len() as u8;
+    out[2..i].copy_from_slice(path);
     put_u32(out, i, off);
     i += 4;
     out[i] = data.len() as u8;
@@ -88,33 +153,33 @@ pub fn encode_put(out: &mut [u8], name: &[u8], off: u32, data: &[u8]) -> Option<
 }
 
 /// 请求编码（TRUNC）。
-pub fn encode_trunc(out: &mut [u8], name: &[u8], size: u32) -> Option<usize> {
-    if name.is_empty() || name.len() > NAME_MAX {
+pub fn encode_trunc(out: &mut [u8], path: &[u8], size: u32) -> Option<usize> {
+    if !path_valid(path) {
         return None;
     }
-    let i = 2 + name.len();
+    let i = 2 + path.len();
     if i + 4 > out.len() {
         return None;
     }
     out[0] = OP_TRUNC;
-    out[1] = name.len() as u8;
-    out[2..i].copy_from_slice(name);
+    out[1] = path.len() as u8;
+    out[2..i].copy_from_slice(path);
     put_u32(out, i, size);
     Some(i + 4)
 }
 
 /// 请求编码（GET）。
-pub fn encode_get(out: &mut [u8], name: &[u8], off: u32) -> Option<usize> {
-    if name.is_empty() || name.len() > NAME_MAX {
+pub fn encode_get(out: &mut [u8], path: &[u8], off: u32) -> Option<usize> {
+    if !path_valid(path) {
         return None;
     }
-    let i = 2 + name.len();
+    let i = 2 + path.len();
     if i + 4 > out.len() {
         return None;
     }
     out[0] = OP_GET;
-    out[1] = name.len() as u8;
-    out[2..i].copy_from_slice(name);
+    out[1] = path.len() as u8;
+    out[2..i].copy_from_slice(path);
     put_u32(out, i, off);
     Some(i + 4)
 }
@@ -129,34 +194,87 @@ pub fn encode_list(out: &mut [u8]) -> Option<usize> {
     Some(1)
 }
 
+/// v2 路径型 op 的请求编码共用：`[op][nlen][path]` 恰好（无尾随字段）。
+fn encode_path_op(out: &mut [u8], op: u8, path: &[u8]) -> Option<usize> {
+    if !path_valid(path) {
+        return None;
+    }
+    if 2 + path.len() > out.len() {
+        return None;
+    }
+    out[0] = op;
+    out[1] = path.len() as u8;
+    out[2..2 + path.len()].copy_from_slice(path);
+    Some(2 + path.len())
+}
+
+/// 请求编码（LOOKUP）。
+pub fn encode_lookup(out: &mut [u8], path: &[u8]) -> Option<usize> {
+    encode_path_op(out, OP_LOOKUP, path)
+}
+
+/// 请求编码（MKDIR）。
+pub fn encode_mkdir(out: &mut [u8], path: &[u8]) -> Option<usize> {
+    encode_path_op(out, OP_MKDIR, path)
+}
+
+/// 请求编码（UNLINK）。
+pub fn encode_unlink(out: &mut [u8], path: &[u8]) -> Option<usize> {
+    encode_path_op(out, OP_UNLINK, path)
+}
+
+/// 请求编码（READDIR）。
+pub fn encode_readdir(out: &mut [u8], path: &[u8]) -> Option<usize> {
+    encode_path_op(out, OP_READDIR, path)
+}
+
+/// 请求编码（STAT）。
+pub fn encode_stat(out: &mut [u8], path: &[u8]) -> Option<usize> {
+    encode_path_op(out, OP_STAT, path)
+}
+
 /// 解析后的请求（服务端分派面）。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Req<'a> {
     /// 分片写：off 起写入 data（off 超现长 = 零填充扩容，PUT 语义）。
-    Put { name: &'a [u8], off: u32, data: &'a [u8] },
+    Put { path: &'a [u8], off: u32, data: &'a [u8] },
     /// 定长（size=0 兼 create）。
-    Trunc { name: &'a [u8], size: u32 },
+    Trunc { path: &'a [u8], size: u32 },
     /// 分片读。
-    Get { name: &'a [u8], off: u32 },
-    /// 名列。
+    Get { path: &'a [u8], off: u32 },
+    /// 名列（根；分层列目录用 [`Req::Readdir`]）。
     List,
+    /// 存在性探询（v2 路径面）。
+    Lookup { path: &'a [u8] },
+    /// 建目录（父须存在）。
+    Mkdir { path: &'a [u8] },
+    /// 删文件/空目录。
+    Unlink { path: &'a [u8] },
+    /// 目录项列（names = NUL 连接，应答 LIST 同形）。
+    Readdir { path: &'a [u8] },
+    /// 类型 + 尺寸。
+    Stat { path: &'a [u8] },
 }
 
-/// 请求解析（服务端面）：空/未知 op/名空或超帽/字段截断/**尾随字节** → None
-/// （调用方回 [`ST_BAD`]——畸形请求不猜语义）。
+/// 请求解析（服务端面）：空/未知 op/路径坏（空/超帽/空段）/字段截断/
+/// **尾随字节** → None（调用方回 [`ST_BAD`]——畸形请求不猜语义）。
 pub fn parse_request(m: &[u8]) -> Option<Req<'_>> {
     let op = *m.first()?;
     if op == OP_LIST {
         return if m.len() == 1 { Some(Req::List) } else { None };
     }
-    if !(op == OP_PUT || op == OP_TRUNC || op == OP_GET) {
+    if !(op == OP_PUT || op == OP_TRUNC || op == OP_GET
+        || op == OP_LOOKUP || op == OP_MKDIR || op == OP_UNLINK
+        || op == OP_READDIR || op == OP_STAT)
+    {
         return None;
     }
     let n = *m.get(1)? as usize;
-    if n == 0 || n > NAME_MAX {
+    // n 越界（名截断）→ None；n=0 → 空路径，path_valid 拒（v1 旧拒面等价）。
+    let path = m.get(2..2 + n)?;
+    if !path_valid(path) {
         return None;
     }
-    let name = m.get(2..2 + n)?;
     let i = 2 + n;
     match op {
         OP_PUT => {
@@ -171,20 +289,26 @@ pub fn parse_request(m: &[u8]) -> Option<Req<'_>> {
             if i + 5 + dlen != m.len() || dlen > CHUNK {
                 return None;
             }
-            Some(Req::Put { name, off, data })
+            Some(Req::Put { path, off, data })
         }
         OP_TRUNC => {
             if i + 4 != m.len() {
                 return None;
             }
-            Some(Req::Trunc { name, size: get_u32(m, i) })
+            Some(Req::Trunc { path, size: get_u32(m, i) })
         }
-        _ => {
+        OP_GET => {
             if i + 4 != m.len() {
                 return None;
             }
-            Some(Req::Get { name, off: get_u32(m, i) })
+            Some(Req::Get { path, off: get_u32(m, i) })
         }
+        // v2 路径型五 op：路径后恰消息尾（无尾随字段）。
+        OP_LOOKUP => (i == m.len()).then_some(Req::Lookup { path }),
+        OP_MKDIR => (i == m.len()).then_some(Req::Mkdir { path }),
+        OP_UNLINK => (i == m.len()).then_some(Req::Unlink { path }),
+        OP_READDIR => (i == m.len()).then_some(Req::Readdir { path }),
+        _ => (i == m.len()).then_some(Req::Stat { path }),
     }
 }
 
@@ -265,6 +389,30 @@ pub fn parse_reply_list(m: &[u8]) -> Option<Result<&[u8], u8>> {
     Some(Ok(&m[2..]))
 }
 
+/// STAT 应答编码（st=0 面）：`[0][type u8][size u32]` 恰 6 字节。
+pub fn encode_reply_stat(out: &mut [u8], ty: u8, size: u32) -> Option<usize> {
+    if out.len() < 6 {
+        return None;
+    }
+    out[0] = ST_OK;
+    out[1] = ty;
+    put_u32(out, 2, size);
+    Some(6)
+}
+
+/// STAT 应答解析：`Ok((type, size))` / `Err(st)`（服务端拒绝）；畸形 →
+/// None（长度不符——客户端按断链处理）。
+pub fn parse_reply_stat(m: &[u8]) -> Option<Result<(u8, u32), u8>> {
+    let st = *m.first()?;
+    if st != ST_OK {
+        return if m.len() == 1 { Some(Err(st)) } else { None };
+    }
+    if m.len() != 6 {
+        return None;
+    }
+    Some(Ok((m[1], get_u32(m, 2))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,7 +422,7 @@ mod tests {
         let n = encode_put(&mut b, name, off, data).unwrap();
         assert_eq!(
             parse_request(&b[..n]),
-            Some(Req::Put { name, off, data })
+            Some(Req::Put { path: name, off, data })
         );
     }
 
@@ -312,16 +460,16 @@ mod tests {
     fn trunc_roundtrip() {
         let mut b = [0u8; 256];
         let n = encode_trunc(&mut b, b"h.hex", 2156).unwrap();
-        assert_eq!(parse_request(&b[..n]), Some(Req::Trunc { name: b"h.hex", size: 2156 }));
+        assert_eq!(parse_request(&b[..n]), Some(Req::Trunc { path: b"h.hex", size: 2156 }));
         let n = encode_trunc(&mut b, b"empty", 0).unwrap();
-        assert_eq!(parse_request(&b[..n]), Some(Req::Trunc { name: b"empty", size: 0 }));
+        assert_eq!(parse_request(&b[..n]), Some(Req::Trunc { path: b"empty", size: 0 }));
     }
 
     #[test]
     fn get_roundtrip() {
         let mut b = [0u8; 256];
         let n = encode_get(&mut b, b"t.bin", 384).unwrap();
-        assert_eq!(parse_request(&b[..n]), Some(Req::Get { name: b"t.bin", off: 384 }));
+        assert_eq!(parse_request(&b[..n]), Some(Req::Get { path: b"t.bin", off: 384 }));
     }
 
     #[test]
@@ -335,7 +483,8 @@ mod tests {
     #[test]
     fn request_malformed() {
         assert_eq!(parse_request(b""), None); // 空
-        assert_eq!(parse_request(b"\x05"), None); // 未知 op
+        assert_eq!(parse_request(b"\x0a"), None); // 未知 op（10 号未分配）
+        assert_eq!(parse_request(b"\x05"), None); // LOOKUP 缺 nlen（v2 起 5 号在册）
         assert_eq!(parse_request(b"\x01"), None); // 缺 nlen
         assert_eq!(parse_request(b"\x01\x03ab"), None); // 名截断
         assert_eq!(parse_request(b"\x01\x02ab"), None); // 名完整但字段零字节（panic 探针实锤后补）
@@ -460,6 +609,10 @@ mod tests {
         assert_eq!(encode_list(&mut b), Some(1));
         let mut b = [0u8; 1]; // reply_status：恰 1
         assert_eq!(encode_reply_status(&mut b, ST_OK), Some(1));
+        let mut b = [0u8; 2 + 3]; // lookup "a\0b"：恰 5
+        assert_eq!(encode_lookup(&mut b, b"a\0b"), Some(5));
+        let mut b = [0u8; 6]; // reply_stat：恰 6
+        assert_eq!(encode_reply_stat(&mut b, TYPE_FILE, 1), Some(6));
     }
 
     #[test]
@@ -471,6 +624,12 @@ mod tests {
         assert_eq!(encode_put(&mut [], b"a", 0, b""), None);
         assert_eq!(encode_trunc(&mut [], b"a", 0), None);
         assert_eq!(encode_get(&mut [], b"a", 0), None);
+        assert_eq!(encode_lookup(&mut [], b"a"), None);
+        assert_eq!(encode_mkdir(&mut [], b"a"), None);
+        assert_eq!(encode_unlink(&mut [], b"a"), None);
+        assert_eq!(encode_readdir(&mut [], b"a"), None);
+        assert_eq!(encode_stat(&mut [], b"a"), None);
+        assert_eq!(encode_reply_stat(&mut [], TYPE_FILE, 0), None);
     }
 
     #[test]
@@ -491,14 +650,183 @@ mod tests {
         m.extend_from_slice(&7u32.to_le_bytes());
         assert_eq!(
             parse_request(&m),
-            Some(Req::Get { name: name.as_slice(), off: 7 })
+            Some(Req::Get { path: name.as_slice(), off: 7 })
         );
         // encode 侧同名恰满 roundtrip。
         let mut b = [0u8; 256];
         let n = encode_get(&mut b, &name, 7).unwrap();
         assert_eq!(
             parse_request(&b[..n]),
-            Some(Req::Get { name: name.as_slice(), off: 7 })
+            Some(Req::Get { path: name.as_slice(), off: 7 })
         );
+    }
+
+    // ---- v2 路径面（C-0 刀 1）----
+
+    fn path_8seg() -> Vec<u8> {
+        // 深度恰 8（PATH_DEPTH_MAX）：s1\0s2\0…\0s8。
+        let segs: [&[u8]; PATH_DEPTH_MAX] =
+            [b"s1", b"s2", b"s3", b"s4", b"s5", b"s6", b"s7", b"s8"];
+        segs.join(&0u8)
+    }
+
+    #[test]
+    fn path_ops_roundtrip() {
+        let mut b = [0u8; 256];
+        let p = b"d\0sub\0f.bin";
+        let n = encode_lookup(&mut b, p).unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Lookup { path: p }));
+        let n = encode_mkdir(&mut b, b"d").unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Mkdir { path: b"d" }));
+        let n = encode_unlink(&mut b, p).unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Unlink { path: p }));
+        let n = encode_readdir(&mut b, b"d\0sub").unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Readdir { path: b"d\0sub" }));
+        let n = encode_stat(&mut b, p).unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Stat { path: p }));
+        // 深度恰 8 边界成立。
+        let deep = path_8seg();
+        let n = encode_lookup(&mut b, &deep).unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Lookup { path: deep.as_slice() }));
+    }
+
+    #[test]
+    fn path_depth_rejected() {
+        let mut b = [0u8; 256];
+        let mut deep9 = path_8seg();
+        deep9.extend_from_slice(b"\0s9"); // 9 段
+        assert_eq!(encode_lookup(&mut b, &deep9), None);
+        // 线面伪造同拒：parse 侧 path_valid 同门。
+        let mut m = vec![OP_STAT, deep9.len() as u8];
+        m.extend_from_slice(&deep9);
+        assert_eq!(parse_request(&m), None);
+    }
+
+    #[test]
+    fn path_len_boundary() {
+        let mut b = [0u8; 256];
+        // 总长恰 128 = PATH_MAX：48 + NUL + 48 + NUL + 30（段帽内三段）。
+        let mut p: Vec<u8> = Vec::new();
+        p.extend_from_slice(&[b'x'; NAME_MAX]);
+        p.push(0);
+        p.extend_from_slice(&[b'y'; NAME_MAX]);
+        p.push(0);
+        p.extend_from_slice(&[b'z'; 30]);
+        assert_eq!(p.len(), PATH_MAX);
+        let n = encode_mkdir(&mut b, &p).unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Mkdir { path: p.as_slice() }));
+        // 超 1 字节 → 拒。
+        p.push(b'w');
+        assert_eq!(p.len(), PATH_MAX + 1);
+        assert_eq!(encode_mkdir(&mut b, &p), None);
+    }
+
+    #[test]
+    fn path_empty_segment_rejected() {
+        let mut b = [0u8; 256];
+        assert_eq!(encode_lookup(&mut b, b""), None); // 空路径
+        assert_eq!(encode_lookup(&mut b, b"\0a"), None); // 前导 NUL（首段空）
+        assert_eq!(encode_lookup(&mut b, b"a\0"), None); // 尾随 NUL（末段空）
+        assert_eq!(encode_lookup(&mut b, b"a\0\0b"), None); // 连续 NUL（中间空段）
+    }
+
+    #[test]
+    fn path_segment_over_name_max() {
+        let mut b = [0u8; 256];
+        // 单段 49：v1 同拒面回归（n > NAME_MAX 旧规则的单段等价）。
+        assert_eq!(encode_get(&mut b, &[b'a'; NAME_MAX + 1], 0), None);
+        // 中段 49（总长 ≤ PATH_MAX）：段帽仍拒——PATH_MAX 不放宽段帽。
+        let mut mid: Vec<u8> = vec![b'a'; NAME_MAX + 1];
+        mid.push(0);
+        mid.extend_from_slice(b"tail");
+        assert!(mid.len() <= PATH_MAX);
+        assert_eq!(encode_lookup(&mut b, &mid), None);
+    }
+
+    #[test]
+    fn path_v1_wire_compat() {
+        // D2：单段路径与 v1 名逐字节同形——旧调用方零迁移。
+        let mut b = [0u8; 256];
+        assert_eq!(encode_lookup(&mut b, b"f"), Some(3));
+        assert_eq!(&b[..3], &[OP_LOOKUP, 1, b'f']);
+        assert_eq!(encode_get(&mut b, b"f", 7), Some(7));
+        assert_eq!(&b[..7], &[OP_GET, 1, b'f', 7, 0, 0, 0]);
+        let n = encode_put(&mut b, b"a.bin", 0, b"hi").unwrap();
+        assert_eq!(
+            &b[..n],
+            &[OP_PUT, 5, b'a', b'.', b'b', b'i', b'n', 0, 0, 0, 0, 2, b'h', b'i']
+        );
+    }
+
+    #[test]
+    fn v1_ops_take_paths() {
+        // PUT/TRUNC/GET 名域升路径：多段路径直通（服务端树 C-0 刀 2 消费）。
+        round_put(b"d\0f.bin", 0, b"hi");
+        let mut b = [0u8; 256];
+        let n = encode_trunc(&mut b, b"d\0f.bin", 9).unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Trunc { path: b"d\0f.bin", size: 9 }));
+        let n = encode_get(&mut b, b"d\0f.bin", 3).unwrap();
+        assert_eq!(parse_request(&b[..n]), Some(Req::Get { path: b"d\0f.bin", off: 3 }));
+    }
+
+    #[test]
+    fn path_ops_trailing_rejected() {
+        assert_eq!(parse_request(b"\x06\x01a\x00"), None); // MKDIR 尾随
+        assert_eq!(parse_request(&[OP_LOOKUP, 1, b'a', 0]), None); // LOOKUP 尾随 1 字节
+        assert_eq!(parse_request(&[OP_STAT, 2, b'a', 0, b'b', 0]), None); // STAT 尾随（尾随字节含 NUL 同拒）
+        assert_eq!(parse_request(&[OP_UNLINK, 2, b'a', 0, b'b']), None); // UNLINK 尾随
+    }
+
+    #[test]
+    fn path_parse_nlen_boundary() {
+        // nlen 声 200：名在场也拒（总长帽 parse 侧同门）。
+        let mut m = vec![OP_LOOKUP, 200];
+        m.extend_from_slice(&[b'q'; 200]);
+        assert_eq!(parse_request(&m), None);
+        // nlen 声 3 实给 2（名截断）→ None。
+        assert_eq!(parse_request(&[OP_LOOKUP, 3, b'a', b'b']), None);
+    }
+
+    #[test]
+    fn path_op_out_capacity() {
+        // 路径型编码器容量门：贴合过、差一拒（p = 9B 路径 → 恰 11 / 差一 10）。
+        let p = b"aaaa\0bbbb";
+        let mut b = [0u8; 11];
+        assert_eq!(encode_readdir(&mut b, p), Some(11));
+        let mut b = [0u8; 10];
+        assert_eq!(encode_readdir(&mut b, p), None);
+    }
+
+    #[test]
+    fn reply_stat_roundtrip() {
+        let mut b = [0u8; 8];
+        let n = encode_reply_stat(&mut b, TYPE_DIR, 4096).unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(parse_reply_stat(&b[..n]), Some(Ok((TYPE_DIR, 4096u32))));
+        let n = encode_reply_stat(&mut b, TYPE_FILE, 0).unwrap();
+        assert_eq!(parse_reply_stat(&b[..n]), Some(Ok((TYPE_FILE, 0u32))));
+        // 错误应答：恰 1 字节 st；带尾随 → None。
+        let n = encode_reply_status(&mut b, ST_NOENT).unwrap();
+        assert_eq!(parse_reply_stat(&b[..n]), Some(Err(ST_NOENT)));
+        assert_eq!(parse_reply_stat(b"\x01\x00"), None);
+        // 畸形：st=0 面长度 ≠ 6（截断/超长）。
+        assert_eq!(parse_reply_stat(b"\x00\x00\x00\x00\x00"), None);
+        assert_eq!(parse_reply_stat(b"\x00\x00\x00\x00\x00\x00\x00"), None);
+        // out 不足。
+        let mut tiny = [0u8; 5];
+        assert_eq!(encode_reply_stat(&mut tiny, TYPE_FILE, 0), None);
+    }
+
+    #[test]
+    fn reply_readdir_reuses_list_shape() {
+        // READDIR 应答 = LIST 同形 blob；分隔语义在调用方（READDIR 用 NUL
+        // 连接——段内无 NUL，可分性由 path_valid 构造保证）。
+        let mut b = [0u8; 256];
+        let names = b"f.bin\0sub\0t.hex";
+        let n = encode_reply_list(&mut b, names).unwrap();
+        assert_eq!(parse_reply_list(&b[..n]), Some(Ok(names.as_slice())));
+        // 空目录：空 blob 合法。
+        let n = encode_reply_list(&mut b, b"").unwrap();
+        assert_eq!(parse_reply_list(&b[..n]), Some(Ok(&[] as &[u8])));
     }
 }
