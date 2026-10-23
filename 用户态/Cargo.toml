@@ -38,7 +38,11 @@
 # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数 crate，host 测试；单消费
 # = fsmgr 树层（独立小工作区编 musl target，同 stdhello/bsh 不入 members），
 # 帽常量/状态码自 berry-fsproto 单源引——「不长第二套」）。
-members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-blkproto",
+# C-1 刀 1：berry-fsclient（fs 服务客户端：rpc.rs 会话机自 bsh 迁居
+# cfg(not(test))——毒化位/90s·10s 双帽/阻塞重试形态逐字保真，host 测试不
+# 链接 syscall 面；lib.rs 纯函数面 fd 表/cwd/stat/dirent/ST 映射 host 测试）。
+# 单消费 = berry-libc（刀 2 fd 3+ 文件面）；bsh 刀 4 删自有面改经 libc。
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
     "berry-virtio", "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"

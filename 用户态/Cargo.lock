@@ -26,6 +26,14 @@ name = "berry-fatfs"
 version = "0.1.0"
 
 [[package]]
+name = "berry-fsclient"
+version = "0.1.0"
+dependencies = [
+ "berry-fsproto",
+ "berry-sys",
+]
+
+[[package]]
 name = "berry-fsproto"
 version = "0.1.0"
 
