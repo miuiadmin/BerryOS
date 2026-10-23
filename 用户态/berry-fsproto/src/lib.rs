@@ -40,6 +40,11 @@
 //!
 //! PUT/TRUNC/GET 名域同升路径（多段 = 子目录内文件——服务端树 C-0 刀 2）。
 //! 严格串行 RPC、编码器 None 拒绝契约、帽常量双侧同步义务三纪律照旧。
+//!
+//! **空路径串（nlen=0）= 根寻址**（C-1 刀 5 立法）：读面三 op（LOOKUP/
+//! READDIR/STAT）专属——encode 侧放行、parse 侧白名单对偶；服务端 fsmgr
+//! 根特判（LOOKUP=OK / READDIR=overlay 并合 / STAT=(TYPE_DIR, 根项数)）。
+//! 写面与 GET 拒空不变（根不可建/删/写，也不是文件读定向）。
 
 #![cfg_attr(not(test), no_std)]
 
@@ -106,6 +111,7 @@ pub const TYPE_DIR: u8 = 1;
 /// v2 路径校验：NUL 分段整串。拒：空路径 / 总长超 [`PATH_MAX`] / 空段
 /// （前导、尾随、连续 NUL）/ 任一段超 [`NAME_MAX`] / 段数超
 /// [`PATH_DEPTH_MAX`]。单段（无 NUL）≤NAME_MAX 与 v1 名同形同规则。
+/// （空路径的读面根寻址例外由调用方按 op 分流——本函数不知 op，恒拒空。）
 fn path_valid(path: &[u8]) -> bool {
     if path.is_empty() || path.len() > PATH_MAX {
         return false;
@@ -202,8 +208,16 @@ pub fn encode_list(out: &mut [u8]) -> Option<usize> {
 }
 
 /// v2 路径型 op 的请求编码共用：`[op][nlen][path]` 恰好（无尾随字段）。
-fn encode_path_op(out: &mut [u8], op: u8, path: &[u8]) -> Option<usize> {
-    if !path_valid(path) {
+/// `root_ok` = 空路径（nlen=0 → 根寻址）是否合法——**读面三 op**
+/// （LOOKUP/STAT/READDIR）专属（C-1 刀 5 立法：libc `chdir("/")`/
+/// `opendir("/")` 的根定向；服务端 fsmgr 对空 wire 特判根语义）；
+/// 写面（MKDIR/UNLINK，及不走本函数的 PUT/TRUNC）拒空不变。
+fn encode_path_op(out: &mut [u8], op: u8, path: &[u8], root_ok: bool) -> Option<usize> {
+    if path.is_empty() {
+        if !root_ok {
+            return None;
+        }
+    } else if !path_valid(path) {
         return None;
     }
     if 2 + path.len() > out.len() {
@@ -217,27 +231,27 @@ fn encode_path_op(out: &mut [u8], op: u8, path: &[u8]) -> Option<usize> {
 
 /// 请求编码（LOOKUP）。
 pub fn encode_lookup(out: &mut [u8], path: &[u8]) -> Option<usize> {
-    encode_path_op(out, OP_LOOKUP, path)
+    encode_path_op(out, OP_LOOKUP, path, true)
 }
 
 /// 请求编码（MKDIR）。
 pub fn encode_mkdir(out: &mut [u8], path: &[u8]) -> Option<usize> {
-    encode_path_op(out, OP_MKDIR, path)
+    encode_path_op(out, OP_MKDIR, path, false)
 }
 
 /// 请求编码（UNLINK）。
 pub fn encode_unlink(out: &mut [u8], path: &[u8]) -> Option<usize> {
-    encode_path_op(out, OP_UNLINK, path)
+    encode_path_op(out, OP_UNLINK, path, false)
 }
 
 /// 请求编码（READDIR）。
 pub fn encode_readdir(out: &mut [u8], path: &[u8]) -> Option<usize> {
-    encode_path_op(out, OP_READDIR, path)
+    encode_path_op(out, OP_READDIR, path, true)
 }
 
 /// 请求编码（STAT）。
 pub fn encode_stat(out: &mut [u8], path: &[u8]) -> Option<usize> {
-    encode_path_op(out, OP_STAT, path)
+    encode_path_op(out, OP_STAT, path, true)
 }
 
 /// 解析后的请求（服务端分派面）。
@@ -277,9 +291,15 @@ pub fn parse_request(m: &[u8]) -> Option<Req<'_>> {
         return None;
     }
     let n = *m.get(1)? as usize;
-    // n 越界（名截断）→ None；n=0 → 空路径，path_valid 拒（v1 旧拒面等价）。
+    // n 越界（名截断）→ None；n=0 = 根寻址（C-1 刀 5 立法）——读面三
+    // op（LOOKUP/READDIR/STAT）白名单放行，写面（PUT/TRUNC/MKDIR/UNLINK）
+    // 与 GET 维持 v1 拒面（根不是可定向的写/读对象）。
     let path = m.get(2..2 + n)?;
-    if !path_valid(path) {
+    if n == 0 {
+        if !(op == OP_LOOKUP || op == OP_READDIR || op == OP_STAT) {
+            return None;
+        }
+    } else if !path_valid(path) {
         return None;
     }
     let i = 2 + n;
@@ -731,10 +751,36 @@ mod tests {
     #[test]
     fn path_empty_segment_rejected() {
         let mut b = [0u8; 256];
-        assert_eq!(encode_lookup(&mut b, b""), None); // 空路径
+        // 空路径在 LOOKUP = 根寻址（刀 5 立法）——非空串的空段拒面照旧。
         assert_eq!(encode_lookup(&mut b, b"\0a"), None); // 前导 NUL（首段空）
         assert_eq!(encode_lookup(&mut b, b"a\0"), None); // 尾随 NUL（末段空）
         assert_eq!(encode_lookup(&mut b, b"a\0\0b"), None); // 连续 NUL（中间空段）
+    }
+
+    #[test]
+    fn root_wire_read_ops_only() {
+        // 空 wire（nlen=0）= 根寻址（C-1 刀 5 立法）：读面三 op 专属——
+        // encode 放行 `[op][0]` 恰 2 字节 + parse 白名单对偶 roundtrip；
+        // 写面（MKDIR/UNLINK）与 GET/PUT/TRUNC 拒空钉死（根不可建/删/写，
+        // 也不是文件读定向）。
+        let mut b = [0u8; 256];
+        for (enc, op, want) in [
+            (encode_lookup as fn(&mut [u8], &[u8]) -> Option<usize>, OP_LOOKUP, Req::Lookup { path: b"" }),
+            (encode_readdir as fn(&mut [u8], &[u8]) -> Option<usize>, OP_READDIR, Req::Readdir { path: b"" }),
+            (encode_stat as fn(&mut [u8], &[u8]) -> Option<usize>, OP_STAT, Req::Stat { path: b"" }),
+        ] {
+            assert_eq!(enc(&mut b, b""), Some(2));
+            assert_eq!(&b[..2], &[op, 0]);
+            assert_eq!(parse_request(&b[..2]), Some(want));
+        }
+        assert_eq!(encode_mkdir(&mut b, b""), None);
+        assert_eq!(encode_unlink(&mut b, b""), None);
+        // 线面伪造同拒：parse 白名单不含写面/GET（GET 恰形也拒——n=0
+        // 先于尾随字段校验执行）。
+        assert_eq!(parse_request(&[OP_MKDIR, 0]), None);
+        assert_eq!(parse_request(&[OP_UNLINK, 0]), None);
+        assert_eq!(parse_request(&[OP_GET, 0, 0, 0, 0, 0]), None);
+        assert_eq!(parse_request(&[OP_TRUNC, 0, 0, 0, 0, 0]), None);
     }
 
     #[test]

@@ -38,7 +38,7 @@ use berry_sys::{
 };
 use berry_fsproto::{
     encode_reply_get, encode_reply_list, encode_reply_stat, encode_reply_status, parse_request,
-    Req, ST_BAD,
+    Req, ST_BAD, TYPE_DIR,
 };
 use berry_fstree::{ReadDirRes, ReadRes, StatRes, Tree};
 
@@ -150,13 +150,19 @@ fn main() {
             // （FAT 建删目录不在 C-0 盒、FAT 文件删除留 v2）；READDIR 的
             // RAM Miss 回落 FAT 目录（刀 3）。
             Some(Req::Lookup { path: name }) => {
-                let st = match tree.stat(name) {
-                    StatRes::Ok(..) => berry_fsproto::ST_OK,
-                    StatRes::Noent => match fat.as_mut().map(|f| f.stat(name)) {
-                        Some(FatStat::Ok(..)) => berry_fsproto::ST_OK,
-                        Some(FatStat::Bad) => ST_BAD,
-                        _ => berry_fsproto::ST_NOENT,
-                    },
+                // 根（空 wire，C-1 刀 5 立法）：RAM 根构造性存在——恒 OK
+                //（libc `chdir` 的根定向探针走 STAT，此面供 LOOKUP 根问询）。
+                let st = if name.is_empty() {
+                    berry_fsproto::ST_OK
+                } else {
+                    match tree.stat(name) {
+                        StatRes::Ok(..) => berry_fsproto::ST_OK,
+                        StatRes::Noent => match fat.as_mut().map(|f| f.stat(name)) {
+                            Some(FatStat::Ok(..)) => berry_fsproto::ST_OK,
+                            Some(FatStat::Bad) => ST_BAD,
+                            _ => berry_fsproto::ST_NOENT,
+                        },
+                    }
                 };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
             }
@@ -173,13 +179,10 @@ fn main() {
                 // bsh 裸 `ls` 迁 libc opendir("/") 后 READDIR 是根列名的
                 // 唯一活路径（LIST 无客户端留守——协议冻结不删）；fstree
                 // resolve 把空段当名查 → 根恒 Noent，故根并合在此执法
-                // 而非树层。
+                // 而非树层（刀 5 起空 wire 立法进 fsproto，STAT/LOOKUP
+                // 同门）。
                 if name.is_empty() {
-                    let n = tree.list_root_nul(&mut names);
-                    let n = match fat.as_ref() {
-                        Some(f) => f.append_names(&tree.root_names(), &mut names, n, 0),
-                        None => n,
-                    };
+                    let n = root_overlay(&tree, &fat, &mut names);
                     encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
                 } else {
                     match tree.readdir(name, &mut names) {
@@ -212,26 +215,59 @@ fn main() {
                     }
                 }
             }
-            Some(Req::Stat { path: name }) => match tree.stat(name) {
-                StatRes::Ok(ty, size) => {
-                    encode_reply_stat(&mut rep, ty, size).unwrap_or_else(|| trap())
+            Some(Req::Stat { path: name }) => {
+                // 根（空 wire，C-1 刀 5 立法）：(TYPE_DIR, overlay 全景项数)
+                // ——size 口径与子目录 STAT 同义（子项数），项数与 READDIR
+                // 根并合同源（root_overlay 单一实现）。fstree resolve 把空
+                // wire 当名查 → 根恒 Noent，故根语义在分派层执法。
+                if name.is_empty() {
+                    let mut names = [0u8; 256];
+                    let n = root_overlay(&tree, &fat, &mut names);
+                    encode_reply_stat(&mut rep, TYPE_DIR, nul_count(&names[..n]))
+                        .unwrap_or_else(|| trap())
+                } else {
+                    match tree.stat(name) {
+                        StatRes::Ok(ty, size) => {
+                            encode_reply_stat(&mut rep, ty, size).unwrap_or_else(|| trap())
+                        }
+                        // FAT 回落面：文件 (TYPE_FILE, size) / 目录 (TYPE_DIR, 0)
+                        // （刀 3 起含子目录链；毒化/链断诚实 ST_BAD）。
+                        StatRes::Noent => match fat.as_mut().map(|f| f.stat(name)) {
+                            Some(FatStat::Ok(ty, sz)) => {
+                                encode_reply_stat(&mut rep, ty, sz).unwrap_or_else(|| trap())
+                            }
+                            Some(FatStat::Bad) => {
+                                encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                            }
+                            _ => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
+                                .unwrap_or_else(|| trap()),
+                        },
+                    }
                 }
-                // FAT 回落面：文件 (TYPE_FILE, size) / 目录 (TYPE_DIR, 0)
-                // （刀 3 起含子目录链；毒化/链断诚实 ST_BAD）。
-                StatRes::Noent => match fat.as_mut().map(|f| f.stat(name)) {
-                    Some(FatStat::Ok(ty, sz)) => {
-                        encode_reply_stat(&mut rep, ty, sz).unwrap_or_else(|| trap())
-                    }
-                    Some(FatStat::Bad) => {
-                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
-                    }
-                    _ => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
-                        .unwrap_or_else(|| trap()),
-                },
-            },
+            }
             None => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
         };
         send_reply(h, &rep, rep_len);
+    }
+}
+
+/// 根 overlay 名列（NUL 连接）：RAM 根全列 + FAT 未影子名续列——
+/// READDIR 根并合（刀 4）与 STAT 根项数（刀 5）的**单一实现**（同源
+/// 同序，两应答面不各自演化）。
+fn root_overlay(tree: &Tree, fat: &Option<Fat>, names: &mut [u8; 256]) -> usize {
+    let n = tree.list_root_nul(names);
+    match fat.as_ref() {
+        Some(f) => f.append_names(&tree.root_names(), names, n, 0),
+        None => n,
+    }
+}
+
+/// NUL 连接 blob 的段计数（STAT 根 size 口径 = 子项数；空 blob = 0）。
+fn nul_count(blob: &[u8]) -> u32 {
+    if blob.is_empty() {
+        0
+    } else {
+        1 + blob.iter().filter(|&&b| b == 0).count() as u32
     }
 }
 

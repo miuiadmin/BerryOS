@@ -16,7 +16,7 @@
   - Phase 6（生态）已收官 2026-10-22：std 面（stdhello/hexyl）、RAM-fs、virtio MMIO/blk/net 用户态驱动、FAT12 读写、UDP/DNS、TCP 四刀（T-d 收官刀）。
   - P7 x86_64 最小集五原语收官 2026-10：PVH 引导 / PIT+PIC / 异常向量 / 上下文切换 / SYSCALL-SYSRET，smoke-x86 7 标记已挂 CI。
   - app-0（应用模型 .bap v0）已落地 2026-10：berry-manifest + mkapp + svcmgr appd 雏形（`APP ok n=2`）。
-  - 当前基线：`just smoke` 五跑全绿（裸相 23 + rootfs 相 22 + RX/FAT 子目录/持久化 45）+ EL2 同绿；host 255 测；syscall 30 号在册/29 实现。下一步见 `文档/路线图.md`。
+  - 当前基线：`just smoke` 五跑全绿（裸相 23 + rootfs 相 24 + RX/FAT 子目录/持久化 47）+ EL2 同绿；host 280 测；syscall 30 号在册/29 实现。下一步见 `文档/路线图.md`。
 - **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `文档/AI调度设计.md`）+ PC 高性能。
 
 ## 设计总原则（三条，钦定）
@@ -127,8 +127,8 @@ berryos/
 **启动输出速览**（完整标记沿革逐字归档 → `文档/阶段沿革.md`；标记清单单一事实源 = `工具链/smoke.sh`）：
 
 - `just run` / `just run-el2`：`BerryOS boot` → `KVA ok` → `ROOTFS ok/absent` + `ROOTFS vmo=` 双行 → ktest 各段 `… ok` 至 `ktest done` → 稳态矩阵（A/B 忙循环 + EL0 用户进程轮转，`switches=N` 金丝雀）→ watchdog `G1.5 ok`。
-- `just run-rootfs`：rootfs 相 22 标记（`ECO ok` … `APP ok n=2` + `DIR ok n=`，逐标记语义见归档与 smoke.sh）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。
-- `just smoke`：五跑——裸相 23 零漂移 / rootfs 相 22 / RX 注入相（45 合相 + 编辑/`run fail`/落盘/RAM 目录链注入段）/ FAT 子目录相（fixture 盘 ls/cat DATA）/ FAT 持久化相（脏盘跨 boot 读回 f42t）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`just smoke-x86` 独立关卡（7 标记恰一次）。
+- `just run-rootfs`：rootfs 相 24 标记（`ECO ok` … `APP ok n=2` + `DIR ok n=` + `CD ok`，逐标记语义见归档与 smoke.sh）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。
+- `just smoke`：五跑——裸相 23 零漂移 / rootfs 相 24 / RX 注入相（47 合相 + 编辑/`run fail`/落盘/RAM 目录链/cd-pwd 注入段）/ FAT 子目录相（fixture 盘 ls/cat DATA）/ FAT 持久化相（脏盘跨 boot 读回 f42t）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`just smoke-x86` 独立关卡（7 标记恰一次）。
 
 **前置（macOS，一次性）**：
 
@@ -163,7 +163,7 @@ just check / just clean
 - **QEMU ≥11.x 不接受 `-bios none`**（报 `Could not find ROM image 'none'`）；`virt -kernel <ELF>` 直加载即可，故 justfile / `.cargo/config.toml` 都不带 `-bios`。
 - **QEMU halt 后不退出**：内核 `wfe` 死循环，串口打印完即停在那。退出 QEMU 用 `Ctrl-A` 然后 `X`（macOS 无 GNU `timeout`，自动化里用后台 + `kill`）。
 - 调试：`-s -S` + lldb 单步；`-d cpu_reset -D qemu.log` 看启动 CurrentEL。
-- 测试入口：`just smoke`（QEMU 无人值守冒烟，CI 同款，`工具链/smoke.sh`——G-eco-c 起裸相 + rootfs 相双跑、P5 A-1 起加 RX 交互相三跑；P5 v0 起 RX 相 = rootfs+FIFO 合相 + 三段编辑注入自验（标记数随相递增，T-d 起 43、C-0 刀 4 起 45 五段））+ `just test-host`（host 单元，不依赖 QEMU；G-eco-c 起含 `用户态/berry-loader` cpio/ELF 解析 29 测、P6 A-1 起含 `用户态/berry-fsproto` 协议 31 测（C-0 刀 1 起 v2 路径面：NUL 分段 + LOOKUP/MKDIR/UNLINK/READDIR/STAT 五 op，18→31）、C-0 刀 2 起含 `用户态/berry-fstree` 目录树 17 测（RAM overlay 平面表升树——多段路径/五 op 语义/容量帽）、P6 A-3 起含 `用户态/berry-virtio` 13 测、P6 A-4 起含 `用户态/berry-blkproto` 协议 13 测、P6 A-5 起含 `用户态/berry-fatfs` 11 测、P6 A-6 起含写基元共 14 测（fat12_set/find_free_cluster/encode_file_entry roundtrip——fixture 共识基准钉读写两面编码一致）、C-0 刀 3 起扩子目录链读面 14→16 测（DirKind::Dir/簇链走查，fixture 专列同源基准）、P6 A-7 起含 `用户态/berry-netproto` 以太网/ARP/IPv4/ICMP/UDP/DNS 编解码 17 测（校验和向量 + 逐字节交叉实现对拍 + wire 钉板 + padding 容忍/恰长拒面；A-8a 扩 UDP/DNS 面 11→17）、P6 A-8a 起含 `用户态/berry-netdproto` DNS RPC 协议 14 测（严格串行 RPC + 编码 None 拒绝契约 + 「非 OK 恒全零 addr」烘焙线双侧 + 应答黄金字节 wire 钉板——A-8d 补；T-d 起扩 TCP 三 op 面 OPEN/ROUNDTRIP/CLOSE——「非 OK 恒不携 data」烘焙线 + ST_BUSY 单会话语义，14→26 测）+ TCP T-c 起含 `用户态/berry-tcp` 的最小 TCP 客户端状态机纯函数面（握手/序号推进/RTO/TIME_WAIT 状态转移 + close 双路，IO 驱动在 vnet tcp.rs，30 测）、app-0 起含 `用户态/berry-manifest` 的 .bap manifest v0 解析纯函数面（TOML 子集冻结到字节级 + 严格拒面 + 双守卫，host 23 测）——总计 11+51+31+17+13+13+16+24+26+30+23=255）+ mkapp 门禁自检（`工具链/mkapp.py --selftest`，9 负样本 + 2 正对照——挂 just test-host 前置，mkfat --check-fixture 同位）+ QEMU 集成（`ktest` 框架，见 `文档/测试策略.md`）。
+- 测试入口：`just smoke`（QEMU 无人值守冒烟，CI 同款，`工具链/smoke.sh`——G-eco-c 起裸相 + rootfs 相双跑、P5 A-1 起加 RX 交互相三跑；P5 v0 起 RX 相 = rootfs+FIFO 合相 + 三段编辑注入自验（标记数随相递增，T-d 起 43、C-0 刀 4 起 45 五段、C-1 刀 5 起 47 六段——f 段 cd/pwd 防回声断言 `'/d1'`））+ `just test-host`（host 单元，不依赖 QEMU；G-eco-c 起含 `用户态/berry-loader` cpio/ELF 解析 29 测、P6 A-1 起含 `用户态/berry-fsproto` 协议 32 测（C-0 刀 1 起 v2 路径面：NUL 分段 + LOOKUP/MKDIR/UNLINK/READDIR/STAT 五 op，18→31；C-1 刀 5 空路径串（nlen=0）= 根寻址立法——读面三 op 专属放行 + parse 白名单对偶 + 写面拒空钉死，31→32）、C-1 刀 1 起含 `用户态/berry-fsclient` 23 测（libc 文件面纯函数：fd 表客户端游标/resolve_path 相对挂 CWD/分片读写/严格串行 RPC 会话机）、C-0 刀 2 起含 `用户态/berry-fstree` 目录树 18 测（RAM overlay 平面表升树——多段路径/五 op 语义/容量帽；C-1 刀 4 list_root_nul 根名 NUL 连接形状面，17→18）、P6 A-3 起含 `用户态/berry-virtio` 13 测、P6 A-4 起含 `用户态/berry-blkproto` 协议 13 测、P6 A-5 起含 `用户态/berry-fatfs` 11 测、P6 A-6 起含写基元共 14 测（fat12_set/find_free_cluster/encode_file_entry roundtrip——fixture 共识基准钉读写两面编码一致）、C-0 刀 3 起扩子目录链读面 14→16 测（DirKind::Dir/簇链走查，fixture 专列同源基准）、P6 A-7 起含 `用户态/berry-netproto` 以太网/ARP/IPv4/ICMP/UDP/DNS 编解码 17 测（校验和向量 + 逐字节交叉实现对拍 + wire 钉板 + padding 容忍/恰长拒面；A-8a 扩 UDP/DNS 面 11→17）、P6 A-8a 起含 `用户态/berry-netdproto` DNS RPC 协议 14 测（严格串行 RPC + 编码 None 拒绝契约 + 「非 OK 恒全零 addr」烘焙线双侧 + 应答黄金字节 wire 钉板——A-8d 补；T-d 起扩 TCP 三 op 面 OPEN/ROUNDTRIP/CLOSE——「非 OK 恒不携 data」烘焙线 + ST_BUSY 单会话语义，14→26 测）+ TCP T-c 起含 `用户态/berry-tcp` 的最小 TCP 客户端状态机纯函数面（握手/序号推进/RTO/TIME_WAIT 状态转移 + close 双路，IO 驱动在 vnet tcp.rs，30 测）、app-0 起含 `用户态/berry-manifest` 的 .bap manifest v0 解析纯函数面（TOML 子集冻结到字节级 + 严格拒面 + 双守卫，host 23 测）——总计 11+51+32+23+18+13+13+16+24+26+30+23=280）+ mkapp 门禁自检（`工具链/mkapp.py --selftest`，9 负样本 + 2 正对照——挂 just test-host 前置，mkfat --check-fixture 同位）+ QEMU 集成（`ktest` 框架，见 `文档/测试策略.md`）。
 
 ## Claude 在本仓库的工作方式
 

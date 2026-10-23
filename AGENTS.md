@@ -119,8 +119,8 @@ berryos/
 **启动输出速览**（完整标记沿革逐字归档 → `文档/阶段沿革.md`；标记清单单一事实源 = `工具链/smoke.sh`）：
 
 - `just run` / `just run-el2`：`BerryOS boot` → `KVA ok` → `ROOTFS ok/absent` + `ROOTFS vmo=` 双行 → ktest 各段 `… ok` 至 `ktest done` → 稳态矩阵（A/B 忙循环 + EL0 用户进程轮转，`switches=N` 金丝雀）→ watchdog `G1.5 ok`。
-- `just run-rootfs`：rootfs 相 22 标记（`ECO ok` … `APP ok n=2` + `DIR ok n=`，逐标记语义见归档与 smoke.sh）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。
-- `just smoke`：五跑——裸相 23 零漂移 / rootfs 相 22 / RX 注入相（45 合相 + 编辑/`run fail`/落盘/RAM 目录链注入段）/ FAT 子目录相（fixture 盘 ls/cat DATA）/ FAT 持久化相（脏盘跨 boot 读回 f42t）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`just smoke-x86` 独立关卡（7 标记恰一次）。
+- `just run-rootfs`：rootfs 相 24 标记（`ECO ok` … `APP ok n=2` + `DIR ok n=` + `CD ok`，逐标记语义见归档与 smoke.sh）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。
+- `just smoke`：五跑——裸相 23 零漂移 / rootfs 相 24 / RX 注入相（47 合相 + 编辑/`run fail`/落盘/RAM 目录链/cd-pwd 注入段）/ FAT 子目录相（fixture 盘 ls/cat DATA）/ FAT 持久化相（脏盘跨 boot 读回 f42t）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`just smoke-x86` 独立关卡（7 标记恰一次）。
 
 **前置（macOS，一次性）**：`brew install qemu just` + `rustup target add aarch64-unknown-none`（stable，无需 nightly/build-std）；P7-x0 起 x86_64 最小集另需 `rustup target add x86_64-unknown-none`（同 stable 预编译 core）。
 
@@ -131,7 +131,7 @@ just build          # = cargo build（内核 ELF）；先自动跑 build-user �
 just build-user     # G-eco：用户程序编译 → flat binary（内核/src/userbins/*.bin，gitignored）+ mkapp.py 打包 demo 双 app（app/*.bap）+ mkcpio.py 产 rootfs.cpio
 just run            # QEMU virt → 1BerryOS boot（默认起始 EL1），halt
 just run-el2        # virt,virtualization=on → 21BerryOS boot（EL2→EL1 eret 降级路径）
-just smoke          # 无人值守冒烟（CI 同款）：boot 标记断言 + switches 金丝雀严格递增；五跑 C-0 刀 4 起（裸 23 + rootfs 22——P6 A-8 加 `DNS ok addr=` + TCP T-c 加 `TCP ok echo=` + T-d 加 `TCPS ok echo=` + app-0 加 `APP ok n=` + C-0 加 `DIR ok n=` + RX 交互 45 + FAT 子目录相（fixture 盘 ls/cat DATA）+ FAT 持久化相）
+just smoke          # 无人值守冒烟（CI 同款）：boot 标记断言 + switches 金丝雀严格递增；五跑 C-0 刀 4 起（裸 23 + rootfs 24——P6 A-8 加 `DNS ok addr=` + TCP T-c 加 `TCP ok echo=` + T-d 加 `TCPS ok echo=` + app-0 加 `APP ok n=` + C-0 加 `DIR ok n=` + C-1 加 `FILE ok`/`CD ok` + RX 交互 47（f 段 cd/pwd 防回声断言）+ FAT 子目录相（fixture 盘 ls/cat DATA）+ FAT 持久化相）
 just abi-check      # ABI 单源守卫：gen_abi.py --check 逐字节比对 abi.toml 三面产物（忘再生成/手改产物即 FAIL）
 just abi-gen        # ABI 再生：abi.toml → 内核/berry-sys abi_gen.rs + 文档 marker 块（改 ABI = 改源 → abi-gen → diff 入册）
 just size           # 内核体积基线报告（文件量 / PT_LOAD 镜像与静态内存 / 段明细；CI 同步打印）

@@ -39,7 +39,13 @@
 //! 侧对齐）。自验 `DIR ok` = 多段读写 RAM 全链（FAT 子目录 QEMU 活覆盖
 //! 在 smoke FAT 子目录相注入段——cat DATA/NOTE.TXT / ls DATA）。
 //!
-//! v1 内建：help / echo / env / run / exit（Plan B v0.5：`exit` 经 std::process::exit
+//! C-1 刀 5（cd/pwd）：libc cwd 族（chdir/getcwd——进程级 CWD 静态）；
+//! **相对路径语义自此成立**——cat/`>`/cd 的相对名经 libc resolve 挂 CWD
+//! 解析。自验 `CD ok` = 沙箱全链（chdir → pwd → 相对名落子目录 → 绝对
+//! 多段同文件读回 → 回根后相对名即失——CWD 真迁移非文本戏法）。
+//!
+//! v1 内建：help / echo / env / run / exit / cat / ls / mkdir / rm / cd / pwd
+//!（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 //!
@@ -62,7 +68,8 @@ use berry_libc::{
     EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
 };
 use berry_libc::fs::{
-    closedir, mkdir, open, opendir, readdir, stat, unlink, O_CREAT, O_RDONLY, O_WRONLY, Stat,
+    chdir, closedir, getcwd, mkdir, open, opendir, readdir, stat, unlink, O_CREAT, O_RDONLY,
+    O_WRONLY, Stat,
 };
 use berry_sys::{
     berry_channel_recv, berry_clock_read, berry_handle_close, berry_object_wait_one, Handle,
@@ -140,6 +147,7 @@ fn main() {
     fat_selftest();
     fatw_selftest();
     dir_selftest();
+    cd_selftest();
 
     // —— 交互循环（化妆面）：prompt 只挂命令完成；空读（fd0 的 10s 帽超时
     //    EOF 化）= 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也
@@ -317,7 +325,7 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
     if cmd == "help" {
         writeln!(
             out,
-            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | A | B（rootfs 管道）| A && B | A > file | exit"
+            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | A | B（rootfs 管道）| A && B | A > file | exit"
         )
         .unwrap();
         (Vec::new(), 0)
@@ -369,6 +377,27 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
         (Vec::new(), 2)
     } else if let Some(rest) = cmd.strip_prefix("rm ") {
         rm_output(rest.trim(), out)
+    } else if cmd == "cd" {
+        // C-1 刀 5：裸 cd 无 HOME 概念（v1）——usage 面。
+        writeln!(out, "usage: cd <dir>").unwrap();
+        (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("cd ") {
+        cd_output(rest.trim(), out)
+    } else if cmd == "pwd" {
+        // C-1 刀 5：cwd 渲染行（libc getcwd——进程级 CWD 静态，chdir 改）。
+        let mut buf = [0u8; 160];
+        // SAFETY: buf 可写、长度如参；返回值按 POSIX 检（null = 错）。
+        let r = unsafe { getcwd(buf.as_mut_ptr() as *mut _, buf.len()) };
+        if r.is_null() {
+            // ERANGE 面 160B > PATH_MAX 渲染帽构造性不可达——到这即异常面。
+            writeln!(out, "bsh: pwd: {}", errno_text(errno())).unwrap();
+            (Vec::new(), 1)
+        } else {
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            let mut d = buf[..len].to_vec();
+            d.push(b'\n');
+            (d, 0)
+        }
     } else {
         writeln!(out, "bsh: {}: not found", cmd).unwrap();
         (Vec::new(), 127)
@@ -799,6 +828,29 @@ fn rm_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
     }
 }
 
+/// `cd <dir>`（C-1 刀 5）：libc chdir（resolve 相对路径 + STAT 目录型检
+/// ——文件目标 ENOTDIR「bad path」）。静默成功（POSIX 口径；失败才诊断）；
+/// cwd 是 libc 进程级静态——后续 cat/`>` 的相对名都经它解析。
+fn cd_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    if !valid_path(name) {
+        writeln!(out, "usage: cd <dir>").unwrap();
+        return (Vec::new(), 2);
+    }
+    if fs_h() == 0 {
+        writeln!(out, "bsh: cd: {}: fs not available", name).unwrap();
+        return (Vec::new(), 1);
+    }
+    let p = cpath(name);
+    // SAFETY: p 是 NUL 结尾路径串；chdir 按 libc 契约使用。
+    if unsafe { chdir(p.as_ptr() as *const _) } == 0 {
+        (Vec::new(), 0)
+    } else {
+        let e = errno();
+        writeln!(out, "bsh: cd: {}: {}", name, errno_text(e)).unwrap();
+        (Vec::new(), errno_code(e))
+    }
+}
+
 /// fs 自验（P6 A-1，`FS ok` = rootfs 相第 11 标记——确定性状态谓词）：
 /// put_file 64B pattern（HEXYL_STDIN 前缀——单片路径）→ get_file 全等；
 /// put_file 2156B（hexyl 首验输出——多片 + close 即 commit 的多片路径）→
@@ -986,6 +1038,110 @@ fn dir_selftest() {
         }
     }
     println!("DIR ok n=64");
+}
+
+/// cd 自验（C-1 刀 5，`CD ok` = rootfs 相第 24 标记——确定性状态谓词）：
+/// libc cwd 族全链——mkdir 沙箱 `bdir2` → chdir 进去 → pwd=="/bdir2" →
+/// **相对名**写 `n2.txt`（libc resolve 挂 CWD → 落进 bdir2）→ **CWD 内
+/// 相对读回** `n2.txt` 全等（写落点铁证）→ chdir "/" → **回根后多段**
+/// `bdir2/n2.txt` 全等（同一文件两路寻址）→ 回根后相对名 `n2.txt` 即失
+/// （ENOENT——CWD 真迁移的铁证，非仅 pwd 文本）→ 清场回根。失败
+/// eprintln + park（标记缺失 → smoke FAIL 兜底）。
+fn cd_selftest() {
+    if let Err(e) = mkdir_of("bdir2") {
+        eprintln!("bsh: cd selftest: mkdir {}", errno_text(e));
+        berry_libc::park();
+    }
+    let enter = |dir: &str| {
+        let p = cpath(dir);
+        // SAFETY: p 是 NUL 结尾路径串；chdir 按 libc 契约使用。
+        if unsafe { chdir(p.as_ptr() as *const _) } != 0 {
+            let e = errno();
+            eprintln!("bsh: cd selftest: chdir {} {}", dir, errno_text(e));
+            berry_libc::park();
+        }
+    };
+    enter("bdir2");
+    if !pwd_is("/bdir2") {
+        eprintln!("bsh: cd selftest: pwd != /bdir2");
+        berry_libc::park();
+    }
+    if let Err(e) = put_file("n2.txt", b"cd\n") {
+        eprintln!("bsh: cd selftest: rw {}", errno_text(e));
+        berry_libc::park();
+    }
+    // CWD 内相对读回（写落点铁证——此刻 CWD=/bdir2，相对名即 /bdir2/n2.txt）。
+    match get_file("n2.txt") {
+        Ok(d) if d == b"cd\n" => {}
+        r => {
+            eprintln!(
+                "bsh: cd selftest: get-cwd {:?}",
+                r.map(|v| v.len()).map_err(|e| errno_text(e))
+            );
+            berry_libc::park();
+        }
+    }
+    enter("/");
+    if !pwd_is("/") {
+        eprintln!("bsh: cd selftest: pwd != /");
+        berry_libc::park();
+    }
+    // 根 opendir（opendir("/") → READDIR 空 wire 根并合——刀 4 语义在
+    // 刀 5 fsproto 立法后才真可达，此断言 = 首个 QEMU 活验）。
+    match dir_lines("/") {
+        Ok(d) if d.windows(5).any(|w| w == b"bdir2") => {}
+        r => {
+            eprintln!(
+                "bsh: cd selftest: root-ls {:?}",
+                r.map(|v| v.len()).map_err(|e| errno_text(e))
+            );
+            berry_libc::park();
+        }
+    }
+    // 回根后多段寻址同一文件（两路寻址全等——CWD 回空 wire，`bdir2/n2.txt`
+    // 从根解析；首版把多段名当绝对路径在 CWD=/bdir2 下查——解析成
+    // /bdir2/bdir2/n2.txt 而 FAIL，实测教训：多段 ≠ 绝对）。
+    match get_file("bdir2/n2.txt") {
+        Ok(d) if d == b"cd\n" => {}
+        r => {
+            eprintln!(
+                "bsh: cd selftest: get-root {:?}",
+                r.map(|v| v.len()).map_err(|e| errno_text(e))
+            );
+            berry_libc::park();
+        }
+    }
+    match get_file("n2.txt") {
+        Err(e) if e == ENOENT => {}
+        r => {
+            eprintln!(
+                "bsh: cd selftest: relative miss {:?}",
+                r.map(|v| v.len()).map_err(|e| errno_text(e))
+            );
+            berry_libc::park();
+        }
+    }
+    if let Err(e) = unlink_of("bdir2/n2.txt") {
+        eprintln!("bsh: cd selftest: unlink file {}", errno_text(e));
+        berry_libc::park();
+    }
+    if let Err(e) = unlink_of("bdir2") {
+        eprintln!("bsh: cd selftest: unlink dir {}", errno_text(e));
+        berry_libc::park();
+    }
+    println!("CD ok");
+}
+
+/// pwd 全等探针（自验用）：getcwd 渲染串 == want。
+fn pwd_is(want: &str) -> bool {
+    let mut buf = [0u8; 160];
+    // SAFETY: buf 可写、长度如参；null = 错（本探针只论真伪不诊断）。
+    let r = unsafe { getcwd(buf.as_mut_ptr() as *mut _, buf.len()) };
+    if r.is_null() {
+        return false;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    &buf[..len] == want.as_bytes()
 }
 
 /// `A | B | …` 交互面（v1：各段裸名——无参数无 `/`，参数面随 v2 argv 展开）。
