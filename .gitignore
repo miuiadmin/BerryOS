@@ -26,9 +26,16 @@
 
 # 第三方参考实现仅本地保留：克隆树不入库（出处/协议见 参考源码/README.md）
 /参考源码/zcore/
+/参考源码/loopx-2.1.0/
 
 # python 脚本字节码缓存（size.py 被工具链调用时产生）
 __pycache__/
 
 # Claude Code 会话/工作树目录（本地工具产物，不入库）
 .claude/
+
+# loopx MCP 注册（含本机绝对路径，机器绑定）
+/.mcp.json
+
+# loopx 项目内控制面状态（goal/todo/证据账本，本地态）
+/.loopx/
