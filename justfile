@@ -270,6 +270,13 @@ test-host:
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 工具链/mkapp.py --selftest
+    # V-0a 刀 1：berry-efi（EFI 结构最小面——偏移/尺寸/签名/UTF-16 编码
+    # host 钉板）+ elf2pe 自检（合成 ELF 全链转换钉板 + 未知重定位型负样本）
+    # + mkfat --selftest（--put 引导盘构造面：链回读/嵌套目录/负样本——此前
+    # 只手跑，门禁化同 a-3 U4 纪律）。
+    cargo test --manifest-path 引导加载器/berryboot/Cargo.toml -p berry-efi --target {{host}}
+    python3 工具链/elf2pe.py --selftest
+    python3 工具链/mkfat.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
@@ -335,3 +342,53 @@ run-x86: build-x86
 # 「陈旧产物静默上线」同族）。
 smoke-x86: build-x86
     bash 工具链/smoke-x86.sh "{{X86_KERNEL}}"
+
+# ---------- V-0a BerryBoot（EFI 骨架；VM 草案 §V-0，AAVMF 引导链）----------
+# 独立小工作区（同 x86_64 模式——根 workspace 不含本目录；构建必须显式
+# --target，根 .cargo/config.toml 锁的 build.target 跨 workspace 边界仍命中）。
+# 构建链四步（路线修正记录 → 文档/阶段沿革.md V-0a 条目）：cargo staticlib
+# （builtin aarch64-unknown-none，免 nightly）→ rust-lld 静态全链接
+# （--emit-relocs 保留重定位 + berryboot.ld 钉单 .img @0x1000、--image-base
+# 0 ⇒ RVA==vaddr）→ elf2pe.py 转 PE32+（AArch64 EFI application；「staticlib
+# + lld COFF 直链」在 stable 实测死路，故走 ELF 全链接+转换）→ mkfat --put
+# 造 \EFI\BOOT\BOOTAA64.EFI 引导盘。产物全在 out/（gitignored）。
+# rust-lld 随 rustup 走（sysroot 内），无 brew 依赖；--verify 回读断言
+# 恒开（entry 落 .img / .reloc 闭合 / subsystem=EFI app）。
+BOOT_DIR := "引导加载器/berryboot"
+BOOT_TARGET := "aarch64-unknown-none"
+BOOT_OUT := BOOT_DIR / "out"
+BOOT_EFI := BOOT_OUT / "BERRYBOOT.EFI"
+BOOT_IMG := BOOT_OUT / "boot.img"
+AAVMF_CODE := "/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
+AAVMF_VARS := "/opt/homebrew/share/qemu/edk2-arm-vars.fd"
+RUST_LLD := `printf '%s' "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"`
+
+# BerryBoot 构建链（EFI 应用 + 引导盘）
+build-boot:
+    #!/bin/sh
+    set -e
+    cd {{BOOT_DIR}}
+    CARGO_TARGET_DIR=cargo-target cargo build --release --target {{BOOT_TARGET}}
+    mkdir -p out
+    "{{RUST_LLD}}" -flavor ld -static -nostdlib --emit-relocs \
+        -z max-page-size=4096 -z noseparate-code \
+        -T berryboot.ld -e efi_main --image-base 0 \
+        -o out/berryboot.elf cargo-target/{{BOOT_TARGET}}/release/libberryboot.a
+    python3 ../../工具链/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
+    python3 ../../工具链/mkfat.py out/boot.img \
+        --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI"
+
+# AAVMF 引导验收（V-0a 刀 1）：QEMU virt + edk2 固件（pflash 对）+ xhci
+# usb-storage 递盘。期望串口：BdsDxe starting Boot0001 …USB HARDDRIVE →
+# `BerryBoot EFI skeleton (V-0a)`（我们的 PE32+ 被 DXE 加载执行、ConOut
+# 落 PL011 串口）→ 返回后固件续行进 UiApp 前台页。vars.fd 每次 fresh 拷贝
+# （确定性：不带上一轮 BootOrder 状态）。退出 Ctrl-A X。
+# AAVMF 固件来自 brew qemu（edk2-aarch64-code.fd / edk2-arm-vars.fd）。
+run-efi: build-boot
+    #!/bin/sh
+    set -e
+    cp "{{AAVMF_VARS}}" {{BOOT_OUT}}/vars.fd
+    {{QEMU}} -machine virt -cpu cortex-a72 -m 128M -nographic \
+        -pflash "{{AAVMF_CODE}}" -pflash {{BOOT_OUT}}/vars.fd \
+        -drive if=none,file={{BOOT_IMG}},format=raw,id=bb \
+        -device qemu-xhci -device usb-storage,drive=bb
