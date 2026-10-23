@@ -378,10 +378,14 @@ build-boot:
     python3 ../../工具链/mkfat.py out/boot.img \
         --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI"
 
-# AAVMF 引导验收（V-0a 刀 1）：QEMU virt + edk2 固件（pflash 对）+ xhci
+# AAVMF 引导验收（V-0a）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。期望串口：BdsDxe starting Boot0001 …USB HARDDRIVE →
-# `BerryBoot EFI skeleton (V-0a)`（我们的 PE32+ 被 DXE 加载执行、ConOut
-# 落 PL011 串口）→ 返回后固件续行进 UiApp 前台页。vars.fd 每次 fresh 拷贝
+# 三行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
+# `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…`（我们的 PE32+ 被 DXE 加载
+# 执行、ConOut 落 PL011 串口）→ 返回后固件续行进 UiApp 前台页。
+# -device ramfb：virt -nographic 默认**无任何显示设备** → 固件不装 GOP
+# 实例 → gop 行只会打 `locate fail r=EFI_NOT_FOUND`（刀 2 实证；ramfb =
+# edk2 RamfbDxe 驱动面，GOP 查询的确定性供给）。vars.fd 每次 fresh 拷贝
 # （确定性：不带上一轮 BootOrder 状态）。退出 Ctrl-A X。
 # AAVMF 固件来自 brew qemu（edk2-aarch64-code.fd / edk2-arm-vars.fd）。
 run-efi: build-boot
@@ -391,4 +395,5 @@ run-efi: build-boot
     {{QEMU}} -machine virt -cpu cortex-a72 -m 128M -nographic \
         -pflash "{{AAVMF_CODE}}" -pflash {{BOOT_OUT}}/vars.fd \
         -drive if=none,file={{BOOT_IMG}},format=raw,id=bb \
-        -device qemu-xhci -device usb-storage,drive=bb
+        -device qemu-xhci -device usb-storage,drive=bb \
+        -device ramfb

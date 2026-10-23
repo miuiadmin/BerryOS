@@ -76,9 +76,183 @@ pub struct EfiSystemTable {
     pub standard_error_handle: *mut c_void,
     pub std_err: *const c_void, // SIMPLE_TEXT_OUTPUT_PROTOCOL*
     pub runtime_services: *mut c_void, // RUNTIME_SERVICES*（v2）
-    pub boot_services: *mut c_void,    // BOOT_SERVICES*（刀 3 描）
+    pub boot_services: *const EfiBootServices,
     pub number_of_table_entries: usize,
     pub configuration_table: *const c_void, // CONFIGURATION_TABLE*
+}
+
+/// Boot Services 签名（小端 u64 读出 "BOOTSERV"——官方定值）。
+pub const EFI_BOOT_SERVICES_SIGNATURE: u64 = 0x5652_4553_544F_4F42;
+
+/// EFI GUID（16B，C 布局 = u32 + u16 + u16 + u8[8]）。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EfiGuid {
+    pub data1: u32,
+    pub data2: u16,
+    pub data3: u16,
+    pub data4: [u8; 8],
+}
+
+/// GRAPHICS_OUTPUT_PROTOCOL GUID（9042A9DE-23DC-4A38-96FB-7ADED080516A）。
+pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: EfiGuid = EfiGuid {
+    data1: 0x9042_A9DE,
+    data2: 0x23DC,
+    data3: 0x4A38,
+    data4: [0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A],
+};
+
+/// BOOT_SERVICES——刀 2 只类型化用到的入口（locate_protocol / 刀 3 的
+/// handle_protocol），其余槽以具名 `*const c_void` 占位（同 SystemTable
+/// 的 con_in 纪律：保偏移可审计，不描无用签名）。376B 全表，host 测试钉板。
+#[repr(C)]
+pub struct EfiBootServices {
+    pub hdr: EfiTableHeader,                                  // @0
+    pub raise_tpl: *mut c_void,                               // @24
+    pub restore_tpl: *mut c_void,                             // @32
+    pub allocate_pages: *mut c_void,                          // @40
+    pub free_pages: *mut c_void,                              // @48
+    pub get_memory_map: *mut c_void,                          // @56
+    pub allocate_pool: *mut c_void,                           // @64
+    pub free_pool: *mut c_void,                               // @72
+    pub create_event: *mut c_void,                            // @80
+    pub set_timer: *mut c_void,                               // @88
+    pub wait_for_event: *mut c_void,                          // @96
+    pub signal_event: *mut c_void,                            // @104
+    pub close_event: *mut c_void,                             // @112
+    pub check_event: *mut c_void,                             // @120
+    pub install_protocol_interface: *mut c_void,              // @128
+    pub reinstall_protocol_interface: *mut c_void,            // @136
+    pub uninstall_protocol_interface: *mut c_void,            // @144
+    pub handle_protocol: unsafe extern "C" fn(
+        handle: *mut c_void,
+        protocol: *mut EfiGuid,
+        interface: *mut *mut c_void,
+    ) -> EfiStatus,                                           // @152（刀 3）
+    pub reserved: *mut c_void,                                // @160
+    pub register_protocol_notify: *mut c_void,                // @168
+    pub locate_handle: *mut c_void,                           // @176
+    pub locate_device_path: *mut c_void,                      // @184
+    pub install_configuration_table: *mut c_void,             // @192
+    pub load_image: *mut c_void,                              // @200
+    pub start_image: *mut c_void,                             // @208
+    pub exit: *mut c_void,                                    // @216
+    pub unload_image: *mut c_void,                            // @224
+    pub exit_boot_services: *mut c_void,                      // @232（V-0b+ 描）
+    pub get_next_monotonic_count: *mut c_void,                // @240
+    pub stall: *mut c_void,                                   // @248
+    pub set_watchdog_timer: *mut c_void,                      // @256
+    pub connect_controller: *mut c_void,                      // @264
+    pub disconnect_controller: *mut c_void,                   // @272
+    pub open_protocol: *mut c_void,                           // @280
+    pub close_protocol: *mut c_void,                          // @288
+    pub open_protocol_information: *mut c_void,               // @296
+    pub protocols_per_handle: *mut c_void,                    // @304
+    pub locate_handle_buffer: *mut c_void,                    // @312
+    pub locate_protocol: unsafe extern "C" fn(
+        protocol: *mut EfiGuid,
+        registration: *mut c_void,
+        interface: *mut *mut c_void,
+    ) -> EfiStatus,                                           // @320（刀 2）
+    pub install_multiple_protocol_interfaces: *mut c_void,    // @328
+    pub uninstall_multiple_protocol_interfaces: *mut c_void,  // @336
+    pub calculate_crc32: *mut c_void,                         // @344
+    pub copy_mem: *mut c_void,                                // @352
+    pub set_mem: *mut c_void,                                 // @360
+    pub create_event_ex: *mut c_void,                         // @368
+}
+
+/// GRAPHICS_OUTPUT_PROTOCOL（裁决 C：只 QueryMode 信息行，不画像素）。
+#[repr(C)]
+pub struct EfiGraphicsOutputProtocol {
+    pub query_mode: unsafe extern "C" fn(
+        this: *mut EfiGraphicsOutputProtocol,
+        mode_number: usize,
+        size_of_info: *mut usize,
+        info: *mut *mut EfiGraphicsOutputModeInfo,
+    ) -> EfiStatus,                                           // @0
+    pub set_mode: *mut c_void,                                // @8
+    pub blt: *mut c_void,                                     // @16
+    pub mode: *const EfiGraphicsOutputMode,                   // @24
+}
+
+/// GOP 当前模式快照（mode 指针指向的 40B）。
+#[repr(C)]
+pub struct EfiGraphicsOutputMode {
+    pub max_mode: u32,                          // @0
+    pub mode: u32,                              // @4（当前模式号）
+    pub info: *const EfiGraphicsOutputModeInfo, // @8
+    pub size_of_info: usize,                    // @16
+    pub frame_buffer_base: u64,                 // @24
+    pub frame_buffer_size: usize,               // @32
+}
+
+/// QueryMode 出的模式信息（36B，全 u32——像素格式 0=RGBr/1=BGRr/2=位掩码/
+/// 3=仅 Blt）。
+#[repr(C)]
+pub struct EfiGraphicsOutputModeInfo {
+    pub version: u32,               // @0
+    pub horizontal_resolution: u32, // @4
+    pub vertical_resolution: u32,   // @8
+    pub pixel_format: u32,          // @12
+    pub pixel_information: [u32; 4], // @16
+    pub pixels_per_scan_line: u32,  // @32
+}
+
+/// UTF-16 → ASCII 有损解码：`src` 逐 u16 映射进 `out`（≥0x80 → '?'，
+/// 与 utf16_encode 的 BMP 外策略对称）。返回写满的子切片。纯函数。
+pub fn utf16_to_ascii<'a>(src: &[u16], out: &'a mut [u8]) -> &'a [u8] {
+    let mut n = 0;
+    for &u in src {
+        if n >= out.len() {
+            break;
+        }
+        out[n] = if u < 0x80 { u as u8 } else { b'?' };
+        n += 1;
+    }
+    &out[..n]
+}
+
+/// u32 十进制（无前导零，0 → "0"）。容量不足即截断（引导语境纪律同
+/// utf16_encode：宁可截断不可炸）。
+pub fn fmt_u32_dec<'a>(v: u32, out: &'a mut [u8]) -> &'a [u8] {
+    let mut digits = [0u8; 10]; // u32::MAX = 10 位
+    let mut n = 0;
+    let mut v = v;
+    loop {
+        digits[n] = b'0' + (v % 10) as u8;
+        n += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    let m = n.min(out.len());
+    for i in 0..m {
+        out[i] = digits[n - 1 - i];
+    }
+    &out[..m]
+}
+
+/// u64 十六进制小写（无前导零，0 → "0"；"0x" 前缀由调用方拼）。
+pub fn fmt_u64_hex<'a>(v: u64, out: &'a mut [u8]) -> &'a [u8] {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut digits = [0u8; 16]; // u64::MAX = 16 位
+    let mut n = 0;
+    let mut v = v;
+    loop {
+        digits[n] = HEX[(v & 0xF) as usize];
+        n += 1;
+        v >>= 4;
+        if v == 0 {
+            break;
+        }
+    }
+    let m = n.min(out.len());
+    for i in 0..m {
+        out[i] = digits[n - 1 - i];
+    }
+    &out[..m]
 }
 
 /// UTF-16（UCS-2 子集）编码：`s` 逐字符编进 `out`，返回写满的子切片。
@@ -114,6 +288,11 @@ mod tests {
         assert_eq!(size_of::<EfiTableHeader>(), 24);
         assert_eq!(size_of::<EfiSimpleTextOutputProtocol>(), 80);
         assert_eq!(size_of::<EfiSystemTable>(), 120);
+        assert_eq!(size_of::<EfiGuid>(), 16);
+        assert_eq!(size_of::<EfiBootServices>(), 376);
+        assert_eq!(size_of::<EfiGraphicsOutputProtocol>(), 32);
+        assert_eq!(size_of::<EfiGraphicsOutputMode>(), 40);
+        assert_eq!(size_of::<EfiGraphicsOutputModeInfo>(), 36);
     }
 
     #[test]
@@ -145,6 +324,75 @@ mod tests {
         // 小端逐字节应读出 "IBI SYST"。
         let b = EFI_SYSTEM_TABLE_SIGNATURE.to_le_bytes();
         assert_eq!(&b, b"IBI SYST");
+        // Boot Services 同款：小端读出 "BOOTSERV"。
+        assert_eq!(&EFI_BOOT_SERVICES_SIGNATURE.to_le_bytes(), b"BOOTSERV");
+    }
+
+    #[test]
+    fn boot_services_offsets() {
+        let p = 0x1000usize as *const EfiBootServices;
+        assert_eq!(off!(p, handle_protocol), 152);
+        assert_eq!(off!(p, exit_boot_services), 232);
+        assert_eq!(off!(p, locate_protocol), 320);
+        assert_eq!(off!(p, create_event_ex), 368);
+    }
+
+    #[test]
+    fn gop_offsets() {
+        let g = 0x1000usize as *const EfiGraphicsOutputProtocol;
+        assert_eq!(off!(g, query_mode), 0);
+        assert_eq!(off!(g, set_mode), 8);
+        assert_eq!(off!(g, blt), 16);
+        assert_eq!(off!(g, mode), 24);
+        let m = 0x1000usize as *const EfiGraphicsOutputMode;
+        assert_eq!(off!(m, max_mode), 0);
+        assert_eq!(off!(m, mode), 4);
+        assert_eq!(off!(m, info), 8);
+        assert_eq!(off!(m, size_of_info), 16);
+        assert_eq!(off!(m, frame_buffer_base), 24);
+        assert_eq!(off!(m, frame_buffer_size), 32);
+        let i = 0x1000usize as *const EfiGraphicsOutputModeInfo;
+        assert_eq!(off!(i, version), 0);
+        assert_eq!(off!(i, horizontal_resolution), 4);
+        assert_eq!(off!(i, vertical_resolution), 8);
+        assert_eq!(off!(i, pixel_format), 12);
+        assert_eq!(off!(i, pixel_information), 16);
+        assert_eq!(off!(i, pixels_per_scan_line), 32);
+    }
+
+    #[test]
+    fn gop_guid_bytes() {
+        let g = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+        assert_eq!(g.data1, 0x9042A9DE);
+        assert_eq!(g.data2, 0x23DC);
+        assert_eq!(g.data3, 0x4A38);
+        assert_eq!(g.data4, [0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A]);
+        // 小端整读：data1 在线上的首 4B（协议面 LocateProtocol 对拍的基准）。
+        assert_eq!(g.data1.to_le_bytes(), [0xDE, 0xA9, 0x42, 0x90]);
+    }
+
+    #[test]
+    fn ascii_and_number_fmts() {
+        let mut b = [0u8; 16];
+        assert_eq!(utf16_to_ascii(&[0x41, 0x4E2D, 0x42], &mut b), b"A?B"); // CJK → '?'
+        assert_eq!(utf16_to_ascii(&[], &mut b), b"");
+        // 截断：3 槽收 5 字。
+        let mut small = [0u8; 3];
+        assert_eq!(utf16_to_ascii(&[0x41, 0x42, 0x43, 0x44, 0x45], &mut small), b"ABC");
+
+        let mut d = [0u8; 12];
+        assert_eq!(fmt_u32_dec(0, &mut d), b"0");
+        assert_eq!(fmt_u32_dec(42, &mut d), b"42");
+        assert_eq!(fmt_u32_dec(u32::MAX, &mut d), b"4294967295");
+        let mut s = [0u8; 2];
+        assert_eq!(fmt_u32_dec(12345, &mut s), b"12"); // 截断保头
+
+        let mut h = [0u8; 20];
+        assert_eq!(fmt_u64_hex(0, &mut h), b"0");
+        assert_eq!(fmt_u64_hex(0xDEAD_BEEF, &mut h), b"deadbeef");
+        assert_eq!(fmt_u64_hex(u64::MAX, &mut h), b"ffffffffffffffff");
+        let mut hs = [0u8; 3];
+        assert_eq!(fmt_u64_hex(0xAB_CDEF, &mut hs), b"abc"); // 截断保头
     }
 
     #[test]
