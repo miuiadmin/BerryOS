@@ -121,6 +121,7 @@ berryos/
 - `just run` / `just run-el2`：`BerryOS boot` → `KVA ok` → `ROOTFS ok/absent` + `ROOTFS vmo=` 双行 → ktest 各段 `… ok` 至 `ktest done` → 稳态矩阵（A/B 忙循环 + EL0 用户进程轮转，`switches=N` 金丝雀）→ watchdog `G1.5 ok`。
 - `just run-rootfs`：rootfs 相 24 标记（`ECO ok` … `APP ok n=2` + `DIR ok n=` + `CD ok`，逐标记语义见归档与 smoke.sh）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。
 - `just smoke`：五跑——裸相 23 零漂移 / rootfs 相 24 / RX 注入相（47 合相 + 编辑/`run fail`/落盘/RAM 目录链/cd-pwd 注入段）/ FAT 子目录相（fixture 盘 ls/cat DATA）/ FAT 持久化相（脏盘跨 boot 读回 f42t）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`just smoke-x86` 独立关卡（7 标记恰一次）。
+- `just run-efi`：引导链（V-0a）——AAVMF 固件 + 引导盘拉起 BerryBoot：骨架横幅 → `fw:` → `gop:`（ramfb 供 GOP）→ `fs: HELLO.TXT 28B match` → `BERRYBOOT ok`（SFS 开卷读逐字节对拍）；`just build-boot` 先产引导盘。独立工作区，内核链与主 smoke 零交集。
 
 **前置（macOS，一次性）**：`brew install qemu just` + `rustup target add aarch64-unknown-none`（stable，无需 nightly/build-std）；P7-x0 起 x86_64 最小集另需 `rustup target add x86_64-unknown-none`（同 stable 预编译 core）。
 
@@ -139,6 +140,8 @@ just run-rootfs     # G-eco：带 rootfs 启动（-fw_cfg name=opt/berry/rootfs,
 just build-x86      # P7-x0：x86_64 最小集构建（独立小工作区 架构相关/x86_64/，**必须显式 --target**——根 .cargo/config.toml 锁 build.target=aarch64 且 config 发现跨 workspace 边界仍命中）
 just run-x86        # QEMU pc 机 + PVH ELF（-no-reboot）——期望 BerryOS boot (x86_64) → PVH ok → TIMER ok → EXC dump vec=6 + EXC ok → CTX ok n=128 → SYS ok n=128 → X86 ok 七标记（P7-x1 定时器链；P7-x2 #UD dump 后 rip+2 恢复；P7-x3 A/B 任务乒乓 128 轮互验；P7-x4 CPL3 用户程序 SYSCALL/SYSRET 128 轮对拍）
 just smoke-x86      # x86 独立冒烟（7 标记恰一次；不并入主 smoke——ARM64 五跑零扰动；P7-x4 收官起已挂 CI：ci.yml 装 just 复用单一入口 + 两条 x86 步）
+just build-boot     # V-0a：BerryBoot EFI 应用构建链（引导加载器/berryboot 独立工作区：staticlib → rust-lld 静态全链接 → 工具链/elf2pe.py 转 PE32+ → mkfat --put 造 AAVMF 引导盘 out/fatboot.img；主构建链/内核不感知）
+just run-efi        # V-0a：QEMU AAVMF（-bios QEMU_EFI.fd）挂 fatboot.img + -device ramfb——五段横幅至 BERRYBOOT ok（SFS 开卷读 HELLO.TXT 逐字节对拍）；退出 Ctrl-A X
 just run-release / just check / just clean
 ```
 
