@@ -31,6 +31,16 @@
 //! 后空）不建文件（POSIX `> f` 建空文件——v2 再议）；无 fsmgr =
 //! `fs not available` 降级不死 shell。
 //!
+//! C-0 刀 4（bsh 路径适配，v2 同路不长第二套）：cat/`>`/带参 ls 迁多段
+//! 路径——shell 路径 `/` 分段 → wire NUL 分段（`fs_wire_path`，段字符集
+//! 与 v1 白名单同、帽 NAME_MAX/DEPTH/PATH_MAX 与 fsproto `path_valid`
+//! 双侧同步），单段输入与 v1 名同形同规则（零漂移）；新增内建 mkdir/rm
+//!（MKDIR/UNLINK——fsmgr 纯 RAM 面）与带参 ls（READDIR——RAM 目录树 +
+//! FAT 目录回落，服务端分层）；GET/STAT/LOOKUP 客户端零语义改动即得多段
+//!（fsmgr 已分层）。自验 `DIR ok` = v2 五 op + 多段读写 RAM 全链（FAT
+//! 子目录 QEMU 活覆盖在 smoke FAT 子目录相注入段——cat DATA/NOTE.TXT /
+//! ls DATA）。
+//!
 //! v1 内建：help / echo / env / run / exit（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
@@ -58,8 +68,10 @@ use berry_sys::{
 };
 use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec};
 use berry_fsproto::{
-    encode_get, encode_list, encode_put, encode_trunc, parse_reply_get, parse_reply_list, CHUNK,
-    FILE_SIZE_MAX, NAME_MAX, ST_FULL, ST_NOENT, ST_OK,
+    encode_get, encode_list, encode_lookup, encode_mkdir, encode_put, encode_readdir,
+    encode_stat, encode_trunc, encode_unlink, parse_reply_get, parse_reply_list,
+    parse_reply_stat, CHUNK, FILE_SIZE_MAX, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX, ST_BAD,
+    ST_EXISTS, ST_FULL, ST_NOENT, ST_NOEMPTY, ST_OK, TYPE_DIR, TYPE_FILE,
 };
 
 // 链接种子（stdhello 同款）：rlib/LTO 按需保留——无引用则 berry-libc 的
@@ -141,6 +153,7 @@ fn main() {
     fs_selftest(&hexyl_out);
     fat_selftest();
     fatw_selftest();
+    dir_selftest();
 
     // —— 交互循环（化妆面）：prompt 只挂命令完成；空读（fd0 的 10s 帽超时
     //    EOF 化）= 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也
@@ -318,7 +331,7 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
     if cmd == "help" {
         writeln!(
             out,
-            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | A | B（rootfs 管道）| A && B | A > file | exit"
+            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | A | B（rootfs 管道）| A && B | A > file | exit"
         )
         .unwrap();
         (Vec::new(), 0)
@@ -355,11 +368,21 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
         cat_output(rest.trim(), out)
     } else if cmd == "ls" {
         ls_output(out)
-    } else if cmd.starts_with("ls ") {
-        // 带参 ls：v1 无参数面——usage 2（与 cat/run「已知命令+坏参数」口径
-        // 一致；落 not-found 127 会误报命令缺失，P6 A-1 对抗审查实抓）。
-        writeln!(out, "usage: ls").unwrap();
+    } else if let Some(rest) = cmd.strip_prefix("ls ") {
+        // 刀 4：带参 ls = READDIR（RAM 目录树 + FAT 目录回落，同一条
+        // fs_rpc 通道——不长第二套）；坏路径 usage 2（「已知命令+坏参数」
+        // 口径不变，P6 A-1 对抗审查纪律）。
+        ls_path_output(rest.trim(), out)
+    } else if cmd == "mkdir" {
+        writeln!(out, "usage: mkdir <dir>").unwrap();
         (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("mkdir ") {
+        mkdir_output(rest.trim(), out)
+    } else if cmd == "rm" {
+        writeln!(out, "usage: rm <path>").unwrap();
+        (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("rm ") {
+        rm_output(rest.trim(), out)
     } else {
         writeln!(out, "bsh: {}: not found", cmd).unwrap();
         (Vec::new(), 127)
@@ -432,11 +455,18 @@ fn run_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
 // SEND|RECV dup——libc `fs_h()`）对端 fsmgr 的严格串行 RPC ——
 
 /// fs RPC 错误面。NoFs = fsmgr 未拉起（fs_h()==0——降级不死 shell）；
-/// Rpc = 通道/协议断链（wait 超时/解析失败/发送失败——服务死或拓扑破缺）。
+/// Rpc = 通道/协议断链（wait 超时/解析失败/发送失败——服务死或拓扑破缺）；
+/// 刀 4 起三新面（v2 五 op 的语义错误码）：Bad = 路径坏/类型冲突（ST_BAD
+/// ——目录当文件 GET、目录链断）、Exists = MKDIR 目标已在（ST_EXISTS）、
+/// NotEmpty = UNLINK 目录有子项（ST_NOEMPTY）。
+#[derive(Debug)]
 enum FsErr {
     NoFs,
     Noent,
     Full,
+    Bad,
+    Exists,
+    NotEmpty,
     Rpc,
 }
 
@@ -446,6 +476,9 @@ impl FsErr {
             FsErr::NoFs => "fs not available",
             FsErr::Noent => "not found",
             FsErr::Full => "no space",
+            FsErr::Bad => "bad path",
+            FsErr::Exists => "exists",
+            FsErr::NotEmpty => "dir not empty",
             FsErr::Rpc => "fs unreachable",
         }
     }
@@ -454,16 +487,22 @@ impl FsErr {
             FsErr::NoFs => 1,
             FsErr::Noent => 127,
             FsErr::Full => 1,
+            FsErr::Bad => 1,
+            FsErr::Exists => 1,
+            FsErr::NotEmpty => 1,
             FsErr::Rpc => 1,
         }
     }
 }
 
-/// 应答 st 码 → FsErr（未知码 = Rpc——协议面只认四个常量）。
+/// 应答 st 码 → FsErr（未知码 = Rpc——协议面只认在册常量）。
 fn st_err(st: u8) -> FsErr {
     match st {
         ST_NOENT => FsErr::Noent,
         ST_FULL => FsErr::Full,
+        ST_BAD => FsErr::Bad,
+        ST_EXISTS => FsErr::Exists,
+        ST_NOEMPTY => FsErr::NotEmpty,
         _ => FsErr::Rpc,
     }
 }
@@ -615,42 +654,123 @@ fn fs_list(h: Handle) -> Result<Vec<u8>, FsErr> {
     }
 }
 
-/// 重定向目标名白名单：非空 ≤NAME_MAX、字符集 [A-Za-z0-9._-]、无空白
-/// （含空格名随 v2 引号面）。名字即 fs 键——无路径语义（v1 无目录，fsmgr
-/// 平面表）。
-fn valid_fs_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= NAME_MAX
-        && s
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+/// v2 纯状态 op 单趟（应答恰 1 字节 st）：MKDIR/UNLINK 纯 RAM 面
+/// （fsmgr 不回落 FAT——秒级扇区链不可达）→ TIMEOUT_NS；LOOKUP 的 RAM
+/// Miss 回落 FAT stat（多段 = 子目录链走查，每簇一次扇区 RPC）→
+/// [`FS_COMMIT_CAP_NS`]（服务慢 ≠ 服务死，P6 A-6 定帽纪律）。
+fn fs_status_op(
+    h: Handle,
+    encode: fn(&mut [u8], &[u8]) -> Option<usize>,
+    path: &[u8],
+    cap: u64,
+) -> Result<(), FsErr> {
+    if h == 0 {
+        return Err(FsErr::NoFs);
+    }
+    let mut buf = [0u8; 256];
+    let l = encode(&mut buf, path).ok_or(FsErr::Rpc)?;
+    fs_rpc_status(h, &mut buf, l, cap)
 }
 
-/// `A > f` 切分：恰一个 `>`、两侧 trim、目标名过白名单。None = usage 面
-/// （`>>`/多点 `>` 被计数排除；坏名被白名单排除）。
-fn split_redirect(raw: &str) -> Option<(&str, &str)> {
+/// MKDIR `<path>`（RAM 目录树；已存在 → Exists）。
+fn fs_mkdir(h: Handle, path: &[u8]) -> Result<(), FsErr> {
+    fs_status_op(h, encode_mkdir, path, TIMEOUT_NS)
+}
+
+/// UNLINK `<path>`：文件或**空**目录（非空目录 → NotEmpty）。
+fn fs_unlink(h: Handle, path: &[u8]) -> Result<(), FsErr> {
+    fs_status_op(h, encode_unlink, path, TIMEOUT_NS)
+}
+
+/// LOOKUP `<path>`（存在性探针；RAM 树 → FAT 回落，帽按链走查 worst）。
+fn fs_lookup(h: Handle, path: &[u8]) -> Result<(), FsErr> {
+    fs_status_op(h, encode_lookup, path, FS_COMMIT_CAP_NS)
+}
+
+/// READDIR `<dir>`：子名 blob（NUL 连接——LIST 同形，渲染归调用方）。
+/// FAT 目录回落 = fsmgr 侧链走查（每簇一次扇区 RPC，TCG ~0.8s/次）→
+/// [`FS_COMMIT_CAP_NS`]。
+fn fs_readdir(h: Handle, path: &[u8]) -> Result<Vec<u8>, FsErr> {
+    if h == 0 {
+        return Err(FsErr::NoFs);
+    }
+    let mut buf = [0u8; 256];
+    let l = encode_readdir(&mut buf, path).ok_or(FsErr::Rpc)?;
+    let n = fs_rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
+    match parse_reply_list(&buf[..n]).ok_or(FsErr::Rpc)? {
+        Ok(names) => Ok(names.to_vec()),
+        Err(st) => Err(st_err(st)),
+    }
+}
+
+/// STAT `<path>`：(TYPE_FILE, 字节数) / (TYPE_DIR, 子项数)；帽同 READDIR
+/// （FAT 回落 = 同一链走查）。
+fn fs_stat(h: Handle, path: &[u8]) -> Result<(u8, u32), FsErr> {
+    if h == 0 {
+        return Err(FsErr::NoFs);
+    }
+    let mut buf = [0u8; 256];
+    let l = encode_stat(&mut buf, path).ok_or(FsErr::Rpc)?;
+    let n = fs_rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
+    match parse_reply_stat(&buf[..n]).ok_or(FsErr::Rpc)? {
+        Ok(r) => Ok(r),
+        Err(st) => Err(st_err(st)),
+    }
+}
+
+/// shell 路径（`/` 分段）→ wire 路径（NUL 分段，fsproto v2）：段字符集与
+/// v1 白名单同（`[A-Za-z0-9._-]`——无空白/`$`/`/`，未引号 token 面，引号
+/// 随 v2）；帽 NAME_MAX/段、PATH_DEPTH_MAX 段数、PATH_MAX 总长，与
+/// fsproto `path_valid` 双侧同步（encode 侧再检——双侧同步纪律）。单段
+/// 输入与 v1 名同形同规则（零漂移：`d1/Z.TXT` → `d1\0Z.TXT`，`Z.TXT` →
+/// `Z.TXT`）。
+fn fs_wire_path(s: &str) -> Option<Vec<u8>> {
+    let mut wire: Vec<u8> = Vec::with_capacity(s.len());
+    for (i, seg) in s.split('/').enumerate() {
+        if i >= PATH_DEPTH_MAX {
+            return None;
+        }
+        if seg.is_empty()
+            || seg.len() > NAME_MAX
+            || !seg
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+        {
+            return None;
+        }
+        if i > 0 {
+            wire.push(0);
+        }
+        wire.extend_from_slice(seg.as_bytes());
+    }
+    (wire.len() <= PATH_MAX).then_some(wire)
+}
+
+/// `A > f` 切分：恰一个 `>`、两侧 trim、目标路径过 [`fs_wire_path`]（刀 4
+/// 起多段——`echo x > d1/Z.TXT`；单段与 v1 同形零漂移）。None = usage 面
+/// （`>>`/多点 `>` 被计数排除；坏路径被段校验排除）。
+fn split_redirect(raw: &str) -> Option<(&str, &str, Vec<u8>)> {
     if raw.matches('>').count() != 1 {
         return None;
     }
     let (a, b) = raw.split_once('>')?;
     let (cmd, file) = (a.trim(), b.trim());
-    if !valid_fs_name(file) {
-        return None;
-    }
-    Some((cmd, file))
+    let wire = fs_wire_path(file)?;
+    Some((cmd, file, wire))
 }
 
 /// `A > f` 重定向（P6 A-1）：渲染命令（数据字节**不进 out**）→ fs_put 全
 /// 量入文件。诊断/警告照打 out（stderr 语义）；fs 错误 → 警告 + FsErr 码。
 /// v1 文档化面：空命令（展开后空）不建文件（POSIX `> f` 建空文件——v2）；
 /// 命令失败仍落已产出的部分数据（先渲染后写，非 open-before-exec）。
+/// 刀 4：目标可多段（RAM 树写；FAT 名仍只落根——fsmgr 分层路由）。
 fn do_redirect(
     raw: &str,
     vars: &[(String, String)],
     status: i32,
     out: &mut std::io::Stdout,
 ) -> i32 {
-    let Some((cmd_s, file_s)) = split_redirect(raw) else {
+    let Some((cmd_s, file_s, wire)) = split_redirect(raw) else {
         writeln!(out, "usage: <command> > <file>").unwrap();
         return 2;
     };
@@ -659,7 +779,7 @@ fn do_redirect(
     }
     let (data, code) = render_cmd(cmd_s, vars, status, out);
     out.flush().unwrap(); // 诊断先落（stderr 语义——数据进文件）
-    match fs_put(fs_h(), file_s.as_bytes(), &data) {
+    match fs_put(fs_h(), &wire, &data) {
         Ok(()) => code,
         Err(e) => {
             writeln!(out, "bsh: {}: {}", file_s, e.text()).unwrap();
@@ -669,13 +789,15 @@ fn do_redirect(
     }
 }
 
-/// `cat <file>`：fs_get 全量 → 数据字节（fs 错误 → 诊断打 out + FsErr 码）。
+/// `cat <path>`：fs_get 全量 → 数据字节（fs 错误 → 诊断打 out + FsErr 码）。
+/// 刀 4 起多段（RAM 树 → FAT 子目录链，fsmgr 分层）；目录目标 → fsmgr
+/// IsDir → Bad（「bad path」——目录不是读面）。
 fn cat_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
-    if !valid_fs_name(name) {
+    let Some(wire) = fs_wire_path(name) else {
         writeln!(out, "usage: cat <file>").unwrap();
         return (Vec::new(), 2);
-    }
-    match fs_get(fs_h(), name.as_bytes()) {
+    };
+    match fs_get(fs_h(), &wire) {
         Ok(d) => (d, 0),
         Err(e) => {
             writeln!(out, "bsh: cat: {}: {}", name, e.text()).unwrap();
@@ -699,6 +821,63 @@ fn ls_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         }
         Err(e) => {
             writeln!(out, "bsh: ls: {}", e.text()).unwrap();
+            (Vec::new(), e.code())
+        }
+    }
+}
+
+/// `ls <dir>`（刀 4）：READDIR 子名 blob（NUL 连接）→ 每名一行（空目录 =
+/// 空输出 0）。文件目标 → fsmgr NotDir → Bad。
+fn ls_path_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let Some(wire) = fs_wire_path(name) else {
+        writeln!(out, "usage: ls <dir>").unwrap();
+        return (Vec::new(), 2);
+    };
+    match fs_readdir(fs_h(), &wire) {
+        Ok(names) => {
+            let mut d = Vec::new();
+            for n in names.split(|&c| c == 0) {
+                if !n.is_empty() {
+                    d.extend_from_slice(n);
+                    d.push(b'\n');
+                }
+            }
+            (d, 0)
+        }
+        Err(e) => {
+            writeln!(out, "bsh: ls: {}: {}", name, e.text()).unwrap();
+            (Vec::new(), e.code())
+        }
+    }
+}
+
+/// `mkdir <path>`（刀 4）：MKDIR——RAM 目录树（fsmgr 纯 RAM 面）；已存在
+/// → Exists。静默成功（POSIX 口径；失败才诊断）。
+fn mkdir_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let Some(wire) = fs_wire_path(name) else {
+        writeln!(out, "usage: mkdir <dir>").unwrap();
+        return (Vec::new(), 2);
+    };
+    match fs_mkdir(fs_h(), &wire) {
+        Ok(()) => (Vec::new(), 0),
+        Err(e) => {
+            writeln!(out, "bsh: mkdir: {}: {}", name, e.text()).unwrap();
+            (Vec::new(), e.code())
+        }
+    }
+}
+
+/// `rm <path>`（刀 4）：UNLINK——文件或**空**目录（非空目录 → NotEmpty；
+/// 目录链上文件先逐个 rm）。静默成功（POSIX 口径）。
+fn rm_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let Some(wire) = fs_wire_path(name) else {
+        writeln!(out, "usage: rm <path>").unwrap();
+        return (Vec::new(), 2);
+    };
+    match fs_unlink(fs_h(), &wire) {
+        Ok(()) => (Vec::new(), 0),
+        Err(e) => {
+            writeln!(out, "bsh: rm: {}: {}", name, e.text()).unwrap();
             (Vec::new(), e.code())
         }
     }
@@ -809,6 +988,84 @@ fn fatw_selftest() {
         }
     }
     println!("FATW ok n=3000");
+}
+
+/// 目录自验（C-0 刀 4，`DIR ok n=` = rootfs 相第 22 标记——确定性状态
+/// 谓词）：v2 五 op + 多段读写全链 RAM 面——MKDIR `bdir` → 多段 PUT
+/// （`bdir/n.bin` 64B pattern）→ 多段 GET 逐字节全等 → READDIR 恰一名 →
+/// LOOKUP 命中 → STAT 双面（TYPE_DIR 子项数 / TYPE_FILE 字节数）→ UNLINK
+/// 文件 → 空目录 READDIR → UNLINK 空目录 → LOOKUP Noent 收口。读面全 RAM
+/// 命中（`bdir` 在树上——不触 FAT 链走查；FAT 子目录 QEMU 活覆盖在 smoke
+/// FAT 子目录相注入段 `cat DATA/NOTE.TXT`/`ls DATA`）。失败 eprintln +
+/// park（标记缺失 → smoke FAIL 兜底）。
+fn dir_selftest() {
+    let h = fs_h();
+    let a = &HEXYL_STDIN[..64];
+    if let Err(e) = fs_mkdir(h, b"bdir") {
+        eprintln!("bsh: dir selftest: mkdir {}", e.text());
+        berry_libc::park();
+    }
+    match fs_put(h, b"bdir\0n.bin", a).and_then(|_| fs_get(h, b"bdir\0n.bin")) {
+        Ok(d) if d == a => {}
+        Ok(d) => {
+            eprintln!("bsh: dir selftest: get64 len={} want=64", d.len());
+            berry_libc::park();
+        }
+        Err(e) => {
+            eprintln!("bsh: dir selftest: rw64 {}", e.text());
+            berry_libc::park();
+        }
+    }
+    match fs_readdir(h, b"bdir") {
+        Ok(names) if names == &b"n.bin"[..] => {}
+        r => {
+            eprintln!("bsh: dir selftest: readdir {:?}", r);
+            berry_libc::park();
+        }
+    }
+    if let Err(e) = fs_lookup(h, b"bdir\0n.bin") {
+        eprintln!("bsh: dir selftest: lookup {}", e.text());
+        berry_libc::park();
+    }
+    match fs_stat(h, b"bdir") {
+        Ok((ty, n)) if ty == TYPE_DIR && n == 1 => {}
+        r => {
+            eprintln!("bsh: dir selftest: stat dir {:?}", r);
+            berry_libc::park();
+        }
+    }
+    match fs_stat(h, b"bdir\0n.bin") {
+        Ok((ty, n)) if ty == TYPE_FILE && n == 64 => {}
+        r => {
+            eprintln!("bsh: dir selftest: stat file {:?}", r);
+            berry_libc::park();
+        }
+    }
+    // UNLINK 双面：先文件（目录转空——READDIR 空证）→ 空目录可删 → 双查
+    // Noent 收口。
+    if let Err(e) = fs_unlink(h, b"bdir\0n.bin") {
+        eprintln!("bsh: dir selftest: unlink file {}", e.text());
+        berry_libc::park();
+    }
+    match fs_readdir(h, b"bdir") {
+        Ok(names) if names.is_empty() => {}
+        r => {
+            eprintln!("bsh: dir selftest: readdir empty {:?}", r);
+            berry_libc::park();
+        }
+    }
+    if let Err(e) = fs_unlink(h, b"bdir") {
+        eprintln!("bsh: dir selftest: unlink dir {}", e.text());
+        berry_libc::park();
+    }
+    match fs_lookup(h, b"bdir") {
+        Err(FsErr::Noent) => {}
+        r => {
+            eprintln!("bsh: dir selftest: lookup gone {:?}", r);
+            berry_libc::park();
+        }
+    }
+    println!("DIR ok n=64");
 }
 
 /// `A | B | …` 交互面（v1：各段裸名——无参数无 `/`，参数面随 v2 argv 展开）。
