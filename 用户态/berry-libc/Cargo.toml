@@ -10,3 +10,6 @@ edition = "2021"
 
 [dependencies]
 berry-sys = { path = "../berry-sys" }
+# C-1 刀 2：fd 3+ 文件面（fs.rs）——会话机 + 纯函数面（fd 表/cwd/seek/
+# stat/dirent/ST→FsErr）自刀 1 crate 消费，「不长第二套」。
+berry-fsclient = { path = "../berry-fsclient" }

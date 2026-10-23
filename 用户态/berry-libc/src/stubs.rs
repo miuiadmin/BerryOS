@@ -43,30 +43,21 @@ macro_rules! ok {
     )*};
 }
 
-// —— FS 路径面（ENOENT：std 侧报「文件不存在」比「未实现」对最终用户更诚实，
-//    反正 v1 就是不存在）——
+// —— FS 路径面（C-1 刀 2 起 open/openat/opendir/stat/lstat/unlink/unlinkat/
+//    rmdir/chdir/mkdir 迁 `fs.rs` 真实现；余下无真面的照旧 ENOENT——std 侧
+//    报「文件不存在」比「未实现」对最终用户更诚实，反正 v1 就是不存在）——
 neg_int!(
-    open => crate::ENOENT,
-    openat => crate::ENOENT,
-    opendir => crate::ENOENT,
-    stat => crate::ENOENT,
-    lstat => crate::ENOENT,
     readlink => crate::ENOENT,
-    unlink => crate::ENOENT,
-    unlinkat => crate::ENOENT,
-    rmdir => crate::ENOENT,
     rename => crate::ENOENT,
-    chdir => crate::ENOENT,
-    mkdir => crate::ENOENT,
     mkfifo => crate::ENOENT,
     symlink => crate::ENOENT,
     linkat => crate::ENOENT,
     execvp => crate::ENOENT,
 );
 
-// —— FS 元数据/杂（ENOSYS）——
+// —— FS 元数据/杂（ENOSYS；fstat 刀 2 起迁 fs.rs——fd≥3 真/fd 0-2 保持
+//    ENOSYS 旧面）——
 neg_int!(
-    fstat => crate::ENOSYS,
     fchmod => crate::ENOSYS,
     fchown => crate::ENOSYS,
     chmod => crate::ENOSYS,
@@ -84,12 +75,10 @@ neg_int!(
     mprotect => crate::EINVAL,
 );
 
-// —— fd/dir 族 ——
+// —— fd/dir 族（closedir/dirfd 刀 2 起迁 fs.rs；readdir 同）——
 neg_int!(
     dup => crate::EBADF,
     dup2 => crate::EBADF,
-    closedir => crate::EBADF,
-    dirfd => crate::EBADF,
     waitpid => crate::ECHILD,
     waitid => crate::ECHILD,
     kill => crate::EPERM,
@@ -121,7 +110,6 @@ neg_int!(
 );
 
 neg_ssize!(
-    lseek => crate::ESPIPE,
     readv => crate::ENOSYS,
     pread => crate::ENOSYS,
     pwrite => crate::ENOSYS,
@@ -184,11 +172,7 @@ pub extern "C" fn mmap() -> *mut c_void {
     ptr::null_mut()
 }
 
-#[no_mangle]
-pub extern "C" fn getcwd() -> *mut c_char {
-    crate::set_errno(crate::ENOENT);
-    ptr::null_mut()
-}
+// getcwd（刀 2 起迁 fs.rs 真实现——cwd 字符串 + render_cwd/ERANGE 面）。
 
 #[no_mangle]
 pub extern "C" fn realpath(_path: *const c_char, resolved: *mut c_char) -> *mut c_char {
@@ -205,10 +189,7 @@ pub extern "C" fn fdopendir() -> *mut c_void {
     ptr::null_mut()
 }
 
-#[no_mangle]
-pub extern "C" fn readdir() -> *mut c_void {
-    ptr::null_mut() // 目录尾（无 errno 语义）
-}
+// readdir（刀 2 起迁 fs.rs 真实现——DIR blob 游标 + musl dirent 布局）。
 
 /// posix_spawn 族错误码**直接正返**（无 -1 约定）。
 #[no_mangle]

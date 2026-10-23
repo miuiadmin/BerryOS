@@ -1,8 +1,11 @@
 //! 输出/stdio —— fd 0/1/2 → console channel（真实现档）
 //!
-//! fd 模型（v1）：只有 0/1/2；1/2 = console 发端别名（写方向）、0 = env
-//! 块 stdin 端（d-3b 起真输入——channel recv，零长消息 = EOF 约定），都经
-//! **env 块**交付（d-3a，见 `berry_libc_boot`）；其余 fd 一律 -EBADF。
+//! fd 模型（C-1 刀 2 起）：0/1/2 = console/stdin 原路径**一字不动**（R6）；
+//! fd≥3 = fs-backed（`fs.rs`——fd 表游标 + close 即 commit，C-1 两裁决）。
+//! 1/2 = console 发端别名（写方向）、0 = env 块 stdin 端（d-3b 起真输入
+//! ——channel recv，零长消息 = EOF 约定），都经**env 块**交付（d-3a，见
+//! `berry_libc_boot`）；fd≥3 的 read/write/close/lseek 分流 `fs.rs`（不在
+//! 册 fd 的 EBADF 面由那边统一收口）。
 //!
 //! 发送契约（雷 2 教训 + A-2 修订）：**阻塞重发**——`-EBUSY`（console 队列
 //! 满）→ `clock_read` + `wait_one(console, WRITABLE, 10s)` 睡等重试（超时
@@ -225,8 +228,9 @@ fn fd_ok(fd: c_int) -> bool {
 #[no_mangle]
 pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
     if !fd_ok(fd) {
-        crate::set_errno(crate::EBADF);
-        return -1;
+        // fd≥3 = fs-backed 写（fs.rs 收口 EBADF/游标/分片 PUT）；fd<0 同落
+        // 那边的 EBADF 面。
+        return crate::fs::write_fd(fd, buf, n);
     }
     if n == 0 {
         return 0;
@@ -239,8 +243,22 @@ pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
 #[no_mangle]
 pub extern "C" fn writev(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
     if !fd_ok(fd) {
-        crate::set_errno(crate::EBADF);
-        return -1;
+        // fs-backed：逐 iov 走 fs 写（部分写返回已写量——write_fd 同语义）。
+        if cnt <= 0 {
+            return 0;
+        }
+        let mut total: ssize_t = 0;
+        for i in 0..cnt as usize {
+            let v = unsafe { &*iov.add(i) };
+            if v.len > 0 {
+                let r = crate::fs::write_fd(fd, v.base as *const c_void, v.len);
+                if r < 0 {
+                    return if total > 0 { total } else { -1 };
+                }
+                total += r;
+            }
+        }
+        return total;
     }
     if cnt <= 0 {
         return 0;
@@ -276,8 +294,9 @@ static mut PEND_OFF: usize = 0;
 pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
     unsafe {
         if fd != 0 {
-            crate::set_errno(crate::EBADF); // 1/2 只写：读方向诚拒
-            return -1;
+            // fd≥3 = fs-backed 读（fs.rs 收口 EBADF/RA 预读）；fd 1/2 在那边
+            // 落同一 EBADF 面（不在册）——旧「1/2 只写：读方向诚拒」零漂移。
+            return crate::fs::read_fd(fd, buf, n);
         }
         if n == 0 {
             return 0;
@@ -337,18 +356,18 @@ pub extern "C" fn close(fd: c_int) -> c_int {
     if fd_ok(fd) {
         return 0; // console handle 是进程级资产，close(1) 不真关
     }
-    crate::set_errno(crate::EBADF);
-    -1
+    // fd≥3 = fs-backed：摘表 + 可写 fd 的 close 即 commit（裁决 2）。
+    crate::fs::close_fd(fd)
 }
 
 #[no_mangle]
 pub extern "C" fn isatty(fd: c_int) -> c_int {
-    if !fd_ok(fd) {
+    if !fd_ok(fd) && !crate::fs::fd_valid(fd) {
         crate::set_errno(crate::EBADF);
         return 0;
     }
     crate::set_errno(crate::ENOTTY);
-    0 // v1 诚实面：非 tty（hexyl 因之关配色，输出更稳）
+    0 // v1 诚实面：非 tty（console 同面；fs fd 亦非 tty）
 }
 
 // —— FILE / stdio ——

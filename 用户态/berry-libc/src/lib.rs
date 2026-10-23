@@ -39,6 +39,7 @@
 
 pub mod alloc;
 pub mod crt0;
+pub mod fs;
 pub mod io;
 pub mod stubs;
 pub mod strmem;
@@ -71,6 +72,7 @@ pub const EPERM: c_int = 1;
 pub const ENOENT: c_int = 2;
 pub const ESRCH: c_int = 3;
 pub const EINTR: c_int = 4;
+pub const EIO: c_int = 5;
 pub const EBADF: c_int = 9;
 pub const ECHILD: c_int = 10;
 pub const EAGAIN: c_int = 11;
@@ -78,12 +80,19 @@ pub const ENOMEM: c_int = 12;
 pub const EACCES: c_int = 13;
 pub const EFAULT: c_int = 14;
 pub const EBUSY: c_int = 16;
+pub const EEXIST: c_int = 17;
+pub const ENOTDIR: c_int = 20;
+pub const EISDIR: c_int = 21;
 pub const EINVAL: c_int = 22;
+pub const EMFILE: c_int = 24;
 pub const ENOTTY: c_int = 25;
+pub const ENOSPC: c_int = 28;
 pub const ESPIPE: c_int = 29;
 pub const EPIPE: c_int = 32;
 pub const ERANGE: c_int = 34;
+pub const ENAMETOOLONG: c_int = 36;
 pub const ENOSYS: c_int = 38;
+pub const ENOTEMPTY: c_int = 39;
 
 // EAI_*（getaddrinfo 直接返回，非 errno）
 pub const EAI_NONAME: c_int = -2;
