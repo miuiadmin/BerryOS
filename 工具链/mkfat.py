@@ -6,16 +6,22 @@
   - <out.img>：整盘 2048 扇区 × 512B = 1MiB——布局 = [16 扇区 vblk 测试
     保留区][FAT12 卷 @ LBA16]（LBA0 印章 / LBA1 vblk 自验 / LBA5 BLKD 自验
     全落保留区，与卷数据零交集；盘容断言 EXPECT_SECTORS=2048 不变）；
-  - --fixture：berry-fatfs host 测试的跨实现共识基准——卷前缀 22 扇区
-    （boot + 双 FAT + 根目录 + cluster 2..5 数据），确定性字节进 git。
+  - --fixture：berry-fatfs host 测试的跨实现共识基准——含 fixture 专列
+    子目录（见 FIXTURE_DIRS；随产 x.img 同源含目录，默认盘**不含**——
+    QEMU 冒烟盘字节零漂移）。fixture = 卷前缀至末链簇（boot + 双 FAT +
+    根目录 + 全部已分配簇数据），确定性字节进 git。
   - --check-fixture <path>：守卫模式（不写盘）——内存重产 fixture 字节与
     <path> 逐字节比对，不一致 exit 1。挂 just test-host 前置：改了 mkfat
     忘重产 --fixture，host 共识测试会对陈旧基准假绿（A-5 对抗审查实抓）。
 
 确定性：无时刻输入（日期定值 2020-01-01 / 卷序号定值），字段全定宽——
-归档字节只随内容变。 baked 文件（名序即簇序）：
+归档字节只随内容变。 baked 文件（簇分配序 = 根文件名序 → 逐目录名序，
+目录簇先于其子文件簇）：
   - HELLO.TXT    1 簇  （簇 2）
   - PATTERN.BIN  5000B = (i*31+7)%256，3 簇（簇 3→4→5——链走活证）
+  - fixture 专列（FIXTURE_DIRS，默认盘不含）：
+    - DATA        目录 1 簇（簇 6，attr 0x10——C-0 刀 3 子目录读面基准）
+    - DATA/NOTE.TXT  1 簇（簇 7）
 卷几何：簇 = 4 扇区（2KiB）、保留 1、双 FAT × 2 扇区、根 16 项（1 扇区）
 → 数据 2026 扇区 = 506 簇 < 4085（FAT12 合法域）。
 """
@@ -37,6 +43,16 @@ ROOT_LISTING = [
     # (8.3 名, 内容字节)
     (b"HELLO.TXT", b"berryos fat read-only hello\n"),
     (b"PATTERN.BIN", bytes((i * 31 + 7) % 256 for i in range(5000))),
+]
+
+# fixture 专列子目录（C-0 刀 3）：默认卷 build_volume() **不含**——QEMU
+# 冒烟盘（mkfat <out.img> 裸调）字节零漂移是硬线，子目录只进共识基准。
+# `DATA` 名序在 PATTERN.BIN 后 = 簇分配不扰 HELLO@2 / PATTERN@3..5 的
+# 既有共识锚（目录簇 6、子文件簇 7 都是全新分配）。目录项 attr 0x10 /
+# size 0；目录簇内容 = 子文件项（32B/项）+ 0x00 终结填充——mkfat 不产
+# `.`/`..` 项与多簇目录（v1 读面几何，两端同约定）。
+FIXTURE_DIRS = [
+    (b"DATA", [(b"NOTE.TXT", b"berryos fat subdir note\n")]),
 ]
 
 
@@ -75,8 +91,14 @@ def name_to_11(n: bytes) -> bytes:
     return base.ljust(8, b" ") + ext.ljust(3, b" ")
 
 
-def build_volume() -> tuple[bytearray, dict]:
-    """构建 FAT12 卷（卷相对 LBA 0 起）。返回 (卷字节, 几何摘要)。"""
+def build_volume(listing=None, dirs=()) -> tuple[bytearray, dict]:
+    """构建 FAT12 卷（卷相对 LBA 0 起）。返回 (卷字节, 几何摘要)。
+
+    listing = [(名, 内容)] 根文件；dirs = [(目录名, [(子文件名, 内容)])]
+    子目录（attr 0x10 单簇）。簇分配序 = 根文件名序 → 逐目录名序（目录簇
+    先于其子文件簇）——确定性，与旧版（纯文件名序）对默认卷逐字节同产。
+    """
+    listing = ROOT_LISTING if listing is None else listing
     fat_sz = 2  # (506+2)*1.5=762B → 2 扇区
     data_start = 1 + NUM_FATS * fat_sz + 1  # 6（根目录恰 1 扇区）
     clusters = (VOL_SECTORS - data_start) // SPC  # 506
@@ -107,46 +129,76 @@ def build_volume() -> tuple[bytearray, dict]:
     b[510:512] = b"\x55\xAA"
     vol[0:SECTOR] = b
 
-    # —— FAT ×2（项 0=media 0xFF8 / 项 1=0xFFF 保留；文件链按名序分配簇）。
+    # —— FAT ×2（项 0=media 0xFF8 / 项 1=0xFFF 保留；链尾 EOC）。
     fat = bytearray(fat_sz * SECTOR)
     fat12_set(fat, 0, 0xFF8)
     fat12_set(fat, 1, 0xFFF)
     next_clus = 2
-    files = []  # (name11, 首簇, 尺寸)
-    for name, data in sorted(ROOT_LISTING):  # 名序 = 簇序（确定性）
-        nclus = (len(data) + SPC * SECTOR - 1) // (SPC * SECTOR)
-        if nclus == 0:
-            nclus = 1  # 空文件也占一簇（FAT 惯例；本卷无空文件，防御面）
+
+    def alloc_chain(nbytes: int) -> int:
+        """nbytes 的簇链（至少 1 簇），返回首簇。"""
+        nonlocal next_clus
+        nclus = max(1, (nbytes + SPC * SECTOR - 1) // (SPC * SECTOR))
         first = next_clus
         for i in range(nclus):
             fat12_set(fat, first + i, first + i + 1)
         fat12_set(fat, first + nclus - 1, 0xFFF)  # 链尾 EOC
-        files.append((name_to_11(name), first, len(data)))
         next_clus += nclus
+        return first
+
+    root_entries = []  # (name11, attr, 首簇, size)
+    placements = []    # (簇号, 已补零到簇倍数的数据)
+
+    def place(clus: int, data: bytes) -> None:
+        pad = data + b"\0" * (clusters_pad(len(data), SPC * SECTOR) - len(data))
+        assert len(pad) % (SPC * SECTOR) == 0
+        placements.append((clus, pad))
+
+    for name, data in sorted(listing):
+        first = alloc_chain(len(data))
+        root_entries.append((name_to_11(name), 0x20, first, len(data)))
+        place(first, data)
+    for dname, children in sorted(dirs):
+        dfirst = next_clus  # 目录单簇：先占簇，再排子文件簇
+        fat12_set(fat, dfirst, 0xFFF)
+        next_clus += 1
+        child_entries = []
+        for cname, cdata in sorted(children):
+            cfirst = alloc_chain(len(cdata))
+            child_entries.append(dir_entry(name_to_11(cname), 0x20, cfirst, len(cdata)))
+            place(cfirst, cdata)
+        root_entries.append((name_to_11(dname), 0x10, dfirst, 0))  # 目录 size 恒 0
+        place(dfirst, b"".join(child_entries))  # 尾随 0x00 = 目录终结
     for i in range(NUM_FATS):
         vol[(1 + i * fat_sz) * SECTOR:(1 + (i + 1) * fat_sz) * SECTOR] = fat
 
-    # —— 根目录（16 项 × 32B）：卷标 + 文件项，余 0x00 = 目录终结。
+    # —— 根目录（16 项 × 32B）：卷标 + 文件/目录项，余 0x00 = 目录终结。
     root = bytearray(SECTOR)
     root[0:32] = dir_entry(b"BERRYOS    ", 0x08, 0, 0)  # 卷标项（attr 0x08）
-    for i, (name11, clus, size) in enumerate(files):
-        root[(i + 1) * 32:(i + 2) * 32] = dir_entry(name11, 0x20, clus, size)
+    for i, (name11, attr, clus, size) in enumerate(root_entries):
+        root[(i + 1) * 32:(i + 2) * 32] = dir_entry(name11, attr, clus, size)
     vol[data_start * SECTOR - SECTOR:data_start * SECTOR] = root  # 根 @ 扇区 5
 
-    # —— 数据区。
-    for (name11, clus, size), (name, data) in zip(files, sorted(ROOT_LISTING)):
-        pad = data + b"\0" * (clusters_pad(len(data), SPC * SECTOR) - len(data))
+    # —— 数据区（文件内容 / 目录簇的子项表）。
+    for clus, pad in placements:
         off = (data_start + (clus - 2) * SPC) * SECTOR
         vol[off:off + len(pad)] = pad
-        assert len(pad) % (SPC * SECTOR) == 0
-        assert size == len(data)
 
-    return vol, {"clusters": clusters, "fat_sz": fat_sz, "data_start": data_start}
+    return vol, {"clusters": clusters, "fat_sz": fat_sz, "data_start": data_start,
+                 "next_clus": next_clus}
 
 
 def clusters_pad(size: int, clus_sz: int) -> int:
     """文件占用的整簇字节数（向上取整，至少 1 簇）。"""
     return max(clus_sz, (size + clus_sz - 1) // clus_sz * clus_sz)
+
+
+def volume_for(args: list) -> tuple[bytearray, dict]:
+    """按模式选卷：--fixture/--check-fixture 面带 FIXTURE_DIRS（C-0 刀 3
+    子目录共识基准），默认裸调 = 纯 ROOT_LISTING（QEMU 冒烟盘零漂移）。"""
+    if "--fixture" in args or "--check-fixture" in args:
+        return build_volume(ROOT_LISTING, FIXTURE_DIRS)
+    return build_volume()
 
 
 def main() -> int:
@@ -158,8 +210,8 @@ def main() -> int:
         except IndexError:
             sys.stderr.write("mkfat: --check-fixture 需要一个路径参数\n")
             return 2
-        vol, geo = build_volume()
-        n = geo["data_start"] + 4 * SPC
+        vol, geo = volume_for(args)
+        n = geo["data_start"] + (geo["next_clus"] - 2) * SPC
         want = bytes(vol[: n * SECTOR])
         try:
             with open(fx, "rb") as f:
@@ -178,7 +230,7 @@ def main() -> int:
         sys.stderr.write(__doc__)
         return 2
     out_path = args[0]
-    vol, geo = build_volume()
+    vol, geo = volume_for(args)
     disk = bytearray(DISK_SECTORS * SECTOR)
     disk[RESERVED_ZONE * SECTOR:] = vol  # 保留区前缀全零（LBA0 印章由调用方 dd）
     with open(out_path, "wb") as f:
@@ -187,8 +239,8 @@ def main() -> int:
             f"clusters={geo['clusters']} fat={geo['fat_sz']}x{NUM_FATS}")
     if "--fixture" in args:
         fx = args[args.index("--fixture") + 1]
-        # 卷前缀 22 扇区 = boot(1) + FAT(4) + 根(1) + 簇 2..5 数据(16)
-        n = geo["data_start"] + 4 * SPC
+        # 卷前缀至末链簇（fixture 专列：boot(1) + FAT(4) + 根(1) + 簇 2..7）。
+        n = geo["data_start"] + (geo["next_clus"] - 2) * SPC
         with open(fx, "wb") as f:
             f.write(vol[:n * SECTOR])
         line += f" fixture={fx} {n * SECTOR}B"

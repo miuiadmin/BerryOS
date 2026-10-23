@@ -88,13 +88,17 @@ pub struct DirFile {
     pub size: u32,
 }
 
-/// 根目录项分类（只读面：目录/LFN/卷标/删除项皆 Skip）。
+/// 根目录项分类（读面：目录是真项——簇链可走查（C-0 刀 3）；LFN/卷标/
+/// 删除项 Skip）。
 #[derive(Debug, PartialEq, Eq)]
 pub enum DirKind {
     /// 0x00 起始——目录终结（其后全无效，遍历即停）。
     End,
-    /// 跳过项（0xE5 删除 / LFN 0x0F / 卷标 0x08 / 子目录 0x10）。
+    /// 跳过项（0xE5 删除 / LFN 0x0F / 卷标 0x08）。
     Skip,
+    /// 子目录（attr 0x10）：`first_clus` = 子项表簇链头（走查消费方 fsmgr）；
+    /// `size` 恒 0（规范面——非 0 解码即拒）；first_clus 0 = 空目录。
+    Dir(DirFile),
     /// 普通文件（attr 0x20 且非删除）。
     File(DirFile),
 }
@@ -252,7 +256,9 @@ pub fn find_free_cluster(fat: &[u8], from: u32, cluster_count: u32) -> Option<u3
     None
 }
 
-/// 解析 32B 根目录项（长度 != 32 → None）。
+/// 解析 32B 根目录项（长度 != 32 → None）。子目录（attr 0x10）与文件同
+/// 构解码（C-0 刀 3：DIR 属性项即目录文件——簇链头的载体）；目录的
+/// size 域按规范恒 0、簇 1 保留同拒。
 pub fn dir_entry(e: &[u8]) -> Option<DirKind> {
     if e.len() != 32 {
         return None;
@@ -262,20 +268,26 @@ pub fn dir_entry(e: &[u8]) -> Option<DirKind> {
         0xE5 => return Some(DirKind::Skip), // 删除项
         _ => {}
     }
+    let decode = |kind: fn(DirFile) -> DirKind| -> Option<DirKind> {
+        let mut name = [0u8; 11];
+        name.copy_from_slice(&e[0..11]);
+        let first = u16le(e, 26) as u32;
+        let size = u32le(e, 28);
+        if first == 1 || (first == 0 && size > 0) {
+            return None; // 簇 1 保留；首簇 0 仅配 size=0（空文件/空目录——
+        }              // A-6 `>` 建空文件面），带长度即畸形
+        Some(kind(DirFile { name, first_clus: first, size }))
+    };
     match e[11] {
         0x0F => Some(DirKind::Skip), // LFN 长名段
         0x08 => Some(DirKind::Skip), // 卷标
-        0x10 => Some(DirKind::Skip), // 子目录（只读面不递归）
-        _ => {
-            let mut name = [0u8; 11];
-            name.copy_from_slice(&e[0..11]);
-            let first = u16le(e, 26) as u32;
-            let size = u32le(e, 28);
-            if first == 1 || (first == 0 && size > 0) {
-                return None; // 簇 1 保留；首簇 0 仅配 size=0（空文件——A-6
-            }              // `>` 建空文件面），带长度即畸形
-            Some(DirKind::File(DirFile { name, first_clus: first, size }))
+        0x10 => {
+            if u32le(e, 28) != 0 {
+                return None; // 目录项 size 域规范恒 0（两端同约定——mkfat
+            }              // 造 0，非 0 = 畸形拒绝不静默按文件面目走查）
+            decode(DirKind::Dir)
         }
+        _ => decode(DirKind::File),
     }
 }
 
@@ -350,8 +362,9 @@ pub fn name_to_fat11(name: &[u8]) -> Option<[u8; 11]> {
 mod tests {
     use super::*;
 
-    /// mkfat.py --fixture 产物（确定性字节进 git）：卷前缀 22 扇区 =
-    /// boot(1) + 双 FAT(4) + 根目录(1) + 簇 2..5 数据(16)。
+    /// mkfat.py --fixture 产物（确定性字节进 git）：卷前缀 30 扇区 =
+    /// boot(1) + 双 FAT(4) + 根目录(1) + 簇 2..7 数据（文件 + fixture
+    /// 专列子目录 DATA——C-0 刀 3 共识基准，默认盘不含）。
     const FX: &[u8] = include_bytes!("../tests/volume_fixture.bin");
 
     fn fat0() -> &'static [u8] {
@@ -397,18 +410,21 @@ mod tests {
 
     #[test]
     fn fat_chain_fixture_consensus() {
-        // 跨实现共识②：HELLO.TXT 单簇（2, EOC）；PATTERN.BIN 链 3→4→5。
+        // 跨实现共识②：HELLO.TXT 单簇（2, EOC）；PATTERN.BIN 链 3→4→5；
+        // fixture 专列 DATA 目录单簇 6、其子 NOTE.TXT 单簇 7（C-0 刀 3）。
         let fat = fat0();
         assert_eq!(fat12_entry(fat, 2), Some(Fat12Entry::Eoc));
         assert_eq!(fat12_entry(fat, 3), Some(Fat12Entry::Next(4)));
         assert_eq!(fat12_entry(fat, 4), Some(Fat12Entry::Next(5)));
         assert_eq!(fat12_entry(fat, 5), Some(Fat12Entry::Eoc));
-        assert_eq!(fat12_entry(fat, 6), Some(Fat12Entry::Free));
+        assert_eq!(fat12_entry(fat, 6), Some(Fat12Entry::Eoc));
+        assert_eq!(fat12_entry(fat, 7), Some(Fat12Entry::Eoc));
+        assert_eq!(fat12_entry(fat, 8), Some(Fat12Entry::Free));
     }
 
     #[test]
     fn dir_fixture_consensus() {
-        // 跨实现共识③：卷标 Skip + 两文件项 + End 终结。
+        // 跨实现共识③：卷标 Skip + 两文件项 + 目录项（fixture 专列）+ End。
         let r = root();
         assert_eq!(dir_entry(&r[0..32]), Some(DirKind::Skip)); // BERRYOS 卷标
         match dir_entry(&r[32..64]).unwrap() {
@@ -425,7 +441,38 @@ mod tests {
             }
             other => panic!("项 2 应为文件：{:?}", other),
         }
-        assert_eq!(dir_entry(&r[96..128]), Some(DirKind::End));
+        match dir_entry(&r[96..128]).unwrap() {
+            DirKind::Dir(d) => {
+                assert_eq!(&d.name, b"DATA       ");
+                assert_eq!((d.first_clus, d.size), (6, 0));
+            }
+            other => panic!("项 3 应为目录：{:?}", other),
+        }
+        assert_eq!(dir_entry(&r[128..160]), Some(DirKind::End));
+    }
+
+    #[test]
+    fn subdir_chain_consensus() {
+        // 跨实现共识⑤（C-0 刀 3）：子目录链走查——根 DATA@6 → 目录簇 6
+        // = 子项表（NOTE.TXT@7 + End 终结 + 尾零）→ 簇 7 = 子文件字节
+        // （簇尾零填）。fsmgr resolve 同几何消费，此处先钉。
+        let g = parse_bpb(&FX[..512]).unwrap();
+        let clus_off = |c: u32| -> usize {
+            (g.data_sector as usize + (c as usize - 2) * g.spc as usize) * g.bps as usize
+        };
+        let d = &FX[clus_off(6)..];
+        match dir_entry(&d[0..32]).unwrap() {
+            DirKind::File(f) => {
+                assert_eq!(&f.name, b"NOTE    TXT");
+                assert_eq!((f.first_clus, f.size), (7, 24));
+            }
+            other => panic!("目录簇首项应为 NOTE.TXT：{:?}", other),
+        }
+        assert_eq!(dir_entry(&d[32..64]), Some(DirKind::End));
+        assert!(d[64..2048].iter().all(|&b| b == 0)); // 终结后整簇余零
+        let n = clus_off(7);
+        assert_eq!(&FX[n..n + 24], b"berryos fat subdir note\n");
+        assert!(FX[n + 24..n + 2048].iter().all(|&b| b == 0)); // 簇尾零填
     }
 
     #[test]
@@ -559,7 +606,15 @@ mod tests {
         assert_eq!(dir_entry(&mk(0xE5, 0x20)), Some(DirKind::Skip)); // 删除
         assert_eq!(dir_entry(&mk(b'A', 0x0F)), Some(DirKind::Skip)); // LFN
         assert_eq!(dir_entry(&mk(b'A', 0x08)), Some(DirKind::Skip)); // 卷标
-        assert_eq!(dir_entry(&mk(b'A', 0x10)), Some(DirKind::Skip)); // 子目录
+        // 子目录：簇 0 + size 0 = 空目录（合法——首簇 0 仅配零 size）。
+        match dir_entry(&mk(b'A', 0x10)).unwrap() {
+            DirKind::Dir(d) => {
+                assert_eq!(d.first_clus, 0);
+                assert_eq!(d.size, 0);
+                assert_eq!(d.name[0], b'A');
+            }
+            other => panic!("应为目录项：{:?}", other),
+        }
         // 文件项：首簇 0 + size 0 = 空文件（A-6 `>` 建空文件面）——合法。
         match dir_entry(&mk(b'A', 0x20)).unwrap() {
             DirKind::File(f) => {
@@ -580,6 +635,29 @@ mod tests {
         // 长度面：31/33 → None。
         assert_eq!(dir_entry(&[0u8; 31]), None);
         assert_eq!(dir_entry(&[0u8; 33]), None);
+    }
+
+    #[test]
+    fn dir_entry_subdir_faces() {
+        // 目录项专面（C-0 刀 3）：合法形（簇 ≥ 2 + size 0）/ 拒面（size>0
+        // ——规范目录 size 恒 0；簇 1 保留）。
+        let mk = |name: &[u8], clus: u16, size: u32| {
+            let mut e = [0u8; 32];
+            e[..name.len()].copy_from_slice(name);
+            e[11] = 0x10;
+            e[26..28].copy_from_slice(&clus.to_le_bytes());
+            e[28..32].copy_from_slice(&size.to_le_bytes());
+            e
+        };
+        match dir_entry(&mk(b"DATA", 6, 0)).unwrap() {
+            DirKind::Dir(d) => {
+                assert_eq!(&d.name[..4], b"DATA");
+                assert_eq!((d.first_clus, d.size), (6, 0));
+            }
+            other => panic!("应为目录项：{:?}", other),
+        }
+        assert_eq!(dir_entry(&mk(b"DATA", 6, 1)), None); // size>0 畸形
+        assert_eq!(dir_entry(&mk(b"DATA", 1, 0)), None); // 簇 1 保留
     }
 
     #[test]
@@ -718,11 +796,12 @@ mod tests {
 
     #[test]
     fn find_free_cluster_scan() {
-        // fixture：簇 2..5 占用 → 首空 = 6；from 钳位与越过语义。
-        assert_eq!(find_free_cluster(fat0(), 2, 506), Some(6));
-        assert_eq!(find_free_cluster(fat0(), 0, 506), Some(6));
-        assert_eq!(find_free_cluster(fat0(), 6, 506), Some(6));
-        assert_eq!(find_free_cluster(fat0(), 7, 506), Some(7));
+        // fixture：簇 2..7 占用（文件 + DATA 目录面）→ 首空 = 8；from 钳位
+        // 与越过语义。
+        assert_eq!(find_free_cluster(fat0(), 2, 506), Some(8));
+        assert_eq!(find_free_cluster(fat0(), 0, 506), Some(8));
+        assert_eq!(find_free_cluster(fat0(), 7, 506), Some(8));
+        assert_eq!(find_free_cluster(fat0(), 8, 506), Some(8));
         // 域界 = 2 + cluster_count（开区间）：count 收窄后扫描界随之。
         let mut fat = [0u8; 16]; // 覆盖项 2..9（项 8 @ off 12 需 14B）
         fat12_set(&mut fat, 2, FAT12_EOC).unwrap();

@@ -12,9 +12,10 @@
 //! FILE_COUNT_MAX=8 × FILE_SIZE_MAX=16KiB + DIR_COUNT_MAX=16 静态堆
 //! 预算内）+ **FAT12 读写层**（`fat.rs`——A-6 起 8.3 大写名 staging +
 //! TRUNC 即 commit 真写扇区，小写名/多段名走 RAM 树；分层路由与 commit
-//! 序见该模块头；v2 五 op 中 LOOKUP/STAT 未命中回落 FAT 根面 stat11——
-//! RAM 名与 FAT 名同一查询单义，MKDIR/UNLINK/READDIR 纯 RAM 面：FAT
-//! 建删目录不在 C-0 盒、FAT 文件删除留 v2）。
+//! 序见该模块头；v2 五 op 分层（C-0 刀 3 起）：LOOKUP/STAT 未命中回落
+//! FAT——单段 8.3 根面 + 多段子目录链（读面），READDIR 未命中回落 FAT
+//! 目录，GET 多段同走子目录链；MKDIR/UNLINK 纯 RAM 面——FAT 建删目录
+//! 不在 C-0 盒、FAT 文件删除留 v2、`>` 只落根）。
 //!
 //! 服务循环 = echo 同形但 **wait 超时重臂**（关键差异）：echo 的 client
 //! （svcmgr）每节流拍必 ping——10s 帽到点 = 断链，trap；本服务的 client
@@ -37,11 +38,11 @@ use berry_sys::{
 };
 use berry_fsproto::{
     encode_reply_get, encode_reply_list, encode_reply_stat, encode_reply_status, parse_request,
-    Req, ST_BAD, TYPE_FILE,
+    Req, ST_BAD,
 };
 use berry_fstree::{ReadDirRes, ReadRes, StatRes, Tree};
 
-use fat::{Fat, GetRes};
+use fat::{Fat, FatList, FatStat, GetRes};
 
 // 链接种子（stdhello/bsh 同款）：rlib/LTO 按需保留——无引用则 berry-libc
 // 的 crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -108,12 +109,17 @@ fn main() {
                     encode_reply_get(&mut rep, off, slice, more).unwrap_or_else(|| trap())
                 }
                 // RAM Miss → FAT 回落（v1 流不变——单段 8.3 名由 name_to_fat11
-                // 门自筛进 FAT，多段 NUL 串构造性 Miss 到底 → NOENT）。
+                // 门自筛进 FAT；刀 3 起多段 NUL 串走 FAT 子目录链读面）。
                 ReadRes::Miss => match fat.as_mut().map(|f| f.handle_get(name, off, &mut rep)) {
                     Some(GetRes::Served(n)) => n, // rep 已编码（handle_get 内部落字）
                     Some(GetRes::Full) => encode_reply_status(&mut rep, berry_fsproto::ST_FULL)
                         .unwrap_or_else(|| trap()),
                     Some(GetRes::Bad) => {
+                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                    }
+                    // FAT 面命中的是目录（单段目录名/多段终段目录）——与
+                    // RAM IsDir 同义（刀 3）。
+                    Some(GetRes::IsDir) => {
                         encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
                     }
                     // RAM/FAT 双未命中（或 FAT 层缺席）——NOENT。
@@ -138,17 +144,18 @@ fn main() {
                 };
                 encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
             }
-            // v2 五 op（C-0 刀 2 服务面接树）：LOOKUP/STAT 的 RAM Miss 回落
-            // FAT 根 8.3 面（fat.rs stat11——与 GET/LIST 的分层同构：RAM 名
-            // 与 FAT 名同一查询单义）；MKDIR/UNLINK/READDIR 纯 RAM 面（FAT
-            // 建删目录不在 C-0 盒、FAT 文件删除留 v2——刀 3 只做 FAT 子目录
-            // 读面）。
+            // v2 五 op（C-0 刀 2 服务面接树 / 刀 3 FAT 子目录读面）：
+            // LOOKUP/STAT 的 RAM Miss 回落 FAT——单段 8.3 面（内存镜像）+
+            // 多段子目录链（刀 3，盘上子项表）；MKDIR/UNLINK 纯 RAM 面
+            // （FAT 建删目录不在 C-0 盒、FAT 文件删除留 v2）；READDIR 的
+            // RAM Miss 回落 FAT 目录（刀 3）。
             Some(Req::Lookup { path: name }) => {
                 let st = match tree.stat(name) {
                     StatRes::Ok(..) => berry_fsproto::ST_OK,
-                    StatRes::Noent => match fat.as_ref().and_then(|f| f.stat11(name)) {
-                        Some(_) => berry_fsproto::ST_OK,
-                        None => berry_fsproto::ST_NOENT,
+                    StatRes::Noent => match fat.as_mut().map(|f| f.stat(name)) {
+                        Some(FatStat::Ok(..)) => berry_fsproto::ST_OK,
+                        Some(FatStat::Bad) => ST_BAD,
+                        _ => berry_fsproto::ST_NOENT,
                     },
                 };
                 encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
@@ -166,11 +173,24 @@ fn main() {
                     ReadDirRes::Names(n) => {
                         encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
                     }
-                    ReadDirRes::Noent => encode_reply_status(
-                        &mut rep,
-                        berry_fsproto::ST_NOENT,
-                    )
-                    .unwrap_or_else(|| trap()),
+                    // RAM 未命中 → FAT 目录回落（刀 3：FAT 卷挂 / 的子目录
+                    // 读面；RAM 同名项在树上时恒走上面 Names 臂——overlay
+                    // 上层遮下层，目录内容不并合）。
+                    ReadDirRes::Noent => {
+                        match fat.as_mut().map(|f| f.readdir(name, &mut names)) {
+                            Some(FatList::Names(n)) => {
+                                encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
+                            }
+                            Some(FatList::NotDir) | Some(FatList::Bad) => {
+                                encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                            }
+                            Some(FatList::Noent) | None => encode_reply_status(
+                                &mut rep,
+                                berry_fsproto::ST_NOENT,
+                            )
+                            .unwrap_or_else(|| trap()),
+                        }
+                    }
                     ReadDirRes::NotDir => {
                         encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
                     }
@@ -180,12 +200,16 @@ fn main() {
                 StatRes::Ok(ty, size) => {
                     encode_reply_stat(&mut rep, ty, size).unwrap_or_else(|| trap())
                 }
-                // FAT 回落面恒 TYPE_FILE（FAT 根只有文件——子目录刀 3）。
-                StatRes::Noent => match fat.as_ref().and_then(|f| f.stat11(name)) {
-                    Some(sz) => {
-                        encode_reply_stat(&mut rep, TYPE_FILE, sz).unwrap_or_else(|| trap())
+                // FAT 回落面：文件 (TYPE_FILE, size) / 目录 (TYPE_DIR, 0)
+                // （刀 3 起含子目录链；毒化/链断诚实 ST_BAD）。
+                StatRes::Noent => match fat.as_mut().map(|f| f.stat(name)) {
+                    Some(FatStat::Ok(ty, sz)) => {
+                        encode_reply_stat(&mut rep, ty, sz).unwrap_or_else(|| trap())
                     }
-                    None => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
+                    Some(FatStat::Bad) => {
+                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                    }
+                    _ => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
                         .unwrap_or_else(|| trap()),
                 },
             },

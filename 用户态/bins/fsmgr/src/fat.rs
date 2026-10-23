@@ -7,14 +7,19 @@
 //! 回复抢答面）。eager init：服务启动即定几何、整读 FAT0 + 根目录（≈6 扇
 //! 区）；此后数据 GET 按簇读盘（单簇缓存，顺序读零重复 RPC）。
 //!
-//! 分层路由（A-6）：`name_to_fat11` 认的 8.3 大写名 → FAT 层（盘上真文件）；
-//! 其余（小写等 RAM 名）→ RAM 表（do_put/do_trunc 不变）——名字空间按构造
-//! 隔离，同一名字按写法天然只命中一层。**staging + TRUNC 即 commit**（与
+//! 分层路由（A-6 + C-0 刀 3）：`name_to_fat11` 认的 8.3 大写名 → FAT 层
+//! （盘上真文件）；其余（小写/多段等 RAM 名）→ RAM 树（berry-fstree）——
+//! 名字空间按构造隔离，同一名字按写法天然只命中一层。**多段 NUL 路径的
+//! FAT 面只读**（刀 3）：`DATA\0NOTE.TXT` 逐段走查——中段须目录（DIR 属性
+//! 项即目录文件、簇链 = 子项表）、中段文件 = Miss（fstree 同义）；写面
+//! （PUT/TRUNC/staging）恒单段——多段构造性走 RAM 树，**FAT 建删目录不在
+//! C-0 盒、FAT 文件删除留 v2、`>` 只落根**（诚实缺口）；盘上同名目录作
+//! 文件写目标 = ST_BAD（类型冲突）。**staging + TRUNC 即 commit**（与
 //! bsh fs_put 的「分片 PUT + 尾随 TRUNC」协议恰合）：PUT 分片累积进单一
 //! staging 槽、TRUNC(len) 触发落盘（近原子——commit 前读者只见旧版/无文
 //! 件）；跨名写自动先 commit 旧槽（bsh 串行 client 每段重定向一个目标）。
-//! GET 先 staging 后盘（读到正在写的文件）；LIST = RAM 名 + FAT 名 + 未落
-//! 盘的 staging 名。
+//! GET 先 staging 后盘（读到正在写的文件）；LIST = RAM 名 + FAT 名（含
+//! 目录名）+ 未落盘的 staging 名。
 //!
 //! commit 序（crash 窗口 v1 文档化——FAT 无原子多扇区写）：**工作副本**
 //! fat2/root2 上 collect 旧链 →（旧链标记未释放下）分配新链（防重用）→
@@ -37,7 +42,9 @@ use berry_fatfs::{
     dir_entry, encode_file_entry, fat11_display, fat12_entry, fat12_set, find_free_cluster,
     name_to_fat11, parse_bpb, Bpb, DirFile, DirKind, Fat12Entry, FAT12_EOC,
 };
-use berry_fsproto::{encode_reply_get, CHUNK, FILE_SIZE_MAX, LIST_MAX, ST_BAD, ST_FULL};
+use berry_fsproto::{
+    encode_reply_get, CHUNK, FILE_SIZE_MAX, LIST_MAX, ST_BAD, ST_FULL, TYPE_DIR, TYPE_FILE,
+};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_handle_duplicate, berry_object_wait_one, berry_vmo_commit, berry_vmo_create,
@@ -60,6 +67,10 @@ const ROOT_CAP: usize = 512;
 /// 单簇缓存帽（spc=4 → 2048B）。
 const CLUS_CAP: usize = 2048;
 
+/// 目录簇链走查帽（resolve/readdir——环状 FAT 钉死；mkfat 单簇目录，16
+/// 簇 = 32KiB 子项表面，v1 卷几何内充裕）。
+const DIR_CHAIN_MAX: u32 = 16;
+
 /// GET 兜底结果（RAM 未命中后的 FAT 面三态 + 命中）。
 pub enum GetRes {
     /// 命中（rep 已落字，值为应答长）。
@@ -68,7 +79,50 @@ pub enum GetRes {
     Miss,
     /// 文件在盘上但超出协议文件尺寸帽（ST_FULL 诚实降级 ≠ NOENT）。
     Full,
+    /// 命中的是目录（类型冲突——调用方回 ST_BAD，fstree IsDir 同义）。
+    IsDir,
     /// 服务面坏（会话毒化 / 链断 / RPC 失败）。
+    Bad,
+}
+
+/// FAT 面路径解析结果（读面，C-0 刀 3）。
+enum FatPath {
+    /// 终段是文件（簇链可 serve）。
+    File(DirFile),
+    /// 终段是目录（size 恒 0；first_clus = 子项表簇链头）。
+    Dir(DirFile),
+    /// 路径不在 FAT（非 8.3 段 / 中段文件 / 未命中）。
+    Noent,
+    /// 走查坏（会话毒化 / RPC 失败 / 链断）。
+    Bad,
+}
+
+/// 目录簇链扫描结果（resolve 走查内部）。
+enum ChainScan {
+    Found(DirKind),
+    Missing,
+    Bad,
+}
+
+/// v2 STAT/LOOKUP 的 FAT 回落结果（刀 2 起单段、刀 3 起多段泛化）。
+pub enum FatStat {
+    /// (type, size)——文件 (TYPE_FILE, size) / 目录 (TYPE_DIR, 0)。
+    Ok(u8, u32),
+    /// 非 FAT 名或盘上无此路径。
+    Noent,
+    /// 走查坏（多段链面：会话毒化 / RPC 失败 / 链断）。
+    Bad,
+}
+
+/// v2 READDIR 的 FAT 回落结果（刀 3）。
+pub enum FatList {
+    /// 子名 NUL 连接已落 buf（值为总长）。
+    Names(usize),
+    /// 路径不在 FAT。
+    Noent,
+    /// 路径是文件（非目录）。
+    NotDir,
+    /// 走查坏（会话毒化 / RPC 失败 / 链断）。
     Bad,
 }
 
@@ -302,11 +356,26 @@ fn rpc_write(h: Handle, vmo: Handle, lba: u64, src: &[u8; SECTOR_SZ]) -> RpcRes 
 }
 
 impl Fat {
-    /// GET：staging 优先（读到正在写的文件；staged 名不经盘——会话毒化
-    /// 下也照常服务，数据在内存）→ 盘上 FAT 面 + 簇界分片服务（chunk =
-    /// 协议窗、文件尾、簇界三取小——dlen < CHUNK 合法，more 链由 client
-    /// 侧 off 前进收敛）。
+    /// GET：多段路径走 FAT 子目录链（刀 3 读面）；单段 = staging 优先
+    /// （读到正在写的文件；staged 名不经盘——会话毒化下也照常服务，数据
+    /// 在内存）→ 盘上 FAT 面 + 簇界分片服务（chunk = 协议窗、文件尾、簇
+    /// 界三取小——dlen < CHUNK 合法，more 链由 client 侧 off 前进收敛）。
     pub fn handle_get(&mut self, name: &[u8], off: u32, rep: &mut [u8; 256]) -> GetRes {
+        if name.contains(&0) {
+            // 多段：子目录走查（写面恒单段——多段 PUT/TRUNC 在 main 层
+            // 构造性走 RAM 树，到不了这里）。
+            return match self.resolve(name) {
+                FatPath::File(f) => {
+                    if f.size as usize > FILE_SIZE_MAX {
+                        return GetRes::Full;
+                    }
+                    self.serve(&f, off as usize, f.size as usize, rep)
+                }
+                FatPath::Dir(_) => GetRes::IsDir, // 目录不是读面（类型冲突）
+                FatPath::Noent => GetRes::Miss,
+                FatPath::Bad => GetRes::Bad,
+            };
+        }
         let n11 = match name_to_fat11(name) {
             Some(n) => n,
             None => return GetRes::Miss, // RAM 名字空间（小写等）——非 FAT 面
@@ -319,14 +388,18 @@ impl Fat {
         if !self.sess_ok {
             return GetRes::Bad;
         }
-        let f = match self.lookup11(&n11) {
-            Some(f) => f,
-            None => return GetRes::Miss,
-        };
-        if f.size as usize > FILE_SIZE_MAX {
-            return GetRes::Full;
+        match self.find_root(&n11) {
+            Some(DirKind::File(f)) => {
+                if f.size as usize > FILE_SIZE_MAX {
+                    return GetRes::Full;
+                }
+                self.serve(&f, off as usize, f.size as usize, rep)
+            }
+            // 单段 8.3 目录名：类型冲突（ST_BAD）而非 NOENT——fstree read
+            // 的 IsDir 同义（刀 3）。
+            Some(DirKind::Dir(_)) => GetRes::IsDir,
+            _ => GetRes::Miss, // 未命中（Skip/End 不作名匹配面）
         }
-        self.serve(&f, off as usize, f.size as usize, rep)
     }
 
     /// FAT 名 PUT 分片入 staging 槽。None = 非 FAT 名（调用方回落 RAM 通道
@@ -334,6 +407,11 @@ impl Fat {
     /// 一段重定向一个目标的节奏；commit 失败 = 旧槽保留 + 新写拒）。
     pub fn stage_put(&mut self, name: &[u8], off: u32, data: &[u8]) -> Option<StageRes> {
         let n11 = name_to_fat11(name)?;
+        if matches!(self.find_root(&n11), Some(DirKind::Dir(_))) {
+            // 盘上同名目录——文件写目标类型冲突（目录读面 v1 不可写；不拒
+            // 会经 commit 的 End 槽路径写出目录/文件同名双项）。
+            return Some(StageRes::Deny(ST_BAD));
+        }
         let end = off as usize + data.len(); // u32 + ≤CHUNK：64 位下无溢出
         if end > FILE_SIZE_MAX {
             // 尺寸帽先于一切槽操作拒（不触碰既有 staging——拒绝语义干净）。
@@ -371,6 +449,9 @@ impl Fat {
     /// 落盘（盘上无此名 = 建空文件——`echo > NEWF` 的 PUT 先行场景）。
     pub fn stage_trunc(&mut self, name: &[u8], size: u32) -> Option<u8> {
         let n11 = name_to_fat11(name)?;
+        if matches!(self.find_root(&n11), Some(DirKind::Dir(_))) {
+            return Some(ST_BAD); // 同名目录——stage_put 同面（类型冲突）
+        }
         let size = size as usize;
         if size > FILE_SIZE_MAX {
             return Some(ST_FULL);
@@ -570,16 +651,19 @@ impl Fat {
         berry_fsproto::ST_OK
     }
 
-    /// LIST 续列：未被 RAM 影子的 FAT 文件名（显示形）接在 RAM 名后，
-    /// LIST_MAX 同帽截断（截断可见，client 侧不误判穷尽）。影子源 =
-    /// RAM 根名全表**含目录**（C-0 刀 2 起 mkdir 可建 8.3 形目录名——
-    /// overlay 上层遮下层通则，LIST 去重不破）。
+    /// LIST 续列：未被 RAM 影子的 FAT 根名（文件 + 目录，显示形）接在
+    /// RAM 名后，LIST_MAX 同帽截断（截断可见，client 侧不误判穷尽）。
+    /// 影子源 = RAM 根名全表**含目录**（C-0 刀 2 起 mkdir 可建 8.3 形目录
+    /// 名——overlay 上层遮下层通则，LIST 去重不破）。
     pub fn append_names(&self, ram_root: &[&[u8]], buf: &mut [u8], n0: usize) -> usize {
         let mut n = n0;
         for i in 0..self.bpb.root_entries as usize {
             let e = &self.root[i * 32..i * 32 + 32];
             let f = match dir_entry(e) {
                 Some(DirKind::File(f)) => f,
+                // 目录名同列（刀 3——FAT 卷挂 /：根名全量；显示形无区分，
+                // STAT/LOOKUP 可查 TYPE_DIR）。
+                Some(DirKind::Dir(d)) => d,
                 Some(DirKind::End) => break,
                 _ => continue, // 卷标/LFN/删除项/畸形项
             };
@@ -628,18 +712,193 @@ impl Fat {
         n
     }
 
-    /// v2 STAT/LOOKUP 回落面（C-0 刀 2）：单段 8.3 名在 FAT 层的尺寸
-    /// （staged 优先于已 commit——读写一致性按最新内容计；None = 非 FAT
-    /// 名或盘上无此名）。只查内存态（staging + init 期整读的根目录副本），
-    /// 零块 RPC——会话毒化面天然不涉及。
-    pub fn stat11(&self, name: &[u8]) -> Option<u32> {
-        let n11 = name_to_fat11(name)?;
-        if let Some((sn, buf)) = self.staging.as_ref() {
-            if *sn == n11 {
-                return Some(buf.len() as u32);
+    /// v2 STAT/LOOKUP 回落面（C-0 刀 2 单段 / 刀 3 多段）：单段 = staging
+    /// 优先于已 commit（读写一致性按最新内容计）+ 内存根镜像——零块 RPC，
+    /// 会话毒化面天然不涉及（stat11 语义零漂移）；多段 = resolve 链走查
+    /// （子项表在盘上——毒化/链断诚实 Bad）。目录回 TYPE_DIR（size 0）。
+    pub fn stat(&mut self, path: &[u8]) -> FatStat {
+        if !path.contains(&0) {
+            let n11 = match name_to_fat11(path) {
+                Some(n) => n,
+                None => return FatStat::Noent,
+            };
+            if let Some((sn, buf)) = self.staging.as_ref() {
+                if *sn == n11 {
+                    return FatStat::Ok(TYPE_FILE, buf.len() as u32);
+                }
+            }
+            return match self.find_root(&n11) {
+                Some(DirKind::File(f)) => FatStat::Ok(TYPE_FILE, f.size),
+                Some(DirKind::Dir(_)) => FatStat::Ok(TYPE_DIR, 0),
+                // find_root 只产 File/Dir/None——Skip/End 是其内部迭代面，
+                // 防御性兜底与未命中同义。
+                _ => FatStat::Noent,
+            };
+        }
+        match self.resolve(path) {
+            FatPath::File(f) => FatStat::Ok(TYPE_FILE, f.size),
+            FatPath::Dir(_) => FatStat::Ok(TYPE_DIR, 0),
+            FatPath::Noent => FatStat::Noent,
+            FatPath::Bad => FatStat::Bad,
+        }
+    }
+
+    /// 根目录 8.3 名查找（类型感知——目录项也命中；End 即停；畸形项跳过）。
+    /// [`Self::lookup11`] 的读面泛化（刀 3）；写面（commit 旧链 collect /
+    /// staging 判定）仍用 lookup11 的 File-only 语义。
+    fn find_root(&self, n11: &[u8; 11]) -> Option<DirKind> {
+        for i in 0..self.bpb.root_entries as usize {
+            let e = &self.root[i * 32..i * 32 + 32];
+            match dir_entry(e) {
+                Some(DirKind::File(f)) if &f.name == n11 => return Some(DirKind::File(f)),
+                Some(DirKind::Dir(d)) if &d.name == n11 => return Some(DirKind::Dir(d)),
+                Some(DirKind::End) => return None,
+                _ => {}
             }
         }
-        Some(self.lookup11(&n11)?.size)
+        None
+    }
+
+    /// FAT 面多段路径走查（NUL 分段；C-0 刀 3 读面）：根（内存镜像）→ 逐
+    /// 中段须目录（簇链逐簇载入扫子项表）→ 终段定类。中段文件 / 非 8.3 段
+    /// / 未命中 = Noent（fstree mid_segment_file_unreachable 同义）；毒化 /
+    /// RPC 失败 / 链断 = Bad。子项表走查复用单簇缓存（load_clus）——与
+    /// serve 同一缓存面，顺序请求无重复 RPC。
+    fn resolve(&mut self, path: &[u8]) -> FatPath {
+        if !self.sess_ok {
+            return FatPath::Bad; // 会话毒化——子项表在盘上，不走查就是编数据
+        }
+        let segs: Vec<&[u8]> = path.split(|&b| b == 0).collect();
+        if segs.iter().any(|s| s.is_empty()) {
+            return FatPath::Noent; // 防御面（parse 层 nlen/段帽在前）
+        }
+        let last = segs.len() - 1;
+        let mut cur: Option<DirFile> = None; // 当前目录（None = 根）
+        for (i, seg) in segs.iter().enumerate() {
+            let n11 = match name_to_fat11(seg) {
+                Some(n) => n,
+                None => return FatPath::Noent, // 非 8.3 段 = RAM 名字空间
+            };
+            let kind = match cur {
+                None => self.find_root(&n11),
+                Some(d) => match self.scan_chain(&d, &n11) {
+                    ChainScan::Found(k) => Some(k),
+                    ChainScan::Missing => None,
+                    ChainScan::Bad => return FatPath::Bad,
+                },
+            };
+            match kind {
+                Some(DirKind::Dir(d)) if i < last => cur = Some(d), // 中段目录：下行
+                Some(DirKind::File(f)) if i == last => return FatPath::File(f),
+                Some(DirKind::Dir(d)) if i == last => return FatPath::Dir(d),
+                // 中段文件（不可达）/ 未命中 / 空目录作中段
+                _ => return FatPath::Noent,
+            }
+        }
+        FatPath::Noent // 不可达（segs 非空必进循环且必 return）——防御面
+    }
+
+    /// 目录子项表扫描：簇链逐簇载入（单簇缓存）找 8.3 名。空目录（首簇
+    /// 0）= Missing；链长帽 DIR_CHAIN_MAX（环状 FAT 钉死）；EOC 表尽 =
+    /// Missing；Free/Bad/域外 = Bad（链断）。
+    fn scan_chain(&mut self, dir: &DirFile, n11: &[u8; 11]) -> ChainScan {
+        let mut c = dir.first_clus;
+        if c == 0 {
+            return ChainScan::Missing; // 空目录（解码合法形）
+        }
+        let csz = self.cluster_sz();
+        let max = 2 + self.bpb.cluster_count;
+        if !(2..max).contains(&c) {
+            return ChainScan::Bad;
+        }
+        for _ in 0..DIR_CHAIN_MAX {
+            if !self.load_clus(c) {
+                return ChainScan::Bad;
+            }
+            for i in 0..csz / 32 {
+                let e = &self.cache[i * 32..i * 32 + 32];
+                match dir_entry(e) {
+                    Some(DirKind::File(f)) if &f.name == n11 => {
+                        return ChainScan::Found(DirKind::File(f))
+                    }
+                    Some(DirKind::Dir(d)) if &d.name == n11 => {
+                        return ChainScan::Found(DirKind::Dir(d))
+                    }
+                    Some(DirKind::End) => return ChainScan::Missing, // 表终结
+                    _ => {}
+                }
+            }
+            match fat12_entry(&self.fat, c) {
+                Some(Fat12Entry::Next(v)) if (2..max).contains(&v) => c = v, // 下一簇
+                Some(Fat12Entry::Eoc) => return ChainScan::Missing, // 链尾表尽
+                _ => return ChainScan::Bad, // Free/Bad/保留值/域外——链断
+            }
+        }
+        ChainScan::Missing // 链长越帽——按未中收（确定性优先）
+    }
+
+    /// v2 READDIR 的 FAT 回落（刀 3）：路径解析为 FAT 目录 → 子项显示名
+    /// NUL 连接落 buf（fstree readdir 同形、LIST_MAX 同帽截断——截断可
+    /// 见）；文件 = NotDir；未命中 = Noent；毒化/RPC/链断 = Bad。
+    pub fn readdir(&mut self, path: &[u8], buf: &mut [u8]) -> FatList {
+        let d = match self.resolve(path) {
+            FatPath::Dir(d) => d,
+            FatPath::File(_) => return FatList::NotDir,
+            FatPath::Noent => return FatList::Noent,
+            FatPath::Bad => return FatList::Bad,
+        };
+        if d.first_clus == 0 {
+            return FatList::Names(0); // 空目录
+        }
+        let csz = self.cluster_sz();
+        let max = 2 + self.bpb.cluster_count;
+        let cap = LIST_MAX.min(buf.len());
+        let mut n = 0usize;
+        let mut c = d.first_clus;
+        for _ in 0..DIR_CHAIN_MAX {
+            if !self.load_clus(c) {
+                return FatList::Bad;
+            }
+            let mut done = false;
+            for i in 0..csz / 32 {
+                let e = &self.cache[i * 32..i * 32 + 32];
+                let f = match dir_entry(e) {
+                    Some(DirKind::File(f)) => f,
+                    Some(DirKind::Dir(d)) => d, // 子目录名同列（名字面无区分）
+                    Some(DirKind::End) => {
+                        done = true;
+                        break;
+                    }
+                    _ => continue, // 卷标/LFN/删除项/畸形项
+                };
+                let mut tmp = [0u8; 12]; // 8.3 显示名最长 12（8+1+3）
+                let dn = match fat11_display(&f.name, &mut tmp) {
+                    Some(dn) => dn,
+                    None => continue,
+                };
+                let disp = &tmp[..dn];
+                let need = disp.len() + if n > 0 { 1 } else { 0 };
+                if n + need > cap {
+                    done = true; // 帽截断（可见——client 不误判穷尽）
+                    break;
+                }
+                if n > 0 {
+                    buf[n] = 0; // NUL 分隔（fstree readdir 同形）
+                    n += 1;
+                }
+                buf[n..n + disp.len()].copy_from_slice(disp);
+                n += disp.len();
+            }
+            if done {
+                break;
+            }
+            match fat12_entry(&self.fat, c) {
+                Some(Fat12Entry::Next(v)) if (2..max).contains(&v) => c = v,
+                Some(Fat12Entry::Eoc) => break, // 链尾表尽
+                _ => return FatList::Bad, // Free/Bad/域外——链断
+            }
+        }
+        FatList::Names(n)
     }
 
     /// 根目录 8.3 名查找（End 即停；畸形项跳过）。
