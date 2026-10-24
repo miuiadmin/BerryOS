@@ -1,67 +1,74 @@
 # BerryOS
 
+**A microkernel operating system written entirely in Rust — power-first, capability-secure, and AI-native by construction.**
+
 [![CI](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml/badge.svg)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
 
-自研**微内核 + 跨平台操作系统**。Rust 从内核到用户态，ARM64（AArch64）首发，QEMU `virt` 机型验证。
+BerryOS targets battery-class devices first (watch-tier ARM64) and grows toward phones and PCs. The design borrows deliberately: Zircon's pragmatic kernel objects, seL4's capability discipline, and a scheduler built for tickless operation from day one.
 
-端定位（ADR #39–#41）：v1 主战场 = **手表/穿戴 rich 档（MB 级内存），ARM64 单线走到底**；MCU 档（KB 级）v1 排除；v2 攻工业 RT；x86_64 提前启动 QEMU 最小集移植（XNU 同源分端模式：同一内核源、分端用户态）。
+## Design pillars
 
-## 四根支柱
+- **Minimal kernel, maximal isolation.** The `#![no_std]` kernel keeps only what cannot be delegated: scheduling, IPC, address spaces, and capability dispatch. File systems, networking, and drivers are user-space services that can crash and restart without taking the system down.
+- **Capabilities, not permission bits.** Every resource access flows through kernel-enforced handles (Zircon-style). A service sees exactly what it was granted — nothing more.
+- **Power-first.** Tickless (NO_HZ) idle from day one, per-task EPP hints, and a user-space power manager talking to the kernel through a shared ring — not message-copy IPC.
+- **AI-native scheduling.** The kernel exposes first-class interfaces that let a user-space AI policy service influence placement, frequency, and priorities — within hard guardrails (envelope clamps, monotonic narrowing). Intent is a first-class scheduling input (u8, frozen encoding), layered on top of fairness, never replacing it.
+- **AI-friendly ABI.** The syscall ABI is generated from a single source of truth (`tools/abi.toml` → kernel + user-space bindings + docs, byte-checked in CI). Structured tracing, semantic error codes, machine-readable documentation.
+- **Testing built for automation.** Every smoke assertion is a deterministic state predicate — no timing races. An AI agent (or CI) can run the full gate, read the results, and trust them.
 
-| 支柱 | 一句话 |
-|------|--------|
-| **微内核** | 内核只留调度 / IPC / 地址空间 / 能力；驱动、FS、网络全在用户态，可监督重启 |
-| **省电** | tickless（NO_HZ）day-one，空闲核不收周期中断；PM 是用户态服务，与内核走共享环 |
-| **AI 原生调度** | 内核留第一类 ABI：遥测出、策略进；AI 只碰 fair/后台类，RT/deadline 永不 |
-| **PC 高性能** | 每核 runqueue + 负载均衡 + capacity 抽象，手表→手机→PC 一条放置路径 |
+## Status — October 2026
 
-## 现状（诚实版）
+Phase 0–6 shipped on ARM64 (QEMU `virt`), x86_64 minimal port in CI. Highlights of what runs today:
 
-- ✅ **Phase 2b / 出口关卡 G1.5 已完成（2026-10，2b-0~2b-4 全落地）**：内核主体链高半（TTBR1 canonical、低半身份表已退役，boot 打 `KVA ok` 自校验）、每进程页表 + ASID（16 位实测、回卷全量失效）、匿名 VMO/Vmar、首个 EL0 用户进程（ktest `ASPACE ok` / `VMO ok` / `HANDLE ok` / `SYSCALL ok`；用户进程野指针只死自己，坏 handle/未知 syscall 一律错误码返回不杀——watchdog 打 `G1.5 ok`）。其下是 Phase 2a（G1）：buddy/slab 堆、异常向量 + panic dump、GICv2 + CNTV timer、内核线程 + 上下文切换、协作/抢占调度（机制在内核、策略可插拔 trait）、tickless idle（空闲 mask CNTV + `wfi`）、IRQ 驱动抢占。
-- ✅ **Phase 3 能力与系统调用已收官（3-0 handle 表 / 3-1 syscall ABI 骨架 / 3-2 VMO/Vmar 全量门控 / 3-3 process 最小对象 / 3-4a per-process handle 表 / 3-4b channel 三号 / 3-4c event 三号 + 遥测环 + 空策略表等价测试）**：v1 27 个 syscall 编号在册（**22 已实现**）；handle 三操作 + `clock_read` + **VMO/Vmar 九号全链**（rights 位执法 + `copy_from/to_user` 界检 + 悬空 PTE 防线）+ **process/thread 三号**（`process_create` 双出参——Zircon 同形；对象间钉住防悬空）+ **channel 三号**（v1 非阻塞：空 -EAGAIN / 满 -EBUSY；全程原子，任一步失败调用者表零变化）+ **event 三号**（`event_create`/`object_signal`/`object_wait_one`——poll-only 位掩码，命中回写全满足集，`deadline≠0` -ENOTSUP 阻塞留 P4）——**用户进程已能创建第二个进程并与之交换消息**（`user_spawner` 装配启动子进程 `user_child`，`send` 把礼物 VMO handle 随消息迁进子进程端点队列，child 凭**自己表里**的端点 recv 出 PING+礼物、回 REPLY——跨进程能力流动 + 消息往返双闭环）；**每进程自有 handle 表 + bootstrap 迁移**（`process_start` 把 handle 迁进子进程表，子入口 x0 收到子表新值）；**AI 原生调度第一级基建已埋**——策略注入留桩（`进程调度/src/policy.rs`，词汇表四类封顶、内核 clamp 执法）+ 切换遥测环（静态预储零分配写入，watchdog 周期断言）+ **空策略表等价测试**（ktest `POLICY ok`：绑空表与未绑逐位全等——「AI 不在线零影响」是机器断言不是口号）。下一步 Phase 4 IPC 与服务框架（阻塞等待、service manager）。
-- 关卡式验证 G0–G5（`文档/测试策略.md`）：单核正确 → 抢占 → SMP → 全抢占 → demand paging，逐关推进。**尚未到** SMP / 全抢占 / demand paging——文档描述始终与实际阶段一致。
+| Layer | What boots |
+|---|---|
+| Kernel | Preemptive scheduler with priority-inheritance donation, VMO/Vmar memory objects, capability handle tables, 30 registered syscalls (29 implemented), channel IPC with fastpath/slowpath, intent propagation |
+| Services | console/svcmgr service framework, RAM filesystem, **user-space virtio-blk and virtio-net drivers**, FAT12 read/write with cross-boot persistence, UDP/DNS, minimal TCP client (full handshake → data → teardown) plus TCP RPC service |
+| Apps | `bsh` shell (pipes, mini-readline, env), **unmodified `hexyl` 0.17.0** running via a musl-target libc shim, `.bap` application packages (manifest → capability grant → supervised lifecycle) |
+| x86_64 | PVH boot, PIT/PIC timer, exception vectors, context switching, SYSCALL/SYSRET — 7 smoke markers gated in CI |
 
-## 快速开始（macOS）
+Current milestone **M-VM**: a self-hosting disk image (BerryBoot EFI loader → kernel handoff), then a virtualization bring-up window, then a usable CLI. Full plan (Chinese) in [`docs/VM里程碑设计草案.md`](docs/VM里程碑设计草案.md).
+
+## Quick start
 
 ```bash
-brew install qemu just                      # qemu-system-aarch64 + just
-rustup target add aarch64-unknown-none      # stable，拉预编译 core
-just run                                    # QEMU virt 冷启动
+brew install qemu just                    # macOS; Linux: apt install qemu-system-arm qemu-system-x86 just
+rustup target add aarch64-unknown-none x86_64-unknown-none
+
+just run          # boot the kernel to a serial console in QEMU (ARM64 virt)
+just run-rootfs   # full service stack: rootfs, FAT, DNS, TCP, .bap apps
+just smoke        # unattended 5-phase gate: bare 23 + rootfs 24 + interactive RX 47 markers,
+                  #   plus FAT subdirectory and cross-boot persistence phases
+just test-host    # 315 host-side unit tests, no QEMU required
 ```
 
-串口从 `BerryOS boot` 起，经 `KVA ok`（高半自校验）、`ASPACE ok` / `VMO ok` 到 `G1.5 ok`（用户进程跑飞只死自己）；忙循环任务 `A`/`B` 与 EL0 用户进程（打 `u`）在 timer slice 下交替，并周期打 `switches=N` 金丝雀。完整标记序列以 `工具链/smoke.sh` 为准（`just smoke` 逐一断言）。
+No nightly Rust, no custom toolchain — stable builtin targets only.
 
-| 命令 | 说明 |
-|------|------|
-| `just build` | 构建 ELF（target `aarch64-unknown-none`，产物在全局 `~/.cargo-target`） |
-| `just run` | QEMU `virt`，默认起始 EL1 |
-| `just run-el2` | `virtualization=on`，走 EL2→EL1 eret 降级路径 |
-| `just smoke` | 无人值守冒烟：boot 标记断言 + `switches=N` 严格递增（CI 同款） |
-| `just check` / `just clean` / `just test-host` | 检查 / 清理 / host 单元测试 |
+## Repository layout
 
-退出 QEMU：`Ctrl-A` 然后 `X`（内核 `wfe` 停机后不自行退出）。
+```
+kernel/       microkernel core (no_std)
+mm/           physical frames / virtual memory / page tables
+sched/        scheduler / tasks / context switching
+ipc/          message passing (reserved)
+arch/         aarch64 HAL (primary) + x86_64 minimal port
+bootloader/   BerryBoot EFI loader
+drivers/ fs/ net/    user-space service slots
+user/         ABI bindings, protocol crates, programs (bsh, svcmgr, vnet, ...)
+tools/        build recipes, smoke harness, deterministic packers, ABI generator
+docs/         design documents (Chinese)
+```
 
-## 仓库布局
+## Documentation
 
-| 目录 | 内容 |
-|------|------|
-| `内核/` | Rust `#![no_std]`：调度 / IPC / 地址空间 / 能力 |
-| `内存管理/` `进程调度/` `进程间通信/` | Rust `#![no_std]` 内核类 crate |
-| `架构相关/aarch64/` | HAL + 内联汇编（EL 检测 / MMU / 异常向量 / 上下文切换） |
-| `用户态/` `驱动/` `文件系统/` `网络/` | 用户态服务（Rust） |
-| `工具链/` | 构建脚本（cargo + just）/ smoke 脚本 |
-| `文档/` | 设计文档 / ADR / 战略裁决 |
-| `调研报告/` | 21 份 OS 深度调研（23 个系统：单系统 12 + 进化史/坑史 9） |
-| `参考源码/` | 第三方参考实现（独立存放，协议标注见其 README.md） |
+Design documents are written in Chinese and live in [`docs/`](docs/). Start from the index: [`docs/索引.md`](docs/索引.md). Key entries:
 
-## 文档入口
+- Architecture decisions — 49 ADRs, the single source of truth: [`docs/架构决策.md`](docs/架构决策.md)
+- Roadmap: [`docs/路线图.md`](docs/路线图.md)
+- Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计.md`](docs/调度器设计.md)
+- Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计.md`](docs/系统调用ABI设计.md)
 
-- `文档/路线图.md` —— Phase 0–8，每阶段一个 QEMU 里程碑
-- `文档/架构决策.md` —— **ADR 单一事实来源**（决策总表 + 重议触发器，编号以该文件为准）
-- `文档/战略裁决-2026-10-15.md` —— 21 份调研 + AIOS 外部调研的双视角对抗裁决（22 提案 / 19 采纳）
-- `文档/调度器设计.md` / `AI调度设计.md` —— 机制/策略分离、tickless、AI 护栏
-- `文档/测试策略.md` —— 关卡 G0–G5
+中文说明见 **[README.zh-CN.md](README.zh-CN.md)**。
 
-## 许可证
+## License
 
-**Apache-2.0**（ADR #37）。GPL/AGPL 代码不进本仓库；参考实现只借鉴思路，协议洁净是硬约束。
+Apache-2.0. Third-party systems are studied as references only — no third-party code is vendored in this tree, and GPL-licensed implementations are excluded outright.
