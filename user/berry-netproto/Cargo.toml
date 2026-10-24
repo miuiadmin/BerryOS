@@ -6,7 +6,7 @@ edition = "2021"
 # P6 A-7：最小以太网/ARP/IPv4/ICMP-echo 编解码纯函数 crate（解析器即产品
 # 第 5 例，berry-blkproto/berry-fsproto 同款纪律）：零依赖、零 unsafe、
 # 零分配；输入只借用，输出写调用方切片。host 测试全盖（tests/net.rs）；
-# 消费者 vnet（virtio-net 用户态驱动，独立小工作区编 musl target）经
-# path 依赖双端共用——不入 members 的同款豁免（A-3 berry-virtio 先例）。
+# 消费者 vnet（virtio-net 用户态驱动，drivers/bins/vnet 编 musl target）经
+# path 依赖双端共用（跨工作区 path 依赖，bootloader/berry-loader 先例同款）。
 
 [dependencies]
