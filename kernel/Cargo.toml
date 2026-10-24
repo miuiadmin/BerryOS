@@ -1,0 +1,15 @@
+[package]
+name = "berry-kernel"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "berry-kernel"
+path = "src/main.rs"
+
+[dependencies]
+berry-hal-aarch64 = { path = "../arch/aarch64" }
+berry-mm = { path = "../mm" }
+berry-sched = { path = "../sched" }
+
+[build-dependencies]

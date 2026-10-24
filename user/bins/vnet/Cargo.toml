@@ -1,0 +1,31 @@
+[package]
+name = "vnet"
+version = "0.1.0"
+edition = "2021"
+
+# P6 A-7：virtio-net 用户态驱动（ARP/ICMP ping 通自验）。
+# P6 A-8b：自验毕转**常驻服务**（vblk A-4 同款——serve() 循环应答
+# berry-netdproto DNS_QUERY RPC；不再退出，svcmgr 不 reap）。musl target +
+# berry-libc shim，独立小工作区（[workspace] 空——不入 user/ members，
+# stdhello/bsh/vblk 同款豁免）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-exec = { path = "../../berry-exec" }
+berry-virtio = { path = "../../berry-virtio" }
+berry-netproto = { path = "../../berry-netproto" }
+# P6 A-8：网络服务 RPC 协议（DNS_QUERY 单 op 严格串行——服务端侧）。
+berry-netdproto = { path = "../../berry-netdproto" }
+# T-c：最小 TCP 客户端状态机纯函数 crate（状态/序号推进——IO 驱动在本
+# crate tcp.rs；host 测试）。
+berry-tcp = { path = "../../berry-tcp" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

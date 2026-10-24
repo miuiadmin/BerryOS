@@ -1,0 +1,12 @@
+[package]
+name = "talker"
+version = "0.1.0"
+edition = "2021"
+# G-eco-b 编译子程序：talker（4-6 A 半第二服务换轨）。凭交接件里的
+# [console 别名, t2] 与 echo2 直接往返 DEMO_REQ，首圈验回显打 `DEMO ok`
+# （smoke 第 23 标记），稳态 'd'。
+description = "BerryOS talker service (compiled flat binary, spawned by svcmgr)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }

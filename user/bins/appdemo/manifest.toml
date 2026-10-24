@@ -1,0 +1,9 @@
+[app]
+id = "APPDEMO"
+version = "0.1.0"
+entry = "bin/appdemo"
+type = "app"
+intent = "utility"
+
+[capabilities]
+console = true

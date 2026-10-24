@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # aarch64-unknown-none：内核 + no_std 用户程序；aarch64-unknown-linux-musl：
+          # G-eco-d std 面（stdhello/hexyl/bsh/fail/fsmgr/vprobe/vblk/vnet——berry-libc
+          # shim + berry-ld 链）；x86_64-unknown-none：P7 x86_64 最小集（ADR #41）。
+          targets: aarch64-unknown-none, aarch64-unknown-linux-musl, x86_64-unknown-none
+
+      - name: 安装 QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-system-x86
+
+      # 装 just 复用 justfile 单一入口（build/smoke 全走与本地同一配方——防 CI
+      # 自带第二套 cargo 命令与 justfile 分叉；P7-x4 挂账清偿）。
+      - name: 安装 just
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/.local/bin
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # just build = abi-check + build-user + cargo build。曾直接 `cargo build
+      # --locked`：跳过 build-user 则 kernel/src/userbins/*.bin（gitignored 编译
+      # 产物，内核 include_bytes! 直嵌）缺席 → 编译期炸响 exit 101——CI 连红 5
+      # 天的根因（缺产物 loud not silent 是设计，CI 面须先走产物链）。
+      - name: 构建（内核 + 用户程序产物链）
+        run: just build
+
+      - name: 内核体积基线（12号报告 §10.1；size.py 无法运行即 CI 红——symtab 缺失时其内部降级 exit 0 只报 memsz 小计，体积数值本身无门禁）
+        run: just size
+
+      - name: ARM64 冒烟四跑（QEMU 串口断言：裸相 + rootfs 相 + RX 交互相 + FAT 持久化相）
+        run: just smoke
+
+      # ---------- P7-x4 五原语收官 gate：x86_64 最小集挂 CI ----------
+      # x86 独立小工作区（不入根 workspace），cargo 直调（与 justfile build-x86
+      # 同参；--locked 可用——工作区 Cargo.lock 已入册）。
+      - name: 构建 x86_64 最小集（五原语收官 gate）
+        run: |
+          cd arch/x86_64
+          CARGO_TARGET_DIR=cargo-target cargo build --release --locked --target x86_64-unknown-none
+
+      - name: x86_64 最小集冒烟（五原语收官 gate）
+        run: bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"

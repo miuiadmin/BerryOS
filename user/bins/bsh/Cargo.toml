@@ -1,0 +1,26 @@
+[package]
+name = "bsh"
+version = "0.1.0"
+edition = "2021"
+
+# A-2：交互 shell（stdhello 同构独立小工作区——musl target + berry-libc
+# shim 与 none 全家互不渗漏）。fd0 = endB2（boot 手搭 bsh-stdin 对端，
+# console 转发键盘完整行）、fd1/2 = console 别名（env 块 gift[0]）、
+# rootfs VMO = gift[2]（libc `rootfs_h()`，`run <name>` 流式取 ELF）。
+# 验收：自驱自验（内部 `run hexyl` 收齐 2156B）打 `BSH ok`——smoke
+# rootfs 相第 8 标记，不依赖交互输入（rootfs 相 stdin=/dev/null）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-exec = { path = "../../berry-exec" }
+berry-fsproto = { path = "../../berry-fsproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

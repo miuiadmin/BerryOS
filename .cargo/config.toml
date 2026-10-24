@@ -1,0 +1,11 @@
+[build]
+target = "aarch64-unknown-none"
+
+# `cargo run` 直跑 QEMU（justfile 另有完整命令；此处仅为便利）。
+[target.aarch64-unknown-none]
+# 不用 -bios none：QEMU ≥11.x 把 "none" 当文件名，报
+# `Could not find ROM image 'none'`。virt + -kernel ELF 直加载、默认起始 EL1。
+runner = "qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 128M -nographic -kernel"
+# 链接脚本经 `kernel/build.rs` 注入（见那里）；不在此用 rustflags。
+# 注：`aarch64-unknown-none` 默认即用捆绑 rust-lld（self-contained），无需显式 `-C link-self-contained`
+# ——该目标反而会因「不支持该选项」报错，故不设 rustflags。

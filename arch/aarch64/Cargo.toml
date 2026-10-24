@@ -1,0 +1,8 @@
+[package]
+name = "berry-hal-aarch64"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "berry_hal_aarch64"
+path = "src/lib.rs"

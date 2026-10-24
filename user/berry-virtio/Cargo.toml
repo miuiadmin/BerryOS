@@ -1,0 +1,15 @@
+[package]
+name = "berry-virtio"
+version = "0.1.0"
+edition = "2021"
+# P6 A-3（docs/文件系统设计.md §6 P6 后续的块设备刀）：virtio 1.x split
+# virtqueue 布局/编解码纯函数 crate，`berry-loader`/`berry-fsproto` 先例
+# （「解析器即产品」）——`cfg_attr(not(test), no_std)`：库本体 no_std（用户态
+# workspace 成员在 aarch64-unknown-none 下构建），test 构建放开 std 仅为默认
+# 测试挂具。消费者：vblk（用户态块设备驱动，musl 独立小工作区经 path 依赖）。
+# MMIO 寄存器偏移表也在此单源（vblk volatile 读写共用；offset 是规范冻结值，
+# host 可测的「表驱动」面）。
+description = "BerryOS virtio split-ring layout: pure encode/decode for userland drivers"
+license = "Apache-2.0"
+
+[dependencies]

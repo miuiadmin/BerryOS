@@ -1,0 +1,22 @@
+[package]
+name = "appquiet"
+version = "0.1.0"
+edition = "2021"
+
+# app-0 demo 双 app 之二（`docs/app-0实施设计草案.md` §4）：manifest
+# `console = false` + 显式 [runtime] stack_pages = 8（显式路径）——能力
+# 缺席可运行的活证：stdout = appd 私有采集对端（输出不进串口），main
+# 静默真退出，appd collect 面只收 libc exit 先行的零长 EOF（fail 同款
+# 快路径）。stdhello 同链独立小工作区。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

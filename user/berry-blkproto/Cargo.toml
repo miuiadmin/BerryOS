@@ -1,0 +1,14 @@
+[package]
+name = "berry-blkproto"
+version = "0.1.0"
+edition = "2021"
+# P6 A-4（docs/文件系统设计.md 块设备主线 / 开发体验.md L2 fat:rw 铺垫）：
+# 块设备服务 RPC 协议纯函数 crate，`berry-fsproto`/`berry-loader` 先例
+# （D5「解析器即产品」）——`cfg_attr(not(test), no_std)`：库本体 no_std
+# （用户态 workspace 成员在 aarch64-unknown-none 下构建），test 构建放开
+# std 仅为默认测试挂具。双消费：vblk（服务端）/ svcmgr（A-4 消费自验
+# 方；A-5 起 FS 服务接棒）经 path 依赖。
+description = "BerryOS block-device RPC protocol: pure encoder/parser for the P6 A-4 vblk service"
+license = "Apache-2.0"
+
+[dependencies]

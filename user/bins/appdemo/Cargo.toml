@@ -1,0 +1,23 @@
+[package]
+name = "appdemo"
+version = "0.1.0"
+edition = "2021"
+
+# app-0 demo 双 app 之一（`docs/app-0实施设计草案.md` §4）：manifest
+# `console = true` + 省 [runtime]（stack_pages 缺省 8 路径）——能力授予面
+# 的活证。stdhello 同链独立小工作区：musl target 与主工作区 none 全家
+# 互不渗漏。打一行 `app APPDEMO up` 后 exit(0) 真退出，appd（svcmgr arm）
+# reap 收 0；包经 tools/mkapp.py 产 .bap 进 rootfs.cpio（构建期接线
+# 见 justfile build-user）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

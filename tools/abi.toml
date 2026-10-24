@@ -1,0 +1,478 @@
+# =====================================================================
+# BerryOS ABI 单一事实源（常量层 IDL，2026-10 落地）
+# ---------------------------------------------------------------------
+# 产物（`python3 tools/gen_abi.py` 生成，`--check` 逐字节守卫——挂
+# `just abi-check` + smoke + build 前置）：
+#   1. kernel/src/abi_gen.rs           —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR
+#   2. user/berry-sys/src/abi_gen.rs —— 同面镜像（+ INVALID_HANDLE + mod nr）
+#   3. docs/系统调用ABI设计.md        —— §4 编号表体 + §8.2 C 定义列（marker 块）
+# 三面同源 ⇒ 漂移按构造不可能；--check 只拦「改了本文件忘再生成 / 手改产物」。
+# Plan B v0.5 的 abi_check.py 三方对账关卡随之退役（生成即一致）。
+#
+# 改 ABI 的流程：改本文件 → `just abi-gen` → 提交（产物 diff 一并入册）。
+# 范围注记：本源只覆盖**常量层**（号/位/码/宽度）；§8.3 原型层（berry_* 签名
+# 与 .h）仍手写双镜像——v2 挂账（见 ABI 文档 §8 引言）。
+# =====================================================================
+
+[meta]
+stage = "v1"
+nr_total = 30        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
+implemented = 29     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
+
+# G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
+# v1 标量层；真 ABI 结构体出现即在此入册同源）。
+[types]
+handle = 4           # berry_handle_t / Handle = u32（G-eco-c copy_out_u32 的根源）
+rights = 8           # berry_rights_t / Rights = u64
+status = 4           # berry_status_t / Status = i32
+time = 8             # berry_time_t / Time = u64
+invalid_handle = 0   # BERRY_HANDLE_INVALID / INVALID_HANDLE
+
+[[clock]]
+name = "MONOTONIC"
+expr = "0"
+desc = '`clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。'
+desc_user = '`clock_read` 的 clock_id：v1 只有单调钟（壁钟留 v2）。'
+
+[[option]]
+name = "CHAN_OPT_NO_INTENT"
+expr = "1 << 0"
+desc = '''`channel_create` options bit0（4-3c，五件套之 4）：intent opt-out——置位通道
+的 recv 不结算 intent（QNX `_NTO_CHF_FIXED_PRIORITY` 等价，系统服务/看门狗
+类 server 逃生门）。其余位保留（非 0 尾 → -EINVAL，options 纪律）。'''
+
+# ---- rights 位（能力模型 §2；位表是 ABI 冻结值，未消费位先全量在册）----
+
+[[right]]
+name = "READ"
+expr = "1 << 0"
+desc = ""
+[[right]]
+name = "WRITE"
+expr = "1 << 1"
+desc = ""
+[[right]]
+name = "EXECUTE"
+expr = "1 << 2"
+desc = ""
+[[right]]
+name = "MAP"
+expr = "1 << 3"
+desc = ""
+[[right]]
+name = "DUPLICATE"
+expr = "1 << 4"
+desc = ""
+[[right]]
+name = "TRANSFER"
+expr = "1 << 5"
+desc = ""
+[[right]]
+name = "INSPECT"
+expr = "1 << 6"
+desc = ""
+[[right]]
+name = "SIGNAL"
+expr = "1 << 7"
+desc = '3-4c 起消费：`object_signal` 门控（Event 置/清位）。'
+[[right]]
+name = "SEND"
+expr = "1 << 8"
+desc = '3-4b 起消费：`channel_send` 门控。'
+[[right]]
+name = "RECV"
+expr = "1 << 9"
+desc = '3-4b 起消费：`channel_recv` 门控。'
+[[right]]
+name = "MANAGE"
+expr = "1 << 10"
+desc = ""
+[[right]]
+name = "SET_POLICY"
+expr = "1 << 11"
+desc = ""
+[[right]]
+name = "SAME"
+rust = "RIGHTS_SAME"
+c = "BERRY_RIGHT_SAME_RIGHTS"
+expr = "u64::MAX"
+desc = '`handle_duplicate`「取原权利全集」哨兵（= `BERRY_RIGHT_SAME_RIGHTS`，全 1）。'
+desc_user = 'duplicate 的「不裁剪」哨兵（内核同值 u64::MAX；实际授权仍受 handle 既有位约束）。'
+c_note = "duplicate 时取全集的哨兵"
+
+# ---- wait 信号位（4-2 位空间：低 32 内核派生 + 高 32 用户）----
+
+[[signal]]
+name = "READABLE"
+expr = "1 << 0"
+desc = 'Channel 端点可读：**本端**队列非空（内核派生位——用户 signal 不出此位）。'
+[[signal]]
+name = "WRITABLE"
+expr = "1 << 1"
+desc = 'Channel 端点可写：**对端**队列未满（内核派生位）。'
+[[signal]]
+name = "TERMINATED"
+expr = "1 << 2"
+desc = '''Process 已退出（Plan B v0.5 内核派生位；Exited 置位时唤醒，永久置位——
+同 Zircon TASK_TERMINATED 口径；父进程 wait 到该位后 unmap/close 回收）。'''
+[[signal]]
+name = "USER_MASK"
+expr = "0xFFFF_FFFF_0000_0000"
+desc = '''用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
+内核派生信号 READABLE/WRITABLE/TERMINATED——位面冲突由内核执法拒绝）。'''
+
+# ---- 错误码（posix-ish 负数；c_note = 文档 §8.2 C 行注）----
+# rust = false ⇒ 只产文档 C 行、不产 Rust 常量（保留位/未实现面）。
+# TIMEDOUT 的 C 行名自 TIMED_OUT 修正（单源化收口的既有漂移，2026-10）。
+
+[[errno]]
+name = "OK"
+expr = "0"
+rust = false
+c_note = ""
+[[errno]]
+name = "BAD_HANDLE"
+expr = "-9"
+c_note = "EBADF 等价：坏 handle / 类型不符"
+desc = "EBADF：坏 handle / 类型不符 / 代号过期。"
+[[errno]]
+name = "DEAD"
+expr = "-52"
+rust = false
+c_note = "代号作废：对象/服务已死（旧代 handle），决策 #28"
+desc = "代号作废：对象/服务已死（旧代 handle，v3 DEAD 检测启用）。"
+[[errno]]
+name = "INVALID_ARG"
+expr = "-22"
+c_note = "EINVAL"
+desc = "EINVAL：参数非法（如 replace 两值相同）。"
+[[errno]]
+name = "NO_MEMORY"
+expr = "-12"
+c_note = "ENOMEM"
+desc = "ENOMEM：无空间（表满 / gen 耗尽 / 超尺寸）。"
+[[errno]]
+name = "ACCESS_DENIED"
+expr = "-13"
+c_note = "EACCES：权限位不足"
+desc = "EACCES：权限位不足（能力拒绝）。"
+[[errno]]
+name = "NOT_FOUND"
+expr = "-2"
+c_note = "ENOENT"
+desc = "ENOENT：区间不存在（unmap/protect 找不到精确匹配）。"
+[[errno]]
+name = "BAD_STATE"
+expr = "-37"
+c_note = "对象状态不对（未 start / 已关）"
+desc = "EBADSTATE：对象状态不满足（读/映射未提交页——v1 无 demand paging）。"
+[[errno]]
+name = "TIMEDOUT"
+expr = "-110"
+c_note = "ETIMEDOUT"
+desc = "ETIMEDOUT：阻塞等待到点未命中（object_wait_one deadline 到期——4-1）。"
+[[errno]]
+name = "BUSY"
+expr = "-16"
+c_note = "EBUSY：channel 满 / 资源占用"
+desc = "EBUSY：资源占用（映射未解除的 VMO 不能 close/decommit——悬空 PTE 防线）。"
+[[errno]]
+name = "AGAIN"
+expr = "-11"
+c_note = "EAGAIN：非阻塞操作当下无货（channel_recv 空队，3-4b）"
+desc = "EAGAIN：非阻塞操作当下无货可取（channel recv 空——3-4b；posix-ish）。"
+[[errno]]
+name = "NOT_SUPPORTED"
+expr = "-95"
+c_note = "ENOTSUP：阶段未实现"
+desc = "ENOTSUP：未知/未实现编号或能力（ABI §8.4「永不 panic」统一错误面）。"
+[[errno]]
+name = "OUT_OF_RANGE"
+expr = "-34"
+c_note = "ERANGE：offset/len 越界"
+desc = "EOVERFLOW-style：offset/len 越出对象容量或区间管辖界。"
+[[errno]]
+name = "FAULT"
+expr = "-14"
+c_note = "EFAULT：用户指针界检失败（3-2 起 copy_from/to_user 执法）"
+desc = "EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用户区）——3-2 copy 路径。"
+
+# ---- §4 编号表（全 45 行：v1 28 + v2 12 + v3 5；title 含 **粗体** 原样）----
+# implemented = false ⇒ 在册未实现（内核回落 -ENOTSUP、berry-sys wrapper 照发）。
+
+[[group]]
+title = "**handle / 通用对象**"
+[[group.syscall]]
+num = 0x01
+name = "handle_close"
+desc = '关闭 handle'
+stage = "v1"
+[[group.syscall]]
+num = 0x02
+name = "handle_duplicate"
+desc = '复制（权限 ⊆ 原）'
+stage = "v1"
+[[group.syscall]]
+num = 0x03
+name = "handle_replace"
+desc = '原子替换 handle 槽'
+stage = "v1"
+[[group.syscall]]
+num = 0x04
+name = "object_wait_one"
+desc = '等单个对象上的信号'
+stage = "v1"
+note = '4-1 阻塞化（poll-first + 醒来重验 + -ETIMEDOUT）；4-2 扩 Event|Channel。'
+[[group.syscall]]
+num = 0x05
+name = "object_wait_many"
+desc = '等多个对象'
+stage = "v1"
+note = '4-2b 落地：任一命中 → *idx + *observed；WAIT_ANY 哨兵睡眠。'
+[[group.syscall]]
+num = 0x06
+name = "object_signal"
+desc = '泛型置/清信号（Event/Interrupt/Job）'
+stage = "v1"
+note = '3-4c 落地：v1 仅 Event 可 signal（thread/process 信号面随后续步）。'
+[[group.syscall]]
+num = 0x07
+name = "object_get_info"
+desc = '查询对象信息（topic 分派）'
+stage = "v2"
+
+[[group]]
+title = "**内存 / VMO / Vmar**"
+[[group.syscall]]
+num = 0x11
+name = "vmo_create"
+desc = '建内存对象'
+stage = "v1"
+[[group.syscall]]
+num = 0x12
+name = "vmo_commit"
+desc = '提交物理页（v1 无 pager 时直接分配）'
+stage = "v1"
+[[group.syscall]]
+num = 0x13
+name = "vmo_decommit"
+desc = '归还页'
+stage = "v1"
+[[group.syscall]]
+num = 0x14
+name = "vmo_read"
+desc = '内核中介读（非映射访问）'
+stage = "v1"
+[[group.syscall]]
+num = 0x15
+name = "vmo_write"
+desc = '内核中介写'
+stage = "v1"
+[[group.syscall]]
+num = 0x16
+name = "vmar_map"
+desc = 'VMO 映射进区间'
+stage = "v1"
+[[group.syscall]]
+num = 0x17
+name = "vmar_unmap"
+desc = '解除映射'
+stage = "v1"
+[[group.syscall]]
+num = 0x18
+name = "vmar_protect"
+desc = '改权限'
+stage = "v1"
+[[group.syscall]]
+num = 0x19
+name = "vmar_allocate"
+desc = '建子区间'
+stage = "v1"
+[[group.syscall]]
+num = 0x1A
+name = "vmo_get_size"
+desc = '查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长）'
+stage = "v1"
+note = 'G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。'
+
+[[group.syscall]]
+num = 0x1B
+name = "vmo_get_phys"
+desc = '查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽）'
+stage = "v1"
+note = 'P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。'
+
+[[group]]
+title = "**pager**"
+[[group.syscall]]
+num = 0x21
+name = "pager_supply_pages"
+desc = '用户态 pager 给 VMO 填页'
+stage = "v2"
+[[group.syscall]]
+num = 0x22
+name = "pager_op_range"
+desc = '脏页/换出通知'
+stage = "v3"
+
+[[group]]
+title = "**进程 / 线程**"
+[[group.syscall]]
+num = 0x31
+name = "process_create"
+desc = '建进程 + 出 root Vmar（双出参；job v1 恒 0）'
+stage = "v1"
+[[group.syscall]]
+num = 0x32
+name = "process_start"
+desc = '启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值）'
+stage = "v1"
+[[group.syscall]]
+num = 0x33
+name = "process_exit"
+desc = '退出'
+stage = "v1"
+note = 'Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。'
+[[group.syscall]]
+num = 0x34
+name = "thread_create"
+desc = '建线程（未启动，入口随 process_start）'
+stage = "v1"
+[[group.syscall]]
+num = 0x35
+name = "thread_start"
+desc = '投入运行（**在册未实现**——30 在册 29 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本）'
+stage = "v1"
+implemented = false
+note = 'thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。'
+[[group.syscall]]
+num = 0x36
+name = "thread_exit"
+desc = '线程退出'
+stage = "v1"
+note = 'Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。'
+[[group.syscall]]
+num = 0x37
+name = "thread_sleep"
+desc = '睡到 deadline（nanosleep 等价）'
+stage = "v1"
+[[group.syscall]]
+num = 0x38
+name = "thread_set_priority"
+desc = '设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）**'
+stage = "v2"
+[[group.syscall]]
+num = 0x39
+name = "thread_set_deadline"
+desc = '设截止期（软实时）'
+stage = "v2"
+[[group.syscall]]
+num = 0x3A
+name = "process_get_exit_code"
+desc = '查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查）'
+stage = "v1"
+note = 'P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。'
+
+[[group]]
+title = "**异常**"
+[[group.syscall]]
+num = 0x41
+name = "thread_create_exception_channel"
+desc = '用户态异常上报通道'
+stage = "v2"
+
+[[group]]
+title = "**IPC / event / futex**"
+[[group.syscall]]
+num = 0x51
+name = "channel_create"
+desc = '建端点对'
+stage = "v1"
+[[group.syscall]]
+num = 0x52
+name = "channel_send"
+desc = '发消息 + handle 迁移'
+stage = "v1"
+[[group.syscall]]
+num = 0x53
+name = "channel_recv"
+desc = '收消息'
+stage = "v1"
+[[group.syscall]]
+num = 0x54
+name = "event_create"
+desc = '建事件对象'
+stage = "v1"
+note = '3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。'
+[[group.syscall]]
+num = 0x55
+name = "futex_wait"
+desc = '用户态同步（pthread 基础）'
+stage = "v2"
+[[group.syscall]]
+num = 0x56
+name = "futex_wake"
+desc = '唤醒等待者'
+stage = "v2"
+
+[[group]]
+title = "**时间 / 定时器**"
+[[group.syscall]]
+num = 0x61
+name = "clock_read"
+desc = '读单调/壁钟'
+stage = "v1"
+[[group.syscall]]
+num = 0x62
+name = "timer_create"
+desc = '建定时器对象'
+stage = "v2"
+[[group.syscall]]
+num = 0x63
+name = "timer_set"
+desc = '设定时刻'
+stage = "v2"
+
+[[group]]
+title = '**设备**（因"用户态为主+关键暂留"留内核）'
+[[group.syscall]]
+num = 0x71
+name = "interrupt_create"
+desc = '建 IRQ 对象'
+stage = "v2"
+[[group.syscall]]
+num = 0x72
+name = "bind_irq"
+desc = 'IRQ → signal 一个 Event'
+stage = "v2"
+[[group.syscall]]
+num = 0x73
+name = "map_device_memory"
+desc = 'Resource → 设备 MMIO 的 VMO'
+stage = "v2"
+
+[[group]]
+title = "**命名空间**（路径式）"
+[[group.syscall]]
+num = 0x81
+name = "namespace_open"
+desc = '`open("/svc/fs")` → handle'
+stage = "v3"
+[[group.syscall]]
+num = 0x82
+name = "namespace_mount"
+desc = '服务把 channel 挂到路径'
+stage = "v3"
+
+[[group]]
+title = "**策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`）"
+[[group.syscall]]
+num = 0x83
+name = "policy_bind"
+desc = '注册 AI 策略注入通道（共享环，SET_POLICY）'
+stage = "v3"
+[[group.syscall]]
+num = 0x84
+name = "telemetry_open"
+desc = '打开遥测环（只读）'
+stage = "v3"

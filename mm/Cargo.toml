@@ -1,0 +1,10 @@
+[package]
+name = "berry-mm"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "berry_mm"
+path = "src/lib.rs"
+
+# 无外部依赖：buddy 核心是纯 Rust，host 单测走 `cfg(test)` 链 std。

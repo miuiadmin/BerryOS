@@ -1,0 +1,30 @@
+#!/bin/sh
+# berry-ld —— G-eco-d 链接器包装（macOS 交叉 musl 的关键一环，附录 A「链接咒语」）
+#
+# rustc 经 `-C linker=<本脚本> -C linker-flavor=ld.lld` 调入：
+#   1. 剥 musl crt（crt1/crti/crtbegin/crtend/crtn.o——crt1.o 的 _start 与
+#      berry-libc crt0 冲突；__libc_start_main 面全免）；
+#   2. `-lc` 保留在参数流里（惰性保险网：shim 全定义 ⇒ musl libc.a 成员
+#      永不因未满足引用被拉入 = 零 musl 字节进产物；万一漏定义某个符号，
+#      musl 顶上 = 可运行的降级而非链接失败）；
+#   3. 转交 rustup 内置 rust-lld 直驱（多调用 binary：argv[1] 的
+#      `-flavor gnu` 由 rustc 已带，保持参数原序勿动）。
+#
+# 过滤用 shift-回队惯用形：不能「先 `set --` 清空再循环」——那会把循环
+# 列表一并清掉（实踩：rust-lld 零参被调，报 generic driver 提示）。
+n=$#
+while [ "$n" -gt 0 ]; do
+  a=$1
+  shift
+  n=$((n - 1))
+  case "$a" in
+    */crt1.o | */crti.o | */crtbegin.o | */crtend.o | */crtn.o) continue ;;
+  esac
+  set -- "$@" "$a"
+done
+RUSTC=$(command -v rustc || echo "$HOME/.cargo/bin/rustc")
+SYSROOT=$("$RUSTC" --print sysroot)
+# 宿主三元组动态取（勿硬编码 aarch64-apple-darwin——CI 是 linux 宿主；rust-lld
+# 由 rustup 随宿主工具链分发，路径只差三元组一段）。
+HOST=$("$RUSTC" -vV | sed -n 's/^host: //p')
+exec "$SYSROOT/lib/rustlib/$HOST/bin/rust-lld" "$@"

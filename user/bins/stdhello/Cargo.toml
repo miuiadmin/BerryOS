@@ -1,0 +1,24 @@
+[package]
+name = "stdhello"
+version = "0.1.0"
+edition = "2021"
+
+# 独立小工作区（主工作区 excluded）：musl target + berry-ld RUSTFLAGS 与
+# aarch64-unknown-none 全家互不渗漏——std 程序不可能在 none target 下编。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# d-1a 验收面：链接残留审计需要符号表（release 剥了就没得看）
+[profile.audit]
+inherits = "release"
+strip = false

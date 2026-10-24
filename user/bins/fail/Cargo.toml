@@ -1,0 +1,21 @@
+[package]
+name = "fail"
+version = "0.1.0"
+edition = "2021"
+
+# P5 shell v0 收官：`&&` 的确定性非零退出源（stdhello 同链独立小工作区——
+# 主工作区 excluded，musl target 与 aarch64-unknown-none 全家互不渗漏）。
+# 契约：exit(42) —— libc exit → EOF 先行 + berry_process_exit(0x33, 42)，
+# 父侧（bsh）reap 收 42（0x3A 真退出码链的运行期验收面）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

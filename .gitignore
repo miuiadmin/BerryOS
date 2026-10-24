@@ -1,0 +1,45 @@
+/target
+**/*.rs.bk
+
+# G-eco initrd 镜像（编译侧产物，不入库）
+/rootfs.cpio
+
+# P6 A-2 virtio-blk 探测盘（run-rootfs/smoke 现场造的 1MiB 空盘，不入库）
+/disk.img
+
+# C-0 刀 4 FAT 子目录相盘（mkfat --fixture 模式现场造，不入库；默认盘
+# 字节零漂移硬线不破——子目录只在 fixture 模式）
+/disk_dirs.img
+
+# G-eco 用户程序编译产物（just build-user 产出；缺产物 = 内核 include_bytes
+# 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
+/kernel/src/userbins/
+
+# G-eco-b 子程序平像中转区（svcmgr include_bytes! 的输入；两遍构建 pass 1 产物）
+/user/userbins/
+
+# 用户态独立工作区 target（build-user 显式 CARGO_TARGET_DIR）
+/user/cargo-target/
+
+# P7 x86_64 独立工作区 target（build-x86 显式 CARGO_TARGET_DIR）
+/arch/x86_64/cargo-target/
+
+# Claude Code 本地/会话态（不提交；共享的 agents/settings.json 若需入库再单独 force-add）
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# 第三方参考实现仅本地保留：克隆树不入库（出处/协议见 reference/README.md）
+/reference/zcore/
+/reference/loopx-2.1.0/
+
+# python 脚本字节码缓存（size.py 被工具链调用时产生）
+__pycache__/
+
+# Claude Code 会话/工作树目录（本地工具产物，不入库）
+.claude/
+
+# loopx MCP 注册（含本机绝对路径，机器绑定）
+/.mcp.json
+
+# loopx 项目内控制面状态（goal/todo/证据账本，本地态）
+/.loopx/

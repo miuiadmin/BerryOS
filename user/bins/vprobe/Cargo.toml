@@ -1,0 +1,26 @@
+[package]
+name = "vprobe"
+version = "0.1.0"
+edition = "2021"
+
+# P6 A-2：virtio-mmio 探测程序（用户态驱动地基第一刀——`docs/文件系统
+# 设计.md` §6 P6 后续的块设备前置）。stdhello/fsmgr 同链（musl target +
+# berry-libc shim）。svcmgr 经 `SpawnSpec::mmio_vmo` 把 boot 授能的 MMIO
+# 窗口 VMO 映到 `VIRTIO_MMIO_VA`（berry-exec 单源常量）；本程序只读
+# virtio-mmio 规范头四字断言 transport 在席（magic/version/device_id），
+# VendorID 只打印不断言（0x554D4551 "QEMU" 是仿真器特有值）。成功打
+# `VIRTIO ok`（rootfs 相第 12 标记）后 main 返回 = exit(0)，svcmgr reap。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-exec = { path = "../../berry-exec" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

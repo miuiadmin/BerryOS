@@ -1,0 +1,14 @@
+[package]
+name = "berry-netdproto"
+version = "0.1.0"
+edition = "2021"
+# P6 A-8（docs/P6-A8网络服务化设计草案.md）：网络服务 RPC 协议纯函数
+# crate，`berry-fsproto`/`berry-blkproto` 先例（D5「解析器即产品」）——
+# `cfg_attr(not(test), no_std)`：库本体 no_std（用户态 workspace 成员在
+# aarch64-unknown-none 下构建），test 构建放开 std 仅为默认测试挂具。
+# 双消费：vnet（服务端，独立小工作区编 musl target）/ svcmgr（A-8c 起
+# 消费自验方，本工作区成员）经 path 依赖。
+description = "BerryOS network-service RPC protocol: pure encoder/parser for the P6 A-8 vnet DNS service"
+license = "Apache-2.0"
+
+[dependencies]

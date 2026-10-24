@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["kernel", "arch/aarch64", "mm", "sched"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+# panic=abort 消除对 eh_personality 语言项的依赖（no_std 内核不需要 unwind）。
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+
+# 不为 test/bench 显式设 panic：Cargo 对 test 强制 unwind（harness 要抓 panic），即便
+# dev/release 是 abort；显式 `[profile.test] panic` 反而被忽略并告警。`.cargo/config.toml`
+# 把 build.target 锁成 aarch64-unknown-none，host 单测须用 `cargo test --target <host>`
+# 覆盖（见 justfile `test-host`）。

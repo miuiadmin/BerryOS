@@ -1,0 +1,12 @@
+[app]
+id = "APPQUIET"
+version = "0.1.0"
+entry = "bin/appquiet"
+type = "app"
+intent = "background"
+
+[capabilities]
+console = false
+
+[runtime]
+stack_pages = 8
