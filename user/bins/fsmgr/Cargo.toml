@@ -1,0 +1,33 @@
+[package]
+name = "fsmgr"
+version = "0.1.0"
+edition = "2021"
+
+# P6 A-1：RAM-fs 服务（/svc/fs 最小面——`docs/文件系统设计.md` §6 P6 注记）。
+# stdhello/bsh 同构独立小工作区（musl target + berry-libc shim）。通道拓扑：
+# svcmgr 建 fs 对，本服务持 gift[2]（libc `gift2_h()`——fs 服务端端）+ gift[3]
+# （libc `blk_h()`——A-5 起 vblk 的 blk 服务端端，svcmgr 预拉+自验门后经 env
+# 块交付）；bsh 持对端 dup（gift[3]，`fs_h()`）发请求。协议 = berry-fsproto
+# （PUT/TRUNC/GET/LIST + C-0 v2 五 op LOOKUP/MKDIR/UNLINK/READDIR/STAT，
+# 严格串行 RPC）；存储 = berry-fstree 目录树（RAM 写通道——C-0 刀 2 起多
+# 段路径，单段名 v1 语义零漂移）+ FAT12 读写层（berry-fatfs 解析 +
+# berry-blkproto 块 RPC，覆盖层语义见 src/fat.rs）。静默无输出（诊断走
+# 应答 st 码——FAT init 失败/会话
+# 毒化各一行例外）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-fsproto = { path = "../../berry-fsproto" }
+berry-blkproto = { path = "../../berry-blkproto" }
+berry-fatfs = { path = "../../berry-fatfs" }
+berry-fstree = { path = "../../berry-fstree" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,9 @@
+[package]
+name = "berry-tcp"
+version = "0.1.0"
+edition = "2021"
+
+# T-c 起已接线进 user/ workspace members + vnet deps（path 依赖）+ justfile
+# test-host——独立小工作区时期（T-b 防收编）的空 [workspace] 表随之退役。
+# （vnet 消费走 musl target 独立小工作区经 path 依赖，同 berry-netproto 先例，
+# 故本 crate 的 host 测试归 justfile test-host 显式行管。）

@@ -1,0 +1,15 @@
+# berry-manifest —— BerryOS app manifest v0 纯函数解析 crate（app-0，ADR
+# #43/#44；设计 = docs/app-0实施设计草案.md §3）。「解析器即产品」家族
+# （loader/fsproto/virtio/blkproto/fatfs/netproto 之后）：零分配/零 unsafe/
+# 零依赖/输入只借用。双消费 = svcmgr appd arm（本工作区 none target 成员）
+# + tools/mkapp.py 门卫（python 侧对账锚，见 lib.rs 帽常量同步义务注）。
+# cfg_attr(not(test), no_std)：lib 按 no_std 编（宿主 svcmgr 是 none target
+# 平像程序），test 构建放开 std 跑默认 harness——家族既有形态。
+[package]
+name = "berry-manifest"
+version = "0.1.0"
+edition = "2021"
+description = "BerryOS app manifest v0: pure parser for .bap manifests (app-0, ADR #43/#44)"
+license = "Apache-2.0"
+
+[dependencies]

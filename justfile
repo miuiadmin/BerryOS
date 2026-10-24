@@ -3,12 +3,12 @@
 
 export PATH := env_var("HOME") + "/.cargo/bin:" + env_var("PATH")
 
-# 内核产物路径收敛在 工具链/paths.sh（单一事实源，smoke.sh/CI 同源）：
+# 内核产物路径收敛在 tools/paths.sh（单一事实源，smoke.sh/CI 同源）：
 # target 目录可能被全局 ~/.cargo/config.toml 的 target-dir 覆盖（本机指向
 # ~/.cargo-target），故动态解析不硬编码；PATH 修补也在脚本内自足——
 # `export PATH :=` 只进 recipe 环境、不进属性背引号（实测 just 此行为）。
-KERNEL := `bash 工具链/paths.sh kernel`
-KERNEL_RELEASE := `bash 工具链/paths.sh kernel-release`
+KERNEL := `bash tools/paths.sh kernel`
+KERNEL_RELEASE := `bash tools/paths.sh kernel-release`
 
 # 不用 `-bios none`：QEMU ≥11.x 把 "none" 当文件名，报
 # `Could not find ROM image 'none'`。virt + -kernel ELF 直加载即可。
@@ -23,13 +23,13 @@ default: run
 # + 各 bin 自带链接脚本（build.rs 绝对路径注入）——**免 nightly**（custom target
 # 推迟到确需 target 级差异再上，草案 D1 修订）。elf2flat.py 解 PT_LOAD 出平像
 # 并补零到页（.bss 覆盖在文件侧兑现）。两遍构建（G-eco-b）：pass 1 先产
-# echo/talker 平像进 用户态/userbins/，pass 2 svcmgr 才 include_bytes! 内嵌
+# echo/talker 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes! 内嵌
 # （单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序 4096
 # （2 页映射 [0x1000,0x3000) 里首页装镜像、次页是栈——越页即吃栈）；
-# svcmgr 65536 = UserProcess::build 的 D3 帽。内核侧产物 内核/src/userbins/
+# svcmgr 65536 = UserProcess::build 的 D3 帽。内核侧产物 kernel/src/userbins/
 # *.bin gitignored：缺产物 = 内核 include_bytes 编译期炸响（loud not
 # silent），故 build/check/run-release/size-release 都依赖本配方。
-# CARGO_TARGET_DIR 显式钉 用户态/cargo-target：防交互环境（全局 target-dir
+# CARGO_TARGET_DIR 显式钉 user/cargo-target：防交互环境（全局 target-dir
 # 覆盖）把产物漂到内核共享 target。
 build-user:
     #!/bin/sh
@@ -37,38 +37,38 @@ build-user:
     # 产物继续走（P6 A-2 实踩：bsh 漏补 mmio_vmo 字段，E0063 静默、smoke 跑
     # 的是旧 bsh——「缺产物编译期炸响」的 D6 纪律只护了内核侧，这边失守）。
     set -e
-    cd 用户态
+    cd user
     CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker
-    mkdir -p userbins ../内核/src/userbins
-    python3 ../工具链/elf2flat.py \
+    mkdir -p userbins ../kernel/src/userbins
+    python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/echo \
         userbins/echo.bin --max 4096
-    python3 ../工具链/elf2flat.py \
+    python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/talker \
         userbins/talker.bin --max 4096
     CARGO_TARGET_DIR=cargo-target cargo build --release
-    python3 ../工具链/elf2flat.py \
+    python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/abuser \
-        ../内核/src/userbins/abuser.bin --max 4096
-    python3 ../工具链/elf2flat.py \
+        ../kernel/src/userbins/abuser.bin --max 4096
+    python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/svcmgr \
-        ../内核/src/userbins/svcmgr.bin --max 65536
+        ../kernel/src/userbins/svcmgr.bin --max 65536
     # G-eco-d：std 面——stdhello（musl target + berry-libc shim + berry-ld
     # 剥 musl crt；-zmax-page-size=4096 压 PT_LOAD 间隙，G-eco-a 同款教训）。
     # d-3c：hexyl（上游 main.rs 逐字 + 生态依赖树全量——D4 路线①最终验证）。
     # P5 A-2：bsh（交互 shell——prompt/mini-readline/run；stdhello 同链）。
     ROOT=$(cd .. && pwd)
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/stdhello/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/hexyl/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/bsh/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P5 shell v0：fail（`&&` 自验的确定性 exit 42——stdhello 同链）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fail/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P6 A-1：fsmgr（RAM-fs 服务——bsh `>`/cat/ls 的对端，stdhello 同链）。
@@ -77,13 +77,13 @@ build-user:
     # P6 A-6：物化退役——8.3 大写名走 FAT 层 staging + TRUNC 即 commit 真写
     # 扇区（簇分配/双 FAT/根目录项，rpc_write 经 vblk OP_WRITE）；小写名
     # 仍走 RAM 表（名字空间按构造隔离）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fsmgr/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P6 A-2：vprobe（virtio-mmio 探测——MMIO 窗口 VMO 的用户态消费者，
     # stdhello 同链；扫 32 槽窗定位设备——QEMU 倒序建总线、首 -device 落
     # 最高槽且随 -device 顺序漂移，绑死槽号不可为）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vprobe/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P6 A-3：vblk（virtio-blk 块设备驱动——真设备 IO 第一刀；vprobe 同链
@@ -92,7 +92,7 @@ build-user:
     # 读回对拍自打 `VBLK ok`）。
     # P6 A-4：+ berry-blkproto 协议依赖——自验毕转常驻服务（RPC + VMO 随行
     # 数据面；svcmgr 消费自验打 `BLKD ok`）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vblk/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P6 A-7：vnet（virtio-net 驱动——网络面第一刀：ARP/ICMP ping 通；
@@ -101,17 +101,17 @@ build-user:
     # 自打 `NET ok ping=32 slot=N`。
     # P6 A-8：+ berry-netdproto 协议依赖——自验毕转常驻服务（DNS_QUERY
     # 严格串行 RPC；svcmgr 消费自验打 `DNS ok addr=`；不再退出，不 reap）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/vnet/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # app-0（ADR #43/#44）：demo 双 app（appdemo console=true / appquiet
     # console=false——能力授予/缺席两半活证）musl 同链 → staging 组装
     # {manifest.toml, bin/<名>} → mkapp 门禁五道产 .bap（cpio(newc) 包 =
     # manifest + 唯一 bin/ 条目）。staging 与产物都在 userbins/（gitignored）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/appdemo/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/工具链/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
@@ -120,14 +120,14 @@ build-user:
     cp cargo-target/aarch64-unknown-linux-musl/release/appdemo userbins/app-stage/APPDEMO/bin/
     cp bins/appquiet/manifest.toml userbins/app-stage/APPQUIET/
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
-    python3 ../工具链/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
-    python3 ../工具链/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
+    python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
+    python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
     # G-eco-c/d + app-0：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出。app-0 起加
     # app/<ID>.bap 整包条目（'a' < 'b' 排序在 bin/ 前；a-1 阶段 svcmgr
     # 主走查对未知名算术跳过 = 零消费、零行为变化——appd 消费随 a-2）。
-    python3 ../工具链/mkcpio.py ../rootfs.cpio \
+    python3 ../tools/mkcpio.py ../rootfs.cpio \
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
@@ -196,11 +196,11 @@ run-rootfs: build
     #!/bin/sh
     set -e
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
-    python3 工具链/mkfat.py disk.img
+    python3 tools/mkfat.py disk.img
     printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
     # T-c：宿主 TCP 回显服务（vnet TCP 自验对端；QEMU 退出后 trap 统一收）。
     ECHO_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-echod.XXXXXX")
-    python3 工具链/echod.py > "$ECHO_LOG" 2>&1 &
+    python3 tools/echod.py > "$ECHO_LOG" 2>&1 &
     ECHO_PID=$!
     trap 'kill "$ECHO_PID" 2>/dev/null; rm -f "$ECHO_LOG"' EXIT
     i=0
@@ -228,70 +228,70 @@ clean:
 # 故这里显式找 ~/.cargo/bin/rustc，找不到再退回 PATH 里的 rustc。
 host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.cargo/bin/rustc" -vV || rustc -vV; } | sed -n 's/^host: //p'`
 
-# host 单元测试：berry-mm 的纯 Rust buddy 核心（见 内存管理/src/buddy.rs）
-# + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 用户态/berry-loader）
-# + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 用户态/berry-fsproto）
-# + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 用户态/berry-virtio）
-# + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 用户态/berry-blkproto）
-# + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 用户态/berry-fatfs；
+# host 单元测试：berry-mm 的纯 Rust buddy 核心（见 mm/src/buddy.rs）
+# + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 user/berry-loader）
+# + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 user/berry-fsproto）
+# + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 user/berry-virtio）
+# + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 user/berry-blkproto）
+# + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 user/berry-fatfs；
 #   A-6 起含写基元——fat12_set/find_free_cluster/encode_file_entry，fixture
 #   共识基准同时钉住读面与写面编码一致性）
 # + berry-netproto 的以太网/ARP/IPv4/ICMP-echo/UDP/DNS 编解码纯函数面
 #   （P6 A-7 起、A-8a 扩 UDP/DNS——vnet 驱动的协议面：ICMP ping 自验 +
-#   DNS 查询往返，见 用户态/berry-netproto）
+#   DNS 查询往返，见 user/berry-netproto）
 # + berry-netdproto 的网络服务 RPC 协议编解码纯函数面（P6 A-8 起，见
-#   用户态/berry-netdproto——vnet 常驻服务化后的 DNS 查询协议面）
-# + berry-tcp 的最小 TCP 客户端状态机纯函数面（T-c 起，见 用户态/berry-tcp
+#   user/berry-netdproto——vnet 常驻服务化后的 DNS 查询协议面）
+# + berry-tcp 的最小 TCP 客户端状态机纯函数面（T-c 起，见 user/berry-tcp
 #   ——握手/序号推进/RTO/TIME_WAIT 状态转移，IO 驱动在 vnet tcp.rs）。
 # fixture 守卫在 berry-fatfs 测试前置：mkfat --check-fixture 重产比对——
 # 改 mkfat 忘重产 --fixture 时共识测试对陈旧基准假绿（A-5 对抗审查实抓）。
 test-host:
     cargo test -p berry-mm --target {{host}}
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-loader --target {{host}}
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-fsproto --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-fsproto --target {{host}}
     # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数面——v1 单段语义
     # 零漂移 + v2 五 op 面，host 17 测）。
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-fstree --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-fstree --target {{host}}
     # C-1 刀 1：berry-fsclient（fs 会话机自 bsh 迁居 cfg(not(test)) +
     # 纯函数面——fd 表状态机/cwd 拼接/seek 游标数学/stat 整形/dirent
     # 解码/ST→FsErr 映射，host 19 测）。
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-fsclient --target {{host}}
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-virtio --target {{host}}
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-blkproto --target {{host}}
-    python3 工具链/mkfat.py --check-fixture 用户态/berry-fatfs/tests/volume_fixture.bin
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-fatfs --target {{host}}
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-netproto --target {{host}}
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-netdproto --target {{host}}
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-tcp --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-fsclient --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-virtio --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
+    python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin
+    cargo test --manifest-path user/Cargo.toml -p berry-fatfs --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-netproto --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-netdproto --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-tcp --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。
-    cargo test --manifest-path 用户态/Cargo.toml -p berry-manifest --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-manifest --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
-    python3 工具链/mkapp.py --selftest
+    python3 tools/mkapp.py --selftest
     # V-0a 刀 1：berry-efi（EFI 结构最小面——偏移/尺寸/签名/UTF-16 编码
     # host 钉板）+ elf2pe 自检（合成 ELF 全链转换钉板 + 未知重定位型负样本）
     # + mkfat --selftest（--put 引导盘构造面：链回读/嵌套目录/负样本——此前
     # 只手跑，门禁化同 a-3 U4 纪律）。
-    cargo test --manifest-path 引导加载器/berryboot/Cargo.toml -p berry-efi --target {{host}}
+    cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berry-efi --target {{host}}
     # V-0a 刀 3：berryboot app 单源共识——内嵌 HELLO.TXT 基准 ↔ 仓库 fixture
     # hello.txt 逐字节对拍（mkfat fixture 共识基准同族，改一侧忘同步即炸）。
-    cargo test --manifest-path 引导加载器/berryboot/Cargo.toml -p berryboot --target {{host}}
-    python3 工具链/elf2pe.py --selftest
-    python3 工具链/mkfat.py --selftest
+    cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berryboot --target {{host}}
+    python3 tools/elf2pe.py --selftest
+    python3 tools/mkfat.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
 # 只报数不设门禁——阈值等基线稳定后再定（Tock 192KB 教训）。
 size: build
-    python3 工具链/size.py {{KERNEL}}
+    python3 tools/size.py {{KERNEL}}
 
 size-release: abi-check build-user
     cargo build --release
-    python3 工具链/size.py {{KERNEL_RELEASE}}
+    python3 tools/size.py {{KERNEL_RELEASE}}
 
-# ABI 单源工具链（`工具链/abi.toml` = 常量层唯一事实源）：
+# ABI 单源工具链（`tools/abi.toml` = 常量层唯一事实源）：
 #   abi-gen    —— 再生三面产物（内核 abi_gen.rs / berry-sys abi_gen.rs / 文档
 #                marker 块）；改 ABI 后跑它，产物 diff 随源一起入册。
 #   abi-check  —— 逐字节比对守卫（挂 build/check/smoke 前置）：忘再生成 /
@@ -299,22 +299,22 @@ size-release: abi-check build-user
 #                （生成即一致，无需对账）。需 Python ≥3.11（tomllib）——
 #                CLT 自带 /usr/bin/python3(3.9) 不够，brew python3 可。
 abi-gen:
-    python3 工具链/gen_abi.py
+    python3 tools/gen_abi.py
 
 abi-check:
-    python3 工具链/gen_abi.py --check
+    python3 tools/gen_abi.py --check
 
 # 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
 smoke: build
-    bash 工具链/smoke.sh
+    bash tools/smoke.sh
 
 # ---------- P7 x86_64 最小集（ADR #41：范围盒子 = 串口/定时器/异常向量/
 # 上下文切换/SVC 入口；SMP/APIC/ACPI/PCIe 不在盒内）----------
-# 独立小工作区（同 用户态/ 模式——根 workspace 不含本目录）。构建必须显式
+# 独立小工作区（同 user/ 模式——根 workspace 不含本目录）。构建必须显式
 # --target：根 .cargo/config.toml 锁了 build.target=aarch64-unknown-none，
 # config 发现按 CWD 向上走、跨 workspace 边界照样命中（CLI --target 才能盖）。
-X86_DIR := "架构相关/x86_64"
+X86_DIR := "arch/x86_64"
 X86_TARGET := "x86_64-unknown-none"
 X86_KERNEL := X86_DIR / "cargo-target" / X86_TARGET / "release" / "berry-x86"
 
@@ -344,12 +344,12 @@ run-x86: build-x86
 # 改名/挪 bin 时只改 justfile 一侧会让冒烟继续跑旧 ELF 假绿，G-eco-b
 # 「陈旧产物静默上线」同族）。
 smoke-x86: build-x86
-    bash 工具链/smoke-x86.sh "{{X86_KERNEL}}"
+    bash tools/smoke-x86.sh "{{X86_KERNEL}}"
 
 # ---------- V-0a BerryBoot（EFI 骨架；VM 草案 §V-0，AAVMF 引导链）----------
 # 独立小工作区（同 x86_64 模式——根 workspace 不含本目录；构建必须显式
 # --target，根 .cargo/config.toml 锁的 build.target 跨 workspace 边界仍命中）。
-# 构建链四步（路线修正记录 → 文档/阶段沿革.md V-0a 条目）：cargo staticlib
+# 构建链四步（路线修正记录 → docs/阶段沿革.md V-0a 条目）：cargo staticlib
 # （builtin aarch64-unknown-none，免 nightly）→ rust-lld 静态全链接
 # （--emit-relocs 保留重定位 + berryboot.ld 钉单 .img @0x1000、--image-base
 # 0 ⇒ RVA==vaddr）→ elf2pe.py 转 PE32+（AArch64 EFI application；「staticlib
@@ -357,7 +357,7 @@ smoke-x86: build-x86
 # 造 \EFI\BOOT\BOOTAA64.EFI 引导盘。产物全在 out/（gitignored）。
 # rust-lld 随 rustup 走（sysroot 内），无 brew 依赖；--verify 回读断言
 # 恒开（entry 落 .img / .reloc 闭合 / subsystem=EFI app）。
-BOOT_DIR := "引导加载器/berryboot"
+BOOT_DIR := "bootloader/berryboot"
 BOOT_TARGET := "aarch64-unknown-none"
 BOOT_OUT := BOOT_DIR / "out"
 BOOT_EFI := BOOT_OUT / "BERRYBOOT.EFI"
@@ -382,12 +382,12 @@ build-boot: build-user
         -z max-page-size=4096 -z noseparate-code \
         -T berryboot.ld -e efi_main --image-base 0 \
         -o out/berryboot.elf cargo-target/{{BOOT_TARGET}}/release/libberryboot.a
-    python3 ../../工具链/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
+    python3 ../../tools/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
     # --size-mib 8（V-1c）：debug ELF ~2.9MiB + rootfs.cpio ~3.4MiB 量级
     # ——SPC 自适应翻倍（4→8）保 FAT12 域（簇 ~2046）；V-0a 1MiB 默认
     # 造盘路径字节零漂移（参数只进 --put 构造体）。盘名 INITRD.BIN：草案
     # L91 曾误记 INIT.CPIO（扩展名超 8.3 三字符界），偏差记 阶段沿革。
-    python3 ../../工具链/mkfat.py out/boot.img \
+    python3 ../../tools/mkfat.py out/boot.img \
         --size-mib 8 \
         --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI" \
         --put "hello.txt:/HELLO.TXT" \

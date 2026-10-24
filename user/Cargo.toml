@@ -1,0 +1,56 @@
+[workspace]
+# G-eco 编译侧（docs/G-eco编译侧设计草案.md）：用户态 crate 独立工作区——
+# 不进内核 root workspace（members 显式列表）。目标沿用 builtin
+# aarch64-unknown-none（stable 预编译 core，免 nightly——custom target
+# 推迟到确需 target 级差异再上，草案 D1 修订）；各 bin 自带链接脚本
+# （build.rs 绝对路径注入），与根 config 的 build.target 同值无冲突。
+# G-eco-b 两遍构建：svcmgr include_bytes! 内嵌 echo/talker 平像（产物在
+# user/userbins/，gitignored）——直接整仓 `cargo build` 且无 staged 平像
+# 时 svcmgr 编译期炸响（loud not silent）；编排见 justfile build-user。
+# G-eco-c：berry-loader（rootfs 纯函数解析，host 测试）+ hello（首个
+# rootfs 拉起程序——ELF 本体进 cpio，不走 elf2flat/include_bytes）。
+# G-eco-d：berry-libc（musl std 的 libc shim——本工作区编 none target 只是
+# 编译检查，真消费者 stdhello 在自己的独立小工作区编 musl target，故
+# excluded；链接编排见 justfile build-user 的 std 面 pass）。
+# A-2：berry-exec（rootfs 程序拉起链——spawn_rootfs_elf/cpio_find 自 svcmgr
+# 抽取，svcmgr（none target，本工作区成员）与 bsh（musl target，独立小工作
+# 区经 path 依赖）双消费，「不长第二套」）。
+# A-3：berry-virtio（virtio split-ring 纯函数 crate，host 测试；真消费者
+# vblk 在独立小工作区编 musl target，故同 stdhello 不入 members）。
+# A-4：berry-blkproto（块设备服务 RPC 协议纯函数 crate，host 测试；双消费
+# = vblk 服务端（独立小工作区）+ svcmgr 消费自验方（本工作区成员））。
+# A-5：berry-fatfs（FAT12 只读解析纯函数 crate，host 测试对 fixture 做跨
+# 实现共识；消费 = fsmgr FAT 只读层（独立小工作区编 musl target，同
+# stdhello/bsh 不入 members））。
+# A-7：berry-netproto（最小以太网/ARP/IPv4/ICMP-echo 编解码纯函数 crate，
+# host 测试；消费 = vnet（virtio-net 用户态驱动，独立小工作区编 musl
+# target，同 vblk 不入 members））。
+# A-8：berry-netdproto（网络服务 RPC 协议纯函数 crate，host 测试；双消费
+# = vnet 服务端（独立小工作区）+ svcmgr 消费自验方（本工作区成员））。
+# T-c：berry-tcp（最小 TCP 客户端状态机纯函数 crate，「解析器即产品」第 7 例；
+# 消费 = vnet tcp.rs 会话循环（独立小工作区编 musl target，同 vblk 不入
+# members）——host 测试经 justfile test-host 显式行跑）。
+# app-0：berry-manifest（.bap 应用清单 v0 纯函数解析 crate，「解析器即产品」
+# 第 8 例；双消费 = svcmgr appd arm（本工作区成员，none target）+
+# tools/mkapp.py build 期门卫（python 侧帽值对账锚）——host 测试经
+# justfile test-host 显式行跑；demo 双 app（appdemo/appquiet）编 musl
+# target，同 stdhello 不入 members 进 exclude）。
+# C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数 crate，host 测试；单消费
+# = fsmgr 树层（独立小工作区编 musl target，同 stdhello/bsh 不入 members），
+# 帽常量/状态码自 berry-fsproto 单源引——「不长第二套」）。
+# C-1 刀 1：berry-fsclient（fs 服务客户端：rpc.rs 会话机自 bsh 迁居
+# cfg(not(test))——毒化位/90s·10s 双帽/阻塞重试形态逐字保真，host 测试不
+# 链接 syscall 面；lib.rs 纯函数面 fd 表/cwd/stat/dirent/ST 映射 host 测试）。
+# 单消费 = berry-libc（刀 2 fd 3+ 文件面）；bsh 刀 4 删自有面改经 libc。
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
+    "berry-virtio", "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
+resolver = "2"
+
+# 用户程序平像：体积优先（单页墙由 tools/elf2flat.py --max 执法）。
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

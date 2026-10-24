@@ -1,0 +1,20 @@
+[package]
+name = "berry-fsclient"
+version = "0.1.0"
+edition = "2021"
+# C-1 刀 1（docs/VM里程碑设计草案.md §C-1）：fs 服务客户端 crate，两层——
+# ① 会话机（`src/rpc.rs`，cfg(not(test))）：bsh 的 fs_rpc 会话核心迁居（毒化
+# 位 / 90s·10s 双帽 / EBUSY-阻塞重试形态，语义逐字保真）+ fd 面分片 op
+# （put_chunk/commit/get_chunk/lookup/mkdir/unlink/readdir/stat）——真消费
+# = berry-libc（刀 2 fd 3+ 文件面）；host 测试不链接 syscall 面（berry-sys
+# 符号在宿主不存在），none/musl target 编译由 workspace `cargo build`
+# （build-user pass2）覆盖。② 纯函数面（lib.rs）：fd 表状态机 / cwd 拼接 /
+# stat 整形 / dirent 解码 / ST→FsErr 映射，host 测试（`berry-fsproto` 纯
+# 函数 crate 先例）。帽常量与状态码自 berry-fsproto 单源引（「不长第二套」）；
+# 刀 1 无人消费（bsh 刀 4 才删自有面改经 libc）——smoke 零漂移即验收。
+description = "BerryOS fs client: RPC session core (migrated from bsh) + pure fd-table/cwd/stat/dirent face for the libc file layer (C-1 knife 1)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../berry-sys" }
+berry-fsproto = { path = "../berry-fsproto" }

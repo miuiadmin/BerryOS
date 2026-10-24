@@ -1,0 +1,11 @@
+[package]
+name = "berry-sys"
+version = "0.1.0"
+edition = "2021"
+# ABI 合约源：docs/系统调用ABI设计.md §8.3（原型）+ §8.4（Rust FFI 镜像）。
+# v1 手写镜像欠债：IDL 单源生成（内核原型 + 本镜像 + syscalls.h 三合一）是
+# 终态，见 §8.4 引言——改任何签名须同时改内核侧与 ABI 文档（冻结纪律）。
+description = "BerryOS raw syscall bindings (v1 FFI mirror)"
+license = "Apache-2.0"
+
+[dependencies]

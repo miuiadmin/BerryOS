@@ -1,0 +1,38 @@
+[package]
+name = "vblk"
+version = "0.1.0"
+edition = "2021"
+
+# P6 A-3：virtio-blk 用户态块设备驱动（真设备 IO 第一刀——`docs/文件系统
+# 设计.md` §6 P6 块设备主线）。vprobe 同链（musl target + berry-libc shim），
+# 加 `berry-virtio`（split-ring 布局/编解码纯函数 + MMIO 偏移表单源）。
+# 驱动自给自足：MMIO 窗口经 `SpawnSpec::mmio_vmo` 映入（svcmgr 授能），
+# DMA 面全走既有 VMO 机制——`vmo_create/commit` 自建缓冲 VMO、`vmo_read/
+# write` 构造 virtqueue/收发数据、新 0x1B `vmo_get_phys` 查页后备 PA 填
+# 描述符地址（**缓冲 VMO 从不进任何地址空间**——无映射即无需 vmar 能力，
+# 微内核「机制在内核、策略与 IO 在用户态」的完整形态）。验收 = LBA0 读
+# 魔数（justfile/smoke 落盘印章）+ LBA1 写/读回逐字节对拍 → `VBLK ok`
+# （rootfs 相第 13 标记），后 main 返回 = exit(0)，svcmgr reap。
+# P6 A-4（服务化收口）：自验毕**不再退出**——进常驻服务循环（协议 =
+# `berry-blkproto`：请求 9B + 随行 VMO 数据面 + 应答 1B，严格串行 RPC；
+# svcmgr 持对端做消费自验 `BLKD ok`，rootfs 相第 14 标记）。数据面 =
+# channel inline 帽 256B < 单扇区 512B——client dup VMO 别名随请求迁移，
+# 本驱动 bounce-buffer 后 close。单设备单主人：negotiate 的 STATUS=0
+# 复位会掀翻既有 virtqueue，第二实例 = 杀服务（v1 文档化，v2 独占执法）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-exec = { path = "../../berry-exec" }
+berry-virtio = { path = "../../berry-virtio" }
+# A-4：服务协议（请求/应答编解码，纯函数 host 测试盖）。
+berry-blkproto = { path = "../../berry-blkproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

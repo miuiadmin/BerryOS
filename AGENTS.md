@@ -7,22 +7,22 @@
 
 **BerryOS** —— 自研的微内核（microkernel）+ 跨平台操作系统。目标是极简内核 + 用户态服务化，首批跑在 **ARM64 (AArch64)** 上。端定位（ADR #39–#41）：v1 主战场 = 手表/穿戴 rich 档（MB 级内存）单线走到底；MCU 档（KB 级）排除；v2 攻工业 RT；x86_64 提前启动 **QEMU 最小集**移植（范围盒子 + kill criteria），长期为兼容验收目标（XNU 同源分端模式）。
 
-**身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 策略服务干涉调度，见 `文档/AI调度设计.md`）+ PC 高性能。
+**身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 策略服务干涉调度，见 `docs/AI调度设计.md`）+ PC 高性能。
 
 ## 设计总原则（三条，钦定）
 
-1. **人无我有，人有我强**：博采众长的落地口诀——别人验证过的优点学过来，别人踩过的坑绕开。证据库 = `调研报告/`（各家好在哪/不好在哪/怎么做的）；借鉴任何参考前先过 `文档/架构综合纲领.md` 排除 8 问，防杂糅。软件行业积累到今天是做 OS 最好的时代：成熟参考实现全部开源可得，站在巨人肩上是常态而非例外。
-2. **AI 友好化**：把 AI 当系统的一等公民——不止 AI 原生调度（`文档/AI调度设计.md`），一切接口对 AI 可读、可推断：ABI 单一事实源生成（`文档/系统调用ABI设计.md` §8）、结构化 tracing（`文档/可观测性设计.md`）、语义化错误码、机器可读文档。
-3. **AI 测试友好化**：为"以后都是 AI 测软件"的时代预埋基建——测试基建是产品的一部分，不是附属品：确定性可复现（同输入同输出）、可编程故障注入、机器可读遥测/断言、QEMU 自动化关卡（`文档/测试策略.md` G0–G5）；目标是 AI agent 能独立跑测试、读结果、报 bug。
+1. **人无我有，人有我强**：博采众长的落地口诀——别人验证过的优点学过来，别人踩过的坑绕开。证据库 = `research/`（各家好在哪/不好在哪/怎么做的）；借鉴任何参考前先过 `docs/架构综合纲领.md` 排除 8 问，防杂糅。软件行业积累到今天是做 OS 最好的时代：成熟参考实现全部开源可得，站在巨人肩上是常态而非例外。
+2. **AI 友好化**：把 AI 当系统的一等公民——不止 AI 原生调度（`docs/AI调度设计.md`），一切接口对 AI 可读、可推断：ABI 单一事实源生成（`docs/系统调用ABI设计.md` §8）、结构化 tracing（`docs/可观测性设计.md`）、语义化错误码、机器可读文档。
+3. **AI 测试友好化**：为"以后都是 AI 测软件"的时代预埋基建——测试基建是产品的一部分，不是附属品：确定性可复现（同输入同输出）、可编程故障注入、机器可读遥测/断言、QEMU 自动化关卡（`docs/测试策略.md` G0–G5）；目标是 AI agent 能独立跑测试、读结果、报 bug。
 
 ## 技术栈
 
 - **全 Rust**：内核核心是 `#![no_std]` Rust（只含调度器、IPC、地址空间、能力派发）；用户态服务与工具也是 Rust。
 - **syscall 边界用 C-ABI 约定**（Rust ABI 不稳定）：入口 `extern "C"` + `#[repr(C)]`，两端皆 Rust，无跨语言 FFI 风险。
 - **`unsafe` 收敛**到页表 / 上下文切换 / MMIO / 分配器，外层包安全 API。
-- **首批架构：ARM64**。内核 EL1，用户态 EL0，**启动入口 EL 随 QEMU 配置而变**（默认 `-machine virt`+`-kernel` ELF 起始 EL1；`virtualization=on` 则 EL2），EL 检测/降级在 `架构相关/aarch64/` 处理；调试用 `qemu-system-aarch64 -machine virt`。
+- **首批架构：ARM64**。内核 EL1，用户态 EL0，**启动入口 EL 随 QEMU 配置而变**（默认 `-machine virt`+`-kernel` ELF 起始 EL1；`virtualization=on` 则 EL2），EL 检测/降级在 `arch/aarch64/` 处理；调试用 `qemu-system-aarch64 -machine virt`。
 
-## 架构决策（已定，详见 `文档/架构决策.md`）
+## 架构决策（已定，详见 `docs/架构决策.md`）
 
 | 维度 | 决策 |
 |------|------|
@@ -48,14 +48,14 @@
 1. **内核极简**：FS / 网络 / 驱动都不进内核，做成用户态服务。写代码前先问"这个能不能放到用户态？"
 2. **IPC 为中枢**：服务间只通过显式消息通信，内核内不搞全局可变共享。
 3. **能力即权限（capability）**：资源访问靠句柄，不靠全局权限位。
-4. **硬件抽象隔离**：架构相关代码只活在 `架构相关/<arch>/`（规划中 `架构相关/aarch64/`），核心逻辑保持架构无关。
+4. **硬件抽象隔离**：架构相关代码只活在 `arch/<arch>/`（规划中 `arch/aarch64/`），核心逻辑保持架构无关。
 5. **失败隔离**：服务崩溃由内核监督重启，不波及系统。
 
-## 调度器与电源（设计已定，详见 `文档/调度器设计.md`）
+## 调度器与电源（设计已定，详见 `docs/调度器设计.md`）
 
 改动任何调度 / 电源相关代码前先读设计文档。硬约束：
 - **机制在内核（Rust），策略可插拔**：内核只做上下文切换 / 每核 runqueue / 派发框架；策略做成可注册 trait（`class_rt` / `class_fair` / `class_deadline` / `class_idle`）。
-- **capacity(0..1023) 抽象**：每个 CPU 一个算力值，统一手表 → 手机大小核 → PC 全对称；拓扑由 `架构相关/<arch>/` 填表，核心逻辑架构无关。
+- **capacity(0..1023) 抽象**：每个 CPU 一个算力值，统一手表 → 手机大小核 → PC 全对称；拓扑由 `arch/<arch>/` 填表，核心逻辑架构无关。
 - **Tickless（NO_HZ）从 day-one 落地**：空闲核不收周期定时中断，续航第一杠杆。
 - **每核 runqueue + 负载均衡**：多核吞吐主力，单/少核近零开销。
 - **电源管理是用户态 Rust 服务**：governor / 热管理 / 休眠推用户态；内核↔PM 走**共享环形缓冲**（禁通用 IPC 拷贝）；PM 可崩，内核降级保活。
@@ -69,26 +69,27 @@
 berryos/
 ├── AGENTS.md          ← 你正在读
 ├── CLAUDE.md          Claude Code 会话规范
-├── 内核/  内存管理/  进程调度/  进程间通信/      Rust no_std（内核本体）
-├── 架构相关/  引导加载器/                        Rust（HAL + 内联汇编 / 引导）
-├── 驱动/  文件系统/  网络/  用户态/              Rust（用户态服务）
-├── 工具链/  文档/                                构建 / 文档
-└── 参考源码/          第三方参考实现，独立存放（见其内 README.md）
+├── kernel/  mm/  sched/  ipc/      Rust no_std（内核本体）
+├── arch/  bootloader/            Rust（HAL + 内联汇编 / EFI 引导）
+├── drivers/  fs/  net/  user/   Rust（用户态服务）
+├── tools/  docs/                  构建 / 文档
+├── research/                       调研报告（仅私密仓）
+└── reference/                    第三方参考实现，独立存放（仅私密仓）
 ```
 
-> 全 Rust：内核类目录 `#![no_std]` freestanding，服务类目录普通 Rust；**syscall 边界用 C-ABI 约定**，两端皆 Rust。`架构相关/` 内按平台分子目录（如 `架构相关/aarch64/`）。`参考源码/` 与自研代码严格分离，只放别人的源码。
+> 全 Rust：内核类目录 `#![no_std]` freestanding，服务类目录普通 Rust；**syscall 边界用 C-ABI 约定**，两端皆 Rust。`arch/` 内按平台分子目录（如 `arch/aarch64/`）。`reference/` 与自研代码严格分离，只放别人的源码。**目录已英文化（2026-10-24，映射见 `docs/阶段沿革.md` 追记）**。
 
 ## 设计文档
 
-唯一详表 = `文档/索引.md`（36 份文档分类/状态标签/双阅读路径/维护待办）；本节只留分类速览。动相关子系统前先读对应设计文档：
+唯一详表 = `docs/索引.md`（36 份文档分类/状态标签/双阅读路径/维护待办）；本节只留分类速览。动相关子系统前先读对应设计文档：
 
-- **总纲与路线**：`文档/架构决策.md`（49 条 ADR 单一事实源）· `文档/架构综合纲领.md`（取舍纪律 + 排除 8 问——借鉴任何参考前先读）· `文档/路线图.md`（Phase 0–8，现行 M-VM）· `文档/优化议程.md`（五弱题动作表）。
-- **内核核心**：`文档/能力模型设计.md`（纯能力 handle）· `文档/IPC设计.md`（channel/Event/intent）· `文档/内存管理设计.md`（VMO/pager）· `文档/系统调用ABI设计.md`（v1 冻结，abi.toml 单源）· `文档/调度器设计.md`（机制 + M 里程碑权威）· `文档/AI调度设计.md`（ADR #21 修订版）· `文档/可观测性设计.md` · `文档/安全与硬件隔离设计.md`（挂 v2）。
-- **服务与生态**：`文档/文件系统设计.md` · `文档/驱动模型设计.md`（驱动=持证应用）· `文档/shell设计.md`（bsh + 命令梯队）· `文档/应用模型设计.md`（包 + 清单 + 能力）· 挂 v2 四份：`文档/存储布局与沙箱设计.md` / `文档/兼容子系统设计.md` / `文档/更新与OTA设计.md` / `文档/AI工程面设计.md`。
-- **验证与流程**：`文档/测试策略.md`（G0–G5 关卡）· `文档/开发体验.md`（四级阶梯 + 日常循环）。
-- **在途拆解**：`文档/VM里程碑设计草案.md`（现行主里程碑 M-G1..G3）· `文档/SMP设计草案.md`（G2 拆步，S-0 已落）。
-- **演进与归档**（时点记录，勿当现状引用）：`文档/阶段沿革.md`（详史归档 + 追记区——新进展追加其末尾，勿回写本文件）· `文档/Phase4收官盘点.md` / `文档/P6收官盘点.md` · `文档/战役复盘-2026-10.md`（同型地雷册）· 审查报告 ×2 · `文档/战略裁决-2026-10-15.md`（裁决已吸收进 ADR）。
-- **已落地草案**（冻结候选）：`文档/TCP栈设计草案.md` · `文档/P6-A8网络服务化设计草案.md` · `文档/G-eco编译侧设计草案.md` · `文档/4-6出口演示设计草案.md` · `文档/app-0实施设计草案.md`。
+- **总纲与路线**：`docs/架构决策.md`（49 条 ADR 单一事实源）· `docs/架构综合纲领.md`（取舍纪律 + 排除 8 问——借鉴任何参考前先读）· `docs/路线图.md`（Phase 0–8，现行 M-VM）· `docs/优化议程.md`（五弱题动作表）。
+- **内核核心**：`docs/能力模型设计.md`（纯能力 handle）· `docs/IPC设计.md`（channel/Event/intent）· `docs/内存管理设计.md`（VMO/pager）· `docs/系统调用ABI设计.md`（v1 冻结，abi.toml 单源）· `docs/调度器设计.md`（机制 + M 里程碑权威）· `docs/AI调度设计.md`（ADR #21 修订版）· `docs/可观测性设计.md` · `docs/安全与硬件隔离设计.md`（挂 v2）。
+- **服务与生态**：`docs/文件系统设计.md` · `docs/驱动模型设计.md`（驱动=持证应用）· `docs/shell设计.md`（bsh + 命令梯队）· `docs/应用模型设计.md`（包 + 清单 + 能力）· 挂 v2 四份：`docs/存储布局与沙箱设计.md` / `docs/兼容子系统设计.md` / `docs/更新与OTA设计.md` / `docs/AI工程面设计.md`。
+- **验证与流程**：`docs/测试策略.md`（G0–G5 关卡）· `docs/开发体验.md`（四级阶梯 + 日常循环）。
+- **在途拆解**：`docs/VM里程碑设计草案.md`（现行主里程碑 M-G1..G3）· `docs/SMP设计草案.md`（G2 拆步，S-0 已落）。
+- **演进与归档**（时点记录，勿当现状引用）：`docs/阶段沿革.md`（详史归档 + 追记区——新进展追加其末尾，勿回写本文件）· `docs/Phase4收官盘点.md` / `docs/P6收官盘点.md` · `docs/战役复盘-2026-10.md`（同型地雷册）· 审查报告 ×2 · `docs/战略裁决-2026-10-15.md`（裁决已吸收进 ADR）。
+- **已落地草案**（冻结候选）：`docs/TCP栈设计草案.md` · `docs/P6-A8网络服务化设计草案.md` · `docs/G-eco编译侧设计草案.md` · `docs/4-6出口演示设计草案.md` · `docs/app-0实施设计草案.md`。
 
 ## 编码标准
 
@@ -106,17 +107,17 @@ berryos/
 
 ## 改动前清单（任何代理执行任务前过一遍）
 
-- [ ] 是否查过 `参考源码/` 里对应参考项目的成熟实现？
+- [ ] 是否查过 `reference/` 里对应参考项目的成熟实现？
 - [ ] **借鉴是否过了「架构综合纲领.md」的排除 8 问**？（中心=可注入机制/策略分离+硬件信任边界；冲突中心→拒；找不到 G0–G5 关卡=范围泄漏）
 - [ ] 这个功能属于内核还是用户态服务？（默认用户态）
-- [ ] 是否把架构相关代码收敛到了 `架构相关/`？
+- [ ] 是否把架构相关代码收敛到了 `arch/`？
 - [ ] 是否避开了 GPL 传染？（参照 GPL 代码时只看思路，不复制实质代码）
 - [ ] 改动是否能在 QEMU 上独立验证、小步提交？
-- [ ] 是否需要回写 `CLAUDE.md` / `AGENTS.md`（新增架构 / 改语言边界 / 确定构建命令）？**阶段进展/标记沿革只写 `文档/阶段沿革.md`，勿回写这两个文件**（它们每轮全文注入 AI 上下文，2026-10-22 已因沿革膨胀归档瘦身一次）。
+- [ ] 是否需要回写 `CLAUDE.md` / `AGENTS.md`（新增架构 / 改语言边界 / 确定构建命令）？**阶段进展/标记沿革只写 `docs/阶段沿革.md`，勿回写这两个文件**（它们每轮全文注入 AI 上下文，2026-10-22 已因沿革膨胀归档瘦身一次）。
 
 ## 构建与测试
 
-**启动输出速览**（完整标记沿革逐字归档 → `文档/阶段沿革.md`；标记清单单一事实源 = `工具链/smoke.sh`）：
+**启动输出速览**（完整标记沿革逐字归档 → `docs/阶段沿革.md`；标记清单单一事实源 = `tools/smoke.sh`）：
 
 - `just run` / `just run-el2`：`BerryOS boot` → `KVA ok` → `ROOTFS ok/absent` + `ROOTFS vmo=` 双行 → ktest 各段 `… ok` 至 `ktest done` → 稳态矩阵（A/B 忙循环 + EL0 用户进程轮转，`switches=N` 金丝雀）→ watchdog `G1.5 ok`。
 - `just run-rootfs`：rootfs 相 24 标记（`ECO ok` … `APP ok n=2` + `DIR ok n=` + `CD ok`，逐标记语义见归档与 smoke.sh）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。
@@ -129,23 +130,23 @@ berryos/
 
 ```bash
 just build          # = cargo build（内核 ELF）；先自动跑 build-user 补模板产物
-just build-user     # G-eco：用户程序编译 → flat binary（内核/src/userbins/*.bin，gitignored）+ mkapp.py 打包 demo 双 app（app/*.bap）+ mkcpio.py 产 rootfs.cpio
+just build-user     # G-eco：用户程序编译 → flat binary（kernel/src/userbins/*.bin，gitignored）+ mkapp.py 打包 demo 双 app（app/*.bap）+ mkcpio.py 产 rootfs.cpio
 just run            # QEMU virt → 1BerryOS boot（默认起始 EL1），halt
 just run-el2        # virt,virtualization=on → 21BerryOS boot（EL2→EL1 eret 降级路径）
 just smoke          # 无人值守冒烟（CI 同款）：boot 标记断言 + switches 金丝雀严格递增；五跑 C-0 刀 4 起（裸 23 + rootfs 24——P6 A-8 加 `DNS ok addr=` + TCP T-c 加 `TCP ok echo=` + T-d 加 `TCPS ok echo=` + app-0 加 `APP ok n=` + C-0 加 `DIR ok n=` + C-1 加 `FILE ok`/`CD ok` + RX 交互 47（f 段 cd/pwd 防回声断言）+ FAT 子目录相（fixture 盘 ls/cat DATA）+ FAT 持久化相）
 just abi-check      # ABI 单源守卫：gen_abi.py --check 逐字节比对 abi.toml 三面产物（忘再生成/手改产物即 FAIL）
-just abi-gen        # ABI 再生：abi.toml → 内核/berry-sys abi_gen.rs + 文档 marker 块（改 ABI = 改源 → abi-gen → diff 入册）
+just abi-gen        # ABI 再生：abi.toml → kernel/berry-sys abi_gen.rs + 文档 marker 块（改 ABI = 改源 → abi-gen → diff 入册）
 just size           # 内核体积基线报告（文件量 / PT_LOAD 镜像与静态内存 / 段明细；CI 同步打印）
 just run-rootfs     # G-eco：带 rootfs 启动（-fw_cfg name=opt/berry/rootfs,file=rootfs.cpio + virtio-blk/net）——svcmgr 消费链 `rootfs hello` + `ECO ok` … + `NET ok ping=32` + `DNS ok addr=127.0.0.1`（P6 A-8）+ `TCP ok echo=64`（TCP T-c：guest 主动 connect 10.0.2.2:18080 → SLIRP 转发宿主 echod.py，echod 由本 recipe 起/收）+ `TCPS ok echo=64`（TCP T-d：netdproto OPEN/ROUNDTRIP/CLOSE 单会话独占 ST_BUSY——svcmgr 作 client 三 op 一轮全 ST_OK）+ `APP ok n=2`（app-0：svcmgr appd 雏形——`app/*.bap` 收集 → manifest/ELF 双守卫 → spawn → EOF/reap 真码 0 全槽过才自打）（裸跑降级 ROOTFS absent/vmo=none）
-just build-x86      # P7-x0：x86_64 最小集构建（独立小工作区 架构相关/x86_64/，**必须显式 --target**——根 .cargo/config.toml 锁 build.target=aarch64 且 config 发现跨 workspace 边界仍命中）
+just build-x86      # P7-x0：x86_64 最小集构建（独立小工作区 arch/x86_64/，**必须显式 --target**——根 .cargo/config.toml 锁 build.target=aarch64 且 config 发现跨 workspace 边界仍命中）
 just run-x86        # QEMU pc 机 + PVH ELF（-no-reboot）——期望 BerryOS boot (x86_64) → PVH ok → TIMER ok → EXC dump vec=6 + EXC ok → CTX ok n=128 → SYS ok n=128 → X86 ok 七标记（P7-x1 定时器链；P7-x2 #UD dump 后 rip+2 恢复；P7-x3 A/B 任务乒乓 128 轮互验；P7-x4 CPL3 用户程序 SYSCALL/SYSRET 128 轮对拍）
 just smoke-x86      # x86 独立冒烟（7 标记恰一次；不并入主 smoke——ARM64 五跑零扰动；P7-x4 收官起已挂 CI：ci.yml 装 just 复用单一入口 + 两条 x86 步）
-just build-boot     # V-0b 刀 1：BerryBoot EFI 应用构建链（引导加载器/berryboot 独立工作区：staticlib → rust-lld 静态全链接 → 工具链/elf2pe.py 转 PE32+ → mkfat --put 造 AAVMF 引导盘 out/boot.img——BOOTAA64.EFI + HELLO.TXT + KERNEL.ELF + INITRD.BIN（V-1c：内核 debug ELF + rootfs.cpio 直进盘，依赖 build-user）+ --size-mib 8（V-0a 默认造盘字节零漂移；SPC 自适应——簇数出 FAT12 域时翻倍至入域）；刀 2 起链入 berry-loader（用户态 crate 首次进 EFI 引导链）；主构建链不感知、本链消费内核产物）
+just build-boot     # V-0b 刀 1：BerryBoot EFI 应用构建链（bootloader/berryboot 独立工作区：staticlib → rust-lld 静态全链接 → tools/elf2pe.py 转 PE32+ → mkfat --put 造 AAVMF 引导盘 out/boot.img——BOOTAA64.EFI + HELLO.TXT + KERNEL.ELF + INITRD.BIN（V-1c：内核 debug ELF + rootfs.cpio 直进盘，依赖 build-user）+ --size-mib 8（V-0a 默认造盘字节零漂移；SPC 自适应——簇数出 FAT12 域时翻倍至入域）；刀 2 起链入 berry-loader（用户态 crate 首次进 EFI 引导链）；主构建链不感知、本链消费内核产物）
 just run-efi        # V-1c：QEMU AAVMF（-pflash 固件对）挂 boot.img + -device ramfb——十段横幅至 BERRYBOOT ok（… + init: INITRD.BIN 整档读入 + load: 段装载/handoff v0 + mmap: n=31 ok 终图/EBS + BERRYBOOT ok 后 quiesce + br entry），EBS 后内核接续（HANDOFF ok ver=0 → MMAP ok segs=31 pages=10159 → ROOTFS ok src=handoff → 裸相 23 标记 + rootfs 相生态标记 ECO/SH/APP/PIPE）；退出 Ctrl-A X
 just run-release / just check / just clean
 ```
 
-要点：产物在 `~/.cargo-target`（本机全局 target-dir 覆盖，justfile 已动态解析）；QEMU ≥11.x 不用 `-bios none`；halt 后用 `Ctrl-A X` 退出 QEMU。详见 `CLAUDE.md`「构建与测试」与 `文档/路线图.md` Phase 0。
+要点：产物在 `~/.cargo-target`（本机全局 target-dir 覆盖，justfile 已动态解析）；QEMU ≥11.x 不用 `-bios none`；halt 后用 `Ctrl-A X` 退出 QEMU。详见 `CLAUDE.md`「构建与测试」与 `docs/路线图.md` Phase 0。
 
 ## 参考项目与协议注意
 
@@ -153,14 +154,14 @@ just run-release / just check / just clean
 - hubris = **MPL-2.0**：监督重启等语义可借、文件不搬。
 - seL4 / Fuchsia Zircon 作**思路参考**（C/C++，机制通用，不复制代码；seL4 内核 GPL-2.0-only，代码一字不进）。
 - **GPL/AGPL 项目（Linux、xv6、Genode、rCore-Tutorial）只作思路参考，不复制代码**，以免协议传染。本仓库许可证 Apache-2.0（ADR #37）。
-- 详细对照建议见 `参考源码/README.md`。
+- 详细对照建议见 `reference/README.md`。
 
 ## Do / Don't
 
 **Do**
 - 把新功能先写成架构无关的 Rust。
 - 每个可启动里程碑单独成一个提交。
-- 在 `参考源码/` 里沉淀对照实现，写清出处与协议。
+- 在 `reference/` 里沉淀对照实现，写清出处与协议。
 
 **Don't**
 - 不要为了方便把 FS / 驱动塞进内核。
@@ -169,12 +170,12 @@ just run-release / just check / just clean
 - 不要让 libc 桩在 std 启动关键路径上返 ENOSYS：`sanitize_standard_fds` 对 poll 非 EINTR 失败直接 `libc::abort()` 静默死（G-eco-d 实踩——bare `abort`、零文案）；能谎报成功就谎报（fd 恒有效语义），或改真实现。
 - 不要在 syscall handler 里解蔽 IRQ 或忙等跨任务：SVC 入口硬件置 DAIF → syscall 主体不可抢占是 v1 免锁根基（3-4a 已拆 per-process 表，跨表访问仍全靠它串行）。
 - 不要把「映射中 VMO 拒 close」写成一律拒：只拒**销毁性 close**（refs==1 且 mapcnt>0 → -EBUSY），别名 close（refs≥2）放行——对象不死，存活句柄钉住它。
-- 不要在内核对象间存裸指针跨界引用（Thread→Process、Process→root Vmar 等）：必须 `ObjRef::retain/release` 钉住（3-3 起模式，见 `内核/src/process.rs`）——否则持有者关光 handle 即 use-after-free。
+- 不要在内核对象间存裸指针跨界引用（Thread→Process、Process→root Vmar 等）：必须 `ObjRef::retain/release` 钉住（3-3 起模式，见 `kernel/src/process.rs`）——否则持有者关光 handle 即 use-after-free。
 - 不要假设 QEMU 启动在固定 EL：默认 `-machine virt`+`-kernel` ELF 起始 EL1，`virtualization=on` 起始 EL2——boot 第一行 `mrs CurrentEL` 检测并按需 eret 降级到 EL1。
 - 长命睡眠内核任务不睡共享表（4-5 纪律；4-6 新形态：被错捐 eff 32 的睡眠者自己抢片，把断言对象推过自身重试预算——验收司机/probe 也挂私有表，重试预算按「最坏轮转+自己偷片」放宽；halt 后「全系统冻结」先查 panic 尾巴）。
 - `for_each_sleeper` 须 IRQ 屏蔽窗内调用（tick 摘队动睡眠链接——任务体直调须手动 disable/enable 包络）。
 - 不要复制 GPL/AGPL/MPL 文件进自研内核（主参考用 Rust OS：Redox/Theseus/zCore；hubris 只借语义）。
-- 用户程序编译链走 builtin `aarch64-unknown-none` + build.rs 注入链接脚本（stable 免 nightly，G-eco-a 决策勿回退 custom target；`-zmax-page-size=4096` 必带否则 0x1000 基址表达不了）；`内核/src/userbins/*.bin` 是 gitignored 编译产物——缺产物 = 裸 `cargo build` 编译期炸响（设计如此），`just build/check` 已挂 build-user 依赖自动补产。
+- 用户程序编译链走 builtin `aarch64-unknown-none` + build.rs 注入链接脚本（stable 免 nightly，G-eco-a 决策勿回退 custom target；`-zmax-page-size=4096` 必带否则 0x1000 基址表达不了）；`kernel/src/userbins/*.bin` 是 gitignored 编译产物——缺产物 = 裸 `cargo build` 编译期炸响（设计如此），`just build/check` 已挂 build-user 依赖自动补产。
 - asm 模板换轨编译产物时，重试形态（自旋 vs 阻塞）是契约的一部分（G-eco-b 实踩）：逐发送点核对 asm 标号 EBUSY 分支去向（`b Nb` 回环自旋 vs clock+wait 阻塞），不能按家族归纳——console 饱和窗口内阻塞等待者会被自旋友商抢槽饿到超时；多页平像 spawn 的 sp 读 `UserProcess::stack_top` 字段；svcmgr build.rs rerun-if-changed 须盖全 staged 平像（漏列 = 改了子程序、内核还嵌旧字节静默上线）。
 - console 通道纯自旋 send = 长跑饱和下结构性饿死（雷 2 残留实证；与上条对账——自旋赢 boot 竞速、输长跑公平）：自旋者从不阻塞 → 环序冻结 → 排水窗口被占优者垄断（五任务 30s 零成功发送 + pinger -110 下游晚杀）。新用户程序打印一律阻塞形态（EBUSY → wait_one(console, WRITABLE, 10s) → 重发，超时重臂）；svcmgr 豁免亦于 P5 A-2 撤销（send_spin 全量→send_retry 阻塞——全场生产者皆阻塞，无一幸免）。
 - **wait_many 恒满足项使常驻服务永不入睡 = drain 相位钉死 RR 环（P5 A-2 实踩，上条姊妹坑）**：等待数组里「对端永不满 → WRITABLE 恒真」的项让 wait_many poll-first 每次即返、服务从不进 SLEEPQ → drain 相位冻结 RR 环固定节点 → 环序固化后填槽序末位者结构性饿死。修法 = 恒满足项条件化入列（仅 plen>0 才入列该项，常态真睡）。给常驻服务加 wait 项先问：稳态下会不会恒满足？
@@ -186,6 +187,6 @@ just run-release / just check / just clean
 - x86 asm 三坑（P7-x0 实踩）：①rustc 的 x86 内联 asm 默认 **Intel 语法**（本仓 aarch64 全线 AT&T）——每处 global_asm!/asm! 都要 `options(att_syntax)`；②x86_64-unknown-none 默认 **PIC**，`.long _start` 类 R_X86_64_32/32S 对 local symbol 拒链——`.cargo/config.toml` 钉 `relocation-model=static`；③根 .cargo/config.toml 锁 build.target=aarch64 且 **config 发现跨 workspace 边界照样命中**——x86 构建必须显式 `--target x86_64-unknown-none`（justfile build-x86）。
 - x86 链接脚本 `.note*` 绝不能 DISCARD（P7-x0）：PVH 靠 ELF note（`Xen`/type 18）被 QEMU 识别——丢了 note = 静默落 multiboot 路拒收 ELF64。note desc 用 `.long _start` 符号引用非硬编码地址；boot 页表放 .rodata 文件面预零（PT_LOAD 装载即零，弹床免清——硬件写权限看 PTE 位不看 PT_LOAD 旗标）。
 - x86 ISR 桩对齐两层（P7-x1 对抗审查实抓）：①锚 rbp 后 `and $-16` 只归一被打断上下文奇偶；②call 边界 SysV 还要求 call 前 RSP ≡ 0 (mod 16)——`and` 后压**奇数个** 8B 寄存器再 call 即违约（须 `sub $8` 凑偶）；纯整数 handler 今日零可观测，克隆进含 movaps 的调用树即 #GP 三重故障静默退出。新桩照 timer_isr 现形态抄。
-- x86 ISR 桩不保存 XMM 的前提 = builtin target 禁 SSE（P7-x1 挂账）：换 custom target JSON 自查两件——disable-redzone=true（builtin 已禁，三重实证；**不需要也不可加 flag**）+ 保持 -sse/-mmx 软浮点（或 ISR 面补 XMM 保存），见 `架构相关/x86_64/.cargo/config.toml` 注。
+- x86 ISR 桩不保存 XMM 的前提 = builtin target 禁 SSE（P7-x1 挂账）：换 custom target JSON 自查两件——disable-redzone=true（builtin 已禁，三重实证；**不需要也不可加 flag**）+ 保持 -sse/-mmx 软浮点（或 ISR 面补 XMM 保存），见 `arch/x86_64/.cargo/config.toml` 注。
 - 8259 PIC init 的 IMR 敞开窗（P7-x1）：ICW 序列清 IMR = 全部 IRQ 短暂敞开——init 整个包在 IF=0 内，ICW4 后立即 OCW1 掩回（主片 0xFE / 从片 0xFF）；ICW 间 io_wait()（inb 0x80）。
 - asm 勿给「架构上真读写内存」或「正确性依赖与相邻内存写保序」的指令标 nomem（P7-x4 对抗审查实抓）：nomem = 声明无内存副作用 ⇒ 编译器可跨块重排内存访问；volatile 只约束 volatile 操作彼此顺序。实例：invlpg 与页表 U/S RMW 零寄存器依赖即被上提（SDM §4.10 分页结构缓存——store 不刷缓存，失效上提过 RMW 即落空；TCG 不建模该缓存 = 冒烟恒绿真机才爆）；ltr 架构上真读 GDT 描述符。判别：读/写可访问内存（LGDT/LTR/INVLPG 类）或依赖与相邻内存写的顺序——任一 yes 不标 nomem（nostack/preserves_flags 照留）；aarch64 mmu.rs tlbi 同不标，本仓既有先例。

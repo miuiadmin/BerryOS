@@ -1,0 +1,204 @@
+//! berry-hal-aarch64 —— ARM64 HAL（arch 层，unsafe 收敛地）。
+//!
+//! Phase 0：boot 入口（EL2→EL1 降级，见 `boot.rs`）+ PL011 UART 输出 + halt。
+//! Phase 1 Step 4：stage-1 页表 + 开 MMU（见 [`mmu`]、[`paging`]）。
+//! Phase 1 Step 6：异常向量表 + 同步异常/IRQ 处理（见 [`trap`]）。
+//! Phase 1 Step 7：GICv2 中断控制器（见 [`gic`]）。
+//! Phase 1 Step 8：CNTV 虚拟定时器（见 [`timer`]）。
+//! Phase 1 Step 9：SVC syscall 派发（见 [`syscall`]）。
+//! Phase 2a Step 1：任务上下文 + 上下文切换 asm（见 [`task`]）。
+//! 仅 `#![no_std]`；`panic_handler` / `no_main` 由最终 bin crate（`kernel/`）提供。
+#![no_std]
+
+mod boot;
+pub mod fwcfg;
+pub mod gic;
+mod mmio;
+mod mmu;
+mod paging;
+pub mod syscall;
+pub mod task;
+pub mod timer;
+pub mod trap;
+pub mod uart;
+
+// P5 A-1：UART TX 四函数迁入 `uart` 模块——crate root 重导出转发，crate 内
+// 既有 `use crate::uart_putc` 与下游 `berry_hal_aarch64::uart_putc` 均零改动。
+pub use uart::{uart_put_dec, uart_put_hex64, uart_putc, uart_puts};
+
+// ---- 平台内存图（QEMU `virt`）----
+// RAM 几何原在 berry-mm，现挪进 HAL（平台层；berry-mm 保持 arch 无关，由调用方传入）。
+
+/// 物理内存起点（QEMU `virt` RAM）。
+pub const RAM_BASE: usize = 0x4000_0000;
+/// 物理内存终点（128MiB）。
+pub const RAM_TOP: usize = 0x4800_0000;
+/// QEMU `virt` PL011 UART0 基址。
+pub const UART0_BASE: usize = 0x0900_0000;
+/// GICv2 distributor 基址（QEMU `virt`）。
+pub const GICD_BASE: usize = 0x0800_0000;
+/// GICv2 CPU interface 基址（QEMU `virt`）。
+pub const GICC_BASE: usize = 0x0801_0000;
+/// virtio-mmio 传输层窗口基 PA（QEMU `virt` 板 32 槽之槽 0）。板子按槽
+/// 31→0 倒序创建总线、首个 `-device` 落**最高槽**（monitor `info qtree`
+/// 实证：virtio-blk 挂 virtio-mmio-bus.31 = 0x0A00_3E00）——**设备落位随
+/// `-device` 顺序漂移，消费端须扫窗定位、不可绑死槽号**（DTB 枚举随 v2
+/// 真机路径——`dtb.rs` 已留位）。P6 A-2 起用户态驱动地基：boot 把
+/// `[此值, +VIRTIO_MMIO_LEN)` 整窗包成 MMIO VMO 授 svcmgr。
+pub const VIRTIO_MMIO0_PA: usize = 0x0A00_0000;
+/// virtio-mmio 传输层整窗幅：32 槽 × 槽距 0x200（QEMU 11 `virt` 板
+/// monitor `info mtree` 实证：`[0x0A00_0000, 0x0A00_4000)` 连续 32 个
+/// virtio-mmio 区域，空槽也在席应答规范 ID 头）。VMO 页对齐交付 = 4 页。
+pub const VIRTIO_MMIO_LEN: usize = 0x4000;
+
+/// 内核高半基址 = 39-bit VA 高半的底（T1SZ=25 → TTBR1 区 = `[此值, 2^64)`）。
+/// `KERNEL_VA_BASE + pa` 是内核 direct map 的**唯一规则**（RAM 与 MMIO 统一，见
+/// `内存管理设计.md` §5）；bits[38:0]=0 使 KVA 表索引 == PA 表索引。2b-1 起
+/// 内核主体已链高半；`berry_mm::va` 的交换点由 `rust_main` 注入此值（x86_64 最小
+/// 集移植时按目标另定，注入 0 = 恒等）。
+pub const KERNEL_VA_BASE: usize = 0xFFFF_FF80_0000_0000;
+
+/// 启动后期初始化：装异常向量表 + 初始化 GIC。
+/// （MMU/页表已在 boot 期由 `.text.boot` 的 `build_boot_pt`/`enable_mmu` 就绪，
+/// 2b-1 起 `rust_main` 进来时内核已在高半执行。）
+///
+/// 必须在 `rust_main`、单核、EL1、MMU 开时调用一次。
+pub fn init() {
+    // SAFETY: EL1、MMU 已开（向量表在直映的内核镜像内）；任何 DAIF 解蔽之前。
+    unsafe { trap::init() };
+    // SAFETY: MMIO（Device 映射区）；EL1、单核、DAIF 仍屏蔽。
+    unsafe { gic::init() };
+}
+
+/// 高半别名自校验（2b-2 起只走高半——低半身份已退役）：RAM 魔数 + GIC PIDR2
+/// 经高半直映读回。证 TTBR1 翻译生效——逐进程页表 / 低半退役的地基。
+pub fn kva_ok() -> bool {
+    mmu::kva_alias_probe()
+}
+
+/// 2b-2：探测 ASID 位宽（8/16；`ID_AA64MMFR0_EL1.ASIDBits`）。实测值打进关卡记录
+/// （`内存管理设计.md` §5.2）。
+pub fn asid_bits() -> u32 {
+    mmu::asid_bits()
+}
+
+/// 2b-2：激活任务地址空间——TTBR0 ← 表+ASID、CONTEXTIDR、`tlbi aside1is`
+/// （变化才调，比较由调度器做）。`ttbr0_pa == 0` = 无 AS → 内核空表（低半必然
+/// fault——身份表已退役）。填表方须先 `dsb ish`（本函数只管寄存器）。
+pub fn activate_aspace(ttbr0_pa: usize, asid: u16) {
+    // SAFETY: EL1、单核、切换临界区（IRQ 屏蔽）内调用。
+    unsafe { mmu::activate_ttbr0(ttbr0_pa, asid) };
+}
+
+/// 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何
+/// 访问必然 fault（ktest 期望故障正向断言）。回退开关见 `mmu::RETIRE_IDENTITY`。
+pub fn retire_low_half() {
+    // SAFETY: EL1、启动单线程、任何任务切走之前调用一次。
+    unsafe { mmu::retire_low_half() };
+}
+
+/// 全量 ASID 失效（ASID 分配器回卷时调用；用户叶 nG=1，按号失效可达）。
+pub fn flush_all_asid() {
+    // SAFETY: EL1。
+    unsafe { mmu::flush_all_asid() };
+}
+
+/// 2b-3：按 ASID 失效 TLB——Vmar `unmap`/`protect` 改叶后调用（用户叶 nG=1，
+/// 按号可达；boot 时代 global 项与此无关）。
+pub fn tlbi_aside1(asid: u16) {
+    // SAFETY: EL1。
+    unsafe { mmu::tlbi_aside1(asid) };
+}
+
+/// 3-2：读当前 TTBR0_EL1 表基 PA——syscall copy 路径走查调用者自身表用
+/// （EL0 svc 时 TTBR0 仍是调用者页表）。
+pub fn current_ttbr0_pa() -> usize {
+    mmu::current_ttbr0_pa()
+}
+
+// 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
+// P6 A-2 起加 ATTR_DEVICE/SH_NONE：用户侧 MMIO 窗口叶（Device-nGnRnE + 不
+// 共享——内核直映 MMIO 同款，见 mmu.rs）。
+pub use paging::{
+    page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL, SH_INNER,
+    SH_NONE,
+};
+
+// ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
+//
+// HAL 是叶子 crate，**不依赖** berry-sched（否则循环依赖：sched → hal → sched）。
+// 但 timer/IRQ 抖动需要通知调度器（Step 5 打印 tick、Step 6 驱动抢占）——用**函数指针
+// 槽**把调用反转：调度器不进 HAL 的依赖图，`内核` 在 boot 时注册回调（`set_irq_dispatch`），
+// `exception_irq` 经槽调。HAL 永不知 scheduler 之名（plan 循环依赖规避 + R10）。
+
+/// IRQ 派发回调类型（EOIR 之后、`eret` 之前调；C-ABI 约定——ADR #18 syscall/FFI 边界）。
+pub type IrqDispatch = unsafe extern "C" fn(&mut trap::TrapFrame);
+
+static mut IRQ_DISPATCH: Option<IrqDispatch> = None;
+
+/// 注册 IRQ 派发回调。须在**任何 `enable_irq` 之前**调用一次（否则首 IRQ 落空槽——
+/// 由下方 `if let Some` 平凡处理，但 boot 期就该注册好）。
+pub fn set_irq_dispatch(f: IrqDispatch) {
+    // SAFETY: 启动单线程、DAIF 屏蔽（enable_irq 前）；无并发 IRQ、无竞态。
+    unsafe { IRQ_DISPATCH = Some(f) };
+}
+
+/// 取已注册的 IRQ 派发回调（`exception_irq` 用）。未注册时返回 `None`。
+///
+/// # Safety
+/// 读 `static mut`。仅 IRQ 上下文（单核顺序）调用。
+pub unsafe fn irq_dispatch() -> Option<IrqDispatch> {
+    IRQ_DISPATCH
+}
+
+// ---- 用户故障击杀回调（HAL→sched，函数指针槽反转；同上避循环依赖）----
+//
+// 2b-4 G1.5：EL0 用户任务致命故障（野指针/畸形 syscall/brk）→ `exception_sync_el0`
+// 经此槽让**调度器**杀当前任务（出 runqueue + 切走，只死自己）。HAL 永不知
+// scheduler 之名。
+
+/// 用户故障击杀回调类型（同步异常上下文调用；`-> !`——切走永不回）。
+pub type UserFaultExit = unsafe extern "C" fn() -> !;
+
+static mut USER_FAULT_EXIT: Option<UserFaultExit> = None;
+
+/// 注册用户故障击杀回调。须在**首个用户任务被调度之前**调用一次。
+pub fn set_user_fault_exit(f: UserFaultExit) {
+    // SAFETY: 启动单线程、DAIF 屏蔽；无并发 IRQ、无竞态。
+    unsafe { USER_FAULT_EXIT = Some(f) };
+}
+
+/// 取已注册的用户故障击杀回调（`exception_sync_el0` 用）。未注册时返回 `None`。
+///
+/// # Safety
+/// 读 `static mut`。仅同步异常上下文（单核顺序）调用。
+pub unsafe fn user_fault_exit() -> Option<UserFaultExit> {
+    USER_FAULT_EXIT
+}
+
+/// 解蔽 IRQ（`daifclr #2`，清 DAIF.I）。解蔽序的最后一步（VBAR→GIC→timer→此）。
+pub fn enable_irq() {
+    // SAFETY: 写 DAIF 标志位；EL1。
+    unsafe { core::arch::asm!("msr daifclr, #2", options(nostack, preserves_flags)) };
+}
+
+/// 屏蔽 IRQ（`daifset #2`，置 DAIF.I）。
+#[allow(dead_code)]
+pub fn disable_irq() {
+    unsafe { core::arch::asm!("msr daifset, #2", options(nostack, preserves_flags)) };
+}
+
+/// 单次 `wfi`（等中断唤醒一次）。idle 循环用——区别于 [`halt`] 的死循环 wfi。
+pub fn wfi() {
+    // SAFETY: 特权指令；EL1。
+    unsafe { core::arch::asm!("wfi", options(nostack, preserves_flags)) };
+}
+
+/// 永久挂起（`wfi` 循环）。DAIF 屏蔽时无中断唤醒 → 真正停；
+/// 解蔽后 IRQ 唤醒 wfi、走完向量再回此循环（idle 主循环）。
+pub fn halt() -> ! {
+    loop {
+        // unsafe 收敛在此：特权指令。
+        unsafe { core::arch::asm!("wfi") };
+    }
+}

@@ -32,7 +32,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # just build = abi-check + build-user + cargo build。曾直接 `cargo build
-      # --locked`：跳过 build-user 则 内核/src/userbins/*.bin（gitignored 编译
+      # --locked`：跳过 build-user 则 kernel/src/userbins/*.bin（gitignored 编译
       # 产物，内核 include_bytes! 直嵌）缺席 → 编译期炸响 exit 101——CI 连红 5
       # 天的根因（缺产物 loud not silent 是设计，CI 面须先走产物链）。
       - name: 构建（内核 + 用户程序产物链）
@@ -49,8 +49,8 @@ jobs:
       # 同参；--locked 可用——工作区 Cargo.lock 已入册）。
       - name: 构建 x86_64 最小集（五原语收官 gate）
         run: |
-          cd 架构相关/x86_64
+          cd arch/x86_64
           CARGO_TARGET_DIR=cargo-target cargo build --release --locked --target x86_64-unknown-none
 
       - name: x86_64 最小集冒烟（五原语收官 gate）
-        run: bash 工具链/smoke-x86.sh "架构相关/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"
+        run: bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"

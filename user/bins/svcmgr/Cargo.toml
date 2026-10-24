@@ -1,0 +1,26 @@
+[package]
+name = "svcmgr"
+version = "0.1.0"
+edition = "2021"
+# G-eco-b：svcmgr 服务管理器 Rust 化（替换 kernel/src/user.rs 的 svcmgr asm
+# 模板）。契约逐字保留（4-5b/4-6 A 半验收链 = smoke 第 21/23 标记）：
+# 拉起 echo（SVC ok）→ 拉起 talker/echo2 + 交接双 handle（DEMO ok）→
+# 稳态 'v'。内嵌 echo/talker 平像（两遍构建，见 justfile build-user 与
+# 本 crate build.rs 的 rerun-if-changed seam 注）。
+description = "BerryOS service manager (compiled flat binary, replaces asm template)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }
+# G-eco-c：rootfs 消费（cpio walk + ELF 解析 = 纯函数，host 测试盖）。
+berry-loader = { path = "../../berry-loader" }
+# A-2：rootfs 拉起链（spawn_rootfs_elf/channel_pair）自本 crate 抽出共享
+# （bsh 的 run 同链）——本 crate 改为消费者，行为等价重构。
+berry-exec = { path = "../../berry-exec" }
+# A-4：vblk 块设备服务消费自验（BLKD ok）——请求/应答编解码纯函数。
+berry-blkproto = { path = "../../berry-blkproto" }
+# A-8c：vnet 网络服务消费自验（DNS ok）——DNS_QUERY 请求/应答编解码纯函数。
+berry-netdproto = { path = "../../berry-netdproto" }
+# app-0 a-2：.bap manifest v0 解析（纯函数 crate、no_std 同链；svcmgr 兼任
+# appd 雏形——ADR #43/#44 应用 = 纯用户态协议，内核零「应用」概念）。
+berry-manifest = { path = "../../berry-manifest" }

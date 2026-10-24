@@ -1,0 +1,14 @@
+[package]
+name = "berryboot"
+version = "0.1.0"
+edition = "2021"
+description = "BerryBoot EFI 引导应用（V-0a）——staticlib 出 ELF，tools/elf2pe.py 转 PE32+"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+berry-efi = { path = "../berry-efi" }
+# V-0b 刀 2：引导视图解析（p_paddr 口径）——纯函数 crate 跨user/引导
+# 两界复用，库本体 no_std 直接进 EFI staticlib 链。
+berry-loader = { path = "../../../user/berry-loader" }

@@ -1,0 +1,22 @@
+[package]
+name = "berry-x86"
+version = "0.1.0"
+edition = "2021"
+
+# P7-x0（ADR #41 x86_64 最小集）：独立小工作区（同 user/ 模式）——
+# 根 workspace 不含本目录；且根 .cargo/config.toml 锁了
+# build.target=aarch64-unknown-none（config 发现按 CWD 向上走、跨 workspace
+# 边界照样命中），故一切构建走 justfile 的 build-x86（显式
+# --target x86_64-unknown-none）。范围盒子：串口/定时器/异常向量/上下文
+# 切换/SVC 入口；SMP/APIC/ACPI/PCIe 不在盒内（定时器走 PIT+8259）。
+# 加法零扰：不动 ARM64 主线任何文件。
+
+[workspace]
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

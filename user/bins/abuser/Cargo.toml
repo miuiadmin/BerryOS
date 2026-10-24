@@ -1,0 +1,13 @@
+[package]
+name = "abuser"
+version = "0.1.0"
+edition = "2021"
+# G-eco-a 首个编译用户程序：替换 kernel/src/user.rs 的 abuser asm 模板。
+# 契约逐字保留（对齐原 global_asm 块）：节流 → close 垃圾 handle 必须
+# -EBADF（存活自证）→ 'S' 经 console channel_send（-EBUSY 全参重试）→
+# 任何异常自陷被杀（watchdog 错杀断言拦下）。
+description = "BerryOS abuser user program (compiled flat binary, replaces asm template)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }
