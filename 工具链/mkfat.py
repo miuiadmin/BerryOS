@@ -270,20 +270,29 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS) -> tuple:
         node[leaf] = data
 
     assert 1 <= vol_sectors < 0x10000, "total16 域外（1..65535 扇区）"
-    # FAT 尺寸迭代收敛（V-0b 刀 1 裁决 C）：表须装下 (clusters+2) 项 ×1.5B。
-    # 小卷稳定在 fat_sz=2（V-0a 1MiB 盘字节不变——默认零漂移的构造性
-    # 保证）；大卷逐轮放大至收敛（fat_sz ↑ → 数据区 ↓ → 需求 ↓，单调
-    # 必收敛；4MiB → 6 扇区）。
-    fat_sz = 2
+    # SPC 自适应（V-1c）：簇数出 FAT12 域（≥4085）时 SPC 翻倍直至入域——
+    # 确定性：spc 只随 vol_sectors 变（8MiB 引导盘 → SPC=8 → ~2046 簇）。
+    # 默认 1MiB/4MiB 卷 SPC=4 域内不动 = V-0a/刀 1 产物字节零漂移。
+    spc = SPC
     while True:
-        data_start = 1 + NUM_FATS * fat_sz + 1
-        clusters = (vol_sectors - data_start) // SPC
-        need_sectors = (((clusters + 2) * 3 + 1) // 2 + SECTOR - 1) // SECTOR
-        if need_sectors <= fat_sz:
+        # FAT 尺寸迭代收敛（V-0b 刀 1 裁决 C）：表须装下 (clusters+2) 项
+        # ×1.5B。小卷稳定在 fat_sz=2（V-0a 1MiB 盘字节不变——默认零漂移
+        # 的构造性保证）；大卷逐轮放大至收敛（fat_sz ↑ → 数据区 ↓ → 需求
+        # ↓，单调必收敛；4MiB → 6 扇区）。
+        fat_sz = 2
+        while True:
+            data_start = 1 + NUM_FATS * fat_sz + 1
+            clusters = (vol_sectors - data_start) // spc
+            need_sectors = (((clusters + 2) * 3 + 1) // 2 + SECTOR - 1) // SECTOR
+            if need_sectors <= fat_sz:
+                break
+            fat_sz = need_sectors
+        if clusters < 4085:
             break
-        fat_sz = need_sectors
+        spc *= 2
+        if spc > 64:
+            raise SystemExit(f"mkfat: --put FAIL: {vol_sectors} 扇区超 FAT12 可表达域（SPC>64）")
     assert clusters >= 1, "卷太小：装不下数据区"
-    assert clusters < 4085, "FAT12 域外"
 
     vol = bytearray(vol_sectors * SECTOR)
     # —— boot sector（BPB）——与 build_volume 同形，差异三处：total=全盘 /
@@ -292,7 +301,7 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS) -> tuple:
     b[0:3] = b"\xEB\x3C\x90"
     b[3:11] = b"BERRYOS "
     b[11:13] = u16(SECTOR)
-    b[13] = SPC
+    b[13] = spc
     b[14:16] = u16(1)
     b[16] = NUM_FATS
     b[17:19] = u16(ROOT_ENTRIES)
@@ -319,7 +328,7 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS) -> tuple:
 
     def alloc_chain(nbytes: int) -> int:
         nonlocal next_clus
-        nclus = max(1, (nbytes + SPC * SECTOR - 1) // (SPC * SECTOR))
+        nclus = max(1, (nbytes + spc * SECTOR - 1) // (spc * SECTOR))
         first = next_clus
         for i in range(nclus):
             fat12_set(fat, first + i, first + i + 1)
@@ -328,8 +337,8 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS) -> tuple:
         return first
 
     def place(clus: int, data: bytes) -> None:
-        pad = data + b"\0" * (clusters_pad(len(data), SPC * SECTOR) - len(data))
-        assert len(pad) % (SPC * SECTOR) == 0
+        pad = data + b"\0" * (clusters_pad(len(data), spc * SECTOR) - len(data))
+        assert len(pad) % (spc * SECTOR) == 0
         placements.append((clus, pad))
 
     def emit_dir(node: dict, parent_clus: int) -> int:
@@ -351,9 +360,9 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS) -> tuple:
             sub_first = emit_dir(sub, first)
             entries.append(dir_entry(name_to_11(name), 0x10, sub_first, 0))
         blob = b"".join(entries)
-        if len(blob) > SPC * SECTOR:
+        if len(blob) > spc * SECTOR:
             raise SystemExit(
-                f"mkfat: --put FAIL: 目录内容 {len(blob)}B 超单簇 {SPC * SECTOR}B"
+                f"mkfat: --put FAIL: 目录内容 {len(blob)}B 超单簇 {spc * SECTOR}B"
                 "（v1 单簇目录——多簇目录留后续）")
         place(first, blob)
         return first
@@ -380,11 +389,11 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS) -> tuple:
         root[(i + 1) * 32:(i + 2) * 32] = e
     vol[(data_start - 1) * SECTOR:data_start * SECTOR] = root
     for clus, pad in placements:
-        off = (data_start + (clus - 2) * SPC) * SECTOR
+        off = (data_start + (clus - 2) * spc) * SECTOR
         vol[off:off + len(pad)] = pad
 
     return vol, {"clusters": clusters, "fat_sz": fat_sz, "data_start": data_start,
-                 "next_clus": next_clus}
+                 "next_clus": next_clus, "spc": spc}
 
 
 def fat12_get(fat: bytes, n: int) -> int:
@@ -421,8 +430,8 @@ def selftest_puts() -> int:
         data = b""
         c = first
         while 0x2 <= c < 0xFF8:
-            off = (geo_x["data_start"] + (c - 2) * SPC) * SECTOR
-            data += bytes(vol_x[off:off + SPC * SECTOR])
+            off = (geo_x["data_start"] + (c - 2) * geo_x["spc"]) * SECTOR
+            data += bytes(vol_x[off:off + geo_x["spc"] * SECTOR])
             c = fat12_get(fat_x, c)
         return data[:size]
 
@@ -478,6 +487,26 @@ def selftest_puts() -> int:
         return 1
     if build_volume_puts(puts, DISK_SECTORS)[0] != vol:
         print("mkfat: selftest FAIL: 显式 2048 扇区与默认调用产物不一致")
+        return 1
+    # SPC 自适应面（V-1c）：8MiB 引导盘量级（debug ELF ~2.9MiB + INIT.CPIO
+    # ~3.4MiB；草案 L91 曾误记 INIT.CPIO——扩展名 4 字符超 8.3 界，
+    # 实名 INITRD.BIN，偏差记 阶段沿革）→ SPC 翻倍入 FAT12 域；链回读仍等于源；4MiB 及以下 SPC=4
+    # 不动（V-0a/刀 1 产物零漂移守卫）。
+    init = bytes((i * 13 + 9) % 256 for i in range(3_500_000))
+    puts3 = puts2 + [(b"/INITRD.BIN", init)]
+    vol3, geo3 = build_volume_puts(puts3, 16384)
+    if geo3["spc"] != 8 or geo3["clusters"] >= 4085:
+        print(f"mkfat: selftest FAIL: 8MiB 卷几何异常 "
+              f"spc={geo3['spc']} clusters={geo3['clusters']}")
+        return 1
+    fat3 = bytes(vol3[SECTOR:(1 + geo3["fat_sz"]) * SECTOR])
+    root3 = vol3[(geo3["data_start"] - 1) * SECTOR:geo3["data_start"] * SECTOR]
+    icpio = entries_of(root3)[b"INITRD  BIN"]
+    if chain_read(vol3, fat3, geo3, icpio[1], icpio[2]) != init:
+        print("mkfat: selftest FAIL: INIT.CPIO 大档链回读不等于源")
+        return 1
+    if geo2.get("spc") != SPC:
+        print(f"mkfat: selftest FAIL: 4MiB 卷 SPC 漂移 spc={geo2.get('spc')}")
         return 1
     try:
         build_volume_puts([(b"/A.TXT", b"x")], 8)

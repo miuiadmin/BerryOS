@@ -111,30 +111,53 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // [RAM_BASE, kernel_end)——两侧同为合法 buddy 序（守恒面见 buddy 测试）。
     unsafe { mm::init(handoff) };
 
-    // G-eco 入机侧第一刀：rootfs（initrd 角色）装载，两源按序——
-    // ① 入口 x0 的 DTB `/chosen` initrd 物理区间 → 高半直映拷出（真机/
+    // G-eco 入机侧第一刀：rootfs（initrd 角色）装载，三源按序——
+    // ①（V-1c）handoff init_blob：BerryBoot 从盘读 INITRD.BIN 整档
+    //    AllocatePages 页钉后经 handoff @80/@88 递送（fw_cfg 的 EFI 路
+    //    替代者——EFI 固件面无 fw_cfg 具名文件机制）。pa/len 双零 =
+    //    「无此物」（裁决 B 留位语义）；界检整段在 DRAM 窗内 + 帽同
+    //    fw_cfg 路口径——坏值降级不死（boot 期无 panic 纪律）；
+    // ② 入口 x0 的 DTB `/chosen` initrd 物理区间 → 高半直映拷出（真机/
     //    Linux boot 协议路径；QEMU 非 Linux ELF 直加载实测 x0=0、RAM 无
     //    DTB、`-initrd` 整体不加载——initrd/dtb/cmdline 机制全在 QEMU
     //    hw/arm/boot.c 的 is_linux 分支，2026-10 实证）；**V-1a 起 handoff
-    //    命中时本源按缺席处理**（x0 是 handoff PA 非 DTB；V-1c 起 handoff
-    //    blob 另立第三源）；
-    // ② QEMU fw_cfg 具名文件 `-fw_cfg name=opt/berry/rootfs,file=…`
+    //    命中时本源按缺席处理**（x0 是 handoff PA 非 DTB）；
+    // ③ QEMU fw_cfg 具名文件 `-fw_cfg name=opt/berry/rootfs,file=…`
     //    （目录自描述名字+大小、无魔法地址；justfile run-rootfs 配方）。
     // 装进 boot 期缓冲，下一步包只读 VMO 交 svcmgr（cpio/ELF 解析全在
     // 用户态——微内核只补「字节流变对象」原语）。无 rootfs = 正常降级
     // （不带 -fw_cfg 的既有 run/smoke 零扰动）。
-    let rootfs: Option<(&[u8], alloc::vec::Vec<u8>)> = if handoff.is_none() {
-        dtb::boot_probe(boot_x0)
-            .map(|(s, e)| {
-                // SAFETY: boot_probe 已界检区间在 [RAM_BASE, RAM_TOP)——高半
-                // 直映 L2 全覆盖，from_raw_parts 读取必落在已映射块内。
-                let pa = phys_to_virt(s as usize) as *const u8;
-                let bytes = unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) };
-                (b"dtb" as &[u8], bytes.to_vec())
-            })
-    } else {
-        None // EFI 路：x0 非 DTB——dtb 源缺席（fw_cfg 链照常兜底）
-    }
+    let rootfs: Option<(&[u8], alloc::vec::Vec<u8>)> = handoff
+        .and_then(|h| {
+            let (pa, len) = (h.init_blob_pa, h.init_blob_len);
+            if pa == 0 || len == 0 || len > ROOTFS_MAX as u64 {
+                return None;
+            }
+            if pa < berry_hal_aarch64::RAM_BASE as u64
+                || pa.checked_add(len)? > berry_hal_aarch64::RAM_TOP as u64
+            {
+                return None;
+            }
+            // SAFETY: 界检已过（整段在 DRAM 窗内）——高半直映 L2 全覆盖，
+            // from_raw_parts 读取必落在已映射块内（与 dtb 路同款论证）。
+            let p = phys_to_virt(pa as usize) as *const u8;
+            let bytes = unsafe { core::slice::from_raw_parts(p, len as usize) };
+            Some((b"handoff" as &[u8], bytes.to_vec()))
+        })
+        .or_else(|| {
+            if handoff.is_none() {
+                dtb::boot_probe(boot_x0)
+                    .map(|(s, e)| {
+                        // SAFETY: boot_probe 已界检区间在 [RAM_BASE, RAM_TOP)——高半
+                        // 直映 L2 全覆盖，from_raw_parts 读取必落在已映射块内。
+                        let pa = phys_to_virt(s as usize) as *const u8;
+                        let bytes = unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) };
+                        (b"dtb" as &[u8], bytes.to_vec())
+                    })
+            } else {
+                None // EFI 路：x0 非 DTB——dtb 源缺席（fw_cfg 链照常兜底）
+            }
+        })
     .or_else(|| {
             use berry_hal_aarch64::fwcfg;
             let entry = fwcfg::find_file(fwcfg::ROOTFS_NAME)?;

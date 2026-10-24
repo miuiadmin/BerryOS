@@ -15,7 +15,7 @@
 //! - 留位零值（裁决 B）：gop_*（V-1 fbcon 数据源——`文档/VM里程碑设计草案.md`
 //!   L114 携面规划）+ init_blob_*/cmdline_*（V-1+ rootfs 递送替代 fw_cfg）。
 //!   零值 = 「无此物」：pa=0 且 len=0 双字段共同判定，禁只看 pa。
-#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；gop_*/init_blob_*/cmdline_* 留位零值待 V-1c+
+#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；gop_*/cmdline_* 留位零值待 V-1d+
 
 use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
 use berry_mm::va::phys_to_virt;

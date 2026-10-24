@@ -367,12 +367,14 @@ AAVMF_VARS := "/opt/homebrew/share/qemu/edk2-arm-vars.fd"
 RUST_LLD := `printf '%s' "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"`
 
 # BerryBoot 构建链（EFI 应用 + 引导盘）
-build-boot:
+build-boot: build-user
     #!/bin/sh
     set -e
     # V-0b 刀 1（裁决 C）：KERNEL.ELF = 内核 debug ELF 直进盘——缺失即
     # loud（先 just build 补产，勿静默跳过）。
     test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
+    # V-1c：INITRD.BIN = rootfs.cpio（build-user 产出）进盘——缺即 loud。
+    test -f rootfs.cpio || { echo "rootfs.cpio 缺失——先 just build-user"; exit 1; }
     cd {{BOOT_DIR}}
     CARGO_TARGET_DIR=cargo-target cargo build --release --target {{BOOT_TARGET}}
     mkdir -p out
@@ -381,20 +383,27 @@ build-boot:
         -T berryboot.ld -e efi_main --image-base 0 \
         -o out/berryboot.elf cargo-target/{{BOOT_TARGET}}/release/libberryboot.a
     python3 ../../工具链/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
-    # --size-mib 4：FAT12 SPC=4 域内 2044 簇收 ~2.9MiB debug ELF（V-0a
-    # 1MiB 默认造盘路径字节零漂移——参数只进 --put 构造体）。
+    # --size-mib 8（V-1c）：debug ELF ~2.9MiB + rootfs.cpio ~3.4MiB 量级
+    # ——SPC 自适应翻倍（4→8）保 FAT12 域（簇 ~2046）；V-0a 1MiB 默认
+    # 造盘路径字节零漂移（参数只进 --put 构造体）。盘名 INITRD.BIN：草案
+    # L91 曾误记 INIT.CPIO（扩展名超 8.3 三字符界），偏差记 阶段沿革。
     python3 ../../工具链/mkfat.py out/boot.img \
-        --size-mib 4 \
+        --size-mib 8 \
         --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI" \
         --put "hello.txt:/HELLO.TXT" \
-        --put "{{KERNEL}}:/KERNEL.ELF"
+        --put "{{KERNEL}}:/KERNEL.ELF" \
+        --put "../../rootfs.cpio:/INITRD.BIN"
 
 # AAVMF 引导验收（V-0b 刀 3 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。期望串口：BdsDxe starting Boot0001 …USB HARDDRIVE →
-# 八行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
+# 九行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
 # `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…` / `fs: HELLO.TXT 28B match` /
 # `kfile: <n>B ok`（V-0b 刀 1：KERNEL.ELF GetInfo 探长 + AllocatePool +
-# 循环 Read 整档收齐，n = 内核 ELF 字节数——与宿主 ls 对拍）/ `elf:
+# 循环 Read 整档收齐，n = 内核 ELF 字节数——与宿主 ls 对拍）/ `init:
+# <n>B ok`（V-1c：INITRD.BIN = rootfs.cpio 整档读入 → AllocatePages
+# (EfiLoaderData) 页钉（先于终段 GetMemoryMap——页进图非 Conventional，
+# 内核 V-1b pass2 reserve 自动保）→ pa/len 填 handoff init_blob_*；盘上
+# 缺席打 `init: absent` 续行）/ `elf:
 # segs=<n> entry=0x… ok`（V-0b 刀 2：berry-loader boot_parse 引导视图——
 # p_paddr 口径 + DRAM 窗拒面，坏档打 `elf: parse e=<码>`）/ `load:
 # segs=<n> pages=<n> ok`（V-0b 刀 3：boot.span() 整窗 AllocateAddress

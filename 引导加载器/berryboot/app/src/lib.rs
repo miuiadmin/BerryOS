@@ -38,6 +38,12 @@
 //! 收编（x19 抢救 x0 → BRYH 魔数不中 DTB 探测 → fw_cfg 降级路 → 裸相
 //! 23 标记）。CurrentEL ≠ EL1 拒跳（AAVMF virt 默认 EL1；EL2 入场语境的
 //! sctlr 整备不成立——诚实拒绝优于错态跳转）。
+//! V-1c 面：行 5b `init:` INITRD.BIN 整档读入 → AllocatePages
+//! (EfiLoaderData) 页钉——**先于终段 GetMemoryMap**（页进图成非
+//! Conventional，内核 V-1b pass2 reserve 自动保）→ pa/len 透传
+//! load_kernel 填 handoff init_blob_*（@80/@88，V-1c 起消费）+ 终段
+//! dcache 刷集加 init blob 窗（CPU 拷贝脏线防线）。盘上缺席打
+//! `init: absent` 续行——内核降级 ROOTFS absent，非致命。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
 //! **状态码诊断行**（机器可读缺席报告——AI 测试友好：`locate fail r=0x…e`
@@ -153,16 +159,19 @@ const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
 /// 有缝，逐段认领撞页冲突）→ 全窗清零（.bss + 缝隙确定性归零，对齐
 /// QEMU `-kernel` 直加载零 RAM 起步）→ 逐段 copy filesz → 回读逐字节
 /// 对拍（标记 = 状态谓词，不建立在「拷了就算」上）→ handoff 页填 v0
-/// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop/init_blob/cmdline 留位
-/// 零值；memmap 刀 4 填）。全过打 `load: segs=<n> pages=<n> ok` 并返
-/// `Some(hpa)`（handoff 物理地址——刀 4 终段消费）；任一步失败打状态码
-/// 诊断行返 `None`（终标缺席即失败面——机器可读缺席报告）。零 panic：
-/// 一切失败走诊断行返回。
+/// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop/cmdline 留位零值；
+/// memmap 刀 4 填；init_blob_* V-1c 填——`init_pa/init_len` 由 kfile 段
+/// INITRD.BIN 读入产出，缺省 0/0 = 无 blob）。全过打 `load: segs=<n>
+/// pages=<n> ok` 并返 `Some(hpa)`（handoff 物理地址——刀 4 终段消费）；
+/// 任一步失败打状态码诊断行返 `None`（终标缺席即失败面——机器可读缺席
+/// 报告）。零 panic：一切失败走诊断行返回。
 fn load_kernel(
     bs: &berry_efi::EfiBootServices,
     con_out: &berry_efi::EfiSimpleTextOutputProtocol,
     kbuf: *mut c_void,
     bo: &berry_loader::BootElf,
+    init_pa: u64,
+    init_len: u64,
 ) -> Option<u64> {
     let segs = bo.segments();
     // 整窗认领（AllocateAddress 对已占用页返错不覆盖——kbuf/固件数据若
@@ -244,8 +253,8 @@ fn load_kernel(
             gop_height: 0,
             gop_stride: 0,
             gop_format: 0,
-            init_blob_pa: 0,
-            init_blob_len: 0,
+            init_blob_pa: init_pa,
+            init_blob_len: init_len,
             cmdline_pa: 0,
             cmdline_len: 0,
         });
@@ -328,6 +337,8 @@ fn final_boot(
     image_handle: *mut c_void,
     hpa: u64,
     bo: &berry_loader::BootElf,
+    init_pa: u64,
+    init_len: u64,
 ) {
     // CurrentEL 预检（EL 编码在位 [3:2]：EL1 → 0x4）。
     let el: u64;
@@ -480,6 +491,11 @@ fn final_boot(
     }
     dcache_clean(hpa, 4096);
     dcache_clean(mm_buf as u64, mm_size as u64);
+    // V-1c：init blob 页入刷集——读入经固件 CPU 拷贝、脏线随 SCTLR.C 清零
+    // 而丢 = 内核读到旧内存（与内核映像/handoff/memmap 同一条纪律）。
+    if init_len > 0 {
+        dcache_clean(init_pa, (init_len + 4095) & !4095u64);
+    }
     // SCTLR_EL1 清 M(0)/A(1)/C(2)/I(12)：MMU 关（内核自带页表从零建）、
     // 对齐检查关、icache/dcache 关——对齐内核 boot asm 为 QEMU `-kernel`
     // 复位态写的入场假设。
@@ -820,6 +836,116 @@ pub extern "C" fn efi_main(
                                             l.push_u32_dec(fsize as u32);
                                             l.push_str("B ok");
                                         });
+                                        // 行 5b（V-1c）：INITRD.BIN 整档读入
+                                        // → AllocatePages(EfiLoaderData) 页
+                                        // 钉——**必须发生在终段 GetMemoryMap
+                                        // 之前**（页进图成非 Conventional，
+                                        // 内核 V-1b pass2 reserve 自动保）。
+                                        // pa/len 透传 load_kernel 填 handoff
+                                        // init_blob_*（@80/@88）。缺席（旧盘
+                                        // 不带 INITRD.BIN）打 `init: absent`
+                                        // 续行——内核降级 ROOTFS absent，
+                                        // 非致命（裁决 B 留位零值同义）。
+                                        // 帽 16MiB：与内核 ROOTFS_MAX 同口径。
+                                        let mut name16i = [0u16; 16];
+                                        let iname =
+                                            utf16_encode_bytes(b"INITRD.BIN", &mut name16i);
+                                        let mut ifile = core::ptr::null_mut();
+                                        let r_iopen = unsafe {
+                                            (root_ref.open)(root, &mut ifile, iname.as_ptr(), EFI_FILE_MODE_READ, 0)
+                                        };
+                                        let mut init_pa: u64 = 0;
+                                        let mut init_len: u64 = 0;
+                                        if r_iopen == EFI_SUCCESS && !ifile.is_null() {
+                                            let ifile_ref = unsafe { &*ifile };
+                                            let mut ibuf = [0u8; 256];
+                                            let mut ilen = ibuf.len();
+                                            let r_igi = unsafe {
+                                                (ifile_ref.get_info)(
+                                                    ifile,
+                                                    &EFI_FILE_INFO_GUID as *const _,
+                                                    &mut ilen,
+                                                    ibuf.as_mut_ptr() as *mut c_void,
+                                                )
+                                            };
+                                            if r_igi == EFI_SUCCESS && ilen >= 80 {
+                                                let isize_ = unsafe {
+                                                    (*(ibuf.as_ptr() as *const EfiFileInfo)).file_size
+                                                        as usize
+                                                };
+                                                if isize_ > 0 && isize_ <= 16 * 1024 * 1024 {
+                                                    let ipages = (isize_ + 4095) / 4096;
+                                                    let mut ipa: u64 = 0;
+                                                    let r_iap = unsafe {
+                                                        ((*bs).allocate_pages)(
+                                                            EFI_ALLOCATE_ANY_PAGES,
+                                                            EFI_LOADER_DATA,
+                                                            ipages,
+                                                            &mut ipa,
+                                                        )
+                                                    };
+                                                    if r_iap == EFI_SUCCESS && ipa != 0 {
+                                                        let mut igot = 0usize;
+                                                        let mut r_ird = EFI_SUCCESS;
+                                                        while igot < isize_ {
+                                                            let mut ichunk = isize_ - igot;
+                                                            r_ird = unsafe {
+                                                                (ifile_ref.read)(
+                                                                    ifile,
+                                                                    &mut ichunk,
+                                                                    (ipa as *mut u8).add(igot)
+                                                                        as *mut c_void,
+                                                                )
+                                                            };
+                                                            if r_ird != EFI_SUCCESS || ichunk == 0 {
+                                                                break;
+                                                            }
+                                                            igot += ichunk;
+                                                        }
+                                                        if r_ird == EFI_SUCCESS && igot == isize_ {
+                                                            print_line(con_out, |l| {
+                                                                l.push_str("init: ");
+                                                                l.push_u32_dec(isize_ as u32);
+                                                                l.push_str("B ok");
+                                                            });
+                                                            init_pa = ipa;
+                                                            init_len = isize_ as u64;
+                                                        } else {
+                                                            print_line(con_out, |l| {
+                                                                l.push_str("init: read got=");
+                                                                l.push_u32_dec(igot as u32);
+                                                                l.push_str(" want=");
+                                                                l.push_u32_dec(isize_ as u32);
+                                                            });
+                                                            // 不 FreePages：读残页留图
+                                                            // 无害（终图非 Conventional，
+                                                            // 内核 reserve 保住不再用）。
+                                                        }
+                                                    } else {
+                                                        print_line(con_out, |l| {
+                                                            l.push_str("init: alloc r=0x");
+                                                            let mut t = [0u8; 16];
+                                                            l.push(fmt_u64_hex(r_iap as u64, &mut t));
+                                                        });
+                                                    }
+                                                } else {
+                                                    print_line(con_out, |l| {
+                                                        l.push_str("init: size 帽 size=");
+                                                        l.push_u32_dec(isize_ as u32);
+                                                    });
+                                                }
+                                            } else {
+                                                print_line(con_out, |l| {
+                                                    l.push_str("init: get_info r=0x");
+                                                    let mut t = [0u8; 16];
+                                                    l.push(fmt_u64_hex(r_igi as u64, &mut t));
+                                                });
+                                            }
+                                            // 判读边界外收句柄（同 kfile 面纪律）。
+                                            unsafe { (ifile_ref.close)(ifile) };
+                                        } else {
+                                            print_line(con_out, |l| l.push_str("init: absent"));
+                                        }
                                         // 行 6（V-0b 刀 2）：引导视图解析——
                                         // kfile 缓冲就地借用（零拷贝），
                                         // p_paddr 口径出段 + 入口（VMA 高半
@@ -843,11 +969,16 @@ pub extern "C" fn efi_main(
                                                 // handoff PA 直进终段——
                                                 // mmap + EBS + 整备跳 entry，
                                                 // 成功即接管（不归此臂）。
+                                                // V-1c：init_blob_*（kfile 段
+                                                // INITRD.BIN 产物）随行入
+                                                // handoff。
                                                 if let Some(hpa) = load_kernel(
                                                     unsafe { &*bs },
                                                     con_out,
                                                     kbuf,
                                                     &bo,
+                                                    init_pa,
+                                                    init_len,
                                                 ) {
                                                     final_boot(
                                                         unsafe { &*bs },
@@ -855,6 +986,8 @@ pub extern "C" fn efi_main(
                                                         image_handle,
                                                         hpa,
                                                         &bo,
+                                                        init_pa,
+                                                        init_len,
                                                     );
                                                 }
                                             }
