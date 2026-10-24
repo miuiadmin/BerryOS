@@ -1,6 +1,15 @@
 # BerryOS（中文说明）
 
+**简体中文** | [English](README.md)
+
 **全 Rust 微内核操作系统 —— 省电优先、能力安全、AI 原生。** 首发目标为手表级 ARM64 设备（MB 级内存 rich 档），向手机 / PC 延伸。本仓库为发布镜像；开发主仓（含调研报告与参考实现）为私密仓 BerryOS-private。
+
+[![CI](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml/badge.svg)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/miuiadmin/BerryOS?label=release)](https://github.com/miuiadmin/BerryOS/tags)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable_%C2%B7_no_nightly-dea584)](https://www.rust-lang.org/)
+![Arch](https://img.shields.io/badge/arch-ARM64_%C2%B7_x86__64-9b59b6)
+[![Tests](https://img.shields.io/badge/tests-315_host_%C2%B7_5--phase_smoke-2ea44f)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
 
 ## 四根支柱
 
@@ -34,8 +43,6 @@ just test-host    # host 侧 315 单元测试（无需 QEMU）
 ## 文档
 
 设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（49 条 ADR）→ [`docs/路线图.md`](docs/路线图.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
-
-English introduction: **[README.md](README.md)**.
 
 ## 许可证
 
