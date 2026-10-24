@@ -10,17 +10,11 @@ edition = "2021"
 # virtio-mmio 规范头四字断言 transport 在席（magic/version/device_id），
 # VendorID 只打印不断言（0x554D4551 "QEMU" 是仿真器特有值）。成功打
 # `VIRTIO ok`（rootfs 相第 12 标记）后 main 返回 = exit(0)，svcmgr reap。
-
-[workspace]
+# 2026-10-24 自 user/bins/ 迁入 drivers/（工作区成员——空 [workspace]
+# 自绝表与自带 [profile.release] 随迁退役，profile 集中到 drivers/
+# Cargo.toml 根，逐值相同 = 产物零漂移）。
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
-berry-sys = { path = "../../berry-sys" }
-berry-exec = { path = "../../berry-exec" }
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+berry-libc = { path = "../../../user/berry-libc" }
+berry-sys = { path = "../../../user/berry-sys" }
+berry-exec = { path = "../../../user/berry-exec" }

@@ -15,8 +15,9 @@
 # A-2：berry-exec（rootfs 程序拉起链——spawn_rootfs_elf/cpio_find 自 svcmgr
 # 抽取，svcmgr（none target，本工作区成员）与 bsh（musl target，独立小工作
 # 区经 path 依赖）双消费，「不长第二套」）。
-# A-3：berry-virtio（virtio split-ring 纯函数 crate，host 测试；真消费者
-# vblk 在独立小工作区编 musl target，故同 stdhello 不入 members）。
+# A-3：berry-virtio（virtio split-ring 纯函数 crate，host 测试）——
+# 2026-10-24 随驱动一族迁入 drivers/ 工作区（真消费者 vprobe/vblk/vnet
+# 同住 drivers/bins/；host 测试经 justfile test-host 显式行跑）。
 # A-4：berry-blkproto（块设备服务 RPC 协议纯函数 crate，host 测试；双消费
 # = vblk 服务端（独立小工作区）+ svcmgr 消费自验方（本工作区成员））。
 # A-5：berry-fatfs（FAT12 只读解析纯函数 crate，host 测试对 fixture 做跨
@@ -43,7 +44,7 @@
 # 链接 syscall 面；lib.rs 纯函数面 fd 表/cwd/stat/dirent/ST 映射 host 测试）。
 # 单消费 = berry-libc（刀 2 fd 3+ 文件面）；bsh 刀 4 删自有面改经 libc。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-virtio", "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

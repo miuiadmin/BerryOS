@@ -39,7 +39,19 @@ name = "berry-loader"
 version = "0.1.0"
 
 [[package]]
+name = "berry-netdproto"
+version = "0.1.0"
+
+[[package]]
+name = "berry-netproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-sys"
+version = "0.1.0"
+
+[[package]]
+name = "berry-tcp"
 version = "0.1.0"
 
 [[package]]
@@ -55,4 +67,26 @@ dependencies = [
  "berry-libc",
  "berry-sys",
  "berry-virtio",
+]
+
+[[package]]
+name = "vnet"
+version = "0.1.0"
+dependencies = [
+ "berry-exec",
+ "berry-libc",
+ "berry-netdproto",
+ "berry-netproto",
+ "berry-sys",
+ "berry-tcp",
+ "berry-virtio",
+]
+
+[[package]]
+name = "vprobe"
+version = "0.1.0"
+dependencies = [
+ "berry-exec",
+ "berry-libc",
+ "berry-sys",
 ]

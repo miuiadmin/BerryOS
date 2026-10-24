@@ -71,7 +71,8 @@ berryos/
 ├── CLAUDE.md          Claude Code 会话规范
 ├── kernel/  mm/  sched/  ipc/      Rust no_std（内核本体）
 ├── arch/  bootloader/            Rust（HAL + 内联汇编 / EFI 引导）
-├── drivers/  fs/  net/  user/   Rust（用户态服务）
+├── drivers/  Rust：用户态驱动独立工作区（2026-10-24 启用：berry-virtio + vprobe/vblk/vnet）
+├── fs/  net/  user/   Rust（用户态服务）
 ├── tools/  docs/                  构建 / 文档
 ├── research/                       调研报告（仅私密仓）
 └── reference/                    第三方参考实现，独立存放（仅私密仓）

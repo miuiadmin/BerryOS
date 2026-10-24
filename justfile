@@ -83,8 +83,11 @@ build-user:
     # P6 A-2：vprobe（virtio-mmio 探测——MMIO 窗口 VMO 的用户态消费者，
     # stdhello 同链；扫 32 槽窗定位设备——QEMU 倒序建总线、首 -device 落
     # 最高槽且随 -device 顺序漂移，绑死槽号不可为）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
-        cargo build --release --manifest-path bins/vprobe/Cargo.toml \
+    # 2026-10-24：驱动一族（vprobe/vblk/vnet + berry-virtio）自 user/ 迁入
+    # drivers/ 独立工作区（顶层目录提前启用）；musl + berry-ld 链不变，
+    # 产物出 drivers/cargo-target（family 单锁 = drivers/Cargo.lock）。
+    CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path ../drivers/bins/vprobe/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P6 A-3：vblk（virtio-blk 块设备驱动——真设备 IO 第一刀；vprobe 同链
     # + berry-virtio split-ring 纯函数 crate。DMA 面 = vmo_create/commit +
@@ -92,8 +95,8 @@ build-user:
     # 读回对拍自打 `VBLK ok`）。
     # P6 A-4：+ berry-blkproto 协议依赖——自验毕转常驻服务（RPC + VMO 随行
     # 数据面；svcmgr 消费自验打 `BLKD ok`）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
-        cargo build --release --manifest-path bins/vblk/Cargo.toml \
+    CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path ../drivers/bins/vblk/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # P6 A-7：vnet（virtio-net 驱动——网络面第一刀：ARP/ICMP ping 通；
     # vprobe/vblk 同链 + berry-netproto 最小以太网/ARP/IPv4/ICMP-echo 编解码
@@ -101,8 +104,8 @@ build-user:
     # 自打 `NET ok ping=32 slot=N`。
     # P6 A-8：+ berry-netdproto 协议依赖——自验毕转常驻服务（DNS_QUERY
     # 严格串行 RPC；svcmgr 消费自验打 `DNS ok addr=`；不再退出，不 reap）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
-        cargo build --release --manifest-path bins/vnet/Cargo.toml \
+    CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path ../drivers/bins/vnet/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # app-0（ADR #43/#44）：demo 双 app（appdemo console=true / appquiet
     # console=false——能力授予/缺席两半活证）musl 同链 → staging 组装
@@ -136,9 +139,9 @@ build-user:
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
-        bin/vblk=cargo-target/aarch64-unknown-linux-musl/release/vblk \
-        bin/vnet=cargo-target/aarch64-unknown-linux-musl/release/vnet \
-        bin/vprobe=cargo-target/aarch64-unknown-linux-musl/release/vprobe
+        bin/vblk=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vblk \
+        bin/vnet=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet \
+        bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe
 
 build: abi-check build-user
     cargo build
@@ -231,7 +234,7 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 # host 单元测试：berry-mm 的纯 Rust buddy 核心（见 mm/src/buddy.rs）
 # + berry-loader 的 rootfs 解析纯函数面（G-eco-c 起，见 user/berry-loader）
 # + berry-fsproto 的 fs 协议编解码纯函数面（P6 A-1 起，见 user/berry-fsproto）
-# + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，见 user/berry-virtio）
+# + berry-virtio 的 split-ring 布局/编解码纯函数面（P6 A-3 起，2026-10-24 起住 drivers/）
 # + berry-blkproto 的块设备 RPC 协议编解码纯函数面（P6 A-4 起，见 user/berry-blkproto）
 # + berry-fatfs 的 FAT12 BPB/目录项/簇链解析纯函数面（P6 A-5 起，见 user/berry-fatfs；
 #   A-6 起含写基元——fat12_set/find_free_cluster/encode_file_entry，fixture
@@ -256,7 +259,7 @@ test-host:
     # 纯函数面——fd 表状态机/cwd 拼接/seek 游标数学/stat 整形/dirent
     # 解码/ST→FsErr 映射，host 19 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-fsclient --target {{host}}
-    cargo test --manifest-path user/Cargo.toml -p berry-virtio --target {{host}}
+    cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
     python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin
     cargo test --manifest-path user/Cargo.toml -p berry-fatfs --target {{host}}

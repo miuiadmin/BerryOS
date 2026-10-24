@@ -24,6 +24,9 @@
 # P7 x86_64 独立工作区 target（build-x86 显式 CARGO_TARGET_DIR）
 /arch/x86_64/cargo-target/
 
+# drivers/ 驱动工作区 target（build-user 驱动面显式 CARGO_TARGET_DIR）
+/drivers/cargo-target/
+
 # Claude Code 本地/会话态（不提交；共享的 agents/settings.json 若需入库再单独 force-add）
 .claude/settings.local.json
 .claude/scheduled_tasks.lock

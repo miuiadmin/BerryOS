@@ -52,8 +52,9 @@ sched/        scheduler / tasks / context switching
 ipc/          message passing (reserved)
 arch/         aarch64 HAL (primary) + x86_64 minimal port
 bootloader/   BerryBoot EFI loader
-drivers/ fs/ net/    user-space service slots
-user/         ABI bindings, protocol crates, programs (bsh, svcmgr, vnet, ...)
+drivers/      user-space drivers: virtio framework + vprobe/vblk/vnet
+fs/ net/      user-space service slots
+user/         ABI bindings, protocol crates, programs (bsh, svcmgr, ...)
 tools/        build recipes, smoke harness, deterministic packers, ABI generator
 docs/         design documents (Chinese)
 ```
