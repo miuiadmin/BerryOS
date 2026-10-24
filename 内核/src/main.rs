@@ -106,8 +106,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 内核对低半零依赖。回退开关见 HAL `mmu::RETIRE_IDENTITY`。
     berry_hal_aarch64::retire_low_half();
 
-    // SAFETY: 启动单线程、`rust_main` 入口仅调用一次。
-    unsafe { mm::init() };
+    // SAFETY: 启动单线程、`rust_main` 入口仅调用一次。V-1b 起 handoff 透传：
+    // EFI 路按 memmap reserve（打 MMAP ok 标记），QEMU 路/坏图降级仅保
+    // [RAM_BASE, kernel_end)——两侧同为合法 buddy 序（守恒面见 buddy 测试）。
+    unsafe { mm::init(handoff) };
 
     // G-eco 入机侧第一刀：rootfs（initrd 角色）装载，两源按序——
     // ① 入口 x0 的 DTB `/chosen` initrd 物理区间 → 高半直映拷出（真机/

@@ -33,6 +33,12 @@ pub enum AllocError {
 /// `order` 字段的「块内尾页 / 未用」哨兵。
 const TAIL: u8 = 0xFF;
 
+/// `order` 字段的「boot 保留页」哨兵（V-1b `reserve_range` 产物）。
+/// 语义 = 单页占用单元：`free` 恒 false、不可拆、不可并；`free()` 的
+/// 阶匹配检查对它恒 `OrderMismatch`（0xFE > MAX_ORDER，任何合法 order
+/// 参数都到不了等值）——**误释放保留页在结构上被拒**，不靠调用方纪律。
+const RESERVED: u8 = 0xFE;
+
 /// Buddy 页帧分配器（借后备切片，无所有权）。
 pub struct BuddyAllocator<'a> {
     num_pages: usize,
@@ -161,6 +167,56 @@ impl<'a> BuddyAllocator<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Boot 期保留：把页号区间 `[a, b)` 从空闲结构中永久剔除（V-1b）。
+    ///
+    /// 实现 = **幻影分配**：定向拆分包含各页的空闲块到 order-0，再标
+    /// `free=false / order=RESERVED`——buddy 全部不变量原样成立：
+    /// `alloc` 只挑空闲头（保留页永不出选）、`free` 合并查 `free[buddy]`
+    /// （保留页挡住跨界合并）、对保留页误 `free` 报 `OrderMismatch`
+    /// （RESERVED 哨兵 > MAX_ORDER，阶匹配结构性拒——2026-10 host 测试实抓
+    /// 初版「与分配页同形」会让 free(保留页, 0) 走 Ok 甚至合并回收）。
+    ///
+    /// 契约：boot 单线程、且首次 `alloc`/`free` 之前调用（构造后立即）；
+    /// `b` 超出 `num_pages` 截断；区间交叠/相邻幂等（落在已占用块内的页
+    /// 整块跳过——已保留页不会被二次标记）。
+    ///
+    /// 复杂度 O(区间页数 × log 块高)——boot 一次性成本，128MiB 全窗量级毫秒。
+    pub fn reserve_range(&mut self, a: usize, b: usize) {
+        let b = b.min(self.num_pages);
+        let mut p = a.min(b);
+        while p < b {
+            // 找包含 p 的块头：TAIL 尾页的属主头必在下方（页 0 恒为块头）。
+            let mut h = p;
+            while self.order[h] == TAIL {
+                h -= 1;
+            }
+            if !self.free[h] {
+                // 已占用块：整块跳过——交叠保留的幂等面。RESERVED 页是
+                // 单页占用单元（步进 1）；普通已分配块按其阶整块跳过。
+                p = h + if self.order[h] == RESERVED {
+                    1
+                } else {
+                    1usize << self.order[h]
+                };
+                continue;
+            }
+            // 空闲块 [h, h+2^o) 含 p：定向拆分，直到 p 自成 order-0 头。
+            // 不变量：块 h 恒含 p（split 的低半保持 h、高半推进 h）。
+            while self.order[h] > 0 {
+                let o = self.order[h] as usize;
+                let half = 1usize << (o - 1);
+                self.split(h, o);
+                if p >= h + half {
+                    h += half; // p 在高半：buddy 成为含 p 的新头
+                }
+            }
+            // 此刻 h == p（order-0 块只含自身）且 free——标保留单元。
+            self.free[p] = false;
+            self.order[p] = RESERVED;
+            p += 1;
+        }
     }
 
     /// 在阶 `o` 的空闲块头里找首个，返回其页号。
@@ -307,5 +363,146 @@ mod tests {
             cnt += 1;
         }
         assert_eq!(cnt, 13);
+    }
+
+    // ---- V-1b reserve_range 面 ----
+
+    #[test]
+    fn reserve_excludes_range_and_rejects_free() {
+        // 保留 [16,24)：占满单页后恰 56 页可分配、保留区永不出现；
+        // 对保留页误 free → DoubleFree（幻影分配面执法）。
+        let mut ba = make(64);
+        ba.reserve_range(16, 24);
+        let mut got = Vec::new();
+        while let Ok(p) = ba.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 64 - 8);
+        for p in 16..24 {
+            assert!(!got.contains(&p), "保留页 {} 被分配", p);
+            // RESERVED 哨兵执法：合法 order 恒 ≠ 0xFE → OrderMismatch。
+            assert_eq!(ba.free(p, 0), Err(AllocError::OrderMismatch));
+        }
+        // 保留区外的页正常可回收复用。
+        ba.free(got[0], 0).unwrap();
+        assert_eq!(ba.alloc().unwrap(), got[0]);
+    }
+
+    #[test]
+    fn reserve_merge_blocked_by_reserved_page() {
+        // 保留正中一页（[0,64) o6 块的对称点 32）：幻影级联在 32 上方留碎片、
+        // 下方 [0,32) 完整 o5。占尽 63 页（32 永不出现）→ 全释放 → 合并被 32
+        // 挡住：左并到 o5 封顶、右侧碎片链原形——精确形状对拍钉死。
+        let mut ba = make(64);
+        ba.reserve_range(32, 33);
+        let mut got = Vec::new();
+        while let Ok(p) = ba.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 63);
+        assert!(!got.contains(&32), "保留页 32 被分配");
+        for &p in &got {
+            ba.free(p, 0).unwrap();
+        }
+        assert_eq!(
+            ba.debug_free_heads(),
+            vec![(0, 5), (33, 0), (34, 1), (36, 2), (40, 3), (48, 4)]
+        );
+    }
+
+    #[test]
+    fn reserve_overlap_and_clamp_idempotent() {
+        // 交叠保留 [16,24)+[20,30) ≡ 单次 [16,30)；b 越界截断。
+        let mut ba = make(64);
+        ba.reserve_range(16, 24);
+        ba.reserve_range(20, 30);
+        ba.reserve_range(60, 999); // 越界腿：截到 64
+        let mut got = Vec::new();
+        while let Ok(p) = ba.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 64 - 14 - 4, "两腿保留后可分配总量");
+        for p in 16..30 {
+            assert!(!got.contains(&p), "交叠保留页 {} 被分配", p);
+        }
+        for p in 60..64 {
+            assert!(!got.contains(&p), "越界腿保留页 {} 被分配", p);
+        }
+    }
+
+    #[test]
+    fn reserve_prefix_equivalence_with_offset_construct() {
+        // k 恰与 buddy 块界对齐（768 = 3×256，窗 1024 = 2×512）时的**强等价**：
+        // reserve [0,k) 后剩余空闲结构 ≡ make(n-k) 构造（碎片形状全同）——
+        // 同一操作序列下分配页号逐个相同（旧构造页号 +k 平移对拍）。
+        // 注意这是对齐情形的特例性质，非普适承诺：非对齐 k 时两侧碎片形状
+        // 不同（见 reserve_prefix_conservation_unaligned），本测试守住「对齐
+        // 时不得漂移」的回归面。
+        let (n, k) = (1024usize, 768usize);
+        let mut full = make(n);
+        full.reserve_range(0, k);
+        let mut old = make(n - k);
+        let mut sf = Vec::new();
+        let mut so = Vec::new();
+        for _ in 0..32 {
+            let pf = full.alloc().unwrap();
+            let po = old.alloc().unwrap();
+            assert_eq!(pf, k + po, "单页分配序漂移");
+            sf.push(pf);
+            so.push(po);
+        }
+        let b4f = full.alloc_order(4).unwrap();
+        let b4o = old.alloc_order(4).unwrap();
+        assert_eq!(b4f, k + b4o, "order-4 落点漂移");
+        // 混合释放（偶数序单页）后两结构仍镜像推进。
+        for i in (0..32).step_by(2) {
+            full.free(sf[i], 0).unwrap();
+            old.free(so[i], 0).unwrap();
+        }
+        let b6f = full.alloc_order(6).unwrap();
+        let b6o = old.alloc_order(6).unwrap();
+        assert_eq!(b6f, k + b6o, "order-6 落点漂移");
+        // 释放大块 → 合并行为一致 → 复取同位。
+        full.free(b6f, 6).unwrap();
+        old.free(b6o, 6).unwrap();
+        assert_eq!(full.alloc_order(6).unwrap(), k + old.alloc_order(6).unwrap());
+        // 收尾逐页耗尽：两侧总量与全集对拍。
+        let mut cf = 0usize;
+        let mut co = 0usize;
+        while full.alloc().is_ok() {
+            cf += 1;
+        }
+        while old.alloc().is_ok() {
+            co += 1;
+        }
+        assert_eq!(cf, co, "可分配总量漂移");
+    }
+
+    #[test]
+    fn reserve_prefix_conservation_unaligned() {
+        // 非对齐 k（168 = 128+32+8，不撞任何 2^j 块界）：强等价**不成立**
+        //（全窗构造碎片在 k 处向上级联、旧 make(n-k) 碎片在窗尾），守恒面
+        // 仍须钉死——可分配总量一致、保留页永不出现、且全窗侧首个分配恰为
+        // k 页（保留上界——mm::init「先保内核足迹」依赖的形状）。2026-10
+        // EFI 崩溃复盘时立：首版误把对齐特例当普适等价写进 mm.rs 注释。
+        let (n, k) = (2048usize, 168usize);
+        let mut full = make(n);
+        full.reserve_range(0, k);
+        let mut old = make(n - k);
+        // 首分配形状：全窗侧 = k（保留上界）；旧构造侧 = 窗尾（1880 = 2048-168
+        // 的贪心切分最小片是 [1872,1880) o3，级联拆分取 1872）。
+        assert_eq!(full.alloc().unwrap(), k);
+        assert_eq!(old.alloc().unwrap(), 1872);
+        // 守恒：两侧耗尽总量相同（本对刚分配的页之后）。
+        let mut cf = 1usize;
+        let mut co = 1usize;
+        while full.alloc().is_ok() {
+            cf += 1;
+        }
+        while old.alloc().is_ok() {
+            co += 1;
+        }
+        assert_eq!(cf, co, "可分配总量漂移");
+        assert_eq!(cf, n - k, "总量 = n-k");
     }
 }

@@ -8,6 +8,7 @@ use berry_mm::va::{phys_to_virt, PAGE_SHIFT};
 pub fn run() {
     test_gic();
     test_frame();
+    test_memmap();
     test_heap();
     test_syscall();
     test_switch();
@@ -1393,6 +1394,112 @@ fn test_frame() {
     f.free(big, 5).expect("FRAME free big");
 
     berry_hal_aarch64::uart_puts(b"FRAME ok\n");
+}
+
+/// V-1b 合成图用例：假 EFI 内存图（写实页）→ map_ok/desc_range/desc_at 决策
+/// → scratch FrameAllocator reserve 后保留页永不出选。**零新标记**（裸相 23
+/// 标记字节零漂移是 V-1 硬线——断言 fail = panic loud，过则静默）。
+fn test_memmap() {
+    use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
+    use berry_mm::memmap::{desc_at, desc_range, map_ok, DescDecision, EfiMemdesc, EFI_DESC_VERSION};
+
+    // 载体：从全局帧分配取一实页当「图缓冲」——desc_at 经 phys_to_virt 真读回，
+    // 镜像布局/直映路径都被真验证（纯函数面之外的那一截）。
+    let f = crate::mm::frames();
+    let pg = f.alloc().expect("MMAP 合成图载体页");
+    let pa = pg << PAGE_SHIFT;
+    let va = phys_to_virt(pa) as *mut u64;
+
+    // 合成 4 描述符（40B = 5×u64 each）：Conventional 16 页 / loader-data 4 页
+    // （窗内保留段）/ MMIO 0x0900_0000（窗外零交）/ Conventional 贴窗顶 2 页。
+    let descs: [(u64, u64, u64, u64, u64); 4] = [
+        (7, 0x4000_0000, 0, 16, 0),
+        (4, 0x4000_4000, 0, 4, 0),
+        (11, 0x0900_0000, 0, 1, 0),
+        (7, 0x47FF_F000, 0, 2, 0),
+    ];
+    // SAFETY: 载体页来自全局帧分配（boot 单线程独占），窗内直映必中。
+    unsafe {
+        for w in 0..512usize {
+            va.add(w).write_volatile(0);
+        }
+        for (i, d) in descs.iter().enumerate() {
+            for w in 0..5usize {
+                va.add(i * 5 + w).write_volatile(match w {
+                    0 => d.0, // kind | _pad<<32（pad=0）
+                    1 => d.1, // physical_start
+                    2 => d.2, // virtual_start
+                    3 => d.3, // number_of_pages
+                    _ => d.4, // attribute
+                });
+            }
+        }
+    }
+
+    // 整图校验 + 走图决策。
+    assert_eq!(
+        map_ok(pa as u64, 160, 40, EFI_DESC_VERSION, RAM_BASE as u64, RAM_TOP as u64),
+        Some(4),
+        "map_ok 合成图 happy 面"
+    );
+    // SAFETY: map_ok 已过（窗内 8 对齐直读）；boot 单线程只读。
+    let d1 = unsafe { desc_at(pa as u64, 40, 1) };
+    assert_eq!(d1.kind, 4);
+    assert_eq!(d1.physical_start, 0x4000_4000);
+    assert_eq!(d1.number_of_pages, 4, "镜像描述符直映读回不符");
+    let expect = [
+        DescDecision::Skip,
+        DescDecision::Reserve(0x4000_4000, 0x4000_8000),
+        DescDecision::Skip, // 窗外 MMIO 零交
+        DescDecision::Skip, // Conventional
+    ];
+    for (i, e) in expect.iter().enumerate() {
+        // SAFETY: 同上。
+        let d = unsafe { desc_at(pa as u64, 40, i) };
+        assert_eq!(
+            desc_range(d, RAM_BASE as u64, RAM_TOP as u64),
+            *e,
+            "desc_range[{i}] 决策不符"
+        );
+    }
+
+    // reserve 语义：scratch 分配器（栈后备，勿碰全局 FRAMES）——保留 loader 段
+    // 后占尽，保留区 4 页永不出现。
+    let base = 0x4000_0000usize;
+    let mut sfree = [false; 64];
+    let mut sorder = [0u8; 64];
+    let mut sfa = berry_mm::FrameAllocator::new(base, base + 64 * 4096, &mut sfree, &mut sorder);
+    assert_eq!(sfa.reserve(0x4000_4000, 0x4000), 4, "reserve 页数不符");
+    let mut got = 0usize;
+    while let Ok(p) = sfa.alloc() {
+        assert!(
+            !((0x4000_4000..0x4000_8000).contains(&(p << PAGE_SHIFT))),
+            "保留段被分配"
+        );
+        got += 1;
+    }
+    assert_eq!(got, 60, "保留后可分配总量不符");
+
+    // 拒面：版本 / 溢出描述符（Bad → 整图拒绝的触发器）。
+    assert_eq!(
+        map_ok(pa as u64, 160, 40, 2, RAM_BASE as u64, RAM_TOP as u64),
+        None
+    );
+    let hostile = EfiMemdesc {
+        kind: 7,
+        _pad: 0,
+        physical_start: 0,
+        virtual_start: 0,
+        number_of_pages: u64::MAX / 4096 + 1,
+        attribute: 0,
+    };
+    assert_eq!(
+        desc_range(&hostile, RAM_BASE as u64, RAM_TOP as u64),
+        DescDecision::Bad
+    );
+
+    // 载体页归还（合成图内容随页生命周期消亡）。
+    f.free(pg, 0).expect("MMAP 载体页归还");
 }
 
 /// 内核堆（`alloc` crate / slab）：slab 路径（Vec 增长 + realloc）+ 整页路径（> 2KiB）。

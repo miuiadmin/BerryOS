@@ -16,6 +16,7 @@
 pub mod asid;
 pub mod buddy;
 pub mod frame;
+pub mod memmap;
 pub mod va;
 
 pub use buddy::{AllocError, BuddyAllocator, MAX_ORDER};
