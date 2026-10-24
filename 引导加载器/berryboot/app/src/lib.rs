@@ -1,6 +1,7 @@
-//! berryboot——BerryOS 引导应用（V-0b 刀 3：段装载——`load: segs=<n>
-//! pages=<n> ok` 第 7 段横幅 + handoff v0 冻结实例；刀 2 的引导视图解析与
-//! 刀 1 的 KERNEL.ELF 整档读入面、V-0a 的 SFS 开卷读原样保留）。
+//! berryboot——BerryOS 引导应用（V-0b 刀 4：终段——`mmap: n=<N> ok` 第 8
+//! 段 + GetMemoryMap/ExitBootServices + EBS 后直写 PL011 `BERRYBOOT ok` +
+//! DAIF/dcache/SCTLR 整备跳 entry；刀 3 段装载、刀 2 引导视图解析、刀 1
+//! KERNEL.ELF 整档读入、V-0a 的 SFS 开卷读原样保留）。
 //!
 //! 形态：`crate-type=staticlib` → rust-lld 静态全链接（berryboot.ld 单 .img
 //! @0x1000 + --image-base 0 + --emit-relocs）→ 工具链/elf2pe.py 转 PE32+
@@ -25,7 +26,18 @@
 //! 全窗清零（.bss + 缝隙确定性，对齐 QEMU `-kernel` 直加载零 RAM 起步）→
 //! 逐段 copy filesz → 回读逐字节对拍（标记 = 状态谓词）→ handoff 页填
 //! v0（裁决 A/B：memmap 刀 4 填，gop/init_blob/cmdline 留位零值）。
-//! `BERRYBOOT ok` 升格为**全段过**才打（fs + kfile + elf + load 四段皆绿）。
+//! V-0b 刀 4 面：watchdog 归零 + 内存图取回（GetMemoryMap + 扩容重试帽
+//! 两轮）→ handoff memmap_* 四字段落值 → EBS 重试协议（**key 有效期 =
+//! 取图到 EBS 之间零 boot service 调用**；被拒即 key 过期 → 重取图再
+//! 试，帽三轮）→ **EBS 过后固件服务全死**：`mmap: n=<N> ok` 与
+//! `BERRYBOOT ok` 均直写 PL011 MMIO（ConOut 已死——标记语义 = 「含 EBS
+//! 的全链真过」状态谓词）→ DAIF 全屏蔽 + dcache 清刷（真机面；TCG 无
+//! 实缓存 = no-op）+ SCTLR_EL1 清 M/A/C/I（对齐内核 boot asm 为 QEMU
+//! `-kernel` 复位态写的入场假设）+
+//! ic/tlbi 全失效 → `br entry`，x0 = handoff PA、x1..x3 = 0——内核零改动
+//! 收编（x19 抢救 x0 → BRYH 魔数不中 DTB 探测 → fw_cfg 降级路 → 裸相
+//! 23 标记）。CurrentEL ≠ EL1 拒跳（AAVMF virt 默认 EL1；EL2 入场语境的
+//! sctlr 整备不成立——诚实拒绝优于错态跳转）。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
 //! **状态码诊断行**（机器可读缺席报告——AI 测试友好：`locate fail r=0x…e`
@@ -36,11 +48,11 @@
 use berry_efi::{
     fmt_u32_dec, fmt_u64_hex, utf16_encode, utf16_to_ascii, EfiFileInfo,
     EfiGraphicsOutputModeInfo, EfiGraphicsOutputProtocol, EfiLoadedImageProtocol,
-    EfiSimpleFileSystemProtocol, EfiStatus, EfiSystemTable, EFI_ALLOCATE_ADDRESS,
-    EFI_ALLOCATE_ANY_PAGES, EFI_BOOT_SERVICES_SIGNATURE, EFI_FILE_INFO_GUID,
-    EFI_FILE_MODE_READ, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
-    EFI_LOADER_DATA, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_SUCCESS,
-    EFI_SYSTEM_TABLE_SIGNATURE,
+    EfiMemoryDescriptor, EfiSimpleFileSystemProtocol, EfiStatus, EfiSystemTable,
+    EFI_ALLOCATE_ADDRESS, EFI_ALLOCATE_ANY_PAGES, EFI_BOOT_SERVICES_SIGNATURE,
+    EFI_BUFFER_TOO_SMALL, EFI_FILE_INFO_GUID, EFI_FILE_MODE_READ,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_LOADER_DATA,
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
 };
 use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
@@ -142,30 +154,28 @@ const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
 /// QEMU `-kernel` 直加载零 RAM 起步）→ 逐段 copy filesz → 回读逐字节
 /// 对拍（标记 = 状态谓词，不建立在「拷了就算」上）→ handoff 页填 v0
 /// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop/init_blob/cmdline 留位
-/// 零值；memmap 刀 4 填）。全过打 `load: segs=<n> pages=<n> ok`；任一步
-/// 失败打状态码诊断行 + 置 `*ok=false`（BERRYBOOT ok 抑制——机器可读
-/// 缺席报告）。零 panic：一切失败走诊断行返回。
+/// 零值；memmap 刀 4 填）。全过打 `load: segs=<n> pages=<n> ok` 并返
+/// `Some(hpa)`（handoff 物理地址——刀 4 终段消费）；任一步失败打状态码
+/// 诊断行返 `None`（终标缺席即失败面——机器可读缺席报告）。零 panic：
+/// 一切失败走诊断行返回。
 fn load_kernel(
     bs: &berry_efi::EfiBootServices,
     con_out: &berry_efi::EfiSimpleTextOutputProtocol,
     kbuf: *mut c_void,
     bo: &berry_loader::BootElf,
-    ok: &mut bool,
-) {
+) -> Option<u64> {
     let segs = bo.segments();
     // 整窗认领（AllocateAddress 对已占用页返错不覆盖——kbuf/固件数据若
     // 压进 span，此处干净报 EFI 状态码而非静默腐化）。
     let Some((span_base, span_end)) = bo.span() else {
-        *ok = false;
         print_line(con_out, |l| l.push_str("load: span none"));
-        return;
+        return None;
     };
     let pages = ((span_end - span_base) / 4096) as usize;
     let mut got: u64 = span_base;
     let r_ap =
         unsafe { (bs.allocate_pages)(EFI_ALLOCATE_ADDRESS, EFI_LOADER_DATA, pages, &mut got) };
     if r_ap != EFI_SUCCESS || got != span_base {
-        *ok = false;
         print_line(con_out, |l| {
             l.push_str("load: claim r=0x");
             let mut t = [0u8; 16];
@@ -173,7 +183,7 @@ fn load_kernel(
             l.push_str(" addr=");
             l.push_u64_hex(got);
         });
-        return;
+        return None;
     }
     // 全窗清零（span_base 页对齐 → u64 字写）。
     let zp = span_base as *mut u64;
@@ -198,12 +208,11 @@ fn load_kernel(
         let dst =
             unsafe { core::slice::from_raw_parts(s.paddr as *const u8, s.filesz as usize) };
         if src != dst {
-            *ok = false;
             print_line(con_out, |l| {
                 l.push_str("load: verify i=");
                 l.push_u32_dec(i as u32);
             });
-            return;
+            return None;
         }
     }
     // handoff 页：任意页一页 EfiLoaderData（不 FreePages——刀 4 跳 entry
@@ -211,13 +220,12 @@ fn load_kernel(
     let mut hpa: u64 = 0;
     let r_h = unsafe { (bs.allocate_pages)(EFI_ALLOCATE_ANY_PAGES, EFI_LOADER_DATA, 1, &mut hpa) };
     if r_h != EFI_SUCCESS || hpa == 0 {
-        *ok = false;
         print_line(con_out, |l| {
             l.push_str("load: hoff r=0x");
             let mut t = [0u8; 16];
             l.push(fmt_u64_hex(r_h as u64, &mut t));
         });
-        return;
+        return None;
     }
     unsafe {
         (hpa as *mut BerryHandoff).write(BerryHandoff {
@@ -249,6 +257,258 @@ fn load_kernel(
         l.push_u32_dec(pages as u32);
         l.push_str(" ok");
     });
+    Some(hpa)
+}
+
+/// EBS 后直写 PL011：QEMU virt UART0 @0x0900_0000（与 AAVMF ConOut 同
+/// 设备——串口即同一个）——DR@0x00 逐字节、**FR@0x018 TXFE(0x80) 轮询**
+/// （PL011 寄存器偏移按 TRM §3.2 **字节**口径：FR = 字索引 6 = 字节 0x018
+/// ——写成字节 0x06 落进 RSR/ECR 恒 0，TXFE 永等不到即静默死转（刀 4 四轮
+/// 实踩，gdbstub 断点取证）；同 内核 架构相关/aarch64/src/uart.rs 的
+/// UART_FR=0x018）。EBS 过后 ConOut 已死，终标 `BERRYBOOT ok`
+/// 由引导链自持打出。
+fn uart_line(msg: &[u8]) {
+    let uart = 0x0900_0000usize as *mut u8;
+    for &b in msg {
+        unsafe {
+            while (uart.add(0x18).read_volatile() & 0x80) == 0 {}
+            uart.write_volatile(b);
+        }
+    }
+}
+
+/// PL011 直写的行打印（同 print_line 的组装器形态，发射端换直访硬件）。
+/// EBS 尝试环内/后的诊断一律走此面：ConOut 调用既是「动内存图让 map key
+/// 过期」的源，又可能在 EBS 半拆状态下已死——观测面不依赖被测对象。
+fn uart_print(f: impl FnOnce(&mut Line)) {
+    let mut l = Line::new();
+    f(&mut l);
+    l.push_str("\r\n");
+    uart_line(&l.buf[..l.n]);
+}
+
+/// dcache 按地址清刷到 PoC（`dc cvac`，64B 步长 = cortex-a72 cacheline）。
+/// 真机面：MMU 关前把引导链写入（内核映像/handoff/memmap）压进 DRAM；
+/// QEMU TCG 无实缓存 = no-op 零成本。收尾 `dsb sy` 保证清刷点之前完成。
+/// 按 P7-x4 纪律不标 nomem：`dc cvac` 架构上真读缓存行。
+fn dcache_clean(base: u64, len: u64) {
+    let mut a = base & !0x3fu64;
+    let end = base + len;
+    while a < end {
+        unsafe { core::arch::asm!("dc cvac, {0}", in(reg) a) };
+        a += 64;
+    }
+    unsafe { core::arch::asm!("dsb sy") };
+}
+
+/// 行 8 + 终段（V-0b 刀 4）：内存图取回 → handoff memmap_* 落值 →
+/// EBS → 整备跳 entry。成功路径**永不返回**（EBS 后固件全死，`br entry`
+/// 把控制权交内核）；任一步失败打状态码诊断行返回（此时必在 EBS
+/// 前——ConOut 仍活，诊断行走正常打印面；终标缺席即失败面）。
+///
+/// - GetMemoryMap：首探 4096B 缓冲，`EFI_BUFFER_TOO_SMALL` 按出参所需
+///   长扩容重试（帽两轮）；非 SUCCESS 非扩容错 = 诊断行拒。
+/// - EBS 重试协议（spec 惯例）：**key 有效期 = 取图到 EBS 之间零 boot
+///   service 调用**（环内零打印零协议——ConOut 也算动图源）；被拒即
+///   key 过期 → 重取图（handoff memmap_* 随之更新）再试，帽三轮；环内
+///   外诊断一律 PL011 直写（不依赖可能已死的 ConOut）。watchdog 归零
+///   在取图前完成（EFI 默认 5 分钟看门狗会重启整机，内核长跑必关）。
+/// - CurrentEL 预检 ≠ EL1 拒跳（AAVMF virt 默认 EL1；本函数的 sctlr_el1
+///   整备只对 EL1 语境成立——内核自带的 EL2 降级路预期的是 QEMU 复位
+///   态而非 EFI 态，错态跳转两头皆坑）。
+/// - EBS 后序列：直写 PL011 `BERRYBOOT ok`（标记 = 含 EBS 全链真过的
+///   状态谓词）→ DAIF 全屏蔽 → dcache 清刷（span + handoff 页 + memmap
+///   缓冲）→ SCTLR_EL1 清 M/A/C/I + dsb/isb → `ic iallu` + `tlbi
+///   vmalle1`（全失效——MMU 已关后的收尾防线）→ `br entry`（x0 =
+///   handoff PA、x1..x3 = 0，对齐 QEMU `-kernel` 入场寄存器形态——内核
+///   x19 抢救后按 DTB 探测分流，BRYH 魔数与 0xd00dfeed 互不碰撞）。
+fn final_boot(
+    bs: &berry_efi::EfiBootServices,
+    con_out: &berry_efi::EfiSimpleTextOutputProtocol,
+    image_handle: *mut c_void,
+    hpa: u64,
+    bo: &berry_loader::BootElf,
+) {
+    // CurrentEL 预检（EL 编码在位 [3:2]：EL1 → 0x4）。
+    let el: u64;
+    unsafe { core::arch::asm!("mrs {}, CurrentEL", out(reg) el) };
+    if (el >> 2) & 3 != 1 {
+        print_line(con_out, |l| {
+            l.push_str("boot: el=");
+            l.push_u32_dec(((el >> 2) & 3) as u32);
+        });
+        return;
+    }
+    // watchdog 归零：EFI 默认 5 分钟看门狗会在内核长跑（smoke 类分钟级）
+    // 中途重启整机——EBS 不豁免它，GRUB 同款显式关闭。
+    let r_wd = unsafe { (bs.set_watchdog_timer)(0, 0, 0, core::ptr::null()) };
+    if r_wd != EFI_SUCCESS {
+        print_line(con_out, |l| {
+            l.push_str("boot: wd r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_wd as u64, &mut t));
+        });
+        return;
+    }
+    // 内存图缓冲：AllocatePool(EfiLoaderData)（EBS 后保活，内核经
+    // handoff 纳管——不 FreePool）。
+    let mut mm_cap: usize = 4096;
+    let mut mm_buf: *mut c_void = core::ptr::null_mut();
+    let r_ap =
+        unsafe { (bs.allocate_pool)(EFI_LOADER_DATA, mm_cap, &mut mm_buf) };
+    if r_ap != EFI_SUCCESS || mm_buf.is_null() {
+        print_line(con_out, |l| {
+            l.push_str("mmap: alloc r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_ap as u64, &mut t));
+        });
+        return;
+    }
+    // GetMemoryMap：出参 mm_size 回带所需长（含表尾换页余量）。
+    let mut mm_size: usize = mm_cap;
+    let mut map_key: usize = 0;
+    let mut dsize: usize = 0;
+    let mut dver: u32 = 0;
+    let mut r_mm = EFI_BUFFER_TOO_SMALL;
+    for _ in 0..2 {
+        mm_size = mm_cap;
+        r_mm = unsafe {
+            (bs.get_memory_map)(
+                &mut mm_size,
+                mm_buf as *mut EfiMemoryDescriptor,
+                &mut map_key,
+                &mut dsize,
+                &mut dver,
+            )
+        };
+        if r_mm == EFI_SUCCESS {
+            break;
+        }
+        if r_mm != EFI_BUFFER_TOO_SMALL {
+            break;
+        }
+        mm_cap = mm_size + 64;
+        let r_grow =
+            unsafe { (bs.allocate_pool)(EFI_LOADER_DATA, mm_cap, &mut mm_buf) };
+        if r_grow != EFI_SUCCESS || mm_buf.is_null() {
+            r_mm = r_grow; // 落到下方统一诊断行
+            break;
+        }
+    }
+    if r_mm != EFI_SUCCESS || dsize == 0 {
+        print_line(con_out, |l| {
+            l.push_str("mmap: get r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_mm as u64, &mut t));
+        });
+        return;
+    }
+    // handoff memmap_* 四字段落值 + EBS 重试协议。**map key 的有效期 =
+    // 取图到 EBS 之间零 boot service 调用**（spec 惯例——任何服务调用
+    // 都可能动内存图让 key 过期；ConOut 打印也算）：取图 → 直写 handoff
+    // → 立即 EBS，环内零协议调用零打印；被拒（EFI_INVALID_PARAMETER =
+    // key 过期）→ 重取图（复用同缓冲）再试，帽三轮。环内外诊断一律
+    // PL011 直写（uart_print）：不依赖可能已死的 ConOut，也不会自己
+    // 弄过期 key。
+    let h = hpa as *mut BerryHandoff;
+    unsafe {
+        (*h).memmap_pa = mm_buf as u64;
+        (*h).memmap_size = mm_size as u32;
+        (*h).memmap_desc_size = dsize as u32;
+        (*h).memmap_desc_version = dver;
+    }
+    let mut ebs_done = false;
+    for _att in 0..3u32 {
+        // 环内常态路径零打印（PL011 MMIO 直写不动内存图、技术上不碍
+        // key——但首试即成是常态，不留调试噪声）；失败诊断走环内 EBS
+        // 前后的 uart_print 两侧（ebs: r= / mmap: reget=）。
+        let r_ebs = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
+        if r_ebs == EFI_SUCCESS {
+            ebs_done = true;
+            break;
+        }
+        uart_print(|l| {
+            l.push_str("ebs: r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_ebs as u64, &mut t));
+        });
+        let mut rsize: usize = mm_cap;
+        let r_re = unsafe {
+            (bs.get_memory_map)(
+                &mut rsize,
+                mm_buf as *mut EfiMemoryDescriptor,
+                &mut map_key,
+                &mut dsize,
+                &mut dver,
+            )
+        };
+        if r_re != EFI_SUCCESS || rsize > mm_cap || dsize == 0 {
+            uart_print(|l| {
+                l.push_str("mmap: reget r=0x");
+                let mut t = [0u8; 16];
+                l.push(fmt_u64_hex(r_re as u64, &mut t));
+            });
+            break;
+        }
+        mm_size = rsize;
+        unsafe {
+            (*h).memmap_size = rsize as u32;
+            (*h).memmap_desc_size = dsize as u32;
+            (*h).memmap_desc_version = dver;
+        }
+    }
+    if !ebs_done {
+        uart_line(b"ebs: retry fail\r\n");
+        return;
+    }
+    // ===== EBS 已过：固件服务全死——以下只许直访硬件，零协议调用 =====
+    // 行 8 标记在 EBS 后经 PL011 打出：n = EBS 接受的那张终图的描述符数
+    // （重试路径下与首图不同——报终值才是状态谓词）。
+    let ndesc = (mm_size / dsize) as u32;
+    uart_print(|l| {
+        l.push_str("mmap: n=");
+        l.push_u32_dec(ndesc);
+        l.push_str(" ok");
+    });
+    uart_line(b"BERRYBOOT ok\r\n");
+    // DAIF 全屏蔽（D/A/I/F 四位——immediate = 直写该四位组）。
+    unsafe { core::arch::asm!("msr daifset, #0xf") };
+    // dcache 清刷：内核映像整窗 + handoff 页 + memmap 缓冲（全部
+    // identity 映射 VA=PA，cvac 按 VA 有效）。
+    if let Some((sb, se)) = bo.span() {
+        dcache_clean(sb, se - sb);
+    }
+    dcache_clean(hpa, 4096);
+    dcache_clean(mm_buf as u64, mm_size as u64);
+    // SCTLR_EL1 清 M(0)/A(1)/C(2)/I(12)：MMU 关（内核自带页表从零建）、
+    // 对齐检查关、icache/dcache 关——对齐内核 boot asm 为 QEMU `-kernel`
+    // 复位态写的入场假设。
+    let sctlr: u64;
+    unsafe { core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr) };
+    let cleared = sctlr & !0x1007u64;
+    unsafe {
+        core::arch::asm!("msr sctlr_el1, {0}", in(reg) cleared);
+        core::arch::asm!("dsb sy");
+        core::arch::asm!("isb");
+        // icache 全失效 + TLB 全失效（MMU 已关后的缓存残影防线；同 P7-x4
+        // 纪律不标 nomem——二者皆真影响内存/取指一致性）。
+        core::arch::asm!("ic iallu");
+        core::arch::asm!("tlbi vmalle1");
+        core::arch::asm!("dsb sy");
+        core::arch::asm!("isb");
+        // 跳：x0 = handoff PA、x1..x3 = 0（对齐 QEMU `-kernel` 入场寄存器
+        // 形态）；entry 永不返回（内核自设 SP——boot asm 链接栈）。
+        core::arch::asm!(
+            "br {target}",
+            in("x0") hpa,
+            in("x1") 0u64,
+            in("x2") 0u64,
+            in("x3") 0u64,
+            target = in(reg) bo.entry,
+        );
+    }
+    // br 不归；防御兜底（不可达）——EBS 后无路可退，挂死优于错跑。
+    loop {}
 }
 
 /// 单行组装器：定长栈缓冲，零分配；越界即截断（引导语境纪律）。
@@ -458,7 +718,6 @@ pub extern "C" fn efi_main(
                 let r_vol = unsafe { (sfs_ref.open_volume)(sfs as *mut _, &mut root) };
                 if r_vol == EFI_SUCCESS && !root.is_null() {
                     let root_ref = unsafe { &*root };
-                    let mut all_ok = true;
 
                     // 行 4：HELLO.TXT 逐字节对拍（V-0a 刀 3 验收面原样）。
                     let mut name16 = [0u16; 16];
@@ -487,7 +746,6 @@ pub extern "C" fn efi_main(
                                 l.push_str("B match");
                             });
                         } else {
-                            all_ok = false;
                             print_line(con_out, |l| {
                                 l.push_str("fs: mismatch read=");
                                 l.push_u32_dec(n as u32);
@@ -499,7 +757,6 @@ pub extern "C" fn efi_main(
                             });
                         }
                     } else {
-                        all_ok = false;
                         print_line(con_out, |l| {
                             l.push_str("fs: open r=0x");
                             let mut t = [0u8; 16];
@@ -582,17 +839,26 @@ pub extern "C" fn efi_main(
                                                 });
                                                 // 行 7（V-0b 刀 3）：段装载 +
                                                 // handoff v0（bs 签名已在行 3
-                                                // 前验过）。
-                                                load_kernel(
+                                                // 前验过）；刀 4 起成功返
+                                                // handoff PA 直进终段——
+                                                // mmap + EBS + 整备跳 entry，
+                                                // 成功即接管（不归此臂）。
+                                                if let Some(hpa) = load_kernel(
                                                     unsafe { &*bs },
                                                     con_out,
                                                     kbuf,
                                                     &bo,
-                                                    &mut all_ok,
-                                                );
+                                                ) {
+                                                    final_boot(
+                                                        unsafe { &*bs },
+                                                        con_out,
+                                                        image_handle,
+                                                        hpa,
+                                                        &bo,
+                                                    );
+                                                }
                                             }
                                             Err(e) => {
-                                                all_ok = false;
                                                 print_line(con_out, |l| {
                                                     l.push_str("elf: parse e=");
                                                     l.push_str(boot_err_name(e));
@@ -600,7 +866,6 @@ pub extern "C" fn efi_main(
                                             }
                                         }
                                     } else {
-                                        all_ok = false;
                                         print_line(con_out, |l| {
                                             l.push_str("kfile: read got=");
                                             l.push_u32_dec(got as u32);
@@ -612,7 +877,6 @@ pub extern "C" fn efi_main(
                                         });
                                     }
                                 } else {
-                                    all_ok = false;
                                     print_line(con_out, |l| {
                                         l.push_str("kfile: alloc r=0x");
                                         let mut t = [0u8; 16];
@@ -622,14 +886,12 @@ pub extern "C" fn efi_main(
                                     });
                                 }
                             } else {
-                                all_ok = false;
                                 print_line(con_out, |l| {
                                     l.push_str("kfile: size 帽 size=");
                                     l.push_u32_dec(fsize as u32);
                                 });
                             }
                         } else {
-                            all_ok = false;
                             print_line(con_out, |l| {
                                 l.push_str("kfile: get_info r=0x");
                                 let mut t = [0u8; 16];
@@ -641,7 +903,6 @@ pub extern "C" fn efi_main(
                         // 判读边界外收句柄（同 HELLO 面纪律）。
                         unsafe { (kfile_ref.close)(kfile) };
                     } else {
-                        all_ok = false;
                         print_line(con_out, |l| {
                             l.push_str("kfile: open r=0x");
                             let mut t = [0u8; 16];
@@ -649,11 +910,12 @@ pub extern "C" fn efi_main(
                         });
                     }
 
-                    // 根句柄收口（两档读毕）+ 验收标记：全段过才打。
+                    // 根句柄收口（两档读毕）。终段成功路径已在 final_boot
+                    // 内 EBS + 跳 entry 永不归此；走到这里的失败路径必在
+                    // EBS 前（final_boot 一切返回路径都置 ok=false）——
+                    // ConOut/root 仍活，收口合法。`BERRYBOOT ok` 由 EBS 后
+                    // 直写 PL011 打出（刀 4：标记 = 含 EBS 全链真过）。
                     unsafe { (root_ref.close)(root) };
-                    if all_ok {
-                        print_line(con_out, |l| l.push_str("BERRYBOOT ok"));
-                    }
                 } else {
                     print_line(con_out, |l| {
                         l.push_str("fs: open_volume r=0x");

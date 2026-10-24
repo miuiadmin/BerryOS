@@ -20,6 +20,9 @@ pub const EFI_SUCCESS: EfiStatus = 0;
 pub const EFI_LOAD_ERROR: EfiStatus = 1;
 pub const EFI_INVALID_PARAMETER: EfiStatus = 2;
 pub const EFI_UNSUPPORTED: EfiStatus = 3;
+/// GetMemoryMap 缓冲不足——出参 MemoryMapSize 回填所需字节长（V-0b 刀 4：
+/// 首探即按此扩容重试，帽两轮）。
+pub const EFI_BUFFER_TOO_SMALL: EfiStatus = 5;
 pub const EFI_NOT_FOUND: EfiStatus = 14;
 
 /// System Table 签名（"IBI SYST" 的小端 u64 读出——官方定值）。
@@ -133,11 +136,25 @@ pub const EFI_ALLOCATE_ANY_PAGES: u32 = 0;
 /// AllocateAddress 对已占用页返错不覆盖，天然防撞）。
 pub const EFI_ALLOCATE_ADDRESS: u32 = 2;
 
+/// EFI_MEMORY_DESCRIPTOR——GetMemoryMap 单条目（V-0b 刀 4）。40B；遍历步长
+/// 用出参 DescriptorSize（固件可在尾随加私有垫，**不得按 sizeof 前进**——
+/// handoff 把 size/version 原样透传，内核 V-1 消费时同纪律）。
+#[repr(C)]
+pub struct EfiMemoryDescriptor {
+    pub kind: u32,             // EFI_MEMORY_TYPE（7=Conventional 等）
+    pub _pad: u32,             // 自然对齐垫（spec 布局，非填充可查）
+    pub physical_start: u64,
+    pub virtual_start: u64,
+    pub number_of_pages: u64,
+    pub attribute: u64,
+}
+
 /// BOOT_SERVICES——只类型化用到的入口（allocate_pool（V-0b 刀 1）/
 /// handle_protocol（V-0a 刀 3）/ locate_protocol（V-0b 刀 2）/
-/// allocate_pages（V-0b 刀 3）），其余槽以具名 `*const c_void` 占位（同
-/// SystemTable 的 con_in 纪律：保偏移可审计，不描无用签名）。376B 全表，
-/// host 测试钉板。
+/// allocate_pages（V-0b 刀 3）/ get_memory_map + exit_boot_services
+/// （V-0b 刀 4——EBS 时序是引导器最难段，签名必须描对）），其余槽以具名
+/// `*const c_void` 占位（同 SystemTable 的 con_in 纪律：保偏移可审计，
+/// 不描无用签名）。376B 全表，host 测试钉板。
 #[repr(C)]
 pub struct EfiBootServices {
     pub hdr: EfiTableHeader,                                  // @0
@@ -150,7 +167,13 @@ pub struct EfiBootServices {
         memory: *mut u64, // EFI_PHYSICAL_ADDRESS*（出参：分配/认领到的基址）
     ) -> EfiStatus,                                           // @40（V-0b 刀 3）
     pub free_pages: *mut c_void,                              // @48
-    pub get_memory_map: *mut c_void,                          // @56
+    pub get_memory_map: unsafe extern "C" fn(
+        memory_map_size: *mut usize, // 入参=缓冲字节长，出参=所需/实收字节长
+        memory_map: *mut EfiMemoryDescriptor,
+        map_key: *mut usize,        // 出参：EBS 一致性键（map 变则键变）
+        descriptor_size: *mut usize, // 出参：单描述符步长（≥sizeof，走路用它）
+        descriptor_version: *mut u32, // 出参：描述符结构版本（handoff 透传）
+    ) -> EfiStatus,                                             // @56（V-0b 刀 4）
     pub allocate_pool: unsafe extern "C" fn(
         pool_type: usize,
         size: usize,
@@ -180,10 +203,18 @@ pub struct EfiBootServices {
     pub start_image: *mut c_void,                             // @208
     pub exit: *mut c_void,                                    // @216
     pub unload_image: *mut c_void,                            // @224
-    pub exit_boot_services: *mut c_void,                      // @232（V-0b+ 描）
+    pub exit_boot_services: unsafe extern "C" fn(
+        image_handle: *mut c_void, // efi_main 首参原样回传
+        map_key: usize,            // GetMemoryMap 出参原样回传——变则拒
+    ) -> EfiStatus,                                             // @232（V-0b 刀 4）
     pub get_next_monotonic_count: *mut c_void,                // @240
     pub stall: *mut c_void,                                   // @248
-    pub set_watchdog_timer: *mut c_void,                      // @256
+    pub set_watchdog_timer: unsafe extern "C" fn(
+        timeout: usize,          // 0 = 关（默认 5 分钟会重启整机——内核长跑必关）
+        watchdog_code: u64,
+        data_size: usize,
+        watchdog_data: *const c_void,
+    ) -> EfiStatus,                                              // @256（V-0b 刀 4）
     pub connect_controller: *mut c_void,                      // @264
     pub disconnect_controller: *mut c_void,                   // @272
     pub open_protocol: *mut c_void,                           // @280
@@ -430,6 +461,7 @@ mod tests {
         assert_eq!(size_of::<EfiSimpleFileSystemProtocol>(), 16);
         assert_eq!(size_of::<EfiFileProtocol>(), 88);
         assert_eq!(size_of::<EfiLoadedImageProtocol>(), 32);
+        assert_eq!(size_of::<EfiMemoryDescriptor>(), 40);
     }
 
     #[test]
@@ -468,11 +500,27 @@ mod tests {
     #[test]
     fn boot_services_offsets() {
         let p = 0x1000usize as *const EfiBootServices;
+        assert_eq!(off!(p, allocate_pages), 40);
+        assert_eq!(off!(p, get_memory_map), 56);
         assert_eq!(off!(p, allocate_pool), 64);
         assert_eq!(off!(p, handle_protocol), 152);
         assert_eq!(off!(p, exit_boot_services), 232);
+        assert_eq!(off!(p, set_watchdog_timer), 256);
         assert_eq!(off!(p, locate_protocol), 320);
         assert_eq!(off!(p, create_event_ex), 368);
+    }
+
+    #[test]
+    fn memory_descriptor_layout() {
+        // 40B + 字段偏移钉板（kind@0 … attribute@32）——handoff memmap_* 透传
+        // 面 + 内核 V-1 消费面共同的语言；漂移编译期/测试期炸响。
+        let d = 0x1000usize as *const EfiMemoryDescriptor;
+        assert_eq!(size_of::<EfiMemoryDescriptor>(), 40);
+        assert_eq!(off!(d, kind), 0);
+        assert_eq!(off!(d, physical_start), 8);
+        assert_eq!(off!(d, virtual_start), 16);
+        assert_eq!(off!(d, number_of_pages), 24);
+        assert_eq!(off!(d, attribute), 32);
     }
 
     #[test]
