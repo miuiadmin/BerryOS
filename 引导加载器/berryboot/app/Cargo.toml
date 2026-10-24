@@ -9,3 +9,6 @@ crate-type = ["staticlib"]
 
 [dependencies]
 berry-efi = { path = "../berry-efi" }
+# V-0b 刀 2：引导视图解析（p_paddr 口径）——纯函数 crate 跨用户态/引导
+# 两界复用，库本体 no_std 直接进 EFI staticlib 链。
+berry-loader = { path = "../../../用户态/berry-loader" }

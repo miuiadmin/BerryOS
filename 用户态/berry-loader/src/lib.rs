@@ -1,6 +1,6 @@
 //! `berry-loader`——rootfs 解析纯函数库（G-eco-c，草案 D5「解析器即产品」）。
 //!
-//! 解析器两对，零分配、零 unsafe、零依赖，输入只借用：
+//! 解析器三对，零分配、零 unsafe、零依赖，输入只借用：
 //! - 整档面（G-eco-c）：[`cpio_walk`]（cpio newc 流式迭代，`TRAILER!!!`
 //!   自终止）+ [`elf_parse`]（ELF64 LE / ET_EXEC / AArch64 静态镜像解析，
 //!   逐 PT_LOAD 出段，v1 段帽 [`MAX_SEGMENTS`] 越过诚实拒）；
@@ -8,10 +8,15 @@
 //!   数据按偏移算术跳过，std 镜像 ~283KB 归档永不整档驻留）+
 //!   [`elf_head`]（首窗解析装载几何——**跨度按 p_memsz**（.bss 计入，
 //!   stdhello RW 段 memsz=0x41241 实测）+ [`ElfHead::file_len_min`] 文件
-//!   侧下界，段文件字节由消费端分块泵送）。
+//!   侧下界，段文件字节由消费端分块泵送）；
+//! - 引导面（V-0b 刀 2）：[`boot_parse`]（**p_paddr 口径**装载几何——
+//!   BerryBoot EFI 引导应用消费 KERNEL.ELF：QEMU/引导链按 p_paddr 落
+//!   物理内存，DRAM 窗由调用方传入；[`elf_parse`] 的用户几何检查零改动、
+//!   两视图并存不串）。
 //!
 //! 消费端 = svcmgr（rootfs VMO → 本库解析 → process_create/vmar_map/
-//! process_start 拉起）。错误面（截断/坏魔数/野值）全部 host 单测盖——
+//! process_start 拉起）+ BerryBoot 引导链（V-0b 起整档读入 → 引导视图
+//! 解析 → 段拷贝跳入口）。错误面（截断/坏魔数/野值）全部 host 单测盖——
 //! 「AI 测试友好化」在生态关的落点：解析正确性不依赖 QEMU 就能验证。
 //!
 //! v1 明确不收（返回 [`LoadError::NotSupported`]，不 panic 不猜）：ET_DYN、
@@ -515,6 +520,113 @@ pub fn elf_head(head: &[u8], file_len: u64) -> Result<ElfHead, LoadError> {
         return Err(LoadError::BadField); // 入口在映像外 = 跳飞死，装载端拦
     }
     Ok(ElfHead { entry, segs, count, image_min, image_span, file_len_min })
+}
+
+// ==================== ELF64 引导视图（V-0b 刀 2：BerryBoot 装载几何） ====================
+//
+// BerryBoot（EFI 引导应用）消费 KERNEL.ELF 的视角与用户态 spawn 完全不同：
+// 引导链/QEMU `-kernel` 按 **p_paddr** 落物理内存（G-eco 四层实证），段
+// VMA 高半（0xffffff80…）只是链接视图。本节出引导视图几何：逐 PT_LOAD
+// 出 `paddr/filesz/memsz`（filesz < memsz 尾部 = .bss，装载端清零覆盖）+
+// 入口——[`elf_parse`]/[`elf_head`] 的用户几何检查零改动，两视图并存。
+
+/// 一个 PT_LOAD 段的引导装载几何：文件字节位置 + **物理**装载位置/长度。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct BootSeg {
+    pub file_off: u64,
+    pub paddr: u64,
+    pub filesz: u64,
+    pub memsz: u64,
+}
+
+/// 引导视图镜像：入口（物理口径）+ PT_LOAD 段（paddr 几何）。
+#[derive(Debug, PartialEq)]
+pub struct BootElf {
+    pub entry: u64,
+    segs: [BootSeg; MAX_SEGMENTS],
+    count: usize,
+}
+
+impl BootElf {
+    pub fn segments(&self) -> &[BootSeg] {
+        &self.segs[..self.count]
+    }
+}
+
+/// 解析 ELF64 LE / ET_EXEC / AArch64 镜像的**引导装载几何**（p_paddr 口径，
+/// V-0b 刀 2）。
+///
+/// 与 [`elf_parse`] 的校验差异：界检从用户半（`vaddr+memsz ≤ USER_TOP`）换
+/// 成物理 DRAM 窗——调用方传入平台窗 `[phys_base, phys_top)`（BerryBoot =
+/// QEMU virt `-m 128M` ⇒ `[0x4000_0000, 0x4800_0000)`），段 paddr 出窗 =
+/// [`LoadError::BadSegment`] 诚实拒；入口须落在某段 `[paddr, paddr+memsz)`
+/// 内（跳飞 = 引导链死，装载端拦比运行期死诚实——[`elf_head`] 入口检同族）。
+/// 文件范围对**缓冲长度**校验（整档已在内存，与 `elf_parse` 同形；区别于
+/// `elf_head` 的「对声称长度校验」流式面）。
+pub fn boot_parse(elf: &[u8], phys_base: u64, phys_top: u64) -> Result<BootElf, LoadError> {
+    if elf.len() < 64 {
+        return Err(LoadError::Truncated);
+    }
+    if &elf[..4] != b"\x7fELF" {
+        return Err(LoadError::BadMagic);
+    }
+    if elf[4] != 2 || elf[5] != 1 || elf[6] != 1 {
+        return Err(LoadError::NotSupported);
+    }
+    if rd_u16(elf, 16) != 2 {
+        return Err(LoadError::NotSupported); // v1 只收 ET_EXEC
+    }
+    if rd_u16(elf, 18) != 183 {
+        return Err(LoadError::NotSupported); // EM_AARCH64
+    }
+    let entry = rd_u64(elf, 24);
+    let phoff = rd_u64(elf, 32) as usize;
+    let phentsize = rd_u16(elf, 54) as usize;
+    let phnum = rd_u16(elf, 56) as usize;
+    if entry == 0 || phoff == 0 || phentsize != 56 {
+        return Err(LoadError::NotSupported);
+    }
+    let phend = phoff.checked_add(phnum.checked_mul(56).ok_or(LoadError::NotSupported)?)
+        .ok_or(LoadError::NotSupported)?;
+    if phend > elf.len() {
+        return Err(LoadError::Truncated);
+    }
+    let mut segs = [BootSeg { file_off: 0, paddr: 0, filesz: 0, memsz: 0 }; MAX_SEGMENTS];
+    let mut count = 0usize;
+    for i in 0..phnum {
+        let p = &elf[phoff + i * 56..phoff + (i + 1) * 56];
+        if rd_u32(p, 0) != 1 {
+            continue; // 非 PT_LOAD（GNU_STACK/PT_NOTE 等对装载无语义）
+        }
+        let file_off = rd_u64(p, 8);
+        let paddr = rd_u64(p, 24); // p_paddr：引导装载口径（VMA 是链接视图）
+        let filesz = rd_u64(p, 32);
+        let memsz = rd_u64(p, 40);
+        if memsz == 0 {
+            continue; // 空 padding 段容忍
+        }
+        if count == MAX_SEGMENTS {
+            return Err(LoadError::NotSupported); // 段帽：诚实拒
+        }
+        let pend = paddr.checked_add(memsz).ok_or(LoadError::BadSegment)?;
+        let fend = file_off.checked_add(filesz).ok_or(LoadError::BadSegment)?;
+        if filesz > memsz || paddr < phys_base || pend > phys_top {
+            return Err(LoadError::BadSegment); // 含 DRAM 窗界检
+        }
+        if fend > elf.len() as u64 {
+            return Err(LoadError::Truncated); // 段文件字节越出整档
+        }
+        segs[count] = BootSeg { file_off, paddr, filesz, memsz };
+        count += 1;
+    }
+    if count == 0 {
+        return Err(LoadError::NotSupported); // 无 PT_LOAD = 无可装载内容
+    }
+    // 入口须落在某段物理跨度内（各段 pend 已过窗检，加法不溢出）。
+    if !segs[..count].iter().any(|s| entry >= s.paddr && entry < s.paddr + s.memsz) {
+        return Err(LoadError::BadField); // 入口在装载映像外 = 跳飞死
+    }
+    Ok(BootElf { entry, segs, count })
 }
 
 // ==================== host 单元测试（AI 测试友好化：解析面不依赖 QEMU） ====================
@@ -1084,5 +1196,122 @@ mod tests {
         assert_eq!(page_ceil(0x1000), 0x1000); // 已对齐不动
         assert_eq!(page_ceil(0x1001), 0x2000);
         assert_eq!(page_ceil(u64::MAX), u64::MAX); // 溢出饱和不 panic
+    }
+
+    // ---- ELF 引导视图（V-0b 刀 2：p_paddr 口径装载几何） ----
+
+    /// QEMU virt `-m 128M` DRAM 窗（BerryBoot 传入值同源）。
+    const PB: u64 = 0x4000_0000;
+    const PT: u64 = 0x4800_0000;
+
+    /// phdr + p_paddr（@24；[`phdr`] 助手只写 vaddr——引导视图读的是 paddr）。
+    fn phdr_boot(offset: u64, vaddr: u64, paddr: u64, filesz: u64, memsz: u64) -> Vec<u8> {
+        let mut p = phdr(1, offset, vaddr, filesz, memsz);
+        p[24..32].copy_from_slice(&paddr.to_le_bytes());
+        p
+    }
+
+    #[test]
+    fn boot_parse_kernel_shape() {
+        // 内核 ELF 形态浓缩：低半 boot 头段 + filesz=0 的 .bss.boot 段 +
+        // 高半 VMA 镜像段（真身 2026-10-24 dump：5 LOAD + GNU_STACK，此处
+        // 取三段代表性形状——高半 vaddr 被忽略、paddr 是装载真值）。
+        let mut ph = phdr_boot(0x0, 0x4000_0000, 0x4000_0000, 0xE8, 0xE8);
+        ph.extend(phdr_boot(0x0, 0x4000_9000, 0x4000_9000, 0, 0x4000));
+        ph.extend(phdr_boot(0x100, 0xffffff80_4000d000, 0x4000d000, 0x100, 0x200));
+        let mut f = ehdr(64, 3, &ph, 2, 183);
+        f[24..32].copy_from_slice(&0x4000_0000u64.to_le_bytes()); // entry = 首段 paddr
+        f.resize(0x200, 0); // 补段文件字节（ehdr+3phdr=0xE8 < 0x200）
+        let b = boot_parse(&f, PB, PT).unwrap();
+        assert_eq!(b.entry, 0x4000_0000);
+        assert_eq!(b.segments().len(), 3);
+        assert_eq!(
+            b.segments()[0],
+            BootSeg { file_off: 0, paddr: 0x4000_0000, filesz: 0xE8, memsz: 0xE8 }
+        );
+        assert_eq!(b.segments()[1].filesz, 0); // .bss 类段：装载端清零尾部
+        assert_eq!(b.segments()[2].paddr, 0x4000d000); // 高半 VMA 不进视图
+        assert_eq!(b.segments()[2].memsz, 0x200); // memsz 口径含 .bss
+    }
+
+    #[test]
+    fn boot_parse_agrees_with_elf_parse_when_paddr_eq_vaddr() {
+        // paddr==vaddr 且同在低窗：两视图字段一致（同镜像双读共识）。
+        let total = 64 + 56 + 4;
+        let p = phdr_boot(0, 0x1000, 0x1000, total as u64, 0x3000);
+        let mut f = ehdr(64, 1, &p, 2, 183);
+        f.extend_from_slice(b"CODE");
+        let b = boot_parse(&f, 0x1000, PT).unwrap();
+        let u = elf_parse(&f).unwrap();
+        assert_eq!(b.entry, u.entry);
+        assert_eq!(b.segments().len(), u.segments().len());
+        assert_eq!(b.segments()[0].paddr, u.segments()[0].vaddr);
+        assert_eq!(b.segments()[0].filesz as usize, u.segments()[0].data.len());
+        assert_eq!(b.segments()[0].memsz, u.segments()[0].memsz);
+    }
+
+    #[test]
+    fn boot_parse_paddr_below_dram_bad_segment() {
+        let p = phdr_boot(0, 0x1000, 0x1000, 8, 0x1000); // paddr 在窗下
+        let f = ehdr(64, 1, &p, 2, 183);
+        assert_eq!(boot_parse(&f, PB, PT), Err(LoadError::BadSegment));
+    }
+
+    #[test]
+    fn boot_parse_pend_over_dram_top_bad_segment() {
+        // paddr 在窗内但 paddr+memsz 越顶（0x4000_0000+0x800_1000 > 0x4800_0000；
+        // 恰等 top 是半开窗内合法——本测钉「严格越过」面）。
+        let p = phdr_boot(0, 0x4000_0000, 0x4000_0000, 8, 0x800_1000);
+        let f = ehdr(64, 1, &p, 2, 183);
+        assert_eq!(boot_parse(&f, PB, PT), Err(LoadError::BadSegment));
+        // 恰等 top：段合法（半开窗 [base, top)），entry 默认 0x1000 出跨
+        // 才拒——证明等值边界不误伤。
+        let p2 = phdr_boot(0, 0x4000_0000, 0x4000_0000, 8, 0x800_0000);
+        let mut f2 = ehdr(64, 1, &p2, 2, 183);
+        f2[24..32].copy_from_slice(&0x4000_0000u64.to_le_bytes());
+        assert!(boot_parse(&f2, PB, PT).is_ok());
+    }
+
+    #[test]
+    fn boot_parse_hostile_paddr_no_panic() {
+        // paddr+memsz 溢出：checked 拒（恶意野值面不许 panic）。
+        let p = phdr_boot(0, 0, u64::MAX, 8, 0x1000);
+        let f = ehdr(64, 1, &p, 2, 183);
+        assert_eq!(boot_parse(&f, PB, PT), Err(LoadError::BadSegment));
+    }
+
+    #[test]
+    fn boot_parse_entry_outside_image_bad_field() {
+        // 段全绿但 entry（默认 0x1000）不在任何段物理跨度内 = 跳飞死，拦。
+        let p = phdr_boot(0x80, 0x4000_0000, 0x4000_0000, 8, 0x1000);
+        let mut f = ehdr(64, 1, &p, 2, 183);
+        f.extend_from_slice(&[0u8; 0x88]);
+        assert_eq!(boot_parse(&f, PB, PT), Err(LoadError::BadField));
+    }
+
+    #[test]
+    fn boot_parse_filesz_over_memsz_and_file_range_parity() {
+        // filesz>memsz：BadSegment；段文件字节越整档：Truncated（elf_parse 同面）。
+        let p = phdr_boot(0, 0x4000_0000, 0x4000_0000, 0x2000, 0x1000);
+        let f = ehdr(64, 1, &p, 2, 183);
+        assert_eq!(boot_parse(&f, PB, PT), Err(LoadError::BadSegment));
+        let p2 = phdr_boot(0x100, 0x4000_0000, 0x4000_0000, 0x100, 0x100);
+        let f2 = ehdr(64, 1, &p2, 2, 183); // 文件仅 120B，off+filesz=0x200 越出
+        assert_eq!(boot_parse(&f2, PB, PT), Err(LoadError::Truncated));
+    }
+
+    #[test]
+    fn boot_parse_non_load_skipped_and_none_not_supported() {
+        // PT_GNU_STACK（内核真身携带）跳过只出 1 段；只有非 LOAD = 无内容。
+        let mut ph = phdr(6, 0, 0, 0, 0); // PT_GNU_STACK
+        ph.extend(phdr_boot(0x0, 0x4000_0000, 0x4000_0000, 0xE8, 0xE8));
+        let mut f = ehdr(64, 2, &ph, 2, 183);
+        f[24..32].copy_from_slice(&0x4000_0000u64.to_le_bytes());
+        f.resize(0xE8, 0);
+        let b = boot_parse(&f, PB, PT).unwrap();
+        assert_eq!(b.segments().len(), 1);
+        let p2 = phdr(4, 0, 0, 0x20, 0x20); // 只有 PT_NOTE
+        let f2 = ehdr(64, 1, &p2, 2, 183);
+        assert_eq!(boot_parse(&f2, PB, PT), Err(LoadError::NotSupported));
     }
 }

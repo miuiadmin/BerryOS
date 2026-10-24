@@ -389,12 +389,14 @@ build-boot:
         --put "hello.txt:/HELLO.TXT" \
         --put "{{KERNEL}}:/KERNEL.ELF"
 
-# AAVMF 引导验收（V-0b 刀 1 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
+# AAVMF 引导验收（V-0b 刀 2 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。期望串口：BdsDxe starting Boot0001 …USB HARDDRIVE →
-# 六行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
+# 七行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
 # `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…` / `fs: HELLO.TXT 28B match` /
 # `kfile: <n>B ok`（V-0b 刀 1：KERNEL.ELF GetInfo 探长 + AllocatePool +
-# 循环 Read 整档收齐，n = 内核 ELF 字节数——与宿主 ls 对拍）/ `BERRYBOOT ok`
+# 循环 Read 整档收齐，n = 内核 ELF 字节数——与宿主 ls 对拍）/ `elf:
+# segs=<n> entry=0x… ok`（V-0b 刀 2：berry-loader boot_parse 引导视图——
+# p_paddr 口径 + DRAM 窗拒面，坏档打 `elf: parse e=<码>`）/ `BERRYBOOT ok`
 # （全段过才打——状态谓词）。我们的 PE32+ 被 DXE 加载执行、ConOut 落
 # PL011 串口；返回后固件续行进 UiApp 前台页。
 # -device ramfb：virt -nographic 默认**无任何显示设备** → 固件不装 GOP

@@ -7,8 +7,13 @@ name = "berry-efi"
 version = "0.1.0"
 
 [[package]]
+name = "berry-loader"
+version = "0.1.0"
+
+[[package]]
 name = "berryboot"
 version = "0.1.0"
 dependencies = [
  "berry-efi",
+ "berry-loader",
 ]

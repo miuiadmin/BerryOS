@@ -1,6 +1,6 @@
-//! berryboot——BerryOS 引导应用（V-0b 刀 1：KERNEL.ELF 整档读入——
-//! `kfile: <n>B ok` 第 6 段横幅；V-0a 刀 3 的 SFS 开卷读 HELLO.TXT 逐字节
-//! 对拍面原样保留）。
+//! berryboot——BerryOS 引导应用（V-0b 刀 2：引导视图解析——`elf:
+//! segs=<n> entry=0x… ok` 第 6 段横幅；刀 1 的 KERNEL.ELF 整档读入面与
+//! V-0a 刀 3 的 SFS 开卷读 HELLO.TXT 逐字节对拍面原样保留）。
 //!
 //! 形态：`crate-type=staticlib` → rust-lld 静态全链接（berryboot.ld 单 .img
 //! @0x1000 + --image-base 0 + --emit-relocs）→ 工具链/elf2pe.py 转 PE32+
@@ -16,8 +16,11 @@
 //! V-0b 刀 1 面：行 5 `kfile:` KERNEL.ELF 整档读入——根句柄 Open →
 //! GetInfo(EFI_FILE_INFO) 探 file_size → AllocatePool(EfiLoaderData) 按长
 //! 整档缓冲 → 循环 Read 收齐（got == file_size）→ 打段行；缓冲不 FreePool
-//! （刀 2 ELF 解析 / 刀 3 段拷贝就地消费）。`BERRYBOOT ok` 升格为**全段
-//! 过**才打（fs + kfile 两段皆绿）。
+//! （刀 2/刀 3 就地消费）。
+//! V-0b 刀 2 面：行 6 `elf:` 引导视图解析——kfile 缓冲就地借用（零拷贝），
+//! berry-loader `boot_parse`（p_paddr 口径——引导链按 paddr 落内存，VMA
+//! 高半只是链接视图）出段数 + 入口；DRAM 窗 = QEMU virt `-m 128M`。
+//! `BERRYBOOT ok` 升格为**全段过**才打（fs + kfile + elf 三段皆绿）。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
 //! **状态码诊断行**（机器可读缺席报告——AI 测试友好：`locate fail r=0x…e`
@@ -44,6 +47,24 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 /// 刀 3 基准：HELLO.TXT 的期望字节（与仓库 fixture `../hello.txt` 单源
 /// 对拍——host 测试 hello_fixture_consensus 钉同步）。
 const EXPECTED_HELLO: &[u8] = b"BERRYBOOT HELLO FIXTURE v0a\n";
+
+/// V-0b 刀 2：DRAM 装载窗 `[DRAM_BASE, DRAM_TOP)`——QEMU virt `-m 128M`
+/// （run-efi recipe 同源；改 -m 容量须同步此处）。
+const DRAM_BASE: u64 = 0x4000_0000;
+const DRAM_TOP: u64 = 0x4800_0000;
+
+/// 引导链诊断行用的错误短名（`berry_loader::LoadError` → ASCII，机器可读
+/// 缺席报告；无 Display——库本体 no_std，短名面由消费端给）。
+fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
+    use berry_loader::LoadError;
+    match e {
+        LoadError::Truncated => "trunc",
+        LoadError::BadMagic => "magic",
+        LoadError::BadField => "field",
+        LoadError::NotSupported => "nsup",
+        LoadError::BadSegment => "seg",
+    }
+}
 
 /// 刀 1 骨架行：ASCII + CRLF（EFI ConOut 惯例——部分终端只认 CRLF）。
 const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
@@ -219,11 +240,12 @@ pub extern "C" fn efi_main(
         });
     }
 
-    // 行 4 + 行 5：SFS 开卷双档——LoadedImage(image handle) → DeviceHandle
-    // → SFS → OpenVolume → 根句柄（两档共用）→ 行 4 HELLO.TXT 对拍（刀 3
-    // 原样）+ 行 5 KERNEL.ELF 整档读入（V-0b 刀 1）→ Close。全段过才打
-    // `BERRYBOOT ok`（验收标记 = 状态谓词）；任一步失败打 `fs:`/`kfile:
-    // <step> r=0x…` 诊断行。
+    // 行 4–6：SFS 开卷三段——LoadedImage(image handle) → DeviceHandle
+    // → SFS → OpenVolume → 根句柄（各段共用）→ 行 4 HELLO.TXT 对拍（刀 3
+    // 原样）+ 行 5 KERNEL.ELF 整档读入（V-0b 刀 1）+ 行 6 引导视图解析
+    // （V-0b 刀 2，kfile 缓冲就地消费）→ Close。全段过才打 `BERRYBOOT ok`
+    // （验收标记 = 状态谓词）；任一步失败打 `fs:`/`kfile:`/`elf:
+    // <step> r=0x…/e=…` 诊断行。
     if !bs.is_null() && unsafe { (*bs).hdr.signature } == EFI_BOOT_SERVICES_SIGNATURE {
         let hp = unsafe { (*bs).handle_protocol };
         let mut li: *mut c_void = core::ptr::null_mut();
@@ -359,6 +381,30 @@ pub extern "C" fn efi_main(
                                             l.push_u32_dec(fsize as u32);
                                             l.push_str("B ok");
                                         });
+                                        // 行 6（V-0b 刀 2）：引导视图解析——
+                                        // kfile 缓冲就地借用（零拷贝），
+                                        // p_paddr 口径出段 + 入口（VMA 高半
+                                        // 是链接视图，引导链按 paddr 落内存）。
+                                        let kelf = unsafe {
+                                            core::slice::from_raw_parts(kbuf as *const u8, fsize)
+                                        };
+                                        match berry_loader::boot_parse(kelf, DRAM_BASE, DRAM_TOP)
+                                        {
+                                            Ok(bo) => print_line(con_out, |l| {
+                                                l.push_str("elf: segs=");
+                                                l.push_u32_dec(bo.segments().len() as u32);
+                                                l.push_str(" entry=");
+                                                l.push_u64_hex(bo.entry);
+                                                l.push_str(" ok");
+                                            }),
+                                            Err(e) => {
+                                                all_ok = false;
+                                                print_line(con_out, |l| {
+                                                    l.push_str("elf: parse e=");
+                                                    l.push_str(boot_err_name(e));
+                                                });
+                                            }
+                                        }
                                     } else {
                                         all_ok = false;
                                         print_line(con_out, |l| {

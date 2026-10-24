@@ -137,18 +137,12 @@ class Elf:
 
 
 def collect_relocs(elf: Elf) -> list:
-    """ABS64 重定位位址列表（已排序）。sym≠0 时经 .symtab 解析 st_value
-    （lld --emit-relocs 通常 sym=0 + addend 绝对值，两路都兼容）。"""
-    symtab = elf.section_by_name(".symtab")
-    if symtab is not None and symtab["link"] >= len(elf.sections):
-        fail(".symtab link 指向非法 strtab")
-    syms = []
-    if symtab is not None:
-        blob = elf.contents(symtab)
-        for off in range(0, len(blob) - 23, symtab["entsize"] or 24):
-            (st_name, _, _, _, st_value, _) = struct.unpack_from(
-                "<IBBHQQ", blob, off)
-            syms.append(st_value)
+    """ABS64 槽位列表（已排序）。基址重定位只关心「8 字节槽在哪」=
+    r_offset——lld --emit-relocs 产**最终镜像绝对 VMA**（非节相对）；条目
+    的 sym/addend 描述槽**内容**（指向谁），链接期已解析，与本转换无关。
+    V-0b 刀 2 实踩：旧版误用 sym 值当槽位（lld 对静态 reloc 惯用节符号
+    val=节基址 0x1000）⇒ 五条 DIR64 全打 RVA 0x1000——固件加载时
+    +delta×5 砸穿首函数头两条指令（undefined instruction）。"""
     out = []
     for s in elf.sections:
         if s["type"] != SHT_RELA:
@@ -160,16 +154,10 @@ def collect_relocs(elf: Elf) -> list:
         for off in range(0, len(blob) - 23, 24):
             (r_offset, r_info, _) = struct.unpack_from("<QQq", blob, off)
             rtype = r_info & 0xFFFFFFFF
-            rsym = r_info >> 32
             if rtype == 0:
                 continue
             if rtype == R_AARCH64_ABS64:
-                vaddr = target["addr"] + r_offset
-                if rsym != 0:
-                    if rsym >= len(syms):
-                        fail(f"ABS64@0x{vaddr:X} sym#{rsym} 越界且无 .symtab")
-                    vaddr = syms[rsym]  # 链接产物：符号值即最终地址
-                out.append(vaddr)
+                out.append(r_offset)
             elif rtype in R_PCREL_INVARIANT:
                 continue
             else:
@@ -354,12 +342,18 @@ def synth_elf() -> bytes:
         "91000230"  # 0x1004: add x16, x16, #0
         "58000141"  # 0x1008: ldr x1, [x10]      （占位）
         "d65f03c0"  # 0x100C: ret
-    ) + struct.pack("<Q", 0x1008)  # 0x1010: 8B 数据槽 = 绝对地址 0x1008（ABS64 目标）
+    ) + struct.pack("<Q", 0x1008)  # 0x1010: 8B 数据槽（ABS64 目标 A）
+    code += struct.pack("<Q", 0x1000)  # 0x1018: 8B 数据槽（ABS64 目标 B）
     shstrtab = b"\0.img\0.rela.img\0.symtab\0.strtab\0.shstrtab\0"
     strtab = b"\0"
-    symtab = struct.pack("<IBBHQQ", 0, 0, 0, 0, 0, 0)  # 1 个空符号
-    rela = struct.pack("<QQq", 0x10, R_AARCH64_ABS64, 0x1008)      # 数据槽
-    rela += struct.pack("<QQq", 0x0, 283, 0)                        # CALL26（忽略型）
+    symtab = struct.pack("<IBBHQQ", 0, 0, 0, 0, 0, 0)  # sym[0] 空
+    symtab += struct.pack("<IBBHQQ", 0, (3 << 4), 0, 1, 0x1000, 0)
+    # sym[1] = STT_SECTION（.img，val=节基址）——lld --emit-relocs 静态
+    # reloc 惯用形态：r_off=槽位绝对 VMA + rsym=节符号 + addend=符号内偏移
+    rela = struct.pack("<QQq", 0x1010, R_AARCH64_ABS64, 0x1008)   # 槽 A，rsym=0
+    rela += struct.pack("<QQq", 0x0, 283, 0)                      # CALL26（忽略型）
+    rela += struct.pack("<QQq", 0x1018, (1 << 32) | R_AARCH64_ABS64, 0x1000)
+    # 槽 B，rsym=1（节符号）——旧 bug 形态：sym 值 0x1000 被当槽位错打 0x1000
 
     ehsize, phentsize, shentsize = 64, 56, 64
     blobs = [code, rela, symtab, strtab, shstrtab]
@@ -402,9 +396,10 @@ def synth_elf() -> bytes:
 
 def selftest() -> int:
     elf = synth_elf()
-    # 合成源内 2 条 RELA：1 条 ABS64（进 .reloc）+ 1 条 CALL26（忽略）。
+    # 合成源内 3 条 RELA：2 条 ABS64（槽 A rsym=0 / 槽 B rsym=节符号——
+    # 双路径都进 .reloc 且槽位恒取 r_offset）+ 1 条 CALL26（忽略）。
     pe = convert(elf)
-    line = verify(pe, 1)
+    line = verify(pe, 2)
     assert struct.unpack_from("<H", pe, 0) == (0x5A4D,)
     pe_off = 0x80
     machine, nsec = struct.unpack_from("<HH", pe, pe_off + 4)
@@ -418,10 +413,12 @@ def selftest() -> int:
     img_off = SECTION_ALIGNMENT
     assert pe[img_off:img_off + 20] == Elf(elf).contents(
         Elf(elf).section_by_name(".img"))[:20]
-    # .reloc 块钉板：页 0x1000、块 12B（1 DIR64 条目）——offset12=数据槽 0x1010。
+    # .reloc 块钉板：页 0x1000、块 12B（2 DIR64 条目）——槽 A 0x1010（rsym=0）
+    # + 槽 B 0x1018（rsym=节符号——旧 bug 曾把这条错打到 0x1000，本钉板回归执法）。
     rva, rsz = struct.unpack_from("<II", pe, opt + 112 + 8 * IDX_BASE_RELOC)
     assert (rva, rsz) == (0x2000, 12), (hex(rva), rsz)
-    assert struct.unpack_from("<IIH", pe, rva) == (0x1000, 12, RELOC_DIR64 << 12 | 0x010)
+    assert struct.unpack_from("<IIHH", pe, rva) == (
+        0x1000, 12, RELOC_DIR64 << 12 | 0x010, RELOC_DIR64 << 12 | 0x018)
     # 确定性：两次转换逐字节同。
     assert convert(elf) == pe
     # 负样本：白名单外重定位型必须拒（SystemExit 非 0 退出）。
