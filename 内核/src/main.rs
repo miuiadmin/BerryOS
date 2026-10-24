@@ -20,6 +20,7 @@ mod channel;
 mod dtb;
 mod event;
 mod handle;
+mod handoff; // V-0b 刀 3：BerryBoot 交接协议双镜像（const assert 执法，消费随刀 4 起）
 mod heap;
 mod ktest;
 mod mm;

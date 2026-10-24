@@ -1,6 +1,6 @@
-//! berryboot——BerryOS 引导应用（V-0b 刀 2：引导视图解析——`elf:
-//! segs=<n> entry=0x… ok` 第 6 段横幅；刀 1 的 KERNEL.ELF 整档读入面与
-//! V-0a 刀 3 的 SFS 开卷读 HELLO.TXT 逐字节对拍面原样保留）。
+//! berryboot——BerryOS 引导应用（V-0b 刀 3：段装载——`load: segs=<n>
+//! pages=<n> ok` 第 7 段横幅 + handoff v0 冻结实例；刀 2 的引导视图解析与
+//! 刀 1 的 KERNEL.ELF 整档读入面、V-0a 的 SFS 开卷读原样保留）。
 //!
 //! 形态：`crate-type=staticlib` → rust-lld 静态全链接（berryboot.ld 单 .img
 //! @0x1000 + --image-base 0 + --emit-relocs）→ 工具链/elf2pe.py 转 PE32+
@@ -20,7 +20,12 @@
 //! V-0b 刀 2 面：行 6 `elf:` 引导视图解析——kfile 缓冲就地借用（零拷贝），
 //! berry-loader `boot_parse`（p_paddr 口径——引导链按 paddr 落内存，VMA
 //! 高半只是链接视图）出段数 + 入口；DRAM 窗 = QEMU virt `-m 128M`。
-//! `BERRYBOOT ok` 升格为**全段过**才打（fs + kfile + elf 三段皆绿）。
+//! V-0b 刀 3 面：行 7 `load:` 段装载——`span()` 整窗一次
+//! AllocatePages(AllocateAddress) 认领（缝隙一并拿下，防段共享页撞）→
+//! 全窗清零（.bss + 缝隙确定性，对齐 QEMU `-kernel` 直加载零 RAM 起步）→
+//! 逐段 copy filesz → 回读逐字节对拍（标记 = 状态谓词）→ handoff 页填
+//! v0（裁决 A/B：memmap 刀 4 填，gop/init_blob/cmdline 留位零值）。
+//! `BERRYBOOT ok` 升格为**全段过**才打（fs + kfile + elf + load 四段皆绿）。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
 //! **状态码诊断行**（机器可读缺席报告——AI 测试友好：`locate fail r=0x…e`
@@ -31,12 +36,14 @@
 use berry_efi::{
     fmt_u32_dec, fmt_u64_hex, utf16_encode, utf16_to_ascii, EfiFileInfo,
     EfiGraphicsOutputModeInfo, EfiGraphicsOutputProtocol, EfiLoadedImageProtocol,
-    EfiSimpleFileSystemProtocol, EfiStatus, EfiSystemTable, EFI_BOOT_SERVICES_SIGNATURE,
-    EFI_FILE_INFO_GUID, EFI_FILE_MODE_READ, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
-    EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_LOADER_DATA, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
-    EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
+    EfiSimpleFileSystemProtocol, EfiStatus, EfiSystemTable, EFI_ALLOCATE_ADDRESS,
+    EFI_ALLOCATE_ANY_PAGES, EFI_BOOT_SERVICES_SIGNATURE, EFI_FILE_INFO_GUID,
+    EFI_FILE_MODE_READ, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
+    EFI_LOADER_DATA, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_SUCCESS,
+    EFI_SYSTEM_TABLE_SIGNATURE,
 };
 use core::ffi::c_void;
+use core::mem::{offset_of, size_of};
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -66,8 +73,183 @@ fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
     }
 }
 
+// ==================== BerryHandoff v0（V-0b 刀 3 冻结） ====================
+//
+// **双镜像纪律**（同 内核/src/handoff.rs——两侧逐字段同步 + 同一张 const
+// assert 偏移表，任一侧漂移 = 编译期炸响；abi_gen.rs 双面镜像同精神）。
+// 本侧 = 生产端（装载器填写），内核侧 = 消费端（刀 4 起 x19 抢救 → 判
+// magic）。字段语义见内核侧头注（单一详注，此处不重复）。
+
+/// 魔数：LE u32 读出 = ASCII "BRYH"。
+pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
+/// 协议版本：v0 = 0（字段集冻结于 V-0b 刀 3，扩字段 = bump version）。
+pub const HANDOFF_VERSION: u32 = 0;
+
+/// 交接结构（112B，全 8B 字段 8 对齐；无指针——PA 直递）。
+#[repr(C)]
+pub struct BerryHandoff {
+    pub magic: u32,               // @0
+    pub version: u32,             // @4
+    pub entry: u64,               // @8
+    pub dram_base: u64,           // @16
+    pub dram_top: u64,            // @24
+    pub memmap_pa: u64,           // @32（刀 4 填）
+    pub memmap_size: u32,         // @40（刀 4 填）
+    pub memmap_desc_size: u32,    // @44（刀 4 填）
+    pub memmap_desc_version: u32, // @48（刀 4 填）
+    pub _r0: u32,                 // @52 保留零
+    pub gop_fb_pa: u64,           // @56 留位零（V-1 fbcon）
+    pub gop_width: u32,           // @64 留位零
+    pub gop_height: u32,          // @68 留位零
+    pub gop_stride: u32,          // @72 留位零
+    pub gop_format: u32,          // @76 留位零
+    pub init_blob_pa: u64,        // @80 留位零（裁决 B）
+    pub init_blob_len: u64,       // @88 留位零（裁决 B）
+    pub cmdline_pa: u64,          // @96 留位零（裁决 B）
+    pub cmdline_len: u64,         // @104 留位零（裁决 B）
+}
+
+/// 布局执法表（与 内核/src/handoff.rs 逐行相同——两侧同表执法）。
+const _: () = {
+    assert!(size_of::<BerryHandoff>() == 112);
+    assert!(offset_of!(BerryHandoff, magic) == 0);
+    assert!(offset_of!(BerryHandoff, version) == 4);
+    assert!(offset_of!(BerryHandoff, entry) == 8);
+    assert!(offset_of!(BerryHandoff, dram_base) == 16);
+    assert!(offset_of!(BerryHandoff, dram_top) == 24);
+    assert!(offset_of!(BerryHandoff, memmap_pa) == 32);
+    assert!(offset_of!(BerryHandoff, memmap_size) == 40);
+    assert!(offset_of!(BerryHandoff, memmap_desc_size) == 44);
+    assert!(offset_of!(BerryHandoff, memmap_desc_version) == 48);
+    assert!(offset_of!(BerryHandoff, _r0) == 52);
+    assert!(offset_of!(BerryHandoff, gop_fb_pa) == 56);
+    assert!(offset_of!(BerryHandoff, gop_width) == 64);
+    assert!(offset_of!(BerryHandoff, gop_height) == 68);
+    assert!(offset_of!(BerryHandoff, gop_stride) == 72);
+    assert!(offset_of!(BerryHandoff, gop_format) == 76);
+    assert!(offset_of!(BerryHandoff, init_blob_pa) == 80);
+    assert!(offset_of!(BerryHandoff, init_blob_len) == 88);
+    assert!(offset_of!(BerryHandoff, cmdline_pa) == 96);
+    assert!(offset_of!(BerryHandoff, cmdline_len) == 104);
+};
+
 /// 刀 1 骨架行：ASCII + CRLF（EFI ConOut 惯例——部分终端只认 CRLF）。
 const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
+
+/// 行 7（V-0b 刀 3）：段装载——`span()` 整窗一次
+/// AllocatePages(AllocateAddress) 认领（段间缝隙一并拿下：段可共享页/
+/// 有缝，逐段认领撞页冲突）→ 全窗清零（.bss + 缝隙确定性归零，对齐
+/// QEMU `-kernel` 直加载零 RAM 起步）→ 逐段 copy filesz → 回读逐字节
+/// 对拍（标记 = 状态谓词，不建立在「拷了就算」上）→ handoff 页填 v0
+/// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop/init_blob/cmdline 留位
+/// 零值；memmap 刀 4 填）。全过打 `load: segs=<n> pages=<n> ok`；任一步
+/// 失败打状态码诊断行 + 置 `*ok=false`（BERRYBOOT ok 抑制——机器可读
+/// 缺席报告）。零 panic：一切失败走诊断行返回。
+fn load_kernel(
+    bs: &berry_efi::EfiBootServices,
+    con_out: &berry_efi::EfiSimpleTextOutputProtocol,
+    kbuf: *mut c_void,
+    bo: &berry_loader::BootElf,
+    ok: &mut bool,
+) {
+    let segs = bo.segments();
+    // 整窗认领（AllocateAddress 对已占用页返错不覆盖——kbuf/固件数据若
+    // 压进 span，此处干净报 EFI 状态码而非静默腐化）。
+    let Some((span_base, span_end)) = bo.span() else {
+        *ok = false;
+        print_line(con_out, |l| l.push_str("load: span none"));
+        return;
+    };
+    let pages = ((span_end - span_base) / 4096) as usize;
+    let mut got: u64 = span_base;
+    let r_ap =
+        unsafe { (bs.allocate_pages)(EFI_ALLOCATE_ADDRESS, EFI_LOADER_DATA, pages, &mut got) };
+    if r_ap != EFI_SUCCESS || got != span_base {
+        *ok = false;
+        print_line(con_out, |l| {
+            l.push_str("load: claim r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_ap as u64, &mut t));
+            l.push_str(" addr=");
+            l.push_u64_hex(got);
+        });
+        return;
+    }
+    // 全窗清零（span_base 页对齐 → u64 字写）。
+    let zp = span_base as *mut u64;
+    for i in 0..((span_end - span_base) / 8) as usize {
+        unsafe { zp.add(i).write(0) };
+    }
+    // 逐段拷 filesz 字节（file_off/filesz 已过 boot_parse 界检）。
+    for s in segs {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (kbuf as *const u8).add(s.file_off as usize),
+                s.paddr as *mut u8,
+                s.filesz as usize,
+            );
+        }
+    }
+    // 回读对拍：任一段字节差 = 诊断行（段号定位）+ 失败。
+    for (i, s) in segs.iter().enumerate() {
+        let src = unsafe {
+            core::slice::from_raw_parts((kbuf as *const u8).add(s.file_off as usize), s.filesz as usize)
+        };
+        let dst =
+            unsafe { core::slice::from_raw_parts(s.paddr as *const u8, s.filesz as usize) };
+        if src != dst {
+            *ok = false;
+            print_line(con_out, |l| {
+                l.push_str("load: verify i=");
+                l.push_u32_dec(i as u32);
+            });
+            return;
+        }
+    }
+    // handoff 页：任意页一页 EfiLoaderData（不 FreePages——刀 4 跳 entry
+    // 时 x0 指向它，内核接管后经 memmap 纳管）。
+    let mut hpa: u64 = 0;
+    let r_h = unsafe { (bs.allocate_pages)(EFI_ALLOCATE_ANY_PAGES, EFI_LOADER_DATA, 1, &mut hpa) };
+    if r_h != EFI_SUCCESS || hpa == 0 {
+        *ok = false;
+        print_line(con_out, |l| {
+            l.push_str("load: hoff r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_h as u64, &mut t));
+        });
+        return;
+    }
+    unsafe {
+        (hpa as *mut BerryHandoff).write(BerryHandoff {
+            magic: HANDOFF_MAGIC,
+            version: HANDOFF_VERSION,
+            entry: bo.entry,
+            dram_base: DRAM_BASE,
+            dram_top: DRAM_TOP,
+            memmap_pa: 0,
+            memmap_size: 0,
+            memmap_desc_size: 0,
+            memmap_desc_version: 0,
+            _r0: 0,
+            gop_fb_pa: 0,
+            gop_width: 0,
+            gop_height: 0,
+            gop_stride: 0,
+            gop_format: 0,
+            init_blob_pa: 0,
+            init_blob_len: 0,
+            cmdline_pa: 0,
+            cmdline_len: 0,
+        });
+    }
+    print_line(con_out, |l| {
+        l.push_str("load: segs=");
+        l.push_u32_dec(segs.len() as u32);
+        l.push_str(" pages=");
+        l.push_u32_dec(pages as u32);
+        l.push_str(" ok");
+    });
+}
 
 /// 单行组装器：定长栈缓冲，零分配；越界即截断（引导语境纪律）。
 struct Line {
@@ -240,12 +422,12 @@ pub extern "C" fn efi_main(
         });
     }
 
-    // 行 4–6：SFS 开卷三段——LoadedImage(image handle) → DeviceHandle
+    // 行 4–7：SFS 开卷四段——LoadedImage(image handle) → DeviceHandle
     // → SFS → OpenVolume → 根句柄（各段共用）→ 行 4 HELLO.TXT 对拍（刀 3
     // 原样）+ 行 5 KERNEL.ELF 整档读入（V-0b 刀 1）+ 行 6 引导视图解析
-    // （V-0b 刀 2，kfile 缓冲就地消费）→ Close。全段过才打 `BERRYBOOT ok`
-    // （验收标记 = 状态谓词）；任一步失败打 `fs:`/`kfile:`/`elf:
-    // <step> r=0x…/e=…` 诊断行。
+    // （V-0b 刀 2，kfile 缓冲就地消费）+ 行 7 段装载（V-0b 刀 3）→ Close。
+    // 全段过才打 `BERRYBOOT ok`（验收标记 = 状态谓词）；任一步失败打
+    // `fs:`/`kfile:`/`elf:`/`load: <step> r=0x…/e=…` 诊断行。
     if !bs.is_null() && unsafe { (*bs).hdr.signature } == EFI_BOOT_SERVICES_SIGNATURE {
         let hp = unsafe { (*bs).handle_protocol };
         let mut li: *mut c_void = core::ptr::null_mut();
@@ -390,13 +572,25 @@ pub extern "C" fn efi_main(
                                         };
                                         match berry_loader::boot_parse(kelf, DRAM_BASE, DRAM_TOP)
                                         {
-                                            Ok(bo) => print_line(con_out, |l| {
-                                                l.push_str("elf: segs=");
-                                                l.push_u32_dec(bo.segments().len() as u32);
-                                                l.push_str(" entry=");
-                                                l.push_u64_hex(bo.entry);
-                                                l.push_str(" ok");
-                                            }),
+                                            Ok(bo) => {
+                                                print_line(con_out, |l| {
+                                                    l.push_str("elf: segs=");
+                                                    l.push_u32_dec(bo.segments().len() as u32);
+                                                    l.push_str(" entry=");
+                                                    l.push_u64_hex(bo.entry);
+                                                    l.push_str(" ok");
+                                                });
+                                                // 行 7（V-0b 刀 3）：段装载 +
+                                                // handoff v0（bs 签名已在行 3
+                                                // 前验过）。
+                                                load_kernel(
+                                                    unsafe { &*bs },
+                                                    con_out,
+                                                    kbuf,
+                                                    &bo,
+                                                    &mut all_ok,
+                                                );
+                                            }
                                             Err(e) => {
                                                 all_ok = false;
                                                 print_line(con_out, |l| {

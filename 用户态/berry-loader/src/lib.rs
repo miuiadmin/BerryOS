@@ -551,6 +551,22 @@ impl BootElf {
     pub fn segments(&self) -> &[BootSeg] {
         &self.segs[..self.count]
     }
+
+    /// 段集合的物理覆盖窗 `[base, top)`（V-0b 刀 3）：base = 最小 paddr，
+    /// top = max(paddr+memsz) **页对齐上取整**——装载端一次 `AllocatePages`
+    /// 认领整窗（段间缝隙一并拿下：段可共享页/有缝，逐段认领会撞页冲突；
+    /// 缝隙随后统一清零，与 QEMU `-kernel` 直加载的「零 RAM 起步」对齐）。
+    /// 空（count==0）/ 溢出恒 None（敌意位不 panic——同 crate 契约；引导
+    /// 镜像必有段，装载端把 None 当解析失败面处理）。
+    pub fn span(&self) -> Option<(u64, u64)> {
+        let segs = self.segments();
+        let base = segs.iter().map(|s| s.paddr).min()?;
+        let mut end: u64 = base;
+        for s in segs {
+            end = end.max(s.paddr.checked_add(s.memsz)?);
+        }
+        Some((base, end.checked_add(0xFFF)? & !0xFFF))
+    }
 }
 
 /// 解析 ELF64 LE / ET_EXEC / AArch64 镜像的**引导装载几何**（p_paddr 口径，
@@ -1313,5 +1329,52 @@ mod tests {
         let p2 = phdr(4, 0, 0, 0x20, 0x20); // 只有 PT_NOTE
         let f2 = ehdr(64, 1, &p2, 2, 183);
         assert_eq!(boot_parse(&f2, PB, PT), Err(LoadError::NotSupported));
+    }
+
+    // ---- 装载窗 span（V-0b 刀 3：整窗单次认领的几何源） ----
+
+    #[test]
+    fn boot_span_kernel_shape_with_gaps_and_bss() {
+        // kernel_shape 同形：缝隙（0xE8..0x4000_9000）并入窗；末段 memsz
+        // 决定上界（filesz 不是装载终点），页取整上界。
+        let mut ph = phdr_boot(0x0, 0x4000_0000, 0x4000_0000, 0xE8, 0xE8);
+        ph.extend(phdr_boot(0x0, 0x4000_9000, 0x4000_9000, 0, 0x4000));
+        ph.extend(phdr_boot(0x100, 0xffffff80_4000d000, 0x4000d000, 0x100, 0x200));
+        let mut f = ehdr(64, 3, &ph, 2, 183);
+        f[24..32].copy_from_slice(&0x4000_0000u64.to_le_bytes());
+        f.resize(0x200, 0);
+        let b = boot_parse(&f, PB, PT).unwrap();
+        assert_eq!(b.span(), Some((0x4000_0000, 0x4000_e000)));
+    }
+
+    #[test]
+    fn boot_span_disorder_independent_and_exact_page_edge() {
+        // 段序乱排（ELF 惯序非契约）：span 只看 min/max，不看段序；上界
+        // 恰落页界时不多取一页（半开窗语义，AllocatePages 页数不多付）。
+        let mut ph = phdr_boot(0x1000, 0x4000_2000, 0x4000_2000, 0x800, 0x1000);
+        ph.extend(phdr_boot(0x0, 0x4000_0000, 0x4000_0000, 0x800, 0x800));
+        let mut f = ehdr(64, 2, &ph, 2, 183);
+        f[24..32].copy_from_slice(&0x4000_2000u64.to_le_bytes());
+        f.resize(0x1800, 0);
+        let b = boot_parse(&f, PB, PT).unwrap();
+        assert_eq!(b.span(), Some((0x4000_0000, 0x4000_3000)));
+    }
+
+    #[test]
+    fn boot_span_real_kernel_five_loads() {
+        // 真身五段全量（2026-10-24 dump：boot 头段/.bss.boot fsz=0/三个高半
+        // 镜像段）→ [0x4000_0000, 0x4006_6000) = 0x66 页——BerryBoot 刀 3
+        // 认领面基准（真身 phdr 漂移 = 此测先炸）。
+        let mut ph = phdr_boot(0x10000, 0x4000_0000, 0x4000_0000, 0x1f0, 0x1f0);
+        ph.extend(phdr_boot(0x19000, 0x4000_9000, 0x4000_9000, 0, 0x4000));
+        ph.extend(phdr_boot(0x1d000, 0xffffff80_4000d000, 0x4000d000, 0x240c8, 0x240c8));
+        ph.extend(phdr_boot(0x42000, 0xffffff80_40032000, 0x40032000, 0x1fa48, 0x1fa48));
+        ph.extend(phdr_boot(0x62000, 0xffffff80_40052000, 0x40052000, 0x978, 0x13810));
+        let mut f = ehdr(64, 5, &ph, 2, 183);
+        f[24..32].copy_from_slice(&0x4000_0000u64.to_le_bytes());
+        f.resize(0x63000, 0);
+        let b = boot_parse(&f, PB, PT).unwrap();
+        assert_eq!(b.segments().len(), 5);
+        assert_eq!(b.span(), Some((0x4000_0000, 0x4006_6000)));
     }
 }

@@ -127,15 +127,28 @@ pub const EFI_FILE_MODE_READ: u64 = 0x0000_0000_0000_0001;
 /// V-0b 刀 1 KERNEL.ELF 整档缓冲用）。
 pub const EFI_LOADER_DATA: usize = 2;
 
-/// BOOT_SERVICES——刀 2 只类型化用到的入口（locate_protocol / 刀 3 的
-/// handle_protocol），其余槽以具名 `*const c_void` 占位（同 SystemTable
-/// 的 con_in 纪律：保偏移可审计，不描无用签名）。376B 全表，host 测试钉板。
+/// AllocatePages 的分配类型：任意空闲页（V-0b 刀 3 handoff 页用）。
+pub const EFI_ALLOCATE_ANY_PAGES: u32 = 0;
+/// AllocatePages 的分配类型：**指定地址**认领（V-0b 刀 3 内核 span 用——
+/// AllocateAddress 对已占用页返错不覆盖，天然防撞）。
+pub const EFI_ALLOCATE_ADDRESS: u32 = 2;
+
+/// BOOT_SERVICES——只类型化用到的入口（allocate_pool（V-0b 刀 1）/
+/// handle_protocol（V-0a 刀 3）/ locate_protocol（V-0b 刀 2）/
+/// allocate_pages（V-0b 刀 3）），其余槽以具名 `*const c_void` 占位（同
+/// SystemTable 的 con_in 纪律：保偏移可审计，不描无用签名）。376B 全表，
+/// host 测试钉板。
 #[repr(C)]
 pub struct EfiBootServices {
     pub hdr: EfiTableHeader,                                  // @0
     pub raise_tpl: *mut c_void,                               // @24
     pub restore_tpl: *mut c_void,                             // @32
-    pub allocate_pages: *mut c_void,                          // @40
+    pub allocate_pages: unsafe extern "C" fn(
+        allocate_type: u32,
+        memory_type: usize,
+        pages: usize,
+        memory: *mut u64, // EFI_PHYSICAL_ADDRESS*（出参：分配/认领到的基址）
+    ) -> EfiStatus,                                           // @40（V-0b 刀 3）
     pub free_pages: *mut c_void,                              // @48
     pub get_memory_map: *mut c_void,                          // @56
     pub allocate_pool: unsafe extern "C" fn(
