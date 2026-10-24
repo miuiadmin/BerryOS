@@ -1,0 +1,6 @@
+# 自证不靠 inheritance（bootloader/berryboot 同款）：根 .cargo/config.toml
+# 锁 build.target=aarch64-unknown-none 且 config 发现跨 workspace 边界仍
+# 命中——这里显式重钉同值。实际构建全部显式 --target（justfile build-user
+# 的 musl 链 / test-host 的 host 链）。
+[build]
+target = "aarch64-unknown-none"

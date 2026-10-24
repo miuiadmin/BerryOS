@@ -1,7 +1,7 @@
 //! berry-blkproto —— 块设备服务 RPC 协议纯函数库（P6 A-4，`berry-fsproto`
 //! 先例：「解析器即产品」，零分配、零 unsafe、零依赖，输入只借用）。
 //!
-//! 拓扑：vblk（常驻块设备驱动服务，`user/bins/vblk`）持通道一端（env 块
+//! 拓扑：vblk（常驻块设备驱动服务，`drivers/bins/vblk`）持通道一端（env 块
 //! gift[2]，libc `gift2_h()`），svcmgr（A-4 起为消费自验方，A-5 起 FS 服务
 //! 接棒）持对端——**单对双向 + 严格串行 RPC**（一请求一应答，队列深 1 用
 //! 量，无乱序死锁面；fsmgr/bsh 同款约定）。本库只定字节布局与编解码，

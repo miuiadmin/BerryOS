@@ -1,8 +1,15 @@
 # BerryOS
 
+**English** | [简体中文](README.zh-CN.md)
+
 **A microkernel operating system written entirely in Rust — power-first, capability-secure, and AI-native by construction.**
 
 [![CI](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml/badge.svg)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/miuiadmin/BerryOS?label=release)](https://github.com/miuiadmin/BerryOS/tags)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable_%C2%B7_no_nightly-dea584)](https://www.rust-lang.org/)
+![Arch](https://img.shields.io/badge/arch-ARM64_%C2%B7_x86__64-9b59b6)
+[![Tests](https://img.shields.io/badge/tests-315_host_%C2%B7_5--phase_smoke-2ea44f)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
 
 BerryOS targets battery-class devices first (watch-tier ARM64) and grows toward phones and PCs. The design borrows deliberately: Zircon's pragmatic kernel objects, seL4's capability discipline, and a scheduler built for tickless operation from day one.
 
@@ -52,8 +59,9 @@ sched/        scheduler / tasks / context switching
 ipc/          message passing (reserved)
 arch/         aarch64 HAL (primary) + x86_64 minimal port
 bootloader/   BerryBoot EFI loader
-drivers/ fs/ net/    user-space service slots
-user/         ABI bindings, protocol crates, programs (bsh, svcmgr, vnet, ...)
+drivers/      user-space drivers: virtio framework + vprobe/vblk/vnet
+fs/ net/      user-space service slots
+user/         ABI bindings, protocol crates, programs (bsh, svcmgr, ...)
 tools/        build recipes, smoke harness, deterministic packers, ABI generator
 docs/         design documents (Chinese)
 ```
@@ -66,8 +74,6 @@ Design documents are written in Chinese and live in [`docs/`](docs/). Start from
 - Roadmap: [`docs/路线图.md`](docs/路线图.md)
 - Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计.md`](docs/调度器设计.md)
 - Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计.md`](docs/系统调用ABI设计.md)
-
-中文说明见 **[README.zh-CN.md](README.zh-CN.md)**。
 
 ## License
 

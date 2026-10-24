@@ -2,7 +2,7 @@
 //! /`berry-blkproto` 先例：「解析器即产品」，零分配、零 unsafe、零依赖，
 //! 输入只借用）。
 //!
-//! 拓扑：vnet（常驻网络驱动服务，`user/bins/vnet`）持通道一端（env 块
+//! 拓扑：vnet（常驻网络驱动服务，`drivers/bins/vnet`）持通道一端（env 块
 //! gift[2]，libc `gift2_h()`），svcmgr（A-8c 起消费自验方）持对端——**单对
 //! 双向 + 严格串行 RPC**（一请求一应答，队列深 1 用量，无乱序死锁面；
 //! fsmgr/vblk 同款约定）。本库只定字节布局与编解码，通道/等待语义在两端

@@ -19,20 +19,14 @@ edition = "2021"
 # channel inline 帽 256B < 单扇区 512B——client dup VMO 别名随请求迁移，
 # 本驱动 bounce-buffer 后 close。单设备单主人：negotiate 的 STATUS=0
 # 复位会掀翻既有 virtqueue，第二实例 = 杀服务（v1 文档化，v2 独占执法）。
-
-[workspace]
+# 2026-10-24 自 user/bins/ 迁入 drivers/（工作区成员——空 [workspace]
+# 自绝表与自带 [profile.release] 随迁退役，profile 集中到 drivers/
+# Cargo.toml 根，逐值相同 = 产物零漂移）。
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
-berry-sys = { path = "../../berry-sys" }
-berry-exec = { path = "../../berry-exec" }
+berry-libc = { path = "../../../user/berry-libc" }
+berry-sys = { path = "../../../user/berry-sys" }
+berry-exec = { path = "../../../user/berry-exec" }
 berry-virtio = { path = "../../berry-virtio" }
 # A-4：服务协议（请求/应答编解码，纯函数 host 测试盖）。
-berry-blkproto = { path = "../../berry-blkproto" }
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+berry-blkproto = { path = "../../../user/berry-blkproto" }

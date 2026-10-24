@@ -1,0 +1,20 @@
+[workspace]
+# 驱动一族独立工作区（2026-10-24 自 user/ 迁入——「drivers/ 提前启用」裁决：
+# 现役 berry-virtio 框架 + vprobe/vblk/vnet 三 bin 先入位，真机驱动批次
+# 到货直接进 bins/<名>/）。跨界 path 依赖先例 = bootloader/berryboot/app
+# → ../../../user/berry-loader：本区成员依赖 user/ 侧 crate（berry-libc/
+# berry-sys/berry-exec/协议 crate），锁独立互不污染。
+# 成员构建全部显式 --target（musl 链 + berry-ld 见 justfile build-user；
+# host 测试见 test-host）——config 的 target 钉值只防 host 默认意外。
+members = ["berry-virtio", "bins/vprobe", "bins/vblk", "bins/vnet"]
+resolver = "2"
+
+# 与迁移前各 bin 自带 [profile.release]（standalone 工作区根时生效）逐值
+# 相同——workspace 化后非根 profile 失效（cargo 只认工作区根），集中到本
+# 根 = 产物零漂移（rootfs.cpio 迁移前后逐字节对拍验收）。
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
