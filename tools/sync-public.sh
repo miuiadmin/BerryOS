@@ -47,9 +47,14 @@ git -C "$SRC" archive HEAD | tar -x -C "$TMP"
 
 # ---------- 逐条目同步（白名单内 rsync --delete，保证删除传播） ----------
 for item in "${WHITELIST[@]}"; do
-  if [ -e "$TMP/$item" ]; then
-    mkdir -p "$DEST/$(dirname "$item")"
-    rsync -a --delete "$TMP/$item" "$DEST/$item"
+  if [ -d "$TMP/$item" ]; then
+    # 源带尾斜杠 = 拷内容（非整目录塞入）：macOS openrsync 对不存在目标
+    # 的「rsync -a src dst」是嵌套语义（首版实踩：14 顶层全变 kernel/kernel），
+    # GNU rsync 是落位语义——内容形式在两者下行为一致且幂等。仅对目录。
+    mkdir -p "$DEST/$item"
+    rsync -a --delete "$TMP/$item/" "$DEST/$item/"
+  elif [ -f "$TMP/$item" ]; then
+    cp -p "$TMP/$item" "$DEST/$item"
   elif [ -e "$DEST/$item" ]; then
     rm -rf "$DEST/$item"   # 主仓已删 → 镜像跟随删除
   fi
@@ -74,6 +79,7 @@ EOF
 for entry in "$DEST"/* "$DEST"/.[!.]*; do
   [ -e "$entry" ] || continue
   base=$(basename "$entry")
+  [ "$base" = ".git" ] && continue   # 镜像仓自身元数据永不动（首版实踩：.[!.]* 连 .git 一起扬了）
   ok=0
   for item in "${WHITELIST[@]}"; do [ "$base" = "$item" ] && ok=1; done
   if [ $ok -eq 0 ]; then
