@@ -16,7 +16,7 @@
   - Phase 6（生态）已收官 2026-10-22：std 面（stdhello/hexyl）、RAM-fs、virtio MMIO/blk/net 用户态驱动、FAT12 读写、UDP/DNS、TCP 四刀（T-d 收官刀）。
   - P7 x86_64 最小集五原语收官 2026-10：PVH 引导 / PIT+PIC / 异常向量 / 上下文切换 / SYSCALL-SYSRET，smoke-x86 7 标记已挂 CI。
   - app-0（应用模型 .bap v0）已落地 2026-10：berry-manifest + mkapp + svcmgr appd 雏形（`APP ok n=2`）。
-  - 当前基线：`just smoke` 五跑全绿（裸相 23 + rootfs 相 24 + RX/FAT 子目录/持久化 47）+ EL2 同绿；host 292 测；syscall 30 号在册/29 实现；BerryBoot EFI 骨架落地（M-VM V-0a：`just run-efi` AAVMF 下 `BERRYBOOT ok`）。下一步见 `文档/路线图.md`。
+  - 当前基线：`just smoke` 五跑全绿（裸相 23 + rootfs 相 24 + RX/FAT 子目录/持久化 47）+ EL2 同绿；host 293 测；syscall 30 号在册/29 实现；BerryBoot EFI 链 V-0b 刀 1 起 KERNEL.ELF 整档读入（`just run-efi` AAVMF 下 `kfile: 2969480B ok` + `BERRYBOOT ok` 六段）。下一步见 `文档/路线图.md`。
 - **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `文档/AI调度设计.md`）+ PC 高性能。
 
 ## 设计总原则（三条，钦定）
@@ -129,7 +129,7 @@ berryos/
 - `just run` / `just run-el2`：`BerryOS boot` → `KVA ok` → `ROOTFS ok/absent` + `ROOTFS vmo=` 双行 → ktest 各段 `… ok` 至 `ktest done` → 稳态矩阵（A/B 忙循环 + EL0 用户进程轮转，`switches=N` 金丝雀）→ watchdog `G1.5 ok`。
 - `just run-rootfs`：rootfs 相 24 标记（`ECO ok` … `APP ok n=2` + `DIR ok n=` + `CD ok`，逐标记语义见归档与 smoke.sh）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。
 - `just smoke`：五跑——裸相 23 零漂移 / rootfs 相 24 / RX 注入相（47 合相 + 编辑/`run fail`/落盘/RAM 目录链/cd-pwd 注入段）/ FAT 子目录相（fixture 盘 ls/cat DATA）/ FAT 持久化相（脏盘跨 boot 读回 f42t）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`just smoke-x86` 独立关卡（7 标记恰一次）。
-- `just run-efi`：引导链（V-0a）——AAVMF 固件 + 引导盘拉起 BerryBoot：骨架横幅 → `fw: EDK II rev=…` → `gop: 800x600 …`（ramfb 供 GOP）→ `fs: HELLO.TXT 28B match` → `BERRYBOOT ok`（SFS 开卷读逐字节对拍 = 状态谓词）；`just build-boot` 先产 `out/fatboot.img`。独立工作区，内核链与主 smoke 零交集。
+- `just run-efi`：引导链（V-0b 刀 1 起六段）——AAVMF 固件 + 引导盘拉起 BerryBoot：骨架横幅 → `fw: EDK II rev=…` → `gop: 800x600 …`（ramfb 供 GOP）→ `fs: HELLO.TXT 28B match` → `kfile: <n>B ok`（V-0b 刀 1：KERNEL.ELF GetInfo 探长 + AllocatePool + 循环 Read 整档收齐，n = 内核 ELF 字节数）→ `BERRYBOOT ok`（全段过才打 = 状态谓词）；`just build-boot` 先产 `out/boot.img`（--size-mib 4 造盘 + KERNEL.ELF 直进盘）。独立工作区，内核链与主 smoke 零交集。
 
 **前置（macOS，一次性）**：
 
@@ -154,8 +154,8 @@ just smoke          # 无人值守冒烟（CI 同款）：boot 标记断言 + sw
 just build-x86      # P7-x0：x86_64 最小集构建（独立小工作区 架构相关/x86_64/，**必须显式 --target**——根 .cargo/config.toml 锁 build.target=aarch64-unknown-none 且 config 发现跨 workspace 边界仍命中，见 Gotchas）
 just run-x86        # QEMU pc 机 + PVH ELF（-no-reboot）——期望 BerryOS boot (x86_64) → PVH ok → TIMER ok → EXC dump vec=6 + EXC ok → CTX ok n=128 → SYS ok n=128 → X86 ok 七标记（P7-x1 定时器链 100Hz 真中断 100 拍；P7-x2 ud2 触发 #UD dump 后 rip+2 恢复续行；P7-x3 A/B 内核任务独立 .bss 栈乒乓 128 轮互验计数；P7-x4 CPL3 用户程序 SYSCALL/SYSRET 128 轮对拍 + DONE 哨兵经内核恢复路径归位）；退出 Ctrl-A X
 just smoke-x86      # x86 独立冒烟（7 标记恰一次；不并入主 smoke——ARM64 四跑零扰动；P7-x4 收官起已挂 CI：ci.yml 装 just 复用 build/size/smoke 单一入口 + 两条 x86 步（cargo 直调构建 + 本脚本））
-just build-boot     # V-0a：BerryBoot EFI 应用构建链（引导加载器/berryboot 独立工作区：staticlib → rust-lld 静态全链接（berryboot.ld 单 .img @0x1000 + --image-base 0）→ 工具链/elf2pe.py 转 PE32+ → mkfat --put 造 AAVMF 引导盘 out/fatboot.img——\EFI\BOOT\BOOTAA64.EFI + \HELLO.TXT；主构建链/内核不感知）
-just run-efi        # V-0a：QEMU AAVMF（-bios QEMU_EFI.fd）挂 fatboot.img + -device ramfb——期望五段：BerryBoot EFI skeleton (V-0a) / fw: EDK II rev=… / gop: 800x600 fmt=1 mode=1/3 fb=… / fs: HELLO.TXT 28B match / BERRYBOOT ok（协议失败打状态码诊断行，机器可读缺席报告）；退出 Ctrl-A X
+just build-boot     # V-0b 刀 1：BerryBoot EFI 应用构建链（引导加载器/berryboot 独立工作区：staticlib → rust-lld 静态全链接（berryboot.ld 单 .img @0x1000 + --image-base 0）→ 工具链/elf2pe.py 转 PE32+ → mkfat --put 造 AAVMF 引导盘 out/boot.img——\EFI\BOOT\BOOTAA64.EFI + \HELLO.TXT + \KERNEL.ELF（内核 debug ELF 直进盘，缺失即 loud）+ --size-mib 4（V-0a 1MiB 默认造盘字节零漂移，参数只进 --put 构造体）；主构建链不感知、本链消费内核产物）
+just run-efi        # V-0b 刀 1：QEMU AAVMF（-pflash 固件对）挂 boot.img + -device ramfb——期望六段：BerryBoot EFI skeleton (V-0a) / fw: EDK II rev=… / gop: 800x600 fmt=1 mode=1/3 fb=… / fs: HELLO.TXT 28B match / kfile: <n>B ok（n=内核 ELF 字节数）/ BERRYBOOT ok（协议失败打状态码诊断行，机器可读缺席报告）；退出 Ctrl-A X
 just size           # 内核体积基线报告（文件量 / PT_LOAD 镜像与静态内存 / 段明细；CI 同步打印）
 just check / just clean
 ```

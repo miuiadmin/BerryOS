@@ -370,6 +370,9 @@ RUST_LLD := `printf '%s' "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed
 build-boot:
     #!/bin/sh
     set -e
+    # V-0b 刀 1（裁决 C）：KERNEL.ELF = 内核 debug ELF 直进盘——缺失即
+    # loud（先 just build 补产，勿静默跳过）。
+    test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
     cd {{BOOT_DIR}}
     CARGO_TARGET_DIR=cargo-target cargo build --release --target {{BOOT_TARGET}}
     mkdir -p out
@@ -378,16 +381,21 @@ build-boot:
         -T berryboot.ld -e efi_main --image-base 0 \
         -o out/berryboot.elf cargo-target/{{BOOT_TARGET}}/release/libberryboot.a
     python3 ../../工具链/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
+    # --size-mib 4：FAT12 SPC=4 域内 2044 簇收 ~2.9MiB debug ELF（V-0a
+    # 1MiB 默认造盘路径字节零漂移——参数只进 --put 构造体）。
     python3 ../../工具链/mkfat.py out/boot.img \
+        --size-mib 4 \
         --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI" \
-        --put "hello.txt:/HELLO.TXT"
+        --put "hello.txt:/HELLO.TXT" \
+        --put "{{KERNEL}}:/KERNEL.ELF"
 
-# AAVMF 引导验收（V-0a）：QEMU virt + edk2 固件（pflash 对）+ xhci
+# AAVMF 引导验收（V-0b 刀 1 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。期望串口：BdsDxe starting Boot0001 …USB HARDDRIVE →
-# 四行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
-# `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…` / `fs: HELLO.TXT 28B match`
-# → **`BERRYBOOT ok`**（V-0a 验收标记：SFS 开卷读 HELLO.TXT 与内嵌基准
-# 逐字节对拍全等——状态谓词）。我们的 PE32+ 被 DXE 加载执行、ConOut 落
+# 六行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
+# `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…` / `fs: HELLO.TXT 28B match` /
+# `kfile: <n>B ok`（V-0b 刀 1：KERNEL.ELF GetInfo 探长 + AllocatePool +
+# 循环 Read 整档收齐，n = 内核 ELF 字节数——与宿主 ls 对拍）/ `BERRYBOOT ok`
+# （全段过才打——状态谓词）。我们的 PE32+ 被 DXE 加载执行、ConOut 落
 # PL011 串口；返回后固件续行进 UiApp 前台页。
 # -device ramfb：virt -nographic 默认**无任何显示设备** → 固件不装 GOP
 # 实例 → gop 行只会打 `locate fail r=EFI_NOT_FOUND`（刀 2 实证；ramfb =

@@ -1,5 +1,6 @@
-//! berryboot——BerryOS 引导应用（V-0a 刀 3：SFS 开卷读 HELLO.TXT 逐字节
-//! 对拍——`BERRYBOOT ok` 验收标记）。
+//! berryboot——BerryOS 引导应用（V-0b 刀 1：KERNEL.ELF 整档读入——
+//! `kfile: <n>B ok` 第 6 段横幅；V-0a 刀 3 的 SFS 开卷读 HELLO.TXT 逐字节
+//! 对拍面原样保留）。
 //!
 //! 形态：`crate-type=staticlib` → rust-lld 静态全链接（berryboot.ld 单 .img
 //! @0x1000 + --image-base 0 + --emit-relocs）→ 工具链/elf2pe.py 转 PE32+
@@ -9,10 +10,14 @@
 //! 刀 2 面：横幅三行——骨架行（刀 1）+ `fw:` 固件厂商/修订行（SystemTable
 //! 直读，UCS-2 → ASCII 有损）+ `gop:` 模式信息行（BootServices
 //! LocateProtocol(GOP) → QueryMode 当前模式——裁决 C：只信息行不画像素）。
-//! 刀 3 面：行 4 `fs:` + 验收标记——LoadedImage(image handle) →
-//! DeviceHandle → SFS → OpenVolume → 根 Open(HELLO.TXT, READ) → Read →
-//! 与内嵌基准逐字节对拍，全链过 + 字节全等才打 `BERRYBOOT ok`（状态谓词，
-//! 非 README 式装饰）。
+//! 刀 3 面：行 4 `fs:` HELLO.TXT 对拍（LoadedImage(image handle) →
+//! DeviceHandle → SFS → OpenVolume → 根 Open(READ) → Read → 与内嵌基准
+//! 逐字节对拍）。
+//! V-0b 刀 1 面：行 5 `kfile:` KERNEL.ELF 整档读入——根句柄 Open →
+//! GetInfo(EFI_FILE_INFO) 探 file_size → AllocatePool(EfiLoaderData) 按长
+//! 整档缓冲 → 循环 Read 收齐（got == file_size）→ 打段行；缓冲不 FreePool
+//! （刀 2 ELF 解析 / 刀 3 段拷贝就地消费）。`BERRYBOOT ok` 升格为**全段
+//! 过**才打（fs + kfile 两段皆绿）。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
 //! **状态码诊断行**（机器可读缺席报告——AI 测试友好：`locate fail r=0x…e`
@@ -21,11 +26,12 @@
 #![cfg_attr(not(test), no_std)]
 
 use berry_efi::{
-    fmt_u32_dec, fmt_u64_hex, utf16_encode, utf16_to_ascii, EfiGraphicsOutputModeInfo,
-    EfiGraphicsOutputProtocol, EfiLoadedImageProtocol, EfiSimpleFileSystemProtocol, EfiStatus,
-    EfiSystemTable, EFI_BOOT_SERVICES_SIGNATURE, EFI_FILE_MODE_READ,
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
+    fmt_u32_dec, fmt_u64_hex, utf16_encode, utf16_to_ascii, EfiFileInfo,
+    EfiGraphicsOutputModeInfo, EfiGraphicsOutputProtocol, EfiLoadedImageProtocol,
+    EfiSimpleFileSystemProtocol, EfiStatus, EfiSystemTable, EFI_BOOT_SERVICES_SIGNATURE,
+    EFI_FILE_INFO_GUID, EFI_FILE_MODE_READ, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+    EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_LOADER_DATA, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+    EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
 };
 use core::ffi::c_void;
 
@@ -213,11 +219,11 @@ pub extern "C" fn efi_main(
         });
     }
 
-    // 行 4 + 验收标记：SFS 开卷读 HELLO.TXT 逐字节对拍（刀 3）——
-    // LoadedImage(image handle) → DeviceHandle → SFS → OpenVolume →
-    // 根 Open(READ) → Read → 对拍 → Close。全链过 + 字节全等才打
-    // `BERRYBOOT ok`（V-0a 验收标记 = 状态谓词）；任一步失败打
-    // `fs: <step> r=0x…` 诊断行。
+    // 行 4 + 行 5：SFS 开卷双档——LoadedImage(image handle) → DeviceHandle
+    // → SFS → OpenVolume → 根句柄（两档共用）→ 行 4 HELLO.TXT 对拍（刀 3
+    // 原样）+ 行 5 KERNEL.ELF 整档读入（V-0b 刀 1）→ Close。全段过才打
+    // `BERRYBOOT ok`（验收标记 = 状态谓词）；任一步失败打 `fs:`/`kfile:
+    // <step> r=0x…` 诊断行。
     if !bs.is_null() && unsafe { (*bs).hdr.signature } == EFI_BOOT_SERVICES_SIGNATURE {
         let hp = unsafe { (*bs).handle_protocol };
         let mut li: *mut c_void = core::ptr::null_mut();
@@ -248,6 +254,9 @@ pub extern "C" fn efi_main(
                 let r_vol = unsafe { (sfs_ref.open_volume)(sfs as *mut _, &mut root) };
                 if r_vol == EFI_SUCCESS && !root.is_null() {
                     let root_ref = unsafe { &*root };
+                    let mut all_ok = true;
+
+                    // 行 4：HELLO.TXT 逐字节对拍（V-0a 刀 3 验收面原样）。
                     let mut name16 = [0u16; 16];
                     let name = utf16_encode_bytes(b"HELLO.TXT", &mut name16);
                     let mut file = core::ptr::null_mut();
@@ -263,7 +272,6 @@ pub extern "C" fn efi_main(
                         };
                         // 判读前先收句柄（错误路径也不漏 close——句柄生命周期
                         // 与判定解耦）。
-                        unsafe { (root_ref.close)(root) };
                         unsafe { (file_ref.close)(file) };
                         if r_read == EFI_SUCCESS
                             && n == EXPECTED_HELLO.len()
@@ -274,8 +282,8 @@ pub extern "C" fn efi_main(
                                 l.push_u32_dec(n as u32);
                                 l.push_str("B match");
                             });
-                            print_line(con_out, |l| l.push_str("BERRYBOOT ok"));
                         } else {
+                            all_ok = false;
                             print_line(con_out, |l| {
                                 l.push_str("fs: mismatch read=");
                                 l.push_u32_dec(n as u32);
@@ -287,11 +295,124 @@ pub extern "C" fn efi_main(
                             });
                         }
                     } else {
+                        all_ok = false;
                         print_line(con_out, |l| {
                             l.push_str("fs: open r=0x");
                             let mut t = [0u8; 16];
                             l.push(fmt_u64_hex(r_open as u64, &mut t));
                         });
+                    }
+
+                    // 行 5（V-0b 刀 1）：KERNEL.ELF 整档读入——GetInfo 探
+                    // file_size → AllocatePool(EfiLoaderData) 按长整档缓冲 →
+                    // 循环 Read 收齐（got == file_size 才算过）。缓冲**不
+                    // FreePool**：刀 2 ELF 解析 / 刀 3 段拷贝就地消费，应用
+                    // 返回后由固件回收。帽 64MiB：荒谬长先拒（VMO_MAX_SIZE
+                    // 同精神——防无界分配把引导面炸成 panic）。
+                    let mut name16k = [0u16; 16];
+                    let kname = utf16_encode_bytes(b"KERNEL.ELF", &mut name16k);
+                    let mut kfile = core::ptr::null_mut();
+                    let r_kopen = unsafe {
+                        (root_ref.open)(root, &mut kfile, kname.as_ptr(), EFI_FILE_MODE_READ, 0)
+                    };
+                    if r_kopen == EFI_SUCCESS && !kfile.is_null() {
+                        let kfile_ref = unsafe { &*kfile };
+                        let mut info_buf = [0u8; 256];
+                        let mut info_len = info_buf.len();
+                        let r_gi = unsafe {
+                            (kfile_ref.get_info)(
+                                kfile,
+                                &EFI_FILE_INFO_GUID as *const _,
+                                &mut info_len,
+                                info_buf.as_mut_ptr() as *mut c_void,
+                            )
+                        };
+                        // 定长头 80B（到 attribute；name 变长不入面）。
+                        if r_gi == EFI_SUCCESS && info_len >= 80 {
+                            let info = info_buf.as_ptr() as *const EfiFileInfo;
+                            let fsize = unsafe { (*info).file_size } as usize;
+                            if fsize > 0 && fsize <= 64 * 1024 * 1024 {
+                                let mut kbuf: *mut c_void = core::ptr::null_mut();
+                                let r_ap = unsafe {
+                                    ((*bs).allocate_pool)(EFI_LOADER_DATA, fsize, &mut kbuf)
+                                };
+                                if r_ap == EFI_SUCCESS && !kbuf.is_null() {
+                                    let mut got = 0usize;
+                                    let mut r_rd = EFI_SUCCESS;
+                                    while got < fsize {
+                                        let mut chunk = fsize - got;
+                                        r_rd = unsafe {
+                                            (kfile_ref.read)(
+                                                kfile,
+                                                &mut chunk,
+                                                (kbuf as *mut u8).add(got) as *mut c_void,
+                                            )
+                                        };
+                                        if r_rd != EFI_SUCCESS || chunk == 0 {
+                                            break;
+                                        }
+                                        got += chunk;
+                                    }
+                                    if r_rd == EFI_SUCCESS && got == fsize {
+                                        print_line(con_out, |l| {
+                                            l.push_str("kfile: ");
+                                            l.push_u32_dec(fsize as u32);
+                                            l.push_str("B ok");
+                                        });
+                                    } else {
+                                        all_ok = false;
+                                        print_line(con_out, |l| {
+                                            l.push_str("kfile: read got=");
+                                            l.push_u32_dec(got as u32);
+                                            l.push_str(" want=");
+                                            l.push_u32_dec(fsize as u32);
+                                            l.push_str(" r=0x");
+                                            let mut t = [0u8; 16];
+                                            l.push(fmt_u64_hex(r_rd as u64, &mut t));
+                                        });
+                                    }
+                                } else {
+                                    all_ok = false;
+                                    print_line(con_out, |l| {
+                                        l.push_str("kfile: alloc r=0x");
+                                        let mut t = [0u8; 16];
+                                        l.push(fmt_u64_hex(r_ap as u64, &mut t));
+                                        l.push_str(" buf?=");
+                                        l.push_u32_dec(kbuf.is_null() as u32);
+                                    });
+                                }
+                            } else {
+                                all_ok = false;
+                                print_line(con_out, |l| {
+                                    l.push_str("kfile: size 帽 size=");
+                                    l.push_u32_dec(fsize as u32);
+                                });
+                            }
+                        } else {
+                            all_ok = false;
+                            print_line(con_out, |l| {
+                                l.push_str("kfile: get_info r=0x");
+                                let mut t = [0u8; 16];
+                                l.push(fmt_u64_hex(r_gi as u64, &mut t));
+                                l.push_str(" len=");
+                                l.push_u32_dec(info_len as u32);
+                            });
+                        }
+                        // 判读边界外收句柄（同 HELLO 面纪律）。
+                        unsafe { (kfile_ref.close)(kfile) };
+                    } else {
+                        all_ok = false;
+                        print_line(con_out, |l| {
+                            l.push_str("kfile: open r=0x");
+                            let mut t = [0u8; 16];
+                            l.push(fmt_u64_hex(r_kopen as u64, &mut t));
+                        });
+                    }
+
+                    // 根句柄收口（两档读毕）+ 验收标记：全段过才打。
+                    unsafe { (root_ref.close)(root) };
+                    if all_ok {
+                        print_line(con_out, |l| l.push_str("BERRYBOOT ok"));
                     }
                 } else {
                     print_line(con_out, |l| {

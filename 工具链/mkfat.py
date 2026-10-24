@@ -240,9 +240,10 @@ def fat_path_comps(path) -> list:
     return comps
 
 
-def build_volume_puts(puts: list) -> tuple:
-    """构建 EFI 引导卷（全盘 2048 扇区，无保留区前缀）。puts =
-    [(fat_path, 内容字节)]。返回 (盘字节, 几何摘要)。
+def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS) -> tuple:
+    """构建 EFI 引导卷（无保留区前缀）。puts = [(fat_path, 内容字节)]；
+    vol_sectors = 卷扇区数（V-0b 刀 1 裁决 C：--size-mib 参数化——默认
+    DISK_SECTORS=2048 与 V-0a 产物逐字节不变）。返回 (盘字节, 几何摘要)。
 
     与 build_volume 的差异面：任意层嵌套；子目录产 `.`/`..` 首两项
     （attr 0x10，`..` 指父簇——根上指 0；EDK2 FatDxe 友好）；hidden=0
@@ -268,10 +269,20 @@ def build_volume_puts(puts: list) -> tuple:
             raise SystemExit(f"mkfat: --put FAIL: 重复路径 {path}")
         node[leaf] = data
 
-    vol_sectors = DISK_SECTORS  # 引导卷占全盘
-    fat_sz = 2                  # (510+2)*1.5=768B → 2 扇区
-    data_start = 1 + NUM_FATS * fat_sz + 1
-    clusters = (vol_sectors - data_start) // SPC  # 510
+    assert 1 <= vol_sectors < 0x10000, "total16 域外（1..65535 扇区）"
+    # FAT 尺寸迭代收敛（V-0b 刀 1 裁决 C）：表须装下 (clusters+2) 项 ×1.5B。
+    # 小卷稳定在 fat_sz=2（V-0a 1MiB 盘字节不变——默认零漂移的构造性
+    # 保证）；大卷逐轮放大至收敛（fat_sz ↑ → 数据区 ↓ → 需求 ↓，单调
+    # 必收敛；4MiB → 6 扇区）。
+    fat_sz = 2
+    while True:
+        data_start = 1 + NUM_FATS * fat_sz + 1
+        clusters = (vol_sectors - data_start) // SPC
+        need_sectors = (((clusters + 2) * 3 + 1) // 2 + SECTOR - 1) // SECTOR
+        if need_sectors <= fat_sz:
+            break
+        fat_sz = need_sectors
+    assert clusters >= 1, "卷太小：装不下数据区"
     assert clusters < 4085, "FAT12 域外"
 
     vol = bytearray(vol_sectors * SECTOR)
@@ -392,7 +403,7 @@ def selftest_puts() -> int:
     if build_volume_puts(puts)[0] != vol:
         print("mkfat: selftest FAIL: --put 不确定")
         return 1
-    fat = bytes(vol[SECTOR:3 * SECTOR])
+    fat = bytes(vol[SECTOR:(1 + geo["fat_sz"]) * SECTOR])
     root = vol[(geo["data_start"] - 1) * SECTOR:geo["data_start"] * SECTOR]
 
     def entries_of(blob) -> dict:
@@ -405,32 +416,33 @@ def selftest_puts() -> int:
                             int.from_bytes(e[28:32], "little"))
         return out
 
-    def chain_read(first: int, size: int) -> bytes:
+    def chain_read(vol_x: bytes, fat_x: bytes, geo_x: dict,
+                   first: int, size: int) -> bytes:
         data = b""
         c = first
         while 0x2 <= c < 0xFF8:
-            off = (geo["data_start"] + (c - 2) * SPC) * SECTOR
-            data += bytes(vol[off:off + SPC * SECTOR])
-            c = fat12_get(fat, c)
+            off = (geo_x["data_start"] + (c - 2) * SPC) * SECTOR
+            data += bytes(vol_x[off:off + SPC * SECTOR])
+            c = fat12_get(fat_x, c)
         return data[:size]
 
     ents = entries_of(root)
     assert b"BERRYBOOT  " in ents, "卷标项缺失"
     efi = ents[b"EFI        "]
     assert efi[0] == 0x10, "EFI 非 attr 0x10"
-    efi_dir = entries_of(chain_read(efi[1], 2048))
+    efi_dir = entries_of(chain_read(vol, fat, geo, efi[1], 2048))
     assert b".          " in efi_dir and b"..         " in efi_dir, "`.`/`..` 缺失"
     assert efi_dir[b".          "][1] == efi[1], "`.` 簇不自指"
     assert efi_dir[b"..         "][1] == 0, "`..` 应指根(0)"
     boot = efi_dir[b"BOOT       "]
-    boot_dir = entries_of(chain_read(boot[1], 2048))
+    boot_dir = entries_of(chain_read(vol, fat, geo, boot[1], 2048))
     assert boot_dir[b"..         "][1] == efi[1], "BOOT 的 `..` 应指 EFI 簇"
     app = boot_dir[b"BOOTAA64EFI"]
-    if chain_read(app[1], app[2]) != puts[0][1]:
+    if chain_read(vol, fat, geo, app[1], app[2]) != puts[0][1]:
         print("mkfat: selftest FAIL: BOOTAA64.EFI 链回读不等于源")
         return 1
     hello = ents[b"HELLO   TXT"]
-    if chain_read(hello[1], hello[2]) != puts[1][1]:
+    if chain_read(vol, fat, geo, hello[1], hello[2]) != puts[1][1]:
         print("mkfat: selftest FAIL: HELLO.TXT 链回读不等于源")
         return 1
 
@@ -449,8 +461,34 @@ def selftest_puts() -> int:
     else:
         print("mkfat: selftest FAIL: 重复路径未被拒绝")
         return 1
+    # 尺寸参数化面（V-0b 刀 1 裁决 C）：4MiB 卷 + 2.8MiB 级多簇大档——
+    # fat_sz 收敛 >2、链回读仍等于源；显式 2048 扇区与默认调用产物逐字节
+    # 一致（V-0a 引导盘零漂移的构造性证明）；过小卷 loud 拒。
+    big = bytes((i * 11 + 5) % 256 for i in range(1_100_000))
+    puts2 = puts + [(b"/KERNEL.ELF", big)]
+    vol2, geo2 = build_volume_puts(puts2, 8192)
+    if len(vol2) != 8192 * SECTOR or geo2["fat_sz"] <= 2:
+        print(f"mkfat: selftest FAIL: 4MiB 卷几何异常 fat_sz={geo2['fat_sz']}")
+        return 1
+    fat2 = bytes(vol2[SECTOR:(1 + geo2["fat_sz"]) * SECTOR])
+    root2 = vol2[(geo2["data_start"] - 1) * SECTOR:geo2["data_start"] * SECTOR]
+    kern = entries_of(root2)[b"KERNEL  ELF"]
+    if chain_read(vol2, fat2, geo2, kern[1], kern[2]) != big:
+        print("mkfat: selftest FAIL: KERNEL.ELF 大档链回读不等于源")
+        return 1
+    if build_volume_puts(puts, DISK_SECTORS)[0] != vol:
+        print("mkfat: selftest FAIL: 显式 2048 扇区与默认调用产物不一致")
+        return 1
+    try:
+        build_volume_puts([(b"/A.TXT", b"x")], 8)
+    except (SystemExit, AssertionError):
+        pass
+    else:
+        print("mkfat: selftest FAIL: 过小卷未被拒绝")
+        return 1
     print(f"mkfat: selftest ok: --put 卷 {len(vol)}B clusters_used="
-          f"{geo['next_clus'] - 2}/{geo['clusters']}（链回读/嵌套目录/负样本全过）")
+          f"{geo['next_clus'] - 2}/{geo['clusters']}（链回读/嵌套目录/负样本/"
+          f"尺寸参数化全过）")
     return 0
 
 
@@ -496,7 +534,10 @@ def main() -> int:
     # --put 模式（V-0a 刀 1）：EFI 引导盘——内容即 puts，独立构造体，与
     # 默认/fixture 模式互斥（混用 = 语义不明，loud）。取参约定与
     # --check-fixture 同形：`--put <local>:<fat_path>` 两 argv。
+    # `--size-mib N`（V-0b 刀 1 裁决 C）：引导卷尺寸参数化——默认缺省 =
+    # V-0a 1MiB 产物字节不变；4MiB 收 KERNEL.ELF（debug ELF ~2.9MiB）。
     put_specs = []
+    size_mib = None
     rest = []
     i = 1
     while i < len(args):
@@ -505,6 +546,16 @@ def main() -> int:
                 sys.stderr.write("mkfat: --put 需要一个 <local>:<fat_path> 参数\n")
                 return 2
             put_specs.append(args[i + 1])
+            i += 2
+        elif args[i] == "--size-mib":
+            if i + 1 >= len(args):
+                sys.stderr.write("mkfat: --size-mib 需要一个整数参数\n")
+                return 2
+            try:
+                size_mib = int(args[i + 1])
+            except ValueError:
+                sys.stderr.write(f"mkfat: --size-mib 非整数（got {args[i + 1]!r}）\n")
+                return 2
             i += 2
         else:
             rest.append(args[i])
@@ -521,13 +572,21 @@ def main() -> int:
                 return 2
             with open(local, "rb") as f:
                 pairs.append((fat_path, f.read()))
-        vol, geo = build_volume_puts(pairs)
+        if size_mib is not None:
+            vol, geo = build_volume_puts(pairs, size_mib * (1024 * 1024 // SECTOR))
+        else:
+            vol, geo = build_volume_puts(pairs)
         with open(out_path, "wb") as f:
             f.write(vol)
         names = " ".join(p for p, _ in pairs)
-        print(f"mkfat: {out_path} {len(vol)}B (efi boot 盘) clusters_used="
-              f"{geo['next_clus'] - 2}/{geo['clusters']} puts=[{names}]")
+        size_note = f", {size_mib}MiB" if size_mib is not None else ""
+        print(f"mkfat: {out_path} {len(vol)}B (efi boot 盘{size_note}) "
+              f"clusters_used={geo['next_clus'] - 2}/{geo['clusters']} "
+              f"fat={geo['fat_sz']}x{NUM_FATS} puts=[{names}]")
         return 0
+    if size_mib is not None:
+        sys.stderr.write("mkfat: --size-mib 仅与 --put 连用（EFI 引导卷尺寸）\n")
+        return 2
     vol, geo = volume_for(args)
     disk = bytearray(DISK_SECTORS * SECTOR)
     disk[RESERVED_ZONE * SECTOR:] = vol  # 保留区前缀全零（LBA0 印章由调用方 dd）

@@ -123,6 +123,10 @@ pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: EfiGuid = EfiGuid {
 /// EFI_FILE_PROTOCOL 的 open_mode 位（只收用到的）。
 pub const EFI_FILE_MODE_READ: u64 = 0x0000_0000_0000_0001;
 
+/// AllocatePool 内存类型（EfiLoaderData = 引导应用数据——EBS 后仍有效；
+/// V-0b 刀 1 KERNEL.ELF 整档缓冲用）。
+pub const EFI_LOADER_DATA: usize = 2;
+
 /// BOOT_SERVICES——刀 2 只类型化用到的入口（locate_protocol / 刀 3 的
 /// handle_protocol），其余槽以具名 `*const c_void` 占位（同 SystemTable
 /// 的 con_in 纪律：保偏移可审计，不描无用签名）。376B 全表，host 测试钉板。
@@ -134,7 +138,11 @@ pub struct EfiBootServices {
     pub allocate_pages: *mut c_void,                          // @40
     pub free_pages: *mut c_void,                              // @48
     pub get_memory_map: *mut c_void,                          // @56
-    pub allocate_pool: *mut c_void,                           // @64
+    pub allocate_pool: unsafe extern "C" fn(
+        pool_type: usize,
+        size: usize,
+        buffer: *mut *mut c_void,
+    ) -> EfiStatus,                                           // @64（V-0b 刀 1）
     pub free_pool: *mut c_void,                               // @72
     pub create_event: *mut c_void,                            // @80
     pub set_timer: *mut c_void,                               // @88
@@ -252,7 +260,12 @@ pub struct EfiFileProtocol {
     pub write: *mut c_void,        // @40
     pub get_position: *mut c_void, // @48
     pub set_position: *mut c_void, // @56
-    pub get_info: *mut c_void,     // @64
+    pub get_info: unsafe extern "C" fn(
+        this: *mut EfiFileProtocol,
+        information_type: *const EfiGuid,
+        buffer_size: *mut usize,
+        buffer: *mut c_void,
+    ) -> EfiStatus, // @64（V-0b 刀 1）
     pub set_info: *mut c_void,     // @72
     pub flush: *mut c_void,        // @80
 }
@@ -266,6 +279,45 @@ pub struct EfiLoadedImageProtocol {
     pub parent_handle: *mut c_void, // @8
     pub system_table: *mut c_void,  // @16（*mut EfiSystemTable）
     pub device_handle: *mut c_void, // @24——SFS 定位路由的目标
+}
+
+/// EFI_FILE_INFO GUID（09576E92-6D3F-11D2-8E39-00A0C969723B）——GetInfo
+/// 查档长（V-0b 刀 1：KERNEL.ELF 整档读入先探 file_size）。
+pub const EFI_FILE_INFO_GUID: EfiGuid = EfiGuid {
+    data1: 0x0957_6E92,
+    data2: 0x6D3F,
+    data3: 0x11D2,
+    data4: [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B],
+};
+
+/// EFI_TIME（16B 定长——FILE_INFO 内三枚时间戳的排面）。
+#[repr(C)]
+pub struct EfiTime {
+    pub year: u16,       // @0
+    pub month: u8,       // @2
+    pub day: u8,         // @3
+    pub hour: u8,        // @4
+    pub minute: u8,      // @5
+    pub second: u8,      // @6
+    _pad1: u8,           // @7
+    pub nanosecond: u32, // @8
+    pub timezone: u16,   // @12
+    pub daylight: u8,    // @14
+    _pad2: u8,           // @15
+}
+
+/// FILE_INFO——GetInfo(EFI_FILE_INFO) 出参（@80 起变长 UCS-2 名；定长面
+/// 88B 含 name[1]，host 测试钉板）。size = 整结构含名的字节数。
+#[repr(C)]
+pub struct EfiFileInfo {
+    pub size: u64,                 // @0
+    pub file_size: u64,            // @8——刀 1 消费面（整档 Read 的长度权威）
+    pub physical_size: u64,        // @16
+    pub create_time: EfiTime,      // @24
+    pub last_access_time: EfiTime, // @40
+    pub modification_time: EfiTime, // @56
+    pub attribute: u64,            // @72
+    pub name: [u16; 1],            // @80（变长首槽）
 }
 
 /// UTF-16 → ASCII 有损解码：`src` 逐 u16 映射进 `out`（≥0x80 → '?'，
@@ -403,6 +455,7 @@ mod tests {
     #[test]
     fn boot_services_offsets() {
         let p = 0x1000usize as *const EfiBootServices;
+        assert_eq!(off!(p, allocate_pool), 64);
         assert_eq!(off!(p, handle_protocol), 152);
         assert_eq!(off!(p, exit_boot_services), 232);
         assert_eq!(off!(p, locate_protocol), 320);
@@ -477,6 +530,27 @@ mod tests {
         assert_eq!(li.data1, 0x5B1B31A1);
         assert_eq!(li.data4, [0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B]);
         assert_eq!(li.data1.to_le_bytes(), [0xA1, 0x31, 0x1B, 0x5B]);
+    }
+
+    #[test]
+    fn file_info_guid_and_layout() {
+        let g = EFI_FILE_INFO_GUID;
+        assert_eq!(g.data1, 0x09576E92);
+        assert_eq!(g.data2, 0x6D3F);
+        assert_eq!(g.data3, 0x11D2);
+        assert_eq!(g.data4, [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B]);
+        assert_eq!(g.data1.to_le_bytes(), [0x92, 0x6E, 0x57, 0x09]);
+        assert_eq!(core::mem::size_of::<EfiTime>(), 16);
+        assert_eq!(core::mem::size_of::<EfiFileInfo>(), 88);
+        let i = 0x1000usize as *const EfiFileInfo;
+        assert_eq!(off!(i, size), 0);
+        assert_eq!(off!(i, file_size), 8);
+        assert_eq!(off!(i, physical_size), 16);
+        assert_eq!(off!(i, create_time), 24);
+        assert_eq!(off!(i, last_access_time), 40);
+        assert_eq!(off!(i, modification_time), 56);
+        assert_eq!(off!(i, attribute), 72);
+        assert_eq!(off!(i, name), 80);
     }
 
     #[test]
