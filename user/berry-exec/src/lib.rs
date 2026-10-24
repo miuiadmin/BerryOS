@@ -185,7 +185,7 @@ fn send_retry(h: Handle, p: *const u8, n: usize) {
 /// [`spawn_rootfs_elf`] 的参数面（A-2 SpawnSpec 化——9 参位置列表易错位，
 /// G-eco-c 的 ABI 错位教训）。
 pub struct SpawnSpec<'a> {
-    /// cpio 名 = argv0（NUL 分隔 blob 首项；截 63B）。
+    /// cpio 名 = argv0（NUL 分隔 blob 首项；blob 192B，截 191B）。
     pub name: &'a [u8],
     /// rootfs VMO 内 ELF 偏移（cpio_find/遍历所得 data_off）。
     pub data_off: u64,
@@ -205,8 +205,9 @@ pub struct SpawnSpec<'a> {
     /// 键盘行，**非 feeder 模型**）。**被 send take**——调用方保留原值者先
     /// duplicate；与 `stdin_feed` 互斥（调试断言拦混用）。
     pub stdin_handle: Option<Handle>,
-    /// argv[1] 追加项（hexyl 的 `--color=never` 走这条）。
-    pub extra_arg: Option<&'a [u8]>,
+    /// argv[1..] 追加项列表（hexyl 的 `--color=never` 单参 / C-2a 起 uu 家族
+    /// cp/mv 的双操作数走这条）。空片 = 无参。
+    pub args: &'a [&'a [u8]],
     /// env 块 gift[2..]（P6 A-1 起切片 ≤2 项）：[2] = rootfs VMO READ dup
     /// （bsh 的 run 流式取 ELF）/ P6 的 fsmgr 服务端端 fs_b；[3] = fs 客户
     /// 端端（bsh 的 `>`/`cat`/`ls`，P6 A-1）。**全被 send take**，调用方
@@ -241,7 +242,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         stack_pages,
         stdin_feed,
         stdin_handle,
-        extra_arg,
+        args,
         extra_gifts,
         mmio_vmo,
     } = spec;
@@ -419,14 +420,20 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         );
         nhandles = nhandles.max(2 + extra_gifts.len());
     }
-    let mut blob = [0u8; 64];
-    let n = name.len().min(63);
+    // argv 串 = argv0\0 + 各参\0（C-2a 起多参）。blob 192B：消息 inline 帽
+    // 256 内、argv0 + 数参的 cp/mv 形态留足余量；截断按「整参或零参」——
+    // 装不下就不装（调用面 v1 参数都是短 CLI 词，实测最长的 uu_ls 长参面
+    // 也在 192 内），绝不截半参。
+    let mut blob = [0u8; 192];
+    let n = name.len().min(191);
     blob[..n].copy_from_slice(&name[..n]);
     let mut plen = n + 1;
-    if let Some(arg) = extra_arg {
-        let m = arg.len().min(63 - plen);
-        blob[plen..plen + m].copy_from_slice(&arg[..m]);
-        plen += m + 1;
+    for arg in args.iter() {
+        if plen + arg.len() + 1 > blob.len() {
+            break;
+        }
+        blob[plen..plen + arg.len()].copy_from_slice(arg);
+        plen += arg.len() + 1;
     }
     if berry_channel_send(env_s, blob.as_ptr(), plen, gift.as_ptr(), nhandles) != 0 {
         trap();

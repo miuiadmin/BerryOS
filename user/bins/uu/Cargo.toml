@@ -1,0 +1,58 @@
+[workspace]
+# C-2a（VM 草案 §C-2a）：uutils coreutils 家族工作区——12 个 GNU coreutils
+# 命令（ls/cat/cp/mv/rm/mkdir/rmdir/touch/pwd/echo/true/false）经 crates.io
+# 上游 uu_* crate（=0.12.0 锁步，MIT）薄 harness 接入 rootfs。「人无我有/
+# 人有我强」：GNU 兼容 CLI 面买现成的上游逐字不动；每个成员 crate 只做
+# 两件事——CRT0 锚（hexyl 先例）+ uumain 调用直传 i32（`#[uucore::main]`
+# proc 宏已把一切 uumain 统一改写成 `-> i32` 退出码）。
+#
+# 为什么家族 workspace 而非 hexyl 式逐 crate 自绝：12 个成员共享一棵依赖
+# 树（uucore/clap/fluent……），单 Cargo.lock 锁死整族解析（12 独立 lock 的
+# uucore 版本漂移 = 各 bin 语义不同步）；单次构建全树复用 = 12 独立构建
+# 的 wall-clock 与磁盘的 1/12。drivers/ 工作区同款先例（第三例）。
+#
+# 不入 user/ members（nearest-workspace 根在此，与 hexyl 自绝同效）；构建
+# 走 justfile build-user 的 std 面家族块（musl target + berry-ld + 家族
+# CARGO_TARGET_DIR=bins/uu/cargo-target）。
+members = [
+    "cat",
+    "cp",
+    "echo",
+    "false",
+    "ls",
+    "mkdir",
+    "mv",
+    "pwd",
+    "rm",
+    "rmdir",
+    "touch",
+    "true",
+]
+resolver = "2"
+
+# rustix 后端钉 libc（C-2a 实抓）：uucore 带 rustix(default-features=false,
+# features=["fs","process"])——target 是 linux 系（musl）时 rustix 默认选
+# linux_raw 后端 = 内联 svc + **Linux 系统调用号**，整体绕过 berry-libc：
+# 现场 cp binary 的 raw svc 桩直方图（openat=56/umask=166/splice=76…）实锤，
+# Linux 号在 berry 号表上随机对撞既有号（56=thread_set_priority 等）——
+# 「成功」即静默腐化、「失败」是错误码。use-libc 把后端翻到 libc crate FFI
+# = 链接期解析到 berry-libc 符号面（缺桩 loud 拒链，迭代补齐到绿）。
+# 12 成员统一挂（uucore 树全员含 rustix，单成员翻转会让 -p 单包构建的
+# feature 统一面漂移——家族全图构建也要求同一面）。
+[workspace.dependencies]
+rustix = { version = "1", default-features = false, features = ["use-libc"] }
+
+# hexyl/stdhello 同款体积优先五连（上游 ELF 本体进 cpio，rootfs 16MiB
+# 双侧帽是本家族的体积预算约束）。
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# 链接残留/死亡排障需要符号表（hexyl 同款）。
+[profile.audit]
+inherits = "release"
+strip = false
+debug = true

@@ -1,0 +1,9 @@
+[package]
+name = "cat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustix.workspace = true
+uu_cat = "=0.12.0"
+berry-libc = { path = "../../../berry-libc" }

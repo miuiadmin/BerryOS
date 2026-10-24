@@ -181,6 +181,8 @@ const H_MMIO: Handle = 0x0001_0004;
 static mut STEP_WIN: [u8; 512] = [0; 512];
 /// hexyl 终验收齐窗：子 stdout 全量（基准 2156B + 版本漂移余量）。
 static mut HEX_WIN: [u8; 4096] = [0; 4096];
+/// C-2a U1 收集窗（uu 子私有 stdout；ls 两条目 + 上游格式余量，2KiB）。
+static mut U1_WIN: [u8; 2048] = [0; 2048];
 /// vnet（常驻网络服务）client 端（A-8b）：vnet 预拉 Ok 后本表留持的
 /// net_a——A-8c 起作 DNS 自验的 client 端消费；本步只保活（唯一 client
 /// 端 close = 服务端孤儿端，v1 无对端关闭检测，留表即留命）。
@@ -287,7 +289,7 @@ fn run_rootfs_child(console: Handle) {
                 stack_pages: 8,
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
-                extra_arg: None,
+                args: &[],
                 extra_gifts: &[blk_b],
                 mmio_vmo: Some(H_MMIO),
             },
@@ -368,7 +370,7 @@ fn run_rootfs_child(console: Handle) {
                 stack_pages: 8,
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
-                extra_arg: None,
+                args: &[],
                 extra_gifts: fgifts,
                 mmio_vmo: None,
             },
@@ -425,7 +427,7 @@ fn run_rootfs_child(console: Handle) {
                 stack_pages: 8,
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
-                extra_arg: None,
+                args: &[],
                 extra_gifts: &[net_b],
                 mmio_vmo: Some(H_MMIO),
             },
@@ -490,7 +492,7 @@ fn run_rootfs_child(console: Handle) {
                 stack_pages: 8,
                 stdin_feed: Some(stdin),
                 stdin_handle: None,
-                extra_arg: None,
+                args: &[],
                 extra_gifts: gifts,
                 mmio_vmo: None,
             },
@@ -519,6 +521,14 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
+    // ---- C-2a：uutils core 家族单子验收（`U1 ok` = rootfs 相第 25 标记）。
+    // stdhello 预拉同窗口的 fs 串行纪律：每子 EOF + 阻塞 reap 后才起下一
+    // 个（单活跃客户——fsproto 严格串行无请求号，交叠即混流；bsh arm 在
+    // 本 arm 之后，其 fs 自验与本窗口零交叠）。fsmgr 未起（fs_a_h==0）→
+    // 静默跳过（rootfs 相 fsmgr 链断本就该 FAIL——U1 缺失 loud）。
+    if fs_a_h != 0 && u1_selftest(console, fs_a_h) {
+        send_retry(console, U1_OK.as_ptr(), U1_OK.len());
+    }
     while pos < cap {
         let want = ((cap - pos).min(step.len() as u64)) as usize;
         if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), pos, want) != 0 {
@@ -542,7 +552,7 @@ fn run_rootfs_child(console: Handle) {
                             stack_pages: 1,
                             stdin_feed: None,
                             stdin_handle: None,
-                            extra_arg: None,
+                            args: &[],
                             extra_gifts: &[],
                             mmio_vmo: None,
                         },
@@ -596,7 +606,7 @@ fn run_rootfs_child(console: Handle) {
                             stack_pages: 32,
                             stdin_feed: Some(stdin),
                             stdin_handle: None,
-                            extra_arg: Some(b"--color=never"),
+                            args: &[b"--color=never"],
                             extra_gifts: &[],
                             mmio_vmo: None,
                         },
@@ -659,7 +669,7 @@ fn run_rootfs_child(console: Handle) {
                                 stack_pages: 16,
                                 stdin_feed: None,
                                 stdin_handle: Some(H_BSH_STDIN),
-                                extra_arg: None,
+                                args: &[],
                                 extra_gifts: gifts,
                                 mmio_vmo: None,
                             },
@@ -718,7 +728,7 @@ fn run_rootfs_child(console: Handle) {
                                 stack_pages: 8,
                                 stdin_feed: None,
                                 stdin_handle: None,
-                                extra_arg: None,
+                                args: &[],
                                 extra_gifts: &[],
                                 mmio_vmo: Some(H_MMIO),
                             },
@@ -876,6 +886,18 @@ const TCPS_ECHO_PORT: u16 = 18080;
 const TCPS_PATTERN: &[u8; 64] =
     b"berryos-tcp-probe-0123456789012345678901234567890123456789abcdef";
 const _: () = assert!(TCPS_PATTERN.len() == 64);
+
+/// rootfs 相第 25 标记（C-2a，VM 草案 §C-2a）：uutils core 家族单子验收
+/// ——上游 uu_* crate（0.12.0 锁步，MIT）12 命令薄 harness 接入后，
+/// mkdir→touch→cp→mv→ls→cat→rm×2→rmdir 九步串行链全过才打（每步 = fs
+/// gift 拉起 + 私有 stdout EOF 收齐 + 阻塞 reap 真码 0；ls 加子串断言、
+/// cat 加恰空断言）。单消息原子、状态谓词无竞速面；空文件 roundtrip 盖
+/// 元数据五 op RPC 全链，分片数据面经 C-2b shell 面验收。
+const U1_OK: &[u8; 6] = b"U1 ok\n";
+
+/// U1 单步 EOF 活动帽：30s（app 子同档——RPC 链慢而活着不误杀，每次收包
+/// 刷新；真断链 = 帽尽降级 + 标记缺失 = smoke FAIL）。
+const U1_EOF_CAP: u64 = 30 * 1_000_000_000;
 
 // rootfs ELF 流式拉起 = `berry_exec::spawn_rootfs_elf`（A-2 迁出：ELF 首窗
 // 解析 → 页铺平单 VMO → 段泵送 → 栈+保护页 → env 块交接；签名 SpawnSpec
@@ -1174,6 +1196,194 @@ fn collect_eof(h: Handle) -> bool {
     }
 }
 
+// ---- C-2a：U1（uutils core 家族单子验收）四件套 ----
+
+/// U1 步链（九步串行；任一步失败打可见诊断行返 false——`U1 ok` 缺失 =
+/// smoke FAIL loud）。诊断行 step 数字 ↔ STEPS 下标钉死。ls = 输出含
+/// `src.txt`+`mvd.txt` 双子串（上游列名/格式不钉板——「人有我强」买的是
+/// GNU 兼容面，不是字节基准）；cat = 输出恰空（空文件零输出 + 真码 0）。
+/// 全链只造/搬/删**空文件与目录**——12 命令无内容写路径（touch 空建、cp
+/// 复制既有），分片数据面（PUT/GET chunk）留 C-2b。
+fn u1_selftest(console: Handle, fs_a: Handle) -> bool {
+    // (cpio 名, argv[1..], ls 子串断言, 输出恰空断言)。ls 显式
+    // `--color=never`：uu_ls 0.12 默认 Color=Auto，非 tty 虽应回落 plain，
+    // 显式关掉防上游行为漂移（hexyl 同款口径）。
+    const STEPS: &[(&[u8], &[&[u8]], bool, bool)] = &[
+        (b"bin/mkdir", &[b"u1d"], false, false),
+        (b"bin/touch", &[b"u1d/src.txt"], false, false),
+        (b"bin/cp", &[b"u1d/src.txt", b"u1d/dst.txt"], false, false),
+        (b"bin/mv", &[b"u1d/dst.txt", b"u1d/mvd.txt"], false, false),
+        (b"bin/ls", &[b"--color=never", b"u1d"], true, false),
+        (b"bin/cat", &[b"u1d/src.txt"], false, true),
+        (b"bin/rm", &[b"u1d/src.txt"], false, false),
+        (b"bin/rm", &[b"u1d/mvd.txt"], false, false),
+        (b"bin/rmdir", &[b"u1d"], false, false),
+    ];
+    const _: () = assert!(STEPS.len() < 10, "u1 diag step 位单数字");
+    for (i, (name, args, want_subs, want_empty)) in STEPS.iter().enumerate() {
+        let code = match uu_run(console, fs_a, name, args) {
+            None => {
+                u1_diag(console, i, 0xEE00);
+                return false;
+            }
+            Some((c, len)) => {
+                if c == 0 && *want_subs {
+                    // SAFETY: svcmgr 单线程独占（HEX_WIN 同纪律）。
+                    let out: &[u8] = unsafe {
+                        core::slice::from_raw_parts(core::ptr::addr_of!(U1_WIN) as *const u8, len)
+                    };
+                    if !has_sub(out, b"src.txt") || !has_sub(out, b"mvd.txt") {
+                        u1_diag(console, i, 0xEE01);
+                        return false;
+                    }
+                }
+                if c == 0 && *want_empty && len != 0 {
+                    u1_diag(console, i, 0xEE02);
+                    return false;
+                }
+                c
+            }
+        };
+        if code != 0 {
+            u1_diag(console, i, code as usize);
+            return false;
+        }
+    }
+    true
+}
+
+/// U1 单子拉起：fs gift（[rootfs dup, fs 客户端 dup]——gift[2]/[3] 槽位
+/// 语义同 bsh，libc `rootfs_h()`/`fs_h()` 消费，stdhello 预拉同款）+ 私有
+/// stdout（收进 [`U1_WIN`]）+ 阻塞 reap，返 Some((真码, 长度))。失败（档
+/// 缺/spawn Err/无 EOF/reap Err）返 None——步链上层打诊断行（arm 不自
+/// 陷：标记缺失已 loud，诊断留给 u1_diag 汇总）。
+fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<(i32, usize)> {
+    let (data_off, data_len) = cpio_find(H_ROOTFS, name)?;
+    let (out_s, out_c) = channel_pair();
+    let mut rootfs_dup = 0 as Handle;
+    if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+        trap();
+    }
+    let mut fs_dup = 0 as Handle;
+    if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+        trap();
+    }
+    let gifts = [rootfs_dup, fs_dup];
+    let child = match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name,
+            data_off,
+            data_len,
+            stdout: out_c,
+            stack_pages: 32, // clap 解析 + uu 主体栈深（hexyl 同口径，d-3c 实踩）
+            stdin_feed: Some(&[]), // gift[1] 占位（立即 EOF；fsmgr/vnet 先例）
+            stdin_handle: None,
+            args,
+            extra_gifts: &gifts,
+            mmio_vmo: None,
+        },
+    ) {
+        Ok(c) => c,
+        Err(()) => {
+            // Err 三路全在 env send 前——双 dup 未被 take，显式回收（stdhello
+            // 预拉同款）；out 对同收（spawn 内 gift[0] 是 dup，原值仍在表）。
+            if berry_handle_close(rootfs_dup) != 0 {
+                trap();
+            }
+            if berry_handle_close(fs_dup) != 0 {
+                trap();
+            }
+            if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+                trap();
+            }
+            return None;
+        }
+    };
+    // 私有 stdout 收齐（EOF = libc exit 族零长消息，d-3b；活动帽 30s——
+    // fs RPC 链慢而活着不误杀）。随行 handle 丢弃（collect_eof 同款纪律）。
+    // SAFETY: svcmgr 单线程独占（HEX_WIN 同纪律）。
+    let cap: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(U1_WIN) as *mut u8, 2048)
+    };
+    let mut got = 0usize;
+    let mut eof = false;
+    while !eof {
+        let mut msg = [0u8; 256];
+        let mut hh = [0 as Handle; 4]; // 随行收口容量 = channel 上限（富余非协议值）
+        let mut nb = msg.len();
+        let mut nh = hh.len();
+        let s = berry_channel_recv(out_s, msg.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh);
+        if s == 0 {
+            for i in 0..nh {
+                let _ = berry_handle_close(hh[i]); // 多带 handle：丢弃勿 trap
+            }
+            if nb == 0 {
+                eof = true;
+            } else {
+                if got + nb > cap.len() {
+                    send_retry(console, b"u1: overflow\n".as_ptr(), 13);
+                    let _ = child.reap();
+                    if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+                        trap();
+                    }
+                    return None;
+                }
+                cap[got..got + nb].copy_from_slice(&msg[..nb]);
+                got += nb;
+            }
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(out_s, SIGNAL_READABLE, now() + U1_EOF_CAP, &mut obs) != 0 {
+            send_retry(console, b"u1: no EOF\n".as_ptr(), 11);
+            let _ = child.reap();
+            if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+                trap();
+            }
+            return None;
+        }
+    }
+    let code = match child.reap() {
+        Ok(c) => c,
+        Err(()) => {
+            if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+                trap();
+            }
+            return None;
+        }
+    };
+    // out_c 本表副本使命已毕（子表持 SEND 别名，子退出 drain 已收）。
+    if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+        trap();
+    }
+    Some((code, got))
+}
+
+/// U1 诊断行（`u1: step N code XXXX\n`——step ↔ STEPS 下标；code = 子真
+/// 码或 0xEExx 内部断言码：EE00 拉起/EOF/reap 面、EE01 ls 子串缺、EE02
+/// cat 非空）。
+fn u1_diag(console: Handle, step: usize, code: usize) {
+    let mut line = [0u8; 21];
+    line[..9].copy_from_slice(b"u1: step ");
+    line[9] = b'0' + step as u8;
+    line[10..16].copy_from_slice(b" code ");
+    put_hex4(&mut line[16..20], code);
+    line[20] = b'\n';
+    send_retry(console, line.as_ptr(), 21);
+}
+
+/// U1 子串断言助手（hay 含 needle 与否；ls 输出面）。
+fn has_sub(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > hay.len() {
+        return false;
+    }
+    (0..=hay.len() - needle.len()).any(|i| &hay[i..i + needle.len()] == needle)
+}
+
 /// .bap 内层走查产物：manifest 实长 + 包内 bin/ 条目名长 + ELF 包内几何
 /// （`bap_off` 相对偏移——spawn 直用 `bap_off + elf_off`）。
 struct BapScan {
@@ -1317,7 +1527,7 @@ fn app_launch(
             // 都不读 fd0；空 gift 数组不触发 gift[1] 在位 assert）。
             stdin_feed: None,
             stdin_handle: None,
-            extra_arg: None,
+            args: &[],
             extra_gifts: &[],
             mmio_vmo: None,
         },

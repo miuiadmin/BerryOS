@@ -44,21 +44,40 @@ macro_rules! ok {
 }
 
 // —— FS 路径面（C-1 刀 2 起 open/openat/opendir/stat/lstat/unlink/unlinkat/
-//    rmdir/chdir/mkdir 迁 `fs.rs` 真实现；余下无真面的照旧 ENOENT——std 侧
+//    rmdir/chdir/mkdir 迁 `fs.rs` 真实现；C-2a 起 rename 迁 fs.rs 组合真实现
+//    ——copy+unlink 兑现 POSIX 面；余下无真面的照旧 ENOENT——std 侧
 //    报「文件不存在」比「未实现」对最终用户更诚实，反正 v1 就是不存在）——
 neg_int!(
-    readlink => crate::ENOENT,
-    rename => crate::ENOENT,
     mkfifo => crate::ENOENT,
     symlink => crate::ENOENT,
+    symlinkat => crate::ENOENT,
     linkat => crate::ENOENT,
     execvp => crate::ENOENT,
 );
 
-// —— FS 元数据/杂（ENOSYS；fstat 刀 2 起迁 fs.rs——fd≥3 真/fd 0-2 保持
-//    ENOSYS 旧面）——
+// —— xattr 族（C-2a rustix use-libc 后引入）：uu_cp/uu_ls 的属性保留/
+//    显示路径引用（copy_xattrs、ls 的 security context 查询）。errno 取
+//    **ENOTSUP(95) 非 ENOSYS(38)**（对抗审查实抓）：uucore fsxattr 的
+//    is_xattr_unsupported 白名单只吞 ENOTSUP/EOPNOTSUPP——ENOSYS 会经
+//    uu_cp -a（伪诊断）/--preserve=xattr（整单失败）传播；musl
+//    ENOTSUP==EOPNOTSUPP==95，正是 Linux「文件系统不支持 xattr」的规范
+//    档（GNU cp 对此静默跳过）。零参桩形态同上：AArch64 调用约定容忍
+//    调用方多传寄存器参数，被调方忽略即可。读六族（get*/list*）POSIX
+//    返回 ssize_t——同 readlink 档位纪律，见 neg_ssize! 注释。
+neg_int!(
+    setxattr => crate::ENOTSUP,
+    lsetxattr => crate::ENOTSUP,
+    fsetxattr => crate::ENOTSUP,
+    removexattr => crate::ENOTSUP,
+    lremovexattr => crate::ENOTSUP,
+    fremovexattr => crate::ENOTSUP,
+);
+
+// —— FS 元数据/ENOSYS 面（fstat 刀 2 起迁 fs.rs——fd≥3 真/fd 0-2 保持
+//    ENOSYS 旧面；utimensat/futimens C-2a 起改 no-op 成功桩见下方手写面）——
 neg_int!(
     fchmod => crate::ENOSYS,
+    fchmodat => crate::ENOSYS,
     fchown => crate::ENOSYS,
     chmod => crate::ENOSYS,
     chown => crate::ENOSYS,
@@ -67,8 +86,6 @@ neg_int!(
     fsync => crate::ENOSYS,
     fdatasync => crate::ENOSYS,
     ftruncate => crate::ENOSYS,
-    futimens => crate::ENOSYS,
-    utimensat => crate::ENOSYS,
     flock => crate::ENOSYS,
     fcntl => crate::EINVAL,
     ioctl => crate::ENOTTY,
@@ -87,7 +104,8 @@ neg_int!(
     fork => crate::ENOSYS,
 );
 
-// —— socket 族（ENOSYS 一刀切）——
+// —— socket 族（ENOSYS 一刀切；send/recv 六读写族 POSIX 返回 ssize_t，
+//    挪 neg_ssize! 对档——socket() 本身 ENOSYS 时上层到不了，纯防御性对齐）——
 neg_int!(
     socket => crate::ENOSYS,
     socketpair => crate::ENOSYS,
@@ -100,16 +118,37 @@ neg_int!(
     setsockopt => crate::ENOSYS,
     getpeername => crate::ENOSYS,
     getsockname => crate::ENOSYS,
+    pipe2 => crate::ENOSYS,
+);
+
+neg_ssize!(
+    // C-2a 档位纪律第一案（cp 毒路径实锤）：readlink 的 musl/POSIX ABI 返回
+    // ssize_t（64 位）——std（musl 预编译）按 c_long 消费 x0 全宽。原 c_int
+    // 桩只写 w0：x0 高 32 位为零 → 0x00000000ffffffff ≠ 64 位 -1 → std 判
+    // 「成功」→ set_len(0xffffffff) 把桩根本没写过的堆残留当路径 →
+    // Components 倒扫 D-abort（uucore locale 机 env::current_exe() 首踩，
+    // lldb 回调断点 + 帧链 "/proc/self/exe" 14 字面量钉死）。errno 语义照旧
+    // ENOENT：/proc v1 不存在 = 诚实失败，current_exe().ok() 自然走 None
+    // 分支。**新桩入册先查 ABI 返回宽度：ssize_t/off_t/指针宽一律本档。**
+    readlink => crate::ENOENT,
+    // xattr 读六族：POSIX 返回 ssize_t（get*/list*）——uu_cp copy_xattrs 与
+    // uu_ls security context 真实可达面，同毒机制防御性对档（写族 set*/
+    // remove* 返回 int，留在 neg_int!）。errno 同写族取 ENOTSUP（白名单
+    // 面要求，见上方注释）。
+    getxattr => crate::ENOTSUP,
+    lgetxattr => crate::ENOTSUP,
+    fgetxattr => crate::ENOTSUP,
+    listxattr => crate::ENOTSUP,
+    llistxattr => crate::ENOTSUP,
+    flistxattr => crate::ENOTSUP,
+    // socket 读写六族：POSIX 返回 ssize_t——socket() 先 ENOSYS，上层到不了，
+    // 纯防御性对档（零成本换将来 socket 面转真时无第二案）。
     send => crate::ENOSYS,
     recv => crate::ENOSYS,
     recvfrom => crate::ENOSYS,
     sendto => crate::ENOSYS,
     sendmsg => crate::ENOSYS,
     recvmsg => crate::ENOSYS,
-    pipe2 => crate::ENOSYS,
-);
-
-neg_ssize!(
     readv => crate::ENOSYS,
     pread => crate::ENOSYS,
     pwrite => crate::ENOSYS,
@@ -117,6 +156,13 @@ neg_ssize!(
     pwritev => crate::ENOSYS,
     sendfile => crate::ENOSYS,
     splice => crate::ENOSYS,
+    // C-2a：std io::copy 的 File→File 特化先试本调用——-1+ENOSYS 让它
+    // 老实回落 read/write 循环（uu_cp 的 uucore 本地拷贝同款判据）。
+    copy_file_range => crate::ENOSYS,
+    // C-2a：uu_cp 设备文件拷贝路（nix::sys::stat::mknod，LTO 内联后真
+    // 可达）。v1 无设备节点面，ENOSYS = 诚实语义：cp 打「未实现」诊断
+    // 跳过，不谎言成功。
+    mknod => crate::ENOSYS,
 );
 
 // —— 成功谎报档（无竞争锁族/特权空转/信号安装——v1 无信号机制，
@@ -135,6 +181,9 @@ ok!(
     signal,
     sigaddset,
     sigemptyset,
+    // C-2a：uu_cp 的 uucore crash 装配被 LTO 内联进 uumain 入口引用；
+    // 零触碰成功与家族同档（set 后续只进 sigaction 桩，无真消费方）。
+    sigfillset,
     sigaltstack,
     pthread_rwlock_rdlock,
     pthread_rwlock_wrlock,
@@ -154,6 +203,9 @@ ok!(
     posix_spawnattr_setpgroup,
     posix_spawnattr_setsigdefault,
     freeaddrinfo,
+    // C-2a：fadvise 是建议性接口（消费方对失败零处置义务）——谎报成功
+    // 比 ENOSYS 更诚实于语义（「建议被忽略」本就是合法实现档）。
+    posix_fadvise,
 );
 
 // —— 手写面（签名/返回语义敏感）——
@@ -170,6 +222,243 @@ pub extern "C" fn syscall() -> isize {
 pub extern "C" fn mmap() -> *mut c_void {
     crate::set_errno(crate::ENOMEM);
     ptr::null_mut()
+}
+
+// —— C-2a uutils core 批手写桩（12 bin 的链接/行为缺口；hexyl 面已够，
+//    本批逐符号按上游源级降级路径定形）——
+
+/// umask：返回进程 umask（v1 恒 0o022 = musl 默认档——mkdir 的最终 mode
+/// 由 uu_mkdir 自己 0777&~umask 算，本桩只须值稳定）。
+#[no_mangle]
+pub extern "C" fn umask() -> u32 {
+    0o022
+}
+
+// —— 身份族（v1 单 root 用户：uid=euid=gid=egid=0，无附属组）——
+// getuid/getpid 在 sys.rs；此处补 e/g 面（uu_cp -p 走 geteuid 查保留面）。
+
+#[no_mangle]
+pub extern "C" fn geteuid() -> u32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn getegid() -> u32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn getgid() -> u32 {
+    0
+}
+
+/// getgroups：返 0 = 无附属组（不写 list——musl 语义 0 组合法）。
+#[no_mangle]
+pub extern "C" fn getgroups() -> c_int {
+    0
+}
+
+// —— passwd/group 数据库（无 /etc/passwd：NULL/ENOENT——上游 uucore
+//    entries 对 None 回落数字 uid/gid 渲染，源级验证过的降级路）——
+
+#[no_mangle]
+pub extern "C" fn getpwuid() -> *mut c_void {
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn getpwnam() -> *mut c_void {
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn getgrgid() -> *mut c_void {
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn getgrnam() -> *mut c_void {
+    ptr::null_mut()
+}
+
+/// _r 族：**全 5 参签名对真原型**（libc crate：uid/name、pwd/grp、buf、
+/// buflen、result——result 是第 5 参落 x4；对抗审查实抓：旧单参形态绑
+/// x0 = uid/name，真调用方的 result 指针无人写 = 调用即野读）。正返
+/// ENOENT + *result 置 NULL（调用方两出口都看——只置一半是 UB 诱因）。
+/// 零参宏不适用（出参必须写）。
+#[no_mangle]
+pub extern "C" fn getpwuid_r(
+    _uid: u32,
+    _pwd: *mut c_void,
+    _buf: *mut c_void,
+    _buflen: size_t,
+    result: *mut *mut c_void,
+) -> c_int {
+    unsafe { *result = ptr::null_mut() };
+    crate::ENOENT
+}
+
+#[no_mangle]
+pub extern "C" fn getpwnam_r(
+    _name: *const c_char,
+    _pwd: *mut c_void,
+    _buf: *mut c_void,
+    _buflen: size_t,
+    result: *mut *mut c_void,
+) -> c_int {
+    unsafe { *result = ptr::null_mut() };
+    crate::ENOENT
+}
+
+#[no_mangle]
+pub extern "C" fn getgrgid_r(
+    _gid: u32,
+    _grp: *mut c_void,
+    _buf: *mut c_void,
+    _buflen: size_t,
+    result: *mut *mut c_void,
+) -> c_int {
+    unsafe { *result = ptr::null_mut() };
+    crate::ENOENT
+}
+
+#[no_mangle]
+pub extern "C" fn getgrnam_r(
+    _name: *const c_char,
+    _grp: *mut c_void,
+    _buf: *mut c_void,
+    _buflen: size_t,
+    result: *mut *mut c_void,
+) -> c_int {
+    unsafe { *result = ptr::null_mut() };
+    crate::ENOENT
+}
+
+// —— utimensat/futimens：no-op 成功桩——不是谎言：v1 FS 无时间戳面
+// （fs.rs fill_stat 的 mtime 恒 0 = 「卷定值」，C-2a 诚实边界条款），
+// 「设时」在时间戳恒定的文件系统上语义恒真。touch 因此全语义可用
+// （建文件 + 更新时戳两半都真），违失败档（ENOSYS 桩）反把「已成功
+// 建档」误报成错误。utimes 同理。
+
+#[no_mangle]
+pub extern "C" fn utimensat() -> c_int {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn futimens() -> c_int {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn utimes() -> c_int {
+    0
+}
+
+/// musl 的 strerror_r 即 XPG int 版（glibc 才有双版）——libc crate 对
+/// musl 恒引用本名，`__xpg_strerror_r` 单独在册不够。
+#[no_mangle]
+pub extern "C" fn strerror_r(errnum: c_int, buf: *mut c_char, buflen: size_t) -> c_int {
+    __xpg_strerror_r(errnum, buf, buflen)
+}
+
+// pow —— C-2a 链接缺口三件之三：uu_cp 的 indicatif 进度条 ETA 平滑是
+// llvm.pow.f64 libcall，LTO 全图 DCE 后真可达（非死码，必须给定义）。
+// v1 无 libm 服务，落地纯算术实现：pow(x,y) = exp2(y·log2(x))——log2
+// 用 atanh 级数（u=(m-1)/(m+1)，|u|≤1/3，16 项），exp2 用 e^{f·ln2}
+// Taylor（15 项）+ 指数位合成 2^k；全程只用 f64 基本运算与位分解/位
+// 截断（core 无 floor/trunc 家族，见 ftrunc/ffloor），零 libm 循环依赖。
+// 相对精度 ~1e-12
+// （ETA/显示面远超所需）；边角按 IEEE：y=0→1、负底数整指数可算非整
+// NaN、上溢 INF、次正规区折返零（调用面不可达）。
+#[no_mangle]
+pub extern "C" fn pow(x: f64, y: f64) -> f64 {
+    if y == 0.0 || x == 1.0 {
+        return 1.0;
+    }
+    if x.is_nan() || y.is_nan() {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return if y > 0.0 { 0.0 } else { f64::INFINITY };
+    }
+    if x == f64::INFINITY {
+        return if y > 0.0 { f64::INFINITY } else { 0.0 };
+    }
+    if x < 0.0 {
+        if y != ftrunc(y) {
+            return f64::NAN;
+        }
+        // 巨 |y| 饱和转换后奇偶判不真，但彼时结果已是 0/INF，符号无观感
+        let odd = ((y as i64) & 1) == 1;
+        let r = pow(-x, y);
+        return if odd { -r } else { r };
+    }
+    exp2(y * log2(x))
+}
+
+/// ftrunc —— 位运算截断（core 无 floor/trunc 家族）：尾数低于整数位的
+/// 位清零；|v|<1 → ±0（保号）；exp=0x7ff（Inf/NaN）原样返回（本面
+/// 不可达，防御性）。
+fn ftrunc(v: f64) -> f64 {
+    let b = v.to_bits();
+    let exp = ((b >> 52) & 0x7ff) as i64;
+    if exp < 1023 {
+        return f64::from_bits(b & (1u64 << 63)); // ±0
+    }
+    let int_bits = exp - 1023; // 值的指数（≥52 即纯整数位形）
+    if int_bits >= 52 {
+        return v;
+    }
+    let mask = !((1u64 << (52 - int_bits as u32)) - 1);
+    f64::from_bits(b & mask)
+}
+
+/// ffloor —— floor 的截断合成（有限值精确）：负非整截断后 -1。
+fn ffloor(v: f64) -> f64 {
+    let t = ftrunc(v);
+    if v >= 0.0 || v == t {
+        t
+    } else {
+        t - 1.0
+    }
+}
+
+/// log2（x>0 有限）：m∈[1,2) 位分解 + atanh 级数。
+fn log2(x: f64) -> f64 {
+    let bits = x.to_bits();
+    let e = (((bits >> 52) & 0x7ff) as i64 - 1023) as f64;
+    let m = f64::from_bits((bits & !(0x7ffu64 << 52)) | (1023u64 << 52));
+    let u = (m - 1.0) / (m + 1.0);
+    let u2 = u * u;
+    let mut series = 1.0f64;
+    let mut p = u2;
+    let mut i = 3.0;
+    while i <= 31.0 {
+        series += p / i;
+        p *= u2;
+        i += 2.0;
+    }
+    e + 2.0 * u * series / core::f64::consts::LN_2
+}
+
+/// 2^t（t 有限）：k=floor 分解 + e^{f·ln2} Taylor + 指数位合成。
+fn exp2(t: f64) -> f64 {
+    if t < -1022.0 {
+        return 0.0; // 次正规区折返零（ETA 面不可达）
+    }
+    if t > 1023.0 {
+        return f64::INFINITY;
+    }
+    let k = ffloor(t);
+    let s = (t - k) * core::f64::consts::LN_2; // s∈[0,ln2)
+    let mut term = 1.0f64;
+    let mut sum = 1.0f64;
+    for i in 1..=15 {
+        term *= s / (i as f64);
+        sum += term;
+    }
+    sum * f64::from_bits(((1023i64 + k as i64) as u64) << 52)
 }
 
 // getcwd（刀 2 起迁 fs.rs 真实现——cwd 字符串 + render_cwd/ERANGE 面）。
@@ -248,6 +537,7 @@ pub extern "C" fn strerror(errnum: c_int) -> *const c_char {
         22 => b"Invalid argument\0",
         25 => b"Inappropriate ioctl for device\0",
         38 => b"Function not implemented\0",
+        95 => b"Operation not supported\0",
         110 => b"Connection timed out\0",
         _ => b"Unknown error\0",
     };

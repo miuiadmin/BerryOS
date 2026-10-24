@@ -93,6 +93,10 @@ pub const ERANGE: c_int = 34;
 pub const ENAMETOOLONG: c_int = 36;
 pub const ENOSYS: c_int = 38;
 pub const ENOTEMPTY: c_int = 39;
+/// musl：ENOTSUP == EOPNOTSUPP == 95（xattr 族桩档位——uucore
+/// fsxattr 白名单只吞 95，38(ENOSYS) 会向 uu_cp -a/--preserve=xattr
+/// 传播，对抗审查实抓）。
+pub const ENOTSUP: c_int = 95;
 
 // EAI_*（getaddrinfo 直接返回，非 errno）
 pub const EAI_NONAME: c_int = -2;

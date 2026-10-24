@@ -117,6 +117,17 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
+    # 单次构建 12 命令（=0.12.0 锁步，MIT，上游逐字不动；薄 harness =
+    # CRT0 锚 + uumain 直传——`#[uucore::main]` proc 宏已统一改写 -> i32）。
+    # berry-libc 补桩批见 stubs.rs C-2a 段：pow 纯算术实现（indicatif ETA
+    # 经 LTO 真可达）+ mknod ENOSYS + sigfillset ok——lto=fat 把 berry-libc
+    # 折进 bin 自身 rcgu.o（rlib 不上链接线），-lc 保险网拉 musl 成员会与
+    # 折入定义 duplicate，缺口在 libc shim 侧补齐 = 零 musl 字节哲学执法点
+    # （详见 tools/berry-ld 头注）。
+    CARGO_TARGET_DIR=bins/uu/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/uu/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
@@ -134,11 +145,23 @@ build-user:
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
+        bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
+        bin/cp=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp \
+        bin/echo=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/echo \
         bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
+        bin/false=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/false \
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
+        bin/ls=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/ls \
+        bin/mkdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mkdir \
+        bin/mv=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mv \
+        bin/pwd=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd \
+        bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
+        bin/rmdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
+        bin/touch=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/touch \
+        bin/true=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/true \
         bin/vblk=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vblk \
         bin/vnet=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet \
         bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe

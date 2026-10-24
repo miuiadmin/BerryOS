@@ -138,28 +138,63 @@ unsafe fn resolve_to(path: *const c_char, out: &mut [u8; PATH_MAX]) -> Result<us
 
 // —— musl aarch64 结构布局（消费面 = Rust std；字段偏移即 ABI）——
 
-/// `struct stat`（musl aarch64：128B，st_mode@24 / st_size@48）。
+/// `struct stat`（musl aarch64 **asm-generic** 布局：128B，st_mode@16 /
+/// st_nlink@20 / st_rdev@32 / st_size@48 / st_blocks@64——libc crate
+/// aarch64_musl stat64 同源）。2026-10-25 C-2a 定案：旧定义误抄 x86_64-musl
+/// 布局（st_nlink@16 u64 / st_mode@24）——std 在 +16 读 mode 读到的是我们
+/// 写的 nlink=1，uu_ls 把真目录全判成非目录（ls 只打目录名本身）。两布局
+/// 同为 128B 且 st_size 以降偏移恰好同位，故 size 类消费者一直绿灯、
+/// mode 类首次消费者（uu_ls）才显形。
 #[repr(C)]
 pub struct Stat {
-    pub st_dev: u64,
-    pub st_ino: u64,
-    pub st_nlink: u64,
-    pub st_mode: u32,
-    pub st_uid: u32,
-    pub st_gid: u32,
-    pub __pad0: u32,
-    pub st_rdev: u64,
-    pub st_size: i64,
-    pub st_blksize: i64,
-    pub st_blocks: i64,
-    pub st_atime: i64,
-    pub st_atime_nsec: i64,
-    pub st_mtime: i64,
-    pub st_mtime_nsec: i64,
-    pub st_ctime: i64,
-    pub st_ctime_nsec: i64,
-    pub __unused: [u32; 2],
+    pub st_dev: u64,        // @0
+    pub st_ino: u64,        // @8
+    pub st_mode: u32,       // @16
+    pub st_nlink: u32,      // @20
+    pub st_uid: u32,        // @24
+    pub st_gid: u32,        // @28
+    pub st_rdev: u64,       // @32
+    pub __pad1: u64,        // @40
+    pub st_size: i64,       // @48
+    pub st_blksize: i32,    // @56（blksize_t=int；@60 __pad2 垫）
+    pub __pad2: i32,        // @60
+    pub st_blocks: i64,     // @64
+    pub st_atime: i64,      // @72
+    pub st_atime_nsec: i64, // @80
+    pub st_mtime: i64,      // @88
+    pub st_mtime_nsec: i64, // @96
+    pub st_ctime: i64,      // @104
+    pub st_ctime_nsec: i64, // @112
+    pub __unused: [u32; 2], // @120
 }
+
+// 布局钉板（防再次漂移；musl aarch64 bits/alltypes.h 口径）——改字段序
+// 而非数值 = 编译期炸响而非运行期静默错读。**全字段钉**（对抗审查实抓：
+// 首版漏钉 st_dev/st_ino 与 atime/ctime nsec 对——同型相邻字段互换仍
+// 静默过）：20 字段 + size 共 21 断言，相邻同型对（st_dev↔st_ino、
+// st_atime↔st_mtime↔st_ctime 三兄弟、三个 nsec）全在钉板覆盖内。
+const _: () = {
+    assert!(core::mem::size_of::<Stat>() == 128);
+    assert!(core::mem::offset_of!(Stat, st_dev) == 0);
+    assert!(core::mem::offset_of!(Stat, st_ino) == 8);
+    assert!(core::mem::offset_of!(Stat, st_mode) == 16);
+    assert!(core::mem::offset_of!(Stat, st_nlink) == 20);
+    assert!(core::mem::offset_of!(Stat, st_uid) == 24);
+    assert!(core::mem::offset_of!(Stat, st_gid) == 28);
+    assert!(core::mem::offset_of!(Stat, st_rdev) == 32);
+    assert!(core::mem::offset_of!(Stat, __pad1) == 40);
+    assert!(core::mem::offset_of!(Stat, st_size) == 48);
+    assert!(core::mem::offset_of!(Stat, st_blksize) == 56);
+    assert!(core::mem::offset_of!(Stat, __pad2) == 60);
+    assert!(core::mem::offset_of!(Stat, st_blocks) == 64);
+    assert!(core::mem::offset_of!(Stat, st_atime) == 72);
+    assert!(core::mem::offset_of!(Stat, st_atime_nsec) == 80);
+    assert!(core::mem::offset_of!(Stat, st_mtime) == 88);
+    assert!(core::mem::offset_of!(Stat, st_mtime_nsec) == 96);
+    assert!(core::mem::offset_of!(Stat, st_ctime) == 104);
+    assert!(core::mem::offset_of!(Stat, st_ctime_nsec) == 112);
+    assert!(core::mem::offset_of!(Stat, __unused) == 120);
+};
 
 /// `struct dirent`（musl aarch64：d_ino@0/d_off@8/d_reclen@16/d_type@18/
 /// d_name@19，总 280B 对齐尾垫）。
@@ -196,14 +231,15 @@ unsafe fn fill_stat(out: *mut Stat, ty: u8, size: u32) -> c_int {
             Stat {
                 st_dev: 0,
                 st_ino: INO_SEQ,
-                st_nlink: 1,
                 st_mode: mode,
+                st_nlink: 1,
                 st_uid: 0,
                 st_gid: 0,
-                __pad0: 0,
                 st_rdev: 0,
+                __pad1: 0,
                 st_size: size as i64,
                 st_blksize: 512,
+                __pad2: 0,
                 st_blocks: ((size as u64 + 511) / 512) as i64,
                 st_atime: 0,
                 st_atime_nsec: 0,
@@ -759,4 +795,104 @@ pub unsafe extern "C" fn unlinkat(_dirfd: c_int, path: *const c_char, _flags: c_
 #[no_mangle]
 pub unsafe extern "C" fn rmdir(path: *const c_char) -> c_int {
     unsafe { unlink_core(path) }
+}
+
+/// rename（C-2a：组合降级真实现）——fsproto v1 无 RENAME op，libc 侧以
+/// 「读全 src → 写建 dst → unlink src」兑现 POSIX 面：uu_mv 拿到成功即不
+/// 走 EXDEV copy 回退（其判据只认 EXDEV，组合实现的诚实 errno 恰好不触
+/// 发），语义闭环。**非原子**（v1 单会话串行 RPC、沙箱无并发观察者——
+/// 原子性无从谈起，同模块头诚实缺口档）；old==new 恒等自移先针后走
+/// （POSIX 规定 no-op，裸组合会把文件删没）。失败清理抢救首个 errno
+/// （close 系失败码不覆盖成因）。
+#[no_mangle]
+pub unsafe extern "C" fn rename(old: *const c_char, new: *const c_char) -> c_int {
+    unsafe {
+        let mut wsrc = [0u8; PATH_MAX];
+        let mut wdst = [0u8; PATH_MAX];
+        let sl = match resolve_to(old, &mut wsrc) {
+            Ok(l) => l,
+            Err(e) => {
+                crate::set_errno(e);
+                return -1;
+            }
+        };
+        let dl = match resolve_to(new, &mut wdst) {
+            Ok(l) => l,
+            Err(e) => {
+                crate::set_errno(e);
+                return -1;
+            }
+        };
+        if sl == dl && wsrc[..sl] == wdst[..dl] {
+            return 0; // 恒等自移（POSIX no-op）
+        }
+        let in_fd = open(old, O_RDONLY);
+        if in_fd < 0 {
+            return -1;
+        }
+        let out_fd = open(new, O_WRONLY | O_CREAT | O_TRUNC);
+        if out_fd < 0 {
+            let e = *crate::sys::__errno_location();
+            close_fd(in_fd);
+            crate::set_errno(e);
+            return -1;
+        }
+        let mut buf = [0u8; 1024];
+        let mut fail = false;
+        loop {
+            let n = crate::io::read(in_fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+            if n <= 0 {
+                if n < 0 {
+                    fail = true;
+                }
+                break;
+            }
+            let mut off = 0usize;
+            while off < n as usize {
+                let w = crate::io::write(
+                    out_fd,
+                    buf.as_ptr().add(off) as *const c_void,
+                    n as usize - off,
+                );
+                if w < 0 {
+                    fail = true;
+                    break;
+                }
+                off += w as usize;
+            }
+            if fail {
+                break;
+            }
+        }
+        // close(out_fd) = 写通道 commit 点（TRUNC 游标，模块头裁决 2）——
+        // commit 失败码优先于读端问题：两码都真时保写失败（dst 不可信）。
+        let e_wr = if fail { Some(*crate::sys::__errno_location()) } else { None };
+        let e_co = if close_fd(out_fd) != 0 {
+            Some(*crate::sys::__errno_location())
+        } else {
+            None
+        };
+        close_fd(in_fd);
+        if let Some(e) = e_wr {
+            crate::set_errno(e);
+            return -1;
+        }
+        if let Some(e) = e_co {
+            crate::set_errno(e);
+            return -1;
+        }
+        unlink_core(old)
+    }
+}
+
+/// `renameat`：dirfd 忽略（恒按 `AT_FDCWD`）——`openat`/`unlinkat` 同款口径。
+/// C-2a rustix use-libc 后引入（uu_mv/uu_cp 经 rustix::fs::rename 走本名）。
+#[no_mangle]
+pub unsafe extern "C" fn renameat(
+    _olddirfd: c_int,
+    old: *const c_char,
+    _newdirfd: c_int,
+    new: *const c_char,
+) -> c_int {
+    unsafe { rename(old, new) }
 }

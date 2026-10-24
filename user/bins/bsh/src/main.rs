@@ -120,7 +120,7 @@ fn main() {
     //    私有 stdout 收齐）即交互 `run` 的同一台机器——自验过 = 交互面可信。
     //    输出绑 `hexyl_out` 留用：fs 自验的 2156B 多片写入样本（P6 A-1）。
     let hexyl_out: Vec<u8> = if let Some((o, _)) =
-        run_capture("hexyl", Some(&HEXYL_STDIN), Some("--color=never"))
+        run_capture("hexyl", Some(&HEXYL_STDIN), &["--color=never"])
     {
         if !(o.eof && o.dropped == 0 && o.data.len() == HEXYL_PLAIN_LEN) {
             eprintln!(
@@ -325,7 +325,7 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
     if cmd == "help" {
         writeln!(
             out,
-            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | A | B（rootfs 管道）| A && B | A > file | exit"
+            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | A | B（rootfs 管道）| A && B | A > file | exit | 裸名 = bin/<name> 派发（C-2a uu 家族）"
         )
         .unwrap();
         (Vec::new(), 0)
@@ -354,7 +354,7 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
         writeln!(out, "usage: run <name>").unwrap();
         (Vec::new(), 2)
     } else if let Some(rest) = cmd.strip_prefix("run ") {
-        run_output(rest.trim(), out)
+        run_output(rest.trim(), &[], out)
     } else if cmd == "cat" {
         writeln!(out, "usage: cat <file>").unwrap();
         (Vec::new(), 2)
@@ -399,18 +399,38 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
             (d, 0)
         }
     } else {
-        writeln!(out, "bsh: {}: not found", cmd).unwrap();
-        (Vec::new(), 127)
+        // C-2a：裸名 PATH 派发（内建优先零漂移——到这 = 非内建）：首词查
+        // bin/<name>，命中即拉起、余词作 argv[1..]（uu 家族非内建成员
+        // cp/mv/touch/rmdir 等经这条进 shell；裸名 ls/rm/mkdir/cd/pwd/cat
+        // 被内建分支先吃，GNU 全量面经 `run ls` 取）；未命中保持 not found
+        // 127（文案/码不变——RX 相 b/c 断言面）。含 `/` 的词不走派发
+        // （v1 PATH 唯一 = bin/，路径形仍 not found）。
+        let mut words = cmd.split_whitespace();
+        let (name, rest): (&str, Vec<&str>) = match words.next() {
+            Some(w) if !w.contains('/') => (w, words.collect()),
+            _ => {
+                writeln!(out, "bsh: {}: not found", cmd).unwrap();
+                return (Vec::new(), 127);
+            }
+        };
+        if cpio_find(rootfs_h(), format!("bin/{}", name).as_bytes()).is_some() {
+            run_output(name, &rest, out)
+        } else {
+            writeln!(out, "bsh: {}: not found", cmd).unwrap();
+            (Vec::new(), 127)
+        }
     }
 }
 
-/// `run <name>` 的渲染面（P6 A-1 拆 do_run——直出与 `>` 重定向共道）：
-/// cpio 查 `bin/<name>` → 私有 stdout 对拉起（32 页栈 = musl 128KiB 口径，
-/// 盖住 clap 级栈深）→ 收齐 EOF → **数据字节返回**交调用方定向；警告照打
-/// `out`（stderr 语义）。子进程无 stdin（env 块单 gift，libc /dev/null 语义
-/// ——read 即 EOF）。返回 (数据, 状态码)：127 not found / 126 spawn failed /
-/// 2 usage / 其余 = 子真码（reap Err → 1——真码源 0x3A）。
-fn run_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+/// `run <name>` / 裸名 PATH 派发共用的渲染面（P6 A-1 拆 do_run——直出与
+/// `>` 重定向共道）：cpio 查 `bin/<name>` → 私有 stdout 对拉起（32 页栈 =
+/// musl 128KiB 口径，盖住 clap 级栈深）→ 收齐 EOF → **数据字节返回**交调用
+/// 方定向；警告照打 `out`（stderr 语义）。子进程无 stdin（env 块单 gift，
+/// libc /dev/null 语义——read 即 EOF）。`args` = argv[1..]（C-2a 起：
+/// `run` 恒空片、PATH 派发带余词——cp/mv 双操作数走这条）。返回 (数据,
+/// 状态码)：127 not found / 126 spawn failed / 2 usage / 其余 = 子真码
+/// （reap Err → 1——真码源 0x3A）。
+fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
     if name.is_empty() || name.contains([' ', '/']) {
         writeln!(out, "usage: run <name>").unwrap();
         return (Vec::new(), 2);
@@ -421,6 +441,7 @@ fn run_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         return (Vec::new(), 127);
     };
     let (out_s, out_c) = channel_pair();
+    let argv: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
     let spec = SpawnSpec {
         name: full.as_bytes(),
         data_off,
@@ -429,7 +450,7 @@ fn run_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         stack_pages: 32,
         stdin_feed: None,
         stdin_handle: None,
-        extra_arg: None,
+        args: &argv,
         extra_gifts: &[],
         mmio_vmo: None,
     };
@@ -1163,7 +1184,7 @@ fn do_pipe(cmd: &str, vars: &[(String, String)], status: i32, out: &mut std::io:
             writeln!(out, "usage: <name> | <name>（rootfs bin/ 裸名）").unwrap();
             return 2;
         }
-        segs.push(PipeSeg { name, arg: None });
+        segs.push(PipeSeg { name, args: &[] });
     }
     let code = match pipe_capture(&segs, None) {
         Ok((o, c)) => {
@@ -1189,10 +1210,10 @@ fn do_pipe(cmd: &str, vars: &[(String, String)], status: i32, out: &mut std::io:
     code
 }
 
-/// 管道段：程序名 + argv[1]（自验传 `--color=never`，交互 v1 裸名 None）。
+/// 管道段：程序名 + argv[1..]（自验传 `--color=never`，交互 v1 裸名空片）。
 struct PipeSeg<'a> {
     name: &'a str,
-    arg: Option<&'a str>,
+    args: &'a [&'a str],
 }
 
 /// 管道失败面（调用方提示用）。
@@ -1242,6 +1263,7 @@ fn pipe_capture(
     }
     let mut children: Vec<ChildHandles> = Vec::with_capacity(segs.len());
     for (i, (full, (data_off, data_len))) in found.iter().enumerate() {
+        let argv: Vec<&[u8]> = segs[i].args.iter().map(|a| a.as_bytes()).collect();
         let spec = SpawnSpec {
             name: full.as_bytes(),
             data_off: *data_off,
@@ -1250,7 +1272,7 @@ fn pipe_capture(
             stack_pages: 32, // musl 128KiB 口径（hexyl 级栈深，d-3c）
             stdin_feed: if i == 0 { first_feed } else { None },
             stdin_handle: if i > 0 { Some(pipes[i - 1].1) } else { None },
-            extra_arg: segs[i].arg.map(|a| a.as_bytes()),
+            args: &argv,
             extra_gifts: &[],
             mmio_vmo: None,
         };
@@ -1320,7 +1342,7 @@ fn pipe_capture(
 /// eprintln 诊断 + park（标记缺失 loud 兜底）。
 fn pipe_selftest() {
     let pat = &HEXYL_STDIN[..64];
-    let a1 = match run_capture("hexyl", Some(pat), Some("--color=never")) {
+    let a1 = match run_capture("hexyl", Some(pat), &["--color=never"]) {
         Some((o, _)) if o.eof && o.dropped == 0 && !o.data.is_empty() => o.data,
         Some((o, _)) => {
             eprintln!(
@@ -1337,8 +1359,8 @@ fn pipe_selftest() {
         }
     };
     let segs = [
-        PipeSeg { name: "hexyl", arg: Some("--color=never") },
-        PipeSeg { name: "hexyl", arg: Some("--color=never") },
+        PipeSeg { name: "hexyl", args: &["--color=never"] },
+        PipeSeg { name: "hexyl", args: &["--color=never"] },
     ];
     let piped = match pipe_capture(&segs, Some(pat)) {
         Ok((o, _)) => o,
@@ -1351,7 +1373,7 @@ fn pipe_selftest() {
             berry_libc::park();
         }
     };
-    let out3 = match run_capture("hexyl", Some(&a1), Some("--color=never")) {
+    let out3 = match run_capture("hexyl", Some(&a1), &["--color=never"]) {
         Some((o, _)) => o,
         None => {
             eprintln!("bsh: pipe selftest: ref run failed");
@@ -1383,10 +1405,11 @@ fn pipe_selftest() {
 /// None = 档未命中（调用方 not found）；Some((RunOut, code)) 的 code = 子
 /// 真退出码（reap Err → 1——P5 `&&`/`$?` 真码源；spawn Err 仍 park = 自验
 /// 面 loud 死，交互 not-found 面在 do_run 不经此）。
-fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Option<(RunOut, i32)> {
+fn run_capture(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOut, i32)> {
     let full = format!("bin/{}", name);
     let (data_off, data_len) = cpio_find(rootfs_h(), full.as_bytes())?;
     let (out_s, out_c) = channel_pair();
+    let argv: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
     let spec = SpawnSpec {
         name: full.as_bytes(),
         data_off,
@@ -1395,7 +1418,7 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, extra_arg: Option<&str>) -> Opt
         stack_pages: 32,
         stdin_feed: stdin,
         stdin_handle: None,
-        extra_arg: extra_arg.map(|a| a.as_bytes()),
+        args: &argv,
         extra_gifts: &[],
         mmio_vmo: None,
     };

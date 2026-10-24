@@ -27,6 +27,9 @@
 # drivers/ 驱动工作区 target（build-user 驱动面显式 CARGO_TARGET_DIR）
 /drivers/cargo-target/
 
+# C-2a uutils coreutils 家族工作区 target（build-user uu 面显式 CARGO_TARGET_DIR）
+/user/bins/uu/cargo-target/
+
 # Claude Code 本地/会话态（不提交；共享的 agents/settings.json 若需入库再单独 force-add）
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
