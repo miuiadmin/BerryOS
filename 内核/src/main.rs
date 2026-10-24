@@ -73,10 +73,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
-/// C-ABI 约定（ADR #18），符号名与 asm 精确匹配；首参 = 入口 x0（QEMU 传入的
-/// DTB 物理地址——G-eco 入机侧，boot asm 的 x19 抢救）。
+/// C-ABI 约定（ADR #18），符号名与 asm 精确匹配；首参 = 入口 x0（boot asm 的
+/// x19 抢救）——**双语义**（V-1a 分流）：EFI 路 = BerryHandoff PA（BerryBoot
+/// `br entry`，按 BRYH magic 认领，`handoff::probe`）；QEMU `-kernel` 路 =
+/// DTB PA/0（G-eco 入机侧，`dtb::boot_probe`）。
 #[no_mangle]
-pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
+pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 2b-1：注入 direct map 基址——必须先于任何 phys_to_virt 消费者（mm/heap）。
     berry_mm::va::set_kernel_va_base(berry_hal_aarch64::KERNEL_VA_BASE);
     berry_hal_aarch64::init();
@@ -88,6 +90,16 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
         panic!("KVA alias check failed: TTBR1 high-half not translating");
     }
     berry_hal_aarch64::uart_puts(b"KVA ok\n");
+
+    // V-1a：入口首参分流——EFI 路命中即打标记（**EFI 路专属**，smoke 的
+    // -kernel 五跑不见此行）；未中 → None，既有 DTB/fw_cfg 路零扰动。
+    // 插点在 KVA ok 之后：probe 经高半直映读 handoff 页，别名已自证。
+    let handoff = handoff::probe(boot_x0);
+    if let Some(h) = handoff {
+        berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
+        berry_hal_aarch64::uart_put_dec(h.version as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    }
 
     // 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何
     // 访问必然 fault（ktest ASPACE 用例正向断言）；UART/GIC MMIO 已走高半直映，
@@ -101,21 +113,27 @@ pub extern "C" fn rust_main(dtb_pa: usize) -> ! {
     // ① 入口 x0 的 DTB `/chosen` initrd 物理区间 → 高半直映拷出（真机/
     //    Linux boot 协议路径；QEMU 非 Linux ELF 直加载实测 x0=0、RAM 无
     //    DTB、`-initrd` 整体不加载——initrd/dtb/cmdline 机制全在 QEMU
-    //    hw/arm/boot.c 的 is_linux 分支，2026-10 实证）；
+    //    hw/arm/boot.c 的 is_linux 分支，2026-10 实证）；**V-1a 起 handoff
+    //    命中时本源按缺席处理**（x0 是 handoff PA 非 DTB；V-1c 起 handoff
+    //    blob 另立第三源）；
     // ② QEMU fw_cfg 具名文件 `-fw_cfg name=opt/berry/rootfs,file=…`
     //    （目录自描述名字+大小、无魔法地址；justfile run-rootfs 配方）。
     // 装进 boot 期缓冲，下一步包只读 VMO 交 svcmgr（cpio/ELF 解析全在
     // 用户态——微内核只补「字节流变对象」原语）。无 rootfs = 正常降级
     // （不带 -fw_cfg 的既有 run/smoke 零扰动）。
-    let rootfs: Option<(&[u8], alloc::vec::Vec<u8>)> = dtb::boot_probe(dtb_pa)
-        .map(|(s, e)| {
-            // SAFETY: boot_probe 已界检区间在 [RAM_BASE, RAM_TOP)——高半
-            // 直映 L2 全覆盖，from_raw_parts 读取必落在已映射块内。
-            let pa = phys_to_virt(s as usize) as *const u8;
-            let bytes = unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) };
-            (b"dtb" as &[u8], bytes.to_vec())
-        })
-        .or_else(|| {
+    let rootfs: Option<(&[u8], alloc::vec::Vec<u8>)> = if handoff.is_none() {
+        dtb::boot_probe(boot_x0)
+            .map(|(s, e)| {
+                // SAFETY: boot_probe 已界检区间在 [RAM_BASE, RAM_TOP)——高半
+                // 直映 L2 全覆盖，from_raw_parts 读取必落在已映射块内。
+                let pa = phys_to_virt(s as usize) as *const u8;
+                let bytes = unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) };
+                (b"dtb" as &[u8], bytes.to_vec())
+            })
+    } else {
+        None // EFI 路：x0 非 DTB——dtb 源缺席（fw_cfg 链照常兜底）
+    }
+    .or_else(|| {
             use berry_hal_aarch64::fwcfg;
             let entry = fwcfg::find_file(fwcfg::ROOTFS_NAME)?;
             let size = entry.size as usize;

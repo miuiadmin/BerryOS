@@ -80,9 +80,9 @@ global_asm!(
     "    bl enable_mmu",               //  表在 .bss.boot 低半 → 函数内低半寻址即可）
     "    ldr x1, =__stack_top",     // 换高半主栈 + 跳高半入口（此后不再回低半执行；
     "    mov sp, x1",               //  本段 VA==PA 走身份 TTBR0，开 MMU 无缝衔接）
-    "    ldr x1, =rust_main",       // C-ABI 首参 = 入口 x0（DTB PA）：x19 跨
-    "    mov x0, x19",              // build_boot_pt/enable_mmu 两个 extern "C" bl 存活
-    "    br x1",
+    "    ldr x1, =rust_main",       // C-ABI 首参 = 入口 x0（DTB/handoff PA，
+    "    mov x0, x19",              // V-1a 起内核按 magic 分流）；x19 跨两个
+    "    br x1",                    // extern "C" bl（boot_pt/mmu）存活至此
     ".Lhang:",                         // 绝不返回
     "    wfe",
     "    b .Lhang",

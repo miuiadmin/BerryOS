@@ -15,8 +15,10 @@
 //! - 留位零值（裁决 B）：gop_*（V-1 fbcon 数据源——`文档/VM里程碑设计草案.md`
 //!   L114 携面规划）+ init_blob_*/cmdline_*（V-1+ rootfs 递送替代 fw_cfg）。
 //!   零值 = 「无此物」：pa=0 且 len=0 双字段共同判定，禁只看 pa。
-#![allow(dead_code)] // v0 冻结先落镜像，消费面随刀 4 起（x19 抢救 → 判 magic）接入
+#![allow(dead_code)] // probe 已消费 magic/version（V-1a）；其余字段留位零值待 V-1b/c 接入
 
+use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
+use berry_mm::va::phys_to_virt;
 use core::mem::{offset_of, size_of};
 
 /// 魔数：LE u32 读出 = ASCII "BRYH"（BerryOS Handoff）。
@@ -73,3 +75,32 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, cmdline_pa) == 96);
     assert!(offset_of!(BerryHandoff, cmdline_len) == 104);
 };
+
+/// V-1a：入口 x0 分流判别——EFI 路首参 = handoff PA（BerryBoot `br entry`），
+/// QEMU `-kernel` 路首参 = DTB PA/0。界检 [RAM_BASE, RAM_TOP) + 高半直映读
+/// magic/version；未中 → `None`（DTB/fw_cfg 原路零扰动）。DTB 魔数
+/// 0xD00D_FEED（BE）与 HANDOFF_MAGIC 互不碰撞——按 BRYH 认领不会误吞 DTB；
+/// 版本不识别（>v0）同样 `None`：handoff 不消费、fail-safe 降级既有路。
+///
+/// 返回引用按 boot 期静态处理：handoff 页由 BerryBoot AllocatePages 认领
+/// （EFI 图内非 Conventional——V-1b reserve 后内核不再分配它），boot 后只读。
+pub fn probe(x0: usize) -> Option<&'static BerryHandoff> {
+    // 对齐 + 界检：x0=0（QEMU -kernel 实测）与窗外 PA 直接判非；112B 全结构
+    // 须落窗内（checked 防加法回卷）。8 对齐 = 结构自身对齐要求（u64 字段）。
+    if x0 & 7 != 0 {
+        return None;
+    }
+    let end = x0.checked_add(size_of::<BerryHandoff>())?;
+    if x0 < RAM_BASE || end > RAM_TOP {
+        return None;
+    }
+    // SAFETY: 界检过 + set_kernel_va_base 已注入（rust_main 首行先于本函数）
+    // ——高半直映 L2 全覆盖 RAM 窗，112B 读必落已映射块；boot 单线程、此后
+    // 只读（BerryBoot 写完才 br entry，无并发写者）。
+    let h = unsafe { &*(phys_to_virt(x0) as *const BerryHandoff) };
+    if h.magic == HANDOFF_MAGIC && h.version == HANDOFF_VERSION {
+        Some(h)
+    } else {
+        None
+    }
+}
