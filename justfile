@@ -285,6 +285,9 @@ test-host:
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
     python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin
+    # V-2：FAT16 双宽基准同位守卫（--check-fixture16——一卷一宽双 fixture，
+    # 漂移即 FAIL 带 --fixture16 重产提示）。
+    python3 tools/mkfat.py --check-fixture16 user/berry-fatfs/tests/volume_fixture_fat16.bin
     cargo test --manifest-path user/Cargo.toml -p berry-fatfs --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-netproto --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-netdproto --target {{host}}

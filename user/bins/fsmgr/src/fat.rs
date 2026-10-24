@@ -1,5 +1,10 @@
 //! fat.rs —— P6 A-5 FAT12 只读底座 / A-6 落盘读写层（消费 `berry-fatfs`
-//! 纯编解码 + vblk 块服务）。
+//! 纯编解码 + vblk 块服务）。V-2 起 berry-fatfs 判宽双域（FatBits），本层
+//! 机械跟随传 `bpb.fat_bits`；init 挂载门 = **域检（fat_bits≠Fat12）+ 三帽
+//! 双拒面**——域检是对抗审查 confirmed 畸形 BPB 角落（簇数恰落 Fat16 域而
+//! fat_sz 盖不住簇域的自不一致盘三帽全过）后补的执法臂；拒面统一走
+//! diag("geom") RAM-only 降级 = 设计内 loud 拒（不静默按错宽解），帽放宽
+//! 随后续里程碑。
 //!
 //! 拓扑（svcmgr A-5 预拉序）：vblk 由 svcmgr **先于本服务**拉起且自验已过
 //! （BLKD 门），blk 服务端端 blk_a 经本服务的 env 块 gift[3] 交付（libc
@@ -40,7 +45,7 @@
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
 use berry_fatfs::{
     dir_entry, encode_file_entry, fat11_display, fat12_entry, fat12_set, find_free_cluster,
-    name_to_fat11, parse_bpb, Bpb, DirFile, DirKind, Fat12Entry, FAT12_EOC,
+    name_to_fat11, parse_bpb, Bpb, DirFile, DirKind, FatBits, FatEntry, FAT12_EOC,
 };
 use berry_fsproto::{
     encode_reply_get, CHUNK, FILE_SIZE_MAX, LIST_MAX, ST_BAD, ST_FULL, TYPE_DIR, TYPE_FILE,
@@ -196,8 +201,13 @@ pub fn init(h: Handle) -> Option<Fat> {
         }
     };
     // 消费方断言（berry-fatfs 模块头约定）：bps==512（vblk 单扇区粒度）；
-    // 三静态缓冲容量帽（超帽几何 = 非 mkfat 盘，拒之不缩之）。
+    // 三静态缓冲容量帽（超帽几何 = 非 mkfat 盘，拒之不缩之）+ 域检
+    // fat_bits≠Fat12 = 双拒面——parse_bpb 只按簇数分派宽、不交叉核验
+    // fat_sz 覆盖簇域，自不一致畸形 BPB（fat_sz 小而簇数恰落 Fat16 域）三帽
+    // 可全过，无域检臂 = 静默挂载 + 链走查错宽解（对抗审查 confirmed 角落
+    // 后补的执法臂）。
     if bpb.bps != 512
+        || bpb.fat_bits != FatBits::Fat12
         || bpb.fat_sz as usize * SECTOR_SZ > FAT_CAP
         || bpb.root_secs as usize * SECTOR_SZ > ROOT_CAP
         || bpb.spc as usize * SECTOR_SZ > CLUS_CAP
@@ -531,7 +541,7 @@ impl Fat {
             for _ in 0..max {
                 old_chain.push(c);
                 match fat12_entry(&self.fat, c) {
-                    Some(Fat12Entry::Next(v)) if (2..max).contains(&v) => c = v,
+                    Some(FatEntry::Next(v)) if (2..max).contains(&v) => c = v,
                     _ => break, // EOC 链尾（正常）/Free/Bad/畸形——collect 止
                 }
             }
@@ -541,7 +551,8 @@ impl Fat {
         let mut chain: Vec<u32> = Vec::with_capacity(nclus);
         for _ in 0..nclus {
             let from = chain.last().map(|&c| c + 1).unwrap_or(2);
-            let c = match find_free_cluster(&fat2, from, self.bpb.cluster_count) {
+            let c = match find_free_cluster(&fat2, from, self.bpb.cluster_count, self.bpb.fat_bits)
+            {
                 Some(c) => c,
                 None => return ST_FULL, // 数据簇耗尽——内存态未动
             };
@@ -618,7 +629,9 @@ impl Fat {
         };
         let first = chain.first().copied().unwrap_or(0);
         let mut e32 = [0u8; 32];
-        if encode_file_entry(&n11, first, data.len() as u32, &mut e32).is_none() {
+        if encode_file_entry(&n11, first, data.len() as u32, &mut e32, self.bpb.fat_bits)
+            .is_none()
+        {
             trap(); // first 域内簇号 + 尺寸帽已检——内部不变量破，不静默
         }
         root2[slot * 32..slot * 32 + 32].copy_from_slice(&e32);
@@ -831,8 +844,8 @@ impl Fat {
                 }
             }
             match fat12_entry(&self.fat, c) {
-                Some(Fat12Entry::Next(v)) if (2..max).contains(&v) => c = v, // 下一簇
-                Some(Fat12Entry::Eoc) => return ChainScan::Missing, // 链尾表尽
+                Some(FatEntry::Next(v)) if (2..max).contains(&v) => c = v, // 下一簇
+                Some(FatEntry::Eoc) => return ChainScan::Missing, // 链尾表尽
                 _ => return ChainScan::Bad, // Free/Bad/保留值/域外——链断
             }
         }
@@ -895,8 +908,8 @@ impl Fat {
                 break;
             }
             match fat12_entry(&self.fat, c) {
-                Some(Fat12Entry::Next(v)) if (2..max).contains(&v) => c = v,
-                Some(Fat12Entry::Eoc) => break, // 链尾表尽
+                Some(FatEntry::Next(v)) if (2..max).contains(&v) => c = v,
+                Some(FatEntry::Eoc) => break, // 链尾表尽
                 _ => return FatList::Bad, // Free/Bad/域外——链断
             }
         }
@@ -989,7 +1002,7 @@ impl Fat {
         let mut c = first;
         for _ in 0..n {
             c = match fat12_entry(&self.fat, c) {
-                Some(Fat12Entry::Next(v)) if (2..max).contains(&v) => v,
+                Some(FatEntry::Next(v)) if (2..max).contains(&v) => v,
                 _ => return None, // EOC 早到/Free/Bad/保留值/切片界外
             };
         }
