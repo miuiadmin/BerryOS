@@ -22,7 +22,11 @@ jobs:
       - name: 安装 QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-system-x86
+          # qemu-efi-aarch64 = AAVMF 固件对。注意布局：Ubuntu/Debian 包落
+          # /usr/share/AAVMF/AAVMF_CODE.fd + AAVF_VARS.fd（2024.02 起；
+          # 真实 deb 解包钉死——/usr/share/qemu/edk2-*.fd 是 brew/Fedora 布局，
+          # CI 写错路径 = 关卡结构性必红）。
+          sudo apt-get install -y qemu-system-arm qemu-system-x86 qemu-efi-aarch64
 
       # 装 just 复用 justfile 单一入口（build/smoke 全走与本地同一配方——防 CI
       # 自带第二套 cargo 命令与 justfile 分叉；P7-x4 挂账清偿）。
@@ -54,3 +58,14 @@ jobs:
 
       - name: x86_64 最小集冒烟（五原语收官 gate）
         run: bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"
+
+      # ---------- V-4 M-G1 gate：img-boot 独立冒烟（AAVMF 挂盘自举） ----------
+      # just 单一入口（recipe 依赖 image = build + build-boot + mkimage 全链）；
+      # AAVMF 路径环境变量覆盖 justfile 的 brew 默认（Ubuntu qemu-efi-aarch64
+      # 包布局 = /usr/share/AAVMF/，对抗审查 F1 实证）。EFI 引导 ~115s（TCG）
+      # + 注入段，帽内余量 ~3x。
+      - name: img-boot 冒烟（M-G1 gate）
+        run: just smoke-image
+        env:
+          AAVMF_CODE: /usr/share/AAVMF/AAVMF_CODE.fd
+          AAVMF_VARS: /usr/share/AAVMF/AAVMF_VARS.fd

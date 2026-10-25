@@ -378,6 +378,15 @@ run-x86: build-x86
 smoke-x86: build-x86
     bash tools/smoke-x86.sh "{{X86_KERNEL}}"
 
+# V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
+# ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
+# 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 23 +
+# EFI 路生态 12 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
+#（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
+smoke-image: image
+    bash tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
+
 # ---------- V-0a BerryBoot（EFI 骨架；VM 草案 §V-0，AAVMF 引导链）----------
 # 独立小工作区（同 x86_64 模式——根 workspace 不含本目录；构建必须显式
 # --target，根 .cargo/config.toml 锁的 build.target 跨 workspace 边界仍命中）。
@@ -396,8 +405,11 @@ BOOT_TARGET := "aarch64-unknown-none"
 BOOT_OUT := BOOT_DIR / "out"
 BOOT_EFI := BOOT_OUT / "BERRYBOOT.EFI"
 IMAGE := "out/berryos.img"
-AAVMF_CODE := "/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
-AAVMF_VARS := "/opt/homebrew/share/qemu/edk2-arm-vars.fd"
+# AAVMF 固件对本机默认 brew 路径；CI（Ubuntu qemu-efi-aarch64 包）在
+# /usr/share/AAVMF/AAVMF_{CODE,VARS}.fd——经环境变量覆盖，勿写第二份硬编码
+#（Debian 系无 /usr/share/qemu/edk2-*.fd 布局，对抗审查 F1 实证）。
+AAVMF_CODE := env_var_or_default("AAVMF_CODE", "/opt/homebrew/share/qemu/edk2-aarch64-code.fd")
+AAVMF_VARS := env_var_or_default("AAVMF_VARS", "/opt/homebrew/share/qemu/edk2-arm-vars.fd")
 RUST_LLD := `printf '%s' "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"`
 
 # BerryBoot 构建链（EFI 应用——V-3 起纯 EFI 产链；造盘段已吸收进 just image）
