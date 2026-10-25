@@ -310,7 +310,12 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS,
             raise SystemExit(f"mkfat: --put FAIL: 重复路径 {path}")
         node[leaf] = data
 
-    assert 1 <= vol_sectors < 0x10000, "total16 域外（1..65535 扇区）"
+    # total 域（C-2c 开启 total32，V-3 预留位兑现）：≥0x10000 扇区走
+    # total16=0 + total32（@BPB+32，FAT 规范 32 位合成路径——消费端
+    # EDK2 FatDxe / berry-fatfs parse_bpb 均支持，berry-fatfs host 测试
+    # bpb_total32_path 在册）；域内仍 total16（V-2 全部产物字节零漂移）。
+    assert vol_sectors >= 1, "total 域外（≥1 扇区）"
+    assert vol_sectors < 0x1_0000_0000, "total32 域外（u32 扇区）"
     # SPC 自适应（V-1c）：簇数出 FAT12 域（≥4085）时 SPC 翻倍直至入域——
     # 确定性：spc 只随 vol_sectors 变（8MiB 引导盘 → SPC=8 → ~2046 簇）。
     # 默认 1MiB/4MiB 卷 SPC=4 域内不动 = V-0a/刀 1 产物字节零漂移。
@@ -360,7 +365,11 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS,
     b[14:16] = u16(1)
     b[16] = NUM_FATS
     b[17:19] = u16(ROOT_ENTRIES)
-    b[19:21] = u16(vol_sectors)
+    if vol_sectors < 0x10000:
+        b[19:21] = u16(vol_sectors)     # total16（域内 16 位面——V-2 产物零漂移）
+    else:
+        b[19:21] = u16(0)               # total16=0 + total32 合成路径（C-2c）
+        b[32:36] = u32(vol_sectors)
     b[21] = 0xF0                # media：可移介质
     b[22:24] = u16(fat_sz)
     b[24:26] = u16(63)
@@ -630,23 +639,45 @@ def selftest_puts() -> int:
     else:
         print("mkfat: selftest FAIL: FAT12 域小卷 --fat16 未被拒绝")
         return 1
-    # 设计原案「300000 扇区 spc 4→8 翻入 FAT16 域」与 total16 assert 保留
-    # （风险 #4）物理冲突：FAT16 翻倍触发需 clusters>65524 即 vol_sectors
-    # >~262096——超 total16 域，assert 先拦（翻倍分支已实现，正向触发面
-    # 随 V-3 total32 开启）。此处钉 total16 域内行为替代：域顶 65535 扇区
-    # spc=4 直落 FAT16 域不误翻倍；300000 扇区被 total16 assert 拒。
-    _, geo_top = build_volume_puts([(b"/A.TXT", b"x")], 65535, fat16=True)
+    # total 域（C-2c 开启 total32，V-3 预留位兑现）：域顶 65535 扇区
+    # total16=0xFFFF 编码不变（域内 16 位面——V-2 产物零漂移）+ spc=4
+    # 直落 FAT16 域不误翻倍；≥0x10000 扇区走 total16=0 + total32 合成
+    # 路径——96256 扇区（47MiB，`just image --size-mib 48` 的 FAT16 分区
+    # 真身）spc=4 不翻倍；300000 扇区（设计原案翻倍样本，曾为 total16
+    # assert 结构性拦截）clusters>65524 → spc 4→8 翻倍入域——翻倍分支
+    # 正向触发面在此兑现。拒面 = total32 域外（u32 扇区上限）。
+    vol_top, geo_top = build_volume_puts([(b"/A.TXT", b"x")], 65535, fat16=True)
+    if vol_top[19:21] != b"\xff\xff":
+        print("mkfat: selftest FAIL: total16 域顶编码漂移（应 0xFFFF）")
+        return 1
     if geo_top["spc"] != 4 or not (
             FAT16_MIN_CLUSTERS <= geo_top["clusters"] <= FAT16_MAX_CLUSTERS):
         print(f"mkfat: selftest FAIL: total16 域顶 FAT16 卷几何异常 "
               f"spc={geo_top['spc']} clusters={geo_top['clusters']}")
         return 1
+    vol32, geo32 = build_volume_puts([(b"/A.TXT", b"x")], 96256, fat16=True)
+    if vol32[19:21] != b"\x00\x00" or vol32[32:36] != u32(96256):
+        print("mkfat: selftest FAIL: total32 路径 BPB 编码异常"
+              "（total16 应=0 + total32@32 应=卷扇区数）")
+        return 1
+    if geo32["spc"] != 4 or not (
+            FAT16_MIN_CLUSTERS <= geo32["clusters"] <= FAT16_MAX_CLUSTERS):
+        print(f"mkfat: selftest FAIL: total32 路径 FAT16 卷几何异常 "
+              f"spc={geo32['spc']} clusters={geo32['clusters']}")
+        return 1
+    _, geo_dbl = build_volume_puts([(b"/A.TXT", b"x")], 300000, fat16=True)
+    if geo_dbl["spc"] != 8 or not (
+            FAT16_MIN_CLUSTERS <= geo_dbl["clusters"] <= FAT16_MAX_CLUSTERS):
+        print(f"mkfat: selftest FAIL: FAT16 翻倍分支未触发"
+              f"（300000 扇区应 spc 4→8）spc={geo_dbl['spc']} "
+              f"clusters={geo_dbl['clusters']}")
+        return 1
     try:
-        build_volume_puts([(b"/A.TXT", b"x")], 300000, fat16=True)
+        build_volume_puts([(b"/A.TXT", b"x")], 0x1_0000_0000, fat16=True)
     except (SystemExit, AssertionError):
         pass
     else:
-        print("mkfat: selftest FAIL: total16 域外卷未被拒绝")
+        print("mkfat: selftest FAIL: total32 域外卷未被拒绝")
         return 1
     try:
         build_volume_puts([(b"/A.TXT", b"x")], 8)

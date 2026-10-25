@@ -846,7 +846,9 @@ pub extern "C" fn efi_main(
                                         // 不带 INITRD.BIN）打 `init: absent`
                                         // 续行——内核降级 ROOTFS absent，
                                         // 非致命（裁决 B 留位零值同义）。
-                                        // 帽 16MiB：与内核 ROOTFS_MAX 同口径。
+                                        // 帽 32MiB：与内核 ROOTFS_MAX 同口径
+                                        //（C-2c 同步抬升：text 批后 rootfs
+                                        // ≈21.5MiB 超 16MiB 旧帽）。
                                         let mut name16i = [0u16; 16];
                                         let iname =
                                             utf16_encode_bytes(b"INITRD.BIN", &mut name16i);
@@ -873,7 +875,7 @@ pub extern "C" fn efi_main(
                                                     (*(ibuf.as_ptr() as *const EfiFileInfo)).file_size
                                                         as usize
                                                 };
-                                                if isize_ > 0 && isize_ <= 16 * 1024 * 1024 {
+                                                if isize_ > 0 && isize_ <= 32 * 1024 * 1024 {
                                                     let ipages = (isize_ + 4095) / 4096;
                                                     let mut ipa: u64 = 0;
                                                     let r_iap = unsafe {

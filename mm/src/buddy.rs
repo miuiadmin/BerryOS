@@ -13,12 +13,14 @@
 //! 运行时高频可换位图索引——留作 v2 优化，本阶段**正确性优先**。
 
 /// buddy 最大阶。一个 `2^MAX_ORDER` 页的块。
-/// 128MiB / 4KiB = 32768 页；`MAX_ORDER = 12` → 最大块 4096 页 = 16MiB。
+/// 128MiB / 4KiB = 32768 页；`MAX_ORDER = 13` → 最大块 8192 页 = 32MiB。
 /// **必须 ≥ 内核整页大对象的真实需求帽**：heap 整页路径单次连续分配，
-/// `ROOTFS_MAX`/`VMO_MAX_SIZE`（16MiB）帽下的 rootfs 装载 Vec 是最大在册
+/// `ROOTFS_MAX`/`VMO_MAX_SIZE`（32MiB）帽下的 rootfs 装载 Vec 是最大在册
 /// 单块（C-2a 实证：14.5MiB rootfs 在 MAX_ORDER=11 下 order 12 被拒 →
-/// boot 期 alloc panic——「16MiB 帽」此前没有分配器能力支撑，纯空头支票）。
-pub const MAX_ORDER: usize = 12;
+/// boot 期 alloc panic——帽没有分配器能力支撑 = 纯空头支票；C-2c 复刻同律：
+/// text 批 8 命令令 rootfs ≈21.5MiB → order 13，16MiB 帽/12 阶双双不够 →
+/// 帽与阶同步 12→13、16→32MiB）。
+pub const MAX_ORDER: usize = 13;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError {
@@ -354,15 +356,26 @@ mod tests {
         // order_for(3530)=12 被拒 → boot alloc panic——「16MiB 帽」与分配器
         // 能力脱钩。常量 = C-2a 首版 rootfs.cpio 实寸 14_456_248B（对抗审查
         // 实抓：首版误钉排障期中间构建的 14_534_824B——同一事实两数）；
-        // 后续刀内容增删会字节级漂移，但 8–16MiB 域内阶恒 12，帽口径不变。
+        // 8–16MiB 域内阶恒 12。
         let mut ba = make(32768); // 128MiB / 4KiB
         let npages: usize = (14_456_248 + 4096 - 1) / 4096; // ceil = 3530
         // heap.rs order_for 的口径（最小 2^order >= npages）。
         let order = (usize::BITS - (npages - 1).leading_zeros()) as usize;
-        assert_eq!(order, 12, "rootfs 尺寸的阶漂移 = 帽口径变了");
-        assert!(order <= MAX_ORDER, "ROOTFS_MAX 16MiB 帽须有 buddy 能力支撑");
+        assert_eq!(order, 12, "C-2a 尺寸的阶漂移 = 帽口径变了");
+        assert!(order <= MAX_ORDER, "ROOTFS_MAX 32MiB 帽须有 buddy 能力支撑");
         let p = ba.alloc_order(order).expect("rootfs 单块在满盘 buddy 必可分配");
         ba.free(p, order).expect("free");
+
+        // C-2c 钉板（16–32MiB 域）：text 批 8 命令后 rootfs ≈21.5MiB → 阶 13
+        // = 恰达新 MAX_ORDER——16MiB 帽下此分配被拒（C-2a 同型断裂复发），
+        // 故帽/阶同步 16→32MiB、12→13。域内（16MiB, 32MiB] 阶恒 13；后续
+        // 刀内容增删在域内漂移时本断言恒成立。
+        let npages2: usize = (21_500_000 + 4096 - 1) / 4096; // ≈21.5MiB ceil = 5249
+        let order2 = (usize::BITS - (npages2 - 1).leading_zeros()) as usize;
+        assert_eq!(order2, 13, "C-2c 尺寸的阶漂移 = 帽口径变了");
+        assert!(order2 <= MAX_ORDER, "ROOTFS_MAX 32MiB 帽须有 buddy 能力支撑");
+        let p2 = ba.alloc_order(order2).expect("rootfs 单块在满盘 buddy 必可分配");
+        ba.free(p2, order2).expect("free");
     }
 
     #[test]

@@ -42,7 +42,7 @@ static mut ROOTFS: Option<alloc::vec::Vec<u8>> = None;
 
 /// rootfs 大小上限——与 `vmo_create` 的 16MiB 同口径（no-panic：巨 blob 的
 /// 分配 abort 是 boot 期可触发 panic，超限降级为「无 rootfs」存活）。
-const ROOTFS_MAX: usize = 16 << 20;
+const ROOTFS_MAX: usize = 32 << 20;
 
 /// 全局分配器：内核 slab 堆（小对象走 slab，大对象走整页）。
 #[global_allocator]

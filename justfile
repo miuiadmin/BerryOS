@@ -397,7 +397,8 @@ smoke-image: image
 # + lld COFF 直链」在 stable 实测死路，故走 ELF 全链接+转换）。产物全在
 # bootloader/berryboot/out/（gitignored）。V-3 起造盘段移交 `just image`
 #（mkimage.py MBR + FAT16 整盘——单口吸收，V-1c 8MiB FAT12 盘约定随
-# rootfs 14.4MB 已断，24MiB 修复在此）。
+# rootfs 14.4MB 已断，24MiB 修复在此；C-2c text 批后 rootfs ≈18-21MB，
+# 盘容再抬 48MiB——cap 传播见 mkimage --size-mib）。
 # rust-lld 随 rustup 走（sysroot 内），无 brew 依赖；--verify 回读断言
 # 恒开（entry 落 .img / .reloc 闭合 / subsystem=EFI app）。
 BOOT_DIR := "bootloader/berryboot"
@@ -429,8 +430,9 @@ build-boot:
 # 段）。mkimage.py = MBR 薄层（LBA 假几何 255H/63S，protective CHS 自洽即可
 # ——草案 §V-3 原话）+ mkfat.build_volume_puts 单编码器（FAT 写法单源）；
 # 四件套 BOOTAA64.EFI/HELLO.TXT/KERNEL.ELF/INITRD.BIN；hidden = 分区起始
-# LBA（BPB 与分区表自洽）。盘容 24MiB——C-2a 后 rootfs 14.4MB 已超 V-1c
-# 8MiB FAT12 盘约定（存量断裂，本刀修复；FatDxe 实验已证 24MiB FAT16
+# LBA（BPB 与分区表自洽）。盘容 48MiB（C-2c：text 批后 rootfs ≈18-21MB，
+# 24MiB 盘余量结构性见底 → 抬 48 留 ~2x；V-3 史：24MiB 修 C-2a 后 14.4MB
+# 超 V-1c 8MiB FAT12 盘约定的存量断裂，FatDxe 实验已证 24MiB FAT16
 # AAVMF 十段+接续全绿，2026-10-25）。产物 out/berryos.img（gitignored）
 # ——UTM/真机挂盘即用；EDK2 PartitionDxe+FatDxe 消化 MBR/分区偏移，
 # BerryBoot SFS 面零改动。
@@ -448,11 +450,12 @@ image: build build-boot
         --hello {{BOOT_DIR}}/hello.txt \
         --kernel {{KERNEL}} \
         --initrd rootfs.cpio \
-        --size-mib 24
+        --size-mib 48
 
 # AAVMF 引导验收（V-0b 刀 3 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。V-3 起盘 = out/berryos.img（just image 单口：MBR + 单
-# FAT16 分区 24MiB——EDK2 PartitionDxe+FatDxe 消化分区偏移，BerryBoot
+# FAT16 分区 48MiB（C-2c 起，V-3 史 24MiB）——EDK2 PartitionDxe+FatDxe
+# 消化分区偏移，BerryBoot
 # SFS 面零改动；FatDxe 实验消雷 2026-10-25）。期望串口：BdsDxe starting
 # Boot0001 …USB HARDDRIVE →
 # 九行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /

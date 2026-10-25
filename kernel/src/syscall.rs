@@ -141,10 +141,11 @@ fn caller_is_el1(tf: &TrapFrame) -> bool {
 
 /// `vmo_create` 尺寸上限（v1）：页记账 ≈ **18B/页**（pages = `Option<usize>`
 /// 无 niche 占 16B + mapcnt u16 2B——旧注释 10B/页 ≤40KB 系算术错，3b3 H2 勘
-/// 误），16MiB 上限对应 4096 页 ≈ 72KiB 记账。上限只拦巨参滥用；分配本身已
-/// try 化（`Vmo::create` 折 -ENOMEM——上限内 OOM 也不再 abort）。真机/堆扩
-/// 大后上调（ABI 注记）。
-const VMO_MAX_SIZE: usize = 16 * 1024 * 1024;
+/// 误），32MiB 上限对应 8192 页 ≈ 144KiB 记账。上限只拦巨参滥用；分配本身已
+/// try 化（`Vmo::create` 折 -ENOMEM——上限内 OOM 也不再 abort）。上限与
+/// `ROOTFS_MAX`/`MAX_ORDER` 同口径抬升（C-2c：16→32MiB，rootfs ≈21.5MiB
+/// 的装载 VMO 在 16MiB 帽下被拒；真机/堆扩大后再上调，ABI 注记）。
+const VMO_MAX_SIZE: usize = 32 * 1024 * 1024;
 
 /// 栈上拷贝分块（防长缓冲吃内核栈）。
 const COPY_CHUNK: usize = 256;

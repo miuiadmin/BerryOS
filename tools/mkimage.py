@@ -17,9 +17,10 @@
 
 接受面（V-2 FatDxe 实验消雷 2026-10-25）：EDK2 PartitionDxe（MBR 表）
 + FatDxe（FAT16 卷）+ BdsDxe（可移介质默认路径 \\EFI\\BOOT\\BOOTAA64.EFI）
-——BerryBoot SFS 面零改动。盘容默认 24MiB：C-2a 后 rootfs.cpio 14.4MB
-已超 V-1c 8MiB FAT12 盘约定（存量断裂，本刀修复——build-boot 8MiB 造盘
-已被本工具吸收，`just image` 单口）。
+——BerryBoot SFS 面零改动。盘容默认 48MiB（C-2c：text 批 8 命令后
+rootfs.cpio ≈21.5MB，24MiB 盘余量 <2MiB 结构性见底 → 48MiB 留 ~2x）；
+V-3 史：默认 24MiB 修 C-2a 后 14.4MB 超 V-1c 8MiB FAT12 盘约定的存量
+断裂（build-boot 8MiB 造盘已被本工具吸收，`just image` 单口）。
 
 确定性：与 mkcpio/mkfat 同纪律——无时刻输入、同输入同字节（MBR 字段
 全定宽定值；卷 VOLUME_ID/日期沿 mkfat 定值）。
@@ -90,7 +91,7 @@ def main() -> int:
     ap.add_argument("--hello", help="hello.txt（BerryBoot fs: 自验基准，进 \\HELLO.TXT）")
     ap.add_argument("--kernel", help="内核 debug ELF（进 \\KERNEL.ELF）")
     ap.add_argument("--initrd", help="rootfs.cpio（进 \\INITRD.BIN）")
-    ap.add_argument("--size-mib", type=int, default=24, help="整盘容量 MiB（默认 24）")
+    ap.add_argument("--size-mib", type=int, default=48, help="整盘容量 MiB（默认 48）")
     ap.add_argument("--selftest", action="store_true", help="MBR 薄面自检（不写盘）")
     args = ap.parse_args()
 
