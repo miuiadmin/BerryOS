@@ -125,6 +125,9 @@ build-user:
     # 折进 bin 自身 rcgu.o（rlib 不上链接线），-lc 保险网拉 musl 成员会与
     # 折入定义 duplicate，缺口在 libc shim 侧补齐 = 零 musl 字节哲学执法点
     # （详见 tools/berry-ld 头注）。
+    # C-2c（中批）：head/wc/cut/tr/sort/uniq 六件（=0.12.0 锁步，uu 家族
+    # 18 成员）；补桩批见 stubs.rs C-2c 段。深坑件 tail/env/date/grep/
+    # find/which 挂账专项另刀（grep/find 供源 onig 互斥实证不通）。
     CARGO_TARGET_DIR=bins/uu/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/uu/Cargo.toml \
         --target aarch64-unknown-linux-musl
@@ -147,11 +150,13 @@ build-user:
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
         bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
         bin/cp=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp \
+        bin/cut=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cut \
         bin/echo=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/echo \
         bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
         bin/false=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/false \
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
+        bin/head=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/head \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
         bin/ls=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/ls \
         bin/mkdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mkdir \
@@ -159,12 +164,16 @@ build-user:
         bin/pwd=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd \
         bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
         bin/rmdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir \
+        bin/sort=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/sort \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
         bin/touch=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/touch \
+        bin/tr=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tr \
         bin/true=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/true \
+        bin/uniq=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/uniq \
         bin/vblk=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vblk \
         bin/vnet=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet \
-        bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe
+        bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe \
+        bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc
 
 build: abi-check build-user
     cargo build
@@ -381,7 +390,7 @@ smoke-x86: build-x86
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
 # 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 23 +
-# EFI 路生态 13 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# EFI 路生态 14 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image

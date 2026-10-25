@@ -1,0 +1,23 @@
+[package]
+name = "find"
+version = "0.1.0"
+edition = "2021"
+
+# C-2c text 批自写三件之二：find 走查器——路径面 + -maxdepth N/-name
+# GLOB/-type f|d 三谓词 + -print 默认动作（GNU find 语义子集；GLOB 支持
+# * ? 两通配 + 字符类 [] 不做）。libc opendir/readdir/stat 直调（bsh ls
+# 同一台机器——std::fs::read_dir 的尾检 errno 语义不契约，见 bsh 头注）。
+# 为什么自写：findutils 0.10.0 硬依赖 onig（同 grep 尾注）+ chrono/nix
+# 重面——berry 染色链结构性阻断。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

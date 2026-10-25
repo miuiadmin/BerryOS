@@ -38,9 +38,31 @@ use heap::SlabHeap;
 /// G-eco 入机侧：boot 期装载的 rootfs 原字节（fw_cfg / DTB 双源合一产物）。
 /// 消费点随下一步「包只读 VMO 交 svcmgr bootstrap」；boot 单线程写、之后
 /// 只读，不进并发路径。
-static mut ROOTFS: Option<alloc::vec::Vec<u8>> = None;
+static mut ROOTFS: Option<RootfsBuf> = None;
 
-/// rootfs 大小上限——与 `vmo_create` 的 16MiB 同口径（no-panic：巨 blob 的
+/// rootfs 源缓冲形态。handoff/dtb 路**零拷贝借片**——源已页钉 DRAM
+/// （BerryBoot AllocatePages 的 EfiLoaderData / boot 保留区），EBS 后内核
+/// 即 owner，整档 to_vec 是纯浪费；fw_cfg 路 fw_cfg 无 RAM 副本，必须整读
+/// 进堆（冷启 RAM 完整，ROOTFS_MAX 帽内单块可达）。不统一 to_vec 的硬理由：
+/// 内核堆大对象 = 单块连续 buddy 块（heap.rs 整页路径），21.3MiB rootfs 在
+/// EFI 路的固件碎块 + blob 自占 20.4MiB 地形下结构性拿不到 order-13 对齐
+/// 块（C-2c smoke-image 实踩 boot panic）；借片 + VMO 逐页 commit 两路皆
+/// 碎片免疫。
+enum RootfsBuf {
+    Borrowed(&'static [u8]),
+    Owned(alloc::vec::Vec<u8>),
+}
+
+impl RootfsBuf {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            RootfsBuf::Borrowed(b) => b,
+            RootfsBuf::Owned(v) => v,
+        }
+    }
+}
+
+/// rootfs 大小上限——与 `vmo_create` 的 32MiB 同口径（no-panic：巨 blob 的
 /// 分配 abort 是 boot 期可触发 panic，超限降级为「无 rootfs」存活）。
 const ROOTFS_MAX: usize = 32 << 20;
 
@@ -127,7 +149,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 装进 boot 期缓冲，下一步包只读 VMO 交 svcmgr（cpio/ELF 解析全在
     // 用户态——微内核只补「字节流变对象」原语）。无 rootfs = 正常降级
     // （不带 -fw_cfg 的既有 run/smoke 零扰动）。
-    let rootfs: Option<(&[u8], alloc::vec::Vec<u8>)> = handoff
+    let rootfs: Option<(&[u8], RootfsBuf)> = handoff
         .and_then(|h| {
             let (pa, len) = (h.init_blob_pa, h.init_blob_len);
             if pa == 0 || len == 0 || len > ROOTFS_MAX as u64 {
@@ -141,8 +163,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             // SAFETY: 界检已过（整段在 DRAM 窗内）——高半直映 L2 全覆盖，
             // from_raw_parts 读取必落在已映射块内（与 dtb 路同款论证）。
             let p = phys_to_virt(pa as usize) as *const u8;
-            let bytes = unsafe { core::slice::from_raw_parts(p, len as usize) };
-            Some((b"handoff" as &[u8], bytes.to_vec()))
+            // 'static：DRAM 直映视图，寿命 = 整机；blob 留 EfiLoaderData
+            // 保留区即其归宿（零拷贝直用——RootfsBuf 头注）。
+            let bytes: &'static [u8] =
+                unsafe { core::slice::from_raw_parts(p, len as usize) };
+            Some((b"handoff" as &[u8], RootfsBuf::Borrowed(bytes)))
         })
         .or_else(|| {
             if handoff.is_none() {
@@ -151,8 +176,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         // SAFETY: boot_probe 已界检区间在 [RAM_BASE, RAM_TOP)——高半
                         // 直映 L2 全覆盖，from_raw_parts 读取必落在已映射块内。
                         let pa = phys_to_virt(s as usize) as *const u8;
-                        let bytes = unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) };
-                        (b"dtb" as &[u8], bytes.to_vec())
+                        // 'static 同 handoff 路：boot 保留区直映视图，零拷贝。
+                        let bytes: &'static [u8] =
+                            unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) };
+                        (b"dtb" as &[u8], RootfsBuf::Borrowed(bytes))
                     })
             } else {
                 None // EFI 路：x0 非 DTB——dtb 源缺席（fw_cfg 链照常兜底）
@@ -162,7 +189,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             use berry_hal_aarch64::fwcfg;
             let entry = fwcfg::find_file(fwcfg::ROOTFS_NAME)?;
             let size = entry.size as usize;
-            // no-panic：与 vmo_create 16MiB 同口径——巨 blob 分配 abort 是
+            // no-panic：与 vmo_create 32MiB 同口径——巨 blob 分配 abort 是
             // boot 期可触发 panic，超限/空文件一律降级为「无 rootfs」存活。
             if size == 0 || size > ROOTFS_MAX {
                 return None;
@@ -171,11 +198,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             if !fwcfg::read_to(&entry, &mut buf) {
                 return None;
             }
-            Some((b"fwcfg" as &[u8], buf))
+            Some((b"fwcfg" as &[u8], RootfsBuf::Owned(buf)))
         });
     match rootfs {
         Some((src, buf)) => {
-            let bytes = buf.len();
+            let bytes = buf.as_slice().len();
             // SAFETY: boot 单线程写入、此后只读；消费点随下一步「包只读
             // VMO 交 svcmgr」——不进任何并发路径。
             unsafe { *(&raw mut ROOTFS) = Some(buf) };
@@ -724,16 +751,18 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 放宽面拒（权限在 handle 不在对象）。数据面 = 第一刀的 ROOTFS static
     // 整段搬进标准匿名 VMO（create+commit+write 内核侧三连，页模型零新
     // 变体——物理不连续无碍，vmo_read 本就按页走 direct map）；搬运完原
-    // 缓冲即释放（峰值 ≈ 2× rootfs，16MiB 帽 × 128MiB RAM 可容）。----
+    // 缓冲即释放（Owned 路 峰值 ≈ 2× rootfs；Borrowed 零新增——blob 留
+    // 保留区即其归宿）。----
     // SAFETY: boot 单线程；take 取走后置 None（字节已移交 VMO，源缓冲释放）。
-    let h_rootfs = unsafe { (*(&raw mut ROOTFS)).take() }.map(|bytes| {
+    let h_rootfs = unsafe { (*(&raw mut ROOTFS)).take() }.map(|buf| {
+        let bytes = buf.as_slice();
         let mut vmo =
             vmo::Vmo::create(bytes.len()).expect("main: rootfs Vmo create");
         let committed = vmo.size(); // create 已页对齐
         vmo.commit(mm::frames(), 0, committed)
             .expect("main: rootfs Vmo commit");
-        vmo.write(0, &bytes).expect("main: rootfs Vmo write");
-        drop(bytes); // 先释放源缓冲再入表
+        vmo.write(0, bytes).expect("main: rootfs Vmo write");
+        drop(buf); // Owned 先释放源缓冲再入表；Borrowed no-op
         ht_svcmgr
             .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ)
             .expect("main: rootfs VMO 进 svcmgr 表")

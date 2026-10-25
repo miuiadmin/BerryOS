@@ -36,6 +36,13 @@ SECTOR = 512
 PART_LBA = 2048        # 分区起始 LBA（1MiB 对齐——现代盘惯例，EDK2/UTM 皆认）
 HEADS, SPT = 255, 63   # LBA 假几何（protective CHS 自洽用——非寻址依据）
 PART_TYPE_FAT16_LBA = 0x0E
+DEFAULT_SIZE_MIB = 48  # 整盘默认容量（C-2c：text 批后 rootfs ≈21.5MB → 留 ~2x）
+
+
+def volume_sectors(size_mib: int) -> int:
+    """整盘 MiB → 卷扇区数（= 整盘扇区 − 分区起始 LBA）。造盘与自检共用
+    同一推导——扩容只动 DEFAULT_SIZE_MIB / --size-mib，期望值随动不滞留。"""
+    return size_mib * 1024 * 1024 // SECTOR - PART_LBA
 
 
 def lba_to_chs(lba: int) -> bytes:
@@ -72,11 +79,14 @@ def selftest() -> int:
     assert lba_to_chs(2048) == bytes([32, 33, 0]), "LBA2048 → CHS(0,32,33)"
     assert lba_to_chs(49151) == bytes([15, 12, 3]), "LBA49151 → CHS(3,15,12)"
     assert lba_to_chs(1024 * HEADS * SPT) == bytes([254, 63, 255]), "超顶钳 (1023,254,63)"
-    m = build_mbr(PART_LBA, 47104)
+    # 表项布局钉板：卷扇区随 DEFAULT_SIZE_MIB 推导（C-2c 48MiB → 96256）——
+    # V-3 史：硬编 47104（24MiB 派生值）在 C-2c 扩容时滞留一轮，参数化断根。
+    vol = volume_sectors(DEFAULT_SIZE_MIB)
+    m = build_mbr(PART_LBA, vol)
     assert m[446] == 0x00, "status 非 active"
     assert m[450] == PART_TYPE_FAT16_LBA, "分区类型 0x0E"
     assert int.from_bytes(m[454:458], "little") == PART_LBA, "起始 LBA 域"
-    assert int.from_bytes(m[458:462], "little") == 47104, "扇区数域"
+    assert int.from_bytes(m[458:462], "little") == vol, "扇区数域"
     assert m[510:512] == b"\x55\xAA", "签章"
     assert all(b == 0 for b in m[:446]), "引导代码区全零"
     assert all(b == 0 for b in m[462:510]), "表项 1-3 全零"
@@ -91,7 +101,8 @@ def main() -> int:
     ap.add_argument("--hello", help="hello.txt（BerryBoot fs: 自验基准，进 \\HELLO.TXT）")
     ap.add_argument("--kernel", help="内核 debug ELF（进 \\KERNEL.ELF）")
     ap.add_argument("--initrd", help="rootfs.cpio（进 \\INITRD.BIN）")
-    ap.add_argument("--size-mib", type=int, default=48, help="整盘容量 MiB（默认 48）")
+    ap.add_argument("--size-mib", type=int, default=DEFAULT_SIZE_MIB,
+                    help=f"整盘容量 MiB（默认 {DEFAULT_SIZE_MIB}）")
     ap.add_argument("--selftest", action="store_true", help="MBR 薄面自检（不写盘）")
     args = ap.parse_args()
 
@@ -100,10 +111,9 @@ def main() -> int:
     if not (args.out and args.efi and args.hello and args.kernel and args.initrd):
         ap.error("造盘需 out + --efi/--hello/--kernel/--initrd 四件套（缺一即 loud）")
 
-    total = args.size_mib * 1024 * 1024 // SECTOR
-    if total <= PART_LBA + 64:
+    vol_sectors = volume_sectors(args.size_mib)
+    if vol_sectors <= 64:
         raise SystemExit(f"mkimage: FAIL: {args.size_mib}MiB 装不下分区起始 {PART_LBA} + 卷")
-    vol_sectors = total - PART_LBA
 
     puts = []
     nbytes = 0
@@ -120,7 +130,7 @@ def main() -> int:
 
     vol, geo = mkfat.build_volume_puts(puts, vol_sectors=vol_sectors,
                                        fat16=True, hidden=PART_LBA)
-    img = bytearray(total * SECTOR)
+    img = bytearray((PART_LBA + vol_sectors) * SECTOR)
     img[0:SECTOR] = build_mbr(PART_LBA, vol_sectors)
     img[PART_LBA * SECTOR:PART_LBA * SECTOR + len(vol)] = vol
     Path(args.out).write_bytes(img)

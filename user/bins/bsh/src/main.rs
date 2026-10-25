@@ -155,6 +155,9 @@ fn main() {
     //    （对抗审查实抓的链序契约；U2 零 fs 面，前移后 EFI 路亦打 U2 ok
     //    ——smoke-image ECO 同面）。
     u2_selftest(&mut vars, &mut status);
+    // —— C-2c：U3 与 U2 同款链序契约——text 批全零 fs 盘面（纯 RAM/spawn），
+    //    排 fat 族之前（EFI 路无盘亦打 U3——smoke-image ECO 同面）。
+    u3_selftest();
     fat_selftest();
     fatw_selftest();
     dir_selftest();
@@ -1542,6 +1545,131 @@ fn u2_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
         }
     }
     println!("U2 ok");
+}
+
+/// C-2c U3：text 批执行验收（pwd/cat/wc/cut/tr/uniq 六命令 + 三段管道
+/// 面）。**七步门审原案两处挂账裁形**（首跑定标实录，不硬凑假绿）：
+/// - 步③ head 裁出：uu_head 0.12.0 unix stdin 路径 `try_clone_to_owned`
+///   → fcntl(F_DUPFD) → berry-libc 桩 -EINVAL → uucore 译 "Invalid
+///   input" 退 1（实测 code=1 + 该串）——fd 克隆面（dup/dup2/fcntl）libc
+///   刀挂账，head 家族 v1 结构性不可验收。
+/// - 步④ sort|uniq 与步⑥ 四段链的 sort 段：uu_sort 启动期 tmp_dir.rs:67
+///   `ctrlc::set_handler` → ctrlc/signal-hook 后台线程 → std
+///   `thread::spawnhook::run_spawn_hooks` 解引用空注册表悬垂指针 4
+///   （static @0x432078——链接文件面原值 0400…已核，非 berry-ld 重定位
+///   错）→ outline-atomics `__aarch64_ldadd8_relax+0x18` 原子加 D-abort
+///   → 内核 G1.5 kill（空输出无 EOF）——std 线程面（pthread/TLS）平台
+///   缺口挂账；步⑥ 按门审预案授权裁三段（cat,uniq,wc -l）。
+/// 步序映射：1=⓪pwd 2=①cat 3=②wc-c 4=⑤cut|tr 5=⑥'三段链。spawn 合计
+/// = 8 ≤ 12（1+1+1+2+3）。feed 面 ≤1.5KB（三常量合计 96B）、期望面
+/// <32KiB（COLLECT_MAX 口径，实测最大 32B）。断言期望值 = 定标实录
+/// **字面常量**（绝不 Rust 镜像计算——P6 A-5 基准漂移雷）：pwd `/\n` /
+/// cat 逐字节全等 / wc-c `32\n` / cut|tr `BC\nZ\nEL\n` / 三段链 `7\n`。
+/// 链序契约同 U2：全步零 fs 盘面（纯 RAM/spawn），排 fat 族之前——EFI
+/// 路无盘亦打 U3（smoke-image ECO 同面）。诊断行单串 format! 再打（多
+/// 段 eprintln 逐段 write 会被稳态矩阵撕行——定标 v1 实踩）。
+fn u3_selftest() {
+    // 步 1（⓪）：pwd——boot 期 bsh cwd 恒根，render_cwd 空 wire 渲染
+    // "/"（getcwd 根 wart C-1 已修；`/\n` musl 同形——无参 pwd 恒退 0）。
+    match run_capture("pwd", None, &[]) {
+        Some((o, c)) if c == 0 && o.data == b"/\n" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u3_bad(1, c, &o),
+        None => {
+            eprintln!("bsh: u3 selftest bad: step=1 pwd not found");
+            berry_libc::park();
+        }
+    }
+    // 步 2（①）：cat 32B 双行 feed 全量回显（逐字节全等——含尾换行）。
+    match run_capture("cat", Some(U3_FEED), &[]) {
+        Some((o, c)) if c == 0 && o.data == U3_FEED && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u3_bad(2, c, &o),
+        None => {
+            eprintln!("bsh: u3 selftest bad: step=2 cat not found");
+            berry_libc::park();
+        }
+    }
+    // 步 3（②）：wc -c——字节计数真值 32（feed 常量面 32B 的字面钉板，
+    // 宿主 wc -c 同源 =0.12.0）。
+    match run_capture("wc", Some(U3_FEED), &["-c"]) {
+        Some((o, c)) if c == 0 && o.data == b"32\n" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u3_bad(3, c, &o),
+        None => {
+            eprintln!("bsh: u3 selftest bad: step=3 wc not found");
+            berry_libc::park();
+        }
+    }
+    // 步 4（⑤）：cut -c 2-3 | tr a-z A-Z——列裁剪 + 大小写映射双段管道
+    // （abcd→BC / zz→Z / hello world→EL：短行越界取到即止）。
+    let segs45 = [
+        PipeSeg { name: "cut", args: &["-c", "2-3"] },
+        PipeSeg { name: "tr", args: &["a-z", "A-Z"] },
+    ];
+    match pipe_capture(&segs45, Some(U3_CUT_FEED)) {
+        Ok((o, c)) if c == 0 && o.data == b"BC\nZ\nEL\n" && o.eof && o.dropped == 0 => {}
+        Ok((o, c)) => u3_bad(4, c, &o),
+        Err(PipeFail::NotFound(n)) => {
+            eprintln!("bsh: u3 selftest bad: step=4 {} not found", n);
+            berry_libc::park();
+        }
+        Err(PipeFail::SpawnFail(n)) => {
+            eprintln!("bsh: u3 selftest bad: step=4 {} spawn failed", n);
+            berry_libc::park();
+        }
+    }
+    // 步 5（⑥'）：cat | uniq | wc -l 三段链——首段开场 + 末段收口的三段
+    // 结构面（门审原案四段链裁 sort 段，见头注挂账）；uniq 面喂七行无
+    // 相邻重复（sort 缺席下 uniq 语义 = 逐行直通）→ wc -l 计 7。
+    let segs5 = [
+        PipeSeg { name: "cat", args: &[] },
+        PipeSeg { name: "uniq", args: &[] },
+        PipeSeg { name: "wc", args: &["-l"] },
+    ];
+    match pipe_capture(&segs5, Some(U3_SORT_FEED)) {
+        Ok((o, c)) if c == 0 && o.data == b"7\n" && o.eof && o.dropped == 0 => {}
+        Ok((o, c)) => u3_bad(5, c, &o),
+        Err(PipeFail::NotFound(n)) => {
+            eprintln!("bsh: u3 selftest bad: step=5 {} not found", n);
+            berry_libc::park();
+        }
+        Err(PipeFail::SpawnFail(n)) => {
+            eprintln!("bsh: u3 selftest bad: step=5 {} spawn failed", n);
+            berry_libc::park();
+        }
+    }
+    println!("U3 ok");
+}
+
+/// U3 feed 面（定标冻结；步③ head 的五行 feed 随挂账裁出）。
+const U3_FEED: &[u8] = b"u3 feed: abcdefghij\nsecond line\n";
+const U3_SORT_FEED: &[u8] = b"delta\nbravo\nalpha\ndelta\ncharlie\nbravo\nalpha\n";
+const U3_CUT_FEED: &[u8] = b"abcd\nzz\nhello world\n";
+
+/// U3 断言失败诊断：四面（真码/长度/EOF/丢弃）+ 实际字节 hex（截 64B）
+/// **单串一次打**后 park——撕行防护（稳态矩阵并发写串口）+ 标记缺失 =
+/// smoke FAIL 的 loud 兜底。
+fn u3_bad(step: u8, c: i32, o: &RunOut) -> ! {
+    let n = o.data.len().min(64);
+    let s = format!(
+        "bsh: u3 selftest bad: step={} code={} len={} eof={} dropped={} hex={}",
+        step,
+        c,
+        o.data.len(),
+        o.eof,
+        o.dropped,
+        u3_hex(&o.data[..n])
+    );
+    eprintln!("{}", s);
+    berry_libc::park()
+}
+
+/// hex 渲染（小写两位——诊断/串口双可读；仅失败路径走）。
+fn u3_hex(d: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(d.len() * 2);
+    for b in d {
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
 }
 
 /// 拉起 + 收集（自验/交互共用）：查档 → spawn → collect → 回收 → 关对端。

@@ -394,7 +394,7 @@ pub extern "C" fn pow(x: f64, y: f64) -> f64 {
         let r = pow(-x, y);
         return if odd { -r } else { r };
     }
-    exp2(y * log2(x))
+    exp2_impl(y * log2(x))
 }
 
 /// ftrunc —— 位运算截断（core 无 floor/trunc 家族）：尾数低于整数位的
@@ -443,7 +443,9 @@ fn log2(x: f64) -> f64 {
 }
 
 /// 2^t（t 有限）：k=floor 分解 + e^{f·ln2} Taylor + 指数位合成。
-fn exp2(t: f64) -> f64 {
+/// C-2c 起改名 exp2_impl 保私有——同名 C 符号 exp2 的导出面见下方
+/// C-2c 段转发（libcall 面 uu_sort 可达）。
+fn exp2_impl(t: f64) -> f64 {
     if t < -1022.0 {
         return 0.0; // 次正规区折返零（ETA 面不可达）
     }
@@ -459,6 +461,144 @@ fn exp2(t: f64) -> f64 {
         sum += term;
     }
     sum * f64::from_bits(((1023i64 + k as i64) as u64) << 52)
+}
+
+// —— C-2c 中批链接缺口四件（uu_sort 的 locale/数值面；2026-10-25
+//    收敛树链接实证清单——text 批深坑件退出后按缺回补）——
+
+// locale 双件（uu_sort -M 月份名面——uucore::features::i18n::datetime::
+// get_locale_months 真消费；2026-10-25 berryos-99 剥桩重链实证归因）：
+// v1 唯一 locale = "C"/ASCII。
+// setlocale 恒答 "C"（musl 语义：返回现 locale 名——strerror 同款 rodata
+// 指针形态，静态串免分配）；nl_langinfo 问啥都答 "UTF-8"（codeset 查询面）。
+#[no_mangle]
+pub extern "C" fn setlocale(_category: c_int, _locale: *const c_char) -> *mut c_char {
+    let s: &[u8] = b"C\0";
+    s.as_ptr() as *mut c_char
+}
+
+#[no_mangle]
+pub extern "C" fn nl_langinfo(_item: c_int) -> *const c_char {
+    let s: &[u8] = b"UTF-8\0";
+    s.as_ptr() as *const c_char
+}
+
+// exp2/log10 —— C-2c libcall 面（uu_sort 数值排序的 bigdecimal 链：
+// exp2 ← BigDecimalRef::inverse_with_context、log10 ← pow_u64_with_context；
+// 2026-10-25 剥桩重链实证归因——head/wc/cut/tr/uniq 五件零依赖）：导出 C 符号
+// 转发 pow 同族纯算术实现（见上 C-2a 段）；log10(x) = log2(x)/log2(10)，
+// 边角按 IEEE：log10(±0) = -INF、负数/NaN → NaN。
+#[no_mangle]
+pub extern "C" fn exp2(t: f64) -> f64 {
+    exp2_impl(t)
+}
+
+#[no_mangle]
+pub extern "C" fn log10(x: f64) -> f64 {
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x < 0.0 || x.is_nan() {
+        return f64::NAN;
+    }
+    log2(x) / 3.3219280948873623
+}
+
+// —— C-2c 中批链接缺口（uu_sort 的 ctrlc/tempfile/rustix 链五件；cut/
+//    tr/uniq 上游纯输入面零新缺口。2026-10-25 sort 首轮链接实证清单）——
+
+/// sysinfo —— uu_sort buffer_hint::physical_memory_bytes 唯一消费面：只读
+/// totalram 做外排缓冲启发（clamp_hint 钳 [512KiB, 1GiB]——纯性能参数非
+/// 正确性）。musl aarch64 布局 totalram@32（uptime 8 + loads 24）；v1 无
+/// RAM 探测面，定值 128MiB = QEMU 主 smoke 定值（-m 128M）；rustix 的
+/// sysinfo() 非 Result 面（失败路不可达），返 0 + 全结构零填（364B 含
+/// __reserved）。
+#[no_mangle]
+pub extern "C" fn sysinfo(info: *mut c_void) -> c_int {
+    unsafe {
+        if !info.is_null() {
+            core::ptr::write_bytes(info as *mut u8, 0, 364);
+            (info as *mut u64).add(4).write(128 * 1024 * 1024);
+        }
+    }
+    0
+}
+
+/// getrlimit —— uu_sort fd_soft_limit（rustix::process::getrlimit 直映射）：
+/// 读 rlim_cur 收敛合并段并发开档数。**必须写有限值**：RLIM_INFINITY
+/// (u64::MAX) 经 rustix 映 None → 上游 `.current.ok_or(...)` 直接用法错
+/// exit 2。1024 = musl soft limit 默认档；struct rlimit = {cur, max} u64×2。
+#[no_mangle]
+pub extern "C" fn getrlimit(_resource: c_int, rlim: *mut c_void) -> c_int {
+    unsafe {
+        if !rlim.is_null() {
+            let r = rlim as *mut u64;
+            r.add(0).write(1024);
+            r.add(1).write(1024);
+        }
+    }
+    0
+}
+
+/// access —— uu_sort check_inputs 的输入可读探测（rustix::fs::access →
+/// libc::access；GNU sort 同款「先 access 后 open」防 FIFO 阻塞/档位膨
+/// 胀）。v1 无权限位执法且进程恒 root：READ_OK ⟺ 路径存在——复用 fs.rs
+/// stat 真实现（RPC 往返），0/-1 + errno 约定同 stat（ENOENT/EACCES…）。
+#[no_mangle]
+pub extern "C" fn access(path: *const c_char, _mode: c_int) -> c_int {
+    let mut st: crate::fs::Stat = unsafe { core::mem::zeroed() };
+    unsafe { crate::fs::stat(path, &mut st) }
+}
+
+// sem 三件 —— ctrlc 3.5.2 UNIX 信号机（uu_sort tmp_dir 的 SIGINT 清场装
+// 配链）：set_handler 先 sigaction 注册 os_handler（ok! 桩成功）再 spawn
+// 专属线程跑 sem_wait_forever——**v1 运行时不可达**（std 线程经
+// pthread_create 桩返 EAGAIN → set_handler Err → uu_sort 侧 `let _ =`
+// 吸掉，排序照常；sem_post 只在真信号处发，v1 无信号面）。桩面纪律 =
+// 不越界、不阻塞：musl b64 sem_t = [i32;8]（32B），计数位在偏移 0；
+// wait 空计数返 EAGAIN（单线程无等待者模型——真阻塞在无信号面等于挂
+// 死），post 自增返 0。
+
+#[no_mangle]
+pub extern "C" fn sem_init(sem: *mut c_void, _pshared: c_int, value: c_int) -> c_int {
+    unsafe {
+        if !sem.is_null() {
+            core::ptr::write_bytes(sem as *mut u8, 0, 32);
+            (sem as *mut i32).write(value);
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn sem_wait(sem: *mut c_void) -> c_int {
+    unsafe {
+        let s = sem as *mut i32;
+        if sem.is_null() {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
+        if *s > 0 {
+            *s -= 1;
+            0
+        } else {
+            crate::set_errno(crate::EAGAIN);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn sem_post(sem: *mut c_void) -> c_int {
+    unsafe {
+        if sem.is_null() {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
+        let s = sem as *mut i32;
+        *s += 1;
+        0
+    }
 }
 
 // getcwd（刀 2 起迁 fs.rs 真实现——cwd 字符串 + render_cwd/ERANGE 面）。

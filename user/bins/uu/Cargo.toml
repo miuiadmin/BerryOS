@@ -6,10 +6,16 @@
 # 两件事——CRT0 锚（hexyl 先例）+ uumain 调用直传 i32（`#[uucore::main]`
 # proc 宏已把一切 uumain 统一改写成 `-> i32` 退出码）。
 #
-# 为什么家族 workspace 而非 hexyl 式逐 crate 自绝：12 个成员共享一棵依赖
-# 树（uucore/clap/fluent……），单 Cargo.lock 锁死整族解析（12 独立 lock 的
-# uucore 版本漂移 = 各 bin 语义不同步）；单次构建全树复用 = 12 独立构建
-# 的 wall-clock 与磁盘的 1/12。drivers/ 工作区同款先例（第三例）。
+# C-2c（中批）+6：head/wc/cut/tr/sort/uniq（=0.12.0 同锁步——18 成员）。
+# 深坑件 tail/env/date/grep/find/which 挂账专项另刀：uu_grep 0.2.0 /
+# findutils 0.10.0 硬依赖 onig/onig_sys C 正则库（berry-ld 纯 Rust 链
+# 结构性阻断，2026-10-25 probe 实证无 feature 门）；uu_which crates.io
+# 无发布线；tail/env/date 走查重、ICU4X/事件面宽，另刀裁。
+#
+# 为什么家族 workspace 而非 hexyl 式逐 crate 自绝：18 个成员共享一棵依赖
+# 树（uucore/clap/fluent……），单 Cargo.lock 锁死整族解析（18 独立 lock 的
+# uucore 版本漂移 = 各 bin 语义不同步）；单次构建全树复用 = 18 独立构建
+# 的 wall-clock 与磁盘的 1/18。drivers/ 工作区同款先例（第三例）。
 #
 # 不入 user/ members（nearest-workspace 根在此，与 hexyl 自绝同效）；构建
 # 走 justfile build-user 的 std 面家族块（musl target + berry-ld + 家族
@@ -17,16 +23,22 @@
 members = [
     "cat",
     "cp",
+    "cut",
     "echo",
     "false",
+    "head",
     "ls",
     "mkdir",
     "mv",
     "pwd",
     "rm",
     "rmdir",
+    "sort",
     "touch",
+    "tr",
     "true",
+    "uniq",
+    "wc",
 ]
 resolver = "2"
 
@@ -37,13 +49,14 @@ resolver = "2"
 # Linux 号在 berry 号表上随机对撞既有号（56=thread_set_priority 等）——
 # 「成功」即静默腐化、「失败」是错误码。use-libc 把后端翻到 libc crate FFI
 # = 链接期解析到 berry-libc 符号面（缺桩 loud 拒链，迭代补齐到绿）。
-# 12 成员统一挂（uucore 树全员含 rustix，单成员翻转会让 -p 单包构建的
+# 18 成员统一挂（uucore 树全员含 rustix，单成员翻转会让 -p 单包构建的
 # feature 统一面漂移——家族全图构建也要求同一面）。
 [workspace.dependencies]
 rustix = { version = "1", default-features = false, features = ["use-libc"] }
 
-# hexyl/stdhello 同款体积优先五连（上游 ELF 本体进 cpio，rootfs 16MiB
-# 双侧帽是本家族的体积预算约束）。
+# hexyl/stdhello 同款体积优先五连（上游 ELF 本体进 cpio，rootfs 32MiB
+# 双侧帽（C-2c 起 16→32，VMO_MAX_SIZE/ROOTFS_MAX 同口径）是本家族的
+# 体积预算约束）。
 [profile.release]
 opt-level = "z"
 lto = true
