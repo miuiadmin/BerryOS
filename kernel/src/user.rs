@@ -1233,6 +1233,24 @@ impl UserProcess {
     }
 }
 
+/// R-0 私助：分位**桶界保守上界**——目标序数 = ceil(num/den · n)，桶累计
+/// 首达目标的桶 idx → 上界 2^(idx+1)（桶 i 覆盖 [2^i, 2^(i+1)) 周期数；
+/// idx=63 → u64::MAX，防 2^64 移位溢出）。指数粒度只够看形状，精确分位归
+/// R-1 采样集全排序。扫描必达：wake_hist 读序纪律保证 sum(桶) ≥ n ≥ 目标。
+fn benchwake_percentile(h: &crate::telemetry::WakeHist, num: u64, den: u64) -> u64 {
+    let prod = h.n.saturating_mul(num);
+    let target = prod / den + u64::from(prod % den != 0);
+    let mut acc: u64 = 0;
+    for idx in 0..crate::telemetry::WAKE_HIST_BUCKETS {
+        acc += h.buckets[idx];
+        if acc >= target {
+            return if idx >= 63 { u64::MAX } else { 1 << (idx + 1) };
+        }
+    }
+    // 不可达（sum ≥ n ≥ target）；保守回 u64::MAX——打印路径非执法点，不 panic。
+    u64::MAX
+}
+
 /// G1.5 验收看门狗（内核任务）：等 rogue_ptr 被杀、abuser（坏 handle 滥用）与
 /// good 的 console 排水 / switches 金丝雀仍在涨 → 打关卡标记 `G1.5 ok` 后
 /// `exit_current` 退场（A/B/good/abuser 继续分时）。杀数超期望（abuser 被误杀
@@ -1280,6 +1298,45 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                     }
                 }
                 berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
+                // R-0（基准与压力测试设计.md §9）：唤醒延迟直方图 boot 尾一行。
+                // 落点契约：watchdog 单次执行 + 下行 exit_current 切走不归 →
+                // **恰一次**；写在 exit 之后 = 死码（Plan B v0.5 gotcha 同族）。
+                // 形状严格断言（L0 执法）：n>0 且 min<=max（两条皆撕裂安全——
+                // 见 telemetry::wake_hist 读序纪律）；分位数值是统计量只出数
+                // 不设门禁（公约 2——数值 L1 归 bench.py 收割同表）。单行
+                // 纯 ASCII、uart 直写（内核任务非 console 通道——无分片撕
+                // 行面，d-3c 192B 雷不适用，超长亦无失败模式）。长度算术
+                // 绝对界 208B（固定段 48B = 头 12 + 7 个标签各 5 + 换行 1，
+                // + 8 数值字段各至多 20 位）——触发需某延迟 ≥2^63 周期
+                // （62.5MHz 下 ≈293 年），不可达；实践界远低于此（boot 实
+                // 测 81B、一年 soak 上界约 152B）。
+                let h = crate::telemetry::wake_hist();
+                assert!(
+                    h.n > 0,
+                    "BENCHWAKE FAIL: n=0（直方图零样本——唤醒环计数={} 却桶空 = 写点两路失联）",
+                    crate::telemetry::wake_total()
+                );
+                assert!(h.min <= h.max, "BENCHWAKE FAIL: min={} > max={} = 直方图写点 bug", h.min, h.max);
+                let p50 = benchwake_percentile(&h, 1, 2);
+                let p90 = benchwake_percentile(&h, 9, 10);
+                let p99 = benchwake_percentile(&h, 99, 100);
+                berry_hal_aarch64::uart_puts(b"BENCHWAKE n=");
+                berry_hal_aarch64::uart_put_dec(h.n);
+                berry_hal_aarch64::uart_puts(b" min=");
+                berry_hal_aarch64::uart_put_dec(h.min);
+                berry_hal_aarch64::uart_puts(b" p50=");
+                berry_hal_aarch64::uart_put_dec(p50);
+                berry_hal_aarch64::uart_puts(b" p90=");
+                berry_hal_aarch64::uart_put_dec(p90);
+                berry_hal_aarch64::uart_puts(b" p99=");
+                berry_hal_aarch64::uart_put_dec(p99);
+                berry_hal_aarch64::uart_puts(b" max=");
+                berry_hal_aarch64::uart_put_dec(h.max);
+                berry_hal_aarch64::uart_puts(b" sig=");
+                berry_hal_aarch64::uart_put_dec(h.sig);
+                berry_hal_aarch64::uart_puts(b" tmo=");
+                berry_hal_aarch64::uart_put_dec(h.tmo);
+                berry_hal_aarch64::uart_puts(b"\n");
                 berry_sched::exit_current()
             }
         }

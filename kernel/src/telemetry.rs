@@ -193,7 +193,8 @@ fn reason_code(reason: WakeReason) -> u8 {
     }
 }
 
-/// 唤醒钩子本体（`init` 注册进 `berry_sched`）。**零分配**：只写静态环 + 计数。
+/// 唤醒钩子本体（`init` 注册进 `berry_sched`）。**零分配**：只写静态环 + 计数
+/// + R-0 增量直方图（同窗 O(1) 算术，与环写同量级——IRQ 屏蔽热路径纪律不破）。
 fn on_wake(task: &Task, reason: WakeReason) {
     // SAFETY: 写点只经本函数；调用点 = 两个唤醒位，全程 IRQ 屏蔽（单核串行）。
     unsafe {
@@ -208,6 +209,33 @@ fn on_wake(task: &Task, reason: WakeReason) {
         WAKE_RING[WAKE_HEAD] = rec;
         WAKE_HEAD = (WAKE_HEAD + 1) % WAKE_RING_LEN;
         WAKE_TOTAL = WAKE_TOTAL.wrapping_add(1);
+        // R-0 增量直方图：延迟 = 唤醒时刻 − 入睡时刻（原始周期数——公约 5，
+        // 不走 ns 换算）。负延迟 = 时钟倒走 = 睡眠戳/写点 bug → 严格断言
+        // panic（写点执法盖**全历史**，比 wake_check 的环内 64 条更全；设计
+        // §9 门禁授权的 L0 路径）。log2 桶：lat=0（同刻醒）归桶 0；否则
+        // idx = 63 − leading_zeros（lat ≥ 1 ⇒ lz ≤ 63，lat ≥ 2^63 恰归桶
+        // 63——无下溢无溢出）。
+        let lat = match rec.vct.checked_sub(rec.since_vct) {
+            Some(l) => l,
+            None => {
+                panic!("WAKE: 负延迟（vct={} < since={}）= 睡眠戳/写点 bug", rec.vct, rec.since_vct)
+            }
+        };
+        let idx = if lat == 0 { 0 } else { 63 - lat.leading_zeros() as usize };
+        (*core::ptr::addr_of_mut!(WAKE_HIST))[idx] += 1;
+        *core::ptr::addr_of_mut!(WAKE_HIST_N) += 1;
+        if lat < *core::ptr::addr_of!(WAKE_HIST_MIN) {
+            *core::ptr::addr_of_mut!(WAKE_HIST_MIN) = lat;
+        }
+        if lat > *core::ptr::addr_of!(WAKE_HIST_MAX) {
+            *core::ptr::addr_of_mut!(WAKE_HIST_MAX) = lat;
+        }
+        if rec.reason == REASON_SIGNALED {
+            *core::ptr::addr_of_mut!(WAKE_HIST_SIG) += 1;
+        } else {
+            // Timeout（Pending 编码 0 不可达——note_wake 只在置因后发射）。
+            *core::ptr::addr_of_mut!(WAKE_HIST_TMO) += 1;
+        }
     }
 }
 
@@ -277,6 +305,62 @@ pub fn wake_check() -> bool {
         }
     }
     true
+}
+
+// ---- R-0 唤醒延迟增量直方图（`基准与压力测试设计.md` §9；与唤醒环**并存**：
+// 环 = 最近 64 条明细（wrap 丢头），桶 = 全程覆盖的 O(1) 增量统计——看形状
+// 靠桶、看明细靠环；精确分位归 R-1 采样集全排序，桶只给保守上界）----
+
+/// log2 延迟桶数：桶 i 计延迟 ∈ [2^i, 2^(i+1)) 的唤醒次数；延迟 0（同刻醒）
+/// 归桶 0，延迟 ≥ 2^63 归桶 63（打印端上界给 u64::MAX——2^64 溢出防）。
+pub const WAKE_HIST_BUCKETS: usize = 64;
+
+/// 直方图快照（打印端一次取走；[u64;64] ≈ 512B 栈副本，boot 尾一次，非热路径）。
+pub struct WakeHist {
+    /// log2 延迟桶计数（下标 i ⇔ 延迟 ∈ [2^i, 2^(i+1)) 周期数）。
+    pub buckets: [u64; WAKE_HIST_BUCKETS],
+    /// 样本总数（与 [`wake_total`] 同函数同窗递增，恒相等）。
+    pub n: u64,
+    /// 精确最小延迟（u64::MAX 哨兵 ⇔ 零样本——打印端 n>0 门控后必真值）。
+    pub min: u64,
+    /// 精确最大延迟（0 ⇔ 零样本）。
+    pub max: u64,
+    /// Signaled 唤醒分计数。
+    pub sig: u64,
+    /// Timeout 唤醒分计数。
+    pub tmo: u64,
+}
+
+static mut WAKE_HIST: [u64; WAKE_HIST_BUCKETS] = [0; WAKE_HIST_BUCKETS];
+static mut WAKE_HIST_N: u64 = 0;
+static mut WAKE_HIST_MIN: u64 = u64::MAX;
+static mut WAKE_HIST_MAX: u64 = 0;
+static mut WAKE_HIST_SIG: u64 = 0;
+static mut WAKE_HIST_TMO: u64 = 0;
+
+/// 直方图快照（只读）。**读序纪律**（读方可抢占、写方在 IRQ 屏蔽单窗内完成
+/// 全部字段更新，撕裂只可能是「n 旧、桶/极值新一位」）：n 先读 → 后读的桶
+/// 之和恒 ≥ n（分位扫描必达，不耗尽）；min 先于 max 读 → min ≤ max 恒立
+///（min 只减、max 只增，min_old ≤ max_old ≤ max_new）——打印端的两条形状
+/// 断言（n>0、min≤max）在撕裂窗内也不会假阳性。
+pub fn wake_hist() -> WakeHist {
+    // SAFETY: 只读；单核顺序（写点 IRQ 屏蔽串行），按上述读序取快照。
+    let n = unsafe { *core::ptr::addr_of!(WAKE_HIST_N) };
+    let src = core::ptr::addr_of!(WAKE_HIST);
+    let mut buckets = [0u64; WAKE_HIST_BUCKETS];
+    for i in 0..WAKE_HIST_BUCKETS {
+        // SAFETY: 只读静态数组；i 在界内。
+        buckets[i] = unsafe { (*src)[i] };
+    }
+    // SAFETY: 只读。
+    let min = unsafe { *core::ptr::addr_of!(WAKE_HIST_MIN) };
+    // SAFETY: 只读（须后于 min——见读序纪律）。
+    let max = unsafe { *core::ptr::addr_of!(WAKE_HIST_MAX) };
+    // SAFETY: 只读。
+    let sig = unsafe { *core::ptr::addr_of!(WAKE_HIST_SIG) };
+    // SAFETY: 只读。
+    let tmo = unsafe { *core::ptr::addr_of!(WAKE_HIST_TMO) };
+    WakeHist { buckets, n, min, max, sig, tmo }
 }
 
 // ---- 4-3c intent 传播计数器（`IPC设计.md` §2.1 五件套之 5；IRQ 屏蔽路径
