@@ -44,6 +44,12 @@
 //! 解析。自验 `CD ok` = 沙箱全链（chdir → pwd → 相对名落子目录 → 绝对
 //! 多段同文件读回 → 回根后相对名即失——CWD 真迁移非文本戏法）。
 //!
+//! C-2b（uutils U2 管道面）：uu echo/true/false 三命令**执行面**自验
+//! `U2 ok`（rootfs 相第 26 标记）——argv 多参（输出 `berry u2\n` 9B 恰长）/`-n`
+//! 无尾换行/true-false 真退出码/`&&` 链真码传播/`echo | cat` 管道对拍六
+//! 步，全在私有通道收齐逐字节比对（零串口 grep 面；U1 = fs 元数据链，
+//! 本刀补执行面——互补不重叠）。
+//!
 //! v1 内建：help / echo / env / run / exit / cat / ls / mkdir / rm / cd / pwd
 //!（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
@@ -144,6 +150,11 @@ fn main() {
     and_selftest(&mut vars, &mut status);
     pipe_selftest();
     fs_selftest(&hexyl_out);
+    // —— C-2b：U2 必须排在 fat 族**之前**——EFI 路无盘时 fat_selftest
+    //    ST_NOENT → park（`-> !` 永不返回），排其后的自验全部不可达
+    //    （对抗审查实抓的链序契约；U2 零 fs 面，前移后 EFI 路亦打 U2 ok
+    //    ——smoke-image ECO 同面）。
+    u2_selftest(&mut vars, &mut status);
     fat_selftest();
     fatw_selftest();
     dir_selftest();
@@ -1399,6 +1410,138 @@ fn pipe_selftest() {
         berry_libc::park();
     }
     println!("PIPE ok n={}", piped.data.len());
+}
+
+/// u2 自验（C-2b，`U2 ok` = rootfs 相第 26 标记——确定性状态谓词）：C-2a
+/// 接入的 uu echo/true/false 三命令**执行面**验收（U1 = svcmgr 宿主九步 fs
+/// 元数据链，本刀补 argv 多参/`-n`/真退出码/`&&` 链/管道对拍——U1 未盖
+/// 面，互补不重叠；uu echo 带参仅自验面可达——交互面内建优先原样）。
+/// 六步全在 bsh 进程内私有通道收齐后逐字节比对（零串口 grep 面，PIPE ok
+/// 同款）；全过才打 `U2 ok`（单消息原子）；任一步败 eprintln 诊断 + park
+/// （标记缺失 → smoke FAIL loud 兜底）。调用位 = main 链 fat 族**之前**
+/// （EFI 路无盘 fat park 挡断其后——可达性链序契约，见调用点注）。
+///
+/// ① `echo berry u2` 多参 → 9B 恰长 `berry u2\n` + EOF 干净（该腿兼作
+/// 步 ⑥ 管道参照，零额外 spawn）；② `echo -n u2x` → 3B 无尾换行（`-n`
+/// flush 面闭环）；③ `true` 真码 0 + 零输出；④ `false` 真码 1 + 零输出；
+/// ⑤ `&&` 链真码传播（and_selftest 同款零串口噪声）：`run true && A=1`
+/// 置 A、`run false && B=1` 短路 → status==1（false 残留）+ A=="1" +
+/// B 未置；⑥ `echo | cat` 管道对拍（PIPE ok 同型；cat 恒无参末段——
+/// extra_gifts 无 fs handle 契约不破）与步 ① 参照逐字节全等。
+fn u2_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
+    // 步 1：echo 多参（argv[1..] = berry/u2——C-2a SpawnSpec::args 面）。
+    let echo_ref: Vec<u8> = match run_capture("echo", Some(&[]), &["berry", "u2"]) {
+        Some((o, c)) if c == 0 && o.data == b"berry u2\n" && o.eof && o.dropped == 0 => o.data,
+        Some((o, c)) => {
+            eprintln!(
+                "bsh: u2 selftest bad: step=1 code={} len={} eof={} dropped={}",
+                c,
+                o.data.len(),
+                o.eof,
+                o.dropped
+            );
+            berry_libc::park();
+        }
+        None => {
+            eprintln!("bsh: u2 selftest bad: step=1 echo not found");
+            berry_libc::park();
+        }
+    };
+    // 步 2：`-n` 无尾换行（3B 恰长——沿革「-n 零消费路径」的验收面闭环）。
+    match run_capture("echo", Some(&[]), &["-n", "u2x"]) {
+        Some((o, c)) if c == 0 && o.data == b"u2x" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => {
+            eprintln!(
+                "bsh: u2 selftest bad: step=2 code={} len={} eof={} dropped={}",
+                c,
+                o.data.len(),
+                o.eof,
+                o.dropped
+            );
+            berry_libc::park();
+        }
+        None => {
+            eprintln!("bsh: u2 selftest bad: step=2 echo not found");
+            berry_libc::park();
+        }
+    }
+    // 步 3/4：true/false 真退出码（0x3A 真码链）+ 零输出。
+    match run_capture("true", Some(&[]), &[]) {
+        Some((o, c)) if c == 0 && o.data.is_empty() && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => {
+            eprintln!(
+                "bsh: u2 selftest bad: step=3 code={} len={} eof={} dropped={}",
+                c,
+                o.data.len(),
+                o.eof,
+                o.dropped
+            );
+            berry_libc::park();
+        }
+        None => {
+            eprintln!("bsh: u2 selftest bad: step=3 true not found");
+            berry_libc::park();
+        }
+    }
+    match run_capture("false", Some(&[]), &[]) {
+        Some((o, c)) if c == 1 && o.data.is_empty() && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => {
+            eprintln!(
+                "bsh: u2 selftest bad: step=4 code={} len={} eof={} dropped={}",
+                c,
+                o.data.len(),
+                o.eof,
+                o.dropped
+            );
+            berry_libc::park();
+        }
+        None => {
+            eprintln!("bsh: u2 selftest bad: step=4 false not found");
+            berry_libc::park();
+        }
+    }
+    // 步 5：&& 链真码传播（and_selftest 同款——run_line 内部驱动 + 变量表
+    // 断言；true/false 零输出零警告 = 零串口噪声）。
+    let mut out = std::io::stdout();
+    run_line("run true && A=1", vars, status, &mut out);
+    run_line("run false && B=1", vars, status, &mut out);
+    let get = |n: &str| get_var(vars, n).map(|s| s.to_string());
+    if *status != 1 || get("A").as_deref() != Some("1") || get("B").is_some() {
+        eprintln!(
+            "bsh: u2 selftest bad: step=5 status={} A={:?} B={:?}",
+            status,
+            get("A"),
+            get("B")
+        );
+        berry_libc::park();
+    }
+    // 步 6：管道对拍（PIPE ok 同型死锁序铁律在 pipe_capture 内）。
+    let segs = [
+        PipeSeg { name: "echo", args: &["berry", "u2"] },
+        PipeSeg { name: "cat", args: &[] },
+    ];
+    match pipe_capture(&segs, Some(&[])) {
+        Ok((o, c)) if c == 0 && o.data == echo_ref && o.eof && o.dropped == 0 => {}
+        Ok((o, c)) => {
+            eprintln!(
+                "bsh: u2 selftest bad: step=6 code={} len={} eof={} dropped={}",
+                c,
+                o.data.len(),
+                o.eof,
+                o.dropped
+            );
+            berry_libc::park();
+        }
+        Err(PipeFail::NotFound(n)) => {
+            eprintln!("bsh: u2 selftest bad: step=6 {} not found", n);
+            berry_libc::park();
+        }
+        Err(PipeFail::SpawnFail(n)) => {
+            eprintln!("bsh: u2 selftest bad: step=6 {} spawn failed", n);
+            berry_libc::park();
+        }
+    }
+    println!("U2 ok");
 }
 
 /// 拉起 + 收集（自验/交互共用）：查档 → spawn → collect → 回收 → 关对端。

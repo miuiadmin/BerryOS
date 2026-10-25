@@ -381,7 +381,7 @@ smoke-x86: build-x86
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
 # 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 23 +
-# EFI 路生态 12 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# EFI 路生态 13 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image
