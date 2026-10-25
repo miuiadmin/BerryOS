@@ -1,0 +1,9 @@
+# BerryOS B-0 内核微基准基线（机器可读：name,iters,cyc_per_op）。
+# 口径 = CNTVCT 原始周期数（TCG ≈ 实时/2）——只做同机同 QEMU 相对比较；
+# 刷新：python3 tools/bench.py --update（改内核后跑一次，diff 随源入册）。
+cntvct_pair,4096,3
+frame_alloc4k,1024,5888
+frame_alloc64k,256,5899
+handle_evt,1024,19
+vmo_commit1p,256,5970
+vmo_rw4k,128,241

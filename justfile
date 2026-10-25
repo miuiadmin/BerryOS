@@ -328,6 +328,13 @@ test-host:
 size: build
     python3 tools/size.py {{KERNEL}}
 
+# B-0 性能基准单口（docs/基准与压力测试设计.md）：QEMU 裸跑收割 BENCH 行 +
+# 基线对拍（tools/bench_baseline.txt，宽松因子 3x 拦数量级劣化）。改内核后
+# 刷新基线：python3 tools/bench.py --update（diff 随源入册）。严格确定性
+# 断言（churn 泄漏金丝雀/标记到齐）已挂 just smoke 永绿红线——本口只管数值。
+bench: build
+    python3 tools/bench.py
+
 size-release: abi-check build-user
     cargo build --release
     python3 tools/size.py {{KERNEL_RELEASE}}

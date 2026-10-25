@@ -10,7 +10,8 @@
 #      自打、ECO ok = svcmgr 流式 cpio/ELF 拉起成功、STD ok/STD err ok =
 #      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
-#      （裸跑相 rootfs 缺席 = svcmgr 静默降级，23 标记零扰动，两相互证）。
+#      （裸跑相 rootfs 缺席 = svcmgr 静默降级，24 标记零扰动，两相互证；
+#      B-0 起裸相含 BENCH ok n=6——内核微基准 + churn 泄漏金丝雀关卡化）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段）：三拉 QEMU 带
 #      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），50 标记
@@ -107,7 +108,7 @@ DEADLINE_ROOTFS=300  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # （含造盘/boot 走查 + U1/U2/U3 全链；fat/网络族在其
                      # 后），smoke 五跑全绿 27/27，300s 帽常态余量充足
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCH ok n=6" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
 QEMU_PID=""

@@ -16,6 +16,7 @@ extern crate alloc;
 #[allow(dead_code)]
 mod abi_gen;
 mod aspace;
+mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
 mod channel;
 mod dtb;
 mod event;
@@ -220,6 +221,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     syscall::install();
 
     ktest::run();
+
+    // B-0（基准与压力测试设计 §4）：内核微基准 + churn 泄漏金丝雀——ktest 后、
+    // timer/sched init 前的干净窗口（单线程 IRQ 屏蔽零调度噪声）。每次 boot
+    // 都跑：金丝雀属「主干永远绿」红线，BENCH 行供 smoke/bench.py 收割。
+    bench::run();
 
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。

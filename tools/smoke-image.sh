@@ -10,7 +10,8 @@
 #      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
 #   2. 内核接续恰一次：HANDOFF ok ver=0 / MMAP ok segs= / ROOTFS ok
 #      **src=handoff**（handoff 源专属形态——fw_cfg/DTB 路不通于此）；
-#   3. 裸相 23 标记（与 smoke.sh 同一清单——内核行为零漂移的证据）+ EFI 路
+#   3. 裸相 24 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
+#      + BENCH ok n=6 微基准/churn 金丝雀关卡行）+ EFI 路
 #      生态 14 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
 #      EXIT / APP / PIPE / FS / U1 / U2 / U3——与 smoke.sh rootfs 相断言 canon 同面；
 #      无 virtio 面：不挂 virtio-blk/net，VIRTIO/FAT/NET/DIR/CD 族不在
@@ -73,9 +74,9 @@ EFI_ERE=(
 # 内核接续恰一次面（src=handoff 是 handoff 路专属——fw_cfg 路打 src=fw_cfg
 # 串，混源即 FAIL）。
 CONT_MARKERS=("HANDOFF ok ver=0" "MMAP ok segs=" "ROOTFS ok src=handoff")
-# 裸相 23（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
+# 裸相 24（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
 # 各自失去「同内核零漂移」对照力）。
-KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCH ok n=6" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 # EFI 路生态 14（对抗审查保留日志逐标记普查实证——`grep -cF` 各恰一次；与
 # smoke.sh rootfs 相断言 canon 同面，EFI 路上 libc/spawn/退出链回归不静默
 # 溜过。无 virtio 面——VIRTIO/FAT/NET/DIR/CD 族不在断言面。FS 用带参形态
@@ -170,7 +171,7 @@ echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 23 + 生态 14 = 50）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 24 + 生态 14 = 51）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
@@ -190,7 +191,7 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 23 + 生态 14）"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 24 + 生态 14）"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -255,4 +256,4 @@ while :; do
   sleep 2
 done
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 23 + 生态 14 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 24 + 生态 14 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"

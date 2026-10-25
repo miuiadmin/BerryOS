@@ -256,6 +256,24 @@ impl<'a> BuddyAllocator<'a> {
         !self.free[p] && self.order[p] != TAIL
     }
 
+    /// **已分配页总数**（B-0 泄漏金丝雀的对账口径：churn 前后必须相等）。
+    ///
+    /// 全窗扫已分配块头（`free=false` 且非 TAIL/RESERVED），按 `2^order`
+    /// 累计页数——尾页全 TAIL 不单独计，保留页（RESERVED）恒定不计。
+    /// O(num_pages) 线性扫，boot 期 / 低频断言用，非热路径。
+    pub fn allocated_pages(&self) -> usize {
+        let mut n = 0usize;
+        for p in 0..self.num_pages {
+            if !self.free[p] {
+                let o = self.order[p];
+                if o != TAIL && o != RESERVED {
+                    n += 1usize << o;
+                }
+            }
+        }
+        n
+    }
+
     /// 调试用：返回所有「空闲块头页」的 (页号, 阶) 列表（升序）。
     #[cfg(test)]
     pub fn debug_free_heads(&self) -> Vec<(usize, usize)> {

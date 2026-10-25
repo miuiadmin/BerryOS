@@ -100,6 +100,12 @@ impl<'a> FrameAllocator<'a> {
     pub fn npages(&self) -> usize {
         self.npages
     }
+
+    /// 已分配页总数（透传 [`BuddyAllocator::allocated_pages`]——B-0 泄漏
+    /// 金丝雀的对账口径：churn 前后必须相等，确定性严格断言）。
+    pub fn allocated_pages(&self) -> usize {
+        self.buddy.allocated_pages()
+    }
 }
 
 /// 页大小掩码（`PAGE_SIZE - 1`）——ceil 除法用。
@@ -152,5 +158,25 @@ mod tests {
         let n = fa.reserve(0, usize::MAX);
         assert_eq!(n, 16);
         assert_eq!(fa.alloc(), Err(AllocError::OutOfMemory));
+    }
+
+    #[test]
+    fn allocated_pages_accounts_and_returns_to_zero() {
+        // B-0 泄漏金丝雀口径钉板：按块头 2^order 累计（尾页 TAIL 不重复计）、
+        // 保留页恒不计、全释放归零——churn 对账的「相等」有语义。
+        let base = 0x8000_0000;
+        let (f, o) = backing(64);
+        let mut fa = FrameAllocator::new(base, base + 64 * KIB4, f, o);
+        assert_eq!(fa.allocated_pages(), 0, "空窗应为 0");
+        fa.reserve(base + 4 * KIB4, 2 * KIB4); // 保留 2 页——不计入
+        assert_eq!(fa.allocated_pages(), 0, "保留页不计入 allocated");
+        let a = fa.alloc().unwrap(); // 1 页
+        let b = fa.alloc_order(2).unwrap(); // 4 页连续块
+        let c = fa.alloc().unwrap();
+        assert_eq!(fa.allocated_pages(), 6, "1 + 4 + 1");
+        fa.free(a, 0).unwrap();
+        fa.free(b, 2).unwrap();
+        fa.free(c, 0).unwrap();
+        assert_eq!(fa.allocated_pages(), 0, "全释放归零（泄漏金丝雀判据）");
     }
 }
