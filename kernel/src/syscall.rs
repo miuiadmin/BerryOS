@@ -145,7 +145,9 @@ fn caller_is_el1(tf: &TrapFrame) -> bool {
 /// try 化（`Vmo::create` 折 -ENOMEM——上限内 OOM 也不再 abort）。上限与
 /// `ROOTFS_MAX`/`MAX_ORDER` 同口径抬升（C-2c：16→32MiB，rootfs ≈21.5MiB
 /// 的装载 VMO 在 16MiB 帽下被拒；真机/堆扩大后再上调，ABI 注记）。
-const VMO_MAX_SIZE: usize = 32 * 1024 * 1024;
+/// bench S-2（`基准与压力测试设计.md` §12）引用本常量做超帽/边界断言——
+/// 帽值单一事实源，勿在 bench 侧另写裸数字。
+pub(crate) const VMO_MAX_SIZE: usize = 32 * 1024 * 1024;
 
 /// 栈上拷贝分块（防长缓冲吃内核栈）。
 const COPY_CHUNK: usize = 256;

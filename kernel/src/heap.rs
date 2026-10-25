@@ -3,7 +3,8 @@
 //! 架构：
 //!  - **小对象**（`max(size, align) <= 2048`）：按 2 的幂 size-class（8…2048）取自
 //!    slab——每页 4KiB 切成若干等大槽，空槽用侵入式单链表（槽首存 next 指针）。
-//!  - **大对象**（`> 2048`）：直接向帧分配器取 `2^order` 连续页，VA=PA（身份）。
+//!  - **大对象**（`> 2048`）：直接向帧分配器取 `2^order` 连续页，经
+//!    `phys_to_virt` 映入内核 direct map（2b-1 起高半，非身份映射）。
 //!
 //! dealloc 据 `Layout` 重算同样判定（对称），无需元数据旁路。
 //!
@@ -19,7 +20,8 @@
 
 use alloc::alloc::{GlobalAlloc, Layout};
 use alloc::boxed::Box;
-use berry_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
+use berry_hal_aarch64::{uart_put_dec, uart_put_hex64, uart_puts};
+use berry_mm::va::{phys_to_virt, virt_to_phys, PAGE_SHIFT, PAGE_SIZE};
 use core::cell::UnsafeCell;
 use core::ptr;
 
@@ -85,8 +87,18 @@ unsafe impl GlobalAlloc for SlabHeap {
             Some(ci) => push(&mut *self.freelists.get(), ci, ptr),
             None => {
                 let order = order_for(div_round_up(layout.size(), PAGE_SIZE));
-                // 身份映射：VA==PA，pfn = ptr >> PAGE_SHIFT。
-                let _ = crate::mm::frames().free((ptr as usize) >> PAGE_SHIFT, order);
+                // 2b-1 起高半 direct map：alloc 侧返回的是 phys_to_virt(pfn<<SHIFT)，
+                // 还帧前必须折回 PA——旧「VA==PA」是 2b-1 之前的过时前提，照抄会把
+                // 高半 VA 当 PFN 还帧必 Err，被吞错后每块静默漏帧（S-2 vmo_cap 踩亮）。
+                let pfn = virt_to_phys(ptr as usize) >> PAGE_SHIFT;
+                if let Err(_) = crate::mm::frames().free(pfn, order) {
+                    // loud-not-silent：坏块不静默吞（吞错正是上雷存活至今的原因）。
+                    uart_puts(b"heap: large dealloc free failed pfn=0x");
+                    uart_put_hex64(pfn as u64);
+                    uart_puts(b" order=");
+                    uart_put_dec(order as u64);
+                    uart_puts(b"\n");
+                }
             }
         }
     }

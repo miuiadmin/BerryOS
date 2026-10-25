@@ -10,13 +10,14 @@
 #      自打、ECO ok = svcmgr 流式 cpio/ELF 拉起成功、STD ok/STD err ok =
 #      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
-#      （裸跑相 rootfs 缺席 = svcmgr 静默降级，25 标记零扰动，两相互证；
+#      （裸跑相 rootfs 缺席 = svcmgr 静默降级，26 标记零扰动，两相互证；
 #      B-0 起裸相含 BENCH ok n=6——内核微基准 + churn 泄漏金丝雀关卡化；
-#      R-0 起含 BENCHWAKE n=——唤醒延迟直方图 boot 尾形状行）。
+#      R-0 起含 BENCHWAKE n=——唤醒延迟直方图 boot 尾形状行；
+#      S-2 起含 BENCHXH ok——资源耗尽/恢复六面确定性关卡化）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），52 标记
-#      （boot 25 + rootfs 27——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），53 标记
+#      （boot 26 + rootfs 27——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/TCPS ok echo=/APP ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
@@ -51,7 +52,7 @@
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. C-0 刀 4 FAT 子目录相（第四跑）：盘 = mkfat **--fixture 模式**（fixture
 #      专列 DATA/ 目录 + DATA/NOTE.TXT——默认盘不含，默认盘字节零漂移硬线
-#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），52 标记载明全链
+#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），53 标记载明全链
 #      在目录盘上照跑后注入三段（断言与注入行互非子串 + 顺序防回声）：
 #      `ls DATA` → grep 'NOTE.TXT'（READDIR FAT 回落链走查——断言先于一切
 #      含 NOTE.TXT 的注入行回显）→ `cat DATA/NOTE.TXT` → grep
@@ -60,7 +61,7 @@
 #      类型冲突面）。
 #   7. P6 A-6 FAT 持久化相（第五跑）：**不重造盘**（复用第 5 相已写的
 #      disk.img——mkfat 重产 = 持久化零验收；disk_dirs.img 不复用——无
-#      跨盘盘混），52 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
+#      跨盘盘混），53 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
 #      旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT` → grep 'f42t'——
 #      `>` 落的是真扇区、跨 boot 存活。盘 cache writeback=off：QEMU 由
 #      SIGTERM 终止，writeback 模式可能不刷页缓存（所有 -drive 行统一，
@@ -109,7 +110,7 @@ DEADLINE_ROOTFS=300  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # （含造盘/boot 走查 + U1/U2/U3 全链；fat/网络族在其
                      # 后），smoke 五跑全绿 27/27，300s 帽常态余量充足
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
 QEMU_PID=""
@@ -438,7 +439,7 @@ grep -q 'app APPDEMO up' "$LOG" \
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 25 + rootfs 27 = 52
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 26 + rootfs 27 = 53
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块
 # 设备服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络
@@ -486,7 +487,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + vir
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：52 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：53 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -630,7 +631,7 @@ echo "smoke: RAM 目录链到齐（mkdir + 多段 > + cat + 类型面 + rm）"
 # 逐字节回显散布非连续），段 e 的 'd1' 族断言串（'d127x'/'cat d1'）均无
 # 前导斜杠形态——'/d1' 只能来自 pwd 的 getcwd 渲染应答 = libc CWD 全链
 # （chdir resolve+STAT 目录型检 → CWD 静态 → getcwd 渲染）交互面活覆盖
-# （自验面 CD ok 已在 52 标记列）。
+# （自验面 CD ok 已在 53 标记列）。
 inject_line 'cd d1'
 inject_line 'pwd'
 t4=$(date +%s)
@@ -663,7 +664,7 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 # DATA/NOTE.TXT = `berryos fat subdir note\n`——与 berry-fatfs host 共识
 # 基准同源字节）；**独立盘 disk_dirs.img**：disk.img（RX 相已写、阶段 6
 # 持久化相将复用）零扰动——默认盘字节零漂移硬线不破（子目录只在 fixture
-# 模式，正是刀 3 的设计面）。52 标记载明全链在目录盘上照跑（DIR/CD ok 自验
+# 模式，正是刀 3 的设计面）。53 标记载明全链在目录盘上照跑（DIR/CD ok 自验
 # + FATW/RW.TXT 覆写幂等 + FAT 基准读）后注入三段，断言三重防回声：
 # ① `ls DATA` → grep 'NOTE.TXT'——断言先于一切含 NOTE.TXT 的注入行回显
 #   （顺序防线：本注入行自身只含 'ls DATA'，NOTE.TXT 只能来自 READDIR
@@ -741,7 +742,7 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # —— 阶段 6：P6 A-6 FAT 持久化相（第五跑：写过的盘再起）——
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收；
 # disk_dirs.img 本相不复用——两盘链零混）；
-# 不关 fd3（阶段 5 已注入完 cat 行，exec 3>&- 移到本阶段尾）。52 标记载明
+# 不关 fd3（阶段 5 已注入完 cat 行，exec 3>&- 移到本阶段尾）。53 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读。
 # 注入 `cat OUT.TXT` → grep 'f42t'：RX 相 `>` 落的扇区跨 boot 存活——

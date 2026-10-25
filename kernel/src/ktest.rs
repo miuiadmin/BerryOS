@@ -1287,10 +1287,10 @@ fn test_syscall() {
     berry_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
 
-/// `svc #0` 四参往返（ktest 专用）：x0=nr（进）/ret（出）、x1..x3=参。
-/// DAIF 屏蔽不影响同步异常；NZCV 经 SPSR 在 entry/eret 保存/恢复。
+/// `svc #0` 四参往返（ktest 专用；bench S-2 耗尽面复用）：x0=nr（进）/ret（出）、
+/// x1..x3=参。DAIF 屏蔽不影响同步异常；NZCV 经 SPSR 在 entry/eret 保存/恢复。
 /// 安全外壳：3-1 起 syscall 派发不 panic、永不杀调用者（错误码自理）。
-fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
+pub(crate) fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     let ret: u64;
     // SAFETY: svc 触发同步异常；dispatch 只回写 x0（eret 回本指令之后）。
     unsafe {
@@ -1325,9 +1325,9 @@ fn svc5(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> i64 {
     ret as i64
 }
 
-/// `svc #0` 六参往返（ktest 专用；3-2 VMO/Vmar 全链用）：x0=nr（进）/ret（出）、
-/// x1..x6=参（ABI §2 上限 6 参）。
-fn svc6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64 {
+/// `svc #0` 六参往返（ktest 专用，3-2 VMO/Vmar 全链用；bench S-2 耗尽面复用）：
+/// x0=nr（进）/ret（出）、x1..x6=参（ABI §2 上限 6 参）。
+pub(crate) fn svc6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64 {
     let ret: u64;
     // SAFETY: 同 svc4（同步异常；dispatch 只回写 x0）。
     unsafe {
