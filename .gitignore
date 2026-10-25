@@ -7,6 +7,9 @@
 # P6 A-2 virtio-blk 探测盘（run-rootfs/smoke 现场造的 1MiB 空盘，不入库）
 /disk.img
 
+# V-3 just image 整盘镜像产物（mkimage.py 现场造，不入库）
+/out/
+
 # C-0 刀 4 FAT 子目录相盘（mkfat --fixture 模式现场造，不入库；默认盘
 # 字节零漂移硬线不破——子目录只在 fixture 模式）
 /disk_dirs.img

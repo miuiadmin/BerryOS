@@ -309,6 +309,9 @@ test-host:
     cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berryboot --target {{host}}
     python3 tools/elf2pe.py --selftest
     python3 tools/mkfat.py --selftest
+    # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
+    # mkfat --selftest，单编码器纪律不在此长第二套）。
+    python3 tools/mkimage.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
@@ -382,28 +385,25 @@ smoke-x86: build-x86
 # （builtin aarch64-unknown-none，免 nightly）→ rust-lld 静态全链接
 # （--emit-relocs 保留重定位 + berryboot.ld 钉单 .img @0x1000、--image-base
 # 0 ⇒ RVA==vaddr）→ elf2pe.py 转 PE32+（AArch64 EFI application；「staticlib
-# + lld COFF 直链」在 stable 实测死路，故走 ELF 全链接+转换）→ mkfat --put
-# 造 \EFI\BOOT\BOOTAA64.EFI 引导盘。产物全在 out/（gitignored）。
+# + lld COFF 直链」在 stable 实测死路，故走 ELF 全链接+转换）。产物全在
+# bootloader/berryboot/out/（gitignored）。V-3 起造盘段移交 `just image`
+#（mkimage.py MBR + FAT16 整盘——单口吸收，V-1c 8MiB FAT12 盘约定随
+# rootfs 14.4MB 已断，24MiB 修复在此）。
 # rust-lld 随 rustup 走（sysroot 内），无 brew 依赖；--verify 回读断言
 # 恒开（entry 落 .img / .reloc 闭合 / subsystem=EFI app）。
 BOOT_DIR := "bootloader/berryboot"
 BOOT_TARGET := "aarch64-unknown-none"
 BOOT_OUT := BOOT_DIR / "out"
 BOOT_EFI := BOOT_OUT / "BERRYBOOT.EFI"
-BOOT_IMG := BOOT_OUT / "boot.img"
+IMAGE := "out/berryos.img"
 AAVMF_CODE := "/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
 AAVMF_VARS := "/opt/homebrew/share/qemu/edk2-arm-vars.fd"
 RUST_LLD := `printf '%s' "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"`
 
-# BerryBoot 构建链（EFI 应用 + 引导盘）
-build-boot: build-user
+# BerryBoot 构建链（EFI 应用——V-3 起纯 EFI 产链；造盘段已吸收进 just image）
+build-boot:
     #!/bin/sh
     set -e
-    # V-0b 刀 1（裁决 C）：KERNEL.ELF = 内核 debug ELF 直进盘——缺失即
-    # loud（先 just build 补产，勿静默跳过）。
-    test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
-    # V-1c：INITRD.BIN = rootfs.cpio（build-user 产出）进盘——缺即 loud。
-    test -f rootfs.cpio || { echo "rootfs.cpio 缺失——先 just build-user"; exit 1; }
     cd {{BOOT_DIR}}
     CARGO_TARGET_DIR=cargo-target cargo build --release --target {{BOOT_TARGET}}
     mkdir -p out
@@ -412,19 +412,37 @@ build-boot: build-user
         -T berryboot.ld -e efi_main --image-base 0 \
         -o out/berryboot.elf cargo-target/{{BOOT_TARGET}}/release/libberryboot.a
     python3 ../../tools/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
-    # --size-mib 8（V-1c）：debug ELF ~2.9MiB + rootfs.cpio ~3.4MiB 量级
-    # ——SPC 自适应翻倍（4→8）保 FAT12 域（簇 ~2046）；V-0a 1MiB 默认
-    # 造盘路径字节零漂移（参数只进 --put 构造体）。盘名 INITRD.BIN：草案
-    # L91 曾误记 INIT.CPIO（扩展名超 8.3 三字符界），偏差记 阶段沿革。
-    python3 ../../tools/mkfat.py out/boot.img \
-        --size-mib 8 \
-        --put "out/BERRYBOOT.EFI:/EFI/BOOT/BOOTAA64.EFI" \
-        --put "hello.txt:/HELLO.TXT" \
-        --put "{{KERNEL}}:/KERNEL.ELF" \
-        --put "../../rootfs.cpio:/INITRD.BIN"
+
+# V-3 `just image` 单口：MBR + 单 FAT16 分区整盘镜像（吸收 build-boot 造盘
+# 段）。mkimage.py = MBR 薄层（LBA 假几何 255H/63S，protective CHS 自洽即可
+# ——草案 §V-3 原话）+ mkfat.build_volume_puts 单编码器（FAT 写法单源）；
+# 四件套 BOOTAA64.EFI/HELLO.TXT/KERNEL.ELF/INITRD.BIN；hidden = 分区起始
+# LBA（BPB 与分区表自洽）。盘容 24MiB——C-2a 后 rootfs 14.4MB 已超 V-1c
+# 8MiB FAT12 盘约定（存量断裂，本刀修复；FatDxe 实验已证 24MiB FAT16
+# AAVMF 十段+接续全绿，2026-10-25）。产物 out/berryos.img（gitignored）
+# ——UTM/真机挂盘即用；EDK2 PartitionDxe+FatDxe 消化 MBR/分区偏移，
+# BerryBoot SFS 面零改动。
+image: build build-boot
+    #!/bin/sh
+    set -e
+    # V-0b 刀 1（裁决 C）口径沿承：KERNEL.ELF = 内核 debug ELF 直进盘——
+    # 缺失即 loud；INITRD.BIN = rootfs.cpio（build-user 产出）同查。盘名
+    # INITRD.BIN：草案 L91 曾误记 INIT.CPIO（8.3 三字符界），偏差记沿革。
+    test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
+    test -f rootfs.cpio || { echo "rootfs.cpio 缺失——先 just build-user"; exit 1; }
+    mkdir -p out
+    python3 tools/mkimage.py {{IMAGE}} \
+        --efi {{BOOT_EFI}} \
+        --hello {{BOOT_DIR}}/hello.txt \
+        --kernel {{KERNEL}} \
+        --initrd rootfs.cpio \
+        --size-mib 24
 
 # AAVMF 引导验收（V-0b 刀 3 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
-# usb-storage 递盘。期望串口：BdsDxe starting Boot0001 …USB HARDDRIVE →
+# usb-storage 递盘。V-3 起盘 = out/berryos.img（just image 单口：MBR + 单
+# FAT16 分区 24MiB——EDK2 PartitionDxe+FatDxe 消化分区偏移，BerryBoot
+# SFS 面零改动；FatDxe 实验消雷 2026-10-25）。期望串口：BdsDxe starting
+# Boot0001 …USB HARDDRIVE →
 # 九行横幅 `BerryBoot EFI skeleton (V-0a)` / `fw: EDK II rev=0x…` /
 # `gop: <WxH> fmt=<n> mode=<cur>/<max> fb=0x…` / `fs: HELLO.TXT 28B match` /
 # `kfile: <n>B ok`（V-0b 刀 1：KERNEL.ELF GetInfo 探长 + AllocatePool +
@@ -445,12 +463,12 @@ build-boot: build-user
 # edk2 RamfbDxe 驱动面，GOP 查询的确定性供给）。vars.fd 每次 fresh 拷贝
 # （确定性：不带上一轮 BootOrder 状态）。退出 Ctrl-A X。
 # AAVMF 固件来自 brew qemu（edk2-aarch64-code.fd / edk2-arm-vars.fd）。
-run-efi: build-boot
+run-efi: image
     #!/bin/sh
     set -e
     cp "{{AAVMF_VARS}}" {{BOOT_OUT}}/vars.fd
     {{QEMU}} -machine virt -cpu cortex-a72 -m 128M -nographic \
         -pflash "{{AAVMF_CODE}}" -pflash {{BOOT_OUT}}/vars.fd \
-        -drive if=none,file={{BOOT_IMG}},format=raw,id=bb \
+        -drive if=none,file={{IMAGE}},format=raw,id=bb \
         -device qemu-xhci -device usb-storage,drive=bb \
         -device ramfb

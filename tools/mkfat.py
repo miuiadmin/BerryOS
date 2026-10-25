@@ -277,16 +277,18 @@ def fat_path_comps(path) -> list:
 
 
 def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS,
-                      fat16: bool = False) -> tuple:
+                      fat16: bool = False, hidden: int = 0) -> tuple:
     """构建 EFI 引导卷（无保留区前缀）。puts = [(fat_path, 内容字节)]；
     vol_sectors = 卷扇区数（V-0b 刀 1 裁决 C：--size-mib 参数化——默认
     DISK_SECTORS=2048 与 V-0a 产物逐字节不变）；fat16=True 走 FAT16 编码
     （V-2，显式旗——自动域分派会把现役 FAT12 盘翻宽变字节，正面撞零漂移
-    铁线；fat12 路径逐字节不动）。返回 (盘字节, 几何摘要)。
+    铁线；fat12 路径逐字节不动）；hidden = BPB 卷前隐藏扇区数（默认 0 =
+    全盘卷；V-3 mkimage MBR 分区盘传分区起始 LBA——BPB 与分区表自洽）。
+    返回 (盘字节, 几何摘要)。
 
     与 build_volume 的差异面：任意层嵌套；子目录产 `.`/`..` 首两项
-    （attr 0x10，`..` 指父簇——根上指 0；EDK2 FatDxe 友好）；hidden=0
-    （无 vblk 保留区）；media 0xF0（可移介质语义，FAT[0] 同值）；
+    （attr 0x10，`..` 指父簇——根上指 0；EDK2 FatDxe 友好）；hidden
+    （默认 0，无 vblk 保留区）；media 0xF0（可移介质语义，FAT[0] 同值）；
     内容即 puts（不掺 ROOT_LISTING）。
     确定性簇序 = 深度优先：每层先文件（名序）后子目录（名序），目录簇
     先于其子内容簇（与 build_volume 扁平 dirs 同款约定，嵌套递归展开）。
@@ -349,7 +351,7 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS,
 
     vol = bytearray(vol_sectors * SECTOR)
     # —— boot sector（BPB）——与 build_volume 同形，差异三处：total=全盘 /
-    # hidden=0 / media 0xF0。
+    # hidden 参数化（默认 0）/ media 0xF0。
     b = bytearray(SECTOR)
     b[0:3] = b"\xEB\x3C\x90"
     b[3:11] = b"BERRYOS "
@@ -363,7 +365,8 @@ def build_volume_puts(puts: list, vol_sectors: int = DISK_SECTORS,
     b[22:24] = u16(fat_sz)
     b[24:26] = u16(63)
     b[26:28] = u16(255)
-    b[28:32] = u32(0)           # hidden=0（引导卷无保留区前缀）
+    b[28:32] = u32(hidden)      # 卷前隐藏扇区（默认 0 全盘卷；MBR 分区盘 =
+                                # 分区起始 LBA——BPB 与分区表自洽，V-3）
     b[36] = 0x00                # drive number（可移介质惯例）
     b[38] = 0x29
     b[39:43] = u32(VOLUME_ID)
