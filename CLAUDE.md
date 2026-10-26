@@ -169,6 +169,7 @@ just run-efi        # V-1c：QEMU AAVMF（-pflash 固件对）挂 out/berryos.im
 just size           # 内核体积基线报告（文件量 / PT_LOAD 镜像与静态内存 / 段明细；CI 同步打印）
 just bench         # B-0/B-1 性能基准单口（docs/基准与压力测试设计.md §5-6/§8）：默认 B-0 QEMU 裸跑收割 BENCH 六行 + 基线对拍（宽松因子 3x）；`python3 tools/bench.py --el0` = B-1 EL0 四项（run-rootfs 形态收割 BENCH1，rootfs 缺席先 just build-user）；基线 tools/bench_baseline.txt 双段（B-0 裸 CSV / B-1 `BENCH1,` 前缀行），`[--el0] --update` 只刷本段另一段保留（diff 随源入册）；churn 泄漏金丝雀已挂每次 boot（smoke 裸相 `BENCH ok n=6`）
 just bench-rt       # R-1 实时基准单口（docs/基准与压力测试设计.md §10）：`python3 tools/bench.py --rt`——fw_cfg 具名项 opt/berry/rt 门控裸跑（内核 rt_probe 仅该具名项在位才 spawn：三档 δ × 32 样本 oversleep，cyclictest 漏整周期再锚形）收割 BENCHRT 三行 + `RT ok n=96`，只出表无基线（--rt 独立通道，--update/--el0/--factor 组合一律拒绝）；门控缺席 = run/smoke/EFI 零扰动（BENCHRT/RT ok 恒缺）
+just soak [分钟]    # S-1 soak 长跑单口（docs/基准与压力测试设计.md §11，默认 60）：`bash tools/soak.sh <分钟>`——fw_cfg 具名项 opt/berry/soak 门控（内核 soakmon 仅该具名项在位才 spawn 并打 `SOAK gate on` 自证行：常驻心跳任务每 60s vct（本机实测 ≈60s wall）打 `SOAK t=/sw=/pages=/lost=`，首拍潜伏 5 周期（≈300-600s wall）让 boot 尾部帧回收落在 pages 基线之前）+ run-rootfs 全量形态（echod 必抄——缺席则 DNS/TCP 常驻族静默缩水）+ boot 覆盖守卫（SOAK gate on + ECO/VIRTIO/FAT/NET/DNS/TCP/TCPS 七标记——vnet 链尾三标记必收，整族死亡必须 loud）；soak.sh 轮询四断言（t 严格 +1 / sw 严格递增 / pages∈[首拍,首拍+64] / lost 恒 0；非锚定收割——SOAK 行嵌矩阵巨行中段）+ 单拍帽 150s + 总帽 300+(N+5)×150+120s + SIGTERM 纪律 kill+wait+sleep 3；不进 CI（小时级，周跑/手跑，短验 `just soak 2` ≈6-7min）；门控缺席 = run/smoke/EFI 零扰动（SOAK 恒缺）；勿与 smoke/run-rootfs 并行（echod 18080 端口冲突；盘名 disk.soak.img 专属零交集）
 just check / just clean
 ```
 

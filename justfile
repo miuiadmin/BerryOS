@@ -352,6 +352,26 @@ bench: build
 bench-rt: build
     python3 tools/bench.py --rt
 
+# S-1 soak 长跑单口（docs/基准与压力测试设计.md §11）：内核常驻任务 soakmon
+# 每 60s vct（本机实测 ≈60s wall——CNTVCT ≈1.0x，历史半率机型 ≈120s，规划
+# 按半率保守）打一心跳行 `SOAK t= sw= pages= lost=`，soak.sh 轮询四断言
+# （t 严格 +1 / sw 严格递增 / pages 窗口 [首拍,首拍+64] / lost 恒 0）+ boot
+# 覆盖守卫（SOAK gate on 门控自证 + ECO/VIRTIO/FAT/NET/DNS/TCP/TCPS 七标记
+# ——vnet 服务链尾三标记必收，echod/TCP 链死亡必须 loud）。fw_cfg 具名项
+# opt/berry/soak 门控（缺席 = run/smoke/EFI 零扰动；EFI 路无 fw_cfg 具名文件
+# 天然缺席）；run-rootfs 全量形态 + echod（vnet TCP 自验对端——缺席则
+# DNS/TCP 常驻族静默缩水）；首拍潜伏 5 周期（≈300-600s wall，让 boot 尾部
+# 帧回收瞬态落在 pages 基线之前——3 周期 ≈182s 实测恰贴尾部末段，宿主负载
+# 即失保证）。帽 = 300 + (N+5)×150 + 120 s。不进 CI（小时级，周跑/手跑）；
+# 勿与 smoke/run-rootfs 并行（echod 18080 端口冲突；盘名 disk.soak.img 专属
+# 与 smoke 的 disk.img 零交集）。默认 60 分钟（设计 ≥1h 目标，本机实测
+# ≈1h）；短验 `just soak 2`（本机实测 ~6-7min）。SOAK_KEEP_LOG=1 留日志
+# （FAIL 恒留）。参数经 `{{quote(minutes)}}` 引号包裹传递（对抗审查
+# finding 9：裸 `{{minutes}}` 插值使 `just soak '60 && …'` 在组壳层注入
+# 执行——quote 后载荷作为单 argv 落进脚本的 *[!0-9]* 数字拒面）。
+soak minutes="60": build
+    bash tools/soak.sh {{quote(minutes)}}
+
 size-release: abi-check build-user
     cargo build --release
     python3 tools/size.py {{KERNEL_RELEASE}}

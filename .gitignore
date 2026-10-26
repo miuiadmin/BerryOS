@@ -7,6 +7,10 @@
 # P6 A-2 virtio-blk 探测盘（run-rootfs/smoke 现场造的 1MiB 空盘，不入库）
 /disk.img
 
+# S-1 soak 专属盘（soak.sh 现场造；专属名与 smoke 的 disk.img 零交集——
+# 并行窗口同名盘互毁面归零）
+/disk.soak.img
+
 # V-3 just image 整盘镜像产物（mkimage.py 现场造，不入库）
 /out/
 

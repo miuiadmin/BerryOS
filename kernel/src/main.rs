@@ -970,6 +970,44 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                     ht_rt as *mut HandleTable as usize);
     }
 
+    // ---- S-1（docs/基准与压力测试设计.md §11）：soakmon 门控 spawn ----
+    // 设计只写了「不进 CI 主线（小时级），周跑或手跑」，未定稿门控机制——
+    // 但 soakmon **常驻不退出**（比 rt_probe 一次性采样更强）：无门控 = 每次
+    // 常规 boot 永久多一个任务（runqueue/PI 图节点 + 私有表/Event 泄漏 +
+    // 每 60s vct 一次 prio-8 抢占唤醒），稳态组成被永久改变 + 交互
+    // boot 串口每 ~60-120s wall（机型 CNTVCT 速率相关）冒一行——R-1「不进
+    // smoke 需要机制不是自律」先例直接继承：`-fw_cfg name=opt/berry/soak,
+    // string=1`（soak.sh 专递，与 rootfs 具名项并存——fw_cfg FILE_DIR 多项
+    // 按名走查）在位才 spawn；缺席 = run/run-rootfs/smoke 零扰动，EFI 路无
+    // fw_cfg 具名文件 = smoke-image 亦天然缺席。位置约束同 rt 块：sched::
+    // init 后 + boot DAIF 屏蔽窗内（enable_irq 前）。表/Event 有意泄漏
+    // （有界、boot 生命周期——常驻任务永不退出，泄漏即生命周期，console
+    // RX_EV「retain 后永不 release」同族惯例）。块内 spawn 后打
+    // `SOAK gate on`（门控自证行，S-1 对抗审查 finding 2）：打印与 spawn
+    // 同块 = 「行在 ⟺ soakmon 已 spawn」——缺席侧抽查从「等首拍超时」
+    // （潜伏 5 周期 ≈300-600s wall，短窗抽查无判别力）降为短窗 grep 本行。
+    if berry_hal_aarch64::fwcfg::find_file(SOAK_PROBE_NAME).is_some() {
+        let ht_soak: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 表内仅一个哑 Event（rt 块同形）：纯用户位等待 → pi::donor_edge
+        // 返 None（零受捐面）+ 私有表（无跨表错捐面）。arg = ObjRef 地址
+        // （wait_obj 匹配键——无人 signal 它，唯一醒因 Timeout）。
+        let h_soak = ht_soak
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: soak 哑 Event 进 soak 表");
+        let p_soak = ht_soak
+            .get_raw(h_soak, ObjType::Event, 0)
+            .expect("main: 取 soak ObjRef")
+            .0;
+        // prio 8（R-1 同构）：全体常驻（矩阵/console/watchdog/EL0 用户全 0）
+        // 之上——心跳到点立即抢占打出，「心跳在 = 调度活」语义干净；瞬态
+        // boot bench 对（16/32）之下——boot 窗口零干涉（首拍潜伏 5 周期后
+        // 它们早已退出，结构性让位仍是免费保险）。
+        berry_sched::spawn_with_tag(task_soakmon, p_soak.as_ptr() as usize, b"soakmon", 8,
+                                    ht_soak as *mut HandleTable as usize);
+        berry_hal_aarch64::uart_puts(b"SOAK gate on\n");
+    }
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -2208,6 +2246,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 38, "waiter U4（a27eb9c 握手位拆分——合入即生效）"),
     (1 << 39, "RX Event（P5 A-1 console 输入——内核 RX 中断到数据置位）"),
     (1 << 40, "rt_probe 哑 Event（R-1 cyclictest oversleep——永不置位，仅超时醒）"),
+    (1 << 41, "soakmon 哑 Event（S-1 soak 心跳——永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -2230,6 +2269,10 @@ const AI_EV_REL_BIT: u64 = 1 << 36;
 /// rt_probe 哑 Event 的用户位（R-1，占用登记见 [`USER_SIGNAL_BITS`]——R 线
 /// 1<<40 起逐位递增，设计公约 3）。永不置位：唯一醒因 Timeout。
 const RT_EV_BIT: u64 = 1 << 40;
+/// soakmon 哑 Event 的用户位（S-1，占用登记见 [`USER_SIGNAL_BITS`]——
+/// RT_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（活性心跳不是死线，
+/// 超时醒 = 正常节拍）。
+const SOAK_EV_BIT: u64 = 1 << 41;
 
 /// ai_demo ↔ ai_probe 握手标志：demo bind 注入表后、睡 E_rel 前置位——probe
 /// 只在该窗口内做 clamp 断言（E_done 等待期 demo 同样在队但 eff=0，flag 区分
@@ -2587,6 +2630,78 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
     berry_hal_aarch64::uart_put_dec((deltas.len() * RT_SAMPLES) as u64);
     berry_hal_aarch64::uart_puts(b"\n");
     berry_sched::exit_current()
+}
+
+// ---- S-1：soakmon（soak 长跑心跳，boot 门控 spawn 块见 main 尾段；
+// 设计 = docs/基准与压力测试设计.md §11 + 落地实录。命名注记：sched.rs 的
+// SOAK_PRINT_EVERY（金丝雀节流常量）与 task_a 注释「SOAK=1 低噪 soak」是
+// 历史名，与本文 soakmon 无关，勿混读）----
+
+/// soakmon 的 fw_cfg 具名项名（门控键——soak.sh 专递
+/// `-fw_cfg name=opt/berry/soak,string=1`；RT_PROBE_NAME 同款「两侧对读
+/// 维护」纪律）。
+const SOAK_PROBE_NAME: &str = "opt/berry/soak";
+
+/// soakmon（S-1）：常驻心跳任务，每 60s（CNTVCT 周期口径）打一行
+/// `SOAK t=<拍序> sw=<切换总数> pages=<allocated_pages> lost=<RX丢字>`。
+///
+/// - 四字段全是现成计数器直读（`berry_sched::switches` = switches=N 金丝雀
+///   同源标量；`mm::frames().allocated_pages` = B-0/S-2 对账口径（全窗线性
+///   扫，boot 期/低频断言用非热路径）；`uart::rx_lost` = console 环丢字）
+///   ——零新内核状态。
+/// - 周期 = `60 * cntfrq()`（CNTFRQ_EL0 直读，QEMU virt=62.5MHz 不硬编码；
+///   不走 slice_cycles——那是 0.1s slice 单位，60s 是墙钟语义直乘最诚实）。
+/// - **首拍潜伏 5 周期**（落地取舍，闭合设计缺口；S-1 对抗审查 finding 1
+///   由 3 周期加到 5）：设计断言「pages ∈ [首拍值, 首拍值+64]」以首拍为
+///   基线，但无潜伏的首拍落在 60s vct（本机实测 ≈60s wall，历史半率机型
+///   ≈120s）< smoke 实测全链 ~190s wall——boot 尾部瞬态（walk 子进程映像/
+///   栈 unmap 真还、REAPQ 内核栈 dealloc）在首拍后退出 → pages 下穿首拍 =
+///   假 FAIL。3 周期（首拍实测 ≈182s wall）在首验日志里恰贴 walk 尾部
+///   末段（SOAK t=1 紧随 CD ok 之后落地）——宿主负载拉伸指令驱动的尾部
+///   而计数器驱动的首拍不动，基线可落回收瞬态中段。5 周期（首拍
+///   ≈300-600s wall）对 smoke worst 300s 帽 + 数十秒尾部 ≥1.6x 裕量，
+///   让基线必落稳态之后；t 仍从 1 起——断言保持设计原文形状，宿主零状态。
+/// - deadline 绝对网格 `t0 + (n+4)*period`（n 从 1 起）：漂移自校正（每拍
+///   独立锚定在网格上，不随醒来时刻累积），60s 周期 >> 1 tick 唤醒粒度，
+///   R-1 式漏整周期再锚结构性不发生（追不上 = 须连续漏 1500 万 tick）。
+/// - 包络纪律（task_rt_probe 同款）：disable → block（续行 IRQ 仍屏蔽）→
+///   醒因断言 + 读计数器 + **整行打印都在屏蔽窗内** → enable。打印必须
+///   整行包络：IRQ 语境 switches=N 行（canary 带 \n）若撕进 SOAK 行中段
+///   会碎字段（`sw=5switches=300`）→ 宿主正则失配漏拍 = 断言假阴性。
+///   行 ≤192B（固定段 25B + 4 数值字段各至多 20 位 = 绝对界 105B）。
+/// - 常驻不退出：活性心跳不是死线，超时醒 = 正常节拍（「服务端 wait 超时
+///   是心跳不是死线」纪律的内核任务版）；私有表 + 哑 Event `Box::leak`
+///   有意泄漏（有界、boot 生命周期）。醒因恒 Timeout（哑 Event 表私有、
+///   无人 signal；非 Timeout = 跨表 wake 面破损 bug 路径）。
+extern "C" fn task_soakmon(arg: usize) -> ! {
+    use berry_sched::WakeReason;
+    let period = 60 * berry_hal_aarch64::timer::cntfrq();
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    let mut n: u64 = 0;
+    loop {
+        n += 1;
+        // 首拍（n=1）→ t0+5*period；此后每拍 +1 周期（绝对网格，见任务注）。
+        let deadline = t0 + (n + 4) * period;
+        berry_hal_aarch64::disable_irq();
+        let r = berry_sched::block_current(arg, SOAK_EV_BIT, deadline);
+        // block_current 契约：续行时 IRQ 仍屏蔽——醒因断言/计数器读/整行
+        // 打印全在窗内完成才 enable（撕行向量见任务注）。
+        assert!(r == WakeReason::Timeout,
+                "soakmon: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
+        let sw = berry_sched::switches();
+        let pages = mm::frames().allocated_pages() as u64;
+        let lost = berry_hal_aarch64::uart::rx_lost() as u64;
+        berry_hal_aarch64::uart_puts(b"SOAK t=");
+        berry_hal_aarch64::uart_put_dec(n);
+        berry_hal_aarch64::uart_puts(b" sw=");
+        berry_hal_aarch64::uart_put_dec(sw);
+        berry_hal_aarch64::uart_puts(b" pages=");
+        berry_hal_aarch64::uart_put_dec(pages);
+        berry_hal_aarch64::uart_puts(b" lost=");
+        berry_hal_aarch64::uart_put_dec(lost);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::enable_irq();
+    }
 }
 
 /// ai_pong（prio 32，bench 对 B 端）：fa_pong 同构、AI_ROUNDS 轮、不触
