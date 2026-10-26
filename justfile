@@ -352,6 +352,18 @@ bench: build
 bench-rt: build
     python3 tools/bench.py --rt
 
+# B-2 -icount 确定性通道单口（docs/基准与压力测试设计.md §13）：QEMU 追加
+# 定值 `-icount shift=1,sleep=off`——周期数变指令数代理（shift=1 虚拟时钟
+# ≈0.125 cyc/instr），与 TCG 实时基线**不可比、分文件**
+# tools/bench_baseline_icount.txt（跨机/跨 QEMU 版本亦不可比，CI 首跑自立）。
+# boot 时序全变 → 只跑 bench 收割（六行 BENCH 门禁面 + BENCHWAKE 观测行），
+# 不用于功能面。L2 紧门禁形态（精确相等/±5%）由五跑证明烘焙为 bench.py
+# ICOUNT_TOL 常量；证明可重验：
+#   python3 tools/bench.py --icount --prove
+# （五跑漂移谱 + verdict；漂移是合法结局——按 verdict 定 ICOUNT_TOL。）
+bench-icount: build
+    python3 tools/bench.py --icount
+
 # S-1 soak 长跑单口（docs/基准与压力测试设计.md §11）：内核常驻任务 soakmon
 # 每 60s vct（本机实测 ≈60s wall——CNTVCT ≈1.0x，历史半率机型 ≈120s，规划
 # 按半率保守）打一心跳行 `SOAK t= sw= pages= lost=`，soak.sh 轮询四断言
