@@ -158,6 +158,10 @@ fn main() {
     // —— C-2c：U3 与 U2 同款链序契约——text 批全零 fs 盘面（纯 RAM/spawn），
     //    排 fat 族之前（EFI 路无盘亦打 U3——smoke-image ECO 同面）。
     u3_selftest();
+    // —— B-1：EL0 基准自验（`B1 ok n=4` = rootfs 相第 28 标记）。链序契约
+    //    同 U2/U3——bench1 零 fs 盘面（纯 RAM/spawn），排 fat 族之前（EFI
+    //    路无盘亦打 B1——smoke-image ECO 同面）。
+    bench1_selftest();
     fat_selftest();
     fatw_selftest();
     dir_selftest();
@@ -1670,6 +1674,82 @@ fn u3_hex(d: &[u8]) -> String {
         let _ = write!(s, "{:02x}", b);
     }
     s
+}
+
+/// B-1 自验（`B1 ok n=4` = rootfs 相第 28 标记——状态谓词 + 「统计归统计」
+/// 的执法点）：spawn `bin/bench1`（EL0 四项微基准 sys_null/sys_vmo_rw4k/
+/// ipc_enqueue8/evt_signal）经私有通道收齐 BENCH1 行 → **格式断言**（行数
+/// 恰 4 + 名字-iters 对字面常量逐项对拍 + 行体 ≤191B（含 println 尾 \n 共
+/// ≤192B 单消息原子）+ cyc 可解析非零 + eof/
+/// dropped/code 干净）→ 全过才 relay 四行（每行单次 println，~35B 单消息
+/// 原子——HEXYL ok 的化妆面模式；bench.py --el0 从串口收割的就是 relay 面；
+/// **禁止拼一串打**：>192B 经 console 分片被稳态矩阵撕行，d-3c 雷）→ 打
+/// 原子标记。**cyc 数值零断言**（公约 2——统计量只进 bench.py L1 宽松因子；
+/// bsh 侧只验格式/形状，防「行在但缺项/多项」的空心绿）。失败诊断单串
+/// format! 一次 eprintln（撕行防护，u3_bad 同款）+ park（标记缺失 → smoke
+/// FAIL loud 兜底）。
+///
+/// 栈取舍：设计 §8 原文「8 页」——落地复用 run_capture（stack_pages=32，
+/// uu 家族口径）：零新代码 + d-3c std 栈机器 32 页实踩背书（std format!
+/// 栈深无虞），取舍注记见 docs/阶段沿革.md B-1 条。
+fn bench1_selftest() {
+    let (o, c) = match run_capture("bench1", None, &[]) {
+        Some(r) => r,
+        None => {
+            eprintln!("bsh: b1 selftest bad: bench1 not found");
+            berry_libc::park();
+        }
+    };
+    // 整体形状：真码 0 + EOF 干净 + 无截断 + UTF-8 可解析。
+    let text = match std::str::from_utf8(&o.data) {
+        Ok(t) if c == 0 && o.eof && o.dropped == 0 => t,
+        _ => b1_bad(&format!(
+            "code={} eof={} dropped={} len={}",
+            c,
+            o.eof,
+            o.dropped,
+            o.data.len()
+        )),
+    };
+    // 逐行：`BENCH1,<name>,<iters>,<cyc>`——name/iters 对字面常量钉板
+    // （与 bench1 定值镜像；顺序 = bench1 打印序，确定性形状）。
+    const WANT: [(&str, &str); 4] = [
+        ("sys_null", "4096"),
+        ("sys_vmo_rw4k", "128"),
+        ("ipc_enqueue8", "128"),
+        ("evt_signal", "1024"),
+    ];
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() != WANT.len() {
+        b1_bad(&format!("lines={} want={}", lines.len(), WANT.len()));
+    }
+    for (i, line) in lines.iter().enumerate() {
+        let parts: Vec<&str> = line.split(',').collect();
+        let (name, iters) = WANT[i];
+        let ok = parts.len() == 4
+            && parts[0] == "BENCH1"
+            && parts[1] == name
+            && parts[2] == iters
+            && parts[3].parse::<u64>().map_or(false, |v| v > 0)
+            // 公约 4：单行单消息原子——口径含 println 追加的 \n（console_write
+            // 按 min(192, len) 分片）：行体 ≤191 ⇒ 行体+\n ≤192 恰一整条；
+            // 行体恰 192 时 193B 被切 192+1 两条 = 分片撕行窗口（d-3c 雷）。
+            && line.len() <= 191;
+        if !ok {
+            b1_bad(&format!("line={} want=BENCH1,{},{},<cyc>0", line, name, iters));
+        }
+    }
+    // 断言全过才 relay + 打标（序 = BENCH1 行在前、标记收口——BENCH ok 同款）。
+    for line in &lines {
+        println!("{}", line);
+    }
+    println!("B1 ok n=4");
+}
+
+/// B1 断言失败：单串一次 eprintln + park（u3_bad 同款撕行防护）。
+fn b1_bad(diag: &str) -> ! {
+    eprintln!("bsh: b1 selftest bad: {}", diag);
+    berry_libc::park()
 }
 
 /// 拉起 + 收集（自验/交互共用）：查档 → spawn → collect → 回收 → 关对端。

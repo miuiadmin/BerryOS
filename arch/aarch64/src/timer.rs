@@ -33,6 +33,23 @@ static mut SLICE: u64 = 0;
 pub unsafe fn init() -> u64 {
     FREQ = read_cntfrq();
     SLICE = FREQ / SLICE_HZ;
+    // B-1 前置修复（首跑实踩）：EL0 直读 CNTVCT（bench1 `mrs cntvct_el0` 计时）
+    // 需 CNTKCTL_EL1.EL0VCTEN=1——复位 0 = EL0 读即 EC=0x18 陷阱 →
+    // user_fault_exit 静默杀（fault 杀码 0、无 EOF——「跑完却零输出」死状）。
+    // 显式开位 1（Linux 同款 enable）；RMW 保其它位（EVNT* 本核未用复位 0）；
+    // 只开虚拟计数器——EL0PTEN（物理）无消费面不开（最小特权）。
+    let kctl: u64;
+    core::arch::asm!(
+        "mrs {}, cntkctl_el1",
+        out(reg) kctl,
+        options(nostack, preserves_flags)
+    );
+    core::arch::asm!(
+        "msr cntkctl_el1, {}",
+        in(reg) kctl | 1 << 1,
+        options(nostack, preserves_flags)
+    );
+    core::arch::asm!("isb", options(nostack, preserves_flags));
     FREQ
 }
 
