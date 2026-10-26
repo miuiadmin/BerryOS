@@ -933,6 +933,43 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_sched::spawn_with_tag(task_ai_probe, h_rel_p as usize, b"ai_probe", 0,
                                 ht_pr as *mut HandleTable as usize);
 
+    // ---- R-1（docs/基准与压力测试设计.md §10）：rt_probe 门控 spawn ----
+    // 设计只写了「不进 smoke」（公约 7：~34s 采样循环 vs boot 开销 >5s /
+    // smoke 总时长劣化 >10% 界），未定稿门控机制——smoke 与 bench-rt 同一
+    // 内核 ELF，无条件 spawn = 每次常规 boot 白付 34s。以 **fw_cfg 具名项**
+    // 闭合：`-fw_cfg name=opt/berry/rt,string=1`（bench.py --rt 专递）在位
+    // 才 spawn——缺席 = run/smoke 零扰动（rootfs 探测 find_file 同款先例，
+    // main.rs 头段）；EFI 路无 fw_cfg 具名文件 → smoke-image 亦天然缺席。
+    // 位置约束：sched::init 后（spawn 前置）+ enable_irq 前（boot DAIF
+    // 屏蔽窗内 spawn，全体先例共同约束）；find_file 的 MMIO 读与 rootfs
+    // 探测同窗同款、微秒级。
+    if berry_hal_aarch64::fwcfg::find_file(RT_PROBE_NAME).is_some() {
+        let ht_rt: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 表内仅一个哑 Event（ai_probe 表同形）：纯用户位等待 →
+        // pi::donor_edge 返 None（零受捐，公约 3 判据②）+ 私有表（无跨表
+        // 错捐面）。arg = ObjRef 地址（wait_obj 匹配键——无人 signal 它，
+        // 唯一醒因 Timeout）。表/Event 有意泄漏（有界、boot 生命周期——
+        // 内核任务 pinned==0 退出钩子直通不 drain，4-6 坑退出版）。
+        let h_rt = ht_rt
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: rt 哑 Event 进 rt 表");
+        let p_rt = ht_rt
+            .get_raw(h_rt, ObjType::Event, 0)
+            .expect("main: 取 rt ObjRef")
+            .0;
+        // prio 8：全体常驻（矩阵/console/watchdog/EL0 用户）之上、瞬态 boot
+        // bench 对（fa/ai ping=16 / pong=32）之下——「被饿本身就是待测的调度
+        // 延迟」（设计 §10）。落地实录（首跑实踩）：设计原文 prio 24 会以
+        // 24>16 抢占 ai_ping 的 IPC 往返测量窗，一次 rt 醒来（双切换 + PI
+        // 重推 ≈360k 周期）就把 AIDEMO 的 rt2 顶到 rt1×4，撞容差 2x 断言
+        // panic（boot 死 = RT ok 永缺失）。8 结构性排除该类干扰（对 16/32
+        // 永让位——测不到它们，也污染不到它们）；稳态（bench-rt boot 无
+        // 0..24 之间任务）唤醒测量与 24 恒等。
+        berry_sched::spawn_with_tag(task_rt_probe, p_rt.as_ptr() as usize, b"rt_probe", 8,
+                                    ht_rt as *mut HandleTable as usize);
+    }
+
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
@@ -2170,6 +2207,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 37, "waiter U2（4-1 路② poll 命中）"),
     (1 << 38, "waiter U4（a27eb9c 握手位拆分——合入即生效）"),
     (1 << 39, "RX Event（P5 A-1 console 输入——内核 RX 中断到数据置位）"),
+    (1 << 40, "rt_probe 哑 Event（R-1 cyclictest oversleep——永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -2189,6 +2227,9 @@ const _: () = {
 const AI_EV_DONE_BIT: u64 = 1 << 34;
 /// probe 放行事件 E_rel 的用户位（占用登记见 [`USER_SIGNAL_BITS`]）。
 const AI_EV_REL_BIT: u64 = 1 << 36;
+/// rt_probe 哑 Event 的用户位（R-1，占用登记见 [`USER_SIGNAL_BITS`]——R 线
+/// 1<<40 起逐位递增，设计公约 3）。永不置位：唯一醒因 Timeout。
+const RT_EV_BIT: u64 = 1 << 40;
 
 /// ai_demo ↔ ai_probe 握手标志：demo bind 注入表后、睡 E_rel 前置位——probe
 /// 只在该窗口内做 clamp 断言（E_done 等待期 demo 同样在队但 eff=0，flag 区分
@@ -2439,6 +2480,112 @@ extern "C" fn task_ai_probe(arg: usize) -> ! {
         0,
         "ai_probe: signal E_rel 放行"
     );
+    berry_sched::exit_current()
+}
+
+// ---- R-1：rt_probe（cyclictest 式 oversleep，boot 门控 spawn 块见 main 尾段；
+// 设计 = docs/基准与压力测试设计.md §10 + 落地实录）----
+
+/// rt_probe 的 fw_cfg 具名项名（门控键——bench.py --rt 专递
+/// `-fw_cfg name=opt/berry/rt,string=1`；与 ROOTFS_NAME 同款「两侧对读维护」
+/// 纪律，fwcfg.rs 单文件放不下双先例故立此处）。
+const RT_PROBE_NAME: &str = "opt/berry/rt";
+
+/// rt_probe 每档样本数（设计 §10 定值 N=32；bench.py --rt 通道期望
+/// `RT ok n=96` = 3 档 × 32 与此镜像）。
+const RT_SAMPLES: usize = 32;
+// 分位秩与 RT_SAMPLES 钉板耦合：p50 = ceil(50·32/100) = 16 → s[15]、
+// p99 = ceil(99·32/100) = 32 → s[31]（== max，最近秩的诚实结果）。改样本数
+// 须同步重算两秩 + bench.py BENCHRT_RE 的 n=32 字面——编译期拦静默漂移。
+const _: () = {
+    assert!(RT_SAMPLES == 32, "RT_SAMPLES 变更须同步分位秩与 bench.py 镜像");
+};
+
+/// rt_probe（R-1）：三档 δ × 32 样本 oversleep（cyclictest 式绝对周期锚）。
+///
+/// - δ ∈ {slice/4, slice, 4·slice}（slice_cycles() 单源——短档量定时器精度、
+///   长档量轮转排队尾）；**不走 ns 换算**（公约 5：换算舍入会污染被测量）
+///   ——睡点直调 `block_current`（`object_wait_one` 的内部形态，SVC 面的
+///   ns→vct 折算被绕过，deadline 参数本来就是 CNTVCT 周期）。
+/// - deadline 档首锚 `cntvct()+δ`、此后每轮 `+= δ`（绝对周期锚——不随
+///   醒来时刻漂移）；**漏整周期再锚（cyclictest overrun 形）**：本样本
+///   oversleep ≥ δ（下一周期 deadline 也已成过去 = 结构性追不上）时重锚
+///   `deadline = 醒时刻 + δ`。首跑实踩（纯绝对递推版被否的实录）：δ=¼slice
+///   < v1 唤醒粒度（超时扫描只在 tick 跑、无 arm-to-deadline——粒度恒
+///   1 slice）→ 每轮 lag 增 (slice−δ)、32 轮累计成阶梯：p50=95M/max=193M
+///   随样本序线性涨——量出的是**漂移**不是**延迟**（对调度器的错误指控；
+///   4·slice 档同 boot 实测 p50=4M = 真实唤醒延迟 ≤1 tick）。再锚后每样本
+///   回到「δ 未来请求的唤醒延迟」语义（短档量出的正是定时器粒度本身
+///   ——tier-1 p50 ≈ 1 slice 量级是 v1 的诚实答案，arm-to-nearest-deadline
+///   （优化议程挂账）落地后该值应塌缩，本基准即其验收面）。
+/// - oversleep = wake_vct − deadline，`checked_sub` 负值 panic（提前醒 = 再睡
+///   循环破损 bug——L0 严格执法，R-0 on_wake 负延迟 panic 同款；正常统计
+///   数值零断言，统计归统计）。漏周期样本的 oversleep 按原 deadline 记账
+///   （迟到的账记在迟到者头上，不因再锚抹零）。
+/// - 包络纪律（task_sleeper 同款）：disable → block → 续行（IRQ 仍屏蔽）→
+///   **屏蔽窗内读 wake_vct** → enable。
+extern "C" fn task_rt_probe(arg: usize) -> ! {
+    use berry_sched::WakeReason;
+    let s = berry_hal_aarch64::timer::slice_cycles();
+    let deltas = [s / 4, s, s * 4];
+    let mut samples = [0u64; RT_SAMPLES];
+    for &delta in &deltas {
+        let mut deadline = berry_hal_aarch64::timer::cntvct() + delta; // 档首锚
+        for slot in samples.iter_mut() {
+            berry_hal_aarch64::disable_irq();
+            let r = berry_sched::block_current(arg, RT_EV_BIT, deadline);
+            // block_current 契约：续行时 IRQ 仍屏蔽——wake_vct 在窗内取，
+            // 读点与醒点之间零 tick/切换噪声混入。
+            let wake_vct = berry_hal_aarch64::timer::cntvct();
+            berry_hal_aarch64::enable_irq();
+            // 哑 Event 表私有、无人 signal（boot 侧唯一持有者本任务、永不
+            // object_signal）——唯一醒因 Timeout；非 Timeout = 跨表 wake 面
+            // 破损（wake_matching 按地址精确匹配，误醒只可能来自真 signal）。
+            assert!(r == WakeReason::Timeout,
+                    "rt_probe: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
+            *slot = match wake_vct.checked_sub(deadline) {
+                Some(o) => o,
+                None => panic!("rt_probe: 负 oversleep（wake={} < deadline={}）= 再睡循环破损",
+                               wake_vct, deadline),
+            };
+            // 漏整周期再锚（cyclictest overrun 形，取舍实录见任务 doc 注）：
+            // oversleep ≥ δ = 下轮 deadline 已在过去，纯绝对递推只会积累漂移
+            // 阶梯——重锚到醒时刻 + δ，每样本恢复「δ 未来请求」的延迟语义。
+            deadline = if *slot >= delta {
+                wake_vct + delta
+            } else {
+                deadline + delta
+            };
+        }
+        samples.sort_unstable(); // core 面板全排序（32 元素，零分配）
+        // 分位 = 最近秩 ceil(p·n/100)（user.rs benchwake_percentile 同形）：
+        // n=32 → p50=s[15]、p99=s[31]。p99 == max 是 32 样本最近秩 99 分位的
+        // 诚实结果（两列同值非 bug，勿为观感改次大值——偏离标准定义）。
+        // 档行包络：打印时本任务 prio 8 可能正嵌在 prio 0 矩阵任务的逐字符
+        // 打印流中段——disable_irq 消灭 IRQ 语境 switches=N 行撕入向量（免费
+        // 保险，打印发生在两档采样之间、下一档锚点在打印后才取，零测量污染；
+        // BENCHWAKE 先例无包络亦成立）。行 ≤192B（固定段 35B + 4 数值字段
+        // 各至多 20 位 = 绝对界 115B）。
+        berry_hal_aarch64::disable_irq();
+        berry_hal_aarch64::uart_puts(b"BENCHRT,delta=");
+        berry_hal_aarch64::uart_put_dec(delta);
+        berry_hal_aarch64::uart_puts(b",n=");
+        berry_hal_aarch64::uart_put_dec(RT_SAMPLES as u64);
+        berry_hal_aarch64::uart_puts(b",p50=");
+        berry_hal_aarch64::uart_put_dec(samples[15]);
+        berry_hal_aarch64::uart_puts(b",p99=");
+        berry_hal_aarch64::uart_put_dec(samples[31]);
+        berry_hal_aarch64::uart_puts(b",max=");
+        berry_hal_aarch64::uart_put_dec(samples[31]);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::enable_irq();
+    }
+    // 收尾标记（须在 exit_current 之前——其后是死码，Plan B v0.5 gotcha 同族）；
+    // 跑完即退：REAPQ 单条流量（Task Box + 内核栈，帽 32 内），非常驻。
+    // n = 3 档 × RT_SAMPLES（wire 面 `RT ok n=96` = bench.py DONE_RT_RE 镜像）。
+    berry_hal_aarch64::uart_puts(b"RT ok n=");
+    berry_hal_aarch64::uart_put_dec((deltas.len() * RT_SAMPLES) as u64);
+    berry_hal_aarch64::uart_puts(b"\n");
     berry_sched::exit_current()
 }
 

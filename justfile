@@ -343,6 +343,15 @@ size: build
 bench: build
     python3 tools/bench.py
 
+# R-1 实时基准单口（docs/基准与压力测试设计.md §10）：cyclictest 式 oversleep
+# 三档（slice/4、slice、4·slice）× 32 样本。fw_cfg 具名项 opt/berry/rt 门控
+# （缺席 = run/smoke 零扰动——公约 7：~34s 采样循环不进常规 boot；EFI 路
+# 无 fw_cfg 具名文件 = smoke-image 亦天然缺席）；裸跑等 RT ok n=96，帽 120s；
+# 无基线（oversleep>=0 严格断言在内核侧 panic 执法 = L0，分布数值只出表
+# ——统计归统计）。
+bench-rt: build
+    python3 tools/bench.py --rt
+
 size-release: abi-check build-user
     cargo build --release
     python3 tools/size.py {{KERNEL_RELEASE}}

@@ -15,6 +15,12 @@
 - --el0（B-1）：run-rootfs 形态 QEMU（-fw_cfg rootfs，无盘无网无 echod），
   等 bsh 链打到 `B1 ok n=4` 后收割 bsh relay 的 BENCH1 四行。裸相的内核
   BENCH 行也在串口上，但不属本通道收割面（段隔离）。
+- --rt（R-1）：裸跑 QEMU + `-fw_cfg name=opt/berry/rt,string=1`（门控键——
+  内核侧 rt_probe 仅在该具名项在位时 spawn；缺席 = run/smoke 零扰动，公约 7）
+  等 `RT ok n=96`，非锚定收割 BENCHRT 三行。**只出表无基线**（设计 §10 无
+  「门禁与基线」段；oversleep≥0 严格断言在内核侧 panic 执法 = L0，分布数值
+  统计归统计——故 --rt 为独立通道：--update/--el0/--factor 组合一律显式
+  拒绝，不静默忽略）。
 
 用法（仓库根）：
   python3 tools/bench.py             # B-0：跑一次 + 对拍基线（无基线 = 只出表）
@@ -22,6 +28,7 @@
   python3 tools/bench.py --factor 5  # 放宽因子（CI 慢机场景）
   python3 tools/bench.py --el0       # B-1：rootfs 形态跑一次 + 对拍 B-1 段
   python3 tools/bench.py --el0 --update  # B-1：跑一次 + 刷新 B-1 段（B-0 段保留）
+  python3 tools/bench.py --rt        # R-1：裸跑（fw_cfg 门控 rt_probe）出三档表
 
 退出码：0 = 过/仅出表；1 = 劣化超因子或收割不齐（可作 CI 步骤）。
 """
@@ -43,6 +50,9 @@ BOOT_TIMEOUT = 120  # 秒：boot 到 BENCH ok 的帽（与 smoke DEADLINE_BOOT �
 # smoke DEADLINE_ROOTFS=300s 同口径（P6 A-6 RPC 成本模型，勿拿 syscall
 # cycle 外推）。
 BOOT_TIMEOUT_EL0 = 300
+# R-1 通道帽（设计 §10 定帽）：boot 头 ~10-20s + rt_probe 三档
+# 32×(50+200+800)ms ≈ 34s（TCG 半率）——3x 余量。
+BOOT_TIMEOUT_RT = 120
 
 BENCH_RE = re.compile(r"^BENCH,([a-z0-9_]+),(\d+),(\d+)$")
 # MULTILINE：done 正则要喂给轮询早退的 search(全串口日志)——无 MULTILINE 时
@@ -57,6 +67,17 @@ DONE_RE = re.compile(r"^BENCH ok n=(\d+)$", re.MULTILINE)
 # 行位形态，行锚定只对 B-0 内核侧裸行成立）。
 BENCH1_RE = re.compile(r"BENCH1,([a-z0-9_]+),(\d+),(\d+)")
 DONE1_RE = re.compile(r"B1 ok n=(\d+)")
+
+# R-1（rt_probe oversleep）。收割同样**不做行锚定**（B-1 教训同族）：rt_probe
+# prio 8 醒来会抢占 prio 0 矩阵任务的逐字符打印流——BENCHRT 行可落在矩阵
+# 40KB 巨行中段，^ 锚定恒漏收。串内无伪命中面：矩阵字符 A-Z/a-z 无逗号数字
+# 序列；`RT ok n=` 与 `BENCH ok n=` 字面互非子串（BENCHRT 行含 "RT," 不含
+# "RT ok"）。n=32 字面 = task_rt_probe RT_SAMPLES 镜像（wire 面冻结——内核侧
+# const assert 同步执法）。
+BENCHRT_RE = re.compile(r"BENCHRT,delta=(\d+),n=32,p50=(\d+),p99=(\d+),max=(\d+)")
+DONE_RT_RE = re.compile(r"RT ok n=(\d+)")
+RT_TIERS = 3   # 档数（slice/4、slice、4·slice——kernel deltas 定值镜像）
+RT_N = 32      # 每档样本数（kernel RT_SAMPLES 定值镜像）
 
 # B-1 串口行在基线文件里的段前缀（load/save 对称双正则——P6 A-5 基准漂移雷：
 # 读写两侧必须同形，否则「双绿」退化成对陈旧基准自证）。
@@ -159,6 +180,71 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
     return metrics
 
 
+def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
+    """R-1 通道：裸跑 QEMU（+fw_cfg 具名项 opt/berry/rt 门控 rt_probe spawn）
+    等 `RT ok n=96`，非锚定收割三行 BENCHRT → [(delta, p50, p99, max)]。
+
+    独立函数不复用 run_once：收割面（按档元组表 vs 按名 dict）与一致性校验
+    （档数/单调 vs 行数==n）都不同构，混入 mode 分支反而扰动 B-0/B-1 既有
+    两通道（smoke/bench 依赖它们——零回归面优先）。
+    """
+    qemu_cmd = [
+        "qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72",
+        "-m", "128M", "-nographic", "-kernel", kernel,
+        # 门控键：内核侧 find_file("opt/berry/rt") 命中才 spawn rt_probe；
+        # string backing 也登记 FILE_DIR（QEMU 规范行为），内容永不被读。
+        "-fw_cfg", "name=opt/berry/rt,string=1",
+    ]
+    with tempfile.NamedTemporaryFile(
+        prefix="berryos-bench-rt.", suffix=".log", delete=False
+    ) as tf:
+        log_path = tf.name
+    proc = subprocess.Popen(
+        qemu_cmd,
+        stdin=subprocess.DEVNULL, stdout=open(log_path, "w"),
+        stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    try:
+        deadline = time.time() + BOOT_TIMEOUT_RT
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break  # QEMU 提前退出（崩溃）——带着现有日志走收割失败路径
+            text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            if DONE_RT_RE.search(text):
+                break
+            time.sleep(1)
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    finally:
+        # 与 run_once 同款：halt 后不退出，收完即杀。
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        Path(log_path).unlink(missing_ok=True)
+
+    d = DONE_RT_RE.search(text)
+    if d is None:
+        raise SystemExit(
+            f"bench.py: RT ok 行 {BOOT_TIMEOUT_RT}s 未出现（boot 失败 / rt_probe "
+            f"panic（负 oversleep 是 L0 执法）/ fw_cfg 门控未命中？）——"
+            f"串口尾部：{' | '.join(text.splitlines()[-5:])}")
+    done_n = int(d.group(1))
+    rows = [(int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            for m in BENCHRT_RE.finditer(text)]
+    deltas = [r[0] for r in rows]
+    # 一致性（镜像 run_once 的 len≠n 检查）：恰 3 档、n 合计 3×32、delta 单调
+    # 不重（slice/4 < slice < 4·slice；不硬编 62.5MHz 折算值——绝对值跨机型
+    # 不可比，形状断言已够）。
+    if (len(rows) != RT_TIERS or done_n != RT_TIERS * RT_N
+            or deltas != sorted(deltas) or len(set(deltas)) != RT_TIERS):
+        raise SystemExit(
+            f"bench.py: BENCHRT 收割不齐（rows={len(rows)} done_n={done_n} "
+            f"deltas={deltas}——须恰 {RT_TIERS} 行、n 合计 {RT_TIERS * RT_N}、"
+            f"delta 单调不重；改 task_rt_probe 后同步）")
+    return rows
+
+
 def load_baseline() -> tuple[dict[str, int], dict[str, int]]:
     """双段解析：返回 (B-0 段, B-1 段)。
 
@@ -237,14 +323,38 @@ def _iter_table_el0() -> dict[str, int]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--update", action="store_true", help="刷新基线文件（本模式对应段）")
-    ap.add_argument("--factor", type=float, default=3.0,
+    ap.add_argument("--factor", type=float, default=None,
                     help="劣化因子门禁（默认 3.0——拦数量级劣化不拦噪声）")
     ap.add_argument("--el0", action="store_true",
                     help="B-1 通道：run-rootfs 形态收割 BENCH1 四行（默认 B-0 裸跑）")
+    ap.add_argument("--rt", action="store_true",
+                    help="R-1 通道：裸跑（fw_cfg 门控 rt_probe）收割 BENCHRT 三行"
+                         "（只出表无基线——独立通道，--update/--el0/--factor 组合拒绝）")
     ap.add_argument("--kernel", default=None, help="内核 ELF 路径（默认 paths.sh 解析）")
     args = ap.parse_args()
 
+    if args.rt and (args.update or args.el0 or args.factor is not None):
+        # RT 无基线段（设计 §10 只出表）——误触 save_baseline 会按双段前缀
+        # 逻辑误写 bench_baseline.txt；--el0/--factor 同样不进 --rt 早退
+        # 分支：静默忽略 = 用户要的通道/门禁凭空蒸发（--el0 --rt 实际只跑
+        # RT、B-1 静默缺席且退出码 0——三镜审查实抓）。组合一律拒绝。
+        raise SystemExit(
+            "bench.py: --rt 独立通道（只出表无基线）——不与 --update/--el0/"
+            "--factor 组合（--update 误写基线双段；--el0 通道会被静默丢弃；"
+            "--factor 在 RT 无门禁面）")
+
     kernel = args.kernel or kernel_elf()
+    if args.rt:
+        rows = run_rt(kernel)
+        print(f"[R-1(rt)] {'delta':>12} {'p50':>10} {'p99':>10} {'max':>10}")
+        for delta, p50, p99, mx in rows:
+            print(f"{'':<8} {delta:>12} {p50:>10} {p99:>10} {mx:>10}")
+        print("bench.py: R-1 只出表不对拍（oversleep>=0 严格断言在内核侧 panic 执法"
+              "（L0）；分布数值统计归统计——公约 2）")
+        return
+    # --factor 默认 None（非 3.0）：default 值会淹没「显式传参」信号——上方
+    # --rt 组合检测靠 None 区分「用户真传了 --factor」。
+    factor = 3.0 if args.factor is None else args.factor
     metrics = run_once(kernel, el0=args.el0)
 
     tag = "B-1(el0)" if args.el0 else "B-0(kernel)"
@@ -270,8 +380,8 @@ def main() -> None:
         if old is None:
             print(f"bench.py: 新基准项 {name}（基线缺席，不过门禁）")
             continue
-        if cyc > old * args.factor:
-            bad.append(f"{name}: {old} → {cyc}（超基线 ×{cyc / old:.1f} > {args.factor}）")
+        if cyc > old * factor:
+            bad.append(f"{name}: {old} → {cyc}（超基线 ×{cyc / old:.1f} > {factor}）")
     missing = sorted(set(base) - set(metrics))
     if bad or missing:
         for b in bad:
@@ -280,7 +390,7 @@ def main() -> None:
             print(f"bench.py: FAIL 基准项 {m} 从输出消失（改基准源后须 --update）",
                   file=sys.stderr)
         raise SystemExit(1)
-    print(f"bench.py: 对拍过（{tag} 因子 ×{args.factor}，{len(metrics)} 项全在界内）")
+    print(f"bench.py: 对拍过（{tag} 因子 ×{factor}，{len(metrics)} 项全在界内）")
 
 
 if __name__ == "__main__":
