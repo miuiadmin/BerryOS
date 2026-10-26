@@ -24,12 +24,17 @@ impl<'a> FrameAllocator<'a> {
     /// 构造并把 `[base_pa, top_pa)` **整窗**初始化为空闲（构造后立即用
     /// [`reserve`](Self::reserve) 剔除占用区——先构造后 reserve，不预留）。
     ///
-    /// `base_pa` / `top_pa` 必须 4KiB 对齐；后备切片长度须 `>= npages`。
+    /// `base_pa` / `top_pa` 必须 4KiB 对齐；后备切片长度须 `>= npages`
+    ///（free/order）/ `>= (MAX_ORDER+1) × ceil(npages/64)`（bmaps）/
+    /// `>= (MAX_ORDER+1) × ceil(ceil(npages/64)/64)`（sums）——K-1 起位图
+    /// 索引后备（几何语义见 `BuddyAllocator` 字段注释）。
     pub fn new(
         base_pa: usize,
         top_pa: usize,
         free: &'a mut [bool],
         order: &'a mut [u8],
+        bmaps: &'a mut [u64],
+        sums: &'a mut [u64],
     ) -> Self {
         assert!(
             base_pa & (1usize << PAGE_SHIFT) - 1 == 0,
@@ -43,7 +48,7 @@ impl<'a> FrameAllocator<'a> {
             free.len() >= npages && order.len() >= npages,
             "后备切片装不下 npages={npages}"
         );
-        let buddy = BuddyAllocator::new(&mut free[..npages], &mut order[..npages]);
+        let buddy = BuddyAllocator::new(&mut free[..npages], &mut order[..npages], bmaps, sums);
         Self {
             base_pfn,
             npages,
@@ -114,11 +119,16 @@ const PAGE_SHIFT_MASK: usize = (1usize << PAGE_SHIFT) - 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buddy::MAX_ORDER;
 
-    fn backing(n: usize) -> (&'static mut [bool], &'static mut [u8]) {
+    fn backing(n: usize) -> (&'static mut [bool], &'static mut [u8], &'static mut [u64], &'static mut [u64]) {
+        let bw = (n + 63) / 64;
+        let sw = (bw + 63) / 64;
         (
             Box::leak(vec![false; n].into_boxed_slice()),
             Box::leak(vec![0u8; n].into_boxed_slice()),
+            Box::leak(vec![0u64; (MAX_ORDER + 1) * bw].into_boxed_slice()),
+            Box::leak(vec![0u64; (MAX_ORDER + 1) * sw].into_boxed_slice()),
         )
     }
 
@@ -129,8 +139,8 @@ mod tests {
         // 窗 [0x1000_0000, 0x1000_0000 + 64*4K)：保留中段 [base+8K, base+20K+2B)
         // → 页 8..20（尾 2 字节进位占 1 页）= 13 页；越窗腿截断。
         let base = 0x1000_0000;
-        let (f, o) = backing(64);
-        let mut fa = FrameAllocator::new(base, base + 64 * KIB4, f, o);
+        let (f, o, bm, sm) = backing(64);
+        let mut fa = FrameAllocator::new(base, base + 64 * KIB4, f, o, bm, sm);
         let n = fa.reserve(base + 8 * KIB4, 12 * KIB4 + 2);
         assert_eq!(n, 13);
         // 全窗外保留 = 0 页；半交叠只留窗内部分。
@@ -153,8 +163,8 @@ mod tests {
     fn reserve_saturate_no_wraparound() {
         // 敌意巨长：saturating_add 不回卷成巨窗——保留 [base, top) 全窗后 OOM。
         let base = 0x4000_0000;
-        let (f, o) = backing(16);
-        let mut fa = FrameAllocator::new(base, base + 16 * KIB4, f, o);
+        let (f, o, bm, sm) = backing(16);
+        let mut fa = FrameAllocator::new(base, base + 16 * KIB4, f, o, bm, sm);
         let n = fa.reserve(0, usize::MAX);
         assert_eq!(n, 16);
         assert_eq!(fa.alloc(), Err(AllocError::OutOfMemory));
@@ -165,8 +175,8 @@ mod tests {
         // B-0 泄漏金丝雀口径钉板：按块头 2^order 累计（尾页 TAIL 不重复计）、
         // 保留页恒不计、全释放归零——churn 对账的「相等」有语义。
         let base = 0x8000_0000;
-        let (f, o) = backing(64);
-        let mut fa = FrameAllocator::new(base, base + 64 * KIB4, f, o);
+        let (f, o, bm, sm) = backing(64);
+        let mut fa = FrameAllocator::new(base, base + 64 * KIB4, f, o, bm, sm);
         assert_eq!(fa.allocated_pages(), 0, "空窗应为 0");
         fa.reserve(base + 4 * KIB4, 2 * KIB4); // 保留 2 页——不计入
         assert_eq!(fa.allocated_pages(), 0, "保留页不计入 allocated");

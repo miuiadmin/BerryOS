@@ -1464,11 +1464,21 @@ fn test_memmap() {
     }
 
     // reserve 语义：scratch 分配器（栈后备，勿碰全局 FRAMES）——保留 loader 段
-    // 后占尽，保留区 4 页永不出现。
+    // 后占尽，保留区 4 页永不出现。位图/摘要后备同款栈后备（K-1 索引：
+    // 64 页 → 每阶 1 字 × 14 阶）。
     let base = 0x4000_0000usize;
     let mut sfree = [false; 64];
     let mut sorder = [0u8; 64];
-    let mut sfa = berry_mm::FrameAllocator::new(base, base + 64 * 4096, &mut sfree, &mut sorder);
+    let mut sbmaps = [0u64; (berry_mm::MAX_ORDER + 1) * 1];
+    let mut ssums = [0u64; (berry_mm::MAX_ORDER + 1) * 1];
+    let mut sfa = berry_mm::FrameAllocator::new(
+        base,
+        base + 64 * 4096,
+        &mut sfree,
+        &mut sorder,
+        &mut sbmaps,
+        &mut ssums,
+    );
     assert_eq!(sfa.reserve(0x4000_4000, 0x4000), 4, "reserve 页数不符");
     let mut got = 0usize;
     while let Ok(p) = sfa.alloc() {

@@ -9,8 +9,18 @@
 //!   host 测试用 `Vec` 切片；内核侧（Step 3）用静态 BSS 数组。
 //!
 //! 算法是教科书 buddy：每阶 `o` 维护「空闲块头页」集合；`alloc` 找最小够用阶、
-//! 逐阶拆分；`free` 逐阶尝试与 buddy 合并。后备用线性扫描（boot / 低频分配可接受），
-//! 运行时高频可换位图索引——留作 v2 优化，本阶段**正确性优先**。
+//! 逐阶拆分；`free` 逐阶尝试与 buddy 合并。
+//!
+//! 空闲头索引 = **每阶位图 + 摘要位图两级**（K-1 起，v2 优化提前落地）：
+//! 每阶一片位图（bit p = 页 p 是否该阶空闲头）+ 一片摘要（bit = 位图字非零），
+//! `find_free_head` = 摘要字扫 + `trailing_zeros`——查询 O(摘要字数)，维护
+//! O(1)。落地动机 = K-1 回归（2026-10-27 钉死）：旧线性扫在「该阶全窗无
+//! 空闲头」地形下每次分配付 32768 页 × 7 指令 = 28,672 icount 单位的**保证
+//! 失败全窗扫**，而「有没有该阶头」由保留前缀 k = `__kernel_end>>12` 的
+//! 奇偶翻页决定——任意让镜像跨页的无害 commit 都在重掷这台骰子（boot 期
+//! slab 分配史 × k 对齐的阈值事件，94c1fd5 的 .rodata 恰 +0x1000 触发，
+//! frame_alloc4k ×59 / frame_alloc64k 自 B-0 起潜伏 ×58）。位图化后分配
+//! 成本与 k 奇偶/布局脱钩，此类回归结构性绝迹；且顺带收回 64k 慢带。
 
 /// buddy 最大阶。一个 `2^MAX_ORDER` 页的块。
 /// 128MiB / 4KiB = 32768 页；`MAX_ORDER = 13` → 最大块 8192 页 = 32MiB。
@@ -55,16 +65,49 @@ pub struct BuddyAllocator<'a> {
     ///  - 已分配块头页 → 分配时的阶；
     ///  - 块内尾页 → `TAIL`。
     order: &'a mut [u8],
+    /// 每阶空闲头位图（扁平：阶 `o` 占 `[o*W, (o+1)*W)`，`W` = `bmap_words`）。
+    /// bit p = 页 p 是否阶 `o` 空闲头——**不变量**：
+    /// `free[p] && order[p] == o` ⟺ 阶 `o` 位图 p 位置位（K-1 起）。
+    bmaps: &'a mut [u64],
+    /// 位图的摘要位图（扁平：阶 `o` 占 `[o*S, (o+1)*S)`，`S` = `sum_words`）。
+    /// bit w = 阶 `o` 位图第 `w` 字非零——`find_free_head` 先扫摘要（字数 =
+    /// 位图字数的 1/64）再 `trailing_zeros`，免「空阶全位图扫」（K-1 回归
+    /// 的病态路径正是空阶的全窗线性扫）。
+    sums: &'a mut [u64],
+    /// 每阶位图字数 = ceil(num_pages / 64)。
+    bmap_words: usize,
+    /// 每阶摘要字数 = ceil(bmap_words / 64)。
+    sum_words: usize,
 }
 
 impl<'a> BuddyAllocator<'a> {
     /// 用调用方提供的后备切片构造，并把整个区域 `[0, num_pages)` 初始化为空闲。
     ///
-    /// `free.len()` 与 `order.len()` 必须相等（= 页数）。
-    pub fn new(free: &'a mut [bool], order: &'a mut [u8]) -> Self {
+    /// `free.len()` 与 `order.len()` 必须相等（= 页数）；`bmaps.len()` /
+    /// `sums.len()` 须 ≥ `(MAX_ORDER+1) ×` 每阶字数（见字段注释的几何）。
+    pub fn new(
+        free: &'a mut [bool],
+        order: &'a mut [u8],
+        bmaps: &'a mut [u64],
+        sums: &'a mut [u64],
+    ) -> Self {
         let num_pages = free.len();
         assert_eq!(num_pages, order.len(), "free/order 后备切片长度必须一致");
         assert!(num_pages > 0, "至少要 1 页");
+        let bmap_words = (num_pages + 63) / 64;
+        let sum_words = (bmap_words + 63) / 64;
+        assert!(
+            bmaps.len() >= (MAX_ORDER + 1) * bmap_words,
+            "bmaps 后备装不下：需 {} × {} 字",
+            MAX_ORDER + 1,
+            bmap_words
+        );
+        assert!(
+            sums.len() >= (MAX_ORDER + 1) * sum_words,
+            "sums 后备装不下：需 {} × {} 字",
+            MAX_ORDER + 1,
+            sum_words
+        );
         // 先全部置「非空闲头 / 尾页」，再贪心切大块。
         for f in free.iter_mut() {
             *f = false;
@@ -72,10 +115,22 @@ impl<'a> BuddyAllocator<'a> {
         for o in order.iter_mut() {
             *o = TAIL;
         }
+        // 位图/摘要全清零（host 复用切片时有旧值；内核 BSS 已零，重复清零
+        // 正确且只花 boot 一次性 ~56KiB memset 量级）。
+        for w in bmaps.iter_mut() {
+            *w = 0;
+        }
+        for w in sums.iter_mut() {
+            *w = 0;
+        }
         let mut me = Self {
             num_pages,
             free,
             order,
+            bmaps,
+            sums,
+            bmap_words,
+            sum_words,
         };
         me.reset_free();
         me
@@ -93,6 +148,7 @@ impl<'a> BuddyAllocator<'a> {
             // o 至少为 0（单页必能放下，因为 p < num_pages）。
             self.free[p] = true;
             self.order[p] = o as u8;
+            self.bm_set(o, p);
             p += 1usize << o;
         }
     }
@@ -111,12 +167,13 @@ impl<'a> BuddyAllocator<'a> {
         let mut o = order;
         while o <= MAX_ORDER {
             if let Some(p) = self.find_free_head(o) {
-                // 逐阶拆分到目标阶。
+                // 逐阶拆分到目标阶（split 内部同步位图）。
                 while o > order {
                     self.split(p, o);
                     o -= 1;
                 }
                 // 标记已分配：不再是空闲头；order 记为分配阶。
+                self.bm_clear(order, p);
                 self.free[p] = false;
                 self.order[p] = order as u8;
                 return Ok(p);
@@ -147,8 +204,9 @@ impl<'a> BuddyAllocator<'a> {
         if self.order[p] != order as u8 {
             return Err(AllocError::OrderMismatch);
         }
-        // 置为空闲块头（order 字段已 == order，保持）。
+        // 置为空闲块头（order 字段已 == order，保持），入阶位图。
         self.free[p] = true;
+        self.bm_set(order, p);
         // 逐阶向上合并。
         let mut o = order;
         let mut head = p;
@@ -162,10 +220,16 @@ impl<'a> BuddyAllocator<'a> {
                 // 新头 = min(head, buddy) = 清掉第 o 位；另一页退为块内尾页。
                 let new_head = head & !(1usize << o);
                 let tail = if new_head == head { buddy } else { head };
+                // tail 退为尾页：离开 o 阶空闲集合。
+                self.bm_clear(o, tail);
                 self.free[tail] = false;
                 self.order[tail] = TAIL;
+                // new_head 从 o 阶升 (o+1) 阶（head/buddy 中非 tail 的一方，
+                // 合并前本是 o 阶空闲头——先出 o 阶位图再入 o+1）。
+                self.bm_clear(o, new_head);
                 self.free[new_head] = true;
                 self.order[new_head] = (o + 1) as u8;
+                self.bm_set(o + 1, new_head);
                 head = new_head;
                 o += 1;
             } else {
@@ -218,24 +282,71 @@ impl<'a> BuddyAllocator<'a> {
                     h += half; // p 在高半：buddy 成为含 p 的新头
                 }
             }
-            // 此刻 h == p（order-0 块只含自身）且 free——标保留单元。
+            // 此刻 h == p（order-0 块只含自身）且 free——标保留单元
+            //（先出 order-0 位图：离开空闲集合）。
+            self.bm_clear(0, p);
             self.free[p] = false;
             self.order[p] = RESERVED;
             p += 1;
         }
     }
 
-    /// 在阶 `o` 的空闲块头里找首个，返回其页号。
+    /// 在阶 `o` 的空闲块头里找**最小页号**者，返回其页号。
+    ///
+    /// 位图 + 摘要两级索引（K-1）：摘要字扫（每阶 ≤ ceil(W/64) 字，内核
+    /// 32768 页 = 8 字）→ 非零字 `trailing_zeros` 定页——与旧线性扫同返回
+    /// （同为最小页号优先），成本从 O(num_pages) 落到 O(摘要字数)。
+    /// **该阶无空闲头时**只付摘要全零扫（旧版付全窗页扫——K-1 回归 ×59
+    /// 的病态路径：32768 页 × 7 指令的保证失败扫描）。
     fn find_free_head(&self, o: usize) -> Option<usize> {
-        // 线性扫描；boot / 低频分配可接受（见模块文档）。
-        let mut p = 0;
-        while p < self.num_pages {
-            if self.free[p] && self.order[p] == o as u8 {
-                return Some(p);
+        let w = self.bmap_words;
+        let sw = self.sum_words;
+        for si in 0..sw {
+            let s = self.sums[o * sw + si];
+            if s == 0 {
+                continue;
             }
-            p += 1;
+            let wi = si * 64 + s.trailing_zeros() as usize;
+            let word = self.bmaps[o * w + wi];
+            debug_assert!(word != 0, "摘要位与非零位图字失同步（阶 {o} 字 {wi}）");
+            // release 纵深（K-1 处置刀）：不变量万一破裂时 debug 构建由上面
+            // debug_assert loud；release 剔除断言后 tz(0)=64 会把 p 推到
+            // wi*64+64——非尾字时落在窗内 = 对非空闲头页 split/标记的静默
+            // 错分配（尾字才越界 panic）。一条比较把失效形态收敛为「跳过
+            // 该摘要字继续扫」；正常路径永不命中（debug 构建该比较被断言
+            // 前置证伪、死码消除——icount 五跑逐值不变）。
+            if word == 0 {
+                continue;
+            }
+            let p = wi * 64 + word.trailing_zeros() as usize;
+            return Some(p);
         }
         None
+    }
+
+    /// 阶 `o` 位图置位页 `p`（页成为该阶空闲头时调用），同步摘要。
+    fn bm_set(&mut self, o: usize, p: usize) {
+        let w = self.bmap_words;
+        let wi = p / 64;
+        let bit = 1u64 << (p % 64);
+        let old = self.bmaps[o * w + wi];
+        self.bmaps[o * w + wi] = old | bit;
+        if old == 0 {
+            let sw = self.sum_words;
+            self.sums[o * sw + wi / 64] |= 1u64 << (wi % 64);
+        }
+    }
+
+    /// 阶 `o` 位图清位页 `p`（页离开该阶空闲集合时调用），字归零同步清摘要。
+    fn bm_clear(&mut self, o: usize, p: usize) {
+        let w = self.bmap_words;
+        let wi = p / 64;
+        let bit = 1u64 << (p % 64);
+        self.bmaps[o * w + wi] &= !bit;
+        if self.bmaps[o * w + wi] == 0 {
+            let sw = self.sum_words;
+            self.sums[o * sw + wi / 64] &= !(1u64 << (wi % 64));
+        }
     }
 
     /// 把 `(p, o)` 块拆成两个 `o-1` 块：保留 `p` 为头（降阶），`buddy` 置为空闲头。
@@ -244,10 +355,13 @@ impl<'a> BuddyAllocator<'a> {
         debug_assert!(o > 0, "split 阶必须 > 0");
         let buddy = p + (1usize << (o - 1));
         // p 降阶为 o-1 的空闲头（free[p] 不动，仍为 true）。
+        self.bm_clear(o, p);
         self.order[p] = (o - 1) as u8;
+        self.bm_set(o - 1, p);
         // buddy 成为 o-1 的空闲头。
         self.free[buddy] = true;
         self.order[buddy] = (o - 1) as u8;
+        self.bm_set(o - 1, buddy);
     }
 
     /// 检查某页号是否当前已分配（非空闲）。仅供测试 / 断言用。
@@ -295,7 +409,60 @@ mod tests {
         // 把后备放进 leaked Box，让借用 'static；单测进程退出即回收，可接受。
         let free: &'static mut [bool] = Box::leak(vec![false; n].into_boxed_slice());
         let order: &'static mut [u8] = Box::leak(vec![0u8; n].into_boxed_slice());
-        BuddyAllocator::new(free, order)
+        let bw = (n + 63) / 64;
+        let sw = (bw + 63) / 64;
+        let bmaps: &'static mut [u64] =
+            Box::leak(vec![0u64; (MAX_ORDER + 1) * bw].into_boxed_slice());
+        let sums: &'static mut [u64] =
+            Box::leak(vec![0u64; (MAX_ORDER + 1) * sw].into_boxed_slice());
+        BuddyAllocator::new(free, order, bmaps, sums)
+    }
+
+    /// 旧版 `find_free_head` 的线性扫参照实现（K-1 位图索引的对拍基准——
+    /// P6 A-5 双实现纪律：位图索引必须有对旧语义的机器守卫，防「双绿即
+    /// 收敛」退化成对新索引自证）。
+    fn linear_find_free_head(ba: &BuddyAllocator, o: usize) -> Option<usize> {
+        let mut p = 0;
+        while p < ba.num_pages {
+            if ba.free[p] && ba.order[p] == o as u8 {
+                return Some(p);
+            }
+            p += 1;
+        }
+        None
+    }
+
+    /// 位图/摘要**不变量直断**（K-1 处置刀）：对拍守卫验的是「find_free_head
+    /// 返回值 == 线性扫」——「多余脏位且低于当阶最小真头」的瞬时态不改变
+    /// 返回值，须等真头耗尽/当阶清空才显形（理论盲区）。本函数把两条不变量
+    /// 逐位直接断言，把盲区钉成每调必炸：
+    /// ① `free[p] && order[p]==o` ⟺ 阶 `o` 位图 p 位置位；
+    /// ② 摘要位 ⟺ 对应 64 字 span 内存在非零位图字。
+    fn assert_bitmap_invariants(ba: &BuddyAllocator) {
+        let w = ba.bmap_words;
+        let sw = ba.sum_words;
+        for o in 0..=MAX_ORDER {
+            for p in 0..ba.num_pages {
+                let bit = (ba.bmaps[o * w + p / 64] >> (p % 64)) & 1 == 1;
+                assert_eq!(
+                    bit,
+                    ba.free[p] && ba.order[p] == o as u8,
+                    "阶 {o} 页 {p}：位图位={bit} free={} order={}（不变量①破）",
+                    ba.free[p],
+                    ba.order[p]
+                );
+            }
+            for si in 0..sw {
+                for wi in si * 64..((si + 1) * 64).min(w) {
+                    let sbit = (ba.sums[o * sw + si] >> (wi % 64)) & 1 == 1;
+                    assert_eq!(
+                        sbit,
+                        ba.bmaps[o * w + wi] != 0,
+                        "阶 {o} 摘要字 {si} 位 {wi}（不变量②破）"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -557,5 +724,183 @@ mod tests {
         }
         assert_eq!(cf, co, "可分配总量漂移");
         assert_eq!(cf, n - k, "总量 = n-k");
+    }
+
+    #[test]
+    fn bitmap_index_matches_linear_scan() {
+        // K-1 位图索引的**语义对拍**：位图/摘要两级的 `find_free_head` 必须与
+        // 旧线性扫逐值同构（同返回最小页号、同返回 None）。落地动机 = K-1
+        // 回归（分配成本依赖保留前缀奇偶的刀锋态），索引换装只许变快、不许
+        // 变语义——本测试把「最小页号优先」钉死成机器守卫。
+        // 确定性 LCG（无外部依赖，同种子同序列）：975 = 2048-1073 的裸数字，
+        // 与随机论无关。
+        let mut ba = make(975);
+        ba.reserve_range(300, 500); // 非对齐保留前缀 + 中段保留：制造空阶地形
+        let mut rng: u64 = 0x2026_1027;
+        let mut held: Vec<(usize, usize)> = Vec::new();
+        for step in 0..4000 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let pick = (rng >> 33) % 4;
+            match pick {
+                0 | 1 => {
+                    // 单页分配（走 find_free_head(0) 全链）。
+                    if let Ok(p) = ba.alloc() {
+                        held.push((p, 0));
+                    }
+                }
+                2 => {
+                    // 随机阶分配。
+                    let o = ((rng >> 40) % 5) as usize;
+                    if let Ok(p) = ba.alloc_order(o) {
+                        held.push((p, o));
+                    }
+                }
+                _ => {
+                    // 释放（约 1/4 步——held 非空时）。
+                    if let Some((p, o)) = held.pop() {
+                        ba.free(p, o).unwrap();
+                    }
+                }
+            }
+            // 每步全阶对拍：位图索引 == 线性扫（值与 None 双面）。
+            for o in 0..=MAX_ORDER {
+                assert_eq!(
+                    ba.find_free_head(o),
+                    linear_find_free_head(&ba, o),
+                    "step={} 阶 {} 索引/线性扫分歧（位图维护不变量破）",
+                    step,
+                    o
+                );
+            }
+            // 每 100 步不变量直断（瞬时脏位盲区钉死，见 assert_bitmap_invariants）。
+            if step % 100 == 0 {
+                assert_bitmap_invariants(&ba);
+            }
+        }
+        // 尾声：全量释放后再对拍一轮（合并路径的位图维护面）。
+        for &(p, o) in held.iter() {
+            ba.free(p, o).unwrap();
+        }
+        for o in 0..=MAX_ORDER {
+            assert_eq!(ba.find_free_head(o), linear_find_free_head(&ba, o));
+        }
+        assert_bitmap_invariants(&ba);
+    }
+
+    #[test]
+    fn bitmap_words_partial_tail_window() {
+        // 页数非 64 倍数（= 位图尾字部分页）+ 尾部高阶块跨摘要字边界：
+        // 构造 n = 130（两字位图 + 2 页尾字）确保尾窗 bit 位与摘要边界
+        // 不错位——K-1 首版潜在坑面（位图几何按 ceil 切，尾字高位恒 0
+        // 须由「只 set 合法页」保证，这里钉死）。
+        let mut ba = make(130);
+        // 占满再全释放：所有页过一遍位图 set/clear。
+        let mut got = Vec::new();
+        while let Ok(p) = ba.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 130);
+        for &p in got.iter() {
+            ba.free(p, 0).unwrap();
+        }
+        // 全并回单块（128 + 2）。
+        assert_eq!(ba.debug_free_heads(), vec![(0, 7), (128, 1)]);
+        for o in 0..=MAX_ORDER {
+            assert_eq!(ba.find_free_head(o), linear_find_free_head(&ba, o));
+        }
+        assert_bitmap_invariants(&ba);
+    }
+
+    #[test]
+    fn bitmap_multi_summary_word_geometry() {
+        // K-1 处置刀：仓内对拍双测（975/130 页）的摘要字数均 = 1，内核真身
+        // 32768 页 = 8 摘要字的**跨摘要字几何**（si 递进、si*64 跳字、
+        // wi%64 回绕）在 host 面无隔离钉板——本测用 n = 8192（位图 128 字
+        // → 摘要 2 字）补上：①全量单页填充 = 双射（每页恰出一次、零重复
+        // 零越界）；②乱序全释放 → 幂窗精确并回单块 o13@0；③保留 + 混合阶
+        // 随机相逐阶线性对拍 + 周期不变量直断 + 终态与全新构造形状对拍。
+        let n = 8192usize; // 2^13 幂窗
+        let mut ba = make(n);
+        assert_eq!(ba.bmap_words, 128);
+        assert_eq!(ba.sum_words, 2, "本测前提：跨摘要字几何（sum_words=2）");
+        assert_bitmap_invariants(&ba);
+
+        // ① 全量单页填充 = 双射。
+        let mut seen = vec![false; n];
+        for _ in 0..n {
+            let p = ba.alloc().expect("满窗 8192 页全量分配");
+            assert!(p < n, "越界分配 p={p}");
+            assert!(!seen[p], "重复分配 p={p}");
+            seen[p] = true;
+        }
+        assert!(seen.iter().all(|&s| s), "双射破：有页从未分配");
+        assert_eq!(ba.alloc(), Err(AllocError::OutOfMemory));
+        assert_eq!(ba.allocated_pages(), n);
+        assert_bitmap_invariants(&ba);
+
+        // ② LCG Fisher-Yates 乱序全释放 → 幂窗精确并回单块 o13@0。
+        let mut rng: u64 = 0xdead_beef_cafe_f00d;
+        let mut perm: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let j = ((rng >> 33) as usize) % (i + 1);
+            perm.swap(i, j);
+        }
+        for &p in perm.iter() {
+            ba.free(p, 0).unwrap();
+        }
+        assert_eq!(ba.debug_free_heads(), vec![(0, 13)], "幂窗全释放须精确并回单块");
+        assert_eq!(ba.allocated_pages(), 0);
+        assert_bitmap_invariants(&ba);
+
+        // ③ 保留前缀 + 混合阶随机相（对拍节奏同 bitmap_index_matches_linear_scan，
+        //    阶域放宽到 0..=6 触发跨摘要字的高阶空扫面）。
+        ba.reserve_range(300, 500);
+        let mut held: Vec<(usize, usize)> = Vec::new();
+        for step in 0..600 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let pick = (rng >> 33) % 4;
+            match pick {
+                0 | 1 => {
+                    if let Ok(p) = ba.alloc() {
+                        held.push((p, 0));
+                    }
+                }
+                2 => {
+                    let o = ((rng >> 40) % 7) as usize;
+                    if let Ok(p) = ba.alloc_order(o) {
+                        held.push((p, o));
+                    }
+                }
+                _ => {
+                    if let Some((p, o)) = held.pop() {
+                        ba.free(p, o).unwrap();
+                    }
+                }
+            }
+            for o in 0..=MAX_ORDER {
+                assert_eq!(
+                    ba.find_free_head(o),
+                    linear_find_free_head(&ba, o),
+                    "step={} 阶 {o} 索引/线性扫分歧（跨摘要字几何破）",
+                    step
+                );
+            }
+            if step % 100 == 0 {
+                assert_bitmap_invariants(&ba);
+            }
+        }
+        for &(p, o) in held.iter() {
+            ba.free(p, o).unwrap();
+        }
+        // 终态形状 == 全新构造 + 同保留的形状（终态等价钉板）。
+        let mut fresh = make(n);
+        fresh.reserve_range(300, 500);
+        assert_eq!(ba.debug_free_heads(), fresh.debug_free_heads(), "终态形状漂移");
+        assert_eq!(ba.allocated_pages(), 0);
+        assert_bitmap_invariants(&ba);
+        for o in 0..=MAX_ORDER {
+            assert_eq!(ba.find_free_head(o), linear_find_free_head(&ba, o));
+        }
     }
 }

@@ -30,6 +30,7 @@
 use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::PAGE_SIZE;
+use berry_mm::MAX_ORDER;
 
 /// buddy 后备定容：按整段 RAM 计（RAM 几何来自 HAL 平台常量）。
 const MAX_PAGES: usize = (RAM_TOP - RAM_BASE) / PAGE_SIZE; // 32768
@@ -38,6 +39,16 @@ const MAX_PAGES: usize = (RAM_TOP - RAM_BASE) / PAGE_SIZE; // 32768
 static mut FRAME_FREE: [bool; MAX_PAGES] = [false; MAX_PAGES];
 /// buddy 后备：每页一个 u8（块阶 / 尾页哨兵）。
 static mut FRAME_ORDER: [u8; MAX_PAGES] = [0; MAX_PAGES];
+/// buddy 后备：每阶空闲头位图（K-1 起——`find_free_head` 从全窗线性扫换
+/// 位图 + 摘要两级索引；几何/不变量见 `berry_mm::buddy` 模块文档）。
+/// 阶数 × 每阶字数：32768 页 → 每阶 512 字 × 14 阶 = 57,344B。
+const BMAP_WORDS: usize = (MAX_PAGES + 63) / 64;
+static mut FRAME_BMAPS: [u64; (MAX_ORDER + 1) * BMAP_WORDS] = [0; (MAX_ORDER + 1) * BMAP_WORDS];
+/// buddy 后备：位图摘要（每阶 ceil(512/64)=8 字 × 14 阶 = 896B）——空阶
+/// 查询只付摘要扫（K-1 回归的病态路径正是空阶的全窗页扫：32768×7 指令
+/// ×59，见 `docs/基准与压力测试设计.md` §13 归因段）。
+const SUM_WORDS: usize = (BMAP_WORDS + 63) / 64;
+static mut FRAME_SUMS: [u64; (MAX_ORDER + 1) * SUM_WORDS] = [0; (MAX_ORDER + 1) * SUM_WORDS];
 
 /// 全局帧分配器（`init()` 后可用）。
 static mut FRAMES: Option<FrameAllocator<'static>> = None;
@@ -58,9 +69,16 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
     }
     let kernel_end =
         core::ptr::addr_of!(__kernel_end) as usize - berry_hal_aarch64::KERNEL_VA_BASE;
-    // 全窗构造（V-1b）。
+    // 全窗构造（V-1b）。位图/摘要后备随 K-1 索引一并借入。
     // SAFETY: 单核启动期，无并发；后备数组生命周期 'static。
-    let mut fa = FrameAllocator::new(RAM_BASE, RAM_TOP, &mut FRAME_FREE, &mut FRAME_ORDER);
+    let mut fa = FrameAllocator::new(
+        RAM_BASE,
+        RAM_TOP,
+        &mut FRAME_FREE,
+        &mut FRAME_ORDER,
+        &mut FRAME_BMAPS,
+        &mut FRAME_SUMS,
+    );
 
     // 内核自身足迹无条件先保（**两条路同源，第一步**）：__kernel_end 含
     // ELF 外足迹（256KiB 主栈——纯 `. += 0x40000` 保留、不进 PT_LOAD，

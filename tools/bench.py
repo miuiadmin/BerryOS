@@ -105,6 +105,24 @@ BASELINE_ICOUNT = REPO / "tools" / "bench_baseline_icount.txt"
 #     审查起；「逐字节相同」只对 BENCHWAKE 整行比对成立——那是真字符串比对）
 # 重跑得异 verdict 时：改本常量（exact↔pct5 档互换）+ `--icount --update`
 # 重立基线 + 本注释同步（漂移须归因——§5 基线 diff 纪律同款）。
+#
+# —— 证明台账（重证记录，verdict 全 exact 则 TOL 恒 0.0）——
+# [2026-10-27 B-2 立档] verdict=exact：0/29157/29127/50/29433/1695（首证）。
+# [2026-10-27 K-1 重证] verdict=exact：0/168/33/50/444/1695——buddy 空闲头
+#   索引线性扫→位图+摘要两级（K-1 回归修复，根因/机制/验收见
+#   docs/基准与压力测试设计.md §13 归因段）：buddy 族三项坍缩为常数
+#   （4k 29157→168、64k 29127→33、commit1p 29433→444，commit1p−alloc4k=276
+#   与修复前 VMO 层常数逐位同——回归增量全部来自内嵌帧分配的归因再证）；
+#   非 buddy 三项（cntvct 0 / handle_evt 50 / rw4k 1695）与旧基线逐值相同
+#   = 指令流变化严格收敛在 buddy 路径。分配成本自此与保留前缀 k 奇偶/
+#   镜像布局脱钩（「布局跨页 ±28k 翻带」结构性绝迹）。基线同日重立。
+# [2026-10-27 K-1 处置刀重证] verdict=exact：0/168/33/50/444/1695——find_free_head
+#   加 release 防御守卫（摘要位与非零位图字失同步时 `if word == 0 { continue; }`
+#   跳该摘要字，防 tz(0)=64 静默错分配）：debug 构建该比较被 debug_assert 前置
+#   证伪、死码消除（反汇编核实 panic_fmt 路径在位）→ 五跑逐值与 K-1 基线全同、
+#   **基线零改动**；release codegen 独立核实（crate 级 asm：ldr 后 cbz→次摘要
+#   字循环块，守卫在位）。即 debug 通道 loud（断言）/ release 通道纵深（跳字）
+#   双形态成立，icount 指令流不受扰。
 ICOUNT_TOL = 0.0
 
 BENCH_RE = re.compile(r"^BENCH,([a-z0-9_]+),(\d+),(\d+)$")
