@@ -42,6 +42,13 @@ jobs:
       - name: 构建（内核 + 用户程序产物链）
         run: just build
 
+      # K-2：ARM64 内核 release 链接守卫——release 优化才生成的引用形态（.text.boot
+      # ADRP 引 .rodata.cst16 越 ±4GB）断链而 debug 全绿，此前 CI 零覆盖结构性
+      # 不可见（唯二 release 面 = x86 工作区与 build-user 内部）。置于 just build
+      # 后 = userbins 热缓存、build-user 增量 no-op；只构建不跑 QEMU。
+      - name: 构建 release（链接守卫）
+        run: just build-release
+
       - name: 内核体积基线（12号报告 §10.1；size.py 无法运行即 CI 红——symtab 缺失时其内部降级 exit 0 只报 memsz 小计，体积数值本身无门禁）
         run: just size
 

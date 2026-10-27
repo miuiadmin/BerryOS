@@ -186,6 +186,11 @@ build-user:
 build: abi-check build-user
     cargo build
 
+# K-2 release 链接守卫：release 优化（fat LTO + O3）才生成的引用形态（.text.boot
+# ADRP 引 .rodata.cst16 越 ±4GB）可断链而 debug 全绿——只构建不跑 QEMU，挂 CI。
+build-release: abi-check build-user
+    cargo build --release
+
 check: abi-check build-user
     cargo check
 

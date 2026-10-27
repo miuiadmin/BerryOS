@@ -102,16 +102,24 @@ pub unsafe extern "C" fn build_boot_pt() {
     ];
     for pa in dev_blocks {
         let idx = (pa >> 21) & L2_INDEX_MASK;
-        (*l2_low).0[idx] = block_descriptor(pa, ATTR_DEVICE, SH_NONE);
+        (&raw mut (*l2_low).0[idx]).write_volatile(block_descriptor(pa, ATTR_DEVICE, SH_NONE));
     }
 
     // RAM L2：[RAM_BASE, RAM_TOP) 逐 2MiB Normal 块（identity）。
     // BOOT_L2_RAM 由 L1[1] 指向，覆盖 [0x4000_0000, 0x8000_0000)；
     // pa>>21 & 0x1FF 对 [RAM_BASE, RAM_TOP) 恰落在 [0, 64)。
+    //
+    // K-2：本循环与上方 dev_blocks 循环**必须 volatile 标量写**——release（fat LTO
+    // +O3）把全展开后的 64 个编译期常量描述符折叠成 .rodata.cst16 常量池（匿名
+    // .LCP 符号，源码钉不住段位），以 adrp+ldr q 从高半 .rodata 装载 + stp q,q
+    // 向量化直写 → .text.boot（低半）ADRP ±4GB 越界断链（debug opt=1 保留标量
+    // 循环故不断）。volatile 逐写从语义上禁绝向量化/常量池化，值退回 movz/movk
+    // 立即数（LLVM AArch64 标量整数不走 literal pool）——与 2b-1 gotcha 同源的
+    // boot 路径纪律：.text.boot 不得产生对高半数据的引用。
     let mut pa = RAM_BASE;
     while pa < RAM_TOP {
         let idx = (pa >> 21) & L2_INDEX_MASK;
-        (*l2_ram).0[idx] = block_descriptor(pa, ATTR_NORMAL, SH_INNER);
+        (&raw mut (*l2_ram).0[idx]).write_volatile(block_descriptor(pa, ATTR_NORMAL, SH_INNER));
         pa += TWO_MB;
     }
 
