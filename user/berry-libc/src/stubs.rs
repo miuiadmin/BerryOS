@@ -74,7 +74,8 @@ neg_int!(
 );
 
 // —— FS 元数据/ENOSYS 面（fstat 刀 2 起迁 fs.rs——fd≥3 真/fd 0-2 保持
-//    ENOSYS 旧面；utimensat/futimens C-2a 起改 no-op 成功桩见下方手写面）——
+//    ENOSYS 旧面；utimensat/futimens C-2a 起改 no-op 成功桩见下方手写面；
+//    fcntl C-2c 挂账刀起手写真面（console fd 克隆），移出本档）——
 neg_int!(
     fchmod => crate::ENOSYS,
     fchmodat => crate::ENOSYS,
@@ -87,10 +88,102 @@ neg_int!(
     fdatasync => crate::ENOSYS,
     ftruncate => crate::ENOSYS,
     flock => crate::ENOSYS,
-    fcntl => crate::EINVAL,
     ioctl => crate::ENOTTY,
     mprotect => crate::EINVAL,
 );
+
+/// fcntl（C-2c 挂账刀手写——旧 neg_int! EINVAL 桩退役）：真面仅
+/// F_DUPFD(0)/F_DUPFD_CLOEXEC(1030) 的 fd 0/1/2 克隆（console 别名，
+/// uu_head unix stdin 路径 `try_clone_to_owned` 的消费面——std
+/// `sys::unix::fd::owned.rs` 同款调用，C-2c U3 步③ 挂账实录的解扣件）。
+/// 分发表：fd 0-2 + dup cmd → 别名 alloc（满表 = EMFILE）；fd≥3 在册
+/// fs fd → ENOSYS（loud 拒——客户端游标模型的表项是值语义，别名无独立
+/// 游标可给，v1 无 fs fd 克隆面）；fd≥3 不在册 → EBADF；其余 cmd →
+/// EINVAL（旧桩同值零漂移）。C 变参第 3 参按 int 收（F_DUPFD 的最低
+/// 位号；AArch64 寄存器传参对变参/定参同形，lib.rs ABI 口径）。
+#[no_mangle]
+pub extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
+    const F_DUPFD: c_int = 0;
+    const F_DUPFD_CLOEXEC: c_int = 1030; // Linux 通用值（musl 同）
+    if fd < 0 {
+        crate::set_errno(crate::EBADF);
+        return -1;
+    }
+    if (0..=2).contains(&fd) {
+        if cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC {
+            // POSIX F_DUPFD 边界（三镜审查口径修正）：arg 负或 ≥ 号段上限
+            // （FD_BASE+FD_MAX+ALIAS_MAX = 15——本桩的 OPEN_MAX 档）→
+            // EINVAL；段内无空位才 EMFILE。旧实现负 arg 钳 3、超窗归
+            // EMFILE（现役唯一消费方 uu_head 传 0 不可达，纯口径面）。
+            let ceiling = berry_fsclient::FD_BASE
+                + (berry_fsclient::FD_MAX + berry_fsclient::ALIAS_MAX) as c_int;
+            if arg < 0 || arg >= ceiling {
+                crate::set_errno(crate::EINVAL);
+                return -1;
+            }
+            return match crate::io::alias_alloc(fd, arg) {
+                Some(n) => n,
+                None => {
+                    crate::set_errno(crate::EMFILE);
+                    -1
+                }
+            };
+        }
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    if crate::fs::fd_valid(fd) {
+        crate::set_errno(crate::ENOSYS);
+    } else {
+        crate::set_errno(crate::EBADF);
+    }
+    -1
+}
+
+// —— tail 桩面（C-2c 挂账刀：uu_tail 的 -f/监测链——mio/inotify 全家。
+//    挂账刀纪律「现探现补」：链接探针实证 7 枚符号全归 tail（-f 尾随
+//    面 v1 无实现，ENOSYS = 诚实语义——tail 无 -f 路径全绿，见 bsh
+//    u4_selftest 头注）；epoll/eventfd 与 inotify 两族在此合册）——
+neg_int!(
+    epoll_create1 => crate::ENOSYS,
+    epoll_ctl => crate::ENOSYS,
+    epoll_wait => crate::ENOSYS,
+    eventfd => crate::ENOSYS,
+    inotify_init1 => crate::ENOSYS,
+    inotify_add_watch => crate::ENOSYS,
+    inotify_rm_watch => crate::ENOSYS,
+);
+
+/// sigprocmask（uu_env apply_signal_action/block_signal 的链接面）：
+/// ok! 档不够格——第 3 参 oldset 是出参（不写 = 调用方读栈残留）。
+/// v1 无信号机制：谎报「旧掩码全空」+ 成功（sigaction 族 ok! 桩同口径
+/// ——无竞争面的确定性假值，非零参宏可表达的签名敏感件）。
+#[no_mangle]
+pub extern "C" fn sigprocmask(
+    _how: c_int,
+    _set: *const c_void,
+    oldset: *mut c_void,
+) -> c_int {
+    if !oldset.is_null() {
+        // musl sigset_t = 128B（128 信号位图）：全零 = 空集。
+        // SAFETY: oldset 指向调用方 sigset_t（libc 契约）。
+        unsafe { crate::strmem::memset_volatile(oldset as *mut u8, 0, 128) };
+    }
+    0
+}
+
+/// realtime 信号界（uu_env realtime_signal_bounds 的链接面）：musl
+/// 默认 SIGRTMIN=34 / SIGRTMAX=64（Linux glibc 差值是预留动态库槽位，
+/// musl 无此面）——值恒定，env 的界检查获确定区间。
+#[no_mangle]
+pub extern "C" fn __libc_current_sigrtmin() -> c_int {
+    34
+}
+
+#[no_mangle]
+pub extern "C" fn __libc_current_sigrtmax() -> c_int {
+    64
+}
 
 /// `sync`（C 原型 `void sync(void)`——libc crate 同形，C-2 刀 2；uu_df
 /// `--sync` 消费，探针实证 uu_df 全链缺符号恰 sync+statfs 两枚）：空桩
@@ -478,7 +571,18 @@ fn exp2_impl(t: f64) -> f64 {
 // get_locale_months 真消费；2026-10-25 berryos-99 剥桩重链实证归因）：
 // v1 唯一 locale = "C"/ASCII。
 // setlocale 恒答 "C"（musl 语义：返回现 locale 名——strerror 同款 rodata
-// 指针形态，静态串免分配）；nl_langinfo 问啥都答 "UTF-8"（codeset 查询面）。
+// 指针形态，静态串免分配）；nl_langinfo 按 item 分诊（C-2c 挂账刀 U4 首跑
+// 实测修订：原「问啥都答 UTF-8」把 uu_date 的 _DATE_FMT(0x2006c——uu_date
+// locale.rs 手卷的 glibc nl_item，libc crate 未收录故上游自定) 查询也答成
+// "UTF-8"——get_locale_format_string 拿它当日期格式串、ensure_timezone_
+// in_format 再补 " %Z" → date 默认输出恒 "UTF-8 UTC"）：
+//   CODESET(14——libc crate linux 面 glibc 序 nl_item) → "UTF-8"（i18n
+//   codeset 查询面，语义保真）；
+//   其余（_DATE_FMT/D_T_FMT/ABMON 族…）→ ""（空串）——C locale 之外的
+//   locale 数据 v1 一律不支持。uu_date 的 !is_empty 过滤器吃空串后落内建
+//   回退 "%a %b %e %X %Z %Y"（GNU date 同序输出）；uucore get_locale_months
+//   的 ABMON 面有 should_use_icu_locale() 前置门（LC_TIME 缺席 → "und" →
+//   false），运行期不可达——空串不会 poison 月份名。
 #[no_mangle]
 pub extern "C" fn setlocale(_category: c_int, _locale: *const c_char) -> *mut c_char {
     let s: &[u8] = b"C\0";
@@ -486,9 +590,14 @@ pub extern "C" fn setlocale(_category: c_int, _locale: *const c_char) -> *mut c_
 }
 
 #[no_mangle]
-pub extern "C" fn nl_langinfo(_item: c_int) -> *const c_char {
-    let s: &[u8] = b"UTF-8\0";
-    s.as_ptr() as *const c_char
+pub extern "C" fn nl_langinfo(item: c_int) -> *const c_char {
+    const NL_CODESET: c_int = 14; // libc crate linux 面 glibc 序（langinfo.h）
+    static EMPTY: &[u8] = b"\0";
+    static UTF8: &[u8] = b"UTF-8\0";
+    match item {
+        NL_CODESET => UTF8.as_ptr() as *const c_char,
+        _ => EMPTY.as_ptr() as *const c_char,
+    }
 }
 
 // exp2/log10 —— C-2c libcall 面（uu_sort 数值排序的 bigdecimal 链：

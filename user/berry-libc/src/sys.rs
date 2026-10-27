@@ -35,6 +35,29 @@ pub extern "C" fn clock_gettime(_clk: c_int, ts: *mut Timespec) -> c_int {
     0
 }
 
+/// clock_getres（uu_date 的 `--resolution`/周期探针链接面，C-2c 挂账刀）：
+/// 谎报 1ns（tv_sec=0/tv_nsec=1）+ 成功——**必须成功**：上游（rustix→
+/// chrono 链）对 Err 走 unwrap/expect 档，失败 = panic 死进程（ENOSYS
+/// 桩会经此把 date 整体杀掉）；「分辨率 1ns」是 berry 单调钟 ns 粒度的
+/// 诚实值，非任意假值。
+#[no_mangle]
+pub extern "C" fn clock_getres(_clk: c_int, ts: *mut Timespec) -> c_int {
+    unsafe {
+        (*ts).tv_sec = 0;
+        (*ts).tv_nsec = 1;
+    }
+    0
+}
+
+/// clock_settime（uu_date `-s` 设置面）：无特权时钟写面，EPERM 拒——
+/// date 对 -s 失败打诊断退非零（诚实档；`-s` 不在 u4 自验步，运行期
+/// 不可达 = P5 探针实证，桩只守链接面）。
+#[no_mangle]
+pub extern "C" fn clock_settime(_clk: c_int, _ts: *const Timespec) -> c_int {
+    crate::set_errno(crate::EPERM);
+    -1
+}
+
 /// std::thread::sleep 的落点；`flags & 1` = TIMER_ABSTIME（musl 值 1）。
 #[no_mangle]
 pub extern "C" fn clock_nanosleep(

@@ -65,7 +65,9 @@ pub const DT_UNKNOWN: u8 = 0;
 
 // —— 静态态（单线程：static mut 直写，lib.rs ABI 口径）——
 
-static mut FDT: FdTable = FdTable::new();
+/// pub(crate)：io.rs console 别名面借只读视图（别名 alloc 跳 FDT 在册位
+/// ——共段双侧互让防线的此侧入口；单线程 static mut 口径同全 crate）。
+pub(crate) static mut FDT: FdTable = FdTable::new();
 static mut CWD: [u8; PATH_MAX] = [0; PATH_MAX];
 static mut CWD_LEN: usize = 0; // 根 = 空 wire
 // 读 read-ahead：RA_BUF 兼 RPC 缓冲（get_chunk 把数据前移到 [0..len]，
@@ -359,7 +361,9 @@ unsafe fn open_core(path: *const c_char, flags: c_int) -> c_int {
                 return -1;
             }
         };
-        match FDT.alloc(entry) {
+        // 别名避位（C-2c 挂账刀）：console 别名在册的编号不给 fs fd
+        //（共段同号双语义静默错防线，AliasTable::alloc 的反向）。
+        match FDT.alloc_skipping(entry, |fd| crate::io::alias_base(fd).is_some()) {
             Some(fd) => fd,
             None => {
                 crate::set_errno(crate::EMFILE);
@@ -508,8 +512,11 @@ pub(crate) fn fd_valid(fd: c_int) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn lseek(fd: c_int, off: off_t, whence: c_int) -> off_t {
     unsafe {
-        if fd < 3 {
-            crate::set_errno(crate::ESPIPE); // fd 0/1/2 管道面（旧桩同值零漂移）
+        // fd 0/1/2 管道面（旧桩同值零漂移）；C-2c 挂账刀起 console 别名
+        // 同闸——uu_head 的 stream_position 对 stdin 克隆必须拿到失败
+        //（ESPIPE）才走缓冲回退路，译成功 = 静默错位读（别名无游标）。
+        if fd < 3 || crate::io::alias_base(fd).is_some() {
+            crate::set_errno(crate::ESPIPE);
             return -1;
         }
         let entry = match FDT.get_mut(fd) {

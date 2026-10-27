@@ -17,6 +17,7 @@
 
 use core::ptr;
 
+use berry_fsclient::AliasTable;
 use berry_sys::{berry_channel_recv, berry_channel_send, berry_clock_read,
                 berry_object_wait_one, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE,
                 SIGNAL_WRITABLE};
@@ -225,8 +226,43 @@ fn fd_ok(fd: c_int) -> bool {
     (0..=2).contains(&fd)
 }
 
+// —— console 别名面（C-2c 挂账刀：fcntl F_DUPFD/F_DUPFD_CLOEXEC 的 fd
+//    0/1/2 克隆——uu_head stdin 路径 try_clone_to_owned 的真身）——
+// 别名槽与 fd 表（fd 3+）共享同一段编号空间、双侧 alloc 互让（正方向
+// `AliasTable::alloc` 跳 FDT 在册位 / 反方向 `FdTable::alloc_skipping`
+// 跳别名在册位——同号双语义 = read/write 先撞别名翻译、FDT 表项结构性
+// 不可达的静默错，双侧防线在 berry-fsclient host 测试钉板）。别名无独立
+// 状态：read/write/writev/isatty 先翻译回底 fd 走 console 原路径（共享
+// PEND 残段——与 POSIX dup 共享 file description 同义）；close 摘槽即
+// 成功（console 是进程级资产，同 close(1) 不真关口径）；lseek = ESPIPE
+// （console 非 seekable——uu_head stream_position 失败即走缓冲回退路，
+// 译成功 = 静默错位，fs.rs 闸）。
+static mut ALIASES: AliasTable = AliasTable::new();
+
+/// 别名 → 底 fd：非别名 = None。pub(crate)：fcntl 分发（stubs.rs）与
+/// lseek 闸（fs.rs）/open 避位（fs.rs）用。
+pub(crate) fn alias_base(fd: c_int) -> Option<c_int> {
+    // SAFETY: 只读；唯一写点 = fcntl（stubs.rs，单线程 lib.rs ABI 口径）。
+    unsafe { ALIASES.base_of(fd) }
+}
+
+/// fcntl F_DUPFD 面：console `base`（0/1/2）装一条 ≥`start` 的最低可用
+/// 别名（满表/段帽尽 = None → 调用方 EMFILE）。
+pub(crate) fn alias_alloc(base: c_int, start: c_int) -> Option<c_int> {
+    // SAFETY: 单线程 static mut 直写（lib.rs ABI 口径）；FDT 只读借用。
+    unsafe { ALIASES.alloc(base, start, &*core::ptr::addr_of!(crate::fs::FDT)) }
+}
+
+/// 摘别名槽（close 面）：Some(base) = 别名已摘 / None = 非别名。
+pub(crate) fn alias_take(fd: c_int) -> Option<c_int> {
+    // SAFETY: 单线程 static mut 直写（同上）。
+    unsafe { ALIASES.take(fd) }
+}
+
 #[no_mangle]
 pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
+    // 别名先翻译回底 fd（console 克隆——别名无独立状态，见别名面注释）。
+    let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
         // fd≥3 = fs-backed 写（fs.rs 收口 EBADF/游标/分片 PUT）；fd<0 同落
         // 那边的 EBADF 面。
@@ -242,6 +278,8 @@ pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
 
 #[no_mangle]
 pub extern "C" fn writev(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
+    // 别名先翻译（同 write——console 克隆共底 fd）。
+    let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
         // fs-backed：逐 iov 走 fs 写（部分写返回已写量——write_fd 同语义）。
         if cnt <= 0 {
@@ -292,6 +330,9 @@ static mut PEND_OFF: usize = 0;
 
 #[no_mangle]
 pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
+    // 别名先翻译回底 fd（fd 0 克隆共享 PEND 残段——与 POSIX dup 共享
+    // file description 同义：uu_head 经别名读到的与直读 fd 0 是同一条流）。
+    let fd = alias_base(fd).unwrap_or(fd);
     unsafe {
         if fd != 0 {
             // fd≥3 = fs-backed 读（fs.rs 收口 EBADF/RA 预读）；fd 1/2 在那边
@@ -353,6 +394,10 @@ pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
 
 #[no_mangle]
 pub extern "C" fn close(fd: c_int) -> c_int {
+    // 别名：摘槽即成功（console 是进程级资产——close(1) 不真关同口径）。
+    if alias_take(fd).is_some() {
+        return 0;
+    }
     if fd_ok(fd) {
         return 0; // console handle 是进程级资产，close(1) 不真关
     }
@@ -362,6 +407,8 @@ pub extern "C" fn close(fd: c_int) -> c_int {
 
 #[no_mangle]
 pub extern "C" fn isatty(fd: c_int) -> c_int {
+    // 别名先翻译（console 克隆与底 fd 同判定——恒 ENOTTY，v1 诚实面）。
+    let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) && !crate::fs::fd_valid(fd) {
         crate::set_errno(crate::EBADF);
         return 0;

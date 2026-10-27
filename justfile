@@ -139,8 +139,27 @@ build-user:
     # berry-libc statfs 真值桩（OP_STATFS RPC）+ /etc/mtab（fsmgr 启动
     # 预建，挂载表回落件）；du 零新 libc 面（stat/opendir/readdir 全
     # C-1 已有）。bsh df_selftest 验收（`DF ok`）。
+    # C-2c 挂账刀：+tail/env/date（=0.12.0 同锁步，uu 家族 23 成员；
+    # 源码档案 docs/挂账-C2c深坑件/uu/ 归位）。补桩面：tail = epoll/
+    # eventfd/inotify 七枚 ENOSYS（-f 尾随链 v1 无实现，运行期不可达）；
+    # env = sigprocmask 手写桩 + sigrtmin/max 定值（34/64）；date =
+    # clock_getres 谎报 1ns 成功（上游 unwrap 档失败即 panic）+
+    # clock_settime EPERM。bsh u4_selftest 验收（`U4 ok`）。
     CARGO_TARGET_DIR=bins/uu/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/uu/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    # C-2c 挂账刀：自写三件 grep/find/which（uu_* 供源硬依赖 onig C 正则
+    # 库无 feature 门可关——互斥实证不通，自写语义子集替代；stdhello
+    # 同链 std bin 独立小工作区，在 user/bins/{grep,find,which} 不入
+    # uu 家族 workspace）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/grep/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/find/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/which/Cargo.toml \
         --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
@@ -163,12 +182,16 @@ build-user:
         bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
         bin/cp=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp \
         bin/cut=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cut \
+        bin/date=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/date \
         bin/df=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/df \
         bin/du=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/du \
         bin/echo=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/echo \
+        bin/env=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/env \
         bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
         bin/false=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/false \
+        bin/find=cargo-target/aarch64-unknown-linux-musl/release/find \
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
+        bin/grep=cargo-target/aarch64-unknown-linux-musl/release/grep \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/head=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/head \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
@@ -180,6 +203,7 @@ build-user:
         bin/rmdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir \
         bin/sort=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/sort \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
+        bin/tail=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tail \
         bin/touch=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/touch \
         bin/tr=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tr \
         bin/true=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/true \
@@ -187,7 +211,8 @@ build-user:
         bin/vblk=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vblk \
         bin/vnet=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet \
         bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe \
-        bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc
+        bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc \
+        bin/which=cargo-target/aarch64-unknown-linux-musl/release/which
 
 build: abi-check build-user
     cargo build

@@ -178,6 +178,25 @@ impl FdTable {
         None
     }
 
+    /// [`FdTable::alloc`] 的避位版（C-2c 挂账刀）：跳过 `occupied(fd)` 为
+    /// 真的编号（libc open 面传 console 别名在册位——别名与 FDT 共段的
+    /// 反向碰撞防线，正方向 = `AliasTable::alloc` 跳 FDT）。避位后满表 =
+    /// None（EMFILE——被别名占号的空槽不给 fd，双语义同号静默错优先防）。
+    pub fn alloc_skipping(
+        &mut self,
+        e: FdEntry,
+        occupied: impl Fn(i32) -> bool,
+    ) -> Option<i32> {
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            let fd = FD_BASE + i as i32;
+            if s.is_none() && !occupied(fd) {
+                *s = Some(e);
+                return Some(fd);
+            }
+        }
+        None
+    }
+
     pub fn get(&self, fd: i32) -> Option<&FdEntry> {
         self.index(fd).and_then(|i| self.slots[i].as_ref())
     }
@@ -205,6 +224,75 @@ impl FdTable {
         }
         let i = (fd - FD_BASE) as usize;
         (i < FD_MAX).then_some(i)
+    }
+}
+
+// —— console 别名面（C-2c 挂账刀：fcntl F_DUPFD/F_DUPFD_CLOEXEC 的 fd
+//    0/1/2 克隆——uu_head stdin 路径 try_clone_to_owned 的真身）——
+
+/// 别名容量（4 槽）：单程序面 uu_head owned stdin 双克隆 ≤2，4 = 两倍
+/// 余量；满表/越段帽 = None（EMFILE 面）。
+pub const ALIAS_MAX: usize = 4;
+
+/// console fd（0/1/2）别名表：槽 = `Some((alias_fd, base_fd))`。**别名与
+/// FDT 共享同一段 fd 编号空间**（3 起）——alloc 跳过 FDT 在册位 + 已用
+/// 别名位（双语义碰撞防线：同号既在 FDT 又是别名 = read/write 先撞别名
+/// 翻译面，FDT 表项结构性不可达 = 静默错——两侧 alloc 互让，见
+/// `FdTable::alloc_skipping` 反向防线）。FDT 满时别名越 10 上探至
+/// `FD_BASE + FD_MAX + ALIAS_MAX`（排他）——克隆不被 FDT 挤死（POSIX
+/// F_DUPFD 语义：新 fd ≥ start 的最低可用位，不限于某段）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AliasTable {
+    slots: [Option<(i32, i32)>; ALIAS_MAX],
+}
+
+impl AliasTable {
+    pub const fn new() -> Self {
+        Self {
+            slots: [None; ALIAS_MAX],
+        }
+    }
+
+    /// console `base`（0/1/2）装一条 ≥`start` 的最低可用别名，返回新 fd。
+    /// 占用判据 = FDT 在册 ∪ 已用别名位；None = 槽满或段帽尽（EMFILE）。
+    /// 坏 base（非 0/1/2）= None（fcntl 分发层的 EINVAL/EBADF 前置已拦，
+    /// 此处防御性兜底——纯函数不信任调用方）。
+    pub fn alloc(&mut self, base: i32, start: i32, fdt: &FdTable) -> Option<i32> {
+        if !(0..=2).contains(&base) {
+            return None;
+        }
+        let lo = start.max(FD_BASE);
+        let hi = FD_BASE + (FD_MAX + ALIAS_MAX) as i32;
+        let mut fd = lo;
+        while fd < hi {
+            if fdt.get(fd).is_none() && self.base_of(fd).is_none() {
+                let slot = self.slots.iter_mut().find(|s| s.is_none())?;
+                *slot = Some((fd, base));
+                return Some(fd);
+            }
+            fd += 1;
+        }
+        None
+    }
+
+    /// 别名 → 底 fd（0/1/2）；非别名 = None。
+    pub fn base_of(&self, fd: i32) -> Option<i32> {
+        self.slots.iter().find_map(|s| match *s {
+            Some((a, b)) if a == fd => Some(b),
+            _ => None,
+        })
+    }
+
+    /// 摘除别名槽（close 面）：Some(base) / None（非别名 = EBADF 面）。
+    pub fn take(&mut self, fd: i32) -> Option<i32> {
+        for s in self.slots.iter_mut() {
+            if matches!(*s, Some((a, _)) if a == fd) {
+                let base = s.unwrap().1;
+                *s = None;
+                return Some(base);
+            }
+        }
+        None
     }
 }
 
@@ -425,6 +513,91 @@ mod tests {
         e.offset = u32::MAX - 1;
         e.advance(10);
         assert_eq!(e.offset, u32::MAX); // 饱和不回卷
+    }
+
+    // —— AliasTable（console fd 克隆面，C-2c 挂账刀）——
+
+    #[test]
+    fn alias_alloc_lowest_first_and_start_floor() {
+        let mut a = AliasTable::new();
+        let t = FdTable::new();
+        // 空 FDT：自 FD_BASE 最低位起（F_DUPFD 的 start ≤3 抬到 3）。
+        assert_eq!(a.alloc(0, 0, &t), Some(3));
+        assert_eq!(a.alloc(1, 0, &t), Some(4));
+        // start 抬位：显式要 ≥5 → 跳过已用 3/4 落 5。
+        assert_eq!(a.alloc(2, 5, &t), Some(5));
+        assert_eq!(a.base_of(3), Some(0));
+        assert_eq!(a.base_of(4), Some(1));
+        assert_eq!(a.base_of(5), Some(2));
+        // 坏 base（非 0/1/2）= None（防御面）。
+        assert_eq!(a.alloc(3, 3, &t), None);
+    }
+
+    #[test]
+    fn alias_alloc_skips_fdt_and_alias_occupied() {
+        let mut a = AliasTable::new();
+        let mut t = FdTable::new();
+        assert_eq!(t.alloc(entry(b"A", true, false)), Some(3));
+        assert_eq!(t.alloc(entry(b"B", true, false)), Some(4));
+        // FDT 占 3/4：别名从 5 起（跳 FDT 在册位）。
+        assert_eq!(a.alloc(0, 0, &t), Some(5));
+        // 已用别名位 5 也跳：第二条落 6。
+        assert_eq!(a.alloc(1, 0, &t), Some(6));
+        // take 摘 5 后可回填（close 复用面）。
+        assert_eq!(a.take(5), Some(0));
+        assert_eq!(a.take(5), None); // 二次 close = 非别名
+        assert_eq!(a.alloc(2, 0, &t), Some(5));
+    }
+
+    #[test]
+    fn alias_alloc_full_is_emfile_face() {
+        let mut a = AliasTable::new();
+        let t = FdTable::new();
+        for i in 0..ALIAS_MAX {
+            assert_eq!(a.alloc(0, 0, &t), Some(FD_BASE + i as i32));
+        }
+        // 槽满（EMFILE）——空号仍在也不给。
+        assert_eq!(a.alloc(0, 0, &t), None);
+    }
+
+    #[test]
+    fn alias_alloc_crosses_above_ten_when_fdt_full() {
+        let mut a = AliasTable::new();
+        let mut t = FdTable::new();
+        for i in 0..FD_MAX {
+            assert_eq!(t.alloc(entry(b"x", true, false)), Some(FD_BASE + i as i32));
+        }
+        assert_eq!(t.alloc(entry(b"x", true, false)), None); // FDT 满
+        // FDT 满（3..=10 全占）：别名越 10 上探——11/12/13/14 恰 ALIAS_MAX
+        // 枚，段帽 15 排他。
+        for i in 0..ALIAS_MAX {
+            assert_eq!(a.alloc(1, 3, &t), Some(11 + i as i32));
+        }
+        assert_eq!(a.alloc(1, 3, &t), None); // 段帽尽 = EMFILE
+        assert_eq!(a.base_of(14), Some(1));
+    }
+
+    // —— FdTable::alloc_skipping（共段反向碰撞防线）——
+
+    #[test]
+    fn fd_alloc_skipping_avoids_occupied_numbers() {
+        // 别名占 3（FDT 槽 0 空着也不给同号）→ 落 4；占 3/4 → 落 5；
+        // 全段占 → None（EMFILE——不给双语义同号）。
+        let mut t2 = FdTable::new();
+        assert_eq!(t2.alloc_skipping(entry(b"A", true, false), |fd| fd == 3), Some(4));
+        let mut t3 = FdTable::new();
+        assert_eq!(
+            t3.alloc_skipping(entry(b"A", true, false), |fd| fd == 3 || fd == 4),
+            Some(5)
+        );
+        let mut t4 = FdTable::new();
+        assert_eq!(
+            t4.alloc_skipping(entry(b"A", true, false), |fd| (3..=10).contains(&fd)),
+            None
+        );
+        // 空占用谓词 = 与裸 alloc 同值（最低位 3）。
+        let mut t5 = FdTable::new();
+        assert_eq!(t5.alloc_skipping(entry(b"A", true, false), |_| false), Some(3));
     }
 
     // —— resolve_path（cwd 拼接）——
