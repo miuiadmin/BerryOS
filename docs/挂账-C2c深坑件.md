@@ -54,6 +54,15 @@ pipe_capture 每段现 dup 现传（berry-exec 全部 Err 早退点均在 env se
 > 本刀七步 U3 全 stdin 驱动（feed 常量直灌，无文件 open 步）故未触发此雷；
 > 该布线留给挂账刀或 bsh 通用 run 面扩展时一并做。
 
+> **2026-10-27 C-2 刀 2 进展注**：fs 消费子进程的样板已立——bsh 新
+> `run_capture_fs`（本节修法的 df 消费版：rootfs READ dup + fs SEND|RECV
+> dup 四元装配 + stdin 补空 feeder 满足 berry-exec 在位断言；`DF ok` 步②
+> df 经此路全绿）。**三个存量 spawn 点（run_capture/pipe_capture/
+> run_output 裸形态）接线仍归本挂账刀**；另 du 表观尺寸步同刀实录死于
+> std 线程面（uu_du 0.12.0 无条件 thread::spawn——uu_sort 同型，dump 与
+> 处置详见 bsh df_selftest 头注 + `docs/阶段沿革.md` C-2 刀 2 条目），
+> 执行面回收并入本刀 sort·head 批。
+
 ## ③ onig 互斥实证（自写 grep/find/which 的上游缺位记录）
 
 - `uu_grep 0.2.0`（crates.io 线顶）与 `findutils 0.10.0` 均**硬依赖 onig/onig_sys**（C 正则库，

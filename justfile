@@ -135,6 +135,10 @@ build-user:
     # C-2c（中批）：head/wc/cut/tr/sort/uniq 六件（=0.12.0 锁步，uu 家族
     # 18 成员）；补桩批见 stubs.rs C-2c 段。深坑件 tail/env/date/grep/
     # find/which 挂账专项另刀（grep/find 供源 onig 互斥实证不通）。
+    # C-2 刀 2：+df/du（=0.12.0 同锁步，uu 家族 20 成员）——df 消费
+    # berry-libc statfs 真值桩（OP_STATFS RPC）+ /etc/mtab（fsmgr 启动
+    # 预建，挂载表回落件）；du 零新 libc 面（stat/opendir/readdir 全
+    # C-1 已有）。bsh df_selftest 验收（`DF ok`）。
     CARGO_TARGET_DIR=bins/uu/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/uu/Cargo.toml \
         --target aarch64-unknown-linux-musl
@@ -159,6 +163,8 @@ build-user:
         bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
         bin/cp=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp \
         bin/cut=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cut \
+        bin/df=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/df \
+        bin/du=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/du \
         bin/echo=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/echo \
         bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
         bin/false=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/false \

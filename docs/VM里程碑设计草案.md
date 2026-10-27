@@ -35,7 +35,7 @@
 | M-G2 | Fusion 设备面**未知**（GIC v3?、盘控制器 NVMe/AHCI?、有无 PL011?、USB xHCI、GOP）；帧缓冲 console 与 USB 键盘两个驱动件 | V-5a ~ V-8 |
 | M-G3 | fsmgr 平面表（无目录树/路径）；libc 无文件面（fd 3+ 不存在）；bsh 无 PATH 查找、无 Ctrl-C/kill 面、无 Tab 补全；ps/berryctl 不存在 | C-0 ~ C-5 |
 
-> **进展注记（2026-10-25）**：M-G1 五刀全落（`just image` / `just smoke-image` 挂 CI，唯余 UTM 手动点验）；M-G3 过半——C-0/C-1/C-2a/C-2b/C-2c 已落（差刀 2 df/du、挂账刀、C-3/C-4/C-5）；M-G2 未动。上表为 2026-10-22 立项时点的差距评估，勿当现状引用。
+> **进展注记（2026-10-27 更）**：M-G1 五刀全落（`just image` / `just smoke-image` 挂 CI，唯余 UTM 手动点验）；M-G3 过半——C-0/C-1/C-2a/C-2b/C-2c/刀 2 已落（差挂账刀、C-3/C-4/C-5）；M-G2 未动。上表为 2026-10-22 立项时点的差距评估，勿当现状引用。
 
 ## 2. B 线（CLI 四件，M-G3）——先做，早交付早验收
 
@@ -56,7 +56,7 @@
 - **C-2a core 批（✅ 2026-10-25 落，`U1 ok` 九步，rootfs 相 24→25）**：`ls cat cp mv rm mkdir rmdir touch pwd echo true false`（12 命令）接入 rootfs——ls 列目录树、cp/mv/rm roundtrip、touch 建文件全验。
 - **C-2b 管道面（✅ 2026-10-25 落，`U2 ok` 六步，rootfs 相 25→26）**：echo/true/false 执行验收（argv 多参/`-n`/真码/`&&` 链/管道对拍）。
 - **C-2c text 批（✅ 2026-10-25 落，`U3 ok` 五步，rootfs 相 26→27；人类裁决改道）**：原拟 10 命令拆两半——**中批 6**（`head wc cut tr sort uniq`，uu 家族 12→18）五步自验（pwd 收编/cat/wc -c/cut|tr/三段链；head 挂 fcntl F_DUPFD 桩、sort 挂 std 线程面——执行步裁出随深坑挂账）；**深坑 6**（tail/env/date/grep/find/which）挂账另刀（`docs/挂账-C2c深坑件.md` 四节 + 源码归档：桩二分必留 4/可退 8、onig 互斥、自写三件）；随刀一体：容量五腿 48MiB（盘 24→48/帽 16→32/MAX_ORDER 13）+ EFI 路 rootfs 零拷贝借片（`RootfsBuf::Borrowed`，碎片免疫）。
-- **刀 2（排队，已获批）**：`df/du` + statfs/fstatfs 真值面——statfs 经 fs RPC 到 fsmgr FAT 卷几何，输出对拍 mkfat 造盘参数。
+- **刀 2（✅ 2026-10-27 落，`DF ok` 三步，rootfs 相 28→29）**：`df/du` + statfs/fstatfs 真值面——fsproto STATFS(10) op（无路径参卷级）→ fsmgr BPB 几何 + `count_free_clusters` FAT 扫描；uu_df/uu_du 薄 harness（uu 家族 18→20，bin 双发）；`/etc/mtab` fsmgr 启动预建（read_rs_list 二级回落）+ `st_dev` 非零定值（mount_dev_id 分组键）；bsh 三步 = ⓪几何定值（506/2048 恒定）+ ①RW.TXT 重定尺寸差分双向（相位无关——跨相 free 500/499 漂移免疫；原案 DFTEST.BIN 写删不可行：FAT unlink 留 v2）+ ②df 表格逐字节对拍（uu_df 渲染源钉板字面）。**du 自验步首跑实录裁出挂账**（uu_du 0.12.0 无条件 `thread::spawn` → std 线程钩子 outline-atomics ldxr 野指针 D-abort → G1.5 kill——C-2c uu_sort 同型 std 线程面缺口，随深坑刀回收）；两实录随刀入册：bsh `run_capture` 裸 spawn 子进程零 fs 能力（fs_h()==0 → ENOENT 与文件缺失不可区分——fs 消费子进程走 `run_capture_fs` gift 四元装配）、uu_df 直调 uumain 漏 `setup_localization`（表头变消息 ID 列宽漂——harness 手动 setup）。
 - **PATH 语义**：bsh `run` → 非 base64 内建时查 `/bin/<name>`（cpio 内已有则直接 spawn；uutils bin 同链进 cpio）；栈页数默认表 + 按 bin 可覆盖（hexyl 32 页教训的结构化版——SpawnSpec 参数已在）。
 - **诚实边界**：stat 元数据按 FAT 实情（size/名/目录位；权限恒 0755、mtime 恒卷定值——显示级差异不设关卡）；`df/du` 给 FAT 卷几何真值。
 
@@ -162,7 +162,7 @@
 
 ```
 C-0 → C-1 → V-0a → V-0b → C-2a → V-1 → V-2 → V-3/V-4（= M-G1 ✅ 落，唯余 UTM 手动点验）
-  → C-2b → C-2c（✅ 中批 6 + 容量一体）→ 刀 2（df/du+statfs，排队）→ 挂账刀（深坑 6 + head·sort 执行面 + bsh fs_gifts 三 spawn 点）→ C-3 → V-5a（实证刀，可与 C 线并行）→ V-5b/V-6 → C-4 → C-5（= M-G3 大体成）
+  → C-2b → C-2c（✅ 中批 6 + 容量一体）→ 刀 2（✅ df+statfs 三步，du 挂账裁出）→ 挂账刀（深坑 6 + head·sort·du 执行面 + bsh fs_gifts 三 spawn 点）→ C-3 → V-5a（实证刀，可与 C 线并行）→ V-5b/V-6 → C-4 → C-5（= M-G3 大体成）
   → V-7（或降级线）→ V-8（= M-G2 收官）
 ```
 

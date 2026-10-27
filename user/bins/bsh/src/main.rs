@@ -74,12 +74,13 @@ use berry_libc::{
     EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
 };
 use berry_libc::fs::{
-    chdir, closedir, getcwd, mkdir, open, opendir, readdir, stat, unlink, O_CREAT, O_RDONLY,
-    O_WRONLY, Stat,
+    chdir, closedir, getcwd, mkdir, open, opendir, readdir, stat, statfs, unlink, O_CREAT,
+    O_RDONLY, O_WRONLY, Stat, Statfs,
 };
 use berry_sys::{
-    berry_channel_recv, berry_clock_read, berry_handle_close, berry_object_wait_one, Handle,
-    BERRY_ERR_AGAIN, CLOCK_MONOTONIC, SIGNAL_READABLE,
+    berry_channel_recv, berry_clock_read, berry_handle_close, berry_handle_duplicate,
+    berry_object_wait_one, Handle, BERRY_ERR_AGAIN, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV,
+    RIGHT_SEND, SIGNAL_READABLE,
 };
 use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec};
 // C-1 刀 4：fsproto 只余帽常量（usage 预检 + 读面失控兜底）——协议面
@@ -164,6 +165,13 @@ fn main() {
     bench1_selftest();
     fat_selftest();
     fatw_selftest();
+    // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
+    //    du 挂账裁出——uu_du 无条件 thread::spawn 平台缺口，见 df_selftest
+    //    头注实录）。
+    //    **排 fat 族后**（依赖挂载卷在位 + fatw 已写 RW.TXT——差分基线件）；
+    //    EFI 路无盘 fat park（`-> !` 挡断其后自验）→ DF 结构性不打
+    //    （smoke-image ECO canon 零变化）。
+    df_selftest();
     dir_selftest();
     cd_selftest();
 
@@ -1002,6 +1010,128 @@ fn fatw_selftest() {
     println!("FATW ok n=3000");
 }
 
+/// df + statfs 真值自验（C-2 刀 2，`DF ok` = rootfs 相第 29 标记——
+/// 确定性状态谓词 + 双向真值）。三步全收齐才打（单消息原子）：
+/// - 步⓪ 几何定值：直调 statfs（libc 真实现 → OP_STATFS RPC → fsmgr BPB
+///   几何 + FAT 扫描）断言 `f_blocks==506 && f_bsize==2048 && f_frsize==2048`
+///   ——mkfat 默认卷与 fixture 盘同几何（VOL_SECTORS=2032/SPC=4/簇 2048B/
+///   clusters=506），造盘定值跨相恒定。
+/// - 步① 差分真值（**相位无关化**——绝对 free 跨相漂移：rootfs 相每 boot
+///   重造盘 free=500 / 持久化相脏盘 499，绝不能当字面断言）。原案
+///   DFTEST.BIN「写 2048B → free 差==1 → 删除」不可行：FAT 文件删除留 v2
+///   （UNLINK 纯 RAM 树面、fat.rs 无 stage_unlink），残名跨 boot 让第二跑
+///   覆写净差 0 ≠ 1 相位化必 FAIL——改用 fatw 刚写的 RW.TXT 重定尺寸双向
+///   对拍：基线 statfs → 覆写 2048B（1 簇，TRUNC commit 时旧 2 簇链
+///   collect、新链短一节）→ free 恰 +1 → 还原 3000B 原 pattern（fatw 同源
+///   (i*17+3)%256）→ free 恰回基线。缩/放两向都过 = 空闲计数既不撒谎也
+///   不漏失效；双写都在本 boot 内闭合、终态 = fatw 终态（幂等零残留）。
+/// - 步② df 表格面：spawn `bin/df --output=source,fstype` 逐字节对拍
+///   （期望值定标实录字面常量；列宽 = Source min_width 14 左对齐 + 单空
+///   格分隔、末列无尾随空格——uu_df table.rs 渲染源钉板）。活证全链：
+///   /etc/mtab 回落行（fsmgr 启动预建）+ mount_dev_id 分组（stat 根
+///   st_dev 非零定值）+ fstype=fat 过 is_dummy/is_remote 过滤 + statfs
+///   真值装配（blocks>0 才出行）+ 表头 translate! 面（df 薄 harness 手动
+///   setup_localization——缺失时表头变消息 ID、列宽漂移）。
+///
+/// **du 裁出挂账（首跑定标实录 2026-10-27，C-2c uu_sort 同型同批）**：
+/// 原案步③ `du -b PATTERN.BIN` → `5000\tPATTERN.BIN`（表观尺寸真值）
+/// 实跑必死——uu_du 0.12.0 du.rs ~:1168 无条件 `thread::spawn`（打印线
+/// 程，无 flag 可关）→ std 线程钩子 `run_spawn_hooks` 对未注册平台的
+/// 全局注册表做原子加 → outline-atomics LSE 探测回退 `ldxr` 路解引用
+/// 垃圾指针（实抓 dump：D-abort(lower) ISS=0x21 PC=0x306918
+/// FAR=0x26c68c——PC 落 `__aarch64_cas` 家族 ldxr/stxr 循环、x1==FAR
+/// 即原子目标）→ G1.5 kill（code=0 len=0 eof=false 经典死状）。std 线
+/// 程面（pthread/TLS）平台缺口挂账，随 C-2c 深坑件族另刀；du 表观尺
+/// 寸面（st_blocks=512B 扇区取整、-b 消块口径）届时回收——bin/du 仍
+/// 随 rootfs 发行（uu_sort 同形：交互可用面缺席、自验不硬凑假绿）。
+/// 期望值全字面常量（绝不 Rust 镜像计算——P6 A-5 基准漂移雷）；失败诊断
+/// 单串 format! 一次 eprintln（稳态矩阵撕行防护，u3_bad 同款）+ park
+/// （标记缺失 → smoke FAIL loud 兜底）。
+fn df_selftest() {
+    // 步⓪：几何定值（statfs 直调——恒定面先验，步① 差分基线才有意义）。
+    let mut sf: Statfs = unsafe { core::mem::zeroed() };
+    // SAFETY: cpath("/") 恒 NUL 结尾 C 串；sf 按 libc 契约出参写入。
+    if unsafe { statfs(cpath("/").as_ptr() as *const _, &mut sf) } != 0 {
+        eprintln!("bsh: df selftest bad: step=0 statfs errno={}", errno());
+        berry_libc::park();
+    }
+    if sf.f_blocks != 506 || sf.f_bsize != 2048 || sf.f_frsize != 2048 {
+        eprintln!(
+            "bsh: df selftest bad: step=0 geom blocks={} bsize={} frsize={}",
+            sf.f_blocks, sf.f_bsize, sf.f_frsize
+        );
+        berry_libc::park();
+    }
+    // 步①：RW.TXT 重定尺寸差分（3000B=2 簇 → 2048B=1 簇 → 3000B）。2048B
+    // 覆写面 = 前 2048 字节恰是原 pattern 前缀（per-index 公式），用
+    // full[..2048] 切片即 fatw 同源内容。
+    let base = sf.f_bfree;
+    let full: Vec<u8> = (0..3000u32).map(|i| ((i * 17 + 3) % 256) as u8).collect();
+    if let Err(e) = put_file("RW.TXT", &full[..2048]) {
+        eprintln!("bsh: df selftest bad: step=1 shrink {}", errno_text(e));
+        berry_libc::park();
+    }
+    let mid = statfs_free();
+    if let Err(e) = put_file("RW.TXT", &full) {
+        eprintln!("bsh: df selftest bad: step=1 restore {}", errno_text(e));
+        berry_libc::park();
+    }
+    let end = statfs_free();
+    if mid != base + 1 || end != base {
+        eprintln!(
+            "bsh: df selftest bad: step=1 diff base={} mid={} end={}",
+            base, mid, end
+        );
+        berry_libc::park();
+    }
+    // 步②：df 执行面（挂载表 + statfs 装配全链活证；期望 = uu_df 渲染源
+    // 钉板字面：Filesystem(10) pad 至 14 + 单空格 + Type / 末列无尾随空格）
+    // ——**run_capture_fs**：df 子进程要经 libc open/statfs 消费 fs 服务
+    //（U 家族先例零 fs 面，run_capture 裸 spawn 的子进程 fs_h()==0 → open
+    // 降级 ENOENT，首跑实抓——gift 四元装配见该函数头注）。
+    match run_capture_fs("df", None, &["--output=source,fstype"]) {
+        Some((o, c)) if c == 0
+            && o.data == b"Filesystem     Type\n/dev/root      fat\n"
+            && o.eof
+            && o.dropped == 0 => {}
+        Some((o, c)) => df_bad(2, c, &o),
+        None => {
+            eprintln!("bsh: df selftest bad: step=2 df not found");
+            berry_libc::park();
+        }
+    }
+    println!("DF ok");
+}
+
+/// statfs 空闲簇真值（df 自验差分面专用）：statfs 失败 = 链断级——errno
+/// 打点后直接 park（与调用方诊断同形，不自造 Err 往返）。
+fn statfs_free() -> u64 {
+    let mut sf: Statfs = unsafe { core::mem::zeroed() };
+    // SAFETY: 同上——cpath("/") 恒 NUL 结尾。
+    if unsafe { statfs(cpath("/").as_ptr() as *const _, &mut sf) } != 0 {
+        eprintln!("bsh: df selftest bad: statfs errno={}", errno());
+        berry_libc::park();
+    }
+    sf.f_bfree
+}
+
+/// DF 断言失败诊断（u3_bad 同款）：四面（真码/长度/EOF/丢弃）+ 实际字节
+/// hex（截 64B）**单串一次打**后 park。
+fn df_bad(step: u8, c: i32, o: &RunOut) -> ! {
+    let n = o.data.len().min(64);
+    let s = format!(
+        "bsh: df selftest bad: step={} code={} len={} eof={} dropped={} hex={}",
+        step,
+        c,
+        o.data.len(),
+        o.eof,
+        o.dropped,
+        u3_hex(&o.data[..n])
+    );
+    eprintln!("{}", s);
+    berry_libc::park()
+}
+
 /// 目录自验（C-0 刀 4，`DIR ok n=` = rootfs 相第 22 标记——确定性状态
 /// 谓词）：libc 目录/stat 面 + 多段读写全链 RAM 面——mkdir `bdir` →
 /// 多段写（`bdir/n.bin` 64B pattern）→ 多段读逐字节全等 → READDIR 恰一
@@ -1757,6 +1887,42 @@ fn b1_bad(diag: &str) -> ! {
 /// 真退出码（reap Err → 1——P5 `&&`/`$?` 真码源；spawn Err 仍 park = 自验
 /// 面 loud 死，交互 not-found 面在 do_run 不经此）。
 fn run_capture(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOut, i32)> {
+    run_capture_gifts(name, stdin, args, &[])
+}
+
+/// run_capture 的 fs 能力版（C-2 刀 2）：df/du 子进程经 libc `statfs`/
+/// `open`/`stat` 消费 fs 服务——U 家族先例全零 fs 面（stdin/stdout 纯管道
+/// ），`extra_gifts: &[]` 装配下子进程 `fs_h()==0` → libc open 降级
+/// NoFs→ENOENT（首跑实抓：df 挂载表两级回落全 ENOENT，形态与「文件缺失
+/// 」不可区分——open_core 的 NoFs 降级锚）。gift 排布与 bsh 自身同款
+/// （svcmgr 给 bsh 的四元）：gift[2] = rootfs VMO READ dup、gift[3] = fs
+/// 通道 SEND|RECV dup——libc `fs_h()` 恰读 env hs[3]。dup 别名随 env send
+/// **take 迁移**（成功路径零泄漏；失败 park 不回收）。严格串行 RPC 会话
+/// 纪律不破：df/du 生命周期内它是唯一活动 fs client（bsh 阻在 collect/
+/// reap，不发 fs 请求）。
+fn run_capture_fs(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOut, i32)> {
+    let mut rootfs_dup = 0 as Handle;
+    let mut fs_dup = 0 as Handle;
+    if berry_handle_duplicate(rootfs_h(), RIGHT_READ, &mut rootfs_dup) != 0
+        || berry_handle_duplicate(fs_h(), RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0
+    {
+        // fs/rootfs gift 缺席或 dup 失败 = 链断级（fs_selftest 已过则结构性
+        // 不可达；EFI 路 fat park 挡在前——自验面 loud 不静默）。
+        eprintln!("bsh: run capture: fs gift dup failed");
+        berry_libc::park();
+    }
+    // gift[2] 前要求 stdin 在位（berry-exec 断言）——空 feeder 占位（EOF
+    // 留队无害：df/du 不读 stdin，fsmgr dummy 同款）。
+    let stdin = stdin.or(Some(&[] as &[u8]));
+    run_capture_gifts(name, stdin, args, &[rootfs_dup, fs_dup])
+}
+
+fn run_capture_gifts(
+    name: &str,
+    stdin: Option<&[u8]>,
+    args: &[&str],
+    gifts: &[Handle],
+) -> Option<(RunOut, i32)> {
     let full = format!("bin/{}", name);
     let (data_off, data_len) = cpio_find(rootfs_h(), full.as_bytes())?;
     let (out_s, out_c) = channel_pair();
@@ -1770,7 +1936,7 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOu
         stdin_feed: stdin,
         stdin_handle: None,
         args: &argv,
-        extra_gifts: &[],
+        extra_gifts: gifts,
         mmio_vmo: None,
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
