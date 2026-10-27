@@ -11,8 +11,8 @@
 # 粒度下 <1 cyc/op 整除落地 = 0（「净成本 = 其余项 − cntvct_pair」心算
 # 口径仍成立——0 地板）。
 cntvct_pair,4096,0
-frame_alloc4k,1024,168
+frame_alloc4k,1024,78
 frame_alloc64k,256,33
 handle_evt,1024,50
-vmo_commit1p,256,444
+vmo_commit1p,256,354
 vmo_rw4k,128,1695

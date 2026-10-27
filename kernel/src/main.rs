@@ -118,6 +118,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // -kernel 五跑不见此行）；未中 → None，既有 DTB/fw_cfg 路零扰动。
     // 插点在 KVA ok 之后：probe 经高半直映读 handoff 页，别名已自证。
     let handoff = handoff::probe(boot_x0);
+    // S-1：EFI 路标记（handoff 后续被 rootfs 装载消费 move 走，先钉存）——
+    // smp_bringup 的 conduit 门之一（EFI 路 PSCI 归固件管，S-1 盒子跳过）。
+    let efi_boot = handoff.is_some();
     if let Some(h) = handoff {
         berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
         berry_hal_aarch64::uart_put_dec(h.version as u64);
@@ -1019,6 +1022,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::uart::set_rx_notify(rx_irq_notify);
     // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽。
     unsafe { berry_hal_aarch64::uart::rx_init() };
+    // S-1 副核 bring-up（`SMP设计草案.md` §3.2/§4）：窗口 = DAIF 屏蔽尾窗
+    //（全 spawn/回调注册后、arm_slice/enable_irq 前）——主核 CPU_ON 后静默
+    // 轮询心跳，无中断无调度，与副核 bring-up 窗口结构性无重叠（UART 单写者
+    // 纪律）。单核（默认 -smp 1）CPU_ON 返回 -2 → 一行降级，boot 继续；
+    // EL2 机型 / EFI 路按 conduit 门跳过（见 smp.rs 注）。`SMP ok ncores=2`
+    // 仅 -smp 2 双核心跳闭环后打（状态谓词，smoke-smp 专用标记）。
+    berry_hal_aarch64::smp::smp_bringup(efi_boot);
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { berry_hal_aarch64::timer::arm_slice() };

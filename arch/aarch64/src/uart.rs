@@ -215,8 +215,10 @@ pub unsafe fn rx_init() {
     mmio::write(UART + UART_ICR, UART_ICR_STICKY);
     let cr = mmio::read(UART + UART_CR);
     mmio::write(UART + UART_CR, cr | UART_CR_EN);
-    // prio 0xa0 同 CNTV 口径；SPI 段 target 必须真写（复位 0 = 不投任何核，
-    // 见 gic::enable_spi）；level 触发（DTB LEVEL_HIGH）。
-    gic::enable_spi(gic::IRQ_PL011_RX, 0xa0, 0x01, 0b01);
+    // S-1（§3.4）：路由经 gic::SPI_ROUTES 常量表（单核钉 CPU0）——表外源
+    // 此处 loud（boot 无 panic 纪律；RX 失活另有 smoke RX 相断言兜底）。
+    if !gic::enable_spi_routed(gic::IRQ_PL011_RX) {
+        crate::uart_puts(b"uart: SPI33 missing from SPI_ROUTES\n");
+    }
     mmio::write(UART + UART_IMSC, UART_IMSC_RXIM);
 }

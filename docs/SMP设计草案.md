@@ -286,3 +286,30 @@ TLB shootdown v1 保持**同步 IS 广播**（S-4 在页表锁内做，异步 sh
 - **§1.2 HAL 行「所有核同跑 `_start` 全面灾难」限定收口**：PSCI 模型下该场景**不触发**（副核 halted 等 CPU_ON）；但复位 PC 恰是 `_start`——S-1 的 MPIDR 分流仍是防御性必做（非 PSCI conduit / 真机 spin-table 路径直接踩中该行）。
 - **钉板值（S-1 消费）**：conduit = **HVC**；`CPU_ON = 0xC4000003`（x0=target_cpu MPIDR、x1=entry PA、x2=context_id）；`CPU_OFF = 0x84000002`；副核 MPIDR Aff0 = 1。**S-1 首步动态检查**（静态钉不死、须真调 HVC 后断言的两项）：①CPU_ON 返回码（成功 0/失败负 errno，DEN0022 口径）②副核入口 EL 与寄存器初值（SMP 启动协议：入口 MMU off、entry 传 PA、x0=context_id——x0 是否真带 context_id 以实测为准，不照规范想象写死）。
 - **`-smp` 显式化**：justfile `MACH` 定值行补注「不带 `-smp` = QEMU 默认 1 核是 v1 有意定值（免锁根基单核串行）；S-1 起双核只进 smoke-smp 线」——隐式事实转注释；smoke-smp 脚本本体随 S-1 落地。
+
+### S-1（2026-10-28 已完成）：副核 bring-up 基建——§3.2 十项 + 心跳握手 + smoke-smp 独立线
+
+**落地清单**：`arch/aarch64/src/smp.rs`（新模块：`secondary_entry` global_asm §3.2 十项 + 主核侧 `smp_bringup` + `SmpReport` 16 字段自报区（编译期偏移全钉板）+ HB1/HB2/RELEASE 邮箱 + `SmpCpu` per-CPU 块）；`boot.rs`（`_start` MPIDR 防御分流 + 入口 EL 经 x20 钉存过降级路径 → `.Lbss_done` 落 `BOOT_EL`）；`lib.rs`（`pub mod smp`）；`tools/linker-aarch64.ld`（`.rodata` 指针字 `__smp_sec_entry = QUAD(secondary_entry)`）；`gic.rs`（§3.4 `SPI_ROUTES` 常量表 + `enable_spi_routed`；`init()` 注钉「主核一次、副核绝不」）；`uart.rs`（rx_init 路由经表）；`kernel/src/main.rs`（boot DAIF 屏蔽尾窗调 `smp_bringup(efi_boot)`——`rx_init` 后、`arm_slice` 前）；`tools/smoke-smp.sh` + justfile `run-smp`/`smoke-smp`（**全仓唯一 `-smp 2` 入口**；smoke-x86 同款独立形态，不并入主 smoke 不进 CI）。
+
+**S-0 两项动态检查收口（实测钉板）**：①CPU_ON 返回码——`-smp 2` 默认机型 **0（成功）**；单核（无 `-smp`）**-2（0xfffffffffffffffe，目标核不在）**→ 一行降续 boot；②入口 EL/寄存器——默认机型副核**直达 EL1**（entry_el=1）、mpidr=`0x80000001`（U 位+Aff0=1）、**x0=context_id 原样回显**（`0x5ec0deadbeef0001`）、x1..x3=0（SMCCC 口径成立，非想象）。
+
+**conduit 分型（S-1 最大实测收获，probe C 相矛盾日志的破案）**：HVC→PSCI 拦截**只在默认 `-machine virt`（boot EL1）成立**；`virtualization=on`（boot EL2）下内核先降 EL1 再发 HVC → 陷阱到 EL2 且 QEMU **不再**拦截为 PSCI → VBAR_EL2=0 → PC=0 静默挂死（主树首跑实录：`SMP: cpu_on entry=` 后 G1.5/SVC/AIDEMO 全缺）。修法 = **`BOOT_EL` 入口 EL 门**：`_start` 处（降级**前**）读 CurrentEL 经 **x20（callee-saved，eret 不动 GPR）** 携带过 `.Lfrom_el2`，`.Lbss_done`（.bss 清零后）经 PA 写入高半 `BOOT_EL`；`smp_bringup` 见 el≠1 即打 `SMP: skip (boot el=N; HVC conduit = default machine only, S-1 box)` 一行降级。**坑实录**：初版在 `.Lbss_done` 处才读 CurrentEL——降级后读恒得 1，EL2 机型门失效照样挂死（挂死证据 /tmp/s1-main-el2.log，修后 /tmp/s1-main-el2b.log 绿）。SMC 变体留档不实现（S-1 盒子）；EFI/handoff 路 `efi_boot` 门先跳过（conduit 归固件管，未实测）。
+
+**跨半 ADRP 坑（2b-1 双向坑第三形态）**：高半 Rust 直取低半 `.text.boot` 符号（`secondary_entry`/`.bss.boot` 里的 `BOOT_EL`）地址即生成 ADRP 越 ±4GB 断链（R_AARCH64_ADR_PREL_PG_HI21 out of range）。两解法：入口 PA 经链接脚本 `.rodata` 指针字 `QUAD(secondary_entry)` 间接递送（副核 asm 用 `ldr =` 字面量，无 ADRP）；`BOOT_EL` 放高半普通 `.bss`、boot asm 经 PA=VMA−基址 写（与 .bss 清零循环同口径）。`assert-flip` 全绿（.text.boot ADRP 5 条全低半）。
+
+**wfe/wfi 实测（TCG）**：`wfe` = 立即返回的 hint（副核 spins 计数疯涨实证）——park 等待用它必拖主核吞吐；**稳态 park 必须 `wfi` 真睡**。握手邮箱用 wfe 无妨（窗口毫秒级）。心跳序 = 副核置 HB1 → wfe 邮箱（先查后 wfe 再查，丢唤醒免疫）→ 主核 dump 报告 → RELEASE.store+sev → HB2 → `SMP ok ncores=2`（两心跳皆内存状态断言，非竞速——4-5a 纪律）。
+
+**per-core 复位证据（报告区实测值）**：CNTKCTL 副核复位 0（主核已开 bit1 不串核）→ 自开 EL0VCTEN 后读回 2；GICC CTLR 使能前 0（banked 独立）；GICD ITARGETSR[33]=1（主核 SPI_ROUTES 所写、副核只读可见——§3.4 路由表闭环）；TPIDR_EL1 写读回 `SMP_CPU1` VMA。**UART 单写者纪律成立**：副核全程只写 1 个哨兵字符 `'s'`（PA 直写、入口第一证据），日志形态 `sSMP: sec up …` 零撕行；主核从 CPU_ON 到 HB1 观测间静默。
+
+**smoke-smp 线（gate 首跑全绿）**：断言三面 = `SMP ok ncores=2` 恰一次（grep -cF）+ 裸相 26 标记 + switches 金丝雀 ≥3 严格递增（smoke.sh 同款 awk 体）；反向断言 `SMP: FAIL`/`SMP: skip` 出现即 FAIL。时限 = 单核 ×2（boot 120→240s、金丝雀 180→400s——双核 MTTCG 吞吐实测 0.61x）。实测 canary 100/200/300 严格递增，PASS。
+
+**单核零漂移（终值实录，2026-10-28 04:4x）**：主 smoke 五相全绿 SMOKE_RC=0（裸相 26 / rootfs 相 33 / RX·FAT 合相 59×3，canary 25 条严格递增——基线 33/59 系并行刀 C-3（PS/BC）/C-4（TAB）上移，非本刀漂移）+ run-el2 裸相 26/26（`21BerryOS boot` + `SMP: skip (boot el=2; …)` 恰一行）+ host 363/0（338 + C-3 berry-psproto 15 + C-4 berry-complete 10）+ abi-check + smoke-x86 7 标记恰一次 + assert-flip（.text.boot ADRP 5 条全低半）全过。**icount L2 刷新实录（K-1 骰子 benign 残留）**：frame_alloc4k 168→78、vmo_commit1p 444→354（确定性双跑同值；其余四项精确相等）——内核镜像变更（本刀 smp.rs/boot.rs/linker `+8B` 指针字，叠并行刀 bsh 平像增长）挪 `__kernel_end`、重掷 boot 期 buddy 空闲表拓扑（K-1 gotcha 预告形态的良性残余；mm/ 零改动，BENCHXH/BENCHCHURN/宿主位图-线性对拍全绿证不变量）→ `bench.py --icount --update` 刷新基线（双值 diff 随源入册），复验 RC=0。**f42t 边缘 flake 实录（两次）**：主 smoke 首两跑 RX 相 f42t 60s 未出现——根因 = 并行刀 C-4 的 console 逐字节转发**批不耐受**（单唤醒只发 1 字节，一次唤醒收 ≥2 字节即丢前留尾；忙窗内通道满时**连顺序单字节到达也会被 pending 覆盖丢**——非仅并聚一路，C-4 会话确认两路同修；`fdrop` 仅步 a 打一次、后续丢字不可见）+ 段 d `run fail` 内核搅动窗拉长唤醒延迟致字节并聚 → bsh 收到残片走 `usage:` 拒面；faithful 复刻（smoke.sh 同形 59 标记门 + 段 a-d）单核四段全绿（f42t 31s、fdrop=0，本刀内核在证：`SMP: cpu_on entry=` + `ret=-2` 降级行）+ 终跑 SMOKE_RC=0——宿主负载下的边缘竞速，非 S-1 确定性回归（诊断已送达 C-4 会话，修复归其刀）。
+
+### S-1 修复轮（2026-10-28，三路审查去重 6 findings 修 6）
+
+- **release 门铃序补 DSB（major）**：主核 release 序原为 `RELEASE.store` 紧跟 `sev`（中间零屏障）——AArch64 上 SEV 不保证此前 store 已对其他核全局可见，副核 park 循环（查条件→wfe→醒来重查一次）每记 SEV 恰兑换一次额外重查：store 在途则副核回 wfe 后事件寄存器已清、全系统再无唤醒源 → 真机按次随机睡死（收口 `SMP: FAIL hb2 timeout`）。TCG wfe=hint 立返（副核忙轮询）结构性掩蔽此窗，恰因此必须在代码修掉。修法 = `store → dsb sy → sev` 同门铃序（smp.rs，反汇编钉板 `stlr/dsb sy/sev` 三连）；smp.rs 头注/RELEASE 邮箱注的「丢唤醒免疫」表述同步勘正为「依赖主核侧 DSB 的配套序」。
+- **`_start` MPIDR 防御分流改全亲和域（minor ×2 同根）**：原 `tbz x1,#0`（单测 Aff0 bit0）——偶数非零 Aff0（4 核平铺 core2/core3）与双簇拓扑（cpu1=Aff1:1,Aff0:0）都会误入主核路径（重清 .bss 全面灾难），恰是该防御分支自称要防的形态。修法 = `tst x1, #0xffffff`（Aff0..Aff2 bits[23:0] 合法掩码立即数）+ `b.ne secondary_entry`，指令数不变；S-1 盒内（PSCI 副核从不落 _start）行为零变化（单核/双核主核 MPIDR 亲和域均 0）。
+- **`SmpCpu` 布局编译期钉板（minor）**：镜像 SmpReport 纪律补 `offset_of!`/`size_of` const 断言（cpu@0/mpidr@8/present@16/size=64）——secondary_entry asm 硬编码偏移 `[x24]/[x24,#8]/[x24,#16]` 此前无守卫，重排字段静默错位要到 S-3 per-CPU 消费时才显形。
+- **PSCI asm! 补 x18 clobber（minor）**：SMCCC x18 = 平台寄存器、规范允许固件不保留（真机 ATF 可改写），原 x4-x17 out 列表漏它——与注释「不赌实现保留」自相矛盾。补 `out("x18") _` 同列。
+- **进度锚 true-up（minor）**：CLAUDE.md/AGENTS.md「在途拆解」行 `S-0 已落` → `S-0/S-1 已落`（两文件同口径）。
+- 修复后复跑：主 smoke 五相 / run-el2 / smoke-smp / assert-flip / abi-check 全绿（详见任务报告 rerun_results；boot 路径触及 → 单核 smoke + smoke-smp 必复跑面覆盖）。

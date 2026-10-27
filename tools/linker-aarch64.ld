@@ -40,7 +40,15 @@ SECTIONS {
     __text_end = .;
 
     __rodata_start = .;
-    .rodata : AT(__rodata_start - KERNEL_VA_BASE) { *(.rodata .rodata.*) }
+    .rodata : AT(__rodata_start - KERNEL_VA_BASE) {
+        *(.rodata .rodata.*)
+        /* S-1：副核入口指针字 = 低半 secondary_entry 绝对地址（.text.boot
+           VMA==PA）。高半代码读此字取入口 PA——免跨半 ADRP（2b-1 双向坑：
+           高半 Rust 直接取低半符号地址越 ±4GB 断链）。 */
+        . = ALIGN(8);
+        __smp_sec_entry = .;
+        QUAD(secondary_entry)
+    }
     . = ALIGN(4096);
     __rodata_end = .;
 

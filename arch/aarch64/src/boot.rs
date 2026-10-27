@@ -13,11 +13,19 @@ global_asm!(
     ".type _start,%function",
     "_start:",
     "    mov x19, x0",              // 存 QEMU 传入 x0（DTB PA——G-eco 入机侧）：
+    "    mrs x1, mpidr_el1",        // S-1 防御位：_start 只应主核（亲和域
+    "    tst x1, #0xffffff",        // Aff0..Aff2 bits[23:0] 全 0——0xffffff 为
+    "    b.ne secondary_entry",     // 合法掩码立即数）到达；PSCI 副核入口 =
+                                    // secondary_entry（smp.rs）；他核落此
+                                    // （spin-table 类入口——含偶数 Aff0/双簇
+                                    // Aff1≠0 型拓扑，单测 bit0 防不住）一律
+                                    // 按副核路由
     "    mrs x0, CurrentEL",        // EL 检测要占 x0；x19 为 AAPCS callee-saved，
     "    lsr x0, x0, #2",           // x0 = 异常级别 (1/2/3)
-    "    cmp x0, #2",
-    "    b.eq .Lfrom_el2",
-    "    cmp x0, #3",
+    "    mov x20, x0",              // S-1：钉存**入口** EL 过降级路径（eret 不动
+    "    cmp x0, #2",               // GPR；x20 callee-saved 跨 build_boot_pt/
+    "    b.eq .Lfrom_el2",          // enable_mmu 两 bl 存活）——.Lbss_done 处落
+    "    cmp x0, #3",               // BOOT_EL（smp.rs conduit 分型门）。
     "    b.eq .Lfrom_el3",
     "    b .Lat_el1",
 
@@ -76,6 +84,10 @@ global_asm!(
     "    str xzr, [x0], #8",
     "    b .Lbss",
     ".Lbss_done:",
+    "    ldr x1, =BOOT_EL",         // S-1：入口 EL 落 BOOT_EL（smp.rs 高半 .bss
+    "    ldr x2, =0xFFFFFF8000000000", // ——须经 PA 写（VMA−基址，与上方清零
+    "    sub x1, x1, x2",           // 循环同口径）；必须在 .bss 清零**之后**
+    "    str x20, [x1]",            //（先清后存）；x20 = _start 钉存的入口 EL
     "    bl build_boot_pt",            // 建表（mmu.rs，#[link_section .text.boot]；
     "    bl enable_mmu",               //  表在 .bss.boot 低半 → 函数内低半寻址即可）
     "    ldr x1, =__stack_top",     // 换高半主栈 + 跳高半入口（此后不再回低半执行；

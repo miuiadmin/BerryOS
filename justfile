@@ -249,6 +249,14 @@ run: build
 run-el2: build
     {{QEMU}} -machine virt,virtualization=on -cpu cortex-a72 -m 128M -nographic -kernel {{KERNEL}}
 
+# S-1 副核 bring-up 手跑（`SMP设计草案.md` §3/§4）：默认机型 + -smp 2——
+# PSCI CPU_ON 拉副核走 §3.2 十项 → 心跳握手 → `SMP ok ncores=2`。
+# **-smp 只进本线**（run-smp/smoke-smp）：主 run/run-el2/run-rootfs/smoke
+# 一律单核——单核零漂移硬线（S-1 盒子边界）。默认机型（boot EL1）才有
+# HVC→PSCI 拦截；virtualization=on 下内核 BOOT_EL 门先行跳过（conduit 分型）。
+run-smp: build
+    {{QEMU}} {{MACH}} -smp 2 -kernel {{KERNEL}}
+
 # G-eco 入机侧开发：带 rootfs 启动——fw_cfg 具名文件递送（QEMU 非 Linux ELF
 # 直加载不走 Linux boot 协议：x0=0/RAM 无 DTB/-initrd 整体不加载，2026-10 实证；
 # 名字 opt/berry/rootfs 与 HAL fwcfg::ROOTFS_NAME 单一事实源对读）。
@@ -500,6 +508,14 @@ run-x86: build-x86
 # 「陈旧产物静默上线」同族）。
 smoke-x86: build-x86
     bash tools/smoke-x86.sh "{{X86_KERNEL}}"
+
+# S-1 副核 bring-up 冒烟（smoke-x86 同款独立形态——不并入主 smoke、不进
+# CI：ARM64 五跑单核基线零扰动）。断言三面：`SMP ok ncores=2` 恰一次 +
+# 裸相 26 标记 + 金丝雀严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐）。
+# 内核路径经 KERNEL 传参（单一事实源——smoke-x86 先例）。
+# **-smp 只进本线**（与 run-smp 同注：主 smoke 族一律单核）。
+smoke-smp: build
+    bash tools/smoke-smp.sh "{{KERNEL}}"
 
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF

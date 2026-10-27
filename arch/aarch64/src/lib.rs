@@ -16,6 +16,7 @@ pub mod gic;
 mod mmio;
 mod mmu;
 mod paging;
+pub mod smp;
 pub mod syscall;
 pub mod task;
 pub mod timer;

@@ -59,6 +59,10 @@ const PRIO_CNTV: u8 = 0xa0;
 
 /// 初始化 GICv2：distributor + CPU interface，启用 IRQ27。
 ///
+/// **主核（CPU0）boot 期一次、仅此一处**——S-1 起副核**绝不**调用本函数：
+/// GICD 是全局单份，重跑的 `GICD_CTLR=0` 会清光 CPU0 已配的中断（结构性
+/// 灾难）；副核只经 [`secondary_cpuif_init`] 动自己 banked 的 GICC。
+///
 /// # Safety
 /// MMIO 写（Device 映射区）；EL1、启动早期、单核。
 pub unsafe fn init() {
@@ -148,3 +152,32 @@ pub unsafe fn enable_spi(irq: usize, prio: u8, target: u8, cfg: u32) {
     mmio::write(GICD + GICD_ICPENDR0 + 4 * (irq / 32), 1 << (irq % 32));
     mmio::write(GICD + GICD_ISENABLER0 + 4 * (irq / 32), 1 << (irq % 32));
 }
+
+// ---- S-1：per-源 SPI 路由表（`SMP设计草案.md` §3.4 裁决）----
+// 原先 target 散在调用点硬编码（uart.rs 曾 0x01 三处硬编）——副核时代收敛
+// 为常量表：单核钉 CPU0（0x01），S-3 起按核扩。新 SPI 源必须入表（表外源
+// = 路由未入册，enable_spi_routed 拒配 loud）。
+
+/// per-源 SPI 路由表：(irq, prio, target, cfg)。console/RX 钉 CPU0——
+/// S-1 盒子边界（副核稳态零中断源、零 UART 写）。
+pub const SPI_ROUTES: &[(usize, u8, u8, u32)] = &[
+    (IRQ_PL011_RX, 0xa0, 0x01, 0b01), // PL011 RX：电平触发（DTB LEVEL_HIGH）
+];
+
+/// 经 [`SPI_ROUTES`] 使能一个 SPI：查表命中才动 GICD（表外源返 false——
+/// 路由漂移在调用点 loud，不静默散落）。
+pub fn enable_spi_routed(irq: usize) -> bool {
+    for &(r_irq, r_prio, r_target, r_cfg) in SPI_ROUTES {
+        if r_irq == irq {
+            // SAFETY: boot 单线程、DAIF 屏蔽窗内调用（与 enable_spi 同契约）。
+            unsafe { enable_spi(r_irq, r_prio, r_target, r_cfg) };
+            return true;
+        }
+    }
+    false
+}
+
+// 副核 GIC 面（§3.2 ⑥）：**只动本核 banked 的 GICC**（PMR=0xff + CTLR=1）
+// ——GICD 全局零触碰（重跑 `gic::init` 的 GICD_CTLR=0 会清光 CPU0 中断）。
+// 实现在 `smp.rs` 副核 asm（PA 直写，开 MMU 前后读面进报告）；此注为
+// 口径锚点：副核对 GIC 的全部写面收敛在 GICC 两寄存器。
