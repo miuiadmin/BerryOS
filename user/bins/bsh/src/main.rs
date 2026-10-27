@@ -163,6 +163,11 @@ fn main() {
     //    同 U2/U3——bench1 零 fs 盘面（纯 RAM/spawn），排 fat 族之前（EFI
     //    路无盘亦打 B1——smoke-image ECO 同面）。
     bench1_selftest();
+    // —— C-2c 挂账刀：U4 深坑六件执行面自验（`U4 ok` = rootfs 相第 30
+    //    标记）。链序契约同 U2/U3/B1——tail/head/env/date 四步纯管道 +
+    //    grep/which/find 三步走 RAM 树 fs gift（零盘面），排 fat 族之前
+    //    （EFI 路无盘亦打 U4——smoke-image ECO canon 同面）。
+    u4_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -466,6 +471,18 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
         writeln!(out, "bsh: run: {}: not found", name).unwrap();
         return (Vec::new(), 127);
     };
+    // C-2c 挂账刀：fs gift 装配（挂账文档 §② 根因修法——裸 spawn 的子
+    // 进程 fs_h()==0，libc 文件 op 全体降级 ENOENT（与文件缺失不可区分）
+    //；uu 家族文件参数面（cat <f>/grep <f>/df …）自此真可达）。fs 缺席
+    // = 裸形态降级（无 fsmgr 不死 shell——零漂移面）。
+    let mut gift_buf = [0 as Handle; 2];
+    let gifts: Option<&[Handle]> = match fs_gifts() {
+        Some((r, f)) => {
+            gift_buf = [r, f];
+            Some(&gift_buf[..])
+        }
+        None => None,
+    };
     let (out_s, out_c) = channel_pair();
     let argv: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
     let spec = SpawnSpec {
@@ -474,10 +491,12 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
         data_len,
         stdout: out_c,
         stack_pages: 32,
-        stdin_feed: None,
+        // gift 在位时按 berry-exec 断言补空 feeder 占位（EOF 即达——子
+        // 进程读 stdin 返 0，与裸形态 /dev/null 语义同形零漂移）。
+        stdin_feed: if gifts.is_some() { Some(&[]) } else { None },
         stdin_handle: None,
         args: &argv,
-        extra_gifts: &[],
+        extra_gifts: gifts.unwrap_or(&[]),
         mmio_vmo: None,
     };
     let (data, code) = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
@@ -502,6 +521,12 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
         (o.data, code)
     } else {
         // Err = ELF 坏或资源耗尽（-ENOMEM 降级，PROCESS_MAX 出帽不杀 shell）。
+        // gifts 未被 take（早退点全在 env send 前）——显式补关防泄漏
+        //（未装配/未成的 0 值关返 -EBADF 无害，照关省一分支）。
+        if gifts.is_some() {
+            let _ = berry_handle_close(gift_buf[0]);
+            let _ = berry_handle_close(gift_buf[1]);
+        }
         writeln!(out, "bsh: run: {}: spawn failed", name).unwrap();
         (Vec::new(), 126)
     };
@@ -1404,6 +1429,17 @@ fn pipe_capture(
     }
     let last = segs.len() - 1;
     let (out_s, out_c) = channel_pair();
+    // C-2c 挂账刀：首段 fs gift 装配（挂账文档 §②；v1 约束「单管道至多
+    // 一个 fs 消费段」的结构化落法——gifts 只骑首段，fs 缺席 = 裸形态
+    // 降级零漂移）。fail-fast 已过 = 名字全命中，dup 失败不影响 spawn 面。
+    let mut gift_buf = [0 as Handle; 2];
+    let gifts: Option<&[Handle]> = match fs_gifts() {
+        Some((r, f)) => {
+            gift_buf = [r, f];
+            Some(&gift_buf[..])
+        }
+        None => None,
+    };
     // pipes[i] = 段 i 与段 i+1 之间的通道对（(写端, 读端)）。
     let mut pipes: Vec<(Handle, Handle)> = Vec::with_capacity(last);
     for _ in 0..last {
@@ -1418,10 +1454,16 @@ fn pipe_capture(
             data_len: *data_len,
             stdout: if i == last { out_c } else { pipes[i].0 },
             stack_pages: 32, // musl 128KiB 口径（hexyl 级栈深，d-3c）
-            stdin_feed: if i == 0 { first_feed } else { None },
+            stdin_feed: if i == 0 {
+                // gift 在位时按 berry-exec 断言补空 feeder 占位（EOF 即达
+                //——首段读 stdin 恒返 0，与裸形态同形零漂移）。
+                first_feed.or(gifts.is_some().then_some(&[] as &[u8]))
+            } else {
+                None
+            },
             stdin_handle: if i > 0 { Some(pipes[i - 1].1) } else { None },
             args: &argv,
-            extra_gifts: &[],
+            extra_gifts: if i == 0 { gifts.unwrap_or(&[]) } else { &[] },
             mmio_vmo: None,
         };
         match spawn_rootfs_elf(rootfs_h(), &spec) {
@@ -1429,6 +1471,12 @@ fn pipe_capture(
             Err(_) => {
                 // 失败段无子进程；读端中只有本段待用的 pipes[i-1].1 未被
                 // take（其余已被后段 spawn 迁走，close 返 -EBADF 忽略之）。
+                // fs gifts 同面：只在首段 spawn 失败时未 take（i>0 时已被
+                // 首段 env send 迁走，照关返 -EBADF 无害）。
+                if i == 0 && gifts.is_some() {
+                    let _ = berry_handle_close(gift_buf[0]);
+                    let _ = berry_handle_close(gift_buf[1]);
+                }
                 let _ = berry_handle_close(out_c);
                 let _ = berry_handle_close(out_s);
                 for (w, r) in &pipes {
@@ -1882,6 +1930,156 @@ fn b1_bad(diag: &str) -> ! {
     berry_libc::park()
 }
 
+/// U4 feed 面（定标冻结——期望值全字面常量，宿主 =0.12.0 同源钉板）。
+const U4_LINES: &[u8] = b"l1\nl2\nl3\nl4\nl5\n";
+const U4_ABC: &[u8] = b"abcdefghijkl";
+const U4_GREP_FILE: &[u8] = b"alpha\nbravo\ncharlie\nbravo\n";
+
+/// U4 自验（C-2c 挂账刀，`U4 ok` = rootfs 相第 30 标记）：深坑六件
+/// tail/env/date/grep/find/which 的**执行面**验收——八步全字面常量逐字节
+/// 对拍（私有通道收齐，零串口 grep 面；spawn 合计 12：tail/head/env/date
+/// 各 1 + grep 4（-n 主体 + -v 双态 + -q 优先级真码回归钉板——三镜
+/// 审查修复）+ 管道 cat|grep 2 + which/find 各 1）。链序契约同
+/// U2/U3/B1——排 fat 族之前（EFI 路无盘亦打 U4，smoke-image ECO 同面；
+/// fs 步走 RAM 树 + run_capture_fs gift 四元，/etc/mtab 由 fsmgr 启动
+/// 预建 EFI 路同在）。
+/// 步② 弱断言锚 environ=NULL（berry-libc 空环境档）：uu_env 无命令面
+/// print_all_env_vars 遍历 environ——NULL 表零行 + setenv ok! 桩不写真
+/// 状态 → 恒空出（setenv/environ 落真时本步常量改 "U4V=zz\n" 收编设值
+/// 打印面）。步① head -c 是 fd 克隆面的端到端活证（stdin
+/// try_clone_to_owned → fcntl F_DUPFD_CLOEXEC → 别名槽 → 同一条流读回
+/// ；stream_position 撞 ESPIPE 走缓冲回退路——Segment 2 设计闭环）。
+/// 步④ 期望值按自写 grep 实测口径（FILE 参数恒带名前缀——GNU 单文件
+/// 无前缀是其差异面，grep 头注语义子集口径内；不按 GNU 字面硬凑）。
+/// fstree 容量窗：fs_selftest 残留 t64.bin/h.hex + etc/mtab 在册，U4 峰值
+/// 再 +u4.txt +bin +bin/wc（FILE_COUNT_MAX=9 / DIR_COUNT_MAX=17 内），
+/// 步④⑥ 用毕即清（容量纪律——残留会挤压后续 dir/cd 自验窗口）。
+fn u4_selftest() {
+    // 步 ⓪：tail -n 2——末两行（-f 尾随链 v1 无实现，运行期不可达）。
+    match run_capture("tail", Some(U4_LINES), &["-n", "2"]) {
+        Some((o, c)) if c == 0 && o.data == b"l4\nl5\n" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(0, c, &o),
+        None => u4_fail(0, "tail not found"),
+    }
+    // 步 ①：head -c 8——fd 克隆活证（别名槽读回与直读 fd 0 同一条流）。
+    match run_capture("head", Some(U4_ABC), &["-c", "8"]) {
+        Some((o, c)) if c == 0 && o.data == b"abcdefgh" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(1, c, &o),
+        None => u4_fail(1, "head not found"),
+    }
+    // 步 ②：env U4V=zz——弱断言（空出 + 真码 0；environ=NULL 锚，见头注）。
+    match run_capture("env", None, &["U4V=zz"]) {
+        Some((o, c)) if c == 0 && o.data.is_empty() && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(2, c, &o),
+        None => u4_fail(2, "env not found"),
+    }
+    // 步 ③：date -u -d @0——epoch 渲染字面钉板（clock_getres 谎报 1ns 成功
+    // 桩的消费面；--resolution/-s 运行期不可达）。
+    match run_capture("date", None, &["-u", "-d", "@0"]) {
+        Some((o, c)) if c == 0 && o.data == b"Thu Jan  1 00:00:00 UTC 1970\n"
+            && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(3, c, &o),
+        None => u4_fail(3, "date not found"),
+    }
+    // 步 ④：grep -n bravo /u4.txt——fs gift 面（文件参数段：open/read 经
+    // run_capture_fs 四元装配；见头注名前缀口径）。
+    if let Err(e) = put_file("u4.txt", U4_GREP_FILE) {
+        u4_fail(4, &format!("put u4.txt {}", errno_text(e)));
+    }
+    match run_capture_fs("grep", None, &["-n", "bravo", "/u4.txt"]) {
+        Some((o, c)) if c == 0 && o.data == b"/u4.txt:2:bravo\n/u4.txt:4:bravo\n"
+            && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(4, c, &o),
+        None => u4_fail(4, "grep not found"),
+    }
+    // 步 ④（续）：grep 真码面回归钉板（三镜审查修复的防回归断言）——
+    // -v 双态（GNU：选中行存在 → 0 / 零选中 → 1；旧 `any != inv` 恰两态
+    // 反转）+ -q 优先级（-q 命中 → 0 压过文件错 2；stderr 诊断同通道进
+    // 比对面——/nope 打开错文案即期望字节的一部分）。
+    match run_capture_fs("grep", None, &["-n", "-v", "bravo", "/u4.txt"]) {
+        Some((o, c)) if c == 0 && o.data == b"/u4.txt:1:alpha\n/u4.txt:3:charlie\n"
+            && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(4, c, &o),
+        None => u4_fail(4, "grep not found"),
+    }
+    match run_capture_fs("grep", None, &["-v", "a", "/u4.txt"]) {
+        Some((o, c)) if c == 1 && o.data.is_empty() && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(4, c, &o),
+        None => u4_fail(4, "grep not found"),
+    }
+    match run_capture_fs("grep", None, &["-q", "bravo", "/nope", "/u4.txt"]) {
+        Some((o, c)) if c == 0 && o.data == b"grep: /nope: not readable\n"
+            && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(4, c, &o),
+        None => u4_fail(4, "grep not found"),
+    }
+    if let Err(e) = unlink_of("u4.txt") {
+        u4_fail(4, &format!("unlink u4.txt {}", errno_text(e)));
+    }
+    // 步 ⑤：cat | grep -c bravo——管道面（首段纯转发 + 末段 stdin 回落 +
+    // 计数旗标；fs gift 骑首段结构约束与 cat 零 fs 消费不冲突）。
+    let segs5 = [
+        PipeSeg { name: "cat", args: &[] },
+        PipeSeg { name: "grep", args: &["-c", "bravo"] },
+    ];
+    match pipe_capture(&segs5, Some(U4_GREP_FILE)) {
+        Ok((o, c)) if c == 0 && o.data == b"2\n" && o.eof && o.dropped == 0 => {}
+        Ok((o, c)) => u4_bad(5, c, &o),
+        Err(PipeFail::NotFound(n)) => u4_fail(5, &format!("{} not found", n)),
+        Err(PipeFail::SpawnFail(n)) => u4_fail(5, &format!("{} spawn failed", n)),
+    }
+    // 步 ⑥：which wc——PATH 空 → 默认 /bin（存在性判据，v1 mode 恒 0644
+    // 无 x 位的头注偏差）；自建 /bin/wc 验证定位，用毕即清。
+    if let Err(e) = mkdir_of("bin") {
+        u4_fail(6, &format!("mkdir bin {}", errno_text(e)));
+    }
+    if let Err(e) = put_file("bin/wc", b"x\n") {
+        u4_fail(6, &format!("put bin/wc {}", errno_text(e)));
+    }
+    match run_capture_fs("which", None, &["wc"]) {
+        Some((o, c)) if c == 0 && o.data == b"/bin/wc\n" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(6, c, &o),
+        None => u4_fail(6, "which not found"),
+    }
+    if let Err(e) = unlink_of("bin/wc") {
+        u4_fail(6, &format!("unlink bin/wc {}", errno_text(e)));
+    }
+    if let Err(e) = unlink_of("bin") {
+        u4_fail(6, &format!("rmdir bin {}", errno_text(e)));
+    }
+    // 步 ⑦：find /etc -name mt*——递归走查 + GLOB 谓词（opendir/readdir/
+    // stat 全 fs 面；/etc/mtab fsmgr 启动预建——EFI 路同在）。
+    match run_capture_fs("find", None, &["/etc", "-name", "mt*"]) {
+        Some((o, c)) if c == 0 && o.data == b"/etc/mtab\n" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => u4_bad(7, c, &o),
+        None => u4_fail(7, "find not found"),
+    }
+    println!("U4 ok");
+}
+
+/// U4 断言失败诊断（u3_bad 同款：四面 + 实际字节 hex 截 64B 单串一次打
+/// + park——撕行防护 + 标记缺失 = smoke FAIL loud 兜底）。
+fn u4_bad(step: u8, c: i32, o: &RunOut) -> ! {
+    let n = o.data.len().min(64);
+    let s = format!(
+        "bsh: u4 selftest bad: step={} code={} len={} eof={} dropped={} hex={}",
+        step,
+        c,
+        o.data.len(),
+        o.eof,
+        o.dropped,
+        u3_hex(&o.data[..n])
+    );
+    eprintln!("{}", s);
+    berry_libc::park()
+}
+
+/// U4 档未命中 / IO 面失败（put/unlink/mkdir/段拉起）：单串 + park。
+fn u4_fail(step: u8, what: &str) -> ! {
+    eprintln!("bsh: u4 selftest bad: step={} {}", step, what);
+    berry_libc::park()
+}
+
 /// 拉起 + 收集（自验/交互共用）：查档 → spawn → collect → 回收 → 关对端。
 /// None = 档未命中（调用方 not found）；Some((RunOut, code)) 的 code = 子
 /// 真退出码（reap Err → 1——P5 `&&`/`$?` 真码源；spawn Err 仍 park = 自验
@@ -1900,17 +2098,41 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOu
 /// **take 迁移**（成功路径零泄漏；失败 park 不回收）。严格串行 RPC 会话
 /// 纪律不破：df/du 生命周期内它是唯一活动 fs client（bsh 阻在 collect/
 /// reap，不发 fs 请求）。
-fn run_capture_fs(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOut, i32)> {
+/// fs gift 四元装配（C-2c 挂账刀——挂账文档 §② 修法落地：三个存量
+/// spawn 点 run_output/pipe_capture 接线，样板 = svcmgr `uu_run` 与下方
+/// `run_capture_fs`）：gift[2] = rootfs VMO READ dup、gift[3] = fs 通道
+/// SEND|RECV dup。**berry-exec take 契约**：spawn 成功则两 dup 随 env
+/// send 全被 take（本表副本使命即毕，成功路径零泄漏）；spawn Err（全部
+/// 早退点在 env send 前）= 未 take 留本表，调用方须显式补关双 dup
+///（Err 面清理见各调用点）。None = fs 服务缺席或 dup 失败——交互面调用
+/// 方降级裸 spawn（零漂移，无 fsmgr 不死 shell）；自验面走 run_capture_fs
+/// 的 park。**v1 约束：单管道至多一个 fs 消费段**——共享单会话 fs 通道
+/// 上双消费者 = 应答偷取/会话错位，故 pipe_capture 只给首段装配（末段
+/// fs 消费 = 文件参数段的组合随 v2）。
+fn fs_gifts() -> Option<(Handle, Handle)> {
     let mut rootfs_dup = 0 as Handle;
     let mut fs_dup = 0 as Handle;
     if berry_handle_duplicate(rootfs_h(), RIGHT_READ, &mut rootfs_dup) != 0
         || berry_handle_duplicate(fs_h(), RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0
     {
-        // fs/rootfs gift 缺席或 dup 失败 = 链断级（fs_selftest 已过则结构性
-        // 不可达；EFI 路 fat park 挡在前——自验面 loud 不静默）。
-        eprintln!("bsh: run capture: fs gift dup failed");
-        berry_libc::park();
+        // 半途失败：可能已成一枚——两枚都试关（未成的关返 -EBADF 无害）。
+        let _ = berry_handle_close(rootfs_dup);
+        let _ = berry_handle_close(fs_dup);
+        return None;
     }
+    Some((rootfs_dup, fs_dup))
+}
+
+fn run_capture_fs(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOut, i32)> {
+    let (rootfs_dup, fs_dup) = match fs_gifts() {
+        Some(g) => g,
+        None => {
+            // fs/rootfs gift 缺席或 dup 失败 = 链断级（fs_selftest 已过则
+            // 结构性不可达；EFI 路 fat park 挡在前——自验面 loud 不静默）。
+            eprintln!("bsh: run capture: fs gift dup failed");
+            berry_libc::park();
+        }
+    };
     // gift[2] 前要求 stdin 在位（berry-exec 断言）——空 feeder 占位（EOF
     // 留队无害：df/du 不读 stdin，fsmgr dummy 同款）。
     let stdin = stdin.or(Some(&[] as &[u8]));
