@@ -14,6 +14,10 @@ name = "berry-blkproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-complete"
+version = "0.1.0"
+
+[[package]]
 name = "berry-exec"
 version = "0.1.0"
 dependencies = [

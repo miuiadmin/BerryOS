@@ -372,6 +372,9 @@ test-host:
     # C-3：berry-psproto（ps 查询 RPC 协议纯函数面——表/ver/mem 三 op
     # 编解码 + 严格解析全拒面 + 黄金字节钉板，host 15 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-psproto --target {{host}}
+    # C-4：berry-complete（bsh Tab 补全纯函数面——token 切分四形/前缀
+    # 匹配唯一·多候选·零命中/排序去重/列示字节，host 10 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-complete --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。

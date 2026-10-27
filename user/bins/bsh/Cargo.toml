@@ -17,6 +17,8 @@ berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-exec = { path = "../../berry-exec" }
 berry-fsproto = { path = "../../berry-fsproto" }
+# C-4：Tab 补全纯函数面（token 切分/前缀匹配/列示——host 10 测）。
+berry-complete = { path = "../../berry-complete" }
 
 [profile.release]
 opt-level = "z"

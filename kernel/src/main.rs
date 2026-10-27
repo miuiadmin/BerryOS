@@ -1455,150 +1455,15 @@ unsafe fn rx_ev_clear() {
     }
 }
 
-// ---- P5 v0.5：console mini-readline（历史环 + 召回 + Ctrl-U）----
-//
-// 行编辑归属裁定：console 已是内核侧 tty line discipline 等价物（echo/退格/
-// 行缓冲/token/转发全在此），上下键历史 + Ctrl-U 随之；**Tab 补全 defer v2**
-// ——补全需要 rootfs 知识（用户态），编辑会话归属问题随 v2 留档（shell设计
-// §2.4）。历史环 8×96B newest-first（console 任务独占写——单核单写者串行；
-// shift-push 768B 拷贝在打字速率下可忽略，内核任务栈 16KiB 无虞故取任务栈
-// 外的静态存储只为跨函数助手访问方便）。
+// ---- P5 v0.5：console mini-readline（历史环 + 召回 + Ctrl-U）——**C-4 已
+// 退役**：行编辑归属下沉 bsh（Tab 补全需 rootfs/fs 知识——用户态；P5 留档
+// 的「编辑会话归属」裁定兑现，shell设计 §2.4）。内核删历史环/ESC 状态机/
+// 退格/Ctrl-U/echo 全套约 150 行，console 退化 = 逐字节透传 bsh + 原始行
+// 观察 + 本端 drain——见 [`task_console`]。编辑器等价实现（std 版 + Tab
+// 补全）在 user/bins/bsh/src/editor.rs，语义逐字对齐本版（历史环 8 条
+// newest-first、非空且≠newest 才入环、usize::MAX=live 游标、浏览态编辑
+// 已载入行、下翻到 live 清草稿、ESC 状态机三分支含非 final 复位落下）。----
 
-/// 历史行内容（hist[0] = 最近行）。
-static mut HIST: [[u8; 96]; 8] = [[0; 96]; 8];
-/// 各行实长。
-static mut HIST_LEN: [usize; 8] = [0; 8];
-/// 有效条数（帽 8——满环再推丢最旧）。
-static mut HIST_COUNT: usize = 0;
-/// 浏览游标：usize::MAX = live（非浏览态）；0..HIST_COUNT = 已载入的历史条。
-/// 浏览中打字/退格/Ctrl-U = 编辑**已载入的历史行**，hi 不动；Enter 推历史并
-/// 回 live（被编辑过的历史行按编辑后内容入环首——readline 惯例）。
-static mut HIST_HI: usize = usize::MAX;
-
-/// Enter 推历史：非空 && != newest（重复执行同一命令不灌环）；游标回 live。
-/// token 行（`rx`）同样入历史——上键召回语义不因 token 特判分叉。
-///
-/// # Safety
-/// console 任务独占调用（单写者；不与 IRQ 语境共享——历史面无 IRQ 生产者）。
-unsafe fn hist_push(line: &[u8; 96], li: usize) {
-    if li == 0 {
-        // 空行 Enter 同样回 live（与 dup-of-newest 分支承诺一致——否则上翻
-        // ×N → Ctrl-U → 空行 Enter 后游标还钉在 hist[hi+1]，再上翻召回旧
-        // 条而非 newest。对抗审查实抓）。
-        // SAFETY: 单写者写游标。
-        unsafe { *core::ptr::addr_of_mut!(HIST_HI) = usize::MAX };
-        return;
-    }
-    // SAFETY: 单写者串行；只读现状判重。
-    let count = unsafe { *core::ptr::addr_of!(HIST_COUNT) };
-    if count > 0 {
-        // SAFETY: 同上。
-        let (nlen, newest) = unsafe {
-            (
-                *core::ptr::addr_of!(HIST_LEN[0]),
-                &*core::ptr::addr_of!(HIST[0]),
-            )
-        };
-        if nlen == li && newest[..li] == line[..li] {
-            // SAFETY: 单写者写游标。
-            unsafe { *core::ptr::addr_of_mut!(HIST_HI) = usize::MAX };
-            return;
-        }
-    }
-    // SAFETY: 单写者串行；满环丢最旧（index 7）。
-    unsafe {
-        let keep = count.min(7);
-        for i in (0..keep).rev() {
-            HIST[i + 1] = HIST[i];
-            HIST_LEN[i + 1] = HIST_LEN[i];
-        }
-        HIST[0] = *line;
-        HIST_LEN[0] = li;
-        HIST_COUNT = (count + 1).min(8);
-        HIST_HI = usize::MAX;
-    }
-}
-
-/// 上翻召回：MAX→0（首翻 = newest）/ hi+1 < COUNT → hi+1 / 否则停留（顶上
-/// 无操作）。召回 = 擦当前行回显 + 载入该条。
-///
-/// # Safety
-/// console 任务独占调用。
-unsafe fn hist_recall_up(line: &mut [u8; 96], li: &mut usize) {
-    // SAFETY: 单写者只读。
-    let (count, hi) = unsafe {
-        (
-            *core::ptr::addr_of!(HIST_COUNT),
-            *core::ptr::addr_of!(HIST_HI),
-        )
-    };
-    if count == 0 {
-        return;
-    }
-    let target = if hi == usize::MAX {
-        0
-    } else if hi + 1 < count {
-        hi + 1
-    } else {
-        return; // 顶上停留
-    };
-    // SAFETY: target < count（上方推导）。
-    unsafe { hist_load(target, line, li) };
-}
-
-/// 下翻：hi > 0 → hi-1 / hi == 0 → 回 live（清空编辑行——浏览前的草稿不
-/// 保存，v1 极简）/ live 态无操作。
-///
-/// # Safety
-/// console 任务独占调用。
-unsafe fn hist_recall_down(line: &mut [u8; 96], li: &mut usize) {
-    // SAFETY: 单写者只读。
-    let hi = unsafe { *core::ptr::addr_of!(HIST_HI) };
-    if hi == usize::MAX {
-        return;
-    }
-    if hi == 0 {
-        erase_line_echo(*li);
-        *li = 0;
-        // SAFETY: 单写者写游标。
-        unsafe { *core::ptr::addr_of_mut!(HIST_HI) = usize::MAX };
-    } else {
-        // SAFETY: hi-1 < count（hi 来自合法游标值域）。
-        unsafe { hist_load(hi - 1, line, li) };
-    }
-}
-
-/// 载入 hist[target] 进编辑行 + 回显重绘（先擦旧行再 echo 新行；编辑点恒在
-/// 行尾——v1 无光标移动）。
-///
-/// # Safety
-/// console 任务独占调用；target < HIST_COUNT。
-unsafe fn hist_load(target: usize, line: &mut [u8; 96], li: &mut usize) {
-    // SAFETY: 单写者只读；调用方保证界内。
-    let (src, n) = unsafe {
-        (
-            &*core::ptr::addr_of!(HIST[target]),
-            *core::ptr::addr_of!(HIST_LEN[target]),
-        )
-    };
-    erase_line_echo(*li);
-    for i in 0..n {
-        berry_hal_aarch64::uart_putc(src[i]);
-    }
-    line[..n].copy_from_slice(&src[..n]);
-    *li = n;
-    // SAFETY: 单写者写游标。
-    unsafe { *core::ptr::addr_of_mut!(HIST_HI) = target };
-}
-
-/// 擦除 li 格回显（"\b \b" ×li——退格三连同款；不触碰行缓冲本身）。
-fn erase_line_echo(li: usize) {
-    for _ in 0..li {
-        berry_hal_aarch64::uart_putc(b'\x08');
-        berry_hal_aarch64::uart_putc(b' ');
-        berry_hal_aarch64::uart_putc(b'\x08');
-    }
-}
 
 /// 4-5a console 服务任务：**首个服务循环**——wait_many [endK:READABLE, 哑
 /// Event:1<<32]（任一命中；10s 心跳帽，空等超时非错误、回环重等）→ drain
@@ -1614,20 +1479,29 @@ fn erase_line_echo(li: usize) {
 /// watchdog 错杀断言拦下）。console 是常驻服务**不退出**（与 sleeper/waker
 /// 等验收任务不同）；4-5b svcmgr 落地后用户态服务与此同构。
 ///
-/// **P5 A-1 输入面**：wait_many 扩第三项 [RX Event:1<<39]——内核 RX 中断
-/// （SPI 33）drain UART FIFO 进 HAL 静态环后经通知槽置位唤醒本任务。消费 =
+/// **P5 A-1 / C-4 输入面**：wait_many 扩第三项 [RX Event:1<<39]——内核 RX
+/// 中断（SPI 33）drain UART FIFO 进 HAL 静态环后经通知槽置位唤醒本任务。消费 =
 /// `disable_irq` 包络内 `rx_pop_all`（搬空环）+ `rx_ev_clear`（清位）——
 /// 「位 0 ⟺ 环空」不变量在包络内闭环（包络内**无 SVC/阻塞**：屏蔽窗内切走
-/// 是违约）。包络外做 echo（QEMU `-nographic` 不回显——软件自做）+ 行缓冲
-/// token：首条恰为 `rx` 的行打 `RX ok n=… lost=…`（smoke 第 25 标记，
-/// **直接 uart 打**——console 自己就是排水者，不能再给自己发消息）。
+/// 是违约）。原始行观察（可打印序列、\n/\r 断行）仅供 token 判定：首条恰为
+/// `rx` 的行直接 uart 打 `RX ok n=… lost=… fdrop=`（smoke 标记，**直接
+/// uart 打**——console 自己就是排水者，不能再给自己发消息）。
 ///
-/// **P5 A-2 交互面**：wait_many 再扩第四项 [endK2:WRITABLE]（bsh stdin
-/// 发端；队列腾位即 pending 重发窗）。行缓冲 96B + 退格（\x7f/\x08 → 回显
-/// "\b \b"）、其它控制字节忽略；完整行非 token → `send(endK2)` 转发 bsh
-/// （行末归一 \n）；满 -EBUSY 保持 pending 重发、新行覆盖旧 pending（丢弃
-/// 计数入 `fdrop=`——bsh 缺席/死 = 8 深队列灌满后丢，打字速率下不触发）。
-/// n=4 仍 wait_many（WAIT_ANY 哨兵 + 私有表——PI 双保险纪律不因扩项破）。
+/// **P5 A-2 / C-4 交互面**：wait_many 再扩第四项 [endK2:WRITABLE]（bsh
+/// stdin 发端；队列腾位即吸收环排水窗）。**C-4 起逐字节透传**：编辑归属
+/// 下沉 bsh（echo/退格/历史/Tab 补全全在 bsh——console 无 rootfs/fs 知识，
+/// 微内核纪律），console 对每个收到的字节（含 \n/\r/DEL/ESC 序列字节）
+/// `send(endK2)` 一条 1B 消息。**C-4r 吸收环（回归修复，2026-10-28）**：
+/// 首版单字节 pending 的吸收面只有「8 深队列 + 1B」≈ 4.5s 打字流——bsh
+/// 忙窗（`run fail` spawn+reap 数秒，TCG 宿主高载更长）内后续字节被覆盖
+/// 丢弃（smoke RX 相段 d 零间歇三行注入实录两连败，f42t 缺失；`pop_all`
+/// 突发多字节更只存活末字节——循环内零发送尝试）。修法 = 128B 字节级 FIFO
+/// 环（纯缓冲，console 仍无行/编辑语义——归属裁定不破）：环满丢新计数
+/// `fdrop=`（bsh 缺席/死面诊断位，128B ≈ 64s 打字流，健康路径恒 0）。
+/// token 行也照常透传（bsh 收 `rx\n` 走 not found 应答——编辑归属下沉后
+/// console 无「吞行」语义，转发面无条件字节级）。n=4 仍 wait_many（WAIT_ANY
+/// 哨兵 + 私有表——PI 双保险纪律不因 C-4 破；恒满足项条件化纪律同前——环
+/// 空时 endK2-WRITABLE 不入列防 drain 相位钉死）。
 extern "C" fn task_console(arg: usize) -> ! {
     use crate::handle::{ERR_AGAIN, ERR_BUSY, ERR_TIMEDOUT, SIGNAL_READABLE, SIGNAL_WRITABLE};
     use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_MANY};
@@ -1647,34 +1521,29 @@ extern "C" fn task_console(arg: usize) -> ! {
         core::ptr::addr_of_mut!(observed) as u64,
     );
     let mut buf = [0u8; 256];
-    // P5 A-1：RX 消费面——搬出缓冲（= 环容量 → 包络内必搬空）、行缓冲、计数。
+    // P5 A-1：RX 消费面——搬出缓冲（= 环容量 → 包络内必搬空）、计数。
     let mut rxbuf = [0u8; berry_hal_aarch64::uart::RX_RING_SIZE];
-    // P5 A-2：行缓冲 96B（bsh 命令行量级；溢出 = li 钉在 len，断行时必不完整
-    // 转发——token 检查同理不匹配）。
-    let mut line = [0u8; 96];
-    let mut li = 0usize;
-    // P5 v0.5：ESC 序列状态机（跨 IRQ 批次持久——序列字节可能分批入环）：
-    // 0 = 常态 / 1 = 见 ESC / 2 = 见 ESC '['（收参数或 final）。
-    let mut esc = 0u8;
-    // P5 A-2：待转发行（pending）——完整行非 token → 压这里 send(endK2)；满
-    // -EBUSY 保持 pending 等 idx==3（WRITABLE，bsh 队列腾位/10s 心跳）重发；
-    // 新行覆盖旧 pending（被覆盖 = 丢弃计数 fwd_drop——bsh 缺席/断供面，RX
-    // lost= 同哲学：打字速率下永不触发，计数仅供诊断）。含 \n 共 97B 上限。
-    let mut pend = [0u8; 97];
-    let mut plen = 0usize;
+    // C-4：原始行观察窗（token 判定专用——96B 帽钉满即不匹配；可打印
+    // ASCII 之外（DEL/ESC/控制字节）不进观察面——编辑语义在 bsh）。
+    let mut raw = [0u8; 96];
+    let mut rlen = 0usize;
+    // C-4r：转发吸收环（128B 字节级 FIFO——逐字节透传的吸收面回归修复，
+    // 见任务头注）。fhead=出位、ftail=入位、flen=在环字节数。
+    let mut fring = [0u8; 128];
+    let (mut fhead, mut ftail, mut flen) = (0usize, 0usize, 0usize);
     let mut fwd_drop: u64 = 0;
     let mut rx_total: u64 = 0;
     let mut rx_ok_done = false;
     let (mut n, mut nh): (u64, u64);
     loop {
         assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "console: clock_read");
-        // 第 4 项（endK2 WRITABLE）**只在有待转发行时入列**——bsh 缺席/无键盘
+        // 第 4 项（endK2 WRITABLE）**只在吸收环非空时入列**——bsh 缺席/无键盘
         // 输入时 endB2 队列恒空 = 该项恒满足 → wait_many 立即返 idx==3 → console
         // 永不入睡：既违 tickless 纪律，更把 drain 相位钉死在 RR 环上（环序固定
         // 后，填槽序末位的自旋生产者结构性饿死——A-2 实踩，svcmgr send_spin
-        // 「SVC ok」每片只见满队）。无 pending = 3 项真睡（A-1 形态，相位随
-        // 发送方唤醒旋转）；有 pending = 4 项入列，idx==3 即重发窗。
-        let n_items: u64 = if plen > 0 { 4 } else { 3 };
+        // 「SVC ok」每片只见满队）。环空 = 3 项真睡（A-1 形态，相位随发送方
+        // 唤醒旋转）；环非空 = 4 项入列，idx==3 即排水窗。
+        let n_items: u64 = if flen > 0 { 4 } else { 3 };
         let r = svc6(
             NR_OBJECT_WAIT_MANY as u64,
             hs.as_ptr() as u64,
@@ -1710,52 +1579,14 @@ extern "C" fn task_console(arg: usize) -> ! {
         for i in 0..nrx {
             let b = rxbuf[i];
             rx_total += 1;
-            // P5 v0.5 mini-readline：ESC 序列状态机（先于一切常规字节处理——
-            // ESC/参数/final 都不该进 echo/行缓冲）。
-            if esc == 1 {
-                if b == b'[' {
-                    esc = 2;
-                    continue;
-                }
-                esc = 0; // 裸 ESC 后非 '['：复位，本字节按普通字节落下
-            } else if esc == 2 {
-                if (0x30..=0x3f).contains(&b) {
-                    continue; // 参数字节（数字/;/< 等）：留在 esc=2 等 final
-                }
-                if (0x40..=0x7e).contains(&b) {
-                    // final 字节（0x40..=0x7E）：序列终结，状态机出队。
-                    esc = 0;
-                    if b == b'A' {
-                        // 上翻（历史召回）。SAFETY: console 任务独占（单写者）。
-                        unsafe { hist_recall_up(&mut line, &mut li) };
-                    } else if b == b'B' {
-                        // 下翻。SAFETY: 同上。
-                        unsafe { hist_recall_down(&mut line, &mut li) };
-                    }
-                    // 其它 finals（左/右键 C/D、Home/End H/F、Del '~' 等）：吞——
-                    // v1 无光标移动语义，编辑点恒在行尾。
-                    continue;
-                }
-                // 非 final（控制字节 0x7f/≥0x80 乱序等）：unclosed CSI 复位，
-                // 本字节按普通字节落下——否则裸 Esc+'['（或 final 被环满丢
-                // 失）后的 Enter/Ctrl-U/退格被静默吞一键。与 esc=1 非 '['
-                // 分支同款（复位后落下，含同字节 ESC 的再入处理）。
-                // 对抗审查实抓。
-                esc = 0;
-            } else if b == 0x1b {
-                esc = 1;
-                continue;
-            }
+            // C-4 原始行观察（token 判定）：可打印 ASCII 入行、\n/\r 断行
+            // 判定 + 清行、控制字节/DEL/ESC 不进（编辑语义在 bsh——观察面
+            // 只看可打印序列，smoke `rx\n` 注入与编辑时代等价过）。
             if b == b'\n' || b == b'\r' {
-                berry_hal_aarch64::uart_putc(b); // echo（-nographic 无硬件回显）
-                // P5 v0.5：Enter 推历史（非空 && != newest；token 行同入环），
-                // 浏览游标回 live。SAFETY: console 任务独占（单写者）。
-                unsafe { hist_push(&line, li) };
-                if !rx_ok_done && li == 2 && line[..2] == *b"rx" {
+                if !rx_ok_done && rlen == 2 && raw[..2] == *b"rx" {
                     rx_ok_done = true;
                     // 直接 uart（console 即排水者，不走自家通道）；标记条件 =
-                    // 收到完整行 token（状态谓词，非注入即达的回声）。token 行
-                    // console 自营不转发（后续同名行非 token、照常转发）。
+                    // 收到完整行 token（状态谓词，非注入即达的回声）。
                     berry_hal_aarch64::uart_puts(b"RX ok n=");
                     berry_hal_aarch64::uart_put_dec(rx_total);
                     berry_hal_aarch64::uart_puts(b" lost=");
@@ -1767,55 +1598,33 @@ extern "C" fn task_console(arg: usize) -> ! {
                     berry_hal_aarch64::uart_puts(b" fdrop=");
                     berry_hal_aarch64::uart_put_dec(fwd_drop);
                     berry_hal_aarch64::uart_puts(b"\n");
-                } else {
-                    // A-2：完整行非 token → 待转发（含空行——bsh 空命令回
-                    // prompt）；行末归一 \n（终端 \r 入、bsh 见 \n）。旧 pending
-                    // 未发走即被覆盖 = 丢弃计数。
-                    if plen > 0 {
-                        fwd_drop += 1;
-                    }
-                    pend[..li].copy_from_slice(&line[..li]);
-                    pend[li] = b'\n';
-                    plen = li + 1;
                 }
-                li = 0;
-            } else if b == 0x7f || b == 0x08 {
-                // 退格（\x7f=DEL / \x08=BS）：行缓冲回退 + 回显 "\b \b" 三连
-                // （退一格、抹字符、归位）；空行退格无操作。
-                if li > 0 {
-                    li -= 1;
-                }
-                berry_hal_aarch64::uart_putc(b'\x08');
-                berry_hal_aarch64::uart_putc(b' ');
-                berry_hal_aarch64::uart_putc(b'\x08');
-            } else if b == 0x15 {
-                // P5 v0.5 Ctrl-U：行擦除（readline 惯例）——回显退格 ×li +
-                // 清空（浏览中 = 擦已载入历史行的编辑面，hi 不动——同打字/
-                // 退格语义：编辑的是「已载入的行」，Enter 才定稿）。
-                erase_line_echo(li);
-                li = 0;
-            } else if b < 0x20 {
-                // 其他控制字节（非 \n\r/退格/Ctrl-U）：忽略——不回显不缓冲
-                // （Ctrl-C 等信号语义 v1 无）。
+                rlen = 0;
+            } else if b >= 0x20 && b < 0x7f && rlen < raw.len() {
+                raw[rlen] = b;
+                rlen += 1;
+            }
+            // C-4 逐字节透传（无条件——含断行/控制字节：行编辑/echo 归 bsh）
+            // = 进转发吸收环；环满丢新计数（顺序保持：老字节先走）。
+            if flen == fring.len() {
+                fwd_drop += 1;
             } else {
-                berry_hal_aarch64::uart_putc(b); // echo
-                if li < line.len() {
-                    line[li] = b;
-                    li += 1;
-                }
-                // else：行溢出——丢字节、li 钉在 len（断行时转发截断行）。
+                fring[ftail] = b;
+                ftail = (ftail + 1) % fring.len();
+                flen += 1;
             }
         }
-        // A-2：pending 行转发（bsh stdin）——非空即试发；满 -EBUSY 保持
-        // pending（等 idx==3 WRITABLE / 心跳唤醒重发；bsh 缺席/死 = 8 深队列
-        // 灌满后丢弃，见 fwd_drop）。其它错码 = 接线错乱（boot 定值 + SEND
-        // right 在手），panic 兜底。
-        if plen > 0 {
+
+        // C-4r：吸收环排水（bsh stdin）——非空即逐字节试发；满 -EBUSY 停排
+        // （余量留环，等 idx==3 WRITABLE / 心跳唤醒续排；bsh 缺席/死 = 环满
+        // 后丢新，见 fwd_drop）。其它错码 = 接线错乱（boot 定值 + SEND right
+        // 在手），panic 兜底。
+        while flen > 0 {
             let rs = svc6(
                 NR_CHANNEL_SEND as u64,
                 h_bsh as u64,
-                pend.as_ptr() as u64,
-                plen as u64,
+                core::ptr::addr_of!(fring[fhead]) as u64,
+                1,
                 0,
                 0,
                 0,
@@ -1825,9 +1634,11 @@ extern "C" fn task_console(arg: usize) -> ! {
                 "console: bsh-stdin send ret={}",
                 rs
             );
-            if rs == 0 {
-                plen = 0;
+            if rs == ERR_BUSY as i64 {
+                break;
             }
+            fhead = (fhead + 1) % fring.len();
+            flen -= 1;
         }
         // drain：排空本端队列（发送侧重试 + 深度 8 → 批量有界）。
         loop {

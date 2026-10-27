@@ -67,7 +67,7 @@
 //! 末段子进程真码（reap Err → 1——真码源 = 0x3A `process_get_exit_code`，
 //! P5 扩号）。
 
-use std::io::{BufRead, Write};
+use std::io::{Read, Write};
 
 use berry_libc::io::{close, fs_h, read, rootfs_h, write};
 use berry_libc::{
@@ -82,10 +82,14 @@ use berry_sys::{
     berry_object_wait_one, Handle, BERRY_ERR_AGAIN, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV,
     RIGHT_SEND, SIGNAL_READABLE,
 };
-use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec};
+use berry_exec::{channel_pair, cpio_find, cpio_names, spawn_rootfs_elf, ChildHandles, SpawnSpec};
 // C-1 刀 4：fsproto 只余帽常量（usage 预检 + 读面失控兜底）——协议面
 // （encode/parse/ST_*）随自有 RPC 退役，全部走 berry-libc。
 use berry_fsproto::{FILE_SIZE_MAX, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX};
+
+// C-4：行编辑器（console 退化 = 逐字节透传——echo/退格/历史/Tab 补全归
+// bsh；编辑会话归属裁定兑现，shell设计 §2.4）。
+mod editor;
 
 // 链接种子（stdhello 同款）：rlib/LTO 按需保留——无引用则 berry-libc 的
 // crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -168,6 +172,11 @@ fn main() {
     //    grep/which/find 三步走 RAM 树 fs gift（零盘面），排 fat 族之前
     //    （EFI 路无盘亦打 U4——smoke-image ECO canon 同面）。
     u4_selftest();
+    // —— C-4：Tab 补全 + 行编辑接管自验（`TAB ok` = rootfs 相第 33 标记）。
+    //    链序契约同 U2/U3/U4——零 fs 盘面（FakeSrc 状态机 + cpio 直读 +
+    //    RAM 树 /etc），排 fat 族之前（EFI 路无盘亦打 TAB——smoke-image
+    //    ECO canon 同面）。
+    tab_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -180,11 +189,16 @@ fn main() {
     dir_selftest();
     cd_selftest();
 
-    // —— 交互循环（化妆面）：prompt 只挂命令完成；空读（fd0 的 10s 帽超时
-    //    EOF 化）= 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也
-    //    不刷屏；真交互者敲行即得响应）。
+    // —— 交互循环（化妆面）：**C-4 起行编辑归 bsh**（console 逐字节透传，
+    //    echo/退格/历史召回/Tab 补全全在本端——editor.rs）。逐字节 read +
+    //    Editor::feed；行定稿走 run_line。空读（fd0 的 10s 帽超时 EOF 化）
+    //    = 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也不刷屏；
+    //    真交互者敲行即得响应——与 read_line 时代零漂移）。
     let stdin = std::io::stdin();
+    let mut sin = stdin.lock();
     let mut out = std::io::stdout();
+    let mut ed = editor::Editor::new();
+    let mut src = RealSrc;
     let mut prompt_pending = true;
     loop {
         if prompt_pending {
@@ -192,13 +206,228 @@ fn main() {
             out.flush().unwrap();
             prompt_pending = false;
         }
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+        let mut b = [0u8; 1];
+        if sin.read(&mut b).unwrap_or(0) == 0 {
             continue; // 空读噪声：不重刷 prompt、不睡（下轮 read 再阻塞 10s）
         }
-        run_line(line.trim_end_matches(['\n', '\r']), &mut vars, &mut status, &mut out);
-        prompt_pending = true;
+        match ed.feed(b[0], &mut src) {
+            editor::Flow::Continue(echo) => {
+                if !echo.is_empty() {
+                    out.write_all(&echo).unwrap();
+                    out.flush().unwrap();
+                }
+            }
+            editor::Flow::Line(line) => {
+                out.write_all(b"\n").unwrap(); // Enter 回显（归调用方契约）
+                let s = String::from_utf8_lossy(&line).into_owned();
+                run_line(s.trim_end_matches(['\n', '\r']), &mut vars, &mut status, &mut out);
+                prompt_pending = true;
+            }
+        }
     }
+}
+
+/// C-4 真源（Tab 候选）：命令位 = 内建 ∪ rootfs bin/（cpio 直读——libc
+/// fs 视图无 /bin，bin/ 只存在于 rootfs VMO，`run` 同源；双源同名由
+/// berry-complete 内部去重）；路径位 = libc opendir（RAM overlay + FAT
+/// 回落——与 `ls` 同一条路）。"." = 编辑器的 cwd 相对名形态 → getcwd
+/// 绝对化（cwd 值来自同一条 fs，白名单必过）。
+struct RealSrc;
+
+impl editor::TabSource for RealSrc {
+    fn commands(&mut self, out: &mut Vec<Vec<u8>>) {
+        const BUILTINS: [&[u8]; 11] = [
+            b"help", b"exit", b"env", b"echo", b"run", b"cat", b"ls", b"mkdir", b"rm",
+            b"cd", b"pwd",
+        ];
+        for b in BUILTINS {
+            out.push(b.to_vec());
+        }
+        let h = rootfs_h();
+        if h != 0 {
+            cpio_names(h, b"bin/", &mut |name| out.push(name.to_vec()));
+        }
+    }
+
+    fn entries(&mut self, dir: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
+        let d: Vec<u8> = if dir == b"." {
+            let mut buf = [0u8; 160];
+            // SAFETY: buf 可写、长度如参；null = 错（cwd 面 Err 静默）。
+            let r = unsafe { getcwd(buf.as_mut_ptr() as *mut _, buf.len()) };
+            if r.is_null() {
+                return Err(());
+            }
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            buf[..len].to_vec()
+        } else {
+            dir.to_vec()
+        };
+        // 尾 '/' 剥到只剩根：fsproto path_valid 空段拒（前导/尾随/连续
+        // NUL）——编辑器 dir 形态恒含尾 '/'，直接送 LOOKUP = ST_BAD
+        // （C-4 真机首跑实抓）；根 "/" 保持原样（根寻址立法 nlen 段面）。
+        let mut end = d.len();
+        while end > 1 && d[end - 1] == b'/' {
+            end -= 1;
+        }
+        let mut p = d[..end].to_vec();
+        p.push(0);
+        // SAFETY: p NUL 结尾；DIR 指针按 libc 目录族契约使用。
+        let dp = unsafe { opendir(p.as_ptr() as *const _) };
+        if dp.is_null() {
+            return Err(());
+        }
+        let mut names = Vec::new();
+        loop {
+            // SAFETY: 返回指向 DIR 内部 Dirent（即拷即用）；null = 目录尾。
+            let ent = unsafe { readdir(dp) };
+            if ent.is_null() {
+                break;
+            }
+            // SAFETY: ent 有效；d_name NUL 结尾名区。
+            let name = unsafe { &(*ent).d_name };
+            let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+            names.push(name[..len].to_vec());
+        }
+        unsafe { closedir(dp) };
+        Ok(names)
+    }
+}
+
+/// Tab 补全自验（C-4，`TAB ok` = rootfs 相第 33 标记）。九步全确定性：
+/// ⓪-⑥ FakeSrc 喂键断言编辑器状态机（唯一补全/多候选列示/历史召回环/
+/// 退格三连与空行无操作/Ctrl-U/ESC 非 final 复位落下/路径位补全——内核
+/// 版语义对齐回归面）；⑦⑧ 真源两钉（cpio bin/ 含 ps、libc /etc 含
+/// mtab——「补全的源是真的」两面各一钉）。失败 eprintln + park（TAB ok
+/// 缺失 → smoke FAIL 兜底）。
+fn tab_selftest() {
+    use editor::{Editor, Flow, TabSource};
+
+    /// 确定性假源：命令位三候选（echo/env/exit——唯一命中与公共前缀零
+    /// 增量两面可造）；路径位只识 /etc/。
+    struct FakeSrc;
+    impl TabSource for FakeSrc {
+        fn commands(&mut self, out: &mut Vec<Vec<u8>>) {
+            for c in [b"echo" as &[u8], b"env", b"exit"] {
+                out.push(c.to_vec());
+            }
+        }
+        fn entries(&mut self, dir: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
+            if dir == b"/etc/" {
+                Ok(vec![b"mtab".to_vec()])
+            } else {
+                Err(())
+            }
+        }
+    }
+
+    /// 喂键串：收 (echo, lines)——echo = Continue 累计回显字节、lines =
+    /// Line 定稿集（Enter 事件按序入列）。
+    fn feed_all(ed: &mut Editor, src: &mut dyn TabSource, keys: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let (mut echo, mut lines) = (Vec::new(), Vec::new());
+        for &k in keys {
+            match ed.feed(k, src) {
+                Flow::Continue(e) => echo.extend_from_slice(&e),
+                Flow::Line(l) => lines.push(l),
+            }
+        }
+        (echo, lines)
+    }
+
+    let mut src = FakeSrc;
+    let mut fails: Vec<&str> = Vec::new();
+
+    // ⓪ 命令位唯一补全：`ec`+Tab → 行与回显双面 `echo `（后缀 ho + 尾空格）。
+    let mut ed = Editor::new();
+    let (e, lines) = feed_all(&mut ed, &mut src, b"ec\t");
+    if ed.line() != b"echo " || e.as_slice() != b"echo " || !lines.is_empty() {
+        fails.push("⓪ 唯一补全");
+    }
+
+    // ① 多候选：`e`+Tab → 公共增量空（lcp(echo,env,exit)=prefix）——列示
+    // 三名 + prompt/当前行重显，行不动。
+    let mut ed = Editor::new();
+    let (e, lines) = feed_all(&mut ed, &mut src, b"e\t");
+    if ed.line() != b"e" || e.as_slice() != b"e\necho env exit\nbsh> e" || !lines.is_empty() {
+        fails.push("① 多候选列示");
+    }
+
+    // ② 历史召回环：两行入史（cat=0 新 / ls=1 旧）→ 首翻 newest → 次翻
+    // ls → 下翻回 cat → 下翻到 live 清行（内核版对抗审查面全保持）。
+    let mut ed = Editor::new();
+    let (e, lines) = feed_all(&mut ed, &mut src, b"ls\ncat\n");
+    if lines != vec![b"ls".to_vec(), b"cat".to_vec()] || e.as_slice() != b"lscat" {
+        fails.push("② 历史入环");
+    }
+    let (e, _) = feed_all(&mut ed, &mut src, b"\x1b[A");
+    if ed.line() != b"cat" || e.as_slice() != b"cat" {
+        fails.push("② 上翻 newest");
+    }
+    let (e, _) = feed_all(&mut ed, &mut src, b"\x1b[A");
+    if ed.line() != b"ls" || e.as_slice() != b"\x08 \x08\x08 \x08\x08 \x08ls" {
+        fails.push("② 上翻次新");
+    }
+    let (e, _) = feed_all(&mut ed, &mut src, b"\x1b[B");
+    if ed.line() != b"cat" || e.as_slice() != b"\x08 \x08\x08 \x08cat" {
+        fails.push("② 下翻回 newest");
+    }
+    let (e, _) = feed_all(&mut ed, &mut src, b"\x1b[B");
+    if ed.line() != b"" || e.as_slice() != b"\x08 \x08\x08 \x08\x08 \x08" {
+        fails.push("② 下翻到 live 清行");
+    }
+
+    // ③ 退格三连 + 空行无操作：ab 两退（b、a 依次落）+ 第三退空行零回显。
+    let mut ed = Editor::new();
+    let (e, _) = feed_all(&mut ed, &mut src, b"ab\x7f\x7f\x7f");
+    if ed.line() != b"" || e.as_slice() != b"ab\x08 \x08\x08 \x08" {
+        fails.push("③ 退格/空行无操作");
+    }
+
+    // ④ Ctrl-U 擦全行：abcd 四格回擦。
+    let mut ed = Editor::new();
+    let (e, _) = feed_all(&mut ed, &mut src, b"abcd\x15");
+    if ed.line() != b"" || e.as_slice() != b"abcd\x08 \x08\x08 \x08\x08 \x08\x08 \x08" {
+        fails.push("④ Ctrl-U 擦全行");
+    }
+
+    // ⑤ ESC 非 final 复位落下回归：ESC '[' 后 0x7f（非参数非 final）→
+    // 复位按普通字节落下 = 退格（内核版对抗审查实抓面）。
+    let mut ed = Editor::new();
+    let (e, _) = feed_all(&mut ed, &mut src, b"xy\x1b[\x7f");
+    if ed.line() != b"x" || e.as_slice() != b"xy\x08 \x08" {
+        fails.push("⑤ ESC 非 final 复位落下");
+    }
+
+    // ⑥ 路径位补全：`cat /etc/m`+Tab → `/etc/mtab`（无尾空格——路径位
+    // add_space=false）。
+    let mut ed = Editor::new();
+    let (e, _) = feed_all(&mut ed, &mut src, b"cat /etc/m\t");
+    if ed.line() != b"cat /etc/mtab" || e.as_slice() != b"cat /etc/mtab" {
+        fails.push("⑥ 路径位补全");
+    }
+
+    // ⑦ 真源钉 1：命令位含内建 echo 与 rootfs bin/ps（C-3 双源真值）。
+    let mut rs = RealSrc;
+    let mut cmds = Vec::new();
+    rs.commands(&mut cmds);
+    if !cmds.iter().any(|c| c.as_slice() == b"echo") || !cmds.iter().any(|c| c.as_slice() == b"ps") {
+        fails.push("⑦ 真源命令位");
+    }
+
+    // ⑧ 真源钉 2：路径位 /etc/ 含 mtab（fsmgr 预建 RAM 树——EFI 路同在）。
+    match rs.entries(b"/etc/") {
+        Ok(names) => {
+            if !names.iter().any(|n| n.as_slice() == b"mtab") {
+                fails.push("⑧ 真源路径位");
+            }
+        }
+        Err(()) => fails.push("⑧ 真源路径面不可用"),
+    }
+
+    if !fails.is_empty() {
+        eprintln!("bsh: tab selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("TAB ok");
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码

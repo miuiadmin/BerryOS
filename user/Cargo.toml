@@ -49,8 +49,12 @@
 # = svcmgr 服务端（拉起账本编码——本工作区成员，none target）+ ps bin
 # 客户端（user/bins/ps 独立小工作区编 musl target，同 stdhello/bsh 不入
 # members））。
+# C-4：berry-complete（bsh Tab 补全纯函数 crate——token 切分/前缀匹配/
+# 列示，host 测试；单消费 = bsh 编辑器（独立小工作区 path 依赖，musl
+# target，同 stdhello 不入 members——但本 crate 无 syscall 面故入 members
+# 挂 host 测试无碍 none 工作区纪律））。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

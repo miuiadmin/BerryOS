@@ -59,6 +59,8 @@ berry> ls | grep boot
 
 P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其上是自写 mini-readline：退格 / 上下键历史 / Tab 补全（命令名 + 路径）。不引 ncurses，串口 raw 模式够用。
 
+**归属裁定与兑现（C-4，2026-10-28）**：原留档「Tab 补全 defer v2——补全需 rootfs 知识」经 C-4 **提前兑现且不破微内核纪律**——console（内核）无 rootfs/fs 知识，行编辑归属整体迁 bsh：console 退化为逐字节透传，echo/退格/历史/Ctrl-U/Tab 补全全部在 bsh `editor.rs`（std 版 mini-readline，语义逐字对齐内核时代形态）。Tab 候选源 = bsh 自持能力：内建命令表 ∪ rootfs `bin/`（cpio 枚举）+ libc 目录视图（`opendir`/`readdir`）——**内核零新面**。切分/匹配/三态消费（Unique 补全/Ambiguous 公共增量+列示/None 静默）收敛在 `user/berry-complete` 纯函数 crate（host 10 测）。**C-4r 吸收环（同日回归修复）**：逐字节透传首版的转发吸收面只有「通道 8 深 + 1B pending」≈ 4.5s 打字流——bsh 忙窗（如 `run fail` 的 spawn+reap 数秒，TCG 宿主高载更长）内后续字节被覆盖丢弃，且 `rx_pop_all` 突发多字节只存活末字节（smoke RX 相段 d 三行零间歇注入实录两连败，f42t 缺失）；修法 = console 侧 128B 字节级 FIFO 环（纯缓冲、零行/编辑语义——归属裁定不破），环满丢新计数 `fdrop=`，bsh-stdin WRITABLE 项仅环非空时入列（A-2 恒满足项纪律保持），复刻四段全过（f42t 落串口 + fdrop=0 全程）。
+
 ## 3. 命令三梯队
 
 | 梯队 | 命令 | 来源 | 说明 |
@@ -82,7 +84,7 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 
 | 时点 | 内容 | 验收 |
 |------|------|------|
-| P5 第一刀 | PL011 RX 中断 + mini-readline（**已落地 2026-10，A-1/A-2 两步**：A-1 = UART RX 面 + GIC SPI 33 + console 三项 wait_many，`RX ok` = smoke 交互相标记；A-2 = 键盘行转发端 + bsh 挂载。mini-readline（P5 v0 收官补齐）= console 行编辑归属：退格/上下键历史（8×96B newest-first 环 + ESC 序列状态机）/Ctrl-U，**Tab 补全 defer v2**——补全需 rootfs 知识（编辑会话归属随 v2 留档 §2.4）；smoke RX 相注入退格 + `ESC[A` 召回双验） | 串口双向：能打字回显、历史（smoke 三跑注入序列断言） |
+| P5 第一刀 | PL011 RX 中断 + mini-readline（**已落地 2026-10，A-1/A-2 两步**：A-1 = UART RX 面 + GIC SPI 33 + console 三项 wait_many，`RX ok` = smoke 交互相标记；A-2 = 键盘行转发端 + bsh 挂载。mini-readline（P5 v0 收官补齐）= console 行编辑归属：退格/上下键历史（8×96B newest-first 环 + ESC 序列状态机）/Ctrl-U，Tab 补全当时 defer v2（补全需 rootfs 知识）；**C-4（2026-10-28）兑现**：行编辑归属迁 bsh（console 退化逐字节透传），Tab 补全 = 内建 ∪ rootfs bin/ + 目录视图三态面，`TAB ok` = rootfs 相标记（见 §2.4 归属裁定）；smoke RX 相注入退格 + `ESC[A` 召回双验） | 串口双向：能打字回显、历史（smoke 三跑注入序列断言） |
 | P5 v0 | bsh：内建命令 + `run` 外部程序 + 环境变量 + `&&`（**已落地 2026-10**：环境变量 = shell 局部 vars + `$NAME`/`$?` 展开 + `env` 内建（子进程 env 传递 defer v2——argv 块无 env 面，`export` 随之）；`&&` = 切行短路 + 每段执行时展开（`A=1 && echo $A` 求值序）；状态码 sh 惯例 0/2/126/127/子真码——真码源 = **0x3A `process_get_exit_code`（P5 扩号，ABI 单源管线首次真实扩号 28→29）**，`ChildHandles::reap` 改 `Result<i32>`；`fail`（exit 42）= rootfs 确定性非零源；自验 = and_selftest 三步断言 + smoke `EXIT ok` 强化 code==0） | 串口跑 `run hello`（`开发体验.md` §3 场景成真；bsh `&&` 自验内嵌 `run fail` 真码 42） |
 | P5 v0.5 | channel 管道 `\|`（已落地 2026-10：`PIPE ok` = rootfs 相第 10 标记，bsh 三跑对拍自验）；重定向 `>` 依赖 FS（/svc/fs），随 P6 | `hexyl \| hexyl` 端到端 |
 | P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向（A-1 最小面已落地 2026-10：fsmgr RAM-fs 服务 + berry-fsproto 协议 + bsh `>`/cat/ls，`FS ok n=` = rootfs 相第 11 标记；**2026-10-23 注：P6 已收官，uutils 全家与 berryctl/powertop/trace 三件套未随 P6 落地——滑移 M-VM（M-G3「CLI 可用」站，C-2 拆步，见 `VM里程碑设计草案.md`）**） | `berryctl --json` 遥测可读 |

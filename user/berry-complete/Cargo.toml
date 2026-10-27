@@ -1,0 +1,14 @@
+[package]
+name = "berry-complete"
+version = "0.1.0"
+edition = "2021"
+# C-4（docs/shell设计.md §2.4 留档兑现）：bsh Tab 补全纯函数 crate，
+# `berry-psproto` 先例（「解析器即产品」）——`cfg_attr(not(test), no_std)`
+# + `extern crate alloc`：库本体 no_std（未来 no_std 服务可消费），test
+# 构建放开 std 仅为默认测试挂具。单消费 = bsh 编辑器（user/bins/bsh
+# 独立小工作区 path 依赖，musl target）；host 测试经 justfile test-host
+# 显式行跑。
+description = "BerryOS bsh Tab completion: pure token-split / prefix-match / listing primitives"
+license = "Apache-2.0"
+
+[dependencies]

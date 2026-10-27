@@ -29,18 +29,22 @@
 #      C-3 起含 PS ok n=/BC ok——ps 查询 RPC + berryctl 三子命令（svcmgr
 #      ps_selftest/bc_selftest：账本全表编码 + 家名单断言 + ver/ps/mem
 #      三 op 渲染行逐字节对拍，rootfs 相第 31/32 标记）。
+#      C-4 起含 TAB ok——bsh Tab 补全 + 行编辑接管自验九步（console 退化
+#      逐字节透传、编辑/echo/历史/Tab 全归 bsh editor：FakeSrc 状态机
+#      回归面 ⓪-⑥ + 真源两钉 ⑦⑧（cpio bin/ps + libc /etc/mtab）），
+#      rootfs 相第 33 标记。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），58 标记
-#      （boot 26 + rootfs 32——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），59 标记
+#      （boot 26 + rootfs 33——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/TCPS ok echo=/APP ok n=/
-#      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/PS ok n=/BC ok
+#      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/PS ok n=/BC ok
 #      在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
 #      服务/.bap 应用拉起消费链/RAM 目录树 v2 五 op 自验/uutils core 家族
 #      空文件元数据九步链 + echo/true/false 执行六步链 + text 批五步执行链
 #      （门审裁形后）+ EL0 四项微基准格式断言收口（B-1）+ 深坑六件八步
-#      执行链（U4——C-2c 挂账刀）
+#      执行链（U4——C-2c 挂账刀）+ Tab 补全九步（TAB——C-4）
 #      全过，
 #      状态谓词门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
@@ -51,7 +55,9 @@
 #           `bsh: hellq: not found`（A-2 行编辑 + 转发 + bsh 应答；注入词
 #           刻意非 cpio 在档名——C-2a 起裸名 = bin/ PATH 派发，真名会真跑）；
 #        c. `\x1b[A`+`!\n` → 历史召回 `hellq` + `!` → 转发 →
-#           `bsh: hellq!: not found`（P5 v0 mini-readline：ESC[A 上翻）；
+#           `bsh: hellq!: not found`（P5 v0.5 mini-readline ESC[A 上翻；C-4
+#           起编辑归 bsh editor.rs——语义逐字对齐，rx 行亦入 bsh 史故
+#           newest 恒 = hellq）；
 #        d. `run fail\n` → `$?`=42 → `echo f$?t > OUT.TXT\n`（大写 8.3 名
 #           → FAT 层落盘，内容 "f42t\n"）→ `cat OUT.TXT\n` 读回——断言
 #           grep 'f42t'：命令文本只含未展开的 `f$?t`，串口回显逐字节散布
@@ -70,7 +76,7 @@
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. C-0 刀 4 FAT 子目录相（第四跑）：盘 = mkfat **--fixture 模式**（fixture
 #      专列 DATA/ 目录 + DATA/NOTE.TXT——默认盘不含，默认盘字节零漂移硬线
-#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），58 标记载明全链
+#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），59 标记载明全链
 #      在目录盘上照跑后注入三段（断言与注入行互非子串 + 顺序防回声）：
 #      `ls DATA` → grep 'NOTE.TXT'（READDIR FAT 回落链走查——断言先于一切
 #      含 NOTE.TXT 的注入行回显）→ `cat DATA/NOTE.TXT` → grep
@@ -79,7 +85,7 @@
 #      类型冲突面）。
 #   7. P6 A-6 FAT 持久化相（第五跑）：**不重造盘**（复用第 5 相已写的
 #      disk.img——mkfat 重产 = 持久化零验收；disk_dirs.img 不复用——无
-#      跨盘盘混），58 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
+#      跨盘盘混），59 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
 #      旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT` → grep 'f42t'——
 #      `>` 落的是真扇区、跨 boot 存活。盘 cache writeback=off：QEMU 由
 #      SIGTERM 终止，writeback 模式可能不刷页缓存（所有 -drive 行统一，
@@ -194,6 +200,12 @@ fail() {
 assert_marker() {
   if [ "$1" = "DEMO ok" ]; then
     grep -qE '(^|[^I])DEMO ok' "$LOG"
+  elif [ "$1" = "TAB ok" ]; then
+    # C-4：boot 期 TAGTAB ok 恰含 "TAB ok" 子串——qF 假阳性。只排前邻 G
+    # （TAGTAB 的 G）——真标记嵌稳态矩阵巨行中段、前驱可为任意大写矩阵
+    # 字母（实测 BTAB ok），排整个 A-Z 会把真标记一并拒掉（DEMO ok 只排
+    # I 同型教训：排除集 = 假阳性源的唯一直接前驱字符）。
+    grep -qE '(^|[^G])TAB ok' "$LOG"
   else
     grep -qF "$1" "$LOG"
   fi
@@ -451,15 +463,20 @@ QEMU_PID=$!
 # 对拍后打 `BC ok`）。零 fs 盘面（rootfs 内 ELF spawn + 纯 RAM RPC），
 # EFI 路可达同面——rootfs 相第 31/32 标记（状态谓词；两 spawn + 4 RPC
 # ≈ +10-20s TCG，DEADLINE_ROOTFS 帽不动）。
+# TAB（C-4）：bsh tab_selftest 九步——⓪-⑥ FakeSrc 喂键断言编辑器状态机
+# （唯一补全/多候选列示/历史召回环/退格/Ctrl-U/ESC 非 final 复位落下/
+# 路径位），⑦⑧ 真源两钉（cpio bin/ 含 ps、libc /etc/ 含 mtab）。零 fs
+# 盘面、零 spawn（纯内存面），链序排 fat 族前（EFI 路亦打）——rootfs 相
+# 第 33 标记。断言走 assert_marker 特例（TAGTAB ok 子串假阳性面）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "PS ok n=" "BC ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "PS ok n=" "BC ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
     || fail "QEMU 提前退出（rootfs 相）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   missing=""
   for m in "${ROOTFS_MARKERS[@]}"; do
-    grep -qF "$m" "$LOG" || missing="${missing:+$missing }$m"
+    assert_marker "$m" || missing="${missing:+$missing }$m"
   done
   # vmo 行须非降级形态（=none 即 seam 断：内核没把 rootfs 包进 VMO）。
   if [ -z "$missing" ] && grep -q 'ROOTFS vmo=none' "$LOG"; then
@@ -473,7 +490,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + PS ok n= + BC ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + PS ok n= + BC ok）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
@@ -533,7 +550,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + vir
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：58 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：59 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)

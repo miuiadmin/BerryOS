@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-complete"
+version = "0.1.0"
+
+[[package]]
 name = "berry-exec"
 version = "0.1.0"
 dependencies = [
@@ -42,6 +46,7 @@ version = "0.1.0"
 name = "bsh"
 version = "0.1.0"
 dependencies = [
+ "berry-complete",
  "berry-exec",
  "berry-fsproto",
  "berry-libc",

@@ -520,6 +520,43 @@ pub fn cpio_find(h_rootfs: Handle, name: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
+/// cpio 目录前缀枚举（C-4 Tab 补全命令名候选源）：步进走档收集 name 以
+/// `dir` 开头的**直接子项**（余部非空且不含 '/'），截去前缀经回调送出。
+/// 与 [`cpio_find`] 同款步进纪律（512B 窗、归档永不整档驻留）；无 rootfs/
+/// 档坏 → 中途返（已收部分保留——补全候选的非完整性无正确性面，静默）。
+/// 回调形（`&mut dyn FnMut`）保 no_std 零 alloc：收集容器归调用方（bsh
+/// std 侧 Vec）。
+pub fn cpio_names(h_rootfs: Handle, dir: &[u8], f: &mut dyn FnMut(&[u8])) {
+    let mut cap = 0u64;
+    if berry_vmo_get_size(h_rootfs, &mut cap) != 0 {
+        return; // 无 rootfs：vmo=none → 空枚举（补全静默无操作）
+    }
+    // SAFETY: 调用方单线程顺序调用，本窗独占（cpio_find 同款纪律）。
+    let win: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(STEP_WIN) as *mut u8, 512)
+    };
+    let mut pos = 0u64;
+    while pos < cap {
+        let want = ((cap - pos).min(win.len() as u64)) as usize;
+        if berry_vmo_read(h_rootfs, win.as_mut_ptr(), pos, want) != 0 {
+            return;
+        }
+        match berry_loader::cpio_step(&win[..want], pos, cap) {
+            Ok(berry_loader::StepOutcome::End) => return,
+            Ok(berry_loader::StepOutcome::Entry(s)) => {
+                let name = s.name.as_bytes();
+                if let Some(rest) = name.strip_prefix(dir) {
+                    if !rest.is_empty() && !rest.contains(&b'/') {
+                        f(rest);
+                    }
+                }
+                pos = s.next_off;
+            }
+            Err(_) => return, // 档坏：同 cpio_find 的查询面降级
+        }
+    }
+}
+
 /// 自陷：读未映射地址 → D-abort(lower) → `user_fault_exit` 只死自己
 /// （svcmgr 同款——libc `park` 不 trap 的 watchdog 契约不适用于 syscall 面
 /// 链断，标记缺失 = smoke FAIL 兜底）。
