@@ -637,9 +637,10 @@ pub unsafe extern "C" fn fstat(fd: c_int, out: *mut Stat) -> c_int {
 // —— statfs（C-2 刀 2：卷级真值——df 面）——
 
 /// statfs 的 f_files/f_ffree 定值：RAM 树目录帽（berry-fsproto
-/// `DIR_COUNT_MAX`=16）域——FAT 卷无 inode 配额真值可报，给域内非零定值
-/// 保持「已探测文件系统」语义（uucore 只在 `df -i` 才消费这对）。
-const STATFS_FILES: u64 = 16;
+/// `DIR_COUNT_MAX`=17——含启动预建 etc 保留槽，用户可用 16）域——FAT 卷
+/// 无 inode 配额真值可报，给域内非零定值保持「已探测文件系统」语义
+/// （uucore 只在 `df -i` 才消费这对）。
+const STATFS_FILES: u64 = 17;
 
 /// `statfs`（libc crate 真原型：`(path, buf) -> c_int`）。**v1 单卷语义**：
 /// 忽略 path 内容（不按路径分卷——系统唯一 FAT 卷，fsproto STATFS 无路径
@@ -656,6 +657,36 @@ pub unsafe extern "C" fn statfs(path: *const c_char, buf: *mut Statfs) -> c_int 
             crate::set_errno(crate::EFAULT);
             return -1;
         }
+        statfs_fill(buf)
+    }
+}
+
+/// `fstatfs`（libc crate 真原型：`(fd, buf) -> c_int`）。**v1 单卷语义**
+/// 与 [`statfs`] 同体：fd 不分卷（console 0-2 与 fs-backed 3+ 同属唯一
+/// FAT 卷的打开面），仅校验非负（负 fd → EBADF）与 buf 非空（EFAULT）
+/// ——path 内容忽略的同族对称面；真值/值映射/降级锚全同 [`statfs`]。
+/// （对抗审查实抓：入册断言宣称 statfs/fstatfs 真实现而 fstatfs 零符号
+/// ——补实现让文档变真；uu_df 0.12.0 现役仅消费 statfs，此面为经 fd
+/// 消费方预留。）
+#[no_mangle]
+pub unsafe extern "C" fn fstatfs(fd: c_int, buf: *mut Statfs) -> c_int {
+    unsafe {
+        if buf.is_null() {
+            crate::set_errno(crate::EFAULT);
+            return -1;
+        }
+        if fd < 0 {
+            crate::set_errno(crate::EBADF);
+            return -1;
+        }
+        statfs_fill(buf)
+    }
+}
+
+/// 卷级真值共用体（`statfs`/`fstatfs` 同源——v1 单卷，path/fd 都不分
+/// 卷）：OP_STATFS RPC → `Statfs` 整形写入。值映射见 [`statfs`] 头注。
+unsafe fn statfs_fill(buf: *mut Statfs) -> c_int {
+    unsafe {
         match rpc_statfs(crate::io::fs_h()) {
             Ok(s) => {
                 let cluster = s.spc as u64 * 512;

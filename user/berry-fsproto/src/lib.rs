@@ -101,15 +101,18 @@ pub const PATH_MAX: usize = 128;
 pub const PATH_DEPTH_MAX: usize = 8;
 /// 单文件尺寸帽（服务端执法；客户端 GET 循环同值兜底 more 失控面）。
 pub const FILE_SIZE_MAX: usize = 16 * 1024;
-/// 文件数帽（服务端执法；静态堆 256KiB 预算内 8×16KiB=128KiB 稳态 + Vec
-/// 增长 transient）。
-pub const FILE_COUNT_MAX: usize = 8;
-/// LIST 应答名区帽（8 文件 × 名帽最坏 392B 超单消息——按容纳截断，截断 =
+/// 文件数帽（服务端执法；静态堆 256KiB 预算内 9×16KiB=144KiB 稳态 + Vec
+/// 增长 transient）。C-2 刀 2 起 9 = 8 用户可用 + 1 启动预建保留槽
+/// （fsmgr 预建 /etc/mtab 占 1——对抗审查实抓后保语义面：用户可用额
+/// 不因系统自占用静默收窄）。
+pub const FILE_COUNT_MAX: usize = 9;
+/// LIST 应答名区帽（9 文件 × 名帽最坏 441B 超单消息——按容纳截断，截断 =
 /// 后续文件不列，调用方可见）。
 pub const LIST_MAX: usize = 200;
 /// 目录数帽（刀 2：RAM overlay 树全局 Dir 节点计数，服务端执法——文件帽
-/// 的目录同族：树深/广度有界，深树 Vec 开销不失控）。
-pub const DIR_COUNT_MAX: usize = 16;
+/// 的目录同族：树深/广度有界，深树 Vec 开销不失控）。C-2 刀 2 起 17 =
+/// 16 用户可用 + 1 启动预建保留槽（fsmgr 预建 etc 目录占 1）。
+pub const DIR_COUNT_MAX: usize = 17;
 
 /// STAT 应答类型位：文件。
 pub const TYPE_FILE: u8 = 0;
@@ -1032,7 +1035,8 @@ mod tests {
                 assert_ne!(all[i], all[j], "状态码撞号：{} vs {}", all[i], all[j]);
             }
         }
-        // 刀 2 帽常量在册（双侧同步义务的服务端锚）。
-        assert_eq!(DIR_COUNT_MAX, 16);
+        // 刀 2 帽常量在册（双侧同步义务的服务端锚；C-2 刀 2 起含启动
+        // 预建保留槽：17 = 16 用户 + 1 etc，9 = 8 用户 + 1 mtab）。
+        assert_eq!(DIR_COUNT_MAX, 17);
     }
 }

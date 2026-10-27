@@ -544,13 +544,16 @@ impl Fat {
     /// fat2/root2 全程不改 self——任一步失败内存态零变化（client 重 PUT
     /// 重试路径成立）。返回 ST_OK / ST_FULL（数据簇·根目录满）/ ST_BAD。
     fn commit(&mut self, n11: [u8; 11], data: &[u8]) -> u8 {
-        // C-2 刀 2：FAT 写路径——STATFS 空闲缓存失效（入点即置：半途失败
-        // 的孤儿链只在盘面，重读比信任镜像诚实；空置一次的代价 = 下次
-        // STATFS 多 fat_sz 次 RPC，可忽略）。
-        self.free_dirty = true;
+        // 毒化早退先行：零状态触碰——STATFS 冻结真值仍可服务（对抗审查
+        // 实抓：置脏先于守卫会把「什么都没写」也标记过期，毒化后一次写
+        // 尝试即令 df 永久 ST_BAD，打破 statfs 文档契约）。
         if !self.sess_ok {
             return ST_BAD;
         }
+        // C-2 刀 2：FAT 写路径——STATFS 空闲缓存失效（守卫后、首写前置
+        // 脏：半途失败的孤儿链只在盘面，重读比信任镜像诚实；空置一次的
+        // 代价 = 下次 STATFS 多 fat_sz 次 RPC，可忽略）。
+        self.free_dirty = true;
         let csz = self.cluster_sz();
         let nclus = if data.is_empty() {
             0 // 空文件 first=0 无链（mkfat 空文件占簇惯例不采用——两端都解析）

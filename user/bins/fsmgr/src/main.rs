@@ -10,8 +10,9 @@
 //! ——无路径参，**严格串行 RPC**——一请求一
 //! 应答，队列深 1 用量，无乱序死锁面）；存储 = berry-fstree 目录树
 //! （RAM-fs——C-0 刀 2 起多段 NUL 路径，单段名 v1 语义零漂移；
-//! FILE_COUNT_MAX=8 × FILE_SIZE_MAX=16KiB + DIR_COUNT_MAX=16 静态堆
-//! 预算内）+ **FAT12 读写层**（`fat.rs`——A-6 起 8.3 大写名 staging +
+//! FILE_COUNT_MAX=9 × FILE_SIZE_MAX=16KiB + DIR_COUNT_MAX=17 静态堆
+//! 预算内——C-2 刀 2 起含启动预建保留槽（/etc + mtab 各占 1，用户可
+//! 用面保持 8/16 不因系统自占用收窄））+ **FAT12 读写层**（`fat.rs`——A-6 起 8.3 大写名 staging +
 //! TRUNC 即 commit 真写扇区，小写名/多段名走 RAM 树；分层路由与 commit
 //! 序见该模块头；v2 五 op 分层（C-0 刀 3 起）：LOOKUP/STAT 未命中回落
 //! FAT——单段 8.3 根面 + 多段子目录链（读面），READDIR 未命中回落 FAT

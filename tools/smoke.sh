@@ -18,7 +18,7 @@
 #      格式断言后 relay 收口，rootfs 相第 28 标记）；
 #      C-2 刀 2 起含 DF ok——df + statfs 真值面（statfs 几何定值 +
 #      RW.TXT 重定尺寸差分（相位无关）+ df 表格三步全过才打，rootfs 相
-#      第 29 标记；原案步④ du 表观尺寸首跑实录裁出挂账——uu_du 0.12.0
+#      第 29 标记；原案步③ du 表观尺寸首跑实录裁出挂账——uu_du 0.12.0
 #      无条件 thread::spawn 踩 std 线程面平台缺口（C-2c uu_sort 同型），
 #      见 bsh df_selftest 头注）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列

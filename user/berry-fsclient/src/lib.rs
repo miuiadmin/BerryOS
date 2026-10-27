@@ -7,9 +7,11 @@
 //!   组装成 open/close/read/write/lseek/stat/opendir/readdir/chdir/getcwd。
 //! - **会话机**（`rpc` 模块，`cfg(not(test))`）：自 bsh 迁居的 fs_rpc 核心
 //!   （严格串行 RPC、任一收侧超时即毒化会话、90s commit / 10s 常规双帽、
-//!   EBUSY 阻塞重试形态）+ fd 面分片 op。协议零新增——fsproto v2 十 op
-//!   原样（GET/PUT 自带 off，客户端游标 = 服务端无会话）+ C-2 刀 2
-//!   STATFS（卷级几何/空闲真值，无路径参——df/statfs 桩的原料）。
+//!   EBUSY 阻塞重试形态）+ fd 面分片 op。协议面全按 berry-fsproto 单源
+//!   消费：v1 四 op（PUT/TRUNC/GET/LIST——GET/PUT 自带 off，客户端游标
+//!   = 服务端无会话）+ v2 五 op（LOOKUP/MKDIR/UNLINK/READDIR/STAT）原样
+//!   零改动；C-2 刀 2 新增 STATFS（卷级几何/空闲真值，无路径参——df/
+//!   statfs 桩的原料），协议 9→10 op。
 //!
 //! ## C-1 两裁决（随五刀拆解单批准）
 //!
@@ -106,7 +108,8 @@ pub fn st_to_err(st: u8) -> FsErr {
 /// fd 表基址：0/1/2 = console/stdin（libc io.rs 现路径一字不动——R6），
 /// fs-backed fd 自 3 起。
 pub const FD_BASE: i32 = 3;
-/// fd 表容量（8 槽 fd 3..=10：RAM 树 FILE_COUNT_MAX=8 同量级；满 = EMFILE
+/// fd 表容量（8 槽 fd 3..=10：RAM 树用户可用文件帽 8 同量级
+/// （FILE_COUNT_MAX=9 含 mtab 预建保留槽，C-2 刀 2 起）；满 = EMFILE
 /// 面）。表项 ≈136B，libc 侧静态实例 ≈1.1KiB。
 pub const FD_MAX: usize = 8;
 
