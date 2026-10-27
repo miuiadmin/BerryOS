@@ -12,10 +12,14 @@
 # 结构性阻断，2026-10-25 probe 实证无 feature 门）；uu_which crates.io
 # 无发布线；tail/env/date 走查重、ICU4X/事件面宽，另刀裁。
 #
-# 为什么家族 workspace 而非 hexyl 式逐 crate 自绝：18 个成员共享一棵依赖
-# 树（uucore/clap/fluent……），单 Cargo.lock 锁死整族解析（18 独立 lock 的
-# uucore 版本漂移 = 各 bin 语义不同步）；单次构建全树复用 = 18 独立构建
-# 的 wall-clock 与磁盘的 1/18。drivers/ 工作区同款先例（第三例）。
+# C-2 刀 2 +df/du（=0.12.0 同锁步——20 成员）：df 消费 berry-libc statfs
+# 真值桩（OP_STATFS RPC）+ sync 空桩（探针实证全链缺符号恰此两枚）；
+# du 零新 libc 面（stat/opendir/readdir 已有面全兜）。
+#
+# 为什么家族 workspace 而非 hexyl 式逐 crate 自绝：20 个成员共享一棵依赖
+# 树（uucore/clap/fluent……），单 Cargo.lock 锁死整族解析（20 独立 lock 的
+# uucore 版本漂移 = 各 bin 语义不同步）；单次构建全树复用 = 20 独立构建
+# 的 wall-clock 与磁盘的 1/20。drivers/ 工作区同款先例（第三例）。
 #
 # 不入 user/ members（nearest-workspace 根在此，与 hexyl 自绝同效）；构建
 # 走 justfile build-user 的 std 面家族块（musl target + berry-ld + 家族
@@ -24,6 +28,8 @@ members = [
     "cat",
     "cp",
     "cut",
+    "df",
+    "du",
     "echo",
     "false",
     "head",
@@ -49,7 +55,7 @@ resolver = "2"
 # Linux 号在 berry 号表上随机对撞既有号（56=thread_set_priority 等）——
 # 「成功」即静默腐化、「失败」是错误码。use-libc 把后端翻到 libc crate FFI
 # = 链接期解析到 berry-libc 符号面（缺桩 loud 拒链，迭代补齐到绿）。
-# 18 成员统一挂（uucore 树全员含 rustix，单成员翻转会让 -p 单包构建的
+# 20 成员统一挂（uucore 树全员含 rustix，单成员翻转会让 -p 单包构建的
 # feature 统一面漂移——家族全图构建也要求同一面）。
 [workspace.dependencies]
 rustix = { version = "1", default-features = false, features = ["use-libc"] }

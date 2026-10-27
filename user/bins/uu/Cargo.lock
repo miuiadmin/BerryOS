@@ -399,6 +399,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "df"
+version = "0.1.0"
+dependencies = [
+ "berry-libc",
+ "rustix",
+ "uu_df",
+ "uucore",
+]
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -419,6 +429,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "du"
+version = "0.1.0"
+dependencies = [
+ "berry-libc",
+ "rustix",
+ "uu_du",
 ]
 
 [[package]]
@@ -1741,6 +1760,35 @@ dependencies = [
  "fluent",
  "memchr",
  "uucore",
+]
+
+[[package]]
+name = "uu_df"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "537b4991a0996888e1c64872f2fd2eea978102418e0576a58c2e4a0e8c0e716e"
+dependencies = [
+ "clap",
+ "fluent",
+ "rustix",
+ "thiserror",
+ "unicode-width",
+ "uucore",
+]
+
+[[package]]
+name = "uu_du"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ae0fca6efbb42021688f47ce7c1ef88059452c6b73b744c0a99304a38973363"
+dependencies = [
+ "clap",
+ "fluent",
+ "glob",
+ "rustc-hash",
+ "thiserror",
+ "uucore",
+ "windows-sys",
 ]
 
 [[package]]

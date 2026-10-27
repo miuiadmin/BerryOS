@@ -3,6 +3,8 @@
 //! 原料 = 刀 1 berry-fsclient（会话机 + 纯函数面），本模块只做**组装**：
 //! fd 表静态化、CStr→wire 解析、errno 映射、musl 结构布局。fd 0/1/2 =
 //! console/stdin（`io.rs` 现路径一字不动——R6）；fd≥3 = fs-backed。
+//! C-2 刀 2：+ `statfs`（卷级真值——OP_STATFS RPC 应答整形进 libc statfs
+//! 布局，df/du 面；无路径参，v1 单 FAT 卷）。
 //!
 //! 两裁决（随五刀拆解单批准）：
 //! 1. **fd 表 = 客户端游标**：read→`GET(path,off)`、write→`PUT(path,off)`
@@ -39,9 +41,9 @@ use core::ptr;
 
 use berry_fsclient::{
     commit, dirent_next, get_chunk, put_chunk, resolve_path, render_cwd, seek_offset, st_mode_of,
-    readdir as rpc_readdir, stat as rpc_stat, mkdir as rpc_mkdir, unlink as rpc_unlink,
-    FdEntry, FdTable, CHUNK, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX, RPC_BUF, SEEK_END, TYPE_DIR,
-    FsErr,
+    readdir as rpc_readdir, stat as rpc_stat, statfs as rpc_statfs, mkdir as rpc_mkdir,
+    unlink as rpc_unlink, FdEntry, FdTable, CHUNK, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX, RPC_BUF,
+    SEEK_END, TYPE_DIR, FsErr,
 };
 
 use crate::{c_char, c_int, c_void, off_t, size_t, ssize_t};
@@ -196,6 +198,47 @@ const _: () = {
     assert!(core::mem::offset_of!(Stat, __unused) == 120);
 };
 
+/// `struct statfs`（**libc crate** aarch64-musl 口径：120B——f_spare 取
+/// `[u64;4]`（32B）比 musl C 真身（`int[4]`、总 104B）大 16B；无碍：唯一
+/// 读写者 uucore::fsext 经 libc crate 同一布局 zeroed+解引用，不与真 musl
+/// 互操作）。2026-10-26 刀 2 探针（rustc const asserts 对真实 libc rlib
+/// 编译钉死，数字实证非目测）；消费链 = uu_df 的容量/空闲列。同型相邻对
+/// （f_blocks/f_bfree/f_bavail、f_files/f_ffree、f_namelen/f_frsize/
+/// f_flags）全在钉板覆盖内——C-2a Stat「首版漏钉相邻对」教训的照抄面。
+#[repr(C)]
+pub struct Statfs {
+    pub f_type: u64,      // @0
+    pub f_bsize: u64,     // @8
+    pub f_blocks: u64,    // @16
+    pub f_bfree: u64,     // @24
+    pub f_bavail: u64,    // @32
+    pub f_files: u64,     // @40
+    pub f_ffree: u64,     // @48
+    pub f_fsid: [i32; 2], // @56（fsid_t = [c_int; 2]，8B）
+    pub f_namelen: u64,   // @64
+    pub f_frsize: u64,    // @72
+    pub f_flags: u64,     // @80
+    pub f_spare: [u64; 4], // @88
+}
+
+// 布局钉板（Stat 同款纪律）：12 字段 + size 共 13 断言。
+const _: () = {
+    assert!(core::mem::size_of::<Statfs>() == 120);
+    assert!(core::mem::offset_of!(Statfs, f_type) == 0);
+    assert!(core::mem::offset_of!(Statfs, f_bsize) == 8);
+    assert!(core::mem::offset_of!(Statfs, f_blocks) == 16);
+    assert!(core::mem::offset_of!(Statfs, f_bfree) == 24);
+    assert!(core::mem::offset_of!(Statfs, f_bavail) == 32);
+    assert!(core::mem::offset_of!(Statfs, f_files) == 40);
+    assert!(core::mem::offset_of!(Statfs, f_ffree) == 48);
+    assert!(core::mem::offset_of!(Statfs, f_fsid) == 56);
+    assert!(core::mem::size_of::<[i32; 2]>() == 8);
+    assert!(core::mem::offset_of!(Statfs, f_namelen) == 64);
+    assert!(core::mem::offset_of!(Statfs, f_frsize) == 72);
+    assert!(core::mem::offset_of!(Statfs, f_flags) == 80);
+    assert!(core::mem::offset_of!(Statfs, f_spare) == 88);
+};
+
 /// `struct dirent`（musl aarch64：d_ino@0/d_off@8/d_reclen@16/d_type@18/
 /// d_name@19，总 280B 对齐尾垫）。
 #[repr(C)]
@@ -219,6 +262,11 @@ pub struct DIR {
     ino: u64,
 }
 
+/// stat 的 st_dev 定值：v1 单 FAT 卷主设备号——"FAT" ASCII（0x464154）非零
+/// 定值（C-2 刀 2：uu_df `mount_dev_id` = stat("/").st_dev 作挂载行分组键，
+/// 0 在其语义里与「stat 失败」的空串/无设备面难以区分；非零钉板）。
+const STAT_DEV: u64 = 0x0046_4154;
+
 unsafe fn fill_stat(out: *mut Stat, ty: u8, size: u32) -> c_int {
     let mode = match st_mode_of(ty) {
         Some(m) => m,
@@ -229,7 +277,7 @@ unsafe fn fill_stat(out: *mut Stat, ty: u8, size: u32) -> c_int {
         ptr::write(
             out,
             Stat {
-                st_dev: 0,
+                st_dev: STAT_DEV,
                 st_ino: INO_SEQ,
                 st_mode: mode,
                 st_nlink: 1,
@@ -580,6 +628,58 @@ pub unsafe extern "C" fn fstat(fd: c_int, out: *mut Stat) -> c_int {
             }
             Err(err) => {
                 crate::set_errno(errno_of(err));
+                -1
+            }
+        }
+    }
+}
+
+// —— statfs（C-2 刀 2：卷级真值——df 面）——
+
+/// statfs 的 f_files/f_ffree 定值：RAM 树目录帽（berry-fsproto
+/// `DIR_COUNT_MAX`=16）域——FAT 卷无 inode 配额真值可报，给域内非零定值
+/// 保持「已探测文件系统」语义（uucore 只在 `df -i` 才消费这对）。
+const STATFS_FILES: u64 = 16;
+
+/// `statfs`（libc crate 真原型：`(path, buf) -> c_int`）。**v1 单卷语义**：
+/// 忽略 path 内容（不按路径分卷——系统唯一 FAT 卷，fsproto STATFS 无路径
+/// 参；空指针仍拒 EFAULT，stat 族同面）；真值 = OP_STATFS RPC（fsmgr 从
+/// BPB 几何 + FAT 扫描填充）。值映射：f_bsize=f_frsize=簇字节（spc×512
+/// ——mkfat 卷扇区恒 512B）、f_blocks=cluster_count、f_bfree=f_bavail=
+/// free_clusters（FAT 无 root reserve）、f_type=0（`df -T` 才消费，v1 不
+/// 给；fstype 字串走 fsmgr 预建的静态 /etc/mtab，段④面）、f_namelen=
+/// NAME_MAX、f_flags=0。失败 = -1 + errno（NoFs→ENOENT 同降级锚）。
+#[no_mangle]
+pub unsafe extern "C" fn statfs(path: *const c_char, buf: *mut Statfs) -> c_int {
+    unsafe {
+        if path.is_null() || buf.is_null() {
+            crate::set_errno(crate::EFAULT);
+            return -1;
+        }
+        match rpc_statfs(crate::io::fs_h()) {
+            Ok(s) => {
+                let cluster = s.spc as u64 * 512;
+                ptr::write(
+                    buf,
+                    Statfs {
+                        f_type: 0,
+                        f_bsize: cluster,
+                        f_blocks: s.cluster_count as u64,
+                        f_bfree: s.free_clusters as u64,
+                        f_bavail: s.free_clusters as u64,
+                        f_files: STATFS_FILES,
+                        f_ffree: STATFS_FILES,
+                        f_fsid: [0, 0],
+                        f_namelen: NAME_MAX as u64,
+                        f_frsize: cluster,
+                        f_flags: 0,
+                        f_spare: [0; 4],
+                    },
+                );
+                0
+            }
+            Err(e) => {
+                crate::set_errno(errno_of(e));
                 -1
             }
         }

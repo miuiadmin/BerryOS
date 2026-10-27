@@ -92,6 +92,14 @@ neg_int!(
     mprotect => crate::EINVAL,
 );
 
+/// `sync`（C 原型 `void sync(void)`——libc crate 同形，C-2 刀 2；uu_df
+/// `--sync` 消费，探针实证 uu_df 全链缺符号恰 sync+statfs 两枚）：空桩
+/// 不是谎——v1 写通道逐 op 同步 commit（PUT staging + close TRUNC 即真写
+/// 扇区，双 FAT 随写随新），无进程内缓冲可刷；「刷盘」在零缓冲文件系统
+/// 上语义恒真（utimensat no-op 桩同款口径）。
+#[no_mangle]
+pub extern "C" fn sync() {}
+
 // —— fd/dir 族（closedir/dirfd 刀 2 起迁 fs.rs；readdir 同）——
 neg_int!(
     dup => crate::EBADF,
