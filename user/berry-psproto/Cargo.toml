@@ -1,0 +1,13 @@
+[package]
+name = "berry-psproto"
+version = "0.1.0"
+edition = "2021"
+# C-3 段①（docs/VM里程碑设计草案.md §C-3）：ps 查询 RPC 协议纯函数
+# crate，`berry-fsproto` 先例（「解析器即产品」）——`cfg_attr(not(test),
+# no_std)`：库本体 no_std（svcmgr 在 aarch64-unknown-none 下消费），test
+# 构建放开 std 仅为默认测试挂具。双消费：svcmgr 服务端（拉起账本编码）
+# + ps bin 客户端（`user/bins/ps` 独立小工作区 path 依赖，musl target）。
+description = "BerryOS ps query RPC protocol: pure encoder/parser for the C-3 process table"
+license = "Apache-2.0"
+
+[dependencies]

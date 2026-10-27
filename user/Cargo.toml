@@ -45,8 +45,12 @@
 # cfg(not(test))——毒化位/90s·10s 双帽/阻塞重试形态逐字保真，host 测试不
 # 链接 syscall 面；lib.rs 纯函数面 fd 表/cwd/stat/dirent/ST 映射 host 测试）。
 # 单消费 = berry-libc（刀 2 fd 3+ 文件面）；bsh 刀 4 删自有面改经 libc。
+# C-3 段①：berry-psproto（ps 查询 RPC 协议纯函数 crate，host 测试；双消费
+# = svcmgr 服务端（拉起账本编码——本工作区成员，none target）+ ps bin
+# 客户端（user/bins/ps 独立小工作区编 musl target，同 stdhello/bsh 不入
+# members））。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

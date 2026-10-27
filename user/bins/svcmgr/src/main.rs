@@ -37,6 +37,8 @@ use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, 
 use berry_netdproto as ndp;
 // app-0 a-2：.bap manifest v0 解析面（纯函数 crate，host 23 测同源）。
 use berry_manifest::{APP_SLOTS, BAP_MAX, ENTRY_MAX, ID_MAX, MANIFEST_MAX};
+// C-3 段①：ps 查询 RPC 协议面（ps_selftest 服务端：请求解析 + 账本编码）。
+use berry_psproto as psp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -64,9 +66,13 @@ const CHILD_SP: usize = 0x3000;
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(console: Handle) -> ! {
+    // C-3 段①：拉起账本开卷——svcmgr 自身行（报告者恒 alive；裸跑也记，
+    // 表零消费者无害）。
+    ps_reg(b"svcmgr", psp::STATE_ALIVE, 0);
     // ---- B 半：echo 服务 + ECHO_REQ 往返 + `SVC ok` ----
     let (end0, end1) = channel_pair();
     spawn_child(ECHO_BIN, end1);
+    ps_reg(b"echo", psp::STATE_ALIVE, 0); // 常驻（稳态 'v' 往返对端）
     let mut buf = [0u8; 8];
     let req = ECHO_REQ.to_le_bytes();
     send_retry(end0, req.as_ptr(), 8);
@@ -76,8 +82,10 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // ---- A 半：talker + echo2，交接双 handle ----
     let (s1, t1) = channel_pair();
     spawn_child(TALKER_BIN, t1);
+    ps_reg(b"talker", psp::STATE_ALIVE, 0); // 常驻（交接后持双 handle 等待）
     let (t2, e2) = channel_pair();
     spawn_child(ECHO_BIN, e2);
+    ps_reg(b"echo2", psp::STATE_ALIVE, 0); // 常驻（talker 链对端）
     let mut gift = [0 as Handle; 2];
     if berry_handle_duplicate(console, RIGHT_SEND, &mut gift[0]) != 0 {
         trap(); // 先复制再送：send 会 take 走句柄，原值须留给稳态
@@ -105,6 +113,10 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // （echod 由 recipe 起，与 vnet 自验 `TCP ok` 同一宿主服务）；裸跑
     // NET_A==0 静默跳过零扰动。----
     tcp_selftest(console);
+
+    // ---- C-3 段①：ps 查询 RPC 自验（`PS ok n=`）——此刻常驻全员在位、
+    // app 批/stdhello 已收口（账本状态稳定）。裸跑档缺静默跳过零扰动。----
+    ps_selftest(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
     let v = [b'v'];
@@ -295,6 +307,7 @@ fn run_rootfs_child(console: Handle) {
             },
         ) {
             Ok(_child) => {
+                ps_reg(b"vblk", psp::STATE_ALIVE, 0); // 拉起即常驻（自验门成败都活——pair 互钉）
                 // 常驻服务：**不 reap**——reap 首步 wait TERMINATED 30s 绝对
                 // 帽对「不退出的服务」必超时返 Err、回收链零执行（未确认退
                 // 出绝不 unmap/close）；child 的 ht/hv/hp/vmo 留表即留命
@@ -315,8 +328,9 @@ fn run_rootfs_child(console: Handle) {
                 }
             }
             Err(()) => {
-                // Err 全在 env send 前——blk_b 未被 take，两新鲜端显式回收
-                // 防表槽泄漏。
+                // Err 全在 env send 前——blk_b 未被 take，两新鲜端显式
+                // 回收防表槽泄漏。
+                ps_reg(b"vblk", psp::STATE_SPAWNFAIL, 0);
                 if berry_handle_close(blk_b) != 0 {
                     trap();
                 }
@@ -376,6 +390,7 @@ fn run_rootfs_child(console: Handle) {
             },
         ) {
             Ok(_) => {
+                ps_reg(b"fsmgr", psp::STATE_ALIVE, 0); // 拉起即常驻（FAT 降级不影响活性）
                 fs_a_h = fs_a;
                 fs_client = fs_dup;
                 // blk_cli 已被 take 迁移（旧值必 -EBADF，勿关）——清零防
@@ -383,6 +398,7 @@ fn run_rootfs_child(console: Handle) {
                 blk_cli = 0;
             }
             Err(()) => {
+                ps_reg(b"fsmgr", psp::STATE_SPAWNFAIL, 0);
                 // Err 路全在 env send 前——fs_b/blk_cli 均未被 take、fs_dup
                 // 是 fresh dup 非 take 产物，显式回收防表槽泄漏。
                 if berry_handle_close(fs_dup) != 0 {
@@ -433,12 +449,14 @@ fn run_rootfs_child(console: Handle) {
             },
         ) {
             Ok(_child) => {
+                ps_reg(b"vnet", psp::STATE_ALIVE, 0); // 拉起即常驻（自验门成败都活——serve 常驻）
                 // 常驻不 reap。`NET ok` 标记仍由 vnet 自打（自验在 serve()
                 // 前，rootfs 相第 17 标记零扰动）；DNS ok（A-8c）起本端
                 // 转 client 消费。
                 NET_A.store(net_a, Ordering::Relaxed);
             }
             Err(()) => {
+                ps_reg(b"vnet", psp::STATE_SPAWNFAIL, 0);
                 // Err 全在 env send 前——net_b 未被 take，两新鲜端显式回收
                 // 防表槽泄漏（vblk 同款）。
                 if berry_handle_close(net_b) != 0 {
@@ -498,17 +516,24 @@ fn run_rootfs_child(console: Handle) {
             },
         ) {
             Ok(child) => {
+                ps_reg(b"stdhello", psp::STATE_ALIVE, 0);
                 // Plan B v0.5 原语义：reap 返真退出码，`EXIT ok` 只在
-                // code==0 打（stdhello 恒 main 返 0）。
+                // code==0 打（stdhello 恒 main 返 0）。reap 失败保 alive——
+                // EXIT ok 已缺 = FAIL 已响，alive 是诚实下界。
                 match child.reap() {
                     Err(()) => eco_skip(b"exit reap"),
                     Ok(0) => {
+                        ps_exit(b"stdhello", 0);
                         send_retry(console, EXIT_OK.as_ptr(), EXIT_OK.len());
                     }
-                    Ok(_) => eco_skip(b"exit code"),
+                    Ok(c) => {
+                        ps_exit(b"stdhello", c);
+                        eco_skip(b"exit code");
+                    }
                 }
             }
             Err(()) => {
+                ps_reg(b"stdhello", psp::STATE_SPAWNFAIL, 0);
                 // Err 三路全在 env send 前——gift dup 未被 take，显式回收防
                 // 表槽泄漏（bsh arm 同款）。
                 if berry_handle_close(rootfs_dup) != 0 {
@@ -557,8 +582,15 @@ fn run_rootfs_child(console: Handle) {
                             mmio_vmo: None,
                         },
                     ) {
-                        Ok(_) => send_retry(console, ECO_OK.as_ptr(), ECO_OK.len()),
-                        Err(()) => eco_skip(b"elf bad"),
+                        // hello 常驻（10s 周期睡眠不回收）——入账。
+                        Ok(_) => {
+                            ps_reg(b"hello", psp::STATE_ALIVE, 0);
+                            send_retry(console, ECO_OK.as_ptr(), ECO_OK.len())
+                        }
+                        Err(()) => {
+                            ps_reg(b"hello", psp::STATE_SPAWNFAIL, 0);
+                            eco_skip(b"elf bad");
+                        }
                     }
                 } else if name == "bin/stdhello" {
                     // C-1 刀 3：预拉段（vnet 后、walk 前）已 spawn + 阻塞
@@ -687,8 +719,10 @@ fn run_rootfs_child(console: Handle) {
                                 trap();
                             }
                             fs_client = 0;
+                            ps_reg(b"bsh", psp::STATE_SPAWNFAIL, 0);
                             eco_skip(b"elf bad");
                         } else {
+                            ps_reg(b"bsh", psp::STATE_ALIVE, 0);
                             // Ok：fs_client 已被 take 迁移（旧值必 -EBADF，勿关）；
                             // 本表 fs_a 用毕关——bsh 的 dup 与本表别名共享同一
                             // ObjRef 队列，关别名只减引用（队列由 bsh 侧撑着），
@@ -822,6 +856,298 @@ fn run_rootfs_child(console: Handle) {
             send_retry(console, line.as_ptr(), line.len());
         }
     }
+}
+
+// ---- C-3 段①：ps 查询 RPC——拉起账本（表驱动真值源）+ ps_selftest ----
+
+/// ps 输出收集窗（16 行 × 最坏 ~29B 渲染 ≈ 464B；512B 帽）。
+static mut PS_WIN: [u8; 512] = [0; 512];
+
+/// 账本行（name 内联定宽——no_std 零分配；name_len=0 = 空槽）。
+#[derive(Clone, Copy)]
+struct PsRec {
+    name: [u8; psp::NAME_MAX],
+    name_len: u8,
+    state: u8,
+    code: i32,
+}
+
+impl PsRec {
+    const EMPTY: PsRec = PsRec { name: [0; psp::NAME_MAX], name_len: 0, state: 0, code: 0 };
+}
+
+/// 表容 = psp::MAX_ENTRIES（协议 REPLY_MAX 帽的表侧对偶——扩容先抬协议）。
+const PS_MAX: usize = psp::MAX_ENTRIES;
+static mut PS_TAB: [PsRec; PS_MAX] = [PsRec::EMPTY; PS_MAX];
+static mut PS_N: usize = 0;
+
+/// 名定位（已注册 → 该槽；新名 → 追加；表满 → None）。幂等重名改写用。
+fn ps_find_slot(name: &[u8]) -> Option<usize> {
+    // SAFETY: svcmgr 单线程独占（PS_TAB/PS_N，HEX_WIN 同纪律）。
+    let tab = unsafe { &mut *core::ptr::addr_of_mut!(PS_TAB) };
+    let n = unsafe { &mut *core::ptr::addr_of_mut!(PS_N) };
+    for i in 0..*n {
+        if &tab[i].name[..tab[i].name_len as usize] == name {
+            return Some(i);
+        }
+    }
+    if *n < PS_MAX {
+        *n += 1;
+        Some(*n - 1)
+    } else {
+        None
+    }
+}
+
+/// 账本登记（拉起/终态统一入口；重名幂等改写）。名域拒绝面与
+/// psp::ReplyBuilder::push 同款（空/超宽/内嵌 NUL 静默丢行；表满同——
+/// ps_selftest 名单断言缺失会 FAIL loud 兜底）。
+fn ps_reg(name: &[u8], state: u8, code: i32) {
+    if name.is_empty() || name.len() > psp::NAME_MAX || name.contains(&0) {
+        return;
+    }
+    let Some(i) = ps_find_slot(name) else {
+        return;
+    };
+    // SAFETY: 同 ps_find_slot；i < PS_N ≤ PS_MAX 由 ps_find_slot 保证。
+    unsafe {
+        let r = &mut PS_TAB[i];
+        r.name = [0; psp::NAME_MAX];
+        r.name[..name.len()].copy_from_slice(name);
+        r.name_len = name.len() as u8;
+        r.state = state;
+        r.code = code;
+    }
+}
+
+/// 终态改写（spawn 后退出——名不在表即登记被拒/被丢，重登记为 exited 同样
+/// 无害：表满时再次丢弃，口径一致）。
+fn ps_exit(name: &[u8], code: i32) {
+    ps_reg(name, psp::STATE_EXITED, code);
+}
+
+/// C-3 段①自验（`PS ok n=` = rootfs 相新标记）：ps bin = svcmgr 拉起账本
+/// 的渲染面——预建 (ps_a, ps_b) 查询对，ps_b 经 gift[2] 迁入（libc
+/// `gift2_h()`，extra_gifts 单元素恰落位 2）→ spawn → 收 1B 请求 → 账本
+/// 全表编码应答（畸形请求/带 handle → [ST_BAD,0]，ps 侧 bad reply 退 1
+/// loud）→ 私有 stdout 收齐渲染行 → 家名单断言（常驻拓扑真值，非验收
+/// 流水——U1/uu_run 瞬态子不入账）→ 打标记。`bin/ps` 缺席（裸跑档/旧
+/// rootfs）静默跳过零扰动；链内坏面 = eco_skip 可见降级 + 标记缺失
+/// （smoke FAIL 兜底）。
+fn ps_selftest(console: Handle) {
+    let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/ps") else {
+        return;
+    };
+    // run_rootfs_child 的 eco_skip 同款（模块级函数看不到其局部闭包——
+    // 复刻保持降级行形状零漂移：`eco: <why>\n`）。
+    let eco_skip = |why: &[u8]| {
+        let mut line = [0u8; 24];
+        line[..4].copy_from_slice(b"eco:");
+        line[4] = b' ';
+        let n = 5 + why.len();
+        line[5..n].copy_from_slice(why);
+        line[n] = b'\n';
+        send_retry(console, line.as_ptr(), n + 1);
+    };
+    let (ps_a, ps_b) = channel_pair();
+    let (out_s, out_c) = channel_pair();
+    // 自身入账（应答编码前——查询时点恒 alive 真值）。
+    ps_reg(b"ps", psp::STATE_ALIVE, 0);
+    let child = match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: b"bin/ps",
+            data_off,
+            data_len,
+            stdout: out_c,
+            stack_pages: 16, // bsh 同档 std 小程序（无 clap 链）
+            stdin_feed: Some(&[]), // gift[1] 占位（立即 EOF；uu_run 同款）
+            stdin_handle: None,
+            args: &[],
+            extra_gifts: &[ps_b], // 单元素 → env 块 gift[2]
+            mmio_vmo: None,
+        },
+    ) {
+        Ok(c) => c,
+        Err(()) => {
+            // Err 全在 env send 前——ps_b 未被 take，显式回收（uu_run 同款）。
+            if berry_handle_close(ps_b) != 0
+                || berry_handle_close(ps_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            eco_skip(b"ps spawn");
+            return;
+        }
+    };
+    // ① 收请求（严格串行单请求；富余 handle 收口丢弃）。帽 30s——svcmgr
+    // 顺序走到此处才服务，慢而活着不误杀（U1_EOF_CAP 同档）。
+    const PS_CAP_NS: u64 = 30 * 1_000_000_000;
+    let mut msg = [0u8; 256];
+    let mut hh = [0 as Handle; 4];
+    let mut nb = msg.len();
+    let mut nh = hh.len();
+    let req_ok = loop {
+        let s = berry_channel_recv(ps_a, msg.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh);
+        if s == 0 {
+            for i in 0..nh {
+                let _ = berry_handle_close(hh[i]);
+            }
+            break psp::parse_request(&msg, nb).is_some() && nh == 0;
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(ps_a, SIGNAL_READABLE, now() + PS_CAP_NS, &mut obs) != 0 {
+            send_retry(console, b"ps: no req\n".as_ptr(), 12);
+            let _ = child.reap();
+            if berry_handle_close(ps_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            return;
+        }
+    };
+    // ② 应答：请求合法 → 账本全表编码（push 拒 = 内部超编——协议/表帽
+    // 双端共识下理论不可达，仍 loud 降级）；否则 [ST_BAD, 0]。
+    let mut rep = [0u8; 256];
+    let rl;
+    if req_ok {
+        let mut b = psp::ReplyBuilder::new(&mut rep);
+        let mut full = true;
+        // SAFETY: svcmgr 单线程独占（PS_TAB/PS_N）。
+        let n = unsafe { core::ptr::read(core::ptr::addr_of!(PS_N)) };
+        for i in 0..n {
+            // SAFETY: 同上（Copy 整行读出，不经引用跨 push 调用）。
+            let r = unsafe { core::ptr::read(core::ptr::addr_of!(PS_TAB[i])) };
+            if !b.push(&r.name[..r.name_len as usize], r.state, r.code) {
+                full = false;
+                break;
+            }
+        }
+        if full {
+            rl = b.finish();
+        } else {
+            eco_skip(b"ps table");
+            rl = 2;
+            rep[0] = psp::ST_BAD;
+            rep[1] = 0;
+        }
+    } else {
+        rl = 2;
+        rep[0] = psp::ST_BAD;
+        rep[1] = 0;
+    }
+    send_retry(ps_a, rep.as_ptr(), rl);
+    // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 30s）。
+    // SAFETY: svcmgr 单线程独占（PS_WIN，HEX_WIN 同纪律）。
+    let cap: &mut [u8] =
+        unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, 512) };
+    let mut got = 0usize;
+    let mut eof = false;
+    while !eof {
+        let mut m2 = [0u8; 256];
+        let mut h2 = [0 as Handle; 4];
+        let mut nb2 = m2.len();
+        let mut nh2 = h2.len();
+        let s = berry_channel_recv(out_s, m2.as_mut_ptr(), &mut nb2, h2.as_mut_ptr(), &mut nh2);
+        if s == 0 {
+            for i in 0..nh2 {
+                let _ = berry_handle_close(h2[i]);
+            }
+            if nb2 == 0 {
+                eof = true;
+            } else {
+                if got + nb2 > cap.len() {
+                    send_retry(console, b"ps: overflow\n".as_ptr(), 14);
+                    let _ = child.reap();
+                    if berry_handle_close(ps_a) != 0
+                        || berry_handle_close(out_c) != 0
+                        || berry_handle_close(out_s) != 0
+                    {
+                        trap();
+                    }
+                    return;
+                }
+                cap[got..got + nb2].copy_from_slice(&m2[..nb2]);
+                got += nb2;
+            }
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(out_s, SIGNAL_READABLE, now() + PS_CAP_NS, &mut obs) != 0 {
+            send_retry(console, b"ps: no EOF\n".as_ptr(), 12);
+            let _ = child.reap();
+            if berry_handle_close(ps_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            return;
+        }
+    }
+    // ④ 终验回收：真码必 0（ps 任何坏面都 eprintln+exit 1）。
+    let code = match child.reap() {
+        Ok(c) => c,
+        Err(()) => {
+            eco_skip(b"ps reap");
+            if berry_handle_close(ps_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            return;
+        }
+    };
+    if berry_handle_close(ps_a) != 0 || berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+        trap();
+    }
+    if code != 0 {
+        eco_skip(b"ps code");
+        return;
+    }
+    // ⑤ 家名单断言：常驻核心行无条件 + stdhello 退出行（全路径确定性——
+    // 预拉段阻塞 reap 先于本函数）+ vblk/vnet 以 H_MMIO 探测门控
+    // （EFI/smoke-image 路无 virtio、驱动不拉起——无条件断言会结构性
+    // FAIL）。逐行子串（has_sub，相位稳健），非全表字节比对。
+    let mut ok = has_sub(&cap[..got], b"svcmgr alive\n")
+        && has_sub(&cap[..got], b"echo alive\n")
+        && has_sub(&cap[..got], b"talker alive\n")
+        && has_sub(&cap[..got], b"echo2 alive\n")
+        && has_sub(&cap[..got], b"hello alive\n")
+        && has_sub(&cap[..got], b"fsmgr alive\n")
+        && has_sub(&cap[..got], b"bsh alive\n")
+        && has_sub(&cap[..got], b"ps alive\n")
+        && has_sub(&cap[..got], b"stdhello exited(0)\n");
+    let mut msz = 0u64;
+    if berry_vmo_get_size(H_MMIO, &mut msz) == 0 {
+        ok = ok
+            && has_sub(&cap[..got], b"vblk alive\n")
+            && has_sub(&cap[..got], b"vnet alive\n");
+    }
+    if !ok {
+        eco_skip(b"ps roster");
+        return;
+    }
+    // ⑥ 标记：n = 窗内行数（≤ PS_MAX=16 → 恒 2 位十进制零填充）。
+    let n = cap[..got].iter().filter(|&&b| b == b'\n').count();
+    const _: () = assert!(PS_MAX < 100, "PS ok n= 2 位形态");
+    let mut line = [0u8; 11];
+    line[..8].copy_from_slice(b"PS ok n=");
+    line[8] = b'0' + (n / 10) as u8;
+    line[9] = b'0' + (n % 10) as u8;
+    line[10] = b'\n';
+    send_retry(console, line.as_ptr(), line.len());
 }
 
 /// smoke 第 24 标记（7 字节，尾插随合并序）。
@@ -1535,6 +1861,7 @@ fn app_launch(
         Err(()) => {
             // spawn Err 全在 env send 前（berry-exec 契约）：本表零 take，
             // fresh 私有对原值都在——关掉（vblk Err-path close 同款纪律）。
+            ps_reg(id, psp::STATE_SPAWNFAIL, 0);
             eco_app(console, id, b"elf bad");
             if out_s != 0
                 && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
@@ -1543,6 +1870,7 @@ fn app_launch(
             }
         }
         Ok(child) => {
+            ps_reg(id, psp::STATE_ALIVE, 0);
             if out_s != 0 {
                 // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
                 // RIGHT_SEND 随 env 块迁移），原值 c 留本表——先收 EOF（d-3b
@@ -1557,8 +1885,14 @@ fn app_launch(
                 }
             }
             match child.reap() {
-                Ok(0) => return true,
-                Ok(_) => eco_app(console, id, b"exit code"),
+                Ok(0) => {
+                    ps_exit(id, 0);
+                    return true;
+                }
+                Ok(c) => {
+                    ps_exit(id, c);
+                    eco_app(console, id, b"exit code");
+                }
                 Err(()) => eco_app(console, id, b"app reap"),
             }
         }
