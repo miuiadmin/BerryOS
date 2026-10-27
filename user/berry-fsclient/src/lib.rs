@@ -8,7 +8,8 @@
 //! - **会话机**（`rpc` 模块，`cfg(not(test))`）：自 bsh 迁居的 fs_rpc 核心
 //!   （严格串行 RPC、任一收侧超时即毒化会话、90s commit / 10s 常规双帽、
 //!   EBUSY 阻塞重试形态）+ fd 面分片 op。协议零新增——fsproto v2 十 op
-//!   原样（GET/PUT 自带 off，客户端游标 = 服务端无会话）。
+//!   原样（GET/PUT 自带 off，客户端游标 = 服务端无会话）+ C-2 刀 2
+//!   STATFS（卷级几何/空闲真值，无路径参——df/statfs 桩的原料）。
 //!
 //! ## C-1 两裁决（随五刀拆解单批准）
 //!
@@ -39,8 +40,11 @@ mod rpc;
 #[cfg(not(test))]
 pub use rpc::*;
 
-// 单源再出口：libc（刀 2）只 dep 本 crate 即得帽常量。
-pub use berry_fsproto::{CHUNK, FILE_SIZE_MAX, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX, TYPE_DIR, TYPE_FILE};
+// 单源再出口：libc（刀 2）只 dep 本 crate 即得帽常量；Statfs（C-2 刀 2
+// statfs() 的应答结构）同源再出口——消费方不直 dep berry-fsproto。
+pub use berry_fsproto::{
+    CHUNK, FILE_SIZE_MAX, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX, TYPE_DIR, TYPE_FILE, Statfs,
+};
 
 use berry_fsproto::{ST_BAD, ST_EXISTS, ST_FULL, ST_NOEMPTY, ST_NOENT};
 

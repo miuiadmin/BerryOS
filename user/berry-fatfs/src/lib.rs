@@ -4,7 +4,8 @@
 //!
 //! 职责边界：本库只做**字节 ↔ 结构**的无状态编解码（BPB 几何 / FAT12
 //! 紧包与 FAT16 定宽表项 / 根目录项 / 8.3 名转换 + A-6 写基元
-//! `fat12_set`/`fat16_set`/`find_free_cluster`/`encode_file_entry`）；扇区
+//! `fat12_set`/`fat16_set`/`find_free_cluster`/`encode_file_entry` + C-2
+//! 刀 2 `count_free_clusters`（df/STATFS 空闲真值））；扇区
 //! 读写（vblk 经 `berry-blkproto` RPC）、簇链缓存、staging/commit 编排全
 //! 在消费方 fsmgr（`user/bins/fsmgr/src/fat.rs`）。
 //!
@@ -336,6 +337,25 @@ pub fn find_free_cluster(
         c += 1;
     }
     None
+}
+
+/// 计 FAT 域 2..2+cluster_count 内 Free 项数（C-2 刀 2：df/STATFS 的卷级
+/// 空闲真值——[`find_free_cluster`] 的计数版）。任一项解码失败（切片短 /
+/// 保留值落文件簇位 = 畸形）→ None 诚实拒：空闲计数是上报真值，不静默
+/// 少计（alloc 扫描 [`find_free_cluster`] 跳过畸形项继续找——找得到首个
+/// 空簇即够用，两面语义按消费方分立）。
+pub fn count_free_clusters(fat: &[u8], cluster_count: u32, bits: FatBits) -> Option<u32> {
+    let mut n = 0u32;
+    for c in 2..2 + cluster_count {
+        let e = match bits {
+            FatBits::Fat12 => fat12_entry(fat, c)?,
+            FatBits::Fat16 => fat16_entry(fat, c)?,
+        };
+        if matches!(e, FatEntry::Free) {
+            n += 1;
+        }
+    }
+    Some(n)
 }
 
 /// 解析 32B 根目录项（长度 != 32 → None）。子目录（attr 0x10）与文件同
@@ -1193,6 +1213,52 @@ mod tests {
             fat16_set(&mut full, c, FAT16_EOC).unwrap();
         }
         assert_eq!(find_free_cluster(&full, 2, 7, FatBits::Fat16), None);
+    }
+
+    #[test]
+    fn count_free_clusters_fixture_consensus() {
+        // 跨实现共识⑥（C-2 刀 2）：双宽 fixture 空闲簇字面钉板——簇 2..7
+        // 占用（HELLO 单簇 + PATTERN 链 3 簇 + DATA 单簇 + NOTE 单簇）→
+        // FAT12 506-6=500 / FAT16 4087-6=4081（df 对拍 oracle 的纯函数侧锚）。
+        assert_eq!(count_free_clusters(fat0(), 506, FatBits::Fat12), Some(500));
+        assert_eq!(count_free_clusters(fat0_16(), 4087, FatBits::Fat16), Some(4081));
+    }
+
+    #[test]
+    fn count_free_clusters_bounds() {
+        // 全闲（零 FAT = 域内全 Free，count == cluster_count）/ 全忙（全
+        // EOC = 0）/ 空域（cluster_count=0）三界 + 非零值族（Bad/EOC/Next）
+        // 皆不计。FAT12 面（项 8 @ off 12 需 14B——16B 切片盖 2..8 域）。
+        let z12 = [0u8; 16];
+        assert_eq!(count_free_clusters(&z12, 7, FatBits::Fat12), Some(7));
+        let mut full = [0u8; 16];
+        for c in 2..9u32 {
+            fat12_set(&mut full, c, FAT12_EOC).unwrap();
+        }
+        assert_eq!(count_free_clusters(&full, 7, FatBits::Fat12), Some(0));
+        assert_eq!(count_free_clusters(&z12, 0, FatBits::Fat12), Some(0));
+        let mut mix = [0u8; 16];
+        fat12_set(&mut mix, 2, FAT12_BAD).unwrap();
+        fat12_set(&mut mix, 3, FAT12_EOC).unwrap();
+        fat12_set(&mut mix, 4, 5).unwrap(); // Next
+        assert_eq!(count_free_clusters(&mix, 7, FatBits::Fat12), Some(4)); // 5..8 四项闲
+        // FAT16 对偶（项 n @ 2n——8 项域需 18B）。
+        let z16 = [0u8; 18];
+        assert_eq!(count_free_clusters(&z16, 7, FatBits::Fat16), Some(7));
+        let mut full16 = [0u8; 18];
+        for c in 2..9u32 {
+            fat16_set(&mut full16, c, FAT16_EOC).unwrap();
+        }
+        assert_eq!(count_free_clusters(&full16, 7, FatBits::Fat16), Some(0));
+        // 畸形/切片短 → None 诚实拒（上报真值不猜——与 find 的跳过面分立）。
+        assert_eq!(count_free_clusters(&[0u8; 4], 506, FatBits::Fat12), None);
+        assert_eq!(count_free_clusters(&[0u8; 4], 4087, FatBits::Fat16), None);
+        let mut bad = [0u8; 16];
+        fat12_set(&mut bad, 2, 1).unwrap(); // 保留值 1 落文件簇位 = 畸形
+        assert_eq!(count_free_clusters(&bad, 7, FatBits::Fat12), None);
+        let mut bad16 = [0u8; 18];
+        fat16_set(&mut bad16, 2, 1).unwrap();
+        assert_eq!(count_free_clusters(&bad16, 7, FatBits::Fat16), None);
     }
 
     #[test]
