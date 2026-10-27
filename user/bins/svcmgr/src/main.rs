@@ -245,11 +245,14 @@ fn run_rootfs_child(console: Handle) {
         return; // 裸跑：vmo=none → -EBADF，零扰动
     }
     let eco_skip = |why: &[u8]| {
+        // 诊断行超长安全截断（no_std panic=halt，宁截断不炸机）——本闭包
+        // 存在 >18B 调用点（`stdhello not pre-pulled`=23B），无帽即越界。
+        let m = why.len().min(18);
         let mut line = [0u8; 24];
         line[..4].copy_from_slice(b"eco:");
         line[4] = b' ';
-        let n = 5 + why.len();
-        line[5..n].copy_from_slice(why);
+        let n = 5 + m;
+        line[5..n].copy_from_slice(&why[..m]);
         line[n] = b'\n';
         send_retry(console, line.as_ptr(), n + 1);
     };
@@ -945,11 +948,13 @@ fn ps_selftest(console: Handle) {
     // run_rootfs_child 的 eco_skip 同款（模块级函数看不到其局部闭包——
     // 复刻保持降级行形状零漂移：`eco: <why>\n`）。
     let eco_skip = |why: &[u8]| {
+        // 诊断行超长安全截断（no_std panic=halt，宁截断不炸机）。
+        let m = why.len().min(18);
         let mut line = [0u8; 24];
         line[..4].copy_from_slice(b"eco:");
         line[4] = b' ';
-        let n = 5 + why.len();
-        line[5..n].copy_from_slice(why);
+        let n = 5 + m;
+        line[5..n].copy_from_slice(&why[..m]);
         line[n] = b'\n';
         send_retry(console, line.as_ptr(), n + 1);
     };
@@ -1008,7 +1013,8 @@ fn ps_selftest(console: Handle) {
         }
         let mut obs = 0u64;
         if berry_object_wait_one(ps_a, SIGNAL_READABLE, now() + PS_CAP_NS, &mut obs) != 0 {
-            send_retry(console, b"ps: no req\n".as_ptr(), 12);
+            let m = b"ps: no req\n";
+            send_retry(console, m.as_ptr(), m.len());
             let _ = child.reap();
             if berry_handle_close(ps_a) != 0
                 || berry_handle_close(out_c) != 0
@@ -1055,7 +1061,8 @@ fn ps_selftest(console: Handle) {
                 eof = true;
             } else {
                 if got + nb2 > cap.len() {
-                    send_retry(console, b"ps: overflow\n".as_ptr(), 13);
+                    let m = b"ps: overflow\n";
+                    send_retry(console, m.as_ptr(), m.len());
                     let _ = child.reap();
                     if berry_handle_close(ps_a) != 0
                         || berry_handle_close(out_c) != 0
@@ -1075,7 +1082,8 @@ fn ps_selftest(console: Handle) {
         }
         let mut obs = 0u64;
         if berry_object_wait_one(out_s, SIGNAL_READABLE, now() + PS_CAP_NS, &mut obs) != 0 {
-            send_retry(console, b"ps: no EOF\n".as_ptr(), 12);
+            let m = b"ps: no EOF\n";
+            send_retry(console, m.as_ptr(), m.len());
             let _ = child.reap();
             if berry_handle_close(ps_a) != 0
                 || berry_handle_close(out_c) != 0
@@ -1107,6 +1115,10 @@ fn ps_selftest(console: Handle) {
         eco_skip(b"ps code");
         return;
     }
+    // 账本真值：查询工具自身行迁终态（stdhello/app 批 ps_exit 同款；⑤
+    // 断言读的是渲染窗快照，不受影响——后续 berryctl `ps` 子命令见到
+    // 的即 exited(0)）。
+    ps_exit(b"ps", 0);
     // ⑤ 家名单断言：常驻核心行无条件 + stdhello 退出行（全路径确定性——
     // 预拉段阻塞 reap 先于本函数）+ vblk/vnet 以 H_MMIO 探测门控
     // （EFI/smoke-image 路无 virtio、驱动不拉起——无条件断言会结构性
@@ -1146,11 +1158,13 @@ fn ps_selftest(console: Handle) {
 /// eco 降级行（run_rootfs_child/ps_selftest 的 `eco: <why>\n` 同形状
 /// 零漂移——bc 族抽出模块级共用）。
 fn eco_note(console: Handle, why: &[u8]) {
+    // 诊断行超长安全截断（no_std panic=halt，宁截断不炸机）。
+    let m = why.len().min(18);
     let mut line = [0u8; 24];
     line[..4].copy_from_slice(b"eco:");
     line[4] = b' ';
-    let n = 5 + why.len();
-    line[5..n].copy_from_slice(why);
+    let n = 5 + m;
+    line[5..n].copy_from_slice(&why[..m]);
     line[n] = b'\n';
     send_retry(console, line.as_ptr(), n + 1);
 }
@@ -1158,6 +1172,7 @@ fn eco_note(console: Handle, why: &[u8]) {
 /// bc ver 应答串（svcmgr 编译期标识——env! 取本 crate 版本；系统级版本
 /// 源 v2 随发布面定）。≤ psp::VER_MAX 由 encode_ver_reply 拒面执法。
 const BC_VER: &[u8] = concat!("BerryOS/svcmgr ", env!("CARGO_PKG_VERSION")).as_bytes();
+const _: () = assert!(BC_VER.len() <= psp::VER_MAX, "BC_VER 超 psproto VER_MAX");
 
 /// 畸形应答帧（2B [ST_BAD,0]——三 op 客户端解析面各自拒）。
 fn bad_reply(rep: &mut [u8]) -> usize {
@@ -1258,7 +1273,8 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
         }
         let mut obs = 0u64;
         if berry_object_wait_one(q_a, SIGNAL_READABLE, now() + BC_CAP_NS, &mut obs) != 0 {
-            send_retry(console, b"bc: no req\n".as_ptr(), 12);
+            let m = b"bc: no req\n";
+            send_retry(console, m.as_ptr(), m.len());
             let _ = child.reap();
             if berry_handle_close(q_a) != 0
                 || berry_handle_close(out_c) != 0
@@ -1308,7 +1324,8 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
                 eof = true;
             } else {
                 if got + nb2 > cap.len() {
-                    send_retry(console, b"bc: overflow\n".as_ptr(), 13);
+                    let m = b"bc: overflow\n";
+                    send_retry(console, m.as_ptr(), m.len());
                     let _ = child.reap();
                     if berry_handle_close(q_a) != 0
                         || berry_handle_close(out_c) != 0
@@ -1328,7 +1345,8 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
         }
         let mut obs = 0u64;
         if berry_object_wait_one(out_s, SIGNAL_READABLE, now() + BC_CAP_NS, &mut obs) != 0 {
-            send_retry(console, b"bc: no EOF\n".as_ptr(), 12);
+            let m = b"bc: no EOF\n";
+            send_retry(console, m.as_ptr(), m.len());
             let _ = child.reap();
             if berry_handle_close(q_a) != 0
                 || berry_handle_close(out_c) != 0
@@ -1360,9 +1378,12 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
         trap();
     }
     if code != 0 {
+        // 账本真值：终态改写（stdhello/app 批 ps_exit 同款）。
+        ps_exit(b"berryctl", code);
         eco_note(console, b"bc code");
         return None;
     }
+    ps_exit(b"berryctl", 0);
     Some(got)
 }
 
@@ -1397,14 +1418,15 @@ fn bc_selftest(console: Handle) {
         eco_note(console, b"bc mem");
         return;
     }
-    // ② ps：账本渲染锚行（家常驻 + 上轮 ps 行残留 + 自身行）。
+    // ② ps：账本渲染锚行（家常驻 + ps 行已在 ps_selftest 收尾迁终态 +
+    // 自身行——本轮查询时点 berryctl 刚 ps_reg 为 ALIVE，真值成立）。
     let Some(got) = bc_run_sub(console, b"ps", data_off, data_len) else {
         return;
     };
     // SAFETY: 同上。
     let win: &[u8] = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(PS_WIN) as *const u8, got) };
     if !(has_sub(win, b"svcmgr alive\n")
-        && has_sub(win, b"ps alive\n")
+        && has_sub(win, b"ps exited(0)\n")
         && has_sub(win, b"berryctl alive\n"))
     {
         eco_note(console, b"bc ps");

@@ -452,6 +452,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_lying_len() {
+        // 谎报 len 角：len > buf 实长必拒——kernel recv 恒写真 nb 故实跑
+        // 不可达，协议面单独钉板。
+        let mut buf = [0u8; 8];
+        let len = encode_ver_reply(&mut buf, b"ab").unwrap();
+        assert_eq!(len, 4);
+        assert_eq!(parse_ver_reply(&buf[..3], 99), None); // buf 切 3B、谎报 99
+        assert_eq!(parse_mem_reply(&[0u8; 4], MEM_REPLY_LEN), None); // buf 4B、恰长谎报 10
+    }
+
+    #[test]
+    fn encode_ver_buf_boundary() {
+        // buf 恰等帧长（st + ver + NUL = 4）恰收；少 1 拒。
+        let mut small = [0u8; 4];
+        assert_eq!(encode_ver_reply(&mut small, b"ab"), Some(4));
+        let mut tiny = [0u8; 3];
+        assert_eq!(encode_ver_reply(&mut tiny, b"ab"), None);
+    }
+
+    #[test]
+    fn ver_single_char_roundtrip() {
+        // 最短合法帧：st + 单字符 + NUL = 3，往返不漂。
+        let mut buf = [0u8; 8];
+        let len = encode_ver_reply(&mut buf, b"x").unwrap();
+        assert_eq!(len, 3);
+        assert_eq!(parse_ver_reply(&buf, len), Some(&b"x"[..]));
+    }
+
+    #[test]
     fn ver_mem_wire_golden() {
         // 黄金字节钉板（表应答 wire_golden 同款纪律——改布局 = 此测必炸）。
         let mut buf = [0u8; 64];
