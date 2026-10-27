@@ -85,3 +85,79 @@ pipe_capture 每段现 dup 现传（berry-exec 全部 Err 早退点均在 env se
   挂账刀直接拷回 `user/bins/uu/` 恢复 members 即用）。
 - `bins/{grep,find,which}/`：自写三件完整源码（独立小 workspace 形态，含各自 Cargo.lock；
   挂账刀按当时树况决定接回形态）。
+
+---
+
+## ⑤ 挂账刀收账实录（2026-10-27，四节全部归位，本文件转归档）
+
+**裁决**：①②③④ 四节全部由 C-2c 挂账刀（2026-10-27）落地收账；源码档案照旧留档。
+
+- **① 桩面归位**：tail 补桩七枚 ENOSYS（epoll_create1/epoll_ctl/epoll_wait/eventfd/
+  inotify_init1/inotify_add_watch/inotify_rm_watch——§①「现探现补」预言应验：lock
+  重解析后比本档已知 12 桩多出 epoll_ctl/epoll_wait/inotify_add_watch/
+  inotify_rm_watch 四枚；
+  -f 尾随链 v1 无实现、运行期不可达，U4 自验无 -f 步）；env = sigprocmask 空掩码
+  手写桩 + `__libc_current_sigrtmin/max` 定值 34/64（musl 档）；date = clock_getres
+  谎报 {0,1ns} 成功（上游 unwrap 档失败即 panic）+ clock_settime EPERM。uu_sort
+  专属 exp2/log10 零新面不动。
+- **② fs gift 接线**：C-2 刀 2 已立 `run_capture_fs` 样板（§② 修法的 df 消费版），
+  本刀把三个存量 spawn 点接线：`run_output`/`pipe_capture` 走 gift 装配（v1 单
+  fs 消费者约束——gifts 只随管道首段）；`run_capture` 保持裸形态（其消费面
+  tail/env/date 均无文件 IO）。
+- **③ 自写三件落地**：`user/bins/{grep,find,which}/`（stdhello 同款独立小工作区，
+  berry-ld 直链）；uu 家族 members 20→23（tail/env/date 拷回恢复）。
+- **④ date 钉板消费 + 一枚桩侧雷实录**：U4 步③ 断言即 §④ 钉板字面
+  `Thu Jan  1 00:00:00 UTC 1970`。**首跑实录**：nl_langinfo 原「问啥都答 UTF-8」
+  把 uu_date 的 _DATE_FMT（0x2006c——uu_date locale.rs 手卷的 glibc nl_item，libc
+  crate 未收录故上游自定常量）查询也答成 "UTF-8"——get_locale_format_string 拿它
+  当日期格式串、ensure_timezone_in_format 再补 " %Z" → date 默认输出恒
+  "UTF-8 UTC"（u4_bad 四面 dump `hex=5554462d38205554430a` 实锤）。**修法 = 按
+  item 分诊**：CODESET（14——libc crate linux 面 glibc 序）→ "UTF-8"，其余 → ""
+  （C locale 之外的 locale 数据 v1 一律不支持；uu_date 的 !is_empty 过滤器吃空串
+  落内建回退 `"%a %b %e %X %Z %Y"` = 钉板同序输出；uucore get_locale_months 的
+  ABMON 面有 should_use_icu_locale() 前置门——LC_TIME 缺席 → "und" → false——
+  运行期不可达，空串不会 poison 月份名）。
+- **lock 实测**：uu/Cargo.lock 238→263 = 25 包新增、0 包移除 + 2 行依赖边
+  再限定（三镜审查账目修正：原式「25 adds + 2 removals」把行级删除混进包级
+  账目——238+25−2=261≠263）；adds 比计划 24 多一枚 = getrandom 0.2.17 第二版本
+  （const-random-macro 链引入，与 0.4.3 共存）；2 行删除为良性再限定（tempfile
+  的 getrandom 依赖收窄到 0.4.3）。存量 238 零漂移。
+- **U4 八步**（bsh `u4_selftest`，`U4 ok` = rootfs 相第 30 标记，链序排 fat 族前
+  同 U2/U3 契约）：⓪ `tail -n 2` → ① `head -c 8`（fd 克隆桩 fcntl F_DUPFD 活证）
+  → ② `env U4V=zz`（environ=NULL 锚：空输出 rc0）→ ③ date 钉板 → ④ `grep -n
+  bravo /u4.txt`（自写 grep 对 FILE 参恒带文件名前缀——**计划字面修正**：期望
+  `"/u4.txt:2:bravo\n/u4.txt:4:bravo\n"` 非 GNU 单文件省名形态 `2:bravo\n…`）
+  → ⑤ `cat|grep -c` 管道 → ⑥ `which wc`（PATH 缺席默认 /bin + stat 存在性）
+  → ⑦ `find /etc -name 'mt*'`（fsmgr mtab 预建消费面复用 → `/etc/mtab`）。
+  步④/⑥ 用后即 unlink（fstree 帽 9/17 窗口让位后续 dir/cd 自验；⑦ 纯只读
+  消费预建树零创建零清理——三镜审查勘误：原记「④/⑥/⑦ 用后即 unlink」）。
+- **sort/du 处置**：P4 实测判决双双不可行——崩点在 std `run_spawn_hooks`
+  （早于 pthread_create），线程面平台缺口依旧；两件挂账维持（bin 仍随 rootfs
+  发行，验收面留缺口解除另刀）。§① 预言的 tail 宽桩面已闭环，无新挂账。
+- **三镜审查修复轮（2026-10-27，18 findings——修 15 / 驳 3）**：
+  grep 四修：退出码 GNU 口径（旧式 `any != o.inv` 在 -v 下两态恰反转——
+  有选中退 1/零选中退 0；改 `-q 命中 0 最优先 → 错 2 → 选中存在（-v 同权）
+  0 / 否则 1`）、不剥尾 `\r`（剥掉则含 \r 的 pattern 永不中且命中行输出少
+  一字节）、文件参 read<0 loud（原 `n<=0` 当 EOF 静默截断——真码 1 与
+  「无命中」同形，恰 C-2c 步 2 教训要防的盲区）、**幻影行首跑实抓**
+  （`0..=buf.len()` 对 \n 收尾缓冲造第 N+1 空行——-v 回归钉板逼出：GNU
+  口径 \n 收尾文件恰 N 行、空缓冲零行，修 `start==buf.len()` 边界不造行）；
+  find 两修（走查错置 AtomicBool 退 1——原恒 0 且头注误标「GNU 同形」；
+  尾斜杠 `trim_end_matches('/')` 消 `/etc//mtab` 双斜杠）+ glob 指数回溯
+  局限头注明示（info 级只记录）；fcntl F_DUPFD 边界执法（arg<0 或 ≥
+  FD_BASE+FD_MAX+ALIAS_MAX=15 → EINVAL——POSIX 口径，原负参被钳 3、超窗
+  归 EMFILE）；U4 步④ 扩四断言回归钉板（`-n` 选中 + `-n -v` 反选 +
+  `-v` 全空退 1 + `-q` 带不可读参仍退 0 且 stderr 入比对面——spawn 合计
+  9→12）+ 步② 弱断言成因注记（environ=NULL 桩面，setenv/environ 落真时
+  改常量 `"U4V=zz\n"`）；文档勘误五处（本档 §⑤ 差集三枚→四枚补
+  epoll_wait、lock 账目 238+25−2=261≠263 包/行混账、⑦ 零创建零清理、
+  AGENTS smoke 行 rootfs 29→30、uu/Cargo.toml 设计理由 20→23、CLAUDE/AGENTS
+  run-efi 段字节数刷新（kfile 3394152B / init 28608660B / load pages=133 /
+  MMAP pages=17426——主树工件注入副本 image 直靴实测）。驳三：仓库根
+  cargo-target/ 游离目录（他人探针产物不碰——处置权在主会话）、build-user
+  时点不可复现（并发 ps 刀在途编辑态，非本刀文件——本刀构建链独立闭环 +
+  隔离副本复跑全绿）、smoke.sh PASS 行金丝雀计数为 RX 相残留变量（既有
+  形态 info 记录，另刀改逐相计数）。修复轮验收：abi-check
+  PASS + test-host 338/0 + 五相 smoke 全绿（U4 ok 含新四断言，rootfs.cpio
+  28,608,660B）+ smoke-image 复跑全绿（EFI 十段 + 生态 16 含 U4 ok +
+  字节对拍 + RX 活性复验）。
