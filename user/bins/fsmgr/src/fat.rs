@@ -26,6 +26,11 @@
 //! GET 先 staging 后盘（读到正在写的文件）；LIST = RAM 名 + FAT 名（含
 //! 目录名）+ 未落盘的 staging 名。
 //!
+//! C-2 刀 2：STATFS 卷级真值——几何取 BPB，空闲簇数 = **盘面** FAT0 整读
+//! 计数（`count_free_clusters`）+ dirty 缓存（commit 写路径失效、STATFS 重
+//! 建后清位）；无卷面（盘缺席/init 降级）在分派层回 ST_NOENT（fat 族无盘
+//! 语义同款）。
+//!
 //! commit 序（crash 窗口 v1 文档化——FAT 无原子多扇区写）：**工作副本**
 //! fat2/root2 上 collect 旧链 →（旧链标记未释放下）分配新链（防重用）→
 //! 写数据扇区（簇尾零填）→ 释放旧链 → 写双 FAT → 写根目录项（同名覆写/
@@ -44,11 +49,13 @@
 
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
 use berry_fatfs::{
-    dir_entry, encode_file_entry, fat11_display, fat12_entry, fat12_set, find_free_cluster,
-    name_to_fat11, parse_bpb, Bpb, DirFile, DirKind, FatBits, FatEntry, FAT12_EOC,
+    count_free_clusters, dir_entry, encode_file_entry, fat11_display, fat12_entry, fat12_set,
+    find_free_cluster, name_to_fat11, parse_bpb, Bpb, DirFile, DirKind, FatBits, FatEntry,
+    FAT12_EOC,
 };
 use berry_fsproto::{
-    encode_reply_get, CHUNK, FILE_SIZE_MAX, LIST_MAX, ST_BAD, ST_FULL, TYPE_DIR, TYPE_FILE,
+    encode_reply_get, encode_reply_statfs, CHUNK, FILE_SIZE_MAX, LIST_MAX, Statfs, ST_BAD,
+    ST_FULL, TYPE_DIR, TYPE_FILE,
 };
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
@@ -131,6 +138,16 @@ pub enum FatList {
     Bad,
 }
 
+/// STATFS 的 FAT 应答结果（C-2 刀 2——无卷面在分派层：`fat==None` →
+/// ST_NOENT，与 fat 族无盘语义一致）。
+pub enum FatStatfs {
+    /// 应答已落 rep（值为应答长）。
+    Served(usize),
+    /// 服务面坏（会话毒化 / RPC 失败 / FAT 畸形计数拒——诚实 ST_BAD，
+    /// 服务不死纪律）。
+    Bad,
+}
+
 /// FAT 层 PUT 分片结果（None = 非 FAT 名——调用方回落 RAM 通道）。
 pub enum StageRes {
     /// 已入 staging 槽（TRUNC 点 commit 落盘）。
@@ -158,6 +175,13 @@ pub struct Fat {
     /// 单槽 staging（A-6：FAT 名的 PUT 分片累积；TRUNC = commit 触发点，
     /// 槽内 (8.3 名, 内容)——跨名写自动先落盘旧槽）。
     staging: Option<([u8; 11], Vec<u8>)>,
+    /// STATFS 空闲簇缓存脏位（C-2 刀 2 方案 A）：true = 缓存不可信（init
+    /// 起首读 + commit 写路径失效），STATFS 时整读**盘面** FAT0 重建后清
+    /// 位。空闲真值取盘面而非内存镜像——commit 半途失败的孤儿链只在盘
+    /// 面（df 上报已落盘的真相）；镜像专供链走查，两不混源。
+    free_dirty: bool,
+    /// 缓存的空闲簇数（仅 !free_dirty 时有效）。
+    free_cache: u32,
 }
 
 /// eager init：vmo bounce → 探测卷 → 整读 FAT0 + 根目录。失败 = None
@@ -250,6 +274,8 @@ pub fn init(h: Handle) -> Option<Fat> {
         cache: [0u8; CLUS_CAP],
         cache_clus: 0,
         staging: None,
+        free_dirty: true, // 首读走 STATFS 路径统一重建（单一重读实现）
+        free_cache: 0,
     })
 }
 
@@ -518,6 +544,10 @@ impl Fat {
     /// fat2/root2 全程不改 self——任一步失败内存态零变化（client 重 PUT
     /// 重试路径成立）。返回 ST_OK / ST_FULL（数据簇·根目录满）/ ST_BAD。
     fn commit(&mut self, n11: [u8; 11], data: &[u8]) -> u8 {
+        // C-2 刀 2：FAT 写路径——STATFS 空闲缓存失效（入点即置：半途失败
+        // 的孤儿链只在盘面，重读比信任镜像诚实；空置一次的代价 = 下次
+        // STATFS 多 fat_sz 次 RPC，可忽略）。
+        self.free_dirty = true;
         if !self.sess_ok {
             return ST_BAD;
         }
@@ -755,6 +785,52 @@ impl Fat {
             FatPath::Dir(_) => FatStat::Ok(TYPE_DIR, 0),
             FatPath::Noent => FatStat::Noent,
             FatPath::Bad => FatStat::Bad,
+        }
+    }
+
+    /// STATFS 应答（C-2 刀 2）：几何全取 BPB 真值源；空闲簇数走 dirty 缓存
+    /// ——脏（首次/commit 后）则整读盘面 FAT0（fat_sz 扇区逐 RPC，smoke
+    /// FAT12 卷 = 2 次）+ [`count_free_clusters`] 重建后清位，净则直接用
+    /// （df 高频面零 RPC——净缓存不涉 RPC，blk 会话毒化后仍可服务：fsmgr
+    /// 是卷唯一写者，毒化后 commit 恒 ST_BAD，缓存不会再过期 = 冻结真值）。
+    /// 重读进局部 scratch 不动 `self.fat` 镜像（见 `free_dirty` 字段注——
+    /// 盘面/镜像两不混源）；RPC 失败/毒化/畸形计数拒 = Bad（诚实 ST_BAD，
+    /// 服务不死）。
+    pub fn statfs(&mut self, rep: &mut [u8; 256]) -> FatStatfs {
+        if self.free_dirty {
+            let mut fat_buf = [0u8; FAT_CAP]; // init 帽已断言 fat_sz*512 ≤ FAT_CAP
+            let base = self.bpb.hidden as u64 + self.bpb.fat_sector as u64;
+            let mut sec = [0u8; SECTOR_SZ];
+            for i in 0..self.bpb.fat_sz as u64 {
+                if !self.read_sector(base + i, &mut sec) {
+                    return FatStatfs::Bad; // 毒化（read_sector 内已 loud）/干净失败
+                }
+                let o = i as usize * SECTOR_SZ;
+                fat_buf[o..o + SECTOR_SZ].copy_from_slice(&sec);
+            }
+            let n = match count_free_clusters(
+                &fat_buf[..self.bpb.fat_sz as usize * SECTOR_SZ],
+                self.bpb.cluster_count,
+                self.bpb.fat_bits,
+            ) {
+                Some(n) => n,
+                // 畸形 FAT（保留值落文件簇位/切片短）——上报真值不猜（count
+                // 契约），与 alloc 扫描的跳过面分立。
+                None => return FatStatfs::Bad,
+            };
+            self.free_cache = n;
+            self.free_dirty = false;
+        }
+        let s = Statfs {
+            total_sectors: self.bpb.total,
+            spc: self.bpb.spc as u32,
+            cluster_count: self.bpb.cluster_count,
+            free_clusters: self.free_cache,
+            sector_sz: self.bpb.bps as u32, // init 帽已断言 == 512
+        };
+        match encode_reply_statfs(rep, &s) {
+            Some(n) => FatStatfs::Served(n),
+            None => trap(), // rep 256B ≥ 21——编码 None = 内部不变量破，不静默
         }
     }
 
