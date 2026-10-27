@@ -161,6 +161,17 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/which/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # C-3 段①：ps（ps 查询 CLI——svcmgr 拉起账本的渲染面；stdhello 同链
+    # std bin 独立小工作区，gift[2] 持查询端 ps_b + psproto PS_LIST 单 op
+    # 严格串行 RPC；svcmgr ps_selftest 消费自验打 `PS ok n=`）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/ps/Cargo.toml \
+        --target aarch64-unknown-linux-musl
+    # C-3 段②：berryctl（ver/ps/mem 三子命令控制 CLI 雏形——ps 同链 +
+    # psproto 三 op 全面；svcmgr bc_selftest 消费自验打 `BC ok`）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/berryctl/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
@@ -178,6 +189,7 @@ build-user:
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         bin/bench1=cargo-target/aarch64-unknown-linux-musl/release/bench1 \
+        bin/berryctl=cargo-target/aarch64-unknown-linux-musl/release/berryctl \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
         bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
         bin/cp=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp \
@@ -198,6 +210,7 @@ build-user:
         bin/ls=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/ls \
         bin/mkdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mkdir \
         bin/mv=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mv \
+        bin/ps=cargo-target/aarch64-unknown-linux-musl/release/ps \
         bin/pwd=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd \
         bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
         bin/rmdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir \
@@ -348,6 +361,9 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-netproto --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-netdproto --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-tcp --target {{host}}
+    # C-3：berry-psproto（ps 查询 RPC 协议纯函数面——表/ver/mem 三 op
+    # 编解码 + 严格解析全拒面 + 黄金字节钉板，host 15 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-psproto --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。

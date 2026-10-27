@@ -4,7 +4,7 @@
 # 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
 # （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
 #
-# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 16 = 对抗审查保留日志
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 18 = 对抗审查保留日志
 # 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
 # 面八步，链序排 fat 族前 EFI 路可达）——非主观子集）：
 #   1. EFI 十段恰一次：skeleton / fw / gop（成功形态 WxH，locate fail 不算）/
@@ -14,10 +14,10 @@
 #   3. 裸相 26 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
-#      生态 16 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
-#      EXIT / APP / PIPE / FS / U1 / U2 / U3 / B1 / U4——与 smoke.sh rootfs 相断言
-#      canon 同面；无 virtio 面：不挂 virtio-blk/net，VIRTIO/FAT/NET/DIR/CD
-#      族不在断言面）；
+#      生态 18 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
+#      EXIT / APP / PIPE / FS / U1 / U2 / U3 / B1 / U4 / PS / BC——与
+#      smoke.sh rootfs 相断言 canon 同面；无 virtio 面：不挂 virtio-blk/net，
+#      VIRTIO/FAT/NET/DIR/CD 族不在断言面）；
 #   4. kfile/init 字节数与宿主 KERNEL.ELF / rootfs.cpio **精确对拍**（盘
 #      内容 ↔ BerryBoot 读数 ↔ 内核消费三方一致性，镜像打包断裂即 FAIL）；
 #   5. switches 金丝雀 ≥3 条严格递增（同 smoke.sh——冻而不死类 bug 的
@@ -58,6 +58,8 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke-image: FAIL: 找不到 $QEMU
 # 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG），360s ≈ 3x 余量（帽只兜
 # 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
 # B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
+# C-3 起 +PS/BC（ps + berryctl 三拉起 = 两 musl spawn + 4 RPC ≈ +10-20s
+# TCG）——360s 帽不动。
 DEADLINE_BOOT=360
 DEADLINE_CANARY=120
 DEADLINE_RX=60
@@ -80,15 +82,18 @@ CONT_MARKERS=("HANDOFF ok ver=0" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # 裸相 26（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
 # 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行）。
 KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
-# EFI 路生态 16（对抗审查保留日志逐标记普查实证——`grep -cF` 各恰一次；与
+# EFI 路生态 18（对抗审查保留日志逐标记普查实证——`grep -cF` 各恰一次；与
 # smoke.sh rootfs 相断言 canon 同面，EFI 路上 libc/spawn/退出链回归不静默
 # 溜过。无 virtio 面——VIRTIO/FAT/NET/DIR/CD 族不在断言面。FS 用带参形态
 # `FS ok n=` 避 `ROOTFS ok src=` 子串混叠——smoke.sh P6 A-1 同款陷阱；
 # `STD ok` 与 `STD err ok` 互非子串已核，smoke.sh 双断言先例。C-2c 起
 # +U3 ok（text 批执行验收——与 U1/U2 同为纯 RAM/spawn 面，EFI 路可达）；
 # B-1 起 +B1 ok n=4（EL0 四项微基准格式断言收口——零 fs 盘面纯 RAM/spawn，
-# 链序在 bsh 内排 fat 族前 = EFI 路无盘亦打，smoke.sh rootfs 相同步面）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok")
+# 链序在 bsh 内排 fat 族前 = EFI 路无盘亦打，smoke.sh rootfs 相同步面）；
+# C-3 起 +PS ok n=/BC ok（ps 查询 RPC + berryctl 三子命令——svcmgr 直打、
+# 零 fs 盘面（rootfs 内 ELF spawn + 纯 RAM RPC），EFI 路可达同面；账本
+# 行数 EFI 路无 virtio 族与主 smoke 不同形，断言取 `PS ok n=` 前缀式）。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "PS ok n=" "BC ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
@@ -176,7 +181,7 @@ echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 26 + 生态 16 = 55）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 26 + 生态 18 = 57）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
@@ -196,7 +201,7 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 26 + 生态 16）"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 26 + 生态 18）"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -261,4 +266,4 @@ while :; do
   sleep 2
 done
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 26 + 生态 16 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 26 + 生态 18 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
