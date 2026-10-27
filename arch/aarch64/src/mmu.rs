@@ -92,8 +92,8 @@ pub unsafe extern "C" fn build_boot_pt() {
     let l2_ram = &raw mut BOOT_L2_RAM;
 
     // L1[0] → 低区 L2；L1[1] → RAM L2。
-    (*l1).0[0] = table_descriptor(l2_low as usize);
-    (*l1).0[1] = table_descriptor(l2_ram as usize);
+    (&raw mut (*l1).0[0]).write_volatile(table_descriptor(l2_low as usize));
+    (&raw mut (*l1).0[1]).write_volatile(table_descriptor(l2_ram as usize));
 
     // 低区 L2：映 UART、GIC 所在的 2MiB 块为 Device（identity）。
     let dev_blocks = [
@@ -116,6 +116,11 @@ pub unsafe extern "C" fn build_boot_pt() {
     // 循环故不断）。volatile 逐写从语义上禁绝向量化/常量池化，值退回 movz/movk
     // 立即数（LLVM AArch64 标量整数不走 literal pool）——与 2b-1 gotcha 同源的
     // boot 路径纪律：.text.boot 不得产生对高半数据的引用。
+    // K-3：上方 BOOT_L1[0]/[1] 与下方 KERNEL_L1[0]/[1] 四写同款 volatile 化——
+    // stp 合并对写同样是值折叠→cst16 池化的合法 O3 入口形态（折叠为绝对常量
+    // 对后可走 ldr q+str q 直写）；至此 build_boot_pt 内同类「编译期常量表填充」
+    // 复发向量已全关（配套断言：size.py --assert-flip 钉 .text.boot 全部 ADRP
+    // 目标必低半，debug/release 双面执法）。
     let mut pa = RAM_BASE;
     while pa < RAM_TOP {
         let idx = (pa >> 21) & L2_INDEX_MASK;
@@ -125,8 +130,8 @@ pub unsafe extern "C" fn build_boot_pt() {
 
     // 2b-0：TTBR1 内核表——高半 KVA 与低半 PA 走同一对 L2（见 KERNEL_L1 文档）。
     let k_l1 = &raw mut KERNEL_L1;
-    (*k_l1).0[0] = table_descriptor(l2_low as usize);
-    (*k_l1).0[1] = table_descriptor(l2_ram as usize);
+    (&raw mut (*k_l1).0[0]).write_volatile(table_descriptor(l2_low as usize));
+    (&raw mut (*k_l1).0[1]).write_volatile(table_descriptor(l2_ram as usize));
 
     // 表写入对页表遍历可见。
     dsb_ish();

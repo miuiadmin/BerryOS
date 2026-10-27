@@ -188,8 +188,11 @@ build: abi-check build-user
 
 # K-2 release 链接守卫：release 优化（fat LTO + O3）才生成的引用形态（.text.boot
 # ADRP 引 .rodata.cst16 越 ±4GB）可断链而 debug 全绿——只构建不跑 QEMU，挂 CI。
+# K-3：构建后尾挂 size.py --assert-flip——release 面 .text.boot 全部 ADRP 目标
+# 必低半（bit63=0）断言（debug 面经 smoke.sh 既有调用零改动生效）。
 build-release: abi-check build-user
     cargo build --release
+    python3 tools/size.py --assert-flip {{KERNEL_RELEASE}}
 
 check: abi-check build-user
     cargo check
@@ -334,6 +337,9 @@ test-host:
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
     python3 tools/mkimage.py --selftest
+    # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
+    # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
+    python3 tools/size.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
