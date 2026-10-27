@@ -118,6 +118,10 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // app 批/stdhello 已收口（账本状态稳定）。裸跑档缺静默跳过零扰动。----
     ps_selftest(console);
 
+    // ---- C-3 段②：berryctl v0 自验（`BC ok`）——ver/ps/mem 三子命令
+    // 全跑通（psproto 三 op 服务面 + 渲染行断言）。裸跑档缺静默跳过。----
+    bc_selftest(console);
+
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
     let v = [b'v'];
     loop {
@@ -995,7 +999,9 @@ fn ps_selftest(console: Handle) {
             for i in 0..nh {
                 let _ = berry_handle_close(hh[i]);
             }
-            break psp::parse_request(&msg, nb).is_some() && nh == 0;
+            // 分派面：本自验拉起的是 `ps`——仅 PS_LIST 在册（berryctl 面
+            // 走 bc_selftest；带 handle 随行 = 野值拒）。
+            break psp::parse_request(&msg, nb) == Some(psp::OP_PS_LIST) && nh == 0;
         }
         if s != BERRY_ERR_AGAIN {
             trap();
@@ -1013,36 +1019,21 @@ fn ps_selftest(console: Handle) {
             return;
         }
     };
-    // ② 应答：请求合法 → 账本全表编码（push 拒 = 内部超编——协议/表帽
-    // 双端共识下理论不可达，仍 loud 降级）；否则 [ST_BAD, 0]。
+    // ② 应答：请求合法 → 账本全表编码（`encode_table_reply`——push 拒 =
+    // 内部超编，协议/表帽双端共识下理论不可达，仍 loud 降级）；否则
+    // [ST_BAD, 0]。
     let mut rep = [0u8; 256];
-    let rl;
-    if req_ok {
-        let mut b = psp::ReplyBuilder::new(&mut rep);
-        let mut full = true;
-        // SAFETY: svcmgr 单线程独占（PS_TAB/PS_N）。
-        let n = unsafe { core::ptr::read(core::ptr::addr_of!(PS_N)) };
-        for i in 0..n {
-            // SAFETY: 同上（Copy 整行读出，不经引用跨 push 调用）。
-            let r = unsafe { core::ptr::read(core::ptr::addr_of!(PS_TAB[i])) };
-            if !b.push(&r.name[..r.name_len as usize], r.state, r.code) {
-                full = false;
-                break;
+    let rl = if req_ok {
+        match encode_table_reply(&mut rep) {
+            Some(l) => l,
+            None => {
+                eco_skip(b"ps table");
+                bad_reply(&mut rep)
             }
         }
-        if full {
-            rl = b.finish();
-        } else {
-            eco_skip(b"ps table");
-            rl = 2;
-            rep[0] = psp::ST_BAD;
-            rep[1] = 0;
-        }
     } else {
-        rl = 2;
-        rep[0] = psp::ST_BAD;
-        rep[1] = 0;
-    }
+        bad_reply(&mut rep)
+    };
     send_retry(ps_a, rep.as_ptr(), rl);
     // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 30s）。
     // SAFETY: svcmgr 单线程独占（PS_WIN，HEX_WIN 同纪律）。
@@ -1064,7 +1055,7 @@ fn ps_selftest(console: Handle) {
                 eof = true;
             } else {
                 if got + nb2 > cap.len() {
-                    send_retry(console, b"ps: overflow\n".as_ptr(), 14);
+                    send_retry(console, b"ps: overflow\n".as_ptr(), 13);
                     let _ = child.reap();
                     if berry_handle_close(ps_a) != 0
                         || berry_handle_close(out_c) != 0
@@ -1148,6 +1139,279 @@ fn ps_selftest(console: Handle) {
     line[9] = b'0' + (n % 10) as u8;
     line[10] = b'\n';
     send_retry(console, line.as_ptr(), line.len());
+}
+
+// ---- C-3 段②：berryctl v0——ver/ps/mem 三子命令自验（`BC ok`） ----
+
+/// eco 降级行（run_rootfs_child/ps_selftest 的 `eco: <why>\n` 同形状
+/// 零漂移——bc 族抽出模块级共用）。
+fn eco_note(console: Handle, why: &[u8]) {
+    let mut line = [0u8; 24];
+    line[..4].copy_from_slice(b"eco:");
+    line[4] = b' ';
+    let n = 5 + why.len();
+    line[5..n].copy_from_slice(why);
+    line[n] = b'\n';
+    send_retry(console, line.as_ptr(), n + 1);
+}
+
+/// bc ver 应答串（svcmgr 编译期标识——env! 取本 crate 版本；系统级版本
+/// 源 v2 随发布面定）。≤ psp::VER_MAX 由 encode_ver_reply 拒面执法。
+const BC_VER: &[u8] = concat!("BerryOS/svcmgr ", env!("CARGO_PKG_VERSION")).as_bytes();
+
+/// 畸形应答帧（2B [ST_BAD,0]——三 op 客户端解析面各自拒）。
+fn bad_reply(rep: &mut [u8]) -> usize {
+    rep[0] = psp::ST_BAD;
+    rep[1] = 0;
+    2
+}
+
+/// 账本全表 → 表应答（PS_LIST 服务面；ps_selftest 与 berryctl `ps` 子
+/// 命令共用——「不长第二套」）。push 拒 = 内部超编（协议/表帽双端共识下
+/// 理论不可达）→ None，调用方降级 ST_BAD。
+fn encode_table_reply(buf: &mut [u8]) -> Option<usize> {
+    let mut b = psp::ReplyBuilder::new(buf);
+    // SAFETY: svcmgr 单线程独占（PS_TAB/PS_N，HEX_WIN 同纪律）。
+    let n = unsafe { core::ptr::read(core::ptr::addr_of!(PS_N)) };
+    for i in 0..n {
+        // SAFETY: 同上（Copy 整行读出，不经引用跨 push 调用）。
+        let r = unsafe { core::ptr::read(core::ptr::addr_of!(PS_TAB[i])) };
+        if !b.push(&r.name[..r.name_len as usize], r.state, r.code) {
+            return None;
+        }
+    }
+    Some(b.finish())
+}
+
+/// mem 应答真值：svcmgr 经既有 vmo_get_size 计数自己可见的 VMO（rootfs
+/// blob / MMIO 窗——H_MMIO 无 virtio 路缺席自然少一）。零新内核面
+/// （C-3 钦定：内核遥测读不新增，telemetry_open 留 v3 挂账不动）。
+fn mem_tally() -> (u8, u64) {
+    let (mut n, mut tot) = (0u8, 0u64);
+    let mut sz = 0u64;
+    if berry_vmo_get_size(H_ROOTFS, &mut sz) == 0 {
+        n += 1;
+        tot += sz;
+    }
+    if berry_vmo_get_size(H_MMIO, &mut sz) == 0 {
+        n += 1;
+        tot += sz;
+    }
+    (n, tot)
+}
+
+/// berryctl 单子命令一轮：spawn（argv=子命令，gift[2]=查询端）→ 服务
+/// 一笔查询 RPC（op 分派：VER/MEM/表）→ 渲染行收齐 → reap。返窗内字节
+/// 数；任一坏面 eco 降级行 + None（标记缺失 = smoke FAIL 兜底）。渲染窗
+/// 复用 PS_WIN（ps_selftest 已收口，单线程顺序复用零交叠）。
+fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Option<usize> {
+    let (q_a, q_b) = channel_pair();
+    let (out_s, out_c) = channel_pair();
+    // 自身入账（幂等——三子命令跑同槽改写，ps 同款待遇：注册于拉起点）。
+    ps_reg(b"berryctl", psp::STATE_ALIVE, 0);
+    let child = match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: b"bin/berryctl",
+            data_off,
+            data_len,
+            stdout: out_c,
+            stack_pages: 16, // std 小程序（ps 同档，无 clap 链）
+            stdin_feed: Some(&[]), // gift[1] 占位（立即 EOF；uu_run 同款）
+            stdin_handle: None,
+            args: &[sub],
+            extra_gifts: &[q_b], // 单元素 → env 块 gift[2]
+            mmio_vmo: None,
+        },
+    ) {
+        Ok(c) => c,
+        Err(()) => {
+            // Err 全在 env send 前——q_b 未被 take，显式回收（uu_run 同款）。
+            if berry_handle_close(q_b) != 0
+                || berry_handle_close(q_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            eco_note(console, b"bc spawn");
+            return None;
+        }
+    };
+    // ① 收请求（严格串行单请求；富余 handle 收口丢弃）。帽 30s——svcmgr
+    // 顺序走到此处才服务，慢而活着不误杀（PS_CAP_NS 同档）。
+    const BC_CAP_NS: u64 = 30 * 1_000_000_000;
+    let mut msg = [0u8; 256];
+    let mut hh = [0 as Handle; 4];
+    let mut nb = msg.len();
+    let mut nh = hh.len();
+    let op = loop {
+        let s = berry_channel_recv(q_a, msg.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh);
+        if s == 0 {
+            for i in 0..nh {
+                let _ = berry_handle_close(hh[i]);
+            }
+            break if nh == 0 { psp::parse_request(&msg, nb) } else { None };
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(q_a, SIGNAL_READABLE, now() + BC_CAP_NS, &mut obs) != 0 {
+            send_retry(console, b"bc: no req\n".as_ptr(), 12);
+            let _ = child.reap();
+            if berry_handle_close(q_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            return None;
+        }
+    };
+    // ② op 分派应答：VER → 编译期串；MEM → vmo_get_size 计数；LIST →
+    // 账本全表；畸形/带 handle → [ST_BAD,0]（客户端各自 bad reply 退 1）。
+    let mut rep = [0u8; 256];
+    let rl = match op {
+        Some(psp::OP_VER) => match psp::encode_ver_reply(&mut rep, BC_VER) {
+            Some(l) => l,
+            None => bad_reply(&mut rep),
+        },
+        Some(psp::OP_MEM) => {
+            let (vmos, total) = mem_tally();
+            psp::encode_mem_reply(&mut rep, vmos, total)
+        }
+        Some(_) => match encode_table_reply(&mut rep) {
+            Some(l) => l,
+            None => bad_reply(&mut rep),
+        },
+        None => bad_reply(&mut rep),
+    };
+    send_retry(q_a, rep.as_ptr(), rl);
+    // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 30s）。
+    // SAFETY: svcmgr 单线程独占（PS_WIN 顺序复用，HEX_WIN 同纪律）。
+    let cap: &mut [u8] =
+        unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, 512) };
+    let mut got = 0usize;
+    let mut eof = false;
+    while !eof {
+        let mut m2 = [0u8; 256];
+        let mut h2 = [0 as Handle; 4];
+        let mut nb2 = m2.len();
+        let mut nh2 = h2.len();
+        let s = berry_channel_recv(out_s, m2.as_mut_ptr(), &mut nb2, h2.as_mut_ptr(), &mut nh2);
+        if s == 0 {
+            for i in 0..nh2 {
+                let _ = berry_handle_close(h2[i]);
+            }
+            if nb2 == 0 {
+                eof = true;
+            } else {
+                if got + nb2 > cap.len() {
+                    send_retry(console, b"bc: overflow\n".as_ptr(), 13);
+                    let _ = child.reap();
+                    if berry_handle_close(q_a) != 0
+                        || berry_handle_close(out_c) != 0
+                        || berry_handle_close(out_s) != 0
+                    {
+                        trap();
+                    }
+                    return None;
+                }
+                cap[got..got + nb2].copy_from_slice(&m2[..nb2]);
+                got += nb2;
+            }
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(out_s, SIGNAL_READABLE, now() + BC_CAP_NS, &mut obs) != 0 {
+            send_retry(console, b"bc: no EOF\n".as_ptr(), 12);
+            let _ = child.reap();
+            if berry_handle_close(q_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            return None;
+        }
+    }
+    // ④ 终验回收：真码必 0（berryctl 任何坏面都 eprintln+exit 1）。
+    let code = match child.reap() {
+        Ok(c) => c,
+        Err(()) => {
+            eco_note(console, b"bc reap");
+            if berry_handle_close(q_a) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            return None;
+        }
+    };
+    if berry_handle_close(q_a) != 0
+        || berry_handle_close(out_c) != 0
+        || berry_handle_close(out_s) != 0
+    {
+        trap();
+    }
+    if code != 0 {
+        eco_note(console, b"bc code");
+        return None;
+    }
+    Some(got)
+}
+
+/// C-3 段②自验（`BC ok` = rootfs 相新标记，注册面随段②收口刀挂
+/// smoke.sh）：berryctl 三子命令全跑通——ver（编译期串逐字节）/ mem
+/// （形状——bytes 值随 rootfs 内容漂，非定值断言）/ ps（家常驻锚行 +
+/// 自身可见）。`bin/berryctl` 缺席（裸跑档/旧 rootfs）静默跳过零扰动；
+/// 链内坏面 = eco 降级行 + 标记缺失（smoke FAIL 兜底）。
+fn bc_selftest(console: Handle) {
+    let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/berryctl") else {
+        return;
+    };
+    // ⓪ ver：编译期期望串（BC_VER 同源拼——env! 编译期展开，双侧同 crate）。
+    let want_ver: &[u8] = concat!("ver BerryOS/svcmgr ", env!("CARGO_PKG_VERSION"), "\n").as_bytes();
+    let Some(got) = bc_run_sub(console, b"ver", data_off, data_len) else {
+        return;
+    };
+    // SAFETY: 单线程独占（PS_WIN——bc_run_sub 收口后只读）。
+    let win: &[u8] = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(PS_WIN) as *const u8, got) };
+    if !has_sub(win, want_ver) {
+        eco_note(console, b"bc ver");
+        return;
+    }
+    // ① mem：形状断言（`mem vmos=` 前缀——vmos 1/2 随 virtio 在位漂、
+    // bytes 随 rootfs 内容漂；真码 0 + 前缀在即协议面通）。
+    let Some(got) = bc_run_sub(console, b"mem", data_off, data_len) else {
+        return;
+    };
+    // SAFETY: 同上。
+    let win: &[u8] = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(PS_WIN) as *const u8, got) };
+    if !has_sub(win, b"mem vmos=") {
+        eco_note(console, b"bc mem");
+        return;
+    }
+    // ② ps：账本渲染锚行（家常驻 + 上轮 ps 行残留 + 自身行）。
+    let Some(got) = bc_run_sub(console, b"ps", data_off, data_len) else {
+        return;
+    };
+    // SAFETY: 同上。
+    let win: &[u8] = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(PS_WIN) as *const u8, got) };
+    if !(has_sub(win, b"svcmgr alive\n")
+        && has_sub(win, b"ps alive\n")
+        && has_sub(win, b"berryctl alive\n"))
+    {
+        eco_note(console, b"bc ps");
+        return;
+    }
+    // ③ 标记。
+    send_retry(console, b"BC ok\n".as_ptr(), 6);
 }
 
 /// smoke 第 24 标记（7 字节，尾插随合并序）。

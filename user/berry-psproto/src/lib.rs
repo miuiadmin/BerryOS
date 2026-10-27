@@ -1,29 +1,41 @@
 //! berry-psproto —— ps 查询 RPC 协议纯函数库（C-3 段①，`berry-fsproto`
 //! 先例：零分配、零 unsafe、零依赖，输入只借用）。
 //!
-//! 拓扑：svcmgr 持通道一端（ps_a），ps bin 持对端（ps_b——随 env 块
+//! 拓扑：svcmgr 持通道一端（ps_a），查询 bin 持对端（ps_b——随 env 块
 //! gift[2] 迁入，libc `gift2_h()` 消费，见 svcmgr `ps_selftest`）——单对
 //! 双向 + 严格串行 RPC（一请求一应答，队列深 1 用量，fsproto 同款纪律）。
 //! 真值源 = svcmgr 拉起账本（「表驱动、零新内核面」，C-3 钦定）。
 //!
-//! 消息 = channel inline 单帧（≤[`REPLY_MAX`] ≤ `CHAN_MSG_MAX`=256B）。
-//! 全数值 LE。布局（v0，全定宽）：
+//! 消息 = channel inline 单帧（表应答 ≤[`REPLY_MAX`]；余两 op 各 ≤
+//! `CHAN_MSG_MAX`=256B）。全数值 LE。布局（v0，全定宽）：
 //!
-//! - 请求 `[op u8]`：恰 1 字节（尾随字节 = 野值拒）——PS_LIST(1) 单 op。
-//! - 应答 `[st u8][count u8]` + count × `[name ≤ NAME_MAX B，NUL 终止]
+//! - 请求 `[op u8]`：恰 1 字节（尾随字节 = 野值拒）——PS_LIST(1) 表查询
+//!   / VER(2) 版本串 / MEM(3) svcmgr 可见内存汇总（C-3 段② berryctl 面，
+//!   `ver`/`ps`/`mem` 三子命令）。
+//! - 表应答 `[st u8][count u8]` + count × `[name ≤ NAME_MAX B，NUL 终止]
 //!   [state u8][code i32 LE]`：
 //!   - st = [`ST_OK`]/[`ST_BAD`]（v1 无诊断面——畸形即拒，客户端打一行
 //!     诊断退出，标记缺失 = smoke FAIL 兜底）；
 //!   - state = [`STATE_ALIVE`]/[`STATE_EXITED`]/[`STATE_SPAWNFAIL`]；code
 //!     仅 EXITED 行有意义，编码仍全宽携带（定宽优先，消费端自辨）。
+//! - 版本应答 `[st u8][ver ≤ VER_MAX B，NUL 终止]`（恰长——NUL 必为末
+//!   字节；宽帽 [`VER_MAX`]）。
+//! - 内存应答 `[st u8][vmos u8][total u64 LE]` 恰 [`MEM_REPLY_LEN`]——
+//!   svcmgr 经既有 `vmo_get_size` 计数自己可见的 VMO（rootfs blob /
+//!   MMIO 窗），内核遥测读 syscall 不新增（telemetry_open 留 v3 挂账）。
 //!
 //! 严格解析：count 超帽/名字空或超长/缺 NUL/截断/尾随字节/未知 state/
 //! 未知 st 一律 None（「编不出就拒绝，不截断」——截断的表是谎言表）。
 
 #![cfg_attr(not(test), no_std)]
 
-/// 拉全表（v0 单 op；按 pid/名过滤留 v2 随交互面）。
+/// 拉全表（ps bin / berryctl `ps` 子命令；按 pid/名过滤留 v2 随交互面）。
 pub const OP_PS_LIST: u8 = 1;
+/// 版本串查询（berryctl `ver` 子命令）。
+pub const OP_VER: u8 = 2;
+/// svcmgr 可见内存汇总（berryctl `mem` 子命令——`vmo_get_size` 计数，
+/// 零新内核面）。
+pub const OP_MEM: u8 = 3;
 
 /// 应答状态码。
 pub const ST_OK: u8 = 0;
@@ -44,20 +56,36 @@ pub const REQUEST_LEN: usize = 1;
 /// 应答帧帽 = 头 2B + 行最坏 [`NAME_MAX`]+1(NUL)+1(state)+4(code)。
 pub const REPLY_MAX: usize = 2 + MAX_ENTRIES * (NAME_MAX + 1 + 1 + 4);
 const _: () = assert!(REPLY_MAX <= 256, "REPLY_MAX 须落在 CHAN_MSG_MAX=256 内");
+/// 版本串宽帽（NUL 外）。
+pub const VER_MAX: usize = 32;
+/// 内存应答恰长：st(1) + vmos(1) + total(8)。
+pub const MEM_REPLY_LEN: usize = 10;
 
-/// 编码请求（buf ≥ [`REQUEST_LEN`]；恒成功——定宽 1B）。
+/// 编码表查询请求（buf ≥ [`REQUEST_LEN`]；恒成功——定宽 1B）。
 pub fn encode_request(buf: &mut [u8]) -> usize {
-    buf[0] = OP_PS_LIST;
+    encode_request_op(buf, OP_PS_LIST)
+}
+
+/// 编码指定 op 的请求（berryctl `ver`/`mem` 面）。op 须在册——调用点
+/// 传编译期常量，野 op = 程序员错，assert 即可（运行期不可达）。
+pub fn encode_request_op(buf: &mut [u8], op: u8) -> usize {
+    assert!(valid_op(op), "psproto: 野 op");
+    buf[0] = op;
     REQUEST_LEN
 }
 
-/// 解析请求：恰 1B 且 op 匹配；否则 None（服务端以 ST_BAD 应答拒面）。
-pub fn parse_request(buf: &[u8], len: usize) -> Option<()> {
-    if len == REQUEST_LEN && buf.len() >= len && buf[0] == OP_PS_LIST {
-        Some(())
+/// 解析请求：恰 1B 且 op 在册，返回 op 供服务端分派；否则 None（服务端
+/// 以 ST_BAD 应答拒面）。
+pub fn parse_request(buf: &[u8], len: usize) -> Option<u8> {
+    if len == REQUEST_LEN && buf.len() >= len && valid_op(buf[0]) {
+        Some(buf[0])
     } else {
         None
     }
+}
+
+fn valid_op(op: u8) -> bool {
+    op == OP_PS_LIST || op == OP_VER || op == OP_MEM
 }
 
 /// 应答增量构造器（服务端）：`new` 写 st/count 占位 → `push` 逐行追加 →
@@ -148,6 +176,52 @@ pub fn parse_reply(
     Some(())
 }
 
+/// 编码版本应答（服务端）：`[ST_OK][ver][NUL]`。拒绝面（ver 空或超宽或
+/// 含 NUL / buf 不足）返 None——调用方降级 ST_BAD，不静默截断。
+pub fn encode_ver_reply(buf: &mut [u8], ver: &[u8]) -> Option<usize> {
+    if ver.is_empty() || ver.len() > VER_MAX || ver.contains(&0) || buf.len() < 2 + ver.len() {
+        return None;
+    }
+    buf[0] = ST_OK;
+    buf[1..1 + ver.len()].copy_from_slice(ver);
+    buf[1 + ver.len()] = 0;
+    Some(2 + ver.len())
+}
+
+/// 解析版本应答（客户端）：恰长（NUL 必为末字节）、st=ST_OK、串非空且
+/// ≤ [`VER_MAX`]、无内嵌 NUL；返回版本串切片。
+pub fn parse_ver_reply(buf: &[u8], len: usize) -> Option<&[u8]> {
+    if len < 3 || len > buf.len() || buf[0] != ST_OK || buf[len - 1] != 0 {
+        return None;
+    }
+    let ver = &buf[1..len - 1];
+    if ver.is_empty() || ver.len() > VER_MAX || ver.contains(&0) {
+        return None;
+    }
+    Some(ver)
+}
+
+/// 编码内存应答（服务端）：`[ST_OK][vmos][total LE]` 恰 [`MEM_REPLY_LEN`]
+/// （buf 不足 = 内部错，assert——定长常量调用点）。
+pub fn encode_mem_reply(buf: &mut [u8], vmos: u8, total: u64) -> usize {
+    assert!(buf.len() >= MEM_REPLY_LEN, "psproto: mem buf 不足");
+    buf[0] = ST_OK;
+    buf[1] = vmos;
+    buf[2..10].copy_from_slice(&total.to_le_bytes());
+    MEM_REPLY_LEN
+}
+
+/// 解析内存应答（客户端）：恰 [`MEM_REPLY_LEN`] 且 st=ST_OK；返回
+/// `(vmos, total)`。
+pub fn parse_mem_reply(buf: &[u8], len: usize) -> Option<(u8, u64)> {
+    if len != MEM_REPLY_LEN || len > buf.len() || buf[0] != ST_OK {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&buf[2..10]);
+    Some((buf[1], u64::from_le_bytes(b)))
+}
+
 fn valid_state(s: u8) -> bool {
     s == STATE_ALIVE || s == STATE_EXITED || s == STATE_SPAWNFAIL
 }
@@ -179,12 +253,24 @@ mod tests {
         let mut buf = [0u8; 4];
         let n = encode_request(&mut buf);
         assert_eq!(n, 1);
-        assert_eq!(parse_request(&buf, n), Some(()));
-        // 恰长执法：尾随字节/空/错 op 全拒。
+        assert_eq!(parse_request(&buf, n), Some(OP_PS_LIST));
+        // 恰长执法：尾随字节/空全拒。
         assert_eq!(parse_request(&buf, 2), None);
         assert_eq!(parse_request(&buf, 0), None);
-        buf[0] = OP_PS_LIST + 1;
-        assert_eq!(parse_request(&buf, 1), None);
+        // 野 op：0（st 值域泄漏进请求面）/ 4（三在册 op 之外）。
+        assert_eq!(parse_request(&[0], 1), None);
+        assert_eq!(parse_request(&[OP_MEM + 1], 1), None);
+    }
+
+    #[test]
+    fn request_op_dispatch() {
+        // 三 op 全经 encode_request_op → parse 往返（服务端分派面）。
+        let mut buf = [0u8; 4];
+        for op in [OP_PS_LIST, OP_VER, OP_MEM] {
+            let n = encode_request_op(&mut buf, op);
+            assert_eq!(n, REQUEST_LEN);
+            assert_eq!(parse_request(&buf, n), Some(op));
+        }
     }
 
     #[test]
@@ -309,6 +395,78 @@ mod tests {
         buf2[7] = 9; // 野 state
         buf2[8..12].copy_from_slice(&0i32.to_le_bytes());
         assert_eq!(parse_reply(&buf2, 12, |_, _, _| ()), None);
+    }
+
+    #[test]
+    fn ver_roundtrip_and_rejects() {
+        let mut buf = [0u8; 64];
+        let len = encode_ver_reply(&mut buf, b"BerryOS/0.1.0").unwrap();
+        assert_eq!(len, 1 + 13 + 1); // st + ver + NUL
+        assert_eq!(parse_ver_reply(&buf, len), Some(&b"BerryOS/0.1.0"[..]));
+        // 最宽边界：VER_MAX 字节恰收。
+        let wide = [b'v'; VER_MAX];
+        let l2 = encode_ver_reply(&mut buf, &wide).unwrap();
+        assert_eq!(l2, 1 + VER_MAX + 1);
+        assert_eq!(parse_ver_reply(&buf, l2), Some(&wide[..]));
+        // 编码拒绝面：空 / 超宽 / 内嵌 NUL。
+        assert!(encode_ver_reply(&mut buf, b"").is_none());
+        let over = [b'x'; VER_MAX + 1];
+        assert!(encode_ver_reply(&mut buf, &over).is_none());
+        assert!(encode_ver_reply(&mut buf, b"a\0b").is_none());
+        // 解析拒绝面：截断每切点（len<3 或 NUL 不在末尾）/ 尾随字节 /
+        // st 坏 / 内嵌 NUL。
+        let len = encode_ver_reply(&mut buf, b"berry").unwrap();
+        for cut in 0..len {
+            assert_eq!(parse_ver_reply(&buf[..cut], cut), None, "截断 @{cut} 应拒");
+        }
+        let mut tail = buf;
+        tail[len] = b'x';
+        assert_eq!(parse_ver_reply(&tail, len + 1), None);
+        let mut bad = buf;
+        bad[0] = ST_BAD;
+        assert_eq!(parse_ver_reply(&bad, len), None);
+        let mut emb = buf;
+        emb[2] = 0; // 内嵌 NUL（原串 berry → b\0rry）
+        assert_eq!(parse_ver_reply(&emb, len), None);
+    }
+
+    #[test]
+    fn mem_roundtrip_and_rejects() {
+        let mut buf = [0u8; 16];
+        let len = encode_mem_reply(&mut buf, 2, 0x0102_0304_0506_0708);
+        assert_eq!(len, MEM_REPLY_LEN);
+        assert_eq!(parse_mem_reply(&buf, len), Some((2, 0x0102_0304_0506_0708)));
+        // LE 钉板：total 首字节 = 最低位字节。
+        assert_eq!(buf[2], 0x08);
+        // 值域边界：全零 / 顶格。
+        let l2 = encode_mem_reply(&mut buf, 0, 0);
+        assert_eq!(parse_mem_reply(&buf, l2), Some((0, 0)));
+        let l3 = encode_mem_reply(&mut buf, 255, u64::MAX);
+        assert_eq!(parse_mem_reply(&buf, l3), Some((255, u64::MAX)));
+        // 恰长执法：9B/11B / st 坏。
+        assert_eq!(parse_mem_reply(&buf, MEM_REPLY_LEN - 1), None);
+        assert_eq!(parse_mem_reply(&buf, MEM_REPLY_LEN + 1), None);
+        let mut bad = buf;
+        bad[0] = ST_BAD;
+        assert_eq!(parse_mem_reply(&bad, MEM_REPLY_LEN), None);
+    }
+
+    #[test]
+    fn ver_mem_wire_golden() {
+        // 黄金字节钉板（表应答 wire_golden 同款纪律——改布局 = 此测必炸）。
+        let mut buf = [0u8; 64];
+        let len = encode_ver_reply(&mut buf, b"berry").unwrap();
+        assert_eq!(len, 7);
+        assert_eq!(
+            &buf[..len],
+            &[ST_OK, b'b', b'e', b'r', b'r', b'y', 0][..]
+        );
+        let len = encode_mem_reply(&mut buf, 3, 0x0100);
+        assert_eq!(len, MEM_REPLY_LEN);
+        assert_eq!(
+            &buf[..len],
+            &[ST_OK, 3, 0x00, 0x01, 0, 0, 0, 0, 0, 0][..]
+        );
     }
 
     #[test]
