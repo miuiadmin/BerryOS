@@ -255,11 +255,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     unsafe { mm::init(handoff) };
 
     // G-eco 入机侧第一刀：rootfs（initrd 角色）装载，三源按序——
-    // ①（V-1c）handoff init_blob：BerryBoot 从盘读 INITRD.BIN 整档
-    //    AllocatePages 页钉后经 handoff @80/@88 递送（fw_cfg 的 EFI 路
-    //    替代者——EFI 固件面无 fw_cfg 具名文件机制）。pa/len 双零 =
-    //    「无此物」（裁决 B 留位语义）；界检整段在 DRAM 窗内 + 帽同
-    //    fw_cfg 路口径——坏值降级不死（boot 期无 panic 纪律）；
+    // ①（V-1c/A1-3b）handoff init：BerryBoot 从盘读 INITRD.BIN 页钉后经
+    //    handoff 递送（fw_cfg 的 EFI 路替代者——EFI 固件面无 fw_cfg 具名
+    //    文件机制）。**按 version 分派**（A1-3b §3.2.1）：v1 = 分段描述符
+    //    数组（ BerryBoot 8MiB 目标段逐段 AllocatePages——40MB+ blob 的
+    //    递送形态，绕开固件大连续段地形墙）：单段零拷贝借片、多段 VMO
+    //    逐页拼装（源切片直传，堆零暂存）；v0 = init_blob_*（@80/@88）
+    //    单 blob 原路（旧装载器照跑）。零段/坏值降级不死（boot 期无
+    //    panic 纪律）；
     // ② 入口 x0 的 DTB `/chosen` initrd 物理区间 → 高半直映拷出（真机/
     //    Linux boot 协议路径；QEMU 非 Linux ELF 直加载实测 x0=0、RAM 无
     //    DTB、`-initrd` 整体不加载——initrd/dtb/cmdline 机制全在 QEMU
@@ -276,23 +279,88 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // （不带 -fw_cfg 的既有 run/smoke 零扰动）。
     let rootfs: Option<(&[u8], RootfsBuf)> = handoff
         .and_then(|h| {
-            let (pa, len) = (h.init_blob_pa, h.init_blob_len);
-            if pa == 0 || len == 0 || len > ROOTFS_MAX as u64 {
-                return None;
+            if h.version >= 1 {
+                // v1：分段数组是唯一 init 事实源（init_blob_* 置零不读）。
+                // 结构校验（同页自相对/对齐/界检）在 `handoff::init_segs`；
+                // 空段（无 INITRD/违约）→ None 回落下一源。
+                let segs: &[handoff::InitSeg] = handoff::init_segs(h, boot_x0)
+                    .unwrap_or(&[]);
+                if segs.is_empty() {
+                    return None;
+                }
+                // Σ 总量帽（与 fw_cfg 多卷路同口径——A1-1 帽分家执法点）。
+                let mut total: usize = 0;
+                for s in segs {
+                    total = total.checked_add(s.len as usize)?;
+                    if total > ROOTFS_TOTAL_MAX {
+                        return None;
+                    }
+                }
+                if segs.len() == 1 {
+                    // 单段零拷贝借片：与 v0 同纪律（源已在 DRAM，EfiLoaderData
+                    // 保留区即归宿——RootfsBuf 头注）。
+                    let (pa, len) = (segs[0].pa as usize, segs[0].len as usize);
+                    // SAFETY: init_segs 已界检整段在 [RAM_BASE, RAM_TOP)——
+                    // 高半直映 L2 全覆盖，from_raw_parts 必落已映射块。
+                    let p = phys_to_virt(pa) as *const u8;
+                    let bytes: &'static [u8] =
+                        unsafe { core::slice::from_raw_parts(p, len) };
+                    Some((b"handoff" as &[u8], RootfsBuf::Borrowed(bytes)))
+                } else {
+                    // 多段 VMO 逐页拼装：源切片直传 `Vmo::write`（源已在
+                    // DRAM 高半别名——堆零暂存，比 fw_cfg 路 4MiB chunk 更
+                    // 低调堆峰）；页模型与 fw_cfg 多卷路同形（commit 逐页
+                    // 出帧、物理不连续无碍）。
+                    let mut vmo = vmo::Vmo::create(total).ok()?;
+                    vmo.commit(mm::frames(), 0, vmo.size()).ok()?;
+                    let mut off: usize = 0;
+                    for s in segs {
+                        // SAFETY: 同上——init_segs 已逐段界检。
+                        let src = unsafe {
+                            core::slice::from_raw_parts(
+                                phys_to_virt(s.pa as usize) as *const u8,
+                                s.len as usize,
+                            )
+                        };
+                        vmo.write(off, src).ok()?;
+                        off += s.len as usize;
+                    }
+                    // 对账（拼装完整性——同 fw_cfg 路纪律）。
+                    if off != total {
+                        return None;
+                    }
+                    // 段页回收（A1-3b）：拼装完成 = 段内容已全量进 VMO，
+                    // EfiLoaderData 段页与 VMO 页双份占 RAM（29MiB rootfs
+                    // 即 ≈7276 页浪费；40MB+ blob 双份 80MiB/128MiB 结构性
+                    // 不可行）——按段区间归还 buddy（BerryBoot AllocatePages
+                    // 页粒度 == ceil(len/4096)，回收恰无漏无溢）。单段
+                    // Borrowed 不回收（段即活 rootfs 本体）；fw_cfg 路 chunk
+                    // 缓冲逐卷复用无此面。
+                    for s in segs {
+                        mm::frames().release(s.pa as usize, s.len as usize);
+                    }
+                    Some((b"handoff" as &[u8], RootfsBuf::Assembled(vmo, total)))
+                }
+            } else {
+                // v0：init_blob_* 单 blob 原路（旧装载器兼容面）。
+                let (pa, len) = (h.init_blob_pa, h.init_blob_len);
+                if pa == 0 || len == 0 || len > ROOTFS_MAX as u64 {
+                    return None;
+                }
+                if pa < berry_hal_aarch64::RAM_BASE as u64
+                    || pa.checked_add(len)? > berry_hal_aarch64::RAM_TOP as u64
+                {
+                    return None;
+                }
+                // SAFETY: 界检已过（整段在 DRAM 窗内）——高半直映 L2 全覆盖，
+                // from_raw_parts 读取必落在已映射块内（与 dtb 路同款论证）。
+                let p = phys_to_virt(pa as usize) as *const u8;
+                // 'static：DRAM 直映视图，寿命 = 整机；blob 留 EfiLoaderData
+                // 保留区即其归宿（零拷贝直用——RootfsBuf 头注）。
+                let bytes: &'static [u8] =
+                    unsafe { core::slice::from_raw_parts(p, len as usize) };
+                Some((b"handoff" as &[u8], RootfsBuf::Borrowed(bytes)))
             }
-            if pa < berry_hal_aarch64::RAM_BASE as u64
-                || pa.checked_add(len)? > berry_hal_aarch64::RAM_TOP as u64
-            {
-                return None;
-            }
-            // SAFETY: 界检已过（整段在 DRAM 窗内）——高半直映 L2 全覆盖，
-            // from_raw_parts 读取必落在已映射块内（与 dtb 路同款论证）。
-            let p = phys_to_virt(pa as usize) as *const u8;
-            // 'static：DRAM 直映视图，寿命 = 整机；blob 留 EfiLoaderData
-            // 保留区即其归宿（零拷贝直用——RootfsBuf 头注）。
-            let bytes: &'static [u8] =
-                unsafe { core::slice::from_raw_parts(p, len as usize) };
-            Some((b"handoff" as &[u8], RootfsBuf::Borrowed(bytes)))
         })
         .or_else(|| {
             if handoff.is_none() {

@@ -81,6 +81,29 @@ impl<'a> FrameAllocator<'a> {
         n
     }
 
+    /// Boot 期回收保留区间 `[pa, pa+len)`（A1-3b，[`reserve`] 的逆）：
+    /// 与窗口相交部分中**此前由 reserve 剔除的页**归还空闲池——普通
+    /// 已分配/已空闲页跳过（幂等）。返回**实际归还页数**。
+    ///
+    /// 契约：boot 单线程；区间归属由调用方保证（误回收他源保留区 =
+    /// 内存腐化）。典型用例：handoff v1 init 段页在 VMO 拼装完成后
+    /// 归还——段内容双份（EfiLoaderData 段 + VMO 页）的地形死结出口。
+    pub fn release(&mut self, pa: usize, len: usize) -> usize {
+        let base = self.base_pfn << PAGE_SHIFT;
+        let top = (self.base_pfn + self.npages) << PAGE_SHIFT;
+        // checked：与 reserve 同款防回卷。
+        let end = pa.saturating_add(len);
+        let lo = pa.max(base);
+        let hi = end.min(top);
+        if lo >= hi {
+            return 0;
+        }
+        let first = lo >> PAGE_SHIFT;
+        let last = (hi + PAGE_SHIFT_MASK) >> PAGE_SHIFT;
+        self.buddy
+            .release_range(first - self.base_pfn, last - self.base_pfn)
+    }
+
     /// 分配一页，返回其 PFN。
     pub fn alloc(&mut self) -> Result<usize, AllocError> {
         self.buddy.alloc().map(|i| self.base_pfn + i)
@@ -168,6 +191,24 @@ mod tests {
         let n = fa.reserve(0, usize::MAX);
         assert_eq!(n, 16);
         assert_eq!(fa.alloc(), Err(AllocError::OutOfMemory));
+    }
+
+    #[test]
+    fn release_translates_pfn_clamps_and_counts() {
+        // reserve 的逆（A1-3b）：保留 [base+8K, +20K) 13 页 → release 同
+        // 区间归还恰 13 页、全窗 64 页复可分配；越窗腿截断 + 幂等 0。
+        let base = 0x1000_0000;
+        let (f, o, bm, sm) = backing(64);
+        let mut fa = FrameAllocator::new(base, base + 64 * KIB4, f, o, bm, sm);
+        assert_eq!(fa.reserve(base + 8 * KIB4, 12 * KIB4), 12);
+        assert_eq!(fa.reserve(base + 20 * KIB4, 2), 1); // 尾 2 字节进位占 1 页
+        assert_eq!(fa.release(base + 8 * KIB4, 12 * KIB4 + 2), 13);
+        assert_eq!(fa.release(base + 8 * KIB4, 12 * KIB4 + 2), 0, "幂等");
+        let mut got = Vec::new();
+        while let Ok(p) = fa.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 64, "回收后整窗全可分配");
     }
 
     #[test]

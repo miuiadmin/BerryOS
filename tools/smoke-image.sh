@@ -15,7 +15,7 @@
 # ——非主观子集）：
 #   1. EFI 十段恰一次：skeleton / fw / gop（成功形态 WxH，locate fail 不算）/
 #      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
-#   2. 内核接续恰一次：HANDOFF ok ver=0 / MMAP ok segs= / ROOTFS ok
+#   2. 内核接续恰一次：HANDOFF ok ver=1 / MMAP ok segs= / ROOTFS ok
 #      **src=handoff**（handoff 源专属形态——fw_cfg/DTB 路不通于此）；
 #   3. 裸相 26 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
@@ -91,7 +91,7 @@ EFI_ERE=(
 )
 # 内核接续恰一次面（src=handoff 是 handoff 路专属——fw_cfg 路打 src=fw_cfg
 # 串，混源即 FAIL）。
-CONT_MARKERS=("HANDOFF ok ver=0" "MMAP ok segs=" "ROOTFS ok src=handoff")
+CONT_MARKERS=("HANDOFF ok ver=1" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # 裸相 26（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
 # 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行）。
 KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")

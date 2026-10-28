@@ -209,8 +209,17 @@ impl<'a> BuddyAllocator<'a> {
         self.free[p] = true;
         self.bm_set(order, p);
         // 逐阶向上合并。
+        self.merge_up(p, order);
+        Ok(())
+    }
+
+    /// 把阶 `order` 的空闲块头 `head` 逐阶向上与 buddy 合并（`free` 与
+    /// [`release_range`] 共用的合并环——单一实现，不长第二套）。
+    ///
+    /// 前置：`head` 已是阶 `order` 空闲头（free=true、位图已置）。
+    fn merge_up(&mut self, head: usize, order: usize) {
         let mut o = order;
-        let mut head = p;
+        let mut head = head;
         while o < MAX_ORDER {
             let buddy = head ^ (1usize << o);
             // buddy 须是同阶空闲块头才能合并。
@@ -237,7 +246,6 @@ impl<'a> BuddyAllocator<'a> {
                 break;
             }
         }
-        Ok(())
     }
 
     /// Boot 期保留：把页号区间 `[a, b)` 从空闲结构中永久剔除（V-1b）。
@@ -290,6 +298,41 @@ impl<'a> BuddyAllocator<'a> {
             self.order[p] = RESERVED;
             p += 1;
         }
+    }
+
+    /// Boot 期回收（A1-3b）：[`reserve_range`] 的逆——把 `[a, b)` 内的
+    /// RESERVED 哨兵页逐页归还空闲池（order-0 空闲头 + [`merge_up`] 与
+    /// 邻块自然合并）。**只回收 RESERVED 页**：普通已分配页 / 已空闲页 /
+    /// 尾页一律跳过（幂等；不越权释放他源占用）。返回**实际归还页数**
+    ///（区间内非 RESERVED 页不计——与区间长度的差 = 跳过面）。
+    ///
+    /// 契约：boot 单线程；调用方保证区间确属自己此前 reserve 的
+    /// （boot 期手误回收他源保留区 = 内存腐化——本面只挡「已分配页
+    /// 不被回收」这一半，保留区之间的归属靠调用方纪律，同 reserve）。
+    /// 与 `free` 的分工：free 按分配阶整块释放且对 RESERVED 恒
+    /// OrderMismatch（结构性拒）；本面是保留语义的专用出口。
+    pub fn release_range(&mut self, a: usize, b: usize) -> usize {
+        let b = b.min(self.num_pages);
+        let mut p = a.min(b);
+        let mut released = 0usize;
+        while p < b {
+            if self.order[p] != RESERVED {
+                // 已空闲 / 已分配 / 尾页：不属本面，逐页步进。
+                p += 1;
+                continue;
+            }
+            // RESERVED 单页 → order-0 空闲头，入位图，向上合并（相邻
+            // RESERVED 页随后逐页到达，合并环自然拼接出大块）。
+            self.free[p] = true;
+            self.order[p] = 0;
+            self.bm_set(0, p);
+            self.merge_up(p, 0);
+            released += 1;
+            // p 若在合并中退为尾页（p != 合并头），后续步进照走（TAIL ≠
+            // RESERVED → 跳过），区间内下一 RESERVED 页继续回收。
+            p += 1;
+        }
+        released
     }
 
     /// 在阶 `o` 的空闲块头里找**最小页号**者，返回其页号。
@@ -607,6 +650,56 @@ mod tests {
         // 保留区外的页正常可回收复用。
         ba.free(got[0], 0).unwrap();
         assert_eq!(ba.alloc().unwrap(), got[0]);
+    }
+
+    // ---- A1-3b release_range 面（reserve 的逆）----
+
+    #[test]
+    fn release_restores_full_pool_shape() {
+        // 保留 [16,24) → 回收同区间：整窗应恢复成与「从未保留」等价的
+        // 形状（64 页全可分配 + 回收计数恰 8 + 位图不变量保持）。
+        let mut ba = make(64);
+        ba.reserve_range(16, 24);
+        assert_eq!(ba.release_range(16, 24), 8);
+        assert_bitmap_invariants(&ba);
+        let mut got = Vec::new();
+        while let Ok(p) = ba.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 64, "回收后整窗全可分配");
+        // 再回收（幂等面）：无 RESERVED 页可回收 → 0。
+        assert_eq!(ba.release_range(16, 24), 0);
+    }
+
+    #[test]
+    fn release_merges_back_to_max_order() {
+        // 保留正中 [32,33)（o6 对称点）→ 回收后合并环应还原出完整 o6
+        // 单块（reserve_merge_blocked_by_reserved_page 的逆命题）。
+        let mut ba = make(64);
+        ba.reserve_range(32, 33);
+        assert_eq!(ba.release_range(32, 33), 1);
+        assert_eq!(ba.debug_free_heads(), vec![(0, 6)]);
+        assert_bitmap_invariants(&ba);
+    }
+
+    #[test]
+    fn release_skips_allocated_and_free_pages() {
+        // 先占后混：[0,4) 正常分配、[8,12) 保留、[16,20) 保持空闲——
+        // release [0,20) 只回收 4 个 RESERVED 页（已分配/已空闲页不越权），
+        // 已分配页随后正常 free（不腐化）。
+        let mut ba = make(64);
+        let a = ba.alloc_order(2).unwrap(); // [0,4) 已分配
+        assert_eq!(a, 0);
+        ba.reserve_range(8, 12);
+        assert_eq!(ba.release_range(0, 20), 4);
+        assert_eq!(ba.allocated_pages(), 4, "已分配页不受 release 影响");
+        assert_bitmap_invariants(&ba);
+        ba.free(a, 2).unwrap(); // 正常回收面原样可用
+        let mut got = Vec::new();
+        while let Ok(p) = ba.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 64);
     }
 
     #[test]
