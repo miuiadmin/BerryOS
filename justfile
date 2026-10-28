@@ -240,7 +240,14 @@ build-user:
         bin/vnet=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet \
         bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe \
         bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc \
-        bin/which=cargo-target/aarch64-unknown-linux-musl/release/which
+        bin/which=cargo-target/aarch64-unknown-linux-musl/release/which \
+        --split 32
+    # A1-3b（余量刀）：mkcpio --split 32 = 主路恒走多卷产链——≈28MiB
+    # rootfs = 1 卷 rootfs0.cpio（单卷 ≤32MiB 与内核 fwcfg 单卷帽同口径，
+    # 容量工程前置-A1 §3.1）；越帽自动分卷、消费端（内核连续前缀发现序
+    # opt/berry/rootfs0..9 + VMO 逐页拼装）零改动。run-rootfs/smoke 按
+    # rootfs0 在席性动态取卷名；rootfs.cpio 单档照常产出（既有消费面
+    # 零扰动）。陈卷（旧构建多卷残留）由 mkcpio 写卷前自清。
     # T-1 §1：TLS lint FAIL 门（挂 mkcpio 后——smoke/check/run 全经
     # build-user = CI 自然被护）。F1 放置可行性 = crt0::tls_place 的
     # python 镜像（FAIL ⟺ 运行期 brk #0x7C1 会炸，无任意阈值）；F2
@@ -333,7 +340,19 @@ run-rootfs: build
         i=$((i+1)); [ "$i" -gt 25 ] && { echo "echod 5s 未 listening（18080 被占？）"; exit 1; }
         sleep 0.2
     done
-    {{QEMU}} {{MACH}} -kernel {{KERNEL}} -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+    # A1-3b：rootfs fw_cfg 卷动态递送——build-user 起 mkcpio --split 32
+    # 旁路产 rootfs0.cpio..（内核连续前缀发现序 opt/berry/rootfs0..9 优先，
+    # 单卷帽 32MiB）；rootfs0 在席走多卷名，缺席回落旧名单单卷（混跑兼容
+    # ——手动 mkcpio 无 --split 的树也照跑）。FWCFG 串一次构建、不加引号
+    # 代入（词切分即多 -fw_cfg 参数，卷名无空格）。
+    FWCFG=""
+    i=0
+    while [ -f "rootfs$i.cpio" ]; do
+        FWCFG="$FWCFG -fw_cfg name=opt/berry/rootfs$i,file=rootfs$i.cpio"
+        i=$((i+1))
+    done
+    [ -n "$FWCFG" ] || FWCFG="-fw_cfg name=opt/berry/rootfs,file=rootfs.cpio"
+    {{QEMU}} {{MACH}} -kernel {{KERNEL}} $FWCFG \
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
         -device virtio-blk-device,drive=drv0 \
@@ -423,6 +442,10 @@ test-host:
     cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berryboot --target {{host}}
     python3 tools/elf2pe.py --selftest
     python3 tools/mkfat.py --selftest
+    # A1-3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
+    # 拒面/陈卷清理）——rootfs 多卷产链（build-user --split 32）的编码
+    # 单源执法，改 mkcpio 必跑。
+    python3 tools/mkcpio.py --selftest-split
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
     python3 tools/mkimage.py --selftest
@@ -580,7 +603,8 @@ smoke-image: image
 # bootloader/berryboot/out/（gitignored）。V-3 起造盘段移交 `just image`
 #（mkimage.py MBR + FAT16 整盘——单口吸收，V-1c 8MiB FAT12 盘约定随
 # rootfs 14.4MB 已断，24MiB 修复在此；C-2c text 批后 rootfs ≈18-21MB，
-# 盘容再抬 48MiB——cap 传播见 mkimage --size-mib）。
+# 盘容再抬 48MiB；A1-3b 96MiB——40MB+ 级 rootfs 验收形态同盘容，cap
+# 传播见 mkimage --size-mib）。
 # rust-lld 随 rustup 走（sysroot 内），无 brew 依赖；--verify 回读断言
 # 恒开（entry 落 .img / .reloc 闭合 / subsystem=EFI app）。
 BOOT_DIR := "bootloader/berryboot"
@@ -615,8 +639,9 @@ build-boot:
 # 段）。mkimage.py = MBR 薄层（LBA 假几何 255H/63S，protective CHS 自洽即可
 # ——草案 §V-3 原话）+ mkfat.build_volume_puts 单编码器（FAT 写法单源）；
 # 四件套 BOOTAA64.EFI/HELLO.TXT/KERNEL.ELF/INITRD.BIN；hidden = 分区起始
-# LBA（BPB 与分区表自洽）。盘容 48MiB（C-2c：text 批后 rootfs ≈18-21MB，
-# 24MiB 盘余量结构性见底 → 抬 48 留 ~2x；V-3 史：24MiB 修 C-2a 后 14.4MB
+# LBA（BPB 与分区表自洽）。盘容 96MiB（A1-3b：rootfs 40MB+ 验收形态
+# （尾部放大件凑量）+ EFI/hello/kernel 三件后余量 ~2x；C-2c 史 48MiB
+# = text 批后 rootfs ≈21MB 抬 2x；V-3 史：24MiB 修 C-2a 后 14.4MB
 # 超 V-1c 8MiB FAT12 盘约定的存量断裂，FatDxe 实验已证 24MiB FAT16
 # AAVMF 十段+接续全绿，2026-10-25）。产物 out/berryos.img（gitignored）
 # ——UTM/真机挂盘即用；EDK2 PartitionDxe+FatDxe 消化 MBR/分区偏移，
@@ -635,11 +660,11 @@ image: build build-boot
         --hello {{BOOT_DIR}}/hello.txt \
         --kernel {{KERNEL}} \
         --initrd rootfs.cpio \
-        --size-mib 48
+        --size-mib 96
 
 # AAVMF 引导验收（V-0b 刀 3 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。V-3 起盘 = out/berryos.img（just image 单口：MBR + 单
-# FAT16 分区 48MiB（C-2c 起，V-3 史 24MiB）——EDK2 PartitionDxe+FatDxe
+# FAT16 分区 96MiB（A1-3b 起，C-2c 史 48MiB、V-3 史 24MiB）——EDK2 PartitionDxe+FatDxe
 # 消化分区偏移，BerryBoot
 # SFS 面零改动；FatDxe 实验消雷 2026-10-25）。期望串口：BdsDxe starting
 # Boot0001 …USB HARDDRIVE →

@@ -291,6 +291,18 @@ last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
 # —— 阶段 3：G-eco rootfs 全链（G-eco-c 起）——
 # rootfs.cpio 由 build-user 产出（justfile mkcpio 步）；缺席 = 回归（loud）。
 [ -f rootfs.cpio ] || fail "缺 rootfs.cpio（build-user 应产出——G-eco-c 编排回归）"
+# A1-3b：rootfs fw_cfg 卷动态递送——build-user 起 mkcpio --split 32 旁路产
+# rootfs0.cpio..（内核连续前缀发现序 opt/berry/rootfs0..9 优先，单卷帽
+# 32MiB）；rootfs0 在席走多卷名、缺席回落旧名单单卷（混跑兼容）。串一次
+# 构建、七位点（rootfs/RX/FAT 子目录/持久化/B4 三 boot）同源代入；不加
+# 引号代入 = 词切分即多 -fw_cfg 参数（卷名无空格）。
+FWCFG=""
+vi=0
+while [ -f "rootfs$vi.cpio" ]; do
+  FWCFG="$FWCFG -fw_cfg name=opt/berry/rootfs$vi,file=rootfs$vi.cpio"
+  vi=$((vi+1))
+done
+[ -n "$FWCFG" ] || FWCFG="-fw_cfg name=opt/berry/rootfs,file=rootfs.cpio"
 # P6 A-2：virtio-blk 盘（vprobe 的探测对象——设备在席 = `-device
 # virtio-blk-device` 落位的充要条件；缺席现场造，gitignored。
 # force-legacy=false = 传输层报现代版 Version=2（QEMU 默认报 1，vprobe
@@ -322,9 +334,9 @@ done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
-echo "smoke: QEMU 启动（rootfs 相：-fw_cfg opt/berry/rootfs + virtio-blk + virtio-net）"
+echo "smoke: QEMU 启动（rootfs 相：fw_cfg rootfs 卷（A1-3b 多卷名）+ virtio-blk + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
@@ -612,7 +624,7 @@ python3 tools/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
@@ -841,7 +853,7 @@ rm -f "$FX_BIN"
 printf 'BERRYOSVBLK!' | dd of=disk_dirs.img conv=notrunc status=none
 echo "smoke: QEMU 启动（FAT 子目录相：fixture 盘 disk_dirs.img + FIFO stdin）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk_dirs.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
@@ -916,7 +928,7 @@ wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"
 echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
@@ -1005,7 +1017,7 @@ python3 tools/mkfat.py disk.pwr.img || fail "mkfat 造掉电盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.pwr.img conv=notrunc status=none
 echo "smoke: QEMU 启动（B4 掉电 Boot A：新文件窗采样，无 netdev）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
@@ -1048,7 +1060,7 @@ fi
 : > "$LOG"
 echo "smoke: QEMU 启动（B4 掉电 Boot B：DF resize 窗采样 + 注入）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
@@ -1091,7 +1103,7 @@ echo "smoke: 毒环注入就位（$PWR_P）"
 : > "$LOG"
 echo "smoke: QEMU 启动（B4 掉电 Boot C：毒环恢复终验，无 netdev）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \

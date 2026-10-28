@@ -17,8 +17,8 @@
 
 接受面（V-2 FatDxe 实验消雷 2026-10-25）：EDK2 PartitionDxe（MBR 表）
 + FatDxe（FAT16 卷）+ BdsDxe（可移介质默认路径 \\EFI\\BOOT\\BOOTAA64.EFI）
-——BerryBoot SFS 面零改动。盘容默认 48MiB（C-2c：text 批 8 命令后
-rootfs.cpio ≈21.5MB，24MiB 盘余量 <2MiB 结构性见底 → 48MiB 留 ~2x）；
+——BerryBoot SFS 面零改动。盘容默认 96MiB（A1-3b：rootfs 40MB+ 级验收
+形态同盘容；C-2c 史 48MiB = text 批后 ≈21.5MB 留 ~2x；
 V-3 史：默认 24MiB 修 C-2a 后 14.4MB 超 V-1c 8MiB FAT12 盘约定的存量
 断裂（build-boot 8MiB 造盘已被本工具吸收，`just image` 单口）。
 
@@ -36,7 +36,8 @@ SECTOR = 512
 PART_LBA = 2048        # 分区起始 LBA（1MiB 对齐——现代盘惯例，EDK2/UTM 皆认）
 HEADS, SPT = 255, 63   # LBA 假几何（protective CHS 自洽用——非寻址依据）
 PART_TYPE_FAT16_LBA = 0x0E
-DEFAULT_SIZE_MIB = 48  # 整盘默认容量（C-2c：text 批后 rootfs ≈21.5MB → 留 ~2x）
+DEFAULT_SIZE_MIB = 96  # 整盘默认容量（A1-3b：rootfs 40MB+ 验收形态同盘容——
+                       # 恰传 justfile --size-mib 96；C-2c 史 48MiB = text 批后 ≈2x）
 
 
 def volume_sectors(size_mib: int) -> int:
@@ -79,7 +80,7 @@ def selftest() -> int:
     assert lba_to_chs(2048) == bytes([32, 33, 0]), "LBA2048 → CHS(0,32,33)"
     assert lba_to_chs(49151) == bytes([15, 12, 3]), "LBA49151 → CHS(3,15,12)"
     assert lba_to_chs(1024 * HEADS * SPT) == bytes([254, 63, 255]), "超顶钳 (1023,254,63)"
-    # 表项布局钉板：卷扇区随 DEFAULT_SIZE_MIB 推导（C-2c 48MiB → 96256）——
+    # 表项布局钉板：卷扇区随 DEFAULT_SIZE_MIB 推导（A1-3b 96MiB → 194560）——
     # V-3 史：硬编 47104（24MiB 派生值）在 C-2c 扩容时滞留一轮，参数化断根。
     vol = volume_sectors(DEFAULT_SIZE_MIB)
     m = build_mbr(PART_LBA, vol)

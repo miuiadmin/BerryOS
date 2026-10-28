@@ -17,6 +17,7 @@
   - `--selftest-split`：切分器纯函数面守卫（mkfat --check-fixture 同位
     纪律；A1-3b 挂 just test-host 前置，本刀可独立跑）。
 """
+import os
 import sys
 
 
@@ -57,6 +58,10 @@ def build_archive(items: list[tuple[bytes, bytes]]) -> bytes:
 
 VOL_SUFFIX = ".cpio"
 
+# 内核 fw_cfg 连续前缀发现域（A1 §3.2）：opt/berry/rootfs0..9——陈卷清理
+# 的执法范围与之同口径（第 10 卷起内核本就不读，清了也无害、不清也不劫持）。
+VOL_SCAN_MAX = 10
+
 
 def split_volumes(blob: bytes, vol_bytes: int) -> list[bytes]:
     """纯切分器（容量工程前置-A1 §3.3）：只切字节流、不做条目对齐——cpio
@@ -78,6 +83,25 @@ def volume_paths(out_path: str, n: int) -> list[str]:
     """
     stem = out_path[: -len(VOL_SUFFIX)] if out_path.endswith(VOL_SUFFIX) else out_path
     return [f"{stem}{i}{VOL_SUFFIX}" for i in range(n)]
+
+
+def clean_stale_volumes(out_path: str, keep: int) -> int:
+    """清陈卷（A1-3b 产链卫生）：旧构建分了 N 卷、新构建只出 M<N 卷时，
+    残留的 <stem><i>.cpio（i≥M）会被内核 fw_cfg 连续前缀发现序
+    （opt/berry/rootfs0..9）拼进 VMO = **静默错字节**（rootfs 尾段来自
+    陈卷，ktest/装载面全不自知）。写卷前 unlink 序号 ≥keep 的卷；
+    `--split` 缺席路径 keep=0 全清——防旧名单单卷路（rootfs.cpio 直挂
+    opt/berry/rootfs）被陈 rootfs0.cpio 劫持为多卷路。ENOENT 静默
+    （常态即不存在）；返回实删数（打点用）。"""
+    stem = out_path[: -len(VOL_SUFFIX)] if out_path.endswith(VOL_SUFFIX) else out_path
+    removed = 0
+    for idx in range(keep, VOL_SCAN_MAX):
+        try:
+            os.unlink(f"{stem}{idx}{VOL_SUFFIX}")
+            removed += 1
+        except FileNotFoundError:
+            pass
+    return removed
 
 
 def selftest_split() -> int:
@@ -126,6 +150,24 @@ def selftest_split() -> int:
         raise AssertionError("selftest: vol=0 未拒")
     except ValueError:
         pass
+    # ⑥ 陈卷清理（A1-3b 产链卫生）：多卷→少卷收缩时 ≥keep 序号卷被清、
+    # <keep 存活；keep=0 全清（--split 缺席路径防旧名单路劫持）。
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        vol0 = os.path.join(td, "rootfs0.cpio")
+        vol1 = os.path.join(td, "rootfs1.cpio")
+        vol2 = os.path.join(td, "rootfs2.cpio")
+        for p, payload in ((vol0, b"a"), (vol1, b"b"), (vol2, b"c")):
+            with open(p, "wb") as f:
+                f.write(payload)
+        root = os.path.join(td, "rootfs.cpio")
+        assert clean_stale_volumes(root, 2) == 1, "selftest: 收缩清 1 卷"
+        assert os.path.exists(vol0) and os.path.exists(vol1), "selftest: <keep 存活"
+        assert not os.path.exists(vol2), "selftest: ≥keep 已清"
+        assert clean_stale_volumes(root, 0) == 2, "selftest: 全清恰余量"
+        assert not (os.path.exists(vol0) or os.path.exists(vol1)), "selftest: 全清"
+        assert clean_stale_volumes(root, 0) == 0, "selftest: 空集幂等返 0"
     print("mkcpio: selftest-split ok")
     return 0
 
@@ -167,6 +209,14 @@ def main() -> int:
         with open(path, "rb") as f:
             parsed.append((name.encode(), f.read()))
     blob = build_archive(parsed)
+    # 陈卷清理先于写卷（keep 由本次产出卷数定；--split 缺席 = 单档产链，
+    # 编号卷一律不该在——全清防内核多卷发现序被陈卷劫持）。
+    n_vols = 0
+    if split_mib is not None:
+        n_vols = len(split_volumes(blob, split_mib * 1024 * 1024))
+    stale = clean_stale_volumes(out_path, n_vols)
+    if stale:
+        print(f"mkcpio: 清陈卷 {stale} 个（序号 ≥{n_vols}——旧构建残留）")
     with open(out_path, "wb") as f:
         f.write(blob)
     print(f"mkcpio: {out_path} {len(blob)}B x{len(items)} 条目")

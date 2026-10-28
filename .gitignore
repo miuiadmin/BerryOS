@@ -1,8 +1,10 @@
 /target
 **/*.rs.bk
 
-# G-eco initrd 镜像（编译侧产物，不入库）
+# G-eco initrd 镜像（编译侧产物，不入库）——A1-3b 起含 --split 编号卷
+# （rootfs0.cpio/…：单卷 ≤32MiB 形态下 28MiB 归档 = 1 卷 rootfs0.cpio）
 /rootfs.cpio
+/rootfs*.cpio
 
 # P6 A-2 virtio-blk 探测盘（run-rootfs/smoke 现场造的 1MiB 空盘，不入库）
 /disk.img
