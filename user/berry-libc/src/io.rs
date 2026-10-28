@@ -146,6 +146,14 @@ pub fn send_stdout_eof() {
     }
 }
 
+/// env 块 handles[1] 的 stdin 通道端（C-4b Ctrl-C 杀链消费：bsh 前台等待
+/// 经 wait_many 并监 stdin READABLE，0x03 到达即 terminate(130)）；0 = 未
+/// 交付（老 spawn 面），调用方退化为不监听 stdin。
+pub fn stdin_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { STDIN_H }
+}
+
 /// env 块 gift[2] 的 rootfs VMO handle（A-2：0 = 无第三位——svcmgr 系老
 /// 程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
 pub fn rootfs_h() -> u32 {

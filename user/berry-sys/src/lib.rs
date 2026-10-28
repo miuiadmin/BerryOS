@@ -315,6 +315,15 @@ pub extern "C" fn berry_process_get_exit_code(process: Handle, code: *mut i32) -
     unsafe { sys(nr::PROCESS_GET_EXIT_CODE, process as usize, code as usize, 0, 0, 0, 0) }
 }
 
+/// 0x3B（C-4b）：外部终止进程（kill/Ctrl-C 内核原语）。`code` 落为该进程
+/// 退出码（父侧收割同 process_exit 面：wait TERMINATED → get_exit_code）。
+/// 门控 Process MANAGE；自杀 -EBADSTATE（退自己走 berry_process_exit）；
+/// 已终止 -EBADSTATE。
+#[no_mangle]
+pub extern "C" fn berry_process_terminate(process: Handle, code: i32) -> Status {
+    unsafe { sys(nr::PROCESS_TERMINATE, process as usize, code as usize, 0, 0, 0, 0) }
+}
+
 /// options 低 8 位 = berry_intent（ADR #42 占位；v1 内核只收 0）。
 #[no_mangle]
 pub extern "C" fn berry_thread_create(process: Handle, options: u32, out: *mut Handle) -> Status {

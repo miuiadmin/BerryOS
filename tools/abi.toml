@@ -16,8 +16,8 @@
 
 [meta]
 stage = "v1"
-nr_total = 30        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
-implemented = 29     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
+nr_total = 31        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
+implemented = 30     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。
@@ -341,7 +341,7 @@ stage = "v1"
 [[group.syscall]]
 num = 0x35
 name = "thread_start"
-desc = '投入运行（**在册未实现**——30 在册 29 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本）'
+desc = '投入运行（**在册未实现**——31 在册 30 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本）'
 stage = "v1"
 implemented = false
 note = 'thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。'
@@ -372,6 +372,12 @@ name = "process_get_exit_code"
 desc = '查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查）'
 stage = "v1"
 note = 'P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。'
+[[group.syscall]]
+num = 0x3B
+name = "process_terminate"
+desc = '外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。'
+stage = "v1"
+note = 'C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。'
 
 [[group]]
 title = "**异常**"

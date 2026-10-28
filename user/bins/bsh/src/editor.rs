@@ -42,6 +42,11 @@ pub enum Flow {
     Continue(Vec<u8>),
     /// 行定稿（Enter）——line 不含换行；`\n` 回显归调用方。
     Line(Vec<u8>),
+    /// Ctrl-C（0x03，C-4b）：作废当前行（编辑器侧已清行 + 游标回 live；
+    /// 作废草稿**不入历史**——hist_push 不调）。杀前台子进程归调用方
+    /// （编辑器无子进程知识——feed 循环期恒无前台子进程，等待期的 0x03
+    /// 走 collect_fg 杀链不经此处）。echo = "^C\n"；prompt 重显归调用方。
+    Interrupt(Vec<u8>),
 }
 
 /// 行编辑器（单会话——bsh 交互循环独占）。
@@ -110,6 +115,17 @@ impl Editor {
                     echo.extend_from_slice(b"\x08 \x08");
                 }
                 Flow::Continue(echo)
+            }
+            0x03 => {
+                // Ctrl-C（C-4b）：作废当前行——清缓冲 + 游标回 live（草稿
+                // 不入历史）。与 ESC 状态机共存逐一核对：三种 esc 态下
+                // 0x03 都「复位落下」到本臂（esc=1 非 '[' 复位落下 /
+                // esc=2 非参数 0x30..=0x3f、非 final 0x40..=0x7e 复位落下 /
+                // esc=0 直达）——无一吞字节路径，CSI 中断语义与真终端
+                // 一致（序列中断、行作废）。
+                self.line.clear();
+                self.hi = usize::MAX;
+                Flow::Interrupt(b"^C\n".to_vec())
             }
             0x15 => {
                 // Ctrl-U：行擦除（readline 惯例；浏览中 = 擦已载入历史行的

@@ -57,12 +57,13 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 |
 | 0x33 | `process_exit` | 退出 | v1 |
 | 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 |
-| 0x35 | `thread_start` | 投入运行（**在册未实现**——30 在册 29 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本） | v1 |
+| 0x35 | `thread_start` | 投入运行（**在册未实现**——31 在册 30 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本） | v1 |
 | 0x36 | `thread_exit` | 线程退出 | v1 |
 | 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
 | 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 |
 | 0x39 | `thread_set_deadline` | 设截止期（软实时） | v2 |
 | 0x3A | `process_get_exit_code` | 查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查） | v1 |
+| 0x3B | `process_terminate` | 外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。 | v1 |
 | **异常** ||||
 | 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 |
 | **IPC / event / futex** ||||
@@ -123,7 +124,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 7. 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1（实际 30 号在册 / 29 已实现——2026-10 现状；原预算 ~26，唯 `thread_start`(0x35) 未实现留 v2 多线程批）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
+- **v1（实际 31 号在册 / 30 已实现——2026-10 现状；原预算 ~26，唯 `thread_start`(0x35) 未实现留 v2 多线程批）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
 - **v2**：pager（demand paging）、futex、timer、异常通道、调度策略、设备 syscall。（G3–G4）
 - **v3**：namespace（open/mount）、**AI 策略注入/遥测控制 syscall**（`policy_bind`/`telemetry_open`，见 `AI调度设计.md`）、完整 POSIX 兼容库（含受限 fork 探索）。（G4+）
 
@@ -339,6 +340,14 @@ berry_status_t berry_process_get_exit_code(berry_handle_t process, int32_t *code
                                   need=0 仅类型门控；state != Exited →
                                   -EAGAIN（poll 语义——先 wait TERMINATED
                                   再查）；出参 i32 4B（宽度跟 ABI 类型走） */
+berry_status_t berry_process_terminate(berry_handle_t process, int32_t code);
+                               /* C-4b（0x3B）：外部终止（kill/Ctrl-C 的内核
+                                  原语）。门控 Process MANAGE；自杀 →
+                                  -EBADSTATE（退自己走 process_exit）；已退 →
+                                  -EBADSTATE；code 落为该进程退出码（父侧
+                                  wait TERMINATED + get_exit_code 收割同
+                                  process_exit 面）；目标收口 = 同一退出钩子
+                                  （不开第二退出面），任务摘队入 REAPQ */
 berry_status_t berry_thread_create(berry_handle_t process, uint32_t options,
                                berry_handle_t *out);        /* 未启动描述；入口/sp
                                随 process_start（首线程启动路径，Zircon 同形）；
@@ -385,7 +394,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 30**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 8（含 0x3A `process_get_exit_code`，P5）+ channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 31**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
 
 ### 8.4 Rust FFI 镜像（`user/berry-sys`，raw 绑定）
 

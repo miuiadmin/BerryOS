@@ -6,7 +6,7 @@
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 30 号在册、29 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 31 号在册、30 已实现）----
 // 在册未实现：0x35 thread_start（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -42,6 +42,8 @@ pub const NR_THREAD_EXIT: usize = 0x36;
 pub const NR_THREAD_SLEEP: usize = 0x37;
 /// P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。
 pub const NR_PROCESS_GET_EXIT_CODE: usize = 0x3A;
+/// C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。
+pub const NR_PROCESS_TERMINATE: usize = 0x3B;
 pub const NR_CHANNEL_CREATE: usize = 0x51;
 pub const NR_CHANNEL_SEND: usize = 0x52;
 pub const NR_CHANNEL_RECV: usize = 0x53;

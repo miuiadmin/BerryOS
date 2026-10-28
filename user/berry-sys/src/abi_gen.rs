@@ -111,6 +111,8 @@ pub(crate) mod nr {
     pub(crate) const THREAD_SLEEP: usize = 0x37;
     /// P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。
     pub(crate) const PROCESS_GET_EXIT_CODE: usize = 0x3A;
+    /// C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。
+    pub(crate) const PROCESS_TERMINATE: usize = 0x3B;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;

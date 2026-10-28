@@ -50,6 +50,19 @@
 //! 步，全在私有通道收齐逐字节比对（零串口 grep 面；U1 = fs 元数据链，
 //! 本刀补执行面——互补不重叠）。
 //!
+//! C-4b（Ctrl-C kill 面，`INT ok` = rootfs 相第 34 标记）：0x03 经 console
+//! 逐字节透传到 stdin（C-4 纯缓冲纪律不破——识别在 bsh，console 零改动）。
+//! 两路径互斥不重入：**feed 循环期**（恒无前台子进程）→ editor `Interrupt`
+//! 作废当前行（清行 + 不入历史 + "^C" 回显 + prompt 重显）；**前台等待期**
+//! （run/pipe 的 collect 窗）→ [`collect_fg`] wait_many 三项
+//! [out:READABLE, proc:TERMINATED, stdin:READABLE]，0x03 到达即
+//! `process_terminate(130)`（POSIX 128+SIGINT 惯例）+ wait TERMINATED →
+//! reap → `$?` = 130。**EOF 缺口（v1 边界）**：terminate 是内核杀不走
+//! libc exit 族（EOF 先行在 exit/_exit/abort 内），被杀者 stdout 的收集方
+//! **收不到零长 EOF**——收口只能靠 wait 的 TERMINATED 项（不赌 10s 活动
+//! 帽），详见 [`collect_fg`] 头注。打字-ahead（等待期收走的非 0x03 字节）
+//! 进 [`TYPEAHEAD`] 缓存，交互循环先于 stdin 消化——不丢键。
+//!
 //! v1 内建：help / echo / env / run / exit / cat / ls / mkdir / rm / cd / pwd
 //!（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
@@ -69,7 +82,7 @@
 
 use std::io::{Read, Write};
 
-use berry_libc::io::{close, fs_h, read, rootfs_h, write};
+use berry_libc::io::{close, fs_h, read, rootfs_h, stdin_h, write};
 use berry_libc::{
     EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
 };
@@ -79,8 +92,9 @@ use berry_libc::fs::{
 };
 use berry_sys::{
     berry_channel_recv, berry_clock_read, berry_handle_close, berry_handle_duplicate,
-    berry_object_wait_one, Handle, BERRY_ERR_AGAIN, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV,
-    RIGHT_SEND, SIGNAL_READABLE,
+    berry_object_wait_many, berry_object_wait_one, berry_process_terminate, Handle,
+    BERRY_ERR_AGAIN, BERRY_ERR_BAD_STATE, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
+    SIGNAL_READABLE, SIGNAL_TERMINATED,
 };
 use berry_exec::{channel_pair, cpio_find, cpio_names, spawn_rootfs_elf, ChildHandles, SpawnSpec};
 // C-1 刀 4：fsproto 只余帽常量（usage 预检 + 读面失控兜底）——协议面
@@ -124,6 +138,52 @@ struct RunOut {
     eof: bool,
     /// 超收集帽被丢弃的字节数。
     dropped: usize,
+    /// C-4b：因 Ctrl-C（process_terminate 130）收场——EOF 缺口面的合法
+    /// 无 EOF（不是断链），调用方据此静默 no-EOF 警告。
+    killed: bool,
+}
+
+/// C-4b 前台交互态：boot 自验链全程 false（自验子进程不容 stdin 误杀、
+/// `collect` 路径零漂移——C-4r 确定性契约保持）；进交互循环前置 true——
+/// run/pipe 的前台等待自此并监 stdin（[`collect_fg`]）。`static mut` +
+/// 访问器同 [`TYPEAHEAD`] 单线程纪律（Cell 非 Sync / std::sync 锁走
+/// pthread 桩深水区，均勿引）。
+static mut INT_MODE: bool = false;
+
+fn int_armed() -> bool {
+    // SAFETY: bsh 单线程（main 独占）；唯一写点在交互循环前（先于任何读）。
+    unsafe { core::ptr::addr_of_mut!(INT_MODE).read() }
+}
+
+fn int_arm() {
+    // SAFETY: 同上。
+    unsafe {
+        *core::ptr::addr_of_mut!(INT_MODE) = true;
+    }
+}
+
+/// C-4b 打字-ahead 暂存：前台等待期（collect_fg）收走的非 0x03 stdin 字节
+/// （不收则 console 吸收环满丢新，C-4r）；交互循环**先于** stdin 消化
+/// （FIFO）。std 单线程（v1 无 pthread 面——std::sync 锁走 futex/pthread
+/// 桩深水区，勿引），`static mut` + `addr_of_mut` 单线程纪律同 berry-exec
+/// `ELF_WIN`。
+static mut TYPEAHEAD: Vec<u8> = Vec::new();
+
+fn typeahead_push(b: u8) {
+    // SAFETY: bsh 单线程（main 独占）；无并发写者。
+    unsafe { (*core::ptr::addr_of_mut!(TYPEAHEAD)).push(b) }
+}
+
+fn typeahead_pop() -> Option<u8> {
+    // SAFETY: 同上；FIFO——从队首取（push 追加尾）。
+    unsafe {
+        let v = &mut *core::ptr::addr_of_mut!(TYPEAHEAD);
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.remove(0))
+        }
+    }
 }
 
 fn main() {
@@ -177,6 +237,11 @@ fn main() {
     //    RAM 树 /etc），排 fat 族之前（EFI 路无盘亦打 TAB——smoke-image
     //    ECO canon 同面）。
     tab_selftest();
+    // —— C-4b：Ctrl-C kill 面自验（`INT ok` = rootfs 相第 34 标记）。链序
+    //    契约同 U2/U3/TAB——零 fs 盘面（editor 状态机 + bin/hello 纯 RAM
+    //    spawn + 内核 terminate 原语），排 fat 族之前（EFI 路无盘亦打
+    //    INT——smoke-image ECO canon 同面）。
+    int_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -200,17 +265,28 @@ fn main() {
     let mut ed = editor::Editor::new();
     let mut src = RealSrc;
     let mut prompt_pending = true;
+    // C-4b：交互态武装——Ctrl-C 杀链自此后效（boot 自验链全程未武装，
+    // 自验子进程不容 stdin 误杀）。
+    int_arm();
     loop {
         if prompt_pending {
             write!(out, "bsh> ").unwrap();
             out.flush().unwrap();
             prompt_pending = false;
         }
-        let mut b = [0u8; 1];
-        if sin.read(&mut b).unwrap_or(0) == 0 {
-            continue; // 空读噪声：不重刷 prompt、不睡（下轮 read 再阻塞 10s）
-        }
-        match ed.feed(b[0], &mut src) {
+        // C-4b：前台等待期（collect_fg）收走的打字-ahead 先于 stdin 消化
+        // （FIFO——时序保全，不丢键）。
+        let c = match typeahead_pop() {
+            Some(c) => c,
+            None => {
+                let mut b = [0u8; 1];
+                if sin.read(&mut b).unwrap_or(0) == 0 {
+                    continue; // 空读噪声：不重刷 prompt、不睡（下轮 read 再阻塞 10s）
+                }
+                b[0]
+            }
+        };
+        match ed.feed(c, &mut src) {
             editor::Flow::Continue(echo) => {
                 if !echo.is_empty() {
                     out.write_all(&echo).unwrap();
@@ -221,6 +297,14 @@ fn main() {
                 out.write_all(b"\n").unwrap(); // Enter 回显（归调用方契约）
                 let s = String::from_utf8_lossy(&line).into_owned();
                 run_line(s.trim_end_matches(['\n', '\r']), &mut vars, &mut status, &mut out);
+                prompt_pending = true;
+            }
+            editor::Flow::Interrupt(echo) => {
+                // C-4b：feed 循环期恒无前台子进程（前台等待走 collect_fg，
+                // 其内的 0x03 在那边杀链处理——两路径互斥不重入）→ 作废
+                // 当前行：编辑器已清行，此处 "^C\n" 回显 + prompt 重显。
+                out.write_all(&echo).unwrap();
+                out.flush().unwrap();
                 prompt_pending = true;
             }
         }
@@ -320,14 +404,15 @@ fn tab_selftest() {
         }
     }
 
-    /// 喂键串：收 (echo, lines)——echo = Continue 累计回显字节、lines =
-    /// Line 定稿集（Enter 事件按序入列）。
+    /// 喂键串：收 (echo, lines)——echo = Continue/Interrupt 累计回显字节、
+    /// lines = Line 定稿集（Enter 事件按序入列；C-4b Interrupt 计回显）。
     fn feed_all(ed: &mut Editor, src: &mut dyn TabSource, keys: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
         let (mut echo, mut lines) = (Vec::new(), Vec::new());
         for &k in keys {
             match ed.feed(k, src) {
                 Flow::Continue(e) => echo.extend_from_slice(&e),
                 Flow::Line(l) => lines.push(l),
+                Flow::Interrupt(e) => echo.extend_from_slice(&e),
             }
         }
         (echo, lines)
@@ -428,6 +513,148 @@ fn tab_selftest() {
         berry_libc::park();
     }
     println!("TAB ok");
+}
+
+/// Ctrl-C kill 链自验（C-4b，`INT ok` = rootfs 相第 34 标记）。四步全确定性、
+/// 零 fs 盘面（editor 状态机 + bin/hello 纯 RAM spawn + 内核 0x3B terminate
+/// 原语）——链序契约同 U2/U3/TAB：排 fat 族之前（EFI 路无盘亦打 INT——
+/// smoke-image ECO canon 同面）。失败 eprintln + park（INT ok 缺失 → smoke
+/// FAIL 兜底）。
+///
+/// ⓪ editor 常态 0x03：`cat f` 进行中 0x03 → Flow::Interrupt + 行清空 +
+///   "^C\n" 回显 + 作废草稿**不入历史**（ESC[A 上翻在空历史上无操作）；
+/// ① ESC 序列共存（0x03 与状态机中间态冲突面逐一核对）：裸 ESC 后 0x03
+///   （esc=1 非 '[' 复位落下）与 ESC '[' 后 0x03（esc=2——0x03 非参数段
+///   0x30..=0x3f、非 final 段 0x40..=0x7e，复位落下）都直达 Interrupt
+///   ——CSI 序列被中断、行作废（与真终端语义一致）；
+/// ② Interrupt 后编辑器续用：清行后 `ls`+Enter 正常定稿（状态机无残留）；
+/// ③ 前台杀链真机面：spawn bin/hello（发 13B 后 10s 滚动长睡——结构性
+///   不自退，svcmgr ECO 同款常驻形态）→ `process_terminate(130)` == 0 →
+///   重复 terminate == -EBADSTATE（已终止面，退出码首因不覆写）→
+///   collect_fg 返回 killed=true + eof=false（**EOF 缺口活证**：内核杀不
+///   走 libc exit 族，stdout 收不到零长 EOF——收口靠 wait_many 的
+///   TERMINATED 项，不赌 10s 活动帽）→ reap() == Ok(130)（真码面：
+///   run_output 的 `$?` 即此值）。
+fn int_selftest() {
+    use editor::{Editor, Flow, TabSource};
+
+    /// 确定性哑源：0x03 路径永不问 Tab（src 仅 Tab 键消费）。
+    struct NoSrc;
+    impl TabSource for NoSrc {
+        fn commands(&mut self, _out: &mut Vec<Vec<u8>>) {}
+        fn entries(&mut self, _dir: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
+            Err(())
+        }
+    }
+
+    let mut src = NoSrc;
+    let mut fails: Vec<&str> = Vec::new();
+
+    // ⓪ 常态 0x03：作废当前行——Interrupt("^C\n") + 行清空。
+    let mut ed = Editor::new();
+    for &k in b"cat f" {
+        if !matches!(ed.feed(k, &mut src), Flow::Continue(_)) {
+            fails.push("⓪ 前导键非 Continue");
+        }
+    }
+    match ed.feed(0x03, &mut src) {
+        Flow::Interrupt(e) if e.as_slice() == b"^C\n" && ed.line().is_empty() => {}
+        _ => fails.push("⓪ 常态 0x03 非 Interrupt/清行/回显"),
+    }
+    // 作废草稿不入历史：上翻在空历史上无操作（行恒空、无 Line 产出）。
+    for k in [0x1b, b'[', b'A'] {
+        if !matches!(ed.feed(k, &mut src), Flow::Continue(_)) || !ed.line().is_empty() {
+            fails.push("⓪ 作废行不入历史");
+        }
+    }
+
+    // ① ESC 序列共存两态：esc=1 / esc=2 下的 0x03 都复位落下直达 Interrupt。
+    let mut ed = Editor::new();
+    for k in b"ab\x1b" {
+        if !matches!(ed.feed(*k, &mut src), Flow::Continue(_)) {
+            fails.push("① 前导键非 Continue");
+        }
+    }
+    match ed.feed(0x03, &mut src) {
+        Flow::Interrupt(_) if ed.line().is_empty() => {}
+        _ => fails.push("① ESC 态 0x03 非 Interrupt"),
+    }
+    let mut ed = Editor::new();
+    for k in b"ab\x1b[" {
+        if !matches!(ed.feed(*k, &mut src), Flow::Continue(_)) {
+            fails.push("① 前导键非 Continue");
+        }
+    }
+    match ed.feed(0x03, &mut src) {
+        Flow::Interrupt(_) if ed.line().is_empty() => {}
+        _ => fails.push("① CSI 态 0x03 非 Interrupt"),
+    }
+
+    // ② Interrupt 后编辑器续用：清行后 `ls`+Enter 正常定稿。
+    match ed.feed(b'l', &mut src) {
+        Flow::Continue(_) => {}
+        _ => fails.push("② 续用 l 非 Continue"),
+    }
+    match ed.feed(b's', &mut src) {
+        Flow::Continue(_) => {}
+        _ => fails.push("② 续用 s 非 Continue"),
+    }
+    match ed.feed(b'\n', &mut src) {
+        Flow::Line(l) if l.as_slice() == b"ls" => {}
+        _ => fails.push("② 续用定稿 != ls"),
+    }
+
+    // ③ 前台杀链真机面（bin/hello：svcmgr ECO 同款常驻形态，stack_pages
+    //    同款 1 页）。
+    let full = b"bin/hello";
+    let Some((data_off, data_len)) = cpio_find(rootfs_h(), full) else {
+        eprintln!("bsh: int selftest: bin/hello not found");
+        berry_libc::park();
+    };
+    let (out_s, out_c) = channel_pair();
+    let spec = SpawnSpec {
+        name: full,
+        data_off,
+        data_len,
+        stdout: out_c,
+        stack_pages: 1,
+        stdin_feed: None,
+        stdin_handle: None,
+        args: &[],
+        extra_gifts: &[],
+        mmio_vmo: None,
+    };
+    let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("bsh: int selftest: hello spawn failed");
+            berry_libc::park();
+        }
+    };
+    if berry_process_terminate(child.hp, 130) != 0 {
+        fails.push("③ terminate(130) != 0");
+    }
+    if berry_process_terminate(child.hp, 130) != BERRY_ERR_BAD_STATE {
+        fails.push("③ 重复 terminate != -EBADSTATE");
+    }
+    let o = collect_fg(out_s, child.hp, &[child.hp]);
+    if !o.killed || o.eof {
+        fails.push("③ collect_fg 非 killed 收场（EOF 缺口面破缺）");
+    }
+    match child.reap() {
+        Ok(130) => {}
+        Ok(_) => fails.push("③ reap 真码 != 130"),
+        Err(()) => fails.push("③ reap 失败"),
+    }
+    if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+        berry_libc::park();
+    }
+
+    if !fails.is_empty() {
+        eprintln!("bsh: int selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("INT ok");
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码
@@ -729,8 +956,14 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
         mmio_vmo: None,
     };
     let (data, code) = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
-        let o = collect(out_s);
-        if !o.eof {
+        // C-4b：交互态 = 前台 Ctrl-C 武装（collect_fg 三项等待）；boot 自验
+        // 链（INT_MODE=false）走纯 collect——C-4r 确定性契约零漂移。
+        let o = if int_armed() {
+            collect_fg(out_s, child.hp, &[child.hp])
+        } else {
+            collect(out_s)
+        };
+        if !o.eof && !o.killed {
             writeln!(out, "[bsh: run {}: no EOF (timeout)]", name).unwrap();
         }
         if o.dropped > 0 {
@@ -1591,7 +1824,7 @@ fn do_pipe(cmd: &str, vars: &[(String, String)], status: i32, out: &mut std::io:
     let code = match pipe_capture(&segs, None) {
         Ok((o, c)) => {
             out.write_all(&o.data).unwrap();
-            if !o.eof {
+            if !o.eof && !o.killed {
                 writeln!(out, "[bsh: pipe: no EOF (timeout)]").unwrap();
             }
             if o.dropped > 0 {
@@ -1723,8 +1956,19 @@ fn pipe_capture(
             berry_libc::park(); // 关不掉 = 表序错乱，loud（标记缺失兜底）
         }
     }
-    // 死锁序铁律：先收末段 stdout（EOF 链逐级传到采集端）……
-    let o = collect(out_s);
+    // 死锁序铁律：先收末段 stdout（EOF 链逐级传到采集端）……C-4b：交互态
+    // 前台等待集 = [out:READABLE, **末段** proc:TERMINATED, stdin:READABLE]
+    // ——Ctrl-C 杀**全段**（terminate 逐段 130），但 TERMINATED 只盯末段：
+    // 盯中段会在「中段正常先退、末段仍在产出」的常态 pipe 上提前断收 +
+    // 尾段丢失（EOF 缺口面只对被杀者成立——正常退出者 EOF 先行，idx 序
+    // 保证 READABLE 恒先命中）。boot 自验（INT_MODE=false）走纯 collect
+    // 零漂移。
+    let o = if int_armed() && !children.is_empty() {
+        let kills: Vec<Handle> = children.iter().map(|c| c.hp).collect();
+        collect_fg(out_s, children[last].hp, &kills)
+    } else {
+        collect(out_s)
+    };
     // ……再逐段 reap（此时全员应已退出，30s 帽只兜挂死面；失败 = 句柄
     // 留存有界泄漏 + 子进程僵尸（v1 无 kill，见 do_pipe 边界注），警告不死
     // shell——终验面在 svcmgr `EXIT ok`）。末段 reap Ok = 管道状态码（P5
@@ -2440,7 +2684,132 @@ fn collect(h: Handle) -> RunOut {
             break; // 活动帽尽仍无 EOF：断链面，交调用方警告
         }
     }
-    RunOut { data, eof, dropped }
+    RunOut { data, eof, dropped, killed: false }
+}
+
+/// C-4b 前台收集（Ctrl-C 杀链）：[`collect`] 的交互态扩展——空队等待从
+/// `wait_one(out:READABLE)` 扩为 **wait_many 三项** `[out:READABLE,
+/// proc:TERMINATED, stdin:READABLE]`（入参序 = 命中序：wait_many 返回
+/// 入参序最前命中项，READABLE 恒排 TERMINATED 前——正常退出面 EOF 先行
+/// 零漂移）。三分支：
+/// - **idx 0（out 可读）**：数据到——回外层 recv（与 collect 同形）；
+/// - **idx 1（TERMINATED 先于 EOF）**：子已死而无零长 EOF——**EOF 缺口面
+///   （v1 边界）**：`process_terminate` 是内核杀**不走 libc exit 族**
+///   （`send_stdout_eof` 在 exit/_exit/abort 内），被杀者 stdout 的收集方
+///   **收不到 EOF**——收口只能靠本 wait 的 TERMINATED 项（不赌 10s 活动帽；
+///   v1 channel 无对端关闭检测，EOF 语义补全挂 v2）。排空残留队列
+///   后按 killed 收场；
+/// - **idx 2（stdin 可读）**：排空 stdin 找 0x03——命中即
+///   `process_terminate(×kill 集, 130)`（POSIX 128+SIGINT 惯例）+ 回显
+///   `^C`；非 0x03 字节进 [`TYPEAHEAD`]（打字-ahead 不丢——交互循环先于
+///   stdin 消化）。
+/// 已死者的重复 terminate 返 -EBADSTATE，忽略（退出码首因不覆写）。
+/// kill 集调用方给全（单段 run = 1 / 管道 = 全段）；hp = TERMINATED 盯
+/// 哨（run = 同一 handle / 管道 = 末段——盯中段会在常态 pipe 上误断收）。
+fn collect_fg(h: Handle, hp: Handle, kill: &[Handle]) -> RunOut {
+    let sin = stdin_h();
+    let mut data: Vec<u8> = Vec::new();
+    let mut dropped = 0usize;
+    let mut eof = false;
+    let mut killed = false;
+    let mut msg = [0u8; 256];
+    while !eof {
+        let mut nb = msg.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        if s == 0 {
+            if nb == 0 {
+                eof = true;
+            } else {
+                let keep = nb.min(COLLECT_MAX.saturating_sub(data.len()));
+                data.extend_from_slice(&msg[..keep]);
+                dropped += nb - keep;
+            }
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            break; // 非 -EAGAIN 错误：对端异常，按无 EOF 收场（collect 同款）
+        }
+        // 空队：三项等待（10s 活动帽，收包刷新）。stdin 缺席（老 spawn 面）
+        // 退化两项（out + TERMINATED）——Ctrl-C 面不达但 EOF/TERMINATED
+        // 收口仍完整。
+        let hs = [h, hp, sin];
+        let sigs = [SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_READABLE];
+        let n = if sin != 0 { 3 } else { 2 };
+        let (mut idx, mut obs) = (0usize, 0u64);
+        if berry_object_wait_many(
+            hs.as_ptr(),
+            sigs.as_ptr(),
+            n,
+            now() + TIMEOUT_NS,
+            &mut idx,
+            &mut obs,
+        ) != 0
+        {
+            break; // 活动帽尽：与 collect 同收场（eof=false 交调用方警告）
+        }
+        if idx == 2 {
+            // stdin：排空找 0x03（console 逐字节 1B 消息、队列深 8——循环
+            // 收到 -EAGAIN；超容量非 -EAGAIN 返码同面出循环）。
+            let mut sb = [0u8; 64];
+            loop {
+                let mut snb = sb.len();
+                let mut snh = 0usize;
+                if berry_channel_recv(
+                    sin,
+                    sb.as_mut_ptr(),
+                    &mut snb,
+                    core::ptr::null_mut(),
+                    &mut snh,
+                ) != 0
+                {
+                    break;
+                }
+                for i in 0..snb {
+                    if sb[i] == 0x03 {
+                        println!("^C"); // Ctrl-C 回显（杀链起点；换行随 println）
+                        for &p in kill {
+                            // 已死者 -EBADSTATE 忽略——退出码首因不覆写。
+                            let _ = berry_process_terminate(p, 130);
+                        }
+                        killed = true;
+                    } else {
+                        typeahead_push(sb[i]);
+                    }
+                }
+            }
+            continue; // 回外层：杀后 wait_many 撞 TERMINATED（idx 1）收口
+        }
+        if idx == 1 {
+            // TERMINATED 先于 EOF：EOF 缺口面（头注）——排空残留后收场。
+            // 残留里恰有零长 EOF（窄竞速窗内正常退出）也照收——eof 置真。
+            killed = true;
+            loop {
+                let mut nb = msg.len();
+                let mut nh = 0usize;
+                let s = berry_channel_recv(
+                    h,
+                    msg.as_mut_ptr(),
+                    &mut nb,
+                    core::ptr::null_mut(),
+                    &mut nh,
+                );
+                if s != 0 {
+                    break;
+                }
+                if nb == 0 {
+                    eof = true;
+                    break;
+                }
+                let keep = nb.min(COLLECT_MAX.saturating_sub(data.len()));
+                data.extend_from_slice(&msg[..keep]);
+                dropped += nb - keep;
+            }
+            break;
+        }
+        // idx == 0：out 数据可读——外层 recv
+    }
+    RunOut { data, eof, dropped, killed }
 }
 
 /// now = clock_read（失败按当前时刻 0 处理 → 立即超时，活证死路 loud）。

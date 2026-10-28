@@ -654,13 +654,95 @@ fn test_syscall() {
     );
     assert_eq!(unsafe { OUT }, 0, "SYSCALL：未退 code 出参须保持 0");
 
+    // F4d. process_terminate（C-4b 0x3B）：错误面 + 未 start 终止收口——坏
+    //      handle / 类型不符（Vmar）→ -EBADF；缺 MANAGE（dup 出 DUPLICATE-only
+    //      别名——空 rights 拒面，I 段先例）→ -EACCES；成功终止**未 start**
+    //      进程（码 42，无任务面——Process 侧收口）→ 0，且退出面**首次可在
+    //      ktest 闭环**：wait TERMINATED poll 即中 + get_exit_code 收 42（F4b/F4c
+    //      注记「Exited 成功路径 ktest 造不出」自此改写——terminate 免 spawn
+    //      面）；重复终止 → -EBADSTATE（幂等面收口在 wait/get_exit_code，不
+    //      重复杀）。自杀面（-EBADSTATE）与已 start 杀链（摘队+REAPQ）需
+    //      CURRENT/目标任务在场——ktest 在 sched::init 前跑，交 EL0 运行期
+    //      bsh Ctrl-C/kill 自验（C-4b 后段 `INT ok` 标记）。
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, 0xDEAD_BEEF, 42, 0),
+        -9,
+        "SYSCALL：terminate 坏 handle 须 -EBADF"
+    );
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hv3 as u64, 42, 0),
+        -9,
+        "SYSCALL：terminate 对 Vmar 须 -EBADF（类型门控）"
+    );
+    // SAFETY: OUT 复用 F 段纪律（预清）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hp2 as u64,
+            crate::handle::RIGHT_DUPLICATE as u64,
+            &raw mut OUT as u64
+        ),
+        0,
+        "SYSCALL：terminate 前置——dup DUPLICATE-only 别名"
+    );
+    let hp2r = unsafe { OUT } as u32;
+    assert_ne!(hp2r, 0, "SYSCALL：dup 别名须回填");
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2r as u64, 42, 0),
+        -13,
+        "SYSCALL：terminate 缺 MANAGE 须 -EACCES"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2r as u64, 0, 0), 0, "SYSCALL：close 别名");
+    // 成功终止（未 start——kill_task_by_pinned 扫不到任务，走 Process 侧收口）。
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2 as u64, 42, 0),
+        0,
+        "SYSCALL：terminate 未 start 进程须 0"
+    );
+    // 退出面闭环 ①：wait TERMINATED poll 即中（Exited 单调置位）。
+    // SAFETY: I_OBS 纪律同 F4b（预清 + 命中回填全满足集）。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(
+            crate::syscall::NR_OBJECT_WAIT_ONE as u64,
+            hp2 as u64,
+            crate::handle::SIGNAL_TERMINATED,
+            0,
+            &raw mut I_OBS as u64
+        ),
+        0,
+        "SYSCALL：terminated 进程 wait poll 须即中"
+    );
+    assert_eq!(
+        unsafe { I_OBS },
+        crate::handle::SIGNAL_TERMINATED,
+        "SYSCALL：observed 须为 TERMINATED（全满足集）"
+    );
+    // 退出面闭环 ②：terminate 的 code=42 落退出码账面。
+    // SAFETY: OUT 纪律同上（i32 出参，低 4 字节写入）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_GET_EXIT_CODE as u64, hp2 as u64, &raw mut OUT as u64, 0),
+        0,
+        "SYSCALL：terminated get_exit_code 须 0"
+    );
+    assert_eq!(unsafe { OUT } as u32, 42, "SYSCALL：terminate code=42 须落退出码");
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2 as u64, 43, 0),
+        -37,
+        "SYSCALL：重复 terminate 须 -EBADSTATE（且保首因码 42 不被 43 覆写）"
+    );
+
     // F5. 清场（顺带覆盖钉住释放链：close 线程 → 释放对 Process 的钉住；
     //     close 进程 → 释放对 root Vmar 的钉住；空进程无映射，close 不受
-    //     -EBUSY 面影响）。
+    //     -EBUSY 面影响）。F4d 后 hp2 已 Exited——close 即最终引用归零，drop
+    //     Process（release vmar 钉住 + PROCESS_LIVE 减）——终止态对象回收链
+    //     随本段走通。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hth as u64, 0, 0), 0, "SYSCALL：close thread");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp as u64, 0, 0), 0, "SYSCALL：close process");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv2 as u64, 0, 0), 0, "SYSCALL：close child vmar");
-    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close process 2");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close terminated process 2");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv3 as u64, 0, 0), 0, "SYSCALL：close child vmar 2");
 
     // G. 3-4a per-process 表拆分：两表隔离 + take/insert_ref 迁移原语 + 子进程

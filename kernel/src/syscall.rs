@@ -6,10 +6,11 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 30 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**P6 A-3 起 29 号已实现**——
+//! v1 31 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**C-4b 起 30 号已实现**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
 //! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
+//! process_terminate（C-4b——外部终止，kill/Ctrl-C 内核原语）+
 //! thread_create/exit（3-3 + Plan B 退出路径）+
 //! channel 三号（3-4b）+ event 三号（3-4c；4-1 wait_one 阻塞化）+ wait_many
 //! （4-2b）+ thread_sleep（4-0，首个阻塞 syscall），全部经 [`HandleTable`]
@@ -61,7 +62,7 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 30 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// ---- v1 31 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
 // 常量本体在 `crate::abi_gen`（`tools/abi.toml` 生成文件）；此处 re-export
 // 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
 // abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
@@ -71,10 +72,10 @@ pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_PROCESS_EXIT,
-    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
-    NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT,
-    NR_VMO_CREATE, NR_VMO_DECOMMIT, NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ,
-    NR_VMO_WRITE,
+    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_TERMINATE, NR_THREAD_CREATE,
+    NR_THREAD_EXIT, NR_THREAD_SLEEP, NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
+    NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
+    NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
 use crate::abi_gen::CLOCK_MONOTONIC;
 
@@ -1040,6 +1041,70 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+/// `process_terminate(process, code)`（0x3B，C-4b）：外部终止进程——kill /
+/// Ctrl-C 的内核原语。`code` 落为该进程退出码，父侧收割面与 `process_exit`
+/// 逐字同形（wait TERMINATED → `process_get_exit_code`）。
+///
+/// 门控序（[`sys_object_signal`] 先例）：`get_raw` 三门控（在表 / 类型
+/// Process / 权利 **MANAGE**）→ 坏值/类型不符 -EBADF、缺 MANAGE -EACCES；
+/// 随后两道状态判均 -EBADSTATE：①**自杀**（目标 ObjRef 地址 == 调用者任务
+/// 的 pinned 键）——退自己走 `process_exit`（terminate 要摘的目标任务此刻
+/// 正在它自己栈上执行本 syscall，REAPQ 回收自己在结构上不可行）；②已
+/// Exited——幂等语义收口在 wait/get_exit_code，不重复杀。
+///
+/// 收口（**不开第二退出面**）：
+/// - **已 start**：[`berry_sched::kill_task_by_pinned`] 走与自退出同一退出
+///   钩子（mark_exited + 码 + TERMINATED 唤醒 + drain 子表 + release 运行
+///   钉住）+ 摘队 + REAPQ；观测打一行 `TERM:` 诊断（非 smoke 标记）。
+/// - **未 start**：Process 侧收口 = 钩子语义**减 release**（`process_start`
+///   的运行钉住从未发生，release 会把 refs 打穿 0、在调用方 handle 仍指它时
+///   销毁对象）；ht 出生为空（bootstrap 迁移在 start 才发生），drain 防御
+///   保留。ktest 可终止未 start 进程再断言 -EBADSTATE/退出码——无需 spawn。
+///
+/// 借用纪律：`kill_task_by_pinned` 返回 `Some` 即钩子内已 `ObjRef::release`
+/// ——此后不再解引用 `obj`（调用方表槽持有 ≥1 引用，对象活到调用方 close）。
+extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
+    let (h, code) = (tf.regs[1] as u32, tf.regs[2] as i32);
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
+    };
+    if obj.as_ptr() as usize == berry_sched::current_pinned() {
+        return ERR_BAD_STATE as i64; // 自杀：退自己走 process_exit
+    }
+    // SAFETY: get_raw 已三门控（在表、类型 Process、权利足）；单核 IRQ 屏蔽。
+    unsafe {
+        let r = &mut *obj.as_ptr();
+        let Some(p) = r.obj.as_process_mut() else {
+            return ERR_BAD_HANDLE as i64; // 不可达防御面（类型刚验过）
+        };
+        if p.state == ProcState::Exited {
+            return ERR_BAD_STATE as i64; // 已终止：幂等面在 wait/get_exit_code
+        }
+        if p.started {
+            // 已 start：目标任务在场（Alive ⟹ 未退出 ⟹ Ready/Blocked）。
+            // Some 分支钩子内已 release——立即返回，不再触 obj。
+            if let Some(name) = berry_sched::kill_task_by_pinned(obj.as_ptr() as usize, code) {
+                berry_hal_aarch64::uart_puts(b"\nTERM: killed '");
+                berry_hal_aarch64::uart_puts(name);
+                berry_hal_aarch64::uart_puts(b"'\n");
+                return 0;
+            }
+            // None + started = 不可达防御面（任务必在场）——落未 start 收口向。
+        }
+        // 未 start（或上述防御面）：Process 侧收口，无 release（无运行钉住）。
+        if p.mark_exited() {
+            p.exit_code = code;
+            // 唤醒等本 Process TERMINATED 的睡眠者（ktest 期 SLEEPQ 恒空——
+            // wake_matching 空队安全返回；SLEEPQ 钩子自动触发 PI 重推）。
+            berry_sched::wake_matching(obj.as_ptr() as usize, SIGNAL_TERMINATED);
+        }
+        p.ht.drain();
+    }
+    0
+}
+
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
 
 /// `channel_create(options, *out0, *out1)`（4-3c 起 options 首参，Zircon/
@@ -1751,6 +1816,7 @@ pub fn install() {
     reg(NR_PROCESS_START, sys_process_start);
     reg(NR_PROCESS_EXIT, sys_process_exit);
     reg(NR_PROCESS_GET_EXIT_CODE, sys_process_get_exit_code);
+    reg(NR_PROCESS_TERMINATE, sys_process_terminate);
     reg(NR_THREAD_CREATE, sys_thread_create);
     reg(NR_THREAD_EXIT, sys_thread_exit);
     reg(NR_THREAD_SLEEP, sys_thread_sleep);

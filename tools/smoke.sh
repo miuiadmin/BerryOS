@@ -33,18 +33,26 @@
 #      逐字节透传、编辑/echo/历史/Tab 全归 bsh editor：FakeSrc 状态机
 #      回归面 ⓪-⑥ + 真源两钉 ⑦⑧（cpio bin/ps + libc /etc/mtab）），
 #      rootfs 相第 33 标记。
+#      C-4b 起含 INT ok——Ctrl-C kill 面自验四步（editor 0x03 作废行/
+#      ESC 序列两态共存/Interrupt 后续用 + 前台杀链真机面：spawn
+#      bin/hello → process_terminate(130) → collect_fg wait_many
+#      TERMINATED 收口（EOF 缺口活证——内核杀不走 libc exit 族）→
+#      reap 130 即 $? 真码），rootfs 相第 34 标记（链序同 TAB 排 fat
+#      族前——EFI 路无盘亦打）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
-#      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），59 标记
-#      （boot 26 + rootfs 33——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段、
+#      C-4b 起七段）：三拉 QEMU 带
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），60 标记
+#      （boot 26 + rootfs 34——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/TCPS ok echo=/APP ok n=/
-#      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/PS ok n=/BC ok
+#      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/PS ok n=/BC ok
 #      在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
 #      服务/.bap 应用拉起消费链/RAM 目录树 v2 五 op 自验/uutils core 家族
 #      空文件元数据九步链 + echo/true/false 执行六步链 + text 批五步执行链
 #      （门审裁形后）+ EL0 四项微基准格式断言收口（B-1）+ 深坑六件八步
-#      执行链（U4——C-2c 挂账刀）+ Tab 补全九步（TAB——C-4）
+#      执行链（U4——C-2c 挂账刀）+ Tab 补全九步（TAB——C-4）+ Ctrl-C
+#      kill 链四步（INT——C-4b）
 #      全过，
 #      状态谓词门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
@@ -76,7 +84,7 @@
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. C-0 刀 4 FAT 子目录相（第四跑）：盘 = mkfat **--fixture 模式**（fixture
 #      专列 DATA/ 目录 + DATA/NOTE.TXT——默认盘不含，默认盘字节零漂移硬线
-#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），59 标记载明全链
+#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），60 标记载明全链
 #      在目录盘上照跑后注入三段（断言与注入行互非子串 + 顺序防回声）：
 #      `ls DATA` → grep 'NOTE.TXT'（READDIR FAT 回落链走查——断言先于一切
 #      含 NOTE.TXT 的注入行回显）→ `cat DATA/NOTE.TXT` → grep
@@ -85,7 +93,7 @@
 #      类型冲突面）。
 #   7. P6 A-6 FAT 持久化相（第五跑）：**不重造盘**（复用第 5 相已写的
 #      disk.img——mkfat 重产 = 持久化零验收；disk_dirs.img 不复用——无
-#      跨盘盘混），59 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
+#      跨盘盘混），60 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
 #      旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT` → grep 'f42t'——
 #      `>` 落的是真扇区、跨 boot 存活。盘 cache writeback=off：QEMU 由
 #      SIGTERM 终止，writeback 模式可能不刷页缓存（所有 -drive 行统一，
@@ -468,8 +476,17 @@ QEMU_PID=$!
 # 路径位），⑦⑧ 真源两钉（cpio bin/ 含 ps、libc /etc/ 含 mtab）。零 fs
 # 盘面、零 spawn（纯内存面），链序排 fat 族前（EFI 路亦打）——rootfs 相
 # 第 33 标记。断言走 assert_marker 特例（TAGTAB ok 子串假阳性面）。
+# INT（C-4b）：bsh int_selftest 四步——⓪ editor 常态 0x03（作废行/清缓
+# 冲/不入历史）① ESC 序列两态共存（esc=1/esc=2 复位落下直达 Interrupt）
+# ② Interrupt 后编辑器续用 ③ 前台杀链真机面：spawn bin/hello（10s 滚动
+# 长睡不自退）→ process_terminate(130)==0 → 重复杀 -EBADSTATE →
+# collect_fg wait_many TERMINATED 收口（eof=false+killed=true——EOF 缺口
+# 活证：内核杀不走 libc exit 族，stdout 无零长 EOF）→ reap==130（$?
+# 真码）。零 fs 盘面（hello = rootfs ELF 纯 RAM spawn），链序排 fat 族前
+# （EFI 路亦打）——rootfs 相第 34 标记。裸 grep -qF 足够（"INTENT ok"
+# 不含 "INT ok"——INT 后是 E 非空格，两两互非子串已核）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "PS ok n=" "BC ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "PS ok n=" "BC ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -490,7 +507,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + PS ok n= + BC ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + PS ok n= + BC ok）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
@@ -550,7 +567,7 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + vir
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：59 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：60 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -706,6 +723,29 @@ while :; do
   sleep 1
 done
 echo "smoke: cd/pwd 应答到齐（chdir + getcwd 渲染）"
+# g. Ctrl-C 交互杀链（C-4b）：`run hello`（前台子进程 = bin/hello——打一拍
+# `rootfs hello` 后 10s 滚动长睡不自退，kill 目标确定性在位；`run` 走 cpio
+# `bin/<名>` 直查，段 f 后 CWD=/d1 无碍）→ 前台期注入 `echo i$?t`
+# （collect_fg stdin 臂：非 0x03 字节进 TYPEAHEAD 不丢键）→ 0x03 → 杀集
+# `process_terminate(130)`（POSIX 128+SIGINT 惯例码）+ `^C` 回显 →
+# TERMINATED 项收口（被杀者零长 EOF 永不到达——kill 不走 libc exit 族的
+# EOF 缺口面）→ typeahead 回放 `echo i$?t` 真执行。断言 grep -aqF
+# 'i130t'（P6 A-6 展开造内容纪律：注入/回显只含未展开 `i$?t`，i130t 只能
+# 来自 $?=130 的真实展开——editor/collect_fg/terminate/typeahead/状态码
+# 五环全过才可达，状态谓词非竞速；boot 期 `INT ok` 只盖自验面，本段是
+# 交互杀真面）。行间不等待：FIFO/通道排队天然串行（段 d 同款）。
+inject_line 'run hello'
+inject_line 'echo i$?t'
+printf '\x03' >&3; sleep 0.5
+t4=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 Ctrl-C 杀链阶段退出"
+  grep -aqF 'i130t' "$LOG" && break
+  [ $(( $(date +%s) - t4 )) -gt 60 ] \
+    && fail "i130t 60s 未出现（Ctrl-C 交互杀链断？查 TERM/^C 行与 bsh: 诊断）"
+  sleep 1
+done
+echo "smoke: Ctrl-C 交互杀到齐（run hello 前台 + 0x03 → terminate 130 → \$? 展开回放）"
 
 # 注入后金丝雀（fresh 日志从 RX 相起算，无需清）。
 t5=$(date +%s)

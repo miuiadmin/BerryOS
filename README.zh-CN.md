@@ -22,7 +22,7 @@
 
 ## 现状（2026-10）
 
-- **Phase 0–6 已收官（ARM64，QEMU virt）**：调度与 PI 捐赠 / VMO+Vmar 地址空间 / 能力 handle 表 + 30 号 syscall（29 实现）/ channel IPC fastpath-slowpath / intent 传播；console+svcmgr 服务框架、RAM-fs、**用户态 virtio-blk / virtio-net 驱动**、FAT12 读写（跨 boot 持久化）、UDP/DNS、最小 TCP 客户端全链 + TCP RPC 服务化；bsh shell（管道 / mini-readline）、**未经修改的 hexyl 0.17.0** 经 musl libc shim 跑通、`.bap` 应用包模型 v0。
+- **Phase 0–6 已收官（ARM64，QEMU virt）**：调度与 PI 捐赠 / VMO+Vmar 地址空间 / 能力 handle 表 + 31 号 syscall（30 实现）/ channel IPC fastpath-slowpath / intent 传播；console+svcmgr 服务框架、RAM-fs、**用户态 virtio-blk / virtio-net 驱动**、FAT12 读写（跨 boot 持久化）、UDP/DNS、最小 TCP 客户端全链 + TCP RPC 服务化；bsh shell（管道 / mini-readline）、**未经修改的 hexyl 0.17.0** 经 musl libc shim 跑通、`.bap` 应用包模型 v0。
 - **x86_64 最小集**：PVH 引导 / PIT+PIC / 异常向量 / 上下文切换 / SYSCALL-SYSRET，7 标记挂 CI。
 - **现行里程碑 M-VM**：自举磁盘镜像（BerryBoot EFI → handoff）→ 虚拟化窗口 → CLI 可用（uutils）。
 

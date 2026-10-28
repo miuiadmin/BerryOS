@@ -184,6 +184,20 @@ pub fn current_tag() -> usize {
     }
 }
 
+/// 当前任务钉住的 Process 对象键（C-4b `process_terminate` 的自杀判别用）：
+/// `Task.pinned` 只读透传（语义/钉住对见 [`set_task_pinned`]）。0 = 无
+/// （内核任务 / boot 裸表用户进程 / ktest 期 CURRENT=null）——调用方拿它跟
+/// 目标 Process ObjRef 地址比对，0 恒不等任何在表对象指针。单核只读。
+pub fn current_pinned() -> usize {
+    // SAFETY: 只读；单核顺序访问（写点全在 IRQ 屏蔽路径）。
+    let cur = unsafe { CURRENT };
+    if cur.is_null() {
+        0
+    } else {
+        unsafe { (*cur).pinned }
+    }
+}
+
 /// Plan B v0.5：写任务的 `pinned` 钉住字段（`process_start` 成功路径调用——
 /// 与语义层的 `ObjRef::retain` 同点成对；退出钩子消费）。`task` =
 /// [`try_spawn_user`] 返回的 usize（Box::leak 指针）。sched 只存取不解释
@@ -396,7 +410,10 @@ unsafe fn reapq_push(t: *mut Task) {
 
 /// 回收退出任务的 Task Box + 内核栈（16KiB/个）。调用面 = `idle_loop` 稳态与
 /// `yield_now` 切回后——**永不在被回收者自身上下文**。退出者已出 runqueue/
-/// SLEEPQ（exit 只从 Running 态发生）+ 钩子已清 pinned 引用，无悬挂指针。
+/// SLEEPQ（REAPQ 两源：自退出 [`switch_away_forever_with`] 从 Running 态；
+/// C-4b `process_terminate` 经 [`kill_task_by_pinned`] 先摘队再钩子，从
+/// Blocked（SLEEPQ）/ Ready（RUNQUEUE）两态——见其头注）+ 钩子已清 pinned
+/// 引用，无悬挂指针。
 /// drop 纯释放零分配；单核无并发（IRQ 上下文不碰分配器）。
 pub fn reap_drain() {
     // SAFETY: REAPQ 写点全在 IRQ 屏蔽退出路径；本读点单核顺序；drain 后清零。
@@ -411,6 +428,72 @@ pub fn reap_drain() {
         }
         REAPQ_LEN = 0;
     }
+}
+
+/// C-4b `process_terminate`：按钉住键（Process ObjRef 地址）杀**非当前**任务。
+/// 扫 SLEEPQ（Blocked）+ RUNQUEUE（Ready）找 `pinned` 匹配者，找到则走与
+/// [`switch_away_forever_with`] 同一套收口（**不开第二退出面**）——区别仅在
+/// 目标不是 CURRENT：无切换位，收尾是 REAPQ 而非 `context_switch`。返回被杀
+/// 任务名（观测打印用）；`None` = 无任务持该键（未 start 的进程——调用方只做
+/// Process 侧收口）。
+///
+/// **摘队先于退出钩子**（与 `switch_away_forever_with` 的钩子→dequeue 序相反，
+/// 有意为之）：钩子内 `wake_matching(TERMINATED)` 会摘 SLEEPQ 匹配者入环——
+/// 病理形态下目标自己就在等它自己的 Process（父把子 process handle 经
+/// bootstrap 递入、子 wait TERMINATED），钩子先跑会把目标从 SLEEPQ 摘走入环，
+/// 随后的本函数摘队即撞「`SleepQueue::unlink` 不幂等」扬队坑。先摘队 = 目标
+/// 已离场，钩子的唤醒面无论如何碰不到它。
+///
+/// **睡眠等待钉住泄漏（安全向）**：睡眠任务的 4-1 等待 retain（覆盖全部睡眠
+/// 轮次、原定醒来出口 release）随任务永不续行而泄漏——wait_many 的多对象
+/// retain 集合无法从 Task 结构恢复，泄漏是唯一安全 v1 选项（channel 端点互钉
+/// 环泄漏同政策）；对象永活，无 UAF。
+///
+/// # Safety
+/// IRQ 屏蔽窗内调用（syscall 主体天然满足）；单核——目标必不在 CPU 上
+/// （CURRENT 是调用者），只可能 Blocked（SLEEPQ）或 Ready（环上）或不存在。
+pub unsafe fn kill_task_by_pinned(pinned: usize, code: i32) -> Option<&'static [u8]> {
+    if pinned == 0 {
+        return None; // 内核任务/boot 裸表进程无钉住键——无任务面可杀
+    }
+    unsafe {
+        // ① SLEEPQ 扫描（Blocked：wait_one/wait_many/纯 sleep 的目标）。
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
+            if (*t).pinned == pinned {
+                sleepq().unlink(c); // 在队才摘（刚扫到——契约满足）
+                (*t).state = TaskState::Exited;
+                note_sleepq_changed(); // 睡眠者集合定型 → PI 全图重推（donor 边随离队消失）
+                if let Some(hook) = EXIT_HOOK {
+                    hook(pinned, code); // 同一套 Process 收口（Exited+码+唤醒+drain+release）
+                }
+                reapq_push(t);
+                return Some((*t).name);
+            }
+        }
+        // ② RUNQUEUE 环扫描（Ready；CURRENT 是调用者——目标不在 Running）。
+        if let Some(h) = rq().head() {
+            let mut cur = h;
+            loop {
+                if (*cur.as_ptr()).pinned == pinned {
+                    RR.dequeue(&mut *cur.as_ptr(), rq()); // unlink（幂等）+ 置 Exited
+                    if let Some(hook) = EXIT_HOOK {
+                        hook(pinned, code);
+                    }
+                    reapq_push(cur.as_ptr());
+                    return Some((*cur.as_ptr()).name);
+                }
+                // SAFETY: 环上节点必有 next（环形不变式）。
+                cur = (*cur.as_ptr()).rq_next.get().expect("ring node must have next");
+                if cur == h {
+                    break;
+                }
+            }
+        }
+    }
+    None
 }
 
 /// switches 金丝雀只读访问（watchdog / 遥测读；单核顺序）。
