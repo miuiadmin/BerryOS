@@ -685,13 +685,15 @@ image: build build-boot
 # PL011 串口；返回后固件续行进 UiApp 前台页。
 # -device ramfb：virt -nographic 默认**无任何显示设备** → 固件不装 GOP
 # 实例 → gop 行只会打 `locate fail r=EFI_NOT_FOUND`（刀 2 实证；ramfb =
-# edk2 RamfbDxe 驱动面，GOP 查询的确定性供给）。vars.fd 每次 fresh 拷贝
-# （确定性：不带上一轮 BootOrder 状态）。退出 Ctrl-A X。
-# AAVMF 固件来自 brew qemu（edk2-aarch64-code.fd / edk2-arm-vars.fd）。
+# edk2 RamfbDxe 驱动面，GOP 查询的确定性供给）。vars.fd 自产 blank 64MiB
+# 0xFF（2026-10-29 实抓：拷贝共享模板会继承手动 boot 写入的 BootOrder
+# 陈旧项 → BDS 试败尾落 EFI Internal Shell；blank = 固件每跑重新枚举
+# 在位设备自举——真「不带上一轮 BootOrder 状态」）。退出 Ctrl-A X。
+# AAVMF 固件来自 brew qemu（edk2-aarch64-code.fd；vars 不再消费共享件）。
 run-efi: image
     #!/bin/sh
     set -e
-    cp "{{AAVMF_VARS}}" {{BOOT_OUT}}/vars.fd
+    python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > {{BOOT_OUT}}/vars.fd
     {{QEMU}} -machine virt -cpu cortex-a72 -m 128M -nographic \
         -pflash "{{AAVMF_CODE}}" -pflash {{BOOT_OUT}}/vars.fd \
         -drive if=none,file={{IMAGE}},format=raw,id=bb \

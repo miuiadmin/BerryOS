@@ -47,7 +47,8 @@
 #
 # 用法：tools/smoke-image.sh <镜像> <AAVMF_CODE.fd> <AAVMF_VARS.fd>
 #（三参均由 justfile 单一事实源注入——smoke-x86 先例：脚本不自带第二份
-# 路径拷贝。）
+# 路径拷贝。第 3 参 AAVMF_VARS 现仅占位：vars 自产 blank，不读共享模板
+# ——见下方 vars 生成段注。）
 # 调试：SMOKE_KEEP_LOG=1 just smoke-image 保留串口日志不删。
 set -u
 
@@ -64,7 +65,6 @@ QEMU=${QEMU:-qemu-system-aarch64}
 command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke-image: FAIL: 找不到 $QEMU" >&2; exit 1; }
 [ -f "$IMAGE" ] || { echo "smoke-image: FAIL: 镜像不存在（先 just image）：$IMAGE" >&2; exit 1; }
 [ -f "$AAVMF_CODE" ] || { echo "smoke-image: FAIL: AAVMF CODE 固件不存在：$AAVMF_CODE" >&2; exit 1; }
-[ -f "$AAVMF_VARS" ] || { echo "smoke-image: FAIL: AAVMF VARS 固件不存在：$AAVMF_VARS" >&2; exit 1; }
 [ -f "$KERNEL" ] || { echo "smoke-image: FAIL: 内核未构建（先 just build）：$KERNEL" >&2; exit 1; }
 [ -f "rootfs.cpio" ] || { echo "smoke-image: FAIL: rootfs.cpio 缺席（先 just build-user）" >&2; exit 1; }
 
@@ -198,9 +198,12 @@ canary_ok() {
   '
 }
 
-# vars.fd fresh 拷贝进本跑临时目录（固件写 VARS 产生 boot entry 类状态——
-# fresh 拷贝 = 跨 run 零状态泄漏，run-efi 同款纪律）。
-cp "$AAVMF_VARS" "$RUN_DIR/vars.fd" || fail "vars.fd 拷贝失败"
+# vars.fd 自产 blank（64MiB 全 0xFF）进本跑临时目录——**不拷贝共享模板**
+# （2026-10-29 实抓：手动 boot `-pflash` 直挂共享 vars 会往里持久化
+# BootOrder/boot entry，拷贝继承陈旧项 → USB 形态下 BDS 试遍旧 entry 尾落
+# EFI Internal Shell（标记全缺）；blank = 固件每跑重新枚举在位设备自举，
+# 真零状态。第 3 参 AAVMF_VARS 仅为接口稳定保留（CI 零改动），不消费）。
+python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$RUN_DIR/vars.fd" || fail "vars.fd 生成失败"
 
 # FIFO stdin（smoke.sh RX 相同款）：holder 持写端防 EOF；帽 1200s 盖全流程
 # worst（360+120+60 + RX 注入段 + 余量 ~2x）。
