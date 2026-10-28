@@ -193,3 +193,5 @@ C-0 → C-1 → V-0a → V-0b → C-2a → V-1 → V-2 → V-3/V-4（= M-G1 ✅ 
 | （旁证）平台 virtio | 待实证 | virtio-net `1af4:1000` @0/1/0（QEMU 默认 NIC——非显式配置即在位） | Fusion 若有 virtio-blk → 直接复用 vblk |
 
 > V-5a-0 起回填的行式映射（berrydump 输出 → 本表行）：`madt:` → CPU/GIC 行（`cpu=e/t` + `gicd=3(GICv3)` + gicd@/gicr@ 基址）；`pci:` → 盘控制器/USB/网卡行（class 三元：0108xx=NVMe、0C0330=XHCI、0200xx=ETH——**USB 事实主源**）；`spcr:`/`dbg2:` → 串口行（iface=3=PL011 + base，两表交叉验证）；`gop:`/`gop[m]:` → GOP 行；`cfg:`+`fdt:` → 发现机制行（acpi20/dtb 计数 + FDT magic 校验）；`hcs:` blk/net 计数 = 旁证。主源 = berrydump 实机输出；对拍 = Linux live `lspci`（方法原案）。
+>
+> **段③ 对拍命令清单（2026-10-28 入册——Linux live（ARM64 ISO）与段② 同一次 Fusion 会话顺手收，每条 ↔ 一行 berrydump 输出）**：`lspci -nn`（vendor:device + class ↔ `pci[i]:` loc=BDF/class 逐条对拍）、`lspci -t`（桥接拓扑）、`dmesg | grep -iE "gic|its"`（↔ `madt:` gicd= 行）、`nproc`（↔ `cpu=e/t`）、`ls /sys/firmware/acpi/tables/ /sys/firmware/devicetree 2>/dev/null`（↔ `cfg:`+`fdt:` 发现机制）、`dmesg | grep -iE "pl011|16550|serial"`（↔ `spcr:`/`dbg2:` 串口）。
