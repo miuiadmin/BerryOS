@@ -104,7 +104,7 @@ pub(crate) mod nr {
     /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
     pub(crate) const PROCESS_EXIT: usize = 0x33;
     pub(crate) const THREAD_CREATE: usize = 0x34;
-    /// thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。
+    /// T-1 落地：门控 Thread MANAGE；所属 Process 须已 start 且 Alive（否则 -EBADSTATE）；线程入口不得返回（返回 = fault 杀兜底）——pthread/线程库的内核地基。
     pub(crate) const THREAD_START: usize = 0x35;
     /// Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。
     pub(crate) const THREAD_EXIT: usize = 0x36;

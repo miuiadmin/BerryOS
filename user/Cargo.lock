@@ -54,6 +54,7 @@ version = "0.1.0"
 dependencies = [
  "berry-fsclient",
  "berry-sys",
+ "berry-tls",
 ]
 
 [[package]]
@@ -85,6 +86,10 @@ name = "berry-tcp"
 version = "0.1.0"
 
 [[package]]
+name = "berry-tls"
+version = "0.1.0"
+
+[[package]]
 name = "echo"
 version = "0.1.0"
 dependencies = [
@@ -113,6 +118,13 @@ dependencies = [
 
 [[package]]
 name = "talker"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
+name = "thrchild"
 version = "0.1.0"
 dependencies = [
  "berry-sys",

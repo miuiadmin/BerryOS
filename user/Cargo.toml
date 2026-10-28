@@ -53,8 +53,13 @@
 # 列示，host 测试；单消费 = bsh 编辑器（独立小工作区 path 依赖，musl
 # target，同 stdhello 不入 members——但本 crate 无 syscall 面故入 members
 # 挂 host 测试无碍 none 工作区纪律））。
+# T-1 §1：berry-tls（TLS 拷贝式放置纯函数 crate，host 测试；单消费 =
+# berry-libc crt0（主线程装配）+ 第二层 pthread trampoline（malloc 块
+# 复用同一算术）。「不长第二套」+ §6 回退形态——berry-libc 的 libc 同名
+# 符号在 host 测试二进制里对 libSystem write 符号插入劫自旋，纯面外迁
+# 独立 crate 后 host 测试零 libc 符号面）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

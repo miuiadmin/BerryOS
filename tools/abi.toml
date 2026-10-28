@@ -17,7 +17,7 @@
 [meta]
 stage = "v1"
 nr_total = 31        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
-implemented = 30     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
+implemented = 31     # 已实现（T-1 后 v1 在册全实现——0x35 thread_start 随多线程首刀落地）
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。
@@ -341,10 +341,9 @@ stage = "v1"
 [[group.syscall]]
 num = 0x35
 name = "thread_start"
-desc = '投入运行（**在册未实现**——31 在册 30 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本）'
+desc = '投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形）'
 stage = "v1"
-implemented = false
-note = 'thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。'
+note = 'T-1 落地：门控 Thread MANAGE；所属 Process 须已 start 且 Alive（否则 -EBADSTATE）；线程入口不得返回（返回 = fault 杀兜底）——pthread/线程库的内核地基。'
 [[group.syscall]]
 num = 0x36
 name = "thread_exit"

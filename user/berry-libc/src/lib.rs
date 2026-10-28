@@ -9,8 +9,8 @@
 //! - **真实现**：malloc 族（静态 256KiB 堆）、write 族（fd 0/1/2 → console
 //!   channel）、mem/str 族、`__errno_location`、clock 族、crt0（TLS/TPIDR_EL0
 //!   用户态自设——零内核 seam）、snprintf/fprintf（asm 变参蹦床 + % 子集）；
-//! - **成功桩**：无竞争锁族、`sigaction` 族谎报安装、`syscall` 返 -ENOSYS
-//!   （std 无竞争快路径不经此）；
+//! - **成功桩**：无竞争锁族、`sigaction` 族谎报安装、`syscall` 走 futex.rs
+//!   拦截（nr≠98 返 -ENOSYS——std 无竞争快路径不经此）；
 //! - **ENOSYS/ENOENT 桩**：FS 面、socket 族、fork/exec/posix_spawn、kill 族。
 //!
 //! ## ABI 口径（写新桩前必读）
@@ -25,8 +25,10 @@
 //!   声明错宽度 = 调用方读出 +4G 而非 -1（G-eco-c copy_out_u32 同族教训）。
 //! - **errno 面**：返 -1 的桩一律 `set_errno(...)`（musl 惯例：调用方先看
 //!   返回值再看 errno）。
-//! - **单线程根基**：pthread_create 返 EAGAIN（永不产线程）⇒ 全 crate 无锁、
-//!   `static mut` 直写合法；线程真支持是 v2 面。
+//! - **多线程根基（T-1）**：pthread_create 真身（`pthread.rs`——栈 VMO +
+//!   蹦床 TLS 装配 + thread_start）；跨线程共享面（malloc 堆 = futex 锁、
+//!   key 登记表 = futex 锁；errno 仍进程级单实例——v1 接受的窄竞窗）。
+//!   std::thread 同步原语全 futex 化（`futex.rs`——syscall(98) 拦截）。
 //! - **死= 真退出（Plan B v0.5）不= trap**：`exit`/`_exit`/`abort` =
 //!   stdout 零长 EOF 先行 + `berry_process_exit`（0x33 真路径：内核置
 //!   Exited + 唤醒 TERMINATED 等待者 + drain + REAPQ 回收任务体）；trap
@@ -40,7 +42,9 @@
 pub mod alloc;
 pub mod crt0;
 pub mod fs;
+pub mod futex;
 pub mod io;
+pub mod pthread;
 pub mod stubs;
 pub mod strmem;
 pub mod sys;
@@ -93,6 +97,8 @@ pub const ERANGE: c_int = 34;
 pub const ENAMETOOLONG: c_int = 36;
 pub const ENOSYS: c_int = 38;
 pub const ENOTEMPTY: c_int = 39;
+/// T-1：futex 面超时档（std futex_wait_timeout 的 -1+errno 路径）。
+pub const ETIMEDOUT: c_int = 110;
 /// musl：ENOTSUP == EOPNOTSUPP == 95（xattr 族桩档位——uucore
 /// fsxattr 白名单只吞 95，38(ENOSYS) 会向 uu_cp -a/--preserve=xattr
 /// 传播，对抗审查实抓）。

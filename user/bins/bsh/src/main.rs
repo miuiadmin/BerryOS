@@ -1505,7 +1505,7 @@ fn fatw_selftest() {
 }
 
 /// df + statfs 真值自验（C-2 刀 2，`DF ok` = rootfs 相第 29 标记——
-/// 确定性状态谓词 + 双向真值）。三步全收齐才打（单消息原子）：
+/// 确定性状态谓词 + 双向真值）。四步全收齐才打（单消息原子）：
 /// - 步⓪ 几何定值：直调 statfs（libc 真实现 → OP_STATFS RPC → fsmgr BPB
 ///   几何 + FAT 扫描）断言 `f_blocks==506 && f_bsize==2048 && f_frsize==2048`
 ///   ——mkfat 默认卷与 fixture 盘同几何（VOL_SECTORS=2032/SPC=4/簇 2048B/
@@ -1526,18 +1526,17 @@ fn fatw_selftest() {
 ///   st_dev 非零定值）+ fstype=fat 过 is_dummy/is_remote 过滤 + statfs
 ///   真值装配（blocks>0 才出行）+ 表头 translate! 面（df 薄 harness 手动
 ///   setup_localization——缺失时表头变消息 ID、列宽漂移）。
-///
-/// **du 裁出挂账（首跑定标实录 2026-10-27，C-2c uu_sort 同型同批）**：
-/// 原案步③ `du -b PATTERN.BIN` → `5000\tPATTERN.BIN`（表观尺寸真值）
-/// 实跑必死——uu_du 0.12.0 du.rs ~:1168 无条件 `thread::spawn`（打印线
-/// 程，无 flag 可关）→ std 线程钩子 `run_spawn_hooks` 对未注册平台的
-/// 全局注册表做原子加 → outline-atomics LSE 探测回退 `ldxr` 路解引用
-/// 垃圾指针（实抓 dump：D-abort(lower) ISS=0x21 PC=0x306918
-/// FAR=0x26c68c——PC 落 `__aarch64_cas` 家族 ldxr/stxr 循环、x1==FAR
-/// 即原子目标）→ G1.5 kill（code=0 len=0 eof=false 经典死状）。std 线
-/// 程面（pthread/TLS）平台缺口挂账，随 C-2c 深坑件族另刀；du 表观尺
-/// 寸面（st_blocks=512B 扇区取整、-b 消块口径）届时回收——bin/du 仍
-/// 随 rootfs 发行（uu_sort 同形：交互可用面缺席、自验不硬凑假绿）。
+/// - 步③ du 表观尺寸面（**T-1 回收 2026-10-28**）：`du -b PATTERN.BIN` →
+///   `5000\tPATTERN.BIN\n`（原案步③ 原样回嵌——PATTERN.BIN 5000B 在全部
+///   造盘模式在位 = 跨相恒定）。原裁因（首跑定标实录 2026-10-27）= uu_du
+///   0.12.0 du.rs ~:1168 无条件 `thread::spawn`（打印线程）→ std 线程钩子
+///   `run_spawn_hooks` 原子加野指针 → D-abort G1.5 kill；同日破案重归因 =
+///   **crt0 原位 TLS 初值污染**（.tbss 窗 = 活 .data.rel.ro 文件字节，
+///   docs/挂账-C2c深坑件.md 法证，uu_sort 同案同批），L1 TLS 四全局 + L2b
+///   pthread/futex/gift 面落地后 du 家族复通——`-b` = --apparent-size
+///   --block-size=1（消 st_blocks 512B 扇区取整口径，字节真值恰 5000）。
+///   **run_capture_fs**（du 经 libc open/stat 消费 fs 服务，df 步同款
+///   gift 四元装配）。
 /// 期望值全字面常量（绝不 Rust 镜像计算——P6 A-5 基准漂移雷）；失败诊断
 /// 单串 format! 一次 eprintln（稳态矩阵撕行防护，u3_bad 同款）+ park
 /// （标记缺失 → smoke FAIL loud 兜底）。
@@ -1591,6 +1590,17 @@ fn df_selftest() {
         Some((o, c)) => df_bad(2, c, &o),
         None => {
             eprintln!("bsh: df selftest bad: step=2 df not found");
+            berry_libc::park();
+        }
+    }
+    // 步③（T-1 回收）：du -b 表观尺寸真值——PATTERN.BIN 5000B（造盘定值
+    // 跨相恒定；`-b` 消 st_blocks 512B 扇区取整口径）。du 经 libc open/
+    // stat 消费 fs 服务 = run_capture_fs gift 四元（步② df 同款）。
+    match run_capture_fs("du", None, &["-b", "PATTERN.BIN"]) {
+        Some((o, c)) if c == 0 && o.data == b"5000\tPATTERN.BIN\n" && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => df_bad(3, c, &o),
+        None => {
+            eprintln!("bsh: df selftest bad: step=3 du not found");
             berry_libc::park();
         }
     }
@@ -2361,24 +2371,26 @@ fn u2_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
     println!("U2 ok");
 }
 
-/// C-2c U3：text 批执行验收（pwd/cat/wc/cut/tr/uniq 六命令 + 三段管道
-/// 面）。**七步门审原案两处挂账裁形**（首跑定标实录，不硬凑假绿）：
-/// - 步③ head 裁出：uu_head 0.12.0 unix stdin 路径 `try_clone_to_owned`
+/// C-2c U3：text 批执行验收（pwd/cat/wc/cut/tr/sort/uniq 七命令 + 四段管道
+/// 面）。**七步门审原案两处挂账：一处回收、一处仍裁**：
+/// - 步③ head 仍裁出：uu_head 0.12.0 unix stdin 路径 `try_clone_to_owned`
 ///   → fcntl(F_DUPFD) → berry-libc 桩 -EINVAL → uucore 译 "Invalid
 ///   input" 退 1（实测 code=1 + 该串）——fd 克隆面（dup/dup2/fcntl）libc
-///   刀挂账，head 家族 v1 结构性不可验收。
-/// - 步④ sort|uniq 与步⑥ 四段链的 sort 段：uu_sort 启动期 tmp_dir.rs:67
-///   `ctrlc::set_handler` → ctrlc/signal-hook 后台线程 → std
-///   `thread::spawnhook::run_spawn_hooks` 解引用空注册表悬垂指针 4
-///   （static @0x432078——链接文件面原值 0400…已核，非 berry-ld 重定位
-///   错）→ outline-atomics `__aarch64_ldadd8_relax+0x18` 原子加 D-abort
-///   → 内核 G1.5 kill（空输出无 EOF）——std 线程面（pthread/TLS）平台
-///   缺口挂账；步⑥ 按门审预案授权裁三段（cat,uniq,wc -l）。
-/// 步序映射：1=⓪pwd 2=①cat 3=②wc-c 4=⑤cut|tr 5=⑥'三段链。spawn 合计
-/// = 8 ≤ 12（1+1+1+2+3）。feed 面 ≤1.5KB（三常量合计 96B）、期望面
-/// <32KiB（COLLECT_MAX 口径，实测最大 32B）。断言期望值 = 定标实录
+///   刀挂账，head 家族 v1 结构性不可验收（U4 步① 的 `head -c 8` 文件参
+///   形态经 fcntl 实现另案收编，与本步 stdin 形态不同面）。
+/// - 步④ sort|uniq 与步⑥ 四段链的 sort 段：**T-1 回收（2026-10-28）**——
+///   原裁因 = uu_sort 启动期 ctrlc/signal-hook 后台线程踩 std 线程面
+///   （`run_spawn_hooks` 解引用空注册表悬垂指针 → outline-atomics 原子加
+///   D-abort → 内核 G1.5 kill（空输出无 EOF）；同日破案重归因 = **crt0
+///   原位 TLS 初值污染**（.tbss 窗 = 活 .data.rel.ro 文件字节，
+///   docs/挂账-C2c深坑件.md 法证），L1 TLS 四全局 + L2b pthread/futex/gift
+///   面落地后 sort 家族复通——按原案字面常量回嵌，期望值零改动。
+/// 步序映射：1=⓪pwd 2=①cat 3=②wc-c 4=④sort|uniq 5=⑤cut|tr 6=⑥四段链。
+/// spawn 合计 = 11 ≤ 12（1+1+1+2+2+4）。feed 面 ≤1.5KB（三常量合计 96B）、
+/// 期望面 <32KiB（COLLECT_MAX 口径，实测最大 32B）。断言期望值 = 定标实录
 /// **字面常量**（绝不 Rust 镜像计算——P6 A-5 基准漂移雷）：pwd `/\n` /
-/// cat 逐字节全等 / wc-c `32\n` / cut|tr `BC\nZ\nEL\n` / 三段链 `7\n`。
+/// cat 逐字节全等 / wc-c `32\n` / sort|uniq `alpha\nbravo\ncharlie\ndelta\n`
+/// / cut|tr `BC\nZ\nEL\n` / 四段链 `4\n`。
 /// 链序契约同 U2：全步零 fs 盘面（纯 RAM/spawn），排 fat 族之前——EFI
 /// 路无盘亦打 U3（smoke-image ECO 同面）。诊断行单串 format! 再打（多
 /// 段 eprintln 逐段 write 会被稳态矩阵撕行——定标 v1 实踩）。
@@ -2412,14 +2424,14 @@ fn u3_selftest() {
             berry_libc::park();
         }
     }
-    // 步 4（⑤）：cut -c 2-3 | tr a-z A-Z——列裁剪 + 大小写映射双段管道
-    // （abcd→BC / zz→Z / hello world→EL：短行越界取到即止）。
-    let segs45 = [
-        PipeSeg { name: "cut", args: &["-c", "2-3"] },
-        PipeSeg { name: "tr", args: &["a-z", "A-Z"] },
+    // 步 4（④，T-1 回收）：sort | uniq——排序 + 邻去重双段管道（七行 feed
+    // → 字典序 → 四行；`alpha\nbravo\ncharlie\ndelta\n` 原案字面常量）。
+    let segs4 = [
+        PipeSeg { name: "sort", args: &[] },
+        PipeSeg { name: "uniq", args: &[] },
     ];
-    match pipe_capture(&segs45, Some(U3_CUT_FEED)) {
-        Ok((o, c)) if c == 0 && o.data == b"BC\nZ\nEL\n" && o.eof && o.dropped == 0 => {}
+    match pipe_capture(&segs4, Some(U3_SORT_FEED)) {
+        Ok((o, c)) if c == 0 && o.data == b"alpha\nbravo\ncharlie\ndelta\n" && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => u3_bad(4, c, &o),
         Err(PipeFail::NotFound(n)) => {
             eprintln!("bsh: u3 selftest bad: step=4 {} not found", n);
@@ -2430,16 +2442,14 @@ fn u3_selftest() {
             berry_libc::park();
         }
     }
-    // 步 5（⑥'）：cat | uniq | wc -l 三段链——首段开场 + 末段收口的三段
-    // 结构面（门审原案四段链裁 sort 段，见头注挂账）；uniq 面喂七行无
-    // 相邻重复（sort 缺席下 uniq 语义 = 逐行直通）→ wc -l 计 7。
-    let segs5 = [
-        PipeSeg { name: "cat", args: &[] },
-        PipeSeg { name: "uniq", args: &[] },
-        PipeSeg { name: "wc", args: &["-l"] },
+    // 步 5（⑤）：cut -c 2-3 | tr a-z A-Z——列裁剪 + 大小写映射双段管道
+    // （abcd→BC / zz→Z / hello world→EL：短行越界取到即止）。
+    let segs45 = [
+        PipeSeg { name: "cut", args: &["-c", "2-3"] },
+        PipeSeg { name: "tr", args: &["a-z", "A-Z"] },
     ];
-    match pipe_capture(&segs5, Some(U3_SORT_FEED)) {
-        Ok((o, c)) if c == 0 && o.data == b"7\n" && o.eof && o.dropped == 0 => {}
+    match pipe_capture(&segs45, Some(U3_CUT_FEED)) {
+        Ok((o, c)) if c == 0 && o.data == b"BC\nZ\nEL\n" && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => u3_bad(5, c, &o),
         Err(PipeFail::NotFound(n)) => {
             eprintln!("bsh: u3 selftest bad: step=5 {} not found", n);
@@ -2447,6 +2457,26 @@ fn u3_selftest() {
         }
         Err(PipeFail::SpawnFail(n)) => {
             eprintln!("bsh: u3 selftest bad: step=5 {} spawn failed", n);
+            berry_libc::park();
+        }
+    }
+    // 步 6（⑥，T-1 回复四段）：cat | sort | uniq | wc -l——首段开场 + 中段
+    // 变换 + 末段收口的四段链原案形态（七行 feed → 4 行 → `4\n` 字面）。
+    let segs6 = [
+        PipeSeg { name: "cat", args: &[] },
+        PipeSeg { name: "sort", args: &[] },
+        PipeSeg { name: "uniq", args: &[] },
+        PipeSeg { name: "wc", args: &["-l"] },
+    ];
+    match pipe_capture(&segs6, Some(U3_SORT_FEED)) {
+        Ok((o, c)) if c == 0 && o.data == b"4\n" && o.eof && o.dropped == 0 => {}
+        Ok((o, c)) => u3_bad(6, c, &o),
+        Err(PipeFail::NotFound(n)) => {
+            eprintln!("bsh: u3 selftest bad: step=6 {} not found", n);
+            berry_libc::park();
+        }
+        Err(PipeFail::SpawnFail(n)) => {
+            eprintln!("bsh: u3 selftest bad: step=6 {} spawn failed", n);
             berry_libc::park();
         }
     }

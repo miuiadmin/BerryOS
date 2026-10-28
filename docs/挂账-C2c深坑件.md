@@ -63,6 +63,14 @@ pipe_capture 每段现 dup 现传（berry-exec 全部 Err 早退点均在 env se
 > 处置详见 bsh df_selftest 头注 + `docs/阶段沿革.md` C-2 刀 2 条目），
 > 执行面回收并入本刀 sort·head 批。
 
+> **2026-10-28 T-1 收口注记**：上注「std 线程面缺口」归因被**法证推翻**
+> （`docs/法证-TLS原位方案崩因归因.md`）——du/sort 启动期死的真因 =
+> **crt0 .tbss 初值污染**（原位 TLS 方案不清零、.tbss 文件字节非零区被当
+> 数据用），非 pthread/TLS 平台缺口。T-1（拷贝式 TLS + pthread/futex
+> 真身 + 0x35 thread_start，`docs/T-1实施设计草案.md`）落地后：U3 sort
+> 段恢复（五步→六步）、DF du 表观尺寸步恢复（三步→四步），双双入 smoke
+> rootfs 相常绿。三个存量 spawn 点接线**仍挂账**（与线程面无关，归后续刀）。
+
 ## ③ onig 互斥实证（自写 grep/find/which 的上游缺位记录）
 
 - `uu_grep 0.2.0`（crates.io 线顶）与 `findutils 0.10.0` 均**硬依赖 onig/onig_sys**（C 正则库，

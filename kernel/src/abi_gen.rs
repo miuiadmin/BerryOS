@@ -6,8 +6,7 @@
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 31 号在册、30 已实现）----
-// 在册未实现：0x35 thread_start（派发回落 -ENOTSUP，永不 panic）
+// ---- syscall 号（ABI §4 编号表；v1 31 号在册、31 已实现）----
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;
@@ -35,7 +34,7 @@ pub const NR_PROCESS_START: usize = 0x32;
 /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
 pub const NR_PROCESS_EXIT: usize = 0x33;
 pub const NR_THREAD_CREATE: usize = 0x34;
-/// thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。
+/// T-1 落地：门控 Thread MANAGE；所属 Process 须已 start 且 Alive（否则 -EBADSTATE）；线程入口不得返回（返回 = fault 杀兜底）——pthread/线程库的内核地基。
 pub const NR_THREAD_START: usize = 0x35;
 /// Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。
 pub const NR_THREAD_EXIT: usize = 0x36;

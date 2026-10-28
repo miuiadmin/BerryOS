@@ -14,9 +14,9 @@
 //! 纯 raw 层：**绝不 panic、绝不分配**；上层 `berry` crate 负责
 //! `Status → Result<(), Status>` 包装与运行时（console/argv 等随 G-eco-d）。
 //!
-//! 数值事实与内核侧对账（2026-10，P5 v0.5 起 29 号在册 28 号已实现——
-//! 余 0x35 `thread_start`（v2 多线程）内核回落 `-ENOTSUP`，wrapper 照发；
-//! 0x33/0x36 已真实现且 `-> !` 不返，「调用者存活」对它们不成立）。
+//! 数值事实与内核侧对账（2026-10，T-1 起 31 号在册 31 号已实现——0x35
+//! `thread_start` 随多线程首刀落地（entry/sp/arg 四参，Zircon zx_thread_start
+//! 同形）；0x33/0x36 已真实现且 `-> !` 不返，「调用者存活」对它们不成立）。
 
 #![no_std]
 #![allow(clippy::missing_safety_doc)] // FFI 边界：指针语义在 ABI 文档成文
@@ -330,10 +330,14 @@ pub extern "C" fn berry_thread_create(process: Handle, options: u32, out: *mut H
     unsafe { sys(nr::THREAD_CREATE, process as usize, options as usize, out as usize, 0, 0, 0) }
 }
 
-/// 未实现（内核 -ENOTSUP）——ABI 形状照发。
+/// T-1 落地（多线程首刀）：投入运行**非首线程**（首线程随 `process_start`；
+/// Zircon zx_thread_start 同形四参）。门控 Thread MANAGE；所属 Process 须已
+/// start 且 Alive（否则 -EBADSTATE）；`arg` 落新线程 x0（与首线程 bootstrap
+/// 迁移值对称——pthread 层递 (fn, arg) 的载体）；线程入口不得返回（返回 =
+/// fault 杀兜底）。
 #[no_mangle]
-pub extern "C" fn berry_thread_start(thread: Handle) -> Status {
-    unsafe { sys(nr::THREAD_START, thread as usize, 0, 0, 0, 0, 0) }
+pub extern "C" fn berry_thread_start(thread: Handle, entry: usize, sp: usize, arg: usize) -> Status {
+    unsafe { sys(nr::THREAD_START, thread as usize, entry, sp, arg, 0, 0) }
 }
 
 /// ABI 形状 `-> !`；内核 0x36 已随 Plan B v0.5 实现（v1 单线程 ⇒ 等价

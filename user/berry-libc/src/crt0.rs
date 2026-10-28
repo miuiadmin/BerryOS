@@ -3,10 +3,13 @@
 //! 职责（`_start`，经 `process_start` 进入，`x0` = bootstrap = **env 通道端**，
 //! d-3a 起协议见 io.rs `berry_libc_boot` 头注）：
 //! 1. 抢救 bootstrap handle 与初始栈顶；
-//! 2. `berry_tls_setup`：经 `__ehdr_start` 自走 phdr 表找 PT_TLS，
-//!    **用户态自设 TPIDR_EL0**（EL0 可写寄存器，零内核 seam）；静态 ELF 的
-//!    init image 本就加载在 `p_vaddr` 原位（.tbss 孔洞由装载端页铺平零页
-//!    覆盖），**免拷贝**，一条 `msr` 完事；
+//! 2. `berry_tls_setup`（T-1 §1 **拷贝式 TLS**）：经 `__ehdr_start` 自走 phdr
+//!    表找 PT_TLS → 静态 arena 里 `tls_place` 放置 → **显式清零整窗 + 拷
+//!    模板** → `msr tpidr_el0`（TP = data−0x10，EL0 可写寄存器，零内核
+//!    seam）。原位 TP 方案已删——`.tbss` 零初始化契约三方共违约（lld 标准布局
+//!    + berry-exec 零 PT_TLS 感知 + 原位直用），TLS 胞元初值 = 活
+//!    `.data.rel.ro` 文件字节（vtable/函数指针），见
+//!    `docs/法证-TLS原位方案崩因归因.md`；
 //! 3. `berry_libc_boot`：recv env 块 → console/stdin handle 落种 + **真
 //!    argv**（NUL 分隔字节串 → static 数组）→ 返 argc；
 //! 4. 直调 `main(argc, argv)`（argv 从 `BERRY_ARGV` 全局交汇编取址）；
@@ -15,11 +18,22 @@
 //! 跳过项（诚实缺口，非疏漏）：
 //! - `.init_array` 不走——Rust 静态量经 const 求值初始化，无 C++ 构造面。
 //!
-//! TP 偏移口径：LLD 的 AArch64 TLSLE 重定位把 `tprel` 解成「符号地址 − TP」；
-//! `TP_ADJ` 是 PT_TLS `p_vaddr` 到 TP 的修正量，**值经链接产物反汇编实证**
-//! （见 `berry_tls_probe`——build 侧 lldb 一眼定常数，不猜不赌）。
+//! 纯函数面（`tls_place`/`find_ptls`/`tls_template`/`TLS_ARENA_CAP`/模板
+//! 四全局）自 `berry-tls` 独立纯 crate 消费并再导出（T-1 §6 回退启用，
+//! berry-fsclient 先例：本 crate 的 libc 同名符号在 host 测试二进制里对
+//! libSystem write 发生符号插入——panic 钩子 stderr 被 write → console_write
+//! → berry_channel_send 劫持自旋，首跑实测挂死；纯面独立 crate 后 host
+//! 测试零 libc 符号面）。**python/rust 双份算术义务注记**随纯面迁
+//! `user/berry-tls/src/lib.rs` 与 `tools/tlsscan.py` 两侧头注。
 
 use core::arch::{asm, global_asm};
+
+// T-1 裁决三：TLS 模板四全局 + 纯放置/phdr 走查面（单一事实源 = berry-tls；
+// 再导出给第二层 pthread 经 `berry_libc::crt0::` 消费）。
+pub use berry_tls::{
+    find_ptls, tls_place, tls_template, BERRY_TLS_ALIGN, BERRY_TLS_FILESZ, BERRY_TLS_MEMSZ,
+    BERRY_TLS_VADDR, TLS_ARENA_CAP,
+};
 
 /// 链接种子（rlib 按需提取的活门）：`_start` 是 global_asm——不产生任何
 /// 引用面，无人引用本模块时 crt0 目标件整件不进链接（实踩：lld 警告
@@ -28,20 +42,30 @@ use core::arch::{asm, global_asm};
 #[no_mangle]
 pub extern "C" fn berry_crt0_anchor() {}
 
-// TLS 探针不在 shim 侧：`#[thread_local]` 在 no_std crate 面有 feature gate，
-// 且要测的本来就是 **std 自己** 的 TLS codegen 惯例——探针在 stdhello
-// （`thread_local!` + `#[no_mangle]` 存取函数），build 侧反汇编该函数读
-// `mrs tpidr_el0` 后的加法常数，对照探针符号地址与 PT_TLS p_vaddr 定
-// `TP_ADJ`（见本文件头注「TP 偏移口径」）。
+/// TLS 拷贝式静态 arena：.bss NOBITS 零文件字节（每 std bin PT_LOAD
+/// memsz +4KiB = +1 页/进程 AS，无 cpio 文件字节增长；VMO commit 走
+/// zero_frame 保零——**但不信它**：`berry_tls_setup` 显式
+/// `memset_volatile` 清零整窗，法证教训一级防御）。16 对齐给 tls_place
+/// 的 base 前置（align ≤ 16 时 data−base 恒 0x10）——`#[repr(align)]`
+/// 只认类型，包一层 newtype（对齐随类型走，零运行期开销）。
+#[repr(C, align(16))]
+struct TlsArena([u8; TLS_ARENA_CAP]);
 
-// TP = PT_TLS p_vaddr + TP_ADJ。**实证值 −0x10**（2026-10，stdhello audit
-// 构建）：std_tls_probe 反汇编读 PROBE（.tdata st_value=0）得
-// `mrs tpidr_el0; add #0x10` —— lld 的 AArch64 TLSLE 惯例是
-// tprel = st_value + 0x10（TP 上方留 2 字 TCB 洞，musl/glibc aarch64 同
-// 形）⟹ TP = 段首 − 0x10。
-const TP_ADJ: i64 = -0x10;
+static mut TLS_ARENA: TlsArena = TlsArena([0; TLS_ARENA_CAP]);
 
-/// 走自身 ELF 头找 PT_TLS 并设 TPIDR_EL0（无 TLS 段则空操作）。
+extern "C" {
+    static __ehdr_start: u8;
+}
+
+/// 走自身 ELF 头装主线程 TLS（拷贝式，T-1 §1）。
+///
+/// 命中 PT_TLS → 写四模板全局 → `tls_place` 成功 → `memset_volatile`
+/// 显式清零整窗（memsz，**不信 .bss 零初值**——法证教训一级防御）→
+/// `memcpy_volatile` 拷模板（filesz）→ `msr tpidr_el0`（TP = data−0x10）；
+/// placement None → `brk #0x7C1`（boot 期唯一 loud 形态：此刻 CONSOLE_H
+/// 未落种、无打印 syscall 面；brk 走内核 EXCEPTION dump + user_fault_exit
+/// 串口 loud；tlsscan --check F1 门先拦使其实际不可达）；无 PT_TLS →
+/// 空操作返回（四全局保持 0 初值 = ALIGN 0 哨兵）。
 ///
 /// 前置条件：`__ehdr_start`（链接器自供，附录 A 强面在册）；本函数在 TLS
 /// 就绪前运行，体内不得触碰任何 `#[thread_local]`。
@@ -49,25 +73,24 @@ const TP_ADJ: i64 = -0x10;
 pub unsafe extern "C" fn berry_tls_setup() {
     unsafe {
         let ehdr: *const u8 = core::ptr::addr_of!(__ehdr_start);
-        let phoff = core::ptr::read_unaligned(ehdr.add(0x20) as *const u64) as usize;
-        let phentsize = core::ptr::read_unaligned(ehdr.add(0x36) as *const u16) as usize;
-        let phnum = core::ptr::read_unaligned(ehdr.add(0x38) as *const u16) as usize;
-        for i in 0..phnum {
-            let ph = ehdr.add(phoff + i * phentsize);
-            // ELF64 Phdr: p_type@0 p_flags@4 p_offset@8 p_vaddr@0x10 p_filesz@0x20 p_memsz@0x28
-            if core::ptr::read_unaligned(ph as *const u32) == 7 {
-                // PT_TLS
-                let vaddr = core::ptr::read_unaligned(ph.add(0x10) as *const u64) as i64;
-                let tp = (vaddr + TP_ADJ) as u64;
+        let Some((vaddr, filesz, memsz, align)) = find_ptls(ehdr) else {
+            return; // 无 PT_TLS：空操作（bin/hello 类）
+        };
+        BERRY_TLS_VADDR = vaddr;
+        BERRY_TLS_FILESZ = filesz;
+        BERRY_TLS_MEMSZ = memsz;
+        BERRY_TLS_ALIGN = align;
+        let base = core::ptr::addr_of_mut!(TLS_ARENA) as *mut u8 as usize;
+        match tls_place(base, TLS_ARENA_CAP, filesz, memsz, align) {
+            Some(data) => {
+                crate::strmem::memset_volatile(data as *mut u8, 0, memsz);
+                crate::strmem::memcpy_volatile(data as *mut u8, vaddr as *const u8, filesz);
+                let tp = (data - 0x10) as u64;
                 asm!("msr tpidr_el0, {}", in(reg) tp);
-                return;
             }
+            None => asm!("brk #0x7C1"), // arena 溢出：lint 门 F1 先拦 = 实际不可达
         }
     }
-}
-
-extern "C" {
-    static __ehdr_start: u8;
 }
 
 global_asm!(

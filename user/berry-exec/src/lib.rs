@@ -32,7 +32,8 @@ use berry_sys::{
     berry_process_get_exit_code, berry_process_start, berry_thread_create, berry_vmar_map,
     berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
     berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY, BERRY_ERR_NO_MEMORY,
-    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_SEND, RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_SEND,
+    RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 
 /// ELF 首窗：ehdr + 全部 phdr（真实 lld 产物 phnum ≤ 10 量级，4KiB 绰绰）。
@@ -390,10 +391,18 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         trap();
     }
     // —— env 块（start 前压队，确定性先行）：argv = argv0\0[+arg\0]；handles
-    //    按位 [stdout 端别名, (stdin 端), (extra_gift)]（先 dup stdout：
-    //    send 会 take 走句柄，原值留调用方——G-eco-b 交接消息同款）。
+    //    按位 [stdout 端别名, (stdin 端), (self_proc/self_vmar), (extra_gift…)]
+    //    （先 dup stdout：send 会 take 走句柄，原值留调用方——G-eco-b 交接
+    //    消息同款）。
+    //    **前缀紧致律（T-1 终验实抓回归的立法）**：gift[0..nhandles] 必须
+    //    是满前缀、零 0 洞——内核 send 预检逐 handle `alive()`，0（INVALID_
+    //    HANDLE）即 -EBADF 自陷（T-1 首版把自描述对钉死 [4]/[5]、extra<2
+    //    时中段留洞 = svcmgr 拉起面全体连灭，vblk/ps/fsmgr/uu_run 族）。
+    //    修法 = 自描述对前移固定位 [2]/[3]、extras 挪 [4..4+len]——每槽
+    //    语义固定、nhandles 单调门控 presence，消费侧（libc io.rs boot）同
+    //    步对偶。无 stdin 的老 spawn 面（svcmgr 无管道子）nhandles=1 不装。
     let (env_s, env_c) = channel_pair();
-    let mut gift = [0 as Handle; 4];
+    let mut gift = [0 as Handle; 6];
     if berry_handle_duplicate(stdout, RIGHT_SEND, &mut gift[0]) != 0 {
         trap();
     }
@@ -407,18 +416,41 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         gift[1] = *h; // 被 send take（迁移语义同上）
         nhandles = nhandles.max(2);
     }
-    assert!(extra_gifts.len() <= 2, "spawn: extra_gifts ≤ 2（gift 数组容量 4）");
-    for (i, g) in extra_gifts.iter().enumerate() {
-        gift[2 + i] = *g; // 被 send take（迁移语义同上）
-    }
+    // slice 帽（指令字面 ≤4）+ 容量执法（2 base + 2 自描述对 + extra ≤ 6 →
+    // extra ≤ 2）双断言：今日调用面全 ≤2 零漂移，越界即 panic loud。
+    assert!(extra_gifts.len() <= 4, "spawn: extra_gifts slice 帽 4");
+    assert!(
+        4 + extra_gifts.len() <= gift.len(),
+        "spawn: extra_gifts ≤ 2（gift[2..4] = T-1 自描述对占定）"
+    );
     if !extra_gifts.is_empty() {
-        // gift[2] 前要求 gift[1] 已在位（0 空位随行会被 send 预检 -EBADF 自陷
-        // ——运行时断言拦调用面漂移，老注释的纪律检升级）。
+        // extras 落 [4] 起要求 stdin 在位（前缀紧致律：[2]/[3] 缺 stdin 即
+        // 洞——运行时断言拦调用面漂移）。
         assert!(
             stdin_pair.is_some() || stdin_handle.is_some(),
             "spawn: extra_gifts 需 stdin 在位"
         );
-        nhandles = nhandles.max(2 + extra_gifts.len());
+    }
+    // —— T-1 自描述对（条件装配：stdin 在位 = T-1 时代的调用面），固定位
+    //    [2]/[3]：[2] = 自身 Process（MANAGE|DUPLICATE——子内 pthread_
+    //    create 走 thread_create）、[3] = 自身 root Vmar（MAP|MANAGE|
+    //    DUPLICATE——vmar_map 授片 + vmar_unmap 门控 RIGHT_MAP）。
+    //    extras 紧随落 [4..4+len]（**装在块内** = 结构性保证前缀无洞：
+    //    extras 不可能先于自描述对出现）；nhandles = 4 + len ∈ {4,5,6}。
+    //    子内 `self_proc_h()==0`（无 stdin 面）→ pthread_create EAGAIN
+    //    守门（旧桩语义零漂移）。
+    if stdin_pair.is_some() || stdin_handle.is_some() {
+        if berry_handle_duplicate(hp, RIGHT_MANAGE | RIGHT_DUPLICATE, &mut gift[2]) != 0 {
+            trap();
+        }
+        if berry_handle_duplicate(hv, RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE, &mut gift[3]) != 0
+        {
+            trap();
+        }
+        for (i, g) in extra_gifts.iter().enumerate() {
+            gift[4 + i] = *g; // 被 send take（迁移语义同上）
+        }
+        nhandles = 4 + extra_gifts.len();
     }
     // argv 串 = argv0\0 + 各参\0（C-2a 起多参）。blob 192B：消息 inline 帽
     // 256 内、argv0 + 数参的 cp/mv 形态留足余量；截断按「整参或零参」——

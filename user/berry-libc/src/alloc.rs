@@ -1,20 +1,27 @@
-//! malloc 族 —— 静态 256KiB `.bss` 堆 + first-fit 空闲链（G-eco-d 真实现档）
+//! malloc 族 —— 静态 1MiB `.bss` 堆 + first-fit 空闲链（G-eco-d 真实现档）
 //!
-//! v1 口径（附录 A）：
-//! - 子进程无 root vmar handle（bootstrap 单 handle），**不向内核要页**——
-//!   堆 = 链接进 `.bss` 的静态数组；v2 随 d-3 bootstrap 消息协议携带的
-//!   vmar handle 换 VMO 增长；
+//! v1 口径（附录 A + T-1）：
+//! - 子进程不向内核要页（bootstrap 面无堆 VMO 增长通道）——堆 = 链接进
+//!   `.bss` 的静态数组；
 //! - first-fit + 地址序插入 + 相邻合并（无合并的碎片化在 Vec 增长模式下
 //!   几轮就散架）；
-//! - 单线程根基（pthread_create 桩永不产线程）⇒ 无锁 `static mut` 直写。
+//! - **多线程根基（T-1）**：全路径 futex 锁（`futex::mutex_lock`——CAS
+//!   快路径无竞争零开销，慢路径真睡不烧片）；持锁者只做纯内存操作
+//!   （inner_malloc/free_insert 不入内核），锁序无死锁面。堆 256KiB→1MiB
+//!   （du/sort 3 线程 + std 线程栈外元数据（栈本体走 VMO））。
 //!
 //! 块布局：`[Block 头 16B | payload]`，`size` 记 payload 字节数。
 
 use core::ptr;
+use core::sync::atomic::AtomicU32;
 
 use crate::{c_int, c_void, size_t};
 
-pub const HEAP_SIZE: usize = 256 * 1024;
+pub const HEAP_SIZE: usize = 1024 * 1024;
+
+/// 堆互斥（futex 化：0 = 空、1 = 持有）。**不可重入**——持锁路径只走
+/// inner_* 私函数，public 面（malloc/free/…）不得嵌套互调。
+static HEAP_LOCK: AtomicU32 = AtomicU32::new(0);
 
 #[repr(align(16))]
 struct Heap {
@@ -121,7 +128,9 @@ unsafe fn inner_malloc(n: usize) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn malloc(n: size_t) -> *mut c_void {
+    crate::futex::mutex_lock(&HEAP_LOCK);
     let p = unsafe { inner_malloc(if n == 0 { 1 } else { n }) };
+    crate::futex::mutex_unlock(&HEAP_LOCK);
     if p.is_null() {
         crate::set_errno(crate::ENOMEM);
         return ptr::null_mut();
@@ -134,10 +143,12 @@ pub extern "C" fn free(p: *mut c_void) {
     if p.is_null() {
         return;
     }
+    crate::futex::mutex_lock(&HEAP_LOCK);
     unsafe {
         let b = (p as *mut Block).sub(1);
         free_insert(b);
     }
+    crate::futex::mutex_unlock(&HEAP_LOCK);
 }
 
 #[no_mangle]
@@ -149,16 +160,21 @@ pub extern "C" fn realloc(p: *mut c_void, n: size_t) -> *mut c_void {
         free(p);
         return ptr::null_mut();
     }
+    // 单锁包整操作（拷贝 + 旧块归还原子化；锁不可重入——内部走
+    // inner_malloc/free_insert，不经 public 面）。
+    crate::futex::mutex_lock(&HEAP_LOCK);
     unsafe {
         let old = (*(p as *mut Block).sub(1)).size;
         let newp = inner_malloc(n);
         if newp.is_null() {
+            crate::futex::mutex_unlock(&HEAP_LOCK);
             crate::set_errno(crate::ENOMEM);
             return ptr::null_mut();
         }
         let copy = if old < n { old } else { n };
         crate::strmem::memcpy_volatile(newp, p as *const u8, copy);
-        free(p);
+        free_insert((p as *mut Block).sub(1));
+        crate::futex::mutex_unlock(&HEAP_LOCK);
         newp as *mut c_void
     }
 }
@@ -190,9 +206,11 @@ pub extern "C" fn posix_memalign(out: *mut *mut c_void, align: size_t, n: size_t
     }
     // 超对齐：过量分配 + 对齐落位；前缀 [原块, 对齐点) 永久泄漏（罕见路径，
     // memalign 语义可接受——free 走对齐点上的假头，size 记到原块尾）。
+    crate::futex::mutex_lock(&HEAP_LOCK);
     unsafe {
         let base = inner_malloc(n + align + core::mem::size_of::<Block>());
         if base.is_null() {
+            crate::futex::mutex_unlock(&HEAP_LOCK);
             *out = ptr::null_mut();
             return crate::ENOMEM;
         }
@@ -204,13 +222,16 @@ pub extern "C" fn posix_memalign(out: *mut *mut c_void, align: size_t, n: size_t
         (*hdr).next = ptr::null_mut();
         *out = p as *mut c_void;
     }
+    crate::futex::mutex_unlock(&HEAP_LOCK);
     0
 }
 
-/// 堆余量（调试/`STD ok` 自检面可读）。
+/// 堆余量（调试/`STD ok` 自检面可读；锁保链走查不被并发分配撕裂）。
 pub fn heap_free_bytes() -> usize {
+    crate::futex::mutex_lock(&HEAP_LOCK);
     unsafe {
         if FREE_HEAD.is_null() {
+            crate::futex::mutex_unlock(&HEAP_LOCK);
             return HEAP_SIZE - core::mem::size_of::<Block>();
         }
         let mut cur = FREE_HEAD;
@@ -219,6 +240,12 @@ pub fn heap_free_bytes() -> usize {
             sum += (*cur).size;
             cur = (*cur).next;
         }
+        crate::futex::mutex_unlock(&HEAP_LOCK);
         sum
     }
+}
+
+/// 堆占用字节数（T-1：只读导出——pthread 自检/容量观测面）。
+pub fn used() -> usize {
+    HEAP_SIZE - heap_free_bytes()
 }

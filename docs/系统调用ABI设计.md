@@ -57,7 +57,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 |
 | 0x33 | `process_exit` | 退出 | v1 |
 | 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 |
-| 0x35 | `thread_start` | 投入运行（**在册未实现**——31 在册 30 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本） | v1 |
+| 0x35 | `thread_start` | 投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形） | v1 |
 | 0x36 | `thread_exit` | 线程退出 | v1 |
 | 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
 | 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 |
@@ -124,7 +124,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 7. 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1（实际 31 号在册 / 30 已实现——2026-10 现状；原预算 ~26，唯 `thread_start`(0x35) 未实现留 v2 多线程批）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
+- **v1（实际 31 号在册 / 31 已实现——T-1 后在册全实现（2026-10；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地））**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
 - **v2**：pager（demand paging）、futex、timer、异常通道、调度策略、设备 syscall。（G3–G4）
 - **v3**：namespace（open/mount）、**AI 策略注入/遥测控制 syscall**（`policy_bind`/`telemetry_open`，见 `AI调度设计.md`）、完整 POSIX 兼容库（含受限 fork 探索）。（G4+）
 
@@ -353,7 +353,16 @@ berry_status_t berry_thread_create(berry_handle_t process, uint32_t options,
                                随 process_start（首线程启动路径，Zircon 同形）；
                                options 低 8 位 = berry_intent（ADR #42，P3 占位，
                                未知值 -EINVAL；0x00=UNSPECIFIED 不设限） */
-berry_status_t berry_thread_start(berry_handle_t thread);
+berry_status_t berry_thread_start(berry_handle_t thread, uintptr_t entry,
+                               uintptr_t sp, uintptr_t arg);
+                               /* T-1 修正（实现落地）：加 entry/sp/arg 三参
+                                  ——单参形态是 v1 未实现占位；Zircon
+                                  zx_thread_start 同形。门控 Thread MANAGE；
+                                  所属 Process 须已 start 且 Alive（否则
+                                  -EBADSTATE——首线程必须经 process_start）；
+                                  arg 落新线程 x0（与首线程 bootstrap 对称
+                                  ——pthread 层递 (fn, arg) 的载体）；线程入口
+                                  不得返回（返回 = fault 杀兜底） */
 berry_status_t berry_thread_exit(void);                         /* Plan B v0.5
                                已实现：v1 单线程 ⇒ 等价 process_exit(0)
                                （Zircon last-thread 语义，多线程留 v2） */
@@ -373,7 +382,11 @@ berry_status_t berry_channel_send(berry_handle_t ch,
                               const void *bytes, size_t nbytes,
                               const berry_handle_t *handles, size_t nhandles);
                                /* v1 非阻塞：消息压对端队列（深度 8），满 → -EBUSY；
-                                  nbytes ≤ 256 / nhandles ≤ 4（超 → -EINVAL）；
+                                  nbytes ≤ 256 / nhandles ≤ 6（T-1：4→6——
+                                  berry-exec env 块 gift 扩至 6 位（[2]/[3] =
+                                  子进程自描述对 self_proc/self_vmar——前缀
+                                  紧致布局，终验实抓定案；extras 随后 [4..]），
+                                  与 kernel `CHAN_HND_MAX` 同源；超 → -EINVAL）；
                                   随行 handle 逐个迁出调用者表（原值立即 -EBADF）、
                                   令牌随消息挂起——接收方 recv 时落入它的表；
                                   数组内重复 handle 值 → -EINVAL（原子性预检）；
@@ -441,7 +454,7 @@ extern "C" {
     pub fn berry_process_exit(code: i32) -> ! ;
     pub fn berry_process_get_exit_code(process: Handle, code: *mut i32) -> Status;
     pub fn berry_thread_create(process: Handle, options: u32, out: *mut Handle) -> Status;
-    pub fn berry_thread_start(thread: Handle) -> Status;
+    pub fn berry_thread_start(thread: Handle, entry: usize, sp: usize, arg: usize) -> Status;
     pub fn berry_thread_exit() -> ! ;
     pub fn berry_thread_sleep(deadline: Time) -> Status;
 

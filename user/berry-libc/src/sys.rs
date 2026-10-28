@@ -239,14 +239,11 @@ pub extern "C" fn getrandom(buf: *mut c_void, len: size_t, _flags: c_uint) -> is
 
 // —— 弱面顺手件（附录 A weak 24 里有真消费者的一对）——
 
-#[no_mangle]
-pub extern "C" fn __cxa_thread_atexit_impl(
-    _dtor: extern "C" fn(*mut c_void),
-    _obj: *mut c_void,
-    _dso: *mut c_void,
-) -> c_int {
-    0 // TLS 析构登记但不执行（进程 park 终态，无泄漏可观测面）
-}
+// T-1：`__cxa_thread_atexit_impl` 桩已删（曾在此返 0 吞 TLS dtor 注册）。
+// std 1.95 对它是**弱引用**（GOT null-check → cbz 分叉，rlib 反汇编实证）：
+// 桩在场 = std 走桩不跑析构；桩缺席 = 落 std 自家 StaticList 注册路径
+// （经 `mrs TPIDR_EL0` 走链表——与拷贝式 TLS 完全兼容），线程退出时
+// 析构真实执行。删桩是严格改进，勿复活。
 
 #[no_mangle]
 pub static __dso_handle: c_uint = 0;

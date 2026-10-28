@@ -20,10 +20,15 @@ version = "0.1.0"
 dependencies = [
  "berry-fsclient",
  "berry-sys",
+ "berry-tls",
 ]
 
 [[package]]
 name = "berry-sys"
+version = "0.1.0"
+
+[[package]]
+name = "berry-tls"
 version = "0.1.0"
 
 [[package]]

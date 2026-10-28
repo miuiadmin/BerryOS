@@ -55,6 +55,7 @@ static mut IDLE_TASK: Task = Task {
     intent_acc: 0,
     proc_tag: 0,
     pinned: 0,
+    thread_key: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
     sleep_prev: core::cell::Cell::new(None),
@@ -208,6 +209,16 @@ pub fn set_task_pinned(task: usize, pinned: usize) {
     unsafe { (*(task as *mut Task)).pinned = pinned };
 }
 
+/// T-1：写任务的 `thread_key` 钉住字段（`thread_start`/`process_start` 成功
+/// 路径调用——首线程同样钉（对抗审查②：不钉 = 首线程 join 结构性死等）；
+/// 与语义层的 `ObjRef::retain(Thread)` 同点成对；退出钩子消费做 Thread 簿记/
+/// join 唤醒）。`task` = [`try_spawn_user`] 返回的 usize；写点契约同
+/// [`set_task_pinned`]（任务未跑、IRQ 屏蔽窗）。sched 只存取不解释。
+pub fn set_task_thread(task: usize, thread_key: usize) {
+    // SAFETY: 同 set_task_pinned（try_spawn_user 刚返回、未运行；单核）。
+    unsafe { (*(task as *mut Task)).thread_key = thread_key };
+}
+
 /// 同 [`spawn`]，但带声明档（4-3c intent 验收：借入/拒借的档位差源）。
 /// `intent` 直落 `intent_declared`/`intent_effective` 双字段——boot 可信语境
 /// 一步到位；非法值（编码域外）直接 panic（同 `new_kernel` 系 expect 政策）。
@@ -350,7 +361,7 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
     if let Some(hook) = EXIT_HOOK {
         // 语义层钩子：pinned=0（内核任务/boot 裸表进程）直通。钩子内可能
         // wake_matching（唤醒者入 runqueue——下方 pick 自然可见）。
-        hook((*cur).pinned, code);
+        hook((*cur).pinned, (*cur).thread_key, code);
     }
     RR.dequeue(&mut *cur, rq());
     reapq_push(cur);
@@ -378,13 +389,16 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
 // ---- Plan B v0.5：任务退出钩子 + 待回收队列 ----
 
 /// 任务退出钩子槽（反转通知，`set_user_fault_exit` 同模式——sched 不依赖
-/// `内核` crate）。签名 `(pinned, code)`：pinned = Task 钉住的 Process ObjRef
-/// 地址（0 = 无）；code = 退出码（fault/kill 路径 0）。**在 cur 出 runqueue
-/// 之前、IRQ 屏蔽窗内调用**——钩子内唤醒/表操作与 syscall 主体同纪律。
-static mut EXIT_HOOK: Option<unsafe extern "C" fn(pinned: usize, code: i32)> = None;
+/// `内核` crate）。签名 `(pinned, thread_key, code)`：pinned = Task 钉住的
+/// Process ObjRef 地址（0 = 无）；thread_key = Task 钉住的 Thread ObjRef
+/// 地址（0 = 无——首线程/内核任务）；code = 退出码（fault/kill 路径 0）。
+/// **在 cur 出 runqueue 之前、IRQ 屏蔽窗内调用**——钩子内唤醒/表操作与
+/// syscall 主体同纪律。内核内部 C-ABI 槽（非用户 ABI——T-1 扩 thread_key）。
+static mut EXIT_HOOK: Option<unsafe extern "C" fn(pinned: usize, thread_key: usize, code: i32)> =
+    None;
 
 /// 注册任务退出钩子（`内核` crate 语义层 boot 期调用，见 `syscall::install`）。
-pub fn set_exit_hook(f: unsafe extern "C" fn(pinned: usize, code: i32)) {
+pub fn set_exit_hook(f: unsafe extern "C" fn(pinned: usize, thread_key: usize, code: i32)) {
     // SAFETY: boot 单线程注册；此后只读。
     unsafe { EXIT_HOOK = Some(f) };
 }
@@ -411,9 +425,10 @@ unsafe fn reapq_push(t: *mut Task) {
 /// 回收退出任务的 Task Box + 内核栈（16KiB/个）。调用面 = `idle_loop` 稳态与
 /// `yield_now` 切回后——**永不在被回收者自身上下文**。退出者已出 runqueue/
 /// SLEEPQ（REAPQ 两源：自退出 [`switch_away_forever_with`] 从 Running 态；
-/// C-4b `process_terminate` 经 [`kill_task_by_pinned`] 先摘队再钩子，从
-/// Blocked（SLEEPQ）/ Ready（RUNQUEUE）两态——见其头注）+ 钩子已清 pinned
-/// 引用，无悬挂指针。
+/// C-4b `process_terminate` / T-1 `process_exit` 经 [`kill_all_tasks_by_pinned`]
+/// 先摘队再钩子，从 Blocked（SLEEPQ）/ Ready（RUNQUEUE）两态——见其头注）+
+/// 钩子已平衡 pinned/thread_key 引用（retain/release 成对；字段残留数值随
+/// Box drop 无害）。
 /// drop 纯释放零分配；单核无并发（IRQ 上下文不碰分配器）。
 pub fn reap_drain() {
     // SAFETY: REAPQ 写点全在 IRQ 屏蔽退出路径；本读点单核顺序；drain 后清零。
@@ -430,12 +445,21 @@ pub fn reap_drain() {
     }
 }
 
-/// C-4b `process_terminate`：按钉住键（Process ObjRef 地址）杀**非当前**任务。
-/// 扫 SLEEPQ（Blocked）+ RUNQUEUE（Ready）找 `pinned` 匹配者，找到则走与
+/// C-4b `process_terminate` / T-1 `process_exit`：按钉住键（Process ObjRef
+/// 地址）杀**全部非当前**任务（terminate 的目标进程全部线程；process_exit
+/// 的兄弟线程——调用者随后经 `switch_away_forever_with` 自退）。逐个走与
 /// [`switch_away_forever_with`] 同一套收口（**不开第二退出面**）——区别仅在
-/// 目标不是 CURRENT：无切换位，收尾是 REAPQ 而非 `context_switch`。返回被杀
-/// 任务名（观测打印用）；`None` = 无任务持该键（未 start 的进程——调用方只做
-/// Process 侧收口）。
+/// 目标不是 CURRENT：无切换位，收尾是 REAPQ 而非 `context_switch`。返回
+/// `(首杀任务名, 总杀数)`（观测打印用）；`None` = 无任务持该键（未 start 的
+/// 进程——调用方只做 Process 侧收口）。**每任务走一次钩子**：末任务钩子完成
+/// Process 收口（mark_exited + 码 + TERMINATED + drain + release 运行钉住）
+/// ——terminate 不再做 started 路径的 Process 侧收口（防 drain 双跑/refs
+/// 打穿）。
+///
+/// **外层重扫循环（T-1）**：钩子内 `wake_matching(TERMINATED)` 会摘 SLEEPQ
+/// 匹配者入环（join 等待者被唤醒），不得持游标跨轮——每轮从 SLEEPQ 头 /
+/// RQ 头全新扫描，杀一个再重扫，直到两队列均无匹配者。n≤任务总数，O(n²)
+/// 无碍（terminate/process_exit 一次性路径）。
 ///
 /// **摘队先于退出钩子**（与 `switch_away_forever_with` 的钩子→dequeue 序相反，
 /// 有意为之）：钩子内 `wake_matching(TERMINATED)` 会摘 SLEEPQ 匹配者入环——
@@ -450,50 +474,86 @@ pub fn reap_drain() {
 /// 环泄漏同政策）；对象永活，无 UAF。
 ///
 /// # Safety
-/// IRQ 屏蔽窗内调用（syscall 主体天然满足）；单核——目标必不在 CPU 上
-/// （CURRENT 是调用者），只可能 Blocked（SLEEPQ）或 Ready（环上）或不存在。
-pub unsafe fn kill_task_by_pinned(pinned: usize, code: i32) -> Option<&'static [u8]> {
+/// IRQ 屏蔽窗内调用（syscall 主体天然满足）；零阻塞零让出（指针手术 + 钩子
+/// + REAPQ 压队——「handler 不得忙等跨任务」铁则不破）。RUNQUEUE 扫描**跳过
+/// CURRENT**（运行任务在环上且 pinned 匹配——process_exit 杀兄弟会命中自己：
+/// 杀 CURRENT = 在自家栈上把自己塞进 REAPQ 后继续跑；terminate 语义下
+/// CURRENT=调用者恒不匹配目标键，跳过是双保险）。SLEEPQ 无跳过面（CURRENT
+/// 是 Running 恒不在 SLEEPQ）。
+pub unsafe fn kill_all_tasks_by_pinned(
+    pinned: usize,
+    code: i32,
+) -> Option<(&'static [u8], usize)> {
     if pinned == 0 {
         return None; // 内核任务/boot 裸表进程无钉住键——无任务面可杀
     }
+    let mut first: Option<&'static [u8]> = None;
+    let mut count: usize = 0;
     unsafe {
-        // ① SLEEPQ 扫描（Blocked：wait_one/wait_many/纯 sleep 的目标）。
-        let mut cur = sleepq().head.get();
-        while let Some(c) = cur {
-            let t = c.as_ptr();
-            cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
-            if (*t).pinned == pinned {
+        loop {
+            // ① SLEEPQ 扫描（Blocked：wait_one/wait_many/纯 sleep 的目标）。
+            let mut hit: Option<core::ptr::NonNull<Task>> = None;
+            let mut cur = sleepq().head.get();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
+                if (*t).pinned == pinned {
+                    hit = Some(c);
+                    break;
+                }
+            }
+            if let Some(c) = hit {
+                let t = c.as_ptr();
+                let tk = (*t).thread_key;
                 sleepq().unlink(c); // 在队才摘（刚扫到——契约满足）
                 (*t).state = TaskState::Exited;
                 note_sleepq_changed(); // 睡眠者集合定型 → PI 全图重推（donor 边随离队消失）
                 if let Some(hook) = EXIT_HOOK {
-                    hook(pinned, code); // 同一套 Process 收口（Exited+码+唤醒+drain+release）
+                    hook(pinned, tk, code); // 同一套收口（线程簿记 + 末任务 Process 收口）
                 }
                 reapq_push(t);
-                return Some((*t).name);
+                if first.is_none() {
+                    first = Some((*t).name);
+                }
+                count += 1;
+                continue; // 重扫（钩子唤醒可能已搬动两队列）
             }
-        }
-        // ② RUNQUEUE 环扫描（Ready；CURRENT 是调用者——目标不在 Running）。
-        if let Some(h) = rq().head() {
-            let mut cur = h;
-            loop {
-                if (*cur.as_ptr()).pinned == pinned {
-                    RR.dequeue(&mut *cur.as_ptr(), rq()); // unlink（幂等）+ 置 Exited
-                    if let Some(hook) = EXIT_HOOK {
-                        hook(pinned, code);
+            // ② RUNQUEUE 环扫描（Ready；跳过 CURRENT——见 # Safety 注）。
+            let cur_task = CURRENT;
+            let mut hit: Option<core::ptr::NonNull<Task>> = None;
+            if let Some(h) = rq().head() {
+                let mut cur = h;
+                loop {
+                    let p = cur.as_ptr();
+                    if p != cur_task && (*p).pinned == pinned {
+                        hit = Some(cur);
+                        break;
                     }
-                    reapq_push(cur.as_ptr());
-                    return Some((*cur.as_ptr()).name);
-                }
-                // SAFETY: 环上节点必有 next（环形不变式）。
-                cur = (*cur.as_ptr()).rq_next.get().expect("ring node must have next");
-                if cur == h {
-                    break;
+                    // SAFETY: 环上节点必有 next（环形不变式）。
+                    cur = (*p).rq_next.get().expect("ring node must have next");
+                    if cur == h {
+                        break;
+                    }
                 }
             }
+            if let Some(c) = hit {
+                let t = c.as_ptr();
+                let tk = (*t).thread_key;
+                RR.dequeue(&mut *t, rq()); // unlink（幂等）+ 置 Exited
+                if let Some(hook) = EXIT_HOOK {
+                    hook(pinned, tk, code);
+                }
+                reapq_push(t);
+                if first.is_none() {
+                    first = Some((*t).name);
+                }
+                count += 1;
+                continue;
+            }
+            break; // 两队列均无匹配者——收工
         }
     }
-    None
+    first.map(|name| (name, count))
 }
 
 /// switches 金丝雀只读访问（watchdog / 遥测读；单核顺序）。

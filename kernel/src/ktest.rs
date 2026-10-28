@@ -30,12 +30,13 @@ pub fn run() {
 /// Step 9 信号 + G0 退出 #6 + **3-1 真 ABI 骨架**：从 EL1 发 `svc #0`（EC=0x15）
 /// → HAL dispatch → 语义层 handler（`kernel/src/syscall.rs`）→ 回写 x0、eret 续行。
 /// 用例：调试槽退役面（4-5a：0xFE/0xFF 随 console 服务落地回落 -ENOTSUP——
-/// EL0 输出改走 channel_send 真 IPC）；未知号 0x99 / 未实现真号 0x35 一律
-/// -ENOTSUP（3-1 政策：错误码自理、永不杀调用者）；clock_read（MONOTONIC）两次
-/// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）；
-/// 3-4a per-process 表拆分（G 段）：两表隔离 + take/insert_ref 迁移原语 + 子进程
-/// 出生自带空表；3-4b channel 三号（H 段）：非阻塞队列语义 + handle 随消息迁移
-/// 的原子序（「两进程交换一句消息」的 EL0 正向验收在 user_spawner/user_child）。
+/// EL0 输出改走 channel_send 真 IPC）；未知号 0x99 -ENOTSUP（3-1 政策：错误码
+/// 自理、永不杀调用者；**T-1 起在册 31 号全实现——「未实现真号」样本随 0x35
+/// 退役**）；clock_read（MONOTONIC）两次读单调；handle 三操作经 syscall 全链路
+/// 门控（close/duplicate + 旧值/坏 handle 拒）；3-4a per-process 表拆分（G 段）：
+/// 两表隔离 + take/insert_ref 迁移原语 + 子进程出生自带空表；3-4b channel 三号
+/// （H 段）：非阻塞队列语义 + handle 随消息迁移的原子序（「两进程交换一句消息」
+/// 的 EL0 正向验收在 user_spawner/user_child）；T-1 thread_start 门控面（F3b 段）。
 #[allow(clippy::result_unwrap_used)]
 fn test_syscall() {
     use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
@@ -53,16 +54,12 @@ fn test_syscall() {
     assert_eq!(svc4(0xFE, 0x5a, 0, 0), -95, "SYSCALL：0xFE 调试槽须已退役");
     assert_eq!(svc4(0xFF, 0x75, 0, 0), -95, "SYSCALL：0xFF 调试槽须已退役");
 
-    // B. 未知号（越界 0x99）与未实现真号（thread_start 0x35，v2 多线程面）
-    //    一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言
-    //    （3-2 起 0x11、3-4c 起 0x04/0x06/0x54、4-2b 起 0x05、Plan B 起 0x33/0x36
-    //    已实现——**勿再拿 0x33 当样本：已实现后会真退出杀掉 ktest**）。
+    // B. 未知号（越界 0x99）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的
+    //    EL1 侧正向断言。**「未实现真号」样本 0x35 已随 T-1 thread_start 实现
+    //    退役**（样本断言会打到真 handler）；亦勿拿不在册的 0x38/0x39 冒充——
+    //    其 -ENOTSUP 成因与未知号相同，「在册未实现」覆盖点不存在；v2 新号
+    //    入册时若暂未实现，再立新样本（勿拿已实现号 0x33——会真退出杀 ktest）。
     assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
-    assert_eq!(
-        svc4(0x35, 0, 0, 0),
-        -95,
-        "SYSCALL：未实现真号须 -ENOTSUP"
-    );
 
     // C. clock_read：MONOTONIC 两次读单调递增；非法 id -ENOTSUP。
     // SAFETY: svc 同步异常；OUT 为本函数私有静态。
@@ -526,7 +523,7 @@ fn test_syscall() {
     // F. 3-3 process/thread：对象面 + 错误面（ktest 在 berry_sched::init 之前跑，
     //    process_start 成功路径会 spawn → 不能在此验——happy path 由 EL0
     //    `user_spawner` 承担，watchdog 错杀断言兜底）。
-    use crate::syscall::{NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE};
+    use crate::syscall::{NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_START};
     // F0. process_create 双出参：process + root Vmar 两 handle 均非零。
     // SAFETY: 同上（OUT/CHILD_OUT 为本函数私有静态）。
     unsafe { OUT = 0; CHILD_OUT = 0 };
@@ -595,6 +592,59 @@ fn test_syscall() {
         svc6(NR_PROCESS_START as u64, hp as u64, hth as u64, 0x1000, 0x4001, 0, 0),
         -22,
         "SYSCALL：process_start sp 未 16 对齐须 -EINVAL"
+    );
+
+    // F3b. thread_start 门控面（T-1 0x35 四参）：与 process_start 同校验序的
+    //      错误臂——ktest 在 berry_sched::init 之前跑，成功路径会 spawn
+    //      （不可测，交 EL0 运行期自验）。坏 handle / 对 Vmar → -EBADF；
+    //      entry=0 / sp 未 16 对齐 → -EINVAL（检在 handle 门控之前，F3 同序）；
+    //      缺 MANAGE（dup 出 DUPLICATE-only 别名——零权利 dup 拒面绕行，F4d
+    //      同款）→ -EACCES；所属进程未 start → -EBADSTATE（首线程必须经
+    //      process_start——thread_start 只管进程内造线程）。
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, 0xDEAD_BEEF, 0x1000, 0x4000, 0, 0, 0),
+        -9,
+        "SYSCALL：thread_start 坏 handle 须 -EBADF"
+    );
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hv2 as u64, 0x1000, 0x4000, 0, 0, 0),
+        -9,
+        "SYSCALL：thread_start 对 Vmar 须 -EBADF（类型门控）"
+    );
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hth as u64, 0, 0x4000, 0, 0, 0),
+        -22,
+        "SYSCALL：thread_start entry=0 须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hth as u64, 0x1000, 0x4001, 0, 0, 0),
+        -22,
+        "SYSCALL：thread_start sp 未 16 对齐须 -EINVAL"
+    );
+    // SAFETY: OUT 复用 F 段纪律（预清）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hth as u64,
+            crate::handle::RIGHT_DUPLICATE as u64,
+            &raw mut OUT as u64
+        ),
+        0,
+        "SYSCALL：thread_start 前置——dup DUPLICATE-only 别名"
+    );
+    let hthr = unsafe { OUT } as u32;
+    assert_ne!(hthr, 0, "SYSCALL：dup 别名须回填");
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hthr as u64, 0x1000, 0x4000, 0, 0, 0),
+        -13,
+        "SYSCALL：thread_start 缺 MANAGE 须 -EACCES"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hthr as u64, 0, 0), 0, "SYSCALL：close 别名");
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hth as u64, 0x1000, 0x4000, 0, 0, 0),
+        -37,
+        "SYSCALL：thread_start 未 start 进程须 -EBADSTATE"
     );
 
     // F4. 归属面：ht 属 proc(hp)，拿 hp2 的 handle 去 start → -EACCES（参数面
@@ -694,7 +744,7 @@ fn test_syscall() {
         "SYSCALL：terminate 缺 MANAGE 须 -EACCES"
     );
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2r as u64, 0, 0), 0, "SYSCALL：close 别名");
-    // 成功终止（未 start——kill_task_by_pinned 扫不到任务，走 Process 侧收口）。
+    // 成功终止（未 start——kill_all_tasks_by_pinned 扫不到任务，走 Process 侧收口）。
     assert_eq!(
         svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2 as u64, 42, 0),
         0,
@@ -809,7 +859,7 @@ fn test_syscall() {
     static mut HBUF: [u8; 320] = [0; 320]; // send 源 / recv 目的（超限值只作参数不拷）
     static mut H_NB: u64 = 0; // *nbytes in-out（进 = 容量、出 = 实际）
     static mut H_NH: u64 = 0; // *nhandles in-out
-    static mut H_HND: [u32; 4] = [0; 4]; // 随行 handle 数组（u32 × CHAN_HND_MAX）
+    static mut H_HND: [u32; 6] = [0; 6]; // 随行 handle 数组（u32 × CHAN_HND_MAX——T-1 4→6 同步）
 
     // H0. create：两端 handle 均非零互异；rights 面 SEND|RECV 可门控查得。
     // SAFETY: svc 同步异常；H 系列静态均本函数私有。
@@ -848,7 +898,7 @@ fn test_syscall() {
         "SYSCALL：channel_send（无随行 handle）"
     );
     // SAFETY: 同上。
-    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 4; H_HND = [0; 4] };
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 6; H_HND = [0; 6] };
     assert_eq!(
         svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
              &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
@@ -879,7 +929,7 @@ fn test_syscall() {
     );
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 0,
-             &raw const H_HND as u64, 5, 0),
+             &raw const H_HND as u64, 7, 0),
         -22,
         "SYSCALL：nhandles 超限须 -EINVAL"
     );
@@ -956,7 +1006,7 @@ fn test_syscall() {
         .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hsrc");
     // SAFETY: 同上。
-    unsafe { H_HND = [hsrc, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
+    unsafe { H_HND = [hsrc, 0, 0, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 1, 0),
@@ -969,7 +1019,7 @@ fn test_syscall() {
         "SYSCALL：迁移后原值须 -EBADF（发送方失去）"
     );
     // SAFETY: 同上。
-    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 4; H_HND = [0; 4] };
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 6; H_HND = [0; 6] };
     assert_eq!(
         svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
              &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
@@ -996,7 +1046,7 @@ fn test_syscall() {
         .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hgd");
     // SAFETY: 同上。
-    unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0] };
+    unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0, 0, 0] };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 2, 0),
@@ -1008,7 +1058,7 @@ fn test_syscall() {
         "SYSCALL：原子序——同批好 handle 须原值仍活"
     );
     // SAFETY: 同上。
-    unsafe { H_HND = [hgd, hgd, 0, 0] };
+    unsafe { H_HND = [hgd, hgd, 0, 0, 0, 0] };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 2, 0),

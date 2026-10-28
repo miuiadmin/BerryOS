@@ -26,10 +26,16 @@ use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
 static mut CONSOLE_H: u32 = 0;
 static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随后开）
-// A-2/P6：env 块 gift[2..] 双槽——[0] = rootfs VMO READ dup（bsh）、
-// [1] = P6 A-1 第三/四位（fsmgr 得服务端端 `gift2_h()`、bsh 得 fs 客户
-// 端端 `fs_h()`——同槽两位经 spawn 侧的 gift 排布区分，见 berry-exec 注）。
-static mut GIFT_H: [u32; 2] = [0; 2];
+// A-2/P6：env 块 extras 双槽（gift[4..] 位）——extras[0] = rootfs VMO
+// READ dup（bsh）或 P6 A-1 第三/四位（fsmgr 得服务端端 `gift2_h()`、bsh
+// 得 fs 客户端端 `fs_h()`——同槽两位经 spawn 侧的 gift 排布区分，见
+// berry-exec 注）。
+// T-1 自描述对占固定位 gift[2]/[3]（前缀紧致律——自描述对前移、extras
+// 后挪，产侧 extra<2 不再中段留 0 洞）：GIFT_H[2] = self_proc MANAGE|
+// DUPLICATE dup（`self_proc_h()`——pthread_create 的 thread_create 面）、
+// GIFT_H[3] = self_vmar MAP|MANAGE|DUPLICATE dup（`self_vmar_h()`——
+// 子线程栈映射/回收面）。
+static mut GIFT_H: [u32; 4] = [0; 4];
 static mut STACK_TOP: usize = 0;
 
 // —— argv 面（d-3a env 块）：静态落位（名区 256B + 16 槽 + NULL 终结）——
@@ -58,11 +64,15 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         stdout = ptr::addr_of_mut!(STDOUT_FILE);
         let mut blob = [0u8; 256];
         let mut nb = blob.len();
-        // A-2：容量 2→3；P6 A-1：3→4——gift 位语义 [0]=console 发端别名、
-        // [1]=stdin 端、[2]=rootfs VMO READ dup 或 fsmgr 端、[3]=fs 客户端
-        // 端（按 spawn 侧排布区分，落 `GIFT_H` 双槽；svcmgr 系老程序照送
-        // 1-2 位，按实收 nhandles 落种，向后兼容）。
-        let mut hs = [0u32; 4];
+        // A-2：容量 2→3；P6 A-1：3→4；T-1：4→6。前缀紧致律布局（与
+        // berry-exec 产侧对偶）：[0]=console 发端别名、[1]=stdin 端、
+        // [2]/[3]=T-1 自描述对（self_proc/self_vmar——spawn 侧条件装配，
+        // 老调用面不送则位缺 0，`self_proc_h()==0` 即 pthread_create 的
+        // EAGAIN 守门）、[4..]=extras（rootfs VMO READ dup 或 fsmgr 端 +
+        // fs/blk 客户端端，按 spawn 侧排布区分，落 `GIFT_H` 双槽）。nh
+        // 取值域 = {1（无 stdin 老面）, 4..=6（stdin → 自描述对必随行）}
+        // ——nhandles 单调门控 presence，按实收落种向后兼容。
+        let mut hs = [0u32; 6];
         let mut nh = hs.len();
         if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0 {
             return 0;
@@ -74,10 +84,16 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
             STDIN_H = hs[1];
         }
         if nh >= 3 {
-            GIFT_H[0] = hs[2];
+            GIFT_H[2] = hs[2];
         }
         if nh >= 4 {
-            GIFT_H[1] = hs[3];
+            GIFT_H[3] = hs[3];
+        }
+        if nh >= 5 {
+            GIFT_H[0] = hs[4];
+        }
+        if nh >= 6 {
+            GIFT_H[1] = hs[5];
         }
         // argv 解析：NUL 分隔字节串逐个拷进名区、记指针。
         let (mut argc, mut i, mut o) = (0usize, 0usize, 0usize);
@@ -154,33 +170,33 @@ pub fn stdin_h() -> u32 {
     unsafe { STDIN_H }
 }
 
-/// env 块 gift[2] 的 rootfs VMO handle（A-2：0 = 无第三位——svcmgr 系老
-/// 程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
+/// env 块 extras[0]（gift[4] 位）的 rootfs VMO handle（A-2：0 = 未交付——
+/// svcmgr 系老程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
 pub fn rootfs_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[0] }
 }
 
-/// env 块 gift[2] 的同槽访问器（P6 A-1：fsmgr 的 fs 服务端端——svcmgr 建
-/// fs 对后经 env 块第三位交付；0 = 未交付 = park 挂起）。与 [`rootfs_h`]
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（P6 A-1：fsmgr 的 fs 服务端端——svcmgr 建
+/// fs 对后经 env 块 extras 首位交付；0 = 未交付 = park 挂起）。与 [`rootfs_h`]
 /// 同槽不同名：spawn 侧同一 gift 位对两种程序承载不同对象。
 pub fn gift2_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[0] }
 }
 
-/// env 块 gift[3] 的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
-/// RPC；0 = 无第四位 = fs 未拉起，调用方降级「fs not available」不死）。
+/// env 块 extras[1]（gift[5] 位）的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
+/// RPC；0 = 未交付 = fs 未拉起，调用方降级「fs not available」不死）。
 pub fn fs_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[1] }
 }
 
-/// env 块 gift[3] 的同槽访问器（P6 A-5：fsmgr 的块设备服务端——svcmgr
-/// 预拉 vblk 后把 blk_a 经 fsmgr 的 env 块第四位交付，fsmgr 据此读 FAT
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（P6 A-5：fsmgr 的块设备服务端——svcmgr
+/// 预拉 vblk 后把 blk_a 经 fsmgr 的 env 块 extras 次位交付，fsmgr 据此读 FAT
 /// 卷；0 = 未交付 = 无 FAT 层，RAM-only 降级续走）。与 [`fs_h`] 同槽不同
 /// 名：spawn 侧同一 gift 位对两种程序承载不同对象（bsh 拿 fs 端 / fsmgr
-/// 拿 blk 端，每进程 env 块独立无冲突——gift[2] 的 rootfs/gift2 同款惯例）。
+/// 拿 blk 端，每进程 env 块独立无冲突——extras[0] 的 rootfs/gift2 同款惯例）。
 pub fn blk_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[1] }
@@ -188,6 +204,23 @@ pub fn blk_h() -> u32 {
 
 pub fn stack_top() -> usize {
     unsafe { STACK_TOP }
+}
+
+// —— T-1 自描述对访问器（pthread.rs 消费）——
+
+/// env 块 gift[2] 的**自身 Process** handle（MANAGE|DUPLICATE dup——
+/// `pthread_create` 经它 `thread_create` 拉兄弟线程）。0 = 未交付（老
+/// spawn 面）= `pthread_create` 返 EAGAIN（std Builder::spawn 走 Err）。
+pub fn self_proc_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[2] }
+}
+
+/// env 块 gift[3] 的**自身 root Vmar** handle（MAP|MANAGE|DUPLICATE dup
+/// ——子线程栈 `vmar_map`/join `vmar_unmap` 面）。0 = 未交付，同 EAGAIN 守门。
+pub fn self_vmar_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[3] }
 }
 
 /// console 发送：分片 + EBUSY 阻塞等 WRITABLE（见模块头契约，A-2 修订）。

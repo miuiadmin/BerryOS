@@ -23,10 +23,12 @@ default: run
 # + 各 bin 自带链接脚本（build.rs 绝对路径注入）——**免 nightly**（custom target
 # 推迟到确需 target 级差异再上，草案 D1 修订）。elf2flat.py 解 PT_LOAD 出平像
 # 并补零到页（.bss 覆盖在文件侧兑现）。两遍构建（G-eco-b）：pass 1 先产
-# echo/talker 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes! 内嵌
-# （单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序 4096
-# （2 页映射 [0x1000,0x3000) 里首页装镜像、次页是栈——越页即吃栈）；
-# svcmgr 65536 = UserProcess::build 的 D3 帽。内核侧产物 kernel/src/userbins/
+# echo/talker/thrchild 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes!
+# 内嵌（单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序
+# 4096（2 页映射 [0x1000,0x3000) 里首页装镜像、次页是栈——越页即吃栈）；
+# svcmgr 65536 = UserProcess::build 的 D3 帽；T-1 thrchild 16384（4 页墙
+# ——t2 栈 2048B 内嵌 .bss 与代码共页，平像恰 1 页；镜像最大 4 页时 svcmgr
+# 映射窗 [0x1000,0x7000) 的主栈区仍余 2 页）。内核侧产物 kernel/src/userbins/
 # *.bin gitignored：缺产物 = 内核 include_bytes 编译期炸响（loud not
 # silent），故 build/check/run-release/size-release 都依赖本配方。
 # CARGO_TARGET_DIR 显式钉 user/cargo-target：防交互环境（全局 target-dir
@@ -38,7 +40,7 @@ build-user:
     # 的是旧 bsh——「缺产物编译期炸响」的 D6 纪律只护了内核侧，这边失守）。
     set -e
     cd user
-    CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker
+    CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker -p thrchild
     mkdir -p userbins ../kernel/src/userbins
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/echo \
@@ -46,6 +48,11 @@ build-user:
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/talker \
         userbins/talker.bin --max 4096
+    # T-1 §2：thrchild（进程内双线程自验子——bootstrap 自句柄经 process_start
+    # x0 递入；pass 1 平像 + svcmgr include_bytes 内嵌，零 rootfs 新条目）。
+    python3 ../tools/elf2flat.py \
+        cargo-target/aarch64-unknown-none/release/thrchild \
+        userbins/thrchild.bin --max 16384
     CARGO_TARGET_DIR=cargo-target cargo build --release
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/abuser \
@@ -226,6 +233,12 @@ build-user:
         bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe \
         bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc \
         bin/which=cargo-target/aarch64-unknown-linux-musl/release/which
+    # T-1 §1：TLS lint FAIL 门（挂 mkcpio 后——smoke/check/run 全经
+    # build-user = CI 自然被护）。F1 放置可行性 = crt0::tls_place 的
+    # python 镜像（FAIL ⟺ 运行期 brk #0x7C1 会炸，无任意阈值）；F2
+    # .tdata 自指针（拷贝式迁移后 = 悬垂直址）。CAP/算术 python↔rust
+    # 双份同源义务，见 tools/tlsscan.py 头注。
+    python3 ../tools/tlsscan.py --check ../rootfs.cpio
 
 build: abi-check build-user
     cargo build
@@ -359,6 +372,12 @@ test-host:
     # 纯函数面——fd 表状态机/cwd 拼接/seek 游标数学/stat 整形/dirent
     # 解码/ST→FsErr 映射，host 19 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-fsclient --target {{host}}
+    # T-1 §1：berry-tls host 测（TLS 拷贝式纯函数面——tls_place 放置算术/
+    # 拒绝面 + find_ptls 合成 mini-ehdr 补读 p_align@0x30 + 模板四全局；
+    # 与 tools/tlsscan.py python 镜像同向量共识钉板。独立纯 crate 形态
+    # （§6 回退）：berry-libc 的 libc 同名符号在 host 测试二进制里对
+    # libSystem write 符号插入劫自旋，纯面外迁后 host 测试零 libc 面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-tls --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
     python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin
@@ -398,6 +417,11 @@ test-host:
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
+    # T-1 §1：tlsscan 门禁自检（tls_place python 镜像 + F1/F2 全链 + cpio/
+    # .bap 递归；mkfat --selftest 同位先例）+ census 审计（恒绿——拷贝式
+    # 后 .tbss∩文件字节无害只配审计；rootfs.cpio 缺席打跳过不 FAIL）。
+    python3 tools/tlsscan.py --selftest
+    python3 tools/tlsscan.py --audit
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

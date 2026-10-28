@@ -5,8 +5,9 @@
 //! - `neg!`：返 -1 + 置 errno（errno 取值跟 C 族语义：路径族 ENOENT、
 //!   桩族 ENOSYS、fd 族 EBADF……）；
 //! - `ok!`：成功谎报（无竞争锁族/特权空转/信号安装）；
-//! - 少数签名敏感的（mmap/environ/posix_spawnp/getaddrinfo/pthread key 族）
-//!   手写。
+//! - 少数签名敏感的（mmap/environ/posix_spawnp/getaddrinfo）手写——
+//!   T-1 起 syscall/futex、sem、pthread key/生命周期族迁 `futex.rs`/
+//!   `pthread.rs` 真身，此处只剩 attr getter 三桩。
 //!
 //! 返回宽度纪律：int 族 `-> c_int`、ssize 族 `-> isize`、指针族 `-> *mut T`。
 
@@ -289,11 +290,7 @@ ok!(
     pthread_rwlock_rdlock,
     pthread_rwlock_wrlock,
     pthread_rwlock_unlock,
-    pthread_detach,
     pthread_setname_np,
-    pthread_attr_init,
-    pthread_attr_destroy,
-    pthread_attr_setstacksize,
     posix_spawn_file_actions_init,
     posix_spawn_file_actions_addchdir_np,
     posix_spawn_file_actions_adddup2,
@@ -311,12 +308,8 @@ ok!(
 
 // —— 手写面（签名/返回语义敏感）——
 
-/// 变参真号槽（std 无竞争快路径 CAS 不经此；is_terminal 的 ioctl 落此 → -ENOSYS）。
-#[no_mangle]
-pub extern "C" fn syscall() -> isize {
-    crate::set_errno(crate::ENOSYS);
-    -1
-}
+// T-1：`syscall` 变参真号槽已迁 `futex.rs`（SYS_futex(98) 拦截 + 7 参定形；
+// nr≠98 保持 set_errno(ENOSYS)+-1 零漂移）。
 
 /// 附录 A「引用点待实证」：v1 ENOMEM 拒绝——若首跑证明在启动关键路径再调档。
 #[no_mangle]
@@ -667,56 +660,10 @@ pub extern "C" fn access(path: *const c_char, _mode: c_int) -> c_int {
     unsafe { crate::fs::stat(path, &mut st) }
 }
 
-// sem 三件 —— ctrlc 3.5.2 UNIX 信号机（uu_sort tmp_dir 的 SIGINT 清场装
-// 配链）：set_handler 先 sigaction 注册 os_handler（ok! 桩成功）再 spawn
-// 专属线程跑 sem_wait_forever——**v1 运行时不可达**（std 线程经
-// pthread_create 桩返 EAGAIN → set_handler Err → uu_sort 侧 `let _ =`
-// 吸掉，排序照常；sem_post 只在真信号处发，v1 无信号面）。桩面纪律 =
-// 不越界、不阻塞：musl b64 sem_t = [i32;8]（32B），计数位在偏移 0；
-// wait 空计数返 EAGAIN（单线程无等待者模型——真阻塞在无信号面等于挂
-// 死），post 自增返 0。
-
-#[no_mangle]
-pub extern "C" fn sem_init(sem: *mut c_void, _pshared: c_int, value: c_int) -> c_int {
-    unsafe {
-        if !sem.is_null() {
-            core::ptr::write_bytes(sem as *mut u8, 0, 32);
-            (sem as *mut i32).write(value);
-        }
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn sem_wait(sem: *mut c_void) -> c_int {
-    unsafe {
-        let s = sem as *mut i32;
-        if sem.is_null() {
-            crate::set_errno(crate::EINVAL);
-            return -1;
-        }
-        if *s > 0 {
-            *s -= 1;
-            0
-        } else {
-            crate::set_errno(crate::EAGAIN);
-            -1
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn sem_post(sem: *mut c_void) -> c_int {
-    unsafe {
-        if sem.is_null() {
-            crate::set_errno(crate::EINVAL);
-            return -1;
-        }
-        let s = sem as *mut i32;
-        *s += 1;
-        0
-    }
-}
+// sem 三件 —— T-1 已迁 `pthread.rs` 真身（ctrlc 后台线程经 pthread_create
+// 真跑后 sem_wait_forever **运行时可达**：计数 ≤0 → futex 真睡——v1 无信号
+// 面 = 永睡无害；旧 EAGAIN 桩的热自旋（每轮醒-退-再 spawn）是其反面教训，
+// 与 pthread 真身同刀落地是纪律）。
 
 // getcwd（刀 2 起迁 fs.rs 真实现——cwd 字符串 + render_cwd/ERANGE 面）。
 
@@ -834,70 +781,12 @@ pub extern "C" fn gai_strerror(_code: c_int) -> *const c_char {
     s.as_ptr() as *const c_char
 }
 
-// —— pthread key/specific（单线程真存取——std 的 TLS 析构注册面）——
+// —— pthread key/specific + 身份/生命周期：T-1 已迁 `pthread.rs` 真身 ——
+// （key 三件 per-thread 化（specific 入 struct pthread + PKEY_DTOR 进程级
+// futex 锁）；self/create/join/detach/attr 三件 = 栈 VMO + 蹦床 TLS 装配 +
+// join TERMINATED 信号面。旧「单线程真存取」PKEY_VALS 全局数组随之退役。）
 
-const PKEYS: usize = 64;
-static mut PKEY_N: u32 = 0;
-static mut PKEY_VALS: [u64; PKEYS] = [0; PKEYS];
-
-#[no_mangle]
-pub extern "C" fn pthread_key_create(
-    key: *mut u32,
-    _dtor: extern "C" fn(*mut c_void),
-) -> c_int {
-    unsafe {
-        if PKEY_N as usize >= PKEYS {
-            return crate::EAGAIN;
-        }
-        PKEY_N += 1;
-        *key = PKEY_N; // 从 1 起
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_key_delete(_key: u32) -> c_int {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_setspecific(key: u32, val: *const c_void) -> c_int {
-    unsafe {
-        if (key as usize) < PKEYS {
-            PKEY_VALS[key as usize] = val as u64;
-        }
-    }
-    0
-}
-
-/// 弱面顺手件（附录 A weak 24 有真消费者）。
-#[no_mangle]
-pub extern "C" fn pthread_getspecific(key: u32) -> *mut c_void {
-    unsafe {
-        if (key as usize) < PKEYS {
-            PKEY_VALS[key as usize] as *mut c_void
-        } else {
-            ptr::null_mut()
-        }
-    }
-}
-
-// —— pthread 身份/attr ——
-
-#[no_mangle]
-pub extern "C" fn pthread_self() -> u64 {
-    1 // 单线程：恒定非零伪 id（join/attr 面不真消费）
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_create() -> c_int {
-    crate::EAGAIN // 谎报成功 = 调用方 join 幻影线程；EAGAIN 让 std 报错
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_join() -> c_int {
-    crate::ESRCH
-}
+// —— pthread 身份/attr（保留面）——
 
 #[no_mangle]
 pub extern "C" fn pthread_getattr_np() -> c_int {

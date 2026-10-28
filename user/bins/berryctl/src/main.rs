@@ -87,7 +87,7 @@ fn main() {
     let nb;
     loop {
         let mut n = rep.len();
-        let mut hh = [0 as Handle; 4];
+        let mut hh = [0 as Handle; 6];
         let mut nh = hh.len();
         let s = berry_channel_recv(h, rep.as_mut_ptr(), &mut n, hh.as_mut_ptr(), &mut nh);
         if s == 0 {

@@ -814,7 +814,7 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
     // 一只缓冲两面按 op 出长度：DNS 应答 5B 前缀 / TCP ROUNDTRIP 应答
     // [st][dlen][data≤128] = TCP_REP_MAX 130B。
     let mut rep = [0u8; ndp::TCP_REP_MAX];
-    let mut hs = [0 as Handle; 4];
+    let mut hs = [0 as Handle; 6]; // 随行收口容量 = CHAN_HND_MAX（T-1 4→6；协议 0/富余丢弃）
     // TCP 单会话独占（草案 §8）：None = 无会话；OPEN 建 / CLOSE 弃——
     // selftest 与本服务同一 Sess 驱动（「不长第二套」）。
     let mut sess: Option<tcp::Sess> = None;

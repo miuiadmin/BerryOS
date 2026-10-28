@@ -21,11 +21,13 @@
 
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_handle_duplicate, berry_object_wait_one, berry_process_create, berry_process_start,
-    berry_thread_create, berry_vmar_map, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
-    berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_WRITABLE,
+    berry_handle_duplicate, berry_object_wait_one, berry_process_create,
+    berry_process_get_exit_code, berry_process_start, berry_thread_create, berry_vmar_map,
+    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
+    berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
+    CLOCK_MONOTONIC, RIGHT_DUPLICATE,
+    RIGHT_MANAGE, RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE,
+    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 // A-2：拉起链换轨 berry-exec（「不长第二套」——spawn_rootfs_elf/channel_pair
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
@@ -46,6 +48,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
 /// talker 镜像。
 const TALKER_BIN: &[u8] = include_bytes!("../../../userbins/talker.bin");
+/// T-1 §2：thrchild 镜像（进程内双线程自验子——echo/talker 同产链 pass 1
+/// 平像内嵌，零 rootfs 新条目 = 裸跑/EFI 路天然同面）。
+const THRCHILD_BIN: &[u8] = include_bytes!("../../../userbins/thrchild.bin");
 /// hexyl 终验基准（d-3c）：上游 0.17.0（`user/bins/hexyl` 逐字内嵌）在
 /// 宿主以 `--color=never` 管道跑同样 256B 输入的**逐字节输出快照**（版本随
 /// Cargo.toml 钉死——升版须重产此文件，比对不等即 FAIL 是故意的）。
@@ -121,6 +126,14 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // ---- C-3 段②：berryctl v0 自验（`BC ok`）——ver/ps/mem 三子命令
     // 全跑通（psproto 三 op 服务面 + 渲染行断言）。裸跑档缺静默跳过。----
     bc_selftest(console);
+
+    // ---- T-1 §2：进程内多线程消费面自验（`THR ok`，rootfs 相第 36 标记）
+    // ——thrchild 内嵌镜像，bootstrap 自句柄形态（dup(hp, MANAGE|DUPLICATE)
+    // 经 process_start x0 递入子表），父侧等 Process TERMINATED + 真码 7。
+    // 镜像内嵌零 rootfs 依赖 = 裸跑/EFI 路同打；链内坏面 = eco 降级行 +
+    // 标记缺失（smoke FAIL 兜底）；账本不入册（hexyl 同例——PS ok n= 零
+    // 漂移）。----
+    thr_selftest(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
     let v = [b'v'];
@@ -973,7 +986,7 @@ fn ps_selftest(console: Handle) {
             stdin_feed: Some(&[]), // gift[1] 占位（立即 EOF；uu_run 同款）
             stdin_handle: None,
             args: &[],
-            extra_gifts: &[ps_b], // 单元素 → env 块 gift[2]
+            extra_gifts: &[ps_b], // 单元素 → env 块 extras[0]（gift[4] 位）
             mmio_vmo: None,
         },
     ) {
@@ -995,7 +1008,7 @@ fn ps_selftest(console: Handle) {
     // 顺序走到此处才服务，慢而活着不误杀（U1_EOF_CAP 同档）。
     const PS_CAP_NS: u64 = 30 * 1_000_000_000;
     let mut msg = [0u8; 256];
-    let mut hh = [0 as Handle; 4];
+    let mut hh = [0 as Handle; 6];
     let mut nb = msg.len();
     let mut nh = hh.len();
     let req_ok = loop {
@@ -1049,7 +1062,7 @@ fn ps_selftest(console: Handle) {
     let mut eof = false;
     while !eof {
         let mut m2 = [0u8; 256];
-        let mut h2 = [0 as Handle; 4];
+        let mut h2 = [0 as Handle; 6];
         let mut nb2 = m2.len();
         let mut nh2 = h2.len();
         let s = berry_channel_recv(out_s, m2.as_mut_ptr(), &mut nb2, h2.as_mut_ptr(), &mut nh2);
@@ -1235,7 +1248,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
             stdin_feed: Some(&[]), // gift[1] 占位（立即 EOF；uu_run 同款）
             stdin_handle: None,
             args: &[sub],
-            extra_gifts: &[q_b], // 单元素 → env 块 gift[2]
+            extra_gifts: &[q_b], // 单元素 → env 块 extras[0]（gift[4] 位）
             mmio_vmo: None,
         },
     ) {
@@ -1257,7 +1270,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
     // 顺序走到此处才服务，慢而活着不误杀（PS_CAP_NS 同档）。
     const BC_CAP_NS: u64 = 30 * 1_000_000_000;
     let mut msg = [0u8; 256];
-    let mut hh = [0 as Handle; 4];
+    let mut hh = [0 as Handle; 6];
     let mut nb = msg.len();
     let mut nh = hh.len();
     let op = loop {
@@ -1312,7 +1325,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
     let mut eof = false;
     while !eof {
         let mut m2 = [0u8; 256];
-        let mut h2 = [0 as Handle; 4];
+        let mut h2 = [0 as Handle; 6];
         let mut nb2 = m2.len();
         let mut nh2 = h2.len();
         let s = berry_channel_recv(out_s, m2.as_mut_ptr(), &mut nb2, h2.as_mut_ptr(), &mut nh2);
@@ -1434,6 +1447,133 @@ fn bc_selftest(console: Handle) {
     }
     // ③ 标记。
     send_retry(console, b"BC ok\n".as_ptr(), 6);
+}
+
+// ---- T-1 §2：进程内多线程消费面（`THR ok`） ----
+
+/// thrchild 布局：平像恰 1 页（代码/只读 + .bss 内嵌 2048B 次线程栈共页
+/// ——8192 栈版平像 3 页会把 svcmgr 内嵌总量顶破 64KiB `USER_CODE_MAX`，
+/// 见 thrchild link-user.ld 头注），映射加宽 [0x1000,0x7000)——余 5 页
+/// 零页作主线程栈（spawn_child 的 2 页形态放大版；镜像越不过 0x5000 =
+/// elf2flat --max 16384 执法，主栈区最劣仍余 2 页）。主 sp0 = 映射窗顶
+/// （CHILD_SP=0x3000 同口径）。
+const THR_MAP_LEN: usize = 0x6000;
+const THR_ENTRY: usize = 0x1000;
+const THR_SP: usize = 0x7000;
+/// 期望退出码：五步链全过 = 7；任何步失败 = 9（thrchild src/main.rs 头注）。
+const THR_OK_CODE: i32 = 7;
+/// join 应答帽 30s：TCG 下 spawn→跑→收口「慢而活」不误杀（M3DEMO cp 步
+/// ≈17s 定标同口径）；超帽 = 降级行 + 标记缺失 = smoke FAIL，不重发。
+const THR_CAP_NS: u64 = 30 * 1_000_000_000;
+/// T-1 §2 标记（7 字节；rootfs 相第 36 标记，EFI 路 ECO 同面）。
+const THR_OK: &[u8; 7] = b"THR ok\n";
+
+/// T-1 §2 自验：拉起 thrchild（进程内 thread_create/thread_start/join/
+/// 复启拒面/末线程收口五步链，见其 src/main.rs 头注）——bootstrap 自句柄
+/// 是关键形态：process_start 的 bootstrap 迁移面首次承载 **Process 本体**
+/// （dup 裁权 MANAGE|DUPLICATE——子内 thread_create(self) 的门控来源），
+/// x0 即子表新值。父侧等 TERMINATED → get_exit_code：7 打 `THR ok`，错码
+/// 打 `eco: thr exit <n>`（数字形态超 eco_note 18B 帽，单建行）。
+fn thr_selftest(console: Handle) {
+    let mut hp = 0 as Handle;
+    let mut hv = 0 as Handle;
+    if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
+        eco_note(console, b"thr create");
+        return;
+    }
+    let mut vmo = 0 as Handle;
+    if berry_vmo_create(THR_MAP_LEN as u64, 0, &mut vmo) != 0 || vmo == 0 {
+        eco_note(console, b"thr vmo");
+        return;
+    }
+    if berry_vmo_commit(vmo, 0, THR_MAP_LEN as u64) != 0
+        || berry_vmo_write(vmo, THRCHILD_BIN.as_ptr(), 0, THRCHILD_BIN.len()) != 0
+    {
+        eco_note(console, b"thr vw");
+        return;
+    }
+    let mut vaddr: usize = THR_ENTRY; // 映射基址提示（in-out 槽预写）
+    if berry_vmar_map(hv, 0, vmo, 0, &mut vaddr, THR_MAP_LEN, RIGHT_READ | RIGHT_WRITE) != 0 {
+        eco_note(console, b"thr map");
+        return;
+    }
+    let mut ht = 0 as Handle;
+    if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
+        eco_note(console, b"thr tc");
+        return;
+    }
+    // bootstrap 自句柄：dup 只紧不松，子拿到的是裁权副本（本表 hp 本体不动
+    // ——wait/get_exit_code 仍走全权原件）。
+    let mut boot: Handle = 0;
+    if berry_handle_duplicate(hp, RIGHT_MANAGE | RIGHT_DUPLICATE, &mut boot) != 0 || boot == 0 {
+        eco_note(console, b"thr dup");
+        return;
+    }
+    if berry_process_start(hp, ht, THR_ENTRY, THR_SP, boot) != 0 {
+        eco_note(console, b"thr start");
+        return;
+    }
+    if berry_handle_close(boot) != BERRY_ERR_BAD_HANDLE {
+        trap(); // 迁移自证：原值必须已作废（spawn_child 同款铁证）
+    }
+    // join：wait 不需权利位；绝对帽 30s。
+    let mut obs = 0u64;
+    if berry_object_wait_one(hp, SIGNAL_TERMINATED, now() + THR_CAP_NS, &mut obs) != 0
+        || obs != SIGNAL_TERMINATED
+    {
+        eco_note(console, b"thr join");
+        return;
+    }
+    let mut code: i32 = 0;
+    if berry_process_get_exit_code(hp, &mut code) != 0 {
+        eco_note(console, b"thr code");
+        return;
+    }
+    // 收口回收（berry-exec `ChildHandles::reap` 同序）：**先 vmar_unmap 再关
+    // vmo**——映射不产生 refs 别名（vmar_map 只 `track_map` 计 mapcnt），不
+    // unmap 就关 vmo = refs==1 且 any_mapped → 销毁性 close 拒 -EBUSY → 本表
+    // trap 杀 svcmgr（THR ok 起全下家标记连坐缺席）。unmap 把 mapcnt 归零后
+    // close(vmo) 才放行；hp 末引用销毁性 close 合法（子已 TERMINATED+drain）；
+    // 顺序先 unmap/vmo/ht/hp 再 hv，Process 内部钉 root Vmar 的释放链自然
+    // 收敛）。echo/talker 常驻不收，本子是短命验收件 = berryctl reap 同待遇。
+    if berry_vmar_unmap(hv, THR_ENTRY, THR_MAP_LEN) != 0
+        || berry_handle_close(vmo) != 0
+        || berry_handle_close(ht) != 0
+        || berry_handle_close(hp) != 0
+        || berry_handle_close(hv) != 0
+    {
+        trap(); // 已 TERMINATED 的收口面，非 0 = 内核侧异常，loud
+    }
+    if code == THR_OK_CODE {
+        send_retry(console, THR_OK.as_ptr(), THR_OK.len());
+        return;
+    }
+    // 错码降级行：`eco: thr exit <n>\n`（十进制带符号，i32 全域 ≤ 26B）。
+    let mut line = [0u8; 32];
+    line[..14].copy_from_slice(b"eco: thr exit ");
+    let mut i = 14usize;
+    if code < 0 {
+        line[i] = b'-';
+        i += 1;
+    }
+    let mut v = code.unsigned_abs() as u64;
+    let mut dig = [0u8; 10];
+    let mut dn = 0usize;
+    loop {
+        dig[dn] = b'0' + (v % 10) as u8;
+        dn += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    while dn > 0 {
+        dn -= 1;
+        line[i] = dig[dn];
+        i += 1;
+    }
+    line[i] = b'\n';
+    send_retry(console, line.as_ptr(), i + 1);
 }
 
 /// smoke 第 24 标记（7 字节，尾插随合并序）。
@@ -1777,14 +1917,15 @@ const APP_EOF_CAP: u64 = 30 * 1_000_000_000;
 /// nb==0 → true；有数据照收丢弃（appquiet 契约输出为零——防御面：万一
 /// 多打不炸，EOF 终会来）；nh>0 = 坏 .bap 多带 handle——按数据面处置：
 /// 令牌已入本表，全量 close 丢弃（P6 A-4 纪律：收口容量给「协议定值 +
-/// 富余」——channel 随行上限 4，容量 4 = 任何消息不 -EINVAL；恰按 0 收
+/// 富余」——channel 随行上限 6（T-1：CHAN_HND_MAX 4→6），容量 6 = 任何消息
+/// 不 -EINVAL；恰按 0 收
 /// 时坏消息容量不足回滚返 -EINVAL，会误入链断 trap 杀 svcmgr——「常驻
 /// 服务被单个坏 .bap 杀死」是最差死法）；非 -EAGAIN 错码 = 端点/表异常
 /// → trap（链断 loud，verify_hexyl 同口径）；空队 wait READABLE 超帽返
 /// false。
 fn collect_eof(h: Handle) -> bool {
     let mut msg = [0u8; 256];
-    let mut hh = [0 as Handle; 4]; // 随行收口容量 = channel 上限（富余非协议值）
+    let mut hh = [0 as Handle; 6]; // 随行收口容量 = channel 上限（富余非协议值）
     loop {
         let mut nb = msg.len();
         let mut nh = hh.len();
@@ -1922,7 +2063,7 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
     let mut eof = false;
     while !eof {
         let mut msg = [0u8; 256];
-        let mut hh = [0 as Handle; 4]; // 随行收口容量 = channel 上限（富余非协议值）
+        let mut hh = [0 as Handle; 6]; // 随行收口容量 = channel 上限（富余非协议值）
         let mut nb = msg.len();
         let mut nh = hh.len();
         let s = berry_channel_recv(out_s, msg.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh);
