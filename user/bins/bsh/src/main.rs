@@ -253,6 +253,13 @@ fn main() {
     df_selftest();
     dir_selftest();
     cd_selftest();
+    // —— C-5：M-G3 里程碑演示相自验（`M3DEMO ok n=5` = rootfs 相第 35
+    //    标记，`VM里程碑设计草案.md` §2）。**排 fat 族后**（①步 ls /
+    //    断言 HELLO.TXT 依赖挂载卷在位；原案五件之 ps 名单由 PS ok 承接
+    //    ——拆解决策见 m3demo_selftest 头注）；EFI 路无盘 fat park
+    //    （`-> !` 挡断其后自验）→ M3DEMO 结构性不打（smoke-image ECO
+    //    canon 零变化，DF 同款契约）。
+    m3demo_selftest(&mut vars, &mut status);
 
     // —— 交互循环（化妆面）：**C-4 起行编辑归 bsh**（console 逐字节透传，
     //    echo/退格/历史召回/Tab 补全全在本端——editor.rs）。逐字节 read +
@@ -1788,6 +1795,158 @@ fn cd_selftest() {
     println!("CD ok");
 }
 
+/// M-G3 里程碑演示相自验（C-5，`M3DEMO ok n=5` = rootfs 相第 35 标记，
+/// `VM里程碑设计草案.md` §2 C-5）。演示叙事五步全状态谓词（4-5a 纪律
+/// ——零竞速）：生态在册 → ls 列卷 → cp 复制 → 管道过滤 → 状态码跨
+/// 命令传递落盘读回。
+/// ⓪ 生态名单（cpio 真源面 = 「ls /bin」的等价真值——rootfs cpio **就是**
+///    bin/ 目录，而 /bin 不在 fsmgr RAM/FAT 面、libc opendir 不可达）：
+///    cpio_names 直数 ≥38（mkcpio x38 条目基线——新增 bin 只增不减，
+///    下界断言防漂移）+ bsh/grep/hello/ls/cp/cat/ps 七锚；
+/// ① ls 消费链（fs gift 面）：`ls /` 列根（RAM 层 ∪ FAT 层，盘在位
+///    ——fat 族后）断言 HELLO.TXT + PATTERN.BIN 子串（mkfat 恒在件，
+///    相位无关；行数/次序不断言——RAM 残留与交互落盘随相变化）；
+/// ② cp 复制链：mkdir `t` + put `t/demo.txt`（字面三行）→ uu_cp 双
+///    操作数（C-2a `SpawnSpec::args` 多参面；**collect 帽 30s**——首跑
+///    定标实录：uu_cp TCG 下 spawn→exit ≈17s 慢而活，10s 帽结构性误判
+///    eof=false，svcmgr `U1_EOF_CAP` 同口径）→ get `t/copy.txt` 逐字节
+///    对拍；
+/// ③ 管道：`cat /t/demo.txt | grep beta`——cat 文件参数段骑首段 fs
+///    gift（v1 单 fs 消费段约束：grep 从 stdin 读零 fs），期望字面
+///    `m3 beta\n`（自写 grep stdin 读口径无文件名前缀，U4 步⑤同款）；
+/// ④ 状态码 + 落盘 + 读回：`grep -q zzz`（demo 无 zzz → rc 1，GNU -q
+///    口径）→ `echo x$?y > T3.TXT`（run_line 真行执行器——`$?` 展开造
+///    内容 `x1y\n` 消回声，段 d OUT.TXT 同款纪律；8.3 大写名经
+///    do_redirect 落 FAT 根真盘）→ get `T3.TXT` 全等。T3.TXT **故意不
+///    清理**：持久化相注入 `cat T3.TXT` 断言 x1y——但本相 boot 自验
+///    会覆写它（RW.TXT 同款覆写幂等路径），故跨 boot 字节存活的正证
+///    仍是 OUT.TXT f42t；T3.TXT 注入腿验证的是交互 cat 读 FAT 根的
+///    活面（弱化面如实记载）。
+/// ps 名单步（原案五件之末）由 `PS ok n=` 承接（C-3 svcmgr
+/// ps_selftest 账本名单面）——bsh 无法自造 psproto gift 通道，不重拉
+/// （拆解决策留档 VM里程碑 §2）。
+/// 链序契约：**排 fat 族后**（①步依赖挂载卷在位）——EFI 路无盘 fat
+/// park 挡断 → M3DEMO 结构性不打（smoke-image canon 零变化，DF 同款）。
+/// fstree 容量窗：峰值在册 FILE 3+2=5 / DIR 1+1=2（MAX 9/17 内），
+/// ④毕 cleanup 双文件 + 目录（容量纪律）。失败 eprintln 单串 + park
+/// （标记缺失 → smoke FAIL 兜底）。
+fn m3demo_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
+    const M3_DEMO: &[u8] = b"m3 alpha\nm3 beta\nm3 gamma\n";
+    let m3_bad = |step: u8, c: i32, o: &RunOut| -> ! {
+        let n = o.data.len().min(64);
+        eprintln!(
+            "bsh: m3demo bad: step={} code={} len={} eof={} dropped={} hex={}",
+            step,
+            c,
+            o.data.len(),
+            o.eof,
+            o.dropped,
+            u3_hex(&o.data[..n])
+        );
+        berry_libc::park()
+    };
+    let m3_fail = |step: u8, what: &str| -> ! {
+        eprintln!("bsh: m3demo bad: step={} {}", step, what);
+        berry_libc::park()
+    };
+
+    // ⓪ 生态名单：cpio 直数（纯 bin/ 视图——内建 11 不混入）。
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    cpio_names(rootfs_h(), b"bin/", &mut |name| names.push(name.to_vec()));
+    if names.len() < 38 {
+        m3_fail(0, &format!("bin count {} < 38", names.len()));
+    }
+    for anchor in ["bsh", "grep", "hello", "ls", "cp", "cat", "ps"] {
+        if !names.iter().any(|n| n == anchor.as_bytes()) {
+            m3_fail(0, &format!("bin missing {}", anchor));
+        }
+    }
+
+    // ① ls 消费链：列根断言 mkfat 恒在件（子串——uu_ls 短格式多列，
+    // 名字完整成 token；行数相位相关不断言）。
+    match run_capture_fs("ls", None, &["/"]) {
+        Some((o, c)) if c == 0 && o.eof && o.dropped == 0
+            && o.data.windows(9).any(|w| w == b"HELLO.TXT")
+            && o.data.windows(11).any(|w| w == b"PATTERN.BIN") => {}
+        Some((o, c)) => m3_bad(1, c, &o),
+        None => m3_fail(1, "ls not found"),
+    }
+
+    // ② cp 复制链：RAM 树造源 → uu_cp 双操作数 → 读回对拍。**collect 帽
+    //    30s**（首跑定标实录：uu_cp TCG 下 spawn→exit ≈17s——lstat/stat×2/
+    //    读写/fchmod 整链串行 fs RPC 慢而活，10s 帽误判 eof=false；30s =
+    //    svcmgr U1_EOF_CAP 同口径，U1 的 cp 先例五相在档）。
+    if let Err(e) = mkdir_of("t") {
+        m3_fail(2, &format!("mkdir t {}", errno_text(e)));
+    }
+    if let Err(e) = put_file("t/demo.txt", M3_DEMO) {
+        m3_fail(2, &format!("put t/demo.txt {}", errno_text(e)));
+    }
+    const CP_EOF_CAP_NS: u64 = 30 * 1_000_000_000;
+    match run_capture_fs_cap("cp", None, &["/t/demo.txt", "/t/copy.txt"], CP_EOF_CAP_NS) {
+        Some((o, c)) if c == 0 && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => m3_bad(2, c, &o),
+        None => m3_fail(2, "cp not found"),
+    }
+    match get_file("t/copy.txt") {
+        Ok(d) if d == M3_DEMO => {}
+        r => m3_fail(
+            2,
+            &format!(
+                "copy mismatch {:?}",
+                r.map(|v| v.len()).map_err(errno_text)
+            ),
+        ),
+    }
+
+    // ③ 管道：cat（首段 fs gift）| grep beta → 字面常量。
+    let segs = [
+        PipeSeg {
+            name: "cat",
+            args: &["/t/demo.txt"],
+        },
+        PipeSeg { name: "grep", args: &["beta"] },
+    ];
+    match pipe_capture(&segs, None) {
+        Ok((o, c)) if c == 0 && o.data == b"m3 beta\n" && o.eof && o.dropped == 0 => {}
+        Ok((o, c)) => m3_bad(3, c, &o),
+        Err(PipeFail::NotFound(n)) => m3_fail(3, &format!("{} not found", n)),
+        Err(PipeFail::SpawnFail(n)) => m3_fail(3, &format!("{} spawn failed", n)),
+    }
+
+    // ④ 状态码跨命令传递 + 落盘 + 读回（T3.TXT 留盘供持久化相注入腿）。
+    match run_capture_fs("grep", None, &["-q", "zzz", "/t/demo.txt"]) {
+        Some((o, c)) if c == 1 && o.data.is_empty() && o.eof && o.dropped == 0 => {}
+        Some((o, c)) => m3_bad(4, c, &o),
+        None => m3_fail(4, "grep not found"),
+    }
+    *status = 1; // $? ← grep -q 真码（rc 已上验，run_line 展开消费它）
+    let mut out = std::io::stdout();
+    run_line("echo x$?y > T3.TXT", vars, status, &mut out);
+    match get_file("T3.TXT") {
+        Ok(d) if d == b"x1y\n" => {}
+        r => m3_fail(
+            4,
+            &format!(
+                "T3.TXT {:?}",
+                r.map(|v| v.len()).map_err(errno_text)
+            ),
+        ),
+    }
+
+    // cleanup：双文件 + 目录（T3.TXT 留盘——持久化相注入腿）。
+    if let Err(e) = unlink_of("t/copy.txt") {
+        m3_fail(9, &format!("unlink t/copy.txt {}", errno_text(e)));
+    }
+    if let Err(e) = unlink_of("t/demo.txt") {
+        m3_fail(9, &format!("unlink t/demo.txt {}", errno_text(e)));
+    }
+    if let Err(e) = unlink_of("t") {
+        m3_fail(9, &format!("rmdir t {}", errno_text(e)));
+    }
+    println!("M3DEMO ok n=5");
+}
+
 /// pwd 全等探针（自验用）：getcwd 渲染串 == want。
 fn pwd_is(want: &str) -> bool {
     let mut buf = [0u8; 160];
@@ -2597,6 +2756,18 @@ fn fs_gifts() -> Option<(Handle, Handle)> {
 }
 
 fn run_capture_fs(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOut, i32)> {
+    run_capture_fs_cap(name, stdin, args, TIMEOUT_NS)
+}
+
+/// [`run_capture_fs`] 的宽帽版（C-5）：collect 活动帽按命令定值——uu_cp
+/// 17s 实测（[`collect_cap`] 注），30s = svcmgr U1_EOF_CAP 同口径；余轻量
+/// uu 命令维持 10s（u2/u3/u4 先例全在档）。
+fn run_capture_fs_cap(
+    name: &str,
+    stdin: Option<&[u8]>,
+    args: &[&str],
+    cap_ns: u64,
+) -> Option<(RunOut, i32)> {
     let (rootfs_dup, fs_dup) = match fs_gifts() {
         Some(g) => g,
         None => {
@@ -2609,7 +2780,7 @@ fn run_capture_fs(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(Ru
     // gift[2] 前要求 stdin 在位（berry-exec 断言）——空 feeder 占位（EOF
     // 留队无害：df/du 不读 stdin，fsmgr dummy 同款）。
     let stdin = stdin.or(Some(&[] as &[u8]));
-    run_capture_gifts(name, stdin, args, &[rootfs_dup, fs_dup])
+    run_capture_gifts_cap(name, stdin, args, &[rootfs_dup, fs_dup], cap_ns)
 }
 
 fn run_capture_gifts(
@@ -2617,6 +2788,18 @@ fn run_capture_gifts(
     stdin: Option<&[u8]>,
     args: &[&str],
     gifts: &[Handle],
+) -> Option<(RunOut, i32)> {
+    run_capture_gifts_cap(name, stdin, args, gifts, TIMEOUT_NS)
+}
+
+/// [`run_capture_gifts`] 的宽帽版（C-5）——collect 帽经参传入（见
+/// [`collect_cap`]）。
+fn run_capture_gifts_cap(
+    name: &str,
+    stdin: Option<&[u8]>,
+    args: &[&str],
+    gifts: &[Handle],
+    cap_ns: u64,
 ) -> Option<(RunOut, i32)> {
     let full = format!("bin/{}", name);
     let (data_off, data_len) = cpio_find(rootfs_h(), full.as_bytes())?;
@@ -2638,7 +2821,7 @@ fn run_capture_gifts(
         Ok(c) => c,
         Err(_) => berry_libc::park(), // 自验面：链断 loud（标记缺失兜底）
     };
-    let o = collect(out_s);
+    let o = collect_cap(out_s, cap_ns);
     // Plan B：reap 失败 ≠ run 链断（终验面在 svcmgr `EXIT ok`）——诊断可见
     // 即可，BSH ok 语义仍只锚定输出面；真码面 Err → 1（P5）。
     let code = match child.reap() {
@@ -2655,8 +2838,19 @@ fn run_capture_gifts(
 }
 
 /// 收子进程 stdout 至 EOF / 活动帽（verify_hexyl 同构：满 192B 分片逐条
-/// 入队，空队 wait READABLE 10s 活动帽，零长消息 = EOF 终点）。
+/// 入队，空队 wait READABLE 活动帽，零长消息 = EOF 终点）——10s 常规帽
+/// （交互管道/轻量命令）。uu 家族 fs 重命令走 [`collect_cap`] 拿宽帽。
 fn collect(h: Handle) -> RunOut {
+    collect_cap(h, TIMEOUT_NS)
+}
+
+/// [`collect`] 的宽帽版（C-5 首跑定标实录）：uu_cp 双操作数在 TCG 下
+/// spawn→exit 实测 ≈17s（fs RPC 链慢而活——lstat/stat/读写整链 ~15 次串行
+/// RPC，时间戳取证 CD ok→m3demo bad 25s 扣 ⓪① ≈8s），10s 帽结构性误判
+/// eof=false（EOF 实际已发、collect 先弃）。「client 收侧帽按服务端 worst
+/// 路径成本定值」——svcmgr `U1_EOF_CAP`=30s（U1 的 cp 同款先例，五相
+/// smoke 在档），同口径 30s。
+fn collect_cap(h: Handle, cap_ns: u64) -> RunOut {
     let mut data: Vec<u8> = Vec::new();
     let mut dropped = 0usize;
     let mut eof = false;
@@ -2678,9 +2872,9 @@ fn collect(h: Handle) -> RunOut {
         if s != BERRY_ERR_AGAIN {
             break; // 非 -EAGAIN 错误：对端异常，按无 EOF 收场（调用方打警告）
         }
-        // 空队：阻塞等 READABLE（10s 活动帽，收包刷新）
+        // 空队：阻塞等 READABLE（活动帽，收包刷新）
         let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
+        if berry_object_wait_one(h, SIGNAL_READABLE, now() + cap_ns, &mut obs) != 0 {
             break; // 活动帽尽仍无 EOF：断链面，交调用方警告
         }
     }

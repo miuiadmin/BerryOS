@@ -142,8 +142,13 @@ DEADLINE_ROOTFS=300  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # （含造盘/boot 走查 + U1/U2/U3 全链；fat/网络族在其
                      # 后），smoke 五跑全绿 27/27，300s 帽常态余量充足；
                      # B-1 起再 +1 spawn（bench1）+ ~8.6k 次 SVC（四项
-                     # iters 合计——TCG 下 ≈ +5-10s，boot 相当量级），300s
-                     # 帽不动
+                     # iters 合计——TCG 下 ≈ +5-10s，boot 相当量级），
+                     # 300s 帽不动；C-5 起 m3demo 五步链每相再 +~45s
+                     # （⓪cpio 走查 ~2s + ①ls ~6s + ②uu_cp 实测 ≈17s
+                     # 慢而活——collect 帽 30s 定标实录（U1_EOF_CAP 同
+                     # 口径）+ ③④ ~18s，run-rootfs 定向 CD ok→M3DEMO ok
+                     # ≈45s），×3 boots 常态 ~240s 仍 < 300s，帽不动
+                     # （五相复跑若显压力再升）
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
@@ -485,8 +490,22 @@ QEMU_PID=$!
 # 真码）。零 fs 盘面（hello = rootfs ELF 纯 RAM spawn），链序排 fat 族前
 # （EFI 路亦打）——rootfs 相第 34 标记。裸 grep -qF 足够（"INTENT ok"
 # 不含 "INT ok"——INT 后是 E 非空格，两两互非子串已核）。
+# M3DEMO（C-5）：M-G3 里程碑演示相 smoke 化（VM里程碑设计草案 §2）——
+# bsh m3demo_selftest 五步全状态谓词（零竞速）：⓪ 生态名单（cpio_names
+# 直数 bin/ ≥38 + bsh/grep/hello/ls/cp/cat/ps 七锚——/bin 不在 fsmgr
+# 面，cpio 真源 = 「ls /bin」等价真值）① ls 消费链（fs gift 面 `ls /`
+# 断言 HELLO.TXT + PATTERN.BIN 子串——mkfat 恒在件相位无关）② cp 复制
+# 链（mkdir t + put demo.txt → uu_cp 双操作数 → 读回逐字节对拍）③
+# cat|grep 管道（首段 fs gift，期望字面 `m3 beta\n`）④ 状态码跨命令
+# 传递落盘：grep -q zzz rc1 → `echo x$?y > T3.TXT`（run_line 真行
+# 执行器，$? 展开造内容 x1y\n 消回声）→ 读回全等；T3.TXT 故意留盘
+# （持久化相注入 cat T3.TXT 断言 x1y——覆写幂等弱化面见持久化相注）。
+# ps 名单步由 PS ok n= 承接（拆解决策留档 VM里程碑 §2）。链序契约同
+# DF **排 fat 族后**（①步依赖挂载卷在位）——EFI 路无盘 fat park 挡断
+# → M3DEMO 结构性不打（smoke-image ECO canon 零变化）——rootfs 相第
+# 35 标记（"M3DEMO ok n=5" 与现役标记两两互非子串——M3 前缀族唯一）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "PS ok n=" "BC ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "PS ok n=" "BC ok" "M3DEMO ok n=5")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -507,7 +526,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + PS ok n= + BC ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + PS ok n= + BC ok + M3DEMO ok n=5）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
@@ -852,6 +871,11 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # 相漂移（重造盘 500/脏盘 499）已被相位无关化消解）。
 # 注入 `cat OUT.TXT` → grep 'f42t'：RX 相 `>` 落的扇区跨 boot 存活——
 # fat:rw 关卡的「w」半边（读 = FAT ok，写 = FATW ok + 本断言）。
+# C-5 追加：注入 `cat T3.TXT` → grep 'x1y'——M3DEMO ④步落盘件的交互
+# cat 面（注入行不含 x1y、$? 展开造内容消回声）。**弱化面如实记载**：
+# 本相 boot 自验 M3DEMO 会覆写 T3.TXT（RW.TXT 同款覆写幂等路径），故
+# 本断言验证「交互 cat 读 FAT 根文件」活面而非跨 boot 字节存活——
+# 后者正证仍是 OUT.TXT f42t（自验链不写它，本相读回的必是 RX 相字节）。
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"
@@ -881,7 +905,7 @@ while :; do
     && fail "FAT 持久化相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: FAT 持久化相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入 cat OUT.TXT"
+echo "smoke: FAT 持久化相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入 cat OUT.TXT + cat T3.TXT"
 inject_line 'cat OUT.TXT'
 t6=$(date +%s)
 while :; do
@@ -891,7 +915,16 @@ while :; do
     && fail "持久化 f42t 60s 未出现（盘写没落/没跨 boot 存活？查 cache.writeback 与 FATW ok）"
   sleep 1
 done
-echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t）"
+inject_line 'cat T3.TXT'
+t6=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 T3.TXT cat 阶段退出"
+  grep -aqF 'x1y' "$LOG" && break
+  [ $(( $(date +%s) - t6 )) -gt 60 ] \
+    && fail "x1y 60s 未出现（M3DEMO T3.TXT 落盘链断？查 M3DEMO ok 与 bsh: 行）"
+  sleep 1
+done
+echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）"
 
 exec 3>&-
-echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t））"
+echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面））"

@@ -35,7 +35,7 @@
 | M-G2 | Fusion 设备面**未知**（GIC v3?、盘控制器 NVMe/AHCI?、有无 PL011?、USB xHCI、GOP）；帧缓冲 console 与 USB 键盘两个驱动件 | V-5a ~ V-8 |
 | M-G3 | fsmgr 平面表（无目录树/路径）；libc 无文件面（fd 3+ 不存在）；bsh 无 PATH 查找、无 Ctrl-C/kill 面、无 Tab 补全；ps/berryctl 不存在 | C-0 ~ C-5 |
 
-> **进展注记（2026-10-27 更）**：M-G1 五刀全落（`just image` / `just smoke-image` 挂 CI，唯余 UTM 手动点验）；M-G3 过半——C-0/C-1/C-2a/C-2b/C-2c/刀 2 已落（差挂账刀、C-3/C-4/C-5）；M-G2 未动。上表为 2026-10-22 立项时点的差距评估，勿当现状引用。
+> **进展注记（2026-10-28 更）**：M-G1 五刀全落（`just image` / `just smoke-image` 挂 CI，唯余 UTM 手动点验）；**M-G3 全链收官——C-0/C-1/C-2a/C-2b/C-2c/刀 2/挂账刀/C-3/C-4（+C-4b Ctrl-C）/C-5 已落**（C-5 = 里程碑演示相 `M3DEMO ok n=5`，rootfs 相 35——本文件 §2 C-5 注记）；M-G2 未动。上表为 2026-10-22 立项时点的差距评估，勿当现状引用。
 
 ## 2. B 线（CLI 四件，M-G3）——先做，早交付早验收
 
@@ -73,6 +73,7 @@
 ### C-5 里程碑演示相（smoke 化）
 - 脚本化断言链：`ls /bin ≥N` → `mkdir /t && cp /bin/… /t/` → `cat f | grep <pat>` → `echo x$?y > T.TXT`（展开造内容，f42t 先例）→ 重启读回（持久化相扩）→ `ps` 名单。
 - 全部状态谓词、零竞速面（4-5a 纪律）；标记带参形态互非子串（DEMO ok ⊂ AIDEMO ok 教训）。
+- **✅ 已落地 2026-10-28**（bsh `m3demo_selftest` 五步 → `M3DEMO ok n=5`，rootfs 相 34→35/三合相 60→61；五相 smoke 全绿 + 金丝雀 30 严格递增 + test-host 363/0 + smoke-image canon 20 零变化）。四项拆解决策留档：① ps 名单步由 `PS ok n=` 承接（C-3 svcmgr ps_selftest 账本面——bsh 无法自造 psproto gift 通道，不重拉）；② 「ls /bin ≥N」落形为 cpio_names ≥38 + 七锚 + `ls /` 断言 HELLO.TXT/PATTERN.BIN（/bin 目录枚举面已有 DIR ok 承接，不重复）；③ 重启读回 = T3.TXT 故意留盘 + 持久化相注入 `cat T3.TXT` 断言 x1y——本相自验覆写幂等、跨 boot 正证仍 = OUT.TXT f42t（弱化面如实记载）；④ **cp 步 collect 帽 30s**（首跑定标实录：uu_cp TCG spawn→exit ≈17s 慢而活、10s 帽误判 eof=false——EOF 实发而帽先弃、reap 30s 帽内干净退 0；修法 = collect 帽参数化三层穿透 `collect_cap`/`run_capture_fs_cap`/`run_capture_gifts_cap`，svcmgr `U1_EOF_CAP` 同口径）。链序排 fat 族后（①ls 依赖挂载卷）→ EFI 路无盘 fat park 挡断、结构性不打。
 
 ## 3. A 线第一站（M-G1）：BerryBoot + 自举镜像
 
@@ -162,7 +163,7 @@
 
 ```
 C-0 → C-1 → V-0a → V-0b → C-2a → V-1 → V-2 → V-3/V-4（= M-G1 ✅ 落，唯余 UTM 手动点验）
-  → C-2b → C-2c（✅ 中批 6 + 容量一体）→ 刀 2（✅ df+statfs 三步，du 挂账裁出）→ 挂账刀（深坑 6 + head·sort·du 执行面 + bsh fs_gifts 三 spawn 点）→ C-3 → V-5a（实证刀，可与 C 线并行）→ V-5b/V-6 → C-4 → C-5（= M-G3 大体成）
+  → C-2b → C-2c（✅ 中批 6 + 容量一体）→ 刀 2（✅ df+statfs 三步，du 挂账裁出）→ 挂账刀（✅ 深坑 6 + head·sort·du 执行面 + bsh fs_gifts 三 spawn 点）→ C-3（✅ ps + berryctl）→ V-5a（实证刀，可与 C 线并行）→ V-5b/V-6 → C-4（✅ Tab 补全 + C-4b Ctrl-C）→ C-5（✅ M3DEMO 五步 = M-G3 大体成）
   → V-7（或降级线）→ V-8（= M-G2 收官）
 ```
 
