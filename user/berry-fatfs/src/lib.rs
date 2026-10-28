@@ -1283,4 +1283,79 @@ mod tests {
         assert_eq!(g.cluster_count, 65524);
         assert_eq!(parse_bpb(&patch(0, 262106)), None); // 65525 → FAT32 地界
     }
+
+    // ── B4 撕裂面基元族（掉电安全首刀）────────────────────────────
+    // 覆写 commit 的撕裂窗「FAT 已写、根未写」在盘面 = 旧链已 Free、根
+    // 仍指旧首簇。恢复 commit 会撞上：smoke 单文件覆写负载下旧首簇是
+    // 最低 Free → 升序分配复用其为新链头（一般负载可中段复用/不复用）
+    // → 释放旧链必须跳过 ∈ 新链者（fsmgr fat.rs ④ 守卫，成员制）。
+    // 本族把该窗的 FAT 级基元逐件钉板（毒环前提可复现、不靠运气采样）。
+
+    #[test]
+    fn torn_fat_poison_window_primitives() {
+        // 毒环态逐基元：FX FAT0 副本上 Free 掉 PATTERN 链头（簇 3）——
+        // 盘面 FAT 视角等价于撕裂窗里「旧链已释放」的瞬间。
+        let mut fat = fat0().to_vec();
+        fat12_set(&mut fat, 3, 0).unwrap();
+        assert_eq!(fat12_entry(&fat, 3), Some(FatEntry::Free));
+        // 空闲计数 +1（df/STATFS 面对撕裂盘仍出真值）。
+        assert_eq!(count_free_clusters(&fat, 506, FatBits::Fat12), Some(501));
+        // 毒环前提钉板：本 fixture 内簇 3 是全域最低 Free → find(2..)
+        // 升序分配必命中它——smoke 负载下恢复 commit 的新链头就是旧首
+        // 簇本身（④ 守卫按成员制不依赖头部复用，此处钉的是复用力学
+        // 前提本身，非防御性兜底）。
+        assert_eq!(find_free_cluster(&fat, 2, 506, FatBits::Fat12), Some(3));
+        // 根目录项不受 FAT 撕裂影响（decode 面）：仍指簇 3——「根指 first、
+        // FAT[first]=Free」即毒环态的字面形状。
+        match dir_entry(&root()[64..96]).unwrap() {
+            DirKind::File(f) => assert_eq!((f.first_clus, f.size), (3, 5000)),
+            other => panic!("PATTERN 槽应为文件项：{:?}", other),
+        }
+        // 重链恢复：新链写回簇 3 → Next(4) 原样认回（守卫跳过释放后，
+        // 新链头存活、后续簇号无损）。
+        fat12_set(&mut fat, 3, 4).unwrap();
+        assert_eq!(fat12_entry(&fat, 3), Some(FatEntry::Next(4)));
+        assert_eq!(count_free_clusters(&fat, 506, FatBits::Fat12), Some(500));
+    }
+
+    #[test]
+    fn torn_fat_midchain_free() {
+        // 假设性中链 Free 形态的基元回归（防 decode/find 语义漂移）：由现
+        // commit 写序（④ 纯内存 + 链内升序 + 整扇区 FAT 写）在盘面结构性
+        // 不可达——中段 Free 先于链头 Free 出现无路径（见评估 §1 与 smoke
+        // Boot B 的 midchain 负向断言）。
+        let mut fat = fat0().to_vec();
+        fat12_set(&mut fat, 4, 0).unwrap();
+        assert_eq!(fat12_entry(&fat, 4), Some(FatEntry::Free));
+        assert_eq!(fat12_entry(&fat, 3), Some(FatEntry::Next(4)));
+        assert_eq!(count_free_clusters(&fat, 506, FatBits::Fat12), Some(501));
+        assert_eq!(find_free_cluster(&fat, 2, 506, FatBits::Fat12), Some(4));
+        fat12_set(&mut fat, 4, 5).unwrap();
+        assert_eq!(fat12_entry(&fat, 4), Some(FatEntry::Next(5)));
+    }
+
+    #[test]
+    fn torn_fat_value_domain_honesty() {
+        // 撕裂盘上的畸形项（保留值 1 落文件簇位——半写 12 位紧包的典型
+        // 产物）：count 诚实拒 None（上报真值不猜）、find 跳过畸形继续找
+        // ——两面语义按消费方分立的撕裂盘回归钉板。
+        let mut fat = fat0().to_vec();
+        pack(&mut fat, 8, 1); // 独立写实现造畸形（fat12_set 值域拦不住 1）
+        assert_eq!(fat12_entry(&fat, 8), None);
+        assert_eq!(count_free_clusters(&fat, 506, FatBits::Fat12), None);
+        assert_eq!(find_free_cluster(&fat, 2, 506, FatBits::Fat12), Some(9));
+    }
+
+    #[test]
+    fn torn_fat16_poison_twin() {
+        // FAT16 能力层孪生（V-2 面；生产写路径 v1 仅 FAT12——fat.rs 同
+        // 形守卫的未来扩面基线）：簇 3 Free → 升序命中 3 → 重链认回。
+        let mut fat = fat0_16().to_vec();
+        fat16_set(&mut fat, 3, 0).unwrap();
+        assert_eq!(fat16_entry(&fat, 3), Some(FatEntry::Free));
+        assert_eq!(count_free_clusters(&fat, 4087, FatBits::Fat16), Some(4082));
+        assert_eq!(find_free_cluster(&fat, 2, 4087, FatBits::Fat16), Some(3));
+        fat16_set(&mut fat, 3, 4).unwrap();
+        assert_eq!(fat16_entry(&fat, 3), Some(FatEntry::Next(4)));
+    }
 }

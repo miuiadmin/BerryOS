@@ -18,6 +18,10 @@
 # 字节零漂移硬线不破——子目录只在 fixture 模式）
 /disk_dirs.img
 
+# B4 掉电相专属盘（smoke 阶段 7 现场造 + pwrcls 注入；专属名与主盘零交集
+# ——毒环态不污染他相复用盘）
+/disk.pwr.img
+
 # G-eco 用户程序编译产物（just build-user 产出；缺产物 = 内核 include_bytes
 # 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
 /kernel/src/userbins/

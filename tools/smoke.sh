@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # BerryOS 无人值守冒烟测试 —— CI 与本地同一入口（just smoke）。
 #
-# 做七件事：
+# 做八件事：
 #   1. 后台拉起 QEMU virt（-kernel ELF 直加载），串口重定向到临时日志；
 #   2. 断言 boot 标记全部出现（BerryOS boot / GIC ok / … / ktest done）；
 #   3. 断言 switches=N 金丝雀 ≥3 条且严格递增（IRQ 抢占分时活着、计数不冻）；
@@ -100,6 +100,29 @@
 #      `>` 落的是真扇区、跨 boot 存活。盘 cache writeback=off：QEMU 由
 #      SIGTERM 终止，writeback 模式可能不刷页缓存（所有 -drive 行统一，
 #      含 justfile run-rootfs）。
+#   8. B4 掉电相（第六-八跑 = 采样 ×2 + 注入 + 恢复终验，独立盘
+#      disk.pwr.img）：掉电安全首刀关卡化——SIGKILL 直拟掉电
+#      （cache.writeback=off 下已写扇区已落宿主盘 = **扇区间**撕裂前缀；
+#      扇区内撕裂 = 真机面，不在本相覆盖）。Boot A：FAT ok 后 +18s
+#      SIGKILL 落 fatw 新文件写窗（staging ≈16 PUT ≈13s + commit ≈10s）
+#      → pwrcls 采样行，断言按 kill 时相分两档（状态谓词、非时序赌）：
+#      FATW ok 未见于日志 → ∈ {noent, clean}（新文件 ④ 空转、⑤FAT 先于
+#      ⑥′根——粗检 canary：执法「根在场而 FAT 撕裂」类现序下不可达
+#      态，对写序回归零证伪力）；已见 → ∈ {clean, poison}（已进覆写面，
+#      同 Boot B 口径）。Boot B：FATW ok（首写完）后 +15s SIGKILL 落 DF
+#      覆写 resize commit 窗 → 采样行断言 ∈ {clean, poison}（整扇区 FAT
+#      写下 midchain 结构性不可达——扇区原子性面的负向断言）；随后
+#      pwrcls --poison **确定性注入毒环态**（RW.TXT 整链双 FAT 置
+#      Free、根目录原样 = 覆写 commit 撕裂窗「FAT 已写、根未写」的盘面
+#      形状——自然采样撞窗是概率事件，注入 = 每轮必达的关下面）；
+#      Boot C：毒环盘上全链重跑——FATW 覆写走恢复 commit（smoke 单文
+#      件覆写负载下旧首簇 = 最低 Free 必复用进新链头；一般负载可中段
+#      复用/不复用——fsmgr ④ 守卫按 ∈ 新链成员制设计，自愈不依赖头部
+#      复用）+ DF/CD 照跑，盘侧 pwrcls 终验必 clean（FAT0 侧——FAT1
+#      分歧不在 oracle 面，评估 §5.2；guest 标记与宿主盘面双面不变
+#      量）。零新 guest 标记（全 script 侧门控，标记数组零耦合）；三
+#      boot 均不带 netdev（vnet 无 net 槽 trap 自死为干净死，NET 族标
+#      记自然缺席不设门——EFI 路「设备缺席优雅降级」同款先例）。
 #
 # 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 CLAUDE.md 陷阱节），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
@@ -875,7 +898,8 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # —— 阶段 6：P6 A-6 FAT 持久化相（第五跑：写过的盘再起）——
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收；
 # disk_dirs.img 本相不复用——两盘链零混）；
-# 不关 fd3（阶段 5 已注入完 cat 行，exec 3>&- 移到本阶段尾）。58 标记载明
+# 不关 fd3（本相注入完 cat 行后 FIFO 再无消费者——阶段 7 掉电相三 boot
+# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。58 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读；
 # DF 自验的差分面同走覆写路径（RW.TXT 3000→2048→3000 双向，绝对 free 跨
@@ -937,5 +961,172 @@ while :; do
 done
 echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）"
 
+# —— 阶段 7：B4 掉电相（第六-八跑：独立盘 disk.pwr.img + 采样 ×2 + 注入 +
+# 恢复终验）——
+# 掉电模拟 = SIGKILL 直杀 QEMU（cache.writeback=off 下已完成扇区已在宿主
+# 盘、在途扇区蒸发 = **扇区间**撕裂前缀；扇区内撕裂 = 真机面不在本相覆盖，
+# 见 docs/FAT写路径原子性评估-2026-10.md）。三 boot 均无 netdev：vnet 无
+# net 槽 = trap 干净自死（NET 族标记自然缺席不设门——EFI 路设备缺席优雅
+# 降级同款先例）；bsh 的 fat 族自验（fat→fatw→df 相邻三连）不依赖 net。
+# 盘重造 + LBA0 印章（vblk 自验读它）——每次 run 从确定性盘起。
+# Boot A（新文件窗采样）：FAT ok 后 +18s SIGKILL 落 fatw 新文件写窗（造源
+# staging ≈13s + commit ≈10s；新文件 ④ 无旧链可释放 = 无毒环窗）。采样
+# 断言按 kill 时相分两档（kill 后查终局日志——状态谓词，不赌 kill 落点
+# 与 TCG 提速赛跑）：FATW ok 未见 → ∈ {noent, clean}（根槽未写 = noent /
+# commit ⑥′ 已过 = clean——commit 序 ⑤FAT 先于 ⑥′根，无「根在 FAT 不
+# 在」中间态；粗检 canary：执法「根在场而 FAT 撕裂」类现序下不可达
+# 态，对 ⑤/⑥′ 写序回归零证伪力——写序执法见评估 §6）；已见（快机已
+# 进 DF 覆写面）→ ∈ {clean, poison}（同 Boot B 口径）。
+# Boot B（覆写窗采样）：FATW ok（首写毕）后 +15s SIGKILL 落 DF resize
+# commit 窗（fatw→df 相邻，resize 3000→2048→3000 ≈ 两次 commit 各 ~10s
+# ≈ [+3,+25]s；覆写 commit ④ 旧链释放→⑤ FAT→⑥′根之间存在毒环窗）→
+# 采样行断言 ∈ {clean, poison}（整扇区 FAT 写 = 中间簇撕裂 midchain 结构
+# 不可达——扇区原子性面的负向断言）。
+# 随后 pwrcls --poison **确定性注入毒环态**（RW.TXT 整链双 FAT 置 Free、
+# 根目录原样 = 覆写 commit 撕裂窗「FAT 已写、根未写」的盘面形状——自然
+# 采样撞窗是概率事件，注入 = 每轮必达）+ 注入后分类必须 poison。
+# 已知缺口（如实入册，评估 §6）：Boot A/B 的 kill 前无活性复验——无输出
+# 挂死与合法采样不可区分（kernel panic 有 loud 串口、由标记帽兜）；
+# switches= 金丝雀每 50 切一行（1x ≈10s），18s/15s 窗内零增长断言在慢机
+# 上是假红，故不做。
+# Boot C（恢复终验）：毒环盘上全链重跑——fatw 覆写走恢复 commit（①collect
+# 走旧首簇即撞 Free 止步 → ②升序分配把旧首簇复用进新链头（smoke 单文
+# 件覆写负载下它是最低 Free；一般负载可中段复用/不复用——守卫按成员制
+# 不依赖此）→
+# ④守卫跳过 ∈ 新链的释放——毒环自愈，user/bins/fsmgr/src/fat.rs 头注）+
+# DF resize + DIR/CD 照跑；guest 标记到齐后 SIGTERM 优雅退 + sleep 3 →
+# **盘侧终验必 clean**（FAT0 侧——FAT1 分歧不在 oracle 面，评估 §5.2；
+# guest 标记绿 + 宿主盘面 clean 双面不变量——标记绿而盘面毒 = 恢复链
+# 假绿，单面都测不出）。
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+: > "$LOG"
+python3 tools/mkfat.py disk.pwr.img || fail "mkfat 造掉电盘失败"
+printf 'BERRYOSVBLK!' | dd of=disk.pwr.img conv=notrunc status=none
+echo "smoke: QEMU 启动（B4 掉电 Boot A：新文件窗采样，无 netdev）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  -global virtio-mmio.force-legacy=false \
+  -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
+  -device virtio-blk-device,drive=drv0 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+t7a=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 提前退出（掉电 Boot A）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+  grep -qF 'FAT ok n=5000' "$LOG" && break
+  [ $(( $(date +%s) - t7a )) -gt 240 ] \
+    && fail "掉电 Boot A 240s FAT ok 未到（bsh fat 链断？查 BSH/TAB/INT ok）"
+  sleep 1
+done
+grep -q 'ROOTFS vmo=none' "$LOG" \
+  && fail "掉电 Boot A: ROOTFS vmo=none（rootfs VMO 交付缺席——入机侧 seam 断）"
+# +18s 落 fatw staging/commit 窗（FAT ok 后 fatw 即刻起步——bsh 链相邻）。
+sleep 18
+kill -9 "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+# SIGKILL 即时死（无 SIGTERM 的数秒刷盘拖尾）——盘面 = 撕裂前缀原样。
+PWR_A=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
+  || fail "掉电 Boot A 分类失败（pwrcls 退出非 0——盘面畸形或几何不符）"
+echo "smoke: 掉电采样 A（fatw 新文件窗）: $PWR_A"
+if grep -qF 'FATW ok n=3000' "$LOG"; then
+  # 快机已进 DF 覆写面（FATW ok 已见于终局日志）——按 Boot B 口径放行。
+  case "$PWR_A" in
+    "PWR cls=clean "*|"PWR cls=poison "*) ;;
+    *) fail "掉电 Boot A 采样越界：$PWR_A（FATW 已毕、覆写窗口径 {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
+  esac
+else
+  # fatw 未毕——新文件窗口径（④ 空转无毒环面；粗检 canary，见块注）。
+  case "$PWR_A" in
+    "PWR cls=noent "*|"PWR cls=clean "*) ;;
+    *) fail "掉电 Boot A 采样越界：$PWR_A（新文件路径应 ∈ {noent, clean}——出现毒环 = ④ 旧链释放被无端执行）" ;;
+  esac
+fi
+
+# Boot B：覆写 resize 窗采样 + 确定性毒环注入。
+: > "$LOG"
+echo "smoke: QEMU 启动（B4 掉电 Boot B：DF resize 窗采样 + 注入）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  -global virtio-mmio.force-legacy=false \
+  -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
+  -device virtio-blk-device,drive=drv0 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+t7b=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 提前退出（掉电 Boot B）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+  grep -qF 'FATW ok n=3000' "$LOG" && break
+  [ $(( $(date +%s) - t7b )) -gt 240 ] \
+    && fail "掉电 Boot B 240s FATW ok 未到（fatw 链断？Boot A 留盘 $PWR_A）"
+  sleep 1
+done
+grep -q 'ROOTFS vmo=none' "$LOG" \
+  && fail "掉电 Boot B: ROOTFS vmo=none（rootfs VMO 交付缺席——入机侧 seam 断）"
+# +15s 落 DF resize commit 窗（FATW ok 后 df 即刻起步——bsh 链相邻；两次
+# resize commit ≈ [+3,+25]s，15s 居中）。
+sleep 15
+kill -9 "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+PWR_B=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
+  || fail "掉电 Boot B 分类失败（pwrcls 退出非 0）"
+echo "smoke: 掉电采样 B（DF resize 窗）: $PWR_B"
+case "$PWR_B" in
+  "PWR cls=clean "*|"PWR cls=poison "*) ;;
+  *) fail "掉电 Boot B 采样越界：$PWR_B（整扇区 FAT 写下应 ∈ {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
+esac
+python3 tools/pwrcls.py --poison disk.pwr.img \
+  || fail "毒环注入失败（pwrcls --poison 自检未过）"
+PWR_P=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
+  || fail "注入后分类失败（pwrcls 退出非 0）"
+case "$PWR_P" in
+  "PWR cls=poison "*) ;;
+  *) fail "注入后非毒环态：$PWR_P（--poison 自检与分类分歧——工具面 bug）" ;;
+esac
+echo "smoke: 毒环注入就位（$PWR_P）"
+
+# Boot C：毒环盘恢复终验——guest 标记（fsmgr/bsh fat 族 + DF/DIR/CD）+ 盘面双面。
+: > "$LOG"
+echo "smoke: QEMU 启动（B4 掉电 Boot C：毒环恢复终验，无 netdev）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
+  -global virtio-mmio.force-legacy=false \
+  -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
+  -device virtio-blk-device,drive=drv0 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+# FAT/FATW 精确形（盘确定性：PATTERN 5000B / RW 3000B）；DF/CD 证明 resize
+# 与目录链在恢复后的盘上照常。DIR ok 由 CD ok 承接（bsh 链 dir→cd 相邻）。
+PWR_MARKERS=("FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=5000" "FATW ok n=3000" "DF ok" "CD ok")
+t7c=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 提前退出（掉电 Boot C 恢复相）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+  missing=""
+  for m in "${PWR_MARKERS[@]}"; do
+    grep -qF "$m" "$LOG" || missing="${missing:+$missing }$m"
+  done
+  if [ -z "$missing" ] && grep -q 'ROOTFS vmo=none' "$LOG"; then
+    fail "掉电 Boot C: ROOTFS vmo=none（rootfs VMO 交付缺席——入机侧 seam 断）"
+  fi
+  [ -z "$missing" ] && break
+  [ $(( $(date +%s) - t7c )) -gt 300 ] \
+    && fail "掉电 Boot C 300s 标记未到齐（毒环恢复链断？），缺：$missing"
+  sleep 1
+done
+# 盘取证前优雅退 + 等真退（P6 A-6 纪律）。
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+sleep 3
+PWR_C=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
+  || fail "掉电终验分类失败（pwrcls 退出非 0）"
+case "$PWR_C" in
+  "PWR cls=clean "*) ;;
+  *) fail "掉电终验非 clean：$PWR_C（guest 标记全绿而盘面未恢复——恢复 commit 假绿或 ④ 守卫失效）" ;;
+esac
+echo "smoke: B4 掉电相到齐（采样 A/B + 毒环注入 + 恢复终验 $PWR_C）"
+
 exec 3>&-
-echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面））"
+echo "smoke: PASS（金丝雀 ${n} 条严格递增 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + Boot C 恢复终验盘面 clean））"
