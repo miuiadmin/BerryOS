@@ -2,14 +2,15 @@
 //!
 //! 纪律：**纯函数、零分配、零 panic**——一切字段读经 bounds 检查出
 //! Option，畸形输入返 None/半途截断（dump 语境：宁缺勿炸，缺席行本身
-//! 就是事实）。偏移对着 ACPI 6.x 规范的 packed 子表布局钉死（**子表
-//! 无对齐垫**：GICC flags@+13、GICD base@+9、GICR base@+5、GAS 内
-//! address@+4——与 C 结构体习惯偏移不同，host 测试钉板执法）。FDT 是
-//! 唯一大端源（BE magic/size）。
+//! 就是事实）。偏移钉死依据：**V-5a-1 AAVMF/QEMU 真字节裁决**
+//! （GICC flags@+12/PhysBase@+32、GICD base@+8/ver@+20、GICR base@+4、
+//! GAS 内 address@+4——ACPICA 结构视图，与 C 结构体习惯偏移不同）；
+//! 早期 V-5a-0 手抄偏移曾与合成 fixture 同错自洽（elf2pe「合成基准须
+//! 复刻真实产物形态」教训复发），真实字节才是裁决源。FDT 是唯一大端
+//! 源（BE magic/size）。
 //!
-//! host 测试用合成 fixture 钉板（ACPI 表形状 spec 固定，非工具链产物
-//! ——elf2pe「合成基准须复刻真实产物形态」教训不适用）；真实固件形态
-//! 由 V-5a-1 AAVMF/QEMU 实证对拍补拍。
+//! host 测试用合成 fixture 钉板（偏移即断言面，按真机裁决值造）；跨
+//! 固件复验 = V-5a Fusion 实机会话对拍。
 
 // （no_std 由 crate 根声明——模块级重复属 no-op，会被 unused_attributes 点名。）
 
@@ -105,15 +106,26 @@ pub fn xsdt_entries(b: &[u8]) -> Option<XsdtEntries> {
     Some(x)
 }
 
-// —— MADT（sig "APIC"；头 36B + local_intc_addr u64@36 + flags u32@44，
-//    条目起 @48；条目头 = type u8@0 + length u16@1，packed 子表）——
+// —— MADT（sig "APIC"；头 36B + local_intc_addr **u32**@36 + flags u32@40，
+//    条目起 @44；条目头 = type u8@0 + length u16@1，packed 子表）——
+//    V-5a-1 首验实抓（AAVMF/QEMU 真字节裁决，五锚点：GICD base@+8 =
+//    0x0800_0000 / ver@+20 = 2 / GICC flags@+12 = enabled / GICC perf@+20
+//    = 23(PMU PPI) / MSI base@+8 = 0x0802_0000）：① local_intc_addr 曾误
+//    按 u64@36 抄 → 条目起算成 @48；② **type 编号曾错**（0→GICC 是 x86
+//    Local APIC、0x0B→GICD 错位一格）——ARM 系真值：0x0B=GICC、0x0C=GICD、
+//    0x0D=MSI Frame、0x0E=GICR、0x0F=ITS；③ 子域偏移按 ACPICA 结构视图
+//    （子表头 2B：Type u8 + Length u8 高位折叠）——GICC flags@+12/PhysBase
+//    @+32/GICRBase@+60、GICD base@+8/ver@+20、GICR base@+4，与 C 结构体
+//    习惯偏移（flags@13/base@5）不同；合成 fixture 与代码曾同错自洽
+//    （elf2pe「合成基准须复刻真实产物形态」教训复发），真实字节才是裁决源。
 
 pub struct MadtFacts {
-    pub cpu_total: u32,           // GICC 条目（type 0）计数
+    pub cpu_total: u32,           // GICC 条目（type 0x0B）计数
     pub cpu_enabled: u32,         // flags bit0（ACPI_MADT_ENABLED）置位数
-    pub gicd_version: Option<u8>, // GICD 条目 version u8@+21（1=v1…3=v3）
-    pub gicd_base: Option<u64>,   // GICD 条目 base u64@+9
-    pub gicr_base: Option<u64>,   // 首个 GICR 条目 base u64@+5（type 0x0E）
+    pub gicd_version: Option<u8>, // GICD 条目（0x0C）version u8@+20
+    pub gicd_base: Option<u64>,   // GICD 条目 base u64@+8
+    pub gicc_base: Option<u64>,   // 首个 GICC 条目 PhysBase u64@+32（GICv2 面）
+    pub gicr_base: Option<u64>,   // GICR 条目（0x0E）base u64@+4；无则 GICC GICRBase u64@+60 非零兜底
 }
 
 pub fn parse_madt(b: &[u8]) -> Option<MadtFacts> {
@@ -121,11 +133,19 @@ pub fn parse_madt(b: &[u8]) -> Option<MadtFacts> {
         return None;
     }
     let len = le_u32(b, 4)? as usize;
-    if len < 48 || len > b.len() {
+    if len < 44 || len > b.len() {
         return None;
     }
-    let mut f = MadtFacts { cpu_total: 0, cpu_enabled: 0, gicd_version: None, gicd_base: None, gicr_base: None };
-    let mut off = 48usize;
+    let mut f = MadtFacts {
+        cpu_total: 0,
+        cpu_enabled: 0,
+        gicd_version: None,
+        gicd_base: None,
+        gicc_base: None,
+        gicr_base: None,
+    };
+    let mut gicr_in_gicc: Option<u64> = None;
+    let mut off = 44usize;
     while off + 2 <= len {
         let etype = b[off];
         // 长度域读失败（尾随残字节）= 截断走查——已收事实保留（测试
@@ -138,41 +158,57 @@ pub fn parse_madt(b: &[u8]) -> Option<MadtFacts> {
             break; // 畸形条目截断走查——已收事实保留（宁缺勿炸）
         }
         match etype {
-            0 => {
-                // GICC（packed：flags u32@+13，len ≥ 17 才可信）
+            0x0B => {
+                // GICC（len 80：flags u32@+12、PhysBase u64@+32、GICRBase u64@+60）
                 f.cpu_total += 1;
-                if elen >= 17 && le_u32(b, off + 13).unwrap_or(0) & 1 != 0 {
+                if elen >= 16 && le_u32(b, off + 12).unwrap_or(0) & 1 != 0 {
                     f.cpu_enabled += 1;
                 }
+                if f.gicc_base.is_none() && elen >= 40 {
+                    f.gicc_base = le_u64(b, off + 32);
+                }
+                if gicr_in_gicc.is_none() && elen >= 68 {
+                    let a = le_u64(b, off + 60).unwrap_or(0);
+                    if a != 0 {
+                        gicr_in_gicc = Some(a); // GICv3 MADT 双源：GICC 内嵌 GICR 基址
+                    }
+                }
             }
-            0x0B => {
-                // GICD（packed：base u64@+9 / version u8@+21，len ≥ 22 才可信）
-                if elen >= 22 {
-                    f.gicd_base = le_u64(b, off + 9);
-                    f.gicd_version = Some(b[off + 21]);
+            0x0C => {
+                // GICD（len 24：base u64@+8 / version u8@+20）
+                if elen >= 21 {
+                    f.gicd_base = le_u64(b, off + 8);
+                    f.gicd_version = Some(b[off + 20]);
                 }
             }
             0x0E => {
-                // GICR（packed：base u64@+5，len ≥ 13 才可信；首个为准）
-                if elen >= 13 && f.gicr_base.is_none() {
-                    f.gicr_base = le_u64(b, off + 5);
+                // GICR（len 16：base u64@+4，条目源优先于 GICC 内嵌）
+                if elen >= 12 && f.gicr_base.is_none() {
+                    f.gicr_base = le_u64(b, off + 4);
                 }
             }
-            _ => {}
+            _ => {} // 0x0D MSI Frame / 0x0F ITS 等——事实面不消费，走查跳过
         }
         off += elen;
+    }
+    if f.gicr_base.is_none() {
+        f.gicr_base = gicr_in_gicc;
     }
     Some(f)
 }
 
 // —— SPCR（sig "SPCR"；iface u8@36、GAS@40（address_space u8@+0、
-//    address u64@+4 → 表内 @44）、baud u8@60）——
+//    address u64@+4 → 表内 @44）、GSI u32@54、baud u8@58）——V-5a-1
+//    AAVMF 真字节裁决（Linux acpi_table_spcr 同视图：IntType@52/IRQ@53/
+//    GSI@54/baud@58/precision@59/stop@60/flow@61/term@62、PCI id@64..68
+//    = ffff/ffff 非 PCI 全 F；首版 baud@60 读到的是 stop_bits=1）——
 
 pub struct SpcrFacts {
-    pub iface: u8,      // 0=16550 1=16550-sub 3=PL011（ACPI 6.x 口径）
-    pub addr_space: u8, // 0=MMIO 1=PIO
-    pub base: u64,      // 串口基址（事实表「有无串口 + 型号」主源）
-    pub baud: Option<u8>, // 表长 ≥ 61 才有（0 = 固件不设）
+    pub iface: u8,        // 0=16550 1=16550-sub 3=PL011（ACPI 6.x 口径）
+    pub addr_space: u8,   // 0=MMIO 1=PIO
+    pub base: u64,        // 串口基址（事实表「有无串口 + 型号」主源）
+    pub gsi: Option<u32>, // 全局系统中断号（表长 ≥ 58 才有；键盘中断面）
+    pub baud: Option<u8>, // 表长 ≥ 59 才有（3 = QEMU 定值；0 = 固件不设）
 }
 
 pub fn parse_spcr(b: &[u8]) -> Option<SpcrFacts> {
@@ -187,7 +223,8 @@ pub fn parse_spcr(b: &[u8]) -> Option<SpcrFacts> {
         iface: b[36],
         addr_space: b[40],
         base: le_u64(b, 44)?,
-        baud: if len >= 61 { Some(b[60]) } else { None },
+        gsi: if len >= 58 { le_u32(b, 54) } else { None },
+        baud: if len >= 59 { Some(b[58]) } else { None },
     })
 }
 
@@ -366,28 +403,30 @@ mod tests {
 
     #[test]
     fn madt_faces() {
-        let mut v = vec![0u8; 48];
+        let mut v = vec![0u8; 44];
         v[..4].copy_from_slice(b"APIC");
-        // GICC 禁用（flags@+13 = 0）+ GICC 启用（bit0）——packed 偏移执法点。
+        // GICC 禁用（flags@+12 = 0）+ GICC 启用（bit0；PhysBase@+32 =
+        // 0x0801_0000 GICv2 CPU Interface）——V-5a-1 真字节裁决偏移执法点。
         for fl in [0u32, 1] {
             let mut e = vec![0u8; 80];
-            e[0] = 0;
+            e[0] = 0x0B;
             put16(&mut e, 1, 80);
-            put32(&mut e, 13, fl);
+            put32(&mut e, 12, fl);
+            put64(&mut e, 32, 0x0801_0000);
             v.extend_from_slice(&e);
         }
-        // GICD：base u64@+9 / version u8@+21。
+        // GICD（0x0C）：base u64@+8 / version u8@+20。
         let mut d = vec![0u8; 24];
-        d[0] = 0x0B;
+        d[0] = 0x0C;
         put16(&mut d, 1, 24);
-        put64(&mut d, 9, 0x0800_0000);
-        d[21] = 3;
+        put64(&mut d, 8, 0x0800_0000);
+        d[20] = 2;
         v.extend_from_slice(&d);
-        // GICR：base u64@+5。
+        // GICR（0x0E）：base u64@+4（条目源优先于 GICC 内嵌）。
         let mut r = vec![0u8; 16];
         r[0] = 0x0E;
         put16(&mut r, 1, 16);
-        put64(&mut r, 5, 0x040A_0000_0000);
+        put64(&mut r, 4, 0x040A_0000_0000);
         v.extend_from_slice(&r);
         // 畸形尾条目（len=0）——走查截断但已收事实保留。
         v.extend_from_slice(&[0x00, 0x00]);
@@ -397,15 +436,30 @@ mod tests {
         let f = parse_madt(&v).unwrap();
         assert_eq!(f.cpu_total, 2);
         assert_eq!(f.cpu_enabled, 1);
-        assert_eq!(f.gicd_version, Some(3));
+        assert_eq!(f.gicd_version, Some(2));
         assert_eq!(f.gicd_base, Some(0x0800_0000));
+        assert_eq!(f.gicc_base, Some(0x0801_0000));
         assert_eq!(f.gicr_base, Some(0x040A_0000_0000));
         // 坏签名 → None。
         let mut bad = v.clone();
         bad[..4].copy_from_slice(b"XPIC");
         assert!(parse_madt(&bad).is_none());
-        // 头过短（< 48）→ None。
+        // 头过短 → None。
         assert!(parse_madt(&v[..44]).is_none());
+        // GICv3 双源：无 0x0E 条目时 GICC 内嵌 GICRBase@+60（非零）兜底。
+        let mut v3 = vec![0u8; 44];
+        v3[..4].copy_from_slice(b"APIC");
+        let mut g = vec![0u8; 80];
+        g[0] = 0x0B;
+        put16(&mut g, 1, 80);
+        put32(&mut g, 12, 1);
+        put64(&mut g, 60, 0x040A_0000_0000);
+        v3.extend_from_slice(&g);
+        let l3 = v3.len() as u32;
+        put32(&mut v3, 4, l3);
+        let f3 = parse_madt(&v3).unwrap();
+        assert_eq!(f3.gicr_base, Some(0x040A_0000_0000));
+        assert_eq!(f3.gicc_base, Some(0)); // GICv3 GICC PhysBase 恒 0（真值即事实）
     }
 
     // —— SPCR ——
@@ -418,21 +472,24 @@ mod tests {
         v[36] = 3; // PL011
         v[40] = 0; // MMIO
         put64(&mut v, 44, 0x0900_0000); // GAS address @ 表内 44（GAS+4）
-        v[60] = 7; // baud
+        put32(&mut v, 54, 33); // GSI u32@54（V-5a-1 真字节裁决偏移执法点）
+        v[58] = 3; // baud u8@58（QEMU 定值 3）
         let f = parse_spcr(&v).unwrap();
         assert_eq!(f.iface, 3);
         assert_eq!(f.addr_space, 0);
         assert_eq!(f.base, 0x0900_0000);
-        assert_eq!(f.baud, Some(7));
+        assert_eq!(f.gsi, Some(33));
+        assert_eq!(f.baud, Some(3));
         assert_eq!(spcr_iface_name(f.iface), Some("PL011"));
-        // 短表（< 52）无 GAS → None；61 前无 baud → None 域。
-        let mut s = vec![0u8; 56];
+        // 短表（< 52）无 GAS → None；58 前无 GSI、59 前无 baud → 两域 None。
+        let mut s = vec![0u8; 57];
         s[..4].copy_from_slice(b"SPCR");
-        put32(&mut s, 4, 56);
+        put32(&mut s, 4, 57);
         s[36] = 0;
         put64(&mut s, 44, 0x3F8);
         let g = parse_spcr(&s).unwrap();
         assert_eq!(g.baud, None);
+        assert_eq!(g.gsi, None);
         assert_eq!(g.iface, 0);
     }
 

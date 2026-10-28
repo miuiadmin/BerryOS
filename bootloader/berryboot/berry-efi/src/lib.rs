@@ -156,8 +156,10 @@ pub const EFI_SIMPLE_NETWORK_PROTOCOL_GUID: EfiGuid = EfiGuid {
 /// LocateHandleBuffer 的搜索型（只收用到的 ByProtocol=2）。
 pub const EFI_LOCATE_BY_PROTOCOL: u32 = 2;
 
-/// PCI_IO 访问宽枚举值 EfiPciIoWidthUint32 = 4（Uint32 配置空间读）。
-pub const EFI_PCI_IO_WIDTH_UINT32: usize = 4;
+/// PCI_IO 访问宽枚举值 EfiPciIoWidthUint32 = 2（枚举序 Uint8=0/Uint16=1/
+/// Uint32=2/Uint64=3——V-5a-1 首验实抓：曾误按「4 字节宽」写成 4=FifoUint8，
+/// Pci.Read 全拒 → pci: n=N 后零 pci[i] 行）。
+pub const EFI_PCI_IO_WIDTH_UINT32: usize = 2;
 
 /// GRAPHICS_OUTPUT_PROTOCOL GUID（9042A9DE-23DC-4A38-96FB-7ADED080516A）。
 pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: EfiGuid = EfiGuid {
@@ -393,40 +395,49 @@ pub struct EfiLoadedImageProtocol {
     pub device_handle: *mut c_void, // @24——SFS 定位路由的目标
 }
 
-/// PCI_IO_PROTOCOL（176B 全表）——pci_read 类型化（@64：Pci.ACCESS.Read
-/// Uint32 配置空间读 = vendor/device/class 取证面），其余槽具名 `*mut
-/// c_void` 占位（同 EfiBootServices 纪律：保偏移可审计，不描无用签名）。
+/// PCI_IO_PROTOCOL（160B 全表）——pci_read 类型化（@48：Pci.ACCESS.Read
+/// Uint32 配置空间读 = vendor/device/class 取证面）、get_location 类型化
+/// （@112：BDF 定位），其余槽具名 `*mut c_void` 占位（同 EfiBootServices
+/// 纪律：保偏移可审计，不描无用签名）。布局依据 EDK2 MdePkg PciIo.h 头
+/// 逐字：**开头是 PollMem+PollIo 两枚单函数**（非一枚 Poll——V-5a-1 两轮
+/// 实抓：幻影 4 槽版 pci_read@64 落 CopyMem（7 参）、误并 1 槽版 @40 落
+/// Io.Write（6 参），两者都被以 EFI_INVALID_PARAMETER 拒——签名不匹配
+/// 类故障的活证面）。
 /// V-5a berrydump 消费。
 #[repr(C)]
 pub struct EfiPciIoProtocol {
-    pub poll_mem_read: *mut c_void,      // @0（PollMem.ACCESS.Read）
-    pub poll_mem_write: *mut c_void,     // @8
-    pub poll_io_read: *mut c_void,       // @16
-    pub poll_io_write: *mut c_void,      // @24
-    pub mem_read: *mut c_void,           // @32（Mem.ACCESS.Read）
-    pub mem_write: *mut c_void,          // @40
-    pub io_read: *mut c_void,            // @48
-    pub io_write: *mut c_void,           // @56
+    pub poll_mem: *mut c_void,            // @0（单函数——非 ACCESS 对）
+    pub poll_io: *mut c_void,             // @8
+    pub mem_read: *mut c_void,            // @16（Mem.ACCESS.Read）
+    pub mem_write: *mut c_void,           // @24
+    pub io_read: *mut c_void,             // @32（Io.ACCESS.Read）
+    pub io_write: *mut c_void,            // @40
     pub pci_read: unsafe extern "C" fn(
         this: *mut EfiPciIoProtocol,
-        width: usize,           // EFI_PCI_IO_WIDTH（Uint32=4）
+        width: usize,           // EFI_PCI_IO_WIDTH（Uint32=2：枚举序非字节宽）
         offset: u64,            // PCI 配置空间偏移（0=ven/dev、8=class 三元）
         count: usize,
         buffer: *mut c_void,    // 出参：读出值落点
-    ) -> EfiStatus,                     // @64（Pci.ACCESS.Read）
-    pub pci_write: *mut c_void,         // @72
-    pub copy_mem: *mut c_void,          // @80
-    pub map: *mut c_void,               // @88
-    pub unmap: *mut c_void,             // @96
-    pub allocate_buffer: *mut c_void,   // @104
-    pub free_buffer: *mut c_void,       // @112
-    pub flush: *mut c_void,             // @120
-    pub get_location: *mut c_void,      // @128（seg/bus/dev/func 定位）
-    pub attributes: *mut c_void,        // @136
-    pub get_bar_attributes: *mut c_void, // @144
-    pub set_bar_attributes: *mut c_void, // @152
-    pub rom_size: u64,                  // @160
-    pub rom_image: *mut c_void,         // @168
+    ) -> EfiStatus,                     // @48（Pci.ACCESS.Read）
+    pub pci_write: *mut c_void,         // @56
+    pub copy_mem: *mut c_void,          // @64
+    pub map: *mut c_void,               // @72
+    pub unmap: *mut c_void,             // @80
+    pub allocate_buffer: *mut c_void,   // @88
+    pub free_buffer: *mut c_void,       // @96
+    pub flush: *mut c_void,             // @104
+    pub get_location: unsafe extern "C" fn(
+        this: *mut EfiPciIoProtocol,
+        segment: *mut usize,  // 全出参（seg/bus/dev/func——V-5a-1 布局探针）
+        bus: *mut usize,
+        device: *mut usize,
+        function: *mut usize,
+    ) -> EfiStatus,                     // @112（seg/bus/dev/func 定位）
+    pub attributes: *mut c_void,        // @120
+    pub get_bar_attributes: *mut c_void, // @128
+    pub set_bar_attributes: *mut c_void, // @136
+    pub rom_size: u64,                  // @144
+    pub rom_image: *mut c_void,         // @152
 }
 
 /// EFI_FILE_INFO GUID（09576E92-6D3F-11D2-8E39-00A0C969723B）——GetInfo
@@ -567,7 +578,7 @@ mod tests {
         assert_eq!(size_of::<EfiLoadedImageProtocol>(), 32);
         assert_eq!(size_of::<EfiMemoryDescriptor>(), 40);
         assert_eq!(size_of::<EfiConfigurationTable>(), 24); // V-5a
-        assert_eq!(size_of::<EfiPciIoProtocol>(), 176); // V-5a
+        assert_eq!(size_of::<EfiPciIoProtocol>(), 160); // V-5a-1 归真（EDK2 头逐字）
     }
 
     #[test]
@@ -621,19 +632,22 @@ mod tests {
     #[test]
     fn cfg_table_and_pci_io_layout() {
         // V-5a：配置表数组步进 24B（guid@0 / vendor_table@16）——扫描走查的
-        // 单一事实源；PciIo 全表 176B、pci_read@64 恰在表正中（Pci 面
-        // Mem@32/Io@48 之后），两结构任一漂移 host 期即炸。
+        // 单一事实源；PciIo 全表 160B、开头 **PollMem+PollIo 两枚单函数**
+        // （EDK2 PciIo.h 逐字）后 Mem/Io/Pci 三对（Pci.Read@48），任一漂移
+        // host 期即炸（V-5a-1 两轮幻影槽教训的钉板执法点）。
         let c = 0x1000usize as *const EfiConfigurationTable;
         assert_eq!(off!(c, vendor_guid), 0);
         assert_eq!(off!(c, vendor_table), 16);
         let p = 0x1000usize as *const EfiPciIoProtocol;
-        assert_eq!(off!(p, mem_read), 32);
-        assert_eq!(off!(p, io_read), 48);
-        assert_eq!(off!(p, pci_read), 64);
-        assert_eq!(off!(p, pci_write), 72);
-        assert_eq!(off!(p, get_location), 128);
-        assert_eq!(off!(p, rom_size), 160);
-        assert_eq!(off!(p, rom_image), 168);
+        assert_eq!(off!(p, poll_mem), 0);
+        assert_eq!(off!(p, poll_io), 8);
+        assert_eq!(off!(p, mem_read), 16);
+        assert_eq!(off!(p, io_read), 32);
+        assert_eq!(off!(p, pci_read), 48);
+        assert_eq!(off!(p, pci_write), 56);
+        assert_eq!(off!(p, get_location), 112);
+        assert_eq!(off!(p, rom_size), 144);
+        assert_eq!(off!(p, rom_image), 152);
     }
 
     #[test]

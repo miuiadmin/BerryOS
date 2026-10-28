@@ -110,7 +110,7 @@
 - 产出物 = **设备事实表**（本文附录 B 回填）：Fusion ARM64 虚机的 GIC 版本与 CPU 数、盘控制器型号（NVMe? AHCI? virtio 有无）、**有无 PL011/16550 串口**（决定键盘降级线是否存在）、USB 控制器（xHCI?）、GOP 分辨率/格式、ACPI 还是 DT（发现机制）。
 - 方法：Fusion 装 UEFI shell / 任意 EFI 调试 app dump（V-0a 骨架顺手复用）+ Linux live 起来 `lspci/lsdev` 对拍。
 - **此刀定 V-5b~V-7 的范围盒**——事实表没拿全不动驱动码。
-- **V-5a-0 工具面已落（2026-10-28，纯 host 产链零 QEMU）**：`bootloader/berrydump/` 独立 workspace EFI dump 应用（**不进** berryboot members / 不动 justfile / 不进 image 产链——dump 工具编译错零耦合 `just build-boot`/`just image` 主链；berry-efi 跨 workspace path dep 合法：纯数据 crate）。同刀 berry-efi 加法扩展：`EfiConfigurationTable`(24B) / `EfiPciIoProtocol`(176B，pci_read@64 typed Uint32 配置空间读) / free_pool@72·locate_handle_buffer@312 typed / ACPI20·DTB·PciIo·BlockIo·SimpleNetwork 五 GUID——**既有消费者 BerryBoot 零扰动实证**（BERRYBOOT.EFI 产链复跑 entry=0x1200 img=0x2458B relocs=5 形状不变；berry-efi host 13→15 测）。纯解析面 `app/src/parse.rs`：RSDP/XSDT/MADT/SPCR/DBG2/FDT 全 bounds-checked Option、畸形截断不炸（半程事实保留——MADT 尾随残字节执法点 host 钉板）；**ACPI packed 子表偏移钉板**（GICC flags@+13、GICD base@+9/ver@+21、GICR base@+5、GAS address@+4——与 C 结构体习惯偏移不同，合成 fixture 8 测钉死）。**runbook**：① `sh bootloader/berrydump/build.sh` → `out/BERRYDUMP.EFI`（16896B）；② 放进 FAT 卷 `\EFI\BOOT\BOOTAA64.EFI`（可移动介质默认路径——Fusion/AAVMF 直接自举；`just image` 产物换名同位即可）；③ Fusion ARM64 虚机挂盘开机，ConOut（窗口/串口）收割行式事实；④ 按行前缀对表回填附录 B。**缺席行也是事实**（`xxx: absent`——机器可读缺席报告纪律）。挂账 V-5a-1：AAVMF/QEMU 首验（小 QEMU 窗，与在途 workflow 排程互斥）+ Fusion 实机会话（手动）+ `lspci` 对拍收口。
+- **V-5a-0 工具面已落（2026-10-28，纯 host 产链零 QEMU）**：`bootloader/berrydump/` 独立 workspace EFI dump 应用（**不进** berryboot members / 不动 justfile / 不进 image 产链——dump 工具编译错零耦合 `just build-boot`/`just image` 主链；berry-efi 跨 workspace path dep 合法：纯数据 crate）。同刀 berry-efi 加法扩展：`EfiConfigurationTable`(24B) / `EfiPciIoProtocol`(176B，pci_read@64 typed Uint32 配置空间读) / free_pool@72·locate_handle_buffer@312 typed / ACPI20·DTB·PciIo·BlockIo·SimpleNetwork 五 GUID——**既有消费者 BerryBoot 零扰动实证**（BERRYBOOT.EFI 产链复跑 entry=0x1200 img=0x2458B relocs=5 形状不变；berry-efi host 13→15 测）。纯解析面 `app/src/parse.rs`：RSDP/XSDT/MADT/SPCR/DBG2/FDT 全 bounds-checked Option、畸形截断不炸（半程事实保留——MADT 尾随残字节执法点 host 钉板）；**ACPI packed 子表偏移钉板**（GICC flags@+13、GICD base@+9/ver@+21、GICR base@+5、GAS address@+4——与 C 结构体习惯偏移不同，合成 fixture 8 测钉死）。**runbook**：① `sh bootloader/berrydump/build.sh` → `out/BERRYDUMP.EFI`（16896B）；② 放进 FAT 卷 `\EFI\BOOT\BOOTAA64.EFI`（可移动介质默认路径——Fusion/AAVMF 直接自举；`just image` 产物换名同位即可）；③ Fusion ARM64 虚机挂盘开机，ConOut（窗口/串口）收割行式事实；④ 按行前缀对表回填附录 B。**缺席行也是事实**（`xxx: absent`——机器可读缺席报告纪律）。**V-5a-1 段① 已收官 2026-10-28**（AAVMF/QEMU 首验三实抓修复闭环，详见 `docs/阶段沿革.md` 同日条）：① MADT 偏移全套按真字节归真（条目起@44、ARM type 编号 0x0B..0x0F、ACPICA 结构视图子域）+ 撕裂 hex 重组法证；② **PciIo 布局两轮实抓**——真表 160B、开头 PollMem+PollIo 两枚单函数、Pci.Read@48/GetLocation@112（EDK2 头逐字裁决；布局错 = 恒 INVALID_PARAMETER 不炸的签名不匹配故障面）；③ SPCR GSI@54/baud@58 归真 + SpcrFacts 增 gsi 域；④ madtraw/spcrraw hex 锚转常驻行 + pci 失败 loud（pcih[i]/pcir[i]）+ pci[i] 增 `loc=` BDF 段；⑤ aavmf-firstboot.sh 自含首验脚本入库。**AAVMF 基线事实见附录 B 参照列**。挂账段②③④：Fusion 实机会话（用户手动）+ lspci 对拍 + 附录 B Fusion 列回填 = V-5a 收口。
 
 ### V-5b 盘驱动（按事实表选型）
 - NVMe（预测概率大）：admin queue + IO queue + PRP——berry-virtio 同形纯函数 crate（RingLayout/描述符编解码拆 host 测）+ 常驻服务（vblk 纪律全套：静默常驻/超时重臂/服务不死）。
@@ -182,13 +182,14 @@ C-0 → C-1 → V-0a → V-0b → C-2a → V-1 → V-2 → V-3/V-4（= M-G1 ✅ 
 
 ## 附录 B：Fusion 设备事实表（V-5a 回填）
 
-| 项 | 事实 | 影响 |
-|----|------|------|
-| CPU 拓扑 / GIC 版本 | 待实证 | GICv3 → HAL 增量刀 |
-| 盘控制器 | 待实证 | NVMe → 新驱动刀；virtio → 复用 vblk |
-| 串口（PL011/16550） | 待实证 | 有 → 键盘降级线成立 |
-| USB 控制器 | 待实证 | xHCI → V-7 范围 |
-| GOP（分辨率/格式） | 待实证 | fbcon 几何 |
-| 硬件发现机制（ACPI/DT） | 待实证 | devmgr v2 输入面；v0 可全走 UEFI handoff |
+| 项 | Fusion 事实 | AAVMF 参照（V-5a-1 段① 实测 2026-10-28） | 影响 |
+|----|------|------|------|
+| CPU 拓扑 / GIC 版本 | 待实证 | `cpu=1/1`、GICv2（gicd@0x8000000 / gicc@0x8010000 / gicr=无条目） | GICv3 → HAL 增量刀 |
+| 盘控制器 | 待实证 | PCI 枚举无盘控制器（usb-storage 走 XHCI；`hcs: blk=1` = USB 盘 BlockIo） | NVMe → 新驱动刀；virtio → 复用 vblk |
+| 串口（PL011/16550） | 待实证 | PL011@0x9000000、GSI=33、baud=3（SPCR+DBG2 双表同基址交叉验证 ✓） | 有 → 键盘降级线成立 |
+| USB 控制器 | 待实证 | qemu-xhci `1b36:000d` @0/2/0（c=0c0330） | xHCI → V-7 范围 |
+| GOP（分辨率/格式） | 待实证 | 800x600 fmt=1 m=1/3（640x480/800x600/1024x768 三模式） | fbcon 几何 |
+| 硬件发现机制（ACPI/DT） | 待实证 | ACPI 2.0（acpi20=1 dtb=0；XSDT 九表 FACP/APIC/PPTT/GTDT/MCFG/SPCR/DBG2/IORT/BGRT） | devmgr v2 输入面；v0 可全走 UEFI handoff |
+| （旁证）平台 virtio | 待实证 | virtio-net `1af4:1000` @0/1/0（QEMU 默认 NIC——非显式配置即在位） | Fusion 若有 virtio-blk → 直接复用 vblk |
 
 > V-5a-0 起回填的行式映射（berrydump 输出 → 本表行）：`madt:` → CPU/GIC 行（`cpu=e/t` + `gicd=3(GICv3)` + gicd@/gicr@ 基址）；`pci:` → 盘控制器/USB/网卡行（class 三元：0108xx=NVMe、0C0330=XHCI、0200xx=ETH——**USB 事实主源**）；`spcr:`/`dbg2:` → 串口行（iface=3=PL011 + base，两表交叉验证）；`gop:`/`gop[m]:` → GOP 行；`cfg:`+`fdt:` → 发现机制行（acpi20/dtb 计数 + FDT magic 校验）；`hcs:` blk/net 计数 = 旁证。主源 = berrydump 实机输出；对拍 = Linux live `lspci`（方法原案）。

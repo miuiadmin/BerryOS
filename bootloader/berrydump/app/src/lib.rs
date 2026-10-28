@@ -2,7 +2,8 @@
 //!
 //! 定位：**纯取证工具**（S-0/fw_cfg 方法论——先拿事实再写驱动码）。经
 //! ConOut 打机器可 grep 的行式事实（`fw:`/`gop:`/`cfg:`/`acpi:`/`xsdt:`/
-//! `madt:`/`spcr:`/`dbg2:`/`fdt:`/`pci:`/`hcs:` 前缀），消费端 = 人/脚本
+//! `madt:`/`spcr:`/`dbg2:`/`fdt:`/`pci:`/`hcs:` 前缀 + `madtraw:`/`spcrraw:`
+//! 原始 hex 锚——跨固件表形异时的裁决源），消费端 = 人/脚本
 //! 对拍回填 `docs/VM里程碑设计草案.md` 附录 B。**缺席显式打印**（`xxx:
 //! absent`——机器可读缺席报告纪律）；**不 EBS**（dump 完返回
 //! EFI_SUCCESS，ConOut 全程活——与 BerryBoot 的 EBS 后直写复杂度无涉）。
@@ -370,6 +371,27 @@ pub extern "C" fn efi_main(
 
     // MADT：CPU 数 + GIC 拓扑（附录 B 首行事实）。
     if madt_pa != 0 {
+        // MADT 原始 hex 锚（madtraw 每行 40B——Line 帽 128：前缀 9 + 80
+        // hex = 89 恒安全；首版 60B/行 = 129 越帽每行丢 1 字符、拼接后半
+        // 字节错位）。**常驻行**（非临时调试）：V-5a-1 靠真实字节裁决了
+        // packed 偏移（合成 fixture 与代码同错自洽的 elf2pe 教训）；Fusion
+        // 会话遇固件表形异（行式值可疑）时，raw 是唯一裁决源——ACPI 三
+        // 表（MADT/SPCR/XSDT）中仅 MADT 体量值得锚（172B/5 行）。
+        if let Some(t) = unsafe { read_table(madt_pa) } {
+            for c in 0..5 {
+                let s = c * 40;
+                if s >= t.len() {
+                    break;
+                }
+                let e = (s + 40).min(t.len());
+                print_line(con_out, |l| {
+                    l.push_str("madtraw: ");
+                    for i in s..e {
+                        l.push_hexn(t[i] as u64, 2);
+                    }
+                });
+            }
+        }
         match unsafe { read_table(madt_pa) }.and_then(parse::parse_madt) {
             Some(m) => print_line(con_out, |l| {
                 l.push_str("madt: cpu=");
@@ -394,6 +416,11 @@ pub extern "C" fn efi_main(
                     Some(a) => l.push_hex(a),
                     None => l.push(b"-"),
                 }
+                l.push_str(" gicc@");
+                match m.gicc_base {
+                    Some(a) => l.push_hex(a),
+                    None => l.push(b"-"),
+                }
                 l.push_str(" gicr@");
                 match m.gicr_base {
                     Some(a) => l.push_hex(a),
@@ -408,6 +435,20 @@ pub extern "C" fn efi_main(
 
     // SPCR：串口有无 + 型号 + 基址（键盘降级线成立与否的主判据）。
     if spcr_pa != 0 {
+        // SPCR @36 起尾部 hex 锚（常驻行同 madtraw——baud@58/GSI@54 即靠
+        // 本行真字节裁决：Linux acpi_table_spcr 视图，首版 baud@60 读到
+        // stop_bits=1）。
+        if let Some(t) = unsafe { read_table(spcr_pa) } {
+            let e = t.len().min(88);
+            if e > 36 {
+                print_line(con_out, |l| {
+                    l.push_str("spcrraw: ");
+                    for i in 36..e {
+                        l.push_hexn(t[i] as u64, 2);
+                    }
+                });
+            }
+        }
         match unsafe { read_table(spcr_pa) }.and_then(parse::parse_spcr) {
             Some(s) => print_line(con_out, |l| {
                 l.push_str("spcr: iface=");
@@ -421,6 +462,11 @@ pub extern "C" fn efi_main(
                 l.push_hex(s.base);
                 l.push_str(" sp=");
                 l.push_u32(s.addr_space as u32);
+                l.push_str(" gsi=");
+                match s.gsi {
+                    Some(g) => l.push_u32(g),
+                    None => l.push(b"-"),
+                }
                 l.push_str(" baud=");
                 match s.baud {
                     Some(b) => l.push_u32(b as u32),
@@ -502,30 +548,48 @@ pub extern "C" fn efi_main(
                     )
                 };
                 if hp != EFI_SUCCESS || iface.is_null() {
+                    // 失败 loud（假缺席比噪声糟——handle 协议查不到本身是事实）。
+                    print_line(con_out, |l| {
+                        l.push_str("pcih[");
+                        l.push_u32(i as u32);
+                        l.push_str("]: st=");
+                        l.push_hex(hp as u64);
+                    });
                     continue;
                 }
                 let pio = unsafe { &*(iface as *const EfiPciIoProtocol) };
                 let mut r0 = 0u32;
                 let mut r8 = 0u32;
-                let ok0 = unsafe {
+                let st0 = unsafe {
                     (pio.pci_read)(
                         iface as *mut EfiPciIoProtocol,
                         EFI_PCI_IO_WIDTH_UINT32,
                         0,
                         1,
                         &mut r0 as *mut u32 as *mut c_void,
-                    ) == EFI_SUCCESS
+                    )
                 };
-                let ok8 = unsafe {
+                let st8 = unsafe {
                     (pio.pci_read)(
                         iface as *mut EfiPciIoProtocol,
                         EFI_PCI_IO_WIDTH_UINT32,
                         8,
                         1,
                         &mut r8 as *mut u32 as *mut c_void,
-                    ) == EFI_SUCCESS
+                    )
                 };
-                if ok0 && ok8 {
+                if st0 == EFI_SUCCESS && st8 == EFI_SUCCESS {
+                    // BDF 定位（lspci 对拍形状——段③ 交叉验证面）。
+                    let (mut seg, mut bus, mut dev_, mut fun) = (0usize, 0usize, 0usize, 0usize);
+                    let _ = unsafe {
+                        (pio.get_location)(
+                            iface as *mut EfiPciIoProtocol,
+                            &mut seg,
+                            &mut bus,
+                            &mut dev_,
+                            &mut fun,
+                        )
+                    };
                     let ven = (r0 & 0xFFFF) as u64;
                     let dev = ((r0 >> 16) & 0xFFFF) as u64;
                     let base = ((r8 >> 24) & 0xFF) as u8;
@@ -535,7 +599,13 @@ pub extern "C" fn efi_main(
                     print_line(con_out, |l| {
                         l.push_str("pci[");
                         l.push_u32(i as u32);
-                        l.push_str("]: ven=");
+                        l.push_str("]: loc=");
+                        l.push_u32(bus as u32);
+                        l.push(b"/");
+                        l.push_u32(dev_ as u32);
+                        l.push(b"/");
+                        l.push_u32(fun as u32);
+                        l.push_str(" ven=");
                         l.push_hexn(ven, 4);
                         l.push_str(" dev=");
                         l.push_hexn(dev, 4);
@@ -546,6 +616,16 @@ pub extern "C" fn efi_main(
                             Some(n) => l.push_str(n),
                             None => l.push(b"?"),
                         }
+                    });
+                } else {
+                    // 配置读失败 loud——静默跳过 = 假缺席（事实表漏行）。
+                    print_line(con_out, |l| {
+                        l.push_str("pcir[");
+                        l.push_u32(i as u32);
+                        l.push_str("]: s0=");
+                        l.push_hex(st0 as u64);
+                        l.push_str(" s8=");
+                        l.push_hex(st8 as u64);
                     });
                 }
             }
@@ -598,13 +678,15 @@ mod tests {
     #[test]
     fn line_push_and_hexn() {
         let mut l = Line::new();
-        l.push_str("pci[0]: ven=");
+        l.push_str("pci[0]: loc=");
+        l.push_u32(2);
+        l.push_str(" ven=");
         l.push_hexn(0x106B, 4);
         l.push_str(" c=");
         l.push_hexn(0x0C0330, 6);
         l.push(b" ");
         l.push_str("XHCI");
-        assert_eq!(&l.buf[..l.n], b"pci[0]: ven=106b c=0c0330 XHCI");
+        assert_eq!(&l.buf[..l.n], b"pci[0]: loc=2 ven=106b c=0c0330 XHCI");
         // 定宽零填充：ven=0x12 → "0012"。
         let mut l2 = Line::new();
         l2.push_hexn(0x12, 4);
