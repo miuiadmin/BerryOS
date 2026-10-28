@@ -134,6 +134,13 @@ pipe_capture 每段现 dup 现传（berry-exec 全部 Err 早退点均在 env se
 - **sort/du 处置**：P4 实测判决双双不可行——崩点在 std `run_spawn_hooks`
   （早于 pthread_create），线程面平台缺口依旧；两件挂账维持（bin 仍随 rootfs
   发行，验收面留缺口解除另刀）。§① 预言的 tail 宽桩面已闭环，无新挂账。
+  **（2026-10-28 T-1 段⓪法证勘误**：崩点定位不变——确在 run_spawn_hooks、
+  早于 pthread_create——但根因归因改写：非「线程面平台缺口」，而是 berry-libc
+  crt0 **原位 TLS 初值污染**（.tbss 窗 = 活 .data.rel.ro 文件字节，三方共违约
+  .tbss 零初始化契约），家族全扫 24/38 带毒（uu 家族全军覆没）——详见
+  `docs/法证-TLS原位方案崩因归因.md`。「挂账维持」结论不变；解锁钥匙 =
+  TLS 提供面修复刀（crt0 拷贝式），修后 sort/du 才首次真正抵达
+  pthread_create=EAGAIN 第二层。）
 - **三镜审查修复轮（2026-10-27，18 findings——修 15 / 驳 3）**：
   grep 四修：退出码 GNU 口径（旧式 `any != o.inv` 在 -v 下两态恰反转——
   有选中退 1/零选中退 0；改 `-q 命中 0 最优先 → 错 2 → 选中存在（-v 同权）
