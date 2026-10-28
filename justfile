@@ -434,6 +434,10 @@ test-host:
     # 后 .tbss∩文件字节无害只配审计；rootfs.cpio 缺席打跳过不 FAIL）。
     python3 tools/tlsscan.py --selftest
     python3 tools/tlsscan.py --audit
+    # A1-3a：mkcpio 切分器守卫（--split 卷产链：重装恒等/卷帽/无空尾卷/
+    # 命名三形/非正卷宽拒——门禁自身坏 = A1-3b 内核 VMO 拼装核心不变量
+    # 静默劣化，mkfat --selftest 同位纪律）。
+    python3 tools/mkcpio.py --selftest-split
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
