@@ -9,6 +9,9 @@
 set -e
 cd "$(dirname "$0")"
 
+# 裸 shell 下 cargo 不在 PATH（justfile 已固化 ~/.cargo/bin——独立脚本自带同款）
+command -v cargo >/dev/null 2>&1 || export PATH="$HOME/.cargo/bin:$PATH"
+
 CARGO_TARGET_DIR=cargo-target cargo build --release
 
 RUST_LLD="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"
