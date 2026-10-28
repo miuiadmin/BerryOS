@@ -48,24 +48,45 @@ static mut ROOTFS: Option<RootfsBuf> = None;
 /// 内核堆大对象 = 单块连续 buddy 块（heap.rs 整页路径），21.3MiB rootfs 在
 /// EFI 路的固件碎块 + blob 自占 20.4MiB 地形下结构性拿不到 order-13 对齐
 /// 块（C-2c smoke-image 实踩 boot panic）；借片 + VMO 逐页 commit 两路皆
-/// 碎片免疫。
+/// 碎片免疫。A1-3b 起第三形态 **Assembled**：fw_cfg 多卷路（40MB+ blob）
+/// boot 期就逐 chunk 拼装进 VMO——堆大单块形态整体绕开（A1-1 地形墙的正解）。
 enum RootfsBuf {
     Borrowed(&'static [u8]),
     Owned(alloc::vec::Vec<u8>),
+    /// fw_cfg 多卷拼装产物（A1-3b）：装载终点 = 单一 VMO（Σ ≤ 128MiB，A1-2
+    /// 帽内），消费面与另两源归一（cpio walk 视图不变，berry-exec/svcmgr
+    /// 零改动）。逻辑字节长（Σ 卷 size）仅供打点——VMO 容量页对齐含尾零
+    /// 页，cpio walk 靠 TRAILER!!! 自终止不依赖精确尾（G-eco-c 口径）。
+    Assembled(vmo::Vmo, usize),
 }
 
 impl RootfsBuf {
-    fn as_slice(&self) -> &[u8] {
+    fn len(&self) -> usize {
         match self {
-            RootfsBuf::Borrowed(b) => b,
-            RootfsBuf::Owned(v) => v,
+            RootfsBuf::Borrowed(b) => b.len(),
+            RootfsBuf::Owned(v) => v.len(),
+            RootfsBuf::Assembled(_, n) => *n,
         }
     }
 }
 
 /// rootfs 大小上限——与 `vmo_create` 的 32MiB 同口径（no-panic：巨 blob 的
 /// 分配 abort 是 boot 期可触发 panic，超限降级为「无 rootfs」存活）。
+/// A1-3b 起语义拆分（帽分家，容量工程前置-A1 §3.1）：本帽 = **单卷帽**
+/// （fw_cfg 单具名文件/单暂存块面，mkcpio `--split 32` 产链契约）；
+/// 多卷总量另见 [`ROOTFS_TOTAL_MAX`]。
 const ROOTFS_MAX: usize = 32 << 20;
+
+/// fw_cfg 多卷**总量帽**（A1-3b）——拼装终点单一 VMO，须 ≤ A1-2 的
+/// `VMO_MAX_SIZE`（128MiB，syscall.rs）同口径；Σ 超帽 = 产链违约，拒收
+/// 降级（boot 期无 panic 纪律）。
+const ROOTFS_TOTAL_MAX: usize = 128 << 20;
+
+/// fw_cfg 多卷逐 chunk 拼装的堆暂存块（A1-3b）——4MiB = order 10 单块，
+/// 冷启/常态地形均稳定可得（C-2c 实证 13.8MiB order 12 冷启可达，本块更
+/// 低一档）；**堆峰 = 单 chunk 非全 blob**（40MB+ = order 15 > MAX_ORDER 13
+/// 的堆单块结构性不可得，A1-1 地形墙的装载侧执法）。
+const ROOTFS_CHUNK: usize = 4 << 20;
 
 /// 全局分配器：内核 slab 堆（小对象走 slab，大对象走整页）。
 #[global_allocator]
@@ -93,6 +114,80 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // PanicMessage 实现了 Display（1.95 起 message() 不再返回 Option）。
     let _ = writeln!(UartWriter, "  {}", info.message());
     berry_hal_aarch64::halt();
+}
+
+/// 字节流 → 只读装载 VMO（handoff/dtb/fw_cfg 单卷三源共用，G-eco 第二刀
+/// 原路径：create+commit+write 三连，页模型零新变体——物理不连续无碍，
+/// vmo_read 按页走 direct map）。boot-only 直构面，失败 = expect（与既有
+/// 同款：此阶段堆/帧已自证可用，失败属不可达病态）。
+fn rootfs_bytes_to_vmo(bytes: &[u8]) -> vmo::Vmo {
+    let mut vmo = vmo::Vmo::create(bytes.len()).expect("main: rootfs Vmo create");
+    let committed = vmo.size(); // create 已页对齐
+    vmo.commit(mm::frames(), 0, committed)
+        .expect("main: rootfs Vmo commit");
+    vmo.write(0, bytes).expect("main: rootfs Vmo write");
+    vmo
+}
+
+/// fw_cfg 多卷装载（A1-3b，容量工程前置-A1 §3.2）——`opt/berry/rootfs0..9`
+/// 连续前缀（首个缺席序号止；其后卷忽略——mkcpio `--split` 产卷恒连续，
+/// 中断 = 产链形态，按前缀收）→ **VMO 逐页拼装**：逐卷 `SeqRead` 顺序续读
+/// 4MiB chunk → `Vmo::write` 到递增 offset。堆峰 = 单 chunk（ROOTFS_CHUNK，
+/// 地形免疫——A1-1 地形墙的装载侧执法）；VMO 逐页 commit 物理不连续无碍
+/// （A1-2 帽 128MiB 内）。
+///
+/// 两帽执法（§3.1 帽分家）：单卷 ≤ [`ROOTFS_MAX`]（产链契约）、Σ ≤
+/// [`ROOTFS_TOTAL_MAX`]。rootfs0 缺席 → `None`（调用方回落旧名单单卷整读，
+/// [`ROOTFS_NAME`] 原路）；卷在位但帽越/空卷/拼装对账不符 → 也 `None`
+/// （整源降级为「无 rootfs」存活，boot 期无 panic 纪律）。
+fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
+    use berry_hal_aarch64::fwcfg;
+
+    // 发现：连续前缀（rootfs0 缺席 = 非多卷形态，直接回落）。
+    let mut vols: alloc::vec::Vec<fwcfg::FileEntry> = alloc::vec::Vec::new();
+    let mut total: usize = 0;
+    for i in 0..fwcfg::ROOTFS_VOLS {
+        let Some(e) = fwcfg::rootfs_volume(i) else { break };
+        let sz = e.size as usize;
+        // 单卷帽（含空卷拒）：mkcpio --split 32 产链契约，越帽 = 违约拒收。
+        if sz == 0 || sz > ROOTFS_MAX {
+            return None;
+        }
+        // 总量帽 + 溢出守卫（Σ 超帽 = 递送面违约，与单卷帽同降级语义）。
+        total = total.checked_add(sz)?;
+        if total > ROOTFS_TOTAL_MAX {
+            return None;
+        }
+        vols.push(e);
+    }
+    if vols.is_empty() {
+        return None;
+    }
+
+    // 拼装：VMO 一次性建+commit（页模型与单卷路 create/commit/write 三连
+    // 同形——commit 逐页出帧清零、write 逐 chunk 覆写；40MB+ 走本路才是
+    // 设计意图，≤32MiB 单卷走旧名单路不进此处）。
+    let mut vmo = vmo::Vmo::create(total).ok()?;
+    vmo.commit(mm::frames(), 0, vmo.size()).ok()?;
+    let mut chunk = alloc::vec![0u8; ROOTFS_CHUNK];
+    let mut off: usize = 0;
+    for vol in &vols {
+        let mut rd = fwcfg::SeqRead::open(vol)?;
+        loop {
+            let n = rd.read(&mut chunk);
+            if n == 0 {
+                break;
+            }
+            vmo.write(off, &chunk[..n]).ok()?;
+            off += n;
+        }
+    }
+    // 对账：实拼字节 == Σ 卷 size（SeqRead 项尾守卫的调用侧执法——差值
+    // 即拼装错位，整源降级不裸奔半截 blob）。
+    if off != total {
+        return None;
+    }
+    Some(RootfsBuf::Assembled(vmo, total))
 }
 
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
@@ -170,8 +265,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     //    DTB、`-initrd` 整体不加载——initrd/dtb/cmdline 机制全在 QEMU
     //    hw/arm/boot.c 的 is_linux 分支，2026-10 实证）；**V-1a 起 handoff
     //    命中时本源按缺席处理**（x0 是 handoff PA 非 DTB）；
-    // ③ QEMU fw_cfg 具名文件 `-fw_cfg name=opt/berry/rootfs,file=…`
-    //    （目录自描述名字+大小、无魔法地址；justfile run-rootfs 配方）。
+    // ③ QEMU fw_cfg 具名文件（目录自描述名字+大小、无魔法地址）。A1-3b 起
+    //    双形态：**多卷优先**（`opt/berry/rootfs0..N` 连续前缀，mkcpio
+    //    `--split` 产链对口——40MB+ blob 的递送形态）→ boot 期 VMO 逐页
+    //    拼装（堆峰 = 单 chunk）；rootfs0 缺席回落**旧名单**
+    //    `opt/berry/rootfs` 单卷整读（原路零漂移；两名并在 = rootfs0 优先，
+    //    多卷是权威形态旧名忽略）。
     // 装进 boot 期缓冲，下一步包只读 VMO 交 svcmgr（cpio/ELF 解析全在
     // 用户态——微内核只补「字节流变对象」原语）。无 rootfs = 正常降级
     // （不带 -fw_cfg 的既有 run/smoke 零扰动）。
@@ -213,6 +312,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         })
     .or_else(|| {
             use berry_hal_aarch64::fwcfg;
+            // A1-3b：多卷优先——rootfs0 在位即走拼装路（发现/帽检/拼装全在
+            // `fwcfg_rootfs_multivol`，bytes= 打点走 RootfsBuf::len 同源）。
+            if let Some(buf) = fwcfg_rootfs_multivol() {
+                return Some((b"fwcfg" as &[u8], buf));
+            }
             let entry = fwcfg::find_file(fwcfg::ROOTFS_NAME)?;
             let size = entry.size as usize;
             // no-panic：与 vmo_create 32MiB 同口径——巨 blob 分配 abort 是
@@ -228,7 +332,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         });
     match rootfs {
         Some((src, buf)) => {
-            let bytes = buf.as_slice().len();
+            let bytes = buf.len();
             // SAFETY: boot 单线程写入、此后只读；消费点随下一步「包只读
             // VMO 交 svcmgr」——不进任何并发路径。
             unsafe { *(&raw mut ROOTFS) = Some(buf) };
@@ -785,15 +889,19 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 缓冲即释放（Owned 路 峰值 ≈ 2× rootfs；Borrowed 零新增——blob 留
     // 保留区即其归宿）。----
     // SAFETY: boot 单线程；take 取走后置 None（字节已移交 VMO，源缓冲释放）。
+    // A1-3b 三态分派：Assembled（fw_cfg 多卷）boot 期已是 VMO，直交零拷贝；
+    // 另两源走字节三连（rootfs_bytes_to_vmo，原路径逐字同）。
     let h_rootfs = unsafe { (*(&raw mut ROOTFS)).take() }.map(|buf| {
-        let bytes = buf.as_slice();
-        let mut vmo =
-            vmo::Vmo::create(bytes.len()).expect("main: rootfs Vmo create");
-        let committed = vmo.size(); // create 已页对齐
-        vmo.commit(mm::frames(), 0, committed)
-            .expect("main: rootfs Vmo commit");
-        vmo.write(0, bytes).expect("main: rootfs Vmo write");
-        drop(buf); // Owned 先释放源缓冲再入表；Borrowed no-op
+        let vmo = match buf {
+            RootfsBuf::Assembled(v, _) => v,
+            RootfsBuf::Borrowed(b) => rootfs_bytes_to_vmo(b),
+            RootfsBuf::Owned(v) => {
+                // Owned 先释放源缓冲再入表（峰值 ≈2× rootfs 的窗口收窄）。
+                let vmo = rootfs_bytes_to_vmo(&v);
+                drop(v);
+                vmo
+            }
+        };
         ht_svcmgr
             .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ)
             .expect("main: rootfs VMO 进 svcmgr 表")
