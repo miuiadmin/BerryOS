@@ -25,7 +25,8 @@
 //! AllocatePages(AllocateAddress) 认领（缝隙一并拿下，防段共享页撞）→
 //! 全窗清零（.bss + 缝隙确定性，对齐 QEMU `-kernel` 直加载零 RAM 起步）→
 //! 逐段 copy filesz → 回读逐字节对拍（标记 = 状态谓词）→ handoff 页填
-//! v0（裁决 A/B：memmap 刀 4 填，gop/init_blob/cmdline 留位零值）。
+//! v0（裁决 A/B：memmap 刀 4 填；gop_* V-6a 起填——banner 期 QueryMode
+//! 事实快照随行递送；init_blob V-1c 填；cmdline 留位零值）。
 //! V-0b 刀 4 面：watchdog 归零 + 内存图取回（GetMemoryMap + 扩容重试帽
 //! 两轮）→ handoff memmap_* 四字段落值 → EBS 重试协议（**key 有效期 =
 //! 取图到 EBS 之间零 boot service 调用**；被拒即 key 过期 → 重取图再
@@ -116,11 +117,11 @@ pub struct BerryHandoff {
     pub memmap_desc_size: u32,    // @44（刀 4 填）
     pub memmap_desc_version: u32, // @48（刀 4 填）
     pub _r0: u32,                 // @52 保留零
-    pub gop_fb_pa: u64,           // @56 留位零（V-1 fbcon）
-    pub gop_width: u32,           // @64 留位零
-    pub gop_height: u32,          // @68 留位零
-    pub gop_stride: u32,          // @72 留位零
-    pub gop_format: u32,          // @76 留位零
+    pub gop_fb_pa: u64,           // @56  帧缓冲 PA（V-6a 起填；零=缺席）
+    pub gop_width: u32,           // @64  像素宽（V-6a 起填）
+    pub gop_height: u32,          // @68  像素高（V-6a 起填）
+    pub gop_stride: u32,          // @72  行字节数（V-6a 起填）
+    pub gop_format: u32,          // @76  EFI PixelFormat 原值（V-6a 起填）
     pub init_blob_pa: u64,        // @80 留位零（裁决 B）
     pub init_blob_len: u64,       // @88 留位零（裁决 B）
     pub cmdline_pa: u64,          // @96 留位零（裁决 B）
@@ -154,12 +155,50 @@ const _: () = {
 /// 刀 1 骨架行：ASCII + CRLF（EFI ConOut 惯例——部分终端只认 CRLF）。
 const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
 
+// ==================== GOP 携面（V-6a） ====================
+//
+// banner 期 QueryMode 的事实快照——load_kernel 写 handoff `gop_*` 留位
+// （@56..@76）随行递送内核（fbcon 数据源，`docs/VM里程碑设计草案.md`
+// §4 V-6）。缺席语义 = 全零（与留位零值同一判定面）：无显示设备
+// （LocateProtocol NOT_FOUND）/ QueryMode 失败 / fmt=3 BltOnly 无线性
+// 帧缓冲 / fb 基为零——任一都按缺席递送，内核消费面零扰动。
+
+/// banner 期 GOP 事实快照（全零 = 无此物——零值缺席语义同 handoff 留位）。
+#[derive(Clone, Copy)]
+pub struct GopFacts {
+    pub fb_pa: u64,  // FrameBufferBase（线性帧缓冲物理基）
+    pub width: u32,  // HorizontalResolution
+    pub height: u32, // VerticalResolution
+    pub stride: u32, // 行字节数（PixelsPerScanLine × 4——fmt≤2 恒 32bpp）
+    pub format: u32, // EFI PixelFormat 原值（0=RGBx 1=BGRx 2=BitMask）
+}
+
+impl GopFacts {
+    pub const ABSENT: GopFacts = GopFacts {
+        fb_pa: 0,
+        width: 0,
+        height: 0,
+        stride: 0,
+        format: 0,
+    };
+}
+
+/// 行字节数换算：fmt≤2 = PixelsPerScanLine×4（32bpp 定宽）；fmt=3
+/// BltOnly 无线性帧缓冲 → None；fmt>3 非规范 → None（宁缺勿猜）。
+pub fn gop_stride_bytes(ppsl: u32, fmt: u32) -> Option<u32> {
+    if fmt > 2 {
+        return None;
+    }
+    ppsl.checked_mul(4)
+}
+
 /// 行 7（V-0b 刀 3）：段装载——`span()` 整窗一次
 /// AllocatePages(AllocateAddress) 认领（段间缝隙一并拿下：段可共享页/
 /// 有缝，逐段认领撞页冲突）→ 全窗清零（.bss + 缝隙确定性归零，对齐
 /// QEMU `-kernel` 直加载零 RAM 起步）→ 逐段 copy filesz → 回读逐字节
 /// 对拍（标记 = 状态谓词，不建立在「拷了就算」上）→ handoff 页填 v0
-/// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop/cmdline 留位零值；
+/// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop_* V-6a 填（`gop` 事实
+/// 快照——全零 = 缺席）、cmdline 留位零值；
 /// memmap 刀 4 填；init_blob_* V-1c 填——`init_pa/init_len` 由 kfile 段
 /// INITRD.BIN 读入产出，缺省 0/0 = 无 blob）。全过打 `load: segs=<n>
 /// pages=<n> ok` 并返 `Some(hpa)`（handoff 物理地址——刀 4 终段消费）；
@@ -170,6 +209,7 @@ fn load_kernel(
     con_out: &berry_efi::EfiSimpleTextOutputProtocol,
     kbuf: *mut c_void,
     bo: &berry_loader::BootElf,
+    gop: &GopFacts,
     init_pa: u64,
     init_len: u64,
 ) -> Option<u64> {
@@ -248,11 +288,11 @@ fn load_kernel(
             memmap_desc_size: 0,
             memmap_desc_version: 0,
             _r0: 0,
-            gop_fb_pa: 0,
-            gop_width: 0,
-            gop_height: 0,
-            gop_stride: 0,
-            gop_format: 0,
+            gop_fb_pa: gop.fb_pa,     // V-6a：banner 期 QueryMode 快照（零=缺席）
+            gop_width: gop.width,
+            gop_height: gop.height,
+            gop_stride: gop.stride,
+            gop_format: gop.format,
             init_blob_pa: init_pa,
             init_blob_len: init_len,
             cmdline_pa: 0,
@@ -632,6 +672,9 @@ pub extern "C" fn efi_main(
     // 裁决 C：只信息行不画像素）。失败打状态码诊断行：实测 AAVMF
     // `virt -nographic` 无显示设备 → GOP 实例缺席 → EFI_NOT_FOUND
     // （0x800000000000000E）——run-efi 挂 -device ramfb 供 RamfbDxe。
+    // V-6a：GOP 事实快照（banner 期一次性收——load_kernel 写 handoff
+    // gop_* 随行递送；各失败臂保持 ABSENT，缺席语义见 GopFacts 注释）。
+    let mut gop_facts = GopFacts::ABSENT;
     let bs = st.boot_services;
     if !bs.is_null() && unsafe { (*bs).hdr.signature } == EFI_BOOT_SERVICES_SIGNATURE {
         let mut gop: *mut c_void = core::ptr::null_mut();
@@ -656,6 +699,22 @@ pub extern "C" fn efi_main(
                     let i = unsafe { &*info };
                     let cur = m.mode;
                     let max = m.max_mode;
+                    // V-6a 携面：当前模式事实收编（fb 基非零 + fmt≤2 才收
+                    // ——BltOnly 无线性帧缓冲按缺席；`gop:` 行照打不耦合，
+                    // 收编与否与打印面独立）。
+                    if m.frame_buffer_base != 0 {
+                        if let Some(stride) =
+                            gop_stride_bytes(i.pixels_per_scan_line, i.pixel_format)
+                        {
+                            gop_facts = GopFacts {
+                                fb_pa: m.frame_buffer_base,
+                                width: i.horizontal_resolution,
+                                height: i.vertical_resolution,
+                                stride,
+                                format: i.pixel_format,
+                            };
+                        }
+                    }
                     print_line(con_out, |l| {
                         l.push_str("gop: ");
                         l.push_u32_dec(i.horizontal_resolution);
@@ -979,6 +1038,7 @@ pub extern "C" fn efi_main(
                                                     con_out,
                                                     kbuf,
                                                     &bo,
+                                                    &gop_facts,
                                                     init_pa,
                                                     init_len,
                                                 ) {
@@ -1092,5 +1152,18 @@ mod tests {
             super::EXPECTED_HELLO,
             "hello.txt 与 EXPECTED_HELLO 漂移——两侧须同步改"
         );
+    }
+
+    /// V-6a：行字节数换算界检面——fmt≤2 定宽 ×4；BltOnly/非规范/溢出
+    /// 一律缺席（宁缺勿猜：错误的 stride 比缺席更伤 fbcon）。
+    #[test]
+    fn gop_stride_bytes_faces() {
+        assert_eq!(super::gop_stride_bytes(800, 1), Some(3200)); // AAVMF 基线 800x600 BGRx
+        assert_eq!(super::gop_stride_bytes(640, 0), Some(2560)); // RGBx
+        assert_eq!(super::gop_stride_bytes(1024, 2), Some(4096)); // BitMask（32bpp 定宽近似）
+        assert_eq!(super::gop_stride_bytes(800, 3), None); // BltOnly 无线性帧缓冲
+        assert_eq!(super::gop_stride_bytes(800, 4), None); // 非规范 fmt
+        assert_eq!(super::gop_stride_bytes(0x4000_0000, 1), None); // 乘 4 溢出宁可缺席
+        assert_eq!(super::gop_stride_bytes(0, 1), Some(0)); // ppsl=0 原样收 0——几何零值由快照消费面界检
     }
 }

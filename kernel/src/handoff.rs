@@ -12,10 +12,11 @@
 //! - 刀 3 填：magic/version/entry/dram_base/dram_top；段装载几何不在结构内
 //!   （内核 ELF 自描述，span 由装载器按 PT_LOAD 认领）。
 //! - 刀 4 填：memmap_*（GetMemoryMap 快照，EBS 前最后一份）。
-//! - 留位零值（裁决 B）：gop_*（V-1 fbcon 数据源——`docs/VM里程碑设计草案.md`
-//!   L114 携面规划）+ init_blob_*/cmdline_*（V-1+ rootfs 递送替代 fw_cfg）。
+//! - 留位零值（裁决 B）：`gop_*` V-6a 起由 BerryBoot 填（banner 期
+//!   QueryMode 事实快照——`docs/VM里程碑设计草案.md` §4 V-6 fbcon 数据
+//!   源，全零 = 无此物）+ `cmdline_*`（留位零值待 V-1d+）。
 //!   零值 = 「无此物」：pa=0 且 len=0 双字段共同判定，禁只看 pa。
-#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；gop_*/cmdline_* 留位零值待 V-1d+
+#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；V-6a 消费 gop_*；cmdline_* 留位零值待 V-1d+
 
 use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
 use berry_mm::va::phys_to_virt;
@@ -41,11 +42,11 @@ pub struct BerryHandoff {
     pub memmap_desc_size: u32,    // @44  描述符步长（刀 4 填）
     pub memmap_desc_version: u32, // @48  EFI_MEMORY_DESCRIPTOR 版本（刀 4 填）
     pub _r0: u32,                 // @52  保留零（对齐）
-    pub gop_fb_pa: u64,           // @56  帧缓冲 PA（留位零——V-1 fbcon）
-    pub gop_width: u32,           // @64  像素宽（留位零）
-    pub gop_height: u32,          // @68  像素高（留位零）
-    pub gop_stride: u32,          // @72  行字节数（留位零）
-    pub gop_format: u32,          // @76  EFI PixelFormat 原值（留位零）
+    pub gop_fb_pa: u64,           // @56  帧缓冲 PA（V-6a 起 BerryBoot 填；零=缺席）
+    pub gop_width: u32,           // @64  像素宽（V-6a 起 BerryBoot 填）
+    pub gop_height: u32,          // @68  像素高（V-6a 起 BerryBoot 填）
+    pub gop_stride: u32,          // @72  行字节数（V-6a 起 BerryBoot 填）
+    pub gop_format: u32,          // @76  EFI PixelFormat 原值（V-6a 起 BerryBoot 填）
     pub init_blob_pa: u64,        // @80  init blob PA（留位零——裁决 B）
     pub init_blob_len: u64,       // @88  init blob 字节长（留位零）
     pub cmdline_pa: u64,          // @96  命令行 PA（留位零——裁决 B）
@@ -103,4 +104,35 @@ pub fn probe(x0: usize) -> Option<&'static BerryHandoff> {
     } else {
         None
     }
+}
+
+/// V-6a：GOP 携面消费视图——BerryBoot banner 期 QueryMode 事实
+/// （handoff @56..@76，fbcon 数据源）。界检四件：fb/几何/stride 非零 +
+/// fmt≤2（0=RGBx 1=BGRx 2=BitMask——3 BltOnly 无线性帧缓冲，装载器已
+/// 按缺席递送，此处双保险）。`None` = 无可用线性帧缓冲（无显示设备
+/// EFI 路 / QEMU `-kernel` 路恒缺席）——消费面零扰动。
+pub struct GopInfo {
+    pub fb_pa: u64,  // 线性帧缓冲物理基
+    pub width: u32,  // HorizontalResolution
+    pub height: u32, // VerticalResolution
+    pub stride: u32, // 行字节数（PixelsPerScanLine × 4）
+    pub format: u32, // EFI PixelFormat 原值
+}
+
+/// GOP 事实提取（含界检）。boot 期只读面——与 `probe` 同一生命周期
+/// （handoff 页 BerryBoot 写完才 `br entry`，无并发写者）。
+pub fn gop_info(h: &BerryHandoff) -> Option<GopInfo> {
+    if h.gop_fb_pa == 0 || h.gop_width == 0 || h.gop_height == 0 || h.gop_stride == 0 {
+        return None;
+    }
+    if h.gop_format > 2 {
+        return None;
+    }
+    Some(GopInfo {
+        fb_pa: h.gop_fb_pa,
+        width: h.gop_width,
+        height: h.gop_height,
+        stride: h.gop_stride,
+        format: h.gop_format,
+    })
 }

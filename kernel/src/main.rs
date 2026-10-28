@@ -125,6 +125,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
         berry_hal_aarch64::uart_put_dec(h.version as u64);
         berry_hal_aarch64::uart_puts(b"\n");
+        // V-6a：GOP 携面消费（BerryBoot banner 期 QueryMode → handoff
+        // @56..@76；fbcon 数据源先行到内核——打点即「事实到内核」证据，
+        // MMIO 窗授能/fbcon 服务随后刀）。零值 = 无此物：QEMU `-kernel`
+        // 路与无显示设备 EFI 路恒缺席，零扰动（EFI 路专属行，同 HANDOFF）。
+        if let Some(g) = handoff::gop_info(h) {
+            berry_hal_aarch64::uart_puts(b"FB ok ");
+            berry_hal_aarch64::uart_put_dec(g.width as u64);
+            berry_hal_aarch64::uart_puts(b"x");
+            berry_hal_aarch64::uart_put_dec(g.height as u64);
+            berry_hal_aarch64::uart_puts(b" fmt=");
+            berry_hal_aarch64::uart_put_dec(g.format as u64);
+            berry_hal_aarch64::uart_puts(b" stride=");
+            berry_hal_aarch64::uart_put_dec(g.stride as u64);
+            berry_hal_aarch64::uart_puts(b" fb=");
+            berry_hal_aarch64::uart_put_hex64(g.fb_pa);
+            berry_hal_aarch64::uart_puts(b"\n");
+        }
     }
 
     // 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何
