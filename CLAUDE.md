@@ -8,7 +8,7 @@
 **BerryOS** —— 自研的微内核 + 跨平台操作系统。
 - 内核核心：**Rust**（`#![no_std]`，最小特权，只做调度 / IPC / 地址空间 / 能力）
 - 用户态服务与工具：**Rust**
-- 首批主线架构：**ARM64 (AArch64)**（v1 主战场 = 手表/穿戴 rich 档单线走到底，ADR #39）；**x86_64 提前启动 QEMU 最小集移植**（串口+定时器+异常向量+上下文切换+SVC 入口，范围盒子 + kill criteria，ADR #41）；RISC-V 留位。MCU 档（KB 级内存）v1 排除（ADR #40，覆盖面 = MMU 设备 MB 级起）
+- 首批主线架构：**ARM64 (AArch64)**（v1 主战场 = **移动设备（手机）** rich 档单线走到底——主战场 = 手机 → PC；手表/穿戴 = 同族低功耗端（省电设计直接受益、又低功耗又优秀，随时可落），ADR #39 2026-10-28 修订）；**x86_64 提前启动 QEMU 最小集移植**（串口+定时器+异常向量+上下文切换+SVC 入口，范围盒子 + kill criteria，ADR #41）；RISC-V 留位。MCU 档（KB 级内存）v1 排除（ADR #40，覆盖面 = MMU 设备 MB 级起）
 - 阶段沿革（**详史逐字归档 → `docs/阶段沿革.md`**；新记录追加到该文件末尾，勿回写本文件）：
   - Phase 0–3 已收官：G0/G1（调度与任务）/G1.5（地址空间 + 首个 EL0）/Phase 3（能力与 syscall——handle 表、VMO/Vmar、process/thread、channel、event、遥测环）。
   - Phase 4（IPC 与服务框架）已收官 2026-10：睡眠/唤醒、阻塞 wait + wait_many、调度看 effective + PI 捐赠、intent 五件套、fastpath/slowpath、console/svcmgr 服务化、AI 演示管线、G-eco rootfs 通道与编译侧（14 项出口对表见 `docs/Phase4收官盘点.md`）。
@@ -27,7 +27,7 @@
   - C-4（bsh Tab 补全）已落地 2026-10-28：**行编辑归属裁定兑现**（shell设计 §2.4「defer v2」提前兑现）——console（内核）退化逐字节透传（内核零 rootfs/fs 知识，微内核纪律），echo/退格/历史/Ctrl-U/Tab 补全整体迁 bsh `editor.rs`（std 版 mini-readline，语义逐字对齐内核时代形态：8 条 newest-first 环、ESC 序列状态机含非 final 复位落下、浏览态编辑）；段① `user/berry-complete` 纯函数 crate（token 切分四形/前缀匹配/三态消费 Unique 补后缀/Ambiguous 公共增量+列示/None 静默，host 10 测）+ berry-exec `cpio_names` 目录枚举；段② console 退化（内核 main.rs 五 hunk：RX 逐字节转发 + 删行编辑状态机）；段③ Tab 接线（`RealSrc` = 内建 11 ∪ rootfs `bin/` ∪ libc `opendir`/`readdir` 目录视图——尾 '/' 剥到只剩根，fsproto 空段拒 C-4 真机首跑实抓）+ bsh `tab_selftest` 九步（FakeSrc 喂键确定性自验）→ `TAB ok`（rootfs 相 32→33，链序排 fat 族前 EFI 路亦打）；段④ smoke 注册（assert_marker `(^|[^G])TAB ok` 前邻特例防 TAGTAB ok 子串假阳性——排整个 A-Z 会拒真标记：真标记嵌稳态矩阵巨行中段、前驱=矩阵大写字母，实测 BTAB ok）。真机首跑双实抓：editor hist_push 用 `take` 搬走行致交互每条命令变空行（改 `clone` 拷贝语义）、`opendir("/etc/")` 尾斜杠撞 fsproto path_valid 空段拒（剥尾 '/' 修）。host 353→363、rootfs x40 条目 29,247,432B、EFI canon 生态 18→19。
   - C-5（M-G3 里程碑演示相）已落地 2026-10-28：bsh `m3demo_selftest` 五步链 → `M3DEMO ok n=5`（rootfs 相 34→35、三合相 60→61）——⓪ cpio_names ≥38 + bsh/grep/hello/ls/cp/cat/ps 七锚（下界断言防漂移）① `ls /` 断言 HELLO.TXT+PATTERN.BIN（RAM ∪ FAT 双层恒在件，相位无关）② RAM 树造源 `t/demo.txt` → uu_cp 双操作数 → 读回逐字节对拍 ③ `cat|grep beta` 管道（文件参数段骑首段 fs gift——v1 单 fs 消费段约束）→ `m3 beta\n` ④ `grep -q zzz` 真码 1 → run_line `echo x$?y > T3.TXT` 落盘 FAT 根读回 x1y（`$?` 展开造内容消回声，段 d OUT.TXT 同款）；**cp 步 collect 帽 30s（首跑定标实录）**：uu_cp 在 TCG 下 spawn→exit ≈17s（lstat/stat×2/读写/fchmod 串行 fs RPC 链慢而活——EOF 实发而 10s 帽先弃、reap 30s 帽内干净退 0），修法 = collect 帽参数化三层穿透（`collect_cap`/`run_capture_fs_cap`/`run_capture_gifts_cap`）+ cp 步 30s（svcmgr `U1_EOF_CAP` 同口径——「client 收侧帽按服务端 worst 路径成本定值」）；ps 名单步由 `PS ok n=` 承接（bsh 无法自造 psproto gift 通道，不重拉）；T3.TXT 故意留盘——持久化相注入 `cat T3.TXT` 断言 x1y（交互 cat 读 FAT 根活面；本相自验覆写幂等、跨 boot 正证仍 = OUT.TXT f42t，弱化面如实记载）；链序排 fat 族后（①ls 依赖挂载卷）——EFI 路无盘 fat park 挡断 → M3DEMO 结构性不打（smoke-image canon 生态 20 零变化）。验收 = 定向 run-rootfs（CD ok→M3DEMO ok 实测 46s）+ 五相 smoke 全绿（rootfs 35/35 + 三合相 61×3 + 金丝雀 30 严格递增）+ test-host 363/0 恒定。M-G3「CLI 可用」至此大体成。
   - 当前基线：`just smoke` 五跑全绿（裸相 26 + rootfs 相 36 + RX/FAT 子目录/持久化 62）+ EL2 同绿；host 378 测（T-1 起 +`user/berry-tls` 12 测——另含 V-5a/V-6a 已提交面 berry-efi +2/berryboot +1，非 T-1 增量）；syscall 31 号在册/31 实现（T-1 多线程首刀后全实现——0x35 `thread_start` 四参落地，`docs/T-1实施设计草案.md`）；BerryBoot EFI 链 **V-1 收官内核 handoff 消费面**（`just run-efi` AAVMF 挂 `out/berryos.img`（V-3）下 `kfile: 3394160B ok` → `init: 29230672B ok` → `elf: segs=5 entry=0x40000000 ok` → `load: segs=5 pages=133 ok` → `mmap: n=31 ok` → `BERRYBOOT ok` 十段，EBS 后内核 `HANDOFF ok ver=0` → `MMAP ok segs=31 pages=17426` → `ROOTFS ok src=handoff` → 裸相 26 标记 + rootfs 相生态标记（ECO/SH/APP/PIPE，无 virtio 面）接续）。下一步见 `docs/路线图.md`。
-- **身份支柱**：微内核 + 省电（手表/手机）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `docs/AI调度设计.md`）+ PC 高性能。
+- **身份支柱**：微内核 + 省电（移动设备/手表）+ **AI 原生调度**（内核留第一类接口让用户态 AI 干涉放置/频率/优先级，见 `docs/AI调度设计.md`）+ PC 高性能——主战场 = 移动设备（手机）与 PC，手表为同族低功耗端。
 
 ## 设计总原则（三条，钦定）
 
@@ -52,7 +52,7 @@
 | 软件 | 自有 ABI + POSIX 兼容库（不跑 Linux 二进制，**v1 无 fork**） |
 | 调度/电源 | 双线并行（见 `调度器设计.md`） |
 | 语言/架构 | **全 Rust**（内核 `#![no_std]` + 用户态）；syscall 边界用 C-ABI 约定；ARM64 首发 |
-| **端定位** | v1 = 手表 rich 档（MB 级内存）ARM64 单线；MCU 档排除；v2 攻工业 RT（对齐 6.12 PREEMPT_RT 量级）；x86 = 兼容验收 + QEMU 最小集提前（XNU 同源分端；ADR #39–#41） |
+| **端定位** | v1 = **移动设备（手机）** rich 档（MB 级内存）ARM64 单线（主战场 = 手机 → PC）；手表/穿戴 = 同族低功耗端随时可落（勿以手表锚死范围）；MCU 档排除；v2 攻工业 RT（对齐 6.12 PREEMPT_RT 量级）；x86 = 兼容验收 + QEMU 最小集提前（XNU 同源分端；ADR #39–#41） |
 | 实时/FS | 软实时；MVP 用 FAT |
 | **分阶段基线** | v1=单核+抢占点+无 demand paging+最小能力/IPC，逐版推向满配（见各文档「阶段化目标」+ `测试策略.md` 关卡 G0–G5） |
 | **AI 原生调度** | 内核留接口让用户态 AI 策略服务干涉放置/频率/优先级；慢/快循环切分、RT 屏蔽、护栏、平台分层（见 `AI调度设计.md`）。**2026-10-16 修订**：干涉面限带内、AI 降级为机制预留+实验轨道+kill criteria |
@@ -70,7 +70,7 @@
 
 改动任何调度 / 电源相关代码前，先读设计文档。硬约束：
 - **机制在内核（Rust），策略可插拔**：内核只做上下文切换 / 每核 runqueue / 派发框架；调度策略做成可注册 trait（`class_rt` / `class_fair` / `class_deadline` / `class_idle`）。
-- **capacity(0..1023) 抽象**：每个 CPU 一个算力值，统一手表(单核小算力)→手机(大小核)→PC(全对称)；拓扑由 `arch/<arch>/` 填表，核心逻辑架构无关。一条放置路径三端通用。
+- **capacity(0..1023) 抽象**：每个 CPU 一个算力值，统一手机(大小核)→PC(全对称)→手表(单核小算力)——同一路径覆盖，端无主次；拓扑由 `arch/<arch>/` 填表，核心逻辑架构无关。一条放置路径三端通用。
 - **Tickless（NO_HZ）从 day-one 落地**：空闲核不收周期定时中断，续航第一杠杆，不是后期补丁。
 - **每核 runqueue + 负载均衡**：多核吞吐主力；单/少核平台近零开销。
 - **电源管理是用户态 Rust 服务**：DVFS governor / 热管理 / 休眠策略推用户态；内核↔PM 走**共享环形缓冲**（禁通用 IPC 消息拷贝，否则吃延迟）；PM 服务可崩，内核降级保活、监督重启。
