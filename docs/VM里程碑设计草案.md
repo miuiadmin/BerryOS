@@ -110,6 +110,7 @@
 - 产出物 = **设备事实表**（本文附录 B 回填）：Fusion ARM64 虚机的 GIC 版本与 CPU 数、盘控制器型号（NVMe? AHCI? virtio 有无）、**有无 PL011/16550 串口**（决定键盘降级线是否存在）、USB 控制器（xHCI?）、GOP 分辨率/格式、ACPI 还是 DT（发现机制）。
 - 方法：Fusion 装 UEFI shell / 任意 EFI 调试 app dump（V-0a 骨架顺手复用）+ Linux live 起来 `lspci/lsdev` 对拍。
 - **此刀定 V-5b~V-7 的范围盒**——事实表没拿全不动驱动码。
+- **V-5a-0 工具面已落（2026-10-28，纯 host 产链零 QEMU）**：`bootloader/berrydump/` 独立 workspace EFI dump 应用（**不进** berryboot members / 不动 justfile / 不进 image 产链——dump 工具编译错零耦合 `just build-boot`/`just image` 主链；berry-efi 跨 workspace path dep 合法：纯数据 crate）。同刀 berry-efi 加法扩展：`EfiConfigurationTable`(24B) / `EfiPciIoProtocol`(176B，pci_read@64 typed Uint32 配置空间读) / free_pool@72·locate_handle_buffer@312 typed / ACPI20·DTB·PciIo·BlockIo·SimpleNetwork 五 GUID——**既有消费者 BerryBoot 零扰动实证**（BERRYBOOT.EFI 产链复跑 entry=0x1200 img=0x2458B relocs=5 形状不变；berry-efi host 13→15 测）。纯解析面 `app/src/parse.rs`：RSDP/XSDT/MADT/SPCR/DBG2/FDT 全 bounds-checked Option、畸形截断不炸（半程事实保留——MADT 尾随残字节执法点 host 钉板）；**ACPI packed 子表偏移钉板**（GICC flags@+13、GICD base@+9/ver@+21、GICR base@+5、GAS address@+4——与 C 结构体习惯偏移不同，合成 fixture 8 测钉死）。**runbook**：① `sh bootloader/berrydump/build.sh` → `out/BERRYDUMP.EFI`（16896B）；② 放进 FAT 卷 `\EFI\BOOT\BOOTAA64.EFI`（可移动介质默认路径——Fusion/AAVMF 直接自举；`just image` 产物换名同位即可）；③ Fusion ARM64 虚机挂盘开机，ConOut（窗口/串口）收割行式事实；④ 按行前缀对表回填附录 B。**缺席行也是事实**（`xxx: absent`——机器可读缺席报告纪律）。挂账 V-5a-1：AAVMF/QEMU 首验（小 QEMU 窗，与在途 workflow 排程互斥）+ Fusion 实机会话（手动）+ `lspci` 对拍收口。
 
 ### V-5b 盘驱动（按事实表选型）
 - NVMe（预测概率大）：admin queue + IO queue + PRP——berry-virtio 同形纯函数 crate（RingLayout/描述符编解码拆 host 测）+ 常驻服务（vblk 纪律全套：静默常驻/超时重臂/服务不死）。
@@ -189,3 +190,5 @@ C-0 → C-1 → V-0a → V-0b → C-2a → V-1 → V-2 → V-3/V-4（= M-G1 ✅ 
 | USB 控制器 | 待实证 | xHCI → V-7 范围 |
 | GOP（分辨率/格式） | 待实证 | fbcon 几何 |
 | 硬件发现机制（ACPI/DT） | 待实证 | devmgr v2 输入面；v0 可全走 UEFI handoff |
+
+> V-5a-0 起回填的行式映射（berrydump 输出 → 本表行）：`madt:` → CPU/GIC 行（`cpu=e/t` + `gicd=3(GICv3)` + gicd@/gicr@ 基址）；`pci:` → 盘控制器/USB/网卡行（class 三元：0108xx=NVMe、0C0330=XHCI、0200xx=ETH——**USB 事实主源**）；`spcr:`/`dbg2:` → 串口行（iface=3=PL011 + base，两表交叉验证）；`gop:`/`gop[m]:` → GOP 行；`cfg:`+`fdt:` → 发现机制行（acpi20/dtb 计数 + FDT magic 校验）；`hcs:` blk/net 计数 = 旁证。主源 = berrydump 实机输出；对拍 = Linux live `lspci`（方法原案）。
