@@ -220,6 +220,13 @@ const H_FB: Handle = 0x0001_0005;
 /// 别名惯例；用完即弃，svcmgr 表不再留）。
 const H_FBINFO: Handle = 0x0001_0006;
 
+/// console fan-out 上屏端 endB_fb = boot 第 7 插定值（GUI-1 段②；同路
+/// 门控——fb VMO 5/info 6 之后）。rights 仅 RECV（guifbd 只收不回发 = 无
+/// 回环风暴）。随 env 块 extras[1] **take 迁入** guifbd 表（libc
+/// `gift3_h()`——blk_h 同槽别名惯例）；console 侧对端持 SEND best-effort
+/// 转发（满丢弃计数，见内核 console 任务体）。
+const H_FBPIPE: Handle = 0x0001_0007;
+
 /// cpio 步进窗：头 110B + 名（mkcpio 名 ≤ 56B 绰绰有余，盖不住 = 诚实拒）。
 /// （ELF_WIN/PUMP_WIN/ELF_MAP_MAX 随 spawn_rootfs_elf 迁 berry-exec——A-2。）
 static mut STEP_WIN: [u8; 512] = [0; 512];
@@ -386,7 +393,10 @@ fn run_rootfs_child(console: Handle) {
     // **take 迁入** guifbd（libc `gift2_h()`，用完即弃）。子自验三步
     // （clear 差分/蜂格对拍/scroll 对拍）全过自打 `FBW ok`（stdout =
     // console，vblk 同路）；常驻 **不 reap**（vblk 同款政策）。
-    // GUI-1b（段②）：console fan-out 端第 7 插随 extras[1] 迁入。
+    // GUI-1 段②：console fan-out 端第 7 插（H_FBPIPE）随 extras[1] take
+    // 迁入——guifbd 自验后转 serve 循环（recv → put_str 上屏），首条消息
+    // 到达自打 `FBSERVE ok`（稳态矩阵打印持续不断 → 首条必达 = 状态谓词
+    // 非竞速）。
     if berry_vmo_get_size(H_FB, &mut msz) != 0 {
         eco_skip(b"fb absent");
     } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/guifbd") {
@@ -401,7 +411,7 @@ fn run_rootfs_child(console: Handle) {
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
                 args: &[],
-                extra_gifts: &[H_FBINFO],
+                extra_gifts: &[H_FBINFO, H_FBPIPE],
                 mmio_vmo: Some(H_FB),
                 mmio_va: FB_VA,
             },

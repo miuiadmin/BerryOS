@@ -932,6 +932,61 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     berry_hal_aarch64::uart_puts(b"FB vmo=0x10005 pages=");
                     berry_hal_aarch64::uart_put_dec(fb_len / 0x1000);
                     berry_hal_aarch64::uart_puts(b"\n");
+                    // GUI-1 段②：console fan-out 双路上屏管道对。console 表
+                    // endK_fb **第 5 插**（endK=1/哑 Event=2/RX Event=3/endK2=4
+                    // 之后，定值断言惯例）；peer 落 svcmgr 表**第 7 插
+                    // 0x0001_0007**（fb VMO 5/info 6 之后，随 env 块 extras[1]
+                    // take 迁入 guifbd——libc `gift3_h()`）。console 持
+                    // RIGHT_SEND（drain 循环 best-effort 转发：满则丢弃 +
+                    // fb_drop 计数，不重试不阻塞保串口主路）；guifbd 只 recv
+                    // 不回发 = 无回环风暴（**wait 数组不加第 5 项**——endK_fb
+                    // READABLE 永不置位 = 死项，best-effort 发送也不需要
+                    // WRITABLE 等待）。通道 opt-out（console/endK2 同款）：
+                    // 显示转发不借出 intent。spawn arg 已满 → handle 走静态槽
+                    // `FB_PIPE_H`（RX_EV_H/BSH_IN_H 惯例）。
+                    let h_end_kfb = ct
+                        .insert(
+                            KernelObj::Channel(
+                                crate::channel::ChannelEnd::try_unpaired(true)
+                                    .expect("main: 建 fb-上屏 console 端"),
+                            ),
+                            handle::RIGHT_SEND,
+                        )
+                        .expect("main: fb-上屏 console 端进私有表");
+                    assert_eq!(
+                        h_end_kfb, 0x0001_0005,
+                        "main: console 表 endK_fb 须第 5 插 0x0001_0005（console 读静态槽依赖）"
+                    );
+                    let h_end_bfb = ht_svcmgr
+                        .insert(
+                            KernelObj::Channel(
+                                crate::channel::ChannelEnd::try_unpaired(true)
+                                    .expect("main: 建 fb-上屏 guifbd 端"),
+                            ),
+                            handle::RIGHT_RECV,
+                        )
+                        .expect("main: fb-上屏 guifbd 端进 svcmgr 表");
+                    assert_eq!(
+                        h_end_bfb, 0x0001_0007,
+                        "main: svcmgr 表 endB_fb 须第 7 插 0x0001_0007（编译侧硬编码）"
+                    );
+                    let (pkf, puf) = (
+                        ct.get_raw(h_end_kfb, handle::ObjType::Channel, 0)
+                            .expect("main: 取 endK_fb ObjRef")
+                            .0,
+                        ht_svcmgr
+                            .get_raw(h_end_bfb, handle::ObjType::Channel, 0)
+                            .expect("main: 取 endB_fb ObjRef")
+                            .0,
+                    );
+                    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——
+                    // pair 完成互钉（endK2/endB2 同款：两表异地、配对延到后
+                    // 插入侧；boot 单线程，中间无人能发）。
+                    unsafe { crate::channel::ChannelEnd::pair(pkf, puf) };
+                    // SAFETY: boot 单线程写、先于 console 任务读（BSH_IN_H 口径）。
+                    unsafe {
+                        *core::ptr::addr_of_mut!(FB_PIPE_H) = h_end_kfb;
+                    }
                 }
                 Err(_) => {
                     // 界检已过仍拒 = fb_pa 非页对齐（RamfbDxe AllocatePages
@@ -1507,6 +1562,18 @@ fn bsh_in_h() -> u32 {
     unsafe { *core::ptr::addr_of!(BSH_IN_H) }
 }
 
+/// fb 上屏管道 console 端（endK_fb）handle 静态槽（console 任务读；spawn
+/// arg 已满走静态槽——RX_EV_H/BSH_IN_H 同款惯例；写点 = boot fb 授能块，
+/// 先于一切任务；0 = 非 EFI-GOP 路（-kernel 五跑零插表），console 跳过
+/// fan-out）。GUI-1 段②。
+static mut FB_PIPE_H: u32 = 0;
+
+/// 读 endK_fb handle 静态槽（console 任务侧）。
+fn fb_pipe_h() -> u32 {
+    // SAFETY: 只读；全部写点先于任务启动（boot 顺序）。
+    unsafe { *core::ptr::addr_of!(FB_PIPE_H) }
+}
+
 /// 「RX 到数据」通知（HAL `exception_irq` → `uart::rx_irq` 经槽调；IRQ 上下文
 /// PSTATE.I=1）。置位 RX Event（用户半位）+ `wake_matching`（匹配键 = ObjRef
 /// 地址，同 4-1 `sys_object_signal` 唤醒路径；console 的 wait_many 挂
@@ -1598,6 +1665,8 @@ extern "C" fn task_console(arg: usize) -> ! {
     let h_dummy = (arg >> 32) as u32;
     let h_rx = rx_ev_h();
     let h_bsh = bsh_in_h();
+    // GUI-1 段②：fb 上屏端（0 = 非 EFI-GOP 路，fan-out 全跳过）。
+    let h_fb = fb_pipe_h();
     // wait_many 四数组（栈上、EL1 内核高半——copy_from_user 的 EL1 分支收）。
     let hs = [h_end_k, h_dummy, h_rx, h_bsh];
     let sigs = [SIGNAL_READABLE, 1u64 << 32, RX_EV_BIT, SIGNAL_WRITABLE];
@@ -1621,6 +1690,10 @@ extern "C" fn task_console(arg: usize) -> ! {
     let mut fring = [0u8; 128];
     let (mut fhead, mut ftail, mut flen) = (0usize, 0usize, 0usize);
     let mut fwd_drop: u64 = 0;
+    // GUI-1 段②：fb fan-out 丢弃计数（guifbd 未起/慢 = 有界丢弃；RX ok
+    // 行尾诊断位，正常 EFI 链稳态应恒 0——矩阵打印节流下 8 深队列+秒级
+    // 排水不构成背压面）。
+    let mut fb_drop: u64 = 0;
     let mut rx_total: u64 = 0;
     let mut rx_ok_done = false;
     let (mut n, mut nh): (u64, u64);
@@ -1686,6 +1759,9 @@ extern "C" fn task_console(arg: usize) -> ! {
                     // 只 grep "RX ok" 前缀，行尾追加零扰动）。
                     berry_hal_aarch64::uart_puts(b" fdrop=");
                     berry_hal_aarch64::uart_put_dec(fwd_drop);
+                    // GUI-1 段②：fb fan-out 丢弃计数（同款行尾诊断位）。
+                    berry_hal_aarch64::uart_puts(b" fbdrop=");
+                    berry_hal_aarch64::uart_put_dec(fb_drop);
                     berry_hal_aarch64::uart_puts(b"\n");
                 }
                 rlen = 0;
@@ -1749,6 +1825,31 @@ extern "C" fn task_console(arg: usize) -> ! {
             for i in 0..n as usize {
                 berry_hal_aarch64::uart_putc(buf[i]);
                 CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            // GUI-1 段②：fb 上屏 fan-out——整段 best-effort 一发（n ≤ 256B
+            // = channel 内联额度内；满 -EBUSY/-EAGAIN → 丢弃 + fb_drop 计数
+            // 不重试不阻塞，保串口主路——guifbd 未起（boot 早期）/慢的输出
+            // 丢 = 既定语义）。零长 EOF 消息不转发（guifbd 无收口语义，省
+            // 队列槽）。非满错码 = 接线错乱（boot 定值 + SEND right 在手），
+            // panic 兜底。
+            if h_fb != 0 && n > 0 {
+                let rf = svc6(
+                    NR_CHANNEL_SEND as u64,
+                    h_fb as u64,
+                    buf.as_ptr() as u64,
+                    n,
+                    0,
+                    0,
+                    0,
+                );
+                assert!(
+                    rf == 0 || rf == ERR_BUSY as i64 || rf == ERR_AGAIN as i64,
+                    "console: fb send ret={}",
+                    rf
+                );
+                if rf != 0 {
+                    fb_drop += 1;
+                }
             }
         }
     }

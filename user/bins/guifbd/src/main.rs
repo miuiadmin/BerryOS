@@ -21,14 +21,23 @@
 //! Fbcon 持有 fb slice 的 &mut 借用，读回须独立通道；ramfb 实为 DRAM，
 //! volatile 是 Device 映射语义下的保守保险（零成本）。
 //!
-//! 段②（console fan-out，GUI-1b 接线）：park 换 serve 循环——收 console
-//! 转发字节流 put_str 上屏（窗口与串口同内容）。
+//! 段②（console fan-out 上屏）：park 换 **serve 循环**（fsmgr 形态）——
+//! 收 console 转发的输出字节流 put_str 上屏（窗口与串口同内容；boot 早期
+//! guifbd 未起时的输出丢 = console 侧 best-effort 既定语义）。首条消息到达
+//! 一次性自打 `FBSERVE ok`（稳态矩阵打印持续不断 → 首条必达 = 状态谓词
+//! 非竞速，4-5a 铁律）；空队 -EAGAIN → wait READABLE 10s 帽**重臂**续睡
+//! （console 长静默合法空闲非断链——echo trap-on-timeout 反例见 fsmgr 头
+//! 注）；非 -EAGAIN 错码 = 通道链断 trap（boot 定值接线，错即接线 bug，
+//! 只死自己 + `FBSERVE ok` 缺失 = smoke FAIL loud 兜底）。
 
 use berry_exec::FB_VA;
 use berry_fbcon::font::{self, GLYPH_H};
 use berry_fbcon::render::{Fbcon, PixelFormat};
-use berry_libc::io::gift2_h;
-use berry_sys::{berry_vmo_read, Handle};
+use berry_libc::io::{gift2_h, gift3_h};
+use berry_sys::{
+    berry_channel_recv, berry_clock_read, berry_object_wait_one, berry_vmo_read, Handle,
+    BERRY_ERR_AGAIN, CLOCK_MONOTONIC, SIGNAL_READABLE,
+};
 
 // 链接种子（fsmgr 同款）：rlib/LTO 按需保留——无引用则 berry-libc 的 crt0
 // （含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -150,6 +159,65 @@ fn main() {
         berry_libc::park();
     }
     println!("FBW ok w={} h={} cells={}x{}", w, h, con.cols(), con.rows());
-    // 段②换 serve 循环（console fan-out 上屏）。
-    berry_libc::park();
+    // —— 段②：serve 循环（console fan-out 上屏；fsmgr 形态）——
+    let hpipe = gift3_h();
+    if hpipe == 0 {
+        // svcmgr 探测门后 extras[1] 恒随行——理论不可达；eprintln loud +
+        // park 兜底（FBSERVE ok 缺失 = smoke FAIL）。
+        eprintln!("guifbd: no fb pipe gift");
+        berry_libc::park();
+    }
+    // 空闲重臂帽：wait READABLE 超时 = 重臂续睡（console 长静默合法空闲），
+    // 非死亡面（fsmgr 同款——真断链面 = recv 非 -EAGAIN 错码，照 trap）。
+    const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
+    let mut served = false;
+    let mut msg = [0u8; 256];
+    loop {
+        let mut nb = msg.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(
+            hpipe,
+            msg.as_mut_ptr(),
+            &mut nb,
+            core::ptr::null_mut(),
+            &mut nh,
+        );
+        if s != 0 {
+            if s == BERRY_ERR_AGAIN {
+                // 空队：阻塞等 READABLE（10s 帽，超时重臂——空闲合法面）。
+                let mut t = 0u64;
+                if berry_clock_read(CLOCK_MONOTONIC, &mut t) != 0 {
+                    trap();
+                }
+                let mut obs = 0u64;
+                let _ = berry_object_wait_one(hpipe, SIGNAL_READABLE, t + TIMEOUT_NS, &mut obs);
+                continue;
+            }
+            trap(); // 非 -EAGAIN 错码 = 通道链断（boot 定值接线，真死亡面）
+        }
+        if !served {
+            served = true;
+            // 首条消息标记（状态谓词非竞速：矩阵打印持续不断 → 首条必达；
+            // 标记本身经 stdout 回 console → 串口 + 回扇 fb = 自证闭环单
+            // 发，无风暴——put_str 上屏不再回发）。
+            println!("FBSERVE ok");
+        }
+        // 上屏：字节流 put_str（自维护行缓冲/换行滚动/行尾回绕在 Fbcon——
+        // '\n'→换行、col==cols 回绕、越底自动 scroll_up）。串口字节流非保证
+        // UTF-8，lossy 容错（无效序列 U+FFFD——显示面语义，串口主路不受
+        // 影响）。
+        let s = String::from_utf8_lossy(&msg[..nb]);
+        con.put_str(&s, fg, bg1);
+    }
+}
+
+/// 自陷：读未映射地址 → D-abort(lower) → `user_fault_exit` 只死自己
+/// （fsmgr 同款——链断 loud，`FBSERVE ok` 缺失 = smoke FAIL 兜底）。
+#[cold]
+fn trap() -> ! {
+    // SAFETY: 故意触发的未映射读（0x4000_0000 与用户布局无交集——家族惯例值）。
+    unsafe { core::ptr::read_volatile(0x4000_0000usize as *const u64) };
+    loop {
+        core::hint::spin_loop();
+    }
 }

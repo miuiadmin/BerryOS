@@ -202,6 +202,17 @@ pub fn blk_h() -> u32 {
     unsafe { GIFT_H[1] }
 }
 
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（GUI-1 段②：guifbd 的
+/// console fan-out 上屏端 endB_fb——svcmgr 预拉 guifbd 时随 extras 次位
+/// take 迁入，recv 循环消费 console 转发的输出字节流；0 = 未交付 = 非
+/// EFI-GOP 链理论不可达，调用方 park 兜底）。与 [`fs_h`]/[`blk_h`] 同槽
+/// 不同名：spawn 侧同一 gift 位对不同程序承载不同对象（extras[0] 的
+/// rootfs/gift2 同款惯例）。
+pub fn gift3_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
 pub fn stack_top() -> usize {
     unsafe { STACK_TOP }
 }
