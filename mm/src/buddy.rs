@@ -25,11 +25,12 @@
 /// buddy 最大阶。一个 `2^MAX_ORDER` 页的块。
 /// 128MiB / 4KiB = 32768 页；`MAX_ORDER = 13` → 最大块 8192 页 = 32MiB。
 /// **必须 ≥ 内核整页大对象的真实需求帽**：heap 整页路径单次连续分配，
-/// `ROOTFS_MAX`/`VMO_MAX_SIZE`（32MiB）帽下的 rootfs 装载 Vec 是最大在册
-/// 单块（C-2a 实证：14.5MiB rootfs 在 MAX_ORDER=11 下 order 12 被拒 →
-/// boot 期 alloc panic——帽没有分配器能力支撑 = 纯空头支票；C-2c 复刻同律：
-/// text 批 8 命令令 rootfs ≈21.5MiB → order 13，16MiB 帽/12 阶双双不够 →
-/// 帽与阶同步 12→13、16→32MiB）。
+/// `ROOTFS_MAX`（32MiB）帽下的 rootfs 装载 Vec 是最大在册单块（C-2a 实证：
+/// 14.5MiB rootfs 在 MAX_ORDER=11 下 order 12 被拒 → boot 期 alloc panic——
+/// 帽没有分配器能力支撑 = 纯空头支票；C-2c 复刻同律：text 批 8 命令令
+/// rootfs ≈21.5MiB → order 13，16MiB 帽/12 阶双双不够 → 帽与阶同步
+/// 12→13、16→32MiB。**A1-2 帽分家后**：`VMO_MAX_SIZE` 128MiB 走 VMO 逐页
+/// commit 不经堆单块，与本阶脱钩不再联动——`容量工程前置-A1设计草案.md` §3.1）。
 pub const MAX_ORDER: usize = 13;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

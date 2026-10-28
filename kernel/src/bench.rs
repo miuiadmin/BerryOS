@@ -441,7 +441,7 @@ fn xh_vmo_cap(base: usize) -> bool {
         ERR_NO_MEMORY as i64,
         "bench: xh vmo 超帽须 -ENOMEM"
     );
-    // 边界（syscall 面）：恰 32MiB 成 → close 即净（记账 Vec 经堆归还）。
+    // 边界（syscall 面）：恰 VMO_MAX_SIZE（A1-2 起 128MiB）成 → close 即净（记账 Vec 经堆归还）。
     // SAFETY: 出参槽 4B 写入 u64 槽低半。
     unsafe { XH_VOUT = 0; }
     assert_eq!(

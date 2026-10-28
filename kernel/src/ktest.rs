@@ -1849,6 +1849,54 @@ fn test_vmo() {
     let v = unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) };
     assert_eq!(v, MAGIC, "VMO：子映射经共享表根可读（同 PA 双 VA 别名）");
 
+    // F. A1-2 容量冒烟：40MiB VMO 全量 commit/decommit——`vmo.rs` commit 逐页
+    // order-0 出帧，不受 MAX_ORDER 堆单块地形约束；帧账本对账（B-0
+    // `allocated_pages` 口径）钉「10240 页全出全还、零泄漏」。40MB+ blob
+    // 装载面的前置证据（`docs/容量工程前置-A1设计草案.md` §2 关键洞察 / §4 A1-2）。
+    //
+    // 对账须计**页记帐双 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
+    // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：`pages:
+    // Vec<Option<usize>>` 16B/页 → 160KiB → order 6 = 64 页；`mapcnt:
+    // Vec<u16>` 2B/页 → 20KiB → order 3 = 8 页——合计 72 页伴随 VMO 存活，
+    // drop 才归还（首跑实测 +72 实抓，与逐项算术逐页吻合）。
+    const CAP40: usize = 40 * 1024 * 1024;
+    let np40 = CAP40 / PAGE_SIZE;
+    let ledger = (16 * np40).div_ceil(PAGE_SIZE).next_power_of_two()
+        + (2 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
+    let a0 = fa.allocated_pages();
+    let mut big = Vmo::create(CAP40).expect("VMO：40MiB create（128MiB 帽内）");
+    assert_eq!(
+        fa.allocated_pages(),
+        a0 + ledger,
+        "VMO：create 记帐双 Vec 入账（order 取整 72 页）"
+    );
+    big.commit(fa, 0, CAP40).expect("VMO：40MiB 全量 commit（10240 页逐页）");
+    assert_eq!(
+        fa.allocated_pages(),
+        a0 + ledger + np40,
+        "VMO：commit 帧账本精确 +10240（另记帐 72 伴随存活）"
+    );
+    big.write(0, &MAGIC.to_le_bytes()).expect("VMO：首页 write");
+    let off_last = CAP40 - 8;
+    big.write(off_last, &MAGIC2.to_le_bytes()).expect("VMO：尾页 write");
+    let mut bigbuf = [0u8; 8];
+    big.read(0, &mut bigbuf).expect("VMO：首页 read");
+    assert_eq!(u64::from_le_bytes(bigbuf), MAGIC, "VMO：40MiB 首页读写往返");
+    big.read(off_last, &mut bigbuf).expect("VMO：尾页 read");
+    assert_eq!(u64::from_le_bytes(bigbuf), MAGIC2, "VMO：40MiB 尾页读写往返");
+    big.decommit(fa, 0, CAP40).expect("VMO：40MiB 全量 decommit");
+    assert_eq!(
+        fa.allocated_pages(),
+        a0 + ledger,
+        "VMO：decommit 后 10240 帧全还（记帐双 Vec 随 VMO 存活）"
+    );
+    drop(big);
+    assert_eq!(
+        fa.allocated_pages(),
+        a0,
+        "VMO：drop 后帧账本精确归位（零泄漏——记帐双 Vec 一并归还）"
+    );
+
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
     berry_hal_aarch64::uart_puts(b"VMO ok\n");
