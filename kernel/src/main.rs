@@ -121,6 +121,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // S-1：EFI 路标记（handoff 后续被 rootfs 装载消费 move 走，先钉存）——
     // smp_bringup 的 conduit 门之一（EFI 路 PSCI 归固件管，S-1 盒子跳过）。
     let efi_boot = handoff.is_some();
+    // GUI-1：GOP 事实五域钉存（V-6a 只打点，GUI-1 起消费——fb VMO 授能块
+    // 在 rootfs/virtio 插表段；handoff @下文 move 进 mm::init 前取走，
+    // `efi_boot` 同款先例）。
+    let mut gop_saved: Option<(u64, u32, u32, u32, u32)> = None;
     if let Some(h) = handoff {
         berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
         berry_hal_aarch64::uart_put_dec(h.version as u64);
@@ -130,6 +134,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // MMIO 窗授能/fbcon 服务随后刀）。零值 = 无此物：QEMU `-kernel`
         // 路与无显示设备 EFI 路恒缺席，零扰动（EFI 路专属行，同 HANDOFF）。
         if let Some(g) = handoff::gop_info(h) {
+            gop_saved = Some((g.fb_pa, g.width, g.height, g.stride, g.format));
             berry_hal_aarch64::uart_puts(b"FB ok ");
             berry_hal_aarch64::uart_put_dec(g.width as u64);
             berry_hal_aarch64::uart_puts(b"x");
@@ -871,6 +876,73 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"VIRTIO vmo=");
         berry_hal_aarch64::uart_put_hex64(h_mmio as u64);
         berry_hal_aarch64::uart_puts(b"\n");
+    }
+
+    // ---- GUI-1（V-6 刀 2 后段挂账）：GOP framebuffer MMIO 窗授能 + 几何
+    // info VMO。fb 窗包成 MMIO VMO（`create_mmio` boot-only——设计文档
+    // 明文否掉 vmo_create_physical syscall 路线；ramfb 后备虽是普通 DRAM，
+    // 按设备窗语义授能 = Device-nGnRnE 直写直达）进 svcmgr 表**第 5 插定值
+    // 0x0001_0005**（console 1 / rootfs 2 / endB2 3 / virtio 4 之后，boot
+    // assert 拦表序漂移——svcmgr 编译侧硬编码惯例）。几何五域走 40B 匿名
+    // VMO（5×u64 LE）**第 6 插 0x0001_0006**——fb 窗 VMO 页取整丢信息、
+    // size 反推不可行；svcmgr 转授 guifbd（info 走 gift[2]，fb 窗走
+    // SpawnSpec mmio_vmo 面映固定 VA）。**EFI 路专属**（gop 缺席 = -kernel
+    // 五跑/无显示 EFI 路零插表零扰动）。create_mmio 对齐/界拒 → 诊断行
+    // 降级不 panic（boot 期无 panic 纪律），svcmgr 探测 -EBADF 即 eco 降级。
+    // fb 段 buddy 双写风险不在此打点自证（handoff 已 move）：RamfbDxe fb
+    // 是 AllocatePages 产物（非 Conventional，V-1b pass2 已 reserve），
+    // 兜底证据 = guifbd 像素读回差分断言（`FBW ok` 缺失即 loud）。----
+    if rootfs_present {
+        if let Some((fb_pa, w, h, stride, fmt)) = gop_saved {
+            // 幅 = ceil_page(stride×h)（实测 800×600×4 = 1,920,000B → 469 页）。
+            let fb_bytes = (stride as u64) * (h as u64);
+            let fb_len = ((fb_bytes + 0xFFF) / 0x1000) * 0x1000;
+            match vmo::Vmo::create_mmio(fb_pa as usize, fb_len as usize) {
+                Ok(vmo) => {
+                    let h_fb = ht_svcmgr
+                        .insert(
+                            handle::KernelObj::Vmo(vmo),
+                            handle::RIGHT_READ | handle::RIGHT_WRITE | handle::RIGHT_MAP,
+                        )
+                        .expect("main: fb VMO 进 svcmgr 表");
+                    assert_eq!(
+                        h_fb, 0x0001_0005,
+                        "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
+                    );
+                    // 几何 info VMO：40B = fb_pa/w/h/stride/fmt 五域 u64 LE
+                    //（一页 VMO，create+commit+write 三连——rootfs VMO 同款）。
+                    let mut info = [0u8; 40];
+                    info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
+                    info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
+                    info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
+                    info[24..32].copy_from_slice(&(stride as u64).to_le_bytes());
+                    info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
+                    let mut ivmo =
+                        vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
+                    ivmo.commit(mm::frames(), 0, 4096)
+                        .expect("main: fbinfo Vmo commit");
+                    ivmo.write(0, &info).expect("main: fbinfo Vmo write");
+                    let h_info = ht_svcmgr
+                        .insert(handle::KernelObj::Vmo(ivmo), handle::RIGHT_READ)
+                        .expect("main: fbinfo VMO 进 svcmgr 表");
+                    assert_eq!(
+                        h_info, 0x0001_0006,
+                        "main: svcmgr 表 fbinfo VMO 须第 6 插 0x0001_0006（编译侧硬编码）"
+                    );
+                    berry_hal_aarch64::uart_puts(b"FB vmo=0x10005 pages=");
+                    berry_hal_aarch64::uart_put_dec(fb_len / 0x1000);
+                    berry_hal_aarch64::uart_puts(b"\n");
+                }
+                Err(_) => {
+                    // 界检已过仍拒 = fb_pa 非页对齐（RamfbDxe AllocatePages
+                    // 产物按页对齐，理论不可达）——降级 loud，FBW ok 缺失
+                    // 由 smoke-image 兜底。
+                    berry_hal_aarch64::uart_puts(b"FB vmo=fail pa=");
+                    berry_hal_aarch64::uart_put_hex64(fb_pa);
+                    berry_hal_aarch64::uart_puts(b"\n");
+                }
+            }
+        }
     }
 
     // D3（G-eco-b）：svcmgr 是首个多页镜像（编译产物内嵌 echo/talker 平像），

@@ -35,12 +35,26 @@ berryos_kernel() {
   echo "$td/aarch64-unknown-none/${1:-debug}/berry-kernel"
 }
 
+# rust-lld 随 rustup 走（sysroot 内）。justfile 属性背引号（RUST_LLD :=）在
+# recipe 环境外求值、无 `export PATH :=` 修补（justfile :8-9 注释自载的 gotcha
+# ——GUI-1 段① just image 实踩：/lib/rustlib//bin/rust-lld），故经本脚本解析。
+berryos_rust_lld() {
+  local sysroot host lld
+  sysroot="$(rustc --print sysroot 2>/dev/null)" \
+    || { echo "paths.sh: rustc 不可用（PATH 自足修补后仍失败）" >&2; return 1; }
+  host="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+  lld="$sysroot/lib/rustlib/$host/bin/rust-lld"
+  [[ -x "$lld" ]] || { echo "paths.sh: rust-lld 不存在：$lld" >&2; return 1; }
+  printf '%s\n' "$lld"
+}
+
 # 直接执行时按参数出路径；被 source 时不做任何事（只定义函数）。
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
     kernel)         berryos_kernel debug ;;
     kernel-release) berryos_kernel release ;;
     target-dir)     berryos_target_dir ;;
-    *) echo "usage: $0 {kernel|kernel-release|target-dir}" >&2; exit 2 ;;
+    rust-lld)       berryos_rust_lld ;;
+    *) echo "usage: $0 {kernel|kernel-release|target-dir|rust-lld}" >&2; exit 2 ;;
   esac
 fi

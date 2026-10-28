@@ -179,6 +179,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/berryctl/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GUI-1：guifbd（framebuffer 显示服务——boot 授能 fb MMIO VMO 映
+    # FB_VA + 几何 info VMO 随 env extras；自验三步全过自打 `FBW ok`，
+    # EFI-GOP 路专属（smoke-image ECO 标记）；段②起 serve 循环收 console
+    # fan-out 上屏）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/guifbd/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
@@ -211,6 +218,7 @@ build-user:
         bin/find=cargo-target/aarch64-unknown-linux-musl/release/find \
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
         bin/grep=cargo-target/aarch64-unknown-linux-musl/release/grep \
+        bin/guifbd=cargo-target/aarch64-unknown-linux-musl/release/guifbd \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/head=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/head \
         bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
@@ -394,6 +402,10 @@ test-host:
     # C-4：berry-complete（bsh Tab 补全纯函数面——token 切分四形/前缀
     # 匹配唯一·多候选·零命中/排序去重/列示字节，host 10 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-complete --target {{host}}
+    # GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数面——V-6 刀 2
+    # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
+    # 渲染/滚动/格式打包，host 28 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-fbcon --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。
@@ -577,7 +589,10 @@ IMAGE := "out/berryos.img"
 #（Debian 系无 /usr/share/qemu/edk2-*.fd 布局，对抗审查 F1 实证）。
 AAVMF_CODE := env_var_or_default("AAVMF_CODE", "/opt/homebrew/share/qemu/edk2-aarch64-code.fd")
 AAVMF_VARS := env_var_or_default("AAVMF_VARS", "/opt/homebrew/share/qemu/edk2-arm-vars.fd")
-RUST_LLD := `printf '%s' "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"`
+# rust-lld 解析走 paths.sh（属性背引号环境无 `export PATH :=` 修补——
+# :8-9 gotcha，GUI-1 段① just image 实踩 /lib/rustlib//bin/rust-lld；
+# paths.sh 自足 PATH 同 KERNEL 行，单一事实源）。
+RUST_LLD := `bash tools/paths.sh rust-lld`
 
 # BerryBoot 构建链（EFI 应用——V-3 起纯 EFI 产链；造盘段已吸收进 just image）
 build-boot:

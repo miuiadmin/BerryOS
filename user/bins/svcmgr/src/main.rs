@@ -32,7 +32,9 @@ use berry_sys::{
 // A-2：拉起链换轨 berry-exec（「不长第二套」——spawn_rootfs_elf/channel_pair
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
 // 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
-use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, SpawnSpec};
+use berry_exec::{
+    channel_pair, cpio_find, spawn_rootfs_elf, SpawnSpec, FB_VA, VIRTIO_MMIO_VA,
+};
 // P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
 // P6 A-8c：vnet 网络服务消费自验（DNS ok）的协议面。
@@ -205,6 +207,19 @@ const H_BSH_STDIN: Handle = 0x0001_0003;
 /// 常驻泄漏政策，防销毁性 close -EBUSY 面纠缠）。A-2。
 const H_MMIO: Handle = 0x0001_0004;
 
+/// fb 窗口 VMO（GOP framebuffer → MMIO 映射窗）= boot 第 5 插定值（GUI-1；
+/// **EFI-GOP 路才有**——`-kernel` 路零插表，探测即降级）。rights R|W|MAP
+/// （H_MMIO 同集）；**map 不 take**——本表恒持原值（H_MMIO 同款 v1 常驻
+/// 泄漏政策）。guifbd 预拉段探测门 = `vmo_get_size` 失败（-EBADF）= 非
+/// EFI 路 → 一行降级不 spawn。
+const H_FB: Handle = 0x0001_0005;
+
+/// fb 几何 info VMO（五域 u64 LE 40B：fb_pa/w/h/stride/fmt）= boot 第 6
+/// 插定值（GUI-1；同路门控）。rights 仅 READ（vmo_read 面）。随 env 块
+/// extras[0] **take 迁入** guifbd 表（libc `gift2_h()`——rootfs_h 同槽
+/// 别名惯例；用完即弃，svcmgr 表不再留）。
+const H_FBINFO: Handle = 0x0001_0006;
+
 /// cpio 步进窗：头 110B + 名（mkcpio 名 ≤ 56B 绰绰有余，盖不住 = 诚实拒）。
 /// （ELF_WIN/PUMP_WIN/ELF_MAP_MAX 随 spawn_rootfs_elf 迁 berry-exec——A-2。）
 static mut STEP_WIN: [u8; 512] = [0; 512];
@@ -324,6 +339,7 @@ fn run_rootfs_child(console: Handle) {
                 args: &[],
                 extra_gifts: &[blk_b],
                 mmio_vmo: Some(H_MMIO),
+                mmio_va: VIRTIO_MMIO_VA,
             },
         ) {
             Ok(_child) => {
@@ -358,6 +374,47 @@ fn run_rootfs_child(console: Handle) {
                     trap();
                 }
                 eco_skip(b"vblk spawn");
+            }
+        }
+    }
+    // ---- GUI-1：guifbd（framebuffer 显示服务）预拉起 ----
+    // EFI-GOP 路（run-efi/smoke-image）：boot 把 fb 窗包 MMIO VMO 插第 5
+    // 插（H_FB）+ 几何 info VMO 第 6 插（H_FBINFO）；`-kernel` 主路零插表
+    // （H_FB get_size → -EBADF → `eco: fb absent` 一行降级——主 smoke
+    // rootfs 相多一行诊断、零标记扰动）。拓扑：fb 窗经 `mmio_vmo` 映
+    // `FB_VA`（map 不 take——本表恒持）；info VMO 随 env 块 extras[0]
+    // **take 迁入** guifbd（libc `gift2_h()`，用完即弃）。子自验三步
+    // （clear 差分/蜂格对拍/scroll 对拍）全过自打 `FBW ok`（stdout =
+    // console，vblk 同路）；常驻 **不 reap**（vblk 同款政策）。
+    // GUI-1b（段②）：console fan-out 端第 7 插随 extras[1] 迁入。
+    if berry_vmo_get_size(H_FB, &mut msz) != 0 {
+        eco_skip(b"fb absent");
+    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/guifbd") {
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/guifbd",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                args: &[],
+                extra_gifts: &[H_FBINFO],
+                mmio_vmo: Some(H_FB),
+                mmio_va: FB_VA,
+            },
+        ) {
+            Ok(_child) => {
+                ps_reg(b"guifbd", psp::STATE_ALIVE, 0); // 常驻（不 reap——vblk 同款）
+            }
+            Err(()) => {
+                // Err 全在 env send 前——H_FBINFO 未被 take 仍在表（boot
+                // 插入原值，非本段新建）；与 H_FB 同留表（有界 2 槽，v1
+                // 常驻泄漏政策——close 止损对 boot 插入值无回收价值）。
+                ps_reg(b"guifbd", psp::STATE_SPAWNFAIL, 0);
+                eco_skip(b"guifbd spawn");
             }
         }
     }
@@ -407,6 +464,7 @@ fn run_rootfs_child(console: Handle) {
                 args: &[],
                 extra_gifts: fgifts,
                 mmio_vmo: None,
+                mmio_va: 0,
             },
         ) {
             Ok(_) => {
@@ -466,6 +524,7 @@ fn run_rootfs_child(console: Handle) {
                 args: &[],
                 extra_gifts: &[net_b],
                 mmio_vmo: Some(H_MMIO),
+                mmio_va: VIRTIO_MMIO_VA,
             },
         ) {
             Ok(_child) => {
@@ -533,6 +592,7 @@ fn run_rootfs_child(console: Handle) {
                 args: &[],
                 extra_gifts: gifts,
                 mmio_vmo: None,
+                mmio_va: 0,
             },
         ) {
             Ok(child) => {
@@ -600,6 +660,7 @@ fn run_rootfs_child(console: Handle) {
                             args: &[],
                             extra_gifts: &[],
                             mmio_vmo: None,
+                            mmio_va: 0,
                         },
                     ) {
                         // hello 常驻（10s 周期睡眠不回收）——入账。
@@ -661,6 +722,7 @@ fn run_rootfs_child(console: Handle) {
                             args: &[b"--color=never"],
                             extra_gifts: &[],
                             mmio_vmo: None,
+                            mmio_va: 0,
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -724,6 +786,7 @@ fn run_rootfs_child(console: Handle) {
                                 args: &[],
                                 extra_gifts: gifts,
                                 mmio_vmo: None,
+                                mmio_va: 0,
                             },
                         )
                         .is_err()
@@ -785,6 +848,7 @@ fn run_rootfs_child(console: Handle) {
                                 args: &[],
                                 extra_gifts: &[],
                                 mmio_vmo: Some(H_MMIO),
+                                mmio_va: VIRTIO_MMIO_VA,
                             },
                         ) {
                             Ok(child) => {
@@ -988,6 +1052,7 @@ fn ps_selftest(console: Handle) {
             args: &[],
             extra_gifts: &[ps_b], // 单元素 → env 块 extras[0]（gift[4] 位）
             mmio_vmo: None,
+            mmio_va: 0,
         },
     ) {
         Ok(c) => c,
@@ -1250,6 +1315,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
             args: &[sub],
             extra_gifts: &[q_b], // 单元素 → env 块 extras[0]（gift[4] 位）
             mmio_vmo: None,
+            mmio_va: 0,
         },
     ) {
         Ok(c) => c,
@@ -2035,6 +2101,7 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
             args,
             extra_gifts: &gifts,
             mmio_vmo: None,
+            mmio_va: 0,
         },
     ) {
         Ok(c) => c,
@@ -2283,6 +2350,7 @@ fn app_launch(
             args: &[],
             extra_gifts: &[],
             mmio_vmo: None,
+            mmio_va: 0,
         },
     ) {
         Err(()) => {

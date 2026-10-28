@@ -58,8 +58,12 @@
 # 复用同一算术）。「不长第二套」+ §6 回退形态——berry-libc 的 libc 同名
 # 符号在 host 测试二进制里对 libSystem write 符号插入劫自旋，纯面外迁
 # 独立 crate 后 host 测试零 libc 符号面）。
+# GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数 crate，V-6 刀 2
+# 前置段曾独立工作区、GUI-1 随首个消费面迁正 members；消费 = guifbd 显示
+# 服务（独立小工作区编 musl target，同 stdhello 不入 members）——host
+# 测试经 justfile test-host 显式行跑）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-fbcon", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 
