@@ -108,7 +108,7 @@ berryos/
 
 唯一详表 = `docs/索引.md`（37 份文档分类/状态标签/双阅读路径/维护待办）；本节只留分类速览。动相关子系统前先读对应设计文档：
 
-- **总纲与路线**：`docs/架构决策.md`（54 条 ADR 单一事实源）· `docs/架构综合纲领.md`（取舍纪律 + 排除 8 问——借鉴任何参考前先读）· `docs/路线图.md`（Phase 0–8，现行 M-VM）· `docs/优化议程.md`（五弱题动作表）。
+- **总纲与路线**：`docs/架构决策.md`（57 条 ADR 单一事实源）· `docs/架构综合纲领.md`（取舍纪律 + 排除 8 问——借鉴任何参考前先读）· `docs/路线图.md`（Phase 0–8，现行 M-VM）· `docs/优化议程.md`（五弱题动作表）。
 - **内核核心**：`docs/能力模型设计.md`（纯能力 handle）· `docs/IPC设计.md`（channel/Event/intent）· `docs/内存管理设计.md`（VMO/pager）· `docs/系统调用ABI设计.md`（v1 冻结，abi.toml 单源）· `docs/调度器设计.md`（机制 + M 里程碑权威）· `docs/AI调度设计.md`（ADR #21 修订版）· `docs/可观测性设计.md` · `docs/安全与硬件隔离设计.md`（挂 v2）。
 - **服务与生态**：`docs/文件系统设计.md` · `docs/驱动模型设计.md`（驱动=持证应用）· `docs/shell设计.md`（bsh + 命令梯队）· `docs/应用模型设计.md`（包 + 清单 + 能力）· `docs/GUI里程碑规划-2026-10.md`（M-GUI 刀序 GUI-0..9 + 裁决 A–I——ADR #50–#54：B 形态协议 / pass 形态 API / berryui 声明式 / 低功耗缝 / SDK 序）· 挂 v2 四份：`docs/存储布局与沙箱设计.md` / `docs/兼容子系统设计.md` / `docs/更新与OTA设计.md` / `docs/AI工程面设计.md`。
 - **验证与流程**：`docs/测试策略.md`（G0–G5 关卡）· `docs/开发体验.md`（四级阶梯 + 日常循环）。
