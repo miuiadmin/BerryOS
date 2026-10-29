@@ -42,10 +42,10 @@
 
 use crate::{c_char, c_int, c_void, ssize_t};
 use berry_fsclient::{
-    poll_revents, sock_domain_err, sock_rpc_errno, SockDomErr, SockEntry, SockKind, SockOp,
-    SocketTable, AF_INET, IPPROTO_TCP, POLLERR, POLLHUP, POLLIN, POLLOUT, SOCK_FD_BASE,
-    SOCK_FD_MAX, SOCK_STREAM, parse_ipv4, EADDRINUSE, EAGAIN, EIO, EINVAL, ENODEV, EPIPE,
-    ETIMEDOUT,
+    poll_revents, sock_domain_err, sock_rpc_errno, EpollCtlErr, EpollTable, SockDomErr, SockEntry,
+    SockKind, SockOp, SocketTable, AF_INET, EPOLLERR, EPOLLHUP, EPOLL_CTL_DEL, EPOLL_FD_BASE,
+    EPOLL_FD_MAX, IPPROTO_TCP, POLLERR, POLLHUP, POLLIN, POLLOUT, SOCK_FD_BASE, SOCK_FD_MAX,
+    SOCK_STREAM, parse_ipv4, EADDRINUSE, EAGAIN, EIO, EINVAL, ENODEV, EPIPE, ETIMEDOUT,
 };
 use berry_netdproto as ndp;
 use berry_sys::{
@@ -952,6 +952,180 @@ pub(crate) fn sock_poll_one(fd: c_int, events: i16) -> i16 {
             Ok(PollState::Gone) => (POLLIN | POLLHUP) & always,
             Err(_) => POLLERR,
         },
+    }
+}
+
+// —— epoll 真实现（A4-1，docs/事件循环A4设计草案.md §3.1/§3.2——epoll
+//    fd 皮 + interest 注册 + wait 三档节拍循环；语义蓝本 berry-poll：
+//    LT / poll-first / timeout 三档，对象面 = socket fd 快照）——
+
+/// epoll fd 段归属谓词（io.rs read/write/writev/close 分派面——fd 四段
+/// （console 别名/fs/socket/epoll）区间排他，段内空槽由各入口收口）。
+pub(crate) fn epoll_valid(fd: c_int) -> bool {
+    (EPOLL_FD_BASE..EPOLL_FD_BASE + EPOLL_FD_MAX as c_int).contains(&fd)
+}
+
+/// epoll 事件出参结构：**Linux UAPI packed 12B**（events@0 u32 +
+/// data@4 u64）——glibc/musl 全 arch 同款 `__attribute__((packed))`；
+/// 草案 §3.3「aarch64 自然对齐 16B」预判被首查推翻（§7 沿革修正）。C-2a
+/// Stat 布局案同族执法：下方 offset_of 编译期钉板（「同尺寸不同字段序 =
+/// 最阴的静默错」）。字段访问只走值存取（packed 字段禁引用）。
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct EpollEvent {
+    pub events: u32,
+    pub data: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<EpollEvent>() == 12);
+const _: () = assert!(core::mem::offset_of!(EpollEvent, events) == 0);
+const _: () = assert!(core::mem::offset_of!(EpollEvent, data) == 4);
+
+/// epoll 表静态实例（SOCKETS 同款——单线程，lib.rs ABI 口径）。
+static mut EPOLLS: EpollTable = EpollTable::new();
+
+/// EpollCtlErr → errno 映射（fsclient 表面错误与 errno 两层——
+/// sock_rpc_errno 同先例）。
+fn epoll_ctl_errno(e: EpollCtlErr) -> c_int {
+    match e {
+        EpollCtlErr::BadFd => crate::EBADF,
+        EpollCtlErr::OpBad | EpollCtlErr::NotSock | EpollCtlErr::Mask => crate::EINVAL,
+        EpollCtlErr::Exists => crate::EEXIST,
+        EpollCtlErr::Noent => crate::ENOENT,
+        EpollCtlErr::Full => crate::ENOSPC,
+    }
+}
+
+/// epoll_create1（A4-1 真身）：flags 只认 0——EPOLL_CLOEXEC v1 无 exec
+/// 面诚实拒 EINVAL（收下不执法是谎报）；alloc 满表 EMFILE（4 槽 23..=26）。
+#[no_mangle]
+pub unsafe extern "C" fn epoll_create1(flags: c_int) -> c_int {
+    if flags != 0 {
+        return err_ret(crate::EINVAL);
+    }
+    // SAFETY: 单线程 static mut（SOCKETS 同款）。
+    match unsafe { EPOLLS.alloc() } {
+        Some(fd) => fd,
+        None => err_ret(crate::EMFILE),
+    }
+}
+
+/// epoll_ctl（A4-1 真身）：ADD/MOD/DEL 三 op。ADD/MOD 必须携 event
+/// （NULL → EFAULT）；DEL 的 event POSIX 忽略（v1 同）；epfd 域检在
+/// event 解引用**前**（EBADF 优先序——4-2「坏 handle 优先」同款）。
+/// target 白名单/掩码/撞槽/帽全在表内执法（fsclient host 钉板）。
+#[no_mangle]
+pub unsafe extern "C" fn epoll_ctl(
+    epfd: c_int,
+    op: c_int,
+    fd: c_int,
+    event: *const EpollEvent,
+) -> c_int {
+    if !epoll_valid(epfd) {
+        return err_ret(crate::EBADF);
+    }
+    let (events, data) = if op == EPOLL_CTL_DEL {
+        (0, 0)
+    } else if event.is_null() {
+        return err_ret(crate::EFAULT);
+    } else {
+        // SAFETY: libc 契约——非 NULL 即有效 epoll_event；packed 读 =
+        // 字段值拷贝（无字段引用）。
+        let e = unsafe { &*event };
+        (e.events, e.data)
+    };
+    // SAFETY: 单线程。
+    match unsafe { EPOLLS.ctl(epfd, op, fd, events, data) } {
+        Ok(()) => 0,
+        Err(e) => err_ret(epoll_ctl_errno(e)),
+    }
+}
+
+/// epoll_wait（A4-1 真身）：快照 + 节拍循环。**LT 语义** = 每轮全量
+/// 复报（berry-poll 同款免费——静态 interest 无消费即再报）；**timeout
+/// 三档**：0 = 纯快照立即返；-1 = 无帽节拍循环（v1 无跨线程 ctl 唤醒
+/// 面，1s 粒度文档化）；>0 = ms→ns deadline 到帽返 0（POSIX 超时 = 0
+/// 事件成功返）。快照源 = 逐 interest 项 `sock_poll_one`（EPOLL↔POLL
+/// 位数值同源 fsclient const 对拍钉板——i16 revents 直转 u32 零换算）；
+/// interest 中 fd 已 close（socket 表不在册）→ 该项报 EPOLLERR|
+/// EPOLLHUP（POSIX 近似——真实 epoll 由内核摘 interest，v1 无生命周
+/// 期联动，fd 号复用风险 v1 文档化，草案 §3.2）。命中项 events = re
+/// 掩码档 + data 原样透传；就绪数超 cap 截断（LT 下轮复报）。
+#[no_mangle]
+pub unsafe extern "C" fn epoll_wait(
+    epfd: c_int,
+    events: *mut EpollEvent,
+    maxevents: c_int,
+    timeout: c_int,
+) -> c_int {
+    // errno 优先序（Linux 同款）：EBADF → EINVAL → EFAULT。
+    if !epoll_valid(epfd) {
+        return err_ret(crate::EBADF);
+    }
+    if maxevents <= 0 {
+        return err_ret(crate::EINVAL);
+    }
+    if events.is_null() {
+        return err_ret(crate::EFAULT);
+    }
+    // SAFETY: 单线程值快照（wait 循环持副本——与表后续变更解耦）。
+    let interest = match unsafe { EPOLLS.snapshot(epfd) } {
+        Some(i) => i,
+        None => return err_ret(crate::EBADF),
+    };
+    let cap = core::cmp::min(maxevents as usize, berry_fsclient::EPOLL_ITEMS_MAX);
+    let deadline = if timeout > 0 {
+        Some(now() + timeout as u64 * 1_000_000)
+    } else {
+        None
+    };
+    loop {
+        let mut n = 0usize;
+        for it in interest.iter().flatten() {
+            let re: u32 = if sock_valid(it.fd) {
+                // 订阅掩码 u32 白名单位（≤0x10）→ i16 无损；re 非负位
+                // 域（≤0x3F）→ u32 直转。
+                sock_poll_one(it.fd, it.events as i16) as u32
+            } else {
+                EPOLLERR | EPOLLHUP
+            };
+            if re != 0 && n < cap {
+                // SAFETY: 出参区（libc 契约；n < cap ≤ maxevents 界
+                // 内）；packed 写 = 字段值存取（无字段引用）。
+                let slot = unsafe { &mut *events.add(n) };
+                slot.events = re;
+                slot.data = it.data;
+                n += 1;
+            }
+            if n == cap {
+                break;
+            }
+        }
+        if n > 0 {
+            return n as c_int;
+        }
+        match timeout {
+            0 => return 0,
+            -1 => {}
+            _ => {
+                if now() >= deadline.unwrap_or(u64::MAX) {
+                    return 0;
+                }
+            }
+        }
+        // 1s 节拍重快照（accept-wait/data-wait 同款底座）。
+        sleep_tick();
+    }
+}
+
+/// close 链尾（io.rs close 的 epoll 段）：释槽 + interest 全清（wait 侧
+/// 持值快照，无悬挂面）；不在册（段内空槽）→ EBADF。
+pub(crate) fn epoll_close(fd: c_int) -> c_int {
+    // SAFETY: 单线程。
+    if unsafe { EPOLLS.free(fd) } {
+        0
+    } else {
+        err_ret(crate::EBADF)
     }
 }
 

@@ -336,6 +336,12 @@ pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
         if crate::net::sock_valid(fd) {
             return crate::net::sock_send(fd, buf as *const u8, n);
         }
+        // epoll 段（23..=26，A4-1）：epoll fd 不可写（Linux 同款 EINVAL
+        // ——interest 注册只走 epoll_ctl）。
+        if crate::net::epoll_valid(fd) {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
         // fd≥3 = fs-backed 写（fs.rs 收口 EBADF/游标/分片 PUT）；fd<0 同落
         // 那边的 EBADF 面。
         return crate::fs::write_fd(fd, buf, n);
@@ -371,6 +377,11 @@ pub extern "C" fn writev(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
                 }
             }
             return total;
+        }
+        // epoll 段（A4-1）：不可写（write 同款 EINVAL）。
+        if crate::net::epoll_valid(fd) {
+            crate::set_errno(crate::EINVAL);
+            return -1;
         }
         // fs-backed：逐 iov 走 fs 写（部分写返回已写量——write_fd 同语义）。
         if cnt <= 0 {
@@ -430,6 +441,12 @@ pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
             // 入口收口（POSIX recv 零长读 = 0）。
             if crate::net::sock_valid(fd) {
                 return crate::net::sock_recv(fd, buf as *mut u8, n);
+            }
+            // epoll 段（A4-1）：epoll fd 不可读（Linux 同款 EINVAL——收割
+            // 只走 epoll_wait）。
+            if crate::net::epoll_valid(fd) {
+                crate::set_errno(crate::EINVAL);
+                return -1;
             }
             // fd≥3 = fs-backed 读（fs.rs 收口 EBADF/RA 预读）；fd 1/2 在那边
             // 落同一 EBADF 面（不在册）——旧「1/2 只写：读方向诚拒」零漂移。
@@ -501,6 +518,11 @@ pub extern "C" fn close(fd: c_int) -> c_int {
     // 回收——不弃 = 会话表真容量位泄漏；net.rs 收口，恒返 0 面）。
     if crate::net::sock_valid(fd) {
         return crate::net::sock_close(fd);
+    }
+    // epoll 段（A4-1）：释槽 + interest 全清（net.rs 收口；段内空槽
+    // EBADF）。
+    if crate::net::epoll_valid(fd) {
+        return crate::net::epoll_close(fd);
     }
     // fd≥3 = fs-backed：摘表 + 可写 fd 的 close 即 commit（裁决 2）。
     crate::fs::close_fd(fd)

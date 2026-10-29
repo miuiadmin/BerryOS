@@ -428,6 +428,212 @@ impl SocketTable {
     }
 }
 
+// —— epoll 表（A4-1：POSIX epoll fd 面，docs/事件循环A4设计草案.md
+//    §3.1——interest 注册的宿主表；语义蓝本 = berry-poll LT/poll-first/
+//    timeout 三档，对象面 = socket fd 快照）——
+
+/// epoll fd 段基址：23 起（socket 段 15..=22 之上；段界 const 断言
+/// 钉板——fd 四段（fs/console 别名/socket/epoll）独立演化结构性免疫）。
+pub const EPOLL_FD_BASE: i32 = 23;
+/// epoll 表容量（4 槽 fd 23..=26）：v1 消费面 = 单进程事件循环 1-2 实例
+/// （容量自定值，非协议同源）；满表 = EMFILE 面。
+pub const EPOLL_FD_MAX: usize = 4;
+/// 单 epoll 实例 interest 容量：与 socket 段容量**同源**（下方 const
+/// 断言——distinct-target ADD（Exists 守卫）最多注册 SOCK_FD_MAX 项，
+/// 恰满帽：**ENOSPC 结构性不可达、Full 是独立演化守卫**（两常量解耦
+/// 演化时先于越界炸响——A4-1 首查实录，见草案 §7 追记）。
+pub const EPOLL_ITEMS_MAX: usize = 8;
+
+/// 段免疫钉板：socket 段上界 ≤ epoll 段基址（SocketTable 同法）。
+const _: () = assert!(SOCK_FD_BASE + SOCK_FD_MAX as i32 <= EPOLL_FD_BASE);
+
+/// 容量同源钉板：interest 帽 == socket 段容量（SOCK_FD_MAX↔
+/// TCP_SESSIONS_MAX 先例）——「distinct target 全注册」恰满帽，Exists
+/// 恒先于 Full 到达；两常量独立演化时此断言先于静默越界炸响。
+const _: () = assert!(EPOLL_ITEMS_MAX == SOCK_FD_MAX);
+
+/// EPOLL 事件位（Linux UAPI 通用值——**与 poll 位数值同源**（Linux 把
+/// poll 位直接复用为 epoll 位），下方 const 对拍钉板零换算执法；域差
+/// u32 vs i16 由对拍吸收）。v1 白名单 = 这四位，其余位（EPOLLET/
+/// EPOLLPRI/EPOLLRDHUP…）拒 EINVAL——收下不执法是谎报，诚实拒优先。
+pub const EPOLLIN: u32 = 0x001;
+pub const EPOLLOUT: u32 = 0x004;
+pub const EPOLLERR: u32 = 0x008;
+pub const EPOLLHUP: u32 = 0x010;
+/// interest 掩码白名单（ctl ADD/MOD 执法面）。
+pub const EPOLL_MASK_OK: u32 = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP;
+
+/// EPOLL↔POLL 数值同源钉板（Linux UAPI 事实——epoll 位复用 poll 位；
+/// libc wait 快照把 `sock_poll_one` 的 i16 revents 直转 u32 events，
+/// 漂移即编译期炸响）。
+const _: () = assert!(EPOLLIN as i64 == POLLIN as i64);
+const _: () = assert!(EPOLLOUT as i64 == POLLOUT as i64);
+const _: () = assert!(EPOLLERR as i64 == POLLERR as i64);
+const _: () = assert!(EPOLLHUP as i64 == POLLHUP as i64);
+
+/// epoll_ctl op 域（Linux 定值）。
+pub const EPOLL_CTL_ADD: i32 = 1;
+pub const EPOLL_CTL_DEL: i32 = 2;
+pub const EPOLL_CTL_MOD: i32 = 3;
+
+/// epoll interest 注册项（值语义 Copy）：目标 socket fd + 订阅掩码
+/// （白名单内）+ data 透传槽（epoll_event.data 的回拷源——wait 命中
+/// 时原样归还，ptr/fd/u32 形态由消费方重释）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EpollItem {
+    pub fd: i32,
+    pub events: u32,
+    pub data: u64,
+}
+
+/// epoll ctl 错误面（errno 整型映射归 libc——SockDomErr 同先例：协议/
+/// 表面错误与 errno 是两层）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpollCtlErr {
+    /// epfd 不在 epoll 段或空槽 → EBADF。
+    BadFd,
+    /// op 值非 ADD/DEL/MOD → EINVAL。
+    OpBad,
+    /// 目标 fd 非 socket 段（console/fs/epoll fd 不入 epoll——v1 白名
+    /// 单 = socket 段；POSIX 近似：非法 fd 本应 EBADF/NFS 大同，统一
+    /// EINVAL 诚实拒不静默收下）→ EINVAL。
+    NotSock,
+    /// ADD 撞已注册 fd → EEXIST。
+    Exists,
+    /// MOD/DEL 目标不在册 → ENOENT。
+    Noent,
+    /// interest 容量帽（EPOLL_ITEMS_MAX）→ ENOSPC。
+    Full,
+    /// 订阅掩码白名单外 → EINVAL。
+    Mask,
+}
+
+/// epoll fd 表（libc 侧静态实例宿主）：`None` 槽 = 空；fd =
+/// `EPOLL_FD_BASE + 槽号`；表项 = interest 数组（首空位安装、DEL 挖洞
+/// 不压缩——快照方只做值拷贝，顺序稳定可测）。SocketTable 同形态。
+pub struct EpollTable {
+    slots: [Option<[Option<EpollItem>; EPOLL_ITEMS_MAX]>; EPOLL_FD_MAX],
+}
+
+impl EpollTable {
+    pub const fn new() -> Self {
+        EpollTable {
+            slots: [None; EPOLL_FD_MAX],
+        }
+    }
+
+    /// 最低空位安装 → fd；满表 None（EMFILE 面，libc 收口）。
+    pub fn alloc(&mut self) -> Option<i32> {
+        for i in 0..EPOLL_FD_MAX {
+            if self.slots[i].is_none() {
+                self.slots[i] = Some([None; EPOLL_ITEMS_MAX]);
+                return Some(EPOLL_FD_BASE + i as i32);
+            }
+        }
+        None
+    }
+
+    /// 释槽（close 面）：摘除整个实例。false = 不在册（EBADF 面）。
+    pub fn free(&mut self, fd: i32) -> bool {
+        match self.index(fd) {
+            Some(i) => self.slots[i].take().is_some(),
+            None => false,
+        }
+    }
+
+    /// ctl 三 op（ADD/MOD/DEL）——epfd 域检 → op 域检 → 目标 fd 白名
+    /// 单（socket 段 15..=22）→ 掩码白名单 → interest 面操作。检查序
+    /// 即 POSIX errno 优先序（BadFd → OpBad → NotSock → Mask →
+    /// Exists/Noent/Full）。
+    pub fn ctl(
+        &mut self,
+        fd: i32,
+        op: i32,
+        target: i32,
+        events: u32,
+        data: u64,
+    ) -> Result<(), EpollCtlErr> {
+        let slot_idx = self.index(fd).ok_or(EpollCtlErr::BadFd)? as usize;
+        let items = self
+            .slots
+            .get_mut(slot_idx)
+            .ok_or(EpollCtlErr::BadFd)?
+            .as_mut()
+            .ok_or(EpollCtlErr::BadFd)?;
+        if op != EPOLL_CTL_ADD && op != EPOLL_CTL_DEL && op != EPOLL_CTL_MOD {
+            return Err(EpollCtlErr::OpBad);
+        }
+        // 目标 fd 白名单 = socket 段在册区间（表归属查 socket 表是 libc
+        // 侧职责——本纯函数只执法号段；「段内但 socket 表空槽」由快照
+        // 方的 sock_valid 前置收口，与此处不重叠）。
+        if !(SOCK_FD_BASE..SOCK_FD_BASE + SOCK_FD_MAX as i32).contains(&target) {
+            return Err(EpollCtlErr::NotSock);
+        }
+        match op {
+            EPOLL_CTL_ADD => {
+                if events & !EPOLL_MASK_OK != 0 {
+                    return Err(EpollCtlErr::Mask);
+                }
+                // 撞槽判据 = 同一 target fd 已注册（两实例各注册同 fd 合
+                // 法——epoll 语义 per-instance）。
+                if items.iter().any(|s| s.is_some_and(|it| it.fd == target)) {
+                    return Err(EpollCtlErr::Exists);
+                }
+                let slot = items
+                    .iter_mut()
+                    .find(|s| s.is_none())
+                    .ok_or(EpollCtlErr::Full)?;
+                *slot = Some(EpollItem { fd: target, events, data });
+                Ok(())
+            }
+            EPOLL_CTL_MOD => {
+                if events & !EPOLL_MASK_OK != 0 {
+                    return Err(EpollCtlErr::Mask);
+                }
+                // 撞槽判据 = 同一 target fd 已注册（两实例各注册同 fd 合
+                // 法——epoll 语义 per-instance）。
+                let slot = items
+                    .iter_mut()
+                    .find(|s| s.is_some_and(|it| it.fd == target))
+                    .ok_or(EpollCtlErr::Noent)?;
+                let it = slot.as_mut().unwrap();
+                it.events = events;
+                it.data = data;
+                Ok(())
+            }
+            _ => {
+                // EPOLL_CTL_DEL：event 指针 POSIX 忽略（v1 同）。
+                let slot = items
+                    .iter_mut()
+                    .find(|s| s.is_some_and(|it| it.fd == target))
+                    .ok_or(EpollCtlErr::Noent)?;
+                *slot = None;
+                Ok(())
+            }
+        }
+    }
+
+    /// interest 值快照（wait 消费面）：拷贝整个数组——wait 循环持有
+    /// 值副本，与表后续变更解耦（单线程下也无借冲突）。None = 不在册。
+    pub fn snapshot(
+        &self,
+        fd: i32,
+    ) -> Option<[Option<EpollItem>; EPOLL_ITEMS_MAX]> {
+        self.index(fd)
+            .and_then(|i| self.slots.get(i as usize))
+            .and_then(|s| s.as_ref())
+            .copied()
+    }
+
+    fn index(&self, fd: i32) -> Option<usize> {
+        if fd < EPOLL_FD_BASE {
+            return None;
+        }
+        let i = (fd - EPOLL_FD_BASE) as usize;
+        (i < EPOLL_FD_MAX).then_some(i)
+    }
+}
+
 /// 点分四段 IPv4 字面量解析（getaddrinfo IP 字面量档的地基，草案 §3.3
 /// ——musl 语义：字面量自消化不走 DNS）。严格面 = inet_pton 口径：恰四
 /// 段、每段 1-3 位 ASCII 十进制、值 0-255；前导零按十进制（"01"=1）。
@@ -1286,5 +1492,179 @@ mod tests {
     fn sock_capacity_matches_netd() {
         // const 断言的运行时镜像（失败信息更可读）。
         assert_eq!(SOCK_FD_MAX, ndp::TCP_SESSIONS_MAX as usize);
+    }
+
+    // —— epoll 表（A4-1）——
+
+    /// ctl 桩：ADD 合法面（EPOLLIN|EPOLLOUT，socket 段内 target）。
+    fn ectl_add(
+        t: &mut EpollTable,
+        epfd: i32,
+        target: i32,
+        events: u32,
+    ) -> Result<(), EpollCtlErr> {
+        t.ctl(epfd, EPOLL_CTL_ADD, target, events, target as u64)
+    }
+
+    #[test]
+    fn epoll_alloc_lowest_first_and_reuse() {
+        let mut t = EpollTable::new();
+        assert_eq!(t.alloc(), Some(23));
+        assert_eq!(t.alloc(), Some(24));
+        assert!(t.free(23));
+        // POSIX 最低空位：23 先于 25 回填。
+        assert_eq!(t.alloc(), Some(23));
+        for fd in 25..=26 {
+            assert_eq!(t.alloc(), Some(fd));
+        }
+        // 满表 = EMFILE 面（4 槽 23..=26）。
+        assert_eq!(t.alloc(), None);
+        assert!(t.free(26));
+        assert_eq!(t.alloc(), Some(26));
+    }
+
+    #[test]
+    fn epoll_ctl_add_mod_del_happy() {
+        let mut t = EpollTable::new();
+        let ep = t.alloc().unwrap();
+        // ADD：interest 首空位安装，data 透传原样入表。
+        assert!(ectl_add(&mut t, ep, 15, EPOLLIN).is_ok());
+        assert!(ectl_add(&mut t, ep, 17, EPOLLOUT | EPOLLERR).is_ok());
+        let snap = t.snapshot(ep).unwrap();
+        assert_eq!(
+            snap[0],
+            Some(EpollItem { fd: 15, events: EPOLLIN, data: 15 })
+        );
+        assert_eq!(
+            snap[1],
+            Some(EpollItem {
+                fd: 17,
+                events: EPOLLOUT | EPOLLERR,
+                data: 17
+            })
+        );
+        assert_eq!(snap[2..], [None; EPOLL_ITEMS_MAX - 2]);
+        // MOD：换掩码 + 换 data（槽位不动——顺序稳定）。
+        assert!(t
+            .ctl(ep, EPOLL_CTL_MOD, 15, EPOLLHUP, 0xdead_beef)
+            .is_ok());
+        let snap2 = t.snapshot(ep).unwrap();
+        assert_eq!(
+            snap2[0],
+            Some(EpollItem { fd: 15, events: EPOLLHUP, data: 0xdead_beef })
+        );
+        // DEL：挖洞不压缩（后续项槽位不动——顺序稳定可测）。
+        assert!(t.ctl(ep, EPOLL_CTL_DEL, 15, 0, 0).is_ok());
+        let snap3 = t.snapshot(ep).unwrap();
+        assert_eq!(snap3[0], None);
+        assert_eq!(snap3[1], snap2[1]);
+    }
+
+    #[test]
+    fn epoll_ctl_rejection_surface() {
+        let mut t = EpollTable::new();
+        let ep = t.alloc().unwrap();
+        // BadFd：epfd 未安装（空槽）/段外/负值。
+        assert_eq!(ectl_add(&mut t, 24, 15, EPOLLIN), Err(EpollCtlErr::BadFd));
+        assert_eq!(ectl_add(&mut t, 22, 15, EPOLLIN), Err(EpollCtlErr::BadFd));
+        assert_eq!(ectl_add(&mut t, 27, 15, EPOLLIN), Err(EpollCtlErr::BadFd));
+        // OpBad：op 值域外。
+        assert_eq!(
+            t.ctl(ep, 0, 15, EPOLLIN, 0),
+            Err(EpollCtlErr::OpBad)
+        );
+        assert_eq!(
+            t.ctl(ep, 4, 15, EPOLLIN, 0),
+            Err(EpollCtlErr::OpBad)
+        );
+        // NotSock：target 非 socket 段（console/fs/别名/epoll 段自身）。
+        for bad in [0, 2, 3, 10, 14, 22 + 1, 26, 99, -1] {
+            assert_eq!(
+                ectl_add(&mut t, ep, bad, EPOLLIN),
+                Err(EpollCtlErr::NotSock),
+                "target={}",
+                bad
+            );
+        }
+        // Mask：白名单外（EPOLLET 高位/POLLPRI/POLLNVAL 位）。
+        for bad_mask in [
+            1u32 << 31,          // EPOLLET
+            0x002,               // EPOLLPRI（= POLLPRI 位）
+            0x020,               // EPOLLNVAL 位域（非白名单）
+            EPOLLIN | 0x040,     // 白名单内混非法位
+        ] {
+            assert_eq!(
+                ectl_add(&mut t, ep, 15, bad_mask),
+                Err(EpollCtlErr::Mask),
+                "mask={:#x}",
+                bad_mask
+            );
+        }
+        // Exists：重复 ADD 同一 target。
+        assert!(ectl_add(&mut t, ep, 15, EPOLLIN).is_ok());
+        assert_eq!(
+            ectl_add(&mut t, ep, 15, EPOLLOUT),
+            Err(EpollCtlErr::Exists)
+        );
+        // Noent：MOD/DEL 未注册 target。
+        assert_eq!(
+            t.ctl(ep, EPOLL_CTL_MOD, 16, EPOLLIN, 0),
+            Err(EpollCtlErr::Noent)
+        );
+        assert_eq!(
+            t.ctl(ep, EPOLL_CTL_DEL, 16, 0, 0),
+            Err(EpollCtlErr::Noent)
+        );
+        // 两实例各注册同一 target 合法（epoll 语义 per-instance）。
+        let ep2 = t.alloc().unwrap();
+        assert!(ectl_add(&mut t, ep2, 15, EPOLLOUT).is_ok());
+    }
+
+    #[test]
+    fn epoll_ctl_capacity_invariant() {
+        // 容量同源不变量的运行时镜像：socket 段全部 distinct target 注
+        // 册恰好填满——后续段内 ADD 恒 Exists（帽满的**可达**形态；
+        // ENOSPC 结构性不可达——见 EPOLL_ITEMS_MAX 注）。
+        let mut t = EpollTable::new();
+        let ep = t.alloc().unwrap();
+        for fd in SOCK_FD_BASE..SOCK_FD_BASE + SOCK_FD_MAX as i32 {
+            assert!(ectl_add(&mut t, ep, fd, EPOLLIN).is_ok(), "fd={}", fd);
+        }
+        assert_eq!(
+            ectl_add(&mut t, ep, 15, EPOLLIN),
+            Err(EpollCtlErr::Exists)
+        );
+        // 挖洞回填：DEL 后新 ADD 复用空位。
+        assert!(t.ctl(ep, EPOLL_CTL_DEL, 17, 0, 0).is_ok());
+        assert!(ectl_add(&mut t, ep, 17, EPOLLOUT).is_ok());
+        // errno 优先序镜像：BadFd 先于 OpBad/NotSock/Mask（全错参时）。
+        assert_eq!(t.ctl(24, 0, 0, 0xdead, 0), Err(EpollCtlErr::BadFd));
+    }
+
+    #[test]
+    fn epoll_snapshot_free_semantics() {
+        let mut t = EpollTable::new();
+        // 空槽/段外 snapshot → None。
+        assert_eq!(t.snapshot(24), None);
+        assert_eq!(t.snapshot(22), None);
+        assert_eq!(t.snapshot(27), None);
+        let ep = t.alloc().unwrap();
+        assert!(ectl_add(&mut t, ep, 15, EPOLLIN | EPOLLOUT).is_ok());
+        // 快照 = 值拷贝：取后改表，副本不动。
+        let snap = t.snapshot(ep).unwrap();
+        assert!(t.ctl(ep, EPOLL_CTL_DEL, 15, 0, 0).is_ok());
+        assert_eq!(
+            snap[0],
+            Some(EpollItem {
+                fd: 15,
+                events: EPOLLIN | EPOLLOUT,
+                data: 15
+            })
+        );
+        // free：释槽后 snapshot → None；重复 free false；未安装槽 false。
+        assert!(t.free(ep));
+        assert_eq!(t.snapshot(ep), None);
+        assert!(!t.free(ep));
+        assert!(!t.free(26));
     }
 }

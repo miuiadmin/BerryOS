@@ -171,6 +171,12 @@ pub extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
         crate::set_errno(crate::EINVAL);
         return -1;
     }
+    // epoll fd 腿（A4-1）：无旗面——epoll fd 唯一可做的是 ctl/wait/close，
+    // 任何 fcntl cmd 恒 EINVAL（Linux 同档：epoll fd 无 FL 可读）。
+    if crate::net::epoll_valid(fd) {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
     crate::set_errno(crate::EBADF);
     -1
 }
@@ -178,11 +184,9 @@ pub extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 // —— tail 桩面（C-2c 挂账刀：uu_tail 的 -f/监测链——mio/inotify 全家。
 //    挂账刀纪律「现探现补」：链接探针实证 7 枚符号全归 tail（-f 尾随
 //    面 v1 无实现，ENOSYS = 诚实语义——tail 无 -f 路径全绿，见 bsh
-//    u4_selftest 头注）；epoll/eventfd 与 inotify 两族在此合册）——
+//    u4_selftest 头注）；eventfd/inotify 两族维持合册——epoll 三桩
+//    A4-1 转真出册（net.rs 真身：EpollTable 23..=26 + LT/timeout 三档）——
 neg_int!(
-    epoll_create1 => crate::ENOSYS,
-    epoll_ctl => crate::ENOSYS,
-    epoll_wait => crate::ENOSYS,
     eventfd => crate::ENOSYS,
     inotify_init1 => crate::ENOSYS,
     inotify_add_watch => crate::ENOSYS,
