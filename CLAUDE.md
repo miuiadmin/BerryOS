@@ -151,6 +151,7 @@ berryos/
 brew install qemu just                          # qemu-system-aarch64 + just（brew 的 qemu 一包含全 arch 的 qemu-system-*）
 rustup target add aarch64-unknown-none          # stable，拉预编译 core（无需 nightly/build-std）
 rustup target add x86_64-unknown-none           # P7-x0 起 x86_64 最小集（stable 预编译 core，免 nightly）
+rustup target add aarch64-unknown-linux-musl    # 用户态 std 面（stdhello/bsh/uu 家族与 .bap 应用同链——musl target + berry-libc shim + berry-ld；开发者文档 docs/应用开发指南.md）
 ```
 
 **日常命令**（仓库根；justfile 已固化 `~/.cargo/bin` 到 PATH）：

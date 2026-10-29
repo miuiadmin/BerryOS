@@ -5,6 +5,9 @@
 //! `app APPDEMO up` 一行经 console 服务落串口（smoke 的独立 grep 断言位，
 //! `ROOTFS_MARKERS` 数组之外——设计 §6 钉板）。
 //!
+//! SDK-1a：manifest 升新形态（[compat] 三值 + `fs = ["rootfs"]`）——本
+//! bin 是 fs 词的**消费侧自证**（`/etc/mtab` 读回，见 main 内注释）。
+//!
 //! argv0 自检 = manifest `entry` 串 `bin/appdemo`（stdhello argv[0] 先例）：
 //! appd 以 entry 串作 `SpawnSpec.name`——错值 = 断言炸 → abort(134) →
 //! appd `reap != Ok(0)` → `APP ok` 缺失 = smoke FAIL loud。
@@ -26,5 +29,14 @@ fn main() -> ExitCode {
         "argv0 should be manifest entry"
     );
     println!("app APPDEMO up");
+    // fs 词自证（SDK-1a §6.2）：libc open/read 经 fsclient → fs_h gift
+    // （env hs[5]）→ fsmgr RPC 真往返——「词表 = 镜子」执法面：manifest
+    // 声明 fs 且 appd 装了四元 gift，此读才可能成功。mtab = fsmgr RAM
+    // 树预建定值（盘相无关——FAT 子目录/持久化/B4/EFI 全相位恒在）。
+    // 失败全 loud：expect/assert panic → abort(134) → reap 非 0 →
+    // `APP ok n=2` 缺失 = smoke FAIL。
+    let mtab = std::fs::read("/etc/mtab").expect("appdemo: mtab read");
+    assert_eq!(mtab, b"/dev/root / fat rw 0 0\n", "mtab 内容漂移");
+    println!("app APPDEMO fs ok 23");
     ExitCode::from(0)
 }

@@ -40,6 +40,7 @@ Current milestone **M-VM**: a self-hosting disk image (BerryBoot EFI loader → 
 ```bash
 brew install qemu just                    # macOS; Linux: apt install qemu-system-arm qemu-system-x86 just
 rustup target add aarch64-unknown-none x86_64-unknown-none
+rustup target add aarch64-unknown-linux-musl   # user-space std programs & .bap apps (guide: docs/应用开发指南.md)
 
 just run          # boot the kernel to a serial console in QEMU (ARM64 virt)
 just run-rootfs   # full service stack: rootfs, FAT, DNS, TCP, .bap apps
@@ -74,6 +75,7 @@ Design documents are written in Chinese and live in [`docs/`](docs/). Start from
 - Roadmap: [`docs/路线图.md`](docs/路线图.md)
 - Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计.md`](docs/调度器设计.md)
 - Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计.md`](docs/系统调用ABI设计.md)
+- App development guide — writing `.bap` apps, manifest v1, build toolchain: [`docs/应用开发指南.md`](docs/应用开发指南.md)
 
 ## License
 

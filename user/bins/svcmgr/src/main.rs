@@ -40,7 +40,9 @@ use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, 
 // P6 A-8c：vnet 网络服务消费自验（DNS ok）的协议面。
 use berry_netdproto as ndp;
 // app-0 a-2：.bap manifest v0 解析面（纯函数 crate，host 23 测同源）。
-use berry_manifest::{APP_SLOTS, BAP_MAX, ENTRY_MAX, ID_MAX, MANIFEST_MAX};
+use berry_manifest::{
+    APP_SLOTS, BAP_MAX, ENTRY_MAX, ID_MAX, MANIFEST_MAX, SDK_CURRENT,
+};
 // C-3 段①：ps 查询 RPC 协议面（ps_selftest 服务端：请求解析 + 账本编码）。
 use berry_psproto as psp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
@@ -311,9 +313,16 @@ fn run_rootfs_child(console: Handle) {
     };
     let mut app_n = 0usize;
     let mut pos = 0u64;
-    // bsh 一次性标志（对抗审查）：H_BSH_STDIN 是单用 handle（take 中转），
-    // 重复 `bin/bsh` 条目重入 arm 会以死值自陷——见 arm 内注释。
-    let mut bsh_spawned = false;
+    // SDK-1a §1.2：bsh 几何记账（延后拉起重排）。None = 归档无 bin/bsh
+    // （走查尾兜底关 fs 端点按原序执行）；Some((data_off, data_len)) = 主
+    // 走查只记几何，spawn 挪到走查毕 app 批之后（见尾段）——app 批的 fs
+    // 授能要 fs_a_h 仍持，而原 arm 内「spawn Ok 后关 fs_a_h」把 bsh 定为
+    // fs_a 队列唯一读者（防回复混流），app 批必须排它前面才拿得到安全
+    // 端点（fsproto 严格串行无请求号，双读者 = 应答偷取——C-1 刀 3
+    // stdhello 预拉同款机制性论证）。重复 `bin/bsh` 条目防重入 =
+    // is_some() 判重（H_BSH_STDIN 单用 handle 的死值自陷面由「只记几何
+    // 不 spawn」根除；重复条目 = 可见降级，较旧双 spawn 是小收紧）。
+    let mut bsh_geom: Option<(u64, u64)> = None;
     // ---- P6 A-5：vblk（常驻块设备服务）预拉起——先于 fsmgr ----
     // A-4 时 vblk 在主走查 arm 拉起（mkcpio 名序靠后，仅 svcmgr 自验消费）；
     // A-5 起 fsmgr 的 FAT 层要 blk 服务端端（env gift[3]），而 fsmgr 预拉在
@@ -752,109 +761,17 @@ fn run_rootfs_child(console: Handle) {
                         trap();
                     }
                 } else if name == "bin/bsh" {
-                    // A-2：交互 shell bsh——stdhello/hexyl 同链（musl target +
-                    // berry-libc shim）。gift 三~五元：[0] console 别名（spawn 内
-                    // dup）/ [1] **endB2 = H_BSH_STDIN（被 take 中转，svcmgr
-                    // 自此不再持有——fd0 = console 键盘行转发对端）** /
-                    // [2] rootfs VMO READ dup（bsh 的 `run <name>` 流式取 ELF，
-                    // libc `rootfs_h()` 消费）/ [3] P6 A-1：fs 客户端端（fs_a
-                    // 的 SEND|RECV dup——`>`/`cat`/`ls` 的 RPC 端，libc
-                    // `fs_h()`；fs_client==0 = fsmgr 未起）/ [4] A2-3：netd
-                    // 服务端端（NET_A 的 SEND|RECV dup——EVS echo server 自验
-                    // 的 RPC 面，libc `netd_h()`；NET_A==0 = vnet 未起 = EFI/
-                    // 裸拓扑，静默不装）。栈 16
-                    // 页（无 clap 链）。`BSH ok` 由 bsh 自打（自驱自验：内部
-                    // `run hexyl` 收齐 2156B——rootfs 相第 8 标记）；prompt/
-                    // 交互为化妆面。
-                    if bsh_spawned {
-                        // 对抗审查：cpio 重复名合法——重入本 arm 会以已被 take
-                        // 的 H_BSH_STDIN 调 send → 预检 -EBADF → 自陷杀 svcmgr。
-                        // 一次性 handle 的单用性不能押在「归档每名恰一条」上
-                        // （其它 arm 幂等：fresh dup/channel_pair；唯本 arm 有
-                        // 单用 handle）。可见降级续走归档。
+                    // A-2：交互 shell bsh——**SDK-1a §1.2 起延后拉起**：本 arm
+                    // 只记包内几何（data_off/data_len），spawn 整体挪到走查毕
+                    // app 批之后的 `if let Some((off, len)) = bsh_geom` 段
+                    // （原 arm 体逐字迁居，gift 拓扑注释随行）——app 批要给
+                    // app 装 fs gift，结构性拿不到安全端点（原 arm spawn Ok
+                    // 后关 fs_a_h = bsh 自此是 fs_a 队列唯一读者），裁「app
+                    // 批前移、bsh 延后」。重复 `bin/bsh` 条目 = 可见降级。
+                    if bsh_geom.is_some() {
                         eco_skip(b"bsh dup");
                     } else {
-                        bsh_spawned = true;
-                        let mut rootfs_dup = 0 as Handle;
-                        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
-                            trap();
-                        }
-                        // A2-3 第五 extras：netd 服务端端。NET_A==0（vnet 未起 =
-                        // EFI/裸拓扑）静默不装——bsh 侧 netd_h()==0 跳过同口径。
-                        // 槽序固定：netd 只随 fs 之后入列（libc 按位落种
-                        // hs[6]→netd——前缀紧致会让 netd 落进 fs 槽 hs[5] 造成
-                        // 同槽不同名；fs 缺席而 vnet 在位的理论拓扑里 netd
-                        // 一并让位，现无此 recipe）。
-                        let mut netd_dup = 0 as Handle;
-                        let net = NET_A.load(Ordering::Relaxed);
-                        if net != 0 {
-                            if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV, &mut netd_dup)
-                                != 0
-                            {
-                                trap();
-                            }
-                        }
-                        let mut gifts = [rootfs_dup, 0 as Handle, 0 as Handle];
-                        let gifts: &[Handle] = if fs_client != 0 {
-                            gifts[1] = fs_client;
-                            if netd_dup != 0 {
-                                gifts[2] = netd_dup;
-                                &gifts
-                            } else {
-                                &gifts[..2]
-                            }
-                        } else {
-                            &gifts[..1]
-                        };
-                        if spawn_rootfs_elf(
-                            H_ROOTFS,
-                            &SpawnSpec {
-                                name: name.as_bytes(),
-                                data_off,
-                                data_len,
-                                stdout: console,
-                                stack_pages: 16,
-                                stdin_feed: None,
-                                stdin_handle: Some(H_BSH_STDIN),
-                                args: &[],
-                                extra_gifts: gifts,
-                                mmio_vmo: None,
-                                mmio_va: 0,
-                            },
-                        )
-                        .is_err()
-                        {
-                            // Err 三路（首窗读/elf_head/几何前置）全在 env send
-                            // 前——rootfs_dup/fs_client/netd_dup 均未被 take，
-                            // 显式回收防表槽泄漏（Ok 路径已被 take，关旧值必
-                            // -EBADF，勿在此关）。
-                            if berry_handle_close(rootfs_dup) != 0 {
-                                trap();
-                            }
-                            if fs_client != 0 && berry_handle_close(fs_client) != 0 {
-                                trap();
-                            }
-                            if netd_dup != 0 && berry_handle_close(netd_dup) != 0 {
-                                trap();
-                            }
-                            fs_client = 0;
-                            ps_reg(b"bsh", psp::STATE_SPAWNFAIL, 0);
-                            eco_skip(b"elf bad");
-                        } else {
-                            ps_reg(b"bsh", psp::STATE_ALIVE, 0);
-                            // Ok：fs_client/netd_dup 已被 take 迁移（旧值必
-                            // -EBADF，勿关）；
-                            // 本表 fs_a 用毕关——bsh 的 dup 与本表别名共享同一
-                            // ObjRef 队列，关别名只减引用（队列由 bsh 侧撑着），
-                            // bsh 自此是 fs_a 队列唯一读者（防回复混流）。NET_A
-                            // 是本表常驻别名（vnet 复用，ps/bc 等后续消费面），
-                            // 不随 bsh 关闭。
-                            fs_client = 0;
-                            if fs_a_h != 0 && berry_handle_close(fs_a_h) != 0 {
-                                trap();
-                            }
-                            fs_a_h = 0;
-                        }
+                        bsh_geom = Some((data_off, data_len));
                     }
                 } else if name == "bin/vprobe" {
                     // P6 A-2：virtio-mmio 探测（用户态驱动地基第一刀）——
@@ -934,14 +851,26 @@ fn run_rootfs_child(console: Handle) {
     // 无害但关掉更干净；fsmgr 常驻不受影响（fs_b 互钉 + 子表自持）。
     // A-5：归档无 bin/fsmgr 时 blk_cli 未被 take——同兜底关（vblk 经
     // pair 互钉常活，无 client 只是闲置）。
-    if fs_client != 0 {
-        if berry_handle_close(fs_client) != 0 {
-            trap();
+    // SDK-1a §1.2：bsh 延后拉起——bsh_geom.is_some() 时 fs 端点还要交给
+    // app 批（fs 授能）与 bsh 拉起段（fs_client take），此处不得提前关
+    // （旧序「bsh arm spawn Ok 已置 0」的隐式跳过条件在延后态失效，显式
+    // 门取代；bsh spawn Err 面的 fs_a_h 留表 = 有界 1 槽，v1 常驻泄漏政策）。
+    if bsh_geom.is_none() {
+        if fs_client != 0 {
+            if berry_handle_close(fs_client) != 0 {
+                trap();
+            }
+            fs_client = 0;
         }
-    }
-    if fs_a_h != 0 {
-        if berry_handle_close(fs_a_h) != 0 {
-            trap();
+        if fs_a_h != 0 {
+            if berry_handle_close(fs_a_h) != 0 {
+                trap();
+            }
+            // 关后置 0：app 批仍会把 fs_a_h 传进 app_launch——陈旧非零值
+            // 会绕过其 `fs_a == 0` 守卫，在已关（或更糟：槽位被复用的错
+            // 对象）句柄上 duplicate（对抗审查 minor：无 bsh+fs app 拓扑
+            // v1 无 recipe，潜伏面堵死）。
+            fs_a_h = 0;
         }
     }
     if blk_cli != 0 {
@@ -952,12 +881,16 @@ fn run_rootfs_child(console: Handle) {
     // ---- app-0 a-2：.bap 启动批（收集槽全量拉起；`APP ok n=` = rootfs
     // 相第 21 标记）——确定性状态谓词：每槽 bap_scan → manifest parse →
     // 双守卫 → 拉起 → EOF/reap 真码 0，全过才打（任一降级 = 标记缺失 =
-    // smoke FAIL；裸跑 app_n==0 零扰动）。
+    // smoke FAIL；裸跑 app_n==0 零扰动）。SDK-1a §1.2：批块先于 bsh 拉起
+    // （appd fs 授能传 fs_a_h——此刻仍持，app 批窗口 app 为 fs_a 队列唯一
+    // 活动客户端：app_launch 对 console=true 阻塞 reap、console=false
+    // collect_eof+reap，任一时刻至多一个 app 存活发 fs RPC）。
     if app_n > 0 {
         let mut ok = 0usize;
         for i in 0..app_n {
             if app_launch(
                 console,
+                fs_a_h,
                 &apps[i].id[..apps[i].id_len],
                 apps[i].bap_off,
                 apps[i].bap_len,
@@ -977,6 +910,95 @@ fn run_rootfs_child(console: Handle) {
             line[9] = b'0' + ok as u8;
             line[10] = b'\n';
             send_retry(console, line.as_ptr(), line.len());
+        }
+    }
+    // ---- A-2：bsh 拉起（SDK-1a §1.2 延后段——原主走查 arm 体逐字迁居，
+    // data_off/data_len 换绑 off/len，其余零改动）----
+    // 交互 shell bsh——stdhello/hexyl 同链（musl target + berry-libc
+    // shim）。gift 三~五元：[0] console 别名（spawn 内 dup）/ [1] **endB2
+    // = H_BSH_STDIN（被 take 中转，svcmgr 自此不再持有——fd0 = console
+    // 键盘行转发对端）** / [2] rootfs VMO READ dup（bsh 的 `run <name>`
+    // 流式取 ELF，libc `rootfs_h()` 消费）/ [3] P6 A-1：fs 客户端端（fs_a
+    // 的 SEND|RECV dup——`>`/`cat`/`ls` 的 RPC 端，libc `fs_h()`；
+    // fs_client==0 = fsmgr 未起）/ [4] A2-3：netd 服务端端（NET_A 的
+    // SEND|RECV dup——EVS echo server 自验的 RPC 面，libc `netd_h()`；
+    // NET_A==0 = vnet 未起 = EFI/裸拓扑，静默不装）。栈 16 页（无 clap
+    // 链）。`BSH ok` 由 bsh 自打（自驱自验：内部 `run hexyl` 收齐
+    // 2156B——rootfs 相第 8 标记）；prompt/交互为化妆面。此刻拉起 =
+    // app 批已收口，bsh 恢复 fs_a 队列唯一读者（下方 Ok 面关 fs_a_h）。
+    if let Some((off, len)) = bsh_geom {
+        let mut rootfs_dup = 0 as Handle;
+        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+            trap();
+        }
+        // A2-3 第五 extras：netd 服务端端。NET_A==0（vnet 未起 = EFI/裸
+        // 拓扑）静默不装——bsh 侧 netd_h()==0 跳过同口径。槽序固定：netd
+        // 只随 fs 之后入列（libc 按位落种 hs[6]→netd——前缀紧致会让 netd
+        // 落进 fs 槽 hs[5] 造成同槽不同名；fs 缺席而 vnet 在位的理论拓
+        // 扑里 netd 一并让位，现无此 recipe）。
+        let mut netd_dup = 0 as Handle;
+        let net = NET_A.load(Ordering::Relaxed);
+        if net != 0 {
+            if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV, &mut netd_dup) != 0 {
+                trap();
+            }
+        }
+        let mut gifts = [rootfs_dup, 0 as Handle, 0 as Handle];
+        let gifts: &[Handle] = if fs_client != 0 {
+            gifts[1] = fs_client;
+            if netd_dup != 0 {
+                gifts[2] = netd_dup;
+                &gifts
+            } else {
+                &gifts[..2]
+            }
+        } else {
+            &gifts[..1]
+        };
+        if spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/bsh",
+                data_off: off,
+                data_len: len,
+                stdout: console,
+                stack_pages: 16,
+                stdin_feed: None,
+                stdin_handle: Some(H_BSH_STDIN),
+                args: &[],
+                extra_gifts: gifts,
+                mmio_vmo: None,
+                mmio_va: 0,
+            },
+        )
+        .is_err()
+        {
+            // Err 三路（首窗读/elf_head/几何前置）全在 env send 前——
+            // rootfs_dup/fs_client/netd_dup 均未被 take，显式回收防表槽泄
+            // 漏（Ok 路径已被 take，关旧值必 -EBADF，勿在此关）。fs_a_h
+            // 不在此关（走查尾兜底已被 bsh_geom 门挡，留表 = 有界 1 槽）。
+            if berry_handle_close(rootfs_dup) != 0 {
+                trap();
+            }
+            if fs_client != 0 && berry_handle_close(fs_client) != 0 {
+                trap();
+            }
+            if netd_dup != 0 && berry_handle_close(netd_dup) != 0 {
+                trap();
+            }
+            ps_reg(b"bsh", psp::STATE_SPAWNFAIL, 0);
+            eco_skip(b"elf bad");
+        } else {
+            ps_reg(b"bsh", psp::STATE_ALIVE, 0);
+            // Ok：fs_client/netd_dup 已被 take 迁移（旧值必 -EBADF，勿关）；
+            // 本表 fs_a 用毕关——bsh 的 dup 与本表别名共享同一 ObjRef 队列，
+            // 关别名只减引用（队列由 bsh 侧撑着），bsh 自此是 fs_a 队列唯一
+            // 读者（防回复混流）。NET_A 是本表常驻别名（vnet 复用，ps/bc 等
+            // 后续消费面），不随 bsh 关闭。fs_client/fs_a_h 的旧「置 0 收尾」
+            // 随 §1.2 迁居成为死写（本块即函数末语）——删。
+            if fs_a_h != 0 && berry_handle_close(fs_a_h) != 0 {
+                trap();
+            }
         }
     }
 }
@@ -2244,20 +2266,25 @@ fn has_sub(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// .bap 内层走查产物：manifest 实长 + 包内 bin/ 条目名长 + ELF 包内几何
-/// （`bap_off` 相对偏移——spawn 直用 `bap_off + elf_off`）。
+/// （`bap_off` 相对偏移——spawn 直用 `bap_off + elf_off`）+ SHA256SUMS
+/// 第三条目在场记账（SDK-1a——v1 只记不读不验，§2.4 三理由）。
 struct BapScan {
     mf_len: usize,
     entry_len: usize,
     elf_off: u64,
     elf_len: u64,
+    has_sums: bool,
 }
 
 /// .bap 内层 cpio 走查（mkapp 生产形状：恰 `manifest.toml` + 唯一 `bin/`
-/// 条目 + TRAILER 自终止）。rootfs 是外部输入面——消费侧独立执法（mkapp
-/// 门禁只约束本仓产物，拼装盘上的 .bap 不凭生产端承诺）：重复/第三/未知
-/// 条目一律 `bap shape` 拒。manifest 可达 1KiB > 步进窗 512B——**专用
-/// vmo_read 直读进 mf 窗**（步进窗只须盖头+名）；ELF 只记几何（段泵送在
-/// spawn_rootfs_elf，归档永不整档驻留）。
+/// 条目 + 可选 `SHA256SUMS`（SDK-1a §2.4 起新产包第三条目常态在场，
+/// 2 条目历史形照收）+ TRAILER 自终止）。rootfs 是外部输入面——消费侧
+/// 独立执法（mkapp 门禁只约束本仓产物，拼装盘上的 .bap 不凭生产端
+/// 承诺）：重复/未知条目一律 `bap shape` 拒。manifest 可达 1KiB >
+/// 步进窗 512B——**专用 vmo_read 直读进 mf 窗**（步进窗只须盖头+名）；
+/// ELF 只记几何（段泵送在 spawn_rootfs_elf，归档永不整档驻留）。
+/// manifest 读窗预算（附 A）恒安全：APP_MF_WIN = MANIFEST_MAX = 1024B
+/// ≥ 最坏 395B（v1 全量段）——SDK-1a 无需扩窗。
 fn bap_scan(
     step: &mut [u8],
     mf: &mut [u8],
@@ -2268,7 +2295,9 @@ fn bap_scan(
     let mut pos = 0u64;
     let mut seen_mf = false;
     let mut seen_bin = false;
-    let mut out = BapScan { mf_len: 0, entry_len: 0, elf_off: 0, elf_len: 0 };
+    let mut seen_sums = false;
+    let mut out =
+        BapScan { mf_len: 0, entry_len: 0, elf_off: 0, elf_len: 0, has_sums: false };
     while pos < bap_len {
         let want = ((bap_len - pos).min(step.len() as u64)) as usize;
         if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), bap_off + pos, want) != 0 {
@@ -2297,6 +2326,17 @@ fn bap_scan(
                     }
                     out.mf_len = data_len as usize;
                     seen_mf = true;
+                } else if name == "SHA256SUMS" {
+                    // SDK-1a §2.4 第三条目：mkapp 产包新常态（恰一份；重复
+                    // = bap shape 拒）。v1 只记账在场——不读内容不验摘要
+                    // （零 no_std sha256 依赖 + 无签名的摘要非安全边界；真
+                    // 执法点 = v2 安装期签名验证，挂账 O4）。2 条目形
+                    // （SDK-1a 前历史包）照收——seen_sums 缺省即容。
+                    if seen_sums {
+                        return Err(b"bap shape");
+                    }
+                    seen_sums = true;
+                    out.has_sums = true;
                 } else if name.len() > 4 && name.starts_with("bin/") {
                     if seen_bin {
                         return Err(b"bap shape");
@@ -2330,8 +2370,12 @@ fn bap_scan(
 /// = 子堵收集队 + 父等退出三方互等）。reap 真码 0 才算过：argv0 断言错 →
 /// abort(134) → 非零 → 降级行 + `APP ok` 缺失 loud。任何失败 = `eco: app`
 /// 行 + false，svcmgr 存活续走（失败隔离：单 app 坏不连坐整批）。
+///
+/// SDK-1a：`fs_a` = fsmgr 预拉对 a 侧（§1.2 新序下 app 批窗口 svcmgr 仍
+/// 持 `fs_a_h`）；fs 授能不可达值 0 传参由 §5.2 `fs none` 降级路径消化。
 fn app_launch(
     console: Handle,
+    fs_a: Handle,
     id: &[u8],
     bap_off: u64,
     bap_len: u64,
@@ -2363,6 +2407,24 @@ fn app_launch(
         eco_app(console, id, b"entry mismatch");
         return false;
     }
+    // SDK-1a §5.2 步骤 1：compat min 装载期检查（ADR #55 工具链三值域的
+    // 运行时执法点）。min > SDK_CURRENT = 本系统比包声称的最低线还老 →
+    // loud 降级行拒拉（fsmgr diag("geom") 同式）；target/compile 是打包
+    // 期面向（mkapp 已闸），装载期不查。此处 out_s 未建、dup 未造——
+    // 零清理直退。
+    if let Some(c) = man.compat {
+        if c.min > SDK_CURRENT {
+            eco_app(console, id, b"compat min"); // 10B ≤ 24B
+            return false;
+        }
+    }
+    // SDK-1a §5.2 步骤 2：net 词 loud 拒（档 (b)——schema/mkapp 收、appd
+    // 拒：v1 无网络服务可安全授能，词表先行 ≠ 无服务硬授，挂账 §10 O3）。
+    // 同样零清理直退（console 两态尚未分岔）。
+    if man.net.is_some() {
+        eco_app(console, id, b"net unserved"); // 11B ≤ 24B
+        return false;
+    }
     // 能力面：console=false 才建私有对（spawn 内 dup RIGHT_SEND 交付 spawn
     // 侧端，原值留本表作收集端）。stack_pages 按 manifest；intent v1 解析
     // 面记录、调度零消费（消费点随 v2 EEVDF，ADR #42 两段式）。
@@ -2374,6 +2436,51 @@ fn app_launch(
         out_s = s;
         c
     };
+    // SDK-1a §5.2 步骤 4：fs 四元装配（uu_run/bsh fs_gifts 同款）——manifest
+    // fs 词在场 = 真授能：rootfs RO dup（env hs[4]→GIFT_H[0]→rootfs_h()）+
+    // fsmgr 对 SEND|RECV dup（env hs[5]→GIFT_H[1]→fs_h()）。半途失败两枚
+    // 都试关（bsh fs_gifts 同款）；失败清理含 console=false 的 out 对（此
+    // 时已分岔——spawn Err 面同款显式关两值）。wants_fs=false 两枚恒 0，
+    // spawn Ok/Err 面的关闭分支不触。
+    let wants_fs = man.fs.is_some();
+    let mut rootfs_dup: Handle = 0;
+    let mut fs_dup: Handle = 0;
+    if wants_fs {
+        if fs_a == 0 {
+            // §1.2 新序下 app 批窗口 fs_a_h 必在席；0 = 老序残路/裸拓扑
+            // 兜底——loud 降级不静默（fsmgr 未预拉的 fs 词授不了能）。
+            eco_app(console, id, b"fs none"); // 7B ≤ 24B
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+            return false;
+        }
+        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+            eco_app(console, id, b"fs dup"); // 6B ≤ 24B
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+            return false;
+        }
+        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+            // 半途失败：rootfs_dup 已成，先试关再走 out 对清理。
+            let _ = berry_handle_close(rootfs_dup);
+            eco_app(console, id, b"fs dup");
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+            return false;
+        }
+    }
+    // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）；
+    // !wants_fs 时两枚恒 0、数组不被引用。
+    let fs_gifts = [rootfs_dup, fs_dup];
     match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -2382,12 +2489,14 @@ fn app_launch(
             data_len: sc.elf_len,
             stdout,
             stack_pages: man.stack_pages as u64,
-            // stdin 无数据面（hello/vprobe 同款 None——appdemo/appquiet
-            // 都不读 fd0；空 gift 数组不触发 gift[1] 在位 assert）。
-            stdin_feed: None,
+            // stdin 无数据面（hello/vprobe 同款——appdemo/appquiet 都不读
+            // fd0）。SDK-1a：wants_fs 时改 `Some(&[])`——berry-exec 契约
+            // extras 非空须 stdin 槽在位（:446-449 assert），零长 feed =
+            // 纯槽位占位无数据。
+            stdin_feed: if wants_fs { Some(&[]) } else { None },
             stdin_handle: None,
             args: &[],
-            extra_gifts: &[],
+            extra_gifts: if wants_fs { &fs_gifts } else { &[] },
             mmio_vmo: None,
             mmio_va: 0,
         },
@@ -2395,6 +2504,13 @@ fn app_launch(
         Err(()) => {
             // spawn Err 全在 env send 前（berry-exec 契约）：本表零 take，
             // fresh 私有对原值都在——关掉（vblk Err-path close 同款纪律）。
+            // SDK-1a §5.2 步骤 6：fs dup 未 take 也在表——先关两枚再关
+            // out 对（半途失败连带关的序一致化）。
+            if wants_fs {
+                if berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0 {
+                    trap();
+                }
+            }
             ps_reg(id, psp::STATE_SPAWNFAIL, 0);
             eco_app(console, id, b"elf bad");
             if out_s != 0
@@ -2404,6 +2520,9 @@ fn app_launch(
             }
         }
         Ok(child) => {
+            // SDK-1a §5.2 步骤 7：fs 两 dup 已被 take 随 env 块迁移（子表
+            // 所有）——本表勿关（旧值已失效，关 = -EBADF；bsh arm 同款
+            // 注释义务）。
             ps_reg(id, psp::STATE_ALIVE, 0);
             if out_s != 0 {
                 // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
