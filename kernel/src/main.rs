@@ -33,7 +33,7 @@ mod user;
 mod vmar;
 mod vmo;
 
-use berry_mm::va::phys_to_virt;
+use berry_mm::va::{phys_to_virt, PAGE_SIZE};
 use heap::SlabHeap;
 
 /// G-eco 入机侧：boot 期装载的 rootfs 原字节（fw_cfg / DTB 双源合一产物）。
@@ -282,10 +282,18 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             if h.version >= 1 {
                 // v1：分段数组是唯一 init 事实源（init_blob_* 置零不读）。
                 // 结构校验（同页自相对/对齐/界检）在 `handoff::init_segs`；
-                // 空段（无 INITRD/违约）→ None 回落下一源。
-                let segs: &[handoff::InitSeg] = handoff::init_segs(h, boot_x0)
-                    .unwrap_or(&[]);
+                // 空段（无 INITRD/违约）→ None 回落下一源。失败路打
+                // `rootfs: <成因>` 诊断行（只此几处、恒在 `ROOTFS absent`
+                // 前一行——机器可读缺席报告，canon 成功路零输出）。
+                let segs: &[handoff::InitSeg] = match handoff::init_segs(h, boot_x0) {
+                    Some(s) => s,
+                    None => {
+                        berry_hal_aarch64::uart_puts(b"rootfs: isegs=rej\n");
+                        &[]
+                    }
+                };
                 if segs.is_empty() {
+                    berry_hal_aarch64::uart_puts(b"rootfs: isegs=0\n");
                     return None;
                 }
                 // Σ 总量帽（与 fw_cfg 多卷路同口径——A1-1 帽分家执法点）。
@@ -293,6 +301,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                 for s in segs {
                     total = total.checked_add(s.len as usize)?;
                     if total > ROOTFS_TOTAL_MAX {
+                        berry_hal_aarch64::uart_puts(b"rootfs: isegs=cap\n");
                         return None;
                     }
                 }
@@ -307,37 +316,59 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         unsafe { core::slice::from_raw_parts(p, len) };
                     Some((b"handoff" as &[u8], RootfsBuf::Borrowed(bytes)))
                 } else {
-                    // 多段 VMO 逐页拼装：源切片直传 `Vmo::write`（源已在
-                    // DRAM 高半别名——堆零暂存，比 fw_cfg 路 4MiB chunk 更
-                    // 低调堆峰）；页模型与 fw_cfg 多卷路同形（commit 逐页
-                    // 出帧、物理不连续无碍）。
-                    let mut vmo = vmo::Vmo::create(total).ok()?;
-                    vmo.commit(mm::frames(), 0, vmo.size()).ok()?;
+                    // 多段 VMO 逐页拼装（A1-3b 终段：**逐段增量
+                    // commit→copy→即回收**）：源切片直传 `Vmo::write`（源
+                    // 已在 DRAM 高半别名——堆零暂存，比 fw_cfg 路 4MiB
+                    // chunk 更低调堆峰）；页模型与 fw_cfg 多卷路同形（commit
+                    // 逐页出帧、物理不连续无碍）。commit 不整刀 upfront——
+                    // 一次性 `commit(0, total)` 令段页 + VMO 页**瞬态双份**
+                    // （44.4MiB blob 首验实踩：MMAP 保留 21861 页 → 空闲
+                    // ~10907 < commit 需求 11367 → NoFrames → ROOTFS absent；
+                    // 次段「双份 80MiB/128MiB 结构性不可行」的瞬态版，常驻
+                    // 版已被段页回收治、瞬态版在此治）；逐段化后峰值 = 已
+                    // 提交 VMO + 当前段宽，已拷段页即时回 buddy 供后续段
+                    // commit 复用。前置条件：BerryBoot 分段器 8MiB 折半 +
+                    // AllocatePages 页粒度 → 内段恒页倍数（末段任意——commit
+                    // 页取整覆盖，VMO 容量 = ceil(total/4096) 恰容纳；内段
+                    // 若违约非页倍 → commit -Unaligned loud absent，非静默）。
+                    let mut vmo = match vmo::Vmo::create(total) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            berry_hal_aarch64::uart_puts(b"rootfs: vmo=create\n");
+                            return None;
+                        }
+                    };
                     let mut off: usize = 0;
                     for s in segs {
+                        let len = s.len as usize;
+                        let plen = len.div_ceil(PAGE_SIZE) * PAGE_SIZE;
+                        if vmo.commit(mm::frames(), off, plen).is_err() {
+                            berry_hal_aarch64::uart_puts(b"rootfs: vmo=commit\n");
+                            return None;
+                        }
                         // SAFETY: 同上——init_segs 已逐段界检。
                         let src = unsafe {
                             core::slice::from_raw_parts(
                                 phys_to_virt(s.pa as usize) as *const u8,
-                                s.len as usize,
+                                len,
                             )
                         };
-                        vmo.write(off, src).ok()?;
-                        off += s.len as usize;
+                        if vmo.write(off, src).is_err() {
+                            berry_hal_aarch64::uart_puts(b"rootfs: vmo=write\n");
+                            return None;
+                        }
+                        // 段页即时回收（A1-3b）：本段内容已全量进 VMO——
+                        // EfiLoaderData 段页按段区间归还 buddy（AllocatePages
+                        // 页粒度 == ceil(len/4096)，回收恰无漏无溢）。单段
+                        // Borrowed 不回收（段即活 rootfs 本体）；fw_cfg 路
+                        // chunk 缓冲逐卷复用无此面。
+                        mm::frames().release(s.pa as usize, len);
+                        off += len;
                     }
                     // 对账（拼装完整性——同 fw_cfg 路纪律）。
                     if off != total {
+                        berry_hal_aarch64::uart_puts(b"rootfs: vmo=off\n");
                         return None;
-                    }
-                    // 段页回收（A1-3b）：拼装完成 = 段内容已全量进 VMO，
-                    // EfiLoaderData 段页与 VMO 页双份占 RAM（29MiB rootfs
-                    // 即 ≈7276 页浪费；40MB+ blob 双份 80MiB/128MiB 结构性
-                    // 不可行）——按段区间归还 buddy（BerryBoot AllocatePages
-                    // 页粒度 == ceil(len/4096)，回收恰无漏无溢）。单段
-                    // Borrowed 不回收（段即活 rootfs 本体）；fw_cfg 路 chunk
-                    // 缓冲逐卷复用无此面。
-                    for s in segs {
-                        mm::frames().release(s.pa as usize, s.len as usize);
                     }
                     Some((b"handoff" as &[u8], RootfsBuf::Assembled(vmo, total)))
                 }
