@@ -35,6 +35,47 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/.local/bin
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # ---------- SEC-01 §4.5 件 23：供应链防线进 CI（fail-fast 位） ----------
+      # cargo-deny：licenses（GPL 拒收 = 仓纪律执法，allowlist 见根 deny.toml——
+      # 依据 = 全 workspace cargo metadata 实测 license 面）+ advisories（RustSec
+      # 三连击教训，SEC-8 §3.4）。本仓多 workspace（26 个根各有 Cargo.lock——
+      # 根/user/drivers/bootloader/x86_64/user bins），逐一 --manifest-path 全覆盖；
+      # find 排除 reference/ .claude/ target/ docs/（docs/挂账-* 是死档部分树，
+      # manifest 断链非可检查对象）。`-A unlicensed -A no-license-field` = 工作区
+      # 本地 crate（berry-* 全家）未标 license 的预期豁免——注意这是「无
+      # license 表达式整类放行」的已知豁免面：缺 license 字段的第三方依赖
+      # 不进 allowlist 匹配、无自动执法（引入时人工把关）；已解析表达式的
+      # GPL 拒收面不受影响（详见 deny.toml 头注）。版本钉 0.20.2（与本地验证同版）。
+      - name: 安装 cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: cargo-deny（licenses + advisories，全 26 workspace）
+        run: |
+          set -eu
+          fails=0
+          for mf in $(find . -name Cargo.toml -not -path './reference/*' -not -path './.claude/*' -not -path './target/*' -not -path './docs/*' | sort); do
+            grep -q '\[workspace\]' "$mf" || continue
+            echo "::group::cargo-deny $mf"
+            if ! cargo deny --config deny.toml --manifest-path "$mf" check licenses advisories -A unlicensed -A no-license-field; then
+              echo "::error file=$mf::cargo-deny licenses/advisories FAILED（GPL 误入或 RustSec 命中——see deny.toml）"
+              fails=$((fails+1))
+            fi
+            echo "::endgroup::"
+          done
+          test "$fails" -eq 0
+
+      # SEC-02 A2：berry-ksproto host 测试门禁（协议 crate 家族纪律——
+      # psproto/netdproto 同族第三席；对抗审查实抓 justfile test-host 未接线
+      # = 20 测零自动执法、静默腐烂）。justfile test-host 接线随兄弟 WIP
+      # 解冻由主会话补线，CI 先挂 fail-fast 位补上执法面。显式 --target 覆盖
+      # 根 .cargo/config.toml 锁的 build.target=aarch64-unknown-none（config
+      # 发现跨 workspace 边界仍命中——Gotcha；host 测试须点名 host 三元组）；
+      # 零依赖零网络，ubuntu runner host 目标预装。
+      - name: berry-ksproto host 测试（SEC-02 A2 协议 crate 门禁）
+        run: cargo test --manifest-path user/berry-ksproto/Cargo.toml --target x86_64-unknown-linux-gnu
+
       # just build = abi-check + build-user + cargo build。曾直接 `cargo build
       # --locked`：跳过 build-user 则 kernel/src/userbins/*.bin（gitignored 编译
       # 产物，内核 include_bytes! 直嵌）缺席 → 编译期炸响 exit 101——CI 连红 5
@@ -76,3 +117,23 @@ jobs:
         env:
           AAVMF_CODE: /usr/share/AAVMF/AAVMF_CODE.fd
           AAVMF_VARS: /usr/share/AAVMF/AAVMF_VARS.fd
+
+      # ---------- SEC-01 §4.5 件 22 + 件 23 尾面（CI/台账） ----------
+      # 镜像哈希清单：smoke-image 依赖链（just image → mkimage）已产
+      # out/manifest.txt（件 3/A1 本刀落地——mkimage 无条件写 <img> 同目录侧
+      # 产物），本步 cat 公示其哈希清单；exists 判断保留为 image 产链退化时的
+      # 宽容面（别因缺席红 CI）。
+      - name: 镜像产物清单（SEC-01 §4.5 件 3/A1）
+        run: |
+          if [ -f out/manifest.txt ]; then
+            echo "== out/manifest.txt =="
+            cat out/manifest.txt
+          else
+            echo "out/manifest.txt 缺席（smoke-image 依赖链未产出——image 产链退化面，本步宽容不红）"
+          fi
+
+      # unsafe 台账守卫（mkfat --check-fixture 同型）：源码 unsafe 面与
+      # docs/unsafe台账.md 双向对拍——新增/移行/删减 unsafe 而忘重产即红；
+      # 密度趋势线 = 台账文档的 git 史。
+      - name: unsafe 台账对拍（SEC-01 §4.5 件 22）
+        run: python3 tools/unsafe_audit.py --check

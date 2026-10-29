@@ -1,0 +1,28 @@
+[package]
+name = "berry-ksproto"
+version = "0.1.0"
+edition = "2021"
+# SEC-02 刀 A2（SEC-01 §4.5 件 15+16，`research/sec-notes/SEC-4-密钥管理与
+# 加密芯片.md` §5.1/§5.2）：keystored 密钥服务 RPC 协议纯函数 crate——
+# KeyMint 借号段 tag 编号表 add-only 冻结 + AuthorizationList 软硬双域 +
+# SecurityLevel 三档 day-one 进 wire + 不透明 keyblob + attestationChallenge
+# 字段位 + op 面最小化三 op（KEY_GENERATE/KEY_ATTEST/COUNTER）+
+# CounterBackend 单调计数器抽象。day-one 缝 = 冻结数据面不是实现密钥库
+# （零密码学算法、零依赖、零 unsafe）。
+#
+# 独立小工作区（user/bins/ps 先例）：空 [workspace] 表自成 workspace——
+# 绕开 user/Cargo.toml|Cargo.lock（SEC-02 兄弟会话 WIP 在途禁碰）。
+# 形态抄 user/berry-psproto：`cfg_attr(not(test), no_std)`、纯函数编解码、
+# 严格串行 RPC 会话机、host 测试。双消费 = keystored 服务端（v2 软桩，
+# `docs/安全与硬件隔离设计.md` §6 C1 拍板）+ client（rollback/attest 面）。
+#
+# 注意：仓库根 .cargo/config.toml 锁 build.target=aarch64-unknown-none 且
+# config 发现跨 workspace 边界仍命中（C-2c Gotcha）——host 测试须显式
+# `cargo test --target aarch64-apple-darwin`；no_std 面验证
+# `cargo build --target aarch64-unknown-none`。
+description = "BerryOS keystored key-service RPC protocol: day-one frozen wire face (KeyMint-borrowed tag space) + monotonic counter abstraction"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
