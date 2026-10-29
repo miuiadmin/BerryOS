@@ -27,6 +27,10 @@ name = "berry-fsproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-guiproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.1.0"
 dependencies = [
@@ -62,6 +66,17 @@ version = "0.1.0"
 [[package]]
 name = "berry-virtio"
 version = "0.1.0"
+
+[[package]]
+name = "gui-inputd"
+version = "0.1.0"
+dependencies = [
+ "berry-exec",
+ "berry-guiproto",
+ "berry-libc",
+ "berry-sys",
+ "berry-virtio",
+]
 
 [[package]]
 name = "vblk"

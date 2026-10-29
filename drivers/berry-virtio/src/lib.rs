@@ -6,7 +6,8 @@
 //! path 依赖双端共用。
 //!
 //! 范围：split queue（packed ring 留 v2）+ virtio-mmio v2 寄存器偏移表
-//! （规范冻结值，表驱动单源）+ virtio-blk 请求头。volatile MMIO 读写留在
+//! （规范冻结值，表驱动单源）+ virtio-blk 请求头 + virtio-input 事件/config
+//! 编解码（`input` 模块，GUI-4 段①）。volatile MMIO 读写留在
 //! 驱动本体（副作用面不进纯函数 crate）——本 crate 只管「内存里的字节
 //! 长什么样」。
 //!
@@ -16,6 +17,8 @@
 //! （帧分配器无连续性保证，跨页 DMA 结构 = 逐 desc 指各自页基 + 偏移）。
 
 #![cfg_attr(not(test), no_std)]
+
+pub mod input;
 
 /// split 描述符表项：addr u64 + len u32 + flags u16 + next u16 = 16B（规范 §2.6.1）。
 pub const DESC_SZ: usize = 16;
@@ -229,6 +232,9 @@ pub mod mmio {
     /// virtio-net 设备 ID（规范 §5.1；A-7 起同窗挂 virtio-net-device——
     /// 占用槽按设备类判读，见 vprobe/vnet/vblk 扫描面）。
     pub const DEVICE_ID_NETWORK: u32 = 1;
+    /// virtio-input 设备 ID（规范 §5.8；GUI-4 段①起 gui-inputd 扫窗按
+    /// 设备类匹配——同窗多设备类各占一槽，勿假设槽号）。
+    pub const DEVICE_ID_INPUT: u32 = 18;
 }
 
 /// 编 virtio-blk 请求头（type/reserved/sector → 16B）。
