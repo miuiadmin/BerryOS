@@ -322,6 +322,11 @@ run-smp: build
 # 独占 ST_BUSY）——svcmgr 作 client 三 op 一轮回显（同一 echod）全 ST_OK
 # 才打 `TCPS ok echo=64` = rootfs 相第 20 标记（「栈本身能跑」与「栈经
 # 服务化 RPC 面能被消费」两半，§9 话术闭环）。
+# A2-2 段③：TCP ok 后 vnet 跑服务端半边自验（TcpMux 会话表 + LISTEN/
+# ACCEPT/POLL op + hostfwd 环回：guest 主动 connect 10.0.2.2:18081 →
+# SLIRP host-alias 转 hostfwd listener → 转回 guest:18081 = 自连自回，
+# 七步链全过才打 `LSN ok n=7` = rootfs 相新增标记；netdev 挂
+# `hostfwd=tcp::18081-:18081`（无盘路/裸相不带 netdev 不受扰）。
 # echod 由本 recipe 起（QEMU 前）/收（trap EXIT）；smoke.sh 同款自足。
 run-rootfs: build
     #!/bin/sh
@@ -356,7 +361,7 @@ run-rootfs: build
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
         -device virtio-blk-device,drive=drv0 \
-        -netdev user,id=n0 -device virtio-net-device,netdev=n0
+        -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0
 
 run-release: abi-check build-user
     cargo build --release

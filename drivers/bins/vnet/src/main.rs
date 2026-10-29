@@ -88,8 +88,9 @@ const RX_BUF_PAGE: u64 = 8192;
 const TX_BUF_PAGE: u64 = 12288;
 /// poll 帽：10s（SLIRP 应答在 ms 级——超帽 = 传输层/几何断了，loud）。
 const POLL_CAP_NS: u64 = 10_000_000_000;
-/// poll 步进：1ms 绝对 deadline 睡（让出 CPU，不空转烧 slice）。
-const POLL_STEP_NS: u64 = 1_000_000;
+/// poll 步进：1ms 绝对 deadline 睡（让出 CPU，不空转烧 slice）。tcp.rs 段③
+/// 泵（drive_until 步进 / serve EAGAIN 空闲窗）共用——pub(crate)。
+pub(crate) const POLL_STEP_NS: u64 = 1_000_000;
 /// STATUS 复位回读帽：1s（真机复位 ms 级；QEMU 同步即 0）。
 const RESET_CAP_NS: u64 = 1_000_000_000;
 /// SLIRP user 网：guest 规范地址 / 网关。
@@ -192,6 +193,9 @@ fn main() {
     // 打 `TCP ok echo=64` = rootfs 相第 19 标记；失败 println 诊断 + trap
     // loud）。
     tcp::selftest(&mut d, regs, &mac, &gw_mac);
+    // A2-2 段③：入站自验（hostfwd 环回自连——LISTEN/ACCEPT/POLL 服务面 +
+    // 会话表全链，打 `LSN ok n=7`；失败 println 诊断 + trap loud）。
+    tcp::listen_selftest(&mut d, regs, &mac, &gw_mac);
     // A-8b：自验毕**转常驻**（不再退出——A-7 瞬态探针的 STATUS=0 退出复位
     // 随退出路径消失，复位只在 negotiate 起点用；DMA VMO 服务存续恒用不
     // 回收）。svcmgr 预拉后不 reap（vblk A-4 同款取舍：wait TERMINATED 30s
@@ -794,15 +798,28 @@ fn dns_roundtrip(
     }
 }
 
-/// 常驻服务循环（A-8b DNS + T-d TCP 三 op，vblk A-4 同款纪律）：env 块
-/// gift[2] 端点收 berry-netdproto 请求——按首字节 op 分派：DNS_QUERY 查询 /
-/// TCP OPEN·ROUNDTRIP·CLOSE（草案 §3.4 单会话三 op 折叠，在席再 OPEN →
-/// ST_BUSY）→ 真网卡往返 → 应答。空队 = 合法空闲（wait READABLE 10s 帽
-/// **超时重臂**——链断判定交发问方 roundtrip 超时，「常驻服务 wait 超时是
-/// 心跳不是死线」）；client 错误一律 ST_* 应答**服务不死**；多带 handle
-/// 逐个 close（EBUSY → ST 降级不死、其余非 0 → trap）；协议无随行面
-/// （nh != 0 / nb == 0 / 未知 op = 坏请求，DNS 形 1B ST_BAD——旧垃圾消息
-/// 行为零改动）。
+/// serve() 应答形（A2-2 段③）：Dns / Tcp（legacy 三 op + tcp 形域内拒）/
+/// Sid（LISTEN·ACCEPT 共用 `[st][sid u32]` 5B——accept_form 分域编码器）/
+/// Poll（`[st][flags][rbytes u16]` 4B）。
+#[derive(Clone, Copy, PartialEq)]
+enum Form {
+    Dns,
+    Tcp,
+    Sid,
+    Poll,
+}
+
+/// 常驻服务循环（A-8b DNS + T-d TCP 三 op + A2-2 段③ LISTEN/ACCEPT/POLL，
+/// vblk A-4 同款纪律）：env 块 gift[2] 端点收 berry-netdproto 请求——按首
+/// 字节 op 分派：DNS_QUERY 查询 / TCP 六 op（OPEN·ROUNDTRIP·CLOSE legacy
+/// 单会话（在席再 OPEN → ST_BUSY）+ LISTEN·ACCEPT·POLL 会话表——草案 §3.4
+/// 折叠 + 段③ hostfwd 入站面）→ 真网卡往返 → 应答。空队 = 合法空闲（非阻塞
+/// 泵一步 + wait READABLE 10s 帽**超时重臂**——链断判定交发问方 roundtrip
+/// 超时，「常驻服务 wait 超时是心跳不是死线」；hostfwd 入站不等 client
+/// RPC——POLL 拉模型的服务端活性面）；client 错误一律 ST_* 应答**服务不死**；
+/// 多带 handle 逐个 close（EBUSY → ST 降级五清不死、其余非 0 → trap）；协
+/// 议无随行面（nh != 0 / nb == 0 / 未知 op = 坏请求，DNS 形 1B ST_BAD——旧
+/// 垃圾消息行为零改动）。
 fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
     let h = gift2_h();
     if h == 0 {
@@ -820,12 +837,19 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
     let mut sess: Option<tcp::Sess> = None;
     // ROUNDTRIP 回显暂存（服务端真实收到的字节——应答随行回传，对拍归 client）。
     let mut rt = [0u8; ndp::TCP_DATA_MAX];
+    // 段③：会话表（LISTEN/ACCEPT/POLL + hostfwd 入站路由）——与 legacy
+    // session-0 并存；listen_selftest 阶段的表内容清场重来。
+    let table = tcp::mux();
+    table.reset();
     loop {
         let mut nb = msg.len();
         let mut nh = hs.len();
         let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh);
         if s != 0 {
             if s == BERRY_ERR_AGAIN {
+                // 空闲窗步进泵（段③）：hostfwd 入站不等 client RPC——非阻塞
+                // 单 poll；CPU 让出由下方 wait_one 承担。
+                tcp::pump_once(d, regs, mac, gw_mac, table, 0);
                 let mut obs = 0u64;
                 let _ = berry_object_wait_one(h, SIGNAL_READABLE, now() + SVC_IDLE_NS, &mut obs);
                 continue;
@@ -834,7 +858,11 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
         }
         let (mut st, mut addr) = (ndp::ST_BAD, [0u8; 4]);
         let mut dl = 0usize; // TCP 应答回传长度（rt 前缀；非 TCP 恒 0）
-        let mut is_tcp = false;
+        // 段③：应答形四态 + 会话族出参（LISTEN/ACCEPT/POLL 各自的编码面）。
+        let mut form = Form::Dns;
+        let mut sid_rep: u32 = 0; // LISTEN/ACCEPT 应答 sid（encode_*_reply 收）
+        let mut accept_form = false; // Form::Sid 细分：ACCEPT（true）/ LISTEN（false）
+        let (mut poll_flags, mut poll_rbytes) = (0u8, 0u16); // POLL 应答面
         if nh == 0 && nb >= 1 {
             match msg[0] {
                 ndp::OP_DNS_QUERY => match ndp::parse_request(&msg[..nb]) {
@@ -853,25 +881,79 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                     },
                     None => st = ndp::ST_BAD,
                 },
-                ndp::OP_TCP_OPEN | ndp::OP_TCP_ROUNDTRIP | ndp::OP_TCP_CLOSE => {
-                    is_tcp = true;
-                    match ndp::parse_tcp_request(&msg[..nb]) {
-                        Some(req) => {
-                            let (s2, n2) = tcp_op(&mut sess, req, d, regs, mac, gw_mac, &mut rt);
+                ndp::OP_TCP_OPEN | ndp::OP_TCP_ROUNDTRIP | ndp::OP_TCP_CLOSE
+                | ndp::OP_TCP_LISTEN | ndp::OP_TCP_ACCEPT | ndp::OP_TCP_POLL => {
+                    // 段③六 op 统一入口：parse_tcp_s_request 按 op 分形——
+                    // Open/Rt/Close v1 恰长 → sid 0（legacy 零漂移）；
+                    // +4B 尾随 sid ∈ 1..=8 才是会话族（Listen/Accept/Poll）。
+                    form = Form::Tcp; // 默认 TCP 形；会话族各臂自改
+                    match ndp::parse_tcp_s_request(&msg[..nb]) {
+                        Some((ndp::TcpSReq::Listen { port }, 0)) => {
+                            match table.listen(port) {
+                                Ok(sid) => {
+                                    st = ndp::ST_OK;
+                                    sid_rep = sid;
+                                    form = Form::Sid;
+                                }
+                                Err(tcp::ListenErr::Dup) => st = ndp::ST_BAD,
+                                Err(tcp::ListenErr::Full) => st = ndp::ST_FULL,
+                            }
+                        }
+                        Some((ndp::TcpSReq::Accept, lsid)) => {
+                            accept_form = true;
+                            form = Form::Sid;
+                            match table.accept(lsid) {
+                                Ok(sid) => {
+                                    st = ndp::ST_OK;
+                                    sid_rep = sid;
+                                }
+                                Err(tcp::AcceptErr::Again) => st = ndp::ST_EAGAIN,
+                                Err(tcp::AcceptErr::NoSession) => st = ndp::ST_NOSESSION,
+                            }
+                        }
+                        Some((ndp::TcpSReq::Poll, 0)) => {
+                            // legacy (Poll, 0) 快照：会话在席即 OK——flags/rbytes
+                            // 恒 0（v1 客户端无人发；文档化兼容面）。
+                            form = Form::Poll;
+                            if sess.is_some() {
+                                st = ndp::ST_OK;
+                            } else {
+                                st = ndp::ST_NOSESSION;
+                            }
+                        }
+                        Some((ndp::TcpSReq::Poll, sid)) => {
+                            form = Form::Poll;
+                            match table.poll_of(sid) {
+                                Some((flags, rbytes)) => {
+                                    st = ndp::ST_OK;
+                                    poll_flags = flags;
+                                    poll_rbytes = rbytes;
+                                }
+                                None => st = ndp::ST_NOSESSION,
+                            }
+                        }
+                        Some((req, 0)) => {
+                            // legacy 三 op（Open/Roundtrip/Close）零漂移路径。
+                            let (s2, n2) = tcp_op(&mut sess, req, d, regs, mac, gw_mac, table, &mut rt);
                             st = s2;
                             dl = n2;
                         }
+                        Some((_, _)) => st = ndp::ST_BAD, // Open/Rt/Close 携 sid = 形域外
                         None => st = ndp::ST_BAD, // 尾随/越界 = 野值拒（协议面）
                     }
                 }
-                _ => st = ndp::ST_BAD, // 未知 op：DNS 形 BAD（旧垃圾消息行为）
+                _ => {
+                    st = ndp::ST_BAD; // 未知 op：DNS 形 BAD（旧垃圾消息行为）
+                    form = Form::Dns;
+                }
             }
         }
         // 协议无随行面：多带 handle 全部回收（EBUSY = client 送了映射中
         // 唯一 handle——降级 ST_BAD 服务不死；其余错 = 链断 trap）。降级
-        // **三清** st/addr/dl：编码器烘焙线「非 OK 恒全零 addr / 非 OK 恒
-        // 不携 data」两侧都不许残留成功值（DNS 成功后撞 EBUSY 时 addr 不清
-        // → encode_reply None → trap 服务死——防御面顺带修复）。
+        // **五清** st/addr/dl/sid_rep/poll 面：编码器烘焙线「非 OK 恒全零
+        // addr / 非 OK 恒不携 data / 非 OK 恒 sid=0」三侧都不许残留成功值
+        // （DNS 成功后撞 EBUSY 时 addr 不清 → encode_reply None → trap 服务
+        // 死——防御面顺带修复；段③ 扩 sid/poll 两清同因）。
         for i in 0..nh {
             if hs[i] != 0 {
                 let s = berry_handle_close(hs[i]);
@@ -879,21 +961,41 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                     st = ndp::ST_BAD;
                     addr = [0u8; 4];
                     dl = 0;
+                    sid_rep = 0;
+                    (poll_flags, poll_rbytes) = (0, 0);
                 } else if s != 0 {
                     trap();
                 }
             }
         }
-        let rl = if is_tcp {
-            match ndp::encode_tcp_reply(&mut rep, st, &rt[..dl]) {
+        // 段③：应答形分派——TCP/Poll/Sid(Dns 各归各的编码器；五清保
+        // 「非 OK 恒零值」烘焙线，None = 编码面违约 trap（防御）。
+        let rl = match form {
+            Form::Tcp => match ndp::encode_tcp_reply(&mut rep, st, &rt[..dl]) {
                 Some(n) => n,
                 None => trap(), // st ∈ {OK,BAD,TIMEOUT,BUSY} + 非 OK 恒空 data 恒过；防御面
+            },
+            Form::Sid => {
+                if accept_form {
+                    match ndp::encode_accept_reply(&mut rep, st, sid_rep) {
+                        Some(n) => n,
+                        None => trap(), // 非 OK 恒 sid=0（五清）恒过；防御面
+                    }
+                } else {
+                    match ndp::encode_listen_reply(&mut rep, st, sid_rep) {
+                        Some(n) => n,
+                        None => trap(), // OK 恒 sid∈1..=MAX / 非 OK 恒 sid=0 恒过；防御面
+                    }
+                }
             }
-        } else {
-            match ndp::encode_reply(&mut rep, st, addr) {
+            Form::Poll => match ndp::encode_poll_reply(&mut rep, st, poll_flags, poll_rbytes) {
+                Some(n) => n,
+                None => trap(), // 非 OK 恒 flags/rbytes=0（五清）恒过；防御面
+            },
+            Form::Dns => match ndp::encode_reply(&mut rep, st, addr) {
                 Some(n) => n,
                 None => trap(), // st ∈ {OK,BAD,TIMEOUT} + 非 OK 恒零 addr 恒过；防御面
-            }
+            },
         };
         let mut obs = 0u64;
         loop {
@@ -912,24 +1014,28 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
 /// TCP 三 op 服务路径（T-d，草案 §3.4 单会话三 op 折叠）：一次 RPC 走
 /// 一段会话——OPEN 建会话 / ROUNDTRIP 会话上发收 / CLOSE 挥手弃置；
 /// 单会话独占（在席再 OPEN → ST_BUSY）。返回 (st, data_len)——data 在
-/// rt 前缀（服务端真实收到的回显字节，对拍归 client）。
+/// rt 前缀（服务端真实收到的回显字节，对拍归 client）。段③ 起会话族
+/// （Listen/Accept/Poll）由 serve 分派前置拦截，本函数只承 legacy 三 op
+/// （req 形为 TcpSReq 全域 + 防御臂兜形域外）。
 #[allow(clippy::too_many_arguments)]
 fn tcp_op(
     sess: &mut Option<tcp::Sess>,
-    req: ndp::TcpReq<'_>,
+    req: ndp::TcpSReq<'_>,
     d: &mut Dma,
     regs: *mut u32,
     mac: &[u8; 6],
     gw_mac: &[u8; 6],
+    table: &mut tcp::TcpMux,
     rt: &mut [u8; ndp::TCP_DATA_MAX],
 ) -> (u8, usize) {
+    use ndp::TcpSReq as R;
     match req {
-        ndp::TcpReq::Open { port } => {
+        R::Open { port } => {
             if sess.is_some() {
                 return (ndp::ST_BUSY, 0); // 单会话独占（草案 §8 文档化语义）
             }
             let sport = TCP_SPORT_NEXT.fetch_add(1, Ordering::Relaxed);
-            match tcp::Sess::connect(d, regs, mac, gw_mac, sport, port, now() + TCPS_OPEN_CAP_NS) {
+            match tcp::Sess::connect(d, regs, mac, gw_mac, table, sport, port, now() + TCPS_OPEN_CAP_NS) {
                 Some(s) => {
                     *sess = Some(s);
                     (ndp::ST_OK, 0)
@@ -937,12 +1043,12 @@ fn tcp_op(
                 None => (ndp::ST_TIMEOUT, 0), // 握手帽到/RST/重传到帽——会话不成立无残留
             }
         }
-        ndp::TcpReq::Roundtrip { data } => {
+        R::Roundtrip { data } => {
             let s2 = match sess.as_mut() {
                 Some(s) => s,
                 None => return (ndp::ST_BAD, 0), // 无会话先发 ROUNDTRIP = 协议面错
             };
-            match s2.roundtrip(d, regs, mac, gw_mac, data, rt, now() + TCPS_RT_CAP_NS) {
+            match s2.roundtrip(d, regs, mac, gw_mac, table, data, rt, now() + TCPS_RT_CAP_NS) {
                 tcp::RtRes::Ok(n) => (ndp::ST_OK, n),
                 // Timeout 会话保命——但 in-flight 占位未清：后续 ROUNDTRIP
                 // 恒 ST_BAD（berry-tcp send 门控 inflight=Some 即拒；迟到
@@ -952,19 +1058,22 @@ fn tcp_op(
                 tcp::RtRes::Bad => (ndp::ST_BAD, 0),
             }
         }
-        ndp::TcpReq::Close => {
+        R::Close => {
             let mut s2 = match sess.take() {
                 Some(s) => s,
                 None => return (ndp::ST_BAD, 0),
             };
             // take() = 无论成败会话弃置（内存态，无设备面残留——Sess 无 Drop
             // 面，conn 纯内存几何；对端超时自收）。
-            if s2.shutdown(d, regs, mac, gw_mac, now() + TCPS_CLOSE_CAP_NS) {
+            if s2.shutdown(d, regs, mac, gw_mac, table, now() + TCPS_CLOSE_CAP_NS) {
                 (ndp::ST_OK, 0)
             } else {
                 (ndp::ST_TIMEOUT, 0) // 挥手帽到——本地已弃置
             }
         }
+        // 会话族（Listen/Accept/Poll）由 serve 分派前置拦截——走不到本臂；
+        // 穷尽性防御（编译器保 match 全覆盖，到达即形域外）。
+        _ => (ndp::ST_BAD, 0),
     }
 }
 

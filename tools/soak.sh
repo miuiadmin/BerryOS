@@ -172,7 +172,7 @@ echo "soak: QEMU 启动（$MINUTES 拍；首拍帽 ${FIRST_BEAT_CAP}s / 单拍�
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.soak.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
-  -netdev user,id=n0 -device virtio-net-device,netdev=n0 \
+  -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
