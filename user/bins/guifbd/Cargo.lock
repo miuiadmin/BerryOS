@@ -19,6 +19,7 @@ name = "berry-fsclient"
 version = "0.1.0"
 dependencies = [
  "berry-fsproto",
+ "berry-netdproto",
  "berry-sys",
 ]
 
@@ -31,12 +32,17 @@ name = "berry-libc"
 version = "0.1.0"
 dependencies = [
  "berry-fsclient",
+ "berry-netdproto",
  "berry-sys",
  "berry-tls",
 ]
 
 [[package]]
 name = "berry-loader"
+version = "0.1.0"
+
+[[package]]
+name = "berry-netdproto"
 version = "0.1.0"
 
 [[package]]

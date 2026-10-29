@@ -188,8 +188,10 @@ pub struct TcpReply<'a> {
 }
 
 /// TCP 面 st 合法域（含 [`ST_BUSY`]；DNS 面编码器不收 BUSY——无会话语义）。
+/// NODEV（A3-3）：vnet deviceless serve 对 OPEN 也答此码（无 NIC 拓扑的
+/// 确定性跳过信号——LISTEN 域先例 A2-3 扩面；既有消费者答码零漂移按构造）。
 const fn tcp_st_known(st: u8) -> bool {
-    st == ST_OK || st == ST_BAD || st == ST_TIMEOUT || st == ST_BUSY
+    st == ST_OK || st == ST_BAD || st == ST_TIMEOUT || st == ST_BUSY || st == ST_NODEV
 }
 
 /// 编码 TCP 请求（None 拒绝契约同 DNS 对：port 0 / data 空或越帽 / out 太短
@@ -968,6 +970,13 @@ mod tests {
         assert_eq!(n, 1);
         assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_BUSY, data: &[] }));
 
+        // A3-3：NODEV 入域（deviceless serve 对 OPEN 也答此码——B4 拓扑
+        // 真值；1B 形合法、非 OK 恒不携 data 对称面）。
+        let n = encode_tcp_reply(&mut out, ST_NODEV, b"").unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_NODEV, data: &[] }));
+        assert_eq!(encode_tcp_reply(&mut out, ST_NODEV, b"x"), None);
+
         let n = encode_tcp_reply(&mut out, ST_OK, b"echo!").unwrap();
         assert_eq!(n, 2 + 5);
         assert_eq!(
@@ -1197,7 +1206,9 @@ mod tests {
     #[test]
     fn tcp_s_st_not_in_legacy_domain() {
         let mut out = [0u8; TCP_REP_MAX];
-        for st in [ST_EAGAIN, ST_NOSESSION, ST_FULL, ST_NODEV] {
+        // NODEV 不在此：A3-3 入域（deviceless serve 对 OPEN 也答此码——
+        // B4 掉电相 bsh skt client 腿的确定性跳过信号，connect→ENODEV）。
+        for st in [ST_EAGAIN, ST_NOSESSION, ST_FULL] {
             assert_eq!(encode_tcp_reply(&mut out, st, b""), None);
             assert_eq!(parse_tcp_reply(&[st]), None);
         }

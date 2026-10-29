@@ -12,9 +12,11 @@ A2 整卡验收线的 host 侧组件）。
   guest RST 后断），单连接失败 sleep 2 重来——guest boot 到 bsh EVS 实测
   可达 ~5min（TCG 慢夜，A2-3 首跑实录 16:52:50→~16:55:30），总帽 480s。
 - 无时刻输入、成功输出全定（mkcpio/mkfat/echod 同纪律）：仅启动一行 +
-  `EVS client ok n=2` 一行；失败诊断进 stderr、退出码 1（smoke 相尾
+  `<TAG> client ok n=2` 一行；失败诊断进 stderr、退出码 1（smoke 相尾
   kill+断言收口，提前退出 = loud）。
-- 用法：python3 tools/evsclient.py [port]        # 默认 18082
+- 用法：python3 tools/evsclient.py [port] [tag]   # 默认 18082 EVS
+  A3-3 SKT 复用（fd 皮对拍——`evsclient.py 18083 SKT`，guest bsh
+  `skt_selftest` server 段同源载荷）；EVS 默认调用字节不变。
   smoke/手动用法：QEMU 前后台起 + 记 PID + 相尾按 PID kill（多会话禁 pkill）。
 """
 import socket
@@ -62,14 +64,16 @@ def try_conn(port: int, payload: bytes) -> None:
 
 def main() -> int:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
-    print(f"evsclient: start on {HOST}:{port}", flush=True)
+    tag = sys.argv[2] if len(sys.argv) > 2 else "EVS"
+    name = f"{tag.lower()}client"
+    print(f"{name}: start on {HOST}:{port}", flush=True)
     t0 = time.monotonic()
     n_ok = 0
     for ci, payload in enumerate(PAYLOADS):
         while True:
             if time.monotonic() - t0 > TOTAL_CAP_S:
                 print(
-                    f"evsclient: FAIL: total cap {TOTAL_CAP_S}s hit at conn {ci}",
+                    f"{name}: FAIL: total cap {TOTAL_CAP_S}s hit at conn {ci}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -79,13 +83,13 @@ def main() -> int:
                 break
             except Exception as e:  # noqa: BLE001 —— 重试环吃一切网络态
                 print(
-                    f"evsclient: conn {ci} attempt failed: {e}",
+                    f"{name}: conn {ci} attempt failed: {e}",
                     file=sys.stderr,
                     flush=True,
                 )
                 time.sleep(RETRY_SLEEP_S)
         n_ok += 1
-    print(f"EVS client ok n={n_ok}", flush=True)
+    print(f"{tag} client ok n={n_ok}", flush=True)
     return 0
 
 

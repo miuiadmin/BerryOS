@@ -1073,10 +1073,10 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
 /// 迁入本表、svcmgr 侧 NET_A 已 store——**trap 死 = 消费者空等帽**（bsh
 /// EVS LISTEN 10s 超时 bail 断 fat 链、svcmgr DNS/TCP 自验各烧应答帽——
 /// A2-3 首跑 B4 掉电相 Boot A 实踩：`FAT ok n=5000` 240s 门 FAIL）。应答
-/// 分派：LISTEN → 1B [`ndp::ST_NODEV`]（bsh 的拓扑跳过信号——LISTEN 域
-/// 已收该码）；其余一切 op/垃圾帧 → 1B [`ndp::ST_BAD`]（serve() 未知 op
-/// 同款先例——各 op 应答域不收 NODEV，域内 BAD = 消费者既有分诊面零
-/// 改动）。常驻纪律同 serve()：不退出、client 错误一律应答服务不死、
+/// 分派：LISTEN/OPEN → 1B [`ndp::ST_NODEV`]（bsh 的拓扑跳过信号——两域
+/// 均已收该码，OPEN 域 A3-3 扩面）；其余一切 op/垃圾帧 → 1B [`ndp::ST_BAD`]
+/// （serve() 未知 op 同款先例——POLL/DRAIN/RT/CLOSE 等会话面域不收 NODEV，
+/// 域内 BAD = 消费者既有分诊面零改动）。常驻纪律同 serve()：不退出、client 错误一律应答服务不死、
 /// 空队 wait 超时重臂（心跳非死线）。
 fn serve_nodev() -> ! {
     let h = gift2_h();
@@ -1098,9 +1098,12 @@ fn serve_nodev() -> ! {
             }
             trap(); // 非空队错码 = 链断（serve() 同口径）
         }
-        // 应答定值：恰 LISTEN 单形（无随行 handle）→ NODEV；其余（含垃圾
-        // 帧/nb==0/带随行）→ BAD。
-        let mut st = if nh == 0 && nb >= 1 && msg[0] == ndp::OP_TCP_LISTEN {
+        // 应答定值：恰 LISTEN/OPEN 单形（无随行 handle）→ NODEV（A3-3 扩
+        // OPEN：bsh skt client 腿 connect = OP_TCP_OPEN——deviceless 下原落
+        // 「其余 → BAD」→ EIO bail 断 fat 链，B4 掉电相 Boot A 240s FAT ok
+        // FAIL 实抓；拓扑真值对两个会话创建 op 同码）；其余（含垃圾帧/
+        // nb==0/带随行）→ BAD。
+        let mut st = if nh == 0 && nb >= 1 && (msg[0] == ndp::OP_TCP_LISTEN || msg[0] == ndp::OP_TCP_OPEN) {
             ndp::ST_NODEV
         } else {
             ndp::ST_BAD

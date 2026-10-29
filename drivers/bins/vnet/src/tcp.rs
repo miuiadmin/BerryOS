@@ -879,6 +879,20 @@ impl TcpMux {
         };
         let ev = s.conn.send(data.len() as u32);
         let ok = matches!(ev.action, bt::Action::Data { .. });
+        if !ok {
+            // 拒面 loud 诊断（排障期；绿路零输出）：state≠Established /
+            // in-flight 占用 / len 越域（0 或 >MSS=128）三面一次可辨。
+            println!(
+                "vnet: rt bad sid={} len={} state={:?} infl={} rx={} una=0x{:x} nxt=0x{:x}",
+                sid,
+                data.len(),
+                s.conn.state,
+                s.conn.inflight_kind(),
+                s.rx_len,
+                s.conn.snd_una,
+                s.conn.snd_nxt
+            );
+        }
         if ok {
             s.act(d, regs, mac, gw_mac, ev.action, data);
             s.post_account();

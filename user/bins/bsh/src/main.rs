@@ -256,6 +256,14 @@ fn main() {
     //    拓扑无 netdev）→ netd_h()==0 静默跳过零扰动。排 fat 族前（U2
     //    家族链序契约照旧——EFI 路本就静默跳过，链序家族一致性不变）。
     evs_selftest();
+    // —— A3-3：socket fd 皮自验（`SKT ok n=3` = rootfs 相第 40 标记，A3
+    //    整卡验收线）：evs 七步链同语义换 POSIX fd 入口——libc socket 族
+    //    （A3-1 表/旗面 + A3-2 RPC 真身）第一次全链活体：client 段
+    //    connect/send/recv（echod 回显）+ 非阻塞 EAGAIN 节拍 + server 段
+    //    bind/listen/accept/尸槽回收/回发（宿主 evsclient 18083 SKT 对拍）。
+    //    拓扑降级同 EVS（netd_h()==0 / ENODEV 静默跳过——EFI canon 零变化、
+    //    B4 无 netdev 相不设门）；排 fat 族前零盘面。
+    skt_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -949,103 +957,148 @@ fn evs_selftest() {
         .enumerate()
     {
         let want: &[u8] = want;
-        // ① accept-wait + ② data-wait 合并循环：EAGAIN = 暂无挂起连接
-        //    （client 侧重试环在外侧）→ 1s 节拍重拉；帽 120s（client 总帽
-        //    480s 内必达）。
-        //
-        // **尸槽回收**（A2-3 首跑实抓 `c0 echo bad Some(1)`）：client 重试环
-        //    在 guest LISTEN 落位前后的失败尝试（SLIRP 的 SYN 重传才落进被
-        //    动打开）留下「握手已成 + 载荷已到 + 对端 recv 帽尽已 FIN」的
-        //    CloseWait 尸槽——accept 照样弹出（非 Closed 即弹）、drain 对拍
-        //    照样相等（同公式载荷），但 ④ RT 回发被 berry-tcp 的
-        //    Established-only `send()` 拒 → ST_BAD。修法 = data-wait 门收紧
-        //    到「WRITABLE（=Established）且有数据」才进 echo；CLOSED 旗或
-        //    「带据无 WRITABLE」= 尸槽 → CLOSE 释槽（帽到自释，结果不敏感
-        //    ——死对端 RST 被 berry-tcp 忽略，恒走 30s 帽释槽路）→ 重入
-        //    accept-wait 取下一条（accept 稳态 1s 内必达活连接）。
-        let acc_dl = now() + 120_000_000_000;
-        let dsid = 'acc: loop {
-            let d = loop {
-                match netd_rpc(netd, ndp::TcpSReq::Accept, lsid, 10_000_000_000)
-                    .and_then(|b| ndp::parse_accept_reply(&b))
-                {
-                    Some(r) if r.st == ndp::ST_OK && r.sid != 0 => break r.sid,
-                    Some(r) if r.st == ndp::ST_EAGAIN => {}
-                    other => bail!(
-                        "bsh: evs: accept c{} bad {:?}",
-                        ci,
-                        other.map(|r| (r.st, r.sid))
-                    ),
+        // 尸槽复活预算（A3-3 首跑实抓，④ 注释详案）：每次复活重入本槽
+        // 整链（acc_dl 随之刷新）；帽 3 = client 重试环 ~47s 周期取 3 条
+        // 仍未命中活连接 = 真异常 loud（无界复活吃穿相帽，更糟）。
+        let mut revives = 0u32;
+        'conn: loop {
+            // ① accept-wait + ② data-wait 合并循环：EAGAIN = 暂无挂起连接
+            //    （client 侧重试环在外侧）→ 1s 节拍重拉；帽 120s（client 总帽
+            //    480s 内必达）。
+            //
+            // **尸槽回收**（A2-3 首跑实抓 `c0 echo bad Some(1)`）：client 重试环
+            //    在 guest LISTEN 落位前后的失败尝试（SLIRP 的 SYN 重传才落进被
+            //    动打开）留下「握手已成 + 载荷已到 + 对端 recv 帽尽已 FIN」的
+            //    CloseWait 尸槽——accept 照样弹出（非 Closed 即弹）、drain 对拍
+            //    照样相等（同公式载荷），但 ④ RT 回发被 berry-tcp 的
+            //    Established-only `send()` 拒 → ST_BAD。修法 = data-wait 门收紧
+            //    到「WRITABLE（=Established）且有数据」才进 echo；CLOSED 旗或
+            //    「带据无 WRITABLE」= 尸槽 → CLOSE 释槽（帽到自释，结果不敏感
+            //    ——死对端 RST 被 berry-tcp 忽略，恒走 30s 帽释槽路）→ 重入
+            //    accept-wait 取下一条（accept 稳态 1s 内必达活连接）。
+            let acc_dl = now() + 120_000_000_000;
+            let dsid = 'acc: loop {
+                let d = loop {
+                    match netd_rpc(netd, ndp::TcpSReq::Accept, lsid, 10_000_000_000)
+                        .and_then(|b| ndp::parse_accept_reply(&b))
+                    {
+                        Some(r) if r.st == ndp::ST_OK && r.sid != 0 => break r.sid,
+                        Some(r) if r.st == ndp::ST_EAGAIN => {}
+                        other => bail!(
+                            "bsh: evs: accept c{} bad {:?}",
+                            ci,
+                            other.map(|r| (r.st, r.sid))
+                        ),
+                    }
+                    if now() >= acc_dl {
+                        bail!("bsh: evs: accept c{} timeout", ci);
+                    }
+                    sleep_ms(tick, sleep_mask, 1000);
+                };
+                // data-wait：WRITABLE + rbytes>0 才是活连接；尸槽释槽重入。
+                let dat_dl = now() + 30_000_000_000;
+                'dat: loop {
+                    match netd_rpc(netd, ndp::TcpSReq::Poll, d, 10_000_000_000)
+                        .and_then(|b| ndp::parse_poll_reply(&b))
+                    {
+                        Some(r) if r.st == ndp::ST_OK => {
+                            if r.flags & ndp::POLL_FLAG_CLOSED != 0
+                                || (r.rbytes > 0 && r.flags & ndp::POLL_FLAG_WRITABLE == 0)
+                            {
+                                // 尸槽（对端已关）：释槽换下一条，不是本自验的
+                                // 失败——client 侧还有活尝试在途。
+                                let _ = netd_rpc_tcp(
+                                    netd,
+                                    ndp::TcpSReq::Close,
+                                    d,
+                                    45_000_000_000,
+                                );
+                                continue 'acc;
+                            }
+                            if r.rbytes > 0 && r.flags & ndp::POLL_FLAG_WRITABLE != 0 {
+                                break 'acc d;
+                            }
+                        }
+                        other => bail!("bsh: evs: c{} poll bad {:?}", ci, other.map(|r| r.st)),
+                    }
+                    if now() >= dat_dl {
+                        bail!("bsh: evs: c{} data timeout", ci);
+                    }
+                    sleep_ms(tick, sleep_mask, 1000);
                 }
-                if now() >= acc_dl {
-                    bail!("bsh: evs: accept c{} timeout", ci);
-                }
-                sleep_ms(tick, sleep_mask, 1000);
             };
-            // data-wait：WRITABLE + rbytes>0 才是活连接；尸槽释槽重入。
-            let dat_dl = now() + 30_000_000_000;
-            'dat: loop {
-                match netd_rpc(netd, ndp::TcpSReq::Poll, d, 10_000_000_000)
-                    .and_then(|b| ndp::parse_poll_reply(&b))
-                {
-                    Some(r) if r.st == ndp::ST_OK => {
-                        if r.flags & ndp::POLL_FLAG_CLOSED != 0
-                            || (r.rbytes > 0 && r.flags & ndp::POLL_FLAG_WRITABLE == 0)
+            // ③ DRAIN 收割：st OK + 逐字节对拍（POLL 报过 rbytes 后串行收割
+            //    必得全量——单连接独占、无并发写者）。
+            let got = netd_rpc_tcp(netd, ndp::TcpSReq::Drain, dsid, 10_000_000_000);
+            match got {
+                Some((st, ref d)) if st == ndp::ST_OK && d.as_slice() == want => {}
+                Some((st, ref d)) => bail!(
+                    "bsh: evs: c{} drain mismatch len={} want={} st={}",
+                    ci,
+                    d.len(),
+                    want.len(),
+                    st
+                ),
+                None => bail!("bsh: evs: c{} drain bad", ci),
+            }
+            // ④ RT 回发（echo）：send + ACK 帽内 ST_OK（client 侧对拍回读——
+            //    本侧只断言投递完成；应答 1B OK 形无数据面）。
+            //
+            // **尸槽迟到相位**（A3-3 首跑实抓 `c0 echo bad Some(1)`，vnet 拒面
+            // 诊断 state=CloseWait infl=0 定谳）：hostfwd 下 host 侧帽尽 close
+            // 与 SLIRP 建连同束——ACK+载荷+FIN µs 级连发进 RX 环；泵逐帧消化
+            // 下 ② 门通过时（载荷已 pump）FIN 还在环里排队，drain→RT 的 RPC
+            // 间隙才被 pump 进 → Established 已失 → `send()` 拒 → ST_BAD。
+            // ② 的门只拦「FIN 先于载荷可见」相位（A2-3），本支拦「FIN 迟于
+            // 载荷」相位：re-poll 复核非 WRITABLE/CLOSED = 尸槽坐实 → 释槽
+            // 重入 accept（client 重试环的下一条活连接已在 Ready 队列——
+            // A3-3 pcap 实证）；WRITABLE 仍在 = 真坏 loud。
+            match netd_rpc_tcp(
+                netd,
+                ndp::TcpSReq::Roundtrip { data: want },
+                dsid,
+                45_000_000_000,
+            ) {
+                Some((st, _)) if st == ndp::ST_OK => {}
+                Some((st, _)) if st == ndp::ST_BAD => {
+                    match netd_rpc(netd, ndp::TcpSReq::Poll, dsid, 10_000_000_000)
+                        .and_then(|b| ndp::parse_poll_reply(&b))
+                    {
+                        Some(r) if r.st == ndp::ST_OK
+                            && (r.flags & ndp::POLL_FLAG_CLOSED != 0
+                                || r.flags & ndp::POLL_FLAG_WRITABLE == 0) =>
                         {
-                            // 尸槽（对端已关）：释槽换下一条，不是本自验的
-                            // 失败——client 侧还有活尝试在途。
+                            revives += 1;
+                            if revives > 3 {
+                                bail!("bsh: evs: c{} corpse loop", ci);
+                            }
                             let _ = netd_rpc_tcp(
                                 netd,
                                 ndp::TcpSReq::Close,
-                                d,
+                                dsid,
                                 45_000_000_000,
                             );
-                            continue 'acc;
+                            continue 'conn;
                         }
-                        if r.rbytes > 0 && r.flags & ndp::POLL_FLAG_WRITABLE != 0 {
-                            break 'acc d;
-                        }
+                        other => bail!(
+                            "bsh: evs: c{} echo bad {:?} poll {:?}",
+                            ci,
+                            st,
+                            other.map(|r| (r.st, r.flags))
+                        ),
                     }
-                    other => bail!("bsh: evs: c{} poll bad {:?}", ci, other.map(|r| r.st)),
                 }
-                if now() >= dat_dl {
-                    bail!("bsh: evs: c{} data timeout", ci);
-                }
-                sleep_ms(tick, sleep_mask, 1000);
+                other => bail!("bsh: evs: c{} echo bad {:?}", ci, other.map(|(s, _)| s)),
             }
-        };
-        // ③ DRAIN 收割：st OK + 逐字节对拍（POLL 报过 rbytes 后串行收割
-        //    必得全量——单连接独占、无并发写者）。
-        let got = netd_rpc_tcp(netd, ndp::TcpSReq::Drain, dsid, 10_000_000_000);
-        match got {
-            Some((st, ref d)) if st == ndp::ST_OK && d.as_slice() == want => {}
-            Some((st, ref d)) => bail!(
-                "bsh: evs: c{} drain mismatch len={} want={} st={}",
-                ci,
-                d.len(),
-                want.len(),
-                st
-            ),
-            None => bail!("bsh: evs: c{} drain bad", ci),
+            // ⑤ CLOSE(dsid)：驱动到 Closed 释槽（ST_TIMEOUT = 帽到槽已释的
+            //    边缘形——首跑实录若真出现再定标，验收打严格 OK）。
+            match netd_rpc_tcp(netd, ndp::TcpSReq::Close, dsid, 45_000_000_000) {
+                Some((st, _)) if st == ndp::ST_OK => {}
+                other => bail!("bsh: evs: c{} close bad {:?}", ci, other.map(|(s, _)| s)),
+            }
+            n_ok += 1;
+            break 'conn;
         }
-        // ④ RT 回发（echo）：send + ACK 帽内 ST_OK（client 侧对拍回读——
-        //    本侧只断言投递完成；应答 1B OK 形无数据面）。
-        match netd_rpc_tcp(
-            netd,
-            ndp::TcpSReq::Roundtrip { data: want },
-            dsid,
-            45_000_000_000,
-        ) {
-            Some((st, _)) if st == ndp::ST_OK => {}
-            other => bail!("bsh: evs: c{} echo bad {:?}", ci, other.map(|(s, _)| s)),
-        }
-        // ⑤ CLOSE(dsid)：驱动到 Closed 释槽（ST_TIMEOUT = 帽到槽已释的
-        //    边缘形——首跑实录若真出现再定标，验收打严格 OK）。
-        match netd_rpc_tcp(netd, ndp::TcpSReq::Close, dsid, 45_000_000_000) {
-            Some((st, _)) if st == ndp::ST_OK => {}
-            other => bail!("bsh: evs: c{} close bad {:?}", ci, other.map(|(s, _)| s)),
-        }
-        n_ok += 1;
     }
     // ⑥ CLOSE(lsid) 撤 listen 表（Listen 槽即时释放——恒 OK）。
     match netd_rpc_tcp(netd, ndp::TcpSReq::Close, lsid, 10_000_000_000) {
@@ -1056,6 +1109,333 @@ fn evs_selftest() {
         berry_libc::park();
     }
     println!("EVS ok n={}", n_ok);
+}
+
+/// A3-3 socket fd 皮自验 client 段载荷（32B）：echod 回显对拍源。公式族
+/// 与 EVS 载荷分型（`(i*13+7)` vs `(i*7+3)`/`(i*11+5)`——server 段直接
+/// 复用 EVS 载荷：宿主 evsclient.py 18083 参数化复用，同源对拍零漂移）。
+const SKT_PAYLOAD_C: [u8; 32] = {
+    let mut a = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        a[i] = (i * 13 + 7) as u8;
+        i += 1;
+    }
+    a
+};
+
+/// A3-3 socket fd 皮自验（`SKT ok n=3` = rootfs 相第 40 标记，A3 整卡
+/// 验收线）：evs 七步链（A2-3）同语义换 POSIX fd 入口——libc socket 族
+/// （A3-1 表/旗面 + A3-2 RPC 真身）第一次全链活体。三段（每段独立
+/// 验收点，失败 eprintln + park——SKT ok 缺失 → smoke FAIL 兜底）：
+/// - ⓪ client 段（connect 10.0.2.2:18080 → 宿主 echod，T-c/TCPS 专线
+///   串行复用——session-0 先后两用已证）：socket → connect（字节序四件
+///   构造 sockaddr_in）→ send 32B（legacy RT 应答随行回显入 RESIDUE）→
+///   recv 恰长逐字节对拍（RESIDUE 收割）→ close——Client 分形全链；
+/// - ① 非阻塞 EAGAIN 节拍 + 旗/sockopt/send 错误面：bind 18084——**无
+///   hostfwd 专线 = hostfwd 是唯一入站路径 → 结构性无连接**，accept
+///   空队恒真（状态谓词非竞速，4-5a 铁律）：socket(SOCK_NONBLOCK 创建
+///   旗) → bind → listen → fcntl F_GETFL 旗对拍（O_RDWR|O_NONBLOCK）→
+///   accept4(空队) == -1 + EAGAIN → getsockopt SO_TYPE == SOCK_STREAM →
+///   send-on-Listen == -1 + EPIPE → close；
+/// - ② server 段（evs 七步链的 fd 皮）：bind 18083 + listen（hostfwd
+///   专线——echod 18080/LSN 18081/EVS 18082 零交集；宿主
+///   `evsclient.py 18083 SKT` 两连接 64B/24B 串行对拍）→ 每连接
+///   {阻塞 accept（libc 内 1s 节拍；挂死兜底 = 相帽——client 总帽 480s
+///   > DEADLINE_ROOTFS 420s，accept 落地前 client 恒活）→ accept 出参
+///   钉板（哨兵 0xFFFF/0xAA 预填必被覆写：AF_INET/port 0/10.0.2.2/
+///   addrlen 16——A3-2 出参契约活证）→ data-wait 闸门（poll 快照：
+///   POLLHUP = 尸槽（CLOSED 旗——带据/空据同拒，evs 尸槽回收的 fd 皮
+///   译法）→ close(dfd) 释槽重入 accept；POLLIN+POLLOUT = 活连接带据）
+///   → recv 恰长逐字节对拍（POLL+DRAIN 在 libc 内）→ send 回发（命名
+///   RT 纯发送臂，A3-1 案②）→ close(dfd)} ×2 → close(lfd)。
+///
+/// 拓扑降级同 EVS：netd gift 缺席（EFI/裸拓扑）→ netd_h()==0 静默跳过
+/// （smoke-image canon 零变化）；gift 在位而 connect/listen 答 ENODEV
+/// （vnet deviceless serve——B4 掉电相无 netdev）→ 同口径静默跳过
+/// （拓扑真值）。
+fn skt_selftest() {
+    if netd_h() == 0 {
+        return;
+    }
+    use berry_libc::net as skt;
+    // 常量镜像（fsclient/std 单源 ABI 冻结值——bsh 不依赖 fsclient，双
+    // 侧同步纪律：C-1 刀 4 usage 预检镜像同族；漂移 = 对拍断言即炸）。
+    const AF_INET: i32 = 2;
+    const SOCK_STREAM: i32 = 1;
+    const F_GETFL: i32 = 3;
+    const SOL_SOCKET: i32 = 1;
+    const SO_TYPE: i32 = 3;
+    const POLLIN: i16 = 0x001;
+    const POLLOUT: i16 = 0x004;
+    const POLLHUP: i16 = 0x010;
+    // 轮询节拍专用 Event（永不置位——wait 帽即纯定时器；evs 同形态）。
+    let mut tick = 0u32;
+    if berry_event_create(0, &mut tick) != 0 || tick == 0 {
+        berry_libc::park();
+    }
+    let sleep_mask: u64 = 1 << 32;
+    macro_rules! bail {
+        ($($a:tt)*) => {{
+            eprintln!($($a)*);
+            berry_libc::park();
+        }};
+    }
+    macro_rules! errno {
+        () => {
+            berry_libc::get_errno()
+        };
+    }
+
+    // —— ⓪ client 段：connect 10.0.2.2:18080（echod 回显）——
+    let cfd = skt::socket(AF_INET, SOCK_STREAM, 0);
+    if cfd < 0 {
+        bail!("bsh: skt: socket errno={}", errno!());
+    }
+    let caddr = skt::SockAddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: skt::htons(18080),
+        sin_addr: skt::htonl(0x0A00_0202), // SLIRP 网关（connect 唯一可达对端）
+        sin_zero: [0; 8],
+    };
+    // SAFETY: caddr/cbuf 均本帧局部，指针生命周期由调用方保证（shim 惯例）。
+    if unsafe {
+        skt::connect(
+            cfd,
+            &caddr as *const skt::SockAddrIn as *const skt::SockAddr,
+            16,
+        )
+    } != 0
+    {
+        let e = errno!();
+        if e == berry_libc::ENODEV {
+            return; // 无 NIC 拓扑（B4 掉电相：vnet deviceless serve）——
+            // 静默跳过，与 evs ST_NODEV 同口径（SKT ok 缺席 = 拓扑真值）。
+        }
+        bail!("bsh: skt: connect errno={}", e);
+    }
+    if unsafe { skt::send(cfd, SKT_PAYLOAD_C.as_ptr() as *const _, 32, 0) } != 32 {
+        bail!("bsh: skt: client send errno={}", errno!());
+    }
+    let mut cbuf = [0u8; 32];
+    let n = unsafe { skt::recv(cfd, cbuf.as_mut_ptr() as *mut _, 32, 0) };
+    if n != 32 || cbuf != SKT_PAYLOAD_C {
+        bail!(
+            "bsh: skt: client echo n={} mismatch={}",
+            n,
+            cbuf != SKT_PAYLOAD_C
+        );
+    }
+    if close(cfd) != 0 {
+        bail!("bsh: skt: client close errno={}", errno!());
+    }
+
+    // —— ① 非阻塞 EAGAIN 节拍 + 旗/sockopt/send 错误面（18084 无
+    //    hostfwd——hostfwd 是唯一入站路径，accept 空队恒真）——
+    let nfd = skt::socket(AF_INET, SOCK_STREAM | berry_libc::fs::O_NONBLOCK, 0);
+    if nfd < 0 {
+        bail!("bsh: skt: nb socket errno={}", errno!());
+    }
+    let naddr = skt::SockAddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: skt::htons(18084),
+        sin_addr: 0, // INADDR_ANY（bind 纯本地 port 记账，地址域不校验）
+        sin_zero: [0; 8],
+    };
+    if unsafe { skt::bind(nfd, &naddr as *const _ as *const skt::SockAddr, 16) } != 0 {
+        bail!("bsh: skt: nb bind errno={}", errno!());
+    }
+    if skt::listen(nfd, 1) != 0 {
+        bail!("bsh: skt: nb listen errno={}", errno!());
+    }
+    // F_GETFL 旗对拍：O_RDWR 恒底 | O_NONBLOCK（socket 创建旗入表 +
+    // fcntl 投影——A3-1 表/旗面活证）。
+    let fl = berry_libc::stubs::fcntl(nfd, F_GETFL, 0);
+    if fl != berry_libc::fs::O_RDWR | berry_libc::fs::O_NONBLOCK {
+        bail!("bsh: skt: F_GETFL fl={:#x}", fl);
+    }
+    // 非阻塞 accept 空队：-1 + EAGAIN 直返（不睡——A3-2 非阻塞语义）。
+    if unsafe { skt::accept4(nfd, core::ptr::null_mut(), core::ptr::null_mut(), 0) } != -1
+        || errno!() != berry_libc::EAGAIN
+    {
+        bail!("bsh: skt: nb accept not EAGAIN");
+    }
+    let mut sov = 0i32;
+    let mut sol = 4u32;
+    if unsafe {
+        skt::getsockopt(
+            nfd,
+            SOL_SOCKET,
+            SO_TYPE,
+            &mut sov as *mut _ as *mut _,
+            &mut sol,
+        )
+    } != 0
+        || sov != SOCK_STREAM
+        || sol != 4
+    {
+        bail!("bsh: skt: SO_TYPE sov={} sol={}", sov, sol);
+    }
+    // send-on-Listen：无会话可发 → -1 + EPIPE（SockOp::Send → ST_BAD →
+    // EPIPE 分岔——A3-2 错码映射表活证）。
+    if unsafe { skt::send(nfd, SKT_PAYLOAD_C.as_ptr() as *const _, 1, 0) } != -1
+        || errno!() != berry_libc::EPIPE
+    {
+        bail!("bsh: skt: send-on-listen not EPIPE");
+    }
+    if close(nfd) != 0 {
+        bail!("bsh: skt: nb close errno={}", errno!());
+    }
+
+    // —— ② server 段：evs 七步链的 fd 皮（hostfwd 18083 + 宿主
+    //    evsclient.py 18083 SKT 两连接串行对拍）——
+    let lfd = skt::socket(AF_INET, SOCK_STREAM, 0);
+    if lfd < 0 {
+        bail!("bsh: skt: srv socket errno={}", errno!());
+    }
+    let laddr = skt::SockAddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: skt::htons(18083),
+        sin_addr: 0,
+        sin_zero: [0; 8],
+    };
+    if unsafe { skt::bind(lfd, &laddr as *const _ as *const skt::SockAddr, 16) } != 0 {
+        bail!("bsh: skt: srv bind errno={}", errno!());
+    }
+    if skt::listen(lfd, 1) != 0 {
+        let e = errno!();
+        if e == berry_libc::ENODEV {
+            return; // client 段已拦主路——防御位（B4 拓扑同口径）。
+        }
+        bail!("bsh: skt: srv listen errno={}", e);
+    }
+    let mut n_ok = 0u32;
+    for (ci, want) in [EVS_PAYLOAD_0.as_slice(), EVS_PAYLOAD_1.as_slice()]
+        .iter()
+        .enumerate()
+    {
+        let want: &[u8] = want;
+        // 尸槽复活预算（evs ④ 同根同款，详见其注释）：帽 3 loud。
+        let mut revives = 0u32;
+        'conn: loop {
+            // 阻塞 accept（libc 内 1s 节拍重拉）+ accept 出参钉板 + data-wait
+            // 闸门（poll 快照尸槽译法）。帽：accept 无显式帽——挂死兜底 =
+            // 相帽（client 总帽 480s > DEADLINE_ROOTFS 420s：accept 落地前
+            // client 恒活；client 死则相帽先 FAIL loud——与 evs 帽序同型）。
+            let dfd = 'acc: loop {
+                let mut sa = skt::SockAddr {
+                    sa_family: 0xFFFF, // 哨兵：必须被覆写
+                    sa_data: [0xAA; 14],
+                };
+                let mut alen = 0u32;
+                // SAFETY: sa/alen 均本帧局部。
+                let dfd = unsafe { skt::accept4(lfd, &mut sa, &mut alen, 0) };
+                if dfd < 0 {
+                    bail!("bsh: skt: accept c{} errno={}", ci, errno!());
+                }
+                // 出参钉板（A3-2 契约：AF_INET / port 0（wire 不携对端端口，
+                // 诚实未知）/ 10.0.2.2 / *addrlen=16——整结构覆写即每字段活证）。
+                if sa.sa_family != AF_INET as u16
+                    || sa.sa_data != [0, 0, 10, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0]
+                    || alen != 16
+                {
+                    bail!(
+                        "bsh: skt: accept out c{} fam={:#x} alen={}",
+                        ci,
+                        sa.sa_family,
+                        alen
+                    );
+                }
+                // data-wait 闸门：poll 快照（timeout 忽略恒立即返——快照语义）
+                // POLLHUP = 尸槽（CLOSED 旗，带据/空据同拒——先于数据位判，
+                // evs「CLOSED 先判」同序）；POLLIN 无 POLLOUT = 尸槽迟到相位
+                // （CloseWait 带据——对端 FIN 已 pump 而未及 Closed；evs ② 门
+                // 「带据无 WRITABLE」的 fd 皮译法，A3-3 首跑实抓补相位）→ 均
+                // close 释槽重入 accept；POLLIN+POLLOUT = 活连接带据 → 进
+                // recv。帽 30s（evs 同值）。
+                let dat_dl = now() + 30_000_000_000;
+                loop {
+                    let mut p = [berry_libc::stubs::PollFd {
+                        fd: dfd,
+                        events: POLLIN | POLLOUT,
+                        revents: 0,
+                    }];
+                    let r = berry_libc::stubs::poll(p.as_mut_ptr(), 1, 0);
+                    let rev = p[0].revents;
+                    if r >= 0
+                        && (rev & POLLHUP != 0 || (rev & POLLIN != 0 && rev & POLLOUT == 0))
+                    {
+                        // 尸槽回收：释槽换下一条，不是失败——client 侧还有
+                        // 活尝试在途（evs 首跑实抓同型 + A3-3 迟到相位）。
+                        if close(dfd) != 0 {
+                            bail!("bsh: skt: corpse close c{} errno={}", ci, errno!());
+                        }
+                        continue 'acc;
+                    }
+                    if r >= 0 && rev & POLLIN != 0 && rev & POLLOUT != 0 {
+                        break;
+                    }
+                    if now() >= dat_dl {
+                        bail!("bsh: skt: c{} data timeout rev={:#x}", ci, rev);
+                    }
+                    sleep_ms(tick, sleep_mask, 1000);
+                }
+                break dfd;
+            };
+            // recv 恰长逐字节对拍（POLL+DRAIN 在 libc 内；闸门已见 POLLIN
+            // 必即收割——阻塞 recv 首拉即中）。
+            let mut buf = [0u8; 64];
+            let n = unsafe { skt::recv(dfd, buf.as_mut_ptr() as *mut _, want.len(), 0) };
+            if n != want.len() as isize || &buf[..want.len()] != want {
+                bail!(
+                    "bsh: skt: c{} drain n={} want={} mismatch={}",
+                    ci,
+                    n,
+                    want.len(),
+                    &buf[..want.len()] != want
+                );
+            }
+            // send 回发（命名 RT 纯发送臂——ACK 帽在 libc 内 CAP_SLOW=45s）。
+            // 尸槽迟到相位（evs ④ 同根）：send 吃 EPIPE（SockOp::Send →
+            // ST_BAD 分岔）时 re-poll 复核——非 POLLOUT/POLLHUP = 会话已离
+            // Established（对端 FIN 在闸门后、send 前被 pump 进）→ close 释槽
+            // 重入 accept；POLLOUT 仍在 = 真坏 loud。
+            if unsafe { skt::send(dfd, buf.as_ptr() as *const _, want.len(), 0) }
+                != want.len() as isize
+            {
+                let mut p = [berry_libc::stubs::PollFd {
+                    fd: dfd,
+                    events: POLLIN | POLLOUT,
+                    revents: 0,
+                }];
+                let r = berry_libc::stubs::poll(p.as_mut_ptr(), 1, 0);
+                let rev = p[0].revents;
+                if r >= 0 && (rev & POLLHUP != 0 || rev & POLLOUT == 0) {
+                    revives += 1;
+                    if revives > 3 {
+                        bail!("bsh: skt: c{} corpse loop", ci);
+                    }
+                    if close(dfd) != 0 {
+                        bail!("bsh: skt: corpse close c{} errno={}", ci, errno!());
+                    }
+                    continue 'conn;
+                }
+                bail!("bsh: skt: c{} echo errno={} rev={:#x}", ci, errno!(), rev);
+            }
+            if close(dfd) != 0 {
+                bail!("bsh: skt: c{} close errno={}", ci, errno!());
+            }
+            n_ok += 1;
+            break 'conn;
+        }
+    }
+    if close(lfd) != 0 {
+        bail!("bsh: skt: listen close errno={}", errno!());
+    }
+    if berry_handle_close(tick) != 0 {
+        berry_libc::park();
+    }
+    println!("SKT ok n={}", 1 + n_ok); // client 段 1 + server 段 2
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码

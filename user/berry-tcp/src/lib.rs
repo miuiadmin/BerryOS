@@ -147,6 +147,17 @@ pub struct Conn {
 }
 
 impl Conn {
+    /// in-flight 占用诊断位（0=None/1=Syn/2=Data/3=Fin——只读，不改状态；
+    /// vnet send_data 拒面 loud 诊断用）。
+    pub fn inflight_kind(&self) -> u8 {
+        match self.inflight {
+            InFlight::None => 0,
+            InFlight::Syn => 1,
+            InFlight::Data { .. } => 2,
+            InFlight::Fin { .. } => 3,
+        }
+    }
+
     /// 主动打开：SynSent + 发 SYN。ISS 由调用方给定（确定性测试需要控制；
     /// vnet 侧可取时钟/计数）。
     pub fn open(iss: u32) -> (Conn, EvOut<'static>) {
