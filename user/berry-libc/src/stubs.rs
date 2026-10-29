@@ -240,18 +240,14 @@ neg_int!(
     fork => crate::ENOSYS,
 );
 
-// —— socket 族（ENOSYS 一刀切；send/recv 六读写族 POSIX 返回 ssize_t，
-//    挪 neg_ssize! 对档——socket() 本身 ENOSYS 时上层到不了，纯防御性对齐）——
+// —— socket 族残桩（A3-2 后形态）：socket/connect/bind/listen/accept(+4)/
+//    send/recv/setsockopt/getsockopt 已转真（net.rs——RPC 面）；本块只剩
+//    v1 无语义面的边角（socketpair/shutdown/getpeername/getsockname/pipe2
+//    ——草案 §5「不做什么」，ENOSYS = 诚实语义）。send/recv 六读写族
+//    POSIX 返回 ssize_t，余部在 neg_ssize! 对档。——
 neg_int!(
-    socket => crate::ENOSYS,
     socketpair => crate::ENOSYS,
-    connect => crate::ENOSYS,
-    bind => crate::ENOSYS,
-    listen => crate::ENOSYS,
-    accept4 => crate::ENOSYS,
     shutdown => crate::ENOSYS,
-    getsockopt => crate::ENOSYS,
-    setsockopt => crate::ENOSYS,
     getpeername => crate::ENOSYS,
     getsockname => crate::ENOSYS,
     pipe2 => crate::ENOSYS,
@@ -277,10 +273,9 @@ neg_ssize!(
     listxattr => crate::ENOTSUP,
     llistxattr => crate::ENOTSUP,
     flistxattr => crate::ENOTSUP,
-    // socket 读写六族：POSIX 返回 ssize_t——socket() 先 ENOSYS，上层到不了，
-    // 纯防御性对档（零成本换将来 socket 面转真时无第二案）。
-    send => crate::ENOSYS,
-    recv => crate::ENOSYS,
+    // socket 读写余部（POSIX 返回 ssize_t）：send/recv 已转真（net.rs，
+    // A3-2）；recvfrom/sendto/sendmsg/recvmsg v1 无数据报/散播面（草案
+    // §5——TCP 流唯一），ENOSYS = 诚实语义。
     recvfrom => crate::ENOSYS,
     sendto => crate::ENOSYS,
     sendmsg => crate::ENOSYS,
@@ -740,16 +735,30 @@ pub struct PollFd {
     pub revents: i16,
 }
 
+/// poll（A3-2 改造）：socket 项（15..=22 段）→ `net::sock_poll_one`
+/// 单 fd 快照（revents 掩码 POSIX 口径——fsclient `poll_revents` 钉板）；
+/// console/fs 项 revents = 0（既有面零漂移——sanitize_standard_fds 的
+/// fd 0/1/2 探测照旧返回 0）。返回值 = revents 非零项计数。timeout v1
+/// 忽略（恒立即返——阻塞档留 A4 事件循环刀，届时配 sleep 节拍）。
 #[no_mangle]
 pub extern "C" fn poll(fds: *mut PollFd, nfds: u64, _timeout: c_int) -> c_int {
+    let mut ready = 0;
     if !fds.is_null() {
         unsafe {
             for i in 0..nfds as usize {
-                (*fds.add(i)).revents = 0;
+                let p = fds.add(i);
+                (*p).revents = if crate::net::sock_valid((*p).fd) {
+                    crate::net::sock_poll_one((*p).fd, (*p).events)
+                } else {
+                    0
+                };
+                if (*p).revents != 0 {
+                    ready += 1;
+                }
             }
         }
     }
-    0
+    ready
 }
 
 // —— environ/getenv（空环境：environ = NULL 表）——

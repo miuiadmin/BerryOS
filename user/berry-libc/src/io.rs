@@ -331,6 +331,11 @@ pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
     // 别名先翻译回底 fd（console 克隆——别名无独立状态，见别名面注释）。
     let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
+        // socket 段（15..=22，A3-2）：分派先于 fs（两段无交集，先判 =
+        // 归属谓词显式化）；sock_send 收口 EBADF/分片/部分写语义。
+        if crate::net::sock_valid(fd) {
+            return crate::net::sock_send(fd, buf as *const u8, n);
+        }
         // fd≥3 = fs-backed 写（fs.rs 收口 EBADF/游标/分片 PUT）；fd<0 同落
         // 那边的 EBADF 面。
         return crate::fs::write_fd(fd, buf, n);
@@ -348,6 +353,25 @@ pub extern "C" fn writev(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
     // 别名先翻译（同 write——console 克隆共底 fd）。
     let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
+        // socket 段（A3-2）：逐 iov 走 sock_send（部分写返回已写量——
+        // fs 路同语义）。
+        if crate::net::sock_valid(fd) {
+            if cnt <= 0 {
+                return 0;
+            }
+            let mut total: ssize_t = 0;
+            for i in 0..cnt as usize {
+                let v = unsafe { &*iov.add(i) };
+                if v.len > 0 {
+                    let r = crate::net::sock_send(fd, v.base as *const u8, v.len);
+                    if r < 0 {
+                        return if total > 0 { total } else { -1 };
+                    }
+                    total += r;
+                }
+            }
+            return total;
+        }
         // fs-backed：逐 iov 走 fs 写（部分写返回已写量——write_fd 同语义）。
         if cnt <= 0 {
             return 0;
@@ -402,6 +426,11 @@ pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
     let fd = alias_base(fd).unwrap_or(fd);
     unsafe {
         if fd != 0 {
+            // socket 段（A3-2）：分派先于 fs（同 write）。n==0 由 sock_recv
+            // 入口收口（POSIX recv 零长读 = 0）。
+            if crate::net::sock_valid(fd) {
+                return crate::net::sock_recv(fd, buf as *mut u8, n);
+            }
             // fd≥3 = fs-backed 读（fs.rs 收口 EBADF/RA 预读）；fd 1/2 在那边
             // 落同一 EBADF 面（不在册）——旧「1/2 只写：读方向诚拒」零漂移。
             return crate::fs::read_fd(fd, buf, n);
@@ -468,6 +497,11 @@ pub extern "C" fn close(fd: c_int) -> c_int {
     if fd_ok(fd) {
         return 0; // console handle 是进程级资产，close(1) 不真关
     }
+    // socket 段（A3-2）：摘表 + best-effort CLOSE RPC（vnet 侧会话槽
+    // 回收——不弃 = 会话表真容量位泄漏；net.rs 收口，恒返 0 面）。
+    if crate::net::sock_valid(fd) {
+        return crate::net::sock_close(fd);
+    }
     // fd≥3 = fs-backed：摘表 + 可写 fd 的 close 即 commit（裁决 2）。
     crate::fs::close_fd(fd)
 }
@@ -476,12 +510,12 @@ pub extern "C" fn close(fd: c_int) -> c_int {
 pub extern "C" fn isatty(fd: c_int) -> c_int {
     // 别名先翻译（console 克隆与底 fd 同判定——恒 ENOTTY，v1 诚实面）。
     let fd = alias_base(fd).unwrap_or(fd);
-    if !fd_ok(fd) && !crate::fs::fd_valid(fd) {
+    if !fd_ok(fd) && !crate::fs::fd_valid(fd) && !crate::net::sock_valid(fd) {
         crate::set_errno(crate::EBADF);
         return 0;
     }
     crate::set_errno(crate::ENOTTY);
-    0 // v1 诚实面：非 tty（console 同面；fs fd 亦非 tty）
+    0 // v1 诚实面：非 tty（console 同面；fs fd / socket fd 亦非 tty）
 }
 
 // —— FILE / stdio ——

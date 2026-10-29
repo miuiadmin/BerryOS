@@ -615,6 +615,96 @@ pub fn dirent_next<'a>(blob: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
     }
 }
 
+// —— A3-2：netd RPC 语义纯函数面（草案 §3.2 协议映射的 host 钉板件）——
+// ST 码/会话容量/POLL 旗自 berry-netdproto 单源引（「不长第二套」）；
+// POSIX 侧常量（errno/poll 位）在本 crate 立值、libc net.rs const assert
+// 对拍（O_NONBLOCK 单源纪律的镜像面——两侧任一漂移编译期炸响）。
+
+/// 容量同源钉板（草案 §3.1「socket 表容量与 TCP_SESSIONS_MAX 同源单一
+/// 定值」的编译期执法）：socket 表槽数 ≠ netd 会话表容量 = fd 段与 sid
+/// 段错位（alloc 满表先于 netd FULL 到达 = 结构性 EMFILE 谎报）。
+const _: () = assert!(SOCK_FD_MAX == berry_netdproto::TCP_SESSIONS_MAX as usize);
+
+/// POSIX poll 位（Linux 通用值；events/revents 都是 i16 位域）。
+pub const POLLIN: i16 = 0x001;
+pub const POLLPRI: i16 = 0x002;
+pub const POLLOUT: i16 = 0x004;
+pub const POLLERR: i16 = 0x008;
+pub const POLLHUP: i16 = 0x010;
+pub const POLLNVAL: i16 = 0x020;
+
+/// netd POLL 快照（flags + rbytes）→ POSIX revents。掩码执法 POSIX 口径
+/// 「revents ⊆ events ∪ {POLLERR, POLLHUP, POLLNVAL}」（恒报告位不受
+/// 订阅约束）；CLOSED（对端收口）= POLLIN|POLLHUP——可读（余量收割/EOF）
+/// 与挂断同报（Linux 对端关闭套接字的 poll 真值形态）。
+pub fn poll_revents(netd_flags: u8, rbytes: u16, events: i16) -> i16 {
+    let mut r: i16 = 0;
+    if rbytes > 0 {
+        r |= POLLIN;
+    }
+    if netd_flags & berry_netdproto::POLL_FLAG_WRITABLE != 0 {
+        r |= POLLOUT;
+    }
+    if netd_flags & berry_netdproto::POLL_FLAG_CLOSED != 0 {
+        r |= POLLIN | POLLHUP;
+    }
+    r & (events | POLLERR | POLLHUP | POLLNVAL)
+}
+
+/// netd ST 码 → errno 的 op 参数化域：ST_BAD/ST_NOSESSION 的 POSIX 语义
+/// 随 op 分岔（listen 的 BAD = 端口已被 LISTEN → EADDRINUSE；send 的
+/// BAD = 死会话/握手中 → EPIPE）——单一平表不成立（草案 §3.2 错码映射
+/// 表逐行）。ST_OK → 0；未知码诚实 EIO（协议演化防御——新 ST 码不该被
+/// 静默当成功）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SockOp {
+    Connect,
+    Listen,
+    Accept,
+    Send,
+    Recv,
+    Close,
+}
+
+// errno 数值面（Linux/musl 同值、ABI 冻结；libc lib.rs 同名常量的
+// 对拍锚点——见 libc net.rs const assert）。
+pub const EIO: i32 = 5;
+pub const EAGAIN: i32 = 11;
+pub const EINVAL: i32 = 22;
+pub const EPIPE: i32 = 32;
+pub const ENODEV: i32 = 19;
+pub const EADDRINUSE: i32 = 98;
+pub const ETIMEDOUT: i32 = 110;
+
+pub fn sock_rpc_errno(op: SockOp, st: u8) -> i32 {
+    use berry_netdproto as ndp;
+    match st {
+        ndp::ST_OK => 0,
+        // accept 空队原生档（非阻塞快返语义）；他 op 不产此码
+        ndp::ST_EAGAIN => EAGAIN,
+        // 无 NIC 拓扑（vnet deviceless serve 的确定性信号）
+        ndp::ST_NODEV => ENODEV,
+        ndp::ST_TIMEOUT => ETIMEDOUT,
+        // netd 会话表满：端口占用近似档（草案 §3.2）
+        ndp::ST_FULL => EADDRINUSE,
+        ndp::ST_NOSESSION => match op {
+            // listen 会话已死 = 「非监听套接字」POSIX 档
+            SockOp::Accept => EINVAL,
+            _ => EPIPE,
+        },
+        ndp::ST_BAD => match op {
+            // vnet ListenErr::Dup（端口已被 LISTEN）映射面
+            SockOp::Listen => EADDRINUSE,
+            // 死 sid / 握手中 / 已关（table.send_data None 三态）
+            SockOp::Send => EPIPE,
+            _ => EIO,
+        },
+        // session-0 独占冲突（connect 二连——他进程已持 legacy 客户端）
+        ndp::ST_BUSY => EIO,
+        _ => EIO,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1130,5 +1220,71 @@ mod tests {
         ] {
             assert_eq!(parse_ipv4(s), None, "s={:?}", core::str::from_utf8(s));
         }
+    }
+
+    // —— A3-2：poll_revents / sock_rpc_errno 钉板 ——
+
+    use berry_netdproto as ndp;
+
+    #[test]
+    fn poll_revents_data_and_writable() {
+        // rbytes>0 → POLLIN（订阅才报）；WRITABLE → POLLOUT。
+        assert_eq!(poll_revents(0, 64, POLLIN), POLLIN);
+        assert_eq!(poll_revents(ndp::POLL_FLAG_WRITABLE, 0, POLLIN), 0);
+        assert_eq!(
+            poll_revents(ndp::POLL_FLAG_WRITABLE, 0, POLLIN | POLLOUT),
+            POLLOUT
+        );
+        assert_eq!(
+            poll_revents(ndp::POLL_FLAG_WRITABLE, 64, POLLIN | POLLOUT),
+            POLLIN | POLLOUT
+        );
+    }
+
+    #[test]
+    fn poll_revents_closed_and_mask() {
+        // CLOSED = POLLIN|POLLHUP；HUP 恒报（未订阅 POLLIN 时只余 HUP）。
+        assert_eq!(
+            poll_revents(ndp::POLL_FLAG_CLOSED, 0, POLLIN),
+            POLLIN | POLLHUP
+        );
+        assert_eq!(poll_revents(ndp::POLL_FLAG_CLOSED, 0, 0), POLLHUP);
+        // 空订阅不掩 ERR/HUP/NVAL 恒报告位。
+        assert_eq!(poll_revents(0, 64, 0), 0);
+        // 空闲会话（零 flags 零 rbytes）= 无就绪。
+        assert_eq!(poll_revents(0, 0, POLLIN | POLLOUT), 0);
+    }
+
+    #[test]
+    fn sock_rpc_errno_table() {
+        // 通用档：OK/EAGAIN/NODEV/TIMEOUT/FULL 全 op 一致。
+        for op in [SockOp::Connect, SockOp::Listen, SockOp::Accept, SockOp::Send, SockOp::Recv, SockOp::Close] {
+            assert_eq!(sock_rpc_errno(op, ndp::ST_OK), 0);
+            assert_eq!(sock_rpc_errno(op, ndp::ST_EAGAIN), EAGAIN);
+            assert_eq!(sock_rpc_errno(op, ndp::ST_NODEV), ENODEV);
+            assert_eq!(sock_rpc_errno(op, ndp::ST_TIMEOUT), ETIMEDOUT);
+            assert_eq!(sock_rpc_errno(op, ndp::ST_FULL), EADDRINUSE);
+            assert_eq!(sock_rpc_errno(op, ndp::ST_BUSY), EIO);
+            assert_eq!(sock_rpc_errno(op, 0x7F), EIO, "未知码诚实 EIO");
+        }
+        // 分岔档：NOSESSION（accept=EINVAL 其余 EPIPE）与 BAD
+        //（listen=EADDRINUSE、send=EPIPE、其余 EIO）。
+        for (op, nosess, bad) in [
+            (SockOp::Connect, EPIPE, EIO),
+            (SockOp::Listen, EPIPE, EADDRINUSE),
+            (SockOp::Accept, EINVAL, EIO),
+            (SockOp::Send, EPIPE, EPIPE),
+            (SockOp::Recv, EPIPE, EIO),
+            (SockOp::Close, EPIPE, EIO),
+        ] {
+            assert_eq!(sock_rpc_errno(op, ndp::ST_NOSESSION), nosess, "{:?}", op);
+            assert_eq!(sock_rpc_errno(op, ndp::ST_BAD), bad, "{:?}", op);
+        }
+    }
+
+    #[test]
+    fn sock_capacity_matches_netd() {
+        // const 断言的运行时镜像（失败信息更可读）。
+        assert_eq!(SOCK_FD_MAX, ndp::TCP_SESSIONS_MAX as usize);
     }
 }

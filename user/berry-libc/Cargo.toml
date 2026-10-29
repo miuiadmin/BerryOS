@@ -17,3 +17,6 @@ berry-fsclient = { path = "../berry-fsclient" }
 # 纯 crate（§6 回退启用：本 crate 的 libc 同名符号在 host 测试二进制里
 # 对 libSystem write 符号插入劫自旋，纯面外迁后 host 测试零 libc 面）。
 berry-tls = { path = "../berry-tls" }
+# A3-2：socket 桩批转真的 RPC 编解码面（netd 通道 = crt0 GIFT_H[4]，
+# io.rs netd_h()；严格串行 RPC 底座移植自 bsh netd_rpc——A2-3）。
+berry-netdproto = { path = "../berry-netdproto" }

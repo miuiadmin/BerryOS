@@ -18,3 +18,7 @@ license = "Apache-2.0"
 [dependencies]
 berry-sys = { path = "../berry-sys" }
 berry-fsproto = { path = "../berry-fsproto" }
+# A3-2：netd ST 码/会话容量/POLL 旗单源引（socket RPC 语义纯函数面
+# poll_revents/sock_rpc_errno 的 wire 侧事实源——「不长第二套」；帽常量
+# 自 berry-fsproto 单源引的同族纪律）。
+berry-netdproto = { path = "../berry-netdproto" }

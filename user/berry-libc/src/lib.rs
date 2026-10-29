@@ -11,7 +11,9 @@
 //!   用户态自设——零内核 seam）、snprintf/fprintf（asm 变参蹦床 + % 子集）；
 //! - **成功桩**：无竞争锁族、`sigaction` 族谎报安装、`syscall` 走 futex.rs
 //!   拦截（nr≠98 返 -ENOSYS——std 无竞争快路径不经此）；
-//! - **ENOSYS/ENOENT 桩**：FS 面、socket 族、fork/exec/posix_spawn、kill 族。
+//! - **ENOSYS/ENOENT 桩**：FS 面（fs.rs 真面外的残部）、socket 残部
+//!   （A3-2 转真后剩 socketpair/shutdown/getpeername/getsockname——
+//!   net.rs + stubs.rs 分界）、fork/exec/posix_spawn、kill 族。
 //!
 //! ## ABI 口径（写新桩前必读）
 //!
@@ -109,6 +111,15 @@ pub const ENOTSUP: c_int = 95;
 pub const EPROTONOSUPPORT: c_int = 93;
 pub const ESOCKTNOSUPPORT: c_int = 94;
 pub const EAFNOSUPPORT: c_int = 97;
+/// A3-2：netd gift 缺席 / vnet deviceless（ST_NODEV——berry-fsclient
+/// `sock_rpc_errno` 单源映射，const assert 对拍）。
+pub const ENODEV: c_int = 19;
+/// A3-2：listen 端口已被占用（ST_FULL/Dup——EADDRINUSE 近似档）。
+pub const EADDRINUSE: c_int = 98;
+/// A3-2：connect 目标非网关 10.0.2.2——v1 协议无地址域（OP_TCP_OPEN 只
+/// 携 port、vnet 段构造 dst=GW_IP 钉死），非网关地址 = 本栈结构性不可
+/// 达，诚实拒（不静默连到别处）。
+pub const ENETUNREACH: c_int = 101;
 
 // EAI_*（getaddrinfo 直接返回，非 errno）
 pub const EAI_NONAME: c_int = -2;
