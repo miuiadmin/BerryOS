@@ -13,8 +13,10 @@
 //! - **A3-2 桩批转真**：socket/connect/bind/listen/accept(+4)/send/recv/
 //!   setsockopt/getsockopt 真身（RPC 底座 = bsh netd_rpc 移植——严格
 //!   串行、超时不重发、netd gift = crt0 GIFT_H[4]）；
-//! - getaddrinfo/freeaddrinfo 真实现（**IP 字面量档**：node 必须点分
-//!   四段 IPv4，非字面量 → EAI_NONAME——DNS 档留 A4+，草案 §5「不做什么」）。
+//! - getaddrinfo/freeaddrinfo 真实现（IP 字面量快路 + **DNS 慢路**
+//!   （A4-2）：miss → 预检本地拒 → netd `OP_DNS_QUERY` RPC → 错码
+//!   全表（ST_TIMEOUT → EAI_AGAIN）；netd gift 缺席 = 静默门
+//!   EAI_NONAME——拓扑降级同 evs/skt）。
 //!
 //! ## v1 语义裁定（A3-2 实录，wire 实读定形）
 //!
@@ -42,10 +44,11 @@
 
 use crate::{c_char, c_int, c_void, ssize_t};
 use berry_fsclient::{
-    poll_revents, sock_domain_err, sock_rpc_errno, EpollCtlErr, EpollTable, SockDomErr, SockEntry,
-    SockKind, SockOp, SocketTable, AF_INET, EPOLLERR, EPOLLHUP, EPOLL_CTL_DEL, EPOLL_FD_BASE,
-    EPOLL_FD_MAX, IPPROTO_TCP, POLLERR, POLLHUP, POLLIN, POLLOUT, SOCK_FD_BASE, SOCK_FD_MAX,
-    SOCK_STREAM, parse_ipv4, EADDRINUSE, EAGAIN, EIO, EINVAL, ENODEV, EPIPE, ETIMEDOUT,
+    poll_revents, sock_domain_err, sock_rpc_errno, dns_name_ok, dns_rpc_eai, EpollCtlErr,
+    EpollTable, SockDomErr, SockEntry, SockKind, SockOp, SocketTable, AF_INET, EPOLLERR, EPOLLHUP,
+    EPOLL_CTL_DEL, EPOLL_FD_BASE, EPOLL_FD_MAX, IPPROTO_TCP, POLLERR, POLLHUP, POLLIN, POLLOUT,
+    SOCK_FD_BASE, SOCK_FD_MAX, SOCK_STREAM, parse_ipv4, EADDRINUSE, EAGAIN, EAI_AGAIN, EAI_NONAME,
+    EIO, EINVAL, ENODEV, EPIPE, ETIMEDOUT,
 };
 use berry_netdproto as ndp;
 use berry_sys::{
@@ -160,6 +163,9 @@ const _: () = {
     assert!(ENODEV == crate::ENODEV as i32);
     assert!(EADDRINUSE == crate::EADDRINUSE as i32);
     assert!(ETIMEDOUT == crate::ETIMEDOUT as i32);
+    // EAI 面（A4-2 DNS 档映射锚——getaddrinfo 直接返回码，非 errno）。
+    assert!(EAI_NONAME == crate::EAI_NONAME as i32);
+    assert!(EAI_AGAIN == crate::EAI_AGAIN as i32);
 };
 
 /// `SockDomErr` → errno（A3-1 立常量时的挂账映射面，本刀消费）。
@@ -202,23 +208,21 @@ fn sleep_tick() {
     }
 }
 
-/// 严格串行 RPC（encode → send（满队 -EBUSY 阻塞等 WRITABLE 重试）→
-/// 应答阻塞帽等 READABLE → recv 原长）。**超时不重发**：晚到应答滞留
-/// 队列毒化下一请求是设计面（v1 无请求序号防重——A2-3 头注同源）。
-/// 应答形随 op 三分 Sid/Poll/Tcp，恰长 parse 归调用方包装层。netd gift
-/// 缺席（netd_h()==0）与链断同返 None（调用方按 op 定 errno——gift 面
-/// 由公开入口先查，此处 None 即链断 EIO）。
-fn netd_rpc(req: ndp::TcpSReq<'_>, session: u32, cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
+/// 严格串行 RPC 的线上层（encode 产物字节 → send（满队 -EBUSY 阻塞等
+/// WRITABLE 重试）→ 应答阻塞帽等 READABLE → recv 原长）。**超时不重发**：
+/// 晚到应答滞留队列毒化下一请求是设计面（v1 无请求序号防重——A2-3 头注
+/// 同源）。netd gift 缺席（netd_h()==0）与链断同返 None（调用方按 op 定
+/// errno——gift 面由公开入口先查，此处 None 即链断面）。A4-2 抽出：
+/// TcpSReq 包装层（[`netd_rpc`]）与 DNS 请求层（[`dns_query`]——请求
+/// 形态非 TcpSReq）共用同一线上协议。
+fn netd_rpc_raw(req: &[u8], cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
     let netd = crate::io::netd_h();
     if netd == 0 {
         return None;
     }
-    let mut buf = [0u8; ndp::REQ_S_LEN_MAX];
-    let n = ndp::encode_tcp_s_request(&mut buf, req, session)?;
     let send_dl = now() + CAP_FAST_NS;
     loop {
-        // buf 前 n 字节已初始化（encode 产物）。
-        let s = berry_channel_send(netd, buf.as_ptr(), n, core::ptr::null(), 0);
+        let s = berry_channel_send(netd, req.as_ptr(), req.len(), core::ptr::null(), 0);
         if s == 0 {
             break;
         }
@@ -247,6 +251,40 @@ fn netd_rpc(req: ndp::TcpSReq<'_>, session: u32, cap_ns: u64, rep: &mut [u8]) ->
         if berry_object_wait_one(netd, SIGNAL_READABLE, reply_dl, &mut obs) != 0 {
             return None; // 帽到无应答 = 断链面（不重发）
         }
+    }
+}
+
+/// TcpSReq 形 RPC 包装（A2-3 原型——语义逐字保真，encode 委托后走
+/// [`netd_rpc_raw`]）。应答形随 op 三分 Sid/Poll/Tcp，恰长 parse 归调用方
+/// 包装层。
+fn netd_rpc(req: ndp::TcpSReq<'_>, session: u32, cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
+    let mut buf = [0u8; ndp::REQ_S_LEN_MAX];
+    let n = ndp::encode_tcp_s_request(&mut buf, req, session)?;
+    // buf 前 n 字节已初始化（encode 产物）。
+    netd_rpc_raw(&buf[..n], cap_ns, rep)
+}
+
+/// DNS A 查询（A4-2）：name → netd `OP_DNS_QUERY` RPC → 点分序四字节
+/// 地址。应答错码映射走 [`dns_rpc_eai`] 全表（ST_TIMEOUT → EAI_AGAIN /
+/// ST_BAD → EAI_NONAME）；RPC 链断（含 netd gift 缺席——公开入口已先查
+/// 静默门，此处 None = 真链断）与畸形应答（parse_reply 烘焙线拒）同路
+/// **EAI_NONAME**（拓扑降级同 evs/skt——v1 无 EAI_SYSTEM 档，链断对
+/// 调用方 = 「此名此路不可解」，musl 对解析器不可达同用 NONAME 族）。
+/// 帽 = CAP_FAST（快 op——单 A 查询往返，服务侧 20s 帽 < 本帽余量足）。
+fn dns_query(name: &[u8]) -> Result<[u8; 4], c_int> {
+    let mut req = [0u8; 2 + ndp::NAME_MAX];
+    let n = match ndp::encode_request(&mut req, ndp::OP_DNS_QUERY, name) {
+        Some(n) => n,
+        None => return Err(crate::EAI_NONAME), // 空/越帽——预检已拦，防御面
+    };
+    let mut rep = [0u8; ndp::REPLY_LEN];
+    let got = netd_rpc_raw(&req[..n], CAP_FAST_NS, &mut rep);
+    let r = got
+        .and_then(|n| ndp::parse_reply(&rep[..n]))
+        .ok_or(crate::EAI_NONAME)?; // 链断/畸形同路
+    match r.st {
+        ndp::ST_OK => Ok(r.addr),
+        st => Err(dns_rpc_eai(st)),
     }
 }
 
@@ -1162,14 +1200,18 @@ fn parse_port(service: *const c_char) -> Option<u16> {
     Some(v as u16)
 }
 
-/// getaddrinfo（真实现·IP 字面量档）：node 必须点分四段 IPv4 字面量
-/// （musl 语义：字面量自消化不走 DNS；node NULL → EAI_NONAME——AI_PASSIVE
-/// 0.0.0.0 档 v1 不做，std::net 消费面不走此形，文档化）。hints 域检：
-/// family ∈ {AF_INET, 0}（外 → EAI_FAMILY）、socktype ∈ {SOCK_STREAM,
-/// 0}（外 → EAI_SERVICE——musl 对不支持 socktype 用此码）；AI_* flags
-/// v1 忽略（ai_canonname 恒 NULL）。结果 = 单节点链（malloc ai 48B +
-/// sa 16B；任一失败释放已分配块 → EAI_MEMORY，无泄漏路径）。成功 0 且
-/// `*res` 指链头。
+/// getaddrinfo（真实现·IP 字面量快路 + DNS 慢路，A4-2）：node 先试点分
+/// 四段 IPv4 字面量（musl 语义：字面量自消化不走 DNS——现状零漂移按
+/// 构造）；miss 且名字过预检（[`dns_name_ok`]——非法/超长 → EAI_NONAME
+/// 纯本地拒零发包）→ netd `OP_DNS_QUERY` RPC（netd gift 缺席 = 静默门
+/// EAI_NONAME——拓扑降级同 evs/skt，EFI/无盘路行为与现状零漂移按构造；
+/// 应答错码 [`dns_rpc_eai`] 全表——ST_TIMEOUT → EAI_AGAIN）。node NULL
+/// → EAI_NONAME（AI_PASSIVE 0.0.0.0 档 v1 不做，std::net 消费面不走此
+/// 形，文档化）。hints 域检：family ∈ {AF_INET, 0}（外 → EAI_FAMILY）、
+/// socktype ∈ {SOCK_STREAM, 0}（外 → EAI_SERVICE——musl 对不支持
+/// socktype 用此码）；AI_* flags v1 忽略（ai_canonname 恒 NULL）。结果 =
+/// 单节点链（malloc ai 48B + sa 16B；任一失败释放已分配块 → EAI_MEMORY，
+/// 无泄漏路径）。成功 0 且 `*res` 指链头。
 #[no_mangle]
 pub unsafe extern "C" fn getaddrinfo(
     node: *const c_char,
@@ -1193,9 +1235,22 @@ pub unsafe extern "C" fn getaddrinfo(
         }
     }
     // SAFETY: C 字符串契约。
-    let addr = match parse_ipv4(unsafe { cstr(node) }) {
-        Some(a) => a,
-        None => return crate::EAI_NONAME,
+    let name = unsafe { cstr(node) };
+    let addr = match parse_ipv4(name) {
+        Some(a) => a, // 快路命中：字面量自消化零 RPC
+        None => {
+            // DNS 慢路（A4-2）：预检本地拒 → 静默门 → RPC + 错码全表。
+            if !dns_name_ok(name) {
+                return crate::EAI_NONAME;
+            }
+            if crate::io::netd_h() == 0 {
+                return crate::EAI_NONAME; // 拓扑降级（同 evs/skt 静默门）
+            }
+            match dns_query(name) {
+                Ok(octets) => u32::from_be_bytes(octets),
+                Err(eai) => return eai,
+            }
+        }
     };
     let port = match parse_port(service) {
         Some(p) => p,

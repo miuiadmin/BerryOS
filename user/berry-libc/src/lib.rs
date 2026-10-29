@@ -130,6 +130,9 @@ pub const EAI_FAMILY: c_int = -5;
 pub const EAI_SERVICE: c_int = -8;
 /// A3-1：malloc 失败档（musl 同值）。
 pub const EAI_MEMORY: c_int = -10;
+/// A4-2：DNS 查询超时档（netd ST_TIMEOUT 映射；musl 同值——「稍后重试
+/// 可解」语义，gai_strerror 文案 "Temporary failure in name resolution"）。
+pub const EAI_AGAIN: c_int = -3;
 
 /// musl `FILE`（布局是 shim 私有：全部 FILE 消费者——fileno/fwrite/fprintf
 /// ——都是本 crate 的定义，不与真 musl 互操作）。

@@ -816,11 +816,13 @@ pub extern "C" fn __xpg_strerror_r(_errnum: c_int, buf: *mut c_char, buflen: siz
 
 #[no_mangle]
 pub extern "C" fn gai_strerror(code: c_int) -> *const c_char {
-    // 返回文案对齐 musl netdb.c 文案面（A3-1 扩三档）。
+    // 返回文案对齐 musl netdb.c 文案面（A3-1 扩三档；A4-2 扩 EAI_AGAIN）。
     let s: &[u8] = match code {
         crate::EAI_MEMORY => b"Out of memory\0",
         crate::EAI_FAMILY => b"Address family not supported\0",
         crate::EAI_SERVICE => b"Service not supported\0",
+        crate::EAI_AGAIN => b"Temporary failure in name resolution\0",
+        crate::EAI_NONAME => b"Name or service not known\0",
         _ => b"Name or service not known\0",
     };
     s.as_ptr() as *const c_char

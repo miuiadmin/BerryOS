@@ -911,6 +911,43 @@ pub fn sock_rpc_errno(op: SockOp, st: u8) -> i32 {
     }
 }
 
+// —— DNS 名字预检 + 应答错码映射（A4-2；libc getaddrinfo DNS 档地基）——
+
+/// EAI_* 数值面（getaddrinfo 直接返回码，非 errno；Linux/musl 同值——
+/// libc lib.rs 同名常量的对拍锚点，errno 区同口径）。
+pub const EAI_NONAME: i32 = -2;
+/// DNS 查询超时档（ST_TIMEOUT 映射；musl 同值）。
+pub const EAI_AGAIN: i32 = -3;
+
+/// DNS 查询名合法性预检（libc 快路 miss 后、**发包前**的纯本地执法）：
+/// 非空、len ≤ netdproto [`NAME_MAX`](berry_netdproto::NAME_MAX)（单源
+/// 引用——协议帽即预检帽）、字符集 [A-Za-z0-9.-]（LDH 域减岗 + 点分
+/// 分隔；v1 无下划线/IDN/尾部点特赦——诚实拒优于收名不执法）。非法/
+/// 超长 → false（调用方 EAI_NONAME 本地拒，零 RPC）。
+pub fn dns_name_ok(name: &[u8]) -> bool {
+    use berry_netdproto as ndp;
+    !name.is_empty()
+        && name.len() <= ndp::NAME_MAX
+        && name.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
+}
+
+/// netdproto DNS 应答 st → EAI 码（sock_rpc_errno 全表先例——「映射臂
+/// 先宣后现」执法：netdproto 应答域 {ST_OK, ST_BAD, ST_TIMEOUT} 三值
+/// 全接线，不按「预期跑不到」裁剪）。域外值经 parse_reply 烘焙线
+/// （未知 st → None）结构性不可达——防御面同 EAI_NONAME。
+pub fn dns_rpc_eai(st: u8) -> i32 {
+    use berry_netdproto as ndp;
+    match st {
+        ndp::ST_OK => 0,
+        // DNS 往返帽到（服务端 DnsRes::Timeout 真实在册可达——域内码，
+        // 非结构性缺席）；「稍后重试可解」语义
+        ndp::ST_TIMEOUT => EAI_AGAIN,
+        // 名字不存在/坏请求（服务端 DnsRes::Bad / parse 拒）
+        ndp::ST_BAD => EAI_NONAME,
+        _ => EAI_NONAME,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1492,6 +1529,47 @@ mod tests {
     fn sock_capacity_matches_netd() {
         // const 断言的运行时镜像（失败信息更可读）。
         assert_eq!(SOCK_FD_MAX, ndp::TCP_SESSIONS_MAX as usize);
+    }
+
+    // —— DNS 名字预检 + 错码映射（A4-2）——
+
+    #[test]
+    fn dns_name_ok_boundary() {
+        // 合法形：LDH 域 + 点分（大小写均收——DNS 大小写不敏感）。
+        assert!(dns_name_ok(b"localhost"));
+        assert!(dns_name_ok(b"a.b.c.d.example.com"));
+        assert!(dns_name_ok(b"LocalHost"));
+        assert!(dns_name_ok(b"x-y.z-w"));
+        assert!(dns_name_ok(b"a")); // 单字符——字符集面合法（语义留给服务端）
+        // 空名 = 拒（encode_request 同面——预检先于 RPC 零发包）。
+        assert!(!dns_name_ok(b""));
+        // 越帽 = 恒拒（协议 NAME_MAX=64 单源——65B 全 'a' 恒拒）。
+        assert!(!dns_name_ok(&[b'a'; ndp::NAME_MAX + 1]));
+        assert!(dns_name_ok(&[b'a'; ndp::NAME_MAX])); // 恰帽收
+        // 非法字符：下划线（v1 无 _ 特赦）、空格、斜杠、冒号、非 ASCII。
+        assert!(!dns_name_ok(b"my_host"));
+        assert!(!dns_name_ok(b"a b"));
+        assert!(!dns_name_ok(b"a/b"));
+        assert!(!dns_name_ok(b"a:b"));
+        assert!(!dns_name_ok(b"a\x80b"));
+        // 边界字符逐一切面：'-' 与 '.' 合法、'.' 首尾字符集面不拒
+        //（「.」/「a..b」语义合法性归服务端/解析器——预检只管字符集与长度）。
+        assert!(dns_name_ok(b"-"));
+        assert!(dns_name_ok(b"."));
+    }
+
+    #[test]
+    fn dns_rpc_eai_table() {
+        // netdproto DNS 应答域全表（「映射臂先宣后现」——三值全接线）。
+        assert_eq!(dns_rpc_eai(ndp::ST_OK), 0);
+        assert_eq!(dns_rpc_eai(ndp::ST_TIMEOUT), EAI_AGAIN);
+        assert_eq!(dns_rpc_eai(ndp::ST_BAD), EAI_NONAME);
+        // 域外防御面（经 parse_reply 烘焙线结构性不可达——同值拒绝）。
+        assert_eq!(dns_rpc_eai(0x7F), EAI_NONAME);
+        assert_eq!(dns_rpc_eai(ndp::ST_BUSY), EAI_NONAME, "DNS 面无会话语义");
+        // 数值面锚（musl 同值：EAI_NONAME=-2 / EAI_AGAIN=-3）。
+        assert_eq!(EAI_NONAME, -2);
+        assert_eq!(EAI_AGAIN, -3);
     }
 
     // —— epoll 表（A4-1）——
