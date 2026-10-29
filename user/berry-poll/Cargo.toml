@@ -1,0 +1,13 @@
+[package]
+name = "berry-poll"
+version = "0.1.0"
+edition = "2021"
+# A2-1（docs/事件循环A2设计草案.md §3.1）：多路等待聚合器纯函数 crate，
+# `berry-complete` 同款形态——`cfg_attr(not(test), no_std)` +
+# `extern crate alloc`：库本体 no_std（未来 no_std 服务可消费），test
+# 构建放开 std 仅为测试挂具。wait_many/时钟经 trait 注入：host 假实现
+# 零 QEMU，guest 真绑定包装随消费面（A2-1 guest 冒烟段）接线。
+description = "BerryOS multi-wait aggregator: batched wait_many polling with LT semantics"
+license = "Apache-2.0"
+
+[dependencies]

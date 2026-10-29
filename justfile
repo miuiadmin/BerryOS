@@ -421,6 +421,10 @@ test-host:
     # C-4：berry-complete（bsh Tab 补全纯函数面——token 切分四形/前缀
     # 匹配唯一·多候选·零命中/排序去重/列示字节，host 10 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-complete --target {{host}}
+    # A2-1：berry-poll（多路等待聚合器纯函数面——wait_many n≤16 翻越：
+    # 批切分 + poll-first 收割到干 + 分段阻塞轮转 + LT/非阻塞/唤醒三免费
+    # 语义，host 13 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-poll --target {{host}}
     # GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数面——V-6 刀 2
     # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
     # 渲染/滚动/格式打包，host 28 测）。
