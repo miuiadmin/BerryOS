@@ -56,6 +56,9 @@ pub const O_RDWR: c_int = 2;
 pub const O_CREAT: c_int = 0o100;
 pub const O_EXCL: c_int = 0o200;
 pub const O_TRUNC: c_int = 0o1000;
+/// fd 旗位（非 open-only）：fcntl F_GETFL/F_SETFL 面——A3-1 起 socket fd
+/// 消费（net.rs 旗投影）；open 路径 v1 忽略此位（fs 无非阻塞面）。
+pub const O_NONBLOCK: c_int = 0o4000;
 
 /// `*at` 族的「相对 cwd」哨兵（std 的调用面恒传它）。
 pub const AT_FDCWD: c_int = -100;

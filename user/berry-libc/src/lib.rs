@@ -44,6 +44,7 @@ pub mod crt0;
 pub mod fs;
 pub mod futex;
 pub mod io;
+pub mod net;
 pub mod pthread;
 pub mod stubs;
 pub mod strmem;
@@ -103,9 +104,21 @@ pub const ETIMEDOUT: c_int = 110;
 /// fsxattr 白名单只吞 95，38(ENOSYS) 会向 uu_cp -a/--preserve=xattr
 /// 传播，对抗审查实抓）。
 pub const ENOTSUP: c_int = 95;
+/// socket 域执法三档（A3-1，musl/Linux 数值面； berry-fsclient
+/// `SockDomErr` → errno 的映射面随 A3-2 socket() 转真刀接线）。
+pub const EPROTONOSUPPORT: c_int = 93;
+pub const ESOCKTNOSUPPORT: c_int = 94;
+pub const EAFNOSUPPORT: c_int = 97;
 
 // EAI_*（getaddrinfo 直接返回，非 errno）
 pub const EAI_NONAME: c_int = -2;
+/// A3-1：hints family 非 {AF_INET, 0}（musl 同值）。
+pub const EAI_FAMILY: c_int = -5;
+/// A3-1：service 非数字端口 / socktype 不支持（musl 对不支持 socktype
+/// 用此码，musl 同值）。
+pub const EAI_SERVICE: c_int = -8;
+/// A3-1：malloc 失败档（musl 同值）。
+pub const EAI_MEMORY: c_int = -10;
 
 /// musl `FILE`（布局是 shim 私有：全部 FILE 消费者——fileno/fwrite/fprintf
 /// ——都是本 crate 的定义，不与真 musl 互操作）。

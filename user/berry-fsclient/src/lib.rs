@@ -296,6 +296,180 @@ impl AliasTable {
     }
 }
 
+// —— socket 表（A3-1：POSIX socket fd 面，docs/事件循环A3设计草案.md
+//    §3.1——fd↔netd 会话映射的宿主表）——
+
+/// socket fd 段基址：15 起。别名/fs 段扫描上界 = `FD_BASE + (FD_MAX +
+/// ALIAS_MAX)` = 15（排他——`AliasTable::alloc` 的 hi 与 fcntl F_DUPFD
+/// 的 ceiling 同源），socket 段与之结构性无碰撞（下方 const 断言钉板：
+/// 两表独立演化时编译期执法，草案 §5 号段膨胀防线）。
+pub const SOCK_FD_BASE: i32 = 15;
+/// socket 表容量（8 槽 fd 15..=22）：与 netdproto `TCP_SESSIONS_MAX=8`
+/// 同源单一定值（A3-2 接 RPC 面时补 libc→netdproto 依赖 + const 断言钉
+/// 同源关系——依赖随该刀加，本刀注释注记，FD_MAX↔FILE_COUNT_MAX 注释
+/// 先例）；满表 = EMFILE 面。
+pub const SOCK_FD_MAX: usize = 8;
+
+/// 段免疫钉板：fs/别名段扫描上界 ≤ socket 段基址（草案 §5）。
+const _: () = assert!(FD_BASE + (FD_MAX + ALIAS_MAX) as i32 <= SOCK_FD_BASE);
+
+/// AF_INET（`sys/socket.h` 定值——socket() 域执法消费面）。
+pub const AF_INET: i32 = 2;
+/// SOCK_STREAM（同上）。
+pub const SOCK_STREAM: i32 = 1;
+/// IPPROTO_TCP（`netinet/in.h` 定值；协议 0 = 默认 = STREAM 上即 TCP）。
+pub const IPPROTO_TCP: i32 = 6;
+
+/// socket() 域执法错误面（errno 整型映射归 libc——协议面错误与 errno
+/// 是两层，FsErr/st_to_err 同先例）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SockDomErr {
+    /// af 非 AF_INET → EAFNOSUPPORT。
+    Af,
+    /// type 非 SOCK_STREAM → ESOCKTNOSUPPORT。
+    Type,
+    /// proto ∉ {0, IPPROTO_TCP} → EPROTONOSUPPORT。
+    Proto,
+}
+
+/// socket(af, ty, proto) 域执法：v1 只收 AF_INET + SOCK_STREAM + proto
+/// ∈ {0, IPPROTO_TCP}（AF_INET+DGRAM/UDP、raw、UNIX 面 v1 不做——草案
+/// §5「不做什么」；POSIX 语义 proto=0 = 默认协议）。域外 → 对应错误档。
+pub fn sock_domain_err(af: i32, ty: i32, proto: i32) -> Result<(), SockDomErr> {
+    if af != AF_INET {
+        return Err(SockDomErr::Af);
+    }
+    if ty != SOCK_STREAM {
+        return Err(SockDomErr::Type);
+    }
+    if proto != 0 && proto != IPPROTO_TCP {
+        return Err(SockDomErr::Proto);
+    }
+    Ok(())
+}
+
+/// socket 表项生命周期（草案 §3.1 四态）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SockKind {
+    /// socket() 已建未连（connect 前，sid=0）。
+    Unconnected,
+    /// connect 完成（TCP 客户端会话）。
+    Client,
+    /// bind+listen 完成（sid = listen 会话）。
+    Listen,
+    /// accept 产出（服务端数据会话）。
+    Server,
+}
+
+/// socket fd 表项（值语义 Copy）：fd↔sid 映射 + F_SETFL 非阻塞旗 +
+/// 本地端口记账（bind/listen 面——netdproto LISTEN 自带 port，bind 与
+/// listen 拆 POSIX 面、合 RPC 面，草案 §3.2）。sid = netd 会话 id
+/// （槽号+1，0 = 「无会话」哨兵——netdproto 同源口径）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SockEntry {
+    pub kind: SockKind,
+    pub port: u16,
+    pub sid: u32,
+    /// O_NONBLOCK 旗（fcntl F_SETFL 面投影，libc net.rs 消费）。
+    pub nonblock: bool,
+}
+
+/// socket fd 表（libc 侧静态实例，单线程根基同 FdTable）：`None` 槽 =
+/// 空。fd = `SOCK_FD_BASE + 槽号`（15..=22）。
+pub struct SocketTable {
+    slots: [Option<SockEntry>; SOCK_FD_MAX],
+}
+
+impl SocketTable {
+    pub const fn new() -> Self {
+        Self {
+            slots: [None; SOCK_FD_MAX],
+        }
+    }
+
+    /// 最低空位安装 → fd（15..=22）；满表 = None（EMFILE 面）。表项由
+    /// 调用方按生命周期阶段构造（get_mut 状态迁移面）。
+    pub fn alloc(&mut self, e: SockEntry) -> Option<i32> {
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if s.is_none() {
+                *s = Some(e);
+                return Some(SOCK_FD_BASE + i as i32);
+            }
+        }
+        None
+    }
+
+    pub fn get(&self, fd: i32) -> Option<&SockEntry> {
+        self.index(fd).and_then(|i| self.slots[i].as_ref())
+    }
+
+    pub fn get_mut(&mut self, fd: i32) -> Option<&mut SockEntry> {
+        match self.index(fd) {
+            Some(i) => self.slots[i].as_mut(),
+            None => None,
+        }
+    }
+
+    /// 摘除并归还表项（close 面）：None = 不在册（fd 越段/空槽——EBADF
+    /// 面）。
+    pub fn take(&mut self, fd: i32) -> Option<SockEntry> {
+        match self.index(fd) {
+            Some(i) => self.slots[i].take(),
+            None => None,
+        }
+    }
+
+    fn index(&self, fd: i32) -> Option<usize> {
+        if fd < SOCK_FD_BASE {
+            return None;
+        }
+        let i = (fd - SOCK_FD_BASE) as usize;
+        (i < SOCK_FD_MAX).then_some(i)
+    }
+}
+
+/// 点分四段 IPv4 字面量解析（getaddrinfo IP 字面量档的地基，草案 §3.3
+/// ——musl 语义：字面量自消化不走 DNS）。严格面 = inet_pton 口径：恰四
+/// 段、每段 1-3 位 ASCII 十进制、值 0-255；前导零按十进制（"01"=1）。
+/// 返回**主机序** u32（a.b.c.d → a<<24|b<<16|c<<8|d；网络序转换 =
+/// htonl/htons 族，libc net.rs 消费面）。None = 非字面量（调用方
+/// EAI_NONAME 面）。
+pub fn parse_ipv4(s: &[u8]) -> Option<u32> {
+    let mut octets = [0u8; 4];
+    let mut seg = 0usize;
+    let mut cur: u16 = 0;
+    let mut cur_len = 0usize;
+    for &c in s {
+        if c == b'.' {
+            if seg == 3 || cur_len == 0 || cur > 255 {
+                return None;
+            }
+            octets[seg] = cur as u8;
+            seg += 1;
+            cur = 0;
+            cur_len = 0;
+        } else if c.is_ascii_digit() {
+            cur_len += 1;
+            if cur_len > 3 {
+                return None;
+            }
+            cur = cur * 10 + u16::from(c - b'0');
+        } else {
+            return None;
+        }
+    }
+    if seg != 3 || cur_len == 0 || cur > 255 {
+        return None;
+    }
+    octets[3] = cur as u8;
+    Some(
+        (u32::from(octets[0]) << 24)
+            | (u32::from(octets[1]) << 16)
+            | (u32::from(octets[2]) << 8)
+            | u32::from(octets[3]),
+    )
+}
+
 // —— 游标数学（lseek 面）——
 
 pub const SEEK_SET: i32 = 0;
@@ -783,5 +957,178 @@ mod tests {
         assert_eq!(st_to_err(0), FsErr::Rpc); // ST_OK 不走此面（调用方先检）
         assert_eq!(st_to_err(6), FsErr::Rpc);
         assert_eq!(st_to_err(0xff), FsErr::Rpc);
+    }
+
+    // —— SocketTable + 域执法 + parse_ipv4（A3-1）——
+
+    fn sock() -> SockEntry {
+        SockEntry {
+            kind: SockKind::Unconnected,
+            port: 0,
+            sid: 0,
+            nonblock: false,
+        }
+    }
+
+    #[test]
+    fn sock_segment_immune_to_alias_span() {
+        // 模块级 const 断言的运行期镜像（数值关系可读钉板）：socket 段
+        // 基 ≥ fs/别名段扫描上界（AliasTable::alloc 的 hi / fcntl F_DUPFD
+        // ceiling 同源）；段形 = 15..=22 排他上界 23。
+        assert!(SOCK_FD_BASE >= FD_BASE + (FD_MAX + ALIAS_MAX) as i32);
+        assert_eq!(SOCK_FD_BASE, 15);
+        assert_eq!(SOCK_FD_BASE + SOCK_FD_MAX as i32, 23);
+    }
+
+    #[test]
+    fn sock_domain_gate() {
+        // proto 0（默认）与 IPPROTO_TCP 双过档。
+        assert_eq!(sock_domain_err(AF_INET, SOCK_STREAM, 0), Ok(()));
+        assert_eq!(sock_domain_err(AF_INET, SOCK_STREAM, IPPROTO_TCP), Ok(()));
+        // AF_INET6(10)/AF_UNIX(1) → Af；SOCK_DGRAM(2) → Type；
+        // IPPROTO_UDP(17) → Proto（执法序：af 先于 ty 先于 proto）。
+        assert_eq!(sock_domain_err(10, SOCK_STREAM, 0), Err(SockDomErr::Af));
+        assert_eq!(sock_domain_err(1, SOCK_STREAM, 0), Err(SockDomErr::Af));
+        assert_eq!(sock_domain_err(AF_INET, 2, 0), Err(SockDomErr::Type));
+        assert_eq!(
+            sock_domain_err(AF_INET, SOCK_STREAM, 17),
+            Err(SockDomErr::Proto)
+        );
+        // af+ty 双错：af 先报。
+        assert_eq!(sock_domain_err(1, 2, 17), Err(SockDomErr::Af));
+    }
+
+    #[test]
+    fn sock_alloc_lowest_first_and_reuse() {
+        let mut t = SocketTable::new();
+        assert_eq!(t.alloc(sock()), Some(15));
+        assert_eq!(t.alloc(sock()), Some(16));
+        assert!(t.take(15).is_some());
+        // POSIX 最低空位：15 先于 17 回填。
+        assert_eq!(t.alloc(sock()), Some(15));
+    }
+
+    #[test]
+    fn sock_alloc_full_is_emfile_face() {
+        let mut t = SocketTable::new();
+        for i in 0..SOCK_FD_MAX {
+            assert_eq!(t.alloc(sock()), Some(SOCK_FD_BASE + i as i32));
+        }
+        assert_eq!(t.alloc(sock()), None);
+    }
+
+    #[test]
+    fn sock_index_segment_boundaries() {
+        let mut t = SocketTable::new();
+        assert_eq!(t.alloc(sock()), Some(15));
+        // 14 = 别名段顶（socket 段前一）不在册；15 在册；22 空槽（在段
+        // 但 None）；23 越段。
+        for fd in [14, 0, 3, 10, 11, 22, 23, -1, 99] {
+            assert_eq!(t.get(fd), None, "fd={}", fd);
+        }
+        assert!(t.get(15).is_some());
+        assert_eq!(t.take(14), None);
+        assert_eq!(t.take(23), None);
+    }
+
+    #[test]
+    fn sock_lifecycle_state_transitions() {
+        // 生命周期模拟：socket(Unconnected,sid=0) → connect → Client(sid=3)
+        // → nonblock 翻转 → close take 归还。Listen 形态另验。
+        let mut t = SocketTable::new();
+        let fd = t.alloc(sock()).unwrap();
+        {
+            let e = t.get_mut(fd).unwrap();
+            assert_eq!((e.kind, e.sid), (SockKind::Unconnected, 0));
+            e.kind = SockKind::Client;
+            e.sid = 3;
+            e.nonblock = true;
+        }
+        let e = t.get(fd).unwrap();
+        assert_eq!(
+            (*e, e.port),
+            (
+                SockEntry {
+                    kind: SockKind::Client,
+                    port: 0,
+                    sid: 3,
+                    nonblock: true,
+                },
+                0
+            )
+        );
+        let closed = t.take(fd).unwrap();
+        assert_eq!((closed.kind, closed.sid), (SockKind::Client, 3));
+        assert!(closed.nonblock);
+    }
+
+    #[test]
+    fn sock_listen_entry_shape() {
+        let mut t = SocketTable::new();
+        let fd = t
+            .alloc(SockEntry {
+                kind: SockKind::Listen,
+                port: 18082,
+                sid: 1,
+                nonblock: false,
+            })
+            .unwrap();
+        assert_eq!(
+            t.get(fd),
+            Some(&SockEntry {
+                kind: SockKind::Listen,
+                port: 18082,
+                sid: 1,
+                nonblock: false,
+            })
+        );
+    }
+
+    #[test]
+    fn sock_take_twice_is_none() {
+        let mut t = SocketTable::new();
+        let fd = t.alloc(sock()).unwrap();
+        assert!(t.take(fd).is_some());
+        assert_eq!(t.take(fd), None); // 二次 close = EBADF 面
+    }
+
+    #[test]
+    fn parse_ipv4_canonical() {
+        assert_eq!(parse_ipv4(b"127.0.0.1"), Some(0x7f00_0001));
+        assert_eq!(parse_ipv4(b"0.0.0.0"), Some(0));
+        assert_eq!(parse_ipv4(b"255.255.255.255"), Some(0xffff_ffff));
+        assert_eq!(parse_ipv4(b"255.0.255.0"), Some(0xff00_ff00));
+        assert_eq!(parse_ipv4(b"10.0.2.2"), Some(0x0a00_0202)); // SLIRP 网关
+        assert_eq!(parse_ipv4(b"192.168.1.1"), Some(0xc0a8_0101));
+    }
+
+    #[test]
+    fn parse_ipv4_leading_zeros_decimal() {
+        // inet_pton/strtoul 十进制口径："01"=1 非八进制。
+        assert_eq!(parse_ipv4(b"01.2.3.04"), Some(0x0102_0304));
+        assert_eq!(parse_ipv4(b"00.0.0.0"), Some(0));
+    }
+
+    #[test]
+    fn parse_ipv4_rejects_malformed() {
+        for s in [
+            &b""[..],
+            b"1.2.3",
+            b"1.2.3.4.5",
+            b"1..2.3",
+            b"1.2.3.",
+            b".1.2.3",
+            b".",
+            b"256.1.1.1",
+            b"1.2.3.999",
+            b"1234.1.1.1",
+            b"1.2.3.a",
+            b"0x1.2.3.4",
+            b"1.2.3.4\n",
+            b" 1.2.3.4",
+            b"1.2.3.4.",
+        ] {
+            assert_eq!(parse_ipv4(s), None, "s={:?}", core::str::from_utf8(s));
+        }
     }
 }

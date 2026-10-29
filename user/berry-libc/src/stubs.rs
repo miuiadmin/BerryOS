@@ -135,9 +135,43 @@ pub extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
     }
     if crate::fs::fd_valid(fd) {
         crate::set_errno(crate::ENOSYS);
-    } else {
-        crate::set_errno(crate::EBADF);
+        return -1;
     }
+    // socket fd 腿（A3-1，net.rs）：fs miss 后查 socket 表（15..=22 段）。
+    // F_GETFL(3)/F_SETFL(4) → 旗投影（O_RDWR | O_NONBLOCK——读写两用 +
+    // 非阻塞旗，只认 O_NONBLOCK 一位写）；dup 族 → ENOSYS（**同 fs 在册
+    // 口径**——dup socket v1 明弃，草案 §5）；其余 cmd → EINVAL。console/
+    // fs 既有面零漂移（socket 段 fd 此前全走 EBADF；socket() 本身 A3-2
+    // 才转真——本腿 = 表先立、执法面先行）。
+    if crate::net::sock_valid(fd) {
+        const F_GETFL: c_int = 3;
+        const F_SETFL: c_int = 4;
+        if cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC {
+            crate::set_errno(crate::ENOSYS);
+            return -1;
+        }
+        if cmd == F_GETFL {
+            return match crate::net::sock_getfl(fd) {
+                Some(fl) => fl,
+                None => {
+                    crate::set_errno(crate::EBADF);
+                    -1
+                }
+            };
+        }
+        if cmd == F_SETFL {
+            return match crate::net::sock_setfl(fd, arg) {
+                Some(()) => 0,
+                None => {
+                    crate::set_errno(crate::EBADF);
+                    -1
+                }
+            };
+        }
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    crate::set_errno(crate::EBADF);
     -1
 }
 
@@ -300,7 +334,8 @@ ok!(
     posix_spawnattr_setflags,
     posix_spawnattr_setpgroup,
     posix_spawnattr_setsigdefault,
-    freeaddrinfo,
+    // A3-1：freeaddrinfo 摘出——真身迁 net.rs（链释放对偶 getaddrinfo 的
+    // malloc 面；ok! 谎报成功版不再合法）。
     // C-2a：fadvise 是建议性接口（消费方对失败零处置义务）——谎报成功
     // 比 ENOSYS 更诚实于语义（「建议被忽略」本就是合法实现档）。
     posix_fadvise,
@@ -762,22 +797,19 @@ pub extern "C" fn __xpg_strerror_r(_errnum: c_int, buf: *mut c_char, buflen: siz
     0
 }
 
-// —— getaddrinfo 族 ——
+// —— getaddrinfo 族（A3-1：真身 = net.rs，IP 字面量档）——
+// getaddrinfo/freeaddrinfo 旧桩已删：net.rs 双 #[no_mangle] 真实现
+// （parse_ipv4 + hints 域检 + malloc 单节点链），此处保留符号指针即可。
 
 #[no_mangle]
-pub extern "C" fn getaddrinfo(
-    _node: *const c_char,
-    _service: *const c_char,
-    _hints: *const c_void,
-    res: *mut *mut c_void,
-) -> c_int {
-    unsafe { *res = ptr::null_mut() };
-    crate::EAI_NONAME
-}
-
-#[no_mangle]
-pub extern "C" fn gai_strerror(_code: c_int) -> *const c_char {
-    let s: &[u8] = b"Name or service not known\0";
+pub extern "C" fn gai_strerror(code: c_int) -> *const c_char {
+    // 返回文案对齐 musl netdb.c 文案面（A3-1 扩三档）。
+    let s: &[u8] = match code {
+        crate::EAI_MEMORY => b"Out of memory\0",
+        crate::EAI_FAMILY => b"Address family not supported\0",
+        crate::EAI_SERVICE => b"Service not supported\0",
+        _ => b"Name or service not known\0",
+    };
     s.as_ptr() as *const c_char
 }
 
