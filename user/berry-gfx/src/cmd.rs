@@ -3,8 +3,10 @@
 //! 几何无关（越界在回放期裁剪），同一列表可对多纹理重放。
 //!
 //! v1 操作集边界（规划钦定最小面，防过度设计）：fill_rect / line /
-//! blit（纹理内区域拷贝）/ glyph-run / present——fbcon 六原语超集 +
-//! 文本位；AA/宽色域/compute/3D 可后补。
+//! blit（纹理内区域拷贝）/ glyph-run / draw_image（段②：单色位图图像/
+//! 图标——与字形同一位法、任意几何；ARGB 彩色面——BYI1 解码产物的
+//! 绘制消费口，A 位 1-bit 透明键）/ present——fbcon 六原语超集 +
+//! 文本/图像位；AA/宽色域/compute/3D 可后补。
 //!
 //! 坐标域：全 i32。[`Rect`] 负宽/负高 = 非法（push 期 loud 拒
 //! [`CmdError::BadRect`]，绝不静默取绝对值）；零宽/零高 = 合法空操作
@@ -67,7 +69,7 @@ pub struct Color {
 
 /// 绘制描述（v1 = 纯色）。**着色器 = 构建产物**（六件套 ③）：API 面
 /// 无运行时编译入口、无着色器源码字符串——渐变/程序化填充等以预编译
-/// 产物 ID 形态在段②+ 入册，不给 JIT 留门。
+/// 产物 ID 形态在后续刀入册，不给 JIT 留门。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaintDesc {
     /// v1 唯一着色参数：纯色。
@@ -116,6 +118,63 @@ impl core::fmt::Debug for GlyphRun<'_> {
     }
 }
 
+/// 图像位来源（段② `DrawImage` 的载荷）：直接位图 或 图标图集槽位。
+///
+/// 位法与字形同一条（[`crate::font::GlyphBits`]：行主序、每行
+/// `(w+7)/8` 字节、MSB = 最左列）——一条位法、两处消费（字形蜂格 /
+/// 任意几何图像）；绘制语义 = 着墨位 fg、零位 bg（`None` = 透明不写）。
+///
+/// Clone/Copy 可派生（位图字段与 `&dyn` 胖引用皆 Copy）；Debug 手写
+/// （`&dyn IconAtlas` 无 Debug 面，概要打印几何/槽位）。
+#[derive(Clone, Copy)]
+pub enum ImageSrc<'a> {
+    /// 直接位图（借用切片随命令表存续——记录/回放自足）。
+    /// **权威构造经 `GlyphBits::new`**；字面构造绕过恰长校验的由
+    /// `Queue::submit` 期 `ImagePixelMismatch` 硬门拦截（先验后写）。
+    Bits(crate::font::GlyphBits<'a>),
+    /// 图标图集槽位：回放期经 [`crate::icon::IconAtlas`] 解析（LRU
+    /// 碰热经内部可变性——共享引用即查询）。缺图标（`icon()==None`）
+    /// = 整命令 no-op（稀疏表合法形态，见 icon.rs 头注）。
+    Icon {
+        atlas: &'a dyn crate::icon::IconAtlas,
+        id: crate::icon::IconId,
+    },
+    /// ARGB 彩色位图（段② 数据面的绘制消费口——[`crate::icon::decode`]
+    /// 产物同序直用，零转换接驳）：`px` = `0xAARRGGBB` row-major 借用
+    /// 切片，`px.len()` 必须 `== w*h`（submit 期恰长硬门同 [`ImageSrc::Bits`]
+    /// ——`ImagePixelMismatch`）。
+    ///
+    /// **A 位 = 1-bit 透明键**：`A==0` 跳过不写（透明）、`A!=0` 一律
+    /// 不透明覆盖 RGB——这不是 blend（半透明混合留位；与 mono 面
+    /// `bg=None` 透明底同族先例）。[`Cmd::DrawImage`] 的 `fg/bg` 参数
+    /// 对本变体不适用（像素自带色，绘制忽略）。
+    Argb {
+        w: u32,
+        h: u32,
+        px: &'a [u32],
+    },
+}
+
+impl core::fmt::Debug for ImageSrc<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ImageSrc::Bits(b) => f
+                .debug_struct("ImageSrc::Bits")
+                .field("w", &b.w)
+                .field("h", &b.h)
+                .field("rows", &b.rows.len())
+                .finish(),
+            ImageSrc::Icon { id, .. } => f.debug_tuple("ImageSrc::Icon").field(id).finish(),
+            ImageSrc::Argb { w, h, px } => f
+                .debug_struct("ImageSrc::Argb")
+                .field("w", w)
+                .field("h", h)
+                .field("px", &px.len())
+                .finish(),
+        }
+    }
+}
+
 /// 显示列表命令（v1 操作集——见模块头边界）。
 #[derive(Debug, Clone, Copy)]
 pub enum Cmd<'a> {
@@ -141,6 +200,18 @@ pub enum Cmd<'a> {
     Blit { src: Rect, dst_x: i32, dst_y: i32 },
     /// glyph-run 绘制（缺字形 → 全零位图 = 空格语义，fbcon 同形）。
     DrawGlyphRun { run: GlyphRun<'a> },
+    /// 位图图像绘制（段②）：`src` 位图画到 `(x,y)`，出界裁剪。两族
+    /// 语义按变体分派：单色面（`Bits`/`Icon`）走 `raster::mono_blit`
+    /// 共核——着墨位 fg、零位 bg（`None` = 透明不写），像素语义与
+    /// glyph-run 同一条；ARGB 面（`Argb`）走 `raster::argb_blit`——
+    /// 像素自带色，`fg/bg` 不适用（A 位 1-bit 透明键，见变体注）。
+    DrawImage {
+        src: ImageSrc<'a>,
+        x: i32,
+        y: i32,
+        fg: Color,
+        bg: Option<Color>,
+    },
     /// 呈现（**flip 留位**）：soft 后端 = no-op——命令直接写进目标
     /// 缓冲，整帧已直写，无可「翻」；真后端（双缓冲/virtio-gpu）在此
     /// 承接页翻转/提交，`rect` = 损伤区提示。
@@ -250,6 +321,19 @@ impl<'a> CommandEncoder<'a> {
         self.record(Cmd::DrawGlyphRun { run })
     }
 
+    /// 单色位图图像绘制（段②）。位图几何的恰长先验在 submit 期硬门
+    /// （`ImageSrc::Bits` 字面构造面）；此处无矩形可先验（出界裁剪）。
+    pub fn draw_image(
+        &mut self,
+        src: ImageSrc<'a>,
+        x: i32,
+        y: i32,
+        fg: Color,
+        bg: Option<Color>,
+    ) -> Result<(), CmdError> {
+        self.record(Cmd::DrawImage { src, x, y, fg, bg })
+    }
+
     /// 呈现（soft no-op / flip 留位）。
     pub fn present(&mut self, rect: Rect) -> Result<(), CmdError> {
         self.record(Cmd::Present { rect })
@@ -273,7 +357,7 @@ fn rect_of<'a>(cmd: &'a Cmd<'_>) -> Option<&'a Rect> {
         Cmd::FillRect { rect, .. } => Some(rect),
         Cmd::Blit { src, .. } => Some(src),
         Cmd::Present { rect } => Some(rect),
-        Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } => None,
+        Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } | Cmd::DrawImage { .. } => None,
     }
 }
 

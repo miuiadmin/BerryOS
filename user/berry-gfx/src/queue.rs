@@ -1,17 +1,18 @@
 //! 命令队列（六件套的回放半边）：[`Queue::submit`] = soft 光栅核的
 //! 唯一执行入口——把 pass 当**屏障照跑**（语义不特化，六件套 ①纪律）：
 //!
-//! 1. **先验后写**：缓冲长度 / dirty 合法性 / blit 源界三道拒面全过
-//!    才动笔（出错零半执行面——目标缓冲不留半个 pass 的笔迹）；
+//! 1. **先验后写**：缓冲长度 / dirty 合法性 / blit 源界 / 图像位恰长
+//!    四道拒面全过才动笔（出错零半执行面——目标缓冲不留半个 pass 的
+//!    笔迹）；
 //! 2. `load_op`（Clear 只铺 dirty ∩ 纹理界；Load 不动）；
 //! 3. 逐命令回放（全部裁剪到 纹理界 ∩ dirty 区——dirty 区外结构性
 //!    不可触碰）；
 //! 4. `Present` no-op（soft = 整帧已直写；flip 留位）。
 //!
 //! v1 soft 单队列零内态（`Queue` 单元结构——API 形态锚点）；真后端
-//! （virtio-gpu）双队列/异步提交留段②+，接口面不变。
+//! （virtio-gpu）双队列/异步提交留后续刀，接口面不变。
 
-use crate::cmd::{Cmd, DisplayList, Rect};
+use crate::cmd::{Cmd, DisplayList, ImageSrc, Rect};
 use crate::color::{DescError, TextureDesc};
 use crate::pass::{LoadOp, PassDescriptor};
 use crate::raster;
@@ -27,6 +28,13 @@ pub enum SubmitError {
     /// Blit 源区越纹理界（`index` = 命令序号）。源区必须**整区**在界内
     /// ——半出界裁剪源 = 静默改语义，禁；零尺寸源恒放行（空操作）。
     BlitSrcOutOfBounds { index: usize },
+    /// DrawImage 位图畸形（`index` = 命令序号）。两族恰长铁律：
+    /// `ImageSrc::Bits` 字面构造绕过 `GlyphBits::new` 的，`rows.len() !=
+    /// h * 行字节`（短行 = 越界位静默错位、长行 = 尾字节静默丢弃）；
+    /// `ImageSrc::Argb` 的 `px.len() != w*h`（同族先验——短切片缺像素、
+    /// 长切片尾随静默丢，两者都禁）。图标槽位面不在此门（实现契约 +
+    /// `bit()`/`get()` 防御采样兜）。
+    ImagePixelMismatch { index: usize },
 }
 
 /// 命令队列（soft 后端：submit = 同步整列表回放，无内态）。
@@ -46,7 +54,7 @@ impl Queue {
         desc: &TextureDesc,
         pass: &PassDescriptor,
     ) -> Result<(), SubmitError> {
-        // —— 先验后写：三道拒面（零半执行面）——
+        // —— 先验后写：四道拒面（零半执行面）——
         // 第四拒面：check_buf 只可能返 BufferTooSmall（其余变体在
         // TextureDesc::new 构造期已拦，字段私有不可绕）。
         if let Err(DescError::BufferTooSmall { need, got }) = desc.check_buf(target.len()) {
@@ -58,10 +66,31 @@ impl Queue {
             }
         }
         for (i, cmd) in dl.iter().enumerate() {
-            if let Cmd::Blit { src, .. } = cmd {
-                if !blit_src_in_frame(src, desc) {
-                    return Err(SubmitError::BlitSrcOutOfBounds { index: i });
+            match cmd {
+                Cmd::Blit { src, .. } => {
+                    if !blit_src_in_frame(src, desc) {
+                        return Err(SubmitError::BlitSrcOutOfBounds { index: i });
+                    }
                 }
+                // 图像位恰长硬门：Bits 面 = 行字节公式（行字节公式单一
+                // 事实源 = GlyphBits::row_bytes——与构造口同一算式，两处
+                // 手写必漂，恰长门与权威门执法的必须是同一条律）；Argb
+                // 面 = px.len() == w*h（u64 中转——u32×u32 恒可算，巨参
+                // 手搓在乘法上无溢出假象）。图标槽位面不在此门（实现
+                // 契约 + `bit()` 防御采样兜）。
+                Cmd::DrawImage { src: ImageSrc::Bits(b), .. } => {
+                    let expect = b.row_bytes().checked_mul(b.h);
+                    if !matches!(expect, Some(n) if n == b.rows.len()) {
+                        return Err(SubmitError::ImagePixelMismatch { index: i });
+                    }
+                }
+                Cmd::DrawImage { src: ImageSrc::Argb { w, h, px }, .. } => {
+                    if (*w as u64) * (*h as u64) != px.len() as u64 {
+                        return Err(SubmitError::ImagePixelMismatch { index: i });
+                    }
+                }
+                Cmd::DrawImage { .. } => {}
+                _ => {}
             }
         }
 
@@ -112,7 +141,7 @@ mod tests {
     use super::*;
     use crate::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun};
     use crate::color::TextureFormat;
-    use crate::font::{FontAtlas8x16, GlyphAtlas};
+    use crate::font::{FontAtlas8x16, GlyphAtlas, GlyphBits};
     use crate::pass::StoreOp;
 
     /// 测试常备几何：16×16、stride=64（无 padding 的最小帧）。
@@ -382,11 +411,17 @@ mod tests {
         ch: u8,
     }
     impl GlyphAtlas for FakeAtlas {
-        fn glyph(&self, ch: u8) -> Option<&[u8; 16]> {
+        fn cell_w(&self) -> usize {
+            8
+        }
+        fn cell_h(&self) -> usize {
+            16
+        }
+        fn glyph(&self, ch: u8) -> Option<GlyphBits<'_>> {
             const G: [u8; 16] = [
                 0x80, 0x01, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ];
-            (ch == self.ch).then_some(&G)
+            (ch == self.ch).then_some(GlyphBits { w: 8, h: 16, rows: &G })
         }
     }
 

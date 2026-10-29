@@ -2,7 +2,7 @@
 //! 与 berry-fbcon `render::PixelFormat` 逐位同源（GOP 原值口径——
 //! handoff `gop_info` 透传零翻译层）；[`TextureDesc`] 是 soft 光栅核的
 //! 全部几何事实（w/h/stride/格式，不持缓冲——缓冲由
-//! `Queue::submit` 按借用递送，VMO-backed 留位段②+）。
+//! `Queue::submit` 按借用递送，VMO-backed 留位后续刀）。
 //!
 //! 拒面四条照抄 fbcon `Fbcon::new`（w<8 / h<16 / stride<w*4 / 缓冲长度
 //! 不足，乘加全 checked——「永不 panic」的库内版，敌意巨参溢出面同样

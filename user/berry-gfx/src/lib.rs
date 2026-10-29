@@ -19,8 +19,9 @@
 //!
 //! # v1 操作集边界（规划钦定最小面，防过度设计）
 //!
-//! fill_rect / line / blit（纹理内区域拷贝）/ glyph-run / present——
-//! fbcon 六原语超集 + 文本位；AA/宽色域/compute/3D 可后补。像素语义
+//! fill_rect / line / blit（纹理内区域拷贝）/ glyph-run / draw_image
+//! （段②：单色位图图像/图标——与字形同一位法）/ present——fbcon 六
+//! 原语超集 + 文本/图像位；AA/宽色域/compute/3D 可后补。像素语义
 //! 与 berry-fbcon `render.rs` 共识契约逐位同（u32 小端 `to_le_bytes`
 //! 落盘 / glyph MSB=最左列 / stride 行尾 padding 永不写），glyph 路径
 //! host 测试对 fbcon 蜂格路径逐字节对拍（两套独立代码、像素必同）。
@@ -28,23 +29,35 @@
 //! # 内存纪律
 //!
 //! 全库零 alloc no_std：纹理 = 调用方供 `&mut [u8]` 借用（VMO-backed
-//! 留位段②+），命令表 = 定容数组（满 → loud `Err`，绝不静默丢）。
-//! 拒面全 loud：非法参数/容量满/缓冲不足/坏矩形一律 `Err`（自定义
-//! 错误类型），绝不 panic、绝不静默改语义；坐标乘加全 checked 或
-//! 先验界内再算（敌意巨参不炸）。
+//! 纹理留位后续刀——缓冲的 VMO 借用面随真后端/首个 guest 消费者定
+//! 形），命令表 = 定容数组（满 → loud `Err`，绝不静默丢）。
+//! 拒面全 loud：非法参数/容量满/缓冲不足/坏矩形/图像位畸形一律 `Err`
+//! （自定义错误类型），绝不 panic、绝不静默改语义；坐标乘加全 checked
+//! 或先验界内再算（敌意巨参不炸）。LRU（[`lru`]）= `Cell` 内部可变性
+//! 单线程语境（`&dyn` 图集查询碰热——见模块头）。
 //!
-//! # 段②留位清单（本刀不做）
+//! # 段② 已落 / 留位清单
 //!
-//! genfbfont 多字号（[`font::FontSize`] 占位）、图标格式 + LRU 图集、
-//! S2' icount 定标、berry-guiproto（submit/damage/frame_callback/vote
-//! 归 proto 层——定形锚点留给真正的首个消费者）、guest gfxdemo +
-//! smoke 标记、双后端（soft ↔ virtio-gpu 共识）。
+//! 段② 本刀已落：genfbfont 三档多字号（[`font`]——1x/2x/3x 静态图集 +
+//! NN 放大共识测试）、图标格式 + ARGB 解码 + LRU 图集（[`icon`] BYI1
+//! `decode` 数据面 / [`icon`]/[`lru`] 图集面）、`draw_image` 命令面
+//! （[`cmd::ImageSrc`]——mono 位图/图标槽位 + **ARGB 彩色面**：解码
+//! 产物绘制消费口 [`cmd::ImageSrc::Argb`]，A 位 1-bit 透明键，无
+//! blend）。仍留位（本刀不做）：S2' icount 定标、
+//! berry-guiproto（submit/damage/frame_callback/vote 归 proto 层——
+//! 定形锚点留给真正的首个消费者）、guest gfxdemo + smoke 标记、双后端
+//! （soft ↔ virtio-gpu 共识）、**VMO-backed 纹理**（纹理缓冲的 VMO 借
+//! 用面——guest 侧 fb/VMO 映射的接驳口，随真后端/首个消费者定形）、
+//! 半透明真 blend（ARGB 面 A 位目前只做 1-bit 透明键——`A==0` 跳过 /
+//! `A!=0` 不透明覆盖，混合语义随真后端定形）。
 #![cfg_attr(not(test), no_std)]
 
 pub mod caps;
 pub mod color;
 pub mod cmd;
 pub mod font;
+pub mod icon;
+pub mod lru;
 pub mod pass;
 pub mod queue;
 mod raster;

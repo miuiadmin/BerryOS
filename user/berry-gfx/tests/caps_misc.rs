@@ -6,7 +6,7 @@ use berry_fbcon::render::{Fbcon, PixelFormat};
 use berry_gfx::caps::{Device, FormatCaps, Msaa};
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, Rect};
 use berry_gfx::color::{TextureDesc, TextureFormat};
-use berry_gfx::font::FontAtlas8x16;
+use berry_gfx::font::{FontAtlas8x16, GlyphAtlas, GlyphBits};
 use berry_gfx::pass::PassDescriptor;
 use berry_gfx::queue::Queue;
 
@@ -90,6 +90,18 @@ fn missing_glyph_blank_consensus() {
     }
 }
 
+// —— max_texture_extent 定值钉板（段② 新增能力位）——
+//
+// 值 = 8192/u32：**承诺地板**（WebGPU spec 默认 limits
+// `maxTextureDimension2D`——Dawn 最低特性集同款；Caps 报承诺不报余量，
+// 见 caps.rs 字注）。soft 实际几何界（i32 坐标域——`DescError::TooLarge`
+// 构造期执法）比承诺宽——「承诺 vs 余量」两层界的对偶验收在
+// tests/images.rs `caps_max_texture_extent_promise_vs_headroom`。
+#[test]
+fn caps_max_texture_extent_pinned() {
+    assert_eq!(Device::new().caps().max_texture_extent, 8192);
+}
+
 // —— 记录/回放分离：同一 DisplayList 对多纹理重放（多目标 × 多格式）——
 #[test]
 fn display_list_replay_two_targets_and_formats() {
@@ -125,4 +137,54 @@ fn display_list_replay_two_targets_and_formats() {
     // 设计留白，MSB=最左列在此再钉一次）。
     assert_eq!(pxb(&f3, 1, 7), 0x00FF_FFFF);
     assert_eq!(pxb(&f1, 1, 7), 0x00FF_FFFF);
+}
+
+/// 敌意字形图集：cell 几何 usize::MAX（超 i32 域）+ 恒缺字形——咬
+/// `raster::glyph_run` 缺字形分支的巨 cell 夹取（该分支走 `fill_rect`
+/// 面；draw_image→`mono_blit` 路的敌意覆盖在 tests/images.rs，此为
+/// glyph_run 路的对偶——两路防线都要有各自的敌意证词）。
+struct HostileGlyphAtlas;
+impl GlyphAtlas for HostileGlyphAtlas {
+    fn cell_w(&self) -> usize {
+        usize::MAX
+    }
+    fn cell_h(&self) -> usize {
+        usize::MAX
+    }
+    fn glyph(&self, _ch: u8) -> Option<GlyphBits<'static>> {
+        None
+    }
+}
+
+// —— 敌意 cell 几何 × 缺字形：夹取后 ∩ 帧有界、不 panic、bg 恰铺 ——
+//
+// 咬住什么：缺字形分支 `i32::try_from(cell).unwrap_or(i32::MAX)` 的
+// 夹取若无测试咬合，被「优化」成 as-cast（回绕负宽）或 panic 形态都
+// 不会在 draw_image 敌意面显形（那是另一条代码路）。
+#[test]
+fn hostile_glyph_run_missing_glyph_clamps_cell() {
+    let (w, h, stride) = (16usize, 16usize, 64usize);
+    let d = TextureDesc::new(w, h, stride, TextureFormat::Rgbx).unwrap();
+    // 蜂格原点 (10,4)：夹取后 (i32::MAX × i32::MAX) ∩ 16×16 帧 =
+    // [10,16)×[4,16)——缺字形 + bg=Some → 全 bg 空格蜂格（fill_rect 面）。
+    let run = GlyphRun {
+        atlas: &HostileGlyphAtlas,
+        glyphs: &[GlyphPos { ch: b'#', x: 10, y: 4 }],
+        fg: Color { r: 255, g: 255, b: 255 },
+        bg: Some(Color { r: 0, g: 0, b: 255 }),
+    };
+    let mut fb = vec![0xEEu8; d.need_bytes()];
+    let mut enc = CommandEncoder::new();
+    enc.draw_glyph_run(run).unwrap();
+    let dl = enc.finish();
+    Queue::new()
+        .submit(&dl, &mut fb, &d, &PassDescriptor::load())
+        .unwrap();
+    let px = |x: usize, y: usize| u32::from_le_bytes(fb[y * stride + x * 4..y * stride + x * 4 + 4].try_into().unwrap());
+    for y in 0..16 {
+        for x in 0..16 {
+            let expect = if x >= 10 && y >= 4 { 0x0000_00FF } else { 0xEEEE_EEEE };
+            assert_eq!(px(x, y), expect, "@({x},{y})：bg 只铺 [10,16)×[4,16)，区外哨兵不动");
+        }
+    }
 }

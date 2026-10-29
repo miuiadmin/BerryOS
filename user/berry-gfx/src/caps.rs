@@ -1,7 +1,9 @@
 //! 设备能力面（六件套 ② Caps day-one）：「这个后端能给什么」的查询口。
 //! v1 soft 后端定值：blit 支持 / 瞬时附件支持（soft 语义 = 复用调用方
-//! CPU buffer，本就零新分配）/ 无 MSAA / Rgbx+Bgrx 双格式 / 命令表容量
-//! = [`crate::cmd::MAX_CMDS`]（单一事实源引用，防两处漂移）。
+//! CPU buffer，本就零新分配）/ 无 MSAA / Rgbx+Bgrx 双格式 / 纹理单边
+//! 上界 = **8192 承诺地板**（WebGPU spec 默认 limits——见
+//! [`Caps::max_texture_extent`] 字注）/ 命令表容量 = [`crate::cmd::MAX_CMDS`]
+//! （单一事实源引用，防两处漂移）。
 //!
 //! [`Usage::Transient`]（六件套 ⑤）在此占位：transient 显式声明——
 //! soft 路径它只是意图标记，真后端（tile memory 类）才是性能提示。
@@ -61,6 +63,14 @@ pub struct Caps {
     pub msaa: Msaa,
     /// 支持的纹理格式集。
     pub texture_formats: FormatCaps,
+    /// 纹理单边像素上界（w/h 同界）。**报承诺不报余量**（GUI-10 增件⑤）：
+    /// 值 = 8192 —— WebGPU spec 默认 limits `maxTextureDimension2D` 的
+    /// 共同地板（Dawn 最低特性集同款），任何真后端（virtio-gpu 类）都
+    /// 必须兑现的下界承诺；soft 的**实际**几何界是光栅核 i32 坐标域
+    /// （`color::DescError::TooLarge` 构造期执法），比承诺宽得多——那
+    /// 是余量不是承诺，消费侧按 ≤ 8192 编程才跨后端可移植。真后端此处
+    /// 填 `min(硬件/驱动实际限制, 共同地板)`。
+    pub max_texture_extent: u32,
     /// 单显示列表命令容量上界（= [`crate::cmd::MAX_CMDS`]）。
     pub max_cmds: usize,
 }
@@ -84,6 +94,7 @@ impl Device {
             transient_attachments: true,
             msaa: Msaa::None,
             texture_formats: FormatCaps { rgbx: true, bgrx: true },
+            max_texture_extent: 8192,
             max_cmds: crate::cmd::MAX_CMDS,
         }
     }
@@ -116,6 +127,9 @@ mod tests {
         // max_cmds 与命令表容量单一事实源同值（漂移 = 容量谎报）。
         assert_eq!(c.max_cmds, crate::cmd::MAX_CMDS);
         assert!(c.max_cmds > 0);
+        // max_texture_extent = 8192 承诺地板（WebGPU 默认 limits——报
+        // 承诺不报余量，字注详；漂移 = 承诺谎报）。
+        assert_eq!(c.max_texture_extent, 8192);
         // 格式查询谓词双面。
         assert!(c.texture_formats.supports(TextureFormat::Rgbx));
         assert!(c.texture_formats.supports(TextureFormat::Bgrx));

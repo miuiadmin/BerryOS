@@ -4,7 +4,11 @@
 //! - 落盘：u32 小端 `to_le_bytes` 字节拷贝（不赌目标缓冲 4 字节对齐）；
 //! - 寻址：`off = y*stride + x*4`（stride = 行字节数，**行尾 padding
 //!   结构性不可达**——所有写经 [`put_px`] 单口执法）；
-//! - glyph 位序：MSB = 最左列（`bits & (0x80 >> gx)`，fbcon 对偶）；
+//! - glyph 位序：MSB = 最左列（`bits & (0x80 >> gx)`，fbcon 对偶）——
+//!   段② 起经 `GlyphBits::bit` 推广到任意几何（字形蜂格与图像/
+//!   图标位图同一 [`mono_blit`] 共核，一条位法两处消费）；ARGB 面
+//!   经 [`argb_blit`]（BYI1 解码产物消费口——A 位 1-bit 透明键，无
+//!   blend，铁律不破）；
 //! - blit 重叠：**memmove 语义**——逐行 `core::ptr::copy`（行内水平
 //!   重叠安全；`copy_from_slice` 自重叠 = UB，P6 A-7/fbcon 滚动同款
 //!   立法）+ 行序按重叠方向取安全向（dst 整体在 src 下方时自底向上，
@@ -14,8 +18,9 @@
 //! 裁剪纪律：所有写像素裁到 `clip`（= 纹理界 ∩ dirty 区，submit 期
 //! 构造）；[put_px] 对纹理界再直检一次——防御未来调用方传宽松 clip。
 
-use crate::cmd::{Cmd, GlyphRun, Rect};
+use crate::cmd::{Cmd, GlyphRun, ImageSrc, Rect};
 use crate::color::TextureDesc;
+use crate::font::GlyphBits;
 
 /// 命令分派（回放入口——`Queue::submit` 逐命令驱动）。
 pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect) {
@@ -30,6 +35,9 @@ pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect
         }
         Cmd::Blit { src, dst_x, dst_y } => blit(target, desc, src, *dst_x, *dst_y, clip),
         Cmd::DrawGlyphRun { run } => glyph_run(target, desc, run, clip),
+        Cmd::DrawImage { src, x, y, fg, bg } => {
+            draw_image(target, desc, src, *x, *y, *fg, *bg, clip)
+        }
         Cmd::Present { .. } => {
             // soft：整帧已直写，无可「翻」——flip 语义留真后端（双缓冲/
             // virtio-gpu）。此处显式 no-op 而非拒面：Present 是合法命令。
@@ -192,33 +200,163 @@ fn blit(target: &mut [u8], desc: &TextureDesc, src: &Rect, dst_x: i32, dst_y: i3
     }
 }
 
-/// glyph-run：逐字形 8×16 blit。位序/小端/pack 逐位复刻 fbcon
-/// `put_char`（共识契约）；`bg = None` = 透明底——零位不写（区外
-/// 画面穿透），与 fbcon 的不透明衬底形成两档语义。
+/// 单色位图 blit 共核（段②：字形蜂格与任意几何图像同一位法、同一
+/// 执行路）：位图画到 `(dx,dy)`——着墨位 fg、零位 bg（`None` = 透明
+/// 不写，区外画面穿透）。位序 MSB = 最左列（`GlyphBits::bit` 单口执法
+/// ——fbcon 对偶契约的任意几何推广）。
+///
+/// 有界性（敌意几何防线）：迭代以 `dst ∩ clip` 可见窗为界（clip ⊆
+/// 纹理界 ⇒ 窗 ≤ 纹理面——巨位图成本 = 可见面，不是位图面）；巨
+/// w/h 夹到 i32::MAX（域外部分结构性不可见，夹掉零语义损失）；源
+/// 行/列经 `bit()` 防御采样（短行/越界恒 false，绝不 panic）。
+fn mono_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    bits: &GlyphBits<'_>,
+    dx: i32,
+    dy: i32,
+    fg_px: u32,
+    bg_px: Option<u32>,
+    clip: &Rect,
+) {
+    // 巨几何夹取：usize 域外的宽/高只可能画在纹理外（纹理 ≤ i32 域）。
+    let dw = i32::try_from(bits.w).unwrap_or(i32::MAX);
+    let dh = i32::try_from(bits.h).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw, dh).intersect(clip) else {
+        return; // 零尺寸/全出界 = no-op
+    };
+    let (y_end, x_end) = (vis.y.saturating_add(vis.h), vis.x.saturating_add(vis.w));
+    let mut y = vis.y;
+    while y < y_end {
+        // vis ⊆ dst ⇒ 源行 ∈ [0,dh)；usize 直转安全（减法非负——
+        // intersect 的 max(dx,·) 下界保证）。
+        let sy = (y - dy) as usize;
+        let mut x = vis.x;
+        while x < x_end {
+            let on = bits.bit((x - dx) as usize, sy);
+            let px = match (on, bg_px) {
+                (true, _) => fg_px,
+                (false, Some(b)) => b,
+                (false, None) => {
+                    x += 1;
+                    continue; // 透明底：零位不写
+                }
+            };
+            put_px(target, desc, clip, x, y, px);
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+/// glyph-run：逐字形经图集位图走 [`mono_blit`] 共核。几何随图集档位
+/// （8×16 / 16×32 / 24×48——`font` 三档）；位序/小端/pack 逐位复刻
+/// fbcon `put_char`（共识契约，1x 档的等价性由 caps_misc/consensus
+/// 组逐字节对拍钉死）。缺字形 → 空格语义：`bg=Some` 铺整蜂格、
+/// `bg=None` no-op——与「全零位图」逐像素等价（免为任意档几何备静态
+/// 空表），fbcon 同形。
 fn glyph_run(target: &mut [u8], desc: &TextureDesc, run: &GlyphRun, clip: &Rect) {
     let fg_px = desc.format().pack(run.fg.r, run.fg.g, run.fg.b);
     let bg_px = run.bg.map(|c| desc.format().pack(c.r, c.g, c.b));
-    const BLANK: [u8; 16] = [0; 16]; // 缺字形 → 全零位图 = 空格语义（fbcon 同形）
     for p in run.glyphs {
-        let g = run.atlas.glyph(p.ch).unwrap_or(&BLANK);
-        for (gy, &bits) in g.iter().enumerate() {
-            for gx in 0..8usize {
-                let on = bits & (0x80 >> gx) != 0; // MSB = 最左列（fbcon 对偶）
-                let px = match (on, bg_px) {
-                    (true, _) => fg_px,
-                    (false, Some(b)) => b,
-                    (false, None) => continue, // 透明底：零位不写
+        match run.atlas.glyph(p.ch) {
+            Some(bits) => mono_blit(target, desc, &bits, p.x, p.y, fg_px, bg_px, clip),
+            None => {
+                let bg = match bg_px {
+                    Some(b) => b,
+                    None => continue, // 透明底：空格 = 什么也不画
                 };
-                // saturating_add：病态巨坐标不 panic（漂出域即被 put_px 裁）。
-                put_px(
-                    target,
-                    desc,
-                    clip,
-                    p.x.saturating_add(gx as i32),
-                    p.y.saturating_add(gy as i32),
-                    px,
-                );
+                // 巨几何夹取同 mono_blit（防御敌意图集实现）。
+                let cw = i32::try_from(run.atlas.cell_w()).unwrap_or(i32::MAX);
+                let ch = i32::try_from(run.atlas.cell_h()).unwrap_or(i32::MAX);
+                fill_rect(target, desc, &Rect::new(p.x, p.y, cw, ch), bg, clip);
             }
         }
+    }
+}
+
+/// DrawImage 执行臂（段②）：按 `ImageSrc` 变体分派——mono 面
+/// （`Bits` 直接位图 / `Icon` 图标槽位——缺图标 = 整命令 no-op，稀疏
+/// 表合法形态）走 [`mono_blit`] 共核；ARGB 面走 [`argb_blit`]
+/// （`fg/bg` 对该面不适用，忽略）。
+fn draw_image(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    src: &ImageSrc<'_>,
+    x: i32,
+    y: i32,
+    fg: crate::cmd::Color,
+    bg: Option<crate::cmd::Color>,
+    clip: &Rect,
+) {
+    match src {
+        ImageSrc::Bits(b) => {
+            let fg_px = desc.format().pack(fg.r, fg.g, fg.b);
+            let bg_px = bg.map(|c| desc.format().pack(c.r, c.g, c.b));
+            mono_blit(target, desc, b, x, y, fg_px, bg_px, clip);
+        }
+        ImageSrc::Icon { atlas, id } => match atlas.icon(*id) {
+            Some(b) => {
+                let fg_px = desc.format().pack(fg.r, fg.g, fg.b);
+                let bg_px = bg.map(|c| desc.format().pack(c.r, c.g, c.b));
+                mono_blit(target, desc, &b, x, y, fg_px, bg_px, clip);
+            }
+            None => {} // 缺图标 no-op（icon.rs 头注语义）
+        },
+        ImageSrc::Argb { w, h, px } => argb_blit(target, desc, *w, *h, px, x, y, clip),
+    }
+}
+
+/// ARGB 彩色位图 blit（段②：`icon::decode` 产物的绘制消费口）：
+/// `px` = `0xAARRGGBB` row-major 画到 `(dx,dy)`。
+///
+/// **A 位 = 1-bit 透明键**：`A==0` 跳过不写（区外画面穿透——图标
+/// 圆角/异形轮廓的透明底）；`A!=0` 一律不透明覆盖 RGB（`(px>>16)&0xFF`
+/// 等三通道 `pack` 经 [`put_px`] 单口落盘）。**这不是 blend**：无
+/// `src*a+dst*(1-a)` 混合——半透明是留位的真 blend 语义，v1 铁律
+/// 不破；与 mono 面 `bg=None` 零位不写同族（1-bit 透明先例）。
+///
+/// 有界性/防御（与 [`mono_blit`] 同纪律）：迭代以 `dst ∩ clip` 可见窗
+/// 为界（巨位图成本 = 可见面）；巨 w/h 夹到 i32::MAX（usize 域外结构
+/// 性不可见）；源像素经 `px.get()` 防御采样（submit 恰长门是第一道，
+/// 手搓旁路的短切片在此恒 `None` = 透明，绝不 panic）。
+fn argb_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    w: u32,
+    h: u32,
+    px: &[u32],
+    dx: i32,
+    dy: i32,
+    clip: &Rect,
+) {
+    // 巨几何夹取：usize 域外的宽/高只可能画在纹理外（纹理 ≤ i32 域）。
+    let dw = i32::try_from(w).unwrap_or(i32::MAX);
+    let dh = i32::try_from(h).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw, dh).intersect(clip) else {
+        return; // 零尺寸/全出界 = no-op
+    };
+    let (y_end, x_end) = (vis.y.saturating_add(vis.h), vis.x.saturating_add(vis.w));
+    let mut y = vis.y;
+    while y < y_end {
+        // vis ⊆ dst ⇒ 源行 ∈ [0,dh)——usize 直转安全。行基址乘法在
+        // u64 域（行号 < 2^31 × w < 2^32 ⇒ < 2^63，64 位目标无溢出；
+        // 本仓目标全 64 位——aarch64/x86_64/host）。
+        let row_base = ((y - dy) as usize) * (w as usize);
+        let mut x = vis.x;
+        while x < x_end {
+            let p = px.get(row_base + (x - dx) as usize).copied();
+            if let Some(p) = p {
+                if p >> 24 != 0 {
+                    let r = ((p >> 16) & 0xFF) as u8;
+                    let g = ((p >> 8) & 0xFF) as u8;
+                    let b = (p & 0xFF) as u8;
+                    let packed = desc.format().pack(r, g, b);
+                    put_px(target, desc, clip, x, y, packed);
+                } // A==0：透明键跳过（不写）
+            } // get() None = 防御采样（短切片旁路 → 透明，不 panic）
+            x += 1;
+        }
+        y += 1;
     }
 }

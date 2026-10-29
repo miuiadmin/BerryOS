@@ -3,8 +3,11 @@
 //! need/got/index 携带载荷），且先验后写（出错零落笔——缓冲快照对拍
 //! 执法）。
 
-use berry_gfx::cmd::{Cmd, CmdError, Color, CommandEncoder, DisplayList, PaintDesc, Rect};
+use berry_gfx::cmd::{
+    Cmd, CmdError, Color, CommandEncoder, DisplayList, ImageSrc, PaintDesc, Rect,
+};
 use berry_gfx::color::{DescError, TextureDesc, TextureFormat};
+use berry_gfx::font::GlyphBits;
 use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::{Queue, SubmitError};
 
@@ -230,4 +233,70 @@ fn submit_no_partial_execution_on_any_reject() {
         Err(SubmitError::BadDirtyRect)
     );
     assert_eq!(fb3, snap3, "拒面 3：零落笔");
+}
+
+// —— 图像恰长拒面（段② `ImagePixelMismatch`）：字面 `GlyphBits` 绕过
+//    `GlyphBits::new` 权威构造口、且经 `DisplayList::push` 手搭 `Cmd`
+//    绕过编码器——**两道前置都绕开，硬门仍在 submit 期拦住**（拒面驻
+//    留点 = 回放入口，与命令怎么录进来的无关）；index 随命令序 loud、
+//    先验后写零落笔；合法路径（权威构造 + 零维空位图 no-op）对照放行 ——
+#[test]
+fn submit_image_pixel_mismatch_handbuilt_cmd() {
+    let d = TextureDesc::new(16, 16, 64, FMT).unwrap();
+    let white = Color { r: 255, g: 255, b: 255 };
+    let blue = Color { r: 0, g: 0, b: 255 };
+    // 手搭命令：8×16 应恰 16 行字节——短/长/空三形全拒。
+    let hand = |rows: &'static [u8]| Cmd::DrawImage {
+        src: ImageSrc::Bits(GlyphBits { w: 8, h: 16, rows }),
+        x: 0,
+        y: 0,
+        fg: white,
+        bg: Some(blue),
+    };
+    for rows in [&[0xFFu8; 15][..], &[0xFFu8; 17][..], &[][..]] {
+        let mut dl = DisplayList::new();
+        dl.push(hand(rows)).unwrap();
+        let mut fb = vec![0x33u8; d.need_bytes()];
+        let snap = fb.clone();
+        assert_eq!(
+            Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()),
+            Err(SubmitError::ImagePixelMismatch { index: 0 }),
+            "rows.len()={} 手搭 index 0 也 loud",
+            rows.len()
+        );
+        assert_eq!(fb, snap, "先验后写：零落笔");
+    }
+    // index 随命令序：合法命令在 index 0、坏命令在 index 1——载荷必须
+    // 指认后者（拒面诊断行可定位到具体命令）。
+    let mut dl = DisplayList::new();
+    dl.push(Cmd::FillRect { rect: Rect::new(0, 0, 16, 16), paint: PaintDesc { color: white } })
+        .unwrap();
+    dl.push(hand(&[0xFF; 15])).unwrap();
+    let mut fb = vec![0x33u8; d.need_bytes()];
+    let snap = fb.clone();
+    assert_eq!(
+        Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()),
+        Err(SubmitError::ImagePixelMismatch { index: 1 })
+    );
+    assert_eq!(fb, snap, "index 0 的合法 FillRect 也零落笔");
+
+    // 对照放行：权威构造（new 过恰长门）→ submit ok 且像素语义正确。
+    let bits = GlyphBits::new(8, 1, &[0b1000_0000]).unwrap();
+    let mut dl = DisplayList::new();
+    dl.push(Cmd::DrawImage { src: ImageSrc::Bits(bits), x: 2, y: 3, fg: white, bg: Some(blue) })
+        .unwrap();
+    // 零维空位图（(0,0) 合法空操作）随后——不拒、不落笔。
+    dl.push(Cmd::DrawImage {
+        src: ImageSrc::Bits(GlyphBits::new(0, 0, &[]).unwrap()),
+        x: 0,
+        y: 0,
+        fg: white,
+        bg: Some(blue),
+    })
+    .unwrap();
+    let mut fb = vec![0u8; d.need_bytes()];
+    assert!(Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::clear(0, 0, 0)).is_ok());
+    let px = |fb: &[u8], x: usize, y: usize| u32::from_le_bytes(fb[y * 64 + x * 4..][..4].try_into().unwrap());
+    assert_eq!(px(&fb, 2, 3), 0x00FF_FFFF, "on = 白");
+    assert_eq!(px(&fb, 3, 3), 0x0000_00FF, "off = 衬底蓝");
 }

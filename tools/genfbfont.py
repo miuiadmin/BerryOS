@@ -1,12 +1,32 @@
 #!/usr/bin/env python3
-"""V-6 刀 2：8×16 点阵 art → berry-fbcon font_data.rs 生成器（单一事实源）。
+"""8×16 点阵 art → 字体表生成器（单一事实源；GUI-2 段② 起多字号三档）。
 
 - art（下方 ART 字典）即字形设计源：'#'=着墨，'.'=空白，每行恰 8 字符；
   每条 spec 从 row 3 起（rows 0..=2 恒空、row 15 恒空由本生成器钉板）。
-- 改 art 后重跑：`python3 tools/genfbfont.py` → 产 user/berry-fbcon/src/font_data.rs
-  （生成物随源入册；对 art 的直接手改会被下次生成覆盖——别绕过 ART）。
+- 三档产出（`python3 tools/genfbfont.py` 无参单命令**全档重产**——故意
+  不做 --scale 部分产 CLI：部分重产 = 陈旧基准陷阱，改 ART 后逐档手动
+  补跑必有人忘其一，见下方工作流）：
+  1. 1x 8×16   → user/berry-fbcon/src/font_data.rs（fbcon 单一事实源，
+     内容格式与段② 前完全一致——字节零漂移是硬门）；
+  2. s2 16×32  → user/berry-gfx/src/font_data_s2.rs（FONT_S2，每形 32 行
+     × 2 字节）；
+  3. s3 24×48  → user/berry-gfx/src/font_data_s3.rs（FONT_S3，每形 48 行
+     × 3 字节）。
+- **改 ART 后的工作流**：改 ART 字典 → `python3 tools/genfbfont.py` 单命
+  令重产全档 → 三档生成物随源入册（berry-fbcon 的 fbcon 测试 + berry-gfx
+  的 NN 放大共识测试双守卫咬生成物漂移）。对生成物的直接手改会被下次
+  生成覆盖——别绕过 ART。
+- **重产守卫 `--check`**：内存重产三档 ↔ 在册文件逐字节比对，漂移即
+  FAIL（exit 1，绝不写盘）——`python3 tools/genfbfont.py --check`。
+  mkfat `--check-fixture` 同款机器守卫（P6 A-5 基准漂移雷的字体版：改
+  ART 忘重产 = 三档一致陈旧，共识测试对陈旧基准**自证假绿**——两侧同
+  源字体时「双绿」退化成单实现自洽，只有字节级重产比对能抓）。已挂
+  berry-gfx host 测试（tests/genfbfont_guard.rs——just test-host 同线
+  自动执法）。
+- 放大口径（scale_glyph 纯函数）：1x 16 行位图 → N 档整数最近邻——
+  输出行 r ← 源行 r//N；输出列 c ← 源列 c//N；字节内 MSB=最左列。
 - 版权面：art 为本仓自绘原创设计（公有领域发表）——禁止从 Linux font_8x16.c
-  等任何外部字体数据复制哪怕一行。
+  等任何外部字体数据复制哪怕一行；放大档派生自同一 art，同属原创。
 - 习惯约定：基线 row 12；大写/数字 rows 3..=12；小写 x 高 rows 6..=12；
   上升部小写顶到 row 3..=4；下行部（g j p q y）伸 rows 13..=14；
   设计宽 7 列（col 7 右留白；M/W 等宽字母可满 8 列）。
@@ -150,10 +170,26 @@ def rows_of(ch: int, spec: list) -> list:
     return rows
 
 
-def main() -> int:
-    out = pathlib.Path(__file__).resolve().parent.parent / "user/berry-fbcon/src/font_data.rs"
-    keys = sorted(ART)
-    assert keys == list(range(32, 127)), f"ART 缺号/多号: {[c for c in range(32,127) if c not in ART]}"
+def scale_glyph(rows: list, n: int) -> list:
+    """1x 16 行位图 → N 档整数最近邻（纯函数；位级口径见模块头）。
+
+    输出行 r ← 源行 r//N；输出列 c ← 源列 c//N——即输出字节 b 的第 j 位
+    （值 0x80>>j，j=0 为 MSB=最左列）= 源行字节的 bit(7-((8*b+j)//N))
+    （LSB 位号约定下的 2^(7-k) = 0x80>>k）。字符串实现与位级公式逐位
+    等价：输出行下标 r//n 取源行、列下标 c//n 取源列，一一对应。
+    """
+    assert len(rows) == 16 and all(len(r) == 8 for r in rows), "1x 输入须为 16×8"
+    return [
+        "".join(rows[r // n][c // n] for c in range(8 * n))
+        for r in range(16 * n)
+    ]
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+
+
+def build_1x(keys: list, rows: dict) -> str:
+    """1x 8×16 表内容（ berry-fbcon font_data.rs——与段② 前逐字节一致，零漂移硬门）。"""
     lines = [
         "//! 本文件由 tools/genfbfont.py 生成——勿手改；改 art 改生成器后重跑。",
         "//! art 为自绘原创设计（公有领域）——非任何外部字体数据的拷贝。",
@@ -163,12 +199,86 @@ def main() -> int:
         "pub static FONT: [[u8; 16]; 95] = [",
     ]
     for ch in keys:
-        body = ", ".join(f"0x{int(r.replace('#', '1').replace('.', '0'), 2):02X}" for r in rows_of(ch, ART[ch]))
+        body = ", ".join(f"0x{int(r.replace('#', '1').replace('.', '0'), 2):02X}" for r in rows[ch])
         label = "SP" if ch == 32 else chr(ch)
         lines.append(f"    /* {ch:3} {label:>2} */ [{body}],")
     lines.append("];")
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"gen -> {out} ({len(lines)} 行)")
+    return "\n".join(lines) + "\n"
+
+
+def build_scaled(keys: list, rows: dict, n: int, table: str) -> str:
+    """N 档（N=2/3）表内容（berry-gfx font_data_sN.rs——NN 放大表 + 档几何常量）。"""
+    lines = [
+        "//! 本文件由 tools/genfbfont.py 生成——勿手改；改 art 改生成器后重跑。",
+        "//! art 为自绘原创设计（公有领域）——非任何外部字体数据的拷贝。",
+        f"//! {n}x 档 = 1x art 整数最近邻放大：输出行 r ← 源行 r//{n}；输出列 c ← 源列 c//{n}。",
+        "//! 行序自上而下；字节内 MSB（bit7）= 最左列（与 1x 表/光栅 blit 对偶契约）。",
+        "",
+        f"/// {n}x 档字格几何（{8 * n}×{16 * n}；每行 {n} 字节）。",
+        f"pub const CELL_W: usize = {8 * n};",
+        f"pub const CELL_H: usize = {16 * n};",
+        "",
+        f"/// {8 * n}×{16 * n} 字形表：ASCII 32..=126（95 形），索引 = ch - 32；每形 {16 * n} 行 × {n} 字节。",
+        f"pub static {table}: [[u8; {16 * n * n}]; 95] = [",
+    ]
+    for ch in keys:
+        scaled = scale_glyph(rows[ch], n)
+        body = ", ".join(
+            f"0x{int(row[8 * b:8 * (b + 1)].replace('#', '1').replace('.', '0'), 2):02X}"
+            for row in scaled
+            for b in range(n)
+        )
+        label = "SP" if ch == 32 else chr(ch)
+        lines.append(f"    /* {ch:3} {label:>2} */ [{body}],")
+    lines.append("];")
+    return "\n".join(lines) + "\n"
+
+
+def artifacts(keys: list, rows: dict) -> list:
+    """三档产物的 (路径, 内容) 全集——写盘与 --check 共用同一内容源。"""
+    return [
+        (REPO / "user/berry-fbcon/src/font_data.rs", build_1x(keys, rows)),
+        (REPO / "user/berry-gfx/src/font_data_s2.rs", build_scaled(keys, rows, 2, "FONT_S2")),
+        (REPO / "user/berry-gfx/src/font_data_s3.rs", build_scaled(keys, rows, 3, "FONT_S3")),
+    ]
+
+
+def check_artifacts(arts: list) -> int:
+    """--check：内存重产 ↔ 在册文件逐字节比对（漂移即 FAIL；绝不写盘）。"""
+    bad = 0
+    for path, text in arts:
+        cur = path.read_text(encoding="utf-8") if path.exists() else None
+        if cur != text:
+            bad += 1
+            print(f"DRIFT {path}（在册产物 ≠ ART/生成器重产）", file=sys.stderr)
+    if bad:
+        print(
+            f"check FAIL: {bad}/{len(arts)} 个产物漂移——重产: python3 tools/genfbfont.py",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"check ok: {len(arts)} 个在册产物与 ART/生成器重产逐字节一致")
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    check = False
+    for a in args:
+        if a == "--check":
+            check = True
+        else:
+            print(f"未知参数: {a}（用法: genfbfont.py [--check]）", file=sys.stderr)
+            return 2
+    keys = sorted(ART)
+    assert keys == list(range(32, 127)), f"ART 缺号/多号: {[c for c in range(32,127) if c not in ART]}"
+    rows = {ch: rows_of(ch, ART[ch]) for ch in keys}
+    arts = artifacts(keys, rows)
+    if check:
+        return check_artifacts(arts)
+    for path, text in arts:
+        path.write_text(text, encoding="utf-8")
+        print(f"gen -> {path}")
     return 0
 
 
