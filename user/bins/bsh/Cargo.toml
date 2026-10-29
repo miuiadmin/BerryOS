@@ -19,6 +19,10 @@ berry-exec = { path = "../../berry-exec" }
 berry-fsproto = { path = "../../berry-fsproto" }
 # C-4：Tab 补全纯函数面（token 切分/前缀匹配/列示——host 10 测）。
 berry-complete = { path = "../../berry-complete" }
+# A2-1：多路等待聚合器（wait_many n≤16 翻越——批切分 + poll-first 收割；
+# host 13 测盖算法面，bsh poll_selftest 盖 guest 绑定面 `POLL ok`）。
+# no_std + extern crate alloc 形态在 std 消费侧照常链接（alloc 由 std 提供）。
+berry-poll = { path = "../../berry-poll" }
 
 [profile.release]
 opt-level = "z"

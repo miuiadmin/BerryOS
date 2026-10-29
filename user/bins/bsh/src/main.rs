@@ -91,9 +91,10 @@ use berry_libc::fs::{
     O_RDONLY, O_WRONLY, Stat, Statfs,
 };
 use berry_sys::{
-    berry_channel_recv, berry_clock_read, berry_handle_close, berry_handle_duplicate,
-    berry_object_wait_many, berry_object_wait_one, berry_process_terminate, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BAD_STATE, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
+    berry_channel_recv, berry_clock_read, berry_event_create, berry_handle_close,
+    berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
+    berry_object_wait_one, berry_process_terminate, Handle, BERRY_ERR_AGAIN,
+    BERRY_ERR_BAD_STATE, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
     SIGNAL_READABLE, SIGNAL_TERMINATED,
 };
 use berry_exec::{channel_pair, cpio_find, cpio_names, spawn_rootfs_elf, ChildHandles, SpawnSpec};
@@ -242,6 +243,11 @@ fn main() {
     //    spawn + 内核 terminate 原语），排 fat 族之前（EFI 路无盘亦打
     //    INT——smoke-image ECO canon 同面）。
     int_selftest();
+    // —— A2-1：多路等待聚合器 guest 冒烟（`POLL ok` = rootfs 相第 37 标记）。
+    //    链序契约同 U2/U3/TAB/INT——零 fs 盘面（纯内核 Event 对象 + 真内核
+    //    wait_many 批切分），排 fat 族之前（EFI 路无盘亦打 POLL——smoke-image
+    //    ECO canon 同面）。
+    poll_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -663,6 +669,140 @@ fn int_selftest() {
         berry_libc::park();
     }
     println!("INT ok");
+}
+
+/// A2-1 guest 绑定：berry-poll `WaitMany` trait 的真 syscall 实现（host 13
+/// 测之上——假实现盖算法面，本面盖「绑定 + 单位换算 + 真内核行为」）。
+/// 毫秒（库面）↔ 纳秒（内核 Time）换算收口在此：deadline=0 原样直传（纯
+/// poll 语义零特判），now() = clock_read(ns)/1e6。
+struct SysWaitMany;
+
+impl berry_poll::WaitMany for SysWaitMany {
+    fn wait_many(
+        &mut self,
+        handles: &[u32],
+        signals: &[u64],
+        deadline_ms: u64,
+    ) -> Result<(usize, u64), i32> {
+        let (mut idx, mut obs) = (usize::MAX, 0u64);
+        let s = berry_object_wait_many(
+            handles.as_ptr(),
+            signals.as_ptr(),
+            handles.len(),
+            deadline_ms.saturating_mul(1_000_000),
+            &mut idx,
+            &mut obs,
+        );
+        if s == 0 {
+            Ok((idx, obs))
+        } else {
+            Err(s)
+        }
+    }
+
+    fn now(&mut self) -> u64 {
+        now() / 1_000_000
+    }
+}
+
+/// A2-1 guest 冒烟（`POLL ok` = rootfs 相第 37 标记）：berry-poll 聚合器
+/// 最小消费面。四步全确定性状态谓词（信号先行置位、wait 只读不消费——
+/// 零竞速，P5 A-2 纪律；单线程无外部置位者，阻塞唤醒面由 host 测试
+/// arm_wake 盖，本面盖批切分/收割/摘槽/超时收口）：
+/// ⓪ N=20 Event 全空纯 poll → 0 事件（20 > WAIT_MANY_MAX=16 → 真批切分
+///    16+4——wait_many n≤16 上限的翻越面就是本刀的存在理由）
+/// ① 置位第 20 个（批 1 成员）→ 非阻塞快照恰 1 事件、slot==19、observed
+///    ==用户位（跨批发现 + 内核全满足集回写口径）
+/// ② 置位其余 19 → wait(500ms) poll-first 立即收满 20（阻塞形态命中即返
+///    ——非睡中唤醒）；随后快照再报同 20（LT 免费复报——信号未消费）
+/// ③ remove 槽 0 → 快照 19（摘槽语义）
+/// ④ 清位全部 → wait(30ms) → Ok(空)（阻塞段超时收口——真睡 30ms 墙钟，
+///    berry-poll 段帽/now 基准换算经真 clock 走通）
+/// 失败 eprintln + park（POLL ok 缺失 → smoke FAIL 兜底）。
+fn poll_selftest() {
+    let mut fails: Vec<&str> = Vec::new();
+    let mask: u64 = 1 << 32; // 用户半位（object_signal 只收 ≥1<<32——4-2 裁定）
+    const N: usize = 20; // 批切分 16+4（WAIT_MANY_MAX 之上第一档）
+    let mut evs = [0u32; N];
+    for (i, e) in evs.iter_mut().enumerate() {
+        if berry_event_create(0, e) != 0 || *e == 0 {
+            eprintln!("bsh: poll selftest: event create {}", i);
+            berry_libc::park();
+        }
+    }
+    let mut ps = berry_poll::PollSet::new(SysWaitMany);
+    for &e in evs.iter() {
+        if ps.add(e, mask).is_err() {
+            fails.push("⓪ add");
+        }
+    }
+    // ⓪ 全空纯 poll：非阻塞快照零事件（跨批 = 每批各一次 -EAGAIN）。
+    match ps.wait(0, 0) {
+        Ok(o) if o.is_empty() => {}
+        _ => fails.push("⓪ 全空快照非零"),
+    }
+    // ① 批 1 成员就绪：跨批发现 + observed 全满足集（恰 mask——Event 新建
+    //    无杂位）。
+    if berry_object_signal(evs[19], 0, mask) != 0 {
+        fails.push("① signal");
+    }
+    match ps.wait(0, 0) {
+        Ok(o) if o.len() == 1
+            && o[0].slot == 19
+            && o[0].handle == evs[19]
+            && o[0].observed == mask => {}
+        _ => fails.push("① 跨批快照面"),
+    }
+    // ② 全量置位 → wait(500ms) 收满 20（poll-first 即返）；LT 免费复报：信号
+    //    未消费 → 同轮快照再报同 20 路（host lt_semantics_repoll_reports_again
+    //    的 guest 面）。
+    for &e in evs.iter().take(19) {
+        if berry_object_signal(e, 0, mask) != 0 {
+            fails.push("② signal");
+        }
+    }
+    match ps.wait(500, now() / 1_000_000) {
+        Ok(o) if o.len() == N => {
+            let sum: usize = o.iter().map(|e| e.slot).sum();
+            if sum != N * (N - 1) / 2 {
+                fails.push("② 槽全集破缺");
+            }
+        }
+        _ => fails.push("② 收割非满 20"),
+    }
+    match ps.wait(0, 0) {
+        Ok(o) if o.len() == N => {}
+        _ => fails.push("② LT 复报破缺"),
+    }
+    // ③ 摘槽 0：19 路。
+    if !ps.remove(evs[0]) {
+        fails.push("③ remove");
+    }
+    match ps.wait(0, 0) {
+        Ok(o) if o.len() == N - 1 => {}
+        _ => fails.push("③ 摘槽后非 19"),
+    }
+    // ④ 清位全部 → 阻塞超时收口：Ok(空)（30ms 真睡——段帽路径经真 clock）。
+    for &e in evs.iter() {
+        if berry_object_signal(e, mask, 0) != 0 {
+            fails.push("④ clear");
+        }
+    }
+    match ps.wait(30, now() / 1_000_000) {
+        Ok(o) if o.is_empty() => {}
+        _ => fails.push("④ 超时非空收场"),
+    }
+    // 收口：Event handle 全关（bsh 长命进程——有界泄漏也不留）。
+    for &e in evs.iter() {
+        if berry_handle_close(e) != 0 {
+            fails.push("close");
+        }
+    }
+    if !fails.is_empty() {
+        eprintln!("bsh: poll selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("POLL ok");
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码
