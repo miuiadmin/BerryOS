@@ -264,6 +264,13 @@ fn main() {
     //    拓扑降级同 EVS（netd_h()==0 / ENODEV 静默跳过——EFI canon 零变化、
     //    B4 无 netdev 相不设门）；排 fat 族前零盘面。
     skt_selftest();
+    // —— A4-3：epoll + DNS 自验（`EPL ok n=8` = rootfs 相第 41 标记，A4
+    //    整卡验收线）：epoll 三桩真身 + getaddrinfo DNS 档第一次全链活体
+    //    （create1 槽满/ctl 拒面全表/wait LT 复报/短帽/非 socket 拒/
+    //    localhost→127.0.0.1/非法名本地拒/close 释槽复用七步）。拓扑降级
+    //    同 EVS/SKT（netd_h()==0 / connect ENODEV 静默跳过——EFI canon
+    //    零变化、B4 无 netdev 相不设门）；排 fat 族前零盘面。
+    epl_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -1436,6 +1443,341 @@ fn skt_selftest() {
         berry_libc::park();
     }
     println!("SKT ok n={}", 1 + n_ok); // client 段 1 + server 段 2
+}
+
+/// A4-3 epoll + DNS 自验（`EPL ok n=8` = rootfs 相第 41 标记，A4 整卡
+/// 验收线）：epoll 三桩真身（A4-1 表+节拍循环）+ getaddrinfo DNS 档
+/// （A4-2 接线）第一次全链活体。八步（每步独立验收点，失败 eprintln +
+/// park——EPL ok 缺失 → smoke FAIL 兜底）：
+/// - ⓪ create1 + 槽满面：flags 只认 0（EPOLL_CLOEXEC → EINVAL）；连开
+///   4 槽满 → 第 5 个 EMFILE；
+/// - ① ctl 拒面全表：epfd 域外 EBADF / op 坏 EINVAL / ADD event NULL
+///   EFAULT / 掩码白名单外（EPOLLET）EINVAL / MOD·DEL 未在册 ENOENT；
+///   段满·帽满形态 = **Exists**（A4-1 定谳：socket 段恰 8 fd ==
+///   EPOLL_ITEMS_MAX ⇒ ENOSPC 结构性不可达）——7 socket + cfd 恰满
+///   socket 段（第 8 个 socket() → EMFILE guest 活证），8/8 全 ADD 后
+///   重 ADD → EEXIST；
+/// - ② wait(timeout=0) 快照 LT 复报：ADD(cfd, IN|OUT, data 哨兵) →
+///   两次连收恰 1 项 events==EPOLLOUT（Client 恒 WRITABLE 状态谓词——
+///   echod 无数据在途非竞速）+ data 覆写对拍；
+/// - ③ wait 短帽（timeout>0）空表到点返 0（POSIX 超时 = 0 事件成功返，
+///   ~1s wall——1s 节拍 sleep_tick 首拍即帽）；
+/// - ④ 非 socket fd（console fd 1）ADD → EINVAL（NotSock 检查先于
+///   Exists/Full——interest 8/8 满时仍正确分档）；
+/// - ⑤ getaddrinfo 双查："127.0.0.1" 字面量快路（零 RPC）+
+///   "localhost" DNS 慢路（netd OP_DNS_QUERY → SLIRP 离线确定
+///   127.0.0.1）——ai_family/ai_socktype/sin_addr 三对拍 +
+///   freeaddrinfo；
+/// - ⑥ 非法名（"my_host" 下划线）/ 超长名（65B > NAME_MAX=64）→
+///   EAI_NONAME 纯本地拒（零发包——预检面活证）；
+/// - ⑦ close 释槽复用：close(epfd3) → create1 同号回填（最低位回填
+///   host 钉板的 guest 活证）→ close。
+///
+/// 拓扑降级同 EVS/SKT：netd gift 缺席（EFI/裸拓扑）→ netd_h()==0 静默
+/// 跳过（smoke-image canon 零变化）；gift 在位而 connect 答 ENODEV
+/// （vnet deviceless serve——B4 掉电相无 netdev）→ 同口径静默跳过
+/// （拓扑真值）。排 fat 族前零盘面。
+fn epl_selftest() {
+    if netd_h() == 0 {
+        return;
+    }
+    use berry_libc::net as epl;
+    // 常量镜像（fsclient/std 单源 ABI 冻结值——skt 镜像同族；漂移 = 对拍
+    // 断言即炸）。
+    const AF_INET: i32 = 2;
+    const SOCK_STREAM: i32 = 1;
+    const EPOLLIN: u32 = 0x001;
+    const EPOLLOUT: u32 = 0x004;
+    const EPOLLET: u32 = 1 << 31;
+    const EPOLL_CLOEXEC: i32 = 0x80000;
+    const EPOLL_CTL_ADD: i32 = 1;
+    const EPOLL_CTL_MOD: i32 = 3;
+    const EPOLL_CTL_DEL: i32 = 2;
+    let mut n_ok = 0u32;
+    macro_rules! bail {
+        ($($a:tt)*) => {{
+            eprintln!($($a)*);
+            berry_libc::park();
+        }};
+    }
+    macro_rules! errno {
+        () => {
+            berry_libc::get_errno()
+        };
+    }
+
+    // 拓扑门 + ② 的就绪源：connect echod 18080（skt ⓪ 同款）。
+    let cfd = epl::socket(AF_INET, SOCK_STREAM, 0);
+    if cfd < 0 {
+        bail!("bsh: epl: socket errno={}", errno!());
+    }
+    let caddr = epl::SockAddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: epl::htons(18080),
+        sin_addr: epl::htonl(0x0A00_0202), // SLIRP 网关
+        sin_zero: [0; 8],
+    };
+    // SAFETY: caddr 本帧局部。
+    if unsafe {
+        epl::connect(
+            cfd,
+            &caddr as *const epl::SockAddrIn as *const epl::SockAddr,
+            16,
+        )
+    } != 0
+    {
+        let e = errno!();
+        if e == berry_libc::ENODEV {
+            return; // 无 NIC 拓扑（B4 掉电相）——静默跳过，skt 同口径。
+        }
+        bail!("bsh: epl: connect errno={}", e);
+    }
+
+    // —— ⓪ create1 + 槽满面（4 槽 23..=26）——
+    // flags 执法：EPOLL_CLOEXEC v1 无 exec 面诚实拒。
+    if unsafe { epl::epoll_create1(EPOLL_CLOEXEC) } != -1 || errno!() != berry_libc::EINVAL {
+        bail!("bsh: epl: create1 flags not EINVAL");
+    }
+    let epfd = unsafe { epl::epoll_create1(0) };
+    if epfd < 0 {
+        bail!("bsh: epl: create1 errno={}", errno!());
+    }
+    let e2 = unsafe { epl::epoll_create1(0) };
+    let e3 = unsafe { epl::epoll_create1(0) };
+    let e4 = unsafe { epl::epoll_create1(0) };
+    if e2 < 0 || e3 < 0 || e4 < 0 {
+        bail!("bsh: epl: create1 fill errno={}", errno!());
+    }
+    // 槽满：4/4 后第 5 个 EMFILE；e4 验毕即释（后续主用 3 实例）。
+    if unsafe { epl::epoll_create1(0) } != -1 || errno!() != berry_libc::EMFILE {
+        bail!("bsh: epl: create1 full not EMFILE");
+    }
+    if close(e4) != 0 {
+        bail!("bsh: epl: e4 close errno={}", errno!());
+    }
+    n_ok += 1;
+
+    // —— ① ctl 拒面全表 + 段满·帽满形态（Exists——A4-1 定谳）——
+    let ev_ok = epl::EpollEvent {
+        events: EPOLLIN | EPOLLOUT,
+        data: 0,
+    };
+    let ev_et = epl::EpollEvent {
+        events: EPOLLIN | EPOLLET,
+        data: 0,
+    };
+    // SAFETY: ev_ok/ev_et 均本帧局部（非 NULL event 路径）。
+    unsafe {
+        // epfd 域外 → EBADF（域检在 event 解引用前——EBADF 优先序）。
+        if epl::epoll_ctl(99, EPOLL_CTL_ADD, cfd, &ev_ok) != -1
+            || errno!() != berry_libc::EBADF
+        {
+            bail!("bsh: epl: ctl badfd not EBADF");
+        }
+        // op 坏 → EINVAL。
+        if epl::epoll_ctl(epfd, 9, cfd, &ev_ok) != -1 || errno!() != berry_libc::EINVAL {
+            bail!("bsh: epl: ctl op not EINVAL");
+        }
+        // ADD event NULL → EFAULT。
+        if epl::epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, core::ptr::null()) != -1
+            || errno!() != berry_libc::EFAULT
+        {
+            bail!("bsh: epl: ctl null not EFAULT");
+        }
+        // 掩码白名单外（EPOLLET——ET v1 不做）→ EINVAL。
+        if epl::epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &ev_et) != -1
+            || errno!() != berry_libc::EINVAL
+        {
+            bail!("bsh: epl: ctl mask not EINVAL");
+        }
+        // MOD/DEL 未在册 → ENOENT。
+        if epl::epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &ev_ok) != -1
+            || errno!() != berry_libc::ENOENT
+        {
+            bail!("bsh: epl: ctl mod not ENOENT");
+        }
+        if epl::epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, core::ptr::null()) != -1
+            || errno!() != berry_libc::ENOENT
+        {
+            bail!("bsh: epl: ctl del not ENOENT");
+        }
+    }
+    // 段满·帽满形态：7 socket + cfd 恰满 socket 段（15..=22）——第 8 个
+    // socket() EMFILE；8/8 全 ADD 后重 ADD → EEXIST（ENOSPC 结构性
+    // 不可达的可达形态——检查序 Exists 先于 Full 定谳）。
+    let mut sfds = [0i32; 7];
+    for (i, s) in sfds.iter_mut().enumerate() {
+        *s = epl::socket(AF_INET, SOCK_STREAM, 0);
+        if *s < 0 {
+            bail!("bsh: epl: fill socket {} errno={}", i, errno!());
+        }
+    }
+    if epl::socket(AF_INET, SOCK_STREAM, 0) != -1 || errno!() != berry_libc::EMFILE {
+        bail!("bsh: epl: socket full not EMFILE");
+    }
+    // SAFETY: ev_ok 本帧局部。
+    unsafe {
+        for (i, &s) in sfds.iter().enumerate() {
+            let ev = epl::EpollEvent {
+                events: EPOLLIN | EPOLLOUT,
+                data: i as u64,
+            };
+            if epl::epoll_ctl(epfd, EPOLL_CTL_ADD, s, &ev) != 0 {
+                bail!("bsh: epl: add s{} errno={}", i, errno!());
+            }
+        }
+        if epl::epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &ev_ok) != 0 {
+            bail!("bsh: epl: add cfd errno={}", errno!());
+        }
+        // interest 8/8 帽满 → 重 ADD 在册 → EEXIST。
+        if epl::epoll_ctl(epfd, EPOLL_CTL_ADD, sfds[0], &ev_ok) != -1
+            || errno!() != berry_libc::EEXIST
+        {
+            bail!("bsh: epl: ctl full not EEXIST");
+        }
+    }
+    n_ok += 1;
+
+    // —— ② wait(timeout=0) 快照 LT 复报：两次连收同集（berry-poll LT
+    //    同款免费——静态 interest 无消费即再报）——
+    let epfd2 = e2; // ② 专用实例（interest 1/8——cfd）
+    let ev_d = epl::EpollEvent {
+        events: EPOLLIN | EPOLLOUT,
+        data: 0xC0DE_0001,
+    };
+    // SAFETY: ev_d 本帧局部。
+    if unsafe { epl::epoll_ctl(epfd2, EPOLL_CTL_ADD, cfd, &ev_d) } != 0 {
+        bail!("bsh: epl: lt add errno={}", errno!());
+    }
+    for round in 0..2 {
+        let mut evs = [epl::EpollEvent {
+            events: 0,
+            data: 0xDEAD_BEEF, // 哨兵：必须被覆写
+        }; 4];
+        // SAFETY: evs 本帧局部出参区。
+        let r = unsafe { epl::epoll_wait(epfd2, evs.as_mut_ptr(), 4, 0) };
+        // 恰 1 项（epfd2 interest 仅 cfd）；恰 OUT 无 IN（echod 无数据
+        // 在途——不 send 它就不发，状态谓词非竞速）；data 覆写透传。
+        // packed 字段先值拷贝再格式化（packed 引用禁——E0793）。
+        let (ev, da) = (evs[0].events, evs[0].data);
+        if r != 1 || ev != EPOLLOUT || da != 0xC0DE_0001 {
+            bail!(
+                "bsh: epl: lt round{} r={} ev={:#x} data={:#x}",
+                round,
+                r,
+                ev,
+                da
+            );
+        }
+    }
+    n_ok += 1;
+
+    // —— ③ wait 短帽（timeout>0）空表到点返 0——
+    let epfd3 = e3; // 空实例（零 interest）
+    let mut evs = [epl::EpollEvent {
+        events: 0,
+        data: 0,
+    }; 4];
+    // SAFETY: evs 本帧局部出参区。
+    if unsafe { epl::epoll_wait(epfd3, evs.as_mut_ptr(), 4, 1500) } != 0 {
+        bail!("bsh: epl: wait cap not 0");
+    }
+    n_ok += 1;
+
+    // —— ④ 非 socket fd ADD 拒（console fd 1——NotSock 先于 Exists/Full，
+    //    epfd interest 8/8 满时仍正确分档 EINVAL 非 ENOSPC/EEXIST）——
+    // SAFETY: ev_ok 本帧局部。
+    if unsafe { epl::epoll_ctl(epfd, EPOLL_CTL_ADD, 1, &ev_ok) } != -1
+        || errno!() != berry_libc::EINVAL
+    {
+        bail!("bsh: epl: ctl notsock not EINVAL");
+    }
+    n_ok += 1;
+
+    // —— ⑤ getaddrinfo 双查（快路字面量 + 慢路 DNS）——
+    let want_addr = epl::htonl(0x7F00_0001); // 127.0.0.1（wire 序对拍）
+    for (label, name) in [("lit", &b"127.0.0.1\0"[..]), ("dns", &b"localhost\0"[..])] {
+        let mut res: *mut epl::AddrInfo = core::ptr::null_mut();
+        // SAFETY: res 本帧局部出参；name NUL 终结字面量。
+        let r = unsafe {
+            epl::getaddrinfo(
+                name.as_ptr(),
+                core::ptr::null(),
+                core::ptr::null(),
+                &mut res,
+            )
+        };
+        if r != 0 || res.is_null() {
+            bail!("bsh: epl: gai {} r={} res={}", label, r, res.is_null());
+        }
+        // SAFETY: getaddrinfo 产物链（libc 契约）；ai_addr 指同链节点内
+        // SockAddrIn（16B——A3-1 钉板）。
+        let ok = unsafe {
+            let ai = &*res;
+            let sa = &*(ai.ai_addr as *const epl::SockAddrIn);
+            ai.ai_family == AF_INET
+                && ai.ai_socktype == SOCK_STREAM
+                && sa.sin_family == AF_INET as u16
+                && sa.sin_addr == want_addr
+        };
+        unsafe { epl::freeaddrinfo(res) };
+        if !ok {
+            bail!("bsh: epl: gai {} fields bad", label);
+        }
+    }
+    n_ok += 1;
+
+    // —— ⑥ 非法名/超长名本地拒（零发包——预检面）——
+    let mut long_name = [b'a'; 65];
+    long_name[65 - 1] = 0; // 64 字符 + NUL——名字长 65 > NAME_MAX=64
+    for (label, name) in [
+        ("badchar", &b"my_host\0"[..]), // 下划线出 [A-Za-z0-9.-]
+        ("toolong", &long_name[..]),
+    ] {
+        let mut res: *mut epl::AddrInfo = core::ptr::null_mut();
+        // SAFETY: res 本帧局部出参。
+        let r = unsafe {
+            epl::getaddrinfo(
+                name.as_ptr(),
+                core::ptr::null(),
+                core::ptr::null(),
+                &mut res,
+            )
+        };
+        if r != berry_libc::EAI_NONAME || !res.is_null() {
+            bail!("bsh: epl: gai {} r={} res={}", label, r, res.is_null());
+        }
+    }
+    n_ok += 1;
+
+    // —— ⑦ close 释槽复用（最低位回填）+ 收尾 ——
+    if close(epfd3) != 0 {
+        bail!("bsh: epl: close epfd3 errno={}", errno!());
+    }
+    let again = unsafe { epl::epoll_create1(0) };
+    if again != epfd3 {
+        bail!("bsh: epl: refill {} != {}", again, epfd3);
+    }
+    if close(again) != 0 {
+        bail!("bsh: epl: close again errno={}", errno!());
+    }
+    n_ok += 1;
+
+    // 收尾：socket 8 全释（7 sfd + cfd）+ epoll 2 实例（epfd 8/8 interest
+    // 随 close 全清；epfd2 cfd 项随之失义——先 close fd 后 close epoll 同
+    // 序亦可，表持值快照无悬挂面）。
+    for (i, &s) in sfds.iter().enumerate() {
+        if close(s) != 0 {
+            bail!("bsh: epl: s{} close errno={}", i, errno!());
+        }
+    }
+    if close(cfd) != 0 {
+        bail!("bsh: epl: cfd close errno={}", errno!());
+    }
+    if close(epfd2) != 0 || close(epfd) != 0 {
+        bail!("bsh: epl: ep close errno={}", errno!());
+    }
+    println!("EPL ok n={}", n_ok);
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码
