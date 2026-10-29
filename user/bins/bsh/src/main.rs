@@ -3903,6 +3903,33 @@ fn fs_gifts() -> Option<(Handle, Handle)> {
     Some((rootfs_dup, fs_dup))
 }
 
+/// A5（`docs/事件循环A5设计草案.md` §3.1）：[`fs_gifts`] 的网络三元件——
+/// rootfs/fs 双元同款 + netd 端 `RIGHT_SEND|RIGHT_RECV` dup 第三元
+/// （env 块 extras 第 3 枚 → gift[6] → libc `GIFT_H[4]`——协议在册零
+/// 扩容，berry-exec ≤3 断言恰满）。权利位对源 = svcmgr 给 bsh 的全量
+/// 形态（fs 端 SEND|RECV 同形，A5-1 对源落定：svcmgr `net_b` 是 fresh
+/// channel 端直递非 dup——bsh 场景必须 dup 既有端）。
+/// `netd_h()==0`（EFI/裸拓扑无 netdev）→ None **静默跳过**（EVS/SKT/EPL
+/// 拓扑门契约同款——canon 零变化按构造）；dup 半途失败双关防漏同
+/// [`fs_gifts`]。**least privilege**：消费者 = nets_selftest（A5-2）——
+/// 交互/管道/裸 spawn 面零改动（既有行为零漂移按构造）。
+#[allow(dead_code)] // 消费者随 A5-2 nets_selftest 落地（拆刀：A5-1 先装配零行为漂移）
+fn net_gifts() -> Option<(Handle, Handle, Handle)> {
+    if netd_h() == 0 {
+        return None;
+    }
+    let (rootfs_dup, fs_dup) = fs_gifts()?;
+    let mut netd_dup = 0 as Handle;
+    if berry_handle_duplicate(netd_h(), RIGHT_SEND | RIGHT_RECV, &mut netd_dup) != 0 {
+        // 半途失败：前两枚已 dup 成功——三枚都试关（未成的 -EBADF 无害）。
+        let _ = berry_handle_close(rootfs_dup);
+        let _ = berry_handle_close(fs_dup);
+        let _ = berry_handle_close(netd_dup);
+        return None;
+    }
+    Some((rootfs_dup, fs_dup, netd_dup))
+}
+
 fn run_capture_fs(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOut, i32)> {
     run_capture_fs_cap(name, stdin, args, TIMEOUT_NS)
 }

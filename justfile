@@ -186,6 +186,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/guifbd/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # A5：netprobe（std::net guest 对拍件——bsh net_gifts 三元 spawn 面
+    # 的消费者；TcpStream::connect 域名/IP 双路 + 回显逐字节对拍。产链
+    # 同 stdhello 独立小工作区 musl 链；自验/标记 `NETS ok` 随 A5-2
+    # nets_selftest）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/netprobe/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
@@ -225,6 +232,7 @@ build-user:
         bin/ls=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/ls \
         bin/mkdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mkdir \
         bin/mv=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mv \
+        bin/netprobe=cargo-target/aarch64-unknown-linux-musl/release/netprobe \
         bin/ps=cargo-target/aarch64-unknown-linux-musl/release/ps \
         bin/pwd=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd \
         bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
