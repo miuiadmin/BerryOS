@@ -352,6 +352,15 @@ impl Sess {
                 );
                 self.arm = arm_at(seq.wrapping_add(1));
             }
+            // 服务端握手应答（A2-2 段② 与 berry-tcp 服务端半边同步入册；会话表
+            // 接线在段③——本臂 = SYN|ACK 线上编码 + RTO 挂臂（SYN 占一序号同 Syn）。
+            bt::Action::SynAck { seq, ack } => {
+                send_seg(
+                    d, regs, mac, gw_mac, self.sport, self.dport, seq, ack,
+                    np::TcpFlags { syn: true, ack: true, ..Default::default() }, Some(bt::MSS), &[],
+                );
+                self.arm = arm_at(seq.wrapping_add(1));
+            }
             bt::Action::Data { seq, len } => {
                 if data.len() != len as usize {
                     println!("vnet: tcp data 段失配 len={} data={}", len, data.len());
