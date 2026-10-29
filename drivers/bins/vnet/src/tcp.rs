@@ -676,8 +676,8 @@ pub(crate) fn pump_once(
 }
 
 /// 谓词驱动泵：直到谓词真或帽到（表会话收口全靠它——含 TIME_WAIT 泵）。
-/// 返回谓词是否达成。
-fn drive_until(
+/// 返回谓词是否达成。A2-3 起 serve 命名 RT 臂直用（ACK 等待谓词）。
+pub(crate) fn drive_until(
     d: &mut Dma,
     regs: *mut u32,
     mac: &[u8; 6],
@@ -826,8 +826,26 @@ impl TcpMux {
         Some(n)
     }
 
-    /// 会话槽无挂臂谓词（send 的 ACK 已到——自验同步点）。
-    fn arm_idle(&self, sid: u32) -> Option<bool> {
+    /// 会话槽 rx 收割（A2-3 DRAIN 数据面）：拷出 + `copy_within` 压实消费
+    ///（memmove 语义，重叠安全——P6 A-7 组帧坑的正面形态）。返回收割字节数
+    ///（可为 0——「POLL 报过 rbytes 后串行收割必非零」由调用方节奏保证，
+    /// 协议面诚实报 0 而非错）。Free/Listen/越界 None（serve() 翻 ST_BAD
+    /// ——Form::Tcp 域内无 NOSESSION 位，诊断位留 Form::Poll）。
+    pub(crate) fn rx_drain(&mut self, sid: u32, out: &mut [u8]) -> Option<usize> {
+        let s = match self.slots.get_mut(Self::idx_of(sid)?)? {
+            Slot::Pending(s) | Slot::Ready(s) | Slot::Data(s) => s,
+            _ => return None,
+        };
+        let take = s.rx_len.min(out.len());
+        out[..take].copy_from_slice(&s.rx[..take]);
+        s.rx.copy_within(take..s.rx_len, 0);
+        s.rx_len -= take;
+        Some(take)
+    }
+
+    /// 会话槽无挂臂谓词（send 的 ACK 已到——自验同步点；A2-3 起 serve
+    /// 命名 RT 臂的收口谓词：Closed 态 arm 亦空 = RST-in-wait 可接受裁定）。
+    pub(crate) fn arm_idle(&self, sid: u32) -> Option<bool> {
         match self.slots.get(Self::idx_of(sid)?)? {
             Slot::Pending(s) | Slot::Ready(s) | Slot::Data(s) => Some(s.arm.is_none()),
             _ => None,
@@ -836,7 +854,8 @@ impl TcpMux {
 
     /// 表会话上发数据：send → act（Data 段 + RTO 挂臂）。仅 Ready/Data 槽
     /// （Pending 握手中 / Closed 不可发）→ false。拷出改写两段式同 route_seg。
-    fn send_data(
+    /// A2-3 起 serve 命名 RT 臂直用（echo 回发面）。
+    pub(crate) fn send_data(
         &mut self,
         d: &mut Dma,
         regs: *mut u32,
@@ -902,9 +921,8 @@ impl TcpMux {
     /// 服务面 CLOSE：Listen → 纯撤表 Some(true)；会话 → close_init +
     /// drive_until 本槽 Closed（TIME_WAIT 由泵收口）后**无论成败释槽**
     /// （v1 无重试语义面，槽容量优先——帽到 Some(false) 但槽已释）；Free/
-    /// 越界 None（ST_NOSESSION 面）。
-    /// 段③ serve 未接线（语义冻结落库）——A2-3 命名数据面接线预留。
-    #[allow(dead_code)]
+    /// 越界 None（Form::Tcp 域内翻 ST_BAD——诊断位留 Form::Poll）。
+    /// A2-3 serve 命名 CLOSE 臂已接线（dead_code 冻结期收束）。
     pub(crate) fn close_sid(
         &mut self,
         d: &mut Dma,

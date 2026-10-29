@@ -23,6 +23,10 @@ berry-complete = { path = "../../berry-complete" }
 # host 13 测盖算法面，bsh poll_selftest 盖 guest 绑定面 `POLL ok`）。
 # no_std + extern crate alloc 形态在 std 消费侧照常链接（alloc 由 std 提供）。
 berry-poll = { path = "../../berry-poll" }
+# A2-3：netd 会话化协议（LISTEN/ACCEPT/POLL/DRAIN/RT/CLOSE 编解码）——
+# EVS echo server 自验（`EVS ok n=2`）的 RPC 面。仅协议层纯函数，
+# 零 syscall/IO 依赖（berry-fsproto 同形态）。
+berry-netdproto = { path = "../../berry-netdproto" }
 
 [profile.release]
 opt-level = "z"

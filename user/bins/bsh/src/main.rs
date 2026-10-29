@@ -82,7 +82,7 @@
 
 use std::io::{Read, Write};
 
-use berry_libc::io::{close, fs_h, read, rootfs_h, stdin_h, write};
+use berry_libc::io::{close, fs_h, netd_h, read, rootfs_h, stdin_h, write};
 use berry_libc::{
     EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
 };
@@ -91,12 +91,14 @@ use berry_libc::fs::{
     O_RDONLY, O_WRONLY, Stat, Statfs,
 };
 use berry_sys::{
-    berry_channel_recv, berry_clock_read, berry_event_create, berry_handle_close,
-    berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
-    berry_object_wait_one, berry_process_terminate, Handle, BERRY_ERR_AGAIN,
-    BERRY_ERR_BAD_STATE, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
-    SIGNAL_READABLE, SIGNAL_TERMINATED,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
+    berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
+    berry_object_wait_one, berry_process_terminate, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_STATE,
+    BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND, SIGNAL_READABLE,
+    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
+// A2-3：netd 会话化协议（EVS echo server 自验的 RPC 编解码面）。
+use berry_netdproto as ndp;
 use berry_exec::{channel_pair, cpio_find, cpio_names, spawn_rootfs_elf, ChildHandles, SpawnSpec};
 // C-1 刀 4：fsproto 只余帽常量（usage 预检 + 读面失控兜底）——协议面
 // （encode/parse/ST_*）随自有 RPC 退役，全部走 berry-libc。
@@ -248,6 +250,12 @@ fn main() {
     //    wait_many 批切分），排 fat 族之前（EFI 路无盘亦打 POLL——smoke-image
     //    ECO canon 同面）。
     poll_selftest();
+    // —— A2-3：事件循环 echo server 自验（`EVS ok n=2` = rootfs 相第 39
+    //    标记，A2 整卡验收线）。**串行状态谓词零竞速**（4-5a 铁律——宿主
+    //    evsclient 逐连接对拍，设计 §3.4）；netd gift 缺席（EFI/裸/无盘
+    //    拓扑无 netdev）→ netd_h()==0 静默跳过零扰动。排 fat 族前（U2
+    //    家族链序契约照旧——EFI 路本就静默跳过，链序家族一致性不变）。
+    evs_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -803,6 +811,251 @@ fn poll_selftest() {
         berry_libc::park();
     }
     println!("POLL ok");
+}
+
+/// EVS 对拍载荷（A2-3；与 `tools/evsclient.py` 同源定值——两连接异型
+/// 64B/24B，本侧断言 DRAIN 收割逐字节、client 侧断言回读逐字节，两侧
+/// 独立成立）。
+const EVS_PAYLOAD_0: [u8; 64] = {
+    let mut a = [0u8; 64];
+    let mut i = 0;
+    while i < 64 {
+        a[i] = (i * 7 + 3) as u8;
+        i += 1;
+    }
+    a
+};
+const EVS_PAYLOAD_1: [u8; 24] = {
+    let mut a = [0u8; 24];
+    let mut i = 0;
+    while i < 24 {
+        a[i] = (i * 11 + 5) as u8;
+        i += 1;
+    }
+    a
+};
+
+/// A2-3 netd RPC 底座：严格串行（请求-应答一一对应、无请求号——P6 A-6
+/// 纪律：**超时不重发**，晚到应答滞留队列只会毒化下一请求）。
+/// encode → send（满队 -EBUSY 阻塞等 WRITABLE 重试——libc console 同款；
+/// bsh 是 netd 队唯一发送者、串行 RPC 稳态至多 1 深在途）→ 应答阻塞帽
+/// 等 READABLE → recv 原长（应答形随 op 三分 Sid/Poll/Tcp，恰长 parse 归
+/// 调用方）。失败返 None——EVS 无降级续走（loud 死 = EVS ok 缺失 → smoke
+/// FAIL 兜底）。cap 按服务端 worst 路径 + 余量定值（P6 A-6「服务慢 ≠
+/// 服务死」：vnet RT/CLOSE 内帽 30s → client 侧 45s；快 op 10s）。
+fn netd_rpc(netd: u32, req: ndp::TcpSReq<'_>, session: u32, cap_ns: u64) -> Option<Vec<u8>> {
+    let mut buf = [0u8; ndp::REQ_S_LEN_MAX];
+    let n = ndp::encode_tcp_s_request(&mut buf, req, session)?;
+    let send_dl = now() + 10_000_000_000;
+    loop {
+        let s = berry_channel_send(netd, buf.as_ptr(), n, core::ptr::null(), 0);
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            return None; // 链断面（非满队）——非慢而活，loud 死
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(netd, SIGNAL_WRITABLE, send_dl, &mut obs) != 0 {
+            return None;
+        }
+    }
+    let reply_dl = now() + cap_ns;
+    loop {
+        let mut msg = [0u8; ndp::TCP_REP_MAX];
+        let mut nb = msg.len();
+        let mut nhd = 0usize;
+        let s = berry_channel_recv(
+            netd,
+            msg.as_mut_ptr(),
+            &mut nb,
+            core::ptr::null_mut(),
+            &mut nhd,
+        );
+        if s == 0 {
+            return Some(msg[..nb].to_vec());
+        }
+        if s != BERRY_ERR_AGAIN {
+            return None; // 坏 handle 类链断——立即死不空等
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(netd, SIGNAL_READABLE, reply_dl, &mut obs) != 0 {
+            return None; // 帽到无应答 = 断链面（不重发——见头注）
+        }
+    }
+}
+
+/// netd_rpc 的 Tcp 形便捷面：parse 产物即刻拷贝成 owned（`TcpReply` 借用
+/// 应答缓冲——闭包内借用无法穿透 and_then 返回）。
+fn netd_rpc_tcp(
+    netd: u32,
+    req: ndp::TcpSReq<'_>,
+    session: u32,
+    cap_ns: u64,
+) -> Option<(u8, Vec<u8>)> {
+    netd_rpc(netd, req, session, cap_ns)
+        .and_then(|b| ndp::parse_tcp_reply(&b).map(|r| (r.st, r.data.to_vec())))
+}
+
+/// EVS 事件循环轮询节拍的纯 sleep：永不置位 Event + 用户位 wait 帽（v1
+/// 无 sleep syscall——wait 帽即定时器；SLEEP_OBJ 形态的用户态版）。
+fn sleep_ms(ev: u32, mask: u64, ms: u64) {
+    let mut obs = 0u64;
+    let _ = berry_object_wait_one(ev, mask, now() + ms * 1_000_000, &mut obs);
+}
+
+/// A2-3 事件循环 echo server 自验（`EVS ok n=2` = rootfs 相第 39 标记，
+/// A2 整卡验收线）：guest 内 netd LISTEN(18082) 会话 + 拉 POLL 事件循环
+/// （推模型留 v2——设计 §A2-2「串行非竞速面轮询无伤」；1s 节拍），宿主
+/// `tools/evsclient.py` 两连接 64B/24B 异型载荷**逐连接串行**对拍（4-5a
+/// 铁律：串行 = 状态谓词零竞速）。生命周期：LISTEN → 每连接 {accept-wait
+/// → data-wait（CLOSED 旗 loud）→ DRAIN 收割逐字节对拍 → RT 回发（ACK
+/// 帽内 ST_OK）→ CLOSE(dsid)} ×2 → CLOSE(lsid) 撤表。netd gift 缺席
+/// （EFI/裸/无盘拓扑无 netdev）→ netd_h()==0 静默跳过；gift 在位而
+/// LISTEN 答 ST_NODEV（vnet deviceless serve——MMIO 窗在、netdev 缺席
+/// 的 B4 掉电相拓扑）→ 同口径静默跳过（拓扑真值，与装配侧同源）。失败
+/// eprintln + park（EVS ok 缺失 → smoke FAIL 兜底）。
+fn evs_selftest() {
+    let netd = netd_h();
+    if netd == 0 {
+        return;
+    }
+    // 轮询节拍专用 Event（永不置位——wait 帽即纯定时器；用户半位 4-2 裁定）。
+    let mut tick = 0u32;
+    if berry_event_create(0, &mut tick) != 0 || tick == 0 {
+        berry_libc::park();
+    }
+    let sleep_mask: u64 = 1 << 32;
+    macro_rules! bail {
+        ($($a:tt)*) => {{
+            eprintln!($($a)*);
+            berry_libc::park();
+        }};
+    }
+    // ⓪ LISTEN(18082) → lsid（hostfwd 专线 18082——LSN 自验 18081 零交集）。
+    let rep = netd_rpc(netd, ndp::TcpSReq::Listen { port: 18082 }, 0, 10_000_000_000)
+        .and_then(|b| ndp::parse_listen_reply(&b));
+    let lsid = match rep {
+        Some(r) if r.st == ndp::ST_OK && r.sid != 0 => r.sid,
+        // 无 NIC 拓扑（A2-3：MMIO 窗在而 netdev 缺席——B4 掉电相；vnet
+        // deviceless serve 应答）→ 静默跳过，与 netd_h()==0 同口径（EVS
+        // ok 结构性缺席 = 拓扑真值）。
+        Some(r) if r.st == ndp::ST_NODEV => return,
+        other => bail!("bsh: evs: listen bad {:?}", other.map(|r| (r.st, r.sid))),
+    };
+    let mut n_ok = 0u32;
+    for (ci, want) in [EVS_PAYLOAD_0.as_slice(), EVS_PAYLOAD_1.as_slice()]
+        .iter()
+        .enumerate()
+    {
+        let want: &[u8] = want;
+        // ① accept-wait + ② data-wait 合并循环：EAGAIN = 暂无挂起连接
+        //    （client 侧重试环在外侧）→ 1s 节拍重拉；帽 120s（client 总帽
+        //    480s 内必达）。
+        //
+        // **尸槽回收**（A2-3 首跑实抓 `c0 echo bad Some(1)`）：client 重试环
+        //    在 guest LISTEN 落位前后的失败尝试（SLIRP 的 SYN 重传才落进被
+        //    动打开）留下「握手已成 + 载荷已到 + 对端 recv 帽尽已 FIN」的
+        //    CloseWait 尸槽——accept 照样弹出（非 Closed 即弹）、drain 对拍
+        //    照样相等（同公式载荷），但 ④ RT 回发被 berry-tcp 的
+        //    Established-only `send()` 拒 → ST_BAD。修法 = data-wait 门收紧
+        //    到「WRITABLE（=Established）且有数据」才进 echo；CLOSED 旗或
+        //    「带据无 WRITABLE」= 尸槽 → CLOSE 释槽（帽到自释，结果不敏感
+        //    ——死对端 RST 被 berry-tcp 忽略，恒走 30s 帽释槽路）→ 重入
+        //    accept-wait 取下一条（accept 稳态 1s 内必达活连接）。
+        let acc_dl = now() + 120_000_000_000;
+        let dsid = 'acc: loop {
+            let d = loop {
+                match netd_rpc(netd, ndp::TcpSReq::Accept, lsid, 10_000_000_000)
+                    .and_then(|b| ndp::parse_accept_reply(&b))
+                {
+                    Some(r) if r.st == ndp::ST_OK && r.sid != 0 => break r.sid,
+                    Some(r) if r.st == ndp::ST_EAGAIN => {}
+                    other => bail!(
+                        "bsh: evs: accept c{} bad {:?}",
+                        ci,
+                        other.map(|r| (r.st, r.sid))
+                    ),
+                }
+                if now() >= acc_dl {
+                    bail!("bsh: evs: accept c{} timeout", ci);
+                }
+                sleep_ms(tick, sleep_mask, 1000);
+            };
+            // data-wait：WRITABLE + rbytes>0 才是活连接；尸槽释槽重入。
+            let dat_dl = now() + 30_000_000_000;
+            'dat: loop {
+                match netd_rpc(netd, ndp::TcpSReq::Poll, d, 10_000_000_000)
+                    .and_then(|b| ndp::parse_poll_reply(&b))
+                {
+                    Some(r) if r.st == ndp::ST_OK => {
+                        if r.flags & ndp::POLL_FLAG_CLOSED != 0
+                            || (r.rbytes > 0 && r.flags & ndp::POLL_FLAG_WRITABLE == 0)
+                        {
+                            // 尸槽（对端已关）：释槽换下一条，不是本自验的
+                            // 失败——client 侧还有活尝试在途。
+                            let _ = netd_rpc_tcp(
+                                netd,
+                                ndp::TcpSReq::Close,
+                                d,
+                                45_000_000_000,
+                            );
+                            continue 'acc;
+                        }
+                        if r.rbytes > 0 && r.flags & ndp::POLL_FLAG_WRITABLE != 0 {
+                            break 'acc d;
+                        }
+                    }
+                    other => bail!("bsh: evs: c{} poll bad {:?}", ci, other.map(|r| r.st)),
+                }
+                if now() >= dat_dl {
+                    bail!("bsh: evs: c{} data timeout", ci);
+                }
+                sleep_ms(tick, sleep_mask, 1000);
+            }
+        };
+        // ③ DRAIN 收割：st OK + 逐字节对拍（POLL 报过 rbytes 后串行收割
+        //    必得全量——单连接独占、无并发写者）。
+        let got = netd_rpc_tcp(netd, ndp::TcpSReq::Drain, dsid, 10_000_000_000);
+        match got {
+            Some((st, ref d)) if st == ndp::ST_OK && d.as_slice() == want => {}
+            Some((st, ref d)) => bail!(
+                "bsh: evs: c{} drain mismatch len={} want={} st={}",
+                ci,
+                d.len(),
+                want.len(),
+                st
+            ),
+            None => bail!("bsh: evs: c{} drain bad", ci),
+        }
+        // ④ RT 回发（echo）：send + ACK 帽内 ST_OK（client 侧对拍回读——
+        //    本侧只断言投递完成；应答 1B OK 形无数据面）。
+        match netd_rpc_tcp(
+            netd,
+            ndp::TcpSReq::Roundtrip { data: want },
+            dsid,
+            45_000_000_000,
+        ) {
+            Some((st, _)) if st == ndp::ST_OK => {}
+            other => bail!("bsh: evs: c{} echo bad {:?}", ci, other.map(|(s, _)| s)),
+        }
+        // ⑤ CLOSE(dsid)：驱动到 Closed 释槽（ST_TIMEOUT = 帽到槽已释的
+        //    边缘形——首跑实录若真出现再定标，验收打严格 OK）。
+        match netd_rpc_tcp(netd, ndp::TcpSReq::Close, dsid, 45_000_000_000) {
+            Some((st, _)) if st == ndp::ST_OK => {}
+            other => bail!("bsh: evs: c{} close bad {:?}", ci, other.map(|(s, _)| s)),
+        }
+        n_ok += 1;
+    }
+    // ⑥ CLOSE(lsid) 撤 listen 表（Listen 槽即时释放——恒 OK）。
+    match netd_rpc_tcp(netd, ndp::TcpSReq::Close, lsid, 10_000_000_000) {
+        Some((st, _)) if st == ndp::ST_OK => {}
+        other => bail!("bsh: evs: close listen bad {:?}", other.map(|(s, _)| s)),
+    }
+    if berry_handle_close(tick) != 0 {
+        berry_libc::park();
+    }
+    println!("EVS ok n={}", n_ok);
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码

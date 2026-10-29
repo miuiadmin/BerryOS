@@ -323,14 +323,17 @@ pub fn parse_tcp_reply(buf: &[u8]) -> Option<TcpReply<'_>> {
 // 由服务端分配经应答回传——请求面无既存会话上下文，encode 收 session≠0 =
 // 野值拒）；ACCEPT 请求 `[op][listen_sid u32 LE]` 5B（会话即 listen 会话，
 // 0 拒）；POLL 请求 `[op]` 1B（默认会话）或 `[op][sid u32 LE]` 5B（Open
-// 双形同款）。
+// 双形同款）；DRAIN 请求（A2-3）`[op][sid u32 LE]` 5B（数据会话收割，0 拒
+// ——默认会话的收割走 legacy ROUNDTRIP 面）。
 //
 // 应答：Open/Roundtrip/Close（含 sessioned 形）**复用 v1 两形零改动**
 // （encode_tcp_reply/parse_tcp_reply——会话不在应答面回显，严格串行 RPC
 // 下调用方自知会话）；LISTEN/ACCEPT 应答 `[st][sid u32 LE]` = 5B 仅 OK（
 // sid ∈ 1..=MAX——**成功必携 sid、非 OK 恒不携**，DNS addr 烘焙线同族）；
 // POLL 应答 `[st][flags u8][rbytes u16 LE]` = 4B 仅 OK（快照查询无
-// TIMEOUT/EAGAIN——「无就绪」是 OK 应答的合法内容不是错误）。
+// TIMEOUT/EAGAIN——「无就绪」是 OK 应答的合法内容不是错误）；DRAIN 应答
+// （A2-3）复用 v1 两形（ST_OK 携收割字节；零收成 = 1B OK 形——与 POLL
+// 「无就绪是合法 OK」同族）。
 
 /// TCP 监听（A2-2）：port → 服务端建 listen 会话，应答 sid 形（服务端分配）。
 pub const OP_TCP_LISTEN: u8 = 5;
@@ -339,6 +342,10 @@ pub const OP_TCP_LISTEN: u8 = 5;
 pub const OP_TCP_ACCEPT: u8 = 6;
 /// TCP 就绪快照（A2-2）：会话 → flags（可写/断开）+ 可读字节数。
 pub const OP_TCP_POLL: u8 = 7;
+/// TCP 收割接收缓冲（A2-3）：数据会话 → 应答携被收割字节（**v1 应答两形
+/// 复用**——ST_OK + data；零收成 = 1B OK 形）。POLL 报 rbytes 后的读半边
+/// ——拉模型数据面，不推进发送臂。
+pub const OP_TCP_DRAIN: u8 = 8;
 
 /// 应答状态：非阻塞无就绪（仅 ACCEPT 面——无挂起连接，client 续轮询）。
 pub const ST_EAGAIN: u8 = 4;
@@ -347,6 +354,11 @@ pub const ST_EAGAIN: u8 = 4;
 pub const ST_NOSESSION: u8 = 5;
 /// 应答状态：会话表满（LISTEN/ACCEPT 造会话时无空槽——client 退避或收摊）。
 pub const ST_FULL: u8 = 6;
+/// 应答状态：net 设备缺席（A2-3，仅 LISTEN 域收——vnet deviceless serve 的
+/// 拓扑信号：MMIO 窗在而 netdev 缺席（B4 掉电相拓扑），vnet 不 trap 改答
+/// 此码，bsh EVS 见之静默跳过。其余 op 域不收——deviceless 端对它们答
+/// 域内 [`ST_BAD`]，消费者按既有分诊面降级）。
+pub const ST_NODEV: u8 = 7;
 
 /// 会话表容量帽（listen + 数据会话共池；双侧同步——vnet 段②按此定表）。
 /// echo server 串行验收 2 连接 + listen + 余量。
@@ -364,7 +376,7 @@ pub const SID_REP_LEN: usize = 5;
 /// POLL 应答线上长度（`[st][flags u8][rbytes u16 LE]`）。
 pub const POLL_REP_LEN: usize = 4;
 
-/// 会话化 TCP 请求（六 op 全集；data 借用原缓冲）。
+/// 会话化 TCP 请求（七 op 全集；data 借用原缓冲）。
 #[derive(Debug, PartialEq, Eq)]
 pub enum TcpSReq<'a> {
     /// 主动打开（默认会话 session=0 或命名数据会话）。
@@ -379,6 +391,9 @@ pub enum TcpSReq<'a> {
     Accept,
     /// 就绪快照（session 0 = 默认会话，或命名会话 sid）。
     Poll,
+    /// 收割接收缓冲（session = 数据会话 sid ∈ 1..=MAX，0 拒——默认会话的
+    /// 收割走 legacy ROUNDTRIP 面；应答复用 v1 两形）。
+    Drain,
 }
 
 impl<'a> From<TcpReq<'a>> for TcpSReq<'a> {
@@ -441,6 +456,15 @@ pub fn encode_tcp_s_request(out: &mut [u8], req: TcpSReq<'_>, session: u32) -> O
             }
             let m = out.get_mut(..5)?;
             m[0] = OP_TCP_POLL;
+            m[1..5].copy_from_slice(&session.to_le_bytes());
+            Some(5)
+        }
+        TcpSReq::Drain => {
+            if session == 0 {
+                return None; // 数据会话必须显式（默认会话收割走 legacy 面）
+            }
+            let m = out.get_mut(..5)?;
+            m[0] = OP_TCP_DRAIN;
             m[1..5].copy_from_slice(&session.to_le_bytes());
             Some(5)
         }
@@ -507,6 +531,16 @@ pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32)> {
             }
             Some((TcpSReq::Poll, sid))
         }
+        OP_TCP_DRAIN => {
+            if buf.len() != 5 {
+                return None;
+            }
+            let sid = u32::from_le_bytes(buf[1..5].try_into().ok()?);
+            if sid == 0 || sid > TCP_SESSIONS_MAX {
+                return None;
+            }
+            Some((TcpSReq::Drain, sid))
+        }
         _ => None,
     }
 }
@@ -519,8 +553,9 @@ pub struct SidRep {
     pub sid: u32,
 }
 
-/// LISTEN 应答 st 域：BAD / FULL（本地建表无 TIMEOUT；成功携 sid）。
-const LISTEN_ST_DOMAIN: [u8; 3] = [ST_OK, ST_BAD, ST_FULL];
+/// LISTEN 应答 st 域：BAD / FULL / **NODEV**（本地建表无 TIMEOUT；成功携
+/// sid。NODEV = vnet deviceless serve——无 NIC 拓扑的确定性跳过信号，A2-3）。
+const LISTEN_ST_DOMAIN: [u8; 4] = [ST_OK, ST_BAD, ST_FULL, ST_NODEV];
 /// ACCEPT 应答 st 域：BAD / EAGAIN / NOSESSION / FULL（非阻塞无 TIMEOUT）。
 const ACCEPT_ST_DOMAIN: [u8; 5] = [ST_OK, ST_BAD, ST_EAGAIN, ST_NOSESSION, ST_FULL];
 
@@ -1072,6 +1107,9 @@ mod tests {
 
         let n = encode_tcp_s_request(&mut out, TcpSReq::Poll, TCP_SESSIONS_MAX).unwrap();
         assert_eq!(&out[..n], &[OP_TCP_POLL, TCP_SESSIONS_MAX as u8, 0, 0, 0]);
+
+        let n = encode_tcp_s_request(&mut out, TcpSReq::Drain, 2).unwrap();
+        assert_eq!(&out[..n], &[OP_TCP_DRAIN, 2, 0, 0, 0]);
     }
 
     /// 尾随 sid=0 野值拒：该用 v1 形（规范形单一）；编码侧结构上产不出，
@@ -1159,7 +1197,7 @@ mod tests {
     #[test]
     fn tcp_s_st_not_in_legacy_domain() {
         let mut out = [0u8; TCP_REP_MAX];
-        for st in [ST_EAGAIN, ST_NOSESSION, ST_FULL] {
+        for st in [ST_EAGAIN, ST_NOSESSION, ST_FULL, ST_NODEV] {
             assert_eq!(encode_tcp_reply(&mut out, st, b""), None);
             assert_eq!(parse_tcp_reply(&[st]), None);
         }
@@ -1186,6 +1224,11 @@ mod tests {
         let n = encode_listen_reply(&mut out, ST_FULL, 0).unwrap();
         assert_eq!(&out[..n], &[ST_FULL]);
         assert_eq!(parse_listen_reply(&out[..n]), Some(SidRep { st: ST_FULL, sid: 0 }));
+
+        // A2-3 NODEV：1B 形（deviceless serve 的拓扑跳过信号——仅 LISTEN 域收）
+        let n = encode_listen_reply(&mut out, ST_NODEV, 0).unwrap();
+        assert_eq!(&out[..n], &[ST_NODEV]);
+        assert_eq!(parse_listen_reply(&out[..n]), Some(SidRep { st: ST_NODEV, sid: 0 }));
     }
 
     /// sid 形域执法：LISTEN 不收 EAGAIN/NOSESSION；ACCEPT 不收 TIMEOUT/BUSY；
@@ -1206,6 +1249,9 @@ mod tests {
         // 双域外
         assert_eq!(encode_listen_reply(&mut out, 0xFF, 0), None);
         assert_eq!(parse_accept_reply(&[0xFF]), None);
+        // NODEV 单域收（A2-3）：LISTEN 收 / ACCEPT 拒（bsh 仅在 LISTEN 见之跳过）
+        assert_eq!(encode_accept_reply(&mut out, ST_NODEV, 0), None);
+        assert_eq!(parse_accept_reply(&[ST_NODEV]), None);
     }
 
     /// sid 形烘焙线：非 OK 携 sid 编码拒 + 非 OK 5B 解析拒；OK 携 sid=0 /
@@ -1309,5 +1355,32 @@ mod tests {
         let mut empty: [u8; 0] = [];
         assert_eq!(encode_tcp_s_request(&mut empty, TcpSReq::Close, 0), None);
         assert_eq!(encode_tcp_s_request(&mut empty, TcpSReq::Listen { port: 80 }, 0), None);
+    }
+
+    /// DRAIN 请求规则（A2-3）：恰长 5B 单形 / session 0 编码与解析双侧拒
+    /// （默认会话收割走 legacy ROUNDTRIP 面）/ 尾随与截断拒 / 帽界对称 /
+    /// 帽内往返。应答面零新增（复用 v1 两形——1B OK 形即「零收成」合法值，
+    /// encode_tcp_reply/parse_tcp_reply 既有面覆盖，不重测）。
+    #[test]
+    fn tcp_s_drain_request_rules() {
+        let mut out = [0u8; REQ_S_LEN_MAX];
+        // 帽内往返（两端界）
+        for sid in [1u32, TCP_SESSIONS_MAX] {
+            let n = encode_tcp_s_request(&mut out, TcpSReq::Drain, sid).unwrap();
+            assert_eq!(n, 5);
+            assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Drain, sid)));
+        }
+        // session 0 双侧拒
+        assert_eq!(encode_tcp_s_request(&mut out, TcpSReq::Drain, 0), None);
+        assert_eq!(parse_tcp_s_request(&[OP_TCP_DRAIN, 0, 0, 0, 0]), None);
+        // 越帽（编码 u32::MAX / 解析帽+1）
+        assert_eq!(encode_tcp_s_request(&mut out, TcpSReq::Drain, u32::MAX), None);
+        assert_eq!(parse_tcp_s_request(&[OP_TCP_DRAIN, 0, 0, 0, TCP_SESSIONS_MAX as u8 + 1]), None);
+        // 恰长执法：截断 1B / 尾随 6B 均拒（无 v1 形可尾随——与 ACCEPT 同款单形）
+        assert_eq!(parse_tcp_s_request(&[OP_TCP_DRAIN]), None);
+        assert_eq!(parse_tcp_s_request(&[OP_TCP_DRAIN, 2, 0, 0, 0, 0]), None);
+        // out 不足
+        let mut small = [0u8; 4];
+        assert_eq!(encode_tcp_s_request(&mut small, TcpSReq::Drain, 1), None);
     }
 }

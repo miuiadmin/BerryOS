@@ -327,6 +327,12 @@ run-smp: build
 # SLIRP host-alias 转 hostfwd listener → 转回 guest:18081 = 自连自回，
 # 七步链全过才打 `LSN ok n=7` = rootfs 相新增标记；netdev 挂
 # `hostfwd=tcp::18081-:18081`（无盘路/裸相不带 netdev 不受扰）。
+# A2-3：POLL ok 后 bsh 跑事件循环 echo server 自验（netdproto LISTEN/
+# ACCEPT/POLL/DRAIN/RT/CLOSE 会话面，hostfwd `tcp::18082-:18082` 专线
+# 外接宿主）——两连接 64B/24B 异型载荷逐字节对拍全过才打 `EVS ok n=2`
+# = rootfs 相第 39 标记；evsclient（宿主对拍 client）由本 recipe 起
+#（QEMU 前）/收（trap EXIT），缺席则 bsh 卡 accept-wait 120s 后 bail
+#（echod 必抄同款：对端在席是 guest 自验链的结构前提）。
 # echod 由本 recipe 起（QEMU 前）/收（trap EXIT）；smoke.sh 同款自足。
 run-rootfs: build
     #!/bin/sh
@@ -338,7 +344,12 @@ run-rootfs: build
     ECHO_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-echod.XXXXXX")
     python3 tools/echod.py > "$ECHO_LOG" 2>&1 &
     ECHO_PID=$!
-    trap 'kill "$ECHO_PID" 2>/dev/null; rm -f "$ECHO_LOG"' EXIT
+    # A2-3：EVS 对拍 client（bsh evs_selftest 对端——先于 QEMU 起，自带
+    # 重试环吃 hostfwd 未就绪态；与 echod 同 trap 统一收）。
+    EVS_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-evsclient.XXXXXX")
+    python3 tools/evsclient.py > "$EVS_LOG" 2>&1 &
+    EVS_PID=$!
+    trap 'kill "$ECHO_PID" "$EVS_PID" 2>/dev/null; rm -f "$ECHO_LOG" "$EVS_LOG"' EXIT
     i=0
     until grep -q 'listening on' "$ECHO_LOG" 2>/dev/null; do
         kill -0 "$ECHO_PID" 2>/dev/null || { cat "$ECHO_LOG"; exit 1; }
@@ -361,7 +372,7 @@ run-rootfs: build
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
         -device virtio-blk-device,drive=drv0 \
-        -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0
+        -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0
 
 run-release: abi-check build-user
     cargo build --release

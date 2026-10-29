@@ -753,13 +753,16 @@ fn run_rootfs_child(console: Handle) {
                     }
                 } else if name == "bin/bsh" {
                     // A-2：交互 shell bsh——stdhello/hexyl 同链（musl target +
-                    // berry-libc shim）。gift 三/四元：[0] console 别名（spawn 内
+                    // berry-libc shim）。gift 三~五元：[0] console 别名（spawn 内
                     // dup）/ [1] **endB2 = H_BSH_STDIN（被 take 中转，svcmgr
                     // 自此不再持有——fd0 = console 键盘行转发对端）** /
                     // [2] rootfs VMO READ dup（bsh 的 `run <name>` 流式取 ELF，
                     // libc `rootfs_h()` 消费）/ [3] P6 A-1：fs 客户端端（fs_a
                     // 的 SEND|RECV dup——`>`/`cat`/`ls` 的 RPC 端，libc
-                    // `fs_h()`；fs_client==0 = fsmgr 未起，退回三元）。栈 16
+                    // `fs_h()`；fs_client==0 = fsmgr 未起）/ [4] A2-3：netd
+                    // 服务端端（NET_A 的 SEND|RECV dup——EVS echo server 自验
+                    // 的 RPC 面，libc `netd_h()`；NET_A==0 = vnet 未起 = EFI/
+                    // 裸拓扑，静默不装）。栈 16
                     // 页（无 clap 链）。`BSH ok` 由 bsh 自打（自驱自验：内部
                     // `run hexyl` 收齐 2156B——rootfs 相第 8 标记）；prompt/
                     // 交互为化妆面。
@@ -776,10 +779,30 @@ fn run_rootfs_child(console: Handle) {
                         if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
                             trap();
                         }
-                        let mut gifts = [rootfs_dup, 0 as Handle];
+                        // A2-3 第五 extras：netd 服务端端。NET_A==0（vnet 未起 =
+                        // EFI/裸拓扑）静默不装——bsh 侧 netd_h()==0 跳过同口径。
+                        // 槽序固定：netd 只随 fs 之后入列（libc 按位落种
+                        // hs[6]→netd——前缀紧致会让 netd 落进 fs 槽 hs[5] 造成
+                        // 同槽不同名；fs 缺席而 vnet 在位的理论拓扑里 netd
+                        // 一并让位，现无此 recipe）。
+                        let mut netd_dup = 0 as Handle;
+                        let net = NET_A.load(Ordering::Relaxed);
+                        if net != 0 {
+                            if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV, &mut netd_dup)
+                                != 0
+                            {
+                                trap();
+                            }
+                        }
+                        let mut gifts = [rootfs_dup, 0 as Handle, 0 as Handle];
                         let gifts: &[Handle] = if fs_client != 0 {
                             gifts[1] = fs_client;
-                            &gifts
+                            if netd_dup != 0 {
+                                gifts[2] = netd_dup;
+                                &gifts
+                            } else {
+                                &gifts[..2]
+                            }
                         } else {
                             &gifts[..1]
                         };
@@ -802,13 +825,16 @@ fn run_rootfs_child(console: Handle) {
                         .is_err()
                         {
                             // Err 三路（首窗读/elf_head/几何前置）全在 env send
-                            // 前——rootfs_dup/fs_client 均未被 take，显式回收防
-                            // 表槽泄漏（Ok 路径已被 take，关旧值必 -EBADF，勿在
-                            // 此关）。
+                            // 前——rootfs_dup/fs_client/netd_dup 均未被 take，
+                            // 显式回收防表槽泄漏（Ok 路径已被 take，关旧值必
+                            // -EBADF，勿在此关）。
                             if berry_handle_close(rootfs_dup) != 0 {
                                 trap();
                             }
                             if fs_client != 0 && berry_handle_close(fs_client) != 0 {
+                                trap();
+                            }
+                            if netd_dup != 0 && berry_handle_close(netd_dup) != 0 {
                                 trap();
                             }
                             fs_client = 0;
@@ -816,10 +842,13 @@ fn run_rootfs_child(console: Handle) {
                             eco_skip(b"elf bad");
                         } else {
                             ps_reg(b"bsh", psp::STATE_ALIVE, 0);
-                            // Ok：fs_client 已被 take 迁移（旧值必 -EBADF，勿关）；
+                            // Ok：fs_client/netd_dup 已被 take 迁移（旧值必
+                            // -EBADF，勿关）；
                             // 本表 fs_a 用毕关——bsh 的 dup 与本表别名共享同一
                             // ObjRef 队列，关别名只减引用（队列由 bsh 侧撑着），
-                            // bsh 自此是 fs_a 队列唯一读者（防回复混流）。
+                            // bsh 自此是 fs_a 队列唯一读者（防回复混流）。NET_A
+                            // 是本表常驻别名（vnet 复用，ps/bc 等后续消费面），
+                            // 不随 bsh 关闭。
                             fs_client = 0;
                             if fs_a_h != 0 && berry_handle_close(fs_a_h) != 0 {
                                 trap();

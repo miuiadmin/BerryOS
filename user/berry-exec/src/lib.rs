@@ -17,8 +17,8 @@
 //!   穿 = 干净 D-abort（hexyl 栈溢出实踩，d-3c）；
 //! - env 块 gift 位语义（libc `berry_libc_boot` 镜像）：[0] = stdout 端
 //!   RIGHT_SEND dup、[1] = stdin 读端、[2..] = extra_gifts（A-2：rootfs VMO
-//!   READ dup；P6 A-1：fsmgr 端/fs 客户端端）。**随行 handle 被 send
-//!   take**——调用方需保留原值者先 duplicate；
+//!   READ dup；P6 A-1：fsmgr 端/fs 客户端端；A2-3：netd 服务端端）。**随行
+//!   handle 被 send take**——调用方需保留原值者先 duplicate；
 //! - **回收（Plan B v0.5）**：成功返 [`ChildHandles`]，调用方收完输出后
 //!   `reap()`（wait TERMINATED → unmap×3 → close×5——P6 A-2 起含 MMIO 窗口）
 //!   ——完整回收映像/栈帧与对象 Box；不 reap = 有界泄漏（root Vmar L1/PT
@@ -214,10 +214,11 @@ pub struct SpawnSpec<'a> {
     /// argv[1..] 追加项列表（hexyl 的 `--color=never` 单参 / C-2a 起 uu 家族
     /// cp/mv 的双操作数走这条）。空片 = 无参。
     pub args: &'a [&'a [u8]],
-    /// env 块 gift[2..]（P6 A-1 起切片 ≤2 项）：[2] = rootfs VMO READ dup
+    /// env 块 gift[2..]（A2-3 起切片 ≤3 项）：[2] = rootfs VMO READ dup
     /// （bsh 的 run 流式取 ELF）/ P6 的 fsmgr 服务端端 fs_b；[3] = fs 客户
-    /// 端端（bsh 的 `>`/`cat`/`ls`，P6 A-1）。**全被 send take**，调用方
-    /// 保留原值者先 duplicate。空片 = 老两/三元 gift（hello/stdhello/hexyl）。
+    /// 端端（bsh 的 `>`/`cat`/`ls`，P6 A-1）；[4] = netd 服务端端（bsh 的
+    /// EVS 自验，A2-3）。**全被 send take**，调用方保留原值者先 duplicate。
+    /// 空片 = 老两/三元 gift（hello/stdhello/hexyl）。
     pub extra_gifts: &'a [Handle],
     /// MMIO 物理窗口 VMO（P6 A-2，boot 授能面——virtio-mmio 窗口）：Some 时
     /// 在栈页之后把它映到 [`VIRTIO_MMIO_VA`]（rights 恰 READ|WRITE，v1
@@ -416,7 +417,9 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     //    语义固定、nhandles 单调门控 presence，消费侧（libc io.rs boot）同
     //    步对偶。无 stdin 的老 spawn 面（svcmgr 无管道子）nhandles=1 不装。
     let (env_s, env_c) = channel_pair();
-    let mut gift = [0 as Handle; 6];
+    // 7 槽（A2-3：[4] rootfs / [5] fs / [6] netd——svcmgr bsh arm 三 extras；
+    // bsh 内 uu_run 族仍 ≤2 消费同一面零漂移）。
+    let mut gift = [0 as Handle; 7];
     if berry_handle_duplicate(stdout, RIGHT_SEND, &mut gift[0]) != 0 {
         trap();
     }
@@ -430,12 +433,12 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         gift[1] = *h; // 被 send take（迁移语义同上）
         nhandles = nhandles.max(2);
     }
-    // slice 帽（指令字面 ≤4）+ 容量执法（2 base + 2 自描述对 + extra ≤ 6 →
-    // extra ≤ 2）双断言：今日调用面全 ≤2 零漂移，越界即 panic loud。
+    // slice 帽（指令字面 ≤4）+ 容量执法（2 base + 2 自描述对 + extra ≤ 7 →
+    // extra ≤ 3）双断言：越界即 panic loud（bsh arm 三 extras = 满配面）。
     assert!(extra_gifts.len() <= 4, "spawn: extra_gifts slice 帽 4");
     assert!(
         4 + extra_gifts.len() <= gift.len(),
-        "spawn: extra_gifts ≤ 2（gift[2..4] = T-1 自描述对占定）"
+        "spawn: extra_gifts ≤ 3（gift[2..4] = T-1 自描述对占定）"
     );
     if !extra_gifts.is_empty() {
         // extras 落 [4] 起要求 stdin 在位（前缀紧致律：[2]/[3] 缺 stdin 即
@@ -450,7 +453,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     //    create 走 thread_create）、[3] = 自身 root Vmar（MAP|MANAGE|
     //    DUPLICATE——vmar_map 授片 + vmar_unmap 门控 RIGHT_MAP）。
     //    extras 紧随落 [4..4+len]（**装在块内** = 结构性保证前缀无洞：
-    //    extras 不可能先于自描述对出现）；nhandles = 4 + len ∈ {4,5,6}。
+    //    extras 不可能先于自描述对出现）；nhandles = 4 + len ∈ 4..=7。
     //    子内 `self_proc_h()==0`（无 stdin 面）→ pthread_create EAGAIN
     //    守门（旧桩语义零漂移）。
     if stdin_pair.is_some() || stdin_handle.is_some() {

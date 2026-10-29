@@ -365,7 +365,8 @@ pub extern "C" fn berry_channel_create(options: u32, out0: *mut Handle, out1: *m
     unsafe { sys(nr::CHANNEL_CREATE, options as usize, out0 as usize, out1 as usize, 0, 0, 0) }
 }
 
-/// v1 非阻塞：满 -EBUSY；nbytes ≤ 256 / nhandles ≤ 4（超 -EINVAL）；随行
+/// v1 非阻塞：满 -EBUSY；nbytes ≤ 256 / nhandles ≤ 8（超 -EINVAL；A2-3
+/// 6→8——kernel `CHAN_HND_MAX` 同源）；随行
 /// handle 逐个迁出调用者表（原值立即 -EBADF）；数组内重复值 -EINVAL；
 /// 任一步失败 = 调用者表零变化。
 #[no_mangle]

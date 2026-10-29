@@ -382,11 +382,12 @@ berry_status_t berry_channel_send(berry_handle_t ch,
                               const void *bytes, size_t nbytes,
                               const berry_handle_t *handles, size_t nhandles);
                                /* v1 非阻塞：消息压对端队列（深度 8），满 → -EBUSY；
-                                  nbytes ≤ 256 / nhandles ≤ 6（T-1：4→6——
-                                  berry-exec env 块 gift 扩至 6 位（[2]/[3] =
-                                  子进程自描述对 self_proc/self_vmar——前缀
-                                  紧致布局，终验实抓定案；extras 随后 [4..]），
-                                  与 kernel `CHAN_HND_MAX` 同源；超 → -EINVAL）；
+                                  nbytes ≤ 256 / nhandles ≤ 8（T-1：4→6；A2-3：
+                                  6→8——bsh arm 三 extras（rootfs/fs/netd 端）
+                                  + base 2 + 自描述对 2 = env 块 7 位，首跑实抓
+                                  nhandles=7 越 6 限 send -EINVAL → spawn 链自陷；
+                                  extras 随后 [4..]），与 kernel `CHAN_HND_MAX`
+                                  同源；超 → -EINVAL）；
                                   随行 handle 逐个迁出调用者表（原值立即 -EBADF）、
                                   令牌随消息挂起——接收方 recv 时落入它的表；
                                   数组内重复 handle 值 → -EINVAL（原子性预检）；

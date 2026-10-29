@@ -43,11 +43,12 @@
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段、
 #      C-4b 起七段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），64 标记
-#      （boot 26 + rootfs 38——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），65 标记
+#      （boot 26 + rootfs 39——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
+#      EVS ok n=2/
 #      PS ok n=/BC ok/
 #      M3DEMO ok n=5/THR ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
@@ -57,7 +58,8 @@
 #      （sort|uniq 步与四段链 T-1 回收）+ EL0 四项微基准格式断言收口（B-1）
 #      + 深坑六件八步执行链（U4——C-2c 挂账刀）+ Tab 补全九步（TAB——C-4）
 #      + Ctrl-C kill 链四步（INT——C-4b）+ 多路等待聚合器四步（POLL——A2-1，
-#      bsh poll_selftest）+ 里程碑演示五步（M3DEMO——C-5）
+#      bsh poll_selftest）+ 事件循环 echo server 两连接对拍（EVS——A2-3，
+#      bsh evs_selftest 经 netd 会话面）+ 里程碑演示五步（M3DEMO——C-5）
 #      + 进程内多线程消费面（THR——T-1，svcmgr thr_selftest）
 #      全过，
 #      状态谓词门控注入时机，不赌 boot 秒数）后
@@ -155,7 +157,7 @@ python3 "$(dirname "$0")/gen_abi.py" --check \
   || { echo "smoke: FAIL: ABI 单源守卫失败（改了 abi.toml 跑 just abi-gen）" >&2; exit 1; }
 
 DEADLINE_BOOT=120    # 秒：boot 全部标记到齐（裸相）
-DEADLINE_ROOTFS=300  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
+DEADLINE_ROOTFS=420  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
                      # 自验含整链 commit（fsmgr 侧 ~13 次串行扇区 RPC，TCG
                      # 下每次 ~0.8s）+ GET 读回 ≈ +30-40s，120s 结构性不够；
                      # T-d 起 svcmgr TCPS 三 op（每 op 一轮 TCP 会话相位，
@@ -177,7 +179,18 @@ DEADLINE_ROOTFS=300  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # 慢而活——collect 帽 30s 定标实录（U1_EOF_CAP 同
                      # 口径）+ ③④ ~18s，run-rootfs 定向 CD ok→M3DEMO ok
                      # ≈45s），×3 boots 常态 ~240s 仍 < 300s，帽不动
-                     # （五相复跑若显压力再升）
+                     # （五相复跑若显压力再升）；**A2-3 起 300→420**：
+                     # EVS 段入 bsh 链（LISTEN+accept-wait+两连接
+                     # RT/DRAIN/CLOSE——CLOSE 释槽走 vnet TCPS_CLOSE_CAP
+                     # 30s + 尸槽回收每条 ~30s，worst ~60-130s）+ TCG
+                     # 慢夜（持久化相 boot→EVS ok 实测 ~200s）叠加，
+                     # 300s 帽首跑实录近失：64/65 到齐唯缺链尾 M3DEMO
+                     #（bsh 阻在 m3demo 内、无 bail、switches 爬至 2400
+                     #——脏盘相 FATW/T3.TXT 覆写 + 旧 staging 隐式
+                     # commit 本就是最慢相；rootfs/RX/子目录三相同链
+                     # 全绿 = 预算题非正确性题）；420 与 evsclient 总帽
+                     # 480 保持 60s 余量序（client 先于 QEMU 起、帽序
+                     # 不能倒）
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
@@ -188,6 +201,11 @@ RX_HOLDER=""
 # T-c：宿主 TCP 回显服务（echod.py）进程与日志（cleanup 兜底收）。
 ECHO_PID=""
 ECHO_LOG=""
+# A2-3：EVS echo server 宿主对拍 client（evsclient.py）——**每相一实例**
+#（rootfs/RX/子目录/持久化四相各起一记：guest 每次 boot 各跑一遍 bsh
+# evs_selftest；B4 三 boot 无 netdev 不起——EVS 结构性缺席不设门）。
+EVS_PID=""
+EVS_LOG=""
 
 cleanup() {
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -205,14 +223,22 @@ cleanup() {
     kill "$ECHO_PID" 2>/dev/null
     wait "$ECHO_PID" 2>/dev/null
   fi
+  # A2-3：evsclient 兜底收（正常流每相 evs_client_wait 已收清——这里只
+  # 兜失败中断时的在途实例）。
+  if [ -n "$EVS_PID" ] && kill -0 "$EVS_PID" 2>/dev/null; then
+    kill "$EVS_PID" 2>/dev/null
+    wait "$EVS_PID" 2>/dev/null
+  fi
   if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
     echo "smoke: 串口日志保留：$LOG" >&2
     # T-c 对抗审查实抓：ECHO_LOG 同为失败现场（echod traceback 只落它）——
     # SMOKE_KEEP_LOG=1 只保串口日志时宿主侧死因恒被抹。
     [ -n "$ECHO_LOG" ] && echo "smoke: echod 日志保留：$ECHO_LOG" >&2
+    [ -n "$EVS_LOG" ] && echo "smoke: evsclient 日志保留：$EVS_LOG" >&2
   else
     rm -f "$LOG"
     [ -n "$ECHO_LOG" ] && rm -f "$ECHO_LOG"
+    [ -n "$EVS_LOG" ] && rm -f "$EVS_LOG"
   fi
 }
 trap cleanup EXIT
@@ -228,8 +254,40 @@ fail() {
     echo "---- echod 日志尾部（$ECHO_LOG）----" >&2
     tail -10 "$ECHO_LOG" >&2
   fi
+  # A2-3 同款：evsclient 死因（重试诊断只落 EVS_LOG）。
+  if [ -n "$EVS_LOG" ] && [ -s "$EVS_LOG" ]; then
+    echo "---- evsclient 日志尾部（$EVS_LOG）----" >&2
+    tail -10 "$EVS_LOG" >&2
+  fi
   echo "--------------------------------" >&2
   exit 1
+}
+
+# A2-3 EVS client 对（每相起/收）：起 = QEMU 前后台拉起（client 自带重试
+# 环——guest LISTEN 未起时 connect 失败重试，240s 总帽内必达）；收 =
+# guest 侧 EVS ok 已到齐后等 client 对拍完成行（compare 与 guest 打标
+# 几乎同时——30s 帽只盖透传余量），成功后收进程 + 清日志槽（下一相重起）。
+evs_client_start() {
+  EVS_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-evsclient.XXXXXX")
+  python3 tools/evsclient.py > "$EVS_LOG" 2>&1 &
+  EVS_PID=$!
+}
+evs_client_wait() {
+  local tag="$1" tc
+  tc=$(date +%s)
+  while ! grep -q 'EVS client ok n=2' "$EVS_LOG" 2>/dev/null; do
+    kill -0 "$EVS_PID" 2>/dev/null \
+      || fail "evsclient 提前退出（$tag）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
+    [ $(( $(date +%s) - tc )) -gt 30 ] \
+      && fail "$tag EVS client 30s 未对拍完成（guest EVS ok 已到——查 EVS_LOG 重试诊断）"
+    sleep 1
+  done
+  kill "$EVS_PID" 2>/dev/null
+  wait "$EVS_PID" 2>/dev/null
+  rm -f "$EVS_LOG"
+  EVS_PID=""
+  EVS_LOG=""
+  echo "smoke: $tag EVS client 对拍完成（两连接 64B/24B 逐字节）"
 }
 
 # 标记断言：DEMO ok 是 AIDEMO ok 的子串（4-6 起既有混叠）——裸 grep -qF 会被
@@ -338,13 +396,15 @@ done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
+# A2-3：EVS client 先于 QEMU 起（client 自带重试环吃 hostfwd 未就绪态）。
+evs_client_start
 echo "smoke: QEMU 启动（rootfs 相：fw_cfg rootfs 卷（A1-3b 多卷名）+ virtio-blk + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
-  -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0 \
+  -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -561,8 +621,14 @@ QEMU_PID=$!
 # 盘面 = 链位置 int_selftest 后 fat 族前（EFI 路无盘亦打，U2/U3/TAB/INT
 # 契约）。"POLL ok" 与现役标记两两互非子串（PIPE/PS/APP 前缀族互异，
 # /usr/bin/grep 复核零碰撞——无 `XPOLL ok` 形态在册，前邻特例不需要）。
+# A2-3（事件循环 echo server 整链）：+ EVS ok n=2——bsh evs_selftest 经
+# netd LISTEN(18082)/ACCEPT/POLL/DRAIN/RT/CLOSE 全链收两连接（每连接
+# 64B/24B 异型载荷逐字节对拍）全过才打——rootfs 相第 39 标记。netdev 依赖
+# 面 = 链位置 poll_selftest 后 fat 族前（**EFI/裸路 netd_h()==0 静默跳过**
+# ——有 netdev 的四相照打；「串行非竞速」4-5a 铁律：逐连接串行对拍零竞速
+# 标记）。"EVS ok n=2" 与现役标记两两互非子串（无 `XEVS ok` 形态在册）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -577,13 +643,13 @@ while :; do
   fi
   [ -z "$missing" ] && break
   # 相内含 FATW 整链 commit + T-d TCP 三 op 全走真网卡——比较须用
-  # DEADLINE_ROOTFS（现 300s；与文案一致。历史上写 BOOT 是笔误：比较 120s
+  # DEADLINE_ROOTFS（现 420s；与文案一致。历史上写 BOOT 是笔误：比较 120s
   # 文案当时 240s，>120s 到齐会被误杀）。
   [ $(( $(date +%s) - t2 )) -gt "$DEADLINE_ROOTFS" ] \
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + EVS ok n=2 + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
@@ -592,10 +658,13 @@ echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROO
 # 「私有通道收齐 + 基准对拍才打」同款分层思想）。
 grep -q 'app APPDEMO up' "$LOG" \
   || fail "app APPDEMO up 缺失（console=true 能力面断——appdemo 未见自证输出；查 eco: app 行）"
+# A2-3：guest EVS ok 已在标记面到齐——收本相 client 对拍结果（30s 帽只盖
+# 透传余量；compare 与 guest 打标几乎同时）。
+evs_client_wait "rootfs 相"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 26 + rootfs 38 = 64
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 26 + rootfs 39 = 65
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块
 # 设备服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络
@@ -622,7 +691,7 @@ RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-rx.XXXXXX")
 rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 # holder 帽 1800s：C-0 刀 4 起 FIFO 面横跨三跑（RX + FAT 子目录 + 持久化，
-# 每跑 DEADLINE_ROOTFS=300s 帽 + 注入段 0.5s/字节——900s 只盖两跑结构性
+# 每跑 DEADLINE_ROOTFS=420s 帽 + 注入段 0.5s/字节——900s 只盖两跑结构性
 # 见底；30min 盖三跑 worst 仍有 ~2x 余量）。
 ( sleep 1800 ) > "$RX_FIFO" &
 RX_HOLDER=$!
@@ -633,17 +702,20 @@ RX_HOLDER=$!
 # SIGTERM 终止前扇区已同步落宿主盘。
 python3 tools/mkfat.py disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
+# A2-3：本相（及子目录/持久化相）每次 boot 各跑一遍 evs_selftest——client
+# 每相一实例（上相已收清，重起零残留）。
+evs_client_start
 echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
-  -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0 \
+  -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：64 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：65 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -664,6 +736,7 @@ while :; do
   sleep 1
 done
 echo "smoke: RX 相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入编辑序列（逐字节 0.5s 间隔）"
+evs_client_wait "RX 相"
 # 逐字节注入助手（段 d 专用——a/b/c 保留既有显式 printf 形态）：单引号传参
 # 保字面（`$?` 不在 smoke 侧展开）；每字节 0.5s（FEN=0 深 1 字节确定性）。
 inject_line() {
@@ -843,7 +916,7 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 # DATA/NOTE.TXT = `berryos fat subdir note\n`——与 berry-fatfs host 共识
 # 基准同源字节）；**独立盘 disk_dirs.img**：disk.img（RX 相已写、阶段 6
 # 持久化相将复用）零扰动——默认盘字节零漂移硬线不破（子目录只在 fixture
-# 模式，正是刀 3 的设计面）。58 标记载明全链在目录盘上照跑（DIR/CD ok 自验
+# 模式，正是刀 3 的设计面）。65 标记载明全链在目录盘上照跑（DIR/CD ok 自验
 # + FATW/RW.TXT 覆写幂等 + FAT 基准读）后注入三段，断言三重防回声：
 # ① `ls DATA` → grep 'NOTE.TXT'——断言先于一切含 NOTE.TXT 的注入行回显
 #   （顺序防线：本注入行自身只含 'ls DATA'，NOTE.TXT 只能来自 READDIR
@@ -862,13 +935,14 @@ FX_BIN=$(mktemp "${TMPDIR:-/tmp}/berryos-fx.XXXXXX")
 python3 tools/mkfat.py disk_dirs.img --fixture "$FX_BIN" || fail "mkfat 造目录盘失败"
 rm -f "$FX_BIN"
 printf 'BERRYOSVBLK!' | dd of=disk_dirs.img conv=notrunc status=none
+evs_client_start
 echo "smoke: QEMU 启动（FAT 子目录相：fixture 盘 disk_dirs.img + FIFO stdin）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk_dirs.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
-  -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0 \
+  -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)
@@ -889,6 +963,7 @@ while :; do
   sleep 1
 done
 echo "smoke: FAT 子目录相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入三段（ls/cat/cat）"
+evs_client_wait "FAT 子目录相"
 inject_line 'ls DATA'
 t6=$(date +%s)
 while :; do
@@ -922,7 +997,7 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收；
 # disk_dirs.img 本相不复用——两盘链零混）；
 # 不关 fd3（本相注入完 cat 行后 FIFO 再无消费者——阶段 7 掉电相三 boot
-# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。58 标记载明
+# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。65 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读；
 # DF 自验的差分面同走覆写路径（RW.TXT 3000→2048→3000 双向，绝对 free 跨
@@ -937,13 +1012,14 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 : > "$LOG"
+evs_client_start
 echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin + virtio-net）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
-  -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0 \
+  -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)
@@ -964,6 +1040,7 @@ while :; do
   sleep 1
 done
 echo "smoke: FAT 持久化相 ${#ALL_MARKERS[@]}/${#ALL_MARKERS[@]} 到齐，注入 cat OUT.TXT + cat T3.TXT"
+evs_client_wait "FAT 持久化相"
 inject_line 'cat OUT.TXT'
 t6=$(date +%s)
 while :; do

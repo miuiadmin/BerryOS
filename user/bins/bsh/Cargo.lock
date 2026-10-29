@@ -40,6 +40,10 @@ name = "berry-loader"
 version = "0.1.0"
 
 [[package]]
+name = "berry-netdproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-poll"
 version = "0.1.0"
 
@@ -59,6 +63,7 @@ dependencies = [
  "berry-exec",
  "berry-fsproto",
  "berry-libc",
+ "berry-netdproto",
  "berry-poll",
  "berry-sys",
 ]

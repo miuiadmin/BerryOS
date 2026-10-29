@@ -37,7 +37,9 @@
 # 注意：echod 18080 宿主端口 guest 侧定值不可参数化——**勿与 smoke/run-rootfs
 # 并行跑**（端口冲突 → 本脚本 listening 轮询 loud fail）。盘名 disk.soak.img
 # 专属（对抗审查 finding 10）——与 smoke/run-rootfs 的 disk.img 零交集，
-# 并行窗口内盘互毁面已闭（端口面仍在，警告保留）。
+# 并行窗口内盘互毁面已闭（端口面仍在，警告保留）。A2-3 起再加 18082
+#（EVS client）同款端口面——evsclient 不做 listening 自证（无监听面），
+# 冲突死状 = client 重试环打满 240s 总帽 FAIL（boot 尾收口处 loud）。
 # 调试：SOAK_KEEP_LOG=1 保留串口日志不删（成功也留；FAIL 恒留）。
 set -u
 
@@ -68,6 +70,11 @@ LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-soak.XXXXXX")
 QEMU_PID=""
 ECHO_PID=""
 ECHO_LOG=""
+# A2-3：EVS echo server 宿主对拍 client——soak 带 netdev = bsh evs_selftest
+# 必跑（netd_h()≠0），client 缺席则 bsh 卡 accept-wait 120s 后 bail = 交互
+# 链断 + EVS ok 缺席覆盖守卫 FAIL（echod 必抄同款：三行 shell 换 bsh 活链）。
+EVS_PID=""
+EVS_LOG=""
 
 KEEP=0
 [ -n "${SOAK_KEEP_LOG:-}" ] && KEEP=1
@@ -83,12 +90,19 @@ cleanup() {
     kill "$ECHO_PID" 2>/dev/null
     wait "$ECHO_PID" 2>/dev/null
   fi
+  # A2-3：evsclient 兜底收（正常流 boot 尾已收清——这里只兜中断在途实例）。
+  if [ -n "$EVS_PID" ] && kill -0 "$EVS_PID" 2>/dev/null; then
+    kill "$EVS_PID" 2>/dev/null
+    wait "$EVS_PID" 2>/dev/null
+  fi
   if [ "$KEEP" -eq 1 ]; then
     echo "soak: 串口日志保留：$LOG" >&2
     [ -n "$ECHO_LOG" ] && echo "soak: echod 日志保留：$ECHO_LOG" >&2
+    [ -n "$EVS_LOG" ] && echo "soak: evsclient 日志保留：$EVS_LOG" >&2
   else
     rm -f "$LOG"
     [ -n "$ECHO_LOG" ] && rm -f "$ECHO_LOG"
+    [ -n "$EVS_LOG" ] && rm -f "$EVS_LOG"
   fi
 }
 trap cleanup EXIT
@@ -102,6 +116,10 @@ fail() {
   if [ -n "$ECHO_LOG" ] && [ -s "$ECHO_LOG" ]; then
     echo "---- echod 日志尾部（$ECHO_LOG）----" >&2
     tail -10 "$ECHO_LOG" >&2
+  fi
+  if [ -n "$EVS_LOG" ] && [ -s "$EVS_LOG" ]; then
+    echo "---- evsclient 日志尾部（$EVS_LOG）----" >&2
+    tail -10 "$EVS_LOG" >&2
   fi
   echo "--------------------------------" >&2
   KEEP=1   # 失败必留全日志（含 echod 现场——smoke T-c 对抗审查教训同源）
@@ -164,6 +182,14 @@ while ! grep -q 'listening on' "$ECHO_LOG" 2>/dev/null; do
   sleep 0.2
 done
 
+# —— A2-3 evsclient：bsh EVS echo server 对拍对端（必抄 echod 模式）——
+# 起在 QEMU 前（client 重试环吃 hostfwd 未就绪态，240s 总帽内必达）；boot
+# 覆盖标记到齐后收口（30s 帽只盖透传余量），成功后收进程清槽——此后
+# 1 小时长跑与 client 零纠缠。
+EVS_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-evsclient.XXXXXX")
+python3 tools/evsclient.py > "$EVS_LOG" 2>&1 &
+EVS_PID=$!
+
 # —— QEMU（run-rootfs 全量形态 + soak 门控键；stdin /dev/null）——
 echo "soak: QEMU 启动（$MINUTES 拍；首拍帽 ${FIRST_BEAT_CAP}s / 单拍帽 ${PER_BEAT_CAP}s / 总帽 ${TOTAL_CAP}s）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
@@ -172,7 +198,7 @@ echo "soak: QEMU 启动（$MINUTES 拍；首拍帽 ${FIRST_BEAT_CAP}s / 单拍�
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.soak.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
-  -netdev user,id=n0,hostfwd=tcp::18081-:18081 -device virtio-net-device,netdev=n0 \
+  -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -180,9 +206,11 @@ QEMU_PID=$!
 # DNS/TCP/TCPS 三标记是 vnet 转常驻服务链的活性终点：echod 中途死/TCP 自验
 # trap 时整族缺席而 ECO/VIRTIO/FAT/NET 照齐——四标记守卫罩不住自己举例的
 # 失败链（对抗审查 finding 3/6）；'SOAK gate on' = 内核门控块内打印（行在
-# ⟺ soakmon 已 spawn），键名漂移在此 loud 而非等首拍帽超时。
+# ⟺ soakmon 已 spawn），键名漂移在此 loud 而非等首拍帽超时。A2-3 起
+# + EVS ok n=2（bsh 侧 netd 会话消费链终点——client 缺席/对拍失配在此
+# loud，而非等 bsh 120s accept-wait bail 后交互链静默断）。
 t0=$(date +%s)
-COVER=("SOAK gate on" "ECO ok" "VIRTIO ok" "FAT ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=")
+COVER=("SOAK gate on" "ECO ok" "VIRTIO ok" "FAT ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "EVS ok n=2")
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 提前退出（boot 期崩溃？）"
   missing=""
@@ -195,6 +223,23 @@ while :; do
   sleep 2
 done
 echo "soak: boot 覆盖标记 ${#COVER[@]}/${#COVER[@]} 到齐（含 SOAK gate on 门控自证；svcmgr/fsmgr/vblk/vnet 常驻族在席）"
+
+# A2-3：收 evsclient 对拍结果（guest EVS ok 已在覆盖面到齐——30s 帽只盖
+# 透传余量；对拍失配/重试环打满 = loud，不留到 1 小时后才见）。
+tc=$(date +%s)
+while ! grep -q 'EVS client ok n=2' "$EVS_LOG" 2>/dev/null; do
+  kill -0 "$EVS_PID" 2>/dev/null \
+    || fail "evsclient 提前退出：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
+  [ $(( $(date +%s) - tc )) -gt 30 ] \
+    && fail "EVS client 30s 未对拍完成（guest EVS ok 已到——查 EVS_LOG 重试诊断）"
+  sleep 1
+done
+kill "$EVS_PID" 2>/dev/null
+wait "$EVS_PID" 2>/dev/null
+rm -f "$EVS_LOG"
+EVS_PID=""
+EVS_LOG=""
+echo "soak: EVS client 对拍完成（两连接 64B/24B 逐字节）"
 
 # —— 阶段 2：心跳四断言轮询（首拍潜伏 5 周期 ≈300-600s wall 是内核侧设计，非挂死）——
 tq=$(date +%s)

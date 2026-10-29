@@ -160,7 +160,18 @@ struct Dma {
 }
 
 fn main() {
-    let slot = find_device();
+    let slot = match find_device() {
+        Some(s) => s,
+        None => {
+            // A2-3：无 NIC 拓扑（MMIO 窗在、netdev 缺席——B4 掉电相）不再
+            // trap 死：netd 端已随 gift 迁入本表、svcmgr 侧 NET_A 已 store，
+            // trap = 消费者空等帽（bsh EVS LISTEN 10s 超时 bail 断 fat 链
+            // → `FAT ok n=5000` 240s 门 FAIL——首跑实踩）。转 deviceless
+            // serve：一切 op 快答、NET 族标记结构性缺席（拓扑真值）。
+            println!("vnet: net absent — deviceless serve (ST_NODEV)");
+            serve_nodev();
+        }
+    };
     let regs = mmio(slot);
     negotiate(regs);
     let mac = read_mac(regs);
@@ -205,8 +216,10 @@ fn main() {
 
 /// 扫 32 槽认领唯一 net 设备（vblk find_device 对称面——**按设备类计数**：
 /// 只认 did==net 恰一，block 槽合法同席不算；未知 did 的 loud 面由 vprobe
-/// 全窗扫描兜）。细节见 vprobe 头注。
-fn find_device() -> usize {
+/// 全窗扫描兜）。细节见 vprobe 头注。A2-3 起返回 Option：`None` = 无 net
+/// 槽（合法拓扑形态非错误——B4 掉电相：仅 vblk 无 netdev），main 转
+/// [`serve_nodev`]；恰一 = `Some(slot)`；≥2 仍 trap loud（真配置错）。
+fn find_device() -> Option<usize> {
     // SAFETY: 窗口经 spawn 映射（Device-nGnRnE）；逐字 volatile；只读
     // ID 头四字 + 特性/队列寄存器（写面在协商序内，见 main）。
     let base = VIRTIO_MMIO_VA as *const u32;
@@ -229,6 +242,8 @@ fn find_device() -> usize {
         }
     }
     let slot = match (n, occupied) {
+        // 0 = 无 NIC 拓扑（MMIO 窗在、netdev 缺席）——合法形态非错误。
+        (0, _) => return None,
         (1, Some(s)) => s,
         _ => {
             println!(
@@ -247,7 +262,7 @@ fn find_device() -> usize {
         println!("vnet: slot {} ver={} did={}", slot, ver, did);
         trap(); // legacy 模式（缺 force-legacy=false）或非 net
     }
-    slot
+    Some(slot)
 }
 
 /// 占用槽的寄存器基（u32 字指针——偏移一律 `/4` 进字单位）。
@@ -809,11 +824,12 @@ enum Form {
     Poll,
 }
 
-/// 常驻服务循环（A-8b DNS + T-d TCP 三 op + A2-2 段③ LISTEN/ACCEPT/POLL，
-/// vblk A-4 同款纪律）：env 块 gift[2] 端点收 berry-netdproto 请求——按首
-/// 字节 op 分派：DNS_QUERY 查询 / TCP 六 op（OPEN·ROUNDTRIP·CLOSE legacy
-/// 单会话（在席再 OPEN → ST_BUSY）+ LISTEN·ACCEPT·POLL 会话表——草案 §3.4
-/// 折叠 + 段③ hostfwd 入站面）→ 真网卡往返 → 应答。空队 = 合法空闲（非阻塞
+/// 常驻服务循环（A-8b DNS + T-d TCP 三 op + A2-2 段③ LISTEN/ACCEPT/POLL +
+/// A2-3 DRAIN/命名 RT·CLOSE，vblk A-4 同款纪律）：env 块 gift[2] 端点收
+/// berry-netdproto 请求——按首字节 op 分派：DNS_QUERY 查询 / TCP 七 op
+///（OPEN·ROUNDTRIP·CLOSE legacy 单会话（在席再 OPEN → ST_BUSY）+
+/// LISTEN·ACCEPT·POLL 会话表 + A2-3 命名数据面 DRAIN·RT·CLOSE——echo
+/// server 整链）→ 真网卡往返 → 应答。空队 = 合法空闲（非阻塞
 /// 泵一步 + wait READABLE 10s 帽**超时重臂**——链断判定交发问方 roundtrip
 /// 超时，「常驻服务 wait 超时是心跳不是死线」；hostfwd 入站不等 client
 /// RPC——POLL 拉模型的服务端活性面）；client 错误一律 ST_* 应答**服务不死**；
@@ -882,10 +898,12 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                     None => st = ndp::ST_BAD,
                 },
                 ndp::OP_TCP_OPEN | ndp::OP_TCP_ROUNDTRIP | ndp::OP_TCP_CLOSE
-                | ndp::OP_TCP_LISTEN | ndp::OP_TCP_ACCEPT | ndp::OP_TCP_POLL => {
-                    // 段③六 op 统一入口：parse_tcp_s_request 按 op 分形——
-                    // Open/Rt/Close v1 恰长 → sid 0（legacy 零漂移）；
-                    // +4B 尾随 sid ∈ 1..=8 才是会话族（Listen/Accept/Poll）。
+                | ndp::OP_TCP_LISTEN | ndp::OP_TCP_ACCEPT | ndp::OP_TCP_POLL
+                | ndp::OP_TCP_DRAIN => {
+                    // 段③+A2-3 七 op 统一入口：parse_tcp_s_request 按 op 分形
+                    // ——Open/Rt/Close v1 恰长 → sid 0（legacy 零漂移）；
+                    // +4B 尾随 sid ∈ 1..=8 才是会话族（Listen/Accept/Poll/
+                    // Drain/命名 Rt·Close）。
                     form = Form::Tcp; // 默认 TCP 形；会话族各臂自改
                     match ndp::parse_tcp_s_request(&msg[..nb]) {
                         Some((ndp::TcpSReq::Listen { port }, 0)) => {
@@ -938,7 +956,46 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                             st = s2;
                             dl = n2;
                         }
-                        Some((_, _)) => st = ndp::ST_BAD, // Open/Rt/Close 携 sid = 形域外
+                        // A2-3 命名数据面（echo server 三 op）：插在 legacy 臂后
+                        // ——sid=0 已被上臂消费，这里的 sid ∈ 1..=8 由协议层保证。
+                        Some((ndp::TcpSReq::Roundtrip { data }, sid)) => {
+                            // 命名 RT = echo 回发：send_data → drive_until ACK 帽
+                            // 30s。RST-in-wait 裁定：Closed 态 arm 亦空 → ST_OK
+                            //（连接死活由后续 POLL/CLOSE 收口，不与 ACK 等待混淆）。
+                            if table.send_data(d, regs, mac, gw_mac, sid, data) {
+                                let ok = tcp::drive_until(
+                                    d, regs, mac, gw_mac, table,
+                                    |t| t.arm_idle(sid) == Some(true),
+                                    now() + TCPS_RT_CAP_NS,
+                                );
+                                st = if ok { ndp::ST_OK } else { ndp::ST_TIMEOUT };
+                            } else {
+                                // 死 sid / 握手中 / 已关 = 用法错（Form::Tcp 域
+                                // 内无 NOSESSION 位——诊断位留 Form::Poll）。
+                                st = ndp::ST_BAD;
+                            }
+                        }
+                        Some((ndp::TcpSReq::Drain, sid)) => match table.rx_drain(sid, &mut rt) {
+                            // 收割 rx：应答复用 v1 两形（OK 携收割字节；零收成
+                            // = 1B OK 形——POLL 报过 rbytes 后串行收割必非零，
+                            // 0 是调用方节奏面诚实值非协议错）。
+                            Some(n) => {
+                                st = ndp::ST_OK;
+                                dl = n;
+                            }
+                            None => st = ndp::ST_BAD,
+                        },
+                        Some((ndp::TcpSReq::Close, sid)) => {
+                            // 命名 CLOSE：close_sid 驱动到 Closed 后释槽（帽到
+                            // 释槽亦然——槽容量优先，Some(false) 报 TIMEOUT 但
+                            // 槽已不在，下次同 sid POLL = ST_NOSESSION 收口）。
+                            match table.close_sid(d, regs, mac, gw_mac, sid, now() + TCPS_CLOSE_CAP_NS) {
+                                Some(true) => st = ndp::ST_OK,
+                                Some(false) => st = ndp::ST_TIMEOUT,
+                                None => st = ndp::ST_BAD,
+                            }
+                        }
+                        Some((_, _)) => st = ndp::ST_BAD, // Open 携 sid = 形域外
                         None => st = ndp::ST_BAD, // 尾随/越界 = 野值拒（协议面）
                     }
                 }
@@ -1000,6 +1057,70 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
         let mut obs = 0u64;
         loop {
             let s = berry_channel_send(h, rep.as_ptr(), rl, core::ptr::null(), 0);
+            if s == 0 {
+                break;
+            }
+            if s != BERRY_ERR_BUSY {
+                trap();
+            }
+            let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, now() + SVC_IDLE_NS, &mut obs);
+        }
+    }
+}
+
+/// 无 NIC 拓扑的常驻应答环（A2-3）：`find_device` 无 net 槽（MMIO 窗在、
+/// netdev 缺席——B4 掉电相拓扑）时 main 转入此处。netd 端已随 env gift[2]
+/// 迁入本表、svcmgr 侧 NET_A 已 store——**trap 死 = 消费者空等帽**（bsh
+/// EVS LISTEN 10s 超时 bail 断 fat 链、svcmgr DNS/TCP 自验各烧应答帽——
+/// A2-3 首跑 B4 掉电相 Boot A 实踩：`FAT ok n=5000` 240s 门 FAIL）。应答
+/// 分派：LISTEN → 1B [`ndp::ST_NODEV`]（bsh 的拓扑跳过信号——LISTEN 域
+/// 已收该码）；其余一切 op/垃圾帧 → 1B [`ndp::ST_BAD`]（serve() 未知 op
+/// 同款先例——各 op 应答域不收 NODEV，域内 BAD = 消费者既有分诊面零
+/// 改动）。常驻纪律同 serve()：不退出、client 错误一律应答服务不死、
+/// 空队 wait 超时重臂（心跳非死线）。
+fn serve_nodev() -> ! {
+    let h = gift2_h();
+    if h == 0 {
+        // gift 缺席 = boot 预拉链断——park 挂起（serve() 同款）。
+        berry_libc::park();
+    }
+    let mut msg = [0u8; 256];
+    let mut hs = [0 as Handle; 6]; // 随行收口容量 = CHAN_HND_MAX（serve() 同款）
+    loop {
+        let mut nb = msg.len();
+        let mut nh = hs.len();
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh);
+        if s != 0 {
+            if s == BERRY_ERR_AGAIN {
+                let mut obs = 0u64;
+                let _ = berry_object_wait_one(h, SIGNAL_READABLE, now() + SVC_IDLE_NS, &mut obs);
+                continue;
+            }
+            trap(); // 非空队错码 = 链断（serve() 同口径）
+        }
+        // 应答定值：恰 LISTEN 单形（无随行 handle）→ NODEV；其余（含垃圾
+        // 帧/nb==0/带随行）→ BAD。
+        let mut st = if nh == 0 && nb >= 1 && msg[0] == ndp::OP_TCP_LISTEN {
+            ndp::ST_NODEV
+        } else {
+            ndp::ST_BAD
+        };
+        // 协议无随行面：多带 handle 全部回收（EBUSY 降级 BAD 服务不死——
+        // serve() 五清的同义简化：应答本就 1B 定值，无成功值可残留）。
+        for i in 0..nh {
+            if hs[i] != 0 {
+                let s = berry_handle_close(hs[i]);
+                if s == BERRY_ERR_BUSY {
+                    st = ndp::ST_BAD;
+                } else if s != 0 {
+                    trap();
+                }
+            }
+        }
+        let rep = [st];
+        let mut obs = 0u64;
+        loop {
+            let s = berry_channel_send(h, rep.as_ptr(), 1, core::ptr::null(), 0);
             if s == 0 {
                 break;
             }

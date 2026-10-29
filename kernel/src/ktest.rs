@@ -859,7 +859,7 @@ fn test_syscall() {
     static mut HBUF: [u8; 320] = [0; 320]; // send 源 / recv 目的（超限值只作参数不拷）
     static mut H_NB: u64 = 0; // *nbytes in-out（进 = 容量、出 = 实际）
     static mut H_NH: u64 = 0; // *nhandles in-out
-    static mut H_HND: [u32; 6] = [0; 6]; // 随行 handle 数组（u32 × CHAN_HND_MAX——T-1 4→6 同步）
+    static mut H_HND: [u32; 8] = [0; 8]; // 随行 handle 数组（u32 × CHAN_HND_MAX——A2-3 6→8 同步）
 
     // H0. create：两端 handle 均非零互异；rights 面 SEND|RECV 可门控查得。
     // SAFETY: svc 同步异常；H 系列静态均本函数私有。
@@ -898,7 +898,7 @@ fn test_syscall() {
         "SYSCALL：channel_send（无随行 handle）"
     );
     // SAFETY: 同上。
-    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 6; H_HND = [0; 6] };
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] };
     assert_eq!(
         svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
              &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
@@ -929,7 +929,7 @@ fn test_syscall() {
     );
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 0,
-             &raw const H_HND as u64, 7, 0),
+             &raw const H_HND as u64, 9, 0),
         -22,
         "SYSCALL：nhandles 超限须 -EINVAL"
     );
@@ -1006,7 +1006,7 @@ fn test_syscall() {
         .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hsrc");
     // SAFETY: 同上。
-    unsafe { H_HND = [hsrc, 0, 0, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
+    unsafe { H_HND = [hsrc, 0, 0, 0, 0, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 1, 0),
@@ -1019,7 +1019,7 @@ fn test_syscall() {
         "SYSCALL：迁移后原值须 -EBADF（发送方失去）"
     );
     // SAFETY: 同上。
-    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 6; H_HND = [0; 6] };
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] };
     assert_eq!(
         svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
              &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
@@ -1046,7 +1046,7 @@ fn test_syscall() {
         .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hgd");
     // SAFETY: 同上。
-    unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0, 0, 0] };
+    unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0, 0, 0, 0, 0] };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 2, 0),
@@ -1058,7 +1058,7 @@ fn test_syscall() {
         "SYSCALL：原子序——同批好 handle 须原值仍活"
     );
     // SAFETY: 同上。
-    unsafe { H_HND = [hgd, hgd, 0, 0, 0, 0] };
+    unsafe { H_HND = [hgd, hgd, 0, 0, 0, 0, 0, 0] };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 2, 0),
