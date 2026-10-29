@@ -429,6 +429,10 @@ test-host:
     # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
     # 渲染/滚动/格式打包，host 28 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-fbcon --target {{host}}
+    # GUI-2 段①：berry-gfx（pass 形态 API + soft 光栅核纯函数面——六件套
+    # day-one：pass 边界/Caps/无运行时编译/display list/transient/文字三段；
+    # glyph 快速路径与 fbcon 蜂格渲染逐字节像素共识 + golden 回归）。
+    cargo test --manifest-path user/Cargo.toml -p berry-gfx --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。

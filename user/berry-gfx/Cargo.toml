@@ -1,0 +1,22 @@
+[package]
+name = "berry-gfx"
+version = "0.1.0"
+edition = "2021"
+# GUI-2 段①（docs/GUI里程碑规划-2026-10.md GUI-2 行 + ADR #51）：pass 形态
+# 图形 API + soft 光栅核纯函数 crate，host 测试先行（berry-virtio/berry-fbcon
+# 「纯函数 crate 化先 host 测」纪律）。钦定：WebGPU 形态语义子集 day-one
+# 六件套——pass 唯一合成边界（loadOp/storeOp/dirty rect）/Caps/着色器=
+# 构建产物（无运行时编译入口）/记录-回放分离（display list）/transient
+# 显式声明/文字三段解耦（shape·图集·pass 内绘制）。v1 操作集 = fbcon 六原语
+# 超集 + glyph-run 位；像素语义与 berry-fbcon 共识逐字节对拍（path 依赖引
+# font::FONT 单源）。真消费 = 段② guifbd/berryui（musl target 独立小工作区
+# path 依赖）；库本体 no_std，test 构建放开 std：cfg_attr(not(test), no_std)
+# + 显式 --target <host> 测试（根 config 锁 aarch64-unknown-none 跨
+# workspace 边界命中——berry-fbcon/berryboot 同款 gotcha）。
+description = "BerryOS graphics: pass-form API + soft raster core (pure functions, host-tested, fbcon pixel-consensus)"
+license = "Apache-2.0"
+
+[dependencies]
+# 像素共识单源：glyph 快速路径与 fbcon 蜂格渲染逐字节对拍共用同一份
+# 8×16 点阵字体表（FONT 95 字形，genfbfont.py 生成勿手改）。
+berry-fbcon = { path = "../berry-fbcon" }

@@ -62,8 +62,11 @@
 # 前置段曾独立工作区、GUI-1 随首个消费面迁正 members；消费 = guifbd 显示
 # 服务（独立小工作区编 musl target，同 stdhello 不入 members）——host
 # 测试经 justfile test-host 显式行跑）。
+# GUI-2 段①：berry-gfx（pass 形态 API + soft 光栅核纯函数 crate——ADR #51
+# 六件套 day-one；像素共识对 berry-fbcon path 依赖单源字体，host 测试；
+# 真消费 guifbd/berryui = 段②另刀）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-fbcon", "berry-poll", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-fbcon", "berry-gfx", "berry-poll", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 
