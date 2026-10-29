@@ -14,7 +14,11 @@
 //!
 //! stdout 恒单行定值（A5-2 nets_selftest 逐字节对拍面；>192B 分片撕行
 //! 纪律——诊断走 stderr 不进对拍缓冲）：
-//! 成功 `NETPROBE ok n=<len>` / 失败 `NETPROBE fail: <stage>`。
+//! 成功 `NETPROBE ok n=<len>` / 失败 `NETPROBE fail: <stage> errno=<n>`
+//! （echo 段无 errno——逻辑失配非系统错误）。**errno=N 是 bsh 侧拓扑门
+//! 信号通道**：B4 掉电相无 netdev（vnet deviceless serve）connect 答
+//! ENODEV(19)——nets_selftest 据此静默跳过（EPL/SKT 双门契约第二道），
+//! 其余 connect 错误 loud（echod 死 = 真链断该 FAIL）。
 //!
 //! std::net 深水面（A5 草案 §3.4 首跑定谳项）本件即 probe 载体：撞桩
 //! 判死面（bare abort 静默死）按 kill criteria 二裁——失败形态本身是
@@ -53,19 +57,26 @@ fn main() -> ExitCode {
         DEFAULT_PAYLOAD.to_string()
     };
 
-    // connect 域内错误（ refused/超时/ENODEV 无 netdev 拓扑）——失败 loud
-    // exit 1；errno 细节经 stderr 诊断行（std io::Error Display 走 strerror）。
+    // connect 域内错误（refused/超时/ENODEV 无 netdev 拓扑）——失败 loud
+    // exit 1；errno 数值进 stdout 标记行（bsh 拓扑门信号通道，确定性），
+    // strerror 文案走 stderr 诊断行（不进对拍缓冲）。
     let mut stream = match TcpStream::connect((host.as_str(), port)) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("netprobe: connect {}:{}: {}", host, port, e);
-            println!("NETPROBE fail: connect");
+            println!(
+                "NETPROBE fail: connect errno={}",
+                e.raw_os_error().unwrap_or(0)
+            );
             return ExitCode::from(1);
         }
     };
     if let Err(e) = stream.write_all(payload.as_bytes()) {
         eprintln!("netprobe: write: {}", e);
-        println!("NETPROBE fail: write");
+        println!(
+            "NETPROBE fail: write errno={}",
+            e.raw_os_error().unwrap_or(0)
+        );
         return ExitCode::from(1);
     }
     // 回显收取：恰好 payload.len() 字节（EOF 早到 = 短读失败面）。
@@ -77,7 +88,10 @@ fn main() -> ExitCode {
             Ok(n) => got += n,
             Err(e) => {
                 eprintln!("netprobe: read: {}", e);
-                println!("NETPROBE fail: read");
+                println!(
+                    "NETPROBE fail: read errno={}",
+                    e.raw_os_error().unwrap_or(0)
+                );
                 return ExitCode::from(1);
             }
         }

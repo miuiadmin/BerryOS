@@ -271,6 +271,15 @@ fn main() {
     //    同 EVS/SKT（netd_h()==0 / connect ENODEV 静默跳过——EFI canon
     //    零变化、B4 无 netdev 相不设门）；排 fat 族前零盘面。
     epl_selftest();
+    // —— A5-2：std::net spawn 面自验（`NETS ok n=2` = rootfs 相第 42 标记，
+    //    A5 整卡验收线）：net_gifts 三元装配（A5-1）+ std::net 深水面
+    //    （TcpStream connect→write→echo 恰长对拍）第一次经 spawn gift 链
+    //    全链活体（正步 10.0.2.2:18080 echod 对拍 + localhost 负控——SLIRP
+    //    guest 环回不绕宿主 loopback 的定谳形状，A5-1 净室 probe 实录）。
+    //    拓扑降级双门同 EPL/SKT（netd_h()==0 / connect ENODEV(19) 静默
+    //    跳过——EFI canon 零变化、B4 无 netdev 相同口径）；排 fat 族前
+    //    零盘面。
+    nets_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -1778,6 +1787,123 @@ fn epl_selftest() {
         bail!("bsh: epl: ep close errno={}", errno!());
     }
     println!("EPL ok n={}", n_ok);
+}
+
+/// A5-2 std::net spawn 面自验（`NETS ok n=2` = rootfs 相第 42 标记，A5
+/// 整卡验收线）：[`net_gifts`] 三元装配（A5-1）+ std::net 深水面
+/// （TcpStream connect→write→echo 恰长对拍）第一次经 spawn gift 链全链
+/// 活体。两步——**A5-1 净室 probe 定谳后的修订步设计**（A5-0 草案
+/// "localhost:18083" 原案证伪：SLIRP guest 环回不绕宿主 loopback
+/// （ENETUNREACH）、evsclient 18083 本非 echo 对端；真 echo 对端 =
+/// echod 18080，SLIRP 网关别名 10.0.2.2 直达宿主）：
+/// - ① 正步：netprobe 10.0.2.2 18080（IP 字面量快路零 DNS RPC）→
+///   rc=0 + 输出逐字节 `NETPROBE ok n=14\n`（14 = 默认载荷
+///   "berry-netprobe"）；
+/// - ② 负控：netprobe localhost 18080 → rc=1 + 输出**尾行**
+///   `NETPROBE fail: connect errno=<n>`（**前缀锚**——errno 值不锚：
+///   std ToSocketAddrs→getaddrinfo→A4-2 DNS 档经 std::net 活证——错误
+///   落 connect 段非解析段；EPL ⓪ 同款「localhost 解析 127.0.0.1 后死于
+///   环回不可达」定谳形状。errno 具体值（ENETUNREACH=101）是 SLIRP 行为
+///   面、随 QEMU 版本可漂——锚值即跨版本脆弱面；strerror 文案同理不锚
+///   ——stderr 诊断行先于 stdout 标记行同通道 FIFO，只锚尾行）。
+///
+/// 每步 fresh `net_gifts()`（berry-exec take 契约：spawn 成功 dup 全被
+/// env send take——gift 值复用第二次 spawn 即 -EBADF）。netprobe 缺席
+/// （cpio_find None）→ 诊断行 loud park（区别于拓扑静默门——标记缺失
+/// smoke FAIL 兜底）。
+///
+/// 拓扑降级**双门**同 EPL/SKT：第一道 netd gift 缺席（EFI/裸拓扑）→
+/// netd_h()==0 静默跳过（smoke-image canon 零变化）；第二道 **gift 在位
+/// 而无 netdev**（B4 掉电相——vnet deviceless serve，connect 答
+/// ENODEV(19)）→ 步① 按 netprobe stdout `fail: connect errno=19` 静默
+/// 跳过——拓扑真值不是链断；其余 connect 错误 loud（echod 死 = 真链断
+/// 该 FAIL）。A5 终验五相 smoke 首跑实抓：单门版在 B4 Boot A 把 ENODEV
+/// 当链断 park → fat 族全断 → 240s FAT ok 未到。排 fat 族前零盘面
+/// （A 系契约）。
+fn nets_selftest() {
+    if netd_h() == 0 {
+        return;
+    }
+    // TCG 下 netprobe 全链（spawn + connect + echo 往返 + 净退）实测秒级、
+    // ENETUNREACH 即返——30s 帽 = uu_cp/C-5 同口径（client 收侧帽按 worst
+    // 路径成本定值，P6 A-6 纪律）。
+    const NETS_CAP_NS: u64 = 30 * 1_000_000_000;
+    let mut n_ok = 0u32;
+
+    // —— ① 正步：10.0.2.2 字面量（echod 真对端）——
+    let g = match net_gifts() {
+        Some(g) => g,
+        None => berry_libc::park(), // netd_h() 已过门而 dup 失败：链断 loud
+    };
+    let (o, rc) = match run_capture_gifts_cap(
+        "netprobe",
+        Some(&[] as &[u8]),
+        &["10.0.2.2", "18080"],
+        &[g.0, g.1, g.2],
+        NETS_CAP_NS,
+    ) {
+        Some(r) => r,
+        None => {
+            eprintln!("bsh: nets: netprobe absent");
+            berry_libc::park();
+        }
+    };
+    if rc == 1 && o.eof && o.data.ends_with(b"NETPROBE fail: connect errno=19\n") {
+        // 拓扑第二道门（EPL/SKT 双门契约）：B4 掉电相无 netdev——netd
+        // gift 在位（第一道 netd_h()==0 不拦）而 vnet deviceless serve
+        // 答 ENODEV(19)。拓扑真值静默跳过（无标记无 park，fat 族照走）；
+        // 其余 connect 错误落下方 loud（echod 死 = 真链断）。
+        return;
+    }
+    if rc != 0 || !o.eof || o.data != b"NETPROBE ok n=14\n" {
+        eprintln!(
+            "bsh: nets: lit rc={} eof={} data={:?}",
+            rc,
+            o.eof,
+            String::from_utf8_lossy(&o.data)
+        );
+        berry_libc::park();
+    }
+    n_ok += 1;
+
+    // —— ② 负控：localhost（std DNS 链 + 环回不可达定谳形状）——
+    let g = match net_gifts() {
+        Some(g) => g,
+        None => berry_libc::park(),
+    };
+    let (o, rc) = match run_capture_gifts_cap(
+        "netprobe",
+        Some(&[] as &[u8]),
+        &["localhost", "18080"],
+        &[g.0, g.1, g.2],
+        NETS_CAP_NS,
+    ) {
+        Some(r) => r,
+        None => {
+            eprintln!("bsh: nets: netprobe absent");
+            berry_libc::park();
+        }
+    };
+    // 尾行 = 剥尾 \n 后最后一个 \n 之后段（stderr 诊断行先于 stdout 标记
+    // 行同通道 FIFO——诊断行数不定，只锚尾行；前缀锚：errno 值是 SLIRP
+    // 行为面随 QEMU 版本可漂，值不锚）。
+    let d = o.data.strip_suffix(b"\n").unwrap_or(&o.data);
+    let tail = match d.iter().rposition(|&b| b == b'\n') {
+        Some(i) => &d[i + 1..],
+        None => d,
+    };
+    if rc != 1 || !o.eof || !tail.starts_with(b"NETPROBE fail: connect errno=") {
+        eprintln!(
+            "bsh: nets: dns rc={} eof={} data={:?}",
+            rc,
+            o.eof,
+            String::from_utf8_lossy(&o.data)
+        );
+        berry_libc::park();
+    }
+    n_ok += 1;
+
+    println!("NETS ok n={}", n_ok);
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码
@@ -3913,7 +4039,6 @@ fn fs_gifts() -> Option<(Handle, Handle)> {
 /// 拓扑门契约同款——canon 零变化按构造）；dup 半途失败双关防漏同
 /// [`fs_gifts`]。**least privilege**：消费者 = nets_selftest（A5-2）——
 /// 交互/管道/裸 spawn 面零改动（既有行为零漂移按构造）。
-#[allow(dead_code)] // 消费者随 A5-2 nets_selftest 落地（拆刀：A5-1 先装配零行为漂移）
 fn net_gifts() -> Option<(Handle, Handle, Handle)> {
     if netd_h() == 0 {
         return None;
