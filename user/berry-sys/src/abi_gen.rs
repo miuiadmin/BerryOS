@@ -75,7 +75,8 @@ pub const BERRY_ERR_OUT_OF_RANGE: Status = -34;
 pub const BERRY_ERR_FAULT: Status = -14;
 
 // ---- syscall 号（v1 在册；私有——用户程序不写编号，只经本 crate 的
-// `berry_*` 封 `svc`，§8.3；未实现号 wrapper 照发、内核回落 -ENOTSUP）----
+// `berry_*` 封 `svc`，§8.3；在册未实现号常量照发、无 wrapper（原型层
+// v2 挂账——dead_code 豁免随生成器），内核回落 -ENOTSUP）----
 pub(crate) mod nr {
     pub(crate) const HANDLE_CLOSE: usize = 0x01;
     pub(crate) const HANDLE_DUPLICATE: usize = 0x02;
@@ -119,6 +120,10 @@ pub(crate) mod nr {
     /// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
     pub(crate) const EVENT_CREATE: usize = 0x54;
     pub(crate) const CLOCK_READ: usize = 0x61;
+    /// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const BERRY_ATTEST: usize = 0x85;
 }
 
 // ---- 宽度冻结断言（abi.toml [types]；G2 冻结面的机器执法）----

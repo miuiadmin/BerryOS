@@ -87,11 +87,15 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`） ||||
 | 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 |
 | 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 |
+| **安全 / 远程证明**（预留） ||||
+| 0x85 | `berry_attest` | 远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法） | v1 |
 <!-- @gen:syscalls end -->
 
-**计数**：v1 ≈ 26；v2 增 ~12；v3 增 ~5（namespace + 策略注入/遥测）；**总数 ~43**。落在"中等偏上 ~30–45"。
+**计数**：v1 32 号在册 / 31 已实现（0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11）；v2 增 12；v3 增 5（namespace + 策略注入/遥测）；**总数 49**（add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
 
 > **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x85`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
+
+> **0x85 `berry_attest` 预留位（SEC-01 §4.5 件 11，底料 `research/sec-notes/SEC-3`）**：远程证明（本地取度量摘要 / quote——EAT/CBOR token 形态、PSA `initial_attest` 同思路）号位按在册模式冻结预留；v1 **在册未实现**，内核派发回落 `-ENOTSUP`（与未知号同形——§8.0 永不 panic）。ktest B 段样本挂账：`ktest.rs` 兄弟 WIP 冻结中，kernel 解冻后立「在册未实现真号」`-ENOTSUP` 样本（沿用既有纪律——勿拿未知号 0x99 冒充，二者 `-ENOTSUP` 成因不同）。kernel 解冻同步义务：`syscall.rs` `install()` 注释「v1 在册 31 号全部实现」随解冻改口（32 在册/31 实现）。
 
 ## 5. 错误码
 
@@ -124,7 +128,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 7. 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1（实际 31 号在册 / 31 已实现——T-1 后在册全实现（2026-10；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地））**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
+- **v1（实际 32 号在册 / 31 已实现——T-1 后在册真语义全实现（2026-10；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地）；SEC-01 件 11 起 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，ktest 样本挂 kernel 解冻）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
 - **v2**：pager（demand paging）、futex、timer、异常通道、调度策略、设备 syscall。（G3–G4）
 - **v3**：namespace（open/mount）、**AI 策略注入/遥测控制 syscall**（`policy_bind`/`telemetry_open`，见 `AI调度设计.md`）、完整 POSIX 兼容库（含受限 fork 探索）。（G4+）
 
@@ -132,7 +136,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 编号表是"概念名"。真正落地是带 `berry_` 前缀的符号：**两端皆 Rust**，合约源是 Rust 的 `extern "C"` + `#[repr(C)]` 定义（内核侧 + `user/berry-sys` 镜像）；`.h` 是派生产物（供 C 程序 / POSIX 库侧用）。本节是 **v1 的冻结合约**——P3 开工时从单一 IDL（Idol 思路）生成内核原型 + `berry-sys` 镜像 + `syscalls.h`，CI 用结构体布局断言 + bindgen 单向生成比对，消灭手写不同步（见 `架构综合纲领.md`）。
 
-> **单源落地状态（2026-10）**：**常量层已单源化**——`tools/abi.toml` 是号/位/码/宽度的唯一事实源，`tools/gen_abi.py` 生成内核 `abi_gen.rs` + berry-sys `abi_gen.rs` + 本文档 §4 编号表与 §8.2 C 定义列（marker 块逐字节再生）；`just abi-check`（`--check` 产物比对）挂 build/check/smoke 前置，改源忘再生成即 FAIL。宽度冻结由生成物两端的 `const _: () = assert!(size_of…)` 机器执法——「CI 结构体布局断言」的 v1 标量层，真 ABI 结构体出现即入册同源。**原型层（§8.3 `berry_*` 签名与 `.h`）仍手写双镜像——v2 挂账**；Plan B v0.5 的临时三方对账关卡 `abi_check.py` 随之退役（生成即一致，无需对账）。
+> **单源落地状态（2026-10）**：**常量层已单源化**——`tools/abi.toml` 是号/位/码/宽度的唯一事实源，`tools/gen_abi.py` 生成内核 `abi_gen.rs` + berry-sys `abi_gen.rs` + 本文档 §4 编号表与 §8.2 C 定义列（marker 块逐字节再生）；`just abi-check`（`--check` 产物比对）挂 build/check/smoke 前置，改源忘再生成即 FAIL。第 4 面产物 `tools/abi.syz`——syzkaller syscall 描述骨架（SEC-01 §4.5 件 25）：同由 `tools/abi.toml` 经 `gen_abi.py` 再生、`just abi-check` 逐字节守卫；骨架未过 syz-sysgen 编译验证，参数面为 ARM64 SVC x1..x6 全宽 int64 占位（abi.toml 无逐 syscall 参数表），待 §8.3 原型层（v2 挂账）收窄。宽度冻结由生成物两端的 `const _: () = assert!(size_of…)` 机器执法——「CI 结构体布局断言」的 v1 标量层，真 ABI 结构体出现即入册同源。**原型层（§8.3 `berry_*` 签名与 `.h`）仍手写双镜像——v2 挂账**；Plan B v0.5 的临时三方对账关卡 `abi_check.py` 随之退役（生成即一致，无需对账）。
 
 ### 8.0 冻结纪律：两层冻结（战略裁决 S8 落地）
 
@@ -162,6 +166,8 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | padding / 保留字段 | 显式命名 + 内核 copyout 前整体清零 | `#[repr(C)]` **不保证** padding 清零；垃圾 padding = 内核信息泄露（Linux 真实 CVE 先例）+ 破坏逐字节比较/哈希 |
 
 > 32 位 handle 分配（决策 #28）：低位 = 槽位号，中位 = 代号 gen（**v1 预留**，槽位重用时单调递增，供 DEAD 检测，见 `能力模型设计.md` §2），高位**可选**编码对象类型（调试器识别越类 handle，v1 可先不编码）。代号位**必须从 v1 预留**——否则日后加 gen 会破坏已发布的 handle ABI。
+
+> **handle 0 立约（SEC-01 §4.5 件 6 前半——既有事实文档化，零代码改动）**：`0` 号 handle **永不有效**——handle 表槽 0 恒空（内核 `HandleTable` 首插惰性铺槽 0 为 Free、`alloc_slot` 永远跳过它取最低可用槽），boot 直插 handle 一律自槽 1 起（插序由 boot 期断言钉死——错值 boot 期炸响而非静默错 handle）；任何 syscall 传 `0` 恒 `-EBADF`（与坏 handle 同面，不另设错误码）。两端常量已单源在册：`BERRY_HANDLE_INVALID` / `INVALID_HANDLE` = 0（`abi.toml` `[types] invalid_handle`）。件 6 后半（能力拒面遥测：handle/rights/调用号落遥测环）挂账 kernel 解冻——落环改动面在 `kernel/src/syscall.rs`（兄弟 WIP 冻结中）；`telemetry.rs` 本身工作树无在途改动，落环钩子随件 6 后半同刀。
 
 ### 8.2 基础类型（`berry/types.h`）
 
@@ -408,7 +414,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 31**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 32**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`））——真语义 31 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B），另 1 号为预留位。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
 
 ### 8.4 Rust FFI 镜像（`user/berry-sys`，raw 绑定）
 

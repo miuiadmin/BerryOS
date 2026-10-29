@@ -6,7 +6,9 @@
 #   1. kernel/src/abi_gen.rs           —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR
 #   2. user/berry-sys/src/abi_gen.rs —— 同面镜像（+ INVALID_HANDLE + mod nr）
 #   3. docs/系统调用ABI设计.md        —— §4 编号表体 + §8.2 C 定义列（marker 块）
-# 三面同源 ⇒ 漂移按构造不可能；--check 只拦「改了本文件忘再生成 / 手改产物」。
+#   4. tools/abi.syz                  —— syzkaller 描述骨架（SEC-01 §4.5 件 25；
+#                                       未过 syz-sysgen 编译验证——头注如实声明）
+# 四面同源 ⇒ 漂移按构造不可能；--check 只拦「改了本文件忘再生成 / 手改产物」。
 # Plan B v0.5 的 abi_check.py 三方对账关卡随之退役（生成即一致）。
 #
 # 改 ABI 的流程：改本文件 → `just abi-gen` → 提交（产物 diff 一并入册）。
@@ -16,8 +18,10 @@
 
 [meta]
 stage = "v1"
-nr_total = 31        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
-implemented = 31     # 已实现（T-1 后 v1 在册全实现——0x35 thread_start 随多线程首刀落地）
+nr_total = 32        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+                     # berry_attest 在册未实现预留位——SEC-01 件 11）
+implemented = 31     # 已实现（T-1 后在册真语义全实现；0x85 berry_attest 预留位
+                     # 恒 -ENOTSUP——与未知号同形，ABI §8.0 永不 panic 执法）
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。
@@ -197,8 +201,9 @@ expr = "-14"
 c_note = "EFAULT：用户指针界检失败（3-2 起 copy_from/to_user 执法）"
 desc = "EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用户区）——3-2 copy 路径。"
 
-# ---- §4 编号表（全 45 行：v1 28 + v2 12 + v3 5；title 含 **粗体** 原样）----
-# implemented = false ⇒ 在册未实现（内核回落 -ENOTSUP、berry-sys wrapper 照发）。
+# ---- §4 编号表（全 49 行：v1 32 + v2 12 + v3 5；title 含 **粗体** 原样）----
+# implemented = false ⇒ 在册未实现（内核回落 -ENOTSUP；berry-sys 侧常量照发、
+# 无 wrapper——生成器对无消费者常量豁免 dead_code，wrapper 随 §8.3 原型层 v2 挂账）。
 
 [[group]]
 title = "**handle / 通用对象**"
@@ -481,3 +486,13 @@ num = 0x84
 name = "telemetry_open"
 desc = '打开遥测环（只读）'
 stage = "v3"
+
+[[group]]
+title = "**安全 / 远程证明**（预留）"
+[[group.syscall]]
+num = 0x85
+name = "berry_attest"
+desc = '远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法）'
+stage = "v1"
+implemented = false
+note = 'SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。'

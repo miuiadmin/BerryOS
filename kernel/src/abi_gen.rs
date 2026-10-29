@@ -6,7 +6,8 @@
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 31 号在册、31 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 32 号在册、31 已实现）----
+// 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;
@@ -49,6 +50,8 @@ pub const NR_CHANNEL_RECV: usize = 0x53;
 /// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
 pub const NR_EVENT_CREATE: usize = 0x54;
 pub const NR_CLOCK_READ: usize = 0x61;
+/// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
+pub const NR_BERRY_ATTEST: usize = 0x85;
 
 // ---- clock id（ABI §8.3 `berry_clock_id_t`）----
 /// `clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。

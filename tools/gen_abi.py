@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""BerryOS ABI 单源生成器（`tools/abi.toml` → 三面产物）。
+"""BerryOS ABI 单源生成器（`tools/abi.toml` → 四面产物）。
 
 产物：
   1. kernel/src/abi_gen.rs              —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR（syscall.rs/handle.rs 转发）
   2. user/berry-sys/src/abi_gen.rs  —— 同面镜像（+ INVALID_HANDLE + 私有 mod nr）
   3. docs/系统调用ABI设计.md           —— §4 编号表体 + §8.2 两段 C 定义列（marker 块替换）
+  4. tools/abi.syz                      —— syzkaller syscall 描述骨架（SEC-01 §4.5 件 25；未过
+                                          syz-sysgen 编译验证——头注如实声明，详见 gen_syz）
 
 用法：
   python3 tools/gen_abi.py           # 生成（写盘；文档块外的内容一字不动）
-  python3 tools/gen_abi.py --check   # 逐字节比对盘上三产物 vs 期望——
+  python3 tools/gen_abi.py --check   # 逐字节比对盘上四产物 vs 期望——
                                       # 挂 just abi-check（build/smoke 前置）：
                                       # 改了 abi.toml 忘再生成 / 手改产物 → FAIL。
 
@@ -42,6 +44,7 @@ IDL = ROOT / "tools" / "abi.toml"
 KERNEL_RS = ROOT / "kernel" / "src" / "abi_gen.rs"
 USER_RS = ROOT / "user" / "berry-sys" / "src" / "abi_gen.rs"
 DOC = ROOT / "docs" / "系统调用ABI设计.md"
+SYZ = ROOT / "tools" / "abi.syz"
 
 # 每端类型映射（u32/u64 按端约定不同是** ABI 决策**，不是漂移——berry-sys 的
 # CHAN_OPT/CLOCK 是 u32（参数寄存器值），内核侧按语义类型收 u64。）
@@ -244,11 +247,15 @@ def gen_user_rs(d: dict) -> str:
         L.append(f"pub const BERRY_ERR_{e['name']}: Status = {e['expr']};")
     L.append("")
     L.append("// ---- syscall 号（v1 在册；私有——用户程序不写编号，只经本 crate 的")
-    L.append("// `berry_*` 封 `svc`，§8.3；未实现号 wrapper 照发、内核回落 -ENOTSUP）----")
+    L.append("// `berry_*` 封 `svc`，§8.3；在册未实现号常量照发、无 wrapper（原型层")
+    L.append("// v2 挂账——dead_code 豁免随生成器），内核回落 -ENOTSUP）----")
     L.append("pub(crate) mod nr {")
     for s in rows:
         if s.get("note"):
             L.append("    /// " + s["note"].split("\n")[0])
+        if not s.get("implemented", True):
+            L.append("    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。")
+            L.append("    #[allow(dead_code)]")
         L.append(f"    pub(crate) const {s['name'].upper()}: usize = 0x{s['num']:02X};")
     L.append("}")
     L.append("")
@@ -349,6 +356,109 @@ def patch_doc(text: str, d: dict) -> str:
     return text
 
 
+# ---------------------------------------------------------------- syz 生成
+
+# syzkaller 描述骨架（SEC-01 §4.5 件 25 后半）：常量层单源的 syscall fuzz 面投影。
+# abi.toml **无逐 syscall 参数表**（§8.3 原型层 v2 挂账）——不臆造参数：各入口给
+# 6 个全宽 int64 占位参（a1..a6 ↔ ARM64 SVC x1..x6，x0 = 号）。常量以字面量注释
+# 随附——syz const 引用需 syz-extract 的 const 数据库，骨架阶段字面量最稳。
+# 本机无 syz-sysgen：产物**未过编译验证**，头注如实声明（骨架，非可用描述）。
+SYZ_HEADER = [
+    "# BerryOS syscall 描述骨架（syzkaller）——**生成文件，勿手改**。",
+    "# 单源 = `tools/abi.toml`；再生 = `python3 tools/gen_abi.py`（`just abi-gen`）；",
+    "# 守卫 = `just abi-check`（`tools/gen_abi.py --check` 逐字节比对，挂 build/smoke 前置）。",
+    "#",
+    "# **骨架——未过 syz-sysgen 编译验证**；形态对表 syzkaller",
+    "# docs/syscall_descriptions.md 保守子集（type/resource 定义、syscall 行、注释）。",
+    "# abi.toml 只覆盖常量层（号/位/码/宽度），无逐 syscall 参数表——本骨架不臆造",
+    "# 参数：各入口按 ARM64 SVC 惯例（x0 = 号、x1..x6 = 参，a1..a6 一一对应）给",
+    "# 6 个全宽 int64 占位参；参数面待 §8.3 原型层（v2 挂账）补，届时 handle 参 →",
+    "# berry_handle、数值参按宽度收窄、指针/缓冲参 → ptr[in/out] 保守映射。",
+    "# 常量以字面量注释随附——不用 syz const 引用（需 syz-extract 的 const 数据库）。",
+]
+
+# §4 编号表全量在册都出入口行（v2/v3 + 在册未实现 v1 号内核回落 -ENOTSUP——
+# 注释如实标 stage；fuzz 侧选录是接入真实 syzkaller 时的下游裁剪，不是单源的事）。
+SYZ_ARGS = ", ".join(f"a{i} int64" for i in range(1, 7))
+
+
+def syz_int(width: int, signed: bool) -> str:
+    """[types] 宽度 → syz 整型名；非 1/2/4/8 宽 FAIL（单源执法——不静默落 int64）。"""
+    if width not in (1, 2, 4, 8):
+        raise Fail(f"abi.toml: [types] 宽度 {width} 无 syz 整型映射（1/2/4/8）")
+    base = {1: "int8", 2: "int16", 4: "int32", 8: "int64"}[width]
+    return base if signed else "u" + base
+
+
+def syz_val(expr: str) -> str:
+    """常量注释值列：`expr (求值)`——字面拼写与求值同形（如 0 / -9）不重复。"""
+    v = eval_expr(expr)
+    shown = hex(v) if v >= 0 else str(v)
+    norm = expr.replace(" ", "").replace("_", "")
+    if norm in (shown, str(v)):
+        return expr
+    return f"{expr}  ({shown})"
+
+
+def syz_stage_mark(s: dict) -> str:
+    if s["stage"] != "v1":
+        return f"（{s['stage']}·未实现）"
+    if not s.get("implemented", True):
+        return "（v1·在册未实现）"
+    return "（v1）"
+
+
+def gen_syz(d: dict) -> str:
+    t = d["types"]
+    meta = d["meta"]
+    L = list(SYZ_HEADER)
+    L.append("")
+    L.append("# ---- 资源/类型定义（abi.toml [types] 宽度冻结面；handle 参未来映射到 berry_handle）----")
+    L.append(f"# 无效 handle：BERRY_HANDLE_INVALID = {t['invalid_handle']}（表槽 0 恒空）")
+    L.append(f"resource berry_handle[{syz_int(t['handle'], False)}]")
+    L.append(f"type berry_rights {syz_int(t['rights'], False)}")
+    L.append(f"type berry_status {syz_int(t['status'], True)}")
+    L.append(f"type berry_time {syz_int(t['time'], False)}")
+    L.append("")
+    L.append("# ---- 常量注释（abi.toml 单源字面量；非 syz const 引用）----")
+    L.append("# clock id:")
+    for c in d["clock"]:
+        L.append(f"#   CLOCK_{c['name']} = {syz_val(c['expr'])}")
+    L.append("# options 位（未知位一律 -EINVAL）:")
+    for o in d["option"]:
+        L.append(f"#   {o['name']} = {syz_val(o['expr'])}")
+    L.append("# rights 位（berry_rights；权限在 handle 不在对象）:")
+    for r in d["right"]:
+        cn = r.get("c") or f"BERRY_RIGHT_{r['name']}"
+        L.append(f"#   {cn} = {syz_val(r['expr'])}")
+    L.append("# wait 信号位（低 32 内核派生 + 高 32 用户）:")
+    for sg in d["signal"]:
+        L.append(f"#   SIGNAL_{sg['name']} = {syz_val(sg['expr'])}")
+    L.append("# 错误码（berry_status_t = i32；posix-ish 负数）:")
+    for e in d["errno"]:
+        cn = e.get("c") or (f"BERRY_ERR_{e['name']}" if e["name"] != "OK" else "BERRY_OK")
+        L.append(f"#   {cn} = {syz_val(e['expr'])}")
+    L.append("")
+    L.append(f"# ---- syscall 入口（§4 编号表全量在册；v1 {meta['nr_total']} 号、"
+             f"已实现 {meta['implemented']}；")
+    L.append("#      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----")
+    for g in d["group"]:
+        L.append("")
+        L.append(f"# {g['title']}")
+        for s in g["syscall"]:
+            L.append(f"# 0x{s['num']:02X} {s['name']}{syz_stage_mark(s)}——{s['desc'].split('\n')[0]}")
+            for cont in s["desc"].split("\n")[1:]:
+                L.append(f"#   {cont}")
+            if s.get("note"):
+                nl = s["note"].split("\n")
+                L.append(f"#   note: {nl[0]}")
+                for cont in nl[1:]:
+                    L.append(f"#   {cont}")
+            L.append(f"{s['name']}({SYZ_ARGS})")
+    L.append("")
+    return "\n".join(L)
+
+
 # ---------------------------------------------------------------- 主流程
 
 def build_all(d: dict) -> tuple:
@@ -356,19 +466,19 @@ def build_all(d: dict) -> tuple:
         doc_text = DOC.read_text("utf-8")
     except OSError as e:
         raise Fail(f"读 ABI 文档失败：{DOC}（{e}）")
-    return (gen_kernel_rs(d), gen_user_rs(d), patch_doc(doc_text, d))
+    return (gen_kernel_rs(d), gen_user_rs(d), patch_doc(doc_text, d), gen_syz(d))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="BerryOS ABI 单源生成/守卫")
     ap.add_argument("--check", action="store_true",
-                    help="不写盘：逐字节比对盘上三产物 vs 期望，漂移即 FAIL")
+                    help="不写盘：逐字节比对盘上四产物 vs 期望，漂移即 FAIL")
     args = ap.parse_args()
     try:
         d = load()
-        k, u, doc = build_all(d)
+        k, u, doc, syz = build_all(d)
         if args.check:
-            targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc)]
+            targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz)]
             bad = []
             for path, want in targets:
                 got = path.read_text("utf-8") if path.exists() else None
@@ -380,13 +490,14 @@ def main() -> int:
                           f"（改了 abi.toml 跑 `just abi-gen`；手改了产物请改回）")
                 return 1
             n = len(v1_rows(d))
-            print(f"abi-check: PASS（NR v1 {n} 号在册——内核 ↔ berry-sys ↔ 文档三面单源一致）")
+            print(f"abi-check: PASS（NR v1 {n} 号在册——内核 ↔ berry-sys ↔ 文档 ↔ syz 四面单源一致）")
             return 0
         KERNEL_RS.write_text(k, "utf-8")
         USER_RS.write_text(u, "utf-8")
         DOC.write_text(doc, "utf-8")
+        SYZ.write_text(syz, "utf-8")
         print(f"abi-gen: 写 {KERNEL_RS.relative_to(ROOT)} / {USER_RS.relative_to(ROOT)}"
-              f" / 文档三 marker 块——提交时产物 diff 一并入册")
+              f" / 文档三 marker 块 / {SYZ.relative_to(ROOT)}——提交时产物 diff 一并入册")
         return 0
     except Fail as e:
         print(f"abi-gen: FAIL——{e}", file=sys.stderr)
