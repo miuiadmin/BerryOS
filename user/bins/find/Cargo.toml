@@ -9,6 +9,7 @@ edition = "2021"
 # 同一台机器——std::fs::read_dir 的尾检 errno 语义不契约，见 bsh 头注）。
 # 为什么自写：findutils 0.10.0 硬依赖 onig（同 grep 尾注）+ chrono/nix
 # 重面——berry 染色链结构性阻断。
+license = "Apache-2.0"
 
 [workspace]
 

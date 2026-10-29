@@ -8,5 +8,6 @@ edition = "2021"
 # 零分配；输入只借用，输出写调用方切片。host 测试全盖（tests/net.rs）；
 # 消费者 vnet（virtio-net 用户态驱动，drivers/bins/vnet 编 musl target）经
 # path 依赖双端共用（跨工作区 path 依赖，bootloader/berry-loader 先例同款）。
+license = "Apache-2.0"
 
 [dependencies]

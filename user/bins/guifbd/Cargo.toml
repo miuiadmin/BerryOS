@@ -11,6 +11,7 @@ edition = "2021"
 # `gift2_h()`——rootfs_h 同槽别名惯例）。启动自验三步（clear 双相位差分
 # /蜂格字形对拍/scroll 行移对拍）全过才打 `FBW ok`（stdout = console 发
 # 端，vblk VBLK ok 同款）；段②起 park 换 serve 循环收 console 转发上屏。
+license = "Apache-2.0"
 
 [workspace]
 

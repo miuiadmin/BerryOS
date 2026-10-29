@@ -8,6 +8,7 @@ edition = "2021"
 # 判据不可表达——存在性判据 + 注释明示，见 main.rs）。PATH 未设默认
 # /bin（v1 rootfs 全量 bin 目录）。crates.io 无 uu_which 线（uutils
 # which 在独立仓库，未发布）——自写即上游缺位。
+license = "Apache-2.0"
 
 [workspace]
 

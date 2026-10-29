@@ -10,6 +10,7 @@ edition = "2021"
 # 为什么自写：uu_grep 0.2.0（crates.io 线顶）硬依赖 onig/onig_sys——
 # Oniguruma C 正则库需 C 工具链，与 berry-ld 纯 Rust 链结构性不兼容
 # （2026-10-25 /tmp probe 实证：无 feature 门可关）。
+license = "Apache-2.0"
 
 [workspace]
 

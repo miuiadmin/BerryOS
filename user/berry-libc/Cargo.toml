@@ -7,6 +7,7 @@ edition = "2021"
 # 189 强未定义全定义——shim 全定义 ⇒ musl libc.a 成员永不入选，零 musl 字节进产物）。
 # 本 crate 需同时在 aarch64-unknown-none（主工作区 pass2，纯编译检查）与
 # aarch64-unknown-linux-musl（stdhello 依赖）两个 target 下编译——只用 core，无链接面。
+license = "Apache-2.0"
 
 [dependencies]
 berry-sys = { path = "../berry-sys" }

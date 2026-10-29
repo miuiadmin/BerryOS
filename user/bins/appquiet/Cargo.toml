@@ -8,6 +8,7 @@ edition = "2021"
 # 缺席可运行的活证：stdout = appd 私有采集对端（输出不进串口），main
 # 静默真退出，appd collect 面只收 libc exit 先行的零长 EOF（fail 同款
 # 快路径）。stdhello 同链独立小工作区。
+license = "Apache-2.0"
 
 [workspace]
 

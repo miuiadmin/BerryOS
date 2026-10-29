@@ -38,27 +38,30 @@ jobs:
       # ---------- SEC-01 §4.5 件 23：供应链防线进 CI（fail-fast 位） ----------
       # cargo-deny：licenses（GPL 拒收 = 仓纪律执法，allowlist 见根 deny.toml——
       # 依据 = 全 workspace cargo metadata 实测 license 面）+ advisories（RustSec
-      # 三连击教训，SEC-8 §3.4）。本仓多 workspace（26 个根各有 Cargo.lock——
-      # 根/user/drivers/bootloader/x86_64/user bins），逐一 --manifest-path 全覆盖；
-      # find 排除 reference/ .claude/ target/ docs/（docs/挂账-* 是死档部分树，
-      # manifest 断链非可检查对象）。`-A unlicensed -A no-license-field` = 工作区
-      # 本地 crate（berry-* 全家）未标 license 的预期豁免——注意这是「无
-      # license 表达式整类放行」的已知豁免面：缺 license 字段的第三方依赖
-      # 不进 allowlist 匹配、无自动执法（引入时人工把关）；已解析表达式的
-      # GPL 拒收面不受影响（详见 deny.toml 头注）。版本钉 0.20.2（与本地验证同版）。
+      # 三连击教训，SEC-8 §3.4）。本仓多 workspace（find 口径 27 个 manifest 命中
+      # ——根/user/drivers/bootloader/x86_64/user bins；23 个真 [workspace] 根 +
+      # 4 个注释命中假根（vblk/vnet/vprobe/berry-tcp——cargo deny 经 --manifest-path
+      # 解析到所属父 workspace，检查面等价；26→27 = A5-1 netprobe 独立小工作区
+      # 增补）），逐一 --manifest-path 全覆盖；find 排除 reference/ .claude/
+      # target/ docs/（docs/挂账-* 是死档部分树，manifest 断链非可检查对象）。
+      # SEC-02 挂账 F1 清账（2026-10-30）：全部本地 crate 补齐
+      # `license = "Apache-2.0"`（ADR #37）后撤 `-A unlicensed -A no-license-field`
+      # 双旗（本地 27 manifest 全绿实录）——「缺 license 字段/无表达式」面恢复
+      # FAIL 执法，第三方依赖缺字段不再整类静默放行（详见 deny.toml 头注）。
+      # 版本钉 0.20.2（与本地验证同版）。
       - name: 安装 cargo-deny
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.20.2
 
-      - name: cargo-deny（licenses + advisories，全 26 workspace）
+      - name: cargo-deny（licenses + advisories，全 workspace）
         run: |
           set -eu
           fails=0
           for mf in $(find . -name Cargo.toml -not -path './reference/*' -not -path './.claude/*' -not -path './target/*' -not -path './docs/*' | sort); do
             grep -q '\[workspace\]' "$mf" || continue
             echo "::group::cargo-deny $mf"
-            if ! cargo deny --config deny.toml --manifest-path "$mf" check licenses advisories -A unlicensed -A no-license-field; then
+            if ! cargo deny --config deny.toml --manifest-path "$mf" check licenses advisories; then
               echo "::error file=$mf::cargo-deny licenses/advisories FAILED（GPL 误入或 RustSec 命中——see deny.toml）"
               fails=$((fails+1))
             fi

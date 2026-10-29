@@ -9,6 +9,7 @@ edition = "2021"
 # rootfs VMO = gift[2]（libc `rootfs_h()`，`run <name>` 流式取 ELF）。
 # 验收：自驱自验（内部 `run hexyl` 收齐 2156B）打 `BSH ok`——smoke
 # rootfs 相第 8 标记，不依赖交互输入（rootfs 相 stdin=/dev/null）。
+license = "Apache-2.0"
 
 [workspace]
 

@@ -9,6 +9,7 @@ edition = "2021"
 # 互不渗漏。打一行 `app APPDEMO up` 后 exit(0) 真退出，appd（svcmgr arm）
 # reap 收 0；包经 tools/mkapp.py 产 .bap 进 rootfs.cpio（构建期接线
 # 见 justfile build-user）。
+license = "Apache-2.0"
 
 [workspace]
 

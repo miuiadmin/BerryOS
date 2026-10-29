@@ -14,6 +14,7 @@ edition = "2021"
 # berry-blkproto 块 RPC，覆盖层语义见 src/fat.rs）。静默无输出（诊断走
 # 应答 st 码——FAT init 失败/会话
 # 毒化各一行例外）。
+license = "Apache-2.0"
 
 [workspace]
 

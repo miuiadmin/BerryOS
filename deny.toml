@@ -6,22 +6,29 @@
 # 经 const-random-macro 共存，C-2c 挂账刀已实录）——不以此红 CI。
 #
 # 多 workspace 执行口 = ci.yml「cargo-deny（licenses+advisories）」step：
-# 本仓 26 个 workspace 根各有 Cargo.lock，逐一 `cargo deny --manifest-path`
-# 检查（根/user/drivers/bootloader/x86_64/user bins 全覆盖；find 排除
-# reference/ .claude/ target/ docs/——docs/挂账-* 是死档部分树，manifest 断链）。
+# find 口径 27 个 manifest 命中（23 个真 workspace 根 + 4 个注释命中假根
+# vblk/vnet/vprobe/berry-tcp——`--manifest-path` 解析到所属父 workspace，
+# 检查面等价；SEC-02 时 26→27 = A5-1 netprobe 独立小工作区增补），逐一
+# `cargo deny --manifest-path` 检查（根/user/drivers/bootloader/x86_64/
+# user bins 全覆盖；find 排除 reference/ .claude/ target/ docs/——
+# docs/挂账-* 是死档部分树，manifest 断链）。
 #
-# 调用侧带 `-A unlicensed -A no-license-field`：工作区本地 crate（berry-* 全家）
-# 未标 license/publish=false（manifest 面不在本刀文件界）——unlicensed/no-license-
-# field lint 对自家 crate 是预期形态。**已知豁免面（如实陈述——对抗审查实抓，
-# 勿再声称 allowlist 兜住该情形）**：allowlist 只匹配「已解析出的 license 表达式」，
-# 无表达式（缺 license 字段）的 crate 根本不进匹配——双旗对其整类静默放行，
-# 缺 license 字段的第三方依赖在本配置下**无自动执法**，引入时依赖审查人工把关。
-# 已解析表达式的执法面不受影响（self_cell/r-efi OR 分支照常过 allowlist 拒收）。
-# 清账路 = berry-* 各 crate 补 `license = "Apache-2.0"`（ADR #37）后撤双旗——
-# 届时「无表达式」面即恢复 FAIL 执法，本注随之改写。
+# 调用侧不带豁免旗（SEC-02 挂账 F1 清账刀 2026-10-30 撤除
+# `-A unlicensed -A no-license-field` 双旗）：全部本地 crate（78 个
+# [package] manifest）已补齐 `license = "Apache-2.0"`（ADR #37）——本地
+# 27 manifest 撤旗后 licenses+advisories 全绿实录，「缺 license 字段/
+# 无表达式」面恢复 FAIL 执法。
+# 历史注记（撤旗前的已知豁免面，对抗审查实抓后曾如实陈述——勿再声称
+# allowlist 兜得住该情形）：allowlist 只匹配「已解析出的 license 表达式」，
+# 无表达式（缺 license 字段）的 crate 根本不进匹配——双旗当时对缺字段
+# crate 整类静默放行，缺 license 字段的第三方依赖无自动执法（引入时依赖
+# 审查人工把关）；已解析表达式的执法面不受影响（self_cell/r-efi OR 分支
+# 照常过 allowlist 拒收）。该豁免面已随清账撤旗消除：本地 crate 补字段
+# 自证，第三方缺字段依赖自本刀起恢复 FAIL。
 #
-# allowlist 依据 = 2026-10-30 对全部 26 个 workspace 的 cargo metadata 实测
-# license 面（非拍脑袋）：MIT OR Apache-2.0 / MIT / Unicode-3.0 / Zlib / ISC /
+# allowlist 依据 = 2026-10-30 对全部 27 manifest（ci 同款 find 口径，23 真
+# workspace 根——净增 netprobe 无新增第三方 license 面）的 cargo metadata
+# 实测 license 面（非拍脑袋）：MIT OR Apache-2.0 / MIT / Unicode-3.0 / Zlib / ISC /
 # CC0-1.0 / 0BSD / Unlicense / Apache-2.0 WITH LLVM-exception——全部在册。
 # 两处 OR 分支含 GPL/LGPL 的既有依赖（OR 语义 = 任一分支满足即合法，选举
 # 非 GPL 分支）：
@@ -30,7 +37,7 @@
 # 若未来引入「GPL AND ...」或纯 GPL 依赖，本配置将拒之——预期行为。
 
 [graph]
-# 工作区本地 crate 未标 license（private 面不发布）：跳过其 license 检查
+# 本地 crate 已全数带 license（F1 清账刀）——all-features 默认关（与 license 面无关）
 all-features = false
 
 [licenses]
@@ -52,7 +59,7 @@ allow = [
     "Unlicense",
 ]
 private = { ignore = true }
-# allowlist = 全 26 workspace 的并集——单一 workspace 检查时必有「未遇到」项
+# allowlist = 全 27 manifest（23 真 workspace 根）依赖并集——单一 workspace 检查时必有「未遇到」项
 # （如根工作区无 Zlib crate、user 工作区有），此 lint 降为 allow 防 CI 红噪声
 unused-allowed-license = "allow"
 

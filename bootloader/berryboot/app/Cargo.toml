@@ -3,6 +3,7 @@ name = "berryboot"
 version = "0.1.0"
 edition = "2021"
 description = "BerryBoot EFI 引导应用（V-0a）——staticlib 出 ELF，tools/elf2pe.py 转 PE32+"
+license = "Apache-2.0"
 
 [lib]
 crate-type = ["staticlib"]
