@@ -93,9 +93,9 @@ use berry_libc::fs::{
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
-    berry_object_wait_one, berry_process_terminate, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_STATE,
-    BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND, SIGNAL_READABLE,
-    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    berry_object_wait_one, berry_process_terminate, berry_signal_send, Handle, BERRY_ERR_AGAIN,
+    BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
+    SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 // A2-3：netd 会话化协议（EVS echo server 自验的 RPC 编解码面）。
 use berry_netdproto as ndp;
@@ -302,6 +302,16 @@ fn main() {
     //    无文件参），排 mmp 后 fat 族前（EFI 路无盘亦打 CLK）；无拓扑
     //    降级门（失败即 park loud）。
     clk_selftest();
+    // —— A7-4 段④：信号面 guest 自验（`SIG ok n=5` = rootfs 相第 45 标记，
+    //    `docs/事件循环A7-4信号面实施设计草案.md` §5）——libc signal.rs 真身
+    //    （sigaction/sigprocmask 表面 + 协同式投递循环 kill/raise/pause）+
+    //    内核 0x86/0x87 跨进程位面的五步链（⓪raise 即时投递 ①表/掩码回读
+    //    ②blocked 窗 held→unblock 补投 ③kill 分诊 self/ESRCH/EINVAL
+    //    ④spawn bin/sigchild 跨进程 SIGTERM→DFL exit(143) EOF 先行）。
+    //    链序契约同 U2/MMP/CLK——零 fs 盘面（纯用户态信号面 + sigchild 零
+    //    gift spawn），排 fat 族前（EFI 路无盘亦打 SIG）；无拓扑降级门
+    //    （失败即 park loud）。
+    sig_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -2605,6 +2615,201 @@ fn clk_selftest() {
         berry_libc::park();
     }
     println!("CLK ok n=6");
+}
+
+/// A7-4 段④：信号面 guest 自验（`SIG ok n=5`，调用点头注——五步）：
+/// ⓪ sigaction 装 SIGUSR1 handler + raise → 计数恰 1（raise 尾同步
+/// dispatch，不赌调度相位）；① 表回读（sigaction null 查询 == handler）
+/// + sigprocmask BLOCK/查询双向（oldset 不含 → 含 SIGUSR2）；② blocked 窗
+/// raise → handler 不跑（held 持久化）→ UNBLOCK 补投 → 计数恰 1（归并式
+/// 分诊 + 收窄补投面 = ③b 投递循环核心环）；③ kill 分诊三连（self ≡
+/// raise 计数 2 / 探活 sig==0 零内核 / 非 self ESRCH + 界外号 EINVAL）；
+/// ④ spawn bin/sigchild → `berry_signal_send(hp, SIGTERM)`（libc kill 仅
+/// self 档——跨进程直调 berry-sys 0x86 面）→ 子睡循环醒来投递 → DFL
+/// Terminate → `io::exit(143)` **EOF 先行**（与 INT 案内核杀 no-EOF 恰成
+/// 对照面——collect 预期 eof=true/killed=false）→ wait TERMINATED +
+/// reap 真码 143。
+///
+/// 信号面经 bsh 本地 extern 声明链接期解析 berry-libc `#[no_mangle]` 真身
+/// （clk ClkTs/mmp mmap 同款先例——extern 块签名与 libc crate
+/// aarch64-musl 声明逐参对齐）。handler 计数靶 = AtomicU32（dispatch 同
+/// 线程同步调用，Relaxed 足够——无跨线程可见性面）。
+fn sig_selftest() {
+    // asm-generic 三号（berry-signal 单源值；本地镜像——不引 berry-signal
+    // 依赖面，与 clk 本地声明形态一致）。
+    const SIGUSR1: i32 = 10;
+    const SIGUSR2: i32 = 12;
+    const SIGTERM: i32 = 15;
+    const SIG_BLOCK: i32 = 0; // 掩码三 how（kernel asm-generic 与 libc 同值）
+    const SIG_UNBLOCK: i32 = 1;
+
+    /// struct sigaction 最小镜像（sa_sigaction@0/sa_mask@8 128B/sa_flags@
+    /// 136/sa_restorer@144——berry-libc signal.rs 钉板同源布局）。
+    #[repr(C)]
+    struct SigAct {
+        sa_sigaction: usize,
+        sa_mask: [u8; 128],
+        sa_flags: i32,
+        sa_restorer: usize,
+    }
+    extern "C" {
+        fn sigaction(sig: i32, act: *const SigAct, oldact: *mut SigAct) -> i32;
+        fn sigprocmask(how: i32, set: *const u8, oldset: *mut u8) -> i32;
+        fn sigemptyset(set: *mut u8) -> i32;
+        fn sigaddset(set: *mut u8, sig: i32) -> i32;
+        fn sigismember(set: *const u8, sig: i32) -> i32;
+        fn raise(sig: i32) -> i32;
+        fn kill(pid: i32, sig: i32) -> i32;
+        fn getpid() -> i32;
+    }
+
+    static CNT1: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static CNT2: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    extern "C" fn h1(_sig: i32) {
+        CNT1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    extern "C" fn h2(_sig: i32) {
+        CNT2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    let c1 = || CNT1.load(std::sync::atomic::Ordering::Relaxed);
+    let c2 = || CNT2.load(std::sync::atomic::Ordering::Relaxed);
+    let mut fails: Vec<&str> = Vec::new();
+
+    // ⓪ 装 SIGUSR1 handler + raise 即时投递：计数恰 1（handler 包络位
+    //    事后已摘——掩码回到全开，①② 不受染）。
+    let mut act = SigAct {
+        sa_sigaction: h1 as *const () as usize,
+        sa_mask: [0; 128],
+        sa_flags: 0,
+        sa_restorer: 0,
+    };
+    unsafe { sigemptyset(act.sa_mask.as_mut_ptr()) };
+    if unsafe { sigaction(SIGUSR1, &act, core::ptr::null_mut()) } != 0 {
+        fails.push("⓪ sigaction 装 handler 非 0");
+    }
+    if unsafe { raise(SIGUSR1) } != 0 || c1() != 1 {
+        fails.push("⓪ raise 即时投递计数 != 1");
+    }
+
+    // ① 表回读 == handler；sigprocmask BLOCK 出 oldset（不含 SIGUSR2）+
+    //    set=NULL 纯查询回读（含）——掩码状态机双向活证。
+    let mut old = SigAct {
+        sa_sigaction: 0,
+        sa_mask: [0; 128],
+        sa_flags: 0,
+        sa_restorer: 0,
+    };
+    if unsafe { sigaction(SIGUSR1, core::ptr::null(), &mut old) } != 0
+        || old.sa_sigaction != h1 as *const () as usize
+    {
+        fails.push("① sigaction 回读 != handler");
+    }
+    let mut set2 = [0u8; 128];
+    let mut oldset = [0u8; 128];
+    unsafe {
+        sigemptyset(set2.as_mut_ptr());
+        sigaddset(set2.as_mut_ptr(), SIGUSR2);
+    }
+    if unsafe { sigprocmask(SIG_BLOCK, set2.as_ptr(), oldset.as_mut_ptr()) } != 0
+        || unsafe { sigismember(oldset.as_ptr(), SIGUSR2) } != 0
+    {
+        fails.push("① BLOCK oldset 不含 SIGUSR2 破缺");
+    }
+    if unsafe { sigprocmask(SIG_BLOCK, core::ptr::null(), oldset.as_mut_ptr()) } != 0
+        || unsafe { sigismember(oldset.as_ptr(), SIGUSR2) } != 1
+    {
+        fails.push("① 查询回读不含 SIGUSR2 破缺");
+    }
+
+    // ② SIGUSR2 blocked 窗内 raise：handler 不跑（held 持久化）→ UNBLOCK
+    //    收窄补投：计数恰 1。
+    let mut act2 = SigAct {
+        sa_sigaction: h2 as *const () as usize,
+        sa_mask: [0; 128],
+        sa_flags: 0,
+        sa_restorer: 0,
+    };
+    unsafe { sigemptyset(act2.sa_mask.as_mut_ptr()) };
+    if unsafe { sigaction(SIGUSR2, &act2, core::ptr::null_mut()) } != 0 {
+        fails.push("② sigaction 装 h2 非 0");
+    }
+    if unsafe { raise(SIGUSR2) } != 0 || c2() != 0 {
+        fails.push("② blocked 窗 raise 计数非 0（held 破缺）");
+    }
+    if unsafe { sigprocmask(SIG_UNBLOCK, set2.as_ptr(), core::ptr::null_mut()) } != 0 || c2() != 1 {
+        fails.push("② UNBLOCK 补投计数 != 1");
+    }
+
+    // ③ kill 分诊：self ≡ raise（计数 2）；探活档 sig==0 零内核；非 self
+    //    诚拒 ESRCH（v1 无 pid 面）；界外号 EINVAL。
+    if unsafe { kill(getpid(), SIGUSR1) } != 0 || c1() != 2 {
+        fails.push("③ kill self 投递计数 != 2");
+    }
+    if unsafe { kill(getpid(), 0) } != 0 {
+        fails.push("③ kill(pid,0) 探活非 0");
+    }
+    if unsafe { kill(999, 0) } != -1 || berry_libc::get_errno() != 3 {
+        fails.push("③ kill(999,0) 非 -1/ESRCH");
+    }
+    if unsafe { kill(999, SIGTERM) } != -1 || berry_libc::get_errno() != 3 {
+        fails.push("③ kill(999,SIGTERM) 非 -1/ESRCH");
+    }
+    if unsafe { kill(getpid(), 99) } != -1 || berry_libc::get_errno() != 22 {
+        fails.push("③ kill 界外号非 -1/EINVAL");
+    }
+
+    // ④ 跨进程终止链（bin/sigchild：DFL 免装靶——200ms 睡循环醒来即
+    //    投递点；信号先于子首睡到达也无竞——内核 pending 位持久在
+    //    Process 上）。EOF 先行对照面：collect 预期 eof=true/killed=false
+    //    （io::exit 链 vs INT 案内核 terminate no-EOF）。
+    let full = b"bin/sigchild";
+    let Some((data_off, data_len)) = cpio_find(rootfs_h(), full) else {
+        eprintln!("bsh: sig selftest: bin/sigchild not found");
+        berry_libc::park();
+    };
+    let (out_s, out_c) = channel_pair();
+    let spec = SpawnSpec {
+        name: full,
+        data_off,
+        data_len,
+        stdout: out_c,
+        stack_pages: 32, // musl std 口径（run_capture 同款 d-3c）
+        stdin_feed: None,
+        stdin_handle: None,
+        args: &[],
+        extra_gifts: &[],
+        mmio_vmo: None,
+        mmio_va: 0,
+    };
+    let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("bsh: sig selftest: sigchild spawn failed");
+            berry_libc::park();
+        }
+    };
+    if berry_signal_send(child.hp, SIGTERM as u32) != 0 {
+        fails.push("④ signal_send(SIGTERM) != 0");
+    }
+    let o = collect_fg(out_s, child.hp, &[child.hp]);
+    if o.killed || !o.eof {
+        fails.push("④ collect 非 eof 收场（exit 链 EOF 面破缺）");
+    }
+    match child.reap() {
+        Ok(143) => {}
+        Ok(_) => fails.push("④ reap 真码 != 143"),
+        Err(()) => fails.push("④ reap 失败"),
+    }
+    if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+        berry_libc::park();
+    }
+
+    if !fails.is_empty() {
+        eprintln!("bsh: sig selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("SIG ok n=5");
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码

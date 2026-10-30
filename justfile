@@ -59,7 +59,7 @@ build-user:
         ../kernel/src/userbins/abuser.bin --max 4096
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/svcmgr \
-        ../kernel/src/userbins/svcmgr.bin --max 65536
+        ../kernel/src/userbins/svcmgr.bin --max 131072
     # G-eco-d：std 面——stdhello（musl target + berry-libc shim + berry-ld
     # 剥 musl crt；-zmax-page-size=4096 压 PT_LOAD 间隙，G-eco-a 同款教训）。
     # d-3c：hexyl（上游 main.rs 逐字 + 生态依赖树全量——D4 路线①最终验证）。
@@ -193,6 +193,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/netprobe/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # A7-4 段④：sigchild（信号终止靶——bsh sig_selftest 步④ spawn 后
+    # berry_signal_send(hp, SIGTERM) 置位；200ms 睡循环醒来 = libc
+    # clock_nanosleep 链尾投递点 → DFL → io::exit(143) EOF 先行。零显式
+    # 信号代码即靶面；自验/标记 `SIG ok n=5` 随 sig_selftest）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/sigchild/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
@@ -237,6 +244,7 @@ build-user:
         bin/pwd=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd \
         bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
         bin/rmdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir \
+        bin/sigchild=cargo-target/aarch64-unknown-linux-musl/release/sigchild \
         bin/sort=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/sort \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
         bin/tail=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tail \
@@ -430,6 +438,12 @@ test-host:
     # libSystem write 符号插入劫自旋，纯面外迁后 host 测试零 libc 面）。
     cargo test --manifest-path user/Cargo.toml -p berry-tls --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-mmap --target {{host}}
+    # A7-4 §3.2：berry-signal host 测（POSIX 信号面纯函数底座——sigaction
+    # 表/掩码状态机 + held 集/musl 128B sigset 位图层/归并式投递分诊计划
+    # plan_dispatch，host 22 测）。berry-tls/mmap 同款独立纯 crate 形态：
+    # berry-libc 的 libc 同名符号在 host 测试二进制里符号插入，纯面外迁
+    # 后 host 测试零 libc 面。
+    cargo test --manifest-path user/Cargo.toml -p berry-signal --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
     python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin

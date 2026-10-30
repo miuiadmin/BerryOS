@@ -1,0 +1,25 @@
+[package]
+name = "sigchild"
+version = "0.1.0"
+edition = "2021"
+
+# A7-4 段④（docs/事件循环A7-4信号面实施设计草案.md §5）：信号终止靶——
+# bsh sig_selftest 步④ spawn 后经 `berry_signal_send(hp, SIGTERM)` 置位
+# （跨进程 0x86 面），本进程 200ms 睡循环的每次醒来 = libc
+# `clock_nanosleep` 链尾投递点（A7-4 ③b §3.3）→ SIGTERM DFL →
+# `io::exit(143)`（128+15 惯例码；EOF 先行——collect 预期 eof=true，与
+# INT 案内核杀 no-EOF 面恰成对拍）。零显式信号代码 = DFL 免装表面的
+# 活证。产链同 ps/stdhello 独立小工作区 musl 链；无 fs/net gift 消费。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
