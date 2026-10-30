@@ -89,9 +89,12 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 |
 | **安全 / 远程证明**（预留） ||||
 | 0x85 | `berry_attest` | 远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法） | v1 |
+| **信号**（POSIX 兼容——libc 协同式投递，A7-4） ||||
+| 0x86 | `signal_send` | 向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配 | v1 |
+| 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 |
 <!-- @gen:syscalls end -->
 
-**计数**：v1 32 号在册 / 31 已实现（0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11）；v2 增 12；v3 增 5（namespace + 策略注入/遥测）；**总数 49**（add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
+**计数**：v1 34 号在册 / 31 已实现（0x85 `berry_attest` 远程证明预留位 + 0x86/0x87 `signal_send`/`signal_take` 信号面预留位（A7-4，门 C 裁定 A add-only）在册未实现——恒 `-ENOTSUP`，SEC-01 件 11 / A7-4 草案 §3.1）；v2 增 12；v3 增 5（namespace + 策略注入/遥测）；**总数 51**（add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
 
 > **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x85`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
 
@@ -414,7 +417,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 32**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`））——真语义 31 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B），另 1 号为预留位。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 34**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号预留 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——在册未实现恒 `-ENOTSUP`，实现落地翻 implemented 31→33））——真语义 31 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B），另 3 号为预留位。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
 
 ### 8.4 Rust FFI 镜像（`user/berry-sys`，raw 绑定）
 

@@ -6,8 +6,8 @@
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 32 号在册、31 已实现）----
-// 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
+// ---- syscall 号（ABI §4 编号表；v1 34 号在册、31 已实现）----
+// 在册未实现：0x85 berry_attest、0x86 signal_send、0x87 signal_take（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;
@@ -52,6 +52,10 @@ pub const NR_EVENT_CREATE: usize = 0x54;
 pub const NR_CLOCK_READ: usize = 0x61;
 /// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
 pub const NR_BERRY_ATTEST: usize = 0x85;
+/// A7-4（门 C 裁定 A add-only 加号，2026-10-30）：在册未实现恒 -ENOTSUP（0x85 attest 同形先例档）——实现落地随 A7-4 段③翻 implemented=true（与 0x87 同刀）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+pub const NR_SIGNAL_SEND: usize = 0x86;
+/// A7-4：与 0x86 同刀同翻。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
+pub const NR_SIGNAL_TAKE: usize = 0x87;
 
 // ---- clock id（ABI §8.3 `berry_clock_id_t`）----
 /// `clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。

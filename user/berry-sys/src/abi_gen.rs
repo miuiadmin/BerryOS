@@ -124,6 +124,14 @@ pub(crate) mod nr {
     // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
     #[allow(dead_code)]
     pub(crate) const BERRY_ATTEST: usize = 0x85;
+    /// A7-4（门 C 裁定 A add-only 加号，2026-10-30）：在册未实现恒 -ENOTSUP（0x85 attest 同形先例档）——实现落地随 A7-4 段③翻 implemented=true（与 0x87 同刀）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const SIGNAL_SEND: usize = 0x86;
+    /// A7-4：与 0x86 同刀同翻。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const SIGNAL_TAKE: usize = 0x87;
 }
 
 // ---- 宽度冻结断言（abi.toml [types]；G2 冻结面的机器执法）----
