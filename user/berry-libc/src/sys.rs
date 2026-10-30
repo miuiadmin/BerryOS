@@ -213,9 +213,14 @@ pub extern "C" fn pause() -> c_int {
     -1
 }
 
+/// getpid() 定值锚（「无进程 ID 概念的诚实常数」档）——提 pub const
+/// 供 berry-signal `GETPID_MIRROR` 跨 crate const assert 钉板
+/// （signal.rs，两值漂移编译期红）；kill 自杀判定锚同源（A7-4 §3.2）。
+pub const SELF_PID: c_int = 42;
+
 #[no_mangle]
 pub extern "C" fn getpid() -> c_int {
-    42
+    SELF_PID
 }
 
 #[no_mangle]

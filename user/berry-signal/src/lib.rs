@@ -56,8 +56,12 @@
 //! 终止类 `exit(128+sig)`——含 SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU
 //! （POSIX 停止类，v1 无停止态，终止 = 「进程不再跑」的最接近
 //! 可观察语义，A7-4 草案 §3.4 偏差清单在册）。SIGKILL/SIGSTOP
-//! 不可捕获不可忽略（[`capturable`] 拒 EINVAL——POSIX 钦定），
-//! 恒走默认表。
+//! 不可捕获不可忽略（[`capturable`] 拒 EINVAL——纯查询/装 DFL 档
+//! 由 [`installable`] 放行）、**不可阻塞**——单一执法点 =
+//! [`plan_dispatch`] 投递期豁免（对其无视掩码直落表查，`kill -9`
+//! 全掩码下仍必杀）；掩码**存储位**允许含 KILL/STOP（Linux
+//! `sig_kernel_only` 同形——sigprocmask 回读可见、投递期绕过）。
+//! POSIX 钦定三元组。
 //!
 //! ### errno 本地定值
 //!
@@ -130,6 +134,25 @@ pub fn capturable(sig: i32) -> Result<(), i32> {
     } else {
         Ok(())
     }
+}
+
+/// sigaction/signal 的装表面分诊（对抗审查 F3：POSIX EINVAL 只罩
+/// 「attempt to catch **or ignore**」——**纯查询与装 SIG_DFL 对
+/// KILL/STOP 合法**，musl/Linux 对拍同形：`sigaction(SIGKILL, NULL,
+/// &old)` 返 0、oldact=SIG_DFL）。返回 `Ok(needs_store)`：false =
+/// KILL/STOP 装 DFL（槽恒 DFL，no-op 免写）——调用方（libc 胶水）
+/// 以此跳过表写。
+pub fn installable(sig: i32, value: u64) -> Result<bool, i32> {
+    if !valid_sig(sig) {
+        return Err(EINVAL);
+    }
+    if sig == SIGKILL || sig == SIGSTOP {
+        if value == SIG_DFL {
+            return Ok(false); // 查询/复位档合法；槽恒 DFL 免写
+        }
+        return Err(EINVAL); // catch/ignore 拒（capturable 同口径）
+    }
+    Ok(true)
 }
 
 // ---- sigaction 表 ----
@@ -205,30 +228,30 @@ pub fn set_full() -> [u8; SIGSET_BYTES] {
 
 /// `sigaddset`：位 (sig-1)，字节序 LE（musl `set->__bits[s/8] |= 1<<(s%8)`）。
 pub fn set_add(set: &mut [u8; SIGSET_BYTES], sig: i32) -> Result<(), i32> {
-    let s = (sig - 1) as usize;
     if !valid_sig(sig) {
-        return Err(EINVAL);
-    }
+        return Err(EINVAL); // 界检先于减法——sig=i32::MIN 的 `sig-1`
+    } // debug 构建 arithmetic overflow panic（对抗审查 F6）
+    let s = (sig - 1) as usize;
     set[s / 8] |= 1u8 << (s % 8);
     Ok(())
 }
 
 /// `sigdelset`：清位（同上位序）。
 pub fn set_del(set: &mut [u8; SIGSET_BYTES], sig: i32) -> Result<(), i32> {
-    let s = (sig - 1) as usize;
     if !valid_sig(sig) {
-        return Err(EINVAL);
+        return Err(EINVAL); // 同 set_add：先检后减
     }
+    let s = (sig - 1) as usize;
     set[s / 8] &= !(1u8 << (s % 8));
     Ok(())
 }
 
 /// `sigismember`：测位（同上位序）。
 pub fn set_ismember(set: &[u8; SIGSET_BYTES], sig: i32) -> Result<bool, i32> {
-    let s = (sig - 1) as usize;
     if !valid_sig(sig) {
-        return Err(EINVAL);
+        return Err(EINVAL); // 同 set_add：先检后减
     }
+    let s = (sig - 1) as usize;
     Ok(set[s / 8] & (1u8 << (s % 8)) != 0)
 }
 
@@ -299,7 +322,8 @@ pub struct Plan {
     pub steps: [(i32, Act); SIG_MAX as usize],
     /// steps 有效长度（= total 位计数）。
     pub n: usize,
-    /// 回写 held：`total & mask`（libc 侧执行完 steps 后写入 held 集）。
+    /// 回写 held：`total & mask` 挖去 KILL/STOP 位（不可阻塞——
+    /// 其位永不入 held；libc 侧执行完 steps 后写入 held 集）。
     pub new_held: SigMask,
 }
 
@@ -316,7 +340,10 @@ pub fn plan_dispatch(total: u64, mask: SigMask, actions: &ActionTable) -> Plan {
         if total & bit == 0 {
             continue;
         }
-        let act = if mask & bit != 0 {
+        // POSIX：SIGKILL/SIGSTOP **不可阻塞**（钦定三元组第三元）——
+        // 掩码位对其无效，直落表查（KILL/STOP 槽恒 DFL → Terminate；
+        // kill -9 全掩码下仍必杀——头注「恒走默认表」的执法点）。
+        let act = if mask & bit != 0 && sig != SIGKILL && sig != SIGSTOP {
             Act::Hold
         } else {
             match actions.slots[sig as usize] {
@@ -383,6 +410,20 @@ mod tests {
         assert_eq!(capturable(10), Ok(())); // SIGUSR1
         assert_eq!(capturable(0), Err(EINVAL));
         assert_eq!(capturable(65), Err(EINVAL));
+    }
+
+    #[test]
+    fn installable_query_and_dfl_legal_on_kill_stop() {
+        // POSIX EINVAL 只罩 catch/ignore——查询与装 DFL 对 KILL/STOP
+        // 合法（musl/Linux 对拍，对抗审查 F3）。
+        assert_eq!(installable(SIGKILL, SIG_DFL), Ok(false)); // no-op 免写
+        assert_eq!(installable(SIGSTOP, SIG_DFL), Ok(false));
+        assert_eq!(installable(SIGKILL, SIG_IGN), Err(EINVAL)); // ignore 拒
+        assert_eq!(installable(SIGSTOP, 0x400090), Err(EINVAL)); // catch 拒
+        assert_eq!(installable(10, SIG_DFL), Ok(true)); // 常规号全放行
+        assert_eq!(installable(10, SIG_IGN), Ok(true));
+        assert_eq!(installable(0, SIG_DFL), Err(EINVAL)); // 界外恒拒
+        assert_eq!(installable(65, SIG_DFL), Err(EINVAL));
     }
 
     // sigaction 表 ----
@@ -465,6 +506,11 @@ mod tests {
         assert_eq!(set_ismember(&mut s, 10), Ok(false));
         assert_eq!(set_add(&mut s, 0), Err(EINVAL));
         assert_eq!(set_add(&mut s, 65), Err(EINVAL));
+        // 极端号无溢出（对抗审查 F6）：sig-1 的 debug arithmetic
+        // overflow panic 回归钉板——界检必须先于减法。
+        assert_eq!(set_add(&mut s, i32::MIN), Err(EINVAL));
+        assert_eq!(set_del(&mut s, i32::MIN), Err(EINVAL));
+        assert_eq!(set_ismember(&s, i32::MIN), Err(EINVAL));
         assert_eq!(set_ismember(&s, 65), Err(EINVAL));
         assert_eq!(set_del(&mut s, 9), Ok(()));
         assert_eq!(s[1], 0);
@@ -551,8 +597,9 @@ mod tests {
     #[test]
     fn plan_mask_beats_terminate() {
         // 掩码优先于投递：默认终止信号被 block → Hold 非 Terminate
-        //（POSIX：blocked 信号即使默认终止也不投——SIGKILL 面由内核
-        // 语义兜底，libc 掩码可挡其余全部）。
+        //（POSIX：blocked 信号即使默认终止也不投——KILL/STOP 除外
+        //：不可阻塞（plan_kill_stop_not_blockable 钉板），其余全部
+        //可挡）。
         let t = ActionTable::new();
         let mask = mask_bit(15).unwrap(); // TERM 被 block
         let p = plan_dispatch(1 << 14, mask, &t);
@@ -596,6 +643,17 @@ mod tests {
         let p = plan_dispatch(1 << 9, mask, &t);
         assert_eq!(acts(&p), vec![(10, Act::Hold)]);
         assert_eq!(p.new_held, mask);
+    }
+
+    #[test]
+    fn plan_kill_stop_not_blockable() {
+        // POSIX：SIGKILL/SIGSTOP 不可阻塞——全掩码下仍直走表查
+        //（KILL/STOP 槽恒 DFL → Terminate；new_held 恒不含其位）。
+        let t = ActionTable::new();
+        let mask = (1 << 8) | (1 << 18); // KILL(9) + STOP(19) 位
+        let p = plan_dispatch(mask, !0, &t); // 全掩码
+        assert_eq!(acts(&p), vec![(9, Act::Terminate), (19, Act::Terminate)]);
+        assert_eq!(p.new_held, 0);
     }
 
     // kill 面 ----

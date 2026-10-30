@@ -74,6 +74,11 @@ const _: () = assert!(core::mem::offset_of!(Sigaction, sa_mask) == 8);
 const _: () = assert!(core::mem::offset_of!(Sigaction, sa_flags) == 136);
 const _: () = assert!(core::mem::offset_of!(Sigaction, sa_restorer) == 144);
 
+// GETPID 镜像钉板（berry-signal 头注「GETPID 镜像」承诺的执法面）：
+// sys.rs `SELF_PID` 与 berry-signal `GETPID_MIRROR` 双值对齐——任一
+// 侧改动即编译期红（单边字面钉板检不出 sys.rs 改值）。
+const _: () = assert!(berry_signal::GETPID_MIRROR == crate::sys::SELF_PID);
+
 // ---- 全局态（头注「全局态与单线程口径」）----
 
 /// 进程级信号掩码（v1 单掩码偏差档；berry-signal SigMask = u64 与内核
@@ -172,8 +177,18 @@ pub extern "C" fn sigprocmask(
     set: *const c_void,
     oldset: *mut c_void,
 ) -> c_int {
-    // 旧掩码先严出（set_of_mask：语义位外 120B 恒零——干净诚实档；
-    // 即使后续 set 界检失败，POSIX 对失败时 oldset 内容未定义，先写
+    // 先读 set 后写 oldset（对抗审查 F1：`set == oldset` 别名时先写
+    // oldset 会把入参砸成当前掩码——UNBLOCK 档静默清空整个掩码、
+    // SETMASK 档变 no-op；musl/Linux 读先写后序，`sigprocmask(how,
+    // &s, &s)` 惯例必须可用）。
+    let mut buf = [0u8; SIGSET_BYTES];
+    let has_set = !set.is_null();
+    if has_set {
+        // SAFETY: set 指向调用方 sigset_t（128B，libc 契约）。
+        unsafe { ptr::copy_nonoverlapping(set as *const u8, buf.as_mut_ptr(), SIGSET_BYTES) };
+    }
+    // 旧掩码严出（set_of_mask：语义位外 120B 恒零——干净诚实档；
+    // 即使后续 how 界检失败，POSIX 对失败时 oldset 内容未定义，先写
     // 无害且调用方拿到的是真值）。
     // SAFETY: oldset 指向调用方 sigset_t（128B，libc 契约）。
     unsafe {
@@ -182,12 +197,9 @@ pub extern "C" fn sigprocmask(
             ptr::copy_nonoverlapping(out.as_ptr(), oldset as *mut u8, SIGSET_BYTES);
         }
     }
-    if set.is_null() {
+    if !has_set {
         return 0; // 纯查询档（POSIX：set=NULL 只取 oldset）
     }
-    let mut buf = [0u8; SIGSET_BYTES];
-    // SAFETY: set 指向调用方 sigset_t（128B，libc 契约）。
-    unsafe { ptr::copy_nonoverlapping(set as *const u8, buf.as_mut_ptr(), SIGSET_BYTES) };
     // 宽进：低 8 字节 LE 取 u64、语义位外忽略（fillset 惯例必须活）。
     let arg = berry_signal::mask_of_set(&buf);
     // SAFETY: 单线程口径（头注），static mut 直写（lib.rs ABI 口径）。
@@ -212,11 +224,29 @@ pub extern "C" fn sigaction(
     act: *const Sigaction,
     oldact: *mut Sigaction,
 ) -> c_int {
-    // KILL/STOP 拒装（POSIX 钦定不可捕获；EINVAL）。
-    if let Err(e) = berry_signal::capturable(sig) {
-        return reject(e);
-    }
-    // SAFETY: act/oldact 指向调用方 struct sigaction（libc 契约）；
+    // 先读 act 后写 oldact（对抗审查 F1：`act == oldact` 别名时先写
+    // oldact 会把新装值砸成旧值——musl/Linux 读先写后序）。
+    // SAFETY: act 指向调用方 struct sigaction（libc 契约）。
+    let new_val = if act.is_null() {
+        None
+    } else {
+        Some(unsafe { (*act).sa_sigaction })
+    };
+    // KILL/STOP：纯查询与装 SIG_DFL 合法（POSIX EINVAL 只罩
+    // catch/ignore——installable 分诊，对抗审查 F3）；界外号恒拒。
+    let store = match new_val {
+        Some(v) => match berry_signal::installable(sig, v as u64) {
+            Ok(store) => store, // false = KILL/STOP 装 DFL no-op 免写
+            Err(e) => return reject(e),
+        },
+        None => {
+            if !berry_signal::valid_sig(sig) {
+                return reject(berry_signal::EINVAL);
+            }
+            false
+        }
+    };
+    // SAFETY: oldact 指向调用方 struct sigaction（libc 契约）；
     // SIG_ACTIONS 单线程口径直访。
     unsafe {
         if !oldact.is_null() {
@@ -229,9 +259,11 @@ pub extern "C" fn sigaction(
             (*oldact).sa_flags = 0;
             (*oldact).sa_restorer = 0;
         }
-        if !act.is_null() {
-            if let Err(e) = SIG_ACTIONS.set(sig, (*act).sa_sigaction as u64) {
-                return reject(e);
+        if store {
+            if let Some(v) = new_val {
+                if let Err(e) = SIG_ACTIONS.set(sig, v as u64) {
+                    return reject(e);
+                }
             }
         }
     }
@@ -242,14 +274,21 @@ pub extern "C" fn sigaction(
 /// sighandler_t`；handler 三值同 sigaction 编码，SIG_ERR = -1 全 1）。
 #[no_mangle]
 pub extern "C" fn signal(sig: c_int, handler: usize) -> usize {
-    if let Err(e) = berry_signal::capturable(sig) {
-        set_errno(-e);
-        return usize::MAX; // SIG_ERR
-    }
+    // KILL/STOP 装 DFL = 合法 no-op（槽恒 DFL），catch/ignore 拒
+    // （installable 分诊同 sigaction——对抗审查 F3）。
+    let store = match berry_signal::installable(sig, handler as u64) {
+        Ok(store) => store,
+        Err(e) => {
+            set_errno(-e);
+            return usize::MAX; // SIG_ERR
+        }
+    };
     // SAFETY: 同 sigaction（单线程口径直访）。
     unsafe {
         let old = SIG_ACTIONS.get(sig).unwrap_or(berry_signal::SIG_DFL);
-        let _ = SIG_ACTIONS.set(sig, handler as u64);
+        if store {
+            let _ = SIG_ACTIONS.set(sig, handler as u64);
+        }
         old as usize
     }
 }
