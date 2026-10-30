@@ -429,6 +429,7 @@ test-host:
     # （§6 回退）：berry-libc 的 libc 同名符号在 host 测试二进制里对
     # libSystem write 符号插入劫自旋，纯面外迁后 host 测试零 libc 面）。
     cargo test --manifest-path user/Cargo.toml -p berry-tls --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-mmap --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
     python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin
