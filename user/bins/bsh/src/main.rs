@@ -84,7 +84,7 @@ use std::io::{Read, Write};
 
 use berry_libc::io::{close, fs_h, netd_h, read, rootfs_h, stdin_h, write};
 use berry_libc::{
-    EACCES, EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
+    EACCES, EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EPERM,
 };
 use berry_libc::fs::{
     chdir, closedir, getcwd, mkdir, open, opendir, readdir, stat, statfs, unlink, O_CREAT,
@@ -289,6 +289,16 @@ fn main() {
     //    无拓扑降级门（T-1 自描述对 gift[3] 是 spawn 通用装配，所有相
     //    恒在——失败即 park loud）。
     mmp_selftest();
+    // —— A7-2：timer 壁钟分档自验（`CLK ok n=6` = rootfs 相第 44 标记，
+    //    `docs/事件循环A7-2实施设计草案.md` §4——设计稿「五步/n=5」系
+    //    ⑤ 增补后计数未同步的勘误，实现定案六步，台账随刀更正）：libc
+    //    clock 族分诊（mono 族直读 / REALTIME 族 = EPOCH_BASE(0)+mono
+    //    合成 / 冷门 id EINVAL 诚实拒）+ 补桩五真身（time/gettimeofday/
+    //    settimeofday/nanosleep/usleep）第一次 guest 全链活体。链序契约
+    //    同 U2/POLL/MMP——零 fs 盘面（纯 clock syscall + `date -u` spawn
+    //    无文件参），排 mmp 后 fat 族前（EFI 路无盘亦打 CLK）；无拓扑
+    //    降级门（失败即 park loud）。
+    clk_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -2154,6 +2164,159 @@ fn mmp_selftest() {
         berry_libc::park();
     }
     println!("MMP ok n=5");
+}
+
+// —— A7-2：clock 族符号同款 extern 链接期解析（A7-1 mmap 先例）——对
+//    libc crate aarch64-musl 声明逐参对齐（clock_gettime 两参/time 单参
+//    出参 gettimeofday 双参/nanosleep 双参）。Timespec/Timeval 布局 =
+//    两 i64 字段（musl aarch64 同形），本地镜像钉板。
+#[repr(C)]
+struct ClkTs {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+#[repr(C)]
+struct ClkTv {
+    tv_sec: i64,
+    tv_usec: i64,
+}
+extern "C" {
+    fn clock_gettime(clk: i32, ts: *mut ClkTs) -> i32;
+    fn clock_settime(clk: i32, ts: *const ClkTs) -> i32;
+    fn time(t: *mut i64) -> i64;
+    fn gettimeofday(tv: *mut ClkTv, tz: *mut core::ffi::c_void) -> i32;
+    fn nanosleep(req: *const ClkTs, rem: *mut ClkTs) -> i32;
+}
+
+/// A7-2：timer 壁钟分档 guest 自验（`CLK ok n=6` = rootfs 相第 44 标记，
+/// `docs/事件循环A7-2实施设计草案.md` §4）。六步全过才打；**状态谓词零
+/// 竞速**（4-5a 铁律——纯串行 libc 直调 + 唯一子进程 `date -u`（漂移
+/// 容忍判据非字面钉板），poll_selftest 同款形态）：
+/// ⓪ mono 双读单调非减 + nsec 域合法（0 ≤ nsec < 1e9）；
+/// ① REALTIME 合成一致：先 mono 后 rt 双读，rt ≥ mono 且 rt−mono ≤ 1s
+///    （base=0 下差值 = 两读取样间隙，≤1s 容忍带）；
+/// ② time()/gettimeofday() 互恰：同窗 |time − tv_sec| ≤ 1s + tv_usec
+///    μs 域合法（0 ≤ usec < 1e6）+ time() 返回值 == 出参回填；
+/// ③ nanosleep(50ms) 活性：前后 mono 差 ∈ [50ms, 5s]（TCG 宽带）+ 返 0；
+/// ④ clock_settime 双档拒：REALTIME/MONOTONIC 各 -1 + errno==EPERM
+///    （拒 per-process 假成功面——设计稿 §3.3）；
+/// ⑤ 裸 `date -u` 漂移容忍钉板：前缀 `Thu Jan  1 00:` + MM:SS 数字域 +
+///    尾 ` UTC 1970`（REALTIME 端到端活钟面——boot→clk 相位分钟级、
+///    小时域 00 结构性稳定；U4 步③ `-d @0` 渲染面钉板的姊妹断言）。
+/// Linux/musl clockid 编号本地镜像（调用侧事实源；berry-sys
+/// CLOCK_MONOTONIC=0 是内核侧编号——本 fn 本地 const 遮蔽其 use 导入，
+/// 双轨勿混，设计稿 §1 #8）。
+fn clk_selftest() {
+    const CLOCK_REALTIME: i32 = 0;
+    const CLOCK_MONOTONIC: i32 = 1;
+
+    let mut fails: Vec<&str> = Vec::new();
+    let nsec_ok = |t: &ClkTs| t.tv_nsec >= 0 && t.tv_nsec < 1_000_000_000;
+    let ns_of = |t: &ClkTs| t.tv_sec as i128 * 1_000_000_000 + t.tv_nsec as i128;
+    let read_mono = |t: &mut ClkTs| unsafe { clock_gettime(CLOCK_MONOTONIC, t) };
+
+    // ⓪ mono 双读单调非减 + nsec 域合法。
+    let mut ma = ClkTs { tv_sec: 0, tv_nsec: 0 };
+    let mut mb = ClkTs { tv_sec: 0, tv_nsec: 0 };
+    let (ra, rb) = (read_mono(&mut ma), read_mono(&mut mb));
+    if ra != 0 || rb != 0 {
+        fails.push("⓪ mono 读非 0");
+    }
+    if !nsec_ok(&ma) || !nsec_ok(&mb) {
+        fails.push("⓪ nsec 域非法");
+    }
+    if ns_of(&mb) < ns_of(&ma) {
+        fails.push("⓪ mono 双读非单调非减");
+    }
+
+    // ① REALTIME 合成一致：先 mono 后 rt（base=0 → rt ≥ mono、差 = 间隙）。
+    let mut m1 = ClkTs { tv_sec: 0, tv_nsec: 0 };
+    let mut r1 = ClkTs { tv_sec: 0, tv_nsec: 0 };
+    let (rm, rr) = (read_mono(&mut m1), unsafe { clock_gettime(CLOCK_REALTIME, &mut r1) });
+    if rm != 0 || rr != 0 {
+        fails.push("① 双钟读非 0");
+    } else {
+        let (mn, rn) = (ns_of(&m1), ns_of(&r1));
+        if !(rn >= mn && rn - mn <= 1_000_000_000) {
+            fails.push("① REALTIME 合成一致破缺");
+        }
+    }
+
+    // ② time()/gettimeofday() 互恰（同窗 ≤1s）+ 出参契约。
+    let mut tout: i64 = -1;
+    let tret = unsafe { time(&mut tout) };
+    let mut tv = ClkTv { tv_sec: 0, tv_usec: 0 };
+    let gvd = unsafe { gettimeofday(&mut tv, core::ptr::null_mut()) };
+    if gvd != 0 {
+        fails.push("② gettimeofday 非 0");
+    }
+    if tret != tout {
+        fails.push("② time 返回值 ≠ 出参回填");
+    }
+    if tret < 0 {
+        fails.push("② time 返回负值");
+    }
+    if (tret - tv.tv_sec).abs() > 1 {
+        fails.push("② time/gettimeofday 互恰破缺");
+    }
+    if !(tv.tv_usec >= 0 && tv.tv_usec < 1_000_000) {
+        fails.push("② tv_usec 域非法");
+    }
+
+    // ③ nanosleep(50ms) 活性（TCG 宽带 [50ms, 5s]）。
+    let mut pre = ClkTs { tv_sec: 0, tv_nsec: 0 };
+    read_mono(&mut pre);
+    let req = ClkTs { tv_sec: 0, tv_nsec: 50_000_000 };
+    let nrc = unsafe { nanosleep(&req, core::ptr::null_mut()) };
+    let mut post = ClkTs { tv_sec: 0, tv_nsec: 0 };
+    read_mono(&mut post);
+    if nrc != 0 {
+        fails.push("③ nanosleep 非 0");
+    }
+    if !(ns_of(&post) - ns_of(&pre) >= 50_000_000
+        && ns_of(&post) - ns_of(&pre) <= 5_000_000_000)
+    {
+        fails.push("③ nanosleep 50ms 活性破缺");
+    }
+
+    // ④ settime 双档拒（EPERM——拒 per-process 假成功面）。
+    let zts = ClkTs { tv_sec: 0, tv_nsec: 0 };
+    if unsafe { clock_settime(CLOCK_REALTIME, &zts) } != -1 || berry_libc::get_errno() != EPERM {
+        fails.push("④ settime REALTIME 非 -1+EPERM");
+    }
+    if unsafe { clock_settime(CLOCK_MONOTONIC, &zts) } != -1 || berry_libc::get_errno() != EPERM {
+        fails.push("④ settime MONOTONIC 非 -1+EPERM");
+    }
+
+    // ⑤ 裸 `date -u` 漂移容忍钉板（29B："Thu Jan  1 00:MM:SS UTC 1970\n"
+    // ——小时域 00 结构性稳定；破界形态（>59min）放宽预案 = 中段 MM:SS
+    // 任意数字，设计稿 §5 #2）。
+    match run_capture("date", None, &["-u"]) {
+        Some((o, c)) if c == 0 => {
+            let d: &[u8] = &o.data;
+            let dig = |x: u8| x.is_ascii_digit();
+            let ok5 = d.len() == 29
+                && d[0..13] == *b"Thu Jan  1 00"
+                && d[13] == b':'
+                && dig(d[14])
+                && dig(d[15])
+                && d[16] == b':'
+                && dig(d[17])
+                && dig(d[18])
+                && d[19..28] == *b" UTC 1970"
+                && d[28] == b'\n';
+            if !ok5 {
+                fails.push("⑤ 裸 date -u 漂移容忍钉板失配");
+            }
+        }
+        _ => fails.push("⑤ 裸 date -u spawn 失败"),
+    }
+
+    if !fails.is_empty() {
+        eprintln!("bsh: clk selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("CLK ok n=6");
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码

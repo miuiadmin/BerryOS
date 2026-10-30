@@ -4,7 +4,7 @@
 # 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
 # （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
 #
-# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 25 = 对抗审查保留日志
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 26 = 对抗审查保留日志
 # 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
 # 面八步；C-4 起 +TAB ok——编辑器九步 + 真源两钉，零 fs 盘面 EFI 路可达；
 # T-1 起 +THR ok——进程内多线程消费面，thrchild 镜像内嵌 svcmgr 零
@@ -12,7 +12,10 @@
 # （clear 双相位差分/蜂格字形对拍/scroll 行移），EFI-GOP 路专属、-kernel
 # 主路零插表零路径；GUI-1 段② 起 +FBSERVE ok——console fan-out 上屏
 # serve 循环首条消息（双路上屏闭环）；A7-1 起 +MMP ok n=5——bsh
-# mmp_selftest 五步，mmap 匿名档 libc 桥首活体，零 fs 盘面 EFI 路同打）
+# mmp_selftest 五步，mmap 匿名档 libc 桥首活体，零 fs 盘面 EFI 路同打；
+# A7-2 起 +CLK ok n=6——bsh clk_selftest 六步，timer 壁钟分档 + 补桩
+# 五真身首活体，纯 clock syscall + `date -u` spawn 无文件参零 fs 盘面
+# EFI 路同打）
 # ——非主观子集）：
 #   1. EFI 十段恰一次：skeleton / fw / gop（成功形态 WxH，locate fail 不算）/
 #      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
@@ -21,9 +24,9 @@
 #   3. 裸相 26 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
-#      生态 25 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
+#      生态 26 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
 #      EXIT / APP / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT / PS / BC /
-#      THR / MMP / FBW / FBSERVE——与
+#      THR / MMP / CLK / FBW / FBSERVE——与
 #      smoke.sh rootfs 相断言 canon 同面；无 virtio 面：不挂 virtio-blk/net，
 #      VIRTIO/FAT/NET/DIR/CD 族不在断言面）；
 #   4. kfile/init 字节数与宿主 KERNEL.ELF / rootfs.cpio **精确对拍**（盘
@@ -139,7 +142,18 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无拓扑降级门——gift[3] 是 T-1 spawn 通用装配，所有相恒在，失败即 park
 # loud。裸 grep -qF 足够——"MMP ok"（大写）与 boot 期 'mmap: n=' ERE（小写）
 # 及现役标记互非子串）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=5" "FBW ok" "FBSERVE ok")
+# A7-2 起 +CLK ok n=6（bsh clk_selftest 六步——timer 壁钟分档：⓪mono
+# 双读单调非减 ①REALTIME 合成一致（rt ≥ mono 差 ≤1s）②time()/
+# gettimeofday() 互恰 ③nanosleep(50ms) 活性 ④settime 双档 EPERM 拒
+# ⑤裸 `date -u` 漂移容忍钉板（前缀 `Thu Jan  1 00:` + MM:SS 数字域 +
+# 尾 ` UTC 1970`——REALTIME 端到端活钟面）。实现面 = berry-libc
+# clock_gettime 分诊（mono 族直读 / REALTIME 族 = EPOCH_BASE(0)+mono
+# 合成 / 冷门 id EINVAL 诚实拒）+ 补桩五真身（time/gettimeofday/
+# settimeofday/nanosleep/usleep）。零 fs 盘面（纯 clock syscall + date
+# spawn 无文件参）= EFI 路可达，链位置 mmp 后 fat 族前（A 系契约位）；
+# 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLK ok"（大写）
+# 与现役标记互非子串（无 XCLK 形态在册）。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=5" "CLK ok n=6" "FBW ok" "FBSERVE ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
@@ -235,7 +249,7 @@ echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 26 + 生态 25 = 64）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 26 + 生态 26 = 65）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
@@ -255,7 +269,7 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 26 + 生态 25）"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 26 + 生态 26）"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -327,4 +341,4 @@ while :; do
   sleep 2
 done
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 26 + 生态 25 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 26 + 生态 26 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
