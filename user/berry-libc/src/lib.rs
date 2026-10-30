@@ -1,5 +1,18 @@
 //! # berry-libc —— musl std 的 libc shim（G-eco-d d-1a）
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Full-definition libc shim letting Rust std build for
+//! `aarch64-unknown-linux-musl` on the
+//! [BerryOS](https://github.com/berryos/berryos) microkernel:
+//! malloc/write/pthread/futex/crt0 are real, the rest is stubbed
+//! loudly — ENOSYS/ENOENT codes follow each caller's
+//! error-classification whitelist. aarch64 only; pairs with the in-repo
+//! `berry-ld` linker wrapper — see the repository's app guide.
+//!
+//! Status: experimental (0.1.0) — the surface moves with the BerryOS v1
+//! userland. Repo docs are mostly zh-CN.
+//!
 //! 合约源 = `docs/G-eco编译侧设计草案.md` 附录 A（d-0 审计）：musl target 下
 //! Rust std 的 unix 后端引用 189 个强未定义 libc 符号（hello 探针真实面 41）
 //! ——本 crate **全定义**：shim 全定义 ⇒ 链接器永不从 musl libc.a 拉成员

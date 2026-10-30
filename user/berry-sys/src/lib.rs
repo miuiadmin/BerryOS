@@ -1,5 +1,18 @@
 //! # berry-sys —— BerryOS raw syscall 绑定（v1 FFI 镜像）
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Raw syscall bindings for the [BerryOS](https://github.com/berryos/berryos) microkernel — an
+//! experimental, aarch64-first research OS. This crate mirrors the frozen
+//! v1 syscall ABI: `#[repr(C)]` base types, generated constants (single
+//! source: `tools/abi.toml` in the repo), and thin `svc #0` wrappers.
+//! The raw layer never panics and never allocates; higher-level runtime
+//! lives in berry-libc.
+//!
+//! Builds for **aarch64 targets only**; useful only on BerryOS or its
+//! QEMU image. Status: experimental (0.1.0) — the API moves with the
+//! kernel ABI. Repo docs are mostly zh-CN.
+//!
 //! 合约源 = `docs/系统调用ABI设计.md` §8.3（原型）+ §8.4（本镜像的规范文本）。
 //! 调用约定：ARM64 `SVC #0`，`x0` = syscall 号，`x1..x6` ≤ 6 参，返回 `x0`
 //! （`Status`：0 = Ok，负 = 错误码）。**用户程序不直接写编号**——编号是

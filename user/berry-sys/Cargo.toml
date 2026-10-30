@@ -7,5 +7,15 @@ edition = "2021"
 # 终态，见 §8.4 引言——改任何签名须同时改内核侧与 ABI 文档（冻结纪律）。
 description = "BerryOS raw syscall bindings (v1 FFI mirror)"
 license = "Apache-2.0"
+repository = "https://github.com/berryos/berryos"
+readme = "README.md"
+keywords = ["berryos", "syscall", "aarch64", "no-std", "os"]
+categories = ["api-bindings", "no-std", "os"]
+# docs.rs（双镜头审查 F2）：本 crate 含 aarch64 专属 asm，host（x86_64）文档
+# 构建结构性不可行——targets 覆盖后 docs.rs 以首元素为默认目标、host 不再
+# 构建（docs.rs/about/metadata 语义，2026-10-30 核验）；两 target 均仓内
+# CI 在册可编译。
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none", "aarch64-unknown-linux-musl"]
 
 [dependencies]

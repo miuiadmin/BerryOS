@@ -2,6 +2,18 @@
 //! /`berry-blkproto` 先例：「解析器即产品」，零分配、零 unsafe、零依赖，
 //! 输入只借用）。
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Wire protocol for the [BerryOS](https://github.com/berryos/berryos)
+//! network-service RPC: strict request/reply byte layouts for DNS and
+//! TCP session ops (plus session-suffixed trailing fields). Pure no_std
+//! encoder/parser, host-testable; protocol-only — channel/wait semantics
+//! live at each end of the wire. Strict exact-length parsing: anything
+//! that cannot be encoded cleanly is rejected.
+//!
+//! Status: experimental (0.1.0) — the byte layouts move with the BerryOS
+//! v1 services. Repo docs are mostly zh-CN.
+//!
 //! 拓扑：vnet（常驻网络驱动服务，`drivers/bins/vnet`）持通道一端（env 块
 //! gift[2]，libc `gift2_h()`），svcmgr（A-8c 起消费自验方）持对端——**单对
 //! 双向 + 严格串行 RPC**（一请求一应答，队列深 1 用量，无乱序死锁面；

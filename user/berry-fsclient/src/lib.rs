@@ -1,5 +1,18 @@
 //! # berry-fsclient —— fs 服务客户端会话机 + libc 文件面纯函数（C-1 刀 1）
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Client side of the [BerryOS](https://github.com/berryos/berryos)
+//! filesystem-service RPC, in two layers: pure faces (fd-table, cwd
+//! joining, stat shaping, dirent decoding) plus the syscall-touching
+//! session core (`cfg(not(test))` — host tests never link the syscall
+//! surface). It feeds the berry-libc file layer. v1 honest gaps (no
+//! `.`/`..` normalization, write-open truncation semantics) are
+//! documented in the zh-CN sections below.
+//!
+//! Status: experimental (0.1.0) — the API moves with the BerryOS v1
+//! wire format. Repo docs are mostly zh-CN.
+//!
 //! 合约源 = `docs/VM里程碑设计草案.md` §C-1。两层：
 //!
 //! - **纯函数面**（本文件，host 测试）：fd 3+ 表项的客户端游标模型、cwd

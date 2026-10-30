@@ -1,6 +1,18 @@
 //! berry-fsproto —— fs 服务 RPC 协议纯函数库（P6 A-1，`berry-loader` 先例：
 //! 「解析器即产品」，零分配、零 unsafe、零依赖，输入只借用）。
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Wire protocol for the [BerryOS](https://github.com/berryos/berryos)
+//! filesystem-service RPC: 10 ops (incl. v2 NUL-segment paths and
+//! STATFS), strict request/reply byte layouts. Pure no_std
+//! encoder/parser, host-testable; protocol-only — channel/wait
+//! semantics live at each end of the wire. "The parser is the product":
+//! host unit tests cover the full error surface.
+//!
+//! Status: experimental (0.1.0) — the byte layouts move with the BerryOS
+//! v1 services. Repo docs are mostly zh-CN.
+//!
 //! 拓扑：fsmgr（RAM-fs 服务，`user/bins/fsmgr`）持通道一端，bsh 持对端
 //! dup（env 块 gift[3] 交付，见 svcmgr P6 段）——**单对双向**（send(A)→B 队
 //! / send(B)→A 队）+ **严格串行 RPC**（一请求一应答，队列深 1 用量，无乱序

@@ -1,5 +1,18 @@
 //! # berry-tls —— TLS 拷贝式放置纯函数面（T-1 §1）
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Copy-style TLS (thread-local storage) placement math for the
+//! [BerryOS](https://github.com/berryos/berryos) microkernel: ELF
+//! `PT_TLS` walk, placement arithmetic, and template globals — pure
+//! functions, host-testable. Main thread (crt0) and pthread trampolines
+//! share the same placement arithmetic; the consumer is berry-libc.
+//! Zero arch-specific code: no_std core, builds and unit-tests on any
+//! host.
+//!
+//! Status: experimental (0.1.0) — the API moves with the BerryOS v1
+//! userland ABI. Repo docs are mostly zh-CN.
+//!
 //! 崩因背景：原位 TP 方案下 `.tbss` 零初始化契约被三方共违约（lld 标准布局
 //! + berry-exec 零 PT_TLS 感知 + crt0 原位直用），TLS 胞元初值 = 活
 //! `.data.rel.ro` 文件字节 → 对齐 D-abort——详见

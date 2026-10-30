@@ -14,5 +14,9 @@ edition = "2021"
 # 栈实证）。纯面独立零依赖 crate 后 host 测试不链任何 libc 符号面。
 description = "BerryOS copy-style TLS placement pure functions (tls_place/find_ptls/template globals)"
 license = "Apache-2.0"
+repository = "https://github.com/berryos/berryos"
+readme = "README.md"
+keywords = ["berryos", "tls", "thread-local-storage", "elf", "no-std"]
+categories = ["memory-management", "no-std"]
 
 [dependencies]
