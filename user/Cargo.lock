@@ -104,6 +104,10 @@ name = "berry-psproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-signal"
+version = "0.1.0"
+
+[[package]]
 name = "berry-sys"
 version = "0.1.0"
 
