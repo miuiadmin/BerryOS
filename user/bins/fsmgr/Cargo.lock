@@ -35,10 +35,15 @@ name = "berry-libc"
 version = "0.1.0"
 dependencies = [
  "berry-fsclient",
+ "berry-mmap",
  "berry-netdproto",
  "berry-sys",
  "berry-tls",
 ]
+
+[[package]]
+name = "berry-mmap"
+version = "0.1.0"
 
 [[package]]
 name = "berry-netdproto"

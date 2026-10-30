@@ -79,27 +79,34 @@ jobs:
       - name: berry-ksproto host 测试（SEC-02 A2 协议 crate 门禁）
         run: cargo test --manifest-path user/berry-ksproto/Cargo.toml --target x86_64-unknown-linux-gnu
 
-      # ---------- SDK-1b：发布族六 crate publish 守卫（fail-fast 位） ----------
+      # A7-1：berry-mmap host 测试门禁（ksproto 同款纪律——纯函数 crate 家族
+      # 的测试面必须挂 CI 执法，防「host 测零自动执法、静默腐烂」；user/
+      # workspace 成员经 --manifest-path 点名 + 显式 host 三元组覆盖根
+      # config 的 build.target 锁；零依赖零网络）。
+      - name: berry-mmap host 测试（A7-1 纯函数 crate 门禁）
+        run: cargo test --manifest-path user/berry-mmap/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      # ---------- SDK-1b：发布族七 crate publish 守卫（fail-fast 位） ----------
       # 三档执法，档位由 2026-10-30 双轮实测定死（基线 B2/B3/B4/B6 + 沙箱
       # E1–E3，docs/SDK-1b实施设计草案.md §1.2/§5）：
       # ① grep 硬门：cargo package/--list 对「内部依赖必须带 version」（path-only
       #    照样过 --list）与「description/license 等六键齐备」（缺键只 warning
       #    不 fail）都不执法——grep 是唯一硬门，防 path-only 回归静默过 CI、
       #    爆在用户 cargo publish 当场；
-      # ② 四叶子（零内部依赖）完整 cargo package——verification build 对
+      # ② 五叶子（零内部依赖）完整 cargo package——verification build 对
       #    aarch64-unknown-none（根 config target 锁跨 workspace 边界命中）=
       #    真实发布面可打包（基线 B2 实证）；
       # ③ 中/顶层（fsclient/libc）双写依赖在叶子真发布到 crates.io 前结构性
       #    不可本地全链（tarball 生成即剥 path → registry 解析前置，--no-verify
       #    也不绕，B6 实证）——只跑 --list（registry-free，E1 实证）保文件清单
       #    干净面。叶子发布后本档升级为完整 package（另刀回填，勿现在改）。
-      - name: sdk-publish-guard（SDK-1b 六 crate 发布面守卫）
+      - name: sdk-publish-guard（SDK-1b 七 crate 发布面守卫）
         working-directory: user
         run: |
           set -eu
-          # —— 硬门 1：六 crate 元数据齐备（version/description/license/
+          # —— 硬门 1：七 crate 元数据齐备（version/description/license/
           #    repository/readme 字段 + README 本体在位）。
-          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-fsclient berry-libc; do
+          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-fsclient berry-libc; do
             m="$c/Cargo.toml"
             grep -q '^version = "0.1.0"' "$m"      || { echo "::error file=$m::version 应为 0.1.0"; exit 1; }
             grep -q '^description = ' "$m"         || { echo "::error file=$m::缺 description"; exit 1; }
@@ -121,19 +128,22 @@ jobs:
           dw berry-libc/Cargo.toml berry-fsclient
           dw berry-libc/Cargo.toml berry-tls
           dw berry-libc/Cargo.toml berry-netdproto
+          # A7-1：libc 第 5 条内部依赖（mmap 簿记纯面——first-fit 窗算术 + region 表）。
+          dw berry-libc/Cargo.toml berry-mmap
           # —— 硬门 2b：path 依赖反向执法（双镜头审查 F1，2026-10-30）。
-          #    dw() 只正向钉七条已知线在位；此处反向兜两条：
+          #    dw() 只正向钉八条已知线在位；此处反向兜两条：
           #    ① path-only 形零容忍——任何「有 path 无 version」依赖线当场红
-          #       （防未来加第 5 条/改形去 version 静默过 CI、爆在 publish
+          #       （防未来加线/改形去 version 静默过 CI、爆在 publish
           #       当天「path dependency without a version」）；
-          #    ② path 行计数钉死——fsclient=3 / libc=4 / 四叶子=0；任何改形
+          #    ② path 行计数钉死——fsclient=3 / libc=5 / 五叶子=0；任何改形
           #       （去 version、转 TOML 表形、加线）计数必漂移即红；有意加线
           #       须同步本定值与 dw()（同步律）。
           if grep -nE '= \{ path = "[^"]+"[[:space:]]*\}$' \
               berry-sys/Cargo.toml berry-tls/Cargo.toml berry-netdproto/Cargo.toml \
-              berry-fsproto/Cargo.toml berry-fsclient/Cargo.toml berry-libc/Cargo.toml
+              berry-fsproto/Cargo.toml berry-mmap/Cargo.toml \
+              berry-fsclient/Cargo.toml berry-libc/Cargo.toml
           then
-            echo "::error::发布族六 manifest 存在 path-only 依赖线（= { path = … } 无 version）"
+            echo "::error::发布族七 manifest 存在 path-only 依赖线（= { path = … } 无 version）"
             exit 1
           fi
           pc() {  # pc <manifest> <期望 path 行数>（grep -c 零命中退出码 1，|| true 吞）
@@ -144,11 +154,12 @@ jobs:
           pc berry-tls/Cargo.toml 0
           pc berry-netdproto/Cargo.toml 0
           pc berry-fsproto/Cargo.toml 0
+          pc berry-mmap/Cargo.toml 0
           pc berry-fsclient/Cargo.toml 3
-          pc berry-libc/Cargo.toml 4
-          # —— 档 ②：四叶子完整 package（含 verification build；rustflags
+          pc berry-libc/Cargo.toml 5
+          # —— 档 ②：五叶子完整 package（含 verification build；rustflags
           #    -fp-armv8/-neon 弃用告警为已知噪声（基线 B2），非失败）。
-          for c in berry-sys berry-tls berry-netdproto berry-fsproto; do
+          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap; do
             echo "::group::cargo package -p $c"
             cargo package -p "$c"
             echo "::endgroup::"

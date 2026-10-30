@@ -69,8 +69,12 @@
 # 三域 op 编解码，docs/GUI-4实施设计草案.md §3；host 测试；双消费 =
 # gui-inputd 服务端（drivers/bins/gui-inputd，input 域）+ 段② gui-wm 客户端
 # （GUI-5，present/hdi 域）——三域 = 三对独立 channel，能力即权限）。
+# A7-1：berry-mmap（mmap 匿名档簿记纯函数 crate——region 表 + VA 窗
+# first-fit 底起分配（munmap 空洞复用，F2 裁定），docs/事件循环A7设计
+# 草案.md §3.1+§7；单消费 = berry-libc mmap.rs syscall 桥。berry-tls
+# 同款回退形态：纯面外迁后 host 测试零 libc 符号面）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

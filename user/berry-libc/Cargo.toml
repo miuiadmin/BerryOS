@@ -32,3 +32,8 @@ berry-tls = { path = "../berry-tls", version = "0.1.0" }
 # A3-2：socket 桩批转真的 RPC 编解码面（netd 通道 = crt0 GIFT_H[4]，
 # io.rs netd_h()；严格串行 RPC 底座移植自 bsh netd_rpc——A2-3）。
 berry-netdproto = { path = "../berry-netdproto", version = "0.1.0" }
+# A7-1：mmap 匿名档簿记纯函数面（region 表 + VA 窗 first-fit 底起
+# 洞复用分配——docs/事件循环A7设计草案.md §3.1+§7）。独立纯 crate（berry-tls 同款回退
+# 形态：本 crate 的 libc 同名符号在 host 测试二进制里对 libSystem write
+# 符号插入劫自旋，纯面外迁后 host 测试零 libc 符号面）。
+berry-mmap = { path = "../berry-mmap", version = "0.1.0" }

@@ -84,7 +84,7 @@ use std::io::{Read, Write};
 
 use berry_libc::io::{close, fs_h, netd_h, read, rootfs_h, stdin_h, write};
 use berry_libc::{
-    EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
+    EACCES, EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY,
 };
 use berry_libc::fs::{
     chdir, closedir, getcwd, mkdir, open, opendir, readdir, stat, statfs, unlink, O_CREAT,
@@ -280,6 +280,15 @@ fn main() {
     //    跳过——EFI canon 零变化、B4 无 netdev 相同口径）；排 fat 族前
     //    零盘面。
     nets_selftest();
+    // —— A7-1：mmap 匿名档 libc 桥自验（`MMP ok n=5` = rootfs 相第 43
+    //    标记，A7-1 验收线，`docs/事件循环A7设计草案.md` §3.1）：mmap
+    //    真身（region 表 + vmo_create/逐页 commit/vmar_map(self_vmar_h())
+    //    桥）第一次 guest 全链活体——首映射/写读对拍/munmap/再映射不复
+    //    用/范围盒拒面三连五步。链序契约同 U2/POLL——零 fs 盘面（纯
+    //    vmo/vmar syscall 桥），排 fat 族之前（EFI 路无盘亦打 MMP）；
+    //    无拓扑降级门（T-1 自描述对 gift[3] 是 spawn 通用装配，所有相
+    //    恒在——失败即 park loud）。
+    mmp_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -1904,6 +1913,247 @@ fn nets_selftest() {
     n_ok += 1;
 
     println!("NETS ok n={}", n_ok);
+}
+
+// —— A7-1：mmap/munmap 符号经 extern 声明**链接期**解析到 berry-libc
+//    mmap 真身（#[no_mangle] C-ABI）——与 libc crate aarch64-musl 声明
+//    逐参对齐（registry 源 unix/mod.rs mmap 六参/munmap 两参实证）。extern
+//    形态 = 零编译期耦合：真身落地前后 bsh 源恒可编译（接口契约只钉
+//    符号名 + ABI，模块内部布局是 impl-libc 的实现自由——bsh 不 import
+//    berry_libc::mmap 模块路径）。链接序：berry-libc rlib 先于 -lc 归档
+//    （shim 全定义纪律），符号恒解析到真身。
+extern "C" {
+    fn mmap(
+        addr: *mut core::ffi::c_void,
+        length: usize,
+        prot: i32,
+        flags: i32,
+        fd: i32,
+        offset: i64,
+    ) -> *mut core::ffi::c_void;
+    fn munmap(addr: *mut core::ffi::c_void, length: usize) -> i32;
+    fn mprotect(addr: *mut core::ffi::c_void, len: usize, prot: i32) -> i32;
+}
+
+/// A7-1：mmap 匿名档 guest 自验（`MMP ok n=5` = rootfs 相第 43 标记）——
+/// berry-libc mmap 真身第一次 guest 全链活体。五步全过才打；**状态谓词
+/// 零竞速**（4-5a 铁律——纯串行 libc 直调，零子进程零对拍端，
+/// poll_selftest 同款形态）：
+/// ⓪ mmap(NULL,8192,PROT_READ|PROT_WRITE,MAP_ANONYMOUS|MAP_PRIVATE,-1,0)
+///    双页首映射 → 非 MAP_FAILED、非 NULL、页对齐；两页各 volatile 写
+///    u64 图样 0x4D4D5031/0x4D4D5032 读回对拍（跨页锚 = 整段 commit+
+///    map 两页真活——单页写会漏「次页未 commit」形态）；
+/// ① hint 忽略档：mmap(0x5500_0000,4096,…,-1,0)（非 NULL 无 MAP_FIXED
+///    = hint，POSIX 允许忽略）→ 成功且落窗 [0x5000_0000,0x6000_0000)
+///    + munmap 收口；
+/// ② munmap 三态：内部地址（p1+4096,4096）→ -1 且 errno==EINVAL（交叠
+///    非基址精确 = Partial 诚实拒，条目保留）；恰长（p1,8192）→ 0（真身
+///    扛「先 vmar_unmap 再 close vmo」-EBUSY 序）；重复同址 → 0
+///    （NotFound——POSIX 未映射区间非错误，A7-1 审查追认档）；
+/// ③ 空洞复用钉板：p1 已出表 → 同长再 mmap → **== p1 首址**（first-fit
+///    底起洞复用——A7-0 §3.1 钦定段内分配策略；bump 无复用形态在此必
+///    破）+ 再写读一拍（图样 0x4D4D5033 区分首拍）+ munmap 收口；
+/// ④ 拒面与 mprotect：范围盒三连（fd=0≠-1 / flags+MAP_SHARED / 单
+///    PROT_READ——各断 MAP_FAILED 且 errno==EINVAL）+ PROT_EXEC 忽略档
+///    （R|W|X 放行——用户页本可执行，NX 留 v2）→ mprotect 命中 → -1
+///    且 errno==EACCES（v1 无改权档诚实拒）→ munmap 收口 → 同址再
+///    mprotect → -1 且 errno==EINVAL（未命中档）。
+/// 链序契约同 U2/POLL——零 fs 盘面（纯 vmo/vmar syscall 桥），排 fat
+/// 族之前（EFI 路无盘亦打 MMP）；无拓扑降级门（T-1 自描述对 gift[3]
+/// 是 spawn 通用装配——失败即 park loud）。
+/// 范围盒常量本地镜像（契约冻结值，已对 libc crate aarch64-musl 逐值
+/// 核验：PROT 族 = 1/2/4、MAP_SHARED/PRIVATE/FIXED = 0x01/0x02/0x10、
+/// MAP_ANONYMOUS = 0x20（musl MAP_ANON）、MAP_FAILED = !0——与
+/// berry-libc pub 常量位置解耦，值由契约钉死不漂）。
+fn mmp_selftest() {
+    const PROT_READ: i32 = 1;
+    const PROT_WRITE: i32 = 2;
+    const PROT_EXEC: i32 = 4;
+    const MAP_SHARED: i32 = 0x01;
+    const MAP_PRIVATE: i32 = 0x02;
+    const MAP_ANONYMOUS: i32 = 0x20;
+    const MAP_FAILED: *mut core::ffi::c_void = usize::MAX as *mut core::ffi::c_void;
+    const LEN: usize = 8192; // 双页（跨页验整段 commit+map 两页真活）
+    const WIN_LO: usize = 0x5000_0000; // berry-mmap VA 窗（本地镜像钉板）
+    const WIN_HI: usize = 0x6000_0000;
+
+    let mut fails: Vec<&str> = Vec::new();
+
+    // ⓪ 双页首映射：NULL 请求（first-fit 空表 → 窗基）→ 活址且页对齐。
+    let p1 = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            -1,
+            0,
+        )
+    };
+    let p1_ok = p1 != MAP_FAILED && !p1.is_null() && ((p1 as usize) & 0xfff) == 0;
+    if !p1_ok {
+        fails.push("⓪ 首映射非活址/非页对齐");
+    }
+
+    //    两页各写读（p1_ok 门控——失败即不触 p1：MAP_FAILED 解引用 = EL0
+    //    D-abort 假死，诊断面只剩 park 前的 fails 清单；volatile 执法 =
+    //    真映射页往返，防「写读被寄存器化」假绿；次页拍 = 「整段 commit
+    //    两页真活」的跨页锚）。
+    if p1_ok {
+        const PAT1: u64 = 0x4D4D5031;
+        const PAT1B: u64 = 0x4D4D5032;
+        unsafe { core::ptr::write_volatile(p1 as *mut u64, PAT1) };
+        unsafe { core::ptr::write_volatile(p1.add(4096) as *mut u64, PAT1B) };
+        let got = unsafe { core::ptr::read_volatile(p1 as *const u64) };
+        let got_b = unsafe { core::ptr::read_volatile(p1.add(4096) as *const u64) };
+        if got.to_le_bytes() != PAT1.to_le_bytes() || got_b.to_le_bytes() != PAT1B.to_le_bytes() {
+            fails.push("⓪ 双页写读对拍失配");
+        }
+    }
+
+    // ① hint 忽略档：非 NULL 请求无 MAP_FIXED = hint（POSIX 允许忽略）
+    //    → 成功且落窗 + 收口。
+    let ph = unsafe {
+        mmap(
+            0x5500_0000 as *mut core::ffi::c_void,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            -1,
+            0,
+        )
+    };
+    if ph == MAP_FAILED {
+        fails.push("① hint 档未放行");
+    } else {
+        let a = ph as usize;
+        if a < WIN_LO || a >= WIN_HI {
+            fails.push("① hint 档落窗外");
+        }
+        if unsafe { munmap(ph, 4096) } != 0 {
+            fails.push("① hint 档收口非 0");
+        }
+    }
+
+    // ② munmap 三态：内部地址 → -1+EINVAL（交叠非基址 = Partial 诚实
+    //    拒，条目保留）；恰长 → 0（「先 vmar_unmap 再 close vmo」-EBUSY
+    //    序）；重复同址 → 0（NotFound——POSIX 未映射区间非错误，A7-1
+    //    审查追认档）。
+    if p1_ok {
+        if unsafe { munmap(p1.add(4096), 4096) } != -1 || berry_libc::get_errno() != EINVAL {
+            fails.push("② 内部地址未拒 EINVAL");
+        }
+        if unsafe { munmap(p1, LEN) } != 0 {
+            fails.push("② 恰长收口非 0");
+        }
+        if unsafe { munmap(p1, LEN) } != 0 {
+            fails.push("② 重复收口非 0（POSIX NotFound 档）");
+        }
+    }
+
+    // ③ 空洞复用钉板：p1 已出表 → 同长再映射必回 p1 首址（first-fit
+    //    底起、底洞恰容——A7-0 §3.1 钦定段内分配策略；bump 无复用形态
+    //    在此必破）+ 再写读一拍（图样 +2 区分首拍）+ munmap 收口。
+    let p3 = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            -1,
+            0,
+        )
+    };
+    if p3 == MAP_FAILED || p3.is_null() || ((p3 as usize) & 0xfff) != 0 {
+        fails.push("③ 复用档再映射非活址");
+    } else {
+        if p3 != p1 {
+            fails.push("③ 空洞未复用首址（first-fit 钦定破缺）");
+        }
+        const PAT3: u64 = 0x4D4D5033;
+        unsafe { core::ptr::write_volatile(p3 as *mut u64, PAT3) };
+        let got = unsafe { core::ptr::read_volatile(p3 as *const u64) };
+        if got.to_le_bytes() != PAT3.to_le_bytes() {
+            fails.push("③ 复用档写读对拍失配");
+        }
+        if unsafe { munmap(p3, LEN) } != 0 {
+            fails.push("③ 复用档收口非 0");
+        }
+    }
+
+    // ④ 范围盒拒面三连：各断言返 MAP_FAILED 且 errno==EINVAL（get_errno
+    //    = skt/epl 同源先例；拒因互异逐个独立断言）。
+    let r = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            0, // fd≠-1：匿名档 fd 必 -1
+            0,
+        )
+    };
+    if r != MAP_FAILED || berry_libc::get_errno() != EINVAL {
+        fails.push("④ fd≠-1 未拒 EINVAL");
+    }
+    let r = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE | MAP_SHARED, // v1 无共享档
+            -1,
+            0,
+        )
+    };
+    if r != MAP_FAILED || berry_libc::get_errno() != EINVAL {
+        fails.push("④ MAP_SHARED 未拒 EINVAL");
+    }
+    let r = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            LEN,
+            PROT_READ, // prot 单 READ：vmar_map v1 只支持恰 RW=3
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            -1,
+            0,
+        )
+    };
+    if r != MAP_FAILED || berry_libc::get_errno() != EINVAL {
+        fails.push("④ prot 单 READ 未拒 EINVAL");
+    }
+    // PROT_EXEC 忽略档（R|W|X 放行——用户页本可执行，NX 留 v2）→
+    // mprotect 命中 → -1+EACCES（v1 无改权档诚实拒）→ 收口 → 同址
+    // 未命中 → -1+EINVAL。
+    let pm = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            4096,
+            PROT_READ | PROT_WRITE | PROT_EXEC,
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            -1,
+            0,
+        )
+    };
+    if pm == MAP_FAILED {
+        fails.push("④ PROT_EXEC 忽略档未放行");
+    } else {
+        if unsafe { mprotect(pm, 4096, PROT_READ) } != -1 || berry_libc::get_errno() != EACCES {
+            fails.push("④ mprotect 命中非 EACCES");
+        }
+        if unsafe { munmap(pm, 4096) } != 0 {
+            fails.push("④ EXEC 档收口非 0");
+        }
+        if unsafe { mprotect(pm, 4096, PROT_READ) } != -1 || berry_libc::get_errno() != EINVAL {
+            fails.push("④ mprotect 未命中非 EINVAL");
+        }
+    }
+
+    if !fails.is_empty() {
+        eprintln!("bsh: mmp selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("MMP ok n=5");
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码

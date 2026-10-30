@@ -5,9 +5,11 @@
 //! - `neg!`：返 -1 + 置 errno（errno 取值跟 C 族语义：路径族 ENOENT、
 //!   桩族 ENOSYS、fd 族 EBADF……）；
 //! - `ok!`：成功谎报（无竞争锁族/特权空转/信号安装）；
-//! - 少数签名敏感的（mmap/environ/posix_spawnp/getaddrinfo）手写——
+//! - 少数签名敏感的（environ/posix_spawnp/getaddrinfo）手写——
 //!   T-1 起 syscall/futex、sem、pthread key/生命周期族迁 `futex.rs`/
-//!   `pthread.rs` 真身，此处只剩 attr getter 三桩。
+//!   `pthread.rs` 真身；A7-1 起 mmap/munmap 匿名档真身迁 `mmap.rs`
+//!   （vmo/vmar_map 桥，docs/事件循环A7设计草案.md §3.1）——此处只剩
+//!   attr getter 三桩。
 //!
 //! 返回宽度纪律：int 族 `-> c_int`、ssize 族 `-> isize`、指针族 `-> *mut T`。
 
@@ -90,7 +92,8 @@ neg_int!(
     ftruncate => crate::ENOSYS,
     flock => crate::ENOSYS,
     ioctl => crate::ENOTTY,
-    mprotect => crate::EINVAL,
+    // mprotect 真身迁 mmap.rs（A7-1 修复刀：命中 EACCES/未命中 EINVAL
+    // 分诊 + futex 锁）——桩位退役，避免与 #[no_mangle] 真身撞链。
 );
 
 /// fcntl（C-2c 挂账刀手写——旧 neg_int! EINVAL 桩退役）：真面仅
@@ -304,7 +307,6 @@ neg_ssize!(
 //    栈溢出 = EL0 fault 被杀可接受）——
 ok!(
     madvise,
-    munmap,
     prctl,
     setuid,
     setgid,
@@ -345,12 +347,8 @@ ok!(
 // T-1：`syscall` 变参真号槽已迁 `futex.rs`（SYS_futex(98) 拦截 + 7 参定形；
 // nr≠98 保持 set_errno(ENOSYS)+-1 零漂移）。
 
-/// 附录 A「引用点待实证」：v1 ENOMEM 拒绝——若首跑证明在启动关键路径再调档。
-#[no_mangle]
-pub extern "C" fn mmap() -> *mut c_void {
-    crate::set_errno(crate::ENOMEM);
-    ptr::null_mut()
-}
+// A7-1：mmap/munmap 匿名档真身已迁 `mmap.rs`（ENOMEM 空桩/ok! 谎报桶
+// 双退役——vmo_create+commit+vmar_map 桥 + region 表，头注见彼）。
 
 // —— C-2a uutils core 批手写桩（12 bin 的链接/行为缺口；hexyl 面已够，
 //    本批逐符号按上游源级降级路径定形）——
