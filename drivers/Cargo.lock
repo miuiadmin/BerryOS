@@ -38,6 +38,7 @@ dependencies = [
  "berry-fsclient",
  "berry-mmap",
  "berry-netdproto",
+ "berry-signal",
  "berry-sys",
  "berry-tls",
 ]
@@ -56,6 +57,10 @@ version = "0.1.0"
 
 [[package]]
 name = "berry-netproto"
+version = "0.1.0"
+
+[[package]]
+name = "berry-signal"
 version = "0.1.0"
 
 [[package]]

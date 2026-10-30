@@ -90,6 +90,14 @@ pub const SIG_MIN: i32 = 1;
 pub const SIGKILL: i32 = 9;
 /// SIGSTOP（同上）。
 pub const SIGSTOP: i32 = 19;
+/// SIGABRT（asm-generic 编号 6）——libc `abort` 改装消费（A7-4 ③b）。
+pub const SIGABRT: i32 = 6;
+/// SIGUSR1（10）——bsh sig_selftest 投递活证/回读步消费。
+pub const SIGUSR1: i32 = 10;
+/// SIGUSR2（12）——bsh sig_selftest 掩码档（held 再投证）消费。
+pub const SIGUSR2: i32 = 12;
+/// SIGTERM（15）——sigchild 默认动作终止档（collect 143 = 128+15）。
+pub const SIGTERM: i32 = 15;
 /// musl `sigset_t` 字节宽（1024 位；语义位仅 1..=64）。
 pub const SIGSET_BYTES: usize = 128;
 
@@ -680,5 +688,23 @@ mod tests {
         assert_eq!(SIGSTOP, 19);
         assert_eq!(SIG_DFL, 0);
         assert_eq!(SIG_IGN, 1);
+    }
+
+    // A7-4 ③b 消费面常量 + 默认动作表钉板 ----
+
+    #[test]
+    fn sig_consts_asm_generic() {
+        // asm-generic 编号（A7-4 ③b：abort 改装 / bsh selftest / sigchild）
+        assert_eq!(SIGABRT, 6);
+        assert_eq!(SIGUSR1, 10);
+        assert_eq!(SIGUSR2, 12);
+        assert_eq!(SIGTERM, 15);
+        // 忽略类四件（SIGCHLD/CONT/URG/WINCH）+ 终止类抽样
+        assert_eq!(default_action(17), Ok(DefaultAction::Drop));
+        assert_eq!(default_action(18), Ok(DefaultAction::Drop));
+        assert_eq!(default_action(23), Ok(DefaultAction::Drop));
+        assert_eq!(default_action(28), Ok(DefaultAction::Drop));
+        assert_eq!(default_action(SIGABRT), Ok(DefaultAction::Terminate));
+        assert_eq!(default_action(SIGTERM), Ok(DefaultAction::Terminate));
     }
 }

@@ -328,6 +328,12 @@ pub(crate) fn alias_take(fd: c_int) -> Option<c_int> {
 
 #[no_mangle]
 pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
+    let r = write_inner(fd, buf, n);
+    crate::signal::may_dispatch(); // A7-4 ③b：公共入口投递点（§3.3）
+    r
+}
+
+fn write_inner(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
     // 别名先翻译回底 fd（console 克隆——别名无独立状态，见别名面注释）。
     let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
@@ -432,6 +438,12 @@ static mut PEND_OFF: usize = 0;
 
 #[no_mangle]
 pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
+    let r = read_inner(fd, buf, n);
+    crate::signal::may_dispatch(); // A7-4 ③b：公共入口投递点（§3.3）
+    r
+}
+
+fn read_inner(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
     // 别名先翻译回底 fd（fd 0 克隆共享 PEND 残段——与 POSIX dup 共享
     // file description 同义：uu_head 经别名读到的与直读 fd 0 是同一条流）。
     let fd = alias_base(fd).unwrap_or(fd);
@@ -642,6 +654,11 @@ pub extern "C" fn _exit(code: c_int) -> ! {
 
 #[no_mangle]
 pub extern "C" fn abort() -> ! {
+    // A7-4 ③b：abort 语义 = raise(SIGABRT)——被 catch 则进 handler，
+    // handler 返回后仍终止（musl 口径：abort 流程不因 handler 返回而
+    // 续命）；IGN/DFL 汇入终止路径（dispatch 内 DFL 终止档直接
+    // exit(134) 不返，此后的兜底只罩 Call-返回档）。
+    let _ = crate::signal::raise(crate::signal::SIGABRT);
     console_write(b"abort\n");
     send_stdout_eof();
     berry_sys::berry_process_exit(134) // 128+SIGABRT 惯例码

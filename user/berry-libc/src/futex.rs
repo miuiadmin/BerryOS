@@ -128,6 +128,11 @@ pub extern "C" fn syscall(
             // CLOCK_MONOTONIC 绝对时刻；null = 永等）。
             let deadline = ts_to_deadline(a4 as *const Timespec);
             let r = futex_wait(addr, a3 as u32, deadline);
+            // A7-4 ③b：等醒补投（§3.3）——std 同步原语慢路径（cond/mutex
+            // 慢等/park）是用户态最长的可中断等，信号在此面兑现。仅挂
+            // syscall() 面：futex_wait/mutex_lock（malloc 堆锁）不挂——
+            // malloc 路径入投递 = handler→malloc 自锁死锁面放大。
+            crate::signal::may_dispatch();
             if r == crate::ETIMEDOUT {
                 crate::set_errno(crate::ETIMEDOUT);
                 return -1;

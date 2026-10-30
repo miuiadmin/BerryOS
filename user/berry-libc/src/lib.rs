@@ -21,12 +21,14 @@
 //! 分档（附录 A）：
 //! - **真实现**：malloc 族（静态 256KiB 堆）、write 族（fd 0/1/2 → console
 //!   channel）、mem/str 族、`__errno_location`、clock 族、crt0（TLS/TPIDR_EL0
-//!   用户态自设——零内核 seam）、snprintf/fprintf（asm 变参蹦床 + % 子集）；
-//! - **成功桩**：无竞争锁族、`sigaction` 族谎报安装、`syscall` 走 futex.rs
+//!   用户态自设——零内核 seam）、snprintf/fprintf（asm 变参蹦床 + % 子集）、
+//!   信号面（signal.rs，A7-4 ③a+③b：sigset/sigprocmask/sigaction 真身 +
+//!   协同式投递循环 kill/raise/pause）；
+//! - **成功桩**：无竞争锁族、`syscall` 走 futex.rs
 //!   拦截（nr≠98 返 -ENOSYS——std 无竞争快路径不经此）；
 //! - **ENOSYS/ENOENT 桩**：FS 面（fs.rs 真面外的残部）、socket 残部
 //!   （A3-2 转真后剩 socketpair/shutdown/getpeername/getsockname——
-//!   net.rs + stubs.rs 分界）、fork/exec/posix_spawn、kill 族。
+//!   net.rs + stubs.rs 分界）、fork/exec/posix_spawn。
 //!
 //! ## ABI 口径（写新桩前必读）
 //!

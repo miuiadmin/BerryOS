@@ -222,13 +222,13 @@ pub extern "C" fn __libc_current_sigrtmax() -> c_int {
 pub extern "C" fn sync() {}
 
 // —— fd/dir 族（closedir/dirfd 刀 2 起迁 fs.rs；readdir 同）——
+// kill/killpg 已迁 signal.rs 真身（A7-4 ③b：自杀档 raise 等价 / ESRCH
+// 诚拒——EPERM 桩退役）。
 neg_int!(
     dup => crate::EBADF,
     dup2 => crate::EBADF,
     waitpid => crate::ECHILD,
     waitid => crate::ECHILD,
-    kill => crate::EPERM,
-    killpg => crate::EPERM,
     setsid => crate::EPERM,
     fork => crate::ENOSYS,
 );

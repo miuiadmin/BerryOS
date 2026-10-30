@@ -130,6 +130,9 @@ pub extern "C" fn clock_nanosleep(
         };
         let _ = berry_thread_sleep(deadline);
     }
+    // A7-4 ③b：睡醒补投（§3.3 单点——nanosleep/usleep/pause 轮询档全经
+    // 此；睡本身不可中断，信号处置移到醒来后）。
+    crate::signal::may_dispatch();
     0
 }
 
@@ -180,8 +183,8 @@ pub extern "C" fn settimeofday(_tv: *const Timeval, _tz: *const c_void) -> c_int
     -1
 }
 
-/// 包装 clock_nanosleep；v1 无信号中断面——睡不可中断恒返 0，rem 非空
-/// 先清零（残余量恒 0 的诚实形态）。
+/// 包装 clock_nanosleep；rem 非空先清零（残余量恒 0 的诚实形态——v1 睡
+/// 不可中断，A7-4 ③b 后窗内到达的信号由 nanosleep 链尾投递点补投）。
 #[no_mangle]
 pub extern "C" fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> c_int {
     if !rem.is_null() {
@@ -193,7 +196,8 @@ pub extern "C" fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> c_int {
     clock_nanosleep(CLOCK_MONOTONIC_LINUX, 0, req, rem)
 }
 
-/// μs 档（POSIX 无 errno 面，恒 0——同不可中断档）。
+/// μs 档（POSIX 无 errno 面，恒 0——同不可中断档；A7-4 ③b 起 pause
+/// 轮询与 std sleep 面的投递载体）。
 #[no_mangle]
 pub extern "C" fn usleep(usec: c_uint) -> c_int {
     let req = Timespec {
@@ -203,15 +207,8 @@ pub extern "C" fn usleep(usec: c_uint) -> c_int {
     nanosleep(&req, ptr::null_mut())
 }
 
-#[no_mangle]
-pub extern "C" fn pause() -> c_int {
-    let mut now: berry_sys::Time = 0;
-    if berry_clock_read(CLOCK_MONOTONIC, &mut now) == 0 {
-        let _ = berry_thread_sleep(now + 10_000_000_000);
-    }
-    crate::set_errno(crate::EINTR);
-    -1
-}
+// pause 真身 = signal.rs（A7-4 ③b 迁出：假 EINTR 桩退役——100ms 轮询
+// 档 + SIG_DELIVERED 纪元检测）。
 
 /// getpid() 定值锚（「无进程 ID 概念的诚实常数」档）——提 pub const
 /// 供 berry-signal `GETPID_MIRROR` 跨 crate const assert 钉板

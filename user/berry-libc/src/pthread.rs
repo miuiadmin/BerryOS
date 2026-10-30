@@ -409,6 +409,9 @@ pub extern "C" fn pthread_join(t: pthread_t, value_ptr: *mut *mut c_void) -> c_i
         let _ = berry_handle_close((*pd).th_h);
         (*pd).state = 2; // Joined（写后即 free——簿记纯粹性）
         crate::alloc::free((*pd).tls_base as *mut c_void);
+        // A7-4 ③b：join 等醒补投（§3.3——清理完毕再投，handler 面见到的
+        // 是已回收的线程簿记）。仅成功路径：错码路径无等待窗。
+        crate::signal::may_dispatch();
         0
     }
 }

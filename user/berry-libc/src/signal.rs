@@ -1,11 +1,12 @@
-//! # signal.rs —— POSIX 信号面 libc 真身（A7-4 段③a：纯语义面）
+//! # signal.rs —— POSIX 信号面 libc 真身（A7-4：段③a 纯语义面 + 段③b 投递循环）
 //!
-//! `docs/事件循环A7-4信号面实施设计草案.md` §4 拆步表的段③ 拆两半：
-//! **段③a（本刀）= 不依赖内核两号（0x86/0x87）的纯用户态语义面**——
-//! sigset 五件 + sigprocmask 掩码状态机 + sigaction/signal 表面；投递
-//! 循环（`take() | held_swap(0)` 归并分诊）与 kill/raise/pause 真身化
-//! 随段③b（内核号落地后）一并接线。本刀后 unblock 补投语义暂缺（掩码
-//! 面已真、投递点未挂）——A7-4 §3.4 偏差清单的过渡窗，随段③b 闭合。
+//! `docs/事件循环A7-4信号面实施设计草案.md` §4 拆步表：**段③a** = 不依赖
+//! 内核两号的纯用户态语义面（sigset 五件 + sigprocmask 掩码状态机 +
+//! sigaction/signal 表面）；**段③b（内核 0x86/0x87 落地后）** = 投递循环
+//! （`take() | held_swap(0)` 归并分诊）+ kill/raise/pause 真身 + unblock
+//! 补投 + 投递点接线（io/fs/sys/futex/pthread 返回后 may_dispatch——
+//! §3.3；偏差清单 §3.4：协同式延迟档，compute 紧循环收不到、不中断已
+//! 阻塞调用无 EINTR 面——pause 补显式等信号面）。
 //!
 //! ## 语义核单源
 //!
@@ -46,10 +47,13 @@ use core::ffi::c_int;
 use core::ffi::c_void;
 use core::ptr;
 
-use berry_signal::{ActionTable, SigMask, SIGSET_BYTES};
+use berry_signal::{plan_dispatch, ActionTable, Act, SigMask, SIGSET_BYTES};
+use berry_sys::{berry_signal_send, berry_signal_take};
 
 use crate::set_errno;
 
+/// asm-generic SIGABRT（abort 改装消费面——io.rs；berry-signal 单源）。
+pub use berry_signal::SIGABRT;
 // ---- musl aarch64 struct sigaction 镜像（头注「布局钉板」）----
 
 /// `struct sigaction`（libc crate aarch64-musl 逐字段镜像——sa_sigaction
@@ -86,6 +90,13 @@ const _: () = assert!(berry_signal::GETPID_MIRROR == crate::sys::SELF_PID);
 static mut SIG_MASK: SigMask = 0;
 /// sigaction 表（三值编码槽；const new 直落静态）。
 static mut SIG_ACTIONS: ActionTable = ActionTable::new();
+/// held 集（段③b）：blocked 窗内 take 到的位暂存——归并式分诊下同号
+/// 跨 held/pending 只此一档（POSIX block 窗合并语义）；unblock 补投经
+/// `take_total` 归并再出。
+static mut SIG_HELD: SigMask = 0;
+/// handler 投递计数（段③b）：单调递增——`pause` 用「纪元变动」判窗内
+/// 已投递（usleep 尾 may_dispatch 投的 handler 不经 pause 的返回值面）。
+static mut SIG_DELIVERED: u64 = 0;
 
 /// 界检失败 → errno + -1 的惯用收口（berry-signal 返负 errno）。
 fn reject(e: i32) -> c_int {
@@ -207,8 +218,10 @@ pub extern "C" fn sigprocmask(
         match berry_signal::apply_mask(how, SIG_MASK, arg) {
             Ok(new) => {
                 SIG_MASK = new;
-                // 段③b 接线点：unblock 补投 dispatch 在此挂（A7-4 §3.3
-                // ——held 位被放出后需再跑一轮投递循环；本刀前无循环）。
+                // 段③b（A7-4 §3.3）：unblock/SETMASK 收窄放出 held 位 →
+                // 立即补投（held 再投证 = bsh sig_selftest 步②）。Block/
+                // 展宽档 take 面不变，dispatch 内 Hold 分支自然接住。
+                dispatch_pending();
             }
             Err(e) => return reject(e),
         }
@@ -291,4 +304,168 @@ pub extern "C" fn signal(sig: c_int, handler: usize) -> usize {
         }
         old as usize
     }
+}
+
+// ---- 投递循环 + kill/raise/pause 真身（段③b，A7-4 §3.3）----
+//
+// 内核 0x86/0x87 的用户态消费面：`take_total` 归并（内核 swap(0) 取走
+// | held 清零）→ `plan_dispatch` 分诊 → 执行 steps。协同式延迟档（§3.4
+// 偏差清单）：投递点 = read/write/clock_nanosleep/futex wait/pthread_join
+// 返回后的 [`may_dispatch`] + sigprocmask unblock 补投 + raise 即时——
+// compute 紧循环结构性收不到（无内核打断面），handler 只保证
+// async-signal-safe（同 POSIX 契约：handler 内取 malloc 锁可自锁）。
+
+/// 取待处置全集：内核 `signal_take`（swap(0) 语义取走）| held 集清零
+/// 归并——同号跨 held/pending 只此一位（POSIX block 窗合并语义按构造
+/// 成立，berry-signal 头注「归并式分诊」节）。内核 take 失败（ktest 期
+/// 无 Process 语境等）→ 出参不动（初值 0）：held 位照常出，内核位未
+/// 消费不丢，下轮再取。
+fn take_total() -> SigMask {
+    let mut from_kernel: u64 = 0;
+    let _ = berry_signal_take(&mut from_kernel);
+    // SAFETY: 单线程口径（头注），static mut 读清（lib.rs ABI 口径）。
+    (unsafe {
+        let held = SIG_HELD;
+        SIG_HELD = 0;
+        held
+    }) | from_kernel
+}
+
+/// 投递循环真身（段③b）。返回本轮 handler 投递数（[`pause`] 的纪元
+/// 检测面；Terminate 档在此直接 exit 不返）。
+///
+/// 每轮 fresh [`take_total`]——不携带跨轮 total：handler 内再 raise 的
+/// 信号进内核 pending 由下一轮取走；同号递归投递被 handler 包络位挡成
+/// Hold（POSIX「handler 执行期自动 block 本号」SA_NODEFER-off 的最接近
+/// 语义）。全 Hold 轮零进展即返——held 已持久化，无新 take 不会再有
+/// 进展（progressed 防死循环）。
+pub fn dispatch_pending() -> u32 {
+    let mut delivered: u32 = 0;
+    loop {
+        let total = take_total();
+        if total == 0 {
+            return delivered;
+        }
+        // SAFETY: SIG_MASK/SIG_ACTIONS 单线程口径直访；Plan 是 Copy，
+        // 引用在 plan_dispatch 返回即止（steps 后续按值执行——handler
+        // 内再装表无别名面）。
+        let plan = unsafe { plan_dispatch(total, SIG_MASK, &SIG_ACTIONS) };
+        // held 位**先持久化再执行 steps**：handler 内经 sigprocmask 触发
+        // 的嵌套 dispatch 看到的 held 恒完整（后写 = 砸掉嵌套轮回写的
+        // held 位——丢失暂存信号）。
+        // SAFETY: 同上。
+        unsafe { SIG_HELD |= plan.new_held };
+        let mut progressed = false;
+        for i in 0..plan.n {
+            let (sig, act) = plan.steps[i];
+            match act {
+                Act::Hold => {} // 已持久化
+                Act::Drop => progressed = true, // 消费即进展
+                Act::Call(f) => {
+                    let bit = 1u64 << (sig - 1) as u32;
+                    // SAFETY: 包络位写读（单线程口径）。
+                    let was_blocked = unsafe { SIG_MASK & bit != 0 };
+                    unsafe { SIG_MASK |= bit };
+                    // SAFETY: 表槽值 ≥2 = fn 地址（三值编码契约，
+                    // berry-signal ActionTable 头注）。
+                    let handler: extern "C" fn(c_int) =
+                        unsafe { core::mem::transmute(f) };
+                    // POSIX 钦定：handler 不见调用方 errno。
+                    let saved_errno = crate::get_errno();
+                    handler(sig);
+                    crate::set_errno(saved_errno);
+                    // 只摘包络位——handler 内 sigprocmask 的其它改动
+                    // 保留（POSIX sigreturn 同口径：恢复的是进入 handler
+                    // 时的掩码差量，非全量快照）。
+                    // SAFETY: 同上。
+                    if !was_blocked {
+                        unsafe { SIG_MASK &= !bit };
+                    }
+                    // SAFETY: 单调计数器（pause 纪元面）。
+                    unsafe { SIG_DELIVERED += 1 };
+                    delivered += 1;
+                    progressed = true;
+                }
+                // DFL 终止档：`io::exit` = EOF 先行 + 0x33 真路径（Plan B
+                // v0.5 契约；128+sig = shell `$?` 惯例码）。
+                Act::Terminate => crate::io::exit(128 + sig),
+            }
+        }
+        if !progressed {
+            return delivered; // 全 Hold：无新量不再轮
+        }
+    }
+}
+
+/// 投递点惯用入口（§3.3 五点：read/write/clock_nanosleep/futex wait/
+/// pthread_join 返回后）。v1 无「pending 非空」用户态速查面——每点一次
+/// take syscall（相对 console 通道 RPC 往返可忽略）。
+#[inline]
+pub fn may_dispatch() {
+    dispatch_pending();
+}
+
+/// raise 真身（段③b）：self 发送（h=0 零 handle 面）+ 即时投递——
+/// POSIX：raise ≡ kill(getpid(), sig)，终止档在 dispatch 内 exit 不返。
+#[no_mangle]
+pub extern "C" fn raise(sig: c_int) -> c_int {
+    if !berry_signal::valid_sig(sig) {
+        return reject(berry_signal::EINVAL);
+    }
+    let s = berry_signal_send(0, sig as u32);
+    if s != 0 {
+        // 界检已前置——残余失败 = 内核拒面（libc 语境不可达），诚实 EPERM。
+        crate::set_errno(crate::EPERM);
+        return -1;
+    }
+    dispatch_pending();
+    0
+}
+
+/// kill 真身（段③b）：v1 仅自杀档（pid == getpid() 定值锚 42）。
+/// sig==0 探活档零内核调用（POSIX kill(pid,0)）；非 self 诚拒 ESRCH
+/// （无 pid 面 = 确无此进程，语义真于旧 EPERM 桩）。stubs.rs 桩退役。
+#[no_mangle]
+pub extern "C" fn kill(pid: crate::pid_t, sig: c_int) -> c_int {
+    if sig == 0 {
+        return match berry_signal::kill_probe(pid) {
+            Ok(()) => 0,
+            Err(e) => reject(e),
+        };
+    }
+    if !berry_signal::valid_sig(sig) {
+        return reject(berry_signal::EINVAL);
+    }
+    if !berry_signal::kill_targets_self(pid) {
+        return reject(berry_signal::ESRCH);
+    }
+    raise(sig) // 自杀档 ≡ raise（POSIX 等价式）
+}
+
+/// killpg 真身（段③b）：v1 无进程组面——诚实 ESRCH（「无此进程组」：
+/// 不是权限不够，是组根本不存在）。stubs.rs 桩退役。
+#[no_mangle]
+pub extern "C" fn killpg(_pgrp: crate::pid_t, _sig: c_int) -> c_int {
+    reject(berry_signal::ESRCH)
+}
+
+/// pause 真身（段③b，sys.rs 假 EINTR 桩迁此）：v1 睡不可中断——补偿
+/// 形态 = 100ms 轮询档：usleep 尾的 may_dispatch 投掉窗内到达的信号，
+/// `SIG_DELIVERED` 纪元变动（= 有 handler 真跑过）即返 EINTR。只有
+/// handler 投递算唤醒（POSIX：ignored 信号不醒 pause；blocked 信号
+/// 恒 Hold 不动计数；DFL 终止档在 dispatch 内 exit 不返）。
+#[no_mangle]
+pub extern "C" fn pause() -> c_int {
+    dispatch_pending(); // 入口先排一轮（睡前已 pending 的信号即投）
+    // SAFETY: 单线程口径（头注）。
+    let before = unsafe { SIG_DELIVERED };
+    loop {
+        crate::sys::usleep(100_000);
+        // SAFETY: 同上。
+        if unsafe { SIG_DELIVERED } != before {
+            break;
+        }
+    }
+    crate::set_errno(crate::EINTR);
+    -1
 }
