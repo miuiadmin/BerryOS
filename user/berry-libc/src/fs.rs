@@ -96,7 +96,9 @@ unsafe fn ra_drop(fd: c_int) {
 /// FsErr → errno（协议面错误与 errno 是两层——映射归 libc，刀 1 注）。
 /// NoFs→ENOENT 是**行为零漂移**锚点：无 fs gift 的程序在刀前桩/刀后真
 /// 实现下看到同 errno 同 strerror。
-fn errno_of(e: FsErr) -> c_int {
+/// pub(crate)（A7-3 起）：mmap.rs 文件档 staging 的 RPC 错误映射复用
+/// 本表（单一事实源，不另立映射）。
+pub(crate) fn errno_of(e: FsErr) -> c_int {
     match e {
         FsErr::NoFs => crate::ENOENT,
         FsErr::Noent => crate::ENOENT,
@@ -106,6 +108,18 @@ fn errno_of(e: FsErr) -> c_int {
         FsErr::NotEmpty => crate::ENOTEMPTY,
         FsErr::Rpc => crate::EIO,
     }
+}
+
+/// mmap 文件档的 fd 预检探针（A7-3）：fd 表快照外带——`FdEntry` 是
+/// `Copy`，整值带出（零借用生命周期面）；fd<3 console 段/表查无 →
+/// `None`（调用方译 EBADF）。只读快照——mmap 不消费/不动 fd 游标
+/// （staging 直 RPC `get_chunk`，不经 RA 缓冲，fd 状态零扰动）。
+pub(crate) fn mmap_fd_probe(fd: crate::c_int) -> Option<FdEntry> {
+    if fd < 3 {
+        return None; // console/stdin 段（fd 0/1/2 非文件面）
+    }
+    // SAFETY: 只读快照（FDT 写点在 open/close 族——mmap 预检无写）。
+    unsafe { FDT.get(fd).copied() }
 }
 
 /// resolve_path 拒因分类（只选 errno，不重复执法——resolve_path 仍是

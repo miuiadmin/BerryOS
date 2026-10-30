@@ -48,7 +48,7 @@
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
-#      EVS ok n=2/SKT ok n=3/EPL ok n=8/NETS ok n=2/MMP ok n=5/CLK ok n=6/
+#      EVS ok n=2/SKT ok n=3/EPL ok n=8/NETS ok n=2/MMP ok n=9/CLK ok n=6/
 #      PS ok n=/BC ok/
 #      M3DEMO ok n=5/THR ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
@@ -739,21 +739,34 @@ QEMU_PID=$!
 # 同源专线串行复用，零新端口）。"NETS ok n=2" 与现役标记两两互非子串
 # （NET ok ping= 之 "NET " 与 NETS 之 "NETS" 首四字即异——前邻特例不
 # 需要；无 `XNETS ok` 形态在册）。
-# A7-1（mmap 匿名档 libc 桥）：+ MMP ok n=5——bsh mmp_selftest 五步（⓪
+# A7-1（mmap 匿名档 libc 桥）：+ MMP ok——bsh mmp_selftest（⓪
 # mmap(NULL,8192,…) 双页首映射 + 两页各写读对拍 ①hint 0x5500_0000 忽略
 # 档成功落窗 [0x5000_0000,0x6000_0000) ②munmap 三态——内部地址 -1+
 # EINVAL（Partial 诚实拒）/恰长 0/重复 0（POSIX NotFound 追认档）③再
 # mmap 同长 **== p1 首址**（first-fit 空洞复用——A7-0 §3.1 钦定段内
 # 分配策略）+ 再写读 0x4D4D5033 + munmap ④拒面三连（fd=0 / +MAP_SHARED
 # / 单 PROT_READ 各断 MAP_FAILED+EINVAL）+ PROT_EXEC 忽略档放行 +
-# mprotect 命中 EACCES / 收口后未命中 EINVAL）全过才打——rootfs 相第
-# 43 标记，**A7-1 验收线**。
-# mmap/munmap 经 bsh 本地 extern 声明链接期解析 berry-libc `#[no_mangle]`
-# 真身（六参/两参与 libc crate aarch64-musl 声明逐参对齐——berry-libc
-# rlib 先于 -lc 归档，shim 全定义纪律）。纯 vmo/vmar syscall 桥零 fs 盘
-# 面 = 链位置 nets_selftest 后 fat 族前（A 系契约位，EFI 路无盘亦打——
-# self_vmar gift[3] 是 spawn 通用装配，无拓扑降级门，失败即 park loud）。
-# "MMP ok n=5" 与现役标记两两互非子串（无 `XMMP ok` 形态在册，
+# mprotect 命中 EACCES / 收口后未命中 EINVAL）全过才打——**A7-1 验收线**。
+# A7-3（mmap 文件映射 staging + mprotect dormant）起 n=5→n=9 扩四步：
+# ⑥ 文件档 staging 真身——RAM 造源 m/mmpf.bin（4396B，父目录在 RAM 树
+# create 恒落 RAM 相位无关、避开 M3DEMO 的 t/ 零交叉）→ open(O_RDONLY)
+# → mmap(MAP_PRIVATE, offset=0, len=4200)（跨页 staging + want<文件长
+# 收尾截断臂 take<n 活证）+ 首尾对拍 + [4200,8192) 尾零区零值验（整段
+# commit 含尾零页）→ 映射面改写一字节 → munmap → get_file 验源未变
+# （急切私有拷贝证）→ 同 fd 复映射 offset=4096 len=300（单 PROT_READ
+# 文件档放行 + EOF 恰边）→ 读回对拍；⑦ 文件档拒位四连（MAP_SHARED/
+# offset 非页对齐/超 EOF 原始 length 判/prot 缺 READ 各 EINVAL）；⑧
+# fd 面拒位（fd=1 与 fd=99 各 EBADF / O_WRONLY fd EACCES——v1 只收恰
+# O_RDONLY）；⑨ mprotect dormant 保内容环（哨兵 → PROT_NONE 撤翻译 →
+# 幂等 → RW 复映复活 → 哨兵原值 + 追写读 → dormant 条目 munmap 收口）。
+# 造源收尾还零残留（unlink 文件 + m 目录）。
+# mmap/munmap/mprotect 经 bsh 本地 extern 声明链接期解析 berry-libc
+# `#[no_mangle]` 真身（六参/两参/三参与 libc crate aarch64-musl 声明逐参
+# 对齐——berry-libc rlib 先于 -lc 归档，shim 全定义纪律）。⓪-④⑨ 纯
+# vmo/vmar syscall 桥、⑥-⑧ 走 RAM 树 fs 面（非盘面）= 链位置
+# nets_selftest 后 fat 族前（A 系契约位，EFI 路无盘亦打——self_vmar
+# gift[3] 是 spawn 通用装配，无拓扑降级门，失败即 park loud）。
+# "MMP ok n=9" 与现役标记两两互非子串（无 `XMMP ok` 形态在册，
 # /usr/bin/grep 复核零碰撞——前邻特例不需要）。
 # A7-2（timer 壁钟分档 + 补桩五真身）：+ CLK ok n=6——bsh clk_selftest
 # 六步（⓪mono 双读单调非减 + nsec 域 [0,1e9) ①REALTIME 合成一致——
@@ -776,7 +789,7 @@ QEMU_PID=$!
 # 非子串（无 `XCLK ok` 形态在册——前邻特例不需要）。设计稿「五步/n=5」
 # 系 ⑤ 增补后计数未同步勘误，实现定案六步 n=6。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=5" "CLK ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -797,7 +810,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + EVS ok n=2 + SKT ok n=3 + EPL ok n=8 + NETS ok n=2 + MMP ok n=5 + CLK ok n=6 + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + EVS ok n=2 + SKT ok n=3 + EPL ok n=8 + NETS ok n=2 + MMP ok n=9 + CLK ok n=6 + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout

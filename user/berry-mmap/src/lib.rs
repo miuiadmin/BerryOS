@@ -1,12 +1,14 @@
-//! # berry-mmap —— mmap 匿名档簿记纯函数面（A7-1）
+//! # berry-mmap —— mmap 簿记纯函数面（A7-1 匿名档 / A7-3 文件档）
 //!
 //! ## Overview (for crates.io users)
 //!
-//! Anonymous-`mmap` bookkeeping pure functions for the
+//! `mmap` bookkeeping pure functions for the
 //! [BerryOS](https://github.com/berryos/berryos) microkernel: a
 //! fixed-capacity region table, a VA-window **first-fit** allocator (hole
-//! reuse after `munmap`), an argument classifier, and page-rounding
-//! arithmetic — pure functions, host-testable. The consumer is berry-libc
+//! reuse after `munmap`), an argument classifier (anonymous arm since
+//! A7-1, file-staging arm since A7-3), `mprotect` dormant bookkeeping,
+//! and page-rounding arithmetic — pure functions, host-testable. The
+//! consumer is berry-libc
 //! (`mmap.rs` syscall bridge: vmo_create + vmar_map); this crate holds no
 //! syscall face and no arch-specific code. no_std core; builds and
 //! unit-tests on any host.
@@ -121,46 +123,91 @@ pub enum Reject {
     TooLarge,
 }
 
-/// mmap 匿名档**参数分诊**（A7-0 §3.1 钦定「mmap 流：分诊（纯函数）」
-/// 的落地——本函数承载全部 EINVAL/ENOMEM 前置判断，host 全矩阵值级
-/// 断言，libc 侧零内联判断）。返回取整后长度。
+/// classify 的返回档型：取整后长度 + 种类分流（libc 侧按此分流主管——
+/// `Anon` 零填整段、`File` 走 staging 急切私有拷贝，A7-3 裁定 A 案）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MapKind {
+    /// 匿名档（fd==-1）：零填整段映射（A7-1 契约零漂移）。
+    Anon(usize),
+    /// 文件档（fd≠-1）：MAP_PRIVATE staging 伪映射——libc 侧急切全量
+    /// 私有拷贝（POSIX lazy-COW 的 eager 版，语义等价；staging 主管在
+    /// berry-libc mmap.rs，本 crate 只管分诊与簿记）。
+    File(usize),
+}
+
+/// mmap **参数分诊**（A7-0 §3.1 钦定「mmap 流：分诊（纯函数）」的落地
+/// ——本函数承载全部 EINVAL/ENOMEM 前置判断，host 全矩阵值级断言，
+/// libc 侧零内联判断）。返回档型 = 取整后长度 + 种类分流（匿名/文件
+/// staging——A7-3 起文件档不再一拒了之，libc 侧按 [`MapKind`] 分流）。
 ///
-/// 拒位清单（全部 `Reject::Invalid`）：
+/// 共用拒位（两档皆 `Reject::Invalid`）：
 /// - `length`==0 或页取整溢出（POSIX：length==0 即 EINVAL）；
-/// - `prot` 含未知位（~(READ|WRITE|EXEC)）或缺 READ 或缺 WRITE——
-///   vmar_map v1 只支持恰 RW 权限（PROT_NONE/单 READ/单 WRITE 诚实拒）；
-///   **PROT_EXEC 位忽略**（钦定裁量：用户页本可执行、NX 留 v2——
-///   R|W|EXEC 通过，rights 仍传 RW）；
-/// - `flags` 含未知位 / `MAP_SHARED` / `MAP_FIXED`，或缺
-///   `MAP_ANONYMOUS|MAP_PRIVATE`；
-/// - `fd`≠-1 或 `offset`≠0（文件映射 = A7-3 staging 另裁）。
+/// - `prot` 含未知位（~(READ|WRITE|EXEC)）或 `flags` 含未知位。
+///
+/// 匿名档（`fd`==-1，A7-1 契约**零漂移**）：
+/// - `prot` 非恰含 R|W——vmar_map v1 只支持恰 RW 权限（PROT_NONE/单
+///   READ/单 WRITE 诚实拒）；**PROT_EXEC 位忽略**（钦定裁量：用户页
+///   本可执行、NX 留 v2——R|W|EXEC 通过，rights 仍传 RW）；
+/// - `MAP_SHARED` / `MAP_FIXED` / 缺 `MAP_ANONYMOUS|MAP_PRIVATE`；
+/// - `offset`≠0。
+///
+/// 文件档（`fd`≠-1，A7-3：MAP_PRIVATE staging 伪映射）：
+/// - `flags` 含 `MAP_ANONYMOUS`（POSIX 矛盾面：ANON 与 fd 互斥）/
+///   `MAP_SHARED` / `MAP_FIXED`，或缺 `MAP_PRIVATE`；
+/// - `prot` 缺 READ（恒 RW 硬映射：只要求含 READ，WRITE 可选——单
+///   READ 请求亦按 RW 落 rights；PROT_NONE 拒）；
+/// - `offset`<0 或非页对齐（staging 读源按 offset 起读，页界口径与
+///   addr 同——POSIX 同拒）。
+///
+/// 两档共同：取整长超 [`VMO_MAX`] → `Reject::TooLarge`。
 ///
 /// `addr` **不入参**：非 NULL hint 恒忽略走窗自动分配（钦定裁量——
 /// POSIX 允许实现忽略 hint；`MAP_FIXED` 已在 flags 面拒绝，addr 无第
 /// 二语义）。拒位次序与 errno 档为 v1 契约面，guest/host 双侧钉板。
-pub fn classify(length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> Result<usize, Reject> {
+pub fn classify(length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> Result<MapKind, Reject> {
     let len = round_up_page(length).ok_or(Reject::Invalid)?;
     const PROT_KNOWN: i32 = PROT_READ | PROT_WRITE | PROT_EXEC; // =7
-    if prot & !PROT_KNOWN != 0 || prot & (PROT_READ | PROT_WRITE) != (PROT_READ | PROT_WRITE) {
+    const FLAG_KNOWN: i32 = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS;
+    if prot & !PROT_KNOWN != 0 || flags & !FLAG_KNOWN != 0 {
         return Err(Reject::Invalid);
     }
-    const FLAG_KNOWN: i32 = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS;
-    if flags & !FLAG_KNOWN != 0
-        || flags & (MAP_SHARED | MAP_FIXED) != 0
+    if fd != -1 {
+        // —— 文件档（A7-3）：MAP_PRIVATE staging 伪映射分诊 ——
+        if flags & MAP_ANONYMOUS != 0 // POSIX 矛盾面：ANON 与 fd≠-1 互斥
+            || flags & (MAP_SHARED | MAP_FIXED) != 0
+            || flags & MAP_PRIVATE == 0
+            // 恒 RW 硬映射：只要求含 READ（单 READ 请求亦按 RW 落 rights）
+            || prot & PROT_READ == 0
+            // offset 负值 / 非页对齐（staging 读源起点，页界口径与 addr 同）
+            || offset < 0
+            || offset as u64 % PAGE as u64 != 0
+        {
+            return Err(Reject::Invalid);
+        }
+        if len > VMO_MAX {
+            return Err(Reject::TooLarge);
+        }
+        return Ok(MapKind::File(len));
+    }
+    // —— 匿名档（A7-1 契约零漂移）——
+    if prot & (PROT_READ | PROT_WRITE) != (PROT_READ | PROT_WRITE) {
+        return Err(Reject::Invalid);
+    }
+    if flags & (MAP_SHARED | MAP_FIXED) != 0
         || flags & (MAP_ANONYMOUS | MAP_PRIVATE) != (MAP_ANONYMOUS | MAP_PRIVATE)
     {
         return Err(Reject::Invalid);
     }
-    if fd != -1 || offset != 0 {
+    if offset != 0 {
         return Err(Reject::Invalid);
     }
     if len > VMO_MAX {
         return Err(Reject::TooLarge);
     }
-    Ok(len)
+    Ok(MapKind::Anon(len))
 }
 
-/// 一条在册匿名映射（libc 侧持有：`vmo` 存内核 handle 的 usize 投影）。
+/// 一条在册映射（libc 侧持有：`vmo` 存内核 handle 的 usize 投影）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Region {
     /// 映射基址（页对齐；= vmar_map 请求位 = 实际落位——v1 无重排）。
@@ -170,6 +217,12 @@ pub struct Region {
     pub len: usize,
     /// 背书 VMO handle（usize 投影；munmap 先 vmar_unmap 再 close）。
     pub vmo: usize,
+    /// dormant 位（A7-3 mprotect PROT_NONE 档）：true = vmar 翻译已撤
+    /// （地址区间不可访问——读写即 D-abort），VMO handle 滞表保内容，
+    /// mprotect 复活（RW 复映）翻回 false；munmap 照常收口（close VMO）。
+    /// first_fit/查表面**不看此位**——区间占用语义与活映射同（洞算术
+    /// 不因 dormant 而生洞）。
+    pub dormant: bool,
 }
 
 /// `take_exact` 三态（munmap 语义分流的数据面）。
@@ -230,6 +283,12 @@ impl RegionTable {
             .flatten()
             .find(|r| r.base == base)
             .copied()
+    }
+
+    /// 基址精确查表（可变形态——mprotect dormant 翻转用；调用方须持
+    /// 表互斥，口径同 [`find`]）。
+    pub fn find_mut(&mut self, base: usize) -> Option<&mut Region> {
+        self.slots.iter_mut().flatten().find(|r| r.base == base)
     }
 
     /// 基址精确出表三态（munmap 语义分流，见 [`TakeOutcome`]）。
@@ -342,14 +401,14 @@ mod tests {
     #[test]
     fn classify_ok_canonical_and_rounding() {
         // 典范调用：NULL 自动分配 + RW + ANON|PRIVATE + fd -1 + off 0
-        assert_eq!(classify(1, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0), Ok(PAGE));
+        assert_eq!(classify(1, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0), Ok(MapKind::Anon(PAGE)));
         assert_eq!(
             classify(PAGE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0),
-            Ok(PAGE) // MAP_ANON 双名同值
+            Ok(MapKind::Anon(PAGE)) // MAP_ANON 双名同值
         );
         assert_eq!(
             classify(PAGE + 1, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0),
-            Ok(2 * PAGE) // 取整到页
+            Ok(MapKind::Anon(2 * PAGE)) // 取整到页
         );
     }
 
@@ -359,7 +418,7 @@ mod tests {
         // R|W|EXEC 通过（rights 仍传 RW），与恰 R|W 同档 Ok。
         assert_eq!(
             classify(PAGE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0),
-            Ok(PAGE)
+            Ok(MapKind::Anon(PAGE))
         );
     }
 
@@ -368,12 +427,12 @@ mod tests {
         // 帽界：恰 32MiB 过（内核 vmo_create 含等值档——pthread.rs 同口径）
         assert_eq!(
             classify(VMO_MAX, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0),
-            Ok(VMO_MAX)
+            Ok(MapKind::Anon(VMO_MAX))
         );
         // 帽内最大取整值：VMO_MAX-PAGE+1 → 取整 VMO_MAX 仍过
         assert_eq!(
             classify(VMO_MAX - PAGE + 1, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0),
-            Ok(VMO_MAX)
+            Ok(MapKind::Anon(VMO_MAX))
         );
     }
 
@@ -419,10 +478,11 @@ mod tests {
     fn classify_reject_fd_offset_length() {
         let rw = PROT_READ | PROT_WRITE;
         let fl = MAP_ANONYMOUS | MAP_PRIVATE;
-        // fd≠-1（文件映射 = A7-3 另裁）
+        // fd≠-1 且 fl 含 ANON = 文件档矛盾面（A7-3 前此处一拒了之，
+        // A7-3 起改按文件档分诊——含 ANON 仍拒，零漂移）
         assert_eq!(classify(PAGE, rw, fl, 0, 0), Err(Reject::Invalid));
         assert_eq!(classify(PAGE, rw, fl, 3, 0), Err(Reject::Invalid));
-        // offset≠0（正负同拒）
+        // offset≠0（正负同拒；匿名档 offset 必须 0）
         assert_eq!(classify(PAGE, rw, fl, -1, 8), Err(Reject::Invalid));
         assert_eq!(classify(PAGE, rw, fl, -1, -4096), Err(Reject::Invalid));
         // length==0（POSIX EINVAL）与页取整溢出
@@ -438,6 +498,66 @@ mod tests {
         assert_eq!(classify(VMO_MAX + 1, rw, fl, -1, 0), Err(Reject::TooLarge));
         assert_eq!(classify(VMO_MAX + PAGE, rw, fl, -1, 0), Err(Reject::TooLarge));
         assert_eq!(classify(usize::MAX - (PAGE - 1), rw, fl, -1, 0), Err(Reject::TooLarge));
+    }
+
+    // —— classify 文件档（A7-3）：正档矩阵 + 拒位矩阵 ————————————
+    #[test]
+    fn classify_file_ok_matrix() {
+        let fl = MAP_PRIVATE;
+        // 恒 RW 硬映射：恰 RW / 单 R（WRITE 可选）/ R|W|X（EXEC 忽略同匿名档）
+        assert_eq!(classify(PAGE, PROT_READ | PROT_WRITE, fl, 3, 0), Ok(MapKind::File(PAGE)));
+        assert_eq!(classify(PAGE, PROT_READ, fl, 3, 0), Ok(MapKind::File(PAGE)));
+        assert_eq!(classify(PAGE, PROT_READ | PROT_WRITE | PROT_EXEC, fl, 3, 0), Ok(MapKind::File(PAGE)));
+        // offset 页倍（0 / 4096 / 大偏移皆正档）
+        assert_eq!(classify(PAGE, PROT_READ, fl, 3, 4096), Ok(MapKind::File(PAGE)));
+        assert_eq!(classify(PAGE, PROT_READ, fl, 3, 0x10_0000), Ok(MapKind::File(PAGE)));
+        // 取整到页（A7-1 同款：length=1 → PAGE）
+        assert_eq!(classify(1, PROT_READ, fl, 3, 0), Ok(MapKind::File(PAGE)));
+        assert_eq!(classify(PAGE + 1, PROT_READ, fl, 3, 0), Ok(MapKind::File(2 * PAGE)));
+        // 帽界恰过（与匿名档同口径）
+        assert_eq!(classify(VMO_MAX, PROT_READ, fl, 3, 0), Ok(MapKind::File(VMO_MAX)));
+    }
+
+    #[test]
+    fn classify_file_reject_flags() {
+        let r = PROT_READ;
+        for flags in [
+            MAP_ANONYMOUS,               // POSIX 矛盾面：ANON 与 fd≠-1 互斥
+            MAP_ANONYMOUS | MAP_PRIVATE, // 同上（叠 PRIVATE 仍矛盾）
+            0,                           // 缺 PRIVATE
+            MAP_SHARED,                  // v1 无共享档
+            MAP_PRIVATE | MAP_SHARED,    // 叠 SHARED
+            MAP_PRIVATE | MAP_FIXED,     // v1 无固定地址面
+            MAP_PRIVATE | 0x40,          // 未知 flag 位
+        ] {
+            assert_eq!(
+                classify(PAGE, r, flags, 3, 0),
+                Err(Reject::Invalid),
+                "flags={flags:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_file_reject_offset_prot_len() {
+        let fl = MAP_PRIVATE;
+        // offset 非页对齐（正非对齐/负同拒；负值独立于对齐判拒）
+        assert_eq!(classify(PAGE, PROT_READ, fl, 3, 8), Err(Reject::Invalid));
+        assert_eq!(classify(PAGE, PROT_READ, fl, 3, -4096), Err(Reject::Invalid));
+        // 缺 READ：PROT_NONE / 单 WRITE（恒 RW 硬映射仍要求 READ 在位）
+        assert_eq!(classify(PAGE, PROT_NONE, fl, 3, 0), Err(Reject::Invalid));
+        assert_eq!(classify(PAGE, PROT_WRITE, fl, 3, 0), Err(Reject::Invalid));
+        // 共用面：未知 prot 位 / length==0 / 溢出
+        assert_eq!(classify(PAGE, PROT_READ | 0x8, fl, 3, 0), Err(Reject::Invalid));
+        assert_eq!(classify(0, PROT_READ, fl, 3, 0), Err(Reject::Invalid));
+        assert_eq!(classify(usize::MAX, PROT_READ, fl, 3, 0), Err(Reject::Invalid));
+    }
+
+    #[test]
+    fn classify_file_too_large() {
+        // 文件档同帽：取整超 VMO_MAX → ENOMEM 桶（staging VMO 同一上限）
+        assert_eq!(classify(VMO_MAX + 1, PROT_READ, MAP_PRIVATE, 3, 0), Err(Reject::TooLarge));
+        assert_eq!(classify(usize::MAX - (PAGE - 1), PROT_READ, MAP_PRIVATE, 3, 0), Err(Reject::TooLarge));
     }
 
     // —— first_fit：底起打包 / 空洞复用 / 窗尽 ——————————————————
@@ -542,7 +662,7 @@ mod tests {
 
     // —— region 表：插入/查表/容量/出表三态 ——————————————
     fn reg(base: usize, len: usize) -> Region {
-        Region { base, len, vmo: 0x100 + base as usize % 97 }
+        Region { base, len, vmo: 0x100 + base as usize % 97, dormant: false }
     }
 
     #[test]
@@ -634,6 +754,41 @@ mod tests {
         assert_eq!(t.count(), REGION_MAX);
     }
 
+    // —— dormant 簿记（A7-3 mprotect PROT_NONE 档）————————————
+    #[test]
+    fn region_dormant_flip_via_find_mut() {
+        // find_mut 字面往返：翻 true（unmap 撤翻译）→ find 反映 →
+        // 翻 false（复映复活）→ find 回到原值（vmo/base/len 不动）。
+        let mut t = RegionTable::new();
+        let r = reg(WIN_BASE, 2 * PAGE);
+        assert!(t.insert(r));
+        t.find_mut(WIN_BASE).unwrap().dormant = true;
+        let d = t.find(WIN_BASE).unwrap();
+        assert!(d.dormant);
+        assert_eq!((d.base, d.len, d.vmo), (r.base, r.len, r.vmo)); // 保内容字段不动
+        t.find_mut(WIN_BASE).unwrap().dormant = false;
+        assert_eq!(t.find(WIN_BASE), Some(r)); // 全量回原值
+        // 未命中 None（与 find 同口径）
+        assert!(t.find_mut(WIN_BASE + PAGE).is_none());
+    }
+
+    #[test]
+    fn region_dormant_occupies_window_and_takeable() {
+        // dormant 条目仍占区间：first_fit 不因 dormant 生洞（翻 true 后
+        // 同窗分配落其上方）；take_exact 照常收口（munmap 语义不感知
+        // dormant——libc 侧 Exact 流程 unmap 错误被忽略、close VMO 无
+        // 映射无 EBUSY，纯数据面在此钉板出表可达）。
+        let mut t = RegionTable::new();
+        let r = reg(WIN_BASE, 2 * PAGE);
+        assert!(t.insert(r));
+        t.find_mut(WIN_BASE).unwrap().dormant = true;
+        assert_eq!(t.first_fit(PAGE), Some(WIN_BASE + 2 * PAGE)); // 不复用 dormant 区间
+        assert_eq!(t.first_fit(2 * PAGE), Some(WIN_BASE + 2 * PAGE));
+        // 出表值携带 dormant 位（表内现存形态）——dormant 不拦截收口
+        assert_eq!(t.take_exact(WIN_BASE, 2 * PAGE), TakeOutcome::Exact(Region { dormant: true, ..r }));
+        assert_eq!(t.count(), 0);
+    }
+
     // —— libc 桥语义自检：分配与表操作的合同面 ——————————
     #[test]
     fn alloc_then_table_two_mappings_lifecycle() {
@@ -642,19 +797,19 @@ mod tests {
         let mut t = RegionTable::new();
         // p1 = 双页 @ 底；q = 单页 紧贴其顶
         let p1 = t.first_fit(2 * PAGE).unwrap();
-        assert!(t.insert(Region { base: p1, len: 2 * PAGE, vmo: 0x10 }));
+        assert!(t.insert(Region { base: p1, len: 2 * PAGE, vmo: 0x10, dormant: false }));
         let q = t.first_fit(PAGE).unwrap();
         assert_eq!(q, p1 + 2 * PAGE); // 向上打包
-        assert!(t.insert(Region { base: q, len: PAGE, vmo: 0x11 }));
+        assert!(t.insert(Region { base: q, len: PAGE, vmo: 0x11, dormant: false }));
         assert_eq!(t.count(), 2);
         // p1 出表 → 底洞；q 仍活 → 同长再分配必复用 p1（钦定空洞复用）
-        assert_eq!(t.take_exact(p1, 2 * PAGE), TakeOutcome::Exact(Region { base: p1, len: 2 * PAGE, vmo: 0x10 }));
+        assert_eq!(t.take_exact(p1, 2 * PAGE), TakeOutcome::Exact(Region { base: p1, len: 2 * PAGE, vmo: 0x10, dormant: false }));
         let p2 = t.first_fit(2 * PAGE).unwrap();
         assert_eq!(p2, p1);
-        assert!(t.insert(Region { base: p2, len: 2 * PAGE, vmo: 0x12 }));
+        assert!(t.insert(Region { base: p2, len: 2 * PAGE, vmo: 0x12, dormant: false }));
         // 先出的不是表首（防「首槽特例」侥幸）
-        assert_eq!(t.take_exact(q, PAGE), TakeOutcome::Exact(Region { base: q, len: PAGE, vmo: 0x11 }));
-        assert_eq!(t.take_exact(p2, 2 * PAGE), TakeOutcome::Exact(Region { base: p2, len: 2 * PAGE, vmo: 0x12 }));
+        assert_eq!(t.take_exact(q, PAGE), TakeOutcome::Exact(Region { base: q, len: PAGE, vmo: 0x11, dormant: false }));
+        assert_eq!(t.take_exact(p2, 2 * PAGE), TakeOutcome::Exact(Region { base: p2, len: 2 * PAGE, vmo: 0x12, dormant: false }));
         assert_eq!(t.count(), 0);
         assert_eq!(t.first_fit(PAGE), Some(WIN_BASE)); // 清场后回底
     }

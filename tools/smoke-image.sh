@@ -11,8 +11,9 @@
 # rootfs 依赖，EFI 路同打；GUI-1 起 +FBW ok——guifbd 显示服务自验三步
 # （clear 双相位差分/蜂格字形对拍/scroll 行移），EFI-GOP 路专属、-kernel
 # 主路零插表零路径；GUI-1 段② 起 +FBSERVE ok——console fan-out 上屏
-# serve 循环首条消息（双路上屏闭环）；A7-1 起 +MMP ok n=5——bsh
-# mmp_selftest 五步，mmap 匿名档 libc 桥首活体，零 fs 盘面 EFI 路同打；
+# serve 循环首条消息（双路上屏闭环）；A7-1 起 +MMP ok、A7-3 起 n=9——
+# bsh mmp_selftest 九步：匿名档 libc 桥 + 文件档 staging（⑥-⑧ 走 RAM 树
+# fs 非盘面）+ mprotect dormant 环，EFI 路同打；
 # A7-2 起 +CLK ok n=6——bsh clk_selftest 六步，timer 壁钟分档 + 补桩
 # 五真身首活体，纯 clock syscall + `date -u` spawn 无文件参零 fs 盘面
 # EFI 路同打）
@@ -134,12 +135,15 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # fan-out 管道 endB_fb 第 7 插随 env extras[1] take 迁入；稳态矩阵打印
 # 持续不断 → 首条必达 = 状态谓词非竞速。裸 grep -qF 足够——"FBSERVE ok"
 # 与 "FBW ok"/"FB ok" 互非子串（F-B-S-E-R-V-E））。
-# A7-1 起 +MMP ok n=5（bsh mmp_selftest 五步——mmap 匿名档 libc 桥首活体：
-# region 表 + vmo_create/整段 commit/vmar_map(self_vmar_h()) 桥，首映射
-# volatile 写读对拍/munmap 三态/空洞复用回首址（first-fit 钦定）/范围盒
-# 拒面三连 + mprotect 双裁；零 fs 盘面纯
-# vmo/vmar syscall，链位置 poll 后 fat 族前 = EFI 路可达，U2/POLL 契约；
-# 无拓扑降级门——gift[3] 是 T-1 spawn 通用装配，所有相恒在，失败即 park
+# A7-1 起 +MMP ok、A7-3 起 n=9（bsh mmp_selftest 九步——⓪-④ 匿名档
+# libc 桥：region 表 + vmo_create/整段 commit/vmar_map(self_vmar_h()) 桥，
+# 首映射 volatile 写读对拍/munmap 三态/空洞复用回首址（first-fit 钦定）/
+# 范围盒拒面三连 + mprotect 双裁；⑥-⑧ A7-3 文件档 staging——RAM 造源
+# m/mmpf.bin + mmap(MAP_PRIVATE) 私有拷贝证/同 fd offset 档复映射/拒位
+# 四连/fd 面 EBADF·EACCES；⑨ mprotect dormant 保内容环。⑥-⑧ 走 RAM 树
+# fs 面（非盘面——父目录在 RAM 树 create 恒落 RAM 相位无关），链位置
+# poll 后 fat 族前 = EFI 路可达，U2/POLL 契约；无拓扑降级门——gift[3]
+# 是 T-1 spawn 通用装配，所有相恒在，失败即 park
 # loud。裸 grep -qF 足够——"MMP ok"（大写）与 boot 期 'mmap: n=' ERE（小写）
 # 及现役标记互非子串）。
 # A7-2 起 +CLK ok n=6（bsh clk_selftest 六步——timer 壁钟分档：⓪mono
@@ -153,7 +157,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # spawn 无文件参）= EFI 路可达，链位置 mmp 后 fat 族前（A 系契约位）；
 # 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLK ok"（大写）
 # 与现役标记互非子串（无 XCLK 形态在册）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=5" "CLK ok n=6" "FBW ok" "FBSERVE ok")
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=9" "CLK ok n=6" "FBW ok" "FBSERVE ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")

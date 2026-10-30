@@ -280,14 +280,17 @@ fn main() {
     //    跳过——EFI canon 零变化、B4 无 netdev 相同口径）；排 fat 族前
     //    零盘面。
     nets_selftest();
-    // —— A7-1：mmap 匿名档 libc 桥自验（`MMP ok n=5` = rootfs 相第 43
-    //    标记，A7-1 验收线，`docs/事件循环A7设计草案.md` §3.1）：mmap
-    //    真身（region 表 + vmo_create/逐页 commit/vmar_map(self_vmar_h())
-    //    桥）第一次 guest 全链活体——首映射/写读对拍/munmap/再映射不复
-    //    用/范围盒拒面三连五步。链序契约同 U2/POLL——零 fs 盘面（纯
-    //    vmo/vmar syscall 桥），排 fat 族之前（EFI 路无盘亦打 MMP）；
-    //    无拓扑降级门（T-1 自描述对 gift[3] 是 spawn 通用装配，所有相
-    //    恒在——失败即 park loud）。
+    // —— A7-1/A7-3：mmap 匿名档 + 文件档 staging 自验（`MMP ok n=9`，
+    //    A7-1 验收线 `docs/事件循环A7设计草案.md` §3.1 + A7-3 扩步
+    //    `docs/事件循环A7-3实施设计草案.md`）：mmap/mprotect 真身
+    //    （region 表 + vmo_create/整段 commit/vmar_map(self_vmar_h())
+    //    桥 + 文件档 get_chunk 直 RPC staging + dormant 五臂）guest 全链
+    //    活体——⓪-④ 匿名档五步（首映射/写读对拍/munmap 三态/再映射
+    //    复用/范围盒拒面）+ ⑥-⑨ A7-3 四步（文件档私有拷贝证/拒位四连/
+    //    fd 面 EBADF·EACCES/dormant 保内容环）。链序契约同 U2/POLL——
+    //    ⑥-⑧ 走 RAM 树 fs 面（非盘面），排 fat 族之前（EFI 路无盘亦打
+    //    MMP）；无拓扑降级门（T-1 自描述对 gift[3] 是 spawn 通用装配，
+    //    所有相恒在——失败即 park loud）。
     mmp_selftest();
     // —— A7-2：timer 壁钟分档自验（`CLK ok n=6` = rootfs 相第 44 标记，
     //    `docs/事件循环A7-2实施设计草案.md` §4——设计稿「五步/n=5」系
@@ -1945,8 +1948,9 @@ extern "C" {
     fn mprotect(addr: *mut core::ffi::c_void, len: usize, prot: i32) -> i32;
 }
 
-/// A7-1：mmap 匿名档 guest 自验（`MMP ok n=5` = rootfs 相第 43 标记）——
-/// berry-libc mmap 真身第一次 guest 全链活体。五步全过才打；**状态谓词
+/// A7-1/A7-3：mmap 匿名档 + 文件档 staging guest 自验（`MMP ok n=9` =
+/// rootfs 相标记）——berry-libc mmap/mprotect 真身 guest 全链活体。九步
+/// 全过才打；**状态谓词
 /// 零竞速**（4-5a 铁律——纯串行 libc 直调，零子进程零对拍端，
 /// poll_selftest 同款形态）：
 /// ⓪ mmap(NULL,8192,PROT_READ|PROT_WRITE,MAP_ANONYMOUS|MAP_PRIVATE,-1,0)
@@ -1967,15 +1971,36 @@ extern "C" {
 ///    PROT_READ——各断 MAP_FAILED 且 errno==EINVAL）+ PROT_EXEC 忽略档
 ///    （R|W|X 放行——用户页本可执行，NX 留 v2）→ mprotect 命中 → -1
 ///    且 errno==EACCES（v1 无改权档诚实拒）→ munmap 收口 → 同址再
-///    mprotect → -1 且 errno==EINVAL（未命中档）。
-/// 链序契约同 U2/POLL——零 fs 盘面（纯 vmo/vmar syscall 桥），排 fat
-/// 族之前（EFI 路无盘亦打 MMP）；无拓扑降级门（T-1 自描述对 gift[3]
-/// 是 spawn 通用装配——失败即 park loud）。
+///    mprotect → -1 且 errno==EINVAL（未命中档）；
+/// ⑥ 文件档 staging 真身（A7-3）：RAM 造源 m/mmpf.bin（4396B = 4096 基界
+///    + 300 尾段；目录名避开 M3DEMO 的 t/ 造源面零交叉——父目录在 RAM
+///    树则 create 恒落 RAM，相位无关）→ open(O_RDONLY) → mmap(MAP_PRIVATE,
+///    offset=0, len=4200)（跨 4096 页界 staging + want<文件长 → 收尾截断
+///    臂 take<n 活证）→ 首尾字节/u64 对拍 + [4200,8192) 尾零区零值验
+///    （整段 commit 含尾零页——A7-3 对设计稿「隐式 commit」缺口的执法面）
+///    → 映射面改写一字节 → munmap → get_file 逐字节验源未变（急切私有
+///    拷贝证——staging 与源解耦）→ 同 fd 复映射 offset=4096 len=300（单
+///    PROT_READ 文件档放行 + file_off≠0 + EOF 恰边 4396）→ 读回对拍 →
+///    收口；
+/// ⑦ 文件档拒位四连：MAP_SHARED 叠加 / offset=8 非页对齐 / offset+length
+///    超 EOF（4096+4096>4396，原始 length 判）/ prot 缺 READ（单 WRITE）
+///    ——各 MAP_FAILED 且 errno==EINVAL；
+/// ⑧ fd 面拒位：fd=1（console 段 <3）/ fd=99（fd 表查无）各 EBADF；
+///    O_WRONLY fd → EACCES（v1 只收恰 O_RDONLY——共享档的面诚实拒，
+///    POSIX 偏差清单 §3.3）；
+/// ⑨ mprotect dormant 保内容环：写哨兵 → PROT_NONE 撤翻译 → dormant
+///    幂等 → RW 复映复活 → 哨兵原值保内容（VMO 滞表未 close）→ 追写
+///    读对拍 → dormant 条目 munmap 收口（close 无映射无 -EBUSY 面）；
+///    dormant 期严格不触区间（无翻译读写 = EL0 D-abort 假死）。
+/// 链序契约同 U2/POLL——⑥-⑧ 走 RAM 树 fs 面（非盘面；造源收尾还零残留），
+/// 排 fat 族之前（EFI 路无盘亦打 MMP）；无拓扑降级门（T-1 自描述对
+/// gift[3] 是 spawn 通用装配——失败即 park loud）。
 /// 范围盒常量本地镜像（契约冻结值，已对 libc crate aarch64-musl 逐值
 /// 核验：PROT 族 = 1/2/4、MAP_SHARED/PRIVATE/FIXED = 0x01/0x02/0x10、
 /// MAP_ANONYMOUS = 0x20（musl MAP_ANON）、MAP_FAILED = !0——与
 /// berry-libc pub 常量位置解耦，值由契约钉死不漂）。
 fn mmp_selftest() {
+    const PROT_NONE: i32 = 0;
     const PROT_READ: i32 = 1;
     const PROT_WRITE: i32 = 2;
     const PROT_EXEC: i32 = 4;
@@ -1983,6 +2008,7 @@ fn mmp_selftest() {
     const MAP_PRIVATE: i32 = 0x02;
     const MAP_ANONYMOUS: i32 = 0x20;
     const MAP_FAILED: *mut core::ffi::c_void = usize::MAX as *mut core::ffi::c_void;
+    const EBADF: i32 = 9; // musl aarch64（本函数 const 镜像纪律：值由契约钉死）
     const LEN: usize = 8192; // 双页（跨页验整段 commit+map 两页真活）
     const WIN_LO: usize = 0x5000_0000; // berry-mmap VA 窗（本地镜像钉板）
     const WIN_HI: usize = 0x6000_0000;
@@ -2159,11 +2185,273 @@ fn mmp_selftest() {
         }
     }
 
+    // ⑥ 文件档 staging 真身（A7-3）：RAM 树 mkdir m + 造源 4396B（父目录
+    //    在 RAM 树 → create 恒落 RAM 相位无关；避开 M3DEMO 的 t/ 零交叉）。
+    //    fwant=4200 跨 4096 页界（staging 跨页写）且 < FLEN（收尾截断臂
+    //    take<n 可达——4200 = 21×192+168，末 chunk take=168）。
+    const FLEN: usize = 4396; // 4096 基界 + 300 尾段（两段 offset 档共用）
+    const FWANT: usize = 4200;
+    let mut f_ok = true;
+    let mut made = false; // 造源已落（清理门与 f_ok 分离——open 失败仍要还零）
+    if mkdir_of("m").is_err() {
+        fails.push("⑥ mkdir m 失败");
+        f_ok = false;
+    } else {
+        let fsrc: Vec<u8> = (0..FLEN).map(|i| (i ^ (i >> 3)) as u8).collect();
+        if put_file("m/mmpf.bin", &fsrc).is_err() {
+            fails.push("⑥ 造源失败");
+            f_ok = false;
+        } else {
+            made = true;
+        }
+        // open O_RDONLY → fd 落 berry-libc fd 表（mmap 预检消费面）。
+        let p = cpath("m/mmpf.bin");
+        // SAFETY: p NUL 结尾路径串；fd 按 libc 契约使用。
+        let ffd = if f_ok {
+            unsafe { open(p.as_ptr() as *const _, O_RDONLY) }
+        } else {
+            -1
+        };
+        if f_ok && ffd < 3 {
+            fails.push("⑥ open 失败");
+            f_ok = false;
+        }
+        if f_ok {
+            let q = unsafe {
+                mmap(
+                    core::ptr::null_mut(),
+                    FWANT,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE,
+                    ffd,
+                    0,
+                )
+            };
+            if q == MAP_FAILED {
+                fails.push("⑥ 文件档首映射失败");
+                f_ok = false;
+            } else {
+                let mut w8 = [0u8; 8];
+                w8.copy_from_slice(&fsrc[0..8]);
+                let g0 = unsafe { core::ptr::read_volatile(q as *const u64) };
+                let gm = unsafe { core::ptr::read_volatile(q.add(150) as *const u8) };
+                let gt = unsafe { core::ptr::read_volatile(q.add(FWANT - 1) as *const u8) };
+                // 尾零区：[4200, 8192) 属 commit 清零面（staging 未触）——
+                // 整段 commit 含尾零页的执法锚。
+                let gz = unsafe { core::ptr::read_volatile(q.add(4352) as *const u64) };
+                if g0.to_le_bytes() != w8 || gm != fsrc[150] || gt != fsrc[FWANT - 1] {
+                    fails.push("⑥ staging 内容对拍失配");
+                }
+                if gz != 0 {
+                    fails.push("⑥ 尾零区非零（整段 commit 破缺）");
+                }
+                // 改写字节 150（落私有 VMO——急切拷贝与源解耦）→ 收口。
+                unsafe { core::ptr::write_volatile(q.add(150) as *mut u8, !fsrc[150]) };
+                if unsafe { munmap(q, 8192) } != 0 {
+                    fails.push("⑥ 文件档收口非 0");
+                }
+                // 私有拷贝证：源逐字节未变（改写不回写）。
+                match get_file("m/mmpf.bin") {
+                    Ok(back) if back.len() == FLEN && back.iter().zip(&fsrc).all(|(a, b)| a == b) => {}
+                    _ => fails.push("⑥ 私有拷贝证失配（源被改写）"),
+                }
+                // 同 fd 复映射 offset=4096 len=300：单 PROT_READ 文件档
+                // 放行 + file_off≠0 + EOF 恰边（4096+300 == 4396）。
+                let q2 = unsafe {
+                    mmap(
+                        core::ptr::null_mut(),
+                        300,
+                        PROT_READ,
+                        MAP_PRIVATE,
+                        ffd,
+                        4096,
+                    )
+                };
+                if q2 == MAP_FAILED {
+                    fails.push("⑥ offset 档复映射失败");
+                } else {
+                    let mut w8b = [0u8; 8];
+                    w8b.copy_from_slice(&fsrc[4096..4104]);
+                    let g0 = unsafe { core::ptr::read_volatile(q2 as *const u64) };
+                    let gt = unsafe { core::ptr::read_volatile(q2.add(299) as *const u8) };
+                    if g0.to_le_bytes() != w8b || gt != fsrc[FLEN - 1] {
+                        fails.push("⑥ offset 档内容对拍失配");
+                    }
+                    if unsafe { munmap(q2, 4096) } != 0 {
+                        fails.push("⑥ offset 档收口非 0");
+                    }
+                }
+            }
+            // ⑦ 文件档拒位四连（classify/预检执法面——逐个独立验 errno）。
+            let r = unsafe {
+                mmap(
+                    core::ptr::null_mut(),
+                    300,
+                    PROT_READ,
+                    MAP_PRIVATE | MAP_SHARED, // v1 无共享档
+                    ffd,
+                    0,
+                )
+            };
+            if r != MAP_FAILED || berry_libc::get_errno() != EINVAL {
+                fails.push("⑦ MAP_SHARED 未拒 EINVAL");
+            }
+            let r = unsafe {
+                mmap(
+                    core::ptr::null_mut(),
+                    300,
+                    PROT_READ,
+                    MAP_PRIVATE,
+                    ffd,
+                    8, // 非页对齐
+                )
+            };
+            if r != MAP_FAILED || berry_libc::get_errno() != EINVAL {
+                fails.push("⑦ offset 非页对齐未拒 EINVAL");
+            }
+            let r = unsafe {
+                mmap(
+                    core::ptr::null_mut(),
+                    4096,
+                    PROT_READ,
+                    MAP_PRIVATE,
+                    ffd,
+                    4096, // 4096+4096 > 4396：超 EOF（原始 length 判）
+                )
+            };
+            if r != MAP_FAILED || berry_libc::get_errno() != EINVAL {
+                fails.push("⑦ 超 EOF 未拒 EINVAL");
+            }
+            let r = unsafe {
+                mmap(
+                    core::ptr::null_mut(),
+                    300,
+                    PROT_WRITE, // 文件档缺 READ
+                    MAP_PRIVATE,
+                    ffd,
+                    0,
+                )
+            };
+            if r != MAP_FAILED || berry_libc::get_errno() != EINVAL {
+                fails.push("⑦ prot 缺 READ 未拒 EINVAL");
+            }
+            if close(ffd) != 0 {
+                fails.push("⑦ 源 fd 收口非 0");
+            }
+        }
+    }
+    // ⑧ fd 面拒位：fd=1（console 段 <3）/ fd=99（fd 表查无）各 EBADF；
+    //    O_WRONLY fd → EACCES（v1 只收恰 O_RDONLY）。O_CREAT 对已存文件
+    //    = 纯 open（put_file 覆写幂等档同款）；零写 close 的 TRUNC(0)
+    //    清空造源无害（内容断言已在 ⑥ 完结）。
+    {
+        let r = unsafe {
+            mmap(
+                core::ptr::null_mut(),
+                4096,
+                PROT_READ,
+                MAP_PRIVATE,
+                1,
+                0,
+            )
+        };
+        if r != MAP_FAILED || berry_libc::get_errno() != EBADF {
+            fails.push("⑧ fd=1 未拒 EBADF");
+        }
+        let r = unsafe {
+            mmap(
+                core::ptr::null_mut(),
+                4096,
+                PROT_READ,
+                MAP_PRIVATE,
+                99,
+                0,
+            )
+        };
+        if r != MAP_FAILED || berry_libc::get_errno() != EBADF {
+            fails.push("⑧ fd=99 未拒 EBADF");
+        }
+        if f_ok {
+            let p = cpath("m/mmpf.bin");
+            // SAFETY: 同上。
+            let wf = unsafe { open(p.as_ptr() as *const _, O_WRONLY | O_CREAT) };
+            if wf < 3 {
+                fails.push("⑧ O_WRONLY open 失败");
+            } else {
+                let r = unsafe {
+                    mmap(
+                        core::ptr::null_mut(),
+                        300,
+                        PROT_READ,
+                        MAP_PRIVATE,
+                        wf,
+                        0,
+                    )
+                };
+                if r != MAP_FAILED || berry_libc::get_errno() != EACCES {
+                    fails.push("⑧ O_WRONLY fd 未拒 EACCES");
+                }
+                if close(wf) != 0 {
+                    fails.push("⑧ O_WRONLY fd 收口非 0");
+                }
+            }
+        }
+    }
+    // ⑨ mprotect dormant 保内容环（匿名档页验五臂机制——与文件档无关的
+    //    纯 dormant 面防耦合）。dormant 期严格不触区间：无翻译读写 =
+    //    EL0 D-abort 假死（验收只走 mprotect/munmap 调用面）。
+    let p9 = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            -1,
+            0,
+        )
+    };
+    if p9 == MAP_FAILED {
+        fails.push("⑨ dormant 环基映射失败");
+    } else {
+        const S9A: u64 = 0x4D4D5039;
+        const S9B: u64 = 0x4D4D5041;
+        unsafe { core::ptr::write_volatile(p9 as *mut u64, S9A) };
+        if unsafe { mprotect(p9, 4096, PROT_NONE) } != 0 {
+            fails.push("⑨ 撤翻译非 0");
+        }
+        if unsafe { mprotect(p9, 4096, PROT_NONE) } != 0 {
+            fails.push("⑨ dormant 幂等非 0");
+        }
+        if unsafe { mprotect(p9, 4096, PROT_READ | PROT_WRITE) } != 0 {
+            fails.push("⑨ 复映复活非 0");
+        }
+        let g = unsafe { core::ptr::read_volatile(p9 as *const u64) };
+        if g.to_le_bytes() != S9A.to_le_bytes() {
+            fails.push("⑨ dormant 往返内容失配（VMO 保内容破缺）");
+        }
+        unsafe { core::ptr::write_volatile(p9 as *mut u64, S9B) };
+        let g2 = unsafe { core::ptr::read_volatile(p9 as *const u64) };
+        if g2.to_le_bytes() != S9B.to_le_bytes() {
+            fails.push("⑨ 复活后写读失配");
+        }
+        if unsafe { munmap(p9, 4096) } != 0 {
+            fails.push("⑨ dormant 条目收口非 0");
+        }
+    }
+    // 还零残留：造源文件 + m 目录出 RAM 树（后续 `ls /`/find 类断言
+    // 相位无关恒真——contains 断言虽不锁全集，零残留不留面）。
+    if made && unlink_of("m/mmpf.bin").is_err() {
+        fails.push("⑥ 造源清理失败");
+    }
+    if made && unlink_of("m").is_err() {
+        fails.push("⑥ m 目录清理失败");
+    }
+
     if !fails.is_empty() {
         eprintln!("bsh: mmp selftest bad: {:?}", fails);
         berry_libc::park();
     }
-    println!("MMP ok n=5");
+    println!("MMP ok n=9");
 }
 
 // —— A7-2：clock 族符号同款 extern 链接期解析（A7-1 mmap 先例）——对
