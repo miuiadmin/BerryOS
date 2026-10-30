@@ -20,10 +20,10 @@
 stage = "v1"
 nr_total = 34        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
-                     # 信号面在册未实现档——A7-4 门 C 裁定 A add-only 加号）
-implemented = 31     # 已实现（T-1 后在册真语义全实现；0x85 berry_attest 预留位 +
-                     # 0x86/0x87 信号面预留位恒 -ENOTSUP——与未知号同形，ABI §8.0
-                     # 永不 panic 执法；A7-4 实现落地时翻 33）
+                     # 信号面——A7-4 门 C 裁定 A add-only 加号）
+implemented = 33     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真；
+                     # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
+                     # ABI §8.0 永不 panic 执法）
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。
@@ -506,12 +506,12 @@ num = 0x86
 name = "signal_send"
 desc = '向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配'
 stage = "v1"
-implemented = false
-note = 'A7-4（门 C 裁定 A add-only 加号，2026-10-30）：在册未实现恒 -ENOTSUP（0x85 attest 同形先例档）——实现落地随 A7-4 段③翻 implemented=true（与 0x87 同刀）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。'
+implemented = true
+note = 'A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。'
 [[group.syscall]]
 num = 0x87
 name = "signal_take"
 desc = '原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）'
 stage = "v1"
-implemented = false
-note = 'A7-4：与 0x86 同刀同翻。投递中新到位置回内核 pending（下轮 take）——竞态免设计。'
+implemented = true
+note = 'A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。'

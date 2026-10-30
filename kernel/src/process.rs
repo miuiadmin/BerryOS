@@ -79,6 +79,12 @@ pub struct Process {
     /// 退出码（v1 面上不可读——get_info 落 v2；fault 杀路径置 0（诚实注释：
     /// 杀因观察面缺位，非语义 0）。
     pub exit_code: i32,
+    /// 待投递信号位图（A7-4 段②，0x86/0x87）：u64 一位一号（信号 n = 位
+    /// n-1，覆盖 1..=64）；`signal_send` 置位（幂等 = POSIX 标准信号合并）、
+    /// `signal_take` 原子取走（swap(0)）。plain u64——单核 IRQ 屏蔽路径专用
+    /// 无原子（同 started/state）；投递执行全在用户态 libc（协同式，A7-4
+    /// §2 方案 B——内核不存 handler 表、不唤醒目标）。
+    pub pending_signals: u64,
 }
 
 impl Process {
@@ -100,6 +106,7 @@ impl Process {
             started: false,
             live_threads: 0,
             exit_code: 0,
+            pending_signals: 0,
         }
     }
 

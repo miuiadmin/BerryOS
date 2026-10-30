@@ -76,8 +76,9 @@ pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_PROCESS_EXIT,
-    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_TERMINATE, NR_THREAD_CREATE,
-    NR_THREAD_EXIT, NR_THREAD_SLEEP, NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
+    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_TERMINATE, NR_SIGNAL_SEND,
+    NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP, NR_THREAD_START,
+    NR_VMAR_ALLOCATE, NR_VMAR_MAP,
     NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
     NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
@@ -1259,6 +1260,76 @@ extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
     0
 }
 
+/// `berry_signal_send(h_process, sig)`（0x86，A7-4 段②）：向进程 pending
+/// 集位置位（幂等 = POSIX 标准信号合并语义）。`h=0` → 当前进程（raise 面，
+/// 零 handle 需求）；`h≠0` 门控 Process **MANAGE**（同 terminate 权利面）。
+/// sig ∉ 1..=64 → -EINVAL；目标非 Alive → -EBADSTATE。**不唤醒目标、不解蔽
+/// IRQ、零分配**（协同式用户态投递——投递点在 libc，A7-4 §2 方案 B；免锁
+/// 根基按构造不撞）。与 terminate 的语义边界：terminate = 异步死亡（收到即
+/// 死）；signal = 可捕获投递（默认动作表在用户态）——两原语并存。
+extern "C" fn sys_signal_send(tf: &mut TrapFrame) -> i64 {
+    let (h, sig) = (tf.regs[1] as u32, tf.regs[2] as u32);
+    if sig == 0 || sig > 64 {
+        return ERR_INVALID_ARG as i64; // POSIX：无 0 号信号；位图界 1..=64
+    }
+    let r: &mut ObjRef = if h == 0 {
+        let p = berry_sched::current_pinned();
+        if p == 0 {
+            return ERR_BAD_STATE as i64; // 当前任务无 Process（内核任务/ktest 期）
+        }
+        // SAFETY: current_pinned = 调用者任务运行钉住的 Process ObjRef 地址；
+        // 单核 IRQ 屏蔽（syscall 主体不可抢占）+ 任务存活 ⇒ 指针有效。
+        unsafe { &mut *(p as *mut ObjRef) }
+    } else {
+        let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+        match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
+            // SAFETY: get_raw 已三门控（在表、类型 Process、权利 MANAGE）。
+            Ok((o, _)) => unsafe { &mut *o.as_ptr() },
+            Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
+        }
+    };
+    // SAFETY: r 借用窗内单核 IRQ 屏蔽；h=0 路指针源本就是 Process 任务。
+    let Some(p) = r.obj.as_process_mut() else {
+        return ERR_BAD_HANDLE as i64; // 不可达防御面（类型刚验过/钉住源）
+    };
+    if p.state != ProcState::Alive {
+        return ERR_BAD_STATE as i64; // 已终止进程不收新信号
+    }
+    p.pending_signals |= 1 << (sig - 1);
+    0
+}
+
+/// `berry_signal_take(*pending_out)`（0x87，A7-4 段②）：取走当前进程
+/// pending 集（swap(0) 语义——取后内核位清零，投递中新到位置回内核
+/// pending 留下轮 take）。`*pending` = u64 出参 **8 字节**（非 handle 出参
+/// 宽度跟 ABI 类型走）；零 handle 面零权利位（「对象几何非内容」惯例）。
+/// 出参写失败不消费（先写后清——单核 IRQ 屏蔽下两步间无并发 send）。
+extern "C" fn sys_signal_take(tf: &mut TrapFrame) -> i64 {
+    let out = tf.regs[1];
+    let p = berry_sched::current_pinned();
+    if p == 0 {
+        return ERR_BAD_STATE as i64; // 无 Process 面（内核任务/ktest 期）零意义
+    }
+    // SAFETY: current_pinned 指针有效（同 send）；借用窗内 IRQ 屏蔽。
+    let v = {
+        let Some(proc) = (unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() }) else {
+            return ERR_BAD_HANDLE as i64; // 不可达防御面（钉住源必为 Process）
+        };
+        proc.pending_signals
+    };
+    match copy_out_u64(caller_is_el1(tf), out, v) {
+        Ok(()) => {
+            // 写成功才清零（失败路径不消费——调用方重试拿到同一集合）。
+            // SAFETY: 同上。
+            if let Some(proc) = unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() } {
+                proc.pending_signals = 0;
+            }
+            0
+        }
+        Err(e) => e as i64,
+    }
+}
+
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
 
 /// `channel_create(options, *out0, *out1)`（4-3c 起 options 首参，Zircon/
@@ -1993,4 +2064,8 @@ pub fn install() {
     reg(NR_CHANNEL_SEND, sys_channel_send);
     reg(NR_CHANNEL_RECV, sys_channel_recv);
     reg(NR_EVENT_CREATE, sys_event_create);
+    // A7-4 段②：信号面两号（0x86/0x87——协同式用户态投递，内核只管跨进程
+    // 位置位与取走；handler 本体见 sys_process_terminate 后）。
+    reg(NR_SIGNAL_SEND, sys_signal_send);
+    reg(NR_SIGNAL_TAKE, sys_signal_take);
 }

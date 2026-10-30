@@ -57,7 +57,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 34 号、已实现 31；
+# ---- syscall 入口（§4 编号表全量在册；v1 34 号、已实现 33；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -193,9 +193,9 @@ telemetry_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 berry_attest(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **信号**（POSIX 兼容——libc 协同式投递，A7-4）
-# 0x86 signal_send（v1·在册未实现）——向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配
-#   note: A7-4（门 C 裁定 A add-only 加号，2026-10-30）：在册未实现恒 -ENOTSUP（0x85 attest 同形先例档）——实现落地随 A7-4 段③翻 implemented=true（与 0x87 同刀）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+# 0x86 signal_send（v1）——向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配
+#   note: A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
 signal_send(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x87 signal_take（v1·在册未实现）——原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）
-#   note: A7-4：与 0x86 同刀同翻。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
+# 0x87 signal_take（v1）——原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）
+#   note: A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
 signal_take(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)

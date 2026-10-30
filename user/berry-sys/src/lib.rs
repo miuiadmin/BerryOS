@@ -439,3 +439,21 @@ pub extern "C" fn berry_event_create(options: u32, out: *mut Handle) -> Status {
 pub extern "C" fn berry_clock_read(clock_id: u32, out: *mut Time) -> Status {
     unsafe { sys(nr::CLOCK_READ, clock_id as usize, out as usize, 0, 0, 0, 0) }
 }
+
+// —— 信号（A7-4 段②，协同式用户态投递——libc `signal.rs` 消费）——
+
+/// 向进程 pending 集位置位（幂等 = POSIX 标准信号合并）。`h=0` → 当前进程
+/// （raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64
+/// （else -EINVAL）；目标非 Alive -EBADSTATE。**不唤醒目标**——投递执行在
+/// 用户态 libc（延迟档，A7-4 §2 方案 B）。
+#[no_mangle]
+pub extern "C" fn berry_signal_send(process: Handle, sig: u32) -> Status {
+    unsafe { sys(nr::SIGNAL_SEND, process as usize, sig as usize, 0, 0, 0, 0) }
+}
+
+/// 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）。`out`
+/// = u64 位图（信号 n = 位 n-1）；出参写失败不消费。零 handle 面。
+#[no_mangle]
+pub extern "C" fn berry_signal_take(pending: *mut u64) -> Status {
+    unsafe { sys(nr::SIGNAL_TAKE, pending as usize, 0, 0, 0, 0, 0) }
+}

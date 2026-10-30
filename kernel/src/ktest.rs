@@ -41,7 +41,8 @@ pub fn run() {
 fn test_syscall() {
     use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
     use crate::syscall::{
-        bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_VMO_CREATE,
+        bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_SIGNAL_SEND,
+        NR_SIGNAL_TAKE, NR_VMO_CREATE,
     };
     use crate::vmo::Vmo;
     use berry_mm::va::PAGE_SIZE;
@@ -60,6 +61,29 @@ fn test_syscall() {
     //    其 -ENOTSUP 成因与未知号相同，「在册未实现」覆盖点不存在；v2 新号
     //    入册时若暂未实现，再立新样本（勿拿已实现号 0x33——会真退出杀 ktest）。
     assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
+
+    // B2. 信号面参数拒面（A7-4 段②，0x86/0x87 参数面样本——成功路径不测：
+    // ktest 期 current 无 Process（0x35 先例），happy path 交 EL0 + smoke 兜底）。
+    //    sig 界检先于一切（0 与 65 同拒 -EINVAL——位图界 1..=64）；
+    //    坏 handle → -EBADF（bootstrap 表 gen 不匹配）；h=0/sig 合法 + take
+    //    → -EBADSTATE（ktest 任务无 Process 面——语义拒非崩）。
+    assert_eq!(svc4(NR_SIGNAL_SEND as u64, 0, 0, 0), -22, "SYSCALL：signal_send sig=0 须 -EINVAL");
+    assert_eq!(svc4(NR_SIGNAL_SEND as u64, 0, 65, 0), -22, "SYSCALL：signal_send sig=65 须 -EINVAL");
+    assert_eq!(
+        svc4(NR_SIGNAL_SEND as u64, 0x9999_0001, 10, 0),
+        -9,
+        "SYSCALL：signal_send 坏 handle 须 -EBADF"
+    );
+    assert_eq!(
+        svc4(NR_SIGNAL_SEND as u64, 0, 10, 0),
+        -37,
+        "SYSCALL：signal_send h=0 ktest 无 Process 须 -EBADSTATE"
+    );
+    assert_eq!(
+        svc4(NR_SIGNAL_TAKE as u64, 0, 0, 0),
+        -37,
+        "SYSCALL：signal_take ktest 无 Process 须 -EBADSTATE"
+    );
 
     // C. clock_read：MONOTONIC 两次读单调递增；非法 id -ENOTSUP。
     // SAFETY: svc 同步异常；OUT 为本函数私有静态。
