@@ -62,6 +62,7 @@ pub mod io;
 pub mod mmap;
 pub mod net;
 pub mod pthread;
+pub mod signal;
 pub mod stubs;
 pub mod strmem;
 pub mod sys;

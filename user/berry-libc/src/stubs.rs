@@ -196,23 +196,9 @@ neg_int!(
     inotify_rm_watch => crate::ENOSYS,
 );
 
-/// sigprocmask（uu_env apply_signal_action/block_signal 的链接面）：
-/// ok! 档不够格——第 3 参 oldset 是出参（不写 = 调用方读栈残留）。
-/// v1 无信号机制：谎报「旧掩码全空」+ 成功（sigaction 族 ok! 桩同口径
-/// ——无竞争面的确定性假值，非零参宏可表达的签名敏感件）。
-#[no_mangle]
-pub extern "C" fn sigprocmask(
-    _how: c_int,
-    _set: *const c_void,
-    oldset: *mut c_void,
-) -> c_int {
-    if !oldset.is_null() {
-        // musl sigset_t = 128B（128 信号位图）：全零 = 空集。
-        // SAFETY: oldset 指向调用方 sigset_t（libc 契约）。
-        unsafe { crate::strmem::memset_volatile(oldset as *mut u8, 0, 128) };
-    }
-    0
-}
+// A7-4 段③a：sigprocmask 真身迁 signal.rs（掩码状态机 + oldset 严出
+// 回写——本桩「谎报旧掩码全空 + 成功」形态退役；uu_env block_signal
+// 链行为升级为真位运算，返回值面不变）。
 
 /// realtime 信号界（uu_env realtime_signal_bounds 的链接面）：musl
 /// 默认 SIGRTMIN=34 / SIGRTMAX=64（Linux glibc 差值是预留动态库槽位，
@@ -303,8 +289,11 @@ neg_ssize!(
     mknod => crate::ENOSYS,
 );
 
-// —— 成功谎报档（无竞争锁族/特权空转/信号安装——v1 无信号机制，
+// —— 成功谎报档（无竞争锁族/特权空转——v1 无信号机制，
 //    栈溢出 = EL0 fault 被杀可接受）——
+// A7-4 段③a：信号族五符号（sigaction/signal/sigaddset/sigemptyset/
+//    sigfillset）迁 signal.rs 真身出册；sigaltstack 留册（栈面无语义
+//    谎报无害）。
 ok!(
     madvise,
     prctl,
@@ -314,13 +303,6 @@ ok!(
     setpgid,
     setenv,
     unsetenv,
-    sigaction,
-    signal,
-    sigaddset,
-    sigemptyset,
-    // C-2a：uu_cp 的 uucore crash 装配被 LTO 内联进 uumain 入口引用；
-    // 零触碰成功与家族同档（set 后续只进 sigaction 桩，无真消费方）。
-    sigfillset,
     sigaltstack,
     pthread_rwlock_rdlock,
     pthread_rwlock_wrlock,

@@ -37,3 +37,8 @@ berry-netdproto = { path = "../berry-netdproto", version = "0.1.0" }
 # 形态：本 crate 的 libc 同名符号在 host 测试二进制里对 libSystem write
 # 符号插入劫自旋，纯面外迁后 host 测试零 libc 符号面）。
 berry-mmap = { path = "../berry-mmap", version = "0.1.0" }
+# A7-4 段③a：POSIX 信号面纯函数底座（sigaction 表 + 掩码状态机 +
+# musl 128B sigset 位图层 + 默认动作表 + 归并式投递分诊计划——
+# docs/事件循环A7-4信号面实施设计草案.md §3.2）。signal.rs 消费；
+# 段③b 投递循环（take|held 归并）与 kill/raise 真身同接此 crate。
+berry-signal = { path = "../berry-signal", version = "0.1.0" }

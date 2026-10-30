@@ -71,6 +71,7 @@ dependencies = [
  "berry-fsclient",
  "berry-mmap",
  "berry-netdproto",
+ "berry-signal",
  "berry-sys",
  "berry-tls",
 ]
