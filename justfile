@@ -26,7 +26,8 @@ default: run
 # echo/talker/thrchild 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes!
 # 内嵌（单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序
 # 4096（2 页映射 [0x1000,0x3000) 里首页装镜像、次页是栈——越页即吃栈）；
-# svcmgr 65536 = UserProcess::build 的 D3 帽；T-1 thrchild 16384（4 页墙
+# svcmgr 131072 = UserProcess::build 的 D3 帽（A7-4 段② 64→128KiB 同步抬
+# ——libc 信号面并入后平像 69.6KB 超 64KiB 旧帽）；T-1 thrchild 16384（4 页墙
 # ——t2 栈 2048B 内嵌 .bss 与代码共页，平像恰 1 页；镜像最大 4 页时 svcmgr
 # 映射窗 [0x1000,0x7000) 的主栈区仍余 2 页）。内核侧产物 kernel/src/userbins/
 # *.bin gitignored：缺产物 = 内核 include_bytes 编译期炸响（loud not
@@ -439,8 +440,8 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-tls --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-mmap --target {{host}}
     # A7-4 §3.2：berry-signal host 测（POSIX 信号面纯函数底座——sigaction
-    # 表/掩码状态机 + held 集/musl 128B sigset 位图层/归并式投递分诊计划
-    # plan_dispatch，host 22 测）。berry-tls/mmap 同款独立纯 crate 形态：
+    # 表/掩码状态机 + held 集/musl 128B sigset 位图层/投递分诊 classify，
+    # host 24 测）。berry-tls/mmap 同款独立纯 crate 形态：
     # berry-libc 的 libc 同名符号在 host 测试二进制里符号插入，纯面外迁
     # 后 host 测试零 libc 面。
     cargo test --manifest-path user/Cargo.toml -p berry-signal --target {{host}}

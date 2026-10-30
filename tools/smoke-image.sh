@@ -17,10 +17,11 @@
 # A7-2 起 +CLK ok n=6——bsh clk_selftest 六步，timer 壁钟分档 + 补桩
 # 五真身首活体，纯 clock syscall + `date -u` spawn 无文件参零 fs 盘面
 # EFI 路同打；
-# A7-4 起 +SIG ok n=5——bsh sig_selftest 五步（⓪raise 即时投递 ①表/掩码
+# A7-4 起 +SIG ok n=6——bsh sig_selftest 六步（⓪raise 即时投递 ①表/掩码
 # 回读 ②blocked 窗 held→unblock 补投 ③kill 分诊 ④sigchild 跨进程
-# SIGTERM→DFL exit(143)），纯用户态信号面 + sigchild 零 gift spawn 零
-# fs 盘面，EFI 路同打）
+# SIGTERM→DFL exit(143) ⑤修复轮回归钉板——嵌套补投恰一次/delivery-
+# time 表变更/包络恢复/无残留双投），纯用户态信号面 + sigchild 零 gift
+# spawn 零 fs 盘面，EFI 路同打）
 # ——非主观子集）：
 #   1. EFI 十段恰一次：skeleton / fw / gop（成功形态 WxH，locate fail 不算）/
 #      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
@@ -30,8 +31,8 @@
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
 #      生态 27 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
-#      EXIT / APP / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT / PS / BC /
-#      THR / MMP / CLK / SIG / FBW / FBSERVE——与
+#      EXIT / APP / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT / POLL /
+#      PS / BC / THR / MMP / CLK / SIG / FBW / FBSERVE——与
 #      smoke.sh rootfs 相断言 canon 同面；无 virtio 面：不挂 virtio-blk/net，
 #      VIRTIO/FAT/NET/DIR/CD 族不在断言面）；
 #   4. kfile/init 字节数与宿主 KERNEL.ELF / rootfs.cpio **精确对拍**（盘
@@ -161,15 +162,17 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # spawn 无文件参）= EFI 路可达，链位置 mmp 后 fat 族前（A 系契约位）；
 # 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLK ok"（大写）
 # 与现役标记互非子串（无 XCLK 形态在册）。
-# A7-4 起 +SIG ok n=5（bsh sig_selftest 五步——信号面真身化验收：⓪raise
+# A7-4 起 +SIG ok n=6（bsh sig_selftest 六步——信号面真身化验收：⓪raise
 # 即时投递 ①表/掩码回读 ②blocked 窗 held→unblock 补投 ③kill 分诊
 # self/ESRCH/EINVAL ④spawn bin/sigchild → berry_signal_send(hp,SIGTERM)
-# → DFL io::exit(143) EOF 先行 → reap 143。实现面 = berry-libc signal.rs
-# ③a+③b 真身 + 内核 0x86/0x87）。零 fs 盘面（纯用户态信号面 + sigchild
-# 零 gift spawn）= EFI 路可达，链位置 clk 后 fat 族前（A 系契约位）；
-# 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"SIG ok"（大写）
-# 与现役标记互非子串（无 XSIG 形态在册）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=9" "CLK ok n=6" "SIG ok n=5" "FBW ok" "FBSERVE ok")
+# → DFL io::exit(143) EOF 先行 → reap 143 ⑤修复轮回归钉板（位号序敏感
+# 三形分诊：Call 位 1 < Hold 位 12 < 表变位 18——嵌套补投恰一次 +
+# delivery-time 表重查 + 包络全量恢复 + 无残留双投）。实现面 = berry-libc
+# signal.rs ③a+③b 真身 + 内核 0x86/0x87）。零 fs 盘面（纯用户态信号面 +
+# sigchild 零 gift spawn）= EFI 路可达，链位置 clk 后 fat 族前（A 系契约
+# 位）；无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"SIG ok"
+# （大写）与现役标记互非子串（无 XSIG 形态在册）。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")

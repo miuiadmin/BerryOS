@@ -47,7 +47,7 @@ use core::ffi::c_int;
 use core::ffi::c_void;
 use core::ptr;
 
-use berry_signal::{plan_dispatch, ActionTable, Act, SigMask, SIGSET_BYTES};
+use berry_signal::{classify, ActionTable, Act, SigMask, SIGSET_BYTES};
 use berry_sys::{berry_signal_send, berry_signal_take};
 
 use crate::set_errno;
@@ -277,6 +277,11 @@ pub extern "C" fn sigaction(
                 if let Err(e) = SIG_ACTIONS.set(sig, v as u64) {
                     return reject(e);
                 }
+                // POSIX：装 SIG_IGN 即丢弃本号全部 pending（含阻塞中的
+                // held 位——「whether blocked or not」，修复轮补）。
+                if v as u64 == berry_signal::SIG_IGN {
+                    discard_pending_on_ign(sig);
+                }
             }
         }
     }
@@ -301,6 +306,11 @@ pub extern "C" fn signal(sig: c_int, handler: usize) -> usize {
         let old = SIG_ACTIONS.get(sig).unwrap_or(berry_signal::SIG_DFL);
         if store {
             let _ = SIG_ACTIONS.set(sig, handler as u64);
+            // POSIX（XSI 扩展到 ISO C signal 面，musl 同义）：装 SIG_IGN
+            // 即丢弃本号全部 pending——与 sigaction 同一口径（修复轮补）。
+            if handler as u64 == berry_signal::SIG_IGN {
+                discard_pending_on_ign(sig);
+            }
         }
         old as usize
     }
@@ -309,7 +319,10 @@ pub extern "C" fn signal(sig: c_int, handler: usize) -> usize {
 // ---- 投递循环 + kill/raise/pause 真身（段③b，A7-4 §3.3）----
 //
 // 内核 0x86/0x87 的用户态消费面：`take_total` 归并（内核 swap(0) 取走
-// | held 清零）→ `plan_dispatch` 分诊 → 执行 steps。协同式延迟档（§3.4
+// | held 清零）→ **逐位 `classify` 按步重查**（每步重读掩码与表——
+// handler 中途改掩码/改表即时生效，POSIX delivery-time 口径；修复轮起
+// 弃「轮首 plan_dispatch 冻结执行」形态——对抗审查 MAJOR finding）。
+// 协同式延迟档（§3.4
 // 偏差清单）：投递点 = read/write/clock_nanosleep/futex wait/pthread_join
 // 返回后的 [`may_dispatch`] + sigprocmask unblock 补投 + raise 即时——
 // compute 紧循环结构性收不到（无内核打断面），handler 只保证
@@ -331,14 +344,63 @@ fn take_total() -> SigMask {
     }) | from_kernel
 }
 
+/// POSIX 钦定（修复轮补，对抗审查 finding）：把某号 disposition 装成
+/// SIG_IGN 即**丢弃该号全部 pending——「whether blocked or not」**
+/// （阻塞中的 held 位一并丢）。musl/Linux 经 rt_sigaction 内核面同义。
+/// 实现：`take_total` 归并取走（held 清零 + 内核 swap(0)）→ 滤掉本号
+/// 位 → 余量回 held → 补投一轮（余量中已 unblock 的位立即处置、仍
+/// block 的位自然 Hold 回落——sigprocmask 收窄补投同纪律）。
+/// 前提：`sig ∈ 1..=64` 且非 KILL/STOP（调用点在 `installable` 放行的
+/// store==true 分支内——IGN 档对其结构性拒，界外不可达）。
+fn discard_pending_on_ign(sig: c_int) {
+    let bit = 1u64 << (sig - 1) as u32;
+    let taken = take_total();
+    let rest = taken & !bit;
+    if rest != 0 {
+        // SAFETY: SIG_HELD 单线程口径直访（头注；take_total 已清零，
+        // 直写余量 = 恢复非本号 pending 的暂存）。
+        unsafe { SIG_HELD = rest };
+        dispatch_pending();
+    }
+}
+
 /// 投递循环真身（段③b）。返回本轮 handler 投递数（[`pause`] 的纪元
 /// 检测面；Terminate 档在此直接 exit 不返）。
 ///
+/// **两遍走：取走即分诊（Hold 即刻落 held）+ 工作集按步重查**（修复轮
+/// 二式，对抗审查两件）：原「轮首 plan_dispatch 冻结执行」把 handler
+/// 中途的表变更挡在轮外（MAJOR）；修复轮首版的「全惰性落 held」又让
+/// 「已被 take 走、尚未处置」的阻塞位悬在局部变量里**两头不见**——内核
+/// 已 swap 空、held 未落位，handler 内 `sigprocmask(UNBLOCK)` 的嵌套
+/// 补投 `take_total` 归并到空集，包络恢复再把 unblock 一并抹掉 = 位
+/// 永久滞留 held（位号序敏感：仅「Hold 位号 > Call 位号」触发——修复
+/// 轮对抗审查实抓回归）。
+/// - 第一遍（可见性）：take 到的位按当下掩码/表逐位 [`classify`]——
+///   Hold 位**即刻持久化进 `SIG_HELD`**，其余进本轮工作集（本遍
+///   Call/Drop 分诊不携带，第二遍重查）。冻结 plan 时代「HELD 先持久化
+///   再执行」的嵌套可见性性质由此保留。
+/// - 第二遍（delivery-time）：工作集升序逐位 [`classify`] **每步重读**
+///   `SIG_MASK`/`SIG_ACTIONS`——handler 内装的新 handler 同轮后续位即时
+///   生效（表变更不回滚）；掩码变更只对**嵌套投递**生效——handler 返回
+///   后全量快照恢复（下款），后续位按恢复后掩码分诊（Linux 同形：handler
+///   block 某后续位，返回后该位照投——修复轮对抗审查勘正「掩码即时
+///   生效」的过头注）。
+///
+/// **Call 包络 = 全量快照恢复**（修复轮，sigreturn 真口径）：进入
+/// handler 前 `saved_mask = SIG_MASK`、执行期 `SIG_MASK |= 本号位`
+/// （SA_NODEFER-off 自动 block 本号——同号递归投递挡进 held 集），
+/// 返回后 `SIG_MASK = saved_mask` **全量恢复**——handler 内经
+/// sigprocmask 的掩码改动不越 handler 存活（Linux sigreturn 同形；
+/// 原「只摘包络位」差量保留档连同其「POSIX 同口径」错注一并翻正）。
+///
 /// 每轮 fresh [`take_total`]——不携带跨轮 total：handler 内再 raise 的
-/// 信号进内核 pending 由下一轮取走；同号递归投递被 handler 包络位挡成
-/// Hold（POSIX「handler 执行期自动 block 本号」SA_NODEFER-off 的最接近
-/// 语义）。全 Hold 轮零进展即返——held 已持久化，无新 take 不会再有
-/// 进展（progressed 防死循环）。
+/// 信号进内核 pending，由嵌套 dispatch（sigprocmask 补投/raise 即时）
+/// 或下一轮取走。**每实例至多投一次**：嵌套投的实例来自嵌套自己的
+/// take，本轮位对应本轮已 take 的实例，一一对应；**已知偏差**（冻结
+/// plan 时代既有，§3.4 偏差清单补记）：handler 执行期对同号的新 raise
+/// 与外层快照原实例各投一次——POSIX 2.4.1 待决实例合并不跨嵌套窗口
+/// 成立（Linux 内核 pending 位语义合而为一）。全 Hold 轮零进展即返
+/// ——held 已持久化，无新 take 不会再有进展（progressed 防死循环）。
 pub fn dispatch_pending() -> u32 {
     let mut delivered: u32 = 0;
     loop {
@@ -346,26 +408,50 @@ pub fn dispatch_pending() -> u32 {
         if total == 0 {
             return delivered;
         }
-        // SAFETY: SIG_MASK/SIG_ACTIONS 单线程口径直访；Plan 是 Copy，
-        // 引用在 plan_dispatch 返回即止（steps 后续按值执行——handler
-        // 内再装表无别名面）。
-        let plan = unsafe { plan_dispatch(total, SIG_MASK, &SIG_ACTIONS) };
-        // held 位**先持久化再执行 steps**：handler 内经 sigprocmask 触发
-        // 的嵌套 dispatch 看到的 held 恒完整（后写 = 砸掉嵌套轮回写的
-        // held 位——丢失暂存信号）。
-        // SAFETY: 同上。
-        unsafe { SIG_HELD |= plan.new_held };
+        // 第一遍（可见性，头注）：Hold 位即刻持久化进 held——嵌套投递
+        // （handler 内 UNBLOCK 补投）take_total 归并 held 才能取到「已
+        // take 未处置」的阻塞位；其余进工作集（第二遍重查，本遍分诊
+        // 结果不携带）。
+        let mut work: SigMask = 0;
+        let mut bits = total;
+        while bits != 0 {
+            // 位号+1 ∈ 1..=64（total 非 0 保证 trailing_zeros ≤ 63——
+            // classify 的 sig 界前置条件按构造成立，不再付费复检）。
+            let sig = (bits.trailing_zeros() + 1) as i32;
+            bits &= bits - 1;
+            // SAFETY: SIG_MASK/SIG_ACTIONS/SIG_HELD 单线程口径直访（头注）。
+            if let Act::Hold = unsafe { classify(sig, SIG_MASK, &SIG_ACTIONS) } {
+                unsafe { SIG_HELD |= 1u64 << (sig - 1) as u32 };
+            } else {
+                work |= 1u64 << (sig - 1) as u32;
+            }
+        }
+        // 第二遍（delivery-time，头注）：工作集升序逐位重查。
         let mut progressed = false;
-        for i in 0..plan.n {
-            let (sig, act) = plan.steps[i];
+        let mut bits = work;
+        while bits != 0 {
+            let sig = (bits.trailing_zeros() + 1) as i32;
+            bits &= bits - 1;
+            // 按步重查：每步重读掩码与表（头注——表变更即时生效、掩码
+            // 变更经包络恢复只对嵌套面生效）。
+            // SAFETY: 同第一遍。
+            let act = unsafe { classify(sig, SIG_MASK, &SIG_ACTIONS) };
             match act {
-                Act::Hold => {} // 已持久化
-                Act::Drop => progressed = true, // 消费即进展
+                // handler 内 block 的后续位（mid-round Call→Hold 转移）：
+                // 转落 held，unblock 后补投（第一遍之外的唯一 Hold 来源）。
+                Act::Hold => {
+                    // SAFETY: 同上。
+                    unsafe { SIG_HELD |= 1u64 << (sig - 1) as u32 };
+                }
+                // IGN/DFL-Drop：消费即进展（POSIX ignored 信号不唤醒
+                // pause 的语义面）。
+                Act::Drop => progressed = true,
                 Act::Call(f) => {
                     let bit = 1u64 << (sig - 1) as u32;
-                    // SAFETY: 包络位写读（单线程口径）。
-                    let was_blocked = unsafe { SIG_MASK & bit != 0 };
-                    unsafe { SIG_MASK |= bit };
+                    // Call 包络 = 全量快照恢复（sigreturn 真口径，头注）。
+                    // SAFETY: 包络写读（单线程口径）。
+                    let saved_mask = unsafe { SIG_MASK };
+                    unsafe { SIG_MASK = saved_mask | bit };
                     // SAFETY: 表槽值 ≥2 = fn 地址（三值编码契约，
                     // berry-signal ActionTable 头注）。
                     let handler: extern "C" fn(c_int) =
@@ -374,13 +460,10 @@ pub fn dispatch_pending() -> u32 {
                     let saved_errno = crate::get_errno();
                     handler(sig);
                     crate::set_errno(saved_errno);
-                    // 只摘包络位——handler 内 sigprocmask 的其它改动
-                    // 保留（POSIX sigreturn 同口径：恢复的是进入 handler
-                    // 时的掩码差量，非全量快照）。
+                    // 全量恢复：handler 内 sigprocmask 改动不越 handler
+                    // 存活（Linux sigreturn 同形；修复轮翻正差量保留档）。
                     // SAFETY: 同上。
-                    if !was_blocked {
-                        unsafe { SIG_MASK &= !bit };
-                    }
+                    unsafe { SIG_MASK = saved_mask };
                     // SAFETY: 单调计数器（pause 纪元面）。
                     unsafe { SIG_DELIVERED += 1 };
                     delivered += 1;
@@ -388,7 +471,18 @@ pub fn dispatch_pending() -> u32 {
                 }
                 // DFL 终止档：`io::exit` = EOF 先行 + 0x33 真路径（Plan B
                 // v0.5 契约；128+sig = shell `$?` 惯例码）。
-                Act::Terminate => crate::io::exit(128 + sig),
+                // SIGABRT 特例（A7-4 §3.2 abort 口径，修复轮补）：默认
+                // 终止档同样汇入「console 诊断 + EOF + exit(134)」终止
+                // 路径——`io::exit` 已 EOF 先行，此处只补 console 诊断
+                // （对抗审查 finding：原直接 exit 无 `abort\n`——d-1c
+                // 「bare abort 静默死」排障锚丢失，io.rs abort 尾兜只
+                // 罩 Call-返回档）。
+                Act::Terminate => {
+                    if sig == SIGABRT {
+                        crate::io::console_write(b"abort\n");
+                    }
+                    crate::io::exit(128 + sig)
+                }
             }
         }
         if !progressed {
@@ -420,6 +514,18 @@ pub extern "C" fn raise(sig: c_int) -> c_int {
     }
     dispatch_pending();
     0
+}
+
+/// abort 专属解锁（A7-4 §3.2，修复轮补——对抗审查 finding）：POSIX/C11
+/// 钦定 abort 须**先解除 SIGABRT 阻塞**再 raise——原形态下 block 态的
+/// raise 只落 held 集、handler 结构性永不执行（musl `__libc_sigaction`
+/// 前的 `__restore` 同义处理）。只清掩码存储位；旧 pending（held 位 +
+/// 内核位）由随后的 raise→`dispatch_pending` 经 [`take_total`] 归并
+/// 一并送达（合并语义 = 至多投一次，POSIX 标准信号口径）。
+pub fn abort_unblock_sigabrt() {
+    let bit = 1u64 << (SIGABRT - 1) as u32;
+    // SAFETY: SIG_MASK 单线程口径直访（头注）。
+    unsafe { SIG_MASK &= !bit };
 }
 
 /// kill 真身（段③b）：v1 仅自杀档（pid == getpid() 定值锚 42）。

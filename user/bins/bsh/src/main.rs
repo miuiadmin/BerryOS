@@ -302,12 +302,14 @@ fn main() {
     //    无文件参），排 mmp 后 fat 族前（EFI 路无盘亦打 CLK）；无拓扑
     //    降级门（失败即 park loud）。
     clk_selftest();
-    // —— A7-4 段④：信号面 guest 自验（`SIG ok n=5` = rootfs 相第 45 标记，
+    // —— A7-4 段④：信号面 guest 自验（`SIG ok n=6` = rootfs 相第 45 标记，
     //    `docs/事件循环A7-4信号面实施设计草案.md` §5）——libc signal.rs 真身
     //    （sigaction/sigprocmask 表面 + 协同式投递循环 kill/raise/pause）+
-    //    内核 0x86/0x87 跨进程位面的五步链（⓪raise 即时投递 ①表/掩码回读
+    //    内核 0x86/0x87 跨进程位面的六步链（⓪raise 即时投递 ①表/掩码回读
     //    ②blocked 窗 held→unblock 补投 ③kill 分诊 self/ESRCH/EINVAL
-    //    ④spawn bin/sigchild 跨进程 SIGTERM→DFL exit(143) EOF 先行）。
+    //    ④spawn bin/sigchild 跨进程 SIGTERM→DFL exit(143) EOF 先行
+    //    ⑤修复轮回归钉板——嵌套补投恰一次/delivery-time 表变更/包络
+    //    恢复/无残留双投）。
     //    链序契约同 U2/MMP/CLK——零 fs 盘面（纯用户态信号面 + sigchild 零
     //    gift spawn），排 fat 族前（EFI 路无盘亦打 SIG）；无拓扑降级门
     //    （失败即 park loud）。
@@ -1045,7 +1047,7 @@ fn evs_selftest() {
                 };
                 // data-wait：WRITABLE + rbytes>0 才是活连接；尸槽释槽重入。
                 let dat_dl = now() + 30_000_000_000;
-                'dat: loop {
+                loop {
                     match netd_rpc(netd, ndp::TcpSReq::Poll, d, 10_000_000_000)
                         .and_then(|b| ndp::parse_poll_reply(&b))
                     {
@@ -2617,7 +2619,7 @@ fn clk_selftest() {
     println!("CLK ok n=6");
 }
 
-/// A7-4 段④：信号面 guest 自验（`SIG ok n=5`，调用点头注——五步）：
+/// A7-4 段④：信号面 guest 自验（`SIG ok n=6`，调用点头注——六步）：
 /// ⓪ sigaction 装 SIGUSR1 handler + raise → 计数恰 1（raise 尾同步
 /// dispatch，不赌调度相位）；① 表回读（sigaction null 查询 == handler）
 /// + sigprocmask BLOCK/查询双向（oldset 不含 → 含 SIGUSR2）；② blocked 窗
@@ -2628,7 +2630,13 @@ fn clk_selftest() {
 /// self 档——跨进程直调 berry-sys 0x86 面）→ 子睡循环醒来投递 → DFL
 /// Terminate → `io::exit(143)` **EOF 先行**（与 INT 案内核杀 no-EOF 恰成
 /// 对照面——collect 预期 eof=true/killed=false）→ wait TERMINATED +
-/// reap 真码 143。
+/// reap 真码 143；⑤ 修复轮回归钉板（位号序敏感三形分诊，对抗审查
+/// mini-review S1/S3）：BLOCK{USR2} 后 raise 落 held + `berry_signal_
+/// send(0, SIGCONT)` 内核置位**零投递** + raise(SIGHUP)——h3 内换 18
+/// 的 handler（h4→h4b）+ UNBLOCK{USR2}，断言五件：嵌套补投恰一次
+/// （「Hold 即刻落 held」可见性主钉板）/ delivery-time 表变更（冻结
+/// plan 形态跑旧表 h4）/ 掩码包络全量恢复含 SIGUSR2 / 收尾 UNBLOCK
+/// 计数不涨（冻结 plan 外层 Hold 步重落 held = 残留双投）。
 ///
 /// 信号面经 bsh 本地 extern 声明链接期解析 berry-libc `#[no_mangle]` 真身
 /// （clk ClkTs/mmp mmap 同款先例——extern 块签名与 libc crate
@@ -2640,6 +2648,8 @@ fn sig_selftest() {
     const SIGUSR1: i32 = 10;
     const SIGUSR2: i32 = 12;
     const SIGTERM: i32 = 15;
+    const SIGHUP: i32 = 1; // ⑤ 位号序钉板用（Call 位 1 < Hold 位 12 < 表变位 18）
+    const SIGCONT: i32 = 18;
     const SIG_BLOCK: i32 = 0; // 掩码三 how（kernel asm-generic 与 libc 同值）
     const SIG_UNBLOCK: i32 = 1;
 
@@ -2671,9 +2681,42 @@ fn sig_selftest() {
     extern "C" fn h2(_sig: i32) {
         CNT2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+    static CNT3: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static CNT4: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static CNT4B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    extern "C" fn h4(_sig: i32) {
+        CNT4.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    extern "C" fn h4b(_sig: i32) {
+        CNT4B.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// ⑤ 的嵌套司机：投递中途换 18 的 handler（h4→h4b）+ 解封
+    /// SIGUSR2——两动作都在 handler 内完成才构成「中途表/掩码变更」。
+    /// 换表在前：UNBLOCK 触发的嵌套补投只见 held 里的 12（18 早已被
+    /// 外层轮首 take 进工作集），新表由外层 delivery-time 重查消费。
+    extern "C" fn h3(_sig: i32) {
+        CNT3.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut ab = SigAct {
+            sa_sigaction: h4b as *const () as usize,
+            sa_mask: [0; 128],
+            sa_flags: 0,
+            sa_restorer: 0,
+        };
+        let mut s = [0u8; 128];
+        unsafe {
+            sigemptyset(ab.sa_mask.as_mut_ptr());
+            sigemptyset(s.as_mut_ptr());
+            sigaddset(s.as_mut_ptr(), SIGUSR2);
+            sigaction(SIGCONT, &ab, core::ptr::null_mut());
+            sigprocmask(SIG_UNBLOCK, s.as_ptr(), core::ptr::null_mut());
+        }
+    }
 
     let c1 = || CNT1.load(std::sync::atomic::Ordering::Relaxed);
     let c2 = || CNT2.load(std::sync::atomic::Ordering::Relaxed);
+    let c3 = || CNT3.load(std::sync::atomic::Ordering::Relaxed);
+    let c4 = || CNT4.load(std::sync::atomic::Ordering::Relaxed);
+    let c4b = || CNT4B.load(std::sync::atomic::Ordering::Relaxed);
     let mut fails: Vec<&str> = Vec::new();
 
     // ⓪ 装 SIGUSR1 handler + raise 即时投递：计数恰 1（handler 包络位
@@ -2805,11 +2848,62 @@ fn sig_selftest() {
         berry_libc::park();
     }
 
+    // ⑤ 修复轮回归钉板（位号序敏感：Call 位 SIGHUP=1 < Hold 位
+    //    SIGUSR2=12 < 表变位 SIGCONT=18）：USR2 blocked-held（raise 落
+    //    held）+ 18 经 berry_signal_send(0,·) 内核置位**零投递**（跨
+    //    进程面走 0x86——raise 会自带 dispatch 拿不走「未投递挂起」形
+    //    态）→ raise(SIGHUP) 一轮收三路位。h3 内换表 + 解封。五断言：
+    let base2 = c2();
+    let mut act3 = SigAct {
+        sa_sigaction: h3 as *const () as usize,
+        sa_mask: [0; 128],
+        sa_flags: 0,
+        sa_restorer: 0,
+    };
+    unsafe { sigemptyset(act3.sa_mask.as_mut_ptr()) };
+    let mut act4 = SigAct {
+        sa_sigaction: h4 as *const () as usize,
+        sa_mask: [0; 128],
+        sa_flags: 0,
+        sa_restorer: 0,
+    };
+    unsafe { sigemptyset(act4.sa_mask.as_mut_ptr()) };
+    if unsafe { sigprocmask(SIG_BLOCK, set2.as_ptr(), core::ptr::null_mut()) } != 0
+        || unsafe { raise(SIGUSR2) } != 0
+        || c2() != base2
+    {
+        fails.push("⑤ 前置 blocked 窗 raise 计数漂移");
+    }
+    if unsafe { sigaction(SIGHUP, &act3, core::ptr::null_mut()) } != 0
+        || unsafe { sigaction(SIGCONT, &act4, core::ptr::null_mut()) } != 0
+        || berry_signal_send(0, SIGCONT as u32) != 0
+    {
+        fails.push("⑤ 装 h3/h4/signal_send 非 0");
+    }
+    if unsafe { raise(SIGHUP) } != 0 || c3() != 1 {
+        fails.push("⑤ raise(SIGHUP) 嵌套入口 != 1");
+    }
+    if c2() != base2 + 1 {
+        fails.push("⑤ 嵌套补投计数 != base+1（Hold 即刻落 held 可见性破缺）");
+    }
+    if c4b() != 1 || c4() != 0 {
+        fails.push("⑤ 表变位投递非 h4b 恰一次（delivery-time 表重查破缺）");
+    }
+    if unsafe { sigprocmask(SIG_BLOCK, core::ptr::null(), oldset.as_mut_ptr()) } != 0
+        || unsafe { sigismember(oldset.as_ptr(), SIGUSR2) } != 1
+    {
+        fails.push("⑤ 包络恢复掩码缺 SIGUSR2");
+    }
+    if unsafe { sigprocmask(SIG_UNBLOCK, set2.as_ptr(), core::ptr::null_mut()) } != 0 || c2() != base2 + 1
+    {
+        fails.push("⑤ 收尾 UNBLOCK 残留双投");
+    }
+
     if !fails.is_empty() {
         eprintln!("bsh: sig selftest bad: {:?}", fails);
         berry_libc::park();
     }
-    println!("SIG ok n=5");
+    println!("SIG ok n=6");
 }
 
 /// `&&` 自验（P5 v0，确定性状态谓词——无串口噪声：三步全在变量表/状态码

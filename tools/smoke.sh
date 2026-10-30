@@ -49,7 +49,7 @@
 #      APP ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
 #      EVS ok n=2/SKT ok n=3/EPL ok n=8/NETS ok n=2/MMP ok n=9/CLK ok n=6/
-#      SIG ok n=5/PS ok n=/BC ok/
+#      SIG ok n=6/PS ok n=/BC ok/
 #      M3DEMO ok n=5/THR ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
 #      服务/TCP 服务端监听面（A2-2 段③ hostfwd 环回自连自验）/.bap 应用拉起
@@ -788,12 +788,17 @@ QEMU_PID=$!
 # 无盘亦打）；无拓扑降级门，失败即 park loud。"CLK ok" 与现役标记两两互
 # 非子串（无 `XCLK ok` 形态在册——前邻特例不需要）。设计稿「五步/n=5」
 # 系 ⑤ 增补后计数未同步勘误，实现定案六步 n=6。
-# A7-4（信号面真身化）：+ SIG ok n=5——bsh sig_selftest 五步（⓪sigaction
+# A7-4（信号面真身化）：+ SIG ok n=6——bsh sig_selftest 六步（⓪sigaction
 # 装 SIGUSR1 + raise 即时投递计数 1 ①表回读==handler + sigprocmask
 # BLOCK/查询双向 ②blocked 窗 raise held→UNBLOCK 补投计数 1（③b 归并式
 # 分诊核心环）③kill 分诊三连 self≡raise/ESRCH/EINVAL ④spawn bin/sigchild
 # → berry_signal_send(hp,SIGTERM) → DFL io::exit(143) EOF 先行（INT 案
-# 内核杀 no-EOF 的对照面）→ reap 真码 143）全过才打——rootfs 相第 45
+# 内核杀 no-EOF 的对照面）→ reap 真码 143 ⑤修复轮回归钉板（位号序敏感
+# 三形分诊：Call 位 SIGHUP=1 < Hold 位 SIGUSR2=12 < 表变位 SIGCONT=18
+# ——h3 内换表+解封：嵌套补投恰一次 =「Hold 即刻落 held」可见性主钉板
+# + delivery-time 表重查（冻结 plan 形态跑旧表 h4）+ 包络全量恢复掩码
+# + 收尾 UNBLOCK 无残留双投（冻结 plan 外层 Hold 步重落 held））全过才打
+# ——rootfs 相第 45
 # 标记，**A7-4 段④验收线**。实现面 = berry-libc signal.rs ③a+③b 真身
 # （sigset/sigaction/sigprocmask 表面 + 投递循环 kill/raise/pause）+ 内核
 # 0x86/0x87 跨进程位面；信号面经 bsh 本地 extern 声明链 berry-libc
@@ -802,7 +807,7 @@ QEMU_PID=$!
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=5" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \

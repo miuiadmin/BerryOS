@@ -7,9 +7,15 @@
 //! sigaction table, a signal-mask state machine
 //! (`block`/`unblock`/`setmask`), a musl-compatible 128-byte
 //! `sigset_t` bit-map layer, a default-disposition table, and a
-//! **dispatch planner** that turns `(pending, mask, actions)` into an
-//! ordered side-effect-free step list — the consumer
-//! (berry-libc `signal.rs`) only executes the steps. Delivery is
+//! per-signal **delivery classifier** ([`classify`], batched as
+//! [`plan_dispatch`]) that maps `(sig, mask, actions)` to a
+//! side-effect-free action — the consumer (berry-libc `signal.rs`)
+//! re-classifies each pending signal **at execution time** so that
+//! disposition changes made inside a handler take effect for later
+//! steps of the same round (POSIX delivery-time semantics; mask
+//! changes take effect for **nested** delivery — the libc Call
+//! envelope restores the pre-handler mask on return, sigreturn
+//! semantics). Delivery is
 //! cooperative: the kernel merely sets a pending bit
 //! (`signal_send`, ABI 0x86) and userland drains it
 //! (`signal_take`, ABI 0x87) — see
@@ -30,12 +36,16 @@
 //!
 //! ### 归并式分诊（POSIX block 窗合并语义按构造成立）
 //!
-//! libc 投递循环形态：`total = take() | held_swap(0)` →
-//! [`plan_dispatch(total, mask, actions)`] → 执行 steps（Hold 位
-//! 回写 held、Call 就地调 handler、Terminate `exit(128+sig)`）。
-//! 同号信号跨「内核 pending」与「held 集」按位或归并——标准信号
-//! 在 block 窗内多次到达只投一次（POSIX 2.4.1 合并语义），无需
-//! 计数。`unblock` 后 libc 再跑一轮 dispatch 即自动补投 held 位。
+//! libc 投递循环形态：`total = take() | held_swap(0)` → 两遍走（③b
+//! 修复轮二式：Hold 位**即刻落 held**保嵌套可见性——handler 内
+//! UNBLOCK 补投从 held 取到「已 take 未处置」的阻塞位；工作集**逐位
+//! [`classify`] 按步重查**——改表即时生效、掩码变更只对嵌套投递生效
+//! （Call 包络返回时全量恢复，sigreturn 口径）；弃「轮首
+//! `plan_dispatch` 冻结执行」形态——对抗审查 MAJOR）→ 执行（Call
+//! 就地调 handler、Terminate `exit(128+sig)`）。同号信号跨「内核
+//! pending」与「held 集」按位或归并——标准信号在 block 窗内多次
+//! 到达只投一次（POSIX 2.4.1 合并语义），无需计数。`unblock` 后
+//! libc 再跑一轮 dispatch 即自动补投 held 位。
 //!
 //! ### 掩码与内核同宽（u64）
 //!
@@ -58,7 +68,7 @@
 //! 可观察语义，A7-4 草案 §3.4 偏差清单在册）。SIGKILL/SIGSTOP
 //! 不可捕获不可忽略（[`capturable`] 拒 EINVAL——纯查询/装 DFL 档
 //! 由 [`installable`] 放行）、**不可阻塞**——单一执法点 =
-//! [`plan_dispatch`] 投递期豁免（对其无视掩码直落表查，`kill -9`
+//! [`classify`] 投递期豁免（对其无视掩码直落表查，`kill -9`
 //! 全掩码下仍必杀）；掩码**存储位**允许含 KILL/STOP（Linux
 //! `sig_kernel_only` 同形——sigprocmask 回读可见、投递期绕过）。
 //! POSIX 钦定三元组。
@@ -335,10 +345,43 @@ pub struct Plan {
     pub new_held: SigMask,
 }
 
+/// 单信号投递裁定（[`plan_dispatch`] 的逐位单源）：掩码内（KILL/STOP
+/// 不可阻塞豁免除外——POSIX：SIGKILL/SIGSTOP **不可阻塞**钦定三元组
+/// 第三元，掩码位对其无效直落表查；KILL/STOP 槽恒 DFL → Terminate，
+/// `kill -9` 全掩码下仍必杀——头注「恒走默认表」的执法点）→
+/// [`Act::Hold`]；否则表槽三值分诊：SIG_DFL 查 [`default_action`]（忽略
+/// 类 Drop / 其余 Terminate）、SIG_IGN → Drop、handler 值 → Call。
+/// 前提：`sig ∈ 1..=64`（调用方按位号构造——libc 投递循环
+/// `trailing_zeros()+1`、plan_dispatch 升序遍历，界外号结构性不可达，
+/// 不再付费界检）。
+///
+/// libc 消费面（A7-4 ③b 修复轮）：投递循环**按步重查**——每执行一步前
+/// 重读当前掩码与表再裁定：handler 中途改表 → 按新表裁定（POSIX
+/// delivery-time disposition，表变更不回滚）；handler 中途 block 后续
+/// 位 → 该步变 Hold（处置顺延）。**掩码变更只对嵌套投递即时生效**：
+/// handler 返回后 libc 包络全量恢复投递前掩码（sigreturn 口径），后续
+/// 位按恢复后掩码分诊（Linux 同形）。轮首冻结 plan 执行的旧形态不
+/// 感知中途改动——已修（对抗审查 MAJOR）。
+pub fn classify(sig: i32, mask: SigMask, actions: &ActionTable) -> Act {
+    let bit = 1u64 << (sig - 1) as u32;
+    if mask & bit != 0 && sig != SIGKILL && sig != SIGSTOP {
+        return Act::Hold;
+    }
+    match actions.slots[sig as usize] {
+        SIG_DFL => match default_action(sig) {
+            Ok(DefaultAction::Drop) => Act::Drop,
+            _ => Act::Terminate,
+        },
+        SIG_IGN => Act::Drop,
+        handler => Act::Call(handler),
+    }
+}
+
 /// 归并式分诊：`total`（= `take() | held_swap(0)`，libc 侧归并后的
 /// 待处置全集）× 当前掩码 × handler 表 → 升序计划。纯函数零副作用
 /// ——libc 侧只执行：Hold 位落 held、Call 就地调（errno
-/// save/restore 由调用方包络）、Terminate `exit(128+sig)`。
+/// save/restore 由调用方包络）、Terminate `exit(128+sig)`。逐位裁定
+/// 收敛 [`classify`]（单源——两者漂移由 host 对拍测试钉死）。
 pub fn plan_dispatch(total: u64, mask: SigMask, actions: &ActionTable) -> Plan {
     let mut steps = [(0i32, Act::Drop); SIG_MAX as usize];
     let mut n = 0usize;
@@ -348,21 +391,7 @@ pub fn plan_dispatch(total: u64, mask: SigMask, actions: &ActionTable) -> Plan {
         if total & bit == 0 {
             continue;
         }
-        // POSIX：SIGKILL/SIGSTOP **不可阻塞**（钦定三元组第三元）——
-        // 掩码位对其无效，直落表查（KILL/STOP 槽恒 DFL → Terminate；
-        // kill -9 全掩码下仍必杀——头注「恒走默认表」的执法点）。
-        let act = if mask & bit != 0 && sig != SIGKILL && sig != SIGSTOP {
-            Act::Hold
-        } else {
-            match actions.slots[sig as usize] {
-                SIG_DFL => match default_action(sig) {
-                    Ok(DefaultAction::Drop) => Act::Drop,
-                    _ => Act::Terminate,
-                },
-                SIG_IGN => Act::Drop,
-                handler => Act::Call(handler),
-            }
-        };
+        let act = classify(sig, mask, actions);
         if matches!(act, Act::Hold) {
             new_held |= bit;
         }
@@ -662,6 +691,48 @@ mod tests {
         let p = plan_dispatch(mask, !0, &t); // 全掩码
         assert_eq!(acts(&p), vec![(9, Act::Terminate), (19, Act::Terminate)]);
         assert_eq!(p.new_held, 0);
+    }
+
+    // classify（A7-4 修复轮单源抽面）----
+
+    #[test]
+    fn classify_matches_plan_dispatch_per_bit() {
+        // 单源对拍：plan_dispatch 每一位的裁定 ≡ classify(sig, ..) 逐位
+        // 重查——libc 投递循环「按步重查」与整轮计划同语义的执法面
+        //（两函数漂移即红；classify 为 plan_dispatch 内联逻辑原样成
+        // 函数，本测试是防未来分叉的钉板）。
+        let mut t = ActionTable::new();
+        t.set(1, 0x1000).unwrap();
+        t.set(10, 0x400090).unwrap();
+        t.set(13, SIG_IGN).unwrap();
+        t.set(64, SIG_IGN).unwrap();
+        for mask in [0u64, !0u64, 0xAAAA_AAAA_AAAA_AAAA, 0x0F0F_0F0F_0F0F_0F0F] {
+            for total in [0u64, !0u64, (1 << 9) | (1 << 14) | (1 << 16), 0x8000_0000_0000_0001] {
+                for (sig, act) in acts(&plan_dispatch(total, mask, &t)) {
+                    assert_eq!(
+                        classify(sig, mask, &t),
+                        act,
+                        "sig={} mask={:x} total={:x}",
+                        sig,
+                        mask,
+                        total
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn classify_kill_stop_bypass_and_hold_boundary() {
+        let t = ActionTable::new();
+        // KILL/STOP 掩码豁免直落表查（槽恒 DFL → Terminate——与
+        // plan_kill_stop_not_blockable 同语义的 classify 面）。
+        assert_eq!(classify(9, 1 << 8, &t), Act::Terminate);
+        assert_eq!(classify(19, 1 << 18, &t), Act::Terminate);
+        // 常规号：掩码内 → Hold；掩码外 DFL 终止 / 默认忽略类 Drop。
+        assert_eq!(classify(15, 1 << 14, &t), Act::Hold);
+        assert_eq!(classify(15, 0, &t), Act::Terminate);
+        assert_eq!(classify(17, 0, &t), Act::Drop); // SIGCHLD 默认忽略
     }
 
     // kill 面 ----

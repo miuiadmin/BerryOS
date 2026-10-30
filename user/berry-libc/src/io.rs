@@ -362,6 +362,12 @@ fn write_inner(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
 
 #[no_mangle]
 pub extern "C" fn writev(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
+    let r = writev_inner(fd, iov, cnt);
+    crate::signal::may_dispatch(); // A7-4 ③b：公共入口投递点（§3.3，修复轮补）
+    r
+}
+
+fn writev_inner(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
     // 别名先翻译（同 write——console 克隆共底 fd）。
     let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
@@ -656,8 +662,12 @@ pub extern "C" fn _exit(code: c_int) -> ! {
 pub extern "C" fn abort() -> ! {
     // A7-4 ③b：abort 语义 = raise(SIGABRT)——被 catch 则进 handler，
     // handler 返回后仍终止（musl 口径：abort 流程不因 handler 返回而
-    // 续命）；IGN/DFL 汇入终止路径（dispatch 内 DFL 终止档直接
-    // exit(134) 不返，此后的兜底只罩 Call-返回档）。
+    // 续命）；IGN/DFL 汇入终止路径（dispatch 内 DFL 终止档自带
+    // `abort\n` 诊断 + exit(134) 不返，此后的兜底只罩 Call-返回档）。
+    // POSIX/C11 钦定（修复轮补，对抗审查 finding）：raise 前先解除
+    // SIGABRT 阻塞——block 态下 raise 只落 held、handler 永不执行；
+    // 旧 pending 位随 take_total 归并一并送达。
+    crate::signal::abort_unblock_sigabrt();
     let _ = crate::signal::raise(crate::signal::SIGABRT);
     console_write(b"abort\n");
     send_stdout_eof();
