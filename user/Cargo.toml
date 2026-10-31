@@ -78,8 +78,13 @@
 # 计划，docs/事件循环A7-4信号面实施设计草案.md §3.2；单消费 =
 # berry-libc signal.rs（协同式用户态投递——内核两号 0x86/0x87 只管
 # 跨进程位置位）。berry-tls/berry-mmap 同款回退形态）。
+# GUI-3：berry-ui（保留树视图 crate——arena 代数 NodeId + 脏区引擎 +
+# 三态停帧，ADR #52 声明式 UI 内核；十一模组契约冻结在
+# docs/GUI-3实施设计草案.md §6；双依赖 = berry-gfx（paint 发射
+# DisplayList）+ berry-guiproto（Rect/常量单源不两套）；host 测试，
+# embedder = GUI-5 gui-wm 另刀）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

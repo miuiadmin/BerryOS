@@ -479,6 +479,11 @@ test-host:
     # day-one：pass 边界/Caps/无运行时编译/display list/transient/文字三段；
     # glyph 快速路径与 fbcon 蜂格渲染逐字节像素共识 + golden 回归）。
     cargo test --manifest-path user/Cargo.toml -p berry-gfx --target {{host}}
+    # GUI-3：berry-ui（保留树视图 crate——arena 代数 NodeId 防悬空 +
+    # damage Σ×1.25 退化 + 遮挡剔除 paint + hit topmost + 手势
+    # referee + 三态停帧 FramePhase + 重采样常量 guiproto 单源；
+    # 验收三件 = damage/frame/offscreen）。
+    cargo test --manifest-path user/Cargo.toml -p berry-ui --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。
