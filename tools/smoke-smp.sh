@@ -16,6 +16,9 @@
 #      grep -cF 全串 = 1）——副核 PSCI CPU_ON → §3.2 十项 → hb1 → 主核
 #      dump → release → hb2 握手全闭环的机器断言（两心跳都是内存状态断言，
 #      非时序竞速——4-5a 纪律）；反向断言 `SMP: FAIL` / `SMP: skip` 不出现。
+#      S-3a probe ② 起 + `SGI ok n=` 恰一次（CPU0→CPU1 SGI_RESCHEDULE 单发
+#      → 副核消费臂收讫计数的端到端机器断言；`SGI ok` 归 smp_assertions
+#      不进标记数组——主 smoke 单核结构性不触发，零漂移）。
 #   2. 相 1 裸相 27 标记 / 相 2 rootfs 相 45 标记全部出现（与主 smoke 同面
 #      ——标记数组与 smoke.sh 运行时计数对拍，见下方机器守卫）。
 #   3. switches 金丝雀 ≥3 条严格递增**按相**（任核 tick 命中 100 倍数即整行
@@ -162,6 +165,9 @@ smp_assertions() {
   n=$(grep -cF "SMP ok ncores=2" "$LOG" || true)
   [ "$n" -eq 1 ] || fail "$label SMP 标记非恰一次（n=$n）：SMP ok ncores=2"
   grep -q "SMP: sec up" "$LOG" || fail "$label 缺副核报告行 SMP: sec up"
+  # S-3a probe ②：SGI 收讫标记恰一次（超时面已由 `SMP: FAIL` 反向快败覆盖）。
+  n=$(grep -cF "SGI ok n=" "$LOG" || true)
+  [ "$n" -eq 1 ] || fail "$label SGI ok 非恰一次（n=$n）——S-3a SGI_RESCHEDULE 收讫链断（发/投/收讫计数三面查）"
 }
 
 # 标记轮询公共体：QEMU 活着 + SMP: FAIL/skip 反向快败 + （可选）SMP ok
@@ -401,4 +407,4 @@ echod_stop
 
 # R3 首跑定标三数（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次）。
 echo "smoke-smp: R3 定标三数：boot=${SMP_BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 金丝雀≈${CAN_PERIOD_S:-?}s/行 / rootfs=${ROOTFS_WALL}s（帽 ${DEADLINE_ROOTFS}s）"
-echo "smoke-smp: PASS（两相：SMP ok ncores=2 各恰一次 + 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增）"
+echo "smoke-smp: PASS（两相：SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增）"

@@ -707,14 +707,24 @@ pub fn smp_bringup(efi_boot: bool) {
     }
     // 状态谓词全过才打标记（4-5a 纪律）：非竞速——两心跳都是内存状态断言。
     uart_puts(b"SMP ok ncores=2\n");
-    // S-3a probe ①（S-3 草案 §8.B 实测序）：CPU0 → CPU1 单发
-    // SGI_RESCHEDULE(1)，filter=0b00 List=0b10（bit1=CPU1）。收端 SGI 段
-    // 未接分流臂 → exception_irq 未知源面 loud `irq? id=1`（trap.rs
-    // UNKNOWN_SEEN 首 4 loud）= 零代码观测通道。本点早于副核
-    // enable_sgi_this_core 也不丢：pending 在 CPU1 bank 锁存、使能即投递。
-    // 实测形态入册后才写消费逻辑（S-0 实证纪律）。
+    // S-3a probe ①（已实测入册 2026-11-01——母案执行结果区 S-3a 段）：CPU0 →
+    // CPU1 单发 SGI_RESCHEDULE(1)，filter=0b00 List=0b10（bit1=CPU1）。probe ①
+    // 时收端未接分流臂 → 未知源面 loud `irq? id=1` 零代码观测；probe ② 起
+    // trap.rs SGI 消费臂接管（收讫计数，`irq?` 通道退役还给真未知源）。本点
+    // 早于副核 enable_sgi_this_core 也不丢：pending 在 CPU1 bank 锁存、使能即
+    // 投递（实测兑现）。
     // SAFETY: MMIO 写；boot DAIF 屏蔽窗内（发不等收）。
     unsafe {
         crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate::gic::SgiTarget::List(0b10))
     };
+    // S-3a probe ②：收讫状态谓词等待（HB2 同款 wait_secs——非竞速，命中才打
+    // 标记；smoke-smp 按相断言 `SGI ok` 恰一次）。超时 = 链断 loud（`SMP: FAIL`
+    // 前缀进 smoke 反向快败）；计数装载 Acquire 与 HB2 同款。
+    if wait_secs(3, || crate::trap::SGI_SEEN.load(Ordering::Acquire) >= 1) {
+        uart_puts(b"SGI ok n=");
+        uart_put_dec(crate::trap::SGI_SEEN.load(Ordering::Acquire) as u64);
+        uart_puts(b"\n");
+    } else {
+        uart_puts(b"SMP: FAIL sgi timeout\n");
+    }
 }

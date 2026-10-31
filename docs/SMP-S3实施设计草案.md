@@ -176,7 +176,7 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 6. HEAP 锁最内层：一切结构锁 → HEAP 单向；drain/release/drop 三处复合点（§12 分配器触达汇总）。
 7. IRQ 双入口（tick + rx_irq_notify）都要覆盖——漏 rx 面即漏整条 RX 唤醒链。
 
-### 8.B 侦察面 B：SGI 硬件面预研 + probe 方案（✅ 完成——probe ① 已命中 2026-11-01，实测入母案执行结果区；②③ 待）
+### 8.B 侦察面 B：SGI 硬件面预研 + probe 方案（✅ 完成——probe ①② 已命中 2026-11-01，实测入母案执行结果区；③ 待）
 
 - **机型实证（2026-11-01 dumpdtb）**：QEMU virt 默认 GICv2——DTB `intc@8000000` compatible = `arm,cortex-a15-gic`（+ `arm,gic-v2m-frame`）；`-machine virt,help` 列 `gic-version={2,3,4,host,max}`，`run-smp`/`smoke-smp` 均未设 → 默认 v2。**GICD_SGIR @0xF00 原语成立**。
 - **§2.1 未预见的坑**：`gic.rs:72` init 时 `ICENABLER0=!0` 把 ID 0..31 **全段禁了（含 SGI 0..15）**——SGI_RESCHEDULE(1) 起用必须**每核 banked 再使能**（CPU0 侧 init 后补 + 副核 secondary_main 起手补，`enable_cntv_this_core` :167 同款 banked 纪律：INTID<32 的 ISENABLER0/IPRIORITYR per-CPU banked，写落本核）。GICD_CTLR=1 已开，SGI 路由无需再动 distributor 全局面。

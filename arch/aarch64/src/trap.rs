@@ -405,18 +405,31 @@ pub extern "C" fn exception_unexpected() {
 /// - **PL011 RX（33，P5 A-1）**：`uart::rx_irq` 排空 FIFO 到 RXFE（去活电平，
 ///   EOIR 前铁序——不排空则 EOIR 后线仍高立即重投）→ 环形缓冲 + 通知槽
 ///   （Event 置位/wake 在槽内、IRQ 屏蔽窗内）→ EOIR。不进 tick 槽。
+/// - **SGI_RESCHEDULE(1，S-3a probe ②)**：EOIR + 收讫计数（[`SGI_SEEN`]，
+///   `SGI ok` 标记的谓词源）。语义 = 跨核唤醒戳——到达即已出 wfi；SGI 为
+///   bank pending 位一次性边沿，**无去活电平**（CNTV/PL011 电平铁序不适用）；
+///   不进 tick 槽（授片与 CVAL 编程脱钩——同未知源纪律）。真正消费（重查
+///   runqueue）随 S-3b per-CPU 队列落。
 /// - **未知**：EOIR 后忽略；首 4 个 loud（`irq? id=N`——新源接错号串口可见，
 ///   bring-up 面），之后静默（防电平未清源重投的打印风暴）。
 ///
 /// **顺序（plan Bug 1）**：`ack → 去活电平 → EOIR → dispatch`。dispatch/switch
 /// 必须在 EOIR **之后**——若 switch 跑在 ack 与 EOIR 之间，IRQ 在 GIC 里保持
 /// active（优先级未降），电平触发的 CNTV 下次发不出来（EOIR 饿死）。
+/// S-3a：全核 SGI_RESCHEDULE 收讫计数（probe ②——`SGI ok` 标记的谓词源，
+/// smp_bringup wait_secs 轮询消费）。fetch_add 原子、IRQ 上下文零分配零打印；
+/// S-3b per-CPU 队列落时升 per-CPU 遥测面。
+pub(crate) static SGI_SEEN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 #[no_mangle]
 pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
     let id = crate::gic::acknowledge();
     if id == crate::gic::SPURIOUS {
         return;
     }
+    // SGI 号常量转 usize 模式位（pattern 不收 `as` 表达式——函数内 const 落地）。
+    const SGI_RESCHED_US: usize = crate::gic::SGI_RESCHEDULE as usize;
     match id as usize {
         crate::gic::IRQ_CNTV => {
             // rearm（去活电平）在 EOIR 前：电平触发的 CNTV 须先重编程 CVAL（绝对截止
@@ -435,6 +448,12 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             // 位 + wake_matching；不立即抢占——醒者等 tick/yield，v1 延迟 ≤ 1 slice）。
             crate::uart::rx_irq();
             crate::gic::end(id);
+        }
+        SGI_RESCHED_US => {
+            // S-3a probe ②：SGI 消费臂（见函数头分流注——唤醒戳语义，无去活
+            // 电平、不进 tick 槽）。EOIR + 计收；真消费随 S-3b per-CPU 队列落。
+            crate::gic::end(id);
+            SGI_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }
         _ => {
             // 未知源：EOI 后忽略；首 4 个 loud（防新源接错号静默吞），之后静默
