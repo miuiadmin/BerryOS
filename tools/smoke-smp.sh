@@ -13,7 +13,7 @@
 #      §3.2 十项 → hb1 → 主核 dump → release → hb2 握手全闭环的机器断言
 #      （两心跳都是内存状态断言，非时序竞速——4-5a 纪律）；反向断言
 #      `SMP: FAIL` / `SMP: skip` 不出现（错机型/错旗时 loud 快败）。
-#   2. 裸相 26 标记全部出现（与主 smoke 裸相同面——副核 park 后主核全链
+#   2. 裸相 27 标记全部出现（与主 smoke 裸相同面——副核 park 后主核全链
 #      零扰动：ktest/BENCH/G1.5/稳态矩阵照跑）。
 #   3. switches 金丝雀 ≥3 条严格递增（主核调度器在双核地形下活着——
 #      副核稳态 wfi 真睡、零干扰主核 tick/轮转）。
@@ -87,7 +87,7 @@ assert_marker() {
   fi
 }
 
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
 echo "smoke-smp: QEMU 启动（$KERNEL，-smp 2）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \

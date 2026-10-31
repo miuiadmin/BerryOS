@@ -40,6 +40,12 @@ build-user:
     # 产物继续走（P6 A-2 实踩：bsh 漏补 mmio_vmo 字段，E0063 静默、smoke 跑
     # 的是旧 bsh——「缺产物编译期炸响」的 D6 纪律只护了内核侧，这边失守）。
     set -e
+    # GUI-0（2026-10-29）：user 侧 none-target 家族（echo/talker/thrchild/svcmgr/
+    # abuser/hello）**保留 NEON codegen**——EL0 任务 FP 态已由 TaskContext 全量保存
+    # 兜底、GUI 光栅后续正要用 SIMD；根 .cargo/config.toml 的 -neon 旗只属内核
+    # SIMD-free 合同。cwd=user/ 会向上吃到根 config，env RUSTFLAGS 优先于 config
+    # → 显式清空还原用户仓 codegen（零漂移；musl 面本就无旗）。
+    export RUSTFLAGS=""
     cd user
     CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker -p thrchild
     mkdir -p userbins ../kernel/src/userbins
@@ -625,7 +631,7 @@ smoke-x86: build-x86
 
 # S-1 副核 bring-up 冒烟（smoke-x86 同款独立形态——不并入主 smoke、不进
 # CI：ARM64 五跑单核基线零扰动）。断言三面：`SMP ok ncores=2` 恰一次 +
-# 裸相 26 标记 + 金丝雀严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐）。
+# 裸相 27 标记 + 金丝雀严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐）。
 # 内核路径经 KERNEL 传参（单一事实源——smoke-x86 先例）。
 # **-smp 只进本线**（与 run-smp 同注：主 smoke 族一律单核）。
 smoke-smp: build
@@ -633,7 +639,7 @@ smoke-smp: build
 
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
-# 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 26 +
+# 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 27 +
 # EFI 路生态 15 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
@@ -675,6 +681,11 @@ build-boot:
     #!/bin/sh
     set -e
     cd {{BOOT_DIR}}
+    # GUI-0 修复轮：根 .cargo/config.toml 的 -fp-armv8,-neon 旗经 config 发现
+    # 向上吃到这里——但那是内核 SIMD-free 合同（kernel 限定）；BerryBoot 是
+    # EFI 应用非内核（FPSIMD 态在 quiesce 交接后无保存义务），env RUSTFLAGS
+    # 置空顶掉 config（与 build-user 同款对称——旗作用域 = 内核仓独占）。
+    export RUSTFLAGS=""
     CARGO_TARGET_DIR=cargo-target cargo build --release --target {{BOOT_TARGET}}
     mkdir -p out
     "{{RUST_LLD}}" -flavor ld -static -nostdlib --emit-relocs \

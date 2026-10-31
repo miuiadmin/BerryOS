@@ -131,6 +131,18 @@ BASELINE_ICOUNT = REPO / "tools" / "bench_baseline_icount.txt"
 #   归因 = 测量窗内 ±1 次 tick 事件的相位迁移（锁指令序改变 boot 后虚拟
 #   时钟相位，tick 边界相对测量窗落位翻转，窗内恰含 k 或 k+1 个完整
 #   tick；非 buddy 三项窗小/相位无关不受扰）。基线同日重立。
+# [2026-10-31 GUI-0 重证] verdict=exact：0/125/31/166/1662/6937——FPSIMD 全量
+#   上下文 + 内核 SIMD-free 三层合同（TaskContext 112→640B、switch 无条件
+#   q0..q31+FPCR/FPSR、mem*/bcmp 整数覆写，`docs/GUI里程碑规划-2026-10.md`
+#   GUI-0）：两项大头 vmo_commit1p 311→1662 / vmo_rw4k 1695→6937（×4-5）＝
+#   拷贝路径链 builtins NEON 版→整数 8 字节块循环的设计内代价（TCG 数量级
+#   足够、确定性优先，ADR #34 修订）；handle_evt 50→166（+116）≈ 切换点
+#   全量保存（16 对 stp/ldp q + mrs/msr ≈ 70 指令/切换）落入唤醒测量窗，
+#   幅值与 1-2 次 switch 同量级；buddy 两项 35→125 / 80→31（+90/−49，可正
+#   可负）= boot 指令流改变后 tick 相位重掷与内核镜像布局项的混叠（S-2a
+#   同族形态，五跑逐值相同即确定性无损）；cntvct_pair 0→0 逐值不动（寄存器
+#   直读零切换零拷贝——观测锚不动，佐证收割面无扰动）。BENCHWAKE 五跑逐字节
+#   相同（wake 观测面不动）。基线同日重立。
 ICOUNT_TOL = 0.0
 
 BENCH_RE = re.compile(r"^BENCH,([a-z0-9_]+),(\d+),(\d+)$")

@@ -43,8 +43,8 @@
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段、
 #      C-4b 起七段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），71 标记
-#      （boot 26 + rootfs 45——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），72 标记
+#      （boot 27 + rootfs 45——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
@@ -208,7 +208,7 @@ DEADLINE_ROOTFS=420  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # 面 + ②两连接对拍 ≈ EVS 同量级——合计每相估
                      # +10-30s，420 帽首跑盯实测，压力显性再升）
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
 QEMU_PID=""
@@ -679,7 +679,7 @@ QEMU_PID=$!
 # process_start x0 递入，进程内 thread_create/thread_start/join/复启
 # -EBADSTATE/末线程收口五步链）等 TERMINATED + 真码 7 才打，错码打
 # `eco: thr exit <n>` 降级行——rootfs 相第 36 标记。镜像内嵌零 rootfs
-# 依赖（echo/talker 同产链）= 裸跑亦打（裸相只断言 MARKERS 26 子集，
+# 依赖（echo/talker 同产链）= 裸跑亦打（裸相只断言 MARKERS 27 子集，
 # 多打无害）；链位置 bc_selftest 后 fat 族前（EFI 路 ECO 同面）。
 # "THR ok" 与现役标记两两互非子串——THR 前缀族唯一（TAB `(^|[^G])` 前邻
 # 特例不需要：无任何 `XTHR ok` 形态在册，/usr/bin/grep 复核零碰撞）。
@@ -845,7 +845,7 @@ skt_client_wait "rootfs 相"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 26 + rootfs 45 = 71
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 27 + rootfs 45 = 72
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块
 # 设备服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络

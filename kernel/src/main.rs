@@ -24,6 +24,7 @@ mod handle;
 mod handoff; // V-0b 刀 3：BerryBoot 交接协议双镜像（const assert 执法，消费随刀 4 起）
 mod heap;
 mod ktest;
+mod mem; // GUI-0：本仓 mem* 整数版覆写（内核 SIMD-free 合同 builtins 半边）
 mod mm;
 mod pi;
 mod process;

@@ -12,6 +12,7 @@ pub fn run() {
     test_heap();
     test_syscall();
     test_switch();
+    test_fp();
     test_aspace();
     test_vmo();
     test_handle();
@@ -37,7 +38,7 @@ pub fn run() {
 /// 两表隔离 + take/insert_ref 迁移原语 + 子进程出生自带空表；3-4b channel 三号
 /// （H 段）：非阻塞队列语义 + handle 随消息迁移的原子序（「两进程交换一句消息」
 /// 的 EL0 正向验收在 user_spawner/user_child）；T-1 thread_start 门控面（F3b 段）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_syscall() {
     use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
     use crate::syscall::{
@@ -120,7 +121,7 @@ fn test_syscall() {
         .expect("SYSCALL：insert h2");
     unsafe { OUT = 0 };
     assert_eq!(
-        svc4(NR_HANDLE_DUPLICATE as u64, h2 as u64, RIGHT_READ as u64, &raw mut OUT as u64),
+        svc4(NR_HANDLE_DUPLICATE as u64, h2 as u64, RIGHT_READ, &raw mut OUT as u64),
         0,
         "SYSCALL：duplicate 收紧"
     );
@@ -513,7 +514,7 @@ fn test_syscall() {
     assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, 0, &raw mut OUT as u64, 0, 0, 0), 0,
         "SYSCALL：get_phys 页基");
     let pa0 = unsafe { OUT };
-    assert!(pa0 >= 0x4000_0000 && pa0 < 0x4000_0000 + 128 * 1024 * 1024,
+    assert!((0x4000_0000..0x4000_0000 + 128 * 1024 * 1024).contains(&pa0),
         "SYSCALL：get_phys 须落 RAM 界（得 {pa0:#x}）");
     assert_eq!(pa0 % PAGE_SIZE as u64, 0, "SYSCALL：get_phys 页基页对齐");
     // SAFETY: 同上。
@@ -651,7 +652,7 @@ fn test_syscall() {
         svc4(
             NR_HANDLE_DUPLICATE as u64,
             hth as u64,
-            crate::handle::RIGHT_DUPLICATE as u64,
+            crate::handle::RIGHT_DUPLICATE,
             &raw mut OUT as u64
         ),
         0,
@@ -754,7 +755,7 @@ fn test_syscall() {
         svc4(
             NR_HANDLE_DUPLICATE as u64,
             hp2 as u64,
-            crate::handle::RIGHT_DUPLICATE as u64,
+            crate::handle::RIGHT_DUPLICATE,
             &raw mut OUT as u64
         ),
         0,
@@ -1011,7 +1012,7 @@ fn test_syscall() {
     // SAFETY: 同上。
     unsafe { OUT = 0 };
     assert_eq!(
-        svc4(NR_HANDLE_DUPLICATE as u64, hc0 as u64, RIGHT_RECV as u64, &raw mut OUT as u64),
+        svc4(NR_HANDLE_DUPLICATE as u64, hc0 as u64, RIGHT_RECV, &raw mut OUT as u64),
         0,
         "SYSCALL：dup 收紧到 RECV"
     );
@@ -1194,7 +1195,7 @@ fn test_syscall() {
     // SAFETY: 同上。
     unsafe { OUT = 0 };
     assert_eq!(
-        svc4(NR_HANDLE_DUPLICATE as u64, he as u64, RIGHT_DUPLICATE as u64, &raw mut OUT as u64),
+        svc4(NR_HANDLE_DUPLICATE as u64, he as u64, RIGHT_DUPLICATE, &raw mut OUT as u64),
         0,
         "SYSCALL：dup Event 到仅 DUPLICATE"
     );
@@ -1625,8 +1626,8 @@ fn test_memmap() {
     let base = 0x4000_0000usize;
     let mut sfree = [false; 64];
     let mut sorder = [0u8; 64];
-    let mut sbmaps = [0u64; (berry_mm::MAX_ORDER + 1) * 1];
-    let mut ssums = [0u64; (berry_mm::MAX_ORDER + 1) * 1];
+    let mut sbmaps = [0u64; (berry_mm::MAX_ORDER + 1)];
+    let mut ssums = [0u64; (berry_mm::MAX_ORDER + 1)];
     let mut sfa = berry_mm::FrameAllocator::new(
         base,
         base + 64 * 4096,
@@ -1743,6 +1744,274 @@ fn test_switch() {
     berry_hal_aarch64::uart_puts(b"TASK ok\n");
 }
 
+// ===================== GUI-0：FPSIMD 上下文全量保存（ktest 面） =====================
+
+/// MAIN 侧 canary：q0..q7 + q30/q31 各一个独立 16B 图样（高半位钉死防与合法
+/// 零值/指针巧合）。
+static FP_PAT_MAIN: [u128; 10] = [
+    0xA1B2_C3D4_E5F6_0718_0000_0000_1111_2222,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_3333_4444,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_5555_6666,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_7777_8888,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_9999_AAAA,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_BBBB_CCCC,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_DDDD_EEEE,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_FFFF_0001,
+    // q30 / q31
+    0xA1B2_C3D4_E5F6_0718_0000_0000_2000_0030,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_2000_0031,
+];
+/// OTHER 侧 canary（同族异值）。
+static FP_PAT_OTHER: [u128; 10] = [
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6161_6161,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6262_6262,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6363_6363,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6464_6464,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6565_6565,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6666_6666,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6767_6767,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6868_6868,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6930_0030,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6930_0031,
+];
+/// OTHER 侧 FPCR/FPSR 图样：RMODE=10（RM，round to −inf）/ NZCV=0011——**不含任何
+/// 陷阱使能位**（FPCR bit8..12 置 1 会让 FP 指令直接 trap，ktest 不愿赌）。注：
+/// RMODE 编码 00=RN 最近、01=RZ 零、10=RM −inf、11=RP +inf——10 是 −inf，别按
+/// 「越大越正」直觉读反（CORR-2 修复轮钉板）。
+const FP_FPCR_OTHER: u64 = 0x0080_0000;
+const FP_FPSR_OTHER: u64 = 0x3000_0000;
+static mut FP_CTX_MAIN: TaskContext = TaskContext::ZERO;
+static mut FP_CTX_OTHER: TaskContext = TaskContext::ZERO;
+static mut FP_OTHER_STACK: TestStack4096 = TestStack4096([0; 4096]);
+static mut FP_SNAP: [u128; 10] = [0; 10];
+
+/// q0..q7 + q30/q31 ← pats[0..10]（canary 装载）。
+///
+/// SAFETY: 纯 asm 写向量寄存器；lateout 声明 clobber 防编译器在 q 里保活值。
+#[inline(never)]
+unsafe fn fp_canary_load(pats: *const u128) {
+    unsafe {
+    core::arch::asm!(
+        ".arch armv8-a+fp+simd", // 局部重开 FP/SIMD 汇编解析（全局 -neon）
+        "ldr q0,  [x0, #0]",
+        "ldr q1,  [x0, #16]",
+        "ldr q2,  [x0, #32]",
+        "ldr q3,  [x0, #48]",
+        "ldr q4,  [x0, #64]",
+        "ldr q5,  [x0, #80]",
+        "ldr q6,  [x0, #96]",
+        "ldr q7,  [x0, #112]",
+        "ldr q30, [x0, #128]",
+        "ldr q31, [x0, #144]",
+        in("x0") pats,
+        lateout("v0") _, lateout("v1") _, lateout("v2") _, lateout("v3") _,
+        lateout("v4") _, lateout("v5") _, lateout("v6") _, lateout("v7") _,
+        lateout("v30") _, lateout("v31") _,
+    );
+    }
+}
+
+/// q0..q7 + q30/q31 → out[0..10]（canary 快照）。SAFETY 同 [`fp_canary_load`]。
+#[inline(never)]
+unsafe fn fp_canary_store(out: *mut u128) {
+    unsafe {
+    core::arch::asm!(
+        ".arch armv8-a+fp+simd", // 局部重开 FP/SIMD 汇编解析（全局 -neon）
+        "str q0,  [x0, #0]",
+        "str q1,  [x0, #16]",
+        "str q2,  [x0, #32]",
+        "str q3,  [x0, #48]",
+        "str q4,  [x0, #64]",
+        "str q5,  [x0, #80]",
+        "str q6,  [x0, #96]",
+        "str q7,  [x0, #112]",
+        "str q30, [x0, #128]",
+        "str q31, [x0, #144]",
+        in("x0") out,
+        lateout("v0") _, lateout("v1") _, lateout("v2") _, lateout("v3") _,
+        lateout("v4") _, lateout("v5") _, lateout("v6") _, lateout("v7") _,
+        lateout("v30") _, lateout("v31") _,
+    );
+    }
+}
+
+#[inline(never)]
+unsafe fn fpcr_read() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpcr", out(reg) v); }
+    v
+}
+#[inline(never)]
+unsafe fn fpcr_write(v: u64) {
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpcr, {}", in(reg) v); }
+}
+#[inline(never)]
+unsafe fn fpsr_read() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpsr", out(reg) v); }
+    v
+}
+#[inline(never)]
+unsafe fn fpsr_write(v: u64) {
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpsr, {}", in(reg) v); }
+}
+
+// 本仓 mem* 整数版覆写直调面（crate::mem 定义、此处声明——链接即命中我们的实现）。
+unsafe extern "C" {
+    fn memset(s: *mut u8, c: u8, n: usize) -> *mut u8;
+    fn memcpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8;
+    fn memmove(d: *mut u8, s: *const u8, n: usize) -> *mut u8;
+    fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32;
+    fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32;
+}
+
+/// FP_SNAP 与 pats 逐位比对（u128 整数比较走 GPR，不碰 FP 面）。
+fn fp_snap_eq(pats: &[u128; 10]) -> bool {
+    // SAFETY: ktest 单线程窗口读 FP_SNAP（经 raw 指针取共享引用——static_mut_refs 纪律）。
+    let snap: &[u128; 10] = unsafe { &*(&raw const FP_SNAP) };
+    snap == pats
+}
+
+/// FP 乒乓对端：装 B 图样 → 自证 → 打 `FPING ` 切回 MAIN。切出时其 FP 态落
+/// `FP_CTX_OTHER`（MAIN 侧随后核验保存面）。不会再被切回，`halt()` 收尾满足 `-> !`。
+extern "C" fn fp_ping_fn(_arg: usize) -> ! {
+    // SAFETY: DAIF 屏蔽（ktest 在 enable_irq 之前）；两 ctx 不别名。
+    unsafe {
+        fpcr_write(FP_FPCR_OTHER);
+        fpsr_write(FP_FPSR_OTHER);
+        fp_canary_load((&raw const FP_PAT_OTHER).cast::<u128>());
+        // 自证：装载面成立（非 switch 之功——先排除「图样根本没装上」的假失败）。
+        fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
+        assert!(fp_snap_eq(&FP_PAT_OTHER), "FP：OTHER canary 装载自证失败");
+        berry_hal_aarch64::uart_puts(b"FPING ");
+        berry_hal_aarch64::task::context_switch(
+            &raw mut FP_CTX_OTHER,
+            &raw const FP_CTX_MAIN,
+        );
+    }
+    berry_hal_aarch64::halt();
+}
+
+/// GUI-0：FPSIMD 上下文全量保存三面：
+/// ① 出生零态（new_kernel 出发于 ZERO，FP 面 = 架构复位值）；
+/// ② 跨任务双向对拍（MAIN⇄OTHER 两跳乒乓——双方各装独立 q0..q7/q30/q31 +
+///    FPCR/FPSR 图样，切回后 MAIN 寄存器面与 OTHER 保存面各自核验 = 跨任务
+///    SIMD 不串味）；
+/// ③ 内核 copy/zero 路径 canary（**内核 SIMD-free 合同护栏**：Vmo commit 清零 +
+///    write/read 拷贝跑在 canary 在位时——编译器漂移引入 NEON memset/memcpy 即
+///    boot 期 loud）。
+fn test_fp() {
+    // MAIN 侧 FPCR/FPSR 图样（RMODE=01 / NZCV=1111——同样不含陷阱使能位）。
+    const FPCR_MAIN: u64 = 0x0040_0000;
+    const FPSR_MAIN: u64 = 0xF000_0000;
+    // SAFETY: DAIF 屏蔽（ktest 在 enable_irq 之前）；静态两 ctx 不别名；栈顶 16 对齐。
+    unsafe {
+        let stack_top = (&raw const FP_OTHER_STACK) as *const u8 as usize
+            + core::mem::size_of::<TestStack4096>();
+        FP_CTX_OTHER = TaskContext::new_kernel(fp_ping_fn, 0, stack_top);
+        // ① 出生零态（raw 指针取共享引用——static_mut_refs 纪律；unsafe 归外层块，
+        // 再包一层会 unused_unsafe 告警——CORR-1 修复轮钉板）。
+        let fresh: &TaskContext = &*(&raw const FP_CTX_OTHER);
+        assert!(
+            fresh.fp == [0u128; 32] && fresh.fpcr == 0 && fresh.fpsr == 0,
+            "FP：新任务出生 FP 面非零"
+        );
+        let (fpcr0, fpsr0) = (fpcr_read(), fpsr_read()); // 记录现场值，测毕还原
+        // ② MAIN 侧装载自己的图样 → 两跳乒乓。
+        fpcr_write(FPCR_MAIN);
+        fpsr_write(FPSR_MAIN);
+        fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
+        berry_hal_aarch64::task::context_switch(&raw mut FP_CTX_MAIN, &raw const FP_CTX_OTHER);
+        // <- fp_ping_fn 切回 FP_CTX_MAIN 时续行于此。四面核验：
+        fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
+        assert!(fp_snap_eq(&FP_PAT_MAIN), "FP：MAIN 的 q0..q7/q30/q31 经两跳 switch 后串味");
+        assert!(fpcr_read() == FPCR_MAIN, "FP：MAIN 的 FPCR 未恢复");
+        assert!(fpsr_read() == FPSR_MAIN, "FP：MAIN 的 FPSR 未恢复");
+        // SAFETY: 同窗读 FP_CTX_OTHER（raw 指针取共享引用；unsafe 归外层块）。
+        let o: &TaskContext = &*(&raw const FP_CTX_OTHER);
+        let other_saved = o.fp[0] == FP_PAT_OTHER[0]
+            && o.fp[1] == FP_PAT_OTHER[1]
+            && o.fp[2] == FP_PAT_OTHER[2]
+            && o.fp[3] == FP_PAT_OTHER[3]
+            && o.fp[4] == FP_PAT_OTHER[4]
+            && o.fp[5] == FP_PAT_OTHER[5]
+            && o.fp[6] == FP_PAT_OTHER[6]
+            && o.fp[7] == FP_PAT_OTHER[7]
+            && o.fp[30] == FP_PAT_OTHER[8]
+            && o.fp[31] == FP_PAT_OTHER[9]
+            && o.fpcr == FP_FPCR_OTHER
+            && o.fpsr == FP_FPSR_OTHER;
+        assert!(other_saved, "FP：OTHER 的 FP 态未随切出保存进其上下文");
+        // ③-a 本仓 mem* 整数版覆写正确性直验（含 memmove 重叠两向 + memcmp 符号面
+        // + bcmp 0/非 0 面）。
+        {
+            let mut buf = [0u8; 40];
+            memset(buf.as_mut_ptr(), 0x5A, 40);
+            let mut pat = [0u8; 40];
+            for (i, b) in pat.iter_mut().enumerate() {
+                *b = i as u8;
+            }
+            memcpy(buf.as_mut_ptr(), pat.as_ptr(), 40);
+            assert_eq!(buf, pat, "FP：memset/memcpy 覆写正确性");
+            // 重叠后向（dst > src）：右移 2。
+            let mut ov = [0u8; 24];
+            for (i, b) in ov.iter_mut().enumerate() {
+                *b = (0xA0 + i) as u8;
+            }
+            memmove(ov.as_mut_ptr().add(2), ov.as_ptr(), 22);
+            for i in 0..22 {
+                assert_eq!(ov[i + 2], (0xA0 + i) as u8, "FP：memmove 重叠（后向）正确性");
+            }
+            // 重叠前向（dst < src）：左移 3。
+            let mut ov2 = [0u8; 24];
+            for (i, b) in ov2.iter_mut().enumerate() {
+                *b = (0xC0 + i) as u8;
+            }
+            memmove(ov2.as_mut_ptr(), ov2.as_ptr().add(3), 21);
+            for i in 0..21 {
+                assert_eq!(ov2[i], (0xC0 + i + 3) as u8, "FP：memmove 重叠（前向）正确性");
+            }
+            assert!(memcmp(pat.as_ptr(), buf.as_ptr(), 40) == 0, "FP：memcmp 相等面");
+            buf[39] ^= 1; // pat[39]=0x27 → buf[39]=0x26：首异字节 buf < pat。
+            assert!(memcmp(buf.as_ptr(), pat.as_ptr(), 40) < 0, "FP：memcmp 符号面");
+            // bcmp 直验（LLVM 把 `memcmp(a,b,n)==0` 标准变换为 bcmp 调用——覆写件
+            // 的伴生符号，漏验 = 链条上唯一没对拍过的口）：相等面 0 / 差异面非 0。
+            buf[39] ^= 1; // 0x26 → 0x27：两缓冲再相等。
+            assert!(bcmp(pat.as_ptr(), buf.as_ptr(), 40) == 0, "FP：bcmp 相等面");
+            buf[39] ^= 1; // 重新打破。
+            assert!(bcmp(buf.as_ptr(), pat.as_ptr(), 40) != 0, "FP：bcmp 差异面");
+        }
+        // ③-b 内核 copy/zero/块拷贝路径 canary（SIMD-free 合同护栏——①-neon 旗 +
+        // ②mem* 覆写两机制在位时必过；旗失效/编译器漂移即此处 boot 期 loud）。
+        fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
+        // 块拷贝探针（sys_object_wait_many 数组 / 结构体拷贝同族——首跑实抓
+        // O1 下 LLVM 即用 q 寄存器落这类拷贝，故必须探）；black_box 防常量折叠
+        // 把拷贝优化掉。
+        let src_arr = core::hint::black_box([0x1234_5678_9ABC_DEF0u64; 16]);
+        let dst_arr = src_arr; // [u64;16] 是 Copy——此处即块拷贝；black_box 防折叠
+        assert_eq!(core::hint::black_box(&dst_arr)[15], src_arr[15], "FP：块拷贝探针前置失败");
+        use crate::vmo::Vmo;
+        use berry_mm::va::PAGE_SIZE;
+        let mut vmo = Vmo::create(PAGE_SIZE).expect("FP：装配 VMO");
+        vmo.commit(crate::mm::frames(), 0, PAGE_SIZE)
+            .expect("FP：commit（清零路径）");
+        static SRC: [u8; 512] = [0x5A; 512];
+        vmo.write(0, &SRC).expect("FP：write（拷贝路径）");
+        let mut dst = [0u8; 64];
+        vmo.read(0, &mut dst).expect("FP：read");
+        assert!(dst == [0x5A; 64], "FP：VMO 读写不符（canary 前置失败）");
+        fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
+        assert!(
+            fp_snap_eq(&FP_PAT_MAIN),
+            "FP：内核 copy/zero 路径触碰了 SIMD——违反内核 SIMD-free 合同"
+        );
+        // 还原现场控制位。
+        fpcr_write(fpcr0);
+        fpsr_write(fpsr0);
+    }
+    berry_hal_aarch64::uart_puts(b"FP ok\n");
+}
+
 /// 2b-2：每进程页表 + ASID 互切 + 低半退役正向断言（`内存管理设计.md` §5.1 第 3 步）。
 /// 低半退役本身在 `rust_main` 早期已完成（`retire_low_half`），本用例验证其效果。
 fn test_aspace() {
@@ -1794,7 +2063,7 @@ fn test_aspace() {
 /// 2b-3：匿名 VMO/Vmar 六操作（create/commit/map/unmap/protect/allocate，
 /// `内存管理设计.md` §5.1 第 4 步）——map 即填用户页表；§5.1 验收行：
 /// **内核任务经 VMO 映射读写一页**。fault 侧均走期望故障通道正向断言。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_vmo() {
     use crate::aspace::{alloc_asid, USER_VA};
     use crate::vmar::{Perm, Vmar, VmarError};
@@ -1930,7 +2199,7 @@ fn test_vmo() {
 /// insert/get（查表→类型→权限三门控）、duplicate 只紧不松、close 后旧值必拒
 /// （引用共享仍在）、槽位重用代号 +1（旧 handle 不复活）、replace 原子搬迁、
 /// 坏 handle 面（0/野值）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_handle() {
     use crate::handle::{
         HandleTable, KernelObj, ObjType, Rights, ERR_ACCESS_DENIED, ERR_BAD_HANDLE,
@@ -2058,7 +2327,7 @@ fn test_handle() {
 /// - **收尾 unbind**：恢复全局缺席态——之后 smoke 稳态全程在未绑态跑。
 ///
 /// 进程调度 crate 无 host 测试面（HAL aarch64 asm），QEMU ktest 是唯一家。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_policy() {
     use alloc::vec::Vec;
     use berry_sched::policy::{self, Directive, Entry};
@@ -2156,7 +2425,7 @@ fn test_policy() {
 /// 判据已改锚定 task 自身（`prev == task && next == task`），本用例机器断言
 /// 兜底。本地环手搭（不动全局 RUNQUEUE——ktest 在 `berry_sched::init` 前）；
 /// 非 smoke 标记（TAGTAB 模式：断言炸 = panic = 后续标记缺失兜底）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_rq_ring2() {
     use berry_sched::{RoundRobin, Runqueue, SchedClass, Task, Topo};
 
@@ -2346,7 +2615,7 @@ fn test_rq_ring3() {
 /// / 11 节点链 × 轮帽 8（倒序入队每轮恰好一跳，第 9/10 跳到不了）/ WAIT_ANY
 /// 与 Event donor 跳过 / 冻结随行（离队不清）+ 重入队回落 / 共享表粒度
 /// （内核任务持有面 = 内核侧共享表，boot 场景同款语义）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_pi() {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
@@ -2585,7 +2854,7 @@ fn test_pi() {
 /// `sched::init` 前跑 → 无 CURRENT/SLEEPQ 干扰，纯函数面 K0–K8 直测
 /// settle/snapshot + 三道帽 + 每消息重导；K9 走真 SVC 验 channel_create
 /// options 面）。EL0 全链验收在 main.rs 六任务对打（`INTENT ok`）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_intent() {
     use berry_sched::intent::{settle, snapshot, MsgIntent, SettleOut, SnapOut};
     use berry_sched::{Task, INTENT_BACKGROUND, INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS,
@@ -2749,7 +3018,7 @@ fn test_intent() {
 /// RUNQUEUE + `try_preempt` 解引用 null CURRENT = 挂死；SVC 面只在清场后跑
 ///（慢路分支无等待者，安全）。EL0 全链 + fastpath/直切/RT 实测在 main.rs
 /// fa_ping/fa_pong 对打（`FAST ok`）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_fast() {
     use alloc::boxed::Box;
     use berry_sched::{find_single_waiter, sleepq_insert, sleepq_unlink, Task, WAIT_ANY};
@@ -2898,7 +3167,7 @@ fn test_dtb() {
         push_u32(v, 1);
         v.extend_from_slice(name.as_bytes());
         v.push(0);
-        while v.len() % 4 != 0 {
+        while !v.len().is_multiple_of(4) {
             v.push(0);
         }
     }
