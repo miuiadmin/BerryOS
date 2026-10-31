@@ -1021,8 +1021,9 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
 /// 位」的等待者。`Some(t)` = 恰有一个非哨兵匹配者；`None` = 零/多个匹配者，
 /// 或队列上任一处存在 [`WAIT_ANY`] 哨兵等待者（哨兵被任何非零唤醒命中——
 /// 单点唤醒的集合 ≠ `wake_matching` 的全匹配集，一律退 slowpath 保两路语义
-/// 逐条对齐）。**IRQ 屏蔽窗内调用**；返回指针仅在**同一屏蔽窗内**有效（单核
-/// 无插队——[`fast_wake`] 的契约）。
+/// 逐条对齐）。**IRQ 屏蔽窗内调用**（S-2 起锁窗等价：`klock_enter` 先
+/// disable_irq 后取锁——KERN_LOCK 窗内 IRQ 必屏蔽，SMP 下另享跨核互斥）；
+/// 返回指针仅在**同一窗口内**有效（窗口内无插队——[`fast_wake`] 的契约）。
 pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
     if obj == 0 || signals == 0 {
         return None;
@@ -1054,8 +1055,8 @@ pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
 /// 「一次 SLEEPQ 定点查找替代全队列匹配扫描」。
 ///
 /// # Safety
-/// `t` 须为**同一 IRQ 屏蔽窗内** `find_single_waiter` 的返回值（单核无插队 ⇒
-/// 此刻仍在 SLEEPQ 上）。
+/// `t` 须为**同一窗口内**（IRQ 屏蔽窗 / S-2 起 KERN_LOCK 锁窗——同窗等价，
+/// 窗内无插队 ⇒ 此刻仍在 SLEEPQ 上）`find_single_waiter` 的返回值。
 pub unsafe fn fast_wake(t: NonNull<Task>) {
     // SAFETY: 契约如上。
     unsafe {
@@ -1154,8 +1155,10 @@ unsafe fn expire_timeouts() {
 // ---- PI 图推导支撑原语（4-3b；消费者 = `kernel/src/pi.rs`，图语义在那侧）----
 
 /// 遍历全局 SLEEPQ 上所有睡眠者（head → tail）。**调用契约**：IRQ 屏蔽窗内
-/// （block/wake/syscall 尾路径天然满足）；回调中不得改动任何任务的睡眠链接
-/// 字段（`sleep_prev`/`sleep_next`——遍历中接线会扬队）、不得 block/wake。
+/// （block/wake/syscall 尾路径天然满足；S-2 起锁窗等价——`klock_enter` 先
+/// disable_irq 后取锁，KERN_LOCK 窗内 IRQ 必屏蔽、SMP 下另享跨核互斥）；回调
+/// 中不得改动任何任务的睡眠链接字段（`sleep_prev`/`sleep_next`——遍历中
+/// 接线会扬队）、不得 block/wake。
 /// 只读字段或写 `pi_inherited`/`prio_*` 等非链接字段安全（PI 重推的用法）。
 pub fn for_each_sleeper(mut f: impl FnMut(&mut Task)) {
     // SAFETY: 契约如上；SLEEPQ 单核顺序访问；摘除中的节点由调度器拥有。

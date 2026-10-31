@@ -22,6 +22,8 @@
 //! frame_alloc4k ×59 / frame_alloc64k 自 B-0 起潜伏 ×58）。位图化后分配
 //! 成本与 k 奇偶/布局脱钩，此类回归结构性绝迹；且顺带收回 64k 慢带。
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 /// buddy 最大阶。一个 `2^MAX_ORDER` 页的块。
 /// 128MiB / 4KiB = 32768 页；`MAX_ORDER = 13` → 最大块 8192 页 = 32MiB。
 /// **必须 ≥ 内核整页大对象的真实需求帽**：heap 整页路径单次连续分配，
@@ -79,6 +81,12 @@ pub struct BuddyAllocator<'a> {
     bmap_words: usize,
     /// 每阶摘要字数 = ceil(bmap_words / 64)。
     sum_words: usize,
+    /// 已分配页数水位（D24，S-2 前置读侧原子化）：`alloc_order` 成功 +
+    /// `2^order`、`free` 成功 − `2^order`、`reserve`/`release` 不动（RESERVED
+    /// 恒不计——与旧全窗扫口径逐位一致，`#[cfg(test)]` 对拍钉板）。
+    /// `allocated_pages()` 从 O(num_pages) 扫落为 O(1) load（B-0 泄漏金丝雀
+    /// 每次 boot 执法 + F37 watchdog 锁窗读 + S-3 拆锁后跨核读的撕裂面）。
+    allocated: AtomicUsize,
 }
 
 impl<'a> BuddyAllocator<'a> {
@@ -132,6 +140,7 @@ impl<'a> BuddyAllocator<'a> {
             sums,
             bmap_words,
             sum_words,
+            allocated: AtomicUsize::new(0),
         };
         me.reset_free();
         me
@@ -177,6 +186,9 @@ impl<'a> BuddyAllocator<'a> {
                 self.bm_clear(order, p);
                 self.free[p] = false;
                 self.order[p] = order as u8;
+                // D24 水位：分配成功 +2^order（split 净零——拆出的低半本就
+                // 计在本次分配里，buddy 半块留在空闲集合未计）。
+                self.allocated.fetch_add(1usize << order, Ordering::Relaxed);
                 return Ok(p);
             }
             o += 1;
@@ -210,6 +222,8 @@ impl<'a> BuddyAllocator<'a> {
         self.bm_set(order, p);
         // 逐阶向上合并。
         self.merge_up(p, order);
+        // D24 水位：释放成功 −2^order（merge_up 净零——合并只动空闲集合）。
+        self.allocated.fetch_sub(1usize << order, Ordering::Relaxed);
         Ok(())
     }
 
@@ -416,10 +430,20 @@ impl<'a> BuddyAllocator<'a> {
 
     /// **已分配页总数**（B-0 泄漏金丝雀的对账口径：churn 前后必须相等）。
     ///
-    /// 全窗扫已分配块头（`free=false` 且非 TAIL/RESERVED），按 `2^order`
-    /// 累计页数——尾页全 TAIL 不单独计，保留页（RESERVED）恒定不计。
-    /// O(num_pages) 线性扫，boot 期 / 低频断言用，非热路径。
+    /// D24（S-2）起 = **O(1) 水位读**：`alloc_order`/`free` 成功路径 ±`2^order`
+    /// 维护的 AtomicUsize 单字 load——语义口径与旧全窗扫逐位一致（已分配块头
+    /// 按 `2^order` 累计；尾页 TAIL 不单独计；保留页 RESERVED 恒不计），由
+    /// [`allocated_pages_scan`] 对拍测试钉板。原 O(num_pages) 扫的消费者
+    ///（BENCH churn 断言 / F37 watchdog 锁窗 / soakmon）全数改走本 O(1) 面。
     pub fn allocated_pages(&self) -> usize {
+        self.allocated.load(Ordering::Relaxed)
+    }
+
+    /// 旧全窗扫口径（D24 独立实现——对拍基准，非运行期 API）：扫已分配块头
+    ///（`free=false` 且非 TAIL/RESERVED）按 `2^order` 累计。水位与之失同步
+    /// = alloc/free 挂点漏改——对拍测试 loud。
+    #[cfg(test)]
+    fn allocated_pages_scan(&self) -> usize {
         let mut n = 0usize;
         for p in 0..self.num_pages {
             if !self.free[p] {
@@ -996,5 +1020,60 @@ mod tests {
         for o in 0..=MAX_ORDER {
             assert_eq!(ba.find_free_head(o), linear_find_free_head(&ba, o));
         }
+    }
+
+    /// D24 水位对拍（P6 A-5 双实现纪律同源）：混序 alloc/free/reserve/release
+    /// 全生命期每步断言 `allocated_pages()`（O(1) 水位）== `allocated_pages_scan()`
+    ///（全窗扫口径）——挂点漏改/口径漂移即 loud。确定性 LCG（K-1 对拍同款，
+    /// 勿换随机源——同输入同输出纪律）。
+    #[test]
+    fn allocated_watermark_matches_scan() {
+        let n = 1024usize;
+        let mut ba = make(n);
+        assert_eq!(ba.allocated_pages(), 0);
+        assert_eq!(ba.allocated_pages_scan(), 0);
+        // 保留页不计入水位（RESERVED 恒不计——旧扫口径）。
+        ba.reserve_range(100, 180);
+        assert_eq!(ba.allocated_pages(), 0, "reserve 动水位 = 口径破");
+        assert_eq!(ba.allocated_pages_scan(), 0);
+        let mut held: Vec<(usize, usize)> = Vec::new();
+        let mut rng: u64 = 0x5E2_D24;
+        for step in 0..500 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let pick = (rng >> 33) % 4;
+            match pick {
+                0 | 1 => {
+                    if let Ok(p) = ba.alloc() {
+                        held.push((p, 0));
+                    }
+                }
+                2 => {
+                    let o = ((rng >> 40) % 5) as usize;
+                    if let Ok(p) = ba.alloc_order(o) {
+                        held.push((p, o));
+                    }
+                }
+                _ => {
+                    if let Some((p, o)) = held.pop() {
+                        ba.free(p, o).unwrap();
+                    }
+                }
+            }
+            assert_eq!(
+                ba.allocated_pages(),
+                ba.allocated_pages_scan(),
+                "step={} 水位/全窗扫分歧（D24 挂点漏改）",
+                step
+            );
+        }
+        // 释放保留区亦不动水位（归还的是 RESERVED，本就未计）。
+        let rel = ba.release_range(100, 180);
+        assert_eq!(rel, 80);
+        assert_eq!(ba.allocated_pages(), ba.allocated_pages_scan());
+        for &(p, o) in held.iter() {
+            ba.free(p, o).unwrap();
+        }
+        assert_eq!(ba.allocated_pages(), 0, "全释放后水位非零 = 泄漏口径破");
+        assert_eq!(ba.allocated_pages(), ba.allocated_pages_scan());
     }
 }

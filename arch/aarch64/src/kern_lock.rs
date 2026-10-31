@@ -84,6 +84,36 @@ pub fn svc_exit() {
     kern_release();
 }
 
+// ---- 内核任务直调包络（草案 §2.2/§2.3；F31-F36/F39-F42 改造点）----
+
+/// 内核任务直调临界区入口：= 屏蔽 IRQ + 取锁 + 置当前任务持锁义务位，一次
+/// 完成（草案 §2.2）。F 位点原形态均为任务语境 `disable_irq()` 无条件对
+/// （入口 IRQ 解蔽态）——本对语义等价替换，睡眠点（`block_current` 等）在窗内
+/// 由 sched 舞蹈自动放锁/重取（位=1 分诊）。
+///
+/// **次序铁则**：`disable_irq` 必须先于 `kern_acquire`——反例 = 先取锁后被
+/// 本核 tick 打断，`on_irq_tick` 的 `klock_acquire_raw` 自旋于本核持有的锁
+/// （IRQ 上下文不能让出 CPU）= 同核硬死锁。
+pub fn klock_enter() {
+    crate::disable_irq();
+    kern_acquire();
+    if let Some(f) = unsafe { KLOCK_FLAG } {
+        // SAFETY: 槽在 boot 单线程期注册；f 是 C-ABI fn 指针。
+        unsafe { f(true) };
+    }
+}
+
+/// 对称出口：清位 → 放锁 → 解蔽。`enable_irq` 必须最后——release 前解蔽则
+/// tick 可在持锁期闯入（同款死锁推理，见 [`klock_enter`]）。
+pub fn klock_exit() {
+    if let Some(f) = unsafe { KLOCK_FLAG } {
+        // SAFETY: 同上。
+        unsafe { f(false) };
+    }
+    kern_release();
+    crate::enable_irq();
+}
+
 // ---- PRINT_LOCK ----
 
 /// PRINT_LOCK 取锁（裸对——调用方须已在 IRQ 屏蔽窗；任务态走 [`with_print_lock`]）。

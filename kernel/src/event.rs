@@ -9,6 +9,14 @@
 //! Event 是最简单的内核对象：无队列、无对端、无钉住——就一个 u64。跨任务
 //! 通知 = 各持同一 Event 的 handle（dup 授权），signal 即写共享对象（syscall
 //! 全程 IRQ 屏蔽 → 无并发面）。
+//!
+//! **写者纪律（S-2 C21）**：`signals` 的写者 = SVC 上下文（KERN_LOCK 锁窗内
+//! ——跨核互斥 + 本核 IRQ 屏蔽）；**新增非 SVC 写者一律禁止**（IRQ 上下文绕
+//! 锁直写 = 与他核锁窗写者竞速丢更新）。唯一存量例外 = uart RX 通知槽（P5
+//! A-1 经函数指针槽在 IRQ 上下文置 RX Event 位）——其安全性依托「生产者
+//! SPI33 路由钉 CPU0 + 唯一清位者 console 任务同核 CPU0、SVC 入口先
+//! disable_irq 后取锁」的同核互斥（见 uart.rs E26）；S-3 per-CPU 迁移前
+//! 结构性成立，别在此之外加第二条 IRQ 写者路径。
 
 /// 事件对象本体：信号位掩码（bit i = 信号 i；语义归用户态约定，内核只管位）。
 pub struct Event {

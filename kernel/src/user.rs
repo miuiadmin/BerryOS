@@ -1264,9 +1264,18 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
     let mut last_switches = berry_sched::switches();
     for _ in 0..TRIES {
         // 忙等一拍（无 sleep 原语——Phase 4 通知落地前的土法；轮到别的任务跑）。
+        // **留在锁窗外**（F37）：IRQ 解蔽 tick 才轮转、金丝雀才能涨——进了窗
+        // 全系统只剩本任务串行，等金丝雀 = 自锁（草案 §2.2 短窗纪律）。
         for _ in 0..200_000 {
             core::hint::spin_loop();
         }
+        // F37 读侧收口（草案 §2.2）：kills/puts/switches 三读 + 错杀验证 +
+        // 遥测双环断言 + wake_hist 快照收进单一短窗（B16 锁窗等价口径）。
+        // 成功路经 exit_current 不归——放锁由 sched switch_away_forever 舞蹈
+        // 收口（Task 位=1，`-> !` svc_exit 同形），尾 klock_exit 对其不可达
+        // （死码勿补）；循环续行路对称 klock_exit；panic 路走锁 bypass
+        //（panic handler 直写 UART + halt，无锁递归——kern_lock.rs 模块头）。
+        berry_hal_aarch64::kern_lock::klock_enter();
         let kills = berry_sched::user_kills();
         let puts = crate::console_drained();
         let switches = berry_sched::switches();
@@ -1321,28 +1330,35 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 let p50 = benchwake_percentile(&h, 1, 2);
                 let p90 = benchwake_percentile(&h, 9, 10);
                 let p99 = benchwake_percentile(&h, 99, 100);
-                berry_hal_aarch64::uart_puts(b"BENCHWAKE n=");
-                berry_hal_aarch64::uart_put_dec(h.n);
-                berry_hal_aarch64::uart_puts(b" min=");
-                berry_hal_aarch64::uart_put_dec(h.min);
-                berry_hal_aarch64::uart_puts(b" p50=");
-                berry_hal_aarch64::uart_put_dec(p50);
-                berry_hal_aarch64::uart_puts(b" p90=");
-                berry_hal_aarch64::uart_put_dec(p90);
-                berry_hal_aarch64::uart_puts(b" p99=");
-                berry_hal_aarch64::uart_put_dec(p99);
-                berry_hal_aarch64::uart_puts(b" max=");
-                berry_hal_aarch64::uart_put_dec(h.max);
-                berry_hal_aarch64::uart_puts(b" sig=");
-                berry_hal_aarch64::uart_put_dec(h.sig);
-                berry_hal_aarch64::uart_puts(b" tmo=");
-                berry_hal_aarch64::uart_put_dec(h.tmo);
-                berry_hal_aarch64::uart_puts(b"\n");
+                // BENCHWAKE 十二段拼行收口（G43/G44）：整行在 PRINT_LOCK 内
+                // 一次拼完（原子）——嵌套 KERN→PRINT 单向合法（soakmon/
+                // BENCHRT 同形；窗内 IRQ 已屏蔽，with_print_lock 自适应不复
+                // 原解蔽）。
+                berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                    berry_hal_aarch64::uart_puts(b"BENCHWAKE n=");
+                    berry_hal_aarch64::uart_put_dec(h.n);
+                    berry_hal_aarch64::uart_puts(b" min=");
+                    berry_hal_aarch64::uart_put_dec(h.min);
+                    berry_hal_aarch64::uart_puts(b" p50=");
+                    berry_hal_aarch64::uart_put_dec(p50);
+                    berry_hal_aarch64::uart_puts(b" p90=");
+                    berry_hal_aarch64::uart_put_dec(p90);
+                    berry_hal_aarch64::uart_puts(b" p99=");
+                    berry_hal_aarch64::uart_put_dec(p99);
+                    berry_hal_aarch64::uart_puts(b" max=");
+                    berry_hal_aarch64::uart_put_dec(h.max);
+                    berry_hal_aarch64::uart_puts(b" sig=");
+                    berry_hal_aarch64::uart_put_dec(h.sig);
+                    berry_hal_aarch64::uart_puts(b" tmo=");
+                    berry_hal_aarch64::uart_put_dec(h.tmo);
+                    berry_hal_aarch64::uart_puts(b"\n");
+                });
                 berry_sched::exit_current()
             }
         }
         last_puts = puts;
         last_switches = switches;
+        berry_hal_aarch64::kern_lock::klock_exit();
     }
     panic!("G1.5 FAIL: 超时（kills={} drained={}）", berry_sched::user_kills(), last_puts);
 }

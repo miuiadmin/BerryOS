@@ -143,6 +143,14 @@ BASELINE_ICOUNT = REPO / "tools" / "bench_baseline_icount.txt"
 #   同族形态，五跑逐值相同即确定性无损）；cntvct_pair 0→0 逐值不动（寄存器
 #   直读零切换零拷贝——观测锚不动，佐证收割面无扰动）。BENCHWAKE 五跑逐字节
 #   相同（wake 观测面不动）。基线同日重立。
+# [2026-10-31 GUI-0 × S-2a 段 B 合并重证] verdict=exact：0/37/82/166/1574/6937
+#   ——两线各验全绿后的集成树（a9a75c5 × 5a9a00f+ea53e7c）：vmo_rw4k 6937 与
+#   handle_evt 166 精确等于纯 GUI-0 值 = 两改动面正交实证（段 B 锁面不进
+#   vmo rw/evt 路径、GUI-0 mem* 面不进锁面）；buddy 族 37/82/1574 = 相位重掷
+#   族（37≈基 35、82≈基 80、1574=纯 GUI-0 1662−88 与段 B +181 的混叠）；cntvct
+#   0 观测锚不动。BENCHWAKE 五跑逐字节同（max 46250423）。墙钟双段带内零刷
+#   （B-0 3/12/30/28/260/753、B-1 sys_vmo_rw4k 2019→2171 = SVC 入口锁可见
+#   代价带内合规）。基线随合并树三立。
 ICOUNT_TOL = 0.0
 
 BENCH_RE = re.compile(r"^BENCH,([a-z0-9_]+),(\d+),(\d+)$")

@@ -26,6 +26,9 @@ pub trait SchedClass {
 
 /// 上次 tick 的 CNTVCT 快照（周期数记账基准）。G0 单核静态例外——与 `sched.rs`
 /// 的计数器同款纪律：仅 IRQ 上下文顺序访问。
+///
+/// S-2 前置件 2（A11）起这是**回落位**：本核 SmpCpu.last_vct（TPIDR_EL1
+/// 寻址）才是主位——`cpu0_init` 前防御窗（RR.tick 实际不可达）走本 static。
 static mut LAST_VCT: u64 = 0;
 
 /// 简单轮转调度类（G0/G1 默认）。侵入式环形 FIFO 游标 + 固定时间片。
@@ -95,11 +98,28 @@ impl SchedClass for RoundRobin {
         // 周期数记账（2b-4）：按 CNTVCT 增量递减时间片（饱和到 0）；scheduler 读
         // `slice_left == 0` 决定重调度。基准 0 起步 → 首次 tick 增量巨大 → 必切
         // （与旧「每 tick 减 1、quantum=1」行为等价：仍一次 slice 一换）。
+        //
+        // S-2 前置件 2（A11 per-CPU 化）：基准挪本核 SmpCpu.last_vct——双 tick
+        // 结构性必须（两核共享全局时每核只对「自对方核上次 tick 以来的增量」
+        // 扣减 = slice 约半速不确定燃烧，§3.4 红线）；本核只写本核块（tick
+        // 锁窗内单写者）。槽未装（TPIDR_EL1==0，cpu0_init 前防御窗——本路径
+        // 实际不可达）回落旧全局 static，null-safe 零新 panic 面。
         let now = hal::timer::cntvct();
-        // SAFETY: IRQ 上下文、单核无并发（IRQ 入口硬件屏蔽，不嵌套）。
-        let last = unsafe { LAST_VCT };
-        unsafe { LAST_VCT = now };
-        t.slice_left = t.slice_left.saturating_sub(now.wrapping_sub(last));
+        // SAFETY: IRQ 上下文、本核独占写（per-CPU 块 / 回落位单核窗）。
+        unsafe {
+            match hal::smp::last_vct_slot() {
+                Some(p) => {
+                    let last = p.read_volatile();
+                    p.write_volatile(now);
+                    t.slice_left = t.slice_left.saturating_sub(now.wrapping_sub(last));
+                }
+                None => {
+                    let last = (&raw const LAST_VCT).read_volatile();
+                    (&raw mut LAST_VCT).write_volatile(now);
+                    t.slice_left = t.slice_left.saturating_sub(now.wrapping_sub(last));
+                }
+            }
+        }
     }
 
     fn priority(&self) -> i32 {
