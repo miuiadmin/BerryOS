@@ -267,3 +267,22 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 **S-3b 义务**：①spawn 四写点前移 + enqueue 出表窗（F-E1，与 F1 侦察面同刀）；②偷取双过滤判据落码（F-E2）；③LB 金丝雀 per-child 归因（9.2 裁决二）+ lb_master **私有 handle 表**（A45 铁律——表形状 = 4 Process + VMO + 派生位 wait_many；子 VMO 收割撞 -EBUSY 降级不 trap A18/A74）+ svc 驱动链补 vmar_map（0x31 后 0x32 前，F-A16）+ 子任务 CNTVCT 依赖注（A9 面已由副核 bring-up 开 EL0VCTEN 覆盖——静默杀死状与偷取坏同形，排障先查 F-A9）；④smoke-smp 相 3：`LB ok` **严格必需、absent 一票 FAIL**（F-A4——偷取全坏时 n=4 仍可 CPU0 墙钟跑完，absent 放行 = 零成本假绿；「PAR 块同型」限定轮询骨架不含 absent 语义）；宿主侧 grep -E 提 c0/c1/st1/n 数值复验（c0≥TH∧c1≥TH∧n==4，F-A5）+ Δ 采样点写死（首入队前/末收割后、klock 包络内 F-A8）+ 相 3 开工 `: > "$LOG"` 截断（canary 跨 boot 混日志必假败 F-A12）；⑤帽序三处（F-A7）：D=8s 名义 = TCG 墙钟 16s（CNTVCT 半速 A8 效应）；DEADLINE_LB=240 锚点在标记轮询**后**起算；guest 收割帽 60–90s（与 harness 240 分层，禁打平竞速）；⑥REAPQ 消费权显式裁决 = 维持 CPU0 双点（F-E9，= E0 等价，cap 32 有界性已论证）；⑦ktest 6 横切锁纪律项成文入 ktest.rs 注释区（F-A13——冻结前硬义务）。
 
 **S-3c 义务**：①SQ/RQ/REAPQ/表四面 `_locked` 内层立法（F-L2：不可重入自锁面三处——wake_matching→recompute、kill 钩子链、rx_irq_notify；等价镜/pi_probe klock 包络点随缩窗逐个改序）；②dispatch 分号类别取放（F-L3：约 11 个 syscall 号触 SQ/RQ/REAPQ——svc_enter/exit 全量取锁 = 每号一条反序边；方案 A 分号类别 or 持有集位图，实施时定）；③wait/wake 原子性锚改 **SQ 锁窗**（F-L4：E0 锚 = IRQ 屏蔽窗，分段后窗口敞开 = 丢唤醒永睡——查位+入队同窗 / 写位+扫描同窗）；④send fastpath = find+push+fast_wake **单 SQ 窗**（F-L5：「find 与 wake 分窗」扬队——unlink 非幂等 A39）；⑤kill 分段化五骑缝件（9.2 裁决一）；⑥per-Task 持有集位图 u8 六位（F-L9：klock_window 单 bool 不足以表达 E1 持有集；「持结构锁禁切换」从结构巧合升立法）；⑦新锁 const-init + 零 ops 依赖铁则入 §4（F-L12：ktest KLOCK_OPS None 直通窗 × const-init 兼容确认）；⑧F2 裸打印清单补第三处 heap.rs:96-100（分配器锁内 F-L10；user_fault_exit/REAPQ 溢出两处 PL 包络兼容已核 F-L11）；⑨遥测 last/span 归并语义随双环重验（等价镜猎物⑧：CNTVCT 单源有 S-2b watchdog 全绿既有实证、锁序=时序=vct 序三位一体使归并不改 last 语义——首跑复核）。
+
+### 9.5 S-3a 尾段实施拆解（2026-11-01 侦察定稿；行号锚 = d166b11 实读）
+
+六件义务落 **B→A→C 三步**：B 先行单独可验（多 SGI 流量无害化），A 与 B **合并一刀验**（A 单独落 = 副核深 park 后无唤醒源 = 结构性饿死）；C 纯文档。
+
+**步骤 B（①+⑥ 代码）——发送咽喉 + mod4 退役**：
+- ①咽喉 = `sched/src/class.rs:53 SchedClass::enqueue` 尾部（一切 Ready 转入共享插入点）：`par_enabled() && cpu_id()==0` → `unsafe { hal::gic::send_sgi(SGI_RESCHEDULE, List(1<<1)) }`。发送条件仅此两静态度（gate + 自核号），**永不读对核 park 态**（F-E6/F-A3 纪律落码）；内核任务入队也发（S-3a 全局队列无路由——浪费可受，SGI pending 合并语义下单写成本；S-3b 路由化自然消音）。CPU1 侧不发：CPU0 在 S-3a 恒不 park（console 心跳环维持 slice 节奏——主核 idle 回卷的深 park 件归 S-3b IDLE 深化，非本步面）。
+- ⑥退役 = 删 sched.rs:1495 与 :1550 两处 `park_due()` 门（`smp.rs:362` fn 随手标 retired 注释保留诊断史）；「复发则限频保留为诊断档」的盯面 = smoke-smp 相 2 现存断言（rootfs 120s 帽 6.5× 余量 + echod/-ETIMEDOUT 标记链）+ A51 自旋审计随刀重跑——帽断言 FAIL 即复发信号，无需新增探针。
+
+**步骤 A（②代码）——副核 tickless park 环 + park_recheck 提取**：
+- 提取：on_irq_tick 的 cur==null park 派发段（sched.rs:1486-1541）整体迁出为 `pub unsafe fn park_recheck()`（同 crate）；on_irq_tick 留 expire_timeouts/par_sample/cur!=null 抢占面，cur==null 段改早退（release+return）。CNTV 醒与 SGI 醒**收敛单路径**：exception_irq →（tick 槽或 SGI 计数臂）→ eret 回 park 环 → park_recheck——SGI 不进 tick 槽纪律（trap.rs:411）不破。
+- 派发路径补授片 arm：原 1521 注释假设「CVAL 已满片终点」成立于 tick 醒；SGI 醒无 CNTV IRQ、CVAL 或为深 park 残留——park_recheck 出选真任务时**自 arm_slice()**（授片 arm ≠ rearm；rearm 锚仍在 timer::handle IRQ 入口，⑤名义区分）。
+- 环形（main.rs:3077）：`loop { park_recheck(); park_arm(); enable_irq; wfi; disable_irq; }`；`park_arm` = gate 关 → arm_slice（探测态每 slice 醒查 gate，S-2b 统一环保形）；gate 开且无货 → **SLEEPQ 最近 deadline 者存在则 CVAL 编程至该 deadline（浅 park），否则 timer::mask()（深 park）**。SLEEPQ 空判需 sched 侧新只读 API `nearest_deadline() -> Option<u64>`（头未到期早停同 expire 口径）。
+- **②判据落形**：本核出选面空（peek_next_filtered null）即 park 判据成立——「对核无 pinned!=0 货」在 S-3a 全局队列形态下退化为「①SGI 兜底」（对核入队即戳，无睡穿窗）；per-CPU 队列真判据归 S-3b（F-A3 修②真面）。
+- **③④归属规则成文载体**（随 A 步入册 §2.4 补段 + 调度器设计）：SLEEPQ 插入只发生在运行核（block_current 调用核）= 插入核**单点**武装自身 CVAL；深 park 核的 CNTV 恒不需要武装（插入者必在运行核——不变量自洽）。迟醒界 ≤1 slice 真实来源 = 运行核 slice 节奏（F-E5）。
+
+**步骤 C（③④⑤ 文档）**：③④规则入子案 §2.4 补段 + 母案 §3.3；⑤rearm 锚执法点（timer::handle IRQ 入口，非 tick 尾——F-E11）在 timer.rs handle() 头注升格「执法点」字样 + 授片 arm/rearm 二分名义注记（A 步已带）。
+
+**验证链（A+B 合并刀）**：`just smoke`（单核零漂移：gate 恒关 → 发送臂零触达、park 环探测态形状不变）+ `just smoke-smp` 双相（PAR ok 仍达 = 副核参与在 tickless park + SGI 唤醒下活证；金丝雀严格递增不破）+ `just test-host` + `run-el2`。观察项：相 2 墙钟对比 R3 定标 120s（mod4 退役 + 满速参与的 console 面首跑盯梢——⑥判据）。
