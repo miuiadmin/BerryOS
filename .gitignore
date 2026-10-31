@@ -24,6 +24,10 @@
 # ——毒环态不污染他相复用盘）
 /disk.pwr.img
 
+# S-0 smoke-smp 专属盘（smoke.sh smp 相现场造；专属名与主 smoke 盘零交集
+# ——smoke/smoke-smp 并行窗互毁面归零）
+/disk.smp.img
+
 # G-eco 用户程序编译产物（just build-user 产出；缺产物 = 内核 include_bytes
 # 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
 /kernel/src/userbins/
