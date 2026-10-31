@@ -47,6 +47,11 @@ pub fn install(nr: usize, h: Handler) {
 /// 未知 / 未实现一律 [`ERR_NOT_SUPPORTED`]。
 pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     let nr = tf.regs[0] as usize;
+    // S-2 E0（SMP-S2实施设计草案 3.1-1）：SVC 入口大锁——单点覆盖 EL0/EL1 两
+    // 向量入口（trap.rs 两 EC 0x15 臂汇流于此）；svc_exit 置于 x0 写回前（写回
+    // 是 TrapFrame 栈写，不触共享结构）。`-> !` handler（0x33/0x36）不归——
+    // 放锁在 sched.rs switch_away_forever_with 按位收口，本尾对其不可达。
+    crate::kern_lock::svc_enter();
     let table = &raw const SYSCALLS;
     let ret = if nr <= NR_MAX {
         // SAFETY: 只读快照单槽（fn 指针 Copy）；install 全在 boot 单线程期。
@@ -54,6 +59,7 @@ pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     } else {
         ERR_NOT_SUPPORTED
     };
+    crate::kern_lock::svc_exit();
     tf.regs[0] = ret as u64;
     ret
 }

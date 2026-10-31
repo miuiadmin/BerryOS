@@ -448,6 +448,19 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 必须先于 ktest::run（SYSCALL 用例）与一切用户进程。
     syscall::install();
 
+    // S-2a E0（SMP-S2实施设计草案 §2.1/§2.3）：锁槽对安装——①arch SVC/fault
+    // 入口的当前任务位 置/清器（sched 侧 klock_flag_current）；②sched 五切走点
+    // 舞蹈的锁原语（arch kern_lock 四函数）。ktest 前装好 → ktest 期 SVC 也走
+    // 锁路径（单核非竞争纯开销、恒配平）；CURRENT 空窗位跳过。gate（副核参与）
+    // 不置位 = S-2a 单核可证，改动全量单核零漂移。
+    berry_hal_aarch64::kern_lock::set_klock_flag_hook(berry_sched::klock_flag_current);
+    berry_sched::set_klock_ops(berry_sched::KlockOps {
+        kern_acquire: berry_hal_aarch64::kern_lock::kern_acquire,
+        kern_release: berry_hal_aarch64::kern_lock::kern_release,
+        print_lock: berry_hal_aarch64::kern_lock::print_lock,
+        print_unlock: berry_hal_aarch64::kern_lock::print_unlock,
+    });
+
     ktest::run();
 
     // B-0（基准与压力测试设计 §4）：内核微基准 + churn 泄漏金丝雀——ktest 后、

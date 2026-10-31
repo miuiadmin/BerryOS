@@ -123,6 +123,14 @@ BASELINE_ICOUNT = REPO / "tools" / "bench_baseline_icount.txt"
 #   **基线零改动**；release codegen 独立核实（crate 级 asm：ldr 后 cbz→次摘要
 #   字循环块，守卫在位）。即 debug 通道 loud（断言）/ release 通道纵深（跳字）
 #   双形态成立，icount 指令流不受扰。
+# [2026-10-31 S-2a 重证] verdict=exact：0/35/80/50/311/1695——KERN_LOCK BKL
+#   纪元锁底座段 A（TTAS 原子序进 SVC 入口/dispatch 尾 + 五切走点舞蹈 +
+#   计数原子化 A12，`docs/SMP-S2实施设计草案.md`）：非 buddy 三项（cntvct 0 /
+#   handle_evt 50 / rw4k 1695）与 S-1 基线（3bf9185 立档 0/78/33/354）逐值
+#   相同；buddy 族三项 78→35 / 33→80 / 354→311——三 delta 对称 ±43-47，
+#   归因 = 测量窗内 ±1 次 tick 事件的相位迁移（锁指令序改变 boot 后虚拟
+#   时钟相位，tick 边界相对测量窗落位翻转，窗内恰含 k 或 k+1 个完整
+#   tick；非 buddy 三项窗小/相位无关不受扰）。基线同日重立。
 ICOUNT_TOL = 0.0
 
 BENCH_RE = re.compile(r"^BENCH,([a-z0-9_]+),(\d+),(\d+)$")
