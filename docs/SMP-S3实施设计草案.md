@@ -1,6 +1,6 @@
 # SMP S-3（E1 per-CPU 纪元）实施设计草案
 
-> 状态：**立稿初版 2026-11-01 + 侦察四面收官同日**——§8 侦察结果 A-D 全落（锁序改序定案 / LB 验收照抄级 / SGI 预研 + 全禁坑）；**三镜对抗审查待**（S-2 同型流程），审查后冻结实施序再动代码。
+> 状态：**立稿 + 侦察四面 + 三镜对抗审查收官 2026-11-01（同日三段）**——§8 侦察结果 + §9 三镜审查结果（45 findings 合折、两裁决落定：kill 链分段化 + LB per-child 归因）；**实施序 a→b→c 冻结**（§9.4 义务清单按步对表），下一动作 = S-3a 首步 QEMU SGI 实测。
 > 母案：`docs/SMP设计草案.md` §2.1 E1 行（语义权威）+ §4 S-3 行（范围权威）+ §3.3 SGI IPI 面（硬前置）+ §1.4 偏差对账（调度器设计 §3.5「per-CPU runqueue day-one」声明由本刀兑现改写）。
 > 直接输入（S-2 §7 逐字移交）：`docs/SMP-S2实施设计草案.md` §1 共享面盘点 54 项处置档总表（= 拆锁地图）+ §3.3 切换原语舞蹈表（= 取放点地图）+ §7「留给 S-3」清单。
 > 基线：eaab6c6（S-2b 收官态）；行号锚 = 立稿时点，实施后按符号定位（S-2 先例）。
@@ -34,9 +34,9 @@
 | 调度 | A3 CURRENT | per-CPU 访问器（S-2b 过渡形态） | **真体化**：sched 内部对全局 static 的回落路径收编、注释对齐（行为不变，形态收敛） | per-CPU（免锁维持） |
 | 调度 | A7 IDLE | IDLE_TASK 单份（CPU0）+ 副核 park ctx（S-2b §2.3） | **per-核 idle 环统一**：pick 本地 → steal 探测 → 空则 tickless wfi（§2.4）；CPU0 idle_loop 与副核 secondary_main 环合流为同一 per-core idle 例程；IDLE_TASK 符号退役或降格为 CPU0 idle ctx（侦察定形态——「不立第二个 IDLE_TASK」口径延续，深化非推翻） | per-CPU |
 | 调度 | A8/A9 integrity/expire | tick 锁窗内 | 随 tick 面拆：本核队列锁内执行（integrity 的跨队走查面 = 侦察重设计点——只查本核 or 双锁聚合快照） | 随队列锁 |
-| 调度 | A10 kill_all | KERN_LOCK 全程 | 维持大锁窗（杀链跨任务跨表，粒度不拆——「零阻塞零让出」红利延续；挂 E2 议）。**侦察 C E19/E20**：与 §3 全序冲突（持表跨四层）——三镜审查裁决分段化 or 大锁豁免位（豁免则须入全序特则） | 收缩版 KERN_LOCK |
+| 调度 | A10 kill_all | KERN_LOCK 全程 | **分段化 + 五骑缝件**（§9.2 裁决一——三镜审查落定，否决大锁豁免/集齐四锁案：分配器×O(n²) 停摆 + 豁免位无执法 + F-L8 UAF 两案同病；骑缝件 = 介释放/保 F6 序/双杀 CAS/双队扫描/横核 Running 协议） | 收缩版 KERN_LOCK + 段间重验 |
 | 遥测 | B12/B13 双环 | 单环 KERN_LOCK 串行（S-2 撤销记录维持正确） | **per-CPU 双环**（母案 E1 原位——S-2 §7 留面；可观测性设计原案拆核口径随侦察对齐）；读者（watchdog/BENCHWAKE）改聚合快照 API | per-CPU 写 + 聚合读 |
-| 对象系 | C20 表/对象 | KERN_LOCK 锁内免费 | **KERN_LOCK 收缩为「对象系/表锁」**（更名或收窄——S-2 §7 退役路径第一步；svc_enter/svc_exit 取放点不动，锁的覆盖面从「一切」缩到「对象系/表」） | 收缩版 KERN_LOCK |
+| 对象系 | C20 表/对象 | KERN_LOCK 锁内免费 | **KERN_LOCK 收缩为「对象系/表锁」**（更名或收窄——S-2 §7 退役路径第一步）；~~svc_enter/svc_exit 取放点不动~~ **修正（§9 F-L3）**：约 11 个 syscall 号触 SQ/RQ/REAPQ——入口全量取表锁 = 每号一条反序边，**dispatch 须分号类别取放**（S-3c 义务②） | 收缩版 KERN_LOCK |
 | 对象系 | C21 Event.signals | 非 atomic + 纪律注释 | **AtomicU64 化**（S-2 §7 备选转正——拆锁后「跨核写者全收口」论证失效，原子化一劳永逸；成本极低） | 原子 |
 | 对象系 | C22 ObjRef | 锁内免费 | 随收缩版 KERN_LOCK 维持 | 收缩版 |
 | 分配 | D23 buddy/slab | KERN_LOCK 锁内（E0 无锁铁则） | **独立自旋锁、buddy+slab 合一**（§8.C 定案：slab 补页天然嵌套 buddy，分立须另立内序、合一代价可忽略；per-CPU slab 留后续）；`frames()` 类型面真修（D25）随本刀收账 | 分配器锁（合一） |
@@ -59,7 +59,7 @@
 
 | 号 | 名 | 用途 | 消费者 |
 |----|----|------|--------|
-| 1 | `SGI_RESCHEDULE` | 跨核唤醒戳：入队者发现目标核非当前核/park 态即发；收端 handler = 无条件重验 pick（幂等——pending 合并语义下丢/重均无害，pick 兜底） | S-3a |
+| 1 | `SGI_RESCHEDULE` | 跨核唤醒戳：**入队/唤醒路由到他核即无条件补发（幂等）——禁读对核 park 态条件发送**（§9 F-E6/F-A3：racy 读 = 丢唤醒成因；park 态判定根本不进发送条件）；收端 handler = 无条件重验 pick（pending 合并语义下丢/重均无害，pick 兜底） | S-3a |
 | 2 | `SGI_TLB_DONE` | shootdown 完成回执 | **号位预留不消费**（S-4） |
 
 SGI 0 保留不用（0 号是复位默认值域，观测面干净性）。
@@ -70,8 +70,8 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 
 ### 2.4 park/release 改形 + tickless idle 恢复（E0 两大代价的根治）
 
-- **唤醒延迟 ≤1 slice（S-2 R2）根治**：跨核唤醒路径（wake_matching 命中他核任务 / 入队到他核队列）补发 SGI_RESCHEDULE——被唤任务立刻上核，不再等目标核下次 tick。
-- **tickless idle 恢复（S-2 §2.3 主核 idle 改形的回卷）**：per-核 idle 环空判（本队列空 + 无 steal 货 + SLEEPQ 无到点者——侦察细化判据）→ **mask CNTV + wfi**（真 tickless park）；唤醒源 = SGI_RESCHEDULE（入队者发）+ RX IRQ（CPU0，不可依赖只作兼带）+ 到点任务路径（SLEEPQ 最近 deadline → 该核 CVAL 单点武装——侦察定「无到点者全 mask / 有则单点武装」双态形态）。gate 关（单核）维持现形态零漂移（S-2 先例口径）。
+- **唤醒延迟 ≤1 slice（S-2 R2）根治**：跨核唤醒路径（wake_matching 命中他核任务 / 入队路由到他核）**无条件**补发 SGI_RESCHEDULE（§9 修正：发送条件 = 「目标核非当前核」这一静态判定，不读对核 park 态）——被唤任务立刻上核，不再等目标核下次 tick。
+- **tickless idle 恢复（S-2 §2.3 主核 idle 改形的回卷）**：per-核 idle 环空判（本队列空 + 无 steal 货 + **对核无 pinned!=0 货**（§9 F-A3 修②——A/B 忙环使「非空」恒真，防 parked-peer 睡穿偷取窗）+ SLEEPQ 无到点者——侦察细化判据）→ **mask CNTV + wfi**（真 tickless park）；唤醒源 = SGI_RESCHEDULE（无条件发——入队侧不赌 park 态）+ RX IRQ（CPU0，不可依赖只作兼带）+ 到点任务路径（SLEEPQ 最近 deadline → **归属核**该核 CVAL 单点武装——归属规则随 S-3a 成文 F-E5；不变量「SLEEPQ 插入只发生在运行（tick 武装）核上」入册 = 迟醒界 ≤1 slice 的真实来源）。gate 关（单核）维持现形态零漂移（S-2 先例口径；等价镜实证：分支门卫 par_enabled/cpu_id!=0/无发送者 SGI/mod4 纯 CPU1 面——单核结构性不走新分支）。
 - **park 限频 mod4 退役**：副核满速参与（S-2 雷 2 治理的限频占空比在 IPI + 满速参与后失去存在理由——首跑盯 console 饱和面是否复发，复发则限频保留为诊断档）。
 
 ## §3 拆锁时序与锁序（S-2 §3.3 舞蹈表移交面）
@@ -83,26 +83,26 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 
 **锁序立法（死锁面预防——侦察 C 修正版 2026-11-01）**：
 
-- 全序（**改序**——立稿拟序「队列>SLEEPQ>REAPQ>分配器>表>打印」被现实调用图证伪两处：①持表摸分配器恒常（Drop 链 E1-E10 十条边）→ 分配器须降至表之下；②SLEEPQ 与队列的现实操作序全族 SLEEPQ 先（wake/block/expire/kill E15-E18）→ SLEEPQ 须升至队列之上。反向边零命中）：**SLEEPQ 锁 > 队列锁（双持时先远端后本地，按核号升序）> REAPQ 锁 > 对象系/表锁（收缩版 KERN_LOCK）> 分配器锁（buddy+slab 合一）> ASID 锁 > 打印锁**——证据面 = §8.C 逆序边表 E1-E20；残余重排面收敛为三类：wake/PI 分段取放（E11-E14）、kill 链分段化裁定（E19/E20，A10「维持大锁窗」与全序冲突——三镜审查裁决）、wait 表锁放点前移（E13）。
-- 偷取锁序特则：**只持远端**（偷取 = 放本地锁 → 取远端锁 → 远端 dequeue → 放 → 本核无锁持有该 Task——任务此刻无队列归属，入本核队列时再取本地锁；「双队列同时出现」不变量由「出队后无归属窗 + 单点入队」构造性保证——细案侦察定）。
+- 全序（**改序**——立稿拟序「队列>SLEEPQ>REAPQ>分配器>表>打印」被现实调用图证伪两处：①持表摸分配器恒常（Drop 链 E1-E10 十条边）→ 分配器须降至表之下；②SLEEPQ 与队列的现实操作序全族 SLEEPQ 先（wake/block/expire/kill E15-E18）→ SLEEPQ 须升至队列之上。反向边零命中；**等价镜补列漏边**（F-E1：spawn 的 enqueue 在表窗内 = 表→队列边，与 wake 族成 ABBA 对——E 表补列，修法 = enqueue 出表窗）；**三镜裁决：七层相对序无环、方向确认可冻结（§9.0）**）：**SLEEPQ 锁 > 队列锁 > REAPQ 锁 > 对象系/表锁（收缩版 KERN_LOCK）> 分配器锁（buddy+slab 合一）> ASID 锁 > 打印锁**——证据面 = §8.C 逆序边表 E1-E20 + §9 F-E1 补边；残余重排面三类定案：wake/PI 分段取放（E11-E14——fastpath 定案 = find+push+fast_wake 单 SQ 窗 F-L5）、kill 链分段化（§9.2 裁决一）、wait 表锁放点前移（E13）；**wait/wake 原子性锚 = SQ 锁窗**（F-L4：E0 锚 IRQ 屏蔽窗在分段后敞开 = 丢唤醒永睡——查位+入队同窗/写位+扫描同窗）；**不可重入立法**（F-L2：KERN_LOCK 朴素 TTAS 同核自锁——SQ/RQ/REAPQ/表四面 `_locked` 内层分层，自锁面三处 wake_matching→recompute/kill 钩子链/rx_irq_notify）。
+- 偷取锁序特则：**只持远端**（偷取 = 放本地锁 → 取远端锁 → 远端 dequeue → 放 → 本核无锁持有该 Task——任务此刻无队列归属，入本核队列时再取本地锁；**双持一律核号升序（0→1）**（§9 F-L1 修正：原「先远端后本地×核号升序」两句互斥 = CPU0 取 1→0 / CPU1 取 0→1 ABBA——偷取「只持远端」不构成双持，单独成条）；「双队列同时出现」不变量由「出队后无归属窗 + 单点入队 + **偷取双过滤 `state==Ready && pinned!=0`**（F-E2——PickFilter 他核 Running 排除臂的偷取面化身，漏写 = 任务双核同时执行）」构造性保证。
 - 切换原语舞蹈表（S-2 §3.3 五原语）逐行重映射：每原语的「切前放什么锁/切回取什么锁」从单锁位演化为锁集合枚举——**侦察面 A（最大细读面）**：yield_now/block_current/try_preempt/switch_away_forever_with/on_irq_tick 各自触达结构全列。
 - IRQ 上下文纪律：SGI handler / tick / RX 的取锁面按「短窗 + 永不睡眠 + 永不嵌套打印锁之外的锁」复核（S-2 §2.2 对表结论重裁——母案「IRQ 侧收 per-CPU-only」偏好在 resched_pending 位上部分成立）。
 
-**work stealing 初版**：偷取触发 = 本核 pick None 且对核队列非空（idle 环探测点）；粒度 = 单任务；方向 = 双向（CPU0↔CPU1 用户任务；内核任务永不偷——pinned==0 全钉 CPU0 维持）；per-CPU `steal_cnt` 诊断计数（验收面用）。负载均衡初版 = 「入队侧空核偏好 + idle 偷取」二件（主动迁移不做——挂 v2）。
+**work stealing 初版**：偷取触发 = 本核 pick None 且对核队列非空（idle 环探测点）；粒度 = 单任务；方向 = 双向（CPU0↔CPU1 用户任务；内核任务永不偷——pinned==0 全钉 CPU0 维持）；per-CPU `steal_cnt` 诊断计数（验收面用）。**放置路由 v1（唯一定稿 §9 F-E3/F-E4/F-A1：「入队侧空核偏好」措辞废除）= 本核优先 + 深度失衡阈值 K=2（常规流量；K=2 下 4-burst 第 3 个任务即直接路由 CPU1——直接路由与偷取同格合格，金丝雀断言不赌路由形态，见 §9.2 裁决二）**；主动迁移不做（挂 v2）。
 
 ## §4 拆步表（每步独立可验收；缝 = 可回退面）
 
 | 步 | 内容 | 验收 | 标记 |
 |----|------|------|------|
 | **S-3a SGI IPI 底座 + tickless 恢复** | §2 四件：SGIR 原语 + 实证记录 + SGI_RESCHEDULE 分流段 + 跨核唤醒补发 + per-核 idle 环统一（tickless park 恢复）+ park mod4 退役 | `just smoke`（单核零漂移——单核无发送者，SGI 面结构性无扰动）+ `just smoke-smp` 双相全绿 + `just test-host` + `just build-release` + `run-el2` | smoke-smp 照旧双相（提速不进门）；QEMU SGI 实证记录入母案执行结果区 |
-| **S-3b per-CPU 队列 + 偷取（锁窗未缩）** | A4/A7/A8/A9 + 放置路由 + pick_filter 退役改形 + work stealing 初版 + LB 金丝雀（§5）；SVC 入口仍全量锁 | smoke-smp 全绿（rootfs 相 = E0 语义等价再证）+ 主 smoke 零漂移 + test-host + icount 刷新（队列路径指令数变——S-2a 先例） | **`LB ok`（G2 验收项 1，§5）** |
-| **S-3c 结构锁族 + KERN_LOCK 收缩 + 遥测双环** | A5/A6/D23/D25/C21/C20 收缩/E25 tick 最终形态/B12-B13 双环/F 族包络重映射 + ktest PI/FAST 契约面重验（锁纪元重验）| smoke-smp 全绿 + 主 smoke 零漂移 + test-host + build-release + ktest PI/FAST 面单核双核双绿 | 内核并行见证（诊断面：KERN_LOCK 争用计数下降——不进门） |
+| **S-3b per-CPU 队列 + 偷取（锁窗未缩）** | A4/A7/A8/A9 + 放置路由 + pick_filter 退役改形 + work stealing 初版 + LB 金丝雀（§5/§9.2）；SVC 入口仍全量锁；spawn 四写点前移 + enqueue 出表窗（§9 F-E1） | smoke-smp 全绿（rootfs 相 = 单核恒等 + **功能等价** + 无饿死 + 内核锁序串行——§9 F-E10 表述降格，调度序面按设计扩展交错集非严格 E0 等价）+ 主 smoke 零漂移 + test-host + icount 刷新（队列路径指令数变——S-2a 先例） | **`LB ok`（G2 验收项 1，§5/§9.2 per-child 归因）** |
+| **S-3c 结构锁族 + KERN_LOCK 收缩 + 遥测双环** | A5/A6/D23/D25/C21/C20 收缩/E25 tick 最终形态/B12-B13 双环/F 族包络重映射 + ktest PI/FAST 契约面重验（锁纪元重验）+ kill 分段化五骑缝件（§9.2）| smoke-smp 全绿 + 主 smoke 零漂移 + test-host + build-release + ktest PI/FAST 面单核双核双绿（**ktest 串行本质——并发面覆盖归 LB/soak，如实记载 §9 F-A13**） | 内核并行见证（诊断面：KERN_LOCK 争用计数下降——不进门） |
 
 依赖序：a → b → c 线性（b 的队列形态是 c 缩窗口的前提；a 的 IPI 是 b 满速参与的唤醒前提）。回退缝：a 的 SGI 面 = 单核零扰动（天然缝）；b/c 之间 = 锁窗缩放点（c 不做即停 b 态 = E0.5 形态仍全绿）。
 
 ## §5 验收设计（G2 验收项 1 = 负载均衡对）
 
-- **LB 金丝雀（状态谓词非竞速——4-5a 铁律 + 母案 §5「计数/旗标谓词」口径；**参数与实施粒度定案 §8.D**）**：fw_cfg 门 `opt/berry/lb`（双门 gate + `LB gate on` 自证）；lb_master 内核任务 burst spawn N=4 个 Process-backed CPU-bound 用户任务（svc 0x11/0x15/0x31/0x32 驱动，内嵌 asm 平像 `mrs CNTVCT_EL0` 自旋 D=8s → `svc 0x33`）；完成收割 = `wait_many` 挂 N 个 Process 的 `SIGNAL_TERMINATED`（C-4b 收集器同款，零 console 依赖）；断言单原子行 **`LB ok c0=Δ c1=Δ st1= n=4`**（Δ=el0_ticks 双采样差 ≥ TH=8、st1=CPU1 steal_cnt ≥1、n=完成数）+ 诚实降级行 `LB absent`；smoke-smp.sh 第三相 gated bare（DEADLINE_LB=240）+ 相 1/2 反向断言 `LB gate on` 不得出现 + R3 第四数。置失衡形态 = 放置路由本核优先 + 深度失衡阈值 K=2（§3）——burst 从 CPU0 侧结构性全落 CPU0 队，CPU1 得货唯一路径 = 偷取，无 force 旋钮。`PAR ok` witness 门从 S-2b 翻转档**回收入场**（S-2 §5.2 回收条件 = IPI + 满速参与，本刀兑现；S-3b 同刀把 PAR 断言从 d1>0 档翻回 witness 档）。
+- **LB 金丝雀（状态谓词非竞速——4-5a 铁律 + 母案 §5「计数/旗标谓词」口径；**参数 §8.D + 断言语义 §9.2 裁决二**）**：fw_cfg 门 `opt/berry/lb`（双门 gate + `LB gate on` 自证）；lb_master 内核任务（**私有 handle 表**——A45 铁律）svc 驱动 burst spawn N=4 个 Process-backed CPU-bound 用户任务（内嵌 asm 平像 `mrs CNTVCT_EL0` 自旋 D=8s → `svc 0x33`）；完成收割 = `wait_many` 挂 N 个 Process 的 `SIGNAL_TERMINATED`（C-4b 收集器同款，零 console 依赖）；断言单原子行 **`LB ok c0=Δ c1=Δ st1= n=4`**——**Δ/lb 计数按 per-child 归因**（`LB_CHILDREN` 4 槽静态数组，tick/偷取路径按 `cur ∈ LB_CHILDREN` 记——直接路由与偷取同格合格，矩阵噪声零污染；st1 全局计数降诊断）；smoke-smp.sh 第三相 gated bare（DEADLINE_LB=240，**锚点在标记轮询后起算**）+ 相 1/2 反向断言 `LB gate on` 不得出现 + R3 第四数；**相 3 语义 = `LB ok` 严格必需、`LB absent` 一票 FAIL**（§9 F-A4——禁克隆 PAR absent 放行语义）。`PAR ok` witness 门从 S-2b 翻转档**回收入场**（回收条件 = IPI + 满速参与；S-3b 同刀把 PAR 断言从 d1>0 档翻回 witness 档——§9 F-E12：路由后 PAR ≡ 偷取见证，保留为诊断非验收门）。
 - **偷取测试**：并含于 LB 金丝雀③（steal 见证）；反例面 = 内核任务零偷取（pinned==0 全 CPU0——诊断计数可查）。
 - **ktest PI/FAST 契约面重验**（母案 S-3 行点名；**清单定案 §8.D = 17 断言面 + 6 横切锁纪律项**，PI-K J0-J7 / FAST-K L0-L6 / boot `I PI ok` / `F FAST ok` 四锚）：PI 受捐链（4-5a 面）与 fastpath 恒等唤醒集（4-4 面）在锁纪元 E1 下单核 + 双核重跑——S-2 §3.4「单核不变量逐条保持」论证随锁重做；最危险三条首查 = send fastpath 对象锁→SLEEPQ 扫描逆序边（R1 同源）、recompute/for_each_sleeper 重入 `_locked` 分层、pi_probe klock 包络取序。
 - **遥测聚合验收**：聚合快照 API 签名原样（total/check/last/span/wake_hist 五面）⇒ watchdog/tele_dump/ktest 三读者断言零改动即绿 = 双环切换零漂移的验收形态本身。
@@ -130,7 +130,7 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 - ~~侦察面 B~~ ✅ **2026-11-01 完成**（§8.B——GICv2 dumpdtb 实证 + gic.rs:72 全禁坑 + probe 三步实测序；实测钉钉留 S-3a 首步）。
 - ~~侦察面 C~~ ✅ **2026-11-01 完成**（§8.C——E1-E20 逆序边表证伪立稿拟序两处（§3 已改序）+ 分配器合一锁定案 + D25 方案 + ASID 补位 + Topo 五点最小形态）。
 - ~~侦察面 D~~ ✅ **2026-11-01 完成**（§8.D——LB 金丝雀照抄级方案 + ktest 重验 17+6 清单 + 遥测聚合 seqlock 定案）。
-- **三镜对抗审查（下一门）**：锁序死锁镜 / 语义等价镜（E0→E1 单核不变量逐条）/ 验收有效性镜（金丝雀谓词性）。裁决项 = A10 kill 链分段化 or 大锁豁免位（E19/E20）。审查后冻结拆步序再动代码。
+- ~~三镜对抗审查~~ ✅ **2026-11-01 完成**（§9——45 findings 合折：全序无环方向确认 + KERN_LOCK 不可重入前提纠错 + 两裁决落定（kill 链分段化五骑缝件 / LB per-child 归因解耦）+ §9.4 冻结后实施义务清单按步归属；正文随审修订 §9.3 所列处）。**实施序 a→b→c 冻结**。
 - **文档义务**：调度器设计 §3.5「per-CPU runqueue day-one」行改写（母案 §1.4 偏差对账闭环）；母案执行结果区追记（S-3a 实证记录）；CLAUDE.md Gotchas 锁纪律三条增补面复核（S-2 文档义务项随本刀锁形态变化重裁）；进展追记 `docs/阶段沿革.md`。
 
 ## §8 侦察结果（2026-11-01 三路并行侦察 + B 面内联；行号锚 = main@c02258c 实读）
@@ -215,7 +215,8 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 **LB 金丝雀实施方案（S-3b `LB ok`，照抄级粒度）**：
 
 - **门控**：fw_cfg string 键 `opt/berry/lb`（soak 先例 main.rs:1355-1391 读法）；gate 块克隆 PAR gate（main.rs:1411-1437）插其后，双门 `find_file && smp_active()` + `LB gate on` 自证行 ⇒ 单核主 smoke 零漂移。
-- **置失衡形态（侦察定案）**：放置路由 v1 = **本核优先 + 队列深度失衡阈值 K=2**（非 idle 位）——burst 从 CPU0 侧入队结构性全落 CPU0 队，CPU1 得货唯一路径 = 偷取，**无需 force 旋钮**。偷取资格判据维持 `pinned != 0` ⇒ **LB 子任务必须 Process-backed**（svc 0x11/0x15/0x31/0x32 由 lb_master 内核任务驱动——EL1 同权 A14 + pi_client svc 先例）。
+- **置失衡形态（~~侦察定案~~ §9 修订 F-A1/F-A4）**：~~放置路由 v1 = 本核优先 + 队列深度失衡阈值 K=2（非 idle 位）——burst 从 CPU0 侧入队结构性全落 CPU0 队，CPU1 得货唯一路径 = 偷取，无需 force 旋钮~~ **K=2 与「4-burst 全落 CPU0」算术互斥（第 3 个任务即直接路由 CPU1）——路由保持 K=2（常规均衡语义），金丝雀断言改 per-child 归因与路由形态解耦（§9.2 裁决二），「置失衡」叙事废除**。偷取资格判据维持 `pinned != 0` ⇒ **LB 子任务必须 Process-backed**（svc 0x11/0x15/0x31/0x32 由 lb_master 内核任务驱动——EL1 同权 A14 + pi_client svc 先例；**链上补 vmar_map** §9 F-A16）。
+- **lb_master 私有 handle 表（§9 F-A6 补）**：A45 铁律——不挂 tag 表则 4 个 Process handle 默认落共享 BOOTSTRAP_HT（PI 错捐面 A34/A45）；表形状 = 4 Process + VMO + 派生位 wait_many；子 VMO 收割撞 -EBUSY（A18 销毁性 close）降级不 trap（A74）。
 - **子任务**：内嵌 asm 平像（~20 指令）：`mrs CNTVCT_EL0` 自旋 8s（D_TICKS=500e6 @62.5MHz）→ `svc 0x33` 退出；纯 EL0 零 syscall（不扰 icount 剖面）。完成收割 = lb_master `wait_many` 挂 N 个 Process 的 `SIGNAL_TERMINATED`(1<<2，abi_gen.rs:96)——C-4b 收集器同款，**子任务零 console 依赖**。
 - **参数**：N=4 / D=8s / 阈值 TH=8（TCG tick ~5Hz/核 ⇒ 均衡每核 ≥40 tick，5x 余量）。
 - **落点**：`el0_ticks` 已在 par_sample（smp.rs:302-326，双核各写自己块）——Δ 窗采样归因干净（裸相 pinned!=0 只有 LB 子任务）；`steal_cnt` 新字段 @ SmpCpu offset 88（128B 块宽不变）+ `note_steal()`（镜像 note_dispatch）+ `steal_readout()`。
@@ -229,3 +230,40 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 3. **pi_probe klock 包络取序**（main.rs:1726）：klock_enter→for_each_sleeper 在锁窗收缩后成逆序边——boot `I PI ok` 面的代码改动点。
 
 **遥测聚合读 API（R6 定案）**：per-CPU 双环 + **每环 seqlock**（写钩只加 2 store，仍零分配——A37 合规）+ **聚合快照函数签名原样保留**（total=Σ 各环、check=逐核单调 + vct 一致、last/span 按 vct 归并——CNTVCT 全局单源是跨核归并的物理根基、wake_hist 逐桶相加）⇒ watchdog/tele_dump/ktest 三读者零改动；**不占锁序**（原子序读定案）+ 原始 per-core 访问器留给未来 trace 服务（对齐可观测性设计.md:26-33「每核写自己的环/服务按核轮询」原案——v1 消费面 = 内核聚合，S-3c 随刀在两处文档落同口径）。
+
+## §9 三镜对抗审查结果（2026-11-01 三路并行；全文报告 /tmp/s3_review_{lock,equiv,accept}.md——/tmp 易失，必修项与裁决已全量入册本节，LOW 项随实施刀顺手收）
+
+### 9.0 总判定
+
+**三镜齐一：方向正确、需修后冻结——本节修订落稿后实施序（a→b→c）即冻结。** §3 全序七层相对序经死锁镜全链查证**无环边**（Drop 链回边不存在 F-L13、ASID 面零冲突、E1-E20 外无新环——除等价镜补列的 spawn 边 F-E1）；SQ 最上的方向被确认（「表最外」备选否决 F-L15——保留 E0 级串行使 S-3c 目标归零）；staging 三步的单核零漂移承诺**结构性成立**（等价镜：cpu_id 防御窗返 0 + const 初始化锁无安装步骤 + TOPO const 默认 ≡ Topo::single()）。
+
+**前提纠错（死锁镜）**：KERN_LOCK **不可重入**——`kern_lock.rs:34-43` 朴素 TTAS，同核重取自锁。§3 立法与全部 `_locked` 分层以此为基（E0 时代靠「syscall 主体不可抢占 + IRQ 屏蔽窗」使重取不可达，非靠重入）。
+
+### 9.1 交叉证实面（多镜独立命中 = 必修无疑）
+
+| 面 | 死锁镜 | 等价镜 | 验收镜 | 合折定案 |
+|----|--------|--------|--------|----------|
+| 放置路由两说并存 + K 算术矛盾 | — | F-E3/F-E4 | F-A1 | **路由 v1 唯一定稿 = 本核优先 + 深度失衡阈值 K=2（常规流量）**；§3「入队侧空核偏好」措辞废除；金丝雀断言与路由形态**解耦**（9.2 裁决二） |
+| parked-peer 睡穿 / SGI 发送条件 | — | F-E6 | F-A3 | **无条件向对核发 SGI（幂等），禁读对核 park 态条件发送**（racy 读 = 丢唤醒成因）；park 判据收「对核有 pinned!=0 货则不 park」；SLEEPQ 到点武装归属核定义随 S-3a 落 |
+| spawn 表窗内 enqueue 逆序边 | E 表漏列 | F-E1（HIGH） | — | **E 表补边（表→队列）**；修法 = 装配→写字段→放表→enqueue→重取表→簿记；thread_key/pinned **双字段四写点**（syscall.rs:925/:927/:1044/:1052）全前移（F1 侦察面结论扩充） |
+| kill 扫描面 | F-L7 | F-E8 | — | kill_all / integrity_check 双面同修：**双队核号升序双持扫描**（integrity 定案 = 双锁聚合快照 + 计数对账 + 容忍偷取空窗瞬态） |
+| 偷取判据未定义 | — | F-E2（HIGH） | — | **`state==Ready && pinned!=0` 双过滤**（PickFilter 他核 Running 排除臂的偷取面化身）；「出队后无归属」= 合法新瞬态，integrity/kill 容忍 |
+| ktest 双核覆盖诚实性 | — | — | F-A13 | ktest 本质串行——「双核双绿」不证并发 PI/FAST；覆盖归 LB 金丝雀 + soak，§4 表述如实改 |
+
+### 9.2 两裁决
+
+**裁决一（A10 kill 链 E19/E20）= 分段化，不采大锁豁免位/集齐四锁案**。等价镜倾向「按全序集齐四锁再跑链」（语义逐位同今日、零例外条款）；死锁镜对抗后否决：①大锁窗含分配器 × kill_all O(n²) 重扫 = **两核分配停摆**（豁免位代价面）；②豁免位无 lockdep 执法 = 注释温床；③F-L8（kill 匹配 + REAPQ 释放他核 Running 任务 kstack → 远核写已释放栈 = **UAF 写**，E0 已存在、E1 放大；CONFIRMED 代码面/PLAUSIBLE 实命中）**两案同病**——横核 Running 面必须骑缝件，豁免位买不到豁免。采分段化 + **五骑缝件**：①介释放（段间放锁点重验存活）；②保 F6 序（EXIT_HOOK mark→wake→drain→release 序不换）；③双杀 CAS（kill 匹配与状态翻转原子）；④双队扫描（F-L7）；⑤横核 Running 协议（SGI 停等静默 or kstack 延后释放——F-L8 修法，S-3a 的 SGI 底座先行使其可选）。等价镜的「语义逐位」要求转化为分段化后的语义论证义务（随 S-3c 重做，表述按 F-E10 降格为功能等价）。
+
+**裁决二（LB 金丝雀归因）= per-child 归因断言，与路由形态解耦**。验收镜 F-A1 证实 K=2 下 4-burst 第 3 个任务必直接路由 CPU1（失衡 ≥2 触发）——「结构性全落 CPU0」叙事假、st1=0 恒红；F-A2 证实 Δ/st1/n 三谓词被稳态矩阵常驻 EL0 用户（waiter/pinger/ponger/abuser/spawner，main.rs:507-795）污染 = 子任务偷取全坏也能假绿。定案：**4 槽子任务指针静态数组（`LB_CHILDREN`），tick/偷取路径按 `cur ∈ LB_CHILDREN` 记 `lb_ticks/lb_steal_cnt`**（矩阵噪声零污染、子任务仍零 syscall）；主断言 = 每子任务 ran-on 归因（G2 性质 = 均衡对——**直接路由到空核与偷取同格合格**）；st1（全局 steal_cnt）降诊断行。副产物：偷取活证的独立见证改由 lb_steal_cnt 承担，PAR witness 叙事随之改述（F-E12：路由后 PAR ≡ 偷取见证，与 LB 同质——保留为诊断非验收门）。
+
+### 9.3 正文随审修订处（本 commit 内已改）
+
+§3 队列双持规则（F-L1：原「先远端后本地×核号升序」两句互斥 = CPU0 取 1→0 / CPU1 取 0→1 ABBA——改纯核号升序）；§2.2/§2.4 SGI 无条件发送 + park 判据（F-E6/F-A3）；§3 work stealing 路由统一 + 偷取双过滤（F-E2/F-E3/F-E4/F-A1）；§1 A10 行裁决落定；§4/§5 表述降格与断言语义（F-E10/F-A4/F-A13）；§8.D 补 lb_master 私有表 + svc 链 vmar_map（F-A6/F-A16）。
+
+### 9.4 冻结后实施义务清单（按步归属；每步验收前对表打勾）
+
+**S-3a 义务**：①SGI 无条件发送纪律（禁 park 态条件读）落码；②park 判据含「对核有货不 park」；③SLEEPQ 到点武装归属核规则成文；④单点武装不变量「SLEEPQ 插入只发生在运行（tick 武装）核上」入册（迟醒界 ≤1 slice 的真实来源 F-E5）；⑤rearm 执法点锚 timer::handle IRQ 入口（非 tick 尾 F-E11）；⑥mod4 退役判据 = A51 自旋审计 + LB 子任务零 console + 盯 -ETIMEDOUT/wall（相 2 帽余量 6.5× 低风险 F-E2 猎物②）。
+
+**S-3b 义务**：①spawn 四写点前移 + enqueue 出表窗（F-E1，与 F1 侦察面同刀）；②偷取双过滤判据落码（F-E2）；③LB 金丝雀 per-child 归因（9.2 裁决二）+ lb_master **私有 handle 表**（A45 铁律——表形状 = 4 Process + VMO + 派生位 wait_many；子 VMO 收割撞 -EBUSY 降级不 trap A18/A74）+ svc 驱动链补 vmar_map（0x31 后 0x32 前，F-A16）+ 子任务 CNTVCT 依赖注（A9 面已由副核 bring-up 开 EL0VCTEN 覆盖——静默杀死状与偷取坏同形，排障先查 F-A9）；④smoke-smp 相 3：`LB ok` **严格必需、absent 一票 FAIL**（F-A4——偷取全坏时 n=4 仍可 CPU0 墙钟跑完，absent 放行 = 零成本假绿；「PAR 块同型」限定轮询骨架不含 absent 语义）；宿主侧 grep -E 提 c0/c1/st1/n 数值复验（c0≥TH∧c1≥TH∧n==4，F-A5）+ Δ 采样点写死（首入队前/末收割后、klock 包络内 F-A8）+ 相 3 开工 `: > "$LOG"` 截断（canary 跨 boot 混日志必假败 F-A12）；⑤帽序三处（F-A7）：D=8s 名义 = TCG 墙钟 16s（CNTVCT 半速 A8 效应）；DEADLINE_LB=240 锚点在标记轮询**后**起算；guest 收割帽 60–90s（与 harness 240 分层，禁打平竞速）；⑥REAPQ 消费权显式裁决 = 维持 CPU0 双点（F-E9，= E0 等价，cap 32 有界性已论证）；⑦ktest 6 横切锁纪律项成文入 ktest.rs 注释区（F-A13——冻结前硬义务）。
+
+**S-3c 义务**：①SQ/RQ/REAPQ/表四面 `_locked` 内层立法（F-L2：不可重入自锁面三处——wake_matching→recompute、kill 钩子链、rx_irq_notify；等价镜/pi_probe klock 包络点随缩窗逐个改序）；②dispatch 分号类别取放（F-L3：约 11 个 syscall 号触 SQ/RQ/REAPQ——svc_enter/exit 全量取锁 = 每号一条反序边；方案 A 分号类别 or 持有集位图，实施时定）；③wait/wake 原子性锚改 **SQ 锁窗**（F-L4：E0 锚 = IRQ 屏蔽窗，分段后窗口敞开 = 丢唤醒永睡——查位+入队同窗 / 写位+扫描同窗）；④send fastpath = find+push+fast_wake **单 SQ 窗**（F-L5：「find 与 wake 分窗」扬队——unlink 非幂等 A39）；⑤kill 分段化五骑缝件（9.2 裁决一）；⑥per-Task 持有集位图 u8 六位（F-L9：klock_window 单 bool 不足以表达 E1 持有集；「持结构锁禁切换」从结构巧合升立法）；⑦新锁 const-init + 零 ops 依赖铁则入 §4（F-L12：ktest KLOCK_OPS None 直通窗 × const-init 兼容确认）；⑧F2 裸打印清单补第三处 heap.rs:96-100（分配器锁内 F-L10；user_fault_exit/REAPQ 溢出两处 PL 包络兼容已核 F-L11）；⑨遥测 last/span 归并语义随双环重验（等价镜猎物⑧：CNTVCT 单源有 S-2b watchdog 全绿既有实证、锁序=时序=vct 序三位一体使归并不改 last 语义——首跑复核）。
