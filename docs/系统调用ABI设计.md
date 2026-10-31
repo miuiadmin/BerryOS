@@ -479,7 +479,7 @@ extern "C" {
 }
 ```
 
-约定（同 `CLAUDE.md` FFI 边界）：
+约定（同 `AGENTS.md` C-ABI 速览 / `docs/规则/03-系统调用.md`）：
 - Rust 侧**不持有跨边界的引用生命周期假设**，缓冲一律 `*mut u8`/`usize`（拥有/复制语义）。
 - 改任何签名 = **同时**改合约源（Rust `#[repr(C)]` 定义）与镜像；CI 用结构体布局断言 + bindgen 单向生成 `.h` 后比对（两端 `#[repr(C)]` 保证布局一致）。
 - `process_exit` / `thread_exit` 标 `-> !`（不返回），Rust 侧据此消除后续代码不可达警告。

@@ -65,7 +65,7 @@ FILE_DEFAULTS = {
     "arch/aarch64/src/task.rs": "上下文切换",
     "arch/aarch64/src/trap.rs": "上下文切换",
     # MMIO：设备 MMIO + 系统寄存器/特权指令（mrs/msr/wfi/hvc/out/in…——按
-    # CLAUDE.md「MMIO/寄存器访问」簇归并，口径差异在台账 §一注明）
+    # 规则/01-内核编码.md 域铁律「MMIO/寄存器访问」簇归并，口径差异在台账 §一注明）
     "arch/aarch64/src/mmio.rs": "MMIO",
     "arch/aarch64/src/uart.rs": "MMIO",
     "arch/aarch64/src/gic.rs": "MMIO",
@@ -329,16 +329,16 @@ TEMPLATE = """# unsafe 台账（SEC-01 §4.5 件 22）
 - **六分类**（初判逐块核对于 2026-10-30 全量清单；改判直接改 §三 表的分类列，
   重产按内容锚继承）：
   - **页表**：PTE 读写/表树走查/TTBR0-ASID 激活/TLBI 维护（含写后 dsb 屏障）。
-  - **上下文切换**：切换 asm/任务上下文装配/异常向量与帧保存（CLAUDE.md
+  - **上下文切换**：切换 asm/任务上下文装配/异常向量与帧保存（规则/01
     「上下文切换/寄存器保存」簇；trap 向量表与 x86 IDT/TSS/syscall 入口 MSR 归此）。
   - **MMIO**：设备 MMIO + **系统寄存器/特权指令**（mrs/msr/wfi/hvc/out/in/
-    rdmsr…——按 CLAUDE.md「MMIO/寄存器访问」簇归并；纯设备 MMIO 与系统寄存器
+    rdmsr…——按 规则/01「MMIO/寄存器访问」簇归并；纯设备 MMIO 与系统寄存器
     未拆两列，口径如实注记）。
   - **分配器**：SlabHeap/GlobalAlloc/freelist/帧分配器静态/Task Box 分配基元。
   - **硬件原子**：手写原子 asm（ldxr/stxr/casa/outline-atomics 面）——**现状
     0 处**（原子操作全走 `core::sync::atomic` 安全面）；类别保留占位。
   - **其它**：裸指针解引用/静态可变槽/对象互钉/ABI 出入参拷贝/内存基元/
-    测试与基准面/遥测环静态——CLAUDE.md「外层包安全 API」的包裹层主体。
+    测试与基准面/遥测环静态——规则/01「外层包安全 API」的包裹层主体。
 - **密度口径**：unsafe 跨度内**非空非注行** / 扫描面 `.rs` 物理总行。跨度近似
   （unsafe 块内安全子表达式、unsafe fn 整个函数体都计入）→ **偏高估**。
   对标 Android ~4%（Google 2025-11：unsafe 行占 Rust 总行比）时以此口径差为准

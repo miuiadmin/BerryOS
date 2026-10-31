@@ -143,7 +143,7 @@
 #      boot 均不带 netdev（vnet 无 net 槽 trap 自死为干净死，NET 族标
 #      记自然缺席不设门——EFI 路「设备缺席优雅降级」同款先例）。
 #
-# 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 CLAUDE.md 陷阱节），
+# 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 规则/08-QEMU与仿真.md / 雷册 §A8），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
 # 调试：SMOKE_KEEP_LOG=1 just smoke 保留串口日志不删。
 set -u

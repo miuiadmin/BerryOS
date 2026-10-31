@@ -1,6 +1,6 @@
 # cargo-deny 配置（SEC-01 §4.5 件 23——供应链防线进 CI）
 #
-# 检查面：licenses（GPL 拒收 = 仓纪律执法，见 CLAUDE.md「协议洁净」/ADR #37
+# 检查面：licenses（GPL 拒收 = 仓纪律执法，见 AGENTS.md「总闸」+ 规则/13 /ADR #37
 # Apache-2.0）+ advisories（RustSec 三连击教训，SEC-8 §3.4）。
 # bans/sources 维持告警档（多版本共存有既有先例：getrandom 0.2.17 双版本
 # 经 const-random-macro 共存，C-2c 挂账刀已实录）——不以此红 CI。

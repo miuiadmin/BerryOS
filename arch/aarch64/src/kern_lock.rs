@@ -4,7 +4,7 @@
 //! - **TTAS**（test-and-test-and-set）：争用时只本地 `load(Relaxed)` + `spin_loop()`
 //!   探测释放、释放时一次 Acquire CAS 拿锁——等释放期间不碰共享行（TAS 的 LL/SC
 //!   失败重试风暴、TCG 原子慢路径都绕开）。**wfe 否决**：TCG `wfe` = 立即返回的
-//!   hint（S-1 实测副核忙转拖主核 ~40% 吞吐——CLAUDE.md Gotchas），E0 纯自旋；
+//!   hint（S-1 实测副核忙转拖主核 ~40% 吞吐——雷册 §A99），E0 纯自旋；
 //!   长自旋 = E0 违约信号（草案 §6 R1 观测面）。
 //! - **屏障**：`Acquire`/`Release` 映射 LDAXR/STLXR，临界区与锁外访问的序由序
 //!   语义保证——不手写 dmb（重复发明）；dsb 唯一保留场景 = S-1 门铃序（smp.rs），
