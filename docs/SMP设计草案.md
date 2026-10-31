@@ -313,3 +313,10 @@ TLB shootdown v1 保持**同步 IS 广播**（S-4 在页表锁内做，异步 sh
 - **PSCI asm! 补 x18 clobber（minor）**：SMCCC x18 = 平台寄存器、规范允许固件不保留（真机 ATF 可改写），原 x4-x17 out 列表漏它——与注释「不赌实现保留」自相矛盾。补 `out("x18") _` 同列。
 - **进度锚 true-up（minor）**：CLAUDE.md/AGENTS.md「在途拆解」行 `S-0 已落` → `S-0/S-1 已落`（两文件同口径）。
 - 修复后复跑：主 smoke 五相 / run-el2 / smoke-smp / assert-flip / abi-check 全绿（详见任务报告 rerun_results；boot 路径触及 → 单核 smoke + smoke-smp 必复跑面覆盖）。
+
+### S-2 全刀收官（2026-10-31 段 A+B / 2026-11-01 段 C=S-2b）：E0 BKL 纪元——内核串行 + 用户并行立证
+
+- **段 A+B（S-2a，单核可证）**：KERN_LOCK 锁底座（TTAS + PRINT_LOCK + panic bypass + irqsave/拼行 API）+ arch 槽注入 + Task.klock_window 位五切走点舞蹈 + F31-F42 直调包络 + 前置件 2（计数原子化 + CPU0 per-CPU 块/LAST_VCT）+ D24/I50 读侧原子化 + 契约注释立法——d1cf130 / 5a9a00f，单核全绿 + icount 三 delta 复位。**详录 → `docs/SMP-S2实施设计草案.md`（子案，共享面 54 项处置档总表 = S-3 拆锁地图）。**
+- **段 C（S-2b，副核参与）**：gate（`SMP_PAR`，smp_bringup + par_probe spawn 后置位）+ `secondary_main` 高半入口（指针字 blr + 探测/参与统一环 + banked PPI27）+ `PickFilter` 过滤出选（副核 user_only + Running-elsewhere 排除；**副核只读版 peek**——单游标回卷饥饿修复）+ park 三切点（`SMP_SEC_PARK_CTX`）+ **park mod4 限频**（console 多生产者深饿源头治理——占空比 25%）+ CURRENT per-CPU 访问器 + CPU0 idle 参与态改形 + PAR 金丝雀（验收翻转：限频下 witness 归 S-3，验收面 = `PAR absent` 行 `d1=` 非零）+ 副核高半栈（低半栈向量风暴修复）+ §5.4 帽 ×2 全账面 22 笔 + smoke-smp 双相扩相（裸 27 + rootfs 45 + EVS/SKT 对拍 + R3 三数）。
+- **验收（2026-11-01 全链）**：test-host 665/0 + 主 smoke 八跑零漂移（单核非竞争路径不变）+ **扩相 smoke-smp 首跑 PASS**（R3 三数 boot 6s（帽 2.5%）/金丝雀 ≈0s/rootfs 129s（帽 15%）免升档；**PAR witness 限频下仍提前命中 `PAR ok c0=256 c1=2`**）+ run-el2 同绿。E0 话术兑现：**内核串行 + 用户并行**——rootfs 生态全谱在 `-smp 2` 全绿 = 串行语义等价的端到端证据。
+- **三边界之外的实战三雷**（详录沿革 2026-11-01 段）：① RUNQUEUE 单游标回卷饥饿（副核消费版 pick 回卷 CPU0 FIFO 序——修 = 只读 peek）；② console 单通道多生产者深饿（fix4/fix5 双向实锤「无界生产下下游怎么调都错」——修 = 源头 mod4 限频）；③ 副核低半栈向量风暴（park 帧 SP 落已退役低半映射——修 = 高半静态栈）。**S-3 交接口**：per-CPU runqueue/IPI（witness 满速验收 + tickless idle 恢复）/CURRENT 真体化/遥测双环——§7 子案在册。

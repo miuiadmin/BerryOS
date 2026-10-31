@@ -96,7 +96,7 @@ berryos/
 - **内核核心**：`docs/能力模型设计.md`（纯能力 handle）· `docs/IPC设计.md`（channel/Event/intent）· `docs/内存管理设计.md`（VMO/pager）· `docs/系统调用ABI设计.md`（v1 冻结，abi.toml 单源）· `docs/调度器设计.md`（机制 + M 里程碑权威）· `docs/AI调度设计.md`（ADR #21 修订版）· `docs/可观测性设计.md` · `docs/安全与硬件隔离设计.md`（挂 v2）。
 - **服务与生态**：`docs/文件系统设计.md` · `docs/驱动模型设计.md`（驱动=持证应用）· `docs/shell设计.md`（bsh + 命令梯队）· `docs/应用模型设计.md`（包 + 清单 + 能力）· `docs/GUI里程碑规划-2026-10.md`（M-GUI 刀序 GUI-0..9 + 裁决 A–I——ADR #50–#54：B 形态协议 / pass 形态 API / berryui 声明式 / 低功耗缝 / SDK 序）· 挂 v2 四份：`docs/存储布局与沙箱设计.md` / `docs/兼容子系统设计.md` / `docs/更新与OTA设计.md` / `docs/AI工程面设计.md`。
 - **验证与流程**：`docs/测试策略.md`（G0–G5 关卡）· `docs/开发体验.md`（四级阶梯 + 日常循环）。
-- **在途拆解**：`docs/VM里程碑设计草案.md`（现行主里程碑 M-G1..G3）· `docs/SMP设计草案.md`（G2 拆步，S-0/S-1 已落）· M-ECO 事件循环线 A 系草案 ×7（`容量工程前置-A1设计草案.md` + `事件循环A2..A7设计草案.md`——A1-A6 已落地 2026-10-30 收官（六标记 POLL/LSN/EVS/SKT/EPL/NETS 入 rootfs 相 37-42，A6-0 盘点在册）、A7 POSIX 原语批已收官 2026-10-31（A7-1 匿名 mmap/A7-2 timer/A7-3 文件映射+mprotect dormant 已落地 2026-10-30——MMP n=9/CLK n=6；信号面门 C 已裁定 A 2026-10-30（add-only 加号放行）；A7-4 信号面已落地 2026-10-31——方案 B 协同式用户态投递（0x86/0x87 内核两号 + libc 投递循环/sigaction 表/掩码/held 再投 + bsh 六步 `SIG ok n=6` 入 rootfs 相 45，`docs/事件循环A7-4信号面实施设计草案.md`）；FPU 出局归 M-GUI 线））· `事件循环A7-{2,3}实施设计草案.md`、`事件循环A7-4信号面实施设计草案.md`。
+- **在途拆解**：`docs/VM里程碑设计草案.md`（现行主里程碑 M-G1..G3）· `docs/SMP设计草案.md`（G2 拆步，S-0/S-1/S-2 已落——S-2b 副核参与 2026-11-01 收官：E0 BKL「内核串行+用户并行」端到端立证，smoke-smp 双相 PASS + 主 smoke 零漂移，详 `SMP-S2实施设计草案.md`；S-3 per-CPU 化待） · M-ECO 事件循环线 A 系草案 ×7（`容量工程前置-A1设计草案.md` + `事件循环A2..A7设计草案.md`——A1-A6 已落地 2026-10-30 收官（六标记 POLL/LSN/EVS/SKT/EPL/NETS 入 rootfs 相 37-42，A6-0 盘点在册）、A7 POSIX 原语批已收官 2026-10-31（A7-1 匿名 mmap/A7-2 timer/A7-3 文件映射+mprotect dormant 已落地 2026-10-30——MMP n=9/CLK n=6；信号面门 C 已裁定 A 2026-10-30（add-only 加号放行）；A7-4 信号面已落地 2026-10-31——方案 B 协同式用户态投递（0x86/0x87 内核两号 + libc 投递循环/sigaction 表/掩码/held 再投 + bsh 六步 `SIG ok n=6` 入 rootfs 相 45，`docs/事件循环A7-4信号面实施设计草案.md`）；FPU 出局归 M-GUI 线））· `事件循环A7-{2,3}实施设计草案.md`、`事件循环A7-4信号面实施设计草案.md`。
 - **演进与归档**（时点记录，勿当现状引用）：`docs/阶段沿革.md`（详史归档 + 追记区——新进展追加其末尾，勿回写本文件）· `docs/Phase4收官盘点.md` / `docs/P6收官盘点.md` · `docs/战役复盘-2026-10.md`（同型地雷册）· 审查报告 ×2 · `docs/战略裁决-2026-10-15.md`（裁决已吸收进 ADR）。
 - **已落地草案**（冻结候选）：`docs/TCP栈设计草案.md` · `docs/P6-A8网络服务化设计草案.md` · `docs/G-eco编译侧设计草案.md` · `docs/4-6出口演示设计草案.md` · `docs/app-0实施设计草案.md`。
 
@@ -124,9 +124,9 @@ berryos/
 **启动输出速览**（标记清单单一事实源 = `tools/smoke.sh`；标记沿革逐字归档 → `docs/阶段沿革.md`；**标记语义注解与命令注释全文快照 → `docs/雷册-判例库.md` §C**）：
 
 - `just run` / `just run-el2`：裸相 27 标记（行首 1/21 = 起始 EL）——`BerryOS boot` → `KVA ok` → `ROOTFS ok/absent` + `ROOTFS vmo=` 双行 → ktest 各段 `… ok` → BENCH 六行 + `BENCHCHURN ok`/`BENCHXH ok` 金丝雀 + `BENCH ok n=6` → 稳态矩阵（`switches=N` 金丝雀严格递增）→ watchdog `G1.5 ok` → `BENCHWAKE` 直方图。
-- `just run-smp`（S-1，**全仓唯一 -smp 入口**）：`SMP: cpu_on entry=<hex>` → `sSMP: sec up el=1 …`（行首 `s` = 副核哨兵）→ `SMP ok ncores=2`（心跳状态谓词）；单核/EL2 机型/EFI 三降级路径 boot 全标记零扰动。
+- `just run-smp`（S-1 起 bring-up + **S-2b 起副核参与态**，**全仓唯一 -smp 入口**）：`SMP: cpu_on entry=<hex>` → `sSMP: sec up el=1 …`（行首 `s` = 副核哨兵）→ `SMP ok ncores=2`（心跳状态谓词）→ S-2b 起 +`PAR gate on`（参与门自证——副核探测/参与环开始拉 `pinned!=0` 用户任务，裸相无货时空转；`PAR ok`/`PAR absent d1=` 行由 par_probe 60s 窗打出）；单核/EL2 机型/EFI 三降级路径 boot 全标记零扰动。
 - `just run-rootfs`：rootfs 相 45 标记——svcmgr 消费链全谱：`ECO ok`…`APP ok n=2` + `FS`/`VIRTIO`/`VBLK`/`BLKD`/`FAT`/`FATW`/`NET`/`DNS`/`TCP`/`TCPS ok` + C 系 `DIR`/`CD`/`U1`–`U4`/`B1`/`DF`/`TAB`/`INT`/`PS`/`BC`/`M3DEMO` + T-1 `THR` + A 系 `POLL`/`LSN`/`EVS`/`SKT`/`EPL`/`NETS`/`MMP`/`CLK`/`SIG`；A 系排 fat 族前 + netd 拓扑降级双门（netd_h()==0/ENODEV 静默跳过）；裸跑双行降级（`ROOTFS absent`/`vmo=none`）零扰动。逐标记语义 → `tools/smoke.sh` + 雷册 §C。
-- `just smoke`：八跑 CI 冒烟——裸相 27 + rootfs 相 45 + RX 注入相（rootfs+FIFO 合相 72，含 Ctrl-C 杀段）+ FAT 子目录相 + FAT 持久化相（脏盘跨 boot 读回 f42t + `cat T3.TXT` 断言 x1y）+ B4 掉电相（独立盘三 boot 采样 + `pwrcls` 毒环注入，guest 标记与宿主盘面双面不变量）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`smoke-x86`（7 标记）/`smoke-smp`（SMP ok 恰一次）独立关卡不并入主 smoke。
+- `just smoke`：八跑 CI 冒烟——裸相 27 + rootfs 相 45 + RX 注入相（rootfs+FIFO 合相 72，含 Ctrl-C 杀段）+ FAT 子目录相 + FAT 持久化相（脏盘跨 boot 读回 f42t + `cat T3.TXT` 断言 x1y）+ B4 掉电相（独立盘三 boot 采样 + `pwrcls` 毒环注入，guest 标记与宿主盘面双面不变量）+ 金丝雀严格递增；`SMOKE_KEEP_LOG=1` 留日志。`smoke-x86`（7 标记）/`smoke-smp`（双相）独立关卡不并入主 smoke。
 - `just run-efi`：AAVMF 挂 `out/berryos.img` 自举——BerryBoot 十段（`fw:`/`gop:`/`fs:`/`kfile:`/`init:`/`elf:`/`load:`/`mmap:` → `BERRYBOOT ok`）→ 内核接续（`HANDOFF ok` → `MMAP ok` → `ROOTFS ok src=handoff`）→ 裸相 27 + EFI 路生态 27（无 virtio 面；LSN/EVS/SKT/EPL/NETS 拓扑门静默不打 = 拓扑真值；GUI-1 起 +FBW/FBSERVE 双路上屏）；盘形制 = MBR + FAT16 96MiB + 0xDA 预留槽 16MiB（`just image` 单口 + `manifest.txt` 侧产物）。十段全文 → 雷册 §C。
 
 **前置（macOS，一次性）**：
@@ -154,8 +154,8 @@ just smoke          # 无人值守冒烟（CI 同款）：八跑全相标记断�
 just build-x86      # x86_64 最小集构建（独立工作区 arch/x86_64/，**必须显式 --target**——根 config 锁 aarch64 且跨 workspace 边界仍命中）
 just run-x86        # QEMU pc 机 + PVH ELF（-no-reboot）——七标记 PVH/TIMER/EXC/CTX/SYS/X86 ok（P7-x1..x4 四刀链）；退出 Ctrl-A X
 just smoke-x86      # x86 独立冒烟（7 标记恰一次；不并入主 smoke；已挂 CI——ci.yml 两条 x86 步）
-just run-smp        # S-1 副核 bring-up 手跑（默认机型 + -smp 2——全仓唯一 -smp 入口）；退出 Ctrl-A X
-just smoke-smp      # S-1 副核冒烟（独立关卡不进 CI）：SMP ok ncores=2 恰一次 + 裸相 27 + 金丝雀严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x）；`SMP: FAIL`/`SMP: skip` 出现即 FAIL
+just run-smp        # 副核 bring-up + 参与态手跑（默认机型 + -smp 2——全仓唯一 -smp 入口；S-2b 起 gate 置位副核拉 EL0 任务）；退出 Ctrl-A X
+just smoke-smp      # S-2b 副核参与双相冒烟（独立关卡不进 CI）：相 1 裸相 27 + SMP 握手 → 相 2 rootfs 生态 45 + EVS/SKT 宿主对拍 + PAR 活证（`PAR absent` 行 `d1=` 非零即副核 park 派发活证；`PAR ok` 提前命中放行）；`SMP ok` 按相各恰一次 + 金丝雀按相严格递增；时限帽按相（boot 240/canary 400/rootfs 840/PAR 300）+ 脚本尾打 R3 定标三数；`SMP: FAIL`/`SMP: skip` 出现即 FAIL；挂 build-user 依赖（缺 rootfs 产物 loud 快败）
 just smoke-image    # V-4 img-boot 独立冒烟（M-G1 关卡，已挂 CI）：EFI 十段恰一次 + 接续 + 生态 27 + kfile/init 字节对拍 + FIFO 注入 RX ok + 活性复验；EFI 路无盘 = bsh park 在 fat 自验，交互杀段结构性不打（C-4b 裁定）
 just build-boot     # BerryBoot EFI 应用构建链：staticlib → rust-lld 静态全链接（链入 berry-loader）→ elf2pe.py 转 PE32+；V-3 起纯 EFI 产链，消费内核产物
 just image          # V-3 单口整盘镜像 → out/berryos.img（MBR + FAT16 96MiB + 0xDA 预留槽 + 四件套，同输入同字节）+ 侧产物 manifest.txt（SHA-256 清单 v0 冻结）；--key-hash 只落 manifest

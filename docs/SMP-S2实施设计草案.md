@@ -1,6 +1,6 @@
 # SMP S-2（BKL 纪元 E0）实施设计草案
 
-> 状态：**段 A + 段 B 已落地**（A = 锁底座 d1cf130；B = F31-F42 包络 + 前置件 2 + D24/I50 + 契约注释立法 5a9a00f——单核可证全绿，icount 三 delta 复位；S-2b 副核参与未启）。立稿 2026-10-31；行号锚 = 基线 d8162ba（实施后行号已漂，定位按符号）。
+> 状态：**S-2 全刀收官（段 A + B + C）**（A = 锁底座 d1cf130；B = F31-F42 包络 + 前置件 2 + D24/I50 + 契约注释立法 5a9a00f——单核可证全绿，icount 三 delta 复位；**C = S-2b 副核参与 2026-11-01 收官**——gate 置位 + secondary_main 探测/参与环 + PickFilter 过滤出选（副核只读版 peek——雷 1 回卷饥饿修复）+ park mod4 限频（雷 2 console 深饿源头治理）+ 副核高半栈（雷 3 向量风暴修复）+ PAR 金丝雀 + smoke-smp 双相扩相；验收 = smoke-smp 双相 PASS（R3 三数 boot 6s/金丝雀 ≈0s/rootfs 129s 全远低帽 70% 线，免升档）+ 主 smoke 八跑零漂移 + test-host 665 + run-el2 同绿）。立稿 2026-10-31；行号锚 = 基线 d8162ba（实施后行号已漂，定位按符号）。
 > 母案：`docs/SMP设计草案.md` §2.1（E0 三边界 = 规格源头，本立稿是细化不是推翻）+ §4 S-2 行 + §6 风险。
 > 输入：五路侦察 2026-10-31（入口/退出面、睡眠/切换面、IRQ 与内核任务面、副核执行面、验收与纪律面——/tmp/s2-scout-*.md，已全文消化并入本文）。
 > 话术限定（母案 §7）：E0 BKL 双核 = **内核串行 + 用户并行**，不是「SMP 内核」——S-3 才可说内核并发；本文一切「双核」表述受此限定。
@@ -253,7 +253,7 @@ release(): store(false, Release)
 | 步 | 内容 | 验收命令 | 预期 |
 |----|------|----------|------|
 | **S-2a 锁底座 + 单核零扰动 + 裸相** | kern_lock.rs（TTAS + PRINT_LOCK + panic bypass + irqsave/拼行 API G43/G44）+ arch dispatch 取放 + sched 槽 + Task 位 + 五切走点舞蹈（§3.3 表）+ `-> !` :383 + 直调包络升级（F31-F36/F39-F42）+ 前置件两件（计数/kill 计原子化 / CPU0 块 + LAST_VCT per-CPU）+ D24/I50 读侧原子化；**gate 不置位（副核维持 park）** | `just smoke`（八跑）+ `just smoke-smp`（S-1 形态不扩）+ `just test-host` + `just abi-check` + `just build-release`（release 链接守卫 + assert-flip——新增 arch 文件的 ADRP 面）+ `python3 tools/bench.py --icount` 双跑 | 主 smoke 八跑全绿**零漂移**（锁 = 单核非竞争纯开销；BENCH 3x 宽松因子门禁吸收——首跑盯）；smoke-smp 裸相 26 + `SMP ok ncores=2` 照旧（副核 park、锁在单核跑）；icount 双跑同值后 `--update` 基线刷新 diff 随源入册（S-1 先例——锁原子序进 SVC 入口 = 每 syscall 指令数变，L2 门禁必动） |
-| **S-2b 副核参与 + rootfs 相 + 并发金丝雀** | gate 置位 + secondary_main（指针字 + blr + 门控唤醒探测环 §2.3）+ PPI27/副核 arm_slice + pick 过滤（pinned!=0）+ CURRENT per-CPU 访问器（空态契约）+ 主核 idle 改形（§2.3）+ PAR 金丝雀（§5.2）+ smoke-smp rootfs 相 harness（§5.1） | `just smoke-smp`（扩相：裸 + rootfs 双相）+ `just smoke`（主八跑）+ `just test-host` | smoke-smp：裸相 26 + `SMP ok` + **rootfs 相 44 全绿** + `PAR ok c0=… c1=…`；主 smoke 零漂移（单核非竞争路径不变）；rootfs 生态面（bsh/uu/THR/MMP/CLK/POLL…）在 -smp 2 全绿 = E0 语义等价的端到端证据 |
+| **S-2b 副核参与 + rootfs 相 + 并发金丝雀** | gate 置位 + secondary_main（指针字 + blr + 门控唤醒探测环 §2.3）+ PPI27/副核 arm_slice + pick 过滤（pinned!=0）+ CURRENT per-CPU 访问器（空态契约）+ 主核 idle 改形（§2.3）+ PAR 金丝雀（§5.2）+ smoke-smp rootfs 相 harness（§5.1）+ §5.4 帽 ×2 账面（22 笔） | `just smoke-smp`（扩相：裸 + rootfs 双相）+ `just smoke`（主八跑）+ `just test-host` + `just run-el2` | smoke-smp：裸相 27 + `SMP ok` + **rootfs 相 45 全绿** + PAR 活证（**2026-11-01 验收翻转**：`PAR absent` 行诊断尾 `d1=` 非零即副核 park 派发活证——限频占空比下 witness 不作验收门；`PAR ok c0=… c1=…` 提前命中 = 超预期放行）；主 smoke 零漂移（单核非竞争路径不变）；rootfs 生态面（bsh/uu/THR/MMP/CLK/POLL…）在 -smp 2 全绿 = E0 语义等价的端到端证据。**首跑实录**：R3 三数 boot 6s/金丝雀 ≈0s/行/rootfs 129s——全远低帽 70% 线免升档；PAR witness 限频下仍提前命中（c0=256 c1=2） |
 
 拆步缝 = gate（§2.3）：S-2a 全部改动单核可证；S-2b 才引入第二写核——问题域不混、回退面干净（gate 不置即回 S-2a 形态）。
 
@@ -272,6 +272,8 @@ release(): store(false, Release)
 | 金丝雀 | switches 行 ≥3 严格递增（awk 体沿用 smoke-smp.sh:126-139——数据源 A2 原子化全局单份：任核 tick 命中 100 倍数即整行持 PRINT_LOCK 打印，两核交替打印不破坏数值序列单调，论证 §5.2「金丝雀打印口径」）；收尾按 PID kill + wait + sleep 3（SIGTERM 后 QEMU 存活数秒，P6 A-6） |
 
 ### 5.2 并发金丝雀 `PAR ok`（状态谓词非竞速——4-5a 铁律；v1 无 affinity 的观测面裁决）
+
+> **验收翻转（2026-10-31 裁决，2026-11-01 首跑实录）**：E0 无 IPI + park mod4 限频（雷 2 治理面）下副核 EL0 窗占空比 25%，witness 重叠窗结构性收窄——**真并行 witness 不作 S-2b 验收门，归 S-3**（IPI + per-CPU 队满速参与后的验收面）。S-2b 验收口径 = `PAR absent` 降级行诊断尾 **`d1=`（副核 park 派发计数）非零**即副核参与活证；`PAR ok c0=…` 提前命中 = 超预期放行（首跑实录即此态：witness 在限频下仍置位，c1=2 低采样边带——证据强度高于 absent 档，照收）。下方 D1/witness 设计原文保留（机制面未变，仅验收门翻转）。
 
 - **裁决 = 选项 D1（per-CPU 计数见证，内核侧）**：SmpCpu 块加 per-core `el0_ticks`（本核 tick 采样时 CURRENT 为 EL0 用户任务的技术数）+ `switches_local` + `last_task`（tick 采样记本核当前任务 id）——**本核只写本核块**（per-CPU by construction 免锁；与 §2.2 对表不冲突——PAR 见证是本核私有观测数据，非共享内核状态，母案「IRQ 侧收 per-CPU-only」偏好在这类数据上成立）。
 - **粘性 witness 位**：core0 tick 见自身=T1 且读 core1 `last_task==T2` 时单向置位——只在与件观察时置位、无 false-positive；false-negative（采样错过重叠窗）由持续运行的矩阵任务群 + 阈值窗口兜底。内存状态断言非竞速（侦察⑤ D0-6：S-1 SmpReport/哨兵 's' 同形态先例）。
