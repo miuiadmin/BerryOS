@@ -50,7 +50,7 @@ const ECHO_PORT: u16 = 18080;
 const TCP_SPORT: u16 = 48080;
 /// 自验各相位帽（ns）：握手/往返/挥手单相位预算（§6 RPC 成本模型：单帧
 /// poll ~1s 级 TCG；成功路径三相位合计 ≈10 帧往返）。
-const SELFTEST_CAP_NS: u64 = 30_000_000_000;
+const SELFTEST_CAP_NS: u64 = 60_000_000_000;
 /// 单帧组帧缓冲：TCP 头 20 + MSS 选项 4 + 段体 MSS=128 = 152B。
 const SEG_BUF_SZ: usize = np::TCP_HDR_SZ + np::TCP_OPT_MSS_SZ + bt::MSS as usize;
 
@@ -1031,7 +1031,7 @@ const LSN_PORT: u16 = 18081;
 /// 交叉，边界例亦验证过）。
 const LSN_SPORT: u16 = 48082;
 /// 入站自验各相位帽（ns）——同 SELFTEST_CAP_NS 口径。
-const LSN_CAP_NS: u64 = 30_000_000_000;
+const LSN_CAP_NS: u64 = 60_000_000_000;
 
 /// 入站自验（A2-2 段③，rootfs 相 `LSN ok n=7`）：hostfwd 环回自连自验——
 /// guest 主动 connect 10.0.2.2:18081 → SLIRP host-alias 代理宿主 loopback:

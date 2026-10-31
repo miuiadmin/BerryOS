@@ -629,12 +629,16 @@ run-x86: build-x86
 smoke-x86: build-x86
     bash tools/smoke-x86.sh "{{X86_KERNEL}}"
 
-# S-1 副核 bring-up 冒烟（smoke-x86 同款独立形态——不并入主 smoke、不进
-# CI：ARM64 五跑单核基线零扰动）。断言三面：`SMP ok ncores=2` 恰一次 +
-# 裸相 27 标记 + 金丝雀严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐）。
-# 内核路径经 KERNEL 传参（单一事实源——smoke-x86 先例）。
+# S-2b 副核参与冒烟——双相（`SMP-S2实施设计草案.md` §5.1）：相 1 裸相
+# （27 标记 + SMP 握手）+ 相 2 rootfs 生态相（45 标记 + EVS/SKT 对拍
+# client + PAR absent d1 副核参与活证——真并行 witness 归 S-3）。
+# 断言面：`SMP ok ncores=2` 按相各恰一次 + 标记与 smoke.sh 计数对拍机器
+# 守卫 + 金丝雀按相严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐），
+# 脚本尾打 R3 定标三数（首跑定标义务）。内核路径经 KERNEL 传参（单一
+# 事实源——smoke-x86 先例）。**build-user 依赖（§5.1 随迁件②）**：相 2
+# 消费 rootfs*.cpio——新环境/worktree 缺产物时 loud 快败不烧 840s 帽。
 # **-smp 只进本线**（与 run-smp 同注：主 smoke 族一律单核）。
-smoke-smp: build
+smoke-smp: build build-user
     bash tools/smoke-smp.sh "{{KERNEL}}"
 
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，

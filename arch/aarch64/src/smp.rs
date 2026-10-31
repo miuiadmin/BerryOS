@@ -117,26 +117,57 @@ pub static SMP_SEC_SPINS: AtomicU64 = AtomicU64::new(0);
 /// tick 以来的增量」扣减 = slice 约半速不确定燃烧，§3.4 红线；本核只写本核块）。
 #[repr(C, align(64))]
 pub struct SmpCpu {
-    pub cpu: u64,      // 逻辑核号（主核=0 / 副核=1）
-    pub mpidr: u64,    // 入口 MPIDR 原始值
-    pub present: u64,  // 主核恒 1；副核 = bring-up 心跳闭环（hb2 后置）
-    pub last_vct: u64, // RR.tick 记账基准（A11 per-CPU——本核独占写）
-    pub pad: [u64; 4],
+    pub cpu: u64,        // 逻辑核号（主核=0 / 副核=1）
+    pub mpidr: u64,      // 入口 MPIDR 原始值
+    pub present: u64,    // 主核恒 1；副核 = bring-up 心跳闭环（hb2 后置）
+    pub last_vct: u64,   // RR.tick 记账基准（A11 per-CPU——本核独占写）
+    pub current: u64,    // 本核 CURRENT 任务指针（S-2b——null = 副核 park 态）
+    pub el0_ticks: u64,  // PAR 金丝雀：tick 采样时 CURRENT 为 EL0 用户任务的计数
+    pub last_task: u64,  // PAR 见证：tick 采样时本核当前任务（0 = 非 EL0 清钉）
+    pub par_witness: u64, // PAR 粘性 witness（仅 CPU0 块有意义，见 par_sample）
+    /// 本核 on_irq_tick 总计数（诊断面：PAR absent 时区分「tick 没响」vs
+    /// 「tick 响了但派发不出」——与 el0_ticks 不同，park/内核态 tick 也计）。
+    pub ticks: u64,
+    /// 本核 tick **入口**计数（klock_acquire 之前——诊断面：ticks_pre 涨而
+    /// ticks 不涨 = 卡锁；两者同冻 = CNTV/IRQ 链死。S-2b 排障期）。
+    pub ticks_pre: u64,
+    /// 本核 park 派发计数（on_irq_tick cur==null 出选真任务的次数——
+    /// c1 恒 0 时证「派发发生过但任务没活到下个 tick」。S-2b 排障期）。
+    pub disp_cnt: u64,
 }
 
 const fn zero_cpu() -> SmpCpu {
-    SmpCpu { cpu: 0, mpidr: 0, present: 0, last_vct: 0, pad: [0; 4] }
+    SmpCpu {
+        cpu: 0,
+        mpidr: 0,
+        present: 0,
+        last_vct: 0,
+        current: 0,
+        el0_ticks: 0,
+        last_task: 0,
+        par_witness: 0,
+        ticks: 0,
+        ticks_pre: 0,
+        disp_cnt: 0,
+    }
 }
 
 // 编译期钉板：secondary_entry asm 硬编码偏移（cpu@[x24]、mpidr@[x24,#8]、
 // present@[x24,#16]）与结构布局一致——SmpReport 同款纪律（钉全不钉零头）。
 // 本块是 S-3 per-CPU 区的种子，重排/插字段要到 S-3 才有消费者显形，
 // 编译期先拦（C-2a Stat 布局案：同尺寸不同字段序 = 最阴的静默错）。
-const _: () = assert!(core::mem::size_of::<SmpCpu>() == 64);
+const _: () = assert!(core::mem::size_of::<SmpCpu>() == 128); // ticks@64 起第二 cache 行
 const _: () = assert!(core::mem::offset_of!(SmpCpu, cpu) == 0);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, mpidr) == 8);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, present) == 16);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, last_vct) == 24);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, current) == 32);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, el0_ticks) == 40);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, last_task) == 48);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, par_witness) == 56);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, ticks) == 64);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, ticks_pre) == 72);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, disp_cnt) == 80);
 
 /// 副核 per-CPU 块（TPIDR_EL1 由 secondary_entry asm ⑩ 自钉）。
 #[no_mangle]
@@ -177,6 +208,208 @@ pub fn last_vct_slot() -> Option<*mut u64> {
     // SAFETY: 非零即本核钉入的 SmpCpu 地址（cpu0_init / secondary_entry ⑩）；
     // last_vct 字段本核独占（tick 锁窗内单写者）。
     Some(unsafe { core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).last_vct) })
+}
+
+/// 本核 CURRENT 槽（S-2b）：TPIDR_EL1 → `SmpCpu.current`——CURRENT per-CPU
+/// 访问器的存储面（sched 侧 current_task/set_current 经此读写；null = 副核
+/// park 态空态契约）。None = TPIDR_EL1 未装（cpu0_init/ktest 前防御窗）——
+/// 调用方回落自有全局（与 last_vct_slot 同款契约）。
+pub fn current_slot() -> Option<*mut u64> {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: 非零即本核钉入的 SmpCpu 地址；current 字段本核独占写
+    //（切换原语锁窗内单写者）。
+    Some(unsafe { core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).current) })
+}
+
+/// 本核逻辑核号（S-2b）：TPIDR_EL1 未装（ktest/boot 早期窗）→ 0（CPU0）。
+/// 副核 pick 过滤（pinned!=0）与 on_irq_tick 副核早退按此分诊。
+pub fn cpu_id() -> usize {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return 0;
+    }
+    // SAFETY: 非零即本核钉入的 SmpCpu 地址；cpu 字段块建成后只读。
+    unsafe { (&raw const (*(base as *mut SmpCpu)).cpu).read_volatile() as usize }
+}
+
+/// 副核 park 上下文（S-2b §2.3「首派发上下文」）：副核 park 态 wfi 被 tick
+/// 打断 → on_irq_tick park 派发把 boot 栈上下文惰性存进本块；任务侧
+/// block/preempt 回 park = `context_switch(cur.ctx, park_ctx)` 恢复同一帧
+/// → exception_irq 尾 eret 回 secondary_main 统一环。非调度语义 Task：
+/// 不进 RUNQUEUE、无 TCB、仅 TaskContext 存档（不立第二个 IDLE_TASK——
+/// A7 口径延续）。首次派发前 = ZERO 纯 sink（switch asm 写 prev 读 next，
+/// ZERO 起步安全）；「切回 park 前必有 park→task 派发」构造性保证。
+#[no_mangle]
+pub static mut SMP_SEC_PARK_CTX: crate::task::TaskContext = crate::task::TaskContext::ZERO;
+
+/// 副核 park ctx 指针（切换原语消费）。
+pub fn sec_park_ctx() -> *mut crate::task::TaskContext {
+    &raw mut SMP_SEC_PARK_CTX
+}
+
+/// 副核高半栈（S-2b 修复：低半 `__boot_stack_top` 只供 asm 早期）。副核
+/// Rust 入口立即换到本栈——此后探测环帧/tick IRQ 帧/park 存档帧全在高半：
+/// 主表与任意用户表（内核高半共享）都映，park 帧恢复后 `load_frame` 读栈
+/// 不再依赖低半映射。实测雷（rootfs 形态 c1=0 排障）：exit 链 park 切点
+/// `activate_aspace(0,0)` 切主表（2b-2 起无低半映射）→ 恢复的 park 帧 SP=
+/// 低半栈 → 读 IRQ 栈帧 fault → 向量风暴死循环（SP 每轮 `-0x120` 下坠，
+/// tick 永不进——`pre1==t1` 同冻即此死状指纹）。16KiB 同早期栈量级；换栈
+/// 点在 `-> !` 入口（永不 ret），旧低半帧弃置无害。
+#[repr(C, align(16))]
+struct SecStackBuf([u8; 16384]);
+static SMP_SEC_STACK: SecStackBuf = SecStackBuf([0; 16384]);
+
+/// 副核高半栈顶（满减栈 = 数组尾）。
+pub fn sec_stack_top() -> usize {
+    (&raw const SMP_SEC_STACK).addr() + 16384
+}
+
+/// 副核参与门（gate，S-2a/S-2b 拆步天然缝）：置位前副核 secondary_main
+/// 探测环每 slice 空转（on_irq_tick 早退、零共享触达）；置位后入正式参与
+///（tick 进锁窗 pick）。主核 smp_bringup 成功后置位（Release 序，副核
+/// 下次 tick 醒来生效——无 IPI 的 E0 代价，轮询免疫丢唤醒）。
+static SMP_PAR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// 置位参与门（主核 boot 尾、DAIF 屏蔽窗内单写点）。
+pub fn par_enable() {
+    SMP_PAR.store(1, core::sync::atomic::Ordering::Release);
+}
+
+/// 副核参与门状态（on_irq_tick 副核早退判据）。
+pub fn par_enabled() -> bool {
+    SMP_PAR.load(core::sync::atomic::Ordering::Acquire) >= 1
+}
+
+/// SMP 活性（hb2 心跳闭环 = bring-up 成功）：PAR 金丝雀 spawn 门 =
+/// 单核相零漂移自动成立（ncores==2 才 spawn）。
+pub fn smp_active() -> bool {
+    SMP_HB2.load(core::sync::atomic::Ordering::Acquire) >= 1
+}
+
+/// PAR 金丝雀采样（S-2b §5.2 D1——on_irq_tick 锁窗内每 tick 一次；
+/// per-CPU 块本核独占写，跨核读 volatile，BKL 锁窗串行无撕裂）：
+/// - EL0 tick：本核 el0_ticks+1、last_task=cur 钉板；
+/// - 非 EL0：last_task 清钉（0 = 非 EL0 见证缺席，witness 不误置）；
+/// - 粘性 witness（仅 CPU0）：自身 EL0 且读到 CPU1 last_task 为**另一**
+///   EL0 任务 → 双核重叠执行真并行见证，单向置位后不清。
+pub fn par_sample(cur: usize, is_el0: bool) {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return; // ktest/早期防御窗：无本核块（PAR 面不可达）
+    }
+    // SAFETY: 本核块；el0_ticks/last_task/par_witness 本核独占写（tick
+    // 锁窗内），SMP_CPU1.last_task 跨核 volatile 读（对齐 u64 原子无撕裂）。
+    unsafe {
+        let my = base as *mut SmpCpu;
+        if is_el0 {
+            (*my).el0_ticks = (*my).el0_ticks.wrapping_add(1);
+            (*my).last_task = cur as u64;
+            if (*my).cpu == 0 {
+                let c1_last = (&raw const SMP_CPU1.last_task).read_volatile();
+                if c1_last != 0 && c1_last != cur as u64 {
+                    (*my).par_witness = 1;
+                }
+            }
+        } else {
+            (*my).last_task = 0;
+        }
+    }
+}
+
+/// PAR 读数（打印任务消费：volatile 单字读，下界断言无需一致快照）：
+/// 返回 (el0_ticks0, el0_ticks1, witness, ticks0, ticks1)——后两位是本核
+/// on_irq_tick 总计数（诊断：`t1==0` = 副核 tick 链路死（探测环没被 CNTV
+/// 打醒），`t1>0 && c1==0` = tick 活但派发/出选面问题）。
+pub fn par_readout() -> (u64, u64, u64, u64, u64) {
+    // SAFETY: 跨核 volatile 读（对齐 u64 原子无撕裂；谓词为下界断言）。
+    unsafe {
+        let c0 = (&raw const SMP_CPU0.el0_ticks).read_volatile();
+        let c1 = (&raw const SMP_CPU1.el0_ticks).read_volatile();
+        let w = (&raw const SMP_CPU0.par_witness).read_volatile();
+        let t0 = (&raw const SMP_CPU0.ticks).read_volatile();
+        let t1 = (&raw const SMP_CPU1.ticks).read_volatile();
+        (c0, c1, w, t0, t1)
+    }
+}
+
+/// 排障期扩展读数（S-2b 诊断面）：(pre0, pre1, disp1)——pre = klock 前 tick
+/// 入口计数（pre 涨/ticks 冻 = 卡锁；同冻 = CNTV/IRQ 链死），disp1 = 副核
+/// park 派发计数（disp1>0 && c1==0 = 派发出的任务没活到下个 tick）。
+pub fn diag_readout() -> (u64, u64, u64) {
+    // SAFETY: 跨核 volatile 读（诊断谓词，无需一致快照）。
+    unsafe {
+        let p0 = (&raw const SMP_CPU0.ticks_pre).read_volatile();
+        let p1 = (&raw const SMP_CPU1.ticks_pre).read_volatile();
+        let d1 = (&raw const SMP_CPU1.disp_cnt).read_volatile();
+        (p0, p1, d1)
+    }
+}
+
+/// S-2b：副核 park 派发**限频门**——每 4 tick（800ms 周期）放行一次摘取。
+/// pinned 满速循环（child 类）占空比砍到 25%：console 单通道的生产率降回
+/// CPU0 轮转可消化量级（fix4/fix5 双向实锤——低优消费者 → 生产者深饿；
+/// 高优消费者 → 0 层验收任务全饿；无界生产下下游怎么调都错，正解在源头
+/// 限频）。副核参与验收面 = d1>0 活证（不要求满速，满速/真并行归 S-3）。
+pub fn park_due() -> bool {
+    // SAFETY: 本核块（调用点在 CPU1 tick 锁窗内）；对齐 u64 volatile 无撕裂。
+    unsafe { ((&raw const SMP_CPU1.ticks).read_volatile() & 3) == 0 }
+}
+
+/// 本核 on_irq_tick 计数（on_irq_tick gate 检查后调用——两核都计，per-CPU
+/// 块本核独占写）。诊断面：见 [`par_readout`]。
+pub fn note_tick() {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return; // ktest/早期防御窗
+    }
+    // SAFETY: 本核块；ticks 本核独占写（tick 锁窗内）。
+    unsafe {
+        let my = base as *mut SmpCpu;
+        (*my).ticks = (*my).ticks.wrapping_add(1);
+    }
+}
+
+/// 本核 tick **入口**计数（klock_acquire 之前调用——含 gate 早退轮）。
+/// 诊断面：见 [`diag_readout`]。S-2b 排障期。
+pub fn note_tick_entry() {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return; // ktest/早期防御窗
+    }
+    // SAFETY: 本核块；ticks_pre 本核独占写（IRQ 入口，锁外）。
+    unsafe {
+        let my = base as *mut SmpCpu;
+        (*my).ticks_pre = (*my).ticks_pre.wrapping_add(1);
+    }
+}
+
+/// 本核 park 派发计数（on_irq_tick cur==null 出选真任务时调用——锁窗内）。
+/// 诊断面：见 [`diag_readout`]。S-2b 排障期。
+pub fn note_dispatch() {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return; // ktest/早期防御窗
+    }
+    // SAFETY: 本核块；disp_cnt 本核独占写（tick 锁窗内）。
+    unsafe {
+        let my = base as *mut SmpCpu;
+        (*my).disp_cnt = (*my).disp_cnt.wrapping_add(1);
+    }
 }
 
 /// boot asm 钉存的**入口** EL（1/2/3）：`_start` 处检测、经 x20（callee-saved，
@@ -223,8 +456,8 @@ global_asm!(
     "    cmp x0, #2",
     "    b.eq .Lsmp_from_el2",
     "    cmp x0, #3",
-    "    b.eq .Lsmp_final",                  // EL3 不预期（virt 无）；直入 park
-    "    b .Lsmp_el1",                       // EL1 直达（默认机型 PSCI 入口）
+    "    b.eq .Lsmp_el3_park",              // EL3 不预期（virt 无）；MMU 未开
+    "    b .Lsmp_el1",                       //   → 独立 PA wfi 环（读不得高半指针字）
 
     // ---- ① EL2 → EL1 降级（复刻 boot.rs .Lfrom_el2；elr 落回本函数）----
     ".Lsmp_from_el2:",
@@ -315,9 +548,18 @@ global_asm!(
     "    str x0, [x9]",
     "    str x0, [x24, #16]",                // per-CPU 块 present=1
     "    dmb ish",
-    ".Lsmp_final:",                          // ⑧稳态 park：wfi 真睡（零 UART 写）
+    // ---- ⑧转高半 secondary_main（S-2b）：指针字 + blr——直接 `bl` 低半→高半
+    //      CALL26 ±128MiB 越界断链，经 `.rodata` 指针字寄存器间接跳无此限
+    //      （__smp_sec_entry 同款先例）；MMU 已开（bl enable_mmu 之后）高半
+    //      字面量可读。gate 检查在 on_irq_tick 早退（统一探测/参与环合一，
+    //      secondary_main 自身无 gate 分支）——不归（-> !）。
+    ".Lsmp_final:",
+    "    ldr x0, =__secondary_main_ptr",
+    "    ldr x1, [x0]",
+    "    blr x1",
+    ".Lsmp_el3_park:",                       // EL3 兜底：MMU 未开，PA wfi 永停
     "    wfi",
-    "    b .Lsmp_final",
+    "    b .Lsmp_el3_park",
     ".size secondary_entry, . - secondary_entry",
     ".ltorg",
 );

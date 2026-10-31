@@ -19,14 +19,18 @@ A2 整卡验收线的 host 侧组件）。
   `skt_selftest` server 段同源载荷）；EVS 默认调用字节不变。
   smoke/手动用法：QEMU 前后台起 + 记 PID + 相尾按 PID kill（多会话禁 pkill）。
 """
+import os
 import socket
 import sys
 import time
 
 HOST = "127.0.0.1"
 PORT = 18082
-TOTAL_CAP_S = 480  # 总帽：guest boot→bsh EVS 实测 ~60s-5min（TCG 慢夜）+ 对拍余量
-ATTEMPT_CAP_S = 45  # 单尝试帽：connect/write/read 全程；失败尝试留 guest CloseWait
+# 帽 env 化（S-2b §5.1）：默认值 = 主 smoke 单核线现行定值不变；smoke-smp
+# 线经 env 覆盖（TOTAL 960 / ATTEMPT 90——MTTCG 双核 0.61x 一切帽 ×2 铁律；
+# 「client 帽 ≥ 相帽 + 60s」与「内帽 < 尝试帽」两道帽序见 SMP-S2 草案 §5.1）。
+TOTAL_CAP_S = int(os.environ.get("BERRY_EVS_TOTAL_CAP_S", "480"))  # 总帽：guest boot→bsh EVS 实测 ~60s-5min（TCG 慢夜）+ 对拍余量
+ATTEMPT_CAP_S = int(os.environ.get("BERRY_EVS_ATTEMPT_CAP_S", "45"))  # 单尝试帽：connect/write/read 全程；失败尝试留 guest CloseWait
                     # 尸槽（bsh 侧释槽 30s 帽 + 重入 accept）——45s 覆盖回收窗
 RETRY_SLEEP_S = 2
 

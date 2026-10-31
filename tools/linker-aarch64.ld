@@ -48,6 +48,12 @@ SECTIONS {
         . = ALIGN(8);
         __smp_sec_entry = .;
         QUAD(secondary_entry)
+        /* S-2b：secondary_main 指针字——副核 asm `.Lsmp_final` 经 ldr+blr 寄存器
+           间接跳转高半入口（直接 bl 低半→高半 CALL26 ±128MiB 越界断链；
+           与 __smp_sec_entry 同款先例）。secondary_main #[no_mangle]（kernel）。 */
+        . = ALIGN(8);
+        __secondary_main_ptr = .;
+        QUAD(secondary_main)
     }
     . = ALIGN(4096);
     __rodata_end = .;

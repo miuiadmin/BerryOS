@@ -792,10 +792,10 @@ core::arch::global_asm!(
     "    svc  #0",
     "    cbnz x0, 3f",
     "    ldr  x5, [x2]",
-    "    movz x3, #0xE400",             // δ = 1e10 ns（10s，远超 ponger 节流周期）
-    "    movk x3, #0x540B, lsl #16",
-    "    movk x3, #0x2, lsl #32",
-    "    add  x3, x5, x3",              // deadline = now + 10s
+    "    movz x3, #0x8C80",             // δ = 3e10 ns（30s 帽；原 10s——S-2b 双核
+    "    movk x3, #0xFC18, lsl #16",    // BKL 争用 + MTTCG 互拖调度税下 ponger 轮转
+    "    movk x3, #0x6, lsl #32",       // 变慢实测超 10s（pinger -110 自陷错杀，
+    "    add  x3, x5, x3",              // deadline = now + 30s）
     "    movz x0, #0x04",               // wait_one(endA, WRITABLE, deadline, *obs)
     "    mov  x1, x20",
     "    movz x2, #2",                  // SIGNAL_WRITABLE（内核派生位）

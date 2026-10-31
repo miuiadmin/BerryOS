@@ -1130,9 +1130,9 @@ fn ps_selftest(console: Handle) {
             return;
         }
     };
-    // ① 收请求（严格串行单请求；富余 handle 收口丢弃）。帽 30s——svcmgr
-    // 顺序走到此处才服务，慢而活着不误杀（U1_EOF_CAP 同档）。
-    const PS_CAP_NS: u64 = 30 * 1_000_000_000;
+    // ① 收请求（严格串行单请求；富余 handle 收口丢弃）。帽 60s——svcmgr
+    // 顺序走到此处才服务，慢而活着不误杀（U1_EOF_CAP 同档；S-2b §5.4 ×2）。
+    const PS_CAP_NS: u64 = 60 * 1_000_000_000;
     let mut msg = [0u8; 256];
     let mut hh = [0 as Handle; 6];
     let mut nb = msg.len();
@@ -1180,7 +1180,7 @@ fn ps_selftest(console: Handle) {
         bad_reply(&mut rep)
     };
     send_retry(ps_a, rep.as_ptr(), rl);
-    // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 30s）。
+    // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 60s）。
     // SAFETY: svcmgr 单线程独占（PS_WIN，HEX_WIN 同纪律）。
     let cap: &mut [u8] =
         unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, 512) };
@@ -1393,9 +1393,9 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
             return None;
         }
     };
-    // ① 收请求（严格串行单请求；富余 handle 收口丢弃）。帽 30s——svcmgr
+    // ① 收请求（严格串行单请求；富余 handle 收口丢弃）。帽 60s——svcmgr
     // 顺序走到此处才服务，慢而活着不误杀（PS_CAP_NS 同档）。
-    const BC_CAP_NS: u64 = 30 * 1_000_000_000;
+    const BC_CAP_NS: u64 = 60 * 1_000_000_000;
     let mut msg = [0u8; 256];
     let mut hh = [0 as Handle; 6];
     let mut nb = msg.len();
@@ -1444,7 +1444,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
         None => bad_reply(&mut rep),
     };
     send_retry(q_a, rep.as_ptr(), rl);
-    // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 30s）。
+    // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 60s）。
     // SAFETY: svcmgr 单线程独占（PS_WIN 顺序复用，HEX_WIN 同纪律）。
     let cap: &mut [u8] =
         unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, 512) };
@@ -1589,9 +1589,9 @@ const THR_ENTRY: usize = 0x1000;
 const THR_SP: usize = 0x7000;
 /// 期望退出码：五步链全过 = 7；任何步失败 = 9（thrchild src/main.rs 头注）。
 const THR_OK_CODE: i32 = 7;
-/// join 应答帽 30s：TCG 下 spawn→跑→收口「慢而活」不误杀（M3DEMO cp 步
+/// join 应答帽 60s：TCG 下 spawn→跑→收口「慢而活」不误杀（M3DEMO cp 步
 /// ≈17s 定标同口径）；超帽 = 降级行 + 标记缺失 = smoke FAIL，不重发。
-const THR_CAP_NS: u64 = 30 * 1_000_000_000;
+const THR_CAP_NS: u64 = 60 * 1_000_000_000;
 /// T-1 §2 标记（7 字节；rootfs 相第 36 标记，EFI 路 ECO 同面）。
 const THR_OK: &[u8; 7] = b"THR ok\n";
 
@@ -1643,7 +1643,7 @@ fn thr_selftest(console: Handle) {
     if berry_handle_close(boot) != BERRY_ERR_BAD_HANDLE {
         trap(); // 迁移自证：原值必须已作废（spawn_child 同款铁证）
     }
-    // join：wait 不需权利位；绝对帽 30s。
+    // join：wait 不需权利位；绝对帽 60s。
     let mut obs = 0u64;
     if berry_object_wait_one(hp, SIGNAL_TERMINATED, now() + THR_CAP_NS, &mut obs) != 0
         || obs != SIGNAL_TERMINATED
@@ -1715,10 +1715,10 @@ const EXIT_OK: &[u8; 8] = b"EXIT ok\n";
 /// 防子串混叠——`FS ok n=` 同款惯例；**状态谓词，无竞速面**）。
 const BLKD_OK: &[u8] = b"BLKD ok n=512\n";
 
-/// BLKD 应答帽：30s（vblk 启动自验在服务循环**之前**——boot 期在途可达
+/// BLKD 应答帽：60s（vblk 启动自验在服务循环**之前**——boot 期在途可达
 /// 数秒；超帽 = 降级行 + 标记缺失 = smoke FAIL，不重发[请求可能仍在途，
 /// 重发 = 重复写]）。
-const BLKD_REPLY_CAP: u64 = 30 * 1_000_000_000;
+const BLKD_REPLY_CAP: u64 = 60 * 1_000_000_000;
 
 /// BLKD 自验扇区（LBA5——避开 justfile/smoke 落盘印章 LBA0 与 vblk 启动
 /// 自验 LBA1；确定性 pattern 跨相幂等重写，对拍恒过）。
@@ -1734,13 +1734,13 @@ const BLKD_COMMIT_LEN: u64 = ((SECTOR_SZ as u64 + 4095) / 4096) * 4096;
 /// 形态防子串混叠——`BLKD ok n=` 同款惯例；状态谓词，无竞速面）。
 const DNS_OK: &[u8] = b"DNS ok addr=127.0.0.1\n";
 
-/// DNS 应答帽：60s。worst 路径 = vnet 启动自验尾巴（ARP+ICMP 在 serve()
+/// DNS 应答帽：120s。worst 路径 = vnet 启动自验尾巴（ARP+ICMP 在 serve()
 /// **之前**，早到的请求入队等待——主走查的阻塞 reap 通常已覆盖这段，但
 /// 帽不押时序）+ 服务端 DNS 整体帽 20s（vnet `DNS_CAP_NS`——SLIRP 失联
 /// 时 ST_TIMEOUT 应答 20s 到点，慢 ≠ 死由本帽兜底）+ 余量。超帽 = 降级行
 /// + 标记缺失 = smoke FAIL（请求可能仍在途，**不重发**——v1 无请求序号，
 /// blk_rpc 同款纪律）。
-const DNS_REPLY_CAP: u64 = 60 * 1_000_000_000;
+const DNS_REPLY_CAP: u64 = 120 * 1_000_000_000;
 
 /// rootfs 相第 20 标记（T-d，`docs/TCP栈设计草案.md` §7）：vnet TCP 三 op
 /// 服务消费自验——OPEN(18080) → ROUNDTRIP 64B 逐字节对拍 → CLOSE 三步全
@@ -1749,12 +1749,12 @@ const DNS_REPLY_CAP: u64 = 60 * 1_000_000_000;
 /// 服务」口径的区分面）；状态谓词，无竞速面。
 const TCPS_OK: &[u8] = b"TCPS ok echo=64\n";
 
-/// TCP 应答帽：60s（DNS 同值。「client 帽 > 服务帽」纪律：vnet 侧三 op
-/// 各相位帽 OPEN 20s / ROUNDTRIP 30s / CLOSE 30s，逐 op 各等各的应答——
-/// 服务活着只是慢时 ST_TIMEOUT 应答最迟 ~30s 到，本帽只兜 vnet 整个挂死
+/// TCP 应答帽：120s（DNS 同值。「client 帽 > 服务帽」纪律：vnet 侧三 op
+/// 各相位帽 OPEN 20s / ROUNDTRIP 60s / CLOSE 60s，逐 op 各等各的应答——
+/// 服务活着只是慢时 ST_TIMEOUT 应答最迟 ~60s 到，本帽只兜 vnet 整个挂死
 /// 的面）。超帽 = 降级行 + 标记缺失 = smoke FAIL（不重发——串行 RPC 队列
 /// 里可能滞留迟到应答错配下一请求，v1 无请求序号，blk_rpc 同款纪律）。
-const TCPS_REPLY_CAP: u64 = 60 * 1_000_000_000;
+const TCPS_REPLY_CAP: u64 = 120 * 1_000_000_000;
 
 /// 宿主回显服务端口（`tools/echod.py` bind 127.0.0.1:18080 定值——SLIRP
 /// guest 主动出站 10.0.2.2 同端口转发；vnet tcp.rs `ECHO_PORT` 镜像值）。
@@ -1774,9 +1774,9 @@ const _: () = assert!(TCPS_PATTERN.len() == 64);
 /// 元数据五 op RPC 全链，分片数据面经 C-2b shell 面验收。
 const U1_OK: &[u8; 6] = b"U1 ok\n";
 
-/// U1 单步 EOF 活动帽：30s（app 子同档——RPC 链慢而活着不误杀，每次收包
+/// U1 单步 EOF 活动帽：60s（app 子同档——RPC 链慢而活着不误杀，每次收包
 /// 刷新；真断链 = 帽尽降级 + 标记缺失 = smoke FAIL）。
-const U1_EOF_CAP: u64 = 30 * 1_000_000_000;
+const U1_EOF_CAP: u64 = 60 * 1_000_000_000;
 
 // rootfs ELF 流式拉起 = `berry_exec::spawn_rootfs_elf`（A-2 迁出：ELF 首窗
 // 解析 → 页铺平单 VMO → 段泵送 → 栈+保护页 → env 块交接；签名 SpawnSpec
@@ -1964,7 +1964,7 @@ fn blk_stages(blk: Handle, vmo: Handle, pat: &[u8; SECTOR_SZ]) -> Result<(), &'s
 
 /// 严格串行 RPC（一请求一应答，`berry-blkproto` 约定）：dup VMO 别名随请求
 /// send（EBUSY → wait WRITABLE 重试；take 只发生在成功路径——EBUSY 时别名
-/// 未被取走，可原值重发）→ 30s 应答帽 wait READABLE → recv 恰 1B 解析。
+/// 未被取走，可原值重发）→ 60s 应答帽 wait READABLE → recv 恰 1B 解析。
 /// 应答帽超时/错码 → Err（请求可能仍在途，**不重发**——重发 = 重复写）。
 fn blk_rpc(h: Handle, op: u8, sector: u64, vmo: Handle) -> Result<u8, ()> {
     let mut req = [0u8; 16];
@@ -1989,7 +1989,7 @@ fn blk_rpc(h: Handle, op: u8, sector: u64, vmo: Handle) -> Result<u8, ()> {
         }
         wait(h, SIGNAL_WRITABLE);
     }
-    // 应答帽 30s（vblk 启动自验在服务循环前——boot 在途可达数秒；普通
+    // 应答帽 60s（vblk 启动自验在服务循环前——boot 在途可达数秒；普通
     // wait 是 10s，这里宽帽）。
     let mut obs = 0u64;
     if berry_object_wait_one(h, SIGNAL_READABLE, now() + BLKD_REPLY_CAP, &mut obs) != 0 {
@@ -2036,9 +2036,9 @@ fn eco_app(console: Handle, id: &[u8], why: &[u8]) {
     send_retry(console, line.as_ptr(), n + 1);
 }
 
-/// app EOF 收集帽：30s。worst 路径 = 子 main 全程 + EOF 排队（demo app
+/// app EOF 收集帽：60s。worst 路径 = 子 main 全程 + EOF 排队（demo app
 /// 毫秒级；30s = 断链/卡死兜底——超帽 `no EOF` 降级行，reap 兜底收口）。
-const APP_EOF_CAP: u64 = 30 * 1_000_000_000;
+const APP_EOF_CAP: u64 = 60 * 1_000_000_000;
 
 /// 收集端等零长 EOF（`verify_hexyl` 的 drain 骨架去内容面）：s==0 且
 /// nb==0 → true；有数据照收丢弃（appquiet 契约输出为零——防御面：万一

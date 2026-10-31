@@ -185,9 +185,9 @@ const GW_ADDR_HOST: u32 = 0x0A00_0202;
 
 /// 快 op 收侧帽（LISTEN/ACCEPT/POLL/DRAIN——bsh netd_rpc 同口径 10s）。
 const CAP_FAST_NS: u64 = 10_000_000_000;
-/// 慢 op 收侧帽（OPEN/RT/CLOSE——vnet 内帽 30s + 余量 15s：「服务慢 ≠
-/// 服务死」，P6 A-6 纪律）。
-const CAP_SLOW_NS: u64 = 45_000_000_000;
+/// 慢 op 收侧帽（OPEN/RT/CLOSE——vnet 内帽 60s + 余量 30s（S-2b §5.4 整族
+/// ×2）：「服务慢 ≠ 服务死」，P6 A-6 纪律）。
+const CAP_SLOW_NS: u64 = 90_000_000_000;
 /// 阻塞循环轮询节拍（accept-wait/data-wait——bsh evs 1s 同款）。
 const POLL_TICK_NS: u64 = 1_000_000_000;
 

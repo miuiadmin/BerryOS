@@ -1008,13 +1008,14 @@ fn evs_selftest() {
     {
         let want: &[u8] = want;
         // 尸槽复活预算（A3-3 首跑实抓，④ 注释详案）：每次复活重入本槽
-        // 整链（acc_dl 随之刷新）；帽 3 = client 重试环 ~47s 周期取 3 条
-        // 仍未命中活连接 = 真异常 loud（无界复活吃穿相帽，更糟）。
+        // 整链（acc_dl 随之刷新）；帽 3 = client 重试环 ~94s 周期（S-2b §5.4
+        // 帽 ×2 后）取 3 条仍未命中活连接 = 真异常 loud（无界复活吃穿相帽，
+        // 更糟）。
         let mut revives = 0u32;
         'conn: loop {
             // ① accept-wait + ② data-wait 合并循环：EAGAIN = 暂无挂起连接
-            //    （client 侧重试环在外侧）→ 1s 节拍重拉；帽 120s（client 总帽
-            //    480s 内必达）。
+            //    （client 侧重试环在外侧）→ 1s 节拍重拉；帽 240s（client 总帽
+            //    480s 内必达；S-2b §5.4 ×2——smp 线 client 总帽 960s 同序）。
             //
             // **尸槽回收**（A2-3 首跑实抓 `c0 echo bad Some(1)`）：client 重试环
             //    在 guest LISTEN 落位前后的失败尝试（SLIRP 的 SYN 重传才落进被
@@ -1024,9 +1025,9 @@ fn evs_selftest() {
             //    Established-only `send()` 拒 → ST_BAD。修法 = data-wait 门收紧
             //    到「WRITABLE（=Established）且有数据」才进 echo；CLOSED 旗或
             //    「带据无 WRITABLE」= 尸槽 → CLOSE 释槽（帽到自释，结果不敏感
-            //    ——死对端 RST 被 berry-tcp 忽略，恒走 30s 帽释槽路）→ 重入
+            //    ——死对端 RST 被 berry-tcp 忽略，恒走 60s 帽释槽路）→ 重入
             //    accept-wait 取下一条（accept 稳态 1s 内必达活连接）。
-            let acc_dl = now() + 120_000_000_000;
+            let acc_dl = now() + 240_000_000_000;
             let dsid = 'acc: loop {
                 let d = loop {
                     match netd_rpc(netd, ndp::TcpSReq::Accept, lsid, 10_000_000_000)
@@ -1046,7 +1047,7 @@ fn evs_selftest() {
                     sleep_ms(tick, sleep_mask, 1000);
                 };
                 // data-wait：WRITABLE + rbytes>0 才是活连接；尸槽释槽重入。
-                let dat_dl = now() + 30_000_000_000;
+                let dat_dl = now() + 60_000_000_000;
                 loop {
                     match netd_rpc(netd, ndp::TcpSReq::Poll, d, 10_000_000_000)
                         .and_then(|b| ndp::parse_poll_reply(&b))
@@ -1061,7 +1062,7 @@ fn evs_selftest() {
                                     netd,
                                     ndp::TcpSReq::Close,
                                     d,
-                                    45_000_000_000,
+                                    90_000_000_000,
                                 );
                                 continue 'acc;
                             }
@@ -1107,7 +1108,7 @@ fn evs_selftest() {
                 netd,
                 ndp::TcpSReq::Roundtrip { data: want },
                 dsid,
-                45_000_000_000,
+                90_000_000_000,
             ) {
                 Some((st, _)) if st == ndp::ST_OK => {}
                 Some((st, _)) if st == ndp::ST_BAD => {
@@ -1126,7 +1127,7 @@ fn evs_selftest() {
                                 netd,
                                 ndp::TcpSReq::Close,
                                 dsid,
-                                45_000_000_000,
+                                90_000_000_000,
                             );
                             continue 'conn;
                         }
@@ -1142,7 +1143,7 @@ fn evs_selftest() {
             }
             // ⑤ CLOSE(dsid)：驱动到 Closed 释槽（ST_TIMEOUT = 帽到槽已释的
             //    边缘形——首跑实录若真出现再定标，验收打严格 OK）。
-            match netd_rpc_tcp(netd, ndp::TcpSReq::Close, dsid, 45_000_000_000) {
+            match netd_rpc_tcp(netd, ndp::TcpSReq::Close, dsid, 90_000_000_000) {
                 Some((st, _)) if st == ndp::ST_OK => {}
                 other => bail!("bsh: evs: c{} close bad {:?}", ci, other.map(|(s, _)| s)),
             }
@@ -1402,8 +1403,8 @@ fn skt_selftest() {
                 // （CloseWait 带据——对端 FIN 已 pump 而未及 Closed；evs ② 门
                 // 「带据无 WRITABLE」的 fd 皮译法，A3-3 首跑实抓补相位）→ 均
                 // close 释槽重入 accept；POLLIN+POLLOUT = 活连接带据 → 进
-                // recv。帽 30s（evs 同值）。
-                let dat_dl = now() + 30_000_000_000;
+                // recv。帽 60s（evs 同值）。
+                let dat_dl = now() + 60_000_000_000;
                 loop {
                     let mut p = [berry_libc::stubs::PollFd {
                         fd: dfd,
@@ -1445,7 +1446,7 @@ fn skt_selftest() {
                     &buf[..want.len()] != want
                 );
             }
-            // send 回发（命名 RT 纯发送臂——ACK 帽在 libc 内 CAP_SLOW=45s）。
+            // send 回发（命名 RT 纯发送臂——ACK 帽在 libc 内 CAP_SLOW=90s）。
             // 尸槽迟到相位（evs ④ 同根）：send 吃 EPIPE（SockOp::Send →
             // ST_BAD 分岔）时 re-poll 复核——非 POLLOUT/POLLHUP = 会话已离
             // Established（对端 FIN 在闸门后、send 前被 pump 进）→ close 释槽
@@ -1859,9 +1860,9 @@ fn nets_selftest() {
         return;
     }
     // TCG 下 netprobe 全链（spawn + connect + echo 往返 + 净退）实测秒级、
-    // ENETUNREACH 即返——30s 帽 = uu_cp/C-5 同口径（client 收侧帽按 worst
+    // ENETUNREACH 即返——60s 帽 = uu_cp/C-5 同口径 ×2（client 收侧帽按 worst
     // 路径成本定值，P6 A-6 纪律）。
-    const NETS_CAP_NS: u64 = 30 * 1_000_000_000;
+    const NETS_CAP_NS: u64 = 60 * 1_000_000_000;
     let mut n_ok = 0u32;
 
     // —— ① 正步：10.0.2.2 字面量（echod 真对端）——
@@ -4135,7 +4136,7 @@ fn m3demo_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
     if let Err(e) = put_file("t/demo.txt", M3_DEMO) {
         m3_fail(2, &format!("put t/demo.txt {}", errno_text(e)));
     }
-    const CP_EOF_CAP_NS: u64 = 30 * 1_000_000_000;
+    const CP_EOF_CAP_NS: u64 = 60 * 1_000_000_000;
     match run_capture_fs_cap("cp", None, &["/t/demo.txt", "/t/copy.txt"], CP_EOF_CAP_NS) {
         Some((o, c)) if c == 0 && o.eof && o.dropped == 0 => {}
         Some((o, c)) => m3_bad(2, c, &o),

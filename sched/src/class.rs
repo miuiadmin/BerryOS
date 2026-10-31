@@ -126,3 +126,136 @@ impl SchedClass for RoundRobin {
         0
     }
 }
+
+// ---- S-2b：副核参与的 pick 过滤器（草案 §2.3）----
+//
+// E0 BKL 纪元「内核串行 / 用户并行」的出选过滤面：副核（CPU1）只允许
+// `pinned != 0` 的任务（= svcmgr `process_start` → `set_task_pinned` 派生的
+// EL0 用户进程）入选出选；内核任务与 boot 裸表进程全钉 CPU0（pinned=0），
+// 结构性不越核。`Running-elsewhere` 排除：他核正在跑的任务（state==Running
+// 且非本核当前）绝不被本核二派发——park 派发与 preempt 出选共用本谓词。
+//
+// CPU0 全量视图（user_only=false）：单核唯一 Running==my_cur，与旧
+// `pick_next` 逐位对齐（无过滤漂移）。
+
+/// pick 出选过滤器（S-2b）。`user_only` = 只出选 `pinned != 0`（副核）；
+/// `my_cur` = 本核当前任务（Running-elsewhere 排除的自豁免指针，park 派发
+/// 态传 null——park 上下文不是调度语义 Task，永不入环）。
+pub struct PickFilter {
+    pub user_only: bool,
+    pub my_cur: *mut Task,
+}
+
+impl PickFilter {
+    /// CPU0 全量视图（单核语义与旧 `pick_next` 恒等：唯一 Running 即 my_cur，
+    /// 恒过第二臂；pinned 不设门）。
+    pub fn all(my_cur: *mut Task) -> Self {
+        PickFilter { user_only: false, my_cur }
+    }
+
+    /// 副核用户面视图（`pinned != 0` 才可见；park 派发态 my_cur=null）。
+    pub fn user_only(my_cur: *mut Task) -> Self {
+        PickFilter { user_only: true, my_cur }
+    }
+
+    /// 出选资格：①user_only 时排除 pinned==0；②恒排除他核 Running
+    /// （state==Running 且指针 != my_cur——Ready 态才可出选；本核当前在环
+    /// 且 eligible，pick 返自身 = 续跑不切）。
+    pub(crate) fn eligible(&self, t: *const Task) -> bool {
+        unsafe {
+            if self.user_only && (*t).pinned == 0 {
+                return false;
+            }
+            if (*t).state == TaskState::Running && (t as *mut Task) != self.my_cur {
+                return false;
+            }
+            true
+        }
+    }
+}
+
+impl RoundRobin {
+    /// 过滤版出选（S-2b inherent 方法——trait 冻结不动，`docs/SMP-S2实施设计草案.md`
+    /// §2.3）。语义 = 旧 `pick_next`（两圈：最高 effective、同高取 head 侧等待
+    /// 最久者）叠加 [`PickFilter::eligible`] 门。
+    ///
+    /// 实现为**单圈严格 > 替换**：首个 eligible 者起步，遇严格更高者替换——
+    /// 与两圈「记最高再从头取第一个 == 最高」恒等（严格 > 保住首见位置 = head
+    /// 侧优先），且正确处理 head 不 eligible 形态（两圈版 max 初值取自 head、
+    /// 头部被滤时二圈起点也是 head——本实现直接以首个 eligible 为锚，无该
+    /// 隐患）。选中后 `advance_past` + `policy::apply` 与旧版逐位同序。
+    /// **消费版**出选（CPU0 专用）：选中即 `advance_past` 消耗共享游标
+    /// （FIFO 公平轮转的推进器）+ `policy::apply`。
+    pub fn pick_next_filtered(
+        &self,
+        rq: &Runqueue,
+        _topo: &Topo,
+        filter: &PickFilter,
+    ) -> Option<&mut Task> {
+        let chosen = self.scan_filtered(rq, filter)?;
+        // SAFETY: scan_filtered 契约（KERN_LOCK 窗内、节点在环）。
+        unsafe { rq.advance_past(chosen) };
+        let t = unsafe { &mut *chosen.as_ptr() };
+        crate::policy::apply(t);
+        Some(t)
+    }
+
+    /// **只读版**出选（S-2b 修正：副核专用）——不消费共享游标。
+    ///
+    /// E0 单 RUNQUEUE 单游标下，副核 pick 若走消费版，`advance_past` 会把
+    /// CPU0 的 RR FIFO 出选序周期性回卷到 pinned 任务身后——副核 user_only
+    /// 视图唯一 eligible 时（裸相 = user_child）每 tick 必回卷一次 = 游标恒
+    /// 定钉死在小段内摆动，远段任务结构性饿死（S-2b 首跑实锤：pinger 等
+    /// ponger 通道 WRITABLE 30s 不醒、30 次出选机会全被回卷吃掉）。副核
+    /// 「借走」任务由 `state=Running` + PickFilter 的他核 Running 排除臂
+    /// 表达，无需消耗 head；CPU0 游标恢复单核 FIFO 语义。副核内多 pinned
+    /// 任务的公平轮转归 S-3 per-CPU 队（E0 下 pinned 常驻 ≤1 无饿面）。
+    pub fn peek_next_filtered(
+        &self,
+        rq: &Runqueue,
+        _topo: &Topo,
+        filter: &PickFilter,
+    ) -> Option<&mut Task> {
+        let chosen = self.scan_filtered(rq, filter)?;
+        let t = unsafe { &mut *chosen.as_ptr() };
+        crate::policy::apply(t);
+        Some(t)
+    }
+
+    /// 单圈严格 > 替换扫描（两包装的公共体；选中者未出环、未动游标）。
+    fn scan_filtered(
+        &self,
+        rq: &Runqueue,
+        filter: &PickFilter,
+    ) -> Option<NonNull<Task>> {
+        // SAFETY: 环上任务均调度器拥有且在环；调用侧全在 KERN_LOCK 窗内
+        // （SVC/tick/klock 包络）——扫描期间无并发出/入环（E0 BKL 执法面）。
+        unsafe {
+            let mut cur = rq.head()?;
+            // 锚定首个 eligible 节点（环上节点必有 next——环形不变式）。
+            while !filter.eligible(cur.as_ptr()) {
+                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+                if cur == rq.head().expect("head 已取过") {
+                    return None; // 整圈无 eligible
+                }
+            }
+            let mut best = cur;
+            let mut best_eff = (*cur.as_ptr()).prio_effective;
+            loop {
+                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+                if cur == rq.head().expect("head 已取过") {
+                    break; // 整圈扫完
+                }
+                if !filter.eligible(cur.as_ptr()) {
+                    continue;
+                }
+                let e = (*cur.as_ptr()).prio_effective;
+                if e > best_eff {
+                    best = cur;
+                    best_eff = e;
+                }
+            }
+            Some(best)
+        }
+    }
+}

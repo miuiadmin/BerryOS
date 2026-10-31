@@ -483,6 +483,16 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_B_MAGIC),
     ));
 
+    // S-2 前置件 2（S-2b 前移至 sched::init 前）：主核自钉 per-CPU 块
+    //（TPIDR_EL1 ← SMP_CPU0）——LAST_VCT per-CPU 记账（A11）+ CURRENT per-CPU
+    // 主位（S-2b）的本核基座。**必须在 sched::init 之前**：init 的
+    // set_current(IDLE_TASK) 经 current_slot() 落 SmpCpu0.current 主位——
+    // TPIDR 后装则先写的 static 回落位被零初始化主位覆盖（current_task()
+    // 读主位恒 null）。ktest/bench 期（slot 未装）回落 static null = 现状
+    // 语义逐位对齐；arm_slice/enable_irq（首 tick）前、单核机型同走（per-CPU
+    // 化不分核数）。副核同款在 secondary_entry asm ⑩。
+    berry_hal_aarch64::smp::cpu0_init();
+
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     berry_sched::init();
     // 3-4c 遥测环：注册切换钩子（init 后、首个切换前——rust_main 尾部的
@@ -585,6 +595,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         .expect("main: console 哑 Event 进私有表");
     // arg 打包（pi_server 同款）：高 32 位哑 Event、低 32 位 endK——均 console
     // 私有表本地值（SVC 经 caller_table tag≠0 分支落到本表解析）。
+    // prio 0（S-2b fix5 回滚）：消费者提优先在「生产有限」时成立——双核副核
+    // 无界生产下 console 排空即被填满 = 8 层常驻，0 层验收任务（BLOCK/INTENT/
+    // SVC/DEMO 宿主）全饿（fix5 轮实锤）。正解在源头限频（park 派发 mod4，
+    // sched.rs），console 与生产者同层靠轮转分槽。
     berry_sched::spawn_with_tag(
         task_console,
         ((h_dummy_ev as usize) << 32) | h_end_k as usize,
@@ -1387,10 +1401,6 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::uart::set_rx_notify(rx_irq_notify);
     // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽。
     unsafe { berry_hal_aarch64::uart::rx_init() };
-    // S-2 前置件 2：主核自钉 per-CPU 块（TPIDR_EL1 ← SMP_CPU0）——LAST_VCT
-    // per-CPU 记账（A11）的本核基座；须在 arm_slice/enable_irq（首 tick）前，
-    // 单核机型同走（per-CPU 化不分核数）。副核同款在 secondary_entry asm ⑩。
-    berry_hal_aarch64::smp::cpu0_init();
     // S-1 副核 bring-up（`SMP设计草案.md` §3.2/§4）：窗口 = DAIF 屏蔽尾窗
     //（全 spawn/回调注册后、arm_slice/enable_irq 前）——主核 CPU_ON 后静默
     // 轮询心跳，无中断无调度，与副核 bring-up 窗口结构性无重叠（UART 单写者
@@ -1398,6 +1408,33 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // EL2 机型 / EFI 路按 conduit 门跳过（见 smp.rs 注）。`SMP ok ncores=2`
     // 仅 -smp 2 双核心跳闭环后打（状态谓词，smoke-smp 专用标记）。
     berry_hal_aarch64::smp::smp_bringup(efi_boot);
+    // S-2b PAR 金丝雀门（`docs/SMP-S2实施设计草案.md` §5.3）：副核 bring-up
+    // 成功（hb2 心跳闭环 → smp_active）才 spawn task_par_probe + 置参与 gate
+    //（soak 块同款形态：私有表 + 哑 Event + prio 8 + 有意泄漏）。序硬约束：
+    // **spawn 先于 par_enable**——gate 先开而探针缺位 = 副核已开始拉用户任务、
+    // 金丝雀缺席；gate 在 arm_slice/enable_irq（主核首 tick）前置位 = 副核
+    // 探测环首轮 tick 即可开始参与。`PAR gate on` 自证行与 spawn 同块
+    //（SOAK gate on 先例：行在 ⟺ 探针已 spawn）。
+    if berry_hal_aarch64::smp::smp_active() {
+        let ht_par: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 表内仅一个哑 Event（soak 块同形）：纯用户位等待 → pi::donor_edge
+        // 返 None（零受捐面）+ 私有表（无跨表错捐面）。无人 signal 它，唯一
+        // 醒因 Timeout。
+        let h_par = ht_par
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: par 哑 Event 进 par 表");
+        let p_par = ht_par
+            .get_raw(h_par, ObjType::Event, 0)
+            .expect("main: 取 par ObjRef")
+            .0;
+        // prio 8（soakmon 同档）：常驻全体（矩阵/console/watchdog/EL0 用户全 0）
+        // 之上——探针醒即抢占读数；boot 瞬态 bench 对（16/32）之下零干涉。
+        berry_sched::spawn_with_tag(task_par_probe, p_par.as_ptr() as usize, b"parprobe", 8,
+                                    ht_par as *mut HandleTable as usize);
+        berry_hal_aarch64::smp::par_enable();
+        berry_hal_aarch64::uart_puts(b"PAR gate on\n");
+    }
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { berry_hal_aarch64::timer::arm_slice() };
@@ -2504,6 +2541,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 39, "RX Event（P5 A-1 console 输入——内核 RX 中断到数据置位）"),
     (1 << 40, "rt_probe 哑 Event（R-1 cyclictest oversleep——永不置位，仅超时醒）"),
     (1 << 41, "soakmon 哑 Event（S-1 soak 心跳——永不置位，仅超时醒）"),
+    (1 << 42, "par_probe 哑 Event（S-2b 副核参与金丝雀——永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -2530,6 +2568,9 @@ const RT_EV_BIT: u64 = 1 << 40;
 /// RT_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（活性心跳不是死线，
 /// 超时醒 = 正常节拍）。
 const SOAK_EV_BIT: u64 = 1 << 41;
+/// par_probe 哑 Event 的用户位（S-2b，占用登记见 [`USER_SIGNAL_BITS`]——
+/// SOAK_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（soakmon 同款契约）。
+const PAR_EV_BIT: u64 = 1 << 42;
 
 /// ai_demo ↔ ai_probe 握手标志：demo bind 注入表后、睡 E_rel 前置位——probe
 /// 只在该窗口内做 clamp 断言（E_done 等待期 demo 同样在队但 eff=0，flag 区分
@@ -2980,6 +3021,150 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
             berry_hal_aarch64::uart_put_dec(lost);
             berry_hal_aarch64::uart_puts(b"\n");
         });
+        berry_hal_aarch64::kern_lock::klock_exit();
+    }
+}
+
+/// 副核高半入口（S-2b，`docs/SMP-S2实施设计草案.md` §2.3）：secondary_entry
+/// asm `.Lsmp_final` 经 `__secondary_main_ptr` 指针字 blr 进入——不归（`-> !`）。
+/// `#[no_mangle]`：链接脚本 QUAD(secondary_main) 按名解析。
+///
+/// 起手序（每步都在 DAIF 全屏蔽窗内）：
+/// 1. `daifset #0xf` 钉板——PSCI CPU_ON 出来的 DAIF 态不作假设（asm 期虽
+///    未解蔽，钉死防未来 asm 改动漂移）；
+/// 2. [`berry_hal_aarch64::trap::init`]：VBAR_EL1 per-CPU 复位 0——asm 期靠
+///    屏蔽窗硬扛；参与环前必须重指高半 `__vectors`（enable_irq 后 CNTV →
+///    exception_irq 经 VBAR 派发）；
+/// 3. [`berry_hal_aarch64::gic::enable_cntv_this_core`]：本核 banked PPI27
+///    使能（GICC PMR/CTLR 面 asm §3.2 ⑥ 已配）——GICD 全局面零触碰（S-1
+///    纪律：副核绝不动 distributor 全局面）。
+///
+/// **统一探测/参与环**（两态合一，gate 检查在 on_irq_tick 早退——本环自身
+/// 无 gate 分支）：gate 未置位 = 每 slice CNTV 唤醒 → on_irq_tick 锁窗内
+/// 早退（klock 旋取即放）→ 回环重臂续睡 = 探测态纯空转，轮询粒度 = 1 slice
+///（无 IPI（E0 代价），置位后 ≤1 slice 内开始拉任务）；gate 置位 = 同一环里
+/// on_irq_tick 走 park 派发（cur==null 出选 `pinned!=0` 用户任务切入）或正常
+/// preempt，任务尽则 block/exit/yield 的 park 分支切回本环（sec_park_ctx）
+/// 续 wfi。wfi 真睡（TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
+#[no_mangle]
+pub unsafe extern "C" fn secondary_main() -> ! {
+    // S-2b 修复：换离低半早期栈（__boot_stack_top）到高半静态栈——必须在
+    // 任何调用/IRQ 之前（本函数 `-> !`，旧帧弃置无害）。此后本核全部栈
+    // 访问（探测环帧/tick IRQ 帧/park 存档帧）都在高半：主表与用户表均映，
+    // park 帧恢复后读栈不再依赖低半映射（2b-2 退役；风暴雷详注见 smp.rs
+    // `SMP_SEC_STACK`）。
+    {
+        let top = berry_hal_aarch64::smp::sec_stack_top();
+        // SAFETY: 特权寄存器写；副核 DAIF 屏蔽窗内单线程；nostack——只改
+        // 寄存器不访问内存（此刻旧栈仍在低半可用，但本指令不触栈）。
+        unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(nostack)) };
+    }
+    // SAFETY: 特权寄存器写；副核 DAIF 窗内单线程。
+    // （排障期哨兵 enter/init ok 已随 C1 复活验证回收——bring-up 窗口 =
+    // UART 单写者纪律窗，副核静默是 SMP ok 完整落行的前提，勿在此窗加打印。）
+    unsafe {
+        core::arch::asm!("msr daifset, #0xf", options(nostack, preserves_flags));
+        berry_hal_aarch64::trap::init();
+        berry_hal_aarch64::gic::enable_cntv_this_core();
+    }
+    loop {
+        // SAFETY: 本核 CVAL 重臂（写 CNTV_CTL/CVAL 绝对截止）；DAIF 屏蔽窗内
+        //（disable_irq/wfi 后或起手窗）。
+        unsafe { berry_hal_aarch64::timer::arm_slice() };
+        berry_hal_aarch64::enable_irq();
+        berry_hal_aarch64::wfi(); // 真睡；CNTV IRQ → exception_irq → on_irq_tick
+        berry_hal_aarch64::disable_irq();
+        // park 派发/正常 preempt 都经 on_irq_tick 内 context_switch 发生；
+        // 任务尽切回 sec_park_ctx 时续行点在其调用者栈帧——经 eret 回到本循环。
+    }
+}
+
+/// S-2b 副核参与金丝雀探针（`docs/SMP-S2实施设计草案.md` §5.3，soakmon
+/// envelope 变体）：每 2s 超时醒一次读 PAR 读数——`PAR ok c0=<n> c1=<n>` =
+/// 「两核各自跑过 ≥2 个 EL0 用户任务 tick + 存在某一 tick 两核同时在跑
+/// **不同** EL0 任务」（witness 粘性位，par_sample 在 on_irq_tick 锁窗内
+/// 采样）→ 副核参与（E0「内核串行/用户并行」）的活跃证。
+///
+/// - 预算 = 120 轮 × 2s = 240s：条件满足即提前打点退出（典型路径远早于
+///   预算尾——rootfs 相用户进程持续 churn 期间两核并发 EL0 是常态）；轮尽
+///   仍不满足 = 打 `PAR absent c0=<n> c1=<n> w=<w>` 诚实缺证行后安静退出
+///   （**不是破损证明**：裸相 EL0 用户进程一次性短命、耗尽后无 churn，
+///   结构性不达条件——absent 是合法态。`PAR ok` 的机器断言归 smoke-smp
+///   扩相（rootfs 相用户 churn 充足，破损时 ok 缺失 = harness FAIL loud）；
+///   断言/panic 形态在此被明令禁止：裸相长跑（run-smp 交互/soak 类）跑过
+///   预算即炸 = 时序竞速型假阴性（「标记不得建立在竞速上」纪律）。
+/// - 醒因恒 Timeout（哑 Event 表私有、永不置位；非 Timeout = 跨表 wake 面
+///   破损 bug 路径）。
+/// - 包络纪律（soakmon 同款 F33）：klock_enter → block → 醒因断言 + 读数 +
+///   整行打印（with_print_lock 拼行 G43）→ klock_exit。读数在锁窗内
+///   （par_sample 写面同在 tick 锁窗——单写者序不赌跨核可见性时机）。
+/// - 打点后 exit_current 退出（探针非常驻——与 soakmon 的差异：PAR 是一次性
+///   验收断言，不是活性心跳；表/Event 泄漏同款有意）。
+extern "C" fn task_par_probe(arg: usize) -> ! {
+    use berry_hal_aarch64::smp::par_readout;
+    use berry_sched::WakeReason;
+    let period = 2 * berry_hal_aarch64::timer::cntfrq();
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    let mut n: u64 = 0;
+    loop {
+        n += 1;
+        let deadline = t0 + n * period;
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = berry_sched::block_current(arg, PAR_EV_BIT, deadline);
+        assert!(r == WakeReason::Timeout,
+                "par_probe: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
+        let (c0, c1, witness, t0, t1) = par_readout();
+        let (pre0, pre1, d1) = berry_hal_aarch64::smp::diag_readout();
+        if n == 1 {
+            // 早期诊断行（2s 档即出）：t1==0 = 副核 tick 链路死（对照 sS2b
+            // 哨兵定位分段）；t1>0 && c1==0 = tick 活但派发/出选面问题。
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                berry_hal_aarch64::uart_puts(b"PAR diag t0=");
+                berry_hal_aarch64::uart_put_dec(t0);
+                berry_hal_aarch64::uart_puts(b" t1=");
+                berry_hal_aarch64::uart_put_dec(t1);
+                berry_hal_aarch64::uart_puts(b"\n");
+            });
+        }
+        if witness != 0 && c0 >= 2 && c1 >= 2 {
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                berry_hal_aarch64::uart_puts(b"PAR ok c0=");
+                berry_hal_aarch64::uart_put_dec(c0);
+                berry_hal_aarch64::uart_puts(b" c1=");
+                berry_hal_aarch64::uart_put_dec(c1);
+                berry_hal_aarch64::uart_puts(b"\n");
+            });
+            berry_hal_aarch64::kern_lock::klock_exit();
+            berry_sched::exit_current();
+        }
+        if n >= 120 {
+            // 预算尽诚实缺证（见任务注：裸相结构性不达条件 = 合法 absent，
+            // 非 FAIL；ok 断言归扩相 harness）。
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                berry_hal_aarch64::uart_puts(b"PAR absent c0=");
+                berry_hal_aarch64::uart_put_dec(c0);
+                berry_hal_aarch64::uart_puts(b" c1=");
+                berry_hal_aarch64::uart_put_dec(c1);
+                berry_hal_aarch64::uart_puts(b" w=");
+                berry_hal_aarch64::uart_put_dec(witness);
+                berry_hal_aarch64::uart_puts(b" t0=");
+                berry_hal_aarch64::uart_put_dec(t0);
+                berry_hal_aarch64::uart_puts(b" t1=");
+                berry_hal_aarch64::uart_put_dec(t1);
+                // S-2b 排障期诊断尾（格式冻结面之后追加，不进 harness 消费）：
+                // pre0/pre1 = klock 前 tick 入口计数（pre1>t1 = 卡锁；同冻 =
+                // CNTV/IRQ 链死）；d1 = 副核 park 派发计数。
+                berry_hal_aarch64::uart_puts(b" pre0=");
+                berry_hal_aarch64::uart_put_dec(pre0);
+                berry_hal_aarch64::uart_puts(b" pre1=");
+                berry_hal_aarch64::uart_put_dec(pre1);
+                berry_hal_aarch64::uart_puts(b" d1=");
+                berry_hal_aarch64::uart_put_dec(d1);
+                berry_hal_aarch64::uart_puts(b"\n");
+            });
+            berry_hal_aarch64::kern_lock::klock_exit();
+            berry_sched::exit_current();
+        }
         berry_hal_aarch64::kern_lock::klock_exit();
     }
 }

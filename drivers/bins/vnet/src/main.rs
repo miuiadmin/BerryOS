@@ -121,13 +121,14 @@ const SVC_IDLE_NS: u64 = 10_000_000_000;
 /// 应答天然滤除；u16 回卷 = id 空间复用，与「id 匹配」过滤共存）。Relaxed
 /// 单消费者足够。
 static DNS_ID: AtomicU16 = AtomicU16::new(0);
-/// TCP 服务三 op 相位帽（T-d，均 < client 侧 svcmgr TCPS_REPLY_CAP 60s——
+/// TCP 服务三 op 相位帽（T-d，均 < client 侧 svcmgr TCPS_REPLY_CAP 120s——
 /// vblk BLKD「服务帽 < client 帽」同款纪律）。OPEN 20s（握手 ~3 帧往返）/
-/// ROUNDTRIP 30s（数据+回显+ACK ~3 帧）/ CLOSE 30s（挥手四帧 + TIME_WAIT
-/// 2s——TCG 单帧 poll ~1s 级，§6 RPC 成本模型）。
+/// ROUNDTRIP 60s（数据+回显+ACK ~3 帧）/ CLOSE 60s（挥手四帧 + TIME_WAIT
+/// 2s——TCG 单帧 poll ~1s 级，§6 RPC 成本模型；RT/CLOSE ×2 = S-2b §5.4
+/// MTTCG 双核 0.61x 一切帽 ×2 铁律，OPEN 余量足不随族）。
 const TCPS_OPEN_CAP_NS: u64 = 20_000_000_000;
-const TCPS_RT_CAP_NS: u64 = 30_000_000_000;
-const TCPS_CLOSE_CAP_NS: u64 = 30_000_000_000;
+const TCPS_RT_CAP_NS: u64 = 60_000_000_000;
+const TCPS_CLOSE_CAP_NS: u64 = 60_000_000_000;
 /// TCP 服务会话源端口发号器（自验固定 48080 之外从 48081 起——两会话源口
 /// 错开；u16 回卷 = 端口空间复用，会话内四元组按现值匹配）。Relaxed 单
 /// 消费者（serve 串行）足够。

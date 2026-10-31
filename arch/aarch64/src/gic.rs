@@ -61,7 +61,8 @@ const PRIO_CNTV: u8 = 0xa0;
 ///
 /// **主核（CPU0）boot 期一次、仅此一处**——S-1 起副核**绝不**调用本函数：
 /// GICD 是全局单份，重跑的 `GICD_CTLR=0` 会清光 CPU0 已配的中断（结构性
-/// 灾难）；副核只经 [`secondary_cpuif_init`] 动自己 banked 的 GICC。
+/// 灾难）；副核 GICC 面由 secondary_entry asm 内联配置（S-1）、CNTV 使能
+/// 面经 [`enable_cntv_this_core`]（S-2b）。
 ///
 /// # Safety
 /// MMIO 写（Device 映射区）；EL1、启动早期、单核。
@@ -151,6 +152,22 @@ pub unsafe fn enable_spi(irq: usize, prio: u8, target: u8, cfg: u32) {
     set_config(irq, cfg);
     mmio::write(GICD + GICD_ICPENDR0 + 4 * (irq / 32), 1 << (irq % 32));
     mmio::write(GICD + GICD_ISENABLER0 + 4 * (irq / 32), 1 << (irq % 32));
+}
+
+/// 副核使能本核 CNTV（PPI27，S-2b）：INTID<32 的 ISENABLER0/IPRIORITYR 是
+/// **per-CPU banked**——写 GICD 偏移落的是**调用核自己的 bank**，与 CPU0
+/// init 配置互不可见、互不干扰；ICFGR 不 banked（CPU0 已配 level，免配）；
+/// GICD_CTLR/SPI 面一概不碰（S-1 纪律：副核绝不动全局面）。GICC CTLR/PMR
+/// 已由 secondary_entry asm 配好（S-1 §3.2 ⑥）。本核 CVAL 由 secondary_main
+/// 循环的 arm_slice 武装。
+///
+/// # Safety
+/// MMIO 写；副核 DAIF 屏蔽窗内调用（secondary_main 起手，使能后首中断须
+/// 探测环已就位）。
+pub unsafe fn enable_cntv_this_core() {
+    set_priority(IRQ_CNTV, PRIO_CNTV);
+    mmio::write(GICD + GICD_ICPENDR0, 1 << IRQ_CNTV); // 擦历史 pending
+    mmio::write(GICD + GICD_ISENABLER0, 1 << IRQ_CNTV);
 }
 
 // ---- S-1：per-源 SPI 路由表（`SMP设计草案.md` §3.4 裁决）----
