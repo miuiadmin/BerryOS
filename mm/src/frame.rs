@@ -130,7 +130,8 @@ impl<'a> FrameAllocator<'a> {
     }
 
     /// 已分配页总数（透传 [`BuddyAllocator::allocated_pages`]——B-0 泄漏
-    /// 金丝雀的对账口径：churn 前后必须相等，确定性严格断言）。
+    /// 金丝雀的对账口径：churn 前后必须相等，确定性严格断言；D24 起 O(1)
+    /// 水位读，口径由 buddy 对拍测试钉板）。
     pub fn allocated_pages(&self) -> usize {
         self.buddy.allocated_pages()
     }

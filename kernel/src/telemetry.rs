@@ -18,6 +18,7 @@
 //! 单核 v1 单环；SMP（G2）按核拆 per-CPU 环 + 写方限本核（设计文档原案）。
 
 use berry_sched::{SwitchKind, Task, WakeReason};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// 环容量（静态预储——2KB 级常驻 .bss，boot 后永不增长）。
 pub const RING_LEN: usize = 64;
@@ -364,95 +365,86 @@ pub fn wake_hist() -> WakeHist {
 }
 
 // ---- 4-3c intent 传播计数器（`IPC设计.md` §2.1 五件套之 5；IRQ 屏蔽路径
-// 静态计数，零分配零拷贝——「值通胀」的可观测信号）----
+// 静态计数，零分配零拷贝——「值通胀」的可观测信号）。S-2 I50 起原子化
+//（fetch_add/load Relaxed）：写点仍在锁窗内单写者，读点（watchdog/断言/
+// 采集）可在锁窗外安全读——S-2b 副核 PAR 金丝雀的消费面。----
 
 /// 借入生效次数（msg_intent 抬升 server 档位的每次结算；高频公共服务被
 /// 高档客户端触达即此数飙升 = 「一切皆顶带 = 没有 band」的早期信号）。
-static mut INTENT_BORROWS: u64 = 0;
+static INTENT_BORROWS: AtomicU64 = AtomicU64::new(0);
 /// 消息链跳数帽拒绝传播次数（`intent::INTENT_HOP_MAX`）。
-static mut INTENT_HOP_CAPPED: u64 = 0;
+static INTENT_HOP_CAPPED: AtomicU64 = AtomicU64::new(0);
 /// 时间帽拒绝传播次数（每跳预算 + 链累计封顶两路合计）。
-static mut INTENT_BUDGET_CAPPED: u64 = 0;
+static INTENT_BUDGET_CAPPED: AtomicU64 = AtomicU64::new(0);
 
 /// 记一次借入生效（recv 结算 slowpath）。
 pub fn intent_borrowed() {
-    // SAFETY: 写点全程 IRQ 屏蔽（syscall 主体），单核串行。
-    unsafe { INTENT_BORROWS += 1 };
+    INTENT_BORROWS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 记一次跳数帽拒绝（recv 结算 slowpath）。
 pub fn intent_hop_capped_inc() {
-    // SAFETY: 同上。
-    unsafe { INTENT_HOP_CAPPED += 1 };
+    INTENT_HOP_CAPPED.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 记一次时间帽拒绝（send 快照降级 / recv 结算拒传播）。
 pub fn intent_budget_capped() {
-    // SAFETY: 同上。
-    unsafe { INTENT_BUDGET_CAPPED += 1 };
+    INTENT_BUDGET_CAPPED.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 借入生效累计。
 pub fn intent_borrows() -> u64 {
-    // SAFETY: 只读。
-    unsafe { INTENT_BORROWS }
+    INTENT_BORROWS.load(Ordering::Relaxed)
 }
 
 /// 跳数帽累计。
 pub fn intent_hop_capped_total() -> u64 {
-    // SAFETY: 只读。
-    unsafe { INTENT_HOP_CAPPED }
+    INTENT_HOP_CAPPED.load(Ordering::Relaxed)
 }
 
 /// 时间帽累计。
 pub fn intent_budget_capped_total() -> u64 {
-    // SAFETY: 只读。
-    unsafe { INTENT_BUDGET_CAPPED }
+    INTENT_BUDGET_CAPPED.load(Ordering::Relaxed)
 }
 
 // ---- 4-4 IPC fastpath/slowpath 计数器（`IPC设计.md` §7——快/慢路配比的
-// 可观测信号；IRQ 屏蔽路径静态计数，零分配）----
+// 可观测信号；IRQ 屏蔽路径静态计数，零分配）。S-2 I50 起原子化（同上：
+// 写点锁窗内单写者，读点锁窗外安全）----
 
 /// fastpath 命中数（检查链全过 → 定点唤醒 + 直切判定）。
-static mut IPC_FAST_HITS: u64 = 0;
+static IPC_FAST_HITS: AtomicU64 = AtomicU64::new(0);
 /// slowpath 走数（检查链任一不满足 → `wake_matching` 全匹配——含「无等待者」
 /// 的常态流水线 send；配比 = 快路覆盖率）。
-static mut IPC_FAST_MISSES: u64 = 0;
+static IPC_FAST_MISSES: AtomicU64 = AtomicU64::new(0);
 /// 直切发生数（fastpath 唤醒后 `try_preempt` 真的切走——严格更高 eff 才切）。
-static mut IPC_DIRECT: u64 = 0;
+static IPC_DIRECT: AtomicU64 = AtomicU64::new(0);
 
 /// 记一次 fastpath 命中（send 检查链全过）。
 pub fn ipc_fast_hit() {
-    // SAFETY: 写点全程 IRQ 屏蔽（syscall 主体），单核串行。
-    unsafe { IPC_FAST_HITS += 1 };
+    IPC_FAST_HITS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 记一次 slowpath（检查链不满足或无等待者）。
 pub fn ipc_fast_miss() {
-    // SAFETY: 同上。
-    unsafe { IPC_FAST_MISSES += 1 };
+    IPC_FAST_MISSES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 记一次直切（`try_preempt` 切走）。
 pub fn ipc_direct_switch() {
-    // SAFETY: 同上。
-    unsafe { IPC_DIRECT += 1 };
+    IPC_DIRECT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// fastpath 命中累计。
 pub fn ipc_fast_hits() -> u64 {
-    // SAFETY: 只读。
-    unsafe { IPC_FAST_HITS }
+    IPC_FAST_HITS.load(Ordering::Relaxed)
 }
 
 /// slowpath 累计。
 pub fn ipc_fast_misses() -> u64 {
-    // SAFETY: 只读。
-    unsafe { IPC_FAST_MISSES }
+    IPC_FAST_MISSES.load(Ordering::Relaxed)
 }
 
 /// 直切累计。
 pub fn ipc_direct_total() -> u64 {
-    // SAFETY: 只读。
-    unsafe { IPC_DIRECT }
+    IPC_DIRECT.load(Ordering::Relaxed)
 }

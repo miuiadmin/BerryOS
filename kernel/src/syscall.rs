@@ -1226,24 +1226,29 @@ extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
             if let Some((name, n)) =
                 berry_sched::kill_all_tasks_by_pinned(obj.as_ptr() as usize, code)
             {
-                berry_hal_aarch64::uart_puts(b"\nTERM: killed '");
-                berry_hal_aarch64::uart_puts(name);
-                berry_hal_aarch64::uart_puts(b"'");
-                if n > 1 {
-                    // 群杀计数（手写十进制——no_std 零依赖；任务数 4 槽含哨兵足
-                    // 够，n 帽 = 表容量量级 < 10^3）。
-                    let mut buf = [0u8; 4];
-                    let mut i = buf.len();
-                    let mut v = n;
-                    while v > 0 {
-                        i -= 1;
-                        buf[i] = b'0' + (v % 10) as u8;
-                        v /= 10;
+                // G43/G44 拼行收口：TERM 行五段（含条件群杀计数）在 PRINT_LOCK
+                // 内一次拼完——SVC 锁窗内运行，KERN→PRINT 单向嵌套合法、
+                // with_print_lock 自适应不复原解蔽。
+                berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                    berry_hal_aarch64::uart_puts(b"\nTERM: killed '");
+                    berry_hal_aarch64::uart_puts(name);
+                    berry_hal_aarch64::uart_puts(b"'");
+                    if n > 1 {
+                        // 群杀计数（手写十进制——no_std 零依赖；任务数 4 槽含哨兵足
+                        // 够，n 帽 = 表容量量级 < 10^3）。
+                        let mut buf = [0u8; 4];
+                        let mut i = buf.len();
+                        let mut v = n;
+                        while v > 0 {
+                            i -= 1;
+                            buf[i] = b'0' + (v % 10) as u8;
+                            v /= 10;
+                        }
+                        berry_hal_aarch64::uart_puts(b" x");
+                        berry_hal_aarch64::uart_puts(&buf[i..]);
                     }
-                    berry_hal_aarch64::uart_puts(b" x");
-                    berry_hal_aarch64::uart_puts(&buf[i..]);
-                }
-                berry_hal_aarch64::uart_puts(b"\n");
+                    berry_hal_aarch64::uart_puts(b"\n");
+                });
                 return 0;
             }
             // None + started = 不可达防御面（任务必在场）——落未 start 收口向。

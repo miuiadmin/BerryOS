@@ -110,18 +110,22 @@ pub static SMP_RELEASE: AtomicU64 = AtomicU64::new(0);
 #[no_mangle]
 pub static SMP_SEC_SPINS: AtomicU64 = AtomicU64::new(0);
 
-/// 副核 per-CPU 块（§3.2 ⑩）：TPIDR_EL1 钉此块地址——S-3 起扩为真 per-CPU
-/// 区（runqueue/current 指针等）。64 对齐（cache 行口径预留）。
+/// per-CPU 块（副核 §3.2 ⑩ / 主核 S-2 前置件 2）：TPIDR_EL1 钉本核块地址
+/// ——S-3 起扩为真 per-CPU 区（runqueue/current 指针等）。64 对齐（cache 行
+/// 口径预留）。S-2 起首个真字段 = `last_vct`（A11：RR.tick 周期数记账基准
+/// per-CPU 化——双 tick 结构性必须：两核共享全局时每核只对「自对方核上次
+/// tick 以来的增量」扣减 = slice 约半速不确定燃烧，§3.4 红线；本核只写本核块）。
 #[repr(C, align(64))]
 pub struct SmpCpu {
-    pub cpu: u64,     // 逻辑核号（副核=1）
-    pub mpidr: u64,   // 入口 MPIDR 原始值
-    pub present: u64, // 1 = bring-up 心跳闭环（hb2 后置）
-    pub pad: [u64; 5],
+    pub cpu: u64,      // 逻辑核号（主核=0 / 副核=1）
+    pub mpidr: u64,    // 入口 MPIDR 原始值
+    pub present: u64,  // 主核恒 1；副核 = bring-up 心跳闭环（hb2 后置）
+    pub last_vct: u64, // RR.tick 记账基准（A11 per-CPU——本核独占写）
+    pub pad: [u64; 4],
 }
 
 const fn zero_cpu() -> SmpCpu {
-    SmpCpu { cpu: 0, mpidr: 0, present: 0, pad: [0; 5] }
+    SmpCpu { cpu: 0, mpidr: 0, present: 0, last_vct: 0, pad: [0; 4] }
 }
 
 // 编译期钉板：secondary_entry asm 硬编码偏移（cpu@[x24]、mpidr@[x24,#8]、
@@ -132,9 +136,48 @@ const _: () = assert!(core::mem::size_of::<SmpCpu>() == 64);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, cpu) == 0);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, mpidr) == 8);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, present) == 16);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, last_vct) == 24);
 
+/// 副核 per-CPU 块（TPIDR_EL1 由 secondary_entry asm ⑩ 自钉）。
 #[no_mangle]
 pub static mut SMP_CPU1: SmpCpu = zero_cpu();
+
+/// 主核 per-CPU 块（前置件 2，S-2）：TPIDR_EL1 由 [`cpu0_init`] 自钉——
+/// 单核机型同走（LAST_VCT per-CPU 化不分核数）。
+#[no_mangle]
+pub static mut SMP_CPU0: SmpCpu = zero_cpu();
+
+/// 主核自钉 per-CPU 块：boot DAIF 屏蔽尾窗、`arm_slice`/`enable_irq` 前调用
+///（首 tick 前必达）。副核同款动作在 secondary_entry asm ⑩——两核各自
+/// TPIDR_EL1 钉各自块。
+pub fn cpu0_init() {
+    let mpidr: u64;
+    // SAFETY: 只读系统寄存器；boot 单线程窗。
+    unsafe {
+        asm!("mrs {}, mpidr_el1", out(reg) mpidr);
+        let p: *mut SmpCpu = &raw mut SMP_CPU0;
+        (*p).cpu = 0;
+        (*p).mpidr = mpidr;
+        (*p).present = 1; // 主核恒在场（无 bring-up 握手）
+        asm!("msr tpidr_el1, {0}", in(reg) p as u64);
+        asm!("isb");
+    }
+}
+
+/// 本核 LAST_VCT 槽（A11/前置件 2）：TPIDR_EL1 → `SmpCpu.last_vct`。返回
+/// 裸指针由调用方 volatile 读写（IRQ 热路径零包装）；None = TPIDR_EL1 未装
+///（cpu0_init 前防御窗——RR.tick 实际不可达此态）——调用方回落自有全局。
+pub fn last_vct_slot() -> Option<*mut u64> {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: 非零即本核钉入的 SmpCpu 地址（cpu0_init / secondary_entry ⑩）；
+    // last_vct 字段本核独占（tick 锁窗内单写者）。
+    Some(unsafe { core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).last_vct) })
+}
 
 /// boot asm 钉存的**入口** EL（1/2/3）：`_start` 处检测、经 x20（callee-saved，
 /// eret 不动 GPR）携带过 EL2→EL1 降级路径，`.Lbss_done`（`.bss` 清零之后）

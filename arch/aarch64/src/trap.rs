@@ -356,6 +356,11 @@ fn dump_el0(tf: &TrapFrame, ec: u32) {
 }
 
 fn dump_hdr(tf: &TrapFrame, ec: u32, hdr: &[u8]) {
+    // G43/G44 拼行收口：dump 头 + 寄存器全集 = 多段拼行——裸 PRINT_LOCK 对
+    // 包裹（两语境 IRQ 均屏蔽：current-EL 异常入口 PSTATE.I=1；dump_el0 在
+    // svc_enter KERN 窗内——KERN→PRINT 单向嵌套合法）。fatal 路 halt 于其
+    // 后（停机面锁 bypass 无碍）；BRK recover 路本对放锁后续行。
+    crate::kern_lock::print_lock();
     uart_puts(b"\n");
     uart_puts(hdr);
     uart_puts(b"\n");
@@ -373,6 +378,7 @@ fn dump_hdr(tf: &TrapFrame, ec: u32, hdr: &[u8]) {
     for (i, r) in tf.regs.iter().enumerate() {
         put_reg(i, *r);
     }
+    crate::kern_lock::print_unlock();
 }
 
 /// 不应触发的向量（asm 调）。读 ESR/ELR 打印后 halt。
@@ -438,9 +444,12 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
                 core::sync::atomic::AtomicU32::new(0);
             let k = UNKNOWN_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if k < 4 {
+                // G43/G44 拼行：IRQ 上下文（PSTATE.I=1）→ 裸 PRINT_LOCK 对。
+                crate::kern_lock::print_lock();
                 uart_puts(b"irq? id=");
                 crate::uart_put_dec(id as u64);
                 uart_puts(b"\n");
+                crate::kern_lock::print_unlock();
             }
         }
     }
