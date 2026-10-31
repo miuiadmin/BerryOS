@@ -3037,7 +3037,8 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
 ///    exception_irq 经 VBAR 派发）；
 /// 3. [`berry_hal_aarch64::gic::enable_cntv_this_core`]：本核 banked PPI27
 ///    使能（GICC PMR/CTLR 面 asm §3.2 ⑥ 已配）——GICD 全局面零触碰（S-1
-///    纪律：副核绝不动 distributor 全局面）。
+///    纪律：副核绝不动 distributor 全局面）；SGI_RESCHEDULE banked 使能
+///    同窗（S-3a——收端使能面收端自理）。
 ///
 /// **统一探测/参与环**（两态合一，gate 检查在 on_irq_tick 早退——本环自身
 /// 无 gate 分支）：gate 未置位 = 每 slice CNTV 唤醒 → on_irq_tick 锁窗内
@@ -3066,6 +3067,12 @@ pub unsafe extern "C" fn secondary_main() -> ! {
         core::arch::asm!("msr daifset, #0xf", options(nostack, preserves_flags));
         berry_hal_aarch64::trap::init();
         berry_hal_aarch64::gic::enable_cntv_this_core();
+        // S-3a：本核 SGI_RESCHEDULE(1) banked 补使能——CPU0 init 的
+        // `ICENABLER0=!0` 只禁了 CPU0 bank，但副核 bank 复位态不可假设，
+        // 显式使能 + 擦历史 pending（收端纪律：使能面收端自理）。
+        berry_hal_aarch64::gic::enable_sgi_this_core(
+            berry_hal_aarch64::gic::SGI_RESCHEDULE,
+        );
     }
     loop {
         // SAFETY: 本核 CVAL 重臂（写 CNTV_CTL/CVAL 绝对截止）；DAIF 屏蔽窗内

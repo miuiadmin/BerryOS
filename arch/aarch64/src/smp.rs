@@ -707,4 +707,14 @@ pub fn smp_bringup(efi_boot: bool) {
     }
     // 状态谓词全过才打标记（4-5a 纪律）：非竞速——两心跳都是内存状态断言。
     uart_puts(b"SMP ok ncores=2\n");
+    // S-3a probe ①（S-3 草案 §8.B 实测序）：CPU0 → CPU1 单发
+    // SGI_RESCHEDULE(1)，filter=0b00 List=0b10（bit1=CPU1）。收端 SGI 段
+    // 未接分流臂 → exception_irq 未知源面 loud `irq? id=1`（trap.rs
+    // UNKNOWN_SEEN 首 4 loud）= 零代码观测通道。本点早于副核
+    // enable_sgi_this_core 也不丢：pending 在 CPU1 bank 锁存、使能即投递。
+    // 实测形态入册后才写消费逻辑（S-0 实证纪律）。
+    // SAFETY: MMIO 写；boot DAIF 屏蔽窗内（发不等收）。
+    unsafe {
+        crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate::gic::SgiTarget::List(0b10))
+    };
 }
