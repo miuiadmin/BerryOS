@@ -727,4 +727,60 @@ pub fn smp_bringup(efi_boot: bool) {
     } else {
         uart_puts(b"SMP: FAIL sgi timeout\n");
     }
+    // S-3a probe ③：形态 + pending 合并语义观测（观察轮——实测入母案后 SGI
+    // 观测面收官；`SGI3` 前缀与 `SGI ok`/`SMP: FAIL` 断言面零碰撞，观察行
+    // 不进 smoke 断言）。bringup 全程 boot DAIF 屏蔽（main.rs 装载序：全
+    // spawn/回调注册后、arm_slice/enable_irq 前）。
+    //
+    // 观测 1——Others(0b01)：除己外全体 = CPU1（双核上应与 List(0b10)
+    // 同效）。SAFETY: MMIO 写；DAIF 屏蔽窗内（发不等收）。
+    unsafe {
+        crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate::gic::SgiTarget::Others)
+    };
+    if wait_secs(3, || crate::trap::SGI_SEEN.load(Ordering::Acquire) >= 2) {
+        uart_puts(b"SGI3 others ok n=");
+        uart_put_dec(crate::trap::SGI_SEEN.load(Ordering::Acquire) as u64);
+        uart_puts(b"\n");
+    } else {
+        uart_puts(b"SGI3 others timeout\n");
+    }
+    // 观测 2——同源双发合并：背靠背两发不等首投递。GICv2 同源 SGI 共享一个
+    // pending 位 → 次发合并（计数 +1）；实测可能 n=3（合并）/n=4（逐发竞速
+    // 胜出）——观察不定论，实测入册（S-0 纪律）。相邻 MMIO 写间隔远小于
+    // CPU1 唤醒+ack 延迟 → 合并应结构性成立；2s 稳定窗兜底区分合并/逐发。
+    // SAFETY: MMIO 写 ×2；DAIF 屏蔽窗内。
+    unsafe {
+        crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate::gic::SgiTarget::List(0b10));
+        crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate::gic::SgiTarget::List(0b10));
+    }
+    if wait_secs(3, || crate::trap::SGI_SEEN.load(Ordering::Acquire) >= 3) {
+        let merged = !wait_secs(2, || crate::trap::SGI_SEEN.load(Ordering::Acquire) >= 4);
+        uart_puts(b"SGI3 merge ok n=");
+        uart_put_dec(crate::trap::SGI_SEEN.load(Ordering::Acquire) as u64);
+        if merged {
+            uart_puts(b" merged");
+        }
+        uart_puts(b"\n");
+    } else {
+        uart_puts(b"SGI3 merge timeout\n");
+    }
+    // 观测 3——Self(0b10)：仅发送核自身。CPU0 屏蔽窗内发送 → 不投递、
+    // pending 锁存本核 bank（ISPENDR0 直读自证）；boot 尾 enable_irq 后才
+    // 投递。「先发后解蔽不丢」发端版，与 probe ① 收端版互补。首跑实测
+    // pending=0（≠预期 1）——补 seen/daif_i 观测位定谳：seen=4 → 未投递
+    // 且未锁存（Self filter 路径疑点）；seen=5/daif_i=1 → 窗内被解蔽、
+    // 即发即消费。
+    // SAFETY: MMIO 写；DAIF 屏蔽窗内。
+    unsafe {
+        crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate::gic::SgiTarget::Self_)
+    };
+    uart_puts(b"SGI3 self ok pending=");
+    uart_put_dec(
+        crate::gic::sgi_pending_this_core(crate::gic::SGI_RESCHEDULE as usize) as u64,
+    );
+    uart_puts(b" seen=");
+    uart_put_dec(crate::trap::SGI_SEEN.load(Ordering::Acquire) as u64);
+    uart_puts(b" daif_i=");
+    uart_put_dec(crate::kern_lock::irq_enabled() as u64);
+    uart_puts(b"\n");
 }

@@ -133,9 +133,9 @@ pub fn print_unlock() {
     PRINT_LOCK.store(false, Ordering::Release);
 }
 
-/// 读 DAIF.I（bit 7）：true = IRQ 解蔽。
+/// 读 DAIF.I（bit 7）：true = IRQ 解蔽。（S-3a probe ③ 观测位跨 crate 复用。）
 #[inline]
-fn irq_enabled() -> bool {
+pub fn irq_enabled() -> bool {
     let daif: u64;
     // SAFETY: 只读系统寄存器；无内存副作用；EL1。
     unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nostack, preserves_flags)) };

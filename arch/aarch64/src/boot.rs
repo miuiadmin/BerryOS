@@ -63,6 +63,10 @@ global_asm!(
     "    ldr x1, =0x09000000",         // 串口标记 '1'：到达 EL1
     "    mov x0, #0x31",
     "    str w0, [x1]",
+    "    msr daifset, #0xf",           // 屏蔽 D/A/I/F：EL1 直入路继承 reset DAIF=0
+    "    isb",                         // （解蔽）——与 EL2 路 eret SPSR=0x3c5 对齐；
+                                     // 「boot DAIF 屏蔽直到 enable_irq」契约双径归
+                                     // 一（S-3a probe ③ daif 锚实测 entry=1 揪出）
     "    movz x0, #0x30, lsl #16",     // CPACR_EL1.FPEN=0b11：显式开 EL1 FP/SIMD（ADR #34）
     "    msr cpacr_el1, x0",           // 消 reset 依赖：QEMU 8.2 reset=FPEN 0（架构值），
     "    isb",                         // 编译器 SIMD memset 一执行即 EC=0x07 陷阱（CI 实测）；

@@ -1712,8 +1712,14 @@ static mut SWITCH_OTHER_STACK: TestStack4096 = TestStack4096([0; 4096]);
 /// 乒乓对端：打 `PING ` 后切回 MAIN。Step 1 不会被切回（MAIN 不再切它），故以
 /// `halt()` 收尾满足 `-> !`。
 extern "C" fn switch_ping_fn(_arg: usize) -> ! {
-    // SAFETY: 当前 DAIF 屏蔽（boot 起 IRQ 未解蔽，ktest 在 enable_irq 之前），
-    // 满足 context_switch 的 `PSTATE.I==1` 不变式。两 ctx 不别名。
+    // trampoline 起步即解蔽（真任务须收 tick——task.rs 设计）——但本测试走
+    // boot 屏蔽窗（ktest 在 enable_irq 前）：先复蔽。一来守「boot DAIF 屏蔽
+    // 直到 enable_irq」契约（否则 ktest 后全窗解蔽），二来 context_switch
+    // 的 `PSTATE.I==1` 不变式对下面切回 MAIN 也成立（S-3a probe ③ daif
+    // 锚实测揪出：trampoline 解蔽被带回 MAIN）。
+    berry_hal_aarch64::disable_irq();
+    // SAFETY: 当前 DAIF 屏蔽（复蔽于上），满足 context_switch 的 `PSTATE.I==1`
+    // 不变式。两 ctx 不别名。
     unsafe {
         berry_hal_aarch64::uart_puts(b"PING ");
         berry_hal_aarch64::task::context_switch(
@@ -1875,7 +1881,10 @@ fn fp_snap_eq(pats: &[u128; 10]) -> bool {
 /// FP 乒乓对端：装 B 图样 → 自证 → 打 `FPING ` 切回 MAIN。切出时其 FP 态落
 /// `FP_CTX_OTHER`（MAIN 侧随后核验保存面）。不会再被切回，`halt()` 收尾满足 `-> !`。
 extern "C" fn fp_ping_fn(_arg: usize) -> ! {
-    // SAFETY: DAIF 屏蔽（ktest 在 enable_irq 之前）；两 ctx 不别名。
+    // 复蔽于 trampoline 解蔽后（switch_ping_fn 同款：boot 屏蔽窗契约 +
+    // 切回 MAIN 的 PSTATE.I==1 不变式；S-3a probe ③ 揪出）。
+    berry_hal_aarch64::disable_irq();
+    // SAFETY: 当前 DAIF 屏蔽（复蔽于上）；两 ctx 不别名。
     unsafe {
         fpcr_write(FP_FPCR_OTHER);
         fpsr_write(FP_FPSR_OTHER);

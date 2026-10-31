@@ -42,6 +42,7 @@ pub const SPURIOUS: u32 = 1023;
 const GICD_CTLR: usize = 0x000;
 const GICD_ISENABLER0: usize = 0x100;
 const GICD_ICENABLER0: usize = 0x180;
+const GICD_ISPENDR0: usize = 0x200;
 const GICD_ICPENDR0: usize = 0x280;
 const GICD_ICACTIVER0: usize = 0x380;
 /// 每 IRQ 一字节。
@@ -224,6 +225,15 @@ pub unsafe fn send_sgi(id: u8, target: SgiTarget) {
 pub unsafe fn enable_sgi_this_core(id: u8) {
     mmio::write(GICD + GICD_ICPENDR0, 1 << (id & 0xf)); // 擦历史 pending
     mmio::write(GICD + GICD_ISENABLER0, 1 << (id & 0xf));
+}
+
+/// 读本核 bank 的 SGI/PPI pending 位（S-3a probe ③）：`GICD_ISPENDR0` 对
+/// INTID<32 **per-CPU banked**——调用核只见自己 bank 的 pending 面。DAIF
+/// 屏蔽窗内发送的 Self SGI 不投递、pending 锁存于此——直读即「锁存后投递」
+/// 语义的**发端**自证（收端版 = probe ①「先发后使能不丢」）。
+pub fn sgi_pending_this_core(id: usize) -> bool {
+    // SAFETY: 只读 MMIO（GICD ISPENDR0 本核 bank），无写面无副作用。
+    unsafe { mmio::read(GICD + GICD_ISPENDR0) & (1 << (id & 0xf)) != 0 }
 }
 
 // ---- S-1：per-源 SPI 路由表（`SMP设计草案.md` §3.4 裁决）----
