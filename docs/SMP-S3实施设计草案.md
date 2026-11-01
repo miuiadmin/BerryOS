@@ -351,3 +351,26 @@ A+B 合并刀落码后 smoke-smp run4/5 连 FAIL（缺 CHAIN/MANY/SVC/DEMO 四�
 - **b-2b run9 trampoline IRQ 窗口崩（判例 §A106）**：thread 形态首跑 G1.5 杀数 2>1——`user_entry_trampoline` 旧序先 daifclr 再写 ELR/SPSR，副核 park 派发在 deadline 到点态 unmask 即刻吃 IRQ，异常入口覆写 ELR → eret 以 SPSR=0 落 EL0 执行特权 msr 必杀（CPU0 派发径靠 rearm-before-EOIR「整片无 CNTV」不变式侥幸免疫——**新调度路径点亮旧窗口**）。修 = trampoline 全程不解蔽（EL0 DAIF 由 SPSR=0 给出）→ run10 全绿。
 - **b-2b run10 `c0=0` 定谳 → 断言解耦（裁决二适用）**：K=2 按**各环实深**改道是 place() 设计本意——bare boot rq0 常驻字母打印噪声撑深 → 4 计算线程全落空队 rq1 = 正确调度行为，c0≥TH 构造性不可满足 → 降观测面；执法 = **c1≥TH ∧ n==4**（TH=24 定标 vs 实测 c1=77 ≈ 1/3 余量防轮转波动）；LB 行格式/帽锚（F-A7 帽序②）/截断（F-A12）三面钉同值。
 - **验收 b-2（收官链）**：smoke-smp 三相 PASS（相 1 27/27 墙钟 4s；相 2 45 标记 + EVS/SKT 对拍 + **PAR ok 提前命中 witness c0=7 c1=18**——S-3b 偷取/路由面生效的端到端活证，S-2b 时代恒 absent d1；相 3 `LB ok c0=0 c1=77 st1=0 n=4` 与 run10 逐字一致）+ R3 定标 boot=4s/rootfs=225s（帽 26%/27%）免升档 + test-host 762/0（L3b 新面只增不减）；主 smoke 八跑零漂移 + run-el2 + bench-icount 复核见沿革追记。
+
+### 9.7 S-3c 拆锁立法实施拆解（2026-11-01 侦察基线 + 刀序草案；行号锚 = main@792fe07 实读；**草案——开工前须过一轮对抗复核（锁序面唯一最大结构险，b-2 收官后新上下文重验 F-L 系 findings 仍成立）**）
+
+**侦察基线（792fe07 行号锚；§8.A 结构枚举仍有效，此处只录 S-3c 专属增量）**：
+
+- **锁底座现形**（kern_lock.rs 158 行全读）：KERN_LOCK/PRINT_LOCK = TTAS 自旋对（static AtomicBool const-init）；`svc_enter/svc_exit` = SVC 派发包络（取放 KERN_LOCK + KLOCK_FLAG 槽位）；`klock_enter/klock_exit` = 内核任务直调对——**次序铁则：disable_irq 必须先于 kern_acquire**（否则同核 tick on_irq_tick klock_acquire_raw 自旋 = 同核硬死锁；exit 对称 = 清位→放锁→enable_irq 最后）；KLOCK_FLAG Option<fn(bool)> 槽（None = ktest/boot 窗直通）；`-> !` handler（0x33/0x36）不归 svc_exit——放锁在 sched.rs switch_away_forever_with 收口；with_print_lock = irqsave 整消息原子。klock_enter 计数：main.rs 32 / user.rs 1 / sched.rs 2（syscall.rs 走 svc_enter 槽不计）。
+- **dispatch 触面实数 = 12 号**（F-L3「约 11」勘正）：0x32 process_start（try_spawn_user→RQ）/ 0x33 process_exit（钩子链 SQ+RQ+REAPQ 全谱）/ 0x35 thread_start（RQ）/ 0x36 thread_exit（join wake SQ + 自 REAPQ 经 `-> !`）/ 0x37 thread_sleep（block_current SQ）/ 0x3B process_terminate（kill_all_tasks_by_pinned 全谱）/ 0x52 channel_send（find_single_waiter 扫 SQ + try_preempt RQ + slowpath wake）/ 0x53 channel_recv（wake_matching SQ）/ 0x06 object_signal（wake_matching SQ）/ 0x04 object_wait_one（block_current SQ）/ 0x05 object_wait_many（block_current SQ）。排除面：0x3A get_exit_code 纯 poll（state 检 + copy_out）；0x86/0x87 信号两号无队触（libc 轮询面）；0x01/0x03 close/replace 触 PI 全图重推（donor 表面，随表锁走）。
+- **队结构现形**（sched.rs）：PER_CPU_RQ `[Runqueue; 2]` 纯数组（b-1 落、无 lock 字段——A4 否决「免一次错误预埋」，本步按注入槽定形）；REAPQ static mut :688 + REAPQ_LEN + reapq_push :694 / reap_drain :712（S-2b 注 :538——参与态 CPU1 锁窗退出链可 push，drain 须同窗串行）；SLEEPQ 全局单队（block_current :1117 / wake_one_inner :1198 / wake_matching :1230 / find_single_waiter :1268 / kill_all_tasks_by_pinned :762）；task_exit_hook = syscall.rs:1091（钩子内 wake_matching 搬 SLEEPQ，外层重扫循环消化）。enqueue_with_kick :295（b-1 统一入口）。
+- **自锁面三处**（F-L2 不可重入）：wake_matching→PI recompute（sched 内嵌调用）；kill 钩子链（terminate/exit 钩子内再醒人）；rx_irq_notify（main.rs:1403 注册——IRQ 上下文置位 RX Event + wake_matching，任何 SQ 锁方案必须 IRQ 上下文可入）。
+- **平变量原子化欠账**（C21 + 同类面）：Event.signals 平 u64（event.rs:23）；Process.pending_signals 平 u64（process.rs:87）——现靠 KERN_LOCK 串行，拆 KL 后 IRQ/跨核读写即竞态，**必须先行于任何锁收缩**。
+- **遥测双环**（telemetry.rs）：RING :45 / WAKE_RING :176 两环全 static mut + HEAD/TOTAL 平变量、64 槽、读者 last()/span() 无同步——现全靠 KERN_LOCK 串行（B12/B13 = per-CPU 双环 + seqlock 读者，F4 硬前置）。
+- **持有集载体**：Task.klock_window 单 bool（sched.rs:104 字段 / :205/:213 消费 / :224 写）——义务⑥ 升 u8 六位持有集位图。
+- **F2 裸打印第三处**（义务⑧）：heap.rs:96-100——大块 dealloc 失败路径 uart 直打（分配器锁内语境）。
+
+**刀序草案（三步；每步独立可验可回退）**：
+
+- **c-1 前置件（零锁序变化的原子化 + 遥测底座 + 立法载体）**：①C21 双面——Event.signals + Process.pending_signals → AtomicU64（拆 KL 前提，读改写全 cas 化）；②B12/B13——遥测 per-CPU 双环 + seqlock 读者（切换路径多核并发写的唯一现护 = KL，拆前必须自护）；③义务⑥——klock_window bool → 持有集位图 u8 六位（KL 位 + 结构锁五位，c-2 立法载体）；④义务⑦——新锁 const-init + 零 ops 依赖铁则成文（KLOCK_OPS None 直通窗兼容——注入槽形，与 A4 裁决同构）。KL 全程不动，验收 = 全量面绿（smoke/smoke-smp/test-host/icount——icount 预期漂移：原子化读改写指令流变化，prove 后随源）。
+- **c-2 结构锁族 + `_locked` 分层 + dispatch 分号类别（义务①②③④ + C20）**：per-queue lock 经注入槽定形（PER_CPU_RQ 扩 lock 字段——一次动结构）+ SLEEPQ 锁 + REAPQ 锁 + 表锁；wake_matching/find_single_waiter/block_current 等内层 `_locked` 改形（自锁面三处 = 调用者已持锁重入路径）；svc 分号类别取放（12 号清单按触面类取：纯表号 / SQ 号 / RQ 号 / 全谱号——方案 A/B（分号 vs 持有集）按 c-1 位图实装定）；wait/wake 原子性锚 SQ 锁窗（义务③：查位+入队同窗 / 写位+扫描同窗——旧锚 = IRQ 屏蔽窗，分段后窗口敞开 = 丢唤醒永睡）；send fastpath 单 SQ 窗（义务④：find+push+fast_wake 同窗——unlink 非幂等 A39）；C20——KERN_LOCK 收缩为对象系/表锁（svc_enter 不再全量取）。锁序 = §3 冻结序 SQ>队列>REAPQ>表>分配器>ASID>打印。
+- **c-3 kill 分段化 + 收尾（义务⑤⑧⑨）**：terminate/exit 链按裁决一五骑缝件分段（介释放 / 保 F6 序 / 双杀 CAS / 双队扫描 / 横核 Running 协议）；heap.rs:96-100 裸打印收 PL 包络（义务⑧）；遥测 last/span 归并语义随双环重验（义务⑨——锁序=时序=vct 序三位一体，归并不改 last 语义，首跑复核）。
+
+**验收（子案 :101 面）**：smoke-smp 全绿 + 主 smoke 零漂移 + test-host + build-release + ktest PI/FAST 面单核双核双绿（ktest 串行本质——并发面覆盖归 LB/soak，如实记载 F-A13）+ icount prove/随源。
+
+**风险与回退**：c-2 = S-3 最大结构险步（锁序回归 = 死锁/丢唤醒两族死状）；缝 = c-1 全程 KL 不动零行为差、c-2/c-3 各自独立 commit revert 面清晰；死锁排障第一现场 = on_irq_tick/reap_drain（IRQ 上下文入锁点）与 rx_irq_notify（F-L2 第三处——IRQ 上下文 SQ 面）。
