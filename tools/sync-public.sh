@@ -25,6 +25,9 @@ WHITELIST=(
   kernel mm sched ipc arch bootloader drivers fs net user tools
   docs
   .github .cargo
+  # rust-toolchain.toml：编译器轴钉版（SDK-02 拍板①）——「同输入同字节」
+  # 契约的公开面组成部分；ci.yml 显式 toolchain 同值引用它。
+  rust-toolchain.toml
   justfile Cargo.toml Cargo.lock LICENSE
   README.md README.zh-CN.md .gitignore
 )
