@@ -1484,81 +1484,21 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         !cur.is_null() && (*cur).ttbr0 != 0,
     );
     if cur.is_null() {
-        // S-2b park 派发（副核 park 态空哨兵被 tick 打醒）：锁内 pick
-        //（user_only 过滤）出选真任务 → 惰性存档 park 帧（context_switch 的
-        // prev 侧写入 SMP_SEC_PARK_CTX）并切入；无货原样返回续 wfi（探测环
-        // 下轮 tick 再试——gate 后无 IPI，轮询免疫丢唤醒）。
-        // S-2b 限频门：每 4 tick 放行一次（副核低频参与）。满速摘取使 CPU1 上
-        // pinned 满速循环（child）无界生产，console 单通道消费率结构性跟不上
-        // （fix4/fix5 双向实锤：低优消费者→生产者饿；高优消费者→0 层全饿），
-        // 正解 = 源头限频（占空比 25%）；d1>0 副核参与活证不受影响。
-        if !hal::smp::park_due() {
-            klock_release_raw();
-            return;
-        }
-        // S-2b 修正：副核 park 派发走只读版（不消费共享游标——消费版每 tick
-        // 把 CPU0 的 FIFO 出选序回卷到 pinned 任务身后 = 远段任务结构性饿死，
-        // 见 peek_next_filtered 头注；本段天然仅副核走）。
-        if let Some(next) = RR.peek_next_filtered(rq(), &TOPO, &pick_filter(core::ptr::null_mut())) {
-            let next_ptr: *mut Task = next;
-            // S-2b 排障期诊断面：派发计数 + 前 8 次打名（c1 恒 0 时证派发
-            // 发生过、派发了谁——任务没活到下个 tick 的归因起点）。
-            hal::smp::note_dispatch();
-            {
-                let d1 = hal::smp::diag_readout().2;
-                if d1 <= 8 {
-                    hal::kern_lock::with_print_lock(|| {
-                        hal::uart_puts(b"sS2b: disp #");
-                        hal::uart_put_dec(d1);
-                        hal::uart_puts(b" '");
-                        hal::uart_puts((*next_ptr).name);
-                        hal::uart_puts(b"'\n");
-                    });
-                }
-            }
-            (*next_ptr).state = TaskState::Running;
-            (*next_ptr).slice_left = hal::timer::slice_cycles();
-            // 授片重编已由 timer::handle 的 rearm-before-EOIR 在 IRQ 入口覆盖
-            //（CVAL 已是满片终点）——与下方 preempt 路径同口径，不再 arm。
-            set_current(next_ptr);
-            // A12 口径：SWITCHES 唯一递增语义延伸到 park 派发（金丝雀计全部
-            // 上下文切换；写点在锁窗内）。
-            SWITCHES.fetch_add(1, Ordering::Relaxed);
-            // park 无 AS，无条件激活 next（user_only 出选者恒 EL0 用户任务，
-            // ttbr0 != 0）。
-            hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
-            // note_switch prev=null 跳过发射（park 非调度语义上下文）。
-            klock_release_raw();
-            // SAFETY: PSTATE.I=1（IRQ 屏蔽）；prev=park ctx（惰性捕获 boot 帧）、
-            // next 有效。next 首切经 trampoline eret 落 EL0；park 帧自此存档，
-            // 后续任务侧 block/preempt 回 park 从 dispatch 点续行 → return →
-            // eret 回 secondary_main 探测环。
-            hal::task::context_switch(hal::smp::sec_park_ctx(), &raw const (*next_ptr).ctx);
-            return;
-        }
-        // 无货：出口放锁（与入口配平），续探测环。
+        // S-3a（子案 §9.5 步 A）：park 派发整体迁出至 [`park_recheck`]——SGI
+        // 醒与 CNTV 醒经 eret 回 secondary_main park 环后收敛单路径承接；本槽
+        // 只留 expire/par_sample（上方已毕），cur==null 无记账面，放锁即回。
+        // mod4 限频门随 tickless park 退役（义务⑥——副核参与节奏改由 CPU0
+        // 入队 SGI 事件定步：console 消费一轮才唤醒生产一轮 = 往返背压，
+        // 替代占空比限频；复发盯面见 smp.rs park_due 注）。
         klock_release_raw();
         return;
     }
     RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left（饱和到 0）
     if (*cur).slice_left == 0 {
-        // S-2b 限频（占空比执法点）：副核 slice 尽时非放行 tick 一律切回
-        // park（pinned 任务置 Ready 回环、current 清 null）——只挡 park 摘取
-        // 不挡续跑的话，child 类满速循环 preempt 每 tick peek 返自身续跑，
-        // 占空比仍 100%（限频失效）。切回 park 帧续行 → 探测环 wfi，下个
-        // 放行 tick 再摘。
-        if hal::smp::cpu_id() != 0 && !hal::smp::park_due() {
-            (*cur).state = TaskState::Ready;
-            set_current(core::ptr::null_mut());
-            // A12 口径：任务→park 同 park 派发对称计切换（金丝雀严格递增）。
-            SWITCHES.fetch_add(1, Ordering::Relaxed);
-            klock_release_raw();
-            // SAFETY: PSTATE.I=1（IRQ 屏蔽）；prev 有效、park 帧已存档
-            // （首次 park 派发时惰性捕获；切走后 cur 异常帧留其内核栈，
-            // 再摘入时恢复——与 CPU0 preempt 切换同机制）。
-            hal::task::context_switch(&raw mut (*cur).ctx, hal::smp::sec_park_ctx());
-            return;
-        }
+        // S-3a 义务⑥：mod4 切回 park 门退役——副核 slice 尽与 CPU0 同径出选
+        //（peek 只读版，下方）；副核 park 化只经任务自身 block/exit/yield 的
+        // 切回 sec_park_ctx 点，不再由 tick 强制（参与节奏由入队 SGI 事件
+        // 定步，与上支 park 迁出注同源）。
         // S-2b 修正：副核出选走只读版（不消费共享游标——防回卷饥饿，
         // 见 peek_next_filtered 头注）；CPU0 恒消费版（FIFO 推进器）。
         let picked = if hal::smp::cpu_id() == 0 {
@@ -1611,4 +1551,95 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     }
     // 未切走路：出口放锁（与入口 klock_acquire_raw 配平）。
     klock_release_raw();
+}
+
+/// S-3a 副核 park 重查（子案 §9.5 步 A）——自 `on_irq_tick` 的 cur==null
+/// park 派发段整体迁出：**SGI 醒与 CNTV 醒收敛单路径**（exception_irq 的 SGI
+/// 分支只计数不派发——「SGI 不进 tick 槽」纪律不破；两类 wfi 唤醒都经 eret
+/// 回 secondary_main park 环后到此处）。
+///
+/// 语义与原段逐位同（klock → peek 只读版出选 → 置 Running/授片/set_current →
+/// activate → 放锁 → context_switch 入任务；切回点即本函数 context_switch
+/// 调用行——任务侧 block/preempt 回 park 从此续行，return 回 park 环）。
+/// 差异一处：派发路径**自行 arm_slice**（S-3a ⑤二分——授片 arm ≠ rearm，
+/// rearm 锚仍在 timer::handle IRQ 入口：原「CVAL 已满片终点」假设只成立于
+/// CNTV 醒；SGI 醒无 CNTV IRQ，CVAL 或为深 park mask 残留，不重编 = 授片
+/// 无界）。
+///
+/// 仅副核（secondary_main park 环）调用；CPU0 侧结构性不达（其 idle 不进
+/// park 环——S-3b IDLE 深化件）。gate 未开 = 早退零共享触达（探测态轮询
+/// 免疫：gate 开启由 park 环 arm_slice 周期醒承载，≤1 slice 内此处开始
+/// 真派发）。
+///
+/// # Safety
+/// PSTATE.I=1（park 环屏蔽窗内调用）；klock 自管（取放配平）。
+pub unsafe fn park_recheck() {
+    klock_acquire_raw();
+    if !hal::smp::par_enabled() {
+        klock_release_raw();
+        return;
+    }
+    // S-2b 修正（随段迁入）：副核 park 派发走只读版（不消费共享游标——
+    // 消费版把 CPU0 的 FIFO 出选序回卷到 pinned 任务身后 = 远段任务结构性
+    // 饿死，见 peek_next_filtered 头注；本函数天然仅副核走）。
+    if let Some(next) = RR.peek_next_filtered(rq(), &TOPO, &pick_filter(core::ptr::null_mut())) {
+        let next_ptr: *mut Task = next;
+        // S-2b 排障期诊断面（随段迁入）：派发计数 + 前 8 次打名（c1 恒 0 时
+        // 证派发发生过、派发了谁——任务没活到下个 tick 的归因起点）。
+        hal::smp::note_dispatch();
+        {
+            let d1 = hal::smp::diag_readout().2;
+            if d1 <= 8 {
+                hal::kern_lock::with_print_lock(|| {
+                    hal::uart_puts(b"sS2b: disp #");
+                    hal::uart_put_dec(d1);
+                    hal::uart_puts(b" '");
+                    hal::uart_puts((*next_ptr).name);
+                    hal::uart_puts(b"'\n");
+                });
+            }
+        }
+        (*next_ptr).state = TaskState::Running;
+        (*next_ptr).slice_left = hal::timer::slice_cycles();
+        // 授片 arm（S-3a ⑤二分的授片侧）：本路径无 CNTV IRQ 先行（SGI 醒/
+        // 浅 park 到点醒后 CVAL 非满片终点）——与 preempt 路径「timer::
+        // handle 已重编」互补，此处显式武装。
+        // SAFETY: 本核 CVAL 重臂（写 CNTV_CTL/CVAL 绝对截止）；PSTATE.I=1、
+        // klock 窗内（无锁序面）。
+        unsafe { hal::timer::arm_slice() };
+        set_current(next_ptr);
+        // A12 口径（随段迁入）：SWITCHES 唯一递增语义延伸到 park 派发（金丝雀
+        // 计全部上下文切换；写点在锁窗内）。
+        SWITCHES.fetch_add(1, Ordering::Relaxed);
+        // park 无 AS，无条件激活 next（user_only 出选者恒 EL0 用户任务，
+        // ttbr0 != 0）。
+        hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
+        // note_switch prev=null 跳过发射（park 非调度语义上下文）。
+        klock_release_raw();
+        // SAFETY: PSTATE.I=1（park 环屏蔽窗）；prev=park ctx（惰性捕获——
+        // 首次派发把 park_recheck 调用帧存进 SMP_SEC_PARK_CTX）、next 有效。
+        // next 首切经 trampoline eret 落 EL0；后续任务侧 block/preempt 回
+        // park 从本调用行下续行 → return 回 park 环（无 IRQ 帧介入——与
+        // S-2b 旧形「eret 回环」的差异点，park 帧更浅更稳）。
+        hal::task::context_switch(hal::smp::sec_park_ctx(), &raw const (*next_ptr).ctx);
+        return;
+    }
+    // 无货：放锁回环（park_arm 承接武装策略）。
+    klock_release_raw();
+}
+
+/// SLEEPQ 最近截止时刻（S-3a tickless park 武装面——子案 §9.5 步 A；
+/// 头未到期即最近，空队 None = 深 park）。锁窗内读队头（与
+/// [`expire_timeouts`] 同口径——升序队头即最近到期）。
+///
+/// 调用契约：IRQ 屏蔽窗内（secondary_main park 环天然满足）。
+pub fn nearest_deadline() -> Option<u64> {
+    klock_acquire_raw();
+    // SAFETY: klock 窗内只读队头（head 经 `sleepq()` 静态单例；SLEEPQ 变更
+    // 全在锁窗内——无并发出入队窗）。
+    let d = unsafe {
+        sleepq().head.get().map(|h| (*h.as_ptr()).wait_deadline)
+    };
+    klock_release_raw();
+    d
 }

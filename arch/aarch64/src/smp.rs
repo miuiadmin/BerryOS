@@ -358,7 +358,14 @@ pub fn diag_readout() -> (u64, u64, u64) {
 /// pinned 满速循环（child 类）占空比砍到 25%：console 单通道的生产率降回
 /// CPU0 轮转可消化量级（fix4/fix5 双向实锤——低优消费者 → 生产者深饿；
 /// 高优消费者 → 0 层验收任务全饿；无界生产下下游怎么调都错，正解在源头
-/// 限频）。副核参与验收面 = d1>0 活证（不要求满速，满速/真并行归 S-3）。
+/// 限频）。
+///
+/// **已退役（S-3a 六件义务⑥，子案 §9.5 步 B）**：tickless park + SGI 事件
+/// 驱动唤醒落地后，副核参与节奏由 CPU0 入队事件定步（往返背压——console
+/// 消费一轮才唤醒生产一轮），周期轮询限频失去存在前提，两处调用点摘除。
+/// 保留 fn 与注释供诊断史对照（复发盯面 = smoke-smp 相 2 现存断言：
+/// rootfs 帽 6.5× 余量 + echod/-ETIMEDOUT 标记链——帽断言 FAIL 即复发信号）。
+#[allow(dead_code)]
 pub fn park_due() -> bool {
     // SAFETY: 本核块（调用点在 CPU1 tick 锁窗内）；对齐 u64 volatile 无撕裂。
     unsafe { ((&raw const SMP_CPU1.ticks).read_volatile() & 3) == 0 }

@@ -192,6 +192,14 @@ park/release 同步（S-1 邮箱起步用 wfe+sev，S-3 起调度改 IPI）。
 TLB shootdown v1 保持**同步 IS 广播**（S-4 在页表锁内做，异步 shootdown
 + 回执 IPI 是 v2+ 优化，非本刀）。
 
+**S-3a 实施定案（2026-11-01）**：①②③已落（`send_sgi` 原语 +
+`SGI_RESCHEDULE`=1 + trap.rs 分流臂 probe ② 收讫计数）；④的 enqueue 尾
+发送面被实验证伪除名——全局队列 peek 序下零派发价值 + console 灌压压垮
+30s 帽（判词 → 子案 `SMP-S3实施设计草案.md` §9.5 末），生产发送面归零，
+在册发送者仅 bringup probe ③ 观测块；跨核唤醒戳随 S-3b per-CPU 队列路由化
+回归（发送条件 = 目标核队列真有货）。副核 park 形 = masked-wfi + **截止
+驱动醒**（SLEEPQ 归属核单点武装 CVAL——规则 ③④成文 → 子案 §2.4 实施定案段）。
+
 ### 3.4 其余硬件面裁决
 
 - **UART TX 交织**：S-2 起打印路径（uart_puts 族）挂一把打印自旋锁

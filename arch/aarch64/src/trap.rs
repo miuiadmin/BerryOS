@@ -405,11 +405,14 @@ pub extern "C" fn exception_unexpected() {
 /// - **PL011 RX（33，P5 A-1）**：`uart::rx_irq` 排空 FIFO 到 RXFE（去活电平，
 ///   EOIR 前铁序——不排空则 EOIR 后线仍高立即重投）→ 环形缓冲 + 通知槽
 ///   （Event 置位/wake 在槽内、IRQ 屏蔽窗内）→ EOIR。不进 tick 槽。
-/// - **SGI_RESCHEDULE(1，S-3a probe ②)**：EOIR + 收讫计数（[`SGI_SEEN`]，
-///   `SGI ok` 标记的谓词源）。语义 = 跨核唤醒戳——到达即已出 wfi；SGI 为
-///   bank pending 位一次性边沿，**无去活电平**（CNTV/PL011 电平铁序不适用）；
-///   不进 tick 槽（授片与 CVAL 编程脱钩——同未知源纪律）。真正消费（重查
-///   runqueue）随 S-3b per-CPU 队列落。
+/// - **SGI_RESCHEDULE(1，probe ② 臂 + ③ 观测)——bringup probe 专用**：EOIR +
+///   收讫计数（[`SGI_SEEN`]，`SGI ok` 标记的谓词源）。enqueue 尾跨核唤醒戳
+///   （原义务①）已实验证伪除名出 S-3a——全局队列 peek 序下零派发价值 +
+///   child 灌压压垮 30s 帽（判词 → 子案 §9.5「义务①除名判词」）；生产
+///   发送面归零，在册发送者仅 bringup probe ③ 观测块（smp.rs）。跨核唤醒
+///   戳随 S-3b per-CPU 队列路由化回归。SGI 为 bank pending 位一次性边沿，
+///   **无去活电平**（CNTV/PL011 电平铁序不适用）；不进 tick 槽（授片与
+///   CVAL 编程脱钩——同未知源纪律）。
 /// - **未知**：EOIR 后忽略；首 4 个 loud（`irq? id=N`——新源接错号串口可见，
 ///   bring-up 面），之后静默（防电平未清源重投的打印风暴）。
 ///
@@ -450,8 +453,8 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             crate::gic::end(id);
         }
         SGI_RESCHED_US => {
-            // S-3a probe ②：SGI 消费臂（见函数头分流注——唤醒戳语义，无去活
-            // 电平、不进 tick 槽）。EOIR + 计收；真消费随 S-3b per-CPU 队列落。
+            // S-3a probe ② 臂（见函数头分流注——bringup probe 专用，无去活
+            // 电平、不进 tick 槽）。EOIR + 计收；唤醒戳发送面随 S-3b 回归。
             crate::gic::end(id);
             SGI_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }

@@ -54,6 +54,8 @@ impl SchedClass for RoundRobin {
         t.state = TaskState::Ready;
         // SAFETY: t 是调度器拥有、当前不在任何 runqueue 上的新任务。
         unsafe { rq.link_back(NonNull::from(&mut *t)) };
+        // [S-3a 义务①除名] enqueue 尾跨核 SGI 戳被实验证伪除名，降级 S-3b
+        // per-CPU 队列路由化回归——判词全文 → 子案 §9.5「义务①除名判词」。
     }
 
     fn dequeue(&self, t: &mut Task, rq: &mut Runqueue) {

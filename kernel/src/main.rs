@@ -3040,13 +3040,21 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
 ///    纪律：副核绝不动 distributor 全局面）；SGI_RESCHEDULE banked 使能
 ///    同窗（S-3a——收端使能面收端自理）。
 ///
-/// **统一探测/参与环**（两态合一，gate 检查在 on_irq_tick 早退——本环自身
-/// 无 gate 分支）：gate 未置位 = 每 slice CNTV 唤醒 → on_irq_tick 锁窗内
-/// 早退（klock 旋取即放）→ 回环重臂续睡 = 探测态纯空转，轮询粒度 = 1 slice
-///（无 IPI（E0 代价），置位后 ≤1 slice 内开始拉任务）；gate 置位 = 同一环里
-/// on_irq_tick 走 park 派发（cur==null 出选 `pinned!=0` 用户任务切入）或正常
-/// preempt，任务尽则 block/exit/yield 的 park 分支切回本环（sec_park_ctx）
-/// 续 wfi。wfi 真睡（TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
+/// **统一探测/参与环**（两态合一；S-3a tickless park 形——子案 §9.5 步 A）：
+/// gate 未置位 = park_arm 走 arm_slice 周期醒（探测态轮询，粒度 = 1 slice
+/// ——park_recheck 见 gate 关即早退，置位后 ≤1 slice 内开始真派发）；gate
+/// 置位 = park_recheck 承接一切派发（CNTV 醒 eret 后单路径于此——**截止
+/// 驱动醒**口径），park_arm 按 SLEEPQ 最近 deadline 浅 park（到点醒 →
+/// on_irq_tick expire → 回环 recheck 摘醒者）或 mask 深 park（SLEEPQ 尽空
+/// 时）。自续性实证（noSGI 150s）：钉本核任务阻塞带 deadline 入 SLEEPQ →
+/// arm_at 到点醒 → 自续 27 笔派发——「深 park 无 SGI 结构性饿死」对当前
+/// 面不成立（CPU1 唯一客户 = 恒 deadline 阻塞的 pinned child；边界 = 无
+/// 限期阻塞 + SLEEPQ 空窗时外部唤醒，留 S-3b 路由化收口）。原义务①
+/// enqueue SGI 已除名（判词 → 子案 §9.5），唤醒戳随 S-3b 回归。
+/// 任务尽则 block/exit/yield 切回本环（sec_park_ctx）续行。
+/// wfi 真睡且全程 PSTATE.I=1（masked-wfi：GIC 线 pending 即醒，enable→wfi
+/// 间到达的 IRQ 先被服务后 wfi 直睡的丢唤醒窗由此收口——Linux arm64
+/// cpu_do_idle 同款；TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
 #[no_mangle]
 pub unsafe extern "C" fn secondary_main() -> ! {
     // S-2b 修复：换离低半早期栈（__boot_stack_top）到高半静态栈——必须在
@@ -3075,14 +3083,37 @@ pub unsafe extern "C" fn secondary_main() -> ! {
         );
     }
     loop {
-        // SAFETY: 本核 CVAL 重臂（写 CNTV_CTL/CVAL 绝对截止）；DAIF 屏蔽窗内
-        //（disable_irq/wfi 后或起手窗）。
-        unsafe { berry_hal_aarch64::timer::arm_slice() };
+        // S-3a tickless park 环（子案 §9.5 步 A）：派发收敛到 park_recheck
+        //（CNTV 醒 eret 后到这——截止驱动醒口径）；武装策略按 gate 两态。
+        // SAFETY: PSTATE.I=1（起手 DAIF 窗 / 上轮 disable_irq）；klock 自管。
+        unsafe { berry_sched::park_recheck() };
+        // PAR 清钉（tickless 伴生洞收口）：深 park 窗无 tick 采样，last_task
+        // 若滞留上一个 EL0 任务指针，CPU0 侧 witness 会误置假并行见证——
+        // wfi 前清（本核块独占写、无跨核读：par_sample 的 cpu==0 分支才读
+        // 对岸，免锁）。
+        berry_hal_aarch64::smp::par_sample(0, false);
+        if berry_hal_aarch64::smp::par_enabled() {
+            match berry_sched::nearest_deadline() {
+                // SAFETY: 本核 CVAL 编程到 SLEEPQ 最近 deadline（绝对截止，
+                // 过期即醒由回环 expire 承接）；屏蔽窗内。
+                Some(d) => unsafe { berry_hal_aarch64::timer::arm_at(d) },
+                // SAFETY: CNTV IMASK=1（深 park——SLEEPQ 尽空无醒源，倒计仍
+                // 跑；后续就绪的钉本核任务暂由 S-3b 路由化前的边界注收口，
+                // 详函数头自续性实证段）。
+                None => unsafe { berry_hal_aarch64::timer::mask() },
+            }
+        } else {
+            // SAFETY: 本核 CVAL 重臂（探测态周期醒，gate 开启 ≤1 slice 可见）；
+            // DAIF 屏蔽窗内。
+            unsafe { berry_hal_aarch64::timer::arm_slice() };
+        }
+        // masked-wfi（丢唤醒窗收口）：wfi 全程 PSTATE.I=1——若先 enable 再
+        // wfi，enable→wfi 间到达的 IRQ 会被先服务（pending 位消费掉）后 wfi
+        // 直睡 = 丢唤醒；屏蔽态 wfi 由 GIC 线 pending 唤醒，醒后 enable_irq
+        // 即取该中断（无 pending 则直落 disable，窗微无害）——三步闭环。
+        berry_hal_aarch64::wfi();
         berry_hal_aarch64::enable_irq();
-        berry_hal_aarch64::wfi(); // 真睡；CNTV IRQ → exception_irq → on_irq_tick
         berry_hal_aarch64::disable_irq();
-        // park 派发/正常 preempt 都经 on_irq_tick 内 context_switch 发生；
-        // 任务尽切回 sec_park_ctx 时续行点在其调用者栈帧——经 eret 回到本循环。
     }
 }
 
