@@ -11,7 +11,9 @@
 use crate::class::{RoundRobin, SchedClass};
 use crate::runqueue::{Runqueue, Topo};
 use crate::spin::SpinLock;
-use crate::task::{Task, TaskState, WakeReason, HELD_KERN_LOCK, HELD_RQ0, HELD_RQ1, HELD_SQ};
+use crate::task::{
+    Task, TaskState, WakeReason, HELD_KERN_LOCK, HELD_RQ0, HELD_RQ1, HELD_REAPQ, HELD_SQ,
+};
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
 use core::ptr::{addr_of_mut, NonNull};
@@ -630,9 +632,10 @@ pub fn yield_now() {
     }
     // Plan B：切回后顺手回收退出任务（drop Box + 内核栈）——本上下文非被回收
     // 者自身栈；无切换发生时也 drain（环形忙转下 idle 可能长期不来）。
-    // S-2b：参与态下 REAPQ push 可来自 CPU1 锁窗退出链——drain 须同窗串行；
-    // CPU0 idle/main 语境裸取裸放配平（窗口短：drain+空判，不跨切换）。副核
-    // 防御 yield 面不 drain（REAPQ 由 CPU0 idle/tick 消化）。
+    // S-2b：参与态下 REAPQ push 可来自 CPU1 锁窗退出链——drain 经 REAPQ 锁
+    // 串行（c-2b slice 2）；KL raw 窗包裹保持（KL>REAPQ §A108，窗口短：
+    // drain+空判，不跨切换）。副核防御 yield 面不 drain（REAPQ 由 CPU0
+    // idle/tick 消化）。
     if hal::smp::cpu_id() == 0 {
         if hal::smp::par_enabled() {
             klock_acquire_raw();
@@ -713,9 +716,9 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
         hook((*cur).pinned, (*cur).thread_key, code);
     }
     // RQ 窗（c-2b）：dequeue（自摘环置 Exited）+ 出选 + 被选者置 Running 同
-    // 窗；reapq_push 夹层在内（终态 RQ>REAPQ 正序——c-2b slice 2 REAPQ 取放
-    // 后即成嵌套形）。EXIT_HOOK 留窗前（钩子可 wake_matching 入队 = 同核环
-    // 同锁重入，绝不入窗）。
+    // 窗；reapq_push 在内（REAPQ 锁嵌套 = 终态 RQ>REAPQ 正序——c-2b slice 2
+    // 落形）。EXIT_HOOK 留窗前（钩子可 wake_matching 入队 = 同核环同锁重
+    // 入，绝不入窗）。
     rq_lock();
     RR.dequeue(&mut *cur, rq());
     reapq_push(cur);
@@ -794,19 +797,30 @@ static mut REAPQ: [*mut Task; REAPQ_CAP] = [core::ptr::null_mut(); REAPQ_CAP];
 static mut REAPQ_LEN: usize = 0;
 static mut REAPQ_WARNED: usize = 0;
 const REAPQ_CAP: usize = 32;
-/// REAPQ 互斥锁（S-3c c-2a **落形**——c-2b 取放启用；持有位 = `HELD_REAPQ`；
-/// 七层冻结锁序第三层）。过渡态语义同 `SLEEPQ_LOCK`（KL 全量在场 ⇒ 恒零
-/// 争用，窗形先行）。
-#[allow(dead_code)]
+/// REAPQ 互斥锁（S-3c c-2a 落形 → **c-2b slice 2 取放启用**；持有位 =
+/// `HELD_REAPQ`，记账在 `reapq_push`/`reap_drain` 本面）。七层冻结锁序第三
+/// 层；过渡态语义同 `SLEEPQ_LOCK`/RQ 锁（KL 全量在场 ⇒ 恒零争用，§A108）。
 static REAPQ_LOCK: SpinLock = SpinLock::new();
 
 /// 压队（退出路径，IRQ 屏蔽窗内；cur 还在自家栈上——只入队不释放）。
+/// REAPQ 锁窗（c-2b slice 2）：exit 链调用点在 RQ 窗内 → RQ>REAPQ 正序
+/// 嵌套；kill 链调用点在 RQ/SQ 锁窗外（KL 窗内裸 REAPQ 窗）。溢出 loud
+/// 打印在锁窗外（错误路径 ≤4 次，窗最短化——REAPQ>打印虽为冻结正序，
+/// 错误面不占用锁序推理）。
 unsafe fn reapq_push(t: *mut Task) {
+    REAPQ_LOCK.acquire();
+    held_mark(HELD_REAPQ, true);
+    let mut loud = false;
     if REAPQ_LEN < REAPQ_CAP {
         REAPQ[REAPQ_LEN] = t;
         REAPQ_LEN += 1;
     } else if REAPQ_WARNED < 4 {
         REAPQ_WARNED += 1;
+        loud = true;
+    }
+    held_mark(HELD_REAPQ, false);
+    REAPQ_LOCK.release();
+    if loud {
         hal::uart_puts(b"reapq overflow (leak)\n");
     }
 }
@@ -818,10 +832,16 @@ unsafe fn reapq_push(t: *mut Task) {
 /// 先摘队再钩子，从 Blocked（SLEEPQ）/ Ready（runqueue）两态——见其头注）+
 /// 钩子已平衡 pinned/thread_key 引用（retain/release 成对；字段残留数值随
 /// Box drop 无害）。
-/// drop 纯释放零分配；单核无并发（IRQ 上下文不碰分配器）。
+/// drop 纯释放零分配；REAPQ 锁串行一切 push/drain（c-2b slice 2——参与态
+/// CPU1 锁窗退出链可 push，本读点不再单核顺序假设；过渡态 KL 全量在场 ⇒
+/// 恒零争用，§A108）。
 pub fn reap_drain() {
-    // SAFETY: REAPQ 写点全在 IRQ 屏蔽退出路径；本读点单核顺序；drain 后清零。
+    // SAFETY: REAPQ 写点（push）全在 IRQ 屏蔽退出路径；参与态下 CPU1 锁窗
+    // 退出链可 push——本读点持 REAPQ 锁串行。drain 后清零。drop 纯释放零
+    // 分配（「IRQ 上下文不碰分配器」铁则不破——释放非分配）。
     unsafe {
+        REAPQ_LOCK.acquire();
+        held_mark(HELD_REAPQ, true);
         let n = REAPQ_LEN;
         for i in 0..n {
             let p = REAPQ[i];
@@ -831,6 +851,8 @@ pub fn reap_drain() {
             }
         }
         REAPQ_LEN = 0;
+        held_mark(HELD_REAPQ, false);
+        REAPQ_LOCK.release();
     }
 }
 

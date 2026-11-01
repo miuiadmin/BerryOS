@@ -49,7 +49,7 @@ pub const HELD_SQ: u8 = 1 << 1;
 pub const HELD_RQ0: u8 = 1 << 2;
 /// CPU1 runqueue 持有位（c-2b 取放启用）。
 pub const HELD_RQ1: u8 = 1 << 3;
-/// REAPQ 持有位（c-2b 取放启用）。
+/// REAPQ 持有位（c-2b slice 2 起随 `reapq_push`/`reap_drain` 置/清）。
 pub const HELD_REAPQ: u8 = 1 << 4;
 
 /// 任务生命周期状态。
@@ -149,7 +149,8 @@ pub struct Task {
     /// `klock_window` 语义原样）；bit1..=4 = 结构锁四位（c-2a 定名：
     /// [`HELD_SQ`] 已随 `sq_lock`/`sq_unlock` 记账，[`HELD_RQ0`]/[`HELD_RQ1`]
     /// 随 c-2b RQ 取放对（`rq_lock_of`）记账；[`HELD_REAPQ`] 随 c-2b slice 2
-    /// 启用）；bit5 = 表锁（C20 KL 收缩后 KL 本尊兼职，c-2c 定名）。
+    /// `reapq_push`/`reap_drain` 记账）；bit5 = 表锁（C20 KL 收缩后 KL 本尊
+    /// 兼职，c-2c 定名）。
     /// 「持结构锁禁切换」从结构巧合升立法：c-2c 起切换原语按「非零即禁」
     /// 执法（现役舞蹈分诊仅 bit0，行为与旧 bool 位逐点等价）。
     pub held_locks: u8,
