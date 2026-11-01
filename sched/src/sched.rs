@@ -350,7 +350,9 @@ pub fn topo_smp_online() {
 /// 均救不了派发延迟差：快核 µs vs 本核轮转 ms——排障三连实证），v1 只铺
 /// thread_start 的同进程计算线程（并行收益面）；b-2 偷取迁移再放开；
 /// ⑤可铺核任务本核优先 + 深度失衡 K=2：本核队列长 ≥ 对核 + 2 → 改道对核
-///   （「4-burst 第 3 个直接路由」语义；len 读在本核 KERN_LOCK 窗内）。
+///   （「4-burst 第 3 个直接路由」语义；len 读 = AtomicUsize 免锁读——
+///   c-2b slice 3 Q3 收口：C20 后表锁语境合法无逆序边，K=2 启发式容忍
+///   跨核近似值）。
 /// 只在 spawn 调（新放语义）；wake/expire 再入队回 home 不改道（防 sleeper
 /// 被唤醒方弹核）；b-2 偷取迁移时随迁改写 home。
 fn place(task: &Task) -> usize {
@@ -359,7 +361,9 @@ fn place(task: &Task) -> usize {
     }
     let me = hal::smp::cpu_id();
     let other = 1 - me;
-    // SAFETY: spawn 调用面全在 KERN_LOCK/屏蔽窗内；只读 len（Cell）。
+    // SAFETY: rq_of 触 static mut 访问（spawn 单线程语境）；len 为
+    // AtomicUsize（c-2b slice 3），Relaxed 免锁读无撕裂、不触环结构
+    //（环面操作仍须 RQ 锁窗）。
     let (mine, theirs) = unsafe { (rq_of(me).len(), rq_of(other).len()) };
     if mine >= theirs + 2 { other } else { me }
 }

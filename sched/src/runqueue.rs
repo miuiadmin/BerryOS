@@ -4,6 +4,7 @@ use crate::spin::SpinLock;
 use crate::task::Task;
 use core::cell::Cell;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// 单 CPU 的运行队列。G0 单核：全局一个。
 ///
@@ -19,7 +20,15 @@ pub struct Runqueue {
     /// 以「走查步数 == len」执法：**孤儿段形态下从 head 走圈仍闭合**（活圈
     /// 自闭合），只有对账才能显形「有成员不在头可达圈上」（复盘雷 2 残留
     /// 诊断——五任务静默失联的确诊机制即此形态）。
-    len: Cell<usize>,
+    ///
+    /// **S-3c c-2b slice 3（Q3 收口）**：`Cell<usize>` → `AtomicUsize`——
+    /// `place()` 表锁语境免锁读远环 len，撕裂读由原子性消解（Q3 二选一取
+    /// 原子化：入锁窗方案 = 表窗内碰 RQ 面 F-E1 同族逆序 + C20 后双 RQ
+    /// 升序双取；原子化免锁序牵连、终态合法）。取放恒在本队列 RQ 锁窗内
+    ///（单写者——load+store 即可，全序由锁提供；原子性只为跨核**读**不
+    /// 撕裂），两端 Relaxed；K=2 放置启发式与金丝雀对账容忍近似值。
+    /// codegen 与 Cell 等形（ldr/str）——icount 零漂。
+    len: AtomicUsize,
     /// per-queue 自旋锁（S-3c c-2a 落形 → **c-2b 取放启用**；持有位 =
     /// `HELD_RQ0`/`HELD_RQ1`，记账在 `sched::rq_lock_of` 统一承担）。crate 内
     /// 自持 [`SpinLock`]（零 arch 依赖——b-1 时「A4 侦察形 lock 字段被依赖
@@ -46,7 +55,7 @@ impl Runqueue {
     pub const fn new() -> Self {
         Runqueue {
             head: Cell::new(None),
-            len: Cell::new(0),
+            len: AtomicUsize::new(0),
             lock: SpinLock::new(),
         }
     }
@@ -67,9 +76,10 @@ impl Runqueue {
         self.lock.release();
     }
 
-    /// 环长（走查对账用）。
+    /// 环长（走查对账用；Relaxed 免锁读——c-2b slice 3 原子化，跨核读者
+    /// （`place`/integrity）无撕裂，本核锁窗内读者值稳定）。
     pub fn len(&self) -> usize {
-        self.len.get()
+        self.len.load(Ordering::Relaxed)
     }
 
     /// 环完整性走查（复盘雷 2 残留诊断）：从 head 沿 `rq_next` 走一圈须回到
@@ -143,7 +153,9 @@ impl Runqueue {
                 (*h).rq_prev.set(Some(task));
             }
         }
-        self.len.set(self.len.get() + 1);
+        // 单写者（本队列 RQ 锁窗内）——load+store 免 fetch_add（ldadd 会破
+        // 与 Cell 形的指令等价；全序由锁提供，原子性只为读不撕裂）。
+        self.len.store(self.len.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     }
 
     /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
@@ -173,7 +185,8 @@ impl Runqueue {
         }
         (*t).rq_prev.set(None);
         (*t).rq_next.set(None);
-        self.len.set(self.len.get() - 1);
+        // 同 link_back：单写者 load+store（RQ 锁窗内）。
+        self.len.store(self.len.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
     }
 
     /// 环游标（4-3a：`RoundRobin::pick_next` 环形扫描的起点）。crate 内策略
