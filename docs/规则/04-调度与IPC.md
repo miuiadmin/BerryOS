@@ -50,6 +50,7 @@
 - **`try_preempt` 严格更高才切（4-4）**：直切=选者 `prio_effective` 严格高于当前——同层 FIFO 不因 IPC 插队；协议同 `block_current`（屏蔽窗内可切走、切回续行、IRQ 勿解蔽），授片即 `arm_slice` 重编。幻影出选防线：`pick_next` 非纯查询（选中即 `advance_past` 耗 head）——「先 pick 再判」白耗 head、锁死出选相位 → 结构性饿死；故以 `Runqueue::has_eff_above` 只读探峰前置，不可能切就不 pick；「pick 了又不用」同罪（tick `next==cur` 自耗合法——cur 真被服务过）。先问：会不会 pick 了又不用？ → 雷册 §A43
 - **eret 落地序列 ELR/SPSR 无帧保（S-3b 副核派发）**：手搓「写 ELR/SPSR 后 eret」序列（`user_entry_trampoline` 类）在写点与 eret 之间不得解蔽 IRQ——异常入口覆写 ELR 为返回址，eret 便以新 SPSR 落错 EL 执行特权指令必杀；CPU0 派发径靠 rearm-before-EOIR「整片无 CNTV」不变式侥幸免疫，副核 park/deadline 派发近确定性命中（G1.5 杀数超标连坐是其死状）；EL0 解蔽由 SPSR=0 承担，trampoline 全程屏蔽。先问：写点与 eret 之间有 IRQ 入口面吗？ → 雷册 §A106
 - **偷取摘环必有回插（S-3b 跨核搬运）**：环语义合同 = 出选≠离环（选中执行只推游标，block 才 unlink/exit 才 dequeue，enqueue 只在首次 runnable 三源）——跨核偷取摘 victim 环后必须回插本核环，缺此步 victim preempt 让出即成「无环 Ready」孤儿永不被 pick（饿死 + 偷空侧深 park 无醒源整机假死）。先问：跨队列搬运路径的入环侧在哪？ → 雷册 §A107
+- **过渡态拆锁嵌套逆序显式标注「C20 收缩时消解」（S-3c c-2a）**：分阶段拆 KL 期间，新结构锁（SQ/RQ/REAPQ）在 KL 窗内取放 = 嵌套方向与终态七层冻结序相反；过渡态死锁不可能的根基 = KL 单持有者串行一切取放点——任何一点落窗外即真 ABBA。C20 收缩验收面必含逆序边逐点消解核销。先问：新结构锁的取放点是否全程在 KL 窗内？ → 雷册 §A108
 
 ## 深读
 
