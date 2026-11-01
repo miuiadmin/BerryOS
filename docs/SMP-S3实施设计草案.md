@@ -298,3 +298,30 @@ A+B 合并刀落码后 smoke-smp run4/5 连 FAIL（缺 CHAIN/MANY/SVC/DEMO 四�
 - **A 无 B 自续性（原子性前提修正）**：「A 单独落 = 副核深 park 结构性饿死」担忧**对当前面证伪**——child 自身阻塞带 deadline 入 SLEEPQ → park 环 arm_at(child deadline) → 到点醒 → park_recheck → 派发；noSGI 150s 自续 27 笔派发 + 金丝雀 500→1200 严格递增。未钉任务全由 CPU0 承载，CPU1 唯一客户 = 恒 deadline 阻塞的 pinned child。边界（S-3b 收口）：钉本核任务**无限期**阻塞 + SLEEPQ 空窗 mask 态下被外部唤醒 = 无醒源睡穿——当前面不触达。步 A「②判据落形」段中「①SGI 兜底」口径随除名作废，睡穿边界由本句承载。
 - **裁决**：义务①（enqueue 尾 SGI）从 S-3a 除名，降级 S-3b per-CPU 队列路由化件（§9.4 S-3b 义务⑧——届时发送条件 = 目标核队列真有货，派发价值成立）；⑥mod4 退役随 A 半刀保留已验绿。SGI_RESCHEDULE 生产发送面归零——在册发送者仅 bringup probe ③ 观测块（smp.rs），trap.rs 分流臂转 probe 专用（头注已改）。
 - **潜伏双雷记档（S-3b IDLE 深化件，本刀不扩）**：①on_irq_tick cur==null 槽原兼 CPU0 idle 再派发（idle_loop 注释「非空时 tick 锁内 pick 派发切走」）——S-3a 迁出后为 wedge；金丝雀永续 runnable 使 CPU0 测试面从不真空（未触达）。②`sec_park_ctx()`（smp.rs）= 全局单槽——旧码 cur==null 分支两核共穿，CPU0 idle 派发会覆写 CPU1 park 帧 = 跨核帧灾难；从未触发，wedge 比静默跨核腐坏更安全（per-CPU 化随 S-3b）。
+
+### 9.6 S-3b 尾段实施拆解（2026-11-01 侦察定稿；行号锚 = 4e8a2a5 实读）
+
+八件义务落 **b-1→b-2 两刀**：b-1 = 结构基座 + 放置路由 + 唤醒戳回归（**无偷取停态**——路由任务由对核队列自消费，功能正确、LB 不均，独立可验可回退）；b-2 = 偷取 + IDLE 深化（双雷收口）+ LB 验收全套。SVC 入口仍全量 KERN_LOCK（S-3c 才拆）——两刀全部队列手术都在 KERN_LOCK 窗内，天然原子。
+
+**侦察基线（4e8a2a5 行号锚）**：sched.rs:71 `static mut RUNQUEUE` / :73 `TOPO=single()` / :116 `rq()` 单源访问器；enqueue 五点 :236/:251/:271/:304/:368（spawn 家族，:304=try_spawn_user 尾、:368=spawn_intent 尾）；pick 消费面五点 :420（yield）/:547（exit）/:1021（block）/:1217-1220（幻影防线 has_eff_above+pick）/:1504-1507（on_irq_tick CPU0 消费版 pick vs 副核 peek 只读版二分）；block/exit 副核 None 分支 = park 切点（:551-562/:1023 上下文，穿 `sec_park_ctx()` 全局单槽 = 雷②消费面）；park_recheck :1556+；idle_loop :1397-1440（参与态 `_empty` 空判未消费 = F5，无派发路径 = 雷① wedge 面）。syscall.rs 两对写点：:909 try_spawn_user → :925/:927 set_task_pinned/set_task_thread（thread_start 面）、:1014 → :1044/:1052（process_start 面）——enqueue 先行（:304）、字段后写 = F1 半初始化窗。class.rs PickFilter :146（user_only/my_cur 两臂）+ eligible :163-174（user_only 排 pinned==0 + 恒排他核 Running）。runqueue.rs：Runqueue const new ✓ / Topo{nr_cpus} 占位 / advance_past 游标原语。smoke-smp.sh：相1 裸 27 + 相2 rootfs 45 + 三帽 240/400/840 + `SGI ok n=` 恰一次（grep -cF 计打印次数非数值——生产 SGI 回归后 n 数值混流量不断言）。`cpu_capacity` **不存在**（hal 新加面）。
+
+**步骤 b-1（结构 + 路由 + 义务⑧）——per-CPU 队列真化**：
+- **PER_CPU_RQ**：sched.rs 新 `static PER_CPU_RQ: [CpuRq; 2]`（CpuRq = `{lock: Spinlock, rq: Runqueue}`，const init——按 §8.C A4 冻结形立**含 lock 字段**；b-1 全部触达在 KERN_LOCK 窗内，per-queue lock **不 acquire**（注释声明「S-3c 细化启用」），占位免二次动结构）。`rq()` 内部改分诊 `&mut PER_CPU_RQ[cpu_id()].rq`——单源访问器红利：全部消费点零改自动本核化；:71 RUNQUEUE static 退役删除。gate 关/smoke 单核时 cpu_id()==0 恒 → PER_CPU_RQ[0] 行为等价旧单队列（零漂移判据的根基）。
+- **Topo 真化**：`capacity:[u32;2]` 新增（sched::init 从 hal `cpu_capacity()` 填——arch/aarch64/src/smp.rs 新加 pub fn，QEMU virt 同核返 1024 占位；真差异容量 = EAS 面 v2+）。nr_cpus 维持。
+- **放置路由 v1**（place 落 enqueue 侧）：内核任务（ttbr0==0）恒 CPU0；用户任务**本核优先** + 深度失衡 K=2（`len[本核] >= len[对核]+2` → 路由对核；4-burst 第 3 个直接路由即此语义）。len 读在 KERN_LOCK 窗内（enqueue 调用点全在锁窗——S-3b 事实，S-3c 改锁时重验）。
+- **义务⑧ 唤醒戳回归**：place 路由到非本核 → enqueue 后 `send_sgi(SGI_RESCHEDULE, List(1<<目标))`。发送条件 = 路由决策（目标核≠cpu_id()）三静态度，**永不读 park 态**（F-E6/F-A3 纪律维持）。S-3a 睡穿边界（mask 态外部唤醒）就此收口：SGI 醒 → eret 回 park 环 → park_recheck 读**本核**队列 → 有货派发。§9.5 判词「派发价值成立」的前提兑现——路由任务只在对核队列，peek 不再被恒 Ready child 遮蔽。probe ② 的 `SGI ok n=` 语义随变（bringup 单发 → 含生产流量），smoke 断言面不受动（恰一次打印门），脚本注释更新。
+- **F-E1 写点前移（义务①）**：try_spawn_user 签名加 pinned/thread_key 两参，TCB 构造即写、enqueue 最后；syscall.rs 四写点（:925/:927/:1044/:1052）删除改传参。「enqueue 出表窗」= 调用者表锁窗内任务已 runnable 的窗——随 b-1 实施时实读 syscall 锁界定收口（若 spawn 全程在表锁内则 enqueue 移锁外，前移已消半初始化窗、出表窗消锁序窗）。
+- **PickFilter 退役改形（F8 承接）**：user_only 臂删（放置保证 CPU1 队列无内核任务——pinned 过滤臂语义由路由接管）；my_cur 他核 Running 排除臂删（Running 任务不在任何队列，队列归属天然替代）。:1504-1507 二分退役——副核改**消费版** pick_next_filtered（队列私有游标，回卷饥饿不复在——peek/pick 双视图退役）。PickFilter struct 缩形或删除，五 pick 点同步。
+- **不变量维持**：SLEEPQ 全局不分核（归属规则 ③④：插入核单点武装，§2.4 已成文）；REAPQ 维持 CPU0 双点（义务⑥——现形态已然，b-1 文书确认 + b-2 成文）；integrity_check 暂对 PER_CPU_RQ[0] 单队对账（b-2 扩双队）。
+- **验收 b-1**：`just smoke` 八跑零漂移（单核 gate 恒关 → 队列面行为等价）+ `just smoke-smp` 双相 PASS（无偷取停态：路由任务 CPU1 自消费，PAR/金丝雀/27+45 标记不破；相 2 盯 -ETIMEDOUT 家族 = SGI 回归后 console 压力重演哨——K=2 失衡下 rootfs 相路由笔数有限，判词机理不复发）+ `just test-host` + `just run-el2` + unsafe 台账重产。
+
+**步骤 b-2（偷取 + IDLE 深化 + LB 全套 = 义务②③④⑤⑥⑦）**：
+- **偷取初版（义务② F-E2 双过滤）**：判据落码 = ①用户任务才偷（ttbr0!=0，内核任务永不偷）②Ready 态（环上即 Ready，天然）。触发 = 本核 pick None 且对核队列非空；粒度单任务、双向。落点两处：park_recheck 出选 None 尾（副核）+ idle 环探测点（CPU0，合流后同径）。手术全程 KERN_LOCK 窗内（S-3b 事实）。
+- **A7 IDLE 环合流 + 双雷收口**：idle_loop 参与态分支与副核 park 环合流 per-核 idle 例程——CPU0 面补 reap_drain（义务⑥维持）+ 空判真消费（F5：`_empty` 未消费 → 消费）+ 空→偷取探测→深/浅 park、非空→park_recheck 派发（雷① wedge 收口 = CPU0 idle 得派发径）。雷② = `sec_park_ctx()` per-CPU 化（[ctx;2] 数组内部按 cpu_id 分诊，block/exit 两 park 切点调用零改）。
+- **integrity 扩双队对账（R4）**：两队列 len 和 + 各环走查 + SLEEPQ 对账（孤儿段面维持）。
+- **LB 金丝雀（义务③⑤）**：fw_cfg `opt/berry/lb` gate（boot 期读 + `LB gate on` 自证行）；lb_master 内核任务 gate 门控 spawn，私有 handle 表（A45：4 Process + VMO + wait_many 派生位；子 VMO 收割 -EBUSY 降级不 trap A18/A74）；svc 驱动链：burst spawn N=4 Process-backed CPU-bound 用户任务（**vmar_map 补 0x31 后 0x32 前** F-A16）→ 子任务 `mrs CNTVCT_EL0` 自旋 D=8s 名义（TCG 墙钟 16s，A8 半速；EL0VCTEN 已由副核 bring-up 开——静默杀死状排障先查 F-A9）→ svc 0x33 汇报 → wait_many 挂 4 个 SIGNAL_TERMINATED 收割（guest 帽 60–90s 与 harness 240 分层禁打平竞速，义务⑤帽序③）。断言 `LB ok c0=Δ c1=Δ st1= n=4`——**per-child 归因**（LB_CHILDREN 4 槽静态数组，tick/偷取按 cur∈LB_CHILDREN 记，直接路由与偷取同格合格，矩阵噪声零污染；st1 全局计数降诊断，9.2 裁决二）；Δ 采样点 = 首入队前/末收割后、klock 包络内（F-A8）。
+- **smoke-smp 相 3（义务④）**：gated bare 第三 boot（fw_cfg 挂 lb=on，与 berry/par 同款机制）；`LB ok` **严格必需、absent 一票 FAIL**（F-A4——偷取全坏时 n=4 仍可 CPU0 墙钟跑完，absent 放行 = 零成本假绿）；`: > "$LOG"` 截断（F-A12 跨 boot 混日志必假败）；宿主 grep -E 提 c0/c1/st1/n 数值复验（c0≥TH∧c1≥TH∧n==4，TH 首跑定标后写死，F-A5）；DEADLINE_LB=240 锚点在标记轮询**后**起算（F-A7 帽序②）。PAR 断言维持软档观察（F-E12 文书确认：路由后 d1 ≡ 偷取/路由见证语义注解更新）。
+- **义务⑦ ktest 锁纪律成文**：ktest.rs 注释区六横切锁纪律项（锁序 SQ>队列>REAPQ>表>分配器>ASID>打印 + KLOCK_OPS None 直通窗保留声明 F9）。
+- **验收 b-2**：`just smoke-smp` 三相 PASS（新增相 3）+ `just smoke` 八跑零漂移（lb gate 缺席 = 相 3 面零扰动）+ `just bench-icount` 基线复核（结构改动后确定性通道重验，漂则刷新）+ `just test-host` + 台账 + run-el2。
+
+**风险与回退**：b-1 缝 = 无偷取停态（最坏 = CPU0 队列堆积墙钟拉长，相 2 帽 840s 兜底）；b-2 缝 = 相 3 独立 boot（LB fail 不污相 1/2 判定）。两刀各自独立 commit，revert 即回退。首刀前 QEMU 场协调照多会话纪律（吃 QEMU 验证前知会兄弟会话）。
