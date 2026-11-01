@@ -1310,7 +1310,8 @@ extern "C" fn sys_signal_send(tf: &mut TrapFrame) -> i64 {
     if p.state != ProcState::Alive {
         return ERR_BAD_STATE as i64; // 已终止进程不收新信号
     }
-    p.pending_signals |= 1 << (sig - 1);
+    // S-3c C21：原子置位（fetch_or——位叠加不丢；序归锁窗）。
+    p.pending_signals.fetch_or(1 << (sig - 1), core::sync::atomic::Ordering::Relaxed);
     0
 }
 
@@ -1326,22 +1327,27 @@ extern "C" fn sys_signal_take(tf: &mut TrapFrame) -> i64 {
         return ERR_BAD_STATE as i64; // 无 Process 面（内核任务/ktest 期）零意义
     }
     // SAFETY: current_pinned 指针有效（同 send）；借用窗内 IRQ 屏蔽。
+    // S-3c C21 取走协议（swap 先行 + 失败回滚）：原子 swap(0) 取走当前集，
+    // copy_out 失败则 fetch_or(v) 回滚——回滚只补 v 的原位，窗口期新到位
+    // （若有）保留在 pending 留下轮 take，语义 = 文档「投递中新到位置回
+    // 内核 pending」的原子版；KL 纪元两序（先读后清 vs swap 先行）观察等价。
     let v = {
         let Some(proc) = (unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() }) else {
             return ERR_BAD_HANDLE as i64; // 不可达防御面（钉住源必为 Process）
         };
-        proc.pending_signals
+        proc.pending_signals.swap(0, core::sync::atomic::Ordering::Relaxed)
     };
     match copy_out_u64(caller_is_el1(tf), out, v) {
-        Ok(()) => {
-            // 写成功才清零（失败路径不消费——调用方重试拿到同一集合）。
+        Ok(()) => 0,
+        Err(e) => {
+            // 写失败不消费：原集回滚进 pending（叠加位不丢，调用方重试拿全）。
             // SAFETY: 同上。
             if let Some(proc) = unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() } {
-                proc.pending_signals = 0;
+                proc.pending_signals
+                    .fetch_or(v, core::sync::atomic::Ordering::Relaxed);
             }
-            0
+            e as i64
         }
-        Err(e) => e as i64,
     }
 }
 
@@ -1736,7 +1742,7 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
 unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
     unsafe {
         match &(*obj.as_ptr()).obj {
-            KernelObj::Event(e) => Some(e.signals),
+            KernelObj::Event(e) => Some(e.load()),
             KernelObj::Channel(c) => {
                 let mut s = if c.has_message() { SIGNAL_READABLE } else { 0 };
                 if let Some(peer) = c.peer() {

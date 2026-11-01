@@ -37,6 +37,12 @@ pub enum EppHint {
     Perf,
 }
 
+/// 持有集位图常量（S-3c 义务⑥，F-L9）：`Task::held_locks` 的位定义。
+/// bit0 = KERN_LOCK（原 `klock_window` 语义原样——arch SVC/fault 入口置、
+/// dispatch 尾/直调包络清、切换舞蹈分诊放/取）；bit1..=5 预留结构锁五位
+/// （SLEEPQ/RQ/REAPQ/表/对象系——c-2 分号类别取放时定名启用）。
+pub const HELD_KERN_LOCK: u8 = 1 << 0;
+
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -129,7 +135,13 @@ pub struct Task {
     /// `klock_exit`（内核任务直调包络）。sched 切换原语按位分诊：切走前放锁、
     /// 切回后重取（SVC 层 ~31 个 handler 零改动；内核任务直调位=0 幂等跳过）。
     /// 位只在任务自身执行流中被写 → 挂起期间稳定。
-    pub klock_window: bool,
+    ///
+    /// **S-3c 义务⑥（F-L9）升持有集位图 u8**：bit0 = KERN_LOCK（原
+    /// `klock_window` 语义原样）；bit1..=5 预留结构锁五位（SLEEPQ / RQ /
+    /// REAPQ / 表 / 对象系——c-2 分号类别取放时定名启用）。「持结构锁禁
+    /// 切换」从结构巧合升立法：c-2 起切换原语按「非零即禁」执法（现役仅
+    /// bit0，行为与旧 bool 位逐点等价）。
+    pub held_locks: u8,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
     // Phase 兑现——RR 不消费，为 EAS/PI/AI 调度预埋，免后改 TCB 布局返工）----
@@ -305,7 +317,7 @@ impl Task {
             thread_key: 0,
             home_cpu: 0,
             spread: false,
-            klock_window: false,
+            held_locks: 0,
             prio_base: 0,
             prio_effective: 0,
             pi_inherited: 0,

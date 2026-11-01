@@ -3,25 +3,38 @@
 //!
 //! v1 形态 = **静态预储环形缓冲**（无堆、无锁）：写入点经 `berry_sched` 切换
 //! 钩子（[`set_switch_hook`] 注册的 [`on_switch`]），三个切换位（yield/抢占/
-//! exit）全程 IRQ 屏蔽 → 单核天然串行，写入路径**零分配**（try 化批的
-//! 「IRQ 热路径零分配」纪律——`heap.rs` 分配上下文纪律不得从这里重开）。
+//! exit）→ 写入路径**零分配**（try 化批的「IRQ 热路径零分配」纪律——
+//! `heap.rs` 分配上下文纪律不得从这里重开）。
 //!
 //! 记录量（AI调度 §4 第一级，QEMU 可靠子集）：切换时刻 CNTVCT（相邻差 =
 //! prev 运行时长 → 运行时长分布）、任务 id（名字 FNV-1a 稳定哈希）、切换
-//! 原因分型、是否切入 idle（→ util）。**唤醒事件已随 4-0 落地**（唤醒环
-//! [`WAKE_RING`]：block→wake 延迟即「唤醒模式」分布数据，经 [`set_wake_hook`]
-//! 注册的 [`on_wake`]——两个唤醒位 Signaled/Timeout 全程 IRQ 屏蔽，同款
-//! 零分配纪律）。**消费路径留 v3**（`telemetry_open` 映射环给 trace 服务/
+//! 原因分型、是否切入 idle（→ util）。**唤醒事件已随 4-0 落地**（唤醒环：
+//! block→wake 延迟即「唤醒模式」分布数据，经 [`set_wake_hook`] 注册的
+//! [`on_wake`]）。**消费路径留 v3**（`telemetry_open` 映射环给 trace 服务/
 //! AI 策略服务）；v1 读点 = watchdog 存活性断言（环在涨、vct 单调、延迟
 //! 非负）。
 //!
-//! 单核 v1 单环；SMP（G2）按核拆 per-CPU 环 + 写方限本核（设计文档原案）。
+//! **S-3c B12/B13：per-CPU 双环 + seqlock（拆 KERN_LOCK 前置件）**。写方限
+//! 本核（设计原案「per-CPU 环 + 写方限本核」兑现）：切换/唤醒钩子跑在发生
+//! 切换/唤醒的核上，只写自己的环——写-写天然无竞态；跨核读者（watchdog/
+//! BENCH 采集跑在任一核）经 **seqlock**（版本号奇偶 + Release/Acquire 对）
+//! 取一致快照。KL 纪元（S-3b 前）写点仍全程 KL 窗内串行，seqlock 是零成本
+//! 冗余；c-2 拆锁后它就是唯一保护。直方图五计数器原子化（fetch_add/
+//! fetch_min/fetch_max——单核直写形态退役），写序 = 桶/极值在前、N 的
+//! Release 递增**最后**，读者 N 的 Acquire 读**最先**——「桶和 ≥ n」与
+//! 「n>0 ⇒ min≠哨兵」两条形状断言在无锁窗下仍立（读序纪律见 [`wake_hist`]）。
 
+use berry_hal_aarch64::smp::cpu_id;
 use berry_sched::{SwitchKind, Task, WakeReason};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicU64, Ordering};
 
-/// 环容量（静态预储——2KB 级常驻 .bss，boot 后永不增长）。
+/// 环容量（静态预储——2KB 级常驻 .bss，boot 后永不增长；per-CPU 后总量
+/// = 2×两环，仍 2KB 级）。
 pub const RING_LEN: usize = 64;
+
+/// per-CPU 环槽数（S-2b 起参与上限 2 核；拓扑真化后扩——遥测环静态定容，
+/// boot 前注册不受 HAL 活性时序影响）。
+const NCPUS: usize = 2;
 
 /// 单条切换记录（`#[repr(C)]`：将来 `telemetry_open` 映射给用户态的 ABI 形状
 /// 从 day-one 定型；字段全定宽）。
@@ -40,19 +53,6 @@ pub struct SwitchRec {
     /// 不分配栈，见 `sched.rs` IDLE_TASK）。
     pub idle_next: bool,
 }
-
-/// 环本体 + 游标（单核 IRQ 屏蔽串行写；读点同 crate 单核顺序）。
-static mut RING: [SwitchRec; RING_LEN] = [SwitchRec {
-    vct: 0,
-    prev: 0,
-    next: 0,
-    kind: 0,
-    idle_next: false,
-}; RING_LEN];
-/// 下一写入槽（环形 +1；`TOTAL < RING_LEN` 时其前全有效）。
-static mut HEAD: usize = 0;
-/// 累计写入数（不减——wrap 后 `span()` 给环内有效条数）。
-static mut TOTAL: u64 = 0;
 
 /// 名字 → 稳定短 id（FNV-1a-32；展示端反查靠名字表，环内只存定宽 id）。
 fn name_id(name: &[u8]) -> u32 {
@@ -74,21 +74,62 @@ fn kind_code(kind: SwitchKind) -> u8 {
     }
 }
 
-/// 切换钩子本体（`init` 注册进 `berry_sched`）。**零分配**：只写静态环 + 计数。
-fn on_switch(prev: &Task, next: &Task, kind: SwitchKind) {
-    // SAFETY: 写点只经本函数；调用点 = 三个切换位，全程 IRQ 屏蔽（单核串行）。
-    unsafe {
-        let rec = SwitchRec {
-            vct: berry_hal_aarch64::timer::cntvct(),
-            prev: name_id(prev.name),
-            next: name_id(next.name),
-            kind: kind_code(kind),
-            idle_next: next.kstack.is_none(),
-        };
-        RING[HEAD] = rec;
-        HEAD = (HEAD + 1) % RING_LEN;
-        TOTAL = TOTAL.wrapping_add(1);
+// ---- per-CPU 切换环（B12）----
+
+/// 单核环本体（写方 = 本核钩子**唯一**；读者任意核经 seqlock）。
+struct SwitchRing {
+    /// seqlock 版本：写方 even→odd（进入）→even（退出）；读者见 odd 或版本
+    /// 变化即重试。
+    seq: AtomicU64,
+    /// 下一写入槽（环形 +1；`total < RING_LEN` 时其前全有效）——写方私有。
+    head: usize,
+    /// 累计写入数（不减——wrap 后 [`ring_span`] 给环内有效条数）——写方私有。
+    total: u64,
+    /// 环槽——写方私有（读者经版本号校验后只读）。
+    recs: [SwitchRec; RING_LEN],
+}
+
+impl SwitchRing {
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            head: 0,
+            total: 0,
+            recs: [SwitchRec { vct: 0, prev: 0, next: 0, kind: 0, idle_next: false }; RING_LEN],
+        }
     }
+}
+
+/// per-CPU 切换环（静态预储；`static mut` + 写方限本核 = 全仓内核静态惯式）。
+static mut SWITCH_RINGS: [SwitchRing; NCPUS] = [SwitchRing::new(), SwitchRing::new()];
+
+/// 本核环写入一笔（seqlock 写方协议：odd 进 → 数据 → Release even 出）。
+unsafe fn ring_write(rec: SwitchRec) {
+    let cpu = cpu_id().min(NCPUS - 1); // 拓扑槽外防御：收敛尾槽（boot 期 mp 不明）
+    // SAFETY: 写方限本核——本核槽无他核写者；读者经 seq 校验不读半写。
+    let r = &mut (*core::ptr::addr_of_mut!(SWITCH_RINGS))[cpu];
+    let s = r.seq.load(Ordering::Relaxed);
+    r.seq.store(s + 1, Ordering::Relaxed); // odd：写方进入
+    fence(Ordering::Release); // 数据写不得前移出窗
+    r.recs[r.head] = rec;
+    r.head = (r.head + 1) % RING_LEN;
+    r.total = r.total.wrapping_add(1);
+    fence(Ordering::Release);
+    r.seq.store(s + 2, Ordering::Release); // even：数据先于版本号可见
+}
+
+/// 切换钩子本体（`init` 注册进 `berry_sched`）。**零分配**：只写本核静态环
+/// + 计数。
+fn on_switch(prev: &Task, next: &Task, kind: SwitchKind) {
+    let rec = SwitchRec {
+        vct: berry_hal_aarch64::timer::cntvct(),
+        prev: name_id(prev.name),
+        next: name_id(next.name),
+        kind: kind_code(kind),
+        idle_next: next.kstack.is_none(),
+    };
+    // SAFETY: 写方限本核（见 ring_write）；调用点 = 三个切换位。
+    unsafe { ring_write(rec) }
 }
 
 /// 注册切换钩子（`rust_main` 在 `berry_sched::init` 后、首个切换前调用一次）。
@@ -97,36 +138,91 @@ pub fn init() {
     berry_sched::set_wake_hook(Some(on_wake));
 }
 
-/// 累计写入数（遥测存活断言用：须 ≥ `berry_sched::switches()`——SWITCHES 只计
-/// 抢占切换，遥测环计全部三型）。
-pub fn total() -> u64 {
-    // SAFETY: 只读；单核顺序（写点 IRQ 屏蔽串行）。
-    unsafe { TOTAL }
+/// seqlock 读者：取 `cpu` 环内第 k 新条目（k=0 最新；空/越界 None；版本
+/// 变化重试）。head/total/槽三读须同窗一致——版本号兜底。
+fn ring_peek(cpu: usize, k: usize) -> Option<SwitchRec> {
+    // SAFETY: 只读；半写窗由 seq 校验排除（重试）。
+    let r = unsafe { &(*core::ptr::addr_of!(SWITCH_RINGS))[cpu] };
+    loop {
+        let s1 = r.seq.load(Ordering::Acquire);
+        if s1 & 1 == 1 {
+            continue; // 写方在窗内
+        }
+        let total = r.total;
+        let head = r.head;
+        if k >= total.min(RING_LEN as u64) as usize {
+            // 版本校验仍要走完（防「早退读了撕裂数据」路径被优化依赖）。
+            fence(Ordering::Acquire);
+            let s2 = r.seq.load(Ordering::Relaxed);
+            if s1 == s2 {
+                return None;
+            }
+            continue;
+        }
+        let idx = (head + RING_LEN - 1 - k) % RING_LEN;
+        let rec = r.recs[idx];
+        fence(Ordering::Acquire); // 槽读不得后移过复检
+        let s2 = r.seq.load(Ordering::Relaxed);
+        if s1 == s2 {
+            return Some(rec);
+        }
+    }
 }
 
-/// 环内有效条数（min(TOTAL, RING_LEN)）。
-pub fn span() -> usize {
-    // SAFETY: 只读。
-    let t = unsafe { TOTAL };
+/// `cpu` 环内有效条数（min(total, RING_LEN)）。
+fn ring_span(cpu: usize) -> usize {
+    // SAFETY: 只读 total（写方限本核，u64 读撕裂不在单核原子性讨论域）。
+    let t = unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total };
     (t as usize).min(RING_LEN)
 }
 
-/// 按新→旧序取第 `i` 条（0 = 最新；越界 None）。
-pub fn last(i: usize) -> Option<SwitchRec> {
-    // SAFETY: 只读；槽位在 span 内必有效。
-    let s = span();
-    if i >= s {
-        return None;
-    }
+/// `cpu` 环累计写入数。
+fn ring_total(cpu: usize) -> u64 {
     // SAFETY: 只读。
-    let head = unsafe { HEAD };
-    let idx = (head + RING_LEN - 1 - i) % RING_LEN;
-    // SAFETY: 只读静态环。
-    Some(unsafe { RING[idx] })
+    unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total }
+}
+
+/// 累计写入数（全环求和——每环单调不减，和单调；遥测存活断言用：须 ≥
+/// `berry_sched::switches()`——SWITCHES 只计抢占切换，遥测环计全部四型）。
+pub fn total() -> u64 {
+    ring_total(0) + ring_total(1)
+}
+
+/// 全环合并有效条数（各环 min(total, RING_LEN) 之和，帽 2×RING_LEN）。
+pub fn span() -> usize {
+    ring_span(0) + ring_span(1)
+}
+
+/// 按新→旧序取合并第 `i` 条（0 = 最新；两环按 vct 归并——锁序=时序=vct 序
+/// 三位一体（义务⑨），vct 归并序 = 全局真序；越界 None）。
+pub fn last(i: usize) -> Option<SwitchRec> {
+    let mut k = [0usize; NCPUS]; // 各环已取条数（游标）
+    for _ in 0..=i {
+        // 两环各取当前游标条，vct 大者（更新）胜出。
+        let cands: [Option<SwitchRec>; NCPUS] = [ring_peek(0, k[0]), ring_peek(1, k[1])];
+        let winner = match (cands[0], cands[1]) {
+            (Some(a), Some(b)) => {
+                if a.vct >= b.vct {
+                    0
+                } else {
+                    1
+                }
+            }
+            (Some(_), None) => 0,
+            (None, Some(_)) => 1,
+            (None, None) => return None, // 合并流尽
+        };
+        let picked = cands[winner];
+        k[winner] += 1;
+        if k[0] + k[1] - 1 == i {
+            return picked;
+        }
+    }
+    None // 不可达（循环内必命中或流尽）
 }
 
 /// 环健康自检（watchdog 周期断言）：①有货；②vct 从旧到新单调不减（CNTVCT
-/// 只前进——切换记录乱序 = 环写路径有并发/覆盖 bug）。
+/// 只前进——两环各自单调（单写者），vct 归并不破单调）。
 pub fn check() -> bool {
     let s = span();
     if s == 0 {
@@ -172,18 +268,6 @@ pub struct WakeRec {
     pub _pad: [u8; 3],
 }
 
-/// 唤醒环本体 + 游标（写点 = 两个唤醒位，IRQ 屏蔽串行；读点同 crate 顺序）。
-static mut WAKE_RING: [WakeRec; WAKE_RING_LEN] = [WakeRec {
-    vct: 0,
-    since_vct: 0,
-    wait_obj: 0,
-    task_id: 0,
-    reason: 0,
-    _pad: [0; 3],
-}; WAKE_RING_LEN];
-static mut WAKE_HEAD: usize = 0;
-static mut WAKE_TOTAL: u64 = 0;
-
 /// `WakeReason` → 环内 u8 编码（`Pending` 到不了这里——`note_wake` 只在
 /// 置因之后发射）。
 fn reason_code(reason: WakeReason) -> u8 {
@@ -194,80 +278,172 @@ fn reason_code(reason: WakeReason) -> u8 {
     }
 }
 
-/// 唤醒钩子本体（`init` 注册进 `berry_sched`）。**零分配**：只写静态环 + 计数
-/// + R-0 增量直方图（同窗 O(1) 算术，与环写同量级——IRQ 屏蔽热路径纪律不破）。
-fn on_wake(task: &Task, reason: WakeReason) {
-    // SAFETY: 写点只经本函数；调用点 = 两个唤醒位，全程 IRQ 屏蔽（单核串行）。
-    unsafe {
-        let rec = WakeRec {
-            vct: berry_hal_aarch64::timer::cntvct(),
-            since_vct: task.wait_since,
-            wait_obj: task.wait_obj as u64,
-            task_id: name_id(task.name),
-            reason: reason_code(reason),
-            _pad: [0; 3],
-        };
-        WAKE_RING[WAKE_HEAD] = rec;
-        WAKE_HEAD = (WAKE_HEAD + 1) % WAKE_RING_LEN;
-        WAKE_TOTAL = WAKE_TOTAL.wrapping_add(1);
-        // R-0 增量直方图：延迟 = 唤醒时刻 − 入睡时刻（原始周期数——公约 5，
-        // 不走 ns 换算）。负延迟 = 时钟倒走 = 睡眠戳/写点 bug → 严格断言
-        // panic（写点执法盖**全历史**，比 wake_check 的环内 64 条更全；设计
-        // §9 门禁授权的 L0 路径）。log2 桶：lat=0（同刻醒）归桶 0；否则
-        // idx = 63 − leading_zeros（lat ≥ 1 ⇒ lz ≤ 63，lat ≥ 2^63 恰归桶
-        // 63——无下溢无溢出）。
-        let lat = match rec.vct.checked_sub(rec.since_vct) {
-            Some(l) => l,
-            None => {
-                panic!("WAKE: 负延迟（vct={} < since={}）= 睡眠戳/写点 bug", rec.vct, rec.since_vct)
-            }
-        };
-        let idx = if lat == 0 { 0 } else { 63 - lat.leading_zeros() as usize };
-        (*core::ptr::addr_of_mut!(WAKE_HIST))[idx] += 1;
-        *core::ptr::addr_of_mut!(WAKE_HIST_N) += 1;
-        if lat < *core::ptr::addr_of!(WAKE_HIST_MIN) {
-            *core::ptr::addr_of_mut!(WAKE_HIST_MIN) = lat;
-        }
-        if lat > *core::ptr::addr_of!(WAKE_HIST_MAX) {
-            *core::ptr::addr_of_mut!(WAKE_HIST_MAX) = lat;
-        }
-        if rec.reason == REASON_SIGNALED {
-            *core::ptr::addr_of_mut!(WAKE_HIST_SIG) += 1;
-        } else {
-            // Timeout（Pending 编码 0 不可达——note_wake 只在置因后发射）。
-            *core::ptr::addr_of_mut!(WAKE_HIST_TMO) += 1;
+/// 单核唤醒环（同 [`SwitchRing`] 协议：写方限本核 + seqlock 读者）。
+struct WakeRing {
+    seq: AtomicU64,
+    head: usize,
+    total: u64,
+    recs: [WakeRec; WAKE_RING_LEN],
+}
+
+impl WakeRing {
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            head: 0,
+            total: 0,
+            recs: [WakeRec {
+                vct: 0,
+                since_vct: 0,
+                wait_obj: 0,
+                task_id: 0,
+                reason: 0,
+                _pad: [0; 3],
+            }; WAKE_RING_LEN],
         }
     }
 }
 
-/// 唤醒环累计写入数（watchdog 断言用——boot sleeper 双路径后必 ≥ 2）。
-pub fn wake_total() -> u64 {
-    // SAFETY: 只读；单核顺序（写点 IRQ 屏蔽串行）。
-    unsafe { WAKE_TOTAL }
+static mut WAKE_RINGS: [WakeRing; NCPUS] = [WakeRing::new(), WakeRing::new()];
+
+/// 本核唤醒环写入一笔（seqlock 写方协议同 [`ring_write`]）。
+unsafe fn wake_ring_write(rec: WakeRec) {
+    let cpu = cpu_id().min(NCPUS - 1);
+    // SAFETY: 写方限本核；读者经 seq 校验。
+    let r = &mut (*core::ptr::addr_of_mut!(WAKE_RINGS))[cpu];
+    let s = r.seq.load(Ordering::Relaxed);
+    r.seq.store(s + 1, Ordering::Relaxed);
+    fence(Ordering::Release);
+    r.recs[r.head] = rec;
+    r.head = (r.head + 1) % WAKE_RING_LEN;
+    r.total = r.total.wrapping_add(1);
+    fence(Ordering::Release);
+    r.seq.store(s + 2, Ordering::Release);
 }
 
-/// 唤醒环内有效条数（min(WAKE_TOTAL, WAKE_RING_LEN)）。
-pub fn wake_span() -> usize {
-    // SAFETY: 只读。
-    let t = unsafe { WAKE_TOTAL };
+/// 唤醒钩子本体（`init` 注册进 `berry_sched`）。**零分配**：只写本核静态环
+/// + 原子计数 + R-0 增量直方图（同窗 O(1) 算术，与环写同量级——热路径纪律
+/// 不破）。
+fn on_wake(task: &Task, reason: WakeReason) {
+    let rec = WakeRec {
+        vct: berry_hal_aarch64::timer::cntvct(),
+        since_vct: task.wait_since,
+        wait_obj: task.wait_obj as u64,
+        task_id: name_id(task.name),
+        reason: reason_code(reason),
+        _pad: [0; 3],
+    };
+    // SAFETY: 写方限本核（见 wake_ring_write）；调用点 = 两个唤醒位。
+    unsafe { wake_ring_write(rec) }
+    // R-0 增量直方图：延迟 = 唤醒时刻 − 入睡时刻（原始周期数——公约 5，
+    // 不走 ns 换算）。负延迟 = 时钟倒走 = 睡眠戳/写点 bug → 严格断言
+    // panic（写点执法盖**全历史**，比 wake_check 的环内条目更全；设计
+    // §9 门禁授权的 L0 路径）。log2 桶：lat=0（同刻醒）归桶 0；否则
+    // idx = 63 − leading_zeros（lat ≥ 1 ⇒ lz ≤ 63，lat ≥ 2^63 恰归桶
+    // 63——无下溢无溢出）。
+    let lat = match rec.vct.checked_sub(rec.since_vct) {
+        Some(l) => l,
+        None => {
+            panic!("WAKE: 负延迟（vct={} < since={}）= 睡眠戳/写点 bug", rec.vct, rec.since_vct)
+        }
+    };
+    let idx = if lat == 0 { 0 } else { 63 - lat.leading_zeros() as usize };
+    // S-3c B13：直方图原子化（单核直写退役）——写序纪律 = 桶/极值/分计在
+    // 前，N 的 Release 递增**最后**（读者 N 的 Acquire 读最先，见 wake_hist）。
+    WAKE_HIST[idx].fetch_add(1, Ordering::Relaxed);
+    WAKE_HIST_MIN.fetch_min(lat, Ordering::Relaxed);
+    WAKE_HIST_MAX.fetch_max(lat, Ordering::Relaxed);
+    if rec.reason == REASON_SIGNALED {
+        WAKE_HIST_SIG.fetch_add(1, Ordering::Relaxed);
+    } else {
+        // Timeout（Pending 编码 0 不可达——note_wake 只在置因后发射）。
+        WAKE_HIST_TMO.fetch_add(1, Ordering::Relaxed);
+    }
+    WAKE_HIST_N.fetch_add(1, Ordering::Release);
+}
+
+/// seqlock 读者：取 `cpu` 唤醒环内第 k 新条目（同 [`ring_peek`] 协议）。
+fn wake_ring_peek(cpu: usize, k: usize) -> Option<WakeRec> {
+    // SAFETY: 只读；半写窗由 seq 校验排除。
+    let r = unsafe { &(*core::ptr::addr_of!(WAKE_RINGS))[cpu] };
+    loop {
+        let s1 = r.seq.load(Ordering::Acquire);
+        if s1 & 1 == 1 {
+            continue;
+        }
+        let total = r.total;
+        let head = r.head;
+        if k >= total.min(WAKE_RING_LEN as u64) as usize {
+            fence(Ordering::Acquire);
+            let s2 = r.seq.load(Ordering::Relaxed);
+            if s1 == s2 {
+                return None;
+            }
+            continue;
+        }
+        let idx = (head + WAKE_RING_LEN - 1 - k) % WAKE_RING_LEN;
+        let rec = r.recs[idx];
+        fence(Ordering::Acquire);
+        let s2 = r.seq.load(Ordering::Relaxed);
+        if s1 == s2 {
+            return Some(rec);
+        }
+    }
+}
+
+fn wake_ring_span(cpu: usize) -> usize {
+    // SAFETY: 只读 total。
+    let t = unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total };
     (t as usize).min(WAKE_RING_LEN)
 }
 
-/// 按新→旧序取第 `i` 条（0 = 最新；越界 None）。
+fn wake_ring_total(cpu: usize) -> u64 {
+    // SAFETY: 只读。
+    unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total }
+}
+
+/// 唤醒环累计写入数（全环求和；watchdog 断言用——boot sleeper 双路径后
+/// 必 ≥ 2）。
+pub fn wake_total() -> u64 {
+    wake_ring_total(0) + wake_ring_total(1)
+}
+
+/// 唤醒环合并有效条数（各环 min 之和）。
+pub fn wake_span() -> usize {
+    wake_ring_span(0) + wake_ring_span(1)
+}
+
+/// 按新→旧序取合并第 `i` 条（0 = 最新；vct 归并同 [`last`]；越界 None）。
 pub fn wake_last(i: usize) -> Option<WakeRec> {
-    let s = wake_span();
-    if i >= s {
-        return None;
+    let mut k = [0usize; NCPUS];
+    for _ in 0..=i {
+        let cands: [Option<WakeRec>; NCPUS] =
+            [wake_ring_peek(0, k[0]), wake_ring_peek(1, k[1])];
+        let winner = match (cands[0], cands[1]) {
+            (Some(a), Some(b)) => {
+                if a.vct >= b.vct {
+                    0
+                } else {
+                    1
+                }
+            }
+            (Some(_), None) => 0,
+            (None, Some(_)) => 1,
+            (None, None) => return None,
+        };
+        let picked = cands[winner];
+        k[winner] += 1;
+        if k[0] + k[1] - 1 == i {
+            return picked;
+        }
     }
-    // SAFETY: 只读；槽位在 span 内必有效。
-    let head = unsafe { WAKE_HEAD };
-    let idx = (head + WAKE_RING_LEN - 1 - i) % WAKE_RING_LEN;
-    Some(unsafe { WAKE_RING[idx] })
+    None
 }
 
 /// 环内出现过的唤醒原因掩码（bit0=Signaled、bit1=Timeout）。watchdog 断言
 /// boot 双路径覆盖用——**仅环未淘汰时有效**（boot 记录被新条目顶掉后，
-/// 掩码只反映环内现状，不再断言）。
+/// 掩码只反映环内现状，不再断言；boot 期单核 → 记录全在环 0，per-CPU 化
+/// 不改此断言面）。
 pub fn wake_reason_mask() -> u8 {
     let mut m = 0u8;
     for i in 0..wake_span() {
@@ -281,10 +457,10 @@ pub fn wake_reason_mask() -> u8 {
     m
 }
 
-/// 唤醒环健康自检（watchdog 周期断言）：①有货；②每条原因合法（∈
+/// 环健康自检（watchdog 周期断言）：①有货；②每条原因合法（∈
 /// Signaled/Timeout——出现 0 = Pending 漏进环 = 写路径 bug）；③延迟非负
 ///（`vct ≥ since_vct`——唤醒时刻早于入睡 = 戳或环有 bug）；④vct 从旧到新
-/// 单调不减。
+/// 单调不减（两环各单调 + vct 归并不破单调）。
 pub fn wake_check() -> bool {
     let s = wake_span();
     if s == 0 {
@@ -309,7 +485,7 @@ pub fn wake_check() -> bool {
 }
 
 // ---- R-0 唤醒延迟增量直方图（`基准与压力测试设计.md` §9；与唤醒环**并存**：
-// 环 = 最近 64 条明细（wrap 丢头），桶 = 全程覆盖的 O(1) 增量统计——看形状
+// 环 = 最近条目明细（wrap 丢头），桶 = 全程覆盖的 O(1) 增量统计——看形状
 // 靠桶、看明细靠环；精确分位归 R-1 采样集全排序，桶只给保守上界）----
 
 /// log2 延迟桶数：桶 i 计延迟 ∈ [2^i, 2^(i+1)) 的唤醒次数；延迟 0（同刻醒）
@@ -332,35 +508,33 @@ pub struct WakeHist {
     pub tmo: u64,
 }
 
-static mut WAKE_HIST: [u64; WAKE_HIST_BUCKETS] = [0; WAKE_HIST_BUCKETS];
-static mut WAKE_HIST_N: u64 = 0;
-static mut WAKE_HIST_MIN: u64 = u64::MAX;
-static mut WAKE_HIST_MAX: u64 = 0;
-static mut WAKE_HIST_SIG: u64 = 0;
-static mut WAKE_HIST_TMO: u64 = 0;
+// S-3c B13：五计数器 + 桶全原子（拆 KL 后多核并发 fetch_*；KL 纪元单写者
+// 语义不变——fetch_* 是直写的严格上位替代）。
+static WAKE_HIST: [AtomicU64; WAKE_HIST_BUCKETS] =
+    [const { AtomicU64::new(0) }; WAKE_HIST_BUCKETS];
+static WAKE_HIST_N: AtomicU64 = AtomicU64::new(0);
+static WAKE_HIST_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
+static WAKE_HIST_MAX: AtomicU64 = AtomicU64::new(0);
+static WAKE_HIST_SIG: AtomicU64 = AtomicU64::new(0);
+static WAKE_HIST_TMO: AtomicU64 = AtomicU64::new(0);
 
-/// 直方图快照（只读）。**读序纪律**（读方可抢占、写方在 IRQ 屏蔽单窗内完成
-/// 全部字段更新，撕裂只可能是「n 旧、桶/极值新一位」）：n 先读 → 后读的桶
-/// 之和恒 ≥ n（分位扫描必达，不耗尽）；min 先于 max 读 → min ≤ max 恒立
-///（min 只减、max 只增，min_old ≤ max_old ≤ max_new）——打印端的两条形状
-/// 断言（n>0、min≤max）在撕裂窗内也不会假阳性。
+/// 直方图快照（只读）。**读序纪律**（S-3c B13 无锁窗版）：N 先读（Acquire，
+/// 与写方末位 Release 递增配对——凡计入 n 的样本，其桶/极值写已可见）→
+/// 后读的桶之和恒 ≥ n（之后落桶的只增不减，分位扫描必达，不耗尽）→ min
+/// 先于 max 读（min 只减、max 只增，min_read ≤ min_old ≤ max_old ≤
+/// max_read 恒立）——打印端的两条形状断言（n>0 ⇒ min≠哨兵、min≤max）在
+/// 并发窗内也不会假阳性。
 pub fn wake_hist() -> WakeHist {
-    // SAFETY: 只读；单核顺序（写点 IRQ 屏蔽串行），按上述读序取快照。
-    let n = unsafe { *core::ptr::addr_of!(WAKE_HIST_N) };
-    let src = core::ptr::addr_of!(WAKE_HIST);
+    let n = WAKE_HIST_N.load(Ordering::Acquire);
     let mut buckets = [0u64; WAKE_HIST_BUCKETS];
     for i in 0..WAKE_HIST_BUCKETS {
-        // SAFETY: 只读静态数组；i 在界内。
-        buckets[i] = unsafe { (*src)[i] };
+        buckets[i] = WAKE_HIST[i].load(Ordering::Relaxed);
     }
-    // SAFETY: 只读。
-    let min = unsafe { *core::ptr::addr_of!(WAKE_HIST_MIN) };
-    // SAFETY: 只读（须后于 min——见读序纪律）。
-    let max = unsafe { *core::ptr::addr_of!(WAKE_HIST_MAX) };
-    // SAFETY: 只读。
-    let sig = unsafe { *core::ptr::addr_of!(WAKE_HIST_SIG) };
-    // SAFETY: 只读。
-    let tmo = unsafe { *core::ptr::addr_of!(WAKE_HIST_TMO) };
+    let min = WAKE_HIST_MIN.load(Ordering::Relaxed);
+    // 须后于 min（见读序纪律）。
+    let max = WAKE_HIST_MAX.load(Ordering::Relaxed);
+    let sig = WAKE_HIST_SIG.load(Ordering::Relaxed);
+    let tmo = WAKE_HIST_TMO.load(Ordering::Relaxed);
     WakeHist { buckets, n, min, max, sig, tmo }
 }
 
