@@ -112,6 +112,12 @@ trap cleanup EXIT
 
 fail() {
   echo "smoke-smp: FAIL: $1" >&2
+  # 失败即自动留全尸（2026-11-01 相 3 时敏 flake 归因教训：tail -40 截掉
+  # PC/FAR/SPSR 行 + cleanup 删原件 = 现场不可逆丢失，差分压测被迫盲跑）。
+  # 成功路径不受影响（照旧即弃；SMOKE_KEEP_LOG 仍管全量保留）。
+  local keep="out/smoke-smp-fail.$(date +%Y%m%d-%H%M%S).log"
+  mkdir -p out 2>/dev/null
+  cp "$LOG" "$keep" 2>/dev/null && echo "smoke-smp: 失败全尸已存：$keep" >&2
   echo "---- 串口日志尾部（$LOG）----" >&2
   tail -40 "$LOG" >&2
   # 客户端死因随失败即打印不留文件（smoke.sh 同款纪律）。

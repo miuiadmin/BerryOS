@@ -208,6 +208,30 @@ DEADLINE_ROOTFS=420  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # 面 + ②两连接对拍 ≈ EVS 同量级——合计每相估
                      # +10-30s，420 帽首跑盯实测，压力显性再升）
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
+DEADLINE_BOOTC=420   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史：初值 300
+                     # 沿 rootfs 相旧帽（Boot C = 同源 bsh 全链重跑），但
+                     # B-1/C-5/A2-3/A3-3 历次加链只升了 DEADLINE_ROOTFS
+                     #（300→420），Boot C 未跟——帽债实锤于 S-3c c-1 归因
+                     # 双跑（2026-11-01，毒盘 pwrcls --poison 同源态单跑掐
+                     # 标记首现）：基线（d7cf01d）CD ok @300s 恰贴帽零余量
+                     #（b-2 收官八跑 PASS = 侥幸过线），c-1（遥测/信号原子
+                     # 化 +4~6s 设计内源致漂移）@304s 即破——主因帽债非
+                     # c-1；420 对齐 DEADLINE_ROOTFS（同源负载同帽口径，
+                     # A2-3 升帽先例同型：帽只兜结构性挂死，常态 CD ok
+                     # ~285-305s + TCG 波动 ±5s）。
+DEADLINE_BOOTA=300   # 秒：B4 掉电 Boot A FAT ok 到齐（FAT 5000 前缀段）。
+                     # 帽史：初值 240（内联），同族帽债随 Boot B 一并勘正
+                     #（2026-11-01）：归因复现实测 FAT ok 落点 ~200-206s（基线/
+                     # c-1 双跑），c-1 源致 +2% + TCG 波动 ±5s 下 240 余量仅
+                     # ~10-15%——链再加即重蹈；300 = 阶梯对齐链深（A 守 FAT
+                     # 前缀 < B 守 FATW < C 守全链 CD），帽只兜结构性挂死。
+DEADLINE_BOOTB=360   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3000）。
+                     # 帽史：初值 240（内联），2026-11-01 S-3c c-1 复验八跑实炸：
+                     # FATW ok 未到（fail dump switches 钟 @2000 仍在爬 = 慢而非
+                     # 断；对照同 c-1 首跑过线态 FAT @sw1600→FATW @sw1900，本跑
+                     # FAT @sw1700 慢 ~6% = c-1 源致 +2% + TCG 波动），外推 FATW
+                     # ~245-250s 撞穿 240——与 Boot C 同债族早一相发作；360 ≈
+                     # 最坏观测 ×1.45（与 Boot C 420/304 同口径）。
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
@@ -1303,8 +1327,8 @@ while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
     || fail "QEMU 提前退出（掉电 Boot A）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   grep -qF 'FAT ok n=5000' "$LOG" && break
-  [ $(( $(date +%s) - t7a )) -gt 240 ] \
-    && fail "掉电 Boot A 240s FAT ok 未到（bsh fat 链断？查 BSH/TAB/INT ok）"
+  [ $(( $(date +%s) - t7a )) -gt "$DEADLINE_BOOTA" ] \
+    && fail "掉电 Boot A ${DEADLINE_BOOTA}s FAT ok 未到（bsh fat 链断？查 BSH/TAB/INT ok）"
   sleep 1
 done
 grep -q 'ROOTFS vmo=none' "$LOG" \
@@ -1346,8 +1370,8 @@ while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
     || fail "QEMU 提前退出（掉电 Boot B）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   grep -qF 'FATW ok n=3000' "$LOG" && break
-  [ $(( $(date +%s) - t7b )) -gt 240 ] \
-    && fail "掉电 Boot B 240s FATW ok 未到（fatw 链断？Boot A 留盘 $PWR_A）"
+  [ $(( $(date +%s) - t7b )) -gt "$DEADLINE_BOOTB" ] \
+    && fail "掉电 Boot B ${DEADLINE_BOOTB}s FATW ok 未到（fatw 链断？Boot A 留盘 $PWR_A）"
   sleep 1
 done
 grep -q 'ROOTFS vmo=none' "$LOG" \
@@ -1399,8 +1423,8 @@ while :; do
     fail "掉电 Boot C: ROOTFS vmo=none（rootfs VMO 交付缺席——入机侧 seam 断）"
   fi
   [ -z "$missing" ] && break
-  [ $(( $(date +%s) - t7c )) -gt 300 ] \
-    && fail "掉电 Boot C 300s 标记未到齐（毒环恢复链断？），缺：$missing"
+  [ $(( $(date +%s) - t7c )) -gt "$DEADLINE_BOOTC" ] \
+    && fail "掉电 Boot C ${DEADLINE_BOOTC}s 标记未到齐（毒环恢复链断？），缺：$missing"
   sleep 1
 done
 # 盘取证前优雅退 + 等真退（P6 A-6 纪律）。
