@@ -1434,6 +1434,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // 之上——探针醒即抢占读数；boot 瞬态 bench 对（16/32）之下零干涉。
         berry_sched::spawn_with_tag(task_par_probe, p_par.as_ptr() as usize, b"parprobe", 8,
                                     ht_par as *mut HandleTable as usize);
+        // S-3b（子案 §9.6 填充点）：bring-up 成功真化拓扑（nr_cpus=2 +
+        // capacity[1]）——par_enable 前（gate Release 序先于副核任何读）。
+        berry_sched::topo_smp_online();
         berry_hal_aarch64::smp::par_enable();
         berry_hal_aarch64::uart_puts(b"PAR gate on\n");
     }

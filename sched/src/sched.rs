@@ -240,6 +240,21 @@ pub fn init() {
     }
 }
 
+/// S-3b（子案 §9.6 填充点）bring-up 成功后真化拓扑：`nr_cpus=2` +
+/// `capacity[1]` 填表（[`init`] 时 `nr_cpus` 恒 1 只填 [0]）。调用点 =
+/// main `smp_active` 块（**par_enable 前**——gate 的 Release 序使本写入对
+/// 副核 gate 后的一切读全可见；DAIF 屏蔽窗单写点）。单核形态不被调（
+/// `smp_active` 假）——零漂移。现消费者 = LB 金丝雀/未来 EAS 面；v1 pick
+/// 不读 nr_cpus（放置路由读队列长），纯账面真化。
+pub fn topo_smp_online() {
+    // SAFETY: boot 单线程（DAIF 屏蔽窗）、一次性写；此后只读（topo() 契约）。
+    unsafe {
+        let t = &mut *addr_of_mut!(TOPO);
+        t.nr_cpus = 2;
+        t.capacity[1] = hal::smp::cpu_capacity(1);
+    }
+}
+
 // ---- S-3b 步 b-1：放置路由 + 跨核唤醒戳（子案 §9.4 义务⑧ / §8.C A4）----
 
 /// 放置路由 v1：决定新任务的归属核（[`Task::home_cpu`] 定死一次的写入源）。
@@ -1465,29 +1480,68 @@ fn integrity_check() {
 ///
 /// **先 `disable_irq` 再判/`mask`**：保证 mask 与解蔽之间无窗口漏进早 IRQ（风险 R6）。
 ///
-/// **S-2b 参与态改形（§2.3 主核 idle）**：回收/空判入 KERN_LOCK 窗（REAPQ push
-/// 可来自 CPU1 锁窗退出链——drain 须同窗串行）+ 判空后**恒 arm_slice + wfi**：
-/// runnable 货由本核 tick（锁内 pick）派发——idle 不再裸 yield（无锁 pick 与
-/// CPU1 锁内 pick 的双派发窗闭合），CPU0-bound 内核任务最迟 1 slice 被发现。
-/// 单核/未参与形态零漂移（原样）。
+/// **S-2b 参与态改形（§2.3 主核 idle）→ S-3b b-2 A7 合流**：回收/出选/偷取
+/// 入 KERN_LOCK 窗（REAPQ push 可来自 CPU1 锁窗退出链——drain 须同窗串行）；
+/// 派发 = park 式直接切换（[`dispatch_from_idle`]——不再「恒 arm_slice + wfi
+/// 等 tick 锁内 pick」间接链），皆空深/浅 park（masked-wfi）。IDLE_TASK 降格
+/// 为 CPU0 idle ctx（current 恒 IDLE_TASK 不置 null——block/exit 的 pick-None
+/// 臂与 on_irq_tick/on_sgi_resched 的 cur 判据都依赖非 null）。单核/未参与
+/// 形态零漂移（原样）。
 pub fn idle_loop() -> ! {
     loop {
         hal::disable_irq();
         if hal::smp::par_enabled() {
-            // S-2b 参与态：drain + 空判在锁窗内（与 CPU1 的 REAPQ push/调度
-            // 手术同 KERN_LOCK 串行）。
+            // S-3b b-2（子案 §9.6 件② A7 合流 + 雷① 收口）：CPU0 idle 与副核
+            // park 环同形——锁窗内 reap_drain（义务⑥ 维持）→ 本核出选（F5
+            // 空判真消费：pick 本身即判，`_empty` 死变量就此消解）→ 偷取探测
+            // → 皆空深/浅 park。派发 = park 式直接切换（雷① wedge 收口：
+            // S-2b 形「恒 arm_slice + wfi 等 tick 锁内 pick」的间接链拆断——
+            // idle 不再等 tick，RR.tick(IDLE) 片衰减延迟边同步消解；环顶重查
+            // 承接一切 wfi 醒（在-handler 派发先切走时切回点同径）。REAPQ 深
+            // park 滞留面：跨核退出必经 wake_matching 路径的事件入队 SGI 醒
+            // 本核（exit 钩子唤醒链），醒即 drain——静默退出者由下次任意醒
+            // 承接，cap 32 有界（义务⑥ 账面不变）。
             klock_acquire_raw();
             reap_drain();
-            // SAFETY: KERN_LOCK 窗内（IRQ 已屏蔽 + 跨核互斥）。
-            let _empty = unsafe { rq().is_empty() && sleepq().len.get() == 0 };
-            klock_release_raw();
-            // 恒 arm + wfi：非空时 tick 锁内 pick 派发切走（idle 上下文冻结于
-            // wfi 点，被切回时续行回 loop 顶）；空/睡眠者面 tick 扫超时（真空
-            // 窗多付每 slice 一次空 tick——蓝图 §2.3 接受的探测态代价）。
-            // SAFETY: 写 CNTV 系统寄存器；EL1。
-            unsafe { hal::timer::arm_slice() };
-            hal::enable_irq();
-            hal::wfi();
+            // SAFETY: KERN_LOCK 窗内（IRQ 屏蔽 + 跨核互斥）；my_cur=null 出选
+            // （idle 非 Running 驻环者——环上无 Running 残留，同 park_recheck
+            // 判据）；偷取同窗（对核环手术）。
+            let picked: Option<*mut Task> = unsafe {
+                RR.pick_next_filtered(rq(), topo(), core::ptr::null_mut())
+                    .map(|n| n as *mut Task)
+                    .or_else(|| try_steal_one())
+            };
+            match picked {
+                Some(next_ptr) => {
+                    // SAFETY: PSTATE.I=1（loop 顶 disable）；klock 已取（体内
+                    // 放锁）。切回点 = helper 尾（任务侧 block/exit 的 pick-None
+                    // 臂切回 IDLE_TASK.ctx = helper prev 同槽）→ 分支尾 → 环顶
+                    // 重检（PSTATE.I=1 续承——block/exit 切换不变式）。
+                    unsafe { dispatch_from_idle(next_ptr) };
+                }
+                None => {
+                    klock_release_raw();
+                    // 深浅 park（副核 secondary_main 环同形）：SLEEPQ 全局升序
+                    // 队头即最近到期（两核对同一 deadline 双 arm = 至多一次
+                    // 冗余醒，锁内 expire 串行无撕）；尽空深 park（mask）醒源
+                    // 只剩 SGI/外设 IRQ。
+                    match nearest_deadline() {
+                        // SAFETY: 本核 CVAL 编程到绝对 deadline（过期即醒，环
+                        // 顶 expire 承接——tick 进 expire 后 pick 到期者即时
+                        // 派发，RR.tick(IDLE) 片衰减边不再挡路）。
+                        Some(d) => unsafe { hal::timer::arm_at(d) },
+                        // SAFETY: CNTV IMASK=1（深 park）；REAPQ 滞留面见上注。
+                        None => unsafe { hal::timer::mask() },
+                    }
+                    // masked-wfi 三步闭环（丢唤醒窗收口，secondary_main 同款）：
+                    // wfi 全程 PSTATE.I=1——醒于 GIC pending 线而不服务；醒后
+                    // enable 即取该中断（handler 内 SGI 快速重调度/入队皆可），
+                    // 再 disable 回环顶重检。
+                    hal::wfi();
+                    hal::enable_irq();
+                    hal::disable_irq();
+                }
+            }
         } else {
             // 单核/未参与形态：零漂移（原样）。
             // Plan B：idle 是天然回收点（退出者已不可能在任何执行上下文）——
@@ -1737,33 +1791,148 @@ pub unsafe fn park_recheck() {
                 });
             }
         }
-        (*next_ptr).state = TaskState::Running;
-        (*next_ptr).slice_left = hal::timer::slice_cycles();
-        // 授片 arm（S-3a ⑤二分的授片侧）：本路径无 CNTV IRQ 先行（SGI 醒/
-        // 浅 park 到点醒后 CVAL 非满片终点）——与 preempt 路径「timer::
-        // handle 已重编」互补，此处显式武装。
-        // SAFETY: 本核 CVAL 重臂（写 CNTV_CTL/CVAL 绝对截止）；PSTATE.I=1、
-        // klock 窗内（无锁序面）。
-        unsafe { hal::timer::arm_slice() };
-        set_current(next_ptr);
-        // A12 口径（随段迁入）：SWITCHES 唯一递增语义延伸到 park 派发（金丝雀
-        // 计全部上下文切换；写点在锁窗内）。
-        SWITCHES.fetch_add(1, Ordering::Relaxed);
-        // park 无 AS，无条件激活 next（user_only 出选者恒 EL0 用户任务，
-        // ttbr0 != 0）。
-        hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
-        // note_switch prev=null 跳过发射（park 非调度语义上下文）。
-        klock_release_raw();
-        // SAFETY: PSTATE.I=1（park 环屏蔽窗）；prev=park ctx（惰性捕获——
-        // 首次派发把 park_recheck 调用帧存进 SMP_SEC_PARK_CTX）、next 有效。
-        // next 首切经 trampoline eret 落 EL0；后续任务侧 block/preempt 回
-        // park 从本调用行下续行 → return 回 park 环（无 IRQ 帧介入——与
-        // S-2b 旧形「eret 回环」的差异点，park 帧更浅更稳）。
-        hal::task::context_switch(hal::smp::sec_park_ctx(), &raw const (*next_ptr).ctx);
+        // S-3b b-2：派发尾提取 [`dispatch_from_park_ctx`]（本核出选与偷取
+        // 同径；置 Running/授片/显式 arm/set_current/SWITCHES/激活/放锁/切入
+        // 全在 helper——S-3a ⑤二分的授片侧语义不变）。
+        // SAFETY: PSTATE.I=1（park 环屏蔽窗）；klock 已取（体内放锁）。
+        dispatch_from_park_ctx(next_ptr);
+        return;
+    }
+    // S-3b b-2 件①（子案 §9.6，义务②）：本核无货 → 偷取探测（对核环首
+    // eligible 用户任务——F-E2 双过滤见 [`try_steal_one`]）；偷到随迁 home
+    // 后与本核出选**同径派发**（LB 记账面同格——件④ per-child 归因的机制
+    // 前提）。
+    if let Some(next_ptr) = try_steal_one() {
+        hal::smp::note_dispatch();
+        dispatch_from_park_ctx(next_ptr);
         return;
     }
     // 无货：放锁回环（park_arm 承接武装策略）。
     klock_release_raw();
+}
+
+// ---- S-3b 步 b-2（子案 §9.6）：偷取初版 + A7 IDLE 合流 ----
+
+/// 偷取初版（义务②）：本核出选 None 后扫对核环，摘首 eligible 有表任务。
+/// F-E2 双过滤：①有地址空间者才偷（`ttbr0 != 0`——**无表**内核任务永不
+/// 跨核（内核串行纪元不变量），被此臂滤出；带表内核任务（task_a/task_b
+/// 隔离金丝雀类，EL1 跑）与 EL0 用户进程皆过此臂——b-2a 实测前者跨核迁移
+/// 随环轮转健康）②非 Running 态（环上构造性 Ready；[`crate::class::eligible`]
+/// 单臂 my_cur=null 排一切 Running——对核 cur 在其环上 Running，天然跳过，
+/// 偷不得）。
+/// 触发 = 本核 pick None（idle/park 空转点——非负载阈值探测）；粒度单任务；
+/// 双向对称。无乒乓：偷到即**随迁改写 home**（`place()` 注的 b-2 唯一改写点
+/// ——此后 wake/expire 再入队回新家核，迁移粘性）；**摘环即回插本核环**
+/// （体尾 F-E2 补——出选臂 pick「留环只推游标」，偷来者同形，绝无裸跑）。
+///
+/// # Safety
+/// KERN_LOCK 窗内（对核环手术与一切环变更同锁串行——跨核 dequeue 安全）；
+/// 本核出选已 None（调用契约：先 pick 后偷）。
+unsafe fn try_steal_one() -> Option<*mut Task> {
+    if !hal::smp::par_enabled() {
+        return None;
+    }
+    let me = hal::smp::cpu_id();
+    let other = 1 - me;
+    let src = rq_of(other);
+    // 对核环扫描（has_eff_above_filtered 同款走查形）：首过双过滤者即 victim；
+    // 整圈无货 None。断链形态由 link/unlink 入口断言执法（环不变式），走查
+    // 「环上必有 next」与 ring_check 同口径。
+    let Some(h) = src.head() else { return None };
+    let mut cur = h;
+    let mut victim = None;
+    loop {
+        let p = cur.as_ptr();
+        if (*p).ttbr0 != 0 && crate::class::eligible(core::ptr::null_mut(), p) {
+            victim = Some(cur);
+            break;
+        }
+        // SAFETY: 环上节点必有 next（锁窗内无并发出/入环）。
+        let next = (*p).rq_next.get().expect("steal scan: on-ring node must have next");
+        if next == h {
+            break; // 整圈扫完
+        }
+        cur = next;
+    }
+    let v = victim?;
+    let p = v.as_ptr();
+    // SAFETY: KERN_LOCK 窗内（跨核互斥）；unlink 幂等语义不涉（v 构造性在
+    // src 环上）；head==v 时游标自前移（对核 pick 不失位）。不走 RR.dequeue
+    // ——那会置 Exited（block_current 同款规避，偷取者保持 Ready）。
+    src.unlink(v);
+    (*p).home_cpu = me as u8; // 随迁改写 home（迁移粘性）
+    // 摘环后必须回插本核环（F-E2 补：偷取与出选的形态对齐——出选臂经
+    // pick_next_filtered 者「留环只推游标」，偷来者不可裸跑）。缺此步则
+    // victim 一旦走 preempt 让出（忙循环任务必经——无 block/wake 重入环
+    // 链）即成「Ready 却不在任何环」的孤儿，永不被 pick：b-2a 首版实测
+    // task_a/task_b 被偷后饿死绝迹、rq0 偷空后 CPU0 深 park 无醒源永睡
+    // （tick/tele 全死），短路偷取 400s 复跑全绿定谳。enqueue 置 Ready、
+    // 调用侧 dispatch 随即置 Running——与出选派发同序。
+    RR.enqueue(&mut *p, rq_of(me));
+    Some(p)
+}
+
+/// park 派发公共尾（副核）：置 Running + 授片 + **显式 arm**（S-3a ⑤二分的
+/// 授片侧——本路径无 CNTV IRQ 先行，SGI 醒/浅 park 到点醒后 CVAL 非满片
+/// 终点，不重编 = 授片无界）+ set_current + SWITCHES（A12 全上下文切换计数）
+/// + 无条件激活（park 帧无 AS 归属——上次派发者表可能仍驻 TTBR0，故恒显式
+/// 激活；F-E2 偷取过滤 = `ttbr0 != 0` = **有地址空间者**——EL0 用户进程与
+/// 挂表内核任务（task_a/task_b 隔离金丝雀类，EL1 跑）皆可偷，b-2a 实测
+/// 后者跨核迁移随环轮转健康）+ 放锁 + 切入。本核出选与偷取同径（LB 同格
+/// 合格）。note_switch prev=null 跳过发射（park 非调度语义上下文）；sS2b
+/// 派发诊断（note_dispatch/打名）留调用侧（出选/偷取两臂各记）。
+///
+/// # Safety
+/// PSTATE.I=1（park 环屏蔽窗）；klock 已取（体内放锁）；`next_ptr` 有效
+/// 且已在本核环（出选留环 / 偷取回插——派发即置 Running 于环，cur-in-ring
+/// 常态，对核 pick 的 eligible 滤跳过）。
+unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
+    (*next_ptr).state = TaskState::Running;
+    (*next_ptr).slice_left = hal::timer::slice_cycles();
+    // SAFETY: 本核 CVAL 重臂；PSTATE.I=1、klock 窗内。
+    unsafe { hal::timer::arm_slice() };
+    set_current(next_ptr);
+    SWITCHES.fetch_add(1, Ordering::Relaxed);
+    hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
+    klock_release_raw();
+    // SAFETY: prev=本核 park ctx（惰性捕获——首次派发把调用帧存进本核槽）、
+    // next 有效。next 首切经 trampoline eret 落 EL0；任务侧 block/preempt 回
+    // park 从本调用行下续行 → return 回环。
+    unsafe {
+        hal::task::context_switch(
+            hal::smp::sec_park_ctx(),
+            &raw const (*next_ptr).ctx,
+        )
+    };
+}
+
+/// CPU0 idle 派发（A7 合流形，雷① 收口）：prev = **IDLE_TASK.ctx**（非
+/// sec_park_ctx——block/exit 的 pick-None 臂切回 `IDLE_TASK.ctx`，与本处
+/// prev 同槽帧一致：idle_loop 派发帧被捕获进 IDLE.ctx，任务侧空转落回时
+/// 恰续行于本函数 context_switch 调用行下 → return 回 idle 环顶）。
+/// activate_if_changed（idle 在主表或上次 next 表，差量激活——与 tick/SGI
+/// preempt-from-IDLE 同形；next 可为内核任务 ttbr0=0，不可无条件激活）。
+/// note_switch prev=IDLE（真调度语义上下文，Preempt 记账与 tick 派发对齐）。
+///
+/// # Safety
+/// PSTATE.I=1（idle 环屏蔽窗）；klock 已取（体内放锁）；`next_ptr` 有效。
+unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
+    let idle = addr_of_mut!(IDLE_TASK);
+    (*next_ptr).state = TaskState::Running;
+    (*next_ptr).slice_left = hal::timer::slice_cycles();
+    // SAFETY: 本核 CVAL 重臂（授片侧显式 arm——同 dispatch_from_park_ctx，
+    // idle 派发无 CNTV IRQ 先行：wfi 醒 / SGI 醒 / 环顶重查三种入口皆然）。
+    unsafe { hal::timer::arm_slice() };
+    set_current(next_ptr);
+    SWITCHES.fetch_add(1, Ordering::Relaxed);
+    activate_if_changed(idle, next_ptr);
+    note_switch(idle, next_ptr, SwitchKind::Preempt);
+    klock_release_raw();
+    // SAFETY: prev=IDLE.ctx（idle_loop 帧惰性捕获，与任务侧 None 臂切回点
+    // 同槽——见函数头）、next 有效。切回即本行下 → return 回 idle 环。
+    unsafe {
+        hal::task::context_switch(&raw mut (*idle).ctx, &raw const (*next_ptr).ctx)
+    };
 }
 
 /// SLEEPQ 最近截止时刻（S-3a tickless park 武装面——子案 §9.5 步 A；

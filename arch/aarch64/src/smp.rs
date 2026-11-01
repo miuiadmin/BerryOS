@@ -239,19 +239,28 @@ pub fn cpu_id() -> usize {
     unsafe { (&raw const (*(base as *mut SmpCpu)).cpu).read_volatile() as usize }
 }
 
-/// 副核 park 上下文（S-2b §2.3「首派发上下文」）：副核 park 态 wfi 被 tick
-/// 打断 → on_irq_tick park 派发把 boot 栈上下文惰性存进本块；任务侧
-/// block/preempt 回 park = `context_switch(cur.ctx, park_ctx)` 恢复同一帧
-/// → exception_irq 尾 eret 回 secondary_main 统一环。非调度语义 Task：
-/// 不进 RUNQUEUE、无 TCB、仅 TaskContext 存档（不立第二个 IDLE_TASK——
-/// A7 口径延续）。首次派发前 = ZERO 纯 sink（switch asm 写 prev 读 next，
-/// ZERO 起步安全）；「切回 park 前必有 park→task 派发」构造性保证。
+/// per-CPU park 上下文槽（S-2b §2.3「首派发上下文」；S-3b b-2 雷② 收口——
+/// 子案 §9.5 末）：某核 park 态 wfi 被打断 → park 派发把该核栈上下文惰性
+/// 存进**本核槽位**；任务侧 block/preempt 回 park = `context_switch(cur.ctx,
+/// park_ctx)` 恢复同一帧 → eret 回该核统一环。非调度语义 Task：不进
+/// RUNQUEUE、无 TCB、仅 TaskContext 存档（不立第二个 IDLE_TASK——A7 口径
+/// 延续）。首次派发前 = ZERO 纯 sink（switch asm 写 prev 读 next，ZERO 起步
+/// 安全）；「切回 park 前必有 park→task 派发」构造性保证。
+///
+/// S-3b b-2 起单槽真化 per-CPU `[ctx; 2]`：全局单槽形态下，CPU0 idle 若经
+/// 本块派发会**覆写 CPU1 park 帧**（跨核帧灾难——雷②，从未触发：CPU0 idle
+/// 旧形态结构性不达本块，wedge 比静默跨核腐坏更安全）。分诊按 cpu_id 后
+/// CPU0 槽防御性在位（现调用面 block/exit 两 park 切点均 `cpu_id != 0` 臂
+/// 独占；S-3c 拆锁若开 CPU0 park 面即天然就位，不再改本块）。
 #[no_mangle]
-pub static mut SMP_SEC_PARK_CTX: crate::task::TaskContext = crate::task::TaskContext::ZERO;
+pub static mut SMP_SEC_PARK_CTX: [crate::task::TaskContext; 2] =
+    [crate::task::TaskContext::ZERO, crate::task::TaskContext::ZERO];
 
-/// 副核 park ctx 指针（切换原语消费）。
+/// 本核 park ctx 槽指针（切换原语消费；block/exit 两 park 切点调用零改）。
 pub fn sec_park_ctx() -> *mut crate::task::TaskContext {
-    &raw mut SMP_SEC_PARK_CTX
+    // SAFETY: static mut 槽位寻址（无并发窗——本核槽本核独占读写，跨核槽
+    // 只经 KERN_LOCK 串行的切换原语触达）。
+    unsafe { &raw mut SMP_SEC_PARK_CTX[cpu_id()] }
 }
 
 /// 副核高半栈（S-2b 修复：低半 `__boot_stack_top` 只供 asm 早期）。副核
