@@ -1,6 +1,6 @@
 # berry-libc
 
-Full-definition libc shim for the [BerryOS](https://github.com/berryos/berryos)
+Full-definition libc shim for the [BerryOS](https://github.com/miuiadmin/BerryOS)
 microkernel (experimental, aarch64-first research OS): lets Rust std
 build for `aarch64-unknown-linux-musl` on BerryOS (malloc/write/
 pthread/futex/crt0 real, the rest stubbed loudly).

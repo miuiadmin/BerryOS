@@ -1,6 +1,6 @@
 # berry-sys
 
-Raw syscall bindings for the [BerryOS](https://github.com/berryos/berryos)
+Raw syscall bindings for the [BerryOS](https://github.com/miuiadmin/BerryOS)
 microkernel (experimental, aarch64-first research OS): `#[repr(C)]` ABI
 types, generated constants, and `svc #0` wrappers. No allocation, never
 panics.

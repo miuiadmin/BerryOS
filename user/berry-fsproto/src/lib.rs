@@ -3,7 +3,7 @@
 //!
 //! ## Overview (for crates.io users)
 //!
-//! Wire protocol for the [BerryOS](https://github.com/berryos/berryos)
+//! Wire protocol for the [BerryOS](https://github.com/miuiadmin/BerryOS)
 //! filesystem-service RPC: 10 ops (incl. v2 NUL-segment paths and
 //! STATFS), strict request/reply byte layouts. Pure no_std
 //! encoder/parser, host-testable; protocol-only — channel/wait

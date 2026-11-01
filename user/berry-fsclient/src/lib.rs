@@ -2,7 +2,7 @@
 //!
 //! ## Overview (for crates.io users)
 //!
-//! Client side of the [BerryOS](https://github.com/berryos/berryos)
+//! Client side of the [BerryOS](https://github.com/miuiadmin/BerryOS)
 //! filesystem-service RPC, in two layers: pure faces (fd-table, cwd
 //! joining, stat shaping, dirent decoding) plus the syscall-touching
 //! session core (`cfg(not(test))` — host tests never link the syscall

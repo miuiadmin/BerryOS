@@ -2,7 +2,7 @@
 //!
 //! ## Overview (for crates.io users)
 //!
-//! Raw syscall bindings for the [BerryOS](https://github.com/berryos/berryos) microkernel — an
+//! Raw syscall bindings for the [BerryOS](https://github.com/miuiadmin/BerryOS) microkernel — an
 //! experimental, aarch64-first research OS. This crate mirrors the frozen
 //! v1 syscall ABI: `#[repr(C)]` base types, generated constants (single
 //! source: `tools/abi.toml` in the repo), and thin `svc #0` wrappers.

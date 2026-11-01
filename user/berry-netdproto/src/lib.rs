@@ -4,7 +4,7 @@
 //!
 //! ## Overview (for crates.io users)
 //!
-//! Wire protocol for the [BerryOS](https://github.com/berryos/berryos)
+//! Wire protocol for the [BerryOS](https://github.com/miuiadmin/BerryOS)
 //! network-service RPC: strict request/reply byte layouts for DNS and
 //! TCP session ops (plus session-suffixed trailing fields). Pure no_std
 //! encoder/parser, host-testable; protocol-only — channel/wait semantics

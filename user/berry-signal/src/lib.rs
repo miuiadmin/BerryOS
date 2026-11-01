@@ -3,7 +3,7 @@
 //! ## Overview (for crates.io users)
 //!
 //! Pure-function POSIX-signal bookkeeping for the
-//! [BerryOS](https://github.com/berryos/berryos) microkernel: a
+//! [BerryOS](https://github.com/miuiadmin/BerryOS) microkernel: a
 //! sigaction table, a signal-mask state machine
 //! (`block`/`unblock`/`setmask`), a musl-compatible 128-byte
 //! `sigset_t` bit-map layer, a default-disposition table, and a

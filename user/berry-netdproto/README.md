@@ -1,6 +1,6 @@
 # berry-netdproto
 
-Wire protocol for the [BerryOS](https://github.com/berryos/berryos)
+Wire protocol for the [BerryOS](https://github.com/miuiadmin/BerryOS)
 network service RPC (experimental, aarch64-first research OS): strict
 request/reply byte layouts for DNS and TCP round-trip ops — pure no_std
 encoder/parser, host-testable.

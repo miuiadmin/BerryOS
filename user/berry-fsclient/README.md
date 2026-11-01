@@ -1,6 +1,6 @@
 # berry-fsclient
 
-Client side of the [BerryOS](https://github.com/berryos/berryos)
+Client side of the [BerryOS](https://github.com/miuiadmin/BerryOS)
 filesystem-service RPC (experimental, aarch64-first research OS):
 session core (strict-serial, poisoning, EBUSY-retry) plus pure
 fd-table/cwd/stat/dirent faces used by the berry-libc file layer.
