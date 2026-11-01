@@ -1,0 +1,201 @@
+# BerryOS syscall 描述骨架（syzkaller）——**生成文件，勿手改**。
+# 单源 = `tools/abi.toml`；再生 = `python3 tools/gen_abi.py`（`just abi-gen`）；
+# 守卫 = `just abi-check`（`tools/gen_abi.py --check` 逐字节比对，挂 build/smoke 前置）。
+#
+# **骨架——未过 syz-sysgen 编译验证**；形态对表 syzkaller
+# docs/syscall_descriptions.md 保守子集（type/resource 定义、syscall 行、注释）。
+# abi.toml 只覆盖常量层（号/位/码/宽度），无逐 syscall 参数表——本骨架不臆造
+# 参数：各入口按 ARM64 SVC 惯例（x0 = 号、x1..x6 = 参，a1..a6 一一对应）给
+# 6 个全宽 int64 占位参；参数面待 §8.3 原型层（v2 挂账）补，届时 handle 参 →
+# berry_handle、数值参按宽度收窄、指针/缓冲参 → ptr[in/out] 保守映射。
+# 常量以字面量注释随附——不用 syz const 引用（需 syz-extract 的 const 数据库）。
+
+# ---- 资源/类型定义（abi.toml [types] 宽度冻结面；handle 参未来映射到 berry_handle）----
+# 无效 handle：BERRY_HANDLE_INVALID = 0（表槽 0 恒空）
+resource berry_handle[uint32]
+type berry_rights uint64
+type berry_status int32
+type berry_time uint64
+
+# ---- 常量注释（abi.toml 单源字面量；非 syz const 引用）----
+# clock id:
+#   CLOCK_MONOTONIC = 0
+# options 位（未知位一律 -EINVAL）:
+#   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)
+# rights 位（berry_rights；权限在 handle 不在对象）:
+#   BERRY_RIGHT_READ = 1 << 0  (0x1)
+#   BERRY_RIGHT_WRITE = 1 << 1  (0x2)
+#   BERRY_RIGHT_EXECUTE = 1 << 2  (0x4)
+#   BERRY_RIGHT_MAP = 1 << 3  (0x8)
+#   BERRY_RIGHT_DUPLICATE = 1 << 4  (0x10)
+#   BERRY_RIGHT_TRANSFER = 1 << 5  (0x20)
+#   BERRY_RIGHT_INSPECT = 1 << 6  (0x40)
+#   BERRY_RIGHT_SIGNAL = 1 << 7  (0x80)
+#   BERRY_RIGHT_SEND = 1 << 8  (0x100)
+#   BERRY_RIGHT_RECV = 1 << 9  (0x200)
+#   BERRY_RIGHT_MANAGE = 1 << 10  (0x400)
+#   BERRY_RIGHT_SET_POLICY = 1 << 11  (0x800)
+#   BERRY_RIGHT_SAME_RIGHTS = u64::MAX  (0xffffffffffffffff)
+# wait 信号位（低 32 内核派生 + 高 32 用户）:
+#   SIGNAL_READABLE = 1 << 0  (0x1)
+#   SIGNAL_WRITABLE = 1 << 1  (0x2)
+#   SIGNAL_TERMINATED = 1 << 2  (0x4)
+#   SIGNAL_USER_MASK = 0xFFFF_FFFF_0000_0000  (0xffffffff00000000)
+# 错误码（berry_status_t = i32；posix-ish 负数）:
+#   BERRY_OK = 0
+#   BERRY_ERR_BAD_HANDLE = -9
+#   BERRY_ERR_DEAD = -52
+#   BERRY_ERR_INVALID_ARG = -22
+#   BERRY_ERR_NO_MEMORY = -12
+#   BERRY_ERR_ACCESS_DENIED = -13
+#   BERRY_ERR_NOT_FOUND = -2
+#   BERRY_ERR_BAD_STATE = -37
+#   BERRY_ERR_TIMEDOUT = -110
+#   BERRY_ERR_BUSY = -16
+#   BERRY_ERR_AGAIN = -11
+#   BERRY_ERR_NOT_SUPPORTED = -95
+#   BERRY_ERR_OUT_OF_RANGE = -34
+#   BERRY_ERR_FAULT = -14
+
+# ---- syscall 入口（§4 编号表全量在册；v1 34 号、已实现 33；
+#      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
+
+# **handle / 通用对象**
+# 0x01 handle_close（v1）——关闭 handle
+handle_close(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x02 handle_duplicate（v1）——复制（权限 ⊆ 原）
+handle_duplicate(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x03 handle_replace（v1）——原子替换 handle 槽
+handle_replace(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x04 object_wait_one（v1）——等单个对象上的信号
+#   note: 4-1 阻塞化（poll-first + 醒来重验 + -ETIMEDOUT）；4-2 扩 Event|Channel。
+object_wait_one(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x05 object_wait_many（v1）——等多个对象
+#   note: 4-2b 落地：任一命中 → *idx + *observed；WAIT_ANY 哨兵睡眠。
+object_wait_many(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x06 object_signal（v1）——泛型置/清信号（Event/Interrupt/Job）
+#   note: 3-4c 落地：v1 仅 Event 可 signal（thread/process 信号面随后续步）。
+object_signal(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x07 object_get_info（v2·未实现）——查询对象信息（topic 分派）
+object_get_info(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **内存 / VMO / Vmar**
+# 0x11 vmo_create（v1）——建内存对象
+vmo_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x12 vmo_commit（v1）——提交物理页（v1 无 pager 时直接分配）
+vmo_commit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x13 vmo_decommit（v1）——归还页
+vmo_decommit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x14 vmo_read（v1）——内核中介读（非映射访问）
+vmo_read(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x15 vmo_write（v1）——内核中介写
+vmo_write(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x16 vmar_map（v1）——VMO 映射进区间
+vmar_map(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x17 vmar_unmap（v1）——解除映射
+vmar_unmap(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x18 vmar_protect（v1）——改权限
+vmar_protect(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x19 vmar_allocate（v1）——建子区间
+vmar_allocate(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x1A vmo_get_size（v1）——查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长）
+#   note: G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。
+vmo_get_size(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x1B vmo_get_phys（v1）——查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽）
+#   note: P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
+vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **pager**
+# 0x21 pager_supply_pages（v2·未实现）——用户态 pager 给 VMO 填页
+pager_supply_pages(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x22 pager_op_range（v3·未实现）——脏页/换出通知
+pager_op_range(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **进程 / 线程**
+# 0x31 process_create（v1）——建进程 + 出 root Vmar（双出参；job v1 恒 0）
+process_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x32 process_start（v1）——启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值）
+process_start(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x33 process_exit（v1）——退出
+#   note: Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
+process_exit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x34 thread_create（v1）——建线程（未启动，入口随 process_start）
+thread_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x35 thread_start（v1）——投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形）
+#   note: T-1 落地：门控 Thread MANAGE；所属 Process 须已 start 且 Alive（否则 -EBADSTATE）；线程入口不得返回（返回 = fault 杀兜底）——pthread/线程库的内核地基。
+thread_start(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x36 thread_exit（v1）——线程退出
+#   note: Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。
+thread_exit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x37 thread_sleep（v1）——睡到 deadline（nanosleep 等价）
+thread_sleep(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x38 thread_set_priority（v2·未实现）——设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）**
+thread_set_priority(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x39 thread_set_deadline（v2·未实现）——设截止期（软实时）
+thread_set_deadline(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x3A process_get_exit_code（v1）——查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查）
+#   note: P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。
+process_get_exit_code(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x3B process_terminate（v1）——外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。
+#   note: C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。
+process_terminate(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **异常**
+# 0x41 thread_create_exception_channel（v2·未实现）——用户态异常上报通道
+thread_create_exception_channel(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **IPC / event / futex**
+# 0x51 channel_create（v1）——建端点对
+channel_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x52 channel_send（v1）——发消息 + handle 迁移
+channel_send(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x53 channel_recv（v1）——收消息
+channel_recv(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x54 event_create（v1）——建事件对象
+#   note: 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
+event_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x55 futex_wait（v2·未实现）——用户态同步（pthread 基础）
+futex_wait(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x56 futex_wake（v2·未实现）——唤醒等待者
+futex_wake(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **时间 / 定时器**
+# 0x61 clock_read（v1）——读单调/壁钟
+clock_read(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x62 timer_create（v2·未实现）——建定时器对象
+timer_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x63 timer_set（v2·未实现）——设定时刻
+timer_set(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **设备**（因"用户态为主+关键暂留"留内核）
+# 0x71 interrupt_create（v2·未实现）——建 IRQ 对象
+interrupt_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x72 bind_irq（v2·未实现）——IRQ → signal 一个 Event
+bind_irq(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x73 map_device_memory（v2·未实现）——Resource → 设备 MMIO 的 VMO
+map_device_memory(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **命名空间**（路径式）
+# 0x81 namespace_open（v3·未实现）——`open("/svc/fs")` → handle
+namespace_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x82 namespace_mount（v3·未实现）——服务把 channel 挂到路径
+namespace_mount(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`）
+# 0x83 policy_bind（v3·未实现）——注册 AI 策略注入通道（共享环，SET_POLICY）
+policy_bind(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x84 telemetry_open（v3·未实现）——打开遥测环（只读）
+telemetry_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **安全 / 远程证明**（预留）
+# 0x85 berry_attest（v1·在册未实现）——远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法）
+#   note: SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
+berry_attest(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **信号**（POSIX 兼容——libc 协同式投递，A7-4）
+# 0x86 signal_send（v1）——向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配
+#   note: A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+signal_send(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x87 signal_take（v1）——原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）
+#   note: A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
+signal_take(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)

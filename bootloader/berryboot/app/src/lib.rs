@@ -25,7 +25,8 @@
 //! AllocatePages(AllocateAddress) 认领（缝隙一并拿下，防段共享页撞）→
 //! 全窗清零（.bss + 缝隙确定性，对齐 QEMU `-kernel` 直加载零 RAM 起步）→
 //! 逐段 copy filesz → 回读逐字节对拍（标记 = 状态谓词）→ handoff 页填
-//! v0（裁决 A/B：memmap 刀 4 填，gop/init_blob/cmdline 留位零值）。
+//! v1（裁决 A/B：memmap 刀 4 填；gop_* V-6a 起填——banner 期 QueryMode
+//! 事实快照随行递送；cmdline 留位零值；init 分段数组 A1-3b 起填）。
 //! V-0b 刀 4 面：watchdog 归零 + 内存图取回（GetMemoryMap + 扩容重试帽
 //! 两轮）→ handoff memmap_* 四字段落值 → EBS 重试协议（**key 有效期 =
 //! 取图到 EBS 之间零 boot service 调用**；被拒即 key 过期 → 重取图再
@@ -38,11 +39,12 @@
 //! 收编（x19 抢救 x0 → BRYH 魔数不中 DTB 探测 → fw_cfg 降级路 → 裸相
 //! 23 标记）。CurrentEL ≠ EL1 拒跳（AAVMF virt 默认 EL1；EL2 入场语境的
 //! sctlr 整备不成立——诚实拒绝优于错态跳转）。
-//! V-1c 面：行 5b `init:` INITRD.BIN 整档读入 → AllocatePages
-//! (EfiLoaderData) 页钉——**先于终段 GetMemoryMap**（页进图成非
-//! Conventional，内核 V-1b pass2 reserve 自动保）→ pa/len 透传
-//! load_kernel 填 handoff init_blob_*（@80/@88，V-1c 起消费）+ 终段
-//! dcache 刷集加 init blob 窗（CPU 拷贝脏线防线）。盘上缺席打
+//! V-1c/A1-3b 面：行 5b `init:` INITRD.BIN **分段读入**（8MiB 目标段
+//! alloc 失败折半重试）→ 每段 AllocatePages(EfiLoaderData) 页钉——
+//! **先于终段 GetMemoryMap**（页进图成非 Conventional，内核 V-1b pass2
+//! reserve 自动保）→ 段描述符数组透传 load_kernel 填 handoff v1
+//! （init_segs_* @112/@120 + @128 同页数组，A1-3b 起消费）+ 终段
+//! dcache 刷集逐段入刷（CPU 拷贝脏线防线）。盘上缺席打
 //! `init: absent` 续行——内核降级 ROOTFS absent，非致命。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
@@ -91,7 +93,7 @@ fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
     }
 }
 
-// ==================== BerryHandoff v0（V-0b 刀 3 冻结） ====================
+// ==================== BerryHandoff v1（V-0b 刀 3 冻结 v0；A1-3b 扩 v1） ====================
 //
 // **双镜像纪律**（同 kernel/src/handoff.rs——两侧逐字段同步 + 同一张 const
 // assert 偏移表，任一侧漂移 = 编译期炸响；abi_gen.rs 双面镜像同精神）。
@@ -100,10 +102,28 @@ fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
 
 /// 魔数：LE u32 读出 = ASCII "BRYH"。
 pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
-/// 协议版本：v0 = 0（字段集冻结于 V-0b 刀 3，扩字段 = bump version）。
-pub const HANDOFF_VERSION: u32 = 0;
+/// 协议版本：v1 = 1（A1-3b init 分段递送；v0 = 0 冻结于 V-0b 刀 3）。
+pub const HANDOFF_VERSION: u32 = 1;
 
-/// 交接结构（112B，全 8B 字段 8 对齐；无指针——PA 直递）。
+/// 分段描述符数上限（与内核侧同值——handoff 单页自含的执法点）。
+pub const INIT_SEGS_MAX: usize = 32;
+
+/// init 分段目标段宽（A1-3b §3.2.1）：8MiB 起步、alloc 失败折半重试——
+/// 固件碎片地形免疫（A1-1 §2 地形墙的装载器侧执法）。
+pub const INIT_SEG_TARGET: usize = 8 * 1024 * 1024;
+
+/// INITRD.BIN 总量帽：与内核 `ROOTFS_TOTAL_MAX` 同口径（A1-2 帽分家）。
+pub const INIT_TOTAL_MAX: usize = 128 * 1024 * 1024;
+
+/// init 分段描述符（v1 描述符数组元素，随 handoff 同页 @128）。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct InitSeg {
+    pub pa: u64,
+    pub len: u64,
+}
+
+/// 交接结构（v1 = 128B 头，全 8B 字段 8 对齐；无指针——PA 直递）。
 #[repr(C)]
 pub struct BerryHandoff {
     pub magic: u32,               // @0
@@ -116,20 +136,26 @@ pub struct BerryHandoff {
     pub memmap_desc_size: u32,    // @44（刀 4 填）
     pub memmap_desc_version: u32, // @48（刀 4 填）
     pub _r0: u32,                 // @52 保留零
-    pub gop_fb_pa: u64,           // @56 留位零（V-1 fbcon）
-    pub gop_width: u32,           // @64 留位零
-    pub gop_height: u32,          // @68 留位零
-    pub gop_stride: u32,          // @72 留位零
-    pub gop_format: u32,          // @76 留位零
-    pub init_blob_pa: u64,        // @80 留位零（裁决 B）
-    pub init_blob_len: u64,       // @88 留位零（裁决 B）
+    pub gop_fb_pa: u64,           // @56  帧缓冲 PA（V-6a 起填；零=缺席）
+    pub gop_width: u32,           // @64  像素宽（V-6a 起填）
+    pub gop_height: u32,          // @68  像素高（V-6a 起填）
+    pub gop_stride: u32,          // @72  行字节数（V-6a 起填）
+    pub gop_format: u32,          // @76  EFI PixelFormat 原值（V-6a 起填）
+    pub init_blob_pa: u64,        // @80 v0 事实源（v1 置零不读）
+    pub init_blob_len: u64,       // @88 v0 事实源（v1 置零不读）
     pub cmdline_pa: u64,          // @96 留位零（裁决 B）
     pub cmdline_len: u64,         // @104 留位零（裁决 B）
+    pub init_segs_pa: u64,        // @112 描述符数组 PA（= handoff 页 @128；0=无）
+    pub init_segs_count: u32,     // @120 段数（0=无 INITRD）
+    pub _r1: u32,                 // @124 保留零
 }
 
 /// 布局执法表（与 kernel/src/handoff.rs 逐行相同——两侧同表执法）。
 const _: () = {
-    assert!(size_of::<BerryHandoff>() == 112);
+    assert!(size_of::<BerryHandoff>() == 128);
+    assert!(size_of::<InitSeg>() == 16);
+    assert!(offset_of!(InitSeg, pa) == 0);
+    assert!(offset_of!(InitSeg, len) == 8);
     assert!(offset_of!(BerryHandoff, magic) == 0);
     assert!(offset_of!(BerryHandoff, version) == 4);
     assert!(offset_of!(BerryHandoff, entry) == 8);
@@ -149,19 +175,60 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, init_blob_len) == 88);
     assert!(offset_of!(BerryHandoff, cmdline_pa) == 96);
     assert!(offset_of!(BerryHandoff, cmdline_len) == 104);
+    assert!(offset_of!(BerryHandoff, init_segs_pa) == 112);
+    assert!(offset_of!(BerryHandoff, init_segs_count) == 120);
+    assert!(offset_of!(BerryHandoff, _r1) == 124);
 };
 
 /// 刀 1 骨架行：ASCII + CRLF（EFI ConOut 惯例——部分终端只认 CRLF）。
 const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
+
+// ==================== GOP 携面（V-6a） ====================
+//
+// banner 期 QueryMode 的事实快照——load_kernel 写 handoff `gop_*` 留位
+// （@56..@76）随行递送内核（fbcon 数据源，`docs/VM里程碑设计草案.md`
+// §4 V-6）。缺席语义 = 全零（与留位零值同一判定面）：无显示设备
+// （LocateProtocol NOT_FOUND）/ QueryMode 失败 / fmt=3 BltOnly 无线性
+// 帧缓冲 / fb 基为零——任一都按缺席递送，内核消费面零扰动。
+
+/// banner 期 GOP 事实快照（全零 = 无此物——零值缺席语义同 handoff 留位）。
+#[derive(Clone, Copy)]
+pub struct GopFacts {
+    pub fb_pa: u64,  // FrameBufferBase（线性帧缓冲物理基）
+    pub width: u32,  // HorizontalResolution
+    pub height: u32, // VerticalResolution
+    pub stride: u32, // 行字节数（PixelsPerScanLine × 4——fmt≤2 恒 32bpp）
+    pub format: u32, // EFI PixelFormat 原值（0=RGBx 1=BGRx 2=BitMask）
+}
+
+impl GopFacts {
+    pub const ABSENT: GopFacts = GopFacts {
+        fb_pa: 0,
+        width: 0,
+        height: 0,
+        stride: 0,
+        format: 0,
+    };
+}
+
+/// 行字节数换算：fmt≤2 = PixelsPerScanLine×4（32bpp 定宽）；fmt=3
+/// BltOnly 无线性帧缓冲 → None；fmt>3 非规范 → None（宁缺勿猜）。
+pub fn gop_stride_bytes(ppsl: u32, fmt: u32) -> Option<u32> {
+    if fmt > 2 {
+        return None;
+    }
+    ppsl.checked_mul(4)
+}
 
 /// 行 7（V-0b 刀 3）：段装载——`span()` 整窗一次
 /// AllocatePages(AllocateAddress) 认领（段间缝隙一并拿下：段可共享页/
 /// 有缝，逐段认领撞页冲突）→ 全窗清零（.bss + 缝隙确定性归零，对齐
 /// QEMU `-kernel` 直加载零 RAM 起步）→ 逐段 copy filesz → 回读逐字节
 /// 对拍（标记 = 状态谓词，不建立在「拷了就算」上）→ handoff 页填 v0
-/// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop/cmdline 留位零值；
-/// memmap 刀 4 填；init_blob_* V-1c 填——`init_pa/init_len` 由 kfile 段
-/// INITRD.BIN 读入产出，缺省 0/0 = 无 blob）。全过打 `load: segs=<n>
+/// （裁决 A：结构 V-0b 冻结实例化；裁决 B：gop_* V-6a 填（`gop` 事实
+/// 快照——全零 = 缺席）、cmdline 留位零值；
+/// memmap 刀 4 填；init 分段数组 A1-3b 填（`segs` 由行 5b 分段读入产出，
+/// 缺省空 = 无 INITRD——init_segs_pa=0/count=0）。全过打 `load: segs=<n>
 /// pages=<n> ok` 并返 `Some(hpa)`（handoff 物理地址——刀 4 终段消费）；
 /// 任一步失败打状态码诊断行返 `None`（终标缺席即失败面——机器可读缺席
 /// 报告）。零 panic：一切失败走诊断行返回。
@@ -170,8 +237,8 @@ fn load_kernel(
     con_out: &berry_efi::EfiSimpleTextOutputProtocol,
     kbuf: *mut c_void,
     bo: &berry_loader::BootElf,
-    init_pa: u64,
-    init_len: u64,
+    gop: &GopFacts,
+    isegs: &[InitSeg],
 ) -> Option<u64> {
     let segs = bo.segments();
     // 整窗认领（AllocateAddress 对已占用页返错不覆盖——kbuf/固件数据若
@@ -248,16 +315,25 @@ fn load_kernel(
             memmap_desc_size: 0,
             memmap_desc_version: 0,
             _r0: 0,
-            gop_fb_pa: 0,
-            gop_width: 0,
-            gop_height: 0,
-            gop_stride: 0,
-            gop_format: 0,
-            init_blob_pa: init_pa,
-            init_blob_len: init_len,
+            gop_fb_pa: gop.fb_pa,     // V-6a：banner 期 QueryMode 快照（零=缺席）
+            gop_width: gop.width,
+            gop_height: gop.height,
+            gop_stride: gop.stride,
+            gop_format: gop.format,
+            init_blob_pa: 0, // v1 置零不读（分段数组是唯一 init 事实源）
+            init_blob_len: 0,
             cmdline_pa: 0,
             cmdline_len: 0,
+            init_segs_pa: if isegs.is_empty() { 0 } else { hpa + 128 },
+            init_segs_count: isegs.len() as u32,
+            _r1: 0,
         });
+        // 描述符数组随 handoff 同页 @128（§3.2.1 单页自含：32×16B+128B
+        // = 640B < 4KiB——内核 init_segs 按「恰为 hpa+128」自相对契约校验）。
+        let dst = (hpa + 128) as *mut InitSeg;
+        for (i, s) in isegs.iter().enumerate() {
+            dst.add(i).write(InitSeg { pa: s.pa, len: s.len });
+        }
     }
     print_line(con_out, |l| {
         l.push_str("load: segs=");
@@ -337,8 +413,7 @@ fn final_boot(
     image_handle: *mut c_void,
     hpa: u64,
     bo: &berry_loader::BootElf,
-    init_pa: u64,
-    init_len: u64,
+    isegs: &[InitSeg],
 ) {
     // CurrentEL 预检（EL 编码在位 [3:2]：EL1 → 0x4）。
     let el: u64;
@@ -491,10 +566,11 @@ fn final_boot(
     }
     dcache_clean(hpa, 4096);
     dcache_clean(mm_buf as u64, mm_size as u64);
-    // V-1c：init blob 页入刷集——读入经固件 CPU 拷贝、脏线随 SCTLR.C 清零
-    // 而丢 = 内核读到旧内存（与内核映像/handoff/memmap 同一条纪律）。
-    if init_len > 0 {
-        dcache_clean(init_pa, (init_len + 4095) & !4095u64);
+    // V-1c/A1-3b：init 段页入刷集——读入经固件 CPU 拷贝、脏线随 SCTLR.C 清零
+    // 而丢 = 内核读到旧内存（与内核映像/handoff/memmap 同一条纪律）。逐段
+    // 各自入刷（段间物理不连续——A1-3b 分段形态）。
+    for s in isegs {
+        dcache_clean(s.pa, (s.len + 4095) & !4095u64);
     }
     // SCTLR_EL1 清 M(0)/A(1)/C(2)/I(12)：MMU 关（内核自带页表从零建）、
     // 对齐检查关、icache/dcache 关——对齐内核 boot asm 为 QEMU `-kernel`
@@ -632,6 +708,9 @@ pub extern "C" fn efi_main(
     // 裁决 C：只信息行不画像素）。失败打状态码诊断行：实测 AAVMF
     // `virt -nographic` 无显示设备 → GOP 实例缺席 → EFI_NOT_FOUND
     // （0x800000000000000E）——run-efi 挂 -device ramfb 供 RamfbDxe。
+    // V-6a：GOP 事实快照（banner 期一次性收——load_kernel 写 handoff
+    // gop_* 随行递送；各失败臂保持 ABSENT，缺席语义见 GopFacts 注释）。
+    let mut gop_facts = GopFacts::ABSENT;
     let bs = st.boot_services;
     if !bs.is_null() && unsafe { (*bs).hdr.signature } == EFI_BOOT_SERVICES_SIGNATURE {
         let mut gop: *mut c_void = core::ptr::null_mut();
@@ -656,6 +735,22 @@ pub extern "C" fn efi_main(
                     let i = unsafe { &*info };
                     let cur = m.mode;
                     let max = m.max_mode;
+                    // V-6a 携面：当前模式事实收编（fb 基非零 + fmt≤2 才收
+                    // ——BltOnly 无线性帧缓冲按缺席；`gop:` 行照打不耦合，
+                    // 收编与否与打印面独立）。
+                    if m.frame_buffer_base != 0 {
+                        if let Some(stride) =
+                            gop_stride_bytes(i.pixels_per_scan_line, i.pixel_format)
+                        {
+                            gop_facts = GopFacts {
+                                fb_pa: m.frame_buffer_base,
+                                width: i.horizontal_resolution,
+                                height: i.vertical_resolution,
+                                stride,
+                                format: i.pixel_format,
+                            };
+                        }
+                    }
                     print_line(con_out, |l| {
                         l.push_str("gop: ");
                         l.push_u32_dec(i.horizontal_resolution);
@@ -836,17 +931,6 @@ pub extern "C" fn efi_main(
                                             l.push_u32_dec(fsize as u32);
                                             l.push_str("B ok");
                                         });
-                                        // 行 5b（V-1c）：INITRD.BIN 整档读入
-                                        // → AllocatePages(EfiLoaderData) 页
-                                        // 钉——**必须发生在终段 GetMemoryMap
-                                        // 之前**（页进图成非 Conventional，
-                                        // 内核 V-1b pass2 reserve 自动保）。
-                                        // pa/len 透传 load_kernel 填 handoff
-                                        // init_blob_*（@80/@88）。缺席（旧盘
-                                        // 不带 INITRD.BIN）打 `init: absent`
-                                        // 续行——内核降级 ROOTFS absent，
-                                        // 非致命（裁决 B 留位零值同义）。
-                                        // 帽 16MiB：与内核 ROOTFS_MAX 同口径。
                                         let mut name16i = [0u16; 16];
                                         let iname =
                                             utf16_encode_bytes(b"INITRD.BIN", &mut name16i);
@@ -854,8 +938,24 @@ pub extern "C" fn efi_main(
                                         let r_iopen = unsafe {
                                             (root_ref.open)(root, &mut ifile, iname.as_ptr(), EFI_FILE_MODE_READ, 0)
                                         };
-                                        let mut init_pa: u64 = 0;
-                                        let mut init_len: u64 = 0;
+                                        // 行 5b（V-1c→A1-3b）：INITRD.BIN
+                                        // **分段读入**（8MiB 目标段，alloc
+                                        // 失败折半重试）→ 每段
+                                        // AllocatePages(EfiLoaderData) 页钉
+                                        // ——**必须发生在终段 GetMemoryMap
+                                        // 之前**（页进图成非 Conventional，
+                                        // 内核 V-1b pass2 reserve 自动保）。
+                                        // 段描述符数组随 handoff v1 递送
+                                        // （init_segs_* @112/@120 + @128
+                                        // 数组，load_kernel 写）。缺席（旧盘
+                                        // 不带 INITRD.BIN）打 `init: absent`
+                                        // 续行——内核降级 ROOTFS absent，
+                                        // 非致命（零段同义）。总量帽 128MiB
+                                        // （A1-2 帽分家同口径；旧 32MiB 单块
+                                        // 帽随分段形态退役）。
+                                        let mut isegs =
+                                            [InitSeg { pa: 0, len: 0 }; INIT_SEGS_MAX];
+                                        let mut iseg_n: usize = 0;
                                         if r_iopen == EFI_SUCCESS && !ifile.is_null() {
                                             let ifile_ref = unsafe { &*ifile };
                                             let mut ibuf = [0u8; 256];
@@ -873,22 +973,68 @@ pub extern "C" fn efi_main(
                                                     (*(ibuf.as_ptr() as *const EfiFileInfo)).file_size
                                                         as usize
                                                 };
-                                                if isize_ > 0 && isize_ <= 16 * 1024 * 1024 {
-                                                    let ipages = (isize_ + 4095) / 4096;
-                                                    let mut ipa: u64 = 0;
-                                                    let r_iap = unsafe {
-                                                        ((*bs).allocate_pages)(
-                                                            EFI_ALLOCATE_ANY_PAGES,
-                                                            EFI_LOADER_DATA,
-                                                            ipages,
-                                                            &mut ipa,
-                                                        )
-                                                    };
-                                                    if r_iap == EFI_SUCCESS && ipa != 0 {
+                                                if isize_ > 0 && isize_ <= INIT_TOTAL_MAX {
+                                                    // 段宽随折半历史单调降（成功段宽沿用
+                                                    // ——后续段不再重掷 8MiB 大段骰子）。
+                                                    let mut seg_target = INIT_SEG_TARGET;
+                                                    let mut off = 0usize;
+                                                    let mut seg_ok = true;
+                                                    while off < isize_ {
+                                                        if iseg_n == INIT_SEGS_MAX {
+                                                            print_line(con_out, |l| {
+                                                                l.push_str(
+                                                                    "init: segs n=32 cap",
+                                                                );
+                                                            });
+                                                            seg_ok = false;
+                                                            break;
+                                                        }
+                                                        let want = core::cmp::min(
+                                                            seg_target,
+                                                            isize_ - off,
+                                                        );
+                                                        let mut pages = (want + 4095) / 4096;
+                                                        let mut ipa: u64 = 0;
+                                                        let mut r_iap: usize;
+                                                        loop {
+                                                            r_iap = unsafe {
+                                                                ((*bs).allocate_pages)(
+                                                                    EFI_ALLOCATE_ANY_PAGES,
+                                                                    EFI_LOADER_DATA,
+                                                                    pages,
+                                                                    &mut ipa,
+                                                                )
+                                                            };
+                                                            if r_iap == EFI_SUCCESS && ipa != 0 {
+                                                                break;
+                                                            }
+                                                            if pages <= 1 {
+                                                                break; // 1 页地板：无处再折
+                                                            }
+                                                            pages /= 2; // 折半重试（严格递减）
+                                                            seg_target = pages * 4096;
+                                                        }
+                                                        if r_iap != EFI_SUCCESS || ipa == 0 {
+                                                            print_line(con_out, |l| {
+                                                                l.push_str("init: alloc r=0x");
+                                                                let mut t = [0u8; 16];
+                                                                l.push(fmt_u64_hex(
+                                                                    r_iap as u64,
+                                                                    &mut t,
+                                                                ));
+                                                            });
+                                                            seg_ok = false;
+                                                            break;
+                                                        }
+                                                        // 段内读满（页容量内、不越档尾）。
+                                                        let read_amt = core::cmp::min(
+                                                            pages * 4096,
+                                                            isize_ - off,
+                                                        );
                                                         let mut igot = 0usize;
                                                         let mut r_ird = EFI_SUCCESS;
-                                                        while igot < isize_ {
-                                                            let mut ichunk = isize_ - igot;
+                                                        while igot < read_amt {
+                                                            let mut ichunk = read_amt - igot;
                                                             r_ird = unsafe {
                                                                 (ifile_ref.read)(
                                                                     ifile,
@@ -902,31 +1048,38 @@ pub extern "C" fn efi_main(
                                                             }
                                                             igot += ichunk;
                                                         }
-                                                        if r_ird == EFI_SUCCESS && igot == isize_ {
-                                                            print_line(con_out, |l| {
-                                                                l.push_str("init: ");
-                                                                l.push_u32_dec(isize_ as u32);
-                                                                l.push_str("B ok");
-                                                            });
-                                                            init_pa = ipa;
-                                                            init_len = isize_ as u64;
+                                                        if r_ird == EFI_SUCCESS && igot == read_amt {
+                                                            isegs[iseg_n] = InitSeg {
+                                                                pa: ipa,
+                                                                len: read_amt as u64,
+                                                            };
+                                                            iseg_n += 1;
+                                                            off += read_amt;
                                                         } else {
                                                             print_line(con_out, |l| {
                                                                 l.push_str("init: read got=");
                                                                 l.push_u32_dec(igot as u32);
                                                                 l.push_str(" want=");
-                                                                l.push_u32_dec(isize_ as u32);
+                                                                l.push_u32_dec(
+                                                                    read_amt as u32,
+                                                                );
                                                             });
-                                                            // 不 FreePages：读残页留图
-                                                            // 无害（终图非 Conventional，
-                                                            // 内核 reserve 保住不再用）。
+                                                            seg_ok = false;
+                                                            break;
                                                         }
-                                                    } else {
+                                                    }
+                                                    if seg_ok && off == isize_ {
                                                         print_line(con_out, |l| {
-                                                            l.push_str("init: alloc r=0x");
-                                                            let mut t = [0u8; 16];
-                                                            l.push(fmt_u64_hex(r_iap as u64, &mut t));
+                                                            l.push_str("init: ");
+                                                            l.push_u32_dec(isize_ as u32);
+                                                            l.push_str("B ok");
                                                         });
+                                                    } else {
+                                                        // 失败 = 整源缺席（已分配段页留图
+                                                        // 无害：终图非 Conventional，内核
+                                                        // reserve 保住不再用——与旧读残
+                                                        // 页同纪律）。
+                                                        iseg_n = 0;
                                                     }
                                                 } else {
                                                     print_line(con_out, |l| {
@@ -969,16 +1122,16 @@ pub extern "C" fn efi_main(
                                                 // handoff PA 直进终段——
                                                 // mmap + EBS + 整备跳 entry，
                                                 // 成功即接管（不归此臂）。
-                                                // V-1c：init_blob_*（kfile 段
-                                                // INITRD.BIN 产物）随行入
-                                                // handoff。
+                                                // A1-3b：init 分段描述符数组
+                                                //（行 5b 分段读入产物）随行入
+                                                // handoff v1。
                                                 if let Some(hpa) = load_kernel(
                                                     unsafe { &*bs },
                                                     con_out,
                                                     kbuf,
                                                     &bo,
-                                                    init_pa,
-                                                    init_len,
+                                                    &gop_facts,
+                                                    &isegs[..iseg_n],
                                                 ) {
                                                     final_boot(
                                                         unsafe { &*bs },
@@ -986,8 +1139,7 @@ pub extern "C" fn efi_main(
                                                         image_handle,
                                                         hpa,
                                                         &bo,
-                                                        init_pa,
-                                                        init_len,
+                                                        &isegs[..iseg_n],
                                                     );
                                                 }
                                             }
@@ -1090,5 +1242,18 @@ mod tests {
             super::EXPECTED_HELLO,
             "hello.txt 与 EXPECTED_HELLO 漂移——两侧须同步改"
         );
+    }
+
+    /// V-6a：行字节数换算界检面——fmt≤2 定宽 ×4；BltOnly/非规范/溢出
+    /// 一律缺席（宁缺勿猜：错误的 stride 比缺席更伤 fbcon）。
+    #[test]
+    fn gop_stride_bytes_faces() {
+        assert_eq!(super::gop_stride_bytes(800, 1), Some(3200)); // AAVMF 基线 800x600 BGRx
+        assert_eq!(super::gop_stride_bytes(640, 0), Some(2560)); // RGBx
+        assert_eq!(super::gop_stride_bytes(1024, 2), Some(4096)); // BitMask（32bpp 定宽近似）
+        assert_eq!(super::gop_stride_bytes(800, 3), None); // BltOnly 无线性帧缓冲
+        assert_eq!(super::gop_stride_bytes(800, 4), None); // 非规范 fmt
+        assert_eq!(super::gop_stride_bytes(0x4000_0000, 1), None); // 乘 4 溢出宁可缺席
+        assert_eq!(super::gop_stride_bytes(0, 1), Some(0)); // ppsl=0 原样收 0——几何零值由快照消费面界检
     }
 }

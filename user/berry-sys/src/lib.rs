@@ -1,5 +1,18 @@
 //! # berry-sys —— BerryOS raw syscall 绑定（v1 FFI 镜像）
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Raw syscall bindings for the [BerryOS](https://github.com/berryos/berryos) microkernel — an
+//! experimental, aarch64-first research OS. This crate mirrors the frozen
+//! v1 syscall ABI: `#[repr(C)]` base types, generated constants (single
+//! source: `tools/abi.toml` in the repo), and thin `svc #0` wrappers.
+//! The raw layer never panics and never allocates; higher-level runtime
+//! lives in berry-libc.
+//!
+//! Builds for **aarch64 targets only**; useful only on BerryOS or its
+//! QEMU image. Status: experimental (0.1.0) — the API moves with the
+//! kernel ABI. Repo docs are mostly zh-CN.
+//!
 //! 合约源 = `docs/系统调用ABI设计.md` §8.3（原型）+ §8.4（本镜像的规范文本）。
 //! 调用约定：ARM64 `SVC #0`，`x0` = syscall 号，`x1..x6` ≤ 6 参，返回 `x0`
 //! （`Status`：0 = Ok，负 = 错误码）。**用户程序不直接写编号**——编号是
@@ -14,9 +27,9 @@
 //! 纯 raw 层：**绝不 panic、绝不分配**；上层 `berry` crate 负责
 //! `Status → Result<(), Status>` 包装与运行时（console/argv 等随 G-eco-d）。
 //!
-//! 数值事实与内核侧对账（2026-10，P5 v0.5 起 29 号在册 28 号已实现——
-//! 余 0x35 `thread_start`（v2 多线程）内核回落 `-ENOTSUP`，wrapper 照发；
-//! 0x33/0x36 已真实现且 `-> !` 不返，「调用者存活」对它们不成立）。
+//! 数值事实与内核侧对账（2026-10，T-1 起 31 号在册 31 号已实现——0x35
+//! `thread_start` 随多线程首刀落地（entry/sp/arg 四参，Zircon zx_thread_start
+//! 同形）；0x33/0x36 已真实现且 `-> !` 不返，「调用者存活」对它们不成立）。
 
 #![no_std]
 #![allow(clippy::missing_safety_doc)] // FFI 边界：指针语义在 ABI 文档成文
@@ -315,16 +328,29 @@ pub extern "C" fn berry_process_get_exit_code(process: Handle, code: *mut i32) -
     unsafe { sys(nr::PROCESS_GET_EXIT_CODE, process as usize, code as usize, 0, 0, 0, 0) }
 }
 
+/// 0x3B（C-4b）：外部终止进程（kill/Ctrl-C 内核原语）。`code` 落为该进程
+/// 退出码（父侧收割同 process_exit 面：wait TERMINATED → get_exit_code）。
+/// 门控 Process MANAGE；自杀 -EBADSTATE（退自己走 berry_process_exit）；
+/// 已终止 -EBADSTATE。
+#[no_mangle]
+pub extern "C" fn berry_process_terminate(process: Handle, code: i32) -> Status {
+    unsafe { sys(nr::PROCESS_TERMINATE, process as usize, code as usize, 0, 0, 0, 0) }
+}
+
 /// options 低 8 位 = berry_intent（ADR #42 占位；v1 内核只收 0）。
 #[no_mangle]
 pub extern "C" fn berry_thread_create(process: Handle, options: u32, out: *mut Handle) -> Status {
     unsafe { sys(nr::THREAD_CREATE, process as usize, options as usize, out as usize, 0, 0, 0) }
 }
 
-/// 未实现（内核 -ENOTSUP）——ABI 形状照发。
+/// T-1 落地（多线程首刀）：投入运行**非首线程**（首线程随 `process_start`；
+/// Zircon zx_thread_start 同形四参）。门控 Thread MANAGE；所属 Process 须已
+/// start 且 Alive（否则 -EBADSTATE）；`arg` 落新线程 x0（与首线程 bootstrap
+/// 迁移值对称——pthread 层递 (fn, arg) 的载体）；线程入口不得返回（返回 =
+/// fault 杀兜底）。
 #[no_mangle]
-pub extern "C" fn berry_thread_start(thread: Handle) -> Status {
-    unsafe { sys(nr::THREAD_START, thread as usize, 0, 0, 0, 0, 0) }
+pub extern "C" fn berry_thread_start(thread: Handle, entry: usize, sp: usize, arg: usize) -> Status {
+    unsafe { sys(nr::THREAD_START, thread as usize, entry, sp, arg, 0, 0) }
 }
 
 /// ABI 形状 `-> !`；内核 0x36 已随 Plan B v0.5 实现（v1 单线程 ⇒ 等价
@@ -352,7 +378,8 @@ pub extern "C" fn berry_channel_create(options: u32, out0: *mut Handle, out1: *m
     unsafe { sys(nr::CHANNEL_CREATE, options as usize, out0 as usize, out1 as usize, 0, 0, 0) }
 }
 
-/// v1 非阻塞：满 -EBUSY；nbytes ≤ 256 / nhandles ≤ 4（超 -EINVAL）；随行
+/// v1 非阻塞：满 -EBUSY；nbytes ≤ 256 / nhandles ≤ 8（超 -EINVAL；A2-3
+/// 6→8——kernel `CHAN_HND_MAX` 同源）；随行
 /// handle 逐个迁出调用者表（原值立即 -EBADF）；数组内重复值 -EINVAL；
 /// 任一步失败 = 调用者表零变化。
 #[no_mangle]
@@ -411,4 +438,22 @@ pub extern "C" fn berry_event_create(options: u32, out: *mut Handle) -> Status {
 #[no_mangle]
 pub extern "C" fn berry_clock_read(clock_id: u32, out: *mut Time) -> Status {
     unsafe { sys(nr::CLOCK_READ, clock_id as usize, out as usize, 0, 0, 0, 0) }
+}
+
+// —— 信号（A7-4 段②，协同式用户态投递——libc `signal.rs` 消费）——
+
+/// 向进程 pending 集位置位（幂等 = POSIX 标准信号合并）。`h=0` → 当前进程
+/// （raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64
+/// （else -EINVAL）；目标非 Alive -EBADSTATE。**不唤醒目标**——投递执行在
+/// 用户态 libc（延迟档，A7-4 §2 方案 B）。
+#[no_mangle]
+pub extern "C" fn berry_signal_send(process: Handle, sig: u32) -> Status {
+    unsafe { sys(nr::SIGNAL_SEND, process as usize, sig as usize, 0, 0, 0, 0) }
+}
+
+/// 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）。`out`
+/// = u64 位图（信号 n = 位 n-1）；出参写失败不消费。零 handle 面。
+#[no_mangle]
+pub extern "C" fn berry_signal_take(pending: *mut u64) -> Status {
+    unsafe { sys(nr::SIGNAL_TAKE, pending as usize, 0, 0, 0, 0, 0) }
 }

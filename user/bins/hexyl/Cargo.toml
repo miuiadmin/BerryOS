@@ -10,6 +10,7 @@ edition = "2021"
 # + berry-libc shim + berry-ld 链路能否吃下生态 std 程序，本 bin 即判据
 # （kill criteria：链接期拖出不可 shim 的语义依赖（线程/futex/mmap）则
 # 路线①降档，见草案 D4）。
+license = "Apache-2.0"
 
 [workspace]
 

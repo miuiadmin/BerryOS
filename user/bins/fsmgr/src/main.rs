@@ -6,16 +6,20 @@
 //! fs_b）+ gift[3]（libc `blk_h()`——A-5 起 blk 服务端端 blk_a，vblk 经
 //! svcmgr 预拉+自验门后交付）；bsh 持对端 fs_a 的 SEND|RECV dup（gift[3]，
 //! libc `fs_h()`）发请求。协议 = berry-fsproto（PUT/TRUNC/GET/LIST + v2
-//! 五 op LOOKUP/MKDIR/UNLINK/READDIR/STAT，**严格串行 RPC**——一请求一
+//! 五 op LOOKUP/MKDIR/UNLINK/READDIR/STAT + C-2 刀 2 STATFS 卷级几何/空闲
+//! ——无路径参，**严格串行 RPC**——一请求一
 //! 应答，队列深 1 用量，无乱序死锁面）；存储 = berry-fstree 目录树
 //! （RAM-fs——C-0 刀 2 起多段 NUL 路径，单段名 v1 语义零漂移；
-//! FILE_COUNT_MAX=8 × FILE_SIZE_MAX=16KiB + DIR_COUNT_MAX=16 静态堆
-//! 预算内）+ **FAT12 读写层**（`fat.rs`——A-6 起 8.3 大写名 staging +
+//! FILE_COUNT_MAX=9 × FILE_SIZE_MAX=16KiB + DIR_COUNT_MAX=17 静态堆
+//! 预算内——C-2 刀 2 起含启动预建保留槽（/etc + mtab 各占 1，用户可
+//! 用面保持 8/16 不因系统自占用收窄））+ **FAT12 读写层**（`fat.rs`——A-6 起 8.3 大写名 staging +
 //! TRUNC 即 commit 真写扇区，小写名/多段名走 RAM 树；分层路由与 commit
 //! 序见该模块头；v2 五 op 分层（C-0 刀 3 起）：LOOKUP/STAT 未命中回落
 //! FAT——单段 8.3 根面 + 多段子目录链（读面），READDIR 未命中回落 FAT
 //! 目录，GET 多段同走子目录链；MKDIR/UNLINK 纯 RAM 面——FAT 建删目录
-//! 不在 C-0 盒、FAT 文件删除留 v2、`>` 只落根）。
+//! 不在 C-0 盒、FAT 文件删除留 v2、`>` 只落根）。启动段 RAM 树预建
+//! `/etc/mtab`（C-2 刀 2：uu_df 挂载表回落件——定值一行，见 main 内
+//! MTAB_LINE 注）。
 //!
 //! 服务循环 = echo 同形但 **wait 超时重臂**（关键差异）：echo 的 client
 //! （svcmgr）每节流拍必 ping——10s 帽到点 = 断链，trap；本服务的 client
@@ -42,7 +46,7 @@ use berry_fsproto::{
 };
 use berry_fstree::{ReadDirRes, ReadRes, StatRes, Tree};
 
-use fat::{Fat, FatList, FatStat, GetRes};
+use fat::{Fat, FatList, FatStat, FatStatfs, GetRes};
 
 // 链接种子（stdhello/bsh 同款）：rlib/LTO 按需保留——无引用则 berry-libc
 // 的 crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -61,6 +65,22 @@ fn main() {
         berry_libc::park();
     }
     let mut tree = Tree::new();
+    // C-2 刀 2 段④：/etc/mtab 启动预建（方案 A——RAM 树自建，rootfs.cpio
+    // 字节零漂移；mkcpio 加 etc 条目没人消费的装载机制实证见侦察注记）。
+    // 消费方 = uu_df 挂载表（uucore `read_fs_list` 开 /proc/self/mountinfo
+    // 失败回落 /etc/mtab；行解析 raw[0]=dev_name raw[1]=dir raw[2]=fstype
+    // raw[3]=opts——fstype=fat 过 is_dummy/is_remote 全过滤）。一行定值
+    // （无时刻输入）；mkdir 失败（帽满）也续走 put——ST_NOENT 静默 = df 无
+    // 挂载行，put 返非 OK 打一行诊断（链断级 loud——挂载表面缺失的 smoke
+    // 兜底是 DF ok 缺失本身）。
+    {
+        const MTAB_LINE: &[u8] = b"/dev/root / fat rw 0 0\n";
+        if tree.mkdir(b"etc") != berry_fsproto::ST_OK {
+            eprintln!("fsmgr: mtab: mkdir etc failed");
+        } else if tree.put(b"etc\0mtab", 0, MTAB_LINE) != berry_fsproto::ST_OK {
+            eprintln!("fsmgr: mtab: put failed");
+        }
+    }
     // A-5：FAT 只读层 eager init（vblk 由 svcmgr 预拉且自验已过，此刻必在
     // 服务——FAT init 的首读不会撞服务未起）；blk_h()==0 = 无块设备面，
     // RAM-only 降级续走（init 失败同理，诊断行见 fat.rs）。
@@ -245,6 +265,18 @@ fn main() {
                     }
                 }
             }
+            // C-2 刀 2：STATFS——卷级几何/空闲真值（df/statfs 面，无路径
+            // 参）。无卷（盘缺席/未挂/init 降级 RAM-only）→ ST_NOENT（fat
+            // 族无盘语义同款）；RPC 失败/毒化/畸形计数 → ST_BAD（服务不死
+            // 纪律：错误分流应答，不自陷）。
+            Some(Req::Statfs) => match fat.as_mut().map(|f| f.statfs(&mut rep)) {
+                Some(FatStatfs::Served(n)) => n,
+                Some(FatStatfs::Bad) => {
+                    encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                }
+                None => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
+                    .unwrap_or_else(|| trap()),
+            },
             None => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
         };
         send_reply(h, &rep, rep_len);

@@ -22,6 +22,7 @@ edition = "2021"
 # 2026-10-24 自 user/bins/ 迁入 drivers/（工作区成员——空 [workspace]
 # 自绝表与自带 [profile.release] 随迁退役，profile 集中到 drivers/
 # Cargo.toml 根，逐值相同 = 产物零漂移）。
+license = "Apache-2.0"
 
 [dependencies]
 berry-libc = { path = "../../../user/berry-libc" }

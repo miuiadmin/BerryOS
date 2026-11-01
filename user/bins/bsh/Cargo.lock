@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-complete"
+version = "0.1.0"
+
+[[package]]
 name = "berry-exec"
 version = "0.1.0"
 dependencies = [
@@ -15,6 +19,7 @@ name = "berry-fsclient"
 version = "0.1.0"
 dependencies = [
  "berry-fsproto",
+ "berry-netdproto",
  "berry-sys",
 ]
 
@@ -23,11 +28,19 @@ name = "berry-fsproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-guiproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.1.0"
 dependencies = [
  "berry-fsclient",
+ "berry-mmap",
+ "berry-netdproto",
+ "berry-signal",
  "berry-sys",
+ "berry-tls",
 ]
 
 [[package]]
@@ -35,15 +48,39 @@ name = "berry-loader"
 version = "0.1.0"
 
 [[package]]
+name = "berry-mmap"
+version = "0.1.0"
+
+[[package]]
+name = "berry-netdproto"
+version = "0.1.0"
+
+[[package]]
+name = "berry-poll"
+version = "0.1.0"
+
+[[package]]
+name = "berry-signal"
+version = "0.1.0"
+
+[[package]]
 name = "berry-sys"
+version = "0.1.0"
+
+[[package]]
+name = "berry-tls"
 version = "0.1.0"
 
 [[package]]
 name = "bsh"
 version = "0.1.0"
 dependencies = [
+ "berry-complete",
  "berry-exec",
  "berry-fsproto",
+ "berry-guiproto",
  "berry-libc",
+ "berry-netdproto",
+ "berry-poll",
  "berry-sys",
 ]

@@ -1,0 +1,17 @@
+# BerryOS 性能基准基线（机器可读，双段行前缀区分）：
+#   B-0 段 = 裸 CSV `name,iters,cyc`（内核微基准，bench.py 默认模式）；
+#   B-1 段 = `BENCH1,name,iters,cyc`（EL0 用户态基准，bench.py --el0）。
+# 口径 = CNTVCT 原始周期数（TCG ≈ 实时/2）——只做同机同 QEMU 相对比较；
+# 刷新：python3 tools/bench.py [--el0] --update（只动对应段，另一段保留）。
+cntvct_pair,4096,3
+frame_alloc4k,1024,35
+frame_alloc64k,256,16
+handle_evt,1024,27
+vmo_commit1p,256,275
+vmo_rw4k,128,771
+
+# —— B-1 段（BENCH1 前缀）——
+BENCH1,evt_signal,1024,484
+BENCH1,ipc_enqueue8,128,10101
+BENCH1,sys_null,4096,63
+BENCH1,sys_vmo_rw4k,128,2019

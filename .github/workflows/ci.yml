@@ -22,7 +22,11 @@ jobs:
       - name: 安装 QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-system-x86
+          # qemu-efi-aarch64 = AAVMF 固件对。注意布局：Ubuntu/Debian 包落
+          # /usr/share/AAVMF/AAVMF_CODE.fd + AAVF_VARS.fd（2024.02 起；
+          # 真实 deb 解包钉死——/usr/share/qemu/edk2-*.fd 是 brew/Fedora 布局，
+          # CI 写错路径 = 关卡结构性必红）。
+          sudo apt-get install -y qemu-system-arm qemu-system-x86 qemu-efi-aarch64
 
       # 装 just 复用 justfile 单一入口（build/smoke 全走与本地同一配方——防 CI
       # 自带第二套 cargo 命令与 justfile 分叉；P7-x4 挂账清偿）。
@@ -31,12 +35,162 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/.local/bin
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # ---------- SEC-01 §4.5 件 23：供应链防线进 CI（fail-fast 位） ----------
+      # cargo-deny：licenses（GPL 拒收 = 仓纪律执法，allowlist 见根 deny.toml——
+      # 依据 = 全 workspace cargo metadata 实测 license 面）+ advisories（RustSec
+      # 三连击教训，SEC-8 §3.4）。本仓多 workspace（find 口径 27 个 manifest 命中
+      # ——根/user/drivers/bootloader/x86_64/user bins；23 个真 [workspace] 根 +
+      # 4 个注释命中假根（vblk/vnet/vprobe/berry-tcp——cargo deny 经 --manifest-path
+      # 解析到所属父 workspace，检查面等价；26→27 = A5-1 netprobe 独立小工作区
+      # 增补）），逐一 --manifest-path 全覆盖；find 排除 reference/ .claude/
+      # target/ docs/（docs/挂账-* 是死档部分树，manifest 断链非可检查对象）。
+      # SEC-02 挂账 F1 清账（2026-10-30）：全部本地 crate 补齐
+      # `license = "Apache-2.0"`（ADR #37）后撤 `-A unlicensed -A no-license-field`
+      # 双旗（本地 27 manifest 全绿实录）——「缺 license 字段/无表达式」面恢复
+      # FAIL 执法，第三方依赖缺字段不再整类静默放行（详见 deny.toml 头注）。
+      # 版本钉 0.20.2（与本地验证同版）。
+      - name: 安装 cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: cargo-deny（licenses + advisories，全 workspace）
+        run: |
+          set -eu
+          fails=0
+          for mf in $(find . -name Cargo.toml -not -path './reference/*' -not -path './.claude/*' -not -path './target/*' -not -path './docs/*' | sort); do
+            grep -q '\[workspace\]' "$mf" || continue
+            echo "::group::cargo-deny $mf"
+            if ! cargo deny --config deny.toml --manifest-path "$mf" check licenses advisories; then
+              echo "::error file=$mf::cargo-deny licenses/advisories FAILED（GPL 误入或 RustSec 命中——see deny.toml）"
+              fails=$((fails+1))
+            fi
+            echo "::endgroup::"
+          done
+          test "$fails" -eq 0
+
+      # SEC-02 A2：berry-ksproto host 测试门禁（协议 crate 家族纪律——
+      # psproto/netdproto 同族第三席；对抗审查实抓 justfile test-host 未接线
+      # = 20 测零自动执法、静默腐烂）。justfile test-host 接线随兄弟 WIP
+      # 解冻由主会话补线，CI 先挂 fail-fast 位补上执法面。显式 --target 覆盖
+      # 根 .cargo/config.toml 锁的 build.target=aarch64-unknown-none（config
+      # 发现跨 workspace 边界仍命中——Gotcha；host 测试须点名 host 三元组）；
+      # 零依赖零网络，ubuntu runner host 目标预装。
+      - name: berry-ksproto host 测试（SEC-02 A2 协议 crate 门禁）
+        run: cargo test --manifest-path user/berry-ksproto/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      # A7-1：berry-mmap host 测试门禁（ksproto 同款纪律——纯函数 crate 家族
+      # 的测试面必须挂 CI 执法，防「host 测零自动执法、静默腐烂」；user/
+      # workspace 成员经 --manifest-path 点名 + 显式 host 三元组覆盖根
+      # config 的 build.target 锁；零依赖零网络）。
+      - name: berry-mmap host 测试（A7-1 纯函数 crate 门禁）
+        run: cargo test --manifest-path user/berry-mmap/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      # A7-4：berry-signal host 测试门禁（ksproto/mmap 同款纪律——纯函数
+      # crate 家族的测试面必须挂 CI 执法；justfile test-host 已接线，CI
+      # fail-fast 位同面补上——零依赖零网络）。
+      - name: berry-signal host 测试（A7-4 纯函数 crate 门禁）
+        run: cargo test --manifest-path user/berry-signal/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      # ---------- SDK-1b：发布族八 crate publish 守卫（fail-fast 位） ----------
+      # 三档执法，档位由 2026-10-30 双轮实测定死（基线 B2/B3/B4/B6 + 沙箱
+      # E1–E3，docs/SDK-1b实施设计草案.md §1.2/§5）：
+      # ① grep 硬门：cargo package/--list 对「内部依赖必须带 version」（path-only
+      #    照样过 --list）与「description/license 等六键齐备」（缺键只 warning
+      #    不 fail）都不执法——grep 是唯一硬门，防 path-only 回归静默过 CI、
+      #    爆在用户 cargo publish 当场；
+      # ② 六叶子（零内部依赖）完整 cargo package——verification build 对
+      #    aarch64-unknown-none（根 config target 锁跨 workspace 边界命中）=
+      #    真实发布面可打包（基线 B2 实证）；
+      # ③ 中/顶层（fsclient/libc）双写依赖在叶子真发布到 crates.io 前结构性
+      #    不可本地全链（tarball 生成即剥 path → registry 解析前置，--no-verify
+      #    也不绕，B6 实证）——只跑 --list（registry-free，E1 实证）保文件清单
+      #    干净面。叶子发布后本档升级为完整 package（另刀回填，勿现在改）。
+      - name: sdk-publish-guard（SDK-1b 八 crate 发布面守卫）
+        working-directory: user
+        run: |
+          set -eu
+          # —— 硬门 1：八 crate 元数据齐备（version/description/license/
+          #    repository/readme 字段 + README 本体在位）。
+          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-fsclient berry-libc; do
+            m="$c/Cargo.toml"
+            grep -q '^version = "0.1.0"' "$m"      || { echo "::error file=$m::version 应为 0.1.0"; exit 1; }
+            grep -q '^description = ' "$m"         || { echo "::error file=$m::缺 description"; exit 1; }
+            grep -q '^license = "Apache-2.0"' "$m" || { echo "::error file=$m::license 应为 Apache-2.0"; exit 1; }
+            grep -q '^repository = ' "$m"          || { echo "::error file=$m::缺 repository"; exit 1; }
+            grep -q '^readme = "README.md"' "$m"   || { echo "::error file=$m::缺 readme 字段"; exit 1; }
+            test -f "$c/README.md"                 || { echo "::error file=$m::README.md 缺席"; exit 1; }
+          done
+          # —— 硬门 2：内部依赖双写形恰一（path + version 同行；依赖行上方
+          #    注释不拦，行本体逐字节钉死）。
+          dw() {  # dw <manifest> <dep>
+            grep -q "^$2 = { path = \"../$2\", version = \"0.1.0\" }$" "$1" \
+              || { echo "::error file=$1::依赖 $2 应为 { path = \"../$2\", version = \"0.1.0\" } 双写形"; exit 1; }
+          }
+          dw berry-fsclient/Cargo.toml berry-sys
+          dw berry-fsclient/Cargo.toml berry-fsproto
+          dw berry-fsclient/Cargo.toml berry-netdproto
+          dw berry-libc/Cargo.toml berry-sys
+          dw berry-libc/Cargo.toml berry-fsclient
+          dw berry-libc/Cargo.toml berry-tls
+          dw berry-libc/Cargo.toml berry-netdproto
+          # A7-1：libc 第 5 条内部依赖（mmap 簿记纯面——first-fit 窗算术 + region 表）。
+          dw berry-libc/Cargo.toml berry-mmap
+          # A7-4：libc 第 6 条内部依赖（POSIX 信号面纯函数底座——表/掩码/
+          # sigset 位图/投递分诊；libc signal.rs 消费）。
+          dw berry-libc/Cargo.toml berry-signal
+          # —— 硬门 2b：path 依赖反向执法（双镜头审查 F1，2026-10-30）。
+          #    dw() 只正向钉九条已知线在位；此处反向兜两条：
+          #    ① path-only 形零容忍——任何「有 path 无 version」依赖线当场红
+          #       （防未来加线/改形去 version 静默过 CI、爆在 publish
+          #       当天「path dependency without a version」）；
+          #    ② path 行计数钉死——fsclient=3 / libc=6 / 六叶子=0；任何改形
+          #       （去 version、转 TOML 表形、加线）计数必漂移即红；有意加线
+          #       须同步本定值与 dw()（同步律）。
+          if grep -nE '= \{ path = "[^"]+"[[:space:]]*\}$' \
+              berry-sys/Cargo.toml berry-tls/Cargo.toml berry-netdproto/Cargo.toml \
+              berry-fsproto/Cargo.toml berry-mmap/Cargo.toml berry-signal/Cargo.toml \
+              berry-fsclient/Cargo.toml berry-libc/Cargo.toml
+          then
+            echo "::error::发布族八 manifest 存在 path-only 依赖线（= { path = … } 无 version）"
+            exit 1
+          fi
+          pc() {  # pc <manifest> <期望 path 行数>（grep -c 零命中退出码 1，|| true 吞）
+            n=$(grep -cE '= \{ path = ' "$1" || true)
+            [ "$n" = "$2" ] || { echo "::error file=$1::path 依赖线计数 $n ≠ 期望 $2（加线/改形须同步 dw/pc 定值）"; exit 1; }
+          }
+          pc berry-sys/Cargo.toml 0
+          pc berry-tls/Cargo.toml 0
+          pc berry-netdproto/Cargo.toml 0
+          pc berry-fsproto/Cargo.toml 0
+          pc berry-mmap/Cargo.toml 0
+          pc berry-signal/Cargo.toml 0
+          pc berry-fsclient/Cargo.toml 3
+          pc berry-libc/Cargo.toml 6
+          # —— 档 ②：六叶子完整 package（含 verification build；rustflags
+          #    -fp-armv8/-neon 弃用告警为已知噪声（基线 B2），非失败）。
+          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal; do
+            echo "::group::cargo package -p $c"
+            cargo package -p "$c"
+            echo "::endgroup::"
+          done
+          # —— 档 ③：中/顶层 --list（registry-free 文件清单干净面）。
+          cargo package --list -p berry-fsclient
+          cargo package --list -p berry-libc
+
       # just build = abi-check + build-user + cargo build。曾直接 `cargo build
       # --locked`：跳过 build-user 则 kernel/src/userbins/*.bin（gitignored 编译
       # 产物，内核 include_bytes! 直嵌）缺席 → 编译期炸响 exit 101——CI 连红 5
       # 天的根因（缺产物 loud not silent 是设计，CI 面须先走产物链）。
       - name: 构建（内核 + 用户程序产物链）
         run: just build
+
+      # K-2：ARM64 内核 release 链接守卫——release 优化才生成的引用形态（.text.boot
+      # ADRP 引 .rodata.cst16 越 ±4GB）断链而 debug 全绿，此前 CI 零覆盖结构性
+      # 不可见（唯二 release 面 = x86 工作区与 build-user 内部）。置于 just build
+      # 后 = userbins 热缓存、build-user 增量 no-op；只构建不跑 QEMU。
+      - name: 构建 release（链接守卫）
+        run: just build-release
 
       - name: 内核体积基线（12号报告 §10.1；size.py 无法运行即 CI 红——symtab 缺失时其内部降级 exit 0 只报 memsz 小计，体积数值本身无门禁）
         run: just size
@@ -54,3 +208,34 @@ jobs:
 
       - name: x86_64 最小集冒烟（五原语收官 gate）
         run: bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"
+
+      # ---------- V-4 M-G1 gate：img-boot 独立冒烟（AAVMF 挂盘自举） ----------
+      # just 单一入口（recipe 依赖 image = build + build-boot + mkimage 全链）；
+      # AAVMF 路径环境变量覆盖 justfile 的 brew 默认（Ubuntu qemu-efi-aarch64
+      # 包布局 = /usr/share/AAVMF/，对抗审查 F1 实证）。EFI 引导 ~115s（TCG）
+      # + 注入段，帽内余量 ~3x。
+      - name: img-boot 冒烟（M-G1 gate）
+        run: just smoke-image
+        env:
+          AAVMF_CODE: /usr/share/AAVMF/AAVMF_CODE.fd
+          AAVMF_VARS: /usr/share/AAVMF/AAVMF_VARS.fd
+
+      # ---------- SEC-01 §4.5 件 22 + 件 23 尾面（CI/台账） ----------
+      # 镜像哈希清单：smoke-image 依赖链（just image → mkimage）已产
+      # out/manifest.txt（件 3/A1 本刀落地——mkimage 无条件写 <img> 同目录侧
+      # 产物），本步 cat 公示其哈希清单；exists 判断保留为 image 产链退化时的
+      # 宽容面（别因缺席红 CI）。
+      - name: 镜像产物清单（SEC-01 §4.5 件 3/A1）
+        run: |
+          if [ -f out/manifest.txt ]; then
+            echo "== out/manifest.txt =="
+            cat out/manifest.txt
+          else
+            echo "out/manifest.txt 缺席（smoke-image 依赖链未产出——image 产链退化面，本步宽容不红）"
+          fi
+
+      # unsafe 台账守卫（mkfat --check-fixture 同型）：源码 unsafe 面与
+      # docs/unsafe台账.md 双向对拍——新增/移行/删减 unsafe 而忘重产即红；
+      # 密度趋势线 = 台账文档的 git 史。
+      - name: unsafe 台账对拍（SEC-01 §4.5 件 22）
+        run: python3 tools/unsafe_audit.py --check

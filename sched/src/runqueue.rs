@@ -173,20 +173,25 @@ impl Runqueue {
         self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
 
-    /// 只读探峰：环上是否存在 `prio_effective` 严格高于 `v` 的任务（至多一圈，
-    /// 不动游标、不做出选）。供 [`crate::sched::try_preempt`] 的前置判定——
+    /// 过滤版只读探峰（S-2b）：环上是否存在 `prio_effective` 严格高于 `v` 的
+    /// **eligible** 任务（叠加 [`crate::class::PickFilter`] 门，至多一圈，不动
+    /// 游标、不做出选）。供 [`crate::sched::try_preempt`] 的前置判定——
     /// 「不可能切走就根本不 pick」（pick_next 会 `advance_past` 消耗 head 槽位：
-    /// 出选后不切走 = 幻影出选，见 try_preempt 注释）。
-    pub(crate) fn has_eff_above(&self, v: i32) -> bool {
+    /// 出选后不切走 = 幻影出选，见 try_preempt 注释；S-2b 起全调用面走过滤版，
+    /// 无过滤版退役——user_only=false 时与无门探峰逐位恒等）。
+    pub(crate) fn has_eff_above_filtered(
+        &self,
+        v: i32,
+        filter: &crate::class::PickFilter,
+    ) -> bool {
         let Some(h) = self.head.get() else {
             return false; // 空环
         };
-        // SAFETY: 环上任务均调度器拥有且在环（pick_next 扫描同款不变式）；
-        // 单核无并发 pick（IRQ 屏蔽切换位互斥）——只读扫描无并发出/入环。
+        // SAFETY: 同 has_eff_above——环上不变式 + KERN_LOCK 窗内单 pick（E0）。
         unsafe {
             let mut cur = h;
             loop {
-                if (*cur.as_ptr()).prio_effective > v {
+                if filter.eligible(cur.as_ptr()) && (*cur.as_ptr()).prio_effective > v {
                     return true;
                 }
                 cur = (*cur.as_ptr())

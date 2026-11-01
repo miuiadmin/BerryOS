@@ -3,7 +3,10 @@
 //! 约定：我方 ISS=1000，对端 ISS=5000——握手后 Established 基线：
 //! snd_nxt=1001 / snd_una=1001 / rcv_nxt=5001 / inflight=None。
 
-use berry_tcp::{rto_ms, Action, Conn, MSS, RTO_START_MS, SegFlags, State, TcpSeg, TIME_WAIT_MS, WINDOW};
+use berry_tcp::{
+    rto_ms, Action, Conn, MSS, RTO_START_MS, SegFlags, State, TcpSeg, TIME_WAIT_MS, WINDOW,
+    ACCEPT_Q_MAX, AcceptQueue,
+};
 
 fn syn_ack(seq: u32, ack: u32, mss: Option<u16>) -> TcpSeg<'static> {
     TcpSeg {
@@ -498,4 +501,195 @@ fn closed_ignores_all() {
     assert_eq!(c.state, State::Closed);
     assert_eq!(c.send(10).action, Action::None);
     assert_eq!(c.close().action, Action::None);
+}
+
+// ─── 服务端半边（A2-2 段②，`docs/事件循环A2设计草案.md` §3.2）───
+// 约定沿用：我方 ISS=1000、对端 SYN seq=5000；服务端握手 = 被动收 SYN →
+// 回 SYN|ACK → 收第三步 ACK(=iss+1)。客户端 30 测零改动铁律的对面锚。
+
+/// 对端纯 SYN（无 ack 旗）。
+fn pure_syn(seq: u32, mss: Option<u16>) -> TcpSeg<'static> {
+    let mut s = syn_ack(seq, 0, mss);
+    s.flags.ack = false;
+    s
+}
+
+/// 服务端被动打开 + 握手第三步 ACK → Established（对端 SYN seq 恒 5000）。
+fn server_established(iss: u32) -> Conn {
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(iss, &syn).unwrap();
+    c.on_seg(&ack_seg(iss.wrapping_add(1)));
+    c
+}
+
+#[test]
+fn listen_marker_ignores_all_including_rst() {
+    // 监听哨兵：一切入段忽略——含 RST（「RST 任意状态」唯一豁免面：监听口无
+    // 四元组上下文，误路由的杂散 RST 不得击毙整个监听服务）。
+    let mut c = Conn::listen();
+    assert_eq!(c.state, State::Listen);
+    for seg in [syn_ack(5000, 1001, None), ack_seg(1001), fin_seg(5001), rst_seg()] {
+        assert_eq!(c.on_seg(&seg).action, Action::None);
+    }
+    assert_eq!(c.state, State::Listen);
+    assert_eq!(c.send(10).action, Action::None);
+    assert_eq!(c.close().action, Action::None);
+}
+
+#[test]
+fn passive_open_synack_shape() {
+    // SYN(seq=5000, MSS=1400) → SynRcvd + SynAck{seq=iss, ack=5001}；记账四件
+    // （snd_nxt/rcv_nxt/peer_mss/in-flight=Syn——RTO 重传臂的载体）。
+    let syn = pure_syn(5000, Some(1400));
+    let (c, out) = Conn::passive_open(1000, &syn).unwrap();
+    assert_eq!(c.state, State::SynRcvd);
+    assert_eq!(c.snd_nxt, 1001);
+    assert_eq!(c.snd_una, 1000);
+    assert_eq!(c.rcv_nxt, 5001);
+    assert_eq!(c.peer_mss, Some(1400));
+    assert_eq!(out.action, Action::SynAck { seq: 1000, ack: 5001 });
+    assert!(out.deliver.is_none());
+    // 非 SYN 段 → None（协议层执法，不赌调用方 demux 正确）。
+    assert!(Conn::passive_open(1000, &ack_seg(1001)).is_none());
+}
+
+#[test]
+fn handshake_ack_completes_server() {
+    // 第三步纯 ACK：Established + in-flight 清（send 立即可用）+ 无出段（无可应答）。
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(1000, &syn).unwrap();
+    let seg = ack_seg(1001);
+    let out = c.on_seg(&seg);
+    assert_eq!(c.state, State::Established);
+    assert_eq!(c.snd_una, 1001);
+    assert_eq!(out.action, Action::None);
+    assert_eq!(c.send(10).action, Action::Data { seq: 1001, len: 10 });
+}
+
+#[test]
+fn handshake_ack_piggyback_data() {
+    // ACK+数据同段：握手完成 + 同段交付（echo 首包快路——一步到位不空转一轮）。
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(1000, &syn).unwrap();
+    let seg = data_seg(5001, b"hi");
+    let out = c.on_seg(&seg);
+    assert_eq!(c.state, State::Established);
+    assert_eq!(out.deliver, Some(&b"hi"[..]));
+    assert_eq!(c.rcv_nxt, 5003);
+    assert_eq!(out.action, Action::Ack);
+}
+
+#[test]
+fn synrcvd_bad_ack_ignored() {
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(1000, &syn).unwrap();
+    // ack 未指到 iss+1 → 忽略（防旧连接串扰——客户端 handshake_bad_ack_ignored 对偶）。
+    assert_eq!(c.on_seg(&ack_seg(999)).action, Action::None);
+    assert_eq!(c.state, State::SynRcvd);
+    // 无 ack 旗的纯数据段 → 忽略（握手未完成）。
+    let mut noack = data_seg(5001, b"x");
+    noack.flags.ack = false;
+    assert_eq!(c.on_seg(&noack).action, Action::None);
+    assert_eq!(c.state, State::SynRcvd);
+}
+
+#[test]
+fn synrcvd_resyn_reanswers() {
+    // 对端重传 SYN（我方 SYN|ACK 丢失）：同 incarnation（seq+1 对齐 rcv_nxt）
+    // 重答 SYN|ACK；不同 seq = 新 incarnation，v1 忽略且不改写 rcv_nxt。
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(1000, &syn).unwrap();
+    let resyn = pure_syn(5000, None);
+    let out = c.on_seg(&resyn);
+    assert_eq!(out.action, Action::SynAck { seq: 1000, ack: 5001 });
+    assert_eq!(c.state, State::SynRcvd);
+    let other = pure_syn(6000, None);
+    let out = c.on_seg(&other);
+    assert_eq!(out.action, Action::None);
+    assert_eq!(c.state, State::SynRcvd);
+    assert_eq!(c.rcv_nxt, 5001);
+}
+
+#[test]
+fn synrcvd_rto_retransmits_synack_then_cap() {
+    // SYN|ACK 的 RTO 重传臂：SynAck 形（非客户端 Syn 形）+ 退避；帽满放弃 → Closed
+    // （客户端 rto_backoff_cap_gives_up 的服务端对偶）。
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(1000, &syn).unwrap();
+    for backoff in 1..=3 {
+        let out = c.on_rto();
+        assert_eq!(out.action, Action::SynAck { seq: 1000, ack: 5001 });
+        assert_eq!(c.rto_backoff, backoff);
+    }
+    let out = c.on_rto(); // 第 4 次：放弃
+    assert_eq!(out.action, Action::None);
+    assert_eq!(c.state, State::Closed);
+}
+
+#[test]
+fn synrcvd_rst_closes_conn() {
+    // 半开 conn 自身吃 RST → Closed（统一 RST 规则对连接照走；豁免的只是监听哨兵）。
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(1000, &syn).unwrap();
+    c.on_seg(&rst_seg());
+    assert_eq!(c.state, State::Closed);
+}
+
+#[test]
+fn server_side_full_lifecycle() {
+    // 被动侧全生命周期：握手 → 收数据交付 → 发数据 → 被动收 FIN → 主动 close →
+    // LastAck 收口（echo server 一轮连接的完整形状——A2-3 验收链的状态机地基）。
+    let syn = pure_syn(5000, None);
+    let (mut c, _) = Conn::passive_open(1000, &syn).unwrap();
+    c.on_seg(&ack_seg(1001)); // → Established
+    let seg = data_seg(5001, b"echo!");
+    let out = c.on_seg(&seg);
+    assert_eq!(out.deliver, Some(&b"echo!"[..]));
+    assert_eq!(out.action, Action::Ack);
+    assert_eq!(c.send(5).action, Action::Data { seq: 1001, len: 5 });
+    c.on_seg(&ack_seg(1006)); // 我方数据被确认
+    c.on_seg(&fin_seg(5006)); // 对端挥手 → CloseWait
+    assert_eq!(c.state, State::CloseWait);
+    let out = c.close(); // → LastAck
+    assert_eq!(out.action, Action::Fin { seq: 1006 });
+    c.on_seg(&ack_seg(1007)); // 覆盖 fin+1 → Closed 正常终态
+    assert_eq!(c.state, State::Closed);
+}
+
+#[test]
+fn accept_queue_fifo_cap_wraparound() {
+    assert_eq!(ACCEPT_Q_MAX, 2); // 帽钉板（与 netdproto TCP_SESSIONS_MAX 独立——见头注）
+    let mut q = AcceptQueue::new();
+    assert!(q.is_empty());
+    assert!(q.accept().is_none()); // 空队非阻塞 → None（ST_EAGAIN 上游来源）
+    let c1 = server_established(1000);
+    let c2 = server_established(2000);
+    let c3 = server_established(3000);
+    assert!(q.push(c1));
+    assert!(q.push(c2));
+    assert_eq!(q.len(), 2);
+    assert!(q.is_full());
+    assert!(!q.push(c3)); // 满队拒（不静默挤占——调用方以返回值执法容量纪律）
+    // FIFO：弹最老。
+    assert_eq!(q.accept().unwrap().snd_iss, 1000);
+    assert_eq!(q.accept().unwrap().snd_iss, 2000);
+    // 环回写：head 已前进（现为 0→1→0 一圈），新 conn 落 tail=(head+len)%MAX。
+    assert!(q.push(c3));
+    assert_eq!(q.accept().unwrap().snd_iss, 3000);
+    assert!(q.is_empty());
+}
+
+#[test]
+fn accept_queue_rejects_non_established() {
+    // accept 语义协议层执法：半开 SynRcvd / 监听哨兵 / 已死 conn 一律拒；队列保持空。
+    let mut q = AcceptQueue::new();
+    let syn = pure_syn(5000, None);
+    let (halfopen, _) = Conn::passive_open(1000, &syn).unwrap();
+    assert!(!q.push(halfopen));
+    assert!(!q.push(Conn::listen()));
+    let (mut dead, _) = Conn::open(1000);
+    dead.on_seg(&rst_seg());
+    assert!(!q.push(dead));
+    assert!(q.is_empty());
+    assert!(q.accept().is_none());
 }

@@ -87,15 +87,79 @@ pub struct EfiSystemTable {
 /// Boot Services 签名（小端 u64 读出 "BOOTSERV"——官方定值）。
 pub const EFI_BOOT_SERVICES_SIGNATURE: u64 = 0x5652_4553_544F_4F42;
 
-/// EFI GUID（16B，C 布局 = u32 + u16 + u16 + u8[8]）。
+/// CONFIGURATION_TABLE（24B）——SystemTable.configuration_table 数组单
+/// 条目；V-5a berrydump 扫描 ACPI20/DTB 入口用（vendor_table 即表物理
+/// 指针——RSDP/FDT 头可直读）。
 #[repr(C)]
-#[derive(Clone, Copy)]
+pub struct EfiConfigurationTable {
+    pub vendor_guid: EfiGuid,      // @0
+    pub vendor_table: *mut c_void, // @16
+}
+
+/// EFI GUID（16B，C 布局 = u32 + u16 + u16 + u8[8]）。PartialEq 供配置表
+/// 扫描按 GUID 分类入口（V-5a berrydump）。
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct EfiGuid {
     pub data1: u32,
     pub data2: u16,
     pub data3: u16,
     pub data4: [u8; 8],
 }
+
+/// ACPI 2.0 RSDP 配置表 GUID（8868E871-E4F1-11D3-BC22-0080C73C8881）——
+/// SystemTable ConfigurationTable 扫描定位 RSDP（V-5a berrydump：ACPI vs
+/// DT 发现机制判别 + MADT/SPCR/DBG2 走查入口）。
+pub const EFI_ACPI20_TABLE_GUID: EfiGuid = EfiGuid {
+    data1: 0x8868_E871,
+    data2: 0xE4F1,
+    data3: 0x11D3,
+    data4: [0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81],
+};
+
+/// Device Tree 配置表 GUID（B1B621D2-F19C-E2D8-97D1-71D4B659D1C8）——
+/// EFI_DTB_TABLE_GUID（V-5a：固件走 ACPI 还是 DT 的直接证据）。
+pub const EFI_DTB_TABLE_GUID: EfiGuid = EfiGuid {
+    data1: 0xB1B6_21D2,
+    data2: 0xF19C,
+    data3: 0xE2D8,
+    data4: [0x97, 0xD1, 0x71, 0xD4, 0xB6, 0x59, 0xD1, 0xC8],
+};
+
+/// PCI_IO_PROTOCOL GUID（4CF5B200-68B8-4CA5-9EEC-B23E3F50029A）——句柄
+/// 枚举 + 每设备配置空间读（V-5a berrydump：盘控制器/USB HC 型号取证面）。
+pub const EFI_PCI_IO_PROTOCOL_GUID: EfiGuid = EfiGuid {
+    data1: 0x4CF5_B200,
+    data2: 0x68B8,
+    data3: 0x4CA5,
+    data4: [0x9E, 0xEC, 0xB2, 0x3E, 0x3F, 0x50, 0x02, 0x9A],
+};
+
+/// BLOCK_IO_PROTOCOL GUID（964E5B21-6459-11D2-8E39-00A0C969723B——与 SFS
+/// 的 5B22 相邻一族）——句柄计数取证（V-5a：盘控制器协议面旁证）。
+pub const EFI_BLOCK_IO_PROTOCOL_GUID: EfiGuid = EfiGuid {
+    data1: 0x964E_5B21,
+    data2: 0x6459,
+    data3: 0x11D2,
+    data4: [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B],
+};
+
+/// SIMPLE_NETWORK_PROTOCOL GUID（A19832B9-AC25-11D3-9A2D-0090273FC14D）
+/// ——句柄计数取证（V-5a：网卡协议面旁证）。
+pub const EFI_SIMPLE_NETWORK_PROTOCOL_GUID: EfiGuid = EfiGuid {
+    data1: 0xA198_32B9,
+    data2: 0xAC25,
+    data3: 0x11D3,
+    data4: [0x9A, 0x2D, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D],
+};
+
+/// LocateHandleBuffer 的搜索型（只收用到的 ByProtocol=2）。
+pub const EFI_LOCATE_BY_PROTOCOL: u32 = 2;
+
+/// PCI_IO 访问宽枚举值 EfiPciIoWidthUint32 = 2（枚举序 Uint8=0/Uint16=1/
+/// Uint32=2/Uint64=3——V-5a-1 首验实抓：曾误按「4 字节宽」写成 4=FifoUint8，
+/// Pci.Read 全拒 → pci: n=N 后零 pci[i] 行）。
+pub const EFI_PCI_IO_WIDTH_UINT32: usize = 2;
 
 /// GRAPHICS_OUTPUT_PROTOCOL GUID（9042A9DE-23DC-4A38-96FB-7ADED080516A）。
 pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: EfiGuid = EfiGuid {
@@ -179,7 +243,7 @@ pub struct EfiBootServices {
         size: usize,
         buffer: *mut *mut c_void,
     ) -> EfiStatus,                                           // @64（V-0b 刀 1）
-    pub free_pool: *mut c_void,                               // @72
+    pub free_pool: unsafe extern "C" fn(buffer: *mut c_void) -> EfiStatus, // @72（V-5a：LocateHandleBuffer 句柄数组回收）
     pub create_event: *mut c_void,                            // @80
     pub set_timer: *mut c_void,                               // @88
     pub wait_for_event: *mut c_void,                          // @96
@@ -221,7 +285,13 @@ pub struct EfiBootServices {
     pub close_protocol: *mut c_void,                          // @288
     pub open_protocol_information: *mut c_void,               // @296
     pub protocols_per_handle: *mut c_void,                    // @304
-    pub locate_handle_buffer: *mut c_void,                    // @312
+    pub locate_handle_buffer: unsafe extern "C" fn(
+        search_type: u32, // EFI_LOCATE_SEARCH_TYPE（本仓只收 ByProtocol=2）
+        protocol: *mut EfiGuid,
+        search_key: *mut c_void,
+        no_handles: *mut usize,            // 出参：命中句柄数
+        buffer: *mut *mut *mut c_void,     // 出参：固件分配的句柄数组（FreePool 收口）
+    ) -> EfiStatus,                                           // @312（V-5a）
     pub locate_protocol: unsafe extern "C" fn(
         protocol: *mut EfiGuid,
         registration: *mut c_void,
@@ -323,6 +393,51 @@ pub struct EfiLoadedImageProtocol {
     pub parent_handle: *mut c_void, // @8
     pub system_table: *mut c_void,  // @16（*mut EfiSystemTable）
     pub device_handle: *mut c_void, // @24——SFS 定位路由的目标
+}
+
+/// PCI_IO_PROTOCOL（160B 全表）——pci_read 类型化（@48：Pci.ACCESS.Read
+/// Uint32 配置空间读 = vendor/device/class 取证面）、get_location 类型化
+/// （@112：BDF 定位），其余槽具名 `*mut c_void` 占位（同 EfiBootServices
+/// 纪律：保偏移可审计，不描无用签名）。布局依据 EDK2 MdePkg PciIo.h 头
+/// 逐字：**开头是 PollMem+PollIo 两枚单函数**（非一枚 Poll——V-5a-1 两轮
+/// 实抓：幻影 4 槽版 pci_read@64 落 CopyMem（7 参）、误并 1 槽版 @40 落
+/// Io.Write（6 参），两者都被以 EFI_INVALID_PARAMETER 拒——签名不匹配
+/// 类故障的活证面）。
+/// V-5a berrydump 消费。
+#[repr(C)]
+pub struct EfiPciIoProtocol {
+    pub poll_mem: *mut c_void,            // @0（单函数——非 ACCESS 对）
+    pub poll_io: *mut c_void,             // @8
+    pub mem_read: *mut c_void,            // @16（Mem.ACCESS.Read）
+    pub mem_write: *mut c_void,           // @24
+    pub io_read: *mut c_void,             // @32（Io.ACCESS.Read）
+    pub io_write: *mut c_void,            // @40
+    pub pci_read: unsafe extern "C" fn(
+        this: *mut EfiPciIoProtocol,
+        width: usize,           // EFI_PCI_IO_WIDTH（Uint32=2：枚举序非字节宽）
+        offset: u64,            // PCI 配置空间偏移（0=ven/dev、8=class 三元）
+        count: usize,
+        buffer: *mut c_void,    // 出参：读出值落点
+    ) -> EfiStatus,                     // @48（Pci.ACCESS.Read）
+    pub pci_write: *mut c_void,         // @56
+    pub copy_mem: *mut c_void,          // @64
+    pub map: *mut c_void,               // @72
+    pub unmap: *mut c_void,             // @80
+    pub allocate_buffer: *mut c_void,   // @88
+    pub free_buffer: *mut c_void,       // @96
+    pub flush: *mut c_void,             // @104
+    pub get_location: unsafe extern "C" fn(
+        this: *mut EfiPciIoProtocol,
+        segment: *mut usize,  // 全出参（seg/bus/dev/func——V-5a-1 布局探针）
+        bus: *mut usize,
+        device: *mut usize,
+        function: *mut usize,
+    ) -> EfiStatus,                     // @112（seg/bus/dev/func 定位）
+    pub attributes: *mut c_void,        // @120
+    pub get_bar_attributes: *mut c_void, // @128
+    pub set_bar_attributes: *mut c_void, // @136
+    pub rom_size: u64,                  // @144
+    pub rom_image: *mut c_void,         // @152
 }
 
 /// EFI_FILE_INFO GUID（09576E92-6D3F-11D2-8E39-00A0C969723B）——GetInfo
@@ -462,6 +577,8 @@ mod tests {
         assert_eq!(size_of::<EfiFileProtocol>(), 88);
         assert_eq!(size_of::<EfiLoadedImageProtocol>(), 32);
         assert_eq!(size_of::<EfiMemoryDescriptor>(), 40);
+        assert_eq!(size_of::<EfiConfigurationTable>(), 24); // V-5a
+        assert_eq!(size_of::<EfiPciIoProtocol>(), 160); // V-5a-1 归真（EDK2 头逐字）
     }
 
     #[test]
@@ -503,11 +620,53 @@ mod tests {
         assert_eq!(off!(p, allocate_pages), 40);
         assert_eq!(off!(p, get_memory_map), 56);
         assert_eq!(off!(p, allocate_pool), 64);
+        assert_eq!(off!(p, free_pool), 72); // V-5a
         assert_eq!(off!(p, handle_protocol), 152);
         assert_eq!(off!(p, exit_boot_services), 232);
         assert_eq!(off!(p, set_watchdog_timer), 256);
+        assert_eq!(off!(p, locate_handle_buffer), 312); // V-5a
         assert_eq!(off!(p, locate_protocol), 320);
         assert_eq!(off!(p, create_event_ex), 368);
+    }
+
+    #[test]
+    fn cfg_table_and_pci_io_layout() {
+        // V-5a：配置表数组步进 24B（guid@0 / vendor_table@16）——扫描走查的
+        // 单一事实源；PciIo 全表 160B、开头 **PollMem+PollIo 两枚单函数**
+        // （EDK2 PciIo.h 逐字）后 Mem/Io/Pci 三对（Pci.Read@48），任一漂移
+        // host 期即炸（V-5a-1 两轮幻影槽教训的钉板执法点）。
+        let c = 0x1000usize as *const EfiConfigurationTable;
+        assert_eq!(off!(c, vendor_guid), 0);
+        assert_eq!(off!(c, vendor_table), 16);
+        let p = 0x1000usize as *const EfiPciIoProtocol;
+        assert_eq!(off!(p, poll_mem), 0);
+        assert_eq!(off!(p, poll_io), 8);
+        assert_eq!(off!(p, mem_read), 16);
+        assert_eq!(off!(p, io_read), 32);
+        assert_eq!(off!(p, pci_read), 48);
+        assert_eq!(off!(p, pci_write), 56);
+        assert_eq!(off!(p, get_location), 112);
+        assert_eq!(off!(p, rom_size), 144);
+        assert_eq!(off!(p, rom_image), 152);
+    }
+
+    #[test]
+    fn v5a_guid_bytes() {
+        // V-5a 事实面三主源 + 两旁证 GUID 的小端线字节——AAVMF/Fusion 实测
+        // dump 与固件侧枚举对拍的基准（错一位 = 假缺席 = 事实表漏行）。
+        let a = EFI_ACPI20_TABLE_GUID;
+        assert_eq!(a.data1.to_le_bytes(), [0x71, 0xE8, 0x68, 0x88]);
+        assert_eq!(a.data4, [0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81]);
+        let d = EFI_DTB_TABLE_GUID;
+        assert_eq!(d.data1.to_le_bytes(), [0xD2, 0x21, 0xB6, 0xB1]);
+        assert_eq!(d.data4, [0x97, 0xD1, 0x71, 0xD4, 0xB6, 0x59, 0xD1, 0xC8]);
+        let p = EFI_PCI_IO_PROTOCOL_GUID;
+        assert_eq!(p.data1.to_le_bytes(), [0x00, 0xB2, 0xF5, 0x4C]);
+        assert_eq!(p.data4, [0x9E, 0xEC, 0xB2, 0x3E, 0x3F, 0x50, 0x02, 0x9A]);
+        let b = EFI_BLOCK_IO_PROTOCOL_GUID;
+        assert_eq!(b.data1.to_le_bytes(), [0x21, 0x5B, 0x4E, 0x96]);
+        let n = EFI_SIMPLE_NETWORK_PROTOCOL_GUID;
+        assert_eq!(n.data1.to_le_bytes(), [0xB9, 0x32, 0x98, 0xA1]);
     }
 
     #[test]

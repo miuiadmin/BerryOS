@@ -7,9 +7,38 @@ edition = "2021"
 # 189 强未定义全定义——shim 全定义 ⇒ musl libc.a 成员永不入选，零 musl 字节进产物）。
 # 本 crate 需同时在 aarch64-unknown-none（主工作区 pass2，纯编译检查）与
 # aarch64-unknown-linux-musl（stdhello 依赖）两个 target 下编译——只用 core，无链接面。
+description = "BerryOS libc shim: full-definition libc surface for Rust std (musl target) on the BerryOS microkernel (aarch64)"
+license = "Apache-2.0"
+repository = "https://github.com/berryos/berryos"
+readme = "README.md"
+keywords = ["berryos", "libc", "posix", "musl", "aarch64"]
+categories = ["api-bindings", "os"]
+# docs.rs（双镜头审查 F2）：自带 crt0/pthread/brk 面 aarch64 专属 asm 且经
+# berry-sys/berry-fsclient 传递同带，host（x86_64）文档构建结构性不可行——
+# targets 覆盖后 docs.rs 以首元素为默认目标、host 不再构建
+# （docs.rs/about/metadata 语义，2026-10-30 核验）；none 面仓内 pass2 在册。
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none", "aarch64-unknown-linux-musl"]
 
 [dependencies]
-berry-sys = { path = "../berry-sys" }
+berry-sys = { path = "../berry-sys", version = "0.1.0" }
 # C-1 刀 2：fd 3+ 文件面（fs.rs）——会话机 + 纯函数面（fd 表/cwd/seek/
 # stat/dirent/ST→FsErr）自刀 1 crate 消费，「不长第二套」。
-berry-fsclient = { path = "../berry-fsclient" }
+berry-fsclient = { path = "../berry-fsclient", version = "0.1.0" }
+# T-1 §1：TLS 拷贝式纯函数面（tls_place/find_ptls/模板四全局）——独立
+# 纯 crate（§6 回退启用：本 crate 的 libc 同名符号在 host 测试二进制里
+# 对 libSystem write 符号插入劫自旋，纯面外迁后 host 测试零 libc 面）。
+berry-tls = { path = "../berry-tls", version = "0.1.0" }
+# A3-2：socket 桩批转真的 RPC 编解码面（netd 通道 = crt0 GIFT_H[4]，
+# io.rs netd_h()；严格串行 RPC 底座移植自 bsh netd_rpc——A2-3）。
+berry-netdproto = { path = "../berry-netdproto", version = "0.1.0" }
+# A7-1：mmap 匿名档簿记纯函数面（region 表 + VA 窗 first-fit 底起
+# 洞复用分配——docs/事件循环A7设计草案.md §3.1+§7）。独立纯 crate（berry-tls 同款回退
+# 形态：本 crate 的 libc 同名符号在 host 测试二进制里对 libSystem write
+# 符号插入劫自旋，纯面外迁后 host 测试零 libc 符号面）。
+berry-mmap = { path = "../berry-mmap", version = "0.1.0" }
+# A7-4 段③a：POSIX 信号面纯函数底座（sigaction 表 + 掩码状态机 +
+# musl 128B sigset 位图层 + 默认动作表 + 归并式投递分诊计划——
+# docs/事件循环A7-4信号面实施设计草案.md §3.2）。signal.rs 消费；
+# 段③b 投递循环（take|held 归并）与 kill/raise 真身同接此 crate。
+berry-signal = { path = "../berry-signal", version = "0.1.0" }

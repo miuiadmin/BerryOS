@@ -1,0 +1,29 @@
+[package]
+name = "guifbd"
+version = "0.1.0"
+edition = "2021"
+
+# GUI-1（M-GUI 首刀）：framebuffer 显示服务（V-6 刀 2 后段收口）。fsmgr/
+# vblk 同构独立小工作区（musl target + berry-libc shim）。拓扑：内核 boot
+# 把 GOP fb 窗包成 MMIO VMO 插 svcmgr 表（第 5 插）+ 几何五域 40B 匿名
+# VMO（第 6 插）——svcmgr 预拉段以 `SpawnSpec::mmio_vmo` 把 fb 窗映到
+# [`berry_exec::FB_VA`]、info VMO 经 env 块 extras[0] 随行（libc
+# `gift2_h()`——rootfs_h 同槽别名惯例）。启动自验三步（clear 双相位差分
+# /蜂格字形对拍/scroll 行移对拍）全过才打 `FBW ok`（stdout = console 发
+# 端，vblk VBLK ok 同款）；段②起 park 换 serve 循环收 console 转发上屏。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-exec = { path = "../../berry-exec" }
+berry-fbcon = { path = "../../berry-fbcon" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

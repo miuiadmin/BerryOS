@@ -51,9 +51,10 @@ pub const USER_CODE_VA: usize = 0x1000;
 /// 单页布局的 sp0（16 对齐；多页进程改读 `UserProcess::stack_top`）。
 pub const USER_STACK_TOP: usize = 0x4000;
 
-/// 代码镜像帽（D3）：flat binary 约定输入的体积上限——防调用方手滑把整段
-/// ELF 塞进来（elf2flat.py `--max 65536` 同值执法）。
-pub const USER_CODE_MAX: usize = 64 * PAGE_SIZE;
+/// 代码镜像帽（D3；A7-4 段② 64→128KiB——svcmgr 平像贴墙后 SDK-1b 型
+/// doc 漂移越页，C-2c 容量同步先例抬墙）：flat binary 约定输入的体积上限
+/// ——防调用方手滑把整段 ELF 塞进来（elf2flat.py `--max 131072` 同值执法）。
+pub const USER_CODE_MAX: usize = 128 * PAGE_SIZE;
 
 /// 数据页 canary（非零——good 的「页内容正确」自检依据）。
 pub const USER_MAGIC: u64 = 0x00C0_FFEe_E000_0E10;
@@ -791,10 +792,10 @@ core::arch::global_asm!(
     "    svc  #0",
     "    cbnz x0, 3f",
     "    ldr  x5, [x2]",
-    "    movz x3, #0xE400",             // δ = 1e10 ns（10s，远超 ponger 节流周期）
-    "    movk x3, #0x540B, lsl #16",
-    "    movk x3, #0x2, lsl #32",
-    "    add  x3, x5, x3",              // deadline = now + 10s
+    "    movz x3, #0x8C80",             // δ = 3e10 ns（30s 帽；原 10s——S-2b 双核
+    "    movk x3, #0xFC18, lsl #16",    // BKL 争用 + MTTCG 互拖调度税下 ponger 轮转
+    "    movk x3, #0x6, lsl #32",       // 变慢实测超 10s（pinger -110 自陷错杀，
+    "    add  x3, x5, x3",              // deadline = now + 30s）
     "    movz x0, #0x04",               // wait_one(endA, WRITABLE, deadline, *obs)
     "    mov  x1, x20",
     "    movz x2, #2",                  // SIGNAL_WRITABLE（内核派生位）
@@ -1192,10 +1193,10 @@ impl UserProcess {
     /// （`0x1000 + code_len` / 再上一页）——单页程序布局与 2b-4 起逐位相同
     /// （data@0x2000、stack@[0x3000,0x4000)），asm 模板的硬编槽位零扰动；
     /// 多页（svcmgr 编译镜像，内嵌双子程序平像）由 `stack_top` 交给调用方。
-    /// 帽 64KiB（`USER_CODE_MAX`）：防调用方手滑传整段 ELF——flat 才是约定输入
-    /// （elf2flat.py `--max` 同值执法）。
+    /// 帽 128KiB（`USER_CODE_MAX`，A7-4 段② 64→128KiB 同步抬）：防调用方手滑
+    /// 传整段 ELF——flat 才是约定输入（elf2flat.py `--max` 同值执法）。
     pub fn build(fa: &mut FrameAllocator, code: &[u8], data_magic: u64) -> Self {
-        assert!(code.len() <= USER_CODE_MAX, "用户代码镜像超 64KiB 帽（flat 才是约定输入）");
+        assert!(code.len() <= USER_CODE_MAX, "用户代码镜像超 128KiB 帽（flat 才是约定输入）");
         assert!(code.len() % 4 == 0, "用户代码模板须 4 字节对齐长度");
         let code_pages = (code.len() + PAGE_SIZE - 1) / PAGE_SIZE;
         let code_len = code_pages * PAGE_SIZE;
@@ -1233,6 +1234,24 @@ impl UserProcess {
     }
 }
 
+/// R-0 私助：分位**桶界保守上界**——目标序数 = ceil(num/den · n)，桶累计
+/// 首达目标的桶 idx → 上界 2^(idx+1)（桶 i 覆盖 [2^i, 2^(i+1)) 周期数；
+/// idx=63 → u64::MAX，防 2^64 移位溢出）。指数粒度只够看形状，精确分位归
+/// R-1 采样集全排序。扫描必达：wake_hist 读序纪律保证 sum(桶) ≥ n ≥ 目标。
+fn benchwake_percentile(h: &crate::telemetry::WakeHist, num: u64, den: u64) -> u64 {
+    let prod = h.n.saturating_mul(num);
+    let target = prod / den + u64::from(prod % den != 0);
+    let mut acc: u64 = 0;
+    for idx in 0..crate::telemetry::WAKE_HIST_BUCKETS {
+        acc += h.buckets[idx];
+        if acc >= target {
+            return if idx >= 63 { u64::MAX } else { 1 << (idx + 1) };
+        }
+    }
+    // 不可达（sum ≥ n ≥ target）；保守回 u64::MAX——打印路径非执法点，不 panic。
+    u64::MAX
+}
+
 /// G1.5 验收看门狗（内核任务）：等 rogue_ptr 被杀、abuser（坏 handle 滥用）与
 /// good 的 console 排水 / switches 金丝雀仍在涨 → 打关卡标记 `G1.5 ok` 后
 /// `exit_current` 退场（A/B/good/abuser 继续分时）。杀数超期望（abuser 被误杀
@@ -1245,9 +1264,18 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
     let mut last_switches = berry_sched::switches();
     for _ in 0..TRIES {
         // 忙等一拍（无 sleep 原语——Phase 4 通知落地前的土法；轮到别的任务跑）。
+        // **留在锁窗外**（F37）：IRQ 解蔽 tick 才轮转、金丝雀才能涨——进了窗
+        // 全系统只剩本任务串行，等金丝雀 = 自锁（草案 §2.2 短窗纪律）。
         for _ in 0..200_000 {
             core::hint::spin_loop();
         }
+        // F37 读侧收口（草案 §2.2）：kills/puts/switches 三读 + 错杀验证 +
+        // 遥测双环断言 + wake_hist 快照收进单一短窗（B16 锁窗等价口径）。
+        // 成功路经 exit_current 不归——放锁由 sched switch_away_forever 舞蹈
+        // 收口（Task 位=1，`-> !` svc_exit 同形），尾 klock_exit 对其不可达
+        // （死码勿补）；循环续行路对称 klock_exit；panic 路走锁 bypass
+        //（panic handler 直写 UART + halt，无锁递归——kern_lock.rs 模块头）。
+        berry_hal_aarch64::kern_lock::klock_enter();
         let kills = berry_sched::user_kills();
         let puts = crate::console_drained();
         let switches = berry_sched::switches();
@@ -1280,11 +1308,57 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                     }
                 }
                 berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
+                // R-0（基准与压力测试设计.md §9）：唤醒延迟直方图 boot 尾一行。
+                // 落点契约：watchdog 单次执行 + 下行 exit_current 切走不归 →
+                // **恰一次**；写在 exit 之后 = 死码（Plan B v0.5 gotcha 同族）。
+                // 形状严格断言（L0 执法）：n>0 且 min<=max（两条皆撕裂安全——
+                // 见 telemetry::wake_hist 读序纪律）；分位数值是统计量只出数
+                // 不设门禁（公约 2——数值 L1 归 bench.py 收割同表）。单行
+                // 纯 ASCII、uart 直写（内核任务非 console 通道——无分片撕
+                // 行面，d-3c 192B 雷不适用，超长亦无失败模式）。长度算术
+                // 绝对界 208B（固定段 48B = 头 12 + 7 个标签各 5 + 换行 1，
+                // + 8 数值字段各至多 20 位）——触发需某延迟 ≥2^63 周期
+                // （62.5MHz 下 ≈293 年），不可达；实践界远低于此（boot 实
+                // 测 81B、一年 soak 上界约 152B）。
+                let h = crate::telemetry::wake_hist();
+                assert!(
+                    h.n > 0,
+                    "BENCHWAKE FAIL: n=0（直方图零样本——唤醒环计数={} 却桶空 = 写点两路失联）",
+                    crate::telemetry::wake_total()
+                );
+                assert!(h.min <= h.max, "BENCHWAKE FAIL: min={} > max={} = 直方图写点 bug", h.min, h.max);
+                let p50 = benchwake_percentile(&h, 1, 2);
+                let p90 = benchwake_percentile(&h, 9, 10);
+                let p99 = benchwake_percentile(&h, 99, 100);
+                // BENCHWAKE 十二段拼行收口（G43/G44）：整行在 PRINT_LOCK 内
+                // 一次拼完（原子）——嵌套 KERN→PRINT 单向合法（soakmon/
+                // BENCHRT 同形；窗内 IRQ 已屏蔽，with_print_lock 自适应不复
+                // 原解蔽）。
+                berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                    berry_hal_aarch64::uart_puts(b"BENCHWAKE n=");
+                    berry_hal_aarch64::uart_put_dec(h.n);
+                    berry_hal_aarch64::uart_puts(b" min=");
+                    berry_hal_aarch64::uart_put_dec(h.min);
+                    berry_hal_aarch64::uart_puts(b" p50=");
+                    berry_hal_aarch64::uart_put_dec(p50);
+                    berry_hal_aarch64::uart_puts(b" p90=");
+                    berry_hal_aarch64::uart_put_dec(p90);
+                    berry_hal_aarch64::uart_puts(b" p99=");
+                    berry_hal_aarch64::uart_put_dec(p99);
+                    berry_hal_aarch64::uart_puts(b" max=");
+                    berry_hal_aarch64::uart_put_dec(h.max);
+                    berry_hal_aarch64::uart_puts(b" sig=");
+                    berry_hal_aarch64::uart_put_dec(h.sig);
+                    berry_hal_aarch64::uart_puts(b" tmo=");
+                    berry_hal_aarch64::uart_put_dec(h.tmo);
+                    berry_hal_aarch64::uart_puts(b"\n");
+                });
                 berry_sched::exit_current()
             }
         }
         last_puts = puts;
         last_switches = switches;
+        berry_hal_aarch64::kern_lock::klock_exit();
     }
     panic!("G1.5 FAIL: 超时（kills={} drained={}）", berry_sched::user_kills(), last_puts);
 }

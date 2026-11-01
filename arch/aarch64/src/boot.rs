@@ -13,11 +13,19 @@ global_asm!(
     ".type _start,%function",
     "_start:",
     "    mov x19, x0",              // 存 QEMU 传入 x0（DTB PA——G-eco 入机侧）：
+    "    mrs x1, mpidr_el1",        // S-1 防御位：_start 只应主核（亲和域
+    "    tst x1, #0xffffff",        // Aff0..Aff2 bits[23:0] 全 0——0xffffff 为
+    "    b.ne secondary_entry",     // 合法掩码立即数）到达；PSCI 副核入口 =
+                                    // secondary_entry（smp.rs）；他核落此
+                                    // （spin-table 类入口——含偶数 Aff0/双簇
+                                    // Aff1≠0 型拓扑，单测 bit0 防不住）一律
+                                    // 按副核路由
     "    mrs x0, CurrentEL",        // EL 检测要占 x0；x19 为 AAPCS callee-saved，
     "    lsr x0, x0, #2",           // x0 = 异常级别 (1/2/3)
-    "    cmp x0, #2",
-    "    b.eq .Lfrom_el2",
-    "    cmp x0, #3",
+    "    mov x20, x0",              // S-1：钉存**入口** EL 过降级路径（eret 不动
+    "    cmp x0, #2",               // GPR；x20 callee-saved 跨 build_boot_pt/
+    "    b.eq .Lfrom_el2",          // enable_mmu 两 bl 存活）——.Lbss_done 处落
+    "    cmp x0, #3",               // BOOT_EL（smp.rs conduit 分型门）。
     "    b.eq .Lfrom_el3",
     "    b .Lat_el1",
 
@@ -55,6 +63,10 @@ global_asm!(
     "    ldr x1, =0x09000000",         // 串口标记 '1'：到达 EL1
     "    mov x0, #0x31",
     "    str w0, [x1]",
+    "    msr daifset, #0xf",           // 屏蔽 D/A/I/F：EL1 直入路继承 reset DAIF=0
+    "    isb",                         // （解蔽）——与 EL2 路 eret SPSR=0x3c5 对齐；
+                                     // 「boot DAIF 屏蔽直到 enable_irq」契约双径归
+                                     // 一（S-3a probe ③ daif 锚实测 entry=1 揪出）
     "    movz x0, #0x30, lsl #16",     // CPACR_EL1.FPEN=0b11：显式开 EL1 FP/SIMD（ADR #34）
     "    msr cpacr_el1, x0",           // 消 reset 依赖：QEMU 8.2 reset=FPEN 0（架构值），
     "    isb",                         // 编译器 SIMD memset 一执行即 EC=0x07 陷阱（CI 实测）；
@@ -76,6 +88,10 @@ global_asm!(
     "    str xzr, [x0], #8",
     "    b .Lbss",
     ".Lbss_done:",
+    "    ldr x1, =BOOT_EL",         // S-1：入口 EL 落 BOOT_EL（smp.rs 高半 .bss
+    "    ldr x2, =0xFFFFFF8000000000", // ——须经 PA 写（VMA−基址，与上方清零
+    "    sub x1, x1, x2",           // 循环同口径）；必须在 .bss 清零**之后**
+    "    str x20, [x1]",            //（先清后存）；x20 = _start 钉存的入口 EL
     "    bl build_boot_pt",            // 建表（mmu.rs，#[link_section .text.boot]；
     "    bl enable_mmu",               //  表在 .bss.boot 低半 → 函数内低半寻址即可）
     "    ldr x1, =__stack_top",     // 换高半主栈 + 跳高半入口（此后不再回低半执行；

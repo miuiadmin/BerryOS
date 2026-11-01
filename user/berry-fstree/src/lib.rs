@@ -485,9 +485,10 @@ mod tests {
 
     #[test]
     fn dir_cap() {
-        // DIR_COUNT_MAX=16 全局计数（含嵌套）；17th → ST_FULL。
+        // DIR_COUNT_MAX=17 全局计数（含嵌套，含启动预建 etc 保留槽——
+        // 用户可用 16）；18th → ST_FULL。
         let mut t = Tree::new();
-        for i in 0..16 {
+        for i in 0..17 {
             let name = alloc::format!("d{i:02}");
             assert_eq!(t.mkdir(name.as_bytes()), ST_OK);
         }
@@ -499,16 +500,17 @@ mod tests {
 
     #[test]
     fn file_cap() {
-        // FILE_COUNT_MAX=8 全局计数；9th → ST_FULL；unlink 释放槽复用。
+        // FILE_COUNT_MAX=9 全局计数（含启动预建 /etc/mtab 保留槽——用户
+        // 可用 8）；10th → ST_FULL；unlink 释放槽复用。
         let mut t = Tree::new();
-        for i in 0..8 {
+        for i in 0..9 {
             let name = alloc::format!("f{i}");
             assert_eq!(t.put(name.as_bytes(), 0, b"x"), ST_OK);
         }
-        assert_eq!(t.put(b"f8", 0, b"x"), ST_FULL);
-        assert_eq!(t.trunc(b"f8", 0), ST_FULL);
+        assert_eq!(t.put(b"f9", 0, b"x"), ST_FULL);
+        assert_eq!(t.trunc(b"f9", 0), ST_FULL);
         assert_eq!(t.unlink(b"f0"), ST_OK);
-        assert_eq!(t.put(b"f8", 0, b"x"), ST_OK);
+        assert_eq!(t.put(b"f9", 0, b"x"), ST_OK);
     }
 
     #[test]

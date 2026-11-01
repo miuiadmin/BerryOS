@@ -117,9 +117,11 @@ pub const RX_RING_SIZE: usize = 256;
 /// RX 环形缓冲（IRQ 生产者 / console 消费者；两下标均单调 mod 环长）。
 struct RxRing {
     data: [u8; RX_RING_SIZE],
-    /// 生产者写位（RX IRQ 上下文独占）。
+    /// 生产者写位（RX IRQ 上下文独占——SPI33 路由钉 CPU0，S-1 §3.4）。
     head: usize,
-    /// 消费者读位（console 任务的 `disable_irq` 包络内独占）。
+    /// 消费者读位（console 任务的 `disable_irq` 包络内独占——E26/S-2：该
+    /// 包络是**同核**互斥，安全前提 = 生产者与消费者同钉 CPU0（RX 路由 +
+    /// console 钉核，S-2 盒子）；消费者迁核 = 丢更新，S-3 per-CPU 化时重审）。
     tail: usize,
     /// 环满丢字节数（bring-up 可见性：console 标记行打印；不丢命只丢字节）。
     lost: u32,
@@ -186,7 +188,9 @@ pub fn rx_irq() {
 
 /// 搬空 RX 环（console 侧消费）：环内字节依序写入 `buf`（至多 `buf.len()`），
 /// 返回搬出条数。**必须在 `disable_irq` 包络内调**（与 IRQ 生产者串行——
-/// `ai_probe` 扫 SLEEPQ 同款包络纪律）；`buf` ≥ [`RX_RING_SIZE`] 则环必被搬空
+/// `ai_probe` 扫 SLEEPQ 同款包络纪律；E26/S-2：disable_irq 只屏蔽**本核**，
+/// 互斥成立的前提 = 生产者（SPI33 钉 CPU0）与消费者 console 同核）；
+/// `buf` ≥ [`RX_RING_SIZE`] 则环必被搬空
 /// ——这是随后清 Event 位成立的前提（「位 0 ⟺ 环空」不变量在包络内闭环）。
 pub fn rx_pop_all(buf: &mut [u8]) -> usize {
     // SAFETY: 单消费者（console 任务）；调用方保证 IRQ 屏蔽包络。
@@ -215,8 +219,10 @@ pub unsafe fn rx_init() {
     mmio::write(UART + UART_ICR, UART_ICR_STICKY);
     let cr = mmio::read(UART + UART_CR);
     mmio::write(UART + UART_CR, cr | UART_CR_EN);
-    // prio 0xa0 同 CNTV 口径；SPI 段 target 必须真写（复位 0 = 不投任何核，
-    // 见 gic::enable_spi）；level 触发（DTB LEVEL_HIGH）。
-    gic::enable_spi(gic::IRQ_PL011_RX, 0xa0, 0x01, 0b01);
+    // S-1（§3.4）：路由经 gic::SPI_ROUTES 常量表（单核钉 CPU0）——表外源
+    // 此处 loud（boot 无 panic 纪律；RX 失活另有 smoke RX 相断言兜底）。
+    if !gic::enable_spi_routed(gic::IRQ_PL011_RX) {
+        crate::uart_puts(b"uart: SPI33 missing from SPI_ROUTES\n");
+    }
     mmio::write(UART + UART_IMSC, UART_IMSC_RXIM);
 }

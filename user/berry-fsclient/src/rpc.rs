@@ -15,6 +15,8 @@
 //!   `commit(path, size)` = TRUNC——**写通道 commit 点 = close**（C-1 裁决
 //! 2，bsh `>` 两段式同款）。
 //! - 状态五 op：lookup / mkdir / unlink / readdir / stat。
+//! - 卷级：`statfs()` → [`Statfs`]（C-2 刀 2——df/statfs 桩的原料，无路径
+//!   参：v1 单 FAT 卷、卷级）。
 //!
 //! `cfg(not(test))` 整模块：berry-sys 的 syscall 符号在宿主不存在——host
 //! 测试只盖 lib.rs 纯函数面；none target 编译由 workspace `cargo build`
@@ -22,8 +24,8 @@
 
 use berry_fsproto::{
     encode_get, encode_lookup, encode_mkdir, encode_put, encode_readdir, encode_stat,
-    encode_trunc, encode_unlink, parse_reply_get, parse_reply_list, parse_reply_stat,
-    ST_OK,
+    encode_statfs, encode_trunc, encode_unlink, parse_reply_get, parse_reply_list,
+    parse_reply_stat, parse_reply_statfs, Statfs, ST_OK,
 };
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_object_wait_one, Handle,
@@ -251,6 +253,23 @@ pub fn stat(h: Handle, path: &[u8]) -> Result<(u8, u32), FsErr> {
     let n = rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
     match parse_reply_stat(&buf[..n]).ok_or(FsErr::Rpc)? {
         Ok(r) => Ok(r),
+        Err(st) => Err(st_to_err(st)),
+    }
+}
+
+/// 卷级几何/空闲真值（STATFS——C-2 刀 2，df/statfs 桩的原料；请求无路径
+/// 参：v1 单 FAT 卷、卷级）。帽 = [`FS_COMMIT_CAP_NS`]：服务端一次性走全
+/// FAT 扇区 RPC（比单链走查更重的 worst 路径——「收侧帽按服务端 worst
+/// 路径成本定值」纪律，P6 A-6）。
+pub fn statfs(h: Handle) -> Result<Statfs, FsErr> {
+    if h == 0 {
+        return Err(FsErr::NoFs);
+    }
+    let mut buf = [0u8; RPC_BUF];
+    let l = encode_statfs(&mut buf).ok_or(FsErr::Rpc)?;
+    let n = rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
+    match parse_reply_statfs(&buf[..n]).ok_or(FsErr::Rpc)? {
+        Ok(s) => Ok(s),
         Err(st) => Err(st_to_err(st)),
     }
 }

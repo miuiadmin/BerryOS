@@ -1,4 +1,5 @@
-//! berry-tcp：最小 TCP 客户端状态机（「解析器即产品」第 7 例，`docs/TCP栈设计草案.md` §3 T-b）。
+//! berry-tcp：最小 TCP 状态机——客户端 + 服务端半边（「解析器即产品」第 7 例，
+//! `docs/TCP栈设计草案.md` §3 T-b；服务端半边 = A2-2 段②，`docs/事件循环A2设计草案.md` §3.2）。
 //!
 //! - 零分配 / 零 unsafe / 零依赖 / `#![no_std]`；输入只借用（`TcpSeg::payload` 切片）。
 //! - **状态机与 IO 分离**（smoltcp 组织借鉴，只借思路不搬代码）：本 crate 只做状态与
@@ -10,6 +11,12 @@
 //! - 定值表（草案 §4 对账）：MSS=128（通告+收帽）/ 窗口恒 512 / RTO 3s 起 ×2 退避
 //!   3 次帽 / TIME_WAIT 2s / in-flight=1（顺序单发，收 ACK 再发）/ 乱序段丢弃回当前
 //!   ACK（靠对端重传）/ 收 RST 任意状态直转 Closed（对陌生四元组回 RST = v2）。
+//! - 服务端半边（A2-2 段②）：`Conn::listen` 哨兵（vnet 会话表同槽复用的身份标记
+//!   ——忽略一切入段**含 RST**：监听口无四元组上下文，误路由的杂散 RST 不得击毙
+//!   整个监听服务）、`passive_open` 被动打开（SYN→SynRcvd 答 SYN|ACK；握手第三步
+//!   ACK→Established 并同段收捎带数据/FIN——echo 首包快路）、`AcceptQueue` 固定槽
+//!   FIFO（队满丢 SYN 的决策在调用方——TCP 规范行为：不应答即丢）。**客户端面
+//!   （open/send/close/on_seg 原语义）零改动**。
 //! - 每个入段至多产生**一个**出段动作（`Action`）+ 至多一个数据交付切片（`deliver`）
 //!   ——ACK+数据+FIN 同段也只回一个 ACK。
 //! - 序号回绕 v1 不做专门处理：一律 wrapping 算术防溢出 panic（ABI §8.0「永不 panic」
@@ -45,6 +52,11 @@ pub enum State {
     TimeWait,
     CloseWait,
     LastAck,
+    /// 监听套接字哨兵（A2-2 段②）：SYN 经 vnet demux 后走 `passive_open` 造新连接，
+    /// 本 conn 永不收段（收了也全忽略含 RST）——vnet 会话表同槽复用的身份标记。
+    Listen,
+    /// 服务端被动打开（A2-2 段②）：SYN 收讫、SYN|ACK 已发，等握手第三步 ACK。
+    SynRcvd,
 }
 
 /// 入段标志位（位掩码 crate 引入违背零依赖，四 bool 最直白）。
@@ -76,6 +88,9 @@ pub enum Action {
     None,
     /// 发/重发 SYN（seq = snd_iss；编码面带 MSS 选项通告）。
     Syn { seq: u32 },
+    /// 服务端握手应答 SYN|ACK（A2-2 段②）：seq = snd_iss、ack = rcv_nxt（= 对端
+    /// SYN seq+1）；编码面带 MSS 选项通告同 `Syn`。重传臂 = SynRcvd 态的 `on_rto`。
+    SynAck { seq: u32, ack: u32 },
     /// 发/重发数据段（内容 vnet 侧持有——本 crate 零分配不存数据，按 (seq, len) 取回）。
     Data { seq: u32, len: u32 },
     /// 发/重发 FIN。
@@ -132,6 +147,17 @@ pub struct Conn {
 }
 
 impl Conn {
+    /// in-flight 占用诊断位（0=None/1=Syn/2=Data/3=Fin——只读，不改状态；
+    /// vnet send_data 拒面 loud 诊断用）。
+    pub fn inflight_kind(&self) -> u8 {
+        match self.inflight {
+            InFlight::None => 0,
+            InFlight::Syn => 1,
+            InFlight::Data { .. } => 2,
+            InFlight::Fin { .. } => 3,
+        }
+    }
+
     /// 主动打开：SynSent + 发 SYN。ISS 由调用方给定（确定性测试需要控制；
     /// vnet 侧可取时钟/计数）。
     pub fn open(iss: u32) -> (Conn, EvOut<'static>) {
@@ -147,6 +173,51 @@ impl Conn {
             rto_backoff: 0,
         };
         (conn, EvOut { action: Action::Syn { seq: iss }, deliver: None })
+    }
+
+    /// 监听套接字哨兵（A2-2 段②）：vnet 会话表同槽复用的身份标记。永不收段
+    /// （SYN 由 vnet demux 后经 `passive_open` 造新连接）；撤表/close 由 vnet
+    /// 管理面直接驱动，不经状态机。
+    pub fn listen() -> Conn {
+        Conn {
+            state: State::Listen,
+            snd_iss: 0,
+            snd_nxt: 0,
+            snd_una: 0,
+            rcv_nxt: 0,
+            window: WINDOW,
+            peer_mss: None,
+            inflight: InFlight::None,
+            rto_backoff: 0,
+        }
+    }
+
+    /// 服务端被动打开（A2-2 段②）：收对端 SYN → SynRcvd + 回 SYN|ACK。
+    /// 非 SYN 段 → None（协议层执法，不赌调用方 demux 正确）。ISS 由调用方给定
+    /// （同 `open` 约定——确定性测试 / vnet 取时钟）；accept 队满的丢弃决策也在
+    /// 调用方（`AcceptQueue::is_full` 先验——TCP 规范行为：不应答即丢）。
+    pub fn passive_open(iss: u32, syn: &TcpSeg) -> Option<(Conn, EvOut<'static>)> {
+        if !syn.flags.syn {
+            return None;
+        }
+        let conn = Conn {
+            state: State::SynRcvd,
+            snd_iss: iss,
+            snd_nxt: iss.wrapping_add(1),
+            snd_una: iss,
+            rcv_nxt: syn.seq.wrapping_add(1),
+            window: WINDOW,
+            peer_mss: syn.mss,
+            inflight: InFlight::Syn,
+            rto_backoff: 0,
+        };
+        Some((
+            conn,
+            EvOut {
+                action: Action::SynAck { seq: iss, ack: syn.seq.wrapping_add(1) },
+                deliver: None,
+            },
+        ))
     }
 
     /// 发一段数据（len ≤ MSS，in-flight=1：上一段未确认前拒发——返回 None 不动状态）。
@@ -185,6 +256,11 @@ impl Conn {
 
     /// 处理一个入段（已通过四元组/校验和过滤——那是 vnet 编码面的职责）。
     pub fn on_seg<'s>(&mut self, seg: &'s TcpSeg) -> EvOut<'s> {
+        // Listen：监听哨兵忽略一切入段——含 RST（「RST 任意状态」规则的唯一豁免面：
+        // 监听口无四元组上下文，误路由的杂散 RST 不得击毙整个监听服务）。
+        if self.state == State::Listen {
+            return EvOut::none();
+        }
         // RST：任意状态直转 Closed（会话作废）；Closed 下幂等。
         if seg.flags.rst {
             self.state = State::Closed;
@@ -193,8 +269,9 @@ impl Conn {
             return EvOut::none();
         }
         match self.state {
-            State::Closed => EvOut::none(),
+            State::Closed | State::Listen => EvOut::none(),
             State::SynSent => self.on_seg_synsent(seg),
+            State::SynRcvd => self.on_seg_synrcvd(seg),
             State::Established
             | State::FinWait1
             | State::FinWait2
@@ -214,7 +291,14 @@ impl Conn {
         }
         let action = match self.inflight {
             InFlight::None => return EvOut::none(),
-            InFlight::Syn => Action::Syn { seq: self.snd_iss },
+            InFlight::Syn => {
+                if self.state == State::SynRcvd {
+                    // 服务端：重发 SYN|ACK（ack 取 rcv_nxt 现值——同 incarnation 不变）。
+                    Action::SynAck { seq: self.snd_iss, ack: self.rcv_nxt }
+                } else {
+                    Action::Syn { seq: self.snd_iss }
+                }
+            }
             InFlight::Data { seq, len } => Action::Data { seq, len },
             InFlight::Fin { seq } => Action::Fin { seq },
         };
@@ -244,6 +328,27 @@ impl Conn {
             self.rto_backoff = 0;
             self.state = State::Established;
             return EvOut::ack(); // 握手第三步
+        }
+        EvOut::none()
+    }
+
+    /// SynRcvd（A2-2 段②）：① 对端重传 SYN（我方 SYN|ACK 丢失）——同 incarnation
+    /// （seq+1 对齐 rcv_nxt）重答 SYN|ACK；不同 seq = 新 incarnation，v1 忽略。
+    /// ② 握手第三步 ACK（ack == iss+1）→ Established，并直接走 open 共路处理
+    /// 同段捎带的数据/FIN（ACK+数据同段一步到位——echo 首包快路）。
+    fn on_seg_synrcvd<'s>(&mut self, seg: &'s TcpSeg<'s>) -> EvOut<'s> {
+        if seg.flags.syn && !seg.flags.ack {
+            if seg.seq.wrapping_add(1) == self.rcv_nxt {
+                return EvOut {
+                    action: Action::SynAck { seq: self.snd_iss, ack: self.rcv_nxt },
+                    deliver: None,
+                };
+            }
+            return EvOut::none();
+        }
+        if seg.flags.ack && seg.ack == self.snd_iss.wrapping_add(1) {
+            self.state = State::Established;
+            return self.on_seg_open(seg); // ①清 in-flight Syn ②交付捎带数据 ③同段 FIN
         }
         EvOut::none()
     }
@@ -334,5 +439,65 @@ impl Conn {
             }
         }
         EvOut::none()
+    }
+}
+
+/// accept 队列容量帽（A2-2 段②）：echo 串行验收 2 连接即够——**与 netdproto
+/// `TCP_SESSIONS_MAX`(=8) 独立**：会话表帽管 RPC 会话槽（listen + 数据会话共享），
+/// 本帽只管「已建立待 accept」的排队深度；队满时对新 SYN 的丢弃决策在调用方
+/// （`is_full` 先验——TCP 规范行为：不应答即丢）。
+pub const ACCEPT_Q_MAX: usize = 2;
+
+/// accept 队列（A2-2 段②）：已建立连接的 FIFO 容器，固定槽环（零分配/no_std）。
+/// 压队只收 Established conn（半开 SynRcvd / 已死 conn 拒——accept 语义协议层
+/// 执法）；vnet 在握手完成侧 `push`、消费方经 `accept` 弹最老。
+#[derive(Debug, Clone)]
+pub struct AcceptQueue {
+    slots: [Option<Conn>; ACCEPT_Q_MAX],
+    /// 弹出端（最老）。
+    head: usize,
+    len: usize,
+}
+
+impl AcceptQueue {
+    pub const fn new() -> Self {
+        AcceptQueue { slots: [None; ACCEPT_Q_MAX], head: 0, len: 0 }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// 队满先验：SYN 到达且已满 → 调用方直接丢弃（不 `passive_open` 不应答）。
+    pub fn is_full(&self) -> bool {
+        self.len == ACCEPT_Q_MAX
+    }
+
+    /// 压队：仅收 Established conn；满队/状态不符 → false（不静默挤占——调用方
+    /// 以返回值执法自己的容量纪律）。
+    pub fn push(&mut self, conn: Conn) -> bool {
+        if self.len == ACCEPT_Q_MAX || conn.state != State::Established {
+            return false;
+        }
+        let tail = (self.head + self.len) % ACCEPT_Q_MAX;
+        self.slots[tail] = Some(conn);
+        self.len += 1;
+        true
+    }
+
+    /// accept：FIFO 弹出最老的已建立连接；空队 → None（非阻塞语义——
+    /// netdproto `ST_EAGAIN` 的上游来源）。
+    pub fn accept(&mut self) -> Option<Conn> {
+        if self.len == 0 {
+            return None;
+        }
+        let conn = self.slots[self.head].take();
+        self.head = (self.head + 1) % ACCEPT_Q_MAX;
+        self.len -= 1;
+        conn
     }
 }

@@ -6,17 +6,21 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 30 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**P6 A-3 起 29 号已实现**——
+//! v1 34 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**33 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号）**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
 //! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
+//! process_terminate（C-4b——外部终止，kill/Ctrl-C 内核原语）+
 //! thread_create/exit（3-3 + Plan B 退出路径）+
+//! thread_start（T-1 多线程首刀——四参扩形 entry/sp/arg，Zircon zx_thread_start
+//! 同形；非首线程投入运行 + Thread TERMINATED join 面 + 末线程进程收口）+
 //! channel 三号（3-4b）+ event 三号（3-4c；4-1 wait_one 阻塞化）+ wait_many
 //! （4-2b）+ thread_sleep（4-0，首个阻塞 syscall），全部经 [`HandleTable`]
-//! 能力门控——**权限在 handle 不在对象**。余 0x35 thread_start（v2 多线程），
-//! 未注册槽由 HAL 默认返 `-ENOTSUP`。**任务退出钩子**（Plan B）：任一任务
-//! 退出（含 fault 杀，码 0）经 [`task_exit_hook`] 置 Process Exited + 唤醒
-//! TERMINATED 等待者 + drain 子表 + release 钉住——见下方 hook 注释。
+//! 能力门控——**权限在 handle 不在对象**。未注册槽由 HAL 默认返
+//! `-ENOTSUP`。**任务退出钩子**（Plan B → T-1 线程版）：任一任务
+//! 退出（含 fault 杀，码 0）经 [`task_exit_hook`] 做 Thread 簿记（join 唤醒）+
+//! 活线程计数——末线程再 Process 收口（Exited + 唤醒 TERMINATED + drain 子表
+//! + release 双钉住）——见下方 hook 注释。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
@@ -61,20 +65,22 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 30 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// ---- v1 31 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
 // 常量本体在 `crate::abi_gen`（`tools/abi.toml` 生成文件）；此处 re-export
 // 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
 // abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
-// 在册未实现号（0x35）随转发触发 unused_imports——同冻结位纪律整体豁免。
+// T-1 起 31 号全注册（0x35 随 sys_thread_start 消费）——豁免保留为冻结位
+// 纪律（v2 批再入册未同步实现的号仍随转发触发 unused_imports）。
 #[allow(unused_imports)]
 pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_PROCESS_EXIT,
-    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
-    NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT,
-    NR_VMO_CREATE, NR_VMO_DECOMMIT, NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ,
-    NR_VMO_WRITE,
+    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_TERMINATE, NR_SIGNAL_SEND,
+    NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP, NR_THREAD_START,
+    NR_VMAR_ALLOCATE, NR_VMAR_MAP,
+    NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
+    NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
 use crate::abi_gen::CLOCK_MONOTONIC;
 
@@ -141,10 +147,15 @@ fn caller_is_el1(tf: &TrapFrame) -> bool {
 
 /// `vmo_create` 尺寸上限（v1）：页记账 ≈ **18B/页**（pages = `Option<usize>`
 /// 无 niche 占 16B + mapcnt u16 2B——旧注释 10B/页 ≤40KB 系算术错，3b3 H2 勘
-/// 误），16MiB 上限对应 4096 页 ≈ 72KiB 记账。上限只拦巨参滥用；分配本身已
-/// try 化（`Vmo::create` 折 -ENOMEM——上限内 OOM 也不再 abort）。真机/堆扩
-/// 大后上调（ABI 注记）。
-const VMO_MAX_SIZE: usize = 16 * 1024 * 1024;
+/// 误），128MiB 上限对应 32768 页 ≈ 576KiB 记账。上限只拦巨参滥用；分配本身已
+/// try 化（`Vmo::create` 折 -ENOMEM——上限内 OOM 也不再 abort）。**A1-2 帽分家**
+/// （`docs/容量工程前置-A1设计草案.md` §3.1）：C-2c 曾与 `ROOTFS_MAX`/`MAX_ORDER`
+/// 同口径 16→32MiB（rootfs 装载同因）；大 blob 装载形态迁 VMO 逐页 commit 后帽
+/// 独立抬至 128MiB（逐页无堆单块地形压力——A5/A6 的 80-120MB 静态面），
+/// `MAX_ORDER` 不再联动。
+/// bench S-2（`基准与压力测试设计.md` §12）引用本常量做超帽/边界断言——
+/// 帽值单一事实源，勿在 bench 侧另写裸数字。
+pub(crate) const VMO_MAX_SIZE: usize = 128 * 1024 * 1024;
 
 /// 栈上拷贝分块（防长缓冲吃内核栈）。
 const COPY_CHUNK: usize = 256;
@@ -843,6 +854,80 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+/// `thread_start(thread, entry, sp, arg)`（0x35，T-1 多线程首刀）：投入运行
+/// **非首线程**（首线程随 [`sys_process_start`]——本号只管进程内造线程，
+/// Zircon zx_thread_start 同形四参）。门控：thread **MANAGE**。`arg` 落新线程
+/// x0（与首线程 bootstrap 迁移值对称——pthread 层递 (fn, arg) 的载体）。
+///
+/// 校验序（镜像 [`sys_process_start`]）：`entry`==0 / `sp` 非 16 对齐 →
+/// -EINVAL；坏值/类型不符 → -EBADF、缺 MANAGE → -EACCES；thread 已
+/// started/exited → -EBADSTATE；所属 Process 未 start 或非 Alive →
+/// -EBADSTATE（首线程必须经 process_start）。全过后与首线程同一
+/// [`berry_sched::try_spawn_user`] 入口（无 bootstrap 迁移——失败零副作用，
+/// try 化在一切不可逆变更之前，None → -ENOMEM）。
+///
+/// 成功尾四连写：`thrd.started=true`；`proc.live_threads+=1`；Process
+/// retain + `set_task_pinned`（运行钉住，同首线程对）；Thread retain +
+/// `set_task_thread`（线程钉住——退出钩子 Thread 簿记/join 唤醒的键）。
+/// **无 per-process 线程帽**（16KiB 栈 + TCB 随 REAPQ 回收，无不回收泄漏；
+/// 堆尽由 try_spawn_user 折 -ENOMEM 优雅兜底）。sp 不做映射校验
+/// （process_start 同政策：错 sp = 首切 fault 杀兜底）；线程入口不得返回
+/// （返回 = fault 杀兜底）。
+extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
+    let (th, entry, sp, arg) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3], tf.regs[4]);
+    if entry == 0 || sp == 0 || sp % 16 != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let vt = match t.get_raw(th, ObjType::Thread, RIGHT_MANAGE) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
+    };
+    // SAFETY: get_raw 已三门控（在表、类型 Thread、权利足）；单核 IRQ 屏蔽。
+    let thrd = unsafe { (*vt.as_ptr()).obj.as_thread_mut() };
+    let Some(thrd) = thrd else {
+        return ERR_BAD_HANDLE as i64; // 类型门控后不可达；防御面
+    };
+    // SAFETY: owner() 来自 Thread 构造期 retain 的钉住——对象必活且类型互异
+    // 无别名（论证同 process_start 双对象同借；T-1 定案序：owner 取 Process
+    // 先于 thrd.started 检查——F3b「未 start 进程」-37 落在下方两 -EBADSTATE
+    // 臂，语义与检查次序无观测差，仍按定案序书写）。
+    let proc_ref = thrd.owner();
+    let proc = unsafe { (*proc_ref.as_ptr()).obj.as_process_mut() };
+    let Some(proc) = proc else {
+        return ERR_BAD_HANDLE as i64; // 防御面（Thread 钉住的对象必为 Process）
+    };
+    if thrd.started || thrd.exited {
+        return ERR_BAD_STATE as i64; // 单次启动执法（同 process_start 口径）
+    }
+    if proc.state != ProcState::Alive || !proc.started {
+        return ERR_BAD_STATE as i64; // 首线程必须经 process_start
+    }
+    let ht_ptr = &raw mut proc.ht as *mut HandleTable as usize;
+    // 任务装配 try 化 + 前置于一切不可逆变更（process_start H2 纪律；本号无
+    // bootstrap 迁移——失败零回滚面）：栈/TCB OOM → -ENOMEM。
+    let task_ptr = match berry_sched::try_spawn_user(
+        entry as usize,
+        arg as usize,
+        sp as usize,
+        b"user_thread",
+        proc.ttbr0_pa,
+        proc.asid,
+        ht_ptr,
+    ) {
+        Some(p) => p,
+        None => return ERR_NO_MEMORY as i64,
+    };
+    thrd.started = true;
+    proc.live_threads += 1;
+    // SAFETY: 双 retain 与双字段写同点成对（任务已入队未运行，单核无竞态）。
+    unsafe { (*proc_ref.as_ptr()).retain() };
+    berry_sched::set_task_pinned(task_ptr, proc_ref.as_ptr() as usize);
+    unsafe { (*vt.as_ptr()).retain() };
+    berry_sched::set_task_thread(task_ptr, vt.as_ptr() as usize);
+    0
+}
+
 /// `process_start(process, thread, entry, sp, bootstrap)`：启动首线程
 /// （把 thread 的执行流放进 process 的地址空间）。门控：process 与 thread
 /// 各 **MANAGE**。
@@ -855,9 +940,11 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
 ///
 /// 校验序：`entry`==0 / `sp` 非 16 对齐 → -EINVAL；bootstrap 非 0 但无效 →
 /// -EBADF；thread 非本 process 所属 → -EACCES；已启动 → -EBADSTATE。全过后
-/// `started=true`、**替运行中的任务再钉一次 Process**（v1 任务不退出，
-/// 永不释放——防 handle 全关后页表根被销毁），`spawn_user` 入队（tag =
-/// 子进程表指针——子的 EL0 syscall 从此派发到自己的表）。
+/// `started=true`、**替运行中的任务再钉一次 Process 与 Thread**（T-1：Thread
+/// 钉住让首线程 join 面成立——退出钩子① 按 `thread_key` 置 `exited`/唤醒/
+/// release；v1 任务不退出永不释放——防 handle 全关后对象被销毁），
+/// `spawn_user` 入队（tag = 子进程表指针——子的 EL0 syscall 从此派发到自己
+/// 的表）。
 extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     let (ph, th, entry, sp, bootstrap) = (
         tf.regs[1] as u32,
@@ -947,6 +1034,7 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     };
     thrd.started = true;
     proc.started = true; // per-Process 单次执法（见上方对抗审查修注释）
+    proc.live_threads = 1; // T-1：首线程入账（thread_start 起再 +=1；减点唯一 = 退出钩子）
     // Plan B v0.5：替运行中的任务钉一次 Process（retain），并把 ObjRef 地址落
     // Task.pinned——退出钩子据此置 Exited/唤醒/drain/成对 release。写点在
     // spawn 后（任务未跑，无竞态）。
@@ -954,56 +1042,103 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     // 未运行，无竞态）。
     unsafe { (*vr.as_ptr()).retain() };
     berry_sched::set_task_pinned(task_ptr, vr.as_ptr() as usize);
+    // T-1 修复（对抗审查②）：首线程**同样钉 Thread**——join 面（wait Thread
+    // TERMINATED）对首线程成立：thread_key 落 Task 后退出钩子① 才会置
+    // `exited`/唤醒 join 者/成对 release。不钉 = thread_key 恒 0 → 首线程
+    // join 结构性死等（与 sys_thread_start 成功尾同形）。
+    // SAFETY: vt 在表（get_raw 过）；retain 与 thread_key 写同点成对（任务已
+    // 入队未运行，无竞态）。
+    unsafe { (*vt.as_ptr()).retain() };
+    berry_sched::set_task_thread(task_ptr, vt.as_ptr() as usize);
     0
 }
 
-// ---- process/thread 退出（Plan B v0.5：0x33/0x36 真实现）----
+// ---- process/thread 退出（Plan B v0.5：0x33/0x36 真实现；T-1 多线程重梳）----
 
 /// 任务退出钩子（sched `switch_away_forever_with` 在切走前调；`set_exit_hook`
-/// 注册于 [`install`]）。语义序 = 安全序（**顺序即正确性——颠倒即 UAF/漏醒**）：
-/// ①Process 置 Exited + exit_code（幂等）→ ②`wake_matching(TERMINATED)` 唤醒
-/// 父进程等待者 → ③drain 该 Process 的 handle 表（释放子侧全部能力）→
-/// ④release `process_start` 的运行钉住（**最后**：此后 Process 生死交还 handle
-/// 引用计数——父 close hp 归零即 drop；release 前 drain 防 Process 已 drop 还
-/// 触其 ht）。pinned=0（内核任务 / boot 手搭裸表用户进程）直通——**绝不 drain
-/// 私有表**：ai bench ping/pong 共享一张 tag 表，退出 drain 会扬活任务的句柄
-/// （4-6 共享表粒度坑的退出版）。
-unsafe extern "C" fn task_exit_hook(pinned: usize, code: i32) {
+/// 注册于 [`install`]）。T-1 分序版（每任务一套，语义序 = 安全序——**顺序即
+/// 正确性，颠倒即 UAF/漏醒/drain 双跑**）：
+///
+/// - `pinned == 0`（内核任务 / boot 手搭裸表用户进程）直通——**绝不 drain
+///   私有表**：ai bench ping/pong 共享一张 tag 表，退出 drain 会扬活任务的
+///   句柄（4-6 共享表粒度坑的退出版）。
+/// - ①`thread_key != 0`（`thread_start` 造的非首线程 + `process_start` 造的
+///   首线程——T-1 修复后**两类任务都钉 Thread**）：Thread 簿记——置
+///   `exited`（join 面永真位）→ `wake_matching(thread_key, TERMINATED)` 唤醒
+///   join 等待者 → release 对应 start 的 Thread 钉住（此后 Thread 生死
+///   交还 handle 引用计数）。`thread_key == 0` 仅剩防御面（pinned!=0 的任务
+///   现恒有 thread_key；修复前首线程不钉 = join 结构性死等）。
+/// - ②`live_threads -= 1`：**减到 0 = 末线程**才做 Process 收口 = 原四步
+///   （`mark_exited` 首因保码 → `wake_matching(pinned, TERMINATED)` →
+///   `ht.drain()`）；**非末线程绝不 `mark_exited`、绝不 drain**（K1 教训
+///   线程版——共享表上活兄弟的 handle 不能被先退线程扬掉）。
+/// - ③release Process 运行钉住（**最后**：此后 Process 生死交还 handle 引用
+///   计数；release 前 drain 防 Process 已 drop 还触其 `ht`）。
+///
+/// plain `-= 1` 无下溢检查的不变量：`pinned != 0` ⟺ 该任务入过账（
+/// `process_start`/`thread_start` 成功尾与 retain/pinned 写同点成对）——
+/// 单核 IRQ 屏蔽路径专用（同 `started`/`state`）。
+unsafe extern "C" fn task_exit_hook(pinned: usize, thread_key: usize, code: i32) {
     if pinned == 0 {
         return;
     }
     let obj = pinned as *mut ObjRef;
-    // SAFETY: pinned 来自 process_start 的 retain（运行钉住 ≥1——本钩子期间
-    // 对象必活）；IRQ 屏蔽窗内（钩子调用点契约）。
+    // SAFETY: pinned 来自 process_start/thread_start 的 retain（运行钉住 ≥1
+    // ——本钩子期间对象必活）；IRQ 屏蔽窗内（钩子调用点契约）。
     unsafe {
+        if thread_key != 0 {
+            let tobj = thread_key as *mut ObjRef;
+            let t = &mut *tobj;
+            let Some(thrd) = t.obj.as_thread_mut() else { return }; // 防御面（不可达）
+            thrd.exited = true; // join 面：永不再跑点置位，单调永不清
+            berry_sched::wake_matching(thread_key, SIGNAL_TERMINATED);
+            // SAFETY: 与 thread_start 的 retain 成对；此后不再触 tobj。
+            ObjRef::release(NonNull::new_unchecked(tobj));
+        }
         let r = &mut *obj;
         let Some(proc) = r.obj.as_process_mut() else { return }; // 防御面（不可达）
-        if proc.mark_exited() {
-            proc.exit_code = code;
-            // 唤醒等本 Process TERMINATED 的睡眠者（匹配键 = ObjRef 地址，同
-            // Event/Channel 面；SLEEPQ 钩子自动触发 PI 重推）。
-            berry_sched::wake_matching(pinned, SIGNAL_TERMINATED);
+        proc.live_threads -= 1;
+        if proc.live_threads == 0 {
+            // 末线程：Process 收口（原 Plan B 四步——首因保码）。
+            if proc.mark_exited() {
+                proc.exit_code = code;
+                // 唤醒等本 Process TERMINATED 的睡眠者（匹配键 = ObjRef 地址，
+                // 同 Event/Channel 面；SLEEPQ 钩子自动触发 PI 重推）。
+                berry_sched::wake_matching(pinned, SIGNAL_TERMINATED);
+            }
+            proc.ht.drain();
         }
-        proc.ht.drain();
         // SAFETY: 与 process_start 的 retain 成对；此后不再触 obj。
         ObjRef::release(NonNull::new_unchecked(obj));
     }
 }
 
-/// `process_exit(code) -> !`（0x33，Plan B v0.5）：退出**当前任务**——v1 进程
-/// 单线程，末线程退出 = 进程终止（Zircon last-thread 同义）。钩子置 Exited +
-/// 唤醒 TERMINATED 等待者 + drain 子表 + release 钉住；Task Box/内核栈入
-/// REAPQ。**ABI `-> !`**：实现永不返回（切走即不再回来）——HAL 派发回写 x0
-/// 的路径天然不可达（`exit_current_with` 内部 `context_switch` 不归）。
-/// EL1 无 Process 调用者（ktest 禁测 0x33——会杀 ktest）= 只退任务自身，
-/// 合法面（Zircon thread_exit 同义兜底）。
+/// `process_exit(code) -> !`（0x33，Plan B v0.5；T-1 重梳全进程语义）：退出
+/// **整个进程**——先静默杀光兄弟线程（`kill_all_tasks_by_pinned(p, 0)`——
+/// 兄弟 code 传 0（诚实语义：非主动退出无自有码，同 fault 杀口径），打印
+/// 上移调用方、process_exit 路静默），再 `exit_current_with(code)` 退自己
+/// （自己走钩子 = 末线程收口：mark_exited + 码 + TERMINATED + drain +
+/// release）。当前任务非 Process 任务（`current_pinned()==0`——内核任务/
+/// boot 裸表用户进程，ktest 禁测 0x33 会杀 ktest）= 只退任务自身，合法面
+/// （Zircon thread_exit 同义兜底）。**ABI `-> !`**：实现永不返回（切走即不
+/// 再回来）——HAL 派发回写 x0 的路径天然不可达（`exit_current_with` 内部
+/// `context_switch` 不归）。
 extern "C" fn sys_process_exit(tf: &mut TrapFrame) -> i64 {
     let code = tf.regs[1] as i32;
+    let p = berry_sched::current_pinned();
+    if p != 0 {
+        // 静默杀兄弟（外层重扫循环消化「钩子内 wake_matching 搬 SLEEPQ」的
+        // 队形变化；RUNQUEUE 扫描跳过 CURRENT——自己走 exit_current_with）。
+        unsafe { berry_sched::kill_all_tasks_by_pinned(p, 0) };
+    }
     berry_sched::exit_current_with(code)
 }
 
-/// `thread_exit() -> !`（0x36，Plan B v0.5）：v1 单线程进程——末线程退出 =
-/// 进程终止（`process_exit(0)` 同义；多线程 + 保留进程随 v2 thread_start）。
+/// `thread_exit() -> !`（0x36，Plan B v0.5；T-1 重梳）：仅退**当前线程**——
+/// `exit_current_with(0)`（Zircon zx_thread_exit 同形无参；码 0 = 线程退出无
+/// 自有退出码面）。末线程与否由钩子 `live_threads` 计数裁决：是末线程则
+/// Process 收口（同 process_exit）；不是则只做 Thread 簿记 + join 唤醒，
+/// 进程续活。
 extern "C" fn sys_thread_exit(_tf: &mut TrapFrame) -> i64 {
     berry_sched::exit_current_with(0)
 }
@@ -1033,6 +1168,169 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
     }
     match copy_out_u32(el1, out, p.exit_code as u32) {
         Ok(()) => 0,
+        Err(e) => e as i64,
+    }
+}
+
+/// `process_terminate(process, code)`（0x3B，C-4b）：外部终止进程——kill /
+/// Ctrl-C 的内核原语。`code` 落为该进程退出码，父侧收割面与 `process_exit`
+/// 逐字同形（wait TERMINATED → `process_get_exit_code`）。
+///
+/// 门控序（[`sys_object_signal`] 先例）：`get_raw` 三门控（在表 / 类型
+/// Process / 权利 **MANAGE**）→ 坏值/类型不符 -EBADF、缺 MANAGE -EACCES；
+/// 随后两道状态判均 -EBADSTATE：①**自杀**（目标 ObjRef 地址 == 调用者任务
+/// 的 pinned 键）——退自己走 `process_exit`（terminate 要摘的目标任务此刻
+/// 正在它自己栈上执行本 syscall，REAPQ 回收自己在结构上不可行）；②已
+/// Exited——幂等语义收口在 wait/get_exit_code，不重复杀。
+///
+/// 收口（**不开第二退出面**）：
+/// - **已 start**：[`berry_sched::kill_all_tasks_by_pinned`] 群杀（T-1 起进程
+///   可多线程——外层重扫循环消化「钩子内 `wake_matching` 搬 SLEEPQ」的队形
+///   变化），逐任务走与自退出同一退出钩子（末任务钩子完成 Process 收口：
+///   mark_exited + 码 + TERMINATED 唤醒 + drain 子表 + release 运行钉住）
+///   + 摘队 + REAPQ；观测打一行 `TERM: killed '<名>'`（n>1 追加 ` x<n>`
+///   ——非 smoke 标记）。**terminate 不再做 started 路径的 Process 侧收口**
+///   （末任务钩子已做——重做 = drain 双跑/refs 打穿）。
+/// - **未 start**：Process 侧收口 = 钩子语义**减 release**（`process_start`
+///   的运行钉住从未发生，release 会把 refs 打穿 0、在调用方 handle 仍指它时
+///   销毁对象）；ht 出生为空（bootstrap 迁移在 start 才发生），drain 防御
+///   保留。ktest 可终止未 start 进程再断言 -EBADSTATE/退出码——无需 spawn。
+///
+/// 借用纪律：`kill_all_tasks_by_pinned` 返回 `Some` 即钩子内已逐任务
+/// `ObjRef::release`——此后不再解引用 `obj`（调用方表槽持有 ≥1 引用，对象
+/// 活到调用方 close）。
+extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
+    let (h, code) = (tf.regs[1] as u32, tf.regs[2] as i32);
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
+    };
+    if obj.as_ptr() as usize == berry_sched::current_pinned() {
+        return ERR_BAD_STATE as i64; // 自杀：退自己走 process_exit
+    }
+    // SAFETY: get_raw 已三门控（在表、类型 Process、权利足）；单核 IRQ 屏蔽。
+    unsafe {
+        let r = &mut *obj.as_ptr();
+        let Some(p) = r.obj.as_process_mut() else {
+            return ERR_BAD_HANDLE as i64; // 不可达防御面（类型刚验过）
+        };
+        if p.state == ProcState::Exited {
+            return ERR_BAD_STATE as i64; // 已终止：幂等面在 wait/get_exit_code
+        }
+        if p.started {
+            // 已 start：目标任务在场（Alive ⟹ 未退出 ⟹ Ready/Blocked；兄弟
+            // 线程任意状态——SLEEPQ/Runqueue 双扫 + 外层重扫循环）。Some 分支
+            // 钩子内已逐任务 release——立即返回，不再触 obj；末任务钩子完成
+            // Process 收口（本函数不再做 started 路径的 Process 侧收口）。
+            if let Some((name, n)) =
+                berry_sched::kill_all_tasks_by_pinned(obj.as_ptr() as usize, code)
+            {
+                // G43/G44 拼行收口：TERM 行五段（含条件群杀计数）在 PRINT_LOCK
+                // 内一次拼完——SVC 锁窗内运行，KERN→PRINT 单向嵌套合法、
+                // with_print_lock 自适应不复原解蔽。
+                berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                    berry_hal_aarch64::uart_puts(b"\nTERM: killed '");
+                    berry_hal_aarch64::uart_puts(name);
+                    berry_hal_aarch64::uart_puts(b"'");
+                    if n > 1 {
+                        // 群杀计数（手写十进制——no_std 零依赖；任务数 4 槽含哨兵足
+                        // 够，n 帽 = 表容量量级 < 10^3）。
+                        let mut buf = [0u8; 4];
+                        let mut i = buf.len();
+                        let mut v = n;
+                        while v > 0 {
+                            i -= 1;
+                            buf[i] = b'0' + (v % 10) as u8;
+                            v /= 10;
+                        }
+                        berry_hal_aarch64::uart_puts(b" x");
+                        berry_hal_aarch64::uart_puts(&buf[i..]);
+                    }
+                    berry_hal_aarch64::uart_puts(b"\n");
+                });
+                return 0;
+            }
+            // None + started = 不可达防御面（任务必在场）——落未 start 收口向。
+        }
+        // 未 start（或上述防御面）：Process 侧收口，无 release（无运行钉住）。
+        if p.mark_exited() {
+            p.exit_code = code;
+            // 唤醒等本 Process TERMINATED 的睡眠者（ktest 期 SLEEPQ 恒空——
+            // wake_matching 空队安全返回；SLEEPQ 钩子自动触发 PI 重推）。
+            berry_sched::wake_matching(obj.as_ptr() as usize, SIGNAL_TERMINATED);
+        }
+        p.ht.drain();
+    }
+    0
+}
+
+/// `berry_signal_send(h_process, sig)`（0x86，A7-4 段②）：向进程 pending
+/// 集位置位（幂等 = POSIX 标准信号合并语义）。`h=0` → 当前进程（raise 面，
+/// 零 handle 需求）；`h≠0` 门控 Process **MANAGE**（同 terminate 权利面）。
+/// sig ∉ 1..=64 → -EINVAL；目标非 Alive → -EBADSTATE。**不唤醒目标、不解蔽
+/// IRQ、零分配**（协同式用户态投递——投递点在 libc，A7-4 §2 方案 B；免锁
+/// 根基按构造不撞）。与 terminate 的语义边界：terminate = 异步死亡（收到即
+/// 死）；signal = 可捕获投递（默认动作表在用户态）——两原语并存。
+extern "C" fn sys_signal_send(tf: &mut TrapFrame) -> i64 {
+    let (h, sig) = (tf.regs[1] as u32, tf.regs[2] as u32);
+    if sig == 0 || sig > 64 {
+        return ERR_INVALID_ARG as i64; // POSIX：无 0 号信号；位图界 1..=64
+    }
+    let r: &mut ObjRef = if h == 0 {
+        let p = berry_sched::current_pinned();
+        if p == 0 {
+            return ERR_BAD_STATE as i64; // 当前任务无 Process（内核任务/ktest 期）
+        }
+        // SAFETY: current_pinned = 调用者任务运行钉住的 Process ObjRef 地址；
+        // 单核 IRQ 屏蔽（syscall 主体不可抢占）+ 任务存活 ⇒ 指针有效。
+        unsafe { &mut *(p as *mut ObjRef) }
+    } else {
+        let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+        match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
+            // SAFETY: get_raw 已三门控（在表、类型 Process、权利 MANAGE）。
+            Ok((o, _)) => unsafe { &mut *o.as_ptr() },
+            Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
+        }
+    };
+    // SAFETY: r 借用窗内单核 IRQ 屏蔽；h=0 路指针源本就是 Process 任务。
+    let Some(p) = r.obj.as_process_mut() else {
+        return ERR_BAD_HANDLE as i64; // 不可达防御面（类型刚验过/钉住源）
+    };
+    if p.state != ProcState::Alive {
+        return ERR_BAD_STATE as i64; // 已终止进程不收新信号
+    }
+    p.pending_signals |= 1 << (sig - 1);
+    0
+}
+
+/// `berry_signal_take(*pending_out)`（0x87，A7-4 段②）：取走当前进程
+/// pending 集（swap(0) 语义——取后内核位清零，投递中新到位置回内核
+/// pending 留下轮 take）。`*pending` = u64 出参 **8 字节**（非 handle 出参
+/// 宽度跟 ABI 类型走）；零 handle 面零权利位（「对象几何非内容」惯例）。
+/// 出参写失败不消费（先写后清——单核 IRQ 屏蔽下两步间无并发 send）。
+extern "C" fn sys_signal_take(tf: &mut TrapFrame) -> i64 {
+    let out = tf.regs[1];
+    let p = berry_sched::current_pinned();
+    if p == 0 {
+        return ERR_BAD_STATE as i64; // 无 Process 面（内核任务/ktest 期）零意义
+    }
+    // SAFETY: current_pinned 指针有效（同 send）；借用窗内 IRQ 屏蔽。
+    let v = {
+        let Some(proc) = (unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() }) else {
+            return ERR_BAD_HANDLE as i64; // 不可达防御面（钉住源必为 Process）
+        };
+        proc.pending_signals
+    };
+    match copy_out_u64(caller_is_el1(tf), out, v) {
+        Ok(()) => {
+            // 写成功才清零（失败路径不消费——调用方重试拿到同一集合）。
+            // SAFETY: 同上。
+            if let Some(proc) = unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() } {
+                proc.pending_signals = 0;
+            }
+            0
+        }
         Err(e) => e as i64,
     }
 }
@@ -1417,7 +1715,7 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
 /// - Event → 用户位掩码原样；
 /// - Channel → 内核派生：`READABLE`（**本端**队列非空）| `WRITABLE`（**对端**
 ///   队列未满；未配对端点对端恒「满」——运行期不可达，create 即配对）；
-/// - 其余类型 → `None`（wait 面只收 Event|Channel）。
+/// - 其余类型 → `None`（wait 面只收 Event|Channel|Process|Thread）。
 ///
 /// # Safety
 /// `obj` 须为在表/钉住的活对象；Channel 分支解引用互钉对端（互钉保活）。
@@ -1442,6 +1740,11 @@ unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
             // 用户位的不设门口径）。
             KernelObj::Process(p) => {
                 Some(if p.state == ProcState::Exited { SIGNAL_TERMINATED } else { 0 })
+            }
+            // T-1 join 面：Thread 同口径（退出钩子在「永不再跑点」置 exited
+            // ——单调永不清；等非 TERMINATED 位 = 永不命中，不设门同上）。
+            KernelObj::Thread(th) => {
+                Some(if th.exited { SIGNAL_TERMINATED } else { 0 })
             }
             _ => None,
         }
@@ -1482,9 +1785,10 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
     0
 }
 
-/// wait 面取对象（wait_one/wait_many 共用，Plan B 起三类型链）：Event →
-/// Channel → Process（wait 不需权利位，need=0）。全拒回**首个**（Event 的）
-/// 错误——与 4-2 的两类型链语义逐字一致（-EBADF/-EACCES 原样透传）。
+/// wait 面取对象（wait_one/wait_many 共用，Plan B 起三类型链、T-1 起
+/// 四类型链）：Event → Channel → Process → Thread（wait 不需权利位，
+/// need=0）。全拒回**首个**（Event 的）错误——与 4-2 的两类型链语义逐字
+/// 一致（-EBADF/-EACCES 原样透传）。
 fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>, i32> {
     match t.get_raw(h, ObjType::Event, 0) {
         Ok((o, _)) => Ok(o),
@@ -1492,7 +1796,10 @@ fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>
             Ok((o, _)) => Ok(o),
             Err(_) => match t.get_raw(h, ObjType::Process, 0) {
                 Ok((o, _)) => Ok(o),
-                Err(_) => Err(e),
+                Err(_) => match t.get_raw(h, ObjType::Thread, 0) {
+                    Ok((o, _)) => Ok(o),
+                    Err(_) => Err(e),
+                },
             },
         },
     }
@@ -1504,11 +1811,14 @@ fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>
 /// `deadline≠0`（MONOTONIC 绝对时刻）未命中 → 挂 [`berry_sched::block_current`]
 /// 睡到点。
 ///
-/// **wait 面对象 = Event | Channel | Process**（4-2 / Plan B）：Event 状态 =
-/// 用户位掩码；Channel 状态 = 内核派生 READABLE/WRITABLE；Process 状态 =
-/// 内核派生 TERMINATED（Exited 单调置位——父进程 wait 后 unmap/close 回收，
-/// [`berry_exec`] 的 reap 链）。查询点 [`signal_state`]；等不出的位
-/// （Channel 用户位 / Process 非 TERMINATED 位）永不命中，同 Zircon 不设门。
+/// **wait 面对象 = Event | Channel | Process | Thread**（4-2 / Plan B / T-1）：
+/// Event 状态 = 用户位掩码；Channel 状态 = 内核派生 READABLE/WRITABLE；
+/// Process 状态 = 内核派生 TERMINATED（Exited 单调置位——父进程 wait 后
+/// unmap/close 回收，[`berry_exec`] 的 reap 链）；Thread 状态 = 内核派生
+/// TERMINATED（T-1 join 面——`thread_start` 后 `object_wait_one(th,
+/// TERMINATED, …)` 即内核侧 join，裁决二）。查询点 [`signal_state`]；等不出
+/// 的位（Channel 用户位 / Process|Thread 非 TERMINATED 位）永不命中，同
+/// Zircon 不设门。
 ///
 /// **poll-first**：信号已到即返不睡（无丢信号）。醒来**重验条件**（醒因 ≠
 /// 结果：Timeout 时位可能刚被置、Signaled 时位可能又被清——清位竞态下重验
@@ -1537,8 +1847,8 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         0
     };
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // 4-2/Plan B：三类型链（Event|Channel|Process）——wait 不需权利位；全拒回
-    // 首个错误（-EBADF/-EACCES 原样透传）。
+    // 4-2/Plan B/T-1：四类型链（Event|Channel|Process|Thread）——wait 不需
+    // 权利位；全拒回首个错误（-EBADF/-EACCES 原样透传）。
     let obj = match wait_get(t, h) {
         Ok(o) => o,
         Err(e) => return e as i64,
@@ -1650,9 +1960,9 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
         sbuf[i] = u64::from_le_bytes(b);
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // 解析全部对象（Event|Channel|Process 三类型链 [`wait_get`]，同 wait_one；
-    // wait 不需权利位）；任一失败 = 整体拒绝、首错透传——此时尚无 retain，
-    // 无回滚面。
+    // 解析全部对象（Event|Channel|Process|Thread 四类型链 [`wait_get`]，同
+    // wait_one；wait 不需权利位）；任一失败 = 整体拒绝、首错透传——此时尚无
+    // retain，无回滚面。
     let mut objs: [Option<NonNull<ObjRef>>; WAIT_MANY_MAX] = [None; WAIT_MANY_MAX];
     for i in 0..n {
         let o = match wait_get(t, hbuf[i]) {
@@ -1720,9 +2030,13 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// 阻塞化 / 4-2 wait 面扩 Channel 均为改板；4-2b 加 wait_many(0x05) = 24 号；
 /// G-eco 加 vmo_get_size(0x1A) = 25 号；**Plan B v0.5 加 process_exit(0x33) /
 /// thread_exit(0x36) = 27 号**；**P5 加 process_get_exit_code(0x3A) = 28 号**；
-/// **P6 A-3 加 vmo_get_phys(0x1B) = 29 号**（余 0x35 thread_start v2 多线程面）。
+/// **P6 A-3 加 vmo_get_phys(0x1B) = 29 号**；**C-4b 加 process_terminate(0x3B)
+/// = 30 号**；**T-1 加 thread_start(0x35) = 31 号；A7-4 加
+/// signal_send(0x86)/signal_take(0x87) = 33 号——v1 在册 34 号
+/// （唯 0x85 `berry_attest` 预留）真语义全部实现**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
-/// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住——见 [`task_exit_hook`]）。
+/// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住；T-1 分序版：Thread
+/// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
     berry_sched::set_exit_hook(task_exit_hook);
@@ -1748,11 +2062,17 @@ pub fn install() {
     reg(NR_PROCESS_START, sys_process_start);
     reg(NR_PROCESS_EXIT, sys_process_exit);
     reg(NR_PROCESS_GET_EXIT_CODE, sys_process_get_exit_code);
+    reg(NR_PROCESS_TERMINATE, sys_process_terminate);
     reg(NR_THREAD_CREATE, sys_thread_create);
+    reg(NR_THREAD_START, sys_thread_start); // T-1 多线程首刀（create 与 exit 之间）
     reg(NR_THREAD_EXIT, sys_thread_exit);
     reg(NR_THREAD_SLEEP, sys_thread_sleep);
     reg(NR_CHANNEL_CREATE, sys_channel_create);
     reg(NR_CHANNEL_SEND, sys_channel_send);
     reg(NR_CHANNEL_RECV, sys_channel_recv);
     reg(NR_EVENT_CREATE, sys_event_create);
+    // A7-4 段②：信号面两号（0x86/0x87——协同式用户态投递，内核只管跨进程
+    // 位置位与取走；handler 本体见 sys_process_terminate 后）。
+    reg(NR_SIGNAL_SEND, sys_signal_send);
+    reg(NR_SIGNAL_TAKE, sys_signal_take);
 }

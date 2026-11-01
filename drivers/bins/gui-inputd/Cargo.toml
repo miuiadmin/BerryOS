@@ -1,0 +1,27 @@
+# gui-inputd —— GUI-4 段① virtio-input 用户态输入服务（I3）。
+#
+# 双面 crate：lib = 纯逻辑（wire 事件流 → 归一化 → PointerEvent 泵，host
+# 单测全盖）；bin = guest 入口（真 virtio 源 + berry-guiproto input 域
+# 分发，vnet/vblk 同链 musl target + berry-libc shim，真机接线 = 段②）。
+#
+# **berry-libc 按目标门控**（`cfg(target_os = "linux")`——musl 侧才在场）：
+# berry-libc 的 libc 同名 no_mangle 符号在 host 测试二进制里对 libSystem
+# write 符号插入劫自旋（T-1 实录，user/Cargo.toml 同因注释——berry-tls
+# 纯面外迁的动机）；host `cargo test` 连带构建 bin target，若链接
+# berry-libc 则测试 harness 打印即被劫。门控后 host bin 为空壳 main，
+# guest 面整体缺席——§7.2 两条验证命令得以逐字成立。
+[package]
+name = "gui-inputd"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+berry-guiproto = { path = "../../../user/berry-guiproto" }
+berry-sys = { path = "../../../user/berry-sys" }
+berry-exec = { path = "../../../user/berry-exec" }
+berry-virtio = { path = "../../berry-virtio" }
+
+# guest 面依赖（musl/linux 侧）：gift2_h/park/crt0 锚（vnet 同款）。
+[target.'cfg(target_os = "linux")'.dependencies]
+berry-libc = { path = "../../../user/berry-libc" }

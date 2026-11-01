@@ -1,0 +1,26 @@
+[package]
+name = "berry-signal"
+version = "0.1.0"
+edition = "2021"
+# A7-4（docs/事件循环A7-4信号面实施设计草案.md §3.2）：POSIX 信号面
+# 纯函数底座——sigaction 表 / 掩码状态机（block/unblock/setmask +
+# held 集）/ musl 128B sigset 位图层 / 默认动作表 / 归并式投递分诊
+# 计划（plan_dispatch：pending×mask×actions → 升序零副作用步列表）。
+# 消费 = berry-libc signal.rs（协同式用户态投递——内核两号 0x86
+# send / 0x87 take 只管跨进程位置位，信号语义全在用户态）。
+# `berry-tls`/`berry-mmap` 同款 `cfg_attr(not(test), no_std)`：库本体
+# no_std（berry-libc 在 none/musl 双 target 下消费），test 构建放开
+# std 仅为默认测试挂具。
+#
+# 为什么独立 crate（berry-tls/berry-mmap 先例）：berry-libc 定义
+# ~百枚 libc 同名符号，host 测试二进制里对 libSystem 的 write 发生
+# 符号插入（interpose）——纯面独立零依赖 crate 后 host 测试不链任何
+# libc 符号面。
+description = "BerryOS POSIX-signal pure functions (sigaction table + mask state machine + sigset bit layer + dispatch planner for cooperative delivery)"
+license = "Apache-2.0"
+repository = "https://github.com/berryos/berryos"
+readme = "README.md"
+keywords = ["berryos", "signal", "posix", "sigaction", "no-std"]
+categories = ["no-std", "os"]
+
+[dependencies]

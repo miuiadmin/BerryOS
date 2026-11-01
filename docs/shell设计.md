@@ -49,7 +49,7 @@ berry> ls | grep boot
         等两个 Job 结束
 ```
 
-重定向 `>` 同理（`/svc/fs` 的 handle 传给子进程当 stdout）。**Ctrl-C 不用 Unix 信号**：shell 收键 → signal 一个 Event/Job 对象 → 监督服务处置（`能力模型设计.md` / `IPC设计.md` 语义）。
+重定向 `>` 同理（`/svc/fs` 的 handle 传给子进程当 stdout）。**Ctrl-C 不用 Unix 信号**——v1 落地形态（C-4b，2026-10-28）：shell 前台等待（`collect_fg` wait_many 挂 stdin 项）收 0x03 → 回显 `^C` + 对**自己持有的 child handle** 直调 `process_terminate(130)`（128+SIGINT 惯例码；杀的权限 = 持有 Process handle + MANAGE 门控，纯能力模型不破）→ TERMINATED 项收口（被杀者零长 EOF 永不到达——kill 不走 libc exit 族的 EOF 缺口面）；前台期其余键进 typeahead 缓冲不丢键。原草案「signal 一个 Event/Job 对象 → 监督服务处置」留 v2（监督服务/进程组面；管道全段杀 v1 已由 kill 集覆盖）。
 
 ### 2.3 内建命令（为什么 cd 不可能是外部程序）
 
@@ -58,6 +58,10 @@ berry> ls | grep boot
 ### 2.4 串口行编辑
 
 P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其上是自写 mini-readline：退格 / 上下键历史 / Tab 补全（命令名 + 路径）。不引 ncurses，串口 raw 模式够用。
+
+**归属裁定与兑现（C-4，2026-10-28）**：原留档「Tab 补全 defer v2——补全需 rootfs 知识」经 C-4 **提前兑现且不破微内核纪律**——console（内核）无 rootfs/fs 知识，行编辑归属整体迁 bsh：console 退化为逐字节透传，echo/退格/历史/Ctrl-U/Tab 补全全部在 bsh `editor.rs`（std 版 mini-readline，语义逐字对齐内核时代形态）。Tab 候选源 = bsh 自持能力：内建命令表 ∪ rootfs `bin/`（cpio 枚举）+ libc 目录视图（`opendir`/`readdir`）——**内核零新面**。切分/匹配/三态消费（Unique 补全/Ambiguous 公共增量+列示/None 静默）收敛在 `user/berry-complete` 纯函数 crate（host 10 测）。**C-4r 吸收环（同日回归修复）**：逐字节透传首版的转发吸收面只有「通道 8 深 + 1B pending」≈ 4.5s 打字流——bsh 忙窗（如 `run fail` 的 spawn+reap 数秒，TCG 宿主高载更长）内后续字节被覆盖丢弃，且 `rx_pop_all` 突发多字节只存活末字节（smoke RX 相段 d 三行零间歇注入实录两连败，f42t 缺失）；修法 = console 侧 128B 字节级 FIFO 环（纯缓冲、零行/编辑语义——归属裁定不破），环满丢新计数 `fdrop=`，bsh-stdin WRITABLE 项仅环非空时入列（A-2 恒满足项纪律保持），复刻四段全过（f42t 落串口 + fdrop=0 全程）。
+
+**Ctrl-C 杀链（C-4b，2026-10-28）**：editor 喂 0x03 → 清行 + 游标回 live（不入历史）→ `Flow::Interrupt("^C\n")`——feed 循环期（无前台子进程）= 作废当前行 + prompt 重显；前台期由 `collect_fg` 收键处理（两路径互斥不重入）。ESC 序列状态机两态（esc=1 已见 ESC / esc=2 CSI 参数区）中收 0x03 = **复位状态机后落下**直达 Interrupt（不吞字节——真终端的 CSI 中断语义）；交互杀真面 = smoke RX 相 g 段注入（`run hello` 前台 + 0x03 → terminate 130 → typeahead 回放 `echo i$?t` 断言 `i130t`，展开造内容防回声）。
 
 ## 3. 命令三梯队
 
@@ -82,7 +86,7 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 
 | 时点 | 内容 | 验收 |
 |------|------|------|
-| P5 第一刀 | PL011 RX 中断 + mini-readline（**已落地 2026-10，A-1/A-2 两步**：A-1 = UART RX 面 + GIC SPI 33 + console 三项 wait_many，`RX ok` = smoke 交互相标记；A-2 = 键盘行转发端 + bsh 挂载。mini-readline（P5 v0 收官补齐）= console 行编辑归属：退格/上下键历史（8×96B newest-first 环 + ESC 序列状态机）/Ctrl-U，**Tab 补全 defer v2**——补全需 rootfs 知识（编辑会话归属随 v2 留档 §2.4）；smoke RX 相注入退格 + `ESC[A` 召回双验） | 串口双向：能打字回显、历史（smoke 三跑注入序列断言） |
+| P5 第一刀 | PL011 RX 中断 + mini-readline（**已落地 2026-10，A-1/A-2 两步**：A-1 = UART RX 面 + GIC SPI 33 + console 三项 wait_many，`RX ok` = smoke 交互相标记；A-2 = 键盘行转发端 + bsh 挂载。mini-readline（P5 v0 收官补齐）= console 行编辑归属：退格/上下键历史（8×96B newest-first 环 + ESC 序列状态机）/Ctrl-U，Tab 补全当时 defer v2（补全需 rootfs 知识）；**C-4（2026-10-28）兑现**：行编辑归属迁 bsh（console 退化逐字节透传），Tab 补全 = 内建 ∪ rootfs bin/ + 目录视图三态面，`TAB ok` = rootfs 相标记（见 §2.4 归属裁定）；smoke RX 相注入退格 + `ESC[A` 召回双验；**C-4b（2026-10-28）补 Ctrl-C 前台杀链**：collect_fg 收 0x03 → process_terminate(130) + TERMINATED 收口 → `$?`=130，smoke RX 相 g 段注入验） | 串口双向：能打字回显、历史（smoke 三跑注入序列断言） |
 | P5 v0 | bsh：内建命令 + `run` 外部程序 + 环境变量 + `&&`（**已落地 2026-10**：环境变量 = shell 局部 vars + `$NAME`/`$?` 展开 + `env` 内建（子进程 env 传递 defer v2——argv 块无 env 面，`export` 随之）；`&&` = 切行短路 + 每段执行时展开（`A=1 && echo $A` 求值序）；状态码 sh 惯例 0/2/126/127/子真码——真码源 = **0x3A `process_get_exit_code`（P5 扩号，ABI 单源管线首次真实扩号 28→29）**，`ChildHandles::reap` 改 `Result<i32>`；`fail`（exit 42）= rootfs 确定性非零源；自验 = and_selftest 三步断言 + smoke `EXIT ok` 强化 code==0） | 串口跑 `run hello`（`开发体验.md` §3 场景成真；bsh `&&` 自验内嵌 `run fail` 真码 42） |
 | P5 v0.5 | channel 管道 `\|`（已落地 2026-10：`PIPE ok` = rootfs 相第 10 标记，bsh 三跑对拍自验）；重定向 `>` 依赖 FS（/svc/fs），随 P6 | `hexyl \| hexyl` 端到端 |
 | P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向（A-1 最小面已落地 2026-10：fsmgr RAM-fs 服务 + berry-fsproto 协议 + bsh `>`/cat/ls，`FS ok n=` = rootfs 相第 11 标记；**2026-10-23 注：P6 已收官，uutils 全家与 berryctl/powertop/trace 三件套未随 P6 落地——滑移 M-VM（M-G3「CLI 可用」站，C-2 拆步，见 `VM里程碑设计草案.md`）**） | `berryctl --json` 遥测可读 |
@@ -93,5 +97,5 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 - `路线图.md` P5：本文是"shell + 基础命令"里程碑的展开。
 - `开发体验.md` §3：`berry>` 提示符、`berryctl test run G3` 的出处在此定名。
 - `系统调用ABI设计.md` §6：process_create / handle 传递 = 起子进程的 ABI 根基；§8.5 稳定性行政策同样约束 shell 的消息格式（berryctl 与各命令的 `--json` schema 按 add-only 管理）。
-- `IPC设计.md`：channel 当 pipe、Event 当 Ctrl-C 的语义来源。
+- `IPC设计.md`：channel 当 pipe 的语义来源；Ctrl-C 原草案的 Event 中转未走（C-4b v1 落地 = process_terminate 直杀，见 §2.2）。
 - `可观测性设计.md`：trace 命令 = 遥测环的人机/AI 双面出口。

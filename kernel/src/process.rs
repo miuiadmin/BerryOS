@@ -69,9 +69,22 @@ pub struct Process {
     /// `ht` 的双任务：首任务退出即 drain 活兄弟的表 + 提前置 TERMINATED，
     /// 父侧 reap 把地址空间从运行中任务脚下抽走。
     pub started: bool,
+    /// 活线程计数（T-1 多线程）：增点三（new 置 0 / process_start 成功尾置 1
+    /// ——首线程 / thread_start 成功尾 +=1）；减点唯一 = 任务退出钩子（一切
+    /// 退出路径汇经钩子）。减到 0 = 末线程 → Process 收口（mark_exited + 码 +
+    /// TERMINATED + drain）；**非末线程绝不收口**（K1 教训线程版——共享表上
+    /// 活兄弟的 handle 不能被先退线程扬掉）。plain usize——单核 IRQ 屏蔽路径
+    /// 专用无原子（同 started/state）。
+    pub live_threads: usize,
     /// 退出码（v1 面上不可读——get_info 落 v2；fault 杀路径置 0（诚实注释：
     /// 杀因观察面缺位，非语义 0）。
     pub exit_code: i32,
+    /// 待投递信号位图（A7-4 段②，0x86/0x87）：u64 一位一号（信号 n = 位
+    /// n-1，覆盖 1..=64）；`signal_send` 置位（幂等 = POSIX 标准信号合并）、
+    /// `signal_take` 原子取走（swap(0)）。plain u64——单核 IRQ 屏蔽路径专用
+    /// 无原子（同 started/state）；投递执行全在用户态 libc（协同式，A7-4
+    /// §2 方案 B——内核不存 handler 表、不唤醒目标）。
+    pub pending_signals: u64,
 }
 
 impl Process {
@@ -91,7 +104,9 @@ impl Process {
             ht: HandleTable::new(),
             state: ProcState::Alive,
             started: false,
+            live_threads: 0,
             exit_code: 0,
+            pending_signals: 0,
         }
     }
 
@@ -126,6 +141,12 @@ pub struct Thread {
     pub sp: usize,
     /// 已启动（true = 已 spawn，再 start → -EBADSTATE）。
     pub started: bool,
+    /// 已退出（T-1 join 面）：退出钩子在任务「永不再跑点」置位、单调永不清
+    /// ——`signal_state` 映射为 Thread `SIGNAL_TERMINATED`（join 等待者由
+    /// `object_wait_one(th, TERMINATED, …)` 收割，裁决二：内核侧 join 的
+    /// 死透保证）。与 started 并存两 bool 不上 enum——最小扰动 process_start
+    /// 既有消费点。
+    pub exited: bool,
 }
 
 impl Thread {
@@ -135,7 +156,7 @@ impl Thread {
     /// `proc_ref` 须为在表、类型 Process 的活对象。
     pub unsafe fn new(proc_ref: NonNull<ObjRef>) -> Self {
         (*proc_ref.as_ptr()).retain();
-        Self { proc: proc_ref, entry: 0, sp: 0, started: false }
+        Self { proc: proc_ref, entry: 0, sp: 0, started: false, exited: false }
     }
 
     /// 所属 Process 对象标识（process_start 校验 thread↔process 归属）。

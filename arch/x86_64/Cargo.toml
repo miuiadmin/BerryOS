@@ -10,6 +10,7 @@ edition = "2021"
 # --target x86_64-unknown-none）。范围盒子：串口/定时器/异常向量/上下文
 # 切换/SVC 入口；SMP/APIC/ACPI/PCIe 不在盒内（定时器走 PIT+8259）。
 # 加法零扰：不动 ARM64 主线任何文件。
+license = "Apache-2.0"
 
 [workspace]
 

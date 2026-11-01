@@ -434,9 +434,10 @@ fn serve(d: &Dma, regs: *mut u32, cap: u64) -> ! {
     }
     let mut msg = [0u8; 256];
     let mut rep = [0u8; 1];
-    // 随行 handle 收口容量 4（协议定值 1；富余 = 多带面走 nh!=1 → ST_BAD
-    // 拒——若按 1 收，多带消息 -EINVAL 会误入链断 trap 杀服务）。
-    let mut hs = [0 as Handle; 4];
+    // 随行 handle 收口容量 6（协议定值 1；= CHAN_HND_MAX 上限——T-1 起
+    // 4→6；富余 = 多带面走 nh!=1 → ST_BAD 拒——若按 1 收，多带消息
+    // -EINVAL 会误入链断 trap 杀服务）。
+    let mut hs = [0 as Handle; 6];
     loop {
         let mut nb = msg.len();
         let mut nh = hs.len();

@@ -1,0 +1,15 @@
+[package]
+name = "mv"
+version = "0.1.0"
+edition = "2021"
+
+# 行为注记：rename = berry-libc fs.rs C-2a 组合真实现（copy+unlink 兑现
+# POSIX 面）——uu_mv 的 EXDEV copy 回退判据天然不触发（组合实现返诚实
+# errno）。非原子（v1 单会话串行 RPC，无并发观察者——文档化取舍）；
+# 超服务端单文件帽（FILE_SIZE_MAX 16KiB）的大文件 mv 诚实失败。
+license = "Apache-2.0"
+
+[dependencies]
+rustix.workspace = true
+uu_mv = "=0.12.0"
+berry-libc = { path = "../../../berry-libc" }

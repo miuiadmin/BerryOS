@@ -26,10 +26,15 @@ const SLEEP_NS: u64 = 10 * 1_000_000_000;
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(env: Handle) -> ! {
-    // d-3a env 块：argv0（本程序不消费）+ handles[0] = console 别名。
+    // d-3a env 块：argv0（本程序不消费）+ handles 前缀紧致布局 [stdout,
+    // (stdin), (self_proc/self_vmar), (extra_gift…)]。收窗取 spawn 侧
+    // gift 数组容量 6（C-4b 实抓：窗口落后 env 块生长即 recv 撞
+    // `nhandles > cap` -EINVAL → 自陷 D-abort，内核拒面是对的，本程序
+    // 窗口跟不上 env 块生长才是错；T-1 布局：gift[2]/[3] = 自描述对、
+    // extras 后挪 [4..]。只消费 hs[0]，多余 gift 随 recv 落表不碍事）。
     let mut blob = [0u8; 64];
     let mut nb = blob.len();
-    let mut hs = [0 as Handle; 2];
+    let mut hs = [0 as Handle; 6];
     let mut nh = hs.len();
     if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0
         || nh < 1

@@ -75,7 +75,8 @@ pub const BERRY_ERR_OUT_OF_RANGE: Status = -34;
 pub const BERRY_ERR_FAULT: Status = -14;
 
 // ---- syscall 号（v1 在册；私有——用户程序不写编号，只经本 crate 的
-// `berry_*` 封 `svc`，§8.3；未实现号 wrapper 照发、内核回落 -ENOTSUP）----
+// `berry_*` 封 `svc`，§8.3；在册未实现号常量照发、无 wrapper（原型层
+// v2 挂账——dead_code 豁免随生成器），内核回落 -ENOTSUP）----
 pub(crate) mod nr {
     pub(crate) const HANDLE_CLOSE: usize = 0x01;
     pub(crate) const HANDLE_DUPLICATE: usize = 0x02;
@@ -104,19 +105,29 @@ pub(crate) mod nr {
     /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
     pub(crate) const PROCESS_EXIT: usize = 0x33;
     pub(crate) const THREAD_CREATE: usize = 0x34;
-    /// thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。
+    /// T-1 落地：门控 Thread MANAGE；所属 Process 须已 start 且 Alive（否则 -EBADSTATE）；线程入口不得返回（返回 = fault 杀兜底）——pthread/线程库的内核地基。
     pub(crate) const THREAD_START: usize = 0x35;
     /// Plan B v0.5 落地：v1 单线程 ⇒ 等价 process_exit(0)（Zircon last-thread 语义）。
     pub(crate) const THREAD_EXIT: usize = 0x36;
     pub(crate) const THREAD_SLEEP: usize = 0x37;
     /// P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。
     pub(crate) const PROCESS_GET_EXIT_CODE: usize = 0x3A;
+    /// C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。
+    pub(crate) const PROCESS_TERMINATE: usize = 0x3B;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;
     /// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
     pub(crate) const EVENT_CREATE: usize = 0x54;
     pub(crate) const CLOCK_READ: usize = 0x61;
+    /// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const BERRY_ATTEST: usize = 0x85;
+    /// A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+    pub(crate) const SIGNAL_SEND: usize = 0x86;
+    /// A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
+    pub(crate) const SIGNAL_TAKE: usize = 0x87;
 }
 
 // ---- 宽度冻结断言（abi.toml [types]；G2 冻结面的机器执法）----

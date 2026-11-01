@@ -8,7 +8,11 @@ edition = "2021"
 # aarch64-unknown-none 下构建），test 构建放开 std 仅为默认测试挂具。
 # 双消费：vnet（服务端，独立小工作区编 musl target）/ svcmgr（A-8c 起
 # 消费自验方，本工作区成员）经 path 依赖。
-description = "BerryOS network-service RPC protocol: pure encoder/parser for the P6 A-8 vnet DNS service"
+description = "BerryOS network-service RPC wire protocol: pure no_std encoder/parser (DNS + TCP session ops)"
 license = "Apache-2.0"
+repository = "https://github.com/berryos/berryos"
+readme = "README.md"
+keywords = ["berryos", "rpc", "dns", "protocol", "no-std"]
+categories = ["network-programming", "no-std"]
 
 [dependencies]

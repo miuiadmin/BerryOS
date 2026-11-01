@@ -6,7 +6,9 @@
 #   1. kernel/src/abi_gen.rs           —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR
 #   2. user/berry-sys/src/abi_gen.rs —— 同面镜像（+ INVALID_HANDLE + mod nr）
 #   3. docs/系统调用ABI设计.md        —— §4 编号表体 + §8.2 C 定义列（marker 块）
-# 三面同源 ⇒ 漂移按构造不可能；--check 只拦「改了本文件忘再生成 / 手改产物」。
+#   4. tools/abi.syz                  —— syzkaller 描述骨架（SEC-01 §4.5 件 25；
+#                                       未过 syz-sysgen 编译验证——头注如实声明）
+# 四面同源 ⇒ 漂移按构造不可能；--check 只拦「改了本文件忘再生成 / 手改产物」。
 # Plan B v0.5 的 abi_check.py 三方对账关卡随之退役（生成即一致）。
 #
 # 改 ABI 的流程：改本文件 → `just abi-gen` → 提交（产物 diff 一并入册）。
@@ -16,8 +18,12 @@
 
 [meta]
 stage = "v1"
-nr_total = 30        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数）
-implemented = 29     # 已实现（唯一例外 0x35 thread_start，v2 多线程）
+nr_total = 34        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+                     # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
+                     # 信号面——A7-4 门 C 裁定 A add-only 加号）
+implemented = 33     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真；
+                     # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
+                     # ABI §8.0 永不 panic 执法）
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。
@@ -197,8 +203,9 @@ expr = "-14"
 c_note = "EFAULT：用户指针界检失败（3-2 起 copy_from/to_user 执法）"
 desc = "EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用户区）——3-2 copy 路径。"
 
-# ---- §4 编号表（全 45 行：v1 28 + v2 12 + v3 5；title 含 **粗体** 原样）----
-# implemented = false ⇒ 在册未实现（内核回落 -ENOTSUP、berry-sys wrapper 照发）。
+# ---- §4 编号表（全 49 行：v1 32 + v2 12 + v3 5；title 含 **粗体** 原样）----
+# implemented = false ⇒ 在册未实现（内核回落 -ENOTSUP；berry-sys 侧常量照发、
+# 无 wrapper——生成器对无消费者常量豁免 dead_code，wrapper 随 §8.3 原型层 v2 挂账）。
 
 [[group]]
 title = "**handle / 通用对象**"
@@ -341,10 +348,9 @@ stage = "v1"
 [[group.syscall]]
 num = 0x35
 name = "thread_start"
-desc = '投入运行（**在册未实现**——30 在册 29 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本）'
+desc = '投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形）'
 stage = "v1"
-implemented = false
-note = 'thread_start：v2 多线程面（v1 单线程，start 即随 process_start）。'
+note = 'T-1 落地：门控 Thread MANAGE；所属 Process 须已 start 且 Alive（否则 -EBADSTATE）；线程入口不得返回（返回 = fault 杀兜底）——pthread/线程库的内核地基。'
 [[group.syscall]]
 num = 0x36
 name = "thread_exit"
@@ -372,6 +378,12 @@ name = "process_get_exit_code"
 desc = '查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查）'
 stage = "v1"
 note = 'P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。'
+[[group.syscall]]
+num = 0x3B
+name = "process_terminate"
+desc = '外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。'
+stage = "v1"
+note = 'C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。'
 
 [[group]]
 title = "**异常**"
@@ -476,3 +488,30 @@ num = 0x84
 name = "telemetry_open"
 desc = '打开遥测环（只读）'
 stage = "v3"
+
+[[group]]
+title = "**安全 / 远程证明**（预留）"
+[[group.syscall]]
+num = 0x85
+name = "berry_attest"
+desc = '远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法）'
+stage = "v1"
+implemented = false
+note = 'SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。'
+
+[[group]]
+title = "**信号**（POSIX 兼容——libc 协同式投递，A7-4）"
+[[group.syscall]]
+num = 0x86
+name = "signal_send"
+desc = '向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配'
+stage = "v1"
+implemented = true
+note = 'A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。'
+[[group.syscall]]
+num = 0x87
+name = "signal_take"
+desc = '原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）'
+stage = "v1"
+implemented = true
+note = 'A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。'

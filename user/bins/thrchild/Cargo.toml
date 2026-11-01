@@ -1,0 +1,16 @@
+[package]
+name = "thrchild"
+version = "0.1.0"
+edition = "2021"
+# T-1 §2（多线程首刀消费面）：THR ok 验收子——hello 同款 no_std berry-sys
+# 裸 bin，但走 echo/talker 的 elf2flat 平像产链（include_bytes 内嵌 svcmgr，
+# 非 hello 的 ELF 进 cpio——零 rootfs 新条目，裸跑/EFI 路同面）。
+# bootstrap 自句柄形态：process_start x0 = 本进程 Process 句柄（svcmgr 侧
+# dup(hp, MANAGE|DUPLICATE) 迁入子表），进程内 thread_create/thread_start/
+# join/复启拒面/末线程收口五步链自验（src/main.rs 头注）；父侧按退出码
+# 打 `THR ok` / `eco: thr exit <n>`。
+description = "BerryOS in-process multithread acceptance child (flat image embedded in svcmgr)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }

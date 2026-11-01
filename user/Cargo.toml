@@ -45,8 +45,46 @@
 # cfg(not(test))——毒化位/90s·10s 双帽/阻塞重试形态逐字保真，host 测试不
 # 链接 syscall 面；lib.rs 纯函数面 fd 表/cwd/stat/dirent/ST 映射 host 测试）。
 # 单消费 = berry-libc（刀 2 fd 3+ 文件面）；bsh 刀 4 删自有面改经 libc。
+# C-3 段①：berry-psproto（ps 查询 RPC 协议纯函数 crate，host 测试；双消费
+# = svcmgr 服务端（拉起账本编码——本工作区成员，none target）+ ps bin
+# 客户端（user/bins/ps 独立小工作区编 musl target，同 stdhello/bsh 不入
+# members））。
+# C-4：berry-complete（bsh Tab 补全纯函数 crate——token 切分/前缀匹配/
+# 列示，host 测试；单消费 = bsh 编辑器（独立小工作区 path 依赖，musl
+# target，同 stdhello 不入 members——但本 crate 无 syscall 面故入 members
+# 挂 host 测试无碍 none 工作区纪律））。
+# T-1 §1：berry-tls（TLS 拷贝式放置纯函数 crate，host 测试；单消费 =
+# berry-libc crt0（主线程装配）+ 第二层 pthread trampoline（malloc 块
+# 复用同一算术）。「不长第二套」+ §6 回退形态——berry-libc 的 libc 同名
+# 符号在 host 测试二进制里对 libSystem write 符号插入劫自旋，纯面外迁
+# 独立 crate 后 host 测试零 libc 符号面）。
+# GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数 crate，V-6 刀 2
+# 前置段曾独立工作区、GUI-1 随首个消费面迁正 members；消费 = guifbd 显示
+# 服务（独立小工作区编 musl target，同 stdhello 不入 members）——host
+# 测试经 justfile test-host 显式行跑）。
+# GUI-2 段①：berry-gfx（pass 形态 API + soft 光栅核纯函数 crate——ADR #51
+# 六件套 day-one；像素共识对 berry-fbcon path 依赖单源字体，host 测试；
+# 真消费 guifbd/berryui = 段②另刀）。
+# GUI-4 段①：berry-guiproto（GUI wire 协议纯函数 crate——present/input/hdi
+# 三域 op 编解码，docs/GUI-4实施设计草案.md §3；host 测试；双消费 =
+# gui-inputd 服务端（drivers/bins/gui-inputd，input 域）+ 段② gui-wm 客户端
+# （GUI-5，present/hdi 域）——三域 = 三对独立 channel，能力即权限）。
+# A7-1：berry-mmap（mmap 匿名档簿记纯函数 crate——region 表 + VA 窗
+# first-fit 底起分配（munmap 空洞复用，F2 裁定），docs/事件循环A7设计
+# 草案.md §3.1+§7；单消费 = berry-libc mmap.rs syscall 桥。berry-tls
+# 同款回退形态：纯面外迁后 host 测试零 libc 符号面）。
+# A7-4：berry-signal（POSIX 信号面纯函数底座 crate——sigaction 表 +
+# 掩码状态机 + musl 128B sigset 位图层 + 默认动作表 + 归并式投递分诊
+# 计划，docs/事件循环A7-4信号面实施设计草案.md §3.2；单消费 =
+# berry-libc signal.rs（协同式用户态投递——内核两号 0x86/0x87 只管
+# 跨进程位置位）。berry-tls/berry-mmap 同款回退形态）。
+# GUI-3：berry-ui（保留树视图 crate——arena 代数 NodeId + 脏区引擎 +
+# 三态停帧，ADR #52 声明式 UI 内核；十一模组契约冻结在
+# docs/GUI-3实施设计草案.md §6；双依赖 = berry-gfx（paint 发射
+# DisplayList）+ berry-guiproto（Rect/常量单源不两套）；host 测试，
+# embedder = GUI-5 gui-wm 另刀）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

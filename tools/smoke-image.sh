@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+# smoke-image：M-G1 V-4 img-boot 独立冒烟关卡（VM 草案 §V-4；smoke-x86 同款
+# 形态——独立关卡，**不并入主 smoke**，ARM64 五跑零扰动；M-G1 收官时另裁
+# 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
+# （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
+#
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 27 = 对抗审查保留日志
+# 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
+# 面八步；C-4 起 +TAB ok——编辑器九步 + 真源两钉，零 fs 盘面 EFI 路可达；
+# T-1 起 +THR ok——进程内多线程消费面，thrchild 镜像内嵌 svcmgr 零
+# rootfs 依赖，EFI 路同打；GUI-1 起 +FBW ok——guifbd 显示服务自验三步
+# （clear 双相位差分/蜂格字形对拍/scroll 行移），EFI-GOP 路专属、-kernel
+# 主路零插表零路径；GUI-1 段② 起 +FBSERVE ok——console fan-out 上屏
+# serve 循环首条消息（双路上屏闭环）；A7-1 起 +MMP ok、A7-3 起 n=9——
+# bsh mmp_selftest 九步：匿名档 libc 桥 + 文件档 staging（⑥-⑧ 走 RAM 树
+# fs 非盘面）+ mprotect dormant 环，EFI 路同打；
+# A7-2 起 +CLK ok n=6——bsh clk_selftest 六步，timer 壁钟分档 + 补桩
+# 五真身首活体，纯 clock syscall + `date -u` spawn 无文件参零 fs 盘面
+# EFI 路同打；
+# A7-4 起 +SIG ok n=6——bsh sig_selftest 六步（⓪raise 即时投递 ①表/掩码
+# 回读 ②blocked 窗 held→unblock 补投 ③kill 分诊 ④sigchild 跨进程
+# SIGTERM→DFL exit(143) ⑤修复轮回归钉板——嵌套补投恰一次/delivery-
+# time 表变更/包络恢复/无残留双投），纯用户态信号面 + sigchild 零 gift
+# spawn 零 fs 盘面，EFI 路同打）
+# ——非主观子集）：
+#   1. EFI 十段恰一次：skeleton / fw / gop（成功形态 WxH，locate fail 不算）/
+#      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
+#   2. 内核接续恰一次：HANDOFF ok ver=1 / MMAP ok segs= / ROOTFS ok
+#      **src=handoff**（handoff 源专属形态——fw_cfg/DTB 路不通于此）；
+#   3. 裸相 27 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
+#      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
+#      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
+#      生态 27 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
+#      EXIT / APP / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT / POLL /
+#      PS / BC / THR / MMP / CLK / SIG / FBW / FBSERVE——与
+#      smoke.sh rootfs 相断言 canon 同面；无 virtio 面：不挂 virtio-blk/net，
+#      VIRTIO/FAT/NET/DIR/CD 族不在断言面）；
+#   4. kfile/init 字节数与宿主 KERNEL.ELF / rootfs.cpio **精确对拍**（盘
+#      内容 ↔ BerryBoot 读数 ↔ 内核消费三方一致性，镜像打包断裂即 FAIL）；
+#   5. switches 金丝雀 ≥3 条严格递增（同 smoke.sh——冻而不死类 bug 的
+#      唯一探测器）；注入后复验（RX 中断破坏 IRQ 契约的死状是冻而非崩）；
+#   6. RX 注入相：FIFO stdin 逐字节注入 `rx\n` → RX ok（PL011 RX 中断 →
+#      console 任务 → token 面全链；bsh 可交互的自动代理——提示符本身无
+#      固定标记；C-4b 勘正：RX ok 实为内核 console 观察窗直打、不经 bsh
+#      ——EFI 路 bsh park 在 fat 段（C-2b 契约），注入命令不执行，此相
+#      只验内核 RX 链路非 bsh 交互）。
+#      C-4b 裁定：EFI 路不设 Ctrl-C 交互杀段（i130t）——bsh 交互编辑循环
+#      结构性不可达（fat park 挡断，详见阶段 5 后注记）；交互杀五环面由
+#      主路 smoke.sh RX 相段 g 独占（有盘路 bsh 全功能），EFI 路杀链核心
+#      由 boot 期 INT ok 覆盖（真机 spawn+terminate+reap 四步）。
+#
+# UTM 手动点验四条（同镜像、UI 无法 CI——清单正文见 docs/开发体验.md §L3）：
+#   ① 插盘：UTM 新建 ARM64 虚机（UEFI）驱动器挂 berryos.img；
+#   ② 开机：固件自举 → BerryBoot 十段 → 内核标记流；
+#   ③ 到提示符：串口/控制台终端出 bsh 提示符；
+#   ④ 键盘输入：键入 rx（回显）→ ls → 截图留档。
+#
+# 用法：tools/smoke-image.sh <镜像> <AAVMF_CODE.fd> <AAVMF_VARS.fd>
+#（三参均由 justfile 单一事实源注入——smoke-x86 先例：脚本不自带第二份
+# 路径拷贝。第 3 参 AAVMF_VARS 现仅占位：vars 自产 blank，不读共享模板
+# ——见下方 vars 生成段注。）
+# 调试：SMOKE_KEEP_LOG=1 just smoke-image 保留串口日志不删。
+set -u
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
+source "$SCRIPT_DIR/paths.sh"
+KERNEL=$(berryos_kernel debug)
+
+IMAGE=${1:?用法: smoke-image.sh <镜像> <AAVMF_CODE> <AAVMF_VARS>}
+AAVMF_CODE=${2:?缺 AAVMF_CODE 路径}
+AAVMF_VARS=${3:?缺 AAVMF_VARS 路径}
+
+QEMU=${QEMU:-qemu-system-aarch64}
+command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke-image: FAIL: 找不到 $QEMU" >&2; exit 1; }
+[ -f "$IMAGE" ] || { echo "smoke-image: FAIL: 镜像不存在（先 just image）：$IMAGE" >&2; exit 1; }
+[ -f "$AAVMF_CODE" ] || { echo "smoke-image: FAIL: AAVMF CODE 固件不存在：$AAVMF_CODE" >&2; exit 1; }
+[ -f "$KERNEL" ] || { echo "smoke-image: FAIL: 内核未构建（先 just build）：$KERNEL" >&2; exit 1; }
+[ -f "rootfs.cpio" ] || { echo "smoke-image: FAIL: rootfs.cpio 缺席（先 just build-user）" >&2; exit 1; }
+
+# 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG），360s ≈ 3x 余量（帽只兜
+# 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
+# B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
+# C-3 起 +PS/BC（ps + berryctl 三拉起 = 两 musl spawn + 4 RPC ≈ +10-20s
+# TCG）——360s 帽不动。
+DEADLINE_BOOT=360
+DEADLINE_CANARY=120
+DEADLINE_RX=60
+
+# EFI 十段恰一次面（4 固定串 + 6 ERE——ERE 钉成功形态：gop 必须带分辨率、
+# kfile/init 必须带字节与 ok，失败诊断行（locate fail / open fail / absent）
+# 一律不匹配 = loud）。
+EFI_FIXED=("BerryBoot EFI skeleton" "fw: EDK II" "fs: HELLO.TXT 28B match" "BERRYBOOT ok")
+EFI_ERE=(
+  'gop: [0-9]+x[0-9]+'
+  'kfile: [0-9]+B ok'
+  'init: [0-9]+B ok'
+  'elf: segs=[0-9]+ entry=0x[0-9a-f]+ ok'
+  'load: segs=[0-9]+ pages=[0-9]+ ok'
+  'mmap: n=[0-9]+ ok'
+)
+# 内核接续恰一次面（src=handoff 是 handoff 路专属——fw_cfg 路打 src=fw_cfg
+# 串，混源即 FAIL）。
+CONT_MARKERS=("HANDOFF ok ver=1" "MMAP ok segs=" "ROOTFS ok src=handoff")
+# 裸相 27（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
+# 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行）。
+KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+# EFI 路生态 27（对抗审查保留日志逐标记普查实证——`grep -cF` 各恰一次；与
+# smoke.sh rootfs 相断言 canon 同面，EFI 路上 libc/spawn/退出链回归不静默
+# 溜过。无 virtio 面——VIRTIO/FAT/NET/DIR/CD 族不在断言面。FS 用带参形态
+# `FS ok n=` 避 `ROOTFS ok src=` 子串混叠——smoke.sh P6 A-1 同款陷阱；
+# `STD ok` 与 `STD err ok` 互非子串已核，smoke.sh 双断言先例。C-2c 起
+# +U3 ok（text 批执行验收——与 U1/U2 同为纯 RAM/spawn 面，EFI 路可达；
+# T-1 起 sort|uniq 步与四段链回收同面）；
+# B-1 起 +B1 ok n=4（EL0 四项微基准格式断言收口——零 fs 盘面纯 RAM/spawn，
+# 链序在 bsh 内排 fat 族前 = EFI 路无盘亦打，smoke.sh rootfs 相同步面）；
+# C-3 起 +PS ok n=/BC ok（ps 查询 RPC + berryctl 三子命令——svcmgr 直打、
+# 零 fs 盘面（rootfs 内 ELF spawn + 纯 RAM RPC），EFI 路可达同面；账本
+# 行数 EFI 路无 virtio 族与主 smoke 不同形，断言取 `PS ok n=` 前缀式）。
+# C-4 起 +TAB ok（bsh tab_selftest 九步——FakeSrc 状态机 + 真源两钉，零
+# fs 盘面纯 RAM/cpio 直读，EFI 路可达；断言走 assert_marker 特例防
+# TAGTAB ok 子串假阳性）。
+# C-4b 起 +INT ok（bsh int_selftest 四步——editor 0x03 作废行/ESC 两态
+# 共存/续用 + 前台杀链真机面：bin/hello 纯 RAM spawn + process_terminate
+# (130) + collect_fg TERMINATED 收口 + reap 130；零 fs 盘面，链序排 fat
+# 族前 = EFI 路可达；裸 grep -qF 足够——"INTENT ok" 不含 "INT ok" 子串）。
+# A2-1 起 +POLL ok（bsh poll_selftest 四步——纯内核 Event 对象 + 真内核
+# wait_many 批切分 16+4；链位置 int 后 fat 族前 = EFI 路可达，U2/U3/TAB/
+# INT 契约）。"POLL ok" 与 EFI canon 现役标记互非子串（PIPE/PS 前缀互异）。
+# T-1 起 +THR ok（svcmgr thr_selftest——thrchild 内嵌镜像（echo/talker 同
+# 产链 include_bytes）bootstrap 自句柄五步链，零 rootfs/零 fs 盘面 = EFI
+# 路结构性可达（链位置 bc_selftest 后 fat 族前同打）；裸 grep -qF 足够
+# ——"THR ok" 无前邻混叠面（THR 前缀族唯一，TAB `(^|[^G])` 特例不需要）。
+# GUI-1 起 +FBW ok（guifbd 显示服务自验三步全过自打——boot 授能 fb MMIO
+# VMO 第 5 插映 FB_VA + 几何 info VMO 第 6 插随 env extras；stdout=console
+# 发端 vblk 同路；EFI-GOP 路专属，-kernel 主路 svcmgr 探测 -EBADF 一行
+# 降级不 spawn）。裸 grep -qF 足够——"FBW ok" 与 boot 期 "FB ok"（gop
+# 携面打点）/"FB vmo="（授能打点）互非子串（F-B-W-space vs F-B-space）。
+# GUI-1 段② 起 +FBSERVE ok（guifbd serve 循环首条消息自打——console
+# fan-out 管道 endB_fb 第 7 插随 env extras[1] take 迁入；稳态矩阵打印
+# 持续不断 → 首条必达 = 状态谓词非竞速。裸 grep -qF 足够——"FBSERVE ok"
+# 与 "FBW ok"/"FB ok" 互非子串（F-B-S-E-R-V-E））。
+# A7-1 起 +MMP ok、A7-3 起 n=9（bsh mmp_selftest 九步——⓪-④ 匿名档
+# libc 桥：region 表 + vmo_create/整段 commit/vmar_map(self_vmar_h()) 桥，
+# 首映射 volatile 写读对拍/munmap 三态/空洞复用回首址（first-fit 钦定）/
+# 范围盒拒面三连 + mprotect 双裁；⑥-⑧ A7-3 文件档 staging——RAM 造源
+# m/mmpf.bin + mmap(MAP_PRIVATE) 私有拷贝证/同 fd offset 档复映射/拒位
+# 四连/fd 面 EBADF·EACCES；⑨ mprotect dormant 保内容环。⑥-⑧ 走 RAM 树
+# fs 面（非盘面——父目录在 RAM 树 create 恒落 RAM 相位无关），链位置
+# poll 后 fat 族前 = EFI 路可达，U2/POLL 契约；无拓扑降级门——gift[3]
+# 是 T-1 spawn 通用装配，所有相恒在，失败即 park
+# loud。裸 grep -qF 足够——"MMP ok"（大写）与 boot 期 'mmap: n=' ERE（小写）
+# 及现役标记互非子串）。
+# A7-2 起 +CLK ok n=6（bsh clk_selftest 六步——timer 壁钟分档：⓪mono
+# 双读单调非减 ①REALTIME 合成一致（rt ≥ mono 差 ≤1s）②time()/
+# gettimeofday() 互恰 ③nanosleep(50ms) 活性 ④settime 双档 EPERM 拒
+# ⑤裸 `date -u` 漂移容忍钉板（前缀 `Thu Jan  1 00:` + MM:SS 数字域 +
+# 尾 ` UTC 1970`——REALTIME 端到端活钟面）。实现面 = berry-libc
+# clock_gettime 分诊（mono 族直读 / REALTIME 族 = EPOCH_BASE(0)+mono
+# 合成 / 冷门 id EINVAL 诚实拒）+ 补桩五真身（time/gettimeofday/
+# settimeofday/nanosleep/usleep）。零 fs 盘面（纯 clock syscall + date
+# spawn 无文件参）= EFI 路可达，链位置 mmp 后 fat 族前（A 系契约位）；
+# 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLK ok"（大写）
+# 与现役标记互非子串（无 XCLK 形态在册）。
+# A7-4 起 +SIG ok n=6（bsh sig_selftest 六步——信号面真身化验收：⓪raise
+# 即时投递 ①表/掩码回读 ②blocked 窗 held→unblock 补投 ③kill 分诊
+# self/ESRCH/EINVAL ④spawn bin/sigchild → berry_signal_send(hp,SIGTERM)
+# → DFL io::exit(143) EOF 先行 → reap 143 ⑤修复轮回归钉板（位号序敏感
+# 三形分诊：Call 位 1 < Hold 位 12 < 表变位 18——嵌套补投恰一次 +
+# delivery-time 表重查 + 包络全量恢复 + 无残留双投）。实现面 = berry-libc
+# signal.rs ③a+③b 真身 + 内核 0x86/0x87）。零 fs 盘面（纯用户态信号面 +
+# sigchild 零 gift spawn）= EFI 路可达，链位置 clk 后 fat 族前（A 系契约
+# 位）；无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"SIG ok"
+# （大写）与现役标记互非子串（无 XSIG 形态在册）。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok")
+
+LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
+QEMU_PID=""
+RX_FIFO=""
+RX_HOLDER=""
+
+cleanup() {
+  if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
+    kill "$QEMU_PID" 2>/dev/null
+    wait "$QEMU_PID" 2>/dev/null
+  fi
+  if [ -n "$RX_HOLDER" ] && kill -0 "$RX_HOLDER" 2>/dev/null; then
+    kill "$RX_HOLDER" 2>/dev/null
+    wait "$RX_HOLDER" 2>/dev/null
+  fi
+  [ -n "$RX_FIFO" ] && rm -f "$RX_FIFO"
+  rm -rf "$RUN_DIR"
+  if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
+    echo "smoke-image: 串口日志保留：$LOG" >&2
+  else
+    rm -f "$LOG"
+  fi
+}
+trap cleanup EXIT
+
+fail() {
+  echo "smoke-image: FAIL: $1" >&2
+  echo "---- 串口日志尾部（$LOG）----" >&2
+  tail -40 "$LOG" >&2
+  echo "--------------------------------" >&2
+  exit 1
+}
+
+# 标记断言（smoke.sh 同款）：DEMO ok 是 AIDEMO ok 的子串，特判负向；其余
+# 两两互非子串裸 grep 足够。
+assert_marker() {
+  if [ "$1" = "DEMO ok" ]; then
+    grep -qE '(^|[^I])DEMO ok' "$LOG"
+  elif [ "$1" = "TAB ok" ]; then
+    # C-4：boot 期 TAGTAB ok 恰含 "TAB ok" 子串——qF 假阳性。只排前邻 G
+    # （TAGTAB 的 G）——真标记可嵌稳态矩阵巨行中段（前驱任意大写字母，
+    # 实测 BTAB ok），排整个 A-Z 会拒真标记（DEMO ok 只排 I 同型）。
+    grep -qE '(^|[^G])TAB ok' "$LOG"
+  else
+    grep -qF "$1" "$LOG"
+  fi
+}
+
+# 恰一次断言：EFI 引导链无重入（BerryBoot 不跑两遍 = EBS 后固件不再拿回
+# 控制权的结构性证据）；grep -c 空结果时 0（|| true 吞 grep 无匹配退出码）。
+assert_once() {
+  local c
+  c=$(grep -cF -- "$1" "$LOG" || true)
+  [ "$c" -eq 1 ] || fail "「$1」非恰一次（${c:-0} 次）——EFI 链重入或打印面漂移"
+}
+assert_once_re() {
+  local c
+  c=$(grep -cE -- "$1" "$LOG" || true)
+  [ "$c" -eq 1 ] || fail "ERE「$1」非恰一次（${c:-0} 次）——EFI 链重入或打印面漂移"
+}
+
+# 金丝雀序列检查（smoke.sh 同款 awk：≥3 条且严格递增）。
+canary_ok() {
+  grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
+    { if (NR>1 && $1<=prev) bad=1; prev=$1; n=NR }
+    END { exit (bad || n<3) ? 1 : 0 }
+  '
+}
+
+# vars.fd 自产 blank（64MiB 全 0xFF）进本跑临时目录——**不拷贝共享模板**
+# （2026-10-29 实抓：手动 boot `-pflash` 直挂共享 vars 会往里持久化
+# BootOrder/boot entry，拷贝继承陈旧项 → USB 形态下 BDS 试遍旧 entry 尾落
+# EFI Internal Shell（标记全缺）；blank = 固件每跑重新枚举在位设备自举，
+# 真零状态。第 3 参 AAVMF_VARS 仅为接口稳定保留（CI 零改动），不消费）。
+python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$RUN_DIR/vars.fd" || fail "vars.fd 生成失败"
+
+# FIFO stdin（smoke.sh RX 相同款）：holder 持写端防 EOF；帽 1200s 盖全流程
+# worst（360+120+60 + RX 注入段 + 余量 ~2x）。
+RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image-fifo.XXXXXX")
+rm -f "$RX_FIFO"
+mkfifo "$RX_FIFO" || fail "mkfifo 失败"
+( sleep 1200 ) > "$RX_FIFO" &
+RX_HOLDER=$!
+
+echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）"
+# 与 justfile run-efi 同参（不挂 virtio——EFI 路无 virtio 面；ramfb 供 GOP）。
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
+  -pflash "$AAVMF_CODE" -pflash "$RUN_DIR/vars.fd" \
+  -drive if=none,file="$IMAGE",format=raw,id=bb \
+  -device qemu-xhci -device usb-storage,drive=bb \
+  -device ramfb \
+  < "$RX_FIFO" > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 27 + 生态 27 = 67）——
+# EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
+# 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
+ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
+t0=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 提前退出（固件/引导崩溃？）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+  missing=""
+  for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}" "${KERNEL_MARKERS[@]}" "${ECO_MARKERS[@]}"; do
+    assert_marker "$m" || missing="${missing:+$missing }$m"
+  done
+  for e in "${EFI_ERE[@]}"; do
+    grep -qE "$e" "$LOG" || missing="${missing:+$missing }ERE:$e"
+  done
+  [ -z "$missing" ] && break
+  [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] \
+    && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
+  sleep 1
+done
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 27 + 生态 27）"
+
+# —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
+for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
+  assert_once "$m"
+done
+for e in "${EFI_ERE[@]}"; do
+  assert_once_re "$e"
+done
+echo "smoke-image: EFI 十段 + 接续恰一次到齐"
+
+# —— 阶段 3：字节数对拍（盘内容 ↔ 引导链读数 ↔ 内核消费）——
+KERNEL_BYTES=$(wc -c < "$KERNEL" | tr -d ' ')
+INITRD_BYTES=$(wc -c < "rootfs.cpio" | tr -d ' ')
+grep -qE "kfile: ${KERNEL_BYTES}B ok" "$LOG" \
+  || fail "kfile 字节数与宿主内核不一致（期望 ${KERNEL_BYTES}B）——镜像打包或引导读链断裂"
+grep -qE "init: ${INITRD_BYTES}B ok" "$LOG" \
+  || fail "init 字节数与宿主 rootfs.cpio 不一致（期望 ${INITRD_BYTES}B）——镜像打包或引导读链断裂"
+echo "smoke-image: 字节对拍 ok（kfile=${KERNEL_BYTES}B init=${INITRD_BYTES}B 与宿主精确同数）"
+
+# —— 阶段 4：switches 金丝雀（≥3 条且严格递增）——
+t1=$(date +%s)
+while :; do
+  n=$(grep -c 'switches=' "$LOG" || true)
+  [ "${n:-0}" -ge 3 ] && break
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在金丝雀阶段退出"
+  [ $(( $(date +%s) - t1 )) -gt "$DEADLINE_CANARY" ] \
+    && fail "金丝雀 ${DEADLINE_CANARY}s 内不足 3 条（现有 ${n:-0}）"
+  sleep 2
+done
+canary_ok || fail "switches 序列非严格递增：$(grep -o 'switches=[0-9]*' "$LOG" | tr '\n' ' ')"
+# 快照注入前末值——阶段 6 复验以「出现严格更大的新线」为谓词（对抗审查 F2：
+# 全量重验会被注入前旧线满足，冻而不死零判别力）。
+LAST_CANARY=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+
+# —— 阶段 5：RX 注入相（bsh 可交互的自动代理）——
+# 全标记到齐 = bsh 就位（BSH ok 即交互读循环在跑）；注入 `rx` 逐字节 0.5s
+# （FEN=0 深 1 字节，打字速率确定性——smoke.sh RX 相同款）。
+exec 3> "$RX_FIFO"
+printf 'r' >&3; sleep 0.5
+printf 'x' >&3; sleep 0.5
+printf '\n' >&3
+t2=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 RX ok 阶段退出（注入链断？）"
+  grep -qF "RX ok" "$LOG" && break
+  [ $(( $(date +%s) - t2 )) -gt "$DEADLINE_RX" ] \
+    && fail "RX ok ${DEADLINE_RX}s 未出现（EFI 路 RX 中断链断——查 irq? 行）"
+  sleep 1
+done
+echo "smoke-image: RX ok 到齐（注入 rx → 应答）"
+# （C-4b 裁定：EFI 路不设 Ctrl-C 交互杀注入段（i130t）——bsh 按 C-2b 链序
+#  契约 park 在 fat_selftest（无盘 get_file Err → park `-> !` 挡断其后），
+#  交互编辑循环结构性不可达（RX ok 是内核 console 观察窗直打、不经 bsh，
+#  故能到而注入命令永不执行——verify 首跑实抓，串口 13670B 纯稳态矩阵零
+#  回显实证）。交互杀五环面由主路 smoke.sh RX 相段 g 独占（有盘路 bsh
+#  全功能）；EFI 路杀链核心面由 boot 期 INT ok 覆盖（真机 spawn +
+#  terminate(130) + collect_fg 收口 + reap 130 四步）。）
+
+# —— 阶段 6：注入后活性复验（等严格大于 LAST_CANARY 的新线）——
+# switches 单调累计，全量重验无判别力（对抗审查 F2）——RX 中断破坏 IRQ 契约
+# 的死状 = RX ok 后冻结，只有「新线仍在出现」才是活性谓词。
+t3=$(date +%s)
+while :; do
+  cur=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+  [ "${cur:-0}" -gt "$LAST_CANARY" ] && break
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在注入后复验阶段退出"
+  [ $(( $(date +%s) - t3 )) -gt "$DEADLINE_CANARY" ] \
+    && fail "注入后 ${DEADLINE_CANARY}s 无新金丝雀线（> $LAST_CANARY）——RX 注入后冻结（冻而不死面）"
+  sleep 2
+done
+
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 27 + 生态 27 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"

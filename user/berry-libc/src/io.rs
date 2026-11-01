@@ -17,6 +17,7 @@
 
 use core::ptr;
 
+use berry_fsclient::AliasTable;
 use berry_sys::{berry_channel_recv, berry_channel_send, berry_clock_read,
                 berry_object_wait_one, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE,
                 SIGNAL_WRITABLE};
@@ -25,10 +26,18 @@ use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
 static mut CONSOLE_H: u32 = 0;
 static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随后开）
-// A-2/P6：env 块 gift[2..] 双槽——[0] = rootfs VMO READ dup（bsh）、
-// [1] = P6 A-1 第三/四位（fsmgr 得服务端端 `gift2_h()`、bsh 得 fs 客户
-// 端端 `fs_h()`——同槽两位经 spawn 侧的 gift 排布区分，见 berry-exec 注）。
-static mut GIFT_H: [u32; 2] = [0; 2];
+// A-2/P6：env 块 extras 四槽（gift[4..] 位）——extras[0] = rootfs VMO
+// READ dup（bsh）或 P6 A-1 第三/四位（fsmgr 得服务端端 `gift2_h()`、bsh
+// 得 fs 客户端端 `fs_h()`——同槽两位经 spawn 侧的 gift 排布区分，见
+// berry-exec 注）；A2-3 第三位 = netd 服务端端（bsh EVS 自验——
+// `netd_h()`）；GUI-4 段② 第四位 = input 客户端端（bsh `inputpoll`——
+// `input_h()`）。
+// T-1 自描述对占固定位 gift[2]/[3]（前缀紧致律——自描述对前移、extras
+// 后挪，产侧 extra<2 不再中段留 0 洞）：GIFT_H[2] = self_proc MANAGE|
+// DUPLICATE dup（`self_proc_h()`——pthread_create 的 thread_create 面）、
+// GIFT_H[3] = self_vmar MAP|MANAGE|DUPLICATE dup（`self_vmar_h()`——
+// 子线程栈映射/回收面）。
+static mut GIFT_H: [u32; 6] = [0; 6];
 static mut STACK_TOP: usize = 0;
 
 // —— argv 面（d-3a env 块）：静态落位（名区 256B + 16 槽 + NULL 终结）——
@@ -57,11 +66,17 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         stdout = ptr::addr_of_mut!(STDOUT_FILE);
         let mut blob = [0u8; 256];
         let mut nb = blob.len();
-        // A-2：容量 2→3；P6 A-1：3→4——gift 位语义 [0]=console 发端别名、
-        // [1]=stdin 端、[2]=rootfs VMO READ dup 或 fsmgr 端、[3]=fs 客户端
-        // 端（按 spawn 侧排布区分，落 `GIFT_H` 双槽；svcmgr 系老程序照送
-        // 1-2 位，按实收 nhandles 落种，向后兼容）。
-        let mut hs = [0u32; 4];
+        // A-2：容量 2→3；P6 A-1：3→4；T-1：4→6；A2-3：6→7；GUI-4 段②：7→8。
+        // 前缀紧致律布局
+        // （与 berry-exec 产侧对偶）：[0]=console 发端别名、[1]=stdin 端、
+        // [2]/[3]=T-1 自描述对（self_proc/self_vmar——spawn 侧条件装配，
+        // 老调用面不送则位缺 0，`self_proc_h()==0` 即 pthread_create 的
+        // EAGAIN 守门）、[4..]=extras（rootfs VMO READ dup 或 fsmgr 端 +
+        // fs/blk 客户端端 + A2-3 netd 端 + GUI-4 段② input 端，按 spawn 侧
+        // 排布区分，落 `GIFT_H` 四槽）。nh 取值域 = {1（无 stdin 老面）,
+        // 4..=8（stdin → 自描述对必随行）}——nhandles 单调门控 presence，
+        // 按实收落种向后兼容。
+        let mut hs = [0u32; 8];
         let mut nh = hs.len();
         if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0 {
             return 0;
@@ -73,10 +88,22 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
             STDIN_H = hs[1];
         }
         if nh >= 3 {
-            GIFT_H[0] = hs[2];
+            GIFT_H[2] = hs[2];
         }
         if nh >= 4 {
-            GIFT_H[1] = hs[3];
+            GIFT_H[3] = hs[3];
+        }
+        if nh >= 5 {
+            GIFT_H[0] = hs[4];
+        }
+        if nh >= 6 {
+            GIFT_H[1] = hs[5];
+        }
+        if nh >= 7 {
+            GIFT_H[4] = hs[6];
+        }
+        if nh >= 8 {
+            GIFT_H[5] = hs[7]; // GUI-4 段②：input 端（svcmgr 预拉分种）
         }
         // argv 解析：NUL 分隔字节串逐个拷进名区、记指针。
         let (mut argc, mut i, mut o) = (0usize, 0usize, 0usize);
@@ -145,40 +172,96 @@ pub fn send_stdout_eof() {
     }
 }
 
-/// env 块 gift[2] 的 rootfs VMO handle（A-2：0 = 无第三位——svcmgr 系老
-/// 程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
+/// env 块 handles[1] 的 stdin 通道端（C-4b Ctrl-C 杀链消费：bsh 前台等待
+/// 经 wait_many 并监 stdin READABLE，0x03 到达即 terminate(130)）；0 = 未
+/// 交付（老 spawn 面），调用方退化为不监听 stdin。
+pub fn stdin_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { STDIN_H }
+}
+
+/// env 块 extras[0]（gift[4] 位）的 rootfs VMO handle（A-2：0 = 未交付——
+/// svcmgr 系老程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
 pub fn rootfs_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[0] }
 }
 
-/// env 块 gift[2] 的同槽访问器（P6 A-1：fsmgr 的 fs 服务端端——svcmgr 建
-/// fs 对后经 env 块第三位交付；0 = 未交付 = park 挂起）。与 [`rootfs_h`]
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（P6 A-1：fsmgr 的 fs 服务端端——svcmgr 建
+/// fs 对后经 env 块 extras 首位交付；0 = 未交付 = park 挂起）。与 [`rootfs_h`]
 /// 同槽不同名：spawn 侧同一 gift 位对两种程序承载不同对象。
 pub fn gift2_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[0] }
 }
 
-/// env 块 gift[3] 的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
-/// RPC；0 = 无第四位 = fs 未拉起，调用方降级「fs not available」不死）。
+/// env 块 extras[1]（gift[5] 位）的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
+/// RPC；0 = 未交付 = fs 未拉起，调用方降级「fs not available」不死）。
 pub fn fs_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[1] }
 }
 
-/// env 块 gift[3] 的同槽访问器（P6 A-5：fsmgr 的块设备服务端——svcmgr
-/// 预拉 vblk 后把 blk_a 经 fsmgr 的 env 块第四位交付，fsmgr 据此读 FAT
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（P6 A-5：fsmgr 的块设备服务端——svcmgr
+/// 预拉 vblk 后把 blk_a 经 fsmgr 的 env 块 extras 次位交付，fsmgr 据此读 FAT
 /// 卷；0 = 未交付 = 无 FAT 层，RAM-only 降级续走）。与 [`fs_h`] 同槽不同
 /// 名：spawn 侧同一 gift 位对两种程序承载不同对象（bsh 拿 fs 端 / fsmgr
-/// 拿 blk 端，每进程 env 块独立无冲突——gift[2] 的 rootfs/gift2 同款惯例）。
+/// 拿 blk 端，每进程 env 块独立无冲突——extras[0] 的 rootfs/gift2 同款惯例）。
 pub fn blk_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[1] }
 }
 
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（GUI-1 段②：guifbd 的
+/// console fan-out 上屏端 endB_fb——svcmgr 预拉 guifbd 时随 extras 次位
+/// take 迁入，recv 循环消费 console 转发的输出字节流；0 = 未交付 = 非
+/// EFI-GOP 链理论不可达，调用方 park 兜底）。与 [`fs_h`]/[`blk_h`] 同槽
+/// 不同名：spawn 侧同一 gift 位对不同程序承载不同对象（extras[0] 的
+/// rootfs/gift2 同款惯例）。
+pub fn gift3_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
+/// env 块 extras[2]（gift[6] 位）访问器（A2-3：netd 服务端端 NET_A dup——
+/// svcmgr 拉起 bsh 时随 extras 第三位交付，bsh 的 EVS 自验（echo server）
+/// 经它发 berry-netdproto RPC；0 = 未交付 = 无 vnet 链（EFI 路/裸跑），
+/// EVS 静默跳过）。**独占槽**（无同槽不同名——extras[0]/[1] 的双名惯例
+/// 在此不适用：第三位现役只有 netd 一个产面）。
+pub fn netd_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[4] }
+}
+
+/// env 块 extras[3]（gift[7] 位）访问器（GUI-4 段②：input 域 channel
+/// 客户端端 INPUT_A dup——svcmgr 拉起 bsh 时随 extras 第四位交付，bsh 的
+/// `inputpoll` 经它发 berry-guiproto INPUT_POLL RPC；0 = 未交付 = inputd
+/// 未起（裸/B4/EFI 拓扑），调用方静默降级）。**独占槽**（netd_h 同款——
+/// 第四位现役只有 input 一个产面）。
+pub fn input_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[5] }
+}
+
 pub fn stack_top() -> usize {
     unsafe { STACK_TOP }
+}
+
+// —— T-1 自描述对访问器（pthread.rs 消费）——
+
+/// env 块 gift[2] 的**自身 Process** handle（MANAGE|DUPLICATE dup——
+/// `pthread_create` 经它 `thread_create` 拉兄弟线程）。0 = 未交付（老
+/// spawn 面）= `pthread_create` 返 EAGAIN（std Builder::spawn 走 Err）。
+pub fn self_proc_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[2] }
+}
+
+/// env 块 gift[3] 的**自身 root Vmar** handle（MAP|MANAGE|DUPLICATE dup
+/// ——子线程栈 `vmar_map`/join `vmar_unmap` 面）。0 = 未交付，同 EAGAIN 守门。
+pub fn self_vmar_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[3] }
 }
 
 /// console 发送：分片 + EBUSY 阻塞等 WRITABLE（见模块头契约，A-2 修订）。
@@ -225,9 +308,61 @@ fn fd_ok(fd: c_int) -> bool {
     (0..=2).contains(&fd)
 }
 
+// —— console 别名面（C-2c 挂账刀：fcntl F_DUPFD/F_DUPFD_CLOEXEC 的 fd
+//    0/1/2 克隆——uu_head stdin 路径 try_clone_to_owned 的真身）——
+// 别名槽与 fd 表（fd 3+）共享同一段编号空间、双侧 alloc 互让（正方向
+// `AliasTable::alloc` 跳 FDT 在册位 / 反方向 `FdTable::alloc_skipping`
+// 跳别名在册位——同号双语义 = read/write 先撞别名翻译、FDT 表项结构性
+// 不可达的静默错，双侧防线在 berry-fsclient host 测试钉板）。别名无独立
+// 状态：read/write/writev/isatty 先翻译回底 fd 走 console 原路径（共享
+// PEND 残段——与 POSIX dup 共享 file description 同义）；close 摘槽即
+// 成功（console 是进程级资产，同 close(1) 不真关口径）；lseek = ESPIPE
+// （console 非 seekable——uu_head stream_position 失败即走缓冲回退路，
+// 译成功 = 静默错位，fs.rs 闸）。
+static mut ALIASES: AliasTable = AliasTable::new();
+
+/// 别名 → 底 fd：非别名 = None。pub(crate)：fcntl 分发（stubs.rs）与
+/// lseek 闸（fs.rs）/open 避位（fs.rs）用。
+pub(crate) fn alias_base(fd: c_int) -> Option<c_int> {
+    // SAFETY: 只读；唯一写点 = fcntl（stubs.rs，单线程 lib.rs ABI 口径）。
+    unsafe { ALIASES.base_of(fd) }
+}
+
+/// fcntl F_DUPFD 面：console `base`（0/1/2）装一条 ≥`start` 的最低可用
+/// 别名（满表/段帽尽 = None → 调用方 EMFILE）。
+pub(crate) fn alias_alloc(base: c_int, start: c_int) -> Option<c_int> {
+    // SAFETY: 单线程 static mut 直写（lib.rs ABI 口径）；FDT 只读借用。
+    unsafe { ALIASES.alloc(base, start, &*core::ptr::addr_of!(crate::fs::FDT)) }
+}
+
+/// 摘别名槽（close 面）：Some(base) = 别名已摘 / None = 非别名。
+pub(crate) fn alias_take(fd: c_int) -> Option<c_int> {
+    // SAFETY: 单线程 static mut 直写（同上）。
+    unsafe { ALIASES.take(fd) }
+}
+
 #[no_mangle]
 pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
+    let r = write_inner(fd, buf, n);
+    crate::signal::may_dispatch(); // A7-4 ③b：公共入口投递点（§3.3）
+    r
+}
+
+fn write_inner(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
+    // 别名先翻译回底 fd（console 克隆——别名无独立状态，见别名面注释）。
+    let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
+        // socket 段（15..=22，A3-2）：分派先于 fs（两段无交集，先判 =
+        // 归属谓词显式化）；sock_send 收口 EBADF/分片/部分写语义。
+        if crate::net::sock_valid(fd) {
+            return crate::net::sock_send(fd, buf as *const u8, n);
+        }
+        // epoll 段（23..=26，A4-1）：epoll fd 不可写（Linux 同款 EINVAL
+        // ——interest 注册只走 epoll_ctl）。
+        if crate::net::epoll_valid(fd) {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
         // fd≥3 = fs-backed 写（fs.rs 收口 EBADF/游标/分片 PUT）；fd<0 同落
         // 那边的 EBADF 面。
         return crate::fs::write_fd(fd, buf, n);
@@ -242,7 +377,39 @@ pub extern "C" fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
 
 #[no_mangle]
 pub extern "C" fn writev(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
+    let r = writev_inner(fd, iov, cnt);
+    crate::signal::may_dispatch(); // A7-4 ③b：公共入口投递点（§3.3，修复轮补）
+    r
+}
+
+fn writev_inner(fd: c_int, iov: *const Iovec, cnt: c_int) -> ssize_t {
+    // 别名先翻译（同 write——console 克隆共底 fd）。
+    let fd = alias_base(fd).unwrap_or(fd);
     if !fd_ok(fd) {
+        // socket 段（A3-2）：逐 iov 走 sock_send（部分写返回已写量——
+        // fs 路同语义）。
+        if crate::net::sock_valid(fd) {
+            if cnt <= 0 {
+                return 0;
+            }
+            let mut total: ssize_t = 0;
+            for i in 0..cnt as usize {
+                let v = unsafe { &*iov.add(i) };
+                if v.len > 0 {
+                    let r = crate::net::sock_send(fd, v.base as *const u8, v.len);
+                    if r < 0 {
+                        return if total > 0 { total } else { -1 };
+                    }
+                    total += r;
+                }
+            }
+            return total;
+        }
+        // epoll 段（A4-1）：不可写（write 同款 EINVAL）。
+        if crate::net::epoll_valid(fd) {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
         // fs-backed：逐 iov 走 fs 写（部分写返回已写量——write_fd 同语义）。
         if cnt <= 0 {
             return 0;
@@ -292,8 +459,28 @@ static mut PEND_OFF: usize = 0;
 
 #[no_mangle]
 pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
+    let r = read_inner(fd, buf, n);
+    crate::signal::may_dispatch(); // A7-4 ③b：公共入口投递点（§3.3）
+    r
+}
+
+fn read_inner(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
+    // 别名先翻译回底 fd（fd 0 克隆共享 PEND 残段——与 POSIX dup 共享
+    // file description 同义：uu_head 经别名读到的与直读 fd 0 是同一条流）。
+    let fd = alias_base(fd).unwrap_or(fd);
     unsafe {
         if fd != 0 {
+            // socket 段（A3-2）：分派先于 fs（同 write）。n==0 由 sock_recv
+            // 入口收口（POSIX recv 零长读 = 0）。
+            if crate::net::sock_valid(fd) {
+                return crate::net::sock_recv(fd, buf as *mut u8, n);
+            }
+            // epoll 段（A4-1）：epoll fd 不可读（Linux 同款 EINVAL——收割
+            // 只走 epoll_wait）。
+            if crate::net::epoll_valid(fd) {
+                crate::set_errno(crate::EINVAL);
+                return -1;
+            }
             // fd≥3 = fs-backed 读（fs.rs 收口 EBADF/RA 预读）；fd 1/2 在那边
             // 落同一 EBADF 面（不在册）——旧「1/2 只写：读方向诚拒」零漂移。
             return crate::fs::read_fd(fd, buf, n);
@@ -353,8 +540,22 @@ pub extern "C" fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
 
 #[no_mangle]
 pub extern "C" fn close(fd: c_int) -> c_int {
+    // 别名：摘槽即成功（console 是进程级资产——close(1) 不真关同口径）。
+    if alias_take(fd).is_some() {
+        return 0;
+    }
     if fd_ok(fd) {
         return 0; // console handle 是进程级资产，close(1) 不真关
+    }
+    // socket 段（A3-2）：摘表 + best-effort CLOSE RPC（vnet 侧会话槽
+    // 回收——不弃 = 会话表真容量位泄漏；net.rs 收口，恒返 0 面）。
+    if crate::net::sock_valid(fd) {
+        return crate::net::sock_close(fd);
+    }
+    // epoll 段（A4-1）：释槽 + interest 全清（net.rs 收口；段内空槽
+    // EBADF）。
+    if crate::net::epoll_valid(fd) {
+        return crate::net::epoll_close(fd);
     }
     // fd≥3 = fs-backed：摘表 + 可写 fd 的 close 即 commit（裁决 2）。
     crate::fs::close_fd(fd)
@@ -362,12 +563,14 @@ pub extern "C" fn close(fd: c_int) -> c_int {
 
 #[no_mangle]
 pub extern "C" fn isatty(fd: c_int) -> c_int {
-    if !fd_ok(fd) && !crate::fs::fd_valid(fd) {
+    // 别名先翻译（console 克隆与底 fd 同判定——恒 ENOTTY，v1 诚实面）。
+    let fd = alias_base(fd).unwrap_or(fd);
+    if !fd_ok(fd) && !crate::fs::fd_valid(fd) && !crate::net::sock_valid(fd) {
         crate::set_errno(crate::EBADF);
         return 0;
     }
     crate::set_errno(crate::ENOTTY);
-    0 // v1 诚实面：非 tty（console 同面；fs fd 亦非 tty）
+    0 // v1 诚实面：非 tty（console 同面；fs fd / socket fd 亦非 tty）
 }
 
 // —— FILE / stdio ——
@@ -472,6 +675,15 @@ pub extern "C" fn _exit(code: c_int) -> ! {
 
 #[no_mangle]
 pub extern "C" fn abort() -> ! {
+    // A7-4 ③b：abort 语义 = raise(SIGABRT)——被 catch 则进 handler，
+    // handler 返回后仍终止（musl 口径：abort 流程不因 handler 返回而
+    // 续命）；IGN/DFL 汇入终止路径（dispatch 内 DFL 终止档自带
+    // `abort\n` 诊断 + exit(134) 不返，此后的兜底只罩 Call-返回档）。
+    // POSIX/C11 钦定（修复轮补，对抗审查 finding）：raise 前先解除
+    // SIGABRT 阻塞——block 态下 raise 只落 held、handler 永不执行；
+    // 旧 pending 位随 take_total 归并一并送达。
+    crate::signal::abort_unblock_sigabrt();
+    let _ = crate::signal::raise(crate::signal::SIGABRT);
     console_write(b"abort\n");
     send_stdout_eof();
     berry_sys::berry_process_exit(134) // 128+SIGABRT 惯例码

@@ -33,6 +33,23 @@ const FW_CFG_FILE_DIR: u16 = 0x19;
 /// 的单一事实源（两侧对读维护）。
 pub const ROOTFS_NAME: &str = "opt/berry/rootfs";
 
+/// 多卷上限（A1-3b）：`opt/berry/rootfs0..9` —— 单数字后缀即够（10 卷 ×
+/// 单卷帽 32MiB ≫ 总量帽 128MiB，帽先绑定；mkcpio `--split` 产链对口）。
+pub const ROOTFS_VOLS: usize = 10;
+
+/// 按序号查多卷具名项（`opt/berry/rootfs{i}`，i=0..ROOTFS_VOLS——
+/// [`ROOTFS_NAME`] 的多卷同位扩面）。越界序号 = 恒 `None`。
+pub fn rootfs_volume(i: usize) -> Option<FileEntry> {
+    if i >= ROOTFS_VOLS {
+        return None;
+    }
+    // 栈上定格名（17B 定长——HAL 无 alloc，格式化 = 末字节拼数字）。
+    let mut name = *b"opt/berry/rootfs0";
+    name[16] = b'0' + i as u8;
+    let s = core::str::from_utf8(&name).ok()?;
+    find_file(s)
+}
+
 /// fw_cfg 在位校验：SIGNATURE 项 = ASCII "QEMU"（低字节 'Q' = 0x51）。
 pub fn present() -> bool {
     // SAFETY: selector/data 是对齐 MMIO 口；只读路径无副作用。selector 收
@@ -107,4 +124,55 @@ pub fn read_to(entry: &FileEntry, buf: &mut [u8]) -> bool {
         }
     }
     true
+}
+
+/// 顺序续读会话（A1-3b）：大 blob 逐 chunk 拼装用——selector **一次选定**，
+/// data 口 offset 随每次读自然推进（无 seek；discard 前进 O(n²) 禁）。
+/// [`read_to`] 是恰全长整读（单卷小 blob 一次成），本面是它的分块版：
+/// 语义约束 = **会话存续期内不得有其他 fw_cfg 访问**（selector 是全局单
+/// 活动流——boot 单线程按序使用，无抢占窗）。
+pub struct SeqRead {
+    /// 剩余未读字节（项尾守卫：越项尾的 data 口行为不承诺，绝不越过）。
+    remaining: u32,
+}
+
+impl SeqRead {
+    /// 选定 `entry` 开始顺序读（selector 写一次）。空项（size==0）→ `None`。
+    pub fn open(entry: &FileEntry) -> Option<SeqRead> {
+        if entry.size == 0 {
+            return None;
+        }
+        // SAFETY: 只写 selector 口（选定后 data 口从项首起流）。
+        unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()) };
+        Some(SeqRead { remaining: entry.size })
+    }
+
+    /// 顺序读 ≤`buf.len()` 字节（项尾截断），返回实读数（0 = 本项读完）。
+    ///
+    /// 4 字节粒度约束：data 口按 u32 弹出、尾字节不足 4 的余数按**前缀截取**
+    /// （与 [`read_to`] 同序——被截掉的尾 1-3 字节已从流中消费）。因此**非
+    /// 末段读**（本步没读到项尾）的实读数向下取整到 4 的倍数——调用方 chunk
+    /// 缓冲取 4 的倍数（A1-3b 内核侧 = 4MiB）即天然无截损。
+    pub fn read(&mut self, buf: &mut [u8]) -> usize {
+        if self.remaining == 0 || buf.is_empty() {
+            return 0;
+        }
+        let mut want = core::cmp::min(buf.len() as u32, self.remaining);
+        // 非末段：4 字节粒度推进（余数只许发生在项尾——中途半 u32 = 跳字节）。
+        if want < self.remaining {
+            want &= !3;
+            if want == 0 {
+                return 0;
+            }
+        }
+        // SAFETY: 只读 MMIO 流；remaining 守卫保证不越过项尾。
+        unsafe {
+            for chunk in buf[..want as usize].chunks_mut(4) {
+                let w = stream_le32().to_le_bytes();
+                chunk.copy_from_slice(&w[..chunk.len()]);
+            }
+        }
+        self.remaining -= want;
+        want as usize
+    }
 }

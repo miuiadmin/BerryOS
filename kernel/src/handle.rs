@@ -440,6 +440,15 @@ impl HandleTable {
         })
     }
 
+    /// 在用（Used 态）槽计数（B-0 churn 金丝雀：全关光后必须归零——确定性
+    /// 严格断言的判据，非热路径）。
+    pub fn used_count(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|s| matches!(s, SlotState::Used { .. }))
+            .count()
+    }
+
     /// [`Self::get`] 的裸指针底层：查表 → 类型 → 权限后返回对象引用指针 + 权利。
     /// **可变访问的正规入口**（syscall 写路径 `as_*_mut`）与**双对象同借**
     /// （`vmar_map` 的 vmar + vmo）用——两个 `get_raw` 指针类型门控互异 ⇒ 必指

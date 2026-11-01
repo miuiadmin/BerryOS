@@ -28,7 +28,7 @@ Phase 0–6 shipped on ARM64 (QEMU `virt`), x86_64 minimal port in CI. Highlight
 
 | Layer | What boots |
 |---|---|
-| Kernel | Preemptive scheduler with priority-inheritance donation, VMO/Vmar memory objects, capability handle tables, 30 registered syscalls (29 implemented), channel IPC with fastpath/slowpath, intent propagation |
+| Kernel | Preemptive scheduler with priority-inheritance donation, VMO/Vmar memory objects, capability handle tables, 31 registered syscalls (30 implemented), channel IPC with fastpath/slowpath, intent propagation |
 | Services | console/svcmgr service framework, RAM filesystem, **user-space virtio-blk and virtio-net drivers**, FAT12 read/write with cross-boot persistence, UDP/DNS, minimal TCP client (full handshake → data → teardown) plus TCP RPC service |
 | Apps | `bsh` shell (pipes, mini-readline, env), **unmodified `hexyl` 0.17.0** running via a musl-target libc shim, `.bap` application packages (manifest → capability grant → supervised lifecycle) |
 | x86_64 | PVH boot, PIT/PIC timer, exception vectors, context switching, SYSCALL/SYSRET — 7 smoke markers gated in CI |
@@ -40,6 +40,7 @@ Current milestone **M-VM**: a self-hosting disk image (BerryBoot EFI loader → 
 ```bash
 brew install qemu just                    # macOS; Linux: apt install qemu-system-arm qemu-system-x86 just
 rustup target add aarch64-unknown-none x86_64-unknown-none
+rustup target add aarch64-unknown-linux-musl   # user-space std programs & .bap apps (guide: docs/应用开发指南.md)
 
 just run          # boot the kernel to a serial console in QEMU (ARM64 virt)
 just run-rootfs   # full service stack: rootfs, FAT, DNS, TCP, .bap apps
@@ -74,6 +75,7 @@ Design documents are written in Chinese and live in [`docs/`](docs/). Start from
 - Roadmap: [`docs/路线图.md`](docs/路线图.md)
 - Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计.md`](docs/调度器设计.md)
 - Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计.md`](docs/系统调用ABI设计.md)
+- App development guide — writing `.bap` apps, manifest v1, build toolchain: [`docs/应用开发指南.md`](docs/应用开发指南.md)
 
 ## License
 

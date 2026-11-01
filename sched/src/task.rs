@@ -101,6 +101,20 @@ pub struct Task {
     /// TERMINATED 等待者 + drain 该 Process 的表 + release 本钉住。语义归
     /// `内核` crate，sched 只存取（同 `proc_tag` 的 crate 边界纪律）。
     pub pinned: usize,
+    /// T-1：本任务钉住的 Thread `ObjRef` 地址（`thread_start` 成功时由
+    /// syscall 层写入——与那次 `retain` 同点成对；0 = 无（首线程/内核任务
+    /// ——首线程无独立 Thread 钉住对）。**退出钩子消费**：Thread 簿记
+    /// （exited 置位 + join 唤醒）+ release 本钉住。语义归 `内核` crate，
+    /// sched 只存取（同 `pinned` 的 crate 边界纪律）。
+    pub thread_key: usize,
+    /// S-2 E0（BKL 纪元，`SMP-S2实施设计草案.md` §2.3）：持锁义务位——「本任务
+    /// 当前处于 KERN_LOCK 持锁窗」随任务走（不放 per-CPU——SVC 入口/切走点
+    /// 可能换核）。置位 = arch SVC/fault 入口（`kern_lock::svc_enter` 经槽）；
+    /// 清位 = dispatch 尾 `svc_exit` / `switch_away_forever_with` 收口 /
+    /// `klock_exit`（内核任务直调包络）。sched 切换原语按位分诊：切走前放锁、
+    /// 切回后重取（SVC 层 ~31 个 handler 零改动；内核任务直调位=0 幂等跳过）。
+    /// 位只在任务自身执行流中被写 → 挂起期间稳定。
+    pub klock_window: bool,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
     // Phase 兑现——RR 不消费，为 EAS/PI/AI 调度预埋，免后改 TCB 布局返工）----
@@ -273,6 +287,8 @@ impl Task {
             asid,
             proc_tag,
             pinned: 0,
+            thread_key: 0,
+            klock_window: false,
             prio_base: 0,
             prio_effective: 0,
             pi_inherited: 0,

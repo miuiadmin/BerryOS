@@ -3,6 +3,7 @@
 > 回答三件事：**四层东西（boot / 系统 / 应用 / 固件）各自怎么更新、每层怎么掉电安全、按端怎么差异**。
 > 核心论点：**升级分四层、每层一把刀。「双分区」只是 L0 块层的版本，我们的主刀在命名空间层——sys 目录级 A/B + 指针原子翻。换家具，不换房子：user/ 数据从来不动**。手机厂换系统是换发动机（整机重刷、恢复模式、变砖恐惧）；我们是换家具，房子（存储布局与归属语义）从来不动。
 > 挂钩：`架构决策.md` #47（本文索引）+ #45（零分区/四棵树 = L1 的物理基础）+ #24（度量链 = 验签与防降级）+ #44（appd/.bap = L2 已设计）；`驱动模型设计.md`（L3 固件随驱动包）；`应用模型设计.md`（L2 = 换树协议的 OTA 面）；`存储布局与沙箱设计.md` §1–§2（分区替代表 + `sys/boot/` 槽位已预留）。**设计先行**（`路线图.md` 明文允许设计文档与任意 Phase 并行产出），v1 无代码面——fw_cfg rootfs 时代的「更新」= 重新打包。
+> **2026-10-30 追记**（SEC-01 day-one 缝冻结 2026-10-30——件 20；SEC-02 A3 文档冻结）：§2.1 L0 slot 状态三字段（Android A/B 同型）+ 「SUCCESSFUL 先于 rollback index 更新」次序 + RPMB 归属裁定（帧驱动=持证应用 / HMAC=keystored / 计数统一走 CounterBackend）+ `berry.verifiedbootstate` 四态验证标记。
 
 ## 0. 病根：整机重刷文化
 
@@ -28,6 +29,20 @@
 - 若 SoC 引导链强制双槽（多数手机 SoC 如此）：L0 老老实实做物理 A/B——但它是**实现细节**，用户可见语义仍是「翻指针」。#45 重议触发器已预埋此后门：真机强制多分区 → **块层**适配，用户可见布局与归属语义不变（分区永远不升用户概念）。
 - **启动计数回退**（ChromeOS verified boot 同款）：新槽启动计数 +1，新系统须在限定窗口内写「健康」标记（关键服务全起 + 自检过）才清零；连续 N 次未健康 → boot 自行回指旧槽。**变砖在机制上不可能**。
 - QEMU / 无双槽 SoC（部分手表）没有 L0 概念——单载荷直加载，L1 直接顶到最前。
+
+### 2.1 L0 slot 三字段 + 反回滚次序 + RPMB 归属 + 验证态标记（SEC-01 day-one 缝冻结 2026-10-30——件 20）
+
+四件设计冻结（真机窗口 P8 实板，设计位现在定死；与 `安全与硬件隔离设计.md` §4/§4.1/§6 对齐）：
+
+1. **slot 状态三字段**（Android A/B boot_control 同型，字段名照抄）：`priority`（优先级，>0 = 可启动；「active 槽」= 高 priority 槽的派生态，不单独存）、`tries_remaining`（剩余尝试次数）、`successful_boot`（成功标记）。落盘形态 = **镜像内固定偏移小文件或专用扇区**，BerryBoot 读它选槽——本节上方「启动计数 + 健康标记」机制的机器可读化。状态机对齐 Android：更新引擎写备槽 → 激活（priority 高 + tries_remaining=N）→ 重启 → bootloader 选高 priority 槽 → 新系统自检 → `markBootSuccessful` 等价面清 tries 落 successful → 失败每 boot 消耗一次 tries、归零 bootloader 自行回旧槽（变砖在机制上不可能，§2 结论不变）。
+2. **「SUCCESSFUL 先于 rollback index 更新」次序纪律**：槽标 SUCCESSFUL **之后**才允许更新反回滚计数元数据——否则先写回滚计数 = 旧槽（版本号更低）再也回不去，**回退机制被防回滚机制反噬**（AOSP 明文规则）。此序写进更新引擎状态机，与 §3「防降级」bullet 构成完整次序契约：回退自由（SUCCESSFUL 前）→ 防降级生效（SUCCESSFUL 后）。
+3. **RPMB 归属裁定**（对齐 `安全与硬件隔离设计.md` §4.1 TEE 客户端定位；`驱动模型设计.md` §1/§2 既有面不为此改）：
+   - **帧驱动 = 持证应用**（devmgr 面，vblk 同族——RPMB 是 eMMC/UFS 块设备的子协议，走块设备授权链）；
+   - **auth key 持有者与 HMAC 计算 = keystored**（BerryOS 无 TEE，keystored = 安全侧进程级隔离最小近似——同 Linux RPMB 子系统「内核只透传帧、密钥在安全世界」拓扑；帧驱动永不接触 auth key）；
+   - **计数统一走 CounterBackend**（read / increment / compare_and_set 抽象，SEC-01 §4.5 件 16）——L0 启动计数、rollback index、未来认证限速计数同一接口；后端 QEMU 软件桩 → 真机 RPMB/eFuse 换芯零协议改。**内核零 RPMB 知识**。
+4. **`berry.verifiedbootstate` 验证态标记**：`androidboot.verifiedbootstate` 的等价物，进 handoff/boot 标记面——四态对齐 Android RootOfTrust 枚举与颜色态：`verified`（GREEN，厂根验签）/ `self-signed`（YELLOW，用户根）/ `unverified`（ORANGE，解锁未验）/ `failed`（RED，验签失败——真机路拒跳或警告屏，QEMU 路占位）。下游（keystored 证明、盘加密密钥绑定、遥测）第一天就能消费「当前验证态」，不需要内核 ABI 再开洞。
+
+> 来源：SEC-01 §4.5 件 20；`research/sec-notes/SEC-1-引导链安全与VerifiedBoot.md` §3.5（A/B 三字段 + SUCCESSFUL/rollback 耦合）、day-one 留缝 3/5、`research/sec-notes/SEC-4-密钥管理与加密芯片.md` §3.4（RPMB 协议）、§5-3（RPMB 归属裁定原文）。
 
 ## 3. L1：系统层主刀 = 目录级 A/B（零分区的更新面兑现）
 
@@ -63,8 +78,8 @@ sys/
 
 | 端 | 更新形态 | 备注 |
 |---|---|---|
-| 手表（v1 主战场） | BT/USB 侧载整包（L1 树级） | 无网面时 OTA 退化 Companion 递送；单用户无灰度 |
-| 手机 | 后台下载（net 服务）+ 静默备槽 + 重启切换（L0 回退保底） | 用户感知 =「重启后版本变了」 |
+| 手机（v1 主战场） | 后台下载（net 服务）+ 静默备槽 + 重启切换（L0 回退保底） | 用户感知 =「重启后版本变了」 |
+| 手表（同族低功耗端） | BT/USB 侧载整包（L1 树级） | 无网面时 OTA 退化 Companion 递送；单用户无灰度 |
 | PC | 同手机 + 手动触发/延迟重启 | — |
 | 车机/工业（v2+） | **维护窗 + 灰度车队 + 回退 SLA**；ASIL/DAL 不承诺（12 号 §3 老实账），安全相关 ECU 不在本系统更新面内 | 工业端离线补丁包（气隙）走同一验签链 |
 

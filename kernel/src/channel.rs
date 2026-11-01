@@ -26,8 +26,12 @@ use core::ptr::NonNull;
 
 /// 单条消息 inline 字节上限（IPC设计 §2：内联载荷 ≤256B；更大走共享 VMO）。
 pub const CHAN_MSG_MAX: usize = 256;
-/// 单条消息随行 handle 上限（ABI §8.3 send/recv 数组界）。
-pub const CHAN_HND_MAX: usize = 4;
+/// 单条消息随行 handle 上限（ABI §8.3 send/recv 数组界）。T-1：4→6——
+/// berry-exec env 块 gift 扩至 6 位；A2-3：6→8——bsh arm 三 extras
+/// （rootfs/fs/netd 端）+ base 2 + T-1 自描述对 2 = env 块 7 位（首跑实抓：
+/// nhandles=7 > 6 → send -EINVAL → spawn 链 trap 自陷 svcmgr）；libc
+/// `io.rs` 收窗与 ktest H3 超限样本同步 8/9 口径。
+pub const CHAN_HND_MAX: usize = 8;
 /// 每端收件队列深度（有界性 = send -EBUSY 的来源）。
 pub const CHAN_DEPTH: usize = 8;
 

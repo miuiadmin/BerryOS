@@ -57,12 +57,13 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 |
 | 0x33 | `process_exit` | 退出 | v1 |
 | 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 |
-| 0x35 | `thread_start` | 投入运行（**在册未实现**——30 在册 29 实现的唯一缺口，随 v2 多线程批落地；ktest「未实现真号」样本） | v1 |
+| 0x35 | `thread_start` | 投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形） | v1 |
 | 0x36 | `thread_exit` | 线程退出 | v1 |
 | 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
 | 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 |
 | 0x39 | `thread_set_deadline` | 设截止期（软实时） | v2 |
 | 0x3A | `process_get_exit_code` | 查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查） | v1 |
+| 0x3B | `process_terminate` | 外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。 | v1 |
 | **异常** ||||
 | 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 |
 | **IPC / event / futex** ||||
@@ -86,11 +87,18 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`） ||||
 | 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 |
 | 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 |
+| **安全 / 远程证明**（预留） ||||
+| 0x85 | `berry_attest` | 远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法） | v1 |
+| **信号**（POSIX 兼容——libc 协同式投递，A7-4） ||||
+| 0x86 | `signal_send` | 向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配 | v1 |
+| 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 |
 <!-- @gen:syscalls end -->
 
-**计数**：v1 ≈ 26；v2 增 ~12；v3 增 ~5（namespace + 策略注入/遥测）；**总数 ~43**。落在"中等偏上 ~30–45"。
+**计数**：v1 34 号在册 / 33 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10）；v2 增 12；v3 增 5（namespace + 策略注入/遥测）；**总数 51**（add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
 
-> **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x85`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
+> **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x87`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
+
+> **0x85 `berry_attest` 预留位（SEC-01 §4.5 件 11，底料 `research/sec-notes/SEC-3`）**：远程证明（本地取度量摘要 / quote——EAT/CBOR token 形态、PSA `initial_attest` 同思路）号位按在册模式冻结预留；v1 **在册未实现**，内核派发回落 `-ENOTSUP`（与未知号同形——§8.0 永不 panic）。ktest B 段样本挂账：`ktest.rs` 兄弟 WIP 冻结中，kernel 解冻后立「在册未实现真号」`-ENOTSUP` 样本（沿用既有纪律——勿拿未知号 0x99 冒充，二者 `-ENOTSUP` 成因不同）。kernel 解冻同步义务已随 A7-4 履行：`syscall.rs` `install()` 注释已改口（v1 在册 34 号 / 33 实现——唯 0x85 预留位 `-ENOTSUP`）。
 
 ## 5. 错误码
 
@@ -111,7 +119,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **v1 不支持** | 理由 |
 |--------------|------|
 | `fork()` | 本模型是 `process_create` + 显式能力传递，无"复制整个 AS+fd 表"语义。硬造需 CoW VMO + handle 全复制，工作量大且语义有坑。**v3+ 可选**用 CoW VMO 实现受限 fork。 |
-| 信号（signal/kill）传统语义 | 用异常通道 + Event 替代 |
+| 信号异步中断语义（EINTR / 任意点抢占） | signal/kill/raise/pause/sigaction/sigprocmask **已随 A7-4 落地**（协同式延迟投递：内核 0x86/0x87 pending 位 + libc 投递点，POSIX 允许任意延迟档——`事件循环A7-4信号面实施设计草案.md` §3.4 偏差清单）；不支持的是「阻塞调用被打断返 EINTR / compute 紧循环即时收号」的异步面 |
 
 | **明确不做** | |
 |--------------|------|
@@ -123,7 +131,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 7. 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1（实际 30 号在册 / 29 已实现——2026-10 现状；原预算 ~26，唯 `thread_start`(0x35) 未实现留 v2 多线程批）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
+- **v1（实际 34 号在册 / 33 已实现——T-1 后在册真语义全实现 + A7-4 `signal_send`(0x86)/`signal_take`(0x87) 落地（2026-10；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地）；SEC-01 件 11 起 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，ktest 样本挂 kernel 解冻）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
 - **v2**：pager（demand paging）、futex、timer、异常通道、调度策略、设备 syscall。（G3–G4）
 - **v3**：namespace（open/mount）、**AI 策略注入/遥测控制 syscall**（`policy_bind`/`telemetry_open`，见 `AI调度设计.md`）、完整 POSIX 兼容库（含受限 fork 探索）。（G4+）
 
@@ -131,7 +139,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 编号表是"概念名"。真正落地是带 `berry_` 前缀的符号：**两端皆 Rust**，合约源是 Rust 的 `extern "C"` + `#[repr(C)]` 定义（内核侧 + `user/berry-sys` 镜像）；`.h` 是派生产物（供 C 程序 / POSIX 库侧用）。本节是 **v1 的冻结合约**——P3 开工时从单一 IDL（Idol 思路）生成内核原型 + `berry-sys` 镜像 + `syscalls.h`，CI 用结构体布局断言 + bindgen 单向生成比对，消灭手写不同步（见 `架构综合纲领.md`）。
 
-> **单源落地状态（2026-10）**：**常量层已单源化**——`tools/abi.toml` 是号/位/码/宽度的唯一事实源，`tools/gen_abi.py` 生成内核 `abi_gen.rs` + berry-sys `abi_gen.rs` + 本文档 §4 编号表与 §8.2 C 定义列（marker 块逐字节再生）；`just abi-check`（`--check` 产物比对）挂 build/check/smoke 前置，改源忘再生成即 FAIL。宽度冻结由生成物两端的 `const _: () = assert!(size_of…)` 机器执法——「CI 结构体布局断言」的 v1 标量层，真 ABI 结构体出现即入册同源。**原型层（§8.3 `berry_*` 签名与 `.h`）仍手写双镜像——v2 挂账**；Plan B v0.5 的临时三方对账关卡 `abi_check.py` 随之退役（生成即一致，无需对账）。
+> **单源落地状态（2026-10）**：**常量层已单源化**——`tools/abi.toml` 是号/位/码/宽度的唯一事实源，`tools/gen_abi.py` 生成内核 `abi_gen.rs` + berry-sys `abi_gen.rs` + 本文档 §4 编号表与 §8.2 C 定义列（marker 块逐字节再生）；`just abi-check`（`--check` 产物比对）挂 build/check/smoke 前置，改源忘再生成即 FAIL。第 4 面产物 `tools/abi.syz`——syzkaller syscall 描述骨架（SEC-01 §4.5 件 25）：同由 `tools/abi.toml` 经 `gen_abi.py` 再生、`just abi-check` 逐字节守卫；骨架未过 syz-sysgen 编译验证，参数面为 ARM64 SVC x1..x6 全宽 int64 占位（abi.toml 无逐 syscall 参数表），待 §8.3 原型层（v2 挂账）收窄。宽度冻结由生成物两端的 `const _: () = assert!(size_of…)` 机器执法——「CI 结构体布局断言」的 v1 标量层，真 ABI 结构体出现即入册同源。**原型层（§8.3 `berry_*` 签名与 `.h`）仍手写双镜像——v2 挂账**；Plan B v0.5 的临时三方对账关卡 `abi_check.py` 随之退役（生成即一致，无需对账）。
 
 ### 8.0 冻结纪律：两层冻结（战略裁决 S8 落地）
 
@@ -161,6 +169,8 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | padding / 保留字段 | 显式命名 + 内核 copyout 前整体清零 | `#[repr(C)]` **不保证** padding 清零；垃圾 padding = 内核信息泄露（Linux 真实 CVE 先例）+ 破坏逐字节比较/哈希 |
 
 > 32 位 handle 分配（决策 #28）：低位 = 槽位号，中位 = 代号 gen（**v1 预留**，槽位重用时单调递增，供 DEAD 检测，见 `能力模型设计.md` §2），高位**可选**编码对象类型（调试器识别越类 handle，v1 可先不编码）。代号位**必须从 v1 预留**——否则日后加 gen 会破坏已发布的 handle ABI。
+
+> **handle 0 立约（SEC-01 §4.5 件 6 前半——既有事实文档化，零代码改动）**：`0` 号 handle **永不有效**——handle 表槽 0 恒空（内核 `HandleTable` 首插惰性铺槽 0 为 Free、`alloc_slot` 永远跳过它取最低可用槽），boot 直插 handle 一律自槽 1 起（插序由 boot 期断言钉死——错值 boot 期炸响而非静默错 handle）；任何 syscall 传 `0` 恒 `-EBADF`（与坏 handle 同面，不另设错误码）。两端常量已单源在册：`BERRY_HANDLE_INVALID` / `INVALID_HANDLE` = 0（`abi.toml` `[types] invalid_handle`）。件 6 后半（能力拒面遥测：handle/rights/调用号落遥测环）挂账 kernel 解冻——落环改动面在 `kernel/src/syscall.rs`（兄弟 WIP 冻结中）；`telemetry.rs` 本身工作树无在途改动，落环钩子随件 6 后半同刀。
 
 ### 8.2 基础类型（`berry/types.h`）
 
@@ -339,12 +349,29 @@ berry_status_t berry_process_get_exit_code(berry_handle_t process, int32_t *code
                                   need=0 仅类型门控；state != Exited →
                                   -EAGAIN（poll 语义——先 wait TERMINATED
                                   再查）；出参 i32 4B（宽度跟 ABI 类型走） */
+berry_status_t berry_process_terminate(berry_handle_t process, int32_t code);
+                               /* C-4b（0x3B）：外部终止（kill/Ctrl-C 的内核
+                                  原语）。门控 Process MANAGE；自杀 →
+                                  -EBADSTATE（退自己走 process_exit）；已退 →
+                                  -EBADSTATE；code 落为该进程退出码（父侧
+                                  wait TERMINATED + get_exit_code 收割同
+                                  process_exit 面）；目标收口 = 同一退出钩子
+                                  （不开第二退出面），任务摘队入 REAPQ */
 berry_status_t berry_thread_create(berry_handle_t process, uint32_t options,
                                berry_handle_t *out);        /* 未启动描述；入口/sp
                                随 process_start（首线程启动路径，Zircon 同形）；
                                options 低 8 位 = berry_intent（ADR #42，P3 占位，
                                未知值 -EINVAL；0x00=UNSPECIFIED 不设限） */
-berry_status_t berry_thread_start(berry_handle_t thread);
+berry_status_t berry_thread_start(berry_handle_t thread, uintptr_t entry,
+                               uintptr_t sp, uintptr_t arg);
+                               /* T-1 修正（实现落地）：加 entry/sp/arg 三参
+                                  ——单参形态是 v1 未实现占位；Zircon
+                                  zx_thread_start 同形。门控 Thread MANAGE；
+                                  所属 Process 须已 start 且 Alive（否则
+                                  -EBADSTATE——首线程必须经 process_start）；
+                                  arg 落新线程 x0（与首线程 bootstrap 对称
+                                  ——pthread 层递 (fn, arg) 的载体）；线程入口
+                                  不得返回（返回 = fault 杀兜底） */
 berry_status_t berry_thread_exit(void);                         /* Plan B v0.5
                                已实现：v1 单线程 ⇒ 等价 process_exit(0)
                                （Zircon last-thread 语义，多线程留 v2） */
@@ -364,7 +391,12 @@ berry_status_t berry_channel_send(berry_handle_t ch,
                               const void *bytes, size_t nbytes,
                               const berry_handle_t *handles, size_t nhandles);
                                /* v1 非阻塞：消息压对端队列（深度 8），满 → -EBUSY；
-                                  nbytes ≤ 256 / nhandles ≤ 4（超 → -EINVAL）；
+                                  nbytes ≤ 256 / nhandles ≤ 8（T-1：4→6；A2-3：
+                                  6→8——bsh arm 三 extras（rootfs/fs/netd 端）
+                                  + base 2 + 自描述对 2 = env 块 7 位，首跑实抓
+                                  nhandles=7 越 6 限 send -EINVAL → spawn 链自陷；
+                                  extras 随后 [4..]），与 kernel `CHAN_HND_MAX`
+                                  同源；超 → -EINVAL）；
                                   随行 handle 逐个迁出调用者表（原值立即 -EBADF）、
                                   令牌随消息挂起——接收方 recv 时落入它的表；
                                   数组内重复 handle 值 → -EINVAL（原子性预检）；
@@ -385,7 +417,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 30**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 8（含 0x3A `process_get_exit_code`，P5）+ channel/event 4 + clock 1），落在「~26」预算内。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 34**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现））——真语义 33 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B/0x86/0x87），另 1 号为预留位。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
 
 ### 8.4 Rust FFI 镜像（`user/berry-sys`，raw 绑定）
 
@@ -432,7 +464,7 @@ extern "C" {
     pub fn berry_process_exit(code: i32) -> ! ;
     pub fn berry_process_get_exit_code(process: Handle, code: *mut i32) -> Status;
     pub fn berry_thread_create(process: Handle, options: u32, out: *mut Handle) -> Status;
-    pub fn berry_thread_start(thread: Handle) -> Status;
+    pub fn berry_thread_start(thread: Handle, entry: usize, sp: usize, arg: usize) -> Status;
     pub fn berry_thread_exit() -> ! ;
     pub fn berry_thread_sleep(deadline: Time) -> Status;
 
@@ -447,7 +479,7 @@ extern "C" {
 }
 ```
 
-约定（同 `CLAUDE.md` FFI 边界）：
+约定（同 `AGENTS.md` C-ABI 速览 / `docs/规则/03-系统调用.md`）：
 - Rust 侧**不持有跨边界的引用生命周期假设**，缓冲一律 `*mut u8`/`usize`（拥有/复制语义）。
 - 改任何签名 = **同时**改合约源（Rust `#[repr(C)]` 定义）与镜像；CI 用结构体布局断言 + bindgen 单向生成 `.h` 后比对（两端 `#[repr(C)]` 保证布局一致）。
 - `process_exit` / `thread_exit` 标 `-> !`（不返回），Rust 侧据此消除后续代码不可达警告。

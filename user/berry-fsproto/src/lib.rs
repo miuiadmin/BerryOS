@@ -1,6 +1,18 @@
 //! berry-fsproto —— fs 服务 RPC 协议纯函数库（P6 A-1，`berry-loader` 先例：
 //! 「解析器即产品」，零分配、零 unsafe、零依赖，输入只借用）。
 //!
+//! ## Overview (for crates.io users)
+//!
+//! Wire protocol for the [BerryOS](https://github.com/berryos/berryos)
+//! filesystem-service RPC: 10 ops (incl. v2 NUL-segment paths and
+//! STATFS), strict request/reply byte layouts. Pure no_std
+//! encoder/parser, host-testable; protocol-only — channel/wait
+//! semantics live at each end of the wire. "The parser is the product":
+//! host unit tests cover the full error surface.
+//!
+//! Status: experimental (0.1.0) — the byte layouts move with the BerryOS
+//! v1 services. Repo docs are mostly zh-CN.
+//!
 //! 拓扑：fsmgr（RAM-fs 服务，`user/bins/fsmgr`）持通道一端，bsh 持对端
 //! dup（env 块 gift[3] 交付，见 svcmgr P6 段）——**单对双向**（send(A)→B 队
 //! / send(B)→A 队）+ **严格串行 RPC**（一请求一应答，队列深 1 用量，无乱序
@@ -38,6 +50,12 @@
 //! - STAT(9)：→ `[0][type u8][size u32]` 恰 6 字节（type = [`TYPE_FILE`]/
 //!   [`TYPE_DIR`]）
 //!
+//! C-2 刀 2：
+//! - STATFS(10)：卷级几何/空闲真值（df/statfs 面）——**无路径参**（v1 单
+//!   FAT 卷、卷级），请求恰 1 字节（LIST 同形，尾随字节 = 野值拒）；应答
+//!   （st=0）：`[0][total u32][spc u32][cluster_count u32][free_clusters u32]
+//!   [sector_sz u32]` 恰 21 字节（[`STATFS_REPLY_LEN`]）。
+//!
 //! PUT/TRUNC/GET 名域同升路径（多段 = 子目录内文件——服务端树 C-0 刀 2）。
 //! 严格串行 RPC、编码器 None 拒绝契约、帽常量双侧同步义务三纪律照旧。
 //!
@@ -66,6 +84,8 @@ pub const OP_UNLINK: u8 = 7;
 pub const OP_READDIR: u8 = 8;
 /// STAT：类型 + 尺寸。
 pub const OP_STAT: u8 = 9;
+/// STATFS：卷级几何/空闲（df/statfs 面——无路径参，v1 单 FAT 卷、卷级）。
+pub const OP_STATFS: u8 = 10;
 
 /// 应答状态：成功。
 pub const ST_OK: u8 = 0;
@@ -93,15 +113,18 @@ pub const PATH_MAX: usize = 128;
 pub const PATH_DEPTH_MAX: usize = 8;
 /// 单文件尺寸帽（服务端执法；客户端 GET 循环同值兜底 more 失控面）。
 pub const FILE_SIZE_MAX: usize = 16 * 1024;
-/// 文件数帽（服务端执法；静态堆 256KiB 预算内 8×16KiB=128KiB 稳态 + Vec
-/// 增长 transient）。
-pub const FILE_COUNT_MAX: usize = 8;
-/// LIST 应答名区帽（8 文件 × 名帽最坏 392B 超单消息——按容纳截断，截断 =
+/// 文件数帽（服务端执法；静态堆 256KiB 预算内 9×16KiB=144KiB 稳态 + Vec
+/// 增长 transient）。C-2 刀 2 起 9 = 8 用户可用 + 1 启动预建保留槽
+/// （fsmgr 预建 /etc/mtab 占 1——对抗审查实抓后保语义面：用户可用额
+/// 不因系统自占用静默收窄）。
+pub const FILE_COUNT_MAX: usize = 9;
+/// LIST 应答名区帽（9 文件 × 名帽最坏 441B 超单消息——按容纳截断，截断 =
 /// 后续文件不列，调用方可见）。
 pub const LIST_MAX: usize = 200;
 /// 目录数帽（刀 2：RAM overlay 树全局 Dir 节点计数，服务端执法——文件帽
-/// 的目录同族：树深/广度有界，深树 Vec 开销不失控）。
-pub const DIR_COUNT_MAX: usize = 16;
+/// 的目录同族：树深/广度有界，深树 Vec 开销不失控）。C-2 刀 2 起 17 =
+/// 16 用户可用 + 1 启动预建保留槽（fsmgr 预建 etc 目录占 1）。
+pub const DIR_COUNT_MAX: usize = 17;
 
 /// STAT 应答类型位：文件。
 pub const TYPE_FILE: u8 = 0;
@@ -275,6 +298,8 @@ pub enum Req<'a> {
     Readdir { path: &'a [u8] },
     /// 类型 + 尺寸。
     Stat { path: &'a [u8] },
+    /// 卷级几何/空闲（无路径参——v1 单 FAT 卷、卷级假定在拓扑层）。
+    Statfs,
 }
 
 /// 请求解析（服务端面）：空/未知 op/路径坏（空/超帽/空段）/字段截断/
@@ -283,6 +308,10 @@ pub fn parse_request(m: &[u8]) -> Option<Req<'_>> {
     let op = *m.first()?;
     if op == OP_LIST {
         return if m.len() == 1 { Some(Req::List) } else { None };
+    }
+    if op == OP_STATFS {
+        // 恰 1 字节（无路径参——尾随字节 = 野值拒，LIST 同门）。
+        return if m.len() == 1 { Some(Req::Statfs) } else { None };
     }
     if !(op == OP_PUT || op == OP_TRUNC || op == OP_GET
         || op == OP_LOOKUP || op == OP_MKDIR || op == OP_UNLINK
@@ -440,6 +469,70 @@ pub fn parse_reply_stat(m: &[u8]) -> Option<Result<(u8, u32), u8>> {
     Some(Ok((m[1], get_u32(m, 2))))
 }
 
+/// STATFS 应答 st=0 面的卷级真值字段（全 u32 LE；df/statfs 的原料——
+/// 服务端从 BPB + FAT 扫描填充，客户端整形进 libc statfs 布局）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Statfs {
+    /// 卷总扇区（BPB total 16/32 位合成）。
+    pub total_sectors: u32,
+    /// 每簇扇区。
+    pub spc: u32,
+    /// 数据区簇数（BPB 派生）。
+    pub cluster_count: u32,
+    /// 空闲簇数（FAT 扫描真值——非几何推导）。
+    pub free_clusters: u32,
+    /// 每扇区字节。
+    pub sector_sz: u32,
+}
+
+/// STATFS 应答总长：st + 五 u32（恰 21 字节——parse 长度执法的锚，
+/// 「帽常量双侧同步义务」的服务端/客户端共用位）。
+pub const STATFS_REPLY_LEN: usize = 1 + 4 * 5;
+
+/// 请求编码（STATFS）：恰 1 字节（无路径参——v1 单 FAT 卷、卷级；LIST
+/// 同形）。空 out → None（None 拒绝契约对齐）。
+pub fn encode_statfs(out: &mut [u8]) -> Option<usize> {
+    if out.is_empty() {
+        return None;
+    }
+    out[0] = OP_STATFS;
+    Some(1)
+}
+
+/// STATFS 应答编码（st=0 面）：`[0][total][spc][cluster_count][free]
+/// [sector_sz]` 五 u32 LE 恰 [`STATFS_REPLY_LEN`] 字节。
+pub fn encode_reply_statfs(out: &mut [u8], s: &Statfs) -> Option<usize> {
+    if out.len() < STATFS_REPLY_LEN {
+        return None;
+    }
+    out[0] = ST_OK;
+    put_u32(out, 1, s.total_sectors);
+    put_u32(out, 5, s.spc);
+    put_u32(out, 9, s.cluster_count);
+    put_u32(out, 13, s.free_clusters);
+    put_u32(out, 17, s.sector_sz);
+    Some(STATFS_REPLY_LEN)
+}
+
+/// STATFS 应答解析：`Ok(Statfs)` / `Err(st)`（服务端拒绝——无卷面语义
+/// 复用 [`ST_NOENT`]）；畸形 → None（长度不符——客户端按断链处理）。
+pub fn parse_reply_statfs(m: &[u8]) -> Option<Result<Statfs, u8>> {
+    let st = *m.first()?;
+    if st != ST_OK {
+        return if m.len() == 1 { Some(Err(st)) } else { None };
+    }
+    if m.len() != STATFS_REPLY_LEN {
+        return None;
+    }
+    Some(Ok(Statfs {
+        total_sectors: get_u32(m, 1),
+        spc: get_u32(m, 5),
+        cluster_count: get_u32(m, 9),
+        free_clusters: get_u32(m, 13),
+        sector_sz: get_u32(m, 17),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,7 +603,7 @@ mod tests {
     #[test]
     fn request_malformed() {
         assert_eq!(parse_request(b""), None); // 空
-        assert_eq!(parse_request(b"\x0a"), None); // 未知 op（10 号未分配）
+        assert_eq!(parse_request(b"\x0b"), None); // 未知 op（11 号未分配——10 号随 C-2 刀 2 入册 STATFS）
         assert_eq!(parse_request(b"\x05"), None); // LOOKUP 缺 nlen（v2 起 5 号在册）
         assert_eq!(parse_request(b"\x01"), None); // 缺 nlen
         assert_eq!(parse_request(b"\x01\x03ab"), None); // 名截断
@@ -640,6 +733,10 @@ mod tests {
         assert_eq!(encode_lookup(&mut b, b"a\0b"), Some(5));
         let mut b = [0u8; 6]; // reply_stat：恰 6
         assert_eq!(encode_reply_stat(&mut b, TYPE_FILE, 1), Some(6));
+        let mut b = [0u8; 1]; // statfs：恰 1
+        assert_eq!(encode_statfs(&mut b), Some(1));
+        let mut b = [0u8; STATFS_REPLY_LEN]; // reply_statfs：恰 21
+        assert_eq!(encode_reply_statfs(&mut b, &zero_statfs()), Some(STATFS_REPLY_LEN));
     }
 
     #[test]
@@ -657,6 +754,8 @@ mod tests {
         assert_eq!(encode_readdir(&mut [], b"a"), None);
         assert_eq!(encode_stat(&mut [], b"a"), None);
         assert_eq!(encode_reply_stat(&mut [], TYPE_FILE, 0), None);
+        assert_eq!(encode_statfs(&mut []), None);
+        assert_eq!(encode_reply_statfs(&mut [], &zero_statfs()), None);
     }
 
     #[test]
@@ -870,6 +969,62 @@ mod tests {
         assert_eq!(encode_reply_stat(&mut tiny, TYPE_FILE, 0), None);
     }
 
+    // ---- STATFS 面（C-2 刀 2）----
+
+    fn zero_statfs() -> Statfs {
+        Statfs { total_sectors: 0, spc: 0, cluster_count: 0, free_clusters: 0, sector_sz: 0 }
+    }
+
+    #[test]
+    fn statfs_roundtrip() {
+        // 请求恰 1 字节（无路径参，LIST 同形）+ 应答五字段逐位回读（造数 =
+        // mkfat 默认卷几何真值：2032 扇区/4 spc/506 簇/500 闲/512B 扇区）。
+        let mut b = [0u8; 32];
+        assert_eq!(encode_statfs(&mut b), Some(1));
+        assert_eq!(&b[..1], &[OP_STATFS]);
+        assert_eq!(parse_request(&b[..1]), Some(Req::Statfs));
+        let s = Statfs {
+            total_sectors: 2032,
+            spc: 4,
+            cluster_count: 506,
+            free_clusters: 500,
+            sector_sz: 512,
+        };
+        let n = encode_reply_statfs(&mut b, &s).unwrap();
+        assert_eq!(n, STATFS_REPLY_LEN);
+        assert_eq!(parse_reply_statfs(&b[..n]), Some(Ok(s)));
+        // u32 极值不漂（五字段全宽钉板）。
+        let s = Statfs {
+            total_sectors: u32::MAX,
+            spc: u32::MAX,
+            cluster_count: u32::MAX,
+            free_clusters: u32::MAX,
+            sector_sz: u32::MAX,
+        };
+        let n = encode_reply_statfs(&mut b, &s).unwrap();
+        assert_eq!(parse_reply_statfs(&b[..n]), Some(Ok(s)));
+        // 错误应答：恰 1 字节 st（无卷面语义复用 ST_NOENT）。
+        let n = encode_reply_status(&mut b, ST_NOENT).unwrap();
+        assert_eq!(parse_reply_statfs(&b[..n]), Some(Err(ST_NOENT)));
+    }
+
+    #[test]
+    fn statfs_malformed() {
+        // 请求尾随字节 = 野值拒（LIST 同门）。
+        assert_eq!(parse_request(&[OP_STATFS, 0]), None);
+        // st=0 面长度 != 21：空 / 截断 / 超长。
+        assert_eq!(parse_reply_statfs(b""), None);
+        assert_eq!(parse_reply_statfs(&[0u8; STATFS_REPLY_LEN - 1]), None);
+        assert_eq!(parse_reply_statfs(&[0u8; STATFS_REPLY_LEN + 1]), None);
+        // 错误应答带尾随字节。
+        assert_eq!(parse_reply_statfs(b"\x01\x00"), None);
+        // out 不足：空 / 差一。
+        assert_eq!(encode_statfs(&mut []), None);
+        assert_eq!(encode_reply_statfs(&mut [], &zero_statfs()), None);
+        let mut tiny = [0u8; STATFS_REPLY_LEN - 1];
+        assert_eq!(encode_reply_statfs(&mut tiny, &zero_statfs()), None);
+    }
+
     #[test]
     fn reply_readdir_reuses_list_shape() {
         // READDIR 应答 = LIST 同形 blob；分隔语义在调用方（READDIR 用 NUL
@@ -892,7 +1047,8 @@ mod tests {
                 assert_ne!(all[i], all[j], "状态码撞号：{} vs {}", all[i], all[j]);
             }
         }
-        // 刀 2 帽常量在册（双侧同步义务的服务端锚）。
-        assert_eq!(DIR_COUNT_MAX, 16);
+        // 刀 2 帽常量在册（双侧同步义务的服务端锚；C-2 刀 2 起含启动
+        // 预建保留槽：17 = 16 用户 + 1 etc，9 = 8 用户 + 1 mtab）。
+        assert_eq!(DIR_COUNT_MAX, 17);
     }
 }

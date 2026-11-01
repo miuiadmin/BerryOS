@@ -7,7 +7,7 @@
 //! 同权，错误由用户态自理。真语义 handler 在内核（`kernel/src/syscall.rs`）经
 //! [`install`] 注册（同 IRQ 槽反转：HAL 不依赖内核 crate）。
 //!
-//! 编号布局：ABI v1..v3 真号 ≤ `0x85`（`系统调用ABI设计.md` §4）。原调试槽
+//! 编号布局：ABI v1..v3 真号 ≤ `0x87`（`系统调用ABI设计.md` §4）。原调试槽
 //! `0xFE/0xFF`（echo/putchar，非 ABI）**4-5a 退役**——EL0 输出改走 console
 //! 服务通道（`channel_send` 真 IPC），两槽回落 [`sys_unimplemented`] 的
 //! -ENOTSUP（ktest 退役面断言在册）。
@@ -16,7 +16,8 @@ use crate::trap::TrapFrame;
 
 /// 未实现/未知 syscall 的统一返回（C 风格负数 = -ENOTSUP，ABI §8.2）。
 pub const ERR_NOT_SUPPORTED: i64 = -95;
-/// 派发表上界（含）：真 ABI 号 ≤0x85，0x86..0xFF 预留（0xFE/0xFF 调试槽已退役）。
+/// 派发表上界（含）：真 ABI 号 ≤0x87（0x86/0x87 信号面在册——A7-4），
+/// 0x88..0xFF 预留（0xFE/0xFF 调试槽已退役）。
 const NR_MAX: usize = 0xFF;
 
 type Handler = extern "C" fn(&mut TrapFrame) -> i64;
@@ -46,6 +47,11 @@ pub fn install(nr: usize, h: Handler) {
 /// 未知 / 未实现一律 [`ERR_NOT_SUPPORTED`]。
 pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     let nr = tf.regs[0] as usize;
+    // S-2 E0（SMP-S2实施设计草案 3.1-1）：SVC 入口大锁——单点覆盖 EL0/EL1 两
+    // 向量入口（trap.rs 两 EC 0x15 臂汇流于此）；svc_exit 置于 x0 写回前（写回
+    // 是 TrapFrame 栈写，不触共享结构）。`-> !` handler（0x33/0x36）不归——
+    // 放锁在 sched.rs switch_away_forever_with 按位收口，本尾对其不可达。
+    crate::kern_lock::svc_enter();
     let table = &raw const SYSCALLS;
     let ret = if nr <= NR_MAX {
         // SAFETY: 只读快照单槽（fn 指针 Copy）；install 全在 boot 单线程期。
@@ -53,6 +59,7 @@ pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     } else {
         ERR_NOT_SUPPORTED
     };
+    crate::kern_lock::svc_exit();
     tf.regs[0] = ret as u64;
     ret
 }

@@ -24,3 +24,9 @@ berry-netdproto = { path = "../../berry-netdproto" }
 # app-0 a-2：.bap manifest v0 解析（纯函数 crate、no_std 同链；svcmgr 兼任
 # appd 雏形——ADR #43/#44 应用 = 纯用户态协议，内核零「应用」概念）。
 berry-manifest = { path = "../../berry-manifest" }
+# C-3 段①：ps 查询 RPC 协议（账本编码 + 请求解析——拉起账本真值源见
+# main.rs PS_TAB；客户端 = user/bins/ps 独立小工作区）。
+berry-psproto = { path = "../../berry-psproto" }
+# GUI-4 段②：input 域 boot 自验（INPUT ok）——SUBSCRIBE 请求编码 + 1B
+# 状态应答收口的纯函数协议面（no_std 同链，netdproto 同型）。
+berry-guiproto = { path = "../../berry-guiproto" }

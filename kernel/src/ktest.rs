@@ -12,6 +12,7 @@ pub fn run() {
     test_heap();
     test_syscall();
     test_switch();
+    test_fp();
     test_aspace();
     test_vmo();
     test_handle();
@@ -30,17 +31,19 @@ pub fn run() {
 /// Step 9 信号 + G0 退出 #6 + **3-1 真 ABI 骨架**：从 EL1 发 `svc #0`（EC=0x15）
 /// → HAL dispatch → 语义层 handler（`kernel/src/syscall.rs`）→ 回写 x0、eret 续行。
 /// 用例：调试槽退役面（4-5a：0xFE/0xFF 随 console 服务落地回落 -ENOTSUP——
-/// EL0 输出改走 channel_send 真 IPC）；未知号 0x99 / 未实现真号 0x35 一律
-/// -ENOTSUP（3-1 政策：错误码自理、永不杀调用者）；clock_read（MONOTONIC）两次
-/// 读单调；handle 三操作经 syscall 全链路门控（close/duplicate + 旧值/坏 handle 拒）；
-/// 3-4a per-process 表拆分（G 段）：两表隔离 + take/insert_ref 迁移原语 + 子进程
-/// 出生自带空表；3-4b channel 三号（H 段）：非阻塞队列语义 + handle 随消息迁移
-/// 的原子序（「两进程交换一句消息」的 EL0 正向验收在 user_spawner/user_child）。
-#[allow(clippy::result_unwrap_used)]
+/// EL0 输出改走 channel_send 真 IPC）；未知号 0x99 -ENOTSUP（3-1 政策：错误码
+/// 自理、永不杀调用者；**T-1 起在册 31 号全实现——「未实现真号」样本随 0x35
+/// 退役**）；clock_read（MONOTONIC）两次读单调；handle 三操作经 syscall 全链路
+/// 门控（close/duplicate + 旧值/坏 handle 拒）；3-4a per-process 表拆分（G 段）：
+/// 两表隔离 + take/insert_ref 迁移原语 + 子进程出生自带空表；3-4b channel 三号
+/// （H 段）：非阻塞队列语义 + handle 随消息迁移的原子序（「两进程交换一句消息」
+/// 的 EL0 正向验收在 user_spawner/user_child）；T-1 thread_start 门控面（F3b 段）。
+#[allow(clippy::unwrap_used)]
 fn test_syscall() {
     use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
     use crate::syscall::{
-        bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_VMO_CREATE,
+        bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_SIGNAL_SEND,
+        NR_SIGNAL_TAKE, NR_VMO_CREATE,
     };
     use crate::vmo::Vmo;
     use berry_mm::va::PAGE_SIZE;
@@ -53,15 +56,34 @@ fn test_syscall() {
     assert_eq!(svc4(0xFE, 0x5a, 0, 0), -95, "SYSCALL：0xFE 调试槽须已退役");
     assert_eq!(svc4(0xFF, 0x75, 0, 0), -95, "SYSCALL：0xFF 调试槽须已退役");
 
-    // B. 未知号（越界 0x99）与未实现真号（thread_start 0x35，v2 多线程面）
-    //    一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的 EL1 侧正向断言
-    //    （3-2 起 0x11、3-4c 起 0x04/0x06/0x54、4-2b 起 0x05、Plan B 起 0x33/0x36
-    //    已实现——**勿再拿 0x33 当样本：已实现后会真退出杀掉 ktest**）。
+    // B. 未知号（越界 0x99）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的
+    //    EL1 侧正向断言。**「未实现真号」样本 0x35 已随 T-1 thread_start 实现
+    //    退役**（样本断言会打到真 handler）；亦勿拿不在册的 0x38/0x39 冒充——
+    //    其 -ENOTSUP 成因与未知号相同，「在册未实现」覆盖点不存在；v2 新号
+    //    入册时若暂未实现，再立新样本（勿拿已实现号 0x33——会真退出杀 ktest）。
     assert_eq!(svc4(0x99, 0, 0, 0), -95, "SYSCALL：未知号须 -ENOTSUP");
+
+    // B2. 信号面参数拒面（A7-4 段②，0x86/0x87 参数面样本——成功路径不测：
+    // ktest 期 current 无 Process（0x35 先例），happy path 交 EL0 + smoke 兜底）。
+    //    sig 界检先于一切（0 与 65 同拒 -EINVAL——位图界 1..=64）；
+    //    坏 handle → -EBADF（bootstrap 表 gen 不匹配）；h=0/sig 合法 + take
+    //    → -EBADSTATE（ktest 任务无 Process 面——语义拒非崩）。
+    assert_eq!(svc4(NR_SIGNAL_SEND as u64, 0, 0, 0), -22, "SYSCALL：signal_send sig=0 须 -EINVAL");
+    assert_eq!(svc4(NR_SIGNAL_SEND as u64, 0, 65, 0), -22, "SYSCALL：signal_send sig=65 须 -EINVAL");
     assert_eq!(
-        svc4(0x35, 0, 0, 0),
-        -95,
-        "SYSCALL：未实现真号须 -ENOTSUP"
+        svc4(NR_SIGNAL_SEND as u64, 0x9999_0001, 10, 0),
+        -9,
+        "SYSCALL：signal_send 坏 handle 须 -EBADF"
+    );
+    assert_eq!(
+        svc4(NR_SIGNAL_SEND as u64, 0, 10, 0),
+        -37,
+        "SYSCALL：signal_send h=0 ktest 无 Process 须 -EBADSTATE"
+    );
+    assert_eq!(
+        svc4(NR_SIGNAL_TAKE as u64, 0, 0, 0),
+        -37,
+        "SYSCALL：signal_take ktest 无 Process 须 -EBADSTATE"
     );
 
     // C. clock_read：MONOTONIC 两次读单调递增；非法 id -ENOTSUP。
@@ -99,7 +121,7 @@ fn test_syscall() {
         .expect("SYSCALL：insert h2");
     unsafe { OUT = 0 };
     assert_eq!(
-        svc4(NR_HANDLE_DUPLICATE as u64, h2 as u64, RIGHT_READ as u64, &raw mut OUT as u64),
+        svc4(NR_HANDLE_DUPLICATE as u64, h2 as u64, RIGHT_READ, &raw mut OUT as u64),
         0,
         "SYSCALL：duplicate 收紧"
     );
@@ -492,7 +514,7 @@ fn test_syscall() {
     assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, 0, &raw mut OUT as u64, 0, 0, 0), 0,
         "SYSCALL：get_phys 页基");
     let pa0 = unsafe { OUT };
-    assert!(pa0 >= 0x4000_0000 && pa0 < 0x4000_0000 + 128 * 1024 * 1024,
+    assert!((0x4000_0000..0x4000_0000 + 128 * 1024 * 1024).contains(&pa0),
         "SYSCALL：get_phys 须落 RAM 界（得 {pa0:#x}）");
     assert_eq!(pa0 % PAGE_SIZE as u64, 0, "SYSCALL：get_phys 页基页对齐");
     // SAFETY: 同上。
@@ -526,7 +548,7 @@ fn test_syscall() {
     // F. 3-3 process/thread：对象面 + 错误面（ktest 在 berry_sched::init 之前跑，
     //    process_start 成功路径会 spawn → 不能在此验——happy path 由 EL0
     //    `user_spawner` 承担，watchdog 错杀断言兜底）。
-    use crate::syscall::{NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE};
+    use crate::syscall::{NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_START};
     // F0. process_create 双出参：process + root Vmar 两 handle 均非零。
     // SAFETY: 同上（OUT/CHILD_OUT 为本函数私有静态）。
     unsafe { OUT = 0; CHILD_OUT = 0 };
@@ -597,6 +619,59 @@ fn test_syscall() {
         "SYSCALL：process_start sp 未 16 对齐须 -EINVAL"
     );
 
+    // F3b. thread_start 门控面（T-1 0x35 四参）：与 process_start 同校验序的
+    //      错误臂——ktest 在 berry_sched::init 之前跑，成功路径会 spawn
+    //      （不可测，交 EL0 运行期自验）。坏 handle / 对 Vmar → -EBADF；
+    //      entry=0 / sp 未 16 对齐 → -EINVAL（检在 handle 门控之前，F3 同序）；
+    //      缺 MANAGE（dup 出 DUPLICATE-only 别名——零权利 dup 拒面绕行，F4d
+    //      同款）→ -EACCES；所属进程未 start → -EBADSTATE（首线程必须经
+    //      process_start——thread_start 只管进程内造线程）。
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, 0xDEAD_BEEF, 0x1000, 0x4000, 0, 0, 0),
+        -9,
+        "SYSCALL：thread_start 坏 handle 须 -EBADF"
+    );
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hv2 as u64, 0x1000, 0x4000, 0, 0, 0),
+        -9,
+        "SYSCALL：thread_start 对 Vmar 须 -EBADF（类型门控）"
+    );
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hth as u64, 0, 0x4000, 0, 0, 0),
+        -22,
+        "SYSCALL：thread_start entry=0 须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hth as u64, 0x1000, 0x4001, 0, 0, 0),
+        -22,
+        "SYSCALL：thread_start sp 未 16 对齐须 -EINVAL"
+    );
+    // SAFETY: OUT 复用 F 段纪律（预清）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hth as u64,
+            crate::handle::RIGHT_DUPLICATE,
+            &raw mut OUT as u64
+        ),
+        0,
+        "SYSCALL：thread_start 前置——dup DUPLICATE-only 别名"
+    );
+    let hthr = unsafe { OUT } as u32;
+    assert_ne!(hthr, 0, "SYSCALL：dup 别名须回填");
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hthr as u64, 0x1000, 0x4000, 0, 0, 0),
+        -13,
+        "SYSCALL：thread_start 缺 MANAGE 须 -EACCES"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hthr as u64, 0, 0), 0, "SYSCALL：close 别名");
+    assert_eq!(
+        svc6(NR_THREAD_START as u64, hth as u64, 0x1000, 0x4000, 0, 0, 0),
+        -37,
+        "SYSCALL：thread_start 未 start 进程须 -EBADSTATE"
+    );
+
     // F4. 归属面：ht 属 proc(hp)，拿 hp2 的 handle 去 start → -EACCES（参数面
     //     全过才走到归属检查）。第二个进程同时把「进程可批量创建」过了。
     // SAFETY: 同上。
@@ -654,13 +729,95 @@ fn test_syscall() {
     );
     assert_eq!(unsafe { OUT }, 0, "SYSCALL：未退 code 出参须保持 0");
 
+    // F4d. process_terminate（C-4b 0x3B）：错误面 + 未 start 终止收口——坏
+    //      handle / 类型不符（Vmar）→ -EBADF；缺 MANAGE（dup 出 DUPLICATE-only
+    //      别名——空 rights 拒面，I 段先例）→ -EACCES；成功终止**未 start**
+    //      进程（码 42，无任务面——Process 侧收口）→ 0，且退出面**首次可在
+    //      ktest 闭环**：wait TERMINATED poll 即中 + get_exit_code 收 42（F4b/F4c
+    //      注记「Exited 成功路径 ktest 造不出」自此改写——terminate 免 spawn
+    //      面）；重复终止 → -EBADSTATE（幂等面收口在 wait/get_exit_code，不
+    //      重复杀）。自杀面（-EBADSTATE）与已 start 杀链（摘队+REAPQ）需
+    //      CURRENT/目标任务在场——ktest 在 sched::init 前跑，交 EL0 运行期
+    //      bsh Ctrl-C/kill 自验（C-4b 后段 `INT ok` 标记）。
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, 0xDEAD_BEEF, 42, 0),
+        -9,
+        "SYSCALL：terminate 坏 handle 须 -EBADF"
+    );
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hv3 as u64, 42, 0),
+        -9,
+        "SYSCALL：terminate 对 Vmar 须 -EBADF（类型门控）"
+    );
+    // SAFETY: OUT 复用 F 段纪律（预清）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hp2 as u64,
+            crate::handle::RIGHT_DUPLICATE,
+            &raw mut OUT as u64
+        ),
+        0,
+        "SYSCALL：terminate 前置——dup DUPLICATE-only 别名"
+    );
+    let hp2r = unsafe { OUT } as u32;
+    assert_ne!(hp2r, 0, "SYSCALL：dup 别名须回填");
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2r as u64, 42, 0),
+        -13,
+        "SYSCALL：terminate 缺 MANAGE 须 -EACCES"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2r as u64, 0, 0), 0, "SYSCALL：close 别名");
+    // 成功终止（未 start——kill_all_tasks_by_pinned 扫不到任务，走 Process 侧收口）。
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2 as u64, 42, 0),
+        0,
+        "SYSCALL：terminate 未 start 进程须 0"
+    );
+    // 退出面闭环 ①：wait TERMINATED poll 即中（Exited 单调置位）。
+    // SAFETY: I_OBS 纪律同 F4b（预清 + 命中回填全满足集）。
+    unsafe { I_OBS = 0 };
+    assert_eq!(
+        svc5(
+            crate::syscall::NR_OBJECT_WAIT_ONE as u64,
+            hp2 as u64,
+            crate::handle::SIGNAL_TERMINATED,
+            0,
+            &raw mut I_OBS as u64
+        ),
+        0,
+        "SYSCALL：terminated 进程 wait poll 须即中"
+    );
+    assert_eq!(
+        unsafe { I_OBS },
+        crate::handle::SIGNAL_TERMINATED,
+        "SYSCALL：observed 须为 TERMINATED（全满足集）"
+    );
+    // 退出面闭环 ②：terminate 的 code=42 落退出码账面。
+    // SAFETY: OUT 纪律同上（i32 出参，低 4 字节写入）。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_GET_EXIT_CODE as u64, hp2 as u64, &raw mut OUT as u64, 0),
+        0,
+        "SYSCALL：terminated get_exit_code 须 0"
+    );
+    assert_eq!(unsafe { OUT } as u32, 42, "SYSCALL：terminate code=42 须落退出码");
+    assert_eq!(
+        svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2 as u64, 43, 0),
+        -37,
+        "SYSCALL：重复 terminate 须 -EBADSTATE（且保首因码 42 不被 43 覆写）"
+    );
+
     // F5. 清场（顺带覆盖钉住释放链：close 线程 → 释放对 Process 的钉住；
     //     close 进程 → 释放对 root Vmar 的钉住；空进程无映射，close 不受
-    //     -EBUSY 面影响）。
+    //     -EBUSY 面影响）。F4d 后 hp2 已 Exited——close 即最终引用归零，drop
+    //     Process（release vmar 钉住 + PROCESS_LIVE 减）——终止态对象回收链
+    //     随本段走通。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hth as u64, 0, 0), 0, "SYSCALL：close thread");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp as u64, 0, 0), 0, "SYSCALL：close process");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv2 as u64, 0, 0), 0, "SYSCALL：close child vmar");
-    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close process 2");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close terminated process 2");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv3 as u64, 0, 0), 0, "SYSCALL：close child vmar 2");
 
     // G. 3-4a per-process 表拆分：两表隔离 + take/insert_ref 迁移原语 + 子进程
@@ -727,7 +884,7 @@ fn test_syscall() {
     static mut HBUF: [u8; 320] = [0; 320]; // send 源 / recv 目的（超限值只作参数不拷）
     static mut H_NB: u64 = 0; // *nbytes in-out（进 = 容量、出 = 实际）
     static mut H_NH: u64 = 0; // *nhandles in-out
-    static mut H_HND: [u32; 4] = [0; 4]; // 随行 handle 数组（u32 × CHAN_HND_MAX）
+    static mut H_HND: [u32; 8] = [0; 8]; // 随行 handle 数组（u32 × CHAN_HND_MAX——A2-3 6→8 同步）
 
     // H0. create：两端 handle 均非零互异；rights 面 SEND|RECV 可门控查得。
     // SAFETY: svc 同步异常；H 系列静态均本函数私有。
@@ -766,7 +923,7 @@ fn test_syscall() {
         "SYSCALL：channel_send（无随行 handle）"
     );
     // SAFETY: 同上。
-    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 4; H_HND = [0; 4] };
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] };
     assert_eq!(
         svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
              &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
@@ -797,7 +954,7 @@ fn test_syscall() {
     );
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 0,
-             &raw const H_HND as u64, 5, 0),
+             &raw const H_HND as u64, 9, 0),
         -22,
         "SYSCALL：nhandles 超限须 -EINVAL"
     );
@@ -855,7 +1012,7 @@ fn test_syscall() {
     // SAFETY: 同上。
     unsafe { OUT = 0 };
     assert_eq!(
-        svc4(NR_HANDLE_DUPLICATE as u64, hc0 as u64, RIGHT_RECV as u64, &raw mut OUT as u64),
+        svc4(NR_HANDLE_DUPLICATE as u64, hc0 as u64, RIGHT_RECV, &raw mut OUT as u64),
         0,
         "SYSCALL：dup 收紧到 RECV"
     );
@@ -874,7 +1031,7 @@ fn test_syscall() {
         .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hsrc");
     // SAFETY: 同上。
-    unsafe { H_HND = [hsrc, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
+    unsafe { H_HND = [hsrc, 0, 0, 0, 0, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 1, 0),
@@ -887,7 +1044,7 @@ fn test_syscall() {
         "SYSCALL：迁移后原值须 -EBADF（发送方失去）"
     );
     // SAFETY: 同上。
-    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 4; H_HND = [0; 4] };
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] };
     assert_eq!(
         svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut HBUF as u64,
              &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
@@ -914,7 +1071,7 @@ fn test_syscall() {
         .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert hgd");
     // SAFETY: 同上。
-    unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0] };
+    unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0, 0, 0, 0, 0] };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 2, 0),
@@ -926,7 +1083,7 @@ fn test_syscall() {
         "SYSCALL：原子序——同批好 handle 须原值仍活"
     );
     // SAFETY: 同上。
-    unsafe { H_HND = [hgd, hgd, 0, 0] };
+    unsafe { H_HND = [hgd, hgd, 0, 0, 0, 0, 0, 0] };
     assert_eq!(
         svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const HBUF as u64, 8,
              &raw const H_HND as u64, 2, 0),
@@ -1038,7 +1195,7 @@ fn test_syscall() {
     // SAFETY: 同上。
     unsafe { OUT = 0 };
     assert_eq!(
-        svc4(NR_HANDLE_DUPLICATE as u64, he as u64, RIGHT_DUPLICATE as u64, &raw mut OUT as u64),
+        svc4(NR_HANDLE_DUPLICATE as u64, he as u64, RIGHT_DUPLICATE, &raw mut OUT as u64),
         0,
         "SYSCALL：dup Event 到仅 DUPLICATE"
     );
@@ -1287,10 +1444,10 @@ fn test_syscall() {
     berry_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
 
-/// `svc #0` 四参往返（ktest 专用）：x0=nr（进）/ret（出）、x1..x3=参。
-/// DAIF 屏蔽不影响同步异常；NZCV 经 SPSR 在 entry/eret 保存/恢复。
+/// `svc #0` 四参往返（ktest 专用；bench S-2 耗尽面复用）：x0=nr（进）/ret（出）、
+/// x1..x3=参。DAIF 屏蔽不影响同步异常；NZCV 经 SPSR 在 entry/eret 保存/恢复。
 /// 安全外壳：3-1 起 syscall 派发不 panic、永不杀调用者（错误码自理）。
-fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
+pub(crate) fn svc4(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     let ret: u64;
     // SAFETY: svc 触发同步异常；dispatch 只回写 x0（eret 回本指令之后）。
     unsafe {
@@ -1325,9 +1482,9 @@ fn svc5(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> i64 {
     ret as i64
 }
 
-/// `svc #0` 六参往返（ktest 专用；3-2 VMO/Vmar 全链用）：x0=nr（进）/ret（出）、
-/// x1..x6=参（ABI §2 上限 6 参）。
-fn svc6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64 {
+/// `svc #0` 六参往返（ktest 专用，3-2 VMO/Vmar 全链用；bench S-2 耗尽面复用）：
+/// x0=nr（进）/ret（出）、x1..x6=参（ABI §2 上限 6 参）。
+pub(crate) fn svc6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64 {
     let ret: u64;
     // SAFETY: 同 svc4（同步异常；dispatch 只回写 x0）。
     unsafe {
@@ -1464,11 +1621,21 @@ fn test_memmap() {
     }
 
     // reserve 语义：scratch 分配器（栈后备，勿碰全局 FRAMES）——保留 loader 段
-    // 后占尽，保留区 4 页永不出现。
+    // 后占尽，保留区 4 页永不出现。位图/摘要后备同款栈后备（K-1 索引：
+    // 64 页 → 每阶 1 字 × 14 阶）。
     let base = 0x4000_0000usize;
     let mut sfree = [false; 64];
     let mut sorder = [0u8; 64];
-    let mut sfa = berry_mm::FrameAllocator::new(base, base + 64 * 4096, &mut sfree, &mut sorder);
+    let mut sbmaps = [0u64; (berry_mm::MAX_ORDER + 1)];
+    let mut ssums = [0u64; (berry_mm::MAX_ORDER + 1)];
+    let mut sfa = berry_mm::FrameAllocator::new(
+        base,
+        base + 64 * 4096,
+        &mut sfree,
+        &mut sorder,
+        &mut sbmaps,
+        &mut ssums,
+    );
     assert_eq!(sfa.reserve(0x4000_4000, 0x4000), 4, "reserve 页数不符");
     let mut got = 0usize;
     while let Ok(p) = sfa.alloc() {
@@ -1545,8 +1712,14 @@ static mut SWITCH_OTHER_STACK: TestStack4096 = TestStack4096([0; 4096]);
 /// 乒乓对端：打 `PING ` 后切回 MAIN。Step 1 不会被切回（MAIN 不再切它），故以
 /// `halt()` 收尾满足 `-> !`。
 extern "C" fn switch_ping_fn(_arg: usize) -> ! {
-    // SAFETY: 当前 DAIF 屏蔽（boot 起 IRQ 未解蔽，ktest 在 enable_irq 之前），
-    // 满足 context_switch 的 `PSTATE.I==1` 不变式。两 ctx 不别名。
+    // trampoline 起步即解蔽（真任务须收 tick——task.rs 设计）——但本测试走
+    // boot 屏蔽窗（ktest 在 enable_irq 前）：先复蔽。一来守「boot DAIF 屏蔽
+    // 直到 enable_irq」契约（否则 ktest 后全窗解蔽），二来 context_switch
+    // 的 `PSTATE.I==1` 不变式对下面切回 MAIN 也成立（S-3a probe ③ daif
+    // 锚实测揪出：trampoline 解蔽被带回 MAIN）。
+    berry_hal_aarch64::disable_irq();
+    // SAFETY: 当前 DAIF 屏蔽（复蔽于上），满足 context_switch 的 `PSTATE.I==1`
+    // 不变式。两 ctx 不别名。
     unsafe {
         berry_hal_aarch64::uart_puts(b"PING ");
         berry_hal_aarch64::task::context_switch(
@@ -1575,6 +1748,277 @@ fn test_switch() {
         // <- switch_ping_fn 切回 SWITCH_CTX_MAIN 时续行于此。
     }
     berry_hal_aarch64::uart_puts(b"TASK ok\n");
+}
+
+// ===================== GUI-0：FPSIMD 上下文全量保存（ktest 面） =====================
+
+/// MAIN 侧 canary：q0..q7 + q30/q31 各一个独立 16B 图样（高半位钉死防与合法
+/// 零值/指针巧合）。
+static FP_PAT_MAIN: [u128; 10] = [
+    0xA1B2_C3D4_E5F6_0718_0000_0000_1111_2222,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_3333_4444,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_5555_6666,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_7777_8888,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_9999_AAAA,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_BBBB_CCCC,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_DDDD_EEEE,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_FFFF_0001,
+    // q30 / q31
+    0xA1B2_C3D4_E5F6_0718_0000_0000_2000_0030,
+    0xA1B2_C3D4_E5F6_0718_0000_0000_2000_0031,
+];
+/// OTHER 侧 canary（同族异值）。
+static FP_PAT_OTHER: [u128; 10] = [
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6161_6161,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6262_6262,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6363_6363,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6464_6464,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6565_6565,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6666_6666,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6767_6767,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6868_6868,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6930_0030,
+    0xB4_D5_C6_E7_F8_0921_0000_0000_6930_0031,
+];
+/// OTHER 侧 FPCR/FPSR 图样：RMODE=10（RM，round to −inf）/ NZCV=0011——**不含任何
+/// 陷阱使能位**（FPCR bit8..12 置 1 会让 FP 指令直接 trap，ktest 不愿赌）。注：
+/// RMODE 编码 00=RN 最近、01=RZ 零、10=RM −inf、11=RP +inf——10 是 −inf，别按
+/// 「越大越正」直觉读反（CORR-2 修复轮钉板）。
+const FP_FPCR_OTHER: u64 = 0x0080_0000;
+const FP_FPSR_OTHER: u64 = 0x3000_0000;
+static mut FP_CTX_MAIN: TaskContext = TaskContext::ZERO;
+static mut FP_CTX_OTHER: TaskContext = TaskContext::ZERO;
+static mut FP_OTHER_STACK: TestStack4096 = TestStack4096([0; 4096]);
+static mut FP_SNAP: [u128; 10] = [0; 10];
+
+/// q0..q7 + q30/q31 ← pats[0..10]（canary 装载）。
+///
+/// SAFETY: 纯 asm 写向量寄存器；lateout 声明 clobber 防编译器在 q 里保活值。
+#[inline(never)]
+unsafe fn fp_canary_load(pats: *const u128) {
+    unsafe {
+    core::arch::asm!(
+        ".arch armv8-a+fp+simd", // 局部重开 FP/SIMD 汇编解析（全局 -neon）
+        "ldr q0,  [x0, #0]",
+        "ldr q1,  [x0, #16]",
+        "ldr q2,  [x0, #32]",
+        "ldr q3,  [x0, #48]",
+        "ldr q4,  [x0, #64]",
+        "ldr q5,  [x0, #80]",
+        "ldr q6,  [x0, #96]",
+        "ldr q7,  [x0, #112]",
+        "ldr q30, [x0, #128]",
+        "ldr q31, [x0, #144]",
+        in("x0") pats,
+        lateout("v0") _, lateout("v1") _, lateout("v2") _, lateout("v3") _,
+        lateout("v4") _, lateout("v5") _, lateout("v6") _, lateout("v7") _,
+        lateout("v30") _, lateout("v31") _,
+    );
+    }
+}
+
+/// q0..q7 + q30/q31 → out[0..10]（canary 快照）。SAFETY 同 [`fp_canary_load`]。
+#[inline(never)]
+unsafe fn fp_canary_store(out: *mut u128) {
+    unsafe {
+    core::arch::asm!(
+        ".arch armv8-a+fp+simd", // 局部重开 FP/SIMD 汇编解析（全局 -neon）
+        "str q0,  [x0, #0]",
+        "str q1,  [x0, #16]",
+        "str q2,  [x0, #32]",
+        "str q3,  [x0, #48]",
+        "str q4,  [x0, #64]",
+        "str q5,  [x0, #80]",
+        "str q6,  [x0, #96]",
+        "str q7,  [x0, #112]",
+        "str q30, [x0, #128]",
+        "str q31, [x0, #144]",
+        in("x0") out,
+        lateout("v0") _, lateout("v1") _, lateout("v2") _, lateout("v3") _,
+        lateout("v4") _, lateout("v5") _, lateout("v6") _, lateout("v7") _,
+        lateout("v30") _, lateout("v31") _,
+    );
+    }
+}
+
+#[inline(never)]
+unsafe fn fpcr_read() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpcr", out(reg) v); }
+    v
+}
+#[inline(never)]
+unsafe fn fpcr_write(v: u64) {
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpcr, {}", in(reg) v); }
+}
+#[inline(never)]
+unsafe fn fpsr_read() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpsr", out(reg) v); }
+    v
+}
+#[inline(never)]
+unsafe fn fpsr_write(v: u64) {
+    unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpsr, {}", in(reg) v); }
+}
+
+// 本仓 mem* 整数版覆写直调面（crate::mem 定义、此处声明——链接即命中我们的实现）。
+unsafe extern "C" {
+    fn memset(s: *mut u8, c: u8, n: usize) -> *mut u8;
+    fn memcpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8;
+    fn memmove(d: *mut u8, s: *const u8, n: usize) -> *mut u8;
+    fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32;
+    fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32;
+}
+
+/// FP_SNAP 与 pats 逐位比对（u128 整数比较走 GPR，不碰 FP 面）。
+fn fp_snap_eq(pats: &[u128; 10]) -> bool {
+    // SAFETY: ktest 单线程窗口读 FP_SNAP（经 raw 指针取共享引用——static_mut_refs 纪律）。
+    let snap: &[u128; 10] = unsafe { &*(&raw const FP_SNAP) };
+    snap == pats
+}
+
+/// FP 乒乓对端：装 B 图样 → 自证 → 打 `FPING ` 切回 MAIN。切出时其 FP 态落
+/// `FP_CTX_OTHER`（MAIN 侧随后核验保存面）。不会再被切回，`halt()` 收尾满足 `-> !`。
+extern "C" fn fp_ping_fn(_arg: usize) -> ! {
+    // 复蔽于 trampoline 解蔽后（switch_ping_fn 同款：boot 屏蔽窗契约 +
+    // 切回 MAIN 的 PSTATE.I==1 不变式；S-3a probe ③ 揪出）。
+    berry_hal_aarch64::disable_irq();
+    // SAFETY: 当前 DAIF 屏蔽（复蔽于上）；两 ctx 不别名。
+    unsafe {
+        fpcr_write(FP_FPCR_OTHER);
+        fpsr_write(FP_FPSR_OTHER);
+        fp_canary_load((&raw const FP_PAT_OTHER).cast::<u128>());
+        // 自证：装载面成立（非 switch 之功——先排除「图样根本没装上」的假失败）。
+        fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
+        assert!(fp_snap_eq(&FP_PAT_OTHER), "FP：OTHER canary 装载自证失败");
+        berry_hal_aarch64::uart_puts(b"FPING ");
+        berry_hal_aarch64::task::context_switch(
+            &raw mut FP_CTX_OTHER,
+            &raw const FP_CTX_MAIN,
+        );
+    }
+    berry_hal_aarch64::halt();
+}
+
+/// GUI-0：FPSIMD 上下文全量保存三面：
+/// ① 出生零态（new_kernel 出发于 ZERO，FP 面 = 架构复位值）；
+/// ② 跨任务双向对拍（MAIN⇄OTHER 两跳乒乓——双方各装独立 q0..q7/q30/q31 +
+///    FPCR/FPSR 图样，切回后 MAIN 寄存器面与 OTHER 保存面各自核验 = 跨任务
+///    SIMD 不串味）；
+/// ③ 内核 copy/zero 路径 canary（**内核 SIMD-free 合同护栏**：Vmo commit 清零 +
+///    write/read 拷贝跑在 canary 在位时——编译器漂移引入 NEON memset/memcpy 即
+///    boot 期 loud）。
+fn test_fp() {
+    // MAIN 侧 FPCR/FPSR 图样（RMODE=01 / NZCV=1111——同样不含陷阱使能位）。
+    const FPCR_MAIN: u64 = 0x0040_0000;
+    const FPSR_MAIN: u64 = 0xF000_0000;
+    // SAFETY: DAIF 屏蔽（ktest 在 enable_irq 之前）；静态两 ctx 不别名；栈顶 16 对齐。
+    unsafe {
+        let stack_top = (&raw const FP_OTHER_STACK) as *const u8 as usize
+            + core::mem::size_of::<TestStack4096>();
+        FP_CTX_OTHER = TaskContext::new_kernel(fp_ping_fn, 0, stack_top);
+        // ① 出生零态（raw 指针取共享引用——static_mut_refs 纪律；unsafe 归外层块，
+        // 再包一层会 unused_unsafe 告警——CORR-1 修复轮钉板）。
+        let fresh: &TaskContext = &*(&raw const FP_CTX_OTHER);
+        assert!(
+            fresh.fp == [0u128; 32] && fresh.fpcr == 0 && fresh.fpsr == 0,
+            "FP：新任务出生 FP 面非零"
+        );
+        let (fpcr0, fpsr0) = (fpcr_read(), fpsr_read()); // 记录现场值，测毕还原
+        // ② MAIN 侧装载自己的图样 → 两跳乒乓。
+        fpcr_write(FPCR_MAIN);
+        fpsr_write(FPSR_MAIN);
+        fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
+        berry_hal_aarch64::task::context_switch(&raw mut FP_CTX_MAIN, &raw const FP_CTX_OTHER);
+        // <- fp_ping_fn 切回 FP_CTX_MAIN 时续行于此。四面核验：
+        fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
+        assert!(fp_snap_eq(&FP_PAT_MAIN), "FP：MAIN 的 q0..q7/q30/q31 经两跳 switch 后串味");
+        assert!(fpcr_read() == FPCR_MAIN, "FP：MAIN 的 FPCR 未恢复");
+        assert!(fpsr_read() == FPSR_MAIN, "FP：MAIN 的 FPSR 未恢复");
+        // SAFETY: 同窗读 FP_CTX_OTHER（raw 指针取共享引用；unsafe 归外层块）。
+        let o: &TaskContext = &*(&raw const FP_CTX_OTHER);
+        let other_saved = o.fp[0] == FP_PAT_OTHER[0]
+            && o.fp[1] == FP_PAT_OTHER[1]
+            && o.fp[2] == FP_PAT_OTHER[2]
+            && o.fp[3] == FP_PAT_OTHER[3]
+            && o.fp[4] == FP_PAT_OTHER[4]
+            && o.fp[5] == FP_PAT_OTHER[5]
+            && o.fp[6] == FP_PAT_OTHER[6]
+            && o.fp[7] == FP_PAT_OTHER[7]
+            && o.fp[30] == FP_PAT_OTHER[8]
+            && o.fp[31] == FP_PAT_OTHER[9]
+            && o.fpcr == FP_FPCR_OTHER
+            && o.fpsr == FP_FPSR_OTHER;
+        assert!(other_saved, "FP：OTHER 的 FP 态未随切出保存进其上下文");
+        // ③-a 本仓 mem* 整数版覆写正确性直验（含 memmove 重叠两向 + memcmp 符号面
+        // + bcmp 0/非 0 面）。
+        {
+            let mut buf = [0u8; 40];
+            memset(buf.as_mut_ptr(), 0x5A, 40);
+            let mut pat = [0u8; 40];
+            for (i, b) in pat.iter_mut().enumerate() {
+                *b = i as u8;
+            }
+            memcpy(buf.as_mut_ptr(), pat.as_ptr(), 40);
+            assert_eq!(buf, pat, "FP：memset/memcpy 覆写正确性");
+            // 重叠后向（dst > src）：右移 2。
+            let mut ov = [0u8; 24];
+            for (i, b) in ov.iter_mut().enumerate() {
+                *b = (0xA0 + i) as u8;
+            }
+            memmove(ov.as_mut_ptr().add(2), ov.as_ptr(), 22);
+            for i in 0..22 {
+                assert_eq!(ov[i + 2], (0xA0 + i) as u8, "FP：memmove 重叠（后向）正确性");
+            }
+            // 重叠前向（dst < src）：左移 3。
+            let mut ov2 = [0u8; 24];
+            for (i, b) in ov2.iter_mut().enumerate() {
+                *b = (0xC0 + i) as u8;
+            }
+            memmove(ov2.as_mut_ptr(), ov2.as_ptr().add(3), 21);
+            for i in 0..21 {
+                assert_eq!(ov2[i], (0xC0 + i + 3) as u8, "FP：memmove 重叠（前向）正确性");
+            }
+            assert!(memcmp(pat.as_ptr(), buf.as_ptr(), 40) == 0, "FP：memcmp 相等面");
+            buf[39] ^= 1; // pat[39]=0x27 → buf[39]=0x26：首异字节 buf < pat。
+            assert!(memcmp(buf.as_ptr(), pat.as_ptr(), 40) < 0, "FP：memcmp 符号面");
+            // bcmp 直验（LLVM 把 `memcmp(a,b,n)==0` 标准变换为 bcmp 调用——覆写件
+            // 的伴生符号，漏验 = 链条上唯一没对拍过的口）：相等面 0 / 差异面非 0。
+            buf[39] ^= 1; // 0x26 → 0x27：两缓冲再相等。
+            assert!(bcmp(pat.as_ptr(), buf.as_ptr(), 40) == 0, "FP：bcmp 相等面");
+            buf[39] ^= 1; // 重新打破。
+            assert!(bcmp(buf.as_ptr(), pat.as_ptr(), 40) != 0, "FP：bcmp 差异面");
+        }
+        // ③-b 内核 copy/zero/块拷贝路径 canary（SIMD-free 合同护栏——①-neon 旗 +
+        // ②mem* 覆写两机制在位时必过；旗失效/编译器漂移即此处 boot 期 loud）。
+        fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
+        // 块拷贝探针（sys_object_wait_many 数组 / 结构体拷贝同族——首跑实抓
+        // O1 下 LLVM 即用 q 寄存器落这类拷贝，故必须探）；black_box 防常量折叠
+        // 把拷贝优化掉。
+        let src_arr = core::hint::black_box([0x1234_5678_9ABC_DEF0u64; 16]);
+        let dst_arr = src_arr; // [u64;16] 是 Copy——此处即块拷贝；black_box 防折叠
+        assert_eq!(core::hint::black_box(&dst_arr)[15], src_arr[15], "FP：块拷贝探针前置失败");
+        use crate::vmo::Vmo;
+        use berry_mm::va::PAGE_SIZE;
+        let mut vmo = Vmo::create(PAGE_SIZE).expect("FP：装配 VMO");
+        vmo.commit(crate::mm::frames(), 0, PAGE_SIZE)
+            .expect("FP：commit（清零路径）");
+        static SRC: [u8; 512] = [0x5A; 512];
+        vmo.write(0, &SRC).expect("FP：write（拷贝路径）");
+        let mut dst = [0u8; 64];
+        vmo.read(0, &mut dst).expect("FP：read");
+        assert!(dst == [0x5A; 64], "FP：VMO 读写不符（canary 前置失败）");
+        fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
+        assert!(
+            fp_snap_eq(&FP_PAT_MAIN),
+            "FP：内核 copy/zero 路径触碰了 SIMD——违反内核 SIMD-free 合同"
+        );
+        // 还原现场控制位。
+        fpcr_write(fpcr0);
+        fpsr_write(fpsr0);
+    }
+    berry_hal_aarch64::uart_puts(b"FP ok\n");
 }
 
 /// 2b-2：每进程页表 + ASID 互切 + 低半退役正向断言（`内存管理设计.md` §5.1 第 3 步）。
@@ -1628,7 +2072,7 @@ fn test_aspace() {
 /// 2b-3：匿名 VMO/Vmar 六操作（create/commit/map/unmap/protect/allocate，
 /// `内存管理设计.md` §5.1 第 4 步）——map 即填用户页表；§5.1 验收行：
 /// **内核任务经 VMO 映射读写一页**。fault 侧均走期望故障通道正向断言。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_vmo() {
     use crate::aspace::{alloc_asid, USER_VA};
     use crate::vmar::{Perm, Vmar, VmarError};
@@ -1707,6 +2151,54 @@ fn test_vmo() {
     let v = unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) };
     assert_eq!(v, MAGIC, "VMO：子映射经共享表根可读（同 PA 双 VA 别名）");
 
+    // F. A1-2 容量冒烟：40MiB VMO 全量 commit/decommit——`vmo.rs` commit 逐页
+    // order-0 出帧，不受 MAX_ORDER 堆单块地形约束；帧账本对账（B-0
+    // `allocated_pages` 口径）钉「10240 页全出全还、零泄漏」。40MB+ blob
+    // 装载面的前置证据（`docs/容量工程前置-A1设计草案.md` §2 关键洞察 / §4 A1-2）。
+    //
+    // 对账须计**页记帐双 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
+    // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：`pages:
+    // Vec<Option<usize>>` 16B/页 → 160KiB → order 6 = 64 页；`mapcnt:
+    // Vec<u16>` 2B/页 → 20KiB → order 3 = 8 页——合计 72 页伴随 VMO 存活，
+    // drop 才归还（首跑实测 +72 实抓，与逐项算术逐页吻合）。
+    const CAP40: usize = 40 * 1024 * 1024;
+    let np40 = CAP40 / PAGE_SIZE;
+    let ledger = (16 * np40).div_ceil(PAGE_SIZE).next_power_of_two()
+        + (2 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
+    let a0 = fa.allocated_pages();
+    let mut big = Vmo::create(CAP40).expect("VMO：40MiB create（128MiB 帽内）");
+    assert_eq!(
+        fa.allocated_pages(),
+        a0 + ledger,
+        "VMO：create 记帐双 Vec 入账（order 取整 72 页）"
+    );
+    big.commit(fa, 0, CAP40).expect("VMO：40MiB 全量 commit（10240 页逐页）");
+    assert_eq!(
+        fa.allocated_pages(),
+        a0 + ledger + np40,
+        "VMO：commit 帧账本精确 +10240（另记帐 72 伴随存活）"
+    );
+    big.write(0, &MAGIC.to_le_bytes()).expect("VMO：首页 write");
+    let off_last = CAP40 - 8;
+    big.write(off_last, &MAGIC2.to_le_bytes()).expect("VMO：尾页 write");
+    let mut bigbuf = [0u8; 8];
+    big.read(0, &mut bigbuf).expect("VMO：首页 read");
+    assert_eq!(u64::from_le_bytes(bigbuf), MAGIC, "VMO：40MiB 首页读写往返");
+    big.read(off_last, &mut bigbuf).expect("VMO：尾页 read");
+    assert_eq!(u64::from_le_bytes(bigbuf), MAGIC2, "VMO：40MiB 尾页读写往返");
+    big.decommit(fa, 0, CAP40).expect("VMO：40MiB 全量 decommit");
+    assert_eq!(
+        fa.allocated_pages(),
+        a0 + ledger,
+        "VMO：decommit 后 10240 帧全还（记帐双 Vec 随 VMO 存活）"
+    );
+    drop(big);
+    assert_eq!(
+        fa.allocated_pages(),
+        a0,
+        "VMO：drop 后帧账本精确归位（零泄漏——记帐双 Vec 一并归还）"
+    );
+
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
     berry_hal_aarch64::uart_puts(b"VMO ok\n");
@@ -1716,7 +2208,7 @@ fn test_vmo() {
 /// insert/get（查表→类型→权限三门控）、duplicate 只紧不松、close 后旧值必拒
 /// （引用共享仍在）、槽位重用代号 +1（旧 handle 不复活）、replace 原子搬迁、
 /// 坏 handle 面（0/野值）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_handle() {
     use crate::handle::{
         HandleTable, KernelObj, ObjType, Rights, ERR_ACCESS_DENIED, ERR_BAD_HANDLE,
@@ -1844,7 +2336,7 @@ fn test_handle() {
 /// - **收尾 unbind**：恢复全局缺席态——之后 smoke 稳态全程在未绑态跑。
 ///
 /// 进程调度 crate 无 host 测试面（HAL aarch64 asm），QEMU ktest 是唯一家。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_policy() {
     use alloc::vec::Vec;
     use berry_sched::policy::{self, Directive, Entry};
@@ -1942,7 +2434,7 @@ fn test_policy() {
 /// 判据已改锚定 task 自身（`prev == task && next == task`），本用例机器断言
 /// 兜底。本地环手搭（不动全局 RUNQUEUE——ktest 在 `berry_sched::init` 前）；
 /// 非 smoke 标记（TAGTAB 模式：断言炸 = panic = 后续标记缺失兜底）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_rq_ring2() {
     use berry_sched::{RoundRobin, Runqueue, SchedClass, Task, Topo};
 
@@ -2132,7 +2624,7 @@ fn test_rq_ring3() {
 /// / 11 节点链 × 轮帽 8（倒序入队每轮恰好一跳，第 9/10 跳到不了）/ WAIT_ANY
 /// 与 Event donor 跳过 / 冻结随行（离队不清）+ 重入队回落 / 共享表粒度
 /// （内核任务持有面 = 内核侧共享表，boot 场景同款语义）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_pi() {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
@@ -2371,7 +2863,7 @@ fn test_pi() {
 /// `sched::init` 前跑 → 无 CURRENT/SLEEPQ 干扰，纯函数面 K0–K8 直测
 /// settle/snapshot + 三道帽 + 每消息重导；K9 走真 SVC 验 channel_create
 /// options 面）。EL0 全链验收在 main.rs 六任务对打（`INTENT ok`）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_intent() {
     use berry_sched::intent::{settle, snapshot, MsgIntent, SettleOut, SnapOut};
     use berry_sched::{Task, INTENT_BACKGROUND, INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS,
@@ -2535,7 +3027,7 @@ fn test_intent() {
 /// RUNQUEUE + `try_preempt` 解引用 null CURRENT = 挂死；SVC 面只在清场后跑
 ///（慢路分支无等待者，安全）。EL0 全链 + fastpath/直切/RT 实测在 main.rs
 /// fa_ping/fa_pong 对打（`FAST ok`）。
-#[allow(clippy::result_unwrap_used)]
+#[allow(clippy::unwrap_used)]
 fn test_fast() {
     use alloc::boxed::Box;
     use berry_sched::{find_single_waiter, sleepq_insert, sleepq_unlink, Task, WAIT_ANY};
@@ -2684,7 +3176,7 @@ fn test_dtb() {
         push_u32(v, 1);
         v.extend_from_slice(name.as_bytes());
         v.push(0);
-        while v.len() % 4 != 0 {
+        while !v.len().is_multiple_of(4) {
             v.push(0);
         }
     }
