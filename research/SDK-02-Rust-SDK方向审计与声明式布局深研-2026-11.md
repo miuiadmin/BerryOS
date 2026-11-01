@@ -3,7 +3,7 @@
 > **溯源**：2026-11-01 用户问询「使用 workflow 模式研究，看我们的软件开发 SDK 对不对？我们这个软件要用 Rust 来开发 SDK，这些怎么开发？基建文档、开发方向对不对？包括声明式布局怎么构建？都要出方案」触发。
 > **产制**：workflow 深研模式（run `wf_04faae38-fa0`，7 agent = 盘点×3（A1 SDK 面 / A2 声明式面 / A3 基建文档）+ 对标×2（B1 SDK 外部 / B2 布局深研）+ 对抗校验×2（C1 交叉校验 / C2 布局可行性批判）；87.2 万 token / 20.9 分钟 / 207 工具调用 / 0 失败 0 残缺）。
 > **基座与边界**：SDK-01（2026-10-29 workflow 深研已拍板 → ADR #55–#57）与 GUI-07/08/10 前研为已裁基座，**本轮不重研已裁事项**——只做「现状审计 + 2026-11 增量校验 + 方案构建」。
-> **状态**：**待拍板**——§六 拍板点七件 + 下刀建议；对抗校验记录（C1 抽验 30+ 仓内锚 + 9 外部 URL、C2 直读 berry-ui 4359 行全量）见附录 F/G。
+> **状态**：**已拍板（2026-11-01）**——用户全权委托（原话「你自己帮我拍啊，我要最彻底、架构最好、最优秀，不顾代价的，不计成本的」），七件全裁取顶配，裁决与执行位见 §6.1；对抗校验记录（C1 抽验 30+ 仓内锚 + 9 外部 URL、C2 直读 berry-ui 4359 行全量）见附录 F/G。
 
 ---
 
@@ -141,17 +141,17 @@ TailwindCSS 原子语义 → Rust 落法 = **「词表闭集原子 id + Copy 位
 
 ## 第六部分 · 拍板点七件 + 下刀建议
 
-### 6.1 拍板点（待用户裁决）
+### 6.1 拍板落册（2026-11-01 用户全权委托，七件全裁取顶配）
 
-| # | 拍板点 | 选项与建议 |
+| # | 拍板点 | 裁决（顶配版）与执行位 |
 |---|---|---|
-| ① | **六 crate 最终 publish**（用户账号动作）+ Trusted Publishing 接入 + repository 换真址 | 建议尽快（生态首实物动作，publish 后指南切「已发布态」+ docs.rs 自动解锁）；publish 前先修 §3.1 #2 八 crate 口径 |
-| ② | **GUI-6 布局刀范围盒** | 建议按 §四 终案立项（案 3 修正版六件 + 冻结面单支 ADR + 容量帽账）；与 GUI-2 段③文件面互斥可并行 |
-| ③ | **intent SDK 接口位专项**（盲区 1） | 建议立 ADR（VOTE↔berry_intent 归一 + libc 透传面），刀可后置但归一裁决宜早——两套「意图」越晚归一代价越大 |
-| ④ | **AI 校验器独立 crate 化**（盲区 4） | 建议随 SDK-2 前置 ADR 同刀（解释器/校验器/LSP/live preview 共用单 crate，Slint 范式） |
-| ⑤ | **无障碍语义树预留**（盲区 6） | 建议进 GUI-6 刀表最小面（add-only label 域）——低成本窗口在 GUI-6/7 前 |
-| ⑥ | **分发/签名链预埋**（盲区 5） | 建议 manifest v2 ADR 时同刀裁 security/distribution 域（分发专项调研另立） |
-| ⑦ | **文档 hotfix 三件**（§3.1 #1/#2/#3） | 建议即时插刀（半天级：镜像同步+clone URL / 八 crate 口径 / GUI-7 验收线加「仓外可跑」） |
+| ① | **八 crate 最终 publish** + Trusted Publishing + repository 换真址 | **立即发，全链接入**。准备链（本线执行）：八 Cargo.toml `repository` 换公开镜像真址 + `rust-version` 钉版 + 仓根 rust-toolchain.toml 钉 rustc（musl 1.2.5 口径前置耦合，C1 接线）+ 指南八 crate 口径修正；发布序 = ci.yml 八 crate 依赖序（sys→tls→netdproto→fsproto→mmap→signal→fsclient→libc）；首版手动发布（用户账号动作，手顺随准备链交付成一键）→ crates.io UI 绑 Trusted Publisher（RFC 3691）→ CI OIDC 发布弃本地 token；publish 后指南切「已发布态」+ docs.rs 自动解锁 |
+| ② | **GUI-6 布局刀范围盒** | **按 §四 终案立项 + 两加强**：(a) 容量帽一次到位——MAX_NODES 256→**512**、CAP 512→**1024**、DESC_MAX 4096→**8192**，MeasCtx 双位图 2KB + old_abs 16KB 栈面审计进验收（免日后二次动冻结面）；(b) **案1 layout.rs v2 不设升级条件直接排刀**——GUI-6 v1 收官即接续开约束单遍协商重写，「目标态」从可选升为必达，golden 重钉单列验收项。冻结面单支 ADR（§4.5 六项）+ ⑤ 无障碍域随 GUI-6 开刀前出；与 GUI-2 段③ 文件面互斥并行 |
+| ③ | **intent SDK 接口位专项**（盲区 1） | **立独立 ADR + 归一方向预裁 = 单一意图词汇表**——guiproto SCENE/VOTE 帧率意图折算映射进 berry_intent 六档语义域（帧率 ballot = berry_intent 图形场景特化），两套并存设终止期限；SDK 面：berry-libc pthread_attr intent 位 + process options 透传 + CHAN_OPT_NO_INTENT 暴露 + ADR #21 带内接口 app 可达性同 ADR 议程；与 SDK-2 前置 ADR 微刀同窗起草 |
+| ④ | **AI 校验器独立 crate 化**（盲区 4） | **独立 crate + 单解释器铁律**——TLV 校验器/解释器从 berry-ui pub(crate) 迁出为 L2 协议位新 crate（定名随 SDK-2 前置 ADR）；立法「设备解释器 / live preview / LSP 三消费者共用同一 crate，禁止第二求值路径」（Slint 四方同解释器先例）；迁移走 ② 冻结面 ADR 同窗 |
+| ⑤ | **无障碍语义树预留**（盲区 6） | **进 GUI-6 且不止最小面**——TLV flags 空位门控 add-only label/role 域（不破 roundtrip，跨版本流拒面同 §4.6 纪律）+ Node 侧语义位预留；v1 role 枚举只立值域不实现；GUI-6 范围盒第七件 |
+| ⑥ | **分发/签名链预埋**（盲区 5） | **manifest v2 三域同刀裁**——词表域 + security（签名算法位/密钥指纹/profile）+ distribution（升级/回滚/来源）骨架一并进 v2 值域框架；细目待分发专项调研（APK Signing v2/v3、Fuchsia pkg_resolver/amber、鸿蒙 App 包格式）填充；v1 预埋 = mkapp 签名位留空 + appd 验签钩留位；归 SDK-2 前置 ADR 微刀 |
+| ⑦ | **文档 hotfix 三件**（§3.1 #1/#2/#3） | **立即执行（拍板后第一刀）**——(a) 指南八 crate 口径 + clone URL + 镜像说明；(b) 规划 GUI-7 验收线加「仓外 app 不改 justfile 可跑」+ GUI-6 立项增件行回填；(c) 公开镜像同步 = 先审 sync-public.sh 过滤面（research/reference 必须在排除表）再跑，public 远端纪律不放松 |
 
 ### 6.2 下刀建议（时序）
 
