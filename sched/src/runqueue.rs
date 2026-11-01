@@ -20,12 +20,11 @@ pub struct Runqueue {
     /// 自闭合），只有对账才能显形「有成员不在头可达圈上」（复盘雷 2 残留
     /// 诊断——五任务静默失联的确诊机制即此形态）。
     len: Cell<usize>,
-    /// per-queue 自旋锁（S-3c c-2a **落形**——c-2b 取放启用；持有位 =
-    /// `HELD_RQ0`/`HELD_RQ1`）。crate 内自持 [`SpinLock`]（零 arch 依赖——
-    /// b-1 时「A4 侦察形 lock 字段被依赖方向约束否决」的解方即此；彼时
-    /// 注释预告的「S-3c 拆锁时结构再扩」由本字段兑现）。过渡态 KL 全量在场
-    /// ⇒ 恒零争用（窗形先行）。
-    #[allow(dead_code)]
+    /// per-queue 自旋锁（S-3c c-2a 落形 → **c-2b 取放启用**；持有位 =
+    /// `HELD_RQ0`/`HELD_RQ1`，记账在 `sched::rq_lock_of` 统一承担）。crate 内
+    /// 自持 [`SpinLock`]（零 arch 依赖——b-1 时「A4 侦察形 lock 字段被依赖
+    /// 方向约束否决」的解方即此；彼时注释预告的「S-3c 拆锁时结构再扩」由本
+    /// 字段兑现）。过渡态 KL 全量在场 ⇒ 恒零争用（窗形先行，§A108）。
     lock: SpinLock,
 }
 
@@ -50,6 +49,22 @@ impl Runqueue {
             len: Cell::new(0),
             lock: SpinLock::new(),
         }
+    }
+
+    /// 取本队列自旋锁（S-3c c-2b 启用）。纪律同 `crate::spin` 头注：IRQ 屏蔽
+    /// 窗内取放、不可重入、持窗禁切换；过渡态一切取放点在 KL 窗内（§A108
+    /// 过渡态逆序——C20 收缩时随分号类别消解）。持有位记账由
+    /// `sched::rq_lock_of`/`rq_unlock_of` 统一承担（本面不重复记账）。
+    ///
+    /// # Safety
+    /// 调用方契约如上（屏蔽窗 + 不重入 + 窗内禁切换）。
+    pub(crate) unsafe fn lock_acquire(&self) {
+        self.lock.acquire();
+    }
+
+    /// 放本队列自旋锁（先清持有位后放——位与锁恒同窗，见 `sched::rq_unlock_of`）。
+    pub(crate) fn lock_release(&self) {
+        self.lock.release();
     }
 
     /// 环长（走查对账用）。

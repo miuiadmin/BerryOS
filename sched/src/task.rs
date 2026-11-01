@@ -148,10 +148,10 @@ pub struct Task {
     /// **S-3c 义务⑥（F-L9）升持有集位图 u8**：bit0 = KERN_LOCK（原
     /// `klock_window` 语义原样）；bit1..=4 = 结构锁四位（c-2a 定名：
     /// [`HELD_SQ`] 已随 `sq_lock`/`sq_unlock` 记账，[`HELD_RQ0`]/[`HELD_RQ1`]
-    /// /[`HELD_REAPQ`] 随 c-2b 取放启用）；bit5 = 表锁（C20 KL 收缩后 KL
-    /// 本尊兼职，c-2c 定名）。「持结构锁禁切换」从结构巧合升立法：c-2c 起
-    /// 切换原语按「非零即禁」执法（现役舞蹈分诊仅 bit0，行为与旧 bool 位
-    /// 逐点等价）。
+    /// 随 c-2b RQ 取放对（`rq_lock_of`）记账；[`HELD_REAPQ`] 随 c-2b slice 2
+    /// 启用）；bit5 = 表锁（C20 KL 收缩后 KL 本尊兼职，c-2c 定名）。
+    /// 「持结构锁禁切换」从结构巧合升立法：c-2c 起切换原语按「非零即禁」
+    /// 执法（现役舞蹈分诊仅 bit0，行为与旧 bool 位逐点等价）。
     pub held_locks: u8,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
