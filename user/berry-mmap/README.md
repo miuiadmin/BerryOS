@@ -1,7 +1,7 @@
 # berry-mmap
 
 Anonymous-`mmap` bookkeeping pure functions for the
-[BerryOS](https://github.com/berryos/berryos) microkernel (experimental,
+[BerryOS](https://github.com/miuiadmin/BerryOS) microkernel (experimental,
 aarch64-first research OS): a fixed-capacity region table, a VA-window
 first-fit allocator (bottom-up, munmap hole reuse), and page-rounding
 arithmetic — pure functions, host-testable.

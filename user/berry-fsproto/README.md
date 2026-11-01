@@ -1,6 +1,6 @@
 # berry-fsproto
 
-Wire protocol for the [BerryOS](https://github.com/berryos/berryos)
+Wire protocol for the [BerryOS](https://github.com/miuiadmin/BerryOS)
 filesystem-service RPC (experimental, aarch64-first research OS): 10 ops
 incl. v2 NUL-segment paths and STATFS — pure no_std encoder/parser,
 host-testable.

@@ -3,7 +3,7 @@
 //! ## Overview (for crates.io users)
 //!
 //! Copy-style TLS (thread-local storage) placement math for the
-//! [BerryOS](https://github.com/berryos/berryos) microkernel: ELF
+//! [BerryOS](https://github.com/miuiadmin/BerryOS) microkernel: ELF
 //! `PT_TLS` walk, placement arithmetic, and template globals — pure
 //! functions, host-testable. Main thread (crt0) and pthread trampolines
 //! share the same placement arithmetic; the consumer is berry-libc.

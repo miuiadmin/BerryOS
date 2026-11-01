@@ -2,6 +2,7 @@
 name = "berry-libc"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
 
 # G-eco-d d-1a：musl std 面的 libc shim（docs/G-eco编译侧设计草案.md 附录 A
 # 189 强未定义全定义——shim 全定义 ⇒ musl libc.a 成员永不入选，零 musl 字节进产物）。
@@ -9,7 +10,7 @@ edition = "2021"
 # aarch64-unknown-linux-musl（stdhello 依赖）两个 target 下编译——只用 core，无链接面。
 description = "BerryOS libc shim: full-definition libc surface for Rust std (musl target) on the BerryOS microkernel (aarch64)"
 license = "Apache-2.0"
-repository = "https://github.com/berryos/berryos"
+repository = "https://github.com/miuiadmin/BerryOS"
 readme = "README.md"
 keywords = ["berryos", "libc", "posix", "musl", "aarch64"]
 categories = ["api-bindings", "os"]

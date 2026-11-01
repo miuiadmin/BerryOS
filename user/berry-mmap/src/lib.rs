@@ -3,7 +3,7 @@
 //! ## Overview (for crates.io users)
 //!
 //! `mmap` bookkeeping pure functions for the
-//! [BerryOS](https://github.com/berryos/berryos) microkernel: a
+//! [BerryOS](https://github.com/miuiadmin/BerryOS) microkernel: a
 //! fixed-capacity region table, a VA-window **first-fit** allocator (hole
 //! reuse after `munmap`), an argument classifier (anonymous arm since
 //! A7-1, file-staging arm since A7-3), `mprotect` dormant bookkeeping,

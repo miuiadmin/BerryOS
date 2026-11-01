@@ -1,7 +1,7 @@
 # berry-tls
 
 Copy-style TLS (thread-local storage) placement math for the
-[BerryOS](https://github.com/berryos/berryos) microkernel (experimental,
+[BerryOS](https://github.com/miuiadmin/BerryOS) microkernel (experimental,
 aarch64-first research OS): ELF `PT_TLS` walk, placement arithmetic, and
 template globals — pure functions, host-testable.
 

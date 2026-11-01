@@ -4,11 +4,16 @@
 //!
 //! Full-definition libc shim letting Rust std build for
 //! `aarch64-unknown-linux-musl` on the
-//! [BerryOS](https://github.com/berryos/berryos) microkernel:
+//! [BerryOS](https://github.com/miuiadmin/BerryOS) microkernel:
 //! malloc/write/pthread/futex/crt0 are real, the rest is stubbed
 //! loudly — ENOSYS/ENOENT codes follow each caller's
 //! error-classification whitelist. aarch64 only; pairs with the in-repo
 //! `berry-ld` linker wrapper — see the repository's app guide.
+//!
+//! Musl semantics baseline: **musl 1.2.5** — the version Rust's official
+//! musl targets ship since Rust 1.93 (2025-12). This crate consumes no
+//! musl bytes; the baseline pins the std behavior we mirror (SDK-02
+//! decision, 2026-11). MSRV = 1.93.
 //!
 //! Status: experimental (0.1.0) — the surface moves with the BerryOS v1
 //! userland. Repo docs are mostly zh-CN.
