@@ -22,6 +22,7 @@ pub mod intent;
 pub mod policy;
 pub mod runqueue;
 pub mod sched;
+pub mod spin;
 pub mod task;
 
 pub use class::{RoundRobin, SchedClass};
@@ -33,13 +34,14 @@ pub use intent::{
 pub use runqueue::{linkable, Runqueue, Topo};
 pub use sched::{
     block_current, current_pinned, current_tag, exit_current,
-    exit_current_with, fast_wake,
-    find_single_waiter, for_each_sleeper, idle_loop, init, intent_settle_current,
+    exit_current_with, fast_wake_locked,
+    find_single_waiter, find_single_waiter_locked, for_each_sleeper, idle_loop, init,
+    intent_settle_current,
     intent_snapshot_current, kill_all_tasks_by_pinned, klock_flag_current, last_killed,
     lb_stats,
     on_irq_tick, on_sgi_resched, park_recheck, nearest_deadline, refresh_effective, reap_drain,
     set_exit_hook, set_lb_match,
-    set_klock_ops, set_sleepq_hook,
+    set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
     sleepq_insertable, sleepq_unlink, spawn, spawn_as, spawn_intent, spawn_user, spawn_with,
     spawn_with_tag, switches, topo_smp_online, try_preempt, try_spawn_user, user_fault_exit,

@@ -1,5 +1,6 @@
 //! Runqueue（侵入式双向环形链表，`NonNull<Task>` 裸指针）+ CPU 拓扑（`Topo`）。
 
+use crate::spin::SpinLock;
 use crate::task::Task;
 use core::cell::Cell;
 use core::ptr::NonNull;
@@ -19,6 +20,13 @@ pub struct Runqueue {
     /// 自闭合），只有对账才能显形「有成员不在头可达圈上」（复盘雷 2 残留
     /// 诊断——五任务静默失联的确诊机制即此形态）。
     len: Cell<usize>,
+    /// per-queue 自旋锁（S-3c c-2a **落形**——c-2b 取放启用；持有位 =
+    /// `HELD_RQ0`/`HELD_RQ1`）。crate 内自持 [`SpinLock`]（零 arch 依赖——
+    /// b-1 时「A4 侦察形 lock 字段被依赖方向约束否决」的解方即此；彼时
+    /// 注释预告的「S-3c 拆锁时结构再扩」由本字段兑现）。过渡态 KL 全量在场
+    /// ⇒ 恒零争用（窗形先行）。
+    #[allow(dead_code)]
+    lock: SpinLock,
 }
 
 /// 环走查步数帽：远大于合法环长（现矩阵 runnable ≤~20），只挡断链死循环
@@ -40,6 +48,7 @@ impl Runqueue {
         Runqueue {
             head: Cell::new(None),
             len: Cell::new(0),
+            lock: SpinLock::new(),
         }
     }
 

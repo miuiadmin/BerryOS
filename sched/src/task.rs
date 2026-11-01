@@ -39,9 +39,18 @@ pub enum EppHint {
 
 /// 持有集位图常量（S-3c 义务⑥，F-L9）：`Task::held_locks` 的位定义。
 /// bit0 = KERN_LOCK（原 `klock_window` 语义原样——arch SVC/fault 入口置、
-/// dispatch 尾/直调包络清、切换舞蹈分诊放/取）；bit1..=5 预留结构锁五位
-/// （SLEEPQ/RQ/REAPQ/表/对象系——c-2 分号类别取放时定名启用）。
+/// dispatch 尾/直调包络清、切换舞蹈分诊放/取）；bit1..=4 = 结构锁四位
+/// （S-3c c-2a 定名启用：SQ 随 `sq_lock`/`sq_unlock` 记账；RQ0/RQ1/REAPQ
+/// 随 c-2b 取放启用）；bit5 = 表锁（C20 KL 收缩后 KL 本尊兼职——c-2c 定名）。
 pub const HELD_KERN_LOCK: u8 = 1 << 0;
+/// SLEEPQ 持有位（c-2a 起 `sq_lock`/`sq_unlock` 置/清）。
+pub const HELD_SQ: u8 = 1 << 1;
+/// CPU0 runqueue 持有位（c-2b 取放启用）。
+pub const HELD_RQ0: u8 = 1 << 2;
+/// CPU1 runqueue 持有位（c-2b 取放启用）。
+pub const HELD_RQ1: u8 = 1 << 3;
+/// REAPQ 持有位（c-2b 取放启用）。
+pub const HELD_REAPQ: u8 = 1 << 4;
 
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,10 +146,12 @@ pub struct Task {
     /// 位只在任务自身执行流中被写 → 挂起期间稳定。
     ///
     /// **S-3c 义务⑥（F-L9）升持有集位图 u8**：bit0 = KERN_LOCK（原
-    /// `klock_window` 语义原样）；bit1..=5 预留结构锁五位（SLEEPQ / RQ /
-    /// REAPQ / 表 / 对象系——c-2 分号类别取放时定名启用）。「持结构锁禁
-    /// 切换」从结构巧合升立法：c-2 起切换原语按「非零即禁」执法（现役仅
-    /// bit0，行为与旧 bool 位逐点等价）。
+    /// `klock_window` 语义原样）；bit1..=4 = 结构锁四位（c-2a 定名：
+    /// [`HELD_SQ`] 已随 `sq_lock`/`sq_unlock` 记账，[`HELD_RQ0`]/[`HELD_RQ1`]
+    /// /[`HELD_REAPQ`] 随 c-2b 取放启用）；bit5 = 表锁（C20 KL 收缩后 KL
+    /// 本尊兼职，c-2c 定名）。「持结构锁禁切换」从结构巧合升立法：c-2c 起
+    /// 切换原语按「非零即禁」执法（现役舞蹈分诊仅 bit0，行为与旧 bool 位
+    /// 逐点等价）。
     pub held_locks: u8,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续

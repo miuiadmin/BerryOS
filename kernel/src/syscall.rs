@@ -1427,7 +1427,7 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
 /// **4-4 fastpath/slowpath 分层**（`IPC设计.md` §7 检查链）：共享前缀（上列
 /// 全部错误面）之后按检查链 fork——「无随行 handle（迁移面留 slowpath）+
 /// 对端队列空 + 恰一个非哨兵 READABLE 等待者且无哨兵在场」全过 → fastpath
-/// 定点唤醒（`fast_wake`，与 slowpath 共用同一内部唤醒序列）+ 直切判定
+/// 定点唤醒（`fast_wake_locked`，与 slowpath 共用同一内部唤醒序列）+ 直切判定
 ///（`try_preempt`：严格更高 eff 才切，seL4 direct switch 的 v1 形态）；
 /// 任一不满足 → slowpath（`wake_matching` 全匹配唤醒）。**两路语义逐条对齐，
 /// 不长第二套**：错误码由共享前缀天然恒等；唤醒集恒等（多匹配者/任一哨兵
@@ -1530,24 +1530,42 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // 屏蔽无插队）：无随行 handle + 队列空 + 恰一个非哨兵 READABLE 等待者且
     // 无哨兵在场 → fastpath；否则 slowpath（检查链其余项 v1 结构性成立，见
     // 函数注释）。
+    // S-3c c-2a 义务④窗：find→push→fast_wake 同一 SLEEPQ 锁窗（终态形
+    // 「查位+写位+唤醒不可分割」；过渡态 KL 全量在场 ⇒ 零争用，窗形先行
+    // ——SLEEPQ_LOCK 注释的逆序标注在此同样适用）。未命中即闭窗——
+    // slowpath 的 wake_matching 自带窗。
     let waiter = if nhandles == 0 && peer_empty {
-        berry_sched::find_single_waiter(peer_ptr.as_ptr() as usize, SIGNAL_READABLE)
+        berry_sched::sq_lock();
+        let w =
+            berry_sched::find_single_waiter_locked(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
+        if w.is_none() {
+            berry_sched::sq_unlock();
+        }
+        w
     } else {
         None
     };
     // SAFETY: peer_ptr 互钉在活；队列有界（满检过，单核无并发插队）。
     unsafe {
         let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
-            return ERR_BAD_HANDLE as i64; // 上面刚解包过——不可达防御面（消息泄漏，安全向）
+            // 上面刚解包过——不可达防御面（消息泄漏，安全向）。c-2a：若义务④
+            // 窗已开（waiter 命中 ⇔ SQ 在持）先闭窗再退——锁泄漏 = 全局死锁。
+            if waiter.is_some() {
+                berry_sched::sq_unlock();
+            }
+            return ERR_BAD_HANDLE as i64;
         };
         peer_end.push(msg);
     }
     match waiter {
         Some(t) => {
-            // fastpath：定点唤醒（同一内部唤醒序列 + PI 收尾重推）→ 直切判定
-            //（严格更高 eff 才切——切走后从 try_preempt 续行、IRQ 仍屏蔽）。
-            // SAFETY: t 来自同一屏蔽窗 find_single_waiter（此刻仍在 SLEEPQ 上）。
-            unsafe { berry_sched::fast_wake(t) };
+            // fastpath：定点唤醒（同一内部唤醒序列 + PI 收尾重推）→ **闭窗** →
+            // 直切判定（严格更高 eff 才切——切走后从 try_preempt 续行、IRQ 仍
+            // 屏蔽；try_preempt 可切换，不入 SQ 窗 = 终态「结构锁窗内禁切换」）。
+            // SAFETY: t 来自同一 SQ 窗内 find_single_waiter_locked（此刻仍在
+            // SLEEPQ 上）。
+            unsafe { berry_sched::fast_wake_locked(t) };
+            berry_sched::sq_unlock();
             crate::telemetry::ipc_fast_hit();
             if berry_sched::try_preempt() {
                 crate::telemetry::ipc_direct_switch();

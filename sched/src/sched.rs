@@ -10,7 +10,8 @@
 
 use crate::class::{RoundRobin, SchedClass};
 use crate::runqueue::{Runqueue, Topo};
-use crate::task::{Task, TaskState, WakeReason, HELD_KERN_LOCK};
+use crate::spin::SpinLock;
+use crate::task::{Task, TaskState, WakeReason, HELD_KERN_LOCK, HELD_SQ};
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
 use core::ptr::{addr_of_mut, NonNull};
@@ -62,9 +63,10 @@ unsafe fn set_current(t: *mut Task) {
 /// 自豁免指针；park 派发态传 null——park 上下文非调度语义 Task，永不入环）。
 /// per-CPU runqueue（S-3b 步 b-1，子案 §9.6 / §8.C A4）：定长数组按核分诊，
 /// 索引 = 核号（v1 = 2）。锁界 = KERN_LOCK 全量窗（S-3b 事实——SVC 入口仍
-/// 全量锁，一切入/出环手术跨核互斥）；A4 侦察形的 per-queue lock 字段被依赖
-/// 方向约束否决（sched 架构无关不引 arch 锁类型——S-3c 拆锁时按彼时锁立法
-/// 经注入槽定形，结构届时再扩）。单核形态（gate 恒关）`cpu_id()` 恒 0 →
+/// 全量锁，一切入/出环手术跨核互斥）；A4 侦察形的 per-queue lock 字段曾因
+/// 「sched 架构无关不引 arch 锁类型」被否决——c-2a 已以 crate 内自持
+/// `SpinLock`（`runqueue.rs` 字段落形，零 arch 依赖）兑现「届时再扩」，
+/// c-2b 起取放启用。单核形态（gate 恒关）`cpu_id()` 恒 0 →
 /// `[0]` 行为等价旧全局 RUNQUEUE（零漂移根基）。
 static mut PER_CPU_RQ: [Runqueue; 2] = [Runqueue::new(), Runqueue::new()];
 /// CPU 拓扑（capacity 由 [`init`] 从 HAL `cpu_capacity()` 填——S-3b 真化；
@@ -227,6 +229,22 @@ pub unsafe extern "C" fn klock_flag_current(on: bool) {
             (*cur).held_locks |= HELD_KERN_LOCK;
         } else {
             (*cur).held_locks &= !HELD_KERN_LOCK;
+        }
+    }
+}
+
+/// 结构锁持有位记账（S-3c c-2a 义务⑥面）：置/清当前任务 `held_locks` 对应
+/// 位。CURRENT 空（ktest/boot/park 窗——结构锁原语在 IRQ 语境也可达，被
+/// 打断任务可能为 park 空态）跳过：位只服务 c-2c 切换舞蹈「非零即禁」执法
+/// 与排障可观测，锁本身的互斥不依赖位；窗内禁切换 ⇒ 位与锁恒同窗配平。
+#[inline]
+unsafe fn held_mark(bit: u8, on: bool) {
+    let cur = current_task();
+    if !cur.is_null() {
+        if on {
+            (*cur).held_locks |= bit;
+        } else {
+            (*cur).held_locks &= !bit;
         }
     }
 }
@@ -695,6 +713,11 @@ static mut REAPQ: [*mut Task; REAPQ_CAP] = [core::ptr::null_mut(); REAPQ_CAP];
 static mut REAPQ_LEN: usize = 0;
 static mut REAPQ_WARNED: usize = 0;
 const REAPQ_CAP: usize = 32;
+/// REAPQ 互斥锁（S-3c c-2a **落形**——c-2b 取放启用；持有位 = `HELD_REAPQ`；
+/// 七层冻结锁序第三层）。过渡态语义同 `SLEEPQ_LOCK`（KL 全量在场 ⇒ 恒零
+/// 争用，窗形先行）。
+#[allow(dead_code)]
+static REAPQ_LOCK: SpinLock = SpinLock::new();
 
 /// 压队（退出路径，IRQ 屏蔽窗内；cur 还在自家栈上——只入队不释放）。
 unsafe fn reapq_push(t: *mut Task) {
@@ -1024,6 +1047,38 @@ unsafe fn sleepq() -> &'static mut SleepQueue {
     &mut *addr_of_mut!(SLEEPQ)
 }
 
+/// SLEEPQ 互斥锁（S-3c c-2a：锁族落形 + SQ 窗先行——§3 七层冻结锁序最顶层）。
+///
+/// **过渡态（c-2a/b）语义**：SVC 入口 KL 全量不动 ⇒ 本锁一切取放点都在 KL
+/// 窗内 ⇒ 恒单写者、零争用（真原子互斥尚未启用——**窗形先定形，行为零差**；
+/// c-2c C20 收缩后才成为真互斥面）。**过渡态逆序标注（勿引为终态锁序）**：
+/// 本锁嵌于 KL 窗内 = KL > 结构锁，与终态七层序（结构锁独立分号、SQ 居
+/// 首）方向相反——KL 单持有者串行一切结构锁取放点，此嵌套方向上死锁结构
+/// 不可能；C20 收缩后 SQ 号路径脱离 KL 窗，本逆序边随之消解（判词 → 子案
+/// §9.7 c-2 拆解段）。
+///
+/// 窗纪律：取放须在 IRQ 屏蔽窗内（既有 SLEEPQ 面契约，雷 2 判例——同核
+/// IRQ 重入 `expire_timeouts` 再取 = 自死锁）；窗内禁切换（终态立法前瞻——
+/// c-2a 起一切 SQ 窗在切点前释放）；不可重入（TTAS——跨函数同窗用
+/// `_locked` 内层分层）。
+static SLEEPQ_LOCK: SpinLock = SpinLock::new();
+
+/// 取 SLEEPQ 锁（含持有位记账）。pub 供 kernel 侧 fastpath 义务④跨窗
+///（find→push→fast_wake 同窗，`syscall.rs` 调用方持窗——窗内禁切换故
+/// 直切判定在窗外）。
+pub fn sq_lock() {
+    SLEEPQ_LOCK.acquire();
+    // SAFETY: 记账位写当前任务字段；CURRENT 空窗由 held_mark 自跳过。
+    unsafe { held_mark(HELD_SQ, true) };
+}
+
+/// 放 SLEEPQ 锁（先清位后放——位与锁恒同窗）。
+pub fn sq_unlock() {
+    // SAFETY: 同上。
+    unsafe { held_mark(HELD_SQ, false) };
+    SLEEPQ_LOCK.release();
+}
+
 impl SleepQueue {
     /// 按 `wait_deadline` 升序插入；相等插相等段**尾**（同 deadline FIFO——
     /// 先睡先醒，扫描顺序可复现）。
@@ -1124,6 +1179,12 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
     // SAFETY: 调用方契约 = IRQ 屏蔽窗；CURRENT 有效；SLEEPQ 单核顺序访问。
     unsafe {
         let cur = current_task();
+        // S-3c c-2a：SQ 窗开（义务③「查位+入队同窗」段——等待字段四写 +
+        // insert_sorted + rq unlink + 置 Blocked + PI 收尾重推，一体不分割）。
+        // 窗内含 pick/RQ 读改（终态 SQ>队列序正确嵌套）；**切点前必闭窗**
+        //（下方两路 klock_release_switch 前）——终态「结构锁窗内禁切换」
+        // 前瞻。过渡态 KL 全量在手 ⇒ 本窗恒零争用（SLEEPQ_LOCK 注释）。
+        sq_lock();
         // 填等待描述（唤醒方 wake_matching 的匹配依据）+ 入睡时刻戳（唤醒
         // 遥测环记 block→wake 延迟——`wait_since` 与 deadline 同窗填，无竞态）。
         (*cur).wait_obj = obj;
@@ -1157,6 +1218,7 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
                 SWITCHES.fetch_add(1, Ordering::Relaxed);
                 note_switch(cur, core::ptr::null_mut(), SwitchKind::Block);
                 note_sleepq_changed();
+                sq_unlock(); // SQ 窗闭（park 切点前——窗内禁切换）
                 klock_release_switch(cur);
                 hal::task::context_switch(&raw mut (*cur).ctx, hal::smp::sec_park_ctx() as *const _);
                 // <- 被 park 派发切回时续行于此（IRQ 仍屏蔽——调用方契约窗内）。
@@ -1179,6 +1241,7 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         // 4-3b：新睡眠者已入队、状态定型——PI 全图重推（写 pi/eff 字段，不碰
         // 链接；屏蔽窗内零分配）后才切走。
         note_sleepq_changed();
+        sq_unlock(); // SQ 窗闭（正常切点前——窗内禁切换；park 分支同款）
         // S-2 E0 舞蹈（草案 §2.3）：SLEEPQ 入队后放锁入睡（睡眠点先放锁 = 持锁者
         // 永不睡眠的执法点；多轮睡眠的重复放/取靠随 Task 位不错配）。
         klock_release_switch(cur);
@@ -1194,13 +1257,14 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
 }
 
 /// 单等待者唤醒内部序列（4-4 抽取）：摘队→置因→入环→唤醒遥测——`wake_matching`
-/// 的每匹配者与 fastpath 定点唤醒（[`fast_wake`]）**共用此一处**（「分层不是
+/// 的每匹配者与 fastpath 定点唤醒（[`fast_wake_locked`]）**共用此一处**（「分层不是
 /// 特例，不长第二套」——两路唤醒序列一字不差，PI 收尾重推同样经调用方各自
 /// 发射 [`note_sleepq_changed`]）。
 ///
 /// # Safety
-/// IRQ 屏蔽窗内；`t` 当前在 SLEEPQ 上（调用方契约同 `SleepQueue::unlink`——
-/// 对不在队者调用会扬掉整队）。
+/// IRQ 屏蔽窗内 + **SQ 锁已持**（c-2a 起两路调用方都在窗内）；`t` 当前在
+/// SLEEPQ 上（调用方契约同 `SleepQueue::unlink`——对不在队者调用会扬掉
+/// 整队）。
 unsafe fn wake_one_inner(t: NonNull<Task>) {
     // SAFETY: 契约如上；SLEEPQ 单核顺序访问。
     unsafe {
@@ -1233,10 +1297,14 @@ unsafe fn wake_one_inner(t: NonNull<Task>) {
 /// 到达序闭环，选择器零熵），首个被选者永久锁死独占腾出的每个槽（实测
 /// user_child 连胜 60/60 轮，pinger/ponger 链 30s 断供）。容量槽公平归
 /// 放置面（[`place`] 的 thread/process 切分）与 b-2 偷取迁移，不归唤醒面。
+///
+/// **S-3c c-2a 起**：全体包 SQ 锁窗（扫描摘队 + PI 收尾一体；窗内
+/// `enqueue_with_kick` 的 RQ 手术 = 终态 SQ>队列序正确嵌套）。
 pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
     if obj == 0 {
         return 0;
     }
+    sq_lock(); // SQ 窗开（写位+扫描同窗——义务③/④对偶面）
     let mut n = 0;
     // SAFETY: IRQ 屏蔽窗（调用方契约）；SLEEPQ 单核顺序访问；遍历中摘除的
     // 节点仍有效（调度器拥有其 Box）。
@@ -1256,6 +1324,7 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
     // 4-3b：摘队完成 = 睡眠者集合定型（离队者冻结 boost、在队者重算捐赠图）。
     // SAFETY: IRQ 屏蔽窗（调用方契约，见函数注释）。
     unsafe { note_sleepq_changed() };
+    sq_unlock(); // SQ 窗闭
     n
 }
 
@@ -1270,8 +1339,23 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
 /// slowpath，其存活期 = 全系统 send 直切关停，ai_ping 类 poll-0 直切确定
 /// 性测试结构必断）。**IRQ 屏蔽窗内调用**（S-2 起锁窗等价：`klock_enter` 先
 /// disable_irq 后取锁——KERN_LOCK 窗内 IRQ 必屏蔽，SMP 下另享跨核互斥）；
-/// 返回指针仅在**同一窗口内**有效（窗口内无插队——[`fast_wake`] 的契约）。
+/// 返回指针仅在**同一窗口内**有效（窗口内无插队——[`fast_wake_locked`] 的
+/// 契约）。
+///
+/// S-3c c-2a 起：**自持窗版**（取放 SQ 锁自包）——消费面 = ktest FAST L0-L4
+/// 谓词层直调（boot 屏蔽态零争用，每调用一平衡窗）。生产 fastpath 用
+/// [`find_single_waiter_locked`]（义务④跨 find→push→fast_wake 单窗）。
 pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
+    sq_lock();
+    let r = find_single_waiter_locked(obj, signals);
+    sq_unlock();
+    r
+}
+
+/// [`find_single_waiter`] 的持窗版：**须已持 SLEEPQ 锁**（`sq_lock`）且整段
+/// 使用窗内完成（同窗配对 `sq_unlock` / [`fast_wake_locked`]）——义务④
+/// fastpath 的 find 臂。谓词语义与自持窗版一字不差。
+pub fn find_single_waiter_locked(obj: usize, signals: u64) -> Option<NonNull<Task>> {
     if obj == 0 || signals == 0 {
         return None;
     }
@@ -1296,15 +1380,16 @@ pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
     found
 }
 
-/// 4-4 fastpath 定点唤醒：唤醒同窗 [`find_single_waiter`] 找到的唯一等待者
-///（内部序列与 `wake_matching` 每匹配者共用 [`wake_one_inner`] + 同款收尾
-/// PI 全图重推）。供 `sys_channel_send` fastpath 调用——检查链命中即
+/// 4-4 fastpath 定点唤醒：唤醒同窗 [`find_single_waiter_locked`] 找到的唯一
+/// 等待者（内部序列与 `wake_matching` 每匹配者共用 [`wake_one_inner`] + 同款
+/// 收尾 PI 全图重推）。供 `sys_channel_send` fastpath 调用——检查链命中即
 /// 「一次 SLEEPQ 定点查找替代全队列匹配扫描」。
 ///
 /// # Safety
-/// `t` 须为**同一窗口内**（IRQ 屏蔽窗 / S-2 起 KERN_LOCK 锁窗——同窗等价，
-/// 窗内无插队 ⇒ 此刻仍在 SLEEPQ 上）`find_single_waiter` 的返回值。
-pub unsafe fn fast_wake(t: NonNull<Task>) {
+/// `t` 须为**同一 SQ 窗内** `find_single_waiter_locked` 的返回值（窗内无
+/// 插队 ⇒ 此刻仍在 SLEEPQ 上）；**SQ 锁已持**（c-2a 起契约——调用方窗内
+/// 收尾 `sq_unlock`，窗内禁切换故直切判定在窗外）。
+pub unsafe fn fast_wake_locked(t: NonNull<Task>) {
     // SAFETY: 契约如上。
     unsafe {
         wake_one_inner(t);
@@ -1378,12 +1463,14 @@ pub fn try_preempt() -> bool {
 
 /// SLEEPQ 超时扫描（`on_irq_tick` 开头调；tick 粗粒度——deadline 过后最迟一个
 /// slice 被摘，tickless 精确 arm 到最近 deadline 留后）。升序队列头未到期即
-/// 早停（空队近零开销）。
+/// 早停（空队近零开销）。S-3c c-2a 起：全体包 SQ 锁窗（扫描摘队 + PI 收尾
+/// 一体；IRQ 语境调用 ⇒ 同核重入不可能——窗纪律见 `SLEEPQ_LOCK`）。
 ///
 /// # Safety
 /// IRQ 屏蔽窗内（on_irq_tick 调用）。
 unsafe fn expire_timeouts() {
     let now = hal::timer::cntvct();
+    sq_lock(); // SQ 窗开
     loop {
         let Some(h) = sleepq().head.get() else { break };
         if (*h.as_ptr()).wait_deadline > now {
@@ -1398,6 +1485,7 @@ unsafe fn expire_timeouts() {
     }
     // 4-3b：超时摘队也改变睡眠者集合（纯 sleep 者超时离队 → 冻结其 boost）。
     unsafe { note_sleepq_changed() };
+    sq_unlock(); // SQ 窗闭
 }
 
 // ---- PI 图推导支撑原语（4-3b；消费者 = `kernel/src/pi.rs`，图语义在那侧）----
