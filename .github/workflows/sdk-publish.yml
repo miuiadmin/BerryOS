@@ -1,0 +1,87 @@
+name: sdk-publish
+
+# SDK 八 crate 发布链（SDK-02 拍板①，2026-11-01）。
+#
+# 现状 = **休眠骨架**：
+#   - dry_run=true（默认）：六叶子 cargo publish --dry-run 全链（打包 +
+#     verification build，停在 upload）——今天起即可用，作发布性守卫。
+#     fsclient/libc 两依赖件的 dry-run 需叶子先上册（registry 解析），上册
+#     前该两步降级为 warning；八件全上册后全绿。
+#   - dry_run=false：**真发布**——被「OIDC 交换」占位步锁死（exit 1），防
+#     误触发。启用前置三件：
+#     ① 八 crate 首版已按 docs/应用开发指南.md §9.1 手动 publish（Trusted
+#       Publisher 只能在 crate 在册后于 crates.io UI 配置）；
+#     ② crates.io 每个 crate → Settings → Trusted Publishing 配
+#       owner=miuiadmin repo=BerryOS workflow=sdk-publish.yml
+#       environment=publish（environment 名与本文件 job 的 environment 字段
+#       必须一致——缺 environment 字段的绑定对不上带 environment 的 job）；
+#     ③ 按 crates.io 当时文档把「OIDC 交换」步替换为官方交换方式（RFC 3691
+#       示例 action rust-lang/crates-io-auth-action 官方标注「当前不存在」，
+#       故本步为文档化占位而非可用实现）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '空跑（默认 true）：打包+verification 全链，停在 upload'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+  id-token: write # Trusted Publishing：OIDC ID token 签发（RFC 3691）
+
+concurrency:
+  group: sdk-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: publish
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # 与仓根 rust-toolchain.toml 钉版同值；verification build 对
+          # aarch64-unknown-none（根 .cargo/config.toml 锁 build.target 跨
+          # workspace 命中——发布机与 CI 同律，指南 §9.1 F5）。
+          toolchain: 1.97.0
+          targets: aarch64-unknown-none
+
+      - name: OIDC 交换（占位——首版手动发布 + crates.io UI 绑定后替换本步）
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          echo "::error::Trusted Publishing 交换步为文档化占位（RFC 3691 示例 action 未发布）。"
+          echo "::error::首版按 docs/应用开发指南.md §9.1 手动发布；UI 绑定后按 crates.io 当时文档替换本步。"
+          exit 1
+
+      # 发布序 = 依赖序（叶子在前）。dry-run：六叶子严格（真守卫）；两依赖件
+      # 上册前降级 warning（结构性不可验，真发布序内自验）。部分成功重跑语义
+      # （already exists 跳过 / index 传播等 30–60s 重试）见指南 §9.1。
+      - name: 发布链（依赖序八连）
+        run: |
+          set -e
+          cd user
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal; do
+              echo "::group::cargo publish --dry-run -p $c"
+              cargo publish --dry-run -p "$c"
+              echo "::endgroup::"
+            done
+            for c in berry-fsclient berry-libc; do
+              echo "::group::cargo publish --dry-run -p $c"
+              if ! cargo publish --dry-run -p "$c"; then
+                echo "::warning::$c dry-run 未过——若报 no matching package named berry-* 属预期（叶子未上册，registry 不可解析）；真发布序内自验。"
+              fi
+              echo "::endgroup::"
+            done
+          else
+            for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-fsclient berry-libc; do
+              echo "::group::cargo publish -p $c"
+              cargo publish -p "$c"
+              echo "::endgroup::"
+            done
+          fi

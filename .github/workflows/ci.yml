@@ -14,6 +14,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防
+          # rustup 1.28+ 默认不自动装（action 装 stable、cargo 按钉版文件找
+          # 1.97.0 缺席 = 结构性红灯）。抬级 = 钉版文件 + 本行两同步。
+          toolchain: 1.97.0
           # aarch64-unknown-none：内核 + no_std 用户程序；aarch64-unknown-linux-musl：
           # G-eco-d std 面（stdhello/hexyl/bsh/fail/fsmgr/vprobe/vblk/vnet——berry-libc
           # shim + berry-ld 链）；x86_64-unknown-none：P7 x86_64 最小集（ADR #41）。
