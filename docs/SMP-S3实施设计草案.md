@@ -325,3 +325,18 @@ A+B 合并刀落码后 smoke-smp run4/5 连 FAIL（缺 CHAIN/MANY/SVC/DEMO 四�
 - **验收 b-2**：`just smoke-smp` 三相 PASS（新增相 3）+ `just smoke` 八跑零漂移（lb gate 缺席 = 相 3 面零扰动）+ `just bench-icount` 基线复核（结构改动后确定性通道重验，漂则刷新）+ `just test-host` + 台账 + run-el2。
 
 **风险与回退**：b-1 缝 = 无偷取停态（最坏 = CPU0 队列堆积墙钟拉长，相 2 帽 840s 兜底）；b-2 缝 = 相 3 独立 boot（LB fail 不污相 1/2 判定）。两刀各自独立 commit，revert 即回退。首刀前 QEMU 场协调照多会话纪律（吃 QEMU 验证前知会兄弟会话）。
+
+**b-1 实施追记（2026-11-01 开刀实录；四项偏离/超集裁决）**：
+- **A4 lock 字段否决**：:309 冻结形 `CpuRq{lock:Spinlock, rq}` **被依赖方向约束否决**——sched 架构无关 crate 不引 arch 锁类型（KLOCK_OPS 函数指针槽同款先例）。落地形 = `static PER_CPU_RQ: [Runqueue; 2]` 纯数组；per-queue lock 留 S-3c 拆锁立法时按彼时锁形经注入槽定形（届时一次动结构，非「免二次动」而是「免一次错误预埋」）。
+- **nr_cpus 填充点后移 b-2**：`sched::init`（main.rs :497）远早于 `smp_bringup`（:1410）——init 期无 HAL 活性源，capacity 循环 `0..nr_cpus.min(2)` 实填 [0]（nr_cpus 恒 1）。b-1 零拓扑消费者（pick `_topo` 未用、place 只读队长）零行为差；b-2 LB 面在 bring-up 成功后刷 nr_cpus=2 + capacity[1]。
+- **integrity_check 直接双队对账**：:315 原拆「b-1 单队、b-2 扩双」——实施直接 `for cpu in 0..2` 各自 ring_check×len 对账（未参与核槽恒空环零成本），b-2 的 R4 扩队义务就此提前完成。
+- **enqueue 面实收窄 + enqueue_with_kick 统一入口**：环语义裁决 = preempt/yield 的 prev **从不离环**（FIFO 只推进游标，block 才 unlink/exit 才 dequeue）→ enqueue 实际只 spawn 族五点 + wake_one_inner + expire_timeouts 三处，统一走 `enqueue_with_kick(task, cpu)`（写 home_cpu + 入 rq_of(cpu) + 条件 SGI）；spawn 族传 `place(task)` 新放、wake/expire 传 `home_cpu` 回家不改道（防 sleeper 被唤醒方弹核）。PickFilter 退役成单臂 `eligible(my_cur, t)`（Running-elsewhere 排除**保留**——pick 选中者留环，环上恰有本核在跑的 cur 须跳过、my_cur 自豁免；user_only 臂由放置纯度替代消亡）。
+
+**b-1 排障实录与终裁（2026-11-01；五连消融定谳 + 两面判死 + place 终裁）**：
+
+首验形态：`just smoke` 单核八跑零漂移绿，但 `run-smp`/`smoke-smp` 相 1 FAIL——CHAIN/MANY 缺席（pinger endA wait_one 30s -110 断供自陷）+ rootfs 相 svcmgr 被杀。排障三连修（试错面）+ 消融五跑（A 中和 SGI 槽仍断 / B 回广播仍断 / C 真 noroute 仍断 / D 回原版 wake_matching 绿 / E 复启到达序抓现场）逐件定谳：
+
+- **义务⑧ CPU0 半件（保留）**：`on_sgi_resched` 独立 SGI 槽（arch `SGI_DISPATCH` 槽反转 + trap SGI 分支 EOIR 后经槽调 + main 注册）——tickful 核跨核唤醒快速重调度：gate（par_enabled && cpu0）→ klock → cur null 护栏 → `rq().len()<2` 幻影出选防线 → pick_next_filtered **同 eff 也切** → arm_slice 显式重编（SGI 入口无 timer::handle rearm）→ 切走前放锁/切后不重取/early return（on_irq_tick 同款协议）。消融 A 证其**非**断链元凶（无辜保留），且修跨核唤醒 tick 延迟缺口（义务⑧ 原义）。
+- **唤醒上限/到达序两面判死（撤回，判词入 wake_matching 文档）**：曾按「容量配对」改造唤醒面（send 醒 1 读方/recv 醒 1 写方 + `wait_since` 到达序选择）——WM 轨迹定谳**粘性独占者闭环**：user_child 连胜 60/60 轮（since 单调递增 = 每轮被首唤醒→首入队→首跑→抢走腾出的槽→最早重睡→仍「最早到达」）。到达序是**内生量**：唤醒序→入队序→运行序→重睡序→到达序闭环，选择器零熵，首动者永久锁死（广播同集合仅换序即断 CHAIN 链 = 集合等价但序不等价的实证）。旧 deadline 序绿非因序公平，而是 deadline 异构（30s/10s/哨兵各别）+ 超时重排提供外生扰动。**终裁：唤醒面 = 纯广播，公平/上限绝不进唤醒选择器；容量槽公平归放置面（spread 切分）与 b-2 偷取迁移。**wake_matching_n 全尸删除。
+- **place 终裁 = thread/process 放置切分**：Task 加 `spread` 位（写入源 = try_spawn_user 调用方语境）——`thread_start` 同进程计算线程 spread=true（K=2 深度失衡判据下路由）、`process_start` 进程根恒家核。判据链：垄断者 = 进程（console burst 灌沟形态在快核 µs 级派发下全吃空槽——唤醒序/上限救不了派发延迟差）；THR 并行收益者 = 线程；APPDEMO(console=true) 留家正确；语义可长期辩护（服务根留 boot 核、计算并行铺开）。b-2 偷取迁移就绪后评估对进程根放开。
+- **终形与验收**：原版广播 wake_matching + spread 切分路由 + on_sgi_resched + enqueue_with_kick；run-smp 27/27 标记恰一次（唯 rogue 预期死）→ smoke-smp 双相 + smoke 单核八跑 + run-el2 + test-host 全链（结果见沿革追记）。

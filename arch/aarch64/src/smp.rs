@@ -287,6 +287,14 @@ pub fn par_enabled() -> bool {
     SMP_PAR.load(core::sync::atomic::Ordering::Acquire) >= 1
 }
 
+/// 每核算力（0..=1023 同构尺度，Linux `scale_capacity` 口径）——S-3b
+/// `Topo::capacity` 填表源（sched::init 调）。QEMU virt 双核同构：恒 1024
+/// 占位；真差异容量（大小核）= EAS 面 v2+（届时按 DTT/ACPI 定形，不在此
+/// 硬编码拓扑）。`cpu` 越界核号返 0（保守——拓扑表外核无算力）。
+pub fn cpu_capacity(_cpu: u32) -> u32 {
+    1024
+}
+
 /// SMP 活性（hb2 心跳闭环 = bring-up 成功）：PAR 金丝雀 spawn 门 =
 /// 单核相零漂移自动成立（ncores==2 才 spawn）。
 pub fn smp_active() -> bool {

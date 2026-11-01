@@ -107,6 +107,21 @@ pub struct Task {
     /// （exited 置位 + join 唤醒）+ release 本钉住。语义归 `内核` crate，
     /// sched 只存取（同 `pinned` 的 crate 边界纪律）。
     pub thread_key: usize,
+    /// S-3b（子案 §9.6 步 b-1）：归属核（home CPU）——per-CPU runqueue 时代
+    /// 任务的家队列号。**spawn 时由放置路由 [`crate::sched::place`] 定死一次**
+    /// （内核任务 ttbr0==0 恒 0；用户任务本核优先 + 深度失衡 K=2）；此后
+    /// wake/expire 再入队一律回本字段队列（不再改道——改道只发生在放置点，
+    /// 防 sleeper 被唤醒方弹核）。b-2 偷取迁移时随迁改写。单核形态恒 0。
+    pub home_cpu: u8,
+    /// S-3b（b-1 判谳补）：**可铺核资格位**——false（默认）= 恒家核（放置
+    /// 路由不路由）；true = 深度失衡 K=2 判据下可改道对核。写入源 =
+    /// [`crate::sched::try_spawn_user`] 调用方语境（thread_start 铺核、
+    /// process_start 恒家）。b-1 排障定谳：process 根（服务/IPC 公民——
+    /// 含 console 灌沟形态的 burst 生产者）路由上快核后以即时派发垄断
+    /// 共享通道槽（唤醒序/上限救不了派发延迟差）——v1 只铺**同进程计算
+    /// 线程**（并行收益面），服务根留家核；b-2 偷取迁移再放开。语义归
+    /// `内核` crate，sched 只存取（同 `pinned` 的 crate 边界纪律）。
+    pub spread: bool,
     /// S-2 E0（BKL 纪元，`SMP-S2实施设计草案.md` §2.3）：持锁义务位——「本任务
     /// 当前处于 KERN_LOCK 持锁窗」随任务走（不放 per-CPU——SVC 入口/切走点
     /// 可能换核）。置位 = arch SVC/fault 入口（`kern_lock::svc_enter` 经槽）；
@@ -288,6 +303,8 @@ impl Task {
             proc_tag,
             pinned: 0,
             thread_key: 0,
+            home_cpu: 0,
+            spread: false,
             klock_window: false,
             prio_base: 0,
             prio_effective: 0,

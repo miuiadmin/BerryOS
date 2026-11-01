@@ -453,10 +453,19 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             crate::gic::end(id);
         }
         SGI_RESCHED_US => {
-            // S-3a probe ② 臂（见函数头分流注——bringup probe 专用，无去活
-            // 电平、不进 tick 槽）。EOIR + 计收；唤醒戳发送面随 S-3b 回归。
+            // 义务⑧（S-3b b-1）接收侧半件：入队 SGI 不再只计数——tickful 核
+            //（CPU0）经独立 SGI 槽快速重调度（跨核唤醒不再等整 tick；无
+            // timer::handle/RR.tick 记账面，与 tick 槽分立）。副核不进：park
+            // 承接架构（S-3a §9.5 步 A）——SGI 醒经 eret 回 park 环单路径
+            // 承接，gate 在回调体内；bringup probe 计收（SGI_SEEN）保留。
             crate::gic::end(id);
             SGI_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            // dispatch 在 EOIR 后（Bug 1 同纪律）；槽由内核 boot 时注册。
+            // SAFETY: IRQ 上下文（PSTATE.I=1）；槽 enable_irq 前注册。
+            if let Some(f) = unsafe { crate::sgi_dispatch() } {
+                // SAFETY: f 是 C-ABI fn 指针；tf 是当前 IRQ 栈上的异常帧。
+                unsafe { f(tf) };
+            }
         }
         _ => {
             // 未知源：EOI 后忽略；首 4 个 loud（防新源接错号静默吞），之后静默

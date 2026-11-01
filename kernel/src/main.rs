@@ -1391,8 +1391,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     }
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
-    // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
+    // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill；SGI 槽（义务⑧
+    // S-3b b-1）驱动 CPU0 快速重调度（跨核唤醒不等整 tick）。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
+    berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
     // P5 A-1：RX 通知槽 + 使能 PL011 RX（SPI 33）——均在 DAIF 屏蔽窗内
     // （enable_irq 前）。次序硬约束：通知槽须先注册（槽空时 rx_irq 平凡

@@ -867,8 +867,9 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
 /// try 化在一切不可逆变更之前，None → -ENOMEM）。
 ///
 /// 成功尾四连写：`thrd.started=true`；`proc.live_threads+=1`；Process
-/// retain + `set_task_pinned`（运行钉住，同首线程对）；Thread retain +
-/// `set_task_thread`（线程钉住——退出钩子 Thread 簿记/join 唤醒的键）。
+/// retain（运行钉住，同首线程对）；Thread retain（线程钉住——退出钩子
+/// Thread 簿记/join 唤醒的键）。pinned/thread_key 字段值经 try_spawn_user
+/// 参数前移写入（F-E1，enqueue 前）。
 /// **无 per-process 线程帽**（16KiB 栈 + TCB 随 REAPQ 回收，无不回收泄漏；
 /// 堆尽由 try_spawn_user 折 -ENOMEM 优雅兜底）。sp 不做映射校验
 /// （process_start 同政策：错 sp = 首切 fault 杀兜底）；线程入口不得返回
@@ -905,8 +906,10 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     }
     let ht_ptr = &raw mut proc.ht as *mut HandleTable as usize;
     // 任务装配 try 化 + 前置于一切不可逆变更（process_start H2 纪律；本号无
-    // bootstrap 迁移——失败零回滚面）：栈/TCB OOM → -ENOMEM。
-    let task_ptr = match berry_sched::try_spawn_user(
+    // bootstrap 迁移——失败零回滚面）：栈/TCB OOM → -ENOMEM。spread=true
+    // （b-1 判谳）：同进程计算线程 = 铺核面（thread_start 专属——process 根
+    // 恒家核，详 sched::place ④）。
+    match berry_sched::try_spawn_user(
         entry as usize,
         arg as usize,
         sp as usize,
@@ -914,17 +917,21 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
         proc.ttbr0_pa,
         proc.asid,
         ht_ptr,
+        proc_ref.as_ptr() as usize,
+        vt.as_ptr() as usize,
+        true,
     ) {
-        Some(p) => p,
+        Some(_) => (),
         None => return ERR_NO_MEMORY as i64,
-    };
+    }
     thrd.started = true;
     proc.live_threads += 1;
-    // SAFETY: 双 retain 与双字段写同点成对（任务已入队未运行，单核无竞态）。
+    // F-E1 前移（S-3b §9.6 步 b-1）：pinned/thread_key 两写点已随本刀前移进
+    // try_spawn_user（enqueue 前、出表窗闭）——此处只剩成对的 retain（引用
+    // 计数与字段值同在任务可运行前落定，E0 全量锁下无观测差）。
+    // SAFETY: 双 retain 与 spawn 内双字段写成对（任务已入队未运行，单核无竞态）。
     unsafe { (*proc_ref.as_ptr()).retain() };
-    berry_sched::set_task_pinned(task_ptr, proc_ref.as_ptr() as usize);
     unsafe { (*vt.as_ptr()).retain() };
-    berry_sched::set_task_thread(task_ptr, vt.as_ptr() as usize);
     0
 }
 
@@ -1010,8 +1017,9 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     // 任务装配 try 化 + **前置于一切不可逆变更**（3b3 H2 重排）：栈/TCB OOM →
     // 回滚迁移（take 回子表令牌、重插调用者表——值或变、语义存活，同 insert
     // 失败回滚）→ -ENOMEM；thrd/started/retain 全未动。单核 IRQ 屏蔽：已入队
-    // 任务在 eret 前不会运行，下面字段补写无竞态。
-    let task_ptr = match berry_sched::try_spawn_user(
+    // 任务在 eret 前不会运行，下面字段补写无竞态。spread=false（b-1 判谳）：
+    // process 根 = 服务/IPC 公民恒家核（详 sched::place ④）。
+    match berry_sched::try_spawn_user(
         entry as usize,
         child_x0,
         sp as usize,
@@ -1019,8 +1027,11 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         proc.ttbr0_pa,
         proc.asid,
         ht_ptr,
+        vr.as_ptr() as usize,
+        vt.as_ptr() as usize,
+        false,
     ) {
-        Some(p) => p,
+        Some(_) => (),
         None => {
             if bootstrap != 0 {
                 // 回滚迁移（子表刚插入、单核无插队 → take 必成；防御面下令牌泄漏，
@@ -1035,21 +1046,20 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     thrd.started = true;
     proc.started = true; // per-Process 单次执法（见上方对抗审查修注释）
     proc.live_threads = 1; // T-1：首线程入账（thread_start 起再 +=1；减点唯一 = 退出钩子）
-    // Plan B v0.5：替运行中的任务钉一次 Process（retain），并把 ObjRef 地址落
-    // Task.pinned——退出钩子据此置 Exited/唤醒/drain/成对 release。写点在
-    // spawn 后（任务未跑，无竞态）。
-    // SAFETY: vr 在表（get_raw 过）；retain 与 pinned 写同点成对（任务已入队
-    // 未运行，无竞态）。
+    // Plan B v0.5：替运行中的任务钉一次 Process（retain）——退出钩子据
+    // Task.pinned 置 Exited/唤醒/drain/成对 release。F-E1 前移（S-3b §9.6
+    // 步 b-1）：字段写已前移进 try_spawn_user（enqueue 前、出表窗闭）——
+    // 此处只剩成对 retain（E0 全量锁下任务入队后到 eret 前不会跑，无观测差）。
+    // SAFETY: vr 在表（get_raw 过）；retain 与 spawn 内 pinned 写成对（任务已
+    // 入队未运行，无竞态）。
     unsafe { (*vr.as_ptr()).retain() };
-    berry_sched::set_task_pinned(task_ptr, vr.as_ptr() as usize);
     // T-1 修复（对抗审查②）：首线程**同样钉 Thread**——join 面（wait Thread
     // TERMINATED）对首线程成立：thread_key 落 Task 后退出钩子① 才会置
     // `exited`/唤醒 join 者/成对 release。不钉 = thread_key 恒 0 → 首线程
     // join 结构性死等（与 sys_thread_start 成功尾同形）。
-    // SAFETY: vt 在表（get_raw 过）；retain 与 thread_key 写同点成对（任务已
-    // 入队未运行，无竞态）。
+    // SAFETY: vt 在表（get_raw 过）；retain 与 spawn 内 thread_key 写成对
+    // （任务已入队未运行，无竞态）。
     unsafe { (*vt.as_ptr()).retain() };
-    berry_sched::set_task_thread(task_ptr, vt.as_ptr() as usize);
     0
 }
 
@@ -1538,9 +1548,11 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             }
         }
         None => {
-            // slowpath：4-2 唤醒点原样——消息落对端队列 → 对端 READABLE 置位，
-            // 唤醒等「对端可读」的全部睡眠者（键 = 对端 ObjRef 地址；等价于
-            // Zircon send 侧的可读信号；无等待者时本遍历近零开销）。
+            // slowpath：4-2 唤醒点——消息落对端队列 → 对端 READABLE 置位，唤醒
+            // 等「对端可读」的睡眠者（键 = 对端 ObjRef 地址；等价于 Zircon send
+            // 侧的可读信号；无等待者时本遍历近零开销）。S-3b b-1 定谳：纯广播
+            // ——公平/上限不进唤醒选择器（到达序内生闭环判词详
+            // `berry_sched::wake_matching` 文档），容量槽公平归放置/偷取面。
             crate::telemetry::ipc_fast_miss();
             berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
         }
@@ -1657,7 +1669,8 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     }
     // 4-2：本端弹出一条 → 对端队列腾出一个槽 → 对端 WRITABLE 置位，唤醒等
     //「对端未满」的睡眠者（A 的可写性由 B 的队列决定——键 = 对端 ObjRef 地址；
-    // 仅成功路径唤醒：回滚路径状态全复原，唤醒即虚假）。
+    // 仅成功路径唤醒：回滚路径状态全复原，唤醒即虚假）。S-3b b-1 定谳：纯广播
+    // ——公平/上限不进唤醒选择器（判词详 `berry_sched::wake_matching` 文档）。
     // SAFETY: 本端门控过、互钉在活；只读对端指针。
     if let Some(peer) = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).and_then(|e| e.peer()) {
         berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
