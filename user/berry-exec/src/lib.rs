@@ -417,9 +417,9 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     //    语义固定、nhandles 单调门控 presence，消费侧（libc io.rs boot）同
     //    步对偶。无 stdin 的老 spawn 面（svcmgr 无管道子）nhandles=1 不装。
     let (env_s, env_c) = channel_pair();
-    // 7 槽（A2-3：[4] rootfs / [5] fs / [6] netd——svcmgr bsh arm 三 extras；
-    // bsh 内 uu_run 族仍 ≤2 消费同一面零漂移）。
-    let mut gift = [0 as Handle; 7];
+    // 8 槽（A2-3：[4] rootfs / [5] fs / [6] netd；GUI-4 段②：+ [7] input
+    // ——svcmgr bsh arm 四 extras；bsh 内 uu_run 族仍 ≤2 消费同一面零漂移）。
+    let mut gift = [0 as Handle; 8];
     if berry_handle_duplicate(stdout, RIGHT_SEND, &mut gift[0]) != 0 {
         trap();
     }
@@ -433,12 +433,12 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         gift[1] = *h; // 被 send take（迁移语义同上）
         nhandles = nhandles.max(2);
     }
-    // slice 帽（指令字面 ≤4）+ 容量执法（2 base + 2 自描述对 + extra ≤ 7 →
-    // extra ≤ 3）双断言：越界即 panic loud（bsh arm 三 extras = 满配面）。
+    // slice 帽（指令字面 ≤4）+ 容量执法（2 base + 2 自描述对 + extra ≤ 8 →
+    // extra ≤ 4）双断言：越界即 panic loud（bsh arm 四 extras = 满配面）。
     assert!(extra_gifts.len() <= 4, "spawn: extra_gifts slice 帽 4");
     assert!(
         4 + extra_gifts.len() <= gift.len(),
-        "spawn: extra_gifts ≤ 3（gift[2..4] = T-1 自描述对占定）"
+        "spawn: extra_gifts ≤ 4（GUI-4 段②：bsh 面 +input 端——8 槽满配）"
     );
     if !extra_gifts.is_empty() {
         // extras 落 [4] 起要求 stdin 在位（前缀紧致律：[2]/[3] 缺 stdin 即
@@ -453,7 +453,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     //    create 走 thread_create）、[3] = 自身 root Vmar（MAP|MANAGE|
     //    DUPLICATE——vmar_map 授片 + vmar_unmap 门控 RIGHT_MAP）。
     //    extras 紧随落 [4..4+len]（**装在块内** = 结构性保证前缀无洞：
-    //    extras 不可能先于自描述对出现）；nhandles = 4 + len ∈ 4..=7。
+    //    extras 不可能先于自描述对出现）；nhandles = 4 + len ∈ 4..=8。
     //    子内 `self_proc_h()==0`（无 stdin 面）→ pthread_create EAGAIN
     //    守门（旧桩语义零漂移）。
     if stdin_pair.is_some() || stdin_handle.is_some() {

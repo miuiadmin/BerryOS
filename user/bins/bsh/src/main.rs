@@ -63,7 +63,7 @@
 //! 帽），详见 [`collect_fg`] 头注。打字-ahead（等待期收走的非 0x03 字节）
 //! 进 [`TYPEAHEAD`] 缓存，交互循环先于 stdin 消化——不丢键。
 //!
-//! v1 内建：help / echo / env / run / exit / cat / ls / mkdir / rm / cd / pwd
+//! v1 内建：help / echo / env / run / exit / cat / ls / mkdir / rm / cd / pwd / inputpoll（GUI-4 段② input 域 POLL 消费端）
 //!（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
@@ -82,7 +82,7 @@
 
 use std::io::{Read, Write};
 
-use berry_libc::io::{close, fs_h, netd_h, read, rootfs_h, stdin_h, write};
+use berry_libc::io::{close, fs_h, input_h, netd_h, read, rootfs_h, stdin_h, write};
 use berry_libc::{
     EACCES, EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EPERM,
 };
@@ -99,6 +99,9 @@ use berry_sys::{
 };
 // A2-3：netd 会话化协议（EVS echo server 自验的 RPC 编解码面）。
 use berry_netdproto as ndp;
+// GUI-4 段②：GUI 输入协议面（INPUT_POLL 请求 / 事件批应答编解码）——
+// inputpoll 消费端的真值断言用 crate 单源 decode，不自造第二套解析。
+use berry_guiproto as gp;
 use berry_exec::{channel_pair, cpio_find, cpio_names, spawn_rootfs_elf, ChildHandles, SpawnSpec};
 // C-1 刀 4：fsproto 只余帽常量（usage 预检 + 读面失控兜底）——协议面
 // （encode/parse/ST_*）随自有 RPC 退役，全部走 berry-libc。
@@ -399,9 +402,9 @@ struct RealSrc;
 
 impl editor::TabSource for RealSrc {
     fn commands(&mut self, out: &mut Vec<Vec<u8>>) {
-        const BUILTINS: [&[u8]; 11] = [
+        const BUILTINS: [&[u8]; 12] = [
             b"help", b"exit", b"env", b"echo", b"run", b"cat", b"ls", b"mkdir", b"rm",
-            b"cd", b"pwd",
+            b"cd", b"pwd", b"inputpoll",
         ];
         for b in BUILTINS {
             out.push(b.to_vec());
@@ -953,6 +956,240 @@ fn netd_rpc_tcp(
 ) -> Option<(u8, Vec<u8>)> {
     netd_rpc(netd, req, session, cap_ns)
         .and_then(|b| ndp::parse_tcp_reply(&b).map(|r| (r.st, r.data.to_vec())))
+}
+
+/// GUI-4 段② input RPC 底座：netd_rpc 逐行镜像（严格串行：请求-应答一一
+/// 对应、无请求号——超时不重发，晚到应答滞留队列只会毒化下一请求）。
+/// encode（POLL 恰 4B——`encode_input_poll_req` 断言面在 guiproto crate 内
+/// 已执，max_events 域 0 非法即调用方 bug）→ send（满队 -EBUSY 阻塞等
+/// WRITABLE 10s 重臂）→ recv（空队 -EAGAIN 帽内等 READABLE 重臂——应答
+/// 两形 1B 错误态 / 事件批，恰长 parse 归调用方）→ `Option<Vec<u8>>`。帽
+/// 35s **> 服务端 POLL_BLOCK_CAP_NS 30s**（gui-inputd serve_poll 定值）——
+/// 「client 帽必须大于服务帽」纪律（服务慢 ≠ 服务死，A71/A76 族）。失败
+/// 返 None → inputpoll loud 面（标记缺失 → smoke FAIL 兜底）。
+fn input_rpc(input: u32, max_events: u8, cap_ns: u64) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 4];
+    let n = gp::encode_input_poll_req(&mut buf, max_events);
+    let send_dl = now() + 10_000_000_000;
+    loop {
+        let s = berry_channel_send(input, buf.as_ptr(), n, core::ptr::null(), 0);
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            return None; // 链断面（非满队）——非慢而活，loud 死
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(input, SIGNAL_WRITABLE, send_dl, &mut obs) != 0 {
+            return None;
+        }
+    }
+    let reply_dl = now() + cap_ns;
+    loop {
+        let mut msg = [0u8; gp::INPUT_REP_MAX];
+        let mut nb = msg.len();
+        let mut nhd = 0usize;
+        let s = berry_channel_recv(
+            input,
+            msg.as_mut_ptr(),
+            &mut nb,
+            core::ptr::null_mut(),
+            &mut nhd,
+        );
+        if s == 0 {
+            return Some(msg[..nb].to_vec());
+        }
+        if s != BERRY_ERR_AGAIN {
+            return None; // 坏 handle 类链断——立即死不空等
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(input, SIGNAL_READABLE, reply_dl, &mut obs) != 0 {
+            return None; // 帽到无应答 = 断链面（不重发——见头注）
+        }
+    }
+}
+
+/// GUI-4 段② §4.2 真值表单行（smoke RX 注入相三批 → 泵三事件的期值面；
+/// 坐标字面量经 PointerPump `normalize_axis` 两 ABS 域（0..32767 /
+/// 0..32768）推演同值——ScreenGeom 800×600 整除定值，首跑以
+/// `gui-inputd: up … cal=` 实录核定，段②草案 §7-①）。
+struct WantEv {
+    name: &'static str,
+    phase: u8,
+    buttons: u8,
+    /// 期望按位含的 flags 位（0 = 不检）。三行真值全 0：泵只对 CANCEL
+    /// 置合成位（gui-inputd lib.rs:606/588 同型），零采样批合成的 UP 事件
+    /// flags 恒 0——草案 §4.2 行③初稿误写 ∋SYNTHESIZED，审查轮纠正。
+    flags_has: u8,
+    x: u32,
+    y: u32,
+    history_len: usize,
+    /// history[0] 期值 (x, y)——history_len ≥ 1 时才检。
+    hist0: Option<(u32, u32)>,
+}
+
+/// 注入三批期值（段②草案 §4.2 真值表逐字段）：① DOWN@中点归一
+/// (399,299) 无历史；② MOVE 末采样 (599,149) 带 1 历史 (199,449)（首
+/// 采样对）；③ UP@最后已知位 (599,149) 零采样 → 泵合成（flags=0——泵仅
+/// 对 CANCEL 置合成位）。pointer_id 恒 0 共面检（见 [`WantEv::diff`]）。
+const INPUTP_WANT: [WantEv; 3] = [
+    WantEv {
+        name: "DOWN",
+        phase: gp::PHASE_DOWN,
+        buttons: gp::BUTTON_L,
+        flags_has: 0,
+        x: 399,
+        y: 299,
+        history_len: 0,
+        hist0: None,
+    },
+    WantEv {
+        name: "MOVE",
+        phase: gp::PHASE_MOVE,
+        buttons: gp::BUTTON_L,
+        flags_has: 0,
+        x: 599,
+        y: 149,
+        history_len: 1,
+        hist0: Some((199, 449)),
+    },
+    WantEv {
+        name: "UP",
+        phase: gp::PHASE_UP,
+        buttons: 0,
+        flags_has: 0,
+        x: 599,
+        y: 149,
+        history_len: 0,
+        hist0: None,
+    },
+];
+
+impl WantEv {
+    /// 逐字段真值检（pointer_id 恒 0 三事件共面检——真值表同列）：不符
+    /// 返回差异面首处（"bsh: inputpoll: ev<i>: <差异面>" loud 行的载荷源）。
+    fn diff(&self, ev: &gp::PointerEvent) -> Option<String> {
+        if ev.phase != self.phase {
+            return Some(format!("phase={} want {}", ev.phase, self.phase));
+        }
+        if ev.buttons != self.buttons {
+            return Some(format!("buttons={} want {}", ev.buttons, self.buttons));
+        }
+        if ev.pointer_id != 0 {
+            return Some(format!("pointer_id={} want 0", ev.pointer_id));
+        }
+        if ev.x != self.x {
+            return Some(format!("x={} want {}", ev.x, self.x));
+        }
+        if ev.y != self.y {
+            return Some(format!("y={} want {}", ev.y, self.y));
+        }
+        if ev.history_len != self.history_len {
+            return Some(format!(
+                "history_len={} want {}",
+                ev.history_len, self.history_len
+            ));
+        }
+        if let Some((hx, hy)) = self.hist0 {
+            if ev.history_len == 0 {
+                return Some(format!("history 缺席 want ({},{})", hx, hy));
+            }
+            let s = &ev.history[0];
+            if s.x != hx || s.y != hy {
+                return Some(format!(
+                    "history[0]=({},{}) want ({},{})",
+                    s.x, s.y, hx, hy
+                ));
+            }
+        }
+        if ev.flags & self.flags_has != self.flags_has {
+            return Some(format!("flags={:#x} 缺位 {:#x}", ev.flags, self.flags_has));
+        }
+        None
+    }
+}
+
+/// GUI-4 段②：inputpoll——INPUT_POLL(max_events=3) RPC → 三事件真值
+/// 断言 → `INPUTP ok n=3`。
+/// - input_h()==0（inputd 未起：裸/B4/EFI）→ "input: absent" + status 1
+/// - 应答 ST_EAGAIN（空态合法——手跑未注入时）→ "inputpoll: no events"
+///   + status 0
+/// - count==3 且段② §4.2 真值表逐字段全中 → 逐事件诊断行 +
+///   `INPUTP ok n=3` + status 0
+/// - 任何不符 → "bsh: inputpoll: <差异面>" + status 1（loud）
+/// 输出纪律（A60）：writeln 单行（≤192B 原子消息）、标记行单发。
+fn inputpoll_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let h = input_h();
+    if h == 0 {
+        writeln!(out, "input: absent").unwrap();
+        return (Vec::new(), 1);
+    }
+    let rep = match input_rpc(h, gp::INPUT_EVENTS_MAX as u8, 35_000_000_000) {
+        Some(r) => r,
+        None => {
+            writeln!(out, "bsh: inputpoll: rpc 无应答").unwrap();
+            return (Vec::new(), 1);
+        }
+    };
+    let view = match gp::parse_input_events_rep(&rep) {
+        Some(Ok(v)) => v,
+        Some(Err(gp::ST_EAGAIN)) => {
+            // 空态合法（手跑未注入：serve_poll 30s 帽到点 ST_EAGAIN）。
+            writeln!(out, "inputpoll: no events").unwrap();
+            return (Vec::new(), 0);
+        }
+        Some(Err(st)) => {
+            writeln!(out, "bsh: inputpoll: st={}", st).unwrap();
+            return (Vec::new(), 1);
+        }
+        None => {
+            writeln!(out, "bsh: inputpoll: 畸形应答").unwrap();
+            return (Vec::new(), 1);
+        }
+    };
+    if view.count() != INPUTP_WANT.len() {
+        writeln!(
+            out,
+            "bsh: inputpoll: n={} want {}",
+            view.count(),
+            INPUTP_WANT.len()
+        )
+        .unwrap();
+        return (Vec::new(), 1);
+    }
+    let mut evs: Vec<gp::PointerEvent> = Vec::with_capacity(INPUTP_WANT.len());
+    for i in 0..INPUTP_WANT.len() {
+        // parse 已整体校验事件流——event(i) None 结构性不可达（防御面）。
+        let Some(ev) = view.event(i) else {
+            writeln!(out, "bsh: inputpoll: ev{} 缺席", i).unwrap();
+            return (Vec::new(), 1);
+        };
+        evs.push(ev);
+    }
+    for (i, w) in INPUTP_WANT.iter().enumerate() {
+        if let Some(d) = w.diff(&evs[i]) {
+            writeln!(out, "bsh: inputpoll: ev{}: {}", i, d).unwrap();
+            return (Vec::new(), 1);
+        }
+    }
+    // 全中：逐事件诊断行（坐标字面量只能来自协议应答的渲染——A79）+
+    // 标记行单发（A60）。
+    for (i, w) in INPUTP_WANT.iter().enumerate() {
+        let ev = &evs[i];
+        let mut line = format!(
+            "inputpoll: #{} {} phase={} btn={} id={} x={} y={} hist={}",
+            i, w.name, ev.phase, ev.buttons, ev.pointer_id, ev.x, ev.y, ev.history_len
+        );
+        if ev.history_len > 0 {
+            line.push_str(&format!(" h0=({},{})", ev.history[0].x, ev.history[0].y));
+        }
+        if ev.flags != 0 {
+            line.push_str(&format!(" flags={:#x}", ev.flags));
+        }
+        writeln!(out, "{}", line).unwrap();
+    }
+    writeln!(out, "INPUTP ok n={}", evs.len()).unwrap();
+    (Vec::new(), 0)
 }
 
 /// EVS 事件循环轮询节拍的纯 sleep：永不置位 Event + 用户位 wait 帽（v1
@@ -3062,7 +3299,13 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
     if cmd == "help" {
         writeln!(
             out,
-            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | A | B（rootfs 管道）| A && B | A > file | exit | 裸名 = bin/<name> 派发（C-2a uu 家族）"
+            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll | A | B（rootfs 管道）"
+        )
+        .unwrap();
+        // A60：192B 控制台原子消息帽——单行装不下全清单，拆两条各 ≤192B。
+        writeln!(
+            out,
+            "…续：| A && B | A > file | exit | 裸名 = bin/<name> 派发（C-2a uu 家族）"
         )
         .unwrap();
         (Vec::new(), 0)
@@ -3135,6 +3378,9 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
             d.push(b'\n');
             (d, 0)
         }
+    } else if cmd == "inputpoll" {
+        // GUI-4 段②：input 域 POLL 消费端（无参内建——RPC + 真值断言面）。
+        inputpoll_output(out)
     } else {
         // C-2a：裸名 PATH 派发（内建优先零漂移——到这 = 非内建）：首词查
         // bin/<name>，命中即拉起、余词作 argv[1..]（uu 家族非内建成员

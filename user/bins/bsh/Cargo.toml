@@ -28,6 +28,10 @@ berry-poll = { path = "../../berry-poll" }
 # EVS echo server 自验（`EVS ok n=2`）的 RPC 面。仅协议层纯函数，
 # 零 syscall/IO 依赖（berry-fsproto 同形态）。
 berry-netdproto = { path = "../../berry-netdproto" }
+# GUI-4 段②：GUI 输入协议面（INPUT_POLL 请求 / 事件批应答编解码）——
+# inputpoll 消费端（`INPUTP ok n=3` smoke RX 注入相标记）的 RPC 面。
+# 仅协议层纯函数，零 syscall/IO 依赖（berry-netdproto 同形态）。
+berry-guiproto = { path = "../../berry-guiproto" }
 
 [profile.release]
 opt-level = "z"

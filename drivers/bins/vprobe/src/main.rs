@@ -19,8 +19,10 @@
 //! - DeviceID@+0x008 **按设备类判读**（A-7 起同窗可挂多 virtio 设备——
 //!   占用槽不再「须恰一」而是分类计数）：did=2（block）须**恰一**
 //!   （smoke/run-rootfs 挂 `-device virtio-blk-device`）；did=1（net）
-//!   A-7 起合法同席（`-device virtio-net-device`，vnet 自认领）；其它
-//!   did = 挂载面漂移，loud trap（未知设备类无消费者，静默漏检更糟）
+//!   A-7 起合法同席（`-device virtio-net-device`，vnet 自认领）；did=18
+//!   （input）GUI-4 段② 起合法同席（`-device virtio-tablet-device`，
+//!   gui-inputd 按类扫槽自认领——A-7 net 同款演化）；其它 did = 挂载面
+//!   漂移，loud trap（未知设备类无消费者，静默漏检更糟）
 //! - VendorID@+0x00C 只打印不断言（0x554D4551 "QEMU" 是仿真器特有值——
 //!   真机/其它仿真器合法取值不同，断言它 = 把 QEMU 特例焊进标记）
 //!
@@ -44,6 +46,9 @@ const VIRTIO_VERSION: u32 = 2;
 const VIRTIO_DEV_BLOCK: u32 = 2;
 /// DeviceID = 1（net 设备——A-7 起合法同席，vnet 自认领）。
 const VIRTIO_DEV_NET: u32 = 1;
+/// DeviceID = 18（input 设备——GUI-4 段② 起合法同席，gui-inputd 自认领：
+/// virtio-tablet/-keyboard 均此 did，ID 表区分靠设备 vq 拓扑非槽头）。
+const VIRTIO_DEV_INPUT: u32 = 18;
 
 fn main() {
     // SAFETY: 窗口经 spawn 映射（Device-nGnRnE + SH_NONE——设备访问不可
@@ -78,6 +83,9 @@ fn main() {
                 block = Some((slot, device_id, vendor_id));
             } else if device_id == VIRTIO_DEV_NET {
                 // A-7 起合法同席（vnet 扫描自认领）——不算 block 槽。
+            } else if device_id == VIRTIO_DEV_INPUT {
+                // GUI-4 段② 起合法同席（gui-inputd 按类扫槽自认领）——
+                // net 同款：健康面由消费者自己的标记（INPUT ok）承接。
             } else {
                 println!("vprobe: slot {} did={}（未知设备类）", slot, device_id);
                 trap();

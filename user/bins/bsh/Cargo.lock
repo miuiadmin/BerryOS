@@ -28,6 +28,10 @@ name = "berry-fsproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-guiproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.1.0"
 dependencies = [
@@ -74,6 +78,7 @@ dependencies = [
  "berry-complete",
  "berry-exec",
  "berry-fsproto",
+ "berry-guiproto",
  "berry-libc",
  "berry-netdproto",
  "berry-poll",

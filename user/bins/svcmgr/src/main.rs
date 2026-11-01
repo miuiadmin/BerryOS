@@ -45,6 +45,9 @@ use berry_manifest::{
 };
 // C-3 段①：ps 查询 RPC 协议面（ps_selftest 服务端：请求解析 + 账本编码）。
 use berry_psproto as psp;
+// GUI-4 段②：GUI wire 协议面（input 域 boot 自验——SUBSCRIBE 请求编码 +
+// 1B 状态应答收口，no_std 纯函数 crate）。
+use berry_guiproto as gp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -138,6 +141,7 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // 标记缺失（smoke FAIL 兜底）；账本不入册（hexyl 同例——PS ok n= 零
     // 漂移）。----
     thr_selftest(console);
+    input_selftest(console); // GUI-4 段②：boot 期 input 域 SUBSCRIBE 自验（INPUT ok）
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
     let v = [b'v'];
@@ -240,6 +244,9 @@ static mut U1_WIN: [u8; 2048] = [0; 2048];
 /// net_a——A-8c 起作 DNS 自验的 client 端消费；本步只保活（唯一 client
 /// 端 close = 服务端孤儿端，v1 无对端关闭检测，留表即留命）。
 static NET_A: AtomicU32 = AtomicU32::new(0);
+/// GUI-4 段②：input 域 channel 客户端端（预拉成功后非 0；boot 自验 +
+/// bsh 面 dup 分种——input_h()）。0 = inputd 未起，静默降级。
+static INPUT_A: AtomicU32 = AtomicU32::new(0);
 
 // ---- app-0 a-2：.bap 消费面（appd 雏形——ADR #43/#44：应用 = 纯用户态
 // 协议约定，svcmgr 兼任 appd；内核零「应用」概念）----
@@ -564,6 +571,65 @@ fn run_rootfs_child(console: Handle) {
                     trap();
                 }
                 eco_skip(b"net spawn");
+            }
+        }
+    }
+    // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet 输入服务）。门控同 vnet
+    // 两道：H_MMIO 在席（EFI/裸拓扑缺席 → eco_skip(b"mmio absent") 静默
+    // 零扰动）+ cpio_find(H_ROOTFS, b"bin/gui-inputd")。
+    //
+    // intent 注记（台账 6，v1 可达面）：input 域 channel 由本表 channel_pair()
+    // 创建、**options=0**——不设 CHAN_OPT_NO_INTENT，消息借入链（4-3c：收端按
+    // 每消息重导 eff = min(declared, msg_intent)）有意保持激活 = GUI 规划 GUI-4
+    // 行「intent INTERACTIVE」的 v1 唯一可达形态。UNSPECIFIED(0x00) 顶档语义下
+    // 借入恒不抑制（4-3c 数值序）；svcmgr/bsh 自身 declared 不变——内核侧
+    // berry_intent 自申报 = 另刀。ADR #42 / 段① §9-6。
+    //
+    // 常驻不 reap（A74：reap 首步 wait 30s 帽必超时）；stdin 哑喂 Some(&[])；
+    // recv 容量按「协议定值 1 op + 富余」判面（段① serve() 已落，本刀零改）。
+    // 失败面 = close(in_b) + close(in_a) + eco_skip(b"inputd spawn")——bsh
+    // inputpoll 面静默降级（input_h()==0 → "input: absent"）。
+    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+        eco_skip(b"mmio absent");
+    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gui-inputd") {
+        let (in_a, in_b) = channel_pair();
+        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
+        // dummy（空 feeder + 立即 EOF；inputd 服务永不读 stdin，vnet 同款）。
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/gui-inputd",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                args: &[],
+                extra_gifts: &[in_b],
+                mmio_vmo: Some(H_MMIO),
+                mmio_va: VIRTIO_MMIO_VA,
+            },
+        ) {
+            Ok(_child) => {
+                ps_reg(b"inputd", psp::STATE_ALIVE, 0); // 拉起即常驻（boot 自验门成败都活——serve 常驻）
+                // 常驻不 reap。`INPUT ok` 标记由 boot 期 input_selftest 打
+                // （SUBSCRIBE RPC 走本端 in_a——net_a 转 client 同款）；
+                // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
+                // inputd 自打。
+                INPUT_A.store(in_a, Ordering::Relaxed);
+            }
+            Err(()) => {
+                ps_reg(b"inputd", psp::STATE_SPAWNFAIL, 0);
+                // Err 全在 env send 前——in_b 未被 take，两新鲜端显式回收
+                // 防表槽泄漏（vnet 同款）。
+                if berry_handle_close(in_b) != 0 {
+                    trap();
+                }
+                if berry_handle_close(in_a) != 0 {
+                    trap();
+                }
+                eco_skip(b"inputd spawn");
             }
         }
     }
@@ -915,14 +981,16 @@ fn run_rootfs_child(console: Handle) {
     // ---- A-2：bsh 拉起（SDK-1a §1.2 延后段——原主走查 arm 体逐字迁居，
     // data_off/data_len 换绑 off/len，其余零改动）----
     // 交互 shell bsh——stdhello/hexyl 同链（musl target + berry-libc
-    // shim）。gift 三~五元：[0] console 别名（spawn 内 dup）/ [1] **endB2
+    // shim）。gift 三~六元：[0] console 别名（spawn 内 dup）/ [1] **endB2
     // = H_BSH_STDIN（被 take 中转，svcmgr 自此不再持有——fd0 = console
     // 键盘行转发对端）** / [2] rootfs VMO READ dup（bsh 的 `run <name>`
     // 流式取 ELF，libc `rootfs_h()` 消费）/ [3] P6 A-1：fs 客户端端（fs_a
     // 的 SEND|RECV dup——`>`/`cat`/`ls` 的 RPC 端，libc `fs_h()`；
     // fs_client==0 = fsmgr 未起）/ [4] A2-3：netd 服务端端（NET_A 的
     // SEND|RECV dup——EVS echo server 自验的 RPC 面，libc `netd_h()`；
-    // NET_A==0 = vnet 未起 = EFI/裸拓扑，静默不装）。栈 16 页（无 clap
+    // NET_A==0 = vnet 未起 = EFI/裸拓扑，静默不装）；[7] GUI-4 段②：
+    // input 客户端端（INPUT_A dup——inputd 未起静默不装，只随 net 后
+    // 入列守槽序）。栈 16 页（无 clap
     // 链）。`BSH ok` 由 bsh 自打（自驱自验：内部 `run hexyl` 收齐
     // 2156B——rootfs 相第 8 标记）；prompt/交互为化妆面。此刻拉起 =
     // app 批已收口，bsh 恢复 fs_a 队列唯一读者（下方 Ok 面关 fs_a_h）。
@@ -943,12 +1011,30 @@ fn run_rootfs_child(console: Handle) {
                 trap();
             }
         }
-        let mut gifts = [rootfs_dup, 0 as Handle, 0 as Handle];
+        // GUI-4 段②第六 extras：input 客户端端。INPUT_A==0（inputd 未起 =
+        // 裸/EFI/B4 拓扑）或 netd 让位（netd_dup==0）时静默不装——bsh 侧
+        // input_h()==0 跳过同口径。槽序固定（netd 条款镜像）：input 只随
+        // netd 之后入列（libc 按位落种 hs[7]→input——前缀紧致会让 input
+        // 落进 netd 槽 hs[6] 造成同槽不同名；netd 缺席而 inputd 在位的
+        // 理论拓扑里 input 一并让位，现无此 recipe）。
+        let mut input_dup = 0 as Handle;
+        let inp = INPUT_A.load(Ordering::Relaxed);
+        if inp != 0 && netd_dup != 0 {
+            if berry_handle_duplicate(inp, RIGHT_SEND | RIGHT_RECV, &mut input_dup) != 0 {
+                trap();
+            }
+        }
+        let mut gifts = [rootfs_dup, 0 as Handle, 0 as Handle, 0 as Handle];
         let gifts: &[Handle] = if fs_client != 0 {
             gifts[1] = fs_client;
             if netd_dup != 0 {
                 gifts[2] = netd_dup;
-                &gifts
+                if input_dup != 0 {
+                    gifts[3] = input_dup;
+                    &gifts[..4]
+                } else {
+                    &gifts[..3]
+                }
             } else {
                 &gifts[..2]
             }
@@ -974,9 +1060,9 @@ fn run_rootfs_child(console: Handle) {
         .is_err()
         {
             // Err 三路（首窗读/elf_head/几何前置）全在 env send 前——
-            // rootfs_dup/fs_client/netd_dup 均未被 take，显式回收防表槽泄
-            // 漏（Ok 路径已被 take，关旧值必 -EBADF，勿在此关）。fs_a_h
-            // 不在此关（走查尾兜底已被 bsh_geom 门挡，留表 = 有界 1 槽）。
+            // rootfs_dup/fs_client/netd_dup/input_dup 均未被 take，显式回
+            // 收防表槽泄漏（Ok 路径已被 take，关旧值必 -EBADF，勿在此关）。
+            // fs_a_h 不在此关（走查尾兜底已被 bsh_geom 门挡，留表 = 有界 1 槽）。
             if berry_handle_close(rootfs_dup) != 0 {
                 trap();
             }
@@ -986,11 +1072,14 @@ fn run_rootfs_child(console: Handle) {
             if netd_dup != 0 && berry_handle_close(netd_dup) != 0 {
                 trap();
             }
+            if input_dup != 0 && berry_handle_close(input_dup) != 0 {
+                trap();
+            }
             ps_reg(b"bsh", psp::STATE_SPAWNFAIL, 0);
             eco_skip(b"elf bad");
         } else {
             ps_reg(b"bsh", psp::STATE_ALIVE, 0);
-            // Ok：fs_client/netd_dup 已被 take 迁移（旧值必 -EBADF，勿关）；
+            // Ok：fs_client/netd_dup/input_dup 已被 take 迁移（旧值必 -EBADF，勿关）；
             // 本表 fs_a 用毕关——bsh 的 dup 与本表别名共享同一 ObjRef 队列，
             // 关别名只减引用（队列由 bsh 侧撑着），bsh 自此是 fs_a 队列唯一
             // 读者（防回复混流）。NET_A 是本表常驻别名（vnet 复用，ps/bc 等
@@ -1275,7 +1364,9 @@ fn ps_selftest(console: Handle) {
     if berry_vmo_get_size(H_MMIO, &mut msz) == 0 {
         ok = ok
             && has_sub(&cap[..got], b"vblk alive\n")
-            && has_sub(&cap[..got], b"vnet alive\n");
+            && has_sub(&cap[..got], b"vnet alive\n")
+            // GUI-4 段②：gui-inputd 预拉同 H_MMIO 门（在席即 alive 行必在）。
+            && has_sub(&cap[..got], b"inputd alive\n");
     }
     if !ok {
         eco_skip(b"ps roster");
@@ -2595,6 +2686,62 @@ fn dns_rpc(h: Handle, name: &[u8]) -> Result<ndp::Reply, ()> {
         return Err(());
     }
     ndp::parse_reply(&rep[..nb]).ok_or(())
+}
+
+/// GUI-4 段②（rootfs 相第 46 标记）：input 域 boot 自验标记——预拉
+/// gui-inputd 后 SUBSCRIBE(DELIVERY_BATCHED) RPC 往返 ST_OK 才打（状态
+/// 谓词，无竞速面——A32）。与现役标记两两互非子串：`INT ok` 位 2 'P'≠'T'；
+/// RX 注入相专用行 `INPUTP ok n=3` 位 5 ' '≠'P'（§3.7-④ 推演同源）。
+const INPUT_OK: &[u8; 9] = b"INPUT ok\n";
+
+/// SUBSCRIBE 应答帽：60s（GUI-4 段② §4.4 成本模型）：tablet 在席实测
+/// ≈ 1-2 轮转（≤2s）→ 30x 余量；B4（tablet 缺席）= gui-inputd park 后
+/// 应答永不到，帽到点即放弃（帽即烧时——B4 kill 全由 bsh 侧标记触发，
+/// 墙钟零影响）。超帽 = 降级行 + 标记缺失（不重发——请求可能仍在途，
+/// v1 无请求序号，dns_rpc 同款纪律）。
+const INPUT_SUB_CAP_NS: u64 = 60 * 1_000_000_000;
+
+/// GUI-4 段②：boot 期 input 域自验——SUBSCRIBE(DELIVERY_BATCHED) 严格
+/// 串行 RPC，ST_OK 才打 INPUT ok（dns_selftest 样板：INPUT_A==0 静默
+/// 跳过零扰动）。tablet 缺席（B4）= gui-inputd 已 spawn 但 find_input_device
+/// None → park（段① :139-141），应答永不到 → 60s 帽到点 eco_line 诊断后
+/// 放弃，**非致命**——B4「vnet 无 net 槽 trap 干净自死、标记自然缺席不设
+/// 门」先例同款；墙钟零影响（B4 kill 全由 bsh 侧标记触发）。
+fn input_selftest(console: Handle) {
+    let h = INPUT_A.load(Ordering::Relaxed);
+    if h == 0 {
+        return;
+    }
+    let mut buf = [0u8; 16];
+    let n = gp::encode_input_sub_req(&mut buf, gp::DELIVERY_BATCHED);
+    match input_rpc(h, &buf[..n]) {
+        Some(st) if st == gp::ST_OK => {
+            send_retry(console, INPUT_OK.as_ptr(), INPUT_OK.len());
+        }
+        // 应答到了但非 OK——链路活着答案错，与链路断分诊（dns 同款）。
+        Some(_) => eco_line(console, b"input sub st"), // 诊断非致命
+        None => eco_line(console, b"input rpc"), // 超时/链断——B4 形态，非致命
+    }
+}
+
+/// input 域 RPC（GUI-4 段②，dns_rpc 同款纪律）：send（EBUSY → wait
+/// WRITABLE 重试——无随行 handle，重发零 take 副作用）→ [`INPUT_SUB_CAP_NS`]
+/// 应答帽 wait READABLE → recv 恰 1B 状态收口（`parse_status_rep`——
+/// SUBSCRIBE 应答 = encode_status_rep 1B，段①烘焙线定形）。应答帽超时/
+/// 错码 → None。no_std 无 alloc：应答不拷 Vec，rpc 层直收口状态字节。
+fn input_rpc(h: Handle, req: &[u8]) -> Option<u8> {
+    send_retry(h, req.as_ptr(), req.len());
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + INPUT_SUB_CAP_NS, &mut obs) != 0 {
+        return None;
+    }
+    let mut rep = [0u8; 16];
+    let mut nb = rep.len();
+    let mut nh = 0usize;
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh) != 0 {
+        return None;
+    }
+    gp::parse_status_rep(&rep[..nb])
 }
 
 /// TCP 面 RPC（T-d，dns_rpc 同款纪律）：encode → send（无随行 handle）→

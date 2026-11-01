@@ -611,6 +611,11 @@ mod guest {
             let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh);
             if s != 0 {
                 if s == BERRY_ERR_AGAIN {
+                    // GUI-4 段②占位（无代码）：PM 交互脉冲——输入事件到达即向
+                    // PM 服务投交互 hint（提频投票）的缝留这里（serve 循环
+                    // 100ms tick 或 EV_SYN 收批点）。**GUI 只投票不设频**
+                    // （GUI 规划 GUI-4 行裁决：PM 仍唯一决策者）；v1 无 PM
+                    // 服务面，本刀零代码零标记——GUI-6/+ 落地时回填。
                     // 空闲合法态：阻塞等下个请求；tick = 心跳非死线——超时
                     // 回环顶重查 used 环后重臂续等（P6 A-3 echo 同款）
                     let items = [h];

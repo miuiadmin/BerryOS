@@ -27,3 +27,6 @@ berry-manifest = { path = "../../berry-manifest" }
 # C-3 段①：ps 查询 RPC 协议（账本编码 + 请求解析——拉起账本真值源见
 # main.rs PS_TAB；客户端 = user/bins/ps 独立小工作区）。
 berry-psproto = { path = "../../berry-psproto" }
+# GUI-4 段②：input 域 boot 自验（INPUT ok）——SUBSCRIBE 请求编码 + 1B
+# 状态应答收口的纯函数协议面（no_std 同链，netdproto 同型）。
+berry-guiproto = { path = "../../berry-guiproto" }

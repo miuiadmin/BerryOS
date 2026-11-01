@@ -2,7 +2,7 @@
 # BerryOS S-2b 副核参与冒烟——双相（`SMP-S2实施设计草案.md` §5.1；smoke-x86
 # 同款独立形态——不并入主 smoke、不进 CI：主 smoke 八跑是单核回归基线，
 # 零扰动）。相 1 = 裸相（27 标记 + SMP 握手）；相 2 = rootfs 生态相
-# （45 标记 + 对拍 client 对 + PAR 副核参与活证）——rootfs 全链在
+# （46 标记 + 对拍 client 对 + PAR 副核参与活证）——rootfs 全链在
 # `-smp 2` 下绿 = E0「内核串行/用户并行」语义等价的端到端证据。
 #
 # **-smp 只进本线**：全仓唯一带 `-smp 2` 的 QEMU 入口（justfile run-smp /
@@ -19,7 +19,7 @@
 #      S-3a probe ② 起 + `SGI ok n=` 恰一次（CPU0→CPU1 SGI_RESCHEDULE 单发
 #      → 副核消费臂收讫计数的端到端机器断言；`SGI ok` 归 smp_assertions
 #      不进标记数组——主 smoke 单核结构性不触发，零漂移）。
-#   2. 相 1 裸相 27 标记 / 相 2 rootfs 相 45 标记全部出现（与主 smoke 同面
+#   2. 相 1 裸相 27 标记 / 相 2 rootfs 相 46 标记全部出现（与主 smoke 同面
 #      ——标记数组与 smoke.sh 运行时计数对拍，见下方机器守卫）。
 #   3. switches 金丝雀 ≥3 条严格递增**按相**（任核 tick 命中 100 倍数即整行
 #      持 PRINT_LOCK 打印——两核交替打印不破坏数值序列单调，§5.2）。
@@ -135,11 +135,11 @@ assert_marker() {
 
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
-# rootfs 相 45 标记——**复制自 smoke.sh**（§5.1 最低限度方案：markers.sh
+# rootfs 相 46 标记——**复制自 smoke.sh**（§5.1 最低限度方案：markers.sh
 # 抽取留后刀；漂移面由下方运行时计数对拍机器守卫盖住——主 smoke 加标记
 # 而本数组漏跟 = 立即 FAIL 防假绿，P6 A-5「基准重产义务要有机器守卫」族）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "INPUT ok")
 
 # 机器守卫：两数组与 smoke.sh 原文计数对拍（元素 = 引号串——**元素内不得
 # 含 `)`/引号**，加标记时守住此约束）。awk 状态机在起始行内即判 `)` 收口
@@ -315,7 +315,7 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
-# ============ 相 2：rootfs 生态相（45 标记 + 对拍 client + PAR 活证） ============
+# ============ 相 2：rootfs 生态相（46 标记 + 对拍 client + PAR 活证） ============
 
 # rootfs 卷前置检查（§5.1 随迁件②：justfile smoke-smp 已挂 build-user 依赖；
 # 手跑裸脚本时缺产物 = loud 快败，不烧 840s DEADLINE 才红）。
@@ -351,12 +351,15 @@ skt_client_start
 field_wait
 echo "smoke-smp: QEMU 启动（-smp 2，相 2 rootfs 相：fw_cfg rootfs 卷 + virtio-blk disk.smp.img + virtio-net hostfwd 三口）"
 t_rootfs0=$(date +%s)
+# GUI-4 段②：+virtio-tablet（id=tab0，无 QMP——INPUTP 注入往返不属本线；
+# tablet 在席 = INPUT ok 照打，数组同步后断言恰好覆盖）。
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.smp.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
+  -device virtio-tablet-device,id=tab0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 

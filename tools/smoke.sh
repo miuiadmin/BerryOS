@@ -42,15 +42,15 @@
 #      族前——EFI 路无盘亦打）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段、
-#      C-4b 起七段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），72 标记
-#      （boot 27 + rootfs 45——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      C-4b 起七段、GUI-4 段② 起八段（+h QMP 注入往返））：三拉 QEMU 带
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），73 标记
+#      （boot 27 + rootfs 46——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
 #      EVS ok n=2/SKT ok n=3/EPL ok n=8/NETS ok n=2/MMP ok n=9/CLK ok n=6/
 #      SIG ok n=6/PS ok n=/BC ok/
-#      M3DEMO ok n=5/THR ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
+#      M3DEMO ok n=5/THR ok/INPUT ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
 #      服务/TCP 服务端监听面（A2-2 段③ hostfwd 环回自连自验）/.bap 应用拉起
 #      消费链/RAM 目录树 v2 五 op 自验/uutils core 家族
@@ -74,6 +74,7 @@
 #      + 里程碑演示
 #      五步（M3DEMO——C-5）
 #      + 进程内多线程消费面（THR——T-1，svcmgr thr_selftest）
+#      + input 服务链（INPUT——GUI-4 段②，svcmgr input_selftest）
 #      全过，
 #      状态谓词门控注入时机，不赌 boot 秒数）后
 #      **逐字节慢速注入**编辑序列（FEN=0
@@ -105,7 +106,7 @@
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. C-0 刀 4 FAT 子目录相（第四跑）：盘 = mkfat **--fixture 模式**（fixture
 #      专列 DATA/ 目录 + DATA/NOTE.TXT——默认盘不含，默认盘字节零漂移硬线
-#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），71 标记载明全链
+#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），73 标记载明全链
 #      在目录盘上照跑后注入三段（断言与注入行互非子串 + 顺序防回声）：
 #      `ls DATA` → grep 'NOTE.TXT'（READDIR FAT 回落链走查——断言先于一切
 #      含 NOTE.TXT 的注入行回显）→ `cat DATA/NOTE.TXT` → grep
@@ -114,7 +115,7 @@
 #      类型冲突面）。
 #   7. P6 A-6 FAT 持久化相（第五跑）：**不重造盘**（复用第 5 相已写的
 #      disk.img——mkfat 重产 = 持久化零验收；disk_dirs.img 不复用——无
-#      跨盘盘混），71 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
+#      跨盘盘混），73 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
 #      旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT` → grep 'f42t'——
 #      `>` 落的是真扇区、跨 boot 存活。盘 cache writeback=off：QEMU 由
 #      SIGTERM 终止，writeback 模式可能不刷页缓存（所有 -drive 行统一，
@@ -227,6 +228,9 @@ EVS_LOG=""
 # EVS 对同款每相一实例，B4 无 netdev 不起）。
 SKT_PID=""
 SKT_LOG=""
+# GUI-4 段②：QMP 通道——RX 相专用（QMP_DIR/QMP_SOCK，RX 相 launch 前赋值）。
+QMP_DIR=""
+QMP_SOCK=""
 
 cleanup() {
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -267,6 +271,8 @@ cleanup() {
     [ -n "$ECHO_LOG" ] && rm -f "$ECHO_LOG"
     [ -n "$EVS_LOG" ] && rm -f "$EVS_LOG"
     [ -n "$SKT_LOG" ] && rm -f "$SKT_LOG"
+    # GUI-4 段②：QMP 临时目录（-rf = 目录连 sock 一起收）。
+    [ -n "$QMP_DIR" ] && rm -rf "$QMP_DIR"
   fi
 }
 trap cleanup EXIT
@@ -468,12 +474,18 @@ wait "$QEMU_PID" 2>/dev/null
 evs_client_start
 skt_client_start
 echo "smoke: QEMU 启动（rootfs 相：fw_cfg rootfs 卷（A1-3b 多卷名）+ virtio-blk + virtio-net）"
+# GUI-4 段②：rootfs/RX/FAT 子目录/FAT 持久化四相 launch 皆在 netdev 行后
+# 追 -device virtio-tablet-device,id=tab0（QEMU virtio-mmio 总线倒序建、
+# tablet 追加在 blk/net 之后取更低槽 = 既有设备槽位零漂移——槽位注记见
+# justfile run-rootfs；B4 三 boot 不挂：掉电相无输入面，gui-inputd park
+# 优雅降级、INPUT ok 自然缺席不设门）。
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
+  -device virtio-tablet-device,id=tab0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -806,8 +818,15 @@ QEMU_PID=$!
 # spawn = 零 fs 盘面，链位置 clk 后 fat 族前（A 系契约位，EFI 路无盘亦打
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
+# GUI-4 段②：+ INPUT ok——svcmgr boot 期 input 域 SUBSCRIBE 自验
+# （input_selftest：gui-inputd 预拉成功后严格串行 RPC，ST_OK 才打；
+# tablet 缺席（B4）= gui-inputd park、60s 帽到点放弃非致命，标记自然
+# 缺席不设门——B4 无 netdev 先例同款；EFI = H_MMIO 缺席预拉跳过，
+# 静默不打 = 拓扑真值（LSN/EVS 同款））。"INPUT ok" 与现役标记两两互
+# 非子串（"INT ok" 位 2 P≠T；RX 相专用行 "INPUTP ok n=3" 不含 "INPUT ok"
+# ——位 5 P≠空格）；不进 assert_marker 特判面。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "INPUT ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -828,7 +847,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + EVS ok n=2 + SKT ok n=3 + EPL ok n=8 + NETS ok n=2 + MMP ok n=9 + CLK ok n=6 + SIG ok n=6 + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + EVS ok n=2 + SKT ok n=3 + EPL ok n=8 + NETS ok n=2 + MMP ok n=9 + CLK ok n=6 + SIG ok n=6 + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok + INPUT ok）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
@@ -845,7 +864,7 @@ skt_client_wait "rootfs 相"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 27 + rootfs 45 = 72
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 27 + rootfs 46 = 73
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块
 # 设备服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络
@@ -888,16 +907,23 @@ printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 evs_client_start
 skt_client_start
 echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + virtio-net）"
+# GUI-4 段②：QMP 通道（RX 相专用）——h 段 qmp_inject 经 unix sock 注入
+# virtio-tablet 事件（三批各一 SYN）；launch 挂 -qmp server=on,wait=off
+#（brew 新版 QEMU 已废 server=nowait 简写——解析期即拒，首跑实录）。
+QMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-qmp.XXXXXX")
+QMP_SOCK="$QMP_DIR/sock"   # unix socket 路径帽 107B——mktemp 短前缀必达
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
+  -device virtio-tablet-device,id=tab0 \
+  -qmp unix:"$QMP_SOCK",server=on,wait=off \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：71 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：73 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -929,6 +955,67 @@ inject_line() {
     sleep 0.5
   done
   printf '\n' >&3
+}
+# GUI-4 段②：QMP 注入 client（macOS 无 socat——python3 socket 直连；内联
+# 不落工具文件：注入序列与 h 段断言同址演化）。协议序：连上先收 greeting
+# （逐行 JSON——读到 {"QMP":…} 才发 qmp_capabilities，等到 {"return":…}
+# 协商毕；异步事件行静默跳过）。**设备路由首跑裁定实录（2026-11-01）**：
+# 主案显式 id（tab0）在 -nographic 无 console 拓扑下被拒——
+# GenericError "Device tab0 (head 0) is not bound to a QemuConsole"
+# （input-send-event 显式 device 寻址走 console 头绑定面）；回退 = 省
+# device 键（事件广播进 HID handler 链，VM 内唯一输入设备路由无歧义，
+# 探针实证 {"return":{}}）——send() 内自动降级 + 裁定行落 stderr（探针
+# 复现路径 = /tmp 直启同配方；段②草案 §7-② / 阶段沿革同源记录）。
+qmp_inject() {
+  python3 - "$QMP_SOCK" <<'PYEOF'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sys.argv[1])
+f = s.makefile("rw", encoding="utf-8", newline="\n")
+def rd_result():                   # 逐行读到命令应答；greeting 即发握手
+    while True:
+        line = f.readline()
+        if not line:
+            raise SystemExit("qmp: eof（QEMU 退出？）")
+        m = json.loads(line)
+        if "QMP" in m:             # greeting
+            f.write('{"execute": "qmp_capabilities"}\n'); f.flush()
+        elif "error" in m:
+            return ("err", m)
+        elif "return" in m:
+            return ("ok", m)
+use_device = True                  # 主案 tab0 → 首命令不收即永降级
+def send(events):                  # 一命令 = 一批 SYN_REPORT
+    global use_device
+    args = {"events": events}
+    if use_device:
+        args["device"] = "tab0"
+    f.write(json.dumps({"execute": "input-send-event", "arguments": args}) + "\n")
+    f.flush()
+    kind, m = rd_result()
+    if kind == "err" and use_device:
+        print("qmp: device=tab0 被拒（{}）→ 永降级省 device 键".format(
+            m.get("error", {}).get("desc", "?")), file=sys.stderr)
+        use_device = False
+        args.pop("device")
+        f.write(json.dumps({"execute": "input-send-event", "arguments": args}) + "\n")
+        f.flush()
+        kind, m = rd_result()
+    if kind == "err":
+        raise SystemExit("qmp: {}".format(m))
+rd_result()                        # greeting → qmp_capabilities → return
+# ① DOWN：btn 按下 + 绝对坐标中点（16384,16384）→ 归一 (399,299)
+send([{"type": "btn", "data": {"down": True, "button": "left"}},
+      {"type": "abs", "data": {"axis": "x", "value": 16384}},
+      {"type": "abs", "data": {"axis": "y", "value": 16384}}])
+# ② MOVE：两采样对（8192,24576）→(199,449) 与（24576,8192）→(599,149)
+send([{"type": "abs", "data": {"axis": "x", "value": 8192}},
+      {"type": "abs", "data": {"axis": "y", "value": 24576}},
+      {"type": "abs", "data": {"axis": "x", "value": 24576}},
+      {"type": "abs", "data": {"axis": "y", "value": 8192}}])
+# ③ UP：btn 抬起（零采样 → 泵合成 UP@最后已知位 (599,149)）
+send([{"type": "btn", "data": {"down": False, "button": "left"}}])
+PYEOF
 }
 exec 3> "$RX_FIFO"
 # a. token 行：RX ok（A-1 console token 面；`rx` 行入历史但不转发）。
@@ -1079,6 +1166,25 @@ while :; do
 done
 echo "smoke: Ctrl-C 交互杀到齐（run hello 前台 + 0x03 → terminate 130 → \$? 展开回放）"
 
+# h. GUI-4 段②输入注入往返（QMP → virtio-tablet → gui-inputd 泵 → bsh
+#    inputpoll）：QMP 三批各一 SYN（①DOWN ②MOVE ③UP）——QEMU 命令返回
+#    前同步写 used 环，泵 100ms tick 收割入 QUEUE_CAP=32（预缓冲）；随后
+#    慢注 inputpoll（0.5s/字节 ≈5.5s 窗）→ bsh INPUT_POLL(max=3) → 三事件
+#    真值断言（段②草案 §4.2 真值表）→ INPUTP ok n=3。**状态谓词非竞速
+#    （A32）**：注入全部先于命令落位，POLL 时队列必非空；**无串口回声面
+#    （A79）**：QMP 事件走 virtio 设备面不进串口，断言坐标字面量只能来自
+#    协议应答渲染；'inputpoll' 小写回显与 'INPUTP ok n=3' 互非子串。
+qmp_inject || fail "QMP 注入失败（tab0 主案 + 省 device 键回退两路皆拒——查 QMP_SOCK 握手；§7-② 裁定实录）"
+inject_line 'inputpoll'
+t4=$(date +%s)
+while ! grep -qF 'INPUTP ok n=3' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 INPUTP 阶段退出"
+  [ $(( $(date +%s) - t4 )) -gt 90 ] \
+    && fail "INPUTP ok n=3 90s 未出现（查 gui-inputd: up 行（ABS 域）与 inputpoll 逐事件诊断）"
+  sleep 1
+done
+echo "smoke: INPUTP 输入往返到齐（QMP 三批 → 泵 3 事件 → POLL 真值断言）"
+
 # 注入后金丝雀（fresh 日志从 RX 相起算，无需清）。
 t5=$(date +%s)
 while :; do
@@ -1099,7 +1205,7 @@ grep -o 'switches=[0-9]*' "$LOG" | cut -d= -f2 | awk '
 # DATA/NOTE.TXT = `berryos fat subdir note\n`——与 berry-fatfs host 共识
 # 基准同源字节）；**独立盘 disk_dirs.img**：disk.img（RX 相已写、阶段 6
 # 持久化相将复用）零扰动——默认盘字节零漂移硬线不破（子目录只在 fixture
-# 模式，正是刀 3 的设计面）。71 标记载明全链在目录盘上照跑（DIR/CD ok 自验
+# 模式，正是刀 3 的设计面）。73 标记载明全链在目录盘上照跑（DIR/CD ok 自验
 # + FATW/RW.TXT 覆写幂等 + FAT 基准读）后注入三段，断言三重防回声：
 # ① `ls DATA` → grep 'NOTE.TXT'——断言先于一切含 NOTE.TXT 的注入行回显
 #   （顺序防线：本注入行自身只含 'ls DATA'，NOTE.TXT 只能来自 READDIR
@@ -1127,6 +1233,7 @@ echo "smoke: QEMU 启动（FAT 子目录相：fixture 盘 disk_dirs.img + FIFO s
   -drive if=none,id=drv0,format=raw,file=disk_dirs.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
+  -device virtio-tablet-device,id=tab0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)
@@ -1182,7 +1289,7 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收；
 # disk_dirs.img 本相不复用——两盘链零混）；
 # 不关 fd3（本相注入完 cat 行后 FIFO 再无消费者——阶段 7 掉电相三 boot
-# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。71 标记载明
+# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。73 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读；
 # DF 自验的差分面同走覆写路径（RW.TXT 3000→2048→3000 双向，绝对 free 跨
@@ -1206,6 +1313,7 @@ echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin + vir
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
+  -device virtio-tablet-device,id=tab0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)

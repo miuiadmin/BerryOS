@@ -128,6 +128,11 @@ build-user:
     CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path ../drivers/bins/vnet/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GUI-4 段②：gui-inputd（virtio-tablet 输入服务——段①已落 bins/，本刀
+    # 入编译链；musl + berry-libc shim + berry-ld 同链）。
+    CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path ../drivers/bins/gui-inputd/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     # app-0（ADR #43/#44）：demo 双 app（appdemo console=true / appquiet
     # console=false——能力授予/缺席两半活证）musl 同链 → staging 组装
     # {manifest.toml, bin/<名>} → mkapp 门禁五道产 .bap（cpio(newc) 包 =
@@ -239,6 +244,7 @@ build-user:
         bin/find=cargo-target/aarch64-unknown-linux-musl/release/find \
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
         bin/grep=cargo-target/aarch64-unknown-linux-musl/release/grep \
+        bin/gui-inputd=../drivers/cargo-target/aarch64-unknown-linux-musl/release/gui-inputd \
         bin/guifbd=cargo-target/aarch64-unknown-linux-musl/release/guifbd \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/head=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/head \
@@ -357,6 +363,10 @@ run-smp: build
 #（QEMU 前）/收（trap EXIT），缺席则 bsh 卡 accept-wait 120s 后 bail
 #（echod 必抄同款：对端在席是 guest 自验链的结构前提）。
 # echod 由本 recipe 起（QEMU 前）/收（trap EXIT）；smoke.sh 同款自足。
+# GUI-4 段②：+virtio-tablet（id=tab0——QEMU virtio-mmio 总线**倒序建**、
+# 首 -device 落最高槽，tablet 追加在 blk/net 之后取更低槽 = 既有设备槽位
+# 零漂移；gui-inputd 按设备类扫 input 槽恰一认领）。**手跑无 QMP**：
+# INPUT ok 照打（boot 自验不依赖注入）；INPUTP 只属 smoke RX 注入相。
 run-rootfs: build
     #!/bin/sh
     set -e
@@ -395,7 +405,8 @@ run-rootfs: build
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
         -device virtio-blk-device,drive=drv0 \
-        -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0
+        -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
+        -device virtio-tablet-device,id=tab0
 
 run-release: abi-check build-user
     cargo build --release
@@ -484,6 +495,9 @@ test-host:
     # referee + 三态停帧 FramePhase + 重采样常量 guiproto 单源；
     # 验收三件 = damage/frame/offscreen）。
     cargo test --manifest-path user/Cargo.toml -p berry-ui --target {{host}}
+    # GUI-4 段②：guiproto 协议面 + gui-inputd 泵/服务单测入 host 台账。
+    cargo test --manifest-path user/Cargo.toml -p berry-guiproto --target {{host}}
+    cargo test --manifest-path drivers/Cargo.toml -p gui-inputd --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板）。

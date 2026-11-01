@@ -26,17 +26,18 @@ use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
 static mut CONSOLE_H: u32 = 0;
 static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随后开）
-// A-2/P6：env 块 extras 三槽（gift[4..] 位）——extras[0] = rootfs VMO
+// A-2/P6：env 块 extras 四槽（gift[4..] 位）——extras[0] = rootfs VMO
 // READ dup（bsh）或 P6 A-1 第三/四位（fsmgr 得服务端端 `gift2_h()`、bsh
 // 得 fs 客户端端 `fs_h()`——同槽两位经 spawn 侧的 gift 排布区分，见
 // berry-exec 注）；A2-3 第三位 = netd 服务端端（bsh EVS 自验——
-// `netd_h()`）。
+// `netd_h()`）；GUI-4 段② 第四位 = input 客户端端（bsh `inputpoll`——
+// `input_h()`）。
 // T-1 自描述对占固定位 gift[2]/[3]（前缀紧致律——自描述对前移、extras
 // 后挪，产侧 extra<2 不再中段留 0 洞）：GIFT_H[2] = self_proc MANAGE|
 // DUPLICATE dup（`self_proc_h()`——pthread_create 的 thread_create 面）、
 // GIFT_H[3] = self_vmar MAP|MANAGE|DUPLICATE dup（`self_vmar_h()`——
 // 子线程栈映射/回收面）。
-static mut GIFT_H: [u32; 5] = [0; 5];
+static mut GIFT_H: [u32; 6] = [0; 6];
 static mut STACK_TOP: usize = 0;
 
 // —— argv 面（d-3a env 块）：静态落位（名区 256B + 16 槽 + NULL 终结）——
@@ -65,16 +66,17 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         stdout = ptr::addr_of_mut!(STDOUT_FILE);
         let mut blob = [0u8; 256];
         let mut nb = blob.len();
-        // A-2：容量 2→3；P6 A-1：3→4；T-1：4→6；A2-3：6→7。前缀紧致律布局
+        // A-2：容量 2→3；P6 A-1：3→4；T-1：4→6；A2-3：6→7；GUI-4 段②：7→8。
+        // 前缀紧致律布局
         // （与 berry-exec 产侧对偶）：[0]=console 发端别名、[1]=stdin 端、
         // [2]/[3]=T-1 自描述对（self_proc/self_vmar——spawn 侧条件装配，
         // 老调用面不送则位缺 0，`self_proc_h()==0` 即 pthread_create 的
         // EAGAIN 守门）、[4..]=extras（rootfs VMO READ dup 或 fsmgr 端 +
-        // fs/blk 客户端端 + A2-3 netd 端，按 spawn 侧排布区分，落
-        // `GIFT_H` 三槽）。nh 取值域 = {1（无 stdin 老面）, 4..=7（stdin →
-        // 自描述对必随行）}——nhandles 单调门控 presence，按实收落种向后
-        // 兼容。
-        let mut hs = [0u32; 7];
+        // fs/blk 客户端端 + A2-3 netd 端 + GUI-4 段② input 端，按 spawn 侧
+        // 排布区分，落 `GIFT_H` 四槽）。nh 取值域 = {1（无 stdin 老面）,
+        // 4..=8（stdin → 自描述对必随行）}——nhandles 单调门控 presence，
+        // 按实收落种向后兼容。
+        let mut hs = [0u32; 8];
         let mut nh = hs.len();
         if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0 {
             return 0;
@@ -99,6 +101,9 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         }
         if nh >= 7 {
             GIFT_H[4] = hs[6];
+        }
+        if nh >= 8 {
+            GIFT_H[5] = hs[7]; // GUI-4 段②：input 端（svcmgr 预拉分种）
         }
         // argv 解析：NUL 分隔字节串逐个拷进名区、记指针。
         let (mut argc, mut i, mut o) = (0usize, 0usize, 0usize);
@@ -226,6 +231,16 @@ pub fn gift3_h() -> u32 {
 pub fn netd_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[4] }
+}
+
+/// env 块 extras[3]（gift[7] 位）访问器（GUI-4 段②：input 域 channel
+/// 客户端端 INPUT_A dup——svcmgr 拉起 bsh 时随 extras 第四位交付，bsh 的
+/// `inputpoll` 经它发 berry-guiproto INPUT_POLL RPC；0 = 未交付 = inputd
+/// 未起（裸/B4/EFI 拓扑），调用方静默降级）。**独占槽**（netd_h 同款——
+/// 第四位现役只有 input 一个产面）。
+pub fn input_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[5] }
 }
 
 pub fn stack_top() -> usize {
