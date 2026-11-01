@@ -1967,10 +1967,12 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
         ]);
     }
     let mut sbuf = [0u64; WAIT_MANY_MAX];
+    let mut want = 0u64; // 请求位并集（睡脸掩码——b-2 修正，见下方 block_current）
     for i in 0..n {
         let mut b = [0u8; 8];
         b.copy_from_slice(&sraw[i * 8..i * 8 + 8]);
         sbuf[i] = u64::from_le_bytes(b);
+        want |= sbuf[i];
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     // 解析全部对象（Event|Channel|Process|Thread 四类型链 [`wait_get`]，同
@@ -2025,9 +2027,16 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
         if deadline_vct <= berry_hal_aarch64::timer::cntvct() {
             break ERR_TIMEDOUT as i64; // 到点未命中（含传入即已过——不睡）
         }
-        // 哨兵 + 全位掩码：任何对象的任何新置位都唤醒本任务，醒来重验定夺。
+        // 哨兵 + **请求位并集**（b-2 修正：原 `!0` 全位掩码 = 任何对象的任何
+        // 新置位都唤醒本任务——任何 wait_many 收割者常驻（如 LB lb_master 挂
+        // TERMINATED 收割 90s）期间：①全系统每次 channel send/recv 都虚假唤醒
+        // 它一轮重验（空转风暴）；②`!0` 与一切唤醒位相交 → find_single_waiter
+        // 哨兵分支恒退 slowpath → send fastpath 直切全局关停 → 依赖「唤醒即
+        // 直切」确定性的 poll-0 测试（ai_ping）结构性必断。并集掩码无漏醒
+        // （任一 S_i ⊆ want，命中 S_i 的唤醒必含 want 位）且快路透明（位不相
+        // 交哨兵不挡 fastpath——sched 侧对齐修正）。
         let _reason =
-            berry_sched::block_current(berry_sched::WAIT_ANY, !0, deadline_vct);
+            berry_sched::block_current(berry_sched::WAIT_ANY, want, deadline_vct);
     };
     for o in objs[..n].iter().flatten() {
         // SAFETY: 与上面的 retain 成对（唯一出口）；release 后不再触 obj。

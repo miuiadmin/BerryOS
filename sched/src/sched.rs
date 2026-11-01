@@ -942,6 +942,44 @@ unsafe fn note_sleepq_changed() {
     }
 }
 
+// ---- S-3b 步 b-2 LB 金丝雀记账（子案 §9.6 义务③/⑤；kernel crate 注入判别）----
+
+/// LB 子任务判别注入槽（kernel 侧读自己的 `LB_PROCS[4]` 比对 `thread_key`）。
+/// **架构无关纪律**：sched 不持内核对象知识，「哪些任务是 LB 线程」归 kernel
+/// （set_wake_hook/policy::bind 同款注入先例）。仅 boot 期（IRQ 屏蔽、lb
+/// gate 块内）注册；`None` = 无 LB 相（常规 boot 零开销——采样点一次静态
+/// 读 + 分支，同 hook 族形）。
+static mut LB_MATCH: Option<fn(key: usize) -> bool> = None;
+
+/// 注册 LB 子任务判别（仅 boot 期 lb gate 块调用）。键 = `thread_key`
+/// （每线程唯一——thread_start 造的计算线程逐只入集，进程 root 为 Process
+/// 键天然不入：per-child 归因零 root 污染）。
+pub fn set_lb_match(f: Option<fn(key: usize) -> bool>) {
+    // SAFETY: 写点仅 boot 期（单核、IRQ 屏蔽、tick/steal 采样未启）。
+    unsafe { LB_MATCH = f };
+}
+
+/// per-CPU LB 子任务 tick 采样计数（义务③ per-child 归因：本核 tick 打在
+/// LB 子身上一次 +1——偷到 CPU1 的子在其上跑、tick 记到 c1；直接路由与
+/// 偷取同格合格）。Relaxed：纯计数无序角色。
+static LB_TICKS: [core::sync::atomic::AtomicU64; 2] =
+    [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+
+/// 全局偷取事件计数（st1——`LB ok` 行的诊断字段，9.2 裁决二降格：不做
+/// 断言面，c0/c1 才是偷取活证断言）。不筛 LB 子：偷取事件本身稀有，全局
+/// 计数对排障（F-A9 静默杀死状同形族）信息量最大。
+static LB_STEALS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// LB 统计快照（`(c0, c1, st1)`）——lb_master 在 klock 包络内调（F-A8 Δ
+/// 采样点纪律：首入队前/末收割后两快照差值），归因原子性由锁窗序保证。
+pub fn lb_stats() -> (u64, u64, u64) {
+    (
+        LB_TICKS[0].load(Ordering::Relaxed),
+        LB_TICKS[1].load(Ordering::Relaxed),
+        LB_STEALS.load(Ordering::Relaxed),
+    )
+}
+
 // ---- 睡眠/唤醒原语（4-0；`IPC设计.md` 阶段化目标 Phase 4 拆步表步 4-0）----
 
 /// `wait_many` 的等待键哨兵（4-2b）：Task 只有单一 `wait_obj` 匹配键，多对象
@@ -1219,9 +1257,12 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
 
 /// 4-4 fastpath 检查链的 SLEEPQ 侧：找「睡单一对象 `obj` 等与 `signals` 相交
 /// 位」的等待者。`Some(t)` = 恰有一个非哨兵匹配者；`None` = 零/多个匹配者，
-/// 或队列上任一处存在 [`WAIT_ANY`] 哨兵等待者（哨兵被任何非零唤醒命中——
-/// 单点唤醒的集合 ≠ `wake_matching` 的全匹配集，一律退 slowpath 保两路语义
-/// 逐条对齐）。**IRQ 屏蔽窗内调用**（S-2 起锁窗等价：`klock_enter` 先
+/// 或队列上任一处存在**位相交**的 [`WAIT_ANY`] 哨兵等待者（哨兵与唤醒位
+/// 相交 = wake_matching 也会摘它——单点唤醒的集合 ≠ 全匹配集，一律退
+/// slowpath 保两路语义逐条对齐；位不相交的哨兵不在唤醒集内，不挡 fastpath
+/// ——b-2 LB 修正：wait_many 收割者常驻挂 TERMINATED 位，若无条件退
+/// slowpath，其存活期 = 全系统 send 直切关停，ai_ping 类 poll-0 直切确定
+/// 性测试结构必断）。**IRQ 屏蔽窗内调用**（S-2 起锁窗等价：`klock_enter` 先
 /// disable_irq 后取锁——KERN_LOCK 窗内 IRQ 必屏蔽，SMP 下另享跨核互斥）；
 /// 返回指针仅在**同一窗口内**有效（窗口内无插队——[`fast_wake`] 的契约）。
 pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
@@ -1235,8 +1276,8 @@ pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
-            if (*t).wait_obj == WAIT_ANY {
-                return None; // 哨兵在场：唤醒集不可约 → slowpath
+            if (*t).wait_obj == WAIT_ANY && ((*t).wait_signals & signals) != 0 {
+                return None; // 位相交哨兵在唤醒集内：唤醒集不可约 → slowpath
             }
             if (*t).wait_obj == obj && ((*t).wait_signals & signals) != 0 {
                 if found.is_some() {
@@ -1613,6 +1654,16 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         cur as usize,
         !cur.is_null() && (*cur).ttbr0 != 0,
     );
+    // S-3b b-2 LB 金丝雀采样（义务③ per-child 归因）：本核 tick 时 cur 是
+    // LB 计算线程（kernel 注入判别 thread_key ∈ LB_PROCS）→ 本核计数 +1。
+    // 直接路由到本核与被偷到本核同格记账（裁决二）——LB 均衡度 witness 的
+    // 唯一记账点。
+    // SAFETY: 读点仅 boot 期写（lb gate 块）；纯计数原子。
+    if let Some(f) = unsafe { LB_MATCH } {
+        if !cur.is_null() && f((*cur).thread_key) {
+            LB_TICKS[hal::smp::cpu_id() as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
     if cur.is_null() {
         // S-3a（子案 §9.5 步 A）：park 派发整体迁出至 [`park_recheck`]——SGI
         // 醒与 CNTV 醒经 eret 回 secondary_main park 环后收敛单路径承接；本槽
@@ -1804,6 +1855,22 @@ pub unsafe fn park_recheck() {
     // 前提）。
     if let Some(next_ptr) = try_steal_one() {
         hal::smp::note_dispatch();
+        // 偷取臂同款前 8 次打名（run7/8 c1=0 归因缺口：出选臂打印、偷取臂
+        // 哑——st1 计数之外零可见性，偷了谁不可考；「副核只偷了一只常驻者
+        // 后粘性占用、探测停摆」的定谳就缺这行字）。
+        {
+            let d1 = hal::smp::diag_readout().2;
+            if d1 <= 8 {
+                hal::kern_lock::with_print_lock(|| {
+                    hal::uart_puts(b"sS2b: steal #");
+                    hal::uart_put_dec(d1);
+                    hal::uart_puts(b" '");
+                    hal::uart_puts((*next_ptr).name);
+                    hal::uart_puts(b"'\n");
+                });
+            }
+        }
+        // SAFETY: PSTATE.I=1（park 环屏蔽窗）；klock 已取（体内放锁）。
         dispatch_from_park_ctx(next_ptr);
         return;
     }
@@ -1869,6 +1936,8 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     // （tick/tele 全死），短路偷取 400s 复跑全绿定谳。enqueue 置 Ready、
     // 调用侧 dispatch 随即置 Running——与出选派发同序。
     RR.enqueue(&mut *p, rq_of(me));
+    // 偷取事件全局计数（st1 诊断面——`LB ok` 行诊断字段，不做断言）。
+    LB_STEALS.fetch_add(1, Ordering::Relaxed);
     Some(p)
 }
 

@@ -57,6 +57,12 @@ DEADLINE_ROOTFS=840    # 秒：相 2 rootfs 相标记到齐（主 smoke 420s ×2
 DEADLINE_PAR=300       # 秒：PAR 行（ok/absent）落窗轮询——探针预算 240s
                        # （120 轮 × 2s）+ 余量；裸相窗结构性打不出（探针预算
                        # ≥ 相窗），断言只挂 rootfs 相
+DEADLINE_LB=240        # 秒：相 3 `LB ok` 行轮询帽（F-A7 帽序②：锚点在标记
+                       # 轮询后起算——boot 墙钟不占帽）。guest 侧分层：子收割
+                       # 帽 90s（义务⑤帽序③,与 240 禁打平竞速）×2 TCG 系数
+LB_TICK_TH=24          # 相 3 c1 下限（F-A5 定标 run10：4 线程 K=2 全改道 rq1
+                       # 形态实测 c1=77 ≈ 每 16s 边 ~40 tick 量级;24 ≈ 1/3——
+                       # 区分「副核得货死（c1=0）」与「活」,余量防轮转波动）
 CLIENT_CMP_CAP=60      # 秒：对拍 client 收割帽（guest 标记已到后的透传余量；
                        # 主 smoke 30s ×2——§5.1「evs/skt 对拍 30→60s」）
 # evsclient 帽 env 覆盖（§5.1：TOTAL 480→960「client 帽 ≥ 相帽 + 60s」/
@@ -405,6 +411,57 @@ wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 echod_stop
 
+# ============ 相 3：LB 均衡验收（S-3b b-2 义务④；gated bare 第三 boot） ============
+# fw_cfg `opt/berry/lb` 门控（RT/SOAK/PAR 同款机制——kernel boot 期 find_file
+# 在位才 spawn lb_master + 注入 set_lb_match 判别 + 打 `LB gate on` 自证行）。
+# 机制语义（子案 §9.6 + 9.2 裁决二）：lb_master 真 svc 链造 **单进程五任务**
+# ——root 经 process_start（spread=false 恒家核,保进程 Alive/started）+ 4
+# 计算线程经 thread_start（spread=true → place K=2 深度失衡**直路路由** rq1
+# + SGI 醒 park 环；偷取为第二路径）→ wait_many（Thread TERMINATED）收割
+# → `LB ok c0=Δ c1=Δ st1=Δ n=4`。直路与偷取同格合格（裁决二——路由形态
+# 与断言解耦），tick 采样按 thread_key 归因（root 键天然排除）；两路径全坏
+# 时 4 子单核墙钟串行跑完 n=4 仍凑齐——真断言在 c1 ≥ TH（副核得货,c0 为
+# 观测面：K=2 按各环实深改道,bare boot rq0 常驻噪声 → 全落 rq1 时 c0 恒 0,
+# run10 定谳）。
+
+field_wait
+: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 3 开工截断复用日志
+echo "smoke-smp: QEMU 启动（-smp 2，相 3 LB 相：fw_cfg lb gate + bare）"
+t_lb0=$(date +%s)
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/lb,string=1 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+# F-A7 帽序②：DEADLINE_LB 锚点在标记轮询**后**起算（boot 时间不占帽）。
+tc=$(date +%s)
+while ! grep -q 'LB ok c0=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 LB 轮询阶段退出"
+  [ $(( $(date +%s) - tc )) -gt "$DEADLINE_LB" ] \
+    && fail "LB ok ${DEADLINE_LB}s 未出（查 boot 期 LB gate on 是否在席——absent 即一票 FAIL，F-A4）"
+  sleep 2
+done
+LB_WALL=$(( $(date +%s) - t_lb0 ))
+
+# F-A5 数值复验（run10 定谳形态）：宿主 grep -E 提 c0/c1/st1/n——**c1 ≥ TH**
+# 且 n==4（裁决二「断言与路由形态解耦」：K=2 深度路由按各环实深改道,bare
+# boot rq0 常驻字母噪声 → 4 计算线程全落空队 rq1,c0 结构性 0——降观测面;
+# c1 ≥ TH 才证副核得货（直路/偷取同格）,n=4 单独放行 = 零成本假绿。LB 行
+# 格式三面钉同值）。
+lb_line=$(grep 'LB ok c0=' "$LOG" | tail -1)
+echo "smoke-smp: ${lb_line}"
+lb_c0=$(echo "$lb_line" | grep -o 'c0=[0-9]*' | cut -d= -f2)
+lb_c1=$(echo "$lb_line" | grep -o 'c1=[0-9]*' | cut -d= -f2)
+lb_n=$(echo "$lb_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
+[ -n "$lb_c1" ] && [ "$lb_c1" -ge "$LB_TICK_TH" ] \
+  || fail "LB c1=${lb_c1:-缺} < TH=${LB_TICK_TH}（副核得货活证缺失——直路/偷取两路径同格破损（裁决二）,n=4 凑齐不救,F-A4）"
+[ -n "$lb_n" ] && [ "$lb_n" -eq 4 ] \
+  || fail "LB n=${lb_n:-缺} ≠ 4（收割计数漂移——LB_CHILD_N 三面钉同值）"
+
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=""
+
 # R3 首跑定标三数（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次）。
 echo "smoke-smp: R3 定标三数：boot=${SMP_BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 金丝雀≈${CAN_PERIOD_S:-?}s/行 / rootfs=${ROOTFS_WALL}s（帽 ${DEADLINE_ROOTFS}s）"
-echo "smoke-smp: PASS（两相：SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增）"
+echo "smoke-smp: PASS（三相：SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增 + LB c1≥${LB_TICK_TH} n=4（c0 观测面,S-3b 副核得货活证））"
