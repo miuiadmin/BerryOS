@@ -31,7 +31,10 @@ static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随�
 // 得 fs 客户端端 `fs_h()`——同槽两位经 spawn 侧的 gift 排布区分，见
 // berry-exec 注）；A2-3 第三位 = netd 服务端端（bsh EVS 自验——
 // `netd_h()`）；GUI-4 段② 第四位 = input 客户端端（bsh `inputpoll`——
-// `input_h()`）。
+// `input_h()`）；GUI-2 段③ 起 extras 首/次位再挂 gfxdemo 的 present/hdi
+// 客户端端（`present_h()`/`hdi_h()`）、第三/四位再挂 guifbd 的 present/
+// hdi 服务端端（`present_srv_h()`/`hdi_srv_h()`）——同槽多产面惯例
+// （gift2/gift3 同款）。
 // T-1 自描述对占固定位 gift[2]/[3]（前缀紧致律——自描述对前移、extras
 // 后挪，产侧 extra<2 不再中段留 0 洞）：GIFT_H[2] = self_proc MANAGE|
 // DUPLICATE dup（`self_proc_h()`——pthread_create 的 thread_create 面）、
@@ -195,6 +198,18 @@ pub fn gift2_h() -> u32 {
     unsafe { GIFT_H[0] }
 }
 
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（GUI-2 段③：gfxdemo 的
+/// present 域 channel 客户端端——svcmgr 预拉 guifbd 段建对后客户端端随
+/// gfxdemo 预拉 extras 首位直递（fresh 端非 dup，fs_b/net_b 先例），
+/// gfxdemo 经它发 berry-guiproto present RPC；0 = 未交付 = guifbd 未起
+/// （rootfs 相 arm 静默跳过 / bsh 手跑恒降级），调用方走 present absent
+/// 退出行）。与 [`rootfs_h`]/[`gift2_h`] 同槽不同名：spawn 侧同一 gift
+/// 位对不同程序承载不同对象（gift3 同款惯例）。
+pub fn present_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
 /// env 块 extras[1]（gift[5] 位）的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
 /// RPC；0 = 未交付 = fs 未拉起，调用方降级「fs not available」不死）。
 pub fn fs_h() -> u32 {
@@ -223,12 +238,34 @@ pub fn gift3_h() -> u32 {
     unsafe { GIFT_H[1] }
 }
 
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（GUI-2 段③：gfxdemo 的
+/// hdi 域 channel 客户端端——随 gfxdemo 预拉 extras 次位直递，gfxdemo 的
+/// REG_VBLANK/VBLANK_WAIT/PREPARE/COMMIT 经它发；0 = 未交付 = 与
+/// [`present_h`] 同门降级）。与 [`fs_h`]/[`blk_h`]/[`gift3_h`] 同槽不同
+/// 名：spawn 侧同一 gift 位对不同程序承载不同对象。
+pub fn hdi_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
 /// env 块 extras[2]（gift[6] 位）访问器（A2-3：netd 服务端端 NET_A dup——
 /// svcmgr 拉起 bsh 时随 extras 第三位交付，bsh 的 EVS 自验（echo server）
 /// 经它发 berry-netdproto RPC；0 = 未交付 = 无 vnet 链（EFI 路/裸跑），
-/// EVS 静默跳过）。**独占槽**（无同槽不同名——extras[0]/[1] 的双名惯例
-/// 在此不适用：第三位现役只有 netd 一个产面）。
+/// EVS 静默跳过）。GUI-2 段③ 起与 [`present_srv_h`] 同槽不同名（第三位
+/// 对 bsh 承载 netd 端 / 对 guifbd 承载 present 服务端端——多产面惯例
+/// 回填 extras[0]/[1]）。
 pub fn netd_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[4] }
+}
+
+/// env 块 extras[2]（gift[6] 位）的同槽访问器（GUI-2 段③：guifbd 的
+/// present 域 channel 服务端端——svcmgr 预拉 guifbd 时随 extras 第三位
+/// take 迁入，serve 循环 present 路经它收 berry-guiproto present RPC；
+/// 0 = 未交付 = 协议破缺面（EFI 链 guifbd 恒有——0 值 eprintln+park
+/// 兜底）。与 [`netd_h`] 同槽不同名：spawn 侧同一 gift 位对不同程序
+/// 承载不同对象（extras[0]/[1] 的多产面惯例同款）。
+pub fn present_srv_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[4] }
 }
@@ -236,9 +273,21 @@ pub fn netd_h() -> u32 {
 /// env 块 extras[3]（gift[7] 位）访问器（GUI-4 段②：input 域 channel
 /// 客户端端 INPUT_A dup——svcmgr 拉起 bsh 时随 extras 第四位交付，bsh 的
 /// `inputpoll` 经它发 berry-guiproto INPUT_POLL RPC；0 = 未交付 = inputd
-/// 未起（裸/B4/EFI 拓扑），调用方静默降级）。**独占槽**（netd_h 同款——
-/// 第四位现役只有 input 一个产面）。
+/// 未起（裸/B4/EFI 拓扑），调用方静默降级）。GUI-2 段③ 起与
+/// [`hdi_srv_h`] 同槽不同名（第四位对 bsh 承载 input 端 / 对 guifbd
+/// 承载 hdi 服务端端——netd_h/present_srv_h 同款）。
 pub fn input_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[5] }
+}
+
+/// env 块 extras[3]（gift[7] 位）的同槽访问器（GUI-2 段③：guifbd 的
+/// hdi 域 channel 服务端端——随 guifbd extras 第四位 take 迁入，serve
+/// 循环 hdi 路经它收软 vsync 四 op（REG_VBLANK/VBLANK_WAIT/PREPARE/
+/// COMMIT）；0 = 未交付 = [`present_srv_h`] 同款 eprintln+park 兜底）。
+/// 与 [`input_h`] 同槽不同名：spawn 侧同一 gift 位对不同程序承载不同
+/// 对象（netd_h/present_srv_h 同款）。
+pub fn hdi_srv_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[5] }
 }
