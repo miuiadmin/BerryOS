@@ -1800,8 +1800,8 @@ pub fn idle_loop() -> ! {
             // （idle 非 Running 驻环者——环上无 Running 残留，同 park_recheck
             // 判据）；偷取同窗（对核环手术）。
             // RQ 窗（c-2b）：本核出选 + 置 Running 同窗（防偷屏障——helper
-            // 首行同值重写幂等，为偷取臂保留）；偷取探测在窗外（slice 5 改
-            // 真锁——远端锁窗自持，不嵌本核窗）。
+            // 首行同值重写幂等，为偷取臂保留）；偷取在窗外（c-2b slice 5
+            // 真锁——远端窗+本核窗两段自持，均不嵌本核出选窗）。
             let picked: Option<*mut Task> = {
                 let p: Option<*mut Task> = unsafe {
                     rq_lock();
@@ -2182,8 +2182,13 @@ pub unsafe fn park_recheck() {
 /// （体尾 F-E2 补——出选臂 pick「留环只推游标」，偷来者同形，绝无裸跑）。
 ///
 /// # Safety
-/// KERN_LOCK 窗内（对核环手术与一切环变更同锁串行——跨核 dequeue 安全）；
-/// 本核出选已 None（调用契约：先 pick 后偷）。
+/// KL 窗内（过渡态 §A108——真锁恒零争用，C20 收缩后本窗形即终态）+ IRQ
+/// 屏蔽；本核出选已 None 且**本核 RQ 窗已闭**（调用契约：先 pick 放锁后
+/// 偷——两调用面 idle_loop/park_recheck 均在 rq_unlock 之后）。
+/// 环手术锁形 = §3 特则「**只持远端**」（c-2b slice 5 真锁包络）：远端
+/// 扫描+摘环一窗 → 放远端 → 无归属窗 → 回插本核再取本地——**绝不双持**
+/// （F-L1「双持一律核号升序」特则本路径构造性不触发——无归属窗单点入队
+/// 即「双队列同时出现」不变量的构造保证）。
 unsafe fn try_steal_one() -> Option<*mut Task> {
     if !hal::smp::par_enabled() {
         return None;
@@ -2191,10 +2196,16 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     let me = hal::smp::cpu_id();
     let other = 1 - me;
     let src = rq_of(other);
-    // 对核环扫描（has_eff_above_filtered 同款走查形）：首过双过滤者即 victim；
-    // 整圈无货 None。断链形态由 link/unlink 入口断言执法（环不变式），走查
-    // 「环上必有 next」与 ring_check 同口径。
-    let Some(h) = src.head() else { return None };
+    // —— 远端窗（只持远端）：对核环扫描（has_eff_above_filtered 同款走查
+    // 形）：首过双过滤者即 victim；整圈无货 None。扫描与摘环同窗——victim
+    // 定型到 unlink 原子，防扫描后摘环前被对核 pick/出队抢走。断链形态由
+    // link/unlink 入口断言执法（环不变式），走查「环上必有 next」与
+    // ring_check 同口径。
+    rq_lock_of(other);
+    let Some(h) = src.head() else {
+        rq_unlock_of(other); // 对核空环——窗闭
+        return None;
+    };
     let mut cur = h;
     let mut victim = None;
     loop {
@@ -2210,12 +2221,19 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
         }
         cur = next;
     }
-    let v = victim?;
+    let Some(v) = victim else {
+        rq_unlock_of(other); // 整圈无 eligible——窗闭
+        return None;
+    };
     let p = v.as_ptr();
-    // SAFETY: KERN_LOCK 窗内（跨核互斥）；unlink 幂等语义不涉（v 构造性在
-    // src 环上）；head==v 时游标自前移（对核 pick 不失位）。不走 RR.dequeue
+    // SAFETY: 远端锁窗内；unlink 幂等语义不涉（v 构造性在 src 环上）；
+    // head==v 时游标自前移（对核 pick 不失位）。不走 RR.dequeue
     // ——那会置 Exited（block_current 同款规避，偷取者保持 Ready）。
     src.unlink(v);
+    // 远端窗闭——victim 自此刻无队列归属（§3 特则四步：放远端 → 无归属
+    // 窗 → 入本核再取本地；home 随迁在无归属窗内独占写——对核任何路径
+    // 此刻都触不到它）。
+    rq_unlock_of(other);
     (*p).home_cpu = me as u8; // 随迁改写 home（迁移粘性）
     // 摘环后必须回插本核环（F-E2 补：偷取与出选的形态对齐——出选臂经
     // pick_next_filtered 者「留环只推游标」，偷来者不可裸跑）。缺此步则
@@ -2224,7 +2242,10 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     // task_a/task_b 被偷后饿死绝迹、rq0 偷空后 CPU0 深 park 无醒源永睡
     // （tick/tele 全死），短路偷取 400s 复跑全绿定谳。enqueue 置 Ready、
     // 调用侧 dispatch 随即置 Running——与出选派发同序。
+    // —— 本核窗（再取本地）：与前远端窗不重叠（只持远端——绝不双持）。
+    rq_lock_of(me);
     RR.enqueue(&mut *p, rq_of(me));
+    rq_unlock_of(me);
     // 偷取事件全局计数（st1 诊断面——`LB ok` 行诊断字段，不做断言）。
     LB_STEALS.fetch_add(1, Ordering::Relaxed);
     Some(p)
