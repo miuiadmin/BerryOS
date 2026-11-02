@@ -2,7 +2,7 @@
 # BerryOS S-2b 副核参与冒烟——双相（`SMP-S2实施设计草案.md` §5.1；smoke-x86
 # 同款独立形态——不并入主 smoke、不进 CI：主 smoke 八跑是单核回归基线，
 # 零扰动）。相 1 = 裸相（27 标记 + SMP 握手）；相 2 = rootfs 生态相
-# （46 标记 + 对拍 client 对 + PAR 副核参与活证）——rootfs 全链在
+# （47 标记 + 对拍 client 对 + PAR 副核参与活证）——rootfs 全链在
 # `-smp 2` 下绿 = E0「内核串行/用户并行」语义等价的端到端证据。
 #
 # **-smp 只进本线**：全仓唯一带 `-smp 2` 的 QEMU 入口（justfile run-smp /
@@ -19,7 +19,7 @@
 #      S-3a probe ② 起 + `SGI ok n=` 恰一次（CPU0→CPU1 SGI_RESCHEDULE 单发
 #      → 副核消费臂收讫计数的端到端机器断言；`SGI ok` 归 smp_assertions
 #      不进标记数组——主 smoke 单核结构性不触发，零漂移）。
-#   2. 相 1 裸相 27 标记 / 相 2 rootfs 相 46 标记全部出现（与主 smoke 同面
+#   2. 相 1 裸相 27 标记 / 相 2 rootfs 相 47 标记全部出现（与主 smoke 同面
 #      ——标记数组与 smoke.sh 运行时计数对拍，见下方机器守卫）。
 #   3. switches 金丝雀 ≥3 条严格递增**按相**（任核 tick 命中 100 倍数即整行
 #      持 PRINT_LOCK 打印——两核交替打印不破坏数值序列单调，§5.2）。
@@ -331,7 +331,7 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
-# ============ 相 2：rootfs 生态相（46 标记 + 对拍 client + PAR 活证） ============
+# ============ 相 2：rootfs 生态相（47 标记 + 对拍 client + PAR 活证） ============
 
 # rootfs 卷前置检查（§5.1 随迁件②：justfile smoke-smp 已挂 build-user 依赖；
 # 手跑裸脚本时缺产物 = loud 快败，不烧 840s DEADLINE 才红）。
