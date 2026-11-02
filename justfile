@@ -193,6 +193,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/guifbd/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GUI-8 可先行面（侦察 §5）：berry-launcher 桌面骨架——guifbd 同形
+    # 独立小工作区 musl 链。v0 = fbinfo gift 门控镜像（缺席单行降级 park
+    # 零标记扰动；在场单行 LAUNCH 日志 + park）；svcmgr 预拉/present/fs/
+    # spawn/标记全挂 gui3→main 并线后 wiring 刀（本刀 svcmgr 面零触碰）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/berry-launcher/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     # A5：netprobe（std::net guest 对拍件——bsh net_gifts 三元 spawn 面
     # 的消费者；TcpStream::connect 域名/IP 双路 + 回显逐字节对拍。产链
     # 同 stdhello 独立小工作区 musl 链；自验/标记 `NETS ok` 随 A5-2
@@ -228,6 +235,7 @@ build-user:
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         bin/bench1=cargo-target/aarch64-unknown-linux-musl/release/bench1 \
+        bin/berry-launcher=cargo-target/aarch64-unknown-linux-musl/release/berry-launcher \
         bin/berryctl=cargo-target/aarch64-unknown-linux-musl/release/berryctl \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
         bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
