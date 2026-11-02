@@ -110,6 +110,32 @@
 | **4-3 ASID 锁 + 回卷 quiesce（改形：锁外等待）** | ①ASID 独立小自旋锁实装（七层第六层位）——**锁只护计数器推进**：分配路径锁内取号、`rolled` 标记即放锁；②quiesce 等待**恒在锁外**：放锁 + 退出 SVC 包络 → `vmalle1is` → SGI #2 全核回执等待 → 等毕重取锁复验 generation（期间又有回卷则重试）；③aspace.rs SAFETY 注释翻新；④回卷强制测试 = fw_cfg 门（`opt/berry/asidroll` 同款双门）钉位 smoke-smp 相 4，ktest 只读重验零新增打印 | ktest ASID 面只读重验 + 相 4 回卷标记；主 smoke 零漂移 |
 | **4-4 压测基建 + canary + 变异标定 + 收官** | ①压测驱动：双核各钉任务 + 跨核栅障（lb_master 先例）；②期望故障槽 SMP 化（per-核槽/位图、静默模式、ELR 定长约定）+「arm 后他核消费」往返探针；③**canary 五步协议**：预热（写者核先访问旧 VA 使 TLB 驻留）→ 栅障 → unmap/还帧（decommit **与 Drop 双构造**——后者与生产 join 同形）→ 复用 → 写旧 VA 期望 fault（计数断言）；写者核与 unmap 核分置 + 同 ASID 兄弟分核形态；④**变异标定（一次性验收步，不入常驻 smoke）**：故意破坏构建（去 tlbi）证明 canary 在 TCG 上真会红——若 TCG 全核同步建模致 stale 构造不出，G2 项 2 证据口径整体改写；标定结论写判例（兼作 §5.1 答案）；⑤`assert!(e==0)` 消音复核收官 | **`TLBS ok n=` 标记**（G2 项 2）+ 相 4 全绿（含「对核满载荷 SVC 风暴中发 shootdown」场景——P0 死锁环钉进可断言面）+ 变异标定结论入册 + 对抗审查零 confirmed |
 
+### 2.1 4-1 实装锚点（2026-11-03 侦察细化，基线 ba8ee33）
+
+- **SGI #2 常量未声明**：gic.rs:37 现役仅 `SGI_RESCHEDULE=1`；:34-36 注释已预留
+  语义——4-1 加 `pub const SGI_TLB_SHOOTDOWN: u8 = 2`。
+- **banked 使能缺口（实装必做）**：gic.rs:93-97 `ICENABLER0=!0` 后主核 bank 仅
+  使能 bit1，副核 = secondary_main 起手 `enable_sgi_this_core`（gic.rs:95 注释
+  在案）——两点位各加 SGI #2。pending 在 bank 锁存（smp.rs:738 注释钉板：使能
+  先后无竞态、早发不丢）。
+- **收端加臂点**：trap.rs:438 `exception_irq` match 加 `SGI_TLB_US` 臂（现臂 =
+  CNTV/PL011/SGI_RESCHED :457/未知兜底 :472）：EOIR → 本地 `tlbi` 补打 →
+  `dsb ish` → 置回执位——取锁面恒零、零打印零分配（SGI_SEEN fetch_add 同款
+  纪律，trap.rs:427-428）。
+- **包络外等待落点 = dispatch 尾闩**：syscall.rs:66-68 `svc_enter_class → h →
+  svc_exit_class`，闩检查放 `svc_exit_class` 之后（KL 已放 + 结构锁已放 = 零锁
+  持有）。形态 = per-CPU pending 闩（目标集位图随闩存）：unmap handler 在 PT 锁
+  内完成清叶+dsb+`send_sgi` 广播后**置闩即返**；dispatch 尾见闩则自旋等回执
+  位图归零再清闩。等待 = 读内存位图（他核 handler 置位），**不依赖本核 IRQ
+  开**——SVC 语境 PSTATE.I=1 不构成阻塞；NONE 类号多付一次 Acquire 原子读
+  （单核闩恒 0，短路路径不置闩）。
+- **单核短路判据 = `par_enabled()`**（smp.rs:295，Release/Acquire 门）：边界
+  安全论证——par 门未置时副核（若已在探测环）从未 activate 用户 aspace、无
+  用户 ASID TLB 项，主核本地 flush 语义完备；故判据取 par_enabled 而非
+  ncores>1。
+- **目标集原语现成**：`SgiTarget::Others` 天然排自核（smp.rs:762 先例）；cpu_id
+  （smp.rs:231）供回执位图索引。
+
 ## §3 锁序与等待纪律（三镜重造——原 v1 §3 的取锁边分析被 P0/P1 证伪半壁）
 
 ### 3.1 取锁边（原分析成立部分）
