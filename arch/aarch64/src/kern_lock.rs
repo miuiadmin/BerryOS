@@ -20,12 +20,17 @@
 //!   行要同一把锁）= 同核硬死锁。sched 侧槽对（`print_lock`/`print_unlock`）
 //!   **不带** irqsave——唯一调用点 on_irq_tick 恒在 IRQ 屏蔽上下文（PSTATE.I=1）。
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// 内核入口大锁：一切 syscall 主体 / IRQ tick 主体 / EL0 fault kill 链的临界区
 /// 边界（E0 话术：**内核串行 + 用户并行**——S-3 才可说内核并发）。持锁者
 /// **永不睡眠**——睡眠点先放锁（sched 侧按 Task 位舞蹈，草案 §2.3）。
 static KERN_LOCK: AtomicBool = AtomicBool::new(false);
+/// KERN_LOCK 争用计数（S-3c c-2c 前置微刀）：kern_acquire 外层 CAS 失败体
+/// +1（按趟计非按轮计——轮数计数有观察者效应；快路径零新指令）。消费面 =
+/// on_irq_tick switches= 金丝雀行尾 ` kl=<n>`（C20 KL 收缩前后对照观测，
+/// 非门禁）。Relaxed：纯计数无序语义。
+static KL_CONTENDED_CAS: AtomicU64 = AtomicU64::new(0);
 /// 打印互斥锁（整条消息粒度）。
 static PRINT_LOCK: AtomicBool = AtomicBool::new(false);
 
@@ -36,10 +41,16 @@ pub fn kern_acquire() {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
+        KL_CONTENDED_CAS.fetch_add(1, Ordering::Relaxed);
         while KERN_LOCK.load(Ordering::Relaxed) {
             core::hint::spin_loop();
         }
     }
+}
+
+/// 读 KERN_LOCK 争用计数（S-3c c-2c 观测面；非门禁——§4 :101 同款裁决）。
+pub fn kl_contention() -> u64 {
+    KL_CONTENDED_CAS.load(Ordering::Relaxed)
 }
 
 /// KERN_LOCK 放锁。

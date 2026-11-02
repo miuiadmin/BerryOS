@@ -323,6 +323,10 @@ echo "smoke-smp: 相 1 SMP 握手 + boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} �
 
 canary_check "相 1" "$DEADLINE_CANARY"
 
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 1 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
+
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
@@ -412,6 +416,10 @@ fi
 
 canary_check "相 2" "$DEADLINE_CANARY"
 
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 2 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
+
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
@@ -463,6 +471,10 @@ lb_n=$(echo "$lb_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
   || fail "LB c1=${lb_c1:-缺} < TH=${LB_TICK_TH}（副核得货活证缺失——直路/偷取两路径同格破损（裁决二）,n=4 凑齐不救,F-A4）"
 [ -n "$lb_n" ] && [ "$lb_n" -eq 4 ] \
   || fail "LB n=${lb_n:-缺} ≠ 4（收割计数漂移——LB_CHILD_N 三面钉同值）"
+
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 3 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null

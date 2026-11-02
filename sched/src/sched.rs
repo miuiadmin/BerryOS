@@ -1982,6 +1982,11 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 print_lock_raw();
                 hal::uart_puts(b"switches=");
                 hal::uart_put_dec(sw);
+                // S-3c c-2c 前置微刀：行尾拼 KL 争用计数（C20 收缩前后对照观测，
+                // 非门禁）。kl_contention 经 hal 直调——with_print_lock :2125 同款
+                // 先例（ops 槽只服务取放对，读数无语境约束）。
+                hal::uart_puts(b" kl=");
+                hal::uart_put_dec(hal::kern_lock::kl_contention());
                 hal::uart_puts(b"\n");
                 print_unlock_raw();
             }
