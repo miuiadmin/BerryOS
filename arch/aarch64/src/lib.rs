@@ -153,6 +153,28 @@ pub unsafe fn irq_dispatch() -> Option<IrqDispatch> {
     IRQ_DISPATCH
 }
 
+/// 入队 SGI（`SGI_RESCHED_US`）接收侧回调槽（义务⑧ S-3b b-1）——与 tick 槽
+/// **分立**：SGI 路径无 `timer::handle`/RR.tick 记账面（快速重调度 ≠ tick 语义），
+/// 且副核不进（park 承接架构——SGI 醒经 eret 回 park 环，handler 内零调度；
+/// gate 在回调体内）。注册/调用模式同上（EOIR 之后、`eret` 之前；C-ABI）。
+pub type SgiDispatch = unsafe extern "C" fn(&mut trap::TrapFrame);
+
+static mut SGI_DISPATCH: Option<SgiDispatch> = None;
+
+/// 注册 SGI 派发回调。须在任何 `enable_irq` 之前调用一次（同 `set_irq_dispatch`）。
+pub fn set_sgi_dispatch(f: SgiDispatch) {
+    // SAFETY: 启动单线程、DAIF 屏蔽（enable_irq 前）；无并发 IRQ、无竞态。
+    unsafe { SGI_DISPATCH = Some(f) };
+}
+
+/// 取已注册的 SGI 派发回调（`exception_irq` SGI 分支用）。未注册返回 `None`。
+///
+/// # Safety
+/// 读 `static mut`。仅 IRQ 上下文（单核顺序）调用。
+pub unsafe fn sgi_dispatch() -> Option<SgiDispatch> {
+    SGI_DISPATCH
+}
+
 // ---- 用户故障击杀回调（HAL→sched，函数指针槽反转；同上避循环依赖）----
 //
 // 2b-4 G1.5：EL0 用户任务致命故障（野指针/畸形 syscall/brk）→ `exception_sync_el0`

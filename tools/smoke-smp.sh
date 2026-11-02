@@ -57,6 +57,12 @@ DEADLINE_ROOTFS=840    # 秒：相 2 rootfs 相标记到齐（主 smoke 420s ×2
 DEADLINE_PAR=300       # 秒：PAR 行（ok/absent）落窗轮询——探针预算 240s
                        # （120 轮 × 2s）+ 余量；裸相窗结构性打不出（探针预算
                        # ≥ 相窗），断言只挂 rootfs 相
+DEADLINE_LB=240        # 秒：相 3 `LB ok` 行轮询帽（F-A7 帽序②：锚点在标记
+                       # 轮询后起算——boot 墙钟不占帽）。guest 侧分层：子收割
+                       # 帽 90s（义务⑤帽序③,与 240 禁打平竞速）×2 TCG 系数
+LB_TICK_TH=24          # 相 3 c1 下限（F-A5 定标 run10：4 线程 K=2 全改道 rq1
+                       # 形态实测 c1=77 ≈ 每 16s 边 ~40 tick 量级;24 ≈ 1/3——
+                       # 区分「副核得货死（c1=0）」与「活」,余量防轮转波动）
 CLIENT_CMP_CAP=60      # 秒：对拍 client 收割帽（guest 标记已到后的透传余量；
                        # 主 smoke 30s ×2——§5.1「evs/skt 对拍 30→60s」）
 # evsclient 帽 env 覆盖（§5.1：TOTAL 480→960「client 帽 ≥ 相帽 + 60s」/
@@ -106,6 +112,12 @@ trap cleanup EXIT
 
 fail() {
   echo "smoke-smp: FAIL: $1" >&2
+  # 失败即自动留全尸（2026-11-01 相 3 时敏 flake 归因教训：tail -40 截掉
+  # PC/FAR/SPSR 行 + cleanup 删原件 = 现场不可逆丢失，差分压测被迫盲跑）。
+  # 成功路径不受影响（照旧即弃；SMOKE_KEEP_LOG 仍管全量保留）。
+  local keep="out/smoke-smp-fail.$(date +%Y%m%d-%H%M%S).log"
+  mkdir -p out 2>/dev/null
+  cp "$LOG" "$keep" 2>/dev/null && echo "smoke-smp: 失败全尸已存：$keep" >&2
   echo "---- 串口日志尾部（$LOG）----" >&2
   tail -40 "$LOG" >&2
   # 客户端死因随失败即打印不留文件（smoke.sh 同款纪律）。
@@ -135,11 +147,11 @@ assert_marker() {
 
 MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
 
-# rootfs 相 46 标记——**复制自 smoke.sh**（§5.1 最低限度方案：markers.sh
+# rootfs 相 47 标记——**复制自 smoke.sh**（§5.1 最低限度方案：markers.sh
 # 抽取留后刀；漂移面由下方运行时计数对拍机器守卫盖住——主 smoke 加标记
 # 而本数组漏跟 = 立即 FAIL 防假绿，P6 A-5「基准重产义务要有机器守卫」族）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "INPUT ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "INPUT ok")
 
 # 机器守卫：两数组与 smoke.sh 原文计数对拍（元素 = 引号串——**元素内不得
 # 含 `)`/引号**，加标记时守住此约束）。awk 状态机在起始行内即判 `)` 收口
@@ -311,6 +323,10 @@ echo "smoke-smp: 相 1 SMP 握手 + boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} �
 
 canary_check "相 1" "$DEADLINE_CANARY"
 
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 1 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
+
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
@@ -403,11 +419,73 @@ fi
 
 canary_check "相 2" "$DEADLINE_CANARY"
 
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 2 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
+
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 echod_stop
 
+# ============ 相 3：LB 均衡验收（S-3b b-2 义务④；gated bare 第三 boot） ============
+# fw_cfg `opt/berry/lb` 门控（RT/SOAK/PAR 同款机制——kernel boot 期 find_file
+# 在位才 spawn lb_master + 注入 set_lb_match 判别 + 打 `LB gate on` 自证行）。
+# 机制语义（子案 §9.6 + 9.2 裁决二）：lb_master 真 svc 链造 **单进程五任务**
+# ——root 经 process_start（spread=false 恒家核,保进程 Alive/started）+ 4
+# 计算线程经 thread_start（spread=true → place K=2 深度失衡**直路路由** rq1
+# + SGI 醒 park 环；偷取为第二路径）→ wait_many（Thread TERMINATED）收割
+# → `LB ok c0=Δ c1=Δ st1=Δ n=4`。直路与偷取同格合格（裁决二——路由形态
+# 与断言解耦），tick 采样按 thread_key 归因（root 键天然排除）；两路径全坏
+# 时 4 子单核墙钟串行跑完 n=4 仍凑齐——真断言在 c1 ≥ TH（副核得货,c0 为
+# 观测面：K=2 按各环实深改道,bare boot rq0 常驻噪声 → 全落 rq1 时 c0 恒 0,
+# run10 定谳）。
+
+field_wait
+: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 3 开工截断复用日志
+echo "smoke-smp: QEMU 启动（-smp 2，相 3 LB 相：fw_cfg lb gate + bare）"
+t_lb0=$(date +%s)
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/lb,string=1 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+# F-A7 帽序②：DEADLINE_LB 锚点在标记轮询**后**起算（boot 时间不占帽）。
+tc=$(date +%s)
+while ! grep -q 'LB ok c0=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 LB 轮询阶段退出"
+  [ $(( $(date +%s) - tc )) -gt "$DEADLINE_LB" ] \
+    && fail "LB ok ${DEADLINE_LB}s 未出（查 boot 期 LB gate on 是否在席——absent 即一票 FAIL，F-A4）"
+  sleep 2
+done
+LB_WALL=$(( $(date +%s) - t_lb0 ))
+
+# F-A5 数值复验（run10 定谳形态）：宿主 grep -E 提 c0/c1/st1/n——**c0==0 且
+# c1 ≥ TH 且 n==4**（裁决二「断言与路由形态解耦」：K=2 深度路由按各环实深
+# 改道,bare boot rq0 常驻字母噪声 → 4 计算线程全落空队 rq1,c0 结构性 0——
+# 升硬门（路由形态漂移金丝雀,零漂声称执法化）;c1 ≥ TH 才证副核得货（直路/
+# 偷取同格）,n=4 单独放行 = 零成本假绿;st1 依裁决二维持诊断位不进门禁。
+# LB 行格式三面钉同值）。
+lb_line=$(grep 'LB ok c0=' "$LOG" | tail -1)
+echo "smoke-smp: ${lb_line}"
+lb_c0=$(echo "$lb_line" | grep -o 'c0=[0-9]*' | cut -d= -f2)
+lb_c1=$(echo "$lb_line" | grep -o 'c1=[0-9]*' | cut -d= -f2)
+lb_n=$(echo "$lb_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
+[ -n "$lb_c0" ] && [ "$lb_c0" -eq 0 ] \
+  || fail "LB c0=${lb_c0:-缺} ≠ 0（裸 boot rq0 路由形态漂移——结构性零金丝雀失守,F-A4）"
+[ -n "$lb_c1" ] && [ "$lb_c1" -ge "$LB_TICK_TH" ] \
+  || fail "LB c1=${lb_c1:-缺} < TH=${LB_TICK_TH}（副核得货活证缺失——直路/偷取两路径同格破损（裁决二）,n=4 凑齐不救,F-A4）"
+[ -n "$lb_n" ] && [ "$lb_n" -eq 4 ] \
+  || fail "LB n=${lb_n:-缺} ≠ 4（收割计数漂移——LB_CHILD_N 三面钉同值）"
+
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 3 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
+
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=""
+
 # R3 首跑定标三数（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次）。
 echo "smoke-smp: R3 定标三数：boot=${SMP_BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 金丝雀≈${CAN_PERIOD_S:-?}s/行 / rootfs=${ROOTFS_WALL}s（帽 ${DEADLINE_ROOTFS}s）"
-echo "smoke-smp: PASS（两相：SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增）"
+echo "smoke-smp: PASS（三相：SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增 + LB c1≥${LB_TICK_TH} n=4（c0 观测面,S-3b 副核得货活证））"

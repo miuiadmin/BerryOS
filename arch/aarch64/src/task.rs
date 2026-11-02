@@ -244,9 +244,15 @@ global_asm!(
     ".type user_entry_trampoline,%function",
     "user_entry_trampoline:",
     // 首次 switch 进新用户任务：x19=entry_va、x20=arg、x21=sp0_va（new_user 设）。
-    // 解蔽 IRQ（同内核 trampoline 的理由：switch 继承 PSTATE.I=1）；SPSR 另设 0
-    //（EL0t、DAIF 解蔽）→ eret 后用户态可被 timer 抢占（向量 0x480）。
-    "    msr daifclr, #2",
+    // **全程不解蔽 IRQ**（run9 定谳）：switch 合同保证入口 PSTATE.I=1，EL0 的
+    // DAIF 由 SPSR_EL1=0 给出——eret 落地即解蔽可抢占（向量 0x480），EL1 侧
+    // 无需也不得提前 daifclr。旧序先 daifclr 再写 ELR/SPSR，`msr elr_el1` 与
+    // `eret` 退役之间开 IRQ 窗：IRQ 入口把 ELR_EL1 覆写为本 trampoline 内返回
+    // 地址，handler 归返后续行 `msr spsr_el1,0` + eret 便以 SPSR=0 落 EL0 执行
+    // trampoline 特权指令（EC=0 杀任务——CPU0 派发径因 rearm-before-EOIR 的
+    // 「整片无 CNTV」不变式侥幸免疫，副核 park 派发在 deadline 到点态 unmask
+    // 即刻吃 IRQ 近确定性命中；判例详雷册 §A）。屏蔽态写 ELR/SPSR 后 eret
+    // 原子落地，窗口消灭。
     "    mov x0, x20",           // 用户入口第一参（eret 不动 GP 寄存器）
     "    msr sp_el0, x21",       // 用户栈顶
     "    msr elr_el1, x19",      // 用户入口 PC

@@ -6,33 +6,49 @@
 //! `current & signals != 0`（4-1 阻塞化：poll-first + 醒来重验；命中回写
 //! **全满足集**，Zircon `zx_object_wait_one` 同形）。
 //!
-//! Event 是最简单的内核对象：无队列、无对端、无钉住——就一个 u64。跨任务
-//! 通知 = 各持同一 Event 的 handle（dup 授权），signal 即写共享对象（syscall
-//! 全程 IRQ 屏蔽 → 无并发面）。
+//! Event 是最简单的内核对象：无队列、无对端、无钉住——就一个原子 u64。
+//! 跨任务通知 = 各持同一 Event 的 handle（dup 授权），signal 即写共享对象。
 //!
-//! **写者纪律（S-2 C21）**：`signals` 的写者 = SVC 上下文（KERN_LOCK 锁窗内
-//! ——跨核互斥 + 本核 IRQ 屏蔽）；**新增非 SVC 写者一律禁止**（IRQ 上下文绕
-//! 锁直写 = 与他核锁窗写者竞速丢更新）。唯一存量例外 = uart RX 通知槽（P5
-//! A-1 经函数指针槽在 IRQ 上下文置 RX Event 位）——其安全性依托「生产者
-//! SPI33 路由钉 CPU0 + 唯一清位者 console 任务同核 CPU0、SVC 入口先
-//! disable_irq 后取锁」的同核互斥（见 uart.rs E26）；S-3 per-CPU 迁移前
-//! 结构性成立，别在此之外加第二条 IRQ 写者路径。
+//! **原子化纪律（S-3c C21 落地）**：`signals` = AtomicU64，**每次 RMW 单条
+//! 原子指令语义**（fetch_update CAS 环 / fetch_or / swap——位叠加不丢）。
+//! 内存序全 Relaxed：**排序由锁窗承担**（现行 = KERN_LOCK 锁窗；S-3c c-2
+//! 拆锁后 = SQ 锁窗，义务③「查位+入队同窗 / 写位+扫描同窗」锚）——原子性
+//! 只杀撕裂与丢更新，**不得**用 Acquire/Release 语义替代锁窗。写者纪律
+//! 沿袭 S-2 C21：SVC 上下文 + uart RX 通知槽（IRQ 上下文，E27 起 KL 包络）；
+//! 新增非 SVC 写者仍一律禁止。
+
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// 事件对象本体：信号位掩码（bit i = 信号 i；语义归用户态约定，内核只管位）。
 pub struct Event {
-    pub signals: u64,
+    pub signals: AtomicU64,
 }
 
 impl Event {
     /// 出生全零（无信号置位）。
     pub fn new() -> Self {
-        Self { signals: 0 }
+        Self { signals: AtomicU64::new(0) }
     }
 
-    /// 原子位置/清位（`signals = (signals & !clear) | set`——单条指令级语义，
-    /// IRQ 屏蔽下单核天然原子）。返回新值。
-    pub fn signal(&mut self, clear_mask: u64, set_mask: u64) -> u64 {
-        self.signals = (self.signals & !clear_mask) | set_mask;
-        self.signals
+    /// 原子位置/清位（`signals = (signals & !clear) | set`——单条原子 RMW
+    /// 语义，CAS 环实现；无锁窗下并发置/清不丢位）。返回新值。
+    pub fn signal(&self, clear_mask: u64, set_mask: u64) -> u64 {
+        // Relaxed：序由锁窗承担（模块注「原子化纪律」）；RMW 原子性本身
+        // 由 fetch_update 的 compare_exchange 环保证。
+        match self.signals.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |cur| Some((cur & !clear_mask) | set_mask),
+        ) {
+            Ok(new) => new,
+            // 闭包恒 Some → CAS 只因值竞争重试后成功，Err 分支不可达；
+            // 防御面取当前值（返回值现役调用点均忽略）。
+            Err(cur) => cur,
+        }
+    }
+
+    /// 当前掩码快照（wait 面 poll-first / 重验循环读点）。
+    pub fn load(&self) -> u64 {
+        self.signals.load(Ordering::Relaxed)
     }
 }

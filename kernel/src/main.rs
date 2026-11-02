@@ -455,6 +455,49 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 锁路径（单核非竞争纯开销、恒配平）；CURRENT 空窗位跳过。gate（副核参与）
     // 不置位 = S-2a 单核可证，改动全量单核零漂移。
     berry_hal_aarch64::kern_lock::set_klock_flag_hook(berry_sched::klock_flag_current);
+    // S-3c c-2c slice 2b（3-1b 翻终态正序）：SVC 入口**结构锁窗**槽——HAL
+    // 侧结构先行、KL 类内末取/先放（终态全局序 KL 最内，七层冻结序
+    // SQ>队列>REAPQ>表），结构位集（SQ→RQ0→
+    // RQ1→REAPQ 升序）物理预取 + held 记账 + svc_mask 声明经此回调；handler
+    // 内层窗由此全退化。CURRENT 空（ktest/boot）跳过 = ktest 期 SVC 形态
+    // 不变（KL 由 HAL 直取恒配平）。fault 面（trap.rs svc_enter 全量形）
+    // 同槽同构。
+    berry_hal_aarch64::kern_lock::set_svc_window_hook(berry_sched::svc_window);
+    // 跨 crate 位对齐编译期执法：HAL 类常量位值 ≡ sched HELD_* 组合——ALL
+    // 钉并集 + 中间三档逐档钉组合（保并集的位重排同样编译失败，防 HAL KL
+    // 门与 sched 结构锁取放对同一 bit 语义分叉）。
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_ALL
+            == (berry_sched::task::HELD_SQ
+                | berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1
+                | berry_sched::task::HELD_REAPQ
+                | berry_sched::task::HELD_TABLE)
+    );
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_TABLE == berry_sched::task::HELD_TABLE
+    );
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_RQ_TABLE
+            == (berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1
+                | berry_sched::task::HELD_TABLE)
+    );
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_SQ_RQ_TABLE
+            == (berry_sched::task::HELD_SQ
+                | berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1
+                | berry_sched::task::HELD_TABLE)
+    );
+    // S-3c slice 3-1a：无表档首类（0x37 降档）——同法逐位钉（表位缺席
+    // 同样编译失败，防位集漂移）。
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_SQ_RQ
+            == (berry_sched::task::HELD_SQ
+                | berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1)
+    );
     berry_sched::set_klock_ops(berry_sched::KlockOps {
         kern_acquire: berry_hal_aarch64::kern_lock::kern_acquire,
         kern_release: berry_hal_aarch64::kern_lock::kern_release,
@@ -1391,8 +1434,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     }
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
-    // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill。
+    // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill；SGI 槽（义务⑧
+    // S-3b b-1）驱动 CPU0 快速重调度（跨核唤醒不等整 tick）。
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
+    berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
     // P5 A-1：RX 通知槽 + 使能 PL011 RX（SPI 33）——均在 DAIF 屏蔽窗内
     // （enable_irq 前）。次序硬约束：通知槽须先注册（槽空时 rx_irq 平凡
@@ -1432,8 +1477,34 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // 之上——探针醒即抢占读数；boot 瞬态 bench 对（16/32）之下零干涉。
         berry_sched::spawn_with_tag(task_par_probe, p_par.as_ptr() as usize, b"parprobe", 8,
                                     ht_par as *mut HandleTable as usize);
+        // S-3b（子案 §9.6 填充点）：bring-up 成功真化拓扑（nr_cpus=2 +
+        // capacity[1]）——par_enable 前（gate Release 序先于副核任何读）。
+        berry_sched::topo_smp_online();
         berry_hal_aarch64::smp::par_enable();
         berry_hal_aarch64::uart_puts(b"PAR gate on\n");
+    }
+    // ---- S-3b b-2（子案 §9.6 义务③④⑤）：LB 金丝雀门控 spawn ----
+    // 双门：smp_active（单核 -smp 1 boot 零面——LB 无副核无偷取语义）+
+    // fw_cfg `opt/berry/lb` 具名项（smoke-smp 相 3 专递;RT/SOAK 同款「两侧
+    // 对读」+ 缺席 = run/smoke 零扰动 + EFI 路天然缺席）。序约束（全体先例
+    // 共同）：sched::init 后 + enable_irq 前（boot DAIF 屏蔽窗内 spawn）;
+    // **set_lb_match 注册在 spawn 同窗**（sched 采样点 boot 期未启——首 tick
+    // 前注入生效,归因零漏）。`LB gate on` 自证行（SOAK/PAR 先例：行在 ⟺
+    // lb_master 已 spawn + 判别已注入——smoke 相 3 排障首查行）。
+    if berry_hal_aarch64::smp::smp_active()
+        && berry_hal_aarch64::fwcfg::find_file(LB_PROBE_NAME).is_some()
+    {
+        let ht_lb: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // lb_master 无等待对象（收割走 wait_many 的 WAIT_ANY 哨兵——不挂
+        // 哑 Event）,表纯为子 Process/VMO/Thread handle 而立（A45 私有表:
+        // 归因键 get_raw 也读它）。arg = 表指针（rt_probe 形态）。
+        berry_sched::set_lb_match(Some(lb_match));
+        // prio 8（parprobe/soakmon 同档）：收割/打行醒即抢占;burst 造子期
+        // 7×4 条 svc 全在自身时间片内连贯（无中途被常驻同级打断的时序面）。
+        berry_sched::spawn_with_tag(task_lb_master, ht_lb as *mut HandleTable as usize,
+                                    b"lb_master", 8, ht_lb as *mut HandleTable as usize);
+        berry_hal_aarch64::uart_puts(b"LB gate on\n");
     }
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
@@ -1852,21 +1923,27 @@ fn fb_pipe_h() -> u32 {
 /// WAIT_ANY 哨兵——任何非零 set 命中，醒来重验定夺）。**不立即抢占**（v1
 /// `wake_matching` 契约——醒者等 tick/yield，交互延迟 ≤ 1 slice）；也不可
 /// 在 IRQ 语境碰 fast_wake/try_preempt。写 Event 与遥测环同纪律：零分配、
-/// 纯指针写字段。S-2 E0 起 `ev.signal + wake_matching` 段包 KERN_LOCK
-/// （E27，草案 §2.4：IRQ 上下文无 Task 位、无 DAIF 操作——同 on_irq_tick
-/// 的 `klock_acquire_raw` 目标形态，kernel 侧直接调 arch 原语）。
+/// 纯指针写字段。S-3c c-2b slice 4 起位写+扫描同 **SQ 窗**（`wake_matching_
+/// locked`——义务③「写位+扫描同窗」的 IRQ 生产者面，F-L2 不可重入立法）；
+/// 3-1b 起 KL 外层包络剥除（E27 退役）——本面 = 纯 SQ 独立单锁窗。
 unsafe extern "C" fn rx_irq_notify() {
     // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
     let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
         .expect("rx_irq_notify: RX_EV_REF 未初始化（boot 接线缺失）");
-    berry_hal_aarch64::kern_lock::kern_acquire();
     unsafe {
+        // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描
+        // 同窗**——Event 位写与 SLEEPQ 扫描摘队在同一 SQ 窗内原子（分段后
+        // 「位已置而队上无等待者」窗口 = 丢唤醒面；消费者 poll-first +
+        // rx_ev_clear 豁免位协议不变）。持窗版 wake_matching_locked 不再
+        // 自取 SQ（不可重入）；3-1b 起 KL 不再外层包络（终态 KL 最内，
+        // SQ 独立窗即终态形）。
+        let sq_phys = berry_sched::sq_lock(); // 位感知退化形（c-2c slice 2a）
         if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
             ev.signal(0, RX_EV_BIT);
         }
-        berry_sched::wake_matching(p.as_ptr() as usize, RX_EV_BIT);
+        berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
+        berry_sched::sq_unlock(sq_phys);
     }
-    berry_hal_aarch64::kern_lock::kern_release();
 }
 
 /// 清 RX Event 位（console 消费包络内调）。位由 IRQ 置、由消费侧清——与
@@ -2024,21 +2101,25 @@ extern "C" fn task_console(arg: usize) -> ! {
                 if !rx_ok_done && rlen == 2 && raw[..2] == *b"rx" {
                     rx_ok_done = true;
                     // 直接 uart（console 即排水者，不走自家通道）；标记条件 =
-                    // 收到完整行 token（状态谓词，非注入即达的回声）。
-                    berry_hal_aarch64::uart_puts(b"RX ok n=");
-                    berry_hal_aarch64::uart_put_dec(rx_total);
-                    berry_hal_aarch64::uart_puts(b" lost=");
-                    berry_hal_aarch64::uart_put_dec(
-                        berry_hal_aarch64::uart::rx_lost() as u64,
-                    );
-                    // A-2：转发丢弃计数（bsh 断供面诊断位；正常恒 0——smoke
-                    // 只 grep "RX ok" 前缀，行尾追加零扰动）。
-                    berry_hal_aarch64::uart_puts(b" fdrop=");
-                    berry_hal_aarch64::uart_put_dec(fwd_drop);
-                    // GUI-1 段②：fb fan-out 丢弃计数（同款行尾诊断位）。
-                    berry_hal_aarch64::uart_puts(b" fbdrop=");
-                    berry_hal_aarch64::uart_put_dec(fb_drop);
-                    berry_hal_aarch64::uart_puts(b"\n");
+                    // 收到完整行 token（状态谓词，非注入即达的回声）。整段
+                    // PRINT_LOCK 包络（3-1a 判例刀同款——多段 uart_puts 拼行
+                    // 被矩阵单字符织入 = smoke「RX ok」前缀假阴性同族面）。
+                    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                        berry_hal_aarch64::uart_puts(b"RX ok n=");
+                        berry_hal_aarch64::uart_put_dec(rx_total);
+                        berry_hal_aarch64::uart_puts(b" lost=");
+                        berry_hal_aarch64::uart_put_dec(
+                            berry_hal_aarch64::uart::rx_lost() as u64,
+                        );
+                        // A-2：转发丢弃计数（bsh 断供面诊断位；正常恒 0——
+                        // smoke 只 grep "RX ok" 前缀，行尾追加零扰动）。
+                        berry_hal_aarch64::uart_puts(b" fdrop=");
+                        berry_hal_aarch64::uart_put_dec(fwd_drop);
+                        // GUI-1 段②：fb fan-out 丢弃计数（同款行尾诊断位）。
+                        berry_hal_aarch64::uart_puts(b" fbdrop=");
+                        berry_hal_aarch64::uart_put_dec(fb_drop);
+                        berry_hal_aarch64::uart_puts(b"\n");
+                    });
                 }
                 rlen = 0;
             } else if b >= 0x20 && b < 0x7f && rlen < raw.len() {
@@ -2098,10 +2179,20 @@ extern "C" fn task_console(arg: usize) -> ! {
                 break; // 排空——回外层阻塞等
             }
             assert_eq!(r2, 0, "console: recv 异常");
-            for i in 0..n as usize {
-                berry_hal_aarch64::uart_putc(buf[i]);
-                CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            }
+            // 3-1a 判例刀（smoke-smp 相 2 实抓「LSN oBk n=7」）：用户打印
+            // drain 改整条消息 PRINT_LOCK 包络——原逐字节裸 uart_putc 与
+            // ktest 矩阵任务单字符直写者**字节级并发**（无共同锁面），标记
+            // 行中段可被织入单字符 → smoke grep 假 FAIL（840s 假阴性）。包
+            // 络后矩阵字符只能落消息前后（整条原子），标记恒完整。
+            // with_print_lock 自带 irqsave（G43 任务态纪律——裸持
+            // PRINT_LOCK 被本核 tick 打断 = 同核硬死锁）；n ≤ 256B @ QEMU
+            // PL011 TX 恒 ready = 微秒级锁窗。
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                for i in 0..n as usize {
+                    berry_hal_aarch64::uart_putc(buf[i]);
+                    CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
+            });
             // GUI-1 段②：fb 上屏 fan-out——整段 best-effort 一发（n ≤ 256B
             // = channel 内联额度内；满 -EBUSY/-EAGAIN → 丢弃 + fb_drop 计数
             // 不重试不阻塞，保串口主路——guifbd 未起（boot 早期）/慢的输出
@@ -3040,13 +3131,21 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
 ///    纪律：副核绝不动 distributor 全局面）；SGI_RESCHEDULE banked 使能
 ///    同窗（S-3a——收端使能面收端自理）。
 ///
-/// **统一探测/参与环**（两态合一，gate 检查在 on_irq_tick 早退——本环自身
-/// 无 gate 分支）：gate 未置位 = 每 slice CNTV 唤醒 → on_irq_tick 锁窗内
-/// 早退（klock 旋取即放）→ 回环重臂续睡 = 探测态纯空转，轮询粒度 = 1 slice
-///（无 IPI（E0 代价），置位后 ≤1 slice 内开始拉任务）；gate 置位 = 同一环里
-/// on_irq_tick 走 park 派发（cur==null 出选 `pinned!=0` 用户任务切入）或正常
-/// preempt，任务尽则 block/exit/yield 的 park 分支切回本环（sec_park_ctx）
-/// 续 wfi。wfi 真睡（TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
+/// **统一探测/参与环**（两态合一；S-3a tickless park 形——子案 §9.5 步 A）：
+/// gate 未置位 = park_arm 走 arm_slice 周期醒（探测态轮询，粒度 = 1 slice
+/// ——park_recheck 见 gate 关即早退，置位后 ≤1 slice 内开始真派发）；gate
+/// 置位 = park_recheck 承接一切派发（CNTV 醒 eret 后单路径于此——**截止
+/// 驱动醒**口径），park_arm 按 SLEEPQ 最近 deadline 浅 park（到点醒 →
+/// on_irq_tick expire → 回环 recheck 摘醒者）或 mask 深 park（SLEEPQ 尽空
+/// 时）。自续性实证（noSGI 150s）：钉本核任务阻塞带 deadline 入 SLEEPQ →
+/// arm_at 到点醒 → 自续 27 笔派发——「深 park 无 SGI 结构性饿死」对当前
+/// 面不成立（CPU1 唯一客户 = 恒 deadline 阻塞的 pinned child；边界 = 无
+/// 限期阻塞 + SLEEPQ 空窗时外部唤醒，留 S-3b 路由化收口）。原义务①
+/// enqueue SGI 已除名（判词 → 子案 §9.5），唤醒戳随 S-3b 回归。
+/// 任务尽则 block/exit/yield 切回本环（sec_park_ctx）续行。
+/// wfi 真睡且全程 PSTATE.I=1（masked-wfi：GIC 线 pending 即醒，enable→wfi
+/// 间到达的 IRQ 先被服务后 wfi 直睡的丢唤醒窗由此收口——Linux arm64
+/// cpu_do_idle 同款；TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
 #[no_mangle]
 pub unsafe extern "C" fn secondary_main() -> ! {
     // S-2b 修复：换离低半早期栈（__boot_stack_top）到高半静态栈——必须在
@@ -3075,14 +3174,37 @@ pub unsafe extern "C" fn secondary_main() -> ! {
         );
     }
     loop {
-        // SAFETY: 本核 CVAL 重臂（写 CNTV_CTL/CVAL 绝对截止）；DAIF 屏蔽窗内
-        //（disable_irq/wfi 后或起手窗）。
-        unsafe { berry_hal_aarch64::timer::arm_slice() };
+        // S-3a tickless park 环（子案 §9.5 步 A）：派发收敛到 park_recheck
+        //（CNTV 醒 eret 后到这——截止驱动醒口径）；武装策略按 gate 两态。
+        // SAFETY: PSTATE.I=1（起手 DAIF 窗 / 上轮 disable_irq）；klock 自管。
+        unsafe { berry_sched::park_recheck() };
+        // PAR 清钉（tickless 伴生洞收口）：深 park 窗无 tick 采样，last_task
+        // 若滞留上一个 EL0 任务指针，CPU0 侧 witness 会误置假并行见证——
+        // wfi 前清（本核块独占写、无跨核读：par_sample 的 cpu==0 分支才读
+        // 对岸，免锁）。
+        berry_hal_aarch64::smp::par_sample(0, false);
+        if berry_hal_aarch64::smp::par_enabled() {
+            match berry_sched::nearest_deadline() {
+                // SAFETY: 本核 CVAL 编程到 SLEEPQ 最近 deadline（绝对截止，
+                // 过期即醒由回环 expire 承接）；屏蔽窗内。
+                Some(d) => unsafe { berry_hal_aarch64::timer::arm_at(d) },
+                // SAFETY: CNTV IMASK=1（深 park——SLEEPQ 尽空无醒源，倒计仍
+                // 跑；后续就绪的钉本核任务暂由 S-3b 路由化前的边界注收口，
+                // 详函数头自续性实证段）。
+                None => unsafe { berry_hal_aarch64::timer::mask() },
+            }
+        } else {
+            // SAFETY: 本核 CVAL 重臂（探测态周期醒，gate 开启 ≤1 slice 可见）；
+            // DAIF 屏蔽窗内。
+            unsafe { berry_hal_aarch64::timer::arm_slice() };
+        }
+        // masked-wfi（丢唤醒窗收口）：wfi 全程 PSTATE.I=1——若先 enable 再
+        // wfi，enable→wfi 间到达的 IRQ 会被先服务（pending 位消费掉）后 wfi
+        // 直睡 = 丢唤醒；屏蔽态 wfi 由 GIC 线 pending 唤醒，醒后 enable_irq
+        // 即取该中断（无 pending 则直落 disable，窗微无害）——三步闭环。
+        berry_hal_aarch64::wfi();
         berry_hal_aarch64::enable_irq();
-        berry_hal_aarch64::wfi(); // 真睡；CNTV IRQ → exception_irq → on_irq_tick
         berry_hal_aarch64::disable_irq();
-        // park 派发/正常 preempt 都经 on_irq_tick 内 context_switch 发生；
-        // 任务尽切回 sec_park_ctx 时续行点在其调用者栈帧——经 eret 回到本循环。
     }
 }
 
@@ -3174,6 +3296,257 @@ extern "C" fn task_par_probe(arg: usize) -> ! {
         }
         berry_hal_aarch64::kern_lock::klock_exit();
     }
+}
+
+// ---- S-3b b-2：LB 金丝雀（子案 §9.6 义务③④⑤；boot 门控块见 main 尾段）----
+
+/// LB gate 的 fw_cfg 具名项名（门控键——smoke-smp 相 3 专递
+/// `-fw_cfg name=opt/berry/lb,string=1`；RT/SOAK_PROBE_NAME 同款「两侧对读
+/// 维护」纪律）。
+const LB_PROBE_NAME: &str = "opt/berry/lb";
+
+/// LB 子进程数（蓝图 N=4）：LB_PROCS 槽位、`LB ok` 行 n= 字面、smoke 相 3
+/// 的 n==4 断言三面钉同值——改此须三处同步。
+const LB_CHILD_N: usize = 4;
+
+/// LB 计算线程 Thread ObjRef 地址表（per-child 归因判别面，义务③ 9.2 裁决二）：
+/// lb_master 造线程时写入（thread_create 后、thread_start 前——thread_key
+/// 值在 create 即定）；sched 侧 tick 采样经 `set_lb_match` 注入的 [`lb_match`]
+/// 读表比对 `cur.thread_key`。归因键选 thread_key（Thread ObjRef 地址）而非
+/// 裸 Task 指针：svc 链不透出任务指针，而 handle→ObjRef 内核直取（get_raw）
+/// 在同 crate 面内；thread_key 在任务全生命周期恒定（F-E1 前移写点），无
+/// ABA 面。进程 root（spread=false 家核自旋，仅为保进程 Alive）为 Process
+/// 键，天然不入集——归因只记 4 计算线程。
+/// Relaxed：写点在 lb_master 语境（klock 窗内直调写）、读点在 tick 锁窗
+/// ——锁序传递可见性，计数纯归因无跨核序角色。
+static LB_PROCS: [core::sync::atomic::AtomicUsize; 4] = [
+    core::sync::atomic::AtomicUsize::new(0),
+    core::sync::atomic::AtomicUsize::new(0),
+    core::sync::atomic::AtomicUsize::new(0),
+    core::sync::atomic::AtomicUsize::new(0),
+];
+
+/// LB 线程判别（sched 侧注入回调体）：thread_key ∈ LB_PROCS 即 LB 计算线程。
+fn lb_match(key: usize) -> bool {
+    LB_PROCS
+        .iter()
+        .any(|p| p.load(core::sync::atomic::Ordering::Relaxed) == key)
+}
+
+/// lb_master（S-3b b-2 LB 金丝雀主驱动，prio 8，私有表 A45）：fw_cfg lb
+/// gate + smp_active 双门控 spawn（boot 块）。真 svc 驱动链（EL1 同权 A14
+/// + waker2/ai_demo `svc4`/`svc6` 先例）造 **单进程五任务**：root 经
+/// process_start（spread=false 恒家核）+ 4 计算线程经 thread_start
+/// （spread=true，place K=2 深度失衡路由）→ wait_many（0x05，WAIT_ANY
+/// 哨兵）挂 4 个 Thread 的 `SIGNAL_TERMINATED` 收割 → klock 包络内 Δ 采样
+/// 打 `LB ok c0=Δ c1=Δ st1=Δ n=4`。机制语义（蓝图钉板）：
+///
+/// - **spread 混形 = 对齐已修订蓝图**（裁决二 + F-A1 修订 + place 终裁）：
+///   「4 子结构性全落 rq0、偷取是唯一路径」旧叙事已被 F-A1 修订明文废除
+///   （K=2 算术与「全落 rq0」互斥），断言与路由形态**解耦**——直接路由与
+///   偷取**同格合格**。首版实现误钉 process_start（spread=false），run7
+///   （rootfs 形态）/run8（bare 验收形态）双实证：单发 FIFO 头偷取在常驻
+///   矩阵噪声下**结构性到不了子**（st1=1 偷走最老常驻者后迁移粘性占用
+///   CPU1，rq1 永不清空、探测停摆——c1=0 恒红，非竞速）。改 thread_start
+///   后 4-burst K=2 算术保底第 3 线程直路 rq1 + SGI 醒 park_recheck 派发
+///   ——c1 见证「子任务在副核跑」的 G2 均衡性质本身；偷取（F-E2 过滤
+///   `ttbr0!=0` 含线程）仍是第二路径，st1 留诊断（裁决二降格）。
+/// - **计算线程 = spread 正典类**（place 终裁：thread_start 同进程计算
+///   线程 spread=true，并行收益面；服务根留家核）。root 同模板自旋仅保
+///   进程 Alive+started（thread_start 前置门），退场与线程同代——归因面
+///   用 thread_key 天然排除 root（Process 键），零污染。
+/// - **svc 链全真**（非直调 handler）：0x31 process_create → 0x11
+///   vmo_create → 0x12 vmo_commit → 0x15 vmo_write（灌 [`user::user_lb_code`]
+///   模板）→ 0x16 vmar_map（**0x31 后 0x32/0x35 前**，F-A16）→ 0x34
+///   thread_create ×5 → 0x32 process_start（root）→ 0x35 thread_start ×4。
+///   五任务共享单页映像：entry 0x1000（模板 ~9 指令 + svc 0x36 thread_exit
+///   出口——**单进程生死线**：0x33 会连杀同进程兄弟线程，0x36 仅退自身 +
+///   join 唤醒，谁先转完谁先汇报；自旋不压栈）+ 栈带 256B/线程自页顶向下
+///   排（root 0x2000、t0-t3 递减 0x100——sp 16 对齐）。
+/// - **收割帽分层**（义务⑤帽序③）：guest 侧 wait_many deadline 90s（子
+///   8s 名义 × TCG 半速 ≈16s 墙钟；K=2 路由常态两核分流 ≤3×16s，全落
+///   单核最坏 5×16s=80s + 余量）与 harness DEADLINE_LB=240 禁打平竞速；
+///   -ETIMEDOUT = assert FAIL loud（子未按帽完成 = 调度面破损,不是
+///   「可容噪声」）。
+/// - **Δ 采样**（F-A8）：首线程入队前 / 末线程收割后两快照,klock 包络内
+///   直调 [`berry_sched::lb_stats`]（kernel→sched 直调,锁窗序保证原子性）。
+/// - 表/对象生命周期：lb_master pinned==0 退出直通**不 drain** 私有表
+///   （A45 有意泄漏,par/rt/soak 同款）;子 VMO 的 -EBUSY 收割面
+///   （A18/A74）不触发（无 close 动作——悬空 PTE 防线的 close 拒绝面
+///   与本链无交）。
+extern "C" fn task_lb_master(arg: usize) -> ! {
+    use crate::abi_gen::{
+        NR_CLOCK_READ, NR_OBJECT_WAIT_MANY, NR_PROCESS_CREATE, NR_PROCESS_START,
+        NR_THREAD_CREATE, NR_THREAD_START, NR_VMAR_MAP, NR_VMO_COMMIT, NR_VMO_CREATE,
+        NR_VMO_WRITE,
+    };
+    use crate::abi_gen::SIGNAL_TERMINATED;
+    use crate::handle::ObjType;
+    // SAFETY: ht_lb 由 boot Box::leak 常驻（活过本任务全程）。
+    let ht: &'static mut crate::handle::HandleTable =
+        unsafe { &mut *(arg as *mut crate::handle::HandleTable) };
+    // Δ 基线（F-A8 采样点一：首线程入队前）。
+    berry_hal_aarch64::kern_lock::klock_enter();
+    let (b0, b1, bs) = berry_sched::lb_stats();
+    berry_hal_aarch64::kern_lock::klock_exit();
+    let code = crate::user::user_lb_code();
+    // 收割对象 = 4 计算线程句柄；root 句柄单槽（不收割——保 Alive 用）。
+    let mut hths = [0u32; LB_CHILD_N];
+    // 出参/入出参槽（本任务内核栈——svc el1 分支直拷先例 waker2/ai_demo）。
+    let (mut hp, mut hv, mut hvmo, mut hth_root) = (0u32, 0u32, 0u32, 0u32);
+    let mut vaddr: u64;
+    // svc4/svc6 是安全封装（同步异常、槽为私有栈变量——el1 直拷先例
+    // waker2/ai_demo 同款零外层 unsafe）。
+    // 0x31：process_create(job=0, options=0, *p, *v)——单进程（4 计算线程
+    // 共享同一地址空间/代码页；svc4 裁 4 参,svc6 裁 6 参）。
+    assert_eq!(
+        svc6(
+            NR_PROCESS_CREATE as u64, 0, 0,
+            core::ptr::addr_of_mut!(hp) as u64,
+            core::ptr::addr_of_mut!(hv) as u64, 0, 0,
+        ),
+        0,
+        "lb: process_create"
+    );
+    // 0x11：vmo_create(size=1 页, options=0, *out)。
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64, 0x1000, 0,
+            core::ptr::addr_of_mut!(hvmo) as u64,
+        ),
+        0,
+        "lb: vmo_create"
+    );
+    // 0x12：vmo_commit(h, off=0, len=1 页)。
+    assert_eq!(svc4(NR_VMO_COMMIT as u64, hvmo as u64, 0, 0x1000), 0,
+               "lb: vmo_commit");
+    // 0x15：vmo_write(h, buf=模板 rodata, off=0, len)——4 参 svc6 裁。
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hvmo as u64, code.as_ptr() as u64, 0,
+            code.len() as u64, 0, 0,
+        ),
+        0,
+        "lb: vmo_write"
+    );
+    // 0x16：vmar_map(vmar, vmo, off=0, *vaddr, len, rights=R|W)——in-out 槽
+    // 先进请求 VA（F-A16：0x31 后 0x32/0x35 前补映射）。
+    vaddr = crate::user::USER_CODE_VA as u64;
+    assert_eq!(
+        svc6(
+            NR_VMAR_MAP as u64, hv as u64, hvmo as u64, 0,
+            core::ptr::addr_of_mut!(vaddr) as u64, 0x1000,
+            (crate::abi_gen::RIGHT_READ | crate::abi_gen::RIGHT_WRITE) as u64,
+        ),
+        0,
+        "lb: vmar_map"
+    );
+    assert_eq!(vaddr as usize, crate::user::USER_CODE_VA,
+               "lb: vmar_map 实际 VA 偏离请求（分配器改道?）");
+    // root：0x34 thread_create + 0x32 process_start（spread=false 恒家核——
+    // 同模板自旋保进程 Alive+started（thread_start 前置门），归因面
+    // thread_key 排除）。sp=0x2000（页顶栈带第一格）。
+    assert_eq!(
+        svc4(
+            NR_THREAD_CREATE as u64, hp as u64, 0,
+            core::ptr::addr_of_mut!(hth_root) as u64,
+        ),
+        0,
+        "lb: thread_create[root]"
+    );
+    assert_eq!(
+        svc6(
+            NR_PROCESS_START as u64, hp as u64, hth_root as u64,
+            crate::user::USER_CODE_VA as u64, 0x2000, 0, 0,
+        ),
+        0,
+        "lb: process_start[root]"
+    );
+    // 4 计算线程：0x34 thread_create + 0x35 thread_start(th, entry, sp,
+    // arg=0——svc6 显式清尾参)。thread_start → spread=true → place K=2
+    // 深度失衡路由（4-burst 算术保底第 3 线程直路 rq1 + SGI 醒 park 环）。
+    // 栈带自页顶向下 256B/线程（自旋不压栈——纯隔离垫；sp 16 对齐）。
+    for i in 0..LB_CHILD_N {
+        assert_eq!(
+            svc4(
+                NR_THREAD_CREATE as u64, hp as u64, 0,
+                core::ptr::addr_of_mut!(hths[i]) as u64,
+            ),
+            0,
+            "lb: thread_create[{}]",
+            i
+        );
+        // 归因登记（create 后、start 前——thread_key 值 create 即定；
+        // 内核直调 get_raw 须自持 klock：svc 返回时 SVC 主体已放锁）。
+        berry_hal_aarch64::kern_lock::klock_enter();
+        // SAFETY: hths[i] 刚由 thread_create 插入本表;类型/权利由 get_raw 门控。
+        let (thr, _) = ht
+            .get_raw(hths[i], ObjType::Thread, 0)
+            .expect("lb: 取 Thread ObjRef");
+        LB_PROCS[i].store(thr.as_ptr() as usize, core::sync::atomic::Ordering::Relaxed);
+        berry_hal_aarch64::kern_lock::klock_exit();
+        let sp = 0x2000 - (i as u64 + 1) * 0x100; // 0x1F00/0x1E00/0x1D00/0x1C00
+        assert_eq!(
+            svc6(
+                NR_THREAD_START as u64, hths[i] as u64,
+                crate::user::USER_CODE_VA as u64, sp, 0, 0, 0,
+            ),
+            0,
+            "lb: thread_start[{}]",
+            i
+        );
+    }
+    // 收割（wait_many 派生位——A45 表形状钉板件）：WAIT_ANY 哨兵睡,计算线程
+    // 退出置 th.exited → signal_state 出 TERMINATED + wake_matching 命中唤醒
+    // → sys 面重验循环定夺命中项;逐次 swap-remove 至 4 尽（Thread 句柄收割
+    // = T-1 join 面,root 不在集——spread=false 自旋永真 Alive）。deadline =
+    // now + 90s（guest 收割帽,义务⑤帽序③）。SIGNAL_TERMINATED 是 Exited
+    // 永真位——已收割项若再入集会即时假命中,swap-remove 保证活跃集单调收缩。
+    let mut now: u64 = 0;
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "lb: clock_read");
+    let deadline = now + 90 * 1_000_000_000;
+    let mut hs = hths;
+    let sigs = [SIGNAL_TERMINATED as u64; LB_CHILD_N];
+    let (mut idx, mut obs) = (0u64, 0u64);
+    let mut n = LB_CHILD_N;
+    while n > 0 {
+        // 两数组/两出参槽均私有栈（svc 安全封装同上）。
+        assert_eq!(
+            svc6(
+                NR_OBJECT_WAIT_MANY as u64,
+                hs.as_ptr() as u64,
+                sigs.as_ptr() as u64,
+                n as u64,
+                deadline,
+                core::ptr::addr_of_mut!(idx) as u64,
+                core::ptr::addr_of_mut!(obs) as u64,
+            ),
+            0,
+            "lb: wait_many 收割（剩 {} 个子未按 90s 帽退出——调度面破损）",
+            n
+        );
+        assert!((idx as usize) < n, "lb: wait_many idx 越界（{}≥{}）", idx, n);
+        hs[idx as usize] = hs[n - 1];
+        n -= 1;
+    }
+    // Δ 终值（F-A8 采样点二：末子收割后）+ 汇总行（G43 拼行）。
+    berry_hal_aarch64::kern_lock::klock_enter();
+    let (e0, e1, es) = berry_sched::lb_stats();
+    berry_hal_aarch64::kern_lock::klock_exit();
+    let (d0, d1, ds) = (e0 - b0, e1 - b1, es - bs);
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"LB ok c0=");
+        berry_hal_aarch64::uart_put_dec(d0);
+        berry_hal_aarch64::uart_puts(b" c1=");
+        berry_hal_aarch64::uart_put_dec(d1);
+        berry_hal_aarch64::uart_puts(b" st1=");
+        berry_hal_aarch64::uart_put_dec(ds);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(LB_CHILD_N as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    berry_sched::exit_current()
 }
 
 /// ai_pong（prio 32，bench 对 B 端）：fa_pong 同构、AI_ROUNDS 轮、不触

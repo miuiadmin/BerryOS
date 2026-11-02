@@ -1073,6 +1073,33 @@ core::arch::global_asm!(
     ".globl __user_ponger_end",
     "__user_ponger_end:",
 
+    // ---- S-3b b-2 LB 金丝雀子模板（main.rs lb_master 经 svc 链造 5 份）----
+    //
+    // 纯 CPU-bound 自旋 + svc 0x36 汇报：`mrs CNTVCT_EL0` 差值 vs D 常数
+    // （500M 周期 ≈ 8s 名义 @62.5MHz——QEMU virt CNTFRQ 常量，多处先例）；
+    // TCG 半速（雷 A8）→ 墙钟 ~16s。无 block/wake（LB 判据纯净：直路路由
+    // 与偷取是仅有的跨核路径）；无打印（裸相零噪声——LB ok 行归 lb_master
+    // 汇总）；不用 x0（bootstrap=0 造入，无能力需求）。EL0VCTEN 双核均已
+    // 开（timer::init 主核 B-1 修复 + 副核 bring-up 自开）——静默杀死状排障
+    // 先查 F-A9（本模板设计已排该面）。svc 0x36 = thread_exit：**单进程五
+    // 任务形态的生死线**——0x33 会 kill_all_tasks_by_pinned 连杀同进程四条
+    // 在转兄弟（run7/8 后形态裁决），0x36 仅退自身 + join 唤醒（非末线程
+    // 「进程续活」），谁先转完谁先汇报、互不牵连；「汇报」即退出本身。
+    ".globl __user_lb",
+    "__user_lb:",
+    "    mrs  x9, CNTVCT_EL0",         // t0
+    "    movz x10, #0x6500",
+    "    movk x10, #0x1DCD, lsl #16",  // D = 0x1DCD_6500 = 500M 周期 ≈ 8s @62.5MHz
+    "    add  x10, x9, x10",           // deadline = t0 + D
+    "1:  mrs  x9, CNTVCT_EL0",
+    "    cmp  x9, x10",
+    "    b.le 1b",                     // 自旋到点（纯忙转，无系统调用）
+    "    movz x0, #0x36",              // thread_exit（svc 汇报——仅退自身）
+    "    svc  #0",
+    "    b    .",                      // 不返；防御兜底（返回 = fault 杀兜底）
+    ".globl __user_lb_end",
+    "__user_lb_end:",
+
     // 4-5b/4-6 svcmgr 模板已随 G-eco-b 退役换编译产物（user/bins/svcmgr，
     // include_bytes! 内嵌 echo/talker 平像——原模板内嵌的 echo 段（268B）与
     // talker 段（936B）随之换轨 user/bins/{echo,talker}）。契约逐字保留
@@ -1092,6 +1119,8 @@ extern "C" {
     static __user_pinger_end: u8;
     static __user_ponger: u8;
     static __user_ponger_end: u8;
+    static __user_lb: u8;
+    static __user_lb_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -1152,6 +1181,15 @@ pub fn user_pinger_code() -> &'static [u8] {
 pub fn user_ponger_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_ponger, &__user_ponger_end) }
+}
+
+/// LB 金丝雀子模板（S-3b b-2：纯 CNTVCT 自旋 + svc 0x36 thread_exit 汇报
+/// ——见模板内注释）。lb_master 经真 svc 链（0x31/0x11/0x12/0x15/0x16/
+/// 0x34/0x32/0x35）单进程造 5 份本镜像（root + 4 计算线程），vmar_map 进
+/// 程空间后 process_start/thread_start。
+pub fn user_lb_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_lb, &__user_lb_end) }
 }
 
 /// svcmgr 用户程序模板（4-5b 验收：服务管理器拉起 echo 服务——真 syscall

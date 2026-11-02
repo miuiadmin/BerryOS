@@ -86,7 +86,7 @@ just build          # 内核 ELF（自动先跑 build-user 补内嵌产物）
 just build-user     # 用户程序 → 平像 + mkapp 打包 .bap + mkcpio 产 rootfs.cpio
 just run            # QEMU virt 冷启动，行首 1 = 起始 EL1；halt 后 Ctrl-A X 退出
 just run-el2        # virtualization=on，行首 21 = EL2→EL1 eret 降级
-just run-rootfs     # fw_cfg 挂 rootfs + virtio 盘网 → svcmgr 消费链全谱（rootfs 相 46 标记）
+just run-rootfs     # fw_cfg 挂 rootfs + virtio 盘网 → svcmgr 消费链全谱（rootfs 相 47 标记）
 just smoke          # 无人值守八跑冒烟（CI 同款）；标记清单 = tools/smoke.sh，语义注解 → 雷册 §C
 just test-host      # host 单元测试（不依赖 QEMU）；host 面总口径以本命令输出为准
 just abi-check      # ABI 单源守卫：abi.toml 三面产物逐字节比对（挂 build/smoke 前置）
@@ -96,7 +96,7 @@ just build-x86      # x86_64 构建（必须显式 --target——根 config 锁 
 just run-x86        # QEMU pc + PVH ELF，七标记（PVH/TIMER/EXC/CTX/SYS/X86 ok）
 just smoke-x86      # x86 独立冒烟（7 标记恰一次；已挂 CI，不并入主 smoke）
 just run-smp        # 副核 bring-up + 参与态手跑（全仓唯一 -smp 入口）
-just smoke-smp      # 副核双相冒烟（独立关卡不进 CI）：SMP ok 按相恰一次 + 金丝雀按相递增
+just smoke-smp      # 副核三相冒烟（独立关卡不进 CI）：SMP ok 按相恰一次 + 金丝雀按相递增 + 相3 LB 门
 just smoke-image    # EFI 整盘镜像独立冒烟（已挂 CI）：十段 + 字节对拍 + RX 注入
 just build-boot     # BerryBoot EFI 构建链（staticlib → rust-lld 全链接 → elf2pe PE32+）
 just image          # 整盘镜像 → out/berryos.img + manifest.txt（同输入同字节）

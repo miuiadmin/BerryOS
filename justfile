@@ -212,6 +212,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/gui-wmd/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GUI-8 可先行面（侦察 §5）：berry-launcher 桌面骨架——guifbd 同形
+    # 独立小工作区 musl 链。v0 = fbinfo gift 门控镜像（缺席单行降级 park
+    # 零标记扰动；在场单行 LAUNCH 日志 + park）；svcmgr 预拉/present/fs/
+    # spawn/标记全挂 gui3→main 并线后 wiring 刀（本刀 svcmgr 面零触碰）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/berry-launcher/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     # A5：netprobe（std::net guest 对拍件——bsh net_gifts 三元 spawn 面
     # 的消费者；TcpStream::connect 域名/IP 双路 + 回显逐字节对拍。产链
     # 同 stdhello 独立小工作区 musl 链；自验/标记 `NETS ok` 随 A5-2
@@ -230,6 +237,10 @@ build-user:
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
     cp cargo-target/aarch64-unknown-linux-musl/release/appdemo userbins/app-stage/APPDEMO/bin/
+    # GUI-7：[ui] 资产入 staging——icons/ PNG 源由 mkapp 编码成 .byi 入包
+    # （源不入包），views/ 原样整包；对应 manifest icon/views 声明位。
+    cp -R bins/appdemo/icons userbins/app-stage/APPDEMO/
+    cp -R bins/appdemo/views userbins/app-stage/APPDEMO/
     cp bins/appquiet/manifest.toml userbins/app-stage/APPQUIET/
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
@@ -243,6 +254,7 @@ build-user:
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         bin/bench1=cargo-target/aarch64-unknown-linux-musl/release/bench1 \
+        bin/berry-launcher=cargo-target/aarch64-unknown-linux-musl/release/berry-launcher \
         bin/berryctl=cargo-target/aarch64-unknown-linux-musl/release/berryctl \
         bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
         bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
@@ -515,9 +527,14 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-guiproto --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p gui-inputd --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
-    # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
-    # manifest fixture 共识/intent 判别值钉板）。
+    # 第 8 例，host 38 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
+    # manifest fixture 共识/intent 判别值钉板 + ID_MAX 绝对钉（berry-layout
+    # 跨面镜像对偶侧））。
     cargo test --manifest-path user/Cargo.toml -p berry-manifest --target {{host}}
+    # GUI-8：berry-layout（桌面布局 JSON v1 纯函数解析/发射——「解析器即
+    # 产品」第 9 例，host 61 测：schema/canonical 钉板 + 帽双侧执法 +
+    # 负例全家桶（parse 侧 39 逐条独立 + emit 侧收口 5，at 位点逐条钉死））。
+    cargo test --manifest-path user/Cargo.toml -p berry-layout --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

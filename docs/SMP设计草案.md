@@ -192,6 +192,14 @@ park/release 同步（S-1 邮箱起步用 wfe+sev，S-3 起调度改 IPI）。
 TLB shootdown v1 保持**同步 IS 广播**（S-4 在页表锁内做，异步 shootdown
 + 回执 IPI 是 v2+ 优化，非本刀）。
 
+**S-3a 实施定案（2026-11-01）**：①②③已落（`send_sgi` 原语 +
+`SGI_RESCHEDULE`=1 + trap.rs 分流臂 probe ② 收讫计数）；④的 enqueue 尾
+发送面被实验证伪除名——全局队列 peek 序下零派发价值 + console 灌压压垮
+30s 帽（判词 → 子案 `SMP-S3实施设计草案.md` §9.5 末），生产发送面归零，
+在册发送者仅 bringup probe ③ 观测块；跨核唤醒戳随 S-3b per-CPU 队列路由化
+回归（发送条件 = 目标核队列真有货）。副核 park 形 = masked-wfi + **截止
+驱动醒**（SLEEPQ 归属核单点武装 CVAL——规则 ③④成文 → 子案 §2.4 实施定案段）。
+
 ### 3.4 其余硬件面裁决
 
 - **UART TX 交织**：S-2 起打印路径（uart_puts 族）挂一把打印自旋锁
@@ -332,3 +340,11 @@ TLB shootdown v1 保持**同步 IS 广播**（S-4 在页表锁内做，异步 sh
 - **probe ③ 落地（同日末段——形态 + 合并 + Self 锁存三观测收官，SGI 观测面全毕）**：`gic.rs` 补 `GICD_ISPENDR0=0x200` + `sgi_pending_this_core`（本核 bank pending 直读；安全壳内 unsafe 块——`verify()` 同款形态）+ `kern_lock::irq_enabled` 升 pub（DAIF.I 直读观测位）；`smp.rs` bringup 尾 probe ② 块后追加三观测块（`SGI3` 前缀与 `SGI ok n=`/`SMP: FAIL` 断言面零碰撞、观察行不进 smoke 断言）。**实测（2026-11-01，-smp 2 五跑）**：① Others(0b01) `SGI3 others ok n=2` 五跑恒命中——双核上 ≡ List(0b10) 同效（QEMU `ALL_CPU_MASK^(1<<cpu)` 钉板兑现）；② 同源背靠背双发 `SGI3 merge ok n=3 merged` / `n=4` **跨跑双形态**（合并 vs 逐发竞速并存——GICv2 同源 SGI 一 pending 位，CPU1 active 窗内外两种时序皆可现；「无条件发送纪律」设计不受影响：发送侧无需知悉合并与否，五跑 n 单调不丢发为证）；③ Self(0b10) `SGI3 self ok pending=1 seen=<n> daif_i=0`——**屏蔽窗内 pending 锁存 ISPENDR0 直读自证**（发端版「先发后解蔽不丢」，与 probe ① 收端版互补；投递机器 ①② 已证，锁存后投递 = enable_irq 时由 SGI_SEEN 收讫，无观察点不赘）。
 - **副产物：boot DAIF 屏蔽窗双洞修复（判例 A105）**：Self 观测首跑 pending=0（≠预期 1）→ daif 六锚定界法（rust_main 入口/ktest 后/bench 后/sched::init 后/bringup 入口/观测前——`irq_enabled()` 直读一行锚）揪出**两处窗违约**：洞① boot.rs `.Lat_el1` 直入路不动 DAIF、继承 QEMU reset DAIF=0（解蔽）——仅 EL2 eret 路 SPSR 0x3c5 屏蔽，双径不对称；洞② ktest `switch_ping_fn`/`fp_ping_fn` 经 task_entry_trampoline 起步 `daifclr #2`（真任务收 tick 的正当设计）后**带着解蔽态切回 MAIN**——boot 自首个 ktest 乒乓起整窗解蔽，兼违 context_switch `PSTATE.I==1` 不变式（当时无已使能源故 benign 不爆）。修复 = `.Lat_el1` 统一 `daifset #0xf`（EL2 路幂等）+ 两 ping fn 起手 `disable_irq()` 复蔽。修后六锚全 0、obs-③ pending=1 命中；run-el2 行首 `21` + boot 全绿（eret 路幂等实证）。「boot DAIF 屏蔽直到 enable_irq」自注释意图升**实测可证契约**。
 - **下一步（§9.4 S-3a 六件义务）**：SGI 观测面（probe ①②③）收官；子案 §9.4 六件义务接棒——无条件发送纪律/park 判据含对核有货/SLEEPQ 到点武装归属核/F-E5 不变量/rearm 锚 timer IRQ 入口/mod4 退役判据。
+
+### S-3a 段② 收官（2026-11-01 A 半刀 + 义务①除名，commit 82ab456）：副核 tickless park——半刀独立成立
+
+- **步 A 落地（②+⑥）**：`park_recheck` 自 on_irq_tick cur==null 段整体提取为 `pub unsafe fn`（klock→gate 早退→peek_next_filtered 只读→sS2b 诊断门→**出选真任务自 arm_slice 授片**→set_current→SWITCHES++→activate_aspace→放锁→context_switch(sec_park_ctx,next)）；on_irq_tick 留 expire/抢占面、cur==null 改早退；preempt 路径 mod4 门移除（⑥退役，`park_due` 标 retired）。副核 park 环（secondary_main）= `loop { park_recheck; par_sample(0,false) 清钉; gate 开→match nearest_deadline { Some(d)=>arm_at(d) 浅 park, None=>mask() 深 park }; gate 关→arm_slice 探测态; wfi; enable_irq; disable_irq }`——**masked-wfi 形**（enable→wfi 间 IRQ 先服务后直睡的丢唤醒窗收口，Linux arm64 cpu_do_idle 同款）+ **PAR 清钉洞**（深 park 窗 last_task 滞留 → CPU0 witness 假见证，wfi 前清）。`timer.rs` 补 `arm_at(deadline)`（CVAL 绝对编程）+ `handle()` 头注升格 **F-E11 执法点** + 授片 arm/rearm 二分名义（⑤）。
+- **义务①除名（实验裁决，判词全文 → 子案 §9.5 末）**：A+B 合并刀（enqueue 尾 SGI 戳）落码后 smoke-smp 连 FAIL——peek 只读扫描恒先命中恒 Ready 的 pinned child（398/398 全 child，+25% 灌压）→ klock/MTTCG 护送队推慢 ponger/svcmgr → pinger/svcmgr wait 帽断 → 0x4000_0000 自陷 → CHAIN/MANY/SVC/DEMO 四标记级联饿死；SGI 二分静音后全绿 + **深 park 截止驱动自续 27 笔/150s**（「A 无 B 结构性饿死」前提证伪——child 恒 deadline 阻塞入 SLEEPQ，arm_at 到点自醒）。裁决 = ①除名降级 S-3b 路由化件（发送条件 = 目标核队列真有货，届时派发价值成立）；**SGI_RESCHEDULE 生产发送面归零，在册发送者仅 bringup probe ③ 观测块**；trap.rs 分流臂转 probe 专用。③④规则同批成文（子案 §2.4 实施定案段 + 母案 §3.3——SLEEPQ 插入只在运行核 = 插入核单点武装；迟醒界 ≤1 slice 来源 = 运行核 slice 节奏 F-E5）。
+- **潜伏双雷记档（S-3b IDLE 深化件）**：① on_irq_tick cur==null 槽原兼 CPU0 idle 再派发——迁出后为 wedge（金丝雀永续 runnable 使测试面不真空，未触达）；② `sec_park_ctx()` 全局单槽——两核共穿会跨核覆写 park 帧（从未触发；wedge 比静默腐坏安全，per-CPU 化随 S-3b）。
+- **验收（2026-11-01 全链，零欠账）**：smoke-smp 双相 PASS（SMP ok/SGI ok 各恰一次 + 裸 27 + rootfs 45 + **PAR ok c0=354 c1=4 满速参与下提前命中**（mod4 限频退役后 c1 从 absent 档升活证档）+ 金丝雀 500→8800 严格递增 + R3 三数 boot 5s/金丝雀≈0s/rootfs 129s 帽 840s）+ 主 smoke 八跑 PASS（39 递增 + 全相链——中途 echod 18080 与 GUI 线并行 smoke 边界竞态一次，等场重跑绿）+ run-el2 `21BerryOS boot` 恰一次 + test-host 全绿 + docs_guard 0 警 + unsafe 台账 631 --check ok（MMIO -1 = send_sgi 块除名）。
+- **下一步（S-3b per-CPU 队列路由化）**：①spawn 四写点前移 + enqueue 出表窗（F-E1）②偷取双过滤（F-E2）③LB 金丝雀 per-child 归因 + 私有 handle 表 + svc 驱动链补 vmar_map ④smoke-smp 相 3 `LB ok` 严格必需 ⑤帽序三处 ⑥REAPQ 消费权维持 CPU0 ⑦ktest 横切锁纪律成文 ⑧**唤醒戳回归**（本刀除名件——发送条件随路由化成立）+ IDLE 深化（双雷 per-CPU 化）。

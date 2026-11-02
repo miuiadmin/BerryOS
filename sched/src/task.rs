@@ -37,6 +37,25 @@ pub enum EppHint {
     Perf,
 }
 
+/// 持有集位图常量（S-3c 义务⑥，F-L9）：`Task::held_locks` 的位定义。
+/// bit0 已退役（原 klock_window 单 bool 语义位，c-2c slice 1 起随 bit5 定名
+/// 迁移删除——KL 本尊即表锁，无双位并立）；bit1..=4 = 结构锁四位
+/// （S-3c c-2a 定名启用：SQ 随 `sq_lock`/`sq_unlock` 记账；RQ0/RQ1/REAPQ
+/// 随 c-2b 取放启用）。
+/// 表锁持有位（c-2c slice 1 起 KLOCK_FLAG 槽置/清、切换舞蹈分诊——C20
+/// 收缩后 KL 本尊兼职表锁，位语义随收：SVC/fault 入口置、dispatch 尾/
+/// 直调包络清、切换舞蹈分诊放/取；bit0→bit5 单 commit 原子迁移，防
+/// 半迁移 KL 永不放全核自旋）。
+pub const HELD_TABLE: u8 = 1 << 5;
+/// SLEEPQ 持有位（c-2a 起 `sq_lock`/`sq_unlock` 置/清）。
+pub const HELD_SQ: u8 = 1 << 1;
+/// CPU0 runqueue 持有位（c-2b 取放启用）。
+pub const HELD_RQ0: u8 = 1 << 2;
+/// CPU1 runqueue 持有位（c-2b 取放启用）。
+pub const HELD_RQ1: u8 = 1 << 3;
+/// REAPQ 持有位（c-2b slice 2 起随 `reapq_push`/`reap_drain` 置/清）。
+pub const HELD_REAPQ: u8 = 1 << 4;
+
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -107,6 +126,21 @@ pub struct Task {
     /// （exited 置位 + join 唤醒）+ release 本钉住。语义归 `内核` crate，
     /// sched 只存取（同 `pinned` 的 crate 边界纪律）。
     pub thread_key: usize,
+    /// S-3b（子案 §9.6 步 b-1）：归属核（home CPU）——per-CPU runqueue 时代
+    /// 任务的家队列号。**spawn 时由放置路由 [`crate::sched::place`] 定死一次**
+    /// （内核任务 ttbr0==0 恒 0；用户任务本核优先 + 深度失衡 K=2）；此后
+    /// wake/expire 再入队一律回本字段队列（不再改道——改道只发生在放置点，
+    /// 防 sleeper 被唤醒方弹核）。b-2 偷取迁移时随迁改写。单核形态恒 0。
+    pub home_cpu: u8,
+    /// S-3b（b-1 判谳补）：**可铺核资格位**——false（默认）= 恒家核（放置
+    /// 路由不路由）；true = 深度失衡 K=2 判据下可改道对核。写入源 =
+    /// [`crate::sched::try_spawn_user`] 调用方语境（thread_start 铺核、
+    /// process_start 恒家）。b-1 排障定谳：process 根（服务/IPC 公民——
+    /// 含 console 灌沟形态的 burst 生产者）路由上快核后以即时派发垄断
+    /// 共享通道槽（唤醒序/上限救不了派发延迟差）——v1 只铺**同进程计算
+    /// 线程**（并行收益面），服务根留家核；b-2 偷取迁移再放开。语义归
+    /// `内核` crate，sched 只存取（同 `pinned` 的 crate 边界纪律）。
+    pub spread: bool,
     /// S-2 E0（BKL 纪元，`SMP-S2实施设计草案.md` §2.3）：持锁义务位——「本任务
     /// 当前处于 KERN_LOCK 持锁窗」随任务走（不放 per-CPU——SVC 入口/切走点
     /// 可能换核）。置位 = arch SVC/fault 入口（`kern_lock::svc_enter` 经槽）；
@@ -114,7 +148,28 @@ pub struct Task {
     /// `klock_exit`（内核任务直调包络）。sched 切换原语按位分诊：切走前放锁、
     /// 切回后重取（SVC 层 ~31 个 handler 零改动；内核任务直调位=0 幂等跳过）。
     /// 位只在任务自身执行流中被写 → 挂起期间稳定。
-    pub klock_window: bool,
+    ///
+    /// **S-3c 义务⑥（F-L9）升持有集位图 u8**：bit0 已退役（原 KERN_LOCK
+    /// 单 bool 位，c-2c slice 1 随 bit5 定名迁移删除）；bit1..=4 = 结构锁
+    /// 四位（[`HELD_SQ`] 随 `sq_lock`/`sq_unlock` 记账，[`HELD_RQ0`]/
+    /// [`HELD_RQ1`] 随 `rq_lock_of` 记账，[`HELD_REAPQ`] 随 `reapq_push`/
+    /// `reap_drain` 记账）；bit5 = 表锁（C20 KL 收缩后 KL 本尊兼职）。
+    ///
+    /// **c-2c slice 2a 起切换舞蹈扩全位集**：切点按位集**逆序**物理放
+    /// （内→外：TABLE→REAPQ→RQ1→RQ0→SQ）、**位保持置位**（跨挂起逻辑
+    /// 持有义务——位只在任务自身执行流写 ⇒ 挂起期稳定），切回**正序**
+    /// 物理重取（外→内，与嵌套窗取序/入口位集预取序一致，防跨核 ABBA）。
+    /// 位号 = 锁序 rank（冻结序 SQ>队列>REAPQ>表）。结构取放对随位感知
+    /// 退化（位已置 = 外层逻辑持有 → 物理取放跳过、配对闭窗同退化）；
+    /// 2b 入口位集预取后方有结构位跨切点携带者（2a 全惰性零行为差）。
+    pub held_locks: u8,
+    /// SVC 入口锁类声明（c-2c slice 2b）：SVC 窗内 = 当前号类位集，窗外恒 0
+    /// ——纯**断言执法元数据**（舞蹈分诊仍以 `held_locks` 物理真值为基：
+    /// 内核任务窗外 held=0 而 mask≠0 的形态若用 mask 基会漏取 KL 永不放）。
+    /// 执法点：`svc_window` 出口 `held == mask`、退出钩子点 `held ⊆ mask`
+    ///（TABLE 位豁免；全谱死亡路径 mask=0x3E 时结构位恒 ⊆ mask——该谓词
+    /// 空转面，见 sched.rs 注）。内核任务永不过 SVC 派发 ⇒ 恒 0 亦执法成立。
+    pub svc_mask: u8,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
     // Phase 兑现——RR 不消费，为 EAS/PI/AI 调度预埋，免后改 TCB 布局返工）----
@@ -288,7 +343,10 @@ impl Task {
             proc_tag,
             pinned: 0,
             thread_key: 0,
-            klock_window: false,
+            home_cpu: 0,
+            spread: false,
+            held_locks: 0,
+            svc_mask: 0,
             prio_base: 0,
             prio_effective: 0,
             pi_inherited: 0,

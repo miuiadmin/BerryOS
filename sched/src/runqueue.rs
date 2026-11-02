@@ -1,8 +1,10 @@
 //! Runqueue（侵入式双向环形链表，`NonNull<Task>` 裸指针）+ CPU 拓扑（`Topo`）。
 
+use crate::spin::SpinLock;
 use crate::task::Task;
 use core::cell::Cell;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// 单 CPU 的运行队列。G0 单核：全局一个。
 ///
@@ -18,7 +20,21 @@ pub struct Runqueue {
     /// 以「走查步数 == len」执法：**孤儿段形态下从 head 走圈仍闭合**（活圈
     /// 自闭合），只有对账才能显形「有成员不在头可达圈上」（复盘雷 2 残留
     /// 诊断——五任务静默失联的确诊机制即此形态）。
-    len: Cell<usize>,
+    ///
+    /// **S-3c c-2b slice 3（Q3 收口）**：`Cell<usize>` → `AtomicUsize`——
+    /// `place()` 表锁语境免锁读远环 len，撕裂读由原子性消解（Q3 二选一取
+    /// 原子化：入锁窗方案 = 表窗内碰 RQ 面 F-E1 同族逆序 + C20 后双 RQ
+    /// 升序双取；原子化免锁序牵连、终态合法）。取放恒在本队列 RQ 锁窗内
+    ///（单写者——load+store 即可，全序由锁提供；原子性只为跨核**读**不
+    /// 撕裂），两端 Relaxed；K=2 放置启发式与金丝雀对账容忍近似值。
+    /// codegen 与 Cell 等形（ldr/str）——icount 零漂。
+    len: AtomicUsize,
+    /// per-queue 自旋锁（S-3c c-2a 落形 → **c-2b 取放启用**；持有位 =
+    /// `HELD_RQ0`/`HELD_RQ1`，记账在 `sched::rq_lock_of` 统一承担）。crate 内
+    /// 自持 [`SpinLock`]（零 arch 依赖——b-1 时「A4 侦察形 lock 字段被依赖
+    /// 方向约束否决」的解方即此；彼时注释预告的「S-3c 拆锁时结构再扩」由本
+    /// 字段兑现）。过渡态 KL 全量在场 ⇒ 恒零争用（窗形先行，§A108）。
+    lock: SpinLock,
 }
 
 /// 环走查步数帽：远大于合法环长（现矩阵 runnable ≤~20），只挡断链死循环
@@ -39,13 +55,31 @@ impl Runqueue {
     pub const fn new() -> Self {
         Runqueue {
             head: Cell::new(None),
-            len: Cell::new(0),
+            len: AtomicUsize::new(0),
+            lock: SpinLock::new(),
         }
     }
 
-    /// 环长（走查对账用）。
+    /// 取本队列自旋锁（S-3c c-2b 启用）。纪律同 `crate::spin` 头注：IRQ 屏蔽
+    /// 窗内取放、不可重入、持窗禁切换；过渡态一切取放点在 KL 窗内（§A108
+    /// 过渡态逆序——C20 收缩时随分号类别消解）。持有位记账由
+    /// `sched::rq_lock_of`/`rq_unlock_of` 统一承担（本面不重复记账）。
+    ///
+    /// # Safety
+    /// 调用方契约如上（屏蔽窗 + 不重入 + 窗内禁切换）。
+    pub(crate) unsafe fn lock_acquire(&self) {
+        self.lock.acquire();
+    }
+
+    /// 放本队列自旋锁（先清持有位后放——位与锁恒同窗，见 `sched::rq_unlock_of`）。
+    pub(crate) fn lock_release(&self) {
+        self.lock.release();
+    }
+
+    /// 环长（走查对账用；Relaxed 免锁读——c-2b slice 3 原子化，跨核读者
+    /// （`place`/integrity）无撕裂，本核锁窗内读者值稳定）。
     pub fn len(&self) -> usize {
-        self.len.get()
+        self.len.load(Ordering::Relaxed)
     }
 
     /// 环完整性走查（复盘雷 2 残留诊断）：从 head 沿 `rq_next` 走一圈须回到
@@ -119,7 +153,9 @@ impl Runqueue {
                 (*h).rq_prev.set(Some(task));
             }
         }
-        self.len.set(self.len.get() + 1);
+        // 单写者（本队列 RQ 锁窗内）——load+store 免 fetch_add（ldadd 会破
+        // 与 Cell 形的指令等价；全序由锁提供，原子性只为读不撕裂）。
+        self.len.store(self.len.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     }
 
     /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
@@ -149,7 +185,8 @@ impl Runqueue {
         }
         (*t).rq_prev.set(None);
         (*t).rq_next.set(None);
-        self.len.set(self.len.get() - 1);
+        // 同 link_back：单写者 load+store（RQ 锁窗内）。
+        self.len.store(self.len.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
     }
 
     /// 环游标（4-3a：`RoundRobin::pick_next` 环形扫描的起点）。crate 内策略
@@ -173,16 +210,16 @@ impl Runqueue {
         self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
 
-    /// 过滤版只读探峰（S-2b）：环上是否存在 `prio_effective` 严格高于 `v` 的
-    /// **eligible** 任务（叠加 [`crate::class::PickFilter`] 门，至多一圈，不动
-    /// 游标、不做出选）。供 [`crate::sched::try_preempt`] 的前置判定——
-    /// 「不可能切走就根本不 pick」（pick_next 会 `advance_past` 消耗 head 槽位：
-    /// 出选后不切走 = 幻影出选，见 try_preempt 注释；S-2b 起全调用面走过滤版，
-    /// 无过滤版退役——user_only=false 时与无门探峰逐位恒等）。
+    /// 过滤版只读探峰（S-2b；S-3b 改形）：环上是否存在 `prio_effective` 严格
+    /// 高于 `v` 的 **eligible** 任务（叠加 [`crate::class::eligible`] Running
+    /// 排除门，至多一圈，不动游标、不做出选）。供 [`crate::sched::try_preempt`]
+    /// 的前置判定——「不可能切走就根本不 pick」（pick_next 会 `advance_past`
+    /// 消耗 head 槽位：出选后不切走 = 幻影出选，见 try_preempt 注释；S-2b 起
+    /// 全调用面走过滤版，无过滤版退役）。
     pub(crate) fn has_eff_above_filtered(
         &self,
         v: i32,
-        filter: &crate::class::PickFilter,
+        my_cur: *mut Task,
     ) -> bool {
         let Some(h) = self.head.get() else {
             return false; // 空环
@@ -191,7 +228,9 @@ impl Runqueue {
         unsafe {
             let mut cur = h;
             loop {
-                if filter.eligible(cur.as_ptr()) && (*cur.as_ptr()).prio_effective > v {
+                if crate::class::eligible(my_cur, cur.as_ptr())
+                    && (*cur.as_ptr()).prio_effective > v
+                {
                     return true;
                 }
                 cur = (*cur.as_ptr())
@@ -208,16 +247,22 @@ impl Runqueue {
 
 /// CPU 拓扑（capacity 表占位）。G0 单核：一个条目。多核（G2+）由 HAL 填表，
 /// 核心逻辑架构无关（`调度器设计.md` §3.1 的 capacity(0..1023) 抽象 v3 落地）。
+/// S-3b（子案 §9.6 步 b-1）真化：`capacity` 定长数组（v1 = 2 核）由
+/// `sched::init` 从 HAL `cpu_capacity()` 填——QEMU virt 同核 1024/1024 占位，
+/// 真差异容量（大小核）= EAS 面 v2+。
 #[derive(Clone, Copy)]
 pub struct Topo {
     /// CPU 数。G0 = 1。
     pub nr_cpus: u32,
+    /// 每核算力（0..=1023 同构尺度，Linux `scale_capacity` 口径）。索引 = 核号；
+    /// 超出在册核数的槽位恒 0（单核形态只 [0] 有效）。
+    pub capacity: [u32; 2],
 }
 
 impl Topo {
     /// 单核拓扑（G0/G1）。
     pub const fn single() -> Self {
-        Topo { nr_cpus: 1 }
+        Topo { nr_cpus: 1, capacity: [0; 2] }
     }
 }
 

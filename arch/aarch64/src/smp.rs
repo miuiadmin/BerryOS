@@ -239,19 +239,28 @@ pub fn cpu_id() -> usize {
     unsafe { (&raw const (*(base as *mut SmpCpu)).cpu).read_volatile() as usize }
 }
 
-/// 副核 park 上下文（S-2b §2.3「首派发上下文」）：副核 park 态 wfi 被 tick
-/// 打断 → on_irq_tick park 派发把 boot 栈上下文惰性存进本块；任务侧
-/// block/preempt 回 park = `context_switch(cur.ctx, park_ctx)` 恢复同一帧
-/// → exception_irq 尾 eret 回 secondary_main 统一环。非调度语义 Task：
-/// 不进 RUNQUEUE、无 TCB、仅 TaskContext 存档（不立第二个 IDLE_TASK——
-/// A7 口径延续）。首次派发前 = ZERO 纯 sink（switch asm 写 prev 读 next，
-/// ZERO 起步安全）；「切回 park 前必有 park→task 派发」构造性保证。
+/// per-CPU park 上下文槽（S-2b §2.3「首派发上下文」；S-3b b-2 雷② 收口——
+/// 子案 §9.5 末）：某核 park 态 wfi 被打断 → park 派发把该核栈上下文惰性
+/// 存进**本核槽位**；任务侧 block/preempt 回 park = `context_switch(cur.ctx,
+/// park_ctx)` 恢复同一帧 → eret 回该核统一环。非调度语义 Task：不进
+/// RUNQUEUE、无 TCB、仅 TaskContext 存档（不立第二个 IDLE_TASK——A7 口径
+/// 延续）。首次派发前 = ZERO 纯 sink（switch asm 写 prev 读 next，ZERO 起步
+/// 安全）；「切回 park 前必有 park→task 派发」构造性保证。
+///
+/// S-3b b-2 起单槽真化 per-CPU `[ctx; 2]`：全局单槽形态下，CPU0 idle 若经
+/// 本块派发会**覆写 CPU1 park 帧**（跨核帧灾难——雷②，从未触发：CPU0 idle
+/// 旧形态结构性不达本块，wedge 比静默跨核腐坏更安全）。分诊按 cpu_id 后
+/// CPU0 槽防御性在位（现调用面 block/exit 两 park 切点均 `cpu_id != 0` 臂
+/// 独占；S-3c 拆锁若开 CPU0 park 面即天然就位，不再改本块）。
 #[no_mangle]
-pub static mut SMP_SEC_PARK_CTX: crate::task::TaskContext = crate::task::TaskContext::ZERO;
+pub static mut SMP_SEC_PARK_CTX: [crate::task::TaskContext; 2] =
+    [crate::task::TaskContext::ZERO, crate::task::TaskContext::ZERO];
 
-/// 副核 park ctx 指针（切换原语消费）。
+/// 本核 park ctx 槽指针（切换原语消费；block/exit 两 park 切点调用零改）。
 pub fn sec_park_ctx() -> *mut crate::task::TaskContext {
-    &raw mut SMP_SEC_PARK_CTX
+    // SAFETY: static mut 槽位寻址（无并发窗——本核槽本核独占读写，跨核槽
+    // 只经 KERN_LOCK 串行的切换原语触达）。
+    unsafe { &raw mut SMP_SEC_PARK_CTX[cpu_id()] }
 }
 
 /// 副核高半栈（S-2b 修复：低半 `__boot_stack_top` 只供 asm 早期）。副核
@@ -285,6 +294,14 @@ pub fn par_enable() {
 /// 副核参与门状态（on_irq_tick 副核早退判据）。
 pub fn par_enabled() -> bool {
     SMP_PAR.load(core::sync::atomic::Ordering::Acquire) >= 1
+}
+
+/// 每核算力（0..=1023 同构尺度，Linux `scale_capacity` 口径）——S-3b
+/// `Topo::capacity` 填表源（sched::init 调）。QEMU virt 双核同构：恒 1024
+/// 占位；真差异容量（大小核）= EAS 面 v2+（届时按 DTT/ACPI 定形，不在此
+/// 硬编码拓扑）。`cpu` 越界核号返 0（保守——拓扑表外核无算力）。
+pub fn cpu_capacity(_cpu: u32) -> u32 {
+    1024
 }
 
 /// SMP 活性（hb2 心跳闭环 = bring-up 成功）：PAR 金丝雀 spawn 门 =
@@ -358,7 +375,14 @@ pub fn diag_readout() -> (u64, u64, u64) {
 /// pinned 满速循环（child 类）占空比砍到 25%：console 单通道的生产率降回
 /// CPU0 轮转可消化量级（fix4/fix5 双向实锤——低优消费者 → 生产者深饿；
 /// 高优消费者 → 0 层验收任务全饿；无界生产下下游怎么调都错，正解在源头
-/// 限频）。副核参与验收面 = d1>0 活证（不要求满速，满速/真并行归 S-3）。
+/// 限频）。
+///
+/// **已退役（S-3a 六件义务⑥，子案 §9.5 步 B）**：tickless park + SGI 事件
+/// 驱动唤醒落地后，副核参与节奏由 CPU0 入队事件定步（往返背压——console
+/// 消费一轮才唤醒生产一轮），周期轮询限频失去存在前提，两处调用点摘除。
+/// 保留 fn 与注释供诊断史对照（复发盯面 = smoke-smp 相 2 现存断言：
+/// rootfs 帽 6.5× 余量 + echod/-ETIMEDOUT 标记链——帽断言 FAIL 即复发信号）。
+#[allow(dead_code)]
 pub fn park_due() -> bool {
     // SAFETY: 本核块（调用点在 CPU1 tick 锁窗内）；对齐 u64 volatile 无撕裂。
     unsafe { ((&raw const SMP_CPU1.ticks).read_volatile() & 3) == 0 }

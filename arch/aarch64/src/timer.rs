@@ -13,8 +13,9 @@
 //!
 //! **绝对截止时间重编程（纪律，非可选 · `调度器设计.md` §4.1）**：定时器永远编程到
 //! 绝对到期时刻——[`arm_slice`] 以计数器现读（CNTVCT）重算，绝不基于上次编程值外推。
-//! v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；Phase 4+ 有
-//! 超时事件后在授片处取 min。
+//! v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；S-3a 起
+//! tickless park 引入第二截止源（[`arm_at`] = SLEEPQ 最近 deadline，park 武装面）；
+//! 授片处取 min 仍留后（Phase 4+）。
 //!
 //! **热路径零分配**：本模块无堆、无锁（G0 单核）。
 
@@ -53,18 +54,15 @@ pub unsafe fn init() -> u64 {
     FREQ
 }
 
-/// 武装一个时间片：**绝对编程**（`调度器设计.md` §4.1「绝对截止时间重编程」纪律，
-/// 非可选）——读 `CNTVCT` 现值、写 `CNTV_CVAL_EL0 = now + SLICE`（显式 CVAL 绝对
-/// 截止是该纪律的落地形态；写未来时刻的 CVAL 同样去活电平触发），绝不基于上次编程
-/// 值外推。随后写 CTL = ENABLE + 不屏蔽（0b01）。兼任 IRQ handler 内的 rearm
-/// （rearm-before-EOIR）。
-/// v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；Phase 4+ 有
-/// 超时事件后在授片处取 min。
+/// 武装到**绝对截止时刻**（S-3a tickless park：浅 park 的 SLEEPQ 最近
+/// deadline 武装面——子案 §9.5 步 A）。与 [`arm_slice`] 同纪律同形态（CVAL
+/// 绝对编程 + CTL=ENABLE 不屏蔽），仅截止来源不同：arm_slice = now+SLICE
+///（授片），arm_at = 调用者给定的绝对 deadline（SLEEPQ 队头到期时刻——
+/// 过期值合法，compare 立即成立即醒，回环 expire 承接）。
 ///
 /// # Safety
-/// 读 CNTVCT + 写 CNTV 系统寄存器；EL1。
-pub unsafe fn arm_slice() {
-    let deadline = cntvct() + SLICE;
+/// 写 CNTV 系统寄存器；EL1。
+pub unsafe fn arm_at(deadline: u64) {
     core::arch::asm!(
         "msr cntv_cval_el0, {0}",
         in(reg) deadline,
@@ -78,6 +76,22 @@ pub unsafe fn arm_slice() {
         options(nostack, preserves_flags)
     );
     core::arch::asm!("isb", options(nostack, preserves_flags));
+}
+
+/// 武装一个时间片：**绝对编程**（`调度器设计.md` §4.1「绝对截止时间重编程」纪律，
+/// 非可选）——读 `CNTVCT` 现值、写 `CNTV_CVAL_EL0 = now + SLICE`（显式 CVAL 绝对
+/// 截止是该纪律的落地形态；写未来时刻的 CVAL 同样去活电平触发），绝不基于上次编程
+/// 值外推。随后写 CTL = ENABLE + 不屏蔽（0b01）。兼任 IRQ handler 内的 rearm
+/// （rearm-before-EOIR）。
+/// v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；Phase 4+ 有
+/// 超时事件后在授片处取 min。
+///
+/// # Safety
+/// 读 CNTVCT + 写 CNTV 系统寄存器；EL1。
+pub unsafe fn arm_slice() {
+    let deadline = cntvct() + SLICE;
+    // SAFETY: 写 CVAL 绝对截止 + CTL（同 arm_at 契约，截止 = now+SLICE）。
+    unsafe { arm_at(deadline) };
 }
 
 /// 屏蔽 CNTV 中断（IMASK=1，ENABLE 保持）——tickless idle 用。倒计仍在跑，但中断不投。
@@ -111,6 +125,11 @@ pub unsafe fn disable() {
 
 /// IRQ handler 钩子（`exception_irq` 在 EOIR 前调）：rearm 时间片（去活电平）。
 /// Step 4 不触发（IRQ 未解蔽）；Step 5 起规律调用。
+/// **S-3a F-E11 执法点**：rearm（CVAL 绝对重编程）唯一合法入口 = 本 timer
+/// IRQ 入口——非 tick 尾（授片后遗 rearm = 与 CVAL 绝对编程脱钩）。授片
+/// arm / rearm 二分：授片 arm = 调度侧自武装（park_recheck 出选真任务时
+/// `arm_slice`，≠ rearm）；rearm = 本处去活电平铁序（电平触发 CNTV 先重编
+/// 程 CVAL 再 EOIR，否则 EOIR 后线仍高立即重投）。
 pub fn handle() {
     // SAFETY: IRQ 上下文、单核无并发。
     unsafe { arm_slice() }

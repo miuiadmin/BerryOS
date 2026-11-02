@@ -2,6 +2,25 @@
 //!
 //! 单核、无抢占（G0）下同步直跑；断言失败 → panic（panic handler 打消息 + file:line:col；
 //! CPU 异常寄存器/PC/ESR/FAR dump 在 HAL `trap::exception_sync`）。SMP（G2）后需每核隔离。
+//!
+//! # 六横切锁纪律（S-3 §3 立法——ktest 是「锁序全图首读者」，改锁先过此面）
+//!
+//! 1. **锁序全序**（死锁面预防；证据 = §8.C 逆序边表 E1-E20 + §9 F-E1 补边）：
+//!    SLEEPQ 锁 > 队列锁 > REAPQ 锁 > 对象系/表锁（收缩版 KERN_LOCK）> 分配器锁
+//!    > ASID 锁 > 打印锁。反向取锁 = ABBA 死锁边，逆序边即重排/合并。
+//! 2. **偷取特则**：只持远端锁（放本地→取远端→远端出队→放）；确需双持一律核号
+//!    升序（0→1，F-L1）；偷取双过滤 `state==Ready && pinned!=0`（F-E2）构造性
+//!    保证「双队列同时出现」不变量。
+//! 3. **不可重入立法**（F-L2）：KERN_LOCK 朴素 TTAS 同核自锁——SQ/RQ/REAPQ/表
+//!    四面 `_locked` 内层分层，自锁面三处（wake_matching→recompute / kill 钩子链
+//!    / rx_irq_notify）。
+//! 4. **wait/wake 原子性锚 = SQ 锁窗**（F-L4）：查位+入队同窗、写位+扫描同窗
+//!    ——分段后 IRQ 屏蔽锚敞开 = 丢唤醒永睡。
+//! 5. **IRQ 上下文纪律**：SGI handler / tick / RX 取锁面 = 短窗 + 永不睡眠
+//!    + 永不嵌套「打印锁之外的锁」。
+//! 6. **KLOCK_OPS None 直通窗保留（F9）**：ktest 在 sched::init **之前**跑——
+//!    KLOCK_OPS 未安装时 klock_* 全直通、klock_flag_current 对 null CURRENT
+//!    跳过。S-3c 起新锁必须保留「安装前零开销直通」形态，否则本测试面破窗。
 
 use berry_mm::va::{phys_to_virt, PAGE_SHIFT};
 
@@ -3098,11 +3117,21 @@ fn test_fast() {
     sleepq_unlink(w2);
     assert!(find_single_waiter(ea, SIGNAL_READABLE).is_some(), "FAST：L2 退一须恢复恰一");
 
-    // L3. 哨兵在场 → None（排头与否无关——漏醒哨兵 = missed wakeup，整队退
-    //     slowpath 由 wake_matching 谓词的哨兵分支兜住）。
+    // L3. 位相交哨兵在场 → None（排头与否无关——漏醒哨兵 = missed wakeup，
+    //     整队退 slowpath 由 wake_matching 谓词的哨兵分支兜住）。
     let wa = sleeper(WAIT_ANY, u64::MAX);
     assert!(find_single_waiter(ea, SIGNAL_READABLE).is_none(), "FAST：L3 哨兵在场须 None");
     sleepq_unlink(wa);
+    // L3b. 位**不相交**哨兵不挡 fastpath（b-2 LB 修正：wake_matching 只摘
+    //      位相交者，哨兵不在唤醒集内即与单点唤醒集无冲突——wait_many
+    //      收割者挂 TERMINATED 位常驻时，READABLE 族 send 直切必须存活）。
+    let wb = sleeper(WAIT_ANY, crate::handle::SIGNAL_TERMINATED);
+    assert_eq!(
+        find_single_waiter(ea, SIGNAL_READABLE).map(|p| p.as_ptr() as usize),
+        Some(w1 as *mut Task as usize),
+        "FAST：L3b 位不相交哨兵不挡唯一真匹配"
+    );
+    sleepq_unlink(wb);
 
     // L4. 不相交位不算匹配、也不挡别处的唯一真匹配（user 位等合成 obj 合法
     //     ——内核永不置位；同 obj 派生位探测与之无交集）。

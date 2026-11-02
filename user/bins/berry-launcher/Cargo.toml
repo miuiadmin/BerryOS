@@ -1,0 +1,27 @@
+[package]
+name = "berry-launcher"
+version = "0.1.0"
+edition = "2021"
+
+# GUI-8（可先行面 #2，docs/GUI-8实施侦察-2026-11.md §5）：桌面 launcher
+# 骨架——guifbd 同形独立小工作区（空 [workspace] escape 根 workspace，
+# 不入 user/Cargo.toml members；musl target + berry-libc shim + berry-ld
+# 链）。v0 冻结面 = fbinfo gift 探测门控镜像：缺席（-kernel 主路 / wiring
+# 刀前无预拉）单行降级 park（零标记扰动）；在场（EFI 路）单行 LAUNCH
+# 骨架日志 + park。svcmgr 预拉/present/fs/spawn/标记全挂 gui3→main 并线
+# 后 wiring 刀——依赖最小化：v0 只碰 gift 探测与 vmo_read，不引
+# berry-exec（FB_VA 映射归 spawn 侧）/berry-fbcon（无渲染面）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

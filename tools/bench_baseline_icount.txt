@@ -12,7 +12,7 @@
 # 口径仍成立——0 地板）。
 cntvct_pair,4096,0
 frame_alloc4k,1024,37
-frame_alloc64k,256,82
+frame_alloc64k,256,37
 handle_evt,1024,166
 vmo_commit1p,256,1574
 vmo_rw4k,128,6937

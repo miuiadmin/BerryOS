@@ -326,10 +326,12 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             return; // 一切 SVC 正常往返（含错误码）
         }
         _ => {
-            // S-2 E0（草案 3.1-2）：EL0 fault kill 链与 SVC 同构——dump 前取锁 +
-            // 置位（IRQ 上下文 PSTATE.I=1 同构）；EXIT_HOOK/杀链至 sched.rs
-            // switch_away_forever_with 按位收口放锁。EL0 任务在跑 ⟹ CURRENT
-            // 非空（位必落）；槽未装 + halt 兜底窗 = 全核冻结面，不放。
+            // S-2 E0（草案 3.1-2）→ S-3c c-2c slice 2b 全量形：EL0 fault kill
+            // 链与 SVC 同构——dump 前按 SVC_CLASS_ALL 取五锁 + 全位记账 +
+            // mask=全谱（IRQ 上下文 PSTATE.I=1 同构）；EXIT_HOOK/杀链至
+            // sched.rs switch_away_forever_with 按位收口放锁。EL0 任务在跑
+            // ⟹ CURRENT 非空（位必落）；槽未装 + halt 兜底窗 = 全核冻结面，
+            // 不放。
             crate::kern_lock::svc_enter();
             dump_el0(tf, ec);
             uart_puts(b"  -> user fault (G1.5: kill current task)\n");
@@ -405,11 +407,14 @@ pub extern "C" fn exception_unexpected() {
 /// - **PL011 RX（33，P5 A-1）**：`uart::rx_irq` 排空 FIFO 到 RXFE（去活电平，
 ///   EOIR 前铁序——不排空则 EOIR 后线仍高立即重投）→ 环形缓冲 + 通知槽
 ///   （Event 置位/wake 在槽内、IRQ 屏蔽窗内）→ EOIR。不进 tick 槽。
-/// - **SGI_RESCHEDULE(1，S-3a probe ②)**：EOIR + 收讫计数（[`SGI_SEEN`]，
-///   `SGI ok` 标记的谓词源）。语义 = 跨核唤醒戳——到达即已出 wfi；SGI 为
-///   bank pending 位一次性边沿，**无去活电平**（CNTV/PL011 电平铁序不适用）；
-///   不进 tick 槽（授片与 CVAL 编程脱钩——同未知源纪律）。真正消费（重查
-///   runqueue）随 S-3b per-CPU 队列落。
+/// - **SGI_RESCHEDULE(1，probe ② 臂 + ③ 观测)——bringup probe 专用**：EOIR +
+///   收讫计数（[`SGI_SEEN`]，`SGI ok` 标记的谓词源）。enqueue 尾跨核唤醒戳
+///   （原义务①）已实验证伪除名出 S-3a——全局队列 peek 序下零派发价值 +
+///   child 灌压压垮 30s 帽（判词 → 子案 §9.5「义务①除名判词」）；生产
+///   发送面归零，在册发送者仅 bringup probe ③ 观测块（smp.rs）。跨核唤醒
+///   戳随 S-3b per-CPU 队列路由化回归。SGI 为 bank pending 位一次性边沿，
+///   **无去活电平**（CNTV/PL011 电平铁序不适用）；不进 tick 槽（授片与
+///   CVAL 编程脱钩——同未知源纪律）。
 /// - **未知**：EOIR 后忽略；首 4 个 loud（`irq? id=N`——新源接错号串口可见，
 ///   bring-up 面），之后静默（防电平未清源重投的打印风暴）。
 ///
@@ -450,10 +455,19 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             crate::gic::end(id);
         }
         SGI_RESCHED_US => {
-            // S-3a probe ②：SGI 消费臂（见函数头分流注——唤醒戳语义，无去活
-            // 电平、不进 tick 槽）。EOIR + 计收；真消费随 S-3b per-CPU 队列落。
+            // 义务⑧（S-3b b-1）接收侧半件：入队 SGI 不再只计数——tickful 核
+            //（CPU0）经独立 SGI 槽快速重调度（跨核唤醒不再等整 tick；无
+            // timer::handle/RR.tick 记账面，与 tick 槽分立）。副核不进：park
+            // 承接架构（S-3a §9.5 步 A）——SGI 醒经 eret 回 park 环单路径
+            // 承接，gate 在回调体内；bringup probe 计收（SGI_SEEN）保留。
             crate::gic::end(id);
             SGI_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            // dispatch 在 EOIR 后（Bug 1 同纪律）；槽由内核 boot 时注册。
+            // SAFETY: IRQ 上下文（PSTATE.I=1）；槽 enable_irq 前注册。
+            if let Some(f) = unsafe { crate::sgi_dispatch() } {
+                // SAFETY: f 是 C-ABI fn 指针；tf 是当前 IRQ 栈上的异常帧。
+                unsafe { f(tf) };
+            }
         }
         _ => {
             // 未知源：EOI 后忽略；首 4 个 loud（防新源接错号静默吞），之后静默

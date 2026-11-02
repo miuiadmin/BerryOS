@@ -40,8 +40,10 @@ use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, 
 // P6 A-8c：vnet 网络服务消费自验（DNS ok）的协议面。
 use berry_netdproto as ndp;
 // app-0 a-2：.bap manifest v0 解析面（纯函数 crate，host 23 测同源）。
+// GUI-7：+[ui] 面（ICON_PREFIX/VIEWS_PREFIX/UI_PATH_MAX——路径执法镜像）。
 use berry_manifest::{
-    APP_SLOTS, BAP_MAX, ENTRY_MAX, ID_MAX, MANIFEST_MAX, SDK_CURRENT,
+    APP_SLOTS, BAP_MAX, ENTRY_MAX, ICON_PREFIX, ID_MAX, MANIFEST_MAX, SDK_CURRENT,
+    UI_PATH_MAX, VIEWS_PREFIX,
 };
 // C-3 段①：ps 查询 RPC 协议面（ps_selftest 服务端：请求解析 + 账本编码）。
 use berry_psproto as psp;
@@ -279,6 +281,32 @@ static mut APP_SLOTS_TBL: [AppSlot; APP_SLOTS] = [APP_SLOT_ZERO; APP_SLOTS];
 /// （STEP_WIN/HEX_WIN 同款纪律；svcmgr 用户栈薄）。
 static mut APP_MF_WIN: [u8; MANIFEST_MAX] = [0; MANIFEST_MAX];
 
+// ---- GUI-7：[ui] 声明条目记账（appd 枚举面）----
+
+/// 包内 ui 条目记账（icons/<stem>.byi / views/<名>——bap_scan 收集，
+/// ui_face 按声明查表；名帽 UI_PATH_MAX=32，条目帽 UI_ENTRIES=4 双侧
+/// 镜像 mkapp ICON_FILES_MAX/VIEWS_FILES_MAX）。
+struct UiEntry {
+    name: [u8; UI_PATH_MAX],
+    name_len: usize,
+    off: u64,
+    len: u64,
+}
+
+const UI_ENTRY_ZERO: UiEntry =
+    UiEntry { name: [0; UI_PATH_MAX], name_len: 0, off: 0, len: 0 };
+
+/// icons//views/ 各自条目帽（mkapp 同值镜像——双侧同步义务见 mkapp 头注）。
+const UI_ENTRIES: usize = 4;
+
+static mut APP_ICON_WIN: [UiEntry; UI_ENTRIES] = [UI_ENTRY_ZERO; UI_ENTRIES];
+static mut APP_VIEWS_WIN: [UiEntry; UI_ENTRIES] = [UI_ENTRY_ZERO; UI_ENTRIES];
+
+/// BYI1 头产面帽（mkapp ICON_DIM_MAX/ICON_PIXELS_MAX 镜像——decode 面
+/// 无单边帽，产面收紧；本侧只验头不展开 RLE）。
+const APP_ICON_DIM_MAX: u16 = 1024;
+const APP_ICON_PIXELS_MAX: u32 = 65536;
+
 /// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
 /// 驻留**，旧 16KiB 整档帽随 std 镜像 ~283KB 一并退役）→ 命中 `bin/hello`
@@ -322,6 +350,20 @@ fn run_rootfs_child(console: Handle) {
         core::slice::from_raw_parts_mut(
             core::ptr::addr_of_mut!(APP_MF_WIN) as *mut u8,
             MANIFEST_MAX,
+        )
+    };
+    // SAFETY: GUI-7 ui 条目双窗同款——本进程独占、单线程顺序读写
+    // （bap_scan 收集 + ui_face 查表两段共用）。
+    let icons: &mut [UiEntry] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_ICON_WIN) as *mut UiEntry,
+            UI_ENTRIES,
+        )
+    };
+    let views: &mut [UiEntry] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_VIEWS_WIN) as *mut UiEntry,
+            UI_ENTRIES,
         )
     };
     let mut app_n = 0usize;
@@ -1162,8 +1204,12 @@ fn run_rootfs_child(console: Handle) {
     // collect_eof+reap，任一时刻至多一个 app 存活发 fs RPC）。
     if app_n > 0 {
         let mut ok = 0usize;
+        // GUI-7：ui 面独立谓词（与拉起成败解耦——失败隔离两方向：ui 元数据
+        // 坏不拦拉起、拉起坏不抹 ui 验证；Absent 不计入 decl）。
+        let mut ui_decl = 0usize;
+        let mut ui_ok = 0usize;
         for i in 0..app_n {
-            if app_launch(
+            let (launched, uface) = app_launch(
                 console,
                 fs_a_h,
                 &apps[i].id[..apps[i].id_len],
@@ -1171,8 +1217,19 @@ fn run_rootfs_child(console: Handle) {
                 apps[i].bap_len,
                 step,
                 mf,
-            ) {
+                icons,
+                views,
+            );
+            if launched {
                 ok += 1;
+            }
+            match uface {
+                UiFace::Ok => {
+                    ui_decl += 1;
+                    ui_ok += 1;
+                }
+                UiFace::Bad => ui_decl += 1,
+                UiFace::Absent => {}
             }
         }
         if ok == app_n {
@@ -1184,6 +1241,17 @@ fn run_rootfs_child(console: Handle) {
             line[..9].copy_from_slice(b"APP ok n=");
             line[9] = b'0' + ok as u8;
             line[10] = b'\n';
+            send_retry(console, line.as_ptr(), line.len());
+        }
+        if ui_decl > 0 && ui_ok == ui_decl {
+            // GUI-7（rootfs 相 45→46）：`APPUI ok n=`——ui 面全验过才打
+            // （任一 Bad = 标记缺失 = smoke FAIL，`APP ok` 同款确定性状态
+            // 谓词）。13B 行、n 单数字——APP_SLOTS < 10 双钉板。
+            const _: () = assert!(APP_SLOTS < 10, "APPUI ok n= 单数字位形态");
+            let mut line = [0u8; 13];
+            line[..11].copy_from_slice(b"APPUI ok n=");
+            line[11] = b'0' + ui_ok as u8;
+            line[12] = b'\n';
             send_retry(console, line.as_ptr(), line.len());
         }
     }
@@ -2567,28 +2635,34 @@ fn has_sub(hay: &[u8], needle: &[u8]) -> bool {
 
 /// .bap 内层走查产物：manifest 实长 + 包内 bin/ 条目名长 + ELF 包内几何
 /// （`bap_off` 相对偏移——spawn 直用 `bap_off + elf_off`）+ SHA256SUMS
-/// 第三条目在场记账（SDK-1a——v1 只记不读不验，§2.4 三理由）。
+/// 第三条目在场记账（SDK-1a——v1 只记不读不验，§2.4 三理由）+ GUI-7
+/// icons//views/ 条目记账（双窗表 + 计数；体不读——ui_face 按声明才读）。
 struct BapScan {
     mf_len: usize,
     entry_len: usize,
     elf_off: u64,
     elf_len: u64,
     has_sums: bool,
+    icon_n: usize,
+    views_n: usize,
 }
 
 /// .bap 内层 cpio 走查（mkapp 生产形状：恰 `manifest.toml` + 唯一 `bin/`
 /// 条目 + 可选 `SHA256SUMS`（SDK-1a §2.4 起新产包第三条目常态在场，
-/// 2 条目历史形照收）+ TRAILER 自终止）。rootfs 是外部输入面——消费侧
-/// 独立执法（mkapp 门禁只约束本仓产物，拼装盘上的 .bap 不凭生产端
-/// 承诺）：重复/未知条目一律 `bap shape` 拒。manifest 可达 1KiB >
-/// 步进窗 512B——**专用 vmo_read 直读进 mf 窗**（步进窗只须盖头+名）；
-/// ELF 只记几何（段泵送在 spawn_rootfs_elf，归档永不整档驻留）。
-/// manifest 读窗预算（附 A）恒安全：APP_MF_WIN = MANIFEST_MAX = 1024B
-/// ≥ 最坏 395B（v1 全量段）——SDK-1a 无需扩窗。
+/// 2 条目历史形照收）+ GUI-7 `icons/*.byi`/`views/*` 各 ≤4 + TRAILER 自
+/// 终止）。rootfs 是外部输入面——消费侧独立执法（mkapp 门禁只约束本仓
+/// 产物，拼装盘上的 .bap 不凭生产端承诺）：重复/未知条目一律 `bap shape`
+/// 拒。manifest 可达 1KiB > 步进窗 512B——**专用 vmo_read 直读进 mf 窗**
+/// （步进窗只须盖头+名）；ELF 只记几何（段泵送在 spawn_rootfs_elf，归档
+/// 永不整档驻留）。manifest 读窗预算（附 A）恒安全：APP_MF_WIN =
+/// MANIFEST_MAX = 1024B ≥ 最坏 395B（v1 全量段 + GUI-7 [ui] 三行 ≈ +70B）
+/// ——SDK-1a 无需扩窗。
 fn bap_scan(
     step: &mut [u8],
     mf: &mut [u8],
     entry: &mut [u8],
+    icons: &mut [UiEntry],
+    views: &mut [UiEntry],
     bap_off: u64,
     bap_len: u64,
 ) -> Result<BapScan, &'static [u8]> {
@@ -2596,8 +2670,15 @@ fn bap_scan(
     let mut seen_mf = false;
     let mut seen_bin = false;
     let mut seen_sums = false;
-    let mut out =
-        BapScan { mf_len: 0, entry_len: 0, elf_off: 0, elf_len: 0, has_sums: false };
+    let mut out = BapScan {
+        mf_len: 0,
+        entry_len: 0,
+        elf_off: 0,
+        elf_len: 0,
+        has_sums: false,
+        icon_n: 0,
+        views_n: 0,
+    };
     while pos < bap_len {
         let want = ((bap_len - pos).min(step.len() as u64)) as usize;
         if berry_vmo_read(H_ROOTFS, step.as_mut_ptr(), bap_off + pos, want) != 0 {
@@ -2649,6 +2730,39 @@ fn bap_scan(
                     out.elf_off = data_off;
                     out.elf_len = data_len;
                     seen_bin = true;
+                } else if name.starts_with(ICON_PREFIX) && name.ends_with(".byi") {
+                    // GUI-7：图标条目（扁平 icons/<stem>.byi，stem 非空无
+                    // '/'）——记几何不读体（10B 头按声明条目才读，ui_face；
+                    // 非 .byi 的 icons/ 名落 else = bap shape 拒）。
+                    let stem = &name[ICON_PREFIX.len()..name.len() - 4];
+                    if stem.is_empty() || stem.contains('/') || name.len() > UI_PATH_MAX {
+                        return Err(b"bap shape");
+                    }
+                    if out.icon_n >= icons.len() {
+                        return Err(b"bap shape");
+                    }
+                    let e = &mut icons[out.icon_n];
+                    e.name[..name.len()].copy_from_slice(name.as_bytes());
+                    e.name_len = name.len();
+                    e.off = data_off;
+                    e.len = data_len;
+                    out.icon_n += 1;
+                } else if name.len() > VIEWS_PREFIX.len() && name.starts_with(VIEWS_PREFIX) {
+                    // GUI-7：视图条目（扁平 views/<名>，非空非嵌套）——原样
+                    // 记账，内容 v1 opaque（DSL 定形 SDK-2）。
+                    let tail = &name[VIEWS_PREFIX.len()..];
+                    if tail.contains('/') || name.len() > UI_PATH_MAX || data_len == 0 {
+                        return Err(b"bap shape");
+                    }
+                    if out.views_n >= views.len() {
+                        return Err(b"bap shape");
+                    }
+                    let e = &mut views[out.views_n];
+                    e.name[..name.len()].copy_from_slice(name.as_bytes());
+                    e.name_len = name.len();
+                    e.off = data_off;
+                    e.len = data_len;
+                    out.views_n += 1;
                 } else {
                     return Err(b"bap shape");
                 }
@@ -2663,6 +2777,109 @@ fn bap_scan(
     Ok(out)
 }
 
+// ---- GUI-7：[ui] 验证面（失败隔离——与拉起成败两独立谓词）----
+
+/// 单 app 的 [ui] 验证结果：`Absent`（无声明且包内零 ui 条目）/ `Ok`
+/// （有声明且全验过）/ `Bad`（有声明验败，或未声明而包内夹带——diag
+/// 行已打）。拉起成败与本面正交（元数据坏不拦执行：`APP ok` 与
+/// `APPUI ok` 各自独立计入）。
+enum UiFace {
+    Absent,
+    Ok,
+    Bad,
+}
+
+/// 按包内名查 ui 条目表（线性 ≤4——条目帽小，无谓散列）。
+fn ui_find<'a>(tbl: &'a [UiEntry], want: &[u8]) -> Option<&'a UiEntry> {
+    tbl.iter().find(|e| &e.name[..e.name_len] == want)
+}
+
+/// [ui] 声明验证：
+/// - icon 声明 ⇒ 包内同名 icons/ 条目在席且 BYI1 头合法（magic/version/
+///   flags + 单边 ≤1024 + w*h ≤65536 产面帽——只验头不展开 RLE，真解码
+///   在 GUI-8 launcher 消费 berry-gfx）；
+/// - views 声明 ⇒ 包内同名 views/ 条目在席；
+/// - 未声明而条目在场 = mkapp 交叉门（`_ui_cross_check`）的消费侧镜像
+///   ——拼装盘防御，`ui stray`。
+/// 任何不符 = diag `eco: app <id> ui …` + `Bad`（不拦 spawn）。
+fn ui_face(
+    console: Handle,
+    id: &[u8],
+    ui: Option<berry_manifest::Ui<'_>>,
+    icons: &[UiEntry],
+    views: &[UiEntry],
+    bap_off: u64,
+) -> UiFace {
+    let Some(u) = ui else {
+        if icons.is_empty() && views.is_empty() {
+            return UiFace::Absent;
+        }
+        eco_app(console, id, b"ui stray"); // 8B
+        return UiFace::Bad;
+    };
+    let mut ok = true;
+    match u.icon {
+        Some(want) => match ui_find(icons, want.as_bytes()) {
+            Some(e) => {
+                // 10B 头直读（条目几何已知；len<10 = 截断头即坏）。
+                let mut hdr = [0u8; 10];
+                if e.len < 10
+                    || berry_vmo_read(H_ROOTFS, hdr.as_mut_ptr(), bap_off + e.off, 10) != 0
+                {
+                    ok = false;
+                    eco_app(console, id, b"ui bad icon"); // 11B
+                } else {
+                    let w = u16::from_le_bytes([hdr[6], hdr[7]]);
+                    let h = u16::from_le_bytes([hdr[8], hdr[9]]);
+                    if &hdr[..4] != b"BYI1"
+                        || hdr[4] != 1
+                        || hdr[5] != 0
+                        || w < 1
+                        || h < 1
+                        || w > APP_ICON_DIM_MAX
+                        || h > APP_ICON_DIM_MAX
+                        || u32::from(w) * u32::from(h) > APP_ICON_PIXELS_MAX
+                    {
+                        ok = false;
+                        eco_app(console, id, b"ui bad icon");
+                    }
+                }
+            }
+            None => {
+                ok = false;
+                eco_app(console, id, b"ui no icon"); // 10B
+            }
+        },
+        None => {
+            // 未声明 icon 而包内夹带 = stray（声明态额外条目 ≤ 帽 tolerated
+            // ——mkapp 交叉门同律）。
+            if !icons.is_empty() {
+                ok = false;
+                eco_app(console, id, b"ui stray");
+            }
+        }
+    }
+    match u.views {
+        Some(want) => {
+            if ui_find(views, want.as_bytes()).is_none() {
+                ok = false;
+                eco_app(console, id, b"ui no views"); // 11B
+            }
+        }
+        None => {
+            if !views.is_empty() {
+                ok = false;
+                eco_app(console, id, b"ui stray");
+            }
+        }
+    }
+    if ok {
+        UiFace::Ok
+    } else {
+        UiFace::Bad
+    }
+}
+
 /// 单 app 拉起（ADR #43 能力面 + §4.3 生命周期 v0：拉起 → 收口 → reap）。
 /// console=true → stdout 直打串口（子自证输出，无收集面）；false → 私有对
 /// 端作 fd1/2（hexyl 同形：`channel_pair` 的 spawn 侧交付、收集端留本表
@@ -2670,6 +2887,9 @@ fn bap_scan(
 /// = 子堵收集队 + 父等退出三方互等）。reap 真码 0 才算过：argv0 断言错 →
 /// abort(134) → 非零 → 降级行 + `APP ok` 缺失 loud。任何失败 = `eco: app`
 /// 行 + false，svcmgr 存活续走（失败隔离：单 app 坏不连坐整批）。
+///
+/// GUI-7：返回 `(拉起成败, UiFace)` 两独立谓词——[ui] 验证在 net 检后
+/// spawn 前（纯读零句柄，无清理面）；验证坏不拦 spawn（失败隔离）。
 ///
 /// SDK-1a：`fs_a` = fsmgr 预拉对 a 侧（§1.2 新序下 app 批窗口 svcmgr 仍
 /// 持 `fs_a_h`）；fs 授能不可达值 0 传参由 §5.2 `fs none` 降级路径消化。
@@ -2681,31 +2901,33 @@ fn app_launch(
     bap_len: u64,
     step: &mut [u8],
     mf: &mut [u8],
-) -> bool {
+    icons: &mut [UiEntry],
+    views: &mut [UiEntry],
+) -> (bool, UiFace) {
     let mut entry = [0u8; ENTRY_MAX];
-    let sc = match bap_scan(step, mf, &mut entry, bap_off, bap_len) {
+    let sc = match bap_scan(step, mf, &mut entry, icons, views, bap_off, bap_len) {
         Ok(sc) => sc,
         Err(why) => {
             eco_app(console, id, why);
-            return false;
+            return (false, UiFace::Absent);
         }
     };
     let man = match berry_manifest::parse(&mf[..sc.mf_len]) {
         Ok(m) => m,
         Err(e) => {
             eco_app(console, id, e.reason_str().as_bytes());
-            return false;
+            return (false, UiFace::Absent);
         }
     };
     // 双守卫：manifest.id ↔ .bap 文件名（走查名 = 真理源）、manifest.entry
     // ↔ 包内条目名（mkapp 门禁 3 的消费侧镜像——rootfs 可被拼装）。
     if man.id.as_bytes() != id {
         eco_app(console, id, b"id mismatch");
-        return false;
+        return (false, UiFace::Absent);
     }
     if man.entry.as_bytes() != &entry[..sc.entry_len] {
         eco_app(console, id, b"entry mismatch");
-        return false;
+        return (false, UiFace::Absent);
     }
     // SDK-1a §5.2 步骤 1：compat min 装载期检查（ADR #55 工具链三值域的
     // 运行时执法点）。min > SDK_CURRENT = 本系统比包声称的最低线还老 →
@@ -2715,7 +2937,7 @@ fn app_launch(
     if let Some(c) = man.compat {
         if c.min > SDK_CURRENT {
             eco_app(console, id, b"compat min"); // 10B ≤ 24B
-            return false;
+            return (false, UiFace::Absent);
         }
     }
     // SDK-1a §5.2 步骤 2：net 词 loud 拒（档 (b)——schema/mkapp 收、appd
@@ -2723,8 +2945,18 @@ fn app_launch(
     // 同样零清理直退（console 两态尚未分岔）。
     if man.net.is_some() {
         eco_app(console, id, b"net unserved"); // 11B ≤ 24B
-        return false;
+        return (false, UiFace::Absent);
     }
+    // GUI-7：[ui] 验证（net 检后、console 分岔前——纯读零句柄零清理；
+    // 失败隔离：Bad 只打 diag 不拦 spawn，与下方拉起链独立计谓词）。
+    let uface = ui_face(
+        console,
+        id,
+        man.ui,
+        &icons[..sc.icon_n],
+        &views[..sc.views_n],
+        bap_off,
+    );
     // 能力面：console=false 才建私有对（spawn 内 dup RIGHT_SEND 交付 spawn
     // 侧端，原值留本表作收集端）。stack_pages 按 manifest；intent v1 解析
     // 面记录、调度零消费（消费点随 v2 EEVDF，ADR #42 两段式）。
@@ -2755,7 +2987,7 @@ fn app_launch(
             {
                 trap();
             }
-            return false;
+            return (false, uface);
         }
         if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
             eco_app(console, id, b"fs dup"); // 6B ≤ 24B
@@ -2764,7 +2996,7 @@ fn app_launch(
             {
                 trap();
             }
-            return false;
+            return (false, uface);
         }
         if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
             // 半途失败：rootfs_dup 已成，先试关再走 out 对清理。
@@ -2775,7 +3007,7 @@ fn app_launch(
             {
                 trap();
             }
-            return false;
+            return (false, uface);
         }
     }
     // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）；
@@ -2840,7 +3072,7 @@ fn app_launch(
             match child.reap() {
                 Ok(0) => {
                     ps_exit(id, 0);
-                    return true;
+                    return (true, uface);
                 }
                 Ok(c) => {
                     ps_exit(id, c);
@@ -2850,7 +3082,7 @@ fn app_launch(
             }
         }
     }
-    false
+    (false, uface)
 }
 
 /// P6 A-8c：vnet 服务消费自验——`DNS_QUERY("localhost")` 严格串行 RPC 往返
