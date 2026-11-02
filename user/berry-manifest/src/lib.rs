@@ -873,6 +873,15 @@ stack_pages = 16
         assert_eq!(ok(&BASE.replace("16", "64")).stack_pages, STACK_PAGES_MAX);
     }
 
+    // 3b. ID_MAX 绝对钉（=24）——berry-layout::ID_MAX 跨面镜像的对偶侧
+    //     （其 cap_anchor_pins 钉本侧值）：此前两侧测试皆常量相对取界，
+    //     单侧改帽全绿静默分叉；本钉使「两侧各钉一份，改帽任一侧即红」
+    //     名实相符（tools/mkapp.py python 镜像仍注释锚，改帽三处同步）。
+    #[test]
+    fn id_max_pinned() {
+        assert_eq!(ID_MAX, 24);
+    }
+
     // 4. manifest 恰 1024B（注释补零——注释内容零语义面）；1025B 拒。
     #[test]
     fn manifest_exactly_1024_bytes() {

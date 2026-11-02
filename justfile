@@ -489,9 +489,14 @@ test-host:
     # 验收三件 = damage/frame/offscreen）。
     cargo test --manifest-path user/Cargo.toml -p berry-ui --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
-    # 第 8 例，host 23 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
-    # manifest fixture 共识/intent 判别值钉板）。
+    # 第 8 例，host 38 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
+    # manifest fixture 共识/intent 判别值钉板 + ID_MAX 绝对钉（berry-layout
+    # 跨面镜像对偶侧））。
     cargo test --manifest-path user/Cargo.toml -p berry-manifest --target {{host}}
+    # GUI-8：berry-layout（桌面布局 JSON v1 纯函数解析/发射——「解析器即
+    # 产品」第 9 例，host 61 测：schema/canonical 钉板 + 帽双侧执法 +
+    # 负例全家桶（parse 侧 39 逐条独立 + emit 侧收口 5，at 位点逐条钉死））。
+    cargo test --manifest-path user/Cargo.toml -p berry-layout --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

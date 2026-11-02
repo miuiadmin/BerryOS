@@ -38,6 +38,12 @@
 # tools/mkapp.py build 期门卫（python 侧帽值对账锚）——host 测试经
 # justfile test-host 显式行跑；demo 双 app（appdemo/appquiet）编 musl
 # target，同 stdhello 不入 members 进 exclude）。
+# GUI-8：berry-layout（桌面布局 JSON v1 纯函数解析/发射 crate，「解析器即
+# 产品」第 9 例——manifest 第 8 例之后；schema/canonical/帽常量单源，
+# canonical 总长公式 22+36n+Σ|app| 见 lib.rs 容量诚实注。消费方 = GUI-8
+# launcher 读写 LAYOUT.JSN（独立小工作区编 musl target，同 stdhello 不入
+# members）+ AI 生成面（canonical 镜像义务——凡产布局字节必过
+# check_canonical）——host 测试经 justfile test-host 显式行跑）。
 # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数 crate，host 测试；单消费
 # = fsmgr 树层（独立小工作区编 musl target，同 stdhello/bsh 不入 members），
 # 帽常量/状态码自 berry-fsproto 单源引——「不长第二套」）。
@@ -84,7 +90,7 @@
 # DisplayList）+ berry-guiproto（Rect/常量单源不两套）；host 测试，
 # embedder = GUI-5 gui-wm 另刀）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 
