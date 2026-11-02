@@ -205,6 +205,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/gfxdemo/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GUI-5：gui-wmd（窗口管理守护——ADR #61 呈现/策略分离：权威窗口表
+    # 两层窗/Z 序/AVOID_SYS 避让有效几何/单焦点 + present/hdi 双域透传
+    # 中继 + inputd 推送面；svcmgr EFI 相预拉 extras 4 枚恰 8/8 满配；
+    # guifbd/gfxdemo 同型独立小工作区；`gui-wmd: up` 诊断行非标记）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/gui-wmd/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     # A5：netprobe（std::net guest 对拍件——bsh net_gifts 三元 spawn 面
     # 的消费者；TcpStream::connect 域名/IP 双路 + 回显逐字节对拍。产链
     # 同 stdhello 独立小工作区 musl 链；自验/标记 `NETS ok` 随 A5-2
@@ -253,6 +260,7 @@ build-user:
         bin/gfxdemo=cargo-target/aarch64-unknown-linux-musl/release/gfxdemo \
         bin/grep=cargo-target/aarch64-unknown-linux-musl/release/grep \
         bin/gui-inputd=../drivers/cargo-target/aarch64-unknown-linux-musl/release/gui-inputd \
+        bin/gui-wmd=cargo-target/aarch64-unknown-linux-musl/release/gui-wmd \
         bin/guifbd=cargo-target/aarch64-unknown-linux-musl/release/guifbd \
         bin/hello=cargo-target/aarch64-unknown-none/release/hello \
         bin/head=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/head \

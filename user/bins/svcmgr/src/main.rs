@@ -247,6 +247,12 @@ static NET_A: AtomicU32 = AtomicU32::new(0);
 /// GUI-4 段②：input 域 channel 客户端端（预拉成功后非 0；boot 自验 +
 /// bsh 面 dup 分种——input_h()）。0 = inputd 未起，静默降级。
 static INPUT_A: AtomicU32 = AtomicU32::new(0);
+/// GUI-5：wmd↔inputd 推送对 inputd 端（wmd arm Ok 路存 push_cli；inputd
+/// arm 读取追加 extras——0 = wmd 未起，inputd extras 仍单枚现行为逐字节
+/// 保留）。**留表即留命**（NET_A 同形）：EFI 相 inputd 不拉起（H_MMIO 门
+/// 先跳）→ 端恒滞 static = wmd push 服务端端的对端保活，属覆盖面非泄漏
+/// （v1 无对端关闭检测）。
+static WMD_PUSH_B: AtomicU32 = AtomicU32::new(0);
 
 // ---- app-0 a-2：.bap 消费面（appd 雏形——ADR #43/#44：应用 = 纯用户态
 // 协议约定，svcmgr 兼任 appd；内核零「应用」概念）----
@@ -418,8 +424,9 @@ fn run_rootfs_child(console: Handle) {
     // rootfs 相每 boot 白建 4 对象 + eco_skip 路恒泄漏）。服务端端随
     // extras[2]/[3] **take 迁入** guifbd（extras 2→4 恰 8/8 满配——
     // berry-exec extras≤4 断言帽内；libc `present_srv_h()`/`hdi_srv_h()`
-    // 消费）；客户端端存函数局部变量（fresh 端非 dup），交紧随本 arm 的
-    // gfxdemo 预拉 arm 直递。0 = guifbd 未起 → gfxdemo arm 静默跳过。
+    // 消费）；客户端端存函数局部变量（fresh 端非 dup）——GUI-5 起交紧随
+    // 本 arm 的 gui-wmd 预拉 arm 换手迁移（ADR #61 端点换手；原直递
+    // gfxdemo 形已退役）。0 = guifbd 未起 → wmd/gfxdemo arm 静默跳过。
     let mut present_cli: Handle = 0;
     let mut hdi_cli: Handle = 0;
     if berry_vmo_get_size(H_FB, &mut msz) != 0 {
@@ -475,20 +482,111 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
-    // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——紧随 guifbd arm ----
-    // 门 = guifbd spawn Ok（present_cli != 0——两客户端端仅 Ok 路成对落值，
-    // 兼作标志）∧ cpio_find(H_ROOTFS, b"bin/gfxdemo")。rootfs 相 guifbd 门
-    // 已跳（`fb absent`）→ 标志 0 → **静默跳过零新行**（inputd INPUT_A==0
-    // 静默跳过同款先例——§0「静默」的字面落实，不设 GFX absent 行）。
-    // 拓扑：present/hdi 客户端端随 extras[0]/[1] **直递**（fresh 端非
-    // dup——fs_b/net_b 先例；gfxdemo 侧 libc `present_h()`/`hdi_h()` 消费，
-    // 0 = 自行降级退 exit(0)）；stdout=console（`GFX ok` 全链断言过自打）；
-    // stdin Some(&[]) 占位（extras 非空须 stdin 槽在位——berry-exec
-    // assert）。**阻塞 reap 收退出码**（stdhello 预拉同形；berry-exec
-    // REAP_TIMEOUT 30s 在册）：零码零新行（GFX ok 归 gfxdemo 自打）；
-    // 非零/Err 面 eco 行续走（失败隔离——标记缺失 = smoke FAIL 兜底）。
-    // **不 ps_reg**（thr 先例注记——瞬态验收件不入账，PS ok n= 零漂移）。
+    // ---- GUI-5：gui-wmd（窗口管理守护）预拉——紧随 guifbd arm、gfxdemo
+    // arm 之前（ADR #61 呈现/策略分离：权威窗口表 + present/hdi 双域透传
+    // 中继）。门 = guifbd spawn Ok（present_cli != 0）∧
+    // cpio_find(H_ROOTFS, b"bin/gui-wmd")。rootfs 相 guifbd 门已跳 →
+    // **静默跳过零新行**（gfxdemo arm 同款先例）。
+    // 拓扑：wm 对（wmd 服务端面 ↔ gfxdemo 客户端面）+ 推送对（wmd push
+    // 服务端面 ↔ inputd 客户端面）本段新建；present/hdi 客户端端 =
+    // guifbd arm 交接件（GUI-5 端点换手：不再随 gfxdemo，改随 wmd
+    // extras[2]/[3] take 迁入）。**env 冻结 8/8**（GUI-5 设计稿 §7 Q12）：
+    // extras 4 枚 = [wm_srv, push_srv, present_cli, hdi_cli] + base 4 恰
+    // CHAN_HND_MAX 硬帽零余量——第 5 插 = 四处抬帽另刀。
+    // intent 注记（inputd arm 同款）：两对 channel_pair() **options=0**
+    // ——消息借入链有意保持激活（GUI 链路 = INTERACTIVE 借入面，ADR #42 /
+    // 段① §9-6）；**建点钉门内**（A5-a：门外 = rootfs 相每 boot 白建对象
+    // + eco_skip 路恒泄漏）。
+    let mut wm_cli: Handle = 0;
     if present_cli != 0 {
+        if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gui-wmd") {
+            // 两对本段新建（fresh 端非 dup）：w_cli 本表留（下方 gfxdemo
+            // arm 消费），push_cli 存 WMD_PUSH_B（下方 inputd arm 消费）；
+            // 服务端端 + 交接件 present/hdi 客户端端随 env 块 take 迁入。
+            let (w_cli, wm_srv) = channel_pair();
+            let (push_cli, push_srv) = channel_pair();
+            match spawn_rootfs_elf(
+                H_ROOTFS,
+                &SpawnSpec {
+                    name: b"bin/gui-wmd",
+                    data_off,
+                    data_len,
+                    stdout: console,
+                    stack_pages: 8,
+                    stdin_feed: Some(&[]),
+                    stdin_handle: None,
+                    args: &[],
+                    extra_gifts: &[wm_srv, push_srv, present_cli, hdi_cli],
+                    mmio_vmo: None,
+                    mmio_va: 0,
+                },
+            ) {
+                Ok(_child) => {
+                    ps_reg(b"gui-wmd", psp::STATE_ALIVE, 0); // 常驻（不 reap——vblk 同款）
+                    // wmd 客户端端仅此落值（兼作下方 gfxdemo arm 的 spawn Ok
+                    // 标志——present_cli 0 值跳过同款）；push_cli 交 inputd
+                    // arm（WMD_PUSH_B 留表即留命——EFI 相 inputd 未拉起则
+                    // 恒滞 static 保活）。
+                    wm_cli = w_cli;
+                    WMD_PUSH_B.store(push_cli, Ordering::Relaxed);
+                }
+                Err(()) => {
+                    ps_reg(b"gui-wmd", psp::STATE_SPAWNFAIL, 0);
+                    // Err 全在 env send 前——六 fresh/交接端无一被 take：
+                    // wm 对 ×2 + push 对 ×2 本段新建须回收；present/hdi 客户
+                    // 端端虽 guifbd arm 所建，换手失败已无人交付（guifbd 侧
+                    // 服务端端互钉常活），一并回收 + 置 0（防下方 arm 误
+                    // 用）——显式回收防表槽泄漏（vnet Err 路先例形态）。
+                    if berry_handle_close(wm_srv) != 0 {
+                        trap();
+                    }
+                    if berry_handle_close(w_cli) != 0 {
+                        trap();
+                    }
+                    if berry_handle_close(push_srv) != 0 {
+                        trap();
+                    }
+                    if berry_handle_close(push_cli) != 0 {
+                        trap();
+                    }
+                    if berry_handle_close(present_cli) != 0 {
+                        trap();
+                    }
+                    if berry_handle_close(hdi_cli) != 0 {
+                        trap();
+                    }
+                    eco_skip(b"gui-wmd spawn");
+                }
+            }
+        } else {
+            // cpio 缺 gui-wmd（手工裁剪镜像面）：present/hdi 客户端端未被
+            // take（guifbd 侧服务端端已迁入不受影响），显式回收
+            // （gfxdemo arm cpio 缺分支同款 close-only；零新行——置 0 死存
+            // 弃：换手后无读者，编译器证死存即警告，GUI-2段③ 先例同形）。
+            if berry_handle_close(present_cli) != 0 {
+                trap();
+            }
+            if berry_handle_close(hdi_cli) != 0 {
+                trap();
+            }
+        }
+    }
+    // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——紧随 wmd arm ----
+    // 门 = wmd spawn Ok（wm_cli != 0——客户端端仅 Ok 路落值，兼作标志）
+    // ∧ cpio_find(H_ROOTFS, b"bin/gfxdemo")。rootfs 相 guifbd 门已跳
+    //（`fb absent`）→ 标志 0 → **静默跳过零新行**（inputd INPUT_A==0
+    // 静默跳过同款先例——§0「静默」的字面落实，不设 GFX absent 行）。
+    // 拓扑（GUI-5 端点换手）：wm 客户端端随 extras[0] **直递**（fresh 端
+    // 非 dup——fs_b/net_b 先例；gfxdemo 侧 libc `wm_cli_h()` 消费，wm 六
+    // op + present/hdi 中继同端，0 = 自行降级退 exit(0)）；present/hdi
+    // 客户端端已随 wmd arm 换手迁移（本 arm 不再触碰）；stdout=console
+    //（`GFX ok` 全链断言过自打）；stdin Some(&[]) 占位（extras 非空须
+    // stdin 槽在位——berry-exec assert）。**阻塞 reap 收退出码**
+    //（stdhello 预拉同形；berry-exec REAP_TIMEOUT 30s 在册）：零码零新行
+    //（GFX ok 归 gfxdemo 自打）；非零/Err 面 eco 行续走（失败隔离——标记
+    // 缺失 = smoke FAIL 兜底）。**不 ps_reg**（thr 先例注记——瞬态验收件
+    // 不入账，PS ok n= 零漂移）。
+    if wm_cli != 0 {
         if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gfxdemo") {
             match spawn_rootfs_elf(
                 H_ROOTFS,
@@ -501,7 +599,7 @@ fn run_rootfs_child(console: Handle) {
                     stdin_feed: Some(&[]),
                     stdin_handle: None,
                     args: &[],
-                    extra_gifts: &[present_cli, hdi_cli],
+                    extra_gifts: &[wm_cli],
                     mmio_vmo: None,
                     mmio_va: 0,
                 },
@@ -516,26 +614,20 @@ fn run_rootfs_child(console: Handle) {
                     }
                 }
                 Err(()) => {
-                    // Err 全在 env send 前——两 fresh 客户端端未被 take，
-                    // 显式回收防表槽泄漏（vnet 同款；guifbd 服务端端互钉
-                    // 常活，GFX/GFXF 标记已缺 = smoke FAIL 兜底）。
-                    if berry_handle_close(present_cli) != 0 {
-                        trap();
-                    }
-                    if berry_handle_close(hdi_cli) != 0 {
+                    // Err 全在 env send 前——wm 客户端端未被 take，显式回收
+                    // 防表槽泄漏（vnet 同款；wmd 侧服务端端互钉常活，
+                    // GFX/GFXF 标记已缺 = smoke FAIL 兜底）。
+                    if berry_handle_close(wm_cli) != 0 {
                         trap();
                     }
                     eco_skip(b"gfxdemo spawn");
                 }
             }
         } else {
-            // cpio 缺 gfxdemo（手工裁剪镜像面）：两 fresh 客户端端未被
-            // take（guifbd 侧服务端端已迁入不受影响），显式回收防表槽
-            // 泄漏（本 arm Err 路同款；常驻 svcmgr 表零终身滞留物）。
-            if berry_handle_close(present_cli) != 0 {
-                trap();
-            }
-            if berry_handle_close(hdi_cli) != 0 {
+            // cpio 缺 gfxdemo（手工裁剪镜像面）：wm 客户端端未被 take
+            //（wmd 侧服务端端已迁入不受影响），显式回收防表槽泄漏（本
+            // arm Err 路同款；常驻 svcmgr 表零终身滞留物）。
+            if berry_handle_close(wm_cli) != 0 {
                 trap();
             }
         }
@@ -683,12 +775,24 @@ fn run_rootfs_child(console: Handle) {
     //
     // 常驻不 reap（A74：reap 首步 wait 30s 帽必超时）；stdin 哑喂 Some(&[])；
     // recv 容量按「协议定值 1 op + 富余」判面（段① serve() 已落，本刀零改）。
-    // 失败面 = close(in_b) + close(in_a) + eco_skip(b"inputd spawn")——bsh
+    // GUI-5：extras 追加 wmd 推送客户端端（WMD_PUSH_B——wmd arm Ok 路存
+    // 值；0 = wmd 未起 → extras 仍单枚，inputd 现行为逐字节保留）。失败面
+    // = close(in_b) + close(in_a)（+ push_b 在席时第三枚）+ eco_skip——bsh
     // inputpoll 面静默降级（input_h()==0 → "input: absent"）。
     if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
         eco_skip(b"mmio absent");
     } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gui-inputd") {
         let (in_a, in_b) = channel_pair();
+        // GUI-5 推送端追加（fsmgr fgifts 条件切片同款）：WMD_PUSH_B 非 0 =
+        // wmd 已起，extras 次位随行 push_b（inputd 侧 libc `wm_push_h()`）。
+        let push_b = WMD_PUSH_B.load(Ordering::Relaxed);
+        let mut igifts = [in_b, 0 as Handle];
+        let igifts: &[Handle] = if push_b != 0 {
+            igifts[1] = push_b;
+            &igifts
+        } else {
+            &igifts[..1]
+        };
         // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
         // dummy（空 feeder + 立即 EOF；inputd 服务永不读 stdin，vnet 同款）。
         match spawn_rootfs_elf(
@@ -702,7 +806,7 @@ fn run_rootfs_child(console: Handle) {
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
                 args: &[],
-                extra_gifts: &[in_b],
+                extra_gifts: igifts,
                 mmio_vmo: Some(H_MMIO),
                 mmio_va: VIRTIO_MMIO_VA,
             },
@@ -714,17 +818,26 @@ fn run_rootfs_child(console: Handle) {
                 // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
                 // inputd 自打。
                 INPUT_A.store(in_a, Ordering::Relaxed);
+                // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
+                // （fsmgr blk_cli 同款；已迁值不可 close）。
+                WMD_PUSH_B.store(0, Ordering::Relaxed);
             }
             Err(()) => {
                 ps_reg(b"inputd", psp::STATE_SPAWNFAIL, 0);
-                // Err 全在 env send 前——in_b 未被 take，两新鲜端显式回收
-                // 防表槽泄漏（vnet 同款）。
+                // Err 全在 env send 前——in_b/push_b 未被 take，新鲜端显式
+                // 回收防表槽泄漏（vnet 同款；push_b = wmd push 服务端端的
+                // 对端，close = 服务端端成孤儿——但 spawn 已败，wmd 推送链
+                // 已断，留表无保活意义）。
                 if berry_handle_close(in_b) != 0 {
                     trap();
                 }
                 if berry_handle_close(in_a) != 0 {
                     trap();
                 }
+                if push_b != 0 && berry_handle_close(push_b) != 0 {
+                    trap();
+                }
+                WMD_PUSH_B.store(0, Ordering::Relaxed);
                 eco_skip(b"inputd spawn");
             }
         }

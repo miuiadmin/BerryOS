@@ -1,0 +1,34 @@
+[package]
+name = "gui-wmd"
+version = "0.1.0"
+edition = "2021"
+
+# GUI-5（ADR #61）：gui-wmd 独立窗口管理守护——呈现/窗口策略分离。
+# 形态：常驻单线程 poll-first serve（wm_srv/push_srv 两路）；权威窗口表
+# （两层窗 + Z 序 + AVOID_SYS 避让有效几何 + parent/group 缝 + 单焦点 +
+# version 纪元计数）；present/hdi 双域透传中继（分发表执法：present
+# 1..=6 / hdi 0x40..=0x43 透传 guifbd、wm 0x60..=0x7F 本地处理、其余 op
+# 1B ST_BAD）；窗口表→inputd 推送（WM_TABLE_WAIT 阻塞应答形）。
+# 拓扑：guifbd 不动；gfxdemo 改连 wm 域（同 op 换端）；inputd 追加推送端。
+# **零 fs 端**（Q-义务②）：fsproto 严格串行无请求号——常驻双读者 =
+# 应答跨客户错配；持久化形态前置三件见设计稿 §7（位序留 GUI-8）。
+# **env 冻结注记（§7 Q12）**：extras 4 枚 = [wm_srv, push_srv,
+# present_cli, hdi_cli]，加 base 4 恰 8/8 零余量（CHAN_HND_MAX 硬帽）；
+# 第 5 插 = kernel/channel + berry-exec + berry-libc 四处抬帽另刀，本刀
+# 不预抬不预留。guifbd/gfxdemo 同型独立小工作区（musl target +
+# berry-libc shim + CRT0_SEED 锚）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

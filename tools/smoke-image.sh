@@ -4,7 +4,7 @@
 # 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
 # （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
 #
-# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 29 = 对抗审查保留日志
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 30 = 对抗审查保留日志
 # 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
 # 面八步；C-4 起 +TAB ok——编辑器九步 + 真源两钉，零 fs 盘面 EFI 路可达；
 # T-1 起 +THR ok——进程内多线程消费面，thrchild 镜像内嵌 svcmgr 零
@@ -23,7 +23,8 @@
 # 回读 ②blocked 窗 held→unblock 补投 ③kill 分诊 ④sigchild 跨进程
 # SIGTERM→DFL exit(143) ⑤修复轮回归钉板——嵌套补投恰一次/delivery-
 # time 表变更/包络恢复/无残留双投），纯用户态信号面 + sigchild 零 gift
-# spawn 零 fs 盘面，EFI 路同打）
+# spawn 零 fs 盘面，EFI 路同打）；GUI-5 起 +WM ok——gfxdemo 改连 wm 域往返
+# 四组断言单 println（EFI 专属）
 # ——非主观子集）：
 #   1. EFI 十段恰一次：skeleton / fw / gop（成功形态 WxH，locate fail 不算）/
 #      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
@@ -32,10 +33,11 @@
 #   3. 裸相 27 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
-#      生态 29 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
+#      生态 30 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
 #      EXIT / APP / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT / POLL /
-#      PS / BC / THR / MMP / CLK / SIG / FBW / FBSERVE / GFX 双——与
-#      smoke.sh rootfs 相断言 canon 同面；无 virtio 面：不挂 virtio-blk/net，
+#      PS / BC / THR / MMP / CLK / SIG / FBW / FBSERVE / GFX 双 / WM——除
+#      WM（GUI-5 起 EFI 专属，详 ECO_MARKERS 前注）外与 smoke.sh rootfs 相
+#      断言 canon 同面；无 virtio 面：不挂 virtio-blk/net，
 #      VIRTIO/FAT/NET/DIR/CD 族不在断言面）；
 #   4. kfile/init 字节数与宿主 KERNEL.ELF / rootfs.cpio **精确对拍**（盘
 #      内容 ↔ BerryBoot 读数 ↔ 内核消费三方一致性，镜像打包断裂即 FAIL）；
@@ -80,6 +82,13 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke-image: FAIL: 找不到 $QEMU
 [ -f "$KERNEL" ] || { echo "smoke-image: FAIL: 内核未构建（先 just build）：$KERNEL" >&2; exit 1; }
 [ -f "rootfs.cpio" ] || { echo "smoke-image: FAIL: rootfs.cpio 缺席（先 just build-user）" >&2; exit 1; }
 
+# 字节对拍基线在入口快照（= just image 刚毕、与镜像打包同窗）：QEMU 运行窗内
+# 共享 ~/.cargo-target 若被兄弟会话构建覆盖，收尾再 wc 会读到换脸文件 → 假
+# FAIL（2026-11-03 实抓：镜像 3794640B ↔ 收尾 stat 3973440B——雷册 §B29
+# 时序踩踏形态）。rootfs.cpio 虽在仓库根不在共享 target dir，同窗快照保持一致。
+KERNEL_BYTES=$(wc -c < "$KERNEL" | tr -d ' ')
+INITRD_BYTES=$(wc -c < "rootfs.cpio" | tr -d ' ')
+
 # 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG），360s ≈ 3x 余量（帽只兜
 # 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
 # B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
@@ -107,8 +116,9 @@ CONT_MARKERS=("HANDOFF ok ver=1" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # 裸相 27（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
 # 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行）。
 KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
-# EFI 路生态 29（对抗审查保留日志逐标记普查实证——`grep -cF` 各恰一次；与
-# smoke.sh rootfs 相断言 canon 同面，EFI 路上 libc/spawn/退出链回归不静默
+# EFI 路生态 30（对抗审查保留日志逐标记普查实证——`grep -cF` 各恰一次；除
+# WM ok（GUI-5 起 EFI 专属）外与 smoke.sh rootfs 相断言 canon 同面，EFI
+# 路上 libc/spawn/退出链回归不静默
 # 溜过。无 virtio 面——VIRTIO/FAT/NET/DIR/CD 族不在断言面。FS 用带参形态
 # `FS ok n=` 避 `ROOTFS ok src=` 子串混叠——smoke.sh P6 A-1 同款陷阱；
 # `STD ok` 与 `STD err ok` 互非子串已核，smoke.sh 双断言先例。C-2c 起
@@ -118,7 +128,10 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 链序在 bsh 内排 fat 族前 = EFI 路无盘亦打，smoke.sh rootfs 相同步面）；
 # C-3 起 +PS ok n=/BC ok（ps 查询 RPC + berryctl 三子命令——svcmgr 直打、
 # 零 fs 盘面（rootfs 内 ELF spawn + 纯 RAM RPC），EFI 路可达同面；账本
-# 行数 EFI 路无 virtio 族与主 smoke 不同形，断言取 `PS ok n=` 前缀式）。
+# 行数 EFI 路无 virtio 族与主 smoke 不同形，断言取 `PS ok n=` 前缀式；
+# GUI-5 对账：wmd 入册后 EFI 相 PS ok n= 实值 15→16——恰满旧帽（16）帽内
+# 不丢；若实为 17 则 S1 抬帽（16→17）已兜——差异即 rootfs 差 1 的同源定位
+# 线索，停刀对账；rootfs 相 wmd 不在册（EFI-only 门）实值 13 不变）。
 # C-4 起 +TAB ok（bsh tab_selftest 九步——FakeSrc 状态机 + 真源两钉，零
 # fs 盘面纯 RAM/cpio 直读，EFI 路可达；断言走 assert_marker 特例防
 # TAGTAB ok 子串假阳性）。
@@ -186,7 +199,23 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 恒「gfx: present absent」降级行——永不进 MARKERS）。裸 grep -qF 足够
 # ——"GFX ok" 与 "GFXF ok n=" 互非子串（G-F-X-空 vs G-F-X-F）且与现役
 # 标记互非子串。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=")
+# GUI-5 起 +WM ok（窗口守护联调标记——gfxdemo 改连 wm 域后往返四组断言全过
+# 单 println 自打：WM_GETINFO（VER_WM=1 + windows_max=15 + 几何回显）/
+# CREATE ack id≠0 / SET 1B OK / TABLE_GET 回显（v1 单窗有效几何==请求几何）。
+# 恰一次 = 结构保证（svcmgr 单次预拉 + 阻塞 reap + 单 println——GFX ok
+# 同款），阶段 2 不另覆盖（仅 EFI 固定串/ERE/接续恰一次面——GFX/GFXF 同
+# 待遇）。仅 EFI 相：svcmgr wmd arm 门 = present_cli≠0 ∧ cpio 在册
+# bin/gui-wmd，rootfs 相 fb 缺席门静默跳过——负向对账（rootfs 日志 WM ok
+# 恰 0 次）归主会话收割手动步进，不进 smoke.sh 码。中间态永不进 MARKERS：
+# wmd spawn fail/cpio 缺 → svcmgr 显式回收 handle 降级续链，gfxdemo 降级
+# 门打「gfx: wm absent」诊断行（netd 双门先例——present/hdi 端随换手归
+# wmd，bsh 手跑恒 wm absent 形）；「gui-wmd: up」启动诊断行前缀统一小写
+# 防误配。裸 grep -qF 足够——"WM ok" 与现役标记互非子串（最近形
+# BENCHWAKE n=/MANY ok/WAIT ok 均不含）。GFX/GFXF 语义零漂移：present/hdi
+# 调用点仅换端经 wmd 中继（op 编码与断言零改动——guifbd 字节不动）。时
+# 序：wmd 一 spawn ≈+5-10s TCG，实测链 ~115s 余量足——DEADLINE_BOOT=360s
+# 帽不动。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
@@ -282,7 +311,7 @@ echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 27 + 生态 29 = 69）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 27 + 生态 30 = 70）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
@@ -302,7 +331,7 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 27 + 生态 29）"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 27 + 生态 30）"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -314,8 +343,8 @@ done
 echo "smoke-image: EFI 十段 + 接续恰一次到齐"
 
 # —— 阶段 3：字节数对拍（盘内容 ↔ 引导链读数 ↔ 内核消费）——
-KERNEL_BYTES=$(wc -c < "$KERNEL" | tr -d ' ')
-INITRD_BYTES=$(wc -c < "rootfs.cpio" | tr -d ' ')
+# 基线已在脚本入口快照（见上：与镜像打包同窗，免疫 QEMU 运行窗内共享
+# target dir 被兄弟会话构建覆盖的换脸读——雷册 §B29 时序踩踏形态）。
 grep -qE "kfile: ${KERNEL_BYTES}B ok" "$LOG" \
   || fail "kfile 字节数与宿主内核不一致（期望 ${KERNEL_BYTES}B）——镜像打包或引导读链断裂"
 grep -qE "init: ${INITRD_BYTES}B ok" "$LOG" \
@@ -374,4 +403,4 @@ while :; do
   sleep 2
 done
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 27 + 生态 29 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 27 + 生态 30 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"

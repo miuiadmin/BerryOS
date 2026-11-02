@@ -1,4 +1,5 @@
-//! gfxdemo —— GUI-2 段③ 消费侧首刀：present/hdi 域的首个真实消费者闭环。
+//! gfxdemo —— GUI-5 消费侧（§3 #12）：wm 域首个真实消费者 + present/hdi
+//! 改经 wmd 中继（同 op 换端，ADR #61 呈现/策略分离）。
 //!
 //! **B 形态三件事的接线半边**（ADR #54「协议先定形、无消费者不接线」）：
 //! berry-gfx pass 形态 API soft 渲一帧（确定性 DisplayList：Clear 底色 +
@@ -11,12 +12,21 @@
 //! = 故障定位面（GFXF 缺 = 服务端 blit/抽样/记账炸；GFXF 在而 GFX 缺 =
 //! 客户端 RPC 链炸）。
 //!
-//! **端点拓扑**（§7-① b-2 裁）：svcmgr 在 guifbd 预拉段 channel_pair()×2，
-//! 客户端端随本程序 env extras 直递（6/8：console/stdin/self_proc/
-//! self_vmar/present_cli/hdi_cli——libc `present_h()`/`hdi_h()` 读
-//! GIFT_H[0]/[1]）。rootfs 相 guifbd arm 随 fb 探测门静默跳过 → 本程序
-//! 不被拉起；bsh 手跑 `present_h()==0` → 一行降级诊断 + exit(0)（netd
-//! 双门先例同款——非错误面，`gfx: present absent` 永不进 MARKERS）。
+//! **端点拓扑**（GUI-5 §2/§7 Q12）：svcmgr 在 wmd 预拉段 channel_pair()
+//! 接线，wm 客户端端随本程序 env extras 直递（5/8：console/stdin/
+//! self_proc/self_vmar/wm_cli——libc `wm_cli_h()` 读 GIFT_H[0]）。三域
+//! **同端混流**：wm 0x60..=0x65 wmd 本地权威处理；present 1..=6 与 hdi
+//! 0x40..=0x43 经 wmd 分发表透传 guifbd（中继不改 op 编码——本程序断言
+//! 面零变化，仅 rpc 首参换端；guifbd 零改动）。rootfs 相 wmd 随 fb 探测
+//! 门不被拉起 → 本程序不被拉起；bsh 手跑 `wm_cli_h()==0` → 一行降级
+//! 诊断 + exit(0)（netd 双门先例同款——非错误面，`gfx: wm absent` 永不
+//! 进 MARKERS）。
+//!
+//! **WM ok 语义**（GUI-5 新标记，恰一次——结构性：svcmgr 单次预拉 +
+//! 阻塞 reap + 单 println）：wm 四步全断言过（GETINFO 能力/版本 →
+//! CREATE 全屏窗 id≠0 → SET(GEOM) 1B OK → TABLE_GET 快照对拍 id 回显
+//! ∧ 有效几何 == 申请——v1 无系统层重叠恒等，GUI-8 加系统窗须随改）
+//! 才打；`GFX ok` 仍收口整链恰一次（wm + present + hdi + 渲染）。
 //!
 //! **RPC 纪律**（§9 A6-a 收侧 10s 帽，fsclient `fs_rpc` 同形）：严格串行
 //! 一请求一应答；发送 -EBUSY 阻塞重试（WRITABLE 10s 重臂）；收侧空队 →
@@ -31,7 +41,7 @@ use berry_gfx::font::FontAtlas8x16;
 use berry_gfx::pass::PassDescriptor;
 use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
-use berry_libc::io::{hdi_h, present_h, self_vmar_h};
+use berry_libc::io::{self_vmar_h, wm_cli_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_vmar_map,
@@ -173,28 +183,106 @@ fn expect_ok(
 }
 
 fn main() {
-    // —— 降级门：present 端未交付（rootfs 相本程序不被拉起；bsh 手跑无
-    // extras）→ 一行诊断 + exit(0)（netd 双门先例同款——非错误面）。
-    let hp = present_h();
-    if hp == 0 {
-        println!("gfx: present absent");
+    // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
+    // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + exit(0)（netd
+    // 双门先例同款——非错误面，`gfx: wm absent` 永不进 MARKERS）。present/
+    // hdi 客户端端已随 wmd 换手中继——本程序不再直持，单门即全链门（GUI-5
+    // §7 Q12：extras 恰 wm_cli 一枚）。
+    let hw = wm_cli_h();
+    if hw == 0 {
+        println!("gfx: wm absent");
         exit(0);
-    }
-    // present 在而 hdi 缺 = svcmgr 分发面破缺（两客户端端成对直递）——
-    // FAIL loud 而非静默降级。
-    let hh = hdi_h();
-    if hh == 0 {
-        fail("hdi absent");
     }
 
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
     let mut req = [0u8; 256];
 
+    // —— wm 域四步（GUI-5 §3 #12——wmd 本地权威面，先于 present 链：
+    // 窗口策略先立，呈现消费随后）。全断言过才打 `WM ok`——恰一次。
+    // ① GETINFO：能力/版本协商断言（version=1 ∧ windows_max=15 满配 ∧
+    // 几何 >0——disp 域 = wmd 启动期 present GETINFO 缓存同源，Q15）。
+    let m = gp::encode_wm_getinfo_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let wminfo = match gp::parse_wm_getinfo_rep(&rep[..n]) {
+        Some(i) => i,
+        None => fail(&format!("wm getinfo rep bad st={}", rep[0])),
+    };
+    if wminfo.version_wm != gp::VER_WM
+        || wminfo.windows_max != gp::WM_WINDOWS_MAX as u8
+        || wminfo.disp_w == 0
+        || wminfo.disp_h == 0
+    {
+        fail(&format!(
+            "wm getinfo vw={} wmax={} disp={}x{}",
+            wminfo.version_wm, wminfo.windows_max, wminfo.disp_w, wminfo.disp_h
+        ));
+    }
+
+    // ② CREATE：全屏 APP 层窗 + AVOID_SYS 旗标（v1 无系统层窗 = 避让空
+    // 转，旗标面先接线）；id≠0 由 wmd 分配策略保证——建窗成功断言面。
+    let creq = gp::WmCreateReq {
+        layer: gp::WM_LAYER_APP,
+        flags: gp::WM_CREATE_F_AVOID_SYS,
+        parent: 0,
+        group: 0,
+        x: 0,
+        y: 0,
+        w: wminfo.disp_w,
+        h: wminfo.disp_h,
+    };
+    let m = enc_req(gp::encode_wm_create_req(&mut req, &creq));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let wid = match gp::parse_wm_create_ack(&rep[..n]) {
+        Some(id) if id != 0 => id,
+        _ => fail(&format!("wm create ack bad st={}", rep[0])),
+    };
+
+    // ③ SET(GEOM)：同几何回写（20B 掩码式定长——masked-out 槽位 vis/z
+    // 仍编码合法值：「编什么收什么」，Q17）；成功形 1B OK。
+    let sreq = gp::WmSetReq {
+        mask: gp::WM_SET_F_GEOM,
+        window_id: wid,
+        x: creq.x,
+        y: creq.y,
+        w: creq.w,
+        h: creq.h,
+        vis: gp::WM_VIS_SHOW,
+        z: 0,
+    };
+    let m = enc_req(gp::encode_wm_set_req(&mut req, &sreq));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm set");
+
+    // ④ TABLE_GET：全表快照对拍——count≥1 ∧ window_id 回显 ∧ 有效几何
+    // == 申请几何（v1 无系统层重叠 = 恒等；GUI-8 加系统窗时避让裁剪使
+    // 有效 ≠ 申请，本断言须随改——guiproto `WmEntry` doc 注同口径）。
+    let m = gp::encode_wm_table_get_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let snap = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+        Some(Ok(s)) => s,
+        Some(Err(st)) => fail(&format!("wm table st={st}")),
+        None => fail(&format!("wm table rep bad len={n}")),
+    };
+    if snap.count < 1 {
+        fail(&format!("wm table count={}", snap.count));
+    }
+    match snap.entries[..snap.count].iter().find(|e| e.id == wid) {
+        Some(e) => {
+            if e.x != creq.x || e.y != creq.y || e.w != creq.w || e.h != creq.h {
+                fail(&format!(
+                    "wm geom echo {}x{}+{}+{} vs req {}x{}+{}+{}",
+                    e.w, e.h, e.x, e.y, creq.w, creq.h, creq.x, creq.y
+                ));
+            }
+        }
+        None => fail(&format!("wm table no win id={wid}")),
+    }
+    println!("WM ok");
+
     // —— GETINFO：能力/版本/格式协商断言（ver=1 ∧ XRGB8888 位在册 ∧
     // credits=2——Bgrx 与 ramfb 同源的格式面在位证明）。
     let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::Getinfo));
-    let (n, _) = rpc(hp, &req[..m], &[], &mut rep, &mut rhs);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
     let info = match gp::parse_getinfo_rep(&rep[..n]) {
         Some(i) => i,
         None => fail(&format!("getinfo rep bad st={}", rep[0])),
@@ -304,7 +392,7 @@ fn main() {
         rect_count: 2,
     };
     let m = enc_req(gp::encode_present_req(&mut req, &sreq));
-    let (n, _) = rpc(hp, &req[..m], &[alias], &mut rep, &mut rhs);
+    let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
     let token = match gp::parse_submit_ack(&rep[..n]) {
         Some(t) => t,
         None => fail(&format!("submit ack bad st={}", rep[0])),
@@ -316,7 +404,7 @@ fn main() {
         &mut req,
         &gp::PresentReq::FrameCallback { frame_token: token },
     ));
-    let (n, _) = rpc(hp, &req[..m], &[], &mut rep, &mut rhs);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
     let done = match gp::parse_frame_done_rep(&rep[..n]) {
         Some(d) => d,
         None => fail(&format!("frame done bad st={}", rep[0])),
@@ -329,7 +417,7 @@ fn main() {
     // 断 count==1 恰归还本次 SUBMIT 的在途别名（credits 记账清零）；ids
     // 域 v1 单客户端 echo 面，不断言精确值免过度约束服务端。
     let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
-    let (n, nh) = rpc(hp, &req[..m], &[], &mut rep, &mut rhs);
+    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
     let rel = match gp::parse_release_rep(&rep[..n]) {
         Some(r) => r,
         None => fail(&format!("release rep bad st={}", rep[0])),
@@ -351,12 +439,12 @@ fn main() {
             preferred_hz: 60,
         },
     ));
-    expect_ok(hp, &req[..m], &[], &mut rep, &mut rhs, "vote");
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote");
     let m = enc_req(gp::encode_present_req(
         &mut req,
         &gp::PresentReq::PowerMode { mode: gp::POWER_DIM },
     ));
-    expect_ok(hp, &req[..m], &[], &mut rep, &mut rhs, "power mode");
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "power mode");
 
     // —— hdi 域软 vsync mini 序：REG_VBLANK(1)+event（send 即 take——event
     // 归服务端）→ VBLANK_WAIT 断 seq≥1 ∧ ts_ns>0（ts = clock 合成软 vsync
@@ -369,10 +457,10 @@ fn main() {
         fail("event create");
     }
     let m = gp::encode_reg_vblank_req(&mut req, 1);
-    expect_ok(hh, &req[..m], &[ev], &mut rep, &mut rhs, "reg vblank on");
+    expect_ok(hw, &req[..m], &[ev], &mut rep, &mut rhs, "reg vblank on");
 
     let m = gp::encode_vblank_wait_req(&mut req);
-    let (n, _) = rpc(hh, &req[..m], &[], &mut rep, &mut rhs);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
     let vb = match gp::parse_vblank_rep(&rep[..n]) {
         Some(v) => v,
         None => fail(&format!("vblank rep bad st={}", rep[0])),
@@ -393,7 +481,7 @@ fn main() {
         format: gp::FMT_XRGB8888,
     };
     let m = gp::encode_prepare_req(&mut req, &preq);
-    let (n, nh) = rpc(hh, &req[..m], &[alias2], &mut rep, &mut rhs);
+    let (n, nh) = rpc(hw, &req[..m], &[alias2], &mut rep, &mut rhs);
     let slot = match gp::parse_prepare_rep(&rep[..n]) {
         Some(s) => s,
         None => fail(&format!("prepare rep bad st={}", rep[0])),
@@ -404,14 +492,14 @@ fn main() {
     close_h(rhs[0]);
 
     let m = gp::encode_commit_req(&mut req, slot, 0);
-    expect_ok(hh, &req[..m], &[], &mut rep, &mut rhs, "commit");
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "commit");
 
     let mut ev2: Handle = 0;
     if berry_event_create(0, &mut ev2) != 0 || ev2 == 0 {
         fail("event create 2");
     }
     let m = gp::encode_reg_vblank_req(&mut req, 0);
-    expect_ok(hh, &req[..m], &[ev2], &mut rep, &mut rhs, "reg vblank off");
+    expect_ok(hw, &req[..m], &[ev2], &mut rep, &mut rhs, "reg vblank off");
 
     // 客户端全链断言过（服务端真值 GFXF ok n= 由 guifbd 首呈现时打出）
     // ——结构性恰一次：svcmgr 单次预拉 + 阻塞 reap + 单 println。
