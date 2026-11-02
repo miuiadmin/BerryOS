@@ -198,6 +198,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/guifbd/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GUI-2 段③：gfxdemo（消费侧首刀——present/hdi 域首个真实消费者闭环：
+    # berry-gfx soft 渲帧 → VMO → SUBMIT/FRAME_CALLBACK/RELEASE → hdi 软
+    # vsync mini 序；svcmgr EFI 相预拉直递 extras 6/8；全断言过打 `GFX ok`，
+    # smoke-image ECO 标记；rootfs 相随 guifbd 门静默跳过零新行）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/gfxdemo/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     # A5：netprobe（std::net guest 对拍件——bsh net_gifts 三元 spawn 面
     # 的消费者；TcpStream::connect 域名/IP 双路 + 回显逐字节对拍。产链
     # 同 stdhello 独立小工作区 musl 链；自验/标记 `NETS ok` 随 A5-2
@@ -243,6 +250,7 @@ build-user:
         bin/false=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/false \
         bin/find=cargo-target/aarch64-unknown-linux-musl/release/find \
         bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
+        bin/gfxdemo=cargo-target/aarch64-unknown-linux-musl/release/gfxdemo \
         bin/grep=cargo-target/aarch64-unknown-linux-musl/release/grep \
         bin/gui-inputd=../drivers/cargo-target/aarch64-unknown-linux-musl/release/gui-inputd \
         bin/guifbd=cargo-target/aarch64-unknown-linux-musl/release/guifbd \
@@ -663,7 +671,7 @@ smoke-smp: build build-user
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
 # 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 27 +
-# EFI 路生态 15 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# EFI 路生态 29 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image

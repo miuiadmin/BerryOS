@@ -11,6 +11,13 @@ edition = "2021"
 # `gift2_h()`——rootfs_h 同槽别名惯例）。启动自验三步（clear 双相位差分
 # /蜂格字形对拍/scroll 行移对拍）全过才打 `FBW ok`（stdout = console 发
 # 端，vblk VBLK ok 同款）；段②起 park 换 serve 循环收 console 转发上屏。
+# GUI-2 段③（消费侧首刀）：serve 循环升格三路（present→hdi→console 轮询
+# + wait_many n=3 并等，deadline=min(下次软 vsync 点, now+10s) 进调用）；
+# present 域六 op 服务端真身（blit-at-SUBMIT + credits≤2 + 两条 ST_BAD
+# damage 立法 + 拒面 close 随行 handle）+ hdi 域软 vsync 四 op 退化形；
+# console 路恒同步直写 + FULL 纯记账；首个 gfx 帧一次性 `GFXF ok n=`。
+# wire 单源 = berry-guiproto（三域 channel + 恰形编解码——本服务零协议
+# 改动，ADR #54 接线半边）。
 license = "Apache-2.0"
 
 [workspace]
@@ -20,6 +27,7 @@ berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-exec = { path = "../../berry-exec" }
 berry-fbcon = { path = "../../berry-fbcon" }
+berry-guiproto = { path = "../../berry-guiproto" }
 
 [profile.release]
 opt-level = "z"

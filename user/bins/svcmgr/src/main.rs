@@ -413,9 +413,22 @@ fn run_rootfs_child(console: Handle) {
     // 迁入——guifbd 自验后转 serve 循环（recv → put_str 上屏），首条消息
     // 到达自打 `FBSERVE ok`（稳态矩阵打印持续不断 → 首条必达 = 状态谓词
     // 非竞速）。
+    // GUI-2 段③（§7-① b-2）：present/hdi 域端点建对分发——探测门 else
+    // 分支内、spawn 前 `channel_pair()`×2（**建点钉门内** A5-a：门外 =
+    // rootfs 相每 boot 白建 4 对象 + eco_skip 路恒泄漏）。服务端端随
+    // extras[2]/[3] **take 迁入** guifbd（extras 2→4 恰 8/8 满配——
+    // berry-exec extras≤4 断言帽内；libc `present_srv_h()`/`hdi_srv_h()`
+    // 消费）；客户端端存函数局部变量（fresh 端非 dup），交紧随本 arm 的
+    // gfxdemo 预拉 arm 直递。0 = guifbd 未起 → gfxdemo arm 静默跳过。
+    let mut present_cli: Handle = 0;
+    let mut hdi_cli: Handle = 0;
     if berry_vmo_get_size(H_FB, &mut msz) != 0 {
         eco_skip(b"fb absent");
     } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/guifbd") {
+        // 两对 (本端, 交接端)：客户端端本表留（下方 gfxdemo arm 消费），
+        // 服务端端随 env 块迁移（fs_b/net_b 先例同款交接端形态）。
+        let (p_cli, present_srv) = channel_pair();
+        let (h_cli, hdi_srv) = channel_pair();
         match spawn_rootfs_elf(
             H_ROOTFS,
             &SpawnSpec {
@@ -427,20 +440,103 @@ fn run_rootfs_child(console: Handle) {
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
                 args: &[],
-                extra_gifts: &[H_FBINFO, H_FBPIPE],
+                extra_gifts: &[H_FBINFO, H_FBPIPE, present_srv, hdi_srv],
                 mmio_vmo: Some(H_FB),
                 mmio_va: FB_VA,
             },
         ) {
             Ok(_child) => {
                 ps_reg(b"guifbd", psp::STATE_ALIVE, 0); // 常驻（不 reap——vblk 同款）
+                // 两客户端端仅此成对落值（兼作下方 gfxdemo arm 的 spawn Ok
+                // 标志——NET_A/INPUT_A 的 0 值跳过同款）。
+                present_cli = p_cli;
+                hdi_cli = h_cli;
             }
             Err(()) => {
-                // Err 全在 env send 前——H_FBINFO 未被 take 仍在表（boot
-                // 插入原值，非本段新建）；与 H_FB 同留表（有界 2 槽，v1
-                // 常驻泄漏政策——close 止损对 boot 插入值无回收价值）。
+                // Err 全在 env send 前——H_FBINFO/H_FBPIPE 未被 take 仍在
+                // 表（boot 插入原值，非本段新建）；与 H_FB 同留表（有界 2
+                // 槽，v1 常驻泄漏政策——close 止损对 boot 插入值无回收价
+                // 值）。段③ 四 fresh 端同样未被 take，显式回收防表槽泄漏
+                // （vnet Err 路先例形态）。
                 ps_reg(b"guifbd", psp::STATE_SPAWNFAIL, 0);
+                if berry_handle_close(present_srv) != 0 {
+                    trap();
+                }
+                if berry_handle_close(p_cli) != 0 {
+                    trap();
+                }
+                if berry_handle_close(hdi_srv) != 0 {
+                    trap();
+                }
+                if berry_handle_close(h_cli) != 0 {
+                    trap();
+                }
                 eco_skip(b"guifbd spawn");
+            }
+        }
+    }
+    // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——紧随 guifbd arm ----
+    // 门 = guifbd spawn Ok（present_cli != 0——两客户端端仅 Ok 路成对落值，
+    // 兼作标志）∧ cpio_find(H_ROOTFS, b"bin/gfxdemo")。rootfs 相 guifbd 门
+    // 已跳（`fb absent`）→ 标志 0 → **静默跳过零新行**（inputd INPUT_A==0
+    // 静默跳过同款先例——§0「静默」的字面落实，不设 GFX absent 行）。
+    // 拓扑：present/hdi 客户端端随 extras[0]/[1] **直递**（fresh 端非
+    // dup——fs_b/net_b 先例；gfxdemo 侧 libc `present_h()`/`hdi_h()` 消费，
+    // 0 = 自行降级退 exit(0)）；stdout=console（`GFX ok` 全链断言过自打）；
+    // stdin Some(&[]) 占位（extras 非空须 stdin 槽在位——berry-exec
+    // assert）。**阻塞 reap 收退出码**（stdhello 预拉同形；berry-exec
+    // REAP_TIMEOUT 30s 在册）：零码零新行（GFX ok 归 gfxdemo 自打）；
+    // 非零/Err 面 eco 行续走（失败隔离——标记缺失 = smoke FAIL 兜底）。
+    // **不 ps_reg**（thr 先例注记——瞬态验收件不入账，PS ok n= 零漂移）。
+    if present_cli != 0 {
+        if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gfxdemo") {
+            match spawn_rootfs_elf(
+                H_ROOTFS,
+                &SpawnSpec {
+                    name: b"bin/gfxdemo",
+                    data_off,
+                    data_len,
+                    stdout: console,
+                    stack_pages: 8,
+                    stdin_feed: Some(&[]),
+                    stdin_handle: None,
+                    args: &[],
+                    extra_gifts: &[present_cli, hdi_cli],
+                    mmio_vmo: None,
+                    mmio_va: 0,
+                },
+            ) {
+                Ok(child) => {
+                    match child.reap() {
+                        // 零码零新行——GFX ok 归 gfxdemo 自打（stdhello 的
+                        // EXIT ok 同位，本 arm 无自证标记面）。
+                        Ok(0) => {}
+                        Ok(_) => eco_skip(b"gfx code"),
+                        Err(()) => eco_skip(b"gfx reap"),
+                    }
+                }
+                Err(()) => {
+                    // Err 全在 env send 前——两 fresh 客户端端未被 take，
+                    // 显式回收防表槽泄漏（vnet 同款；guifbd 服务端端互钉
+                    // 常活，GFX/GFXF 标记已缺 = smoke FAIL 兜底）。
+                    if berry_handle_close(present_cli) != 0 {
+                        trap();
+                    }
+                    if berry_handle_close(hdi_cli) != 0 {
+                        trap();
+                    }
+                    eco_skip(b"gfxdemo spawn");
+                }
+            }
+        } else {
+            // cpio 缺 gfxdemo（手工裁剪镜像面）：两 fresh 客户端端未被
+            // take（guifbd 侧服务端端已迁入不受影响），显式回收防表槽
+            // 泄漏（本 arm Err 路同款；常驻 svcmgr 表零终身滞留物）。
+            if berry_handle_close(present_cli) != 0 {
+                trap();
+            }
+            if berry_handle_close(hdi_cli) != 0 {
+                trap();
             }
         }
     }

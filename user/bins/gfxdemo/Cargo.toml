@@ -1,0 +1,31 @@
+[package]
+name = "gfxdemo"
+version = "0.1.0"
+edition = "2021"
+
+# GUI-2 段③（消费侧首刀）：present/hdi 域的首个真实消费者闭环——
+# berry-gfx pass 形态 API soft 渲一帧（Bgrx 与 ramfb 同源免转换）→ 匿名
+# VMO commit+map → dup READ 别名随行 SUBMIT（blit-at-SUBMIT 上屏）→
+# FRAME_CALLBACK 回执 → RELEASE 归还即关 → VOTE/POWER_MODE 1B 回执 →
+# hdi 域软 vsync mini 序（REG_VBLANK/VBLANK_WAIT/PREPARE/COMMIT）。端点
+# = svcmgr EFI 相预拉直递（env extras 6/8——libc `present_h()`/`hdi_h()`，
+# netd 双门先例同款：rootfs 相/bsh 手跑 `present_h()==0` 恒走降级行）。
+# 全链断言过才打 `GFX ok`（smoke-image EFI 相 ECO 标记；服务端真值标记
+# `GFXF ok n=` 由 guifbd 侧打出——两分立 = 故障定位面）。guifbd 同型独立
+# 小工作区（musl target + berry-libc shim + CRT0_SEED 锚）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-guiproto = { path = "../../berry-guiproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
