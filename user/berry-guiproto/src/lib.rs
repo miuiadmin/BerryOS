@@ -5,15 +5,23 @@
 //! 拓扑（docs/GUI-4实施设计草案.md §2）：**三域 = 三对独立 channel**，不是
 //! 一个 op 空间——能力即权限（客户端拿不到它域 channel 端点就结构性发不了
 //! 它域 op，微内核纪律，替代「op 层鉴权」的第二套机制）：
-//! - **present 域**（op 1..6）：应用/gui-wm（GUI-5，段②消费者）↔ 显示服务
-//!   端——GETINFO（能力/版本/格式协商）/ SUBMIT（提交帧）/ FRAME_CALLBACK
-//!   （帧完成回执，阻塞应答）/ RELEASE（归还 buffer，阻塞应答）/ VOTE
-//!   （帧率投票）/ POWER_MODE（显示电源模式）；
+//! - **present 域**（op 1..6）：应用 → gui-wmd 代理（GUI-5 换手，ADR #61：
+//!   客户端改连 wm 域，present/hdi 客户端端归 wmd 中继，guifbd 零改动）↔
+//!   显示服务端——GETINFO（能力/版本/格式协商）/ SUBMIT（提交帧）/
+//!   FRAME_CALLBACK（帧完成回执，阻塞应答）/ RELEASE（归还 buffer，阻塞
+//!   应答）/ VOTE（帧率投票）/ POWER_MODE（显示电源模式）；
 //! - **input 域**（op 0x20..0x21）：gui-inputd（`drivers/bins/gui-inputd`）
 //!   持服务端，消费者 INPUT_SUBSCRIBE（订阅）/ INPUT_POLL（拉事件批，可
 //!   阻塞）——**段①唯一接线面**；
 //! - **hdi 域**（op 0x40..0x43）：REG_VBLANK / VBLANK_WAIT / PREPARE /
-//!   COMMIT——GUI-2 / virtio-gpu S1 挂账（§9-⑨），段①仅编解码 + 测试。
+//!   COMMIT——GUI-2 / virtio-gpu S1 挂账（§9-⑨），段①仅编解码 + 测试；
+//! - **wm 域**（op 0x60..=0x7F 互斥带，v1 六 op 0x60..0x65，GUI-5 第四域）：
+//!   gui-wmd 持权威窗口表（两层窗/Z 序/避让/parent·group/焦点）；**两对
+//!   channel 共享同一 op 空间**——wm 服务对（GETINFO/CREATE/DESTROY/SET/
+//!   TABLE_GET）+ wmd↔inputd 推送对（inputd 发 TABLE_WAIT，wmd park 至表
+//!   版本新于 last_seen 应答全表快照 ≤[`WM_REP_MAX`]）。TABLE_WAIT 携
+//!   last_seen = **库内首个带参阻塞请求**（vblank_wait 无参阻塞先例的带参
+//!   扩展——唤醒判据进 wire，立法注记）。
 //!
 //! 每域独立**严格串行 RPC**（一请求一应答、队列深 1 用量，netdproto 同款
 //! 纪律）；服务端→客户端「推送」一律建模为**阻塞应答**（frame_callback /
@@ -74,6 +82,42 @@ pub const OP_VBLANK_WAIT: u8 = 0x41;
 pub const OP_PREPARE: u8 = 0x42;
 /// hdi 域：提交槽到目标时刻。
 pub const OP_COMMIT: u8 = 0x43;
+/// wm 域：能力/版本/窗口帽协商（GUI-5；wm 域自带版本面——塞 present
+/// GetinfoRep 保留位 = 协议面变更，Q2 裁弃）。
+pub const OP_WM_GETINFO: u8 = 0x60;
+/// wm 域：建窗（两层窗 + parent/group 字段缝 + 避让标志；ack 携 window_id）。
+pub const OP_WM_CREATE: u8 = 0x61;
+/// wm 域：毁窗（应答 1B OK）。
+pub const OP_WM_DESTROY: u8 = 0x62;
+/// wm 域：掩码式属性设置（几何/可见/Z 同帧原子生效；应答 1B OK）。
+pub const OP_WM_SET: u8 = 0x63;
+/// wm 域：拉窗口表快照（非阻塞全量）。
+pub const OP_WM_TABLE_GET: u8 = 0x64;
+/// wm 域：等表变更快照（阻塞应答——携 last_seen 版本号，表已新立即答）。
+pub const OP_WM_TABLE_WAIT: u8 = 0x65;
+
+// ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
+
+/// 窗口层：应用层（桌面/普通窗）。
+pub const WM_LAYER_APP: u8 = 0;
+/// 窗口层：系统层（状态栏等——压应用层任意 Z）。
+pub const WM_LAYER_SYSTEM: u8 = 1;
+/// CREATE flags：申请几何避让系统层（wmd 写有效几何进表，不变量式重推导）。
+pub const WM_CREATE_F_AVOID_SYS: u8 = 1 << 0;
+/// SET mask 位：几何四槽（x/y/w/h）。
+pub const WM_SET_F_GEOM: u8 = 1 << 0;
+/// SET mask 位：可见槽（vis）。
+pub const WM_SET_F_VIS: u8 = 1 << 1;
+/// SET mask 位：Z 序槽（z）。
+pub const WM_SET_F_Z: u8 = 1 << 2;
+/// SET vis 槽值：隐藏。
+pub const WM_VIS_HIDE: u8 = 0;
+/// SET vis 槽值：显示。
+pub const WM_VIS_SHOW: u8 = 1;
+/// WmEntry flags 位：可见（wm_hit_test 唯一参选位）。
+pub const WM_WIN_F_VISIBLE: u8 = 1 << 0;
+/// WmEntry flags 位：持焦点（wmd 单焦点窗策略面）。
+pub const WM_WIN_F_FOCUSED: u8 = 1 << 1;
 
 // ---------- 状态码 / 值域 ----------
 
@@ -191,6 +235,13 @@ pub const INPUT_REP_MAX: usize = 244;
 pub const HDI_REQ_MAX: usize = 20;
 /// hdi 域应答帧帽（VBLANK_WAIT 应答 16B）。
 pub const HDI_REP_MAX: usize = 16;
+/// wm 域窗口表上限（快照 = 12B 头 + 15×16B 表项 = [`WM_REP_MAX`] 单帧
+/// 顶格；帽按快照单帧 ≤ CHAN_MSG_MAX 硬约束定，GUI-8 launcher 桌面形态复核）。
+pub const WM_WINDOWS_MAX: usize = 15;
+/// wm 域请求帧帽（SET 请求 20B 最坏）。
+pub const WM_REQ_MAX: usize = 20;
+/// wm 域应答帧帽 = 快照 12B 头 + 15×16B 表项。
+pub const WM_REP_MAX: usize = 252;
 
 /// SUBMIT 请求随行 handle 数（buffer VMO——须 dup 别名，vblk 协议头注契约）。
 pub const ATTACH_SUBMIT: usize = 1;
@@ -222,6 +273,8 @@ pub const VER_PRESENT: u8 = 1;
 pub const VER_INPUT: u8 = 1;
 /// hdi 域版本。
 pub const VER_HDI: u8 = 1;
+/// wm 域版本（GUI-5 定形刀在册——ADR #50：per-interface version 随定形刀必落）。
+pub const VER_WM: u8 = 1;
 
 // ---------- 帧长常量（私有；公开帽常量见上）----------
 
@@ -247,6 +300,20 @@ const PE_HEAD: usize = 32;
 const PE_SAMPLE: usize = 16;
 /// INPUT_POLL 应答定长头。
 const INPUT_REP_HEAD: usize = 4;
+/// WM_GETINFO 应答恰长 12B。
+const WM_GETINFO_REP_LEN: usize = 12;
+/// WM_CREATE 请求恰长 16B / ack 恰长 8B。
+const WM_CREATE_REQ_LEN: usize = 16;
+const WM_CREATE_ACK_LEN: usize = 8;
+/// WM_DESTROY 请求恰长 8B。
+const WM_DESTROY_REQ_LEN: usize = 8;
+/// WM_SET 请求恰长 20B。
+const WM_SET_REQ_LEN: usize = 20;
+/// WM_TABLE_WAIT 请求恰长 8B。
+const WM_TABLE_WAIT_REQ_LEN: usize = 8;
+/// 窗口表快照定长头 / 表项单项宽。
+const WM_SNAP_HEAD: usize = 12;
+const WM_ENTRY_LEN: usize = 16;
 
 // ---------- 值域谓词（const fn——位域/域值双侧对称执法）----------
 
@@ -290,6 +357,28 @@ const fn delivery_known(d: u8) -> bool {
 
 const fn frame_status_known(s: u8) -> bool {
     s == FRAME_PRESENTED || s == FRAME_DISCARDED
+}
+
+const fn wm_layer_known(l: u8) -> bool {
+    l <= WM_LAYER_SYSTEM
+}
+
+const fn wm_create_flags_known(f: u8) -> bool {
+    f & !WM_CREATE_F_AVOID_SYS == 0
+}
+
+/// SET mask 值域：mask=0（「空设置」非法定义在协议层——netdproto port 0 /
+/// INPUT_POLL max_events 0 同款）与未知位双侧拒。
+const fn wm_set_mask_known(m: u8) -> bool {
+    m != 0 && m & !(WM_SET_F_GEOM | WM_SET_F_VIS | WM_SET_F_Z) == 0
+}
+
+const fn wm_vis_known(v: u8) -> bool {
+    v <= WM_VIS_SHOW
+}
+
+const fn wm_win_flags_known(f: u8) -> bool {
+    f & !(WM_WIN_F_VISIBLE | WM_WIN_F_FOCUSED) == 0
 }
 
 // ---------- LE 读写辅助（私有；encode 侧长度已由 get_mut 定界）----------
@@ -1243,6 +1332,483 @@ pub fn parse_commit_req(buf: &[u8]) -> Option<(u8, u64)> {
     Some((slot, le64(buf, 4)?))
 }
 
+// ---------- wm 域（GUI-5：gui-wmd 窗口守护——权威窗口表 + 命中分发）----------
+//
+// 十组编解码对：GETINFO req/rep、CREATE req/ack、DESTROY req、SET req、
+// TABLE_GET req、TABLE_WAIT req、快照应答（TABLE_GET/TABLE_WAIT 共用
+// `encode_wm_snapshot_rep`/`parse_wm_snapshot_rep`）+ DESTROY/SET 的 1B OK
+// 成功应答（复用 `encode_status_rep`/`parse_status_rep`）。ST_* 七码零新增
+// （Q18）：id/parent 无效 → ST_NOENT、表满 → ST_FULL、layer/mask/flags/vis
+// 野值 → ST_BAD（wire 层 None——值域执法在 parse/encode，引用存在性是
+// 服务端策略面）；ST_BUSY 预留多客户端刀（v1 串行深 1 不可达）。
+
+/// 编码 WM_GETINFO 请求（恰 4B `[op][r][r16]`，无参；`encode_vblank_wait_req`
+/// 同款 assert 形）。
+pub fn encode_wm_getinfo_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= 4, "guiproto: wm getinfo req buf 不足");
+    out[0] = OP_WM_GETINFO;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    4
+}
+
+/// 解析 WM_GETINFO 请求：恰 4B + op 位（保留域恒不校验——无参面同款）。
+pub fn parse_wm_getinfo_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != 4 || buf[0] != OP_WM_GETINFO {
+        return None;
+    }
+    Some(())
+}
+
+/// WM_GETINFO 应答（解析产物；12B 布局见 `encode_wm_getinfo_rep`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmGetinfoRep {
+    pub version_wm: u8,
+    /// ≤ [`WM_WINDOWS_MAX`]（双侧执法——镜像 max_credits ≤ CREDITS_MAX）。
+    pub windows_max: u8,
+    /// 显示几何（wmd 启动期一次缓存；真值源 present GETINFO 逐调用中继
+    /// 非自答——wmd 不持第二份 present 常量副本，Q15）。
+    pub disp_w: u16,
+    pub disp_h: u16,
+}
+
+/// 编码 WM_GETINFO 应答（恰 12B `[st=0][version_wm][windows_max][r]
+/// [disp_w u16][disp_h u16][r u32]`；buf 不足 / windows_max 越帽 = 调用方
+/// 错，assert——`encode_getinfo_rep` 先例）。
+pub fn encode_wm_getinfo_rep(out: &mut [u8], rep: &WmGetinfoRep) -> usize {
+    assert!(out.len() >= WM_GETINFO_REP_LEN, "guiproto: wm getinfo buf 不足");
+    assert!(rep.windows_max as usize <= WM_WINDOWS_MAX, "guiproto: windows_max 越帽");
+    out[0] = ST_OK;
+    out[1] = rep.version_wm;
+    out[2] = rep.windows_max;
+    out[3] = 0;
+    out[4..6].copy_from_slice(&rep.disp_w.to_le_bytes());
+    out[6..8].copy_from_slice(&rep.disp_h.to_le_bytes());
+    out[8..12].copy_from_slice(&0u32.to_le_bytes()); // r 恒 0
+    WM_GETINFO_REP_LEN
+}
+
+/// 解析 WM_GETINFO 应答：恰 12B + st=ST_OK + windows_max ≤
+/// [`WM_WINDOWS_MAX`]；保留位（off 3/8..12）恒不校验。
+pub fn parse_wm_getinfo_rep(buf: &[u8]) -> Option<WmGetinfoRep> {
+    if buf.len() != WM_GETINFO_REP_LEN || buf[0] != ST_OK {
+        return None;
+    }
+    let windows_max = buf[2];
+    if windows_max as usize > WM_WINDOWS_MAX {
+        return None;
+    }
+    Some(WmGetinfoRep {
+        version_wm: buf[1],
+        windows_max,
+        disp_w: le16(buf, 4)?,
+        disp_h: le16(buf, 6)?,
+    })
+}
+
+/// WM_CREATE 请求（解析产物）。x/y/w/h = **申请几何**（表项回显的是避让
+/// 裁剪后的有效几何——申请值不回显，`WmEntry` doc 注对拍口径）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmCreateReq {
+    /// [`WM_LAYER_APP`]/[`WM_LAYER_SYSTEM`]（值域双侧执法）。
+    pub layer: u8,
+    /// [`WM_CREATE_F_AVOID_SYS`] 位域（未知位双侧拒）。
+    pub flags: u8,
+    /// 父窗 id（0 = 无父——QNX 缝安全域聚合，v1 字段缝先占）。
+    pub parent: u16,
+    /// 组 id（v1 恒 0 合法，字段缝）。
+    pub group: u8,
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
+/// 编码 WM_CREATE 请求（恰 16B `[op][layer][flags][r][parent u16][group][r]
+/// [x u16][y u16][w u16][h u16]`；layer/flags 野值 / out 不足 → None）。
+pub fn encode_wm_create_req(out: &mut [u8], req: &WmCreateReq) -> Option<usize> {
+    if !wm_layer_known(req.layer) || !wm_create_flags_known(req.flags) {
+        return None;
+    }
+    let m = out.get_mut(..WM_CREATE_REQ_LEN)?;
+    m[0] = OP_WM_CREATE;
+    m[1] = req.layer;
+    m[2] = req.flags;
+    m[3] = 0;
+    m[4..6].copy_from_slice(&req.parent.to_le_bytes());
+    m[6] = req.group;
+    m[7] = 0;
+    m[8..10].copy_from_slice(&req.x.to_le_bytes());
+    m[10..12].copy_from_slice(&req.y.to_le_bytes());
+    m[12..14].copy_from_slice(&req.w.to_le_bytes());
+    m[14..16].copy_from_slice(&req.h.to_le_bytes());
+    Some(WM_CREATE_REQ_LEN)
+}
+
+/// 解析 WM_CREATE 请求：恰 16B + op + layer/flags 值域对称拒；保留位
+/// （off 3/7）恒不校验。
+pub fn parse_wm_create_req(buf: &[u8]) -> Option<WmCreateReq> {
+    if buf.len() != WM_CREATE_REQ_LEN || buf[0] != OP_WM_CREATE {
+        return None;
+    }
+    let layer = buf[1];
+    let flags = buf[2];
+    if !wm_layer_known(layer) || !wm_create_flags_known(flags) {
+        return None;
+    }
+    Some(WmCreateReq {
+        layer,
+        flags,
+        parent: le16(buf, 4)?,
+        group: buf[6],
+        x: le16(buf, 8)?,
+        y: le16(buf, 10)?,
+        w: le16(buf, 12)?,
+        h: le16(buf, 14)?,
+    })
+}
+
+/// 编码 WM_CREATE 应答（恰 8B `[st=0][r][r16][window_id u16][r16]`——
+/// SUBMIT ack 同形 u16 缩宽；buf 不足 = 调用方错，assert）。
+pub fn encode_wm_create_ack(out: &mut [u8], window_id: u16) -> usize {
+    assert!(out.len() >= WM_CREATE_ACK_LEN, "guiproto: wm create ack buf 不足");
+    out[0] = ST_OK;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4..6].copy_from_slice(&window_id.to_le_bytes());
+    out[6..8].copy_from_slice(&0u16.to_le_bytes());
+    WM_CREATE_ACK_LEN
+}
+
+/// 解析 WM_CREATE 应答：恰 8B + st=ST_OK → window_id（id≠0 由 wmd 分配
+/// 策略保证——gfxdemo 建窗断言面，wire 层不执法）。
+pub fn parse_wm_create_ack(buf: &[u8]) -> Option<u16> {
+    if buf.len() != WM_CREATE_ACK_LEN || buf[0] != ST_OK {
+        return None;
+    }
+    le16(buf, 4)
+}
+
+/// 编码 WM_DESTROY 请求（恰 8B `[op][r][r16][window_id u16][r16]`；buf
+/// 不足 = 调用方错，assert）。应答 1B OK——`encode_status_rep` 复用。
+pub fn encode_wm_destroy_req(out: &mut [u8], window_id: u16) -> usize {
+    assert!(out.len() >= WM_DESTROY_REQ_LEN, "guiproto: wm destroy buf 不足");
+    out[0] = OP_WM_DESTROY;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4..6].copy_from_slice(&window_id.to_le_bytes());
+    out[6..8].copy_from_slice(&0u16.to_le_bytes());
+    WM_DESTROY_REQ_LEN
+}
+
+/// 解析 WM_DESTROY 请求：恰 8B + op → window_id（存在性 = 服务端 ST_NOENT
+/// 策略面，wire 不拦）。
+pub fn parse_wm_destroy_req(buf: &[u8]) -> Option<u16> {
+    if buf.len() != WM_DESTROY_REQ_LEN || buf[0] != OP_WM_DESTROY {
+        return None;
+    }
+    le16(buf, 4)
+}
+
+/// WM_SET 请求（解析产物；20B 掩码式，Q17）。移动+缩放+可见+Z 同帧原子
+/// 生效（表版本恰 +1，inputd 恰醒一次收一张快照）。masked-out 槽位值无
+/// 语义仍编入（定长 +「编什么收什么」——禁实现侧偷偷清零，解析对称回显）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmSetReq {
+    /// [`WM_SET_F_GEOM`]/[`WM_SET_F_VIS`]/[`WM_SET_F_Z`] 位域（mask=0 /
+    /// 未知位双侧拒）。
+    pub mask: u8,
+    pub window_id: u16,
+    /// 几何槽（GEOM 位选中才生效——申请几何，有效几何推导在 wmd）。
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+    /// 可见槽（[`WM_VIS_HIDE`]/[`WM_VIS_SHOW`]——值域无条件双侧执法，Q18；
+    /// VIS 位选中才生效）。
+    pub vis: u8,
+    /// Z 槽（任意 u8——z 平铺客户端自选语义，Q5）。
+    pub z: u8,
+}
+
+/// 编码 WM_SET 请求（恰 20B `[op][mask][r16][window_id u16][r16][x u16]
+/// [y u16][w u16][h u16][vis][z][r16]`；mask=0/未知位、vis 野值 / out
+/// 不足 → None）。
+pub fn encode_wm_set_req(out: &mut [u8], req: &WmSetReq) -> Option<usize> {
+    if !wm_set_mask_known(req.mask) || !wm_vis_known(req.vis) {
+        return None;
+    }
+    let m = out.get_mut(..WM_SET_REQ_LEN)?;
+    m[0] = OP_WM_SET;
+    m[1] = req.mask;
+    m[2] = 0;
+    m[3] = 0;
+    m[4..6].copy_from_slice(&req.window_id.to_le_bytes());
+    m[6] = 0;
+    m[7] = 0;
+    m[8..10].copy_from_slice(&req.x.to_le_bytes());
+    m[10..12].copy_from_slice(&req.y.to_le_bytes());
+    m[12..14].copy_from_slice(&req.w.to_le_bytes());
+    m[14..16].copy_from_slice(&req.h.to_le_bytes());
+    m[16] = req.vis;
+    m[17] = req.z;
+    m[18] = 0;
+    m[19] = 0;
+    Some(WM_SET_REQ_LEN)
+}
+
+/// 解析 WM_SET 请求：恰 20B + op + mask/vis 值域对称拒；保留位（off
+/// 2..4/6..8/18..20）恒不校验；masked-out 槽位照收不清零。
+pub fn parse_wm_set_req(buf: &[u8]) -> Option<WmSetReq> {
+    if buf.len() != WM_SET_REQ_LEN || buf[0] != OP_WM_SET {
+        return None;
+    }
+    let mask = buf[1];
+    let vis = buf[16];
+    if !wm_set_mask_known(mask) || !wm_vis_known(vis) {
+        return None;
+    }
+    Some(WmSetReq {
+        mask,
+        window_id: le16(buf, 4)?,
+        x: le16(buf, 8)?,
+        y: le16(buf, 10)?,
+        w: le16(buf, 12)?,
+        h: le16(buf, 14)?,
+        vis,
+        z: buf[17],
+    })
+}
+
+/// 编码 WM_TABLE_GET 请求（恰 4B `[op][r][r16]`，无参非阻塞；buf 不足 =
+/// 调用方错，assert）。
+pub fn encode_wm_table_get_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= 4, "guiproto: wm table get buf 不足");
+    out[0] = OP_WM_TABLE_GET;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    4
+}
+
+/// 解析 WM_TABLE_GET 请求：恰 4B + op 位（保留域恒不校验）。
+pub fn parse_wm_table_get_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != 4 || buf[0] != OP_WM_TABLE_GET {
+        return None;
+    }
+    Some(())
+}
+
+/// 编码 WM_TABLE_WAIT 请求（恰 8B `[op][r][r16][last_seen u32]`——**库内
+/// 首个带参阻塞请求**：wmd park 至表版本新于 last_seen 应答快照，表已新
+/// 立即答（last_seen=0 = 冷启动恒立即答——version 恒 ≥1）；buf 不足 =
+/// 调用方错，assert）。
+pub fn encode_wm_table_wait_req(out: &mut [u8], last_seen: u32) -> usize {
+    assert!(out.len() >= WM_TABLE_WAIT_REQ_LEN, "guiproto: wm table wait buf 不足");
+    out[0] = OP_WM_TABLE_WAIT;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4..8].copy_from_slice(&last_seen.to_le_bytes());
+    WM_TABLE_WAIT_REQ_LEN
+}
+
+/// 解析 WM_TABLE_WAIT 请求：恰 8B + op → last_seen（任意 u32 合法——纪元
+/// 回退角由消费侧超龄 WAIT(0) 重探测兜底，Q3）。
+pub fn parse_wm_table_wait_req(buf: &[u8]) -> Option<u32> {
+    if buf.len() != WM_TABLE_WAIT_REQ_LEN || buf[0] != OP_WM_TABLE_WAIT {
+        return None;
+    }
+    le32(buf, 4)
+}
+
+/// 窗口表项（快照 16B 定宽，Q5）。x/y/w/h = **有效几何域**——避让裁剪后的
+/// 实际可用矩形（wmd 不变量式重推导维护，任何 CREATE/DESTROY/SET 触发受
+/// 影响表项重算）；申请几何不回显（v1 无系统层重叠时有效 == 申请，GUI-8
+/// 加系统窗时客户端对拍断言须随改）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmEntry {
+    /// 窗口 id（wmd 分配；id≠0 由分配策略保证，wire 层任意 u16 合法帧）。
+    pub id: u16,
+    /// 父窗 id（0 = 无父）。
+    pub parent: u16,
+    /// 组 id（v1 恒 0，字段缝）。
+    pub group: u8,
+    /// 有效几何（半开矩形 `[x, x+w) × [y, y+h)`，整数物理像素）。
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+    /// [`WM_LAYER_APP`]/[`WM_LAYER_SYSTEM`]（两层窗 v1 下即类型优先级一维
+    /// 表，规划 :234 WMM 参照裁语；值域双侧执法）。
+    pub layer: u8,
+    /// 同层 Z 序（客户端自选平铺；服务端归一化 = VER_WM 升版面）。
+    pub z: u8,
+    /// [`WM_WIN_F_VISIBLE`]/[`WM_WIN_F_FOCUSED`] 位域（未知位双侧拒）。
+    pub flags: u8,
+}
+
+/// 窗口表快照（TABLE_GET/TABLE_WAIT 共用应答形；owned 定容数组 + count
+/// ——模块头注惯例）。version u32 = `(epoch u8 << 24) | counter u24`，
+/// counter ∈ 1..=0xFFFFFF 跳 0 ⇒ 服务端恒发 ≥1（WAIT(0) = 冷启动立即答）；
+/// epoch 取 wmd 启动 CNTVCT 派生——无持久化下唯一跨启动区分源（「新于
+/// last_seen」为大概率非必然，纪元回退由消费侧超龄 WAIT(0) 重探测兜底，
+/// Q3；wire 层 version 任意 u32 合法不执法）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmSnapshot {
+    pub version: u32,
+    /// 显示几何域（与 WM_GETINFO 缓存同源——inputd 命中坐标系对齐锚）。
+    pub disp_w: u16,
+    pub disp_h: u16,
+    /// 窗口表（前 `count` 项有效，表序 = 平局裁决序）。
+    pub entries: [WmEntry; WM_WINDOWS_MAX],
+    /// 表项数（0 = 合法空表——窗口表空是真实初始态，区别于 INPUT_POLL
+    /// count 0 拒（空批有 1B EAGAIN 替代形），Q15）。
+    pub count: usize,
+}
+
+/// 编码窗口表快照应答（TABLE_GET/TABLE_WAIT 共用；12B 头 `[st=0][count u8]
+/// [r16][version u32][disp_w u16][disp_h u16]` + count×16B 表项，总长 ≤
+/// [`WM_REP_MAX`]；count 越帽 / 表项 layer·flags 野值 / out 不足 → None，
+/// 不截断）。
+pub fn encode_wm_snapshot_rep(out: &mut [u8], snap: &WmSnapshot) -> Option<usize> {
+    if snap.count > WM_WINDOWS_MAX {
+        return None;
+    }
+    for e in snap.entries.iter().take(snap.count) {
+        if !wm_layer_known(e.layer) || !wm_win_flags_known(e.flags) {
+            return None;
+        }
+    }
+    let total = WM_SNAP_HEAD + snap.count * WM_ENTRY_LEN;
+    let m = out.get_mut(..total)?;
+    m[0] = ST_OK;
+    m[1] = snap.count as u8;
+    m[2] = 0;
+    m[3] = 0;
+    m[4..8].copy_from_slice(&snap.version.to_le_bytes());
+    m[8..10].copy_from_slice(&snap.disp_w.to_le_bytes());
+    m[10..12].copy_from_slice(&snap.disp_h.to_le_bytes());
+    let mut off = WM_SNAP_HEAD;
+    for e in snap.entries.iter().take(snap.count) {
+        m[off..off + 2].copy_from_slice(&e.id.to_le_bytes());
+        m[off + 2..off + 4].copy_from_slice(&e.parent.to_le_bytes());
+        m[off + 4] = e.group;
+        m[off + 5..off + 7].copy_from_slice(&e.x.to_le_bytes());
+        m[off + 7..off + 9].copy_from_slice(&e.y.to_le_bytes());
+        m[off + 9..off + 11].copy_from_slice(&e.w.to_le_bytes());
+        m[off + 11..off + 13].copy_from_slice(&e.h.to_le_bytes());
+        m[off + 13] = e.layer;
+        m[off + 14] = e.z;
+        m[off + 15] = e.flags;
+        off += WM_ENTRY_LEN;
+    }
+    Some(total)
+}
+
+/// 解析窗口表快照应答——**三态分离**（`parse_input_events_rep` 同形）：
+/// - `None`：畸形（截断/尾随/count 越帽/表项 layer·flags 野值/1B OK 形/
+///   非 OK 携数据）；
+/// - `Some(Err(st))`：合法 1B 错误应答（wmd 未上线/降级面 `[ST_EAGAIN]` 等）；
+/// - `Some(Ok(snap))`：快照（count=0 = 合法空表）。
+pub fn parse_wm_snapshot_rep(buf: &[u8]) -> Option<Result<WmSnapshot, u8>> {
+    let st = *buf.first()?;
+    if !st_known(st) {
+        return None;
+    }
+    if buf.len() == 1 {
+        if st == ST_OK {
+            return None; // 1B OK 形非规范（成功必携 12B 头——空表也是头形）
+        }
+        return Some(Err(st));
+    }
+    if st != ST_OK {
+        return None; // 烘焙线：非 OK 恒 1B 不携数据
+    }
+    if buf.len() < WM_SNAP_HEAD {
+        return None; // 2..12B OK 形非法
+    }
+    let count = buf[1] as usize;
+    if count > WM_WINDOWS_MAX {
+        return None;
+    }
+    if buf.len() != WM_SNAP_HEAD + count * WM_ENTRY_LEN {
+        return None; // 恰长（尾随/截断一并拒）
+    }
+    let mut entries = [WmEntry {
+        id: 0,
+        parent: 0,
+        group: 0,
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+        layer: 0,
+        z: 0,
+        flags: 0,
+    }; WM_WINDOWS_MAX];
+    for i in 0..count {
+        let off = WM_SNAP_HEAD + i * WM_ENTRY_LEN;
+        let layer = buf[off + 13];
+        let flags = buf[off + 15];
+        if !wm_layer_known(layer) || !wm_win_flags_known(flags) {
+            return None;
+        }
+        entries[i] = WmEntry {
+            id: le16(buf, off)?,
+            parent: le16(buf, off + 2)?,
+            group: buf[off + 4],
+            x: le16(buf, off + 5)?,
+            y: le16(buf, off + 7)?,
+            w: le16(buf, off + 9)?,
+            h: le16(buf, off + 11)?,
+            layer,
+            z: buf[off + 14],
+            flags,
+        };
+    }
+    Some(Ok(WmSnapshot {
+        version: le32(buf, 4)?,
+        disp_w: le16(buf, 8)?,
+        disp_h: le16(buf, 10)?,
+        entries,
+        count,
+    }))
+}
+
+/// 窗口命中测试（纯函数，**单源**——wmd 权威面与 inputd 快照面共用本实现，
+/// 禁两处手写：算法挨着 `WmEntry` 数据类型随 wire 同刀演进，Q9 裁决）。
+///
+/// 选举序：仅 [`WM_WIN_F_VISIBLE`] 置位项参选 → layer 降序（系统层压应用
+/// 层）→ z 降序（同层高位在上）→ 点入有效矩形（半开 `[x, x+w) × [y, y+h)`
+/// ——w=0/h=0 恒不中）；layer 与 z 双平局取表序靠前。坐标 x/y 为 u32
+/// （PointerEvent 口径），表项几何 u16 提升比较（u16+u16 ⊂ u32 无溢出）。
+pub fn wm_hit_test(entries: &[WmEntry], x: u32, y: u32) -> Option<u16> {
+    let mut best: Option<&WmEntry> = None;
+    for e in entries {
+        if e.flags & WM_WIN_F_VISIBLE == 0 {
+            continue; // 隐藏窗不参选（让击穿由「不参选」自然发生）
+        }
+        let hit = x >= e.x as u32
+            && x < e.x as u32 + e.w as u32
+            && y >= e.y as u32
+            && y < e.y as u32 + e.h as u32;
+        if !hit {
+            continue;
+        }
+        best = match best {
+            // 严格大于：平局保表序靠前（先见者胜）。
+            Some(b) if e.layer > b.layer || (e.layer == b.layer && e.z > b.z) => Some(e),
+            Some(b) => Some(b),
+            None => Some(e),
+        };
+    }
+    best.map(|e| e.id)
+}
+
 // ---------- 帽一致性 const assert（§3.1/§8.1-5；改帽必炸）----------
 
 const _: () = assert!(PRESENT_REQ_MAX == 24 + 16 * DAMAGE_MAX);
@@ -1258,6 +1824,13 @@ const _: () = assert!(INPUT_EVT_MAX_LEN <= 256);
 const _: () = assert!(INPUT_REP_MAX <= 256);
 const _: () = assert!(HDI_REQ_MAX <= 256);
 const _: () = assert!(HDI_REP_MAX <= 256);
+// wm 域帧算术（§7 Q5：快照单帧 12 + 15×16 = 252 ≤ CHAN_MSG_MAX 硬约束）。
+const _: () = assert!(WM_WINDOWS_MAX == 15);
+const _: () = assert!(WM_REQ_MAX == 20);
+const _: () = assert!(WM_REP_MAX == 12 + 15 * 16);
+const _: () = assert!(WM_REP_MAX == WM_SNAP_HEAD + WM_WINDOWS_MAX * WM_ENTRY_LEN);
+const _: () = assert!(WM_REQ_MAX <= 256);
+const _: () = assert!(WM_REP_MAX <= 256);
 
 #[cfg(test)]
 mod tests {
@@ -1336,6 +1909,11 @@ mod tests {
         assert_eq!(RESAMPLE_MAX_DELTA_MS, 20);
         assert_eq!(RESAMPLE_MAX_PREDICTION_MS, 8);
         assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (1, 1, 1));
+        // wm 域帽钉板（GUI-5 §7 Q5——wm const assert 的可见镜像）。
+        assert_eq!(WM_WINDOWS_MAX, 15);
+        assert_eq!(WM_REQ_MAX, 20);
+        assert_eq!(WM_REP_MAX, 252);
+        assert_eq!(VER_WM, 1);
     }
 
     // ===== 2. present 域 =====
@@ -2212,5 +2790,669 @@ mod tests {
         let n = encode_submit_ack(&mut buf, 0x0102_0304);
         assert_eq!(n, 8);
         assert_eq!(&buf[..n], &[0, 0, 0, 0, 0x04, 0x03, 0x02, 0x01][..]);
+    }
+
+    // ===== 6. wm 域（GUI-5——13 条 wire 义务 + wm_hit_test 五组）=====
+
+    /// 测试样本快照（count 项，每项字段相异值随 i 递变防互换静绿——版本
+    /// 三元组 (1,2,3) 先例同纪律）。
+    fn wm_snap_sample(count: usize) -> WmSnapshot {
+        let mut entries = [WmEntry {
+            id: 0,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            layer: 0,
+            z: 0,
+            flags: 0,
+        }; WM_WINDOWS_MAX];
+        for (i, e) in entries.iter_mut().enumerate().take(count) {
+            *e = WmEntry {
+                id: 0x10 + i as u16,
+                parent: 0x20 + i as u16,
+                group: i as u8,
+                x: (100 + i) as u16,
+                y: (200 + i) as u16,
+                w: (50 + i) as u16,
+                h: (60 + i) as u16,
+                layer: WM_LAYER_APP,
+                z: i as u8,
+                flags: WM_WIN_F_VISIBLE,
+            };
+        }
+        WmSnapshot {
+            version: 0x0A00_0001,
+            disp_w: 800,
+            disp_h: 600,
+            entries,
+            count,
+        }
+    }
+
+    #[test]
+    fn wm_all_ops_roundtrip() {
+        let mut buf = [0u8; WM_REP_MAX];
+        // GETINFO req / rep。
+        let n = encode_wm_getinfo_req(&mut buf);
+        assert_eq!(n, 4);
+        assert_eq!(parse_wm_getinfo_req(&buf[..n]), Some(()));
+        let gi = WmGetinfoRep {
+            version_wm: VER_WM,
+            windows_max: 15,
+            disp_w: 800,
+            disp_h: 600,
+        };
+        let n = encode_wm_getinfo_rep(&mut buf, &gi);
+        assert_eq!(n, 12);
+        assert_eq!(parse_wm_getinfo_rep(&buf[..n]), Some(gi));
+        // CREATE req（相异值）/ ack。
+        let cr = WmCreateReq {
+            layer: WM_LAYER_SYSTEM,
+            flags: WM_CREATE_F_AVOID_SYS,
+            parent: 3,
+            group: 4,
+            x: 5,
+            y: 6,
+            w: 7,
+            h: 8,
+        };
+        let n = encode_wm_create_req(&mut buf, &cr).unwrap();
+        assert_eq!(n, 16);
+        assert_eq!(parse_wm_create_req(&buf[..n]), Some(cr));
+        let n = encode_wm_create_ack(&mut buf, 0x1234);
+        assert_eq!(n, 8);
+        assert_eq!(parse_wm_create_ack(&buf[..n]), Some(0x1234));
+        // DESTROY req。
+        let n = encode_wm_destroy_req(&mut buf, 0x5678);
+        assert_eq!(n, 8);
+        assert_eq!(parse_wm_destroy_req(&buf[..n]), Some(0x5678));
+        // SET req：全 mask 相异值 + masked-out 槽照编照收（仅 Z 位——几何/
+        // vis 槽携带值无语义原样往返，禁偷清零）。
+        let sr = WmSetReq {
+            mask: WM_SET_F_GEOM | WM_SET_F_VIS | WM_SET_F_Z,
+            window_id: 9,
+            x: 10,
+            y: 11,
+            w: 12,
+            h: 13,
+            vis: WM_VIS_SHOW,
+            z: 14,
+        };
+        let n = encode_wm_set_req(&mut buf, &sr).unwrap();
+        assert_eq!(n, 20);
+        assert_eq!(parse_wm_set_req(&buf[..n]), Some(sr));
+        let partial = WmSetReq {
+            mask: WM_SET_F_Z,
+            window_id: 2,
+            x: 0xFFFF,
+            y: 0xFFFF,
+            w: 0xFFFF,
+            h: 0xFFFF,
+            vis: WM_VIS_SHOW,
+            z: 0xAB,
+        };
+        let n = encode_wm_set_req(&mut buf, &partial).unwrap();
+        assert_eq!(parse_wm_set_req(&buf[..n]), Some(partial));
+        // TABLE_GET req / TABLE_WAIT req（0 与顶格 last_seen——纪元回退角
+        // 由消费侧兜底，wire 层任意 u32 合法）。
+        let n = encode_wm_table_get_req(&mut buf);
+        assert_eq!(n, 4);
+        assert_eq!(parse_wm_table_get_req(&buf[..n]), Some(()));
+        for ls in [0u32, 0x0A00_0001, u32::MAX] {
+            let n = encode_wm_table_wait_req(&mut buf, ls);
+            assert_eq!(n, 8);
+            assert_eq!(parse_wm_table_wait_req(&buf[..n]), Some(ls));
+        }
+        // 快照应答（TABLE_GET/TABLE_WAIT 共用）。
+        let snap = wm_snap_sample(2);
+        let n = encode_wm_snapshot_rep(&mut buf, &snap).unwrap();
+        assert_eq!(n, 12 + 2 * 16);
+        assert_eq!(parse_wm_snapshot_rep(&buf[..n]).unwrap().ok().unwrap(), snap);
+        // DESTROY/SET 成功应答 = 1B status 面（第十组，复用）。
+        let n = encode_status_rep(&mut buf, ST_OK);
+        assert_eq!(parse_status_rep(&buf[..n]), Some(ST_OK));
+    }
+
+    #[test]
+    fn wm_wire_golden() {
+        // 黄金字节钉板（改布局 = 此测必炸——C-2a 纪律）。全帧 LE。
+        let mut buf = [0u8; WM_REP_MAX];
+        // GETINFO rep 12B。
+        let gi = WmGetinfoRep {
+            version_wm: 1,
+            windows_max: 15,
+            disp_w: 800,
+            disp_h: 600,
+        };
+        let n = encode_wm_getinfo_rep(&mut buf, &gi);
+        assert_eq!(n, 12);
+        assert_eq!(
+            &buf[..n],
+            &[0, 1, 15, 0, 0x20, 0x03, 0x58, 0x02, 0, 0, 0, 0][..]
+        );
+        // GETINFO req 4B。
+        let n = encode_wm_getinfo_req(&mut buf);
+        assert_eq!(&buf[..n], &[0x60, 0, 0, 0][..]);
+        // CREATE req 16B。
+        let cr = WmCreateReq {
+            layer: 1,
+            flags: 1,
+            parent: 3,
+            group: 4,
+            x: 5,
+            y: 6,
+            w: 7,
+            h: 8,
+        };
+        let n = encode_wm_create_req(&mut buf, &cr).unwrap();
+        assert_eq!(n, 16);
+        assert_eq!(
+            &buf[..n],
+            &[0x61, 1, 1, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8, 0][..]
+        );
+        // CREATE ack 8B。
+        let n = encode_wm_create_ack(&mut buf, 0x1234);
+        assert_eq!(&buf[..n], &[0, 0, 0, 0, 0x34, 0x12, 0, 0][..]);
+        // DESTROY req 8B。
+        let n = encode_wm_destroy_req(&mut buf, 0x5678);
+        assert_eq!(&buf[..n], &[0x62, 0, 0, 0, 0x78, 0x56, 0, 0][..]);
+        // SET req 20B。
+        let sr = WmSetReq {
+            mask: 7,
+            window_id: 9,
+            x: 10,
+            y: 11,
+            w: 12,
+            h: 13,
+            vis: 1,
+            z: 14,
+        };
+        let n = encode_wm_set_req(&mut buf, &sr).unwrap();
+        assert_eq!(n, 20);
+        assert_eq!(
+            &buf[..n],
+            &[0x63, 7, 0, 0, 9, 0, 0, 0, 10, 0, 11, 0, 12, 0, 13, 0, 1, 14, 0, 0][..]
+        );
+        // TABLE_GET req 4B / TABLE_WAIT req 8B。
+        let n = encode_wm_table_get_req(&mut buf);
+        assert_eq!(&buf[..n], &[0x64, 0, 0, 0][..]);
+        let n = encode_wm_table_wait_req(&mut buf, 0x0102_0304);
+        assert_eq!(&buf[..n], &[0x65, 0, 0, 0, 0x04, 0x03, 0x02, 0x01][..]);
+        // LE 钉板：TABLE_WAIT last_seen 首字节 = 最低位字节。
+        assert_eq!(buf[4], 0x04);
+        // 快照 1 项 = 12B 头 + 16B 表项。
+        let snap = wm_snap_sample(1);
+        let n = encode_wm_snapshot_rep(&mut buf, &snap).unwrap();
+        assert_eq!(n, 28);
+        assert_eq!(
+            &buf[..n],
+            &[
+                0, 1, 0, 0, // 头：st/count/r16
+                0x01, 0, 0, 0x0A, // version 0x0A000001 LE
+                0x20, 0x03, 0x58, 0x02, // disp_w/disp_h
+                0x10, 0, 0x20, 0, 0, // 表项：id/parent/group
+                0x64, 0, 0xC8, 0, 0x32, 0, 0x3C, 0, // x/y/w/h
+                0, 0, 1, // layer/z/flags
+            ][..]
+        );
+        // LE 钉板：version 首字节 = 最低位字节（counter 段）。
+        assert_eq!(buf[4], 0x01);
+        assert_eq!(buf[7], 0x0A);
+    }
+
+    #[test]
+    fn wm_truncation_and_trailing_rejects() {
+        // 定长帧截断每切点全拒 + 尾随拒（count 在头内——快照短前缀不构成
+        // 合法小帧）。
+        let mut buf = [0u8; WM_REP_MAX];
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let n = encode_wm_getinfo_req(&mut buf);
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_getinfo_rep(
+            &mut buf,
+            &WmGetinfoRep { version_wm: 1, windows_max: 15, disp_w: 800, disp_h: 600 },
+        );
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_create_req(
+            &mut buf,
+            &WmCreateReq {
+                layer: WM_LAYER_APP,
+                flags: 0,
+                parent: 0,
+                group: 0,
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+            },
+        )
+        .unwrap();
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_create_ack(&mut buf, 1);
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_destroy_req(&mut buf, 1);
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_set_req(
+            &mut buf,
+            &WmSetReq {
+                mask: WM_SET_F_GEOM,
+                window_id: 1,
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+                vis: WM_VIS_HIDE,
+                z: 0,
+            },
+        )
+        .unwrap();
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_table_get_req(&mut buf);
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_table_wait_req(&mut buf, 7);
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_snapshot_rep(&mut buf, &wm_snap_sample(1)).unwrap();
+        frames.push(buf[..n].to_vec());
+
+        // 帧序号分派解析器（九帧型 → 统一 Option<()> 拒面）。
+        fn dispatch(fi: usize, b: &[u8]) -> Option<()> {
+            match fi {
+                0 => parse_wm_getinfo_req(b).map(|_| ()),
+                1 => parse_wm_getinfo_rep(b).map(|_| ()),
+                2 => parse_wm_create_req(b).map(|_| ()),
+                3 => parse_wm_create_ack(b).map(|_| ()),
+                4 => parse_wm_destroy_req(b).map(|_| ()),
+                5 => parse_wm_set_req(b).map(|_| ()),
+                6 => parse_wm_table_get_req(b).map(|_| ()),
+                7 => parse_wm_table_wait_req(b).map(|_| ()),
+                _ => match parse_wm_snapshot_rep(b) {
+                    Some(Ok(_)) | Some(Err(_)) => Some(()),
+                    None => None,
+                },
+            }
+        }
+        for (fi, frame) in frames.iter().enumerate() {
+            for cut in 0..frame.len() {
+                assert_eq!(dispatch(fi, &frame[..cut]), None, "帧 {fi} 截断 @{cut} 应拒");
+            }
+            let mut tail = frame.clone();
+            tail.push(0xEE);
+            assert_eq!(dispatch(fi, &tail), None, "帧 {fi} 尾随应拒");
+        }
+    }
+
+    #[test]
+    fn wm_value_domain_reject_matrix() {
+        // 值域拒矩阵（编码 + 解析对称；相异野值防互换静绿）。
+        let mut buf = [0u8; WM_REP_MAX];
+        // CREATE：layer 野值 2 / flags 未知位 0x02。
+        let good_create = WmCreateReq {
+            layer: WM_LAYER_APP,
+            flags: 0,
+            parent: 3,
+            group: 4,
+            x: 5,
+            y: 6,
+            w: 7,
+            h: 8,
+        };
+        let bad_layer = WmCreateReq { layer: 2, ..good_create };
+        assert_eq!(encode_wm_create_req(&mut buf, &bad_layer), None);
+        let mut f = [0u8; WM_CREATE_REQ_LEN];
+        let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
+        f[1] = 2;
+        assert_eq!(parse_wm_create_req(&f), None);
+        let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x02, ..good_create };
+        assert_eq!(encode_wm_create_req(&mut buf, &bad_flags), None);
+        let mut f = [0u8; WM_CREATE_REQ_LEN];
+        let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
+        f[2] = 0x02;
+        assert_eq!(parse_wm_create_req(&f), None);
+        // SET：mask=0 / mask 未知位 0x08 / vis 野值 2（vis 无条件执法——
+        // masked-out 也拒，Q18）。
+        let good = WmSetReq {
+            mask: WM_SET_F_GEOM,
+            window_id: 1,
+            x: 2,
+            y: 3,
+            w: 4,
+            h: 5,
+            vis: WM_VIS_HIDE,
+            z: 6,
+        };
+        let n = encode_wm_set_req(&mut buf, &good).unwrap();
+        let patches: [(usize, u8, &str); 3] = [
+            (1, 0, "mask=0"),
+            (1, 0x08, "mask 未知位"),
+            (16, 2, "vis 野值"),
+        ];
+        for (off, val, why) in patches {
+            let mut f = buf;
+            f[off] = val;
+            assert_eq!(parse_wm_set_req(&f[..n]), None, "{why} 解析应拒");
+        }
+        assert_eq!(encode_wm_set_req(&mut buf, &WmSetReq { mask: 0, ..good }), None);
+        assert_eq!(
+            encode_wm_set_req(&mut buf, &WmSetReq { mask: 0x08 | WM_SET_F_Z, ..good }),
+            None
+        );
+        assert_eq!(encode_wm_set_req(&mut buf, &WmSetReq { vis: 2, ..good }), None);
+        // 快照表项：layer 野值 2（off 头+13）/ flags 未知位 0x04（off 头+15）。
+        let n = encode_wm_snapshot_rep(&mut buf, &wm_snap_sample(1)).unwrap();
+        let mut f = buf;
+        f[WM_SNAP_HEAD + 13] = 2;
+        assert_eq!(parse_wm_snapshot_rep(&f[..n]), None);
+        let mut f = buf;
+        f[WM_SNAP_HEAD + 15] = 0x04;
+        assert_eq!(parse_wm_snapshot_rep(&f[..n]), None);
+        let mut bad_snap = wm_snap_sample(1);
+        bad_snap.entries[0].flags = WM_WIN_F_FOCUSED | 0x04;
+        assert_eq!(encode_wm_snapshot_rep(&mut buf, &bad_snap), None);
+        bad_snap.entries[0].layer = 2;
+        assert_eq!(encode_wm_snapshot_rep(&mut buf, &bad_snap), None);
+        // GETINFO rep：windows_max 越帽 16（解析面；编码面 assert 见
+        // should_panic 测试）。
+        let n = encode_wm_getinfo_rep(
+            &mut buf,
+            &WmGetinfoRep { version_wm: 1, windows_max: 15, disp_w: 800, disp_h: 600 },
+        );
+        let mut f = buf;
+        f[2] = 16;
+        assert_eq!(parse_wm_getinfo_rep(&f[..n]), None);
+    }
+
+    #[test]
+    fn wm_cap_boundary_and_empty_table() {
+        // 帽边界恰满：15 项 = 12 + 15×16 = WM_REP_MAX 顶格。
+        let full = wm_snap_sample(WM_WINDOWS_MAX);
+        let mut buf = [0u8; WM_REP_MAX];
+        let n = encode_wm_snapshot_rep(&mut buf, &full).unwrap();
+        assert_eq!(n, WM_REP_MAX);
+        let got = parse_wm_snapshot_rep(&buf[..n]).unwrap().ok().unwrap();
+        assert_eq!(got.count, WM_WINDOWS_MAX);
+        assert_eq!(got.entries[WM_WINDOWS_MAX - 1], full.entries[WM_WINDOWS_MAX - 1]);
+        // 越帽：16 项编码 None；count=16 解析 None（合成头）。
+        let mut over = wm_snap_sample(WM_WINDOWS_MAX);
+        over.count = WM_WINDOWS_MAX + 1;
+        assert_eq!(encode_wm_snapshot_rep(&mut buf, &over), None);
+        let mut f = buf;
+        f[1] = WM_WINDOWS_MAX as u8 + 1;
+        assert_eq!(parse_wm_snapshot_rep(&f[..n]), None);
+        // count=0 = 合法空表钉（12B 头恰帧——区别于 INPUT_POLL count 0 拒：
+        // 空批有 1B EAGAIN 替代形，窗口表空 = 真实初始态，Q15）。
+        let empty = wm_snap_sample(0);
+        let n = encode_wm_snapshot_rep(&mut buf, &empty).unwrap();
+        assert_eq!(n, 12);
+        let got = parse_wm_snapshot_rep(&buf[..n]).unwrap().ok().unwrap();
+        assert_eq!(got.count, 0);
+        assert_eq!(got, empty);
+    }
+
+    #[test]
+    fn wm_snapshot_three_state_and_baking_line() {
+        // 三态之一：合法 1B 错误应答（wmd 未上线/降级面）→ Err(st)。
+        assert_eq!(parse_wm_snapshot_rep(&[ST_EAGAIN]), Some(Err(ST_EAGAIN)));
+        assert_eq!(parse_wm_snapshot_rep(&[ST_BUSY]), Some(Err(ST_BUSY)));
+        // 烘焙线：非 OK 携数据 = 畸形（None）。
+        assert_eq!(parse_wm_snapshot_rep(&[ST_BAD, 0, 0, 0]), None);
+        assert_eq!(parse_wm_snapshot_rep(&[ST_FULL, 0xEE]), None);
+        // 未知 st / 1B OK 形（成功必携 12B 头）/ 空帧 → None。
+        assert_eq!(parse_wm_snapshot_rep(&[ST_UNSUPPORTED + 1]), None);
+        assert_eq!(parse_wm_snapshot_rep(&[ST_OK]), None);
+        assert_eq!(parse_wm_snapshot_rep(&[]), None);
+        // 头截断（2..12B OK 形非法）/ count=1 表项截断。
+        assert_eq!(parse_wm_snapshot_rep(&[ST_OK, 0]), None);
+        assert_eq!(parse_wm_snapshot_rep(&[ST_OK, 0, 0, 0]), None);
+        assert_eq!(parse_wm_snapshot_rep(&[ST_OK, 1, 0, 0, 1]), None);
+    }
+
+    #[test]
+    fn wm_reserved_wild_forward_compat() {
+        // 保留位解析侧恒不校验（前向兼容锚——0xEE 塞槽仍解析）。
+        let mut buf = [0u8; WM_REP_MAX];
+        // GETINFO req r/r16。
+        assert_eq!(parse_wm_getinfo_req(&[OP_WM_GETINFO, 0xEE, 0xEE, 0xEE]), Some(()));
+        // TABLE_GET req r/r16。
+        assert_eq!(parse_wm_table_get_req(&[OP_WM_TABLE_GET, 0xEE, 0xEE, 0xEE]), Some(()));
+        // TABLE_WAIT req r/r16（off 1..4）。
+        let n = encode_wm_table_wait_req(&mut buf, 5);
+        buf[1] = 0xEE;
+        buf[2] = 0xEE;
+        buf[3] = 0xEE;
+        assert_eq!(parse_wm_table_wait_req(&buf[..n]), Some(5));
+        // CREATE req r（off 3/7）。
+        let cr = WmCreateReq {
+            layer: WM_LAYER_APP,
+            flags: 0,
+            parent: 1,
+            group: 2,
+            x: 3,
+            y: 4,
+            w: 5,
+            h: 6,
+        };
+        let n = encode_wm_create_req(&mut buf, &cr).unwrap();
+        buf[3] = 0xEE;
+        buf[7] = 0xEE;
+        assert_eq!(parse_wm_create_req(&buf[..n]), Some(cr));
+        // SET req r16（off 2..4/6..8/18..20）。
+        let sr = WmSetReq {
+            mask: WM_SET_F_GEOM | WM_SET_F_Z,
+            window_id: 1,
+            x: 2,
+            y: 3,
+            w: 4,
+            h: 5,
+            vis: WM_VIS_SHOW,
+            z: 6,
+        };
+        let n = encode_wm_set_req(&mut buf, &sr).unwrap();
+        for i in [2usize, 3, 6, 7, 18, 19] {
+            buf[i] = 0xEE;
+        }
+        assert_eq!(parse_wm_set_req(&buf[..n]), Some(sr));
+        // GETINFO rep r（off 3）/ r u32（off 8..12）。
+        let gi = WmGetinfoRep {
+            version_wm: 1,
+            windows_max: 15,
+            disp_w: 800,
+            disp_h: 600,
+        };
+        let n = encode_wm_getinfo_rep(&mut buf, &gi);
+        buf[3] = 0xFF;
+        for i in 8..12 {
+            buf[i] = 0xFF;
+        }
+        assert_eq!(parse_wm_getinfo_rep(&buf[..n]), Some(gi));
+        // CREATE ack r/r16（off 1..4、6..8）。
+        let n = encode_wm_create_ack(&mut buf, 9);
+        buf[1] = 0xEE;
+        buf[6] = 0xEE;
+        buf[7] = 0xEE;
+        assert_eq!(parse_wm_create_ack(&buf[..n]), Some(9));
+        // 快照头 r16（off 2..4）。
+        let snap = wm_snap_sample(1);
+        let n = encode_wm_snapshot_rep(&mut buf, &snap).unwrap();
+        buf[2] = 0xEE;
+        buf[3] = 0xEE;
+        assert_eq!(
+            parse_wm_snapshot_rep(&buf[..n]).unwrap().ok().unwrap(),
+            snap
+        );
+    }
+
+    #[test]
+    fn wm_open_value_fields_not_rejected() {
+        // 开放值域不拒：z/group/parent/version/last_seen 任意值合法帧（值域
+        // 执法只钉钦定位域——SET mask 与 CREATE flags 的未知位拒是**值域面**
+        // 非「未知位不拒」保留面，两纪律分立注记）。
+        let mut buf = [0u8; WM_REP_MAX];
+        let wild = WmSetReq {
+            mask: WM_SET_F_Z,
+            window_id: 0,
+            x: 0xFFFF,
+            y: 0xFFFF,
+            w: 0xFFFF,
+            h: 0xFFFF,
+            vis: WM_VIS_HIDE,
+            z: 0xFF,
+        };
+        let n = encode_wm_set_req(&mut buf, &wild).unwrap();
+        assert_eq!(parse_wm_set_req(&buf[..n]), Some(wild));
+        let wild_c = WmCreateReq {
+            layer: WM_LAYER_APP,
+            flags: 0,
+            parent: 0xFFFF,
+            group: 0xEE,
+            x: 0xFFFF,
+            y: 0xFFFF,
+            w: 0xFFFF,
+            h: 0xFFFF,
+        };
+        let n = encode_wm_create_req(&mut buf, &wild_c).unwrap();
+        assert_eq!(parse_wm_create_req(&buf[..n]), Some(wild_c));
+        // 快照 version 任意 u32（含 0——「恒 ≥1」是服务端不变量非 wire 执法，
+        // Q3）；id=0 引用存在性归服务端 ST_NOENT 策略面（Q18 分工）。
+        for v in [0u32, u32::MAX] {
+            let mut s = wm_snap_sample(1);
+            s.version = v;
+            let n = encode_wm_snapshot_rep(&mut buf, &s).unwrap();
+            assert_eq!(parse_wm_snapshot_rep(&buf[..n]).unwrap().ok().unwrap(), s);
+        }
+        let n = encode_wm_destroy_req(&mut buf, 0);
+        assert_eq!(parse_wm_destroy_req(&buf[..n]), Some(0));
+    }
+
+    #[test]
+    fn wm_wrong_op_confusion_rejects() {
+        // 错 op 混淆拒：拿 0x01/0x20/0x40 投 wm 解析器必 None（0x60 带互斥，
+        // Q1——结构性防错投）。
+        assert_eq!(parse_wm_getinfo_req(&[OP_GETINFO, 0, 0, 0]), None);
+        assert_eq!(parse_wm_getinfo_req(&[OP_INPUT_POLL, 0, 0, 0]), None);
+        assert_eq!(parse_wm_table_get_req(&[OP_REG_VBLANK, 0, 0, 0]), None);
+        for wrong in [OP_GETINFO, OP_INPUT_SUBSCRIBE, OP_COMMIT] {
+            let mut f = [0u8; WM_CREATE_REQ_LEN];
+            f[0] = wrong;
+            assert_eq!(parse_wm_create_req(&f), None);
+            let mut f = [0u8; WM_SET_REQ_LEN];
+            f[0] = wrong;
+            assert_eq!(parse_wm_set_req(&f), None);
+            let mut f = [0u8; WM_TABLE_WAIT_REQ_LEN];
+            f[0] = wrong;
+            assert_eq!(parse_wm_table_wait_req(&f), None);
+            let mut f = [0u8; WM_DESTROY_REQ_LEN];
+            f[0] = wrong;
+            assert_eq!(parse_wm_destroy_req(&f), None);
+        }
+        // 反向：wm op 投三既有域解析器必 None（既有面零改动的防错投证明）。
+        assert_eq!(parse_present_req(&[OP_WM_CREATE, 0, 0, 0]), None);
+        assert_eq!(parse_input_poll_req(&[OP_WM_TABLE_GET, 1, 0, 0]), None);
+        assert_eq!(parse_reg_vblank_req(&[OP_WM_GETINFO, 0, 0, 0]), None);
+        assert_eq!(parse_vblank_wait_req(&[OP_WM_SET, 0, 0, 0]), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "guiproto")]
+    fn wm_encode_getinfo_rep_rejects_cap_overflow() {
+        // assert 契约：windows_max 越帽 = 调用方程序员错，炸响不静默。
+        let mut buf = [0u8; WM_GETINFO_REP_LEN];
+        encode_wm_getinfo_rep(
+            &mut buf,
+            &WmGetinfoRep {
+                version_wm: 1,
+                windows_max: WM_WINDOWS_MAX as u8 + 1,
+                disp_w: 800,
+                disp_h: 600,
+            },
+        );
+    }
+
+    #[test]
+    fn wm_encode_none_contract() {
+        // None 契约（netdproto 同款——含空 out 切片，不截断不 panic）。
+        let mut buf = [0u8; WM_REP_MAX];
+        let cr = WmCreateReq {
+            layer: WM_LAYER_APP,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        let sr = WmSetReq {
+            mask: WM_SET_F_VIS,
+            window_id: 1,
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            vis: WM_VIS_SHOW,
+            z: 0,
+        };
+        // 值域野值（已在 reject 矩阵钉过——此处 None 面）与 out 不足。
+        assert_eq!(encode_wm_create_req(&mut buf, &cr), Some(16));
+        assert_eq!(encode_wm_create_req(&mut [], &cr), None);
+        assert_eq!(encode_wm_set_req(&mut [], &sr), None);
+        let mut small = [0u8; 19];
+        assert_eq!(encode_wm_set_req(&mut small, &sr), None);
+        let snap = wm_snap_sample(1);
+        assert_eq!(encode_wm_snapshot_rep(&mut [], &snap), None);
+        let mut small = [0u8; 27];
+        assert_eq!(encode_wm_snapshot_rep(&mut small, &snap), None);
+    }
+
+    #[test]
+    fn wm_hit_test_groups() {
+        // 组①空表 → None。
+        assert_eq!(wm_hit_test(&[], 400, 300), None);
+        let base = WmEntry {
+            id: 7,
+            parent: 0,
+            group: 0,
+            x: 100,
+            y: 200,
+            w: 50,
+            h: 60,
+            layer: WM_LAYER_APP,
+            z: 0,
+            flags: WM_WIN_F_VISIBLE,
+        };
+        // 组②表边界：半开 [x, x+w) × [y, y+h)——左/上界含、右/下界不含；
+        // w=0/h=0 恒不中。
+        let table = [base];
+        assert_eq!(wm_hit_test(&table, 100, 200), Some(7)); // 左上角恰中
+        assert_eq!(wm_hit_test(&table, 149, 259), Some(7)); // 右下内界
+        assert_eq!(wm_hit_test(&table, 150, 250), None); // 右界外
+        assert_eq!(wm_hit_test(&table, 140, 260), None); // 下界外
+        assert_eq!(wm_hit_test(&table, 99, 250), None); // 左界外
+        assert_eq!(wm_hit_test(&[WmEntry { w: 0, ..base }], 100, 200), None);
+        assert_eq!(wm_hit_test(&[WmEntry { h: 0, ..base }], 100, 200), None);
+        // 组③Z 遮盖：同层高 z 压低 z（表序无关）；系统层压应用层任意 z；
+        // layer/z 双平局取表序靠前。
+        let low = WmEntry { id: 1, x: 0, y: 0, w: 800, h: 600, z: 1, ..base };
+        let high = WmEntry { id: 2, x: 0, y: 0, w: 800, h: 600, z: 9, ..base };
+        let sys = WmEntry { id: 3, x: 0, y: 0, w: 800, h: 30, layer: WM_LAYER_SYSTEM, ..base };
+        assert_eq!(wm_hit_test(&[low, high], 400, 300), Some(2));
+        assert_eq!(wm_hit_test(&[high, low], 400, 300), Some(2));
+        assert_eq!(wm_hit_test(&[low, sys], 400, 10), Some(3)); // 层压 z
+        let tie_b = WmEntry { id: 5, ..low };
+        let tie_a_table = [WmEntry { id: 4, ..low }, tie_b];
+        assert_eq!(wm_hit_test(&tie_a_table, 400, 300), Some(4)); // 平局表序靠前
+        // 组④避让带：系统状态栏占 y∈[0,30)，app 有效几何自 y=30 起（避让
+        // 已重推导进表项）——带内命中系统窗；系统窗缺席则带内无命中（app
+        // 有效矩形不覆盖 = 击穿出表）。
+        let app = WmEntry { id: 6, x: 0, y: 30, w: 800, h: 570, ..base };
+        assert_eq!(wm_hit_test(&[app, sys], 400, 10), Some(3));
+        assert_eq!(wm_hit_test(&[app], 400, 10), None);
+        assert_eq!(wm_hit_test(&[app], 400, 300), Some(6));
+        // 组⑤隐藏窗让击穿：F_VISIBLE 未置位不参选——点穿到下层；全隐藏 None。
+        let hidden = WmEntry { id: 8, flags: 0, ..high };
+        assert_eq!(wm_hit_test(&[hidden, low], 400, 300), Some(1));
+        assert_eq!(wm_hit_test(&[hidden], 400, 300), None);
     }
 }

@@ -33,7 +33,13 @@ static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随�
 // `netd_h()`）；GUI-4 段② 第四位 = input 客户端端（bsh `inputpoll`——
 // `input_h()`）；GUI-2 段③ 起 extras 首/次位再挂 gfxdemo 的 present/hdi
 // 客户端端（`present_h()`/`hdi_h()`）、第三/四位再挂 guifbd 的 present/
-// hdi 服务端端（`present_srv_h()`/`hdi_srv_h()`）——同槽多产面惯例
+// hdi 服务端端（`present_srv_h()`/`hdi_srv_h()`）；GUI-5 起首位再产两枚
+// ——gfxdemo 的 wm 域客户端端（`wm_cli_h()`——端点换手：present/hdi 客
+// 户端端改随 gui-wmd，`present_h()` 保留旧注）与 gui-wmd 的 wm 服务端
+// 端（`wm_srv_h()`）、次位再产 inputd 的 wmd 推送客户端端
+// （`wm_push_h()`）与 gui-wmd 的推送服务端端（`wm_push_srv_h()`）、
+// 第三/四位再产 gui-wmd 的 present/hdi 客户端端（`wm_present_h()`/
+// `wm_hdi_h()`——guifbd 客户端端换手件）——同槽多产面惯例
 // （gift2/gift3 同款）。
 // T-1 自描述对占固定位 gift[2]/[3]（前缀紧致律——自描述对前移、extras
 // 后挪，产侧 extra<2 不再中段留 0 洞）：GIFT_H[2] = self_proc MANAGE|
@@ -204,8 +210,35 @@ pub fn gift2_h() -> u32 {
 /// gfxdemo 经它发 berry-guiproto present RPC；0 = 未交付 = guifbd 未起
 /// （rootfs 相 arm 静默跳过 / bsh 手跑恒降级），调用方走 present absent
 /// 退出行）。与 [`rootfs_h`]/[`gift2_h`] 同槽不同名：spawn 侧同一 gift
-/// 位对不同程序承载不同对象（gift3 同款惯例）。
+/// 位对不同程序承载不同对象（gift3 同款惯例）。GUI-5 起 gfxdemo 改连
+/// wm 域经 gui-wmd 中继（[`wm_cli_h`] 同槽顶替——ADR #61 端点换手）；
+/// 本访问器保留（旧 spawn 面兼容注记）。
 pub fn present_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（GUI-5：gfxdemo 的 wm 域
+/// channel 客户端端——svcmgr wmd arm 建对后客户端端随 gfxdemo 预拉
+/// extras 首位直递（fresh 端非 dup，fs_b/net_b 先例），gfxdemo 的 wm 六
+/// op + present/hdi 中继经它发（ADR #61 端点换手——present/hdi 客户端
+/// 端改随 gui-wmd）；0 = 未交付 = wmd 未起（rootfs 相 arm 静默跳过 /
+/// bsh 手跑恒降级），调用方走 wm absent 退出行）。与
+/// [`rootfs_h`]/[`gift2_h`]/[`present_h`] 同槽不同名：spawn 侧同一 gift
+/// 位对不同程序承载不同对象（gift3 同款惯例）。
+pub fn wm_cli_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（GUI-5：gui-wmd 的 wm 域
+/// channel 服务端端——svcmgr wmd arm 建对后随 extras 首位 take 迁入，
+/// serve 循环 wm 路经它收 wm 六 op + present/hdi 中继请求；0 = 未交付 =
+/// 协议破缺面（EFI 链 wmd 恒有——0 值 eprintln+park 兜底）。与
+/// [`rootfs_h`]/[`gift2_h`]/[`present_h`]/[`wm_cli_h`] 同槽不同名：spawn
+/// 侧同一 gift 位对不同程序承载不同对象（netd_h/present_srv_h 同款
+/// 多产面惯例）。
+pub fn wm_srv_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[0] }
 }
@@ -242,8 +275,30 @@ pub fn gift3_h() -> u32 {
 /// hdi 域 channel 客户端端——随 gfxdemo 预拉 extras 次位直递，gfxdemo 的
 /// REG_VBLANK/VBLANK_WAIT/PREPARE/COMMIT 经它发；0 = 未交付 = 与
 /// [`present_h`] 同门降级）。与 [`fs_h`]/[`blk_h`]/[`gift3_h`] 同槽不同
-/// 名：spawn 侧同一 gift 位对不同程序承载不同对象。
+/// 名：spawn 侧同一 gift 位对不同程序承载不同对象。GUI-5 起 gfxdemo 的
+/// hdi op 改经 wm 域中继（[`wm_cli_h`] 面），本访问器保留旧注。
 pub fn hdi_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（GUI-5：gui-inputd 的 wmd
+/// 推送 channel 客户端端——svcmgr inputd arm 随 extras 次位追加直递
+/// （WMD_PUSH_B 非 0 追加形；0 = 未交付 = wmd 未起，inputd 退单通道现
+/// 行为——`wm_push_h()==0` 门控））。与 [`fs_h`]/[`blk_h`]/[`gift3_h`]/
+/// [`hdi_h`] 同槽不同名：spawn 侧同一 gift 位对不同程序承载不同对象
+/// （多产面惯例）。
+pub fn wm_push_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（GUI-5：gui-wmd 的
+/// wmd↔inputd 推送对服务端端——inputd 的 WM_TABLE_WAIT 在此 park 应答
+/// 窗口表快照；0 = 未交付 = [`wm_srv_h`] 同款 eprintln+park 兜底）。与
+/// [`fs_h`]/[`blk_h`]/[`gift3_h`]/[`hdi_h`]/[`wm_push_h`] 同槽不同名：
+/// spawn 侧同一 gift 位对不同程序承载不同对象（多产面惯例）。
+pub fn wm_push_srv_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[1] }
 }
@@ -270,6 +325,19 @@ pub fn present_srv_h() -> u32 {
     unsafe { GIFT_H[4] }
 }
 
+/// env 块 extras[2]（gift[6] 位）的同槽访问器（GUI-5：gui-wmd 的 present
+/// 域 channel 客户端端——**guifbd 客户端端换手件**：GUI-2 段③ 随 gfxdemo
+/// 直递的客户端端，GUI-5 起改随 wmd extras 第三位直递，present 六 op 透
+/// 传中继经它发（启动序②RELEASE_WAIT 清前世孤儿别名 / ③GETINFO 缓存
+/// 几何 + 运行期逐调用中继——真值源恒 guifbd）；0 = 未交付 =
+/// [`wm_srv_h`] 同款 eprintln+park 兜底）。与 [`netd_h`]/
+/// [`present_srv_h`] 同槽不同名：spawn 侧同一 gift 位对不同程序承载
+/// 不同对象（多产面惯例）。
+pub fn wm_present_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[4] }
+}
+
 /// env 块 extras[3]（gift[7] 位）访问器（GUI-4 段②：input 域 channel
 /// 客户端端 INPUT_A dup——svcmgr 拉起 bsh 时随 extras 第四位交付，bsh 的
 /// `inputpoll` 经它发 berry-guiproto INPUT_POLL RPC；0 = 未交付 = inputd
@@ -288,6 +356,16 @@ pub fn input_h() -> u32 {
 /// 与 [`input_h`] 同槽不同名：spawn 侧同一 gift 位对不同程序承载不同
 /// 对象（netd_h/present_srv_h 同款）。
 pub fn hdi_srv_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[5] }
+}
+
+/// env 块 extras[3]（gift[7] 位）的同槽访问器（GUI-5：gui-wmd 的 hdi 域
+/// channel 客户端端——present 换手同款（guifbd 客户端端换手件），hdi 四
+/// op 透传中继经它发；0 = 未交付 = [`wm_srv_h`] 同款 eprintln+park 兜
+/// 底）。与 [`input_h`]/[`hdi_srv_h`] 同槽不同名：spawn 侧同一 gift 位对
+/// 不同程序承载不同对象（多产面惯例）。
+pub fn wm_hdi_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[5] }
 }

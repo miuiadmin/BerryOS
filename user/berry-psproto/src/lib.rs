@@ -47,10 +47,12 @@ pub const STATE_EXITED: u8 = 2;
 pub const STATE_SPAWNFAIL: u8 = 3;
 
 /// 名宽 = 8.3 基名同宽（账本行名：svcmgr/echo/talker/echo2/hello/vblk/
-/// fsmgr/vnet/stdhello/bsh/appdemo/appquiet/ps 全 ≤8）。
+/// fsmgr/vnet/stdhello/bsh/appdemo/appquiet/ps 全 ≤8；GUI-5 起 gui-wmd
+/// 7B 入册）。
 pub const NAME_MAX: usize = 8;
-/// 行数帽（账本构造上界——常驻 + 启动批 + ps 自身；恰 [`MAX_ENTRIES`] 同源）。
-pub const MAX_ENTRIES: usize = 16;
+/// 行数帽（账本构造上界——常驻 + 启动批 + ps 自身；恰 [`MAX_ENTRIES`] 同源。
+/// GUI-5 ADR #61 义务①：16→17 收 gui-wmd，不留裕——18 = 无 ADR 修订的偏离）。
+pub const MAX_ENTRIES: usize = 17;
 /// 请求恰长。
 pub const REQUEST_LEN: usize = 1;
 /// 应答帧帽 = 头 2B + 行最坏 [`NAME_MAX`]+1(NUL)+1(state)+4(code)。
@@ -286,12 +288,14 @@ mod tests {
             (b"appquiet", STATE_EXITED, -1), // 负码 LE 往返
             (b"bsh", STATE_ALIVE, 0),
             (b"vblk", STATE_SPAWNFAIL, 0),
+            (b"gui-wmd", STATE_ALIVE, 0), // GUI-5 真实名入册（7B ≤ NAME_MAX）
         ]);
     }
 
     #[test]
     fn reply_full_table_boundary() {
-        // 16 行 × 最宽名 8B = REPLY_MAX 恰满（builder 用整帧 buf）。
+        // 17 行 × 最宽名 8B = REPLY_MAX 恰满（builder 用整帧 buf）；第 17 名
+        // svcmgr16（8B 保恰满断言——真实名 gui-wmd 7B 钉 mixed 测试，Q7）。
         let rows: Vec<(&[u8], u8, i32)> = (0..MAX_ENTRIES)
             .map(|i| {
                 let name: &'static [u8] = match i {
@@ -310,7 +314,8 @@ mod tests {
                     12 => b"svcmgr12",
                     13 => b"svcmgr13",
                     14 => b"svcmgr14",
-                    _ => b"svcmgr15",
+                    15 => b"svcmgr15",
+                    _ => b"svcmgr16",
                 };
                 (name, STATE_ALIVE, i as i32)
             })
@@ -334,7 +339,7 @@ mod tests {
         assert!(!b.push(b"nil", 0, 0)); // 未知 state（0 非法）
         assert!(!b.push(b"nil", 4, 0)); // 未知 state（4 非法）
         assert!(b.push(b"ok", STATE_ALIVE, 0));
-        // 表满拒：灌到 16 行后第 17 行 false。
+        // 表满拒：灌到 17 行后第 18 行 false。
         let mut buf2 = [0u8; REPLY_MAX];
         let mut b2 = ReplyBuilder::new(&mut buf2);
         for i in 0..MAX_ENTRIES {
@@ -363,7 +368,7 @@ mod tests {
         let mut tail = buf;
         tail[len] = b'x';
         assert_eq!(parse_reply(&tail, len + 1, |_, _, _| ()), None);
-        // count 超帽（改 count=17）。
+        // count 超帽（改 count=18）。
         let mut over = buf;
         over[1] = MAX_ENTRIES as u8 + 1;
         assert_eq!(parse_reply(&over, len, |_, _, _| ()), None);
