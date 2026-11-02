@@ -1083,6 +1083,39 @@ fn evs_selftest() {
             let got = netd_rpc_tcp(netd, ndp::TcpSReq::Drain, dsid, 10_000_000_000);
             match got {
                 Some((st, ref d)) if st == ndp::ST_OK && d.as_slice() == want => {}
+                // **活重复载荷槽**（c-2b slice 2 首跑实抓定谳环境 flake 的加固
+                // 件）：client 重试环 45s 单尝试帽烧穿后重发 P0——guest 侧
+                // ci==0 轮本视角可能已闭环（n_ok 已计），迟到重发的 P0 落在
+                // ci==1 槽 = drain 对拍 mismatch loud 炸相（TCG 慢夜临界实抓
+                // 形态，KEEP_LOG 复跑绿定谳非回归）。同款 echo 回发放行该次
+                // 重试闭环（client 进 P1 轮），释槽重入 accept 取真 P1 连接；
+                // revives 帽 3 复用（与 ④ 尸槽共用预算——无界重放吃穿相帽更
+                // 糟）。ci==0 无对称面（client 串行：P1 必在 P0 轮闭环后才发）。
+                Some((st, ref d))
+                    if ci == 1
+                        && st == ndp::ST_OK
+                        && d.as_slice() == EVS_PAYLOAD_0.as_slice() =>
+                {
+                    revives += 1;
+                    if revives > 3 {
+                        bail!("bsh: evs: c{} dup loop", ci);
+                    }
+                    let _ = netd_rpc_tcp(
+                        netd,
+                        ndp::TcpSReq::Roundtrip {
+                            data: EVS_PAYLOAD_0.as_slice(),
+                        },
+                        dsid,
+                        90_000_000_000,
+                    );
+                    let _ = netd_rpc_tcp(
+                        netd,
+                        ndp::TcpSReq::Close,
+                        dsid,
+                        90_000_000_000,
+                    );
+                    continue 'conn;
+                }
                 Some((st, ref d)) => bail!(
                     "bsh: evs: c{} drain mismatch len={} want={} st={}",
                     ci,
@@ -1433,10 +1466,26 @@ fn skt_selftest() {
                 }
                 break dfd;
             };
-            // recv 恰长逐字节对拍（POLL+DRAIN 在 libc 内；闸门已见 POLLIN
-            // 必即收割——阻塞 recv 首拉即中）。
+            // recv 全长 64 逐字节对拍（POLL+DRAIN 在 libc 内；闸门已见 POLLIN
+            // 必即收割——DRAIN 原子全量 ⇒ 阻塞 recv 首拉即整载荷 24/64）。
+            // 放宽恰长 → 全长：ci==1 槽须能认出迟到重发的 P0（下支）。
             let mut buf = [0u8; 64];
-            let n = unsafe { skt::recv(dfd, buf.as_mut_ptr() as *mut _, want.len(), 0) };
+            let n = unsafe { skt::recv(dfd, buf.as_mut_ptr() as *mut _, 64, 0) };
+            if ci == 1 && n == 64 && buf == EVS_PAYLOAD_0 {
+                // **活重复载荷槽**（evs ③ 同根同款，详见其注释）：client 45s
+                // 单尝试帽烧穿后重发 P0 落在 ci==1 槽——同款 echo 回发放行该次
+                // 重试闭环（client 进 P1 轮），释槽重入 accept 取真 P1；
+                // revives 帽 3 复用（与尸槽共用预算）。
+                revives += 1;
+                if revives > 3 {
+                    bail!("bsh: skt: c{} dup loop", ci);
+                }
+                let _ = unsafe { skt::send(dfd, EVS_PAYLOAD_0.as_ptr() as *const _, 64, 0) };
+                if close(dfd) != 0 {
+                    bail!("bsh: skt: dup close c{} errno={}", ci, errno!());
+                }
+                continue 'conn;
+            }
             if n != want.len() as isize || &buf[..want.len()] != want {
                 bail!(
                     "bsh: skt: c{} drain n={} want={} mismatch={}",
