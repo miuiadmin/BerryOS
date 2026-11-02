@@ -1,7 +1,9 @@
 # GUI-2 段③ 消费侧首刀实施设计（B 形态接线——guifbd present/hdi 域服务端 + gfxdemo 首帧上屏）
 
-> 状态：**设计定稿**（2026-11-02——设计 workflow 六工产物拍板落定：§3–§6 填毕、§7 八问全裁、
-> §9 对抗批判吸收清单；拍板记录见 §7）。
+> 状态：**已收官**（2026-11-02——设计 workflow 六工拍板 + 实施 workflow 9 工落地 + 主会话串行
+> 收割：test-host 817/0（+1 新测）+ smoke-image 两连 PASS **69/69**（GFX ok/GFXF ok n=7 恰一次、
+> 既有 67 零漂移）+ smoke 八跑全绿（rootfs 相 46 零变化 + 负向 GFX==0 + `eco: fb absent` 恰一行）
+> + check/docs_guard 绿；PS 台账实测 EFI 相 **15** / rootfs 相族 **13**——底稿两相对调已勘（§5/§7-⑥））。
 > 前置：GUI-2 段①② 已落 main（`5317e09`/`098d01b`——berry-gfx pass 形态 API + soft 光栅核 host 面全备）；GUI-4 段①② 已收官（guiproto 三域 wire 全定形 + input 域接线，`1023072`）；GUI-1 显示链在 CI（FBW/FBSERVE）。
 > 定形锚点：`docs/GUI里程碑规划-2026-10.md` :102——「GUI-4（输入事件往返）或 GUI-2 消费侧首刀，先到先定」——**GUI-4 已到，本刀即锚点兑现刀**。
 
@@ -112,7 +114,10 @@ gfxdemo arm 静默跳过零新行 = §0「静默」的字面落实。
 2. GFX ok / GFXF ok n= 恰一次复核：grep -cF 各 ==1。
 3. 既有 67 零漂移：FBW ok / FBSERVE ok（guifbd 回归）、PS ok n= 前缀（账本零新增）、BSH ok。
 4. 阶段 3 字节对拍动态自洽（rootfs.cpio +bin/gfxdemo 变容自动跟随）。
-5. 顺手对账：EFI 相 `PS ok n=` 实值 == 13（§9 R1 备注⑤ 的 15/16 vs 16/16 台账矛盾勘误依据）。
+5. 顺手对账：EFI 相 `PS ok n=` 实值 == **15**（2026-11-02 正片双跑实测）；rootfs 相族实值 == **13**
+   （同日主仓正片双跑同值——gui3 树登记面与主仓同源零差，本刀零登记行坐实）；B4 Boot C 相 == 14。
+   设计底稿「EFI 13 / rootfs 15」系**两相读数对调**错值；本刀 gfxdemo reap 走 berry-exec
+   `child.reap()` 不经 svcmgr 登记路径——§9 R1 备注⑤ 台账勘误依据。
 
 **rootfs 相零扰动复核（just smoke）**：八跑全绿 + ROOTFS_MARKERS 46 零变化；
 负向复核：rootfs 相日志 `grep -c "GFX"` == 0；`eco: fb absent` 仍恰一行。
@@ -168,8 +173,9 @@ just smoke（八跑 + rootfs 46 + grep GFX==0）→ just check → 文档收口�
    点对拍 vmo_read（交叉核对强于复算期望）+ gfxdemo 全链断言；宿主侧像素断言无通道不做；
    golden 整图对拍挂 SDK-1 不进本刀。
 6. **编译链/挂账 → 全部预期成立**：gfxdemo 新 crate 照 guifbd 产链两行；PS 零注册（thr 先例）
-   ——roster 实测 EFI 相 13/16、rootfs 相 15/16；guifbd 恰 8/8、gfxdemo 6/8 句柄；PROCESS_MAX
-   =64 距离远。GUI-4段② §7-⑤「rootfs 相恰满 16/16」与实测 15/16 矛盾——勘误见 §5/§9。
+   ——roster 实测 EFI 相 **15**/16、rootfs 相族 **13**/16（正片实测；底稿「EFI 13/rootfs 15」
+   系两相对调错值）；guifbd 恰 8/8、gfxdemo 6/8 句柄；PROCESS_MAX
+   =64 距离远。GUI-4段② §7-⑤「rootfs 相恰满 16/16」与实测 13/16 矛盾——勘误见 §5/§9。
 7. **（并入 ①）** 8. **gui-wm（GUI-5）分界记录**：本刀 gfxdemo 直连 present 域 = 单客户端
    退化面；GUI-5 gui-wm 进场后 gfxdemo 改连 wm——协议同 op 不变，分发端点换手。挂账防丢。
 
@@ -211,7 +217,8 @@ just smoke（八跑 + rootfs 46 + grep GFX==0）→ just check → 文档收口�
 
 **风险面十条**（主会话收割时逐条对照）：wire 改动需求 = 零（任何「应答加字段」滑向 = 停刀升 ADR
 #54 重裁）；guifbd env 恰 8/8 零余量（第 9 插 = CHAN_HND_MAX 抬帽四处联动另刀——review 卡死
-extras 恰 4）；PS 相位余量（EFI 13/16、rootfs 15/16——零注册解）；软 vsync 停车死状可被 smoke
+extras 恰 4）；PS 相位余量（勘误后真值：EFI 相 **15**/16、rootfs 相族 **13**/16——零注册解；底稿
+对调错值已由 §5-⑤ 实测取代）；软 vsync 停车死状可被 smoke
 抓（标记缺失）+ parked 超期路径留 eprintln；TCG 时率放大属预期；rootfs.cpio 增容字节对拍自洽；
 QEMU 串行收割；bsh 手跑恒降级是设计内非缺陷；ramfb 格式面 Bgrx 既有依赖记录在案。
 
