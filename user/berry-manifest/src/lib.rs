@@ -32,6 +32,23 @@
 //!   1..=16B `[a-z0-9-]`。纯占位（v1 appd 解析通过即忽略；签名实现
 //!   v2——节/键/值域今天定死，v2 只能填进这个壳）。
 //!
+//! ## schema v1 增量（GUI-7，`docs/GUI里程碑规划-2026-10.md` 裁决 F——
+//! add-only：三键独立可选，全缺省 = 旧包零漂移）
+//!
+//! - `[ui]` 整节可省：`icon`/`label`/`views` 三键**独立可选**（无齐备
+//!   约束——有图标无视图是常态；空节文本形态由 mkapp 规范形门禁拒，
+//!   空 [runtime] 两级执法同款）。节内任何失败统一 `bad ui`（compat/
+//!   security 理由单一化同款）。
+//! - `icon` = 包内 `icons/` 前缀路径，**产品名 `.byi` 后缀**（宿主 mkapp
+//!   端 PNG→BYI1 编码，裁决 B：设备端零解码依赖，线格式 = berry-gfx
+//!   `icon.rs` BYI1——ARGB8888 RLE，mkapp 拒面须为 decode 域子集）；
+//! - `views` = 包内 `views/` 前缀路径（berryui 声明式资源挂点，DSL 定形
+//!   随 SDK-2——v1 只验位不释义）；
+//! - `label` = 桌面显示名（1..=LABEL_MAX 可打印 ASCII——parse_string
+//!   字符集；CJK 等非 ASCII 显示名随 v2 词面扩展再议）。
+//! - 帽/前缀常量 `ICON_PREFIX`/`VIEWS_PREFIX`/`UI_PATH_MAX`/`LABEL_MAX`
+//!   单一事实源 = 本 crate，mkapp.py 镜像（双侧同步义务同上）。
+//!
 //! ## 语法子集（冻结到字节级——「编不出就拒绝，不截断」）
 //!
 //! - 换行 **LF-only**：任何 CR 出现即拒（git autocrlf 检出即触发，build
@@ -85,6 +102,15 @@ pub const STACK_PAGES_DEFAULT: u32 = 8;
 pub const STACK_PAGES_MIN: u32 = 1;
 /// stack_pages 上界（hexyl 32 页 = musl 128KiB 惯例之倍）。
 pub const STACK_PAGES_MAX: u32 = 64;
+// ---- GUI-7 增量帽（裁决 F；mkapp.py 镜像——双侧同步义务见模块头注）----
+/// [ui] icon/views 包内路径帽（ENTRY_MAX 同值——包内路径统一帽）。
+pub const UI_PATH_MAX: usize = 32;
+/// [ui] label 显示名帽（可打印 ASCII，parse_string 字符集）。
+pub const LABEL_MAX: usize = 32;
+/// [ui] icon 值前缀（包内 icons/ 目录——entry 的 `bin/` 前缀同型）。
+pub const ICON_PREFIX: &str = "icons/";
+/// [ui] views 值前缀（包内 views/ 目录——berryui 声明式资源挂点）。
+pub const VIEWS_PREFIX: &str = "views/";
 
 /// `ManifestErr` 理由帽——appd 降级行 `eco: app <id> <理由>` 的发射窗按
 /// 24B 设计（§5）；超长理由自身截断后接省略号（「截断不 panic」）。
@@ -255,6 +281,18 @@ pub struct Security<'a> {
     pub key_lineage: &'a str,
 }
 
+/// `[ui]` 三键独立可选（GUI-7 裁决 F）：icon/label/views——全缺省 None =
+/// v0 旧包零漂移（add-only）。icon/views = 包内路径（前缀/帽执法在
+/// `set_ui_path`）；label = 桌面显示名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ui<'a> {
+    /// 包内 `icons/` 前缀 + `.byi` 后缀产品路径（mkapp 端 PNG 源编译）。
+    pub icon: Option<&'a str>,
+    pub label: Option<&'a str>,
+    /// 包内 `views/` 前缀路径（berryui DSL 挂点，语义随 SDK-2）。
+    pub views: Option<&'a str>,
+}
+
 /// 解析成功的 manifest（全借用——零拷贝切进输入缓冲）。type 恒 `"app"`
 /// （§2 唯一值），不入结构；stack_pages 已合并缺省。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,6 +312,8 @@ pub struct Manifest<'a> {
     /// 值域闭集 {"client"}（parser 照收；appd 侧 loud 拒——档 (b)）。
     pub net: Option<&'a str>,
     pub security: Option<Security<'a>>,
+    /// GUI-7：三键独立可选（全缺省 None——add-only 执法锚同 compat 族）。
+    pub ui: Option<Ui<'a>>,
 }
 
 /// 解析失败理由（定长内联，零分配）——appd 降级行按 `reason_str()` 打印。
@@ -321,6 +361,7 @@ enum Sec {
     Run,
     Compat,
     Secu,
+    Ui,
 }
 
 // ---- SDK-1a 词表/值域（mkapp.py FS_SCOPES/NET_SCOPES/SEC_RE 镜像）----
@@ -348,6 +389,10 @@ struct Fields<'a> {
     net: Option<&'a [u8]>,
     sec_profile: Option<&'a [u8]>,
     sec_lineage: Option<&'a [u8]>,
+    // GUI-7 增量槽（三键独立可选——独立 Option，无齐缺裁断）
+    ui_icon: Option<&'a [u8]>,
+    ui_label: Option<&'a [u8]>,
+    ui_views: Option<&'a [u8]>,
 }
 
 /// 两端去空格（空格是唯一合法空白——CR/tab 已在全文级拒）。
@@ -506,6 +551,24 @@ fn set_sec<'a>(slot: &mut Option<&'a [u8]>, val: &'a [u8]) -> Result<(), Manifes
     Ok(())
 }
 
+/// [ui] icon/views 路径槽（GUI-7）：前缀 + 非空名 + UI_PATH_MAX——节内
+/// 任何失败统一 `bad ui`（compat/security 理由单一化同款）。
+fn set_ui_path<'a>(
+    slot: &mut Option<&'a [u8]>,
+    val: &'a [u8],
+    prefix: &[u8],
+) -> Result<(), ManifestErr> {
+    if slot.is_some() {
+        return Err(err("bad ui"));
+    }
+    let s = parse_string(val).ok_or_else(|| err("bad ui"))?;
+    if s.len() <= prefix.len() || s.len() > UI_PATH_MAX || !s.starts_with(prefix) {
+        return Err(err("bad ui"));
+    }
+    *slot = Some(s);
+    Ok(())
+}
+
 /// manifest v0 解析主入口。永不 panic；一切拒绝经 `ManifestErr` 带理由。
 pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
     if bytes.len() > MANIFEST_MAX {
@@ -533,9 +596,12 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         net: None,
         sec_profile: None,
         sec_lineage: None,
+        ui_icon: None,
+        ui_label: None,
+        ui_views: None,
     };
-    let (mut saw_app, mut saw_caps, mut saw_run, mut saw_compat, mut saw_secu) =
-        (false, false, false, false, false);
+    let (mut saw_app, mut saw_caps, mut saw_run, mut saw_compat, mut saw_secu, mut saw_ui) =
+        (false, false, false, false, false, false);
     let mut cur: Option<Sec> = None;
 
     for raw in bytes.split(|&b| b == b'\n') {
@@ -562,6 +628,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 b"runtime" => Sec::Run,
                 b"compat" => Sec::Compat,
                 b"security" => Sec::Secu,
+                b"ui" => Sec::Ui,
                 _ => return Err(err("unknown section")),
             };
             let dup = match sec {
@@ -570,6 +637,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 Sec::Run => saw_run,
                 Sec::Compat => saw_compat,
                 Sec::Secu => saw_secu,
+                Sec::Ui => saw_ui,
             };
             if dup {
                 return Err(err("dup section"));
@@ -580,6 +648,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 Sec::Run => saw_run = true,
                 Sec::Compat => saw_compat = true,
                 Sec::Secu => saw_secu = true,
+                Sec::Ui => saw_ui = true,
             }
             cur = Some(sec);
             continue;
@@ -640,6 +709,19 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
             // SDK-1a：预留节（值域执法在 set_sec；齐缺裁断在收尾）
             (Sec::Secu, b"profile") => set_sec(&mut f.sec_profile, val)?,
             (Sec::Secu, b"key_lineage") => set_sec(&mut f.sec_lineage, val)?,
+            // GUI-7：[ui] 三键独立可选（路径执法在 set_ui_path；label 帽在此）
+            (Sec::Ui, b"icon") => set_ui_path(&mut f.ui_icon, val, ICON_PREFIX.as_bytes())?,
+            (Sec::Ui, b"views") => set_ui_path(&mut f.ui_views, val, VIEWS_PREFIX.as_bytes())?,
+            (Sec::Ui, b"label") => {
+                if f.ui_label.is_some() {
+                    return Err(err("bad ui"));
+                }
+                let s = parse_string(val).ok_or_else(|| err("bad ui"))?;
+                if s.is_empty() || s.len() > LABEL_MAX {
+                    return Err(err("bad ui"));
+                }
+                f.ui_label = Some(s);
+            }
             _ => return Err(err("unknown key")),
         }
     }
@@ -688,6 +770,16 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         }),
         _ => return Err(err("bad security")),
     };
+    // GUI-7：三键独立可选——全缺省 None（空 [ui] 节合法同空 [runtime]，
+    // 其文本形态由 mkapp 规范形门禁拒——两级执法互补）。
+    let ui = match (f.ui_icon, f.ui_label, f.ui_views) {
+        (None, None, None) => None,
+        (icon, label, views) => Some(Ui {
+            icon: icon.map(|s| from_utf8(s).unwrap_or("")),
+            label: label.map(|s| from_utf8(s).unwrap_or("")),
+            views: views.map(|s| from_utf8(s).unwrap_or("")),
+        }),
+    };
 
     // 字节集已由 valid_id/parse_string/词表验为 ASCII——from_utf8 必然成功，
     // unwrap_or 仅防御（永不 panic 承诺）。
@@ -702,6 +794,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         fs,
         net,
         security,
+        ui,
     })
 }
 
@@ -862,7 +955,8 @@ stack_pages = 16
     // 10. 未知节 / 未知键 / 节前键 / 坏节头 / 越节键。
     #[test]
     fn reject_unknown_and_misplaced() {
-        assert_eq!(bad(&BASE.replace("[runtime]", "[ui]")).reason_str(), "unknown section");
+        // GUI-7 起 [ui] 是在册节——未知节探针换 [extra]
+        assert_eq!(bad(&BASE.replace("[runtime]", "[extra]")).reason_str(), "unknown section");
         // [ app  ]（双空格）折出 "unknown section"——容忍集外
         assert_eq!(bad(&BASE.replace("[runtime]", "[  runtime ]")).reason_str(), "unknown section");
         assert_eq!(bad(&BASE.replace("[runtime]", "[runtime")).reason_str(), "bad section");
@@ -1029,6 +1123,12 @@ stack_pages = 16
         assert_eq!(m.fs, Some("rootfs"));
         assert_eq!(m.net, None);
         assert_eq!(m.security, None);
+        // GUI-7：appdemo = 首个带 [ui] 的在册样本（icon/label/views 三键
+        // 齐用——mkapp 编码链 + appd 枚举标记的消费面对象）。
+        let u = m.ui.expect("appdemo ui");
+        assert_eq!(u.icon, Some("icons/icon.byi"));
+        assert_eq!(u.label, Some("APPDEMO"));
+        assert_eq!(u.views, Some("views/main.bui"));
     }
 
     // 21. appquiet：显式 stack_pages = 8 + console = false + background 词。
@@ -1042,6 +1142,9 @@ stack_pages = 16
         assert!(!m.console);
         assert_eq!(m.stack_pages, 8); // 显式路径
         assert_eq!(m.intent, Intent::Background);
+        // GUI-7：无 [ui] 旧形照收（add-only 双半活证：APPDEMO 带样本 vs
+        // APPQUIET 不带）。
+        assert_eq!(m.ui, None);
     }
 
     // 22. 理由截断（「编不出就拒绝」对诊断行放宽为「截断不 panic」）。
@@ -1059,7 +1162,7 @@ stack_pages = 16
             "bad intent", "bad int", "range", "missing [app]", "missing [capabilities]",
             "missing id", "bad id", "missing version", "bad version", "missing entry",
             "bad entry", "missing type", "bad type", "missing intent", "missing console",
-            "bad compat", "bad scope", "bad security",
+            "bad compat", "bad scope", "bad security", "bad ui",
         ] {
             assert!(r.len() <= REASON_MAX, "{r}");
             assert_eq!(ManifestErr::new(r).reason_str(), r);
@@ -1292,6 +1395,103 @@ stack_pages = 16
         assert_eq!(bad(&s).reason_str(), "bad security");
     }
 
+    // ---- GUI-7 增量测试面（[ui] 三键独立可选 + 拒面单一化 bad ui）----
+
+    /// BASE 尾插 [ui] 段（F7 定位同 F4 尾追加）。
+    fn with_ui(base: &str, body: &str) -> String {
+        format!("{base}\n[ui]\n{body}")
+    }
+
+    // 32a. [ui] 三键独立可选：全在场逐字段 + 单键/双键组合各自合法
+    //（无齐备约束——compat/security 的显式反例）。
+    #[test]
+    fn ui_parse_pin() {
+        let s = with_ui(
+            BASE,
+            "icon = \"icons/icon.byi\"\nlabel = \"Demo App\"\nviews = \"views/main.bui\"",
+        );
+        let m = ok(&s);
+        let u = m.ui.expect("ui");
+        assert_eq!(u.icon, Some("icons/icon.byi"));
+        assert_eq!(u.label, Some("Demo App"));
+        assert_eq!(u.views, Some("views/main.bui"));
+        // 单键三形（独立可选面）
+        for (body, want) in [
+            ("icon = \"icons/a.byi\"\n", (Some("icons/a.byi"), None, None)),
+            ("label = \"X\"\n", (None, Some("X"), None)),
+            ("views = \"views/v\"\n", (None, None, Some("views/v"))),
+        ] {
+            let s = with_ui(BASE, body);
+            let m = ok(&s);
+            let u = m.ui.unwrap();
+            assert_eq!((u.icon, u.label, u.views), want, "{body:?}");
+        }
+        // 恰满边界：32B 路径（icons/6 + 名 22 + .byi 4）/ 32B label
+        let p32 = format!("icons/{}.byi", "a".repeat(22));
+        assert_eq!(p32.len(), UI_PATH_MAX);
+        let s = with_ui(BASE, &format!("icon = \"{p32}\""));
+        let m = ok(&s);
+        assert_eq!(m.ui.unwrap().icon, Some(p32.as_str()));
+        let l32 = "a".repeat(LABEL_MAX);
+        let s = with_ui(BASE, &format!("label = \"{l32}\""));
+        let m = ok(&s);
+        assert_eq!(m.ui.unwrap().label, Some(l32.as_str()));
+    }
+
+    // 32b. [ui] 拒面统一 `bad ui`：前缀/裸前缀/超长/label 空/超长/重复键/
+    // 未知键/越节键。
+    #[test]
+    fn ui_rejects() {
+        for body in [
+            "icon = \"icon.byi\"\n",               // 无 icons/ 前缀
+            "icon = \"bin/icon.byi\"\n",           // 错前缀
+            "icon = \"icons/\"\n",                 // 裸前缀（空名）
+            "views = \"main.bui\"\n",              // 无 views/ 前缀
+            "views = \"views/\"\n",                // 裸前缀
+            "icon = \"icons/a.byi\"\nicon = \"icons/b.byi\"\n", // 重复键
+            "label = \"A\"\nlabel = \"B\"\n",      // 重复键
+            "label = \"\"\n",                      // 空 label
+        ] {
+            let s = with_ui(BASE, body);
+            assert_eq!(bad(&s).reason_str(), "bad ui", "{body:?}");
+        }
+        // 未知键走全 schema 通例 `unknown key`（同 test 30 caps 探针）
+        assert_eq!(
+            bad(&with_ui(BASE, "badge = \"x\"\n")).reason_str(),
+            "unknown key"
+        );
+        // 超长：33B 路径 / 33B label
+        let p33 = format!("icons/{}.byi", "a".repeat(23));
+        assert!(p33.len() > UI_PATH_MAX);
+        assert_eq!(
+            bad(&with_ui(BASE, &format!("icon = \"{p33}\""))).reason_str(),
+            "bad ui"
+        );
+        let l33 = "a".repeat(LABEL_MAX + 1);
+        assert_eq!(
+            bad(&with_ui(BASE, &format!("label = \"{l33}\""))).reason_str(),
+            "bad ui"
+        );
+        // 越节键：icon 出现在 [app] = unknown key（[ui] 键不泄漏）
+        assert_eq!(
+            bad(&BASE.replace("[app]\n", "[app]\nicon = \"icons/a.byi\"\n")).reason_str(),
+            "unknown key"
+        );
+        // 重复节
+        let s = format!("{}{}[ui]\nlabel = \"B\"\n", with_ui(BASE, "label = \"A\"\n"), "");
+        assert_eq!(bad(&s).reason_str(), "dup section");
+    }
+
+    // 32c. [ui] 缺席/空节：全缺省 None（add-only 执法锚）；空节 = 解析合法
+    // ui None（空 [runtime] 先例同款——文本形态由 mkapp 规范形门禁拒）。
+    #[test]
+    fn ui_absent() {
+        assert_eq!(ok(BASE).ui, None);
+        let s = BASE.replace("\n[capabilities]", "\n[ui]\n[capabilities]");
+        let m = ok(&s);
+        assert_eq!(m.ui, None);
+    }
+
     // 33. 规范形七形态 F0-F6（§3.2 字节模板，测试内字面常量）：parse Ok +
     // 字段逐项——「mkapp 发射的字节 berry-manifest 必收」双向钉板
     // （mkfat ↔ berry-fatfs fixture 共识同型；mkapp 侧同款样本在 selftest）。
@@ -1349,5 +1549,20 @@ stack_pages = 16
         assert_eq!(m.stack_pages, 8);
         let s = m.security.expect("F6 security");
         assert_eq!((s.profile, s.key_lineage), ("ed25519-main", "root-2026"));
+
+        // F7 +[ui]（GUI-7，尾部追加——规范形定序 [ui] 居末、节间恰一空行
+        //（mkapp canonical 发射形逐字节互钉）；三键独立故子集形态
+        // icon-only 同为规范形）。appdemo 现行 manifest 同形。
+        let f7 = format!(
+            "{f6}\n[ui]\nicon = \"icons/icon.byi\"\nlabel = \"KITCHEN\"\nviews = \"views/main.bui\"\n"
+        );
+        let m = ok(&f7);
+        let u = m.ui.expect("F7 ui");
+        assert_eq!(
+            (u.icon, u.label, u.views),
+            (Some("icons/icon.byi"), Some("KITCHEN"), Some("views/main.bui"))
+        );
+        let f7b = format!("{f0}\n[ui]\nicon = \"icons/icon.byi\"\n");
+        assert_eq!(ok(&f7b).ui.unwrap().icon, Some("icons/icon.byi"));
     }
 }

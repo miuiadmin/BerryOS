@@ -43,17 +43,17 @@
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段、
 #      C-4b 起七段）：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），72 标记
-#      （boot 27 + rootfs 45——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），73 标记
+#      （boot 27 + rootfs 46——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
-#      APP ok n=/
+#      APP ok n=/APPUI ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
 #      EVS ok n=2/SKT ok n=3/EPL ok n=8/NETS ok n=2/MMP ok n=9/CLK ok n=6/
 #      SIG ok n=6/PS ok n=/BC ok/
 #      M3DEMO ok n=5/THR ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
 #      服务/TCP 服务端监听面（A2-2 段③ hostfwd 环回自连自验）/.bap 应用拉起
-#      消费链/RAM 目录树 v2 五 op 自验/uutils core 家族
+#      消费链/[ui] 资产面对账/RAM 目录树 v2 五 op 自验/uutils core 家族
 #      空文件元数据九步链 + echo/true/false 执行六步链 + text 批六步执行链
 #      （sort|uniq 步与四段链 T-1 回收）+ EL0 四项微基准格式断言收口（B-1）
 #      + 深坑六件八步执行链（U4——C-2c 挂账刀）+ Tab 补全九步（TAB——C-4）
@@ -830,8 +830,18 @@ QEMU_PID=$!
 # spawn = 零 fs 盘面，链位置 clk 后 fat 族前（A 系契约位，EFI 路无盘亦打
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
+# GUI-7（appd [ui] 资产面）：+ APPUI ok n=——rootfs 相第 46 标记，
+# **GUI-7 验收线**。带 [ui] 声明的 .bap 逐项对账：icon 声明 ↔ 包内
+# icons/<stem>.byi 条目（BYI1 头校验：magic/ver/flags/尺寸帽）；views
+# 声明 ↔ views/ 条目在场；未声明 ⇔ 零条目 = mkapp 交叉门禁（§5.3 ⑥）
+# 的运行时镜像。ui_decl>0 且 ui_ok==ui_decl 才打——**与 APP ok 独立判**
+# （失败隔离双向：ui 坏不挡启动，启动坏不抹 ui 验证）。n= 单数字位
+# （APP_SLOTS<10 const assert）；n=1 = APPDEMO（APPQUIET 无 [ui] 不计）。
+# 纯 appd 扫描面 = 零新盘面/零新 syscall，链位置紧随 APP ok 行后；EFI
+# 路同打（appd 同二进制）。“APPUI ok” 与现役标记两两互非子串（现役无
+# `XAPPUI ok` 形态在册）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok")
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -852,7 +862,7 @@ while :; do
     && fail "rootfs 相 ${DEADLINE_ROOTFS}s 标记未到齐，缺：$missing"
   sleep 1
 done
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + EVS ok n=2 + SKT ok n=3 + EPL ok n=8 + NETS ok n=2 + MMP ok n=9 + CLK ok n=6 + SIG ok n=6 + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（ROOTFS 双行 + rootfs hello + ECO ok + STD 双标记 + FILE ok + HEXYL ok + BSH ok + EXIT ok + PIPE ok + FS ok n= + VIRTIO ok + VBLK ok + BLKD ok n= + FAT ok n= + FATW ok n= + NET ok ping= + DNS ok addr= + TCP ok echo= + LSN ok n=7 + TCPS ok echo= + APP ok n= + APPUI ok n= + DIR ok n= + CD ok + U1 ok + U2 ok + U3 ok + B1 ok n=4 + DF ok + U4 ok + TAB ok + INT ok + POLL ok + EVS ok n=2 + SKT ok n=3 + EPL ok n=8 + NETS ok n=2 + MMP ok n=9 + CLK ok n=6 + SIG ok n=6 + PS ok n= + BC ok + M3DEMO ok n=5 + THR ok）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
@@ -869,7 +879,7 @@ skt_client_wait "rootfs 相"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 27 + rootfs 45 = 72
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 27 + rootfs 46 = 73
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块
 # 设备服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络

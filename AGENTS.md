@@ -86,7 +86,7 @@ just build          # 内核 ELF（自动先跑 build-user 补内嵌产物）
 just build-user     # 用户程序 → 平像 + mkapp 打包 .bap + mkcpio 产 rootfs.cpio
 just run            # QEMU virt 冷启动，行首 1 = 起始 EL1；halt 后 Ctrl-A X 退出
 just run-el2        # virtualization=on，行首 21 = EL2→EL1 eret 降级
-just run-rootfs     # fw_cfg 挂 rootfs + virtio 盘网 → svcmgr 消费链全谱（rootfs 相 45 标记）
+just run-rootfs     # fw_cfg 挂 rootfs + virtio 盘网 → svcmgr 消费链全谱（rootfs 相 46 标记）
 just smoke          # 无人值守八跑冒烟（CI 同款）；标记清单 = tools/smoke.sh，语义注解 → 雷册 §C
 just test-host      # host 单元测试（不依赖 QEMU）；host 面总口径以本命令输出为准
 just abi-check      # ABI 单源守卫：abi.toml 三面产物逐字节比对（挂 build/smoke 前置）

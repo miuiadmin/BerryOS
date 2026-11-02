@@ -13,3 +13,8 @@ compile = "0.1.0"
 [capabilities]
 console = true
 fs = ["rootfs"]
+
+[ui]
+icon = "icons/icon.byi"
+label = "APPDEMO"
+views = "views/main.bui"

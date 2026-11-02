@@ -211,6 +211,10 @@ build-user:
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
     cp cargo-target/aarch64-unknown-linux-musl/release/appdemo userbins/app-stage/APPDEMO/bin/
+    # GUI-7：[ui] 资产入 staging——icons/ PNG 源由 mkapp 编码成 .byi 入包
+    # （源不入包），views/ 原样整包；对应 manifest icon/views 声明位。
+    cp -R bins/appdemo/icons userbins/app-stage/APPDEMO/
+    cp -R bins/appdemo/views userbins/app-stage/APPDEMO/
     cp bins/appquiet/manifest.toml userbins/app-stage/APPQUIET/
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
