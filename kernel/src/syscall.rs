@@ -2091,11 +2091,12 @@ pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
     // S-3c c-2c slice 2b：第三参 = SVC 入口锁类位集（`kern_lock::SVC_CLASS_*`，
     // 位值镜像 sched HELD_*——kernel main 编译期断言对齐）。分类审计 =
-    // `docs/SMP-S3实施设计草案.md` §:390 修正版落类表；**0x37 过渡态含表**
-    //（终版表 SQ+RQ 无表档降档推迟 slice 3：`nearest_deadline` 的 KL-only
-    // 免锁读面未收口前，SLEEPQ 写者脱离 KL 即竞态）。
+    // `docs/SMP-S3实施设计草案.md` §:390 修正版落类表；0x37 已随 slice 3-1a
+    // 降档 SQ_RQ 无表档（`nearest_deadline` KL-only 读面收口 SQ——SLEEPQ
+    // 全触面纯 SQ 串行，该号免 KL；死锁论证见常量注）。
     use berry_hal_aarch64::kern_lock::{
-        SVC_CLASS_ALL, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ_TABLE, SVC_CLASS_TABLE,
+        SVC_CLASS_ALL, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ, SVC_CLASS_SQ_RQ_TABLE,
+        SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
@@ -2132,7 +2133,10 @@ pub fn install() {
     reg(NR_THREAD_CREATE, sys_thread_create, SVC_CLASS_ALL);
     reg(NR_THREAD_START, sys_thread_start, SVC_CLASS_RQ_TABLE);
     reg(NR_THREAD_EXIT, sys_thread_exit, SVC_CLASS_ALL);
-    reg(NR_THREAD_SLEEP, sys_thread_sleep, SVC_CLASS_SQ_RQ_TABLE);
+    // —— SQ+RQ（0x0E，无表无 KL）：thread_sleep 单号——slice 3-1a 降档
+    //（block_current SQ+RQ 双结构面纯睡眠，表触零；入口不取 KL，舞蹈
+    // 放/取步按 0x0E 位集不碰 KL——锁序论证见 SVC_CLASS_SQ_RQ 常量注）。
+    reg(NR_THREAD_SLEEP, sys_thread_sleep, SVC_CLASS_SQ_RQ);
     // —— TABLE：join 读面（表 + state 平读）——
     reg(NR_PROCESS_GET_EXIT_CODE, sys_process_get_exit_code, SVC_CLASS_TABLE);
     // —— ALL：terminate kill 链（同 fault 面）——

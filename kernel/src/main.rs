@@ -489,6 +489,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                 | berry_sched::task::HELD_RQ1
                 | berry_sched::task::HELD_TABLE)
     );
+    // S-3c slice 3-1a：无表档首类（0x37 降档）——同法逐位钉（表位缺席
+    // 同样编译失败，防位集漂移）。
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_SQ_RQ
+            == (berry_sched::task::HELD_SQ
+                | berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1)
+    );
     berry_sched::set_klock_ops(berry_sched::KlockOps {
         kern_acquire: berry_hal_aarch64::kern_lock::kern_acquire,
         kern_release: berry_hal_aarch64::kern_lock::kern_release,
@@ -2096,21 +2104,25 @@ extern "C" fn task_console(arg: usize) -> ! {
                 if !rx_ok_done && rlen == 2 && raw[..2] == *b"rx" {
                     rx_ok_done = true;
                     // 直接 uart（console 即排水者，不走自家通道）；标记条件 =
-                    // 收到完整行 token（状态谓词，非注入即达的回声）。
-                    berry_hal_aarch64::uart_puts(b"RX ok n=");
-                    berry_hal_aarch64::uart_put_dec(rx_total);
-                    berry_hal_aarch64::uart_puts(b" lost=");
-                    berry_hal_aarch64::uart_put_dec(
-                        berry_hal_aarch64::uart::rx_lost() as u64,
-                    );
-                    // A-2：转发丢弃计数（bsh 断供面诊断位；正常恒 0——smoke
-                    // 只 grep "RX ok" 前缀，行尾追加零扰动）。
-                    berry_hal_aarch64::uart_puts(b" fdrop=");
-                    berry_hal_aarch64::uart_put_dec(fwd_drop);
-                    // GUI-1 段②：fb fan-out 丢弃计数（同款行尾诊断位）。
-                    berry_hal_aarch64::uart_puts(b" fbdrop=");
-                    berry_hal_aarch64::uart_put_dec(fb_drop);
-                    berry_hal_aarch64::uart_puts(b"\n");
+                    // 收到完整行 token（状态谓词，非注入即达的回声）。整段
+                    // PRINT_LOCK 包络（3-1a 判例刀同款——多段 uart_puts 拼行
+                    // 被矩阵单字符织入 = smoke「RX ok」前缀假阴性同族面）。
+                    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                        berry_hal_aarch64::uart_puts(b"RX ok n=");
+                        berry_hal_aarch64::uart_put_dec(rx_total);
+                        berry_hal_aarch64::uart_puts(b" lost=");
+                        berry_hal_aarch64::uart_put_dec(
+                            berry_hal_aarch64::uart::rx_lost() as u64,
+                        );
+                        // A-2：转发丢弃计数（bsh 断供面诊断位；正常恒 0——
+                        // smoke 只 grep "RX ok" 前缀，行尾追加零扰动）。
+                        berry_hal_aarch64::uart_puts(b" fdrop=");
+                        berry_hal_aarch64::uart_put_dec(fwd_drop);
+                        // GUI-1 段②：fb fan-out 丢弃计数（同款行尾诊断位）。
+                        berry_hal_aarch64::uart_puts(b" fbdrop=");
+                        berry_hal_aarch64::uart_put_dec(fb_drop);
+                        berry_hal_aarch64::uart_puts(b"\n");
+                    });
                 }
                 rlen = 0;
             } else if b >= 0x20 && b < 0x7f && rlen < raw.len() {
@@ -2170,10 +2182,20 @@ extern "C" fn task_console(arg: usize) -> ! {
                 break; // 排空——回外层阻塞等
             }
             assert_eq!(r2, 0, "console: recv 异常");
-            for i in 0..n as usize {
-                berry_hal_aarch64::uart_putc(buf[i]);
-                CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            }
+            // 3-1a 判例刀（smoke-smp 相 2 实抓「LSN oBk n=7」）：用户打印
+            // drain 改整条消息 PRINT_LOCK 包络——原逐字节裸 uart_putc 与
+            // ktest 矩阵任务单字符直写者**字节级并发**（无共同锁面），标记
+            // 行中段可被织入单字符 → smoke grep 假 FAIL（840s 假阴性）。包
+            // 络后矩阵字符只能落消息前后（整条原子），标记恒完整。
+            // with_print_lock 自带 irqsave（G43 任务态纪律——裸持
+            // PRINT_LOCK 被本核 tick 打断 = 同核硬死锁）；n ≤ 256B @ QEMU
+            // PL011 TX 恒 ready = 微秒级锁窗。
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                for i in 0..n as usize {
+                    berry_hal_aarch64::uart_putc(buf[i]);
+                    CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
+            });
             // GUI-1 段②：fb 上屏 fan-out——整段 best-effort 一发（n ≤ 256B
             // = channel 内联额度内；满 -EBUSY/-EAGAIN → 丢弃 + fb_drop 计数
             // 不重试不阻塞，保串口主路——guifbd 未起（boot 早期）/慢的输出

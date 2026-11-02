@@ -71,8 +71,15 @@ pub fn kern_release() {
 pub const SVC_CLASS_NONE: u8 = 0x00;
 /// 纯表号（0x02/0x03/0x3A/0x61/0x86/0x87）：仅 KL。
 pub const SVC_CLASS_TABLE: u8 = 0x20;
-/// wait/send 族（0x01/0x04/0x05/0x06/0x52/0x53 + 0x37 过渡含表）：SQ+RQ+表。
+/// wait/send 族（0x01/0x04/0x05/0x06/0x52/0x53）：SQ+RQ+表。
 pub const SVC_CLASS_SQ_RQ_TABLE: u8 = 0x2E;
+/// thread_sleep 单号（0x37）：SQ+RQ 双核升序、**无表无 KL**（slice 3-1a
+/// 降档——`nearest_deadline` KL-only 读面收口 SQ 后，SLEEPQ 全触面纯 SQ
+/// 串行，本号 handler 纯睡眠面零表触）。死锁安全（§A112 两态并存禁不
+/// 触发）：全域结构物理取用恒升序前缀（本类入口/舞蹈取步恒持完整
+/// SQ+RQ0+RQ1 三元组，KL 类同序取结构），KL 单持有者且一切 KL 取用点
+/// 不持结构——「入口持 RQ 旋 KL」边不存在。
+pub const SVC_CLASS_SQ_RQ: u8 = 0x0E;
 /// start 双号（0x32/0x35）：RQ 双核升序 + 表。
 pub const SVC_CLASS_RQ_TABLE: u8 = 0x2C;
 /// 全谱（0x33/0x36/0x3B + vmo/vmar 0x11..0x1B + create 族 0x31/0x34/0x51/0x54）。

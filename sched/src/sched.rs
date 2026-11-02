@@ -1902,15 +1902,26 @@ pub fn last_killed() -> &'static [u8] {
 /// **零分配、成功路径零输出**；违约即 panic 带时刻响亮失败（失败路径才
 /// 格式化）。调用契约：IRQ 上下文（环/队变更屏蔽窗的串行等价）。
 fn integrity_check() {
-    // SAFETY: IRQ 上下文（调用方保证——环/队变更只在屏蔽窗，与本检查串行）；
-    // 只读走查 + Cell 记账读。
+    // S-3c slice 3-1a 分窗走查（拆解勘误同刀）：原 KL 串行裸走查是侦察
+    // 「全域最后一位 KL-only 读者」论漏数的**第二位**——0x37 降档免 KL 后
+    // 其 block/wake 的 SQ/RQ 写与本对账走查失去共同串行化点（§A113 读者
+    // 面：对账撕读 = assert 假火 = 内核 fatal，读者面随降档同刀收口）。
+    // **裸物理窗而非位感知退化对**：调用点在 set_current(next) 之后、
+    // context_switch 之前——current=next 义务位置位而物理锁未重取（重取
+    // 在 next 自身续行点），位在此说谎；被抢占者持锁 ⟂ 可抢占（屏蔽窗
+    // 矛盾律）⇒ 本核无自持，裸取无自死锁。三窗独立开闭无嵌套（3-1b ③
+    // 终态形提前落定——KL 剥离后本面零改）。
+    // SAFETY: IRQ 上下文（调用方保证——KL 窗内 + 屏蔽窗）；只读走查 +
+    // Cell 记账读；窗内禁切换（对账两读同窗一致）。
     unsafe {
         // S-3b：双队列各自走查对账（per-CPU 分诊后账面 = 每核独立环 + 全局
         // SLEEPQ 三段；孤儿段形态对 pick 不可见，只有记账对账显形）。恒走查
         // 两槽——未参与核槽恒空环（walk 0 == len 0 恒过，零成本）。
         for cpu in 0..2 {
+            rq_of(cpu).lock_acquire();
             let steps = rq_of(cpu).ring_check();
             let want = rq_of(cpu).len();
+            rq_of(cpu).lock_release();
             assert!(
                 steps == want,
                 "integrity: cpu{} ring walk {} != len {} (orphan segment or broken links)",
@@ -1919,6 +1930,7 @@ fn integrity_check() {
                 want
             );
         }
+        SLEEPQ_LOCK.acquire();
         let mut n = 0;
         let mut cur = sleepq().head.get();
         while let Some(c) = cur {
@@ -1929,12 +1941,9 @@ fn integrity_check() {
             );
             cur = (*c.as_ptr()).sleep_next.get();
         }
-        assert!(
-            n == sleepq().len.get(),
-            "integrity: sleepq walk {} != len {}",
-            n,
-            sleepq().len.get()
-        );
+        let want = sleepq().len.get();
+        SLEEPQ_LOCK.release();
+        assert!(n == want, "integrity: sleepq walk {} != len {}", n, want);
     }
 }
 
@@ -2498,14 +2507,20 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
 /// 头未到期即最近，空队 None = 深 park）。锁窗内读队头（与
 /// [`expire_timeouts`] 同口径——升序队头即最近到期）。
 ///
-/// 调用契约：IRQ 屏蔽窗内（secondary_main park 环天然满足）。
+/// 调用契约：IRQ 屏蔽窗内（secondary_main park 环天然满足）；**不持任何
+/// 结构位**（今日两处调用点皆 park 空态——CURRENT=null 恒真取；任务语境
+/// 误入持非 SQ 位 = SQ 内嵌序破，调用方自证）。
+///
+/// S-3c slice 3-1a：KL-only 裸读（§A113 判定的全域最后一位）改 SQ 锁对
+/// ——c-2b slice 4 起 SLEEPQ 一切写者已持 SQ 窗（五发射点），本读换 SQ
+/// 即闭合「SLEEPQ 全触面纯 SQ 串行」，0x37 随刀降档免 KL（syscall.rs）。
 pub fn nearest_deadline() -> Option<u64> {
-    klock_acquire_raw();
-    // SAFETY: klock 窗内只读队头（head 经 `sleepq()` 静态单例；SLEEPQ 变更
-    // 全在锁窗内——无并发出入队窗）。
+    let phys = sq_lock();
+    // SAFETY: SQ 锁窗内只读队头（head 经 `sleepq()` 静态单例；SLEEPQ 一切
+    // 变更同窗串行——写者清单 = slice 4 五发射点 + 本读，KL 依赖就此归零）。
     let d = unsafe {
         sleepq().head.get().map(|h| (*h.as_ptr()).wait_deadline)
     };
-    klock_release_raw();
+    sq_unlock(phys);
     d
 }
