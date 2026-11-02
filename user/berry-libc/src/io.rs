@@ -223,7 +223,9 @@ pub fn present_h() -> u32 {
 /// extras 首位直递（fresh 端非 dup，fs_b/net_b 先例），gfxdemo 的 wm 六
 /// op + present/hdi 中继经它发（ADR #61 端点换手——present/hdi 客户端
 /// 端改随 gui-wmd）；0 = 未交付 = wmd 未起（rootfs 相 arm 静默跳过 /
-/// bsh 手跑恒降级），调用方走 wm absent 退出行）。与
+/// bsh 手跑恒降级），调用方走 wm absent 退出行）。GUI-8 前置 wiring 刀起
+/// berry-launcher 同槽消费：svcmgr launcher arm 交付 wmd 客户端端 dup 柄
+/// （门控 + 一次 WM_GETINFO + 单行 LAUNCH 非标记日志后 park 永驻）。与
 /// [`rootfs_h`]/[`gift2_h`]/[`present_h`] 同槽不同名：spawn 侧同一 gift
 /// 位对不同程序承载不同对象（gift3 同款惯例）。
 pub fn wm_cli_h() -> u32 {

@@ -3,14 +3,17 @@ name = "berry-launcher"
 version = "0.1.0"
 edition = "2021"
 
-# GUI-8（可先行面 #2，docs/GUI-8实施侦察-2026-11.md §5）：桌面 launcher
-# 骨架——guifbd 同形独立小工作区（空 [workspace] escape 根 workspace，
-# 不入 user/Cargo.toml members；musl target + berry-libc shim + berry-ld
-# 链）。v0 冻结面 = fbinfo gift 探测门控镜像：缺席（-kernel 主路 / wiring
-# 刀前无预拉）单行降级 park（零标记扰动）；在场（EFI 路）单行 LAUNCH
-# 骨架日志 + park。svcmgr 预拉/present/fs/spawn/标记全挂 gui3→main 并线
-# 后 wiring 刀——依赖最小化：v0 只碰 gift 探测与 vmo_read，不引
-# berry-exec（FB_VA 映射归 spawn 侧）/berry-fbcon（无渲染面）。
+# GUI-8 前置 wiring 刀（gui3，可先行面 #2 起，docs/GUI-8实施侦察-2026-11.md
+# §5）：桌面 launcher——guifbd 同形独立小工作区（空 [workspace] escape 根
+# workspace，不入 user/Cargo.toml members；musl target + berry-libc shim +
+# berry-ld 链）。wiring 面 = wm 域门控 + GETINFO 握手：svcmgr 预拉 arm
+# （紧随 gfxdemo arm）交付 wm 客户端端 dup 柄（extras[0]，libc
+# `wm_cli_h()` 同槽顶替 v0 gift2_h——多产面惯例），本程序以它为门、发
+# 一次 WM_GETINFO、打单行 LAUNCH 非标记日志后 park 永驻（零新 smoke
+# 标记；PS ok n= 零漂——不 ps_reg，瞬态验收件不入账先例）。
+# present/fs/spawn/标记全挂 GUI-8 主体刀——依赖最小化：本刀只碰 wm_cli
+# 探测 + guiproto GETINFO 编解码，不引 berry-exec（spawn 归 svcmgr 侧）/
+# berry-fbcon（无渲染面）。
 license = "Apache-2.0"
 
 [workspace]
@@ -18,6 +21,7 @@ license = "Apache-2.0"
 [dependencies]
 berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
 
 [profile.release]
 opt-level = "z"

@@ -255,6 +255,18 @@ static INPUT_A: AtomicU32 = AtomicU32::new(0);
 /// 先跳）→ 端恒滞 static = wmd push 服务端端的对端保活，属覆盖面非泄漏
 /// （v1 无对端关闭检测）。
 static WMD_PUSH_B: AtomicU32 = AtomicU32::new(0);
+/// GUI-8 前置 wiring 刀（D2）：wm 客户端端 dup 柄——wmd arm Ok 路 dup 出
+/// SEND|RECV 留表，launcher arm 门读 + extras 直递。原柄 w_cli 被下方
+/// gfxdemo arm 直递 take 离表且其 Err/cpio 缺路关原柄不置 0（死存弃判例）
+/// ——launcher 门若读 wm_cli 局部变量 = 死柄活读；dup 柄生命周期独立
+/// （gfxdemo 失败/缺席关原柄不伤 dup）。**留表即留命**（NET_A/WMD_PUSH_B
+/// 同形）：留表期内它是 wmd 服务端端的活跃对端（v1 无对端关闭检测，
+/// 覆盖面非泄漏）。**消费面三出口皆清零**（inputd arm push_b / fsmgr
+/// blk_cli 同款卫生惯例——已迁值不可 close、已 close 值不可复用，static
+/// 清零防柄号复用后误读成活柄）：launcher arm Ok（随 extras take 迁入）
+/// / Err / cpio 缺三分支 + gfxdemo reap 挂死角（见 launcher arm 注）各
+/// store(0)。0 = wmd 未起或已消费，launcher arm 静默跳过。
+static WMD_CLI_DUP: AtomicU32 = AtomicU32::new(0);
 
 // ---- app-0 a-2：.bap 消费面（appd 雏形——ADR #43/#44：应用 = 纯用户态
 // 协议约定，svcmgr 兼任 appd；内核零「应用」概念）----
@@ -571,6 +583,17 @@ fn run_rootfs_child(console: Handle) {
                     // 恒滞 static 保活）。
                     wm_cli = w_cli;
                     WMD_PUSH_B.store(push_cli, Ordering::Relaxed);
+                    // GUI-8 前置 wiring 刀（D2）：dup 一枚 wm 客户端端留表
+                    // （SEND|RECV 双权利——bsh fs_a 同口径）供下方 launcher
+                    // arm 消费：原柄 w_cli 随 gfxdemo arm extras 直递 take
+                    // 后离表（其 Err/cpio 缺路关原柄不置 0），launcher 门读
+                    // wm_cli 变量 = 死柄活读；dup 生命周期独立（gfxdemo 失败
+                    // 关原柄不伤 dup）。失败 trap（fsmgr fs_dup 先例同形）。
+                    let mut w_dup: Handle = 0;
+                    if berry_handle_duplicate(w_cli, RIGHT_SEND | RIGHT_RECV, &mut w_dup) != 0 {
+                        trap();
+                    }
+                    WMD_CLI_DUP.store(w_dup, Ordering::Relaxed);
                 }
                 Err(()) => {
                     ps_reg(b"gui-wmd", psp::STATE_SPAWNFAIL, 0);
@@ -652,7 +675,23 @@ fn run_rootfs_child(console: Handle) {
                         // EXIT ok 同位，本 arm 无自证标记面）。
                         Ok(0) => {}
                         Ok(_) => eco_skip(b"gfx code"),
-                        Err(()) => eco_skip(b"gfx reap"),
+                        Err(()) => {
+                            // 挂死/帽尽：berry-exec 不冒险回收（reap 超时
+                            // 路）——原柄 w_cli 仍滞挂死进程表。此时若续走
+                            // 接线 launcher = 同一 wm 端点双持有者（滞留原
+                            // 柄 + dup 柄）并发 recv、应答互截，违 wmd「单
+                            // wm 客户端串行」头注前提——dup 柄回收 + 清零，
+                            // launcher arm 门落空静默跳过（此路径 GFX 标记
+                            // 已缺 = smoke FAIL 兜底在前，无标记漂移面；
+                            // GUI-8 wiring 刀审查修：gfxdemo arm 内本分支
+                            // 时 WMD_CLI_DUP 恒非 0——门 wm_cli!=0 ⟸ wmd
+                            // Ok 路 dup 已 store）。
+                            if berry_handle_close(WMD_CLI_DUP.load(Ordering::Relaxed)) != 0 {
+                                trap();
+                            }
+                            WMD_CLI_DUP.store(0, Ordering::Relaxed);
+                            eco_skip(b"gfx reap");
+                        }
                     }
                 }
                 Err(()) => {
@@ -672,6 +711,74 @@ fn run_rootfs_child(console: Handle) {
             if berry_handle_close(wm_cli) != 0 {
                 trap();
             }
+        }
+    }
+    // ---- GUI-8 前置 wiring 刀：berry-launcher（桌面 launcher）预拉——紧
+    // 随 gfxdemo arm（阻塞 reap 段）、fsmgr arm 之前（D3：任意时刻至多
+    // 一个活跃 wm 客户端——gfxdemo 先活后死（reap 毕）、launcher 后活，
+    // wmd 头注「单 wm 客户端串行」前提保住；握手期 wmd 空闲，无
+    // TABLE_WAIT 交叠）。门 = wmd spawn Ok（WMD_CLI_DUP != 0——D2 dup 柄：
+    // 原柄 wm_cli 已随 gfxdemo arm 直递 take 离表且不置 0（死存弃判例），
+    // 读局部变量 = 死柄活读）∧ cpio_find(H_ROOTFS, b"bin/berry-launcher")。
+    // rootfs 相 fb 探测门已跳 → **静默跳过零新行**（rootfs 相 47 标记零
+    // 漂）。**不 ps_reg**（D1：psproto 17 帽不留裕——GUI-5 草案 §7 Q7：
+    // 18 = 无 ADR 修订的偏离；launcher v0 = 验收件沿 gfxdemo arm「瞬态
+    // 验收件不入账」先例，PS ok n= 零漂，入账归 GUI-8 主体刀连带抬帽裁
+    // 决）；家名单（ps_selftest 的 has_sub 断言链，grep 锚 `let mut ok =
+    // has_sub`）同样不添（guifbd/wmd 不在册先例）。
+    // 拓扑：wm 客户端端 dup 柄随 extras[0] **直递**（take 迁入；launcher
+    // 侧 libc `wm_cli_h()` 消费——gift2_h 同槽顶替的多产面惯例）；env =
+    // base 4 + extras 1 = 5/8 ✓ 无抬帽义务。launcher 门内 GETINFO 握手
+    // 一次 + 单行 LAUNCH 非标记日志（EFI 相唯一新增行）后 **park 永驻**
+    // （不 reap——wmd 常驻同款但无 ps_reg；gfxdemo 的阻塞 reap 形不适用
+    // 于常驻面）；static 三出口清零（inputd push_b/fsmgr blk_cli 卫生
+    // 惯例——已迁值不可 close、已 close 值不可复用，防柄号复用误读）。
+    let wmd_dup = WMD_CLI_DUP.load(Ordering::Relaxed);
+    if wmd_dup != 0 {
+        if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/berry-launcher") {
+            match spawn_rootfs_elf(
+                H_ROOTFS,
+                &SpawnSpec {
+                    name: b"bin/berry-launcher",
+                    data_off,
+                    data_len,
+                    stdout: console,
+                    stack_pages: 8,
+                    stdin_feed: Some(&[]),
+                    stdin_handle: None,
+                    args: &[],
+                    extra_gifts: &[wmd_dup],
+                    mmio_vmo: None,
+                    mmio_va: 0,
+                },
+            ) {
+                Ok(_child) => {
+                    // 零行零记账：LAUNCH 成功日志归 launcher 自打（非
+                    // 标记——EFI 相唯一新增行）；park 永驻不 reap。dup 柄
+                    // 已随 extras take 迁入（不可 close）——static 清零防
+                    // 柄号复用后误读成活柄（inputd arm push_b 同款）。
+                    WMD_CLI_DUP.store(0, Ordering::Relaxed);
+                }
+                Err(()) => {
+                    // Err 全在 env send 前——dup 柄未被 take，显式回收防
+                    // 表槽泄漏（vnet 同款；本 arm 仅一枚 fresh 端——dup 柄，
+                    // 无 wmd arm 式六枚枚举；wmd 侧服务端端互钉常活）+
+                    // 清零（fsmgr blk_cli 同款卫生惯例）。
+                    if berry_handle_close(wmd_dup) != 0 {
+                        trap();
+                    }
+                    WMD_CLI_DUP.store(0, Ordering::Relaxed);
+                    eco_skip(b"launcher spawn");
+                }
+            }
+        } else {
+            // cpio 缺 berry-launcher（手工裁剪镜像面）：dup 柄未被 take，
+            // 显式回收（gfxdemo arm cpio 缺分支同款 close-only；零新行）+
+            // 清零（同上卫生惯例）。
+            if berry_handle_close(wmd_dup) != 0 {
+                trap();
+            }
+            WMD_CLI_DUP.store(0, Ordering::Relaxed);
         }
     }
     // ---- P6 A-1：fsmgr（RAM-fs 服务）预拉起（A-5：+ gift[3] blk 端）----
