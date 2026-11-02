@@ -439,7 +439,7 @@ DEADLINE_ROOTFS=840 不动：tablet 在席时 INPUT ok 距 THR ok ≈ 一次 RPC
 
 ### 4.4 A74 合规清单（gui-inputd 常驻面）
 
-常驻子不进 reap（ps_reg(b"inputd", ALIVE, 0) 后 svcmgr 不 wait）；stdin 哑喂 `Some(&[])`；serve recv 容量「协议 1 op + 富余」判面（段①已落：nh!=0 → ST_BAD 不 trap）；预拉 Err 面 close 两端不泄漏。ps 账本（审稿亲证）：ps_selftest ⑤ 家名单断言 = 逐行子串 presence-only——inputd 行加入不破既有断言（⑦ 反向追加 inputd 行强化拓扑真值）；rootfs 相 roster 恰 **16/16 封顶**（ps_selftest 时 15，berryctl 后 16；表满后 m3demo 第 17 注册被满表丢弃 = 无断言面不可见）；PS_WIN 512B / REPLY_MAX 226B 双帽 16 行均余；`PS ok n=` 前缀式断言全相安全，零余量挂账见 §7-⑤。
+常驻子不进 reap（ps_reg(b"inputd", ALIVE, 0) 后 svcmgr 不 wait）；stdin 哑喂 `Some(&[])`；serve recv 容量「协议 1 op + 富余」判面（段①已落：nh!=0 → ST_BAD 不 trap）；预拉 Err 面 close 两端不泄漏。ps 账本（审稿亲证）：ps_selftest ⑤ 家名单断言 = 逐行子串 presence-only——inputd 行加入不破既有断言（⑦ 反向追加 inputd 行强化拓扑真值）；rootfs 相 roster **实测 13/16**（~~16/16 封顶~~ 设计期推演错值——2026-11-02 GUI-2 段③ 正片实测勘误：rootfs 相族 `PS ok n=13` 主仓/gui3 双树同值；「ps_selftest 时 15」实为 EFI 相读数误植（EFI 相 `PS ok n=15`）、「berryctl 后 16」无标记实证；表满丢弃机制记述保留作机制参考，实际余量 3——抬帽义务见 §7-⑤ 勘误）；PS_WIN 512B / REPLY_MAX 226B 双帽 16 行均余；`PS ok n=` 前缀式断言全相安全，零余量挂账见 §7-⑤。
 
 ---
 
@@ -478,7 +478,7 @@ just smoke-smp      # 相 2 rootfs 46 绿（tablet 在席 INPUT ok 照打；无 
 2. **QMP 设备路由首跑裁定**：主案 `"device": "tab0"` 显式寻址；若 QEMU 对 mmio 输入设备 id 寻址报 error → 回退省 device 键（VM 内唯一输入设备，路由无歧义），qmp_inject 单行改动，裁定实录追记。**首跑裁定实录（2026-11-01）三录**：① brew 新版 QEMU 已废 `server=nowait` 简写（解析期即拒）→ `server=on,wait=off`（§3.7 ⑦ 同步）；② 主案 `device:"tab0"` 在 -nographic 无 console 拓扑下被拒——GenericError `Device tab0 (head 0) is not bound to a QemuConsole`（显式 id 寻址走 console 头绑定面，mmio 设备无此绑定）；③ 回退省 device 键实证可用（事件广播进 HID handler 链；探针 + smoke 正片双证）——落地非预判的「单行改动」而是 send() 内主案失败即永降级 + 裁定行落 stderr（smoke 正片实录：`qmp: device=tab0 被拒（…）→ 永降级省 device 键`），smoke run 4 全八相 PASS。
 3. **段① §5.3「gift 第 8 插 0x0001_0008 + boot 表序 assert」被本设计取代**：vnet 形态胜出——运行时 `channel_pair()` + extra_gifts 交付 + 静态 INPUT_A/dup 分种，**无 boot 直插定值、无模板硬编**（雷册 A33 的 boot 断言义务只对模板硬编形态执法，本刀不触发即无 assert 义务）。段① 文档该节（:460-475）以本草案为准——偏差记录，不改段①原文（在册文档冻结惯例）。
 4. **段① §9-3「run/run-rootfs 增 tablet」之裸 run 不挂**：裸相无 rootfs 无消费者，挂 tablet 只喂 dmesg 噪声；本刀只挂 run-rootfs + smoke 四相。偏差记录。
-5. **PS_MAX=16 零余量挂账**：inputd 入册后 rootfs 相 roster 恰满（16/16）。下一个常驻服务必须先抬 `user/berry-psproto/src/lib.rs` `MAX_ENTRIES`（16→17；REPLY_MAX = 2+17×14 = 240 ≤ 256 仍容）+ ps 消费端渲染宽度复核。
+5. **PS_MAX=16 余量挂账（勘误后真值）**：inputd 入册后 rootfs 相 roster 实测 **13/16**（~~恰满 16/16~~ 设计期推演错值——2026-11-02 GUI-2 段③ 正片双跑实测 `PS ok n=13` 勘误；另 EFI 相 15/16、B4 Boot C 相 14/16 同批定值）。抬帽义务降档：**表满（第 17 注册）前**须先抬 `user/berry-psproto/src/lib.rs` `MAX_ENTRIES`（16→17；REPLY_MAX = 2+17×14 = 240 ≤ 256 仍容）+ ps 消费端渲染宽度复核——非「下一常驻服务立即先抬」。
 6. **CHAN_HND_MAX=8 恰满帽挂账**（审稿机制校正）：`kernel/src/channel.rs:34` 的 8 = **channel 消息随行 handle 数帽**（`channel.rs:47` `Message.handles` 数组）——spawn env 礼物块走 channel 消息随行（ktest.rs:887 注释「A2-3 6→8 同步」即 netd 第 7 插时同步抬的同一数组），故 bsh 满配 env 8 插 = 恰满此帽；**子进程 handle 另有进程表，bsh spawn 子不占 env 槽**——满配后 bsh 交互面（run hello 等）零影响。第 9 插（若有）= 内核抬帽另刀 + berry-exec gift 数组 + berry-libc hs + ktest H_HND 四处联动——禁改清单护住本刀不动内核。
 7. **段① §9 台账 7-10 重列（不在本刀，防丢）**：⑦ gui-wm 消费侧（GUI-5——gift 端点改经 GUI 服务树分发）；⑧ ABS 域真机标定（仿真域 ≠ 真触控板）；⑨ 多输入设备枚举与路由（现恰一认领，多设备 = 拒面而非竞抢）；⑩ PM 交互脉冲真落地（GUI-6/+，本刀仅占位注释）。
 8. **intent 语义注记**：options=0 = 不设 CHAN_OPT_NO_INTENT——INTERACTIVE 借入经消息传播（4-3c 每消息重导 eff，非历史 max 累积）；svcmgr/bsh 自身 declared 恒 UNSPECIFIED（顶档 = 借入不抑制）。若 M4 后观测到 input 事件消息流抬升 bsh 档位干扰调度，回溯点 = svcmgr 预拉段注释（已记录，不预埋代码）。

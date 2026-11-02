@@ -1095,8 +1095,8 @@ pub fn parse_reg_vblank_req(buf: &[u8]) -> Option<u8> {
     Some(e)
 }
 
-/// 编码 VBLANK_WAIT 请求（恰 4B `[op][r][r16]`，无参；服务端解析面随 HDI
-/// 域消费者（§9-⑨）落地——段①无消费者故不设 parse）。
+/// 编码 VBLANK_WAIT 请求（恰 4B `[op][r][r16]`，无参；解析面
+/// [`parse_vblank_wait_req`]——GUI-2 段③ 消费侧首刀起在册）。
 pub fn encode_vblank_wait_req(out: &mut [u8]) -> usize {
     assert!(out.len() >= 4, "guiproto: vblank wait buf 不足");
     out[0] = OP_VBLANK_WAIT;
@@ -1104,6 +1104,15 @@ pub fn encode_vblank_wait_req(out: &mut [u8]) -> usize {
     out[2] = 0;
     out[3] = 0;
     4
+}
+
+/// 解析 VBLANK_WAIT 请求：恰 4B + op 位（无参；保留域恒不校验——
+/// GETINFO 无参面同款）。
+pub fn parse_vblank_wait_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != 4 || buf[0] != OP_VBLANK_WAIT {
+        return None;
+    }
+    Some(())
 }
 
 /// VBLANK_WAIT 应答（阻塞应答：`[st=0][r][r16][seq u32][ts_ns u64]`）。
@@ -1998,6 +2007,28 @@ mod tests {
         assert_eq!(parse_reg_vblank_req(&[OP_REG_VBLANK, 1, 0]), None);
         assert_eq!(parse_reg_vblank_req(&[OP_REG_VBLANK, 1, 0, 0, 0]), None);
         assert_eq!(parse_reg_vblank_req(&[OP_VBLANK_WAIT, 1, 0, 0]), None);
+    }
+
+    #[test]
+    fn vblank_wait_req_roundtrip_and_rejects() {
+        // 无参请求：roundtrip + 黄金字节钉板。
+        let mut buf = [0u8; 4];
+        let n = encode_vblank_wait_req(&mut buf);
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..n], &[OP_VBLANK_WAIT, 0, 0, 0][..]);
+        assert_eq!(parse_vblank_wait_req(&buf[..n]), Some(()));
+        // 保留位 r/r16 解析侧恒不校验（前向兼容锚——GETINFO 无参同款）。
+        let mut wild = buf;
+        wild[1] = 0xEE;
+        wild[2] = 0xEE;
+        wild[3] = 0xEE;
+        assert_eq!(parse_vblank_wait_req(&wild), Some(()));
+        // 截断每切点 / 长尾 / 错 op。
+        for cut in 0..4 {
+            assert_eq!(parse_vblank_wait_req(&buf[..cut]), None, "截断 @{cut} 应拒");
+        }
+        assert_eq!(parse_vblank_wait_req(&[OP_VBLANK_WAIT, 0, 0, 0, 0]), None);
+        assert_eq!(parse_vblank_wait_req(&[OP_REG_VBLANK, 0, 0, 0]), None);
     }
 
     #[test]
