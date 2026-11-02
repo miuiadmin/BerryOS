@@ -12,7 +12,7 @@ use crate::class::{RoundRobin, SchedClass};
 use crate::runqueue::{Runqueue, Topo};
 use crate::spin::SpinLock;
 use crate::task::{
-    Task, TaskState, WakeReason, HELD_KERN_LOCK, HELD_RQ0, HELD_RQ1, HELD_REAPQ, HELD_SQ,
+    Task, TaskState, WakeReason, HELD_RQ0, HELD_RQ1, HELD_REAPQ, HELD_SQ, HELD_TABLE,
 };
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
@@ -206,9 +206,10 @@ fn print_unlock_raw() {
 /// 切走前分诊（舞蹈步「放」）：位=1（SVC 持锁窗内走到切换点）则放锁——与单核
 /// 「让出点 = 屏蔽窗」同构；位=0（内核任务直调/半装窗）幂等跳过。
 unsafe fn klock_release_switch(task: *mut Task) {
-    // 义务⑥位图：切换舞蹈分诊 bit0（KL）——其余位 c-2 立法后由各锁自管
-    //（结构锁窗内禁切换，届时「非零即禁」执法点收口）。
-    if (*task).held_locks & HELD_KERN_LOCK != 0 {
+    // 义务⑥位图：切换舞蹈分诊 bit5（表锁——c-2c slice 1 起随 C20 语义随收
+    // KL 本尊兼职）；结构锁位（bits1-4）c-2c slice 2a 起扩「按位集逆序放」
+    // +「非零即禁」执法（结构锁窗内禁切换）。
+    if (*task).held_locks & HELD_TABLE != 0 {
         klock_release_raw();
     }
 }
@@ -216,7 +217,7 @@ unsafe fn klock_release_switch(task: *mut Task) {
 /// 切回后续行分诊（舞蹈步「取」）：位=1 则重取——wait 重验循环/遥测/后续
 /// handler 逻辑回到锁内；位=0 幂等跳过。
 unsafe fn klock_acquire_switch(task: *mut Task) {
-    if (*task).held_locks & HELD_KERN_LOCK != 0 {
+    if (*task).held_locks & HELD_TABLE != 0 {
         klock_acquire_raw();
     }
 }
@@ -228,9 +229,9 @@ pub unsafe extern "C" fn klock_flag_current(on: bool) {
     let cur = current_task();
     if !cur.is_null() {
         if on {
-            (*cur).held_locks |= HELD_KERN_LOCK;
+            (*cur).held_locks |= HELD_TABLE;
         } else {
-            (*cur).held_locks &= !HELD_KERN_LOCK;
+            (*cur).held_locks &= !HELD_TABLE;
         }
     }
 }
