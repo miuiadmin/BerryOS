@@ -455,8 +455,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 锁路径（单核非竞争纯开销、恒配平）；CURRENT 空窗位跳过。gate（副核参与）
     // 不置位 = S-2a 单核可证，改动全量单核零漂移。
     berry_hal_aarch64::kern_lock::set_klock_flag_hook(berry_sched::klock_flag_current);
-    // S-3c c-2c slice 2b：SVC 入口**结构锁窗**槽——HAL 侧按类 KL-first 取 /
-    // KL-last 放（过渡态全局序 KL 最外，§A108 延续），结构位集（SQ→RQ0→
+    // S-3c c-2c slice 2b（3-1b 翻终态正序）：SVC 入口**结构锁窗**槽——HAL
+    // 侧结构先行、KL 类内末取/先放（终态全局序 KL 最内，七层冻结序
+    // SQ>队列>REAPQ>表），结构位集（SQ→RQ0→
     // RQ1→REAPQ 升序）物理预取 + held 记账 + svc_mask 声明经此回调；handler
     // 内层窗由此全退化。CURRENT 空（ktest/boot）跳过 = ktest 期 SVC 形态
     // 不变（KL 由 HAL 直取恒配平）。fault 面（trap.rs svc_enter 全量形）
@@ -1922,23 +1923,20 @@ fn fb_pipe_h() -> u32 {
 /// WAIT_ANY 哨兵——任何非零 set 命中，醒来重验定夺）。**不立即抢占**（v1
 /// `wake_matching` 契约——醒者等 tick/yield，交互延迟 ≤ 1 slice）；也不可
 /// 在 IRQ 语境碰 fast_wake/try_preempt。写 Event 与遥测环同纪律：零分配、
-/// 纯指针写字段。S-2 E0 起 `ev.signal + wake_matching` 段包 KERN_LOCK
-/// （E27，草案 §2.4：IRQ 上下文无 Task 位、无 DAIF 操作——同 on_irq_tick
-/// 的 `klock_acquire_raw` 目标形态，kernel 侧直接调 arch 原语）；S-3c
-/// c-2b slice 4 起位写+扫描再收一层 **SQ 同窗**（`wake_matching_locked`
-/// ——义务③「写位+扫描同窗」的 IRQ 生产者面，F-L2 不可重入立法）。
+/// 纯指针写字段。S-3c c-2b slice 4 起位写+扫描同 **SQ 窗**（`wake_matching_
+/// locked`——义务③「写位+扫描同窗」的 IRQ 生产者面，F-L2 不可重入立法）；
+/// 3-1b 起 KL 外层包络剥除（E27 退役）——本面 = 纯 SQ 独立单锁窗。
 unsafe extern "C" fn rx_irq_notify() {
     // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
     let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
         .expect("rx_irq_notify: RX_EV_REF 未初始化（boot 接线缺失）");
-    berry_hal_aarch64::kern_lock::kern_acquire();
     unsafe {
         // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描
         // 同窗**——Event 位写与 SLEEPQ 扫描摘队在同一 SQ 窗内原子（分段后
         // 「位已置而队上无等待者」窗口 = 丢唤醒面；消费者 poll-first +
         // rx_ev_clear 豁免位协议不变）。持窗版 wake_matching_locked 不再
-        // 自取 SQ（不可重入）；KL 仍外层包络 = 过渡态逆序（§A108，C20
-        // 收缩随 c-2c ⑤ 消解定形）。
+        // 自取 SQ（不可重入）；3-1b 起 KL 不再外层包络（终态 KL 最内，
+        // SQ 独立窗即终态形）。
         let sq_phys = berry_sched::sq_lock(); // 位感知退化形（c-2c slice 2a）
         if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
             ev.signal(0, RX_EV_BIT);
@@ -1946,7 +1944,6 @@ unsafe extern "C" fn rx_irq_notify() {
         berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
         berry_sched::sq_unlock(sq_phys);
     }
-    berry_hal_aarch64::kern_lock::kern_release();
 }
 
 /// 清 RX Event 位（console 消费包络内调）。位由 IRQ 置、由消费侧清——与

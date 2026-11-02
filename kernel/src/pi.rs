@@ -56,8 +56,7 @@ pub fn init() {
 
 /// 全图重推捐赠图（零增量簿记；见模块注释）——**自持窗版**（c-2b slice 4
 /// 起拆层）：SQ 窗自包 body，手动调用面（ktest PI 直调）用本版。表读随
-/// SQ→表冻结序正嵌套（复核 C1）；KL 纪元恒零争用 = 行为零差（窗形先行，
-/// C20 收缩直接生效）。
+/// SQ→表 冻结序正嵌套（复核 C1）。
 pub fn recompute() {
     let sq_phys = berry_sched::sq_lock(); // 位感知退化形（c-2c slice 2a）
     recompute_locked();
@@ -68,14 +67,26 @@ pub fn recompute() {
 /// 点 / `wake_matching_locked` / `fast_wake_locked` / `expire_timeouts` /
 /// kill SLEEPQ 臂）一律在 SQ 窗内发射本钩子，钩子体不再自取 SQ（同锁重入
 /// = 同核自锁）。拆层前本函数体即钩子体且零自取 = KL 在场时段纯结构等价。
-/// 表读（`holder_table`）在 SQ 窗内 = SQ→表 冻结序正序；C20 后表锁面归
-/// c-2c 分号类别定形（本刀不动）。
+/// 表读（`holder_table`）3-1b 起收 **KL 子窗**（SQ→表 正序嵌套 = 终态
+/// 七层冻结序——KL 归表锁本职、最内层；C20 后表读必经 KL 的常驻面之一）。
 fn recompute_locked() {
     // 第一趟：清零**在队者**的受捐额（冻结语义——已离队的 runnable 者不动，
-    // boost 随行到下次入睡/退出）。
+    // boost 随行到下次入睡/退出）。纯 Task 字段写，不触表——窗内不包。
     berry_sched::for_each_sleeper(|t| t.pi_inherited = 0);
 
     // 不动点迭代：每轮沿边传播一跳。`Cell` 规避嵌套闭包的可变捕获冲突。
+    // 3-1b：整段包 KL 子窗——内层 `holder_table` 反查读 bootstrap 表，
+    // 表读必经 KL（终态锁序 SQ→KL 正序嵌套；粗窗 = 重推期间表变更被
+    // KL 串行，与发射点 SQ 串行叠成一致快照）。**位感知退化（判据 =
+    // HAL 持有者镜像非任务位）**：SVC TABLE 类主体（KL 已持）内经
+    // wake/block/close 发射本钩 → 跳物理取放防同核重入自旋死锁——
+    // 任务位不够（ktest/boot 窗 CURRENT=null 位记账不存在，而 HAL 直取
+    // 的 KL 物理持有态真实，sys_handle_close 直调面即此形态）；IRQ/tick
+    // 语境镜像恒 0 照常真取（`kern_lock::kl_held` 判据注）。
+    let kl_phys = !berry_hal_aarch64::kern_lock::kl_held();
+    if kl_phys {
+        berry_hal_aarch64::kern_lock::kern_acquire();
+    }
     for _ in 0..PI_MAX_HOPS {
         let changed = Cell::new(false);
         berry_sched::for_each_sleeper(|donor| {
@@ -97,9 +108,13 @@ fn recompute_locked() {
             break; // 不动点：再无传播
         }
     }
+    if kl_phys {
+        berry_hal_aarch64::kern_lock::kern_release();
+    }
 
     // 尾趟：刷在队者 effective（runnable 者保持冻结值）。公式与 pick 侧
-    // policy::apply 同一：max(base + 策略权重, pi_inherited)。
+    // policy::apply 同一：max(base + 策略权重, pi_inherited)。纯字段算术
+    // 不触表——窗内不包。
     berry_sched::for_each_sleeper(berry_sched::refresh_effective);
 }
 
