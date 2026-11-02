@@ -241,6 +241,16 @@ pub(crate) fn current_ttbr0_pa() -> usize {
     ttbr as usize & 0x0000_FFFF_FFFF_F000
 }
 
+/// S-4 4-2：当前 TTBR0 的 ASID 字段（bits[63:48]）——syscall copy 链读者
+/// 解析 per-AS PT 锁的键。与 [`current_ttbr0_pa`] 同一读点（EL0 syscall 不
+/// 切 AS，天然 = 调用者 ASID，同窗一致键）。
+pub(crate) fn current_asid() -> u16 {
+    let ttbr: u64;
+    // SAFETY: 特权读；EL1，无副作用。
+    unsafe { asm!("mrs {0}, ttbr0_el1", out(reg) ttbr, options(nostack, preserves_flags)) };
+    (ttbr >> 48) as u16
+}
+
 /// 低半身份表退役（2b-2）：TTBR0 ← 内核空表（ASID 0）+ **全量 TLB 失效**。
 /// 此后低半任何访问必然 fault——ktest 以期望故障正向断言之。
 /// 用 `vmalle1is`：身份时代的低半 TLB 项是 global（boot 块描述符 nG=0），按号

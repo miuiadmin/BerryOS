@@ -10,6 +10,11 @@
 //! 预留在父表登记，防父越子映射）。ASLR 随机化（§3）留 v2（需 RNG）。
 //! v1 不回收页表帧/解除预留（对象销毁统一在 Phase 3 能力层）。
 //!
+//! SMP（S-4 4-2）：写者（map/unmap/protect）全程持 per-AS PT 锁（键 =
+//! ASID，见 [`PT_LOCKS`]）；读者（syscall copy 链经 [`walk_leaf`]）由调用
+//! 方同窗持锁（walk+copy 同窗铁律，判例 §A113）。跨核改叶后 `broadcast()`
+//! 发 SGI #2 广播（非阻塞；回执等待在 SVC 派发尾，见 HAL `tlbshoot`）。
+//!
 //! 全 API 返回 `Result`（syscall 边界无 panic 纪律）。
 
 use crate::vmo::{zero_frame, Vmo};
@@ -17,6 +22,7 @@ use alloc::vec::Vec;
 use berry_hal_aarch64 as hal;
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SIZE};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// 用户 VA 上界：T0SZ=25 → TTBR0 区 = `[0, 2^39)`。
 pub const USER_VA_TOP: usize = 1 << 39;
@@ -29,6 +35,59 @@ const TABLE_BIT: u64 = 1 << 1;
 const ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 /// AP 字段（bits[7:6]）掩码——protect 改权用。
 const AP_MASK: u64 = 0b11 << 6;
+
+// ---- per-AS 页表自旋锁（S-4 4-2；SMP-S4 草案 §2 4-2①④ + §3.1）----
+
+/// 锁键 = ASID：写者（map/unmap/protect）持 `self.asid`，读者（syscall copy
+/// 链）持 `hal::current_asid()`（与 `current_ttbr0_pa` 同一 TTBR0 读点 = 同
+/// 窗一致键——walk_leaf 无对象句柄，键控解析闭合此缺口）。定长 64KiB BSS
+/// 换 O(1) 无注册解析：8 位硬件域只用前 256 槽、16 位域满用（余槽死重零
+/// 成本——BSS 清零不占镜像）。子 Vmar 经共享 asid 天然共享同锁（同树同
+/// 锁）。ASID 回卷后同号新 AS 复用同槽 = 仅过串行化（互斥语义不破；回卷
+/// 世代精确隔离 = 4-3 领地）。ASID 0（内核空表）永不取锁——空表无用户叶、
+/// 无写者。
+///
+/// 层位：KL/表之右、分配器之上（§3.1：写者 PT 嵌 KL 窗取放 = §A108 过渡
+/// 态合法；map 建中间表出帧 = PT 锁内摸分配器，帧分配器纯 KL 串行故锁序
+/// 一致）。**不进 HELD 位图、不绑 CURRENT**（§A113 三位说谎面）；TTAS
+/// 形 = kern_lock KERN_LOCK 同款（CAS(Acquire) 外环 + Relaxed 内环）。
+static PT_LOCKS: [AtomicBool; 0x1_0000] = [const { AtomicBool::new(false) }; 0x1_0000];
+
+/// PT 锁 RAII 守卫：Drop 放锁。map 中途回滚臂等多出口路径零漏放（no_std
+/// 无 unwind、panic=halt，Drop 只走正常控制流）。
+pub(crate) struct PtGuard {
+    asid: u16,
+}
+
+impl Drop for PtGuard {
+    fn drop(&mut self) {
+        PT_LOCKS[self.asid as usize].store(false, Ordering::Release);
+    }
+}
+
+/// 取本 AS PT 锁（TTAS）。无环论证（SMP-S4 草案 §3.2）：SVC 全程 IRQ 屏蔽
+/// ——持有者不被抢占/中断，方法体有界 → 等待者最终必得；PT 恒在 KL 窗内
+/// 取放（全系统单一嵌套向，无反转面）。boot/ktest 直调路径同样 DAIF 屏蔽。
+fn pt_lock(asid: u16) -> PtGuard {
+    // TTAS（test-and-test-and-set）：CAS 外环避免每次写行争、Relaxed 内环
+    // 读自旋降总线流量——kern_lock KERN_LOCK 同款形态。
+    while PT_LOCKS[asid as usize]
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        while PT_LOCKS[asid as usize].load(Ordering::Relaxed) {
+            core::hint::spin_loop();
+        }
+    }
+    PtGuard { asid }
+}
+
+/// 读者侧入口（syscall.rs copy_* 链 EL0 路）：锁**当前** AS——`access_ok`
+/// 走查与 copy store 同窗（§A113 walk+copy 同窗铁律）。EL1 路（ktest 静态
+/// 缓冲）不取：高半直映无用户表。
+pub(crate) fn pt_lock_current() -> PtGuard {
+    pt_lock(hal::current_asid())
+}
 
 /// 映射权限（v1 三档；AP 编码见 `paging.rs`——Rw=00 仅 EL1 读写、Ro=10 只读、
 /// UserRw=01 EL0/EL1 读写——2b-4 首个 EL0 用户页。UserRo=11 留 v2 按需）。
@@ -183,6 +242,10 @@ impl Vmar {
         len: usize,
         perm: Perm,
     ) -> Result<usize, VmarError> {
+        // per-AS PT 锁（S-4 4-2①）：整方法串行——不止 PTE：同 Vmar 并发调
+        // 用的 regions Vec push/check_slot 竞态同窗关死。RAII：中途回滚臂
+        // `return Err` 亦放。
+        let _pt = pt_lock(self.asid);
         self.check_slot(vaddr, len)?;
         if vmo_offset % PAGE_SIZE != 0 {
             return Err(VmarError::Unaligned);
@@ -225,6 +288,11 @@ impl Vmar {
                     // SAFETY: 特权指令；EL1。回滚叶对走查可见 + 旧 TLB 项作废。
                     unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
                     hal::tlbi_aside1(self.asid);
+                    // S-4 4-2⑤：他核可能已走查缓存回滚前的半填叶（读者走查
+                    // 与本写者靠 PT 锁互斥，但**锁外**的历史缓存项作废只能靠
+                    // 广播）。锁窗内只发不待——回执等待在 SVC 派发尾；单核
+                    // par_enabled=false 时 TX=0 零扰动（boot/ktest 路径）。
+                    hal::tlbshoot::broadcast();
                     return Err(e);
                 }
             };
@@ -251,10 +319,14 @@ impl Vmar {
     /// 计数 -1（此后该页可 decommit/销毁）。**不退物理页**（页属 VMO；v1 也不
     /// 回收中间表帧）。区间须与本 Vmar 登记的映射**精确匹配**（子区间解映射留 v2）。
     pub fn unmap(&mut self, vaddr: usize, len: usize) -> Result<(), VmarError> {
+        // per-AS PT 锁（S-4 4-2①），整方法串行（同 map）。
+        let _pt = pt_lock(self.asid);
         let idx = self.find_mapped(vaddr, len)?;
-        // SAFETY: Region 的 vmo 指针经 map 的 &mut 传入；两层政策保有效（见
-        // Region 注释：handle 层 close 拒绝面 + 直构对象泄漏持有），且单核 +
-        // syscall 全程 IRQ 屏蔽（无并发销毁窗口）。
+        // SAFETY: Region 的 vmo 指针经 map 的 &mut 传入；有效性依托两层政策
+        // （见 Region 注释：handle 层 close -EBUSY 拒面 + drain 泄漏兜底）。
+        // 并发面（S-4 4-2 起 SMP，原「单核 + IRQ 屏蔽」假设退役）：本方法
+        // 全程 PT 锁 + KL 双串行——同 AS 他核写者被 PT 锁挡；同 VMO 映两 AS
+        // 的跨核 untrack_map 被 KL 挡；对象销毁被 -EBUSY 挡在 PTE 外。
         unsafe {
             let r = &self.regions[idx];
             (*r.vmo).untrack_map(r.vmo_off, r.len);
@@ -263,12 +335,17 @@ impl Vmar {
         // SAFETY: 特权指令；EL1。改叶对走查可见 + 旧 TLB 项作废。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
         hal::tlbi_aside1(self.asid);
+        // S-4 4-2⑤：清叶广播——本核 tlbi 管不到他核缓存项。锁窗内只发不
+        // 待（回执等待在 SVC 派发尾零锁自旋）；单核 TX=0 零扰动。
+        hal::tlbshoot::broadcast();
         self.regions.swap_remove(idx);
         Ok(())
     }
 
     /// 改权限：重写叶 AP 位 + 按号失效 + 更新区间登记。精确匹配语义同 unmap。
     pub fn protect(&mut self, vaddr: usize, len: usize, perm: Perm) -> Result<(), VmarError> {
+        // per-AS PT 锁（S-4 4-2①），整方法串行（同 map）。
+        let _pt = pt_lock(self.asid);
         let idx = self.find_mapped(vaddr, len)?;
         for i in 0..len / PAGE_SIZE {
             let va = vaddr + i * PAGE_SIZE;
@@ -283,6 +360,9 @@ impl Vmar {
         // SAFETY: 特权指令；EL1。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
         hal::tlbi_aside1(self.asid);
+        // S-4 4-2⑤：权限降级（如 Rw→Ro）后他核 stale 可写项是安全面——广播
+        // 作废（同 unmap，锁窗内只发不待）。
+        hal::tlbshoot::broadcast();
         self.regions[idx].kind = RegionKind::Mapped(perm);
         Ok(())
     }
@@ -321,7 +401,9 @@ impl Vmar {
         table_base(pa)
     }
 
-    /// 读槽位；无效则建新表（清零帧）写入，返回下一级表 PA。
+    /// 读槽位；无效则建新表（清零帧）写入，返回下一级表 PA。SMP（S-4 4-2）：
+    /// 写者（map）全程持 per-AS PT 锁——跨核双建表竞态已闭，下方「非零非表」
+    /// 断言在 SMP 下同样成立（断言留作双保险）。
     fn next_table(fa: &mut FrameAllocator, slot: *mut u64) -> Result<usize, VmarError> {
         // SAFETY: 槽位属本表树独占；volatile 防重排。
         let e = unsafe { slot.read_volatile() };
@@ -379,6 +461,10 @@ impl Vmar {
 /// （bit1=1；用户树由 `next_table` 独家产出），L3 须页描述符（bit0=1）；任一层
 /// 缺失/形态不符 → `None`。AP 位 [7:6] 由调用方解读（00/01=EL1 可写、10=EL1
 /// 只读、11=EL0 专属）。
+///
+/// 读者窗纪律（S-4 4-2，判例 §A113 walk+copy 同窗铁律）：调用方（syscall
+/// copy 链）须在持本表树 AS 的 PT 锁窗内（[`pt_lock_current`]）走查并完成
+/// store——封死「走查通过后写者撤页」的 TOCTOU 窗。
 pub(crate) fn walk_leaf(l1_pa: usize, va: usize) -> Option<u64> {
     /// L3 页描述符有效位（bit0）。
     const PAGE_VALID: u64 = 1;

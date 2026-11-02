@@ -1615,7 +1615,11 @@ extern "C" fn task_sleeper(_arg: usize) -> ! {
     // 双路径全过——置门槛放行 watchdog 唤醒环断言（此刻两条 boot 唤醒记录必
     // 已落环：钩子在唤醒时刻发射，先于 sleeper 续行到这里）。
     BLOCK_BOOT_DONE.store(true, core::sync::atomic::Ordering::Relaxed);
-    berry_hal_aarch64::uart_puts(b"K BLOCK ok\n");
+    // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（bringup 后裸打与副核调度打印
+    // 并发即字节撕行 = smoke 假阴性 240s 超时——实测本行与 sS2b steal 撞拍）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"K BLOCK ok\n");
+    });
     berry_sched::exit_current()
 }
 
@@ -1701,7 +1705,10 @@ extern "C" fn task_waker2(arg: usize) -> ! {
         0,
         "waker2: thread_sleep 1 slice（让 waiter 收尾）"
     );
-    berry_hal_aarch64::uart_puts(b"W WAIT ok\n");
+    // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（同 K BLOCK——裸打撕行面）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"W WAIT ok\n");
+    });
     berry_sched::exit_current()
 }
 
@@ -1814,7 +1821,10 @@ extern "C" fn task_pi_probe(arg: usize) -> ! {
         0,
         "pi_probe: signal E 放行"
     );
-    berry_hal_aarch64::uart_puts(b"I PI ok\n");
+    // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（同 K BLOCK——裸打撕行面）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"I PI ok\n");
+    });
     berry_sched::exit_current()
 }
 
@@ -2462,7 +2472,10 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
            "it_probe: hop 帽计数须 ≥1（CH4a）");
     assert!(crate::telemetry::intent_budget_capped_total() >= 2,
            "it_probe: 时间帽计数须 ≥2（slow send 降级 + CH4b 结算封顶）");
-    berry_hal_aarch64::uart_puts(b"I INTENT ok\n");
+    // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（同 K BLOCK——裸打撕行面）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"I INTENT ok\n");
+    });
     berry_sched::exit_current()
 }
 
@@ -2570,17 +2583,20 @@ extern "C" fn task_fast_pinger(arg: usize) -> ! {
             "fa_ping: 直切须 ≥N-2（32>16 每轮必切；实跑 {}）", direct);
     let avg_ticks = rt_ticks / FAST_ROUNDS;
     let ref_cyc = avg_ticks * 1_000_000_000 / freq; // 1GHz 参考 cycle（数值 = ns）
-    berry_hal_aarch64::uart_puts(b"F FAST ok\n  rt_ticks=");
-    berry_hal_aarch64::uart_put_dec(avg_ticks);
-    berry_hal_aarch64::uart_puts(b" ref_cyc=");
-    berry_hal_aarch64::uart_put_dec(ref_cyc);
-    berry_hal_aarch64::uart_puts(b" hits=");
-    berry_hal_aarch64::uart_put_dec(hits);
-    berry_hal_aarch64::uart_puts(b" miss=");
-    berry_hal_aarch64::uart_put_dec(miss);
-    berry_hal_aarch64::uart_puts(b" direct=");
-    berry_hal_aarch64::uart_put_dec(direct);
-    berry_hal_aarch64::uart_puts(b"\n");
+    // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（多段拼行整段入锁——RX ok 同款）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"F FAST ok\n  rt_ticks=");
+        berry_hal_aarch64::uart_put_dec(avg_ticks);
+        berry_hal_aarch64::uart_puts(b" ref_cyc=");
+        berry_hal_aarch64::uart_put_dec(ref_cyc);
+        berry_hal_aarch64::uart_puts(b" hits=");
+        berry_hal_aarch64::uart_put_dec(hits);
+        berry_hal_aarch64::uart_puts(b" miss=");
+        berry_hal_aarch64::uart_put_dec(miss);
+        berry_hal_aarch64::uart_puts(b" direct=");
+        berry_hal_aarch64::uart_put_dec(direct);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
     berry_sched::exit_current()
 }
 
@@ -2607,7 +2623,10 @@ extern "C" fn task_svc_tag(arg: usize) -> ! {
         -9, // -EBADF：共享表 handle 在自己表查无（返 -EAGAIN 即还在走共享表）
         "svc_tag: 共享表 handle 须 -EBADF（tag 路由活证）"
     );
-    berry_hal_aarch64::uart_puts(b"TAGTAB ok\n");
+    // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（同 K BLOCK——裸打撕行面）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"TAGTAB ok\n");
+    });
     berry_sched::exit_current()
 }
 
@@ -3619,10 +3638,15 @@ extern "C" fn task_ai_ping(arg: usize) -> ! {
         let mut observed = 0u64;
         // SAFETY: 本任务内核栈局部变量，活过调用。
         let pobs = core::ptr::addr_of_mut!(observed) as u64;
+        // S-4 4-2：原 poll(deadline=0) 挂「send 返回即回件在」的单核串行微时序
+        // 假设——SMP 下 pong 在他核调度，send 返回时回件未必落地 → -EAGAIN
+        // 假阴性。改 100ms 有界等待（CNTVCT 100MHz）：微时序被帽吸收，真断
+        // 链仍 -ETIMEDOUT 断言失败 = smoke FAIL（fail loud 语义不变）。
         assert_eq!(
-            svc6(NR_OBJECT_WAIT_ONE as u64, ha as u64, SIGNAL_READABLE, 0, pobs, 0, 0),
+            svc6(NR_OBJECT_WAIT_ONE as u64, ha as u64, SIGNAL_READABLE,
+                 t0 + 10_000_000, pobs, 0, 0),
             0,
-            "ai_ping: wait poll 命中（断链 -EAGAIN 即 FAIL）"
+            "ai_ping: wait READABLE（断链超时即 FAIL）"
         );
         let (mut n, mut nh): (u64, u64) = (8, 0);
         assert_eq!(

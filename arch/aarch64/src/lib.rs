@@ -119,6 +119,12 @@ pub fn current_ttbr0_pa() -> usize {
     mmu::current_ttbr0_pa()
 }
 
+/// S-4 4-2：读当前 TTBR0_EL1 的 ASID 字段（bits[63:48]）——per-AS PT 锁的
+/// 读者键（与 [`current_ttbr0_pa`] 同一读点，同窗一致）。
+pub fn current_asid() -> u16 {
+    mmu::current_asid()
+}
+
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
 // P6 A-2 起加 ATTR_DEVICE/SH_NONE：用户侧 MMIO 窗口叶（Device-nGnRnE + 不
 // 共享——内核直映 MMIO 同款，见 mmu.rs）。
