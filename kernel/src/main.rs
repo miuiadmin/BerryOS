@@ -1897,12 +1897,12 @@ unsafe extern "C" fn rx_irq_notify() {
         // rx_ev_clear 豁免位协议不变）。持窗版 wake_matching_locked 不再
         // 自取 SQ（不可重入）；KL 仍外层包络 = 过渡态逆序（§A108，C20
         // 收缩随 c-2c ⑤ 消解定形）。
-        berry_sched::sq_lock();
+        let sq_phys = berry_sched::sq_lock(); // 位感知退化形（c-2c slice 2a）
         if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
             ev.signal(0, RX_EV_BIT);
         }
         berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
-        berry_sched::sq_unlock();
+        berry_sched::sq_unlock(sq_phys);
     }
     berry_hal_aarch64::kern_lock::kern_release();
 }

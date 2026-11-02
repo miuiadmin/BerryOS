@@ -51,6 +51,7 @@
 - **eret 落地序列 ELR/SPSR 无帧保（S-3b 副核派发）**：手搓「写 ELR/SPSR 后 eret」序列（`user_entry_trampoline` 类）在写点与 eret 之间不得解蔽 IRQ——异常入口覆写 ELR 为返回址，eret 便以新 SPSR 落错 EL 执行特权指令必杀；CPU0 派发径靠 rearm-before-EOIR「整片无 CNTV」不变式侥幸免疫，副核 park/deadline 派发近确定性命中（G1.5 杀数超标连坐是其死状）；EL0 解蔽由 SPSR=0 承担，trampoline 全程屏蔽。先问：写点与 eret 之间有 IRQ 入口面吗？ → 雷册 §A106
 - **偷取摘环必有回插（S-3b 跨核搬运）**：环语义合同 = 出选≠离环（选中执行只推游标，block 才 unlink/exit 才 dequeue，enqueue 只在首次 runnable 三源）——跨核偷取摘 victim 环后必须回插本核环，缺此步 victim preempt 让出即成「无环 Ready」孤儿永不被 pick（饿死 + 偷空侧深 park 无醒源整机假死）。先问：跨队列搬运路径的入环侧在哪？ → 雷册 §A107
 - **过渡态拆锁嵌套逆序显式标注「C20 收缩时消解」（S-3c c-2a）**：分阶段拆 KL 期间，新结构锁（SQ/RQ/REAPQ）在 KL 窗内取放 = 嵌套方向与终态七层冻结序相反；过渡态死锁不可能的根基 = KL 单持有者串行一切取放点——任何一点落窗外即真 ABBA。C20 收缩验收面必含逆序边逐点消解核销。先问：新结构锁的取放点是否全程在 KL 窗内？ → 雷册 §A108
+- **结构窗闭窗点必须仍在窗主上下文（S-3c c-2c slice 2a）**：held_mark/held_test 绑定 CURRENT——切换位点「先 set_current 后闭结构窗」= 清位落到被选者/park 空态头上：窗主位终身不清（此后同锁窗恒退化不取锁、位跨睡眠终身携带）+ 被选者活位被误清，双向投毒；全域唯 block_current 双分支犯过此序（修法 = 闭窗含 PI 钩子整体挪到翻转前）。给 CURRENT-绑定记账原语扩调用面时先审该点 CURRENT 生命周期。先问：闭窗点在 set_current 翻转前吗？ → 雷册 §A111
 
 ## 深读
 

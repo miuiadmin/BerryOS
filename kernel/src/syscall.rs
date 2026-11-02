@@ -1534,12 +1534,16 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // 「查位+写位+唤醒不可分割」；过渡态 KL 全量在场 ⇒ 零争用，窗形先行
     // ——SLEEPQ_LOCK 注释的逆序标注在此同样适用）。未命中即闭窗——
     // slowpath 的 wake_matching 自带窗。
+    // c-2c slice 2a：退化形窗——phys 随锁返回（位已置 = 外层逻辑持有，
+    // 物理闭窗跳过）；miss/防御面/hit 三闭窗位互斥。
+    let mut sq_phys = false;
     let waiter = if nhandles == 0 && peer_empty {
-        berry_sched::sq_lock();
+        sq_phys = berry_sched::sq_lock();
         let w =
             berry_sched::find_single_waiter_locked(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
         if w.is_none() {
-            berry_sched::sq_unlock();
+            berry_sched::sq_unlock(sq_phys);
+            sq_phys = false;
         }
         w
     } else {
@@ -1551,7 +1555,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             // 上面刚解包过——不可达防御面（消息泄漏，安全向）。c-2a：若义务④
             // 窗已开（waiter 命中 ⇔ SQ 在持）先闭窗再退——锁泄漏 = 全局死锁。
             if waiter.is_some() {
-                berry_sched::sq_unlock();
+                berry_sched::sq_unlock(sq_phys);
             }
             return ERR_BAD_HANDLE as i64;
         };
@@ -1565,7 +1569,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             // SAFETY: t 来自同一 SQ 窗内 find_single_waiter_locked（此刻仍在
             // SLEEPQ 上）。
             unsafe { berry_sched::fast_wake_locked(t) };
-            berry_sched::sq_unlock();
+            berry_sched::sq_unlock(sq_phys);
             crate::telemetry::ipc_fast_hit();
             if berry_sched::try_preempt() {
                 crate::telemetry::ipc_direct_switch();

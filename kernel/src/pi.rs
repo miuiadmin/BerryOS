@@ -59,9 +59,9 @@ pub fn init() {
 /// SQ→表冻结序正嵌套（复核 C1）；KL 纪元恒零争用 = 行为零差（窗形先行，
 /// C20 收缩直接生效）。
 pub fn recompute() {
-    berry_sched::sq_lock();
+    let sq_phys = berry_sched::sq_lock(); // 位感知退化形（c-2c slice 2a）
     recompute_locked();
-    berry_sched::sq_unlock();
+    berry_sched::sq_unlock(sq_phys);
 }
 
 /// [`recompute`] 的持窗版 body：**SQ 已持**契约——全部发射点（block 双切

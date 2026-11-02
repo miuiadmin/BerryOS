@@ -149,14 +149,19 @@ pub struct Task {
     /// 切回后重取（SVC 层 ~31 个 handler 零改动；内核任务直调位=0 幂等跳过）。
     /// 位只在任务自身执行流中被写 → 挂起期间稳定。
     ///
-    /// **S-3c 义务⑥（F-L9）升持有集位图 u8**：bit0 = KERN_LOCK（原
-    /// `klock_window` 语义原样）；bit1..=4 = 结构锁四位（c-2a 定名：
-    /// [`HELD_SQ`] 已随 `sq_lock`/`sq_unlock` 记账，[`HELD_RQ0`]/[`HELD_RQ1`]
-    /// 随 c-2b RQ 取放对（`rq_lock_of`）记账；[`HELD_REAPQ`] 随 c-2b slice 2
-    /// `reapq_push`/`reap_drain` 记账）；bit5 = 表锁（C20 KL 收缩后 KL 本尊
-    /// 兼职，c-2c 定名）。
-    /// 「持结构锁禁切换」从结构巧合升立法：c-2c 起切换原语按「非零即禁」
-    /// 执法（现役舞蹈分诊仅 bit0，行为与旧 bool 位逐点等价）。
+    /// **S-3c 义务⑥（F-L9）升持有集位图 u8**：bit0 已退役（原 KERN_LOCK
+    /// 单 bool 位，c-2c slice 1 随 bit5 定名迁移删除）；bit1..=4 = 结构锁
+    /// 四位（[`HELD_SQ`] 随 `sq_lock`/`sq_unlock` 记账，[`HELD_RQ0`]/
+    /// [`HELD_RQ1`] 随 `rq_lock_of` 记账，[`HELD_REAPQ`] 随 `reapq_push`/
+    /// `reap_drain` 记账）；bit5 = 表锁（C20 KL 收缩后 KL 本尊兼职）。
+    ///
+    /// **c-2c slice 2a 起切换舞蹈扩全位集**：切点按位集**逆序**物理放
+    /// （内→外：TABLE→REAPQ→RQ1→RQ0→SQ）、**位保持置位**（跨挂起逻辑
+    /// 持有义务——位只在任务自身执行流写 ⇒ 挂起期稳定），切回**正序**
+    /// 物理重取（外→内，与嵌套窗取序/入口位集预取序一致，防跨核 ABBA）。
+    /// 位号 = 锁序 rank（冻结序 SQ>队列>REAPQ>表）。结构取放对随位感知
+    /// 退化（位已置 = 外层逻辑持有 → 物理取放跳过、配对闭窗同退化）；
+    /// 2b 入口位集预取后方有结构位跨切点携带者（2a 全惰性零行为差）。
     pub held_locks: u8,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
