@@ -60,11 +60,38 @@ pub fn kern_release() {
 }
 
 // ---- SVC 派发包络（草案 3.1-1）：取锁 + 置当前任务持锁义务位 ----
+// S-3c c-2c slice 2b 起按类分档（入口位集预取 + 内层窗按位退化）。
+
+/// SVC 入口锁类位集（S-3c c-2c slice 2b）：位值镜像 sched `task.rs` 的
+/// HELD_*（bit1=SQ 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 /
+/// bit5=TABLE 0x20）；跨 crate 位对齐由 kernel main 编译期断言执法。
+/// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案.md`；NONE 类号
+/// （clock_read/signal_take/默认槽）**完全不取任何锁**。
+pub const SVC_CLASS_NONE: u8 = 0x00;
+/// 纯表号（0x02/0x03/0x3A/0x86）：仅 KL。
+pub const SVC_CLASS_TABLE: u8 = 0x20;
+/// wait/send 族（0x01/0x04/0x05/0x06/0x52/0x53 + 0x37 过渡含表）：SQ+RQ+表。
+pub const SVC_CLASS_SQ_RQ_TABLE: u8 = 0x2E;
+/// start 双号（0x32/0x35）：RQ 双核升序 + 表。
+pub const SVC_CLASS_RQ_TABLE: u8 = 0x2C;
+/// 全谱（0x33/0x36/0x3B + vmo/vmar 0x11..0x1B + create 族 0x31/0x34/0x51/0x54）。
+pub const SVC_CLASS_ALL: u8 = 0x3E;
 
 /// 当前任务位 置/清 槽（kernel main 装 `berry_sched::klock_flag_current`；
 /// HAL 不依赖 sched——`set_user_fault_exit` 同款反转先例）。None = 未装窗
 ///（boot 最早路径）——锁仍直取直放，位跳过。
 static mut KLOCK_FLAG: Option<unsafe extern "C" fn(bool)> = None;
+
+/// SVC 入口**结构锁窗**槽（slice 2b）：kernel main 装
+/// `berry_sched::svc_window` 对（(class, true)=取 / (class, false)=放）。
+/// HAL 侧只管 KL——类含 TABLE 位则先取 KL（**过渡态 KL-first 入口序**：
+/// 与现役 IRQ 面（tick/sgi/park_recheck/idle 等 klock_acquire_raw 先取）
+/// 保持单向全局序 KL 最外，§A108 不变式延续；终态翻正序（结构先行）=
+/// slice 3 与 IRQ 面 KL 剥离原子同刀，两态不可并存）。结构位集的物理
+/// 取/放 + held 记账 + `svc_mask` 声明全经槽交 sched 侧。None = 未装窗
+///（boot 最早路径）——KL 仍直取直放（物理配平恒成立），结构窗跳过
+///（handler 内层窗照旧自取，今日形态）。
+static mut SVC_WINDOW: Option<unsafe extern "C" fn(u8, bool)> = None;
 
 /// 注册当前任务位回调（kernel main，ktest 前恰一次）。
 pub fn set_klock_flag_hook(f: unsafe extern "C" fn(bool)) {
@@ -72,27 +99,47 @@ pub fn set_klock_flag_hook(f: unsafe extern "C" fn(bool)) {
     unsafe { KLOCK_FLAG = Some(f) };
 }
 
-/// SVC 入口包络：EL0/EL1 两向量入口在 `trap.rs` 的 EC 0x15 臂单点汇流于
-/// `syscall::dispatch`，本对覆盖一切 syscall。取锁直调（本 crate 原语）；
-/// 位置位经槽——CURRENT 空（ktest/boot 窗）跳过：锁由本对恒配平，位只服务
-/// sched 切换舞蹈。
-pub fn svc_enter() {
-    kern_acquire();
-    if let Some(f) = unsafe { KLOCK_FLAG } {
+/// 注册 SVC 结构锁窗回调（kernel main，ktest 前恰一次；slice 2b）。
+pub fn set_svc_window_hook(f: unsafe extern "C" fn(u8, bool)) {
+    // SAFETY: boot 单线程注册；此后只读。
+    unsafe { SVC_WINDOW = Some(f) };
+}
+
+/// SVC 入口按类包络（slice 2b 真行为变更点）：类含 TABLE 位 → `kern_acquire`
+/// **先取**（KL-first 过渡序）；再经槽让 sched 侧结构升序物理取 + 全类位
+/// 记账 + `svc_mask=bits`——handler 内层窗（sq_lock/rq_lock 等）由此全退化
+/// （位已置 → 跳物理取放，位归本对收口）。类不含 TABLE 位（NONE 类）= 零锁
+/// 零槽直达 handler。槽未装（boot 窗）= 只取 KL 直进（今日形态）。
+/// `-> !` handler（0x33/0x36）不归——放锁在 sched.rs `switch_away_forever_with`
+/// 舞蹈收口，出口对对其不可达。
+pub fn svc_enter_class(class: u8) {
+    if class & SVC_CLASS_TABLE != 0 {
+        kern_acquire();
+    }
+    if let Some(f) = unsafe { SVC_WINDOW } {
         // SAFETY: 槽在 boot 单线程期注册；f 是 C-ABI fn 指针。
-        unsafe { f(true) };
+        unsafe { f(class, true) };
     }
 }
 
-/// SVC 出口包络：清位 + 放锁（`regs[0]` 栈写不触共享结构——放锁前后皆可，
-/// 草案 2.2）。`-> !` handler（0x33/0x36）不归——放锁在 sched.rs
-/// `switch_away_forever_with` 收口（草案 3.2），本尾对其不可达（死码勿补）。
-pub fn svc_exit() {
-    if let Some(f) = unsafe { KLOCK_FLAG } {
+/// SVC 出口按类包络：槽侧结构降序物理放 + 断言 held==class 清账 → KL **最后**
+/// 放（KL-last 与入口 KL-first 对称——全局序 KL 最外不变）。`regs[0]` 栈写不
+/// 触共享结构。仅 dispatch 正常返可达。
+pub fn svc_exit_class(class: u8) {
+    if let Some(f) = unsafe { SVC_WINDOW } {
         // SAFETY: 同上。
-        unsafe { f(false) };
+        unsafe { f(class, false) };
     }
-    kern_release();
+    if class & SVC_CLASS_TABLE != 0 {
+        kern_release();
+    }
+}
+
+/// SVC 入口包络（全量形）：EL0 fault kill 链专用（`trap.rs` 非 0x15 臂）——
+/// dump + 杀链可触任何结构 ⇒ 五锁全取、全位记账、mask=全谱。等价历史
+/// `svc_enter`（BKL 纪元）＋ slice 2b 结构位集；收口同为舞蹈按位放。
+pub fn svc_enter() {
+    svc_enter_class(SVC_CLASS_ALL);
 }
 
 // ---- 内核任务直调包络（草案 §2.2/§2.3；F31-F36/F39-F42 改造点）----

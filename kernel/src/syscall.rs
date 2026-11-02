@@ -2089,40 +2089,58 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
+    // S-3c c-2c slice 2b：第三参 = SVC 入口锁类位集（`kern_lock::SVC_CLASS_*`，
+    // 位值镜像 sched HELD_*——kernel main 编译期断言对齐）。分类审计 =
+    // `docs/SMP-S3实施设计草案.md` §:390 修正版落类表；**0x37 过渡态含表**
+    //（终版表 SQ+RQ 无表档降档推迟 slice 3：`nearest_deadline` 的 KL-only
+    // 免锁读面未收口前，SLEEPQ 写者脱离 KL 即竞态）。
+    use berry_hal_aarch64::kern_lock::{
+        SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ_TABLE, SVC_CLASS_TABLE,
+    };
     berry_sched::set_exit_hook(task_exit_hook);
-    reg(NR_HANDLE_CLOSE, sys_handle_close);
-    reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate);
-    reg(NR_HANDLE_REPLACE, sys_handle_replace);
-    reg(NR_OBJECT_WAIT_ONE, sys_object_wait_one);
-    reg(NR_OBJECT_WAIT_MANY, sys_object_wait_many);
-    reg(NR_OBJECT_SIGNAL, sys_object_signal);
-    reg(NR_CLOCK_READ, sys_clock_read);
-    reg(NR_VMO_CREATE, sys_vmo_create);
-    reg(NR_VMO_COMMIT, sys_vmo_commit);
-    reg(NR_VMO_DECOMMIT, sys_vmo_decommit);
-    reg(NR_VMO_READ, sys_vmo_read);
-    reg(NR_VMO_WRITE, sys_vmo_write);
-    reg(NR_VMO_GET_SIZE, sys_vmo_get_size);
-    reg(NR_VMO_GET_PHYS, sys_vmo_get_phys);
-    reg(NR_VMAR_MAP, sys_vmar_map);
-    reg(NR_VMAR_UNMAP, sys_vmar_unmap);
-    reg(NR_VMAR_PROTECT, sys_vmar_protect);
-    reg(NR_VMAR_ALLOCATE, sys_vmar_allocate);
-    reg(NR_PROCESS_CREATE, sys_process_create);
-    reg(NR_PROCESS_START, sys_process_start);
-    reg(NR_PROCESS_EXIT, sys_process_exit);
-    reg(NR_PROCESS_GET_EXIT_CODE, sys_process_get_exit_code);
-    reg(NR_PROCESS_TERMINATE, sys_process_terminate);
-    reg(NR_THREAD_CREATE, sys_thread_create);
-    reg(NR_THREAD_START, sys_thread_start); // T-1 多线程首刀（create 与 exit 之间）
-    reg(NR_THREAD_EXIT, sys_thread_exit);
-    reg(NR_THREAD_SLEEP, sys_thread_sleep);
-    reg(NR_CHANNEL_CREATE, sys_channel_create);
-    reg(NR_CHANNEL_SEND, sys_channel_send);
-    reg(NR_CHANNEL_RECV, sys_channel_recv);
-    reg(NR_EVENT_CREATE, sys_event_create);
+    // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
+    reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);
+    reg(NR_HANDLE_REPLACE, sys_handle_replace, SVC_CLASS_TABLE);
+    reg(NR_OBJECT_WAIT_ONE, sys_object_wait_one, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_OBJECT_WAIT_MANY, sys_object_wait_many, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_OBJECT_SIGNAL, sys_object_signal, SVC_CLASS_SQ_RQ_TABLE);
+    // —— NONE（0x00）：纯硬件读/任务自面原子，零锁零表——KL 争用收缩主力
+    //（deadline 轮询热路径）——
+    reg(NR_CLOCK_READ, sys_clock_read, SVC_CLASS_NONE);
+    // —— ALL（0x3E）：vmo/vmar 十一号（分配器 + 表 + kill 面）——
+    reg(NR_VMO_CREATE, sys_vmo_create, SVC_CLASS_ALL);
+    reg(NR_VMO_COMMIT, sys_vmo_commit, SVC_CLASS_ALL);
+    reg(NR_VMO_DECOMMIT, sys_vmo_decommit, SVC_CLASS_ALL);
+    reg(NR_VMO_READ, sys_vmo_read, SVC_CLASS_ALL);
+    reg(NR_VMO_WRITE, sys_vmo_write, SVC_CLASS_ALL);
+    reg(NR_VMO_GET_SIZE, sys_vmo_get_size, SVC_CLASS_ALL);
+    reg(NR_VMO_GET_PHYS, sys_vmo_get_phys, SVC_CLASS_ALL);
+    reg(NR_VMAR_MAP, sys_vmar_map, SVC_CLASS_ALL);
+    reg(NR_VMAR_UNMAP, sys_vmar_unmap, SVC_CLASS_ALL);
+    reg(NR_VMAR_PROTECT, sys_vmar_protect, SVC_CLASS_ALL);
+    reg(NR_VMAR_ALLOCATE, sys_vmar_allocate, SVC_CLASS_ALL);
+    reg(NR_PROCESS_CREATE, sys_process_create, SVC_CLASS_ALL);
+    // —— RQ+TABLE（0x2C）：start 双号（enqueue 双核升序 + 表）——
+    reg(NR_PROCESS_START, sys_process_start, SVC_CLASS_RQ_TABLE);
+    // —— ALL：真退出（`-> !`，舞蹈收口）——
+    reg(NR_PROCESS_EXIT, sys_process_exit, SVC_CLASS_ALL);
+    reg(NR_THREAD_CREATE, sys_thread_create, SVC_CLASS_ALL);
+    reg(NR_THREAD_START, sys_thread_start, SVC_CLASS_RQ_TABLE);
+    reg(NR_THREAD_EXIT, sys_thread_exit, SVC_CLASS_ALL);
+    reg(NR_THREAD_SLEEP, sys_thread_sleep, SVC_CLASS_SQ_RQ_TABLE);
+    // —— TABLE：join 读面（表 + state 平读）——
+    reg(NR_PROCESS_GET_EXIT_CODE, sys_process_get_exit_code, SVC_CLASS_TABLE);
+    // —— ALL：terminate kill 链（同 fault 面）——
+    reg(NR_PROCESS_TERMINATE, sys_process_terminate, SVC_CLASS_ALL);
+    reg(NR_CHANNEL_CREATE, sys_channel_create, SVC_CLASS_ALL);
+    // —— SQ+RQ+TABLE：send/recv（fastpath sq_phys 外提已备，slice 2a）——
+    reg(NR_CHANNEL_SEND, sys_channel_send, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_CHANNEL_RECV, sys_channel_recv, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_EVENT_CREATE, sys_event_create, SVC_CLASS_ALL);
     // A7-4 段②：信号面两号（0x86/0x87——协同式用户态投递，内核只管跨进程
-    // 位置位与取走；handler 本体见 sys_process_terminate 后）。
-    reg(NR_SIGNAL_SEND, sys_signal_send);
-    reg(NR_SIGNAL_TAKE, sys_signal_take);
+    // 位置位与取走；handler 本体见 sys_process_terminate 后）。0x86 = 表查 +
+    // 目标 pending 原子（不唤醒目标）；0x87 = current 自面原子（零锁）。
+    reg(NR_SIGNAL_SEND, sys_signal_send, SVC_CLASS_TABLE);
+    reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_NONE);
 }

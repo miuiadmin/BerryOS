@@ -106,6 +106,7 @@ static mut IDLE_TASK: Task = Task {
     home_cpu: 0,
     spread: false,
     held_locks: 0,
+    svc_mask: 0,
     rq_prev: core::cell::Cell::new(None),
     rq_next: core::cell::Cell::new(None),
     sleep_prev: core::cell::Cell::new(None),
@@ -203,19 +204,19 @@ fn print_unlock_raw() {
     }
 }
 
-/// 切走前分诊（舞蹈步「放」）：位集**逆序**物理放——位号 = 锁序 rank
-/// （bit1 SQ 最外 … bit5 TABLE 最内，七层冻结序 SQ>队列>REAPQ>表），逆序 =
-/// 内先外后：TABLE(bit5) → REAPQ(bit4) → RQ1(bit3) → RQ0(bit2) → SQ(bit1)。
+/// 切走前分诊（舞蹈步「放」）：位集**内→外**物理放——**过渡态序（c-2c
+/// slice 2b 定谳）**：REAPQ(bit4) → RQ1(bit3) → RQ0(bit2) → SQ(bit1) →
+/// TABLE(bit5=KL) 最后放，与入口 KL-first 对称——全局锁序 **KL 最外**
+/// （§A108 不变式延续：一切结构取放点仍在 KL 窗内 ⇒ 单持有者串行一切
+/// 取放点、跨核死锁不可能）。终态七层冻结序（SQ>队列>REAPQ>表，KL 最内）
+/// 的翻序 = slice 3 与 IRQ 面 KL 剥离/recompute TABLE 子窗**原子同刀**，
+/// 两态全局序不可并存（跨核 ABBA：入口持 RQ 旋 KL vs tick 持 KL 旋 RQ）。
 /// **位保持置位**——跨挂起逻辑持有义务（位只在任务自身执行流写 ⇒ 挂起期
 /// 稳定），切回由「取」步按同位集重取；物理锁在挂起期对其余核可见为空闲
-/// （自旋等待绝不跨挂起）。位=0（内核任务直调/半装窗）幂等跳过。c-2c
-/// slice 2a 前现役携带位 = bit5 单诊（KL）；结构位（bits1-4）自此机制
-/// 就绪、2b 入口位集预取后方有携带者（全惰性零行为差）。
+/// （自旋等待绝不跨挂起）。位=0（内核任务直调/半装窗）幂等跳过。bit5
+/// 单诊路径（内核任务 klock 窗）本序下仅放 KL——行为逐位不变（零漂移）。
 unsafe fn klock_release_switch(task: *mut Task) {
     let held = (*task).held_locks;
-    if held & HELD_TABLE != 0 {
-        klock_release_raw();
-    }
     if held & HELD_REAPQ != 0 {
         REAPQ_LOCK.release();
     }
@@ -228,15 +229,23 @@ unsafe fn klock_release_switch(task: *mut Task) {
     if held & HELD_SQ != 0 {
         SLEEPQ_LOCK.release();
     }
+    if held & HELD_TABLE != 0 {
+        klock_release_raw();
+    }
 }
 
-/// 切回后续行分诊（舞蹈步「取」）：位集**正序**物理重取（锁序外→内：
-/// SQ(bit1) → RQ0(bit2) → RQ1(bit3) → REAPQ(bit4) → TABLE(bit5)——与
-/// 一切嵌套窗取序/2b 入口位集预取序一致，防跨核 ABBA）。位已置（「放」步
-/// 物理放锁不清位）⇒ 本步不触位；wait 重验循环/遥测/后续 handler 逻辑
-/// 回到锁内；位=0 幂等跳过。
+/// 切回后续行分诊（舞蹈步「取」）：位集**外→内**物理重取——**过渡态序
+/// （c-2c slice 2b）**：TABLE(bit5=KL) 最先取 → SQ(bit1) → RQ0(bit2) →
+/// RQ1(bit3) → REAPQ(bit4)，与 SVC 入口 KL-first / 一切 IRQ 面
+/// （tick/sgi/park_recheck/idle 的 klock_acquire_raw 先取）单向一致，防
+/// 跨核 ABBA。位已置（「放」步物理放锁不清位）⇒ 本步不触位；wait 重验
+/// 循环/遥测/后续 handler 逻辑回到锁内；位=0 幂等跳过。bit5 单诊路径
+/// 仅取 KL——行为逐位不变。
 unsafe fn klock_acquire_switch(task: *mut Task) {
     let held = (*task).held_locks;
+    if held & HELD_TABLE != 0 {
+        klock_acquire_raw();
+    }
     if held & HELD_SQ != 0 {
         SLEEPQ_LOCK.acquire();
     }
@@ -248,9 +257,6 @@ unsafe fn klock_acquire_switch(task: *mut Task) {
     }
     if held & HELD_REAPQ != 0 {
         REAPQ_LOCK.acquire();
-    }
-    if held & HELD_TABLE != 0 {
-        klock_acquire_raw();
     }
 }
 
@@ -265,6 +271,63 @@ pub unsafe extern "C" fn klock_flag_current(on: bool) {
         } else {
             (*cur).held_locks &= !HELD_TABLE;
         }
+    }
+}
+
+/// SVC 入口/出口**结构锁窗**槽回调（S-3c c-2c slice 2b；arch `kern_lock`
+/// SVC_WINDOW 槽，kernel main 装）。KL 由 HAL 侧按类先取/后放（过渡态
+/// KL-first/KL-last）；本对只管结构位集：
+/// enter —— 位集升序物理取（SQ→RQ0→RQ1→REAPQ；RQ 类位一律双核升序全取）
+///   + `held_locks |= class` 记账 + `svc_mask = class` 声明。入口预取位让
+///   handler 体内层窗（sq_lock/rq_lock/reapq 等）全退化（位已置 → 跳物理
+///   取放、位不清）——位归本对收口，穿越体内全部内层窗直达舞蹈切点。
+/// exit —— debug 断言 `held == class`（泄漏/越类执法——内层退化窗不触位，
+///   出口不等于声明 = 有锁越类持有或泄漏）→ 结构降序物理放 + 清位 +
+///   mask 清零。`-> !` 号（0x33/0x36）与 fault 链不达出口——放锁在
+///   `switch_away_forever_with` 舞蹈按位收口。
+/// CURRENT 空（ktest/boot 窗）→ 全跳过（KL 由 HAL 恒配平，handler 内层窗
+/// 照旧自取——今日形态）。NONE 类（0x00）= 位集空 → 零物理取放（mask 写 0
+/// 幂等）。
+pub unsafe extern "C" fn svc_window(class: u8, enter: bool) {
+    let cur = current_task();
+    if cur.is_null() {
+        return;
+    }
+    if enter {
+        if class & HELD_SQ != 0 {
+            SLEEPQ_LOCK.acquire();
+        }
+        if class & HELD_RQ0 != 0 {
+            rq_of(0).lock_acquire();
+        }
+        if class & HELD_RQ1 != 0 {
+            rq_of(1).lock_acquire();
+        }
+        if class & HELD_REAPQ != 0 {
+            REAPQ_LOCK.acquire();
+        }
+        (*cur).held_locks |= class;
+        (*cur).svc_mask = class;
+    } else {
+        debug_assert_eq!(
+            (*cur).held_locks,
+            class,
+            "svc_window exit: held 位集须恰等于声明类（越类持有/泄漏）"
+        );
+        if class & HELD_REAPQ != 0 {
+            REAPQ_LOCK.release();
+        }
+        if class & HELD_RQ1 != 0 {
+            rq_of(1).lock_release();
+        }
+        if class & HELD_RQ0 != 0 {
+            rq_of(0).lock_release();
+        }
+        if class & HELD_SQ != 0 {
+            SLEEPQ_LOCK.release();
+        }
+        (*cur).held_locks &= !class;
+        (*cur).svc_mask = 0;
     }
 }
 
@@ -766,9 +829,13 @@ pub unsafe extern "C" fn user_fault_exit() -> ! {
 unsafe fn assert_exit_hook_windows_closed() {
     let cur = current_task();
     if !cur.is_null() {
+        // c-2c slice 2b 演化：SVC 全谱/含结构类号（0x2E/0x2C/0x3E）合法携带
+        // 入口预取结构位过此点（收口在尾部舞蹈）⇒ 断言基从「无结构位」放宽
+        // 为「结构位 ⊆ svc_mask 声明类」（TABLE 位豁免——内核任务/直调面
+        // 无声明恒携带）。越类结构位 = 泄漏，照杀。
         debug_assert!(
-            (*cur).held_locks & !HELD_TABLE == 0,
-            "exit hook: structural lock bit set"
+            (*cur).held_locks & !(*cur).svc_mask & !HELD_TABLE == 0,
+            "exit hook: structural lock bit beyond declared class"
         );
     }
 }

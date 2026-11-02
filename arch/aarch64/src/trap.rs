@@ -326,10 +326,12 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             return; // 一切 SVC 正常往返（含错误码）
         }
         _ => {
-            // S-2 E0（草案 3.1-2）：EL0 fault kill 链与 SVC 同构——dump 前取锁 +
-            // 置位（IRQ 上下文 PSTATE.I=1 同构）；EXIT_HOOK/杀链至 sched.rs
-            // switch_away_forever_with 按位收口放锁。EL0 任务在跑 ⟹ CURRENT
-            // 非空（位必落）；槽未装 + halt 兜底窗 = 全核冻结面，不放。
+            // S-2 E0（草案 3.1-2）→ S-3c c-2c slice 2b 全量形：EL0 fault kill
+            // 链与 SVC 同构——dump 前按 SVC_CLASS_ALL 取五锁 + 全位记账 +
+            // mask=全谱（IRQ 上下文 PSTATE.I=1 同构）；EXIT_HOOK/杀链至
+            // sched.rs switch_away_forever_with 按位收口放锁。EL0 任务在跑
+            // ⟹ CURRENT 非空（位必落）；槽未装 + halt 兜底窗 = 全核冻结面，
+            // 不放。
             crate::kern_lock::svc_enter();
             dump_el0(tf, ec);
             uart_puts(b"  -> user fault (G1.5: kill current task)\n");

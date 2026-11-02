@@ -455,6 +455,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 锁路径（单核非竞争纯开销、恒配平）；CURRENT 空窗位跳过。gate（副核参与）
     // 不置位 = S-2a 单核可证，改动全量单核零漂移。
     berry_hal_aarch64::kern_lock::set_klock_flag_hook(berry_sched::klock_flag_current);
+    // S-3c c-2c slice 2b：SVC 入口**结构锁窗**槽——HAL 侧按类 KL-first 取 /
+    // KL-last 放（过渡态全局序 KL 最外，§A108 延续），结构位集（SQ→RQ0→
+    // RQ1→REAPQ 升序）物理预取 + held 记账 + svc_mask 声明经此回调；handler
+    // 内层窗由此全退化。CURRENT 空（ktest/boot）跳过 = ktest 期 SVC 形态
+    // 不变（KL 由 HAL 直取恒配平）。fault 面（trap.rs svc_enter 全量形）
+    // 同槽同构。
+    berry_hal_aarch64::kern_lock::set_svc_window_hook(berry_sched::svc_window);
+    // 跨 crate 位对齐编译期执法：HAL 类常量位值 ≡ sched HELD_* 并集
+    //（任一侧位语义漂移 = 编译失败，防分叉）。
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_ALL
+            == (berry_sched::task::HELD_SQ
+                | berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1
+                | berry_sched::task::HELD_REAPQ
+                | berry_sched::task::HELD_TABLE)
+    );
     berry_sched::set_klock_ops(berry_sched::KlockOps {
         kern_acquire: berry_hal_aarch64::kern_lock::kern_acquire,
         kern_release: berry_hal_aarch64::kern_lock::kern_release,

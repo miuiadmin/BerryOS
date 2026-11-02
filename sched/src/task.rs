@@ -163,6 +163,12 @@ pub struct Task {
     /// 退化（位已置 = 外层逻辑持有 → 物理取放跳过、配对闭窗同退化）；
     /// 2b 入口位集预取后方有结构位跨切点携带者（2a 全惰性零行为差）。
     pub held_locks: u8,
+    /// SVC 入口锁类声明（c-2c slice 2b）：SVC 窗内 = 当前号类位集，窗外恒 0
+    /// ——纯**断言执法元数据**（舞蹈分诊仍以 `held_locks` 物理真值为基：
+    /// 内核任务窗外 held=0 而 mask≠0 的形态若用 mask 基会漏取 KL 永不放）。
+    /// 执法点：`svc_window` 出口 `held == mask`、退出钩子点 `held ⊆ mask`
+    ///（TABLE 位豁免）。内核任务永不过 SVC 派发 ⇒ 恒 0 亦执法成立。
+    pub svc_mask: u8,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
     // Phase 兑现——RR 不消费，为 EAS/PI/AI 调度预埋，免后改 TCB 布局返工）----
@@ -339,6 +345,7 @@ impl Task {
             home_cpu: 0,
             spread: false,
             held_locks: 0,
+            svc_mask: 0,
             prio_base: 0,
             prio_effective: 0,
             pi_inherited: 0,
