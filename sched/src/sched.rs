@@ -832,7 +832,10 @@ unsafe fn assert_exit_hook_windows_closed() {
         // c-2c slice 2b 演化：SVC 全谱/含结构类号（0x2E/0x2C/0x3E）合法携带
         // 入口预取结构位过此点（收口在尾部舞蹈）⇒ 断言基从「无结构位」放宽
         // 为「结构位 ⊆ svc_mask 声明类」（TABLE 位豁免——内核任务/直调面
-        // 无声明恒携带）。越类结构位 = 泄漏，照杀。
+        // 无声明恒携带）。越类结构位 = 泄漏，照杀。**空转面**：全谱死亡路径
+        // （0x33/0x36/EL0 fault 链，mask=0x3E）四结构位恒 ⊆ mask——谓词在该
+        // 面不设防，防漏靠入口预取物理配平 + 舞蹈按位放；快照级执法（held
+        // == 入口记录）= slice 3-2 挂账加固。
         debug_assert!(
             (*cur).held_locks & !(*cur).svc_mask & !HELD_TABLE == 0,
             "exit hook: structural lock bit beyond declared class"

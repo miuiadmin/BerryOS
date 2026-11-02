@@ -66,9 +66,10 @@ pub fn kern_release() {
 /// HELD_*（bit1=SQ 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 /
 /// bit5=TABLE 0x20）；跨 crate 位对齐由 kernel main 编译期断言执法。
 /// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案.md`；NONE 类号
-/// （clock_read/signal_take/默认槽）**完全不取任何锁**。
+/// （默认槽/越界号——实装号零）**完全不取任何锁**；凡含 copy_out/copy_in
+/// 出参链的号（walk_leaf 页表读者）或任何共享面禁落 NONE（§A113 读者面）。
 pub const SVC_CLASS_NONE: u8 = 0x00;
-/// 纯表号（0x02/0x03/0x3A/0x86）：仅 KL。
+/// 纯表号（0x02/0x03/0x3A/0x61/0x86/0x87）：仅 KL。
 pub const SVC_CLASS_TABLE: u8 = 0x20;
 /// wait/send 族（0x01/0x04/0x05/0x06/0x52/0x53 + 0x37 过渡含表）：SQ+RQ+表。
 pub const SVC_CLASS_SQ_RQ_TABLE: u8 = 0x2E;

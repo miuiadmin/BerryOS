@@ -462,14 +462,31 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 不变（KL 由 HAL 直取恒配平）。fault 面（trap.rs svc_enter 全量形）
     // 同槽同构。
     berry_hal_aarch64::kern_lock::set_svc_window_hook(berry_sched::svc_window);
-    // 跨 crate 位对齐编译期执法：HAL 类常量位值 ≡ sched HELD_* 并集
-    //（任一侧位语义漂移 = 编译失败，防分叉）。
+    // 跨 crate 位对齐编译期执法：HAL 类常量位值 ≡ sched HELD_* 组合——ALL
+    // 钉并集 + 中间三档逐档钉组合（保并集的位重排同样编译失败，防 HAL KL
+    // 门与 sched 结构锁取放对同一 bit 语义分叉）。
     const _: () = assert!(
         berry_hal_aarch64::kern_lock::SVC_CLASS_ALL
             == (berry_sched::task::HELD_SQ
                 | berry_sched::task::HELD_RQ0
                 | berry_sched::task::HELD_RQ1
                 | berry_sched::task::HELD_REAPQ
+                | berry_sched::task::HELD_TABLE)
+    );
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_TABLE == berry_sched::task::HELD_TABLE
+    );
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_RQ_TABLE
+            == (berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1
+                | berry_sched::task::HELD_TABLE)
+    );
+    const _: () = assert!(
+        berry_hal_aarch64::kern_lock::SVC_CLASS_SQ_RQ_TABLE
+            == (berry_sched::task::HELD_SQ
+                | berry_sched::task::HELD_RQ0
+                | berry_sched::task::HELD_RQ1
                 | berry_sched::task::HELD_TABLE)
     );
     berry_sched::set_klock_ops(berry_sched::KlockOps {

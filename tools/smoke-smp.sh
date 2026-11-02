@@ -457,16 +457,19 @@ while ! grep -q 'LB ok c0=' "$LOG"; do
 done
 LB_WALL=$(( $(date +%s) - t_lb0 ))
 
-# F-A5 数值复验（run10 定谳形态）：宿主 grep -E 提 c0/c1/st1/n——**c1 ≥ TH**
-# 且 n==4（裁决二「断言与路由形态解耦」：K=2 深度路由按各环实深改道,bare
-# boot rq0 常驻字母噪声 → 4 计算线程全落空队 rq1,c0 结构性 0——降观测面;
-# c1 ≥ TH 才证副核得货（直路/偷取同格）,n=4 单独放行 = 零成本假绿。LB 行
-# 格式三面钉同值）。
+# F-A5 数值复验（run10 定谳形态）：宿主 grep -E 提 c0/c1/st1/n——**c0==0 且
+# c1 ≥ TH 且 n==4**（裁决二「断言与路由形态解耦」：K=2 深度路由按各环实深
+# 改道,bare boot rq0 常驻字母噪声 → 4 计算线程全落空队 rq1,c0 结构性 0——
+# 升硬门（路由形态漂移金丝雀,零漂声称执法化）;c1 ≥ TH 才证副核得货（直路/
+# 偷取同格）,n=4 单独放行 = 零成本假绿;st1 依裁决二维持诊断位不进门禁。
+# LB 行格式三面钉同值）。
 lb_line=$(grep 'LB ok c0=' "$LOG" | tail -1)
 echo "smoke-smp: ${lb_line}"
 lb_c0=$(echo "$lb_line" | grep -o 'c0=[0-9]*' | cut -d= -f2)
 lb_c1=$(echo "$lb_line" | grep -o 'c1=[0-9]*' | cut -d= -f2)
 lb_n=$(echo "$lb_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
+[ -n "$lb_c0" ] && [ "$lb_c0" -eq 0 ] \
+  || fail "LB c0=${lb_c0:-缺} ≠ 0（裸 boot rq0 路由形态漂移——结构性零金丝雀失守,F-A4）"
 [ -n "$lb_c1" ] && [ "$lb_c1" -ge "$LB_TICK_TH" ] \
   || fail "LB c1=${lb_c1:-缺} < TH=${LB_TICK_TH}（副核得货活证缺失——直路/偷取两路径同格破损（裁决二）,n=4 凑齐不救,F-A4）"
 [ -n "$lb_n" ] && [ "$lb_n" -eq 4 ] \

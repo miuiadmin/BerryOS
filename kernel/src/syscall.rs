@@ -2095,7 +2095,7 @@ pub fn install() {
     //（终版表 SQ+RQ 无表档降档推迟 slice 3：`nearest_deadline` 的 KL-only
     // 免锁读面未收口前，SLEEPQ 写者脱离 KL 即竞态）。
     use berry_hal_aarch64::kern_lock::{
-        SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ_TABLE, SVC_CLASS_TABLE,
+        SVC_CLASS_ALL, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ_TABLE, SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
@@ -2105,9 +2105,13 @@ pub fn install() {
     reg(NR_OBJECT_WAIT_ONE, sys_object_wait_one, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_OBJECT_WAIT_MANY, sys_object_wait_many, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_OBJECT_SIGNAL, sys_object_signal, SVC_CLASS_SQ_RQ_TABLE);
-    // —— NONE（0x00）：纯硬件读/任务自面原子，零锁零表——KL 争用收缩主力
-    //（deadline 轮询热路径）——
-    reg(NR_CLOCK_READ, sys_clock_read, SVC_CLASS_NONE);
+    // —— TABLE：clock_read（0x61）——CNTVCT 硬件读零共享，但出参 copy_out 链
+    // 经 access_ok→walk_leaf 无锁走查本进程页表：同进程兄弟线程（spread 分置
+    // 对核）或父进程持 vmar 句柄的跨核 unmap/protect（ALL 类写者）与本读者
+    // 无共同串行化点——TLBI 落在走查与 store 间即 EL1 D-abort→halt（§A113
+    // 读者面）。升 TABLE 持 KL 与页表写者互斥；NONE 落类是对抗审查双镜坐实
+    // 的本刀漏审回改，NONE 实装号归零（仅默认槽/越界号）。
+    reg(NR_CLOCK_READ, sys_clock_read, SVC_CLASS_TABLE);
     // —— ALL（0x3E）：vmo/vmar 十一号（分配器 + 表 + kill 面）——
     reg(NR_VMO_CREATE, sys_vmo_create, SVC_CLASS_ALL);
     reg(NR_VMO_COMMIT, sys_vmo_commit, SVC_CLASS_ALL);
@@ -2140,7 +2144,8 @@ pub fn install() {
     reg(NR_EVENT_CREATE, sys_event_create, SVC_CLASS_ALL);
     // A7-4 段②：信号面两号（0x86/0x87——协同式用户态投递，内核只管跨进程
     // 位置位与取走；handler 本体见 sys_process_terminate 后）。0x86 = 表查 +
-    // 目标 pending 原子（不唤醒目标）；0x87 = current 自面原子（零锁）。
+    // 目标 pending 原子（不唤醒目标）；0x87 = current pending 自面原子，但
+    // 出参 copy_out 链走查本进程页表（§A113 读者面，同 0x61）——升 TABLE。
     reg(NR_SIGNAL_SEND, sys_signal_send, SVC_CLASS_TABLE);
-    reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_NONE);
+    reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_TABLE);
 }

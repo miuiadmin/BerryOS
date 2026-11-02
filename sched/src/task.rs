@@ -167,7 +167,8 @@ pub struct Task {
     /// ——纯**断言执法元数据**（舞蹈分诊仍以 `held_locks` 物理真值为基：
     /// 内核任务窗外 held=0 而 mask≠0 的形态若用 mask 基会漏取 KL 永不放）。
     /// 执法点：`svc_window` 出口 `held == mask`、退出钩子点 `held ⊆ mask`
-    ///（TABLE 位豁免）。内核任务永不过 SVC 派发 ⇒ 恒 0 亦执法成立。
+    ///（TABLE 位豁免；全谱死亡路径 mask=0x3E 时结构位恒 ⊆ mask——该谓词
+    /// 空转面，见 sched.rs 注）。内核任务永不过 SVC 派发 ⇒ 恒 0 亦执法成立。
     pub svc_mask: u8,
 
     // ---- 2b-4 表示法字段（`调度器设计.md` §3.6/§6：字段随 Phase 2b 落地，语义随后续
