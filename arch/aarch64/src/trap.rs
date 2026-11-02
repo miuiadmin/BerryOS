@@ -435,6 +435,7 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
     }
     // SGI 号常量转 usize 模式位（pattern 不收 `as` 表达式——函数内 const 落地）。
     const SGI_RESCHED_US: usize = crate::gic::SGI_RESCHEDULE as usize;
+    const SGI_TLB_US: usize = crate::gic::SGI_TLB_SHOOTDOWN as usize;
     match id as usize {
         crate::gic::IRQ_CNTV => {
             // rearm（去活电平）在 EOIR 前：电平触发的 CNTV 须先重编程 CVAL（绝对截止
@@ -468,6 +469,14 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
                 // SAFETY: f 是 C-ABI fn 指针；tf 是当前 IRQ 栈上的异常帧。
                 unsafe { f(tf) };
             }
+        }
+        SGI_TLB_US => {
+            // S-4 4-1：TLB shootdown 收端——EOIR 先行（Bug 1 纪律：dispatch 类
+            // 工作必须在 EOIR 后），随后本地全量失效 + dsb ish + 回执计数
+            //（tlbshoot::irq_ack——零锁零打印零分配，SGI_SEEN 同款 IRQ 上下文
+            // 纪律；§3.2 无环判据的收端半边：handler 取锁面恒零）。
+            crate::gic::end(id);
+            crate::tlbshoot::irq_ack();
         }
         _ => {
             // 未知源：EOI 后忽略；首 4 个 loud（防新源接错号静默吞），之后静默

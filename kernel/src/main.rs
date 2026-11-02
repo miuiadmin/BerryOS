@@ -3172,6 +3172,11 @@ pub unsafe extern "C" fn secondary_main() -> ! {
         berry_hal_aarch64::gic::enable_sgi_this_core(
             berry_hal_aarch64::gic::SGI_RESCHEDULE,
         );
+        // S-4 4-1：本核 SGI_TLB_SHOOTDOWN(2) banked 补使能（CPU0 init 位点同
+        // 款纪律）。bringup probe ④ 早于此也可能已锁存 pending——使能即投递。
+        berry_hal_aarch64::gic::enable_sgi_this_core(
+            berry_hal_aarch64::gic::SGI_TLB_SHOOTDOWN,
+        );
     }
     loop {
         // S-3a tickless park 环（子案 §9.5 步 A）：派发收敛到 park_recheck

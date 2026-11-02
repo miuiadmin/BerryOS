@@ -807,4 +807,20 @@ pub fn smp_bringup(efi_boot: bool) {
     uart_puts(b" daif_i=");
     uart_put_dec(crate::kern_lock::irq_enabled() as u64);
     uart_puts(b"\n");
+    // S-4 4-1 probe ④：TLB shootdown 回执链——裸发 SGI #2 Others（probe 专用
+    // 无闩形态；生产面 = broadcast() 闩 + dispatch 尾等待，4-2 接线）→ CPU1
+    // handler 全量本地失效 + 回执计数。等待 = wait_secs 内存状态谓词（4-5a
+    // 非竞速纪律）——boot DAIF 屏蔽窗内不依赖本核 IRQ 开，CPU1 handler 侧
+    // 置位。`SGI2 ok n=` 恰一次 = smoke-smp 裸相断言源（S-4 §2 4-1 验收）。
+    {
+        let base = crate::tlbshoot::ack_count(1);
+        crate::tlbshoot::send_others();
+        if wait_secs(3, || crate::tlbshoot::ack_count(1) > base) {
+            uart_puts(b"SGI2 ok n=");
+            uart_put_dec((crate::tlbshoot::ack_count(1) - base) as u64);
+            uart_puts(b"\n");
+        } else {
+            uart_puts(b"SMP: FAIL sgi2 timeout\n");
+        }
+    }
 }

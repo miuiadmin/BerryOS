@@ -66,6 +66,11 @@ pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     crate::kern_lock::svc_enter_class(class);
     let ret = h(tf);
     crate::kern_lock::svc_exit_class(class);
+    // S-4 §3.2/§2 4-1②：SGI #2 回执的**包络外等待点**——此处 KL+结构锁已全
+    // 放（`svc_exit_class` 毕）= 零锁持有；自旋读对核回执计数（他核 IRQ
+    // handler 置位，不依赖本核 IRQ 开）。NONE 类号多付一次 Acquire 原子读
+    //（单核闩恒 0 直返）。
+    crate::tlbshoot::sched_exit_check();
     tf.regs[0] = ret as u64;
     ret
 }

@@ -20,6 +20,7 @@ mod paging;
 pub mod smp;
 pub mod syscall;
 pub mod task;
+pub mod tlbshoot;
 pub mod timer;
 pub mod trap;
 pub mod uart;

@@ -32,9 +32,10 @@ pub const IRQ_CNTV: usize = 27;
 /// 若接线有误，`exception_irq` 未知源分支 loud 打 `irq? id=N`（bring-up 面）。
 pub const IRQ_PL011_RX: usize = 33;
 /// SGI 号分配（S-3 §2.2）：1 = `SGI_RESCHEDULE`（跨核唤醒戳）；2 = TLB
-/// shootdown 回执（S-4 预留不消费）；**0 保留不用**（复位默认值域，观测面
-/// 干净性）。
+/// shootdown 回执（S-4 4-1 现役——收端 = trap.rs SGI_TLB 臂 + tlbshoot 模块）；
+/// **0 保留不用**（复位默认值域，观测面干净性）。
 pub const SGI_RESCHEDULE: u8 = 1;
+pub const SGI_TLB_SHOOTDOWN: u8 = 2;
 /// IAR 读到的「无中断」值。
 pub const SPURIOUS: u32 = 1023;
 
@@ -95,6 +96,10 @@ pub unsafe fn init() {
     // 副核 secondary_main 起手（[`enable_sgi_this_core`]，banked 纪律同款）。
     // 单核相零漂移：只使能无发送者，面结构性不触发。
     mmio::write(GICD + GICD_ISENABLER0, 1 << SGI_RESCHEDULE);
+    // S-4 4-1：SGI_TLB_SHOOTDOWN(2) 本核（CPU0）banked 使能——收端必须逐核
+    // 补（副核 secondary_main 起手同款）；单核相零漂移同上：只使能无发送者，
+    // 面结构性不触发（发送计数 tlbshoot::TX 单核恒 0 = 等价镜实证项）。
+    mmio::write(GICD + GICD_ISENABLER0, 1 << SGI_TLB_SHOOTDOWN);
     mmio::write(GICD + GICD_CTLR, 1);
 
     // ---- CPU interface：全优先级放行 + 开 ----

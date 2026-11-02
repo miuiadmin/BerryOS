@@ -263,6 +263,17 @@ pub(crate) unsafe fn flush_all_asid() {
     isb();
 }
 
+/// S-4 收端本地全量失效（SGI #2 handler 专用，tlbshoot::irq_ack 调）：非 IS
+/// `vmalle1`——发端 SGI 已按核定向（Others 排自核），收端只清自己的 TLB、
+/// 不再广播。含 global 项（`aside1` 家族按号失效够不着 global）。`dsb ish`
+/// 保证失效完成先于回执计数对发端可观（回执序的排序边）；随后 eret 回中断
+/// 前无需 isb——TLB 已清 + dsb 收口，走查自然取新项。v1 收端粒度 = 全量
+/// （无请求槽）；按号精确（请求槽 + 分代）= v2 优化。
+pub(crate) unsafe fn flush_local_all() {
+    asm!("tlbi vmalle1", options(nostack, preserves_flags));
+    dsb_ish();
+}
+
 // ---- 系统寄存器读写（unsafe 收敛地，裸 asm）----
 
 #[inline(always)]
