@@ -35,7 +35,7 @@ x86_64 = QEMU 最小集提前 + 兼容验收（ADR #39–#41）。身份支柱�
 - 软件：自有 ABI + POSIX 兼容库，不跑 Linux 二进制，**v1 无 fork**；启动：QEMU `-kernel` 直加载 + EFI。
 - 并发：细粒度锁 + 全可抢占（分阶段）；驱动：用户态为主，启动关键（GIC/timer/UART）暂留内核。
 - 调度：机制在内核、策略可插拔（class_rt/fair/deadline/idle）；tickless day-one；双线并行（省电+多核）。
-- intent = 第一类调度输入（u8，ADR #42 两段式）：公平是机制默认，intent 是策略叠加，永不替代。
+- intent = 第一类调度输入（u8，#42 两段式）：公平是机制默认，intent 是策略叠加永不替代；#58 单一词汇表（SCENE/VOTE 折算进六档）。
 - AI 原生调度：内核留带内接口给用户态策略（ADR #21 修订：机制预留 + 实验轨道 + kill criteria）。
 - v1 基线：单核 + 抢占点 + 无 demand paging + 最小能力/IPC，逐版推向满配（关卡 G0–G5）。
 
