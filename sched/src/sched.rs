@@ -890,7 +890,10 @@ pub fn reap_drain() {
 ///
 /// # Safety
 /// IRQ 屏蔽窗内调用（syscall 主体天然满足）；零阻塞零让出（指针手术 + 钩子
-/// + REAPQ 压队——「handler 不得忙等跨任务」铁则不破）。runqueue 扫描**跳过
+/// + REAPQ 压队——「handler 不得忙等跨任务」铁则不破）。两臂结构锁窗（① SQ
+/// / ② RQ）均**闭窗先于退出钩子/REAPQ 面**（c-2b：EXIT_HOOK 可
+/// wake_matching 再入同锁 = 自锁面——② 臂 slice 1 / ① 臂 slice 4 立法）。
+/// runqueue 扫描**跳过
 /// CURRENT**（运行任务在环上且 pinned 匹配——process_exit 杀兄弟会命中自己：
 /// 杀 CURRENT = 在自家栈上把自己塞进 REAPQ 后继续跑；terminate 语义下
 /// CURRENT=调用者恒不匹配目标键，跳过是双保险）。SLEEPQ 无跳过面（CURRENT
@@ -906,8 +909,14 @@ pub unsafe fn kill_all_tasks_by_pinned(
     let mut count: usize = 0;
     unsafe {
         loop {
-            // ① SLEEPQ 扫描（Blocked：wait_one/wait_many/纯 sleep 的目标）。
+            // ① SLEEPQ 扫描（Blocked：wait_one/wait_many/纯 sleep 的目标）。SQ 窗
+            // （c-2b slice 4 自锁面第二形）：扫描+摘队+PI 重推发射同窗（发射点
+            // 契约 = 五处一律窗内，钩子体 recompute_locked 不自取 SQ——F-L2
+            // 不可重入）；**闭窗先于退出钩子/REAPQ 面**（EXIT_HOOK 可
+            // wake_matching 再入 SQ = 同核自锁面——② RQ 臂 slice 1「先放锁
+            // 再进钩子」同款立法）。
             let mut hit: Option<core::ptr::NonNull<Task>> = None;
+            sq_lock();
             let mut cur = sleepq().head.get();
             while let Some(c) = cur {
                 let t = c.as_ptr();
@@ -923,6 +932,7 @@ pub unsafe fn kill_all_tasks_by_pinned(
                 sleepq().unlink(c); // 在队才摘（刚扫到——契约满足）
                 (*t).state = TaskState::Exited;
                 note_sleepq_changed(); // 睡眠者集合定型 → PI 全图重推（donor 边随离队消失）
+                sq_unlock(); // 窗闭先于钩子（EXIT_HOOK 内 wake_matching 再入 SQ）
                 if let Some(hook) = EXIT_HOOK {
                     hook(pinned, tk, code); // 同一套收口（线程簿记 + 末任务 Process 收口）
                 }
@@ -933,6 +943,7 @@ pub unsafe fn kill_all_tasks_by_pinned(
                 count += 1;
                 continue; // 重扫（钩子唤醒可能已搬动两队列）
             }
+            sq_unlock(); // SLEEPQ 无匹配者——窗闭（② RQ 臂自持窗）
             // ② runqueue 环扫描（Ready；跳过 CURRENT——见 # Safety 注）。
             // RQ 窗（c-2b）：环走查读 + dequeue 同窗；命中后先放锁再进钩子/
             // REAPQ 面（EXIT_HOOK 可 wake_matching 入队 = 同核环同锁重入死锁
@@ -1421,14 +1432,33 @@ unsafe fn wake_one_inner(t: NonNull<Task>) {
 /// 放置面（[`place`] 的 thread/process 切分）与 b-2 偷取迁移，不归唤醒面。
 ///
 /// **S-3c c-2a 起**：全体包 SQ 锁窗（扫描摘队 + PI 收尾一体；窗内
-/// `enqueue_with_kick` 的 RQ 手术 = 终态 SQ>队列序正确嵌套）。
+/// `enqueue_with_kick` 的 RQ 手术 = 终态 SQ>队列序正确嵌套）。**c-2b
+/// slice 4 起**：本体 = 取放锁薄壳 + 持窗版 [`wake_matching_locked`]（自锁
+/// 面：IRQ 生产者「写位+扫描同窗」复用；#[inline] 内联回原指令流）。
 pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
     if obj == 0 {
         return 0;
     }
     sq_lock(); // SQ 窗开（写位+扫描同窗——义务③/④对偶面）
+    let n = wake_matching_locked(obj, set_signals);
+    sq_unlock(); // SQ 窗闭
+    n
+}
+
+/// [`wake_matching`] 的持窗版（c-2b slice 4 自锁面第三形——IRQ 生产者消费）：
+/// **须已持 SLEEPQ 锁**（`sq_lock`）且同窗配对 `sq_unlock`——扫描摘队 + PI
+/// 收尾发射一体（与自持窗版同体，仅去取放锁）；窗内禁切换。消费面 =
+/// `rx_irq_notify`（F-L2 第三处「IRQ 上下文 SQ 面」）：**写位+扫描同窗**（义务③
+/// IRQ 面）——Event 位写与本扫描同一 SQ 窗内原子，防分段后「位已置而队上
+/// 无等待者」窗口丢唤醒。`#[inline]` 使自持窗版壳内联回原指令流（icount
+/// 等形——slice 1-3 先例同纪律）。
+#[inline]
+pub fn wake_matching_locked(obj: usize, set_signals: u64) -> usize {
+    if obj == 0 {
+        return 0;
+    }
     let mut n = 0;
-    // SAFETY: IRQ 屏蔽窗（调用方契约）；SLEEPQ 单核顺序访问；遍历中摘除的
+    // SAFETY: 调用方持窗（屏蔽窗等价）；SLEEPQ 单核顺序访问；遍历中摘除的
     // 节点仍有效（调度器拥有其 Box）。
     unsafe {
         let mut cur = sleepq().head.get();
@@ -1444,9 +1474,8 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
         }
     }
     // 4-3b：摘队完成 = 睡眠者集合定型（离队者冻结 boost、在队者重算捐赠图）。
-    // SAFETY: IRQ 屏蔽窗（调用方契约，见函数注释）。
+    // SAFETY: 同上；发射点契约 = SQ 窗内（钩子体 recompute_locked 不自取）。
     unsafe { note_sleepq_changed() };
-    sq_unlock(); // SQ 窗闭
     n
 }
 

@@ -1882,17 +1882,27 @@ fn fb_pipe_h() -> u32 {
 /// 在 IRQ 语境碰 fast_wake/try_preempt。写 Event 与遥测环同纪律：零分配、
 /// 纯指针写字段。S-2 E0 起 `ev.signal + wake_matching` 段包 KERN_LOCK
 /// （E27，草案 §2.4：IRQ 上下文无 Task 位、无 DAIF 操作——同 on_irq_tick
-/// 的 `klock_acquire_raw` 目标形态，kernel 侧直接调 arch 原语）。
+/// 的 `klock_acquire_raw` 目标形态，kernel 侧直接调 arch 原语）；S-3c
+/// c-2b slice 4 起位写+扫描再收一层 **SQ 同窗**（`wake_matching_locked`
+/// ——义务③「写位+扫描同窗」的 IRQ 生产者面，F-L2 不可重入立法）。
 unsafe extern "C" fn rx_irq_notify() {
     // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
     let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
         .expect("rx_irq_notify: RX_EV_REF 未初始化（boot 接线缺失）");
     berry_hal_aarch64::kern_lock::kern_acquire();
     unsafe {
+        // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描
+        // 同窗**——Event 位写与 SLEEPQ 扫描摘队在同一 SQ 窗内原子（分段后
+        // 「位已置而队上无等待者」窗口 = 丢唤醒面；消费者 poll-first +
+        // rx_ev_clear 豁免位协议不变）。持窗版 wake_matching_locked 不再
+        // 自取 SQ（不可重入）；KL 仍外层包络 = 过渡态逆序（§A108，C20
+        // 收缩随 c-2c ⑤ 消解定形）。
+        berry_sched::sq_lock();
         if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
             ev.signal(0, RX_EV_BIT);
         }
-        berry_sched::wake_matching(p.as_ptr() as usize, RX_EV_BIT);
+        berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
+        berry_sched::sq_unlock();
     }
     berry_hal_aarch64::kern_lock::kern_release();
 }

@@ -48,13 +48,29 @@ const PI_MAX_HOPS: usize = 8;
 
 /// 注册 PI 重推钩子（boot 期、首个切换发生前调用——`telemetry::init` 同位）。
 /// 此后每次 SLEEPQ 变更（block 睡下后 / wake 摘队后）自动全图重推。
+/// c-2b slice 4 起注册**持窗版** [`recompute_locked`]（发射点 SQ 已持——
+/// 钩子体不自取 SQ，F-L2 不可重入立法）。
 pub fn init() {
-    berry_sched::set_sleepq_hook(Some(recompute));
+    berry_sched::set_sleepq_hook(Some(recompute_locked));
 }
 
-/// 全图重推捐赠图（零增量簿记；见模块注释）。**IRQ 屏蔽窗内调用**（钩子
-/// 注入点天然满足；`sys_handle_close` 成功尾的手动调用点同）。
+/// 全图重推捐赠图（零增量簿记；见模块注释）——**自持窗版**（c-2b slice 4
+/// 起拆层）：SQ 窗自包 body，手动调用面（ktest PI 直调）用本版。表读随
+/// SQ→表冻结序正嵌套（复核 C1）；KL 纪元恒零争用 = 行为零差（窗形先行，
+/// C20 收缩直接生效）。
 pub fn recompute() {
+    berry_sched::sq_lock();
+    recompute_locked();
+    berry_sched::sq_unlock();
+}
+
+/// [`recompute`] 的持窗版 body：**SQ 已持**契约——全部发射点（block 双切
+/// 点 / `wake_matching_locked` / `fast_wake_locked` / `expire_timeouts` /
+/// kill SLEEPQ 臂）一律在 SQ 窗内发射本钩子，钩子体不再自取 SQ（同锁重入
+/// = 同核自锁）。拆层前本函数体即钩子体且零自取 = KL 在场时段纯结构等价。
+/// 表读（`holder_table`）在 SQ 窗内 = SQ→表 冻结序正序；C20 后表锁面归
+/// c-2c 分号类别定形（本刀不动）。
+fn recompute_locked() {
     // 第一趟：清零**在队者**的受捐额（冻结语义——已离队的 runnable 者不动，
     // boost 随行到下次入睡/退出）。
     berry_sched::for_each_sleeper(|t| t.pi_inherited = 0);

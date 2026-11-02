@@ -46,7 +46,7 @@ pub use sched::{
     sleepq_insertable, sleepq_unlink, spawn, spawn_as, spawn_intent, spawn_user, spawn_with,
     spawn_with_tag, switches, topo_smp_online, try_preempt, try_spawn_user, user_fault_exit,
     user_kills,
-    wake_matching, yield_now, KlockOps, SleepqHook, SwitchHook, SwitchKind,
+    wake_matching, wake_matching_locked, yield_now, KlockOps, SleepqHook, SwitchHook, SwitchKind,
     WakeHook, WAIT_ANY,
 };
 pub use task::{EppHint, Task, TaskState, WakeReason, STACK_SIZE};
