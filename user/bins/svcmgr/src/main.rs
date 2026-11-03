@@ -3520,8 +3520,12 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             data_off,
             data_len,
             stdout: console,
-            // v0 park 形 8 页；段③ berry-ui 树实测定值（草案 R5 栈面）。
-            stack_pages: 8,
+            // 64 页 = 256KB（R5 实测定值——段③ 首验仪器定谳：8 页 32KB 下
+            // main+0x1c 序言即穿保护页 D-abort——`UiMain::new` 构造中间体
+            // LTO 后仍部分落栈 ~29KB + pre-main std 运行时；帧循环另有
+            // CommandEncoder 18KB/帧（gfxdemo 8 页先例无 berry-ui 链）。
+            // bsh 32 页先例之上；manifest 域检 1..=64 顶格）。
+            stack_pages: 64,
             // 占位 dummy（空 feeder 立即 EOF；berry-exec assert：extras 非
             // 空须 stdin 槽在位——fsmgr/vnet 同款）。
             stdin_feed: Some(&[]),

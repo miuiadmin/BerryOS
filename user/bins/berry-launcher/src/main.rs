@@ -1,9 +1,21 @@
-//! berry-launcher —— GUI-8 桌面 launcher（可先行面 #2，docs/
-//! GUI-8实施侦察-2026-11.md §5；规划与侦察文档定名 berry-launcher）。
-//! 前置 wiring 刀（gui3）：v0 fbinfo 探测骨架升级 wm 域接线——svcmgr
-//! 预拉 arm（紧随 gfxdemo arm）交付 wm 客户端端 dup 柄（extras[0]，
-//! libc `wm_cli_h()` 同槽顶替 `gift2_h()`——多产面惯例），本程序以它
-//! 为门、发一次 WM_GETINFO、打单行 LAUNCH 非标记日志后 park 永驻。
+//! berry-launcher —— GUI-8 桌面 launcher（docs/GUI-8实施设计草案.md §4
+//! 段③；前身 = gui3 前置 wiring 刀 v0 park 骨架）。
+//!
+//! **模块树（段③ W1 起）**：
+//!
+//! - [`icons`]：app 注册表 + berry-ui `IconSource` 供件桥（W1 空注册表
+//!   骨架——W2 = APP_LIST 拉取装载）。
+//! - [`layout_io`]：LAYOUT.JSN 读写三约束（缺席/坏件回默认 + 重写自愈
+//!   + 写失败非致命；冻结相 `fs_h()==0` 默认直返零 RPC）。
+//! - [`desktop`]：桌面静态面建树（壁纸三带/状态栏/SwipePager 四页
+//!   Grid 4×3/a11y 骨架 18/32——裁决六/八；几何全 GETINFO 动态——
+//!   裁决 D）。
+//! - [`frameloop`]：长活帧循环（W2 填充——W1 静默 park）。
+//!
+//! 本文件保留面：wm 门控 + 严格串行 RPC 半程族（`rpc_send`/`rpc_recv`
+//! 单趟拼装——W2 起 icons 流式会话与 frameloop attach 面共用；gfxdemo
+//! `rpc` 形态镜像）+ `LAUNCH v=` 非标记行 + CRT0 链接种子 + `fail`/park
+//! 常驻纪律（崩溃监督一次重启帽归 svcmgr 域——裁决四-d）。
 //!
 //! **门控面（wm_cli_h()）**：
 //!
@@ -16,36 +28,29 @@
 //!   镜像精简：send -EBUSY → WRITABLE 10s 帽重臂；recv -EAGAIN →
 //!   READABLE 10s 帽；无 attach 面——GETINFO 无随行 handle）→ parse
 //!   `WmGetinfoRep` → **单行非标记日志**（`LAUNCH` 前缀 canon 零碰撞
-//!   ——2026-11-02 grep 全树实证；无 " ok" 形 = 非 smoke 标记语义）+
-//!   park。**原值宁报勿猜**（fmt 原值先例）：不做 gfxdemo 式断言链
-//!   （那是 WM ok 标记语义面，launcher 非标记面）；parse 失败 =
-//!   eprintln 诊断 + park（不留半开态）。
+//!   ——2026-11-02 grep 全树实证；无 " ok" 形 = 非 smoke 标记语义）。
+//!   **原值宁报勿猜**（fmt 原值先例）：不做 gfxdemo 式断言链（那是
+//!   WM ok 标记语义面，launcher 非标记面）；parse 失败 = eprintln
+//!   诊断 + park（不留半开态）。
 //!
-//! **wiring 刀明确不做（挂 GUI-8 主体刀，刀前勿在此扩面）**：
-//!
-//! - svcmgr 预拉/arm 已随本刀兑现（D1-D8 定案）：不 ps_reg（psproto 17
-//!   帽不留裕——launcher v0 = 验收件沿 gfxdemo「瞬态验收件不入账」先例，
-//!   PS ok n= 零漂；入账归 GUI-8 主体刀连带抬帽裁决）；park 永驻不
-//!   reap（常驻面——gfxdemo 阻塞 reap 形不适用）。
-//! - TODO(GUI-8 主体刀): present/input 客户端接线——GUI-2段③（present
-//!   服务端真身）/GUI-4段②（gui-inputd）均落 gui3 未并 main，帧循环
-//!   SUBMIT/CALLBACK/RELEASE 全踩彼刀；input 域端点经 gift 交付（GUI-4
-//!   草案 §5.3：launcher 不直连 inputd）。
-//! - TODO(GUI-8 主体刀): fs/布局读写——berry-layout（布局 JSON v1
-//!   纯函数解析/发射，已落 main）parse/emit 消费后置；落点 = FAT12 卷根
-//!   LAYOUT.JSN（≤2048B 单簇近原子；侦察 §3.4）；fs 单活跃客户让位序
-//!   随裁决四。
-//! - TODO(GUI-8 主体刀): spawn——点击图标拉起 .bap（裁决二待裁：直行
-//!   复刻 app_launch 守卫 vs svcmgr 常驻 spawn RPC）。
-//! - TODO(GUI-8 主体刀): 一切 smoke 标记——LAUNCH* 标记方案 + canon
-//!   碰撞复验 + smoke 三脚本同刀（smoke.sh 改动归主线串行，规划 §4:97）。
+//! **输出面（W2 起）**：EFI 相 launcher 输出 = `LAUNCH v=…` 非标记行
+//!（GETINFO 后）+ 帧循环两标记（`LAUNCH ok` 首帧呈现 / `PAGE ok n=2`
+//! 合成 swipe 双翻页——字节精确，frameloop 自测产物）；icons/layout_io
+//! 常态零打印（eprintln 仅失败诊断面）。
+
+mod desktop;
+mod frameloop;
+mod icons;
+mod layout_io;
 
 use berry_guiproto as gp;
-use berry_libc::io::wm_cli_h;
+use berry_libc::io::{app_cli_h, wm_cli_h};
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_object_wait_one, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
+    berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
+    SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
+use berry_ui::UiMain;
 
 // 链接种子（fsmgr/guifbd 同款）：rlib/LTO 按需保留——无引用则 berry-libc
 // 的 crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -58,7 +63,7 @@ const RPC_CAP_NS: u64 = 10 * 1_000_000_000;
 
 /// 诊断 + park 收口（gfxdemo `fail` 的 park 形——launcher 常驻不被 reap，
 /// exit 码无消费者；park = stdout EOF + 10s 周期睡眠，guifbd 自验后
-/// park 同款；v0 骨架形态延续，勿改成 exit 形）。
+/// park 同款；崩溃监督/一次重启帽归 svcmgr，本进程不自救）。
 fn fail(what: &str) -> ! {
     eprintln!("launcher: {what}");
     berry_libc::park()
@@ -74,18 +79,40 @@ fn now() -> u64 {
     t
 }
 
-/// 严格串行 RPC 单趟（gfxdemo `rpc` 精简形——无 attach 面：本程序唯一
-/// 请求 WM_GETINFO 无随行 handle，发送侧恒 null/0）。发送侧：-EBUSY →
+/// 即关（RELEASE 归还别名——关失败 = handle 表泄漏，FAIL loud；gfxdemo
+/// `close_h` 同形）。
+fn close_h(h: Handle) {
+    if berry_handle_close(h) != 0 {
+        fail("handle close");
+    }
+}
+
+/// 编码收口（None = 本程序侧组帧 bug——定容 256B 缓冲恒够，结构性不可
+/// 达；gfxdemo `enc_req` 同形）。
+fn enc_req(m: Option<usize>) -> usize {
+    match m {
+        Some(n) => n,
+        None => fail("req encode"),
+    }
+}
+
+/// 严格串行 RPC **发送半程**（gfxdemo `rpc` 发送侧同形拆出——icons 的
+/// APP_LIST 是一请求多应答分片流，发送与接收须拆开复用）。-EBUSY →
 /// 阻塞等 WRITABLE（10s 帽重臂，雷 2 纪律不自旋；send 原子性——EBUSY/
-/// 错码时随行 handle 零迁移）。收侧：空队 -EAGAIN → 阻塞等 READABLE
-/// （`RPC_CAP_NS` 帽）。返回应答长；应答随行 handle 收槽保留 gfxdemo 形
-/// ——GETINFO 应答恒零随行，收下不消费。
-fn rpc(ch: Handle, req: &[u8], rep: &mut [u8; 256]) -> usize {
+/// 错码时随行 handle 零迁移）。**send 即 take**（§9 A6-b）：attach 随行
+/// handle 在 send 成功即迁出本表——SUBMIT 每帧需 fresh dup 别名
+///（frameloop 消费面）。
+fn rpc_send(ch: Handle, req: &[u8], attach: &[Handle]) {
+    let (hptr, hn) = if attach.is_empty() {
+        (core::ptr::null(), 0)
+    } else {
+        (attach.as_ptr(), attach.len())
+    };
     let mut deadline = 0u64;
     loop {
-        let s = berry_channel_send(ch, req.as_ptr(), req.len(), core::ptr::null(), 0);
+        let s = berry_channel_send(ch, req.as_ptr(), req.len(), hptr, hn);
         if s == 0 {
-            break;
+            return;
         }
         if s != BERRY_ERR_BUSY {
             fail(&format!("rpc send err={s}"));
@@ -99,9 +126,15 @@ fn rpc(ch: Handle, req: &[u8], rep: &mut [u8; 256]) -> usize {
         }
         deadline = 0; // 重臂（命中后仍满则续等——公平排队）
     }
-    let mut rhs = [0 as Handle; 8];
+}
+
+/// 严格串行 RPC **收侧半程**（单条应答消息；流式会话逐消息复用）：
+/// 空队 -EAGAIN → 阻塞等 READABLE（`RPC_CAP_NS` 帽）。返回 `(应答长,
+/// 随行 handle 数)`；`rhs` 出参 = 应答随行 handle（RELEASE 归还别名——
+/// 调用方即关）。每轮重置容量（in-out 出参——漏重置 = 恒 -EINVAL 死
+/// 循环，A1-b）。
+fn rpc_recv(ch: Handle, rep: &mut [u8; 256], rhs: &mut [Handle; 8]) -> (usize, usize) {
     loop {
-        // 每轮重置容量（in-out 出参——漏重置 = 恒 -EINVAL 死循环，A1-b）。
         let mut nb = rep.len();
         let mut nh = rhs.len();
         let s = berry_channel_recv(ch, rep.as_mut_ptr(), &mut nb, rhs.as_mut_ptr(), &mut nh);
@@ -109,7 +142,7 @@ fn rpc(ch: Handle, req: &[u8], rep: &mut [u8; 256]) -> usize {
             if nb == 0 {
                 fail("rpc empty reply");
             }
-            return nb;
+            return (nb, nh);
         }
         if s != BERRY_ERR_AGAIN {
             fail(&format!("rpc recv err={s}"));
@@ -118,6 +151,39 @@ fn rpc(ch: Handle, req: &[u8], rep: &mut [u8; 256]) -> usize {
         if berry_object_wait_one(ch, SIGNAL_READABLE, now() + RPC_CAP_NS, &mut obs) != 0 {
             fail("rpc reply timeout 10s");
         }
+    }
+}
+
+/// 严格串行 RPC 单趟（一请求一应答；gfxdemo `rpc` 同形——wm/present 域
+/// 消费面）。发送侧：-EBUSY → 阻塞等 WRITABLE（10s 帽重臂）。收侧：空
+/// 队 -EAGAIN → 阻塞等 READABLE（`RPC_CAP_NS` 帽）。返回 `(应答长,
+/// 随行 handle 数)`。
+fn rpc(
+    ch: Handle,
+    req: &[u8],
+    attach: &[Handle],
+    rep: &mut [u8; 256],
+    rhs: &mut [Handle; 8],
+) -> (usize, usize) {
+    rpc_send(ch, req, attach);
+    rpc_recv(ch, rep, rhs)
+}
+
+/// 1B 状态应答单趟收口（VOTE 烘焙线：一切非 OK 应答恒 1B 不带数据；
+/// gfxdemo `expect_ok` 同形——fail 收口 = eprintln + park）。
+fn expect_ok(
+    ch: Handle,
+    req: &[u8],
+    attach: &[Handle],
+    rep: &mut [u8; 256],
+    rhs: &mut [Handle; 8],
+    what: &str,
+) {
+    let (n, _) = rpc(ch, req, attach, rep, rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(gp::ST_OK) => {}
+        Some(st) => fail(&format!("{what} st={st}")),
+        None => fail(&format!("{what} rep bad len={n}")),
     }
 }
 
@@ -136,21 +202,43 @@ fn main() {
     // disp 域 = wmd 启动期 present GETINFO 缓存同源）。原值宁报勿猜——
     // 不做 gfxdemo 式断言链（WM ok 标记语义面归 gfxdemo，launcher 非标记
     // 面）；parse 失败 = eprintln 诊断 + park（不留半开态）。
-    let mut req = [0u8; 4];
+    let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
     let m = gp::encode_wm_getinfo_req(&mut req);
-    let n = rpc(hw, &req[..m], &mut rep);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
     let info = match gp::parse_wm_getinfo_rep(&rep[..n]) {
         Some(i) => i,
         None => fail(&format!("wm getinfo rep bad st={}", rep[0])),
     };
-    // 单行非标记日志（LAUNCH 前缀 canon 零碰撞；无 " ok" 形）——EFI 相
-    // 唯一新增行。原值直报（v0 fmt 原值先例延续）。
+    // 单行非标记日志（LAUNCH 前缀 canon 零碰撞；无 " ok" 形）——EFI 冻结
+    // 相 launcher 全程唯一输出行（段③ W1 注：icons/layout_io 冻结相零
+    // 打印，桌面链在此行后静默）。原值直报（v0 fmt 原值先例延续）。
     println!(
         "LAUNCH v={} wmax={} {}x{}",
         info.version_wm, info.windows_max, info.disp_w, info.disp_h
     );
-    // 收口：park 挂起（stdout EOF + 10s 周期睡眠）——常驻桌面占位，帧
-    // 循环/serve 循环随 GUI-8 主体刀接入。
-    berry_libc::park();
+
+    // —— 段③ 静态面接线（W1：树成帧不驱——frameloop 静默 park）——
+    // 注册表初始化（W2 = app 域 APP_LIST 拉取装载；冻结相 app_cli_h()==0
+    //（extras 恰 [wm]）→ 空注册表——草案 R1 修约 1/2）。
+    icons::init(app_cli_h());
+    // 布局装载（冻结相 fs_h()==0 → 默认布局直返零 RPC；三约束自愈面
+    // 见 layout_io 头注）。
+    let layout = layout_io::load(icons::registry());
+    // Ui<512> arena ≈ 75KB+（Node 144B×512 + 走查/序/快照缓冲侧表）——
+    // guest 栈 stack_pages=64 = 256KB（R5 仪器定谳，svcmgr 装配注释为
+    // 单源——8 页下 main+0x1c 序言即穿保护页）栈置仍不稳：Box::leak
+    // 堆置（桌面进程终身持有——常驻面无回收语义，leak 即分配）。
+    let ui: &'static mut UiMain =
+        Box::leak(Box::new(UiMain::new(info.disp_w as u32, info.disp_h as u32)));
+    ui.set_icon_source(icons::icon_source());
+    // 桌面建树（几何全 GETINFO 动态——ui.viewport()；Err = 容量/文本域
+    // 违例 → fail 收口：eprintln + park，监督重启归 svcmgr 域）。
+    let desktop = match desktop::build(ui, &layout, icons::registry()) {
+        Ok(d) => d,
+        Err(e) => fail(&format!("desktop build err={e:?}")),
+    };
+    // 帧循环（W1 静默 park；LAUNCH ok/PAGE ok = W2 产物）。
+    frameloop::run(hw, ui, desktop);
 }
