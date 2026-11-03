@@ -43,6 +43,14 @@ impl AsidAllocator {
             (a, false)
         }
     }
+
+    /// 测试注入（S-4 4-3 `asidroll` 门专用）：`next` 快进到 `max`——下次
+    /// [`alloc`](Self::alloc) 即发**本轮最后一个 ASID + 真回卷信号**。生产
+    /// 路径零调用（自然回卷前计数器已历整个轮次，无快进面）。
+    pub fn force_near_roll(&mut self) {
+        let max: u16 = if self.width == 8 { 0xff } else { 0xffff };
+        self.next = max;
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +78,15 @@ mod tests {
         let (first, _) = a.alloc();
         assert_ne!(first, 0, "ASID 0 保留");
         assert_eq!(a.alloc(), (2, false));
+    }
+
+    #[test]
+    fn force_near_roll_makes_next_alloc_roll() {
+        let mut a = AsidAllocator::new(16);
+        a.force_near_roll();
+        // 快进后首次分配 = 本轮最后号 + 回卷信号；新轮次从 1 重启无信号。
+        assert_eq!(a.alloc(), (0xffff, true));
+        assert_eq!(a.alloc(), (1, false));
     }
 
     #[test]

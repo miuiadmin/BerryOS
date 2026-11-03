@@ -449,12 +449,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 必须先于 ktest::run（SYSCALL 用例）与一切用户进程。
     syscall::install();
 
-    // S-2a E0（SMP-S2实施设计草案 §2.1/§2.3）：锁槽对安装——①arch SVC/fault
-    // 入口的当前任务位 置/清器（sched 侧 klock_flag_current）；②sched 五切走点
-    // 舞蹈的锁原语（arch kern_lock 四函数）。ktest 前装好 → ktest 期 SVC 也走
-    // 锁路径（单核非竞争纯开销、恒配平）；CURRENT 空窗位跳过。gate（副核参与）
-    // 不置位 = S-2a 单核可证，改动全量单核零漂移。
-    berry_hal_aarch64::kern_lock::set_klock_flag_hook(berry_sched::klock_flag_current);
+    //（S-2a E0 历史注：sched 舞蹈锁原语槽 set_klock_ops 在下方 park 块前
+    // 安装；同批的「①位 置/清器 KLOCK_FLAG 槽」已随 S-4 判例 klock_enter
+    // 改道全谱 SVC 窗退役——位面收编 svc_window，见 kern_lock.rs klock_enter 注。）
     // S-3c c-2c slice 2b（3-1b 翻终态正序）：SVC 入口**结构锁窗**槽——HAL
     // 侧结构先行、KL 类内末取/先放（终态全局序 KL 最内，七层冻结序
     // SQ>队列>REAPQ>表），结构位集（SQ→RQ0→
@@ -1505,6 +1502,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_sched::spawn_with_tag(task_lb_master, ht_lb as *mut HandleTable as usize,
                                     b"lb_master", 8, ht_lb as *mut HandleTable as usize);
         berry_hal_aarch64::uart_puts(b"LB gate on\n");
+    }
+    // ---- S-4 4-3：ASID 回卷 quiesce 门控 spawn（fw_cfg `opt/berry/asidroll`；
+    // smoke-smp 相 4 专递——lb 同款双门）----
+    // 双门同 LB：smp_active（单核 boot 零面——无他核 stale 面，arm 短路仅
+    // 本地失效）+ fw_cfg 具名项（缺席 = run/smoke 零扰动 + EFI 天然缺席）。
+    // 同窗约束同全体先例：sched::init 后 + enable_irq 前（boot DAIF 屏蔽窗
+    // spawn）。任务 prio 8（parprobe/lb_master 同档），私有空表（A45 归因面
+    // 同款——任务零 handle 操作，表纯为 spawn_with_tag 合同）。`ASIDR gate
+    // on` 自证行（PAR/LB 先例：行在 ⟺ 任务已 spawn——相 4 排障首查行）。
+    if berry_hal_aarch64::smp::smp_active()
+        && berry_hal_aarch64::fwcfg::find_file(ASIDROLL_PROBE_NAME).is_some()
+    {
+        let ht_asidr: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        berry_sched::spawn_with_tag(task_asid_roll, 0, b"asidroll", 8,
+                                    ht_asidr as *mut HandleTable as usize);
+        berry_hal_aarch64::uart_puts(b"ASIDR gate on\n");
     }
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
@@ -3329,6 +3343,11 @@ extern "C" fn task_par_probe(arg: usize) -> ! {
 /// 维护」纪律）。
 const LB_PROBE_NAME: &str = "opt/berry/lb";
 
+/// ASID 回卷 gate 的 fw_cfg 具名项名（S-4 4-3 门控键——smoke-smp 相 4 专递
+/// `-fw_cfg name=opt/berry/asidroll,string=1`；LB_PROBE_NAME 同款「两侧对读
+/// 维护」纪律）。
+const ASIDROLL_PROBE_NAME: &str = "opt/berry/asidroll";
+
 /// LB 子进程数（蓝图 N=4）：LB_PROCS 槽位、`LB ok` 行 n= 字面、smoke 相 3
 /// 的 n==4 断言三面钉同值——改此须三处同步。
 const LB_CHILD_N: usize = 4;
@@ -3573,6 +3592,36 @@ extern "C" fn task_lb_master(arg: usize) -> ! {
     berry_sched::exit_current()
 }
 
+/// S-4 4-3 相 4（smoke-smp `asidroll` 门）：ASID 回卷 quiesce 验收。
+/// 四步：①[`aspace::asid_force_near_roll`] 快进；②[`aspace::alloc_asid`]
+/// 真回卷（锁内代数 bump + 锁外武装——本核全量失效 + 广播置闩，不等待）；
+/// ③显式 [`tlbshoot::roll_quiesce_check`] 驱动（内核任务无 dispatch 尾
+/// 等待点——IRQ 开零锁语境内联等待，§3.2 同守）；④断言 + `ASIDR ok n=`
+/// 打标。n = 全核回执增量（双核 Others 自核排除——总增量 ≥1 ⟺ 对核已为
+/// 本轮回卷做过全量失效；按核取数有抢占-迁移错位面，总数面免疫）。
+/// one-shot：打标毕 [`exit_current`]（lb_master 同款）。
+extern "C" fn task_asid_roll(_arg: usize) -> ! {
+    let ack0 = berry_hal_aarch64::tlbshoot::ack_count(0)
+        + berry_hal_aarch64::tlbshoot::ack_count(1);
+    crate::aspace::asid_force_near_roll();
+    let _last = crate::aspace::alloc_asid(); // 快进后必真回卷（g ≥ 1 断言兜底）
+    let g = berry_hal_aarch64::tlbshoot::roll_gen();
+    assert!(g >= 1, "asidroll: 回卷代数零前进（force_near_roll 未生效？）");
+    berry_hal_aarch64::tlbshoot::roll_quiesce_check();
+    let ack1 = berry_hal_aarch64::tlbshoot::ack_count(0)
+        + berry_hal_aarch64::tlbshoot::ack_count(1);
+    let n = ack1 - ack0;
+    assert!(n >= 1, "asidroll: 全核回执零前进（quiesce 回执链断——查 SGI #2 面）");
+    let q = berry_hal_aarch64::tlbshoot::quiesced_gen();
+    assert!(q >= g, "asidroll: QUIESCED({q}) < ROLL({g})（驱动退出但未追平）");
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"ASIDR ok n=");
+        berry_hal_aarch64::uart_put_dec(n as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    berry_sched::exit_current()
+}
+
 /// ai_pong（prio 32，bench 对 B 端）：fa_pong 同构、AI_ROUNDS 轮、不触
 /// ipc_fast 三计数器断言（demo bench 与 fa 口径分离——fa 断言虽已先过，别混
 /// 进 demo 轮次的计数）。
@@ -3622,7 +3671,9 @@ extern "C" fn task_ai_pong(arg: usize) -> ! {
 /// 核串行，demo 醒来读到的必是本轮值）。
 extern "C" fn task_ai_ping(arg: usize) -> ! {
     use crate::handle::SIGNAL_READABLE;
-    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE};
+    use crate::syscall::{
+        NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_SIGNAL, NR_OBJECT_WAIT_ONE,
+    };
     let ha = arg as u32;
     let h_done = (arg >> 32) as u32;
     let mut buf = [0u8; 8];
@@ -3638,13 +3689,25 @@ extern "C" fn task_ai_ping(arg: usize) -> ! {
         let mut observed = 0u64;
         // SAFETY: 本任务内核栈局部变量，活过调用。
         let pobs = core::ptr::addr_of_mut!(observed) as u64;
-        // S-4 4-2：原 poll(deadline=0) 挂「send 返回即回件在」的单核串行微时序
-        // 假设——SMP 下 pong 在他核调度，send 返回时回件未必落地 → -EAGAIN
-        // 假阴性。改 100ms 有界等待（CNTVCT 100MHz）：微时序被帽吸收，真断
-        // 链仍 -ETIMEDOUT 断言失败 = smoke FAIL（fail loud 语义不变）。
+        // S-4 4-3：有界等待，deadline = **MONOTONIC 纳秒**（`sys_object_wait_one`
+        // 契约；clock_read 锚 + 1s 帽 = 正常轮 10× 余量，fail loud 语义不变；
+        // pong 侧 10s 帽不动）。
+        // 沿革定谳（三轮 lldb 尸检，雷册 §A118 修订版）：4-2 引入有界等待时
+        // 把 `t0 + 10_000_000`（CNTVCT 周期数）直接喂给了 ns 语义参数——
+        // `ns_to_vct` 换算后 deadline 恒在远古（62.5MHz 下阈值 t0 ≥ 1e7/15
+        // ≈ 0.67M 周期 ≈ boot 后 ~11ms 起，任意时刻都过点），「睡到点」自
+        // 出生起退化为**瞬时超时 poll**：SMP 下
+        // pong 回件与 ping 的 poll 竞速，回件未落队即 -ETIMEDOUT 假阴性
+        //（概率性 per-boot——同核直切链赢则绿、跨核竞速输则红）。尸检签名 =
+        // 回件 AIR 活躺 ha 队列 + pong 已完成本轮回睡 + ping ETIMEDOUT——
+        // 睡眠从未发生。修复 = 单位归一（同 pong 的 clock_read 锚）。
+        let mut now: u64 = 0;
+        // SAFETY: 同上。
+        let pnow = core::ptr::addr_of_mut!(now) as u64;
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "ai_ping: clock_read");
         assert_eq!(
             svc6(NR_OBJECT_WAIT_ONE as u64, ha as u64, SIGNAL_READABLE,
-                 t0 + 10_000_000, pobs, 0, 0),
+                 now + 1_000_000_000, pobs, 0, 0),
             0,
             "ai_ping: wait READABLE（断链超时即 FAIL）"
         );

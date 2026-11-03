@@ -96,7 +96,7 @@ just build-x86      # x86_64 构建（必须显式 --target——根 config 锁 
 just run-x86        # QEMU pc + PVH ELF，七标记（PVH/TIMER/EXC/CTX/SYS/X86 ok）
 just smoke-x86      # x86 独立冒烟（7 标记恰一次；已挂 CI，不并入主 smoke）
 just run-smp        # 副核 bring-up + 参与态手跑（全仓唯一 -smp 入口）
-just smoke-smp      # 副核三相冒烟（独立关卡不进 CI）：SMP ok 按相恰一次 + 金丝雀按相递增 + 相3 LB 门
+just smoke-smp      # 副核四相冒烟（独立关卡不进 CI）：相1/2 SMP/SGI/SGI2 恰一次 + 金丝雀递增门；相3 LB 三硬门（c0=0/c1≥TH/n=4）+ 相4 ASIDR 门（n≥1）
 just smoke-image    # EFI 整盘镜像独立冒烟（已挂 CI）：十段 + 字节对拍 + RX 注入
 just build-boot     # BerryBoot EFI 构建链（staticlib → rust-lld 全链接 → elf2pe PE32+）
 just image          # 整盘镜像 → out/berryos.img + manifest.txt（同输入同字节）

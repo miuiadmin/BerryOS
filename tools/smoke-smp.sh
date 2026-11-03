@@ -63,6 +63,8 @@ DEADLINE_PAR=300       # 秒：PAR 行（ok/absent）落窗轮询——探针预
 DEADLINE_LB=240        # 秒：相 3 `LB ok` 行轮询帽（F-A7 帽序②：锚点在标记
                        # 轮询后起算——boot 墙钟不占帽）。guest 侧分层：子收割
                        # 帽 90s（义务⑤帽序③,与 240 禁打平竞速）×2 TCG 系数
+DEADLINE_ASIDR=240     # 秒：相 4 `ASIDR ok` 行轮询帽（DEADLINE_LB 同款帽序②；
+                       # 任务四步全快路径——快进/取号/广播/回执等待,无收割长跑）
 LB_TICK_TH=24          # 相 3 c1 下限（F-A5 定标 run10：4 线程 K=2 全改道 rq1
                        # 形态实测 c1=77 ≈ 每 16s 边 ~40 tick 量级;24 ≈ 1/3——
                        # 区分「副核得货死（c1=0）」与「活」,余量防轮转波动）
@@ -493,6 +495,48 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
+# ============ 相 4：ASID 回卷 quiesce 验收（S-4 4-3；gated bare 第四 boot） ============
+# fw_cfg `opt/berry/asidroll` 门控（lb 同款机制）：boot 期双门过（smp_active
+# + 具名项在席）→ spawn task_asidroll（①force_near_roll 快进 ②alloc 真回卷
+# ——ASID 锁内代数 bump + 锁外武装（本核 vmalle1is + SGI #2 广播置闩）
+# ③显式 roll_quiesce_check 驱动（IRQ 开零锁语境内联等待——内核任务无
+# dispatch 尾等待点的等价面）④断言代数/回执前进）→ `ASIDR ok n=`（n = 全核
+# 回执增量,≥1 = 对核已为本轮回卷做过全量失效——回卷 quiesce 回执链活证）。
+# 断言面 = gate 自证行 + ok 行在席 + n≥1（bare boot 单任务单发,无相 1..3
+# 恰一次复杂度）。锁外等待纪律（§3.2）与对飞面记录 → tlbshoot.rs 模块注。
+
+field_wait
+: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 4 开工截断复用日志
+echo "smoke-smp: QEMU 启动（-smp 2，相 4 ASID 回卷相：fw_cfg asidroll gate + bare）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/asidroll,string=1 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+# F-A7 帽序②同款：锚点在标记轮询后起算。
+tc=$(date +%s)
+while ! grep -q 'ASIDR ok n=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 ASIDR 轮询阶段退出"
+  [ $(( $(date +%s) - tc )) -gt "$DEADLINE_ASIDR" ] \
+    && fail "ASIDR ok ${DEADLINE_ASIDR}s 未出（查 boot 期 ASIDR gate on 是否在席——absent 即门未过,guest 断言炸则有 panic 行）"
+  sleep 2
+done
+grep -q 'ASIDR gate on' "$LOG" \
+  || fail "ASIDR gate on 自证行缺失（门未过——查 fw_cfg 注入与 smp_active 面）"
+asidr_line=$(grep 'ASIDR ok n=' "$LOG" | tail -1)
+echo "smoke-smp: ${asidr_line}"
+asidr_n=$(echo "$asidr_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
+[ -n "$asidr_n" ] && [ "$asidr_n" -ge 1 ] \
+  || fail "ASIDR n=${asidr_n:-缺} < 1（全核回执零前进——回卷 quiesce 回执链断：查 SGI #2 面/对飞记录）"
+
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 4 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
+
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=""
+
 # R3 首跑定标三数（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次）。
 echo "smoke-smp: R3 定标三数：boot=${SMP_BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 金丝雀≈${CAN_PERIOD_S:-?}s/行 / rootfs=${ROOTFS_WALL}s（帽 ${DEADLINE_ROOTFS}s）"
-echo "smoke-smp: PASS（三相：SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增 + LB c1≥${LB_TICK_TH} n=4（c0 观测面,S-3b 副核得货活证））"
+echo "smoke-smp: PASS（四相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）——恰一次/金丝雀执法不跨相 3/4 boot）"

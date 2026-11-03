@@ -94,21 +94,16 @@ pub const SVC_CLASS_TABLE: u8 = 0x20;
 pub const SVC_CLASS_SQ_RQ_TABLE: u8 = 0x2E;
 /// thread_sleep 单号（0x37）：SQ+RQ 双核升序、**无表无 KL**（slice 3-1a
 /// 降档——`nearest_deadline` KL-only 读面收口 SQ 后，SLEEPQ 全触面纯 SQ
-/// 串行，本号 handler 纯睡眠面零表触）。死锁安全（终态序 slice 3-1b 后）：
-/// 全域结构物理取用恒升序前缀（本类入口/舞蹈取步恒持完整
-/// SQ+RQ0+RQ1 三元组；KL 取用点（svc TABLE 类号/recompute TABLE 子窗/
-/// klock_enter 位感知退化）要么结构先取 KL 后取、要么单持 KL 不物理持
-/// 结构）——「入口持 RQ 旋 KL」边不存在。
+/// 串行，本号 handler 纯睡眠面零表触）。死锁安全（终态序 slice 3-1b 后 +
+/// S-4 判例 klock_enter 收编）：全域结构物理取用恒升序前缀（本类入口/舞蹈
+/// 取步恒持完整 SQ+RQ0+RQ1 三元组；KL 取用点（svc TABLE 类号/recompute
+/// TABLE 子窗/klock_enter 全谱窗）一律结构先取 KL 后取）——「入口持 RQ
+/// 旋 KL」「持 KL 旋结构」双边皆不存在。
 pub const SVC_CLASS_SQ_RQ: u8 = 0x0E;
 /// start 双号（0x32/0x35）：RQ 双核升序 + 表。
 pub const SVC_CLASS_RQ_TABLE: u8 = 0x2C;
 /// 全谱（0x33/0x36/0x3B + vmo/vmar 0x11..0x1B + create 族 0x31/0x34/0x51/0x54）。
 pub const SVC_CLASS_ALL: u8 = 0x3E;
-
-/// 当前任务位 置/清 槽（kernel main 装 `berry_sched::klock_flag_current`；
-/// HAL 不依赖 sched——`set_user_fault_exit` 同款反转先例）。None = 未装窗
-///（boot 最早路径）——锁仍直取直放，位跳过。
-static mut KLOCK_FLAG: Option<unsafe extern "C" fn(bool)> = None;
 
 /// SVC 入口**结构锁窗**槽（slice 2b）：kernel main 装
 /// `berry_sched::svc_window` 对（(class, true)=取 / (class, false)=放）。
@@ -120,12 +115,6 @@ static mut KLOCK_FLAG: Option<unsafe extern "C" fn(bool)> = None;
 ///（boot 最早路径）——KL 仍直取直放（物理配平恒成立），结构窗跳过
 ///（handler 内层窗照旧自取，今日形态）。
 static mut SVC_WINDOW: Option<unsafe extern "C" fn(u8, bool)> = None;
-
-/// 注册当前任务位回调（kernel main，ktest 前恰一次）。
-pub fn set_klock_flag_hook(f: unsafe extern "C" fn(bool)) {
-    // SAFETY: boot 单线程注册；此后只读。
-    unsafe { KLOCK_FLAG = Some(f) };
-}
 
 /// 注册 SVC 结构锁窗回调（kernel main，ktest 前恰一次；slice 2b）。
 pub fn set_svc_window_hook(f: unsafe extern "C" fn(u8, bool)) {
@@ -175,33 +164,36 @@ pub fn svc_enter() {
 
 // ---- 内核任务直调包络（草案 §2.2/§2.3；F31-F36/F39-F42 改造点）----
 
-/// 内核任务直调临界区入口：= 屏蔽 IRQ + 取锁 + 置当前任务持锁义务位，一次
+/// 内核任务直调临界区入口：= 屏蔽 IRQ + 结构先行全谱包络 + KL 类内末取，一次
 /// 完成（草案 §2.2）。F 位点原形态均为任务语境 `disable_irq()` 无条件对
-/// （入口 IRQ 解蔽态）——本对语义等价替换，睡眠点（`block_current` 等）在窗内
-/// 由 sched 舞蹈自动放锁/重取（位=1 分诊）。
+/// （入口 IRQ 解蔽态）。睡眠点（`block_current` 等）在窗内由 sched 舞蹈按位
+/// 放锁/重取——舞蹈分诊对 ALL 位集通用（KL 臂 = kern_acquire/release 本体，
+/// KL_HELD 随切走清/切回置）。
 ///
-/// **次序铁则**：`disable_irq` 必须先于 `kern_acquire`——反例 = 先取锁后被
-/// 本核 tick 打断，tick 语境的 SQ/RQ 结构锁窗自旋于本核持有的结构锁
-/// （IRQ 上下文不能让出 CPU）= 同核硬死锁（3-1b 起 tick 已无 KL 面，
-/// 死锁推理面 = KL 持有者触达的结构锁；klock_enter 位感知退化 ⇒ KL
-/// 持有窗内结构物理锁恒未取，实际防线 = disable_irq 在先）。
+/// **S-4 判例（直调族取锁序与 SVC 族不同序 = 潜在跨核 AB-BA 边，2026-11-03
+/// 全谱化收编）**：历史形态 = KL 先取 + 只置 TABLE 位（KLOCK_FLAG 槽），窗体
+/// （wake_matching/block_current/for_each_sleeper）物理取 SQ = 「持 KL 等 SQ」
+/// 违序边；对核 KL-free SQ 窗（tick expire / rx）内 recompute 又「持 SQ 等
+/// KL」⇒ 结构性跨核互锁边（理论边——**未捕获实尸**：同日三轮 lldb 尸检的
+/// ai panic 定谳为 wait deadline 单位错配（雷册 §A118 修订版），双核现场均
+/// 在自由推进，本边未触发）。工程裁决：边真实存在且修法干净——改道
+/// [`svc_enter_class`] 全谱窗（EL0 kill 链 `svc_enter` 同形）：结构先行 KL
+/// 最内，窗内结构锁全退化 ⇒ KL 持有者恒无等待、一切 KL 等待有限，防御性
+/// 收编不挂尸检名。boot 窗（CURRENT 空）= 槽跳过仅取 KL——与历史形态等价。
+///
+/// **次序铁则**：`disable_irq` 必须先于一切取锁——反例 = 取锁后被本核 tick
+/// 打断，tick 语境的结构锁窗自旋于本核持有的锁（IRQ 上下文不能让出 CPU）
+/// = 同核硬死锁（雷 2 判例）。
 pub fn klock_enter() {
     crate::disable_irq();
-    kern_acquire();
-    if let Some(f) = unsafe { KLOCK_FLAG } {
-        // SAFETY: 槽在 boot 单线程期注册；f 是 C-ABI fn 指针。
-        unsafe { f(true) };
-    }
+    svc_enter_class(SVC_CLASS_ALL);
 }
 
-/// 对称出口：清位 → 放锁 → 解蔽。`enable_irq` 必须最后——release 前解蔽则
-/// tick 可在持锁期闯入（同款死锁推理，见 [`klock_enter`]）。
+/// 对称出口：KL 先放（最内先放）→ 结构降序物理放 + 断言 held==ALL 清账 →
+/// 解蔽。`enable_irq` 必须最后——放锁前解蔽则 tick 可在持锁期闯入（同款
+/// 死锁推理，见 [`klock_enter`]）。
 pub fn klock_exit() {
-    if let Some(f) = unsafe { KLOCK_FLAG } {
-        // SAFETY: 同上。
-        unsafe { f(false) };
-    }
-    kern_release();
+    svc_exit_class(SVC_CLASS_ALL);
     crate::enable_irq();
 }
 

@@ -71,6 +71,9 @@ pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     // handler 置位，不依赖本核 IRQ 开）。NONE 类号多付一次 Acquire 原子读
     //（单核闩恒 0 直返）。
     crate::tlbshoot::sched_exit_check();
+    // S-4 4-3：ASID 回卷 quiesce 驱动（闩驱动——闩恒 false 时一次 Acquire
+    // 读直返，单核闩恒不置）。零锁纪律同上（§3.2）。
+    crate::tlbshoot::roll_quiesce_check();
     tf.regs[0] = ret as u64;
     ret
 }

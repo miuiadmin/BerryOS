@@ -38,7 +38,7 @@ static mut CURRENT: *mut Task = core::ptr::null_mut();
 /// 读主位；None（TPIDR_EL1 未装——ktest/`cpu0_init` 前防御窗）→ 回落本 static
 ///（与 `last_vct_slot` 同款契约，单核语义逐位对齐）。副核 park 态 = null
 /// 空哨兵（空态契约：消费点 = `on_irq_tick` 判空走 park 派发 / SVC 面
-/// `klock_flag_current` 等 null 跳过——副核 park 期无任务即无 SVC）。
+/// `svc_window` 等 null 跳过——副核 park 期无任务即无 SVC）。
 #[inline]
 unsafe fn current_task() -> *mut Task {
     match hal::smp::current_slot() {
@@ -257,20 +257,6 @@ unsafe fn klock_acquire_switch(task: *mut Task) {
     }
     if held & HELD_TABLE != 0 {
         klock_acquire_raw();
-    }
-}
-
-/// arch SVC/fault 入口经槽回调（kernel main 装）：置/清当前任务持锁义务位。
-/// CURRENT 空（ktest/boot 窗）跳过——锁由 arch 侧 svc_enter/svc_exit 直取直放
-/// 恒配平，位只服务本文件的切换舞蹈（草案 3.1-1/3.1-2）。
-pub unsafe extern "C" fn klock_flag_current(on: bool) {
-    let cur = current_task();
-    if !cur.is_null() {
-        if on {
-            (*cur).held_locks |= HELD_TABLE;
-        } else {
-            (*cur).held_locks &= !HELD_TABLE;
-        }
     }
 }
 

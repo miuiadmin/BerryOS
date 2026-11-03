@@ -19,8 +19,9 @@
 //! 5. **IRQ 上下文纪律**：SGI handler / tick / RX 取锁面 = 短窗 + 永不睡眠
 //!    + 永不嵌套「打印锁之外的锁」。
 //! 6. **KLOCK_OPS None 直通窗保留（F9）**：ktest 在 sched::init **之前**跑——
-//!    KLOCK_OPS 未安装时 klock_* 全直通、klock_flag_current 对 null CURRENT
-//!    跳过。S-3c 起新锁必须保留「安装前零开销直通」形态，否则本测试面破窗。
+//!    KLOCK_OPS 未安装时 klock_* 全直通、SVC_WINDOW 槽对 null CURRENT 跳过
+//!    （S-4 判例后 klock_enter 同走 SVC_WINDOW，形态不变）。S-3c 起新锁必须
+//!    保留「安装前零开销直通」形态，否则本测试面破窗。
 
 use berry_mm::va::{phys_to_virt, PAGE_SHIFT};
 

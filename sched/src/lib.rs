@@ -37,7 +37,7 @@ pub use sched::{
     exit_current_with, fast_wake_locked,
     find_single_waiter, find_single_waiter_locked, for_each_sleeper, idle_loop, init,
     intent_settle_current,
-    intent_snapshot_current, kill_all_tasks_by_pinned, klock_flag_current, last_killed,
+    intent_snapshot_current, kill_all_tasks_by_pinned, last_killed,
     lb_stats,
     on_irq_tick, on_sgi_resched, park_recheck, nearest_deadline, refresh_effective, reap_drain,
     set_exit_hook, set_lb_match,

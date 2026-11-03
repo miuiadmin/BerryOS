@@ -26,6 +26,26 @@
 //! 广播下恒正确（每次投递 ⇔ 一次全量清）。按号精确（请求槽 + 分代）= v2
 //! 优化；发端 PT 锁窗内自己的 `tlbi aside1is` 已按号失效本核视角。
 //!
+//! ## S-4 4-3：ASID 回卷 quiesce（代数 + 锁外驱动）
+//!
+//! ASID 计数器回卷（`AsidAllocator::alloc` 返 `rolled`）时，上一轮同号映射
+//! 可能仍驻他核 TLB——回卷方须**全核失效并等回执**（quiesce）后新轮才算
+//! 可用。协议（aspace ASID 锁只护计数器推进，quiesce 恒在锁外）：
+//! ①锁内 [`roll_gen_bump`]（代数 +1，与取号同临界区——代数序 = 取号序）；
+//! ②锁外 [`roll_quiesce_arm`]：本核 `vmalle1is` + [`broadcast`]（置回执闩 +
+//! SGI #2，广播即返）+ 置 per-CPU 待驱动闩；③驱动点 [`roll_quiesce_check`]
+//! ——SVC 路由 dispatch 尾自动消费，内核任务路显式调用——循环
+//! 「快照代数 → broadcast → 等回执 → `QUIESCED` 追平」至追上 `ROLL`
+//!（等待期间他核又回卷则代数再进，循环再驱动一轮，全局单调收敛）。
+//! 日常防线 = 激活路径按号失效（`activate_aspace` 无条件 `tlbi aside1`）；
+//! 本 quiesce 是回卷兜底（`内存管理设计.md` §5.2 / 草案 §2 4-3）。
+//!
+//! **已知对飞面（4-4 压测相法定探针，本刀只记录不修）**：两核同时广播+
+//! 尾等待（并发 unmap / 并发回卷）时各自 SVC 窗 PSTATE.I=1 自旋、互收不到
+//! 对方 SGI #2 → 互等。当前测试面单发送者形态不可达；草案 §3.3「对飞不
+//! 成立」论断按阻塞式发送立论，实装闩式（广播即返+尾等）的形态漂移在此
+//! 记录，修面归 4-4（对核满载荷 SVC 风暴 = 该面探针）。
+//!
 //! ## 单核短路 / 自核排除（§2 4-1③④）
 //!
 //! `par_enabled()==false` → `broadcast()` 零发送零闩直返（调用方 PT 窗内
@@ -50,6 +70,15 @@ static PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::n
 
 /// per-CPU 快照（broadcast 时点对核 ACKS 值）。
 static PEND_SNAP: [AtomicU32; MAX_CORES] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// 回卷代数（aspace ASID 锁窗内 bump——每回卷 +1；代数序 = 取号序）。
+static ROLL_GEN: AtomicU32 = AtomicU32::new(0);
+
+/// 已 quiesce（全核回执等毕）的最高代数（单调只升——fetch_max）。
+static QUIESCED_GEN: AtomicU32 = AtomicU32::new(0);
+
+/// per-CPU 回卷待驱动闩（arm 置位；quiesce_check 等毕清零——单核恒不置）。
+static ROLL_PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::new(false)];
 
 /// 收端半边（trap.rs SGI #2 臂调）：本地全量失效 + `dsb ish`（失效完成
 /// 先于回执可观的排序边）+ 回执计数自增。**取锁面恒零、零打印零分配**
@@ -94,10 +123,29 @@ pub fn broadcast() {
 
 /// 闩等待（per-CPU）：自旋至对核回执计数严格大于快照，清闩。**调用点必须
 /// 零锁持有**（§3.2——dispatch 尾 = `svc_exit_class` 后，KL+结构锁已全放）。
+///
+/// 有界自旋 fail-loud 探针（400M 圈 ≈ TCG 下秒级，远超正常回执 µs-ms 级）：
+/// 本等待点真楔死 = 静默僵尸核（无 panic 无串口），探针把静默翻成 panic
+/// 自报名全状态。诊断史（2026-11-03 尸检修订版）：三连复现的「单核 B 洪流 +
+/// ai 家族饿死」病灶**非本协议楔面**——真根 = ai_ping wait deadline 单位
+/// 错配（CNTVCT 周期数喂 ns 语义参数，有界等待退化为瞬时超时 poll；雷册
+/// §A118 修订版），本探针全程零触发（阴性证）。保留作回执链真楔面守卫；
+/// 对飞面 = 4-4 压测相法定探针（模块头「已知对飞面」节）。
 fn wait_pending(me: usize) {
     let t = 1 - me;
     let snap = PEND_SNAP[me].load(Ordering::Relaxed);
+    let mut spins: u32 = 0;
     while ACKS[t].load(Ordering::Acquire) <= snap {
+        spins = spins.wrapping_add(1);
+        if spins >= 400_000_000 {
+            panic!(
+                "tlbshoot: 核{me} 回执等待楔死 snap={snap} acks[t]={} tx={} pend=({},{})",
+                ack_count(t),
+                tx_count(),
+                PENDING[0].load(Ordering::Acquire),
+                PENDING[1].load(Ordering::Acquire)
+            );
+        }
         core::hint::spin_loop();
     }
     PENDING[me].store(false, Ordering::Release);
@@ -112,6 +160,52 @@ pub(crate) fn sched_exit_check() {
     }
 }
 
+// ---- S-4 4-3：ASID 回卷 quiesce（aspace.rs 计数器锁外的驱动协议）----
+
+/// 回卷代数 +1（**aspace ASID 锁窗内**调用——与取号同临界区，代数序 =
+/// 取号序；锁序第六层位最深处，持锁窗内无任何等待）。
+pub fn roll_gen_bump() {
+    ROLL_GEN.fetch_add(1, Ordering::Release);
+}
+
+/// 回卷 quiesce 武装（aspace ASID 锁**外**调用，`rolled==true` 时恰一次）：
+/// 本核全量失效（`vmalle1is`——本核旧代翻译即刻清）+ [`broadcast`]（SGI #2
+/// 对核全量失效，广播即返）+ 置本核待驱动闩。**本函数绝不等待**——等待归
+/// [`roll_quiesce_check`]（SVC 路 dispatch 尾自动；内核任务路显式）。单核
+/// 短路：仅本核失效（无他核 stale 面），代数直接追平（闩不置——单核零
+/// 漂移，与 4-3 前行为等价）。
+pub fn roll_quiesce_arm() {
+    // 本核全量 TLB 失效（安全封装——非 unsafe 面）；调用语境 = alloc 返回路
+    //（零锁）或 boot 屏蔽窗——无共享结构触达。
+    crate::flush_all_asid();
+    if !crate::smp::par_enabled() {
+        QUIESCED_GEN.fetch_max(ROLL_GEN.load(Ordering::Acquire), Ordering::Release);
+        return;
+    }
+    ROLL_PENDING[crate::smp::cpu_id()].store(true, Ordering::Release);
+    broadcast();
+}
+
+/// 回卷 quiesce 驱动（闩驱动——无闩一次 Acquire 读直返；**调用点必须零锁**，
+/// §3.2 同款纪律）：循环「快照代数 → broadcast → 等回执 → `QUIESCED`
+/// 追平」至追上 `ROLL`。SVC 路由 dispatch 尾（`sched_exit_check` 后）与
+/// 内核任务显式调用共用；双核并发驱动同格收敛——每轮 broadcast 各自快照
+/// 各自等（恰一归因不变），`QUIESCED` 单调只升。等待期间他核又回卷则
+/// `ROLL` 再进，循环条件重检再驱动一轮（有界：回卷间隔 ≫ 回执往返）。
+pub fn roll_quiesce_check() {
+    let me = crate::smp::cpu_id();
+    if !ROLL_PENDING[me].load(Ordering::Acquire) {
+        return;
+    }
+    while QUIESCED_GEN.load(Ordering::Acquire) < ROLL_GEN.load(Ordering::Acquire) {
+        let g = ROLL_GEN.load(Ordering::Acquire);
+        broadcast();
+        sched_exit_check();
+        QUIESCED_GEN.fetch_max(g, Ordering::Release);
+    }
+    ROLL_PENDING[me].store(false, Ordering::Release);
+}
+
 // ---- 观测面（probe ④ / ktest / 等价镜）----
 
 /// 指定核回执计数（probe ④ 的 wait_secs 轮询谓词源）。
@@ -122,4 +216,14 @@ pub fn ack_count(core: usize) -> u32 {
 /// SGI #2 实发送计数（等价镜实证项：单核相恒 0）。
 pub fn tx_count() -> u32 {
     TX.load(Ordering::Relaxed)
+}
+
+/// 回卷代数（4-3 相 4 断言面：force_near_roll 后须 ≥1）。
+pub fn roll_gen() -> u32 {
+    ROLL_GEN.load(Ordering::Acquire)
+}
+
+/// 已 quiesce 最高代数（4-3 相 4 断言面：驱动毕须追平 roll_gen）。
+pub fn quiesced_gen() -> u32 {
+    QUIESCED_GEN.load(Ordering::Acquire)
 }

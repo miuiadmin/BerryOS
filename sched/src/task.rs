@@ -42,9 +42,10 @@ pub enum EppHint {
 /// 迁移删除——KL 本尊即表锁，无双位并立）；bit1..=4 = 结构锁四位
 /// （S-3c c-2a 定名启用：SQ 随 `sq_lock`/`sq_unlock` 记账；RQ0/RQ1/REAPQ
 /// 随 c-2b 取放启用）。
-/// 表锁持有位（c-2c slice 1 起 KLOCK_FLAG 槽置/清、切换舞蹈分诊——C20
-/// 收缩后 KL 本尊兼职表锁，位语义随收：SVC/fault 入口置、dispatch 尾/
-/// 直调包络清、切换舞蹈分诊放/取；bit0→bit5 单 commit 原子迁移，防
+/// 表锁持有位（c-2c slice 1 起置/清、切换舞蹈分诊——C20
+/// 收缩后 KL 本尊兼职表锁，位语义随收：SVC/fault 入口与内核任务直调包络
+///（S-4 判例起统一经 svc_window 全谱位集）置、dispatch 尾/直调出口清、
+/// 切换舞蹈分诊放/取；bit0→bit5 单 commit 原子迁移，防
 /// 半迁移 KL 永不放全核自旋）。
 pub const HELD_TABLE: u8 = 1 << 5;
 /// SLEEPQ 持有位（c-2a 起 `sq_lock`/`sq_unlock` 置/清）。

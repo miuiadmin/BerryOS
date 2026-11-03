@@ -158,6 +158,16 @@ BASELINE_ICOUNT = REPO / "tools" / "bench_baseline_icount.txt"
 #   buddy 扫描）；vmo_rw4k 6937 精确不动 = TABLE 降档对 copy 链 icount 面
 #   零成本实证（TABLE 位集不含 vmo_rw 的 RQ 位）。BENCHWAKE 五跑逐字节同
 #   （max 46253280）。基线随 4-2 树四立。
+# [2026-11-03 S-4 4-3 重证] verdict=exact：0/216/37/166/1753/6937——ASID 回卷
+#   quiesce（ROLL_GEN/QUIESCED_GEN 代数对 + klock_enter 直调族改道 SVC_ALL）
+#   落地树三漂移归因 = 镜像布局挪 buddy 起始拓扑（十六续同族）：alloc4k
+#   37→216 与 commit1p 1574→1753 **+179≡+179 1:1 纯继承**（commit 内含一次
+#   4k 分配 + 清零，分配器路径自身指令流不变）；alloc64k 82→37 恰回 4-2 前
+#   值（连扫边界位形再变——反向漂移排除「envelope 真开销」假设：加锁只会变
+#   慢）；非分配器面三项（cntvct_pair 0 / handle_evt 166 / vmo_rw4k 6937）
+#   逐指令不动 = 直调改道不进 icount bench 面。BENCHWAKE 五跑逐字节同
+#   （n=210 min=1497 p50=4096 p90=32768 p99=33554432 max=46253511）。基线
+#   随 4-3 树五立。
 ICOUNT_TOL = 0.0
 
 BENCH_RE = re.compile(r"^BENCH,([a-z0-9_]+),(\d+),(\d+)$")
