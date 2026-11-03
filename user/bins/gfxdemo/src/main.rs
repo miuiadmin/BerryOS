@@ -25,8 +25,16 @@
 //! **WM ok 语义**（GUI-5 新标记，恰一次——结构性：svcmgr 单次预拉 +
 //! 阻塞 reap + 单 println）：wm 四步全断言过（GETINFO 能力/版本 →
 //! CREATE 全屏窗 id≠0 → SET(GEOM) 1B OK → TABLE_GET 快照对拍 id 回显
-//! ∧ 有效几何 == 申请——v1 无系统层重叠恒等，GUI-8 加系统窗须随改）
-//! 才打；`GFX ok` 仍收口整链恰一次（wm + present + hdi + 渲染）。
+//! ∧ 有效几何 == 申请——v1 无系统层重叠恒等）才打；`GFX ok` 仍收口
+//! 整链恰一次（wm + present + hdi + 渲染）。
+//!
+//! **D3 单 wm 客户端 = 时间轴单活**（GUI-8 段② 头注随动，0c 钉）：段②
+//! 起 berry-launcher 常驻 = 第二 wm 客户端（wm 客户端端 dup 柄，
+//! `wm_cli_h()` 同槽），但 svcmgr 装配序 = 本程序先活后死（阻塞 reap
+//! 收毕）→ launcher 后活常驻——本程序整个生命周期内 wm 表恒「唯一客户
+//! 端唯一窗」，TABLE_GET 断言零连带改；状态栏/壁纸 = launcher 窗口内容
+//! 层（GUI-8 裁决四-e）非 wmd 系统窗，「有效几何 == 申请」恒等面不破
+//! ——真系统窗/避让裁剪刀再随改。
 //!
 //! **RPC 纪律**（§9 A6-a 收侧 10s 帽，fsclient `fs_rpc` 同形）：严格串行
 //! 一请求一应答；发送 -EBUSY 阻塞重试（WRITABLE 10s 重臂）；收侧空队 →
@@ -254,8 +262,9 @@ fn main() {
     expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm set");
 
     // ④ TABLE_GET：全表快照对拍——count≥1 ∧ window_id 回显 ∧ 有效几何
-    // == 申请几何（v1 无系统层重叠 = 恒等；GUI-8 加系统窗时避让裁剪使
-    // 有效 ≠ 申请，本断言须随改——guiproto `WmEntry` doc 注同口径）。
+    // == 申请几何（v1 无系统层重叠 = 恒等；GUI-8 裁决四-e 定谳：状态栏/
+    // 壁纸 = launcher 窗口内容层非 wmd 系统窗，恒等不破——真系统窗/避让
+    // 裁剪刀再随改，guiproto `WmEntry` doc 注同口径）。
     let m = gp::encode_wm_table_get_req(&mut req);
     let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
     let snap = match gp::parse_wm_snapshot_rep(&rep[..n]) {

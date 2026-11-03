@@ -9,7 +9,11 @@
 //! - A 半：直线拉起 talker + echo2（同一份 echo 镜像第二实例），交接消息
 //!   一次迁移双 handle（console 别名 + t2 对端——能力经消息授权，不经
 //!   全局名）→ talker 打 `DEMO ok`；
-//! - 稳态：节流 + ECHO_REQ 实证往返 + 'v'。
+//! - 稳态：节流 + ECHO_REQ 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）；
+//!   GUI-8 段② 起 GUI 形（APP_SVC≠0）加挂 app 域常驻 serve（wait_many
+//!   双通道：app 请求 + launcher 终结信号——guifbd 先例）+ launcher 监督
+//!   最小件（非阻塞探活 + 一次重启帽，裁决四-d）；rootfs/裸跑形原紧环
+//!   逐字保留（47/47 零漂红线）。
 //!
 //! 子程序镜像 `include_bytes!` 内嵌（两遍构建：leaf bins 先产平像再编本
 //! crate，见 justfile `build-user`；改子程序须先重跑 pass 1）。入口 x0 =
@@ -21,11 +25,11 @@
 
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_handle_duplicate, berry_object_wait_one, berry_process_create,
+    berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one, berry_process_create,
     berry_process_get_exit_code, berry_process_start, berry_thread_create, berry_vmar_map,
     berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
     berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, RIGHT_DUPLICATE,
+    BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE,
     RIGHT_MANAGE, RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE,
     SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
@@ -33,7 +37,7 @@ use berry_sys::{
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
 // 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
 use berry_exec::{
-    channel_pair, cpio_find, spawn_rootfs_elf, SpawnSpec, FB_VA, VIRTIO_MMIO_VA,
+    channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec, FB_VA, VIRTIO_MMIO_VA,
 };
 // P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
@@ -50,6 +54,9 @@ use berry_psproto as psp;
 // GUI-4 段②：GUI wire 协议面（input 域 boot 自验——SUBSCRIBE 请求编码 +
 // 1B 状态应答收口，no_std 纯函数 crate）。
 use berry_guiproto as gp;
+// GUI-8 段②：app 域 RPC 协议面（launcher ↔ svcmgr：APP_LIST/APP_SPAWN
+// 编解码——段① 落库，本刀接 serve 消费侧）。
+use berry_appproto as appp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -145,13 +152,83 @@ pub extern "C" fn _start(console: Handle) -> ! {
     thr_selftest(console);
     input_selftest(console); // GUI-4 段②：boot 期 input 域 SUBSCRIBE 自验（INPUT ok）
 
-    // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）----
+    // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
+    // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
+    // serve 泵（APP_SVC READABLE——命中帧消化毕续泵至 -EAGAIN 静默）+
+    // launcher 监督探活 + SPAWN 活子探活/drain（app_supervise，M-C 异步
+    // 收口的稳态兑现点）。三路皆空（APP_SVC==0 且无 launcher 子且子表空
+    // ——rootfs/裸跑/重启帽尽形）= **保现状纯 echo 紧环**（47 标记零漂，
+    // n=1 字面落实）；GUI 形才并等（n≤2+2×APP_SPAWN_LIVE_MAX=10：svc
+    // READABLE + launcher hp TERMINATED + 每活子 out_s READABLE（drain
+    // 唤醒面——EOF 后停挂）+ hp TERMINATED）——deadline =
+    // now+APP_IDLE_CAP_NS（guifbd min(vb_next, cap) 退化形：节流是忙 spin
+    // 非时点，无可对齐的下轮点）；到点 = 合法空闲重臂（真断链面 recv 错码
+    // 照 trap——app_serve_one/app_supervise 内执法）。----
     let v = [b'v'];
     loop {
         throttle();
         send_retry(end0, req.as_ptr(), 8);
         roundtrip(end0, &mut buf, &req);
         send_retry(console, v.as_ptr(), 1);
+        // poll-first：先收干再并等（guifbd 三路同序）；SPAWN 帧异步形
+        // （M-C）：拉起即 ACK、收口尾入 APP_CHILDREN——app_supervise 探
+        // 活兑现，echo/监督零长停。
+        while app_serve_one(console) {}
+        launcher_supervise(console);
+        app_supervise(console);
+        let svc = APP_SVC.load(Ordering::Relaxed);
+        // SAFETY: LAUNCHER_CHILD 单线程独占（boot arm / 本 loop 不交叠）。
+        let lhp = match unsafe { &*core::ptr::addr_of!(LAUNCHER_CHILD) } {
+            Some(c) => c.hp,
+            None => 0,
+        };
+        // SAFETY: APP_CHILDREN 只读共享面（app_supervise 独占借用已释）。
+        let children: &[Option<AppSpawnTail>] = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::addr_of!(APP_CHILDREN) as *const Option<AppSpawnTail>,
+                APP_SPAWN_LIVE_MAX,
+            )
+        };
+        let mut hs = [0 as Handle; 2 + 2 * APP_SPAWN_LIVE_MAX];
+        let mut sigs = [0u64; 2 + 2 * APP_SPAWN_LIVE_MAX];
+        let mut n = 0usize;
+        if svc != 0 {
+            hs[n] = svc;
+            sigs[n] = SIGNAL_READABLE;
+            n += 1;
+        }
+        if lhp != 0 {
+            hs[n] = lhp;
+            sigs[n] = SIGNAL_TERMINATED;
+            n += 1;
+        }
+        for c in children.iter() {
+            if let Some(t) = c {
+                if t.out_s != 0 && !t.eof_seen {
+                    hs[n] = t.out_s;
+                    sigs[n] = SIGNAL_READABLE;
+                    n += 1;
+                }
+                hs[n] = t.child.hp;
+                sigs[n] = SIGNAL_TERMINATED;
+                n += 1;
+            }
+        }
+        if n != 0 {
+            let mut idx = 0usize;
+            let mut obs = 0u64;
+            let s = berry_object_wait_many(
+                hs.as_ptr(),
+                sigs.as_ptr(),
+                n,
+                now() + APP_IDLE_CAP_NS,
+                &mut idx,
+                &mut obs,
+            );
+            if s != 0 && s != BERRY_ERR_TIMEDOUT {
+                trap(); // 到点 = 空闲重臂；余错 = 死亡面（guifbd 同口径）
+            }
+        }
     }
 }
 
@@ -249,24 +326,94 @@ static NET_A: AtomicU32 = AtomicU32::new(0);
 /// GUI-4 段②：input 域 channel 客户端端（预拉成功后非 0；boot 自验 +
 /// bsh 面 dup 分种——input_h()）。0 = inputd 未起，静默降级。
 static INPUT_A: AtomicU32 = AtomicU32::new(0);
+/// GUI-8 段②：数据盘在位旗（vblk 预拉自验 Ok 路 store 1；0 = 无 virtio-blk
+/// 数据盘/自验拒——EFI 冻结相 usb-storage 非本域即拒）。**旗非端点**
+/// （NET_A/INPUT_A 皆句柄，此为布尔语义）——R1 判别器 v2 源：fs 让位 ⟺
+/// 布局卷在位（fsmgr 挂同一 blk 盘，两信号同源同真假）。INPUT_A 判别实证
+/// 废案：inputd 预拉只门 H_MMIO（virt 恒在）且 spawn Ok 即 store（tablet
+/// 探测在 inputd 进程内、晚于 store，park 不回清）→ EFI 冻结相恒真误让位
+/// （实测 bsh fs_h()==0 park，11 标记连坐）。
+static BLK_OK: AtomicU32 = AtomicU32::new(0);
 /// GUI-5：wmd↔inputd 推送对 inputd 端（wmd arm Ok 路存 push_cli；inputd
 /// arm 读取追加 extras——0 = wmd 未起，inputd extras 仍单枚现行为逐字节
 /// 保留）。**留表即留命**（NET_A 同形）：EFI 相 inputd 不拉起（H_MMIO 门
 /// 先跳）→ 端恒滞 static = wmd push 服务端端的对端保活，属覆盖面非泄漏
 /// （v1 无对端关闭检测）。
 static WMD_PUSH_B: AtomicU32 = AtomicU32::new(0);
-/// GUI-8 前置 wiring 刀（D2）：wm 客户端端 dup 柄——wmd arm Ok 路 dup 出
-/// SEND|RECV 留表，launcher arm 门读 + extras 直递。原柄 w_cli 被下方
-/// gfxdemo arm 直递 take 离表且其 Err/cpio 缺路关原柄不置 0（死存弃判例）
-/// ——launcher 门若读 wm_cli 局部变量 = 死柄活读；dup 柄生命周期独立
-/// （gfxdemo 失败/缺席关原柄不伤 dup）。**留表即留命**（NET_A/WMD_PUSH_B
-/// 同形）：留表期内它是 wmd 服务端端的活跃对端（v1 无对端关闭检测，
-/// 覆盖面非泄漏）。**消费面三出口皆清零**（inputd arm push_b / fsmgr
-/// blk_cli 同款卫生惯例——已迁值不可 close、已 close 值不可复用，static
-/// 清零防柄号复用后误读成活柄）：launcher arm Ok（随 extras take 迁入）
-/// / Err / cpio 缺三分支 + gfxdemo reap 挂死角（见 launcher arm 注）各
-/// store(0)。0 = wmd 未起或已消费，launcher arm 静默跳过。
+/// GUI-8 前置 wiring 刀（D2）→ 段② 升格常驻源：wm 客户端端 dup 源——
+/// wmd arm Ok 路 dup 出 SEND|RECV 留表，launcher 装配（boot arm / 监督
+/// 重启）每次从它**现 dup 新别名**作 gift（NET_A 常驻源先例：本体永留
+/// 表、dup 生命周期独立——原柄 w_cli 由 gfxdemo arm 直递 take 离表且其
+/// Err/cpio 缺路关原柄不置 0（死存弃判例），本 static 是 launcher 侧
+/// 唯一可再生 wm 端）。**留表即留命**（NET_A/WMD_PUSH_B 同形）：留表期
+/// 内它是 wmd 服务端端的活跃对端（v1 无对端关闭检测，覆盖面非泄漏）；
+/// launcher 崩溃后其别名随子表销毁，本源在 = wm 客户端端点存活，监督
+/// 一次重启（裁决四-d）可再 dup——重启可行性的结构前提（段② 现场裁：
+/// 若首次赠出即耗尽，重启形退化为无 wm 空壳，裁决 E「监督重启」名存
+/// 实亡）。唯一清零出口 = gfxdemo reap 挂死角（滞留原柄与 dup 同端点，
+/// 续走 = 双读者应答互截违 D3——关门即装配门永闭，正确降级）。0 = wmd
+/// 未起，launcher 装配静默跳过（rootfs 形恒 0）。
 static WMD_CLI_DUP: AtomicU32 = AtomicU32::new(0);
+
+// ---- GUI-8 段②：app 域常驻 serve + launcher 监督（裁决二/四-d）----
+
+/// app 域服务端端：launcher 装配门内 `channel_pair()` 的本侧（稳态 loop
+/// 挂第二通道 serve）；对端随 extras[2] take 迁入 launcher（libc
+/// `app_cli_h()` 同槽惯例）。0 = app 域不在（rootfs/裸跑形门闭、或 fs
+/// 缺席前缀截断降级）——稳态 loop 据此分形（n=1 紧环零漂）。launcher
+/// 崩溃收口时置 0 + close（对端已死，serve 面撤）。
+static APP_SVC: AtomicU32 = AtomicU32::new(0);
+
+/// GUI 形 fs 常驻别名：launcher 装配 Ok 时存 fsmgr 预拉对的 fs_a_h（NET_A
+/// 先例——**不随 bsh 关闭**）。两面消费：app 域 serve 的 fs 授能源
+/// （`app_launch` 的 fs_a 参数——GUI spawn 的 fs 词 app 走 dup 授能，
+/// 裁决四-b「授出端 dup 子自持 + 父收口后再用」）+ 监督重启的 fs gift
+/// 现 dup 源。0 = rootfs 形（bsh Ok 路照旧关 fs_a_h，零漂）。
+static FS_A: AtomicU32 = AtomicU32::new(0);
+
+/// launcher 装配成立标志（Ok 置 1；崩溃收口置 0）——bsh arm 的 fs 让位
+/// 路由判别器（裁决四-b：GUI 形 fs 端让位 launcher、bsh 退三元皮）+
+/// 走查尾兜底/Ok 关口 fs_a_h 的让位门。与 FS_A 分立：FS_A 是端点真值
+/// （可为 0 的降级形），本标志是相判别器。
+static LAUNCHER_LIVE: AtomicU32 = AtomicU32::new(0);
+
+/// 监督子柄（裁决四-d）：launcher spawn Ok 留存（`reap` 全链柄集），
+/// 稳态 loop 非阻塞探活用；None = 无 launcher（rootfs 形/已收口）。
+/// SAFETY: svcmgr 单线程独占（PS_TAB 同纪律）。
+static mut LAUNCHER_CHILD: Option<ChildHandles> = None;
+
+/// 一次重启帽（裁决四-d「一次重启」字面执法）：swap 惯取 1 = 帽已用。
+/// 帽后再生崩溃 = eco 行 loud 终报不再试（循环重启风暴比不重启更伤稳态
+/// ——kill criteria 5 的对面）。
+static LAUNCHER_RESTARTED: AtomicU32 = AtomicU32::new(0);
+
+/// SPAWN RPC 活子表帽（M-C）：GUI app 分钟级活期 × 4 槽 = 同时活 app 上
+/// 限；满表拒新不拒旧（洪泛面：launcher 端重复点击防抖归 launcher，本帽
+/// 兜服务侧结构性上限——防 APP_SPAWN 洪泛撑爆监督面）。帽值 = 桌面 4 页
+/// × 每页 1 点击并发面的宽余量（v1 demo 拓扑实活 ≤2）。
+const APP_SPAWN_LIVE_MAX: usize = 4;
+
+/// SPAWN 收口尾子表（M-C γ-分·异步侧）：serve 期插入、稳态 `app_supervise`
+/// 探活兑现后槽位回 None。`[const { None }; N]` 内联常量块 = 非 Copy 元素
+/// 重复表达式的稳定形。SAFETY: 同 LAUNCHER_CHILD 单线程独占。
+static mut APP_CHILDREN: [Option<AppSpawnTail>; APP_SPAWN_LIVE_MAX] =
+    [const { None }; APP_SPAWN_LIVE_MAX];
+
+/// 稳态空闲并等帽（guifbd `IDLE_CAP_NS` 同值同义——合法空闲非死线，到点
+/// 重臂续等；真断链面 = recv 非 -EAGAIN 错码照 trap）。
+const APP_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
+
+/// app 域 LIST 的 icon 声明长帽 = 64KiB（服务侧现场裁：BYI1 RLE 理论
+/// 最坏全不可压 ~384KiB 不设整档帽——64KiB 覆盖现实 app 图标（65536px 帽
+/// 下典型 RLE 产物 ≪ 4KiB）+ 大余量；越帽条目降级 blob_len=0（launcher
+/// 回落默认图标，条目仍在册——id/label 面完整），v2 资产管道再议）。
+/// 单页墙修复后纯声明值执法（零整读窗——blob 体经 ChunkStream 逐片直
+/// 读，不再驻 .bss 静态窗）。
+const APP_ICON_BLOB_MAX: usize = 65536;
+
+/// 走查记账条目数的稳态镜像（`run_rootfs_child` 局部 app_n 持久面——
+/// APP_LIST/APP_SPAWN 的数据源计数；walk 毕落值）。SAFETY: 同上单线程。
+static mut APP_ACCOUNT_N: usize = 0;
 
 // ---- app-0 a-2：.bap 消费面（appd 雏形——ADR #43/#44：应用 = 纯用户态
 // 协议约定，svcmgr 兼任 appd；内核零「应用」概念）----
@@ -436,6 +583,10 @@ fn run_rootfs_child(console: Handle) {
                     Ok(()) => {
                         send_retry(console, BLKD_OK.as_ptr(), BLKD_OK.len());
                         blk_cli = blk_a; // 端点留给 fsmgr（下方预拉段交付）
+                        // 数据盘在位旗（GUI-8 R1 判别器 v2）：真 virtio-blk
+                        // 应答写读 LBA5 过才达此（EFI 冻结相 usb-storage
+                        // 非 vblk 域，自验即拒 eco: blkd write → 恒 0）。
+                        BLK_OK.store(1, Ordering::Relaxed);
                     }
                     Err(why) => {
                         eco_skip(why);
@@ -586,12 +737,14 @@ fn run_rootfs_child(console: Handle) {
                     // 恒滞 static 保活）。
                     wm_cli = w_cli;
                     WMD_PUSH_B.store(push_cli, Ordering::Relaxed);
-                    // GUI-8 前置 wiring 刀（D2）：dup 一枚 wm 客户端端留表
-                    // （SEND|RECV 双权利——bsh fs_a 同口径）供下方 launcher
-                    // arm 消费：原柄 w_cli 随 gfxdemo arm extras 直递 take
-                    // 后离表（其 Err/cpio 缺路关原柄不置 0），launcher 门读
-                    // wm_cli 变量 = 死柄活读；dup 生命周期独立（gfxdemo 失败
-                    // 关原柄不伤 dup）。失败 trap（fsmgr fs_dup 先例同形）。
+                    // GUI-8 段②：dup 一枚 wm 客户端端落 WMD_CLI_DUP 留表
+                    // （SEND|RECV 双权利——bsh fs_a 同口径）——**常驻 dup 源**
+                    // （NET_A 先例）：launcher 装配（下方新位 arm / 监督一次
+                    // 重启）每次从它现 dup 新别名作 gift，本体永不消费。原柄
+                    // w_cli 随 gfxdemo arm extras 直递 take 后离表（其 Err/
+                    // cpio 缺路关原柄不置 0），本 static 是 launcher 侧唯一
+                    // 可再生 wm 端（生命周期独立——gfxdemo 失败关原柄不伤
+                    // dup）。失败 trap（fsmgr fs_dup 先例同形）。
                     let mut w_dup: Handle = 0;
                     if berry_handle_duplicate(w_cli, RIGHT_SEND | RIGHT_RECV, &mut w_dup) != 0 {
                         trap();
@@ -715,75 +868,6 @@ fn run_rootfs_child(console: Handle) {
             if berry_handle_close(wm_cli) != 0 {
                 trap();
             }
-        }
-    }
-    // ---- GUI-8 前置 wiring 刀：berry-launcher（桌面 launcher）预拉——紧
-    // 随 gfxdemo arm（阻塞 reap 段）、fsmgr arm 之前（D3：任意时刻至多
-    // 一个活跃 wm 客户端——gfxdemo 先活后死（reap 毕）、launcher 后活，
-    // wmd 头注「单 wm 客户端串行」前提保住；握手期 wmd 空闲，无
-    // TABLE_WAIT 交叠）。门 = wmd spawn Ok（WMD_CLI_DUP != 0——D2 dup 柄：
-    // 原柄 wm_cli 已随 gfxdemo arm 直递 take 离表且不置 0（死存弃判例），
-    // 读局部变量 = 死柄活读）∧ cpio_find(H_ROOTFS, b"bin/berry-launcher")。
-    // rootfs 相 fb 探测门已跳 → **静默跳过零新行**（rootfs 相 47 标记零
-    // 漂）。**不 ps_reg**（D1：psproto 17 帽不留裕——GUI-5 草案 §7 Q7：
-    // 18 = 无 ADR 修订的偏离；launcher v0 = 验收件沿 gfxdemo arm「瞬态
-    // 验收件不入账」先例，PS ok n= 零漂，入账归 GUI-8 主体刀连带抬帽裁
-    // 决）；家名单（ps_selftest 的 has_sub 断言链，grep 锚 `let mut ok =
-    // has_sub`）同样不添（guifbd/wmd 不在册先例）。
-    // 拓扑：wm 客户端端 dup 柄随 extras[0] **直递**（take 迁入；launcher
-    // 侧 libc `wm_cli_h()` 消费——gift2_h 同槽顶替的多产面惯例）；env =
-    // base 4 + extras 1 = 5/8 ✓ 无抬帽义务。launcher 门内 GETINFO 握手
-    // 一次 + 单行 LAUNCH 非标记日志（EFI 相唯一新增行）后 **park 永驻**
-    // （不 reap——wmd 常驻同款但无 ps_reg；gfxdemo 的阻塞 reap 形不适用
-    // 于常驻面）；static 三出口清零（inputd push_b/fsmgr blk_cli 卫生
-    // 惯例——已迁值不可 close、已 close 值不可复用，防柄号复用误读）。
-    let wmd_dup = WMD_CLI_DUP.load(Ordering::Relaxed);
-    if wmd_dup != 0 {
-        if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/berry-launcher") {
-            match spawn_rootfs_elf(
-                H_ROOTFS,
-                &SpawnSpec {
-                    name: b"bin/berry-launcher",
-                    data_off,
-                    data_len,
-                    stdout: console,
-                    stack_pages: 8,
-                    stdin_feed: Some(&[]),
-                    stdin_handle: None,
-                    args: &[],
-                    extra_gifts: &[wmd_dup],
-                    mmio_vmo: None,
-                    mmio_va: 0,
-                    intent: 0,
-                },
-            ) {
-                Ok(_child) => {
-                    // 零行零记账：LAUNCH 成功日志归 launcher 自打（非
-                    // 标记——EFI 相唯一新增行）；park 永驻不 reap。dup 柄
-                    // 已随 extras take 迁入（不可 close）——static 清零防
-                    // 柄号复用后误读成活柄（inputd arm push_b 同款）。
-                    WMD_CLI_DUP.store(0, Ordering::Relaxed);
-                }
-                Err(()) => {
-                    // Err 全在 env send 前——dup 柄未被 take，显式回收防
-                    // 表槽泄漏（vnet 同款；本 arm 仅一枚 fresh 端——dup 柄，
-                    // 无 wmd arm 式六枚枚举；wmd 侧服务端端互钉常活）+
-                    // 清零（fsmgr blk_cli 同款卫生惯例）。
-                    if berry_handle_close(wmd_dup) != 0 {
-                        trap();
-                    }
-                    WMD_CLI_DUP.store(0, Ordering::Relaxed);
-                    eco_skip(b"launcher spawn");
-                }
-            }
-        } else {
-            // cpio 缺 berry-launcher（手工裁剪镜像面）：dup 柄未被 take，
-            // 显式回收（gfxdemo arm cpio 缺分支同款 close-only；零新行）+
-            // 清零（同上卫生惯例）。
-            if berry_handle_close(wmd_dup) != 0 {
-                trap();
-            }
-            WMD_CLI_DUP.store(0, Ordering::Relaxed);
         }
     }
     // ---- P6 A-1：fsmgr（RAM-fs 服务）预拉起（A-5：+ gift[3] blk 端）----
@@ -997,6 +1081,73 @@ fn run_rootfs_child(console: Handle) {
                 WMD_PUSH_B.store(0, Ordering::Relaxed);
                 eco_skip(b"inputd spawn");
             }
+        }
+    }
+    // ---- GUI-8 段②：berry-launcher（桌面）装配 arm——inputd 后、stdhello
+    // 前（草案 §2.3 序重排）。**D3 追认论证**（scout S3-F3）：launcher 仍
+    // 在 gfxdemo 阻塞 reap 之后（单 wm 客户端序——gfxdemo 先活后死、
+    // launcher 后活，wmd 头注前提保住）；fsmgr/vnet/inputd 三 arm 皆不触
+    // wm 域，launcher 越其身后 = 重排安全。新位三得：fsmgr 后 = fs_client
+    // 在位可让、inputd 后 = INPUT_A 在位可判、监督/serve 所需端点齐。
+    // 门 = WMD_CLI_DUP != 0（= wmd Ok ∧ fb 在位；rootfs 形恒 0 → **静默
+    // 跳过零新行**，47 标记零漂）。装配体 = `launcher_assemble`（boot 本
+    // arm 与监督一次重启（裁决四-d）共用形）；装配表（env base 4 +
+    // extras ≤4 = 8/8 恰满，bsh 满配先例，零内核抬帽）：
+    //   extras[0] wm 客户端 fresh dup（源 WMD_CLI_DUP 常驻 dup 源——每次
+    //            装配现 dup，本体留表；launcher 侧 libc `wm_cli_h()`）
+    //   extras[1] fs 客户端端 = fs_client 让位迁移（**R1 判别器 v2**：仅
+    //            BLK_OK≠0 交互相让位（数据盘在位）；libc `fs_h()`）
+    //   extras[2] app 域客户端端（arm 门内 channel_pair() 对端，服务端端
+    //            APP_SVC 留本表稳态 serve——裁决二；随 fs 让位同门截断；
+    //            libc `app_cli_h()`）
+    //   extras[3] input 客户端端 dup（源 INPUT_A，SEND|RECV；交互相缺席
+    //            → 截断；libc `input_h()`）
+    // **R1 判别器 v2（第二次修约，仪器实测定谳）**：fs 让位只随交互相，
+    // 判据 = BLK_OK≠0（数据盘在位 = vblk 自验过；交互相结构性配置 tablet+
+    // QMP+mkfat 盘三件同挂，fsmgr 挂同一盘——「launcher 需 LAYOUT.JSN 的
+    // 卷在位」语义恰合）。废案存证（M-A fallback INPUT_A≠0）：实测 EFI
+    // 冻结相恒真——inputd 预拉只门 H_MMIO（virt 恒在）、spawn Ok 即 store
+    // INPUT_A、tablet 探测在 inputd 进程内晚于 store（park 不回清）→ 误
+    // 让位 → bsh fs_h()==0 → fs_selftest PUT64 ENOENT park → fs 族 11 标记
+    // 连坐（仪器实测 PUT64 not found h=0）。冻结十段相 BLK_OK=0 → fs 留
+    // bsh（[rootfs,fs,net] 三元皮现状零漂——fs 族 11 标记 + fat 段 park 形
+    // 全保；首轮 WMD_CLI_DUP 判别同病 = M-A 双报形态）。
+    // app/input 随 fs 让位同门截断（前缀紧致律/netd 条款镜像：app 前移落
+    // fs 槽 hs[5] = 同槽不同名）→ **冻结相实形 = 恰 [wm] 一枚**（e41ae92
+    // 接线刀 EFI 形同构零漂）；交互相 = [wm,fs,app,input] 满四枚。
+    // **入账**：Ok 路 ps_reg(b"launcher", ALIVE, 0)（psproto 帽 18 恰容
+    // ——worker F 同刀抬 17→18；时序论证：不抬帽先入账 = 表恰满丢行、
+    // berryctl 自验结构性 FAIL，两件必须同刀）；常驻不 reap（wmd 同款）
+    // ——探活归稳态 loop `launcher_supervise`（裁决四-d）。家名单
+    // （ps_selftest has_sub 链）不添（guifbd/wmd 不在册先例）。fs 串行
+    // 纪律注记：让位后 launcher = fs 唯一桌面读者（布局写在桌面态、app
+    // 活时结构性无布局编辑——裁决四-b 相位互斥）；冻结相 launcher 零 fs
+    // 零 app（[wm] park 形，bsh 全自验照跑）。
+    if WMD_CLI_DUP.load(Ordering::Relaxed) != 0 {
+        // R1 判别器 v2：交互相（BLK_OK≠0 数据盘在位）才让位 fs；冻结相 0
+        // 直传 = [wm] 截断形（assemble 前缀截断纪律自处）。rootfs 形
+        // BLK_OK=1（disk.img 自验过）但 arm 门 WMD_CLI_DUP==0 恒跳过——
+        // 判别器不消费零漂。
+        let lg_fs: Handle = if BLK_OK.load(Ordering::Relaxed) != 0 {
+            fs_client
+        } else {
+            0
+        };
+        let took = if launcher_assemble(console, lg_fs) {
+            // GUI 形 fs 常驻别名（NET_A 先例——**不随 bsh 关**）：app 域
+            // serve 的 fs 授能源（app_launch fs_a 参数）+ 监督重启 fs gift
+            // 现 dup 源。fs 缺席形 fs_a_h==0 存 0 = 空占位无害。
+            FS_A.store(fs_a_h, Ordering::Relaxed);
+            true
+        } else {
+            false
+        };
+        // **让位 = 真实迁移点**（对抗审查 M0 裁定）：Ok 且 lg_fs≠0 = take
+        // 成立（extras[1] 随 env 迁入子表）→ 局部归零防 bsh 复用；Ok 而
+        // lg_fs==0 = 未涉让位；Err/cpio 缺 = assemble 契约原样归还（未
+        // close）——两路 fs_client 原值流 bsh，cpio 手工裁剪角不饿死。
+        if took && lg_fs != 0 {
+            fs_client = 0;
         }
     }
     // ---- C-1 刀 3：stdhello 预拉起——vnet 之后、主走查（bsh spawn）前 ----
@@ -1283,6 +1434,10 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
+    // GUI-8 段②：走查记账面持久化——APP_LIST/APP_SPAWN 的数据源计数
+    // （apps 槽表本体即 static APP_SLOTS_TBL，恒存活；此处镜像 app_n 供
+    // 稳态 serve 分界。SAFETY: 单线程，walk 毕一次性落值）。
+    unsafe { APP_ACCOUNT_N = app_n; }
     // P6 A-1 兜底：归档无 bin/bsh（fs 面无消费者）——fs_client/fs_a 留表
     // 无害但关掉更干净；fsmgr 常驻不受影响（fs_b 互钉 + 子表自持）。
     // A-5：归档无 bin/fsmgr 时 blk_cli 未被 take——同兜底关（vblk 经
@@ -1291,7 +1446,10 @@ fn run_rootfs_child(console: Handle) {
     // app 批（fs 授能）与 bsh 拉起段（fs_client take），此处不得提前关
     // （旧序「bsh arm spawn Ok 已置 0」的隐式跳过条件在延后态失效，显式
     // 门取代；bsh spawn Err 面的 fs_a_h 留表 = 有界 1 槽，v1 常驻泄漏政策）。
-    if bsh_geom.is_none() {
+    // GUI-8 段②：GUI 形（LAUNCHER_LIVE≠0）fs_a_h 是 FS_A 常驻别名本体
+    // （app 域 serve fs 授能 + 监督重启源）——让位门同 bsh_geom 门并联；
+    // fs_client 在 GUI 形已于 launcher arm 归零，闭包内自然 no-op。
+    if bsh_geom.is_none() && LAUNCHER_LIVE.load(Ordering::Relaxed) == 0 {
         if fs_client != 0 {
             if berry_handle_close(fs_client) != 0 {
                 trap();
@@ -1328,7 +1486,7 @@ fn run_rootfs_child(console: Handle) {
         let mut ui_decl = 0usize;
         let mut ui_ok = 0usize;
         for i in 0..app_n {
-            let (launched, uface) = app_launch(
+            let (launched, uface, tail) = app_launch(
                 console,
                 fs_a_h,
                 &apps[i].id[..apps[i].id_len],
@@ -1339,6 +1497,12 @@ fn run_rootfs_child(console: Handle) {
                 icons,
                 views,
             );
+            // M-C γ-分·boot 批：同步消费收口尾（行为零漂——批窗口仍单
+            // app 串行收口，`APP ok n=` 谓词 = 拉起 ∧ 退出真码 0 不变）。
+            let launched = match tail {
+                Some(t) => app_reap_tail(console, t),
+                None => launched,
+            };
             if launched {
                 ok += 1;
             }
@@ -1398,11 +1562,13 @@ fn run_rootfs_child(console: Handle) {
         // A2-3 第五 extras：netd 服务端端。NET_A==0（vnet 未起 = EFI/裸
         // 拓扑）静默不装——bsh 侧 netd_h()==0 跳过同口径。槽序固定：netd
         // 只随 fs 之后入列（libc 按位落种 hs[6]→netd——前缀紧致会让 netd
-        // 落进 fs 槽 hs[5] 造成同槽不同名；fs 缺席而 vnet 在位的理论拓
-        // 扑里 netd 一并让位，现无此 recipe）。
+        // 落进 fs 槽 hs[5] 造成同槽不同名；fs 缺席而 vnet 在位时 netd 一并
+        // 让位——GUI-8 段② R1 判别器后此形 = **交互相专属**（BLK_OK≠0
+        // 才让位 fs：冻结相 bsh 三元皮现状零漂；交互相 bsh 退 [rootfs] 单
+        // 皮在 fs_selftest 客户端侧 park，新相自订契约）。
         let mut netd_dup = 0 as Handle;
         let net = NET_A.load(Ordering::Relaxed);
-        if net != 0 {
+        if fs_client != 0 && net != 0 {
             if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV, &mut netd_dup) != 0 {
                 trap();
             }
@@ -1421,6 +1587,10 @@ fn run_rootfs_child(console: Handle) {
             }
         }
         let mut gifts = [rootfs_dup, 0 as Handle, 0 as Handle, 0 as Handle];
+        // GUI-8 段② 让位路由（R1 判别器 v2——BLK_OK）：交互相（数据盘在
+        // 位）fs_client 已随 launcher extras take 迁入（arm 归零），此门走
+        // else = [rootfs] 单 gift；冻结相/rootfs 形 fs 未让位 → 四元/三元
+        // 满配现状零漂（同一门三相）。
         let gifts: &[Handle] = if fs_client != 0 {
             gifts[1] = fs_client;
             if netd_dup != 0 {
@@ -1482,7 +1652,13 @@ fn run_rootfs_child(console: Handle) {
             // 读者（防回复混流）。NET_A 是本表常驻别名（vnet 复用，ps/bc 等
             // 后续消费面），不随 bsh 关闭。fs_client/fs_a_h 的旧「置 0 收尾」
             // 随 §1.2 迁居成为死写（本块即函数末语）——删。
-            if fs_a_h != 0 && berry_handle_close(fs_a_h) != 0 {
+            // GUI-8 段②：GUI 形（LAUNCHER_LIVE≠0）fs_a_h 让位 FS_A 常驻
+            // 别名（NET_A 先例——app 域 serve fs 授能 + 监督重启源，不随
+            // bsh 关）；rootfs 形照旧关。
+            if fs_a_h != 0
+                && LAUNCHER_LIVE.load(Ordering::Relaxed) == 0
+                && berry_handle_close(fs_a_h) != 0
+            {
                 trap();
             }
         }
@@ -1491,8 +1667,12 @@ fn run_rootfs_child(console: Handle) {
 
 // ---- C-3 段①：ps 查询 RPC——拉起账本（表驱动真值源）+ ps_selftest ----
 
-/// ps 输出收集窗（16 行 × 最坏 ~29B 渲染 ≈ 464B；512B 帽）。
-static mut PS_WIN: [u8; 512] = [0; 512];
+/// ps 输出收集窗长（GUI-8 裁决五③ 随 18 帽抬：18 行 × 最坏 ~29B 渲染 ≈
+/// 522B > 旧 512B——溢出即 ps 行截断；640B 帽留余。零可观测漂移：窗只
+/// 是容量，行数由账本/协议决定）。
+const PS_WIN_LEN: usize = 640;
+/// ps 输出收集窗（18 行 × 最坏 ~29B 渲染 ≈ 522B；640B 帽）。
+static mut PS_WIN: [u8; PS_WIN_LEN] = [0; PS_WIN_LEN];
 
 /// 账本行（name 内联定宽——no_std 零分配；name_len=0 = 空槽）。
 #[derive(Clone, Copy)]
@@ -1669,8 +1849,9 @@ fn ps_selftest(console: Handle) {
     send_retry(ps_a, rep.as_ptr(), rl);
     // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 60s）。
     // SAFETY: svcmgr 单线程独占（PS_WIN，HEX_WIN 同纪律）。
-    let cap: &mut [u8] =
-        unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, 512) };
+    let cap: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, PS_WIN_LEN)
+    };
     let mut got = 0usize;
     let mut eof = false;
     while !eof {
@@ -1770,7 +1951,8 @@ fn ps_selftest(console: Handle) {
         eco_skip(b"ps roster");
         return;
     }
-    // ⑥ 标记：n = 窗内行数（≤ PS_MAX=16 → 恒 2 位十进制零填充）。
+    // ⑥ 标记：n = 窗内行数（≤ PS_MAX=18——GUI-8 裁决五抬帽随改 → 恒 2 位
+    //    十进制零填充）。
     let n = cap[..got].iter().filter(|&&b| b == b'\n').count();
     const _: () = assert!(PS_MAX < 100, "PS ok n= 2 位形态");
     let mut line = [0u8; 11];
@@ -1936,8 +2118,9 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
     send_retry(q_a, rep.as_ptr(), rl);
     // ③ 渲染行收齐（EOF = libc exit 族零长消息，d-3b；帽同 60s）。
     // SAFETY: svcmgr 单线程独占（PS_WIN 顺序复用，HEX_WIN 同纪律）。
-    let cap: &mut [u8] =
-        unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, 512) };
+    let cap: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PS_WIN) as *mut u8, PS_WIN_LEN)
+    };
     let mut got = 0usize;
     let mut eof = false;
     while !eof {
@@ -3006,16 +3189,23 @@ fn ui_face(
 /// 单 app 拉起（ADR #43 能力面 + §4.3 生命周期 v0：拉起 → 收口 → reap）。
 /// console=true → stdout 直打串口（子自证输出，无收集面）；false → 私有对
 /// 端作 fd1/2（hexyl 同形：`channel_pair` 的 spawn 侧交付、收集端留本表
-/// ——appquiet 静默活证）。**先 collect 后 reap**（PIPE 死锁序铁律——反序
-/// = 子堵收集队 + 父等退出三方互等）。reap 真码 0 才算过：argv0 断言错 →
-/// abort(134) → 非零 → 降级行 + `APP ok` 缺失 loud。任何失败 = `eco: app`
-/// 行 + false，svcmgr 存活续走（失败隔离：单 app 坏不连坐整批）。
+/// ——appquiet 静默活证）。reap 真码 0 才算过：argv0 断言错 → abort(134)
+/// → 非零 → 降级行 + `APP ok` 缺失 loud。任何失败 = `eco: app` 行 +
+/// false，svcmgr 存活续走（失败隔离：单 app 坏不连坐整批）。
 ///
 /// GUI-7：返回 `(拉起成败, UiFace)` 两独立谓词——[ui] 验证在 net 检后
 /// spawn 前（纯读零句柄，无清理面）；验证坏不拦 spawn（失败隔离）。
 ///
 /// SDK-1a：`fs_a` = fsmgr 预拉对 a 侧（§1.2 新序下 app 批窗口 svcmgr 仍
 /// 持 `fs_a_h`）；fs 授能不可达值 0 传参由 §5.2 `fs none` 降级路径消化。
+///
+/// GUI-8 段②（对抗审查 M-C 裁定——§5「reap 异步收尾不阻塞回执」落地）：
+/// 返回三元 `(拉起成败, UiFace, Option<AppSpawnTail>)`——spawn Ok 后
+/// **收口尾外移**（collect_eof 60s + reap 30s 不再内联）：boot 批同步
+/// 消费 `app_reap_tail`（行为零漂——批窗口仍单 app 串行收口）；SPAWN
+/// RPC 形把尾入 `APP_CHILDREN` 子表，稳态 loop 探活后异步兑现（回执
+/// 即刻——GUI app 分钟级活期不冻 echo/监督）。拉起成败 = spawn 面
+/// 谓词（退出真码归收口尾，不进本值）。
 fn app_launch(
     console: Handle,
     fs_a: Handle,
@@ -3026,31 +3216,31 @@ fn app_launch(
     mf: &mut [u8],
     icons: &mut [UiEntry],
     views: &mut [UiEntry],
-) -> (bool, UiFace) {
+) -> (bool, UiFace, Option<AppSpawnTail>) {
     let mut entry = [0u8; ENTRY_MAX];
     let sc = match bap_scan(step, mf, &mut entry, icons, views, bap_off, bap_len) {
         Ok(sc) => sc,
         Err(why) => {
             eco_app(console, id, why);
-            return (false, UiFace::Absent);
+            return (false, UiFace::Absent, None);
         }
     };
     let man = match berry_manifest::parse(&mf[..sc.mf_len]) {
         Ok(m) => m,
         Err(e) => {
             eco_app(console, id, e.reason_str().as_bytes());
-            return (false, UiFace::Absent);
+            return (false, UiFace::Absent, None);
         }
     };
     // 双守卫：manifest.id ↔ .bap 文件名（走查名 = 真理源）、manifest.entry
     // ↔ 包内条目名（mkapp 门禁 3 的消费侧镜像——rootfs 可被拼装）。
     if man.id.as_bytes() != id {
         eco_app(console, id, b"id mismatch");
-        return (false, UiFace::Absent);
+        return (false, UiFace::Absent, None);
     }
     if man.entry.as_bytes() != &entry[..sc.entry_len] {
         eco_app(console, id, b"entry mismatch");
-        return (false, UiFace::Absent);
+        return (false, UiFace::Absent, None);
     }
     // SDK-1a §5.2 步骤 1：compat min 装载期检查（ADR #55 工具链三值域的
     // 运行时执法点）。min > SDK_CURRENT = 本系统比包声称的最低线还老 →
@@ -3060,7 +3250,7 @@ fn app_launch(
     if let Some(c) = man.compat {
         if c.min > SDK_CURRENT {
             eco_app(console, id, b"compat min"); // 10B ≤ 24B
-            return (false, UiFace::Absent);
+            return (false, UiFace::Absent, None);
         }
     }
     // SDK-1a §5.2 步骤 2：net 词 loud 拒（档 (b)——schema/mkapp 收、appd
@@ -3068,7 +3258,7 @@ fn app_launch(
     // 同样零清理直退（console 两态尚未分岔）。
     if man.net.is_some() {
         eco_app(console, id, b"net unserved"); // 11B ≤ 24B
-        return (false, UiFace::Absent);
+        return (false, UiFace::Absent, None);
     }
     // GUI-7：[ui] 验证（net 检后、console 分岔前——纯读零句柄零清理；
     // 失败隔离：Bad 只打 diag 不拦 spawn，与下方拉起链独立计谓词）。
@@ -3110,7 +3300,7 @@ fn app_launch(
             {
                 trap();
             }
-            return (false, uface);
+            return (false, uface, None);
         }
         if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
             eco_app(console, id, b"fs dup"); // 6B ≤ 24B
@@ -3119,7 +3309,7 @@ fn app_launch(
             {
                 trap();
             }
-            return (false, uface);
+            return (false, uface, None);
         }
         if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
             // 半途失败：rootfs_dup 已成，先试关再走 out 对清理。
@@ -3130,7 +3320,7 @@ fn app_launch(
             {
                 trap();
             }
-            return (false, uface);
+            return (false, uface, None);
         }
     }
     // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）；
@@ -3180,33 +3370,655 @@ fn app_launch(
             // 所有）——本表勿关（旧值已失效，关 = -EBADF；bsh arm 同款
             // 注释义务）。
             ps_reg(id, psp::STATE_ALIVE, 0);
-            if out_s != 0 {
-                // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
-                // RIGHT_SEND 随 env 块迁移），原值 c 留本表——先收 EOF（d-3b
-                // 写侧对称面——libc exit 族 EOF 先行，Plan B 起 abort 亦然）
-                // 再关两端（hexyl 臂同款：收集端 + 本表原值副本）。帽内未到
-                // = 断链/卡死。
-                if !collect_eof(out_s) {
-                    eco_app(console, id, b"no EOF");
-                }
-                if berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0 {
-                    trap();
-                }
-            }
-            match child.reap() {
-                Ok(0) => {
-                    ps_exit(id, 0);
-                    return (true, uface);
-                }
-                Ok(c) => {
-                    ps_exit(id, c);
-                    eco_app(console, id, b"exit code");
-                }
-                Err(()) => eco_app(console, id, b"app reap"),
-            }
+            // M-C γ-分：收口尾不在此兑现——原值打包随三元返（boot 批同步
+            // 消费 / SPAWN 形入 APP_CHILDREN 异步）。id 拷贝 owned（tail
+            // 存活越出本帧，&id 借用撑不过——AppSlot 同款 [u8; ID_MAX]
+            // 定宽）。
+            let mut tid = [0u8; ID_MAX];
+            tid[..id.len()].copy_from_slice(id);
+            return (
+                true,
+                uface,
+                Some(AppSpawnTail {
+                    child,
+                    out_s,
+                    // console=true：子表持 console 原值，本表零收口面（
+                    // 勿关 console）；console=false：原值 c 留尾。
+                    stdout_c: if out_s != 0 { stdout } else { 0 },
+                    id: tid,
+                    id_len: id.len(),
+                    eof_seen: false,
+                }),
+            );
         }
     }
-    (false, uface)
+    (false, uface, None)
+}
+
+/// SPAWN 收口尾载荷（M-C γ-分）：`app_launch` spawn Ok 后的异步收口包——
+/// boot 批同步消费、SPAWN RPC 形入 `APP_CHILDREN` 子表由稳态探活兑现。
+struct AppSpawnTail {
+    child: ChildHandles,
+    out_s: Handle,
+    stdout_c: Handle, // 0 = console=true（子表即 console，本表零收口面）
+    id: [u8; ID_MAX],
+    id_len: usize,
+    /// 稳态 drain 已消费 EOF 帧（`app_supervise` 管堵防线吞掉的 0 长帧
+    /// 记账——reap 侧 `collect_eof` 免死等已被消费的 EOF）。boot 批恒
+    /// false（同步路径自收自证）。
+    eof_seen: bool,
+}
+
+/// `AppSpawnTail` 兑现面（M-C γ-分下半）：collect_eof → 关对 → reap →
+/// ps_exit——与段② 前 inline 形逐句同源（boot 批行为零漂义务）。返回 =
+/// 「退出码 0」谓词（原 `(true, uface)` 首值语义：true 仅当 reap Ok(0)）。
+fn app_reap_tail(console: Handle, t: AppSpawnTail) -> bool {
+    let AppSpawnTail { child, out_s, stdout_c, id, id_len, eof_seen } = t;
+    let id = &id[..id_len];
+    if out_s != 0 && !eof_seen {
+        // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
+        // RIGHT_SEND 随 env 块迁移），原值 c 留本表——先收 EOF（d-3b
+        // 写侧对称面——libc exit 族 EOF 先行，Plan B 起 abort 亦然）
+        // 再关两端（hexyl 臂同款：收集端 + 本表原值副本）。帽内未到
+        // = 断链/卡死。
+        if !collect_eof(out_s) {
+            eco_app(console, id, b"no EOF");
+        }
+        if berry_handle_close(out_s) != 0 || berry_handle_close(stdout_c) != 0 {
+            trap();
+        }
+    }
+    match child.reap() {
+        Ok(0) => {
+            ps_exit(id, 0);
+            true
+        }
+        Ok(c) => {
+            ps_exit(id, c);
+            eco_app(console, id, b"exit code");
+            false
+        }
+        Err(()) => {
+            eco_app(console, id, b"app reap");
+            false
+        }
+    }
+}
+
+// ---- GUI-8 段②：app 域常驻 serve + launcher 装配/监督（裁决二/四-d）----
+
+/// launcher 装配体（boot arm 与监督一次重启共用形）。**契约**（对抗审查
+/// M0 裁定——让位 = 真实迁移点制）：`fs_gift` 由调用方持有；Ok 且
+/// fs_gift≠0 = extras[1] take 迁入（不可 close）；**余路（门闭/cpio 缺/
+/// Err）原样归还不动**（本函数只 close 自建端：wm fresh/app 对两端/input
+/// dup——调用方局部零收尾义务两形同口不变）；返回 true = 装配成立
+/// （LAUNCHER_CHILD/APP_SVC/LAUNCHER_LIVE 已落值）。三源：wm =
+/// WMD_CLI_DUP 常驻源**现 dup**（NET_A 形——重启可行性的结构前提）；
+/// app 对 = `channel_pair()` options=0（intent 借入链激活——input 域台账
+/// 6 同款，GUI INTERACTIVE 面 v1 唯一可达形态，ADR #42）+ input =
+/// INPUT_A 现 dup（SEND|RECV——bsh netd_dup 同口径）。前缀截断（bsh
+/// netd 条款镜像）：fs 缺 → 恰 [wm]（**冻结十段相实形**——R1 判别器在
+/// arm 门外定局）；input 缺 → [wm, fs, app]（交互相 tablet 缺席角）。
+fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
+    let wmd_dup = WMD_CLI_DUP.load(Ordering::Relaxed);
+    if wmd_dup == 0 {
+        // 门闭（rootfs 形；boot/restart 调用点均已在门外——本支防御面，
+        // fs_gift 归还不动）。
+        return false;
+    }
+    let (data_off, data_len) = match cpio_find(H_ROOTFS, b"bin/berry-launcher") {
+        Some(g) => g,
+        None => {
+            // cpio 缺 berry-launcher（手工裁剪镜像面）：零新行（gfxdemo
+            // cpio 缺分支同款）——fs_gift 归还不动（bsh 照得 fs，M0 角）。
+            return false;
+        }
+    };
+    // wm fresh 别名（SEND|RECV——wmd arm w_dup 同口径）。失败 trap：dup 源
+    // 在表却失败 = 内核资源面异常，此刻零清理面（fsmgr fs_dup 先例）。
+    let mut wm_fresh: Handle = 0;
+    if berry_handle_duplicate(wmd_dup, RIGHT_SEND | RIGHT_RECV, &mut wm_fresh) != 0 {
+        trap();
+    }
+    // app 域通道对（fs 在位才建——前缀 [wm] ⊂ [wm,fs,app] 截断纪律；对端
+    // extras[2] take 迁入，本端 spawn Ok 才定局落 APP_SVC）。
+    let mut app_svc: Handle = 0;
+    let mut app_cli: Handle = 0;
+    if fs_gift != 0 {
+        let (a, b) = channel_pair();
+        app_svc = a;
+        app_cli = b;
+    }
+    // input dup（[wm,fs,app] 全在位才装——同前缀纪律；INPUT_A==0 = inputd
+    // 未起静默截断。冻结相 inputd 起而 tablet 缺席（INPUT_A≠0）也到不了
+    // 此——fs_gift 已被 R1 v2 门截为 0，前缀纪律先拦）。
+    let mut in_dup: Handle = 0;
+    let inp = INPUT_A.load(Ordering::Relaxed);
+    if fs_gift != 0 && inp != 0 {
+        if berry_handle_duplicate(inp, RIGHT_SEND | RIGHT_RECV, &mut in_dup) != 0 {
+            trap();
+        }
+    }
+    let mut lgifts = [0 as Handle; 4];
+    lgifts[0] = wm_fresh;
+    let lgifts: &[Handle] = if fs_gift == 0 {
+        &lgifts[..1]
+    } else {
+        lgifts[1] = fs_gift;
+        lgifts[2] = app_cli;
+        if in_dup != 0 {
+            lgifts[3] = in_dup;
+            &lgifts[..4]
+        } else {
+            &lgifts[..3]
+        }
+    };
+    match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: b"bin/berry-launcher",
+            data_off,
+            data_len,
+            stdout: console,
+            // v0 park 形 8 页；段③ berry-ui 树实测定值（草案 R5 栈面）。
+            stack_pages: 8,
+            // 占位 dummy（空 feeder 立即 EOF；berry-exec assert：extras 非
+            // 空须 stdin 槽在位——fsmgr/vnet 同款）。
+            stdin_feed: Some(&[]),
+            stdin_handle: None,
+            args: &[],
+            extra_gifts: lgifts,
+            mmio_vmo: None,
+            mmio_va: 0,
+            intent: 0,
+        },
+    ) {
+        Ok(child) => {
+            ps_reg(b"launcher", psp::STATE_ALIVE, 0); // 常驻入账（帽 18 同刀，见 arm 注）
+            // app 域服务端端定局：换新收旧（重启路旧值恒已被 supervise
+            // 清零——swap-close 防御面，可达路径零触发）。
+            let old = APP_SVC.swap(app_svc, Ordering::Relaxed);
+            if old != 0 && berry_handle_close(old) != 0 {
+                trap();
+            }
+            // SAFETY: svcmgr 单线程独占（boot arm / 稳态 loop 不交叠——
+            // PS_TAB 同纪律）。
+            unsafe { LAUNCHER_CHILD = Some(child); }
+            LAUNCHER_LIVE.store(1, Ordering::Relaxed);
+            true
+        }
+        Err(()) => {
+            // Err 全在 env send 前——四类 fresh/交接端无一被 take，自建端
+            // 全量回收防表槽泄漏（wmd arm Err 路同款枚举）；**fs_gift 归还
+            // 不动**（M0 契约：调用方持有，只 close 本函数自建端）。
+            if berry_handle_close(wm_fresh) != 0 {
+                trap();
+            }
+            if app_svc != 0
+                && (berry_handle_close(app_svc) != 0 || berry_handle_close(app_cli) != 0)
+            {
+                trap();
+            }
+            if in_dup != 0 && berry_handle_close(in_dup) != 0 {
+                trap();
+            }
+            eco_line(console, b"launcher spawn");
+            false
+        }
+    }
+}
+
+/// app 域 serve 单帧泵（稳态 loop 每轮先收干）：APP_SVC==0 = no-op 零开销
+/// （rootfs/裸跑/收口形——rootfs 相零漂的结构保证）；空队 -EAGAIN →
+/// false（poll-first 的 poll 半）；命中帧两段分派——LIST 走 1B 门
+/// （`parse_request` 恰长执法只面 LIST 空），SPAWN 全帧走
+/// `parse_spawn_request`（25B + NUL 补齐纪律），余者 1B `[ST_BAD]`
+/// （appproto 烘焙线不变量：非 OK 应答恒 1B）。非 -EAGAIN 错码 trap
+/// （断链/野柄 = 死亡面——guifbd serve 同口径，v1 无对端关闭检测）。
+fn app_serve_one(console: Handle) -> bool {
+    let svc = APP_SVC.load(Ordering::Relaxed);
+    if svc == 0 {
+        return false;
+    }
+    let mut buf = [0u8; appp::FRAME_MAX];
+    let mut nbytes = buf.len();
+    let mut hs = [0 as Handle; 8]; // 随行收口容量 = channel 上限 8（A2-3）
+    let mut nh = hs.len();
+    let s = berry_channel_recv(svc, buf.as_mut_ptr(), &mut nbytes, hs.as_mut_ptr(), &mut nh);
+    if s == BERRY_ERR_AGAIN {
+        return false;
+    }
+    if s != 0 {
+        trap();
+    }
+    // 随行柄面零实施（v1 wire 无此面）：协议外令牌已入本表——全量丢弃
+    // 防表槽泄漏（collect_eof 同款纪律），帧本体照常按字节分派。
+    for i in 0..nh {
+        let _ = berry_handle_close(hs[i]);
+    }
+    if nbytes == appp::REQUEST_LEN
+        && appp::parse_request(&buf, nbytes) == Some(appp::OP_APP_LIST_REQ)
+    {
+        app_serve_list(console, svc);
+    } else if buf[0] == appp::OP_APP_SPAWN_REQ {
+        // **op 门先行**（对抗审查 M-B 裁定）：parse_spawn_request 只验帧长
+        // + NUL 补齐、op 字节不参与（段① 冻结面）——无此门则任意 op 的
+        // 25B 合法补齐帧（含 LIST 尾随形/APP_EVENT 留位/野 op）都被收作
+        // SPAWN = 冻结拒面 [ST_BAD] 被反转成执行动作。
+        match appp::parse_spawn_request(&buf, nbytes) {
+            Some(id) => app_serve_spawn(console, svc, id),
+            None => {
+                let n = appp::encode_err_reply(&mut buf);
+                send_retry(svc, buf.as_ptr(), n);
+            }
+        }
+    } else {
+        // 畸形帧（含 1B 裸 SPAWN 头——无 id 段 = 编不出合法请求）：拒面。
+        let n = appp::encode_err_reply(&mut buf);
+        send_retry(svc, buf.as_ptr(), n);
+    }
+    true
+}
+
+/// APP_LIST 应答流（裁决二 + §5）：N × ENTRY{id,label,w,h,blob_len} + 每
+/// 条目 blob 192B 分片（`ChunkStream` 流式——与 `ChunkEncoder` 帧字节
+/// 等价（host 测钉），idx 单源纪律同源；零整读窗 = 单页墙修复形）+ 终帧
+/// END{n}。数据源 = boot 走查记账表（APP_SLOTS_TBL[..APP_ACCOUNT_N]——
+/// 单一事实源；cpio_find 直查会是第二走查面）+ serve 期现查 bap_scan/
+/// manifest（四静态窗复用——walk 期借用已随 run_rootfs_child 返回消亡，
+/// 单线程零交叠）。**失败隔离逐条目**：scan/parse 失败 = eco 降级行 +
+/// 跳过（END n 只计已发——「半张清单不进渲染面」由解码侧 idx/对账执法，
+/// 服务侧诚实计数）；icon 面降级合法：头坏/越 64KiB 帽 → w/h=blob_len=0
+///（launcher 回默认图标，id/label 面仍完整）。label 缺席回填 id 本串
+///（appproto 头注哲学：缺席语义归数据源不进 wire）。
+fn app_serve_list(console: Handle, svc: Handle) {
+    // SAFETY: 稳态 serve 期单线程独占四窗 + 槽表（walk 已毕；run_rootfs_
+    // child 的借用已消亡）——PS_WIN/HEX_WIN 同纪律。
+    let step: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(STEP_WIN) as *mut u8, 512)
+    };
+    let mf: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_MF_WIN) as *mut u8,
+            MANIFEST_MAX,
+        )
+    };
+    let icons: &mut [UiEntry] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_ICON_WIN) as *mut UiEntry,
+            UI_ENTRIES,
+        )
+    };
+    let views: &mut [UiEntry] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_VIEWS_WIN) as *mut UiEntry,
+            UI_ENTRIES,
+        )
+    };
+    let account = unsafe { core::ptr::addr_of!(APP_ACCOUNT_N).read() };
+    let tbl: &[AppSlot] = unsafe {
+        core::slice::from_raw_parts(core::ptr::addr_of!(APP_SLOTS_TBL) as *const AppSlot, APP_SLOTS)
+    };
+    let mut frame = [0u8; appp::FRAME_MAX];
+    let mut sent = 0u32;
+    for i in 0..account {
+        let id = &tbl[i].id[..tbl[i].id_len];
+        let mut entry_name = [0u8; ENTRY_MAX];
+        let sc = match bap_scan(
+            step,
+            mf,
+            &mut entry_name,
+            icons,
+            views,
+            tbl[i].bap_off,
+            tbl[i].bap_len,
+        ) {
+            Ok(sc) => sc,
+            Err(_) => {
+                eco_app(console, id, b"list skip"); // 服务期扫描败 = 走查后漂移面
+                continue;
+            }
+        };
+        let man = match berry_manifest::parse(&mf[..sc.mf_len]) {
+            Ok(m) => m,
+            Err(_) => {
+                eco_app(console, id, b"list skip");
+                continue;
+            }
+        };
+        // label：manifest [ui].label（parse 执法非空 ≤32 ≤ wire 64）缺席回填
+        // id 本串——桌显示名恒在。
+        let label: &[u8] = match man.ui.and_then(|u| u.label) {
+            Some(l) => l.as_bytes(),
+            None => id,
+        };
+        // icon：声明 → 包内条目 + BYI1 头镜像 ui_face 执法——**零整读窗**
+        //（单页墙修复：64KiB 静态整读窗会被 elf2flat 补零物化进平像（.bss
+        // 文件侧兑现），143360B 顶破 131072 帽——改只验头 10B + `ChunkStream`
+        // VMO 逐 ≤192B 直读进帧载荷域，blob 体零驻内存；帧字节与
+        // `ChunkEncoder` 等价由 host 测钉）。任何不符 = 合法降级面（
+        // 0/0/0——boot 期 APPUI 已验过健康路，此处降级只覆盖 serve 期漂移/
+        // 越帽形）；流中途读败 = 该帧零填充 + eco 降级行（流长恒 = 声明
+        // ——解码侧 idx/对账执法不破；中途败实际仅 H_ROOTFS 亡一途，
+        // send_retry 同死 = 诊断行多数走不到，防御面在）。
+        let mut icon_w = 0u32;
+        let mut icon_h = 0u32;
+        let mut icon_src: Option<(u64, u64)> = None; // (VMO 基址, 声明长)
+        if let Some(want) = man.ui.and_then(|u| u.icon) {
+            if let Some(e) = ui_find(&icons[..sc.icon_n], want.as_bytes()) {
+                let mut hdr = [0u8; 10];
+                let len_ok = e.len >= 10 && (e.len as usize) <= APP_ICON_BLOB_MAX;
+                if len_ok
+                    && berry_vmo_read(H_ROOTFS, hdr.as_mut_ptr(), tbl[i].bap_off + e.off, 10) == 0
+                {
+                    let w = u16::from_le_bytes([hdr[6], hdr[7]]);
+                    let h = u16::from_le_bytes([hdr[8], hdr[9]]);
+                    if &hdr[..4] == b"BYI1"
+                        && hdr[4] == 1
+                        && hdr[5] == 0
+                        && w >= 1
+                        && h >= 1
+                        && w <= APP_ICON_DIM_MAX
+                        && h <= APP_ICON_DIM_MAX
+                        && u32::from(w) * u32::from(h) <= APP_ICON_PIXELS_MAX
+                    {
+                        icon_w = u32::from(w);
+                        icon_h = u32::from(h);
+                        icon_src = Some((tbl[i].bap_off + e.off, e.len));
+                    }
+                }
+            }
+        }
+        let blob_len = match icon_src {
+            Some((_, l)) => l as u32,
+            None => 0,
+        };
+        // 条目头 + blob 分片 + 计数（encode None = id/label 野值——walk/parse
+        // 双侧执法下理论不可达，防御跳过不炸 serve：单条目坏不连坐）。
+        match appp::encode_entry(&mut frame, id, label, icon_w, icon_h, blob_len) {
+            Some(n) => send_retry(svc, frame.as_ptr(), n),
+            None => {
+                eco_app(console, id, b"list skip");
+                continue;
+            }
+        }
+        if let Some((base, len)) = icon_src {
+            let mut stream = appp::ChunkStream::new(len as usize);
+            let mut read_ok = true;
+            let mut fill = |dst: &mut [u8], off: usize| -> bool {
+                if berry_vmo_read(
+                    H_ROOTFS,
+                    dst.as_mut_ptr(),
+                    base + off as u64,
+                    dst.len(),
+                ) == 0
+                {
+                    true
+                } else {
+                    read_ok = false;
+                    false
+                }
+            };
+            while let Some(n) = stream.next(&mut frame, &mut fill) {
+                send_retry(svc, frame.as_ptr(), n);
+            }
+            if !read_ok {
+                // 13B ≤ 24B eco 帽；条目仍计 sent（头已发，降级可见化）。
+                eco_app(console, id, b"icon partial");
+            }
+        }
+        sent += 1;
+    }
+    let n = appp::encode_list_end(&mut frame, sent);
+    send_retry(svc, frame.as_ptr(), n);
+}
+
+/// APP_SPAWN 处置（§5）：id → 记账表定位（boot 走查单源）→ **槽位预检** →
+/// `app_launch` 全守卫复用（bap_scan→manifest→compat→ui→fs 授能→spawn
+/// ——裁决二论据①「守卫单源」的字面落实）→ ACK 耦合律（ok=1 ⇒ err=0）。
+/// **M-C 真异步形**（对抗审查后落地，替代 v1 同步现场裁）：app_launch 三元
+/// 返尾 `Some(t)` = 拉起成立即刻入 `APP_CHILDREN`、ACK 先发（collect_eof
+/// 60s + reap 30s 归稳态 `app_supervise` 异步兑现——回执不冻 echo/监督，
+/// §5「reap 异步收尾不阻塞回执」冻结款字面兑现；同步形的「ACK ≥90s 毒化
+/// 下轮请求」病灶随消）。ok=1 语义 = **拉起成立**（spawn 面），退出真码归
+/// eco: app 行 + ps 账本异步可见。err 值域：1 = 守卫/拉起败/槽满（细节归
+/// eco: app 行，槽满 = "app slots"）、2 = id 不在册。console 参数 = svcmgr
+/// console（manifest console=true 的 app 诊断直打串口；false 走私有对收集
+/// ——boot 批同语义，零新面）。
+fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
+    let mut frame = [0u8; appp::FRAME_MAX];
+    let account = unsafe { core::ptr::addr_of!(APP_ACCOUNT_N).read() };
+    // SAFETY: 同 app_serve_list（只读面）。
+    let tbl: &[AppSlot] = unsafe {
+        core::slice::from_raw_parts(core::ptr::addr_of!(APP_SLOTS_TBL) as *const AppSlot, APP_SLOTS)
+    };
+    let mut hit: Option<(u64, u64)> = None;
+    for i in 0..account {
+        if &tbl[i].id[..tbl[i].id_len] == id {
+            hit = Some((tbl[i].bap_off, tbl[i].bap_len));
+            break;
+        }
+    }
+    // 槽位预检在 spawn 前（M-C）：满表先拒——不拉起即无收口尾，防占位
+    // 失败面；空槽序号此刻锁定（单线程独占，serve 期间无并发插槽）。
+    let free: Option<usize> = {
+        // SAFETY: 只读扫描面（同表读写皆单线程 serve/监督序）。
+        let children: &[Option<AppSpawnTail>] = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::addr_of!(APP_CHILDREN) as *const Option<AppSpawnTail>,
+                APP_SPAWN_LIVE_MAX,
+            )
+        };
+        (0..APP_SPAWN_LIVE_MAX).find(|&i| children[i].is_none())
+    };
+    let (ok, err) = match (hit, free) {
+        (None, _) => (false, 2), // id 不在册（launcher 注册表外的串号/伪造）
+        (Some(_), None) => {
+            // 槽满：拒新不拒旧（表内活 app 照常监督）。9B ≤ 24B eco 帽。
+            eco_app(console, id, b"app slots");
+            (false, 1)
+        }
+        (Some((off, len)), Some(slot)) => {
+            // SAFETY: 同 app_serve_list——四窗 serve 期独占复用。
+            let step: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(STEP_WIN) as *mut u8,
+                    512,
+                )
+            };
+            let mf: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(APP_MF_WIN) as *mut u8,
+                    MANIFEST_MAX,
+                )
+            };
+            let icons: &mut [UiEntry] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(APP_ICON_WIN) as *mut UiEntry,
+                    UI_ENTRIES,
+                )
+            };
+            let views: &mut [UiEntry] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(APP_VIEWS_WIN) as *mut UiEntry,
+                    UI_ENTRIES,
+                )
+            };
+            let (_, _, tail) = app_launch(
+                console,
+                FS_A.load(Ordering::Relaxed),
+                id,
+                off,
+                len,
+                step,
+                mf,
+                icons,
+                views,
+            );
+            match tail {
+                Some(t) => {
+                    // 拉起成立：尾入子表（slot 由预检锁定），ACK 即刻——
+                    // 收口归稳态 app_supervise（M-C 异步形）。
+                    // SAFETY: 单线程独占写面（slot 此刻必空——预检后无
+                    // 第二插入点）；tuple 首值谓词与 tail 同源（Ok 臂
+                    // 恒 (true, _, Some)，Err 臂恒 (false, _, None)）。
+                    let children: &mut [Option<AppSpawnTail>] = unsafe {
+                        core::slice::from_raw_parts_mut(
+                            core::ptr::addr_of_mut!(APP_CHILDREN)
+                                as *mut Option<AppSpawnTail>,
+                            APP_SPAWN_LIVE_MAX,
+                        )
+                    };
+                    children[slot] = Some(t);
+                    (true, 0)
+                }
+                // 拉起败（含守卫拒）：预检槽位自然空置，无需归还动作。
+                None => (false, 1),
+            }
+        }
+    };
+    let n = match appp::encode_spawn_ack(&mut frame, ok, err) {
+        Some(n) => n,
+        None => trap(), // 耦合律执法面——本侧构造恒合法，不可达防御
+    };
+    send_retry(svc, frame.as_ptr(), n);
+}
+
+/// launcher 监督探活（裁决四-d 最小件）：`berry_object_wait_one(hp,
+/// TERMINATED, deadline=0)` **poll 形**（berry-sys 文档形——非阻塞单点
+/// 查询，选形依据：稳态 loop 每轮调用，阻塞形会卡死 echo 紧环；hp 恒由
+/// LAUNCHER_CHILD 持有，与 guifbd 三路轮询同零成本量级）。命中 = 崩溃面：
+/// reap（TERMINATED 已落 → 内部 wait 瞬回）→ ps_exit 账本收口 → eco 行
+/// loud（**非 smoke 标记**——崩溃本是异常面，十段对拍不承crash行）→
+/// APP_SVC 收口（对端已死，serve 面撤；已 close 值不可复用 → swap 清零）→
+/// LAUNCHER_LIVE 落 0（bsh/fs 已在早前路径定局，此标志只作相真值）→
+/// **一次重启帽**（LAUNCHER_RESTARTED swap 惯取——帽后再生崩溃 = 终报
+/// 不再试：循环重启风暴比不重启更伤稳态，kill criteria 5 的对面）。重
+/// 启 fs gift = FS_A 常驻别名现 dup（无 fs 装配形 FS_A==0 → 0 直传 =
+/// [wm] 截断形，同 boot 契约）。
+fn launcher_supervise(console: Handle) {
+    let hp = match unsafe { &*core::ptr::addr_of!(LAUNCHER_CHILD) } {
+        Some(c) => c.hp,
+        None => return, // 无 launcher（rootfs 形/已收口）——no-op 零开销
+    };
+    let mut obs = 0u64;
+    let s = berry_object_wait_one(hp, SIGNAL_TERMINATED, 0, &mut obs);
+    if s == BERRY_ERR_AGAIN {
+        return; // 存活常态（poll 未命中）
+    }
+    if s != 0 {
+        trap(); // poll 野柄 = 表异常（死亡面——guifbd 同口径）
+    }
+    // 崩溃面：reap 全链收口（wait 已命中 → 内部 wait 瞬回；&self 借用形——
+    // 柄集由其内部收链，Err = 句柄留存有界泄漏的既定政策，账本仍收口）。
+    // SAFETY: 同上借用纪律（单线程独占）。
+    let code = match unsafe { (&*core::ptr::addr_of!(LAUNCHER_CHILD)).as_ref() } {
+        Some(c) => match c.reap() {
+            Ok(c) => c,
+            Err(()) => 1, // 读码失败防御面——非零标记（eco 行已响）
+        },
+        None => return, // 理论不可达（hp 借用自 Some 支）——防御直退
+    };
+    // SAFETY: 单线程独占（稳态 loop 内，装配/serve 不交叠）。
+    unsafe { LAUNCHER_CHILD = None; }
+    ps_exit(b"launcher", code);
+    eco_line(console, b"launcher died");
+    let old = APP_SVC.swap(0, Ordering::Relaxed);
+    if old != 0 && berry_handle_close(old) != 0 {
+        trap();
+    }
+    LAUNCHER_LIVE.store(0, Ordering::Relaxed);
+    if LAUNCHER_RESTARTED.swap(1, Ordering::Relaxed) == 0 {
+        let mut fs_dup: Handle = 0;
+        // R1 判别器 v2 同门（boot arm 同款）：冻结相 BLK_OK=0 → 重启装配
+        // 仍 [wm] 截断形——fs_a 别名 dup 交 launcher = park 骨架不读 fs 暂
+        // 无害，段③ 布局读起即成 bsh↔launcher 双读者混流面（fsproto 串行
+        // 无请求号——C-1 刀 3 同款回混危害类），形契约须一次立正。
+        let fs_a = if BLK_OK.load(Ordering::Relaxed) != 0 {
+            FS_A.load(Ordering::Relaxed)
+        } else {
+            0
+        };
+        if fs_a != 0 && berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+            eco_line(console, b"launcher fs");
+            return;
+        }
+        if !launcher_assemble(console, fs_dup) {
+            // 归还契约配套：败路 fs_dup 原样退回 = 本路自持（boot arm 调用
+            // 点 fs_client 流 bsh，本路无下游）——显式 close 防表槽泄漏。
+            if fs_dup != 0 && berry_handle_close(fs_dup) != 0 {
+                trap();
+            }
+            eco_line(console, b"launcher restart");
+        }
+    }
+}
+
+/// SPAWN 活子探活（M-C γ-分·稳态侧）：逐槽两件事——① 机会性非阻塞
+/// drain `out_s`（chatty-app 管堵防线：通道队列满则子写阻塞、永不达退出
+/// = 槽位僵尸；EOF 帧（0 长）吞到即止并记 `eof_seen`——reap 侧
+/// `collect_eof` 免死等已被本面消费的 EOF）；② poll `wait_one(hp,
+/// TERMINATED, 0)` 命中 = 尾出表兑现 `app_reap_tail`（EOF/TERMINATED 先
+/// 后序由退出路径保证——EOF 排队先于进程终结可观测，命中面 collect 帽内
+/// 瞬收）+ 槽位回 None。poll 形选形同 `launcher_supervise`（稳态 loop
+/// 每轮调用，阻塞形卡死 echo 紧环）；表扫 O(APP_SPAWN_LIVE_MAX)=4。
+fn app_supervise(console: Handle) {
+    // SAFETY: APP_CHILDREN 单线程独占（serve 插入/本探活/稳态并等皆顺序
+    // 不交叠——PS_TAB 同纪律）。
+    let children: &mut [Option<AppSpawnTail>] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(APP_CHILDREN) as *mut Option<AppSpawnTail>,
+            APP_SPAWN_LIVE_MAX,
+        )
+    };
+    for i in 0..APP_SPAWN_LIVE_MAX {
+        // take→回表形：drain 要 &mut t（eof_seen 记账），借用不撑过循环尾。
+        let mut t = match children[i].take() {
+            Some(t) => t,
+            None => continue,
+        };
+        if t.out_s != 0 && !t.eof_seen {
+            // drain（collect_eof 骨架的非阻塞形：数据帧丢弃、随行 handle
+            // 全量 close 丢弃——P6 A-4 同款；非 -EAGAIN 错码 = 链断 trap）。
+            let mut msg = [0u8; 256];
+            let mut hh = [0 as Handle; 6];
+            loop {
+                let mut nb = msg.len();
+                let mut nh = hh.len();
+                let s = berry_channel_recv(
+                    t.out_s,
+                    msg.as_mut_ptr(),
+                    &mut nb,
+                    hh.as_mut_ptr(),
+                    &mut nh,
+                );
+                if s == BERRY_ERR_AGAIN {
+                    break;
+                }
+                if s != 0 {
+                    trap();
+                }
+                for k in 0..nh {
+                    let _ = berry_handle_close(hh[k]); // 多带 handle：丢弃勿 trap
+                }
+                if nb == 0 {
+                    t.eof_seen = true; // EOF 已消费——reap 面免再等
+                    break;
+                }
+            }
+        }
+        let mut obs = 0u64;
+        let s = berry_object_wait_one(t.child.hp, SIGNAL_TERMINATED, 0, &mut obs);
+        if s == BERRY_ERR_AGAIN {
+            children[i] = Some(t); // 存活常态——回表续监督
+            continue;
+        }
+        if s != 0 {
+            trap(); // poll 野柄 = 表异常（launcher_supervise 同口径）
+        }
+        // 退出面：尾已在手（槽位 take 后即空）——收口兑现。
+        app_reap_tail(console, t);
+    }
 }
 
 /// P6 A-8c：vnet 服务消费自验——`DNS_QUERY("localhost")` 严格串行 RPC 往返

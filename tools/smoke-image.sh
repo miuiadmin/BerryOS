@@ -132,6 +132,10 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # GUI-5 对账：wmd 入册后 EFI 相 PS ok n= 实值 15→16——恰满旧帽（16）帽内
 # 不丢；若实为 17 则 S1 抬帽（16→17）已兜——差异即 rootfs 差 1 的同源定位
 # 线索，停刀对账；rootfs 相 wmd 不在册（EFI-only 门）实值 13 不变）。
+# GUI-8 段② 对账：launcher 入册（ps_reg ALIVE 不 reap）后 EFI 相 PS ok n=
+# 实值 16→17——不抬帽先入账 = 表 17 恰满丢 berryctl 自身行（裁决五两件
+# 同刀必做，抬帽 17→18 已兜——REPLY_MAX 254≤256 帧帽内）；rootfs 相
+# launcher 不在册（EFI-only 门）实值不变。
 # C-4 起 +TAB ok（bsh tab_selftest 九步——FakeSrc 状态机 + 真源两钉，零
 # fs 盘面纯 RAM/cpio 直读，EFI 路可达；断言走 assert_marker 特例防
 # TAGTAB ok 子串假阳性）。

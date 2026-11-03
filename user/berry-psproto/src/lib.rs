@@ -51,8 +51,12 @@ pub const STATE_SPAWNFAIL: u8 = 3;
 /// 7B 入册）。
 pub const NAME_MAX: usize = 8;
 /// 行数帽（账本构造上界——常驻 + 启动批 + ps 自身；恰 [`MAX_ENTRIES`] 同源。
-/// GUI-5 ADR #61 义务①：16→17 收 gui-wmd，不留裕——18 = 无 ADR 修订的偏离）。
-pub const MAX_ENTRIES: usize = 17;
+/// GUI-5 ADR #61 义务①：16→17 收 gui-wmd；GUI-8 段② 裁决五：17→18 收
+/// berry-launcher，同刀必做（不抬帽先入账 = 表 17 恰满丢 berryctl 自身行，
+/// bc 自验结构性 FAIL）。不留裕——**19 = 268 绝壁**：REPLY_MAX 256 帧帽
+/// （CHAN_MSG_MAX）最后一站，18 恰 254≤256 过编译断言，19 越帽，再入账
+/// 须先破帧帽）。
+pub const MAX_ENTRIES: usize = 18;
 /// 请求恰长。
 pub const REQUEST_LEN: usize = 1;
 /// 应答帧帽 = 头 2B + 行最坏 [`NAME_MAX`]+1(NUL)+1(state)+4(code)。
@@ -294,8 +298,8 @@ mod tests {
 
     #[test]
     fn reply_full_table_boundary() {
-        // 17 行 × 最宽名 8B = REPLY_MAX 恰满（builder 用整帧 buf）；第 17 名
-        // svcmgr16（8B 保恰满断言——真实名 gui-wmd 7B 钉 mixed 测试，Q7）。
+        // 18 行 × 最宽名 8B = REPLY_MAX 恰满（builder 用整帧 buf）；第 18 名
+        // svcmgr17（8B 保恰满断言——真实名 gui-wmd 7B 钉 mixed 测试，Q7）。
         let rows: Vec<(&[u8], u8, i32)> = (0..MAX_ENTRIES)
             .map(|i| {
                 let name: &'static [u8] = match i {
@@ -315,7 +319,8 @@ mod tests {
                     13 => b"svcmgr13",
                     14 => b"svcmgr14",
                     15 => b"svcmgr15",
-                    _ => b"svcmgr16",
+                    16 => b"svcmgr16",
+                    _ => b"svcmgr17",
                 };
                 (name, STATE_ALIVE, i as i32)
             })
@@ -339,7 +344,7 @@ mod tests {
         assert!(!b.push(b"nil", 0, 0)); // 未知 state（0 非法）
         assert!(!b.push(b"nil", 4, 0)); // 未知 state（4 非法）
         assert!(b.push(b"ok", STATE_ALIVE, 0));
-        // 表满拒：灌到 17 行后第 18 行 false。
+        // 表满拒：灌到 18 行后第 19 行 false。
         let mut buf2 = [0u8; REPLY_MAX];
         let mut b2 = ReplyBuilder::new(&mut buf2);
         for i in 0..MAX_ENTRIES {
@@ -368,7 +373,7 @@ mod tests {
         let mut tail = buf;
         tail[len] = b'x';
         assert_eq!(parse_reply(&tail, len + 1, |_, _, _| ()), None);
-        // count 超帽（改 count=18）。
+        // count 超帽（改 count=19）。
         let mut over = buf;
         over[1] = MAX_ENTRIES as u8 + 1;
         assert_eq!(parse_reply(&over, len, |_, _, _| ()), None);

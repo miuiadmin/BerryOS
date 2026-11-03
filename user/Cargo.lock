@@ -157,6 +157,7 @@ dependencies = [
 name = "svcmgr"
 version = "0.1.0"
 dependencies = [
+ "berry-appproto",
  "berry-blkproto",
  "berry-exec",
  "berry-guiproto",

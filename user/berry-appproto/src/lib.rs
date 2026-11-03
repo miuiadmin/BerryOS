@@ -236,6 +236,49 @@ impl<'a> ChunkEncoder<'a> {
     }
 }
 
+/// blob 分片流编码器（服务端·零整读窗形）：与 [`ChunkEncoder`] 同帧同
+/// idx 纪律（host 等价测逐字节钉——两实现单源共识不长第三套），但 blob
+/// 不整驻内存：`new` 只携声明总长，`next` 逐帧回调 `fill(dst, off)`
+/// （off = blob 内偏移）由数据源自填本帧 ≤192B 载荷。`fill` 返 false =
+/// 源读败——该帧载荷零填充（dst 内容视为未定义），**流长恒与声明一致**
+/// （解码侧 idx/对账执法不破，坏由调用方 eco 可见化）；后续帧独立重试探
+/// （源恢复则续真数据）。空声明 = 零帧（与 [`ChunkEncoder`] 同形）。
+/// 动机：svcmgr 侧 64KiB 整读静态窗会被 elf2flat 补零物化进平像（.bss
+/// 文件侧兑现），单页墙 131072 顶破——VMO 逐 ≤192B 直读进帧载荷域即免窗。
+pub struct ChunkStream {
+    len: usize,
+    pos: usize,
+    next_idx: u32,
+}
+
+impl ChunkStream {
+    pub fn new(len: usize) -> Self {
+        Self { len, pos: 0, next_idx: 0 }
+    }
+
+    /// 编下一分片帧（`fill` 直写 buf 载荷域），返帧长；声明长收干返 None。
+    /// buf 不足 = 调用方程序员错（定长帽调用点），assert 炸响。
+    pub fn next<F: FnMut(&mut [u8], usize) -> bool>(
+        &mut self,
+        buf: &mut [u8],
+        fill: &mut F,
+    ) -> Option<usize> {
+        if self.pos >= self.len {
+            return None;
+        }
+        let n = (self.len - self.pos).min(CHUNK_DATA_MAX);
+        assert!(buf.len() >= CHUNK_HEAD + n, "appproto: chunk buf 不足");
+        buf[0] = OP_APP_CHUNK;
+        buf[1..CHUNK_HEAD].copy_from_slice(&self.next_idx.to_le_bytes());
+        if !fill(&mut buf[CHUNK_HEAD..CHUNK_HEAD + n], self.pos) {
+            buf[CHUNK_HEAD..CHUNK_HEAD + n].fill(0);
+        }
+        self.pos += n;
+        self.next_idx += 1;
+        Some(CHUNK_HEAD + n)
+    }
+}
+
 /// 编码 APP_LIST_END 终帧（n = 服务端已发条目数；对账由解码侧执法）。
 pub fn encode_list_end(buf: &mut [u8], n: u32) -> usize {
     assert!(buf.len() >= END_LEN, "appproto: end buf 不足");
@@ -882,5 +925,69 @@ mod tests {
         let mut end = [0u8; END_LEN];
         encode_list_end(&mut end, 0);
         assert_eq!(ListDecoder::new().feed(&end[..2], END_LEN), None);
+    }
+
+    #[test]
+    fn chunk_stream_encoder_equivalence() {
+        // ChunkStream（流式 fill 形）↔ ChunkEncoder（整 blob 借用形）逐字节
+        // 等价——同帧长同 idx 同切片（两实现单源纪律的等价钉；含 0/1/恰
+        // 192/越界 193/多帧尾零头各形）。
+        for len in [0usize, 1, 191, 192, 193, 192 * 3, 192 * 3 + 50] {
+            let blob: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let mut a = [0u8; FRAME_MAX];
+            let mut b = [0u8; FRAME_MAX];
+            let mut enc = ChunkEncoder::new(&blob);
+            let mut stream = ChunkStream::new(len);
+            let mut fill = |dst: &mut [u8], off: usize| {
+                dst.copy_from_slice(&blob[off..off + dst.len()]);
+                true
+            };
+            loop {
+                let fa = enc.next(&mut a);
+                let fb = stream.next(&mut b, &mut fill);
+                assert_eq!(fa, fb, "帧长漂移 len={len}");
+                match (fa, fb) {
+                    (Some(na), Some(nb)) => {
+                        assert_eq!(&a[..na], &b[..nb], "帧字节漂移 len={len}");
+                    }
+                    (None, None) => break,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_stream_fill_failure_zero_pads() {
+        // fill 读败契约：败帧起零填充、流长恒与声明一致、idx 连贯——解码
+        // 侧对账不破（服务端零窗流式的读败容错面，坏由 eco 可见化）。
+        let blob: Vec<u8> = (0..500usize).map(|i| (i % 251) as u8).collect();
+        let mut stream = ChunkStream::new(500);
+        let mut buf = [0u8; FRAME_MAX];
+        // off ≥ 192 起读败（首帧 192B 全真，后续帧全零填）。
+        let mut fill = |dst: &mut [u8], off: usize| {
+            if off >= 192 {
+                return false;
+            }
+            dst.copy_from_slice(&blob[off..off + dst.len()]);
+            true
+        };
+        let n1 = stream.next(&mut buf, &mut fill).unwrap();
+        let mut want = [0u8; FRAME_MAX];
+        let mut enc = ChunkEncoder::new(&blob);
+        let w1 = enc.next(&mut want).unwrap();
+        assert_eq!(&buf[..n1], &want[..w1], "首帧（读败前）须与编码器等价");
+        // 余帧：500-192=308 → 192 + 116 两帧零载荷、idx 1/2 连贯。
+        let mut rest = Vec::new();
+        while let Some(n) = stream.next(&mut buf, &mut fill) {
+            rest.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(rest.len(), (CHUNK_HEAD + 192) + (CHUNK_HEAD + 116));
+        let idx = |f: &[u8]| u32::from_le_bytes([f[1], f[2], f[3], f[4]]);
+        let (f2, f3) = rest.split_at(CHUNK_HEAD + 192);
+        assert_eq!(idx(f2), 1);
+        assert!(f2[CHUNK_HEAD..].iter().all(|&b| b == 0), "败帧须零填");
+        assert_eq!(idx(f3), 2);
+        assert!(f3[CHUNK_HEAD..].iter().all(|&b| b == 0), "败帧须零填");
     }
 }
