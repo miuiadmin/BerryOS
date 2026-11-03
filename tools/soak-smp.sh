@@ -6,28 +6,42 @@
 #   1. `-smp 2` + 双门控键：`opt/berry/soak`（soakmon 心跳 v2）+
 #      `opt/berry/soakload`（S-5d D2 满载载荷 = 内核门控 EL0 churn 舰队：
 #      root 家核 + 2 写者 spread→CPU1 互抢轮转——sw1 严格递增的物理来源；
-#      写者恒 Runnable → CPU1 不 idle → park1 停增 = 满载谓词）。载荷零打印
+#      写者恒 Runnable → CPU1 不 idle → park1 停增 = 满载形态〔park 越窗
+#      守卫面，非主判——主判见 ④ Δsw1〕）。载荷零打印
 #      （D2：panic SMP 安全面）；`SOAKLOAD fleet on n=3` = master 在舰队真
 #      spawn 后的自证行（boot 覆盖标记）。
-#   2. 心跳 v2 八字段断言（头注 3 断言带差异——单核 soak.sh 的恒零自证在此
-#      换成活性/满载面）：
+#   2. 心跳 v2.1 九字段八断言（头注 3 断言带差异——单核 soak.sh 的恒零自证
+#      在此换成活性/载荷面；churn 字段单核无载荷恒 0 不入其断言面）：
 #        ① t 严格 +1 且从 1 起（丢拍 = 静默死）；
 #        ② sw 严格递增（全局调度活性——单核 soak 同款）；
 #        ③ sw0 严格递增（soakmon prio 8 每拍必切自身核——CPU0 活性）；
-#        ④ sw1 双臂：严格递增（序列完整/对核活着）∧ **Δsw1 ≥ 320/拍（满载
-#           谓词主判）**——2 写者互抢 tick 轮转 TCG 半率 ≈560 切换/拍；S-5d
-#           B 探针实测死态残余 ≈195/拍（写者退场后 churn 线程迁入空核维持
-#           秒级切换、park 亦停增——冻结断言与 park 帽双哑弹），增量塌缩 =
-#           唯一可辨死签名；320 = 两态几何中点，双侧 ≥1.6x 裕量，R3 打
-#           Δsw1min 观测贴帽即复审；
+#        ④ sw1 双臂：严格递增（序列完整/对核活着）∧ **Δsw1 ≥ 320/拍（载荷
+#           活性主判）**——2 写者同 runnable 互抢 tick 轮转 TCG 半率 ≈560
+#           切换/拍；S-5d B 探针实测死态残余 ≈195/拍（写者退场后 churn
+#           线程迁入空核维持秒级切换、park 亦停增——冻结断言与 park 帽双
+#           哑弹），增量塌缩 = 唯一可辨死签名。**口径诚实化（S-5e M2）**：
+#           谓词实为「双写者同时在席 ≥57%」（320/560——f=0.6 载荷形态过线
+#           而 CPU1 实载仅六成），非核利用率满载；**勿抬地板到 450**（对
+#           ≈560 仅 1.24x，TCG 抖动不耐）。320 = 两态几何中点 √(560×195)
+#           ≈330.45 向下收 10（S-5e m4 勘误「= 几何中点」算术——双侧
+#           1.75x/1.64x ≥1.6x）。**定标合同（S-5e ②）**：地板为单机单样本
+#           定标（净态 + B 死株实测）——常驻任务混变更/QEMU 升级/写者数
+#           变动 → 先重跑 B 死株标定再调地板。R3 打 Δsw1min 观测贴帽即复审；
 #        ⑤ park0/park1 ∈ [首拍值, 首拍值+256]（越窗守卫、非充分谓词：满载
 #           核 park 停增，死态 park 亦停增〔B 探针实录〕——帽只抓 idle 刷穿
 #           这另一族死状；满载主判在 ④）；
 #        ⑥ pages 稳态窗 ∈ [第 6 拍值, +64]（S-5b 带宽口径原样）——首 5 拍
 #           结算窗豁免：boot 尾 bsh 自验族瞬态（S-5d A 跑实测 FAT n=5000
 #           释放波 −773 页横跨首拍基线、FATW/df/dir/cd 小波尾）在结算窗内
-#           非泄漏证据；稳态基线 = 第 6 拍（≈guest t=360s，自验族收尾后）；
-#        ⑦ lost 恒 0（console 环健康）。
+#           非泄漏证据；稳态基线 = 第 6 拍（≈guest t=360s，自验族收尾后）。
+#           **边界（S-5e m6）**：真比较最早第 7 拍——MINUTES≤6 时本断言
+#           平凡（第 6 拍自比恒过），PASS 行按拍数条件化措辞非无脑「全绿」；
+#        ⑦ lost 恒 0（console 环健康）；
+#        ⑧ churn 严格递增（心跳 v2.1 第 9 字段 = 载荷 vmo_create 成功计数
+#           ——S-5e M1 端到端防假绿：写者被 G1.5 kill / svc 恒败 / gen 顶格
+#           时调度/内存面照绿，唯 churn 冻结在此开口；辅以「阶段 2 新增
+#           'G1.5: kill user task' 零容忍」——boot 期 rogue 矩阵预期杀做
+#           基线扣除，载荷线程被杀即 FAIL）。
 #   3. 帽差异（满载 TCG 减速裕量）：单拍帽 240s（单核 soak 实测 ≈60s wall/
 #      拍的 4x；双核三载荷 + 常驻族的 TCG 拉伸头寸）。
 #   4. R3 定标行（PASS 尾打观测面非断言面：boot/首拍/均拍 wall + park Δ
@@ -64,11 +78,16 @@ DEADLINE_BOOT=600   # 秒：boot 覆盖十二标记 + 门控自证行到齐。60
                     # 300s 余量 <1.5x，双核满载 TCG + 宿主争用拉伸即翻（S-5d
                     # 三场红定谳后升 600 = 基线 3x 裕量；再超 = R1 审计非再升）
 PER_BEAT_CAP=240    # 秒：单拍 wall 帽（单核 soak 实测 ≈60s 的 4x——双核满载 TCG 拉伸头寸）
-FIRST_BEAT_CAP=$(( DEADLINE_BOOT + 5 * PER_BEAT_CAP + 60 ))     # 首拍：boot + 潜伏五周期 + 余量
-TOTAL_CAP=$(( DEADLINE_BOOT + (MINUTES + 5) * PER_BEAT_CAP + 120 ))  # 总帽（兜结构性挂死）
+FIRST_BEAT_CAP=$(( 5 * PER_BEAT_CAP + 60 ))    # 首拍：潜伏五周期 + 余量（tq 从
+                 # boot 收拍后起算——帽不含 boot 分量；S-5e m7 勘误旧公式
+                 # 双计 DEADLINE_BOOT=600：实宽一格、方向保守不产假绿，现
+                 # 口径即所言——首拍墙钟实测 0s〔5 周期在 boot 期内已过〕）
+TOTAL_CAP=$(( (MINUTES + 5) * PER_BEAT_CAP + 120 ))  # 总帽（兜结构性挂死；同上不含 boot 分量）
 PARK_CAP=256        # 满载谓词帽（满载核 park 停增；载荷死 ≈10Hz 刷穿；R3 定标观测）
-SW1_FLOOR=320       # Δsw1/拍地板（满载谓词主判：净态写者互抢 ≈560/拍 vs 死态
-                    # 残余 ≈195/拍〔B 探针实测〕；320 = 几何中点双侧 ≥1.6x）
+SW1_FLOOR=320       # Δsw1/拍地板（载荷活性主判：净态写者互抢 ≈560/拍 vs 死态
+                    # 残余 ≈195/拍〔B 探针实测〕；320 = 几何中点 √(560×195)≈330.45
+                    # 向下收 10〔m4 勘误〕双侧 ≥1.64x；口径 = 双写者在席 ≥57%
+                    #〔M2〕；勿抬 450——对 ≈560 仅 1.24x，TCG 抖动不耐）
 POLL=2
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-soaksmp.XXXXXX")
@@ -126,7 +145,7 @@ trap cleanup EXIT
 fail() {
   echo "soak-smp: FAIL: $1" >&2
   echo "---- 心跳表（全部已收拍）----" >&2
-  grep -aoE 'SOAK t=[0-9]+ sw=[0-9]+ sw0=[0-9]+ sw1=[0-9]+ park0=[0-9]+ park1=[0-9]+ pages=[0-9]+ lost=[0-9]+' "$LOG" >&2 || true
+  grep -aoE 'SOAK t=[0-9]+ sw=[0-9]+ sw0=[0-9]+ sw1=[0-9]+ park0=[0-9]+ park1=[0-9]+ pages=[0-9]+ lost=[0-9]+ churn=[0-9]+' "$LOG" >&2 || true
   echo "---- 串口日志尾部（全文保留：$LOG）----" >&2
   tail -40 "$LOG" >&2
   if [ -n "$ECHO_LOG" ] && [ -s "$ECHO_LOG" ]; then
@@ -149,17 +168,17 @@ fail() {
 # 心跳提取：非锚定（SOAK 行嵌 ABAB 巨行中段是常态）+ -a（无效字节触发 BSD
 # grep 二进制模式全文件静默零收割——smoke.sh 串口断言一律 grep -a 同款先例）。
 beats_raw() {
-  grep -aoE 'SOAK t=[0-9]+ sw=[0-9]+ sw0=[0-9]+ sw1=[0-9]+ park0=[0-9]+ park1=[0-9]+ pages=[0-9]+ lost=[0-9]+' "$LOG" 2>/dev/null || true
+  grep -aoE 'SOAK t=[0-9]+ sw=[0-9]+ sw0=[0-9]+ sw1=[0-9]+ park0=[0-9]+ park1=[0-9]+ pages=[0-9]+ lost=[0-9]+ churn=[0-9]+' "$LOG" 2>/dev/null || true
 }
 
-# 七断言（输入行 "t sw sw0 sw1 park0 park1 pages lost"；头注 2 逐条）。
+# 八断言（输入行 "t sw sw0 sw1 park0 park1 pages lost churn"；头注 2 逐条）。
 # awk 陷阱实录（soak.sh 同款）：裸 `exit` 退出码恒 0——必须 `exit 1` +
 # END `if (bad) exit 1` 双保险。返回行 = R3 定标观测串（park0/park1 Δ +
 # pages 区间——PASS 行消费）。
 validate_beats() {
-  beats_raw | sed -E 's/^SOAK t=//; s/ sw=/ /; s/ sw0=/ /; s/ sw1=/ /; s/ park0=/ /; s/ park1=/ /; s/ pages=/ /; s/ lost=/ /' | awk '
+  beats_raw | sed -E 's/^SOAK t=//; s/ sw=/ /; s/ sw0=/ /; s/ sw1=/ /; s/ park0=/ /; s/ park1=/ /; s/ pages=/ /; s/ lost=/ /; s/ churn=/ /' | awk '
     {
-      t=$1; sw=$2; s0=$3; s1=$4; q0=$5; q1=$6; pg=$7; lo=$8
+      t=$1; sw=$2; s0=$3; s1=$4; q0=$5; q1=$6; pg=$7; lo=$8; ch=$9
       if (NR == 1) {
         if (t != 1) { printf "首拍 t=%d != 1\n", t; bad=1; exit 1 }
         pmin = pg; pmax = pg; pq0 = q0; pq1 = q1
@@ -170,6 +189,9 @@ validate_beats() {
         if (s1 <= ps1) { printf "t=%d sw1=%d 非严格递增（前 sw1=%d）——CPU1 冻死\n", t, s1, ps1; bad=1; exit 1 }
         else if (s1 - ps1 < '"$SW1_FLOOR"') { printf "t=%d Δsw1=%d 塌缩 < %d/拍（前 sw1=%d）——CPU1 满载谓词破（载荷死/写者退场：净态互抢 ≈560/拍 vs 死态残余 ≈195/拍，B 探针实测）\n", t, s1 - ps1, '"$SW1_FLOOR"', ps1; bad=1; exit 1 }
         if (mind1 == "" || s1 - ps1 < mind1) mind1 = s1 - ps1
+        # S-5e M1 ⑧：载荷业务进度——churn 冻结 = 写者被杀/svc 恒败/gen 顶格
+        #（调度/内存面照绿的端到端假绿在此开口）。
+        if (ch <= pch) { printf "t=%d churn=%d 非严格递增（前 %d）——载荷业务进度冻死（S-5e M1 端到端面）\n", t, ch, pch; bad=1; exit 1 }
       }
       if (q0 < pq0 || q0 > pq0 + '"$PARK_CAP"') { printf "t=%d park0=%d 越窗 [基线 %d, %d]——CPU0 非满载（载荷死/常驻阻塞面）\n", t, q0, pq0, pq0 + '"$PARK_CAP"'; bad=1; exit 1 }
       if (q1 < pq1 || q1 > pq1 + '"$PARK_CAP"') { printf "t=%d park1=%d 越窗 [基线 %d, %d]——CPU1 非满载（写者死→idle park 环刷穿帽）\n", t, q1, pq1, pq1 + '"$PARK_CAP"'; bad=1; exit 1 }
@@ -182,9 +204,9 @@ validate_beats() {
       if (pg > pmax) pmax = pg
       if (q0 > mq0) mq0 = q0
       if (q1 > mq1) mq1 = q1
-      pt=t; psw=sw; ps0=s0; ps1=s1; n=NR
+      pt=t; psw=sw; ps0=s0; ps1=s1; pch=ch; n=NR
     }
-    END { if (bad) exit 1; printf "n=%d last_t=%d last_sw=%d last_sw0=%d last_sw1=%d parkD0=%d parkD1=%d Δsw1min=%d pages=%d..%d", n, pt, psw, ps0, ps1, mq0-pq0, mq1-pq1, mind1+0, pmin, pmax }'
+    END { if (bad) exit 1; printf "n=%d last_t=%d last_sw=%d last_sw0=%d last_sw1=%d parkD0=%d parkD1=%d Δsw1min=%d pages=%d..%d churn=%d", n, pt, psw, ps0, ps1, mq0-pq0, mq1-pq1, mind1+0, pmin, pmax, pch+0 }'
 }
 
 # —— 造盘（run-rootfs/soak 同款确定性 FAT12 卷 + LBA0 印章；每次重造 = 跨跑
@@ -285,8 +307,17 @@ SKT_PID=""
 SKT_LOG=""
 echo "soak-smp: SKT client 对拍完成（fd 皮 server 段两连接 64B/24B 逐字节）"
 
-# —— 阶段 2：心跳七断言轮询（首拍潜伏 5 周期 ≈300-1200s wall 是内核侧
+# —— 阶段 2：心跳八断言轮询（首拍潜伏 5 周期 ≈300-1200s wall 是内核侧
 # 设计，非挂死——soak.sh 同款）——
+# S-5e M1 辅面·基线扣除语义：boot 期 rogue 矩阵的 G1.5 kill 是**预期杀**
+# （银行 30min PASS 跑 AnXkfJ 实测恰 1 条 'user_rogue_ptr'，行 132）——
+# 零容忍的执法面 = 阶段 2 起**新增** kill（舰队/常驻线程被杀 = 缩水；非末
+# 线程不 drain = 进程壳活着，kill -0 抓不到）；基线快照取在 boot cover +
+# 对拍收口后 = 最新可观测点（更晚的 fleet spawn 期 kill 由断言⑧ churn 冻
+# 红兜底——churn= 业务计数冻死即红，两断言互补成满覆盖）。
+KILL_BASE=$(grep -ac 'G1.5: kill user task' "$LOG" 2>/dev/null || true)
+KILL_BASE=${KILL_BASE:-0}
+echo "soak-smp: boot 期 G1.5 kill 基线 ${KILL_BASE}（rogue 矩阵预期杀；阶段 2 起新增即 FAIL）"
 tq=$(date +%s)
 first_beat_wall=""
 last_n=0
@@ -295,12 +326,17 @@ summary="(无拍)"
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
     || fail "QEMU 中途退出（崩溃/panic？——心跳表与日志尾部见上）"
+  # S-5e M1 辅面：阶段 2 新增用户线程 kill 零容忍（基线扣除见上注）。
+  KILL_NOW=$(grep -ac 'G1.5: kill user task' "$LOG" 2>/dev/null || true)
+  KILL_NOW=${KILL_NOW:-0}
+  [ "$KILL_NOW" -gt "$KILL_BASE" ] \
+    && fail "串口新增 G1.5: kill user task（基线 ${KILL_BASE} → ${KILL_NOW}）——用户线程被杀（舰队缩水，S-5e M1 封口）"
   now=$(date +%s)
   [ $(( now - tq )) -gt "$TOTAL_CAP" ] && fail "总帽 ${TOTAL_CAP}s 破（已收 ${last_n}/${MINUTES} 拍）"
   n=$(beats_raw | wc -l | tr -d ' ')
   n=${n:-0}
   if [ "$n" -gt 0 ]; then
-    summary=$(validate_beats) || fail "七断言破：$summary"
+    summary=$(validate_beats) || fail "八断言破：$summary"
     if [ -z "$first_beat_wall" ]; then
       first_beat_wall=$(( now - tq ))
     fi
@@ -324,8 +360,17 @@ done
 
 elapsed=$(( $(date +%s) - tq ))
 mean_beat=$(( (elapsed - first_beat_wall) / (MINUTES - 1) ))
-echo "soak-smp: PASS ${MINUTES}/${MINUTES} 拍七断言全绿（$summary）"
+# S-5e ① 号独立面：拍周期下界——deadline 减半形 bug（30 拍 15min 收官）全绿
+# 假象在此红。实测净态 ≈57s/拍（TCG 宿主争用下仍 >40s）；<40s 只能是 60s
+# guest 网格被改（半率历史机型 ≈120s/拍更远）。
+[ "$mean_beat" -ge 40 ] || fail "均拍 ${mean_beat}s < 40s——拍周期塌缩（deadline 减半形 bug 全绿假象，S-5e ① 封口）"
+# S-5e m6：PASS 措辞按拍数条件化——pages 稳态窗真比较最早第 7 拍。
+if [ "$MINUTES" -ge 7 ]; then
+  echo "soak-smp: PASS ${MINUTES}/${MINUTES} 拍八断言全绿（$summary）"
+else
+  echo "soak-smp: PASS ${MINUTES}/${MINUTES} 拍七断言全绿 + pages 稳态窗未及执法（真比较须 ≥7 拍，n=${MINUTES} 平凡非绿——S-5e m6 措辞边界；$summary）"
+fi
 # R3 定标行（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次——smoke-smp
 # R3 三数同款 §6 纪律）。
-echo "soak-smp: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s）/$summary（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 / pages 稳态帽 +64，首 5 拍结算豁免——pmin..pmax 含豁免窗观测）"
+echo "soak-smp: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s，下界 40）/$summary（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 = 双写者在席 ≥57% / pages 稳态帽 +64，首 5 拍结算豁免——pmin..pmax 含豁免窗观测 / churn 严格递增〔M1〕）"
 echo "soak-smp: 全程 ${elapsed}s（总帽 ${TOTAL_CAP}s）"

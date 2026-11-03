@@ -327,7 +327,11 @@ build-release: docs-guard abi-check build-user
 docs-guard:
     python3 tools/docs_guard.py
 
-check: docs-guard abi-check build-user
+# 可写全局清单门禁（Ginux writable-globals 借法）：新增 static mut 必须入册
+writable-globals:
+    python3 tools/writable_globals.py --check
+
+check: docs-guard writable-globals abi-check build-user
     cargo check
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot
@@ -608,32 +612,41 @@ bench-icount: build
 
 # S-1 soak 长跑单口（docs/基准与压力测试设计.md §11）：内核常驻任务 soakmon
 # 每 60s vct（本机实测 ≈60s wall——CNTVCT ≈1.0x，历史半率机型 ≈120s，规划
-# 按半率保守）打一心跳行 `SOAK t= sw= pages= lost=`，soak.sh 轮询四断言
-# （t 严格 +1 / sw 严格递增 / pages 窗口 [首拍,首拍+64] / lost 恒 0）+ boot
-# 覆盖守卫（SOAK gate on 门控自证 + ECO/VIRTIO/FAT/NET/DNS/TCP/TCPS 七标记
-# ——vnet 服务链尾三标记必收，echod/TCP 链死亡必须 loud）。fw_cfg 具名项
+# 按半率保守）打心跳 v2.1 行 `SOAK t= sw= sw0= sw1= park0= park1= pages=
+# lost= churn=`（单核面 sw1/park1 恒零自证 + churn 无载荷恒 0 不入断言），
+# soak.sh 轮询六断言（t/sw/sw0 严格递增 + sw1/park1 恒零 + pages 稳态窗
+# [首拍,首拍+64]〔首 5 拍结算豁免——S-5d〕+ lost 恒 0）+ boot 覆盖守卫
+# （SOAK gate on 门控自证 + ECO/VIRTIO/SKT/FAT/NET/DNS/TCP/TCPS/EVS 十标记
+# ——A3-3 宿主对端三件套 echod/evsclient/sktclient 全在，SKT ok n= 断链点
+# 标记；vnet 服务链尾三标记必收，echod/TCP 链死亡必须 loud）。fw_cfg 具名项
 # opt/berry/soak 门控（缺席 = run/smoke/EFI 零扰动；EFI 路无 fw_cfg 具名文件
-# 天然缺席）；run-rootfs 全量形态 + echod（vnet TCP 自验对端——缺席则
-# DNS/TCP 常驻族静默缩水）；首拍潜伏 5 周期（≈300-600s wall，让 boot 尾部
-# 帧回收瞬态落在 pages 基线之前——3 周期 ≈182s 实测恰贴尾部末段，宿主负载
-# 即失保证）。帽 = 300 + (N+5)×150 + 120 s。不进 CI（小时级，周跑/手跑）；
-# 勿与 smoke/run-rootfs 并行（echod 18080 端口冲突；盘名 disk.soak.img 专属
-# 与 smoke 的 disk.img 零交集）。默认 60 分钟（设计 ≥1h 目标，本机实测
-# ≈1h）；短验 `just soak 2`（本机实测 ~6-7min）。SOAK_KEEP_LOG=1 留日志
-# （FAIL 恒留）。参数经 `{{quote(minutes)}}` 引号包裹传递（对抗审查
+# 天然缺席）；run-rootfs 全量形态 + 对端三件套（18080-18083——缺席则 bsh
+# 卡 SKT 无帽 accept、fat 族整族断〔S-5d 判例〕）；首拍潜伏 5 周期
+# （≈300-600s wall，让 boot 尾部帧回收瞬态落在 pages 基线之前——3 周期
+# ≈182s 实测恰贴尾部末段，宿主负载即失保证）。帽不含 boot 分量：
+# (N+5)×150+120 s、boot 帽 600（S-5e m7 勘误旧「300+(N+5)×150+120」
+# 双计 boot 面）。不进 CI（小时级，周跑/手跑）；勿与 smoke/run-rootfs
+# 并行（18080-18083 端口面；盘名 disk.soak.img 与 smoke/soak-smp 的
+# disk.img/disk.soaksmp.img 三方零交集）。默认 60 分钟（设计 ≥1h 目标，
+# 本机实测 ≈1h）；短验 `just soak 2`（本机实测 ~6-7min）。SOAK_KEEP_LOG=1
+# 留日志（FAIL 恒留）。参数经 `{{quote(minutes)}}` 引号包裹传递（对抗审查
 # finding 9：裸 `{{minutes}}` 插值使 `just soak '60 && …'` 在组壳层注入
 # 执行——quote 后载荷作为单 argv 落进脚本的 *[!0-9]* 数字拒面）。
 soak minutes="60": build
     bash tools/soak.sh {{quote(minutes)}}
 
 # S-5d 双核满载 soak 单口（docs/SMP-S5实施设计草案.md §2 D1/D2/D4）：soak.sh
-# 全量形态 + `-smp 2` + 双 fw_cfg 门控（opt/berry/soak 心跳 v2 八字段 +
+# 全量形态 + `-smp 2` + 双 fw_cfg 门控（opt/berry/soak 心跳 v2.1 九字段 +
 # opt/berry/soakload = 内核门控 EL0 churn 舰队 root 家核 + 2 写者 spread→
-# CPU1——sw1 双臂断言物理源（严格递增 ∧ Δsw1 ≥320/拍满载主判：净态写者
-# 互抢 ≈560/拍 vs 死态残余 ≈195/拍 B 探针实测；gen 预算 1s 摊频纪律见
-# 脚本头注）。七断言 = 单核六断言换面：sw1/park1 恒零自证 → sw1 双臂 +
+# CPU1——sw1 双臂断言物理源（严格递增 ∧ Δsw1 ≥320/拍载荷活性主判〔口径 =
+# 双写者同时在席 ≥57%，320 = 几何中点 √(560×195)≈330 收 10：净态写者互抢
+# ≈560/拍 vs 死态残余 ≈195/拍 B 探针实测；勿抬 450〕；gen 预算 1s 摊频纪律
+# 见脚本头注）。八断言 = 单核六断言换面：sw1/park1 恒零自证 → sw1 双臂 +
 # 双核 park ∈ [首拍,首拍+256]（越窗守卫——死态 park 亦停增非充分谓词，
-# 满载主判在 Δsw1）。盘名 disk.soaksmp.img 三方零交集；echod 18080 端口面同 soak——
+# 主判在 Δsw1）+ churn 严格递增（v2.1 第 9 字段 = 载荷 vmo_create 成功数
+# ——S-5e M1 端到端防假绿：写者被杀/svc 恒败/gen 顶格时调度面照绿唯 churn
+# 冻红）+ 串口 G1.5 kill 零容忍 + 均拍下界 40s。盘名 disk.soaksmp.img 三方
+# 零交集；echod 18080-18083 端口面同 soak——
 # 勿与任何同端口通道并行。默认 30 分钟（验收线 ≥30min 满载零断言失败）；
 # 30min 级实跑**后台执行须显式 timeout ≥7200000ms**（默认帽恰 30min 必超
 # ——S-5 草案 §3 明文）。短验 `just soak-smp 2`；SOAK_KEEP_LOG=1 留日志。

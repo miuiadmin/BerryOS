@@ -411,6 +411,27 @@ fn vme(e: VmarError) -> i32 {
     }
 }
 
+// ---- S-5e M1：soakload churn 进度观测（端到端防假绿）----
+// 对抗审查实录（S-5e M1）：载荷线程被 G1.5 kill / churn svc 恒败（gen 顶格）
+// 时写者仍自旋满载形态——调度/内存/console 断言照绿（载荷业务进度零观测）。
+// 观测面：soakload master 舰队 spawn 后 arm（task_soakload）；此后 vmo_create
+// 成功（载荷每环首 svc）计数。Relaxed 即可——观测计数只要原子性与最终可见
+//（boot 尾毫秒级漏计无关紧要），非同步原语。soakmon 心跳 v2.1 第 9 字段
+// churn= 读出（soak-smp.sh 断言严格递增；非 soakload boot 恒 0 不入断言面）。
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+static SOAKLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
+static SOAK_CHURN_OK: AtomicU64 = AtomicU64::new(0);
+
+/// soakload master 舰队 spawn 后置位（churn 成功计数开始）。
+pub fn soakload_churn_arm() {
+    SOAKLOAD_ACTIVE.store(true, Ordering::Relaxed);
+}
+
+/// churn 成功计数读出（soakmon 心跳 v2.1 churn= 字段）。
+pub fn soakload_churn_readout() -> u64 {
+    SOAK_CHURN_OK.load(Ordering::Relaxed)
+}
+
 /// `vmo_create(size, options, *out)`：建匿名 VMO。新对象授 READ|WRITE|MAP|
 /// DUPLICATE（全 Rights 面减 TRANSFER——transfer 随 3-4 channel 落地）；v1
 /// options 恒 0。`size` 上限 [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
@@ -441,7 +462,14 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
             RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE,
         ) {
             Ok(h) => match copy_out_u32(el1, out, h) {
-                Ok(()) => 0,
+                Ok(()) => {
+                    // S-5e M1：soakload 载荷 churn 进度计数（svc 恒败/gen 顶格
+                    // → 心跳 churn 冻红；非 soakload boot 零成本分支直过）。
+                    if SOAKLOAD_ACTIVE.load(Ordering::Relaxed) {
+                        SOAK_CHURN_OK.fetch_add(1, Ordering::Relaxed);
+                    }
+                    0
+                }
                 Err(e) => e as i64,
             },
             Err(e) => e as i64,

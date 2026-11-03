@@ -1436,13 +1436,17 @@ core::arch::global_asm!(
     // 安全面〕、无 go-flag/DONE 面〔常驻不退〕）。
     // 每环三段：①churn vmo_create(0x11)→commit(0x12)→write(0x15, 8B)
     // →close(0x01)——**返回值全忽略**（载荷非断言面：svc 失败 = 槽旧值
-    // 空转无害，健康内核零失败）；②clock_read(0x61)×64 内核面风暴（无
-    // handle、无预算帽）；③CNTVCT_EL0 自旋 1s 摊频——**gen 预算纪律**
-    //（草案 §1.5/§5.3）：子表 8 槽 × 14 位 gen ≈13 万次 create 复用帽，
-    // 永续 handle churn 不节流则分钟级刷穿 → create 永久失败 = 压测面
-    // 静默缩水；1s 摊频 → ≈1 churn/s/线程，30min 三线程合计 ≈5.4k =
-    // 帽内 24x 裕量。观测面 = 宿主 soak-smp.sh 心跳 v2：sw1 严格递增 =
-    // 写者互抢轮转、park1 停增 = 满载谓词（三段全满载形态）。寄存器
+    // 空转无害；恒败/gen 顶格由内核 churn 计数观测——vmo_create 成功面
+    // 计数入心跳 v2.1 churn= 字段，冻结即宿主断言红〔S-5e M1 端到端防
+    // 假绿〕）；②clock_read(0x61)×64 内核面风暴（无 handle、无预算帽）；
+    // ③CNTVCT_EL0 自旋 1s 摊频——**gen 预算纪律**（草案 §1.5/§5.3）：
+    // handle 表为可增长 Vec（硬帽 65536 槽 × 14 位 gen；churn 复用集中
+    // 最低空槽）——S-5e m3 勘误旧「子表 8 槽/24x 裕量」口径：30min 三
+    // 线程 ≈5.4k create 对复用集中帽实为 ≈3x 裕量；gen 顶格只推表增长
+    //（帽前不缩水面），真到硬帽 = create 持久失败 → churn 冻红 loud 非
+    // 静默缩水；1s 摊频 → ≈1 churn/s/线程。观测面 = 宿主 soak-smp.sh
+    // 心跳 v2.1：sw1 严格递增 = 写者互抢轮转、park1 停增 = 满载谓词
+    //（三段全满载形态）、churn 递增 = ①段业务进度。寄存器
     // 合同：x20 = 窗口基（handle 槽 win+0x40 / write 源 win+0xC0 / clock
     // 出参 win+0x0）；x0 = NR→ret（svc dispatch 只回写 x0）；write 借走
     // x4 → 后续 svc 前 win+0x40 重载（allocst 同款）。root（x0=0

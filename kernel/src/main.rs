@@ -3254,16 +3254,20 @@ const SOAK_PROBE_NAME: &str = "opt/berry/soak";
 /// soakmon（S-1）：常驻心跳任务，每 60s（CNTVCT 周期口径）打一行
 /// `SOAK t=<拍序> sw=<切换总数> sw0=<CPU0 切换> sw1=<CPU1 切换>
 /// park0=<CPU0 park> park1=<CPU1 park> pages=<allocated_pages>
-/// lost=<RX丢字>`（S-5d 心跳 v2——D4 裁决：per-CPU 统计入行）。
+/// lost=<RX丢字> churn=<载荷vmo_create成功数>`
+///（S-5d 心跳 v2 八字段 + S-5e M1 v2.1 追加第 9 字段——端到端防假绿）。
 ///
-/// - 八字段全是现成计数器直读（`berry_sched::switches` = switches=N 金丝雀
+/// - 九字段全是现成计数器直读（`berry_sched::switches` = switches=N 金丝雀
 ///   同源标量；`smp::sw_park_readout` = S-5a per-CPU sw/park 四数〔跨核
 ///   volatile 单字读，谓词为严格递增/有界增量断言，无需一致快照〕；
 ///   `mm::frames().allocated_pages` = B-0/S-2 对账口径（D24 起
 ///   O(1) 水位原子读，口径由 buddy 对拍测试钉板）；`uart::rx_lost` =
-///   console 环丢字）——零新内核状态。宿主断言分工：soak-smp = sw0/sw1
-///   各自严格递增（对核冻死即红）+ park 增量有界（满载谓词）；单核
-///   soak.sh = 副核四数恒零自证（sw1/park1 零活性）。
+///   console 环丢字；`syscall::soakload_churn_readout` = S-5e M1 载荷
+///   进度计数〔churn 冻结 = svc 恒败/gen 顶格/写者被杀——soak-smp 断言
+///   严格递增；单核 soak 无载荷恒 0 不断言〕）——零新锁零新打印面。宿主
+///   断言分工：soak-smp = sw0/sw1 各自严格递增（对核冻死即红）+ park
+///   增量有界 + churn 严格递增（载荷业务进度）；单核 soak.sh = 副核四数
+///   恒零自证（sw1/park1 零活性；churn 恒 0 无载荷面）。
 /// - 周期 = `60 * cntfrq()`（CNTFRQ_EL0 直读，QEMU virt=62.5MHz 不硬编码；
 ///   不走 slice_cycles——那是 0.1s slice 单位，60s 是墙钟语义直乘最诚实）。
 /// - **首拍潜伏 5 周期**（落地取舍，闭合设计缺口；S-1 对抗审查 finding 1
@@ -3284,7 +3288,7 @@ const SOAK_PROBE_NAME: &str = "opt/berry/soak";
 ///   拼行，G43）→ klock_exit。打印必须整行包络：IRQ 语境 switches=N 行
 ///   （canary 带 \n）若撕进 SOAK 行中段会碎字段（`sw=5switches=300`）→
 ///   宿主正则失配漏拍 = 断言假阴性。
-///   行 ≤256B（v2 固定段 49B + 8 数值字段各至多 20 位 = 绝对界 209B）。
+///   行 ≤256B（v2.1 固定段 56B + 9 数值字段各至多 20 位 = 绝对界 236B）。
 /// - 常驻不退出：活性心跳不是死线，超时醒 = 正常节拍（「服务端 wait 超时
 ///   是心跳不是死线」纪律的内核任务版）；私有表 + 哑 Event `Box::leak`
 ///   有意泄漏（有界、boot 生命周期）。醒因恒 Timeout（哑 Event 表私有、
@@ -3307,10 +3311,13 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
         assert!(r == WakeReason::Timeout,
                 "soakmon: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
         let sw = berry_sched::switches();
-        // S-5d 心跳 v2（D4）：per-CPU sw/park 四数入行（头注「八字段」）。
+        // S-5d 心跳 v2（D4）：per-CPU sw/park 四数入行；S-5e M1 v2.1 追加 churn。
         let (sw0, sw1, park0, park1) = berry_hal_aarch64::smp::sw_park_readout();
         let pages = mm::frames().allocated_pages() as u64;
         let lost = berry_hal_aarch64::uart::rx_lost() as u64;
+        // S-5e M1（心跳 v2.1）：载荷业务进度第 9 字段——调度/内存面照绿而
+        // churn 冻结 = svc 恒败/gen 顶格/写者被杀，端到端假绿在此开口。
+        let churn = crate::syscall::soakload_churn_readout();
         berry_hal_aarch64::kern_lock::with_print_lock(|| {
             berry_hal_aarch64::uart_puts(b"SOAK t=");
             berry_hal_aarch64::uart_put_dec(n);
@@ -3328,6 +3335,8 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
             berry_hal_aarch64::uart_put_dec(pages);
             berry_hal_aarch64::uart_puts(b" lost=");
             berry_hal_aarch64::uart_put_dec(lost);
+            berry_hal_aarch64::uart_puts(b" churn=");
+            berry_hal_aarch64::uart_put_dec(churn);
             berry_hal_aarch64::uart_puts(b"\n");
         });
         berry_hal_aarch64::kern_lock::klock_exit();
@@ -4717,13 +4726,15 @@ extern "C" fn task_pp(arg: usize) -> ! {
 /// 后**常驻不退**——master 表持有舰队三 handle（进程/Vmar/data VMO）=
 /// 载荷进程生命周期锚（master 退 = 表 drain 关进程 handle = 舰队连坐死，
 /// 「常驻载荷」合同破坏）。`SOAKLOAD fleet on n=` 自证行打在舰队真 spawn
-/// 之后（行在 ⟺ 载荷在打）。永睡形：1h 死线轮转 block（醒因必 Timeout
-/// ——哑 Event 无人 signal，soakmon 同款契约）；boot 期一次性 spawn 链
-/// （~10 svc）后零内核态足迹。
+/// 之后（行在 ⟺ 载荷在打）；随后 arm churn 计数（S-5e M1：vmo_create 成功
+/// 面计数 → 心跳 v2.1 churn=——svc 恒败/gen 顶格/写者被杀即冻红）。永睡形：
+/// 1h 死线轮转 block（醒因必 Timeout——哑 Event 无人 signal，soakmon 同款
+/// 契约）；boot 期一次性 spawn 链（~10 svc）后零内核态足迹。
 extern "C" fn task_soakload(arg: usize) -> ! {
     use berry_sched::WakeReason;
     use crate::user::user_soakload_code;
     let (_hp, _hv, _hd) = storm_spawn_fleet("L", user_soakload_code(), SOAKLOAD_WRITER_N, 1);
+    crate::syscall::soakload_churn_arm();
     berry_hal_aarch64::kern_lock::with_print_lock(|| {
         berry_hal_aarch64::uart_puts(b"SOAKLOAD fleet on n=");
         berry_hal_aarch64::uart_put_dec((1 + SOAKLOAD_WRITER_N) as u64);

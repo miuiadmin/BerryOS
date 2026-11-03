@@ -72,8 +72,10 @@ DEADLINE_BOOT=600   # 秒：boot 覆盖十标记 + 门控自证行到齐。600 =
                     # 300s 余量 <1.5x，宿主争用拉伸即翻（S-5d 三场红定谳后升
                     # 600 = 基线 3x 裕量；再超 = R1 审计非再升）
 PER_BEAT_CAP=150    # 秒：单拍 wall 帽（本机实测 ≈60s wall 的 2.5x；历史半率机型 ≈120s 的 1.25x）
-FIRST_BEAT_CAP=$(( DEADLINE_BOOT + 5 * PER_BEAT_CAP + 60 ))     # 首拍：boot + 潜伏五周期 + 余量
-TOTAL_CAP=$(( DEADLINE_BOOT + (MINUTES + 5) * PER_BEAT_CAP + 120 ))  # 总帽（兜结构性挂死）
+FIRST_BEAT_CAP=$(( 5 * PER_BEAT_CAP + 60 ))    # 首拍：潜伏五周期 + 余量（tq 从 boot
+                 # 收拍后起算——不含 boot 分量；S-5e m7 勘误旧公式双计
+                 # DEADLINE_BOOT=600：方向保守不产假绿，现口径即所言）
+TOTAL_CAP=$(( (MINUTES + 5) * PER_BEAT_CAP + 120 ))  # 总帽（兜结构性挂死；同上不含 boot 分量）
 POLL=2
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-soak.XXXXXX")
