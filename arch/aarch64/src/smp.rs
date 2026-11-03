@@ -134,6 +134,15 @@ pub struct SmpCpu {
     /// 本核 park 派发计数（on_irq_tick cur==null 出选真任务的次数——
     /// c1 恒 0 时证「派发发生过但任务没活到下个 tick」。S-2b 排障期）。
     pub disp_cnt: u64,
+    /// 本核上下文切换计数（S-5a per-CPU 统计——`SWITCHES` 全局原子的分核
+    /// 面；sched 切换位点调 [`note_switch_cpu`]，本核独占写）。soak-smp 心跳
+    /// 侧 sw0/sw1 各自严格递增 = 双核各自调度活（全局计数盖不住对核冻死）。
+    pub sw_cnt: u64,
+    /// 本核 park 入口计数（S-5a——idle_loop None 臂/secondary_main park 尾
+    /// 调 [`note_park_cpu`]）。soak 双核满载证明：满载核 park 停增（深 park
+    /// 窗无醒源）；心跳侧 idle 增量有界帽 = 满载谓词（`测试策略.md` idle
+    /// residency 常设义务的最低限度兑现）。
+    pub park_cnt: u64,
 }
 
 const fn zero_cpu() -> SmpCpu {
@@ -149,6 +158,8 @@ const fn zero_cpu() -> SmpCpu {
         ticks: 0,
         ticks_pre: 0,
         disp_cnt: 0,
+        sw_cnt: 0,
+        park_cnt: 0,
     }
 }
 
@@ -168,6 +179,10 @@ const _: () = assert!(core::mem::offset_of!(SmpCpu, par_witness) == 56);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, ticks) == 64);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, ticks_pre) == 72);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, disp_cnt) == 80);
+// S-5a 尾插两字段（sw_cnt@88/park_cnt@96）：逻辑尺寸 104 仍向上取整 128
+// （align 64）——size 断言不变；asm 只钉 0/8/16 三偏移，不受尾插影响。
+const _: () = assert!(core::mem::offset_of!(SmpCpu, sw_cnt) == 88);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, park_cnt) == 96);
 
 /// 副核 per-CPU 块（TPIDR_EL1 由 secondary_entry asm ⑩ 自钉）。
 #[no_mangle]
@@ -417,6 +432,53 @@ pub fn note_tick_entry() {
     unsafe {
         let my = base as *mut SmpCpu;
         (*my).ticks_pre = (*my).ticks_pre.wrapping_add(1);
+    }
+}
+
+/// 本核上下文切换计数（S-5a——sched 六切换位点全局 `SWITCHES` 自增后调用；
+/// 与全局计数器同窗、本核独占写）。读面：[`sw_park_readout`]。
+pub fn note_switch_cpu() {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return; // ktest/早期防御窗（切换面实际不可达，防御对齐 note_tick 族）
+    }
+    // SAFETY: 本核块；sw_cnt 本核独占写（切换位点 IRQ 屏蔽/锁窗内）。
+    unsafe {
+        let my = base as *mut SmpCpu;
+        (*my).sw_cnt = (*my).sw_cnt.wrapping_add(1);
+    }
+}
+
+/// 本核 park 入口计数（S-5a——idle_loop None 臂 / secondary_main park 尾
+/// wfi 前调用；本核独占写）。读面：[`sw_park_readout`]。
+pub fn note_park_cpu() {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return; // ktest/早期防御窗
+    }
+    // SAFETY: 本核块；park_cnt 本核独占写（park 尾屏蔽窗内单写者）。
+    unsafe {
+        let my = base as *mut SmpCpu;
+        (*my).park_cnt = (*my).park_cnt.wrapping_add(1);
+    }
+}
+
+/// S-5a per-CPU 统计读数（跨核 volatile 单字读，对齐 u64 原子无撕裂；谓词
+/// 为严格递增/有界增量断言，无需一致快照）：返回 (sw0, sw1, park0, park1)。
+/// soak-smp 心跳消费：sw0/sw1 各自严格递增 = 双核各自调度活；park 增量
+/// 有界 = 满载谓词（满载核 park 停增）。
+pub fn sw_park_readout() -> (u64, u64, u64, u64) {
+    // SAFETY: 跨核 volatile 读（诊断谓词）。
+    unsafe {
+        let s0 = (&raw const SMP_CPU0.sw_cnt).read_volatile();
+        let s1 = (&raw const SMP_CPU1.sw_cnt).read_volatile();
+        let p0 = (&raw const SMP_CPU0.park_cnt).read_volatile();
+        let p1 = (&raw const SMP_CPU1.park_cnt).read_volatile();
+        (s0, s1, p0, p1)
     }
 }
 

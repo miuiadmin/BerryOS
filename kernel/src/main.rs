@@ -3269,6 +3269,8 @@ pub unsafe extern "C" fn secondary_main() -> ! {
         // wfi，enable→wfi 间到达的 IRQ 会被先服务（pending 位消费掉）后 wfi
         // 直睡 = 丢唤醒；屏蔽态 wfi 由 GIC 线 pending 唤醒，醒后 enable_irq
         // 即取该中断（无 pending 则直落 disable，窗微无害）——三步闭环。
+        // S-5a：park 入口计数（本核块独占写；TPIDR 未挂的防御窗内早退）。
+        berry_hal_aarch64::smp::note_park_cpu();
         berry_hal_aarch64::wfi();
         berry_hal_aarch64::enable_irq();
         berry_hal_aarch64::disable_irq();

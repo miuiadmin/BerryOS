@@ -731,6 +731,7 @@ pub fn yield_now() {
                 hal::activate_aspace(0, 0);
             }
             SWITCHES.fetch_add(1, Ordering::Relaxed);
+            hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             note_switch(prev, core::ptr::null_mut(), SwitchKind::Yield);
             klock_release_switch(prev);
             hal::task::context_switch(&raw mut (*prev).ctx, hal::smp::sec_park_ctx() as *const _);
@@ -866,6 +867,7 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
                 hal::activate_aspace(0, 0);
             }
             SWITCHES.fetch_add(1, Ordering::Relaxed);
+            hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             note_switch(cur, core::ptr::null_mut(), SwitchKind::Exit);
             // 「-> ! 的 syscall 永不返回」同款：cur 已 dequeue 永不回——park
             // 切走后本上下文废弃（halt 不可达兜底保持）。
@@ -1501,6 +1503,7 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
                     hal::activate_aspace(0, 0);
                 }
                 SWITCHES.fetch_add(1, Ordering::Relaxed);
+                hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
                 note_switch(cur, core::ptr::null_mut(), SwitchKind::Block);
                 klock_release_switch(cur);
                 hal::task::context_switch(&raw mut (*cur).ctx, hal::smp::sec_park_ctx() as *const _);
@@ -2006,6 +2009,7 @@ pub fn idle_loop() -> ! {
                     // wfi 全程 PSTATE.I=1——醒于 GIC pending 线而不服务；醒后
                     // enable 即取该中断（handler 内 SGI 快速重调度/入队皆可），
                     // 再 disable 回环顶重检。
+                    hal::smp::note_park_cpu(); // S-5a per-CPU park 统计（本核独占写）
                     hal::wfi();
                     hal::enable_irq();
                     hal::disable_irq();
@@ -2022,6 +2026,7 @@ pub fn idle_loop() -> ! {
                 // tickless：空闲不 arm、屏蔽 CNTV，wfi 睡。
                 // SAFETY: 写 CNTV_CTL；EL1。
                 unsafe { hal::timer::mask() };
+                hal::smp::note_park_cpu(); // S-5a per-CPU park 统计（本核独占写）
                 hal::enable_irq(); // 允许 IRQ 唤醒 wfi（Step 4 无源 → 永睡 = 干净 halt）
                 hal::wfi();
                 // 被唤醒（Step 5+）→ 回 loop 顶重检 runqueue。
@@ -2128,6 +2133,7 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // （同一中断上下文、微秒级差）——CVAL 已是满片终点，此处不再 arm。
             set_current(next_ptr);
             let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+            hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             activate_if_changed(cur, next_ptr);
             note_switch(cur, next_ptr, SwitchKind::Preempt);
             // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
@@ -2431,6 +2437,7 @@ unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
     SWITCHES.fetch_add(1, Ordering::Relaxed);
+    hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
     // SAFETY: prev=本核 park ctx（惰性捕获——首次派发把调用帧存进本核槽）、
     // next 有效。next 首切经 trampoline eret 落 EL0；任务侧 block/preempt 回
@@ -2463,6 +2470,7 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
     SWITCHES.fetch_add(1, Ordering::Relaxed);
+    hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     activate_if_changed(idle, next_ptr);
     note_switch(idle, next_ptr, SwitchKind::Preempt);
     // SAFETY: prev=IDLE.ctx（idle_loop 帧惰性捕获，与任务侧 None 臂切回点

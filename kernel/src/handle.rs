@@ -449,6 +449,55 @@ impl HandleTable {
             .count()
     }
 
+    /// **完整性走查**（S-5 相 7 HT 风暴终账 + 任意静默点可用）：全表扫描验证
+    /// 结构不变量，违规返 `Err`（定位描述）——**零分配、panic-free**：调用方
+    /// 打专用 FAIL 行（`with_print_lock` 整段包络）+ 受控停机，**不裸 panic**
+    /// （SMP 下 panic handler 无锁打印 + halt 本核，对核仍在跑 = 撕行风险）。
+    ///
+    /// 不变量（违反即表已腐败——并发竞态的真病灶面）：
+    /// 1. 槽 0 恒 `Free`（handle 0 = `BERRY_HANDLE_INVALID` 保留位）；
+    /// 2. `Free.next_gen ≥ 1`（出生即 1，close/take/drain 只增不减；0 = 写坏。
+    ///    `> GEN_MASK` 合法——gen 耗尽槽由 [`Self::alloc_slot`] 跳过驻留）；
+    /// 3. `Used.gen ∈ [1, GEN_MASK]`（[`Self::take_gen`] 只发行此域值）；
+    /// 4. `Used` 槽指向的 `ObjRef.refs ≥ 1`（0 = 引用归零对象已释放但槽仍
+    ///    Used = UAF——并发 close/drain 竞态在此暴露）。
+    ///
+    /// 调用契约：与表的其他访问同序——syscall 表类临界窗内，或 IRQ 屏蔽静默
+    /// 点（风暴前基线 / fleet join 后终账）。返回 `Ok(在用槽数)` 供调用方
+    /// 对账（走查计数独立累计，不复用 [`Self::used_count`] 的遍历）。
+    pub fn integrity_check(&self) -> Result<usize, &'static str> {
+        // 零分配出生态：无槽可查（槽 0 尚未惰性铺出）。
+        let Some(first) = self.slots.first() else {
+            return Ok(0);
+        };
+        if !matches!(first, SlotState::Free { .. }) {
+            return Err("HT integrity: slot 0 not Free");
+        }
+        let mut used = 0usize;
+        for s in &self.slots {
+            match s {
+                SlotState::Free { next_gen } => {
+                    if *next_gen == 0 {
+                        return Err("HT integrity: Free next_gen=0");
+                    }
+                }
+                SlotState::Used { gen, obj, .. } => {
+                    if *gen == 0 || *gen > GEN_MASK {
+                        return Err("HT integrity: Used gen out of range");
+                    }
+                    // SAFETY: 槽在表且 gen 在发行域内 → 按表不变量指针有效；
+                    // 本走查职责恰是探测不变量破缺（refs==0 即 UAF 信号），
+                    // 读面止于诊断取值（usize），无派生解引用。
+                    if unsafe { (*obj.as_ptr()).refs } == 0 {
+                        return Err("HT integrity: Used refs=0 (UAF)");
+                    }
+                    used += 1;
+                }
+            }
+        }
+        Ok(used)
+    }
+
     /// [`Self::get`] 的裸指针底层：查表 → 类型 → 权限后返回对象引用指针 + 权利。
     /// **可变访问的正规入口**（syscall 写路径 `as_*_mut`）与**双对象同借**
     /// （`vmar_map` 的 vmar + vmo）用——两个 `get_raw` 指针类型门控互异 ⇒ 必指

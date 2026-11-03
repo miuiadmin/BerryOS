@@ -2336,9 +2336,24 @@ fn test_handle() {
     assert_eq!(ht.get(0, ObjType::Vmo, 0).err(), Some(ERR_BAD_HANDLE));
     assert_eq!(ht.close(0xDEAD_BEEF).err(), Some(ERR_BAD_HANDLE));
 
+    // H. integrity_check 正向走查（S-5a）：此刻混合态 = 两 Used（h2b/h4 两对象
+    //    各一）+ 槽 1/2 空（代号已进）→ Ok(2)；零分配空表 → Ok(0)。走查
+    //    逻辑本身的 boot 窗验证（变异标定株：破坏 gen/refs 后此断言必红）。
+    assert_eq!(
+        ht.integrity_check(),
+        Ok(2),
+        "HANDLE：混合态走查须报 2 在用槽"
+    );
+    let ht_empty = HandleTable::new();
+    assert_eq!(ht_empty.integrity_check(), Ok(0), "HANDLE：空表走查 Ok(0)");
+
     // 收尾：全关——h2b 的 close 使第一对象引用归零（走最后释放路径）。
     ht.close(h2b).expect("HANDLE：close h2b");
     ht.close(h4).expect("HANDLE：close h4");
+
+    // H2. 全关后走查归零（终账恒等——B-0 churn 金丝雀同判据，走查面收口）。
+    assert_eq!(ht.integrity_check(), Ok(0), "HANDLE：全关后走查须归零");
+    assert_eq!(ht.used_count(), 0, "HANDLE：全关后 used_count 归零");
 
     berry_hal_aarch64::uart_puts(b"HANDLE ok\n");
 }
