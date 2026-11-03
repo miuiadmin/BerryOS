@@ -428,12 +428,14 @@ fn main() {
     close_h(rhs[0]);
 
     // —— VOTE/POWER_MODE：1B 烘焙线成功形（§0「只记账不仲裁」——票收下
-    // 即回执；POWER_DIM = §3#6 钉的 DIM 档）。
+    // 即回执；POWER_DIM = §3#6 钉的 DIM 档）。VOTE scene 位携 berry_intent
+    // 六档值（GUI-8 §4 段①/ADR #58 收官——常态票 = INTERACTIVE，SCENE
+    // 词表退役 deprecated）。
     let m = enc_req(gp::encode_present_req(
         &mut req,
         &gp::PresentReq::Vote {
             sticky: 0,
-            scene: gp::SCENE_NORMAL,
+            scene: gp::Intent::Interactive as u8,
             min_hz: 0,
             max_hz: 60,
             preferred_hz: 60,

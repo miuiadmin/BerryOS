@@ -181,7 +181,8 @@ impl FrameOutcome {
 
 /// 帧率协商票面（§6 冻结——**引擎只产票不仲裁**，仲裁在显示服务，
 /// 对齐条 12）。全字段 pub（§6 逐字——sticky 为粘性场景位，v1 票源恒
-/// 0 除 IDLE 场景置 1 停帧粘滞）。
+/// 0 除 IDLE 场景置 1 停帧粘滞）；`scene` 携 berry_intent 六档值
+/// （GUI-8 §4 段①/ADR #58 收官——SCENE 词表退役，见 `ballot_for`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoteBallot {
     pub min_hz: u16,
@@ -192,9 +193,11 @@ pub struct VoteBallot {
 }
 
 /// 场景票面定值表（v1）：idle（**可全停**——min/max/preferred 全 0 +
-/// sticky=1 停帧粘滞）/ 交互进行中（SCENE_DRAG 120 档）/ 动画
-/// （SCENE_ANIMATED 60 档）/ 常态（SCENE_NORMAL 60 档上限）。scene
-/// 取 guiproto 单源常量；sticky 唯置位点 = idle（停帧粘滞——显示服务
+/// sticky=1 停帧粘滞）/ 交互进行中（120 档）/ 动画（60 档）/ 常态
+/// （60 档上限）。scene 携 berry_intent 六档值（GUI-8 §4 段①/ADR #58
+/// 收官：帧率 ballot = berry_intent 的图形场景特化——hz 三元组仍按图形
+/// 相位分档，档位字节折进六档语义域：交互谱系三相位 → INTERACTIVE、
+/// idle → BACKGROUND）。sticky 唯置位点 = idle（停帧粘滞——显示服务
 /// 收到 sticky 票后不再唤醒引擎，§3.8）。
 pub(crate) fn ballot_for(anim_active: bool, interacting: bool, idle: bool) -> VoteBallot {
     if idle {
@@ -202,7 +205,7 @@ pub(crate) fn ballot_for(anim_active: bool, interacting: bool, idle: bool) -> Vo
             min_hz: 0,
             max_hz: 0,
             preferred_hz: 0,
-            scene: berry_guiproto::SCENE_IDLE,
+            scene: berry_guiproto::Intent::Background as u8,
             sticky: 1,
         };
     }
@@ -211,7 +214,7 @@ pub(crate) fn ballot_for(anim_active: bool, interacting: bool, idle: bool) -> Vo
             min_hz: 60,
             max_hz: 120,
             preferred_hz: 120,
-            scene: berry_guiproto::SCENE_DRAG,
+            scene: berry_guiproto::Intent::Interactive as u8,
             sticky: 0,
         };
     }
@@ -220,7 +223,7 @@ pub(crate) fn ballot_for(anim_active: bool, interacting: bool, idle: bool) -> Vo
             min_hz: 30,
             max_hz: 120,
             preferred_hz: 60,
-            scene: berry_guiproto::SCENE_ANIMATED,
+            scene: berry_guiproto::Intent::Interactive as u8,
             sticky: 0,
         };
     }
@@ -228,7 +231,7 @@ pub(crate) fn ballot_for(anim_active: bool, interacting: bool, idle: bool) -> Vo
         min_hz: 0,
         max_hz: 60,
         preferred_hz: 60,
-        scene: berry_guiproto::SCENE_NORMAL,
+        scene: berry_guiproto::Intent::Interactive as u8,
         sticky: 0,
     }
 }

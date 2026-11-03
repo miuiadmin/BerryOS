@@ -15,3 +15,10 @@ description = "BerryOS GUI wire protocol: present/input/hdi domain op encoder/pa
 license = "Apache-2.0"
 
 [dependencies]
+# intent 六档词表单源（GUI-8 §4 段①/ADR #58 收官）：VOTE scene 字节改携
+# berry_intent 六档值——判别值自 berry-manifest `Intent` 取（镜像链：
+# sched/src/intent.rs 单一事实源 → manifest 判别值钉板，本 crate 转发，
+# 禁第三份手抄）。不走 berry-sys：六档词表不在彼处（只有
+# CHAN_OPT_NO_INTENT），且其常量层 = abi.toml 生成面（syscall ABI），
+# 调度词表手写进彼 = 破其单源纪律。
+berry-manifest = { path = "../berry-manifest" }

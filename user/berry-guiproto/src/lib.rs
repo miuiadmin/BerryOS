@@ -1,6 +1,8 @@
 //! berry-guiproto —— GUI wire 协议纯函数库（GUI-4 段①，`berry-fsproto`/
 //! `berry-psproto`/`berry-netdproto` 先例：「解析器即产品」，零分配、零
-//! unsafe、零依赖，输入只借用）。
+//! unsafe、输入只借用；唯一依赖 = berry-manifest——GUI-8 §4 段①/ADR #58
+//! 收官：VOTE scene 字节改携 berry_intent 六档值，`Intent` 判别值经其
+//! 镜像 sched/src/intent.rs 单源转发，禁第三份手抄）。
 //!
 //! 拓扑（docs/GUI-4实施设计草案.md §2）：**三域 = 三对独立 channel**，不是
 //! 一个 op 空间——能力即权限（客户端拿不到它域 channel 端点就结构性发不了
@@ -168,16 +170,54 @@ pub const BUTTON_R: u8 = 1 << 1;
 /// 中键（位域）。
 pub const BUTTON_M: u8 = 1 << 2;
 
-/// 场景：常态。
+// ---------- SCENE 词表（已退役——GUI-8 §4 段① / ADR #58 收官）----------
+//
+// v0 帧率意图第一版五值词表；GUI-8 起 VOTE scene 字节**改携 berry_intent
+// 六档值**（下方 [`Intent`] 转发，单源链 = sched/src/intent.rs →
+// berry-manifest 判别值钉板）。本词表**停发非删值**：常量保留 +
+// deprecated 标注（add-only 纪律——删 wire 值 = 破已出货编码器的跨版本
+// 流）；旧值 0..=4 落在 intent 域 0x00..=0x05 之内，parse 面随刀收宽
+// （见 `scene_known`）——老编码器不炸，语义重释。发送侧折算走
+// [`scene_to_intent`] 或直接发 [`Intent`] 档。
+
+/// 场景：常态（退役词表——停发非删值，见上方块注）。
+#[deprecated(note = "SCENE 词表已退役（GUI-8/ADR #58）：VOTE scene 位改携 Intent 六档值；旧值折算走 scene_to_intent")]
 pub const SCENE_NORMAL: u8 = 0;
-/// 场景：滚动。
+/// 场景：滚动（退役词表——停发非删值，见上方块注）。
+#[deprecated(note = "SCENE 词表已退役（GUI-8/ADR #58）：VOTE scene 位改携 Intent 六档值；旧值折算走 scene_to_intent")]
 pub const SCENE_SCROLL: u8 = 1;
-/// 场景：拖拽。
+/// 场景：拖拽（退役词表——停发非删值，见上方块注）。
+#[deprecated(note = "SCENE 词表已退役（GUI-8/ADR #58）：VOTE scene 位改携 Intent 六档值；旧值折算走 scene_to_intent")]
 pub const SCENE_DRAG: u8 = 2;
-/// 场景：动画。
+/// 场景：动画（退役词表——停发非删值，见上方块注）。
+#[deprecated(note = "SCENE 词表已退役（GUI-8/ADR #58）：VOTE scene 位改携 Intent 六档值；旧值折算走 scene_to_intent")]
 pub const SCENE_ANIMATED: u8 = 3;
-/// 场景：空闲。
+/// 场景：空闲（退役词表——停发非删值，见上方块注）。
+#[deprecated(note = "SCENE 词表已退役（GUI-8/ADR #58）：VOTE scene 位改携 Intent 六档值；旧值折算走 scene_to_intent")]
 pub const SCENE_IDLE: u8 = 4;
+
+/// berry_intent 六档词表（转发 `berry_manifest::Intent`——判别值
+/// 0x00..=0x05 的镜像钉板在彼处，单一事实源 = `sched/src/intent.rs`）。
+/// VOTE scene 字节的值域即此域（GUI-8 §4 段①/ADR #58 收官：帧率
+/// ballot = berry_intent 的图形场景特化——hz 三元组是图形面，档位字节
+/// 归六档语义域；呈现侧仲裁位保留，ADR #53 per-surface 意图位不撤）。
+pub use berry_manifest::Intent;
+
+/// SCENE 旧词表 → berry_intent 六档折算（ADR #58 收官映射表）：交互
+/// 谱系四值（NORMAL/SCROLL/DRAG/ANIMATED）→ [`Intent::Interactive`]、
+/// IDLE（可全停）→ [`Intent::Background`]；未知值 None loud——不静默折
+/// [`Intent::Unspecified`]：「未声明」是 0x00 自身的语义，误折 = 顶档
+/// 通胀（`sched/src/intent.rs` 数值约定注）。
+#[allow(deprecated)] // 折算的源域就是退役词表本体（停发 ≠ 禁读）
+pub const fn scene_to_intent(scene: u8) -> Option<u8> {
+    match scene {
+        SCENE_NORMAL | SCENE_SCROLL | SCENE_DRAG | SCENE_ANIMATED => {
+            Some(Intent::Interactive as u8)
+        }
+        SCENE_IDLE => Some(Intent::Background as u8),
+        _ => None,
+    }
+}
 
 /// 电源模式：正常。
 pub const POWER_NORMAL: u8 = 0;
@@ -343,8 +383,12 @@ const fn submit_flags_known(f: u8) -> bool {
     f & !(SUBMIT_F_DAMAGE_FULL | SUBMIT_F_UNSQUASHABLE) == 0
 }
 
+/// VOTE scene 字节值域 = berry_intent 六档（GUI-8 §4 段① 起 scene 位携
+/// [`Intent`] 判别值 0x00..=0x05；退役 SCENE 值 0..=4 为其子集——域随刀
+/// 收宽属 add-only，老编码器不破）。0x06.. 保留段双侧拒（对齐
+/// `sched/src/intent.rs` 编码冻结注记：0x06..0x0F 保留、内核 -EINVAL）。
 const fn scene_known(s: u8) -> bool {
-    s <= SCENE_IDLE
+    s <= Intent::Maintenance as u8
 }
 
 const fn mode_known(m: u8) -> bool {
@@ -602,6 +646,8 @@ pub enum PresentReq {
     Vote {
         /// 布尔语义（0/1）：跨场景切换保持。
         sticky: u8,
+        /// 帧率意图档（GUI-8 §4 段①起携 berry_intent 六档值——[`Intent`]
+        /// 判别值 0x00..=0x05；旧 SCENE 词表退役，折算见 [`scene_to_intent`]）。
         scene: u8,
         min_hz: u16,
         max_hz: u16,
@@ -1986,6 +2032,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Vote scene 沿用退役 SCENE_ANIMATED——老值在新域仍合法（跨版本兼容面）
     fn present_req_all_ops_roundtrip() {
         let reqs = [
             PresentReq::Getinfo,
@@ -2174,6 +2221,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // 黄金字节沿退役 SCENE_DRAG(=2)——跨版本流钉板（值在 intent 域内合法）
     fn vote_roundtrip_domain_and_golden() {
         let req = PresentReq::Vote {
             sticky: 1,
@@ -2195,8 +2243,9 @@ mod tests {
         ];
         assert_eq!(&buf[..n], &want[..]);
         assert_eq!(parse_present_req(&buf[..n]), Some(req));
-        // 全场景值域往返。
-        for s in [SCENE_NORMAL, SCENE_SCROLL, SCENE_DRAG, SCENE_ANIMATED, SCENE_IDLE] {
+        // 全值域往返：intent 六档 0x00..=0x05（GUI-8 §4 段①起 scene 位携
+        // 六档值；退役 SCENE 值 0..=4 含于其内——跨版本兼容面）。
+        for s in 0..=Intent::Maintenance as u8 {
             let r = PresentReq::Vote {
                 sticky: 0,
                 scene: s,
@@ -2207,7 +2256,9 @@ mod tests {
             let n = encode_present_req(&mut buf, &r).unwrap();
             assert_eq!(parse_present_req(&buf[..n]), Some(r));
         }
-        // 值域拒绝：sticky 2 / scene 5（编码 + 解析对称）。
+        // 值域拒绝：sticky 2 / scene 6（intent 保留段 0x06.. 首——编码 +
+        // 解析对称；scene 5 = INTENT_MAINTENANCE GUI-8 起入域，旧拒点 5
+        // 让位 6）。
         let bad_sticky = PresentReq::Vote {
             sticky: 2,
             scene: SCENE_NORMAL,
@@ -2221,19 +2272,47 @@ mod tests {
         assert_eq!(parse_present_req(&f), None);
         let bad_scene = PresentReq::Vote {
             sticky: 0,
-            scene: SCENE_IDLE + 1,
+            scene: Intent::Maintenance as u8 + 1,
             min_hz: 0,
             max_hz: 0,
             preferred_hz: 0,
         };
         assert_eq!(encode_present_req(&mut buf, &bad_scene), None);
         let mut f2 = want;
-        f2[2] = 5;
+        f2[2] = Intent::Maintenance as u8 + 1;
         assert_eq!(parse_present_req(&f2), None);
         // 截断每切点。
         for cut in 0..VOTE_REQ_LEN {
             assert_eq!(parse_present_req(&buf[..cut]), None);
         }
+    }
+
+    #[test]
+    #[allow(deprecated)] // 源域 = 退役 SCENE 词表（折算面本体——停发 ≠ 禁读）
+    fn scene_to_intent_folds_full_domain() {
+        // 交互谱系四值 → INTERACTIVE(0x02)。
+        for s in [SCENE_NORMAL, SCENE_SCROLL, SCENE_DRAG, SCENE_ANIMATED] {
+            assert_eq!(scene_to_intent(s), Some(Intent::Interactive as u8), "scene={}", s);
+        }
+        // IDLE → BACKGROUND(0x04)。
+        assert_eq!(scene_to_intent(SCENE_IDLE), Some(Intent::Background as u8));
+        // 未知值 None loud：0x05..=0xFF 全拒（0x05 = INTENT_MAINTENANCE
+        // 非 SCENE 源值；0x06.. = intent 保留段；高位段同拒）。
+        for v in Intent::Maintenance as u8..=u8::MAX {
+            assert_eq!(scene_to_intent(v), None, "scene={}", v);
+        }
+        // 折算产物全部落 wire 合法域（scene_known）——发送面闭环。
+        for s in [SCENE_NORMAL, SCENE_SCROLL, SCENE_DRAG, SCENE_ANIMATED, SCENE_IDLE] {
+            assert!(scene_known(scene_to_intent(s).unwrap()), "scene={}", s);
+        }
+        // 判别值与 sched/intent.rs 冻结面对账（镜像链锚—— berry-manifest
+        // 侧 intent_discriminants_pinned 的对偶断言面）。
+        assert_eq!(Intent::Unspecified as u8, 0x00);
+        assert_eq!(Intent::LatencyCritical as u8, 0x01);
+        assert_eq!(Intent::Interactive as u8, 0x02);
+        assert_eq!(Intent::Utility as u8, 0x03);
+        assert_eq!(Intent::Background as u8, 0x04);
+        assert_eq!(Intent::Maintenance as u8, 0x05);
     }
 
     #[test]

@@ -63,6 +63,9 @@ dependencies = [
 [[package]]
 name = "berry-guiproto"
 version = "0.1.0"
+dependencies = [
+ "berry-manifest",
+]
 
 [[package]]
 name = "berry-layout"

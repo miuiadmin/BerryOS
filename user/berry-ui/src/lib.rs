@@ -9,7 +9,8 @@
 //! `berry-gfx`（渲染消费面：CommandEncoder/GlyphPos/Color/FontSize——
 //! DisplayList 的 `'a` 钉在**调用方 scratch 与 `'static` 图集**上，不钉
 //! 引擎，树与列表解耦无自引用，gfx 坑 1/2 对策）+ `berry-guiproto`
-//! （常量/类型单源非收发：Rect(u32)/DAMAGE_MAX/RESAMPLE_*/SCENE_*；
+//! （常量/类型单源非收发：Rect(u32)/DAMAGE_MAX/RESAMPLE_*/Intent 六档
+//! （GUI-8 §4 段①起票面 scene 位携 intent 值；SCENE_* 退役 deprecated）；
 //! wire 编解码/channel/VMO 全在 embedder——引擎不假设直摸 vblank/hdi
 //! 域，对齐条 19）。**embedder = GUI-5 留位**（guest 侧 gui-wm/gfxdemo
 //! 接驳挂账不在本刀；host 侧 embedder = tests/ 离屏 [u8] 纹理对拍）。

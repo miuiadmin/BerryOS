@@ -153,7 +153,9 @@ impl Gesture {
     }
 
     /// 任一活跃指针处于拖拽态（vote_hint 的 interacting 第三信号——
-    /// §3.8 场景票面 SCENE_DRAG 档的判定源；非拖按住不算交互进行中）。
+    /// §3.8 票面 INTERACTIVE 档（GUI-8 §4 段①折算：拖拽相位 →
+    /// INTERACTIVE，旧 SCENE_DRAG 档退役）的判定源；非拖按住不算
+    /// 交互进行中）。
     pub(crate) fn any_dragging(&self) -> bool {
         self.slots.iter().any(|s| s.active && s.dragging)
     }
