@@ -646,6 +646,11 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
 - `shell --timeout N` 测试/演示自动退出；P1 的 `snapshot=on` 覆盖层未升级为
   qcow2 持久层；PNG 未压缩；540×1200 仍被 1.92MB GOP 缓冲容量拒（`DISP fail`）。
 
+- **P2 × GUI-8 联调（预览，未并）**：`gui8-draft` 2e57502 + 本 P2 内核（临时 worktree）
+  在 480×1000 出状态栏/页指示器/4 列网格；中段控制台测试日志覆盖、图标仍是 dash =
+  GUI-8 在途面。产物 `out/berryos-desktop.img` / `out/berry-desktop-480x1000.png`
+  （gitignored 预览件）。主分支 launcher 仍是 skeleton；GUI-8 合并后 `just image` 即得桌面。
+
 **未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 连续 fb；
 256MiB handoff 修复；PNG 压缩；attach 控制服务。P2 未动 `smoke.sh` 默认 800×600
 与内核 ABI；`run-efi`/smoke 不带 `opt/berry/display` 时零漂移。
