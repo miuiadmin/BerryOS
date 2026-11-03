@@ -201,11 +201,16 @@ fn access_ok(caller_el1: bool, ptr: u64, len: u64, write: bool) -> bool {
 /// 从调用方缓冲拷进内核切片（`vmo_write` 源 / in 参数读）。
 fn copy_from_user(caller_el1: bool, src: u64, dst: &mut [u8]) -> Result<(), i32> {
     if !dst.is_empty() {
+        // S-4 4-2（判例 §A113 walk+copy 同窗铁律）：EL0 路走查与 store 同一
+        // per-AS PT 锁窗——封死他核 unmap/protect 在两步之间撤页的 TOCTOU
+        // （原「单核无 TOCTOU」假设随 SMP 退役）。EL1 路高半直映不取。
+        let _pt = if caller_el1 { None } else { Some(crate::vmar::pt_lock_current()) };
         if !access_ok(caller_el1, src, dst.len() as u64, false) {
             return Err(ERR_FAULT);
         }
-        // SAFETY: 整段界检过（EL1 = 高半直映；EL0 = 调用者表逐页 AP 验过）；
-        // syscall 全程 IRQ 屏蔽 → 校验与拷贝间无任务切换（单核无 TOCTOU）。
+        // SAFETY: 整段界检过（EL1 = 高半直映；EL0 = 调用者表逐页 AP 验过且
+        // 同窗持锁，见上）；syscall 全程 IRQ 屏蔽 → 校验与拷贝间无本核任务
+        // 切换。
         unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst.as_mut_ptr(), dst.len()) };
     }
     Ok(())
@@ -214,6 +219,8 @@ fn copy_from_user(caller_el1: bool, src: u64, dst: &mut [u8]) -> Result<(), i32>
 /// 从内核切片拷出到调用方缓冲（`vmo_read` 目的 / out 参数写）。
 fn copy_to_user(caller_el1: bool, dst: u64, src: &[u8]) -> Result<(), i32> {
     if !src.is_empty() {
+        // S-4 4-2：同 copy_from_user——EL0 路走查与 store 同一 PT 锁窗。
+        let _pt = if caller_el1 { None } else { Some(crate::vmar::pt_lock_current()) };
         if !access_ok(caller_el1, dst, src.len() as u64, true) {
             return Err(ERR_FAULT);
         }
@@ -225,6 +232,8 @@ fn copy_to_user(caller_el1: bool, dst: u64, src: &[u8]) -> Result<(), i32> {
 
 /// 读调用方 in-out u64 槽（vmar_map 的 *vaddr 等）。
 fn copy_in_u64(caller_el1: bool, ptr: u64) -> Result<u64, i32> {
+    // S-4 4-2：同 copy 链同窗铁律（§A113）——EL0 路持锁走查 + 读。
+    let _pt = if caller_el1 { None } else { Some(crate::vmar::pt_lock_current()) };
     if !access_ok(caller_el1, ptr, 8, false) {
         return Err(ERR_FAULT);
     }
@@ -481,6 +490,9 @@ extern "C" fn sys_vmo_decommit(tf: &mut TrapFrame) -> i64 {
 
 /// `vmo_read(vmo, buf, offset, len)`：内核中介读（非映射访问）。门控：READ。
 /// 整段缓冲校验前置（fail-fast，纯读无半截副作用）；256B 分块防吃内核栈。
+/// S-4 4-2：前置 access_ok 是纯走查 fail-fast（不 store），**不是**安全边界
+/// ——真正的 §A113 读者窗在下方 copy_to_user 分块（每块 PT 锁同窗 + 每块
+/// 重查，前置被跨核 TOCTOU 绕过仅导致分块时 -EFAULT）。
 extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     let (h, buf, off, len) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3] as usize, tf.regs[4] as usize);
     let el1 = caller_is_el1(tf);
@@ -510,7 +522,8 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     0
 }
 
-/// `vmo_write(vmo, buf, offset, len)`：内核中介写。门控：WRITE。分块同 read。
+/// `vmo_write(vmo, buf, offset, len)`：内核中介写。门控：WRITE。分块同 read
+/// （前置 access_ok 同为 fail-fast 纯走查，§A113 窗在 copy_from_user 分块）。
 extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
     let (h, buf, off, len) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3] as usize, tf.regs[4] as usize);
     let el1 = caller_is_el1(tf);
@@ -2113,18 +2126,26 @@ pub fn install() {
     // 读者面）。升 TABLE 持 KL 与页表写者互斥；NONE 落类是对抗审查双镜坐实
     // 的本刀漏审回改，NONE 实装号归零（仅默认槽/越界号）。
     reg(NR_CLOCK_READ, sys_clock_read, SVC_CLASS_TABLE);
-    // —— ALL（0x3E）：vmo/vmar 十一号（分配器 + 表 + kill 面）——
-    reg(NR_VMO_CREATE, sys_vmo_create, SVC_CLASS_ALL);
-    reg(NR_VMO_COMMIT, sys_vmo_commit, SVC_CLASS_ALL);
-    reg(NR_VMO_DECOMMIT, sys_vmo_decommit, SVC_CLASS_ALL);
-    reg(NR_VMO_READ, sys_vmo_read, SVC_CLASS_ALL);
-    reg(NR_VMO_WRITE, sys_vmo_write, SVC_CLASS_ALL);
-    reg(NR_VMO_GET_SIZE, sys_vmo_get_size, SVC_CLASS_ALL);
-    reg(NR_VMO_GET_PHYS, sys_vmo_get_phys, SVC_CLASS_ALL);
-    reg(NR_VMAR_MAP, sys_vmar_map, SVC_CLASS_ALL);
-    reg(NR_VMAR_UNMAP, sys_vmar_unmap, SVC_CLASS_ALL);
-    reg(NR_VMAR_PROTECT, sys_vmar_protect, SVC_CLASS_ALL);
-    reg(NR_VMAR_ALLOCATE, sys_vmar_allocate, SVC_CLASS_ALL);
+    // —— TABLE（0x20，仅 KL）：vmo/vmar 十一号——S-4 4-2 自 ALL（0x3E）降档，
+    // 判例 §A115 四问逐项过：①读者面 = 本组号自身 copy 链（vmo_read/write、
+    // vmar_map in/out 等）与他核页表写者——KL 保留即互斥不失，且本刀起 copy
+    // 链另持 per-AS PT 锁（§A113 同窗铁律，弃 KL 后的互斥后继）；handler 区
+    // 零 berry_sched 触达（结构位原就未用）；②位集收缩 = 取锁子集不添边
+    // （真正的新边 PT 锁恒嵌 KL 窗内取放 = §A108 过渡态合法）；③copy 链跨核
+    // 分窗 = 每次调用一窗（256B 分块粒度可续取）；④PT 锁不进 HELD 位图、不
+    // 绑 CURRENT（零镜像面）。KL 留守实义务 = 帧分配器（纯 KL 串行）+
+    // handle 表 + 堆 + 跨 AS 面（同 VMO 映两 AS 的 untrack_map 竞态）。——
+    reg(NR_VMO_CREATE, sys_vmo_create, SVC_CLASS_TABLE);
+    reg(NR_VMO_COMMIT, sys_vmo_commit, SVC_CLASS_TABLE);
+    reg(NR_VMO_DECOMMIT, sys_vmo_decommit, SVC_CLASS_TABLE);
+    reg(NR_VMO_READ, sys_vmo_read, SVC_CLASS_TABLE);
+    reg(NR_VMO_WRITE, sys_vmo_write, SVC_CLASS_TABLE);
+    reg(NR_VMO_GET_SIZE, sys_vmo_get_size, SVC_CLASS_TABLE);
+    reg(NR_VMO_GET_PHYS, sys_vmo_get_phys, SVC_CLASS_TABLE);
+    reg(NR_VMAR_MAP, sys_vmar_map, SVC_CLASS_TABLE);
+    reg(NR_VMAR_UNMAP, sys_vmar_unmap, SVC_CLASS_TABLE);
+    reg(NR_VMAR_PROTECT, sys_vmar_protect, SVC_CLASS_TABLE);
+    reg(NR_VMAR_ALLOCATE, sys_vmar_allocate, SVC_CLASS_TABLE);
     reg(NR_PROCESS_CREATE, sys_process_create, SVC_CLASS_ALL);
     // —— RQ+TABLE（0x2C）：start 双号（enqueue 双核升序 + 表）——
     reg(NR_PROCESS_START, sys_process_start, SVC_CLASS_RQ_TABLE);

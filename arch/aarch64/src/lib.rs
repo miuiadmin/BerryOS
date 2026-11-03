@@ -20,6 +20,7 @@ mod paging;
 pub mod smp;
 pub mod syscall;
 pub mod task;
+pub mod tlbshoot;
 pub mod timer;
 pub mod trap;
 pub mod uart;
@@ -116,6 +117,12 @@ pub fn tlbi_aside1(asid: u16) {
 /// （EL0 svc 时 TTBR0 仍是调用者页表）。
 pub fn current_ttbr0_pa() -> usize {
     mmu::current_ttbr0_pa()
+}
+
+/// S-4 4-2：读当前 TTBR0_EL1 的 ASID 字段（bits[63:48]）——per-AS PT 锁的
+/// 读者键（与 [`current_ttbr0_pa`] 同一读点，同窗一致）。
+pub fn current_asid() -> u16 {
+    mmu::current_asid()
 }
 
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。

@@ -1345,7 +1345,11 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                         assert!(mask == 0b11, "G1.5 FAIL: 唤醒环缺路径（mask={:#b}，须 Signaled|Timeout 双覆盖）", mask);
                     }
                 }
-                berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
+                // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（bringup 后裸打撕行面，
+                // 同 main.rs K BLOCK 判例）。
+                berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                    berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
+                });
                 // R-0（基准与压力测试设计.md §9）：唤醒延迟直方图 boot 尾一行。
                 // 落点契约：watchdog 单次执行 + 下行 exit_current 切走不归 →
                 // **恰一次**；写在 exit 之后 = 死码（Plan B v0.5 gotcha 同族）。

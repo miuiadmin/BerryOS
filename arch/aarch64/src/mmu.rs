@@ -241,6 +241,16 @@ pub(crate) fn current_ttbr0_pa() -> usize {
     ttbr as usize & 0x0000_FFFF_FFFF_F000
 }
 
+/// S-4 4-2：当前 TTBR0 的 ASID 字段（bits[63:48]）——syscall copy 链读者
+/// 解析 per-AS PT 锁的键。与 [`current_ttbr0_pa`] 同一读点（EL0 syscall 不
+/// 切 AS，天然 = 调用者 ASID，同窗一致键）。
+pub(crate) fn current_asid() -> u16 {
+    let ttbr: u64;
+    // SAFETY: 特权读；EL1，无副作用。
+    unsafe { asm!("mrs {0}, ttbr0_el1", out(reg) ttbr, options(nostack, preserves_flags)) };
+    (ttbr >> 48) as u16
+}
+
 /// 低半身份表退役（2b-2）：TTBR0 ← 内核空表（ASID 0）+ **全量 TLB 失效**。
 /// 此后低半任何访问必然 fault——ktest 以期望故障正向断言之。
 /// 用 `vmalle1is`：身份时代的低半 TLB 项是 global（boot 块描述符 nG=0），按号
@@ -261,6 +271,17 @@ pub(crate) unsafe fn flush_all_asid() {
     asm!("tlbi vmalle1is", options(nostack, preserves_flags));
     dsb_ish();
     isb();
+}
+
+/// S-4 收端本地全量失效（SGI #2 handler 专用，tlbshoot::irq_ack 调）：非 IS
+/// `vmalle1`——发端 SGI 已按核定向（Others 排自核），收端只清自己的 TLB、
+/// 不再广播。含 global 项（`aside1` 家族按号失效够不着 global）。`dsb ish`
+/// 保证失效完成先于回执计数对发端可观（回执序的排序边）；随后 eret 回中断
+/// 前无需 isb——TLB 已清 + dsb 收口，走查自然取新项。v1 收端粒度 = 全量
+/// （无请求槽）；按号精确（请求槽 + 分代）= v2 优化。
+pub(crate) unsafe fn flush_local_all() {
+    asm!("tlbi vmalle1", options(nostack, preserves_flags));
+    dsb_ish();
 }
 
 // ---- 系统寄存器读写（unsafe 收敛地，裸 asm）----

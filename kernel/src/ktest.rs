@@ -2118,6 +2118,10 @@ fn test_vmo() {
     );
 
     // B. map 即填表 + §5.1 验收：内核经 VMO 映射读写一页（VA 视角）。
+    // S-4 4-2 合同（本段直调 map/unmap/protect 的隐含前提钉板）：ktest 全程
+    // 在 smp_bringup 之前、par_enabled=false——PT 锁零争用一次过、
+    // broadcast() TX=0 零扰动。若未来把本段挪到 SMP 在场后跑，须改经
+    // dispatch 路径（回执等待在 SVC 派发尾）或自证回执已收。
     let mut root = Vmar::new_root(fa, alloc_asid()).expect("VMO：建 root Vmar（ktest 可信语境）");
     root.map(fa, &mut vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
         .expect("VMO：map");

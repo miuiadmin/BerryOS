@@ -151,6 +151,13 @@ BASELINE_ICOUNT = REPO / "tools" / "bench_baseline_icount.txt"
 #   0 观测锚不动。BENCHWAKE 五跑逐字节同（max 46250423）。墙钟双段带内零刷
 #   （B-0 3/12/30/28/260/753、B-1 sys_vmo_rw4k 2019→2171 = SVC 入口锁可见
 #   代价带内合规）。基线随合并树三立。
+# [2026-11-03 S-4 4-2 重证] verdict=exact：0/37/82/166/1574/6937——per-AS PT
+#   锁 + copy 链同窗锁 + 十一号 TABLE 降档落地树：唯一漂移 frame_alloc64k
+#   37→82（镜像尾新增 PT_LOCKS 64KiB BSS 挪帧分配器起点 → 64k 连扫边界位形
+#   变；4k 单页 37 不变佐证 = 纯布局项非锁开销——锁面在 vmar/copy 路径不进
+#   buddy 扫描）；vmo_rw4k 6937 精确不动 = TABLE 降档对 copy 链 icount 面
+#   零成本实证（TABLE 位集不含 vmo_rw 的 RQ 位）。BENCHWAKE 五跑逐字节同
+#   （max 46253280）。基线随 4-2 树四立。
 ICOUNT_TOL = 0.0
 
 BENCH_RE = re.compile(r"^BENCH,([a-z0-9_]+),(\d+),(\d+)$")
