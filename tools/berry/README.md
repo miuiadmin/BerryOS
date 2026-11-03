@@ -92,7 +92,8 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 - `berry input` 走 VNC 输入专用连接（多客户端，不请求帧）；QMP 只留 reset/stop。
   独立 attach 控制服务仍未落，但跨进程注入已由 VNC 覆盖。
 - 默认 `berry shot` 等 `BERRYBOOT ok`，当前测试镜像此时可能还在固件/测试面；要看 GUI
-  请传 `--wait-marker "FBW ok"` 或 launcher 标记。
+  请传 `--wait-marker "FBW ok"` 或 launcher 标记。`--profile phone` 时 guifbd 进入
+  GUI 模式（console 只走串口，不盖桌面）；默认 800×600 仍保留 console 上屏。
 - Windows/Linux 代码路径已写（TCP endpoint / 条件编译），但本轮只在 macOS 实机验证。
 - P1 用 QEMU `snapshot=on` 临时覆盖层，基础镜像只读；跨 boot 持久化（GUI-8 布局）留后续。
 - PNG 用 zlib stored block（无压缩），480×1000 约 1.4 MiB；后续换压缩编码。

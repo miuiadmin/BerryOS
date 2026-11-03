@@ -240,6 +240,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 在 rootfs/virtio 插表段；handoff @下文 move 进 mm::init 前取走，
     // `efi_boot` 同款先例）。
     let mut gop_saved: Option<(u64, u32, u32, u32, u32)> = None;
+    // GUI P2：ramfb 手机档成功时置 1——随 fbinfo 第 6 域交 guifbd，
+    // GUI 模式 console 只走串口/记账，不上屏盖桌面。
+    let mut gui_mode = false;
     if let Some(h) = handoff {
         berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
         berry_hal_aarch64::uart_put_dec(h.version as u64);
@@ -265,6 +268,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     gw = w;
                     gh = h;
                     gs = stride;
+                    gui_mode = true;
                     berry_hal_aarch64::uart_puts(b"DISP ok ");
                     berry_hal_aarch64::uart_put_dec(gw as u64);
                     berry_hal_aarch64::uart_puts(b"x");
@@ -1229,14 +1233,15 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         h_fb, 0x0001_0005,
                         "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
                     );
-                    // 几何 info VMO：40B = fb_pa/w/h/stride/fmt 五域 u64 LE
+                    // 几何 info VMO：48B = fb_pa/w/h/stride/fmt/gui 六域 u64 LE
                     //（一页 VMO，create+commit+write 三连——rootfs VMO 同款）。
-                    let mut info = [0u8; 40];
+                    let mut info = [0u8; 48];
                     info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
                     info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
                     info[24..32].copy_from_slice(&(stride as u64).to_le_bytes());
                     info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
+                    info[40..48].copy_from_slice(&(gui_mode as u64).to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
                     ivmo.commit(mm::frames(), 0, 4096)

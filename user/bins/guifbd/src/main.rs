@@ -241,12 +241,14 @@ struct Srv<'a> {
     served: bool,
     gfxf: bool,
     console_full_n: u64,
+    /// GUI 模式：console 只记账/串口，不上屏（防测试/日志盖桌面）。
+    gui: bool,
     /// SUBMIT 行弹舱（vmo_read 行读出 → 直写 fb；帽 = ROW_BOUNCE_MAX）。
     bounce: [u8; ROW_BOUNCE_MAX],
 }
 
 impl<'a> Srv<'a> {
-    fn new(con: Fbcon<'a>, w: usize, h: usize, stride: usize) -> Self {
+    fn new(con: Fbcon<'a>, w: usize, h: usize, stride: usize, gui: bool) -> Self {
         Srv {
             con,
             w,
@@ -270,6 +272,7 @@ impl<'a> Srv<'a> {
             served: false,
             gfxf: false,
             console_full_n: 0,
+            gui,
             bounce: [0; ROW_BOUNCE_MAX],
         }
     }
@@ -392,7 +395,9 @@ impl<'a> Srv<'a> {
         // 影响）。**恒同步直写**（A2-a 立法）：console 文本路禁入任何
         // vsync 排队呈现路径——误读形 = 文本路 +16.67ms/队深打满/屏显冻结。
         let s = String::from_utf8_lossy(&msg[..nb]);
-        self.con.put_str(&s, CON_FG, CON_BG);
+        if !self.gui {
+            self.con.put_str(&s, CON_FG, CON_BG);
+        }
         // FULL 纯记账：每条消息语义 = 一次 submit(FULL) 走同一呈现谱系
         // （「无 damage 不提交」day-one 执法面）——console 不占 credits、
         // 不发 token、不入 held（R2 A2-a：同步直写与记账并行不悖）。
@@ -811,14 +816,14 @@ impl<'a> Srv<'a> {
 }
 
 fn main() {
-    // 几何 info VMO（boot 40B 五域 u64 LE：fb_pa/w/h/stride/fmt）。
+    // 几何 info VMO（boot 48B 六域 u64 LE：fb_pa/w/h/stride/fmt/gui）。
     let h: Handle = gift2_h();
     if h == 0 {
         // svcmgr 探测门后恒随行 info——理论不可达；eprintln loud 兜底。
         eprintln!("guifbd: no fbinfo gift");
         berry_libc::park();
     }
-    let mut info = [0u8; 40];
+    let mut info = [0u8; 48];
     if berry_vmo_read(h, info.as_mut_ptr(), 0, info.len()) != 0 {
         eprintln!("guifbd: fbinfo read failed");
         berry_libc::park();
@@ -828,6 +833,8 @@ fn main() {
     };
     let (_fb_pa, w, h, stride) = (rd(0), rd(1), rd(2), rd(3));
     let fmt_raw = (rd(4) as u64 & 0xFFFF_FFFF) as u32;
+    // 第 6 域 = GUI 模式（旧内核只写 40B → 该域读 0 = 兼容旧行为）。
+    let gui = rd(5) != 0;
     let fmt = match PixelFormat::from_raw(fmt_raw) {
         Some(f) => f,
         None => {
@@ -919,7 +926,7 @@ fn main() {
         eprintln!("guifbd: no fb pipe gift");
         berry_libc::park();
     }
-    let mut srv = Srv::new(con, w, h, stride);
+    let mut srv = Srv::new(con, w, h, stride, gui);
     // —— 三路 serve：present→hdi→console 确定性轮询；全 EAGAIN 才
     // wait_many n=3 并等。deadline = min(下次软 vsync 点, now+10s) **进
     // 调用本身**（A1-a——醒来后补查不够：parked 最长迟答 10s 且 smoke

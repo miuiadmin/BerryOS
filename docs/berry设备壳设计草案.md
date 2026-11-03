@@ -646,6 +646,10 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
 - `shell --timeout N` 测试/演示自动退出；P1 的 `snapshot=on` 覆盖层未升级为
   qcow2 持久层；PNG 未压缩；540×1200 仍被 1.92MB GOP 缓冲容量拒（`DISP fail`）。
 
+- **GUI 模式 console 静音**：fbinfo 扩 48B 第 6 域 `gui=1`（仅 `DISP ok` 时置位）；
+  guifbd 在该模式仍记账 `console_full_n`/`present_seq`，但跳过 `put_str`——测试/日志
+  只走串口，不再盖桌面。默认 800×600（无 display 项）零漂移；干净镜像复验待 GUI-8
+  rootfs 稳定后。
 - **P2 × GUI-8 联调（预览，未并）**：`gui8-draft` 2e57502 + 本 P2 内核（临时 worktree）
   在 480×1000 出状态栏/页指示器/4 列网格；中段控制台测试日志覆盖、图标仍是 dash =
   GUI-8 在途面。产物 `out/berryos-desktop.img` / `out/berry-desktop-480x1000.png`
