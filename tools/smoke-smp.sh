@@ -65,6 +65,9 @@ DEADLINE_LB=240        # 秒：相 3 `LB ok` 行轮询帽（F-A7 帽序②：锚
                        # 帽 90s（义务⑤帽序③,与 240 禁打平竞速）×2 TCG 系数
 DEADLINE_ASIDR=240     # 秒：相 4 `ASIDR ok` 行轮询帽（DEADLINE_LB 同款帽序②；
                        # 任务四步全快路径——快进/取号/广播/回执等待,无收割长跑）
+DEADLINE_TLBS=240      # 秒：相 5 `TLBS ok` 行轮询帽（帽序②同前；guest 侧
+                       # 分层：warm 栅障 8s + canary 收割 8s 双帽（TCG 半速
+                       # ≈ 16s 墙钟 ×2）+ spawn/风暴余量——两帽之和远小于本帽）
 LB_TICK_TH=24          # 相 3 c1 下限（F-A5 定标 run10：4 线程 K=2 全改道 rq1
                        # 形态实测 c1=77 ≈ 每 16s 边 ~40 tick 量级;24 ≈ 1/3——
                        # 区分「副核得货死（c1=0）」与「活」,余量防轮转波动）
@@ -537,6 +540,54 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
+# ============ 相 5：TLB shootdown canary 压测（S-4 4-4；gated bare 第五 boot） ============
+# fw_cfg `opt/berry/tlbs` 门控（lb/asidroll 同款机制）：boot 期双门过 →
+# spawn task_tlbs——canary 五步 × 双轮（SMP-S4 草案 §2 4-4 冻结规格
+# 「decommit 与 Drop 双构造」）：每轮①预热（root 家核 + 4 写者
+# spread→CPU1 warm str 旧 VA 驻留 TLB + probe fault 汇报）②warm 栅障
+# （Δprobe == 5 + 跨核断言）③unmap page0 + 还帧（PT 锁 + 本核 aside1 +
+# SGI #2 广播——SVC dispatch 尾等回执,svc 返回即全核失效毕；round A =
+# vmo_decommit（VMO 活）/ round B = handle_close→Drop（与生产 teardown
+# 同机制））④复用（新 VMO 吸收还帧,不回 map 同 VA）⑤放行 flag → 写
+# 旧 VA 期望 fault（Δcanary 恰 == 5 + Δhits[1][0]≥1 = 对核 stale 已被
+# 广播打掉）。SVC 风暴面 = 写者轮询环每迭代一次 clock_read（对核满载荷
+# 中发 shootdown）。变异标定（去 tlbi 证 canary 真 红）= 一次性验收步,
+# 不入常驻 smoke（结论入判例兼 §5.1 答案）。
+# 断言面 = gate 自证行 + ok 行在席 + n==10（2 轮 × 5 参与者,
+# 与 main.rs TLBS_PARTICIPANTS 三面钉同值）。
+
+field_wait
+: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 5 开工截断复用日志
+echo "smoke-smp: QEMU 启动（-smp 2，相 5 TLB canary 相：fw_cfg tlbs gate + bare）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/tlbs,string=1 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+# F-A7 帽序②同款：锚点在 QEMU 起后起算。
+tc=$(date +%s)
+while ! grep -q 'TLBS ok n=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 TLBS 轮询阶段退出"
+  [ $(( $(date +%s) - tc )) -gt "$DEADLINE_TLBS" ] \
+    && fail "TLBS ok ${DEADLINE_TLBS}s 未出（查 boot 期 TLBS gate on 是否在席——absent 即门未过,guest 断言炸则有 panic 行）"
+  sleep 2
+done
+grep -q 'TLBS gate on' "$LOG" \
+  || fail "TLBS gate on 自证行缺失（门未过——查 fw_cfg 注入与 smp_active 面）"
+tlbs_line=$(grep 'TLBS ok n=' "$LOG" | tail -1)
+echo "smoke-smp: ${tlbs_line}"
+tlbs_n=$(echo "$tlbs_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
+[ -n "$tlbs_n" ] && [ "$tlbs_n" -eq 10 ] \
+  || fail "TLBS n=${tlbs_n:-缺} != 10（双轮 canary 命中不齐 = 有写入成功 = stale 残留 = shootdown 断链：查 SGI #2 广播/收端 vmalle1/unmap/decommit/Drop 路径——变异标定记录见判例）"
+
+# S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
+kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
+echo "smoke-smp: 相 5 KL 争用观测（非门禁）：kl=${kl_last:-缺}"
+
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=""
+
 # R3 首跑定标三数（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次）。
 echo "smoke-smp: R3 定标三数：boot=${SMP_BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 金丝雀≈${CAN_PERIOD_S:-?}s/行 / rootfs=${ROOTFS_WALL}s（帽 ${DEADLINE_ROOTFS}s）"
-echo "smoke-smp: PASS（四相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）——恰一次/金丝雀执法不跨相 3/4 boot）"
+echo "smoke-smp: PASS（五相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）——恰一次/金丝雀执法不跨相 3/4/5 boot）"

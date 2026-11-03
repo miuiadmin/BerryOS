@@ -51,6 +51,24 @@ pub const USER_CODE_VA: usize = 0x1000;
 /// 单页布局的 sp0（16 对齐；多页进程改读 `UserProcess::stack_top`）。
 pub const USER_STACK_TOP: usize = 0x4000;
 
+/// TLB shootdown canary 双页 data VA（S-4 4-4）：page0 = 0x4800_0000 canary
+/// 写点（warm + unmap 后写回期望 fault）/ page1 = +0x1000（VMO off 0x1000:
+/// +0x0 clock 出参 / +0x10 flag）/ probe = +0x2_0000（永不映射——slot1 汇报
+/// 点；64K 粒度单 movz 产物）。三面钉同值：`__user_tlbc` 模板 movz/movk
+/// 立即数 + main.rs task_tlbs arm/unmap 实参——改值须两处同步（asm 侧注释
+/// 已回指本行）。**选址纪律（§A119，两轮撞车沉淀）**：canary 槽 arm 后整个
+/// boot 期全局常驻、纯数值 FAR 匹配无进程校验——同 boot 并发载荷的任意同
+/// VA fault 都被静默吞 +1 且该杀不杀。选址须过全仓**双面净区扫描**：①内
+/// 核侧——ktest 自杀 VA 族钉死 0x4000_0000（本文件 :14/:245/:478/:600/:759/
+/// :897/:1076，首轮撞车 11≠10 实锤）；②user/ 侧常驻 VA 段表——mmap 窗
+/// [0x5000_0000,0x6000_0000)（berry-mmap）/ **pthread 栈段 [0x6000_0000,
+/// 0x7000_0000)**（berry-libc STACK_VA_BASE 段基 = 首栈保护页恰在段基——
+/// 二轮撞车，审查实抓）/ virtio MMIO 0x7000_0000 + FB 0x7100_0000（berry-
+/// exec）/ 用户 ELF 链接基 0x1000 低端。**0x4800_0000 = DRAM 物理窗外
+/// （[0x4000_0000,0x4800_0000) 128M，物理不可达故语义无主）+ mmap 窗前
+/// 0x800_0000 远**——双面净。
+pub const TLBS_DATA_VA: usize = 0x4800_0000;
+
 /// 代码镜像帽（D3；A7-4 段② 64→128KiB——svcmgr 平像贴墙后 SDK-1b 型
 /// doc 漂移越页，C-2c 容量同步先例抬墙）：flat binary 约定输入的体积上限
 /// ——防调用方手滑把整段 ELF 塞进来（elf2flat.py `--max 131072` 同值执法）。
@@ -1100,6 +1118,51 @@ core::arch::global_asm!(
     ".globl __user_lb_end",
     "__user_lb_end:",
 
+    // ---- S-4 4-4 TLB shootdown canary 子模板（main.rs task_tlbs 经 svc 链
+    // 造 5 份：root 家核 + 4 写者 spread→CPU1）----
+    //
+    // 五步 canary 的用户侧半场：①warm str×4（page0 旧映射驻留本核 TLB）→
+    // ②probe ldr（base+0x2_0000 永不映射 → 必 fault → trap.rs CANARY_SLOTS
+    // slot1 静默恢复计数 = per-核 warm 汇报，master 据此收栅障）→ ③风暴轮询
+    // 环（每迭代一次 clock_read svc = 对核满载荷 SVC 风暴面 + page1+0x10
+    // flag 轮询）→ ④flag 置 1 后写回 page0 旧 VA（master 已 unmap+还帧+复用
+    // → stale TLB 则写入成功〔变异形态〕/ 已失效则必 fault → slot0 静默恢复
+    // 计数 = canary 命中）→ ⑤thread_exit（0x36 仅退自身——单进程五任务形态
+    // 生死线，__user_lb 头注同款）。
+    // 寄存器合同：x20 = page0 基址（canary 写点）/ x21 = page1 基址（= base
+    // +0x1000，VMO off 0x1000；+0x0 clock 出参 / +0x10 flag）/ x1 = probe VA
+    // / x0 = NR→ret（svc dispatch 只回写 x0——x1-x30 跨 svc 稳定，svc4 头注
+    // 同契约）。VA 三面钉同值：本模板 movz/movk 立即数 = main.rs TLBS_DATA_VA
+    // （pub const 单源，0x4800_0000）+ task_tlbs arm/unmap 实参。
+    ".globl __user_tlbc",
+    "__user_tlbc:",
+    "    movz x20, #0x4800, lsl #16",  // x20 = 0x4800_0000（page0：canary 写点）
+    "    str  x20, [x20]",             // warm ×4（旧映射驻留本核 TLB）
+    "    str  x20, [x20]",
+    "    str  x20, [x20]",
+    "    str  x20, [x20]",
+    "    movz x1, #0x4802, lsl #16",   // probe VA = 0x4802_0000（base+0x2_0000，
+    "                                   //  永不映射——64K 粒度单 movz 即得）",
+    "    ldr  x2, [x1]",               // 必 fault → slot1 静默恢复（warm 汇报）
+    "    movz x21, #0x4800, lsl #16",  // x21 = 0x4800_1000（page1 = VMO off
+    "    movk x21, #0x1000",           //  0x1000——imm12 加不了 0x1000，movk 合成）
+    "    //                                  +0x0 clock 出参 / +0x10 flag",
+    "1:  movz x0, #0x61",              // NR_CLOCK_READ（SVC 风暴——满载荷面）
+    "    movz x1, #0",                 // CLOCK_MONOTONIC
+    "    mov  x2, x21",                // 出参 = page1+0x0（copy_out 8B）
+    "    movz x3, #0",
+    "    svc  #0",
+    "    ldr  x3, [x21, #0x10]",       // flag（master vmo_write 放行位）
+    "    cbz  x3, 1b",
+    "    // canary 写点：stale→写入成功（变异形态）/ 已失效→必 fault→slot0",
+    "    str  x20, [x20]",
+    "    movz x0, #0x36",              // thread_exit（仅退自身）
+    "    svc  #0",
+    "    b    .",                      // 不返；防御兜底
+    ".balign 4",                       // 尾部补齐（模板长度 4 字节对齐）
+    ".globl __user_tlbc_end",
+    "__user_tlbc_end:",
+
     // 4-5b/4-6 svcmgr 模板已随 G-eco-b 退役换编译产物（user/bins/svcmgr，
     // include_bytes! 内嵌 echo/talker 平像——原模板内嵌的 echo 段（268B）与
     // talker 段（936B）随之换轨 user/bins/{echo,talker}）。契约逐字保留
@@ -1121,6 +1184,8 @@ extern "C" {
     static __user_ponger_end: u8;
     static __user_lb: u8;
     static __user_lb_end: u8;
+    static __user_tlbc: u8;
+    static __user_tlbc_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -1190,6 +1255,14 @@ pub fn user_ponger_code() -> &'static [u8] {
 pub fn user_lb_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_lb, &__user_lb_end) }
+}
+
+/// TLB shootdown canary 子模板（S-4 4-4：warm → probe 汇报 → SVC 风暴
+/// 轮询 → canary 写点 → thread_exit——见模板内注释）。task_tlbs 经真 svc
+/// 链单进程造 5 份镜像（root 家核 + 4 写者 spread→CPU1）。
+pub fn user_tlbc_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_tlbc, &__user_tlbc_end) }
 }
 
 /// svcmgr 用户程序模板（4-5b 验收：服务管理器拉起 echo 服务——真 syscall

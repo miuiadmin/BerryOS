@@ -36,6 +36,67 @@ pub fn fault_armed() -> bool {
     EXPECTED_FAULT_FAR.load(Ordering::Acquire) != 0
 }
 
+// ---- S-4 4-4②：期望故障槽 SMP 化（canary 专用 per-核多槽 + 静默恢复）----
+//
+// 与上方单槽 [`EXPECTED_FAULT_FAR`]（EL1 ktest 直调族、swap 一次性消费）分立
+// 的**多槽常驻表**：per-核 × [`CANARY_SLOTS_PER_CPU`] 槽，armed 后**不自动
+// 消防**（far 保持），每次命中 hits++ 并静默恢复（ELR+=4）——多写者并发
+// 故障计数与「arm 后他核消费」往返探针（发起核 arm、故障核消费）的载体。
+// 三纪律：
+// - **静默模式恒开**：恢复路径零打印零分配零取锁（EL0 恢复臂必须在杀链
+//   `svc_enter` 取锁**之前**早退）。
+// - **ELR 定长约定**：恢复恒 `ELR+=4`（AArch64 定长指令；触障指令 = 载荷
+//   内 str/ldr——payload 端合同，见 user.rs `__user_tlbc` 注）。
+// - **生产零面**：本表只由 `task_tlbs`（fw_cfg `opt/berry/tlbs` 门控）武装；
+//   任何其他 boot 路径 far 恒 0 → 扫描零命中 → EL0「用户态故障一律真死」
+//   不变量对未武装面保持（本表是其 canary 例外通道）。
+
+/// canary 槽（per-核）：far=0 = 未武装。
+struct CanarySlot {
+    far: AtomicUsize,
+    hits: AtomicUsize,
+}
+
+const fn canary_slot() -> CanarySlot {
+    CanarySlot { far: AtomicUsize::new(0), hits: AtomicUsize::new(0) }
+}
+
+/// per-核槽数（S-4 4-4 canary 两用：slot 0 = canary 写点 / slot 1 = probe 汇报点）。
+pub const CANARY_SLOTS_PER_CPU: usize = 2;
+
+/// 核数面（QEMU virt `-smp 2` 主验面钉 2；扩核时随 smp.rs 面同步）。
+pub const CANARY_CPUS: usize = 2;
+
+/// per-核 canary 槽表：`[cpu][slot]`。Acquire/Release 跨核观测（arm 核存 /
+/// 故障核消费 / 驱动核读 hits）。
+static CANARY_SLOTS: [[CanarySlot; CANARY_SLOTS_PER_CPU]; CANARY_CPUS] =
+    [[canary_slot(), canary_slot()], [canary_slot(), canary_slot()]];
+
+/// 武装 `cpu` 核的 `slot` 槽（远程 arm——发起核写、故障核读，4-4② 往返探针面）。
+pub fn canary_arm(cpu: usize, slot: usize, far: usize) {
+    CANARY_SLOTS[cpu][slot].far.store(far, Ordering::Release);
+}
+
+/// 读 `cpu` 核 `slot` 槽的恢复计数（驱动核跨核观测）。
+pub fn canary_hits(cpu: usize, slot: usize) -> usize {
+    CANARY_SLOTS[cpu][slot].hits.load(Ordering::Acquire)
+}
+
+/// 本核扫描 canary 槽：FAR 命中武装槽 → hits++ 返 true（调用方 ELR+=4 静默
+/// 恢复）。未命中/全未武装返 false（走原路径）。
+fn canary_consume(far: usize) -> bool {
+    if far == 0 {
+        return false;
+    }
+    for row in &CANARY_SLOTS[crate::smp::cpu_id()] {
+        if row.far.load(Ordering::Acquire) == far {
+            row.hits.fetch_add(1, Ordering::AcqRel);
+            return true;
+        }
+    }
+    false
+}
+
 /// 异常帧（`#[repr(C)]`，与下方 asm 的存取偏移严格对应）。
 ///
 /// 布局：`x0..x30`（31×8=248）+ esr/far/elr/spsr/sp（5×8=40）= **288** 字节（16 对齐）。
@@ -292,6 +353,11 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
                 tf.elr = tf.elr.wrapping_add(4); // 假设 4 字节 ldr/str（ktest 用 ldr x0,[x1]）
                 return;
             }
+            // S-4 4-4：canary per-核槽（静默恢复 + 计数；未武装面恒不命中）。
+            if canary_consume(tf.far as usize) {
+                tf.elr = tf.elr.wrapping_add(4);
+                return;
+            }
             dump(tf, ec);
             uart_puts(b"  -> fatal, halt\n");
             halt();
@@ -326,6 +392,16 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             return; // 一切 SVC 正常往返（含错误码）
         }
         _ => {
+            // S-4 4-4：canary per-核槽早退（**杀链 svc_enter 取锁之前**——静默
+            // 恢复零锁零打印；ELR+=4 = AArch64 定长约定，payload 端 str 合同）。
+            // 仅 data abort（EC=0x24）查 FAR——canary 触发面全为 str/ldr 数据
+            // 访问；其余 EC（I-abort/BRK/对齐…）FAR 为保留值，查 = 幻影吞面
+            // （对抗审查 R4 收紧）。未武装面（生产 boot 恒 far=0）零命中 =
+            // 原杀链不变量保持。
+            if ec == 0x24 && canary_consume(tf.far as usize) {
+                tf.elr = tf.elr.wrapping_add(4);
+                return;
+            }
             // S-2 E0（草案 3.1-2）→ S-3c c-2c slice 2b 全量形：EL0 fault kill
             // 链与 SVC 同构——dump 前按 SVC_CLASS_ALL 取五锁 + 全位记账 +
             // mask=全谱（IRQ 上下文 PSTATE.I=1 同构）；EXIT_HOOK/杀链至

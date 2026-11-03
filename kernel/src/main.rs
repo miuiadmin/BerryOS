@@ -1520,6 +1520,30 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                     ht_asidr as *mut HandleTable as usize);
         berry_hal_aarch64::uart_puts(b"ASIDR gate on\n");
     }
+    // ---- S-4 4-4：TLB shootdown canary 压测门控 spawn（fw_cfg
+    // `opt/berry/tlbs`；smoke-smp 相 5 专递——lb/asidroll 同款双门）----
+    // 双门同前例：smp_active（单核 boot 零面——无 stale TLB 可言）+
+    // fw_cfg 具名项（缺席 = run/smoke 零扰动 + EFI 天然缺席）。任务 prio 8
+    // （parprobe/lb_master/asidroll 同档）；表 = 私有表（svc 链 handle 落
+    // 脚点，caller_table 经 current_tag 取——lb_master 同合同）+ 表内一个哑
+    // Event（par 形态：arg = ObjRef 供 block_current 栅障/收割轮询超时醒，
+    // 永不置位）；`TLBS gate on` 自证行（相 5 排障首查行）。
+    if berry_hal_aarch64::smp::smp_active()
+        && berry_hal_aarch64::fwcfg::find_file(TLBS_PROBE_NAME).is_some()
+    {
+        let ht_tlbs: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_tlbs_ev = ht_tlbs
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: tlbs 哑 Event 进 tlbs 表");
+        let p_tlbs_ev = ht_tlbs
+            .get_raw(h_tlbs_ev, ObjType::Event, 0)
+            .expect("main: 取 tlbs ObjRef")
+            .0;
+        berry_sched::spawn_with_tag(task_tlbs, p_tlbs_ev.as_ptr() as usize, b"tlbs", 8,
+                                    ht_tlbs as *mut HandleTable as usize);
+        berry_hal_aarch64::uart_puts(b"TLBS gate on\n");
+    }
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { berry_hal_aarch64::timer::arm_slice() };
@@ -2666,6 +2690,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 40, "rt_probe 哑 Event（R-1 cyclictest oversleep——永不置位，仅超时醒）"),
     (1 << 41, "soakmon 哑 Event（S-1 soak 心跳——永不置位，仅超时醒）"),
     (1 << 42, "par_probe 哑 Event（S-2b 副核参与金丝雀——永不置位，仅超时醒）"),
+    (1 << 43, "tlbs 哑 Event（S-4 4-4 canary 压测 master——永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -2695,6 +2720,10 @@ const SOAK_EV_BIT: u64 = 1 << 41;
 /// par_probe 哑 Event 的用户位（S-2b，占用登记见 [`USER_SIGNAL_BITS`]——
 /// SOAK_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（soakmon 同款契约）。
 const PAR_EV_BIT: u64 = 1 << 42;
+/// tlbs 哑 Event 的用户位（S-4 4-4，占用登记见 [`USER_SIGNAL_BITS`]——
+/// PAR_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（canary 压测 master 的
+/// 栅障/收割轮询节拍——计数面是 CANARY_SLOTS 原子，非事件面）。
+const TLBS_EV_BIT: u64 = 1 << 43;
 
 /// ai_demo ↔ ai_probe 握手标志：demo bind 注入表后、睡 E_rel 前置位——probe
 /// 只在该窗口内做 clamp 断言（E_done 等待期 demo 同样在队但 eff=0，flag 区分
@@ -3348,9 +3377,22 @@ const LB_PROBE_NAME: &str = "opt/berry/lb";
 /// 维护」纪律）。
 const ASIDROLL_PROBE_NAME: &str = "opt/berry/asidroll";
 
+/// S-4 4-4 TLB shootdown canary 压测门控名（smoke-smp 相 5 专递：
+/// `-fw_cfg name=opt/berry/tlbs,string=1`；ASIDROLL 同款「两侧对读维护」
+/// 纪律——tools/smoke-smp.sh 相 5 段与本常量对读）。
+const TLBS_PROBE_NAME: &str = "opt/berry/tlbs";
+
 /// LB 子进程数（蓝图 N=4）：LB_PROCS 槽位、`LB ok` 行 n= 字面、smoke 相 3
 /// 的 n==4 断言三面钉同值——改此须三处同步。
 const LB_CHILD_N: usize = 4;
+
+/// TLB canary 写者线程数（S-4 4-4，lb 4-burst 同构）。
+const TLBS_WRITER_N: usize = 4;
+
+/// TLB canary 每轮参与者总数 = root（家核）+ `TLBS_WRITER_N` 写者。双轮
+/// （decommit/Drop）毕 `TLBS ok n=` 行 n = 2 × 本值 = 10，与 smoke 相 5
+/// n==10 断言三面钉同值——改此须三处同步。
+const TLBS_PARTICIPANTS: usize = 1 + TLBS_WRITER_N;
 
 /// LB 计算线程 Thread ObjRef 地址表（per-child 归因判别面，义务③ 9.2 裁决二）：
 /// lb_master 造线程时写入（thread_create 后、thread_start 前——thread_key
@@ -3616,6 +3658,370 @@ extern "C" fn task_asid_roll(_arg: usize) -> ! {
     assert!(q >= g, "asidroll: QUIESCED({q}) < ROLL({g})（驱动退出但未追平）");
     berry_hal_aarch64::kern_lock::with_print_lock(|| {
         berry_hal_aarch64::uart_puts(b"ASIDR ok n=");
+        berry_hal_aarch64::uart_put_dec(n as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    berry_sched::exit_current()
+}
+
+/// tlbs 栅障/收割共用的有界轮询（par_probe 形）：哑 Event `block_current`
+/// 超时醒（50ms 步）——master prio 8 醒即抢占采样、睡即让出 CPU0（root/
+/// 常驻才有时间片跑 warm/风暴；裸自旋会饿死同核 root）。返回末次观测的
+/// `canary_hits(0, slot) + canary_hits(1, slot)`（预算尽仍未达 = 调用方
+/// assert 兜底 fail-loud）。deadline = CNTVCT 周期域（block_current 契约
+/// ——勿喂 ns，§A118 面）。
+fn tlbs_poll(arg: usize, want: usize, slot: usize, budget_vct: u64) -> usize {
+    use berry_sched::WakeReason;
+    let step = berry_hal_aarch64::timer::cntfrq() / 20; // 50ms 步
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    loop {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        // SAFETY: 调用方契约 = IRQ 屏蔽窗（par_probe 同款）。
+        let deadline = berry_hal_aarch64::timer::cntvct() + step;
+        let r = berry_sched::block_current(arg, TLBS_EV_BIT, deadline);
+        assert!(r == WakeReason::Timeout,
+                "tlbs: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
+        let total = berry_hal_aarch64::trap::canary_hits(0, slot)
+            + berry_hal_aarch64::trap::canary_hits(1, slot);
+        let expired = berry_hal_aarch64::timer::cntvct().wrapping_sub(t0) > budget_vct;
+        let done = total >= want;
+        berry_hal_aarch64::kern_lock::klock_exit();
+        if done || expired {
+            return total;
+        }
+    }
+}
+
+/// tlbs 单轮 canary 舰队装配（S-4 4-4 双轮共用；svc 落脚 = 本任务私有表，
+/// caller_table 经 current_tag 取）：进程 + 代码页 + **双 1 页 data VMO**
+/// （page0 = canary 写点 @`TLBS_DATA_VA` / page1 = flag 时钟页 @+0x1000
+/// ——分体而非合体：合体下 page1 映射钉住 VMO，round B 的 handle_close
+/// 永不达 Drop）+ root + `TLBS_WRITER_N` 写者。返回 (Vmar, page0 VMO,
+/// page1 VMO)——还帧机制由调用方选（round A decommit / round B close→
+/// Drop）。tag 仅入 assert 标签（排障按轮定位）。
+fn tlbs_spawn_fleet(tag: &str) -> (u32, u32, u32) {
+    use crate::abi_gen::{
+        NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_START,
+        NR_VMAR_MAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_WRITE, RIGHT_READ, RIGHT_WRITE,
+    };
+    use crate::user::{user_tlbc_code, TLBS_DATA_VA, USER_CODE_VA};
+    let code = user_tlbc_code();
+    let (mut hp, mut hv, mut hc) = (0u32, 0u32, 0u32);
+    let (mut hd0, mut hd1, mut hth_root) = (0u32, 0u32, 0u32);
+    let mut hths = [0u32; TLBS_WRITER_N];
+    let mut vaddr: u64;
+    // 进程 + 代码页（lb_master 同链 0x31/0x11/0x12/0x15/0x16——svc4/svc6
+    // 安全封装，槽为私有栈变量，el1 直拷先例）。
+    assert_eq!(
+        svc6(
+            NR_PROCESS_CREATE as u64, 0, 0,
+            core::ptr::addr_of_mut!(hp) as u64,
+            core::ptr::addr_of_mut!(hv) as u64, 0, 0,
+        ),
+        0,
+        "tlbs{}: process_create",
+        tag
+    );
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64, 0x1000, 0,
+            core::ptr::addr_of_mut!(hc) as u64,
+        ),
+        0,
+        "tlbs{}: vmo_create[code]",
+        tag
+    );
+    assert_eq!(svc4(NR_VMO_COMMIT as u64, hc as u64, 0, 0x1000), 0,
+               "tlbs{}: vmo_commit[code]", tag);
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hc as u64, code.as_ptr() as u64, 0,
+            code.len() as u64, 0, 0,
+        ),
+        0,
+        "tlbs{}: vmo_write[code]",
+        tag
+    );
+    vaddr = USER_CODE_VA as u64;
+    assert_eq!(
+        svc6(
+            NR_VMAR_MAP as u64, hv as u64, hc as u64, 0,
+            core::ptr::addr_of_mut!(vaddr) as u64, 0x1000,
+            (RIGHT_READ | RIGHT_WRITE) as u64,
+        ),
+        0,
+        "tlbs{}: vmar_map[code]",
+        tag
+    );
+    assert_eq!(vaddr as usize, USER_CODE_VA, "tlbs{}: code VA 偏离请求", tag);
+    // 双 1 页 data VMO。page1（flag 页）：+0x0 clock 出参 / +0x10 flag；
+    // commit 清零 = flag 天然 0，参与者风暴轮询至 master 放行。
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64, 0x1000, 0,
+            core::ptr::addr_of_mut!(hd0) as u64,
+        ),
+        0,
+        "tlbs{}: vmo_create[page0]",
+        tag
+    );
+    assert_eq!(svc4(NR_VMO_COMMIT as u64, hd0 as u64, 0, 0x1000), 0,
+               "tlbs{}: vmo_commit[page0]", tag);
+    vaddr = TLBS_DATA_VA as u64;
+    assert_eq!(
+        svc6(
+            NR_VMAR_MAP as u64, hv as u64, hd0 as u64, 0,
+            core::ptr::addr_of_mut!(vaddr) as u64, 0x1000,
+            (RIGHT_READ | RIGHT_WRITE) as u64,
+        ),
+        0,
+        "tlbs{}: vmar_map[page0]",
+        tag
+    );
+    assert_eq!(vaddr as usize, TLBS_DATA_VA, "tlbs{}: page0 VA 偏离请求", tag);
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64, 0x1000, 0,
+            core::ptr::addr_of_mut!(hd1) as u64,
+        ),
+        0,
+        "tlbs{}: vmo_create[page1]",
+        tag
+    );
+    assert_eq!(svc4(NR_VMO_COMMIT as u64, hd1 as u64, 0, 0x1000), 0,
+               "tlbs{}: vmo_commit[page1]", tag);
+    vaddr = (TLBS_DATA_VA + 0x1000) as u64;
+    assert_eq!(
+        svc6(
+            NR_VMAR_MAP as u64, hv as u64, hd1 as u64, 0,
+            core::ptr::addr_of_mut!(vaddr) as u64, 0x1000,
+            (RIGHT_READ | RIGHT_WRITE) as u64,
+        ),
+        0,
+        "tlbs{}: vmar_map[page1]",
+        tag
+    );
+    assert_eq!(vaddr as usize, TLBS_DATA_VA + 0x1000,
+               "tlbs{}: page1 VA 偏离请求", tag);
+    // root（spread=false 恒家核）+ 写者（thread_start spread=true → K=2
+    // 路由 CPU1——lb 4-burst 同构）。sp = page1 顶内错落（asm 不压栈——
+    // 纯合法垫；page1 恒映射，永不随 page0 unmap 撤）。
+    assert_eq!(
+        svc4(
+            NR_THREAD_CREATE as u64, hp as u64, 0,
+            core::ptr::addr_of_mut!(hth_root) as u64,
+        ),
+        0,
+        "tlbs{}: thread_create[root]",
+        tag
+    );
+    let sp_root = (TLBS_DATA_VA + 0x1FF0) as u64; // page1 顶（16 对齐）
+    assert_eq!(
+        svc6(
+            NR_PROCESS_START as u64, hp as u64, hth_root as u64,
+            USER_CODE_VA as u64, sp_root, 0, 0,
+        ),
+        0,
+        "tlbs{}: process_start[root]",
+        tag
+    );
+    for i in 0..TLBS_WRITER_N {
+        assert_eq!(
+            svc4(
+                NR_THREAD_CREATE as u64, hp as u64, 0,
+                core::ptr::addr_of_mut!(hths[i]) as u64,
+            ),
+            0,
+            "tlbs{}: thread_create[{}]",
+            tag,
+            i
+        );
+        let sp = (TLBS_DATA_VA + 0x1F00 - i * 0x40) as u64; // 0x1F00..0x1E40
+        assert_eq!(
+            svc6(
+                NR_THREAD_START as u64, hths[i] as u64,
+                USER_CODE_VA as u64, sp, 0, 0, 0,
+            ),
+            0,
+            "tlbs{}: thread_start[{}]",
+            tag,
+            i
+        );
+    }
+    (hv, hd0, hd1)
+}
+
+/// tlbs 还帧机制（S-4 4-4 冻结规格「decommit 与 Drop 双构造」）。
+enum TlbsFree {
+    /// round A：`vmo_decommit`——VMO 对象活、页帧还 buddy。
+    Decommit,
+    /// round B：`handle_close`——引用归零走 VMO Drop 还帧（与生产进程
+    /// teardown 同机制「join 同形」）。
+    Drop,
+}
+
+/// tlbs 单轮 canary 五步（增量口径——槽 hits 跨轮累计不打清零，断言全用
+/// Δ）：①舰队 spawn；②warm 栅障（Δslot1 == P + Δwarm[1]≥1 跨核路由
+/// 结构断言）；③unmap page0（整方法 PT 锁 + 本核 tlbi_aside1(进程 ASID)
+/// + SGI #2 广播即发，SVC dispatch 尾零锁等回执——svc 返回即全核失效毕）
+/// + 还帧（按 `how`）+ 复用（新 vmo_create+commit 吸收还帧，**不回 map
+/// 同 VA**——回 map 则 canary 写命中新映射不 fault）；④放行 flag（page1
+/// VMO off 0x10，内核侧写帧——EL0 同帧可见）；⑤收割（Δslot0 恰 == P +
+/// Δhits[1][0]≥1 = 对核 stale 已被广播打掉；计数不足 = 有写入成功 =
+/// stale 残留 = shootdown 断链面）。reuse 句柄泄漏持有（表随任务常驻——
+/// lb_master 同合同）。
+fn tlbs_round(arg: usize, tag: &str, how: TlbsFree, budget: u64) {
+    use crate::abi_gen::{
+        NR_HANDLE_CLOSE, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
+        NR_VMO_WRITE,
+    };
+    use crate::user::TLBS_DATA_VA;
+    let hits = |slot: usize| {
+        berry_hal_aarch64::trap::canary_hits(0, slot)
+            + berry_hal_aarch64::trap::canary_hits(1, slot)
+    };
+    // ① 先取 warm 基线再 spawn 舰队（对抗审查 R0）：spawn 尾 thread_start
+    // 经 place→enqueue_with_kick 在 **syscall 内**即发 SGI_RESCHEDULE——CPU1
+    // 写者即刻可跑且其 probe 命中路径零锁（EL0 canary 早退臂），可先于本核
+    // 落地；基线取在 spawn 后 = 早到 probe 被吸进基线 → Δslot1 恒差 1 →
+    // warm 栅栏烧满 budget 假红（CI 争用/宿主抢占可翻面）。spawn 前取 = 本
+    // 轮参与者尚不存在（round B 时上轮舰队已全退出——Δslot0==P 收割门保证
+    // 命中先于 thread_exit）、槽跨轮常驻累计，Δ 口径不变。
+    let w_base = hits(1);
+    let w1_base = berry_hal_aarch64::trap::canary_hits(1, 1);
+    let (hv, hd0, hd1) = tlbs_spawn_fleet(tag);
+    // ② warm 栅障：Δslot1 == P（每参与者必经 warm str×4 → probe fault 才
+    // 入风暴环，Δ到位 ⟺ 本轮 P 份旧映射 TLB 驻留毕）。
+    tlbs_poll(arg, w_base + TLBS_PARTICIPANTS, 1, budget);
+    let wd = hits(1) - w_base;
+    assert!(
+        wd >= TLBS_PARTICIPANTS,
+        "tlbs{}: warm 栅障超时（Δslot1 {}/{}——参与者未起或 slot1 未接）",
+        tag,
+        wd,
+        TLBS_PARTICIPANTS
+    );
+    assert!(
+        berry_hal_aarch64::trap::canary_hits(1, 1) > w1_base,
+        "tlbs{}: 本轮写者全落 CPU0（Δwarm[1]=0）——K=2 路由结构性意外，查 place/park 面",
+        tag
+    );
+    // ③ unmap + 还帧（双构造分岔点）+ 复用。
+    let h_base = hits(0);
+    let (c0_base, c1_base) = (
+        berry_hal_aarch64::trap::canary_hits(0, 0),
+        berry_hal_aarch64::trap::canary_hits(1, 0),
+    );
+    assert_eq!(
+        svc4(NR_VMAR_UNMAP as u64, hv as u64, TLBS_DATA_VA as u64, 0x1000),
+        0,
+        "tlbs{}: vmar_unmap[page0]",
+        tag
+    );
+    match how {
+        TlbsFree::Decommit => {
+            assert_eq!(svc4(NR_VMO_DECOMMIT as u64, hd0 as u64, 0, 0x1000), 0,
+                       "tlbs{}: vmo_decommit[page0]", tag);
+            // 维度差分（审查 R3）：Decommit 后 VMO 对象仍活——同 VMO 再
+            // commit 须成功（两臂互换/close 形态变异时此断言红）。
+            assert_eq!(svc4(NR_VMO_COMMIT as u64, hd0 as u64, 0, 0x1000), 0,
+                       "tlbs{}: 维度差分[Decommit: VMO 应活——commit-again]", tag);
+        }
+        TlbsFree::Drop => {
+            // 真实不变量（审查 R2 改述）：此刻舰队 5 线程**仍在风暴环内存活**
+            // （flag 步④才置位），close 归零的依据不是「已退出」而是——
+            // 参与者不持任何 VMO ObjRef（子进程表出生为空、只调 clock_read/
+            // thread_exit，纯 VA 经 TLB 访存不取引用）+ unmap 已 untrack_map
+            // 撤 mapcnt → refs==1（仅本任务表槽）过 -EBUSY 拒面 → Drop 还帧。
+            assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hd0 as u64, 0, 0), 0,
+                       "tlbs{}: handle_close[page0]", tag);
+            // 维度差分（审查 R3）：close 后 handle 应已死——写之须非 0
+            // （两臂互换/decommit 形态变异时此断言红）。
+            assert!(svc6(NR_VMO_WRITE as u64, hd0 as u64, &1u8 as *const u8 as u64, 0, 1, 0, 0) != 0,
+                    "tlbs{}: 维度差分[Drop: handle 应死——write 须非 0]", tag);
+        }
+    }
+    // 注：decommit/Drop 的「帧真还 buddy」账回归不在本门观测面（TLB 面归
+    // canary 断言链、帧账归 ktest VMO 面——互不代偿，审查 R3 边界记录）。
+    let mut hr = 0u32;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64, 0x1000, 0,
+            core::ptr::addr_of_mut!(hr) as u64,
+        ),
+        0,
+        "tlbs{}: vmo_create[reuse]",
+        tag
+    );
+    assert_eq!(svc4(NR_VMO_COMMIT as u64, hr as u64, 0, 0x1000), 0,
+               "tlbs{}: vmo_commit[reuse]", tag);
+    // ④ 放行 flag：参与者出风暴环 → 写旧 VA → 期望 fault。
+    let one: u8 = 1;
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hd1 as u64,
+            core::ptr::addr_of!(one) as u64, 0x10, 1, 0, 0,
+        ),
+        0,
+        "tlbs{}: vmo_write[flag]",
+        tag
+    );
+    // ⑤ 收割：Δslot0 恰 == P（模板写点恰一次 + 静默恢复后 thread_exit
+    // 不复触）。
+    tlbs_poll(arg, h_base + TLBS_PARTICIPANTS, 0, budget);
+    let (c0_now, c1_now) = (
+        berry_hal_aarch64::trap::canary_hits(0, 0),
+        berry_hal_aarch64::trap::canary_hits(1, 0),
+    );
+    let hd = (c0_now + c1_now) - h_base;
+    assert!(
+        hd >= TLBS_PARTICIPANTS,
+        "tlbs{}: canary 收割超时（Δslot0 {}/{}——Δc0={} Δc1={}；计数不足 = 有写入成功 = stale 残留 = shootdown 断链）",
+        tag,
+        hd,
+        TLBS_PARTICIPANTS,
+        c0_now - c0_base,
+        c1_now - c1_base
+    );
+    assert!(
+        c1_now > c1_base,
+        "tlbs{}: 对核 canary 零命中（Δhits[1][0]=0——CPU1 写入成功 = SGI #2 广播失效面）",
+        tag
+    );
+    assert_eq!(hd, TLBS_PARTICIPANTS, "tlbs{}: canary 命中超额（重触面?）", tag);
+}
+
+/// S-4 4-4 相 5（smoke-smp `tlbs` 门）：TLB shootdown canary 压测验收。
+/// canary 五步 × 双轮（SMP-S4 草案 §2 4-4 冻结规格「decommit 与 Drop 双
+/// 构造」；§5.1 变异标定兼任答案）：round A 还帧 = vmo_decommit / round B
+/// 还帧 = handle_close→Drop（与生产 teardown 同机制）。每轮 5 参与者
+/// （root spread=false 家核 + 4 写者 spread=true → K=2 路由 CPU1），warm
+/// str 旧 VA 驻留 TLB → probe fault 汇报（slot1）→ SVC 风暴轮询（每迭代
+/// 一次 clock_read = 对核满载荷 SVC 中发 shootdown——P0 死锁环钉进可断言
+/// 面）→ unmap+广播+还帧+复用（不回 map 同 VA）→ 放行 flag → 写旧 VA
+/// 期望 fault（slot0 增量恰 == 参与者数 + Δhits[1][0]≥1）。变异形态（去
+/// tlbi/去广播）→ 对核写入成功 → 计数不足 → assert 炸 = canary 在 TCG
+/// 上真 红。one-shot：双轮毕打标 `TLBS ok n=`（n = 两轮 slot0 命中总
+/// 数 = 2×参与者数——三面钉同值：本注释、`TLBS ok` 行、smoke 相 5 断言）
+/// 后 exit_current。
+extern "C" fn task_tlbs(arg: usize) -> ! {
+    use crate::user::TLBS_DATA_VA;
+    // canary 槽双核双槽武装（幂等——双轮同 VA；远程 arm：master CPU0 写、
+    // 故障核消费。probe = base+0x2_0000，与模板 movz 单源）。
+    for cpu in 0..berry_hal_aarch64::trap::CANARY_CPUS {
+        berry_hal_aarch64::trap::canary_arm(cpu, 0, TLBS_DATA_VA); // slot0：写点
+        berry_hal_aarch64::trap::canary_arm(cpu, 1, TLBS_DATA_VA + 0x2_0000); // slot1：probe
+    }
+    let budget = 8 * berry_hal_aarch64::timer::cntfrq();
+    tlbs_round(arg, "A", TlbsFree::Decommit, budget);
+    tlbs_round(arg, "B", TlbsFree::Drop, budget);
+    // 双轮总账：恰 2×P（每参与者写点恰一次、跨轮槽累计）。
+    let n = berry_hal_aarch64::trap::canary_hits(0, 0)
+        + berry_hal_aarch64::trap::canary_hits(1, 0);
+    assert_eq!(n, 2 * TLBS_PARTICIPANTS, "tlbs: 双轮总命中 {n} != {}（重触/漏触面?）",
+               2 * TLBS_PARTICIPANTS);
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"TLBS ok n=");
         berry_hal_aarch64::uart_put_dec(n as u64);
         berry_hal_aarch64::uart_puts(b"\n");
     });
