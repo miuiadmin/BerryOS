@@ -1,0 +1,397 @@
+//! Command handlers. All QEMU interaction is argv-based; no shell strings.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Child;
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+
+use crate::display::frame::ScreenSource;
+use crate::display::vnc::VncSource;
+use crate::error::{BerryError, Result};
+use crate::net::Endpoint;
+use crate::profile;
+use crate::qemu::{self, Qemu};
+use crate::qmp::QmpClient;
+use crate::run_dir::{self, RunDir, Tail};
+
+pub struct RunArgs {
+    pub kernel: Option<PathBuf>,
+    pub marker: String,
+    pub timeout: Duration,
+    pub accel: String,
+    pub memory: Option<u32>,
+    pub follow: bool,
+    pub keep: bool,
+    pub json: bool,
+}
+
+pub struct ShotArgs {
+    pub image: Option<PathBuf>,
+    pub marker: Option<String>,
+    pub delay: Duration,
+    pub out: Option<PathBuf>,
+    pub profile: String,
+    pub accel: String,
+    pub memory: Option<u32>,
+    pub timeout: Duration,
+    pub keep: bool,
+    pub display_mode: Option<String>,
+    pub json: bool,
+}
+
+pub struct ShellArgs {
+    pub image: Option<PathBuf>,
+    pub profile: String,
+    pub scale: ScaleMode,
+    pub accel: String,
+    pub memory: Option<u32>,
+    pub timeout: Duration,
+    pub keep: bool,
+    pub display_mode: Option<String>,
+    pub json: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ScaleMode {
+    Fit,
+    Integer(u32),
+}
+
+pub enum InputAction {
+    Key(String),
+    Tap(u16, u16),
+    Swipe { x1: u16, y1: u16, x2: u16, y2: u16, ms: u64 },
+}
+
+pub struct InputArgs {
+    pub run: Option<String>,
+    pub action: InputAction,
+    pub json: bool,
+}
+
+pub fn version(as_json: bool) {
+    if as_json {
+        println!("{}", json!({"v":1,"t":"version","version":env!("CARGO_PKG_VERSION")}));
+    } else {
+        println!("berry {}", env!("CARGO_PKG_VERSION"));
+    }
+}
+
+pub fn run(args: RunArgs) -> Result<()> {
+    let qemu = Qemu::discover()?;
+    let kernel = qemu::resolve_kernel(args.kernel)?;
+    let accel = qemu::choose_accel(&args.accel, false)?;
+    let memory = args.memory.unwrap_or(profile::default_profile().memory_mib);
+    let mut run = RunDir::create("run", args.keep)?;
+    let serial = run.file("serial.log");
+    let log = run.file("qemu.log");
+    if args.json {
+        println!(
+            "{}",
+            json!({"v":1,"t":"run.start","run":run.path(),"kernel":kernel,"accel":accel.as_arg(),"memory_mib":memory})
+        );
+    }
+    let mut child = qemu::spawn_kernel(&qemu, &kernel, &serial, &log, accel, memory)?;
+    let mut tail = Tail::open(&serial);
+    let deadline = Instant::now() + args.timeout;
+    let mut stdout = std::io::stdout();
+    loop {
+        let new = tail.read_new();
+        if !new.is_empty() && args.follow && !args.json {
+            stdout.write_all(&new).ok();
+            stdout.flush().ok();
+        }
+        if !args.marker.is_empty() && tail.contains(&args.marker) {
+            if args.json {
+                println!(
+                    "{}",
+                    json!({"v":1,"t":"marker","name":args.marker,"run":run.path()})
+                );
+            } else {
+                println!("marker ok: {}", args.marker);
+            }
+            stop_child(&mut child, None);
+            if args.keep {
+                run.keep();
+            }
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait()? {
+            let text = tail.tail_text(4000);
+            stop_child(&mut child, None);
+            return Err(BerryError::device(format!(
+                "qemu exited ({status}) before marker '{}'",
+                args.marker
+            ))
+            .with_hint(format!("serial tail:\n{text}")));
+        }
+        if Instant::now() >= deadline {
+            let text = tail.tail_text(4000);
+            stop_child(&mut child, None);
+            return Err(BerryError::timeout(format!(
+                "timed out after {}s waiting for '{}'",
+                args.timeout.as_secs(),
+                args.marker
+            ))
+            .with_hint(format!("serial tail:\n{text}")));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+pub fn shot(args: ShotArgs) -> Result<()> {
+    let qemu = Qemu::discover()?;
+    let image = qemu::resolve_image(args.image)?;
+    let firmware = qemu::firmware()?;
+    let profile = profile::get(&args.profile)?;
+    let accel = qemu::choose_accel(&args.accel, true)?;
+    let memory = args.memory.unwrap_or(profile.memory_mib);
+    let mut run = RunDir::create("shot", args.keep)?;
+    let vars = run.file("vars.fd");
+    qemu::create_vars(&vars, 64)?;
+    let serial = run.file("serial.log");
+    let log = run.file("qemu.log");
+    let (vnc, qmp_ep) = endpoints(&run);
+    if args.json {
+        println!(
+            "{}",
+            json!({"v":1,"t":"shot.start","run":run.path(),"image":image,"profile":profile.id})
+        );
+    }
+    let mut child = qemu::spawn_image(
+        &qemu,
+        &image,
+        &firmware,
+        &vars,
+        &serial,
+        &log,
+        &vnc,
+        &qmp_ep,
+        accel,
+        memory,
+        true,
+        args.display_mode.as_deref(),
+    )?;
+    wait_endpoint(&vnc, Duration::from_secs(10))?;
+    let mut source = VncSource::connect(&vnc)?;
+    let mut tail = Tail::open(&serial);
+    let deadline = Instant::now() + args.timeout;
+    if let Some(marker) = &args.marker {
+        loop {
+            tail.read_new();
+            if tail.contains(marker) {
+                break;
+            }
+            if let Some(status) = child.try_wait()? {
+                stop_child(&mut child, None);
+                return Err(BerryError::device(format!(
+                    "qemu exited ({status}) before marker '{marker}'"
+                ))
+                .with_hint(format!("serial tail:\n{}", tail.tail_text(4000))));
+            }
+            if Instant::now() >= deadline {
+                stop_child(&mut child, None);
+                return Err(BerryError::timeout(format!(
+                    "timed out waiting for marker '{marker}'"
+                ))
+                .with_hint(format!("serial tail:\n{}", tail.tail_text(4000))));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    if !args.delay.is_zero() {
+        std::thread::sleep(args.delay);
+    }
+    let frame = source.next_frame(Duration::from_secs(10)).ok_or_else(|| {
+        let err = source.error().unwrap_or_else(|| "no frame".to_string());
+        BerryError::protocol(format!("VNC: {err}"))
+            .with_hint(format!("serial tail:\n{}", tail.tail_text(4000)))
+    })?;
+    let out = args.out.unwrap_or_else(|| PathBuf::from("shot.png"));
+    crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
+    let mut qmp = QmpClient::connect(&qmp_ep).ok();
+    stop_child(&mut child, qmp.as_mut());
+    if args.keep {
+        run.keep();
+    }
+    if args.json {
+        println!(
+            "{}",
+            json!({"v":1,"t":"shot","path":out,"width":frame.width,"height":frame.height,"run":run.path()})
+        );
+    } else {
+        println!("shot: {} ({}x{})", out.display(), frame.width, frame.height);
+    }
+    Ok(())
+}
+
+pub fn shell(args: ShellArgs) -> Result<()> {
+    crate::window::run(args)
+}
+
+pub fn input(args: InputArgs) -> Result<()> {
+    let run = find_run(args.run.as_deref())?;
+    let (w, h) = guest_size(&run).unwrap_or((800, 600));
+    let endpoint = qmp_endpoint(&run)?;
+    let mut qmp = QmpClient::connect(&endpoint)?;
+    match args.action {
+        InputAction::Key(code) => qmp.send_key(&code)?,
+        InputAction::Tap(x, y) => {
+            let (ax, ay) = to_abs(x, y, w, h);
+            qmp.tap_abs(ax, ay)?;
+        }
+        InputAction::Swipe { x1, y1, x2, y2, ms } => {
+            let steps = (ms / 16).max(2);
+            let (ax1, ay1) = to_abs(x1, y1, w, h);
+            let (ax2, ay2) = to_abs(x2, y2, w, h);
+            qmp.pointer_abs(ax1, ay1, true)?;
+            for i in 1..=steps {
+                let t = i as f64 / steps as f64;
+                let x = (ax1 as f64 + (ax2 as f64 - ax1 as f64) * t) as u16;
+                let y = (ay1 as f64 + (ay2 as f64 - ay1 as f64) * t) as u16;
+                qmp.pointer_abs(x, y, true)?;
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            qmp.pointer_abs(ax2, ay2, false)?;
+        }
+    }
+    if args.json {
+        println!("{}", json!({"v":1,"t":"input","run":run,"ok":true}));
+    } else {
+        println!("input: ok ({})", run.display());
+    }
+    Ok(())
+}
+
+fn to_abs(x: u16, y: u16, w: u32, h: u32) -> (u16, u16) {
+    let ax = (x as u64 * 32767 / (w.max(1) as u64 - 1).max(1)) as u16;
+    let ay = (y as u64 * 32767 / (h.max(1) as u64 - 1).max(1)) as u16;
+    (ax, ay)
+}
+
+fn find_run(id: Option<&str>) -> Result<PathBuf> {
+    if let Some(id) = id {
+        let p = if Path::new(id).is_dir() {
+            PathBuf::from(id)
+        } else {
+            run_dir::home().join("run").join(id)
+        };
+        if p.is_dir() {
+            return Ok(p);
+        }
+        return Err(BerryError::env(format!("run not found: {}", p.display())));
+    }
+    let root = run_dir::home().join("run");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() || !qmp_endpoint(&p).is_ok() {
+                continue;
+            }
+            let t = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
+                best = Some((t, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+        .ok_or_else(|| BerryError::env("no running device").with_hint("start one with `berry shell`"))
+}
+
+fn guest_size(run: &Path) -> Option<(u32, u32)> {
+    let meta = std::fs::read_to_string(run.join("meta.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&meta).ok()?;
+    let w = v.get("guest_w")?.as_u64()? as u32;
+    let h = v.get("guest_h")?.as_u64()? as u32;
+    Some((w, h))
+}
+
+fn qmp_endpoint(run: &Path) -> Result<Endpoint> {
+    #[cfg(unix)]
+    {
+        let p = run.join("qmp.sock");
+        if p.exists() {
+            return Ok(Endpoint::Unix(p));
+        }
+        let port = std::fs::read_to_string(run.join("qmp.port")).ok();
+        if let Some(port) = port {
+            return Ok(Endpoint::Tcp(format!("127.0.0.1:{}", port.trim())));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let port = std::fs::read_to_string(run.join("qmp.port"))?;
+        return Ok(Endpoint::Tcp(format!("127.0.0.1:{}", port.trim())));
+    }
+    Err(BerryError::env(format!(
+        "no QMP endpoint in {}",
+        run.display()
+    )))
+}
+
+fn endpoints(run: &RunDir) -> (Endpoint, Endpoint) {
+    #[cfg(unix)]
+    {
+        let vnc = run.file("vnc.sock");
+        let qmp = run.file("qmp.sock");
+        let _ = std::fs::remove_file(&vnc);
+        let _ = std::fs::remove_file(&qmp);
+        (Endpoint::Unix(vnc), Endpoint::Unix(qmp))
+    }
+    #[cfg(not(unix))]
+    {
+        let vnc_port = free_port();
+        let qmp_port = free_port();
+        let _ = std::fs::write(run.file("vnc.port"), vnc_port.to_string());
+        let _ = std::fs::write(run.file("qmp.port"), qmp_port.to_string());
+        (
+            Endpoint::Tcp(format!("127.0.0.1:{vnc_port}")),
+            Endpoint::Tcp(format!("127.0.0.1:{qmp_port}")),
+        )
+    }
+}
+
+#[cfg(not(unix))]
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .unwrap_or(5900)
+}
+
+fn wait_endpoint(ep: &Endpoint, timeout: Duration) -> Result<()> {
+    #[cfg(unix)]
+    {
+        if let Endpoint::Unix(p) = ep {
+            return run_dir::wait_for_file(p, timeout);
+        }
+    }
+    let _ = (ep, timeout);
+    std::thread::sleep(Duration::from_millis(100));
+    Ok(())
+}
+
+fn stop_child(child: &mut Child, qmp: Option<&mut QmpClient>) {
+    if let Some(q) = qmp {
+        let _ = q.quit_now();
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    }
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}

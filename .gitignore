@@ -69,3 +69,10 @@ __pycache__/
 
 # loopx 项目内控制面状态（goal/todo/证据账本，本地态）
 /.loopx/
+
+# berry 宿主工具独立 target（just berry-build 显式 CARGO_TARGET_DIR）
+/tools/berry/cargo-target/
+
+# berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
+/shot.png
+/berry-shot-*.png

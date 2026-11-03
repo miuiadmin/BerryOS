@@ -777,6 +777,43 @@ image: build build-boot
         --initrd rootfs.cpio \
         --size-mib 96
 
+# 宿主设备壳（ADR #62）：tools/berry = host-only 独立 workspace。根 .cargo/config.toml
+# 把 build.target 锁成 aarch64-unknown-none，故必须显式 --target <host>；裸 cargo build
+# 会编到内核 target。Cargo.lock 随仓锁定 host 依赖（winit/softbuffer/clap/serde_json）。
+berry-build:
+    #!/bin/sh
+    set -e
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    cd tools/berry
+    PATH="$HOME/.cargo/bin:$PATH" CARGO_TARGET_DIR="$PWD/cargo-target" \
+        cargo build --release --target "$HOST"
+
+# 设备壳 CLI：just berry doctor / run / shot / shell / input ...
+berry *ARGS: berry-build
+    #!/bin/sh
+    set -e
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    exec tools/berry/cargo-target/$HOST/release/berry {{ARGS}}
+
+# 双击/手跑入口：手机比例窗口（P1 先 letterbox 800×600，P2 客机 480×1000）。
+shell: berry-build
+    #!/bin/sh
+    set -e
+    test -f out/berryos.img || { echo "缺 out/berryos.img——先 just image"; exit 1; }
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    exec tools/berry/cargo-target/$HOST/release/berry shell --image out/berryos.img
+
+# P0 宿主面冒烟：doctor + 内核 marker + EFI 截图（不建窗口；TCG 确定性）。
+berry-smoke: berry-build
+    #!/bin/sh
+    set -e
+    test -f out/berryos.img || { echo "缺 out/berryos.img——先 just image"; exit 1; }
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    BIN=tools/berry/cargo-target/$HOST/release/berry
+    "$BIN" doctor --json
+    "$BIN" run --marker "BerryOS boot" --timeout 30
+    "$BIN" shot --image out/berryos.img --out out/berry-shot.png --timeout 120
+
 # AAVMF 引导验收（V-0b 刀 3 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。V-3 起盘 = out/berryos.img（just image 单口：MBR + 单
 # FAT16 分区 96MiB（A1-3b 起，C-2c 史 48MiB、V-3 史 24MiB）——EDK2 PartitionDxe+FatDxe

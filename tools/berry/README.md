@@ -1,0 +1,90 @@
+# berry — BerryOS 开发者设备壳（host tool）
+
+一个宿主二进制，两种入口：
+
+- 终端里 `berry doctor / run / shot / shell / input` —— 可编程、可 CI；
+- 双击/无参数 —— 打开手机比例的设备窗口（`berry shell`）。
+
+设计依据：`docs/berry设备壳设计草案.md` / ADR #62。**QEMU 只是引擎子进程**，窗口、截图、
+注入、缩放都在宿主侧；VNC 是 v0 传输，P3 换共享内存时窗口代码不动。
+
+## 构建
+
+```bash
+just berry-build          # host 独立 workspace，显式 --target <host>
+just berry doctor         # QEMU / 固件 / 镜像 / accel
+```
+
+`tools/berry` 是独立 workspace；根 `.cargo/config.toml` 把 `build.target` 锁成
+`aarch64-unknown-none`，所以必须走 `just berry-build`（或显式 `--target`）。宿主依赖
+（winit/softbuffer/clap/serde_json）只在 `tools/berry/Cargo.lock`，不进客机/ABI。
+
+## 命令
+
+```bash
+just berry doctor [--json]
+just berry run --kernel <elf> --marker "BerryOS boot" --timeout 30 --follow
+just berry shot --image out/berryos.img --out out/shot.png --timeout 120
+just shell                                  # = berry shell --image out/berryos.img
+just berry shell --profile phone --timeout 30
+just berry input key ret
+just berry input tap 400 300
+just berry input swipe 400 500 400 200 --ms 300
+just berry-smoke                            # doctor + kernel marker + EFI shot
+```
+
+`berry shot` 不建窗口：起 QEMU（`-display none -vnc`）→ 等串口标记 → 从 VNC 抓一帧 →
+写 PNG → 停设备。`berry shell` 起同一套设备，只是把 VNC 帧接到 winit 窗口。
+
+## 环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `BERRY_HOME` | run dir 根（默认 `~/.berry`，Windows `%LOCALAPPDATA%\BerryOS`） |
+| `BERRY_QEMU` | 指定 `qemu-system-aarch64` |
+| `BERRY_KERNEL` / `BERRY_IMAGE` | 默认内核/镜像 |
+| `AAVMF_CODE` | AAVMF code pflash（默认 brew / 发行版路径） |
+
+## 窗口快捷键
+
+| 键 | 动作 |
+| --- | --- |
+| `Cmd/Ctrl+S` | 截图 `berry-shot-<ts>.png` |
+| `Cmd/Ctrl+R` | 复位设备 |
+| `Cmd/Ctrl+Q` | 退出 |
+| `F` | 全屏切换 |
+| `I` | 显示/隐藏传输信息 |
+| 鼠标/触摸 | 点击、拖动 → 客机触摸 |
+| 键盘 | 映射到 X11 keysym |
+
+## Profile
+
+| id | 面板 | 客机渲染 | 备注 |
+| --- | --- | --- | --- |
+| `default` | 800×600 | 800×600 | P1 兼容档 / CI |
+| `phone` | 1080×2250 | 480×1000 | 默认；P2 客机模式设置后填满 |
+| `phone16` | 1080×1920 | 480×854 | 16:9 |
+| `phone20` | 1080×2400 | 540×1200 | P2（需连续 fb） |
+| `tablet` | 1600×2560 | 800×1280 | 后续 |
+
+P1 客机仍输出 800×600，窗口按 profile 比例等比缩放并 letterbox；P2 通过 fw_cfg
+`opt/berry/display` + `etc/ramfb` commit 让客机输出 480×1000。
+
+## 已知限制（P1）
+
+- QEMU 是外部依赖（GPLv2，进程边界）；主仓 Apache-2.0 不打包 QEMU。
+- `berry input` 直连 QMP；QEMU QMP 单客户端，所以 `berry shell` 不再长期持有 QMP，
+  改为按需连接。并发 shell+input 的 attach 控制服务是 P2 项。
+- 默认 `berry shot` 等 `BERRYBOOT ok`，当前 EFI 镜像此时可能还在固件 UI；要看 GUI 请等
+  `FBW ok`/launcher 标记落地后传 `--wait-marker`。
+- Windows/Linux 代码路径已写（TCP endpoint / 条件编译），但本轮只在 macOS 实机验证。
+- P1 用 QEMU `snapshot=on` 临时覆盖层，基础镜像只读；跨 boot 持久化（GUI-8 布局）留 P2。
+- PNG 用 zlib stored block（无压缩），800×600 约 1.4 MiB；P2 换压缩编码。
+
+## 测试
+
+```bash
+cd tools/berry
+cargo test --target "$(rustc -vV | sed -n 's/^host: //p')"
+just berry-smoke     # 仓库根；需要 out/berryos.img
+```

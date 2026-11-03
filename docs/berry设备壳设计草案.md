@@ -1,6 +1,6 @@
 # 开发者设备壳（berry shell）设计草案
 
-> 【状态】草案 · 2026-11-03 立稿。用户裁决原话：「先把方案落了，我要最好的方案架构」。
+> 【状态】草案 · 2026-11-03 立稿；P0/P1 已落地（同日，见 §16.4）。用户裁决原话：「先把方案落了，我要最好的方案架构」。
 > 【定位】宿主侧开发者工具：一个 `berry` 二进制，终端里是 CLI，双击是手机比例窗口。
 > 【单一事实源】本文 = 设备壳架构/协议/刀序；ADR #62 = 一句话裁决；GUI 规划 = 上游需求。
 > 【关系】补 `run-efi` 的 `-nographic` 窗口缺口；承接 GUI-9/SDK-1 的 screenshot/inject 宿主面；
@@ -597,6 +597,34 @@ CI 不建窗口；`shot --ephemeral` 内部 VNC/QMP 全 headless。GUI 冒烟留
 一句话：`berry` 单二进制；QEMU 只作引擎子进程；控制面 QMP、数据面 v0 VNC/v2 shm；
 窗口/输入/截图不依赖 QEMU GUI 后端；客机 v1 用 fw_cfg ramfb 模式设置 + 每帧 commit
 实现 480×1000（恰好用满 800×600 GOP 缓冲）；QEMU GPL 用进程边界隔离。
+
+### 16.4 落地注记（2026-11-03，P0/P1）
+
+**已落**：`tools/berry/`（lib + bin，host 独立 workspace）——`doctor` / `run` / `shot` /
+`shell` / `input` / `version`；QMP 客户端（握手、screendump、send-key、input-send-event、
+quit）；RFB 3.8（None 安全、Raw、DesktopSize、Pointer/Key）；PNG（zlib stored，无压缩）；
+winit/softbuffer 窗口（fit/bilinear、鼠标/触摸/键盘、截图/复位/全屏/退出）；`just berry-build` /
+`just berry ...` / `just shell` / `just berry-smoke`。macOS + QEMU 11.0.3 实测：
+`doctor` 绿、`run` 命中 `BerryOS boot`、`shot` 出 800×600 PNG、`shell` 窗口起停、
+`input tap/key` 经 QMP 到达客机；10 条 host 单测全绿。
+
+**与设计稿的差异（如实记）**：
+
+- `berry shell` 默认 `phone` profile，但客机仍是 800×600，窗口按 19:9 letterbox；
+  P2 的 ramfb 模式设置/commit 落码后才填满。
+- `berry input` 直连 QMP，未落 §6.3 的 attach 控制服务。QEMU QMP 单客户端，故 `shell`
+  不再长期持 QMP（reset/stop 按需连接）；并发 shell+input 的控制服务留 P2。
+- `shot` 以 VNC 抓帧为主，QMP `screendump` 兜底未接；当前 EFI 镜像串口无 `FBW ok`，
+  `shot` 等 `BERRYBOOT ok` 时抓到的是固件 UI——**不是设备壳的问题**，是客机 GUI 镜像
+  尚未就位；GUI 截图验收等 `FBW ok`/launcher 标记。
+- `shell --timeout N` 是测试/演示用自动退出；默认 0（不自动退）。
+- P1 用 QEMU `snapshot=on` 临时覆盖层（基础镜像只读）；跨 boot 持久化覆盖层
+  （GUI-8 布局）留 P2，届时换 qcow2 backing overlay。
+- PNG 未压缩；P2 换压缩编码，`write_png` API 不变。
+
+**未落（下一刀）**：P2 客机 ramfb 模式设置 + `etc/ramfb` 每帧 commit + `CHAN_HND_MAX`
+8→9/10 评审 + `disp0` 拆分；P3 shm/virtio-gpu/damage/120Hz/回放。P0/P1 未动 `smoke.sh`
+与默认 800×600，CI 基线零漂移。
 
 ## 附录 A：RAMFBCfg（28B，大端）
 

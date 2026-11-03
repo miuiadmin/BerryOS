@@ -101,6 +101,9 @@ just smoke-image    # EFI 整盘镜像独立冒烟（已挂 CI）：十段 + 字
 just build-boot     # BerryBoot EFI 构建链（staticlib → rust-lld 全链接 → elf2pe PE32+）
 just image          # 整盘镜像 → out/berryos.img + manifest.txt（同输入同字节）
 just run-efi        # AAVMF 挂 berryos.img + ramfb——十段引导 + 内核接续
+just berry ...      # 宿主设备壳 CLI：doctor/run/shot/shell/input（tools/berry，host target）
+just shell          # = berry shell --image out/berryos.img（手机比例窗口；P1 先 letterbox 800×600）
+just berry-smoke    # P0 宿主面冒烟：doctor + kernel marker + EFI 截图（不建窗口）
 just build-release  # release 链接守卫（挂 CI）：fat LTO ADRP 断链形态补面 + assert-flip
 just run-release / just check / just clean
 just bench          # B-0/B-1 基准：BENCH 六行 + 基线对拍；--el0 四项；--update 分段刷新
