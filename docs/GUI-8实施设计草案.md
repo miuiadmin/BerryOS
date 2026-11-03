@@ -32,7 +32,7 @@
 | 验收面 | 标记（命名候选，canon 两两互非子串复验 = 落码义务） | 相 |
 |---|---|---|
 | V1 桌面到达 | `LAUNCH ok`（首帧呈现 + 布局装载毕；现役非标记行 `LAUNCH v=` 保留） | EFI 冻结十段 |
-| V2 合成交互 | `PAGE ok n=2`（合成 swipe 翻页两格）/ `CLICK ok n=1`（合成 click → **真** spawn RPC 全程） | EFI 冻结十段 |
+| V2 合成交互 | `PAGE ok n=2`（合成 swipe 翻页两格）/ `CLICK ok n=1`（合成 click → **真** spawn RPC 全程） | PAGE 冻结十段；CLICK 随段④ 交互相（修约 1：冻结相 launcher 恰 [wm]，点击输入面结构性缺席——CI 覆盖经 smoke-image 不失） |
 | V3 真链注入 | 复用 V2 标记（virtio-tablet→inputd→gift→launcher 真线） | EFI GUI 交互相（新） |
 | V4 跨 boot | `LAYOUTW ok`（变体布局落盘 + 回读自洽）/ `LAYOUT ok n=`（Boot B 读回变体格数） | EFI GUI 交互相双 boot |
 
@@ -42,8 +42,9 @@ SwipePager→Click 全逻辑真、唯 pointer wire 假；CLICK 的 spawn RPC 与
 
 ### 1.2 smoke 相拓扑（结构裁决展开见 §3-裁决一）
 
-- **EFI 冻结十段零字节扰动**：新标记 LAUNCH ok/PAGE ok/CLICK ok 由 launcher 自身
-  打印（拓扑同 WM ok 先例，挂 ECO_MARKERS）；LAYOUT 族标记结构性缺席（无数据盘）。
+- **EFI 冻结十段零字节扰动**：新标记 LAUNCH ok/PAGE ok 由 launcher 自身
+  打印（拓扑同 WM ok 先例，挂 ECO_MARKERS；CLICK 随段④ 交互相——修约 1）；
+  LAYOUT 族标记结构性缺席（无数据盘）。
 - **新相「EFI GUI 交互相」**（smoke-image 增段，独立于冻结十段）：挂
   `-device virtio-tablet-device` + `-qmp unix:` + 独立 mkfat FAT12 数据盘
   （LBA0 印章 `BERRYOSVBLK!`，fsmgr 挂载门零改即收——`fat.rs` 锚 `for &cand in
@@ -77,9 +78,9 @@ svcmgr（稳态 echo 往返 + app 域 serve 常驻 ← 新增第二通道）
 |---|---|---|---|
 | base 0-3 | console/stdin/self_proc/self_vmar | 同现状 | 在 |
 | extras[0] | wm 客户端 dup（`wm_cli_h()`） | wmd arm Ok 路（现状） | 在 |
-| extras[1] | fs 客户端端（`fs_h()`） | fsmgr arm 后 **分相错开**让位（§3-裁决四-b） | 在（RAM-only） |
-| extras[2] | app 域客户端端（新 `app_cli_h()`） | launcher arm 门内 channel_pair | 在 |
-| extras[3] | input 客户端端 dup（`input_h()`） | inputd arm Ok 路 | **缺席**（无 tablet） |
+| extras[1] | fs 客户端端（`fs_h()`） | fsmgr arm 后 **分相错开**让位（§3-裁决四-b） | 缺——修约 1/R1 裁定（v2 修约 2）：让位判别 = BLK_OK≠0（数据盘在位 = vblk 自验过），冻结相 fs 留 bsh（三元皮零漂） |
+| extras[2] | app 域客户端端（新 `app_cli_h()`） | launcher arm 门内 channel_pair | 缺——随 fs 让位同门截断（netd 条款镜像：前缀紧致禁中段洞） |
+| extras[3] | input 客户端端 dup（`input_h()`） | inputd arm Ok 路 | 缺（无 tablet——INPUT_A≠0 不再判交互相（修约 2），此槽随 fs_gift=0 前缀截断缺席） |
 
 直行复刻 spawn 需 rootfs VMO = 第 5 枚 → 内核 CHAN_HND_MAX 8→9 四处联动
 （ADR #61 论据②同款地形）——被裁决二排除，gift 清单恰满即设计约束达成。
@@ -92,8 +93,10 @@ svcmgr（稳态 echo 往返 + app 域 serve 常驻 ← 新增第二通道）
 - 追认 D3 不变量：launcher 仍在 gfxdemo reap 之后（D3 本意单 wm 客户端序，
   fsmgr/vnet/inputd 皆不触 wm 域，重排安全——scout S3-F3 论证）。
 - launcher 移到 fsmgr 后 = fs_client 已存在可赠；移到 inputd 后 = INPUT_A 可 dup。
-- bsh arm（:1413 `gifts[1] = fs_client`）改条件路由：GUI 形（`WMD_CLI_DUP≠0`）
-  让位 launcher，bsh 退三元皮（rootfs 形现状零漂）。
+- bsh arm（:1413 `gifts[1] = fs_client`）改条件路由（修约 1 后判别 =
+  `BLK_OK≠0`，修约 2）：交互相让位 launcher（bsh 退 [rootfs] 单皮——
+  fs_selftest 无 fs_h() 门会 park，park 契约由段④ 立法）；冻结相/rootfs
+  形 bsh 三元皮零漂。
 - 监督最小件：launcher arm 后台非阻塞 wait + 崩溃 → 一次重启 + eco 行 loud。
 
 ## §3 裁决书（编号承袭侦察 §4；裁决三已兑现归档）
@@ -231,7 +234,8 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
   三约束）+ 合成 selftest（PAGE/CLICK 标记 + 变体布局写）+ LAUNCH ok 首帧标记。
 - 依赖接线：berry-ui/berry-gfx/berry-layout 进 launcher 独立 workspace
   （guifbd 同形先例：no_std crate 入 musl std 程序）。
-- 验收：EFI 冻结十段新三标记到齐 + UTM 手验桌面起。
+- 验收：EFI 冻结十段新两标记（LAUNCH ok/PAGE ok）到齐 + UTM 手验桌面起；
+  CLICK ok 随段④ 交互相验（修约 1）。
 
 **段④ smoke 新相 + 文书收官**
 - EFI GUI 交互相（tablet+QMP+数据盘双 boot）+ LAYOUT 族标记 + 标记族 canon
@@ -296,7 +300,19 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
 
 - **R1**（段② 首验）：bsh 在 EFI 形失去 fs gift 后 park 行为漂移（现
   「park 在 fat 段」语义）——十段字节对拍门兜底；漂移则让位判别改
-  inputd/数据盘在位信号。
+  inputd/数据盘在位信号。**已触发收编（对抗审查 MAJOR [0]+[1]）**：
+  WMD_CLI_DUP 判别在 EFI 冻结相恒开 = 恒让位 → fs_selftest 无门 park
+  杀 11 标记；冻结相 launcher 恰 [wm]（e41ae92 接线刀同构零漂）。
+  **二次收编（仪器实测，修约 2）**：fallback `INPUT_A≠0` 实证废——
+  inputd 预拉只门 H_MMIO（virt 恒在）且 spawn Ok 即 store（tablet 探测
+  晚于 store、park 不回清）→ EFI 冻结相恒真误让位，bsh fs_h()==0 →
+  PUT64 ENOENT park → fs 族 11 标记连坐（仪器：bsh 自打 `PUT64 not
+  found h=0`；基线 stash 对照 71/71 全绿）。**判别器 v2 = BLK_OK≠0**
+  （vblk 预拉自验写读 LBA5 过 = 真 virtio-blk 数据盘在位；EFI 冻结相
+  usb-storage 非 vblk 域自验即拒恒 0；rootfs 形=1 但 arm 门恒跳不消费）。
+  语义恰合：launcher 需 fs ⟺ LAYOUT.JSN 所在布局卷在位（fsmgr 挂同一
+  盘，两信号同源同真假）。监督重启装配同门（冻结相重启仍 [wm]——
+  防 段③ 布局读起 bsh↔launcher 双读者混流面，C-1 刀 3 危害类）。
 - **R2**（段② 首验）：svcmgr 稳态 loop 挂第二通道后 echo 往返时延零可感
   （boot 自验门既有断言兜底）。
 - **R3**（段③ 首验）：长活 present 客户端 credits 背压 + blit-at-SUBMIT
