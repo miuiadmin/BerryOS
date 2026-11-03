@@ -11,7 +11,7 @@
   G1  AGENTS.md 行数帽 ≤200。
   G2  AGENTS.md 行长：>100 字符 WARN、>120 字符 FAIL。
   G3  探针串在位（外部工具依赖的口径串，防误删）：
-      AGENTS.md   外层包安全 API / SLICE_HZ/2 / docs/规则/ / docs/雷册-判例库.md
+      AGENTS.md   6 串（清单单源 = 下方 PROBES 表，勿在此逐列——两处必漂）
       规则/01     外层包安全 API / FPSIMD
       规则/03     copy_out_u32
       规则/08     SLICE_HZ/2
