@@ -648,12 +648,12 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
 
 - **GUI 模式 console 静音**：fbinfo 扩 48B 第 6 域 `gui=1`（仅 `DISP ok` 时置位）；
   guifbd 在该模式仍记账 `console_full_n`/`present_seq`，但跳过 `put_str`——测试/日志
-  只走串口，不再盖桌面。默认 800×600（无 display 项）零漂移；干净镜像复验待 GUI-8
-  rootfs 稳定后。
-- **P2 × GUI-8 联调（预览，未并）**：`gui8-draft` 2e57502 + 本 P2 内核（临时 worktree）
-  在 480×1000 出状态栏/页指示器/4 列网格；中段控制台测试日志覆盖、图标仍是 dash =
-  GUI-8 在途面。产物 `out/berryos-desktop.img` / `out/berry-desktop-480x1000.png`
-  （gitignored 预览件）。主分支 launcher 仍是 skeleton；GUI-8 合并后 `just image` 即得桌面。
+  只走串口，不再盖桌面。默认 800×600（无 display 项）零漂移；已用 GUI-8 干净镜像复验。
+- **P2 × GUI-8 联调（预览，未并）**：`gui8-draft` 2e57502 + 本 P2 内核 + `gui=1` 静音，
+  在 480×1000 出**干净桌面**：状态栏/页指示器/4 列 8 图标位，无控制台覆盖；图标仍是
+  dash = GUI-8 资产在途面。产物 `out/berryos-desktop.img` / `out/berry-desktop-480x1000.png`
+  （gitignored 预览件）与 `out/BerryOS-Desktop.app`。主分支 launcher 仍是 skeleton；
+  GUI-8 合并后 `just image` 即得桌面。
 
 **未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 连续 fb；
 256MiB handoff 修复；PNG 压缩；attach 控制服务。P2 未动 `smoke.sh` 默认 800×600
