@@ -4,7 +4,7 @@
 <dict>
   <key>CFBundleName</key><string>BerryOS</string>
   <key>CFBundleDisplayName</key><string>BerryOS</string>
-  <key>CFBundleIdentifier</key><string>dev.berryos.shell</string>
+  <key>CFBundleIdentifier</key><string>@BUNDLE_ID@</string>
   <key>CFBundleVersion</key><string>@VERSION@</string>
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>
   <key>CFBundlePackageType</key><string>APPL</string>

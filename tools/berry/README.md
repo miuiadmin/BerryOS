@@ -24,6 +24,8 @@ just berry doctor         # QEMU / 固件 / 镜像 / accel
 
 ```bash
 tools/berry/packaging/macos/build.sh      # → out/BerryOS.app（自包含镜像/固件，ad-hoc 签名）
+BERRY_IMAGE=out/berryos-desktop.img BERRY_BUNDLE_ID=dev.berryos.shell.desktop \
+  tools/berry/packaging/macos/build.sh out/BerryOS-Desktop.app
 ```
 
 macOS `.app` 会从 `Contents/Resources` 找 `berryos.img`/`AAVMF_CODE.fd`；QEMU 仍是外部

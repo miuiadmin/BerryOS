@@ -8,14 +8,15 @@ cd "$ROOT"
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 BIN="tools/berry/cargo-target/$HOST/release/berry"
 test -x "$BIN" || { echo "missing $BIN — run: just berry-build"; exit 1; }
-test -f out/berryos.img || { echo "missing out/berryos.img — run: just image"; exit 1; }
+IMG=${BERRY_IMAGE:-out/berryos.img}
+test -f "$IMG" || { echo "missing $IMG — run: just image, or set BERRY_IMAGE"; exit 1; }
 
 APP=${1:-out/BerryOS.app}
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/berry"
 chmod +x "$APP/Contents/MacOS/berry"
-cp out/berryos.img "$APP/Contents/Resources/berryos.img"
+cp "$IMG" "$APP/Contents/Resources/berryos.img"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
 
 FW=${AAVMF_CODE:-}
@@ -35,8 +36,9 @@ else
 fi
 
 VERSION=$("$BIN" --version | awk '{print $2}')
-sed "s/@VERSION@/$VERSION/g" tools/berry/packaging/macos/Info.plist \
-  > "$APP/Contents/Info.plist"
+BUNDLE_ID=${BERRY_BUNDLE_ID:-dev.berryos.shell}
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" \
+  tools/berry/packaging/macos/Info.plist > "$APP/Contents/Info.plist"
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || \
