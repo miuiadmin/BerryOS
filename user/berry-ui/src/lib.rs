@@ -35,30 +35,121 @@ pub mod desc;
 pub mod frame;
 pub mod hit;
 pub mod layout;
+#[cfg(feature = "s7")]
+pub mod mask;
+pub mod metrics;
 pub mod paint;
 pub mod resample;
+pub mod swipe;
 pub mod telemetry;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
 
 // 扁平面 re-export：门面签名里不限定模块路径的名字（§6 用法对齐）。
-pub use desc::{AstError, Msg, MsgBuf, NodeId, Props, TextBuf, ViewKind, ViewSpec};
+pub use desc::{AstError, Axis, Msg, MsgBuf, NodeId, Props, TextBuf, ViewKind, ViewSpec};
+pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, TextMetrics};
 
-use berry_gfx::cmd::{CommandEncoder, GlyphPos};
+use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
 use berry_guiproto::{FRAME_DISCARDED, FRAME_PRESENTED, PHASE_MOVE};
 use resample::Sample;
 
 // ---------- 常量族（§6 冻结） ----------
 
-pub const MAX_NODES: usize = 256;
+/// 走查/位图/序缓冲容量单源（D10：layout::CAP 与 paint::ORDER_CAP =
+/// `2 * MAX_NODES` 常量表达式；CAP 注释五处耦合同步）。
+pub const MAX_NODES: usize = 512;
 pub const TEXT_INLINE: usize = 64;
 pub const MSG_MAX: usize = 8;
 pub const ANIM_MAX: usize = 16;
+/// S7 anim staging 帽（§6/D1）：与动画槽帽 ANIM_MAX 同源——单 tick 应用
+/// 的 Layout 型动画 ≤ 槽数 → staging 条数结构性不触帽（满 = 既有 loud
+/// 形态 debug_assert 防御面）。B 面（cfg s7）编译——A 面无 staging。
+#[cfg(feature = "s7")]
+pub const ANIM_STAGING_MAX: usize = ANIM_MAX;
 pub const INPUT_BUF_MAX: usize = 8;
 pub const DEP_EDGES_MAX: usize = 64;
 pub const DRAG_SLOP_PX: i32 = 8;
 pub const OVERDRAW_BUDGET_X256: u32 = 640; // 2.5×256（GUI-10 反清单 7）
 pub const IDLE_AFTER_MS: u64 = 2000; // OH 常量：静默强降 IDLE
 pub type UiMain = Ui<MAX_NODES>;
+
+/// arena 运行期树深帽（GUI-6 D29）：add() 执法（超深 → NodeBad loud）
+/// ——递归面（measure/place/cull/emit）未迭代化，深链 × ~200B/帧穿
+/// 32KB guest 栈；96×~200B + 数组面 < 32KB 安全。与 D11 builder 帽
+/// DESC_DEPTH_MAX=64 分工（构建期 vs 运行期——64 < 96 自洽）。
+pub const TREE_DEPTH_MAX: u32 = 96;
+
+// ---------- a11y 侧表（GUI-6 D12 段B 最小落位） ----------
+
+/// a11y 侧表容量（D12：a11y 条目数帽——超 → apply 面 TooSmall loud）。
+pub const A11Y_MAX: usize = 32;
+
+/// a11y 角色常量域（wire u8；§6 冻结——枚举外的开放值域，host 可扩）。
+pub const ROLE_NONE: u8 = 0;
+pub const ROLE_BUTTON: u8 = 1;
+pub const ROLE_TEXT: u8 = 2;
+pub const ROLE_IMAGE: u8 = 3;
+pub const ROLE_TOGGLE: u8 = 4;
+pub const ROLE_LIST_ITEM: u8 = 5;
+
+/// a11y 条目（D12：Node 冻结 19 字段无 a11y 位——侧表存 NodeId + 角色
+/// + 内联标签）。`node` 的 gen 位与 arena 三重对拍（发射面防悬空残项）。
+/// 完整生命周期（增删查 pub API）= 段D；段B 只落 apply/encode 数据面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct A11yEntry {
+    pub node: NodeId,
+    pub role: u8,
+    pub label: TextBuf,
+}
+
+// ---------- press_map 侧表（GUI-6 D18——段D） ----------
+
+/// press_map 容量（D18：声明式 pressed-state 映射帽；超 = NodeFull loud
+/// ——D30 容量族单源立法：UiError 无侧表满变体，NodeFull 兼任「Ui 容量
+/// 域满」，与 a11y 满 32 / arena 满同族）。
+pub const PRESS_MAP_MAX: usize = 16;
+
+/// pressed 视觉底色（D18：RGB u32 打包 `r<<16|g<<8|b`）。设计意图 =
+/// 「bg 亮度减半」——v1 无样式系统，硬编码常量单源（文档化豁免；样式
+/// 系统落地后由此常量迁出）。
+pub const PRESSED_BG: u32 = 0x40_40_40;
+
+/// press_map 单条（D18）：`trigger` = Press/Release/Cancel 锚定节点，
+/// `visual` = 视觉换底节点（Rect/Text——bg 承载面），`saved_bg` = Press
+/// 时刻原底色（`None` = Text 原透明底——还原 = 移除 bg），`active` =
+/// 已换底未还原（防二次 Press 覆写 saved_bg 断还原链）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PressEntry {
+    trigger: NodeId,
+    visual: NodeId,
+    saved_bg: Option<u32>,
+    active: bool,
+}
+
+/// Color → RGB u32 打包（`r<<16|g<<8|b`——D18 saved_bg 存储形）。
+fn pack_color(c: Color) -> u32 {
+    ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32)
+}
+
+/// RGB u32 打包 → Color（unpack 逆函数）。
+fn unpack_color(v: u32) -> Color {
+    Color { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 }
+}
+
+// ---------- const 断言族（D10——冻结形态编译期钉死） ----------
+
+/// Node 冻结 19 字段 = 144B（GUI-3 §2.2——字段一字不改的执法面）。
+const _: () = assert!(core::mem::size_of::<Node>() == 144, "Node 冻结 19 字段 = 144B（§2.2）");
+
+/// builder 深帽 < arena 深帽（D11/D29 自洽——构建期帽先行收敛，运行期
+/// 帽兜底；倒挂即两帽分工破坏）。
+const _: () = assert!(
+    (desc::DESC_DEPTH_MAX as u32) < TREE_DEPTH_MAX,
+    "DESC_DEPTH_MAX < TREE_DEPTH_MAX 自洽（D11/D29）"
+);
+
+/// CAP = 2*MAX_NODES 常量表达式联动（D10 单源——MAX_NODES 动则 CAP 走）。
+const _: () = assert!(layout::CAP == 2 * MAX_NODES, "layout::CAP = 2*MAX_NODES（D10 单源）");
+const _: () = assert!(paint::ORDER_CAP == 2 * MAX_NODES, "paint::ORDER_CAP = 2*MAX_NODES（D10 单源）");
 
 /// 默认软 vsync 周期（≈60Hz）——`set_vsync` 前的 rate_hint/expected 轨
 /// 兜底值（协商倒数注入前的确定值，embedder 可覆写）。
@@ -150,7 +241,17 @@ pub struct Ui<const N: usize> {
     spinup_anchor: Option<u64>, // wake 时刻的下一 tick（起振延迟遥测锚）
     deps: dep::DepTable, // 依赖边表单源 dep.rs（幂等去重 + unbind/clear）
     telem: telemetry::Telemetry,
+    tm: &'static dyn metrics::TextMetrics, // D28 供给槽（默认 Monospace）
+    icons: &'static dyn metrics::IconSource, // D28 供给槽（默认 Empty）
+    a11y: [Option<A11yEntry>; A11Y_MAX], // a11y 侧表（D12——apply 落/encode 读）
+    press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
+    press_map_n: usize,
 }
+
+/// D28 默认供件（host 测试与 v1 guest 的开箱面——Monospace 逐位复刻
+/// 现状 Text 测量 / 图标资源未注册恒 None）。
+static DEFAULT_TEXT_METRICS: MonospaceTextMetrics = MonospaceTextMetrics;
+static DEFAULT_ICON_SOURCE: EmptyIconSource = EmptyIconSource;
 
 // —— 内部小工具（零 panic：全 checked/饱和/先验界内） ——
 
@@ -169,6 +270,10 @@ fn clamp_u32(v: i64) -> u32 {
 }
 
 /// props 几何等价判定（纯着色变 → 0 重排——Measure/Render 保留的执法点）。
+/// 段B 新面：Col/Row/Grid 的 w/h/cross 入几何（块字段全比）；Image res/
+/// w/h、Icon id/w/h 全比；Icon fg 不比（纯着色——paint 位换色不动布局）。
+/// S7 B 面无消费者（props_diff 位映射接管）——A 面（cfg not s7）独占。
+#[cfg_attr(feature = "s7", allow(dead_code))]
 fn props_geom_equal(a: &Props, b: &Props) -> bool {
     match (a, b) {
         (Props::Root, Props::Root) => true,
@@ -176,9 +281,23 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
         (Props::Text(x), Props::Text(y)) => {
             x.style.scale == y.style.scale && x.text.as_bytes() == y.text.as_bytes()
         }
-        (Props::Col(x), Props::Col(y)) => x.gap == y.gap,
-        (Props::Row(x), Props::Row(y)) => x.gap == y.gap,
+        (Props::Col(x), Props::Col(y)) => {
+            x.gap == y.gap && x.w == y.w && x.h == y.h && x.cross == y.cross
+        }
+        (Props::Row(x), Props::Row(y)) => {
+            x.gap == y.gap && x.w == y.w && x.h == y.h && x.cross == y.cross
+        }
         (Props::Pad(x), Props::Pad(y)) => x.all == y.all,
+        (Props::Grid(x), Props::Grid(y)) => {
+            x.cols == y.cols
+                && x.rows == y.rows
+                && x.gap == y.gap
+                && x.cross == y.cross
+                && x.w == y.w
+                && x.h == y.h
+        }
+        (Props::Image(x), Props::Image(y)) => x.res == y.res && x.w == y.w && x.h == y.h,
+        (Props::Icon(x), Props::Icon(y)) => x.id == y.id && x.w == y.w && x.h == y.h,
         _ => false, // 变体切换按几何变处理（保守重排）
     }
 }
@@ -221,6 +340,16 @@ impl<const N: usize> Ui<N> {
             spinup_anchor: None,
             deps: dep::DepTable::new(),
             telem: telemetry::Telemetry::new(),
+            tm: &DEFAULT_TEXT_METRICS,
+            icons: &DEFAULT_ICON_SOURCE,
+            a11y: [None; A11Y_MAX],
+            press_map: [PressEntry {
+                trigger: NodeId(0),
+                visual: NodeId(0),
+                saved_bg: None,
+                active: false,
+            }; PRESS_MAP_MAX],
+            press_map_n: 0,
         }
     }
 
@@ -368,17 +497,15 @@ impl<const N: usize> Ui<N> {
 
     fn damage_rect(&mut self, r: damage::RectI) {
         // §3.4 add 流程：先 clip 到 viewport（负界/越界折界内残片；零面
-        // 积 no-op 丢弃——gfx 坑 5 收口在此，wire 化后恒 ≥0）。
+        // 积 no-op 丢弃——gfx 坑 5 收口在此，wire 化后恒 ≥0）。GUI-6
+        // D17：与 layout/anim 三调用点收敛单源 `layout::dmg_clip_add`。
         let vp = damage::RectI::new(
             0,
             0,
             damage::u32_to_i32_sat(self.vp_w),
             damage::u32_to_i32_sat(self.vp_h),
         );
-        let c = r.intersect(&vp);
-        if !c.is_empty() {
-            self.damage.add(c.to_wire());
-        }
+        layout::dmg_clip_add(&mut self.damage, &r, &vp);
     }
 
     fn reset_arena(&mut self) {
@@ -397,6 +524,8 @@ impl<const N: usize> Ui<N> {
             i += 1;
         }
         self.deps.clear(); // 旧树 NodeId 全悬空——边表整清（dep 表侧单源）
+        self.a11y = [None; A11Y_MAX]; // 同理整清（D12 侧表随树生命周期）
+        self.press_map_n = 0; // 同理整清（D18 表随树生命周期——悬空 id 无还原义）
         self.input_n = 0;
         self.hist_len = 0;
         self.gesture = hit::Gesture::new(); // 旧树 NodeId 全悬空——手势态随之归零
@@ -462,11 +591,70 @@ impl<const N: usize> Ui<N> {
     pub fn add(&mut self, parent: NodeId, spec: desc::ViewSpec) -> Result<NodeId, UiError> {
         let pidx = self.slot_of(parent)?;
         match self.nodes[pidx].as_ref().map(|n| n.kind) {
-            Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad) => {}
-            _ => return Err(UiError::BadParent), // 容器位传叶子
+            Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad)
+            | Some(ViewKind::Grid) => {} // 容器白名单（Grid 入列——D24）
+            // 叶四件显式列名（Rect/Text 原有 + Image/Icon 新叶）：容器位
+            // 传叶子 → BadParent。Grid 格满/零维先验在 Root-子检后（段C
+            // 已落——AST/builder/add/set_props 三面同律齐）。
+            Some(ViewKind::Rect) | Some(ViewKind::Text) | Some(ViewKind::Image)
+            | Some(ViewKind::Icon) => return Err(UiError::BadParent),
+            _ => return Err(UiError::BadParent), // 死槽防御
         }
         if spec.kind == ViewKind::Root {
             return Err(UiError::BadParent); // Root 不能为子
+        }
+        // Grid spec 先验（§4.2 拒面 add 侧；AST/builder 面在 desc.rs 双
+        // 拒）：零维 spec 拒——UiError 族冻结（D21），NodeBad 兼任。
+        if let Props::Grid(g) = &spec.props {
+            if g.cols == 0 || g.rows == 0 {
+                return Err(UiError::NodeBad);
+            }
+        }
+        // Grid 父位格满拒（GUI-6 段C——D24/add 面）：子数 ≥ cols×rows
+        // 再 add = BadParent（「父位不容再子」族；AST 面 GridNotFit 同
+        // 律）。父零维 = 状态漂移（add/set_props 两面已拦新值）——
+        // NodeBad loud 防静默错格。
+        if let Some(Props::Grid(g)) = self.nodes[pidx].as_ref().map(|n| &n.props) {
+            if g.cols == 0 || g.rows == 0 {
+                return Err(UiError::NodeBad);
+            }
+            let cap = g.cols as u32 * g.rows as u32;
+            let mut cnt = 0u32;
+            let mut cur = self.nodes[pidx].as_ref().map(|n| n.first_child).unwrap_or(NONE);
+            let mut hops = 0usize;
+            while cur != NONE && hops <= N {
+                hops += 1;
+                match self.nodes.get(cur as usize) {
+                    Some(Some(c)) if c.alive => {
+                        cnt += 1;
+                        cur = c.next_sib;
+                    }
+                    _ => break,
+                }
+            }
+            if cnt >= cap {
+                return Err(UiError::BadParent);
+            }
+        }
+        // D29 arena 树深帽：新节点深度 = 父链节点数 + 1（根 = 深度 1）
+        // ——超 TREE_DEPTH_MAX 拒（递归面 measure/place/cull/emit 未迭
+        // 代化，深链穿 32KB guest 栈）。链走查带环防御（hops 帽 = N）。
+        let mut chain: u32 = 0;
+        let mut cur = pidx as u32;
+        let mut hops = 0usize;
+        while hops <= N {
+            hops += 1;
+            let Some(n) = self.nodes.get(cur as usize).and_then(|o| o.as_ref()) else {
+                break; // 链断（结构异常）：以已计深度为准保守放行
+            };
+            chain += 1;
+            if n.parent == NONE {
+                break;
+            }
+            cur = n.parent;
+        }
+        if chain.saturating_add(1) > TREE_DEPTH_MAX {
+            return Err(UiError::NodeBad); // 超深 loud（§6 UiError 族无深帽变体——NodeBad 兼任）
         }
         let Some(idx) = self.alloc_slot() else { return Err(UiError::NodeFull) };
         let gen = self.gens[idx];
@@ -551,7 +739,59 @@ impl<const N: usize> Ui<N> {
         if parent != NONE {
             self.mark_ancestors_dirty(parent);
         }
+        // D12 生命周期①：子树连带清 a11y 条目（槽位匹配——旧 gen 残项
+        // 同清，「remove 后无悬挂」钉板对象；条目仅创建于活节点，槽位
+        // 命中即本子树成员或既有残项，两清皆正确）。
+        let mut k = 0usize;
+        while k < A11Y_MAX {
+            let hit = self.a11y[k]
+                .as_ref()
+                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
+                .unwrap_or(false);
+            if hit {
+                self.a11y[k] = None;
+            }
+            k += 1;
+        }
         Ok(())
+    }
+
+    /// S7 单源分派（§5/D2——B 面，cfg s7）：mask=0 零操作直返；GEOM 位
+    /// → 节点重排脏 + 旧界与父链各界 damage（经 dmg_clip_add 交
+    /// viewport——D17 单源）；PAINT 位 → paint 脏保位 + 本界 damage。
+    ///
+    /// 与 §5 伪码的一处有据差异（§11-6 钦定钉板反推）：**不预标脏祖
+    /// 先**——上行传播改由 D4 截断承担（measure 返 changed：内在不变
+    /// 的祖先不重测/不重摆）；父链在此只读收集 damage。预标脏即全测，
+    /// 「孙 GEOM 变、中间聚合内在吸收 → 顶层 measured==0」不可能成立。
+    #[cfg(feature = "s7")]
+    fn apply_change(&mut self, idx: usize, mask: mask::ChangeMask) {
+        if mask.is_empty() {
+            return; // D2：mask=0 零操作（同 props/同文直返）
+        }
+        if mask.intersects(mask::ChangeMask::GEOM) {
+            let old_r = self.abs_rect_of(idx);
+            self.damage_rect(old_r); // 旧界
+            let mut p = self.nodes.get(idx).and_then(|o| o.as_ref()).map(|n| n.parent).unwrap_or(NONE);
+            let mut hops = 0usize;
+            while p != NONE && hops <= N {
+                let pr = self.abs_rect_of(p as usize);
+                self.damage_rect(pr); // 父链各界（只读收集——不标脏，见函数注）
+                p = self.nodes.get(p as usize).and_then(|o| o.as_ref()).map(|n| n.parent).unwrap_or(NONE);
+                hops += 1;
+            }
+            if let Some(n) = self.nodes.get_mut(idx).and_then(|o| o.as_mut()) {
+                n.layout_dirty = true;
+                n.paint_dirty = true;
+            }
+        }
+        if mask.intersects(mask::ChangeMask::PAINT) {
+            if let Some(n) = self.nodes.get_mut(idx).and_then(|o| o.as_mut()) {
+                n.paint_dirty = true; // 保位（v1 写侧簿记——§1.2 保持不消费）
+            }
+            let r = self.abs_rect_of(idx);
+            self.damage_rect(r); // 纯绘：同界重绘
+        }
     }
 
     pub fn set_props(&mut self, node: NodeId, props: desc::Props) -> Result<(), UiError> {
@@ -570,32 +810,74 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Col, Props::Col(_)))
                 | Some((ViewKind::Row, Props::Row(_)))
                 | Some((ViewKind::Pad, Props::Pad(_)))
+                | Some((ViewKind::Image, Props::Image(_)))
+                | Some((ViewKind::Icon, Props::Icon(_)))
+                | Some((ViewKind::Grid, Props::Grid(_)))
         );
         if !kind_ok {
             return Err(UiError::NodeBad);
         }
+        // Grid props 先验（§4.2 拒面 set_props 侧——三面齐律）：零维 /
+        // 缩格不容现有子 → NodeBad（先验后写，状态保持——kind 失配测
+        // 同型纪律）。
+        if let Props::Grid(g) = &props {
+            if g.cols == 0 || g.rows == 0 {
+                return Err(UiError::NodeBad);
+            }
+            let mut cnt = 0u32;
+            let mut cur = self.nodes[idx].as_ref().map(|n| n.first_child).unwrap_or(NONE);
+            let mut hops = 0usize;
+            while cur != NONE && hops <= N {
+                hops += 1;
+                match self.nodes.get(cur as usize) {
+                    Some(Some(c)) if c.alive => {
+                        cnt += 1;
+                        cur = c.next_sib;
+                    }
+                    _ => break,
+                }
+            }
+            if (g.cols as u32 * g.rows as u32) < cnt {
+                return Err(UiError::NodeBad);
+            }
+        }
         let Some(old) = self.nodes[idx].as_ref().map(|n| n.props) else { return Err(UiError::NodeBad) };
-        let geom_same = props_geom_equal(&old, &props);
-        let old_r = self.abs_rect_of(idx);
-        if let Some(n) = self.nodes[idx].as_mut() {
-            n.props = props;
-            n.paint_dirty = true;
-        }
-        if geom_same {
-            self.damage_rect(old_r); // 纯着色：同界重绘
-        } else {
-            self.damage_rect(old_r); // 旧界
-            let p = self.nodes[idx].as_ref().map(|n| n.parent).unwrap_or(NONE);
-            if p != NONE {
-                let pr = self.abs_rect_of(p as usize);
-                self.damage_rect(pr); // 兄弟位移面（新界由 layout 收）
-                self.mark_ancestors_dirty(p);
-            }
+        // B 面（S7 段E）：props_diff 位映射（§5 表单源）→ apply_change
+        // 单源分派（GEOM/PAINT/mask=0 三路——D2）；A 面现状体下方
+        // cfg(not) 块逐字保持（§10：同文/同 props 的现状浪费保留）。
+        #[cfg(feature = "s7")]
+        {
+            let m = mask::props_diff(&old, &props);
             if let Some(n) = self.nodes[idx].as_mut() {
-                n.layout_dirty = true;
+                n.props = props;
             }
+            self.apply_change(idx, m);
+            Ok(())
         }
-        Ok(())
+        #[cfg(not(feature = "s7"))]
+        {
+            let geom_same = props_geom_equal(&old, &props);
+            let old_r = self.abs_rect_of(idx);
+            if let Some(n) = self.nodes[idx].as_mut() {
+                n.props = props;
+                n.paint_dirty = true;
+            }
+            if geom_same {
+                self.damage_rect(old_r); // 纯着色：同界重绘
+            } else {
+                self.damage_rect(old_r); // 旧界
+                let p = self.nodes[idx].as_ref().map(|n| n.parent).unwrap_or(NONE);
+                if p != NONE {
+                    let pr = self.abs_rect_of(p as usize);
+                    self.damage_rect(pr); // 兄弟位移面（新界由 layout 收）
+                    self.mark_ancestors_dirty(p);
+                }
+                if let Some(n) = self.nodes[idx].as_mut() {
+                    n.layout_dirty = true;
+                }
+            }
+            Ok(())
+        }
     }
 
     pub fn set_text(&mut self, node: NodeId, bytes: &[u8]) -> Result<(), UiError> {
@@ -609,21 +891,55 @@ impl<const N: usize> Ui<N> {
         if !is_text {
             return Err(UiError::NodeBad);
         }
-        let old_r = self.abs_rect_of(idx);
-        self.damage_rect(old_r); // 旧界（内在尺寸变）
-        let p = self.nodes[idx].as_ref().map(|n| n.parent).unwrap_or(NONE);
-        if p != NONE {
-            let pr = self.abs_rect_of(p as usize);
-            self.damage_rect(pr);
-            self.mark_ancestors_dirty(p);
-        }
-        if let Some(n) = self.nodes[idx].as_mut() {
-            if let Props::Text(tp) = &mut n.props {
-                tp.text = buf;
+        // B 面（S7 段E）：D3 三态（§11 术语）——同文（字节相等）→ 零操
+        // 作直返；等长换文（len 与 scale 均同；set_text 面恒同 scale）
+        // → TEXT|BG 纯 PAINT；变长 → TEXT|BG|W|H（内在变 = GEOM 追加）
+        // → apply_change 单源分派。A 面现状体下方 cfg(not) 块逐字保持
+        // （无旧值比较——同文全量 relayout 浪费保留，§10 诚实基线）。
+        #[cfg(feature = "s7")]
+        {
+            let old = match self.nodes[idx].as_ref().map(|n| &n.props) {
+                Some(Props::Text(tp)) => tp.text,
+                _ => return Err(UiError::NodeBad), // unreachable（is_text 已验）——loud 防御
+            };
+            let m = if old.as_bytes() == buf.as_bytes() {
+                mask::ChangeMask::NONE // 同文：零操作（D2）
+            } else if old.len == buf.len {
+                mask::ChangeMask::TEXT.union(mask::ChangeMask::BG) // 等长换文：纯 PAINT
+            } else {
+                mask::ChangeMask::TEXT
+                    .union(mask::ChangeMask::BG)
+                    .union(mask::ChangeMask::W)
+                    .union(mask::ChangeMask::H) // 变长：内在变 → GEOM 追加
+            };
+            if !m.is_empty() {
+                if let Some(n) = self.nodes[idx].as_mut() {
+                    if let Props::Text(tp) = &mut n.props {
+                        tp.text = buf;
+                    }
+                }
+                self.apply_change(idx, m);
             }
-            n.layout_dirty = true;
+            Ok(())
         }
-        Ok(())
+        #[cfg(not(feature = "s7"))]
+        {
+            let old_r = self.abs_rect_of(idx);
+            self.damage_rect(old_r); // 旧界（内在尺寸变）
+            let p = self.nodes[idx].as_ref().map(|n| n.parent).unwrap_or(NONE);
+            if p != NONE {
+                let pr = self.abs_rect_of(p as usize);
+                self.damage_rect(pr);
+                self.mark_ancestors_dirty(p);
+            }
+            if let Some(n) = self.nodes[idx].as_mut() {
+                if let Props::Text(tp) = &mut n.props {
+                    tp.text = buf;
+                }
+                n.layout_dirty = true;
+            }
+            Ok(())
+        }
     }
 
     pub fn invalidate(&mut self, node: NodeId) -> Result<(), UiError> {
@@ -635,6 +951,217 @@ impl<const N: usize> Ui<N> {
             n.paint_dirty = true;
         }
         Ok(())
+    }
+
+    /// offset 公开面（GUI-6 D31）：内部走 anim Transform 同路径——直写
+    /// ox/oy 不重排 + 新旧**子树包络** damage（经 D17 clip helper 收口）
+    /// ——SwipePager 跟手与 app 直控共用，无第三套 dirty 语义。
+    pub fn set_offset(&mut self, node: NodeId, ox: i32, oy: i32) -> Result<(), UiError> {
+        let idx = self.slot_of(node)? as usize;
+        let before = anim::subtree_abs_rect(&self.nodes, idx, 0);
+        if let Some(n) = self.nodes[idx].as_mut() {
+            n.ox = ox;
+            n.oy = oy;
+            n.paint_dirty = true;
+        }
+        let after = anim::subtree_abs_rect(&self.nodes, idx, 0);
+        self.damage_rect(before.envelope(&after));
+        Ok(())
+    }
+
+    // —— a11y 运行期 API（GUI-6 D12 段D 生命周期②③——§7.1 D12 三面：apply 落表（段B）+ 本运行期面 + remove 连带清（上文）） ——
+
+    /// a11y 条目登记（D12）：`node` 须活（slot_of 拒悬空/坏槽）；同节点
+    /// 重复 set = 原槽覆写（in-place 更新，不占新槽）；表满 32 →
+    /// [`UiError::NodeFull`] loud（D30 容量族——侧表满兼任「Ui 容量域满」）。
+    /// 标签 > `TEXT_INLINE` → `TextTooLong` loud。
+    pub fn set_a11y(&mut self, node: NodeId, role: u8, label: &[u8]) -> Result<(), UiError> {
+        self.slot_of(node)?; // 活性先验（悬空 id 拒登记——防发射面残项）
+        let buf = desc::TextBuf::new(label)?;
+        if let Some(e) = self.a11y.iter_mut().find(|e| e.as_ref().is_some_and(|e| e.node == node)) {
+            *e = Some(A11yEntry { node, role, label: buf });
+            return Ok(()); // in-place 覆写：不占新槽（33 帽语义只数唯一节点）
+        }
+        let slot = match self.a11y.iter().position(|e| e.is_none()) {
+            Some(i) => i,
+            None => return Err(UiError::NodeFull),
+        };
+        self.a11y[slot] = Some(A11yEntry { node, role, label: buf });
+        Ok(())
+    }
+
+    /// a11y 条目摘除（D12）：命中返 true；未登记/已摘返 false（幂等面）。
+    pub fn take_a11y(&mut self, node: NodeId) -> bool {
+        if let Some(e) = self.a11y.iter_mut().find(|e| e.as_ref().is_some_and(|e| e.node == node)) {
+            *e = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// a11y 活条目迭代（D12）：**活性过滤**——条目节点已死/代数不匹配的
+    /// 残项跳过不吐（remove 连带清为尽力面，本过滤为发射面前卫：读侧
+    /// 永不见悬空 id）。
+    pub fn a11y_iter(&self) -> impl Iterator<Item = &A11yEntry> {
+        self.a11y
+            .iter()
+            .filter_map(|e| e.as_ref())
+            .filter(|e| self.slot_of(e.node).is_ok())
+    }
+
+    // —— press_map 声明式 pressed 短路径（GUI-6 D18——§7.1） ——
+
+    /// pressed 视觉映射登记（D18）：`entries` = `(trigger, visual)` 对；
+    /// **整表替换**语义（幂等重建面）。帽 [`PRESS_MAP_MAX`] = 16，超 →
+    /// [`UiError::NodeFull`] loud（D30 容量族单源——§6 冻结注释「帽 16，
+    /// 超 = NodeFull」；冻结 UiError 族无侧表变体，NodeFull 兼任）。
+    /// trigger/visual 均须活节点；visual 须 Rect/Text（bg 承载面）——违
+    /// 者 `NodeBad` loud（先验后写，半落拒绝不污染现表）。
+    pub fn set_press_map(&mut self, entries: &[(NodeId, NodeId)]) -> Result<(), UiError> {
+        if entries.len() > PRESS_MAP_MAX {
+            return Err(UiError::NodeFull);
+        }
+        // 先验后写：全对子过验再落表（任一拒 = 原表原样）。
+        for &(trig, vis) in entries {
+            self.slot_of(trig)?;
+            let idx = self.slot_of(vis)? as usize;
+            let visual_ok = matches!(
+                self.nodes[idx].as_ref().map(|n| n.kind),
+                Some(ViewKind::Rect) | Some(ViewKind::Text)
+            );
+            if !visual_ok {
+                return Err(UiError::NodeBad);
+            }
+        }
+        for (i, &(trig, vis)) in entries.iter().enumerate() {
+            // active=false 起步：登记面不预换底（Press 事件才换）；
+            // saved_bg 于首次 Press 时记。
+            self.press_map[i] = PressEntry {
+                trigger: trig,
+                visual: vis,
+                saved_bg: None,
+                active: false,
+            };
+        }
+        self.press_map_n = entries.len();
+        Ok(())
+    }
+
+    /// pump 期 pressed 反应（D18）：Press → visual 换 [`PRESSED_BG`] 底
+    /// （记原底色）；Release/Cancel → 还原（Text 透明底 = 移除 bg）。走
+    /// 现状 `set_props` 语义（同帧 damage/dirty 生效——主线零依赖 B 面
+    /// mask）。零闭包（ADR #52）：表驱动直查，无回调。
+    fn press_react(&mut self, m: Msg) {
+        match m {
+            Msg::Press { node, .. } => {
+                let Some(e) = Self::press_entry_of(&self.press_map[..self.press_map_n], node) else {
+                    return;
+                };
+                if e.active {
+                    return; // 二次 Press：保首 Press 的 saved_bg（还原链不断）
+                }
+                let vis = e.visual;
+                let idx = match self.slot_of(vis) {
+                    Ok(i) => i as usize,
+                    Err(_) => return, // visual 已死：跳过（还原义务随节点消亡解除）
+                };
+                // 读现 bg → 记 saved_bg → 换 PRESSED_BG（set_props 同帧生效）。
+                let saved = match self.nodes[idx].as_ref().map(|n| n.props) {
+                    Some(Props::Rect(rp)) => Some(pack_color(rp.bg)),
+                    Some(Props::Text(tp)) => tp.style.bg.map(pack_color),
+                    _ => return, // 登记后 kind 被换（异常）：跳过不动
+                };
+                let new_props = match self.nodes[idx].as_ref().map(|n| n.props) {
+                    Some(Props::Rect(mut rp)) => {
+                        rp.bg = unpack_color(PRESSED_BG);
+                        Props::Rect(rp)
+                    }
+                    Some(Props::Text(mut tp)) => {
+                        tp.style.bg = Some(unpack_color(PRESSED_BG));
+                        Props::Text(tp)
+                    }
+                    _ => return,
+                };
+                if self.set_props(vis, new_props).is_ok() {
+                    if let Some(e) = Self::press_entry_of_mut(
+                        &mut self.press_map[..self.press_map_n],
+                        node,
+                    ) {
+                        e.saved_bg = saved;
+                        e.active = true;
+                    }
+                }
+            }
+            Msg::Release { node, .. } | Msg::Cancel { node } => {
+                let Some(e) = Self::press_entry_of(&self.press_map[..self.press_map_n], node)
+                else {
+                    return;
+                };
+                if !e.active {
+                    return; // 未换底（登记后未 Press）：还原面无动作
+                }
+                let vis = e.visual;
+                let saved = e.saved_bg;
+                let Ok(idx) = self.slot_of(vis) else {
+                    // visual 已死：还原义务解除（仅清 active 位防重入）。
+                    if let Some(e) = Self::press_entry_of_mut(
+                        &mut self.press_map[..self.press_map_n],
+                        node,
+                    ) {
+                        e.active = false;
+                        e.saved_bg = None;
+                    }
+                    return;
+                };
+                let new_props = match self.nodes[idx as usize].as_ref().map(|n| n.props) {
+                    Some(Props::Rect(mut rp)) => {
+                        rp.bg = unpack_color(saved.unwrap_or(PRESSED_BG));
+                        Props::Rect(rp)
+                    }
+                    Some(Props::Text(mut tp)) => {
+                        // None = 原透明底——还原 = 移除 bg
+                        tp.style.bg = saved.map(unpack_color);
+                        Props::Text(tp)
+                    }
+                    _ => return, // 登记后 kind 被换（异常）：跳过
+                };
+                if self.set_props(vis, new_props).is_ok() {
+                    if let Some(e) = Self::press_entry_of_mut(
+                        &mut self.press_map[..self.press_map_n],
+                        node,
+                    ) {
+                        e.active = false;
+                        e.saved_bg = None;
+                    }
+                }
+            }
+            Msg::Click { .. } | Msg::DragStart { .. } | Msg::DragMove { .. }
+            | Msg::DragEnd { .. } => {}
+        }
+    }
+
+    /// 表查（immutable 面）：首个 trigger 命中的条目副本。
+    fn press_entry_of(map: &[PressEntry], node: NodeId) -> Option<PressEntry> {
+        map.iter().find(|e| e.trigger == node).copied()
+    }
+
+    /// 表查（mutable 面）。
+    fn press_entry_of_mut(map: &mut [PressEntry], node: NodeId) -> Option<&mut PressEntry> {
+        map.iter_mut().find(|e| e.trigger == node)
+    }
+
+    // —— 供给槽（D28：门面 layout/render_frame 签名不变——槽取传下） ——
+
+    /// 文本度量供件换装（默认 [`MonospaceTextMetrics`]；换件后脏位重测
+    /// 生效——set_viewport 触发全量重测）。
+    pub fn set_text_metrics(&mut self, tm: &'static dyn TextMetrics) {
+        self.tm = tm;
+    }
+
+    /// 图标/图片资源供件换装（默认 [`EmptyIconSource`]——dims 恒 None）。
+    pub fn set_icon_source(&mut self, src: &'static dyn IconSource) {
+        self.icons = src;
     }
 
     pub fn bounds(&self, node: NodeId) -> Result<damage::RectI, UiError> {
@@ -655,13 +1182,17 @@ impl<const N: usize> Ui<N> {
 
     pub fn layout(&mut self) -> layout::LayoutStat {
         // 脏子树重排；新界进 damage（freed = 当前空闲槽清单——removal 面
-        // 的陈旧缓存跳过依据）。
+        // 的陈旧缓存跳过依据）。GUI-6 D28：tm/icons 从供给槽取传（门面
+        // 签名不变）；D9：v1 只接 Viewport 档。
         layout::relayout(
             &mut self.nodes,
             self.vp_w,
             self.vp_h,
             &mut self.damage,
             &self.free_stack[..self.free_count],
+            self.tm,
+            self.icons,
+            layout::Constraints::Viewport,
         )
     }
 
@@ -683,7 +1214,15 @@ impl<const N: usize> Ui<N> {
         if self.root_slot == NONE {
             return paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 };
         }
-        paint::paint(&self.nodes, self.root_slot, (self.vp_w, self.vp_h), &self.damage, scratch, enc)
+        paint::paint(
+            &self.nodes,
+            self.root_slot,
+            (self.vp_w, self.vp_h),
+            &self.damage,
+            scratch,
+            enc,
+            self.icons, // D28 槽取传（门面签名不变）
+        )
     }
 
     // —— 输入 ——
@@ -722,6 +1261,14 @@ impl<const N: usize> Ui<N> {
                 self.move_hist[self.hist_len] =
                     Sample { ts_ns: ev.ts_ns, x: ev.x as i64, y: ev.y as i64 };
                 self.hist_len += 1;
+                // D15 速度环入环点：resample **替换前**的原始 (ts,x,y)
+                //（resampled 样本不入环——防速度低估；§7.1）。
+                self.gesture.note_sample(
+                    ev.pointer_id,
+                    ev.ts_ns,
+                    hit::u32_to_i32_sat(ev.x),
+                    hit::u32_to_i32_sat(ev.y),
+                );
                 let s = {
                     let h: &[Sample] = &self.move_hist[..self.hist_len];
                     resample::resample_to_target(h, target)
@@ -748,6 +1295,16 @@ impl<const N: usize> Ui<N> {
                     if let Some(Msg::DragMove { resampled, .. }) = out.last_mut() {
                         *resampled = true;
                     }
+                }
+                // D18 pressed 短路径：本事件产出的 Msg 即时消费（Press 换
+                // 底 / Release·Cancel 还原——走现状 set_props 语义同帧生
+                // 效，主线零依赖 B 面 mask）。
+                let mut k = n_before;
+                while k < out.len() {
+                    if let Some(m) = out.at(k) {
+                        self.press_react(m);
+                    }
+                    k += 1;
                 }
             }
             i += 1;
@@ -819,13 +1376,45 @@ impl<const N: usize> Ui<N> {
         enc: &mut CommandEncoder<'a>,
     ) -> frame::FrameOutcome {
         // doFrame 序列（§3.8）：anim tick → layout → paint → 遥测 → 相位推进。
-        let anim_on = anim::tick(&mut self.anims, &mut self.nodes, &mut self.damage, now_ns);
+        // D17：anim damage 经 viewport clip——tick 收 vp_w/vp_h。
+        // B 面（S7 段E D1）：Layout 型动画产 (slot, mask) 入 staging——
+        // tick 后、relayout 前统一 apply_change 分派（帧内时序锚），三
+        // 漏斗 dirty/damage 无第三套语义；A 面 tick 直写现状保持。
+        #[cfg(feature = "s7")]
+        let mut staging = anim::AnimStaging::new();
+        #[cfg(feature = "s7")]
+        let anim_on = anim::tick(
+            &mut self.anims,
+            &mut self.nodes,
+            &mut self.damage,
+            now_ns,
+            self.vp_w,
+            self.vp_h,
+            &mut staging,
+        );
+        #[cfg(not(feature = "s7"))]
+        let anim_on = anim::tick(
+            &mut self.anims,
+            &mut self.nodes,
+            &mut self.damage,
+            now_ns,
+            self.vp_w,
+            self.vp_h,
+        );
+        #[cfg(feature = "s7")]
+        for k in 0..staging.n {
+            let (slot, m) = staging.items[k];
+            self.apply_change(slot as usize, m);
+        }
         let _stat = layout::relayout(
             &mut self.nodes,
             self.vp_w,
             self.vp_h,
             &mut self.damage,
             &self.free_stack[..self.free_count],
+            self.tm,
+            self.icons,
+            layout::Constraints::Viewport,
         );
         let drew = !self.damage.is_empty(); // 无 damage 不提交（对齐条 6）
         let report = if drew && self.root_slot != NONE {
@@ -836,6 +1425,7 @@ impl<const N: usize> Ui<N> {
                 &self.damage,
                 scratch,
                 enc,
+                self.icons, // D28 槽取传
             )
         } else {
             paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 }
@@ -862,6 +1452,8 @@ impl<const N: usize> Ui<N> {
             discarded: false,
             damage_full: dmg.full,
             damage_rects: dmg.count,
+            damage_adds: dmg.adds,
+            relayout_ns: 0, // 引擎无钟——host bench 双打点（见字段注）
             overdraw_x256: report.overdraw_x256,
             jank: false,
         };
@@ -997,13 +1589,16 @@ impl<const N: usize> Ui<N> {
 
     pub fn encode_desc(&self, out: &mut [u8]) -> Result<usize, desc::AstError> {
         // 无根树 → Ok(0)（空流；apply 空流 Truncated 拒——空树不可重建根）。
-        desc::encode_tree(&self.nodes, self.root_slot, out)
+        // a11y 表透传（D12——A11Y 块唯一发射源）。
+        desc::encode_tree(&self.nodes, self.root_slot, &self.a11y, out)
     }
 
     pub fn apply_desc(&mut self, src: &[u8]) -> Result<(), desc::AstError> {
         // 整树重建 + FULL damage；拒面零半执行（失败重建空场）。
+        // reset_arena 已清 a11y 表（满帽拒绝的半落条目随重建归零）。
         self.reset_arena();
-        match desc::apply_tree(src, &mut self.nodes, &mut self.gens, &mut self.root_slot) {
+        match desc::apply_tree(src, &mut self.nodes, &mut self.gens, &mut self.root_slot, &mut self.a11y)
+        {
             Ok(()) => {
                 self.damage.add_full();
                 Ok(())

@@ -26,3 +26,12 @@ berry-gfx = { path = "../berry-gfx" }
 # RESAMPLE_* 四常量 + SCENE_*/FRAME_*/CREDITS_MAX——wire 收发归
 # embedder（拓扑对齐条 19：引擎不假设直摸 vblank/hdi 域）。
 berry-guiproto = { path = "../berry-guiproto" }
+
+[features]
+# GUI-6 段E S7 属性级生死门 A/B 双实现（草案 §10/D19 + ADR #60）：
+# 默认（A 面）= 三漏斗现状 dirty 语义逐字保持——含同文换文全量
+# relayout 的现状浪费（诚实基线）；开 `s7`（B 面）= ChangeMask 单源
+# 分派 apply_change + D1 anim staging + D4 截断。host-only 实验轨道
+# （不进 guest 产物/CI 主门）；kill criteria：B 面帧收益 < 20% → 面
+# 退场（feature 留册不留码路径）。
+s7 = []

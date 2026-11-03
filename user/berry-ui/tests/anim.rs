@@ -140,7 +140,7 @@ fn gap_layout_anim_moves_sibling() {
     let mut ui = Ui::<16>::new(100, 100);
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     let a = ui.add(col, rect_spec(10, 10)).unwrap();
     let b = ui.add(col, rect_spec(10, 10)).unwrap();
@@ -272,7 +272,7 @@ fn offset_damage_envelopes_descendant_footprint() {
     let mut ui = Ui::<16>::new(100, 100);
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     let big = ui.add(col, rect_spec(200, 20)).unwrap();
     ui.layout();
@@ -292,11 +292,47 @@ fn offset_damage_envelopes_descendant_footprint() {
     })
     .unwrap();
     // 中点 ox=5：新旧子树包络并 = (0,0,205,20)——含子越界段 [100,205)；
-    // 自身界口径只记 (0,0,105,20)——本断言即两口径分界钉板
+    // 自身界口径只记 (0,0,105,20)。D17 后包络经 viewport(100) clip 折
+    // (0,0,100,20)——正确性 wart 修复（越界 damage 折界内残片，与
+    // layout/lib 同语义单源；重钉 205→100 = 草案 §11 点名许可项）。
     let out = frame(&mut ui, 6000);
     assert!(out.drew);
     assert_eq!(out.damage.count, 1);
-    assert_eq!(out.damage.rects[0], berry_guiproto::Rect { x: 0, y: 0, w: 205, h: 20 });
+    assert_eq!(out.damage.rects[0], berry_guiproto::Rect { x: 0, y: 0, w: 100, h: 20 });
+}
+
+#[test]
+fn set_offset_transform_path_clipped_subtree_envelope() {
+    // GUI-6 D31：Ui::set_offset = anim Transform 同路径——直写 ox/oy 不
+    // 重排 + 新旧**子树包络** damage；D17：包络经 viewport clip 收口
+    //（与 anim damage_add 同语义单源——本测即两收敛点的公共钉板）。
+    let mut ui = Ui::<16>::new(100, 100);
+    let root = ui.root();
+    let col = ui
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
+        .unwrap();
+    let big = ui.add(col, rect_spec(200, 20)).unwrap();
+    ui.layout();
+    ui.drain_damage();
+
+    ui.set_offset(col, 5, 0).unwrap();
+    assert_eq!(
+        ui.bounds(big).unwrap(),
+        berry_ui::damage::RectI::new(5, 0, 200, 20),
+        "子树随 offset 走（视觉链含 ox）"
+    );
+    let d = ui.drain_damage();
+    assert_eq!(d.count, 1);
+    assert_eq!(
+        d.rects[0],
+        berry_guiproto::Rect { x: 0, y: 0, w: 100, h: 20 },
+        "新旧子树包络 (0,0,205,20) 经 viewport(100) clip 折宽 100（D17）"
+    );
+    // Transform 路不重排：全缓存命中
+    assert_eq!(ui.layout(), LayoutStat { measured: 0, placed: 0 });
+    // 悬空 id loud
+    ui.remove(col).unwrap();
+    assert_eq!(ui.set_offset(col, 0, 0), Err(UiError::NodeBad));
 }
 
 #[test]
@@ -324,4 +360,48 @@ fn prop_kind_mismatch_no_op_but_completes() {
     assert!(!out2.drew);
     assert!(!ui.anim_active(), "完成即移除——prop 不匹配不卡死");
     assert_eq!(ui.bounds(a).unwrap(), berry_ui::damage::RectI::new(0, 0, 10, 10));
+}
+
+/// GUI-6 D13 钉板（§11 项 10）：QuadOut/CubicOut Q16.16 定点值级——
+/// t=0.5 → eased 0.75/0.875（49152/57344 → v=750/875 精确整值）；
+/// t=0.25 → eased 0.4375/0.578125 → v=437/578（i128 整除向下取整，
+/// 无浮点舍入漂移）；终点帧精确 `to`（完成分支同既有语义——本测
+/// from=0/to=1000 走同一 [interp] 单源）。
+#[test]
+fn quad_cubic_out_fixed_point_pins() {
+    for (easing, mid, quarter) in
+        [(Easing::QuadOut, 750i32, 437i32), (Easing::CubicOut, 875, 578)]
+    {
+        let mut ui = Ui::<16>::new(100, 100);
+        let a = settled(&mut ui);
+        ui.anim_add(Anim {
+            node: a,
+            prop: AnimProp::OffsetX,
+            from: 0,
+            to: 1000,
+            start_ns: 1000,
+            dur_ns: 10_000,
+            easing,
+        })
+        .unwrap();
+        // 四分之一 now=3500（elapsed 2500 → t = 2500<<16/10000 = 16384
+        // 精确 0.25；inv = 49152）
+        frame(&mut ui, 3500);
+        assert_eq!(
+            ui.bounds(a).unwrap(),
+            berry_ui::damage::RectI::new(quarter, 0, 10, 10),
+            "{easing:?} t=0.25"
+        );
+        // 中点 now=6000（t=32768 精确 0.5 → eased 49152/57344 → v 整值）
+        frame(&mut ui, 6000);
+        assert_eq!(
+            ui.bounds(a).unwrap(),
+            berry_ui::damage::RectI::new(mid, 0, 10, 10),
+            "{easing:?} t=0.5"
+        );
+        // 终点帧：精确 to（完成分支钉板）
+        frame(&mut ui, 11_000);
+        assert_eq!(ui.bounds(a).unwrap(), berry_ui::damage::RectI::new(1000, 0, 10, 10));
+        assert!(!ui.anim_active());
+    }
 }

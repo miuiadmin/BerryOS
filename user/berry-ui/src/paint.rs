@@ -3,12 +3,13 @@
 //! - **前到后剔除、后到前发射**（OH ui_lite 同路）：按 damage 矩形逐
 //!   个走树——逆前序（尾兄先、子先于父 = 画家算法后画者先看）维护
 //!   [`RectSet`] 已覆盖集；**仅 Rect 叶子（实心不透明）计遮挡源**
-//!   （Text 蜂格有洞不计——保守正确）。可见区（bounds ∩ damage −
-//!   covered）空 → skip（`culled++`）。
+//!   （Text 蜂格有洞不计、Image/Icon 恒不计——§4.3，保守正确）。
+//!   可见区（bounds ∩ damage − covered）空 → skip（`culled++`）。
 //! - 发射序 = 收集序的逆 = 前序（画家算法背到前：后者盖前者）。逐节
 //!   点：Rect → `fill_rect`；Text → GlyphPos run 组进调用方 scratch →
 //!   `draw_glyph_run`（`style.bg` 衬底透传，None = 透明底——§6
-//!   TextStyle 字段语义优先）。
+//!   TextStyle 字段语义优先）；Image/Icon → `draw_image`（§4.3——
+//!   Argb 像素经 D28 icons 槽，blit = 源内在尺寸 v1 无缩放）。
 //! - **尾部必录 `Present{damage 包络}`**（soft no-op 也录——FULL →
 //!   viewport、空集 → 零矩形）。
 //! - overdraw_x256 = drawn_px×256/vp 面素（发射足迹 ∩ viewport；u128
@@ -22,8 +23,9 @@
 
 use crate::damage::{i64_to_i32_sat, DamageSet, RectI, RectSet};
 use crate::desc::{Props, ViewKind};
+use crate::metrics::IconSource;
 use crate::Node;
-use berry_gfx::cmd::{CommandEncoder, GlyphPos, GlyphRun, Rect as GfxRect};
+use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, ImageSrc, Rect as GfxRect};
 
 /// 槽索引空哨兵（§6 Node 注：NONE = u32::MAX——hit.rs 同值，本模块自
 /// 带防跨模块未定名依赖）。
@@ -33,10 +35,10 @@ const NONE: u32 = u32::MAX;
 /// 多画不少画，见 RectSet 类型注）。
 const COVERED_CAP: usize = 16;
 
-/// 单 damage 矩形的可见发射序缓冲（>512 可见叶子的病态树触发 cull 溢
-/// 出 → `emit_walk_all` 回退直发射——不丢画面；MAX_NODES=256 契约的
-/// 两倍余量）。
-const ORDER_CAP: usize = 512;
+/// 单 damage 矩形的可见发射序缓冲（>`2*MAX_NODES` 可见叶子的病态树触发
+/// cull 溢出 → `emit_walk_all` 回退直发射——不丢画面；D10 单源常量
+/// 表达式 = MAX_NODES=512 契约的两倍余量）。
+pub(crate) const ORDER_CAP: usize = 2 * crate::MAX_NODES;
 
 /// paint 产出统计（§6 冻结字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,8 +53,10 @@ pub struct PaintReport {
     pub overdraw_x256: u32,
 }
 
-/// paint 主入口（§6 冻结内部签名）：`scratch` 与 encoder 的 `'a` 同源
-/// ——glyph run 引用钉调用方缓冲，引擎不持引用。
+/// paint 主入口（§6 冻结内部签名 + GUI-6 D28 icons 进参）：`scratch`
+/// 与 encoder 的 `'a` 同源——glyph run 引用钉调用方缓冲，引擎不持引用。
+/// `icons` = D7 资源缝经 D28 槽供给（段C：Image/Icon 叶发射消费——
+/// `'a` 同源让 Argb 像素借用随命令表存续）。
 pub(crate) fn paint<'a>(
     nodes: &[Option<Node>],
     root: u32,
@@ -60,6 +64,7 @@ pub(crate) fn paint<'a>(
     damage: &DamageSet,
     scratch: &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
+    icons: &'a dyn IconSource,
 ) -> PaintReport {
     let mut rep =
         PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 };
@@ -112,14 +117,14 @@ pub(crate) fn paint<'a>(
             // ——前序直发射、无遮挡剔除、无序缓冲（painter 序由走查序
             // 自证，overdraw 偏高但**不丢画面**；主路径的 culled 计数回
             // 卷到本段前值，由回退走查按 damage 外叶子重计）。契约树
-            // （N ≤ MAX_NODES=256 < ORDER_CAP/2）结构性不达此面——防御
+            // （N ≤ MAX_NODES=512 < ORDER_CAP/2）结构性不达此面——防御
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
-            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, &mut rest, enc, &mut rep, 0);
+            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, &mut rest, enc, &mut rep, 0);
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）
             for k in (0..n_order).rev() {
-                emit_node(nodes, order[k], &bnds[k], &vp_rect, &mut rest, enc, &mut rep);
+                emit_node(nodes, order[k], &bnds[k], &vp_rect, icons, &mut rest, enc, &mut rep);
             }
         }
     }
@@ -224,9 +229,16 @@ fn cull_walk(
         }
     }
 
-    // 自身（子树最底 = 最后画）。Root/Col/Row/Pad 无视觉内容不参与。
-    if !matches!(n.kind, ViewKind::Rect | ViewKind::Text) {
-        return;
+    // 自身（子树最底 = 最后画）。容器无视觉内容不参与（Grid 同列——
+    // 子格各自发射）；Image/Icon = 可见叶（§4.3——Text 同列走查，
+    // 恒不计遮挡源）。
+    match n.kind {
+        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {}
+        ViewKind::Root
+        | ViewKind::Col
+        | ViewKind::Row
+        | ViewKind::Pad
+        | ViewKind::Grid => return,
     }
     let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
     let vis = b.intersect(d);
@@ -235,7 +247,7 @@ fn cull_walk(
         return;
     }
     if n.kind == ViewKind::Rect {
-        covered.add(vis); // 实心不透明才计遮挡源（Text 蜂格有洞不计）
+        covered.add(vis); // 实心不透明才计遮挡源（Text 蜂格有洞不计；Image/Icon 恒不计遮挡源——§4.3）
     }
     if *n_order < ORDER_CAP {
         order[*n_order] = slot;
@@ -259,6 +271,7 @@ fn emit_walk_all<'a>(
     ey: i64,
     d: &RectI,
     vp_rect: &RectI,
+    icons: &'a dyn IconSource,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -274,15 +287,22 @@ fn emit_walk_all<'a>(
     let bx = ex + n.x as i64 + n.ox as i64;
     let by = ey + n.y as i64 + n.oy as i64;
 
-    // 自身先（前序 = 画家算法背到前：先画者先发射）。Root/Col/Row/Pad
-    // 无视觉内容不参与（主路径同语义）。
-    if matches!(n.kind, ViewKind::Rect | ViewKind::Text) {
-        let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
-        if b.intersect(d).is_empty() {
-            rep.culled += 1; // damage 外叶子
-        } else {
-            emit_node(nodes, slot, &b, vp_rect, rest, enc, rep);
+    // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
+    // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
+    match n.kind {
+        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {
+            let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
+            if b.intersect(d).is_empty() {
+                rep.culled += 1; // damage 外叶子
+            } else {
+                emit_node(nodes, slot, &b, vp_rect, icons, rest, enc, rep);
+            }
         }
+        ViewKind::Root
+        | ViewKind::Col
+        | ViewKind::Row
+        | ViewKind::Pad
+        | ViewKind::Grid => {}
     }
 
     // 子：头兄起流序（painter 序：后画者后访问 = 覆盖在前画者上）。
@@ -295,7 +315,7 @@ fn emit_walk_all<'a>(
         }
         match nodes.get(c as usize) {
             Some(Some(ch)) if ch.alive => {
-                emit_walk_all(nodes, c, bx, by, d, vp_rect, rest, enc, rep, hops + 1);
+                emit_walk_all(nodes, c, bx, by, d, vp_rect, icons, rest, enc, rep, hops + 1);
                 c = ch.next_sib;
             }
             _ => return, // 链上死槽 = 树结构异常，防御放弃余段
@@ -304,13 +324,18 @@ fn emit_walk_all<'a>(
 }
 
 /// 单节点发射（painter 序段）：Rect → fill_rect；Text → glyph run 组
-/// scratch 子片。命令满帽（CmdError::Full）停录不炸；drawn_px 按节点
-/// 界 ∩ viewport 计（发射足迹）。
+/// scratch 子片；Image/Icon → `draw_image`（§4.3：源 = `pixels(id)`
+/// Argb——blit 尺寸 = 源内在尺寸、v1 无缩放，`fg` Icon = 调色前景
+/// （Argb 惰性——alpha 键即 tint，文档化）/ Image = 中性黑（无调色语
+/// 义），`bg` 恒 None 透明底；dims 与 pixels 不一致 = 供件矛盾，loud
+/// 后跳过不录——空绘不炸）。命令满帽（CmdError::Full）停录不炸；
+/// drawn_px 按节点界 ∩ viewport 计（发射足迹——与录入成功无关）。
 fn emit_node<'a>(
     nodes: &[Option<Node>],
     slot: u32,
     b: &RectI,
     vp_rect: &RectI,
+    icons: &'a dyn IconSource,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -321,6 +346,12 @@ fn emit_node<'a>(
             if enc.fill_rect(GfxRect::new(b.x, b.y, b.w, b.h), p.bg).is_ok() {
                 rep.cmds += 1;
             }
+        }
+        Props::Image(p) => {
+            emit_image(icons, p.res, Color { r: 0, g: 0, b: 0 }, b.x, b.y, enc, rep);
+        }
+        Props::Icon(p) => {
+            emit_image(icons, p.id, p.fg, b.x, b.y, enc, rep);
         }
         Props::Text(p) => {
             // run 截断到 scratch 余量（容量不足的尾部字形丢弃——调用
@@ -349,7 +380,46 @@ fn emit_node<'a>(
                 }
             }
         }
-        _ => {} // Root/Col/Row/Pad：无视觉内容（子树各自发射）
+        // Root/Col/Row/Pad/Grid：无视觉内容（子树各自发射）
+        _ => {}
     }
     rep.drawn_px = rep.drawn_px.saturating_add(b.intersect(vp_rect).area());
+}
+
+/// Image/Icon 叶发射共核（§4.3）：`pixels(id)` 借用 → `ImageSrc::Argb`
+///（恰长 `px.len() == w*h` 由 submit 期硬门双保险——此处先验矛盾源即
+/// 跳过）。未注册分档 loud：默认空供件 = 静默空绘（guest 未注册不炸）
+///；真供件缺注册/pixels-dims 不一致 = debug_assert loud（注册 bug）。
+fn emit_image<'a>(
+    icons: &'a dyn IconSource,
+    id: u16,
+    fg: Color,
+    x: i32,
+    y: i32,
+    enc: &mut CommandEncoder<'a>,
+    rep: &mut PaintReport,
+) {
+    let px = icons.pixels(id);
+    if px.is_none() && !icons.is_empty() {
+        debug_assert!(false, "IconSource 真供件缺注册 id={id}（pixels None——注册 bug）");
+    }
+    if let Some(px) = px {
+        match icons.dims(id) {
+            // 一致源：dims × pixels 恰长 → Argb 直发（blit = 源内在尺寸）
+            Some((w, h)) if px.len() as u64 == w as u64 * h as u64 => {
+                if enc
+                    .draw_image(ImageSrc::Argb { w, h, px }, x, y, fg, None)
+                    .is_ok()
+                {
+                    rep.cmds += 1;
+                }
+            }
+            _ => {
+                debug_assert!(
+                    false,
+                    "IconSource id={id} 供件矛盾（dims 与 pixels 恰长不符）——跳过不录"
+                );
+            }
+        }
+    }
 }

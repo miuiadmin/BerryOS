@@ -6,14 +6,17 @@
 //!
 //! 纪律：确定性、断言值级、只用公共 API（§6 公开面）。
 
-use berry_gfx::cmd::{Cmd, Color, CommandEncoder, GlyphPos, Rect as GfxRect};
+use berry_gfx::cmd::{Cmd, Color, CommandEncoder, GlyphPos, ImageSrc, Rect as GfxRect};
 use berry_gfx::color::{TextureDesc, TextureFormat};
 use berry_gfx::font::FontSize;
 use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_guiproto::Rect as WireRect;
 use berry_ui::damage::RectI;
-use berry_ui::desc::{ColProps, RectProps, RowProps, TextProps, TextStyle};
+use berry_ui::desc::{
+    ColProps, GridProps, IconProps, ImageProps, RectProps, RowProps, TextProps, TextStyle,
+};
+use berry_ui::metrics::IconSource;
 use berry_ui::{OVERDRAW_BUDGET_X256, Props, TextBuf, Ui, UiMain, ViewKind, ViewSpec};
 
 const W: usize = 64;
@@ -44,6 +47,45 @@ fn rect_spec(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
     }
 }
 
+// ---------- GUI-6 段C Image/Icon 叶发射钉板（§4.3 / §11-14） ----------
+
+/// 双注册像素供件：Icon id=7 → 2×2 ARGB；Image res=9 → 3×2 ARGB。
+/// px 值钉具体字面量（载荷值级对拍用）。
+struct PaintSrc;
+static ICON_PX: [u32; 4] = [0xFF_FF_00_00, 0xFF_00_FF_00, 0xFF_00_00_FF, 0xFF_FF_FF_00];
+static IMG_PX: [u32; 6] =
+    [0xFF_10_20_30, 0xFF_40_50_60, 0xFF_70_80_90, 0xFF_A0_B0_C0, 0xFF_D0_E0_F0, 0xFF_0F_1F_2F];
+static PAINT_SRC: PaintSrc = PaintSrc;
+
+impl IconSource for PaintSrc {
+    fn dims(&self, id: u16) -> Option<(u32, u32)> {
+        match id {
+            7 => Some((2, 2)),
+            9 => Some((3, 2)),
+            _ => None,
+        }
+    }
+    fn pixels(&self, id: u16) -> Option<&[u32]> {
+        match id {
+            7 => Some(&ICON_PX),
+            9 => Some(&IMG_PX),
+            _ => None,
+        }
+    }
+}
+
+fn icon_spec(id: u16, w: Option<u32>, h: Option<u32>) -> ViewSpec {
+    ViewSpec {
+        kind: ViewKind::Icon,
+        key: 0,
+        props: Props::Icon(IconProps { id, fg: Color { r: 10, g: 20, b: 30 }, w, h }),
+    }
+}
+
+fn image_spec(res: u16, w: Option<u32>, h: Option<u32>) -> ViewSpec {
+    ViewSpec { kind: ViewKind::Image, key: 0, props: Props::Image(ImageProps { res, w, h }) }
+}
+
 /// 场景：Root → Col(gap 0){ Rect C1 64×16, Text "AB" 8×16 fg 透明底,
 /// Rect C2 64×16 }。返回 (ui, r1, text, r2)。
 fn build_col_scene() -> (UiMain, berry_ui::NodeId, berry_ui::NodeId, berry_ui::NodeId) {
@@ -55,7 +97,7 @@ fn build_col_scene() -> (UiMain, berry_ui::NodeId, berry_ui::NodeId, berry_ui::N
             ViewSpec {
                 kind: ViewKind::Col,
                 key: 0,
-                props: Props::Col(ColProps { gap: 0 }),
+                props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }),
             },
         )
         .unwrap();
@@ -340,23 +382,28 @@ fn present_tail_empty_damage_zero_rect() {
 
 // ---------- ⑥ 病态巨树：cull 缓冲溢出 → 回退直发射（不丢画面） ----------
 
+/// D10 容量帽联动：恰越 ORDER_CAP = 2*MAX_NODES 的可见叶数（顶层 const
+/// 形态随 MAX_NODES 右移——非 generic_const_exprs 语法）。
+const OVERFLOW_NODES: usize = 2 * berry_ui::MAX_NODES + 1;
+
 #[test]
 fn order_cap_overflow_falls_back_no_lost_leaves() {
-    // 513 可见叶 > ORDER_CAP=512：cull 缓冲满帽哨兵 → 整段回退前序直
-    // 发射（无剔除无序缓冲）。发射面：513 × fill_rect——cmds 帽在
-    // berry-gfx MAX_CMDS=256（Present 尾同被帽弃）；drawn_px 照实累计
-    //（发射足迹与录入成功无关）；culled 回卷到段前值后由回退重计 = 0
-    //（全叶皆 damage 内）。Ui<600> 超布局 CAP=512 走保守排布路径——
-    // 结构性前提（>512 节点非契约树），非本断言面。
-    let mut ui = Ui::<600>::new(513, 8);
+    // 1025 可见叶 > ORDER_CAP=2*MAX_NODES=1024：cull 缓冲满帽哨兵 → 整段
+    // 回退前序直发射（无剔除无序缓冲）。发射面：1025 × fill_rect——cmds
+    // 帽在 berry-gfx MAX_CMDS=256（Present 尾同被帽弃）；drawn_px 照实
+    // 累计（发射足迹与录入成功无关）；culled 回卷到段前值后由回退重计
+    // = 0（全叶皆 damage 内）。Ui<1100> 超布局 CAP=1024 走保守排布路径
+    // ——结构性前提（>1024 节点非契约树），非本断言面。D10 容量翻倍：
+    // Ui<600>→Ui<1100>、513 叶/513 宽随源翻 1025（§11.1-4 重钉项）。
+    let mut ui = Ui::<1100>::new(OVERFLOW_NODES as u32, 8);
     let root = ui.root();
     let row = ui
         .add(
             root,
-            ViewSpec { kind: ViewKind::Row, key: 0, props: Props::Row(RowProps { gap: 0 }) },
+            ViewSpec { kind: ViewKind::Row, key: 0, props: Props::Row(RowProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) },
         )
         .unwrap();
-    for _ in 0..513 {
+    for _ in 0..OVERFLOW_NODES {
         ui.add(row, rect_spec(C1, Some(1), Some(8))).unwrap();
     }
     ui.layout();
@@ -369,9 +416,203 @@ fn order_cap_overflow_falls_back_no_lost_leaves() {
     let dl = enc.finish();
 
     assert_eq!(rep.culled, 0, "回退重计：全叶 damage 内（溢出误计已回卷）");
-    assert_eq!(rep.drawn_px, 513 * 8, "发射足迹全量——cmds 帽不减足迹");
+    assert_eq!(rep.drawn_px, (OVERFLOW_NODES * 8) as u64, "发射足迹全量——cmds 帽不减足迹");
     assert_eq!(rep.cmds, 256, "cmds 帽 = berry-gfx MAX_CMDS（Present 尾被帽弃）");
     assert_eq!(dl.len(), 256);
-    assert_eq!(rep.overdraw_x256, 256, "513×8 足迹恰满 513×8 视口");
+    assert_eq!(rep.overdraw_x256, 256, "1025×8 足迹恰满 1025×8 视口");
     assert!(rep.overdraw_x256 <= OVERDRAW_BUDGET_X256);
+}
+
+// ---------- ⑦ GUI-6 段C：Image/Icon 叶发射 + Grid 容器走查 ----------
+
+#[test]
+fn image_icon_paint_emits_draw_image_payload() {
+    // §4.3 paint：注册供件 → DrawImage{Argb} 逐载荷对拍——Icon 带调色
+    // fg、Image 中性 fg（Argb 忽略 fg/bg——值即文档）；blit 尺寸 = 源内在
+    // 尺寸（v1 无缩放），发射序 = 加序（画家算法背到前）
+    let mut ui = UiMain::new(W as u32, H as u32);
+    ui.set_icon_source(&PAINT_SRC);
+    let root = ui.root();
+    let col = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }),
+            },
+        )
+        .unwrap();
+    let ic = ui.add(col, icon_spec(7, None, None)).unwrap();
+    let img = ui.add(col, image_spec(9, None, None)).unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(ic).unwrap(), RectI::new(0, 0, 2, 2), "id=7 dims 2×2");
+    assert_eq!(ui.bounds(img).unwrap(), RectI::new(0, 2, 3, 2), "res=9 dims 3×2 接续");
+
+    ui.drain_damage();
+    ui.wake(0); // FULL
+    let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+    let mut enc = CommandEncoder::new();
+    let rep = ui.paint(&mut scr, &mut enc);
+    let dl = enc.finish();
+
+    assert_eq!(rep.cmds, 3, "DrawImage + DrawImage + Present");
+    assert_eq!(dl.len(), 3);
+    assert_eq!(rep.culled, 0);
+    assert_eq!(rep.drawn_px, 2 * 2 + 3 * 2, "发射足迹 = 界 ∩ viewport");
+    let cmds: Vec<&Cmd> = dl.iter().collect();
+    match cmds[0] {
+        Cmd::DrawImage { src: ImageSrc::Argb { w, h, px }, x, y, fg, bg } => {
+            assert_eq!((*w, *h), (2, 2));
+            assert_eq!(*px, ICON_PX, "Icon 像素载荷逐字面量对拍");
+            assert_eq!((*x, *y), (0, 0));
+            assert_eq!(*fg, Color { r: 10, g: 20, b: 30 }, "Icon fg = 调色前景（Argb 惰性）");
+            assert_eq!(*bg, None);
+        }
+        other => panic!("cmd0 应为 DrawImage，实为 {:?}", other),
+    }
+    match cmds[1] {
+        Cmd::DrawImage { src: ImageSrc::Argb { w, h, px }, x, y, fg, bg } => {
+            assert_eq!((*w, *h), (3, 2));
+            assert_eq!(*px, IMG_PX, "Image 像素载荷逐字面量对拍");
+            assert_eq!((*x, *y), (0, 2));
+            assert_eq!(*fg, Color { r: 0, g: 0, b: 0 }, "Image 无调色语义——中性黑（Argb 惰性）");
+            assert_eq!(*bg, None);
+        }
+        other => panic!("cmd1 应为 DrawImage，实为 {:?}", other),
+    }
+    assert!(matches!(cmds[2], Cmd::Present { .. }), "尾 Present");
+}
+
+#[test]
+fn icon_unregistered_empty_paint_no_crash() {
+    // §11-14 绘制半：默认空供件（未注册）→ 零 DrawImage、零面积叶入
+    // culled、余树照发、不炸（guest 空绘安全面）
+    let mut ui = UiMain::new(W as u32, H as u32);
+    let root = ui.root();
+    let col = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }),
+            },
+        )
+        .unwrap();
+    let ghost = ui.add(col, icon_spec(99, None, None)).unwrap();
+    let t = ui
+        .add(
+            col,
+            ViewSpec {
+                kind: ViewKind::Text,
+                key: 0,
+                props: Props::Text(TextProps {
+                    style: TextStyle { fg: FG, bg: None, scale: FontSize::S8x16 },
+                    text: TextBuf::new(b"hi").unwrap(),
+                }),
+            },
+        )
+        .unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(ghost).unwrap(), RectI::new(0, 0, 0, 0), "未注册 → (0,0) 界");
+    assert_eq!(ui.bounds(t).unwrap(), RectI::new(0, 0, 16, 16), "游标推进 0——Text 落 0 位");
+
+    ui.drain_damage();
+    ui.wake(0);
+    let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+    let mut enc = CommandEncoder::new();
+    let rep = ui.paint(&mut scr, &mut enc);
+    let dl = enc.finish();
+    assert_eq!(rep.cmds, 2, "GlyphRun + Present——零 DrawImage");
+    assert_eq!(dl.len(), 2);
+    assert_eq!(rep.culled, 1, "零面积叶按可见区空剔除");
+    assert!(matches!(dl.iter().next(), Some(Cmd::DrawGlyphRun { .. })));
+}
+
+#[test]
+fn image_icon_never_occlusion_sources() {
+    // §4.3 hit/遮挡面：Image/Icon 恒不计遮挡源——满幅 Icon 压不住先序
+    // Text（对照：同形 Rect 会剔除 Text——occlusion_culling 测 ④）
+    let mut ui = UiMain::new(16, 16);
+    ui.set_icon_source(&PAINT_SRC);
+    let root = ui.root();
+    let t = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Text,
+                key: 0,
+                props: Props::Text(TextProps {
+                    style: TextStyle { fg: FG, bg: None, scale: FontSize::S8x16 },
+                    text: TextBuf::new(b"A").unwrap(),
+                }),
+            },
+        )
+        .unwrap();
+    let ic = ui.add(root, icon_spec(7, Some(16), Some(16))).unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(ic).unwrap(), RectI::new(0, 0, 16, 16), "定尺寸界全幅");
+    assert_eq!(ui.bounds(t).unwrap(), RectI::new(0, 0, 8, 16));
+
+    ui.drain_damage();
+    ui.wake(0);
+    let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+    let mut enc = CommandEncoder::new();
+    let rep = ui.paint(&mut scr, &mut enc);
+    assert_eq!(rep.culled, 0, "Icon 不计遮挡源——Text 不被剔除");
+    assert_eq!(rep.cmds, 3, "GlyphRun + DrawImage + Present");
+    assert_eq!(rep.drawn_px, 8 * 16 + 16 * 16, "两叶足迹全计");
+}
+
+#[test]
+fn grid_container_walk_emits_children_only() {
+    // Grid = 无视觉内容容器（cull/emit 走查过而不发）；子按格发射。
+    // 2×1 gap0：Rect(None) 拉满轨 32×16（行高 = 格内 max）+ Text 内在 16×16 落 (32,0)
+    let mut ui = UiMain::new(W as u32, H as u32);
+    let root = ui.root();
+    let g = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Grid,
+                key: 0,
+                props: Props::Grid(GridProps {
+                    cols: 2,
+                    rows: 1,
+                    gap: 0,
+                    cross: berry_ui::layout::CrossAlign::Stretch,
+                    w: None,
+                    h: None,
+                }),
+            },
+        )
+        .unwrap();
+    let r = ui.add(g, rect_spec(C1, None, None)).unwrap();
+    let t = ui
+        .add(
+            g,
+            ViewSpec {
+                kind: ViewKind::Text,
+                key: 0,
+                props: Props::Text(TextProps {
+                    style: TextStyle { fg: FG, bg: None, scale: FontSize::S8x16 },
+                    text: TextBuf::new(b"hi").unwrap(),
+                }),
+            },
+        )
+        .unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(r).unwrap(), RectI::new(0, 0, 32, 16), "轨宽 64/2 = 32、轨高 = 格内 max(0,16) = 16（Grid 主轴内在——§4.1 Col 同形）");
+    assert_eq!(ui.bounds(t).unwrap(), RectI::new(32, 0, 16, 16), "Text 豁免——内在 16×16");
+
+    ui.drain_damage();
+    ui.wake(0);
+    let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+    let mut enc = CommandEncoder::new();
+    let rep = ui.paint(&mut scr, &mut enc);
+    let dl = enc.finish();
+    assert_eq!(rep.cmds, 3, "FillRect + GlyphRun + Present");
+    assert_eq!(rep.culled, 0);
+    assert!(matches!(dl.iter().next(), Some(Cmd::FillRect { .. })));
 }

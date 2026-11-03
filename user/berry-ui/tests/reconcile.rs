@@ -14,7 +14,7 @@
 
 use berry_ui::desc::{
     AstError, ColProps, DescBuilder, PadProps, Props, RectProps, RowProps, TextProps, TextStyle,
-    ViewKind, ViewSpec, KIND_RECT, KIND_ROOT, KIND_TEXT,
+    ViewKind, ViewSpec, KIND_COL, KIND_RECT, KIND_ROOT, KIND_TEXT,
 };
 use berry_ui::damage::RectI;
 use berry_ui::Ui;
@@ -29,7 +29,7 @@ fn bg(r: u8, g: u8, b: u8) -> Color {
 fn build_rich_tree(ui: &mut Ui<32>) {
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 7, props: Props::Col(ColProps { gap: 4 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 7, props: Props::Col(ColProps { gap: 4, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     ui.add(col, ViewSpec {
         kind: ViewKind::Rect,
@@ -56,7 +56,7 @@ fn build_rich_tree(ui: &mut Ui<32>) {
     })
     .unwrap();
     let row = ui
-        .add(root, ViewSpec { kind: ViewKind::Row, key: 0, props: Props::Row(RowProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Row, key: 0, props: Props::Row(RowProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     let pad = ui
         .add(row, ViewSpec { kind: ViewKind::Pad, key: 0, props: Props::Pad(PadProps { all: 3 }) })
@@ -72,7 +72,7 @@ fn build_rich_tree(ui: &mut Ui<32>) {
 fn rich_tree_oracle_bytes() -> Vec<u8> {
     let mut b = DescBuilder::new();
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
-    b.begin(ViewKind::Col, 7, &Props::Col(ColProps { gap: 4 })).unwrap();
+    b.begin(ViewKind::Col, 7, &Props::Col(ColProps { gap: 4, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })).unwrap();
     b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(20), h: None }))
         .unwrap();
     b.end().unwrap();
@@ -89,7 +89,7 @@ fn rich_tree_oracle_bytes() -> Vec<u8> {
     .unwrap();
     b.end().unwrap();
     b.end().unwrap();
-    b.begin(ViewKind::Row, 0, &Props::Row(RowProps { gap: 0 })).unwrap();
+    b.begin(ViewKind::Row, 0, &Props::Row(RowProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })).unwrap();
     b.begin(ViewKind::Pad, 0, &Props::Pad(PadProps { all: 3 })).unwrap();
     b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(7, 8, 9), w: None, h: None }))
         .unwrap();
@@ -98,6 +98,31 @@ fn rich_tree_oracle_bytes() -> Vec<u8> {
     b.end().unwrap();
     b.end().unwrap(); // 闭 Root（cc 占位回填——begin/end 平衡后取用）
     b.bytes().to_vec()
+}
+
+/// GUI-6 §8.4/D26：V1 旧流 golden——rich_tree_oracle_bytes 现产物钉字面
+/// 量常量（现 oracle 用编码器自推，拦不住编码器漂移——重构致旧包不可读
+/// 时此测炸响；段 B 三新 kind/flags 入流前先钉死旧字节面。v2 golden 同法
+/// 另钉，不并此常量）。
+const GOLDEN_V1_STREAM: &[u8] = &[
+    0x00, 0x00, 0x02, // Root（cc=2）
+    0x03, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03, // Col key=7 gap=4（cc=3）
+    0x01, 0x00, 0x01, 0x02, 0x03, 0x14, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, // Rect bg(1,2,3) w=20 h=None
+    0x02, 0x00, 0x02, b'h', b'i', 0x00, 0x09, 0x09, 0x09, 0x01, 0x04, 0x05, 0x06, 0x00, // Text "hi" S8x16 bg=Some
+    0x02, 0x01, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, b'y', b'o', 0x01, 0x01, 0x01, 0x01, 0x00,
+    0x00, // Text key=0xAA "yo" S16x32 bg=None
+    0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Row gap=0（cc=1）
+    0x05, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, // Pad all=3（cc=1）
+    0x01, 0x00, 0x07, 0x08, 0x09, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, // Rect bg(7,8,9) w/h=None
+];
+
+#[test]
+fn golden_v1_stream_pinned_literal() {
+    assert_eq!(
+        rich_tree_oracle_bytes().as_slice(),
+        GOLDEN_V1_STREAM,
+        "V1 旧流字节漂移——编码器不兼容变更（D26 字面量守卫）"
+    );
 }
 
 #[test]
@@ -142,7 +167,7 @@ fn rebuilt_tree_semantically_equivalent() {
     let mut ui1 = Ui::<32>::new(100, 100);
     let root = ui1.root();
     let col = ui1
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     ui1.add(col, ViewSpec {
         kind: ViewKind::Rect,
@@ -160,7 +185,7 @@ fn rebuilt_tree_semantically_equivalent() {
     })
     .unwrap();
     let row = ui1
-        .add(col, ViewSpec { kind: ViewKind::Row, key: 0, props: Props::Row(RowProps { gap: 0 }) })
+        .add(col, ViewSpec { kind: ViewKind::Row, key: 0, props: Props::Row(RowProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     ui1.add(row, ViewSpec {
         kind: ViewKind::Rect,
@@ -196,11 +221,37 @@ fn rebuilt_tree_semantically_equivalent() {
 #[test]
 fn apply_reject_unknown_kind_and_flags() {
     let mut ui = Ui::<32>::new(100, 100);
-    // 未知 kind 字节（值域 0..=5 外）
+    // 未知 kind 字节（段B 后值域 0..=8：6/7/8 = Image/Icon/Grid——GUI-6 D5）
     assert_eq!(ui.apply_desc(&[0x99, 0]), Err(AstError::UnknownKind { got: 0x99 }));
-    // flags 未知位（bit0 = has_key 之外）
-    assert_eq!(ui.apply_desc(&[KIND_ROOT, 0x02]), Err(AstError::UnknownFlags { got: 0x02 }));
+    assert_eq!(ui.apply_desc(&[9, 0]), Err(AstError::UnknownKind { got: 9 }));
+    // flags 未知位绊线（GUI-6 D5 改钉）：bit1/2/3 = SIZE/A11Y/ALIGN 合法化
+    // 后，未知位域起点 = bit4（0x10 拒；0x80 拒保）；bit1 本体转
+    // HAS_SIZE×Root 拒（§8.2 合法域表——UnknownProp 载 kind×块失配）。
+    assert_eq!(ui.apply_desc(&[KIND_ROOT, 0x10]), Err(AstError::UnknownFlags { got: 0x10 }));
     assert_eq!(ui.apply_desc(&[KIND_ROOT, 0x80]), Err(AstError::UnknownFlags { got: 0x80 }));
+    assert_eq!(
+        ui.apply_desc(&[KIND_ROOT, 0x02]),
+        Err(AstError::UnknownProp { kind: ViewKind::Root, got: 0x02 }),
+        "bit1 合法化后 0x02 不再落 UnknownFlags——HAS_SIZE×Root 由合法域表拒"
+    );
+}
+
+#[test]
+fn has_size_bit_legalized_col_block_parses() {
+    // GUI-6 §11.1-3 双态对拍（TLV 半）：bit1 = HAS_SIZE 合法化——Col +
+    // SIZE 块（w=Some(40) h=None 哨兵对）全解析过且 roundtrip 字节相等
+    //（段B 前此流落 UnknownFlags = 本测先红；布局消费 = 段C）。
+    let mut ui = Ui::<32>::new(100, 100);
+    let stream = [
+        KIND_ROOT, 0x00, 0x01, // Root cc=1
+        KIND_COL, 0x02, 0x02, 0x00, 0x00, 0x00, // Col flags=HAS_SIZE gap=2
+        0x28, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, // 块：w=40 h=None
+        0x00, // cc=0
+    ];
+    ui.apply_desc(&stream).unwrap();
+    let mut out = [0u8; 64];
+    let n = ui.encode_desc(&mut out).unwrap();
+    assert_eq!(&out[..n], &stream, "roundtrip 字节相等（块序 SIZE 哨兵规范形）");
 }
 
 #[test]
@@ -328,21 +379,22 @@ fn desc_builder_reject_faces() {
     b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }))
         .unwrap();
     assert_eq!(
-        b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0 })),
+        b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })),
         Err(AstError::BadParent),
         "未闭叶下 begin → BadParent"
     );
     // end 无 begin 失配
     let mut b = DescBuilder::new();
     assert_eq!(b.end(), Err(AstError::BadParent));
-    // 深度帽 DESC_DEPTH_MAX：Root + 16 层 Col → 第 17 层 begin 拒
+    // 深度帽 DESC_DEPTH_MAX：Root + (DESC_DEPTH_MAX−1) 层 Col → 第
+    // DESC_DEPTH_MAX+1 层 begin 拒（D11 后 = 64 帽——注释随源不焊字面）
     let mut b = DescBuilder::new();
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
     for _ in 0..(berry_ui::desc::DESC_DEPTH_MAX - 1) {
-        b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0 })).unwrap();
+        b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })).unwrap();
     }
     assert_eq!(
-        b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0 })),
+        b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })),
         Err(AstError::TooSmall { need: berry_ui::desc::DESC_DEPTH_MAX + 1, got: berry_ui::desc::DESC_DEPTH_MAX })
     );
 }
@@ -352,7 +404,7 @@ fn desc_builder_child_cap_255_retry_stable() {
     // 单亲 255 子已满（CHILD_MAX=255——u8 children 计数的结构帽）：第
     // 256 个 end() → TooSmall loud，且拒绝在**任何状态变更之前**（先于
     // 计数字节回填/父计数自增）——重试同错零半执行（父计数不增、深度
-    // 不减）。字节面：Root 3 + 255×Rect 14 = 3573 ≤ DESC_MAX=4096——
+    // 不减）。字节面：Root 3 + 255×Rect 14 = 3573 ≤ DESC_MAX=8192——
     // 拒因是子数帽非字节帽（两帽分界钉板）
     let mut b = DescBuilder::new();
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
