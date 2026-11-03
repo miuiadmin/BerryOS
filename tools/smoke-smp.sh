@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# BerryOS S-2b 副核参与冒烟——双相（`SMP-S2实施设计草案.md` §5.1；smoke-x86
-# 同款独立形态——不并入主 smoke、不进 CI：主 smoke 八跑是单核回归基线，
-# 零扰动）。相 1 = 裸相（27 标记 + SMP 握手）；相 2 = rootfs 生态相
-# （47 标记 + 对拍 client 对 + PAR 副核参与活证）——rootfs 全链在
-# `-smp 2` 下绿 = E0「内核串行/用户并行」语义等价的端到端证据。
+# BerryOS S-2b 副核参与冒烟——七相（`SMP-S2实施设计草案.md` §5.1 起，相
+# 3-7 = S-3b/S-4/S-5b 逐相增扩；smoke-x86 同款独立形态——不并入主 smoke、
+# 不进 CI：主 smoke 八跑是单核回归基线，零扰动）。相 1 = 裸相（27 标记 +
+# SMP 握手）；相 2 = rootfs 生态相（47 标记 + 对拍 client 对 + PAR 副核参
+# 与活证）——rootfs 全链在 `-smp 2` 下绿 = E0「内核串行/用户并行」语义
+# 等价的端到端证据；相 3-7 = 专项门（LB/ASIDR/TLBS/ALLOC/HT——各独立
+# boot，断言面见各相段注释与 `docs/规则/07-测试与冒烟.md`）。
 #
 # **-smp 只进本线**：全仓唯一带 `-smp 2` 的 QEMU 入口（justfile run-smp /
 # smoke-smp 本脚本）；主 run/run-el2/run-rootfs/smoke 一律单核（S-1 单核零
@@ -68,6 +70,9 @@ DEADLINE_ASIDR=240     # 秒：相 4 `ASIDR ok` 行轮询帽（DEADLINE_LB 同�
 DEADLINE_TLBS=240      # 秒：相 5 `TLBS ok` 行轮询帽（帽序②同前；guest 侧
                        # 分层：warm 栅障 8s + canary 收割 8s 双帽（TCG 半速
                        # ≈ 16s 墙钟 ×2）+ spawn/风暴余量——两帽之和远小于本帽）
+DEADLINE_STORM=240     # 秒：相 6 `ALLOC ok` / 相 7 `HT ok` 行轮询帽（S-5b，
+                       # 帽序②同前；guest 侧 budget 8s×2 TCG + spawn 余量
+                       # ——64 轮 × 5 人 churn 在 8s budget 内对账）
 LB_TICK_TH=24          # 相 3 c1 下限（F-A5 定标 run10：4 线程 K=2 全改道 rq1
                        # 形态实测 c1=77 ≈ 每 16s 边 ~40 tick 量级;24 ≈ 1/3——
                        # 区分「副核得货死（c1=0）」与「活」,余量防轮转波动）
@@ -590,4 +595,77 @@ QEMU_PID=""
 
 # R3 首跑定标三数（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次）。
 echo "smoke-smp: R3 定标三数：boot=${SMP_BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 金丝雀≈${CAN_PERIOD_S:-?}s/行 / rootfs=${ROOTFS_WALL}s（帽 ${DEADLINE_ROOTFS}s）"
-echo "smoke-smp: PASS（五相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）——恰一次/金丝雀执法不跨相 3/4/5 boot）"
+
+# ============ 相 6：ALLOC churn 压测（S-5b；gated bare 第六 boot） ============
+# fw_cfg `opt/berry/alloc` 门控（前相同款机制）：boot 期双门过 → spawn
+# task_alloc——双核 EL0 分配器 churn：root + 4 写者（spread→CPU1）×
+# 64 轮 vmo create/commit/write/close（模板 __user_allocst，SP 自推导
+# 窗口 + go-flag 基线语义）。验收 = err 全 0 + 完成轮数全满 + 水位恒等
+# （allocated_pages() 终 == 基线——churn 帧全还）+ sw0/sw1 均严格增
+# （双核参与证）。断言面 = gate 自证行 + ok 行在席 + n==320（64 轮 ×
+# 5 参与者，与 main.rs STORM_ROUNDS × STORM_PARTICIPANTS / 模板 movz
+# #64 三面钉同值）。
+
+field_wait
+: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 6 开工截断复用日志
+echo "smoke-smp: QEMU 启动（-smp 2，相 6 ALLOC churn 相：fw_cfg alloc gate + bare）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/alloc,string=1 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+tc=$(date +%s)   # F-A7 帽序②同款：锚点在 QEMU 起后起算
+while ! grep -q 'ALLOC ok n=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 ALLOC 轮询阶段退出"
+  [ $(( $(date +%s) - tc )) -gt "$DEADLINE_STORM" ] \
+    && fail "ALLOC ok ${DEADLINE_STORM}s 未出（查 ALLOC gate on 是否在席——absent 即门未过；水位恒等/双核 sw 断言炸则有 panic 行）"
+  sleep 2
+done
+grep -q 'ALLOC gate on' "$LOG" \
+  || fail "ALLOC gate on 自证行缺失（门未过——查 fw_cfg 注入与 smp_active 面）"
+alloc_line=$(grep 'ALLOC ok n=' "$LOG" | tail -1)
+echo "smoke-smp: ${alloc_line}"
+alloc_n=$(echo "$alloc_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
+[ -n "$alloc_n" ] && [ "$alloc_n" -eq 320 ] \
+  || fail "ALLOC n=${alloc_n:-缺} != 320（churn 轮数不齐 = err 早断或超时——guest assert 行带 errs/dones/水位三元定位）"
+
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=""
+
+# ============ 相 7：HT 风暴压测（S-5b；gated bare 第七 boot） ============
+# fw_cfg `opt/berry/ht` 门控（相 6 同款）：spawn task_ht——同 fleet 形态
+# 换 event 风暴载荷（每轮 event_create→object_signal→handle_close，模板
+# __user_htst）。被打的共享结构 = 子进程 handle 表（单进程五线程跨两核
+# 共用一表，SVC_CLASS_SQ_RQ_TABLE 锁竞争面）。静默点双走查（S-5a
+# integrity_check 契约）：风暴前 + join 后均 Ok(0) + used_count==0
+# （残留态/UAF = 竞态真病灶面）。断言面同相 6（n==320 三面钉）。
+
+field_wait
+: > "$LOG"   # F-A12：相 7 开工截断复用日志
+echo "smoke-smp: QEMU 启动（-smp 2，相 7 HT 风暴相：fw_cfg ht gate + bare）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/ht,string=1 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+tc=$(date +%s)
+while ! grep -q 'HT ok n=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 HT 轮询阶段退出"
+  [ $(( $(date +%s) - tc )) -gt "$DEADLINE_STORM" ] \
+    && fail "HT ok ${DEADLINE_STORM}s 未出（查 HT gate on 是否在席；风暴前后走查炸则有 panic 行——残留态/UAF 面）"
+  sleep 2
+done
+grep -q 'HT gate on' "$LOG" \
+  || fail "HT gate on 自证行缺失（门未过——查 fw_cfg 注入与 smp_active 面）"
+ht_line=$(grep 'HT ok n=' "$LOG" | tail -1)
+echo "smoke-smp: ${ht_line}"
+ht_n=$(echo "$ht_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
+[ -n "$ht_n" ] && [ "$ht_n" -eq 320 ] \
+  || fail "HT n=${ht_n:-缺} != 320（风暴轮数不齐——guest assert 行带 errs/dones 定位）"
+
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=""
+
+echo "smoke-smp: PASS（五相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）；相 6 专项门 = ALLOC gate on + n=320（S-5b 双核 EL0 分配器 churn——水位恒等 + 双核 sw 参与证）；相 7 专项门 = HT gate on + n=320（S-5b 双核 handle 表风暴——静默点双走查 Ok(0)）——恰一次/金丝雀执法不跨相 3-7 boot）"

@@ -69,6 +69,17 @@ pub const USER_STACK_TOP: usize = 0x4000;
 /// 0x800_0000 远**——双面净。
 pub const TLBS_DATA_VA: usize = 0x4800_0000;
 
+/// S-5b 相 6/7 storm fleet 共用数据 VMO 窗 VA（ALLOC churn / HT 风暴）。
+/// 选址纪律同上（§A119 双面净区扫描）：0x4900_0000 与 0x4800 同段
+/// （DRAM 物理窗外 + mmap 窗 0x700_0000 远），全仓双面零命中实证
+/// （2026-11-03，含 user/ 常驻 VA 段表）。布局：page0 = go-flag 页
+/// （master vmo_write 放行位——基线语义完美化：fleet 帧先立 → 快照 →
+/// 放行 → 只对账瞬态 churn）；page1..(1+N) = per-worker 窗口页
+/// （模板 SP 自推导：sp & ~0xFFF = 自身窗口基——解 out-param 并发踩踏，
+/// 窗口偏移 0x40 出参/0x80 err/0x90 完成轮数/0xC0 write 源，main.rs
+/// 常量三面钉同值）。
+pub const STORM_DATA_VA: usize = 0x4900_0000;
+
 /// 代码镜像帽（D3；A7-4 段② 64→128KiB——svcmgr 平像贴墙后 SDK-1b 型
 /// doc 漂移越页，C-2c 容量同步先例抬墙）：flat binary 约定输入的体积上限
 /// ——防调用方手滑把整段 ELF 塞进来（elf2flat.py `--max 131072` 同值执法）。
@@ -1163,6 +1174,129 @@ core::arch::global_asm!(
     ".globl __user_tlbc_end",
     "__user_tlbc_end:",
 
+    // S-5b 相 6 ALLOC churn worker（storm fleet——tlbs_spawn_fleet 形态，
+    // 双核 EL0 分配器压测）。流程：①SP 自推导窗口（mov/lsr/lsl——
+    // sp & ~0xFFF = 自身窗口页基；fleet 按线程错落 sp 派发窗口，解
+    // out-param 并发踩踏）→ ②go-flag 自旋（flag = 绝对 VA movz 合成
+    // ——**邻页推导（win-0x1000）仅 root 成立**，写者窗口前页是他人
+    // 窗口读恒 0 永自旋，S-5b 首跑实证；0x4900 与 STORM_DATA_VA 三面钉）
+    // 纯 EL0 装载环——park 期零内核态面，master 水位快照语义成立 →
+    // ③64 轮 churn：vmo_create(0x11)→commit(0x12)→write(0x15, 8B)→
+    // close(0x01)，任一 svc 非零 →err 路径（win+0x80 计数，master 即红
+    // 早断）→ ④轮数计满 win+0x90 → ⑤thread_exit（0x36 仅退自身——
+    // 单进程五任务生死线，__user_lb 头注同款）。寄存器合同：x20 = 窗口基
+    // / x23 = flag 页（绝对）/ x22 = 剩余轮数 / x0 = NR→ret（svc
+    // dispatch 只回写 x0——x1-x30 跨 svc 稳定；vmo_write 后 x4 已转 len，
+    // close 须从 win+0x40 重载 handle）。ROUNDS=64 与 main.rs STORM_ROUNDS
+    // 三面钉。
+    ".globl __user_allocst",
+    "__user_allocst:",
+    "    mov  x21, sp",               // SP 自推导（lsr/lsl 合成页基）
+    "    lsr  x21, x21, #12",
+    "    lsl  x20, x21, #12",         // x20 = 自身窗口页基
+    "    movz x23, #0x4900, lsl #16", // x23 = flag 页（绝对 VA 三面钉）
+    "1:  ldr  x3, [x23]",             // go-flag 自旋
+    "    cbz  x3, 1b",
+    "    movz x22, #64",              // ROUNDS（三面钉）
+    "2:  movz x0, #0x11",             // vmo_create(0x1000, 0, win+0x40)
+    "    movz x1, #0x1000",           //  imm12 恰容 0x1000
+    "    movz x2, #0",
+    "    add  x3, x20, #0x40",
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    ldr  x4, [x20, #0x40]",      // churn handle（copy_out 已落窗）
+    "    movz x0, #0x12",             // vmo_commit(h, 0, 0x1000)
+    "    mov  x1, x4",
+    "    movz x2, #0",
+    "    movz x3, #0x1000",
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    movz x0, #0x15",             // vmo_write(h, win+0xC0, 0, 8)
+    "    mov  x1, x4",
+    "    add  x2, x20, #0xC0",
+    "    movz x3, #0",
+    "    movz x4, #8",                // x4 转入 len（4 参签名）
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    movz x0, #0x01",             // handle_close(h)
+    "    ldr  x1, [x20, #0x40]",      // 重载（x4 已被 write 借走）
+    "    movz x2, #0",
+    "    movz x3, #0",
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    ldr  x5, [x20, #0x90]",      // 完成轮数++
+    "    add  x5, x5, #1",
+    "    str  x5, [x20, #0x90]",
+    "    subs x22, x22, #1",
+    "    b.ne 2b",
+    "    b    3f",
+    "9:  ldr  x6, [x20, #0x80]",      // err++（master 早断位）
+    "    add  x6, x6, #1",
+    "    str  x6, [x20, #0x80]",
+    "3:  mov  x5, #1",                // 就绪位自宣（win+0x98——master 静默收割）
+    "    str  x5, [x20, #0x98]",
+    "4:  ldr  x3, [x23, #8]",         // 第二放行位（flag 页+8）——park 自旋
+    "    cbz  x3, 4b",                //（末线程收口 drain 前留水位终账窗）
+    "    movz x0, #0x36",             // thread_exit（仅退自身）
+    "    svc  #0",
+    "    b    .",                     // 不返；防御兜底
+    ".balign 4",
+    ".globl __user_allocst_end",
+    "__user_allocst_end:",
+
+    // S-5b 相 7 HT 风暴 worker（同 fleet 形态，载荷换 event 风暴：每轮
+    // event_create(0x54)→object_signal(0x06, set=高 32 位用户位——
+    // SIGNAL_USER_MASK=0xFFFF_FFFF_0000_0000，低 32 位内核派生保留)→
+    // handle_close(0x01)）。被打的共享结构 = 子进程 handle 表（单进程
+    // 五线程跨两核共用一表，SVC_CLASS_SQ_RQ_TABLE 锁竞争面）。窗口
+    // 自推导/go-flag/err 路径/0x36 退出全同 __user_allocst（头注互见）。
+    ".globl __user_htst",
+    "__user_htst:",
+    "    mov  x21, sp",
+    "    lsr  x21, x21, #12",
+    "    lsl  x20, x21, #12",         // x20 = 自身窗口页基
+    "    movz x23, #0x4900, lsl #16", // x23 = flag 页（绝对 VA 三面钉）
+    "1:  ldr  x3, [x23]",
+    "    cbz  x3, 1b",
+    "    movz x22, #64",              // ROUNDS（三面钉）
+    "2:  movz x0, #0x54",             // event_create(0, win+0x40)
+    "    movz x1, #0",
+    "    add  x2, x20, #0x40",
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    ldr  x4, [x20, #0x40]",
+    "    movz x0, #0x06",             // object_signal(h, 0, 用户位)
+    "    mov  x1, x4",
+    "    movz x2, #0",
+    "    movz x3, #1, lsl #32",       // 高 32 位用户位（movz lsl 合成）
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    movz x0, #0x01",             // handle_close(h)
+    "    mov  x1, x4",
+    "    movz x2, #0",
+    "    movz x3, #0",
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    ldr  x5, [x20, #0x90]",      // 完成轮数++
+    "    add  x5, x5, #1",
+    "    str  x5, [x20, #0x90]",
+    "    subs x22, x22, #1",
+    "    b.ne 2b",
+    "    b    3f",
+    "9:  ldr  x6, [x20, #0x80]",      // err++
+    "    add  x6, x6, #1",
+    "    str  x6, [x20, #0x80]",
+    "3:  mov  x5, #1",                // 就绪位自宣（win+0x98——master 静默收割）
+    "    str  x5, [x20, #0x98]",
+    "4:  ldr  x3, [x23, #8]",         // 第二放行位（flag 页+8）——park 自旋
+    "    cbz  x3, 4b",                //（末线程收口 drain 前留静默走查窗）
+    "    movz x0, #0x36",             // thread_exit（仅退自身）
+    "    svc  #0",
+    "    b    .",
+    ".balign 4",
+    ".globl __user_htst_end",
+    "__user_htst_end:",
+
     // 4-5b/4-6 svcmgr 模板已随 G-eco-b 退役换编译产物（user/bins/svcmgr，
     // include_bytes! 内嵌 echo/talker 平像——原模板内嵌的 echo 段（268B）与
     // talker 段（936B）随之换轨 user/bins/{echo,talker}）。契约逐字保留
@@ -1186,6 +1320,10 @@ extern "C" {
     static __user_lb_end: u8;
     static __user_tlbc: u8;
     static __user_tlbc_end: u8;
+    static __user_allocst: u8;
+    static __user_allocst_end: u8;
+    static __user_htst: u8;
+    static __user_htst_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -1263,6 +1401,21 @@ pub fn user_lb_code() -> &'static [u8] {
 pub fn user_tlbc_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_tlbc, &__user_tlbc_end) }
+}
+
+/// ALLOC churn storm 子模板（S-5b 相 6：SP 自推导窗口 → go-flag → 64 轮
+/// vmo create/commit/write/close → 0x36 退出——见模板内注释）。task_alloc
+/// 经真 svc 链单进程造 5 份镜像（root 家核 + 4 写者 spread→CPU1）。
+pub fn user_allocst_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_allocst, &__user_allocst_end) }
+}
+
+/// HT 风暴 storm 子模板（S-5b 相 7：同 fleet 形态，载荷换 event 风暴
+/// create/signal/close——被打面 = 子进程 handle 表跨核并发）。
+pub fn user_htst_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_htst, &__user_htst_end) }
 }
 
 /// svcmgr 用户程序模板（4-5b 验收：服务管理器拉起 echo 服务——真 syscall

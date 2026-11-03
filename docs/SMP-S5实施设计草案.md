@@ -159,3 +159,85 @@ idle park 计数（SmpCpu 尾插字段）；心跳 v2 `SOAK t= sw= sw0= sw1= par
   「缺 PAGE ok」纯载荷 flake 代码无辜，已修状态裁定判据）。S-5a 验证面六绿齐：
   build / test-host 128 / unsafe 台账 --check / docs_guard / 变异标定三株 /
   主 smoke 零漂移。
+
+## §9.2 S-5b 执行追记（2026-11-03 相 6/7 落码）
+
+- 落码面：
+  - `kernel/src/user.rs`：`STORM_DATA_VA = 0x4900_0000`（§A119 双面净区
+    实证——与 0x4800 同段，全仓双面零命中）+ `__user_allocst`（64 轮
+    vmo create/commit/write/close churn）/`__user_htst`（event
+    create/signal/close 风暴）双模板 + accessor。窗口 = SP 自推导
+    （sp & ~0xFFF = 自身窗口页基——fleet 按线程错落 sp 派发窗口，解
+    out-param 并发踩踏）；flag = **绝对 VA movz 合成**（0x4900 三面钉）。
+  - `kernel/src/main.rs`：ALLOC/HT_PROBE_NAME + STORM_{WRITER_N,
+    PARTICIPANTS,ROUNDS}（n=320 三面钉）+ ALLOC/HT_EV_BIT（1<<44/45
+    入 USER_SIGNAL_BITS 登记）+ `storm_spawn_fleet`（data VMO 一炉
+    (1+P) 页：flag 页 + 每人窗口页；root process_start 家核 + 4 写者
+    thread_start spread→CPU1）+ `storm_win_read`（svc vmo_read 直读
+    窗口）+ `storm_poll`（tlbs_poll 同形有界轮询）+ `task_alloc`/
+    `task_ht` master + 双 boot gate 块。
+  - `tools/smoke-smp.sh`：相 6/7 段（gate 自证行 + n==320 断言 +
+    DEADLINE_STORM=240）+ PASS 行/头注/AGENTS:99/规则07 四处条款同步
+    （五相→七相）。
+- **三轮尸检定谳（首跑连环红——全为设计修正非内核病灶）**：
+  1. **klock 窗内 svc 死锁**：storm_poll 首版把 storm_win_read（走 svc
+     dispatch，自带锁窗）放在 klock_enter 窗内 → 重入死锁——task_alloc
+     无声卡死（无 PANIC 无 ok、系统活、rt_ticks 走）。与 tlbs_poll 的
+     关键差异：tlbs 观测面是原子计数（锁窗内读安全），storm 观测面是
+     svc。修法：窗读移锁窗外（block_current 仍锁窗内——tlbs_poll 契约）。
+  2. **flag 邻页推导仅 root 成立**：首版模板 flag = win-0x1000（邻页）；
+     写者窗口 2..5 的前页是他人窗口页 → 读恒 0 永自旋（dones=64≠320，
+     errs=0——root 一人满轮铁证）。修法：flag 改绝对 VA movz。
+  3. **水位对账口径重设计（两跑连环）**：+24（boot 演示/常驻面分配混入
+     对账窗）→ 加 boot 沉降稳定等待后 -6（终账前稳定等待把 REAPQ 栈帧
+     drain 拉进窗 = 结构性 -20±）。定谳：**SMP EL0 形态全局水位无干净
+     窗**（多源噪声 ±几帧 + 生命周期帧时移）。终态口径 = boot 沉降
+     稳定等待（60s 帽）保基线净 + 终账**立即快照**（不等 drain——栈帧
+     移交 REAPQ 后水位不动）+ 断言改**带宽 |Δ|≤64**（churn 全泄主信号
+     ±320 量级，裕度 5×；ktest 单核串行窗的绝对恒等口径在 SMP EL0
+     不可移植——判例候选）。
+  4. **sw 断言语义修正（单相绿全相红）**：首版断言 sw0/sw1 各自严格增；
+     全相跑相 6 红 `CPU0 sw 零前进` 而单相手跑同断言绿。定谳：**per-CPU
+     sw 零前进在「满载荷独占核」是物理正常态**——root 独占 CPU0 纯 EL0
+     churn（svc 进出不计任务切换、rq 空无抢占对象→零切换）；单相绿是
+     boot 沉降提前退出、demo 面恰在窗内活动的**碰巧**（全相跑 TCG 烤慢
+     →沉降帽跑满 60s→demo 毕→CPU0 只剩 root 自旋）。修：断言改**合计式
+     sw0+sw1 严格增**（调度器双核活性——master poll 节拍必涨其所在核）；
+     双核各自跑载荷的结构证归 spread 路由（root 家核 + 写者 K=2→CPU1）
+     + dones 全满，不靠 sw 面。
+- 单相双绿：`ALLOC ok n=320`（2s）+ `HT ok n=320`（2s，静默点双走查
+  Ok(0) 过——含风暴前/后 integrity_check + used_count==0）。
+- 全相 smoke-smp 七相回归：首跑相 6 红（尸检④）→ sw 合计式修正后
+  **七相 PASS**（boot=2s / rootfs=210s / LB c1=78 / ASIDR n=2 /
+  TLBS n=10 / ALLOC n=320 / HT n=320）。
+- **变异标定连环两株绿吞 → 尸检⑤⑥定谳（join 后断言恒真洞）**：
+  - 株 HT-1（模板环尾 create 不 close）注入后静默点②不红——三轮探针
+    定谳（used=0 但窗内 handle 值在 = create 真成功；执行性株 HT-1b
+    out 指完成轮数槽 PANIC 17039370≠320 证段执行）→ **真凶 =
+    `sys_thread_exit` 末线程钩子触发 Process 收口 `proc.ht.drain()`
+    （syscall.rs:1132）**：join 后表必被 drain 清空，静默点②
+    used_count==0/integrity_check==Ok(0) **恒真断言无活性**。
+  - 株 ALLOC-1（churn 换单 VMO 持续 commit 吃帧）注入后水位带宽不红
+    ——同因：worker thread_exit → drain 子表 → 泄漏 VMO 全关帧全还，
+    终账（join 后）被退出语义洗成恒过。
+  - **修法 = 两相全改二次放行形**（S-5b 断言活性设计修正）：模板 3: 段
+    = 就绪位自宣（win+0x98——0x94 踩 0x90 槽高 4B 曾炸 +2^32，尸档
+    21474836800=5×2³²+320）+ park 自旋第二放行位（flag 页+8）→ master
+    就绪收割（storm_poll 参数化 done_off，满值随形态 DONE=320/READY=5）
+    → **真静默窗终账**（水位带宽/sw 合计/走查——帧与 handle 全在册、
+    drain 未发生）→ 二次放行全员退（drain 归还属进程生命周期正确语义，
+    非断言面）→ Σ DONE 槽终账 n=320。
+- **变异标定两株（二次放行形后，双双活红）**：
+  - 株 HT-1：`PANIC @ 静默窗走查 Ok(5) ≠ Ok(0)`——5 残留 handle 被
+    integrity_check 抓获（走查断言先炸，used 断言备用）。还原 → 绿。
+  - 株 ALLOC-1：`PANIC @ 水位越带 base 812 → end 1127 Δ315`（预期
+    +320，实差 315 = 量级全合）。还原 → 绿（残留 grep x24/x25/MUT
+    零 + 双单相复绿）。
+- test-host 78 套件绿零挂；净态双单相 `ALLOC ok n=320` + `HT ok n=320`。
+- 全相 smoke-smp 七相终验（二次放行形）：**PASS**（SMOKE_SMP_EXIT=0——
+  boot=5s / rootfs=204s / LB c0=0 c1=78 / ASIDR n=2 / TLBS n=10 /
+  ALLOC n=320 / HT n=320；尸档 /tmp/s5b-smoke-smp-final4.log）。让场三跑
+  实录：两跑被用户设备壳 VNC rig 长占拦（协议干净拒跑零损失）+ 一跑在
+  点火后 75s 窗内被无通告短突发拦——事后定谳同源（用户设备壳 P0/P1
+  迭代 boot，9cdb925 落库对上）；改门控链式重试（120s 全信号稳定净场门
+  qemu∪18080-18083∪smoke-image + FIELD_NEVER_STABLE 帽 20min）一次过。

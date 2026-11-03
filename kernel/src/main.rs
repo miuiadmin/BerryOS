@@ -1544,6 +1544,47 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                     ht_tlbs as *mut HandleTable as usize);
         berry_hal_aarch64::uart_puts(b"TLBS gate on\n");
     }
+    // ---- S-5b 相 6：ALLOC churn 压测门控 spawn（fw_cfg `opt/berry/alloc`；
+    // smoke-smp 相 6 专递——前例同款双门）----
+    // 双门同前例：smp_active（单核 boot 零面——无对核铺位）+ fw_cfg 具名项
+    // （缺席 = run/smoke 零扰动 + EFI 天然缺席）。任务 prio 8（tlbs 同档）；
+    // 表 = 私有表 + 一个哑 Event（arg = ObjRef 供 storm_poll 超时醒，永不
+    // 置位）；`ALLOC gate on` 自证行（相 6 排障首查行）。
+    if berry_hal_aarch64::smp::smp_active()
+        && berry_hal_aarch64::fwcfg::find_file(ALLOC_PROBE_NAME).is_some()
+    {
+        let ht_alloc: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_alloc_ev = ht_alloc
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: alloc 哑 Event 进 alloc 表");
+        let p_alloc_ev = ht_alloc
+            .get_raw(h_alloc_ev, ObjType::Event, 0)
+            .expect("main: 取 alloc ObjRef")
+            .0;
+        berry_sched::spawn_with_tag(task_alloc, p_alloc_ev.as_ptr() as usize, b"alloc", 8,
+                                    ht_alloc as *mut HandleTable as usize);
+        berry_hal_aarch64::uart_puts(b"ALLOC gate on\n");
+    }
+    // ---- S-5b 相 7：HT 风暴压测门控 spawn（fw_cfg `opt/berry/ht`；smoke-smp
+    // 相 7 专递——alloc 同款双门）----
+    // 结构同相 6（表 + 哑 Event + prio 8 + `HT gate on` 自证行）。
+    if berry_hal_aarch64::smp::smp_active()
+        && berry_hal_aarch64::fwcfg::find_file(HT_PROBE_NAME).is_some()
+    {
+        let ht_storm: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_ht_ev = ht_storm
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: ht 哑 Event 进 ht 表");
+        let p_ht_ev = ht_storm
+            .get_raw(h_ht_ev, ObjType::Event, 0)
+            .expect("main: 取 ht ObjRef")
+            .0;
+        berry_sched::spawn_with_tag(task_ht, p_ht_ev.as_ptr() as usize, b"htstorm", 8,
+                                    ht_storm as *mut HandleTable as usize);
+        berry_hal_aarch64::uart_puts(b"HT gate on\n");
+    }
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { berry_hal_aarch64::timer::arm_slice() };
@@ -2691,6 +2732,8 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 41, "soakmon 哑 Event（S-1 soak 心跳——永不置位，仅超时醒）"),
     (1 << 42, "par_probe 哑 Event（S-2b 副核参与金丝雀——永不置位，仅超时醒）"),
     (1 << 43, "tlbs 哑 Event（S-4 4-4 canary 压测 master——永不置位，仅超时醒）"),
+    (1 << 44, "alloc 哑 Event（S-5b 相 6 churn 压测 master——永不置位，仅超时醒）"),
+    (1 << 45, "ht 哑 Event（S-5b 相 7 风暴压测 master——永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -3396,6 +3439,35 @@ const TLBS_WRITER_N: usize = 4;
 /// n==10 断言三面钉同值——改此须三处同步。
 const TLBS_PARTICIPANTS: usize = 1 + TLBS_WRITER_N;
 
+/// S-5b 相 6 ALLOC churn 压测门控名（smoke-smp 相 6 专递：
+/// `-fw_cfg name=opt/berry/alloc,string=1`；lb/asidroll/tlbs 同款「两侧
+/// 对读维护」纪律——tools/smoke-smp.sh 相 6 段与本常量对读）。
+const ALLOC_PROBE_NAME: &str = "opt/berry/alloc";
+
+/// S-5b 相 7 HT 风暴压测门控名（smoke-smp 相 7 专递：
+/// `-fw_cfg name=opt/berry/ht,string=1`；ALLOC 同款「两侧对读维护」纪律）。
+const HT_PROBE_NAME: &str = "opt/berry/ht";
+
+/// storm fleet 写者线程数（S-5b 相 6/7 同构：root 家核 + N 写者
+/// spread=true → K=2 路由 CPU1——lb 4-burst/tlbs 同构）。
+const STORM_WRITER_N: usize = 4;
+
+/// storm 每轮参与者总数 = root + `STORM_WRITER_N`（水位/终账分母）。
+const STORM_PARTICIPANTS: usize = 1 + STORM_WRITER_N;
+
+/// storm 每参与者 churn 轮数。`ALLOC ok n=`/`HT ok n=` 行 n =
+/// `STORM_ROUNDS` × `STORM_PARTICIPANTS` = 320，与模板 asm movz #64
+/// （user.rs `__user_allocst`/`__user_htst`）、smoke 相 6/7 n==320 断言
+/// 三面钉同值——改此须三处同步。
+const STORM_ROUNDS: usize = 64;
+
+/// storm 窗口偏移（模板 asm 立即数三面钉同值——见 user.rs 模板头注）：
+/// 0x40 churn 出参 handle / 0x80 err 计数 / 0x90 完成轮数 / 0xC0
+/// vmo_write 源。
+const STORM_WIN_ERR: usize = 0x80;
+const STORM_WIN_DONE: usize = 0x90;
+const STORM_WIN_READY: usize = 0x98; // 相 7 二次放行形：就绪位（0x90 槽 8B 域外）
+
 /// LB 计算线程 Thread ObjRef 地址表（per-child 归因判别面，义务③ 9.2 裁决二）：
 /// lb_master 造线程时写入（thread_create 后、thread_start 前——thread_key
 /// 值在 create 即定）；sched 侧 tick 采样经 `set_lb_match` 注入的 [`lb_match`]
@@ -4025,6 +4097,419 @@ extern "C" fn task_tlbs(arg: usize) -> ! {
     berry_hal_aarch64::kern_lock::with_print_lock(|| {
         berry_hal_aarch64::uart_puts(b"TLBS ok n=");
         berry_hal_aarch64::uart_put_dec(n as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    berry_sched::exit_current()
+}
+
+// ---- S-5b 相 6/7：storm fleet（ALLOC churn / HT 风暴双核 EL0 压测）----
+
+/// alloc 哑 Event 的用户位（S-5b 相 6，占用登记见 [`USER_SIGNAL_BITS`]——
+/// TLBS_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（storm_poll 节拍——
+/// 计数面是 data VMO 窗口轮询，非事件面）。
+const ALLOC_EV_BIT: u64 = 1 << 44;
+/// ht 哑 Event 的用户位（S-5b 相 7，同上——ALLOC_EV_BIT 的续位）。
+const HT_EV_BIT: u64 = 1 << 45;
+
+/// storm 舰队装配（S-5b 相 6/7 共用；svc 落脚 = 本任务私有表，
+/// caller_table 经 current_tag 取）：进程 + 代码页 + 单 data VMO
+/// （(1+`STORM_PARTICIPANTS`) 页 = flag 页@0 + 每人窗口页@1..——与 tlbs
+/// 分体双 VMO 不同形：flag 与窗口同 VMO 且全程恒映射，churn 对象（VMO/
+/// Event）每轮独立 create/close 对消）+ root（process_start spread=false
+/// 恒家核）+ `STORM_WRITER_N` 写者（thread_start spread=true → K=2 路由
+/// CPU1）。sp = 各自窗口页顶内错落（模板 SP 自推导窗口基——错落纯防未来
+/// 模板压栈，同页同基）。返回 (process, Vmar, data VMO)——两 handle 随
+/// master 表常驻（reuse 句柄泄漏持有，lb_master 同合同）。tag 仅入
+/// assert 标签。
+fn storm_spawn_fleet(tag: &str, code: &'static [u8]) -> (u32, u32, u32) {
+    use crate::abi_gen::{
+        NR_PROCESS_CREATE, NR_PROCESS_START, NR_THREAD_CREATE, NR_THREAD_START,
+        NR_VMAR_MAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_WRITE, RIGHT_READ, RIGHT_WRITE,
+    };
+    use crate::user::{STORM_DATA_VA, USER_CODE_VA};
+    let (mut hp, mut hv, mut hc) = (0u32, 0u32, 0u32);
+    let (mut hd, mut hth_root) = (0u32, 0u32);
+    let mut hths = [0u32; STORM_WRITER_N];
+    let mut vaddr: u64;
+    // 进程 + 代码页（tlbs_spawn_fleet 同链 0x31/0x11/0x12/0x15/0x16——svc4/
+    // svc6 安全封装，槽为私有栈变量，el1 直拷先例）。
+    assert_eq!(
+        svc6(
+            NR_PROCESS_CREATE as u64, 0, 0,
+            core::ptr::addr_of_mut!(hp) as u64,
+            core::ptr::addr_of_mut!(hv) as u64, 0, 0,
+        ),
+        0,
+        "storm{}: process_create",
+        tag
+    );
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64, 0x1000, 0,
+            core::ptr::addr_of_mut!(hc) as u64,
+        ),
+        0,
+        "storm{}: vmo_create[code]",
+        tag
+    );
+    assert_eq!(svc4(NR_VMO_COMMIT as u64, hc as u64, 0, 0x1000), 0,
+               "storm{}: vmo_commit[code]", tag);
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hc as u64, code.as_ptr() as u64, 0,
+            code.len() as u64, 0, 0,
+        ),
+        0,
+        "storm{}: vmo_write[code]",
+        tag
+    );
+    vaddr = USER_CODE_VA as u64;
+    assert_eq!(
+        svc6(
+            NR_VMAR_MAP as u64, hv as u64, hc as u64, 0,
+            core::ptr::addr_of_mut!(vaddr) as u64, 0x1000,
+            (RIGHT_READ | RIGHT_WRITE) as u64,
+        ),
+        0,
+        "storm{}: vmar_map[code]",
+        tag
+    );
+    assert_eq!(vaddr as usize, USER_CODE_VA, "storm{}: code VA 偏离请求", tag);
+    // data VMO 一炉（(1+P) 页）：页 0 = go-flag（commit 清零天然 0——
+    // 参与者自旋至 master 放行）；页 1..=P = per-worker 窗口（SP 自推导）。
+    let data_len = ((1 + STORM_PARTICIPANTS) * 0x1000) as u64;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64, data_len, 0,
+            core::ptr::addr_of_mut!(hd) as u64,
+        ),
+        0,
+        "storm{}: vmo_create[data]",
+        tag
+    );
+    assert_eq!(svc4(NR_VMO_COMMIT as u64, hd as u64, 0, data_len), 0,
+               "storm{}: vmo_commit[data]", tag);
+    vaddr = STORM_DATA_VA as u64;
+    assert_eq!(
+        svc6(
+            NR_VMAR_MAP as u64, hv as u64, hd as u64, 0,
+            core::ptr::addr_of_mut!(vaddr) as u64, data_len,
+            (RIGHT_READ | RIGHT_WRITE) as u64,
+        ),
+        0,
+        "storm{}: vmar_map[data]",
+        tag
+    );
+    assert_eq!(vaddr as usize, STORM_DATA_VA, "storm{}: data VA 偏离请求", tag);
+    // root（spread=false 恒家核）+ 写者（thread_start spread=true → K=2
+    // 路由 CPU1——lb/tlbs 同构）。sp = 各自窗口页顶内错落（页 1..=P，
+    // 0xFF0 顶/写者逐个 -0x40——16 对齐门 + 页内不越界）。
+    assert_eq!(
+        svc4(
+            NR_THREAD_CREATE as u64, hp as u64, 0,
+            core::ptr::addr_of_mut!(hth_root) as u64,
+        ),
+        0,
+        "storm{}: thread_create[root]",
+        tag
+    );
+    let sp_root = (STORM_DATA_VA + 0x1FF0) as u64; // 页 1 顶（16 对齐）
+    assert_eq!(
+        svc6(
+            NR_PROCESS_START as u64, hp as u64, hth_root as u64,
+            USER_CODE_VA as u64, sp_root, 0, 0,
+        ),
+        0,
+        "storm{}: process_start[root]",
+        tag
+    );
+    for i in 0..STORM_WRITER_N {
+        assert_eq!(
+            svc4(
+                NR_THREAD_CREATE as u64, hp as u64, 0,
+                core::ptr::addr_of_mut!(hths[i]) as u64,
+            ),
+            0,
+            "storm{}: thread_create[{}]",
+            tag,
+            i
+        );
+        let sp = (STORM_DATA_VA + (2 + i) * 0x1000 + 0xFF0 - i * 0x40) as u64;
+        assert_eq!(
+            svc6(
+                NR_THREAD_START as u64, hths[i] as u64,
+                USER_CODE_VA as u64, sp, 0, 0, 0,
+            ),
+            0,
+            "storm{}: thread_start[{}]",
+            tag,
+            i
+        );
+    }
+    (hp, hv, hd)
+}
+
+/// storm 窗口 8B 读（master 轮询面）：svc vmo_read 直读 data VMO 窗口
+/// 字段（el1 直拷先例——buf 内核栈裸指针）。`idx` = 参与者序（0=root）。
+fn storm_win_read(hd: u32, idx: usize, off: usize) -> u64 {
+    use crate::abi_gen::NR_VMO_READ;
+    let mut v = 0u64;
+    let off = ((1 + idx) * 0x1000 + off) as u64;
+    assert_eq!(
+        svc6(
+            NR_VMO_READ as u64, hd as u64,
+            core::ptr::addr_of_mut!(v) as u64, off, 8, 0, 0,
+        ),
+        0,
+        "storm: vmo_read[win{}+{off:#x}]",
+        idx
+    );
+    v
+}
+
+/// storm master 有界轮询（tlbs_poll 同形）：哑 Event `block_current` 超时
+/// 醒（50ms 步——master prio 8 醒即抢占采样、睡即让出 CPU0，裸自旋会饿死
+/// 同核 root）；每醒扫全窗（err>0 即红早断 / 全 done 即收）。返回
+/// (err 和, done 和)——预算尽仍未达 = 调用方 assert 兜底 fail-loud。
+/// deadline = CNTVCT 周期域（§A118）。**窗读在 klock 窗外**（与 tlbs_poll
+/// 的关键差异：观测面是 svc vmo_read 而非原子计数——svc dispatch 自带
+/// 锁窗，外层再包 klock = 重入死锁，S-5b 首跑实证；block_current 仍须
+/// 锁窗内调用——tlbs_poll 同契约）。
+fn storm_poll(arg: usize, ev_bit: u64, hd: u32, budget_vct: u64, done_off: usize) -> (u64, u64) {
+    use berry_sched::WakeReason;
+    let step = berry_hal_aarch64::timer::cntfrq() / 20; // 50ms 步
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    loop {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        // SAFETY: 调用方契约 = IRQ 屏蔽窗（tlbs_poll 同款）。
+        let deadline = berry_hal_aarch64::timer::cntvct() + step;
+        let r = berry_sched::block_current(arg, ev_bit, deadline);
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(r == WakeReason::Timeout,
+                "storm: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
+        // 锁窗外扫窗（svc 面自带锁窗——见头注）。done_off = 收割槽偏移，
+        // 满值随形态：DONE（完成轮数）= ROUNDS×P；READY（就绪位）= P。
+        let (mut errs, mut dones) = (0u64, 0u64);
+        for i in 0..STORM_PARTICIPANTS {
+            errs += storm_win_read(hd, i, STORM_WIN_ERR);
+            dones += storm_win_read(hd, i, done_off);
+        }
+        let full = if done_off == STORM_WIN_DONE {
+            (STORM_ROUNDS * STORM_PARTICIPANTS) as u64
+        } else {
+            STORM_PARTICIPANTS as u64
+        };
+        let expired = berry_hal_aarch64::timer::cntvct().wrapping_sub(t0) > budget_vct;
+        let done = dones >= full || errs > 0;
+        if done || expired {
+            return (errs, dones);
+        }
+    }
+}
+
+/// S-5b 相 6（smoke-smp `alloc` 门）：双核 EL0 分配器 churn 压测验收。
+/// 载荷 = root + 4 写者 × 64 轮 vmo create/commit/write/close（模板
+/// `__user_allocst`——瞬态 VMO 每轮对消）。验收链：①舰队 spawn（线程
+/// park 在 go-flag 自旋——纯 EL0 装载环零内核态面）；②**水位基线快照**
+/// （go-flag 使基线语义完美：fleet 帧 + data VMO 全已在册，唯瞬态 churn
+/// VMO 来去）+ per-CPU sw 基线；③放行 flag（svc vmo_write 写 data VMO
+/// off 0——EL0 同帧可见）；④有界轮询至全 done/err/超时；⑤终账四断言：
+/// err 全 0 / done 全满（n=320 三面钉）/ `allocated_pages()` == 基线
+/// （水位恒等——churn 帧全还，Relaxed 纪律同 churn 终账）/ sw0 与 sw1
+/// 均严格增（双核参与证——master+root 家核切、写者 CPU1 切）。one-shot：
+/// `ALLOC ok n=` 后 exit_current。
+extern "C" fn task_alloc(arg: usize) -> ! {
+    use crate::abi_gen::NR_VMO_WRITE;
+    use crate::user::user_allocst_code;
+    // boot 沉降：gate spawn 于 boot 尾窗（sched::init 后、enable_irq 前），
+    // 但 F/rt/S2b 演示与常驻面（echod/svcmgr/par_probe）在 gate on 后仍在
+    // 初始化分配——基线快照前须等系统态沉降（水位连续两读相等；60s 帽
+    // TCG 覆盖演示面完跑）。S-5b 二跑实证跳过此步则 boot 噪声帧混入对账窗。
+    {
+        use berry_sched::WakeReason;
+        let step = berry_hal_aarch64::timer::cntfrq() / 20;
+        let t0 = berry_hal_aarch64::timer::cntvct();
+        let cap = 60 * berry_hal_aarch64::timer::cntfrq();
+        let (mut last, mut stable) = (usize::MAX, 0);
+        while stable < 2 {
+            berry_hal_aarch64::kern_lock::klock_enter();
+            let deadline = berry_hal_aarch64::timer::cntvct() + step;
+            let r = berry_sched::block_current(arg, ALLOC_EV_BIT, deadline);
+            berry_hal_aarch64::kern_lock::klock_exit();
+            assert!(r == WakeReason::Timeout, "alloc: 沉降等待醒因非 Timeout");
+            let p = mm::frames().allocated_pages();
+            if p == last {
+                stable += 1;
+            } else {
+                stable = 0;
+                last = p;
+            }
+            if berry_hal_aarch64::timer::cntvct().wrapping_sub(t0) > cap {
+                break;
+            }
+        }
+    }
+    let budget = 8 * berry_hal_aarch64::timer::cntfrq();
+    let (_hp, _hv, hd) = storm_spawn_fleet("A", user_allocst_code());
+    // ② 基线：水位（fleet 帧已在——flag 门保证）+ per-CPU sw（写者已
+    // thread_start，park 自旋不占内核态面）。
+    let pages_base = mm::frames().allocated_pages();
+    let (sw0_b, sw1_b, _, _) = berry_hal_aarch64::smp::sw_park_readout();
+    // ③ 放行。
+    let one: u8 = 1;
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hd as u64,
+            core::ptr::addr_of!(one) as u64, 0, 1, 0, 0,
+        ),
+        0,
+        "alloc: vmo_write[flag]"
+    );
+    // ④ 就绪收割（READY 槽——二次放行形）：全员轮毕 + park 自旋于第二
+    // 放行位 = **真静默窗**（churn 帧全在册、进程未收口——drain 洗不掉）。
+    let (errs, readies) = storm_poll(arg, ALLOC_EV_BIT, hd, budget, STORM_WIN_READY);
+    assert_eq!(errs, 0, "alloc: churn err {errs}（svc 非零——handles/帧面）");
+    assert_eq!(readies, STORM_PARTICIPANTS as u64,
+               "alloc: 就绪 {readies} != {}（早断/超时面）", STORM_PARTICIPANTS);
+    // ⑤ 静默窗终账（S-5b 变异标定 ALLOC-1 实证修正：worker thread_exit →
+    // 末线程收口 drain 子表 → 泄漏 VMO 全关帧全还——旧位（join 后）终账
+    // 被 drain 洗成恒过；真静默窗内 churn 帧全在册，带宽断言才有活性）。
+    // 水位断言 = **带宽口径**：SMP EL0 形态全局水位无干净窗（常驻面 ±几帧
+    // 波动 = 噪声底；S-5b 三跑实证），对账主信号 = churn 帧全泄（320 轮
+    // × 1 帧 = ±320 量级）——带宽 64 = 常驻波动余量，主信号裕度 5×。
+    let pages_end = mm::frames().allocated_pages() as i64;
+    let delta = pages_end - pages_base as i64;
+    assert!(
+        delta.abs() <= 64,
+        "alloc: 水位越带（base {pages_base} -> end {pages_end}，Δ{delta} ——\
+         churn 帧泄漏主信号为 ±320 量级，越 64 带 = 泄漏或多还面）"
+    );
+    let (sw0_e, sw1_e, _, _) = berry_hal_aarch64::smp::sw_park_readout();
+    // 双核参与证 = 合计式：per-CPU sw 零前进在「满载荷独占核」是物理
+    // 正常态（root 纯 EL0 churn——svc 进出不计任务切换、rq 空无抢占对象；
+    // S-5b 全相跑实证：沉降帽跑满后 CPU0 只剩 root 自旋 → sw0 恒平）。
+    // 双核各自跑载荷的结构证 = spread 路由（root 家核 + 写者 K=2→CPU1，
+    // lb/tlbs 同构）+ dones 全满；sw 合计涨 = 窗内调度器双核活（master 的
+    // block/醒节拍必涨其所在核）。
+    assert!(sw0_e + sw1_e > sw0_b + sw1_b,
+            "alloc: sw 合计零前进（b {}+{} e {}+{}——调度器停摆面）",
+            sw0_b, sw1_b, sw0_e, sw1_e);
+    // ⑥ 二次放行（flag 页 +8）：全员退（末线程收口 drain——帧归还属
+    // 进程生命周期正确语义，非断言面）+ 终账完成轮数。
+    let one8: u8 = 1;
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hd as u64,
+            core::ptr::addr_of!(one8) as u64, 8, 1, 0, 0,
+        ),
+        0,
+        "alloc: vmo_write[flag2]"
+    );
+    let mut dones = 0u64;
+    for i in 0..STORM_PARTICIPANTS {
+        dones += storm_win_read(hd, i, STORM_WIN_DONE);
+    }
+    assert_eq!(dones, (STORM_ROUNDS * STORM_PARTICIPANTS) as u64,
+               "alloc: 完成轮数 {dones} != 320");
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"ALLOC ok n=");
+        berry_hal_aarch64::uart_put_dec(dones);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    berry_sched::exit_current()
+}
+
+/// S-5b 相 7（smoke-smp `ht` 门）：双核 EL0 HandleTable 风暴压测验收。
+/// 载荷 = 同 fleet 形态换 event 风暴（`__user_htst`：每轮 event_create→
+/// object_signal→handle_close）。**被打的共享结构 = 子进程 handle 表**
+/// （单进程五线程跨两核共用一表，SVC_CLASS_SQ_RQ_TABLE 锁竞争面——与
+/// 相 6 的 per-worker 独立 churn 不同维度）。**二次放行形**（S-5b 变异
+/// 标定 HT-1 实证修正）：worker 轮毕后不直退——就绪位自宣（win+0x94）
+/// + park 自旋第二放行位（flag 页+8）→ master 就绪收割后在**真静默窗**
+/// 走查（表操作全停且进程未收口——join 后旧位被末线程 drain 恒清，
+/// 恒真断言无活性）→ 二次放行全员退 → 终账。静默点双走查（S-5a
+/// integrity_check 调用契约）：①风暴前（线程 park 自旋中，子表出生为
+/// 空——fleet svc 全落 master 表）+ ②真静默窗（全员就绪 parked）——两点
+/// 均须 `integrity_check() == Ok(0)` 且 `used_count() == 0`（风暴
+/// create/close 对消终态）。终账同相 6（err/done/双核 sw）。`HT ok n=`
+/// 后 exit_current。
+extern "C" fn task_ht(arg: usize) -> ! {
+    use crate::abi_gen::NR_VMO_WRITE;
+    use crate::handle::ObjType;
+    use crate::user::user_htst_code;
+    let budget = 8 * berry_hal_aarch64::timer::cntfrq();
+    let (hp, _hv, hd) = storm_spawn_fleet("H", user_htst_code());
+    // 子表可达面：master 表的 process handle → KernelObj::Process → .ht。
+    // SAFETY: current_tag = spawn_with_tag 合同钉死的本任务私有表（非 0）；
+    // 本任务执行流内独占（svc 串行于自身），走查窗在静默点（见上）。
+    let t: &mut crate::handle::HandleTable =
+        unsafe { &mut *(berry_sched::current_tag() as *mut crate::handle::HandleTable) };
+    let child = {
+        let (oref, _) = t
+            .get_raw(hp, ObjType::Process, 0)
+            .expect("ht: 取子 Process");
+        // SAFETY: get_raw 已三门控（在表、类型 Process）；NonNull 指向表内
+        // ObjRef（handle 持有钉住存活——tlbs_round Drop 臂同论证）。
+        let objref: &crate::handle::ObjRef = unsafe { oref.as_ref() };
+        objref.obj.as_process().expect("ht: 类型面意外")
+    };
+    // 静默点①：风暴前（park 自旋中）。
+    berry_hal_aarch64::kern_lock::klock_enter();
+    assert_eq!(child.ht.integrity_check(), Ok(0), "ht: 风暴前走查非 Ok(0)");
+    assert_eq!(child.ht.used_count(), 0, "ht: 风暴前子表非空");
+    berry_hal_aarch64::kern_lock::klock_exit();
+    // 放行 + 轮询收割（同相 6）。
+    let (sw0_b, sw1_b, _, _) = berry_hal_aarch64::smp::sw_park_readout();
+    let one: u8 = 1;
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hd as u64,
+            core::ptr::addr_of!(one) as u64, 0, 1, 0, 0,
+        ),
+        0,
+        "ht: vmo_write[flag]"
+    );
+    // 就绪收割（READY 槽）：全员到 3: 段（轮毕 + 就绪位自宣 + park 自旋
+    // 于第二放行位）——**真静默窗**：表操作全停（末次 close 毕）、进程未
+    // 收口（无人 thread_exit——drain 不发生）。
+    let (errs, readies) = storm_poll(arg, HT_EV_BIT, hd, budget, STORM_WIN_READY);
+    assert_eq!(errs, 0, "ht: 风暴 err {errs}（svc 非零）");
+    assert_eq!(readies, STORM_PARTICIPANTS as u64,
+               "ht: 就绪 {readies} != {}（早断/超时面）", STORM_PARTICIPANTS);
+    // 静默点②（真静默窗）：走查 + 空表断言（风暴 create/close 对消终态；
+    // join 后旧位已被末线程收口 drain 恒清——S-5b 变异标定 HT-1 实证，
+    // 断言移此才有活性）。
+    berry_hal_aarch64::kern_lock::klock_enter();
+    assert_eq!(child.ht.integrity_check(), Ok(0),
+               "ht: 静默窗走查非 Ok(0)（残留态/UAF 面——竞态真病灶）");
+    assert_eq!(child.ht.used_count(), 0, "ht: 静默窗子表非空（close 漏）");
+    berry_hal_aarch64::kern_lock::klock_exit();
+    // 二次放行（flag 页 +8）：全员 thread_exit（末线程触发收口 drain——
+    // 此后表归零属进程生命周期正确语义，非断言面）。
+    let one8: u8 = 1;
+    assert_eq!(
+        svc6(
+            NR_VMO_WRITE as u64, hd as u64,
+            core::ptr::addr_of!(one8) as u64, 8, 1, 0, 0,
+        ),
+        0,
+        "ht: vmo_write[flag2]"
+    );
+    // 终账完成轮数 = 手动 Σ DONE 槽（worker 退出与读窗竞速无关——
+    // 0x90 轮满即写，退出不改）。
+    let mut dones = 0u64;
+    for i in 0..STORM_PARTICIPANTS {
+        dones += storm_win_read(hd, i, STORM_WIN_DONE);
+    }
+    assert_eq!(dones, (STORM_ROUNDS * STORM_PARTICIPANTS) as u64,
+               "ht: 完成轮数 {dones} != 320");
+    let (sw0_e, sw1_e, _, _) = berry_hal_aarch64::smp::sw_park_readout();
+    // 同相 6 合计式（per-CPU 满载荷独占核零前进是物理正常态）。
+    assert!(sw0_e + sw1_e > sw0_b + sw1_b,
+            "ht: sw 合计零前进（b {}+{} e {}+{}）", sw0_b, sw1_b, sw0_e, sw1_e);
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"HT ok n=");
+        berry_hal_aarch64::uart_put_dec(dones);
         berry_hal_aarch64::uart_puts(b"\n");
     });
     berry_sched::exit_current()
