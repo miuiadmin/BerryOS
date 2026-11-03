@@ -27,10 +27,7 @@ pub fn collect() -> Report {
         Err(_) => "unknown".to_string(),
     };
     let firmware = qemu::firmware().ok();
-    let image = ["out/berryos.img", "out/berryos40.img"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_file());
+    let image = qemu::resolve_image(None).ok();
     let kernel = qemu::resolve_kernel(None).ok();
     Report {
         host,

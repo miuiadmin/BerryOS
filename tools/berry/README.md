@@ -20,6 +20,16 @@ just berry doctor         # QEMU / 固件 / 镜像 / accel
 `aarch64-unknown-none`，所以必须走 `just berry-build`（或显式 `--target`）。宿主依赖
 （winit/softbuffer/clap/serde_json）只在 `tools/berry/Cargo.lock`，不进客机/ABI。
 
+## 双击包
+
+```bash
+tools/berry/packaging/macos/build.sh      # → out/BerryOS.app（自包含镜像/固件，ad-hoc 签名）
+```
+
+macOS `.app` 会从 `Contents/Resources` 找 `berryos.img`/`AAVMF_CODE.fd`；QEMU 仍是外部
+依赖（GPLv2，进程边界，不打包）。Linux desktop/Windows 草稿见
+`tools/berry/packaging/`；Windows 的 GUI 子系统 + `AttachConsole` 仍待补。
+
 ## 命令
 
 ```bash

@@ -217,14 +217,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                 println!();
                 return Ok(());
             }
+            let timeout = std::env::var("BERRY_SHELL_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
             commands::shell(ShellArgs {
                 image: None,
                 profile: "phone".to_string(),
                 scale: ScaleMode::Fit,
                 accel: "tcg".to_string(),
                 memory: None,
-                timeout: Duration::from_secs(120),
-                keep: false,
+                timeout: Duration::from_secs(timeout),
+                keep: std::env::var_os("BERRY_SHELL_KEEP").is_some(),
                 display_mode: None,
                 json: false,
             })

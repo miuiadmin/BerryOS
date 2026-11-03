@@ -615,6 +615,12 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
 `shot --profile phone` 出 **480×1000 PNG**、`shell` 起停、`input tap/key` 经 VNC
 到达客机（与 shell 并存）；11 条 host 单测全绿。
 
+- **双击包（P2.5）**：macOS `.app` 已落——`tools/berry/packaging/macos/build.sh`
+  产 `out/BerryOS.app`（`Contents/Resources` 自带 `berryos.img` + `AAVMF_CODE.fd`，
+  ad-hoc 签名；QEMU 仍外部）。实测从 `/tmp` 无 TTY 启动无参 `berry`，资源解析
+  480×1000、退出 0。Linux `.desktop`/Windows 草稿在 `packaging/`；Windows 的
+  GUI 子系统 + `AttachConsole` 仍待补。
+
 **P2 实装（本刀核心）**：
 
 - HAL `fwcfg` 增 fw_cfg DMA 写（16B `FWCfgDmaAccess` 描述符 + 8B 门铃；`SELECT|WRITE`），

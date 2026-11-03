@@ -235,6 +235,27 @@ pub fn spawn_image(
     })
 }
 
+/// App-bundle / runtime-pack resource roots: executable dir, the macOS
+/// `.app` Resources dir (`MacOS/../Resources`), and the per-user pack dir.
+fn resource_dirs() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            v.push(d.to_path_buf());
+            if let Some(parent) = d.parent() {
+                v.push(parent.join("Resources"));
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        v.push(PathBuf::from(home).join("Library/Application Support/BerryOS"));
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        v.push(PathBuf::from(local).join("BerryOS"));
+    }
+    v
+}
+
 /// AAVMF code pflash. Read-only: never opens the brew file for write.
 pub fn firmware() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("AAVMF_CODE") {
@@ -253,6 +274,12 @@ pub fn firmware() -> Result<PathBuf> {
     ];
     for c in candidates {
         let p = PathBuf::from(c);
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    for d in resource_dirs() {
+        let p = d.join("AAVMF_CODE.fd");
         if p.is_file() {
             return Ok(p);
         }
@@ -313,6 +340,12 @@ pub fn resolve_image(explicit: Option<PathBuf>) -> Result<PathBuf> {
     let p = PathBuf::from("out/berryos.img");
     if p.is_file() {
         return Ok(p);
+    }
+    for d in resource_dirs() {
+        let p = d.join("berryos.img");
+        if p.is_file() {
+            return Ok(p);
+        }
     }
     Err(BerryError::env("device image not found").with_hint(
         "pass --image <path>, set BERRY_IMAGE, or run `just image`",

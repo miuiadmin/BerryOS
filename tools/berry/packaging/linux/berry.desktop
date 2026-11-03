@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=BerryOS
+Comment=BerryOS developer device shell
+Exec=berry shell
+Terminal=false
+Categories=Development;
