@@ -233,9 +233,20 @@ DEADLINE_BOOTB=360   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3
                      # FAT @sw1700 慢 ~6% = c-1 源致 +2% + TCG 波动），外推 FATW
                      # ~245-250s 撞穿 240——与 Boot C 同债族早一相发作；360 ≈
                      # 最坏观测 ×1.45（与 Boot C 420/304 同口径）。
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+# 标记单源：裸相 27 + rootfs 47 双数组抽出 tools/markers.sh（smoke-smp.sh
+# 同源消费——原「复制+awk 计数对拍」方案退役，S-5 后测试基建收尾刀）。
+source "$SCRIPT_DIR/markers.sh"
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
+# per-boot 串口轮转：每 QEMU boot 一份日志，$LOG 恒指当前 boot。此前 8
+# boot 顺序截断同文件——后 boot 抹前 boot 现场（S-5 终验金丝雀证据无法
+# 独立复验的根因）；本刀起各相 launch 前 rotate_log 换档，SMOKE_KEEP_LOG=1
+# 时 8 boot 各留档。
+LOGS=("$LOG")
+rotate_log() {
+  LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke.XXXXXX")
+  LOGS+=("$LOG")
+}
 QEMU_PID=""
 RX_FIFO=""
 RX_HOLDER=""
@@ -284,14 +295,16 @@ cleanup() {
     wait "$SKT_PID" 2>/dev/null
   fi
   if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
-    echo "smoke: 串口日志保留：$LOG" >&2
+    for lg in "${LOGS[@]}"; do
+      echo "smoke: 串口日志保留：$lg" >&2
+    done
     # T-c 对抗审查实抓：ECHO_LOG 同为失败现场（echod traceback 只落它）——
     # SMOKE_KEEP_LOG=1 只保串口日志时宿主侧死因恒被抹。
     [ -n "$ECHO_LOG" ] && echo "smoke: echod 日志保留：$ECHO_LOG" >&2
     [ -n "$EVS_LOG" ] && echo "smoke: evsclient 日志保留：$EVS_LOG" >&2
     [ -n "$SKT_LOG" ] && echo "smoke: sktclient 日志保留：$SKT_LOG" >&2
   else
-    rm -f "$LOG"
+    rm -f "${LOGS[@]}"
     [ -n "$ECHO_LOG" ] && rm -f "$ECHO_LOG"
     [ -n "$EVS_LOG" ] && rm -f "$EVS_LOG"
     [ -n "$SKT_LOG" ] && rm -f "$SKT_LOG"
@@ -493,7 +506,7 @@ while ! grep -q 'listening on' "$ECHO_LOG" 2>/dev/null; do
 done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
-: > "$LOG"  # 复用同一日志文件（cleanup 只删一份）
+rotate_log  # rootfs 相起 per-boot 轮转（§5.1 同刀收尾：不再复用截断同一文件）
 # A2-3：EVS client 先于 QEMU 起（client 自带重试环吃 hostfwd 未就绪态）。
 evs_client_start
 skt_client_start
@@ -860,8 +873,7 @@ QEMU_PID=$!
 # 非子串（"INT ok" 位 2 P≠T；RX 相专用行 "INPUTP ok n=3" 不含 "INPUT ok"
 # ——位 5 P≠空格）；不进 assert_marker 特判面。rootfs 相第 47 标记
 # （gui3 并线后计数——APPUI(46)+INPUT(47) 并存）。
-ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "INPUT ok")
+# 数组本体 → tools/markers.sh 单源（S-5 后测试基建收尾刀起，此处仅注记）。
 t2=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -921,7 +933,7 @@ skt_client_wait "rootfs 相"
 # 检盲区），只有切换序列还动才真活着。
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
-: > "$LOG"
+rotate_log
 RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-rx.XXXXXX")
 rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
@@ -1254,7 +1266,7 @@ wait "$QEMU_PID" 2>/dev/null
 # QEMU 由 SIGTERM 终止后仍存活数秒并继续刷盘——盘取证/复用前等真退
 #（P6 A-6 实测纪律；此处 disk.img 阶段 6 要复用）。
 sleep 3
-: > "$LOG"
+rotate_log
 FX_BIN=$(mktemp "${TMPDIR:-/tmp}/berryos-fx.XXXXXX")
 python3 tools/mkfat.py disk_dirs.img --fixture "$FX_BIN" || fail "mkfat 造目录盘失败"
 rm -f "$FX_BIN"
@@ -1338,7 +1350,7 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # 后者正证仍是 OUT.TXT f42t（自验链不写它，本相读回的必是 RX 相字节）。
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
-: > "$LOG"
+rotate_log
 evs_client_start
 skt_client_start
 echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin + virtio-net）"
@@ -1430,7 +1442,7 @@ echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 c
 # 假绿，单面都测不出）。
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
-: > "$LOG"
+rotate_log
 python3 tools/mkfat.py disk.pwr.img || fail "mkfat 造掉电盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.pwr.img conv=notrunc status=none
 echo "smoke: QEMU 启动（B4 掉电 Boot A：新文件窗采样，无 netdev）"
@@ -1475,7 +1487,7 @@ else
 fi
 
 # Boot B：覆写 resize 窗采样 + 确定性毒环注入。
-: > "$LOG"
+rotate_log
 echo "smoke: QEMU 启动（B4 掉电 Boot B：DF resize 窗采样 + 注入）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
@@ -1518,7 +1530,7 @@ esac
 echo "smoke: 毒环注入就位（$PWR_P）"
 
 # Boot C：毒环盘恢复终验——guest 标记（fsmgr/bsh fat 族 + DF/DIR/CD）+ 盘面双面。
-: > "$LOG"
+rotate_log
 echo "smoke: QEMU 启动（B4 掉电 Boot C：毒环恢复终验，无 netdev）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \

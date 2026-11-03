@@ -160,29 +160,11 @@ assert_marker() {
   fi
 }
 
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
-
-# rootfs 相 47 标记——**复制自 smoke.sh**（§5.1 最低限度方案：markers.sh
-# 抽取留后刀；漂移面由下方运行时计数对拍机器守卫盖住——主 smoke 加标记
-# 而本数组漏跟 = 立即 FAIL 防假绿，P6 A-5「基准重产义务要有机器守卫」族）。
-ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "INPUT ok")
-
-# 机器守卫：两数组与 smoke.sh 原文计数对拍（元素 = 引号串——**元素内不得
-# 含 `)`/引号**，加标记时守住此约束）。awk 状态机在起始行内即判 `)` 收口
-# ——sed 区间 /a/,/b/ 的结束模式不在起始行测试（单行数组会越界吃到下一行
-# 引号串，守卫干跑实抓的多计假阳性）。
-cross_check_markers() {
-  local src="$SCRIPT_DIR/smoke.sh"
-  local n1 n2
-  n1=$(awk '/^MARKERS=\(/{f=1} f{n+=gsub(/"/,"x"); if (/\)/) exit} END{print int(n/2)}' "$src")
-  n2=$(awk '/^ROOTFS_MARKERS=\(/{f=1} f{n+=gsub(/"/,"x"); if (/\)/) exit} END{print int(n/2)}' "$src")
-  [ "$n1" -eq "${#MARKERS[@]}" ] \
-    || fail "裸相 MARKERS 与 smoke.sh 漂移（本脚本 ${#MARKERS[@]} vs smoke.sh ${n1:-缺}）——主 smoke 改标记须同步本数组"
-  [ "$n2" -eq "${#ROOTFS_MARKERS[@]}" ] \
-    || fail "ROOTFS_MARKERS 与 smoke.sh 漂移（本脚本 ${#ROOTFS_MARKERS[@]} vs smoke.sh ${n2:-缺}）——主 smoke 加标记须同步本数组（§5.1 单一事实源纪律）"
-}
-cross_check_markers
+# 标记单源：双数组与 smoke.sh 共用 tools/markers.sh（S-5 后测试基建收尾
+# 刀落——原「复制 + awk 计数对拍」§5.1 最低限度方案退役，漂移面构造性
+# 消失；防假绿非空兜底随单源文件内置）。元素约束（不含 `)`/引号）见
+# markers.sh 头注。
+source "$SCRIPT_DIR/markers.sh"
 
 # SMP 按相断言：SMP ok 恰一次（重复 = 副核路径重入；缺失已由标记轮询覆盖）
 # + 副核报告行在席（mpidr/ctx 回显/per-core 寄存器——超时 dump 的诊断源；
