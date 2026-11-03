@@ -195,7 +195,7 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
 
 ## §4 实施刀程（四段，各段独立可验可提交）
 
-**段① 协议与折算（纯函数面，零 guest 扰动）**
+**段① 协议与折算（纯函数面，零 guest 扰动）** ✅ 已落 2026-11-03（三笔 8ce7d3b/782fb3b/7196b56 落 gui8-draft；test-host 984/0 零漂 + abi-check PASS + berry-ui 双面 164/167；对抗审查 1 MAJOR[parse_spawn_request 越帧读→帧长界修复+脏尾回归钉]/1 MINOR 全收编；guest smoke 47/47 对拍顺延 dd 端口空窗）
 - `berry-appproto` crate：APP_LIST/APP_SPAWN 编解码 + host 测（#54/#50 纪律：
   host 测编解码先行）；APP_EVENT op 码留位。
 - intent 折算表落 `berry-guiproto`：SCENE_* 直通退役（**停发非删值**——常量
