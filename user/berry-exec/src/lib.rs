@@ -229,6 +229,12 @@ pub struct SpawnSpec<'a> {
     /// [`VIRTIO_MMIO_VA`]、fb 窗用 [`FB_VA`]——同字段面第二消费者）。
     /// `mmio_vmo == None` 时无效（填 0 即可）。Some 且 0 = 配置错，trap。
     pub mmio_va: u64,
+    /// berry_intent（ADR #42 两段式；GUI-8 §4 段① SDK 透传口②）：随
+    /// `berry_thread_create` options 低 8 位透传（berry-sys 同口径注释）。
+    /// **默认 0 = 现行为零漂**。dormant：v1 内核只收 options==0，非 0 落
+    /// -EINVAL 走本 crate syscall 面自陷纪律 trap()——消费面保持 0，内核
+    /// 收 intent 后（ADR #42 v2 段）此口自然激活。
+    pub intent: u8,
 }
 
 /// rootfs ELF 流式拉起（页铺平单 VMO，同 `tools/elf2flat.py` 语义）：
@@ -257,14 +263,15 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         extra_gifts,
         mmio_vmo,
         mmio_va,
+        intent,
     } = spec;
     assert!(
         stdin_feed.is_none() || stdin_handle.is_none(),
         "spawn: stdin_feed/stdin_handle 互斥"
     );
     // 标量字段解包一次（SpawnSpec 经引用传入，后续按值用）。
-    let (data_off, data_len, stdout, stack_pages, mmio_va) =
-        (*data_off, *data_len, *stdout, *stack_pages, *mmio_va);
+    let (data_off, data_len, stdout, stack_pages, mmio_va, intent) =
+        (*data_off, *data_len, *stdout, *stack_pages, *mmio_va, *intent);
     let want = (data_len.min(4096u64)) as usize;
     // SAFETY: 调用方单线程顺序调用（svcmgr/bsh 主循环），本窗独占。
     let win: &mut [u8] = unsafe {
@@ -402,7 +409,10 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         }
     }
     let mut ht = 0 as Handle;
-    if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
+    // options = spec intent 低 8 位透传（ADR #42 占位口②；berry-libc attr 面
+    // 同口径）。v1 内核只收 0——非 0（dormant 调用面）-EINVAL 走自陷纪律
+    // （词表与激活时序见 `SpawnSpec::intent`）。
+    if berry_thread_create(hp, intent as u32, &mut ht) != 0 || ht == 0 {
         trap();
     }
     // —— env 块（start 前压队，确定性先行）：argv = argv0\0[+arg\0]；handles

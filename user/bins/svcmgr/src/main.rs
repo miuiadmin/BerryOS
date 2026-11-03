@@ -423,6 +423,7 @@ fn run_rootfs_child(console: Handle) {
                 extra_gifts: &[blk_b],
                 mmio_vmo: Some(H_MMIO),
                 mmio_va: VIRTIO_MMIO_VA,
+                intent: 0,
             },
         ) {
             Ok(_child) => {
@@ -504,6 +505,7 @@ fn run_rootfs_child(console: Handle) {
                 extra_gifts: &[H_FBINFO, H_FBPIPE, present_srv, hdi_srv],
                 mmio_vmo: Some(H_FB),
                 mmio_va: FB_VA,
+                intent: 0,
             },
         ) {
             Ok(_child) => {
@@ -573,6 +575,7 @@ fn run_rootfs_child(console: Handle) {
                     extra_gifts: &[wm_srv, push_srv, present_cli, hdi_cli],
                     mmio_vmo: None,
                     mmio_va: 0,
+                    intent: 0,
                 },
             ) {
                 Ok(_child) => {
@@ -667,6 +670,7 @@ fn run_rootfs_child(console: Handle) {
                     extra_gifts: &[wm_cli],
                     mmio_vmo: None,
                     mmio_va: 0,
+                    intent: 0,
                 },
             ) {
                 Ok(child) => {
@@ -750,6 +754,7 @@ fn run_rootfs_child(console: Handle) {
                     extra_gifts: &[wmd_dup],
                     mmio_vmo: None,
                     mmio_va: 0,
+                    intent: 0,
                 },
             ) {
                 Ok(_child) => {
@@ -828,6 +833,7 @@ fn run_rootfs_child(console: Handle) {
                 extra_gifts: fgifts,
                 mmio_vmo: None,
                 mmio_va: 0,
+                intent: 0,
             },
         ) {
             Ok(_) => {
@@ -888,6 +894,7 @@ fn run_rootfs_child(console: Handle) {
                 extra_gifts: &[net_b],
                 mmio_vmo: Some(H_MMIO),
                 mmio_va: VIRTIO_MMIO_VA,
+                intent: 0,
             },
         ) {
             Ok(_child) => {
@@ -958,6 +965,7 @@ fn run_rootfs_child(console: Handle) {
                 extra_gifts: igifts,
                 mmio_vmo: Some(H_MMIO),
                 mmio_va: VIRTIO_MMIO_VA,
+                intent: 0,
             },
         ) {
             Ok(_child) => {
@@ -1036,6 +1044,7 @@ fn run_rootfs_child(console: Handle) {
                 extra_gifts: gifts,
                 mmio_vmo: None,
                 mmio_va: 0,
+                intent: 0,
             },
         ) {
             Ok(child) => {
@@ -1104,6 +1113,7 @@ fn run_rootfs_child(console: Handle) {
                             extra_gifts: &[],
                             mmio_vmo: None,
                             mmio_va: 0,
+                            intent: 0,
                         },
                     ) {
                         // hello 常驻（10s 周期睡眠不回收）——入账。
@@ -1166,6 +1176,7 @@ fn run_rootfs_child(console: Handle) {
                             extra_gifts: &[],
                             mmio_vmo: None,
                             mmio_va: 0,
+                            intent: 0,
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -1229,6 +1240,7 @@ fn run_rootfs_child(console: Handle) {
                                 extra_gifts: &[],
                                 mmio_vmo: Some(H_MMIO),
                                 mmio_va: VIRTIO_MMIO_VA,
+                                intent: 0,
                             },
                         ) {
                             Ok(child) => {
@@ -1439,6 +1451,7 @@ fn run_rootfs_child(console: Handle) {
                 extra_gifts: gifts,
                 mmio_vmo: None,
                 mmio_va: 0,
+                intent: 0,
             },
         )
         .is_err()
@@ -1587,6 +1600,7 @@ fn ps_selftest(console: Handle) {
             extra_gifts: &[ps_b], // 单元素 → env 块 extras[0]（gift[4] 位）
             mmio_vmo: None,
             mmio_va: 0,
+            intent: 0,
         },
     ) {
         Ok(c) => c,
@@ -1852,6 +1866,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
             extra_gifts: &[q_b], // 单元素 → env 块 extras[0]（gift[4] 位）
             mmio_vmo: None,
             mmio_va: 0,
+            intent: 0,
         },
     ) {
         Ok(c) => c,
@@ -2638,6 +2653,7 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
             extra_gifts: &gifts,
             mmio_vmo: None,
             mmio_va: 0,
+            intent: 0,
         },
     ) {
         Ok(c) => c,
@@ -3138,6 +3154,7 @@ fn app_launch(
             extra_gifts: if wants_fs { &fs_gifts } else { &[] },
             mmio_vmo: None,
             mmio_va: 0,
+            intent: 0,
         },
     ) {
         Err(()) => {
