@@ -28,6 +28,10 @@
 # ——smoke/smoke-smp 并行窗互毁面归零）
 /disk.smp.img
 
+# S-5d soak-smp 专属盘（soak-smp.sh 现场造；三方零交集纪律同上——
+# soak/smoke/soak-smp 并行窗互毁面归零）
+/disk.soaksmp.img
+
 # G-eco 用户程序编译产物（just build-user 产出；缺产物 = 内核 include_bytes
 # 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
 /kernel/src/userbins/

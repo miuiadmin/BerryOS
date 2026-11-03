@@ -626,6 +626,21 @@ bench-icount: build
 soak minutes="60": build
     bash tools/soak.sh {{quote(minutes)}}
 
+# S-5d 双核满载 soak 单口（docs/SMP-S5实施设计草案.md §2 D1/D2/D4）：soak.sh
+# 全量形态 + `-smp 2` + 双 fw_cfg 门控（opt/berry/soak 心跳 v2 八字段 +
+# opt/berry/soakload = 内核门控 EL0 churn 舰队 root 家核 + 2 写者 spread→
+# CPU1——sw1 双臂断言物理源（严格递增 ∧ Δsw1 ≥320/拍满载主判：净态写者
+# 互抢 ≈560/拍 vs 死态残余 ≈195/拍 B 探针实测；gen 预算 1s 摊频纪律见
+# 脚本头注）。七断言 = 单核六断言换面：sw1/park1 恒零自证 → sw1 双臂 +
+# 双核 park ∈ [首拍,首拍+256]（越窗守卫——死态 park 亦停增非充分谓词，
+# 满载主判在 Δsw1）。盘名 disk.soaksmp.img 三方零交集；echod 18080 端口面同 soak——
+# 勿与任何同端口通道并行。默认 30 分钟（验收线 ≥30min 满载零断言失败）；
+# 30min 级实跑**后台执行须显式 timeout ≥7200000ms**（默认帽恰 30min 必超
+# ——S-5 草案 §3 明文）。短验 `just soak-smp 2`；SOAK_KEEP_LOG=1 留日志。
+# 参数经 quote 包裹（soak finding 9 同款注入面）。
+soak-smp minutes="30": build
+    bash tools/soak-smp.sh {{quote(minutes)}}
+
 size-release: docs-guard abi-check build-user
     cargo build --release
     python3 tools/size.py {{KERNEL_RELEASE}}

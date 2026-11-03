@@ -1430,6 +1430,70 @@ core::arch::global_asm!(
     ".globl __user_pp_end",
     "__user_pp_end:",
 
+    // S-5d soakload 永续 churn 子模板（storm fleet 形态——soak-smp 双核
+    // 满载载荷，D2 裁决：fw_cfg opt/berry/soakload 门控；不越基准文档
+    // 用户态服务 churn 边界、不新增 user bins、载荷零打印〔panic SMP
+    // 安全面〕、无 go-flag/DONE 面〔常驻不退〕）。
+    // 每环三段：①churn vmo_create(0x11)→commit(0x12)→write(0x15, 8B)
+    // →close(0x01)——**返回值全忽略**（载荷非断言面：svc 失败 = 槽旧值
+    // 空转无害，健康内核零失败）；②clock_read(0x61)×64 内核面风暴（无
+    // handle、无预算帽）；③CNTVCT_EL0 自旋 1s 摊频——**gen 预算纪律**
+    //（草案 §1.5/§5.3）：子表 8 槽 × 14 位 gen ≈13 万次 create 复用帽，
+    // 永续 handle churn 不节流则分钟级刷穿 → create 永久失败 = 压测面
+    // 静默缩水；1s 摊频 → ≈1 churn/s/线程，30min 三线程合计 ≈5.4k =
+    // 帽内 24x 裕量。观测面 = 宿主 soak-smp.sh 心跳 v2：sw1 严格递增 =
+    // 写者互抢轮转、park1 停增 = 满载谓词（三段全满载形态）。寄存器
+    // 合同：x20 = 窗口基（handle 槽 win+0x40 / write 源 win+0xC0 / clock
+    // 出参 win+0x0）；x0 = NR→ret（svc dispatch 只回写 x0）；write 借走
+    // x4 → 后续 svc 前 win+0x40 重载（allocst 同款）。root（x0=0
+    // bootstrap）与写者（x0=writer_arg）跑同一环——arg 不分流。每轮一
+    // 瞬态 VMO 对消 → 水位有界（宿主 ±64 带宽容纳三份瞬态）。
+    ".globl __user_soakload",
+    "__user_soakload:",
+    "    mov  x21, sp",               // SP 自推导（allocst 同式）
+    "    lsr  x21, x21, #12",
+    "    lsl  x20, x21, #12",         // x20 = 自身窗口页基
+    "1:  movz x0, #0x11",             // vmo_create(0x1000, 0, win+0x40)
+    "    movz x1, #0x1000",
+    "    movz x2, #0",
+    "    add  x3, x20, #0x40",
+    "    svc  #0",
+    "    ldr  x4, [x20, #0x40]",      // churn handle（失败轮 = 槽旧值，后续空转无害）
+    "    movz x0, #0x12",             // vmo_commit(h, 0, 0x1000)
+    "    mov  x1, x4",
+    "    movz x2, #0",
+    "    movz x3, #0x1000",
+    "    svc  #0",
+    "    movz x0, #0x15",             // vmo_write(h, win+0xC0, 0, 8)
+    "    ldr  x1, [x20, #0x40]",      // 重载（x4 不跨 svc 假设）
+    "    add  x2, x20, #0xC0",
+    "    movz x3, #0",
+    "    movz x4, #8",
+    "    svc  #0",
+    "    movz x0, #0x01",             // handle_close(h)
+    "    ldr  x1, [x20, #0x40]",
+    "    movz x2, #0",
+    "    movz x3, #0",
+    "    svc  #0",
+    "    movz x22, #64",              // clock_read ×64（无 handle 内核面风暴）
+    "2:  movz x0, #0x61",             // NR_CLOCK_READ（tlbc 风暴同款）
+    "    movz x1, #0",                // CLOCK_MONOTONIC
+    "    mov  x2, x20",               // 出参 = win+0x0（8B，本模板唯一写点族）
+    "    movz x3, #0",
+    "    svc  #0",
+    "    subs x22, x22, #1",
+    "    b.ne 2b",
+    "    mrs  x9, CNTVCT_EL0",        // 自旋摊频到点（1s vct——gen 预算纪律，头注）
+    "    movz x10, #0xACA0",
+    "    movk x10, #0x3B9, lsl #16",  // 62.5M 周期 = 1s @62.5MHz（EL0VCTEN 双核已开）
+    "    add  x10, x9, x10",
+    "3:  mrs  x9, CNTVCT_EL0",
+    "    cmp  x9, x10",
+    "    b.lt 3b",
+    "    b    1b",                    // 永续（常驻载荷——无退出路径）
+    ".globl __user_soakload_end",
+    "__user_soakload_end:",
+
     // 4-5b/4-6 svcmgr 模板已随 G-eco-b 退役换编译产物（user/bins/svcmgr，
     // include_bytes! 内嵌 echo/talker 平像——原模板内嵌的 echo 段（268B）与
     // talker 段（936B）随之换轨 user/bins/{echo,talker}）。契约逐字保留
@@ -1459,6 +1523,8 @@ extern "C" {
     static __user_htst_end: u8;
     static __user_pp: u8;
     static __user_pp_end: u8;
+    static __user_soakload: u8;
+    static __user_soakload_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -1560,6 +1626,15 @@ pub fn user_htst_code() -> &'static [u8] {
 pub fn user_pp_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_pp, &__user_pp_end) }
+}
+
+/// soakload 永续载荷子模板（S-5d：每环 = vmo churn + clock_read×64 内核
+/// 面风暴 + 1s CNTVCT 自旋摊频〔gen 预算纪律〕，返回值全忽略、无退出
+/// 路径——见模板内注释）。task_soakload 经真 svc 链单进程造
+/// `1+SOAKLOAD_WRITER_N` 份镜像（root 家核 + 写者 spread→CPU1）。
+pub fn user_soakload_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_soakload, &__user_soakload_end) }
 }
 
 /// svcmgr 用户程序模板（4-5b 验收：服务管理器拉起 echo 服务——真 syscall

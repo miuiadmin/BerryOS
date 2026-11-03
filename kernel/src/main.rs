@@ -1654,6 +1654,32 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                     ht_pp as *mut HandleTable as usize);
         berry_hal_aarch64::uart_puts(b"PP gate on\n");
     }
+    // ---- S-5d：soakload 满载载荷门控 spawn（fw_cfg `opt/berry/soakload`；
+    // tools/soak-smp.sh 专递——alloc/ht/pp 同款双门）----
+    // D2 裁决（SMP-S5 草案 §2）：双核 soak 满载载荷 = 内核门控 EL0 fleet
+    //（root 家核 churn + 写者 spread→CPU1 互抢轮转）。master prio 0（全体
+    // 常驻同档——boot 期一次性 spawn 链后即永睡，不与 soakmon prio-8 心跳
+    // 争档）；自证行 `SOAKLOAD fleet on n=` 由 master 在舰队真 spawn 后打
+    //（with_print_lock，enable_irq 后语境）——行在 ⟺ 载荷已在打，比 gate
+    // 块先打更贴断言语义（ALLOC gate on 先例打在 master spawn 前，但相 6
+    // 载荷是一次性有限轮，此处载荷即被测对象本体）。
+    if berry_hal_aarch64::smp::smp_active()
+        && berry_hal_aarch64::fwcfg::find_file(SOAKLOAD_PROBE_NAME).is_some()
+    {
+        let ht_sl: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 表内仅一个哑 Event（soak 块同形）：master 永睡的死线轮转等待对象
+        //（无人 signal，唯一醒因 Timeout）。
+        let h_sl_ev = ht_sl
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: soakload 哑 Event 进表");
+        let p_sl_ev = ht_sl
+            .get_raw(h_sl_ev, ObjType::Event, 0)
+            .expect("main: 取 soakload ObjRef")
+            .0;
+        berry_sched::spawn_with_tag(task_soakload, p_sl_ev.as_ptr() as usize, b"soakload", 0,
+                                    ht_sl as *mut HandleTable as usize);
+    }
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { berry_hal_aarch64::timer::arm_slice() };
@@ -2804,6 +2830,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 44, "alloc 哑 Event（S-5b 相 6 churn 压测 master——永不置位，仅超时醒）"),
     (1 << 45, "ht 哑 Event（S-5b 相 7 风暴压测 master——永不置位，仅超时醒）"),
     (1 << 46, "pp 哑 Event（S-5c 相 8 ping-pong 压测 master——永不置位，仅超时醒）"),
+    (1 << 47, "soakload 哑 Event（S-5d 双核 soak 满载载荷 master——永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -3225,12 +3252,18 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
 const SOAK_PROBE_NAME: &str = "opt/berry/soak";
 
 /// soakmon（S-1）：常驻心跳任务，每 60s（CNTVCT 周期口径）打一行
-/// `SOAK t=<拍序> sw=<切换总数> pages=<allocated_pages> lost=<RX丢字>`。
+/// `SOAK t=<拍序> sw=<切换总数> sw0=<CPU0 切换> sw1=<CPU1 切换>
+/// park0=<CPU0 park> park1=<CPU1 park> pages=<allocated_pages>
+/// lost=<RX丢字>`（S-5d 心跳 v2——D4 裁决：per-CPU 统计入行）。
 ///
-/// - 四字段全是现成计数器直读（`berry_sched::switches` = switches=N 金丝雀
-///   同源标量；`mm::frames().allocated_pages` = B-0/S-2 对账口径（D24 起
+/// - 八字段全是现成计数器直读（`berry_sched::switches` = switches=N 金丝雀
+///   同源标量；`smp::sw_park_readout` = S-5a per-CPU sw/park 四数〔跨核
+///   volatile 单字读，谓词为严格递增/有界增量断言，无需一致快照〕；
+///   `mm::frames().allocated_pages` = B-0/S-2 对账口径（D24 起
 ///   O(1) 水位原子读，口径由 buddy 对拍测试钉板）；`uart::rx_lost` =
-///   console 环丢字）——零新内核状态。
+///   console 环丢字）——零新内核状态。宿主断言分工：soak-smp = sw0/sw1
+///   各自严格递增（对核冻死即红）+ park 增量有界（满载谓词）；单核
+///   soak.sh = 副核四数恒零自证（sw1/park1 零活性）。
 /// - 周期 = `60 * cntfrq()`（CNTFRQ_EL0 直读，QEMU virt=62.5MHz 不硬编码；
 ///   不走 slice_cycles——那是 0.1s slice 单位，60s 是墙钟语义直乘最诚实）。
 /// - **首拍潜伏 5 周期**（落地取舍，闭合设计缺口；S-1 对抗审查 finding 1
@@ -3251,7 +3284,7 @@ const SOAK_PROBE_NAME: &str = "opt/berry/soak";
 ///   拼行，G43）→ klock_exit。打印必须整行包络：IRQ 语境 switches=N 行
 ///   （canary 带 \n）若撕进 SOAK 行中段会碎字段（`sw=5switches=300`）→
 ///   宿主正则失配漏拍 = 断言假阴性。
-///   行 ≤192B（固定段 25B + 4 数值字段各至多 20 位 = 绝对界 105B）。
+///   行 ≤256B（v2 固定段 49B + 8 数值字段各至多 20 位 = 绝对界 209B）。
 /// - 常驻不退出：活性心跳不是死线，超时醒 = 正常节拍（「服务端 wait 超时
 ///   是心跳不是死线」纪律的内核任务版）；私有表 + 哑 Event `Box::leak`
 ///   有意泄漏（有界、boot 生命周期）。醒因恒 Timeout（哑 Event 表私有、
@@ -3274,6 +3307,8 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
         assert!(r == WakeReason::Timeout,
                 "soakmon: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
         let sw = berry_sched::switches();
+        // S-5d 心跳 v2（D4）：per-CPU sw/park 四数入行（头注「八字段」）。
+        let (sw0, sw1, park0, park1) = berry_hal_aarch64::smp::sw_park_readout();
         let pages = mm::frames().allocated_pages() as u64;
         let lost = berry_hal_aarch64::uart::rx_lost() as u64;
         berry_hal_aarch64::kern_lock::with_print_lock(|| {
@@ -3281,6 +3316,14 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
             berry_hal_aarch64::uart_put_dec(n);
             berry_hal_aarch64::uart_puts(b" sw=");
             berry_hal_aarch64::uart_put_dec(sw);
+            berry_hal_aarch64::uart_puts(b" sw0=");
+            berry_hal_aarch64::uart_put_dec(sw0);
+            berry_hal_aarch64::uart_puts(b" sw1=");
+            berry_hal_aarch64::uart_put_dec(sw1);
+            berry_hal_aarch64::uart_puts(b" park0=");
+            berry_hal_aarch64::uart_put_dec(park0);
+            berry_hal_aarch64::uart_puts(b" park1=");
+            berry_hal_aarch64::uart_put_dec(park1);
             berry_hal_aarch64::uart_puts(b" pages=");
             berry_hal_aarch64::uart_put_dec(pages);
             berry_hal_aarch64::uart_puts(b" lost=");
@@ -3547,6 +3590,17 @@ const PP_PROBE_NAME: &str = "opt/berry/pp";
 /// 与模板 asm movz #0x140（user.rs `__user_pp`）、smoke 相 8 a==b==320
 /// 断言三面钉同值——改此须三处同步。
 const PP_ROUNDS: usize = 320;
+
+/// S-5d soakload 满载载荷门控名（tools/soak-smp.sh 专递：
+/// `-fw_cfg name=opt/berry/soakload,string=1`；ALLOC/HT/PP 同款「两侧
+/// 对读维护」纪律——tools/soak-smp.sh 门控段与本常量对读）。
+const SOAKLOAD_PROBE_NAME: &str = "opt/berry/soakload";
+
+/// soakload 写者数（spread→CPU1 互抢轮转——宿主 sw1 严格递除断言的物理
+/// 来源：单写者恒 Running 无抢占对象 → sw1 冻结；两写者 tick 轮转 ≈10Hz）。
+/// root（家核）另计 = 舰队共 1+N。满载谓词：写者恒 Runnable → CPU1 不
+/// idle → park1 停增；任一写者死 → CPU1 idle park 环 ≈10Hz 刷穿宿主帽。
+const SOAKLOAD_WRITER_N: usize = 2;
 
 /// LB 计算线程 Thread ObjRef 地址表（per-child 归因判别面，义务③ 9.2 裁决二）：
 /// lb_master 造线程时写入（thread_create 后、thread_start 前——thread_key
@@ -4194,6 +4248,10 @@ const HT_EV_BIT: u64 = 1 << 45;
 /// pp 哑 Event 的用户位（S-5c 相 8，同上——HT_EV_BIT 的续位）。
 const PP_EV_BIT: u64 = 1 << 46;
 
+/// soakload 哑 Event 的用户位（S-5d，占用登记见 [`USER_SIGNAL_BITS`]——
+/// PP_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（master 永睡节拍）。
+const SOAKLOAD_EV_BIT: u64 = 1 << 47;
+
 /// storm 舰队装配（S-5b 相 6/7 + S-5c 相 8 共用；svc 落脚 = 本任务私有表，
 /// caller_table 经 current_tag 取）：进程 + 代码页 + 单 data VMO
 /// （(2+`writer_n`) 页 = flag 页@0 + root 窗口页@1 + 写者窗口页@2..——与
@@ -4651,6 +4709,35 @@ extern "C" fn task_pp(arg: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"\n");
     });
     berry_sched::exit_current()
+}
+
+/// S-5d soakload master（fw_cfg `opt/berry/soakload` 门控）：spawn 永续
+/// churn 舰队（root 家核 + `SOAKLOAD_WRITER_N` 写者 spread→CPU1——
+/// storm_spawn_fleet 复用；data VMO 仅作窗口/sp 布局，无 go-flag/DONE 面）
+/// 后**常驻不退**——master 表持有舰队三 handle（进程/Vmar/data VMO）=
+/// 载荷进程生命周期锚（master 退 = 表 drain 关进程 handle = 舰队连坐死，
+/// 「常驻载荷」合同破坏）。`SOAKLOAD fleet on n=` 自证行打在舰队真 spawn
+/// 之后（行在 ⟺ 载荷在打）。永睡形：1h 死线轮转 block（醒因必 Timeout
+/// ——哑 Event 无人 signal，soakmon 同款契约）；boot 期一次性 spawn 链
+/// （~10 svc）后零内核态足迹。
+extern "C" fn task_soakload(arg: usize) -> ! {
+    use berry_sched::WakeReason;
+    use crate::user::user_soakload_code;
+    let (_hp, _hv, _hd) = storm_spawn_fleet("L", user_soakload_code(), SOAKLOAD_WRITER_N, 1);
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"SOAKLOAD fleet on n=");
+        berry_hal_aarch64::uart_put_dec((1 + SOAKLOAD_WRITER_N) as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    let hour = 3600 * berry_hal_aarch64::timer::cntfrq();
+    loop {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let deadline = berry_hal_aarch64::timer::cntvct() + hour;
+        let r = berry_sched::block_current(arg, SOAKLOAD_EV_BIT, deadline);
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(r == WakeReason::Timeout,
+                "soakload: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
+    }
 }
 
 /// ai_pong（prio 32，bench 对 B 端）：fa_pong 同构、AI_ROUNDS 轮、不触
