@@ -1297,6 +1297,139 @@ core::arch::global_asm!(
     ".globl __user_htst_end",
     "__user_htst_end:",
 
+    // ---- S-5c 相 8：PP ping-pong 双角色模板（main.rs task_pp 经真 svc 链
+    // 造 2 份：root A 家核 CPU0 + 写者 B thread_start spread→CPU1）----
+    //
+    // 单页单码 **arg 分流**（root x0=bootstrap=0 → A；thread_start arg=1 →
+    // B）：双核 channel 对打面。A 先 channel_create 出两端点（outs 落自窗
+    // 0xA0/0xA8），把端点 1 **中继**至 B 窗 0xA0（跨核 handle 传递无别桥
+    // ——v1 无 IPC-for-handles，data 窗口中继是 fleet 形态唯一通道；B 自旋
+    // 等就位 = 跨核 EL0 可见性顺带活证）。此后 N=320 轮严格交替 ping-pong：
+    // A send(seq i)@endA → recv@endA 验回声==i；B recv@endB 验 seq==i →
+    // echo send(i)@endB。**双向逐轮验序 = 零丢失/零乱序/零重复对账**（错
+    // 即 ERR 早断红）。交替下发两方向队列深度恒 ≤1（EBUSY 仅防御重试；
+    // EAGAIN 自旋 = 阻塞面的忙等形态）。窗口槽（allocst/htst 头注互见）：
+    // 0x80 err / 0x90 DONE（各自 N）/ 0x98 READY 自宣 / 0xA0+0xA8 channel
+    // outs（B 窗 0xA0 = 中继端点）/ 0xB0 载荷+收件 / 0xB8 回声 / 0xC0+0xC8
+    // recv 双出参（cap=8 / nh=0 预写）。**无 go-flag/二次放行**：断言面 =
+    // 窗口槽值（master 持 data VMO handle 直读；进程收口 drain 清的是子表
+    // handle，洗不掉窗口页——S-5b「join 后恒真洞」不适用），DONE 收满即
+    // thread_exit（0x36 仅退自身——同进程双线程互不牵连）；err 路径 =
+    // ERR++ → 0x36 早退（master errs>0 早断红，不挂死）。
+    ".globl __user_pp",
+    "__user_pp:",
+    "    cmp  x0, #1",                // arg 分流：1 = B 写者，0 = A root
+    "    b.eq 4f",
+    // ---- A（root）----
+    "    mov  x21, sp",
+    "    lsr  x21, x21, #12",
+    "    lsl  x20, x21, #12",         // x20 = A 窗口页基（SP 自推导）
+    "    movz x0, #0x51",             // channel_create(0, out0=0xA0, out1=0xA8)
+    "    movz x1, #0",
+    "    add  x2, x20, #0xA0",
+    "    add  x3, x20, #0xA8",
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    ldr  x21, [x20, #0xA0]",     // x21 = endA 句柄（A 侧对打端）
+    "    ldr  x4, [x20, #0xA8]",      // endB → 中继 B 窗 0xA0
+    "    add  x5, x20, #0x1000",      // B 窗口页（相邻页——fleet sp 布局钉死）
+    "    str  x4, [x5, #0xA0]",
+    "    mov  x5, #1",                // READY 自宣
+    "    str  x5, [x20, #0x98]",
+    "    movz x8, #0x140",            // N=320（三面钉：PP_ROUNDS/smoke 断言）
+    "    mov  x7, xzr",               // i
+    "1:  str  x7, [x20, #0xB0]",      // 载荷槽 = seq i
+    "    movz x0, #0x52",             // channel_send(endA, 0xB0, 8, 0, 0)
+    "    mov  x1, x21",
+    "    add  x2, x20, #0xB0",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 2f",
+    "    cmn  x0, #16",               // -EBUSY 防御重试（交替形队列 ≤1 不期遇）
+    "    b.eq 1b",
+    "    b    9f",
+    "2:  movz x9, #8",                // recv(endA, 0xB8, &n=8, 0, &nh=0)
+    "    str  x9, [x20, #0xC0]",
+    "    str  xzr, [x20, #0xC8]",
+    "    movz x0, #0x53",
+    "    mov  x1, x21",
+    "    add  x2, x20, #0xB8",
+    "    add  x3, x20, #0xC0",
+    "    mov  x4, xzr",
+    "    add  x5, x20, #0xC8",
+    "    svc  #0",
+    "    cbz  x0, 3f",
+    "    cmn  x0, #11",               // -EAGAIN 自旋（等 B 回声——对端活性面）
+    "    b.eq 2b",
+    "    b    9f",
+    "3:  ldr  x9, [x20, #0xB8]",      // 回声序号必须 == i（A 面对账）
+    "    cmp  x9, x7",
+    "    b.ne 9f",
+    "    add  x7, x7, #1",
+    "    cmp  x7, x8",
+    "    b.lo 1b",
+    "    str  x8, [x20, #0x90]",      // DONE_A = N
+    "    movz x0, #0x36",             // thread_exit（仅退自身——B 不受牵连）
+    "    svc  #0",
+    "    b    .",
+    // ---- B（写者，spread→CPU1）----
+    "4:  mov  x21, sp",
+    "    lsr  x21, x21, #12",
+    "    lsl  x20, x21, #12",         // x20 = B 窗口页基
+    "5:  ldr  x21, [x20, #0xA0]",     // 等中继端点就位（A 落笔 → 跨核可见）
+    "    cbz  x21, 5b",
+    "    mov  x5, #1",                // READY 自宣
+    "    str  x5, [x20, #0x98]",
+    "    movz x8, #0x140",            // N=320（三面钉）
+    "    mov  x7, xzr",
+    "6:  movz x9, #8",                // recv(endB, 0xB0, &n=8, 0, &nh=0)
+    "    str  x9, [x20, #0xC0]",
+    "    str  xzr, [x20, #0xC8]",
+    "    movz x0, #0x53",
+    "    mov  x1, x21",
+    "    add  x2, x20, #0xB0",
+    "    add  x3, x20, #0xC0",
+    "    mov  x4, xzr",
+    "    add  x5, x20, #0xC8",
+    "    svc  #0",
+    "    cbz  x0, 7f",
+    "    cmn  x0, #11",               // -EAGAIN 自旋（等 A 下发）
+    "    b.eq 6b",
+    "    b    9f",
+    "7:  ldr  x9, [x20, #0xB0]",      // 序号必须 == i（B 面对账——丢/乱/重即红）
+    "    cmp  x9, x7",
+    "    b.ne 9f",
+    "    str  x7, [x20, #0xB8]",      // 回声载荷 = i
+    "8:  movz x0, #0x52",             // channel_send(endB, 0xB8, 8, 0, 0)
+    "    mov  x1, x21",
+    "    add  x2, x20, #0xB8",
+    "    movz x3, #8",
+    "    mov  x4, xzr",
+    "    mov  x5, xzr",
+    "    svc  #0",
+    "    cbz  x0, 10f",               // 成功 → 推进轮
+    "    cmn  x0, #16",               // -EBUSY 防御重试
+    "    b.eq 8b",
+    "    b    9f",
+    "10: add  x7, x7, #1",
+    "    cmp  x7, x8",
+    "    b.lo 6b",
+    "    str  x8, [x20, #0x90]",      // DONE_B = N
+    "    movz x0, #0x36",
+    "    svc  #0",
+    "    b    .",
+    "9:  ldr  x6, [x20, #0x80]",      // err++ → 早退（master errs>0 早断红）
+    "    add  x6, x6, #1",
+    "    str  x6, [x20, #0x80]",
+    "    movz x0, #0x36",
+    "    svc  #0",
+    "    b    .",
+    ".balign 4",
+    ".globl __user_pp_end",
+    "__user_pp_end:",
+
     // 4-5b/4-6 svcmgr 模板已随 G-eco-b 退役换编译产物（user/bins/svcmgr，
     // include_bytes! 内嵌 echo/talker 平像——原模板内嵌的 echo 段（268B）与
     // talker 段（936B）随之换轨 user/bins/{echo,talker}）。契约逐字保留
@@ -1324,6 +1457,8 @@ extern "C" {
     static __user_allocst_end: u8;
     static __user_htst: u8;
     static __user_htst_end: u8;
+    static __user_pp: u8;
+    static __user_pp_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -1416,6 +1551,15 @@ pub fn user_allocst_code() -> &'static [u8] {
 pub fn user_htst_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_htst, &__user_htst_end) }
+}
+
+/// PP ping-pong 双角色子模板（S-5c 相 8：arg 分流 A/B——A channel_create
+/// 中继端点 + N 轮 send/recv 逐轮验序，B recv 验序 + echo send——见模板
+/// 内注释）。task_pp 经真 svc 链单进程造 2 份镜像（root A 家核 + B 写者
+/// spread→CPU1——storm_spawn_fleet writer_n=1 形）。
+pub fn user_pp_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_pp, &__user_pp_end) }
 }
 
 /// svcmgr 用户程序模板（4-5b 验收：服务管理器拉起 echo 服务——真 syscall

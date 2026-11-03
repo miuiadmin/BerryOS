@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# BerryOS S-2b 副核参与冒烟——七相（`SMP-S2实施设计草案.md` §5.1 起，相
-# 3-7 = S-3b/S-4/S-5b 逐相增扩；smoke-x86 同款独立形态——不并入主 smoke、
+# BerryOS S-2b 副核参与冒烟——八相（`SMP-S2实施设计草案.md` §5.1 起，相
+# 3-8 = S-3b/S-4/S-5b/S-5c 逐相增扩；smoke-x86 同款独立形态——不并入主 smoke、
 # 不进 CI：主 smoke 八跑是单核回归基线，零扰动）。相 1 = 裸相（27 标记 +
 # SMP 握手）；相 2 = rootfs 生态相（47 标记 + 对拍 client 对 + PAR 副核参
 # 与活证）——rootfs 全链在 `-smp 2` 下绿 = E0「内核串行/用户并行」语义
-# 等价的端到端证据；相 3-7 = 专项门（LB/ASIDR/TLBS/ALLOC/HT——各独立
+# 等价的端到端证据；相 3-8 = 专项门（LB/ASIDR/TLBS/ALLOC/HT/PP——各独立
 # boot，断言面见各相段注释与 `docs/规则/07-测试与冒烟.md`）。
 #
 # **-smp 只进本线**：全仓唯一带 `-smp 2` 的 QEMU 入口（justfile run-smp /
@@ -70,9 +70,10 @@ DEADLINE_ASIDR=240     # 秒：相 4 `ASIDR ok` 行轮询帽（DEADLINE_LB 同�
 DEADLINE_TLBS=240      # 秒：相 5 `TLBS ok` 行轮询帽（帽序②同前；guest 侧
                        # 分层：warm 栅障 8s + canary 收割 8s 双帽（TCG 半速
                        # ≈ 16s 墙钟 ×2）+ spawn/风暴余量——两帽之和远小于本帽）
-DEADLINE_STORM=240     # 秒：相 6 `ALLOC ok` / 相 7 `HT ok` 行轮询帽（S-5b，
-                       # 帽序②同前；guest 侧 budget 8s×2 TCG + spawn 余量
-                       # ——64 轮 × 5 人 churn 在 8s budget 内对账）
+DEADLINE_STORM=240     # 秒：相 6 `ALLOC ok` / 相 7 `HT ok` / 相 8 `PP ok`
+                       # 行轮询帽（S-5b/c，帽序②同前；guest 侧 budget 8s×2
+                       # TCG + spawn 余量——64 轮 × 5 人 churn / 320 轮
+                       # ping-pong 对打均在 8s budget 内对账）
 LB_TICK_TH=24          # 相 3 c1 下限（F-A5 定标 run10：4 线程 K=2 全改道 rq1
                        # 形态实测 c1=77 ≈ 每 16s 边 ~40 tick 量级;24 ≈ 1/3——
                        # 区分「副核得货死（c1=0）」与「活」,余量防轮转波动）
@@ -668,4 +669,40 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
-echo "smoke-smp: PASS（五相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）；相 6 专项门 = ALLOC gate on + n=320（S-5b 双核 EL0 分配器 churn——水位恒等 + 双核 sw 参与证）；相 7 专项门 = HT gate on + n=320（S-5b 双核 handle 表风暴——静默点双走查 Ok(0)）——恰一次/金丝雀执法不跨相 3-7 boot）"
+# ============ 相 8：PP ping-pong 压测（S-5c；gated bare 第八 boot） ============
+# fw_cfg `opt/berry/pp` 门控（相 6/7 同款）：spawn task_pp——单进程双线程
+# 对打（root A 家核 + B 写者 spread→CPU1，模板 __user_pp arg 分流）。A 建
+# channel 两端点、端点 1 经 data 窗口中继 B 窗，N=320 轮严格交替
+# send/recv——双向序号逐轮验（零丢失/零乱序/零重复对账）。无 go-flag/
+# 二次放行：断言面 = 窗口槽值（master 持 data VMO handle——drain 洗不掉）
+# 。断言面 = a==b==320（三面钉：模板 movz #0x140 / PP_ROUNDS / 本行）。
+
+field_wait
+: > "$LOG"   # F-A12：相 8 开工截断复用日志
+echo "smoke-smp: QEMU 启动（-smp 2，相 8 PP ping-pong 相：fw_cfg pp gate + bare）"
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  -fw_cfg name=opt/berry/pp,string=1 \
+  < /dev/null > "$LOG" 2>&1 &
+QEMU_PID=$!
+
+tc=$(date +%s)
+while ! grep -q 'PP ok a=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 PP 轮询阶段退出"
+  [ $(( $(date +%s) - tc )) -gt "$DEADLINE_STORM" ] \
+    && fail "PP ok ${DEADLINE_STORM}s 未出（查 PP gate on 是否在席；序号对账炸则有 errs 早断/panic 行）"
+  sleep 2
+done
+grep -q 'PP gate on' "$LOG" \
+  || fail "PP gate on 自证行缺失（门未过——查 fw_cfg 注入与 smp_active 面）"
+pp_line=$(grep 'PP ok a=' "$LOG" | tail -1)
+echo "smoke-smp: ${pp_line}"
+pp_a=$(echo "$pp_line" | grep -o 'a=[0-9]*' | cut -d= -f2)
+pp_b=$(echo "$pp_line" | grep -o 'b=[0-9]*' | cut -d= -f2)
+{ [ -n "$pp_a" ] && [ "$pp_a" -eq 320 ] && [ -n "$pp_b" ] && [ "$pp_b" -eq 320 ]; } \
+  || fail "PP a=${pp_a:-缺} b=${pp_b:-缺} != 320/320（对打轮数不齐——guest assert 行带 errs/单面缺轮定位）"
+
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=""
+
+echo "smoke-smp: PASS（八相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）；相 6 专项门 = ALLOC gate on + n=320（S-5b 双核 EL0 分配器 churn——水位恒等 + 双核 sw 参与证）；相 7 专项门 = HT gate on + n=320（S-5b 双核 handle 表风暴——静默点双走查 Ok(0)）；相 8 专项门 = PP gate on + a=320/b=320（S-5c 双核 channel ping-pong——单进程双线程对打 + 序号零丢失对账）——恰一次/金丝雀执法不跨相 3-8 boot）"
