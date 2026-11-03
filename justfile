@@ -312,18 +312,22 @@ build-user:
     # 双份同源义务，见 tools/tlsscan.py 头注。
     python3 ../tools/tlsscan.py --check ../rootfs.cpio
 
-build: abi-check build-user
+build: docs-guard abi-check build-user
     cargo build
 
 # K-2 release 链接守卫：release 优化（fat LTO + O3）才生成的引用形态（.text.boot
 # ADRP 引 .rodata.cst16 越 ±4GB）可断链而 debug 全绿——只构建不跑 QEMU，挂 CI。
 # K-3：构建后尾挂 size.py --assert-flip——release 面 .text.boot 全部 ADRP 目标
 # 必低半（bit63=0）断言（debug 面经 smoke.sh 既有调用零改动生效）。
-build-release: abi-check build-user
+build-release: docs-guard abi-check build-user
     cargo build --release
     python3 tools/size.py --assert-flip {{KERNEL_RELEASE}}
 
-check: abi-check build-user
+# 入口规则门禁（AGENTS 注入预算 + 探针/锚点/迁出目标）——build/check/CI 前置
+docs-guard:
+    python3 tools/docs_guard.py
+
+check: docs-guard abi-check build-user
     cargo check
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot
@@ -436,7 +440,7 @@ run-rootfs: build
         -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
         -device virtio-tablet-device,id=tab0
 
-run-release: abi-check build-user
+run-release: docs-guard abi-check build-user
     cargo build --release
     {{QEMU}} {{MACH}} -kernel {{KERNEL_RELEASE}}
 
@@ -622,7 +626,7 @@ bench-icount: build
 soak minutes="60": build
     bash tools/soak.sh {{quote(minutes)}}
 
-size-release: abi-check build-user
+size-release: docs-guard abi-check build-user
     cargo build --release
     python3 tools/size.py {{KERNEL_RELEASE}}
 
@@ -655,7 +659,7 @@ X86_KERNEL := X86_DIR / "cargo-target" / X86_TARGET / "release" / "berry-x86"
 
 # x86 内核构建（PVH 引导 ELF64；缺 x86_64-unknown-none target 先
 # `rustup target add x86_64-unknown-none`——stable 预编译 core，免 nightly）
-build-x86:
+build-x86: docs-guard
     #!/bin/sh
     set -e
     cd {{X86_DIR}}
@@ -780,7 +784,7 @@ image: build build-boot
 # 宿主设备壳（ADR #62）：tools/berry = host-only 独立 workspace。根 .cargo/config.toml
 # 把 build.target 锁成 aarch64-unknown-none，故必须显式 --target <host>；裸 cargo build
 # 会编到内核 target。Cargo.lock 随仓锁定 host 依赖（winit/softbuffer/clap/serde_json）。
-berry-build:
+berry-build: docs-guard
     #!/bin/sh
     set -e
     HOST=$(rustc -vV | sed -n 's/^host: //p')

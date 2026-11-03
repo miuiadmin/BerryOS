@@ -21,6 +21,11 @@
   G4  锚点可解析：docs/规则/*.md 行尾 `→ 雷册 §A…` 的每个编号（支持 §A62 / §A62-65 /
       §A38/39/47 / §A10+§A11+§A100 四形态），雷册须有对应 `### §A…` 节标题（B 同理）。
   G5  CLAUDE.md 含裸行 `@AGENTS.md`（导入语法必须裸行，反引号/围栏包裹即静默不导入）。
+  G6  AGENTS.md 总字符预算：>3000 警、>3400 拒（注入预算；行长帽管不住
+      「行没超但每行都塞满」的密度回归——真正该守的是字符/token，不是行数）。
+  G7  CLAUDE.md 字符预算 ≤600（指针文件，防有人把正文抄回指针）。
+  G8  迁出目标文件在位：docs/命令速览.md / docs/规则/README.md（AGENTS 外链
+      不能指向空气；G3 只查探针串，不查文件本体）。
 """
 import re
 import sys
@@ -31,13 +36,33 @@ AGENTS = ROOT / "AGENTS.md"
 CLAUDE = ROOT / "CLAUDE.md"
 RULES = ROOT / "docs" / "规则"
 LEI = ROOT / "docs" / "雷册-判例库.md"
+MOVED_DOCS = [ROOT / "docs" / "命令速览.md", RULES / "README.md"]
 
 AGENTS_MAX_LINES = 200
+AGENTS_MAX_CHARS = 3400
+AGENTS_WARN_CHARS = 3000
+CLAUDE_MAX_CHARS = 600
 LINE_WARN = 100
 LINE_FAIL = 120
 
+# `--quiet` 只打 FAIL/WARN（docstring 承诺面；CI/本地手跑同口径）。
+QUIET = "--quiet" in sys.argv[1:]
+
+
+def ok(msg: str) -> None:
+    if not QUIET:
+        print(msg)
+
+
 PROBES = {
-    AGENTS: ["外层包安全 API", "SLICE_HZ/2", "docs/规则/", "docs/雷册-判例库.md"],
+    AGENTS: [
+        "外层包安全 API",
+        "SLICE_HZ/2",
+        "docs/规则/",
+        "docs/雷册-判例库.md",
+        "docs/命令速览.md",
+        "docs/规则/README.md",
+    ],
     RULES / "01-内核编码.md": ["外层包安全 API", "FPSIMD"],
     RULES / "03-系统调用.md": ["copy_out_u32"],
     RULES / "08-QEMU与仿真.md": ["SLICE_HZ/2"],
@@ -65,7 +90,7 @@ def gate_g1_agents_lines() -> None:
     if n > AGENTS_MAX_LINES:
         fail(f"G1 AGENTS.md {n} 行 > 帽 {AGENTS_MAX_LINES}")
     else:
-        print(f"G1 ok  AGENTS.md {n}/{AGENTS_MAX_LINES} 行")
+        ok(f"G1 ok  AGENTS.md {n}/{AGENTS_MAX_LINES} 行")
 
 
 def gate_g2_line_len() -> None:
@@ -88,7 +113,7 @@ def gate_g3_probes() -> None:
             if needle not in text:
                 fail(f"G3 {path.relative_to(ROOT)} 探针串缺失: {needle}")
     if len(fails) == before:
-        print(f"G3 ok  探针 {sum(len(v) for v in PROBES.values())} 串在位")
+        ok(f"G3 ok  探针 {sum(len(v) for v in PROBES.values())} 串在位")
 
 
 def lei_ids() -> set[str]:
@@ -137,7 +162,35 @@ def gate_g4_anchors() -> None:
     if checked == 0:
         fail("G4 域文件零锚点行——瘦行节疑似整体丢失")
     elif len(fails) == before:
-        print(f"G4 ok  {checked} 锚点行全部可解析")
+        ok(f"G4 ok  {checked} 锚点行全部可解析")
+
+
+def gate_g6_agents_chars() -> None:
+    n = len(AGENTS.read_text(encoding="utf-8"))
+    if n > AGENTS_MAX_CHARS:
+        fail(f"G6 AGENTS.md {n} 字符 > 帽 {AGENTS_MAX_CHARS}")
+    elif n > AGENTS_WARN_CHARS:
+        warn(f"G6 AGENTS.md {n} 字符 > 警线 {AGENTS_WARN_CHARS}")
+    else:
+        ok(f"G6 ok  AGENTS.md {n}/{AGENTS_MAX_CHARS} 字符（警线 {AGENTS_WARN_CHARS}）")
+
+
+def gate_g7_claude_chars() -> None:
+    if not CLAUDE.exists():
+        return  # G5 已报缺文件，避免二次 traceback
+    n = len(CLAUDE.read_text(encoding="utf-8"))
+    if n > CLAUDE_MAX_CHARS:
+        fail(f"G7 CLAUDE.md {n} 字符 > 帽 {CLAUDE_MAX_CHARS}（指针文件勿抄正文）")
+    else:
+        ok(f"G7 ok  CLAUDE.md {n}/{CLAUDE_MAX_CHARS} 字符")
+
+
+def gate_g8_moved_docs() -> None:
+    missing = [str(p.relative_to(ROOT)) for p in MOVED_DOCS if not p.exists()]
+    if missing:
+        fail(f"G8 迁出目标文件缺失: {', '.join(missing)}")
+    else:
+        ok(f"G8 ok  迁出目标 {len(MOVED_DOCS)} 件在位")
 
 
 def gate_g5_claude_import() -> None:
@@ -147,7 +200,7 @@ def gate_g5_claude_import() -> None:
     if not any(l.strip() == "@AGENTS.md" for l in CLAUDE.read_text(encoding="utf-8").splitlines()):
         fail("G5 CLAUDE.md 无裸行 `@AGENTS.md`（导入语法必须裸行，反引号/围栏包裹即静默不导入）")
     else:
-        print("G5 ok  CLAUDE.md @import 裸行在位")
+        ok("G5 ok  CLAUDE.md @import 裸行在位")
 
 
 def main() -> int:
@@ -159,13 +212,17 @@ def main() -> int:
     gate_g2_line_len()
     gate_g3_probes()
     gate_g4_anchors()
+    gate_g6_agents_chars()
+    gate_g7_claude_chars()
+    gate_g8_moved_docs()
     for w in warns:
         print(f"WARN: {w}", file=sys.stderr)
     for f in fails:
         print(f"FAIL: {f}", file=sys.stderr)
     if fails:
         return 1
-    print(f"docs_guard: PASS（{len(warns)} 警）")
+    if not QUIET:
+        print(f"docs_guard: PASS（{len(warns)} 警）")
     return 0
 
 

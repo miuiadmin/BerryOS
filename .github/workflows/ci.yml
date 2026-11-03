@@ -12,6 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 入口规则门禁（fail-fast）：AGENTS 注入预算（行数/字符/行长）+ 探针
+      # 串 + 雷册锚点。纯 Python，无依赖，先于工具链安装跑——防入口文件
+      # 膨胀悄悄吃掉每轮上下文。
+      - name: docs-guard（AGENTS 注入预算 + 探针/锚点）
+        run: python3 tools/docs_guard.py
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防
