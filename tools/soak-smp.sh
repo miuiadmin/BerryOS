@@ -187,7 +187,7 @@ validate_beats() {
         if (sw <= psw) { printf "t=%d sw=%d 非严格递增（前 sw=%d）——调度冻死\n", t, sw, psw; bad=1; exit 1 }
         if (s0 <= ps0) { printf "t=%d sw0=%d 非严格递增（前 sw0=%d）——CPU0 冻死/心跳断\n", t, s0, ps0; bad=1; exit 1 }
         if (s1 <= ps1) { printf "t=%d sw1=%d 非严格递增（前 sw1=%d）——CPU1 冻死\n", t, s1, ps1; bad=1; exit 1 }
-        else if (s1 - ps1 < '"$SW1_FLOOR"') { printf "t=%d Δsw1=%d 塌缩 < %d/拍（前 sw1=%d）——CPU1 满载谓词破（载荷死/写者退场：净态互抢 ≈560/拍 vs 死态残余 ≈195/拍，B 探针实测）\n", t, s1 - ps1, '"$SW1_FLOOR"', ps1; bad=1; exit 1 }
+        else if (s1 - ps1 < '"$SW1_FLOOR"') { printf "t=%d Δsw1=%d 塌缩 < %d/拍（前 sw1=%d）——载荷活性主判破（④口径=双写者在席 ≥57%，非「满载」：净态互抢 ≈560/拍 vs 死态残余 ≈195/拍，B 探针实测）\n", t, s1 - ps1, '"$SW1_FLOOR"', ps1; bad=1; exit 1 }
         if (mind1 == "" || s1 - ps1 < mind1) mind1 = s1 - ps1
         # S-5e M1 ⑧：载荷业务进度——churn 冻结 = 写者被杀/svc 恒败/gen 顶格
         #（调度/内存面照绿的端到端假绿在此开口）。
