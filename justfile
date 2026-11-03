@@ -535,6 +535,11 @@ test-host:
     # 产品」第 9 例，host 61 测：schema/canonical 钉板 + 帽双侧执法 +
     # 负例全家桶（parse 侧 39 逐条独立 + emit 侧收口 5，at 位点逐条钉死））。
     cargo test --manifest-path user/Cargo.toml -p berry-layout --target {{host}}
+    # GUI-8 段①：berry-appproto（app 域 RPC 协议纯函数面——APP_LIST
+    # 分片流/APP_SPAWN 编解码 + idx 单调 +1（乱序/重放/跳帧拒，0c 钉
+    # v1 冻结）/blob 收支/END 对账三执法 + 帧帽 256 编译期断言 + 黄金
+    # 字节钉板 + recv 复用缓冲脏尾回归钉，host 22 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-appproto --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
