@@ -5,8 +5,9 @@
 - 终端里 `berry doctor / run / shot / shell / input` —— 可编程、可 CI；
 - 双击/无参数 —— 打开手机比例的设备窗口（`berry shell`）。
 
-设计依据：`docs/berry设备壳设计草案.md` / ADR #62。**QEMU 只是引擎子进程**，窗口、截图、
-注入、缩放都在宿主侧；VNC 是 v0 传输，P3 换共享内存时窗口代码不动。
+设计依据：`docs/berry设备壳设计草案.md` / ADR #62。**QEMU 只是引擎子进程**：
+帧面走 QEMU `memory-backend-file,share=on` 的客机 RAM 镜（`RamSource`），输入走
+VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图、缩放都在宿主侧。
 
 ## 构建
 
@@ -25,6 +26,7 @@ just berry doctor         # QEMU / 固件 / 镜像 / accel
 just berry doctor [--json]
 just berry run --kernel <elf> --marker "BerryOS boot" --timeout 30 --follow
 just berry shot --image out/berryos.img --out out/shot.png --timeout 120
+just berry shot --image out/berryos.img --profile phone --out out/phone.png
 just shell                                  # = berry shell --image out/berryos.img
 just berry shell --profile phone --timeout 30
 just berry input key ret
@@ -34,7 +36,9 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 ```
 
 `berry shot` 不建窗口：起 QEMU（`-display none -vnc`）→ 等串口标记 → 从 VNC 抓一帧 →
-写 PNG → 停设备。`berry shell` 起同一套设备，只是把 VNC 帧接到 winit 窗口。
+写 PNG → 停设备。`berry shell` 用 `-display none` + `memory-backend-file` 起同一套设备：
+串口 `FB ok 480x1000 … fb=0x…` 给出几何/PA，`RamSource` 直接读 `ram.bin`，窗口按
+19:9 等比缩放显示；VNC 只作输入通道（不请求帧），`berry input` 可与 shell 并存。
 
 ## 环境变量
 
@@ -62,24 +66,24 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 | id | 面板 | 客机渲染 | 备注 |
 | --- | --- | --- | --- |
 | `default` | 800×600 | 800×600 | P1 兼容档 / CI |
-| `phone` | 1080×2250 | 480×1000 | 默认；P2 客机模式设置后填满 |
+| `phone` | 1080×2250 | 480×1000 | 默认；恰好用满 800×600 GOP 缓冲 |
 | `phone16` | 1080×1920 | 480×854 | 16:9 |
-| `phone20` | 1080×2400 | 540×1200 | P2（需连续 fb） |
+| `phone20` | 1080×2400 | 540×1200 | 需 2.59MB fb；P2 暂被 1.92MB 容量拒 |
 | `tablet` | 1600×2560 | 800×1280 | 后续 |
 
-P1 客机仍输出 800×600，窗口按 profile 比例等比缩放并 letterbox；P2 通过 fw_cfg
-`opt/berry/display` + `etc/ramfb` commit 让客机输出 480×1000。
+`phone*`/`tablet` 默认内存 128MiB（实测 256MiB 时 BerryBoot handoff 失效，另立刀）。
 
-## 已知限制（P1）
+## 已知限制（P2）
 
 - QEMU 是外部依赖（GPLv2，进程边界）；主仓 Apache-2.0 不打包 QEMU。
-- `berry input` 直连 QMP；QEMU QMP 单客户端，所以 `berry shell` 不再长期持有 QMP，
-  改为按需连接。并发 shell+input 的 attach 控制服务是 P2 项。
-- 默认 `berry shot` 等 `BERRYBOOT ok`，当前 EFI 镜像此时可能还在固件 UI；要看 GUI 请等
-  `FBW ok`/launcher 标记落地后传 `--wait-marker`。
+- 帧面要求 QEMU `memory-backend-file,share=on`；不支持该后端的环境回退 VNC（P1 路径）。
+- `berry input` 走 VNC 输入专用连接（多客户端，不请求帧）；QMP 只留 reset/stop。
+  独立 attach 控制服务仍未落，但跨进程注入已由 VNC 覆盖。
+- 默认 `berry shot` 等 `BERRYBOOT ok`，当前测试镜像此时可能还在固件/测试面；要看 GUI
+  请传 `--wait-marker "FBW ok"` 或 launcher 标记。
 - Windows/Linux 代码路径已写（TCP endpoint / 条件编译），但本轮只在 macOS 实机验证。
-- P1 用 QEMU `snapshot=on` 临时覆盖层，基础镜像只读；跨 boot 持久化（GUI-8 布局）留 P2。
-- PNG 用 zlib stored block（无压缩），800×600 约 1.4 MiB；P2 换压缩编码。
+- P1 用 QEMU `snapshot=on` 临时覆盖层，基础镜像只读；跨 boot 持久化（GUI-8 布局）留后续。
+- PNG 用 zlib stored block（无压缩），480×1000 约 1.4 MiB；后续换压缩编码。
 
 ## 测试
 

@@ -1,6 +1,6 @@
 # 开发者设备壳（berry shell）设计草案
 
-> 【状态】草案 · 2026-11-03 立稿；P0/P1 已落地（同日，见 §16.4）。用户裁决原话：「先把方案落了，我要最好的方案架构」。
+> 【状态】草案 · 2026-11-03 立稿；P0/P1/P2 已落地（同日，见 §16.4）。用户裁决原话：「先把方案落了，我要最好的方案架构」。
 > 【定位】宿主侧开发者工具：一个 `berry` 二进制，终端里是 CLI，双击是手机比例窗口。
 > 【单一事实源】本文 = 设备壳架构/协议/刀序；ADR #62 = 一句话裁决；GUI 规划 = 上游需求。
 > 【关系】补 `run-efi` 的 `-nographic` 窗口缺口；承接 GUI-9/SDK-1 的 screenshot/inject 宿主面；
@@ -291,6 +291,13 @@ Created → Starting → Running ⇄ Paused → Stopping → Exited
 
 **不改默认**：没有 `opt/berry/display` 时，内核保持 800×600；`run-efi`/smoke 零漂移。
 手机档只由 `berry shell` 显式传参。
+
+**P2 实装选型（2026-11-03，取代本节原「每帧 commit」路径）**：ramfb 只在 boot
+时用 fw_cfg DMA 写一次 `etc/ramfb`（切换 scanout）；**不做每帧 commit**。宿主用
+QEMU `memory-backend-file,share=on` 把客机 RAM 映射成文件，`RamSource` 从
+`FB ok … fb=0x…` 解析几何后直接读帧——这是真正的共享内存数据面，不依赖 VNC
+更新语义，也不需要 `CHAN_HND_MAX` 抬帽/`disp0`。VNC 退为**输入专用**多客户端
+通道（`VncInput`，不请求帧）+ 无共享 RAM 环境的回退。
 
 ### 7.3 v2：virtio-gpu 2D（终态）
 
@@ -584,9 +591,10 @@ CI 不建窗口；`shot --ephemeral` 内部 VNC/QMP 全 headless。GUI 冒烟留
 
 ### 16.2 仍需评审的三件
 
-1. **commit 的落点与 guifbd env 帽**：直写 fw_cfg（PA 传值 + 抬 `CHAN_HND_MAX` 8→9/10）
-   vs 内核 `display_commit` syscall vs `disp0` 服务 vs `vmo_info.phys` add-only。
-   倾向 v1 抬帽直写、v2 拆 `disp0`；若评审否 PA 或否抬帽，则改 syscall/disp0。
+1. **（已被 P2 实装取代）commit 的落点与 guifbd env 帽**：P2 选「boot 一次
+   mode set + 宿主共享 RAM 读帧」，不逐帧 commit、不抬 `CHAN_HND_MAX`、不拆 `disp0`；
+   原四选（fw_cfg 直写/`display_commit` syscall/`disp0`/`vmo_info.phys`）保留为无
+   `memory-backend-file` 环境的备选。
 2. **默认窗口比例**：19:9 级（480×1000）还是 16:9（480×854）作为 `phone` 默认。
    倾向 19:9，16:9 留 `phone16`；用户可改 profile。
 3. **QEMU 最低版本**：`>= 8.2` 是否够；CI 固定 11.x，doctor 对 8.2–10 只警告。
@@ -598,33 +606,43 @@ CI 不建窗口；`shot --ephemeral` 内部 VNC/QMP 全 headless。GUI 冒烟留
 窗口/输入/截图不依赖 QEMU GUI 后端；客机 v1 用 fw_cfg ramfb 模式设置 + 每帧 commit
 实现 480×1000（恰好用满 800×600 GOP 缓冲）；QEMU GPL 用进程边界隔离。
 
-### 16.4 落地注记（2026-11-03，P0/P1）
+### 16.4 落地注记（2026-11-03，P0/P1/P2）
 
 **已落**：`tools/berry/`（lib + bin，host 独立 workspace）——`doctor` / `run` / `shot` /
-`shell` / `input` / `version`；QMP 客户端（握手、screendump、send-key、input-send-event、
-quit）；RFB 3.8（None 安全、Raw、DesktopSize、Pointer/Key）；PNG（zlib stored，无压缩）；
-winit/softbuffer 窗口（fit/bilinear、鼠标/触摸/键盘、截图/复位/全屏/退出）；`just berry-build` /
-`just berry ...` / `just shell` / `just berry-smoke`。macOS + QEMU 11.0.3 实测：
-`doctor` 绿、`run` 命中 `BerryOS boot`、`shot` 出 800×600 PNG、`shell` 窗口起停、
-`input tap/key` 经 QMP 到达客机；10 条 host 单测全绿。
+`shell` / `input` / `version`；QMP 控制面；RFB 3.8（帧面 + `VncInput` 输入面）；
+PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just shell` /
+`just berry-smoke`。macOS + QEMU 11.0.3 实测：`doctor` 绿、`run` 命中 `BerryOS boot`、
+`shot --profile phone` 出 **480×1000 PNG**、`shell` 起停、`input tap/key` 经 VNC
+到达客机（与 shell 并存）；11 条 host 单测全绿。
+
+**P2 实装（本刀核心）**：
+
+- HAL `fwcfg` 增 fw_cfg DMA 写（16B `FWCfgDmaAccess` 描述符 + 8B 门铃；`SELECT|WRITE`），
+  内核 boot 读 `opt/berry/display`，一次性把 GOP 缓冲切 480×1000 并更新 `gop_info`；
+  `DISP ok` + `FB ok 480x1000 …` 为状态谓词，失败保持 800×600 + `DISP fail`。
+- 宿主 QEMU 加 `memory-backend-file,share=on`；`RamSource` 按 `FB ok` 的
+  `fb_pa/fmt/stride` 读 RAM 镜，BGRX→RGB，60Hz 轮询 + 采样签名去重；**无每帧 commit**。
+- `VncInput`（handshake 后不请求帧）作输入专用通道；QEMU VNC 多客户端，shell 的
+  QMP 不再被 `berry input` 抢占。QMP 只留 reset/stop 控制。
+- 默认 `phone`/`phone16`/`phone20`/`tablet` 内存改 **128MiB**：实测 `-m 256M` 时
+  BerryBoot handoff 失效（`HANDOFF` 缺席、`ROOTFS absent`），128MiB 全链绿；
+  256MiB 的 handoff 修复另立刀。
 
 **与设计稿的差异（如实记）**：
 
-- `berry shell` 默认 `phone` profile，但客机仍是 800×600，窗口按 19:9 letterbox；
-  P2 的 ramfb 模式设置/commit 落码后才填满。
-- `berry input` 直连 QMP，未落 §6.3 的 attach 控制服务。QEMU QMP 单客户端，故 `shell`
-  不再长期持 QMP（reset/stop 按需连接）；并发 shell+input 的控制服务留 P2。
-- `shot` 以 VNC 抓帧为主，QMP `screendump` 兜底未接；当前 EFI 镜像串口无 `FBW ok`，
-  `shot` 等 `BERRYBOOT ok` 时抓到的是固件 UI——**不是设备壳的问题**，是客机 GUI 镜像
-  尚未就位；GUI 截图验收等 `FBW ok`/launcher 标记。
-- `shell --timeout N` 是测试/演示用自动退出；默认 0（不自动退）。
-- P1 用 QEMU `snapshot=on` 临时覆盖层（基础镜像只读）；跨 boot 持久化覆盖层
-  （GUI-8 布局）留 P2，届时换 qcow2 backing overlay。
-- PNG 未压缩；P2 换压缩编码，`write_png` API 不变。
+- §7.2 原「每帧 `etc/ramfb` commit」未采用；真实选型 = boot 一次 mode set +
+  共享 RAM 读帧（见上）。`etc/ramfb` 逐帧 commit 与 `disp0`/抬帽仅保留为
+  无 `memory-backend-file` 环境的备选，不再是 P2 阻塞项。
+- `berry input` 已从 QMP 改为 `VncInput`（多客户端），`guest 480x1000` 实测；
+  §6.3 attach 控制服务仍未落（VNC 输入已覆盖跨进程注入）。
+- `shot` 仍以 VNC 抓帧，QMP `screendump` 兜底未接；测试镜像的 GUI 是 console/测试面，
+  launcher 桌面尚未在该镜像验证——宿主数据面已就位。
+- `shell --timeout N` 测试/演示自动退出；P1 的 `snapshot=on` 覆盖层未升级为
+  qcow2 持久层；PNG 未压缩；540×1200 仍被 1.92MB GOP 缓冲容量拒（`DISP fail`）。
 
-**未落（下一刀）**：P2 客机 ramfb 模式设置 + `etc/ramfb` 每帧 commit + `CHAN_HND_MAX`
-8→9/10 评审 + `disp0` 拆分；P3 shm/virtio-gpu/damage/120Hz/回放。P0/P1 未动 `smoke.sh`
-与默认 800×600，CI 基线零漂移。
+**未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 连续 fb；
+256MiB handoff 修复；PNG 压缩；attach 控制服务。P2 未动 `smoke.sh` 默认 800×600
+与内核 ABI；`run-efi`/smoke 不带 `opt/berry/display` 时零漂移。
 
 ## 附录 A：RAMFBCfg（28B，大端）
 

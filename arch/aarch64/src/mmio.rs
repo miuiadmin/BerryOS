@@ -30,3 +30,16 @@ pub unsafe fn read_u8(addr: usize) -> u8 {
 pub unsafe fn write_u16(addr: usize, val: u16) {
     (addr as *mut u16).write_volatile(val);
 }
+
+/// 向 `addr` 写一个 64 位字（fw_cfg DMA 寄存器等 8B MMIO 口）。
+#[inline]
+pub unsafe fn write_u64(addr: usize, val: u64) {
+    (addr as *mut u64).write_volatile(val);
+}
+
+/// 从 `addr` 读一个 64 位字。
+#[allow(dead_code)]
+#[inline]
+pub unsafe fn read_u64(addr: usize) -> u64 {
+    (addr as *const u64).read_volatile()
+}

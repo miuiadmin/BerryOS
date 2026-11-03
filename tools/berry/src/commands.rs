@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::display::frame::ScreenSource;
-use crate::display::vnc::VncSource;
+use crate::display::vnc::{VncInput, VncSource};
 use crate::error::{BerryError, Result};
 use crate::net::Endpoint;
 use crate::profile;
@@ -148,6 +148,14 @@ pub fn shot(args: ShotArgs) -> Result<()> {
     let profile = profile::get(&args.profile)?;
     let accel = qemu::choose_accel(&args.accel, true)?;
     let memory = args.memory.unwrap_or(profile.memory_mib);
+    let mode = args.display_mode.clone().or_else(|| {
+        (profile.id != "default").then(|| {
+            format!(
+                "{}x{}@{}",
+                profile.render_w, profile.render_h, profile.refresh
+            )
+        })
+    });
     let mut run = RunDir::create("shot", args.keep)?;
     let vars = run.file("vars.fd");
     qemu::create_vars(&vars, 64)?;
@@ -172,7 +180,8 @@ pub fn shot(args: ShotArgs) -> Result<()> {
         accel,
         memory,
         true,
-        args.display_mode.as_deref(),
+        mode.as_deref(),
+        None,
     )?;
     wait_endpoint(&vnc, Duration::from_secs(10))?;
     let mut source = VncSource::connect(&vnc)?;
@@ -233,42 +242,82 @@ pub fn shell(args: ShellArgs) -> Result<()> {
 
 pub fn input(args: InputArgs) -> Result<()> {
     let run = find_run(args.run.as_deref())?;
-    let (w, h) = guest_size(&run).unwrap_or((800, 600));
-    let endpoint = qmp_endpoint(&run)?;
-    let mut qmp = QmpClient::connect(&endpoint)?;
+    let endpoint = vnc_endpoint(&run)?;
+    let mut vnc = VncInput::connect(&endpoint)?;
+    let (w, h) = vnc.size();
+    let clamp = |x: u16, y: u16| -> (u16, u16) {
+        (x.min(w.saturating_sub(1) as u16), y.min(h.saturating_sub(1) as u16))
+    };
     match args.action {
-        InputAction::Key(code) => qmp.send_key(&code)?,
+        InputAction::Key(code) => {
+            let ks = qcode_to_keysym(&code).ok_or_else(|| {
+                BerryError::new(2, format!("unknown key '{code}'"))
+                    .with_hint("qcode: ret/esc/tab/backspace/spc/left/up/right/down or one ASCII char")
+            })?;
+            vnc.key(ks, true)?;
+            vnc.key(ks, false)?;
+        }
         InputAction::Tap(x, y) => {
-            let (ax, ay) = to_abs(x, y, w, h);
-            qmp.tap_abs(ax, ay)?;
+            let (x, y) = clamp(x, y);
+            vnc.pointer(x, y, 1)?;
+            std::thread::sleep(Duration::from_millis(40));
+            vnc.pointer(x, y, 0)?;
         }
         InputAction::Swipe { x1, y1, x2, y2, ms } => {
+            let (x1, y1) = clamp(x1, y1);
+            let (x2, y2) = clamp(x2, y2);
             let steps = (ms / 16).max(2);
-            let (ax1, ay1) = to_abs(x1, y1, w, h);
-            let (ax2, ay2) = to_abs(x2, y2, w, h);
-            qmp.pointer_abs(ax1, ay1, true)?;
+            vnc.pointer(x1, y1, 1)?;
             for i in 1..=steps {
                 let t = i as f64 / steps as f64;
-                let x = (ax1 as f64 + (ax2 as f64 - ax1 as f64) * t) as u16;
-                let y = (ay1 as f64 + (ay2 as f64 - ay1 as f64) * t) as u16;
-                qmp.pointer_abs(x, y, true)?;
+                let x = (x1 as f64 + (x2 as f64 - x1 as f64) * t) as u16;
+                let y = (y1 as f64 + (y2 as f64 - y1 as f64) * t) as u16;
+                vnc.pointer(x, y, 1)?;
                 std::thread::sleep(Duration::from_millis(16));
             }
-            qmp.pointer_abs(ax2, ay2, false)?;
+            vnc.pointer(x2, y2, 0)?;
         }
     }
     if args.json {
-        println!("{}", json!({"v":1,"t":"input","run":run,"ok":true}));
+        println!(
+            "{}",
+            json!({"v":1,"t":"input","run":run,"ok":true,"guest":[w,h]})
+        );
     } else {
-        println!("input: ok ({})", run.display());
+        println!("input: ok ({}, guest {w}x{h})", run.display());
     }
     Ok(())
 }
 
-fn to_abs(x: u16, y: u16, w: u32, h: u32) -> (u16, u16) {
-    let ax = (x as u64 * 32767 / (w.max(1) as u64 - 1).max(1)) as u16;
-    let ay = (y as u64 * 32767 / (h.max(1) as u64 - 1).max(1)) as u16;
-    (ax, ay)
+/// QEMU qcode -> X11 keysym (the VNC input channel speaks keysyms).
+fn qcode_to_keysym(q: &str) -> Option<u32> {
+    Some(match q {
+        "ret" | "enter" => 0xff0d,
+        "esc" => 0xff1b,
+        "backspace" => 0xff08,
+        "tab" => 0xff09,
+        "spc" | "space" => 0x20,
+        "left" => 0xff51,
+        "up" => 0xff52,
+        "right" => 0xff53,
+        "down" => 0xff54,
+        "delete" => 0xffff,
+        "home" => 0xff50,
+        "end" => 0xff57,
+        "minus" => 0x2d,
+        "equal" => 0x3d,
+        "comma" => 0x2c,
+        "dot" => 0x2e,
+        "slash" => 0x2f,
+        "semicolon" => 0x3b,
+        "apostrophe" => 0x27,
+        "bracket_left" => 0x5b,
+        "bracket_right" => 0x5d,
+        "backslash" => 0x5c,
+        "grave_accent" => 0x60,
+        _ if q.chars().count() == 1 => q.chars().next()? as u32,
+        _ => return None,
+    })
 }
 
 fn find_run(id: Option<&str>) -> Result<PathBuf> {
@@ -288,7 +337,7 @@ fn find_run(id: Option<&str>) -> Result<PathBuf> {
     if let Ok(rd) = std::fs::read_dir(&root) {
         for e in rd.flatten() {
             let p = e.path();
-            if !p.is_dir() || !qmp_endpoint(&p).is_ok() {
+            if !p.is_dir() || !vnc_endpoint(&p).is_ok() {
                 continue;
             }
             let t = e
@@ -304,33 +353,25 @@ fn find_run(id: Option<&str>) -> Result<PathBuf> {
         .ok_or_else(|| BerryError::env("no running device").with_hint("start one with `berry shell`"))
 }
 
-fn guest_size(run: &Path) -> Option<(u32, u32)> {
-    let meta = std::fs::read_to_string(run.join("meta.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&meta).ok()?;
-    let w = v.get("guest_w")?.as_u64()? as u32;
-    let h = v.get("guest_h")?.as_u64()? as u32;
-    Some((w, h))
-}
-
-fn qmp_endpoint(run: &Path) -> Result<Endpoint> {
+fn vnc_endpoint(run: &Path) -> Result<Endpoint> {
     #[cfg(unix)]
     {
-        let p = run.join("qmp.sock");
+        let p = run.join("vnc.sock");
         if p.exists() {
             return Ok(Endpoint::Unix(p));
         }
-        let port = std::fs::read_to_string(run.join("qmp.port")).ok();
+        let port = std::fs::read_to_string(run.join("vnc.port")).ok();
         if let Some(port) = port {
             return Ok(Endpoint::Tcp(format!("127.0.0.1:{}", port.trim())));
         }
     }
     #[cfg(not(unix))]
     {
-        let port = std::fs::read_to_string(run.join("qmp.port"))?;
+        let port = std::fs::read_to_string(run.join("vnc.port"))?;
         return Ok(Endpoint::Tcp(format!("127.0.0.1:{}", port.trim())));
     }
     Err(BerryError::env(format!(
-        "no QMP endpoint in {}",
+        "no VNC endpoint in {}",
         run.display()
     )))
 }

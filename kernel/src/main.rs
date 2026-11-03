@@ -191,6 +191,25 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
     Some(RootfsBuf::Assembled(vmo, total))
 }
 
+/// GUI P2：从 fw_cfg `opt/berry/display` 读 `WxH[@Hz]`；缺席/畸形 = None。
+/// 只接受 ASCII 十进制；字符串项可能带 NUL/空白，统一 trim 后再拆。
+fn display_mode_req() -> Option<(u32, u32)> {
+    use berry_hal_aarch64::fwcfg;
+    let e = fwcfg::find_file("opt/berry/display")?;
+    if e.size == 0 || e.size > 32 {
+        return None;
+    }
+    let mut buf = [0u8; 32];
+    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+        return None;
+    }
+    let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
+    let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
+    let s = s.split('@').next()?;
+    let (w, h) = s.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
+
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
 /// C-ABI 约定（ADR #18），符号名与 asm 精确匹配；首参 = 入口 x0（boot asm 的
 /// x19 抢救）——**双语义**（V-1a 分流）：EFI 路 = BerryHandoff PA（BerryBoot
@@ -230,15 +249,41 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // MMIO 窗授能/fbcon 服务随后刀）。零值 = 无此物：QEMU `-kernel`
         // 路与无显示设备 EFI 路恒缺席，零扰动（EFI 路专属行，同 HANDOFF）。
         if let Some(g) = handoff::gop_info(h) {
-            gop_saved = Some((g.fb_pa, g.width, g.height, g.stride, g.format));
+            // GUI P2：可选启动模式请求（`-fw_cfg name=opt/berry/display,
+            // string=480x1000@60`）。一次性把 ramfb scanout 切到手机档；
+            // 不每帧 commit——`berry shell` 直接读 memory-backend-file
+            // 的 RAM 镜（宿主共享 RAM 面）。缺席 = 原 800×600 零扰动。
+            let (mut gw, mut gh, mut gs) = (g.width, g.height, g.stride);
+            if let Some((w, h)) = display_mode_req() {
+                let stride = w.saturating_mul(4);
+                let cap = (g.stride as u64) * (g.height as u64);
+                if w > 0
+                    && h > 0
+                    && (stride as u64) * (h as u64) <= cap
+                    && berry_hal_aarch64::fwcfg::ramfb_set(g.fb_pa, w, h, stride)
+                {
+                    gw = w;
+                    gh = h;
+                    gs = stride;
+                    berry_hal_aarch64::uart_puts(b"DISP ok ");
+                    berry_hal_aarch64::uart_put_dec(gw as u64);
+                    berry_hal_aarch64::uart_puts(b"x");
+                    berry_hal_aarch64::uart_put_dec(gh as u64);
+                    berry_hal_aarch64::uart_puts(b"\n");
+                } else {
+                    // 容量不符/无 etc/ramfb/DMA 拒：保持固件几何，loud 一行。
+                    berry_hal_aarch64::uart_puts(b"DISP fail\n");
+                }
+            }
+            gop_saved = Some((g.fb_pa, gw, gh, gs, g.format));
             berry_hal_aarch64::uart_puts(b"FB ok ");
-            berry_hal_aarch64::uart_put_dec(g.width as u64);
+            berry_hal_aarch64::uart_put_dec(gw as u64);
             berry_hal_aarch64::uart_puts(b"x");
-            berry_hal_aarch64::uart_put_dec(g.height as u64);
+            berry_hal_aarch64::uart_put_dec(gh as u64);
             berry_hal_aarch64::uart_puts(b" fmt=");
             berry_hal_aarch64::uart_put_dec(g.format as u64);
             berry_hal_aarch64::uart_puts(b" stride=");
-            berry_hal_aarch64::uart_put_dec(g.stride as u64);
+            berry_hal_aarch64::uart_put_dec(gs as u64);
             berry_hal_aarch64::uart_puts(b" fb=");
             berry_hal_aarch64::uart_put_hex64(g.fb_pa);
             berry_hal_aarch64::uart_puts(b"\n");

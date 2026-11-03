@@ -14,7 +14,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::commands::{ScaleMode, ShellArgs};
 use crate::device::Device;
-use crate::display::frame::{Frame, InputEvent, ScreenSource};
+use crate::display::frame::{Frame, InputEvent};
 use crate::display::scale::{self, Fit};
 use crate::error::{BerryError, Result};
 use crate::input;

@@ -176,3 +176,111 @@ impl SeqRead {
         want as usize
     }
 }
+
+// ---- GUI P2：ramfb 模式设置（一次性 boot 提交；每帧呈现走共享 RAM 面） ----
+//
+// QEMU ramfb 的配置项 `etc/ramfb` 是**可写** fw_cfg 文件：28B 大端
+// { addr u64, fourcc u32, flags u32, width u32, height u32, stride u32 }。
+// 写入必须走 DMA 口（legacy PIO 只读）——这也是本文件从「只读」扩到
+// 「一次性写」的全部原因。写成功后 QEMU 立刻替换 scanout surface，VNC
+// 与宿主共享 RAM 两侧同时看到新几何；此后客机只画像素，不需要每帧
+// commit（宿主 `berry shell` 直接读 `memory-backend-file` 的 RAM 镜）。
+//
+// 约束：DMA 源缓冲必须在客机物理 RAM 且 PA 正确。这里用 HAL `.bss` 的
+// 64B 对齐静态块——内核镜像 VMA = KERNEL_VA_BASE + LMA，故 PA = VA -
+// KERNEL_VA_BASE；不依赖分配器，可在 `mm::init` 前调用。
+
+const DMA_REG: usize = FW_CFG_BASE + 0x10;
+const DMA_CTRL_ERROR: u32 = 1;
+const DMA_CTRL_SELECT: u32 = 1 << 3;
+const DMA_CTRL_WRITE: u32 = 1 << 4;
+
+/// 64B 对齐静态块：前 16B = FWCfgDmaAccess 描述符，后 28B = ramfb 配置。
+/// 描述符在**客机 RAM**里（fw_cfg DMA 寄存器只收它的 PA），所以数据与
+/// 描述符同一块，PA = VA - KERNEL_VA_BASE。
+#[repr(align(64))]
+struct Align64([u8; 64]);
+
+static mut RAMFB_CFG: Align64 = Align64([0; 64]);
+
+#[inline]
+unsafe fn put_be32(p: *mut u8, v: u32) {
+    core::ptr::copy_nonoverlapping(v.to_be_bytes().as_ptr(), p, 4);
+}
+
+#[inline]
+unsafe fn put_be64(p: *mut u8, v: u64) {
+    core::ptr::copy_nonoverlapping(v.to_be_bytes().as_ptr(), p, 8);
+}
+
+#[inline]
+unsafe fn get_be32(p: *const u8) -> u32 {
+    let mut b = [0u8; 4];
+    core::ptr::copy_nonoverlapping(p, b.as_mut_ptr(), 4);
+    u32::from_be_bytes(b)
+}
+
+/// 写 ramfb 配置项：descriptor {control,length,address} + 28B cfg 同块。
+/// `data_pa` 指向 cfg 本体；descriptor 在静态块首。返回 false = DMA 拒/超时。
+unsafe fn dma_write(select: u16, data_pa: u64, len: u32) -> bool {
+    let base = core::ptr::addr_of_mut!(RAMFB_CFG.0) as *mut u8;
+    let ctrl = ((select as u32) << 16) | DMA_CTRL_SELECT | DMA_CTRL_WRITE;
+    put_be32(base, ctrl);
+    put_be32(base.add(4), len);
+    put_be64(base.add(8), data_pa);
+    // 描述符先落到 RAM，再敲 8B DMA 门铃（门铃值 = descriptor PA）。
+    core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+    let desc_pa = base as usize - KERNEL_VA_BASE;
+    mmio::write_u64(DMA_REG, (desc_pa as u64).to_be());
+    for _ in 0..1_000_000 {
+        let v = get_be32(base);
+        if v & DMA_CTRL_ERROR != 0 {
+            return false;
+        }
+        if v == 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// 把 GOP 缓冲切成 `width × height`（stride = width×4）并通知 QEMU。
+/// 返回 false = 无 `etc/ramfb` 项/项长非 28/DMA 拒——调用方保持原几何。
+pub fn ramfb_set(fb_pa: u64, width: u32, height: u32, stride: u32) -> bool {
+    let Some(entry) = find_file("etc/ramfb") else {
+        crate::uart_puts(b"ramfb: item absent\n");
+        return false;
+    };
+    crate::uart_puts(b"ramfb: select=");
+    crate::uart_put_dec(entry.select as u64);
+    crate::uart_puts(b" size=");
+    crate::uart_put_dec(entry.size as u64);
+    crate::uart_puts(b"\n");
+    if entry.size != 28 || width == 0 || height == 0 || stride == 0 {
+        return false;
+    }
+    // SAFETY: 静态块独占；boot 单线程、任何 EL0 读取之前。
+    unsafe {
+        let base = core::ptr::addr_of_mut!(RAMFB_CFG.0) as *mut u8;
+        let cfg = base.add(16);
+        put_be64(cfg, fb_pa);
+        put_be32(cfg.add(8), 0x3432_5258); // 'XR24'
+        put_be32(cfg.add(12), 0);
+        put_be32(cfg.add(16), width);
+        put_be32(cfg.add(20), height);
+        put_be32(cfg.add(24), stride);
+        let cfg_pa = cfg as usize - KERNEL_VA_BASE;
+        let ok = dma_write(entry.select, cfg_pa as u64, 28);
+        if !ok {
+            let base = core::ptr::addr_of_mut!(RAMFB_CFG.0) as *mut u8;
+            crate::uart_puts(b"ramfb: dma fail ctrl=");
+            crate::uart_put_hex64(get_be32(base) as u64);
+            crate::uart_puts(b" desc_pa=");
+            crate::uart_put_hex64((base as usize - KERNEL_VA_BASE) as u64);
+            crate::uart_puts(b" cfg_pa=");
+            crate::uart_put_hex64(cfg_pa as u64);
+            crate::uart_puts(b"\n");
+        }
+        ok
+    }
+}

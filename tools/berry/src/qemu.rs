@@ -130,9 +130,18 @@ fn read_version(path: &Path) -> String {
         .to_string()
 }
 
-fn machine_args(cmd: &mut Command, accel: Accel, memory_mib: u32, serial: &Path) {
-    cmd.arg("-machine").arg("virt")
-        .arg("-accel").arg(accel.as_arg())
+fn machine_args(
+    cmd: &mut Command,
+    accel: Accel,
+    memory_mib: u32,
+    serial: &Path,
+    memory_backend: Option<&str>,
+) {
+    match memory_backend {
+        Some(id) => cmd.arg("-machine").arg(format!("virt,memory-backend={id}")),
+        None => cmd.arg("-machine").arg("virt"),
+    };
+    cmd.arg("-accel").arg(accel.as_arg())
         .arg("-cpu").arg(accel.cpu())
         .arg("-m").arg(format!("{memory_mib}M"))
         .arg("-display").arg("none")
@@ -158,7 +167,7 @@ pub fn spawn_kernel(
     memory_mib: u32,
 ) -> Result<Child> {
     let mut cmd = qemu.command();
-    machine_args(&mut cmd, accel, memory_mib, serial);
+    machine_args(&mut cmd, accel, memory_mib, serial, None);
     cmd.arg("-kernel").arg(kernel);
     log_stdio(&mut cmd, log)?;
     cmd.spawn().map_err(|e| {
@@ -180,9 +189,16 @@ pub fn spawn_image(
     memory_mib: u32,
     tablet: bool,
     display_mode: Option<&str>,
+    ram_path: Option<&Path>,
 ) -> Result<Child> {
     let mut cmd = qemu.command();
-    machine_args(&mut cmd, accel, memory_mib, serial);
+    machine_args(&mut cmd, accel, memory_mib, serial, ram_path.map(|_| "mem"));
+    if let Some(ram) = ram_path {
+        cmd.arg("-object").arg(format!(
+            "memory-backend-file,id=mem,size={memory_mib}M,mem-path={},share=on",
+            ram.display()
+        ));
+    }
     cmd.arg("-vnc").arg(vnc.qemu_vnc());
     cmd.arg("-qmp").arg(qmp.qemu_qmp());
     cmd.arg("-drive")

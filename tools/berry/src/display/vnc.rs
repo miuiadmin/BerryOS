@@ -106,6 +106,68 @@ struct Reader {
     seq: u64,
 }
 
+/// RFB 3.8 handshake (no encodings/request): version, security None, shared
+/// ClientInit, ServerInit. Returns framebuffer size + pixel format.
+fn handshake(stream: &mut Stream) -> Result<(u32, u32, PixelFormat)> {
+    let mut ver = [0u8; 12];
+    read_exact(stream, &mut ver)?;
+    if !ver.starts_with(b"RFB 003.") {
+        return Err(BerryError::protocol(format!(
+            "VNC: bad version {:?}",
+            String::from_utf8_lossy(&ver)
+        )));
+    }
+    stream.write_all(b"RFB 003.008\n")?;
+    stream.flush()?;
+
+    let mut n = [0u8; 1];
+    read_exact(stream, &mut n)?;
+    if n[0] == 0 {
+        let mut len = [0u8; 4];
+        read_exact(stream, &mut len)?;
+        let mut reason = vec![0u8; u32::from_be_bytes(len) as usize];
+        read_exact(stream, &mut reason)?;
+        return Err(BerryError::protocol(format!(
+            "VNC: refused: {}",
+            String::from_utf8_lossy(&reason)
+        )));
+    }
+    let mut types = vec![0u8; n[0] as usize];
+    read_exact(stream, &mut types)?;
+    if !types.contains(&1) {
+        return Err(BerryError::protocol("VNC: server requires authentication")
+            .with_hint("use a Unix socket (no auth) or configure password=off on loopback"));
+    }
+    stream.write_all(&[1])?;
+    stream.flush()?;
+    let mut result = [0u8; 4];
+    read_exact(stream, &mut result)?;
+    if u32::from_be_bytes(result) != 0 {
+        return Err(BerryError::protocol("VNC: security handshake failed"));
+    }
+
+    stream.write_all(&[1])?; // shared
+    stream.flush()?;
+    let mut init = [0u8; 24];
+    read_exact(stream, &mut init)?;
+    let w = u16::from_be_bytes([init[0], init[1]]) as u32;
+    let h = u16::from_be_bytes([init[2], init[3]]) as u32;
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+        return Err(BerryError::protocol(format!("VNC: bad size {w}x{h}")));
+    }
+    let pf = PixelFormat::parse(&init[4..20])?;
+    let name_len = u32::from_be_bytes([init[20], init[21], init[22], init[23]]) as usize;
+    if name_len > 4096 {
+        return Err(BerryError::protocol("VNC: bad name length"));
+    }
+    let mut name = vec![0u8; name_len];
+    if name_len > 0 {
+        read_exact(stream, &mut name)?;
+    }
+
+    Ok((w, h, pf))
+}
+
 pub struct VncSource {
     slot: Arc<Mutex<Option<Frame>>>,
     writer: Arc<Mutex<Stream>>,
@@ -120,61 +182,7 @@ impl VncSource {
         let mut stream = connect_retry(endpoint, Duration::from_secs(10))?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
-        let mut ver = [0u8; 12];
-        read_exact(&mut stream, &mut ver)?;
-        if !ver.starts_with(b"RFB 003.") {
-            return Err(BerryError::protocol(format!(
-                "VNC: bad version {:?}",
-                String::from_utf8_lossy(&ver)
-            )));
-        }
-        stream.write_all(b"RFB 003.008\n")?;
-        stream.flush()?;
-
-        let mut n = [0u8; 1];
-        read_exact(&mut stream, &mut n)?;
-        if n[0] == 0 {
-            let mut len = [0u8; 4];
-            read_exact(&mut stream, &mut len)?;
-            let mut reason = vec![0u8; u32::from_be_bytes(len) as usize];
-            read_exact(&mut stream, &mut reason)?;
-            return Err(BerryError::protocol(format!(
-                "VNC: refused: {}",
-                String::from_utf8_lossy(&reason)
-            )));
-        }
-        let mut types = vec![0u8; n[0] as usize];
-        read_exact(&mut stream, &mut types)?;
-        if !types.contains(&1) {
-            return Err(BerryError::protocol("VNC: server requires authentication")
-                .with_hint("use a Unix socket (no auth) or configure password=off on loopback"));
-        }
-        stream.write_all(&[1])?;
-        stream.flush()?;
-        let mut result = [0u8; 4];
-        read_exact(&mut stream, &mut result)?;
-        if u32::from_be_bytes(result) != 0 {
-            return Err(BerryError::protocol("VNC: security handshake failed"));
-        }
-
-        stream.write_all(&[1])?; // shared
-        stream.flush()?;
-        let mut init = [0u8; 24];
-        read_exact(&mut stream, &mut init)?;
-        let w = u16::from_be_bytes([init[0], init[1]]) as u32;
-        let h = u16::from_be_bytes([init[2], init[3]]) as u32;
-        if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
-            return Err(BerryError::protocol(format!("VNC: bad size {w}x{h}")));
-        }
-        let pf = PixelFormat::parse(&init[4..20])?;
-        let name_len = u32::from_be_bytes([init[20], init[21], init[22], init[23]]) as usize;
-        if name_len > 4096 {
-            return Err(BerryError::protocol("VNC: bad name length"));
-        }
-        let mut name = vec![0u8; name_len];
-        if name_len > 0 {
-            read_exact(&mut stream, &mut name)?;
-        }
+        let (w, h, pf) = handshake(&mut stream)?;
 
         // Encodings: Raw (0) + DesktopSize (-223). Cursor is deliberately not
         // requested; the host draws its own touch indicator.
@@ -241,6 +249,46 @@ impl Drop for VncSource {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+/// Input-only RFB client: performs the handshake but never requests a frame
+/// and never advertises encodings. QEMU supports multiple VNC clients, so the
+/// shell and `berry input` can coexist while frames come from shared RAM.
+pub struct VncInput {
+    stream: Stream,
+    width: u32,
+    height: u32,
+}
+
+impl VncInput {
+    pub fn connect(endpoint: &Endpoint) -> Result<Self> {
+        let mut stream = connect_retry(endpoint, Duration::from_secs(5))?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let (w, h, _) = handshake(&mut stream)?;
+        stream.set_read_timeout(None)?;
+        Ok(Self { stream, width: w, height: h })
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn pointer(&mut self, x: u16, y: u16, buttons: u8) -> Result<()> {
+        let mut m = [5u8, buttons, 0, 0, 0, 0];
+        m[2..4].copy_from_slice(&x.to_be_bytes());
+        m[4..6].copy_from_slice(&y.to_be_bytes());
+        self.stream.write_all(&m)?;
+        self.stream.flush()?;
+        Ok(())
+    }
+
+    pub fn key(&mut self, keysym: u32, down: bool) -> Result<()> {
+        let mut m = vec![4u8, u8::from(down), 0, 0];
+        m.extend_from_slice(&keysym.to_be_bytes());
+        self.stream.write_all(&m)?;
+        self.stream.flush()?;
+        Ok(())
     }
 }
 

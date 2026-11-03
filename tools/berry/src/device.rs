@@ -1,21 +1,25 @@
-//! One device = one QEMU child + one VNC source + one QMP control channel.
+//! One device = one QEMU child + one ScreenSource + one QMP control channel.
+//! Frames come from the shared guest-RAM mirror when the kernel prints `FB ok`;
+//! otherwise we fall back to VNC. Input/control stay on QMP.
 //! `Drop` is the last-resort reaper; `stop` is the graceful path.
 
-use std::process::Child;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::display::vnc::VncSource;
+use crate::display::frame::ScreenSource;
+use crate::display::ram::{FbInfo, RamSource};
+use crate::display::vnc::{VncInput, VncSource};
 use crate::error::Result;
 use crate::net::Endpoint;
 use crate::profile::Profile;
 use crate::qemu::{self, Qemu};
 use crate::qmp::QmpClient;
-use crate::run_dir::{self, RunDir};
+use crate::run_dir::{self, RunDir, Tail};
 
 pub struct Device {
-    child: Child,
-    qmp: Endpoint,
-    source: VncSource,
+    child: std::process::Child,
+    qmp: Arc<Mutex<QmpClient>>,
+    source: Box<dyn ScreenSource>,
     run: RunDir,
     keep: bool,
     stopped: bool,
@@ -40,7 +44,20 @@ impl Device {
         qemu::create_vars(&vars, 64)?;
         let serial = run.file("serial.log");
         let log = run.file("qemu.log");
+        let ram_path = run.file("ram.bin");
         let (vnc, qmp_ep) = endpoints(&run);
+
+        // Phone profiles request their render mode by default; `default`
+        // keeps the firmware 800x600 (CI/legacy path).
+        let mode = display_mode.or_else(|| {
+            (profile.id != "default").then(|| {
+                format!(
+                    "{}x{}@{}",
+                    profile.render_w, profile.render_h, profile.refresh
+                )
+            })
+        });
+
         let mut child = qemu::spawn_image(
             &qemu,
             &image,
@@ -53,16 +70,48 @@ impl Device {
             accel,
             mem,
             true,
-            display_mode.as_deref(),
+            mode.as_deref(),
+            Some(&ram_path),
         )?;
+
+        // Wait for the kernel's FB fact line (mode set already applied). The
+        // line is printed before userland; 20s covers TCG cold boot.
+        let mut tail = Tail::open(&serial);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut fb = None;
+        while Instant::now() < deadline {
+            tail.read_new();
+            if let Some(line) = tail.text().lines().find(|l| l.contains("FB ok ")) {
+                if let Some(i) = FbInfo::parse(line) {
+                    fb = Some(i);
+                    break;
+                }
+            }
+            if child.try_wait().ok().flatten().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
         let result = (|| {
-            wait_endpoint(&vnc, Duration::from_secs(10))?;
-            VncSource::connect(&vnc)
+            let qmp = connect_qmp(&qmp_ep, Duration::from_secs(10))?;
+            let qmp = Arc::new(Mutex::new(qmp));
+            let source: Box<dyn ScreenSource> = if let Some(info) = fb {
+                let input = VncInput::connect(&vnc)?;
+                Box::new(RamSource::open(&ram_path, info, input)?)
+            } else {
+                // No shared-RAM fact: keep the P1 VNC path (e.g. -kernel or a
+                // non-EFI display). Input still goes through VNC here.
+                wait_endpoint(&vnc, Duration::from_secs(5))?;
+                Box::new(VncSource::connect(&vnc)?)
+            };
+            Ok::<_, crate::error::BerryError>((source, qmp))
         })();
+
         match result {
-            Ok(source) => Ok(Self {
+            Ok((source, qmp)) => Ok(Self {
                 child,
-                qmp: qmp_ep,
+                qmp,
                 source,
                 run,
                 keep,
@@ -76,13 +125,12 @@ impl Device {
         }
     }
 
-    pub fn source_mut(&mut self) -> &mut VncSource {
-        &mut self.source
+    pub fn source_mut(&mut self) -> &mut dyn ScreenSource {
+        &mut *self.source
     }
 
     pub fn reset(&mut self) -> Result<()> {
-        let mut qmp = QmpClient::connect(&self.qmp)?;
-        qmp.system_reset()
+        self.qmp.lock().unwrap().system_reset()
     }
 
     pub fn run_path(&self) -> &std::path::Path {
@@ -94,9 +142,7 @@ impl Device {
             return;
         }
         self.stopped = true;
-        if let Ok(mut qmp) = QmpClient::connect(&self.qmp) {
-            let _ = qmp.quit_now();
-        }
+        let _ = self.qmp.lock().unwrap().quit_now();
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {
             if self.child.try_wait().ok().flatten().is_some() {
@@ -118,6 +164,20 @@ impl Device {
 impl Drop for Device {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+fn connect_qmp(ep: &Endpoint, timeout: Duration) -> Result<QmpClient> {
+    let start = Instant::now();
+    loop {
+        match QmpClient::connect(ep) {
+            Ok(q) => return Ok(q),
+            Err(e) if start.elapsed() < timeout => {
+                let _ = e;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
     }
 }
 

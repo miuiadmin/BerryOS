@@ -42,16 +42,16 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 21 | 16097 | 1124 | 6.98% |
+| kernel/ | 21 | 16142 | 1124 | 6.96% |
 | mm/ | 6 | 1675 | 4 | 0.24% |
 | sched/ | 8 | 3725 | 1075 | 28.86% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 17 | 5341 | 672 | 12.58% |
-| **合计** | 52 | 26838 | 2875 | **10.71%** |
+| arch/ | 17 | 5462 | 732 | 13.40% |
+| **合计** | 52 | 27004 | 2935 | **10.87%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 22883，unsafe 非空行 2475，密度 10.82%（生产面口径）
-- 分类计数：页表 47 | 上下文切换 30 | MMIO 118 | 分配器 13 | 硬件原子 0 | 其它 462
-- 类型计数：block 556 | fn 110 | impl 2 | extern 2（另有类型签名位提及 9 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 23049，unsafe 非空行 2535，密度 11.00%（生产面口径）
+- 分类计数：页表 47 | 上下文切换 30 | MMIO 125 | 分配器 13 | 硬件原子 0 | 其它 462
+- 类型计数：block 557 | fn 116 | impl 2 | extern 2（另有类型签名位提及 9 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -67,6 +67,11 @@
 | arch/aarch64/src/fwcfg.rs | 119 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()); for ch |
 | arch/aarch64/src/fwcfg.rs | 146 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()) }; Some |
 | arch/aarch64/src/fwcfg.rs | 169 | block | MMIO | unsafe { for chunk in buf[..want as usize].chunks_mut(4) { let w |
+| arch/aarch64/src/fwcfg.rs | 207 | fn | MMIO | unsafe fn put_be32(p: *mut u8, v: u32) { core::ptr::copy_nonover |
+| arch/aarch64/src/fwcfg.rs | 212 | fn | MMIO | unsafe fn put_be64(p: *mut u8, v: u64) { core::ptr::copy_nonover |
+| arch/aarch64/src/fwcfg.rs | 217 | fn | MMIO | unsafe fn get_be32(p: *const u8) -> u32 { let mut b = [0u8; 4]; |
+| arch/aarch64/src/fwcfg.rs | 225 | fn | MMIO | unsafe fn dma_write(select: u16, data_pa: u64, len: u32) -> bool |
+| arch/aarch64/src/fwcfg.rs | 263 | block | MMIO | unsafe { let base = core::ptr::addr_of_mut!(RAMFB_CFG.0) as *mut |
 | arch/aarch64/src/gic.rs | 78 | fn | MMIO | unsafe fn init() { // ---- distributor：先关，再清状态 ---- mmio::write( |
 | arch/aarch64/src/gic.rs | 112 | block | MMIO | unsafe { let en = mmio::read(GICD + GICD_ISENABLER0) & (1 << IRQ |
 | arch/aarch64/src/gic.rs | 125 | block | MMIO | unsafe { mmio::read(GICC + GICC_IAR) & 0x3ff } } /// 写 EOIR 结束（必 |
@@ -107,6 +112,8 @@
 | arch/aarch64/src/mmio.rs | 18 | fn | MMIO | unsafe fn write_u8(addr: usize, val: u8) { (addr as *mut u8).wri |
 | arch/aarch64/src/mmio.rs | 24 | fn | MMIO | unsafe fn read_u8(addr: usize) -> u8 { (addr as *const u8).read_ |
 | arch/aarch64/src/mmio.rs | 30 | fn | MMIO | unsafe fn write_u16(addr: usize, val: u16) { (addr as *mut u16). |
+| arch/aarch64/src/mmio.rs | 36 | fn | MMIO | unsafe fn write_u64(addr: usize, val: u64) { (addr as *mut u64). |
+| arch/aarch64/src/mmio.rs | 43 | fn | MMIO | unsafe fn read_u64(addr: usize) -> u64 { (addr as *const u64).re |
 | arch/aarch64/src/mmu.rs | 88 | fn | 页表 | unsafe extern "C" fn build_boot_pt() { // `&raw mut`：取静态裸指针，避开 ` |
 | arch/aarch64/src/mmu.rs | 142 | fn | 页表 | unsafe extern "C" fn enable_mmu() { write_mair_el1(MAIR_EL1); wr |
 | arch/aarch64/src/mmu.rs | 169 | block | 页表 | unsafe { (va as *const u64).read_volatile() } == PROBE_MAGIC; co |
@@ -441,57 +448,57 @@
 | kernel/src/ktest.rs | 2726 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; } /// 一个 Event 进内核侧表（非 channe |
 | kernel/src/ktest.rs | 3046 | block | 其它 | unsafe { (*ni.as_ptr()).obj.as_channel().unwrap().no_intent() }, |
 | kernel/src/ktest.rs | 3116 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; } // L0. 非法参 + 空队 → None（send |
-| kernel/src/main.rs | 256 | block | 其它 | unsafe { mm::init(handoff) }; // G-eco 入机侧第一刀：rootfs（initrd 角色）装 |
-| kernel/src/main.rs | 317 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len) }; Some((b"handoff" |
-| kernel/src/main.rs | 351 | block | 其它 | unsafe { core::slice::from_raw_parts( phys_to_virt(s.pa as usize |
-| kernel/src/main.rs | 393 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len as usize) }; Some((b |
-| kernel/src/main.rs | 406 | block | 其它 | unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) }; (b |
-| kernel/src/main.rs | 438 | block | 其它 | unsafe { *(&raw mut ROOTFS) = Some(buf) }; berry_hal_aarch64::ua |
-| kernel/src/main.rs | 514 | block | MMIO | unsafe { berry_hal_aarch64::timer::init() }; // 2b-2：两忙循环任务各挂一个私 |
-| kernel/src/main.rs | 613 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk, pu) }; // 先于用户矩阵入队 |
-| kernel/src/main.rs | 673 | block | 其它 | unsafe { (*p_rx.as_ptr()).retain() }; // 静态槽传递（spawn arg 已满：hi32 |
-| kernel/src/main.rs | 678 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(RX_EV_H) = h_rx_ev; *core::ptr |
-| kernel/src/main.rs | 702 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(BSH_IN_H) = h_end_k2; } // 3-2 |
-| kernel/src/main.rs | 813 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // 4-2b：哑 Event 进 ponger 表— |
-| kernel/src/main.rs | 862 | block | 其它 | unsafe { ChannelEnd::pair(pc, ps) }; let h_ev_pi = syscall::boot |
-| kernel/src/main.rs | 901 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_d1, h_m1 |
-| kernel/src/main.rs | 922 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_channel_mut().unwrap().push(m) }; |
-| kernel/src/main.rs | 941 | block | 其它 | unsafe { for (i, &h) in slots.iter().enumerate() { *core::ptr::a |
-| kernel/src/main.rs | 985 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_fa, h_fb |
-| kernel/src/main.rs | 1015 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // arg 打包双 handle：低 32 = 自己 |
-| kernel/src/main.rs | 1061 | block | 其它 | unsafe { (*(&raw mut ROOTFS)).take() }.map(\|buf\| { let vmo = mat |
-| kernel/src/main.rs | 1121 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk2, pu2) }; // ---- P |
-| kernel/src/main.rs | 1260 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pkf, puf) }; // SAFETY |
-| kernel/src/main.rs | 1262 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(FB_PIPE_H) = h_end_kfb; } } Er |
-| kernel/src/main.rs | 1317 | block | 其它 | unsafe { ChannelEnd::pair(pab_a, pab_b) }; // E_done（bench 完成事件） |
-| kernel/src/main.rs | 1445 | block | MMIO | unsafe { berry_hal_aarch64::uart::rx_init() }; // S-1 副核 bring-u |
-| kernel/src/main.rs | 1590 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; berry_hal_aarc |
-| kernel/src/main.rs | 1610 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
-| kernel/src/main.rs | 1629 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
-| kernel/src/main.rs | 1736 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
-| kernel/src/main.rs | 1799 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
-| kernel/src/main.rs | 1984 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_H) } } /// bsh stdin 发端（endK |
-| kernel/src/main.rs | 1994 | block | 其它 | unsafe { *core::ptr::addr_of!(BSH_IN_H) } } /// fb 上屏管道 console |
-| kernel/src/main.rs | 2006 | block | MMIO | unsafe { *core::ptr::addr_of!(FB_PIPE_H) } } /// 「RX 到数据」通知（HAL |
-| kernel/src/main.rs | 2018 | fn | 其它 | unsafe extern "C" fn rx_irq_notify() { // SAFETY: IRQ 上下文（单核屏蔽窗串 |
-| kernel/src/main.rs | 2020 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_irq_notif |
-| kernel/src/main.rs | 2022 | block | 其它 | unsafe { // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描 // 同窗* |
-| kernel/src/main.rs | 2045 | fn | 其它 | unsafe fn rx_ev_clear() { // SAFETY: 调用方保证屏蔽包络 + 引用不变。 let p = u |
-| kernel/src/main.rs | 2047 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_ev_clear: |
-| kernel/src/main.rs | 2049 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
-| kernel/src/main.rs | 2181 | block | 其它 | unsafe { rx_ev_clear() }; berry_hal_aarch64::enable_irq(); for i |
-| kernel/src/main.rs | 2324 | block | 其它 | unsafe { *core::ptr::addr_of!(INTENT_H).cast::<u32>().add(i) } } |
-| kernel/src/main.rs | 2893 | block | MMIO | unsafe { &*(arg as *const AiDemoCtx) }; let freq = berry_hal_aar |
-| kernel/src/main.rs | 3255 | fn | 其它 | unsafe extern "C" fn secondary_main() -> ! { // S-2b 修复：换离低半早期栈（ |
-| kernel/src/main.rs | 3265 | block | 其它 | unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(no |
-| kernel/src/main.rs | 3270 | block | 上下文切换 | unsafe { core::arch::asm!("msr daifset, #0xf", options(nostack, |
-| kernel/src/main.rs | 3290 | block | 其它 | unsafe { berry_sched::park_recheck() }; // PAR 清钉（tickless 伴生洞收口 |
-| kernel/src/main.rs | 3300 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_at(d) }, // SAFETY: CNTV |
-| kernel/src/main.rs | 3304 | block | MMIO | unsafe { berry_hal_aarch64::timer::mask() }, } } else { // SAFET |
-| kernel/src/main.rs | 3309 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; } // masked-wf |
-| kernel/src/main.rs | 3546 | block | 其它 | unsafe { &mut *(arg as *mut crate::handle::HandleTable) }; // Δ |
-| kernel/src/main.rs | 4446 | block | 其它 | unsafe { &mut *(berry_sched::current_tag() as *mut crate::handle |
-| kernel/src/main.rs | 4453 | block | 其它 | unsafe { oref.as_ref() }; objref.obj.as_process().expect("ht: 类型 |
+| kernel/src/main.rs | 301 | block | 其它 | unsafe { mm::init(handoff) }; // G-eco 入机侧第一刀：rootfs（initrd 角色）装 |
+| kernel/src/main.rs | 362 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len) }; Some((b"handoff" |
+| kernel/src/main.rs | 396 | block | 其它 | unsafe { core::slice::from_raw_parts( phys_to_virt(s.pa as usize |
+| kernel/src/main.rs | 438 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len as usize) }; Some((b |
+| kernel/src/main.rs | 451 | block | 其它 | unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) }; (b |
+| kernel/src/main.rs | 483 | block | 其它 | unsafe { *(&raw mut ROOTFS) = Some(buf) }; berry_hal_aarch64::ua |
+| kernel/src/main.rs | 559 | block | MMIO | unsafe { berry_hal_aarch64::timer::init() }; // 2b-2：两忙循环任务各挂一个私 |
+| kernel/src/main.rs | 658 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk, pu) }; // 先于用户矩阵入队 |
+| kernel/src/main.rs | 718 | block | 其它 | unsafe { (*p_rx.as_ptr()).retain() }; // 静态槽传递（spawn arg 已满：hi32 |
+| kernel/src/main.rs | 723 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(RX_EV_H) = h_rx_ev; *core::ptr |
+| kernel/src/main.rs | 747 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(BSH_IN_H) = h_end_k2; } // 3-2 |
+| kernel/src/main.rs | 858 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // 4-2b：哑 Event 进 ponger 表— |
+| kernel/src/main.rs | 907 | block | 其它 | unsafe { ChannelEnd::pair(pc, ps) }; let h_ev_pi = syscall::boot |
+| kernel/src/main.rs | 946 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_d1, h_m1 |
+| kernel/src/main.rs | 967 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_channel_mut().unwrap().push(m) }; |
+| kernel/src/main.rs | 986 | block | 其它 | unsafe { for (i, &h) in slots.iter().enumerate() { *core::ptr::a |
+| kernel/src/main.rs | 1030 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_fa, h_fb |
+| kernel/src/main.rs | 1060 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // arg 打包双 handle：低 32 = 自己 |
+| kernel/src/main.rs | 1106 | block | 其它 | unsafe { (*(&raw mut ROOTFS)).take() }.map(\|buf\| { let vmo = mat |
+| kernel/src/main.rs | 1166 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk2, pu2) }; // ---- P |
+| kernel/src/main.rs | 1305 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pkf, puf) }; // SAFETY |
+| kernel/src/main.rs | 1307 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(FB_PIPE_H) = h_end_kfb; } } Er |
+| kernel/src/main.rs | 1362 | block | 其它 | unsafe { ChannelEnd::pair(pab_a, pab_b) }; // E_done（bench 完成事件） |
+| kernel/src/main.rs | 1490 | block | MMIO | unsafe { berry_hal_aarch64::uart::rx_init() }; // S-1 副核 bring-u |
+| kernel/src/main.rs | 1635 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; berry_hal_aarc |
+| kernel/src/main.rs | 1655 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
+| kernel/src/main.rs | 1674 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
+| kernel/src/main.rs | 1781 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
+| kernel/src/main.rs | 1844 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
+| kernel/src/main.rs | 2029 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_H) } } /// bsh stdin 发端（endK |
+| kernel/src/main.rs | 2039 | block | 其它 | unsafe { *core::ptr::addr_of!(BSH_IN_H) } } /// fb 上屏管道 console |
+| kernel/src/main.rs | 2051 | block | MMIO | unsafe { *core::ptr::addr_of!(FB_PIPE_H) } } /// 「RX 到数据」通知（HAL |
+| kernel/src/main.rs | 2063 | fn | 其它 | unsafe extern "C" fn rx_irq_notify() { // SAFETY: IRQ 上下文（单核屏蔽窗串 |
+| kernel/src/main.rs | 2065 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_irq_notif |
+| kernel/src/main.rs | 2067 | block | 其它 | unsafe { // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描 // 同窗* |
+| kernel/src/main.rs | 2090 | fn | 其它 | unsafe fn rx_ev_clear() { // SAFETY: 调用方保证屏蔽包络 + 引用不变。 let p = u |
+| kernel/src/main.rs | 2092 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_ev_clear: |
+| kernel/src/main.rs | 2094 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
+| kernel/src/main.rs | 2226 | block | 其它 | unsafe { rx_ev_clear() }; berry_hal_aarch64::enable_irq(); for i |
+| kernel/src/main.rs | 2369 | block | 其它 | unsafe { *core::ptr::addr_of!(INTENT_H).cast::<u32>().add(i) } } |
+| kernel/src/main.rs | 2938 | block | MMIO | unsafe { &*(arg as *const AiDemoCtx) }; let freq = berry_hal_aar |
+| kernel/src/main.rs | 3300 | fn | 其它 | unsafe extern "C" fn secondary_main() -> ! { // S-2b 修复：换离低半早期栈（ |
+| kernel/src/main.rs | 3310 | block | 其它 | unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(no |
+| kernel/src/main.rs | 3315 | block | 上下文切换 | unsafe { core::arch::asm!("msr daifset, #0xf", options(nostack, |
+| kernel/src/main.rs | 3335 | block | 其它 | unsafe { berry_sched::park_recheck() }; // PAR 清钉（tickless 伴生洞收口 |
+| kernel/src/main.rs | 3345 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_at(d) }, // SAFETY: CNTV |
+| kernel/src/main.rs | 3349 | block | MMIO | unsafe { berry_hal_aarch64::timer::mask() }, } } else { // SAFET |
+| kernel/src/main.rs | 3354 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; } // masked-wf |
+| kernel/src/main.rs | 3591 | block | 其它 | unsafe { &mut *(arg as *mut crate::handle::HandleTable) }; // Δ |
+| kernel/src/main.rs | 4491 | block | 其它 | unsafe { &mut *(berry_sched::current_tag() as *mut crate::handle |
+| kernel/src/main.rs | 4498 | block | 其它 | unsafe { oref.as_ref() }; objref.obj.as_process().expect("ht: 类型 |
 | kernel/src/mem.rs | 36 | block | 其它 | unsafe { while rem >= 8 { (p as *mut u64).write_unaligned(word); |
 | kernel/src/mem.rs | 58 | block | 其它 | unsafe { while rem >= 8 { (d as *mut u64).write_unaligned((s as |
 | kernel/src/mem.rs | 80 | block | 其它 | unsafe { if (dst as usize) < (src as usize) { memcpy(dst, src, n |
