@@ -26,6 +26,10 @@ static ASID_LOCK: AtomicBool = AtomicBool::new(false);
 
 /// 取 ASID 锁（TTAS：CAS 外环防写行争、Relaxed 内环自旋降流量）。
 fn asid_lock() {
+    // G3-3 lockdep（g3-3c）：物理取点记账——集中本函数覆盖两取点
+    // （alloc_asid + asid_force_near_roll）；feature 关 = 编译消除。
+    #[cfg(feature = "lockdep")]
+    berry_hal_aarch64::lockdep::acquire(berry_hal_aarch64::lockdep::CLASS_ASID);
     while ASID_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -58,6 +62,9 @@ pub fn alloc_asid() -> u16 {
         }
         (asid, rolled)
     };
+    // G3-3 lockdep（g3-3c）：物理放点（一）；同款见 asid_force_near_roll。
+    #[cfg(feature = "lockdep")]
+    berry_hal_aarch64::lockdep::release(berry_hal_aarch64::lockdep::CLASS_ASID);
     ASID_LOCK.store(false, Ordering::Release);
     if rolled {
         // 锁外武装：本核全量失效 + 广播置闩（本函数绝不等待）。
@@ -78,6 +85,9 @@ pub fn asid_force_near_roll() {
         }
         (*slot).as_mut().unwrap().force_near_roll();
     }
+    // G3-3 lockdep（g3-3c）：物理放点（二）；同款见 alloc_asid。
+    #[cfg(feature = "lockdep")]
+    berry_hal_aarch64::lockdep::release(berry_hal_aarch64::lockdep::CLASS_ASID);
     ASID_LOCK.store(false, Ordering::Release);
 }
 

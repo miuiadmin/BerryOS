@@ -206,11 +206,12 @@ const _: () = assert!(core::mem::offset_of!(SmpCpu, park_cnt) == 96);
 // G3-1a 尾插第三字段（preempt_count@104）：同 S-5a 尾插纪律——逻辑尺寸 112
 // 仍 ≤ 128 帽，size 断言不变、asm 不受影响。
 const _: () = assert!(core::mem::offset_of!(SmpCpu, preempt_count) == 104);
-// G3-3 尾插第四组（lockdep_chain@112 / depth@120 / floor@121）：逻辑尺寸
-// 122 仍 ≤ 128 帽（align 64）——size 断言不变、asm 只钉 0/8/16 不受影响。
+// G3-3 尾插第四组（lockdep_chain@112 / depth@124 / floor@125）：g3-3c 抬
+// DEPTH_MAX 8→12（PT/ASID 入检测域留裕），逻辑尺寸 126 仍 ≤ 128 帽
+// （align 64）——size 断言不变、asm 只钉 0/8/16 不受影响。
 const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_chain) == 112);
-const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_depth) == 120);
-const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_floor) == 121);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_depth) == 124);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_floor) == 125);
 
 /// 副核 per-CPU 块（TPIDR_EL1 由 secondary_entry asm ⑩ 自钉）。
 #[no_mangle]

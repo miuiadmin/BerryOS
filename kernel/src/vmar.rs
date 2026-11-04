@@ -61,6 +61,10 @@ pub(crate) struct PtGuard {
 
 impl Drop for PtGuard {
     fn drop(&mut self) {
+        // G3-3 lockdep（g3-3c）：物理放点记账——集中本 Drop 覆盖全树一切
+        // PT 放点（RAII 单出口）；feature 关 = 编译消除。
+        #[cfg(feature = "lockdep")]
+        hal::lockdep::release(hal::lockdep::CLASS_PT);
         PT_LOCKS[self.asid as usize].store(false, Ordering::Release);
     }
 }
@@ -73,6 +77,13 @@ impl Drop for PtGuard {
 /// 雷册 §A126 追记二）。PT 恒在 KL 窗内取放（全系统单一嵌套向，无反转面）。
 /// boot/ktest 直调路径同样 DAIF 屏蔽。
 fn pt_lock(asid: u16) -> PtGuard {
+    // G3-3 lockdep（g3-3c）：物理取点记账——集中本函数 + PtGuard::drop 一对
+    // 位点即覆盖全树 6 物理取点（写者 map/unmap/protect 经 self.asid 直达 +
+    // 读者 copy 链三辅助经 pt_lock_current 汇聚于此）；feature 关 = 编译消除。
+    // 重入检粒度前提：v1 全树无「持 A 槽再取 B 槽」嵌套形态（穷举见
+    // lockdep.rs CLASS_PT 注）——单类号无假阳性面。
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::acquire(hal::lockdep::CLASS_PT);
     // TTAS（test-and-test-and-set）：CAS 外环避免每次写行争、Relaxed 内环
     // 读自旋降总线流量——kern_lock KERN_LOCK 同款形态。
     while PT_LOCKS[asid as usize]

@@ -14,11 +14,15 @@
 //! 结构位、随任务走；链须盖 KL/PRINT 且随**执行流**走）。本核独占访问：
 //! 一切取放点恒在 IRQ 屏蔽窗（雷 2 纪律）⇒ 无原子需求。
 //!
-//! **IRQ 地板**（跨流分层）：唯一 IRQ 解蔽持锁窗 = PRINT_LOCK preempt 包络
-//! （G43/G3-1c-1）。IRQ 打断 PRINT 持有者时，handler 取结构锁（如 RX →
-//! wake_matching → SQ）对**本流**合法（被断者不持结构锁、无争用）——链按
-//! `exception_irq` 入口快照分层：地板下 = 被断流词条（不参与序检），地板上
-//! = 本流词条（序检/配平域）。出口断言深度恰归地板（handler 配平执法）。
+//! **IRQ 地板**（跨流分层）：**不变量——一切 IRQ 解蔽持锁窗必须段级
+//! `preempt_disable`（计数 >0 禁切，`syscall.rs` irq_window 包络）**；现役
+//! 两实例（PRINT 包络 G43/G3-1c-1 + send/recv 拷贝窗 g3-1c-2——SVC 0x2E
+//! 包络）；新增解蔽持锁窗先过审（缺计数 ⇒ floor>0 期 context_switch 可达
+//! ⇒ 幽灵 irq-unbalanced 停机）。IRQ 打断持锁者时，handler 取结构锁（如
+//! RX → wake_matching → SQ）对**本流**合法（被断者不持结构锁、无争用）
+//! ——链按 `exception_irq` 入口快照分层：地板下 = 被断流词条（不参与序
+//! 检），地板上 = 本流词条（序检/配平域）。出口断言深度恰归地板（handler
+//! 配平执法）。
 //!
 //! **切换点不变量**：切换原语入口断言 `count==0 ∧ held==0` ⇒ 一切切换点
 //! 链恒配平（任务态归 0 / IRQ 态归地板）⇒ per-CPU 链跨 context_switch
@@ -26,8 +30,12 @@
 //!
 //! **覆盖缺口（v1 注记）**：TPIDR 未立窗（ktest/极早期 boot）槽空跳过——
 //! 检测自 `cpu0_init` 起全覆盖（enable_irq/用户任务全在其后）；ktest 窗
-//! 挂账后续刀。**预留类**：ALLOC/ASID（立法位 5/6）现役无锁实例——类号
-//! 占位，rank 表完整，实例出现时挂钩即检。
+//! 挂账后续刀。**类覆盖（g3-3c 勘正：ASID/PT 原误记「预留无实例」）**：
+//! 现役八类全挂钩——SQ/RQ0/RQ1/REAPQ/TABLE/PRINT 原批 + PT（S-4 4-2
+//! `vmar::PT_LOCKS`，集中挂 `pt_lock`/`PtGuard::drop` 一对位点覆盖全树
+//! 6 物理取点）+ ASID（S-4 4-3 `aspace::ASID_LOCK`，`asid_lock` 集中取
+//! 点 + 两放点）；ALLOC 预留属实（帧分配器纯 KL 串行——无独立分配器锁
+//! 实例，类号占位，实例出现即挂钩）。
 //!
 //! **Kill criteria**（§3）：debug 构建慢 >3× 或误报率 >10% → 降级取放
 //! trace 面。**panic bypass 对齐**：违约打印直写 UART 不取 PRINT_LOCK
@@ -43,15 +51,30 @@ pub const CLASS_RQ1: u8 = 3;
 pub const CLASS_REAPQ: u8 = 4;
 /// 表类（KL——KERN_LOCK，类内末取）。
 pub const CLASS_TABLE: u8 = 5;
-/// 分配器锁类（**预留**：立法位在册，现役无实例）。
+/// PT 页表锁类（per-ASID `vmar::PT_LOCKS`——S-4 4-2 实锁，g3-3c 入册）。
+/// **与 TABLE 同 rank=4**（RQ0/RQ1 分立类号先例）：rank 表无层内序，双向
+/// 跨取合法；现役单向（「PT 恒在 KL 窗内取放」单一嵌套向——`vmar.rs`
+/// 无环论证）。类号是标签非 rank（9 > PRINT 的 8——rank 见 [`rank`]）。
+/// **重入检穷举前提（g3-3c 枚举）**：v1 全树无「持 A 槽 PT 再取 B 槽 PT」
+/// 形态（写者 map/unmap/protect 方法体零 pt_lock 调用；copy 三辅助互不
+/// 嵌套、vmo 分块与 channel 六趟皆顺序取放；跨 ASID 构造纯顺序——
+/// `new_root(fa, alloc_asid())` 实参先走完锁周期）——同类号跨槽映射无
+/// 假阳性面。未来出现合法跨槽嵌套须 (类,实例) 粒度或立法豁免。
+pub const CLASS_PT: u8 = 9;
+/// 分配器锁类（**预留**：帧分配器纯 KL 串行——现役无独立分配器锁实例）。
 pub const CLASS_ALLOC: u8 = 6;
-/// ASID 锁类（**预留**：同上）。
+/// ASID 锁类（`aspace::ASID_LOCK`——S-4 4-3 实锁，g3-3c 挂钩；临界区纯
+/// 计数器推进，与 PT 永不同持）。
 pub const CLASS_ASID: u8 = 7;
 /// 打印锁类（最内层——「持 PRINT_LOCK 者禁取任何锁」由 rank 检自动执法）。
 pub const CLASS_PRINT: u8 = 8;
+/// 类号域上界（1..=CLASS_MAX 在册；[`check_acquire`] 前置校验用——F5）。
+pub const CLASS_MAX: u8 = CLASS_PT;
 
-/// 链深帽：最坏同时持有 = SVC 全类（SQ+RQ0+RQ1+REAPQ）+ KL + PRINT = 7。
-pub const DEPTH_MAX: usize = 8;
+/// 链深帽：理论最坏同持 = SVC 全类（SQ+RQ0+RQ1+REAPQ）+ KL + PT + PRINT
+/// = 8；g3-3c 抬 8→12 留裕（PT/ASID 入检测域 + 未来类扩展）——`SmpCpu`
+/// 逻辑尺寸 126 仍 ≤ 128 帽（smp.rs 偏移断言同步）。
+pub const DEPTH_MAX: usize = 12;
 
 /// 类号 → 立法 rank（1 最外 … 7 最内；S-3 §9.7 七类全序）。RQ0/RQ1 同
 /// rank=2（跨取合法，升降序由 [`acquire`] 专项检）。
@@ -60,11 +83,13 @@ const fn rank(class: u8) -> u8 {
         CLASS_SQ => 1,
         CLASS_RQ0 | CLASS_RQ1 => 2,
         CLASS_REAPQ => 3,
-        CLASS_TABLE => 4,
+        CLASS_TABLE | CLASS_PT => 4,
         CLASS_ALLOC => 5,
         CLASS_ASID => 6,
         CLASS_PRINT => 7,
-        _ => 7, // 未知类号（调用面只有本模块常量——不可达兜底）
+        // 未知类号：入检侧已 fail loud 拦截（check_acquire 前置校验——F5），
+        // 链内词条恒经入检，此臂对合法流不可达 = 腐写兜底。
+        _ => 7,
     }
 }
 
@@ -74,6 +99,11 @@ const fn rank(class: u8) -> u8 {
 fn check_acquire(chain: *const u8, depth: u8, floor: u8, class: u8) -> Option<&'static [u8]> {
     if depth as usize >= DEPTH_MAX {
         return Some(b"chain-overflow");
+    }
+    // 前置校验（F5）：类号域外 = fail loud——防未来加类漏登 rank 表被静默
+    // 错分（原兜底静默映射 rank 7=PRINT，错分方向不可预测）。
+    if class == 0 || class > CLASS_MAX {
+        return Some(b"unknown-class");
     }
     for i in floor..depth {
         // SAFETY: 调用方契约——i < DEPTH_MAX 且链本核独占。
@@ -115,7 +145,8 @@ pub fn acquire(class: u8) {
     }
 }
 
-/// 物理放锁记账 + 配平检（深度恰减、弹出的恰是本类）。
+/// 物理放锁记账 + 配平检（深度恰减、弹出的恰是本类）。**只在物理放点调**
+/// （位感知退化支不触——同 [`acquire`]）。
 #[inline]
 pub fn release(class: u8) {
     let Some((chain, depth, floor)) = crate::smp::lockdep_slot() else {
@@ -123,15 +154,36 @@ pub fn release(class: u8) {
     };
     // SAFETY: 同 [`acquire`]。
     unsafe {
-        let d = *depth;
-        if d == *floor {
-            // 地板下放锁 = 越流放锁（放了他流的锁）或配平早已破——停机面。
-            violation(b"release-underflow", class, chain, d, *floor);
+        let (d, f) = (*depth, *floor);
+        if let Some(kind) = check_release(chain, d, f, class) {
+            violation(kind, class, chain, d, f);
         }
         *depth = d - 1;
-        if *chain.add(d as usize - 1) != class {
-            violation(b"release-unpair", class, chain, d, *floor);
-        }
+    }
+}
+
+/// 放锁检查面（纯检查——[`release`] 与 [`selftest`] 阳性对照共用，F4）：
+/// 返回违约定名（Some）或通过（None）。两臂：地板下放锁（越流放锁/配平
+/// 早已破）+ 栈顶非本类（放错对/序错）。
+fn check_release(chain: *const u8, depth: u8, floor: u8, class: u8) -> Option<&'static [u8]> {
+    if depth == floor {
+        return Some(b"release-underflow");
+    }
+    // SAFETY: 调用方契约——depth > floor 且链本核独占。
+    if unsafe { *chain.add(depth as usize - 1) } != class {
+        return Some(b"release-unpair");
+    }
+    None
+}
+
+/// IRQ 出口配平检查面（纯检查——[`irq_floor_lower`] 与 [`selftest`] 阳性
+/// 对照共用，F4）：深度须恰归地板（handler 配平执法——留残 = 有锁未放
+/// 跨流泄漏）。
+fn check_irq_exit(depth: u8, floor: u8) -> Option<&'static [u8]> {
+    if depth != floor {
+        Some(b"irq-unbalanced")
+    } else {
+        None
     }
 }
 
@@ -156,20 +208,23 @@ pub fn irq_floor_lower() {
     };
     // SAFETY: 同上。
     unsafe {
-        if *depth != *floor {
-            violation(b"irq-unbalanced", 0, chain, *depth, *floor);
+        if let Some(kind) = check_irq_exit(*depth, *floor) {
+            violation(kind, 0, chain, *depth, *floor);
         }
         *floor = 0;
     }
 }
 
-/// 检测器阳性自证（g3-3b）：①活性 = 真链立法全序八连推弹（走
-/// [`acquire`]/[`release`] 本体——槽寻址/检查/记账全路径激活证，ALLOC/ASID
-/// 预留类的检查面同被走到）；②阳性对照 = 三条合成违约**只走 [`check_acquire`]
-/// 检查面**（不落链不停机）+ 地板隔离正对照（被断流词条不进序检域）——
-/// 证明「零 VIOLATION」≠「检测器死了」。boot 窗调用契约：IRQ 屏蔽 +
-/// TPIDR 已钉 + 链净态；marker 直写 UART（`LOCKDEP selftest ok/FAIL`
-/// ——smoke 门 grep 面；FAIL 不停机，冒烟自然红）。
+/// 检测器阳性自证（g3-3b；g3-3c 扩放锁/IRQ 侧三臂）：①活性 = 真链立法
+/// 全序九连推弹（走 [`acquire`]/[`release`] 本体——槽寻址/检查/记账全路径
+/// 激活证，PT 同 rank 位与 ALLOC/ASID 类的检查面同被走到）；②阳性对照 =
+/// 六条合成违约**只走纯检查面**（[`check_acquire`] order/reentry/rq-descend
+/// + [`check_release`] underflow/unpair + [`check_irq_exit`] unbalanced——
+/// 不落链不停机）+ 地板隔离正对照（被断流词条不进序检域）+ 放锁/IRQ 配平
+/// 负对照（合法路径须全过——「删死」类突变不再与健康态同指纹）——证明
+/// 「零 VIOLATION」≠「检测器死了」。boot 窗调用契约：IRQ 屏蔽 + TPIDR
+/// 已钉 + 链净态；marker 直写 UART（`LOCKDEP selftest ok/FAIL`——smoke 门
+/// grep 面；FAIL 不停机，冒烟自然红）。
 pub fn selftest() -> bool {
     let Some((chain, depth, floor)) = crate::smp::lockdep_slot() else {
         return false; // TPIDR 未钉——调用点契约违（selftest 只许 cpu0_init 后）
@@ -179,24 +234,26 @@ pub fn selftest() -> bool {
         if *depth != 0 || *floor != 0 {
             return false; // 非净态——不破坏现场，拒绝自检
         }
-        // ① 活性：全序八连（rank 非降序列）真推真弹。
+        // ① 活性：全序九连（rank 非降序列——PT 与 TABLE 同 rank 4 相邻）真推真弹。
         for c in [
             CLASS_SQ,
             CLASS_RQ0,
             CLASS_RQ1,
             CLASS_REAPQ,
             CLASS_TABLE,
+            CLASS_PT,
             CLASS_ALLOC,
             CLASS_ASID,
             CLASS_PRINT,
         ] {
             acquire(c);
         }
-        let live = *depth == 8 && *chain.add(7) == CLASS_PRINT;
+        let live = *depth == 9 && *chain.add(8) == CLASS_PRINT;
         for c in [
             CLASS_PRINT,
             CLASS_ASID,
             CLASS_ALLOC,
+            CLASS_PT,
             CLASS_TABLE,
             CLASS_REAPQ,
             CLASS_RQ1,
@@ -206,7 +263,7 @@ pub fn selftest() -> bool {
             release(c);
         }
         let balanced = *depth == 0;
-        // ② 阳性对照：合成态只走检查面（链首词条塑形，毕后复原净态）。
+        // ② 阳性对照：合成态只走纯检查面（毕后复原净态）。
         *chain.add(0) = CLASS_TABLE;
         let neg_order = check_acquire(chain, 1, 0, CLASS_SQ).is_some();
         *chain.add(0) = CLASS_SQ;
@@ -214,11 +271,31 @@ pub fn selftest() -> bool {
         let neg_reentry = check_acquire(chain, 2, 0, CLASS_SQ).is_some();
         *chain.add(0) = CLASS_RQ1;
         let neg_rq = check_acquire(chain, 1, 0, CLASS_RQ0).is_some();
+        // 放锁侧（F4）：underflow = 地板下放锁（depth==floor）；unpair =
+        // 栈顶非本类（链顶 RQ1、放 REAPQ）。
+        let neg_underflow = check_release(chain, 1, 1, CLASS_SQ).is_some();
+        let neg_unpair = check_release(chain, 1, 0, CLASS_REAPQ).is_some();
+        // IRQ 出口侧（F4）：depth≠floor = handler 留残。
+        let neg_irqbal = check_irq_exit(2, 1).is_some();
+        // 负对照：合法路径须全过（检查面无双杀）。
         *chain.add(0) = CLASS_PRINT;
         let pos_floor = check_acquire(chain, 1, 1, CLASS_SQ).is_none();
+        *chain.add(0) = CLASS_SQ;
+        let pos_release = check_release(chain, 1, 0, CLASS_SQ).is_none();
+        let pos_irqbal = check_irq_exit(1, 1).is_none();
         *depth = 0;
         *floor = 0;
-        let ok = live && balanced && neg_order && neg_reentry && neg_rq && pos_floor;
+        let ok = live
+            && balanced
+            && neg_order
+            && neg_reentry
+            && neg_rq
+            && neg_underflow
+            && neg_unpair
+            && neg_irqbal
+            && pos_floor
+            && pos_release
+            && pos_irqbal;
         crate::uart::uart_puts(if ok {
             b"\nLOCKDEP selftest ok\n"
         } else {
