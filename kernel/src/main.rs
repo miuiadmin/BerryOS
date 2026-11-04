@@ -2977,6 +2977,14 @@ static AI_BOUND: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool
 /// 口径保持）。
 static AI_RT_LAST: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// 最近一轮 bench 的**最小轮 RT**（噪声底统计量，同写读序）：均值被宿主
+/// 瞬态争用挤穿（2026-11-04 慢夜 rt2/rt1≈2.04x 撞 2x 断言——TCG 下 guest
+/// 钟=墙钟，宿主挤谁谁的读数涨，与内核回归无因果；§A110 时敏 flake 族同
+/// 源：昼夜算力波动，复跑即绿非代码回归）；64
+/// 轮取 min = 宿主尖峰只污少数轮，min 几乎必然落在无争用轮 = 真开销估计。
+/// 断言面迁 min（真回归 = 全轮一致变慢必抬 min，判别力不降）。
+static AI_RT_MIN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// bench 轮数（fa 128 的一半：两轮 + 探针窗都压在秒级虚拟时间内）。
 const AI_ROUNDS: u64 = 64;
 
@@ -3083,7 +3091,8 @@ fn ai_bench_round(ctx: &AiDemoCtx) {
 /// ⑤睡 E_rel（bind 后睡入 SLEEPQ，PI 尾趟 refresh_effective 经 weight_of 同
 /// clamp 把本任务 eff 刷到 0+64——probe 的断言窗口，醒来由 probe signal 放行）
 /// → ⑥bench 轮 2（表在：16+8/32+8=24/40 同层相对序保持；demo 照睡不抢 CPU）
-/// → ⑦unbind → ⑧开销断言（F9① 最小兑现：rt2 ≤ 2×rt1，TCG 噪声容差）→
+/// → ⑦unbind → ⑧开销断言（F9① 最小兑现：rt2_min ≤ 2×rt1_min——min =
+/// 噪声底统计量，均值被宿主争用挤穿先例见 AI_RT_MIN 注释）→
 /// ⑨打 `AIDEMO ok`（smoke 第 22 标记）→ exit。
 extern "C" fn task_ai_demo(arg: usize) -> ! {
     use crate::syscall::{NR_CLOCK_READ, NR_THREAD_SLEEP};
@@ -3107,6 +3116,7 @@ extern "C" fn task_ai_demo(arg: usize) -> ! {
     ai_bench_round(ctx);
     ai_wait_ev(ctx.h_done, AI_EV_DONE_BIT, 100 * 1_000_000_000);
     let rt1 = AI_RT_LAST.load(core::sync::atomic::Ordering::Relaxed);
+    let rt1_min = AI_RT_MIN.load(core::sync::atomic::Ordering::Relaxed);
     // ④ bind 注入表（advisor.py 产出快照——见 boot 4-6 段与 tools/advisor.py；
     // 表运行期 Box::leak：key 是运行期表指针）。越界项 = 拒收面探针：内核在
     // apply/weight_of 双点夹到 ±64（F9② 单调收窄——夹取是唯一方向，无提权
@@ -3141,17 +3151,23 @@ extern "C" fn task_ai_demo(arg: usize) -> ! {
     ai_bench_round(ctx);
     ai_wait_ev(ctx.h_done, AI_EV_DONE_BIT, 100 * 1_000_000_000);
     let rt2 = AI_RT_LAST.load(core::sync::atomic::Ordering::Relaxed);
+    let rt2_min = AI_RT_MIN.load(core::sync::atomic::Ordering::Relaxed);
     // ⑦ unbind（恢复接口缺席态；klock 包络同 ④，F41）。
     berry_hal_aarch64::kern_lock::klock_enter();
     berry_sched::policy::unbind();
     berry_hal_aarch64::kern_lock::klock_exit();
     // ⑧ 开销断言（F9① 最小兑现：注入表在场时 bench RT 须同量级——热路径增
-    // 量 = 2 条目线性查表 + 权重算术，TCG 下远低于噪声；容差 2x 是噪声界非
-    // 精度断言，-icount 精确版/真机 p99 随 FAST 线留 G 卡复测）。
-    assert!(rt1 > 0, "ai_demo: rt1 须非零");
+    // 量 = 2 条目线性查表 + 权重算术，真开销远低于容差）。**断言面 = min
+    // （噪声底统计量）**：均值 rt/rt2 被 2026-11-04 慢夜宿主争用挤穿 2x
+    //（rt1=7147 rt2=14589——TCG guest 钟=墙钟，§A110 时敏 flake 族）；64 轮
+    // 取 min = 宿主尖峰只污少数轮，min 落在无争用轮 = 真开销估计；真回归
+    // = 全轮一致变慢必抬 min，判别力不降。均值仍打印留观测（连续性）；
+    // -icount 精确版/真机 p99 随 FAST 线留 G 卡复测。
+    assert!(rt1_min > 0, "ai_demo: rt1_min 须非零");
     assert!(
-        rt2 <= rt1 * 2,
-        "ai_demo: 注入后 bench RT 须同量级（rt1={} rt2={}，容差 2x）", rt1, rt2
+        rt2_min <= rt1_min * 2,
+        "ai_demo: 注入后 bench RT 噪声底须同量级（min1={} min2={}，rt1={} rt2={} 观测）",
+        rt1_min, rt2_min, rt1, rt2
     );
     // ⑨ 收官标记（smoke 第 22）。G43 拼行（S-2b 副核参与前多核撕行防线）：
     // 整条消息 PRINT_LOCK 内一次拼完。
@@ -3160,6 +3176,10 @@ extern "C" fn task_ai_demo(arg: usize) -> ! {
         berry_hal_aarch64::uart_put_dec(rt1);
         berry_hal_aarch64::uart_puts(b" rt2=");
         berry_hal_aarch64::uart_put_dec(rt2);
+        berry_hal_aarch64::uart_puts(b" min1=");
+        berry_hal_aarch64::uart_put_dec(rt1_min);
+        berry_hal_aarch64::uart_puts(b" min2=");
+        berry_hal_aarch64::uart_put_dec(rt2_min);
         berry_hal_aarch64::uart_puts(b" clamp=64\n");
     });
     berry_sched::exit_current()
@@ -4909,6 +4929,8 @@ extern "C" fn task_ai_ping(arg: usize) -> ! {
     let h_done = (arg >> 32) as u32;
     let mut buf = [0u8; 8];
     let mut rt_ticks: u64 = 0;
+    // min 种子 u64::MAX：首轮必落入；测量语义见 AI_RT_MIN 注释（噪声底）。
+    let mut rt_min: u64 = u64::MAX;
     for _ in 0..AI_ROUNDS {
         buf[..4].copy_from_slice(b"AIP0");
         let t0 = berry_hal_aarch64::timer::cntvct();
@@ -4951,9 +4973,14 @@ extern "C" fn task_ai_ping(arg: usize) -> ! {
             "ai_ping: recv 回件"
         );
         assert!(buf[..3] == *b"AIR", "ai_ping: 载荷须 AIR");
-        rt_ticks += berry_hal_aarch64::timer::cntvct() - t0;
+        let d = berry_hal_aarch64::timer::cntvct() - t0;
+        rt_ticks += d;
+        if d < rt_min {
+            rt_min = d;
+        }
     }
     AI_RT_LAST.store(rt_ticks / AI_ROUNDS, core::sync::atomic::Ordering::Relaxed);
+    AI_RT_MIN.store(rt_min, core::sync::atomic::Ordering::Relaxed);
     assert_eq!(
         svc4(NR_OBJECT_SIGNAL as u64, h_done as u64, 0, AI_EV_DONE_BIT),
         0,
