@@ -10,9 +10,15 @@
 # cntvct_pair=0 是合法值非故障：4096 次循环骨架在 0.125 cyc/instr 量化
 # 粒度下 <1 cyc/op 整除落地 = 0（「净成本 = 其余项 − cntvct_pair」心算
 # 口径仍成立——0 地板）。
+# g3-1c-2 定态位移（2026-11-04，prove 五跑 max_dev 0.000%）：channel_send/recv
+# 原子段守卫 + 调用点拷贝窗改变全 boot/runtime channel 指令流 → 虚拟时钟推进
+# 相位移 → tick 落点对 bench 测量窗的相对位置变 → frame_alloc4k 171→37（窗
+# 内 tick 指令移出）、vmo_commit1p 1708→1574（同因）——源致定态位移非抖动
+# （§A109 配方归因；vmo_rw4k 6937 不动 = 该路径不碰 channel 面，恰与 §A126
+# 尾句「内核侧直拷」互证）。
 cntvct_pair,4096,0
-frame_alloc4k,1024,171
+frame_alloc4k,1024,37
 frame_alloc64k,256,37
 handle_evt,1024,166
-vmo_commit1p,256,1708
+vmo_commit1p,256,1574
 vmo_rw4k,128,6937

@@ -209,8 +209,12 @@ fn copy_from_user(caller_el1: bool, src: u64, dst: &mut [u8]) -> Result<(), i32>
             return Err(ERR_FAULT);
         }
         // SAFETY: 整段界检过（EL1 = 高半直映；EL0 = 调用者表逐页 AP 验过且
-        // 同窗持锁，见上）；syscall 全程 IRQ 屏蔽 → 校验与拷贝间无本核任务
-        // 切换。
+        // 同窗持锁，见上）；无本核任务切换切进校验-拷贝间——g3-1c-2 起双面：
+        // 全屏蔽窗号（多数——屏蔽即无切换）；管道拷贝段局部解蔽窗（send/recv
+        // ——段级 preempt_disable 保无切换 §A113，窗在调用点非此处内置，
+        // 见 `irq_window`——内置对 TABLE 类号（vmo 面）还是 tick 面活体违约：
+        // SQ 位不在集 ⇒ tick 入窗 expire_timeouts 物理取 SQ 于 KL 下 =
+        // §A126 同款七类锁序逆序，不只是切换面）。
         unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst.as_mut_ptr(), dst.len()) };
     }
     Ok(())
@@ -1464,6 +1468,43 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+/// G3-1c-2 管道面原子段禁切守卫（send 满检→push / recv pop→回滚完结）：
+/// new 取窗（计数 +1），Drop 放窗——段内任何早退（`return`/`?`）自动配平，
+/// 配平违约结构性消除（对照：裸 preempt_disable/enable 对 = 18 个早退点手工
+/// 配平，漏一 = 本核静默永禁切）。错误路径跳过段出口检查点 → g3-1b 落点①
+/// （SVC 派发尾，零锁）承接拷贝窗内累积的切换诉求。
+struct PreemptSpan;
+
+impl PreemptSpan {
+    #[inline]
+    fn new() -> Self {
+        berry_sched::preempt_disable();
+        PreemptSpan
+    }
+}
+
+impl Drop for PreemptSpan {
+    #[inline]
+    fn drop(&mut self) {
+        berry_sched::preempt_enable();
+    }
+}
+
+/// G3-1c-2 拷贝段局部解蔽窗（仅限 send/recv 原子段内调用）：save→unmask→
+/// f()→restore 闭式（f 内禁早退——配平结构性成立）。窗内 tick/SGI 可入但禁
+/// 切换：段 preempt_disable（计数 >0）+ g3-1c-1 双门（tick go 支/on_sgi_resched
+/// 闭门早退）；tick 入窗合法 ⇔ SQ 位在集（本域 0x2E 恒真——expire_timeouts
+/// sq_lock 退化形，§A126 推论正用）；§A113 PT 锁窗禁切换由段计数保。**窗在
+/// 调用点不在 copy_from_user 内部**——其余号的调用面仍全屏蔽且计数 0，窗若
+/// 内置 = 那些号拷贝中可切（§A113 违约）。
+fn irq_window<R>(f: impl FnOnce() -> R) -> R {
+    let daif = berry_hal_aarch64::irq_save();
+    berry_hal_aarch64::enable_irq();
+    let r = f();
+    berry_hal_aarch64::irq_restore(daif);
+    r
+}
+
 /// `channel_send(ch, bytes, nbytes, handles, nhandles)`：消息压**对端**队列
 /// （非阻塞：满 → -EBUSY）。门控：本端 **SEND**。随行 handle 逐个 `take` 出
 /// 调用者表（发送方失去原值）、令牌随消息挂起，接收方 recv 时 `insert_ref`
@@ -1503,10 +1544,15 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
+    // g3-1c-2 原子段（满检→push，草案 §8.B 管道域）：段禁切守卫承接今日
+    // 「单核 IRQ 屏蔽无并发」的插队排除论证——单核禁切 = 无他任务插队
+    // （双核 handler 整体由 SVC 入口结构锁窗串行）；段内拷贝位点局部解蔽
+    // （`irq_window`），满检/空快照链项的「此后不变」由禁切保。
     // 对端指针 + 满检 + 队列空快照（4-4 检查链项——对端与本端是不同对象，
     // pair 互指保证，&mut 无别名；满检过且此刻空 = 「队列空」链项成立）。
     // SAFETY: get_raw 已门控；对端由互钉保活（本端活 ⇒ 对端对象必在堆）；
-    // 单核 IRQ 屏蔽无并发。
+    // 单核禁切无插队（g3-1c-2 段守卫；双核结构锁窗）。
+    let _span = PreemptSpan::new();
     let (peer_ptr, peer_empty) = unsafe {
         let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
@@ -1522,9 +1568,10 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         }
         (peer, !peer_end.has_message())
     };
-    // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。
+    // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。拷贝窗
+    // （g3-1c-2）：走查 + 拷入同窗解蔽，段计数保 §A113。
     let mut hbuf = [0u8; CHAN_HND_MAX * 4];
-    if let Err(e) = copy_from_user(el1, handles, &mut hbuf[..nhandles * 4]) {
+    if let Err(e) = irq_window(|| copy_from_user(el1, handles, &mut hbuf[..nhandles * 4])) {
         return e as i64;
     }
     let mut hvals = [0u32; CHAN_HND_MAX];
@@ -1542,7 +1589,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         }
     }
     let mut bbuf = [0u8; CHAN_MSG_MAX];
-    if let Err(e) = copy_from_user(el1, bytes, &mut bbuf[..nbytes]) {
+    if let Err(e) = irq_window(|| copy_from_user(el1, bytes, &mut bbuf[..nbytes])) {
         return e as i64;
     }
     // 全量 take（bounded ≤4——占位数组免堆分配；slice 进消息只取前 n 项）。
@@ -1576,10 +1623,10 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             berry_hal_aarch64::uart_puts(b"intent: hop budget cap (send)\n");
         }
     }
-    // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核 IRQ
-    // 屏蔽无插队）：无随行 handle + 队列空 + 恰一个非哨兵 READABLE 等待者且
-    // 无哨兵在场 → fastpath；否则 slowpath（检查链其余项 v1 结构性成立，见
-    // 函数注释）。
+    // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核禁切
+    // 无插队，g3-1c-2 段守卫在持）：无随行 handle + 队列空 + 恰一个非哨兵
+    // READABLE 等待者且无哨兵在场 → fastpath；否则 slowpath（检查链其余项
+    // v1 结构性成立，见函数注释）。
     // S-3c c-2a 义务④窗：find→push→fast_wake 同一 SLEEPQ 锁窗（终态形
     // 「查位+写位+唤醒不可分割」；过渡态 KL 全量在场 ⇒ 零争用，窗形先行
     // ——SLEEPQ_LOCK 注释的逆序标注在此同样适用）。未命中即闭窗——
@@ -1599,7 +1646,8 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     } else {
         None
     };
-    // SAFETY: peer_ptr 互钉在活；队列有界（满检过，单核无并发插队）。
+    // SAFETY: peer_ptr 互钉在活；队列有界（满检过——单核禁切无插队 g3-1c-2
+    // 段守卫；双核结构锁窗）。
     unsafe {
         let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
             // 上面刚解包过——不可达防御面（消息泄漏，安全向）。c-2a：若义务④
@@ -1611,6 +1659,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         };
         peer_end.push(msg);
     }
+    drop(_span); // g3-1c-2 段终点（push 毕）：原子段收口配平
     match waiter {
         Some(t) => {
             // fastpath：定点唤醒（同一内部唤醒序列 + PI 收尾重推）→ **闭窗** →
@@ -1635,6 +1684,15 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
         }
     }
+    // 段出口检查点（g3-1c-2，f4 裁决 = wake 链尾非 push 直后）：拷贝窗内被
+    // 双门（tick go 支/SGI）挡下的切换诉求在唤醒链全毕后兑现——①push 直后
+    // 切走会打断 S-3c 义务④「find→push→fast_wake 查位+写位+唤醒不可分割」
+    // 窗（物理锁舞蹈能保、语义不可分割不能）；②wake 后才切不劣于今日
+    //（今日 = wake 后紧跟 :1624 fastpath 探峰）；③与 fastpath :1624 探峰天然
+    // 分工（fast 路先探、此检查点收 slow/收尾覆盖），成功路径不开双探峰窗。
+    // 探峰合法 ⇔ RQ 位在集（本号 0x2E ✓，try_preempt rq_lock 退化形，§A126
+    // 定谳）；段内错误路径早退跳过此处，由 g3-1b 落点①（SVC 派发尾零锁）承接。
+    berry_sched::preempt_checkpoint();
     0
 }
 
@@ -1644,7 +1702,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
 ///
 /// # Safety
 /// `endp` 须为本端在表对象（get_raw 门控过）；`msg` 须为从该端队列 pop 出的
-/// 消息；单核 IRQ 屏蔽上下文。
+/// 消息；单核禁切上下文（g3-1c-2：调用点均在 recv 原子段守卫内）。
 unsafe fn recv_rollback(t: &mut HandleTable, endp: NonNull<ObjRef>, msg: Message, inserted: &[u32]) {
     for &nh in inserted {
         let _ = t.take(nh);
@@ -1677,7 +1735,13 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    // SAFETY: get_raw 已门控；单核 IRQ 屏蔽。pop 消费，失败路径经回滚压回队首。
+    // g3-1c-2 原子段（pop→回滚完结，草案 §8.B 管道域）：段禁切守卫承接今日
+    // 「单核 IRQ 屏蔽」的插队排除论证——rollback push_front 与并发 send 的
+    // FIFO 序破面，单核禁切即封（双核 handler 整体由 SVC 入口结构锁窗串行）；
+    // 段内拷贝位点局部解蔽（`irq_window`）。
+    // SAFETY: get_raw 已门控；单核禁切（g3-1c-2 段守卫在持）。pop 消费，失败
+    // 路径经回滚压回队首。
+    let _span = PreemptSpan::new();
     let msg = unsafe {
         let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
@@ -1687,7 +1751,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             None => return ERR_AGAIN as i64, // 非阻塞：空即返（阻塞等消息 = wait_one READABLE，4-2）
         }
     };
-    let cap_bytes = match copy_in_u64(el1, nbytesp) {
+    let cap_bytes = match irq_window(|| copy_in_u64(el1, nbytesp)) {
         Ok(v) => v as usize,
         Err(e) => {
             // SAFETY: 见 recv_rollback 契约（endp 门控过、msg 刚 pop、无令牌入表）。
@@ -1695,7 +1759,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             return e as i64;
         }
     };
-    let cap_hnd = match copy_in_u64(el1, nhandlesp) {
+    let cap_hnd = match irq_window(|| copy_in_u64(el1, nhandlesp)) {
         Ok(v) => v as usize,
         Err(e) => {
             // SAFETY: 同上。
@@ -1708,7 +1772,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return ERR_INVALID_ARG as i64;
     }
-    if let Err(e) = copy_to_user(el1, bytes, &msg.bytes[..msg.nbytes]) {
+    if let Err(e) = irq_window(|| copy_to_user(el1, bytes, &msg.bytes[..msg.nbytes])) {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return e as i64;
@@ -1730,21 +1794,22 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     for i in 0..n {
         obuf[i * 4..i * 4 + 4].copy_from_slice(&newvals[i].to_le_bytes());
     }
-    if let Err(e) = copy_to_user(el1, handles, &obuf[..n * 4]) {
+    if let Err(e) = irq_window(|| copy_to_user(el1, handles, &obuf[..n * 4])) {
         // SAFETY: 同上（回滚含 take 回已入表的 n 个令牌）。
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
     }
-    if let Err(e) = copy_out_u64(el1, nbytesp, msg.nbytes as u64) {
+    if let Err(e) = irq_window(|| copy_out_u64(el1, nbytesp, msg.nbytes as u64)) {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
     }
-    if let Err(e) = copy_out_u64(el1, nhandlesp, n as u64) {
+    if let Err(e) = irq_window(|| copy_out_u64(el1, nhandlesp, n as u64)) {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
     }
+    drop(_span); // g3-1c-2 段终点（回滚链毕）：原子段收口配平
     // 4-2：本端弹出一条 → 对端队列腾出一个槽 → 对端 WRITABLE 置位，唤醒等
     //「对端未满」的睡眠者（A 的可写性由 B 的队列决定——键 = 对端 ObjRef 地址；
     // 仅成功路径唤醒：回滚路径状态全复原，唤醒即虚假）。S-3b b-1 定谳：纯广播
@@ -1772,6 +1837,11 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         }
     }
     drop(msg); // 消费：令牌已入表（Message 定长内联——drop 无堆动作，不碰 refs）
+    // 段出口检查点（g3-1c-2，f4 裁决对称 = WRITABLE wake 链后、返回前）：
+    // 拷贝窗内被双门挡下的切换诉求在唤醒链全毕后兑现（论据同 send 尾注）；
+    // 探峰合法 ⇔ RQ 位在集（0x2E ✓，§A126 定谳）；段内错误路径早退由
+    // g3-1b 落点①承接。
+    berry_sched::preempt_checkpoint();
     0
 }
 
