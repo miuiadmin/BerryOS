@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod control;
 pub mod device;
 pub mod display;
 pub mod doctor;

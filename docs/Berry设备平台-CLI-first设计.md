@@ -228,7 +228,7 @@ Created → Starting → Running ⇄ Paused → Rebooting/Stopping → Exited
 
 ### 6.3 生命周期策略
 
-- `device start`：默认前台？不，默认后台（host 子进程/线程），打印 id；`--foreground` 调试。
+- `device start`：C1b 目标（默认后台，打印 id，`--foreground` 调试）；C1a 用 `berry shell` 作为 host。
 - `shell`：起 host + GUI；`--attach <id>` 只开窗口。
 - `shot`：ephemeral；结束自动清理（`--keep` 保留）。
 - `stop`：`quit` → 5s SIGTERM → 2s SIGKILL；回收子进程。
@@ -339,6 +339,11 @@ doctor [--json]
 pack verify|install <path>       # C4
 version
 ```
+
+**C1a 已落（shell-hosted）**：`device list/status/stop`、`power off/reboot`、`logs`；
+`control.sock` NDJSON + QMP broker 在 `berry shell` 进程内生效；CLI 不直连 QMP。
+**C1b 未落**：headless `device start/attach`、`restart`、Windows control socket、
+`screenshot` 走 host（当前仍 VNC 直连，C0 兼容）。`device start` 仍以 `berry shell` 为代表。
 
 ### 8.2 语义
 
@@ -502,7 +507,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | 刀 | 交付 | 验收 |
 | --- | --- | --- |
 | **C0（已落）** | `berry screenshot` attach（VNC 多客户端）；PNG deflate；`input` VNC；macOS `.app`；480×1000 干净桌面 | 运行中 shell + CLI 截图成功；3.8KB PNG；11 host 单测 |
-| **C1（下一刀）** | `session/` + `control/` + QmpBroker；`device list/status/stop`；`power reboot/off`；`logs`；`screenshot` 走 host | shell 运行时 CLI 重启/关机/截图；QMP 不再冲突；JSON/退出码稳定 |
+| **C1a（已落）** | shell-hosted control.sock + QMP broker；`device list/status/stop`；`power off/reboot`；`logs` | shell 运行时 CLI 重启/关机/查状态/看日志；QMP 不再冲突 |
+| **C1b（下一刀）** | headless `device start/attach`、`restart`；Windows named pipe/TCP+token；`screenshot` 走 host | 无窗口起会话；Windows 可用；截图不再依赖 VNC 直连 |
 | **C2** | `display set/restart`；原生快捷栏五按钮；`shortcut`；`events` | 五个按钮全有等价 CLI；改 profile 重启生效；客机卡死仍可操作 |
 | **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
@@ -517,10 +523,10 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | 现状 | 目标 | 差距/动作 |
 | --- | --- | --- |
 | `shot` 起临时设备 | `shot` 保留；`screenshot` attach | **screenshot 已落**（VNC） |
-| `shell` 自起 + 持 QMP | host 持 QMP + control.sock | C1 重构 `Device`→`SessionHost` |
+| `shell` 自起 + 持 QMP | host 持 QMP + control.sock | **C1a 已落**：Device 内嵌 ControlServer/QMP broker |
 | `input` VNC attach | control `input` op | C1 路由；VNC 保留兜底 |
-| 无 `list/status/stop` | RunStore + control | C1 |
-| 无 `power/display` | QMP broker + profile 重启 | C1/C2 |
+| 无 `list/status/stop` | RunStore + control | **C1a 已落**（shell-hosted）；headless C1b |
+| 无 `power/display` | QMP broker + profile 重启 | **power C1a 已落**；display C2 |
 | 只有键盘快捷键 | 原生快捷栏 + action 表 | C2 |
 | 无事件流 | `events.jsonl` + 订阅 | C1/C2 |
 | macOS `.app` | 三平台包 | Windows/Linux 后续 |

@@ -40,6 +40,12 @@ enum Cmd {
     Shot(ShotCmd),
     /// Capture one frame from a running device (does not boot a new one).
     Screenshot(ScreenshotCmd),
+    /// Session management (list/status/stop).
+    Device(DeviceCmd),
+    /// Power actions on a running device.
+    Power(PowerCmd),
+    /// Read the session serial log.
+    Logs(LogsCmd),
     /// Open the phone-shaped device window (the double-click entry).
     Shell(ShellCmd),
     /// Inject input into a running device via QMP.
@@ -102,6 +108,54 @@ struct ScreenshotCmd {
     settle_ms: u64,
     #[arg(long, default_value_t = 10)]
     timeout: u64,
+}
+
+#[derive(Parser, Debug)]
+struct DeviceCmd {
+    #[command(subcommand)]
+    action: DeviceAction,
+}
+
+#[derive(Subcommand, Debug)]
+enum DeviceAction {
+    /// List known sessions.
+    List,
+    /// Query a running session.
+    Status(StatusCmd),
+    /// Stop a running session.
+    Stop(StopCmd),
+}
+
+#[derive(Parser, Debug)]
+struct StatusCmd {
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct StopCmd {
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct PowerCmd {
+    #[arg(value_parser = ["off", "reboot"])]
+    action: String,
+    #[arg(long)]
+    run: Option<String>,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Parser, Debug)]
+struct LogsCmd {
+    #[arg(long)]
+    run: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    tail: usize,
+    #[arg(long, short = 'f')]
+    follow: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -198,6 +252,17 @@ fn dispatch(cli: Cli) -> Result<()> {
             display_mode: c.display_mode,
             json: cli.json,
         }),
+        Some(Cmd::Device(c)) => match c.action {
+            DeviceAction::List => commands::device_list(cli.json),
+            DeviceAction::Status(s) => commands::device_status(s.run.as_deref(), cli.json),
+            DeviceAction::Stop(s) => commands::device_stop(s.run.as_deref(), cli.json),
+        },
+        Some(Cmd::Power(c)) => {
+            commands::power(c.run.as_deref(), &c.action, c.force, cli.json)
+        }
+        Some(Cmd::Logs(c)) => {
+            commands::logs(c.run.as_deref(), c.tail, c.follow, cli.json)
+        }
         Some(Cmd::Screenshot(c)) => commands::screenshot(ScreenshotArgs {
             run: c.run,
             out: c.out,

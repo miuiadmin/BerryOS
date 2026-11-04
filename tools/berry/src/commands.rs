@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+use crate::control;
 use crate::display::frame::ScreenSource;
 use crate::display::vnc::{VncInput, VncSource};
 use crate::error::{BerryError, Result};
@@ -353,6 +354,150 @@ fn qcode_to_keysym(q: &str) -> Option<u32> {
         _ if q.chars().count() == 1 => q.chars().next()? as u32,
         _ => return None,
     })
+}
+
+pub fn device_list(json: bool) -> Result<()> {
+    let root = run_dir::home().join("run");
+    let mut runs: Vec<(String, String, String, String)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let meta: serde_json::Value = std::fs::read(p.join("meta.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_else(|| json!({}));
+            let label = meta.get("label").and_then(|v| v.as_str()).unwrap_or("-");
+            let pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+            let state = if p.join("control.sock").exists() {
+                match control::request(&p, "status", json!({})) {
+                    Ok(v) => v.get("state").and_then(|s| s.as_str()).unwrap_or("?").to_string(),
+                    Err(_) => "stale".to_string(),
+                }
+            } else {
+                "no-control".to_string()
+            };
+            runs.push((
+                p.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                label.to_string(),
+                state,
+                pid.to_string(),
+            ));
+        }
+    }
+    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    if json {
+        let arr: Vec<_> = runs
+            .iter()
+            .map(|(id, label, state, pid)| {
+                json!({"id":id,"label":label,"state":state,"pid":pid})
+            })
+            .collect();
+        println!("{}", json!({"v":1,"t":"device.list","runs":arr}));
+    } else if runs.is_empty() {
+        println!("no devices");
+    } else {
+        println!("{:<44} {:<8} {:<12} {}", "ID", "LABEL", "STATE", "PID");
+        for (id, label, state, pid) in runs {
+            println!("{:<44} {:<8} {:<12} {}", id, label, state, pid);
+        }
+    }
+    Ok(())
+}
+
+pub fn device_status(run: Option<&str>, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let v = control::request(&run, "status", json!({}))
+        .map_err(|e| e.with_hint("is the device running under `berry shell`?"))?;
+    if json {
+        println!("{}", json!({"v":1,"t":"device.status","run":run,"status":v}));
+    } else {
+        println!(
+            "{}: {}",
+            run.display(),
+            v.get("state").and_then(|s| s.as_str()).unwrap_or("?")
+        );
+    }
+    Ok(())
+}
+
+pub fn device_stop(run: Option<&str>, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let v = control::request(&run, "stop", json!({}))?;
+    if json {
+        println!("{}", json!({"v":1,"t":"device.stop","run":run,"result":v}));
+    } else {
+        println!("stop: {}", run.display());
+    }
+    Ok(())
+}
+
+pub fn power(run: Option<&str>, action: &str, force: bool, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let v = control::request(&run, "power", json!({"action":action,"force":force}))?;
+    if json {
+        println!("{}", json!({"v":1,"t":"power","run":run,"action":action,"result":v}));
+    } else {
+        println!("power {action}: {}", run.display());
+    }
+    Ok(())
+}
+
+pub fn logs(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let path = run.join("serial.log");
+    if follow {
+        let mut t = Tail::open(&path);
+        loop {
+            let chunk = t.read_new();
+            if !chunk.is_empty() {
+                let text = String::from_utf8_lossy(&chunk);
+                for line in text.lines() {
+                    if json {
+                        println!("{}", json!({"v":1,"t":"log","line":line}));
+                    } else {
+                        println!("{line}");
+                    }
+                }
+                std::io::stdout().flush().ok();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = tail;
+        }
+    }
+    let lines: Vec<String> = if let Ok(v) = control::request(&run, "logs", json!({"tail":tail})) {
+        v.get("lines")
+            .and_then(|l| l.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .take(tail)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    };
+    if json {
+        println!("{}", json!({"v":1,"t":"logs","lines":lines}));
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    Ok(())
 }
 
 fn find_run(id: Option<&str>) -> Result<PathBuf> {

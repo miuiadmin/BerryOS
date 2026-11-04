@@ -46,6 +46,11 @@ just berry shot --image out/berryos.img --profile phone --out out/phone.png
 just berry screenshot --out out/shot.png --settle-ms 500   # 抓正在跑的 shell，不重启
 just shell                                  # = berry shell --image out/berryos.img
 just berry shell --profile phone --timeout 30
+just berry device list
+just berry device status --run <id>
+just berry logs --run <id> --tail 50
+just berry power reboot --run <id>
+just berry power off --run <id>
 just berry input key ret
 just berry input tap 400 300
 just berry input swipe 400 500 400 200 --ms 300
@@ -67,13 +72,14 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 | --- | --- | --- |
 | 截图 | **`berry screenshot`（已落）** / `shot`（临时设备） | 截图按钮 / `Cmd+S` |
 | 输入 | `berry input key/tap/swipe`（VNC attach，已落） | 客机触摸/键盘 |
-| 重启/关机 | `berry power reboot/off`（C1） | 重启/关机按钮 |
+| 重启/关机 | **`berry power reboot/off`（C1a 已落）** | 重启/关机按钮（C2） |
 | 分辨率 | `berry display set <profile>`（C2） | 分辨率菜单 |
 | 全屏 | — | `F` |
 | 审计 | `berry events/logs`（C1/C2） | 同一事件流，`source=ui/cli` |
 
-C1 之前 `power/display` 还没有稳定跨进程路径：shell 持有 QMP（单客户端），CLI 不直连；
-`berry screenshot` 已用 VNC 多客户端绕开。完整刀序见设计稿 §6/§8/§13。
+C1a 已落：`berry shell` 进程内起 `control.sock` + QMP broker；CLI `device list/status/stop`、
+`power off/reboot`、`logs` 已可用，CLI 不直连 QMP。C1b 还差 headless `device start/attach`、
+`restart`、Windows control、`screenshot` 走 host。完整刀序见平台文档 §14。
 
 ## 环境变量
 

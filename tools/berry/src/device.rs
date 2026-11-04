@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::display::frame::ScreenSource;
 use crate::display::ram::{FbInfo, RamSource};
+use crate::control::ControlServer;
 use crate::display::vnc::{VncInput, VncSource};
 use crate::error::Result;
 use crate::net::Endpoint;
@@ -23,6 +24,8 @@ pub struct Device {
     run: RunDir,
     keep: bool,
     stopped: bool,
+    stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    _control: Option<ControlServer>,
 }
 
 impl Device {
@@ -93,6 +96,7 @@ impl Device {
             std::thread::sleep(Duration::from_millis(20));
         }
 
+        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let result = (|| {
             let qmp = connect_qmp(&qmp_ep, Duration::from_secs(10))?;
             let qmp = Arc::new(Mutex::new(qmp));
@@ -105,17 +109,25 @@ impl Device {
                 wait_endpoint(&vnc, Duration::from_secs(5))?;
                 Box::new(VncSource::connect(&vnc)?)
             };
-            Ok::<_, crate::error::BerryError>((source, qmp))
+            let control = ControlServer::start(
+                run.path(),
+                qmp.clone(),
+                vnc.clone(),
+                stop_flag.clone(),
+            )?;
+            Ok::<_, crate::error::BerryError>((source, qmp, control))
         })();
 
         match result {
-            Ok((source, qmp)) => Ok(Self {
+            Ok((source, qmp, control)) => Ok(Self {
                 child,
                 qmp,
                 source,
                 run,
                 keep,
                 stopped: false,
+                stop_flag,
+                _control: control,
             }),
             Err(e) => {
                 let _ = child.kill();
@@ -137,11 +149,17 @@ impl Device {
         self.run.path()
     }
 
+    pub fn stop_requested(&self) -> bool {
+        self.stop_flag.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn stop(&mut self) {
         if self.stopped {
             return;
         }
         self.stopped = true;
+        self.stop_flag
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = self.qmp.lock().unwrap().quit_now();
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {

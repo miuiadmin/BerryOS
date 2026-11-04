@@ -346,7 +346,10 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.quit || self.deadline.is_some_and(|d| Instant::now() >= d) {
+        if self.quit
+            || self.device.stop_requested()
+            || self.deadline.is_some_and(|d| Instant::now() >= d)
+        {
             self.device.stop();
             event_loop.exit();
             return;

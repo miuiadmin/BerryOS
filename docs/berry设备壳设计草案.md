@@ -225,7 +225,8 @@ VNC 在 ramfb 下**可能只能整帧更新**（客机直接写显存，QEMU 看
 - QMP 白名单：`qmp_capabilities`、`query-status`、`stop/cont`、`system_reset`、
   `system_powerdown`、`quit`、`screendump`、`send-key`、`input-send-event`、事件。
 - 生命周期/错误码/op 表见平台文档 §6/§7；本文不再重复。
-- 当前落点：`berry screenshot` 已用 VNC 多客户端 attach；QMP broker 是 C1。
+- 当前落点：`berry screenshot` 已用 VNC 多客户端 attach；QMP broker/control.sock C1a 已落
+  （shell-hosted）；C1b 补 headless/Windows。
 
 ## §7 客机侧：三档演进
 
@@ -587,7 +588,8 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   共享 RAM 读帧（见上）。`etc/ramfb` 逐帧 commit 与 `disp0`/抬帽仅保留为
   无 `memory-backend-file` 环境的备选，不再是 P2 阻塞项。
 - `berry input` 已从 QMP 改为 `VncInput`（多客户端），`guest 480x1000` 实测；
-  平台文档 §7 的 control.sock/QMP broker 仍未落（VNC 输入已覆盖跨进程注入）。
+  平台文档 §7 的 control.sock/QMP broker **C1a 已落**（shell-hosted，CLI 可 power/status/logs）；
+  C1b 补 headless/Windows。
 - `shot` 仍以 VNC 抓帧，QMP `screendump` 兜底未接；测试镜像的 GUI 是 console/测试面，
   launcher 桌面尚未在该镜像验证——宿主数据面已就位。
 - `shell --timeout N` 测试/演示自动退出；P1 的 `snapshot=on` 覆盖层未升级为
@@ -604,7 +606,7 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   GUI-8 合并后 `just image` 即得桌面。
 
 **未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 连续 fb；
-256MiB handoff 修复；attach 控制服务。P2 未动 `smoke.sh` 默认 800×600
+256MiB handoff 修复；C1b headless/Windows control。P2 未动 `smoke.sh` 默认 800×600
 与内核 ABI；`run-efi`/smoke 不带 `opt/berry/display` 时零漂移。
 
 ## 附录 A：RAMFBCfg（28B，大端）
