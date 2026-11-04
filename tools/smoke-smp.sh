@@ -90,11 +90,14 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke-smp: FAIL: 找不到 $QEMU" 
 
 # QEMU 严格串行（多会话共享本机）：起跑前等字段空（占位 → 15s 重试，至多
 # 5 轮后 loud 退——不抢跑、不 pkill 别人的 run）。两相 QEMU 起前各查一次。
+# 匹配面 = 本仓 QEMU 签名（同 bench.py QEMU_GUARD_PATTERN，2026-11-04 收窄：
+# aarch64 恒 -machine virt / x86·EFI 恒 -kernel；宿主 Android/AVD 模拟器两签名
+# 皆无，不误伤——裸 qemu-system 会把用户模拟器在场误判成字段被占）。
 field_wait() {
   local waited=0
-  while pgrep -f qemu-system >/dev/null 2>&1; do
+  while pgrep -f 'qemu-system.*(-machine virt|-kernel)' >/dev/null 2>&1; do
     waited=$((waited + 1))
-    [ "$waited" -gt 5 ] && { echo "smoke-smp: FAIL: QEMU 字段被占（pgrep 非空），放弃" >&2; exit 1; }
+    [ "$waited" -gt 5 ] && { echo "smoke-smp: FAIL: QEMU 字段被占（本仓签名 pgrep 非空），放弃" >&2; exit 1; }
     echo "smoke-smp: QEMU 字段被占，等待 15s（第 ${waited} 轮）…" >&2
     sleep 15
   done

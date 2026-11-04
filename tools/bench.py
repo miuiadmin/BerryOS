@@ -254,7 +254,8 @@ def qemu_preflight() -> None:
                 f"bench.py: pgrep 异常 rc={r.returncode}"
                 f"（stderr: {r.stderr.strip()}）——串行守卫自身失效，拒不起 QEMU")
         if not notified:
-            print("bench.py: 检测到在场 QEMU（pgrep -f qemu-system 非空）——"
+            print("bench.py: 检测到在场 QEMU（pgrep -f QEMU_GUARD_PATTERN 非空"
+                  "——本仓签名，Android/AVD 不误伤）——"
                   "串行纪律轮询等空中（帽 900s，绝不并行第二台）", file=sys.stderr)
             notified = True
         if time.time() >= deadline:
