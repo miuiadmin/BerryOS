@@ -243,6 +243,22 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // GUI P2：ramfb 手机档成功时置 1——随 fbinfo 第 6 域交 guifbd，
     // GUI 模式 console 只走串口/记账，不上屏盖桌面。
     let mut gui_mode = false;
+    // 540×1200 等超出固件 GOP 缓冲的档：boot 先记 pending，mm::init 后从
+    // buddy 取连续块、重编程 ramfb；失败回退固件几何。
+    let mut pending_mode: Option<(u32, u32)> = None;
+    let print_fb = |g: (u64, u32, u32, u32, u32)| {
+        berry_hal_aarch64::uart_puts(b"FB ok ");
+        berry_hal_aarch64::uart_put_dec(g.1 as u64);
+        berry_hal_aarch64::uart_puts(b"x");
+        berry_hal_aarch64::uart_put_dec(g.2 as u64);
+        berry_hal_aarch64::uart_puts(b" fmt=");
+        berry_hal_aarch64::uart_put_dec(g.4 as u64);
+        berry_hal_aarch64::uart_puts(b" stride=");
+        berry_hal_aarch64::uart_put_dec(g.3 as u64);
+        berry_hal_aarch64::uart_puts(b" fb=");
+        berry_hal_aarch64::uart_put_hex64(g.0);
+        berry_hal_aarch64::uart_puts(b"\n");
+    };
     if let Some(h) = handoff {
         berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
         berry_hal_aarch64::uart_put_dec(h.version as u64);
@@ -257,40 +273,41 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             // 不每帧 commit——`berry shell` 直接读 memory-backend-file
             // 的 RAM 镜（宿主共享 RAM 面）。缺席 = 原 800×600 零扰动。
             let (mut gw, mut gh, mut gs) = (g.width, g.height, g.stride);
+            let mut need_alloc = false;
             if let Some((w, h)) = display_mode_req() {
                 let stride = w.saturating_mul(4);
                 let cap = (g.stride as u64) * (g.height as u64);
-                if w > 0
-                    && h > 0
-                    && (stride as u64) * (h as u64) <= cap
-                    && berry_hal_aarch64::fwcfg::ramfb_set(g.fb_pa, w, h, stride)
-                {
-                    gw = w;
-                    gh = h;
-                    gs = stride;
-                    gui_mode = true;
-                    berry_hal_aarch64::uart_puts(b"DISP ok ");
-                    berry_hal_aarch64::uart_put_dec(gw as u64);
-                    berry_hal_aarch64::uart_puts(b"x");
-                    berry_hal_aarch64::uart_put_dec(gh as u64);
-                    berry_hal_aarch64::uart_puts(b"\n");
-                } else {
-                    // 容量不符/无 etc/ramfb/DMA 拒：保持固件几何，loud 一行。
+                let need = (stride as u64) * (h as u64);
+                if w == 0 || h == 0 {
                     berry_hal_aarch64::uart_puts(b"DISP fail\n");
+                } else if need <= cap {
+                    if berry_hal_aarch64::fwcfg::ramfb_set(g.fb_pa, w, h, stride) {
+                        gw = w;
+                        gh = h;
+                        gs = stride;
+                        gui_mode = true;
+                        berry_hal_aarch64::uart_puts(b"DISP ok ");
+                        berry_hal_aarch64::uart_put_dec(gw as u64);
+                        berry_hal_aarch64::uart_puts(b"x");
+                        berry_hal_aarch64::uart_put_dec(gh as u64);
+                        berry_hal_aarch64::uart_puts(b"\n");
+                    } else {
+                        berry_hal_aarch64::uart_puts(b"DISP fail\n");
+                    }
+                } else {
+                    pending_mode = Some((w, h));
+                    need_alloc = true;
+                    berry_hal_aarch64::uart_puts(b"DISP defer ");
+                    berry_hal_aarch64::uart_put_dec(w as u64);
+                    berry_hal_aarch64::uart_puts(b"x");
+                    berry_hal_aarch64::uart_put_dec(h as u64);
+                    berry_hal_aarch64::uart_puts(b"\n");
                 }
             }
             gop_saved = Some((g.fb_pa, gw, gh, gs, g.format));
-            berry_hal_aarch64::uart_puts(b"FB ok ");
-            berry_hal_aarch64::uart_put_dec(gw as u64);
-            berry_hal_aarch64::uart_puts(b"x");
-            berry_hal_aarch64::uart_put_dec(gh as u64);
-            berry_hal_aarch64::uart_puts(b" fmt=");
-            berry_hal_aarch64::uart_put_dec(g.format as u64);
-            berry_hal_aarch64::uart_puts(b" stride=");
-            berry_hal_aarch64::uart_put_dec(gs as u64);
-            berry_hal_aarch64::uart_puts(b" fb=");
-            berry_hal_aarch64::uart_put_hex64(g.fb_pa);
-            berry_hal_aarch64::uart_puts(b"\n");
+            if !need_alloc {
+                print_fb((g.fb_pa, gw, gh, gs, g.format));
+            }
         }
     }
 
@@ -303,6 +320,39 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // EFI 路按 memmap reserve（打 MMAP ok 标记），QEMU 路/坏图降级仅保
     // [RAM_BASE, kernel_end)——两侧同为合法 buddy 序（守恒面见 buddy 测试）。
     unsafe { mm::init(handoff) };
+
+    // GUI P2：超出 GOP 缓冲的模式（如 540×1200）在 buddy 就绪后取连续块，
+    // 重编程 ramfb；失败回退固件几何并补 FB ok（host 只等这一行）。
+    if let Some((w, h)) = pending_mode {
+        let stride = w.saturating_mul(4);
+        let bytes = (stride as u64) * (h as u64);
+        let pages = ((bytes + 0xFFF) / 0x1000) as usize;
+        let order = pages.next_power_of_two().trailing_zeros() as usize;
+        let mut done = false;
+        if let Ok(pfn) = mm::frames().alloc_order(order) {
+            let pa = (pfn << 12) as u64;
+            if berry_hal_aarch64::fwcfg::ramfb_set(pa, w, h, stride) {
+                let fmt = gop_saved.map(|g| g.4).unwrap_or(1);
+                gop_saved = Some((pa, w, h, stride, fmt));
+                gui_mode = true;
+                done = true;
+                berry_hal_aarch64::uart_puts(b"DISP ok ");
+                berry_hal_aarch64::uart_put_dec(w as u64);
+                berry_hal_aarch64::uart_puts(b"x");
+                berry_hal_aarch64::uart_put_dec(h as u64);
+                berry_hal_aarch64::uart_puts(b"\n");
+                print_fb((pa, w, h, stride, fmt));
+            } else {
+                let _ = mm::frames().free(pfn, order);
+            }
+        }
+        if !done {
+            berry_hal_aarch64::uart_puts(b"DISP fail\n");
+            if let Some(g) = gop_saved {
+                print_fb(g);
+            }
+        }
+    }
 
     // G-eco 入机侧第一刀：rootfs（initrd 角色）装载，三源按序——
     // ①（V-1c/A1-3b）handoff init：BerryBoot 从盘读 INITRD.BIN 页钉后经

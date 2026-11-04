@@ -110,8 +110,8 @@ headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩�
 | `default` | 800×600 | 800×600 | P1 兼容档 / CI |
 | `phone` | 1080×2250 | 480×1000 | 默认；恰好用满 800×600 GOP 缓冲 |
 | `phone16` | 1080×1920 | 480×854 | 16:9 |
-| `phone20` | 1080×2400 | 540×1200 | 需 2.59MB fb；P2 暂被 1.92MB 容量拒 |
-| `tablet` | 1600×2560 | 800×1280 | 后续 |
+| `phone20` | 1080×2400 | 540×1200 | 已支持：buddy 4MB 连续 fb + ramfb 重编程 |
+| `tablet` | 1600×2560 | 800×1280 | 已支持：buddy 4MB 连续块 + ramfb 重编程 |
 
 `phone*`/`tablet` 默认内存 128MiB（实测 256MiB 时 BerryBoot handoff 失效，另立刀）。
 

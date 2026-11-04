@@ -605,7 +605,7 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   （gitignored 预览件）与 `out/BerryOS-Desktop.app`。主分支 launcher 仍是 skeleton；
   GUI-8 合并后 `just image` 即得桌面。
 
-**未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 连续 fb；
+**未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 已落；
 256MiB handoff 修复；C1b headless/Windows control。P2 未动 `smoke.sh` 默认 800×600
 与内核 ABI；`run-efi`/smoke 不带 `opt/berry/display` 时零漂移。
 

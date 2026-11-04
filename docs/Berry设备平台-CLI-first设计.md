@@ -470,7 +470,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | `phone` | 480×1000 | 已落（恰好用满 800×600 GOP 缓冲） |
 | `phone16` | 480×854 | 可用 |
 | `phone20` | 540×1200 | 需 2.59MB 连续 fb；当前 `DISP fail` |
-| `tablet` | 800×1280 | 后续 |
+| `tablet` | 800×1280 | **可用**：buddy 4MB 连续块 + ramfb 重编程 |
 
 ### 10.2 `display set`
 
