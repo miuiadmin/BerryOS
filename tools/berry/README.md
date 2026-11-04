@@ -63,7 +63,7 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 串口 `FB ok 480x1000 … fb=0x…` 给出几何/PA，`RamSource` 直接读 `ram.bin`，窗口按
 19:9 等比缩放显示；VNC 只作输入通道（不请求帧），`berry input` 可与 shell 并存。
 
-## CLI-first 控制面（规划）
+## CLI-first 控制面（现状）
 
 目标：会话（session host）持有一台设备，CLI/GUI 都 attach 到同一 `control.sock`；窗口按钮
 与 CLI verb 一一对应，AI/CI 不依赖窗口。
@@ -80,7 +80,8 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 C1a/C1b/C1c 已落：`berry shell` 进程内或 headless `berry device start` 都会起
 `control.sock` + QMP broker；CLI `device start/list/status/restart/stop`、`power off/reboot`、
 `logs`、`screenshot`（优先走 host）已可用，CLI 不直连 QMP；`berry shell --attach <id>` 可给
-headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩溃恢复。完整刀序见平台文档 §14。
+headless host 开窗，关窗只 detach。C1d/C1e/C1f 已落（state/cleanup/TCP）；
+C1g 还差 Windows 实机验证/打包、host 自动重启。完整刀序见平台文档 §14。
 
 ## 环境变量
 
@@ -121,7 +122,7 @@ headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩�
 - QEMU 是外部依赖（GPLv2，进程边界）；主仓 Apache-2.0 不打包 QEMU。
 - 帧面要求 QEMU `memory-backend-file,share=on`；不支持该后端的环境回退 VNC（P1 路径）。
 - `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 仍由 shell 持有，
-  `power reboot/off`、`display set` 等需要 C1 的 session host/QMP broker，当前未落。
+  `power reboot/off`、`display set` 已落（C1a/C2c）；只剩 Windows 实机、host 自动重启。
 - 窗口快捷栏 C2d 已落 5 键：`SHOT`/`RES`/`BOOT`/`OFF`/`FULL`（鼠标/触摸）；
   `OFF` 需 3s 内二次点击；`RES` 打开 profile 菜单，host 窗口内停旧/起新 profile。
 - C2b 已落：`berry shortcut screenshot|reboot|power`、`berry display list/set`（记录

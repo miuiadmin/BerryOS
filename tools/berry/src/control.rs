@@ -489,6 +489,11 @@ fn code_name(code: i32) -> &'static str {
 
 }
 
+/// Session host presence: Unix socket or Windows/TCP port file.
+pub fn is_up(run: &Path) -> bool {
+    run.join("control.sock").exists() || run.join("control.port").exists()
+}
+
 /// Client side: issue one request; TCP+token if `control.port` exists, else Unix.
 pub fn request(run: &Path, op: &str, args: Value) -> Result<Value> {
     if run.join("control.port").exists() {

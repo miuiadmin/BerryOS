@@ -593,7 +593,7 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   launcher 桌面尚未在该镜像验证——宿主数据面已就位。
 - `shell --timeout N` 测试/演示自动退出；P1 的 `snapshot=on` 覆盖层未升级为
   qcow2 持久层；PNG 已换 deflate（`miniz_oxide`，480×1000 约 3.8KB）；540×1200 仍被 1.92MB
-  GOP 缓冲容量拒（`DISP fail`）。
+  GOP 缓冲已支持；540×1200 在 mm::init 后用 buddy 4MB 连续块。
 
 - **GUI 模式 console 静音**：fbinfo 扩 48B 第 6 域 `gui=1`（仅 `DISP ok` 时置位）；
   guifbd 在该模式仍记账 `console_full_n`/`present_seq`，但跳过 `put_str`——测试/日志

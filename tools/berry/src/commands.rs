@@ -279,7 +279,7 @@ pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
             .unwrap_or_else(|_| out.clone())
     };
     // C1b: prefer the session host (works for any ScreenSource; no second VNC).
-    if run.join("control.sock").exists() {
+    if control::is_up(&run) {
         if let Ok(v) = control::request(
             &run,
             "screenshot",
@@ -306,7 +306,7 @@ pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
     let frame = source.next_frame(args.timeout).ok_or_else(|| {
         let err = source.error().unwrap_or_else(|| "no frame".to_string());
         BerryError::protocol(format!("VNC: {err}"))
-            .with_hint("is the device still running? try `berry list`")
+            .with_hint("is the device still running? try `berry device list`")
     })?;
     crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
     if args.json {
@@ -728,7 +728,7 @@ pub fn restart_profile(run: &Path, profile_id: &str) -> Result<PathBuf> {
     })?;
     let _ = control::request(run, "power", json!({"action":"off"}));
     let deadline = Instant::now() + Duration::from_secs(10);
-    while run.join("control.sock").exists() && Instant::now() < deadline {
+    while control::is_up(&run) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     if !keep {
@@ -749,7 +749,7 @@ pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {
 
 pub fn device_cleanup(run: Option<&str>, json: bool) -> Result<()> {
     let run = find_run(run)?;
-    if run.join("control.sock").exists() {
+    if control::is_up(&run) {
         if control::request(&run, "status", json!({})).is_ok() {
             return Err(BerryError::device(
                 "device is still running; stop it before cleanup",
@@ -819,7 +819,7 @@ pub fn device_list(json: bool) -> Result<()> {
             let label = meta.get("label").and_then(|v| v.as_str()).unwrap_or("-");
             let pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
             let saved = run_dir::read_state(&p).unwrap_or_else(|| "no-control".to_string());
-            let state = if p.join("control.sock").exists() {
+            let state = if control::is_up(&p) {
                 match control::request(&p, "status", json!({})) {
                     Ok(v) => v.get("state").and_then(|s| s.as_str()).unwrap_or("?").to_string(),
                     Err(_) if saved == "running" => "stale".to_string(),
@@ -910,7 +910,7 @@ pub fn device_stop(run: Option<&str>, json: bool) -> Result<()> {
                 Ok(())
             } else {
                 Err(e.with_hint(
-                    "session is stale (no control socket); start a new device or remove the run dir",
+                    "session is stale (no control endpoint); start a new device or run `berry device cleanup`",
                 ))
             }
         }

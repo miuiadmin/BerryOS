@@ -90,10 +90,10 @@
 ### 4.1 AI agent 闭环
 
 ```bash
-berry device start --profile phone --headless --json   # 得到 session id
+berry device start --profile phone --json   # 默认后台 headless；得到 session id
 berry screenshot --run <id> --out before.png --json
-berry tap 240 500 --run <id> --json
-berry key ret --run <id> --json
+berry input tap 240 500 --run <id> --json
+berry input key ret --run <id> --json
 berry screenshot --run <id> --out after.png --json
 berry power reboot --run <id> --json
 ```
@@ -311,27 +311,28 @@ NDJSON：一行一个 JSON 对象。
 ### 8.1 命令树
 
 ```
-berry [--json] [--run <id>] <command>
+berry [--json] [--verbose] <command>     # --run 是会话类子命令参数，非全局
 
 device
-  start [--profile] [--headless] [--foreground] [--json]
+  start [--image] [--profile] [--foreground] [--memory] [--keep] [--json]
   list [--json]
   status [--run] [--json]
-  stop [--run] [--force] [--json]
+  stop [--run] [--json]
   restart [--run] [--json]
-  attach [--run]                 # GUI 附着已存在 session
+  cleanup [--run] [--json]
+
+shell [--attach <id>] [--profile] [--scale] [--timeout]
+run [--kernel|--image] [--marker] [--timeout]
 
 screenshot [--run] [--out] [--settle-ms] [--json]
 shot [--image] [--profile] [--wait-marker] [--out] [--keep] [--json]
 
-input key|tap|swipe <...>        # 现有
-key|tap|swipe|text <...>         # 平铺别名（C1）
+input key|tap|swipe <...>        # 顶层别名/ text 未落，先用 input
+power off|reboot [--run] [--force] [--json]
+display list|set <profile> [--restart] [--run] [--json]
+# display rotate / WxH 自定义：未落（C2+）
 
-power off|reboot [--run] [--force] [--wait] [--json]
-display list|set <profile|WxH> [--restart] [--run] [--json]
-display rotate <0|90|180|270> [--run] [--json]     # C2
-
-shortcut screenshot|resolution|reboot|power|fullscreen [--run] [--json]
+shortcut screenshot|reboot|power [--run] [--json]
 
 logs [--run] [-f] [--tail N] [--json]
 events [--run] [--json]
@@ -339,7 +340,7 @@ record [--run] --out <dir> --frames N --interval-ms MS [--json]
 play <file.json> [--run] [--json]     # 步骤：screenshot/tap/key/text/swipe/wait/power/display
 stats [--run] [--json]
 doctor [--json]
-pack verify|install <path>       # C4
+pack verify|install <path>       # C4 规划，未落
 version
 ```
 
@@ -348,14 +349,14 @@ version
 **C1b 已落**：headless `device start`（默认后台，`--foreground` 阻塞）、`device restart`、
 `berry screenshot` 优先走 host control（VNC 兜底）。`device start` 的 host 进程标签 = `host`。
 **C1c 已落**：`berry shell --attach <id>` 打开已有 session（VNC 帧/输入 + control 动作）；
-关窗只 detach，host 继续。**C1d 未落**：Windows named pipe/TCP+token、host 崩溃恢复/
-`state.json` 持久化。
+关窗只 detach，host 继续。C1d/C1e/C1f 已落（state.json、cleanup、TCP+token）；
+**C1g 未落**：Windows 实机验证/打包、host 自动重启。
 
 ### 8.2 语义
 
 - **`shot` vs `screenshot`**：`shot` 起临时设备并抓一帧；`screenshot` attach 现有设备，
   不启动、不停止。
-- **`shell`**：`device start --gui` 的简写；保留双击兼容。
+- **`shell`**：打开窗口；headless 用 `device start`；`shell --attach` 附着已有 session；双击兼容。
 - **`--run`**：默认最新 running session；多设备时必填；`--json` 结果含 `run`。
 - **`--wait`**：阻塞到动作完成/超时；`--timeout` 秒。
 - **`--settle-ms`**：截图前等待（默认 0）；用于桌面首帧/动画后。
@@ -366,22 +367,20 @@ version
 
 ```bash
 # 起 headless 会话
-RUN=$(berry device start --profile phone --headless --json | jq -r .run)
+RUN=$(berry device start --profile phone --json | jq -r .run)
 
 # 看当前画面
 berry screenshot --run "$RUN" --out before.png --settle-ms 500
 
 # 操作
-berry tap 240 500 --run "$RUN"
-berry key ret --run "$RUN"
-berry text "hello" --run "$RUN"
+berry input tap 240 500 --run "$RUN"
+berry input key ret --run "$RUN"
 
 # UI 同款动作
 berry shortcut screenshot --run "$RUN"
-berry shortcut resolution --run "$RUN"
 
 # 电源
-berry power reboot --run "$RUN" --wait
+berry power reboot --run "$RUN"
 berry power off --run "$RUN"
 
 # 观察/收尾
@@ -445,7 +444,7 @@ berry device stop --run "$RUN"
 | `Cmd/Ctrl+S` | 截图 | `berry screenshot` |
 | `Cmd/Ctrl+Shift+R` | 重启 | `berry power reboot` |
 | `Cmd/Ctrl+Shift+Q` | 关机 | `berry power off` |
-| `F` | 全屏 | `berry shortcut fullscreen` |
+| `F` | 全屏 | —（窗口专属） |
 | `+/-` | 缩放 | `berry shell --scale`（窗口内） |
 | `Esc` | 退全屏 | — |
 | `I` | 信息悬浮 | `berry stats` |
@@ -473,7 +472,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | `default` | 800×600 | 兼容/CI |
 | `phone` | 480×1000 | 已落（恰好用满 800×600 GOP 缓冲） |
 | `phone16` | 480×854 | 可用 |
-| `phone20` | 540×1200 | 需 2.59MB 连续 fb；当前 `DISP fail` |
+| `phone20` | 540×1200 | **可用**：buddy 4MB 连续 fb + ramfb 重编程 |
 | `tablet` | 800×1280 | **可用**：buddy 4MB 连续块 + ramfb 重编程 |
 
 ### 10.2 `display set`
@@ -486,7 +485,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
   host 窗口内换 Device，attach 窗口重连新 run VNC，窗口继续。
 - **v2**：host/guest display 服务协商热切换（ramfb 重编程/virtio-gpu modeset）；
   需要客机侧协议，另立 ADR。
-- `display rotate` v1 只支持 `0`；90/180/270 需客机/呈现面支持，C2 评估。
+- `display rotate` 未落：需客机/呈现面支持，C2+ 评估；当前不要承诺 0/90/180/270。
 
 ### 10.3 电源
 
@@ -558,7 +557,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C2g（已落）** | 先起新 host 再停旧（失败旧 host 不动）；旧 run 按 keep 清理；tooltip 保持 | 新 host 失败不伤旧；keep=false 旧 run 删除 |
 | **C2h（已落）** | attach 新 host 失败保留旧 host；VNC 重连失败按旧 profile 回滚重连；stale 提示 cleanup | 失败不丢旧会话；rollback 可恢复 |
 | **C2i（下一刀）** | 快捷键提示扩展；host 自动重启；Windows 实机验证 | 交互/平台收口 |
-| **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
+| **C3（部分已落）** | `record`/`play`/`stats` 已落；`--wait`、时间轴回放、多设备未落 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
 **规则**：C1 之前 CLI 不直连 QMP；C2 之前 GUI 不直接调 QMP；所有动作先有 ControlClient

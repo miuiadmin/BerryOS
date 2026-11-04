@@ -200,7 +200,7 @@ pub fn run(args: ShellArgs) -> Result<()> {
     let keep = args.keep;
     let session = if let Some(id) = &args.attach {
         let run = commands::find_run(Some(id))?;
-        if !run.join("control.sock").exists() && !run.join("control.port").exists() {
+        if !crate::control::is_up(&run) {
             return Err(BerryError::device(format!(
                 "session {} has no control endpoint",
                 run.display()
