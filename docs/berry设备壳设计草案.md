@@ -606,7 +606,7 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   GUI-8 合并后 `just image` 即得桌面。
 
 **未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 已落；
-256MiB handoff 修复；C1b headless/Windows control。P2 未动 `smoke.sh` 默认 800×600
+256MiB handoff 已 boot 可用（MMAP degrade 待清）；C1b headless/Windows control。P2 未动 `smoke.sh` 默认 800×600
 与内核 ABI；`run-efi`/smoke 不带 `opt/berry/display` 时零漂移。
 
 ## 附录 A：RAMFBCfg（28B，大端）

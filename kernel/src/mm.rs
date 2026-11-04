@@ -27,13 +27,13 @@
 //! `static_mut_refs` 在 G0 下是良定义的（唯一可变访问、启动单线程）；SMP 后整体重构。
 #![allow(static_mut_refs)]
 
-use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
+use berry_hal_aarch64::{RAM_BASE, RAM_TOP, RAM_TOP_DEFAULT};
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::PAGE_SIZE;
 use berry_mm::MAX_ORDER;
 
 /// buddy 后备定容：按整段 RAM 计（RAM 几何来自 HAL 平台常量）。
-const MAX_PAGES: usize = (RAM_TOP - RAM_BASE) / PAGE_SIZE; // 32768
+const MAX_PAGES: usize = (RAM_TOP - RAM_BASE) / PAGE_SIZE; // 65536（256MiB 上限）
 
 /// buddy 后备：每页一个 bool（是否空闲块头）。
 static mut FRAME_FREE: [bool; MAX_PAGES] = [false; MAX_PAGES];
@@ -71,9 +71,12 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
         core::ptr::addr_of!(__kernel_end) as usize - berry_hal_aarch64::KERNEL_VA_BASE;
     // 全窗构造（V-1b）。位图/摘要后备随 K-1 索引一并借入。
     // SAFETY: 单核启动期，无并发；后备数组生命周期 'static。
+    let ram_top = handoff
+        .map(|h| h.dram_top as usize)
+        .unwrap_or(RAM_TOP_DEFAULT);
     let mut fa = FrameAllocator::new(
         RAM_BASE,
-        RAM_TOP,
+        ram_top,
         &mut FRAME_FREE,
         &mut FRAME_ORDER,
         &mut FRAME_BMAPS,
@@ -93,12 +96,15 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
         // 几何哨兵：handoff 窗与 HAL 常量不符 = 配置错位（改 -m 必须同步 HAL），
         // boot 期 fail-loud 优于带错几何继续。
         assert_eq!(h.dram_base, RAM_BASE as u64, "handoff dram_base != HAL RAM_BASE");
-        assert_eq!(h.dram_top, RAM_TOP as u64, "handoff dram_top != HAL RAM_TOP");
+        assert!(
+            h.dram_top >= RAM_BASE as u64 && h.dram_top <= RAM_TOP as u64,
+            "handoff dram_top outside HAL window"
+        );
         let pa = h.memmap_pa;
         let size = h.memmap_size;
         let dsize = h.memmap_desc_size;
         let ver = h.memmap_desc_version;
-        if let Some(n) = berry_mm::memmap::map_ok(pa, size, dsize, ver, RAM_BASE as u64, RAM_TOP as u64) {
+        if let Some(n) = berry_mm::memmap::map_ok(pa, size, dsize, ver, RAM_BASE as u64, ram_top as u64) {
             // pass 1：全量决策预演——任一 Bad 即弃图降级（reserve 零副作用）。
             let mut bad = false;
             for i in 0..n {
@@ -119,7 +125,7 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
                     // SAFETY: 同 pass 1。
                     let d = unsafe { berry_mm::memmap::desc_at(pa, dsize, i) };
                     if let berry_mm::memmap::DescDecision::Reserve(lo, hi) =
-                        berry_mm::memmap::desc_range(d, RAM_BASE as u64, RAM_TOP as u64)
+                        berry_mm::memmap::desc_range(d, RAM_BASE as u64, ram_top as u64)
                     {
                         reserved += fa.reserve(lo as usize, (hi - lo) as usize);
                     }

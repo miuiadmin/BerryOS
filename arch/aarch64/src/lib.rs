@@ -34,8 +34,11 @@ pub use uart::{uart_put_dec, uart_put_hex64, uart_putc, uart_puts};
 
 /// 物理内存起点（QEMU `virt` RAM）。
 pub const RAM_BASE: usize = 0x4000_0000;
-/// 物理内存终点（128MiB）。
-pub const RAM_TOP: usize = 0x4800_0000;
+/// 物理内存**最大**窗口（256MiB）：boot 页表/probe 上界；实际可用顶由
+/// handoff `dram_top` 决定（128MiB 默认，`-m 256M` 时 256MiB）。
+pub const RAM_TOP: usize = 0x5000_0000;
+/// 无 handoff（QEMU `-kernel`）时的默认 RAM 顶（128MiB）。
+pub const RAM_TOP_DEFAULT: usize = 0x4800_0000;
 /// QEMU `virt` PL011 UART0 基址。
 pub const UART0_BASE: usize = 0x0900_0000;
 /// GICv2 distributor 基址（QEMU `virt`）。
