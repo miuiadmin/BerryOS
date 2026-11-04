@@ -4,7 +4,8 @@
 > 随 /tmp 清洗扬失）——本文件为耐久证据摘要（硬门行原文摘录）。原始整日志
 > 16 份（KEEP_LOG 全量，各含恰 1 行 `ckpt=1469`，md5 全异——含瞬态段）存
 > f4 档案，扬失后以本摘要为准。smoke-smp 钩子面：`SMOKE_KEEP_LOG=1` 八 boot
-> 各留档（tools/smoke-smp.sh :109-129 在册，本刀跑用之）。
+> 各留档（tools/smoke-smp.sh :109-129 在册；g3-1d 跑未用——smoke-smp 证据走
+> 手工重定向归档 f4 档案，后续 smoke-smp 跑建议带之。f4 复审 e1 勘正）。
 
 ## 树态与产物
 
