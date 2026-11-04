@@ -2827,11 +2827,13 @@ extern "C" fn task_fast_pinger(arg: usize) -> ! {
     assert!(miss >= 1, "fa_ping: slowpath 须有走数（pong 回件时 ping Ready 未睡）");
     assert!(direct >= FAST_ROUNDS - 2,
             "fa_ping: 直切须 ≥N-2（32>16 每轮必切；实跑 {}）", direct);
-    // g3-1d 检查点观测面：send/recv 段出口检查点在 fa_ping 轮内真探形必达
-    //（每轮 send+recv 各一，span 已 drop ⇒ count==0）——活性断言 + 行尾
-    // ckpt= 字段（不新增金丝雀行族，f4 g3-1d 预警②零同步负担）。
+    // g3-1d 检查点观测面：ckpt= 为**全局累计**命中数（SVC 派发尾落点主导，
+    // 段出口只占少数）——真判别力 = 全局绊网：PreemptSpan 泄漏钉死 count>0
+    // ⇒ 全站空探（计数>0 直返）⇒ 此处归零即断（f4 g3-1d p1 语义正名：对
+    // 「段出口是否真探」零判别——逐段判别需每轮基线相对增量 ≥2×128）。
+    // 行尾字段不新增金丝雀行族（f4 g3-1d 预警②零同步负担）。
     let ckpt = berry_sched::preempt_checkpoint_hits();
-    assert!(ckpt >= 1, "fa_ping: 段出口检查点真探须有走数（实跑 {}）", ckpt);
+    assert!(ckpt >= 1, "fa_ping: 检查点全局计数归零——疑 PreemptSpan 泄漏使全站空探（实跑 {}）", ckpt);
     let avg_ticks = rt_ticks / FAST_ROUNDS;
     let ref_cyc = avg_ticks * 1_000_000_000 / freq; // 1GHz 参考 cycle（数值 = ns）
     // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（多段拼行整段入锁——RX ok 同款）。

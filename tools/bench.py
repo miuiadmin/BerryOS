@@ -661,11 +661,12 @@ def load_baseline_icount() -> dict[str, int]:
 def save_baseline_icount(metrics: dict[str, int]) -> None:
     """刷新 icount 基线**整个文件**（单段独立文件）——绝不经 save_baseline：
     其双段逻辑会误写 bench_baseline.txt（--rt 拒绝 --update 的理由同源）。
-    头注释五件 = §13 语义①/跨机不可比（§2 铁律 1——非公约 5：公约 5 是
+    头注释六件 = §13 语义①/跨机不可比（§2 铁律 1——非公约 5：公约 5 是
     TCG 半率单位纪律，跨机绝对值不可比的成文位置是 §2 铁律 1，2026-10-27
     审查勘误）/刷新命令/ICOUNT_TOL 镜像/cntvct_pair 量化语义（与 load 侧
     严格同形——P6 A-5 基准漂移雷：读写两侧不同形则「双绿」退化成对陈旧
-    基准自证）。"""
+    基准自证）/史档指针（史档与勘误记事迁 notes.md 不随 --update 重写——
+    2026-11-04 m1 迁移前整文件模板重写曾实证抹史一次，沿革五十四续）。"""
     iters = _iter_table()  # 与 B-0 同六项（bench.rs 定值镜像——分文件不分项）
     lines = [
         "# BerryOS -icount 确定性通道基线（B-2，`python3 tools/bench.py --icount`）。",
@@ -680,6 +681,7 @@ def save_baseline_icount(metrics: dict[str, int]) -> None:
         "# cntvct_pair=0 是合法值非故障：4096 次循环骨架在 0.125 cyc/instr 量化",
         "# 粒度下 <1 cyc/op 整除落地 = 0（「净成本 = 其余项 − cntvct_pair」心算",
         "# 口径仍成立——0 地板）。",
+        "# 史档/勘误记事 → tools/bench_baseline_icount.notes.md（--update 不触史，2026-11-04 m1 迁移）。",
     ]
     for name, cyc in sorted(metrics.items()):
         lines.append(f"{name},{iters.get(name, 0)},{cyc}")
