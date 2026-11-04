@@ -74,6 +74,7 @@ impl Device {
             "image":image.display().to_string(),
             "memory_mib":mem,
             "display_mode":mode,
+            "keep":keep,
         });
         std::fs::write(run.file("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
 

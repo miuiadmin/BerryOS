@@ -625,24 +625,28 @@ pub fn restart_profile(run: &Path, profile_id: &str) -> Result<PathBuf> {
         .map(PathBuf::from)
         .ok_or_else(|| BerryError::env("session has no image metadata; start with --image"))?;
     let memory = meta.get("memory_mib").and_then(|v| v.as_u64()).map(|v| v as u32);
-    let _ = control::request(run, "power", json!({"action":"off"}));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while run.join("control.sock").exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let keep = meta.get("keep").and_then(|v| v.as_bool()).unwrap_or(false);
+    // Start the replacement first: if it fails, the old host is untouched.
     let (new_run, _) = device_start_run(DeviceStartArgs {
         image: Some(image),
         profile: profile.id.to_string(),
         accel: "tcg".to_string(),
         memory,
         display_mode: None,
-        keep: true,
+        keep,
         foreground: false,
         json: false,
     })?;
+    let _ = control::request(run, "power", json!({"action":"off"}));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while run.join("control.sock").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !keep {
+        let _ = std::fs::remove_dir_all(run);
+    }
     Ok(new_run)
 }
-
 pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {
     let run = find_run(run)?;
     let v = control::request(&run, "power", json!({"action":"reboot"}))?;
