@@ -113,8 +113,8 @@ headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩�
 | `phone20` | 1080×2400 | 540×1200 | 已支持：buddy 4MB 连续 fb + ramfb 重编程 |
 | `tablet` | 1600×2560 | 800×1280 | 已支持：buddy 4MB 连续块 + ramfb 重编程 |
 
-`phone*`/`tablet` 默认内存 128MiB；`--memory 256` 已完整可 boot（`MMAP ok` + ROOTFS/GUI），
-128 零回归；profile 默认暂留 128，待 gui8 预览镜像同步 256 内核。
+`phone*`/`tablet` 默认内存 **256MiB**（`MMAP ok` + ROOTFS/GUI）；`default` 128MiB，
+`--memory 128` 仍零回归。gui8 540 预览镜像也已换 256 内核。
 
 ## 已知限制（P2）
 

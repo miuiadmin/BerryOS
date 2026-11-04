@@ -578,9 +578,8 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   `fb_pa/fmt/stride` 读 RAM 镜，BGRX→RGB，60Hz 轮询 + 采样签名去重；**无每帧 commit**。
 - `VncInput`（handshake 后不请求帧）作输入专用通道；QEMU VNC 多客户端，shell 的
   QMP 不再被 `berry input` 抢占。QMP 只留 reset/stop 控制。
-- 默认 `phone`/`phone16`/`phone20`/`tablet` 内存改 **128MiB**：实测 `-m 256M` 时
-  BerryBoot handoff 失效（`HANDOFF` 缺席、`ROOTFS absent`），128MiB 全链绿；
-  256MiB 的 handoff 修复另立刀。
+- 默认 `phone`/`phone16`/`phone20`/`tablet` 内存 **256MiB**：handoff `dram_top` 动态化
+  + `efi_ram_top` 修正后 `-m 256M` 全链绿（`MMAP ok`/ROOTFS/GUI）；`default` 128MiB。
 
 **与设计稿的差异（如实记）**：
 

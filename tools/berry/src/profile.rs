@@ -34,7 +34,7 @@ pub const PROFILES: &[Profile] = &[
         render_w: 480,
         render_h: 1000,
         refresh: 60,
-        memory_mib: 128,
+        memory_mib: 256,
     },
     Profile {
         id: "phone16",
@@ -43,7 +43,7 @@ pub const PROFILES: &[Profile] = &[
         render_w: 480,
         render_h: 854,
         refresh: 60,
-        memory_mib: 128,
+        memory_mib: 256,
     },
     Profile {
         id: "phone20",
@@ -52,7 +52,7 @@ pub const PROFILES: &[Profile] = &[
         render_w: 540,
         render_h: 1200,
         refresh: 60,
-        memory_mib: 128,
+        memory_mib: 256,
     },
     Profile {
         id: "tablet",
@@ -61,7 +61,7 @@ pub const PROFILES: &[Profile] = &[
         render_w: 800,
         render_h: 1280,
         refresh: 60,
-        memory_mib: 128,
+        memory_mib: 256,
     },
 ];
 
