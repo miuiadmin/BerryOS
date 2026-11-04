@@ -241,7 +241,8 @@ Created → Starting → Running ⇄ Paused → Rebooting/Stopping → Exited
 ### 7.1 传输
 
 - macOS/Linux：Unix domain socket `<run>/control.sock`，0600。
-- Windows：`127.0.0.1:<port>` + 随机 token（QEMU 不保证 named pipe）；token 0600 文件。
+- Windows / `BERRY_CONTROL_TCP=1`：`127.0.0.1:<port>` + 随机 token；写
+  `control.port`/`control.token`（token 0600）；每个请求带 token，服务端校验。
 - 默认只接受本机；不开公网；C3 远程必须显式 `--listen` + token/证书。
 
 ### 7.2 帧格式
@@ -420,8 +421,10 @@ berry device stop --run "$RUN"
   stopped/failed；`device list/status` 在 control 缺失时读 state，running 但无 control 标
   `stale`；`device stop` 对已停 run 幂等，对 stale 给诊断。
 - **C1e 已落（崩溃清理）**：meta 记 `qemu_pid`；`berry device cleanup` 对 stale/stopped run
-  先 TERM/KILL orphan QEMU，再删 run dir；running session 拒绝 cleanup。Windows 用
-  `taskkill`（代码路径），控制 socket 仍待 C1f。
+  先 TERM/KILL orphan QEMU，再删 run dir；running session 拒绝 cleanup。
+- **C1f 已落（TCP+token）**：非 Unix 用 `127.0.0.1:<port>` + `control.port`/`control.token`
+  （0600）NDJSON；Unix 默认仍 `control.sock`，`BERRY_CONTROL_TCP=1` 可强制 TCP 测试。
+  已在 macOS 用 TCP 模式跑通 status/logs/power off；Windows 走同一 TCP 代码路径。
 - 按钮 disabled 态：重启/关机进行中；tooltip 显示快捷键 + 等价 CLI。
 - 截图：闪一下 + 落 `berry-shot-<ts>.png` + 事件 `source=ui`。
 - 关机/重启：确认框；进行中显示遮罩；失败显示 `code/message` + 日志入口。
@@ -537,7 +540,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C1c（已落）** | `shell --attach <id>`：VNC 帧/输入 + control 动作；关窗 detach，host 继续 | headless host 可开窗；关窗不杀 session；`device status` 仍 running |
 | **C1d（已落 state）** | `state.json` 持久化（starting/running/rebooting/stopping/stopped/failed）；list/status 缺 control 时读 state，running→stale；stop 幂等 | 杀 host 后 list/status 显示 stale；正常 stop 显示 stopped |
 | **C1e（已落清理）** | meta 记 qemu_pid；`device cleanup` 杀 orphan QEMU + 删 stale run；running 拒绝 | 杀 host 后 cleanup 移除 QEMU/run |
-| **C1f（下一刀）** | Windows named pipe/TCP+token；host 自动重启 | Windows control 可用 |
+| **C1f（已落 TCP）** | 非 Unix TCP+token control；Unix 默认 socket，`BERRY_CONTROL_TCP=1` 测试；token 0600 | macOS TCP 模式 status/logs/power 全通；Windows 走同路径 |
+| **C1g（下一刀）** | Windows 实机验证/打包；host 自动重启 | 真机/CI 绿 |
 | **C2a（已落）** | 原生快捷栏 4 键（SHOT/BOOT/OFF/FULL）；截图/重启/关机/全屏；鼠标+触摸 | 窗口内可点；截图落盘；重启/关机走 control/QMP；全屏切换 |
 | **C2b（已落）** | `OFF` 二次确认；`berry shortcut`；`display list/set`（next-profile）；`events` JSONL | 关机需两次点击；CLI 可触发截图/重启/关机；事件可读 |
 | **C2c（已落 CLI）** | `display set <profile> --restart`：停旧 host、起新 profile host（新 run） | phone→phone16 实测 480×854；新 run 可控 |
