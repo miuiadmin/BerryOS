@@ -1,10 +1,8 @@
 //! Minimal PNG writer + PPM reader.
 //!
-//! No image crate: PNG's IDAT is a zlib stream, and zlib "stored" blocks are
-//! valid deflate without compression. Screenshots stay dependency-free and
-//! byte-exact; a 800x600 RGB frame becomes a ~1.4 MiB PNG, acceptable for a
-//! developer screenshot. (P2 can swap in a compressed encoder behind the same
-//! API if size matters.)
+//! No image crate: PNG's IDAT is a zlib stream; `miniz_oxide` supplies the
+//! deflate encoder (host-only dependency). A 480×1000 frame drops from
+//! ~1.4 MiB stored to a few tens of KiB; `write_png` API is unchanged.
 
 use std::fs;
 use std::fs::File;
@@ -29,7 +27,7 @@ pub fn write_png(path: &Path, width: u32, height: u32, rgb: &[u8]) -> Result<()>
         raw.push(0); // filter: None
         raw.extend_from_slice(&rgb[y * row..(y + 1) * row]);
     }
-    let z = zlib_store(&raw);
+    let z = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6);
 
     let mut ihdr = Vec::with_capacity(13);
     ihdr.extend_from_slice(&width.to_be_bytes());
@@ -59,34 +57,6 @@ fn write_chunk(w: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> Result<()> {
     crc.update(data);
     w.write_all(&crc.finish().to_be_bytes())?;
     Ok(())
-}
-
-fn zlib_store(data: &[u8]) -> Vec<u8> {
-    // zlib header: CMF=0x78, FLG=0x01 (no dict, fastest, valid check bits).
-    let mut out = Vec::with_capacity(data.len() + data.len() / 65535 * 5 + 16);
-    out.extend_from_slice(&[0x78, 0x01]);
-    let mut off = 0;
-    while off < data.len() {
-        let n = (data.len() - off).min(65535);
-        let last = off + n == data.len();
-        out.push(if last { 1 } else { 0 });
-        out.extend_from_slice(&(n as u16).to_le_bytes());
-        out.extend_from_slice(&(!(n as u16)).to_le_bytes());
-        out.extend_from_slice(&data[off..off + n]);
-        off += n;
-    }
-    out.extend_from_slice(&adler32(data).to_be_bytes());
-    out
-}
-
-fn adler32(data: &[u8]) -> u32 {
-    let mut a = 1u32;
-    let mut b = 0u32;
-    for &x in data {
-        a = (a + x as u32) % 65521;
-        b = (b + a) % 65521;
-    }
-    (b << 16) | a
 }
 
 struct Crc32 {
@@ -189,14 +159,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zlib_stored_roundtrip_header() {
-        let data = b"hello berry";
-        let z = zlib_store(data);
-        assert_eq!(&z[..2], &[0x78, 0x01]);
-        // final stored block: 0x01, len LE, ~len LE, data
-        assert_eq!(z[2], 1);
-        assert_eq!(u16::from_le_bytes([z[3], z[4]]) as usize, data.len());
-        assert_eq!(&z[7..7 + data.len()], data);
+    fn zlib_roundtrip() {
+        let data = b"hello berry hello berry hello berry";
+        let z = miniz_oxide::deflate::compress_to_vec_zlib(data, 6);
+        assert_eq!(&z[..1], &[0x78]);
+        let back = miniz_oxide::inflate::decompress_to_vec_zlib(&z).unwrap();
+        assert_eq!(back, data);
     }
 
     #[test]

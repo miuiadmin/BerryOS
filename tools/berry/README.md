@@ -96,7 +96,7 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
   GUI 模式（console 只走串口，不盖桌面）；默认 800×600 仍保留 console 上屏。
 - Windows/Linux 代码路径已写（TCP endpoint / 条件编译），但本轮只在 macOS 实机验证。
 - P1 用 QEMU `snapshot=on` 临时覆盖层，基础镜像只读；跨 boot 持久化（GUI-8 布局）留后续。
-- PNG 用 zlib stored block（无压缩），480×1000 约 1.4 MiB；后续换压缩编码。
+- PNG 用 `miniz_oxide` deflate（zlib）；480×1000 干净桌面约 3.8KB，含图标/照片内容仍远小于 stored。
 
 ## 测试
 

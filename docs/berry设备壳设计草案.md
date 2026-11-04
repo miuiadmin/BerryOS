@@ -396,6 +396,7 @@ justfile 里包一层 `berry-build`，解析 triple 后调用；这是构建入�
 | `softbuffer` | CPU 帧呈现 | MIT/Apache-2.0 |
 | `serde` + `serde_json` | QMP/profile/trace | MIT/Apache-2.0 |
 | `png` | 截图 | MIT/Apache-2.0 |
+| `miniz_oxide` | screenshot deflate | MIT/Zlib |
 | `clap` | CLI | MIT/Apache-2.0 |
 
 - 依赖只进 `tools/berry/Cargo.lock`；`deny.toml` 独立 allowlist；GPL/AGPL 零进入（ADR #37）。
@@ -644,7 +645,8 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
 - `shot` 仍以 VNC 抓帧，QMP `screendump` 兜底未接；测试镜像的 GUI 是 console/测试面，
   launcher 桌面尚未在该镜像验证——宿主数据面已就位。
 - `shell --timeout N` 测试/演示自动退出；P1 的 `snapshot=on` 覆盖层未升级为
-  qcow2 持久层；PNG 未压缩；540×1200 仍被 1.92MB GOP 缓冲容量拒（`DISP fail`）。
+  qcow2 持久层；PNG 已换 deflate（`miniz_oxide`，480×1000 约 3.8KB）；540×1200 仍被 1.92MB
+  GOP 缓冲容量拒（`DISP fail`）。
 
 - **GUI 模式 console 静音**：fbinfo 扩 48B 第 6 域 `gui=1`（仅 `DISP ok` 时置位）；
   guifbd 在该模式仍记账 `console_full_n`/`present_seq`，但跳过 `put_str`——测试/日志
@@ -656,7 +658,7 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   GUI-8 合并后 `just image` 即得桌面。
 
 **未落（下一刀）**：P3 shm ring/virtio-gpu/damage/120Hz/回放；540×1200 连续 fb；
-256MiB handoff 修复；PNG 压缩；attach 控制服务。P2 未动 `smoke.sh` 默认 800×600
+256MiB handoff 修复；attach 控制服务。P2 未动 `smoke.sh` 默认 800×600
 与内核 ABI；`run-efi`/smoke 不带 `opt/berry/display` 时零漂移。
 
 ## 附录 A：RAMFBCfg（28B，大端）
