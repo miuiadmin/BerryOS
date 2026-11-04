@@ -1,9 +1,12 @@
 # berry — BerryOS 开发者设备壳（host tool）
 
-一个宿主二进制，两种入口：
+一个宿主二进制，三种角色：
 
-- 终端里 `berry doctor / run / shot / shell / input` —— 可编程、可 CI；
-- 双击/无参数 —— 打开手机比例的设备窗口（`berry shell`）。
+- **CLI client**：`doctor / run / screenshot / input / ...` —— 可编程、可 CI/AI；
+- **GUI client**：双击/无参数 —— 手机比例窗口 + 快捷栏，调同一套控制面；
+- **session host**：同一二进制持有 QEMU/QMP/帧源，CLI/GUI attach（C1 收口）。
+
+CLI 是主接口；窗口按钮只是命令的按钮化，任何 UI 动作都应有等价 CLI。
 
 设计依据：`docs/berry设备壳设计草案.md` / ADR #62。**QEMU 只是引擎子进程**：
 帧面走 QEMU `memory-backend-file,share=on` 的客机 RAM 镜（`RamSource`），输入走
@@ -39,6 +42,7 @@ just berry doctor [--json]
 just berry run --kernel <elf> --marker "BerryOS boot" --timeout 30 --follow
 just berry shot --image out/berryos.img --out out/shot.png --timeout 120
 just berry shot --image out/berryos.img --profile phone --out out/phone.png
+just berry screenshot --out out/shot.png      # 抓正在跑的 shell，不重启
 just shell                                  # = berry shell --image out/berryos.img
 just berry shell --profile phone --timeout 30
 just berry input key ret
@@ -47,10 +51,28 @@ just berry input swipe 400 500 400 200 --ms 300
 just berry-smoke                            # doctor + kernel marker + EFI shot
 ```
 
-`berry shot` 不建窗口：起 QEMU（`-display none -vnc`）→ 等串口标记 → 从 VNC 抓一帧 →
-写 PNG → 停设备。`berry shell` 用 `-display none` + `memory-backend-file` 起同一套设备：
+`berry shot` 起一台**临时**设备：QEMU（`-display none -vnc`）→ 等串口标记 → 从 VNC 抓一帧 →
+写 PNG → 停设备。`berry screenshot` **不启动**新设备，直接 attach 正在跑的 shell（VNC 多客户端）
+抓一帧；这是 CLI/AI 对「当前界面」截图的主路径。`berry shell` 用 `-display none` + `memory-backend-file` 起同一套设备：
 串口 `FB ok 480x1000 … fb=0x…` 给出几何/PA，`RamSource` 直接读 `ram.bin`，窗口按
 19:9 等比缩放显示；VNC 只作输入通道（不请求帧），`berry input` 可与 shell 并存。
+
+## CLI-first 控制面（规划）
+
+目标：会话（session host）持有一台设备，CLI/GUI 都 attach 到同一 `control.sock`；窗口按钮
+与 CLI verb 一一对应，AI/CI 不依赖窗口。
+
+| 动作 | CLI（当前/规划） | 窗口快捷栏 |
+| --- | --- | --- |
+| 截图 | **`berry screenshot`（已落）** / `shot`（临时设备） | 截图按钮 / `Cmd+S` |
+| 输入 | `berry input key/tap/swipe`（VNC attach，已落） | 客机触摸/键盘 |
+| 重启/关机 | `berry power reboot/off`（C1） | 重启/关机按钮 |
+| 分辨率 | `berry display set <profile>`（C2） | 分辨率菜单 |
+| 全屏 | — | `F` |
+| 审计 | `berry events/logs`（C1/C2） | 同一事件流，`source=ui/cli` |
+
+C1 之前 `power/display` 还没有稳定跨进程路径：shell 持有 QMP（单客户端），CLI 不直连；
+`berry screenshot` 已用 VNC 多客户端绕开。完整刀序见设计稿 §6/§8/§13。
 
 ## 环境变量
 
@@ -89,8 +111,9 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 
 - QEMU 是外部依赖（GPLv2，进程边界）；主仓 Apache-2.0 不打包 QEMU。
 - 帧面要求 QEMU `memory-backend-file,share=on`；不支持该后端的环境回退 VNC（P1 路径）。
-- `berry input` 走 VNC 输入专用连接（多客户端，不请求帧）；QMP 只留 reset/stop。
-  独立 attach 控制服务仍未落，但跨进程注入已由 VNC 覆盖。
+- `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 仍由 shell 持有，
+  `power reboot/off`、`display set` 等需要 C1 的 session host/QMP broker，当前未落。
+- 窗口快捷栏（截图/分辨率/重启/关机/全屏）是 C2；当前只有键盘快捷键，且没有统一控制面。
 - 默认 `berry shot` 等 `BERRYBOOT ok`，当前测试镜像此时可能还在固件/测试面；要看 GUI
   请传 `--wait-marker "FBW ok"` 或 launcher 标记。`--profile phone` 时 guifbd 进入
   GUI 模式（console 只走串口，不盖桌面）；默认 800×600 仍保留 console 上屏。

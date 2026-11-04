@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use berry::commands::{
-    self, InputAction, InputArgs, RunArgs, ScaleMode, ShellArgs, ShotArgs,
+    self, InputAction, InputArgs, RunArgs, ScaleMode, ScreenshotArgs, ShellArgs, ShotArgs,
 };
 use berry::error::{BerryError, Result};
 
@@ -38,6 +38,8 @@ enum Cmd {
     Run(RunCmd),
     /// Boot the device image headlessly and capture one frame as PNG.
     Shot(ShotCmd),
+    /// Capture one frame from a running device (does not boot a new one).
+    Screenshot(ScreenshotCmd),
     /// Open the phone-shaped device window (the double-click entry).
     Shell(ShellCmd),
     /// Inject input into a running device via QMP.
@@ -86,6 +88,17 @@ struct ShotCmd {
     keep: bool,
     #[arg(long)]
     display_mode: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct ScreenshotCmd {
+    /// Run id/dir; default = newest running device.
+    #[arg(long)]
+    run: Option<String>,
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long, default_value_t = 10)]
+    timeout: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -180,6 +193,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             timeout: Duration::from_secs(c.timeout),
             keep: c.keep,
             display_mode: c.display_mode,
+            json: cli.json,
+        }),
+        Some(Cmd::Screenshot(c)) => commands::screenshot(ScreenshotArgs {
+            run: c.run,
+            out: c.out,
+            timeout: Duration::from_secs(c.timeout),
             json: cli.json,
         }),
         Some(Cmd::Shell(c)) => commands::shell(ShellArgs {

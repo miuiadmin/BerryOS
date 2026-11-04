@@ -1,7 +1,7 @@
 # 开发者设备壳（berry shell）设计草案
 
-> 【状态】草案 · 2026-11-03 立稿；P0/P1/P2 已落地（同日，见 §16.4）。用户裁决原话：「先把方案落了，我要最好的方案架构」。
-> 【定位】宿主侧开发者工具：一个 `berry` 二进制，终端里是 CLI，双击是手机比例窗口。
+> 【状态】草案 · 2026-11-03 立稿；P0/P1/P2 已落地；2026-11-04 **CLI-first 平台化重规划**（§0.1/§6/§8/§13 C 系列）。用户裁决原话：「先把方案落了，我要最好的方案架构」。
+> 【定位】宿主侧开发者工具 + 本地设备平台：一个 `berry` 二进制，CLI 为主接口，双击窗口是同一控制面的客户端。
 > 【单一事实源】本文 = 设备壳架构/协议/刀序；ADR #62 = 一句话裁决；GUI 规划 = 上游需求。
 > 【关系】补 `run-efi` 的 `-nographic` 窗口缺口；承接 GUI-9/SDK-1 的 screenshot/inject 宿主面；
 > 客机 GUI 服务边界不动（guifbd/gui-wmd/launcher 零重构，v1 只加 ramfb 模式设置与 commit）。
@@ -18,6 +18,40 @@ ramfb commit 是 v1 的桥；virtio-gpu 是终态。**
 Virtualization.framework/真机）、
 控制面（QMP/未来自家协议）、数据面（VNC/未来共享内存）。窗口、输入、截图、注入、回放
 只依赖这三面的**稳定契约**，不依赖任何一家实现。
+
+### 0.1 二进制还是平台？——二进制是分发，平台是契约
+
+**结论：二进制是分发单位，平台是稳定契约；v1 不做 SaaS/云设备农场。**
+
+- `berry` 仍是**单二进制**，但同一二进制有三种角色：
+  1. **CLI client**：`berry screenshot`/`key`/`power`/`display`——AI/CI 的默认入口；
+  2. **GUI client**：双击窗口 + 快捷栏，和 CLI 调同一套控制 API；
+  3. **session host**：`berry device serve`（或 GUI 进程内）持 QEMU/QMP/帧面，暴露本机
+     `control.sock`，CLI/GUI 都 attach。
+- **平台契约 = 四件**：CLI verbs + JSON schema/退出码 + 本机控制协议 + profile/runtime pack。
+  只要这四件稳定，引擎可以换 QEMU/Virtualization.framework/真机，数据面可以换 VNC/共享 RAM/
+  virtio-gpu，窗口/截图/输入/回放不用改。
+- **为什么不是纯一次性二进制**：`berry shot` 每次起一台新机，AI/CI 无法对「正在跑的界面」截图、
+  按键、重启、改分辨率；没有会话/状态，快捷键也无法被 CLI 复用。
+- **为什么不是重 daemon/SaaS**：本地优先、零账号、零网络依赖；QEMU GPL 仍是外部进程；
+  session host 与 GUI 可以同进程，也可以 headless 独立跑。远程/多设备是 C3，不是 v1 前提。
+- **裁决**：ADR #62 追记（2026-11-04）——「CLI-first 本地设备平台：单二进制三角色，
+  CLI/控制协议是主契约，GUI 是客户端」。对标见 §8.0。
+
+### 0.2 对标：别人怎么把「设备」做成可编程面
+
+| 参考 | 形态 | 借用 | 不照搬 |
+| --- | --- | --- | --- |
+| Android Emulator console + adb | 长活 emulator 进程 + `adb`/console 命令；`adb exec-out screencap` | 会话与命令分离；截图/电源/网络都有 CLI verb | 不做 adb 兼容层；不把 console 做成第二套文本协议 |
+| iOS `xcrun simctl` | 单 CLI 命名空间；`simctl io booted screenshot`、`simctl shutdown` | 设备 id + 简单 verb + 脚本友好 | 不做 Xcode 工程耦合 |
+| QEMU QMP | JSON 控制面；`screendump/system_reset/system_powerdown/quit` | 引擎后端只留白名单；事件驱动状态机 | QMP 单客户端 → 必须由 session host 做 broker，CLI 不直连 |
+| Docker CLI/daemon | client/daemon 分离；稳定 API；context | 本机 socket + 版本化请求；CLI 是薄客户端 | 不做容器/镜像仓库那套重生命周期 |
+| Playwright / Maestro | CLI-first 测试；确定性命令/选择器/JSON | `--json`、退出码、`--wait`、可重放 | 不用 UI 坐标当 API；命令是语义动作 |
+
+参考：Android Emulator console（developer.android.com/studio/run/emulator-console）、
+adb（developer.android.com/tools/adb）、simctl（developer.apple.com/documentation/xcode/simctl）、
+QMP（qemu.org/docs/master/interop/qmp-spec.html）、Docker Engine API（docs.docker.com/engine/api/）、
+Playwright CLI（playwright.dev/docs/test-cli）、Maestro（maestro.mobile.dev）。
 
 ## §1 问题与现状证据
 
@@ -209,45 +243,79 @@ VNC 在 ramfb 下**可能只能整帧更新**（客机直接写显存，QEMU 看
 `Caps.version` 是传输版本域；宿主只接受 `1..=MAX`。新能力（damage/多点/光标/远端）
 一律 add-only + 能力位；**禁止**让窗口代码出现 `if vnc { ... }` 分支。
 
-## §6 控制面：QMP + 本机 attach
+## §6 控制面：session host + 本机 control socket（QMP 只做引擎后端）
 
-### 6.1 QMP 命令白名单
+### 6.1 三层职责
+
+```
+CLI client ─┐
+GUI client ─┼── control.sock（NDJSON，本机，0600）── session host
+AI/CI ──────┘                                      ├─ QMP（唯一持有者）
+                                                   ├─ VNC / shared-RAM 帧源
+                                                   └─ QEMU 子进程
+```
+
+- **session host**：同一 `berry` 二进制的隐藏角色（`berry device serve` 或 GUI 进程内），
+  负责 spawn/回收 QEMU、持有 QMP、维护 run 状态、发事件。
+- **control.sock**：`<run>/control.sock`（Unix）或 `127.0.0.1:<port>` + token（Windows）；
+  请求/应答 NDJSON，一条请求一个 JSON 对象，事件 JSONL 可订阅。
+- **CLI/GUI 都只是客户端**：窗口按钮、键盘快捷键、`berry screenshot`、`berry power reboot`
+  走同一条控制路径，不存在「GUI 能做、CLI 不能做」的动作。
+- **QMP 不直连**：QEMU QMP 单客户端；由 host 持有并串行化，避免 shell+input/CLI 抢连接
+  （P1 的 `berry input` 冲突根因）。CLI 永不直连 QMP。
+
+### 6.2 QMP 白名单（host 内部）
 
 | 操作 | QMP | 说明 |
 | --- | --- | --- |
-| 握手 | `qmp_capabilities` | 启动后第一件事 |
+| 握手 | `qmp_capabilities` | host 启动后第一件事 |
 | 状态 | `query-status` | running/paused/shutdown |
 | 暂停/继续 | `stop` / `cont` | 调试/快照前置 |
 | 复位 | `system_reset` | 「重启设备」 |
 | 优雅退出 | `quit` | 先于 SIGTERM |
-| 截图 | `screendump` | PPM，CI 的确定性通道 |
-| 键盘 | `send-key` | headless 注入 |
-| 指针 | `input-send-event` | 绝对坐标，需 tablet 设备 |
+| 截图 | `screendump` | PPM，兜底通道；VNC attach 为主 |
+| 键盘/指针 | `send-key` / `input-send-event` | 仅 host 内部/兜底；主路径 VNC input |
 | 事件 | `SHUTDOWN/RESET/STOP/RESUME/GUEST_PANICKED` | 驱动状态机 |
 
-QMP 只绑 loopback/Unix socket，**永不开公网**；run dir 0700，socket 0600。Windows 上 QMP
-走 `tcp:127.0.0.1:<随机端口>`（QEMU 不保证 named pipe），靠目录权限 + 随机端口保安全。
+QMP 只绑 loopback/Unix socket，永不开公网；run dir 0700，socket 0600。Windows 走
+`tcp:127.0.0.1:<随机端口>` + token。
 
-### 6.2 生命周期状态机
+### 6.3 control.sock 协议（C1）
+
+请求：
+
+```json
+{"v":1,"id":7,"op":"screenshot","args":{"out":"shot.png"}}
+{"v":1,"id":8,"op":"key","args":{"code":"ret"}}
+{"v":1,"id":9,"op":"power","args":{"action":"reboot"}}
+{"v":1,"id":10,"op":"display","args":{"profile":"phone20"}}
+```
+
+应答：`{"v":1,"id":7,"ok":true,"result":{...}}`；错误：`{"v":1,"id":7,"ok":false,"code":"E_BUSY","message":"..."}`。
+事件：`{"v":1,"t":"frame","...}` / `{"v":1,"t":"state","from":"running","to":"rebooting"}`。
+纪律：`v` 版本、`id` 请求关联、`ok` 布尔、稳定错误码；未知 op = `E_UNSUPPORTED`，不静默。
+socket 权限 0600；token 只放 0600 文件，不进 argv；默认只接受本机。
+
+### 6.4 生命周期状态机
 
 ```
-Created → Starting → Running ⇄ Paused → Stopping → Exited
+Created → Starting → Running ⇄ Paused → Rebooting/Stopping → Exited
                          ↘ Failed（QEMU 崩溃/启动超时/协议错）
 ```
 
 - `Starting`：spawn QEMU → QMP 握手 → 等首帧/首标记（可配超时）。
-- `Running`：帧流 + 输入 + 标记监听。
-- `Stopping`：先 `quit`，5s 未退 SIGTERM，再 2s SIGKILL；无论如何回收子进程。
-- `Failed`：保留 run dir + serial 尾 + qemu.log，窗口显示「重启/打开日志」。
+- `Running`：帧源 + 输入 + 控制 socket + 事件。
+- `Rebooting`：`system_reset` → 等 `RESET`/首帧；状态保持同一 session id。
+- `Stopping`：`quit`，5s 未退 SIGTERM，再 2s SIGKILL；回收子进程。
+- `Failed`：保留 run dir + serial 尾 + qemu.log；GUI 显示「重启/打开日志」。
 
-### 6.3 本机 attach 协议
+### 6.5 当前落点（如实）
 
-`berry shot`/`berry input`/`berry stats` 要能附着到**正在跑的** shell：
-
-- shell 在 run dir 写 `control.json`（端口 + 随机 token + pid + 启动时刻）。
-- attach 客户端连 loopback，带 token；命令 = `shot`/`input`/`stats`/`reset`/`stop`。
-- 无 shell 时，CLI 可自己起一个 ephemeral 设备（`--ephemeral`）。
-- token 只放 0600 文件，不进 argv；服务端只接受 `127.0.0.1`。
+- **已落**：`berry screenshot` 通过 VNC attach 抓正在跑的 shell（多客户端，不抢 QMP）；
+  `berry input` 走 VNC input；`berry shot` 仍是「起临时设备 + 抓一帧」。
+- **未落（C1）**：control.sock/session host/QMP broker；`power reboot|off`、`status`、
+  `list`、`display set` 因此还没有稳定的跨进程路径。当前 shell 持有 QMP，CLI 直连会冲突，
+  这是 C1 要一次性收口的原因。
 
 ## §7 客机侧：三档演进
 
@@ -328,47 +396,82 @@ QEMU `memory-backend-file,share=on` 把客机 RAM 映射成文件，`RamSource` 
 | gui-inputd | EFI 路 tablet 认领 | 低（GUI-4 已有） |
 | launcher/berry-ui | 零改动（只吃新几何） | 零 |
 
-## §8 CLI 与窗口 UX
+## §8 CLI-first 与窗口 UX
 
-### 8.1 命令面
+### 8.0 原则
+
+1. **命令是语义动作，不是 UI 坐标**：`screenshot`/`key`/`tap`/`power`/`display` 都由 CLI 和
+   窗口按钮共用；AI/CI 不需要「点窗口的哪个像素」。
+2. **CLI 是主接口，窗口是客户端**：窗口快捷栏只是把命令做成按钮；任何按钮都必须有等价
+   CLI verb，且 CLI 可独立触发。
+3. **默认结构化**：`--json` 输出稳定对象/JSONL；人读文本走 stderr；退出码稳定。
+4. **可等待、可重放**：`--wait`/`--timeout`/`--run`；截图/事件带 schema 版本，供 CI/AI 回放。
+
+### 8.1 命令面（当前 + 规划）
+
+| 组 | 命令 | 状态 |
+| --- | --- | --- |
+| 生命周期 | `berry device start [--profile] [--gui]` / `list` / `status` / `stop` / `restart` | C1（`shell` 是 start --gui 的简写） |
+| 截图 | **`berry screenshot [--run <id>] [--out f.png]`** | **已落（VNC attach，不启动新机）** |
+| 一次性截图 | `berry shot [--image] [--profile] [--wait-marker] [--out]` | 已落（起临时设备） |
+| 输入 | `berry input key/tap/swipe` / `berry key` / `tap` / `swipe` / `text` | input 已落；平铺别名 C1 |
+| 电源 | `berry power off` / `berry power reboot` | C1（QMP broker） |
+| 显示 | `berry display set <profile|WxH>` / `display rotate` | C2（运行时切换需 host/guest 协议；v1 可 `--restart`） |
+| 快捷键 | `berry shortcut screenshot|resolution|reboot|power|fullscreen` | C2（与窗口按钮同一动作表） |
+| 观察 | `berry logs [-f]` / `events` / `stats` / `doctor` | logs/stats C1；events C2 |
+| 窗口 | `berry shell [--attach <id>]` / `--profile` / `--scale` | 当前 shell 自起会话；attach C1 |
+
+示例：
 
 ```bash
-berry                         # 无参数：无 TTY → shell；有 TTY → help
-berry shell [--profile phone] [--scale fit|1|2] [--fresh|--persist]
-berry run [--kernel|--image] [--marker "FBW ok"] [--timeout 120] [--json]
-berry shot [--ephemeral] [--wait-marker "FBW ok"] [--out shot.png] [--raw]
-berry input tap X Y | swipe X1 Y1 X2 Y2 MS | key QCODE | text STR
-berry logs [-f]
-berry stats [--json]
-berry list | stop <id>
-berry doctor [--json] [--fix]
-berry pack verify|install <path>
-berry version
+# 起一个设备（无窗口或窗口）
+berry shell --profile phone
+# 对正在跑的设备截图（不重启）
+berry screenshot --out shot.png
+# 输入
+berry input key ret
+berry input tap 240 500
+# 电源/分辨率（C1/C2）
+berry power reboot
+berry display set phone20 --restart
+# 触发窗口同款快捷动作
+berry shortcut screenshot
 ```
 
-- 全局：`--json`（JSONL 事件到 stdout，日志到 stderr）、`--quiet`、`--verbose`、`--no-color`。
-- 配置优先级：CLI > 环境变量 > profile > 内置默认；不做隐式全局配置。
-- 所有命令**不拼 shell 字符串**，argv 数组直传 QEMU。
+全局：`--json`、`--quiet`、`--verbose`、`--no-color`、`--run <id>`；配置优先级
+CLI > env > profile > 默认；所有 QEMU argv 直传，不拼 shell 字符串。
 
-### 8.2 窗口
+### 8.2 窗口：原生快捷栏（不是客机 UI）
 
-- `winit` + `softbuffer`；默认「fit」：屏幕高度 85%、等比、黑边；
-  `--scale 1|2` 走整数最近邻；fit 走定点 bilinear。
-- 细边框 8px，不做假刘海/假按键；客机自己画状态栏。
-- 标题：`BerryOS — phone (480×1000 · 60Hz)`。
-- 悬浮信息（默认隐藏，`I` 切换）：FPS、帧时 p50/p95、缩放、传输、分辨率。
-- 快捷键：`Cmd/Ctrl+S` 截图、`R` 复位、`F` 全屏、`+/-` 缩放、`Esc` 退全屏、`Cmd/Ctrl+Q` 退出。
-- 关闭窗口 = 询问「关机/仅关窗口」；选关窗口则 QEMU 继续跑，`berry list` 可见。
+- 窗口 = 客机帧区 + **底部 44px 原生快捷栏**（winit 自绘，不占客机分辨率）。
+- 按钮：`截图`、`分辨率`、`重启`、`关机`、`全屏`；鼠标悬停显示快捷键 + 等价 CLI。
+- 键盘：`Cmd/Ctrl+S` 截图、`Cmd/Ctrl+Shift+R` 重启、`Cmd/Ctrl+Shift+Q` 关机、
+  `F` 全屏、`+/-` 缩放、`Esc` 退全屏。
+- 每个按钮调用与 CLI 相同的 `ControlClient` 方法；动作结果发事件（`source=ui|cli`），
+  CLI 能审计「谁触发了关机」。
+- 关机/重启弹确认；截图闪一下并落 `berry-shot-<ts>.png`；分辨率菜单列 profiles，
+  选择后按 C2 语义应用（v1 可提示「需重启」并重启）。
+- 快捷栏是宿主 UI：客机卡死/黑屏时仍能截图、重启、关机——这是它相对客机 UI 的核心价值。
+- 标题：`BerryOS — phone (480×1000 · 60Hz)`；悬浮信息（`I`）显示 FPS/帧时/缩放/传输。
 
 ### 8.3 双击语义
 
 | 平台 | 形态 | 注意 |
 | --- | --- | --- |
-| macOS | `BerryOS.app`，`Contents/MacOS/berry` | Info.plist `NSHighResolutionCapable`；签名 + 公证 |
+| macOS | `BerryOS.app`，`Contents/MacOS/berry` | Info.plist `NSHighResolutionCapable`；ad-hoc/Developer ID + 公证 |
 | Windows | `berry.exe`，GUI 子系统 | 从终端启动时 `AttachConsole` 接回 stdout/stderr |
 | Linux | AppImage + `.desktop`，`Terminal=false` | X11/Wayland 依赖随包；`Exec=berry shell` |
 
-无参数 + 无 TTY = shell；有 TTY = help。这一条同时满足双击和终端直觉。
+无参数 + 无 TTY = GUI（内部起 session host + 窗口）；有 TTY = help。双击窗口与
+`berry shell` 都只是客户端入口；真正的设备会话在 host 里，CLI 可随时 attach。
+
+### 8.4 AI/CI 契约
+
+- 不依赖窗口：`berry screenshot`/`key`/`tap`/`power` 全部无窗口可用。
+- 确定性：`--json` 字段稳定、退出码稳定；截图带 `run`/`profile`/`source` 元数据。
+- 可等待：`--wait-marker`/`--wait-frame`/`--timeout`；失败返回 serial 尾/错误码。
+- 可回放：事件 JSONL + 截图 + 输入序列 = 最小复现包（C3）。
+- 安全：默认只绑本机；token/0600；不把 QMP/control 暴露公网。
 
 ## §9 构建、打包、分发
 
@@ -546,6 +649,18 @@ CI 不建窗口；`shot --ephemeral` 内部 VNC/QMP 全 headless。GUI 冒烟留
 
 - shm ring / virtio-gpu 2D / damage；540×1200；120Hz；trace 回放；录屏。
 - 判据：同场景 CPU 比 VNC 降 30%+；`Caps.damage=true` 下窗口零改动。
+
+### C0–C3：CLI-first 平台刀序（2026-11-04 重规划）
+
+| 刀 | 交付 | 判据 |
+| --- | --- | --- |
+| **C0（已落）** | `berry screenshot --out` attach 正在跑的 shell；PNG deflate；`input` VNC；`shot`/`shell` | 运行中 shell + 另起 CLI 截图成功；11 host 单测绿 |
+| **C1（下一刀）** | session host + `control.sock` + QMP broker；`device list/status/stop`；`power reboot/off`；`logs` | CLI 在 shell 运行时重启/关机；QMP 不再被单客户端抢占；窗口与 CLI 同源 |
+| **C2** | `display set/rotate`/profile 菜单；原生快捷栏五按钮 + `shortcut`；事件 `source` | 改分辨率（v1 重启应用）/旋转；五个按钮全有等价 CLI；客机卡死仍可操作 |
+| **C3** | 多设备/远程、事件回放、录屏、Runtime Pack/插件后端 | 一台 host 多 session；CI 录放可复现；远端只走显式启用 |
+
+规则：C1 之前不在 CLI 里直连 QMP；C2 之前窗口按钮不直接调 QMP；所有动作统一走
+`ControlClient`，否则「CLI 能操作快捷键」会退化成两套路径。
 
 ## §14 风险与 kill criteria
 

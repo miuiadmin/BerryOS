@@ -41,6 +41,13 @@ pub struct ShotArgs {
     pub json: bool,
 }
 
+pub struct ScreenshotArgs {
+    pub run: Option<String>,
+    pub out: Option<PathBuf>,
+    pub timeout: Duration,
+    pub json: bool,
+}
+
 pub struct ShellArgs {
     pub image: Option<PathBuf>,
     pub profile: String,
@@ -232,6 +239,30 @@ pub fn shot(args: ShotArgs) -> Result<()> {
         );
     } else {
         println!("shot: {} ({}x{})", out.display(), frame.width, frame.height);
+    }
+    Ok(())
+}
+
+/// Capture one frame from an already-running device (CLI-first attach).
+/// Does not spawn QEMU; VNC is multi-client so this coexists with `berry shell`.
+pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
+    let run = find_run(args.run.as_deref())?;
+    let endpoint = vnc_endpoint(&run)?;
+    let mut source = VncSource::connect(&endpoint)?;
+    let frame = source.next_frame(args.timeout).ok_or_else(|| {
+        let err = source.error().unwrap_or_else(|| "no frame".to_string());
+        BerryError::protocol(format!("VNC: {err}"))
+            .with_hint("is the device still running? try `berry list`")
+    })?;
+    let out = args.out.unwrap_or_else(|| PathBuf::from("screenshot.png"));
+    crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
+    if args.json {
+        println!(
+            "{}",
+            json!({"v":1,"t":"screenshot","path":out,"width":frame.width,"height":frame.height,"run":run})
+        );
+    } else {
+        println!("screenshot: {} ({}x{})", out.display(), frame.width, frame.height);
     }
     Ok(())
 }
