@@ -374,7 +374,7 @@ pub fn input(args: InputArgs) -> Result<()> {
 }
 
 /// QEMU qcode -> X11 keysym (the VNC input channel speaks keysyms).
-fn qcode_to_keysym(q: &str) -> Option<u32> {
+pub(crate) fn qcode_to_keysym(q: &str) -> Option<u32> {
     Some(match q {
         "ret" | "enter" => 0xff0d,
         "esc" => 0xff1b,
@@ -421,6 +421,51 @@ pub fn host(args: HostArgs) -> Result<()> {
     std::io::stdout().flush().ok();
     device.wait();
     device.stop();
+    Ok(())
+}
+
+pub fn play(script: &Path, run: Option<&str>, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let raw = std::fs::read(script)
+        .map_err(|e| BerryError::env(format!("read script {}: {e}", script.display())))?;
+    let doc: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|e| BerryError::protocol(format!("script json: {e}")))?;
+    let steps = doc
+        .get("steps")
+        .and_then(|s| s.as_array())
+        .or_else(|| doc.as_array())
+        .ok_or_else(|| BerryError::protocol("script needs {steps:[...]} or an array"))?;
+    let mut done = 0usize;
+    for (i, step) in steps.iter().enumerate() {
+        let op = step.get("op").and_then(|s| s.as_str()).unwrap_or("");
+        let args = step
+            .get("args")
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut a = step.clone();
+                if let Some(o) = a.as_object_mut() {
+                    o.remove("op");
+                }
+                a
+            });
+        if op == "wait" {
+            let ms = args.get("ms").and_then(|v| v.as_u64()).unwrap_or(100);
+            std::thread::sleep(Duration::from_millis(ms));
+        } else {
+            control::request(&run, op, args).map_err(|e| {
+                BerryError::new(e.code, format!("step {} ({op}): {}", i + 1, e.message))
+            })?;
+        }
+        done += 1;
+        if !json {
+            println!("play: {}/{} {op}", i + 1, steps.len());
+        }
+    }
+    if json {
+        println!("{}", json!({"v":1,"t":"play","run":run,"steps":done}));
+    } else {
+        println!("play: {done} step(s) on {}", run.display());
+    }
     Ok(())
 }
 

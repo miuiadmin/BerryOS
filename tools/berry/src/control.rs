@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::display::frame::ScreenSource;
-use crate::display::vnc::VncSource;
+use crate::display::vnc::{VncInput, VncSource};
 use crate::error::{BerryError, Result};
 use crate::net::Endpoint;
 use crate::qmp::QmpClient;
@@ -247,7 +247,7 @@ fn dispatch(
     match op {
         "hello" => Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "capabilities": ["hello","status","power","stop","logs","screenshot"],
+            "capabilities": ["hello","status","power","stop","logs","screenshot","key","tap","swipe","text"],
         })),
         "status" => {
             let mut q = qmp.lock().unwrap();
@@ -365,6 +365,52 @@ fn dispatch(
             let lines: Vec<&str> = text.lines().collect();
             let start = lines.len().saturating_sub(n);
             Ok(json!({"lines": lines[start..]}))
+        }
+        "key" => {
+            let code = args.get("code").and_then(Value::as_str).unwrap_or("");
+            let ks = crate::commands::qcode_to_keysym(code)
+                .ok_or_else(|| BerryError::new(2, format!("unknown key '{code}'")))?;
+            let mut v = VncInput::connect(vnc)?;
+            v.key(ks, true)?;
+            v.key(ks, false)?;
+            Ok(json!({"key": code}))
+        }
+        "tap" => {
+            let x = args.get("x").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let y = args.get("y").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let mut v = VncInput::connect(vnc)?;
+            v.pointer(x, y, 1)?;
+            std::thread::sleep(Duration::from_millis(30));
+            v.pointer(x, y, 0)?;
+            Ok(json!({"x":x,"y":y}))
+        }
+        "swipe" => {
+            let x1 = args.get("x1").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let y1 = args.get("y1").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let x2 = args.get("x2").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let y2 = args.get("y2").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let ms = args.get("ms").and_then(Value::as_u64).unwrap_or(200);
+            let steps = (ms / 16).max(2);
+            let mut v = VncInput::connect(vnc)?;
+            v.pointer(x1, y1, 1)?;
+            for i in 1..=steps {
+                let t = i as f64 / steps as f64;
+                let x = (x1 as f64 + (x2 as f64 - x1 as f64) * t) as u16;
+                let y = (y1 as f64 + (y2 as f64 - y1 as f64) * t) as u16;
+                v.pointer(x, y, 1)?;
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            v.pointer(x2, y2, 0)?;
+            Ok(json!({"x1":x1,"y1":y1,"x2":x2,"y2":y2}))
+        }
+        "text" => {
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+            let mut v = VncInput::connect(vnc)?;
+            for ch in text.chars() {
+                v.key(ch as u32, true)?;
+                v.key(ch as u32, false)?;
+            }
+            Ok(json!({"text":text}))
         }
         "screenshot" => {
             let out = args

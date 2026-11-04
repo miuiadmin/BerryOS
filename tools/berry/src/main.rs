@@ -55,6 +55,8 @@ enum Cmd {
     Events(EventsCmd),
     /// Capture a screenshot sequence from a running device.
     Record(RecordCmd),
+    /// Run a JSON action script against a running device.
+    Play(PlayCmd),
     /// Internal headless session host (used by `device start`).
     #[command(hide = true)]
     Host(HostCmd),
@@ -150,6 +152,13 @@ struct DisplaySetCmd {
 struct ShortcutCmd {
     #[arg(value_parser = ["screenshot", "resolution", "reboot", "power", "fullscreen"])]
     action: String,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct PlayCmd {
+    file: PathBuf,
     #[arg(long)]
     run: Option<String>,
 }
@@ -388,6 +397,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Record(c)) => {
             commands::record(c.run.as_deref(), &c.out, c.frames, c.interval_ms, cli.json)
         }
+        Some(Cmd::Play(c)) => commands::play(&c.file, c.run.as_deref(), cli.json),
         Some(Cmd::Host(c)) => commands::host(commands::HostArgs {
             image: c.image,
             profile: c.profile,
