@@ -71,6 +71,7 @@ pub struct DeviceStartArgs {
 }
 
 pub struct ShellArgs {
+    pub attach: Option<String>,
     pub image: Option<PathBuf>,
     pub profile: String,
     pub scale: ScaleMode,
@@ -640,7 +641,7 @@ pub fn logs(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Result<
     Ok(())
 }
 
-fn find_run(id: Option<&str>) -> Result<PathBuf> {
+pub(crate) fn find_run(id: Option<&str>) -> Result<PathBuf> {
     if let Some(id) = id {
         let p = if Path::new(id).is_dir() {
             PathBuf::from(id)
@@ -673,7 +674,7 @@ fn find_run(id: Option<&str>) -> Result<PathBuf> {
         .ok_or_else(|| BerryError::env("no running device").with_hint("start one with `berry shell`"))
 }
 
-fn vnc_endpoint(run: &Path) -> Result<Endpoint> {
+pub(crate) fn vnc_endpoint(run: &Path) -> Result<Endpoint> {
     #[cfg(unix)]
     {
         let p = run.join("vnc.sock");

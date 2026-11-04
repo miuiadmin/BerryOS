@@ -208,6 +208,9 @@ struct HostCmd {
 
 #[derive(Parser, Debug)]
 struct ShellCmd {
+    /// Attach the window to an existing headless session (run id/dir).
+    #[arg(long)]
+    attach: Option<String>,
     #[arg(long)]
     image: Option<PathBuf>,
     #[arg(long, default_value = "phone")]
@@ -338,6 +341,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             json: cli.json,
         }),
         Some(Cmd::Shell(c)) => commands::shell(ShellArgs {
+            attach: c.attach,
             image: c.image,
             profile: c.profile,
             scale: parse_scale(&c.scale)?,
@@ -377,6 +381,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(0);
             commands::shell(ShellArgs {
+                attach: None,
                 image: None,
                 profile: "phone".to_string(),
                 scale: ScaleMode::Fit,

@@ -344,7 +344,9 @@ version
 `control.sock` NDJSON + QMP broker 在 `berry shell` 进程内生效；CLI 不直连 QMP。
 **C1b 已落**：headless `device start`（默认后台，`--foreground` 阻塞）、`device restart`、
 `berry screenshot` 优先走 host control（VNC 兜底）。`device start` 的 host 进程标签 = `host`。
-**C1c 未落**：`shell --attach <id>`、Windows named pipe/TCP+token、headless 崩溃恢复。
+**C1c 已落**：`berry shell --attach <id>` 打开已有 session（VNC 帧/输入 + control 动作）；
+关窗只 detach，host 继续。**C1d 未落**：Windows named pipe/TCP+token、host 崩溃恢复/
+`state.json` 持久化。
 
 ### 8.2 语义
 
@@ -510,7 +512,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C0（已落）** | `berry screenshot` attach（VNC 多客户端）；PNG deflate；`input` VNC；macOS `.app`；480×1000 干净桌面 | 运行中 shell + CLI 截图成功；3.8KB PNG；11 host 单测 |
 | **C1a（已落）** | shell-hosted control.sock + QMP broker；`device list/status/stop`；`power off/reboot`；`logs` | shell 运行时 CLI 重启/关机/查状态/看日志；QMP 不再冲突 |
 | **C1b（已落）** | headless `device start`（host 角色，`--foreground`）、`device restart`；`screenshot` 走 host（VNC 兜底） | 无窗口起会话；CLI 截图/重启/关机全通；host 标签 `host` |
-| **C1c（下一刀）** | `shell --attach <id>`；Windows named pipe/TCP+token；崩溃恢复/状态持久化 | 已有 session 开窗；Windows 可用；host 崩溃可诊断 |
+| **C1c（已落）** | `shell --attach <id>`：VNC 帧/输入 + control 动作；关窗 detach，host 继续 | headless host 可开窗；关窗不杀 session；`device status` 仍 running |
+| **C1d（下一刀）** | Windows named pipe/TCP+token；host 崩溃恢复/`state.json` 持久化 | Windows 可用；host 崩溃可诊断/重启 |
 | **C2** | `display set/restart`；原生快捷栏五按钮；`shortcut`；`events` | 五个按钮全有等价 CLI；改 profile 重启生效；客机卡死仍可操作 |
 | **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
@@ -525,7 +528,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | 现状 | 目标 | 差距/动作 |
 | --- | --- | --- |
 | `shot` 起临时设备 | `shot` 保留；`screenshot` attach | **screenshot 已落**（VNC） |
-| `shell` 自起 + 持 QMP | host 持 QMP + control.sock | **C1a 已落**：Device 内嵌 ControlServer/QMP broker；C1b 加 headless host |
+| `shell` 自起 + 持 QMP | host 持 QMP + control.sock | **C1a 已落**：Device 内嵌 ControlServer/QMP broker；C1b 加 headless host；C1c 加 attach |
 | `input` VNC attach | control `input` op | C1 路由；VNC 保留兜底 |
 | 无 `list/status/stop` | RunStore + control | **C1a/C1b 已落**（shell/headless） |
 | 无 `power/display` | QMP broker + profile 重启 | **power C1a 已落**；display C2 |

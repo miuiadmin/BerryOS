@@ -226,7 +226,7 @@ VNC 在 ramfb 下**可能只能整帧更新**（客机直接写显存，QEMU 看
   `system_powerdown`、`quit`、`screendump`、`send-key`、`input-send-event`、事件。
 - 生命周期/错误码/op 表见平台文档 §6/§7；本文不再重复。
 - 当前落点：`berry screenshot` 已用 VNC 多客户端 attach；QMP broker/control.sock C1a 已落
-  （shell-hosted）；C1b headless `device start`/restart/screenshot 走 host 已落；C1c 补 attach/Windows。
+  （shell-hosted）；C1b headless `device start`/restart/screenshot 走 host、C1c `shell --attach` 均已落；C1d 补 Windows/崩溃恢复。
 
 ## §7 客机侧：三档演进
 

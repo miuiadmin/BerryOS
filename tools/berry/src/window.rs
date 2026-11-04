@@ -12,9 +12,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::commands::{ScaleMode, ShellArgs};
+use crate::commands::{self, ScaleMode, ShellArgs};
+use crate::control;
 use crate::device::Device;
-use crate::display::frame::{Frame, InputEvent};
+use crate::display::frame::{Frame, InputEvent, ScreenSource};
+use crate::display::vnc::VncSource;
 use crate::display::scale::{self, Fit};
 use crate::error::{BerryError, Result};
 use crate::input;
@@ -22,31 +24,112 @@ use crate::profile::Profile;
 
 pub fn run(args: ShellArgs) -> Result<()> {
     let profile = crate::profile::get(&args.profile)?;
-    let device = Device::start(
-        args.image,
-        profile,
-        &args.accel,
-        args.memory,
-        args.display_mode,
-        args.keep,
-        "shell",
-    )?;
+    let session = if let Some(id) = &args.attach {
+        let run = commands::find_run(Some(id))?;
+        let ep = commands::vnc_endpoint(&run)?;
+        let source = VncSource::connect(&ep)?;
+        Session::Attach(Attached {
+            run,
+            source,
+            last_poll: Instant::now(),
+            dead: false,
+        })
+    } else {
+        Session::Host(Device::start(
+            args.image,
+            profile.clone(),
+            &args.accel,
+            args.memory,
+            args.display_mode,
+            args.keep,
+            "shell",
+        )?)
+    };
     let event_loop = EventLoop::new()
         .map_err(|e| BerryError::device(format!("event loop: {e}")))?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(device, profile, args.scale);
+    let mut app = App::new(session, profile, args.scale);
     if !args.timeout.is_zero() {
         app.deadline = Some(Instant::now() + args.timeout);
     }
     event_loop
         .run_app(&mut app)
         .map_err(|e| BerryError::device(format!("window: {e}")))?;
-    app.device.stop();
+    app.session.stop();
     Ok(())
 }
 
+enum Session {
+    Host(Device),
+    Attach(Attached),
+}
+
+struct Attached {
+    run: std::path::PathBuf,
+    source: VncSource,
+    last_poll: Instant,
+    dead: bool,
+}
+
+impl Session {
+    fn source_mut(&mut self) -> &mut dyn ScreenSource {
+        match self {
+            Self::Host(d) => d.source_mut(),
+            Self::Attach(a) => &mut a.source,
+        }
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        match self {
+            Self::Host(d) => d.reset(),
+            Self::Attach(a) => {
+                control::request(&a.run, "power", serde_json::json!({"action":"reboot"}))?;
+                Ok(())
+            }
+        }
+    }
+
+    fn stop_requested(&mut self) -> bool {
+        match self {
+            Self::Host(d) => d.stop_requested(),
+            Self::Attach(a) => {
+                if a.dead {
+                    return true;
+                }
+                if a.last_poll.elapsed() < Duration::from_secs(1) {
+                    return false;
+                }
+                a.last_poll = Instant::now();
+                match control::request(&a.run, "status", serde_json::json!({})) {
+                    Ok(v) => {
+                        let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                        if state == "stopped" || state == "exited" {
+                            a.dead = true;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Err(_) => {
+                        a.dead = true;
+                        true
+                    }
+                }
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        match self {
+            Self::Host(d) => d.stop(),
+            // Attach owns no QEMU: closing the window detaches, session stays.
+            Self::Attach(_) => {}
+        }
+    }
+}
+
 struct App {
-    device: Device,
+    session: Session,
     profile: Profile,
     scale: ScaleMode,
     window: Option<Arc<Window>>,
@@ -64,9 +147,9 @@ struct App {
 }
 
 impl App {
-    fn new(device: Device, profile: Profile, scale: ScaleMode) -> Self {
+    fn new(session: Session, profile: Profile, scale: ScaleMode) -> Self {
         Self {
-            device,
+            session,
             profile,
             scale,
             window: None,
@@ -85,7 +168,7 @@ impl App {
     }
 
     fn poll_frame(&mut self) -> bool {
-        match self.device.source_mut().try_next_frame() {
+        match self.session.source_mut().try_next_frame() {
             Some(frame) => {
                 self.last_frame = Some(frame);
                 true
@@ -145,7 +228,7 @@ impl App {
             scale::window_to_guest(px as u32, py as u32, fit, frame.width, frame.height)
         {
             let _ = self
-                .device
+                .session
                 .source_mut()
                 .send_input(InputEvent::Pointer { x, y, buttons });
         }
@@ -196,7 +279,7 @@ impl App {
         }
         if let Some(ks) = input::keysym(&event.logical_key) {
             let _ = self
-                .device
+                .session
                 .source_mut()
                 .send_input(InputEvent::Key { keysym: ks, down: pressed });
         }
@@ -204,7 +287,7 @@ impl App {
     }
 
     fn reset(&mut self) {
-        if self.device.reset().is_ok() {
+        if self.session.reset().is_ok() {
             self.last_frame = None;
             self.request_redraw();
             println!("reset: ok");
@@ -289,7 +372,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.device.stop();
+                self.session.stop();
                 event_loop.exit();
             }
             WindowEvent::Resized(_) => {
@@ -348,10 +431,10 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.quit
-            || self.device.stop_requested()
+            || self.session.stop_requested()
             || self.deadline.is_some_and(|d| Instant::now() >= d)
         {
-            self.device.stop();
+            self.session.stop();
             event_loop.exit();
             return;
         }
