@@ -562,12 +562,22 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
                 core::sync::atomic::AtomicU32::new(0);
             let k = UNKNOWN_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if k < 4 {
-                // G43/G44 拼行：IRQ 上下文（PSTATE.I=1）→ 裸 PRINT_LOCK 对。
-                crate::kern_lock::print_lock();
-                uart_puts(b"irq? id=");
-                crate::uart_put_dec(id as u64);
-                uart_puts(b"\n");
-                crate::kern_lock::print_unlock();
+                // m1 门（errata 批，§A114 追记二）：G3-1c-1 后任务态
+                // with_print_lock = preempt 包络（IRQ 可入窗）——本核
+                // preempt_count>0 = 被打断者可能在 PRINT_LOCK 窗内，裸取
+                // = 同核自旋等不可运行者（自死锁）。同 tick go 支/SGI 双门
+                // 纪律：count>0 只计数让位不打印；==0 才 loud（跨核持有者
+                // 自会放锁，自旋有界）。槽 None（TPIDR 未立）= boot 早期
+                // IRQ 未开，按 0 走原路。
+                let in_preempt_window = crate::smp::preempt_count_slot()
+                    .map_or(false, |c| c.load(core::sync::atomic::Ordering::Relaxed) > 0);
+                if !in_preempt_window {
+                    crate::kern_lock::print_lock();
+                    uart_puts(b"irq? id=");
+                    crate::uart_put_dec(id as u64);
+                    uart_puts(b"\n");
+                    crate::kern_lock::print_unlock();
+                }
             }
         }
     }

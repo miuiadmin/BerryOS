@@ -22,9 +22,12 @@
 //!   本核 tick/SGI 仍可入但抢占支按 preempt_count 闭门不切（sched 侧门）；
 //!   同核硬死锁的旧解（irqsave）由新解（禁切）承接——tick 的 switches=
 //!   金丝雀行要同一把锁，持锁被切走 = 持锁者对自旋于己核 IRQ 语境不可让，
-//!   两种包络同效。sched 侧槽对（`print_lock`/`print_unlock`）**不带**包络
-//!   ——唯一调用点 on_irq_tick 恒在 IRQ 屏蔽上下文（PSTATE.I=1），且其打印
-//!   段在抢占支 go 分支内 = 被门挡在持锁窗外。
+//!   两种包络同效。sched 侧槽对（`print_lock`/`print_unlock`）与 arch 侧裸
+//!   `print_lock` **不带**包络——IRQ 语境裸调用面两处（on_irq_tick 金丝雀行 /
+//!   trap 未知 IRQ 诊断臂），**门纪律（§A114 追记二，m5 立法）**：IRQ 语境裸取
+//!   PRINT_LOCK 前必先过 preempt_count 门——count>0 = 被打断者可能在窗内，
+//!   让位不取（同核自旋等不可运行者 = 自死锁）。tick 金丝雀行天然在门后
+//!   （抢占支 go 分支闭门早退），trap 诊断臂自带同款门（errata m1）。
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -206,7 +209,9 @@ pub fn klock_exit() {
 // ---- PRINT_LOCK ----
 
 /// PRINT_LOCK 取锁（裸对——**不含 preempt 包络**：IRQ 语境调用者（tick go 支
-/// 金丝雀行）靠抢占支闭门天然安全；任务态一律走 [`with_print_lock`]）。
+/// 金丝雀行 + trap 未知 IRQ 诊断臂）各带 preempt_count 门——count>0 = 本核有
+/// 禁切窗（被打断者可能正持 PRINT_LOCK），让位不取；任务态一律走
+/// [`with_print_lock`]）。
 pub fn print_lock() {
     while PRINT_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -230,6 +235,16 @@ pub fn irq_enabled() -> bool {
     // SAFETY: 只读系统寄存器；无内存副作用；EL1。
     unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nostack, preserves_flags)) };
     daif & (1 << 7) == 0
+}
+
+/// 读全宽 DAIF（p1 哨兵专用：包络契约「不触 DAIF」= enter/exit 全值相等，
+/// 只看 bit 7 盖不住 D/A/F 位被改的形态）。
+#[inline]
+fn daif_raw() -> u64 {
+    let daif: u64;
+    // SAFETY: 同 [`irq_enabled`]——只读系统寄存器，无内存副作用；EL1。
+    unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nostack, preserves_flags)) };
+    daif
 }
 
 // ---- G3-1c-1（console 写域解蔽）：PRINT_LOCK preempt 包络槽（HAL→sched
@@ -272,10 +287,17 @@ fn preempt_exit() {
 /// 派发尾检查点在零锁点承接）。锁语义不变：跨核互斥仍靠 TTAS 自旋；
 /// 「持 PRINT_LOCK 者禁取任何锁」单向序不动。panic 路径 bypass 直写（模块头）。
 pub fn with_print_lock<R>(f: impl FnOnce() -> R) -> R {
+    // p1 哨兵（errata 批）：包络契约「不触 DAIF」机器化——f() 内改本核
+    // DAIF = 分诊前提失效（exit 槽按出口态选检查点支，enter/exit 态不齐
+    // = 走错支），debug_assert fail loud；release 编译消除。
+    #[cfg(debug_assertions)]
+    let daif0 = daif_raw();
     preempt_enter();
     print_lock();
     let r = f();
     print_unlock();
     preempt_exit();
+    #[cfg(debug_assertions)]
+    debug_assert_eq!(daif_raw(), daif0, "with_print_lock: f() 内改了 DAIF（包络契约 = 不触 DAIF，分诊前提失效）");
     r
 }

@@ -135,9 +135,12 @@ pub fn preempt_checkpoint() {
 /// exit = 配平 + **按 DAIF 态分诊的检查点**：出口 IRQ 解蔽（= 入口解蔽——
 /// 包络与 f() 均不改 DAIF，IRQ 往返保调用方态）⇒ 任务态打印（console 域
 /// 正主）：enable 归零后立即探峰——禁切期被双门（tick/SGI 抢占支）挡下的
-/// 切换诉求在出锁边界兑现（µs 级上界，不等下个 tick）。出口屏蔽（= 入口
-/// 屏蔽：klock 窗 / SVC 主体 / boot / ktest）⇒ **跳检查点**：窗内 IRQ 屏蔽
-/// ⇒ 无 tick/SGI ⇒ 无新增切换诉求；handler 自身唤醒的诉求由 g3-1b 落点①
+/// 切换诉求在出锁边界兑现。兑现分档（errata m2 勘正）：严格更高 eff 者
+/// 检查点直切 = µs 级上界；同 eff 轮转诉求 try_preempt 不切（严格更高才
+/// 切），落回下个 tick 重探（rearm-at-entry 名义整片 100ms、TCG 实效
+/// ≈200ms）。出口屏蔽（= 入口屏蔽：klock 窗 / SVC 主体 / boot / ktest）
+/// ⇒ **跳检查点**：窗内 IRQ 屏蔽 ⇒ 无 tick/SGI ⇒ 无新增切换诉求；
+/// handler 自身唤醒的诉求由 g3-1b 落点①
 /// （SVC 派发尾检查点，svc_exit_class 毕 = 零锁持有）安全承接——此处若探
 /// = 持 KL/结构锁窗内切换，pick 取 RQ 锁 = 七类锁序（队列>表）逆序违约。
 pub fn print_window_enter() {
@@ -2205,12 +2208,15 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     }
     RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left（饱和到 0）
     if (*cur).slice_left == 0 {
-        // G3-1c-1（console 写域解蔽）：禁切窗内 slice 燃尽——本次 tick 不切
-        //（need_resched 语义：出窗检查点/下 tick 重探；窗 = with_print_lock
-        // preempt 包络，µs 级）。早退点在结构窗开启前（expire/采样/LB 记账
-        // 全毕、零锁持有）——pick 白跑免掉。slice_left 已饱和 0，重探成本
-        // = 每 tick 一次 count 原子读。tick go 支金丝雀行在 go 分支内 =
-        // 被门挡在持 PRINT_LOCK 窗外（G43 改版的死锁防线另一半）。
+        // G3-1c-1（console 写域解蔽）：禁切窗内 slice 燃尽——本次 tick 不切。
+        // 诉求分档承接（errata m2 勘正）：出窗检查点只兑现**严格更高 eff**
+        // 的直切诉求（try_preempt 判定）；slice 燃尽 = 同 eff 轮转诉求，
+        // 检查点不切、落本支下个 tick 重探（rearm-at-entry 名义整片
+        // 100ms、TCG ≈200ms）。窗 = with_print_lock preempt 包络（µs 级
+        // 指窗本身）。早退点在结构窗开启前（expire/采样/LB 记账全毕、零锁
+        // 持有）——pick 白跑免掉。slice_left 已饱和 0，重探成本 = 每 tick
+        // 一次 count 原子读。tick go 支金丝雀行在 go 分支内 = 被门挡在
+        // 持 PRINT_LOCK 窗外（G43 改版的死锁防线另一半）。
         if preempt_count() > 0 {
             return;
         }
@@ -2294,6 +2300,9 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
 /// 的槽位（console 8 槽全满形态，svcmgr 等 `cur=0 want=2` 转到 10s 帽 -110 被
 /// 杀）。本槽把 tickful 核的片尽轮转语义搬到事件面：SGI 到 = rq[0] 刚入新
 /// 任务，立即旋转出选（**同 eff 也切**——探峰只防幻影出选，不限制同层轮转）。
+/// 窗内例外（errata m2 注）：G3-1c-1 门在场（preempt_count>0）= 禁切窗，
+/// 本槽闭门早退——「同 eff 也切」事件面语义窗内暂停，同 eff 诉求落下个
+/// tick、严格更高者出窗检查点直切（分档详 print_window_enter 注）。
 ///
 /// 与 [`on_irq_tick`] 分立（为何不共用 tick 槽）：无 `timer::handle`（无
 /// rearm——授片显式 `arm_slice`，同 [`try_preempt`]/yield/park_recheck 形）、
@@ -2315,9 +2324,11 @@ pub unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFrame) {
     if cur.is_null() {
         return;
     }
-    // G3-1c-1（console 写域解蔽）：禁切窗内 SGI 到——闭门不切（重调度诉求
-    // 由出窗检查点/下 tick 重探承接；窗 µs 级）。on_irq_tick 同款门，先于
-    // 结构窗开启。原 g3-1a 配平断言退居防线位（门后恒 count==0，零成本）。
+    // G3-1c-1（console 写域解蔽）：禁切窗内 SGI 到——闭门不切。诉求分档
+    // 承接（errata m2 勘正）：严格更高 eff 出窗检查点直切（µs 级），同
+    // eff 轮转（本槽「同 eff 也切」语义）窗内被闭门、落本支下个 tick。
+    // on_irq_tick 同款门，先于结构窗开启。原 g3-1a 配平断言退居防线位
+    //（门后恒 count==0，零成本）。
     if preempt_count() > 0 {
         return;
     }

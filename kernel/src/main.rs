@@ -2389,9 +2389,10 @@ extern "C" fn task_console(arg: usize) -> ! {
             // ktest 矩阵任务单字符直写者**字节级并发**（无共同锁面），标记
             // 行中段可被织入单字符 → smoke grep 假 FAIL（840s 假阴性）。包
             // 络后矩阵字符只能落消息前后（整条原子），标记恒完整。
-            // with_print_lock 自带 irqsave（G43 任务态纪律——裸持
-            // PRINT_LOCK 被本核 tick 打断 = 同核硬死锁）；n ≤ 256B @ QEMU
-            // PL011 TX 恒 ready = 微秒级锁窗。
+            // with_print_lock 包络 = preempt 计数对（G43 改版 G3-1c-1——
+            // 任务态持锁期 IRQ 解蔽，tick/SGI 抢占支按计数闭门「入而不切」；
+            // 详 kern_lock 模块头/§A114 追记）；n ≤ 256B @ QEMU PL011 TX
+            // 恒 ready = 微秒级锁窗。
             berry_hal_aarch64::kern_lock::with_print_lock(|| {
                 for i in 0..n as usize {
                     berry_hal_aarch64::uart_putc(buf[i]);
@@ -3327,8 +3328,9 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
         let r = berry_sched::block_current(arg, SOAK_EV_BIT, deadline);
         // S-2 E0 包络升级（F33 同款，草案 §2.3）：醒因断言/计数器读在锁窗内
         //（block_current 返回前舞蹈已重取锁）；SOAK 行打印再包 with_print_lock
-        //（G43 拼行——KERN→PRINT 单向嵌套合法，with_print_lock 在已屏蔽窗
-        // 安全：had_irq=false 不误恢复）。
+        //（G43 拼行——KERN→PRINT 单向嵌套合法；G3-1c-1 改版后包络 = preempt
+        // 计数对不触 DAIF，本调用点在 klock 屏蔽窗内 = 出口跳检查点、屏蔽态
+        // 原样维持——旧「had_irq=false 不误恢复」机制随 irqsave 包络退役）。
         assert!(r == WakeReason::Timeout,
                 "soakmon: 醒因非 Timeout（哑 Event 永不置位——跨表 wake 面破损）");
         let sw = berry_sched::switches();
