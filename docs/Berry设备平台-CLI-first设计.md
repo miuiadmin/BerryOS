@@ -414,6 +414,8 @@ berry device stop --run "$RUN"
   **窗口内停旧 host、按新 profile 起新 host**（新 run），窗口继续。
 - **C2e 已落（attach 窗口）**：`RES` 选新 profile → `restart_profile` 停旧 host/起新 host
   → 重新连新 run 的 VNC，窗口自动重附着；无需手动 `shell --attach`。
+- **540×1200 预览件已落**：GUI-8 全桌面 + 540 内核 → `out/berryos-desktop.img` /
+  `out/berry-desktop-540x1200.png`；桌面 app 已换该镜像，`RES → phone20` 可到 540×1200。
 - **C2f 已落（交互）**：按钮 hover 高亮 + 顶部 tooltip（SCREENSHOT/PROFILE/REBOOT/POWER/FULLSCREEN）。
 - **C2g 已落**：`restart_profile` 改「先起新 host 再停旧 host」——新 host 失败则旧 host
   原样保留（天然回滚）；成功后旧 run 按 `keep` 清理（`keep=false` 删目录）。
