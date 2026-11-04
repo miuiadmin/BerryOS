@@ -68,8 +68,36 @@ const fn rank(class: u8) -> u8 {
     }
 }
 
-/// 物理取锁记账 + 三检（重入 / 先验序 / RQ 降序）。**只在物理取点调**
-/// （位感知退化支不触——wrapper 层纪律，见 sched 侧包装组注释）。
+/// 取锁检查面（纯检查——[`acquire`] 与 [`selftest`] 阳性对照共用）：
+/// 返回违约定名（Some）或通过（None）。检查域 = `chain[floor..depth]`
+///（地板上 = 本流词条）。
+fn check_acquire(chain: *const u8, depth: u8, floor: u8, class: u8) -> Option<&'static [u8]> {
+    if depth as usize >= DEPTH_MAX {
+        return Some(b"chain-overflow");
+    }
+    for i in floor..depth {
+        // SAFETY: 调用方契约——i < DEPTH_MAX 且链本核独占。
+        let held = unsafe { *chain.add(i as usize) };
+        // ① 重入：地板上同类二取 = 非重入 TTAS 同实例自死锁形（wrapper
+        //    位感知退化应已杜绝，此处兜底；RQ0/RQ1 分立类号故同类必同锁）。
+        if held == class {
+            return Some(b"reentry");
+        }
+        // ② 先验序：地板上已持类 rank 须 ≤ 新类 rank（七类全序执法）。
+        if rank(held) > rank(class) {
+            return Some(b"order");
+        }
+        // ③ RQ 升序专项：「双核升序」立法（持 RQ1 再取 RQ0 = 降序；偷取
+        //    特则「只持远端」不构成双持——S-3 §9.7，无误报面）。
+        if class == CLASS_RQ0 && held == CLASS_RQ1 {
+            return Some(b"rq-descend");
+        }
+    }
+    None
+}
+
+/// 物理取锁记账 + 三检。**只在物理取点调**（位感知退化支不触——wrapper
+/// 层纪律，见 sched 侧包装组注释）。
 #[inline]
 pub fn acquire(class: u8) {
     let Some((chain, depth, floor)) = crate::smp::lockdep_slot() else {
@@ -78,26 +106,9 @@ pub fn acquire(class: u8) {
     // SAFETY: 本核独占写（取放点恒 IRQ 屏蔽窗——雷 2）；裸指针 = SmpCpu
     // 尾插字段（链栈/深度/地板三元组，lockdep_slot 契约）。
     unsafe {
-        let d = *depth;
-        let f = *floor;
-        if d as usize >= DEPTH_MAX {
-            violation(b"chain-overflow", class, chain, d, f);
-        }
-        for i in f..d {
-            let held = *chain.add(i as usize);
-            // ① 重入：地板上同类二取 = 非重入 TTAS 同实例自死锁形（wrapper
-            //    位感知退化应已杜绝，此处兜底；RQ0/RQ1 分立类号故同类必同锁）。
-            if held == class {
-                violation(b"reentry", class, chain, d, f);
-            }
-            // ② 先验序：地板上已持类 rank 须 ≤ 新类 rank（七类全序执法）。
-            if rank(held) > rank(class) {
-                violation(b"order", class, chain, d, f);
-            }
-            // ③ RQ 升序专项：「双核升序」立法（持 RQ1 再取 RQ0 = 降序）。
-            if class == CLASS_RQ0 && held == CLASS_RQ1 {
-                violation(b"rq-descend", class, chain, d, f);
-            }
+        let (d, f) = (*depth, *floor);
+        if let Some(kind) = check_acquire(chain, d, f, class) {
+            violation(kind, class, chain, d, f);
         }
         *chain.add(d as usize) = class;
         *depth = d + 1;
@@ -149,6 +160,71 @@ pub fn irq_floor_lower() {
             violation(b"irq-unbalanced", 0, chain, *depth, *floor);
         }
         *floor = 0;
+    }
+}
+
+/// 检测器阳性自证（g3-3b）：①活性 = 真链立法全序八连推弹（走
+/// [`acquire`]/[`release`] 本体——槽寻址/检查/记账全路径激活证，ALLOC/ASID
+/// 预留类的检查面同被走到）；②阳性对照 = 三条合成违约**只走 [`check_acquire`]
+/// 检查面**（不落链不停机）+ 地板隔离正对照（被断流词条不进序检域）——
+/// 证明「零 VIOLATION」≠「检测器死了」。boot 窗调用契约：IRQ 屏蔽 +
+/// TPIDR 已钉 + 链净态；marker 直写 UART（`LOCKDEP selftest ok/FAIL`
+/// ——smoke 门 grep 面；FAIL 不停机，冒烟自然红）。
+pub fn selftest() -> bool {
+    let Some((chain, depth, floor)) = crate::smp::lockdep_slot() else {
+        return false; // TPIDR 未钉——调用点契约违（selftest 只许 cpu0_init 后）
+    };
+    // SAFETY: boot 单线程窗（IRQ 屏蔽）本核链独占；净态由入口判保证。
+    unsafe {
+        if *depth != 0 || *floor != 0 {
+            return false; // 非净态——不破坏现场，拒绝自检
+        }
+        // ① 活性：全序八连（rank 非降序列）真推真弹。
+        for c in [
+            CLASS_SQ,
+            CLASS_RQ0,
+            CLASS_RQ1,
+            CLASS_REAPQ,
+            CLASS_TABLE,
+            CLASS_ALLOC,
+            CLASS_ASID,
+            CLASS_PRINT,
+        ] {
+            acquire(c);
+        }
+        let live = *depth == 8 && *chain.add(7) == CLASS_PRINT;
+        for c in [
+            CLASS_PRINT,
+            CLASS_ASID,
+            CLASS_ALLOC,
+            CLASS_TABLE,
+            CLASS_REAPQ,
+            CLASS_RQ1,
+            CLASS_RQ0,
+            CLASS_SQ,
+        ] {
+            release(c);
+        }
+        let balanced = *depth == 0;
+        // ② 阳性对照：合成态只走检查面（链首词条塑形，毕后复原净态）。
+        *chain.add(0) = CLASS_TABLE;
+        let neg_order = check_acquire(chain, 1, 0, CLASS_SQ).is_some();
+        *chain.add(0) = CLASS_SQ;
+        *chain.add(1) = CLASS_SQ;
+        let neg_reentry = check_acquire(chain, 2, 0, CLASS_SQ).is_some();
+        *chain.add(0) = CLASS_RQ1;
+        let neg_rq = check_acquire(chain, 1, 0, CLASS_RQ0).is_some();
+        *chain.add(0) = CLASS_PRINT;
+        let pos_floor = check_acquire(chain, 1, 1, CLASS_SQ).is_none();
+        *depth = 0;
+        *floor = 0;
+        let ok = live && balanced && neg_order && neg_reentry && neg_rq && pos_floor;
+        crate::uart::uart_puts(if ok {
+            b"\nLOCKDEP selftest ok\n"
+        } else {
+            b"\nLOCKDEP selftest FAIL\n"
+        });
+        ok
     }
 }
 

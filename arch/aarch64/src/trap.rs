@@ -497,6 +497,11 @@ pub extern "C" fn exception_unexpected() {
 /// **顺序（plan Bug 1）**：`ack → 去活电平 → EOIR → dispatch`。dispatch/switch
 /// 必须在 EOIR **之后**——若 switch 跑在 ack 与 EOIR 之间，IRQ 在 GIC 里保持
 /// active（优先级未降），电平触发的 CNTV 下次发不出来（EOIR 饿死）。
+/// **检查点面条文（G3-2 修复批 F1 补立）**：上述「switch」**含一切可切走形
+/// 态**——直切检查点（SVC_EXIT_CHECKPOINT/preempt 族）与 dispatch 槽同纪律
+/// 必在 EOIR 后：检查点 = 「可能 context_switch」，ack↔EOIR 之间切走 =
+/// context_switch 不归 ⇒ gic::end 无限推迟（SMP 放大：被切 Ready 者可被偷核，
+/// EOIR 写错 GICC 永久化）。「不切走的处理」（记账/置位/唤醒回报）不受此限。
 /// S-3a：全核 SGI_RESCHEDULE 收讫计数（probe ②——`SGI ok` 标记的谓词源，
 /// smp_bringup wait_secs 轮询消费）。fetch_add 原子、IRQ 上下文零分配零打印；
 /// S-3b per-CPU 队列落时升 per-CPU 遥测面。

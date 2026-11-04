@@ -641,6 +641,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         "G3-1a：主位 Some 臂读通（cpu0_init 后恒 0——无人开窗）"
     );
 
+    // G3-3 lockdep 阳性自证（g3-3b）：TPIDR 已钉、链净态；活性（真链全序
+    // 八连推弹走本体）+ 合成违约阳性对照（证明「零 VIOLATION」≠「检测器
+    // 死了」）。marker `LOCKDEP selftest ok` = feature 镜像专属行（default
+    // 面编译消除零漂移）；FAIL 不停机——冒烟 grep 自然红。
+    #[cfg(feature = "lockdep")]
+    berry_hal_aarch64::lockdep::selftest();
+
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     berry_sched::init();
     // 3-4c 遥测环：注册切换钩子（init 后、首个切换前——rust_main 尾部的
