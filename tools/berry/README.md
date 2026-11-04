@@ -133,6 +133,7 @@ headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩�
 C1e：`berry device cleanup` 对 stale/stopped run 杀 orphan QEMU 并删 run；running 拒绝。
 C1f：Unix 默认 `control.sock`；非 Unix 用 loopback TCP + `control.port`/`control.token`。
 `BERRY_CONTROL_TCP=1` 可在 macOS 强制走 TCP 路径（已实测 status/logs/power）。
+C2h：attach RES 新 host 失败保留旧 host；VNC 重连失败按旧 profile 回滚重连。
 - 默认 `berry shot` 等 `BERRYBOOT ok`，当前测试镜像此时可能还在固件/测试面；要看 GUI
   请传 `--wait-marker "FBW ok"` 或 launcher 标记。`--profile phone` 时 guifbd 进入
   GUI 模式（console 只走串口，不盖桌面）；默认 800×600 仍保留 console 上屏。

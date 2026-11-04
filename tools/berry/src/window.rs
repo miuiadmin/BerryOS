@@ -200,8 +200,14 @@ pub fn run(args: ShellArgs) -> Result<()> {
     let keep = args.keep;
     let session = if let Some(id) = &args.attach {
         let run = commands::find_run(Some(id))?;
-        let ep = commands::vnc_endpoint(&run)?;
-        let source = VncSource::connect(&ep)?;
+        if !run.join("control.sock").exists() && !run.join("control.port").exists() {
+            return Err(BerryError::device(format!(
+                "session {} has no control endpoint",
+                run.display()
+            ))
+            .with_hint("run is stale; try `berry device cleanup`, then start a new session"));
+        }
+        let source = connect_vnc(&run)?;
         Session::Attach(Attached {
             run,
             source,
@@ -231,6 +237,14 @@ pub fn run(args: ShellArgs) -> Result<()> {
         .map_err(|e| BerryError::device(format!("window: {e}")))?;
     app.session.stop();
     Ok(())
+}
+
+fn connect_vnc(run: &std::path::Path) -> Result<VncSource> {
+    let ep = crate::commands::vnc_endpoint(run)?;
+    VncSource::connect(&ep).map_err(|e| {
+        BerryError::device(format!("attach VNC {}: {e}", ep.display()))
+            .with_hint("run may be stale; try `berry device cleanup` then start again")
+    })
 }
 
 enum Session {
@@ -492,34 +506,55 @@ impl App {
                     }
                 }
             }
-            Session::Attach(a) => match crate::commands::restart_profile(&a.run, p.id) {
-                Ok(new_run) => match crate::commands::vnc_endpoint(&new_run)
-                    .and_then(|ep| VncSource::connect(&ep))
-                {
-                    Ok(src) => {
-                        a.run = new_run;
-                        a.source = src;
-                        a.dead = false;
-                        a.last_poll = Instant::now();
-                    }
+            Session::Attach(a) => {
+                let old_profile = self.profile.id;
+                let mut applied = p;
+                match crate::commands::restart_profile(&a.run, p.id) {
+                    Ok(new_run) => match connect_vnc(&new_run) {
+                        Ok(src) => {
+                            a.run = new_run;
+                            a.source = src;
+                            a.dead = false;
+                            a.last_poll = Instant::now();
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "resolution reattach failed: {e}; rolling back to {old_profile}"
+                            );
+                            match crate::commands::restart_profile(&new_run, old_profile)
+                                .and_then(|r| connect_vnc(&r).map(|src| (r, src)))
+                            {
+                                Ok((run, src)) => {
+                                    a.run = run;
+                                    a.source = src;
+                                    a.dead = false;
+                                    a.last_poll = Instant::now();
+                                    applied = self.profile;
+                                }
+                                Err(e2) => {
+                                    eprintln!("resolution rollback failed: {e2}");
+                                    self.quit = true;
+                                    return;
+                                }
+                            }
+                        }
+                    },
                     Err(e) => {
-                        eprintln!("resolution reattach failed: {e}");
-                        self.quit = true;
+                        // New-first: the old host is still alive on failure.
+                        eprintln!("resolution restart failed: {e}; old host kept");
+                        a.dead = false;
+                        self.menu_open = false;
+                        self.request_redraw();
                         return;
                     }
-                },
-                Err(e) => {
-                    eprintln!("resolution restart failed: {e}");
-                    self.quit = true;
-                    return;
                 }
-            },
+                self.profile = applied;
+            }
         }
-        self.profile = p;
         self.last_frame = None;
         self.last_fit = None;
         self.power_armed = None;
-        self.title = format!("BerryOS — {}", p.id);
+        self.title = format!("BerryOS — {}", self.profile.id);
         if let Some(w) = &self.window {
             w.set_title(&self.title);
             w.request_redraw();

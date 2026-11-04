@@ -417,6 +417,9 @@ berry device stop --run "$RUN"
 - **C2f 已落（交互）**：按钮 hover 高亮 + 顶部 tooltip（SCREENSHOT/PROFILE/REBOOT/POWER/FULLSCREEN）。
 - **C2g 已落**：`restart_profile` 改「先起新 host 再停旧 host」——新 host 失败则旧 host
   原样保留（天然回滚）；成功后旧 run 按 `keep` 清理（`keep=false` 删目录）。
+- **C2h 已落（attach 失败）**：attach RES 新 host 起不来 → 旧 host 原样保留；新 host 成功但
+  VNC 重连失败 → 自动按旧 profile 再起一次并重连（rollback）；仍失败才退窗；attach 前
+  control 缺失给 `device cleanup` 提示。
 - **C1d 已落（state/崩溃可见）**：`state.json` 落 starting/running/rebooting/stopping/
   stopped/failed；`device list/status` 在 control 缺失时读 state，running 但无 control 标
   `stale`；`device stop` 对已停 run 幂等，对 stale 给诊断。
@@ -549,7 +552,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C2e（已落 attach）** | attach 窗口 RES → `restart_profile` → 新 run VNC 重连，自动重附着 | attach 窗口不重启，host 换 480×854 后窗口继续 |
 | **C2f（已落交互）** | 按钮 hover 高亮 + tooltip；菜单当前项高亮；OFF 二次确认 | 悬停可见提示；15 单测绿 |
 | **C2g（已落）** | 先起新 host 再停旧（失败旧 host 不动）；旧 run 按 keep 清理；tooltip 保持 | 新 host 失败不伤旧；keep=false 旧 run 删除 |
-| **C2h（下一刀）** | attach VNC 重连失败回滚/提示；快捷键提示扩展 | 失败可恢复 |
+| **C2h（已落）** | attach 新 host 失败保留旧 host；VNC 重连失败按旧 profile 回滚重连；stale 提示 cleanup | 失败不丢旧会话；rollback 可恢复 |
+| **C2i（下一刀）** | 快捷键提示扩展；host 自动重启；Windows 实机验证 | 交互/平台收口 |
 | **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
