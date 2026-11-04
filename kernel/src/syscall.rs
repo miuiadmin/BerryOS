@@ -663,7 +663,8 @@ extern "C" fn sys_vmo_get_phys(tf: &mut TrapFrame) -> i64 {
 /// 调用方返 -EBADF——syscall 边界无 panic 纪律，不可达分支也不 panic）。
 fn obj_vmo_mut(obj: &core::ptr::NonNull<crate::handle::ObjRef>) -> Option<&'static mut Vmo> {
     // SAFETY: get_raw 已验指针在表、gen 匹配、类型为 Vmo；&mut 期间无并发
-    // 访问（单核 + 多数号 IRQ 屏蔽；send/recv 解蔽窗不触表且段计数 >0 禁切）。
+    // 访问（单核 + 本函数调用面（vmo 族号）全程 IRQ 屏蔽——send/recv 解蔽
+    // 窗不经此函数）。
     unsafe { &mut (*obj.as_ptr()).obj }.as_vmo_mut()
 }
 

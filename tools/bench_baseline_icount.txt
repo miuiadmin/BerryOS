@@ -14,9 +14,13 @@
 # 头注原 tick 相位移归因系虚构作废——沿革四十九续勘正段 + 五十续）：位移机制 =
 # §A95/§A109 **布局骰轨道回摆**：frame_alloc4k 171→37 / vmo_commit1p 1708→1574
 # 是 ±134 同签名轨道态（沿革 :1385/:1416 在册 {37,1574}→{171,1708}→回摆），
-# 本刀代码增量重掷 boot 布局骰。双 ELF 段足迹 diff（c49de69 vs 8cbf832 同机
-# 同链，隔离 worktree 冷构）：PT_LOAD 五段中唯高半可执行段 246880→248928
-# （+2048 B），rodata/data/bss 三段零变——可执行段位移即骰面重掷源。tick 归因
+# 区间代码增量重掷 boot 布局骰（基线 171/1708 烘于 6b7a745）。双 ELF 段足迹
+# diff（c49de69 vs 8cbf832 同机同链，隔离 worktree 冷构；**对照区间含 3323b87
+# phone20 buddy 面——+2048 B 为区间合量非 8cbf832 独量**）：PT_LOAD 五段中唯
+# 高半可执行段 246880→248928（+2048 B），rodata/data/bss 三段零变。更硬论据
+# = 轨道签名本身：两项精确落历史轨道对 {37,1574} 即零算法增量签名——若
+# 3323b87 真改 order-0 热径，frame_alloc4k 不会精确落回 37（顺带洗清其
+# order-0 面）。tick 归因
 # 四重封死（f4 三镜）：测量位（bench::run，boot 窗）在 timer::init/arm_slice/
 # enable_irq 前且 boot DAIF 屏蔽 = 物理无 tick 落点；两漂移项恰同 −134/op 而
 # 迭代数 1024 vs 256（固定 tick 成本不可同摊）；最长窗项 vmo_rw4k 888k cyc
