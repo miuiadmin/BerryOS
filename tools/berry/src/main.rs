@@ -53,6 +53,8 @@ enum Cmd {
     Shortcut(ShortcutCmd),
     /// Read session events.
     Events(EventsCmd),
+    /// Capture a screenshot sequence from a running device.
+    Record(RecordCmd),
     /// Internal headless session host (used by `device start`).
     #[command(hide = true)]
     Host(HostCmd),
@@ -150,6 +152,18 @@ struct ShortcutCmd {
     action: String,
     #[arg(long)]
     run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct RecordCmd {
+    #[arg(long)]
+    run: Option<String>,
+    #[arg(long, default_value = "record")]
+    out: PathBuf,
+    #[arg(long, default_value_t = 10)]
+    frames: u32,
+    #[arg(long, default_value_t = 200)]
+    interval_ms: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -370,6 +384,9 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Some(Cmd::Events(c)) => {
             commands::events(c.run.as_deref(), c.tail, c.follow, cli.json)
+        }
+        Some(Cmd::Record(c)) => {
+            commands::record(c.run.as_deref(), &c.out, c.frames, c.interval_ms, cli.json)
         }
         Some(Cmd::Host(c)) => commands::host(commands::HostArgs {
             image: c.image,

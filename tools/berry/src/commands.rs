@@ -424,6 +424,50 @@ pub fn host(args: HostArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn record(
+    run: Option<&str>,
+    out_dir: &Path,
+    frames: u32,
+    interval_ms: u64,
+    json: bool,
+) -> Result<()> {
+    let run = find_run(run)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut paths = Vec::new();
+    for i in 0..frames {
+        let path = out_dir.join(format!("frame-{:04}.png", i + 1));
+        let v = control::request(
+            &run,
+            "screenshot",
+            json!({"out": path.display().to_string(), "settle_ms": 0}),
+        )?;
+        if !path.exists() {
+            return Err(BerryError::device(format!(
+                "record frame {} not written: {}",
+                i + 1,
+                v.get("path").and_then(|p| p.as_str()).unwrap_or("-")
+            )));
+        }
+        paths.push(path.display().to_string());
+        if i + 1 < frames {
+            std::thread::sleep(Duration::from_millis(interval_ms));
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            json!({"v":1,"t":"record","run":run,"frames":frames,"paths":paths})
+        );
+    } else {
+        println!(
+            "record: {} frame(s) → {}",
+            frames,
+            out_dir.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn display_list(json: bool) -> Result<()> {
     if json {
         let arr: Vec<_> = profile::PROFILES

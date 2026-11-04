@@ -335,6 +335,7 @@ shortcut screenshot|resolution|reboot|power|fullscreen [--run] [--json]
 
 logs [--run] [-f] [--tail N] [--json]
 events [--run] [--json]
+record [--run] --out <dir> --frames N --interval-ms MS [--json]
 stats [--run] [--json]
 doctor [--json]
 pack verify|install <path>       # C4
