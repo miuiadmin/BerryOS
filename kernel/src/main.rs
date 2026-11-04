@@ -2176,17 +2176,21 @@ fn fb_pipe_h() -> u32 {
 /// PSTATE.I=1）。置位 RX Event（用户半位）+ `wake_matching`（匹配键 = ObjRef
 /// 地址，同 4-1 `sys_object_signal` 唤醒路径；console 的 wait_many 挂
 /// WAIT_ANY 哨兵——任何非零 set 命中，醒来重验定夺）。**G3-2（P-B
-/// preempt-on-wake IRQ 面）**：v1「不立即抢占（醒者等 tick/yield，交互延迟
-/// ≤ 1 slice）；不可在 IRQ 语境碰 fast_wake/try_preempt」退役——唤醒携带者
-/// （n>0）在 SQ 窗闭后经 `preempt_checkpoint` 直切（严格更高 eff 才切；IRQ
-/// 上下文 PSTATE.I=1 天然满足切换原语屏蔽窗契约，tick/SGI 抢占支 IRQ 语境
-/// 切换同形先例；try_preempt 的 klock 舞蹈在被打断者窗间态零持位下空转）；
-/// count>0 禁切窗（g3-1c-1 解蔽域）自豁免；n=0（键入无等待者）不探。写
+/// preempt-on-wake IRQ 面；修复批 F1 改版）**：v1「不立即抢占（醒者等
+/// tick/yield，交互延迟 ≤ 1 slice）」退役——本槽做**唤醒 + 回报**：置位 +
+/// SQ 窗内 wake_matching（同窗契约不变），**返回「是否唤醒」**（n>0）；
+/// 直切检查点**不在本槽**（挪 trap.rs PL011_RX 臂 `gic::end` 之后——
+/// ack↔EOIR 之间切换 = context_switch 不归 ⇒ EOIR 无限推迟 ⇒ SPI33 保持
+/// active 钉 RPR ⇒ 同级 CNTV 发不出（EOIR 饿死，trap.rs Bug 1 立法）；
+/// tick/SGI 臂 dispatch 全 post-EOIR 才是真同形先例，f4 F1 定谳）。检查点
+/// 语义不变：严格更高 eff 才切、IRQ 上下文 PSTATE.I=1 天然满足切换原语
+/// 屏蔽窗契约、count>0 禁切窗自豁免、探峰取 RQ 在 SQ 窗外独立窗正序。
+/// n=0（键入无等待者）回报 false 不探。写
 /// Event 与遥测环同纪律：零分配、纯指针写字段。S-3c c-2b slice 4 起位写+
 /// 扫描同 **SQ 窗**（`wake_matching_locked`——义务③「写位+扫描同窗」的
 /// IRQ 生产者面，F-L2 不可重入立法）；3-1b 起 KL 外层包络剥除（E27 退役）
 /// ——本面 = 纯 SQ 独立单锁窗。
-unsafe extern "C" fn rx_irq_notify() {
+unsafe extern "C" fn rx_irq_notify() -> bool {
     // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
     let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
         .expect("rx_irq_notify: RX_EV_REF 未初始化（boot 接线缺失）");
@@ -2203,12 +2207,10 @@ unsafe extern "C" fn rx_irq_notify() {
         }
         let n = berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
         berry_sched::sq_unlock(sq_phys);
-        // G3-2：唤醒携带者窗闭检查点（SQ 窗内禁切换——义务③「写位+扫描
-        // 同窗」契约不破；探峰取 RQ 在 SQ 窗外 = 队列锁独立窗正序）。n=0
-        // 直返——本 IRQ 无唤醒诉求，不付探峰。
-        if n > 0 {
-            berry_sched::preempt_checkpoint();
-        }
+        // G3-2 修复批（F1）：本槽只回报，不检查点——SQ 窗内禁切换（义务③
+        // 「写位+扫描同窗」契约不破）且检查点须在 trap 臂 EOIR 之后（EOIR
+        // 饿死防线，详见函数头注）。n=0 = 无唤醒诉求，false 不探。
+        n > 0
     }
 }
 

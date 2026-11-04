@@ -130,12 +130,14 @@ struct RxRing {
 static mut RX_RING: RxRing = RxRing { data: [0; RX_RING_SIZE], head: 0, tail: 0, lost: 0 };
 
 /// 「RX 到数据」通知槽（HAL→内核反转，`set_irq_dispatch` 同模式）。IRQ 上下文
-/// 调用（PSTATE.I=1）；内核侧实现 = 置 RX Event + `wake_matching`。
-static mut RX_NOTIFY: Option<unsafe extern "C" fn()> = None;
+/// 调用（PSTATE.I=1）；内核侧实现 = 置 RX Event + `wake_matching`，**返回
+/// 「是否唤醒」**（G3-2 修复批 F1：trap 臂据此在 EOIR 后决定是否检查点——
+/// 检查点不得在 ack↔EOIR 之间，EOIR 饿死防线）。
+static mut RX_NOTIFY: Option<unsafe extern "C" fn() -> bool> = None;
 
 /// 注册 RX 到数据通知（boot 期、任何 `enable_irq` 之前——先注册后使能，否则
 /// 首字节静默落环无人唤醒：槽空时 `rx_irq` 平凡跳过通知）。
-pub fn set_rx_notify(f: unsafe extern "C" fn()) {
+pub fn set_rx_notify(f: unsafe extern "C" fn() -> bool) {
     // SAFETY: 启动单线程、DAIF 屏蔽。
     unsafe { *core::ptr::addr_of_mut!(RX_NOTIFY) = Some(f) };
 }
@@ -160,9 +162,11 @@ pub fn rx_lost() -> u32 {
 
 /// RX IRQ handler（`exception_irq` 按 INTID=33 分流、**EOIR 之前**调）：drain
 /// FIFO 到 RXFE（电平触发去活铁序——不排空则 EOIR 后线仍高立即重投）→ 清粘滞
-/// （overrun 等）→ 经通知槽叫内核置 Event/唤醒等待者。全程零分配；FEN=0 下
-/// 突发多字节 = 多次进 handler（每次一字节，见模块头）。
-pub fn rx_irq() {
+/// （overrun 等）→ 经通知槽叫内核置 Event/唤醒等待者，**返回通知槽的「是否
+/// 唤醒」回报**（G3-2 修复批 F1：trap 臂 EOIR 后用于检查点决策；槽空 = false
+/// ——boot 早期平凡跳过）。全程零分配；FEN=0 下突发多字节 = 多次进 handler
+/// （每次一字节，见模块头）。
+pub fn rx_irq() -> bool {
     // SAFETY: IRQ 上下文（PSTATE.I=1）单生产者；MMIO 读写。
     unsafe {
         while mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 {
@@ -181,9 +185,10 @@ pub fn rx_irq() {
         // 正常路径的 INT_RX 已被排空 DR 读清（QEMU 源码：count==0 时随读清）。
         mmio::write(UART + UART_ICR, UART_ICR_STICKY);
         if let Some(f) = *core::ptr::addr_of!(RX_NOTIFY) {
-            f();
+            return f();
         }
     }
+    false
 }
 
 /// 搬空 RX 环（console 侧消费）：环内字节依序写入 `buf`（至多 `buf.len()`），

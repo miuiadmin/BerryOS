@@ -527,9 +527,24 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
         }
         crate::gic::IRQ_PL011_RX => {
             // 排空 FIFO 到 RXFE（去活电平）→ 静态环 + 通知槽（内核侧置 RX Event
-            // 位 + wake_matching；不立即抢占——醒者等 tick/yield，v1 延迟 ≤ 1 slice）。
-            crate::uart::rx_irq();
+            // 位 + wake_matching，槽回报「是否唤醒」）。**G3-2 修复批（F1）**：
+            // 检查点在 **EOIR 之后**（与 CNTV/SGI 臂 dispatch 同纪律——Bug 1：
+            // ack↔EOIR 之间切换 = context_switch 只在被切者下次调度才归 ⇒
+            // gic::end 无限推迟 ⇒ SPI33 保持 active 钉 RPR 0xa0 ⇒ 同级 CNTV
+            // tick 发不出（EOIR 饿死）；SMP 放大：被切 Ready 者可被
+            // try_steal_one 偷往对核，EOIR 写错 GICC 永久化）。v1「不立即抢占，
+            // 醒者等 tick/yield ≤ 1 slice」契约已随 G3-2 退役（此注原句即盲源，
+            // F2）。检查点 = SVC 尾同槽（berry_sched::preempt_checkpoint：
+            // 严格更高 eff 才切、count>0 禁切窗自豁免）。
+            let woke = crate::uart::rx_irq();
             crate::gic::end(id);
+            if woke {
+                // SAFETY: IRQ 上下文（PSTATE.I=1）；槽由 boot 在 enable_irq 前
+                // 注册（set_svc_exit_checkpoint），与 syscall 派发尾同一面。
+                if let Some(checkpoint) = unsafe { crate::SVC_EXIT_CHECKPOINT } {
+                    checkpoint();
+                }
+            }
         }
         SGI_RESCHED_US => {
             // 义务⑧（S-3b b-1）接收侧半件：入队 SGI 不再只计数——tickful 核
