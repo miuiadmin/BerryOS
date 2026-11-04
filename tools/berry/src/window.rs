@@ -25,6 +25,7 @@ use crate::profile::Profile;
 
 const TOOLBAR_H: u32 = 48;
 const TOOLBAR_LABELS: [&str; 5] = ["SHOT", "RES", "BOOT", "OFF", "FULL"];
+const TOOLBAR_TIPS: [&str; 5] = ["SCREENSHOT", "PROFILE", "REBOOT", "POWER", "FULLSCREEN"];
 
 fn toolbar_buttons(width: u32) -> [(u32, u32); 5] {
     let bw = 60u32;
@@ -69,6 +70,11 @@ fn glyph(ch: char, row: usize) -> u8 {
         'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
         'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
         'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
         _ => [0; 7],
     };
     bits[row]
@@ -138,7 +144,7 @@ fn draw_menu(buf: &mut [u32], width: u32, height: u32, current: &str) {
     }
 }
 
-fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool) {
+fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool, hover: Option<usize>) {
     let bar_top = height.saturating_sub(TOOLBAR_H);
     let bar = 0x0018_1C20;
     for y in bar_top..height {
@@ -150,7 +156,13 @@ fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool) {
     }
     let by = bar_top + 8;
     for (i, (bx, bw)) in toolbar_buttons(width).iter().enumerate() {
-        let btn = if i == 3 && armed { 0x008B_2E2E } else { 0x002C_3238 };
+        let btn = if i == 3 && armed {
+            0x008B_2E2E
+        } else if hover == Some(i) {
+            0x003A_424A
+        } else {
+            0x002C_3238
+        };
         for y in by..(by + 32).min(height) {
             for x in *bx..(*bx + *bw).min(width) {
                 buf[(y * width + x) as usize] = btn;
@@ -161,6 +173,23 @@ fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool) {
         let tx = bx + (bw.saturating_sub(tw)) / 2;
         draw_text(buf, width, height, tx, by + 9, label);
     }
+}
+
+fn draw_tooltip(buf: &mut [u32], width: u32, height: u32, hover: usize) {
+    let Some((bx, bw)) = toolbar_buttons(width).get(hover).copied() else {
+        return;
+    };
+    let text = TOOLBAR_TIPS[hover];
+    let tw = text.len() as u32 * 12;
+    let bw_tip = tw + 10;
+    let x = bx.saturating_add(bw / 2).saturating_sub(bw_tip / 2).min(width.saturating_sub(bw_tip));
+    let y = height.saturating_sub(TOOLBAR_H + 26);
+    for yy in y..(y + 20).min(height) {
+        for xx in x..(x + bw_tip).min(width) {
+            buf[(yy * width + xx) as usize] = 0x002A_3036;
+        }
+    }
+    draw_text(buf, width, height, x + 5, y + 3, text);
 }
 
 pub fn run(args: ShellArgs) -> Result<()> {
@@ -300,6 +329,7 @@ struct App {
     deadline: Option<Instant>,
     quit: bool,
     power_armed: Option<Instant>,
+    hover: Option<usize>,
     menu_open: bool,
     image: Option<PathBuf>,
     accel: String,
@@ -335,6 +365,7 @@ impl App {
             deadline: None,
             quit: false,
             power_armed: None,
+            hover: None,
             menu_open: false,
             image,
             accel,
@@ -378,7 +409,18 @@ impl App {
             return;
         };
         scale::render(frame, &fit, size.width, size.height, &mut buffer, 0x0010_1418);
-        draw_toolbar(&mut buffer, size.width, size.height, self.power_armed.is_some());
+        draw_toolbar(
+            &mut buffer,
+            size.width,
+            size.height,
+            self.power_armed.is_some(),
+            self.hover,
+        );
+        if !self.menu_open {
+            if let Some(h) = self.hover {
+                draw_tooltip(&mut buffer, size.width, size.height, h);
+            }
+        }
         if self.menu_open {
             draw_menu(&mut buffer, size.width, size.height, self.profile.id);
         }
@@ -684,12 +726,23 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Some((position.x, position.y));
+                let hover = self.window.as_ref().and_then(|w| {
+                    let s = w.inner_size();
+                    toolbar_hit(s.width, s.height, position.x, position.y)
+                });
+                if hover != self.hover {
+                    self.hover = hover;
+                    self.request_redraw();
+                }
                 if self.mouse_down {
                     self.pointer(position.x, position.y, 1);
                 }
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
+                if self.hover.take().is_some() {
+                    self.request_redraw();
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if button != MouseButton::Left {
@@ -792,10 +845,22 @@ mod toolbar_tests {
     }
 
     #[test]
+    fn hover_highlight_and_tooltip() {
+        let (w, h) = (480usize, 1000usize);
+        let mut buf = vec![0u32; w * h];
+        draw_toolbar(&mut buf, w as u32, h as u32, false, Some(0));
+        let (bx, _) = toolbar_buttons(w as u32)[0];
+        assert_eq!(buf[((h - TOOLBAR_H as usize) + 8) * w + bx as usize], 0x003A_424A);
+        draw_tooltip(&mut buf, w as u32, h as u32, 0);
+        let ty = h - TOOLBAR_H as usize - 26;
+        assert!(buf[ty * w..(ty + 1) * w].iter().any(|p| *p == 0x002A_3036));
+    }
+
+    #[test]
     fn draw_bar_and_text() {
         let (w, h) = (480usize, 1000usize);
         let mut buf = vec![0u32; w * h];
-        draw_toolbar(&mut buf, w as u32, h as u32, false);
+        draw_toolbar(&mut buf, w as u32, h as u32, false, None);
         let bar_top = h - TOOLBAR_H as usize;
         assert_eq!(buf[bar_top * w + 2], 0x0018_1C20);
         let (bx, bw) = toolbar_buttons(w as u32)[0];

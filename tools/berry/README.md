@@ -128,7 +128,7 @@ headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩�
 - C2c 已落 CLI：`berry display set phone16 --restart` 停旧 host、起新 profile host
   （新 run id，实测 480×854）。
 - attach 窗口的 `RES` 已自动重附着：`restart_profile` 停旧 host/起新 profile host，
-  窗口重连新 run VNC，无需手动 re-attach。hover/tooltip/旧 run 清理 = C2f。
+  窗口重连新 run VNC，无需手动 re-attach。按钮 hover 高亮 + tooltip 已落（C2f）；旧 run 清理/失败回滚 = C2g。
 - 默认 `berry shot` 等 `BERRYBOOT ok`，当前测试镜像此时可能还在固件/测试面；要看 GUI
   请传 `--wait-marker "FBW ok"` 或 launcher 标记。`--profile phone` 时 guifbd 进入
   GUI 模式（console 只走串口，不盖桌面）；默认 800×600 仍保留 console 上屏。

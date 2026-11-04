@@ -413,7 +413,8 @@ berry device stop --run "$RUN"
   **窗口内停旧 host、按新 profile 起新 host**（新 run），窗口继续。
 - **C2e 已落（attach 窗口）**：`RES` 选新 profile → `restart_profile` 停旧 host/起新 host
   → 重新连新 run 的 VNC，窗口自动重附着；无需手动 `shell --attach`。
-- **C2f 待落**：hover/tooltip、旧 run 清理、attach 失败回滚。
+- **C2f 已落（交互）**：按钮 hover 高亮 + 顶部 tooltip（SCREENSHOT/PROFILE/REBOOT/POWER/FULLSCREEN）；
+  `draw_tooltip` 不依赖字体资产。旧 run 清理、attach 失败回滚仍 C2g。
 - 按钮 disabled 态：重启/关机进行中；tooltip 显示快捷键 + 等价 CLI。
 - 截图：闪一下 + 落 `berry-shot-<ts>.png` + 事件 `source=ui`。
 - 关机/重启：确认框；进行中显示遮罩；失败显示 `code/message` + 日志入口。
@@ -533,7 +534,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C2c（已落 CLI）** | `display set <profile> --restart`：停旧 host、起新 profile host（新 run） | phone→phone16 实测 480×854；新 run 可控 |
 | **C2d（已落 host）** | `RES` 按钮 + profile 菜单（5 项）；host 窗口内停旧/起新；`RES` 高亮当前 profile | 菜单命中/绘制测试；选 phone16 窗口继续 |
 | **C2e（已落 attach）** | attach 窗口 RES → `restart_profile` → 新 run VNC 重连，自动重附着 | attach 窗口不重启，host 换 480×854 后窗口继续 |
-| **C2f（下一刀）** | hover/tooltip；旧 run 清理；attach 失败回滚/提示 | 交互细节与清理 |
+| **C2f（已落交互）** | 按钮 hover 高亮 + tooltip；菜单当前项高亮；OFF 二次确认 | 悬停可见提示；15 单测绿 |
+| **C2g（下一刀）** | 旧 run 清理；attach 失败回滚/提示；快捷键提示扩展 | 旧 run 可清理；失败可回滚 |
 | **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
