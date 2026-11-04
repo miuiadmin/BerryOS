@@ -1499,6 +1499,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 自带 irqsave 包络）。零行为变更步——注册与否不改变现役行为（探峰恒空），
     // g3-1c 域解蔽后承重。
     berry_hal_aarch64::set_svc_exit_checkpoint(berry_sched::preempt_checkpoint);
+    // G3-1c-1 接线（console 写域解蔽）：with_print_lock 窗包络从 irqsave 换
+    // preempt 计数对——enter/+1，exit = 配平 + 按 DAIF 分诊检查点（解蔽窗
+    // 出口探峰兑现被双门挡下的切换诉求；屏蔽窗出口跳检查点，零行为差）。
+    // 须在 enable_irq 前（首个解蔽窗打印前）注册。
+    berry_hal_aarch64::kern_lock::set_preempt_envelope(
+        berry_sched::print_window_enter,
+        berry_sched::print_window_exit,
+    );
     // P5 A-1：RX 通知槽 + 使能 PL011 RX（SPI 33）——均在 DAIF 屏蔽窗内
     // （enable_irq 前）。次序硬约束：通知槽须先注册（槽空时 rx_irq 平凡
     // 跳过——首字节静默落环无人唤醒）；rx_init 的 IMSC.RXIM 最后开（线一拉

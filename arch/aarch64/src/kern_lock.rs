@@ -15,10 +15,16 @@
 //! - **PRINT_LOCK**：独立实例，粒度 = 整条消息（多段 uart 拼行原子）；嵌套单向
 //!   KERN→PRINT（持 PRINT_LOCK 者禁取任何锁）；**panic bypass**——panic 路径
 //!   直写 UART 绕锁（停机面前锁无意义，也免 panic-in-lock 递归死锁）。
-//! - **irqsave 纪律（G43）**：任务态经 [`with_print_lock`] 取锁 = 先存 DAIF.I +
-//!   屏蔽、放后恢复——裸持 PRINT_LOCK 被本核 tick 打断（tick 的 switches= 金丝雀
-//!   行要同一把锁）= 同核硬死锁。sched 侧槽对（`print_lock`/`print_unlock`）
-//!   **不带** irqsave——唯一调用点 on_irq_tick 恒在 IRQ 屏蔽上下文（PSTATE.I=1）。
+//! - **irqsave 纪律（G43，G3-1c-1 console 写域解蔽改版）**：任务态经
+//!   [`with_print_lock`] 取锁 = **preempt 计数包络**（enter 槽 +1 / exit 槽
+//!   配平+检查点——槽反转接线，HAL 不知 scheduler 之名）：持 PRINT_LOCK 期
+//!   IRQ 不再定向屏蔽（调用方入口本在屏蔽窗则维持原样——包络不触 DAIF），
+//!   本核 tick/SGI 仍可入但抢占支按 preempt_count 闭门不切（sched 侧门）；
+//!   同核硬死锁的旧解（irqsave）由新解（禁切）承接——tick 的 switches=
+//!   金丝雀行要同一把锁，持锁被切走 = 持锁者对自旋于己核 IRQ 语境不可让，
+//!   两种包络同效。sched 侧槽对（`print_lock`/`print_unlock`）**不带**包络
+//!   ——唯一调用点 on_irq_tick 恒在 IRQ 屏蔽上下文（PSTATE.I=1），且其打印
+//!   段在抢占支 go 分支内 = 被门挡在持锁窗外。
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -199,7 +205,8 @@ pub fn klock_exit() {
 
 // ---- PRINT_LOCK ----
 
-/// PRINT_LOCK 取锁（裸对——调用方须已在 IRQ 屏蔽窗；任务态走 [`with_print_lock`]）。
+/// PRINT_LOCK 取锁（裸对——**不含 preempt 包络**：IRQ 语境调用者（tick go 支
+/// 金丝雀行）靠抢占支闭门天然安全；任务态一律走 [`with_print_lock`]）。
 pub fn print_lock() {
     while PRINT_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -225,17 +232,50 @@ pub fn irq_enabled() -> bool {
     daif & (1 << 7) == 0
 }
 
-/// 拼行 API（G44）：整条消息在 PRINT_LOCK 内一次拼完（多段 `uart_puts` 原子），
-/// 含 irqsave 包络（G43）——取锁前存 DAIF.I 并屏蔽、放锁后恢复。任务态打印
-/// 一律经此；panic 路径 bypass 直写（见模块头）。
+// ---- G3-1c-1（console 写域解蔽）：PRINT_LOCK preempt 包络槽（HAL→sched
+// 反转，避循环依赖——同 SVC_EXIT_CHECKPOINT 模式，HAL 永不知 scheduler 之名）----
+//
+// with_print_lock 的窗包络从 irqsave 换 preempt 计数：enter = preempt_disable
+//（+1 计数）；exit = 配平 + 条件检查点（屏蔽窗调用者跳过——详 sched 侧
+// print_window_exit 注）。槽空（boot 注册前）= 平凡直过：该窗 IRQ 恒屏蔽
+//（单线程 boot），零行为差。
+static mut PREEMPT_ENVELOPE: Option<(fn(), fn())> = None;
+
+/// 注册 PRINT_LOCK 窗 preempt 包络（kernel boot 在 enable_irq 前调用一次）。
+pub fn set_preempt_envelope(enter: fn(), exit: fn()) {
+    // SAFETY: boot 单线程（IRQ 未开）注册，此后全系统只读。
+    unsafe { PREEMPT_ENVELOPE = Some((enter, exit)) };
+}
+
+#[inline]
+fn preempt_enter() {
+    // SAFETY: 只读快照；set_preempt_envelope 全在 boot 单线程期。
+    if let Some((e, _)) = unsafe { PREEMPT_ENVELOPE } {
+        e();
+    }
+}
+
+#[inline]
+fn preempt_exit() {
+    // SAFETY: 同上。
+    if let Some((_, x)) = unsafe { PREEMPT_ENVELOPE } {
+        x();
+    }
+}
+
+/// 拼行 API（G44）：整条消息在 PRINT_LOCK 内一次拼完（多段 `uart_puts` 原子）。
+/// 窗包络 = preempt 计数对（G43 改版，G3-1c-1 console 写域解蔽）：持锁期 IRQ
+/// 不再定向屏蔽——入口解蔽者（任务态打印，console 域正主）保持解蔽，tick/
+/// SGI 可入不可切（抢占支按计数闭门）；入口屏蔽者（klock 窗/SVC 主体/boot/
+/// ktest——包络不触 DAIF）维持屏蔽，exit 槽按 DAIF 态跳检查点（sched 侧分诊
+/// ——持 KL/结构锁的 SVC 主体窗内切换违七类锁序，切换诉求由 g3-1b 落点①
+/// 派发尾检查点在零锁点承接）。锁语义不变：跨核互斥仍靠 TTAS 自旋；
+/// 「持 PRINT_LOCK 者禁取任何锁」单向序不动。panic 路径 bypass 直写（模块头）。
 pub fn with_print_lock<R>(f: impl FnOnce() -> R) -> R {
-    let had_irq = irq_enabled();
-    crate::disable_irq();
+    preempt_enter();
     print_lock();
     let r = f();
     print_unlock();
-    if had_irq {
-        crate::enable_irq();
-    }
+    preempt_exit();
     r
 }

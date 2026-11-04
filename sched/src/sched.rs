@@ -127,6 +127,31 @@ pub fn preempt_checkpoint() {
     hal::irq_restore(daif);
 }
 
+/// G3-1c-1：PRINT_LOCK 窗 preempt 包络对（with_print_lock 的 enter/exit 槽
+/// 接线——kernel boot 经 set_preempt_envelope 注册）。
+///
+/// enter = [`preempt_disable`]（+1 计数；**不触 DAIF**——入口屏蔽者维持屏蔽）。
+///
+/// exit = 配平 + **按 DAIF 态分诊的检查点**：出口 IRQ 解蔽（= 入口解蔽——
+/// 包络与 f() 均不改 DAIF，IRQ 往返保调用方态）⇒ 任务态打印（console 域
+/// 正主）：enable 归零后立即探峰——禁切期被双门（tick/SGI 抢占支）挡下的
+/// 切换诉求在出锁边界兑现（µs 级上界，不等下个 tick）。出口屏蔽（= 入口
+/// 屏蔽：klock 窗 / SVC 主体 / boot / ktest）⇒ **跳检查点**：窗内 IRQ 屏蔽
+/// ⇒ 无 tick/SGI ⇒ 无新增切换诉求；handler 自身唤醒的诉求由 g3-1b 落点①
+/// （SVC 派发尾检查点，svc_exit_class 毕 = 零锁持有）安全承接——此处若探
+/// = 持 KL/结构锁窗内切换，pick 取 RQ 锁 = 七类锁序（队列>表）逆序违约。
+pub fn print_window_enter() {
+    preempt_disable();
+}
+
+/// 退出半（文档见 [`print_window_enter`]——DAIF 分诊论证在彼）。
+pub fn print_window_exit() {
+    preempt_enable();
+    if hal::kern_lock::irq_enabled() {
+        preempt_checkpoint();
+    }
+}
+
 /// 本核 pick 过滤器（S-2b §2.3「内核串行/用户并行」）：CPU0 全量视图（与旧
 /// `pick_next` 单核语义恒等）；副核（cpu_id != 0）`user_only`——只出选
 /// `pinned != 0` 的用户任务（svcmgr `process_start` 派生的 EL0 进程；内核任务
@@ -2180,6 +2205,15 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     }
     RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left（饱和到 0）
     if (*cur).slice_left == 0 {
+        // G3-1c-1（console 写域解蔽）：禁切窗内 slice 燃尽——本次 tick 不切
+        //（need_resched 语义：出窗检查点/下 tick 重探；窗 = with_print_lock
+        // preempt 包络，µs 级）。早退点在结构窗开启前（expire/采样/LB 记账
+        // 全毕、零锁持有）——pick 白跑免掉。slice_left 已饱和 0，重探成本
+        // = 每 tick 一次 count 原子读。tick go 支金丝雀行在 go 分支内 =
+        // 被门挡在持 PRINT_LOCK 窗外（G43 改版的死锁防线另一半）。
+        if preempt_count() > 0 {
+            return;
+        }
         // S-3a 义务⑥：mod4 切回 park 门退役——副核 slice 尽与 CPU0 同径出选；
         // 副核 park 化只经任务自身 block/exit/yield 的切回 sec_park_ctx 点，
         // 不再由 tick 强制（参与节奏由入队 SGI 事件定步，与上支注同源）。
@@ -2279,6 +2313,12 @@ pub unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFrame) {
     let cur = current_task();
     // 装饰窗护栏（同 on_irq_tick null 支；正常期 CPU0 current 恒非 null）。
     if cur.is_null() {
+        return;
+    }
+    // G3-1c-1（console 写域解蔽）：禁切窗内 SGI 到——闭门不切（重调度诉求
+    // 由出窗检查点/下 tick 重探承接；窗 µs 级）。on_irq_tick 同款门，先于
+    // 结构窗开启。原 g3-1a 配平断言退居防线位（门后恒 count==0，零成本）。
+    if preempt_count() > 0 {
         return;
     }
     assert_preempt_balanced("on_sgi_resched");
