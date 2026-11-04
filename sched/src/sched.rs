@@ -331,16 +331,16 @@ unsafe fn klock_release_switch(task: *mut Task) {
         klock_release_raw();
     }
     if held & HELD_REAPQ != 0 {
-        REAPQ_LOCK.release();
+        reapq_release();
     }
     if held & HELD_RQ1 != 0 {
-        rq_of(1).lock_release();
+        rq_release(1);
     }
     if held & HELD_RQ0 != 0 {
-        rq_of(0).lock_release();
+        rq_release(0);
     }
     if held & HELD_SQ != 0 {
-        SLEEPQ_LOCK.release();
+        sq_release();
     }
 }
 
@@ -353,16 +353,16 @@ unsafe fn klock_release_switch(task: *mut Task) {
 unsafe fn klock_acquire_switch(task: *mut Task) {
     let held = (*task).held_locks;
     if held & HELD_SQ != 0 {
-        SLEEPQ_LOCK.acquire();
+        sq_acquire();
     }
     if held & HELD_RQ0 != 0 {
-        rq_of(0).lock_acquire();
+        rq_acquire(0);
     }
     if held & HELD_RQ1 != 0 {
-        rq_of(1).lock_acquire();
+        rq_acquire(1);
     }
     if held & HELD_REAPQ != 0 {
-        REAPQ_LOCK.acquire();
+        reapq_acquire();
     }
     if held & HELD_TABLE != 0 {
         klock_acquire_raw();
@@ -390,16 +390,16 @@ pub unsafe extern "C" fn svc_window(class: u8, enter: bool) {
     }
     if enter {
         if class & HELD_SQ != 0 {
-            SLEEPQ_LOCK.acquire();
+            sq_acquire();
         }
         if class & HELD_RQ0 != 0 {
-            rq_of(0).lock_acquire();
+            rq_acquire(0);
         }
         if class & HELD_RQ1 != 0 {
-            rq_of(1).lock_acquire();
+            rq_acquire(1);
         }
         if class & HELD_REAPQ != 0 {
-            REAPQ_LOCK.acquire();
+            reapq_acquire();
         }
         (*cur).held_locks |= class;
         (*cur).svc_mask = class;
@@ -410,16 +410,16 @@ pub unsafe extern "C" fn svc_window(class: u8, enter: bool) {
             "svc_window exit: held 位集须恰等于声明类（越类持有/泄漏）"
         );
         if class & HELD_REAPQ != 0 {
-            REAPQ_LOCK.release();
+            reapq_release();
         }
         if class & HELD_RQ1 != 0 {
-            rq_of(1).lock_release();
+            rq_release(1);
         }
         if class & HELD_RQ0 != 0 {
-            rq_of(0).lock_release();
+            rq_release(0);
         }
         if class & HELD_SQ != 0 {
-            SLEEPQ_LOCK.release();
+            sq_release();
         }
         (*cur).held_locks &= !class;
         (*cur).svc_mask = 0;
@@ -483,7 +483,7 @@ unsafe fn rq_lock_of(cpu: usize) -> bool {
     if held_test(held_rq_bit(cpu)) {
         return false; // 位已置——外层逻辑持有，物理退化（c-2c slice 2a）
     }
-    rq_of(cpu).lock_acquire();
+    rq_acquire(cpu);
     held_mark(held_rq_bit(cpu), true);
     true
 }
@@ -499,7 +499,7 @@ unsafe fn rq_unlock_of(cpu: usize, phys: bool) {
         return; // 退化窗——物理持有归外层
     }
     held_mark(held_rq_bit(cpu), false);
-    rq_of(cpu).lock_release();
+    rq_release(cpu);
 }
 
 /// 取/放本核队列锁（pick×8 + dequeue×3 直调面的便捷形——`rq()` 的锁侧
@@ -517,6 +517,74 @@ unsafe fn rq_lock() -> bool {
 #[inline]
 unsafe fn rq_unlock(phys: bool) {
     rq_unlock_of(hal::smp::cpu_id(), phys)
+}
+
+// ---- G3-3 lockdep 物理取放包装组（feature 关 = 纯转发零成本；spin.rs 零
+// 依赖纪律不破——钩子挂语义命名层，非 SpinLock 本体）----
+// 纪律：**只在物理取放点调**——位感知退化支（位已置跳物理取放）不触，故
+// 钩子不记退化窗；SLEEPQ/REAPQ/RQ 全树物理直取点收敛到本组（runqueue.rs
+// 方法保持纯净，RQ 类号由本组 idx 分诊）。
+
+/// SLEEPQ_LOCK 物理取（lockdep 类 = SQ）。
+#[inline]
+fn sq_acquire() {
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::acquire(hal::lockdep::CLASS_SQ);
+    SLEEPQ_LOCK.acquire();
+}
+
+/// SLEEPQ_LOCK 物理放。
+#[inline]
+fn sq_release() {
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::release(hal::lockdep::CLASS_SQ);
+    SLEEPQ_LOCK.release();
+}
+
+/// REAPQ_LOCK 物理取（类 = REAPQ）。
+#[inline]
+fn reapq_acquire() {
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::acquire(hal::lockdep::CLASS_REAPQ);
+    REAPQ_LOCK.acquire();
+}
+
+/// REAPQ_LOCK 物理放。
+#[inline]
+fn reapq_release() {
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::release(hal::lockdep::CLASS_REAPQ);
+    REAPQ_LOCK.release();
+}
+
+/// 指定核 RQ 锁物理取（RQ0/RQ1 分立类号——「双核升序」立法由此可检）。
+///
+/// # Safety
+/// 同 [`rq_lock_of`]（IRQ 屏蔽；`idx` ∈ {0,1}）。
+#[inline]
+unsafe fn rq_acquire(idx: usize) {
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::acquire(if idx == 0 {
+        hal::lockdep::CLASS_RQ0
+    } else {
+        hal::lockdep::CLASS_RQ1
+    });
+    rq_of(idx).lock_acquire();
+}
+
+/// 指定核 RQ 锁物理放。
+///
+/// # Safety
+/// 同 [`rq_acquire`]。
+#[inline]
+unsafe fn rq_release(idx: usize) {
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::release(if idx == 0 {
+        hal::lockdep::CLASS_RQ0
+    } else {
+        hal::lockdep::CLASS_RQ1
+    });
+    rq_of(idx).lock_release();
 }
 
 /// 初始化调度器：`current = &IDLE_TASK`。须在 `spawn` / `yield_now` 前、`mm::init`
@@ -1049,7 +1117,7 @@ static REAPQ_LOCK: SpinLock = SpinLock::new();
 unsafe fn reapq_push(t: *mut Task) {
     let phys = !held_test(HELD_REAPQ); // 位感知退化（c-2c slice 2a）
     if phys {
-        REAPQ_LOCK.acquire();
+        reapq_acquire();
         held_mark(HELD_REAPQ, true);
     }
     let mut loud = false;
@@ -1062,7 +1130,7 @@ unsafe fn reapq_push(t: *mut Task) {
     }
     if phys {
         held_mark(HELD_REAPQ, false);
-        REAPQ_LOCK.release();
+        reapq_release();
     }
     if loud {
         hal::uart_puts(b"reapq overflow (leak)\n");
@@ -1086,7 +1154,7 @@ pub fn reap_drain() {
     unsafe {
         let phys = !held_test(HELD_REAPQ); // 位感知退化（c-2c slice 2a）
         if phys {
-            REAPQ_LOCK.acquire();
+            reapq_acquire();
             held_mark(HELD_REAPQ, true);
         }
         let n = REAPQ_LEN;
@@ -1100,7 +1168,7 @@ pub fn reap_drain() {
         REAPQ_LEN = 0;
         if phys {
             held_mark(HELD_REAPQ, false);
-            REAPQ_LOCK.release();
+            reapq_release();
         }
     }
 }
@@ -1446,7 +1514,7 @@ pub fn sq_lock() -> bool {
     if unsafe { held_test(HELD_SQ) } {
         return false; // 位已置——外层逻辑持有，物理退化（c-2c slice 2a）
     }
-    SLEEPQ_LOCK.acquire();
+    sq_acquire();
     // SAFETY: 记账位写当前任务字段；CURRENT 空窗由 held_mark 自跳过。
     unsafe { held_mark(HELD_SQ, true) };
     true
@@ -1460,7 +1528,7 @@ pub fn sq_unlock(phys: bool) {
     }
     // SAFETY: 同上。
     unsafe { held_mark(HELD_SQ, false) };
-    SLEEPQ_LOCK.release();
+    sq_release();
 }
 
 impl SleepQueue {
@@ -2014,10 +2082,10 @@ fn integrity_check() {
         // SLEEPQ 三段；孤儿段形态对 pick 不可见，只有记账对账显形）。恒走查
         // 两槽——未参与核槽恒空环（walk 0 == len 0 恒过，零成本）。
         for cpu in 0..2 {
-            rq_of(cpu).lock_acquire();
+            rq_acquire(cpu);
             let steps = rq_of(cpu).ring_check();
             let want = rq_of(cpu).len();
-            rq_of(cpu).lock_release();
+            rq_release(cpu);
             assert!(
                 steps == want,
                 "integrity: cpu{} ring walk {} != len {} (orphan segment or broken links)",
@@ -2026,7 +2094,7 @@ fn integrity_check() {
                 want
             );
         }
-        SLEEPQ_LOCK.acquire();
+        sq_acquire();
         let mut n = 0;
         let mut cur = sleepq().head.get();
         while let Some(c) = cur {
@@ -2038,7 +2106,7 @@ fn integrity_check() {
             cur = (*c.as_ptr()).sleep_next.get();
         }
         let want = sleepq().len.get();
-        SLEEPQ_LOCK.release();
+        sq_release();
         assert!(n == want, "integrity: sleepq walk {} != len {}", n, want);
     }
 }

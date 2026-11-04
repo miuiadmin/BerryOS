@@ -505,8 +505,15 @@ pub(crate) static SGI_SEEN: core::sync::atomic::AtomicU32 =
 
 #[no_mangle]
 pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
+    // G3-3 lockdep IRQ 地板：入口深度快照——被断流词条沉底（唯一 IRQ 解蔽
+    // 持锁窗 = PRINT_LOCK preempt 包络；handler 在其上取结构锁合法跨流，
+    // 序检域 = 地板..深度。feature 关 = 编译消除）。
+    #[cfg(feature = "lockdep")]
+    crate::lockdep::irq_floor_raise();
     let id = crate::gic::acknowledge();
     if id == crate::gic::SPURIOUS {
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::irq_floor_lower();
         return;
     }
     // SGI 号常量转 usize 模式位（pattern 不收 `as` 表达式——函数内 const 落地）。
@@ -596,6 +603,10 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             }
         }
     }
+    // G3-3 lockdep IRQ 地板收回：断言深度恰归地板（handler 配平执法——
+    // 留残 = 有锁未放跨流泄漏）后归 0（IRQ 不可嵌套：handler 全程 PSTATE.I=1）。
+    #[cfg(feature = "lockdep")]
+    crate::lockdep::irq_floor_lower();
 }
 
 unsafe fn read_esr_elr() -> (u64, u64) {

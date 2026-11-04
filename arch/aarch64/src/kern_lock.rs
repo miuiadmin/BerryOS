@@ -55,6 +55,10 @@ static PRINT_LOCK: AtomicBool = AtomicBool::new(false);
 /// KERN_LOCK 取锁（TTAS）。
 #[inline]
 pub fn kern_acquire() {
+    // G3-3 lockdep：物理取点记账（feature 关 = 编译消除；类 = TABLE——七类
+    // 全序位 4，KL 类内末取立法）。
+    #[cfg(feature = "lockdep")]
+    crate::lockdep::acquire(crate::lockdep::CLASS_TABLE);
     while KERN_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -83,6 +87,8 @@ pub fn kl_held() -> bool {
 /// KERN_LOCK 放锁。
 #[inline]
 pub fn kern_release() {
+    #[cfg(feature = "lockdep")]
+    crate::lockdep::release(crate::lockdep::CLASS_TABLE);
     KL_HELD.store(0, Ordering::Relaxed); // 先清镜像再放锁（见 KL_HELD 注）
     KERN_LOCK.store(false, Ordering::Release);
 }
@@ -213,6 +219,10 @@ pub fn klock_exit() {
 /// 禁切窗（被打断者可能正持 PRINT_LOCK），让位不取；任务态一律走
 /// [`with_print_lock`]）。
 pub fn print_lock() {
+    // G3-3 lockdep：类 = PRINT（rank 7 最内）——「持 PRINT_LOCK 者禁取任何
+    // 锁」由此自动执法（其后任何取锁 = rank 降 = violation）。
+    #[cfg(feature = "lockdep")]
+    crate::lockdep::acquire(crate::lockdep::CLASS_PRINT);
     while PRINT_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -225,6 +235,8 @@ pub fn print_lock() {
 
 /// PRINT_LOCK 放锁。
 pub fn print_unlock() {
+    #[cfg(feature = "lockdep")]
+    crate::lockdep::release(crate::lockdep::CLASS_PRINT);
     PRINT_LOCK.store(false, Ordering::Release);
 }
 

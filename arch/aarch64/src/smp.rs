@@ -151,6 +151,14 @@ pub struct SmpCpu {
     /// 非原子 RMW 会被 tick 撕裂（读/写之间打断 = tick 见旧值判可切）——原子
     /// 类型同尺寸 8B，偏移 104/尺寸断言不动。
     pub preempt_count: AtomicU64,
+    /// G3-3 lockdep per-CPU 持有链（尾插第四组）：类号栈（物理取序记录，
+    /// [`crate::lockdep`] 独用——feature `lockdep` 关时无人读写，字段常零）。
+    /// 本核独占：一切取放点恒在 IRQ 屏蔽窗（雷 2 纪律）⇒ 无原子需求。
+    pub lockdep_chain: [u8; crate::lockdep::DEPTH_MAX],
+    /// 链深（栈顶位）。
+    pub lockdep_depth: u8,
+    /// IRQ 地板（`exception_irq` 入口深度快照——跨流分层，lockdep 模块头）。
+    pub lockdep_floor: u8,
 }
 
 const fn zero_cpu() -> SmpCpu {
@@ -169,6 +177,9 @@ const fn zero_cpu() -> SmpCpu {
         sw_cnt: 0,
         park_cnt: 0,
         preempt_count: AtomicU64::new(0),
+        lockdep_chain: [0; crate::lockdep::DEPTH_MAX],
+        lockdep_depth: 0,
+        lockdep_floor: 0,
     }
 }
 
@@ -195,6 +206,11 @@ const _: () = assert!(core::mem::offset_of!(SmpCpu, park_cnt) == 96);
 // G3-1a 尾插第三字段（preempt_count@104）：同 S-5a 尾插纪律——逻辑尺寸 112
 // 仍 ≤ 128 帽，size 断言不变、asm 不受影响。
 const _: () = assert!(core::mem::offset_of!(SmpCpu, preempt_count) == 104);
+// G3-3 尾插第四组（lockdep_chain@112 / depth@120 / floor@121）：逻辑尺寸
+// 122 仍 ≤ 128 帽（align 64）——size 断言不变、asm 只钉 0/8/16 不受影响。
+const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_chain) == 112);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_depth) == 120);
+const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_floor) == 121);
 
 /// 副核 per-CPU 块（TPIDR_EL1 由 secondary_entry asm ⑩ 自钉）。
 #[no_mangle]
@@ -268,6 +284,28 @@ pub fn preempt_count_slot() -> Option<&'static AtomicU64> {
     // SAFETY: 非零即本核钉入的 SmpCpu 地址（boot 期钉、此后不变）；
     // preempt_count 字段本核独占写（禁切窗只在本核开合——跨核不触达）。
     Some(unsafe { &*(core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).preempt_count)) })
+}
+
+/// 本核 LOCKDEP 槽（G3-3）：TPIDR_EL1 → `SmpCpu` 尾插链三元组（类栈首址 /
+/// 深度 / 地板裸指针）。仅 [`crate::lockdep`] 消费——模块常驻编译（feature
+/// 只门调用点），feature 关时链零读写零成本。本核独占写窗 = 取放点 IRQ 屏蔽
+/// 窗，无原子需求。None = TPIDR_EL1 未装（ktest/极早 boot 窗）——lockdep
+/// 全检跳过（覆盖缺口注记见模块头）。
+pub(crate) fn lockdep_slot() -> Option<(*mut u8, *mut u8, *mut u8)> {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: 非零即本核钉入的 SmpCpu 地址（boot 期钉、此后不变）；三字段
+    // 本核独占（IRQ 屏蔽窗内单写者）。
+    let c = unsafe { &mut *(base as *mut SmpCpu) };
+    Some((
+        c.lockdep_chain.as_mut_ptr(),
+        &mut c.lockdep_depth,
+        &mut c.lockdep_floor,
+    ))
 }
 
 /// 本核逻辑核号（S-2b）：TPIDR_EL1 未装（ktest/boot 早期窗）→ 0（CPU0）。

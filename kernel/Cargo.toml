@@ -13,4 +13,9 @@ berry-hal-aarch64 = { path = "../arch/aarch64" }
 berry-mm = { path = "../mm" }
 berry-sched = { path = "../sched" }
 
+[features]
+# G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面
+# ——G3 草案 §3/§6 G3-3 行验收：debug 构建跑主 smoke + 误报率 <10%）。
+lockdep = ["berry-sched/lockdep"]
+
 [build-dependencies]
