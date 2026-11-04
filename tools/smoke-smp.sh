@@ -101,6 +101,15 @@ field_wait() {
 }
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-smp.XXXXXX")
+# per-boot 串口轮转（smoke.sh 同款刀法，f4 复验 minor C 移植）：每 QEMU
+# boot 一份日志，$LOG 恒指当前 boot。此前八相顺序截断同文件——后相抹前相
+# 现场（SMOKE_KEEP_LOG 也只余末相）；本刀起各相 launch 前 rotate_log 换档，
+# SMOKE_KEEP_LOG=1 时八 boot 各留档、失败全尸逐相保全。
+LOGS=("$LOG")
+rotate_log() {
+  LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-smp.XXXXXX")
+  LOGS+=("$LOG")
+}
 EVS_LOG=""; SKT_LOG=""; ECHO_LOG=""
 QEMU_PID=""; EVS_PID=""; SKT_PID=""; ECHO_PID=""
 
@@ -115,12 +124,15 @@ cleanup() {
   # 落定，kill+wait 后再 sleep 3 收尾。
   [ -n "$QEMU_PID" ] && sleep 3
   if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
-    echo "smoke-smp: 串口日志保留：$LOG" >&2
+    for lg in "${LOGS[@]}"; do
+      echo "smoke-smp: 串口日志保留：$lg" >&2
+    done
     for p in "$EVS_LOG" "$SKT_LOG" "$ECHO_LOG"; do
       [ -n "$p" ] && echo "smoke-smp: 客户端日志保留：$p" >&2
     done
   else
-    rm -f "$LOG" "$EVS_LOG" "$SKT_LOG" "$ECHO_LOG"
+    rm -f "${LOGS[@]}"
+    rm -f "$EVS_LOG" "$SKT_LOG" "$ECHO_LOG"
   fi
 }
 trap cleanup EXIT
@@ -130,9 +142,15 @@ fail() {
   # 失败即自动留全尸（2026-11-01 相 3 时敏 flake 归因教训：tail -40 截掉
   # PC/FAR/SPSR 行 + cleanup 删原件 = 现场不可逆丢失，差分压测被迫盲跑）。
   # 成功路径不受影响（照旧即弃；SMOKE_KEEP_LOG 仍管全量保留）。
-  local keep="out/smoke-smp-fail.$(date +%Y%m%d-%H%M%S).log"
+  # per-boot 轮转起（f4 复验 minor C）全相留档：逐 boot 各存一份（旧形态
+  # 只存当相——前相现场随截断不可逆丢失）。
+  local keep i=1
   mkdir -p out 2>/dev/null
-  cp "$LOG" "$keep" 2>/dev/null && echo "smoke-smp: 失败全尸已存：$keep" >&2
+  for lg in "${LOGS[@]}"; do
+    keep="out/smoke-smp-fail.$(date +%Y%m%d-%H%M%S).p${i}.log"
+    cp "$lg" "$keep" 2>/dev/null && echo "smoke-smp: 失败全尸已存：$keep" >&2
+    i=$((i+1))
+  done
   echo "---- 串口日志尾部（$LOG）----" >&2
   tail -40 "$LOG" >&2
   # 客户端死因随失败即打印不留文件（smoke.sh 同款纪律）。
@@ -364,7 +382,7 @@ if lsof -nP -iTCP:18080-18083 -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 echod_start
 
-: > "$LOG"   # 日志分相（smoke.sh 先例：复用同一日志文件，cleanup 只删一份）
+rotate_log   # 日志分相换档（smoke.sh 同款 per-boot 轮转——后相不再抹前相现场）
 evs_client_start
 skt_client_start
 
@@ -449,7 +467,7 @@ echod_stop
 # run10 定谳）。
 
 field_wait
-: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 3 开工截断复用日志
+rotate_log   # F-A12 跨 boot 混日志防线 + per-boot 轮转：相 3 换档
 echo "smoke-smp: QEMU 启动（-smp 2，相 3 LB 相：fw_cfg lb gate + bare）"
 t_lb0=$(date +%s)
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
@@ -507,7 +525,7 @@ QEMU_PID=""
 # 恰一次复杂度）。锁外等待纪律（§3.2）与对飞面记录 → tlbshoot.rs 模块注。
 
 field_wait
-: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 4 开工截断复用日志
+rotate_log   # F-A12 跨 boot 混日志防线 + per-boot 轮转：相 4 换档
 echo "smoke-smp: QEMU 启动（-smp 2，相 4 ASID 回卷相：fw_cfg asidroll gate + bare）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/asidroll,string=1 \
@@ -558,7 +576,7 @@ QEMU_PID=""
 # 与 main.rs TLBS_PARTICIPANTS 三面钉同值）。
 
 field_wait
-: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 5 开工截断复用日志
+rotate_log   # F-A12 跨 boot 混日志防线 + per-boot 轮转：相 5 换档
 echo "smoke-smp: QEMU 启动（-smp 2，相 5 TLB canary 相：fw_cfg tlbs gate + bare）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/tlbs,string=1 \
@@ -606,7 +624,7 @@ echo "smoke-smp: R3 定标三数：boot=${SMP_BOOT_WALL}s（帽 ${DEADLINE_BOOT}
 # #64 三面钉同值）。
 
 field_wait
-: > "$LOG"   # F-A12：跨 boot 混日志必假败——相 6 开工截断复用日志
+rotate_log   # F-A12 跨 boot 混日志防线 + per-boot 轮转：相 6 换档
 echo "smoke-smp: QEMU 启动（-smp 2，相 6 ALLOC churn 相：fw_cfg alloc gate + bare）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/alloc,string=1 \
@@ -648,7 +666,7 @@ QEMU_PID=""
 # （残留态/UAF = 竞态真病灶面）。断言面同相 6（n==320 三面钉）。
 
 field_wait
-: > "$LOG"   # F-A12：相 7 开工截断复用日志
+rotate_log   # F-A12 同款：相 7 换档
 echo "smoke-smp: QEMU 启动（-smp 2，相 7 HT 风暴相：fw_cfg ht gate + bare）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/ht,string=1 \
@@ -690,7 +708,7 @@ QEMU_PID=""
 # 。断言面 = a==b==320（三面钉：模板 movz #0x140 / PP_ROUNDS / 本行）。
 
 field_wait
-: > "$LOG"   # F-A12：相 8 开工截断复用日志
+rotate_log   # F-A12 同款：相 8 换档
 echo "smoke-smp: QEMU 启动（-smp 2，相 8 PP ping-pong 相：fw_cfg pp gate + bare）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/pp,string=1 \
