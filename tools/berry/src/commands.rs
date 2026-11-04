@@ -44,6 +44,7 @@ pub struct ShotArgs {
 pub struct ScreenshotArgs {
     pub run: Option<String>,
     pub out: Option<PathBuf>,
+    pub settle: Duration,
     pub timeout: Duration,
     pub json: bool,
 }
@@ -249,6 +250,9 @@ pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
     let run = find_run(args.run.as_deref())?;
     let endpoint = vnc_endpoint(&run)?;
     let mut source = VncSource::connect(&endpoint)?;
+    if !args.settle.is_zero() {
+        std::thread::sleep(args.settle);
+    }
     let frame = source.next_frame(args.timeout).ok_or_else(|| {
         let err = source.error().unwrap_or_else(|| "no frame".to_string());
         BerryError::protocol(format!("VNC: {err}"))

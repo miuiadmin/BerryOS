@@ -8,7 +8,8 @@
 
 CLI 是主接口；窗口按钮只是命令的按钮化，任何 UI 动作都应有等价 CLI。
 
-设计依据：`docs/berry设备壳设计草案.md` / ADR #62。**QEMU 只是引擎子进程**：
+设计依据：`docs/Berry设备平台-CLI-first设计.md`（平台/CLI/控制面/快捷栏单一事实源）+
+`docs/berry设备壳设计草案.md`（显示/帧面/QEMU 子系统）+ ADR #62 追记。**QEMU 只是引擎子进程**：
 帧面走 QEMU `memory-backend-file,share=on` 的客机 RAM 镜（`RamSource`），输入走
 VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图、缩放都在宿主侧。
 
@@ -42,7 +43,7 @@ just berry doctor [--json]
 just berry run --kernel <elf> --marker "BerryOS boot" --timeout 30 --follow
 just berry shot --image out/berryos.img --out out/shot.png --timeout 120
 just berry shot --image out/berryos.img --profile phone --out out/phone.png
-just berry screenshot --out out/shot.png      # 抓正在跑的 shell，不重启
+just berry screenshot --out out/shot.png --settle-ms 500   # 抓正在跑的 shell，不重启
 just shell                                  # = berry shell --image out/berryos.img
 just berry shell --profile phone --timeout 30
 just berry input key ret

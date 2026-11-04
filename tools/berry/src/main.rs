@@ -97,6 +97,9 @@ struct ScreenshotCmd {
     run: Option<String>,
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Wait before capturing (desktop/animation settle).
+    #[arg(long, default_value_t = 0)]
+    settle_ms: u64,
     #[arg(long, default_value_t = 10)]
     timeout: u64,
 }
@@ -198,6 +201,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Screenshot(c)) => commands::screenshot(ScreenshotArgs {
             run: c.run,
             out: c.out,
+            settle: Duration::from_millis(c.settle_ms),
             timeout: Duration::from_secs(c.timeout),
             json: cli.json,
         }),
