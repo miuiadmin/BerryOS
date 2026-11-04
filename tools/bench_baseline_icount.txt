@@ -25,9 +25,15 @@
 # enable_irq 前且 boot DAIF 屏蔽 = 物理无 tick 落点；两漂移项恰同 −134/op 而
 # 迭代数 1024 vs 256（固定 tick 成本不可同摊）；最长窗项 vmo_rw4k 888k cyc
 # 6937 分文不动。prove exact 定态观测与基线数字（真实测量）本身有效。
+# g3-1d 烘焙（2026-11-04，prove 五跑 max_dev 0.000%）：vmo_commit1p 1574→1572
+# （−2）唯一移项，余五项分毫不动——**非**轨道对翻转（{37,1574}↔{171,1708}
+# 未换轨），系区间合量微布局骰（6b7a745 烘基后 3323b87/8cbf832/b495fb0/
+# 53a381e/68fea8b + g3-1d 增量叠掷；68fea8b RAM_TOP 256MiB 使 mm::FRAME
+# 三静态数组 ×2 = bss 段 248688→372464（+123776，f4 复验对账），text 段
+# 248928 不变——布局重掷而热径零算法增量）。
 cntvct_pair,4096,0
 frame_alloc4k,1024,37
 frame_alloc64k,256,37
 handle_evt,1024,166
-vmo_commit1p,256,1574
+vmo_commit1p,256,1572
 vmo_rw4k,128,6937

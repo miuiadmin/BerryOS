@@ -39,7 +39,7 @@ pub use sched::{
     intent_settle_current,
     intent_snapshot_current, kill_all_tasks_by_pinned, last_killed,
     lb_stats,
-    on_irq_tick, on_sgi_resched, park_recheck, preempt_checkpoint, preempt_count, preempt_disable,
+    on_irq_tick, on_sgi_resched, park_recheck, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,
     preempt_enable, print_window_enter, print_window_exit,
     nearest_deadline, refresh_effective, reap_drain,
     set_exit_hook, set_lb_match,

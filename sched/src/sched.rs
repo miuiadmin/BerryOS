@@ -118,13 +118,25 @@ fn assert_preempt_balanced(where_: &str) {
 /// DAIF 形态，不继承本窗）。
 /// 零行为变更步（g3-1b）：现役 SVC 全程 IRQ 屏蔽 ⇒ 单核 rq 状态窗内
 /// 不可变 ⇒ 探峰恒空 = 纯空探（无直切）；g3-1c 域解蔽后本检查点真承重。
+///
+/// g3-1d 观测面：真探形（count==0 支）命中计数——递增点在 try_preempt
+/// 之前 = **rq_lock 窗外**，无锁原子加（Relaxed 单指令序），不引入任何
+/// 锁序面（f4 g3-1d 预警①）；空探（计数>0 直返）不计。
+static PREEMPT_CKPT_HITS: AtomicU64 = AtomicU64::new(0);
+
 pub fn preempt_checkpoint() {
     let daif = hal::irq_save();
     hal::disable_irq();
     if preempt_count() == 0 {
+        PREEMPT_CKPT_HITS.fetch_add(1, Ordering::Relaxed);
         try_preempt();
     }
     hal::irq_restore(daif);
+}
+
+/// g3-1d：检查点真探形命中数（boot 起累计；fa ktest 尾 `ckpt=` 字段打印）。
+pub fn preempt_checkpoint_hits() -> u64 {
+    PREEMPT_CKPT_HITS.load(Ordering::Relaxed)
 }
 
 /// G3-1c-1：PRINT_LOCK 窗 preempt 包络对（with_print_lock 的 enter/exit 槽
