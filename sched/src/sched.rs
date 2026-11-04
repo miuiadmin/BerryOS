@@ -68,44 +68,37 @@ unsafe fn set_current(t: *mut Task) {
 
 /// PREEMPT_COUNT 回落位（TPIDR_EL1 未装窗 = ktest/cpu0_init 前防御——与
 /// `CURRENT` 回落同款契约；该窗只可能在 CPU0，单核语义正确）。
-static mut PREEMPT_COUNT: u64 = 0;
+static PREEMPT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// 本核 preempt_count 槽（主位 = `SmpCpu.preempt_count`；None 回落本 static）。
 #[inline]
-unsafe fn preempt_slot() -> *mut u64 {
-    match hal::smp::preempt_count_slot() {
-        Some(p) => p,
-        None => &raw mut PREEMPT_COUNT,
-    }
+fn preempt_slot() -> &'static AtomicU64 {
+    hal::smp::preempt_count_slot().unwrap_or(&PREEMPT_COUNT)
 }
 
 /// 开本核禁切窗（可嵌套；须与 [`preempt_enable`] 严格配平）。窗内禁切换——
 /// 切换原语入口配平断言（debug_assert count==0）执法。
+///
+/// 原子 RMW（f4 m3 修复批）：g3-1c 起禁切窗在 IRQ 解蔽态开合——非原子
+/// read-modify-write 会被 tick 打断在读/写之间（tick 见 count 仍 0 判可切 =
+/// 撕裂窗漏切）；fetch_add 单指令序，tick 要么见自增前要么见自增后。Relaxed
+/// 口径 = 本核顺序即够（per-CPU 字段，跨核零序角色；执法点同核 IRQ 屏蔽读）。
 pub fn preempt_disable() {
-    // SAFETY: 本核独占字段；IRQ 状态无关（开窗不解蔽——与 IRQ 屏蔽窗正交）。
-    unsafe {
-        let p = preempt_slot();
-        let v = p.read_volatile();
-        p.write_volatile(v + 1);
-    }
+    preempt_slot().fetch_add(1, Ordering::Relaxed);
 }
 
 /// 关本核禁切窗一层（嵌套弹一层；归零点 = 可切点）。下溢 = 配平违约，
-/// debug 构建 fail-loud。
+/// debug 构建 fail-loud（fetch_sub 前值判——sub 已落地才判，违约时计数翻
+/// u64::MAX = 永禁切方向（fail-safe：宁可卡死调度不静默漏禁），dev 面
+/// panic 先停机）。
 pub fn preempt_enable() {
-    // SAFETY: 同上。
-    unsafe {
-        let p = preempt_slot();
-        let v = p.read_volatile();
-        debug_assert!(v > 0, "preempt_enable: count 下溢（disable/enable 配平违约）");
-        p.write_volatile(v.saturating_sub(1));
-    }
+    let prev = preempt_slot().fetch_sub(1, Ordering::Relaxed);
+    debug_assert!(prev > 0, "preempt_enable: count 下溢（disable/enable 配平违约）");
 }
 
 /// 读本核禁切计数（诊断/检查点探峰自查面——g3-1b 消费）。
 pub fn preempt_count() -> u64 {
-    // SAFETY: 本核独占字段，volatile 读。
-    unsafe { preempt_slot().read_volatile() }
+    preempt_slot().load(Ordering::Relaxed)
 }
 
 /// 切换原语入口配平断言（G3-1a 执法面）：进切换原语 = 本核必须可切
@@ -2201,6 +2194,11 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         if let Some(next) = picked {
             let next_ptr: *mut Task = next;
             if next_ptr != cur {
+                // G3-1a 断言补位（f4 M1 修复批）：tick 抢占支 = 第七切换入口
+                //（函数入口不断言——expire/采样/LB 记账无切换语义的面不执法）。
+                // 定形**前**断言：定形后才断言 = 违约时留下「已定形未切换」
+                // 破态（cur=Ready/next=Running 但无切换发生）。
+                assert_preempt_balanced("on_irq_tick（tick 抢占支）");
                 (*cur).state = TaskState::Ready;
                 (*next_ptr).state = TaskState::Running;
                 go = Some(next_ptr);
@@ -2544,6 +2542,9 @@ unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
 /// PSTATE.I=1（idle 环屏蔽窗）；结构锁窗已闭（RQ 窗/偷取窗在 idle_loop）；
 /// `next_ptr` 有效。
 unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
+    // G3-1a 断言补位（f4 m1 修复批）：idle 派发恒切换（无「出选空」支），
+    // 入口即切换原语语义——第八入口，至此切换原语配平断言全员在席（八入口）。
+    assert_preempt_balanced("dispatch_from_idle");
     let idle = addr_of_mut!(IDLE_TASK);
     (*next_ptr).state = TaskState::Running;
     (*next_ptr).slice_left = hal::timer::slice_cycles();

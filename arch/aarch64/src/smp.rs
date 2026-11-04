@@ -147,8 +147,10 @@ pub struct SmpCpu {
     /// SVC 主体无锁段/长循环段；语义等价今日 IRQ 屏蔽窗的「非零即禁」）。本核
     /// 独占写（禁切窗只在本核开合）；读点 = 切换原语入口配平断言 + 检查点探峰
     /// （g3-1b 起）。零行为变更步：g3-1a 落位后恒 0（无人 inc），g3-1c 域解蔽
-    /// 才有真消费者。
-    pub preempt_count: u64,
+    /// 才有真消费者。AtomicU64（f4 m3 修复批）：g3-1c 起窗口在 IRQ 解蔽态开合，
+    /// 非原子 RMW 会被 tick 撕裂（读/写之间打断 = tick 见旧值判可切）——原子
+    /// 类型同尺寸 8B，偏移 104/尺寸断言不动。
+    pub preempt_count: AtomicU64,
 }
 
 const fn zero_cpu() -> SmpCpu {
@@ -166,7 +168,7 @@ const fn zero_cpu() -> SmpCpu {
         disp_cnt: 0,
         sw_cnt: 0,
         park_cnt: 0,
-        preempt_count: 0,
+        preempt_count: AtomicU64::new(0),
     }
 }
 
@@ -252,19 +254,20 @@ pub fn current_slot() -> Option<*mut u64> {
 }
 
 /// 本核 PREEMPT_COUNT 槽（G3-1a）：TPIDR_EL1 → `SmpCpu.preempt_count`——
-/// 抢占禁用计数的 per-CPU 存储面（sched 侧 preempt_disable/enable 经此读写）。
+/// 抢占禁用计数的 per-CPU 存储面（sched 侧 preempt_disable/enable 经此读写；
+/// m3 修复批起原子面——返回共享引用，sched 侧消费全安全代码）。
 /// None = TPIDR_EL1 未装（cpu0_init/ktest 前防御窗）——调用方回落自有全局
 ///（与 [`current_slot`] 同款契约）。
-pub fn preempt_count_slot() -> Option<*mut u64> {
+pub fn preempt_count_slot() -> Option<&'static AtomicU64> {
     let base: u64;
     // SAFETY: 只读系统寄存器。
     unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
     if base == 0 {
         return None;
     }
-    // SAFETY: 非零即本核钉入的 SmpCpu 地址；preempt_count 字段本核独占写
-    //（禁切窗只在本核开合——跨核不触达）。
-    Some(unsafe { core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).preempt_count) })
+    // SAFETY: 非零即本核钉入的 SmpCpu 地址（boot 期钉、此后不变）；
+    // preempt_count 字段本核独占写（禁切窗只在本核开合——跨核不触达）。
+    Some(unsafe { &*(core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).preempt_count)) })
 }
 
 /// 本核逻辑核号（S-2b）：TPIDR_EL1 未装（ktest/boot 早期窗）→ 0（CPU0）。

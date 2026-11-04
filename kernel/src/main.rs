@@ -581,6 +581,15 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 语义逐位对齐；arm_slice/enable_irq（首 tick）前、单核机型同走（per-CPU
     // 化不分核数）。副核同款在 secondary_entry asm ⑩。
     berry_hal_aarch64::smp::cpu0_init();
+    // G3-1a 主位 Some 臂直测（f4 M2 修复批）：ktest::run（:554）先于
+    // cpu0_init（:583）——其五断言走的 static 回落位；此处 TPIDR_EL1 已钉，
+    // 主位（SmpCpu.preempt_count@TPIDR）一次读断言补齐。静默执法（fail =
+    // panic 停机冒烟自然红），零输出行保 boot 相逐行零漂移。
+    assert_eq!(
+        berry_sched::preempt_count(),
+        0,
+        "G3-1a：主位 Some 臂读通（cpu0_init 后恒 0——无人开窗）"
+    );
 
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     berry_sched::init();

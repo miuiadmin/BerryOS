@@ -1768,12 +1768,13 @@ fn test_switch() {
         // <- switch_ping_fn 切回 SWITCH_CTX_MAIN 时续行于此。
     }
     // G3-1a（草案 §8.C g3-1a）：per-CPU preempt_count 安全对——计数/嵌套/配平
-    // 语义锁死（ktest 跑在 cpu0_init 后 = TPIDR_EL1 已钉，走主位真路径）。
-    // 切换原语入口的 debug 配平断言在 release 主面编译消除（零漂移根基），
-    // 其执法面 = debug 构建 + g3-1b 检查点空探；本位不验（release 下不可达
-    // 违约路径）。断言静默跑：fail = panic 停机冒烟自然红，不加输出行（保
-    // boot 相逐行对拍零漂移）。
-    assert_eq!(berry_sched::preempt_count(), 0, "G3-1a：初始 count==0（主位真路径）");
+    // 语义锁死。**回落位路径**（f4 M2 勘正）：ktest::run（main.rs:554）先于
+    // cpu0_init（:583）——TPIDR_EL1 未钉，五断言走 static 回落位；主位
+    //（SmpCpu.preempt_count）Some 臂由修复批在 cpu0_init 后补 boot 尾直测。
+    // 切换原语入口配平断言 = debug_assert：主面 `just build` = dev profile
+    // 活执法（同批勘正旧「release 编译消除」句）；断言静默跑：fail = panic
+    // 停机冒烟自然红，不加输出行（保 boot 相逐行对拍零漂移）。
+    assert_eq!(berry_sched::preempt_count(), 0, "G3-1a：初始 count==0（回落位路径）");
     berry_sched::preempt_disable();
     assert_eq!(berry_sched::preempt_count(), 1, "G3-1a：disable → 1");
     berry_sched::preempt_disable();
