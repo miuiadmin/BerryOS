@@ -73,7 +73,7 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 | 截图 | **`berry screenshot`（已落）** / `shot`（临时设备） | 截图按钮 / `Cmd+S` |
 | 输入 | `berry input key/tap/swipe`（VNC attach，已落） | 客机触摸/键盘 |
 | 重启/关机 | **`berry power reboot/off`（C1a）** / `berry shortcut`（C2b） | BOOT/OFF 按钮（C2a） |
-| 分辨率 | **`berry display set <profile> --restart`（C2c）** | RES 菜单（C2d） |
+| 分辨率 | **`berry display set <profile> --restart`（C2c）** | **RES 菜单（C2d，host 窗口）** |
 | 全屏 | — | `F` / `FULL` 按钮 |
 | 审计 | `berry events/logs`（C1/C2） | 同一事件流，`source=ui/cli` |
 
@@ -121,11 +121,13 @@ headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩�
 - 帧面要求 QEMU `memory-backend-file,share=on`；不支持该后端的环境回退 VNC（P1 路径）。
 - `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 仍由 shell 持有，
   `power reboot/off`、`display set` 等需要 C1 的 session host/QMP broker，当前未落。
-- 窗口快捷栏 C2a 已落 4 键：`SHOT`/`BOOT`/`OFF`/`FULL`（鼠标/触摸）；`OFF` 需 3s 内二次点击。
+- 窗口快捷栏 C2d 已落 5 键：`SHOT`/`RES`/`BOOT`/`OFF`/`FULL`（鼠标/触摸）；
+  `OFF` 需 3s 内二次点击；`RES` 打开 profile 菜单，host 窗口内停旧/起新 profile。
 - C2b 已落：`berry shortcut screenshot|reboot|power`、`berry display list/set`（记录
   next-profile）、`berry events`（JSONL）。
 - C2c 已落 CLI：`berry display set phone16 --restart` 停旧 host、起新 profile host
-  （新 run id，实测 480×854）；`RES` 按钮/窗口自动重附着 = C2d。
+  （新 run id，实测 480×854）。
+- attach 窗口的 `RES` 目前提示用 CLI `display set --restart` 后重 attach；自动重附着 = C2e。
 - 默认 `berry shot` 等 `BERRYBOOT ok`，当前测试镜像此时可能还在固件/测试面；要看 GUI
   请传 `--wait-marker "FBW ok"` 或 launcher 标记。`--profile phone` 时 guifbd 进入
   GUI 模式（console 只走串口，不盖桌面）；默认 800×600 仍保留 console 上屏。

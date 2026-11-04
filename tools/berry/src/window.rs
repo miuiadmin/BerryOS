@@ -2,6 +2,7 @@
 //! input mapping; it never knows whether frames came from VNC or shared memory.
 
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,15 +24,15 @@ use crate::input;
 use crate::profile::Profile;
 
 const TOOLBAR_H: u32 = 48;
-const TOOLBAR_LABELS: [&str; 4] = ["SHOT", "BOOT", "OFF", "FULL"];
+const TOOLBAR_LABELS: [&str; 5] = ["SHOT", "RES", "BOOT", "OFF", "FULL"];
 
-fn toolbar_buttons(width: u32) -> [(u32, u32); 4] {
-    let bw = 64u32;
+fn toolbar_buttons(width: u32) -> [(u32, u32); 5] {
+    let bw = 60u32;
     let gap = 6u32;
-    let total = 4 * bw + 3 * gap;
+    let total = 5 * bw + 4 * gap;
     let mut x = width.saturating_sub(total + 8);
-    let mut out = [(0, 0); 4];
-    for i in 0..4 {
+    let mut out = [(0, 0); 5];
+    for i in 0..5 {
         out[i] = (x, bw);
         x += bw + gap;
     }
@@ -66,6 +67,8 @@ fn glyph(ch: char, row: usize) -> u8 {
         'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
         'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
         _ => [0; 7],
     };
     bits[row]
@@ -93,6 +96,48 @@ fn draw_text(buf: &mut [u32], width: u32, height: u32, x: u32, y: u32, text: &st
     }
 }
 
+fn menu_rect(width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let count = crate::profile::PROFILES.len() as u32;
+    let w = 220u32;
+    let h = count * 24 + 8;
+    let x = width.saturating_sub(w + 8);
+    let y = height.saturating_sub(TOOLBAR_H + h + 8);
+    (x, y, w, h)
+}
+
+fn menu_hit(width: u32, height: u32, x: f64, y: f64) -> Option<usize> {
+    let (mx, my, mw, mh) = menu_rect(width, height);
+    if x < mx as f64 || x >= (mx + mw) as f64 || y < my as f64 || y >= (my + mh) as f64 {
+        return None;
+    }
+    let row = ((y - my as f64) / 24.0) as usize;
+    if row < crate::profile::PROFILES.len() {
+        Some(row)
+    } else {
+        None
+    }
+}
+
+fn draw_menu(buf: &mut [u32], width: u32, height: u32, current: &str) {
+    let (mx, my, mw, mh) = menu_rect(width, height);
+    for y in my..(my + mh).min(height) {
+        for x in mx..(mx + mw).min(width) {
+            buf[(y * width + x) as usize] = 0x0022_282E;
+        }
+    }
+    for (i, p) in crate::profile::PROFILES.iter().enumerate() {
+        let y = my + 4 + i as u32 * 24;
+        if p.id == current {
+            for yy in y..(y + 22).min(height) {
+                for x in (mx + 2)..(mx + mw - 2).min(width) {
+                    buf[(yy * width + x) as usize] = 0x0034_4A3A;
+                }
+            }
+        }
+        draw_text(buf, width, height, mx + 10, y + 5, &p.id.to_uppercase());
+    }
+}
+
 fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool) {
     let bar_top = height.saturating_sub(TOOLBAR_H);
     let bar = 0x0018_1C20;
@@ -105,7 +150,7 @@ fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool) {
     }
     let by = bar_top + 8;
     for (i, (bx, bw)) in toolbar_buttons(width).iter().enumerate() {
-        let btn = if i == 2 && armed { 0x008B_2E2E } else { 0x002C_3238 };
+        let btn = if i == 3 && armed { 0x008B_2E2E } else { 0x002C_3238 };
         for y in by..(by + 32).min(height) {
             for x in *bx..(*bx + *bw).min(width) {
                 buf[(y * width + x) as usize] = btn;
@@ -120,6 +165,10 @@ fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool) {
 
 pub fn run(args: ShellArgs) -> Result<()> {
     let profile = crate::profile::get(&args.profile)?;
+    let image = args.image.clone();
+    let accel = args.accel.clone();
+    let memory = args.memory;
+    let keep = args.keep;
     let session = if let Some(id) = &args.attach {
         let run = commands::find_run(Some(id))?;
         let ep = commands::vnc_endpoint(&run)?;
@@ -144,7 +193,7 @@ pub fn run(args: ShellArgs) -> Result<()> {
     let event_loop = EventLoop::new()
         .map_err(|e| BerryError::device(format!("event loop: {e}")))?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(session, profile, args.scale);
+    let mut app = App::new(session, profile, args.scale, image, accel, memory, keep);
     if !args.timeout.is_zero() {
         app.deadline = Some(Instant::now() + args.timeout);
     }
@@ -251,10 +300,24 @@ struct App {
     deadline: Option<Instant>,
     quit: bool,
     power_armed: Option<Instant>,
+    menu_open: bool,
+    image: Option<PathBuf>,
+    accel: String,
+    memory: Option<u32>,
+    keep: bool,
 }
 
 impl App {
-    fn new(session: Session, profile: Profile, scale: ScaleMode) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        session: Session,
+        profile: Profile,
+        scale: ScaleMode,
+        image: Option<PathBuf>,
+        accel: String,
+        memory: Option<u32>,
+        keep: bool,
+    ) -> Self {
         Self {
             session,
             profile,
@@ -272,6 +335,11 @@ impl App {
             deadline: None,
             quit: false,
             power_armed: None,
+            menu_open: false,
+            image,
+            accel,
+            memory,
+            keep,
         }
     }
 
@@ -311,6 +379,9 @@ impl App {
         };
         scale::render(frame, &fit, size.width, size.height, &mut buffer, 0x0010_1418);
         draw_toolbar(&mut buffer, size.width, size.height, self.power_armed.is_some());
+        if self.menu_open {
+            draw_menu(&mut buffer, size.width, size.height, self.profile.id);
+        }
         if buffer.present().is_err() {
             return;
         }
@@ -350,21 +421,83 @@ impl App {
         }
     }
 
+    fn select_profile(&mut self, i: usize) {
+        let Some(p) = crate::profile::PROFILES.get(i).copied() else {
+            return;
+        };
+        self.menu_open = false;
+        if p.id == self.profile.id {
+            self.request_redraw();
+            return;
+        }
+        match &mut self.session {
+            Session::Host(dev) => dev.stop(),
+            Session::Attach(_) => {
+                eprintln!(
+                    "resolution: attach session; run `berry display set {} --restart` then reattach",
+                    p.id
+                );
+                self.request_redraw();
+                return;
+            }
+        }
+        match Device::start(
+            self.image.clone(),
+            p,
+            &self.accel,
+            self.memory,
+            None,
+            self.keep,
+            "shell",
+        ) {
+            Ok(dev) => {
+                self.session = Session::Host(dev);
+                self.profile = p;
+                self.last_frame = None;
+                self.last_fit = None;
+                self.power_armed = None;
+                self.title = format!("BerryOS — {}", p.id);
+                if let Some(w) = &self.window {
+                    w.set_title(&self.title);
+                    w.request_redraw();
+                }
+            }
+            Err(e) => {
+                eprintln!("resolution restart failed: {e}");
+                self.quit = true;
+            }
+        }
+    }
+
     fn toolbar_click(&mut self, x: f64, y: f64) -> bool {
         let Some(w) = &self.window else {
             return false;
         };
         let size = w.inner_size();
+        if self.menu_open {
+            if let Some(i) = menu_hit(size.width, size.height, x, y) {
+                self.select_profile(i);
+                return true;
+            }
+            if y < size.height.saturating_sub(TOOLBAR_H) as f64 {
+                self.menu_open = false;
+                self.request_redraw();
+                return true;
+            }
+        }
         let Some(i) = toolbar_hit(size.width, size.height, x, y) else {
             return y >= size.height.saturating_sub(TOOLBAR_H) as f64;
         };
-        if i != 2 {
+        if i != 3 {
             self.power_armed = None;
         }
         match i {
             0 => self.screenshot(),
-            1 => self.reset(),
-            2 => {
+            1 => {
+                self.menu_open = !self.menu_open;
+            }
+            2 => self.reset(),
+            3 => {
                 let armed = self
                     .power_armed
                     .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
@@ -375,7 +508,7 @@ impl App {
                     self.power_armed = Some(Instant::now());
                 }
             }
-            3 => {
+            4 => {
                 let full = w.fullscreen().is_some();
                 w.set_fullscreen(if full {
                     None
@@ -625,6 +758,22 @@ mod toolbar_tests {
             assert_eq!(toolbar_hit(w, h, x, y), Some(i), "button {i}");
         }
         assert_eq!(toolbar_hit(w, h, 10.0, 500.0), None);
+    }
+
+    #[test]
+    fn profile_menu_hit_and_draw() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, my, mw, mh) = menu_rect(w, h);
+        assert!(mw >= 200 && mh >= 5 * 24);
+        for i in 0..crate::profile::PROFILES.len() {
+            let x = (mx + mw / 2) as f64;
+            let y = (my + 4 + i as u32 * 24 + 10) as f64;
+            assert_eq!(menu_hit(w, h, x, y), Some(i));
+        }
+        assert_eq!(menu_hit(w, h, 10.0, 500.0), None);
+        let mut buf = vec![0u32; w as usize * h as usize];
+        draw_menu(&mut buf, w, h, "phone");
+        assert_eq!(buf[(my * w + mx) as usize], 0x0022_282E);
     }
 
     #[test]
