@@ -8,7 +8,8 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use berry::commands::{
-    self, InputAction, InputArgs, RunArgs, ScaleMode, ScreenshotArgs, ShellArgs, ShotArgs,
+    self, DeviceStartArgs, InputAction, InputArgs, RunArgs, ScaleMode,
+    ScreenshotArgs, ShellArgs, ShotArgs,
 };
 use berry::error::{BerryError, Result};
 
@@ -40,12 +41,15 @@ enum Cmd {
     Shot(ShotCmd),
     /// Capture one frame from a running device (does not boot a new one).
     Screenshot(ScreenshotCmd),
-    /// Session management (list/status/stop).
+    /// Session management (start/list/status/restart/stop).
     Device(DeviceCmd),
     /// Power actions on a running device.
     Power(PowerCmd),
     /// Read the session serial log.
     Logs(LogsCmd),
+    /// Internal headless session host (used by `device start`).
+    #[command(hide = true)]
+    Host(HostCmd),
     /// Open the phone-shaped device window (the double-click entry).
     Shell(ShellCmd),
     /// Inject input into a running device via QMP.
@@ -118,10 +122,14 @@ struct DeviceCmd {
 
 #[derive(Subcommand, Debug)]
 enum DeviceAction {
+    /// Start a headless session (default background; --foreground blocks).
+    Start(StartCmd),
     /// List known sessions.
     List,
     /// Query a running session.
     Status(StatusCmd),
+    /// Restart the guest (same session).
+    Restart(RestartCmd),
     /// Stop a running session.
     Stop(StopCmd),
 }
@@ -156,6 +164,46 @@ struct LogsCmd {
     tail: usize,
     #[arg(long, short = 'f')]
     follow: bool,
+}
+
+#[derive(Parser, Debug)]
+struct StartCmd {
+    #[arg(long)]
+    image: Option<PathBuf>,
+    #[arg(long, default_value = "phone")]
+    profile: String,
+    #[arg(long, default_value = "tcg")]
+    accel: String,
+    #[arg(long)]
+    memory: Option<u32>,
+    #[arg(long)]
+    display_mode: Option<String>,
+    #[arg(long)]
+    keep: bool,
+    #[arg(long)]
+    foreground: bool,
+}
+
+#[derive(Parser, Debug)]
+struct RestartCmd {
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct HostCmd {
+    #[arg(long)]
+    image: Option<PathBuf>,
+    #[arg(long, default_value = "phone")]
+    profile: String,
+    #[arg(long, default_value = "tcg")]
+    accel: String,
+    #[arg(long)]
+    memory: Option<u32>,
+    #[arg(long)]
+    display_mode: Option<String>,
+    #[arg(long)]
+    keep: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -252,9 +300,28 @@ fn dispatch(cli: Cli) -> Result<()> {
             display_mode: c.display_mode,
             json: cli.json,
         }),
+        Some(Cmd::Host(c)) => commands::host(commands::HostArgs {
+            image: c.image,
+            profile: c.profile,
+            accel: c.accel,
+            memory: c.memory,
+            display_mode: c.display_mode,
+            keep: c.keep,
+        }),
         Some(Cmd::Device(c)) => match c.action {
+            DeviceAction::Start(s) => commands::device_start(DeviceStartArgs {
+                image: s.image,
+                profile: s.profile,
+                accel: s.accel,
+                memory: s.memory,
+                display_mode: s.display_mode,
+                keep: s.keep,
+                foreground: s.foreground,
+                json: cli.json,
+            }),
             DeviceAction::List => commands::device_list(cli.json),
             DeviceAction::Status(s) => commands::device_status(s.run.as_deref(), cli.json),
+            DeviceAction::Restart(s) => commands::device_restart(s.run.as_deref(), cli.json),
             DeviceAction::Stop(s) => commands::device_stop(s.run.as_deref(), cli.json),
         },
         Some(Cmd::Power(c)) => {

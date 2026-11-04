@@ -36,13 +36,14 @@ impl Device {
         memory: Option<u32>,
         display_mode: Option<String>,
         keep: bool,
+        label: &str,
     ) -> Result<Self> {
         let qemu = Qemu::discover()?;
         let image = qemu::resolve_image(image)?;
         let firmware = qemu::firmware()?;
         let accel = qemu::choose_accel(accel, false)?;
         let mem = memory.unwrap_or(profile.memory_mib);
-        let run = RunDir::create("shell", keep)?;
+        let run = RunDir::create(label, keep)?;
         let vars = run.file("vars.fd");
         qemu::create_vars(&vars, 64)?;
         let serial = run.file("serial.log");
@@ -151,6 +152,16 @@ impl Device {
 
     pub fn stop_requested(&self) -> bool {
         self.stop_flag.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Host loop: block until control asks to stop or QEMU exits.
+    pub fn wait(&mut self) {
+        while !self.stop_requested() {
+            if self.child.try_wait().ok().flatten().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     pub fn stop(&mut self) {

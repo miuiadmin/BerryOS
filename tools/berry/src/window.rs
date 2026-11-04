@@ -29,6 +29,7 @@ pub fn run(args: ShellArgs) -> Result<()> {
         args.memory,
         args.display_mode,
         args.keep,
+        "shell",
     )?;
     let event_loop = EventLoop::new()
         .map_err(|e| BerryError::device(format!("event loop: {e}")))?;

@@ -226,7 +226,7 @@ VNC 在 ramfb 下**可能只能整帧更新**（客机直接写显存，QEMU 看
   `system_powerdown`、`quit`、`screendump`、`send-key`、`input-send-event`、事件。
 - 生命周期/错误码/op 表见平台文档 §6/§7；本文不再重复。
 - 当前落点：`berry screenshot` 已用 VNC 多客户端 attach；QMP broker/control.sock C1a 已落
-  （shell-hosted）；C1b 补 headless/Windows。
+  （shell-hosted）；C1b headless `device start`/restart/screenshot 走 host 已落；C1c 补 attach/Windows。
 
 ## §7 客机侧：三档演进
 
@@ -588,8 +588,8 @@ PNG；winit/softbuffer 窗口；`just berry-build` / `just berry ...` / `just sh
   共享 RAM 读帧（见上）。`etc/ramfb` 逐帧 commit 与 `disp0`/抬帽仅保留为
   无 `memory-backend-file` 环境的备选，不再是 P2 阻塞项。
 - `berry input` 已从 QMP 改为 `VncInput`（多客户端），`guest 480x1000` 实测；
-  平台文档 §7 的 control.sock/QMP broker **C1a 已落**（shell-hosted，CLI 可 power/status/logs）；
-  C1b 补 headless/Windows。
+  平台文档 §7 的 control.sock/QMP broker **C1a/C1b 已落**（shell/headless host，CLI 可
+  power/status/logs/screenshot）；C1c 补 attach/Windows。
 - `shot` 仍以 VNC 抓帧，QMP `screendump` 兜底未接；测试镜像的 GUI 是 console/测试面，
   launcher 桌面尚未在该镜像验证——宿主数据面已就位。
 - `shell --timeout N` 测试/演示自动退出；P1 的 `snapshot=on` 覆盖层未升级为

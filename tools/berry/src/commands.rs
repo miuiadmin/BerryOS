@@ -1,6 +1,6 @@
 //! Command handlers. All QEMU interaction is argv-based; no shell strings.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -47,6 +47,26 @@ pub struct ScreenshotArgs {
     pub out: Option<PathBuf>,
     pub settle: Duration,
     pub timeout: Duration,
+    pub json: bool,
+}
+
+pub struct HostArgs {
+    pub image: Option<PathBuf>,
+    pub profile: String,
+    pub accel: String,
+    pub memory: Option<u32>,
+    pub display_mode: Option<String>,
+    pub keep: bool,
+}
+
+pub struct DeviceStartArgs {
+    pub image: Option<PathBuf>,
+    pub profile: String,
+    pub accel: String,
+    pub memory: Option<u32>,
+    pub display_mode: Option<String>,
+    pub keep: bool,
+    pub foreground: bool,
     pub json: bool,
 }
 
@@ -249,6 +269,34 @@ pub fn shot(args: ShotArgs) -> Result<()> {
 /// Does not spawn QEMU; VNC is multi-client so this coexists with `berry shell`.
 pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
     let run = find_run(args.run.as_deref())?;
+    let out = args.out.unwrap_or_else(|| PathBuf::from("screenshot.png"));
+    let out_abs = if out.is_absolute() {
+        out.clone()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(&out))
+            .unwrap_or_else(|_| out.clone())
+    };
+    // C1b: prefer the session host (works for any ScreenSource; no second VNC).
+    if run.join("control.sock").exists() {
+        if let Ok(v) = control::request(
+            &run,
+            "screenshot",
+            json!({"out": out_abs.display().to_string(), "settle_ms": args.settle.as_millis() as u64}),
+        ) {
+            if args.json {
+                println!("{}", json!({"v":1,"t":"screenshot","run":run,"result":v}));
+            } else {
+                println!(
+                    "screenshot: {} ({}x{})",
+                    v.get("path").and_then(|p| p.as_str()).unwrap_or("-"),
+                    v.get("width").and_then(|w| w.as_u64()).unwrap_or(0),
+                    v.get("height").and_then(|h| h.as_u64()).unwrap_or(0),
+                );
+            }
+            return Ok(());
+        }
+    }
     let endpoint = vnc_endpoint(&run)?;
     let mut source = VncSource::connect(&endpoint)?;
     if !args.settle.is_zero() {
@@ -259,7 +307,6 @@ pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
         BerryError::protocol(format!("VNC: {err}"))
             .with_hint("is the device still running? try `berry list`")
     })?;
-    let out = args.out.unwrap_or_else(|| PathBuf::from("screenshot.png"));
     crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
     if args.json {
         println!(
@@ -354,6 +401,99 @@ fn qcode_to_keysym(q: &str) -> Option<u32> {
         _ if q.chars().count() == 1 => q.chars().next()? as u32,
         _ => return None,
     })
+}
+
+/// Headless session host (hidden `berry host` role). Prints the run id, then
+/// blocks until control asks to stop or QEMU exits.
+pub fn host(args: HostArgs) -> Result<()> {
+    let profile = profile::get(&args.profile)?;
+    let mut device = crate::device::Device::start(
+        args.image,
+        profile,
+        &args.accel,
+        args.memory,
+        args.display_mode,
+        args.keep,
+        "host",
+    )?;
+    println!("RUN {}", device.run_path().display());
+    std::io::stdout().flush().ok();
+    device.wait();
+    device.stop();
+    Ok(())
+}
+
+pub fn device_start(args: DeviceStartArgs) -> Result<()> {
+    if args.foreground {
+        return host(HostArgs {
+            image: args.image,
+            profile: args.profile,
+            accel: args.accel,
+            memory: args.memory,
+            display_mode: args.display_mode,
+            keep: args.keep,
+        });
+    }
+    let exe = std::env::current_exe()
+        .map_err(|e| BerryError::device(format!("current_exe: {e}")))?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("host")
+        .arg("--profile")
+        .arg(&args.profile)
+        .arg("--accel")
+        .arg(&args.accel);
+    if let Some(img) = &args.image {
+        cmd.arg("--image").arg(img);
+    }
+    if let Some(m) = args.memory {
+        cmd.arg("--memory").arg(m.to_string());
+    }
+    if let Some(mode) = &args.display_mode {
+        cmd.arg("--display-mode").arg(mode);
+    }
+    if args.keep {
+        cmd.arg("--keep");
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| BerryError::device(format!("spawn host: {e}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| BerryError::device("host: no stdout pipe"))?;
+    let mut lines = BufReader::new(stdout).lines();
+    let line = lines
+        .next()
+        .transpose()
+        .map_err(|e| BerryError::device(format!("host read: {e}")))?
+        .ok_or_else(|| {
+            BerryError::device("host exited before announcing run")
+                .with_hint("run `berry doctor`; try `berry device start --foreground`")
+        })?;
+    let run = line
+        .strip_prefix("RUN ")
+        .ok_or_else(|| BerryError::protocol(format!("host: bad announce '{line}'")))?;
+    let run = PathBuf::from(run);
+    if args.json {
+        println!("{}", json!({"v":1,"t":"device.start","run":run,"pid":child.id()}));
+    } else {
+        println!("device: {}", run.display());
+    }
+    Ok(())
+}
+
+pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let v = control::request(&run, "power", json!({"action":"reboot"}))?;
+    if json {
+        println!("{}", json!({"v":1,"t":"device.restart","run":run,"result":v}));
+    } else {
+        println!("restart: {}", run.display());
+    }
+    Ok(())
 }
 
 pub fn device_list(json: bool) -> Result<()> {

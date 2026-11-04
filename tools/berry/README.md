@@ -77,9 +77,10 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 | 全屏 | — | `F` |
 | 审计 | `berry events/logs`（C1/C2） | 同一事件流，`source=ui/cli` |
 
-C1a 已落：`berry shell` 进程内起 `control.sock` + QMP broker；CLI `device list/status/stop`、
-`power off/reboot`、`logs` 已可用，CLI 不直连 QMP。C1b 还差 headless `device start/attach`、
-`restart`、Windows control、`screenshot` 走 host。完整刀序见平台文档 §14。
+C1a/C1b 已落：`berry shell` 进程内或 headless `berry device start` 都会起
+`control.sock` + QMP broker；CLI `device start/list/status/restart/stop`、`power off/reboot`、
+`logs`、`screenshot`（优先走 host）已可用，CLI 不直连 QMP。C1c 还差 `shell --attach`、
+Windows control、崩溃恢复。完整刀序见平台文档 §14。
 
 ## 环境变量
 
