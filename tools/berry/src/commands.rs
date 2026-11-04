@@ -424,6 +424,111 @@ pub fn host(args: HostArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn display_list(json: bool) -> Result<()> {
+    if json {
+        let arr: Vec<_> = profile::PROFILES
+            .iter()
+            .map(|p| {
+                json!({
+                    "id":p.id,
+                    "render":[p.render_w,p.render_h],
+                    "panel":[p.panel_w,p.panel_h],
+                    "memory_mib":p.memory_mib,
+                })
+            })
+            .collect();
+        println!("{}", json!({"v":1,"t":"display.list","profiles":arr}));
+    } else {
+        println!("{:<10} {:<12} {:<10}", "ID", "RENDER", "MEMORY");
+        for p in profile::PROFILES {
+            println!(
+                "{:<10} {:<12} {} MiB",
+                p.id,
+                format!("{}x{}", p.render_w, p.render_h),
+                p.memory_mib
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn display_set(run: Option<&str>, profile_id: &str, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let v = control::request(
+        &run,
+        "display",
+        json!({"action":"set","profile":profile_id}),
+    )?;
+    if json {
+        println!("{}", json!({"v":1,"t":"display.set","run":run,"result":v}));
+    } else {
+        println!(
+            "display: {} → {} (requires restart)",
+            run.display(),
+            v.get("profile").and_then(|s| s.as_str()).unwrap_or(profile_id)
+        );
+    }
+    Ok(())
+}
+
+pub fn shortcut(run: Option<&str>, action: &str, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let v = control::request(&run, "shortcut", json!({"action":action}))?;
+    if json {
+        println!("{}", json!({"v":1,"t":"shortcut","run":run,"action":action,"result":v}));
+    } else {
+        println!("shortcut {action}: {}", run.display());
+    }
+    Ok(())
+}
+
+pub fn events(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let path = run.join("events.jsonl");
+    if follow {
+        let mut t = Tail::open(&path);
+        loop {
+            let chunk = t.read_new();
+            if !chunk.is_empty() {
+                let text = String::from_utf8_lossy(&chunk);
+                for line in text.lines() {
+                    if json {
+                        println!("{}", json!({"v":1,"t":"event","line":line}));
+                    } else {
+                        println!("{line}");
+                    }
+                }
+                std::io::stdout().flush().ok();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let lines: Vec<String> = if let Ok(v) = control::request(&run, "events", json!({"tail":tail})) {
+        v.get("lines")
+            .and_then(|l| l.as_array())
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    } else {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        text.lines()
+            .rev()
+            .take(tail)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    };
+    for line in lines {
+        if json {
+            println!("{}", json!({"v":1,"t":"event","line":line}));
+        } else {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
 pub fn device_start(args: DeviceStartArgs) -> Result<()> {
     if args.foreground {
         return host(HostArgs {

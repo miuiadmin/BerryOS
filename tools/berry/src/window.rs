@@ -93,7 +93,7 @@ fn draw_text(buf: &mut [u32], width: u32, height: u32, x: u32, y: u32, text: &st
     }
 }
 
-fn draw_toolbar(buf: &mut [u32], width: u32, height: u32) {
+fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool) {
     let bar_top = height.saturating_sub(TOOLBAR_H);
     let bar = 0x0018_1C20;
     for y in bar_top..height {
@@ -105,7 +105,7 @@ fn draw_toolbar(buf: &mut [u32], width: u32, height: u32) {
     }
     let by = bar_top + 8;
     for (i, (bx, bw)) in toolbar_buttons(width).iter().enumerate() {
-        let btn = 0x002C_3238;
+        let btn = if i == 2 && armed { 0x008B_2E2E } else { 0x002C_3238 };
         for y in by..(by + 32).min(height) {
             for x in *bx..(*bx + *bw).min(width) {
                 buf[(y * width + x) as usize] = btn;
@@ -250,6 +250,7 @@ struct App {
     title: String,
     deadline: Option<Instant>,
     quit: bool,
+    power_armed: Option<Instant>,
 }
 
 impl App {
@@ -270,6 +271,7 @@ impl App {
             title: format!("BerryOS — {}", profile.id),
             deadline: None,
             quit: false,
+            power_armed: None,
         }
     }
 
@@ -308,7 +310,7 @@ impl App {
             return;
         };
         scale::render(frame, &fit, size.width, size.height, &mut buffer, 0x0010_1418);
-        draw_toolbar(&mut buffer, size.width, size.height);
+        draw_toolbar(&mut buffer, size.width, size.height, self.power_armed.is_some());
         if buffer.present().is_err() {
             return;
         }
@@ -356,12 +358,22 @@ impl App {
         let Some(i) = toolbar_hit(size.width, size.height, x, y) else {
             return y >= size.height.saturating_sub(TOOLBAR_H) as f64;
         };
+        if i != 2 {
+            self.power_armed = None;
+        }
         match i {
             0 => self.screenshot(),
             1 => self.reset(),
             2 => {
-                self.session.power_off();
-                self.quit = true;
+                let armed = self
+                    .power_armed
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
+                if armed {
+                    self.session.power_off();
+                    self.quit = true;
+                } else {
+                    self.power_armed = Some(Instant::now());
+                }
             }
             3 => {
                 let full = w.fullscreen().is_some();
@@ -619,7 +631,7 @@ mod toolbar_tests {
     fn draw_bar_and_text() {
         let (w, h) = (480usize, 1000usize);
         let mut buf = vec![0u32; w * h];
-        draw_toolbar(&mut buf, w as u32, h as u32);
+        draw_toolbar(&mut buf, w as u32, h as u32, false);
         let bar_top = h - TOOLBAR_H as usize;
         assert_eq!(buf[bar_top * w + 2], 0x0018_1C20);
         let (bx, bw) = toolbar_buttons(w as u32)[0];

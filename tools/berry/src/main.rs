@@ -47,6 +47,12 @@ enum Cmd {
     Power(PowerCmd),
     /// Read the session serial log.
     Logs(LogsCmd),
+    /// Display/profile operations.
+    Display(DisplayCmd),
+    /// Trigger a window-style shortcut action.
+    Shortcut(ShortcutCmd),
+    /// Read session events.
+    Events(EventsCmd),
     /// Internal headless session host (used by `device start`).
     #[command(hide = true)]
     Host(HostCmd),
@@ -112,6 +118,45 @@ struct ScreenshotCmd {
     settle_ms: u64,
     #[arg(long, default_value_t = 10)]
     timeout: u64,
+}
+
+#[derive(Parser, Debug)]
+struct DisplayCmd {
+    #[command(subcommand)]
+    action: DisplayAction,
+}
+
+#[derive(Subcommand, Debug)]
+enum DisplayAction {
+    /// List profiles.
+    List,
+    /// Select a profile for the next start (requires restart).
+    Set(DisplaySetCmd),
+}
+
+#[derive(Parser, Debug)]
+struct DisplaySetCmd {
+    profile: String,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct ShortcutCmd {
+    #[arg(value_parser = ["screenshot", "resolution", "reboot", "power", "fullscreen"])]
+    action: String,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct EventsCmd {
+    #[arg(long)]
+    run: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    tail: usize,
+    #[arg(long, short = 'f')]
+    follow: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -303,6 +348,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             display_mode: c.display_mode,
             json: cli.json,
         }),
+        Some(Cmd::Display(c)) => match c.action {
+            DisplayAction::List => commands::display_list(cli.json),
+            DisplayAction::Set(s) => {
+                commands::display_set(s.run.as_deref(), &s.profile, cli.json)
+            }
+        },
+        Some(Cmd::Shortcut(c)) => {
+            commands::shortcut(c.run.as_deref(), &c.action, cli.json)
+        }
+        Some(Cmd::Events(c)) => {
+            commands::events(c.run.as_deref(), c.tail, c.follow, cli.json)
+        }
         Some(Cmd::Host(c)) => commands::host(commands::HostArgs {
             image: c.image,
             profile: c.profile,

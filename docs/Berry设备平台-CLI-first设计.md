@@ -406,7 +406,9 @@ berry device stop --run "$RUN"
 - 快捷栏是 **winit 自绘宿主 UI**，不占客机分辨率，不画假刘海/假按键。
 - **C2a 已落（首版 4 键）**：`SHOT` 截图、`BOOT` 重启、`OFF` 关机、`FULL` 全屏；
   鼠标/触摸可点，按钮绘制用内置 5×7 像素字，不依赖字体资产。
-- **C2b 待落**：`RES` 分辨率/profile 菜单、确认框、hover/tooltip、`berry shortcut` 命令。
+- **C2b 已落**：`OFF` 二次确认（3s 内再点）、`berry shortcut screenshot|reboot|power`、
+  `berry display list`、`berry display set <profile>`（记录 next-profile，需重启）、`berry events`。
+- **C2c 待落**：`RES`/profile 菜单、真正带新 profile 重启 host、hover/tooltip。
 - 按钮 disabled 态：重启/关机进行中；tooltip 显示快捷键 + 等价 CLI。
 - 截图：闪一下 + 落 `berry-shot-<ts>.png` + 事件 `source=ui`。
 - 关机/重启：确认框；进行中显示遮罩；失败显示 `code/message` + 日志入口。
@@ -453,8 +455,10 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 
 ### 10.2 `display set`
 
-- **v1（C2）**：只改**下一次启动**的 profile；`--restart` 立即 `power reboot` 应用。
-  返回 `{"applied":false,"requires_restart":true}`，不假装热切换。
+- **v1（C2b 现状）**：`display set` 只把 profile 写成 `next-profile`，返回
+  `{"applied":false,"requires_restart":true}`；**不假装热切换**，也不假装已应用。
+- **C2c**：`display set --restart` 停当前 host → 以新 profile 起新 host（新 run id）；
+  或 host 内热重启。GUI `RES` 菜单在 C2c 接这条路径。
 - **v2**：host/guest display 服务协商热切换（ramfb 重编程/virtio-gpu modeset）；
   需要客机侧协议，另立 ADR。
 - `display rotate` v1 只支持 `0`；90/180/270 需客机/呈现面支持，C2 评估。
@@ -518,7 +522,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C1c（已落）** | `shell --attach <id>`：VNC 帧/输入 + control 动作；关窗 detach，host 继续 | headless host 可开窗；关窗不杀 session；`device status` 仍 running |
 | **C1d（下一刀）** | Windows named pipe/TCP+token；host 崩溃恢复/`state.json` 持久化 | Windows 可用；host 崩溃可诊断/重启 |
 | **C2a（已落）** | 原生快捷栏 4 键（SHOT/BOOT/OFF/FULL）；截图/重启/关机/全屏；鼠标+触摸 | 窗口内可点；截图落盘；重启/关机走 control/QMP；全屏切换 |
-| **C2b（下一刀）** | `RES`/profile 菜单；确认框；hover/tooltip；`berry shortcut`；`events` | 分辨率按钮可用；关机确认；每个按钮有 CLI 等价 |
+| **C2b（已落）** | `OFF` 二次确认；`berry shortcut`；`display list/set`（next-profile）；`events` JSONL | 关机需两次点击；CLI 可触发截图/重启/关机；事件可读 |
+| **C2c（下一刀）** | `RES`/profile 菜单；带新 profile 重启 host；hover/tooltip | 分辨率按钮可用；`display set --restart` 真正生效 |
 | **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
@@ -536,7 +541,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | `input` VNC attach | control `input` op | C1 路由；VNC 保留兜底 |
 | 无 `list/status/stop` | RunStore + control | **C1a/C1b 已落**（shell/headless） |
 | 无 `power/display` | QMP broker + profile 重启 | **power C1a 已落**；display C2 |
-| 只有键盘快捷键 | 原生快捷栏 + action 表 | **C2a 已落**（4 键）；C2b 补分辨率/确认/shortcut |
+| 只有键盘快捷键 | 原生快捷栏 + action 表 | **C2a 已落**（4 键）；**C2b 已落**（确认/shortcut/events/display 记录）；C2c 补 RES/应用 |
 | 无事件流 | `events.jsonl` + 订阅 | C1/C2 |
 | macOS `.app` | 三平台包 | Windows/Linux 后续 |
 

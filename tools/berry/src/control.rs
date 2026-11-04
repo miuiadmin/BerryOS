@@ -189,6 +189,7 @@ mod imp {
                         q.system_reset().map_err(|e| {
                             BerryError::device(format!("qmp system_reset: {e}"))
                         })?;
+                        append_event(run, json!({"v":1,"t":"action","action":"power.reboot","source":"control"}));
                         Ok(json!({"state":"rebooting"}))
                     }
                     "off" => {
@@ -196,6 +197,7 @@ mod imp {
                             BerryError::device(format!("qmp quit: {e}"))
                         })?;
                         stop.store(true, Ordering::Relaxed);
+                        append_event(run, json!({"v":1,"t":"action","action":"power.off","source":"control"}));
                         Ok(json!({"state":"stopping"}))
                     }
                     _ => Err(BerryError::new(2, "power action must be off|reboot")),
@@ -205,6 +207,7 @@ mod imp {
                 let mut q = qmp.lock().unwrap();
                 q.quit_now().map_err(|e| BerryError::device(format!("qmp quit: {e}")))?;
                 stop.store(true, Ordering::Relaxed);
+                append_event(run, json!({"v":1,"t":"action","action":"stop","source":"control"}));
                 Ok(json!({"state":"stopping"}))
             }
             "logs" => {
@@ -214,11 +217,79 @@ mod imp {
                 let start = lines.len().saturating_sub(n);
                 Ok(json!({"lines": lines[start..]}))
             }
+            "display" => {
+                let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
+                match action {
+                    "list" => {
+                        let profiles: Vec<Value> = crate::profile::PROFILES
+                            .iter()
+                            .map(|p| json!({
+                                "id": p.id,
+                                "render": [p.render_w, p.render_h],
+                                "panel": [p.panel_w, p.panel_h],
+                                "memory_mib": p.memory_mib,
+                            }))
+                            .collect();
+                        Ok(json!({"profiles": profiles}))
+                    }
+                    "set" => {
+                        let id = args.get("profile").and_then(Value::as_str).unwrap_or("");
+                        let p = crate::profile::get(id)?;
+                        std::fs::write(run.join("next-profile"), p.id).map_err(|e| {
+                            BerryError::device(format!("write next-profile: {e}"))
+                        })?;
+                        append_event(run, json!({
+                            "v":1,"t":"display","profile":p.id,
+                            "applied":false,"requires_restart":true,
+                        }));
+                        Ok(json!({
+                            "profile": p.id,
+                            "applied": false,
+                            "requires_restart": true,
+                            "next_start": true,
+                        }))
+                    }
+                    _ => Err(BerryError::new(2, "display action must be list|set")),
+                }
+            }
+            "shortcut" => {
+                let action = args.get("action").and_then(Value::as_str).unwrap_or("");
+                match action {
+                    "screenshot" => dispatch("screenshot", args, qmp, vnc, run, stop),
+                    "reboot" => dispatch(
+                        "power",
+                        &json!({"action":"reboot"}),
+                        qmp,
+                        vnc,
+                        run,
+                        stop,
+                    ),
+                    "power" => dispatch(
+                        "power",
+                        &json!({"action":"off"}),
+                        qmp,
+                        vnc,
+                        run,
+                        stop,
+                    ),
+                    "resolution" => dispatch("display", args, qmp, vnc, run, stop),
+                    "fullscreen" => Err(BerryError::new(2, "fullscreen is window-only")),
+                    _ => Err(BerryError::new(2, "unknown shortcut action")),
+                }
+            }
+            "events" => {
+                let n = args.get("tail").and_then(Value::as_u64).unwrap_or(100) as usize;
+                let text = std::fs::read_to_string(run.join("events.jsonl")).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let start = lines.len().saturating_sub(n);
+                Ok(json!({"lines": lines[start..]}))
+            }
             "screenshot" => {
                 let out = args
                     .get("out")
                     .and_then(Value::as_str)
-                    .unwrap_or("screenshot.png");
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| run.join("screenshot.png"));
                 let settle = args
                     .get("settle_ms")
                     .and_then(Value::as_u64)
@@ -230,15 +301,32 @@ mod imp {
                 let frame = source.next_frame(Duration::from_secs(10)).ok_or_else(|| {
                     BerryError::protocol("control screenshot: no VNC frame")
                 })?;
-                crate::png::write_png(Path::new(out), frame.width, frame.height, &frame.to_rgb())?;
+                crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
+                let path_str = out.display().to_string();
+                append_event(run, json!({
+                    "v":1,"t":"screenshot","path":path_str,
+                    "width":frame.width,"height":frame.height,"source":"vnc",
+                }));
                 Ok(json!({
-                    "path": out,
+                    "path": path_str,
                     "width": frame.width,
                     "height": frame.height,
                     "source": "vnc",
                 }))
             }
             _ => Err(BerryError::new(2, format!("unsupported op '{op}'"))),
+        }
+    }
+
+    fn append_event(run: &Path, v: Value) {
+        use std::io::Write;
+        let path = run.join("events.jsonl");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "{v}");
         }
     }
 
