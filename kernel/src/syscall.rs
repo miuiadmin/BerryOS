@@ -546,10 +546,14 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
             return e as i64;
         }
         pos += n;
-        // G3-1b 落点②：块间检查点（COPY_CHUNK 边界 = 天然切片点，草案 §8.C
-        // + §8 交织铁则「每块独立持锁重查」）。零行为变更步 = 空探；块内
-        // walk+copy 同窗（§A113）不解蔽——检查点只在块间。
-        berry_sched::preempt_checkpoint();
+        // §A126 墓碑（原 g3-1b 落点②块间检查点，已死）：本号 = TABLE 类
+        // （§A115 降档，KL-only 无 RQ 位）——preempt_checkpoint 真探形
+        // try_preempt→rq_lock 位不在集不退化 = 物理取 RQ 于 KL 下 = 七类
+        // 锁序（队列>表）逆序（双核窄概率 ABBA 窗，无实测挂死）。g3-1b
+        // 「空探」论证只盖切换行为、没盖探峰动作本身的物理取锁。切换诉求
+        // 由落点①派发尾检查点（svc_exit_class 毕 = 零锁点）承接；vmo 中介
+        // 拷贝解蔽/体内检查点留专门刀（升档翻 §A115 或包络分裂，两解均开
+        // PT 锁序新验证边——未采证据不入刀）。
     }
     0
 }
@@ -581,9 +585,7 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
             return voe(e) as i64;
         }
         pos += n;
-        // G3-1b 落点②：块间检查点（同 sys_vmo_read——COPY_CHUNK 边界切片，
-        // 块间探峰/块内不解蔽；零行为变更步 = 空探）。
-        berry_sched::preempt_checkpoint();
+        // §A126 墓碑：原落点②块间检查点已死——类面分析见 sys_vmo_read 同位注。
     }
     0
 }
