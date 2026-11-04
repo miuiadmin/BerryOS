@@ -399,11 +399,14 @@ berry device stop --run "$RUN"
 │      客机帧（480×1000）      │  ← fit/整数缩放，letterbox
 │                             │
 ├─────────────────────────────┤
-│ [截图] [分辨率] [重启] [关机] [全屏] │  ← 44px 原生快捷栏
+│ [SHOT] [BOOT] [OFF] [FULL] │  ← 44px 原生快捷栏（首版 4 键）
 └─────────────────────────────┘
 ```
 
 - 快捷栏是 **winit 自绘宿主 UI**，不占客机分辨率，不画假刘海/假按键。
+- **C2a 已落（首版 4 键）**：`SHOT` 截图、`BOOT` 重启、`OFF` 关机、`FULL` 全屏；
+  鼠标/触摸可点，按钮绘制用内置 5×7 像素字，不依赖字体资产。
+- **C2b 待落**：`RES` 分辨率/profile 菜单、确认框、hover/tooltip、`berry shortcut` 命令。
 - 按钮 disabled 态：重启/关机进行中；tooltip 显示快捷键 + 等价 CLI。
 - 截图：闪一下 + 落 `berry-shot-<ts>.png` + 事件 `source=ui`。
 - 关机/重启：确认框；进行中显示遮罩；失败显示 `code/message` + 日志入口。
@@ -514,7 +517,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C1b（已落）** | headless `device start`（host 角色，`--foreground`）、`device restart`；`screenshot` 走 host（VNC 兜底） | 无窗口起会话；CLI 截图/重启/关机全通；host 标签 `host` |
 | **C1c（已落）** | `shell --attach <id>`：VNC 帧/输入 + control 动作；关窗 detach，host 继续 | headless host 可开窗；关窗不杀 session；`device status` 仍 running |
 | **C1d（下一刀）** | Windows named pipe/TCP+token；host 崩溃恢复/`state.json` 持久化 | Windows 可用；host 崩溃可诊断/重启 |
-| **C2** | `display set/restart`；原生快捷栏五按钮；`shortcut`；`events` | 五个按钮全有等价 CLI；改 profile 重启生效；客机卡死仍可操作 |
+| **C2a（已落）** | 原生快捷栏 4 键（SHOT/BOOT/OFF/FULL）；截图/重启/关机/全屏；鼠标+触摸 | 窗口内可点；截图落盘；重启/关机走 control/QMP；全屏切换 |
+| **C2b（下一刀）** | `RES`/profile 菜单；确认框；hover/tooltip；`berry shortcut`；`events` | 分辨率按钮可用；关机确认；每个按钮有 CLI 等价 |
 | **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
@@ -532,7 +536,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | `input` VNC attach | control `input` op | C1 路由；VNC 保留兜底 |
 | 无 `list/status/stop` | RunStore + control | **C1a/C1b 已落**（shell/headless） |
 | 无 `power/display` | QMP broker + profile 重启 | **power C1a 已落**；display C2 |
-| 只有键盘快捷键 | 原生快捷栏 + action 表 | C2 |
+| 只有键盘快捷键 | 原生快捷栏 + action 表 | **C2a 已落**（4 键）；C2b 补分辨率/确认/shortcut |
 | 无事件流 | `events.jsonl` + 订阅 | C1/C2 |
 | macOS `.app` | 三平台包 | Windows/Linux 后续 |
 

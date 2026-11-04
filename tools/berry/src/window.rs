@@ -22,6 +22,102 @@ use crate::error::{BerryError, Result};
 use crate::input;
 use crate::profile::Profile;
 
+const TOOLBAR_H: u32 = 48;
+const TOOLBAR_LABELS: [&str; 4] = ["SHOT", "BOOT", "OFF", "FULL"];
+
+fn toolbar_buttons(width: u32) -> [(u32, u32); 4] {
+    let bw = 64u32;
+    let gap = 6u32;
+    let total = 4 * bw + 3 * gap;
+    let mut x = width.saturating_sub(total + 8);
+    let mut out = [(0, 0); 4];
+    for i in 0..4 {
+        out[i] = (x, bw);
+        x += bw + gap;
+    }
+    out
+}
+
+fn toolbar_hit(width: u32, height: u32, x: f64, y: f64) -> Option<usize> {
+    let bar_top = height.saturating_sub(TOOLBAR_H);
+    if y < bar_top as f64 {
+        return None;
+    }
+    let by = bar_top + 8;
+    for (i, (bx, bw)) in toolbar_buttons(width).iter().enumerate() {
+        if x >= *bx as f64
+            && x < (*bx + *bw) as f64
+            && y >= by as f64
+            && y < (by + 32) as f64
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn glyph(ch: char, row: usize) -> u8 {
+    let bits: [u8; 7] = match ch {
+        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        _ => [0; 7],
+    };
+    bits[row]
+}
+
+fn draw_text(buf: &mut [u32], width: u32, height: u32, x: u32, y: u32, text: &str) {
+    let fg = 0x00E8_ECF0;
+    for (ci, ch) in text.chars().enumerate() {
+        for row in 0..7 {
+            let bits = glyph(ch, row);
+            for col in 0..5 {
+                if bits & (1 << (4 - col)) != 0 {
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let px = x + ci as u32 * 12 + col * 2 + dx;
+                            let py = y + row as u32 * 2 + dy;
+                            if px < width && py < height {
+                                buf[(py * width + px) as usize] = fg;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn draw_toolbar(buf: &mut [u32], width: u32, height: u32) {
+    let bar_top = height.saturating_sub(TOOLBAR_H);
+    let bar = 0x0018_1C20;
+    for y in bar_top..height {
+        let start = (y * width) as usize;
+        let end = start + width as usize;
+        if end <= buf.len() {
+            buf[start..end].fill(bar);
+        }
+    }
+    let by = bar_top + 8;
+    for (i, (bx, bw)) in toolbar_buttons(width).iter().enumerate() {
+        let btn = 0x002C_3238;
+        for y in by..(by + 32).min(height) {
+            for x in *bx..(*bx + *bw).min(width) {
+                buf[(y * width + x) as usize] = btn;
+            }
+        }
+        let label = TOOLBAR_LABELS[i];
+        let tw = label.len() as u32 * 12;
+        let tx = bx + (bw.saturating_sub(tw)) / 2;
+        draw_text(buf, width, height, tx, by + 9, label);
+    }
+}
+
 pub fn run(args: ShellArgs) -> Result<()> {
     let profile = crate::profile::get(&args.profile)?;
     let session = if let Some(id) = &args.attach {
@@ -126,6 +222,16 @@ impl Session {
             Self::Attach(_) => {}
         }
     }
+
+    fn power_off(&mut self) {
+        match self {
+            Self::Host(d) => d.stop(),
+            Self::Attach(a) => {
+                let _ = control::request(&a.run, "power", serde_json::json!({"action":"off"}));
+                a.dead = true;
+            }
+        }
+    }
 }
 
 struct App {
@@ -189,7 +295,8 @@ impl App {
             return;
         };
         let integer = matches!(self.scale, ScaleMode::Integer(_));
-        let fit = scale::fit(frame.width, frame.height, size.width, size.height, integer);
+        let guest_h = size.height.saturating_sub(TOOLBAR_H).max(1);
+        let fit = scale::fit(frame.width, frame.height, size.width, guest_h, integer);
         self.last_fit = Some(fit);
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
             return;
@@ -201,6 +308,7 @@ impl App {
             return;
         };
         scale::render(frame, &fit, size.width, size.height, &mut buffer, 0x0010_1418);
+        draw_toolbar(&mut buffer, size.width, size.height);
         if buffer.present().is_err() {
             return;
         }
@@ -224,6 +332,12 @@ impl App {
         if px < 0.0 || py < 0.0 {
             return;
         }
+        if let Some(w) = &self.window {
+            let size = w.inner_size();
+            if py >= size.height.saturating_sub(TOOLBAR_H) as f64 {
+                return;
+            }
+        }
         if let Some((x, y)) =
             scale::window_to_guest(px as u32, py as u32, fit, frame.width, frame.height)
         {
@@ -232,6 +346,35 @@ impl App {
                 .source_mut()
                 .send_input(InputEvent::Pointer { x, y, buttons });
         }
+    }
+
+    fn toolbar_click(&mut self, x: f64, y: f64) -> bool {
+        let Some(w) = &self.window else {
+            return false;
+        };
+        let size = w.inner_size();
+        let Some(i) = toolbar_hit(size.width, size.height, x, y) else {
+            return y >= size.height.saturating_sub(TOOLBAR_H) as f64;
+        };
+        match i {
+            0 => self.screenshot(),
+            1 => self.reset(),
+            2 => {
+                self.session.power_off();
+                self.quit = true;
+            }
+            3 => {
+                let full = w.fullscreen().is_some();
+                w.set_fullscreen(if full {
+                    None
+                } else {
+                    Some(Fullscreen::Borderless(None))
+                });
+            }
+            _ => {}
+        }
+        self.request_redraw();
+        true
     }
 
     fn key(&mut self, event: &winit::event::KeyEvent, pressed: bool) -> bool {
@@ -394,6 +537,12 @@ impl ApplicationHandler for App {
                 }
                 match state {
                     ElementState::Pressed => {
+                        if let Some((x, y)) = self.cursor {
+                            if self.toolbar_click(x, y) {
+                                self.mouse_down = false;
+                                return;
+                            }
+                        }
                         self.mouse_down = true;
                         if let Some((x, y)) = self.cursor {
                             self.pointer(x, y, 1);
@@ -410,7 +559,11 @@ impl ApplicationHandler for App {
             WindowEvent::Touch(t) => {
                 let (x, y) = (t.location.x, t.location.y);
                 match t.phase {
-                    TouchPhase::Started => self.send_touch(x, y, true),
+                    TouchPhase::Started => {
+                        if !self.toolbar_click(x, y) {
+                            self.send_touch(x, y, true);
+                        }
+                    }
                     TouchPhase::Moved => self.send_touch(x, y, true),
                     TouchPhase::Ended | TouchPhase::Cancelled => self.send_touch(x, y, false),
                 }
@@ -444,5 +597,37 @@ impl ApplicationHandler for App {
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(16),
         ));
+    }
+}
+
+#[cfg(test)]
+mod toolbar_tests {
+    use super::*;
+
+    #[test]
+    fn hit_test_four_buttons() {
+        let (w, h) = (480u32, 1000u32);
+        for (i, (bx, bw)) in toolbar_buttons(w).iter().enumerate() {
+            let x = (*bx + *bw / 2) as f64;
+            let y = (h - TOOLBAR_H + 24) as f64;
+            assert_eq!(toolbar_hit(w, h, x, y), Some(i), "button {i}");
+        }
+        assert_eq!(toolbar_hit(w, h, 10.0, 500.0), None);
+    }
+
+    #[test]
+    fn draw_bar_and_text() {
+        let (w, h) = (480usize, 1000usize);
+        let mut buf = vec![0u32; w * h];
+        draw_toolbar(&mut buf, w as u32, h as u32);
+        let bar_top = h - TOOLBAR_H as usize;
+        assert_eq!(buf[bar_top * w + 2], 0x0018_1C20);
+        let (bx, bw) = toolbar_buttons(w as u32)[0];
+        assert_eq!(buf[(bar_top + 8) * w + bx as usize], 0x002C_3238);
+        // At least one text pixel differs from the button fill.
+        let text_px = (bar_top + 9..bar_top + 23)
+            .flat_map(|y| (bx as usize..(bx + bw) as usize).map(move |x| (x, y)))
+            .any(|(x, y)| buf[y * w + x] == 0x00E8_ECF0);
+        assert!(text_px);
     }
 }

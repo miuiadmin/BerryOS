@@ -74,7 +74,7 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 | 输入 | `berry input key/tap/swipe`（VNC attach，已落） | 客机触摸/键盘 |
 | 重启/关机 | **`berry power reboot/off`（C1a 已落）** | 重启/关机按钮（C2） |
 | 分辨率 | `berry display set <profile>`（C2） | 分辨率菜单 |
-| 全屏 | — | `F` |
+| 全屏 | — | `F` / `FULL` 按钮 |
 | 审计 | `berry events/logs`（C1/C2） | 同一事件流，`source=ui/cli` |
 
 C1a/C1b/C1c 已落：`berry shell` 进程内或 headless `berry device start` 都会起
@@ -121,7 +121,8 @@ headless host 开窗，关窗只 detach。C1d 还差 Windows control、host 崩�
 - 帧面要求 QEMU `memory-backend-file,share=on`；不支持该后端的环境回退 VNC（P1 路径）。
 - `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 仍由 shell 持有，
   `power reboot/off`、`display set` 等需要 C1 的 session host/QMP broker，当前未落。
-- 窗口快捷栏（截图/分辨率/重启/关机/全屏）是 C2；当前只有键盘快捷键，且没有统一控制面。
+- 窗口快捷栏 C2a 已落 4 键：`SHOT`/`BOOT`/`OFF`/`FULL`（鼠标/触摸）；
+  分辨率 `RES`、确认框、`berry shortcut` 命令是 C2b。
 - 默认 `berry shot` 等 `BERRYBOOT ok`，当前测试镜像此时可能还在固件/测试面；要看 GUI
   请传 `--wait-marker "FBW ok"` 或 launcher 标记。`--profile phone` 时 guifbd 进入
   GUI 模式（console 只走串口，不盖桌面）；默认 800×600 仍保留 console 上屏。

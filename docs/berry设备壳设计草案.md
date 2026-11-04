@@ -312,7 +312,7 @@ QEMU `memory-backend-file,share=on` 把客机 RAM 映射成文件，`RamSource` 
 CLI 命令树、`shot` vs `screenshot`、原生快捷栏/键位、双击语义、AI/CI 契约 →
 平台文档 §8/§9/§11。设备壳只保留：
 
-- 窗口 = 客机帧区 + 原生快捷栏；快捷栏不占客机分辨率。
+- 窗口 = 客机帧区 + 原生快捷栏；C2a 已落 4 键（SHOT/BOOT/OFF/FULL），不占客机分辨率。
 - 双击/无 TTY = GUI；有 TTY = help；`shell` = `device start --gui` 简写。
 - 快捷栏按钮一律映射到平台文档的 action 表；禁止 UI 直接调 QMP/QEMU。
 - 打包细节见平台文档 §12 与本文件 §9。
