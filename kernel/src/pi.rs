@@ -82,7 +82,9 @@ fn recompute_locked() {
     // wake/block/close 发射本钩 → 跳物理取放防同核重入自旋死锁——
     // 任务位不够（ktest/boot 窗 CURRENT=null 位记账不存在，而 HAL 直取
     // 的 KL 物理持有态真实，sys_handle_close 直调面即此形态）；IRQ/tick
-    // 语境镜像恒 0 照常真取（`kern_lock::kl_held` 判据注）。
+    // 语境镜像**g3-1c-2 起非恒 0**——解蔽窗内 tick/SGI 打断持 KL 的 send/recv
+    // 主体时走同款退化跳过支（持有者被断未并跑，判据问锁本身故两语境同正）；
+    // 窗外语境镜像仍恒 0 照常真取（`kern_lock::kl_held` 判据注）。
     let kl_phys = !berry_hal_aarch64::kern_lock::kl_held();
     if kl_phys {
         berry_hal_aarch64::kern_lock::kern_acquire();

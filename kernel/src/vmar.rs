@@ -65,9 +65,13 @@ impl Drop for PtGuard {
     }
 }
 
-/// 取本 AS PT 锁（TTAS）。无环论证（SMP-S4 草案 §3.2）：SVC 全程 IRQ 屏蔽
-/// ——持有者不被抢占/中断，方法体有界 → 等待者最终必得；PT 恒在 KL 窗内
-/// 取放（全系统单一嵌套向，无反转面）。boot/ktest 直调路径同样 DAIF 屏蔽。
+/// 取本 AS PT 锁（TTAS）。无环论证（SMP-S4 草案 §3.2）：持有者**可被断但
+/// 有界**——SVC 多数号全程 IRQ 屏蔽（g3-1c-2 起唯 send/recv 拷贝窗局部解蔽：
+/// 持有者可被窗内 tick/RX/SGI 打断，但段计数 >0 禁切 + handler 体有界 →
+/// 断有界 → 等待者最终必得）；**铁律：窗内可达 IRQ handler 禁取 PT 锁**——
+/// 持有者被断期间同核自旋等不可运行者 = 硬死锁（今日零触达；新源先过审计，
+/// 雷册 §A126 追记二）。PT 恒在 KL 窗内取放（全系统单一嵌套向，无反转面）。
+/// boot/ktest 直调路径同样 DAIF 屏蔽。
 fn pt_lock(asid: u16) -> PtGuard {
     // TTAS（test-and-test-and-set）：CAS 外环避免每次写行争、Relaxed 内环
     // 读自旋降总线流量——kern_lock KERN_LOCK 同款形态。

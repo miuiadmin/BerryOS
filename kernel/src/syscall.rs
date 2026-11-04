@@ -24,8 +24,9 @@
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
-//! AP 位，校验后直拷。**无 TOCTOU**：SVC 异常入口硬件置 DAIF 屏蔽 IRQ 且
-//! handler 不解蔽 → syscall 主体天然不可抢占（单核）。
+//! AP 位，校验后直拷。**无 TOCTOU**：SVC 异常入口硬件置 DAIF 屏蔽 IRQ，
+//! handler 多数号不解蔽（唯 send/recv 拷贝段局部解蔽——窗内表零触达 + 段
+//! 计数 >0 禁切，见 `irq_window`）→ syscall 主体天然不可抢占（单核）。
 //!
 //! **per-process 表（3-4a 拆表）**：全局单表退役——每个 Process 拥有自己的
 //! [`HandleTable`]（`process.rs`），EL0 syscall 经任务 `proc_tag` 派发到所属
@@ -115,7 +116,8 @@ pub fn bootstrap_table() -> &'static mut HandleTable {
 /// SAFETY（裸指针的三个不变量）：① tag 来源只有三处——boot 期 `Box::leak` 的
 /// 常驻表（main.rs 手搭用户进程 + `spawn_with_tag` 的常驻内核服务）与
 /// `Process::ht`（Box'd ObjRef 内、地址稳定，且运行中的任务钉住 Process →
-/// 表随任务同寿）；② 单核 syscall 全程 IRQ 屏蔽 → 同一表无并发访问；
+/// 表随任务同寿）；② 单核 syscall 多数号 IRQ 屏蔽（唯 send/recv 拷贝窗局部
+/// 解蔽——窗不触表且段计数 >0 禁切，见 `irq_window`）→ 同一表无并发访问；
 /// ③ 每个 handler 同一时刻至多持一张表的 `&mut`（跨表操作如 bootstrap 迁移
 /// 是**两张不同表**的借用，无别名）。
 fn caller_table(tf: &TrapFrame) -> Result<&'static mut HandleTable, i64> {
@@ -661,7 +663,7 @@ extern "C" fn sys_vmo_get_phys(tf: &mut TrapFrame) -> i64 {
 /// 调用方返 -EBADF——syscall 边界无 panic 纪律，不可达分支也不 panic）。
 fn obj_vmo_mut(obj: &core::ptr::NonNull<crate::handle::ObjRef>) -> Option<&'static mut Vmo> {
     // SAFETY: get_raw 已验指针在表、gen 匹配、类型为 Vmo；&mut 期间无并发
-    // 访问（单核 + syscall 全程 IRQ 屏蔽）。
+    // 访问（单核 + 多数号 IRQ 屏蔽；send/recv 解蔽窗不触表且段计数 >0 禁切）。
     unsafe { &mut (*obj.as_ptr()).obj }.as_vmo_mut()
 }
 
@@ -1470,7 +1472,8 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
 
 /// G3-1c-2 管道面原子段禁切守卫（send 满检→push / recv pop→回滚完结）：
 /// new 取窗（计数 +1），Drop 放窗——段内任何早退（`return`/`?`）自动配平，
-/// 配平违约结构性消除（对照：裸 preempt_disable/enable 对 = 18 个早退点手工
+/// 配平违约结构性消除（对照：裸 preempt_disable/enable 对 = 20 个早退点
+/// （send 10 / recv 10）手工
 /// 配平，漏一 = 本核静默永禁切）。错误路径跳过段出口检查点 → g3-1b 落点①
 /// （SVC 派发尾，零锁）承接拷贝窗内累积的切换诉求。
 struct PreemptSpan;
@@ -1491,12 +1494,14 @@ impl Drop for PreemptSpan {
 }
 
 /// G3-1c-2 拷贝段局部解蔽窗（仅限 send/recv 原子段内调用）：save→unmask→
-/// f()→restore 闭式（f 内禁早退——配平结构性成立）。窗内 tick/SGI 可入但禁
-/// 切换：段 preempt_disable（计数 >0）+ g3-1c-1 双门（tick go 支/on_sgi_resched
-/// 闭门早退）；tick 入窗合法 ⇔ SQ 位在集（本域 0x2E 恒真——expire_timeouts
-/// sq_lock 退化形，§A126 推论正用）；§A113 PT 锁窗禁切换由段计数保。**窗在
-/// 调用点不在 copy_from_user 内部**——其余号的调用面仍全屏蔽且计数 0，窗若
-/// 内置 = 那些号拷贝中可切（§A113 违约）。
+/// f()→restore 闭式（f 内禁早退——配平结构性成立）。窗内可达 IRQ 四源：tick、
+/// SGI-resched、PL011 RX（SPI33——每次键入都进，wake_matching 是窗内 SLEEPQ
+/// 手术最频繁者）、SGI-TLB——全部经退化锁安全（g3-1c-2 三镜 verify 核：探峰
+/// RQ 位 / tick SQ 位在集即退化，本域 0x2E 恒真，§A126 推论正用），禁切由段
+/// preempt_disable（计数 >0）+ g3-1c-1 双门（tick go 支/on_sgi_resched 闭门
+/// 早退）保证；§A113 PT 锁窗禁切换由段计数保。**窗内新增可达 IRQ 源 = 先过
+/// 退化锁审计再放行**。**窗在调用点不在 copy_from_user 内部**——其余号的
+/// 调用面仍全屏蔽且计数 0，窗若内置 = 那些号拷贝中可切（§A113 违约）。
 fn irq_window<R>(f: impl FnOnce() -> R) -> R {
     let daif = berry_hal_aarch64::irq_save();
     berry_hal_aarch64::enable_irq();
@@ -1688,8 +1693,9 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // 双门（tick go 支/SGI）挡下的切换诉求在唤醒链全毕后兑现——①push 直后
     // 切走会打断 S-3c 义务④「find→push→fast_wake 查位+写位+唤醒不可分割」
     // 窗（物理锁舞蹈能保、语义不可分割不能）；②wake 后才切不劣于今日
-    //（今日 = wake 后紧跟 :1624 fastpath 探峰）；③与 fastpath :1624 探峰天然
-    // 分工（fast 路先探、此检查点收 slow/收尾覆盖），成功路径不开双探峰窗。
+    //（今日 = wake 后紧跟 fastpath try_preempt 探峰）；③与 fastpath 探峰分工
+    //——fast 命中路先探、段检查点收 slow/收尾，fast 命中路的重探恒空 = 白付
+    // 但中性（icount 已证）。
     // 探峰合法 ⇔ RQ 位在集（本号 0x2E ✓，try_preempt rq_lock 退化形，§A126
     // 定谳）；段内错误路径早退跳过此处，由 g3-1b 落点①（SVC 派发尾零锁）承接。
     berry_sched::preempt_checkpoint();
@@ -2065,7 +2071,8 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
 ///
 /// n ∈ [1, [`WAIT_MANY_MAX`]=16]（栈上定长数组零分配、no-panic；越界 -EINVAL）。
 /// handles/signals 两数组**先整段拷入内核栈**再解析（copy_from_user 界检整段
-/// 走查；syscall 全程 IRQ 屏蔽 → 校验与解析间无 TOCTOU）。数组内重复 handle
+/// 走查；本号全程 IRQ 屏蔽（send/recv 外多数号如此）→ 校验与解析间无
+/// TOCTOU）。数组内重复 handle
 /// 合法（各项独立 retain/release，引用计数守恒）。
 /// wait_many 的 n 上限（ABI §8.3；栈上定长数组零分配的边界——v1 无堆路径，
 /// 16 与 Zircon 同量级）。
