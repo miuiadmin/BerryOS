@@ -207,10 +207,43 @@ pub unsafe fn user_fault_exit() -> Option<UserFaultExit> {
     USER_FAULT_EXIT
 }
 
+// ---- G3-1b 落点①：syscall 返回边界检查点槽（HAL→sched 反转，避循环依赖；
+// 上方 IRQ/SGI/用户故障槽同模式——HAL 永不知 scheduler 之名）----
+//
+// SVC 派发尾（`syscall::dispatch` 的 svc_exit_class 毕后、x0 写回前）调用
+// 的显式抢占检查点；kernel boot 期注册 berry_sched::preempt_checkpoint
+//（计数==0 探峰 + 可能直切，自带 irqsave 包络——sched 侧安全 API）。
+// 零行为变更步（g3-1b）：现役 SVC 全程 IRQ 屏蔽 ⇒ 单核 rq 状态窗内不可变
+// ⇒ 探峰恒空 = 纯空探；g3-1c 域解蔽后承重。
+static mut SVC_EXIT_CHECKPOINT: Option<fn()> = None;
+
+/// 注册 syscall 返回边界检查点（kernel boot 在 enable_irq / 首个用户任务
+/// 被调度前调用一次；槽空 = 派发尾平凡跳过）。
+pub fn set_svc_exit_checkpoint(f: fn()) {
+    // SAFETY: boot 单线程（IRQ 未开）注册，此后全系统只读。
+    unsafe { SVC_EXIT_CHECKPOINT = Some(f) };
+}
+
 /// 解蔽 IRQ（`daifclr #2`，清 DAIF.I）。解蔽序的最后一步（VBAR→GIC→timer→此）。
 pub fn enable_irq() {
     // SAFETY: 写 DAIF 标志位；EL1。
     unsafe { core::arch::asm!("msr daifclr, #2", options(nostack, preserves_flags)) };
+}
+
+/// 存当前 DAIF 全字（G3-1b 检查点 irqsave 包络用）。返回值只可回喂
+/// [`irq_restore`]，不得解读位含义（跨形态只保往返配对语义）。
+pub fn irq_save() -> u64 {
+    let daif: u64;
+    // SAFETY: 读 DAIF 标志寄存器；EL1。
+    unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nostack, preserves_flags)) };
+    daif
+}
+
+/// 恢复 DAIF（与 [`irq_save`] 配对；含屏蔽→解蔽 / 解蔽→屏蔽两向，恢复的是
+/// 保存点快照而非定向操作——G3-1c 域解蔽后窗内 DAIF 形态随落点变，两向都要）。
+pub fn irq_restore(daif: u64) {
+    // SAFETY: 写 DAIF 标志寄存器；EL1。值仅来自 irq_save 同核快照。
+    unsafe { core::arch::asm!("msr daif, {}", in(reg) daif, options(nostack, preserves_flags)) };
 }
 
 /// 屏蔽 IRQ（`daifset #2`，置 DAIF.I）。

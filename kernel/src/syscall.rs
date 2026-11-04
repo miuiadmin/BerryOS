@@ -546,6 +546,10 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
             return e as i64;
         }
         pos += n;
+        // G3-1b 落点②：块间检查点（COPY_CHUNK 边界 = 天然切片点，草案 §8.C
+        // + §8 交织铁则「每块独立持锁重查」）。零行为变更步 = 空探；块内
+        // walk+copy 同窗（§A113）不解蔽——检查点只在块间。
+        berry_sched::preempt_checkpoint();
     }
     0
 }
@@ -577,6 +581,9 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
             return voe(e) as i64;
         }
         pos += n;
+        // G3-1b 落点②：块间检查点（同 sys_vmo_read——COPY_CHUNK 边界切片，
+        // 块间探峰/块内不解蔽；零行为变更步 = 空探）。
+        berry_sched::preempt_checkpoint();
     }
     0
 }

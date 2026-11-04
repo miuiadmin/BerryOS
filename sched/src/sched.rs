@@ -109,11 +109,29 @@ pub fn preempt_count() -> u64 {
 }
 
 /// 切换原语入口配平断言（G3-1a 执法面）：进切换原语 = 本核必须可切
-///（count==0）。release 主面编译消除（零漂移根基）；debug 构建 + ktest
-/// preempt API 位（计数语义）双面执法。
+///（count==0）。主面 `just build` = dev profile ⇒ debug_assert 活执法
+///（2026-11-04 勘正；ktest preempt API 位（计数语义）双面执法）。
 #[inline]
 fn assert_preempt_balanced(where_: &str) {
     debug_assert_eq!(preempt_count(), 0, "切换原语 {}：preempt_count 非零（禁切窗内禁切换）", where_);
+}
+
+/// G3-1b：显式抢占检查点（草案 §8.C 落点族）——带 irqsave 包络的
+///「计数==0 探峰 + 可能直切」。计数 >0（禁切窗）直返；否则 try_preempt
+/// 语义（探峰集 == 出选集，幻影出选防线内置）。切换原语全员要求 IRQ
+/// 屏蔽（调用方契约，草案 §8 交织铁则）⇒ 探峰+直切窗内局部重屏蔽：
+/// 存 DAIF → 屏蔽 → 探/切 → 恢复（直切发生时，恢复点 = 被切任务日后续跑
+/// 至此，其保存 DAIF 即其检查点前态；被切走期间新任务走自身上下文的
+/// DAIF 形态，不继承本窗）。
+/// 零行为变更步（g3-1b）：现役 SVC 全程 IRQ 屏蔽 ⇒ 单核 rq 状态窗内
+/// 不可变 ⇒ 探峰恒空 = 纯空探（无直切）；g3-1c 域解蔽后本检查点真承重。
+pub fn preempt_checkpoint() {
+    let daif = hal::irq_save();
+    hal::disable_irq();
+    if preempt_count() == 0 {
+        try_preempt();
+    }
+    hal::irq_restore(daif);
 }
 
 /// 本核 pick 过滤器（S-2b §2.3「内核串行/用户并行」）：CPU0 全量视图（与旧

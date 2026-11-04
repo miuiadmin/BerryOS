@@ -1486,6 +1486,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
     berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
+    // G3-1b 落点①接线：syscall 返回边界检查点（SVC 派发尾空探；sched 侧
+    // 自带 irqsave 包络）。零行为变更步——注册与否不改变现役行为（探峰恒空），
+    // g3-1c 域解蔽后承重。
+    berry_hal_aarch64::set_svc_exit_checkpoint(berry_sched::preempt_checkpoint);
     // P5 A-1：RX 通知槽 + 使能 PL011 RX（SPI 33）——均在 DAIF 屏蔽窗内
     // （enable_irq 前）。次序硬约束：通知槽须先注册（槽空时 rx_irq 平凡
     // 跳过——首字节静默落环无人唤醒）；rx_init 的 IMSC.RXIM 最后开（线一拉

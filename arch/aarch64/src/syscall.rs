@@ -74,6 +74,15 @@ pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     // S-4 4-3：ASID 回卷 quiesce 驱动（闩驱动——闩恒 false 时一次 Acquire
     // 读直返，单核闩恒不置）。零锁纪律同上（§3.2）。
     crate::tlbshoot::roll_quiesce_check();
+    // G3-1b 落点①：syscall 返回边界检查点（草案 §8.C——svc_exit_class 毕 =
+    // KL+结构锁全放；x0 写回是 TrapFrame 栈写不触共享结构，检查点在其前不
+    // 违约）。`-> !` handler（0x33/0x36）不归，本尾对其不可达——不设检查点。
+    // 槽空（注册前/未注册）= 平凡跳过。槽 static 在 lib.rs 根（跨 crate 槽
+    // 惯例位）。
+    // SAFETY: 只读快照函数指针；set_svc_exit_checkpoint 全在 boot 单线程期。
+    if let Some(checkpoint) = unsafe { crate::SVC_EXIT_CHECKPOINT } {
+        checkpoint();
+    }
     tf.regs[0] = ret as u64;
     ret
 }
