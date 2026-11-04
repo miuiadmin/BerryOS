@@ -477,32 +477,13 @@ pub fn display_set(
         }
         return Ok(());
     }
-    // C2c v1: stop the current host, start a new host with the new profile.
-    let meta: serde_json::Value = std::fs::read(run.join("meta.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_else(|| json!({}));
-    let image = meta
-        .get("image")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from)
-        .ok_or_else(|| BerryError::env("session has no image metadata; start with --image"))?;
-    let memory = meta.get("memory_mib").and_then(|v| v.as_u64()).map(|v| v as u32);
-    let _ = control::request(&run, "power", json!({"action":"off"}));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while run.join("control.sock").exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+    let new_run = restart_profile(&run, profile.id)?;
+    if json {
+        println!("{}", json!({"v":1,"t":"display.set","run":new_run,"old_run":run,"profile":profile.id,"applied":true}));
+    } else {
+        println!("display: {} → {} (new run: {})", run.display(), profile.id, new_run.display());
     }
-    device_start(DeviceStartArgs {
-        image: Some(image),
-        profile: profile.id.to_string(),
-        accel: "tcg".to_string(),
-        memory,
-        display_mode: None,
-        keep: true,
-        foreground: false,
-        json,
-    })
+    Ok(())
 }
 
 pub fn shortcut(run: Option<&str>, action: &str, json: bool) -> Result<()> {
@@ -574,6 +555,17 @@ pub fn device_start(args: DeviceStartArgs) -> Result<()> {
             keep: args.keep,
         });
     }
+    let json_out = args.json;
+    let (run, pid) = device_start_run(args)?;
+    if json_out {
+        println!("{}", json!({"v":1,"t":"device.start","run":run,"pid":pid}));
+    } else {
+        println!("device: {}", run.display());
+    }
+    Ok(())
+}
+
+fn device_start_run(args: DeviceStartArgs) -> Result<(PathBuf, u32)> {
     let exe = std::env::current_exe()
         .map_err(|e| BerryError::device(format!("current_exe: {e}")))?;
     let mut cmd = std::process::Command::new(exe);
@@ -616,13 +608,39 @@ pub fn device_start(args: DeviceStartArgs) -> Result<()> {
     let run = line
         .strip_prefix("RUN ")
         .ok_or_else(|| BerryError::protocol(format!("host: bad announce '{line}'")))?;
-    let run = PathBuf::from(run);
-    if args.json {
-        println!("{}", json!({"v":1,"t":"device.start","run":run,"pid":child.id()}));
-    } else {
-        println!("device: {}", run.display());
+    Ok((PathBuf::from(run), child.id()))
+}
+
+/// Stop an existing host and start a new host with another profile. Returns
+/// the new run id (C2c/C2e). Used by `display set --restart` and attach RES.
+pub fn restart_profile(run: &Path, profile_id: &str) -> Result<PathBuf> {
+    let profile = profile::get(profile_id)?;
+    let meta: serde_json::Value = std::fs::read(run.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| json!({}));
+    let image = meta
+        .get("image")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .ok_or_else(|| BerryError::env("session has no image metadata; start with --image"))?;
+    let memory = meta.get("memory_mib").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let _ = control::request(run, "power", json!({"action":"off"}));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while run.join("control.sock").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(())
+    let (new_run, _) = device_start_run(DeviceStartArgs {
+        image: Some(image),
+        profile: profile.id.to_string(),
+        accel: "tcg".to_string(),
+        memory,
+        display_mode: None,
+        keep: true,
+        foreground: false,
+        json: false,
+    })?;
+    Ok(new_run)
 }
 
 pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {

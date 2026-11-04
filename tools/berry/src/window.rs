@@ -431,41 +431,56 @@ impl App {
             return;
         }
         match &mut self.session {
-            Session::Host(dev) => dev.stop(),
-            Session::Attach(_) => {
-                eprintln!(
-                    "resolution: attach session; run `berry display set {} --restart` then reattach",
-                    p.id
-                );
-                self.request_redraw();
-                return;
-            }
-        }
-        match Device::start(
-            self.image.clone(),
-            p,
-            &self.accel,
-            self.memory,
-            None,
-            self.keep,
-            "shell",
-        ) {
-            Ok(dev) => {
-                self.session = Session::Host(dev);
-                self.profile = p;
-                self.last_frame = None;
-                self.last_fit = None;
-                self.power_armed = None;
-                self.title = format!("BerryOS — {}", p.id);
-                if let Some(w) = &self.window {
-                    w.set_title(&self.title);
-                    w.request_redraw();
+            Session::Host(dev) => {
+                dev.stop();
+                match Device::start(
+                    self.image.clone(),
+                    p,
+                    &self.accel,
+                    self.memory,
+                    None,
+                    self.keep,
+                    "shell",
+                ) {
+                    Ok(dev) => self.session = Session::Host(dev),
+                    Err(e) => {
+                        eprintln!("resolution restart failed: {e}");
+                        self.quit = true;
+                        return;
+                    }
                 }
             }
-            Err(e) => {
-                eprintln!("resolution restart failed: {e}");
-                self.quit = true;
-            }
+            Session::Attach(a) => match crate::commands::restart_profile(&a.run, p.id) {
+                Ok(new_run) => match crate::commands::vnc_endpoint(&new_run)
+                    .and_then(|ep| VncSource::connect(&ep))
+                {
+                    Ok(src) => {
+                        a.run = new_run;
+                        a.source = src;
+                        a.dead = false;
+                        a.last_poll = Instant::now();
+                    }
+                    Err(e) => {
+                        eprintln!("resolution reattach failed: {e}");
+                        self.quit = true;
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("resolution restart failed: {e}");
+                    self.quit = true;
+                    return;
+                }
+            },
+        }
+        self.profile = p;
+        self.last_frame = None;
+        self.last_fit = None;
+        self.power_armed = None;
+        self.title = format!("BerryOS — {}", p.id);
+        if let Some(w) = &self.window {
+            w.set_title(&self.title);
+            w.request_redraw();
         }
     }
 

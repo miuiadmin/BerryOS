@@ -410,8 +410,10 @@ berry device stop --run "$RUN"
 - **C2c 已落（CLI）**：`berry display set <profile> --restart` 停旧 host → 以新 profile
   起新 host（新 run id）；实测 phone→phone16 = 480×854。
 - **C2d 已落（host 窗口）**：`RES` 按钮打开 profile 菜单（5 项）；选新 profile 后
-  **窗口内停旧 host、按新 profile 起新 host**（新 run），窗口继续。attach 窗口的 RES
-  提示用 CLI `display set --restart` 后重 attach（自动重附着仍 C2e）。
+  **窗口内停旧 host、按新 profile 起新 host**（新 run），窗口继续。
+- **C2e 已落（attach 窗口）**：`RES` 选新 profile → `restart_profile` 停旧 host/起新 host
+  → 重新连新 run 的 VNC，窗口自动重附着；无需手动 `shell --attach`。
+- **C2f 待落**：hover/tooltip、旧 run 清理、attach 失败回滚。
 - 按钮 disabled 态：重启/关机进行中；tooltip 显示快捷键 + 等价 CLI。
 - 截图：闪一下 + 落 `berry-shot-<ts>.png` + 事件 `source=ui`。
 - 关机/重启：确认框；进行中显示遮罩；失败显示 `code/message` + 日志入口。
@@ -462,8 +464,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
   `{"applied":false,"requires_restart":true}`；**不假装热切换**。
 - **`display set --restart`（C2c，已落）**：停当前 host → 以新 profile 起新 host
   （新 run id，旧 run 保留为 no-control）；CLI 可立即改 480×854/480×1000 等。
-- **GUI `RES`（C2d，host 窗口已落）**：菜单选 profile → 停旧 host、按新 profile 起新 host，
-  窗口继续；attach 窗口当前提示改用 CLI 后重 attach（自动重附着 C2e）。
+- **GUI `RES`（C2d host / C2e attach）**：菜单选 profile → 停旧 host、按新 profile 起新 host；
+  host 窗口内换 Device，attach 窗口重连新 run VNC，窗口继续。
 - **v2**：host/guest display 服务协商热切换（ramfb 重编程/virtio-gpu modeset）；
   需要客机侧协议，另立 ADR。
 - `display rotate` v1 只支持 `0`；90/180/270 需客机/呈现面支持，C2 评估。
@@ -529,8 +531,9 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C2a（已落）** | 原生快捷栏 4 键（SHOT/BOOT/OFF/FULL）；截图/重启/关机/全屏；鼠标+触摸 | 窗口内可点；截图落盘；重启/关机走 control/QMP；全屏切换 |
 | **C2b（已落）** | `OFF` 二次确认；`berry shortcut`；`display list/set`（next-profile）；`events` JSONL | 关机需两次点击；CLI 可触发截图/重启/关机；事件可读 |
 | **C2c（已落 CLI）** | `display set <profile> --restart`：停旧 host、起新 profile host（新 run） | phone→phone16 实测 480×854；新 run 可控 |
-| **C2d（已落 host）** | `RES` 按钮 + profile 菜单（5 项）；host 窗口内停旧/起新；`RES` 高亮当前 profile | 菜单命中/绘制测试；选 phone16 窗口继续；attach 提示 CLI |
-| **C2e（下一刀）** | hover/tooltip；attach 窗口自动重附着新 host；旧 run 清理 | attach RES 也能一键换分辨率 |
+| **C2d（已落 host）** | `RES` 按钮 + profile 菜单（5 项）；host 窗口内停旧/起新；`RES` 高亮当前 profile | 菜单命中/绘制测试；选 phone16 窗口继续 |
+| **C2e（已落 attach）** | attach 窗口 RES → `restart_profile` → 新 run VNC 重连，自动重附着 | attach 窗口不重启，host 换 480×854 后窗口继续 |
+| **C2f（下一刀）** | hover/tooltip；旧 run 清理；attach 失败回滚/提示 | 交互细节与清理 |
 | **C3** | AI/CI 契约文档化；`--wait`/`--settle-ms`；事件/截图回放；多设备 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
