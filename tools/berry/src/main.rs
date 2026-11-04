@@ -53,6 +53,8 @@ enum Cmd {
     Shortcut(ShortcutCmd),
     /// Read session events.
     Events(EventsCmd),
+    /// Show session state/profile/memory/QEMU pid.
+    Stats(StatsCmd),
     /// Capture a screenshot sequence from a running device.
     Record(RecordCmd),
     /// Run a JSON action script against a running device.
@@ -173,6 +175,12 @@ struct RecordCmd {
     frames: u32,
     #[arg(long, default_value_t = 200)]
     interval_ms: u64,
+}
+
+#[derive(Parser, Debug)]
+struct StatsCmd {
+    #[arg(long)]
+    run: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -394,6 +402,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Events(c)) => {
             commands::events(c.run.as_deref(), c.tail, c.follow, cli.json)
         }
+        Some(Cmd::Stats(c)) => commands::stats(c.run.as_deref(), cli.json),
         Some(Cmd::Record(c)) => {
             commands::record(c.run.as_deref(), &c.out, c.frames, c.interval_ms, cli.json)
         }

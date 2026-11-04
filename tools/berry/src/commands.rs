@@ -792,6 +792,17 @@ pub fn device_cleanup(run: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn stats(run: Option<&str>, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    let v = control::request(&run, "stats", json!({}))?;
+    if json {
+        println!("{}", json!({"v":1,"t":"stats","run":run,"stats":v}));
+    } else {
+        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+    }
+    Ok(())
+}
+
 pub fn device_list(json: bool) -> Result<()> {
     let root = run_dir::home().join("run");
     let mut runs: Vec<(String, String, String, String)> = Vec::new();
