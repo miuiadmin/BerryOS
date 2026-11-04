@@ -72,6 +72,27 @@ impl Drop for RunDir {
     }
 }
 
+/// Update the session state file (C1d; survives host crash for recovery).
+pub fn write_state(run: &Path, state: &str) {
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let v = serde_json::json!({
+        "v": 1,
+        "state": state,
+        "pid": std::process::id(),
+        "updated": d.as_millis() as u64,
+    });
+    let _ = fs::write(run.join("state.json"), serde_json::to_vec_pretty(&v).unwrap_or_default());
+}
+
+/// Read the last persisted state (None = no state file).
+pub fn read_state(run: &Path) -> Option<String> {
+    let b = fs::read(run.join("state.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&b).ok()?;
+    v.get("state").and_then(|s| s.as_str()).map(str::to_string)
+}
+
 pub struct Tail {
     path: PathBuf,
     file: Option<File>,

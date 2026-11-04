@@ -673,13 +673,17 @@ pub fn device_list(json: bool) -> Result<()> {
                 .unwrap_or_else(|| json!({}));
             let label = meta.get("label").and_then(|v| v.as_str()).unwrap_or("-");
             let pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+            let saved = run_dir::read_state(&p).unwrap_or_else(|| "no-control".to_string());
             let state = if p.join("control.sock").exists() {
                 match control::request(&p, "status", json!({})) {
                     Ok(v) => v.get("state").and_then(|s| s.as_str()).unwrap_or("?").to_string(),
-                    Err(_) => "stale".to_string(),
+                    Err(_) if saved == "running" => "stale".to_string(),
+                    Err(_) => saved,
                 }
+            } else if saved == "running" {
+                "stale".to_string()
             } else {
-                "no-control".to_string()
+                saved
             };
             runs.push((
                 p.file_name().unwrap_or_default().to_string_lossy().to_string(),
@@ -711,29 +715,61 @@ pub fn device_list(json: bool) -> Result<()> {
 
 pub fn device_status(run: Option<&str>, json: bool) -> Result<()> {
     let run = find_run(run)?;
-    let v = control::request(&run, "status", json!({}))
-        .map_err(|e| e.with_hint("is the device running under `berry shell`?"))?;
-    if json {
-        println!("{}", json!({"v":1,"t":"device.status","run":run,"status":v}));
-    } else {
-        println!(
-            "{}: {}",
-            run.display(),
-            v.get("state").and_then(|s| s.as_str()).unwrap_or("?")
-        );
+    match control::request(&run, "status", json!({})) {
+        Ok(v) => {
+            if json {
+                println!("{}", json!({"v":1,"t":"device.status","run":run,"status":v}));
+            } else {
+                println!(
+                    "{}: {}",
+                    run.display(),
+                    v.get("state").and_then(|s| s.as_str()).unwrap_or("?")
+                );
+            }
+        }
+        Err(_) => {
+            let saved = run_dir::read_state(&run).unwrap_or_else(|| "unknown".to_string());
+            let stale = saved == "running";
+            let label = if stale { "stale" } else { saved.as_str() };
+            if json {
+                println!("{}", json!({"v":1,"t":"device.status","run":run,
+                    "status":{"state":label,"stale":stale}}));
+            } else {
+                println!("{}: {}", run.display(), label);
+            }
+        }
     }
     Ok(())
 }
 
 pub fn device_stop(run: Option<&str>, json: bool) -> Result<()> {
     let run = find_run(run)?;
-    let v = control::request(&run, "stop", json!({}))?;
-    if json {
-        println!("{}", json!({"v":1,"t":"device.stop","run":run,"result":v}));
-    } else {
-        println!("stop: {}", run.display());
+    match control::request(&run, "stop", json!({})) {
+        Ok(v) => {
+            if json {
+                println!("{}", json!({"v":1,"t":"device.stop","run":run,"result":v}));
+            } else {
+                println!("stop: {}", run.display());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let saved = run_dir::read_state(&run).unwrap_or_default();
+            if saved == "stopped" || saved == "failed" {
+                if json {
+                    println!("{}", json!({"v":1,"t":"device.stop","run":run,
+                        "result":{"state":saved}}));
+                } else {
+                    println!("stop: {} (already {saved})", run.display());
+                }
+                Ok(())
+            } else {
+                Err(e.with_hint(
+                    "session is stale (no control socket); start a new device or remove the run dir",
+                ))
+            }
+        }
     }
-    Ok(())
 }
 
 pub fn power(run: Option<&str>, action: &str, force: bool, json: bool) -> Result<()> {

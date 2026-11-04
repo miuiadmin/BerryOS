@@ -189,6 +189,7 @@ mod imp {
                         q.system_reset().map_err(|e| {
                             BerryError::device(format!("qmp system_reset: {e}"))
                         })?;
+                        crate::run_dir::write_state(run, "rebooting");
                         append_event(run, json!({"v":1,"t":"action","action":"power.reboot","source":"control"}));
                         Ok(json!({"state":"rebooting"}))
                     }
@@ -197,6 +198,7 @@ mod imp {
                             BerryError::device(format!("qmp quit: {e}"))
                         })?;
                         stop.store(true, Ordering::Relaxed);
+                        crate::run_dir::write_state(run, "stopping");
                         append_event(run, json!({"v":1,"t":"action","action":"power.off","source":"control"}));
                         Ok(json!({"state":"stopping"}))
                     }
@@ -207,6 +209,7 @@ mod imp {
                 let mut q = qmp.lock().unwrap();
                 q.quit_now().map_err(|e| BerryError::device(format!("qmp quit: {e}")))?;
                 stop.store(true, Ordering::Relaxed);
+                crate::run_dir::write_state(run, "stopping");
                 append_event(run, json!({"v":1,"t":"action","action":"stop","source":"control"}));
                 Ok(json!({"state":"stopping"}))
             }

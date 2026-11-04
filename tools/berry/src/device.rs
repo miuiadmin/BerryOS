@@ -44,6 +44,7 @@ impl Device {
         let accel = qemu::choose_accel(accel, false)?;
         let mem = memory.unwrap_or(profile.memory_mib);
         let run = RunDir::create(label, keep)?;
+        run_dir::write_state(run.path(), "starting");
         let vars = run.file("vars.fd");
         qemu::create_vars(&vars, 64)?;
         let serial = run.file("serial.log");
@@ -136,7 +137,9 @@ impl Device {
         })();
 
         match result {
-            Ok((source, qmp, control)) => Ok(Self {
+            Ok((source, qmp, control)) => {
+                run_dir::write_state(run.path(), "running");
+                Ok(Self {
                 child,
                 qmp,
                 source,
@@ -145,8 +148,10 @@ impl Device {
                 stopped: false,
                 stop_flag,
                 _control: control,
-            }),
+                })
+            }
             Err(e) => {
+                run_dir::write_state(run.path(), "failed");
                 let _ = child.kill();
                 let _ = child.wait();
                 Err(e)
@@ -185,12 +190,14 @@ impl Device {
             return;
         }
         self.stopped = true;
+        run_dir::write_state(self.run.path(), "stopping");
         self.stop_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = self.qmp.lock().unwrap().quit_now();
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {
             if self.child.try_wait().ok().flatten().is_some() {
+                run_dir::write_state(self.run.path(), "stopped");
                 if self.keep {
                     self.run.keep();
                 }
@@ -200,6 +207,7 @@ impl Device {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        run_dir::write_state(self.run.path(), "stopped");
         if self.keep {
             self.run.keep();
         }
