@@ -143,6 +143,12 @@ pub struct SmpCpu {
     /// 窗无醒源）；心跳侧 idle 增量有界帽 = 满载谓词（`测试策略.md` idle
     /// residency 常设义务的最低限度兑现）。
     pub park_cnt: u64,
+    /// 本核抢占禁用计数（G3-1a——P-A 抢占点加密基座）：>0 = 禁切窗（第三窗，
+    /// SVC 主体无锁段/长循环段；语义等价今日 IRQ 屏蔽窗的「非零即禁」）。本核
+    /// 独占写（禁切窗只在本核开合）；读点 = 切换原语入口配平断言 + 检查点探峰
+    /// （g3-1b 起）。零行为变更步：g3-1a 落位后恒 0（无人 inc），g3-1c 域解蔽
+    /// 才有真消费者。
+    pub preempt_count: u64,
 }
 
 const fn zero_cpu() -> SmpCpu {
@@ -160,6 +166,7 @@ const fn zero_cpu() -> SmpCpu {
         disp_cnt: 0,
         sw_cnt: 0,
         park_cnt: 0,
+        preempt_count: 0,
     }
 }
 
@@ -183,6 +190,9 @@ const _: () = assert!(core::mem::offset_of!(SmpCpu, disp_cnt) == 80);
 // （align 64）——size 断言不变；asm 只钉 0/8/16 三偏移，不受尾插影响。
 const _: () = assert!(core::mem::offset_of!(SmpCpu, sw_cnt) == 88);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, park_cnt) == 96);
+// G3-1a 尾插第三字段（preempt_count@104）：同 S-5a 尾插纪律——逻辑尺寸 112
+// 仍 ≤ 128 帽，size 断言不变、asm 不受影响。
+const _: () = assert!(core::mem::offset_of!(SmpCpu, preempt_count) == 104);
 
 /// 副核 per-CPU 块（TPIDR_EL1 由 secondary_entry asm ⑩ 自钉）。
 #[no_mangle]
@@ -239,6 +249,22 @@ pub fn current_slot() -> Option<*mut u64> {
     // SAFETY: 非零即本核钉入的 SmpCpu 地址；current 字段本核独占写
     //（切换原语锁窗内单写者）。
     Some(unsafe { core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).current) })
+}
+
+/// 本核 PREEMPT_COUNT 槽（G3-1a）：TPIDR_EL1 → `SmpCpu.preempt_count`——
+/// 抢占禁用计数的 per-CPU 存储面（sched 侧 preempt_disable/enable 经此读写）。
+/// None = TPIDR_EL1 未装（cpu0_init/ktest 前防御窗）——调用方回落自有全局
+///（与 [`current_slot`] 同款契约）。
+pub fn preempt_count_slot() -> Option<*mut u64> {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: 非零即本核钉入的 SmpCpu 地址；preempt_count 字段本核独占写
+    //（禁切窗只在本核开合——跨核不触达）。
+    Some(unsafe { core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).preempt_count) })
 }
 
 /// 本核逻辑核号（S-2b）：TPIDR_EL1 未装（ktest/boot 早期窗）→ 0（CPU0）。

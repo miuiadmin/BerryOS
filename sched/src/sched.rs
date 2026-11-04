@@ -58,6 +58,64 @@ unsafe fn set_current(t: *mut Task) {
     }
 }
 
+// ---- G3-1a（P-A 抢占点加密基座，草案 §8.A.3/§8.C）：per-CPU preempt_count ----
+//
+// 语义：>0 = 本核禁切窗（「计数 > 0 窗内禁切换」不变量——等价今日 IRQ 屏蔽窗
+// 的「非零即禁」，把第三窗（SVC 主体无锁段/长循环段）纳入同一执法面）。g3-1a
+// 为零行为变更步：本刀只落计数基座 + 切换原语入口配平断言，无人 inc ⇒ 恒 0、
+// 断言恒过；真消费者 = g3-1b 检查点族（探峰前自查）与 g3-1c 域解蔽（拷贝分块
+// preempt_disable）。
+
+/// PREEMPT_COUNT 回落位（TPIDR_EL1 未装窗 = ktest/cpu0_init 前防御——与
+/// `CURRENT` 回落同款契约；该窗只可能在 CPU0，单核语义正确）。
+static mut PREEMPT_COUNT: u64 = 0;
+
+/// 本核 preempt_count 槽（主位 = `SmpCpu.preempt_count`；None 回落本 static）。
+#[inline]
+unsafe fn preempt_slot() -> *mut u64 {
+    match hal::smp::preempt_count_slot() {
+        Some(p) => p,
+        None => &raw mut PREEMPT_COUNT,
+    }
+}
+
+/// 开本核禁切窗（可嵌套；须与 [`preempt_enable`] 严格配平）。窗内禁切换——
+/// 切换原语入口配平断言（debug_assert count==0）执法。
+pub fn preempt_disable() {
+    // SAFETY: 本核独占字段；IRQ 状态无关（开窗不解蔽——与 IRQ 屏蔽窗正交）。
+    unsafe {
+        let p = preempt_slot();
+        let v = p.read_volatile();
+        p.write_volatile(v + 1);
+    }
+}
+
+/// 关本核禁切窗一层（嵌套弹一层；归零点 = 可切点）。下溢 = 配平违约，
+/// debug 构建 fail-loud。
+pub fn preempt_enable() {
+    // SAFETY: 同上。
+    unsafe {
+        let p = preempt_slot();
+        let v = p.read_volatile();
+        debug_assert!(v > 0, "preempt_enable: count 下溢（disable/enable 配平违约）");
+        p.write_volatile(v.saturating_sub(1));
+    }
+}
+
+/// 读本核禁切计数（诊断/检查点探峰自查面——g3-1b 消费）。
+pub fn preempt_count() -> u64 {
+    // SAFETY: 本核独占字段，volatile 读。
+    unsafe { preempt_slot().read_volatile() }
+}
+
+/// 切换原语入口配平断言（G3-1a 执法面）：进切换原语 = 本核必须可切
+///（count==0）。release 主面编译消除（零漂移根基）；debug 构建 + ktest
+/// preempt API 位（计数语义）双面执法。
+#[inline]
+fn assert_preempt_balanced(where_: &str) {
+    debug_assert_eq!(preempt_count(), 0, "切换原语 {}：preempt_count 非零（禁切窗内禁切换）", where_);
+}
+
 /// 本核 pick 过滤器（S-2b §2.3「内核串行/用户并行」）：CPU0 全量视图（与旧
 /// `pick_next` 单核语义恒等）；副核（cpu_id != 0）`user_only`——只出选
 /// `pinned != 0` 的用户任务（svcmgr `process_start` 派生的 EL0 进程；内核任务
@@ -687,6 +745,7 @@ unsafe fn activate_if_changed(prev: *mut Task, next: *mut Task) {
 /// 切回 park 探测环（**防御面**——生产不可达；park 三切点保舞蹈完备）。
 pub fn yield_now() {
     hal::disable_irq();
+    assert_preempt_balanced("yield_now");
     // SAFETY: IRQ 已屏蔽；CURRENT/本核 runqueue 顺序访问。
     unsafe {
         let prev = current_task();
@@ -835,6 +894,7 @@ unsafe fn assert_exit_hook_windows_closed() {
 /// IRQ 已屏蔽（显式 disable_irq 或异常入口硬件屏蔽）；CURRENT 有效。
 unsafe fn switch_away_forever_with(code: i32) -> ! {
     let cur = current_task();
+    assert_preempt_balanced("exit 族（switch_away_forever_with）");
     debug_assert!((*cur).state != TaskState::Exited, "double exit");
     assert_exit_hook_windows_closed();
     if let Some(hook) = EXIT_HOOK {
@@ -1451,6 +1511,7 @@ impl SleepQueue {
 pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason {
     // SAFETY: 调用方契约 = IRQ 屏蔽窗；CURRENT 有效；SLEEPQ 单核顺序访问。
     unsafe {
+        assert_preempt_balanced("block_current");
         let cur = current_task();
         // S-3c c-2a：SQ 窗开（义务③「查位+入队同窗」段——等待字段四写 +
         // insert_sorted + rq unlink + 置 Blocked + PI 收尾重推，一体不分割）。
@@ -1729,6 +1790,7 @@ pub unsafe fn fast_wake_locked(t: NonNull<Task>) {
 pub fn try_preempt() -> bool {
     // SAFETY: 契约如上；CURRENT/本核 runqueue 顺序访问。
     unsafe {
+        assert_preempt_balanced("try_preempt");
         let cur = current_task();
         // ktest 护栏（复盘雷 3）：`sched::init` 前 CURRENT=null——fastpath 若在
         // 手搭睡眠者在队时被走到（ktest 纪律明令禁止、但仅注释执法），下行的
@@ -2203,6 +2265,7 @@ pub unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFrame) {
     if cur.is_null() {
         return;
     }
+    assert_preempt_balanced("on_sgi_resched");
     // 幻影出选防线（同 try_preempt 注）：环上无他者必不出选，不消耗 head
     // 槽位。len 计 cur 自身（Running 仍驻环），≥2 = 有他者可出选。
     // RQ 窗（c-2b）：len 读 + 出选 + 状态定形同窗（len 读也是环面，同窗才
@@ -2267,6 +2330,7 @@ pub unsafe fn park_recheck() {
     if !hal::smp::par_enabled() {
         return;
     }
+    assert_preempt_balanced("park_recheck");
     // S-3b（F8）：peek 只读版退役——本核队列游标私有，无回卷饥饿面；
     // 出选即消费版（advance_past 推进本核 FIFO）。my_cur=null：park 态
     // 环上无 Running 残留（任务离环只在 block/exit，切回 park 前已离）。

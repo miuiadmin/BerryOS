@@ -1767,6 +1767,21 @@ fn test_switch() {
         );
         // <- switch_ping_fn 切回 SWITCH_CTX_MAIN 时续行于此。
     }
+    // G3-1a（草案 §8.C g3-1a）：per-CPU preempt_count 安全对——计数/嵌套/配平
+    // 语义锁死（ktest 跑在 cpu0_init 后 = TPIDR_EL1 已钉，走主位真路径）。
+    // 切换原语入口的 debug 配平断言在 release 主面编译消除（零漂移根基），
+    // 其执法面 = debug 构建 + g3-1b 检查点空探；本位不验（release 下不可达
+    // 违约路径）。断言静默跑：fail = panic 停机冒烟自然红，不加输出行（保
+    // boot 相逐行对拍零漂移）。
+    assert_eq!(berry_sched::preempt_count(), 0, "G3-1a：初始 count==0（主位真路径）");
+    berry_sched::preempt_disable();
+    assert_eq!(berry_sched::preempt_count(), 1, "G3-1a：disable → 1");
+    berry_sched::preempt_disable();
+    assert_eq!(berry_sched::preempt_count(), 2, "G3-1a：嵌套 → 2");
+    berry_sched::preempt_enable();
+    assert_eq!(berry_sched::preempt_count(), 1, "G3-1a：enable 弹一层");
+    berry_sched::preempt_enable();
+    assert_eq!(berry_sched::preempt_count(), 0, "G3-1a：配平归零（切换原语入口可过）");
     berry_hal_aarch64::uart_puts(b"TASK ok\n");
 }
 
