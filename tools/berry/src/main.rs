@@ -139,6 +139,9 @@ struct DisplaySetCmd {
     profile: String,
     #[arg(long)]
     run: Option<String>,
+    /// Apply now: stop the current host and start a new one with this profile.
+    #[arg(long)]
+    restart: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -351,7 +354,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Display(c)) => match c.action {
             DisplayAction::List => commands::display_list(cli.json),
             DisplayAction::Set(s) => {
-                commands::display_set(s.run.as_deref(), &s.profile, cli.json)
+                commands::display_set(s.run.as_deref(), &s.profile, s.restart, cli.json)
             }
         },
         Some(Cmd::Shortcut(c)) => {

@@ -61,6 +61,21 @@ impl Device {
                 )
             })
         });
+        // Persist enough to restart with a new profile later (display --restart).
+        let meta = serde_json::json!({
+            "v":1,
+            "label":label,
+            "pid":std::process::id(),
+            "started":std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            "profile":profile.id,
+            "image":image.display().to_string(),
+            "memory_mib":mem,
+            "display_mode":mode,
+        });
+        std::fs::write(run.file("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
 
         let mut child = qemu::spawn_image(
             &qemu,

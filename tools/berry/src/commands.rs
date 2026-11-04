@@ -452,23 +452,57 @@ pub fn display_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn display_set(run: Option<&str>, profile_id: &str, json: bool) -> Result<()> {
+pub fn display_set(
+    run: Option<&str>,
+    profile_id: &str,
+    restart: bool,
+    json: bool,
+) -> Result<()> {
     let run = find_run(run)?;
-    let v = control::request(
-        &run,
-        "display",
-        json!({"action":"set","profile":profile_id}),
-    )?;
-    if json {
-        println!("{}", json!({"v":1,"t":"display.set","run":run,"result":v}));
-    } else {
-        println!(
-            "display: {} → {} (requires restart)",
-            run.display(),
-            v.get("profile").and_then(|s| s.as_str()).unwrap_or(profile_id)
-        );
+    let profile = profile::get(profile_id)?;
+    if !restart {
+        let v = control::request(
+            &run,
+            "display",
+            json!({"action":"set","profile":profile.id}),
+        )?;
+        if json {
+            println!("{}", json!({"v":1,"t":"display.set","run":run,"result":v}));
+        } else {
+            println!(
+                "display: {} → {} (requires restart; add --restart to apply)",
+                run.display(),
+                v.get("profile").and_then(|s| s.as_str()).unwrap_or(profile.id)
+            );
+        }
+        return Ok(());
     }
-    Ok(())
+    // C2c v1: stop the current host, start a new host with the new profile.
+    let meta: serde_json::Value = std::fs::read(run.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| json!({}));
+    let image = meta
+        .get("image")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .ok_or_else(|| BerryError::env("session has no image metadata; start with --image"))?;
+    let memory = meta.get("memory_mib").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let _ = control::request(&run, "power", json!({"action":"off"}));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while run.join("control.sock").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    device_start(DeviceStartArgs {
+        image: Some(image),
+        profile: profile.id.to_string(),
+        accel: "tcg".to_string(),
+        memory,
+        display_mode: None,
+        keep: true,
+        foreground: false,
+        json,
+    })
 }
 
 pub fn shortcut(run: Option<&str>, action: &str, json: bool) -> Result<()> {
