@@ -221,11 +221,23 @@ def kernel_elf() -> str:
     return out
 
 
+# BerryOS QEMU 签名（串行守卫匹配面，2026-11-04 收窄）：aarch64 全 launcher
+# （bench/run/smoke/soak/rootfs/EFI）恒带 `-machine virt`；x86 最小集无
+# -machine 旗但恒带 `-kernel`。二者并集 = 本仓 QEMU 全谱；宿主他系模拟器
+# （Android emulator/AVD：`qemu-system-aarch64-headless -avd …`，两签名皆
+# 无）不再误伤——2026-11-04 实案：用户 Android 模拟器在场，裸 `qemu-system`
+# 模式令 icount 空等 900s 超时（icount 走虚拟时钟，宿主模拟器在场本就无
+# 污染面）。守卫立法面不变：只管「本仓 QEMU 单实例」纪律；墙钟通道的
+# 他源宿主负载（编译/他系模拟器）从来不在守卫射程内。
+QEMU_GUARD_PATTERN = r"qemu-system.*(-machine virt|-kernel)"
+
+
 def qemu_preflight() -> None:
     """起 QEMU 前跨进程串行守卫（2026-10-27 三镜审查补修——「QEMU 严格单
-    实例」从进程内天然串行升格为执法点）：`pgrep -f qemu-system` 非空 =
-    另一终端/CI job 的 QEMU 在场（soak/smoke 长跑正属常态）——静默并行第
-    二台既违本仓串行纪律，也污染 vanilla/rt 通道的墙钟派生计时（CNTVCT
+    实例」从进程内天然串行升格为执法点）：`pgrep -f QEMU_GUARD_PATTERN`
+    非空 = 另一终端/CI job 的**本仓** QEMU 在场（soak/smoke 长跑正属常态；
+    Android/AVD 他系模拟器不在此面——见 QEMU_GUARD_PATTERN 注）——静默并行
+    第二台既违本仓串行纪律，也污染 vanilla/rt 通道的墙钟派生计时（CNTVCT
     走 TCG 实时，宿主竞争 = L1 假红面；icount 数值由虚拟时钟驱动免疫，
     纪律一体适用）。行为 = 轮询等空（2s 粒度——「等空而非并行」铁律的
     工具化）而非立即拒绝；帽 900s 后 loud SystemExit——等一小时级的 soak
@@ -233,7 +245,7 @@ def qemu_preflight() -> None:
     deadline = time.time() + 900
     notified = False
     while True:
-        r = subprocess.run(["pgrep", "-f", "qemu-system"],
+        r = subprocess.run(["pgrep", "-f", QEMU_GUARD_PATTERN],
                            capture_output=True, text=True)
         if r.returncode == 1:
             return  # pgrep rc=1 = 无匹配 = 场地空
