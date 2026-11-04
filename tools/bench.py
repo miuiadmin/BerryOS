@@ -22,6 +22,13 @@
   「门禁与基线」段；oversleep≥0 严格断言在内核侧 panic 执法 = L0，分布数值
   统计归统计——故 --rt 为独立通道：--update/--el0/--factor 组合一律显式
   拒绝，不静默忽略）。
+- --lat（G3-4 bench-lat）：-smp 2 裸跑 + `-fw_cfg name=opt/berry/lat,string=1`
+  （门控键同 rt 形）等 `LATIPC ok n=32`，非锚定收割 `BENCHLAT,lane=` 行
+  （G3-4a 起 IPC 路〔内核任务对，wake_matching 直驱〕在册；SGI 路〔EL0
+  用户对 spread→CPU1〕G3-4b 扩入——lane 收割面按在册路断言）。R-1 同族
+  **只出表无基线**（wake→run 段补盲 = 观测面；醒因/唤醒数/负延迟严格断言
+  在内核侧 L0；跨机绝对值不可比承 B-2 纪律）。行嵌矩阵流中段（prio 8 抢
+  占打印）——BENCHRT 同款非锚定收割。
 - --icount（B-2）：裸跑 QEMU 追加定值 `-icount shift=1,sleep=off`，等 boot
   尾 `BENCHWAKE n=`（非锚定），双面收割——六行 BENCH（行锚定）= L2 门禁面
   + BENCHWAKE 整行 = R-0 观测面（§13「依赖」段，观测不动门禁）。三条语义
@@ -41,6 +48,8 @@
   python3 tools/bench.py --el0       # B-1：rootfs 形态跑一次 + 对拍 B-1 段
   python3 tools/bench.py --el0 --update  # B-1：跑一次 + 刷新 B-1 段（B-0 段保留）
   python3 tools/bench.py --rt        # R-1：裸跑（fw_cfg 门控 rt_probe）出三档表
+  python3 tools/bench.py --lat       # G3-4 bench-lat：-smp 2（fw_cfg 门控 lat 对）
+                                      # wake→run 出 lane 表（IPC 路在册）
   python3 tools/bench.py --icount    # B-2：-icount 确定性跑一次 + L2 对拍
                                       #（无基线 = 只出表 + 提示 --update）
   python3 tools/bench.py --icount --update  # B-2：立/刷 icount 基线（独立单段
@@ -71,6 +80,9 @@ BOOT_TIMEOUT_EL0 = 300
 # R-1 通道帽（设计 §10 定帽）：boot 头 ~10-20s + rt_probe 三档
 # 32×(50+200+800)ms ≈ 34s（TCG 半率）——3x 余量。
 BOOT_TIMEOUT_RT = 120
+# G3-4 lat 通道帽：RT 同口径（lane 采样 ≈32×½slice ≈2s 于 boot 窗内完成；
+# -smp 2 boot 略重于裸跑但不放大帽——超帽 = loud 上报不硬凑绿）。
+BOOT_TIMEOUT_LAT = 120
 # B-2 通道帽：与 vanilla BOOT_TIMEOUT=120 同口径、不放大。实测依据（M 系
 # mac，QEMU 11.0.3，2026-10-27 首跑探针）：boot 到 BENCHWAKE 全程 ≈2s——
 # sleep=off 下虚拟时钟纯指令驱动，「-icount 慢 2-4x」预期被实测反驳
@@ -194,6 +206,19 @@ BENCHRT_RE = re.compile(r"BENCHRT,delta=(\d+),n=32,p50=(\d+),p99=(\d+),max=(\d+)
 DONE_RT_RE = re.compile(r"RT ok n=(\d+)")
 RT_TIERS = 3   # 档数（slice/4、slice、4·slice——kernel deltas 定值镜像）
 RT_N = 32      # 每档样本数（kernel RT_SAMPLES 定值镜像）
+
+# G3-4 bench-lat（wake→run 段补盲，草案 §4）。收割同 BENCHRT 族**不做行
+# 锚定**：lane 行由 prio 8 sleeper 抢占矩阵打印流打出（首跑实录：行嵌
+# 矩阵流中段）。全形状含 lane 分组（ipc|sgi——G3-4a 只 ipc 在册，SGI 路
+# G3-4b 扩入时只动 LAT_LANES 断言集不动正则）；n=32 字面 = task_lat_slp
+# LAT_SAMPLES 镜像（wire 面冻结——内核侧 const assert 同步执法）。
+# done 轮询/缺席诊断/整行收割三处共用：DONE 按路分记（LATIPC ok——每路
+# 各自的完成标记，RT ok 同形）；lane 行与标记行字面互非子串。
+BENCHLAT_RE = re.compile(
+    r"BENCHLAT,lane=(ipc|sgi),n=(\d+),min=(\d+),p50=(\d+),p90=(\d+),p99=(\d+),max=(\d+)")
+DONE_LAT_RE = re.compile(r"LATIPC ok n=(\d+)")
+LAT_LANES = ("ipc",)  # 在册路（G3-4b SGI 路落地后扩 ("ipc", "sgi")）
+LAT_N = 32            # 每路样本数（kernel LAT_SAMPLES 定值镜像）
 
 # B-2：BENCHWAKE 行**非锚定**收割/轮询（B-1/R-1 矩阵巨行中段教训同族）：
 # watchdog 内核任务在 G1.5 ok 断言 + 稳态矩阵样本积累后才打（boot 尾），
@@ -422,6 +447,83 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
             f"bench.py: BENCHRT 收割不齐（rows={len(rows)} done_n={done_n} "
             f"deltas={deltas}——须恰 {RT_TIERS} 行、n 合计 {RT_TIERS * RT_N}、"
             f"delta 单调不重；改 task_rt_probe 后同步）")
+    return rows
+
+
+def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
+    """G3-4 bench-lat 通道：-smp 2 裸跑（+fw_cfg 具名项 opt/berry/lat 门控
+    lat 任务对 spawn）等 `LATIPC ok n=32`，非锚定收割 BENCHLAT lane 行 →
+    {lane: (n, min, p50, p90, p99, max)}。
+
+    run_rt 同款独立函数不复用 run_once（收割面/一致性校验不同构，零回归面
+    优先）。一致性 = 恰 LAT_LANES 在册路各一行、n 逐路 == LAT_N、done_n ==
+    行 n 合计（改 task_lat_* 后同步）。
+    """
+    qemu_cmd = [
+        "qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72",
+        "-m", "128M", "-nographic", "-kernel", kernel,
+        # IPC 路 = 同核对（place 内核任务恒 CPU0）；-smp 2 = SGI 路（G3-4b）
+        # 的承载形态先行钉板 + 副核 park 干扰面从首跑就在场（跨核空载真实
+        # 环境，不是理想单核——G3 阶段对照口径一致性）。
+        "-smp", "2",
+        # 门控键同 rt 形：find_file("opt/berry/lat") 命中才 spawn；缺席 =
+        # run/smoke 零扰动。
+        "-fw_cfg", "name=opt/berry/lat,string=1",
+    ]
+    with tempfile.NamedTemporaryFile(
+        prefix="berryos-bench-lat.", suffix=".log", delete=False
+    ) as tf:
+        log_path = tf.name
+    qemu_preflight()  # 跨进程串行守卫（run_rt 同款）
+    proc = subprocess.Popen(
+        qemu_cmd,
+        stdin=subprocess.DEVNULL, stdout=open(log_path, "w"),
+        stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    try:
+        deadline = time.time() + BOOT_TIMEOUT_LAT
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break  # QEMU 提前退出（崩溃）——带着现有日志走收割失败路径
+            text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            if DONE_LAT_RE.search(text):
+                break
+            time.sleep(1)
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    finally:
+        # 与 run_rt 同款：halt 后不退出，收完即杀（kill 后补 wait 收尸）。
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        Path(log_path).unlink(missing_ok=True)
+
+    d = DONE_LAT_RE.search(text)
+    if d is None:
+        raise SystemExit(
+            f"bench.py: LATIPC ok 行 {BOOT_TIMEOUT_LAT}s 未出现（boot 失败 / "
+            f"lat 任务对 panic（负延迟是 L0 执法）/ fw_cfg 门控未命中？）——"
+            f"串口尾部：{' | '.join(text.splitlines()[-5:])}")
+    done_n = int(d.group(1))
+    rows: dict[str, tuple[int, ...]] = {}
+    for m in BENCHLAT_RE.finditer(text):
+        lane = m.group(1)
+        vals = tuple(int(m.group(i)) for i in range(2, 8))
+        if lane in rows:
+            raise SystemExit(
+                f"bench.py: BENCHLAT lane={lane} 重复收割（每路恰一行——"
+                f"改 task_lat_* 后同步）")
+        rows[lane] = vals
+    # 一致性（run_rt 镜像形）：在册路恰齐、逐路 n==LAT_N、done_n == Σn。
+    if (tuple(sorted(rows)) != tuple(sorted(LAT_LANES))
+            or any(v[0] != LAT_N for v in rows.values())
+            or sum(v[0] for v in rows.values()) != done_n):
+        raise SystemExit(
+            f"bench.py: BENCHLAT 收割不齐（lanes={sorted(rows)} done_n={done_n} "
+            f"——须恰 {LAT_LANES} 各一行、n=={LAT_N}、Σn==done_n；"
+            f"改 task_lat_* 后同步）")
     return rows
 
 
@@ -721,6 +823,9 @@ def main() -> None:
     ap.add_argument("--rt", action="store_true",
                     help="R-1 通道：裸跑（fw_cfg 门控 rt_probe）收割 BENCHRT 三行"
                          "（只出表无基线——独立通道，--update/--el0/--factor 组合拒绝）")
+    ap.add_argument("--lat", action="store_true",
+                    help="G3-4 bench-lat 通道：-smp 2（fw_cfg 门控 lat 任务对）收割"
+                         " BENCHLAT lane 行（只出表无基线——R-1 同族独立通道）")
     ap.add_argument("--icount", action="store_true",
                     help="B-2 通道：-icount shift=1,sleep=off 确定性裸跑，收割六行"
                          " BENCH 做 L2 紧门禁对拍（基线 bench_baseline_icount.txt"
@@ -732,17 +837,25 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.rt and (args.update or args.el0 or args.factor is not None
-                    or args.icount or args.prove):
+                    or args.icount or args.prove or args.lat):
         # RT 无基线段（设计 §10 只出表）——误触 save_baseline 会按双段前缀
         # 逻辑误写 bench_baseline.txt；--el0/--icount 同样不进 --rt 早退
         # 分支：静默忽略 = 用户要的通道/门禁凭空蒸发（--el0 --rt 实际只跑
         # RT、B-1 静默缺席且退出码 0——三镜审查实抓）。组合一律拒绝
-        # （B-2 起 --icount/--prove 入拒绝集——prove 只对 --icount 立法）。
+        # （B-2 起 --icount/--prove 入拒绝集——prove 只对 --icount 立法；
+        # --lat 入拒绝集同因——一进程一种 QEMU 形态）。
         raise SystemExit(
             "bench.py: --rt 独立通道（只出表无基线）——不与 --update/--el0/"
-            "--factor/--icount/--prove 组合（--update 误写基线双段；--el0/--icount "
-            "通道会被静默丢弃——一进程一种 QEMU 形态；--factor 在 RT 无门禁面；"
-            "--prove 只对 --icount 立法）")
+            "--factor/--icount/--prove/--lat 组合（--update 误写基线双段；--el0/"
+            "--icount/--lat 通道会被静默丢弃——一进程一种 QEMU 形态；--factor "
+            "在 RT 无门禁面；--prove 只对 --icount 立法）")
+
+    # --- G3-4 --lat 专属校验（--rt 同款独立通道纪律）---
+    if args.lat and (args.update or args.el0 or args.factor is not None
+                     or args.icount or args.prove):
+        raise SystemExit(
+            "bench.py: --lat 独立通道（R-1 同族只出表无基线）——不与 --update/"
+            "--el0/--factor/--icount/--prove 组合（--rt 已在上互斥）")
 
     # --- B-2 --icount 专属校验（§13 参数矩阵；拒绝消息逐组合说因，教学体
     # 同上——「不静默忽略」先例）：单跑/--update/--prove 三形态合法，
@@ -767,6 +880,18 @@ def main() -> None:
             "动作；立/刷基线 = python3 tools/bench.py --icount --update")
 
     kernel = args.kernel or kernel_elf()
+    if args.lat:
+        rows = run_lat(kernel)
+        print(f"[G3-4(lat)] {'lane':<5} {'n':>4} {'min':>10} {'p50':>10} "
+              f"{'p90':>10} {'p99':>10} {'max':>10}")
+        for lane in LAT_LANES:
+            n, mn, p50, p90, p99, mx = rows[lane]
+            print(f"{'':<8} {lane:<5} {n:>4} {mn:>10} {p50:>10} "
+                  f"{p90:>10} {p99:>10} {mx:>10}")
+        print("bench.py: bench-lat 只出表不对拍（醒因/唤醒数/负延迟严格断言在"
+              "内核侧 L0；wake→run 分布数值统计归统计——R-1 公约 2 同族；G3 "
+              "阶段对照数值承 tools/evidence 留档）")
+        return
     if args.rt:
         rows = run_rt(kernel)
         print(f"[R-1(rt)] {'delta':>12} {'p50':>10} {'p99':>10} {'max':>10}")

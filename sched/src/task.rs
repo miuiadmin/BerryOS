@@ -234,6 +234,10 @@ pub struct Task {
     /// 唤醒原因（`block_current` 的返回值来源；唤醒方/超时扫描写入，
     /// 睡眠者续行时读取即消费）。
     pub wakeup: Cell<WakeReason>,
+    /// 唤醒时刻 CNTVCT（G3-4 bench-lat：`note_wake` 戳，醒来任务续行时
+    /// `wake_stamp_take` 取走即消费——run 侧读点 = 醒后首段内核执行，
+    /// rt_probe 的 wake_vct 读点同族。0 = 无在途戳）。
+    pub wake_vct: Cell<u64>,
 }
 
 impl Task {
@@ -368,6 +372,7 @@ impl Task {
             wait_deadline: 0,
             wait_since: 0,
             wakeup: Cell::new(WakeReason::Pending),
+            wake_vct: Cell::new(0),
         })
     }
 }

@@ -1508,6 +1508,36 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                     ht_rt as *mut HandleTable as usize);
     }
 
+    // ---- G3-4（docs/G3全抢占实施设计草案.md §4）：bench-lat IPC 路门控 spawn ----
+    // wake→run 段补盲（草案 §4 暂名 bench-lat）两路之一：IPC send 路 =
+    // **内核任务对**（侦察定谳：SGI 路须 EL0 用户对——place() 内核任务恒
+    // CPU0 + CPU1 出选 = user_only 臂（pinned!=0），内核对跨核架构堵死；
+    // IPC 路同核，内核对零 SVC 噪声、rt_probe 确定性同款）。waker 经
+    // `wake_matching` 直驱（IPC send 尾的唤醒面本体——send 路在 wake 前的
+    // 拷贝/入队机件不在被测的 wake→run 段内，直驱 = 段的隔离测量）。
+    // 门控同 rt_probe 形：fw_cfg `opt/berry/lat`（bench.py --lat 专递）在位
+    // 才 spawn，缺席 = run/smoke 零扰动；EFI 路天然缺席。
+    if berry_hal_aarch64::fwcfg::find_file(LAT_PROBE_NAME).is_some() {
+        let ht_lat: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 表内仅一个握手 Event（rt_probe 表同形：私有表零跨表错捐面；
+        // Event 态无人读写——纯地址作 wait_obj 匹配键 + LAT_EV_BIT 按位唤醒）。
+        let h_lat = ht_lat
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: lat 握手 Event 进 lat 表");
+        let p_lat = ht_lat
+            .get_raw(h_lat, ObjType::Event, 0)
+            .expect("main: 取 lat ObjRef")
+            .0;
+        // sleeper 先 spawn（prio 8 先被 pick → 先睡下，waker 首轮间隔睡前
+        // 必已在队）；waker prio 0——P-B 直切面（G3-2 段①）恰由 8>0 触发，
+        // 每轮 wake_matching 后 sleeper 即时抢占续行 = 被测路径本体。
+        berry_sched::spawn_with_tag(task_lat_slp, p_lat.as_ptr() as usize, b"lat_slp", 8,
+                                    ht_lat as *mut HandleTable as usize);
+        berry_sched::spawn_with_tag(task_lat_wak, p_lat.as_ptr() as usize, b"lat_wak", 0,
+                                    ht_lat as *mut HandleTable as usize);
+    }
+
     // ---- S-1（docs/基准与压力测试设计.md §11）：soakmon 门控 spawn ----
     // 设计只写了「不进 CI 主线（小时级），周跑或手跑」，未定稿门控机制——
     // 但 soakmon **常驻不退出**（比 rt_probe 一次性采样更强）：无门控 = 每次
@@ -2932,6 +2962,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 45, "ht 哑 Event（S-5b 相 7 风暴压测 master——永不置位，仅超时醒）"),
     (1 << 46, "pp 哑 Event（S-5c 相 8 ping-pong 压测 master——永不置位，仅超时醒）"),
     (1 << 47, "soakload 哑 Event（S-5d 双核 soak 满载载荷 master——永不置位，仅超时醒）"),
+    (1 << 48, "lat 握手 Event（G3-4 bench-lat IPC 路——waker wake_matching 唤醒，sleeper 测 wake→run 段）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -3359,6 +3390,121 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
         berry_hal_aarch64::uart_put_dec((deltas.len() * RT_SAMPLES) as u64);
         berry_hal_aarch64::uart_puts(b"\n");
     });
+    berry_sched::exit_current()
+}
+
+// ---- G3-4：bench-lat IPC 路（草案 §4 wake→run 段补盲；boot 门控 spawn 块
+// 见 main 尾段；设计 = docs/G3全抢占实施设计草案.md §4 + 基准与压力测试
+// 设计.md R 线家族）----
+
+/// bench-lat 的 fw_cfg 具名项名（门控键——bench.py --lat 专递
+/// `-fw_cfg name=opt/berry/lat,string=1`；RT_PROBE_NAME 同款「两侧对读
+/// 维护」纪律）。
+const LAT_PROBE_NAME: &str = "opt/berry/lat";
+
+/// bench-lat 每路样本数（草案 §4 直方图复用 R-0/R-1 家族口径；与 bench.py
+/// BENCHLAT_RE 的 n=32 字面镜像——改样本数须同步分位秩与收割面）。
+const LAT_SAMPLES: usize = 32;
+// 分位秩与 LAT_SAMPLES 钉板耦合（rt_probe 同款编译期拦静默漂移）：
+// p50 = ceil(50·32/100) = 16 → s[15]、p90 = ceil(90·32/100) = 29 → s[28]、
+// p99 = ceil(99·32/100) = 32 → s[31]（== max，最近秩的诚实结果）。
+const _: () = {
+    assert!(LAT_SAMPLES == 32, "LAT_SAMPLES 变更须同步分位秩与 bench.py 镜像");
+};
+
+/// lat sleeper（G3-4 IPC 路）：N=32 轮「睡握手 Event → 被 wake_matching
+/// 唤醒 → run 侧测 wake→run 段」。
+///
+/// - 睡点直调 `block_current`（rt_probe 同款：SVC 面折算被绕过，deadline
+///   本来就是 CNTVCT 周期；**不走 ns 换算**——公约 5）。deadline = 60s 远界
+///   （漏醒兜底 = Timeout 醒因断言 fail-loud，不挂死）。
+/// - **run 侧读点**（本路的被测量）：醒后续行锁窗内先取 `wake_stamp_take`
+///   （= note_wake 戳）再读 now（rt_probe wake_vct 读序同款——读点与醒点
+///   之间零 tick/切换噪声混入）；样本 = now − 戳，`checked_sub` 负值 panic
+///   （L0 严格执法，R-0 on_wake 负延迟同族）。
+/// - 醒因恒须 Signaled（waker 侧 wake_matching 按位唤醒；Timeout = 漏醒
+///   = 握手面破损）；戳缺位（0）= note_wake 戳面破损——双双 L0 断言。
+/// - 收尾：全排序 → 单行 `BENCHLAT,lane=ipc,n=,min=,p50=,p90=,p99=,max=`
+///   （BENCHRT 六字段族形，G43 拼行）+ 完成标记 `LATIPC ok n=32`
+///   （bench.py --lat 通道 DONE 面，`RT ok` 同形）→ exit_current 退场
+///   （一次性采样任务，非常驻）。
+extern "C" fn task_lat_slp(arg: usize) -> ! {
+    use berry_sched::WakeReason;
+    let far = 60 * berry_hal_aarch64::timer::cntfrq();
+    let mut samples = [0u64; LAT_SAMPLES];
+    for slot in samples.iter_mut() {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = berry_sched::block_current(
+            arg, LAT_EV_BIT,
+            berry_hal_aarch64::timer::cntvct() + far,
+        );
+        // 顺序例外（rt_probe 行同款，F33/F42 分工）：醒后锁窗内先取戳、
+        // 后 klock_exit——读点即 run 侧首段内核执行（被测段的下界锚）。
+        let wv = berry_sched::wake_stamp_take();
+        let now = berry_hal_aarch64::timer::cntvct();
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(r == WakeReason::Signaled,
+                "lat_slp: 醒因非 Signaled（Timeout = waker 漏醒——握手面破损）");
+        assert!(wv != 0, "lat_slp: wake 戳缺位（note_wake 戳面破损）");
+        *slot = match now.checked_sub(wv) {
+            Some(l) => l,
+            None => panic!("lat_slp: 负 wake→run（now={} < 戳={}）= 时序破损",
+                           now, wv),
+        };
+    }
+    samples.sort_unstable(); // core 面板全排序（32 元素，零分配；rt_probe 同形）
+    // 分位 = 最近秩 ceil(p·n/100)（n=32：p50=s[15]/p90=s[28]/p99=s[31]，
+    // p99==max 是 32 样本最近秩的诚实结果——rt_probe 注同款，勿为观感改
+    // 次大值）。行包络：with_print_lock 整行拼完（G43；boot 尾打印窗，
+    // BENCHRT 同形先例）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"BENCHLAT,lane=ipc,n=");
+        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+        berry_hal_aarch64::uart_puts(b",min=");
+        berry_hal_aarch64::uart_put_dec(samples[0]);
+        berry_hal_aarch64::uart_puts(b",p50=");
+        berry_hal_aarch64::uart_put_dec(samples[15]);
+        berry_hal_aarch64::uart_puts(b",p90=");
+        berry_hal_aarch64::uart_put_dec(samples[28]);
+        berry_hal_aarch64::uart_puts(b",p99=");
+        berry_hal_aarch64::uart_put_dec(samples[31]);
+        berry_hal_aarch64::uart_puts(b",max=");
+        berry_hal_aarch64::uart_put_dec(samples[31]);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LATIPC ok n=");
+        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    berry_sched::exit_current()
+}
+
+/// lat waker（G3-4 IPC 路）：N 轮「间隔纯睡 → `wake_matching` 唤醒 sleeper」。
+///
+/// - 间隔 = ¼ slice 纯睡（obj=0，唯一醒因 Timeout——间隔面的定时器唤醒
+///   **不入** IPC 路测量窗：被测的是 sleeper 的 Signaled 唤醒）。
+/// - 唤醒 = klock 窗内 `wake_matching(obj, LAT_EV_BIT)`（IPC send 尾的
+///   唤醒面本体，IRQ 屏蔽窗契约同其真实调用面）；返回 1 = 恰唤醒 sleeper
+///   （0 = sleeper 未在睡 = 握手竞速破损，L0 fail-loud 不静默重试）。
+/// - P-B 直切（G3-2 段①）：8>0 触发 sleeper 即时抢占——wake_matching
+///   返回时 sleeper 已续行（测完已再睡下），waker 下一轮间隔睡随即发起。
+/// - 跑完即退（REAPQ 单条流量，rt_probe 同形非常驻）。
+extern "C" fn task_lat_wak(arg: usize) -> ! {
+    use berry_sched::WakeReason;
+    let spacer = berry_hal_aarch64::timer::slice_cycles() / 4;
+    for _ in 0..LAT_SAMPLES {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = berry_sched::block_current(
+            0, 0,
+            berry_hal_aarch64::timer::cntvct() + spacer,
+        );
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(r == WakeReason::Timeout,
+                "lat_wak: 间隔睡醒因非 Timeout（obj=0 纯睡——跨表 wake 面破损）");
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let n = berry_sched::wake_matching(arg, LAT_EV_BIT);
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(n == 1, "lat_wak: 唤醒数 {n} ≠ 1（sleeper 未在睡——首轮竞速面破损）");
+    }
     berry_sched::exit_current()
 }
 
@@ -4382,6 +4528,12 @@ const PP_EV_BIT: u64 = 1 << 46;
 /// soakload 哑 Event 的用户位（S-5d，占用登记见 [`USER_SIGNAL_BITS`]——
 /// PP_EV_BIT 的续位）。永不置位：唯一醒因 Timeout（master 永睡节拍）。
 const SOAKLOAD_EV_BIT: u64 = 1 << 47;
+/// lat 握手 Event 的用户位（G3-4 bench-lat IPC 路，占用登记见
+/// [`USER_SIGNAL_BITS`]——SOAKLOAD_EV_BIT 的续位）。**会被置位**（waker
+/// 经 wake_matching 按位唤醒 sleeper）——与哑 Event 族相反的真握手位；
+/// 位本身不锁存（wake_matching 只扫睡眠队不写 Event 态），漏醒由 waker
+/// 侧 n==1 断言 + sleeper 侧醒因/醒时断言双 L0 执法兜底。
+const LAT_EV_BIT: u64 = 1 << 48;
 
 /// storm 舰队装配（S-5b 相 6/7 + S-5c 相 8 共用；svc 落脚 = 本任务私有表，
 /// caller_table 经 current_tag 取）：进程 + 代码页 + 单 data VMO

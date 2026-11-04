@@ -225,6 +225,7 @@ static mut IDLE_TASK: Task = Task {
     wait_deadline: 0,
     wait_since: 0,
     wakeup: core::cell::Cell::new(crate::task::WakeReason::Pending),
+    wake_vct: core::cell::Cell::new(0),
 };
 
 /// 取**本核** runqueue 的 `&mut`（静态单例；KERN_LOCK 窗内跨核互斥、单核
@@ -1377,9 +1378,35 @@ pub fn set_wake_hook(hook: Option<WakeHook>) {
 #[inline]
 unsafe fn note_wake(t: *mut Task, reason: WakeReason) {
     // SAFETY: 指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
+    // G3-4 bench-lat：无条件戳唤醒时刻（不随遥测钩子在否漂移——run 侧
+    // 读点 wake_stamp_take 与本戳成对；cntvct 读在置因窗内，与 wait_since
+    // 同窗纪律）。
+    unsafe {
+        (*t).wake_vct.set(hal::timer::cntvct());
+    }
     let hook = unsafe { WAKE_HOOK };
     if let Some(h) = hook {
         h(unsafe { &*t }, reason);
+    }
+}
+
+/// 取走**当前任务**的唤醒时刻戳（G3-4 bench-lat run 侧读点）：返回
+/// `Task.wake_vct` 并清零（一次性消费——下次睡眠-唤醒周期由 `note_wake`
+/// 重戳）。调用契约 = 刚从 `block_current` 醒来续行的锁窗内（rt_probe 的
+/// wake_vct 读序同款：读点与醒点之间零 tick/切换噪声混入）；0 = 无在途
+/// 戳（未睡先读 = 调用面违约，消费方自行 L0 断言）。
+pub fn wake_stamp_take() -> u64 {
+    // SAFETY: current_task 正统读法（per-CPU 槽优先——SMP 形态下 CURRENT
+    // 静态从未被写（set_current 恒走槽路径）恒 null，读裸静态 = 空解引用
+    // D-abort〔G3-4a 首跑实踩：FAR=0x320 = wake_vct 字段偏移〕）；调用
+    // 契约（block_current 返后锁窗内）⇒ 非空（调用者即 current，副核
+    // park null 空哨兵语境到不了这里）。读后清零同一窗，无并发写者
+    // （note_wake 只在本任务沉睡时写）。
+    unsafe {
+        let cur = current_task();
+        let v = (*cur).wake_vct.get();
+        (*cur).wake_vct.set(0);
+        v
     }
 }
 
