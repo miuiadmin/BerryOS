@@ -2175,12 +2175,17 @@ fn fb_pipe_h() -> u32 {
 /// 「RX 到数据」通知（HAL `exception_irq` → `uart::rx_irq` 经槽调；IRQ 上下文
 /// PSTATE.I=1）。置位 RX Event（用户半位）+ `wake_matching`（匹配键 = ObjRef
 /// 地址，同 4-1 `sys_object_signal` 唤醒路径；console 的 wait_many 挂
-/// WAIT_ANY 哨兵——任何非零 set 命中，醒来重验定夺）。**不立即抢占**（v1
-/// `wake_matching` 契约——醒者等 tick/yield，交互延迟 ≤ 1 slice）；也不可
-/// 在 IRQ 语境碰 fast_wake/try_preempt。写 Event 与遥测环同纪律：零分配、
-/// 纯指针写字段。S-3c c-2b slice 4 起位写+扫描同 **SQ 窗**（`wake_matching_
-/// locked`——义务③「写位+扫描同窗」的 IRQ 生产者面，F-L2 不可重入立法）；
-/// 3-1b 起 KL 外层包络剥除（E27 退役）——本面 = 纯 SQ 独立单锁窗。
+/// WAIT_ANY 哨兵——任何非零 set 命中，醒来重验定夺）。**G3-2（P-B
+/// preempt-on-wake IRQ 面）**：v1「不立即抢占（醒者等 tick/yield，交互延迟
+/// ≤ 1 slice）；不可在 IRQ 语境碰 fast_wake/try_preempt」退役——唤醒携带者
+/// （n>0）在 SQ 窗闭后经 `preempt_checkpoint` 直切（严格更高 eff 才切；IRQ
+/// 上下文 PSTATE.I=1 天然满足切换原语屏蔽窗契约，tick/SGI 抢占支 IRQ 语境
+/// 切换同形先例；try_preempt 的 klock 舞蹈在被打断者窗间态零持位下空转）；
+/// count>0 禁切窗（g3-1c-1 解蔽域）自豁免；n=0（键入无等待者）不探。写
+/// Event 与遥测环同纪律：零分配、纯指针写字段。S-3c c-2b slice 4 起位写+
+/// 扫描同 **SQ 窗**（`wake_matching_locked`——义务③「写位+扫描同窗」的
+/// IRQ 生产者面，F-L2 不可重入立法）；3-1b 起 KL 外层包络剥除（E27 退役）
+/// ——本面 = 纯 SQ 独立单锁窗。
 unsafe extern "C" fn rx_irq_notify() {
     // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
     let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
@@ -2196,8 +2201,14 @@ unsafe extern "C" fn rx_irq_notify() {
         if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
             ev.signal(0, RX_EV_BIT);
         }
-        berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
+        let n = berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
         berry_sched::sq_unlock(sq_phys);
+        // G3-2：唤醒携带者窗闭检查点（SQ 窗内禁切换——义务③「写位+扫描
+        // 同窗」契约不破；探峰取 RQ 在 SQ 窗外 = 队列锁独立窗正序）。n=0
+        // 直返——本 IRQ 无唤醒诉求，不付探峰。
+        if n > 0 {
+            berry_sched::preempt_checkpoint();
+        }
     }
 }
 
