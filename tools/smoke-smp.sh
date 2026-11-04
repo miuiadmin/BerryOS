@@ -144,10 +144,11 @@ fail() {
   # 成功路径不受影响（照旧即弃；SMOKE_KEEP_LOG 仍管全量保留）。
   # per-boot 轮转起（f4 复验 minor C）全相留档：逐 boot 各存一份（旧形态
   # 只存当相——前相现场随截断不可逆丢失）。
-  local keep i=1
+  local keep i=1 ts
+  ts=$(date +%Y%m%d-%H%M%S)
   mkdir -p out 2>/dev/null
   for lg in "${LOGS[@]}"; do
-    keep="out/smoke-smp-fail.$(date +%Y%m%d-%H%M%S).p${i}.log"
+    keep="out/smoke-smp-fail.$ts.p${i}.log"
     cp "$lg" "$keep" 2>/dev/null && echo "smoke-smp: 失败全尸已存：$keep" >&2
     i=$((i+1))
   done
