@@ -534,7 +534,7 @@ fn test_syscall() {
     assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, 0, &raw mut OUT as u64, 0, 0, 0), 0,
         "SYSCALL：get_phys 页基");
     let pa0 = unsafe { OUT };
-    assert!((0x4000_0000..0x4000_0000 + 128 * 1024 * 1024).contains(&pa0),
+    assert!((0x4000_0000..berry_hal_aarch64::RAM_TOP as u64).contains(&pa0),
         "SYSCALL：get_phys 须落 RAM 界（得 {pa0:#x}）");
     assert_eq!(pa0 % PAGE_SIZE as u64, 0, "SYSCALL：get_phys 页基页对齐");
     // SAFETY: 同上。

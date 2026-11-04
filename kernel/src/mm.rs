@@ -57,6 +57,34 @@ static mut FRAMES: Option<FrameAllocator<'static>> = None;
 /// （不直接导入 `__kernel_end_pa`：高半代码 ADRP 引用低半绝对符号会越界，
 /// 高半符号 + 运行时减法才是同半寻址。）
 ///
+/// 实际 RAM 顶：BerryBoot 的 `dram_top` 可能仍是 128MiB 模板；用 EFI 图里
+/// Conventional 段的最大 end 修正（cap 到 HAL `RAM_TOP` 256MiB）。无图/坏图
+/// 时退回 handoff `dram_top`。
+fn efi_ram_top(h: &crate::handoff::BerryHandoff) -> usize {
+    let mut top = h.dram_top as usize;
+    if let Some(n) = berry_mm::memmap::map_ok(
+        h.memmap_pa,
+        h.memmap_size,
+        h.memmap_desc_size,
+        h.memmap_desc_version,
+        RAM_BASE as u64,
+        RAM_TOP as u64,
+    ) {
+        for i in 0..n {
+            let d = unsafe { berry_mm::memmap::desc_at(h.memmap_pa, h.memmap_desc_size, i) };
+            if d.kind == berry_mm::memmap::EFI_CONVENTIONAL {
+                if let Some(len) = d.number_of_pages.checked_mul(4096) {
+                    if let Some(end) = d.physical_start.checked_add(len) {
+                        let end = end.min(RAM_TOP as u64) as usize;
+                        top = top.max(end);
+                    }
+                }
+            }
+        }
+    }
+    top.clamp(RAM_BASE, RAM_TOP)
+}
+
 /// `handoff` = `handoff::probe` 命中的交接结构（EFI 路）；`None` = QEMU
 /// `-kernel` 直加载路。EFI 路且图过校验 → 按 EFI 内存图 reserve；否则
 /// （QEMU 路 / 无图 / 坏图）降级 reserve `[RAM_BASE, kernel_end)`。
@@ -72,7 +100,7 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
     // 全窗构造（V-1b）。位图/摘要后备随 K-1 索引一并借入。
     // SAFETY: 单核启动期，无并发；后备数组生命周期 'static。
     let ram_top = handoff
-        .map(|h| h.dram_top as usize)
+        .map(efi_ram_top)
         .unwrap_or(RAM_TOP_DEFAULT);
     let mut fa = FrameAllocator::new(
         RAM_BASE,
@@ -104,6 +132,7 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
         let size = h.memmap_size;
         let dsize = h.memmap_desc_size;
         let ver = h.memmap_desc_version;
+
         if let Some(n) = berry_mm::memmap::map_ok(pa, size, dsize, ver, RAM_BASE as u64, ram_top as u64) {
             // pass 1：全量决策预演——任一 Bad 即弃图降级（reserve 零副作用）。
             let mut bad = false;
