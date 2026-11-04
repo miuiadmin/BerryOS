@@ -418,7 +418,10 @@ berry device stop --run "$RUN"
   原样保留（天然回滚）；成功后旧 run 按 `keep` 清理（`keep=false` 删目录）。
 - **C1d 已落（state/崩溃可见）**：`state.json` 落 starting/running/rebooting/stopping/
   stopped/failed；`device list/status` 在 control 缺失时读 state，running 但无 control 标
-  `stale`；`device stop` 对已停 run 幂等，对 stale 给诊断。Windows control 仍待补。
+  `stale`；`device stop` 对已停 run 幂等，对 stale 给诊断。
+- **C1e 已落（崩溃清理）**：meta 记 `qemu_pid`；`berry device cleanup` 对 stale/stopped run
+  先 TERM/KILL orphan QEMU，再删 run dir；running session 拒绝 cleanup。Windows 用
+  `taskkill`（代码路径），控制 socket 仍待 C1f。
 - 按钮 disabled 态：重启/关机进行中；tooltip 显示快捷键 + 等价 CLI。
 - 截图：闪一下 + 落 `berry-shot-<ts>.png` + 事件 `source=ui`。
 - 关机/重启：确认框；进行中显示遮罩；失败显示 `code/message` + 日志入口。
@@ -533,7 +536,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C1b（已落）** | headless `device start`（host 角色，`--foreground`）、`device restart`；`screenshot` 走 host（VNC 兜底） | 无窗口起会话；CLI 截图/重启/关机全通；host 标签 `host` |
 | **C1c（已落）** | `shell --attach <id>`：VNC 帧/输入 + control 动作；关窗 detach，host 继续 | headless host 可开窗；关窗不杀 session；`device status` 仍 running |
 | **C1d（已落 state）** | `state.json` 持久化（starting/running/rebooting/stopping/stopped/failed）；list/status 缺 control 时读 state，running→stale；stop 幂等 | 杀 host 后 list/status 显示 stale；正常 stop 显示 stopped |
-| **C1e（下一刀）** | Windows named pipe/TCP+token；host 崩溃自动清理/重启 | Windows 可用；崩溃恢复 |
+| **C1e（已落清理）** | meta 记 qemu_pid；`device cleanup` 杀 orphan QEMU + 删 stale run；running 拒绝 | 杀 host 后 cleanup 移除 QEMU/run |
+| **C1f（下一刀）** | Windows named pipe/TCP+token；host 自动重启 | Windows control 可用 |
 | **C2a（已落）** | 原生快捷栏 4 键（SHOT/BOOT/OFF/FULL）；截图/重启/关机/全屏；鼠标+触摸 | 窗口内可点；截图落盘；重启/关机走 control/QMP；全屏切换 |
 | **C2b（已落）** | `OFF` 二次确认；`berry shortcut`；`display list/set`（next-profile）；`events` JSONL | 关机需两次点击；CLI 可触发截图/重启/关机；事件可读 |
 | **C2c（已落 CLI）** | `display set <profile> --restart`：停旧 host、起新 profile host（新 run） | phone→phone16 实测 480×854；新 run 可控 |

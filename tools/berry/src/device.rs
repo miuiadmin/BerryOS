@@ -94,6 +94,15 @@ impl Device {
             mode.as_deref(),
             Some(&ram_path),
         )?;
+        // Record the QEMU child PID so a stale run can be cleaned after a
+        // host crash (C1e).
+        let meta_path = run.file("meta.json");
+        let mut meta: serde_json::Value = std::fs::read(&meta_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        meta["qemu_pid"] = serde_json::json!(child.id());
+        let _ = std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?);
 
         // Wait for the kernel's FB fact line (mode set already applied). The
         // line is printed before userland; 20s covers TCG cold boot.

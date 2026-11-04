@@ -180,6 +180,8 @@ enum DeviceAction {
     Restart(RestartCmd),
     /// Stop a running session.
     Stop(StopCmd),
+    /// Remove a stale/stopped session and kill an orphan QEMU if needed.
+    Cleanup(CleanupCmd),
 }
 
 #[derive(Parser, Debug)]
@@ -190,6 +192,12 @@ struct StatusCmd {
 
 #[derive(Parser, Debug)]
 struct StopCmd {
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct CleanupCmd {
     #[arg(long)]
     run: Option<String>,
 }
@@ -386,6 +394,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             DeviceAction::Status(s) => commands::device_status(s.run.as_deref(), cli.json),
             DeviceAction::Restart(s) => commands::device_restart(s.run.as_deref(), cli.json),
             DeviceAction::Stop(s) => commands::device_stop(s.run.as_deref(), cli.json),
+            DeviceAction::Cleanup(s) => commands::device_cleanup(s.run.as_deref(), cli.json),
         },
         Some(Cmd::Power(c)) => {
             commands::power(c.run.as_deref(), &c.action, c.force, cli.json)

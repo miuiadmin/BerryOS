@@ -658,6 +658,51 @@ pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn device_cleanup(run: Option<&str>, json: bool) -> Result<()> {
+    let run = find_run(run)?;
+    if run.join("control.sock").exists() {
+        if control::request(&run, "status", json!({})).is_ok() {
+            return Err(BerryError::device(
+                "device is still running; stop it before cleanup",
+            ));
+        }
+    }
+    let meta: serde_json::Value = std::fs::read(run.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| json!({}));
+    let qemu_pid = meta.get("qemu_pid").and_then(|v| v.as_u64()).unwrap_or(0);
+    if qemu_pid != 0 {
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(qemu_pid.to_string())
+                .status();
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(qemu_pid.to_string())
+                .status();
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .arg("/PID")
+                .arg(qemu_pid.to_string())
+                .arg("/F")
+                .status();
+        }
+    }
+    let _ = std::fs::remove_dir_all(&run);
+    if json {
+        println!("{}", json!({"v":1,"t":"device.cleanup","run":run,"qemu_pid":qemu_pid}));
+    } else {
+        println!("cleanup: {}", run.display());
+    }
+    Ok(())
+}
+
 pub fn device_list(json: bool) -> Result<()> {
     let root = run_dir::home().join("run");
     let mut runs: Vec<(String, String, String, String)> = Vec::new();
