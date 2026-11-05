@@ -3025,6 +3025,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 47, "soakload 哑 Event（S-5d 双核 soak 满载载荷 master——永不置位，仅超时醒）"),
     (1 << 48, "lat 握手 Event（G3-4 bench-lat IPC 路——waker wake_matching 唤醒，sleeper 测 wake→run 段）"),
     (1 << 49, "latsgi 位签名（G3-4b bench-lat SGI 路——EL0 sleeper wait_one 位签名门 + 内核 waker Event 置位跨核唤醒）"),
+    (1 << 50, "lat 触发 Event 内部位（G3-5 候选① C 形常驻再触发——soakmon 拍后 signal+wake_matching；Event 落内核私有表不经 ABI object_signal 面，登记 = 防撞/去重面〔f4 F8 补〕）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -3484,7 +3485,8 @@ const _: () = {
 /// 清位竞速结构性不发生）。漏拍自愈：signal 置位先于 wake_matching，
 /// waker 周期竞速中未在等 = 位锁存，下轮 poll-first 即醒（追拍不丢；
 /// 连续多拍并至只并成一次周期 = 收割行数短于拍数——宿主恰 N+1 行断言
-/// 抓形破）。
+/// 抓形破）。〔f4 F1 修实装 2026-11-05：两睡点睡前锁窗内补位 poll——
+/// 原裸 block_current 不查位 = 本注宣称语义虚构，已修。〕
 static LAT_TRIG_IPC_OBJ: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 static LAT_TRIG_SGI_OBJ: core::sync::atomic::AtomicUsize =
@@ -3492,7 +3494,7 @@ static LAT_TRIG_SGI_OBJ: core::sync::atomic::AtomicUsize =
 /// 触发位（LAT 家族位段 1<<48/49 顺延；内核内部位——Event 对象落内核
 /// 私有表，不过 ABI object_signal 面；(obj,bit) 匹配键因对象隔离不撞）。
 const LAT_TRIG_BIT: u64 = 1 << 50;
-/// 触发等待远界（秒）：**首拍网格 t0+5×period=300s**（soakmon 意意留 5
+/// 触发等待远界（秒）：**首拍网格 t0+5×period=300s**（soakmon 有意留 5
 /// 拍前置让基线落稳态）——boot 周期末重睡点到首触发 gap 恒 <300s（重睡点
 /// X>0 ⟹ gap<300），稳态拍距 60s+jitter；480 = 300 + 60% 裕量。首验红案
 /// （2026-11-05 验形跑）：180s「3 拍裕量」误按稳态拍距算——首拍前 180s
@@ -3590,8 +3592,11 @@ extern "C" fn task_lat_slp(arg: usize) -> ! {
 /// - 唤醒 = klock 窗内 `wake_matching(obj, LAT_EV_BIT)`（IPC send 尾的
 ///   唤醒面本体，IRQ 屏蔽窗契约同其真实调用面）；返回 1 = 恰唤醒 sleeper
 ///   （0 = sleeper 未在睡 = 握手竞速破损，L0 fail-loud 不静默重试）。
-/// - P-B 直切（G3-2 段①）：8>0 触发 sleeper 即时抢占——wake_matching
-///   返回时 sleeper 已续行（测完已再睡下），waker 下一轮间隔睡随即发起。
+/// - P-B 抢占资格（G3-2 段①；f4 F15 改口——G3-2 谱系旧句失实）：8>0
+///   sleeper 入 runqueue 即时抢占资格——但唤醒方不切换（本调用在 klock
+///   屏蔽窗内无 tick），wake_matching 返回时 sleeper 仅就绪未续行；续行
+///   待 waker 下轮间隔睡让出后 tick/yield 出选（n==1 断言由优先级出选
+///   保真，无运行时影响）。
 /// - **C 形触发等待**（evidence-g3-5recon.md 后继刀形 1，2026-11-05）：
 ///   boot 周期照跑（bench.py --lat 收割面零改动）后等 `LAT_TRIG_IPC_OBJ`
 ///   （soakmon 每拍行后 signal+wake_matching）。醒来同窗清触发位（§A61
@@ -3624,10 +3629,27 @@ extern "C" fn task_lat_wak(arg: usize) -> ! {
             break;
         }
         berry_hal_aarch64::kern_lock::klock_enter();
-        let r = berry_sched::block_current(
-            trig, LAT_TRIG_BIT,
-            berry_hal_aarch64::timer::cntvct() + trig_far,
-        );
+        // f4 F1 修（2026-11-05）：睡前锁窗内补位 poll——sched.rs block_current
+        // 契约「调用方须已验条件不满足」前置补齐。soakmon 触发若已在本周期
+        // 竞速窗内落位（signal 置位先于 wake_matching，waker 未在睡 = 位锁
+        // 存于 Event），此处 load 查见即跳睡直取 = poll-first 追拍；未查见
+        // 才睡——查位与入队同 KL 窗、写位与扫描同窗（event.rs 原子化纪律
+        // 义务③），无丢唤醒面（trig 有效性同下 SAFETY 注）。
+        let pending = unsafe {
+            (*(trig as *mut crate::handle::ObjRef))
+                .obj
+                .as_event_mut()
+                .expect("lat_wak: 触发 ObjRef 非 Event")
+                .load()
+                & LAT_TRIG_BIT
+        } != 0;
+        let mut r = WakeReason::Signaled;
+        if !pending {
+            r = berry_sched::block_current(
+                trig, LAT_TRIG_BIT,
+                berry_hal_aarch64::timer::cntvct() + trig_far,
+            );
+        }
         // SAFETY: trig = soakmon 门块置入 ht_soak（boot Box::leak 永生表）
         // 的 Event ObjRef——常驻任务生命周期内恒有效。block_current 返回
         // 已重取 KL（soakmon 包络同款），清位同窗后释放。
@@ -3860,16 +3882,32 @@ extern "C" fn task_latsgi_wak(_arg: usize) -> ! {
         cyc += 1;
         // C 形：等 soakmon 拍后触发再发起下周期（同 task_lat_wak 形；0 =
         // bench --lat 单门一次性原形退场——EL0 sleeper 不随退：480s wait
-        // 超时走 err 早退自尽，末线程收口回收，waker 不必拉幕）。
+        // 超时的真兜底 = 内核 latsgi_ret 尾钩 L0 panic 先响〔死讯 fail-loud
+        // 非 EL0 自回收——err 早退对超时不可达，f4 F7 改口〕；现网两
+        // harness 均先杀 QEMU 收割，此路不触发）。
         let trig = LAT_TRIG_SGI_OBJ.load(core::sync::atomic::Ordering::Acquire);
         if trig == 0 {
             break;
         }
         berry_hal_aarch64::kern_lock::klock_enter();
-        let r = berry_sched::block_current(
-            trig, LAT_TRIG_BIT,
-            berry_hal_aarch64::timer::cntvct() + trig_far,
-        );
+        // f4 F1 修（2026-11-05）：睡前锁窗内补位 poll（同 task_lat_wak 形
+        // ——sched.rs 契约前置 + 位锁存 poll-first 追拍实装；查位与入队同
+        // KL 窗，无丢唤醒面）。
+        let pending = unsafe {
+            (*(trig as *mut crate::handle::ObjRef))
+                .obj
+                .as_event_mut()
+                .expect("latsgi_wak: 触发 ObjRef 非 Event")
+                .load()
+                & LAT_TRIG_BIT
+        } != 0;
+        let mut r = WakeReason::Signaled;
+        if !pending {
+            r = berry_sched::block_current(
+                trig, LAT_TRIG_BIT,
+                berry_hal_aarch64::timer::cntvct() + trig_far,
+            );
+        }
         // SAFETY: 同 task_lat_wak 注——ht_soak 永生表 ObjRef，KL 窗内清位。
         unsafe {
             (*(trig as *mut crate::handle::ObjRef))

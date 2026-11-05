@@ -1506,11 +1506,12 @@ core::arch::global_asm!(
     // 醒来 object_signal(0x06, clear=1<<49) 消费位再睡」——无 N 计数/无
     // 退出路径（批界由 waker 周期信号面定义；boot 周期照跑）。480s = 首
     // 拍网格远界（soakmon 首触发 t0+5×60s=300s，LAT_TRIG_FAR_S 同值口径）
-    // ——waker 退场（bench --lat 单门）/断流时超时走 err 早退，末线程收口
-    // 自回收。测量
+    // ——超时面真兜底 = 内核 latsgi_ret 尾钩 L0 panic 先响（f4 F7 改口：
+    // EL0 err 早退对超时不可达——svc 返回前内核已 panic；现网两 harness
+    // 均先杀 QEMU，此路不触发）。测量
     // 读点在内核钩子（syscall 层 wait 醒来侧——main.rs latsgi_* 面）；载荷
-    // 只管握手循环 + err 窗口汇报（PP 同形）。位不锁存兜底：wait 超时 →
-    // cbnz 早退 err++（稳态破链时内核 waker 侧 L0 panic 先响——双保险）。
+    // 只管握手循环 + err 窗口汇报（PP 同形——err 窗兜非超时错路：
+    // event_create/clock_read/object_signal 失败类）。
     // 窗口槽：0x0 clock 出参 / 0x40 event 句柄 / 0x48 observed / 0x80 err
     //（0x90 DONE 槽随一次性形退役——内核收柜走 LATSGI_DONE 静态）。
     // 寄存器合同：x20 窗口基、x21 句柄（svc 只回写 x0——其余跨 svc 常驻）。
@@ -1554,9 +1555,10 @@ core::arch::global_asm!(
     "    cbnz x0, 9f",
     "    b    3b",                    // C 形永续（批界 = waker 周期信号面——
                                       // 无 N 计数/无退出，boot 周期照跑）
-    "9:  ldr  x6, [x20, #0x80]",      // err++ → 早退（超时 = waker 退场/断流
-    "    add  x6, x6, #1",            // 3 拍——末线程收口自回收；稳态破链时
-                                      // waker 侧 L0 先响）
+    "9:  ldr  x6, [x20, #0x80]",      // err++ → 早退（非超时错路兜底——超时
+    "    add  x6, x6, #1",            // 走内核 latsgi_ret 钩 L0 panic 先响
+                                      // 〔f4 F7/F14 改口〕；断流判口径 = 连
+                                      // 漏 8 拍〔480s/60s——旧「3 拍」残注正〕）
     "    str  x6, [x20, #0x80]",
     "    movz x0, #0x36",
     "    svc  #0",

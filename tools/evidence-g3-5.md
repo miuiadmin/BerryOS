@@ -48,6 +48,9 @@
   族承载（均拍下界 40s / 单拍帽 240s / park 窗 / Δsw1 地板全时延敏感）。
   常驻再装形（周期重启采样）= 转正流程后继刀候选——本刀不开（舰队
   respawn 的僵尸累积面与 pages 稳态窗断言冲突，须先侦察任务回收面）。
+  〔f4 F10 标注（2026-11-05）：本段「一次性 = 设计合同」口径已废除——
+  G3-5recon 裁决 C 形常驻再触发可行、G3-5c 已落地执法
+  （`tools/evidence-g3-5c.md`）；一次性仅历史原形（bench.py --lat 单门）。〕
 
 ## 标定首跑（CALIBRATE 模式，8 拍，2026-11-05）
 
@@ -70,6 +73,10 @@
 - **PASS 8/8 拍八断言全绿 + lockdep 三计数绿 + lat 双路完整**（回执
   `out/bench-receipts/soakg3-pilot-20261105.log` + stdout 同目录
   soakg3-pilot-stdout-20261105.log——f4 F1 纪律：$TMPDIR 易失路径不入证据）。
+  〔f4 F16 出处注记（2026-11-05）：stdout 卷 PASS 行 LAT_OBS 仍默认值
+  ——已提交 lat_face 必先于 PASS echo 置 LAT_OBS，故该卷出自未提交早期
+  修订；定标产物 18189/61905000 经 G3-5c 链独立复核沿用，现以
+  BANK_CAP_* 身份活在 kill 参照线（soak-g3.sh 头注同款注记）。〕
   R3：boot=344s（帽 600s）/ 首拍=0s / 均拍=54s（下界 40）/ Δsw1min=555
   （地板 320）/ pages=13591..13704 / churn=2214 严格递增 / parkD0=D1=0。
 

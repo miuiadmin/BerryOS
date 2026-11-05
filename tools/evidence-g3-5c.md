@@ -24,32 +24,34 @@
 
 | 件 | 位置 | 形 |
 |---|---|---|
-| 静态/常量 | main.rs:3488-3498 | `LAT_TRIG_IPC_OBJ`/`LAT_TRIG_SGI_OBJ`（AtomicUsize，0=未装）+ `LAT_TRIG_BIT=1<<50` + `LAT_TRIG_FAR_S=180` |
-| 触发装配门 | main.rs:1580-1608 | soakmon 门块内嵌套 `if lat 探针在位` → 表插 2 Event + Release 存指针 + 自证行 `LAT trig armed`（**soak∧lat 双门**才装；bench.py --lat 单门 = 静态恒 0 → 一次性原形全保，bench 收割面零改动） |
-| IPC sleeper | main.rs:3500-3577 | 批环「32 轮睡-醒 → 排序 → 打 BENCHLAT+LATIPC ok → 读静态：0=break 退（bench 形）/ 非 0=回睡续批（C 形）」 |
-| IPC waker | main.rs:3579-3640 | 周期环「32 轮间隔唤醒 → 读静态：0=break / 非 0=block 触发（far=480s）→ 醒后锁窗内清自身位 → assert Signaled（Timeout=连漏 8 拍 = 断流死讯）」 |
-| SGI waker | main.rs:3725-3880 | 周期环 `cyc` 计数 + ENTER 绝对目标 `cyc*32+i+1`（EL0 sleeper 永不复位——boot 周期耗 1..32，周期 1 对 33..64）+ 采集毕锁窗内 `LATSGI_DONE.store(0)`（安全交接窗：DONE==32 读出 = 上批全发布 + sleeper 已回睡 = BUF/DONE 至下周期首信号前无写者）+ 同形触发等 |
-| soakmon 触发面 | main.rs:3935-3998 | 拍行打出后同 klock 窗对两触发 Event `signal(0,TRIG_BIT)` + `wake_matching`（prio 0 < soakmon 8 → 锁窗内无抢占面） |
+| 静态/常量 | main.rs:3479-3504 | `LAT_TRIG_IPC_OBJ`/`LAT_TRIG_SGI_OBJ`（AtomicUsize，0=未装）+ `LAT_TRIG_BIT=1<<50`（USER_SIGNAL_BITS 位表已登记 :3028——f4 F8 补）+ `LAT_TRIG_FAR_S=480`（FM-16 修正值） |
+| 触发装配门 | main.rs:1580-1609 | soakmon 门块内嵌套 `if lat 探针在位` → 表插 2 Event + Release 存指针 + 自证行 `LAT trig armed`（**soak∧lat 双门**才装；bench.py --lat 单门 = 静态恒 0 → 一次性原形全保，bench 收割面零改动） |
+| IPC sleeper | main.rs:3506-3585 | 批环「32 轮睡-醒 → 排序 → 打 BENCHLAT+LATIPC ok → 读静态：0=break 退（bench 形）/ 非 0=回睡续批（C 形）」 |
+| IPC waker | main.rs:3588-3668 | 周期环「32 轮间隔唤醒 → 读静态：0=break / 非 0=block 触发（far=480s）→ **睡前锁窗内补位 poll**（f4 F1 修 :3630-3652——位已置即跳睡直取，恢复 poll-first 追拍语义 + 补齐 block_current 前置契约）→ 醒后锁窗内清自身位 → assert Signaled（Timeout=连漏 8 拍 = 断流死讯）」 |
+| SGI waker | main.rs:3685-3924 | 周期环 `cyc` 计数 + ENTER 绝对目标 `cyc*32+i+1`（EL0 sleeper 永不复位——boot 周期耗 1..32，周期 1 对 33..64）+ 采集毕锁窗内 `LATSGI_DONE.store(0)`（安全交接窗：DONE==32 读出 = 上批全发布 + sleeper 已回睡 = BUF/DONE 至下周期首信号前无写者）+ 同形触发等（F1 补位 poll 同形 :3883 起） |
+| soakmon 触发面 | main.rs:3987-4056 | 拍行打出后同 klock 窗对两触发 Event `signal(0,TRIG_BIT)` + `wake_matching`（环 :4040-4050；prio 0 < soakmon 8 → 锁窗内无抢占面） |
 
 ### EL0 sleeper kernel/src/user.rs
 
-- `__user_latslp` 模板（user.rs:1503-1565）：撤 x8/x7 计数器与 0x90 DONE
+- `__user_latslp` 模板（user.rs:1503-1566）：撤 x8/x7 计数器与 0x90 DONE
   槽 win-store + thread_exit 尾 → **`b 3b` 永续环**；δ 60s→480s（0xC000/
   0xC23A/0x6F = 480e9，python3 验算——**首拍网格远界**：soakmon 首拍
   t0+5×60s=300s 有意后置，boot 周期末重睡点到首触发 gap 恒 <300s）；
-  超时 = err++ → thread_exit（waker 退场/断流 8 拍 → 舰队自回收——
-  bench 单门形退出后 480s 收口，无僵尸）。
+  超时面真兜底 = 内核尾钩 L0 panic 先响（f4 F7 改口：latsgi_ret 对
+  -110 / lat 侧醒因断言——svc 返回前内核已死，EL0 err++ 早退对超时
+  不可达；现网两 harness 均先杀 QEMU 不触发；err 窗实际兜非超时错路
+  ——event_create/clock_read/object_signal 失败类）。
 
 ### harness tools/soak-g3.sh
 
 | 件 | 位置 | 形 |
 |---|---|---|
-| 恰 N+1 收割 | soak-g3.sh:204+ | 每路 BENCHLAT/LATIPC/LATSGI ok 行数**恰 beats+1**（boot 周期 + 每拍一周期）；≠ 即红 |
-| max-over-cycles | soak-g3.sh:237-244 | 全周期 max 对帽（n=32 时 p99 秩=max 秩——单 max 帽全覆盖 p99） |
-| CALIBRATE 模式 | soak-g3.sh:225-238 | `SOAKG3_CALIBRATE=1` → 观测不执法 + 稳态帽建议值（×3.0）+ kill criteria 顾问 |
-| kill criteria 参照 | soak-g3.sh:93-94 | `BANK_CAP_IPC=18189` / `BANK_CAP_SGI=61905000`（银行跑数字；观测 max 超其 ×3.0 = 候选① 降级线） |
-| COVER 15 标记 | soak-g3.sh:303 | `LAT trig armed`（触发装配自证——双门缺一即无此行 = COVER 红） |
-| 结算环 | 尾段 | 末拍后 settle 轮询（≤45s 帽 < 58s 下拍裕量）等两路计数 ≥ N+1 → kill QEMU 冻结日志 → 恰等断言 + lat_face——先冻结再断言，免漏行假红/新拍移动靶双坑 |
+| 恰 N+1 收割 | soak-g3.sh:208-232 | 每路 BENCHLAT/LATIPC/LATSGI ok 行数**恰 beats+1**（boot 周期 + 每拍一周期）；≠ 即红 |
+| max-over-cycles | soak-g3.sh:244-251 | 全周期 max 对帽（n=32 时 p99 秩=max 秩——单 max 帽全覆盖 p99） |
+| CALIBRATE 模式 | soak-g3.sh:212-243 | `SOAKG3_CALIBRATE=1` → 观测不执法 + 稳态帽建议值（×3.0）+ kill criteria 顾问 |
+| kill criteria 参照 | soak-g3.sh:94-100 | `BANK_CAP_IPC=18189` / `BANK_CAP_SGI=61905000`（银行跑数字；观测 max 超其 ×3.0 = 候选① 降级线）——**执法分支同评（f4 F4 修 :252-262：执法跑机器评估降级线，LAT_CAP_* 抬高后不再盲区；pages 肢两模式对称 fail-loud）** |
+| COVER 15 标记 | soak-g3.sh:321 | `LAT trig armed`（触发装配自证——双门缺一即无此行 = COVER 红）；boot 完成口径行 :334 四面自证 |
+| 结算环 | 尾段（:427-447） | 末拍后 settle 轮询（≤45s 帽 < 58s 下拍裕量）等两路计数 ≥ N+1 → kill QEMU 冻结日志 → 恰等断言 + lat_face——先冻结再断言，免漏行假红/新拍移动靶双坑 |
 
 ## 竞态/失效面清单（实施前定谳 FM-1..15 摘要）
 
@@ -63,7 +65,7 @@
 6. **park1 下界窗风险** → CPU1 被 soakload 写者饱和，park 冻结无扰。
 7. **REAPQ 流量降**（不再周期退任务）→ 无断言依赖 REAPQ 量，无害。
 8. **〔FM-16 首验红案·已修〕首拍网格 vs 触发远界错配**：首验跑双 PANIC
-   （`lat_slp: 醒因非 Signaled` main.rs:3538 + `latsgi: wait ret=-110`
+   （`lat_slp: 醒因非 Signaled` main.rs:3547 + `latsgi: wait ret=-110`
    latsgi_ret 钩）——根因 = soakmon 首拍**有意**后置 t0+5×period=300s
    （留 5 拍前置让 pages 基线落稳态，任务注释明言），而触发远界误按
    稳态拍距算成 180s「3 拍裕量」：boot 周期末重睡点到首触发 gap 可达
@@ -73,6 +75,10 @@
    <300s——首拍网格固定 t0+300、重睡点 X>0 ⟹ gap<300；480=300+60%
    裕量；断言文案 3 拍→8 拍）。教训：**远界必须对「首个事件」标定，
    非稳态节拍**——首事件常带启动后置（基线窗/预热窗/握手窗）。
+   〔f4 F17 出处注记（2026-11-05）：双 PANIC 文案无耐久载体——首验跑
+   经 fail() KEEP 只留易失 $TMPDIR（现已被 /tmp 清洗规则扬掉），回执库
+   全卷零命中；上文文案转录自首验现场勘验，机理链可由复跑再现（480→
+   180 回退即红）。判例 §A129 入册依赖本段转录。〕
 
 ## 跑档（验形 → 定标 → 执法三段）
 
@@ -130,7 +136,7 @@
 
 | 面 | 预期 | 结果 |
 |---|---|---|
-| pages 窗 | 零增量（常驻足迹 boot 吸收） | 三跑实证：t≥5 起恒 13704（与银行跑同终态）；t=4-5 台阶 = boot 尾结算非 per-周期泄漏（银行跑对照定谳） |
+| pages 窗 | 零增量（常驻足迹 boot 吸收） | 两跑实证（f4 F18 改口）：12 拍 CALIBRATE + 执法跑 t≥5 起恒 13704（与银行跑同终态）；3 拍 sanity 无 t≥5 数据（boot 尾结算未落定窗）；t=4-5 台阶 = boot 尾结算非 per-周期泄漏（银行跑对照定谳） |
 | Δsw1 地板 | 只增不减（周期唤醒纯加项） | 3 拍实证：Δsw1min=556 ≥ 地板 320/拍 |
 | park 帽 | 无扰（sleeper 睡 SLEEPQ 非 park） | 3 拍实证：park0=0 / park1=5 恒 |
 | churn | 无扰（soakload 自家计数） | 3 拍实证：1007→1176→1346 严格递增 |
@@ -144,3 +150,34 @@
   sgi 26388125（执法跑，TCG 载荷高位）均 ≪ 降级线（ipc 54567 / sgi
   185715000）且 ≤ 烘入稳态帽；pages 窗三跑绿（零 per-周期增长）。
   **稳态时延面自此有真 BENCHLAT 执法覆盖**（boot 窗 → 全 run 稳态窗）。
+
+## 修复批复验（f4 三镜复审 19 条销账，2026-11-05）
+
+- **修复批**：F1 = 两睡点睡前锁窗内补位 poll（task_lat_wak :3630-3652 /
+  latsgi_wak :3883 起——f4 荐形，恢复 poll-first 追拍语义 + 补齐
+  block_current「调用方须已验条件」前置契约）；F4 = lat_face 执法分支补
+  BANK_CAP×3 kill 线断言（:252-262——执法跑同机器评估降级线，对称
+  fail-loud）；F5/F6 = 判例 §A129（远界对首事件标定）+ §A45 追记（永生
+  适用反转）三处一动入册；F2 = 本件落码面表整表重锚（FM-16 修后值/行
+  号漂移回刷）；F7-F19 随手批（注释改口 ×6 / 位表登记 / /tmp 留档迁
+  out/bench-receipts / 口径行 ×3 / 笔误）。
+- **新树回执（F3）**：default 面 smoke 四相 PASS 零 FAIL（boot 27/27 +
+  rootfs 全链 + RX + FAT 子目录/持久化 + B4 掉电毒环；金丝雀 42 严格
+  递增；`out/bench-receipts/smoke-fixbatch-20261105.log`）+ test-host
+  87 套件全绿 exit=0（`testhost-fixbatch2-20261105.log`；首跑撞 sccache
+  服务坏死 EPERM——stop/start-server 修复后重跑，非测试面问题）。
+- **lockdep 面 soak sanity 3 拍复跑 PASS（F1 行为回执 + F12 stdout
+  留档）**：两路 BENCHLAT 恰 4 = 拍数+1（补位 poll 后触发环零丢拍、
+  逐拍一一对应）+ ipc max 7187 ≤ 24561 / sgi max 20684062 ≤ 62184750
+  + kill 线 18189×3/61905000×3 内（F4 执法分支首跑评估）+ lockdep
+  三计数绿 + pages 13626 恒 / Δsw1min 555 ≥ 320 / churn 1343 严格递增
+  + R3 boot=331s / 均拍=46s（stdout 卷
+  `soakg3-cform-sanity3-stdout-20261105.log` + 串口卷
+  `soakg3-cform-sanity3-20261105.log`——R3 定标行留档补 F12 缺口）。
+- **flake 双证记档（§A110 复跑绿定谳 + §A118 载荷族）**：首跑 sanity2
+  红于均拍 34s < 40s（S-5e ① 墙钟下界）——功能面全绿（COVER 齐 /
+  VIOLATION=0 / 触发环在跑 / pages-churn 常态），同树复跑 46s 过 =
+  宿主空载 TCG 墙钟压缩偶发（非 kernel 回归；真 deadline 减半 bug 在
+  今日机速下显 ~17s/拍，34s 不在其带）；40s 下界保留不动，双证卷
+  `soakg3-cform-sanity2-stdout-20261105.log`。
+- 测试策略 G3 行已补后继指针（C 形 + 修复批复验路由本件）。

@@ -91,8 +91,11 @@ POLL=2
 LAT_CAP_IPC=${LAT_CAP_IPC:-24561}
 LAT_CAP_SGI=${LAT_CAP_SGI:-62184750}
 # 银行跑帽（2026-11-05 bank PASS 60/60 拍，一次性形 boot 窗标定）——
-# kill criteria 参照线（CALIBRATE 观测稳态 max 超其 ×3.0 = 候选① 降级），
-# 不随 LAT_CAP_* 环境变量覆盖漂移。
+# kill criteria 参照线（CALIBRATE 观测稳态 max 超其 ×3.0 = 候选① 降级；
+# f4 F4 修起执法分支同样机器评估），不随 LAT_CAP_* 环境变量覆盖漂移。
+# 出处注记（f4 F16）：定标数字溯源 pilot 首跑 stdout 回执
+# （out/bench-receipts/soakg3-pilot-stdout-20261105.log——该卷 PASS 行
+# LAT_OBS 仍默认值，出自未提交早期修订；数字经 bank 跑独立复核在案沿用）。
 BANK_CAP_IPC=18189
 BANK_CAP_SGI=61905000
 CALIBRATE=0
@@ -246,7 +249,18 @@ lat_face() {
   if [ "$m_sgi" -gt "$LAT_CAP_SGI" ]; then
     echo "lat 面：lane=sgi max-over-cycles=${m_sgi} > 帽 ${LAT_CAP_SGI}（稳态尾延迟回归——lockdep 开销/满载受扰超标）" >&2; bad=1
   fi
-  LAT_OBS="ipc p99max=${p99_ipc} max=${m_ipc} ≤ ${LAT_CAP_IPC}（${beats}+1 周期恰形）/ sgi p99max=${p99_sgi} max=${m_sgi} ≤ ${LAT_CAP_SGI}"
+  # kill criteria 时延肢执法（f4 F4 修，2026-11-05）：稳态 max 超银行跑帽
+  # ×3.0 = 候选① 降级线——执法跑同样机器评估（原仅 CALIBRATE 顾问提示，
+  # LAT_CAP_* 被环境变量抬高后降级线成盲区；pages 肢两模式均 fail-loud，
+  # 此修补对称）。
+  local kil=""
+  [ "$m_ipc" -gt $(( BANK_CAP_IPC * 3 )) ] && kil="${kil}ipc "
+  [ "$m_sgi" -gt $(( BANK_CAP_SGI * 3 )) ] && kil="${kil}sgi "
+  if [ -n "$kil" ]; then
+    echo "soak-g3: lat kill criteria 破线（${kil% } 稳态 max 超银行跑帽 ×3.0：ipc ${m_ipc} / sgi ${m_sgi} vs ${BANK_CAP_IPC}×3 / ${BANK_CAP_SGI}×3）——候选① 降级线触发" >&2
+    bad=1
+  fi
+  LAT_OBS="ipc p99max=${p99_ipc} max=${m_ipc} ≤ ${LAT_CAP_IPC}（${beats}+1 周期恰形）/ sgi p99max=${p99_sgi} max=${m_sgi} ≤ ${LAT_CAP_SGI}（kill 线 ${BANK_CAP_IPC}×3/${BANK_CAP_SGI}×3 内）"
   [ "$bad" -eq 1 ] && return 1
   return 0
 }
@@ -283,7 +297,8 @@ SKT_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-sktclient.XXXXXX")
 SKT_PID=$!
 
 # —— QEMU（soak-smp 全量形态 + 三门控键：soak 心跳 + soakload 满载舰队
-# + lat 一次性采样〔§4 基线进断言面〕；stdin /dev/null）——
+# + lat 常驻再触发〔C 形——BENCHLAT 恰 拍数+1 周期行执法，§4 基线已
+# 升格；旧「一次性采样」注已正（f4 F9）〕；stdin /dev/null）——
 echo "soak-g3: QEMU 启动（-smp 2 + lockdep feature 镜像 + soak/soakload/lat 三门控；$MINUTES 拍；首拍帽 ${FIRST_BEAT_CAP}s / 单拍帽 ${PER_BEAT_CAP}s / park 帽 +${PARK_CAP} / 总帽 ${TOTAL_CAP}s$( [ "$CALIBRATE" -eq 1 ] && echo '；CALIBRATE 模式——lat 帽只观测不执法' ))"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   -fw_cfg name=opt/berry/rootfs,file=rootfs.cpio \
@@ -316,7 +331,7 @@ while :; do
   sleep 2
 done
 BOOT_WALL=$(( $(date +%s) - t0 ))
-echo "soak-g3: boot 覆盖标记 ${#COVER[@]}/${#COVER[@]} 到齐（含 LOCKDEP selftest + SOAKLOAD fleet + LATSGI gate 三面自证；双核 + 常驻族 + churn 舰队在席）"
+echo "soak-g3: boot 覆盖标记 ${#COVER[@]}/${#COVER[@]} 到齐（含 LOCKDEP selftest + SOAKLOAD fleet + LATSGI gate + LAT trig armed 四面自证；双核 + 常驻族 + churn 舰队在席）"
 
 # —— 收 evsclient 对拍结果（30s 帽只盖透传余量）——
 tc=$(date +%s)
