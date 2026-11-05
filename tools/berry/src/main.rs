@@ -41,7 +41,7 @@ enum Cmd {
     Shot(ShotCmd),
     /// Capture one frame from a running device (does not boot a new one).
     Screenshot(ScreenshotCmd),
-    /// Session management (start/list/status/restart/stop).
+    /// Session management (start/list/status/restart/stop/cleanup).
     Device(DeviceCmd),
     /// Power actions on a running device.
     Power(PowerCmd),
@@ -64,7 +64,7 @@ enum Cmd {
     Host(HostCmd),
     /// Open the phone-shaped device window (the double-click entry).
     Shell(ShellCmd),
-    /// Inject input into a running device via QMP.
+    /// Inject input into a running device via VNC.
     Input(InputCmd),
     /// Print version.
     Version,
@@ -334,6 +334,8 @@ struct InputCmd {
 enum InputActionCmd {
     /// QEMU qcode, e.g. ret, esc, a.
     Key { code: String },
+    /// Type a UTF-8 string as keysyms.
+    Text { text: String },
     /// Tap at guest pixel coordinates.
     Tap { x: u16, y: u16 },
     /// Drag from one guest pixel to another.
@@ -476,6 +478,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             run: c.run,
             action: match c.action {
                 InputActionCmd::Key { code } => InputAction::Key(code),
+                InputActionCmd::Text { text } => InputAction::Text(text),
                 InputActionCmd::Tap { x, y } => InputAction::Tap(x, y),
                 InputActionCmd::Swipe { x1, y1, x2, y2, ms } => {
                     InputAction::Swipe { x1, y1, x2, y2, ms }

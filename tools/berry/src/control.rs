@@ -247,7 +247,7 @@ fn dispatch(
     match op {
         "hello" => Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "capabilities": ["hello","status","power","stop","logs","screenshot","key","tap","swipe","text"],
+            "capabilities": ["hello","status","stats","power","stop","logs","display","shortcut","events","screenshot","key","tap","swipe","text"],
         })),
         "stats" => {
             let meta: Value = std::fs::read(run.join("meta.json"))
@@ -267,6 +267,10 @@ fn dispatch(
             }))
         }
         "status" => {
+            let meta: Value = std::fs::read(run.join("meta.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_else(|| json!({}));
             let mut q = qmp.lock().unwrap();
             let st = q.query_status().map_err(|e| {
                 BerryError::device(format!("qmp query-status: {e}"))
@@ -274,6 +278,10 @@ fn dispatch(
             Ok(json!({
                 "state": st.get("status").cloned().unwrap_or_else(|| json!("unknown")),
                 "run": run.display().to_string(),
+                "profile": meta.get("profile").cloned().unwrap_or(Value::Null),
+                "memory_mib": meta.get("memory_mib").cloned().unwrap_or(Value::Null),
+                "qemu_pid": meta.get("qemu_pid").cloned().unwrap_or(Value::Null),
+                "started": meta.get("started").cloned().unwrap_or(Value::Null),
                 "stop_requested": stop.load(Ordering::Relaxed),
             }))
         }

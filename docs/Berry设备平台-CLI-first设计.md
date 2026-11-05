@@ -12,7 +12,7 @@
 ### 1.1 今天缺什么
 
 - `berry shot` 每次都**起一台新设备**，不能对正在跑的窗口截图。
-- `berry shell` 持有 QMP；QEMU QMP 单客户端，`berry input`/未来的 `power` 抢不到控制面。
+- host 独占 QMP；CLI 只走 control.sock/TCP，窗口/attach/input 都不抢 QMP。
 - 窗口只有键盘快捷键，没有**可见快捷栏**；按钮即使做了，也没有和 CLI 共享动作表。
 - 没有会话（session）概念：CLI 无法列设备、查状态、重启、关机、改分辨率、等一帧。
 - AI/CI 只能「起新机 + 抓一帧」，不能做「看当前画面 → 点一下 → 再看 → 重启」的闭环。
@@ -278,16 +278,18 @@ NDJSON：一行一个 JSON 对象。
 | op | args | result | 说明 |
 | --- | --- | --- | --- |
 | `hello` | `client` | `version/capabilities` | 握手/能力 |
-| `status` | — | `state/profile/pid/uptime` | 查状态 |
+| `status` | — | `state/profile/memory_mib/qemu_pid/started` | 查状态 |
 | `screenshot` | `out,settle_ms` | `path,w,h,source` | 抓当前帧 |
-| `key` | `code,down?` | — | keysym/qcode |
+| `key` | `code` | — | qcode/ASCII；按下+抬起 |
 | `tap` | `x,y` | — | 客机像素 |
 | `swipe` | `x1,y1,x2,y2,ms` | — | 插值 |
 | `text` | `text` | — | 逐字符 keysym |
 | `power` | `action:off|reboot,force?` | `state` | QMP |
-| `display` | `profile|WxH,restart?` | `applied/requires_restart` | v1 重启 |
-| `shortcut` | `action:screenshot|resolution|reboot|power|fullscreen` | `result` | UI 动作表 |
+| `display` | `profile,restart?` | `applied/requires_restart` | v1 重启；WxH/rotate 未落 |
+| `shortcut` | `action:screenshot|reboot|power` | `result` | UI 动作表；resolution/fullscreen 未落 |
 | `logs` | `tail?` | `lines` | 串口尾 |
+| `stats` | — | `state/profile/memory_mib/qemu_pid/started` | 会话统计 |
+| `events` | `tail?` | `lines` | events.jsonl 尾 |
 | `stop` | — | — | 结束 session |
 
 ### 7.4 错误码
@@ -314,7 +316,7 @@ NDJSON：一行一个 JSON 对象。
 berry [--json] [--verbose] <command>     # --run 是会话类子命令参数，非全局
 
 device
-  start [--image] [--profile] [--foreground] [--memory] [--keep] [--json]
+  start [--image] [--profile] [--foreground] [--memory] [--accel] [--display-mode] [--keep] [--json]
   list [--json]
   status [--run] [--json]
   stop [--run] [--json]
@@ -327,7 +329,7 @@ run [--kernel|--image] [--marker] [--timeout]
 screenshot [--run] [--out] [--settle-ms] [--json]
 shot [--image] [--profile] [--wait-marker] [--out] [--keep] [--json]
 
-input key|tap|swipe <...>        # 顶层别名/ text 未落，先用 input
+input key|tap|swipe|text <...>   # 顶层别名未落，先用 input
 power off|reboot [--run] [--force] [--json]
 display list|set <profile> [--restart] [--run] [--json]
 # display rotate / WxH 自定义：未落（C2+）

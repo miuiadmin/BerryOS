@@ -91,6 +91,7 @@ pub enum ScaleMode {
 
 pub enum InputAction {
     Key(String),
+    Text(String),
     Tap(u16, u16),
     Swipe { x1: u16, y1: u16, x2: u16, y2: u16, ms: u64 },
 }
@@ -341,6 +342,12 @@ pub fn input(args: InputArgs) -> Result<()> {
             vnc.key(ks, true)?;
             vnc.key(ks, false)?;
         }
+        InputAction::Text(text) => {
+            for ch in text.chars() {
+                vnc.key(ch as u32, true)?;
+                vnc.key(ch as u32, false)?;
+            }
+        }
         InputAction::Tap(x, y) => {
             let (x, y) = clamp(x, y);
             vnc.pointer(x, y, 1)?;
@@ -508,7 +515,8 @@ pub fn record(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        crate::png::write_apng(path, dims.0, dims.1, &raw_frames, interval_ms as u16)?;
+        let delay = interval_ms.clamp(1, u16::MAX as u64) as u16;
+        crate::png::write_apng(path, dims.0, dims.1, &raw_frames, delay)?;
         if json {
             println!(
                 "{}",
@@ -938,10 +946,17 @@ pub fn device_status(run: Option<&str>, json: bool) -> Result<()> {
             if json {
                 println!("{}", json!({"v":1,"t":"device.status","run":run,"status":v}));
             } else {
+                let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("?");
+                let profile = v.get("profile").and_then(|s| s.as_str()).unwrap_or("-");
+                let mem = v.get("memory_mib").and_then(|n| n.as_u64()).unwrap_or(0);
+                let pid = v.get("qemu_pid").and_then(|n| n.as_u64()).unwrap_or(0);
                 println!(
-                    "{}: {}",
+                    "{}: {} (profile {}, {}MiB, pid {})",
                     run.display(),
-                    v.get("state").and_then(|s| s.as_str()).unwrap_or("?")
+                    state,
+                    profile,
+                    mem,
+                    pid
                 );
             }
         }

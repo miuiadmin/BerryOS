@@ -54,6 +54,7 @@ just berry power off --run <id>
 just berry input key ret
 just berry input tap 400 300
 just berry input swipe 400 500 400 200 --ms 300
+just berry input text hello
 just berry-smoke                            # doctor + kernel marker + EFI shot
 ```
 
@@ -71,7 +72,7 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 | 动作 | CLI（当前/规划） | 窗口快捷栏 |
 | --- | --- | --- |
 | 截图 | **`berry screenshot`（已落）** / `shot`（临时设备） | 截图按钮 / `Cmd+S` |
-| 输入 | `berry input key/tap/swipe`（VNC attach，已落） | 客机触摸/键盘 |
+| 输入 | `berry input key/tap/swipe/text`（VNC attach，已落） | 客机触摸/键盘 |
 | 重启/关机 | **`berry power reboot/off`（C1a）** / `berry shortcut`（C2b） | BOOT/OFF 按钮（C2a） |
 | 分辨率 | **`berry display set <profile> --restart`（C2c）** | **RES 菜单（C2d host / C2e attach）** |
 | 全屏 | — | `F` / `FULL` 按钮 |
@@ -121,7 +122,7 @@ C1g 还差 Windows 实机验证/打包、host 自动重启。完整刀序见平�
 
 - QEMU 是外部依赖（GPLv2，进程边界）；主仓 Apache-2.0 不打包 QEMU。
 - 帧面要求 QEMU `memory-backend-file,share=on`；不支持该后端的环境回退 VNC（P1 路径）。
-- `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 仍由 shell 持有，
+- `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 由 host broker 独占，
   `power reboot/off`、`display set` 已落（C1a/C2c）；只剩 Windows 实机、host 自动重启。
 - 窗口快捷栏 C2d 已落 5 键：`SHOT`/`RES`/`BOOT`/`OFF`/`FULL`（鼠标/触摸）；
   `OFF` 需 3s 内二次点击；`RES` 打开 profile 菜单，host 窗口内停旧/起新 profile。
