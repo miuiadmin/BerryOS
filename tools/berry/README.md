@@ -82,8 +82,8 @@ C1a/C1b/C1c 已落：`berry shell` 进程内或 headless `berry device start` �
 `control.sock` + QMP broker；CLI `device start/list/status/restart/stop`、`power off/reboot`、
 `logs`、`screenshot`（优先走 host）已可用，CLI 不直连 QMP；`berry shell --attach <id>` 可给
 headless host 开窗，关窗只 detach。C1d/C1e/C1f 已落（state/cleanup/TCP）；
-C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异常退出后同 run 原地重启）；
-还剩 Windows 实机验证/打包。完整刀序见平台文档 §14。
+C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异常退出后同 run
+原地重启；attach 窗口在 control 恢复后自动重连 VNC）；还剩 Windows 实机验证/打包。
 
 ## 环境变量
 

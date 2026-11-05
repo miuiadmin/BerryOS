@@ -353,8 +353,8 @@ version
 **C1c 已落**：`berry shell --attach <id>` 打开已有 session（VNC 帧/输入 + control 动作）；
 关窗只 detach，host 继续。C1d/C1e/C1f 已落（state.json、cleanup、TCP+token）；
 **C1g 已落 host 自动重启**：`device start --restart-on-crash`，QEMU 异常退出后在
-同一 run/control 路径原地重启（rebooting→running；CLI 重连；旧 VNC/control 短断）。
-C1g 剩余：Windows 实机验证/打包。
+同一 run/control 路径原地重启（rebooting→running；CLI 重连；attach 窗口在 control
+恢复后自动重连 VNC；旧 control/VNC 短断）。C1g 剩余：Windows 实机验证/打包。
 
 ### 8.2 语义
 

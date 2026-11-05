@@ -212,6 +212,8 @@ pub fn run(args: ShellArgs) -> Result<()> {
             run,
             source,
             last_poll: Instant::now(),
+            last_reconnect: Instant::now(),
+            down_since: None,
             dead: false,
         })
     } else {
@@ -256,7 +258,27 @@ struct Attached {
     run: std::path::PathBuf,
     source: VncSource,
     last_poll: Instant,
+    last_reconnect: Instant,
+    down_since: Option<Instant>,
     dead: bool,
+}
+
+impl Attached {
+    /// Same-run host restart: control/VNC disappear briefly. Retry the VNC
+    /// source after control is back instead of treating it as a dead session.
+    fn try_reconnect(&mut self) {
+        if self.last_reconnect.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        self.last_reconnect = Instant::now();
+        if !control::is_up(&self.run) {
+            return;
+        }
+        if let Ok(src) = connect_vnc(&self.run) {
+            self.source = src;
+            self.down_since = None;
+        }
+    }
 }
 
 impl Session {
@@ -294,13 +316,31 @@ impl Session {
                         if state == "stopped" || state == "exited" {
                             a.dead = true;
                             true
+                        } else if state == "rebooting" || state == "starting" {
+                            a.down_since.get_or_insert_with(Instant::now);
+                            a.try_reconnect();
+                            false
                         } else {
+                            if a.down_since.is_some() {
+                                a.try_reconnect();
+                            }
                             false
                         }
                     }
                     Err(_) => {
-                        a.dead = true;
-                        true
+                        let saved = crate::run_dir::read_state(&a.run).unwrap_or_default();
+                        if matches!(saved.as_str(), "stopped" | "stopping" | "failed") {
+                            a.dead = true;
+                            return true;
+                        }
+                        let since = *a.down_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() > Duration::from_secs(45) {
+                            a.dead = true;
+                            true
+                        } else {
+                            a.try_reconnect();
+                            false
+                        }
                     }
                 }
             }
@@ -516,6 +556,8 @@ impl App {
                             a.source = src;
                             a.dead = false;
                             a.last_poll = Instant::now();
+                            a.last_reconnect = Instant::now();
+                            a.down_since = None;
                         }
                         Err(e) => {
                             eprintln!(

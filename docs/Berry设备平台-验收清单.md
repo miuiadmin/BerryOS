@@ -95,7 +95,8 @@ berry play script.json --run "$RUN"
 - [ ] `berry device cleanup` 杀掉 orphan QEMU 并删 run。
 - [ ] `state.json` 状态集：starting/running/rebooting/stopping/stopped/failed。
 - [ ] host 自动重启：`device start --restart-on-crash`，kill QEMU 后同一 run 从
-      `rebooting` 回 `running`，qemu_pid 变化，截图恢复；✅ 已实测。
+      `rebooting` 回 `running`，qemu_pid 变化，截图恢复；✅ 已实测。attach 窗口
+      control 恢复后应自动重连 VNC。
 
 ## 8. 打包
 
