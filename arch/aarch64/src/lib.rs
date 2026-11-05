@@ -230,11 +230,21 @@ pub type DemandFaultProbe = unsafe extern "C" fn(esr: usize, far: usize) -> bool
 
 static mut DEMAND_FAULT_PROBE: Option<DemandFaultProbe> = None;
 
+/// G4-2 第二槽：EL0 臂专用探针（current-EL 臂与 EL0 臂分流——dpg 内核
+/// pager 对不劫 EL0 请求，arm 侧按臂武装不同请求槽/唤不同键，§5-③ 裁决）。
+static mut DEMAND_FAULT_PROBE_EL0: Option<DemandFaultProbe> = None;
+
 /// 注册按需调页故障探针。须在首个可能触 demand 区间访问的任务被调度之前
 /// 调用一次（boot DAIF 屏蔽窗）。
 pub fn set_demand_fault_probe(f: DemandFaultProbe) {
     // SAFETY: 启动单线程、DAIF 屏蔽；无并发 IRQ、无竞态。
     unsafe { DEMAND_FAULT_PROBE = Some(f) };
+}
+
+/// 注册 EL0 臂按需调页探针（注册窗合同同 [`set_demand_fault_probe`]）。
+pub fn set_demand_fault_probe_el0(f: DemandFaultProbe) {
+    // SAFETY: 同上——boot 屏蔽窗单线程。
+    unsafe { DEMAND_FAULT_PROBE_EL0 = Some(f) };
 }
 
 /// 取已注册的按需调页探针（`exception_sync` current-EL 0x25 臂用）。
@@ -245,6 +255,19 @@ pub fn set_demand_fault_probe(f: DemandFaultProbe) {
 pub unsafe fn demand_fault_probe(esr: usize, far: usize) -> bool {
     // SAFETY: 本函数自身契约即异常上下文；槽注册于 boot 屏蔽窗后恒定。
     match DEMAND_FAULT_PROBE {
+        Some(f) => unsafe { f(esr, far) },
+        None => false,
+    }
+}
+
+/// 取 EL0 臂探针（`exception_sync_el0` D-abort 0x24 臂用）；合同同
+/// [`demand_fault_probe`]。
+///
+/// # Safety
+/// 读 `static mut`。仅同步异常上下文（单核顺序）调用。
+pub unsafe fn demand_fault_probe_el0(esr: usize, far: usize) -> bool {
+    // SAFETY: 同上。
+    match DEMAND_FAULT_PROBE_EL0 {
         Some(f) => unsafe { f(esr, far) },
         None => false,
     }

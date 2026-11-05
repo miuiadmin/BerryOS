@@ -121,9 +121,16 @@ def load() -> dict:
         names = [e["name"] for e in d[sec]]
         if len(set(names)) != len(names):
             raise Fail(f"abi.toml: [[{sec}]] name 重复")
-        vals = [eval_expr(e["expr"]) for e in d[sec]]
-        if len(set(vals)) != len(vals):
-            raise Fail(f"abi.toml: [[{sec}]] expr 值重复")
+        if sec == "option":
+            # options 位是 per-syscall 位图（scope 域声明归属 syscall）——
+            # 值唯一性按 scope 执法；缺 scope 视同全局命名空间
+            pairs = [(e.get("scope", ""), eval_expr(e["expr"])) for e in d[sec]]
+            if len(set(pairs)) != len(pairs):
+                raise Fail("abi.toml: [[option]] 同 scope 下 expr 值重复")
+        else:
+            vals = [eval_expr(e["expr"]) for e in d[sec]]
+            if len(set(vals)) != len(vals):
+                raise Fail(f"abi.toml: [[{sec}]] expr 值重复")
     return d
 
 

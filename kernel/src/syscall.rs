@@ -6,7 +6,7 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 34 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**33 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号）**——
+//! v1 35 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**34 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形）**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
 //! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
@@ -66,24 +66,25 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 31 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// ---- v1 35 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
 // 常量本体在 `crate::abi_gen`（`tools/abi.toml` 生成文件）；此处 re-export
 // 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
 // abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
 // T-1 起 31 号全注册（0x35 随 sys_thread_start 消费）——豁免保留为冻结位
-// 纪律（v2 批再入册未同步实现的号仍随转发触发 unused_imports）。
+// 纪律（v2 批再入册未同步实现的号仍随转发触发 unused_imports）；G4-2 起
+// 0x21 pager_supply_pages 激活（v2 号 → v1，add-only）。
 #[allow(unused_imports)]
 pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
-    NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_PROCESS_EXIT,
-    NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_TERMINATE, NR_SIGNAL_SEND,
-    NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP, NR_THREAD_START,
-    NR_VMAR_ALLOCATE, NR_VMAR_MAP,
+    NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
+    NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_TERMINATE,
+    NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
+    NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
     NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
     NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
-use crate::abi_gen::CLOCK_MONOTONIC;
+use crate::abi_gen::{CLOCK_MONOTONIC, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
 /// `内存管理设计.md` §4；copy_out 的界检同源）。
@@ -438,14 +439,19 @@ pub fn soakload_churn_readout() -> u64 {
     SOAK_CHURN_OK.load(Ordering::Relaxed)
 }
 
-/// `vmo_create(size, options, *out)`：建匿名 VMO。新对象授 READ|WRITE|MAP|
-/// DUPLICATE（全 Rights 面减 TRANSFER——transfer 随 3-4 channel 落地）；v1
-/// options 恒 0。`size` 上限 [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
+/// `vmo_create(size, options, *out)`：建匿名 VMO。默认授 READ|WRITE|MAP|
+/// DUPLICATE（全 Rights 面减 TRANSFER——transfer 随 3-4 channel 落地）。
+/// options：bit0 = `VMO_OPT_DEMAND`（G4-2，§5-① 裁决）——按需后备 VMO
+/// （demand 对象属性，映射走 vmar_map 对象级分流 map_demand，首触缺页由
+/// EL0 pager 经 0x21 供给）+ **额外授 SET_POLICY**（0x21 门权——普通 dup
+/// 面不能冒充 pager）；其余位 → -EINVAL（options 纪律）。`size` 上限
+/// [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
 extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     let (size, options, out) = (tf.regs[1] as usize, tf.regs[2] as u32, tf.regs[3]);
-    if options != 0 {
+    if options & !(VMO_OPT_DEMAND as u32) != 0 {
         return ERR_INVALID_ARG as i64;
     }
+    let demand = options & (VMO_OPT_DEMAND as u32) != 0;
     if size == 0 {
         return ERR_INVALID_ARG as i64;
     }
@@ -458,15 +464,19 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     }
     // create try 化（3b3 H2）：NoMem → -ENOMEM（原 create 内嵌 vec! 双分配，
     // OOM abort 曾是 EL0 可触发 panic）。
-    let vmo = match Vmo::create(size) {
+    let vmo = match if demand { Vmo::create_demand(size) } else { Vmo::create(size) } {
         Ok(v) => v,
         Err(e) => return voe(e) as i64,
     };
+    // G4-2：demand 位附加 SET_POLICY（§5-① 裁决——demand VMO 首消费，
+    // 0x21 双验之一；默认面权利集逐位不变）。
+    let rights = if demand {
+        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_SET_POLICY
+    } else {
+        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE
+    };
     match caller_table(tf) {
-        Ok(t) => match t.insert(
-            KernelObj::Vmo(vmo),
-            RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE,
-        ) {
+        Ok(t) => match t.insert(KernelObj::Vmo(vmo), rights) {
             Ok(h) => match copy_out_u32(el1, out, h) {
                 Ok(()) => {
                     // S-5e M1：soakload 载荷 churn 进度计数（svc 恒败/gen 顶格
@@ -717,13 +727,157 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
     let (Some(vmar), Some(vmo)) = pair else {
         return ERR_BAD_HANDLE as i64; // 类型门控后不可达；防御面
     };
-    match vmar.map(crate::mm::frames(), vmo, req as usize, voff, len, Perm::UserRw) {
+    // G4-2（§5-① 裁决）：demand VMO 对象级分流——登记 Demand 区间不填叶
+    //（首触缺页走 EL0 探针 → 0x21 供给）；eager VMO 原路径逐位不变（全
+    // 提交执法点在 `Vmar::map` 内）。perm 同为 UserRw（供给叶取区间登记权）。
+    // demand 分支另登记 asid 反查表（§5-④——探针第一段 TTBR0 现读 asid →
+    // root Vmar 的唯一来源）；**先登记后映射**：登记失败零副作用早返，映射
+    // 失败留幂等残项无害（探针 stage-2 region 查 miss → 原杀链）。
+    let r = if vmo.is_demand() {
+        match crate::vmar::register_demand_root(vmar.asid(), vmar as *mut Vmar) {
+            Ok(()) => vmar.map_demand(vmo, req as usize, voff, len, Perm::UserRw),
+            // 满表 = 供给面不可达（静默丢 = demand 页死循环杀链）→ 拒映射；
+            // 异 root 同 asid = 装配面不变量破（防御拒）。
+            Err(crate::vmar::DemandRootError::Full) => return ERR_NO_MEMORY as i64,
+            Err(crate::vmar::DemandRootError::OwnerConflict) => {
+                return ERR_NOT_SUPPORTED as i64
+            }
+        }
+    } else {
+        vmar.map(crate::mm::frames(), vmo, req as usize, voff, len, Perm::UserRw)
+    };
+    match r {
         Ok(va) => match copy_out_u64(el1, vaddrp, va as u64) {
             Ok(()) => 0,
             Err(e) => e as i64,
         },
         Err(e) => vme(e) as i64,
     }
+}
+
+/// `pager_supply_pages(vmo, src, src_off)`（0x21，G4-2 首形）：用户态 pager
+/// 给 demand VMO 供给一页——**阻塞收货**（§5-③ 裁决）：无武装 EL0 缺页
+/// 请求时 poll-first 后睡 EL0 pager 裸键（fault 探针武装请求槽 + 唤醒即
+/// 递送——ADR #9 缺页路径零分配）。
+///
+/// 门控：目标 vmo 须 Vmo + **SET_POLICY**（demand 创建附加权，§5-① 裁决
+/// ——普通 dup 面不能冒充 pager）；src = 0 → 零页供给（供给页即清零页）；
+/// 否则须 Vmo + READ + `src_off` 页对齐且 `src_off+PAGE_SIZE` 界内 + 源页
+/// 已提交（§2.2 防线 4：supply 链零缺页——未提交源 read 报错拒）。
+///
+/// 供给 = pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款，
+/// dpg_pager 同链）→ 源拷贝（静态 4K 缓冲，零分配）→ 唤 faulter。出口
+/// **恒唤** faulter：成功 = eret 命中新叶；失败 = 重试再 fault 再武装
+/// （pager 重调 0x21 自愈）；pager 不再调 = faulter 永久阻塞（§5-⑤ 裁决
+/// ——PS 可见/不传染）。
+///
+/// 首形界（单 faulter/单 pager；多 faulter 错醒由重 fault 自愈）：目标
+/// Vmo 指针须与武装请求区间匹配（冒充/跨进程请求拒 -EINVAL）。
+extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
+    let (vh, sh, soff) = (tf.regs[1] as u32, tf.regs[2] as u32, tf.regs[3] as usize);
+    if soff % PAGE_SIZE != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 目标/源门控先行——错柄 fail fast 不入睡（阻塞收货前收口校验面）。
+    let vd = match t.get_raw(vh, ObjType::Vmo, RIGHT_SET_POLICY) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64,
+    };
+    let sv = if sh != 0 {
+        match t.get_raw(sh, ObjType::Vmo, RIGHT_READ) {
+            Ok((o, _)) => Some(o),
+            Err(e) => return e as i64,
+        }
+    } else {
+        None
+    };
+    // 跨睡眠钉住（wait_one 同款：睡眠期本表可变，retain 钉对象活性；唯一
+    // 出口成对 release）。
+    // SAFETY: get_raw 门控后对象在表；release 与此成对（唯一出口）。
+    unsafe { (*vd.as_ptr()).retain() };
+    if let Some(s) = sv {
+        unsafe { (*s.as_ptr()).retain() };
+    }
+    let ret = loop {
+        match crate::dpg::el0_take() {
+            Some((far, asid)) => {
+                let r = pager_supply_one(vd, sv, soff, far, asid);
+                // 恒唤 faulter（自愈语义——供给窗收口后出环）。
+                crate::dpg::el0_wake_faulter();
+                break r;
+            }
+            None => {
+                // 无武装请求：睡 EL0 pager 键（0x21 = 阻塞收货）。SVC 入口
+                // 类持锁的放/取舞蹈由 block_current 承担（wait_one 先例）；
+                // 单核 KL 窗内查位+入队 = 无丢唤醒（dpg_pager 同构）。
+                let _ = berry_sched::block_current(
+                    crate::dpg::el0_pager_key(),
+                    crate::dpg::DPG_WAKE_BIT,
+                    u64::MAX,
+                );
+                // 醒后重取锁——续环再 poll（虚醒由下轮 take 吸收）。
+            }
+        }
+    };
+    // SAFETY: 与入口 retain 成对（唯一出口）。
+    unsafe { ObjRef::release(vd) };
+    if let Some(s) = sv {
+        unsafe { ObjRef::release(s) };
+    }
+    ret
+}
+
+/// 0x21 供给执行体（一次武装请求的收货窗；KL 在身——SVC 入口类 TABLE+SQ+RQ）。
+fn pager_supply_one(
+    vd: NonNull<ObjRef>,
+    sv: Option<NonNull<ObjRef>>,
+    soff: usize,
+    far: usize,
+    asid: u16,
+) -> i64 {
+    let Some(root) = crate::vmar::demand_root(asid) else {
+        return ERR_INVALID_ARG as i64;
+    };
+    // SAFETY: 登记面（process 组装）只进不出先形——对象常驻。
+    let Some((rvmo, vmo_off, base)) = (unsafe { (*root).demand_region_at(far) }) else {
+        return ERR_INVALID_ARG as i64;
+    };
+    // 目标匹配验（§5-③）：请求区间所属 Vmo 须即调用方 vmo 句柄本体——冒充
+    //（异 VMO 供给他人区间）/跨进程请求拒。只取身份不持借（供给窗内
+    // supply_page 经 Region 指针另有 &mut——单核屏蔽串行下的既有点名纪律）。
+    // SAFETY: get_raw 门控后取本体（只取地址）。
+    let dv_ptr = match unsafe { (*vd.as_ptr()).obj.as_vmo_mut() } {
+        Some(v) => v as *mut Vmo,
+        None => return ERR_BAD_HANDLE as i64,
+    };
+    if rvmo != dv_ptr {
+        return ERR_INVALID_ARG as i64;
+    }
+    let va = far & !(PAGE_SIZE - 1);
+    // 供给窗（dpg_pager 同链搬进 SVC 面：pt_lock 嵌 KL 正序 + 幂等门 +
+    // 填叶 + dsb/tlbi/broadcast + track_map）。
+    // SAFETY: root 常驻论证同上；dv_ptr 指针身份已验。
+    if let Err(e) = unsafe { (*root).supply_page(crate::mm::frames(), va) } {
+        return vme(e) as i64;
+    }
+    if let Some(s) = sv {
+        // 源拷贝（防线 4：源页未提交 → read 报错拒——supply 链零缺页）。
+        // SAFETY: get_raw 门控；单核屏蔽串行。
+        let Some(src) = (unsafe { (*s.as_ptr()).obj.as_vmo_mut() }) else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        let buf = crate::dpg::supply_buf();
+        if let Err(e) = src.read(soff, buf) {
+            return voe(e) as i64;
+        }
+        let off = vmo_off + (va - base);
+        // SAFETY: dv_ptr 身份已验（Region 同体）；供给窗已提交该页。
+        if let Err(e) = unsafe { &mut *dv_ptr }.write(off, buf) {
+            return voe(e) as i64;
+        }
+    }
+    0
 }
 
 /// `vmar_unmap(vmar, vaddr, len)`：解除映射（精确匹配）。门控：vmar **MAP**。
@@ -2234,7 +2388,8 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// thread_exit(0x36) = 27 号**；**P5 加 process_get_exit_code(0x3A) = 28 号**；
 /// **P6 A-3 加 vmo_get_phys(0x1B) = 29 号**；**C-4b 加 process_terminate(0x3B)
 /// = 30 号**；**T-1 加 thread_start(0x35) = 31 号；A7-4 加
-/// signal_send(0x86)/signal_take(0x87) = 33 号——v1 在册 34 号
+/// signal_send(0x86)/signal_take(0x87) = 33 号；G4-2 加
+/// pager_supply_pages(0x21，v2 号激活) = 34 号——v1 在册 35 号
 /// （唯 0x85 `berry_attest` 预留）真语义全部实现**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
 /// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住；T-1 分序版：Thread
@@ -2285,6 +2440,11 @@ pub fn install() {
     reg(NR_VMAR_UNMAP, sys_vmar_unmap, SVC_CLASS_TABLE);
     reg(NR_VMAR_PROTECT, sys_vmar_protect, SVC_CLASS_TABLE);
     reg(NR_VMAR_ALLOCATE, sys_vmar_allocate, SVC_CLASS_TABLE);
+    // —— SQ+RQ+TABLE（0x2E）：0x21 pager_supply_pages（G4-2）——阻塞收货
+    //（block_current SQ 面）+ 唤 faulter（wake→enqueue RQ 面）+ 双对象
+    // 表门控；供给窗 = vmar 族同构 KL 面（pt_lock 嵌 KL 正序）。锁类对齐
+    // wait_one（同为「表 + 可睡」handler）。
+    reg(NR_PAGER_SUPPLY_PAGES, sys_pager_supply_pages, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_PROCESS_CREATE, sys_process_create, SVC_CLASS_ALL);
     // —— RQ+TABLE（0x2C）：start 双号（enqueue 双核升序 + 表）——
     reg(NR_PROCESS_START, sys_process_start, SVC_CLASS_RQ_TABLE);

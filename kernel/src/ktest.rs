@@ -167,16 +167,29 @@ fn test_syscall() {
     static mut EBUF: [u8; 16] = [0; 16]; // write 源 / read 目的（内核直映区）
     const PATTERN: u64 = 0x00C0_FFEE_0000_0055;
 
-    // E0. 参数面：size=0 / options≠0 → -EINVAL；超尺寸 → -ENOMEM（no-panic 防线）。
+    // E0. 参数面：size=0 → -EINVAL；options 未知位 → -EINVAL；超尺寸 →
+    //     -ENOMEM（no-panic 防线）。G4-2 起 bit0 = VMO_OPT_DEMAND 激活——
+    //     「options≠0 须拒」升「未知位须拒」+ bit0 受纳正测（建毕即 close）。
     assert_eq!(svc6(NR_VMO_CREATE as u64, 0, 0, &raw mut OUT as u64, 0, 0, 0), -22,
         "SYSCALL：vmo_create size=0 须 -EINVAL");
-    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 1, &raw mut OUT as u64, 0, 0, 0), -22,
-        "SYSCALL：vmo_create options≠0 须 -EINVAL");
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 2, &raw mut OUT as u64, 0, 0, 0), -22,
+        "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND 已激活）");
     assert_eq!(
         svc6(NR_VMO_CREATE as u64, u64::MAX, 0, &raw mut OUT as u64, 0, 0, 0),
         -12,
         "SYSCALL：巨 size 须 -ENOMEM（防堆分配 abort）"
     );
+    // SAFETY: svc 同步异常；OUT 为本函数私有静态。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 1, &raw mut OUT as u64, 0, 0, 0),
+        0,
+        "SYSCALL：vmo_create VMO_OPT_DEMAND 须受纳（G4-2 激活面）"
+    );
+    let hdm = unsafe { OUT } as u32;
+    assert_ne!(hdm, 0, "SYSCALL：DEMAND VMO 须回填非零 handle");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hdm as u64, 0, 0), 0,
+        "SYSCALL：close demand vmo（零供给页零映射——防线自洽）");
 
     // E1. create→commit→write→read 往返（WRITE/READ 门控）。
     // SAFETY: svc 同步异常；OUT/EBUF 为本函数私有静态。

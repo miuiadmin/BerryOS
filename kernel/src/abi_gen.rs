@@ -6,7 +6,7 @@
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 34 号在册、33 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 35 号在册、34 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -30,6 +30,12 @@ pub const NR_VMAR_ALLOCATE: usize = 0x19;
 pub const NR_VMO_GET_SIZE: usize = 0x1A;
 /// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
 pub const NR_VMO_GET_PHYS: usize = 0x1B;
+/// G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
+/// 裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
+/// pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款）+ 唤 faulter。
+/// 源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
+/// （§5-⑤ 裁决）。
+pub const NR_PAGER_SUPPLY_PAGES: usize = 0x21;
 pub const NR_PROCESS_CREATE: usize = 0x31;
 pub const NR_PROCESS_START: usize = 0x32;
 /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
@@ -66,6 +72,11 @@ pub const CLOCK_MONOTONIC: u64 = 0;
 /// 的 recv 不结算 intent（QNX `_NTO_CHF_FIXED_PRIORITY` 等价，系统服务/看门狗
 /// 类 server 逃生门）。其余位保留（非 0 尾 → -EINVAL，options 纪律）。
 pub const CHAN_OPT_NO_INTENT: u64 = 1 << 0;
+/// `vmo_create` options bit0（G4-2，§5-① 裁决）：按需后备 VMO——创建即
+/// demand 对象属性 + 额外授 RIGHT_SET_POLICY（在册未消费位首消费；0x21 pager 面
+/// 门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
+/// 其余位保留（非 0 尾 → -EINVAL，options 纪律）。
+pub const VMO_OPT_DEMAND: u64 = 1 << 0;
 
 // ---- rights 位（`能力模型设计.md` §2；位表冻结，未消费位全量在册）----
 pub const RIGHT_READ: Rights = 1 << 0;

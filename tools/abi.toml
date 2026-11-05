@@ -18,10 +18,11 @@
 
 [meta]
 stage = "v1"
-nr_total = 34        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+nr_total = 35        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号）
-implemented = 33     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真；
+implemented = 34     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+                     # G4-2 0x21 pager_supply_pages v2 号激活；
                      # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
                      # ABI §8.0 永不 panic 执法）
 
@@ -42,10 +43,20 @@ desc_user = '`clock_read` 的 clock_id：v1 只有单调钟（壁钟留 v2）。
 
 [[option]]
 name = "CHAN_OPT_NO_INTENT"
+scope = "channel_create"
 expr = "1 << 0"
 desc = '''`channel_create` options bit0（4-3c，五件套之 4）：intent opt-out——置位通道
 的 recv 不结算 intent（QNX `_NTO_CHF_FIXED_PRIORITY` 等价，系统服务/看门狗
 类 server 逃生门）。其余位保留（非 0 尾 → -EINVAL，options 纪律）。'''
+
+[[option]]
+name = "VMO_OPT_DEMAND"
+scope = "vmo_create"
+expr = "1 << 0"
+desc = '''`vmo_create` options bit0（G4-2，§5-① 裁决）：按需后备 VMO——创建即
+demand 对象属性 + 额外授 RIGHT_SET_POLICY（在册未消费位首消费；0x21 pager 面
+门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
+其余位保留（非 0 尾 → -EINVAL，options 纪律）。'''
 
 # ---- rights 位（能力模型 §2；位表是 ABI 冻结值，未消费位先全量在册）----
 
@@ -314,8 +325,13 @@ title = "**pager**"
 [[group.syscall]]
 num = 0x21
 name = "pager_supply_pages"
-desc = '用户态 pager 给 VMO 填页'
-stage = "v2"
+desc = '用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移）'
+stage = "v1"
+note = '''G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
+裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
+pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款）+ 唤 faulter。
+源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
+（§5-⑤ 裁决）。'''
 [[group.syscall]]
 num = 0x22
 name = "pager_op_range"

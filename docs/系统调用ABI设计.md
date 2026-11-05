@@ -50,7 +50,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x1A | `vmo_get_size` | 查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长） | v1 |
 | 0x1B | `vmo_get_phys` | 查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽） | v1 |
 | **pager** ||||
-| 0x21 | `pager_supply_pages` | 用户态 pager 给 VMO 填页 | v2 |
+| 0x21 | `pager_supply_pages` | 用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移） | v1 |
 | 0x22 | `pager_op_range` | 脏页/换出通知 | v3 |
 | **进程 / 线程** ||||
 | 0x31 | `process_create` | 建进程 + 出 root Vmar（双出参；job v1 恒 0） | v1 |
@@ -94,11 +94,11 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 |
 <!-- @gen:syscalls end -->
 
-**计数**：v1 34 号在册 / 33 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10）；v2 增 12；v3 增 5（namespace + 策略注入/遥测）；**总数 51**（add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
+**计数**：v1 35 号在册 / 34 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11）；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 51**（add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
 
 > **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x87`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
 
-> **0x85 `berry_attest` 预留位（SEC-01 §4.5 件 11，底料 `research/sec-notes/SEC-3`）**：远程证明（本地取度量摘要 / quote——EAT/CBOR token 形态、PSA `initial_attest` 同思路）号位按在册模式冻结预留；v1 **在册未实现**，内核派发回落 `-ENOTSUP`（与未知号同形——§8.0 永不 panic）。ktest B 段样本挂账：`ktest.rs` 兄弟 WIP 冻结中，kernel 解冻后立「在册未实现真号」`-ENOTSUP` 样本（沿用既有纪律——勿拿未知号 0x99 冒充，二者 `-ENOTSUP` 成因不同）。kernel 解冻同步义务已随 A7-4 履行：`syscall.rs` `install()` 注释已改口（v1 在册 34 号 / 33 实现——唯 0x85 预留位 `-ENOTSUP`）。
+> **0x85 `berry_attest` 预留位（SEC-01 §4.5 件 11，底料 `research/sec-notes/SEC-3`）**：远程证明（本地取度量摘要 / quote——EAT/CBOR token 形态、PSA `initial_attest` 同思路）号位按在册模式冻结预留；v1 **在册未实现**，内核派发回落 `-ENOTSUP`（与未知号同形——§8.0 永不 panic）。ktest B 段样本挂账：`ktest.rs` 兄弟 WIP 冻结中，kernel 解冻后立「在册未实现真号」`-ENOTSUP` 样本（沿用既有纪律——勿拿未知号 0x99 冒充，二者 `-ENOTSUP` 成因不同）。kernel 解冻同步义务已随 A7-4 履行：`syscall.rs` `install()` 注释已改口（v1 在册 35 号 / 34 实现——唯 0x85 预留位 `-ENOTSUP`；0x21 随 G4-2 激活）。
 
 ## 5. 错误码
 
@@ -131,7 +131,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 7. 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1（实际 34 号在册 / 33 已实现——T-1 后在册真语义全实现 + A7-4 `signal_send`(0x86)/`signal_take`(0x87) 落地（2026-10；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地）；SEC-01 件 11 起 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，ktest 样本挂 kernel 解冻）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
+- **v1（实际 35 号在册 / 34 已实现——T-1 后在册真语义全实现 + A7-4 `signal_send`(0x86)/`signal_take`(0x87) 落地（2026-10）+ G4-2 `pager_supply_pages`(0x21) v2 号激活（2026-11；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地）；SEC-01 件 11 起 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，ktest 样本挂 kernel 解冻）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
 - **v2**：pager（demand paging）、futex、timer、异常通道、调度策略、设备 syscall。（G3–G4）
 - **v3**：namespace（open/mount）、**AI 策略注入/遥测控制 syscall**（`policy_bind`/`telemetry_open`，见 `AI调度设计.md`）、完整 POSIX 兼容库（含受限 fork 探索）。（G4+）
 
@@ -417,7 +417,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 34**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现））——真语义 33 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B/0x86/0x87），另 1 号为预留位。`object_get_info / pager / futex / timer / 设备 / namespace` 全部留到 v2/v3。
+**v1 计数 = 35**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + pager 1（0x21 `pager_supply_pages`，G4-2 v2 号激活——阻塞收货首形，demand VMO 供给）+ 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现））——真语义 34 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B/0x86/0x87/0x21），另 1 号为预留位。`object_get_info / futex / timer / 设备 / namespace` 留到 v2/v3（pager 首号已入 v1；0x22 `pager_op_range` 仍 v3）。
 
 ### 8.4 Rust FFI 镜像（`user/berry-sys`，raw 绑定）
 

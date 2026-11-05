@@ -140,6 +140,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dpgp"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
 name = "echo"
 version = "0.1.0"
 dependencies = [

@@ -622,27 +622,60 @@ impl Vmar {
 //
 // 形：16 槽定长线性扫（boot 语境 demand AS 个位数；探针未命中 16 次原子
 // 载入 ≈ 数十周期——fault 快路径可受）。**只登记不注销**（v1 boot-held：
-// 登记者 = 对象生存期保证人，map_demand 的调用方持有 Vmar 同寿；G4-2
-// process 退出语境再裁注销面）。ASID 0 = 空槽哨兵（分配器从 1 起）。
+// 登记者 = 对象生存期保证人，map_demand 的调用方持有 Vmar 同寿；G4-3
+// 压测/进程回收刀再裁注销面）。ASID 0 = 空槽哨兵（分配器从 1 起）。
+//
+// C-4（G4-1 三镜 declare）：16 槽只进不出 × ASID 回卷（S-4 4-3 quiesce 窗
+// 回收复用）——回卷 asid 复用而旧登记未注销 = 反查拿到旧 root 悬垂。v1
+// 生存期帽兜底：登记面 = boot-held + 常驻 rootfs 关卡进程（不退出），
+// alloc_asid 回卷距离（计数域耗尽）在 v1 关卡时长内不可达；G4-3 档把
+// 「注销面 or 回卷核验」随压测刀一并裁决。
 
 /// 登记槽数（boot/测试语境上界；满 = 后续登记失败 fail loud）。
 const DEMAND_ROOT_SLOTS: usize = 16;
 
+/// 登记失败形（G4-2：SVC 面失败码化——boot 面调用方 expect 收口 fail
+/// loud，SVC 面 [`DemandRootError`] → -ENOMEM / -ENOTSUP 错误码出口）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemandRootError {
+    /// 16 槽满——无空位（拒登记 fail loud，不静默丢）。
+    Full,
+    /// asid 已登记且 root 指针不同——单 root 不变量破（异 Vmar 同 asid =
+    /// 装配面 bug，防御拒）。
+    OwnerConflict,
+}
+
 static DEMAND_ROOTS: [(AtomicU16, AtomicUsize); DEMAND_ROOT_SLOTS] =
     [const { (AtomicU16::new(0), AtomicUsize::new(0)) }; DEMAND_ROOT_SLOTS];
 
-/// 登记 asid → root Vmar（map_demand 的调用方/对象属主；boot DAIF 屏蔽窗
-/// 或 PT 锁窗内调用）。满表 panic——fail loud（静默丢登记 = 探针永不命中
-/// = demand 页死循环杀链，宁响雷）。
-pub fn register_demand_root(asid: u16, root: *mut Vmar) {
-    for (a, p) in DEMAND_ROOTS.iter() {
-        if a.load(Ordering::Relaxed) == 0 {
-            p.store(root as usize, Ordering::Relaxed);
-            a.store(asid, Ordering::Release);
-            return;
+/// 登记 asid → root Vmar（map_demand 的调用方/对象属主；boot DAIF 屏蔽窗、
+/// PT 锁窗或 SVC KL 窗内调用——写者经全谱锁串行，读者〔探针第一段〕锁外
+/// append-only 读安全）。**幂等**：同 (asid, root) 再登记 Ok（同 AS 多次
+/// demand map 只占一槽）；满表 / 异 root 冲突 = Err——静默丢登记 = 探针
+/// 永不命中 = demand 页死循环杀链，宁拒可响。
+pub fn register_demand_root(asid: u16, root: *mut Vmar) -> Result<(), DemandRootError> {
+    let mut free: Option<usize> = None;
+    for (i, (a, p)) in DEMAND_ROOTS.iter().enumerate() {
+        let cur = a.load(Ordering::Relaxed);
+        if cur == asid {
+            // 同 asid：同 root 幂等 Ok；异 root = OwnerConflict。
+            return if p.load(Ordering::Relaxed) == root as usize {
+                Ok(())
+            } else {
+                Err(DemandRootError::OwnerConflict)
+            };
+        }
+        if cur == 0 && free.is_none() {
+            free = Some(i);
         }
     }
-    panic!("vmar: demand root 登记表满（{} 槽）", DEMAND_ROOT_SLOTS);
+    let Some(i) = free else {
+        return Err(DemandRootError::Full);
+    };
+    let (a, p) = &DEMAND_ROOTS[i];
+    p.store(root as usize, Ordering::Relaxed);
+    a.store(asid, Ordering::Release);
+    Ok(())
 }
 
 /// 反查 asid → root Vmar（fault 探针用；未登记 → `None` = 探针不命中）。

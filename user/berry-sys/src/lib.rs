@@ -262,6 +262,18 @@ pub extern "C" fn berry_vmar_allocate(
     }
 }
 
+/// `pager_supply_pages(vmo, src, src_off)`（0x21，G4-2 v2→v1 激活）：用户态
+/// pager 给 demand VMO 供给一页——**阻塞收货**（无武装 EL0 缺页请求时睡
+/// EL0 pager 键，fault 探针武装请求即递送）。门控：`vmo` 须 SET_POLICY
+///（`VMO_OPT_DEMAND` 创建附加权——普通 dup 面不能冒充 pager）；`src` = 0
+/// → 零页供给，否则须 Vmo+READ + `src_off` 页对齐界内 + 源页已提交
+///（供给链零缺页）。出口恒唤 faulter：供给失败 = 其重试再 fault 再武装，
+/// pager 重调本号自愈；不再调 = faulter 永久阻塞（fail loud-on-hang）。
+#[no_mangle]
+pub extern "C" fn berry_pager_supply_pages(vmo: Handle, src: Handle, src_off: u64) -> Status {
+    unsafe { sys(nr::PAGER_SUPPLY_PAGES, vmo as usize, src as usize, src_off as usize, 0, 0, 0) }
+}
+
 // —— 进程 / 线程 ——
 
 /// 双出参（`*process, *vmar`——Zircon 同形：父须拿子地址空间根才能装代码）。

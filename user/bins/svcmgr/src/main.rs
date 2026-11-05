@@ -25,13 +25,13 @@
 
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one, berry_process_create,
-    berry_process_get_exit_code, berry_process_start, berry_thread_create, berry_vmar_map,
-    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
-    berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
-    BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE,
-    RIGHT_MANAGE, RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one, berry_pager_supply_pages,
+    berry_process_create, berry_process_get_exit_code, berry_process_start, berry_thread_create,
+    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
+    berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE,
+    BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
+    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
+    SIGNAL_WRITABLE, VMO_OPT_DEMAND,
 };
 // A-2：拉起链换轨 berry-exec（「不长第二套」——spawn_rootfs_elf/channel_pair
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
@@ -67,6 +67,9 @@ const TALKER_BIN: &[u8] = include_bytes!("../../../userbins/talker.bin");
 /// T-1 §2：thrchild 镜像（进程内双线程自验子——echo/talker 同产链 pass 1
 /// 平像内嵌，零 rootfs 新条目 = 裸跑/EFI 路天然同面）。
 const THRCHILD_BIN: &[u8] = include_bytes!("../../../userbins/thrchild.bin");
+/// G4-2：dpgp 镜像（demand 装载受验子——跨进程供给形 EL0 侧，bootstrap=0
+/// 零句柄；同产链 pass 1 平像内嵌，零 rootfs 新条目）。
+const DPGP_BIN: &[u8] = include_bytes!("../../../userbins/dpgp.bin");
 /// hexyl 终验基准（d-3c）：上游 0.17.0（`user/bins/hexyl` 逐字内嵌）在
 /// 宿主以 `--color=never` 管道跑同样 256B 输入的**逐字节输出快照**（版本随
 /// Cargo.toml 钉死——升版须重产此文件，比对不等即 FAIL 是故意的）。
@@ -150,6 +153,12 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // 标记缺失（smoke FAIL 兜底）；账本不入册（hexyl 同例——PS ok n= 零
     // 漂移）。----
     thr_selftest(console);
+
+    // ---- G4-2：pager 服务首形消费自验（`DPGP ok`，rootfs 相第 47 标记）
+    // ——dpgp 内嵌镜像跨进程供给形（本服务即 pager：0x21 阻塞收货给子
+    // demand 页），bootstrap=0 零句柄形态。镜像内嵌零 rootfs 依赖 = 裸跑/
+    // EFI 路同打；链内坏面 = eco 降级行 + 标记缺失（smoke FAIL 兜底）。----
+    dpg_selftest(console);
     input_selftest(console); // GUI-4 段②：boot 期 input 域 SUBSCRIBE 自验（INPUT ok）
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
@@ -157,7 +166,7 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // serve 泵（APP_SVC READABLE——命中帧消化毕续泵至 -EAGAIN 静默）+
     // launcher 监督探活 + SPAWN 活子探活/drain（app_supervise，M-C 异步
     // 收口的稳态兑现点）。三路皆空（APP_SVC==0 且无 launcher 子且子表空
-    // ——rootfs/裸跑/重启帽尽形）= **保现状纯 echo 紧环**（47 标记零漂，
+    // ——rootfs/裸跑/重启帽尽形）= **保现状纯 echo 紧环**（48 标记零漂，
     // n=1 字面落实）；GUI 形才并等（n≤2+2×APP_SPAWN_LIVE_MAX=10：svc
     // READABLE + launcher hp TERMINATED + 每活子 out_s READABLE（drain
     // 唤醒面——EOF 后停挂）+ hp TERMINATED）——deadline =
@@ -1090,7 +1099,7 @@ fn run_rootfs_child(console: Handle) {
     // wm 域，launcher 越其身后 = 重排安全。新位三得：fsmgr 后 = fs_client
     // 在位可让、inputd 后 = INPUT_A 在位可判、监督/serve 所需端点齐。
     // 门 = WMD_CLI_DUP != 0（= wmd Ok ∧ fb 在位；rootfs 形恒 0 → **静默
-    // 跳过零新行**，47 标记零漂）。装配体 = `launcher_assemble`（boot 本
+    // 跳过零新行**，48 标记零漂）。装配体 = `launcher_assemble`（boot 本
     // arm 与监督一次重启（裁决四-d）共用形）；装配表（env base 4 +
     // extras ≤4 = 8/8 恰满，bsh 满配先例，零内核抬帽）：
     //   extras[0] wm 客户端 fresh dup（源 WMD_CLI_DUP 常驻 dup 源——每次
@@ -2352,6 +2361,162 @@ fn thr_selftest(console: Handle) {
     let mut line = [0u8; 32];
     line[..14].copy_from_slice(b"eco: thr exit ");
     let mut i = 14usize;
+    if code < 0 {
+        line[i] = b'-';
+        i += 1;
+    }
+    let mut v = code.unsigned_abs() as u64;
+    let mut dig = [0u8; 10];
+    let mut dn = 0usize;
+    loop {
+        dig[dn] = b'0' + (v % 10) as u8;
+        dn += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    while dn > 0 {
+        dn -= 1;
+        line[i] = dig[dn];
+        i += 1;
+    }
+    line[i] = b'\n';
+    send_retry(console, line.as_ptr(), i + 1);
+}
+
+// ---- G4-2：pager 服务首形消费面（`DPGP ok`，跨进程供给形） ----
+
+/// dpgp 布局（dpgp src/main.rs 头注 / link-user.ld 单源对应，改须双改）：
+/// 像窗 [0x1000,0x6000) eager（image 1 页 + 4 页零页，主 sp=0x6000 窗顶，
+/// THR_MAP_LEN 同口径缩 1 页）；demand VMO 恰 1 页 @ 0x6000（窗界外——
+/// 受验子读它必走缺页路径）。
+const DPG_MAP_LEN: usize = 0x5000;
+const DPG_ENTRY: usize = 0x1000;
+const DPG_SP: usize = 0x6000;
+/// demand 页 VA（dpgp 侧 `DPGP_VA` 同值——两文件各持 const，改须双改）。
+const DPG_VA: usize = 0x6000;
+/// 供给页首 8 字节期望值（"DPGPmagi" LE——dpgp 侧 `DPGP_MAGIC` 同值）。
+const DPG_MAGIC: u64 = 0x6967_616d_5047_5044;
+/// 期望退出码（读值对 → 7 / 错值 → 9，thrchild 同码面）。
+const DPG_OK_CODE: i32 = 7;
+/// join 应答帽 60s（THR_CAP_NS 同口径；0x21 供给步在 wait 之前已收口，
+/// 本帽只罩「子读值 → exit → TERMINATED」尾段）。
+const DPG_CAP_NS: u64 = 60 * 1_000_000_000;
+/// G4-2 标记（8 字节；rootfs 相第 47 标记〔THR(46) 后插随实发序〕，
+/// 裸跑/EFI 路同面）。
+const DPGP_OK: &[u8; 8] = b"DPGP ok\n";
+
+/// G4-2 自验：**跨进程供给形**（§1.3 exec 装载 demand 化的最小缩影——
+/// 装载器〔本服务〕即 pager）：本服务建三 VMO（源 eager 预写 magic /
+/// 像 eager / demand `VMO_OPT_DEMAND`），像 + demand 映入子 root Vmar
+///（demand 映射即内核 asid 反查登记），`process_start(..., bootstrap=0)`
+/// 零句柄拉起 dpgp → **0x21 阻塞收货**（子首触 0x6000 → EL0 探针武装
+/// 请求 → 本步收货：源页拷入供给页 → 唤子）→ 子读到 magic → exit 7。
+/// 双序天然安全：子先 fault / 本步先睡两序由 poll-first + 位锁存兜底。
+/// 供给步非 0（身份验/源读错）= 早退降级——子重 fault 再武装后无人收货
+/// = 永久阻塞（§5-⑤ fail loud-on-hang，标记缺席 = smoke FAIL 执法）。
+fn dpg_selftest(console: Handle) {
+    let mut hp = 0 as Handle;
+    let mut hv = 0 as Handle;
+    if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
+        eco_note(console, b"dpg create");
+        return;
+    }
+    // 源 VMO（防线 4：pre-commit + 预写 magic——供给链零缺页）。
+    let mut sv = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut sv) != 0 || sv == 0 {
+        eco_note(console, b"dpg sv");
+        return;
+    }
+    if berry_vmo_commit(sv, 0, 4096) != 0
+        || berry_vmo_write(sv, DPG_MAGIC.to_le_bytes().as_ptr(), 0, 8) != 0
+    {
+        eco_note(console, b"dpg svw");
+        return;
+    }
+    // 受验像 VMO（eager 全提交）。
+    let mut iv = 0 as Handle;
+    if berry_vmo_create(DPG_MAP_LEN as u64, 0, &mut iv) != 0 || iv == 0 {
+        eco_note(console, b"dpg iv");
+        return;
+    }
+    if berry_vmo_commit(iv, 0, DPG_MAP_LEN as u64) != 0
+        || berry_vmo_write(iv, DPGP_BIN.as_ptr(), 0, DPGP_BIN.len()) != 0
+    {
+        eco_note(console, b"dpg ivw");
+        return;
+    }
+    // demand VMO（bit0 = VMO_OPT_DEMAND——内核授 SET_POLICY 附加权 = 0x21
+    // 门权；首触缺页由 EL0 探针接管）。
+    let mut dv = 0 as Handle;
+    if berry_vmo_create(4096, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
+        eco_note(console, b"dpg dv");
+        return;
+    }
+    // 像窗 + demand 页映入子 root Vmar（demand 映射触发内核 asid 反查
+    // 登记——探针第一段的供给可达性由此建立）。
+    let mut vaddr = DPG_ENTRY;
+    if berry_vmar_map(hv, 0, iv, 0, &mut vaddr, DPG_MAP_LEN, RIGHT_READ | RIGHT_WRITE) != 0 {
+        eco_note(console, b"dpg imap");
+        return;
+    }
+    let mut dva = DPG_VA;
+    if berry_vmar_map(hv, 0, dv, 0, &mut dva, 4096, RIGHT_READ | RIGHT_WRITE) != 0 {
+        eco_note(console, b"dpg dmap");
+        return;
+    }
+    let mut ht = 0 as Handle;
+    if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
+        eco_note(console, b"dpg tc");
+        return;
+    }
+    // 零句柄形态：bootstrap=0（dpgp 不建线程不碰对象，x0=0）。
+    if berry_process_start(hp, ht, DPG_ENTRY, DPG_SP, 0) != 0 {
+        eco_note(console, b"dpg start");
+        return;
+    }
+    // 0x21 阻塞收货：无武装请求即睡（子首触武装后唤醒本步）；供给毕恒
+    // 唤子（失败亦唤——子重 fault 再武装，本步非 0 早退即 fail loud）。
+    if berry_pager_supply_pages(dv, sv, 0) != 0 {
+        eco_note(console, b"dpg sup");
+        return;
+    }
+    // 子读到 magic → exit 7 → TERMINATED（0x21 返 0 = 供给页已就位，本等
+    // 只罩尾段——60s 宽帽）。
+    let mut obs = 0u64;
+    if berry_object_wait_one(hp, SIGNAL_TERMINATED, now() + DPG_CAP_NS, &mut obs) != 0
+        || obs != SIGNAL_TERMINATED
+    {
+        eco_note(console, b"dpg join");
+        return;
+    }
+    let mut code: i32 = 0;
+    if berry_process_get_exit_code(hp, &mut code) != 0 {
+        eco_note(console, b"dpg code");
+        return;
+    }
+    // 收口回收（thr_selftest 同序）：先 unmap 像窗 + demand 页（Demand 区间
+    // unmap 同收割、mapcnt 归零）再关 vmo；dv 已供给页随 unmap 解除映射。
+    if berry_vmar_unmap(hv, DPG_VA, 4096) != 0
+        || berry_vmar_unmap(hv, DPG_ENTRY, DPG_MAP_LEN) != 0
+        || berry_handle_close(dv) != 0
+        || berry_handle_close(sv) != 0
+        || berry_handle_close(iv) != 0
+        || berry_handle_close(ht) != 0
+        || berry_handle_close(hp) != 0
+        || berry_handle_close(hv) != 0
+    {
+        trap(); // 已 TERMINATED 的收口面，非 0 = 内核侧异常，loud
+    }
+    if code == DPG_OK_CODE {
+        send_retry(console, DPGP_OK.as_ptr(), DPGP_OK.len());
+        return;
+    }
+    // 错码降级行：`eco: dpgp exit <n>\n`（thr_selftest 同款手排十进制）。
+    let mut line = [0u8; 32];
+    line[..15].copy_from_slice(b"eco: dpgp exit ");
+    let mut i = 15usize;
     if code < 0 {
         line[i] = b'-';
         i += 1;

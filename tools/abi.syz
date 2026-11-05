@@ -22,6 +22,7 @@ type berry_time uint64
 #   CLOCK_MONOTONIC = 0
 # options 位（未知位一律 -EINVAL）:
 #   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)
+#   VMO_OPT_DEMAND = 1 << 0  (0x1)
 # rights 位（berry_rights；权限在 handle 不在对象）:
 #   BERRY_RIGHT_READ = 1 << 0  (0x1)
 #   BERRY_RIGHT_WRITE = 1 << 1  (0x2)
@@ -57,7 +58,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 34 号、已实现 33；
+# ---- syscall 入口（§4 编号表全量在册；v1 35 号、已实现 34；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -106,7 +107,12 @@ vmo_get_size(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **pager**
-# 0x21 pager_supply_pages（v2·未实现）——用户态 pager 给 VMO 填页
+# 0x21 pager_supply_pages（v1）——用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移）
+#   note: G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
+#   裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
+#   pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款）+ 唤 faulter。
+#   源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
+#   （§5-⑤ 裁决）。
 pager_supply_pages(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x22 pager_op_range（v3·未实现）——脏页/换出通知
 pager_op_range(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)

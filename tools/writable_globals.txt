@@ -7,6 +7,7 @@ arch/aarch64/src/fwcfg.rs::RAMFB_CFG	arch
 arch/aarch64/src/kern_lock.rs::PREEMPT_ENVELOPE	scheduler
 arch/aarch64/src/kern_lock.rs::SVC_WINDOW	scheduler
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE	arch
+arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE_EL0	arch
 arch/aarch64/src/lib.rs::IRQ_DISPATCH	arch
 arch/aarch64/src/lib.rs::SGI_DISPATCH	arch
 arch/aarch64/src/lib.rs::SVC_EXIT_CHECKPOINT	arch
@@ -33,6 +34,7 @@ arch/x86_64/src/main.rs::STACK_A	boot
 arch/x86_64/src/main.rs::STACK_B	boot
 arch/x86_64/src/main.rs::TSS	boot
 kernel/src/aspace.rs::ASIDS	page-table
+kernel/src/dpg.rs::SUPPLY_BUF	other
 kernel/src/main.rs::BSH_IN_H	boot
 kernel/src/main.rs::FB_PIPE_H	boot
 kernel/src/main.rs::INTENT_H	boot

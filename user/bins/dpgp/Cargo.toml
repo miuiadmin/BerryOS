@@ -1,0 +1,16 @@
+[package]
+name = "dpgp"
+version = "0.1.0"
+edition = "2021"
+# G4-2（pager 服务首形）demand 装载受验子：跨进程供给形的 EL0 侧——
+# hello/thrchild 同款 no_std berry-sys 裸 bin，走 elf2flat 平像产链
+#（include_bytes 内嵌 svcmgr，非 cpio——零 rootfs 新条目）。**零句柄形态**
+#（bootstrap=0，x0=0）：入口直读 demand VA（供给前无翻译 → EL0 探针 →
+# 武装请求 → svcmgr 0x21 阻塞收货供给 → 唤醒 → eret 重试）→ 读值 ==
+# pager 源页 magic → exit 7；错值 exit 9。父侧按退出码打 `DPGP ok`
+# / `eco: dpgp exit <n>`（src/main.rs 头注）。
+description = "BerryOS demand-paging EL0 acceptance child (flat image embedded in svcmgr)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }

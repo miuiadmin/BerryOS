@@ -412,14 +412,14 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
                 tf.elr = tf.elr.wrapping_add(4);
                 return;
             }
-            // G4-1：EL0 D-abort 同插 demand 探针（canary 之后、杀链 svc_enter
-            // 之前）。G4-1 无 EL0 demand 区间 = 探针恒 false 零行为漂移
-            //（miss 路径零锁——两段式第一段锁外快拒）；G4-2 pager 服务
-            // 激活后面即此臂。EL0 异常 taken-to-higher-EL 自动屏蔽
-            // PSTATE.I（与 same-EL 0x25 臂不同）；命中臂屏蔽/KL 窗由探针
-            // 实现方自管（三镜 P2-2①）。
+            // G4-2：EL0 D-abort 走 **EL0 专用探针槽**（§5-③ 裁决：与
+            // current-EL 臂分流——arm 侧武装 EL0 请求槽 + 唤 EL0 pager 键，
+            // 内核 dpg_pager 对不劫 EL0 请求）。canary 之后、杀链 svc_enter
+            // 之前——快路径零锁；未注册/未命中/非翻译缺页（esr 自滤 fsc）
+            // 恒 false = 原杀链不变量保持。EL0 异常 taken-to-higher-EL
+            // 自动屏蔽 PSTATE.I；SMP KL 窗由探针实现方自管（P2-2①）。
             // SAFETY: 同步异常上下文；槽 boot 屏蔽窗注册。
-            if ec == 0x24 && unsafe { crate::demand_fault_probe(tf.esr as usize, tf.far as usize) } {
+            if ec == 0x24 && unsafe { crate::demand_fault_probe_el0(tf.esr as usize, tf.far as usize) } {
                 return; // 槽内已完成 pager 协议——eret 重试
             }
             // S-2 E0（草案 3.1-2）→ S-3c c-2c slice 2b 全量形：EL0 fault kill

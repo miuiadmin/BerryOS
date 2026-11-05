@@ -2,7 +2,7 @@
 # BerryOS S-2b 副核参与冒烟——八相（`SMP-S2实施设计草案.md` §5.1 起，相
 # 3-8 = S-3b/S-4/S-5b/S-5c 逐相增扩；smoke-x86 同款独立形态——不并入主 smoke、
 # 不进 CI：主 smoke 八跑是单核回归基线，零扰动）。相 1 = 裸相（28 标记 +
-# SMP 握手）；相 2 = rootfs 生态相（47 标记 + 对拍 client 对 + PAR 副核参
+# SMP 握手）；相 2 = rootfs 生态相（48 标记 + 对拍 client 对 + PAR 副核参
 # 与活证）——rootfs 全链在 `-smp 2` 下绿 = E0「内核串行/用户并行」语义
 # 等价的端到端证据；相 3-8 = 专项门（LB/ASIDR/TLBS/ALLOC/HT/PP——各独立
 # boot，断言面见各相段注释与 `docs/规则/07-测试与冒烟.md`）。
@@ -25,7 +25,7 @@
 #      `SGI2 ok n=` 恰一次（CPU0→CPU1 SGI_TLB_SHOOTDOWN 单发 → 副核收端臂
 #      全量失效+回执计数；同归 smp_assertions——前缀 SGI2/SGI3 与 `SGI ok`
 #      互不子串、断言面零碰撞，单核相 TX 恒 0 主 smoke 零漂移）。
-#   2. 相 1 裸相 28 标记 / 相 2 rootfs 相 47 标记全部出现（与主 smoke 同面
+#   2. 相 1 裸相 28 标记 / 相 2 rootfs 相 48 标记全部出现（与主 smoke 同面
 #      ——标记数组与 smoke.sh 运行时计数对拍，见下方机器守卫）。
 #   3. switches 金丝雀 ≥3 条严格递增**按相**（任核 tick 命中 100 倍数即整行
 #      持 PRINT_LOCK 打印——两核交替打印不破坏数值序列单调，§5.2）。
@@ -357,7 +357,7 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
-# ============ 相 2：rootfs 生态相（47 标记 + 对拍 client + PAR 活证） ============
+# ============ 相 2：rootfs 生态相（48 标记 + 对拍 client + PAR 活证） ============
 
 # rootfs 卷前置检查（§5.1 随迁件②：justfile smoke-smp 已挂 build-user 依赖；
 # 手跑裸脚本时缺产物 = loud 快败，不烧 840s DEADLINE 才红）。

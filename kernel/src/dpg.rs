@@ -1,6 +1,6 @@
-//! G4-1 demand paging 内核机制最小面（`G4按需调页实施设计草案.md` §4 刀序）。
+//! G4-1/G4-2 demand paging 内核面（`G4按需调页实施设计草案.md` §4 刀序）。
 //!
-//! 闭环形状（**无 EL0 pager 服务、无 0x21**——机制面独立验收）：
+//! G4-1 闭环形状（内核任务自喂——机制面独立验收）：
 //!
 //! ```text
 //! faulter（内核任务，自带 AS + demand 区间）首触 VA
@@ -27,6 +27,11 @@
 //! 舞蹈放锁入队、醒后重取——睡不持锁（§2.3① 语义保持）；pager 供给全链
 //! KL 窗内（SVC vmar_map 同构，§2.3②）；填叶 pt_lock 嵌 KL 正序、
 //! broadcast 只发不待（§2.3③）；pager 单线程首形（§2.3④）。
+//!
+//! G4-2 增 EL0 面（§5-③ 裁决：0x21 阻塞收货）：EL0 D-abort 探针武装
+//! EL0 请求槽 + 唤 EL0 pager 键；用户态 pager 经 `pager_supply_pages`
+//! (0x21) poll-first 收货（无请求睡 pager 键）→ 供给 → 唤 faulter。
+//! 与 EL1 面分槽分键（内核 pager 对不劫 EL0 请求）。
 
 use crate::mm;
 use crate::vmar::{self, Perm, Vmar};
@@ -125,6 +130,90 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     true
 }
 
+// ---- G4-2 EL0 面（§5-③ 裁决：0x21 阻塞收货——请求单槽照旧 + 专用键；
+// 与 EL1 面分槽，内核 dpg_pager 不劫 EL0 请求。arm 侧按臂唤不同键。）----
+
+static EREQ_FAR: AtomicU64 = AtomicU64::new(0);
+static EREQ_ASID: AtomicU16 = AtomicU16::new(0);
+static EREQ_ARMED: AtomicBool = AtomicBool::new(false);
+
+static EFAULT_KEY: u8 = 0; // EL0 faulter 睡此（探针内；0x21 供给毕唤醒）
+static EPAGER_KEY: u8 = 0; // EL0 pager 睡此（0x21 无请求时；探针武装后唤醒）
+
+/// EL0 fault 探针（hal 第二槽 `*_el0`；`exception_sync_el0` D-abort 臂）。
+/// 协议 = [`probe`] 的 EL0 镜像（两段式 + KL 窗 + fsc 滤同款）：武装 EL0
+/// 请求槽 + 唤 EL0 pager 键 + 睡 EL0 fault 键——唯一唤醒者 = 0x21 供给毕
+///（§5-⑤：pager 不再收货 = 永久阻塞，fail loud-on-hang）。EL0 异常
+/// taken-to-higher-EL **自动**屏蔽 PSTATE.I（与 same-EL 臂的差异）——KL
+/// 窗仍取（SMP 与 0x21 供给窗的互斥面同 [`probe`]，P2-2①）。
+unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
+    // DFSC = ESR[5:0]（同 [`probe`]——ISS 低 6 位直达，勿移位）。
+    if !matches!(esr & 0x3f, 4..=7) {
+        return false; // 非翻译缺页——原杀链
+    }
+    let asid = hal::current_asid();
+    let Some(root) = vmar::demand_root(asid) else {
+        return false; // KL 外零锁快拒（rogue fault 不付全谱窗）
+    };
+    hal::kern_lock::klock_enter();
+    // SAFETY: 同 [`probe`]——登记面常驻；regions 权威重验在本 KL 窗内。
+    if unsafe { (*root).demand_region_at(far).is_none() } {
+        hal::kern_lock::klock_exit();
+        return false;
+    }
+    // 命中：武装 + 唤 pager + 睡（时序合同同 [`probe`]——Release 收口后
+    // far/asid 对 0x21 Acquire 侧必可见；全 KL 窗）。
+    EREQ_FAR.store(far as u64, Ordering::Relaxed);
+    EREQ_ASID.store(asid, Ordering::Relaxed);
+    EREQ_ARMED.store(true, Ordering::Release);
+    berry_sched::wake_matching(&EPAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
+    let r = berry_sched::block_current(
+        &EFAULT_KEY as *const u8 as usize,
+        DPG_WAKE_BIT,
+        u64::MAX,
+    );
+    hal::kern_lock::klock_exit();
+    assert!(
+        matches!(r, berry_sched::WakeReason::Signaled),
+        "dpg probe_el0: 醒因非 Signaled（EL0 fault 键无超时/无他者——唤醒面破损）"
+    );
+    true
+}
+
+// ---- 0x21 面小件（syscall.rs `sys_pager_supply_pages` 用；键/槽私有，经
+// 函数面外借——SVC 面不触裸键纪律）----
+
+/// 取走武装请求（consume-on-read，dpg_pager swap 同款）——单核 SVC 屏蔽
+/// 窗内调用（探针写点在异常上下文同核，KL 窗 = 无并发窗口）。
+pub(crate) fn el0_take() -> Option<(usize, u16)> {
+    if EREQ_ARMED.swap(false, Ordering::Acquire) {
+        Some((EREQ_FAR.load(Ordering::Relaxed) as usize, EREQ_ASID.load(Ordering::Relaxed)))
+    } else {
+        None
+    }
+}
+
+/// EL0 pager 等待键（0x21 阻塞收货的睡点）。
+pub(crate) fn el0_pager_key() -> usize {
+    &EPAGER_KEY as *const u8 as usize
+}
+
+/// 唤 EL0 faulter（0x21 出口恒唤——成功 = eret 命中新叶；失败 = 重试再
+/// fault 再武装，pager 重调 0x21 自愈；不再调 = 永久阻塞 §5-⑤）。
+pub(crate) fn el0_wake_faulter() {
+    berry_sched::wake_matching(&EFAULT_KEY as *const u8 as usize, DPG_WAKE_BIT);
+}
+
+/// 0x21 源拷贝缓冲（4K 静态：ADR #9 零分配 + SVC 栈预算——KL 窗内单核
+/// 独占，无重入面）。
+static mut SUPPLY_BUF: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+
+/// 借源拷贝缓冲（独占窗 = 调用方 KL 持有期，单核串行）。
+pub(crate) fn supply_buf() -> &'static mut [u8] {
+    // SAFETY: 仅 sys_pager_supply_pages KL 窗内借用；单核屏蔽串行无并发面。
+    unsafe { &mut *core::ptr::addr_of_mut!(SUPPLY_BUF) }
+}
+
 /// 测试 pager（内核态首形）：poll-first 收请求 → 供给 → 唤 faulter → 回睡。
 extern "C" fn dpg_pager(_arg: usize) -> ! {
     loop {
@@ -206,9 +295,12 @@ pub fn init() {
         ));
     vmar.map_demand(vmo, DEMAND_VA, 0, PAGE_SIZE, Perm::Rw)
         .expect("dpg: map_demand");
-    vmar::register_demand_root(asid, core::ptr::from_mut(vmar));
-    // 探针注册（boot DAIF 屏蔽窗——首个可能触 demand 访问的任务调度前）。
+    vmar::register_demand_root(asid, core::ptr::from_mut(vmar))
+        .expect("dpg: 登记 demand root（G4-2 Result 化——boot 面满表/冲突即响雷）");
+    // 探针注册（boot DAIF 屏蔽窗——首个可能触 demand 访问的任务调度前）；
+    // G4-2：EL0 臂第二槽（process demand 装载面由此臂服务）。
     hal::set_demand_fault_probe(probe);
+    hal::set_demand_fault_probe_el0(probe_el0);
     // pager 先入队（faulter 首触时 pager 在席；双序竞速由 poll-first 兜底）。
     berry_sched::spawn(dpg_pager, 0, b"dpg_pager");
     berry_sched::spawn_as(dpg_faulter, 0, b"dpg_flt", vmar.ttbr0_pa(), vmar.asid());

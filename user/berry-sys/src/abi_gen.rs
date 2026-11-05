@@ -45,6 +45,11 @@ pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 /// 的 recv 不结算 intent（QNX `_NTO_CHF_FIXED_PRIORITY` 等价，系统服务/看门狗
 /// 类 server 逃生门）。其余位保留（非 0 尾 → -EINVAL，options 纪律）。
 pub const CHAN_OPT_NO_INTENT: u32 = 1 << 0;
+/// `vmo_create` options bit0（G4-2，§5-① 裁决）：按需后备 VMO——创建即
+/// demand 对象属性 + 额外授 RIGHT_SET_POLICY（在册未消费位首消费；0x21 pager 面
+/// 门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
+/// 其余位保留（非 0 尾 → -EINVAL，options 纪律）。
+pub const VMO_OPT_DEMAND: u32 = 1 << 0;
 /// `clock_read` 的 clock_id：v1 只有单调钟（壁钟留 v2）。
 pub const CLOCK_MONOTONIC: u32 = 0;
 
@@ -100,6 +105,8 @@ pub(crate) mod nr {
     pub(crate) const VMO_GET_SIZE: usize = 0x1A;
     /// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
     pub(crate) const VMO_GET_PHYS: usize = 0x1B;
+    /// G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
+    pub(crate) const PAGER_SUPPLY_PAGES: usize = 0x21;
     pub(crate) const PROCESS_CREATE: usize = 0x31;
     pub(crate) const PROCESS_START: usize = 0x32;
     /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。

@@ -23,13 +23,14 @@ default: run
 # + 各 bin 自带链接脚本（build.rs 绝对路径注入）——**免 nightly**（custom target
 # 推迟到确需 target 级差异再上，草案 D1 修订）。elf2flat.py 解 PT_LOAD 出平像
 # 并补零到页（.bss 覆盖在文件侧兑现）。两遍构建（G-eco-b）：pass 1 先产
-# echo/talker/thrchild 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes!
+# echo/talker/thrchild/dpgp 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes!
 # 内嵌（单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序
 # 4096（2 页映射 [0x1000,0x3000) 里首页装镜像、次页是栈——越页即吃栈）；
 # svcmgr 131072 = UserProcess::build 的 D3 帽（A7-4 段② 64→128KiB 同步抬
 # ——libc 信号面并入后平像 69.6KB 超 64KiB 旧帽）；T-1 thrchild 16384（4 页墙
 # ——t2 栈 2048B 内嵌 .bss 与代码共页，平像恰 1 页；镜像最大 4 页时 svcmgr
-# 映射窗 [0x1000,0x7000) 的主栈区仍余 2 页）。内核侧产物 kernel/src/userbins/
+# 映射窗 [0x1000,0x7000) 的主栈区仍余 2 页）；G4-2 dpgp 8192（2 页墙——零
+# 句柄受验子像 1 页）。内核侧产物 kernel/src/userbins/
 # *.bin gitignored：缺产物 = 内核 include_bytes 编译期炸响（loud not
 # silent），故 build/check/run-release/size-release 都依赖本配方。
 # CARGO_TARGET_DIR 显式钉 user/cargo-target：防交互环境（全局 target-dir
@@ -47,7 +48,7 @@ build-user:
     # → 显式清空还原用户仓 codegen（零漂移；musl 面本就无旗）。
     export RUSTFLAGS=""
     cd user
-    CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker -p thrchild
+    CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker -p thrchild -p dpgp
     mkdir -p userbins ../kernel/src/userbins
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/echo \
@@ -60,6 +61,12 @@ build-user:
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/thrchild \
         userbins/thrchild.bin --max 16384
+    # G4-2：dpgp（demand 装载受验子——跨进程供给形 EL0 侧，bootstrap=0 零
+    # 句柄；2 页墙 = 像 1 页 + 头寸，像窗 [0x1000,0x6000) 外 0x6000 起
+    # demand 页由 svcmgr dpg_selftest 另映）。同产链内嵌 svcmgr。
+    python3 ../tools/elf2flat.py \
+        cargo-target/aarch64-unknown-none/release/dpgp \
+        userbins/dpgp.bin --max 8192
     CARGO_TARGET_DIR=cargo-target cargo build --release
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/abuser \
