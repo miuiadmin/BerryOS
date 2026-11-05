@@ -150,11 +150,14 @@ struct Region {
     start: usize,
     len: usize,
     kind: RegionKind,
-    /// `Mapped`：指向映射的 Vmo（`map` 经 `&mut` 传入）。**指针有效性依托三条
-    /// 政策**：handle 表路径 close/replace 对映射中 VMO 拒 -EBUSY（对象不可
-    /// 销毁）；drain（进程退出清表）对 refs 将归零的映射中 VMO **整对象泄漏**
-    /// 不递减（handle.rs 对抗审查修——无拒面则用泄漏兜住本指针）；boot/ktest
-    /// 直构对象由调用方保证生存期（v1 泄漏持有——见 `user.rs`）。
+    /// `Mapped`/`Demand`：指向关联的 Vmo（`map`/`map_demand` 经 `&mut`
+    /// 传入）。**指针有效性依托三条政策**：handle 表路径 close/replace 对
+    /// 映射中 **或 demand 登记中** VMO 拒 -EBUSY（判据
+    /// `any_mapped() || demand_mapped()`——demand 分量 = G4-2 修批 P0-1
+    /// 面 a/c：未供给页 mapcnt 恒 0 而指针已活，独立钉住）；drain（进程
+    /// 退出清表）对同判据的 refs 将归零 VMO **整对象泄漏**不递减（handle.rs
+    /// 对抗审查修——无拒面则用泄漏兜住本指针）；boot/ktest 直构对象由
+    /// 调用方保证生存期（v1 泄漏持有——见 `user.rs`）。
     /// `Reserved` 恒 null。
     vmo: *mut Vmo,
     /// `Mapped`：本区间对应 VMO 内偏移（unmap 回调映射计数用）。
@@ -340,9 +343,11 @@ impl Vmar {
     /// 叶、零帧分配**（中间表留待供给时按需建）。VMO 须 demand 后备
     /// （[`crate::vmo::Vmo::is_demand`]——混投 eager VMO 显式拒
     /// [`VmarError::VmoNotCommitted`]，语义 = 「此 VMO 不是按需后备」）。
-    /// 成功后**不** track_map（记账起点 = 供给填叶成功时，§5-⑥ 裁决）。
-    /// fault 语境的反查经 [`register_demand_root`] 全局登记表（本 AS 有
-    /// demand 区间方可被探针命中）。
+    /// 成功后**不** track_map（记账起点 = 供给填叶成功时，§5-⑥ 裁决）但
+    /// **track_demand**（G4-2 修批 P0-1：Region 裸指针存续期钉活 VMO——
+    /// 区间登记即取，未供给页同样算）。fault 语境的反查经
+    /// [`register_demand_root`] 全局登记表（本 AS 有 demand 区间方可被探针
+    /// 命中）。
     ///
     /// 返回映射基 VA。错误集 = 纯校验面（`Unaligned`/`OutOfBounds`/`Overlap`
     /// /`NoMem`）——无副作用中途态，无回滚臂。
@@ -376,6 +381,9 @@ impl Vmar {
             vmo: vmo as *mut Vmo,
             vmo_off: vmo_offset,
         });
+        // 区间登记即钉（G4-2 修批 P0-1）：Region 裸指针已指 vmo——供给前
+        // close(vmo) 的销毁面由本钉拦下（handle 层判据第二分量）。
+        vmo.track_demand(len);
         Ok(vaddr)
     }
 
@@ -462,16 +470,22 @@ impl Vmar {
         // per-AS PT 锁（S-4 4-2①），整方法串行（同 map）。
         let _pt = pt_lock(self.asid);
         let idx = self.find_exact(vaddr, len)?;
-        // SAFETY: Region 的 vmo 指针经 map 的 &mut 传入；有效性依托两层政策
-        // （见 Region 注释：handle 层 close -EBUSY 拒面 + drain 泄漏兜底）。
+        // SAFETY: Region 的 vmo 指针经 map/map_demand 的 &mut 传入；有效性
+        // 依托 Region 注释三条政策（close/replace -EBUSY 拒面〔含 demand 钉〕
+        // + drain 同判据泄漏兜底 + 直构面生存期）。
         // 并发面（S-4 4-2 起 SMP，原「单核 + IRQ 屏蔽」假设退役）：本方法
         // 全程 PT 锁 + KL 双串行——同 AS 他核写者被 PT 锁挡；同 VMO 映两 AS
-        // 的跨核 untrack_map 被 KL 挡；对象销毁被 -EBUSY 挡在 PTE 外。
-        // demand 区间（G4-1）整体 untrack 安全：track_map 只在供给成功时
-        // +1（§5-⑥），未供给页 saturating_sub(0) 零动作——防线自洽。
+        // 的跨核 untrack 被 KL 挡；对象销毁被 -EBUSY 挡在 PTE 外。
+        // demand 区间（G4-1 起）**双记账**（G4-2 修批 P0-1）：mapcnt 收供给
+        // 页（track_map 只在供给成功时 +1，§5-⑥——未供给页 saturating_sub(0)
+        // 零动作）；demand 钉收整区间（Region 即死，钉即放——部分供给区间
+        // 两者各收各的，正交）。
         unsafe {
             let r = &self.regions[idx];
             (*r.vmo).untrack_map(r.vmo_off, r.len);
+            if matches!(r.kind, RegionKind::Demand(_)) {
+                (*r.vmo).untrack_demand(r.len);
+            }
         }
         self.clear_leaves(vaddr, len / PAGE_SIZE);
         // SAFETY: 特权指令；EL1。改叶对走查可见 + 旧 TLB 项作废。
@@ -620,16 +634,17 @@ impl Vmar {
 // 只剩「对象指针」一项；全局小表零 sched 改动、boot 直构/handle 表两语境
 // 同形（task 字段对 handle 表 Vmar 还要解决装/卸窗）。
 //
-// 形：16 槽定长线性扫（boot 语境 demand AS 个位数；探针未命中 16 次原子
-// 载入 ≈ 数十周期——fault 快路径可受）。**只登记不注销**（v1 boot-held：
-// 登记者 = 对象生存期保证人，map_demand 的调用方持有 Vmar 同寿；G4-3
-// 压测/进程回收刀再裁注销面）。ASID 0 = 空槽哨兵（分配器从 1 起）。
+// 形：16 槽定长线性扫（探针未命中 16 次原子载入 ≈ 数十周期——fault 快路径
+// 可受）。**注销面已落**（G4-2 修批 P0-1 面 b：[`Vmar::Drop`] 在 KL 窗清槽
+// ——槽生命周期 = 对象生命周期，16 槽可回收，无「系统终身 16 进程」帽）；
+// 登记面含会退出的进程/子 Vmar（dpg_selftest、process 组装）——安全性不
+// 依托「登记者不退出」，依托**钉住**（demand 区间存续期 Vmo 被
+// `demand_mapped` 钉活）+ **注销**（Drop 先于对象释放清槽，槽永指活对象；
+// 探针锁外读降 hint、窗内重查为权威）。ASID 0 = 空槽哨兵（分配器从 1 起）。
 //
-// C-4（G4-1 三镜 declare）：16 槽只进不出 × ASID 回卷（S-4 4-3 quiesce 窗
-// 回收复用）——回卷 asid 复用而旧登记未注销 = 反查拿到旧 root 悬垂。v1
-// 生存期帽兜底：登记面 = boot-held + 常驻 rootfs 关卡进程（不退出），
-// alloc_asid 回卷距离（计数域耗尽）在 v1 关卡时长内不可达；G4-3 档把
-// 「注销面 or 回卷核验」随压测刀一并裁决。
+// C-4 闭案（G4-1 三镜立案「16 槽只进不出 × ASID 回卷」→ 修批结构性解除）：
+// 旧 AS 的 Vmar 销毁即注销（[`deregister_demand_root`] asid+ptr 双匹配），
+// 回卷复用同号时旧登记已清——同 asid 双活由 `OwnerConflict` 防御拒兜底。
 
 /// 登记槽数（boot/测试语境上界；满 = 后续登记失败 fail loud）。
 const DEMAND_ROOT_SLOTS: usize = 16;
@@ -679,16 +694,81 @@ pub fn register_demand_root(asid: u16, root: *mut Vmar) -> Result<(), DemandRoot
 }
 
 /// 反查 asid → root Vmar（fault 探针用；未登记 → `None` = 探针不命中）。
+/// **stage-1 hint-only 口径**（G4-2 修批后）：注销面已存在（[`Vmar::Drop`]）
+/// ——锁外读得的指针不保证仍活，调用方只可当「值得入锁一查」的快路径
+/// hint 消费（miss 零锁即拒仍安全：注销先于对象释放）；**权威取值 = KL
+/// 窗内重查**（探针 stage-2 / 0x21 供给窗——窗内查得即窗内活，注销与释放
+/// 都在 KL 窗内发生，他核注销须先取同把 KL）。
 pub fn demand_root(asid: u16) -> Option<*mut Vmar> {
     if asid == 0 {
         return None;
     }
     for (a, p) in DEMAND_ROOTS.iter() {
         if a.load(Ordering::Acquire) == asid {
-            return Some(p.load(Ordering::Acquire) as *mut Vmar);
+            let ptr = p.load(Ordering::Acquire);
+            if ptr != 0 {
+                return Some(ptr as *mut Vmar);
+            }
+            // 锁外读者可见的注销半态（deregister 先清 asid 后清 ptr 的镜像
+            // 序）：X+0 按 miss 处理——hint 面零解引用，窗内重查给真值。
         }
     }
     None
+}
+
+/// 注销 asid → root Vmar（G4-2 修批 P0-1 面 b——[`Vmar::Drop`] 收口调用，
+/// 登记槽不再指向已释放对象）。**asid+ptr 双匹配**才清（asid 复用后旧
+/// root 的注销不得误清新登记）；置零次序 = **asid 先清（Release）后 ptr**
+/// （卫生序——锁外读者要么见 asid 消失即止步，要么见 X+0 半态按 miss
+/// 处理，永不见「新 asid + 旧 ptr」）。调用方须持 KL 窗（与登记、探针
+/// stage-2 同锁域互斥——注销与对象释放在同窗内完成，探针窗内查得即
+/// 窗内活）。
+pub fn deregister_demand_root(asid: u16, root: *mut Vmar) {
+    for (a, p) in DEMAND_ROOTS.iter() {
+        if a.load(Ordering::Acquire) == asid && p.load(Ordering::Acquire) == root as usize {
+            a.store(0, Ordering::Release);
+            p.store(0, Ordering::Release);
+            return;
+        }
+    }
+}
+
+impl Drop for Vmar {
+    /// 对象销毁收口（G4-2 修批 P0-1 面 b——**单点执法**，覆盖 handle 表
+    /// 三释放点 close/replace/drain 的 `drop(Box::from_raw)`）：①注销 asid
+    /// 反查槽（DEMAND_ROOTS 永不指已释放对象——探针 stale 命中由此消源）；
+    /// ②走查 regions 放 demand 钉（Demand 区间 untrack_demand——Region
+    /// 即死）。v1 不回收表树帧（模块头政策）故无表清理面。
+    ///
+    /// **mapcnt 不动（刻意的正交不对称）**：残留 PTE 政策在先——表树帧
+    /// v1 不回收、已供给页 PTE 仍指 PA，mapcnt 的职责 = 防「该页 PA 复用
+    /// 经残留 PTE 写坏新主人」，页-PA 关系不随 Region 死而消失
+    /// （[`crate::vmo::Vmo`] Drop 的 mapcnt==0 还帧判据继续有效）；demand
+    /// 钉的职责 = Region 裸指针存续期，Region 死即放。两者职责正交，
+    /// 不对称是正确的对称。
+    ///
+    /// 锁：注销 + 走查须 KL 窗（与登记、探针 stage-2 同锁域）。三释放点
+    /// 锁态不一——SVC 类（handle_close 0x2E、replace 0x36、drain 所属退出
+    /// 链）KL 在身；boot/ktest 直构对象的 Drop 在窗外——由 `kl_held()` 门
+    /// 吸收：未持才物理取放（kern_acquire 非计数锁，同核重入自旋死锁——
+    /// 门形 = kern_lock.rs 官方重入判据）。
+    fn drop(&mut self) {
+        let held = hal::kern_lock::kl_held();
+        if !held {
+            hal::kern_lock::kern_acquire();
+        }
+        deregister_demand_root(self.asid, self as *mut Vmar);
+        for r in self.regions.iter() {
+            if matches!(r.kind, RegionKind::Demand(_)) {
+                // SAFETY: 对象销毁中（Drop 后无任何读者经本对象到达
+                // regions）；与 unmap 的收 Demand 区间同款记账。
+                unsafe { (*r.vmo).untrack_demand(r.len) };
+            }
+        }
+        if !held {
+            hal::kern_lock::kern_release();
+        }
+    }
 }
 
 /// 只读走查任意表树的 L3 叶描述符（3-2：syscall copy 路径的用户缓冲校验——

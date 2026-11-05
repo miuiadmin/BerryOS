@@ -444,14 +444,15 @@ pub fn soakload_churn_readout() -> u64 {
 /// options：bit0 = `VMO_OPT_DEMAND`（G4-2，§5-① 裁决）——按需后备 VMO
 /// （demand 对象属性，映射走 vmar_map 对象级分流 map_demand，首触缺页由
 /// EL0 pager 经 0x21 供给）+ **额外授 SET_POLICY**（0x21 门权——普通 dup
-/// 面不能冒充 pager）；其余位 → -EINVAL（options 纪律）。`size` 上限
-/// [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
+/// 面不能冒充 pager）；其余位 → -EINVAL（options 纪律；**全宽 u64 检**，
+/// G4-2 修批 MECH-2——x2 高 32 位不截断，channel_create 同口径）。
+/// `size` 上限 [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
 extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
-    let (size, options, out) = (tf.regs[1] as usize, tf.regs[2] as u32, tf.regs[3]);
-    if options & !(VMO_OPT_DEMAND as u32) != 0 {
+    let (size, options, out) = (tf.regs[1] as usize, tf.regs[2], tf.regs[3]);
+    if options & !VMO_OPT_DEMAND != 0 {
         return ERR_INVALID_ARG as i64;
     }
-    let demand = options & (VMO_OPT_DEMAND as u32) != 0;
+    let demand = options & VMO_OPT_DEMAND != 0;
     if size == 0 {
         return ERR_INVALID_ARG as i64;
     }
@@ -731,8 +732,11 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
     //（首触缺页走 EL0 探针 → 0x21 供给）；eager VMO 原路径逐位不变（全
     // 提交执法点在 `Vmar::map` 内）。perm 同为 UserRw（供给叶取区间登记权）。
     // demand 分支另登记 asid 反查表（§5-④——探针第一段 TTBR0 现读 asid →
-    // root Vmar 的唯一来源）；**先登记后映射**：登记失败零副作用早返，映射
-    // 失败留幂等残项无害（探针 stage-2 region 查 miss → 原杀链）。
+    // root Vmar 的唯一来源）；**先登记后映射**：登记失败零副作用早返。映射
+    // 失败留幂等残项（同 (asid, root) 重试 map 复占同槽）——G4-2 修批后
+    // 语义改口（MECH-3 翻案）：残项**不再是终身占位**（`Vmar::Drop` 注销面
+    // 已落，槽随对象销毁可回收），stale 残项最坏 = 探针 stage-2 region 查
+    // miss → 原杀链。
     let r = if vmo.is_demand() {
         match crate::vmar::register_demand_root(vmar.asid(), vmar as *mut Vmar) {
             Ok(()) => vmar.map_demand(vmo, req as usize, voff, len, Perm::UserRw),
@@ -839,13 +843,18 @@ fn pager_supply_one(
     let Some(root) = crate::vmar::demand_root(asid) else {
         return ERR_INVALID_ARG as i64;
     };
-    // SAFETY: 登记面（process 组装）只进不出先形——对象常驻。
+    // SAFETY: root 指针 = 本 KL 窗内 fresh 查得（本函数 KL 在身——SVC 入口
+    // 类 TABLE+SQ+RQ）；注销（`Vmar::Drop`）与对象释放都发生在 KL 窗内
+    // ——窗内查得即窗内活，他核注销须先取同把 KL（G4-2 修批 P0-1 面 b
+    // 改口——「只进不出先形」论证退役）。
     let Some((rvmo, vmo_off, base)) = (unsafe { (*root).demand_region_at(far) }) else {
         return ERR_INVALID_ARG as i64;
     };
     // 目标匹配验（§5-③）：请求区间所属 Vmo 须即调用方 vmo 句柄本体——冒充
     //（异 VMO 供给他人区间）/跨进程请求拒。只取身份不持借（供给窗内
-    // supply_page 经 Region 指针另有 &mut——单核屏蔽串行下的既有点名纪律）。
+    // supply_page 经 Region 指针另有 &mut——KL 串行下的既有点名纪律）。
+    // 地址复用混票面已闭（G4-2 修批）：rvmo 经 demand 钉活（销毁拒面）、
+    // dv 经调用方 retain 活——双活对象同址即同体，`!=` 恒判真异体。
     // SAFETY: get_raw 门控后取本体（只取地址）。
     let dv_ptr = match unsafe { (*vd.as_ptr()).obj.as_vmo_mut() } {
         Some(v) => v as *mut Vmo,

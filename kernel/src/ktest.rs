@@ -175,6 +175,12 @@ fn test_syscall() {
     assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 2, &raw mut OUT as u64, 0, 0, 0), -22,
         "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND 已激活）");
     assert_eq!(
+        svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0x1_0000_0001,
+             &raw mut OUT as u64, 0, 0, 0),
+        -22,
+        "SYSCALL：vmo_create options 高 32 位脏值须 -EINVAL（x2 全宽 u64 检——G4-2 修批 MECH-2，旧 as u32 截断此形受纳）"
+    );
+    assert_eq!(
         svc6(NR_VMO_CREATE as u64, u64::MAX, 0, &raw mut OUT as u64, 0, 0, 0),
         -12,
         "SYSCALL：巨 size 须 -ENOMEM（防堆分配 abort）"
@@ -299,6 +305,38 @@ fn test_syscall() {
         "SYSCALL：vmo_decommit（映射已解除）");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), 0, "SYSCALL：close 已 decommit VMO");
 
+    // E3b. demand 攻击形完整回归链（G4-2 修批 P0-1 面 a——f4 意见①：verdict
+    //      (a) 的内核侧镜像，两端在册、攻击序即死）：demand map（区间登记、
+    //      未供给页 mapcnt 恒 0、demand 钉 +1）→ close 须拒 -EBUSY（旧守卫
+    //      只查 mapcnt，此形放行 = 对已释放 Vmo untrack = 确定性 UAF 写；
+    //      修批钉面拦下）→ unmap（mapcnt/demand 双记账归零）→ close 放行。
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 1, &raw mut OUT as u64, 0, 0, 0),
+        0,
+        "SYSCALL：vmo_create demand（攻击形载荷）"
+    );
+    let hdv = unsafe { OUT } as u32;
+    // SAFETY: 同上（请求 VA 复用 0x1000——E3 已 unmap 无重叠）。
+    unsafe { OUT = crate::aspace::USER_VA as u64 };
+    assert_eq!(
+        svc6(NR_VMAR_MAP as u64, hvm as u64, hdv as u64, 0, &raw mut OUT as u64,
+             PAGE_SIZE as u64, 3 /* READ|WRITE */),
+        0,
+        "SYSCALL：vmar_map demand 分流（区间登记零供给）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hdv as u64, 0, 0), -16,
+        "SYSCALL：demand 登记中 close 须 -EBUSY（修批钉面——旧守卫此形放行即 UAF 写）");
+    assert_eq!(
+        svc6(NR_VMAR_UNMAP as u64, hvm as u64, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0, 0),
+        0,
+        "SYSCALL：vmar_unmap demand 区间（双记账归零）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hdv as u64, 0, 0), 0,
+        "SYSCALL：unmap 后 close demand vmo 放行（钉已放）");
+
     // E4. vmar_allocate：子 Vmar 入表授父 rights；子界内 map 成功面（只验状态，
     //     映射本体 E3 已覆盖）。
     // SAFETY: 同上。
@@ -318,6 +356,88 @@ fn test_syscall() {
     assert_eq!(child_rights, RIGHT_MAP | RIGHT_MANAGE, "SYSCALL：子 vmar 授父 rights 全集");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hchild as u64, 0, 0), 0, "SYSCALL：close 子 vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm as u64, 0, 0), 0, "SYSCALL：close root vmar");
+
+    // E3c. 登记槽注销-复用满形（G4-2 修批 P0-1 面 b——API 级；f4 意见⑤满形）：
+    //      17 轮「建 root Vmar → 登记 → 反查验活 → Drop（注销）→ 反查验空」
+    //      + 第 18 轮登记过——修批前 16 槽只进不出（第 17 轮起终身 -ENOMEM
+    //      帽），修批后 `Vmar::Drop` 注销收口、槽随对象回收。附带容量面：16
+    //      并发登记满 → 第 17 并发 Err(Full) → 全 Drop 后再登记 Ok（区分
+    //      「帽存在」与「槽泄漏」）。Drop 在 KL 窗外（boot 直调面）→
+    //      kl_held 门物理取放——顺带覆盖该门形。置于 E4 后 = root vmar 已
+    //      close（其临时登记随 Drop 注销），槽面从零起算。
+    //
+    //      **登记/注销地址耦合走 Box 形**：登记表 ptr 与 `Vmar::Drop` 的
+    //      `self as *mut Vmar` 须同址——`Box::from_raw(p)` 的 drop_in_place
+    //      契约保证在 p；栈对象 + `mem::drop(local)` 的值会 memcpy 进 drop
+    //      参数槽再跑 Drop（宿主 O0-O3 全复现 mismatch），地址耦合不受语言
+    //      保证——登记面一律 Box/泄漏形（生产 0x33 handle 表 Box 同形）。
+    for round in 0..18u32 {
+        let asid = crate::aspace::alloc_asid();
+        // SAFETY: into_raw 后指针单点持有；drop 经 from_raw 原址回收。
+        let p = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid)
+                .expect("SYSCALL：E3c 建 root Vmar（可信语境）"),
+        ));
+        crate::vmar::register_demand_root(asid, p)
+            .expect("SYSCALL：E3c 登记（Drop 回收槽——17 轮后仍有位）");
+        assert_eq!(crate::vmar::demand_root(asid), Some(p),
+            "SYSCALL：E3c 第 {} 轮反查验活", round);
+        // SAFETY: p 来自 into_raw 未动；from_raw → drop_in_place 在 p 原址
+        //（地址耦合保证面——kl_held 门 → 注销 + regions 零 demand 区间零钉放）。
+        drop(unsafe { alloc::boxed::Box::from_raw(p) });
+        assert!(crate::vmar::demand_root(asid).is_none(),
+            "SYSCALL：E3c 第 {} 轮 Drop 注销后反查须空", round);
+    }
+    // 容量面（P3#10 前置件）：并发登记**动态填到满**（boot 面 dpg::init 常驻
+    // 占 1 槽——不写死计数，满即停）→ 未登记者 Drop 后再验仍满（双匹配
+    // no-op，不误清他人槽）→ 全 Drop 后槽回收再登记 Ok。
+    let mut live: alloc::vec::Vec<*mut Vmar> = alloc::vec::Vec::new();
+    loop {
+        let asid = crate::aspace::alloc_asid();
+        let p = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid)
+                .expect("SYSCALL：E3c 容量面建 Vmar（16 槽 + 页表帧预算内）"),
+        ));
+        match crate::vmar::register_demand_root(asid, p) {
+            Ok(()) => live.push(p),
+            Err(crate::vmar::DemandRootError::Full) => {
+                // SAFETY: 未登记即回收——Drop 注销双匹配 no-op，无残。
+                drop(unsafe { alloc::boxed::Box::from_raw(p) });
+                break; // 帽到（该 v 未登记）
+            }
+            Err(e) => panic!("SYSCALL：E3c 容量面意外错误：{:?}", e),
+        }
+    }
+    assert!(!live.is_empty() && live.len() <= 16, "SYSCALL：E3c 填满面计数离谱");
+    // 未登记者 Drop 不误清他人槽：再登记一发须仍 Full（若误清即 Ok 翻案）。
+    let asid_chk = crate::aspace::alloc_asid();
+    let p_chk = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
+        Vmar::new_root(crate::mm::frames(), asid_chk)
+            .expect("SYSCALL：E3c 验满建 Vmar"),
+    ));
+    assert_eq!(
+        crate::vmar::register_demand_root(asid_chk, p_chk),
+        Err(crate::vmar::DemandRootError::Full),
+        "SYSCALL：E3c 未登记者已 Drop，他人槽须仍在（满）"
+    );
+    // SAFETY: 未登记；原址回收，Drop 双匹配 no-op。
+    drop(unsafe { alloc::boxed::Box::from_raw(p_chk) });
+    // SAFETY: live 内指针全自 into_raw；逐个原址回收 = 全注销（drop(live)
+    // 只放裸指针不触 Drop——泄漏形禁用）。
+    for p in live.drain(..) {
+        drop(unsafe { alloc::boxed::Box::from_raw(p) });
+    }
+    let asid18 = crate::aspace::alloc_asid();
+    let p18 = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
+        Vmar::new_root(crate::mm::frames(), asid18)
+            .expect("SYSCALL：E3c 回收后建 Vmar"),
+    ));
+    crate::vmar::register_demand_root(asid18, p18)
+        .expect("SYSCALL：E3c 全注销后再登记 Ok（槽已回收非泄漏）");
+    assert_eq!(crate::vmar::demand_root(asid18), Some(p18),
+        "SYSCALL：E3c 回收槽反查验活");
+    // SAFETY: 同上；Drop 注销收尾。
+    drop(unsafe { alloc::boxed::Box::from_raw(p18) });
 
     // E5. vmo_get_size（0x1A，G-eco 入机侧：svcmgr 消费 rootfs 需要 cpio 总长；
     //     add-only 顺延）。盖四路：往返 + 页对齐语义（create 即取整，非 blob

@@ -58,6 +58,14 @@ pub struct Vmo {
     /// 归还仍被映射的物理页 → PA 被 buddy 复用 → 残留 PTE 经旧 VA 静默写坏
     /// 新主人。本计数让 `decommit`/对象销毁拒绝（或泄漏）此类页。
     mapcnt: alloc::vec::Vec<u16>,
+    /// demand 区间钉计数（G4-2 修批 P0-1，页数累计标量）：`vmar::map_demand`
+    /// 登记即 +、`unmap`/`Vmar::Drop` 收区间即 −。**与 mapcnt 职责正交**：
+    /// mapcnt 防「页 PA 复用经残留 PTE 写坏新主人」（供给语义、per-页，起点
+    /// = 供给成功 §5-⑥）；本计数防「Region 裸指针指向已释放对象」（区间
+    /// 语义、对象级，起点 = 登记即取）——demand 区间未供给页 mapcnt 恒 0
+    /// 而指针已活，须独立钉（close/replace 拒面 + drain 泄漏判据的第二个
+    /// 分量）。
+    demand_mapped: usize,
     /// 按需后备（G4-1，ADR #4/#9）：`true` = 本 VMO 页由 pager 路径在缺页时
     /// 逐页 commit（对象级属性——`vmo_create` options 对象级落位的内核侧
     /// 先形，ABI 位激活留 G4-2）。两值页态（`pages`）不动：demand 只是
@@ -86,6 +94,7 @@ impl Vmo {
             mmio_pa: None,
             pages,
             mapcnt,
+            demand_mapped: 0,
             demand: false,
         })
     }
@@ -133,6 +142,7 @@ impl Vmo {
             mmio_pa: Some(pa_base),
             pages: alloc::vec::Vec::new(),
             mapcnt,
+            demand_mapped: 0,
             demand: false,
         })
     }
@@ -283,6 +293,28 @@ impl Vmo {
         self.mapcnt.iter().any(|&c| c > 0)
     }
 
+    // ---- demand 区间钉计数（G4-2 修批 P0-1；vmar map_demand/unmap/Vmar::Drop
+    //      回调，见结构体字段注释——与 mapcnt 职责正交）----
+
+    /// demand 区间钉 +len 页（`Vmar::map_demand` 登记成功后回调——**登记即
+    /// 取**，与 track_map 的「供给成功才取」差一档：未供给页指针已活）。饱和加。
+    pub(crate) fn track_demand(&mut self, len: usize) {
+        self.demand_mapped = self.demand_mapped.saturating_add(len / PAGE_SIZE);
+    }
+
+    /// demand 区间钉 -len 页（`Vmar::unmap` / `Vmar::Drop` 收 Demand 区间
+    /// 回调——Region 即死，钉即放）。饱和减（防线不是账本，多放一页方向
+    /// 由「Region 死后无人再读」吸收）。
+    pub(crate) fn untrack_demand(&mut self, len: usize) {
+        self.demand_mapped = self.demand_mapped.saturating_sub(len / PAGE_SIZE);
+    }
+
+    /// 任一 demand 区间仍登记着本对象？（close/replace 拒面 + drain 泄漏
+    /// 判据的第二分量——与 `any_mapped` 并集即「有 Region 指着它」。）
+    pub fn demand_mapped(&self) -> bool {
+        self.demand_mapped > 0
+    }
+
     /// 校验 `[offset, offset+len)` 全部落已提交页（read/write 前置）。
     fn ensure_committed(&self, offset: usize, len: usize) -> Result<(), VmoError> {
         for page in offset / PAGE_SIZE..(offset + len).div_ceil(PAGE_SIZE) {
@@ -305,9 +337,11 @@ impl Vmo {
 impl Drop for Vmo {
     /// 对象销毁回收物理页（补 3-0 裁剪项）：归还 mapcnt==0 的已提交页；**仍被
     /// 映射的页泄漏不还**（悬空 PTE 防线的最后一环）。handle 表路径到不了这里
-    /// （close/replace 对映射中 VMO 拒 -EBUSY；drain 对映射中 VMO 整对象泄漏
-    /// 不递减——Plan B 对抗审查修，见 handle.rs）；本 Drop 只兜 boot/ktest 直构
-    /// 对象——其映射常驻不解除（如用户进程 code/data/stack 页），泄漏即 v1 政策。
+    /// （close/replace 对映射中 **或 demand 登记中** VMO 拒 -EBUSY；drain 对
+    /// 同判据（`any_mapped() || demand_mapped()`）整对象泄漏不递减——Plan B
+    /// 对抗审查修，见 handle.rs；demand 分量 = G4-2 修批 P0-1 面 a/c）；本
+    /// Drop 只兜 boot/ktest 直构对象——其映射常驻不解除（如用户进程
+    /// code/data/stack 页），泄漏即 v1 政策。
     /// MMIO 窗口后备（P6 A-2）：`pages` 恒空 → 本循环天然零动作——设备 PA 从
     /// 不进帧记账，无「还设备页进 buddy」面。
     fn drop(&mut self) {

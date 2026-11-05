@@ -282,12 +282,16 @@ impl HandleTable {
     /// 关闭 handle：引用 -1，归零则释放对象。旧 handle 值此后必
     /// [`ERR_BAD_HANDLE`]（槽 `next_gen` 已 +1）。
     ///
-    /// 3-2 拒绝面：**本次 close 会销毁独体（refs==1）且 VMO 映射未解除 → 拒**
-    /// （-EBUSY）——归零销毁 Vmo 有两个后患：Vmar Region 存着该对象指针（unmap
-    /// 回调映射计数）→ 悬空；仍被映射的物理页若归还 → PA 复用经残留 PTE 静默
-    /// 腐败。**别名 close（refs≥2）放行**——对象不死，存活句柄继续钉住它；
-    /// 先 unmap（或先 close 别名）再 close 最后一个。Vmar 带 live 映射时 close
-    /// 只留残留 PTE 与泄漏页（v1 已接受政策），不拒。
+    /// 3-2/G4-2 拒绝面：**本次 close 会销毁独体（refs==1）且 VMO 映射未解除
+    /// 或 demand 区间仍登记 → 拒**（-EBUSY，判据 `any_mapped() ||
+    /// demand_mapped()`）——归零销毁 Vmo 有两个后患：Vmar Region 存着该对象
+    /// 裸指针（unmap 回调映射计数/供给链解引用）→ 悬空（demand 分量 = G4-2
+    /// 修批 P0-1 面 a/c：未供给页 mapcnt 恒 0 而指针已活，独立钉）；仍被映射
+    /// 的物理页若归还 → PA 复用经残留 PTE 静默腐败。**别名 close（refs≥2）
+    /// 放行**——对象不死，存活句柄继续钉住它；先 unmap（或先 close 别名）
+    /// 再 close 最后一个。Vmar 带 live 映射时 close 不拒（v1 政策维持——
+    /// G4-2 修批起由 `Vmar::Drop` 收口：注销 demand 登记槽 + 放 demand 钉，
+    /// 不产悬垂）。
     pub fn close(&mut self, h: Handle) -> Result<(), i32> {
         let (slot, gen, obj, _) = self.lookup_at(h)?;
         // SAFETY: 指针在表、refs ≥ 1；只读探测（close 拒绝面——只拦销毁性 close）。
@@ -295,7 +299,7 @@ impl HandleTable {
             let r = &*obj.as_ptr();
             if r.refs == 1 {
                 if let KernelObj::Vmo(v) = &r.obj {
-                    if v.any_mapped() {
+                    if v.any_mapped() || v.demand_mapped() {
                         return Err(ERR_BUSY);
                     }
                 }
@@ -325,15 +329,16 @@ impl HandleTable {
         // 先验两值（原子性：任一无效则表不动）。
         let (_, _, hobj, _) = self.lookup_at(h)?;
         let (r_slot, r_gen, obj, rights) = self.lookup_at(repl)?;
-        // 同 close 拒绝面：h 的对象**销毁性**（refs==1）且映射未解除时结尾的
-        // close 段会拒——先拒，保证「任一拒绝则表不动」的原子承诺（别名 replace
-        // 不销毁对象，放行；repl 对象只搬迁不销毁，无需查）。
+        // 同 close 拒绝面（含 demand 钉分量，G4-2 修批）：h 的对象**销毁性**
+        // （refs==1）且映射未解除/demand 仍登记时结尾的 close 段会拒——先拒，
+        // 保证「任一拒绝则表不动」的原子承诺（别名 replace 不销毁对象，放行；
+        // repl 对象只搬迁不销毁，无需查）。
         // SAFETY: 指针在表（lookup_at 过）；只读探测。
         unsafe {
             let r = &*hobj.as_ptr();
             if r.refs == 1 {
                 if let KernelObj::Vmo(v) = &r.obj {
-                    if v.any_mapped() {
+                    if v.any_mapped() || v.demand_mapped() {
                         return Err(ERR_BUSY);
                     }
                 }
@@ -380,19 +385,21 @@ impl HandleTable {
     /// **对象本体亦不销毁**（对抗审查修）：`Region.vmo` 裸指针的有效性依托
     /// 「close 拒 -EBUSY 保对象存活」（vmar.rs Region 注释）——drain 无拒
     /// 面，照常 drop Box 会让存活 Vmar 的 unmap/protect 解引用悬空（UAF 写）
-    /// ；故 refs 将归零且仍被映射的 VMO 整档跳过递减（令牌随死表泄漏、对象
-    /// 保活；mapcnt==0 ⟺ 无 Region 指着它，判据精确）。drop 链纯指针操作
-    /// 不回表（无重入）；**仅 IRQ 屏蔽的退出路径调用**（对象释放窗口内不可
-    /// 被切走）。
+    /// ；故 refs 将归零且仍被映射 **或 demand 登记中** 的 VMO 整档跳过递减
+    /// （令牌随死表泄漏、对象保活；mapcnt==0 且 demand 钉==0 ⟺ 无 Region
+    /// 指着它——两防线判据并集，精确；demand 分量 = G4-2 修批 P0-1）。Vmar
+    /// 对象照常 drop：其 `Drop` 注销 demand 登记槽 + 放自身 regions 的 demand
+    /// 钉（KL 窗外语境由 kl_held 门收口）。drop 链纯指针操作不回表（无重入）
+    /// ；**仅 IRQ 屏蔽的退出路径调用**（对象释放窗口内不可被切走）。
     pub fn drain(&mut self) {
         for slot in self.slots.iter_mut() {
             if let SlotState::Used { gen, obj, .. } = *slot {
-                // SAFETY: 指针在表；只读探测（any_mapped 只扫 mapcnt，零分配）。
+                // SAFETY: 指针在表；只读探测（any_mapped/demand_mapped 零分配）。
                 let leak = unsafe {
                     let r = &*obj.as_ptr();
                     r.refs == 1
                         && match &r.obj {
-                            KernelObj::Vmo(v) => v.any_mapped(),
+                            KernelObj::Vmo(v) => v.any_mapped() || v.demand_mapped(),
                             _ => false,
                         }
                 };

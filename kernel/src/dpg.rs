@@ -22,8 +22,10 @@
 //! same-EL 同步异常不自动屏蔽 PSTATE.I（硬件只在 taken-to-higher-EL 置位；
 //! trampoline `daifclr,#2` 起步即解蔽），klock_enter = disable_irq + 全谱
 //! 结构锁即 block_current 契约的「显式 disable_irq」。第一段 asid 反查留
-//! KL 外（append-only 登记锁外读安全，miss 零锁即拒）；第二段（命中臂）
-//! 全程 KL 窗——与 pager 供给窗互斥（SMP 双向丢唤窗闭）。block_current
+//! KL 外（**hint-only**，G4-2 修批后口径——注销面已落，锁外读不保证指针
+//! 仍活，只作快路径 hint；miss 零锁即拒）；第二段（命中臂）全程 KL 窗
+//! ——**根槽 fresh 重查** + regions 权威重验（M-3 两段式纪律升格到根槽）
+//! 与 pager 供给窗互斥（SMP 双向丢唤窗闭）。block_current
 //! 舞蹈放锁入队、醒后重取——睡不持锁（§2.3① 语义保持）；pager 供给全链
 //! KL 窗内（SVC vmar_map 同构，§2.3②）；填叶 pt_lock 嵌 KL 正序、
 //! broadcast 只发不待（§2.3③）；pager 单线程首形（§2.3④）。
@@ -108,12 +110,15 @@ static REQ_ARMED: AtomicBool = AtomicBool::new(false);
 /// PSTATE.I——命中路径全程 klock 窗（disable_irq + 全谱结构锁 =
 /// block_current 契约「内核任务显式 disable_irq」），且与 pager 供给窗
 ///（KL）互斥：SMP 双向丢唤窗（FAULT/PAGER 两键方向）闭。**两段式**
-///（f4 复核推荐形）：asid 反查表查找留 KL 外（append-only + Release/
-/// Acquire 原子对——锁外读安全无 ABA；miss 零锁即拒，rogue fault 快路径
-/// 不付全谱窗——trap.rs EL0 臂「快路径零锁」承诺保持）；命中才入 KL 窗
-/// **重验** regions（M-3 读竞窗闭）+ arm/wake/block。block_current 舞蹈
-/// 放锁入队、醒后重取（dpg_pager 同构）；eret 弹 SPSR 自然恢复 fault 前
-/// 屏蔽态。
+///（f4 复核推荐形；G4-2 修批 P0-1 面 b 升格）：asid 反查表查找留 KL 外
+/// **降为 hint-only**（注销面已落——`Vmar::Drop` KL 窗清槽后对象释放，
+/// 锁外读得的指针不保证仍活，**零解引用零依赖**，仅「值得入锁一查」；
+/// miss 零锁即拒，rogue fault 快路径不付全谱窗——trap.rs EL0 臂「快路径
+/// 零锁」承诺保持）；命中才入 KL 窗 **fresh 重查根槽** + **重验 regions**
+///（M-3 纪律升格到根槽：窗内查得即窗内活——注销/释放都发生在 KL 窗内，
+/// 他核注销须先取同把 KL；stale 命中在窗内自然折 None → 原杀链）+ arm/
+/// wake/block。block_current 舞蹈放锁入队、醒后重取（dpg_pager 同构）；
+/// eret 弹 SPSR 自然恢复 fault 前屏蔽态。
 ///
 /// fsc 滤（三镜 mech-M-2）：只收翻译缺页（fsc 4..=7，L0-L3）——权限/
 /// 访问标志 fault（已映射只读页写等）走原杀链；否则 armed→供给幂等短路→
@@ -124,17 +129,23 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     if !matches!(esr & 0x3f, 4..=7) {
         return false; // 非翻译缺页（权限/访问标志/…）——原杀链
     }
-    // 第一段（KL 外零锁快拒）：asid 反查——登记 append-only + 原子对，
-    // 锁外读安全；miss = 本 AS 无 demand 面，不付全谱窗。
+    // 第一段（KL 外零锁快拒）：asid 反查——**hint-only**（G4-2 修批 P0-1
+    // 面 b：注销面已落，锁外指针不保证仍活；本段零解引用零依赖——stale
+    // 命中由第二段窗内重查吸收）。miss = 本 AS 无 demand 面，不付全谱窗。
     let asid = hal::current_asid();
-    let Some(root) = vmar::demand_root(asid) else {
+    if vmar::demand_root(asid).is_none() {
         return false;
-    };
-    // 第二段（KL 窗）：regions 权威重验（M-3——变更方经 PT 锁嵌 KL 同序，
-    // 锁外快查与入锁间的变更由本窗收口）。
+    }
+    // 第二段（KL 窗）：根槽 **fresh 重查**（M-3 升格——窗内查得即窗内活：
+    // 注销与对象释放都在 KL 窗内发生，他核注销须先取同把 KL）+ regions
+    // 权威重验（变更方经 PT 锁嵌 KL 同序，锁外快查与入锁间的变更由本窗
+    // 收口）。
     hal::kern_lock::klock_enter();
-    // SAFETY: 登记方（init / G4-2 process 组装面）保证对象常驻（登记只进
-    // 不出，Boot-held 先形）。
+    let Some(root) = vmar::demand_root(asid) else {
+        hal::kern_lock::klock_exit();
+        return false; // stage-1 stale 命中折 None——原杀链
+    };
+    // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活，见上）；region 查只读。
     if unsafe { (*root).demand_region_at(far).is_none() } {
         hal::kern_lock::klock_exit();
         return false;
@@ -190,11 +201,18 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         return false; // 非翻译缺页——原杀链
     }
     let asid = hal::current_asid();
-    let Some(root) = vmar::demand_root(asid) else {
+    // stage-1 hint-only（同 [`probe`]——零解引用零依赖，miss 零锁即拒）。
+    if vmar::demand_root(asid).is_none() {
         return false; // KL 外零锁快拒（rogue fault 不付全谱窗）
-    };
+    }
     hal::kern_lock::klock_enter();
-    // SAFETY: 同 [`probe`]——登记面常驻；regions 权威重验在本 KL 窗内。
+    // stage-2 根槽 fresh 重查（同 [`probe`]——窗内查得即窗内活；stale
+    // 命中折 None → 原杀链）。
+    let Some(root) = vmar::demand_root(asid) else {
+        hal::kern_lock::klock_exit();
+        return false;
+    };
+    // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活）；regions 权威重验在本窗。
     if unsafe { (*root).demand_region_at(far).is_none() } {
         hal::kern_lock::klock_exit();
         return false;
@@ -228,8 +246,10 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
 // ---- 0x21 面小件（syscall.rs `sys_pager_supply_pages` 用；键/槽私有，经
 // 函数面外借——SVC 面不触裸键纪律）----
 
-/// 取走武装请求（consume-on-read，dpg_pager swap 同款）——单核 SVC 屏蔽
-/// 窗内调用（探针写点在异常上下文同核，KL 窗 = 无并发窗口）。
+/// 取走武装请求（consume-on-read，dpg_pager swap 同款）——**KL 窗内**调用
+///（0x21 SVC 类 KL 在身；探针写点同在 KL 窗）。互斥依托 **KL 全谱锁**非
+///「单核」（G4-2 修批 C3 改口：SMP 下跨核探针写者与 0x21 读者被 KL 串行
+/// ——smoke-smp 跨核供给已实发，「单核屏蔽」论证退役，防 G4-3 误放宽）。
 pub(crate) fn el0_take() -> Option<(usize, u16)> {
     if EREQ_ARMED.swap(false, Ordering::Acquire) {
         Some((EREQ_FAR.load(Ordering::Relaxed) as usize, EREQ_ASID.load(Ordering::Relaxed)))
@@ -249,13 +269,15 @@ pub(crate) fn el0_wake_faulter() {
     berry_sched::wake_matching(&EFAULT_KEY as *const u8 as usize, DPG_WAKE_BIT);
 }
 
-/// 0x21 源拷贝缓冲（4K 静态：ADR #9 零分配 + SVC 栈预算——KL 窗内单核
-/// 独占，无重入面）。
+/// 0x21 源拷贝缓冲（4K 静态：ADR #9 零分配 + SVC 栈预算）。独占窗 = 调用方
+/// KL 持有期——跨核 0x21 供给者被 KL 全谱锁串行（**非「单核」论证**，G4-2
+/// 修批 C3 改口；无重入面：KL 窗内不重入 SVC）。
 static mut SUPPLY_BUF: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 
-/// 借源拷贝缓冲（独占窗 = 调用方 KL 持有期，单核串行）。
+/// 借源拷贝缓冲（独占窗 = 调用方 KL 持有期）。
 pub(crate) fn supply_buf() -> &'static mut [u8] {
-    // SAFETY: 仅 sys_pager_supply_pages KL 窗内借用；单核屏蔽串行无并发面。
+    // SAFETY: 仅 sys_pager_supply_pages KL 窗内借用；跨核借用者被 KL 串行
+    //（互斥面 = KL 全谱锁，见 SUPPLY_BUF 注释——单核论证已退役）。
     unsafe { &mut *core::ptr::addr_of_mut!(SUPPLY_BUF) }
 }
 
@@ -281,7 +303,11 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         let asid = REQ_ASID.load(Ordering::Relaxed);
         // 供给链全 KL 窗内（SVC vmar_map 同构：pt_lock 嵌 KL 正序、分配器
         // KL 串行）——G4-2 的 0x21 SVC 面即把本窗搬进 syscall 派发。
-        let root = vmar::demand_root(asid).expect("dpg_pager: asid 反查失败（登记面被撤？）");
+        // expect 保留（G4-2 修批后改据）：本 pager 服务的 faulter AS = dpg::
+        // init 的 boot 装配（Box::leak 永不 Drop → 该登记永不注销）；且本点
+        // 在 KL 窗内 fresh 查——窗内查得即窗内活（注销/释放同窗互斥）。
+        let root = vmar::demand_root(asid)
+            .expect("dpg_pager: asid 反查失败（boot 装配 AS 恒登记——Box::leak 永不 Drop）");
         let (vmo, vmo_off, base) = unsafe { (*root).demand_region_at(far) }
             .expect("dpg_pager: 请求 VA 已不在 demand 区间（unmap 竞窗）");
         let va = far & !(PAGE_SIZE - 1);
@@ -290,7 +316,8 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // 数据面：供给页是清零页——写 magic（经 VMO direct map 写路径；
         // faulter 经其 VA 读同 PA，单核调度切换序即全屏障）。
         let off = vmo_off + (va - base);
-        // SAFETY: Region 的 vmo 指针有效性依托对象常驻（init 泄漏持有）。
+        // SAFETY: Region 的 vmo 指针有效性 = init 泄漏持有（boot 装配恒活）
+        // × demand 钉防线（G4-2 修批——handle 层销毁拒面第二分量）双保险。
         unsafe { (*vmo).write(off, &DPG_MAGIC.to_le_bytes()) }
             .expect("dpg_pager: 写 magic 失败（供给页未提交？）");
         // 供给毕唤 faulter（KL 窗内 SQ 嵌套 = SVC 同构）。
