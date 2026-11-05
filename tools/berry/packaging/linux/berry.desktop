@@ -2,6 +2,6 @@
 Type=Application
 Name=BerryOS
 Comment=BerryOS developer device shell
-Exec=berry shell
+Exec=berry
 Terminal=false
 Categories=Development;

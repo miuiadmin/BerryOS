@@ -55,7 +55,7 @@ enum Cmd {
     Events(EventsCmd),
     /// Show session state/profile/memory/QEMU pid.
     Stats(StatsCmd),
-    /// Capture a screenshot sequence from a running device.
+    /// Capture a PNG sequence or APNG from a running device.
     Record(RecordCmd),
     /// Run a JSON action script against a running device.
     Play(PlayCmd),

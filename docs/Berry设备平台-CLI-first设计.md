@@ -327,7 +327,7 @@ shell [--attach <id>] [--profile] [--scale] [--timeout]
 run [--kernel|--image] [--marker] [--timeout]
 
 screenshot [--run] [--out] [--settle-ms] [--json]
-shot [--image] [--profile] [--wait-marker] [--out] [--keep] [--json]
+shot [--image] [--profile] [--accel] [--memory] [--display-mode] [--wait-marker] [--delay-ms] [--timeout] [--out] [--keep] [--json]
 
 input key|tap|swipe|text <...>   # 顶层别名未落，先用 input
 power off|reboot [--run] [--force] [--json]
@@ -428,7 +428,7 @@ berry device stop --run "$RUN"
 - **C1d 已落（state/崩溃可见）**：`state.json` 落 starting/running/rebooting/stopping/
   stopped/failed；`device list/status` 在 control 缺失时读 state，running 但无 control 标
   `stale`；`device stop` 对已停 run 幂等，对 stale 给诊断。
-- **C1e 已落（崩溃清理）**：meta 记 `qemu_pid`；`berry device cleanup` 对 stale/stopped run
+- **C1e 已落（崩溃清理）**：meta 记 `qemu_pid`；`berry device cleanup [--all]` 对 stale/stopped run
   先 TERM/KILL orphan QEMU，再删 run dir；running session 拒绝 cleanup。
 - **C1f 已落（TCP+token）**：非 Unix 用 `127.0.0.1:<port>` + `control.port`/`control.token`
   （0600）NDJSON；Unix 默认仍 `control.sock`，`BERRY_CONTROL_TCP=1` 可强制 TCP 测试。

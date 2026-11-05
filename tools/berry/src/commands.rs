@@ -512,7 +512,7 @@ pub fn record(
                 std::thread::sleep(Duration::from_millis(interval_ms));
             }
         }
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
         let delay = interval_ms.clamp(1, u16::MAX as u64) as u16;
