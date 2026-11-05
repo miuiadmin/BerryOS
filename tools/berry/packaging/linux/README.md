@@ -40,7 +40,14 @@ tools/berry/packaging/linux/build-appimage-docker.sh
 ```
 
 容器内下载 appimagetool、复制可写 AppDir、`ARCH=aarch64` 打包；产物 20.7MB。
-当前用 `--appimage-extract` + `AppRun --version` 验证；FUSE 直接挂载未验。
+FUSE 直接挂载已验证：
+
+```bash
+tools/berry/packaging/linux/smoke-appimage.sh
+# berry 0.1.0；doctor 挂载 /tmp/.mount_.../usr/share/berryos
+```
+
+容器需 `--cap-add SYS_ADMIN --device /dev/fuse`；OrbStack 支持。
 
 有 `appimagetool` 时：
 
