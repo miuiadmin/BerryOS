@@ -32,6 +32,9 @@
 # soak/smoke/soak-smp 并行窗互毁面归零）
 /disk.soaksmp.img
 
+# G3-5 soak-g3 专属盘（soak-g3.sh 现场造；四方零交集纪律同上）
+/disk.soakg3.img
+
 # G-eco 用户程序编译产物（just build-user 产出；缺产物 = 内核 include_bytes
 # 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
 /kernel/src/userbins/
