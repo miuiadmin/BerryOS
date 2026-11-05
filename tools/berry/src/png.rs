@@ -48,6 +48,72 @@ pub fn write_png(path: &Path, width: u32, height: u32, rgb: &[u8]) -> Result<()>
     Ok(())
 }
 
+/// Animated PNG (APNG): truecolor RGB, one fcTL per frame, fdAT after the
+/// first IDAT. delay_ms is split as delay_num/delay_den=1000.
+pub fn write_apng(
+    path: &Path,
+    width: u32,
+    height: u32,
+    frames: &[Vec<u8>],
+    delay_ms: u16,
+) -> Result<()> {
+    let need = width as usize * height as usize * 3;
+    if frames.is_empty() || frames.iter().any(|f| f.len() != need) {
+        return Err(BerryError::internal("apng frame size mismatch"));
+    }
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.push(8);
+    ihdr.push(2);
+    ihdr.push(0);
+    ihdr.push(0);
+    ihdr.push(0);
+    let mut actl = Vec::with_capacity(8);
+    actl.extend_from_slice(&(frames.len() as u32).to_be_bytes());
+    actl.extend_from_slice(&0u32.to_be_bytes()); // infinite plays
+
+    let f = File::create(path)?;
+    let mut w = BufWriter::new(f);
+    w.write_all(b"\x89PNG\r\n\x1a\n")?;
+    write_chunk(&mut w, b"IHDR", &ihdr)?;
+    write_chunk(&mut w, b"acTL", &actl)?;
+    let row = width as usize * 3;
+    let mut seq = 0u32;
+    for (i, frame) in frames.iter().enumerate() {
+        let mut raw = Vec::with_capacity(need + height as usize);
+        for y in 0..height as usize {
+            raw.push(0);
+            raw.extend_from_slice(&frame[y * row..(y + 1) * row]);
+        }
+        let z = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6);
+        let mut fctl = Vec::with_capacity(26);
+        fctl.extend_from_slice(&seq.to_be_bytes());
+        seq += 1;
+        fctl.extend_from_slice(&width.to_be_bytes());
+        fctl.extend_from_slice(&height.to_be_bytes());
+        fctl.extend_from_slice(&0u32.to_be_bytes());
+        fctl.extend_from_slice(&0u32.to_be_bytes());
+        fctl.extend_from_slice(&delay_ms.to_be_bytes());
+        fctl.extend_from_slice(&1000u16.to_be_bytes());
+        fctl.push(0); // dispose: none
+        fctl.push(0); // blend: source
+        write_chunk(&mut w, b"fcTL", &fctl)?;
+        if i == 0 {
+            write_chunk(&mut w, b"IDAT", &z)?;
+        } else {
+            let mut fdat = Vec::with_capacity(4 + z.len());
+            fdat.extend_from_slice(&seq.to_be_bytes());
+            seq += 1;
+            fdat.extend_from_slice(&z);
+            write_chunk(&mut w, b"fdAT", &fdat)?;
+        }
+    }
+    write_chunk(&mut w, b"IEND", &[])?;
+    w.flush()?;
+    Ok(())
+}
+
 fn write_chunk(w: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> Result<()> {
     w.write_all(&(data.len() as u32).to_be_bytes())?;
     w.write_all(kind)?;

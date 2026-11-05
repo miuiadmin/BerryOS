@@ -175,6 +175,9 @@ struct RecordCmd {
     frames: u32,
     #[arg(long, default_value_t = 200)]
     interval_ms: u64,
+    /// Write an animated PNG instead of a PNG sequence.
+    #[arg(long)]
+    apng: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -407,7 +410,14 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Some(Cmd::Stats(c)) => commands::stats(c.run.as_deref(), cli.json),
         Some(Cmd::Record(c)) => {
-            commands::record(c.run.as_deref(), &c.out, c.frames, c.interval_ms, cli.json)
+            commands::record(
+                c.run.as_deref(),
+                &c.out,
+                c.frames,
+                c.interval_ms,
+                c.apng.as_deref(),
+                cli.json,
+            )
         }
         Some(Cmd::Play(c)) => commands::play(&c.file, c.run.as_deref(), cli.json),
         Some(Cmd::Host(c)) => commands::host(commands::HostArgs {

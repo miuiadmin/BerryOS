@@ -38,6 +38,7 @@ berry record --run "$RUN" --out out/rec --frames 5 --interval-ms 300 --json
 - [ ] `screenshot` 不启动新设备，PNG 尺寸=profile render。
 - [ ] `shot` 仍是一次性设备（起 QEMU → 抓帧 → 停）。
 - [ ] `record` 产出 `frame-0001.png...`；`--json` 返回 paths。
+- [ ] `record --apng out.apng` 产出 APNG（acTL/fcTL/fdAT 结构合法）。
 - [ ] PNG 走 miniz_oxide deflate（480×1000 约 4KB 级）。
 
 ## 3. 输入 / 脚本

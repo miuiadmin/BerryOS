@@ -474,9 +474,51 @@ pub fn record(
     out_dir: &Path,
     frames: u32,
     interval_ms: u64,
+    apng: Option<&Path>,
     json: bool,
 ) -> Result<()> {
     let run = find_run(run)?;
+    if let Some(path) = apng {
+        if frames == 0 {
+            return Err(BerryError::env("record --frames must be > 0"));
+        }
+        let endpoint = vnc_endpoint(&run)?;
+        let mut source = VncSource::connect(&endpoint)?;
+        let mut raw_frames: Vec<Vec<u8>> = Vec::new();
+        let mut last: Option<crate::display::frame::Frame> = None;
+        let mut dims = (0u32, 0u32);
+        for i in 0..frames {
+            let wait = if i == 0 {
+                Duration::from_secs(10)
+            } else {
+                Duration::from_millis(interval_ms.max(50))
+            };
+            if let Some(f) = source.next_frame(wait) {
+                dims = (f.width, f.height);
+                last = Some(f);
+            }
+            let Some(f) = last.as_ref() else {
+                return Err(BerryError::device("record: no VNC frame"));
+            };
+            raw_frames.push(f.to_rgb());
+            if i + 1 < frames {
+                std::thread::sleep(Duration::from_millis(interval_ms));
+            }
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::png::write_apng(path, dims.0, dims.1, &raw_frames, interval_ms as u16)?;
+        if json {
+            println!(
+                "{}",
+                json!({"v":1,"t":"record","run":run,"frames":frames,"apng":path.display().to_string()})
+            );
+        } else {
+            println!("record: {} frame(s) → {}", frames, path.display());
+        }
+        return Ok(());
+    }
     std::fs::create_dir_all(out_dir)?;
     let mut paths = Vec::new();
     for i in 0..frames {
