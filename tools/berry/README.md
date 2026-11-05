@@ -82,7 +82,8 @@ C1a/C1b/C1c 已落：`berry shell` 进程内或 headless `berry device start` �
 `control.sock` + QMP broker；CLI `device start/list/status/restart/stop`、`power off/reboot`、
 `logs`、`screenshot`（优先走 host）已可用，CLI 不直连 QMP；`berry shell --attach <id>` 可给
 headless host 开窗，关窗只 detach。C1d/C1e/C1f 已落（state/cleanup/TCP）；
-C1g 还差 Windows 实机验证/打包、host 自动重启。完整刀序见平台文档 §14。
+C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异常退出后同 run 原地重启）；
+还剩 Windows 实机验证/打包。完整刀序见平台文档 §14。
 
 ## 环境变量
 
@@ -123,7 +124,8 @@ C1g 还差 Windows 实机验证/打包、host 自动重启。完整刀序见平�
 - QEMU 是外部依赖（GPLv2，进程边界）；主仓 Apache-2.0 不打包 QEMU。
 - 帧面要求 QEMU `memory-backend-file,share=on`；不支持该后端的环境回退 VNC（P1 路径）。
 - `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 由 host broker 独占，
-  `power reboot/off`、`display set` 已落（C1a/C2c）；只剩 Windows 实机、host 自动重启。
+  `power reboot/off`、`display set` 已落（C1a/C2c）；host 自动重启已落（--restart-on-crash）；
+只剩 Windows 实机/打包。
 - 窗口快捷栏 C2d 已落 5 键：`SHOT`/`RES`/`BOOT`/`OFF`/`FULL`（鼠标/触摸）；
   `OFF` 需 3s 内二次点击；`RES` 打开 profile 菜单，host 窗口内停旧/起新 profile。
 - C2b 已落：`berry shortcut screenshot|reboot|power`、`berry display list/set`（记录

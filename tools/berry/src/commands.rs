@@ -57,6 +57,7 @@ pub struct HostArgs {
     pub memory: Option<u32>,
     pub display_mode: Option<String>,
     pub keep: bool,
+    pub restart_on_crash: bool,
 }
 
 pub struct DeviceStartArgs {
@@ -67,6 +68,7 @@ pub struct DeviceStartArgs {
     pub display_mode: Option<String>,
     pub keep: bool,
     pub foreground: bool,
+    pub restart_on_crash: bool,
     pub json: bool,
 }
 
@@ -424,9 +426,10 @@ pub fn host(args: HostArgs) -> Result<()> {
         args.keep,
         "host",
     )?;
+    device.set_restart_on_crash(args.restart_on_crash);
     println!("RUN {}", device.run_path().display());
     std::io::stdout().flush().ok();
-    device.wait();
+    device.wait_with_restart();
     device.stop();
     Ok(())
 }
@@ -749,6 +752,7 @@ pub fn device_start(args: DeviceStartArgs) -> Result<()> {
             memory: args.memory,
             display_mode: args.display_mode,
             keep: args.keep,
+            restart_on_crash: args.restart_on_crash,
         });
     }
     let json_out = args.json;
@@ -781,6 +785,9 @@ fn device_start_run(args: DeviceStartArgs) -> Result<(PathBuf, u32)> {
     }
     if args.keep {
         cmd.arg("--keep");
+    }
+    if args.restart_on_crash {
+        cmd.arg("--restart-on-crash");
     }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -831,6 +838,7 @@ pub fn restart_profile(run: &Path, profile_id: &str) -> Result<PathBuf> {
         display_mode: None,
         keep,
         foreground: false,
+        restart_on_crash: false,
         json: false,
     })?;
     let _ = control::request(run, "power", json!({"action":"off"}));

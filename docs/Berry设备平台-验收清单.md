@@ -94,7 +94,8 @@ berry play script.json --run "$RUN"
 - [ ] `kill -9 <host pid>` 后 `device list/status` 显示 `stale`（state.json + control 缺失）。
 - [ ] `berry device cleanup` 杀掉 orphan QEMU 并删 run。
 - [ ] `state.json` 状态集：starting/running/rebooting/stopping/stopped/failed。
-- [ ] host 自动重启：⬜ 未落（C1g）。
+- [ ] host 自动重启：`device start --restart-on-crash`，kill QEMU 后同一 run 从
+      `rebooting` 回 `running`，qemu_pid 变化，截图恢复；✅ 已实测。
 
 ## 8. 打包
 
@@ -109,7 +110,7 @@ berry play script.json --run "$RUN"
 ## 9. 已知缺口
 
 - GUI-8 桌面图标仍 dash（launcher app registry/app channel；归 GUI-8 app 服务）。
-- Windows 实机/打包、host 自动重启（C1g）。
+- Windows 实机/打包（C1g）；host 自动重启已落。
 - P3：virtio-gpu / damage / 120Hz / 视频录屏 / 时间轴回放。
 - 顶层 `berry tap/key` 别名、`input text`、`display rotate`、`display set WxH` 未落。
 

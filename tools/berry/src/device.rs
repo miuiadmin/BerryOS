@@ -18,16 +18,28 @@ use crate::qmp::QmpClient;
 use crate::run_dir::{self, RunDir, Tail};
 
 pub struct Device {
+    qemu: Qemu,
+    image: std::path::PathBuf,
+    firmware: std::path::PathBuf,
+    vars: std::path::PathBuf,
+    serial: std::path::PathBuf,
+    log: std::path::PathBuf,
+    ram_path: std::path::PathBuf,
+    vnc: Endpoint,
+    qmp_ep: Endpoint,
+    accel: qemu::Accel,
+    memory_mib: u32,
+    mode: Option<String>,
+    restart_on_crash: bool,
     child: std::process::Child,
     qmp: Arc<Mutex<QmpClient>>,
-    source: Box<dyn ScreenSource>,
+    source: Option<Box<dyn ScreenSource>>,
     run: RunDir,
     keep: bool,
     stopped: bool,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     _control: Option<ControlServer>,
 }
-
 impl Device {
     pub fn start(
         image: Option<std::path::PathBuf>,
@@ -51,9 +63,6 @@ impl Device {
         let log = run.file("qemu.log");
         let ram_path = run.file("ram.bin");
         let (vnc, qmp_ep) = endpoints(&run);
-
-        // Phone profiles request their render mode by default; `default`
-        // keeps the firmware 800x600 (CI/legacy path).
         let mode = display_mode.or_else(|| {
             (profile.id != "default").then(|| {
                 format!(
@@ -62,7 +71,6 @@ impl Device {
                 )
             })
         });
-        // Persist enough to restart with a new profile later (display --restart).
         let meta = serde_json::json!({
             "v":1,
             "label":label,
@@ -78,8 +86,8 @@ impl Device {
             "keep":keep,
         });
         std::fs::write(run.file("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
-
-        let mut child = qemu::spawn_image(
+        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (child, qmp, source, control) = boot_runtime(
             &qemu,
             &image,
             &firmware,
@@ -93,83 +101,114 @@ impl Device {
             true,
             mode.as_deref(),
             Some(&ram_path),
+            &run,
+            stop_flag.clone(),
         )?;
-        // Record the QEMU child PID so a stale run can be cleaned after a
-        // host crash (C1e).
-        let meta_path = run.file("meta.json");
-        let mut meta: serde_json::Value = std::fs::read(&meta_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        meta["qemu_pid"] = serde_json::json!(child.id());
-        let _ = std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?);
+        run_dir::write_state(run.path(), "running");
+        Ok(Self {
+            qemu,
+            image,
+            firmware,
+            vars,
+            serial,
+            log,
+            ram_path,
+            vnc,
+            qmp_ep,
+            accel,
+            memory_mib: mem,
+            mode,
+            restart_on_crash: false,
+            child,
+            qmp,
+            source: Some(source),
+            run,
+            keep,
+            stopped: false,
+            stop_flag,
+            _control: control,
+        })
+    }
 
-        // Wait for the kernel's FB fact line (mode set already applied). The
-        // line is printed before userland; 20s covers TCG cold boot.
-        let mut tail = Tail::open(&serial);
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut fb = None;
-        while Instant::now() < deadline {
-            tail.read_new();
-            if let Some(line) = tail.text().lines().find(|l| l.contains("FB ok ")) {
-                if let Some(i) = FbInfo::parse(line) {
-                    fb = Some(i);
-                    break;
-                }
-            }
-            if child.try_wait().ok().flatten().is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
+    pub fn set_restart_on_crash(&mut self, on: bool) {
+        self.restart_on_crash = on;
+    }
+
+    /// Restart QEMU in the same run/control path after an unexpected exit.
+    /// The control/VNC socket is recreated; CLI/attach clients must reconnect.
+    pub fn restart_in_place(&mut self) -> Result<()> {
+        if self.stopped {
+            return Err(crate::error::BerryError::device("device already stopped"));
         }
-
-        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let result = (|| {
-            let qmp = connect_qmp(&qmp_ep, Duration::from_secs(10))?;
-            let qmp = Arc::new(Mutex::new(qmp));
-            let source: Box<dyn ScreenSource> = if let Some(info) = fb {
-                let input = VncInput::connect(&vnc)?;
-                Box::new(RamSource::open(&ram_path, info, input)?)
-            } else {
-                // No shared-RAM fact: keep the P1 VNC path (e.g. -kernel or a
-                // non-EFI display). Input still goes through VNC here.
-                wait_endpoint(&vnc, Duration::from_secs(5))?;
-                Box::new(VncSource::connect(&vnc)?)
-            };
-            let control = ControlServer::start(
-                run.path(),
-                qmp.clone(),
-                vnc.clone(),
-                stop_flag.clone(),
-            )?;
-            Ok::<_, crate::error::BerryError>((source, qmp, control))
-        })();
-
-        match result {
-            Ok((source, qmp, control)) => {
-                run_dir::write_state(run.path(), "running");
-                Ok(Self {
-                child,
-                qmp,
-                source,
-                run,
-                keep,
-                stopped: false,
-                stop_flag,
-                _control: control,
-                })
+        run_dir::write_state(self.run.path(), "rebooting");
+        self._control.take();
+        self.source.take();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Endpoint::Unix(p) = &self.vnc {
+            let _ = std::fs::remove_file(p);
+        }
+        if let Endpoint::Unix(p) = &self.qmp_ep {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::File::create(&self.serial);
+        let _ = std::fs::File::create(&self.log);
+        self.stop_flag
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let runtime = boot_runtime(
+            &self.qemu,
+            &self.image,
+            &self.firmware,
+            &self.vars,
+            &self.serial,
+            &self.log,
+            &self.vnc,
+            &self.qmp_ep,
+            self.accel,
+            self.memory_mib,
+            true,
+            self.mode.as_deref(),
+            Some(&self.ram_path),
+            &self.run,
+            self.stop_flag.clone(),
+        );
+        match runtime {
+            Ok((child, qmp, source, control)) => {
+                self.child = child;
+                self.qmp = qmp;
+                self.source = Some(source);
+                self._control = control;
+                run_dir::write_state(self.run.path(), "running");
+                Ok(())
             }
             Err(e) => {
-                run_dir::write_state(run.path(), "failed");
-                let _ = child.kill();
-                let _ = child.wait();
+                self.stopped = true;
+                run_dir::write_state(self.run.path(), "failed");
                 Err(e)
             }
         }
     }
 
+    /// Host loop: block until stop is requested; if `restart_on_crash` is set,
+    /// recreate QEMU in the same run after an unexpected exit.
+    pub fn wait_with_restart(&mut self) {
+        loop {
+            self.wait();
+            if self.stop_requested() || !self.restart_on_crash {
+                break;
+            }
+            if let Err(e) = self.restart_in_place() {
+                eprintln!("berry: in-place restart failed: {e}");
+                break;
+            }
+        }
+    }
+
     pub fn source_mut(&mut self) -> &mut dyn ScreenSource {
-        &mut *self.source
+        self.source
+            .as_mut()
+            .expect("device source is present outside restart")
+            .as_mut()
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -226,6 +265,79 @@ impl Device {
 impl Drop for Device {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn boot_runtime(
+    qemu: &Qemu,
+    image: &std::path::Path,
+    firmware: &std::path::Path,
+    vars: &std::path::Path,
+    serial: &std::path::Path,
+    log: &std::path::Path,
+    vnc: &Endpoint,
+    qmp_ep: &Endpoint,
+    accel: qemu::Accel,
+    mem: u32,
+    tablet: bool,
+    mode: Option<&str>,
+    ram_path: Option<&std::path::Path>,
+    run: &RunDir,
+    stop_flag: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(
+    std::process::Child,
+    Arc<Mutex<QmpClient>>,
+    Box<dyn ScreenSource>,
+    Option<ControlServer>,
+)> {
+    let mut child = qemu::spawn_image(
+        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
+    )?;
+    let meta_path = run.file("meta.json");
+    let mut meta: serde_json::Value = std::fs::read(&meta_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    meta["qemu_pid"] = serde_json::json!(child.id());
+    let _ = std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?);
+    let mut tail = Tail::open(serial);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut fb = None;
+    while Instant::now() < deadline {
+        tail.read_new();
+        if let Some(line) = tail.text().lines().find(|l| l.contains("FB ok ")) {
+            if let Some(i) = FbInfo::parse(line) {
+                fb = Some(i);
+                break;
+            }
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let result = (|| {
+        let qmp = connect_qmp(qmp_ep, Duration::from_secs(10))?;
+        let qmp = Arc::new(Mutex::new(qmp));
+        let source: Box<dyn ScreenSource> = if let Some(info) = fb {
+            let input = VncInput::connect(vnc)?;
+            Box::new(RamSource::open(ram_path.unwrap_or(std::path::Path::new("")), info, input)?)
+        } else {
+            wait_endpoint(vnc, Duration::from_secs(5))?;
+            Box::new(VncSource::connect(vnc)?)
+        };
+        let control = ControlServer::start(run.path(), qmp.clone(), vnc.clone(), stop_flag)?;
+        Ok::<_, crate::error::BerryError>((source, qmp, control))
+    })();
+    match result {
+        Ok((source, qmp, control)) => Ok((child, qmp, source, control)),
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            run_dir::write_state(run.path(), "failed");
+            Err(e)
+        }
     }
 }
 

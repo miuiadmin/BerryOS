@@ -275,6 +275,9 @@ struct StartCmd {
     keep: bool,
     #[arg(long)]
     foreground: bool,
+    /// Restart QEMU in the same run after an unexpected exit.
+    #[arg(long)]
+    restart_on_crash: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -297,6 +300,9 @@ struct HostCmd {
     display_mode: Option<String>,
     #[arg(long)]
     keep: bool,
+    /// Restart QEMU in the same run after an unexpected exit.
+    #[arg(long)]
+    restart_on_crash: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -429,6 +435,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             memory: c.memory,
             display_mode: c.display_mode,
             keep: c.keep,
+            restart_on_crash: c.restart_on_crash,
         }),
         Some(Cmd::Device(c)) => match c.action {
             DeviceAction::Start(s) => commands::device_start(DeviceStartArgs {
@@ -439,6 +446,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 display_mode: s.display_mode,
                 keep: s.keep,
                 foreground: s.foreground,
+                restart_on_crash: s.restart_on_crash,
                 json: cli.json,
             }),
             DeviceAction::List => commands::device_list(cli.json),

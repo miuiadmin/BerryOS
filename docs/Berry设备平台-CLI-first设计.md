@@ -316,7 +316,7 @@ NDJSON：一行一个 JSON 对象。
 berry [--json] [--verbose] <command>     # --run 是会话类子命令参数，非全局
 
 device
-  start [--image] [--profile] [--foreground] [--memory] [--accel] [--display-mode] [--keep] [--json]
+  start [--image] [--profile] [--foreground] [--memory] [--accel] [--display-mode] [--keep] [--restart-on-crash] [--json]
   list [--json]
   status [--run] [--json]
   stop [--run] [--json]
@@ -352,7 +352,9 @@ version
 `berry screenshot` 优先走 host control（VNC 兜底）。`device start` 的 host 进程标签 = `host`。
 **C1c 已落**：`berry shell --attach <id>` 打开已有 session（VNC 帧/输入 + control 动作）；
 关窗只 detach，host 继续。C1d/C1e/C1f 已落（state.json、cleanup、TCP+token）；
-**C1g 未落**：Windows 实机验证/打包、host 自动重启。
+**C1g 已落 host 自动重启**：`device start --restart-on-crash`，QEMU 异常退出后在
+同一 run/control 路径原地重启（rebooting→running；CLI 重连；旧 VNC/control 短断）。
+C1g 剩余：Windows 实机验证/打包。
 
 ### 8.2 语义
 
@@ -549,7 +551,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C1d（已落 state）** | `state.json` 持久化（starting/running/rebooting/stopping/stopped/failed）；list/status 缺 control 时读 state，running→stale；stop 幂等 | 杀 host 后 list/status 显示 stale；正常 stop 显示 stopped |
 | **C1e（已落清理）** | meta 记 qemu_pid；`device cleanup` 杀 orphan QEMU + 删 stale run；running 拒绝 | 杀 host 后 cleanup 移除 QEMU/run |
 | **C1f（已落 TCP）** | 非 Unix TCP+token control；Unix 默认 socket，`BERRY_CONTROL_TCP=1` 测试；token 0600 | macOS TCP 模式 status/logs/power 全通；Windows 走同路径 |
-| **C1g（下一刀）** | Windows 实机验证/打包；host 自动重启 | 真机/CI 绿 |
+| **C1g（部分已落）** | host 自动重启已落（同 run 原地重启）；剩 Windows 实机验证/打包 | `--restart-on-crash` + kill QEMU 后同 run 恢复 |
 | **C2a（已落）** | 原生快捷栏 4 键（SHOT/BOOT/OFF/FULL）；截图/重启/关机/全屏；鼠标+触摸 | 窗口内可点；截图落盘；重启/关机走 control/QMP；全屏切换 |
 | **C2b（已落）** | `OFF` 二次确认；`berry shortcut`；`display list/set`（next-profile）；`events` JSONL | 关机需两次点击；CLI 可触发截图/重启/关机；事件可读 |
 | **C2c（已落 CLI）** | `display set <profile> --restart`：停旧 host、起新 profile host（新 run） | phone→phone16 实测 480×854；新 run 可控 |
@@ -558,7 +560,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C2f（已落交互）** | 按钮 hover 高亮 + tooltip；菜单当前项高亮；OFF 二次确认 | 悬停可见提示；15 单测绿 |
 | **C2g（已落）** | 先起新 host 再停旧（失败旧 host 不动）；旧 run 按 keep 清理；tooltip 保持 | 新 host 失败不伤旧；keep=false 旧 run 删除 |
 | **C2h（已落）** | attach 新 host 失败保留旧 host；VNC 重连失败按旧 profile 回滚重连；stale 提示 cleanup | 失败不丢旧会话；rollback 可恢复 |
-| **C2i（下一刀）** | 快捷键提示扩展；host 自动重启；Windows 实机验证 | 交互/平台收口 |
+| **C2i（下一刀）** | 快捷键提示扩展；Windows 实机验证 | 交互/平台收口 |
 | **C3（部分已落）** | `record`/`play`/`stats` 已落；`--wait`、时间轴回放、多设备未落 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
