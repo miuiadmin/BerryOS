@@ -44,8 +44,8 @@ just berry run --kernel <elf> --marker "BerryOS boot" --timeout 30 --follow
 just berry shot --image out/berryos.img --out out/shot.png --timeout 120
 just berry shot --image out/berryos.img --profile phone --out out/phone.png
 just berry screenshot --out out/shot.png --settle-ms 500   # 抓正在跑的 shell，不重启
-just shell                                  # = berry shell --image out/berryos.img
-just desktop                                # GUI 桌面预览：berryos-desktop.img + out/gui-data.img + tablet
+just shell                                  # GUI 优先（out/berryos.img）/ console 回退
+just desktop                                # GUI 桌面：out/berryos.img + out/gui-data.img + tablet + display
 just berry shell --profile phone --timeout 30
 just berry device list
 just berry device status --run <id>

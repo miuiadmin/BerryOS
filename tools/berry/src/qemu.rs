@@ -221,6 +221,24 @@ pub fn spawn_image(
         ))
         .arg("-device").arg("qemu-xhci")
         .arg("-device").arg("usb-storage,drive=bb");
+    // GUI 桌面数据盘（可选）：launcher 需要 virtio-blk 数据盘才拿到
+    // fs/app/input 三枚 gift（svcmgr BLK_OK 门）；FAT12 盘由 just desktop
+    // 造。env 入口避免给 Device/CLI 加一整条参数链。
+    let data_disk = std::env::var_os("BERRY_DATA_DISK")
+        .map(std::path::PathBuf::from)
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+    if tablet || data_disk.is_some() {
+        // virtio-mmio 默认 legacy；inputd 只认 VERSION_1（GUI-4 判例）。
+        cmd.arg("-global").arg("virtio-mmio.force-legacy=false");
+    }
+    if let Some(path) = data_disk {
+        cmd.arg("-drive")
+            .arg(format!(
+                "if=none,id=dd,format=raw,file={},cache.writeback=off",
+                path.display()
+            ))
+            .arg("-device").arg("virtio-blk-device,drive=dd");
+    }
     if tablet {
         cmd.arg("-device").arg("virtio-tablet-device");
     }

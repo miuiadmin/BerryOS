@@ -24,6 +24,14 @@
 | 引导加载器 | Redox bootloader、Limine、OSDev Wiki | — |
 | 工具链 | cargo / rust-lld / just / QEMU | — |
 
+## Ginux（2026-11 本地参考，克隆树不入库）
+
+- 出处：<https://github.com/gmkurtzer/ginux> · 本地快照 HEAD `5dd58ca`（2026-11-03）· Apache-2.0。
+- 定位：x86-64 UEFI、Rust `no_std`、模块化单体内核；Linux 用户态容器宿主（native domain + ring-3 controller）。
+- 对照面：domain/capability 授权与 generation 失效、boot authority 封套、ring-3 controller、OCI 层缓存、HDAE 门禁/证据链、Linux ABI 账本、IOMMU DMA containment。
+- 边界：**不是微内核、不是 aarch64、无 GUI、无 AI 调度**；内核含 VFS/网络/OCI/crypto，Linux ABI 规模巨大（约 11.3 万行 Rust 内核、HDAE 台账 1,033 个 unsafe 块）。只借语义与验证方法，不整搬内核代码；任何代码级借鉴须过 ADR #37 与排除 8 问并补 NOTICE。
+- 详细报告：`research/Ginux-调研-2026-11.md`（对照矩阵 / 可借 / 避雷 / 排除 8 问）。
+
 ## 协议提醒（按 11 号调研报告实测修正，2026-10-15）
 
 - 优先 **Rust OS（语言匹配 + 协议干净）**：Redox(MIT)、Theseus(MIT)、**zCore(MIT，可对照代码形状)**。

@@ -18,6 +18,9 @@ jobs:
       - name: docs-guard（AGENTS 注入预算 + 探针/锚点）
         run: python3 tools/docs_guard.py
 
+      - name: writable-globals（可写全局清单门禁）
+        run: python3 tools/writable_globals.py --check
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防
