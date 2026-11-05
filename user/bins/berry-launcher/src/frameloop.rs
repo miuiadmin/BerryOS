@@ -243,7 +243,7 @@ pub fn run(
     {
         fail("vmar map");
     }
-    let desc = match TextureDesc::new(w, h, stride, TextureFormat::Bgrx) {
+    let desc = match TextureDesc::new(w, h, stride, TextureFormat::Rgbx) {
         Ok(d) => d,
         Err(e) => fail(&format!("texture desc {e:?}")),
     };

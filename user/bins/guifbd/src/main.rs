@@ -835,11 +835,13 @@ fn main() {
     let fmt_raw = (rd(4) as u64 & 0xFFFF_FFFF) as u32;
     // 第 6 域 = GUI 模式（旧内核只写 40B → 该域读 0 = 兼容旧行为）。
     let gui = rd(5) != 0;
-    let fmt = match PixelFormat::from_raw(fmt_raw) {
-        Some(f) => f,
-        None => {
-            // BitMask(2)/BltOnly(3)：from_raw 宁缺勿猜（ramfb 实测恒
-            // Bgrx=1，此路理论不可达）——降级不阻塞主链。
+    // QEMU ramfb fmt=1 = DRM_FORMAT_XRGB8888（LE 内存 B,G,R,X）。本仓
+    // `PixelFormat::Rgbx.pack` 才落该字节序；历史 `Bgrx` 映射把 R/B 互换，
+    // 桌面蓝灰显示成土棕（截图实证）。只改显示契约映射。
+    let fmt = match fmt_raw {
+        1 => PixelFormat::Rgbx,
+        0 => PixelFormat::Bgrx,
+        _ => {
             eprintln!("guifbd: unsupported fmt={}", fmt_raw);
             berry_libc::park();
         }

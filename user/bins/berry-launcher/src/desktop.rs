@@ -78,6 +78,10 @@ const GRID_GAP: u32 = 12;
 const STATUS_PAD: u32 = 6;
 /// 状态栏两 Text 间距。
 const STATUS_GAP: u32 = 8;
+/// 状态栏下强调线高。
+const ACCENT_H: u32 = 2;
+/// 壁纸竖向渐变色带数（Rect 无渐变原语——多带近似；奇高余量归末带）。
+const WALLPAPER_BANDS: u32 = 48;
 
 /// ROLE_LIST —— berry-ui 角色常量域（wire u8 0..=5 在册）之外的**开放
 /// 值域 host 扩展**（lib.rs 角色常量族头注明文「host 可扩」）：6 =
@@ -91,12 +95,13 @@ const STATUS_CLOCK: &[u8] = b"12:00";
 /// a11y 页容器 label。
 const PAGE_LABELS: [&[u8]; PAGES] = [b"page 0", b"page 1", b"page 2", b"page 3"];
 /// 空槽占位 label。
-const PLACEHOLDER: &[u8] = b"-";
+const PLACEHOLDER: &[u8] = b"";
 
 /// 壁纸/文本配色（裁决六三带 + 白系前景；stub 常量——位图通道 v2）。
-const WALLPAPER_TOP: Color = Color { r: 38, g: 50, b: 75 }; // 深蓝灰（上 2/3）
-const WALLPAPER_BOTTOM: Color = Color { r: 74, g: 85, b: 104 }; // 石板（下 1/3）
-const STATUS_BG: Color = Color { r: 0, g: 0, b: 0 }; // 状态栏黑带
+const WALLPAPER_TOP: Color = Color { r: 24, g: 34, b: 58 }; // 夜空蓝
+const WALLPAPER_BOTTOM: Color = Color { r: 86, g: 98, b: 124 }; // 冷灰蓝
+const STATUS_BG: Color = Color { r: 10, g: 14, b: 24 }; // 状态栏深色带
+const ACCENT: Color = Color { r: 82, g: 156, b: 255 }; // 状态栏下 2px 强调线
 const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
 const ICON_FG: Color = Color { r: 230, g: 230, b: 235 };
@@ -136,14 +141,31 @@ struct SlotPlan<'a> {
     app: Option<usize>,
 }
 
+/// 线性插值两色（`t` = 0..=den；Q16 不需要——整数通道足够，18 带近似）。
+fn lerp_color(a: Color, b: Color, t: u32, den: u32) -> Color {
+    if den == 0 {
+        return b;
+    }
+    let f = |x: u8, y: u8| -> u8 {
+        let x = x as u32;
+        let y = y as u32;
+        ((x * (den - t) + y * t) / den) as u8
+    };
+    Color {
+        r: f(a.r, b.r),
+        g: f(a.g, b.g),
+        b: f(a.b, b.b),
+    }
+}
+
 /// S8x16 文本叶子 spec（label/状态栏共用字号档；超 `TEXT_INLINE`=64B
 /// loud Err——id≤24/label≤64 域内不可达）。
-fn text_spec(text: &[u8], fg: Color) -> Result<ViewSpec, UiError> {
+fn text_spec(text: &[u8], fg: Color, scale: FontSize) -> Result<ViewSpec, UiError> {
     Ok(ViewSpec {
         kind: ViewKind::Text,
         key: 0,
         props: Props::Text(TextProps {
-            style: TextStyle { fg, bg: None, scale: FontSize::S8x16 },
+            style: TextStyle { fg, bg: None, scale },
             text: TextBuf::new(text)?,
         }),
     })
@@ -164,34 +186,45 @@ fn icon_of(e: &AppEntry) -> Option<u16> {
 pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<Desktop, UiError> {
     // 宽不消费：三带/Grid 宽全 None 随父拉满（Root 子 avail = viewport
     // 宽——裁决六满幅语义），仅带高/Grid 高需显式派生。
-    let (_vp_w, vp_h) = ui.viewport();
+    let (vp_w, vp_h) = ui.viewport();
     let root = ui.root();
 
-    // —— 壁纸三带（裁决六；插入序 = 自底向上 z 序——先插者先发先绘）——
-    ui.add(
+    // —— 壁纸竖向多带渐变（Rect 无渐变原语；18 带在 TCG 下仍是一次
+    //    整帧 fill，零资产/零缩放）。插入序 = 自底向上 z 序：先插者先绘。
+    let wall = ui.add(
         root,
         ViewSpec {
-            kind: ViewKind::Rect,
+            kind: ViewKind::Col,
             key: 0,
-            props: Props::Rect(RectProps {
-                bg: WALLPAPER_BOTTOM,
-                w: None, // 随父满幅（Root 子 avail = viewport）
-                h: None, // 全幅底衬——下 1/3 露出石板
-            }),
-        },
-    )?;
-    ui.add(
-        root,
-        ViewSpec {
-            kind: ViewKind::Rect,
-            key: 0,
-            props: Props::Rect(RectProps {
-                bg: WALLPAPER_TOP,
+            props: Props::Col(ColProps {
+                gap: 0,
                 w: None,
-                h: Some(vp_h / 3 * 2), // 盖上 2/3（整除取带——奇高余量归下带）
+                h: Some(vp_h),
+                cross: CrossAlign::Stretch,
             }),
         },
     )?;
+    let band_h = vp_h / WALLPAPER_BANDS;
+    for i in 0..WALLPAPER_BANDS {
+        let h = if i + 1 == WALLPAPER_BANDS {
+            vp_h.saturating_sub(band_h.saturating_mul(WALLPAPER_BANDS - 1))
+        } else {
+            band_h
+        };
+        ui.add(
+            wall,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps {
+                    bg: lerp_color(WALLPAPER_TOP, WALLPAPER_BOTTOM, i, WALLPAPER_BANDS - 1),
+                    w: None,
+                    h: Some(h),
+                }),
+            },
+        )?;
+    }
+    // 状态栏底带（Root 直子；内容列的状态栏 Col 叠在其上，同高）。
     ui.add(
         root,
         ViewSpec {
@@ -200,7 +233,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             props: Props::Rect(RectProps {
                 bg: STATUS_BG,
                 w: None,
-                h: Some(STATUS_H), // 状态栏黑带（最上 Rect）
+                h: Some(STATUS_H),
             }),
         },
     )?;
@@ -247,7 +280,12 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             kind: ViewKind::Row,
             key: 0,
             props: Props::Row(RowProps {
-                gap: STATUS_GAP,
+                // 时间右对齐：宽 - 两侧 pad - 两串字宽；窄屏饱和 0。
+                gap: vp_w.saturating_sub(
+                    STATUS_PAD * 2
+                        + (STATUS_NAME.len() + STATUS_CLOCK.len()) as u32
+                            * FontSize::S16x32.cell_w() as u32,
+                ),
                 w: None,
                 h: None,
                 cross: CrossAlign::Start,
@@ -255,10 +293,20 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         },
     )?;
     // 状态栏 2 件 ROLE_TEXT（裁决八；时钟占位——W2 真时钟）。
-    let t1 = ui.add(srow, text_spec(STATUS_NAME, TEXT_FG)?)?;
+    let t1 = ui.add(srow, text_spec(STATUS_NAME, TEXT_FG, FontSize::S16x32)?)?;
     ui.set_a11y(t1, ROLE_TEXT, STATUS_NAME)?;
-    let t2 = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG)?)?;
+    let t2 = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG, FontSize::S16x32)?)?;
     ui.set_a11y(t2, ROLE_TEXT, STATUS_CLOCK)?;
+
+    // 状态栏下 2px 强调线（内容列直子；色带逐帧只读）。
+    ui.add(
+        content,
+        ViewSpec {
+            kind: ViewKind::Rect,
+            key: 0,
+            props: Props::Rect(RectProps { bg: ACCENT, w: None, h: Some(ACCENT_H) }),
+        },
+    )?;
 
     // —— 分页器建树（attach 自管：track Row(w=viewport) + 页 Col×4 +
     //    圆点行 + 圆点×4——swipe.rs；页宽 = viewport 动态）——
@@ -293,7 +341,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     // —— 每页 Grid 4×3 槽板（格 = Col[Icon?, Text]；Center 十字居中）——
     // Grid 高定值 = 视口派生（Grid 主轴内在不吃 avail——Col/Row/Grid
     // 主轴恒内在，定值才撑满；宽随页 Col 拉满 viewport）。
-    let grid_h = vp_h.saturating_sub(STATUS_H + DOT_H + BOTTOM_PAD);
+    let grid_h = vp_h.saturating_sub(STATUS_H + ACCENT_H + DOT_H + BOTTOM_PAD);
     // 格高 = Grid 轨高（与 berry-ui §4.2 place 的 track_h 同式：等分轨 −
     // 行间 gap）。**必须定高**：Cell 是 Col 容器，`h: None` 时引擎按子
     // 内在聚合（icon 48 + gap 4 + label 16 = 68）落界，格只占轨首 68px，
@@ -358,7 +406,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                 ),
                 None => None,
             };
-            let label_node = ui.add(cell, text_spec(pn.label, LABEL_FG)?)?;
+            let label_node = ui.add(cell, text_spec(pn.label, LABEL_FG, FontSize::S16x32)?)?;
             slots[p][s] = Some(Slot {
                 cell,
                 label_node,
