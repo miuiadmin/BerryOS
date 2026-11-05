@@ -746,11 +746,11 @@ smoke-image: image
 #   Boot A：等 LAUNCH/PAGE → QMP 单击 APPDEMO 格 → CLICK ok n=1 + LAYOUTW ok；
 #   Boot B：同一数据盘（不重造）→ LAYOUT ok n=<N> + LAUNCH ok，零 LAYOUTW、
 #           零 CLICK，且数据盘 sha256 前后一致（读路径零重写）。
-# 依赖 launcher 段④ 标记（CLICK/LAYOUTW/LAYOUT）合并；未合并时脚本以显式
-# 缺标记 FAIL（plumbing 先跑 `python3 tools/gui8-smoke.py --self-test` /
-# `--dry-run`）。
+# launcher 段④ 标记（CLICK/LAYOUTW/LAYOUT）已合并；标记缺失时脚本仍以显式
+# 缺标记 FAIL（不静默跳过——plumbing 先跑
+# `python3 tools/gui8-smoke.py --self-test` / `--dry-run`）。
 # GUI8_REBUILD=1 强制重建镜像；GUI8_KEEP=1 保留日志/数据盘。
-# gui8-smoke：双 boot 交互相验收（依赖段④ 标记合并）。
+# gui8-smoke：双 boot 交互相验收（段④ 标记已合并）。
 gui8-smoke:
     #!/bin/sh
     set -eu

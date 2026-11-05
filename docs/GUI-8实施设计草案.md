@@ -32,13 +32,21 @@
 | 验收面 | 标记（命名候选，canon 两两互非子串复验 = 落码义务） | 相 |
 |---|---|---|
 | V1 桌面到达 | `LAUNCH ok`（首帧呈现 + 布局装载毕；现役非标记行 `LAUNCH v=` 保留） | EFI 冻结十段 |
-| V2 合成交互 | `PAGE ok n=2`（合成 swipe 翻页两格）/ `CLICK ok n=1`（合成 click → **真** spawn RPC 全程） | PAGE 冻结十段；CLICK 随段④ 交互相（修约 1：冻结相 launcher 恰 [wm]，点击输入面结构性缺席——CI 覆盖经 smoke-image 不失） |
-| V3 真链注入 | 复用 V2 标记（virtio-tablet→inputd→gift→launcher 真线） | EFI GUI 交互相（新） |
+| V2 合成交互 | `PAGE ok n=2`（合成 swipe 翻页两格；合成 click 未采用——见下注） | PAGE 冻结十段 |
+| V3 真链注入 | `CLICK ok n=1`（virtio-tablet→inputd→gift→launcher 真 click → **真** APP_SPAWN RPC 全程；复用 `PAGE ok n=2`） | EFI GUI 交互相（新） |
 | V4 跨 boot | `LAYOUTW ok`（变体布局落盘 + 回读自洽）/ `LAYOUT ok n=`（Boot B 读回变体格数） | EFI GUI 交互相双 boot |
 
 合成 selftest 语义：合成点只在 berry-ui 输入泵入口（`push_pointer`）——referee→
-SwipePager→Click 全逻辑真、唯 pointer wire 假；CLICK 的 spawn RPC 与 reap 真跑。
-真链（V3）与跨 boot（V4）共挂新相。
+SwipePager→Click 全逻辑真、唯 pointer wire 假；合成 selftest 只产 `PAGE ok n=2`。
+真链（V3）的 CLICK spawn RPC 与 reap 真跑；真链（V3）与跨 boot（V4）共挂新相。
+
+> **段④ 落定注记（integration）**：`CLICK ok n=1` 判据 = **首个真实
+> `Msg::Click` → APP_SPAWN ok 回执**（真链 V3），非合成 click；冻结相
+> `app_cli_h()==0` 结构性静默，故 CLICK 只在交互相出现。探针实测：QMP
+> 单击必须落在格容器命中面内——格 Col 原 `h: None` 只占 Grid 轨首 68px
+> （内在 icon 48+gap 4+label 16），点轨心会落到 Grid 容器（`Msg::Click`
+> 无槽可映射，CLICK 永缺）；desktop 格改定高 = 轨高后 CLICK 链通
+> （integration 修，透明容器零视觉差）。
 
 ### 1.2 smoke 相拓扑（结构裁决展开见 §3-裁决一）
 
@@ -231,7 +239,7 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
   FRAME_CALLBACK → note_presented → RELEASE → vote；per-SUBMIT fresh VMO
   dup 别名池 + credits≤2 背压 + IDLE sticky 停帧票）+ 布局读写（berry-layout
   parse/emit + libc fs 面；缺席回落默认 + 读失败回默认重写自愈 + 写失败非致命
-  三约束）+ 合成 selftest（PAGE/CLICK 标记 + 变体布局写）+ LAUNCH ok 首帧标记。
+  三约束）+ 合成 selftest（PAGE 标记 + 变体布局写；CLICK 归段④ 真链）+ LAUNCH ok 首帧标记。
 - 依赖接线：berry-ui/berry-gfx/berry-layout 进 launcher 独立 workspace
   （guifbd 同形先例：no_std crate 入 musl std 程序）。
 - 验收：EFI 冻结十段新两标记（LAUNCH ok/PAGE ok）到齐 + UTM 手验桌面起；

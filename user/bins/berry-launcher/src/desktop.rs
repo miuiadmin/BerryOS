@@ -294,6 +294,14 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     // Grid 高定值 = 视口派生（Grid 主轴内在不吃 avail——Col/Row/Grid
     // 主轴恒内在，定值才撑满；宽随页 Col 拉满 viewport）。
     let grid_h = vp_h.saturating_sub(STATUS_H + DOT_H + BOTTOM_PAD);
+    // 格高 = Grid 轨高（与 berry-ui §4.2 place 的 track_h 同式：等分轨 −
+    // 行间 gap）。**必须定高**：Cell 是 Col 容器，`h: None` 时引擎按子
+    // 内在聚合（icon 48 + gap 4 + label 16 = 68）落界，格只占轨首 68px，
+    // 轨余下空间命中落到 Grid 容器（Click 无槽可映射——smoke 实抓：
+    // QMP 点轨心 → node=Grid → CLICK 永缺）。定高把命中面铺满槽（透明
+    // 容器零视觉差），a11y ROLE_BUTTON 界同步为整槽。
+    let cell_h = (grid_h.saturating_sub((GRID_ROWS as u32 - 1) * GRID_GAP))
+        / GRID_ROWS as u32;
     let mut slots: [[Option<Slot>; SLOTS_PER_PAGE]; PAGES] = [[None; SLOTS_PER_PAGE]; PAGES];
     for p in 0..PAGES {
         let page = pager.page_node(p as u8).ok_or(UiError::NodeBad)?;
@@ -324,7 +332,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                     props: Props::Col(ColProps {
                         gap: CELL_GAP,
                         w: None,
-                        h: None,
+                        h: Some(cell_h),
                         cross: CrossAlign::Center,
                     }),
                 },
