@@ -10,7 +10,7 @@
 | Windows 实机 | 🟡 `windows/build.ps1` + `run-berry.cmd`；无 `berry.exe` | 本机无 Windows target；`rustup target add` 下载失败 | Windows 上 `run-berry.cmd` → `berry shell`；`doctor` 绿；截图 | 高：未知 DLL/路径/控制台行为 |
 | Windows GUI subsystem | ⬜ `berry.exe` 仍是 console binary | 需 `windows_subsystem` + `AttachConsole`/`AllocConsole` 分支 | 双击不闪控制台；cmd 调用仍能看输出 | 中：Rust std stdout 重定向 |
 | Linux 实机 | ✅ arm64 Linux 容器 + QEMU TCG：`doctor`、480×1000、540×1200/256 GUI 截图通过 | 非桌面发行版/无窗口；AppImage 未产 | `out/linux-gui-540.png`；`smoke-docker.sh` | 中：GUI/QEMU 集成仍限容器 |
-| Linux AppImage | 🟡 脚本支持 `APPIMAGETOOL` | 本机无 appimagetool；非 ELF 主动跳过 | `APPIMAGETOOL=... build-appdir.sh` 出 `.AppImage` 并运行 | 中：FUSE/沙箱 |
+| Linux AppImage | ✅ arm64 Docker 产物 20.7MB；extract + AppRun --version 通过 | 本机无 FUSE；直接挂载未验 | `build-appimage-docker.sh` → `out/BerryOS-aarch64.AppImage` | 中：FUSE/桌面集成 |
 
 ## P1（功能可见缺口）
 

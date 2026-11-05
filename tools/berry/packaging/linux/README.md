@@ -32,6 +32,16 @@ tools/berry/packaging/linux/build-tarball.sh out/BerryOS.AppDir-linux
 # out/BerryOS-linux-aarch64.tar.gz
 ```
 
+### AppImage（arm64 容器）
+
+```bash
+tools/berry/packaging/linux/build-appimage-docker.sh
+# out/BerryOS-aarch64.AppImage
+```
+
+容器内下载 appimagetool、复制可写 AppDir、`ARCH=aarch64` 打包；产物 20.7MB。
+当前用 `--appimage-extract` + `AppRun --version` 验证；FUSE 直接挂载未验。
+
 有 `appimagetool` 时：
 
 ```bash

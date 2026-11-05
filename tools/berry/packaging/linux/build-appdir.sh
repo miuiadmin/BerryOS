@@ -316,7 +316,14 @@ cp -f "$DESKTOP_SRC" "$APP_ABS/usr/share/applications/berry.desktop" || \
     die "failed to copy desktop entry"
 # appimagetool also looks for a desktop entry at the AppDir root.
 cp -f "$DESKTOP_SRC" "$APP_ABS/berry.desktop" || die "failed to copy root desktop entry"
-chmod 0644 "$APP_ABS/usr/share/applications/berry.desktop" "$APP_ABS/berry.desktop"
+ICON_SRC=tools/berry/packaging/linux/berry.png
+[ -f "$ICON_SRC" ] || die "missing icon: $ICON_SRC"
+cp -f "$ICON_SRC" "$APP_ABS/berry.png" || die "failed to copy AppImage icon"
+mkdir -p "$APP_ABS/usr/share/icons/hicolor/256x256/apps"
+cp -f "$ICON_SRC" "$APP_ABS/usr/share/icons/hicolor/256x256/apps/berry.png" || \
+    die "failed to copy hicolor icon"
+chmod 0644 "$APP_ABS/usr/share/applications/berry.desktop" "$APP_ABS/berry.desktop" \
+    "$APP_ABS/berry.png" "$APP_ABS/usr/share/icons/hicolor/256x256/apps/berry.png"
 
 cat > "$APP_ABS/AppRun" <<'RUN'
 #!/bin/sh

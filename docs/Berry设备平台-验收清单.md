@@ -106,7 +106,8 @@ berry play script.json --run "$RUN"
 - [ ] macOS 桌面预览：`out/BerryOS-Desktop.app`（540/256 GUI-8 镜像）。
 - [ ] Linux：`build-linux-binary.sh` + `build-appdir.sh` + `check-appdir --require-elf`
       → 真实 aarch64-musl ELF AppDir；`smoke-docker.sh` 在 arm64 Linux 容器里
-      doctor/480/540 GUI 截图通过。✅ 容器实机；AppImage/桌面未验。
+      doctor/480/540 GUI 截图通过。✅ 容器实机；AppImage 20.7MB（extract 验证）；
+      FUSE/桌面发行版未验。
 - [ ] Windows：`tools/berry/packaging/windows/build.ps1` → `out/BerryOS-win64`；🟡 未实机。
 - [ ] QEMU 不打包；Runtime Pack 独立。✅ 进程边界。
 
