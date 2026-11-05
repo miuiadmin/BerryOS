@@ -38,7 +38,39 @@ use crate::vmar::{self, Perm, Vmar};
 use crate::vmo::Vmo;
 use berry_hal_aarch64 as hal;
 use berry_mm::va::PAGE_SIZE;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+
+/// fault-in-fault 递归帽（草案 §2.2 防线 3，G4-3 落地）：per-CPU 深度 >N
+/// → panic fail loud——防线 1/2（pager AS 全 eager + 处理路径零分配零用户页
+/// 访问）失效时的最后响雷，不静默。
+///
+/// **shape (a) 计数窗 = 活跃处理段**（区域命中 → 武装/唤醒 + 醒后收尾），
+/// `block_current` 睡眠**不计**——并发在飞 faulter（睡在探针内的 N 任务）
+/// 各自只占活跃窗瞬间，不灌计数；窗内深度 ≥2 只可能是真嵌套异常（防线破）。
+const DPG_DEPTH_CAP: u32 = 2; // 草案 N=2 起步：容忍一层嵌套，第三层响雷
+
+// per-CPU 深度（`cpu_id` 索引；Relaxed——异常上下文同核串行，跨核各自独立；
+// v1 双核定容，越界即 panic = 不存在配置的 fail loud）。
+static DEPTH: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+/// 峰值观测（活证面：正常链恒 1；boot 证据行 `DPG dm=` 读出，非 markers 面）。
+static DEPTH_MAX: AtomicU32 = AtomicU32::new(0);
+
+/// 探针入深（异常上下文，提交路径入口）：>帽 = 防线 1/2 破，panic 响雷。
+fn depth_enter() {
+    let d = DEPTH[hal::smp::cpu_id()].fetch_add(1, Ordering::Relaxed) + 1;
+    DEPTH_MAX.fetch_max(d, Ordering::Relaxed);
+    assert!(
+        d <= DPG_DEPTH_CAP,
+        "dpg: fault-in-fault 深度 {} > 帽 {}（防线 1/2 破——pager 自身 demand 化/处理路径触未映射页）",
+        d,
+        DPG_DEPTH_CAP
+    );
+}
+
+/// 探针出深（`block_current` 前/返回前各一次——shape (a) 睡不计）。
+fn depth_exit() {
+    DEPTH[hal::smp::cpu_id()].fetch_sub(1, Ordering::Relaxed);
+}
 
 /// faulter AS 内 demand 区间 VA（页 1——root Vmar 管辖界下界；本 AS 无其他
 /// 用户映射，读它必走缺页路径）。
@@ -107,6 +139,8 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
         hal::kern_lock::klock_exit();
         return false;
     }
+    // 命中 = 提交路径：入深（G4-3 深度帽——此后至 block 前的活跃窗计深度）。
+    depth_enter();
     // 命中：武装请求面（far/asid 先行、armed 收口 Release——pager 侧
     // Acquire 读 armed 后 far/asid 必可见）。
     REQ_FAR.store(far as u64, Ordering::Relaxed);
@@ -115,18 +149,22 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // 唤 pager（KL 窗内 SQ 嵌套 = SVC 同构；双序通吃：已睡 → 摘队，未睡 →
     // 位/槽锁存 + pager poll-first 追平——f4 F1 纪律同源）。
     berry_sched::wake_matching(&PAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
-    // 睡 fault 等待面（无限等——§5-⑤：pager 不再供给 = 永久阻塞；唯一
-    // 唤醒者违约即断言响雷）；舞蹈放 KL 入队、醒后重取。
+    // 出深再睡（shape (a)：睡眠不计——并发在飞 faulter 不灌计数）；舞蹈放
+    // KL 入队、醒后重取。
+    depth_exit();
     let r = berry_sched::block_current(
         &FAULT_KEY as *const u8 as usize,
         DPG_WAKE_BIT,
         u64::MAX,
     );
+    // 醒 = 活跃窗重开（收尾段计深度——此窗内嵌套异常同样响雷）。
+    depth_enter();
     hal::kern_lock::klock_exit();
     assert!(
         matches!(r, berry_sched::WakeReason::Signaled),
         "dpg probe: 醒因非 Signaled（fault 键无超时/无他者——唤醒面破损）"
     );
+    depth_exit();
     true
 }
 
@@ -161,22 +199,29 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         hal::kern_lock::klock_exit();
         return false;
     }
+    // 命中 = 提交路径：入深（G4-3 深度帽，shape (a) 同 [`probe`]）。
+    depth_enter();
     // 命中：武装 + 唤 pager + 睡（时序合同同 [`probe`]——Release 收口后
     // far/asid 对 0x21 Acquire 侧必可见；全 KL 窗）。
     EREQ_FAR.store(far as u64, Ordering::Relaxed);
     EREQ_ASID.store(asid, Ordering::Relaxed);
     EREQ_ARMED.store(true, Ordering::Release);
     berry_sched::wake_matching(&EPAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
+    // 出深再睡（shape (a)：睡眠不计）。
+    depth_exit();
     let r = berry_sched::block_current(
         &EFAULT_KEY as *const u8 as usize,
         DPG_WAKE_BIT,
         u64::MAX,
     );
+    // 醒 = 活跃窗重开（收尾段计深度）。
+    depth_enter();
     hal::kern_lock::klock_exit();
     assert!(
         matches!(r, berry_sched::WakeReason::Signaled),
         "dpg probe_el0: 醒因非 Signaled（EL0 fault 键无超时/无他者——唤醒面破损）"
     );
+    depth_exit();
     true
 }
 
@@ -266,6 +311,11 @@ extern "C" fn dpg_faulter(_arg: usize) -> ! {
     );
     hal::kern_lock::with_print_lock(|| {
         hal::uart_puts(b"DPG ok\n");
+        // G4-3 深度活证（草案 §3「递归不爆」观测面；非 markers 数组——
+        // smoke 零漂移）：正常链峰值恒 1（dp=0 即探针没跑 = 假绿）。
+        hal::uart_puts(b"DPG dm=");
+        hal::uart_put_dec(DEPTH_MAX.load(Ordering::Relaxed) as u64);
+        hal::uart_puts(b"\n");
     });
     // 自证毕停泊（v1 任务不退出——sleeper 族 park 形；DONE 键无人唤醒）。
     hal::kern_lock::klock_enter();
