@@ -1,0 +1,47 @@
+# Berry 平台剩余缺口与验收矩阵
+
+> 2026-11-04。配套：`Berry设备平台-CLI-first设计.md`、`Berry设备平台-验收清单.md`。
+> 状态口径：✅ 已实测 / 🟡 有实现或脚本、未实机 / ⬜ 未落。
+
+## P0（阻塞跨平台交付）
+
+| 项 | 现状 | 为什么未做 | 验收证据 | 风险 |
+| --- | --- | --- | --- | --- |
+| Windows 实机 | 🟡 `windows/build.ps1` + `run-berry.cmd`；无 `berry.exe` | 本机无 Windows target；`rustup target add` 下载失败 | Windows 上 `run-berry.cmd` → `berry shell`；`doctor` 绿；截图 | 高：未知 DLL/路径/控制台行为 |
+| Windows GUI subsystem | ⬜ `berry.exe` 仍是 console binary | 需 `windows_subsystem` + `AttachConsole`/`AllocConsole` 分支 | 双击不闪控制台；cmd 调用仍能看输出 | 中：Rust std stdout 重定向 |
+| Linux 实机 | 🟡 `build-appdir.sh` 产 `out/BerryOS.AppDir` | AppDir 内是 macOS arm64 二进制；无 Linux 环境 | Linux 构建 `berry` → AppDir → 启动、截图、power off | 高：AppImage/FUSE/桌面集成 |
+| Linux AppImage | 🟡 脚本支持 `APPIMAGETOOL` | 本机无 appimagetool；非 ELF 主动跳过 | `APPIMAGETOOL=... build-appdir.sh` 出 `.AppImage` 并运行 | 中：FUSE/沙箱 |
+
+## P1（功能可见缺口）
+
+| 项 | 现状 | 根因/前置 | 验收证据 | 风险 |
+| --- | --- | --- | --- | --- |
+| GUI-8 图标 dash | 🟡 540/256 全桌面可起，但图标占位 | `launcher_assemble` 在 `fs_gift==0` 时只给 `[wm]`，`app_cli_h()==0`；`icons::init` 空 registry | 串口 `LAUNCH v=1` 且桌面出现 APPDEMO/APPQUIET 图标 | 中：需 fsmgr/vblk 或改冻结相 [wm] |
+| data disk 图标实验 | ⬜ 失败已回退 | `vblk` 找到 slot 31，但 `fs_gift` 未成立；FAT/mkfat 有效 | `MMAP/ROOTFS/LAUNCH ok` + app registry | 中：可能污染 boot |
+| 顶层 tap/key/text 别名 | ⬜ 仅 `berry input ...` | clap 未加 alias；`input text` 已有 | `berry tap 1 2` 等 | 低 |
+| `display rotate` / `set WxH` | ⬜ 仅 `display set <profile>` | 需客机/呈现面旋转；自定义 WxH 需新 host mode | `display rotate 90` 后截图方向正确 | 中 |
+| `shortcut resolution/fullscreen` | ⬜ CLI 已删；窗口 RES/F 可用 | resolution 需 profile 参数；fullscreen 窗口-only | 仅窗口侧验收 | 低 |
+| `pack verify/install` | ⬜ C4 规划 | 无 runtime pack 格式 | 命令/JSON 契约 | 低 |
+| attach 自动重连 GUI 实测 | 🟡 代码已接 `down_since`/`try_reconnect` | 无显示环境，GUI 进程级未跑通 | kill QEMU → attach 窗口恢复画面 | 中：VNC 重连时序 |
+
+## P2（后续能力）
+
+| 项 | 现状 | 说明 |
+| --- | --- | --- |
+| P3 virtio-gpu | ⬜ | 当前 ramfb + shared RAM；P3 再做 GPU/damage/120Hz |
+| 视频编码/时间轴回放 | 🟡 APNG 帧序列；`play expect` | 不是视频容器；无音频/时间轴 |
+| 窗口级截图/录屏 | ⬜ | 截图只含客机，不含宿主 toolbar |
+| 剪贴板/IME/音频 | ⬜ | 窗口/客机协议未做 |
+| 多设备编排 | ⬜ | 单 host/单 run；AI 批量需上层脚本 |
+| 签名/公证 | ⬜ | macOS ad-hoc；无 notarization |
+
+## 已实测基线（不要再回退）
+
+- host **15 单测**；`docs_guard` PASS；`git diff --check` 空。
+- `out/BerryOS.app` / `out/BerryOS-Desktop.app` 镜像哈希与 `out/*.img` 一致。
+- `out/BerryOS.AppDir`：25 ok / 1 warning（macOS Mach-O，非 Linux ELF）/ 0 fail。
+- 256MiB `MMAP ok`；540×1200/800×1280 `FBW`；host 自动重启；power off 5s；APNG；play expect。
+
+## 下一步建议顺序
+
+1. Windows CI/实机（P0）→ 2. GUI-8 icons（P1，需 GUI-8 分支）→ 3. Linux 实机/AppImage（P0）→ 4. P3。

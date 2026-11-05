@@ -1,7 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=BerryOS
+GenericName=BerryOS Device Shell
 Comment=BerryOS developer device shell
 Exec=berry
+TryExec=berry
 Terminal=false
 Categories=Development;
+Keywords=BerryOS;QEMU;emulator;
+StartupNotify=true
