@@ -161,12 +161,19 @@ pub extern "C" fn _start(console: Handle) -> ! {
     dpg_selftest(console);
     input_selftest(console); // GUI-4 段②：boot 期 input 域 SUBSCRIBE 自验（INPUT ok）
 
+    // ---- G4-3 C-lite：缺页风暴自愈 N=4（`DPGS ok n=4`，rootfs 相第 49
+    // 标记）——共享三 VMO × 4 子并发首触：单槽盲覆写 + 广播错醒 → 重
+    // fault 自愈收敛（B 刀 per-request 键化的现状基线）；4× join 7 within
+    // 帽。镜像内嵌零 rootfs 依赖 = 裸跑/EFI 路同打；链内坏面 = eco 降级
+    // 行 + 标记缺失（smoke FAIL 兜底）。----
+    dpg_storm(console);
+
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
     // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
     // serve 泵（APP_SVC READABLE——命中帧消化毕续泵至 -EAGAIN 静默）+
     // launcher 监督探活 + SPAWN 活子探活/drain（app_supervise，M-C 异步
     // 收口的稳态兑现点）。三路皆空（APP_SVC==0 且无 launcher 子且子表空
-    // ——rootfs/裸跑/重启帽尽形）= **保现状纯 echo 紧环**（48 标记零漂，
+    // ——rootfs/裸跑/重启帽尽形）= **保现状纯 echo 紧环**（49 标记零漂，
     // n=1 字面落实）；GUI 形才并等（n≤2+2×APP_SPAWN_LIVE_MAX=10：svc
     // READABLE + launcher hp TERMINATED + 每活子 out_s READABLE（drain
     // 唤醒面——EOF 后停挂）+ hp TERMINATED）——deadline =
@@ -2539,6 +2546,135 @@ fn dpg_selftest(console: Handle) {
     }
     line[i] = b'\n';
     send_retry(console, line.as_ptr(), i + 1);
+}
+
+/// G4-3 C-lite 风暴子数（4 子并发首触同一 demand VMO）。
+const DPGS_N: usize = 4;
+/// G4-3 C-lite 标记（12 字节；rootfs 相第 49 标记〔INPUT(48) 后随实发
+/// 序〕，裸跑/EFI 路同面）。带参形态防子串混叠（`BLKD ok n=` 同款惯例——
+/// "DPGS ok n=4" 与 "DPGP ok"/"DPG ok" 位 4 S≠P 互非子串）。
+const DPGS_OK: &[u8; 12] = b"DPGS ok n=4\n";
+
+/// G4-3 C-lite 自验：**缺页风暴自愈 N=4**——共享三 VMO（源/像/demand 各
+/// 建一次）× 4 子并发首触同一 demand 页。机制面现况（G4-3 拆解亲核）：
+/// EL0 请求槽 = 单槽盲覆写（后写者胜，无排队）+ 供给毕全局单键广播（全
+/// 唤——N-1 错醒重 fault 再武装自愈收敛）；4 轮 0x21 阻塞收货每轮至多
+/// 喂一子（同 dv ⇒ 身份验恒过；异子异表各填各叶，supply_page 双重幂等
+/// = 首 commit 一次 + 4 填叶同 PA——共享库页真实形状）。不收敛/丢唤 =
+/// 某子永睡 → join 帽到点 → 标记缺席 = smoke FAIL loud（§5-⑤ 执法）；
+/// 收敛 = 4× join exit 7 within 帽。B 刀 per-request 键化的现状基线。
+fn dpg_storm(console: Handle) {
+    // 共享源 VMO（防线 4：pre-commit + 预写 magic——供给链零缺页）。
+    let mut sv = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut sv) != 0 || sv == 0 {
+        eco_note(console, b"dpgs sv");
+        return;
+    }
+    if berry_vmo_commit(sv, 0, 4096) != 0
+        || berry_vmo_write(sv, DPG_MAGIC.to_le_bytes().as_ptr(), 0, 8) != 0
+    {
+        eco_note(console, b"dpgs svw");
+        return;
+    }
+    // 共享受验像 VMO（eager 全提交——4 子同像 dpgp）。
+    let mut iv = 0 as Handle;
+    if berry_vmo_create(DPG_MAP_LEN as u64, 0, &mut iv) != 0 || iv == 0 {
+        eco_note(console, b"dpgs iv");
+        return;
+    }
+    if berry_vmo_commit(iv, 0, DPG_MAP_LEN as u64) != 0
+        || berry_vmo_write(iv, DPGP_BIN.as_ptr(), 0, DPGP_BIN.len()) != 0
+    {
+        eco_note(console, b"dpgs ivw");
+        return;
+    }
+    // 共享 demand VMO（bit0 = VMO_OPT_DEMAND；4 子同映射 = 4 asid 反查
+    // 登记 ≤ 16 槽）。
+    let mut dv = 0 as Handle;
+    if berry_vmo_create(4096, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
+        eco_note(console, b"dpgs dv");
+        return;
+    }
+    // 4 子拉起：process_create + 双映射（像窗 + demand 页）+ 线程 + start
+    //（零句柄 bootstrap=0，dpg_selftest 同形 ×4）。
+    let mut hps = [0 as Handle; DPGS_N];
+    let mut hvs = [0 as Handle; DPGS_N];
+    let mut hts = [0 as Handle; DPGS_N];
+    for i in 0..DPGS_N {
+        if berry_process_create(0, 0, &mut hps[i], &mut hvs[i]) != 0 || hps[i] == 0 || hvs[i] == 0
+        {
+            eco_note(console, b"dpgs create");
+            return;
+        }
+        let mut vaddr = DPG_ENTRY;
+        if berry_vmar_map(hvs[i], 0, iv, 0, &mut vaddr, DPG_MAP_LEN, RIGHT_READ | RIGHT_WRITE) != 0
+        {
+            eco_note(console, b"dpgs imap");
+            return;
+        }
+        let mut dva = DPG_VA;
+        if berry_vmar_map(hvs[i], 0, dv, 0, &mut dva, 4096, RIGHT_READ | RIGHT_WRITE) != 0 {
+            eco_note(console, b"dpgs dmap");
+            return;
+        }
+        if berry_thread_create(hps[i], 0, &mut hts[i]) != 0 || hts[i] == 0 {
+            eco_note(console, b"dpgs tc");
+            return;
+        }
+        if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, 0) != 0 {
+            eco_note(console, b"dpgs start");
+            return;
+        }
+    }
+    // 4× 0x21 阻塞收货：poll-first + 睡 pager 键逐轮取末写者——错醒子重
+    // fault 再武装自愈，每轮至多喂一子，4 轮收敛 4 叶（供给毕恒唤，失败
+    // 亦唤——非 0 早退即 fail loud）。
+    for _round in 0..DPGS_N {
+        if berry_pager_supply_pages(dv, sv, 0) != 0 {
+            eco_note(console, b"dpgs sup");
+            return;
+        }
+    }
+    // 4× join exit 7（DPG_CAP_NS 同口径 60s/子帽——供给步已毕，本等只罩
+    // 「子读值 → exit → TERMINATED」尾段；丢唤子永睡 = 帽到点标记缺席）。
+    for i in 0..DPGS_N {
+        let mut obs = 0u64;
+        if berry_object_wait_one(hps[i], SIGNAL_TERMINATED, now() + DPG_CAP_NS, &mut obs) != 0
+            || obs != SIGNAL_TERMINATED
+        {
+            eco_note(console, b"dpgs join");
+            return;
+        }
+        let mut code: i32 = 0;
+        if berry_process_get_exit_code(hps[i], &mut code) != 0 {
+            eco_note(console, b"dpgs code");
+            return;
+        }
+        if code != DPG_OK_CODE {
+            eco_note(console, b"dpgs exit");
+            return;
+        }
+    }
+    // 收口：每子先 unmap demand 页再 unmap 像窗（4 unmap 齐走 demand_mapped
+    // 钉归零）→ 关 ht/hp/hv（Vmar Drop 注销 asid 槽）；最后关共享三 VMO
+    //（dv 钉已释，关面不再 -EBUSY）。收口非 0 = 内核侧异常，loud。
+    for i in 0..DPGS_N {
+        if berry_vmar_unmap(hvs[i], DPG_VA, 4096) != 0
+            || berry_vmar_unmap(hvs[i], DPG_ENTRY, DPG_MAP_LEN) != 0
+            || berry_handle_close(hts[i]) != 0
+            || berry_handle_close(hps[i]) != 0
+            || berry_handle_close(hvs[i]) != 0
+        {
+            trap();
+        }
+    }
+    if berry_handle_close(dv) != 0
+        || berry_handle_close(sv) != 0
+        || berry_handle_close(iv) != 0
+    {
+        trap();
+    }
+    send_retry(console, DPGS_OK.as_ptr(), DPGS_OK.len());
 }
 
 /// smoke 第 24 标记（7 字节，尾插随合并序）。
