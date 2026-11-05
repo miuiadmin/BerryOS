@@ -104,8 +104,9 @@ berry play script.json --run "$RUN"
 - [ ] macOS：`tools/berry/packaging/macos/build.sh` → `out/BerryOS.app`；
       ad-hoc 签名；无 TTY 启动资源自解析。
 - [ ] macOS 桌面预览：`out/BerryOS-Desktop.app`（540/256 GUI-8 镜像）。
-- [ ] Linux：`tools/berry/packaging/linux/build-appdir.sh` → `out/BerryOS.AppDir`；
-      有 appimagetool 时产 AppImage。🟡 未实机。
+- [ ] Linux：`build-linux-binary.sh` + `build-appdir.sh` + `check-appdir --require-elf`
+      → 真实 aarch64-musl ELF AppDir；`smoke-docker.sh` 在 arm64 Linux 容器里
+      doctor/480/540 GUI 截图通过。✅ 容器实机；AppImage/桌面未验。
 - [ ] Windows：`tools/berry/packaging/windows/build.ps1` → `out/BerryOS-win64`；🟡 未实机。
 - [ ] QEMU 不打包；Runtime Pack 独立。✅ 进程边界。
 

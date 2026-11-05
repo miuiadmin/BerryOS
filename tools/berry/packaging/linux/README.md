@@ -38,6 +38,15 @@ tools/berry/packaging/linux/build-tarball.sh out/BerryOS.AppDir-linux
 APPIMAGETOOL=/path/to/appimagetool BERRY_BIN=... build-appdir.sh
 ```
 
+## Docker 实机 smoke（arm64 Linux）
+
+```bash
+tools/berry/packaging/linux/smoke-docker.sh
+```
+
+用 arm64 Linux 容器 + QEMU TCG 跑 `berry doctor`，并对 `out/berryos-desktop.img`
+截 480×1000 与 540×1200/256MiB 两张图；输出 `out/linux-smoke/`。
+
 ## 限制
 
 - AppDir 已验证为 **Linux ELF** 结构；尚未在 Linux 实机运行。

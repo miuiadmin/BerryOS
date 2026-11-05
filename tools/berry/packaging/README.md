@@ -7,6 +7,7 @@
 - **Linux**: `linux/build-linux-binary.sh` 交叉构建 musl ELF →
   `linux/build-appdir.sh`（AppRun + berry + image + AAVMF + .desktop）→
   `linux/check-appdir.sh --require-elf`；`linux/build-tarball.sh` 产便携 tar.gz；
+`linux/smoke-docker.sh` 用 arm64 Linux 容器 + QEMU TCG 实跑 doctor/480/540；
 有 `appimagetool` 时顺带产 AppImage。
   QEMU 用发行版 `qemu-system-arm`，外部依赖。
 - **Windows**: `windows/build.ps1` → `out/BerryOS-win64`（berry.exe + image + AAVMF +
