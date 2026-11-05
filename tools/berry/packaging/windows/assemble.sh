@@ -6,6 +6,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd -P)
 cd "$ROOT"
 OUT=${1:-out/BerryOS-win64}
 EXE=${BERRY_EXE:-out/berry.exe}
+GUI=${BERRY_GUI_EXE:-out/berry-shell.exe}
 IMG=${BERRY_IMAGE:-out/berryos.img}
 FW=${AAVMF_CODE:-}
 if [ -z "$FW" ]; then
@@ -16,12 +17,14 @@ if [ -z "$FW" ]; then
     done
 fi
 [ -f "$EXE" ] || { echo "missing $EXE (run build-cross-docker.sh)" >&2; exit 1; }
+[ -f "$GUI" ] || { echo "missing $GUI (run build-cross-docker.sh)" >&2; exit 1; }
 [ -f "$IMG" ] || { echo "missing $IMG" >&2; exit 1; }
 [ -n "$FW" ] && [ -f "$FW" ] || { echo "AAVMF not found; set AAVMF_CODE" >&2; exit 1; }
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
 cp "$EXE" "$OUT/berry.exe"
+cp "$GUI" "$OUT/berry-shell.exe"
 cp "$IMG" "$OUT/berryos.img"
 cp "$FW" "$OUT/AAVMF_CODE.fd"
 cat > "$OUT/run-berry.cmd" <<'CMD'
@@ -33,10 +36,9 @@ set AAVMF_CODE=%~dp0AAVMF_CODE.fd
 CMD
 cat > "$OUT/README.txt" <<'TXT'
 BerryOS device shell (Windows)
-Run: run-berry.cmd, or berry.exe shell
+Double-click berry-shell.exe for the GUI (no console).
+CLI: berry.exe <command> (console), or run-berry.cmd.
 QEMU is external (GPLv2): put qemu-system-aarch64.exe on PATH or set BERRY_QEMU.
-CLI: device/screenshot/record/play/stats/input/power/display.
-GUI subsystem/AttachConsole is still a pending tail; a console window may appear.
 TXT
 ( cd "$OUT" && zip -qr ../BerryOS-win64.zip . )
 ls -la "$OUT"

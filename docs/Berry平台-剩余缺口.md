@@ -8,7 +8,7 @@
 | 项 | 现状 | 为什么未做 | 验收证据 | 风险 |
 | --- | --- | --- | --- | --- |
 | Windows 实机 | 🟡 **已交叉构建 `out/berry.exe`**（PE32+ x64）+ Wine `--version`；未真机 | 本机无 Windows；Wine 只能验证启动 | Windows 上 `run-berry.cmd` → `berry shell`；`doctor` 绿；截图 | 高：QEMU/路径/GUI 行为 |
-| Windows GUI subsystem | 🟡 `berry.exe` 是 console binary；无参双击时 `ShowWindow` 隐藏窗口 | 真正 GUI subsystem + AttachConsole 仍待做 | 双击无控制台；cmd CLI 输出正常 | 中：Rust std stdout 重定向 |
+| Windows GUI subsystem | ✅ 双 exe：`berry.exe` console CLI + `berry-shell.exe` GUI subsystem | GUI 双击/窗口未在真实 Windows 验证 | zip 含两 exe；Wine console `--version` 通过 | 中：真实 Windows 交互 |
 | Linux 实机 | ✅ arm64 Linux 容器 + QEMU TCG：`doctor`、480×1000、540×1200/256 GUI 截图通过 | 非桌面发行版/无窗口；AppImage 未产 | `out/linux-gui-540.png`；`smoke-docker.sh` | 中：GUI/QEMU 集成仍限容器 |
 | Linux AppImage | ✅ arm64 20.7MB；extract + **FUSE 直接挂载** + `--version`/doctor 通过 | 桌面集成未验 | `smoke-appimage.sh`（`/dev/fuse`+SYS_ADMIN） | 中：只限容器 FUSE |
 

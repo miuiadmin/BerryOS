@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
+
 //! `berry` — one binary, two faces: no args on a desktop opens the device
 //! shell; subcommands are the headless developer/CI surface.
 
@@ -13,7 +15,7 @@ use berry::commands::{
 };
 use berry::error::{BerryError, Result};
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "gui")))]
 mod windows_console;
 
 #[derive(Parser, Debug)]
@@ -401,7 +403,7 @@ enum InputActionCmd {
 }
 
 fn main() {
-    #[cfg(windows)]
+    #[cfg(all(windows, not(feature = "gui")))]
     if std::env::args_os().len() == 1 {
         windows_console::hide_console();
     }

@@ -110,7 +110,7 @@ berry play script.json --run "$RUN"
       AppImage FUSE 直接挂载 + `--version`/doctor 通过；桌面发行版集成未验。
 - [ ] Windows：`build-cross-docker.sh` → `out/berry.exe`（PE32+ x64）；
       `assemble.sh` → `out/BerryOS-win64.zip`；`smoke-wine-docker.sh` → `berry 0.1.0`。
-      🟡 未真实 Windows；console binary 无参双击隐藏窗口，真正 GUI subsystem 未落。
+      🟡 未真实 Windows；`berry.exe` console + `berry-shell.exe` GUI subsystem 双入口。
 - [ ] QEMU 不打包；Runtime Pack 独立。✅ 进程边界。
 
 ## 9. 已知缺口

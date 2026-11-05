@@ -28,7 +28,10 @@ tools/berry/packaging/windows/smoke-wine-docker.sh
 ## 限制
 
 - QEMU 不打包（GPLv2）；目标机需 `qemu-system-aarch64.exe` 或 `BERRY_QEMU`。
-- `berry.exe` 是 **console binary**；无参数双击时调用 `ShowWindow(SW_HIDE)` 隐藏控制台再开
-  device shell。真正的 `windows_subsystem=windows` + AttachConsole 仍是 C1g 尾项。
-- 未在真实 Windows 上跑；仅 Wine `--version` 验证。
+- 现在产 **两个 exe**：
+  - `berry.exe`：console CLI（cmd/PowerShell 输出正常）
+  - `berry-shell.exe`：`windows_subsystem=windows` 的 GUI 双击入口（无控制台）
+- `assemble.sh` 两个都打包；`run-berry.cmd` 用 console 版。
+- 未在真实 Windows 上跑；Wine 只验证 console `berry.exe --version`。
+  GUI `berry-shell.exe` 的双击/窗口行为未在真实 Windows 验证。
 - 未刷新图标/安装器/签名。
