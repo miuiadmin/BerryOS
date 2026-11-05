@@ -14,29 +14,42 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
 
 验收面（V2/V3/V4）
 ------------------
+- 数据盘哨兵：根目录 `GUI8.SMK` 的 payload 必须**逐字节恰等于**
+  `BERRYOS-GUI8-SMOKE-V1\\n`（文件名本身用户可创建，故只认 payload；
+  缺席/错 payload 一律 fail closed）。launcher 侧同一串才进冒烟支路。
 - Boot A：AAVMF + out/berryos.img + 独立 FAT12 数据盘（LBA0 印章
-  `BERRYOSVBLK!` + 根目录 `GUI8.SMK`），display fw_cfg 800x600@60，
+  `BERRYOSVBLK!` + 精确 magic 的 `GUI8.SMK`），display fw_cfg 800x600@60，
   virtio-blk + virtio-tablet + QMP。
-  - 等 `LAUNCH ok` / `PAGE ok n=2` / `APP ok n=2`；
-  - 「launcher: click ready」在席则用之，缺席回退 PAGE + settle 秒；
+  - 等基础 5 + boot 批 `app APPDEMO up`（先把 boot 批 app 证据吃完）；
+  - `launcher: click ready` **强制在席恰一次**（缺席即 FAIL，不 sleep
+    回退——这是 QMP 注入前的状态谓词门）；
   - QMP 三批注入（abs → btn down → btn up）单击 APPDEMO 格中心；
-  - 断言 `CLICK ok n=1` + `LAYOUTW ok`；宿主侧再经 FAT12 读回
-    `LAYOUT.JSN` 对拍格数。
+  - 精确计数：`CLICK ok n=1` == 1、`LAYOUTW ok` == 1、`LAYOUT ok n=`
+    == 0（重复/顺序假绿一律 FAIL，不 warn）；
+  - 点击后**新增** `app APPDEMO up` 恰 1 行（点击真 spawn），
+    `app APPQUIET up` 零新增（未误点/误 spawn）；
+  - 宿主侧再经 FAT12 读回 `LAYOUT.JSN`：必须恰 **109 canonical bytes**
+    且 cells 逐项 == `APPDEMO(0,0,0)` + `APPQUIET(page=3,row=0,col=1)`。
 - Boot B：同一镜像、同一数据盘（不重造），fresh vars/QMP。
-  - 断言 `LAYOUT ok n=<N>` + `LAUNCH ok`；
-  - 断言零 `LAYOUTW ok`、零 `CLICK ok`（写路径一次性状态门）；
-  - 宿主侧 sha256 前后相等 = 数据盘零重写。
+  - 精确计数：`LAYOUT ok n=2` == 1、`LAYOUTW ok` == 0、
+    `CLICK ok n=` == 0（写路径一次性状态门）；
+  - 宿主侧 sha256 前后相等 = 数据盘零重写；LAYOUT.JSN 仍为 canonical。
+- `--normal-boot`（常态隔离，可选）：同一镜像/tablet/数据盘拓扑但
+  **不造 `GUI8.SMK`**；boot 一次，点击 APPDEMO，断言 spawn 仍发生
+  （新增 `app APPDEMO up` == 1）、而 `CLICK`/`LAYOUTW`/`LAYOUT` 以及
+  `launcher: click ready` 零打印——证明标记只在哨兵支路出现，常态点击
+  行为不变且不新增任何标记。
 
-**依赖（段④ 落地顺序）**：本脚本消费 launcher 段④ 标记
-`CLICK ok n=1` / `LAYOUTW ok` / `LAYOUT ok n=`。基线 014623d 的 launcher
-只有 LAUNCH/PAGE，三个新标记尚未合并；此时全跑会在等待阶段以**显式
-缺标记** FAIL（不是静默跳过）。合并前 plumbing 自检：
+plumbing 自检（零 QEMU；含错 payload / 无哨兵 / 错 canonical / 重复计数
+/ 顺序倒置负样本）：
 
     python3 tools/gui8-smoke.py --self-test
     python3 tools/gui8-smoke.py --dry-run [--image out/berryos.img]
+    python3 tools/gui8-smoke.py --dry-run --normal-boot
 
-标记 canon（per-process once；监督重启可合法重打）：一律存在性断言，
-不升格「恰一次」——`CLICK ok n=1` 用负向前瞻防 `n=10` 子串假阳性。
+标记 canon：CLICK/LAYOUTW/LAYOUT 在本相按**精确次数**断言（Boot A
+1/1/0，Boot B 0/0/1）；`CLICK ok n=1` 用负向前瞻防 `n=10` 子串假阳性。
+QMP 点击前只认 click ready 状态谓词，不用固定 sleep 兜底。
 
 macOS 纪律：serial 落文件（不依赖 terminal）、QMP 只用 unix socket
 （零 ambient TCP 端口）、每 boot fresh blank vars.fd、SIGTERM/QMP quit
@@ -66,7 +79,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # —— 被断言的 launcher 标记（段④ 合并后由 launcher println 单行打出）——
 MARK_BERRYBOOT = "BERRYBOOT ok"
 MARK_ROOTFS = "ROOTFS ok src=handoff"
-MARK_APP = "APP ok n="
+MARK_APP_N2 = "APP ok n=2"
+MARK_APP_DEMO_UP = "app APPDEMO up"
+MARK_APP_QUIET_UP = "app APPQUIET up"
 MARK_LAUNCH = "LAUNCH ok"
 MARK_PAGE = "PAGE ok n=2"
 MARK_CLICK = "CLICK ok n=1"
@@ -77,13 +92,33 @@ MARK_CLICK_READY = "launcher: click ready"
 MARK_INPUT_ARMED = "launcher: input poll armed"
 # 负向前瞻：`n=10` 不得命中 `n=1`（CLICK 恰一发的期望形态）。
 RE_CLICK_N1 = r"CLICK ok n=1(?![0-9])"
+# Boot B 读回标记：n 固定 2（canonical 双 cell）。
+RE_LAYOUT_N2 = r"LAYOUT ok n=2(?![0-9])"
 
 # —— 数据盘约定（与 tools/smoke.sh / just desktop 同源）——
 DISK_SEAL = b"BERRYOSVBLK!"
 SMK_NAME11 = b"GUI8    SMK"
-SMK_CONTENT = b"BERRYOS GUI8 INTERACTIVE SMOKE MARKER v1\n"
+# 哨兵只认 payload magic（文件名可被用户随手创建）；launcher 侧必须比对
+# 同一串，harness 建盘也只写这一串。末尾换行是 magic 的一部分。
+SMK_MAGIC = b"BERRYOS-GUI8-SMOKE-V1\n"
 LAYOUT_NAME11 = b"LAYOUT  JSN"
 RESERVED_ZONE = 16
+
+# LAYOUT.JSN 只接受这一份 canonical 字节（109B = berry-layout emit 对
+# 默认 APPDEMO+APPQUIET 双 app 注册表的确定性产物）。长度/字节/cells
+# 三面任一不符即 FAIL——不再只看「格数」。
+LAYOUT_CANONICAL = (
+    b'{"schema":1,"cells":[{"app":"APPDEMO","page":0,"row":0,"col":0},'
+    b'{"app":"APPQUIET","page":3,"row":0,"col":1}]}'
+)
+LAYOUT_CELLS_EXPECTED = (
+    ("APPDEMO", 0, 0, 0),
+    ("APPQUIET", 3, 0, 1),
+)
+if len(LAYOUT_CANONICAL) != 109:
+    raise RuntimeError("LAYOUT canonical 字节数漂移（期望 109）")
+if len(LAYOUT_CELLS_EXPECTED) != 2:
+    raise RuntimeError("LAYOUT canonical cell 数漂移（期望 2）")
 
 # —— 桌面几何（launcher desktop.rs 常量镜像；仅用于算 cell(0,0) 中心，
 #    屏幕宽高从串口 LAUNCH/FB 行动态解析——裁决 D：不把 800x600 写死）——
@@ -566,8 +601,8 @@ class Fat12Volume:
         self._write()
 
 
-def create_data_disk(path: Path) -> None:
-    """mkfat 默认 FAT12 盘 + LBA0 印章 + 根目录 GUI8.SMK。"""
+def create_data_disk(path: Path, *, with_smoke: bool = True) -> None:
+    """mkfat 默认 FAT12 盘 + LBA0 印章；with_smoke 时根目录写精确哨兵。"""
     path = Path(path)
     if path.exists():
         raise SmokeError(f"数据盘已存在（拒绝覆盖）：{path}")
@@ -587,12 +622,17 @@ def create_data_disk(path: Path) -> None:
     with path.open("r+b") as f:
         f.seek(0)
         f.write(DISK_SEAL)
-    vol = Fat12Volume(path)
-    vol.add_file(SMK_NAME11, SMK_CONTENT)
-    verify_data_disk(path)
+    if with_smoke:
+        Fat12Volume(path).add_file(SMK_NAME11, SMK_MAGIC)
+    verify_data_disk(path, expect_smoke=with_smoke)
 
 
-def verify_data_disk(path: Path) -> None:
+def verify_data_disk(path: Path, *, expect_smoke: bool = True) -> None:
+    """校验印章 + 哨兵 payload；expect_smoke=False 用于常态隔离 boot。
+
+    文件名存在不算数：payload 必须逐字节等于 ``SMK_MAGIC``。缺席/错
+    payload 一律 fail closed（用户自造 GUI8.SMK 不得打开冒烟支路）。
+    """
     path = Path(path)
     if not path.is_file():
         raise SmokeError(f"数据盘缺席：{path}")
@@ -602,17 +642,42 @@ def verify_data_disk(path: Path) -> None:
         raise SmokeError(f"数据盘 LBA0 印章缺失/不符：{seal!r}（{path}）")
     vol = Fat12Volume(path)
     got = vol.read_file(SMK_NAME11)
-    if got != SMK_CONTENT:
+    if expect_smoke:
+        if got is None:
+            raise SmokeError(
+                f"GUI8.SMK 缺席（哨兵不存在，拒绝进冒烟支路）：{path}"
+            )
+        if got != SMK_MAGIC:
+            raise SmokeError(
+                f"GUI8.SMK payload 非精确 magic：{got!r} != {SMK_MAGIC!r}"
+                f"（{path}）"
+            )
+    elif got is not None:
         raise SmokeError(
-            f"GUI8.SMK 读回不符：{got!r} != {SMK_CONTENT!r}（{path}）"
+            f"常态隔离盘不应有 GUI8.SMK：{got!r}（{path}）"
         )
 
 
-def read_layout_cells(path: Path) -> list | None:
+def read_layout_canonical(path: Path) -> list:
+    """读回 LAYOUT.JSN：恰 109 canonical bytes + 精确双 cell。
+
+    不再是「只数 cells」：长度/逐字节/语义三面全等才返回，任何偏差
+    抛 SmokeError（fail closed）。
+    """
     vol = Fat12Volume(path)
     blob = vol.read_file(LAYOUT_NAME11)
     if blob is None:
-        return None
+        raise SmokeError(f"LAYOUT.JSN 缺席（{path}）")
+    if len(blob) != len(LAYOUT_CANONICAL):
+        raise SmokeError(
+            f"LAYOUT.JSN 长度 {len(blob)} != canonical {len(LAYOUT_CANONICAL)}"
+            f"（{path}）"
+        )
+    if blob != LAYOUT_CANONICAL:
+        raise SmokeError(
+            f"LAYOUT.JSN 非 canonical 字节：{blob!r} != {LAYOUT_CANONICAL!r}"
+            f"（{path}）"
+        )
     try:
         obj = json.loads(blob.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -620,21 +685,24 @@ def read_layout_cells(path: Path) -> list | None:
     cells = obj.get("cells") if isinstance(obj, dict) else None
     if not isinstance(cells, list):
         raise SmokeError(f"LAYOUT.JSN 缺 cells 数组（{path}）")
+    got = []
+    for c in cells:
+        if not isinstance(c, dict) or set(c) != {"app", "page", "row", "col"}:
+            raise SmokeError(f"LAYOUT.JSN cell 形态非法：{c!r}（{path}）")
+        got.append((c["app"], c["page"], c["row"], c["col"]))
+    if tuple(got) != LAYOUT_CELLS_EXPECTED:
+        raise SmokeError(
+            f"LAYOUT.JSN cells {got!r} != {LAYOUT_CELLS_EXPECTED!r}（{path}）"
+        )
     return cells
 
 
-def write_layout_cells_for_selftest(path: Path) -> int:
-    """自检用：注入一份 2 格 canonical 布局并读回。"""
-    vol = Fat12Volume(path)
-    payload = (
-        b'{"schema":1,"cells":[{"app":"APPDEMO","page":0,"row":0,"col":0},'
-        b'{"app":"APPQUIET","page":3,"row":0,"col":1}]}'
-    )
-    vol.add_file(LAYOUT_NAME11, payload)
-    cells = read_layout_cells(path)
-    if cells is None:
-        raise SmokeError("自检 LAYOUT.JSN 读回 None")
-    return len(cells)
+def write_layout_for_selftest(
+    path: Path, payload: bytes = LAYOUT_CANONICAL
+) -> list:
+    """自检用：向无 LAYOUT 的盘注入指定 payload 并走 canonical 读回。"""
+    Fat12Volume(path).add_file(LAYOUT_NAME11, payload)
+    return read_layout_canonical(path)
 
 
 # =====================================================================
@@ -661,6 +729,133 @@ def geometry_from_log(watcher: LogWatcher) -> tuple[int, int, str]:
         if m:
             return int(m.group(1)), int(m.group(2)), m.group(0)
     return 800, 600, "fallback 800x600"
+
+
+# =====================================================================
+# 标记精确计数 / 顺序断言（纯函数；--self-test 直接覆盖负样本）
+# =====================================================================
+
+
+def _require_exact_count(
+    text: str,
+    needle: str,
+    expected: int,
+    phase: str,
+    log_path: Path | None = None,
+) -> None:
+    got = text.count(needle)
+    if got != expected:
+        raise SmokeError(
+            f"{phase}: {needle!r} 出现 {got} 次 != 期望 {expected}",
+            log_path,
+        )
+
+
+def _require_pos_after(
+    text: str,
+    needle: str,
+    anchor: int,
+    phase: str,
+    log_path: Path | None = None,
+) -> None:
+    pos = text.find(needle)
+    if pos < 0:
+        raise SmokeError(f"{phase}: 缺 {needle!r}", log_path)
+    if pos <= anchor:
+        raise SmokeError(
+            f"{phase}: {needle!r} 早于 click ready（pos={pos} <= {anchor}）",
+            log_path,
+        )
+
+
+def verify_boot_a_click(
+    text: str,
+    ready_pos: int,
+    demo_before: int,
+    quiet_before: int,
+    log_path: Path | None = None,
+) -> None:
+    """Boot A 点击后精确验收：1/1/0 + 新 APPDEMO 恰一 + 零 APPQUIET。
+
+    计数与顺序任一不符都 FAIL（重复点击/双 spawn/顺序倒置不得假绿）。
+    """
+    n_click = len(re.findall(RE_CLICK_N1, text))
+    if n_click != 1:
+        raise SmokeError(
+            f"boot A click: `CLICK ok n=1` 出现 {n_click} 次 != 1",
+            log_path,
+        )
+    _require_exact_count(text, MARK_CLICK_ANY, 1, "boot A click", log_path)
+    _require_exact_count(text, MARK_LAYOUTW, 1, "boot A click", log_path)
+    _require_exact_count(text, MARK_LAYOUT, 0, "boot A click", log_path)
+    _require_exact_count(text, MARK_CLICK_READY, 1, "boot A click", log_path)
+    demo_after = text.count(MARK_APP_DEMO_UP)
+    if demo_after != demo_before + 1:
+        raise SmokeError(
+            f"boot A click: 新增 {MARK_APP_DEMO_UP!r} "
+            f"{demo_after - demo_before} 行 != 1（点击未 spawn APPDEMO？）",
+            log_path,
+        )
+    quiet_after = text.count(MARK_APP_QUIET_UP)
+    if quiet_after != quiet_before:
+        raise SmokeError(
+            f"boot A click: 新增 {MARK_APP_QUIET_UP!r} "
+            f"{quiet_after - quiet_before} 行——点击误 spawn APPQUIET",
+            log_path,
+        )
+    _require_pos_after(text, MARK_CLICK_ANY, ready_pos, "boot A click", log_path)
+    # LAYOUTW 由 layout 装载面在启动期落盘后打印（可早于 click ready），
+    # 只做精确计数，不参与点击顺序断言。
+    if text.rfind(MARK_APP_DEMO_UP) <= ready_pos:
+        raise SmokeError(
+            f"boot A click: 新增 {MARK_APP_DEMO_UP!r} 不在 click ready 之后",
+            log_path,
+        )
+
+
+def verify_boot_b(text: str, log_path: Path | None = None) -> None:
+    """Boot B 精确验收：LAYOUT==1、LAYOUTW==0、CLICK==0。"""
+    n_layout = len(re.findall(RE_LAYOUT_N2, text))
+    if n_layout != 1:
+        raise SmokeError(
+            f"boot B: `LAYOUT ok n=2` 出现 {n_layout} 次 != 1", log_path
+        )
+    _require_exact_count(text, MARK_LAYOUT, 1, "boot B", log_path)
+    _require_exact_count(text, MARK_LAYOUTW, 0, "boot B", log_path)
+    _require_exact_count(text, MARK_CLICK_ANY, 0, "boot B", log_path)
+
+
+def verify_normal_boot(
+    text: str,
+    snapshot_pos: int,
+    demo_before: int,
+    quiet_before: int,
+    log_path: Path | None = None,
+) -> None:
+    """常态隔离验收：spawn 仍发生，但零 CLICK/LAYOUTW/LAYOUT/click ready。"""
+    _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
+    _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
+    _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
+    _require_exact_count(text, MARK_CLICK_READY, 0, "normal boot", log_path)
+    demo_after = text.count(MARK_APP_DEMO_UP)
+    if demo_after != demo_before + 1:
+        raise SmokeError(
+            f"normal boot: 新增 {MARK_APP_DEMO_UP!r} "
+            f"{demo_after - demo_before} 行 != 1（常态点击未 spawn APPDEMO）",
+            log_path,
+        )
+    quiet_after = text.count(MARK_APP_QUIET_UP)
+    if quiet_after != quiet_before:
+        raise SmokeError(
+            f"normal boot: 新增 {MARK_APP_QUIET_UP!r} "
+            f"{quiet_after - quiet_before} 行——常态点击误 spawn APPQUIET",
+            log_path,
+        )
+    if text.rfind(MARK_APP_DEMO_UP) < snapshot_pos:
+        raise SmokeError(
+            f"normal boot: 新增 {MARK_APP_DEMO_UP!r} 不在注入前快照之后",
+            log_path,
+        )
 
 
 def qemu_command(
@@ -892,6 +1087,26 @@ def preflight(args) -> None:
 # =====================================================================
 
 
+def _boot_base_markers() -> list[str]:
+    return [MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N2, MARK_LAUNCH, MARK_PAGE]
+
+
+def _wait_boot_batch(boot: Boot, timeout: float) -> None:
+    """基础 5 + boot 批 app 证据：先把 boot 批 APPDEMO up 吃完再点击。"""
+    boot.wait_markers(_boot_base_markers(), timeout)
+    boot.wait_markers([MARK_APP_DEMO_UP], timeout)
+
+
+def _warn_input_armed(boot: Boot) -> None:
+    # launcher 已挂 INPUT_POLL（请求已入 inputd 队列）。这是状态谓词，
+    # 不保证 inputd 已 harvest——点击后的 CLICK 等待窗兜住后者。
+    if not boot.wait_any([MARK_INPUT_ARMED], 60.0):
+        warn(
+            f"未等到「{MARK_INPUT_ARMED}」——QMP 事件可能早于 guest "
+            "挂缓冲而被设备丢弃；仍继续"
+        )
+
+
 def run_dual_boot(args) -> int:
     preflight(args)
     print_marker_status()
@@ -921,7 +1136,7 @@ def run_dual_boot(args) -> int:
         create_data_disk(disk)
         log(
             f"新数据盘：{disk}（{disk.stat().st_size}B，"
-            f"sha256={sha256_file(disk)[:16]}…，LBA0 印章 + GUI8.SMK）"
+            f"sha256={sha256_file(disk)[:16]}…，LBA0 印章 + 精确 GUI8.SMK）"
         )
 
     boot_a: Boot | None = None
@@ -931,30 +1146,19 @@ def run_dual_boot(args) -> int:
         # ---------------- Boot A ----------------
         boot_a = Boot("A", args, run_dir, disk, "a")
         boot_a.start()
-        boot_a.wait_markers(
-            [
-                MARK_BERRYBOOT,
-                MARK_ROOTFS,
-                MARK_APP,
-                MARK_LAUNCH,
-                MARK_PAGE,
-            ],
-            args.boot_a_timeout,
+        _wait_boot_batch(boot_a, args.boot_a_timeout)
+        _warn_input_armed(boot_a)
+
+        # click ready = snap-to-0 已收敛的状态谓词，**强制在席恰一次**；
+        # 缺席即 FAIL，不再 sleep-and-click 回退。
+        boot_a.wait_markers([MARK_CLICK_READY], args.click_ready_timeout)
+        ready_pos = boot_a.log.text.find(MARK_CLICK_READY)
+        demo_before = boot_a.log.text.count(MARK_APP_DEMO_UP)
+        quiet_before = boot_a.log.text.count(MARK_APP_QUIET_UP)
+        log(
+            f"boot A: click ready 在席（pos={ready_pos}，"
+            f"boot 批 APPDEMO up×{demo_before}）"
         )
-        # launcher 已挂 INPUT_POLL（请求已入 inputd 队列）。这是状态谓词，
-        # 不保证 inputd 已 harvest——点击后的 CLICK 等待窗兜住后者。
-        if not boot_a.wait_any([MARK_INPUT_ARMED], 60.0):
-            warn(
-                f"未等到「{MARK_INPUT_ARMED}」——QMP 事件可能早于 guest "
-                "挂缓冲而被设备丢弃；仍继续"
-            )
-        # click-ready（段④ 新标记）在席 = snap-to-0 已收敛；缺席回退 settle。
-        if not boot_a.wait_any([MARK_CLICK_READY], 25.0):
-            warn(
-                f"未等到「{MARK_CLICK_READY}」——回退 PAGE 后静置 "
-                f"{args.settle_seconds:.1f}s（snap-to-0 收敛）"
-            )
-            time.sleep(args.settle_seconds)
 
         w, h, src = geometry_from_log(boot_a.log)
         cx, cy = cell0_center(w, h)
@@ -964,67 +1168,59 @@ def run_dual_boot(args) -> int:
         log("boot A: QMP 注入单击（abs → btn down → btn up）")
         boot_a.qmp.click(cx, cy, w, h)
 
-        # CLICK / LAYOUTW 同一等待窗：两者都是「点击后应已成立」的状态。
+        # 点击后等待三项同时成立：CLICK 恰一、LAYOUTW、新增 APPDEMO up。
         try:
             boot_a.log.wait_until(
                 boot_a.proc,
                 lambda t: re.search(RE_CLICK_N1, t) is not None
-                and MARK_LAYOUTW in t,
-                f"{MARK_CLICK} + {MARK_LAYOUTW}",
+                and MARK_LAYOUTW in t
+                and t.count(MARK_APP_DEMO_UP) > demo_before,
+                f"{MARK_CLICK} + {MARK_LAYOUTW} + 新 {MARK_APP_DEMO_UP}",
                 args.click_timeout,
                 "boot A click",
             )
         except MissingMarkers:
-            # 逐标记列出真缺项（合并前就是这两个的缺席证据）。
+            text = boot_a.log.text
             miss = []
-            if re.search(RE_CLICK_N1, boot_a.log.text) is None:
+            if re.search(RE_CLICK_N1, text) is None:
                 miss.append(MARK_CLICK)
-            if MARK_LAYOUTW not in boot_a.log.text:
+            if MARK_LAYOUTW not in text:
                 miss.append(MARK_LAYOUTW)
+            if text.count(MARK_APP_DEMO_UP) <= demo_before:
+                miss.append(f"新 {MARK_APP_DEMO_UP}")
             raise MissingMarkers(
                 "boot A click",
                 ", ".join(miss) or f"{MARK_CLICK} + {MARK_LAYOUTW}",
                 args.click_timeout,
                 boot_a.log_path,
             ) from None
-        n_click = boot_a.count_re(RE_CLICK_N1)
-        n_layoutw = boot_a.count(MARK_LAYOUTW)
-        if n_click == 0:
-            raise SmokeError(
-                f"boot A: 缺 {MARK_CLICK}（QMP 点击未命中 APPDEMO 格？）",
-                boot_a.log_path,
-            )
-        if n_layoutw == 0:
-            raise SmokeError(
-                f"boot A: 缺 {MARK_LAYOUTW}（布局变体未落盘/回读不自洽）",
-                boot_a.log_path,
-            )
-        if n_click > 1:
-            warn(
-                f"boot A: {MARK_CLICK} 出现 {n_click} 次（监督重启合法重打；"
-                "canon 为存在性）"
-            )
-        log(f"boot A: CLICK×{n_click} LAYOUTW×{n_layoutw}")
 
+        # 先停 QEMU 再对最终串口日志做精确计数（重复/顺序假绿 fail loud）。
+        watcher_a = boot_a.log
+        log_path_a = boot_a.log_path
         boot_a.stop()
         boot_a = None
+        watcher_a.poll()
+        verify_boot_a_click(
+            watcher_a.text, ready_pos, demo_before, quiet_before, log_path_a
+        )
+        log(
+            "boot A: 精确计数 CLICK×1 LAYOUTW×1 LAYOUT×0；"
+            f"新增 {MARK_APP_DEMO_UP}×1、APPQUIET×0"
+        )
+
         verify_data_disk(disk)
-        cells_a = read_layout_cells(disk)
-        if cells_a is None:
-            raise SmokeError(
-                "boot A: LAYOUT.JSN 未落盘（LAYOUTW 已打但宿主读回缺席）"
-            )
-        if args.expected_cells and len(cells_a) != args.expected_cells:
-            raise SmokeError(
-                f"boot A: LAYOUT.JSN 格数 {len(cells_a)} != "
-                f"--expected-cells {args.expected_cells}"
-            )
-        log(f"boot A: LAYOUT.JSN 宿主读回 {len(cells_a)} 格（与回读自洽）")
+        cells_a = read_layout_canonical(disk)
+        log(
+            f"boot A: LAYOUT.JSN 宿主读回 canonical "
+            f"{len(LAYOUT_CANONICAL)}B / {len(cells_a)} cells "
+            f"（{LAYOUT_CELLS_EXPECTED!r}）"
+        )
 
         if args.only_a:
             success = True
             log(
-                "PASS（--only-a）：Boot A 单击 + LAYOUTW + 落盘读回；"
+                "PASS（--only-a）：Boot A 单击 + LAYOUTW + canonical 落盘读回；"
                 "Boot B 未跑"
             )
             return 0
@@ -1033,34 +1229,17 @@ def run_dual_boot(args) -> int:
         hash_before_b = sha256_file(disk)
         boot_b = Boot("B", args, run_dir, disk, "b")
         boot_b.start()
-        layout_pat = rf"LAYOUT ok n={args.expected_cells}(?![0-9])"
-        boot_b.wait_markers(
-            [MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP, MARK_LAUNCH, MARK_PAGE],
-            args.boot_b_timeout,
-        )
-        boot_b.wait_regex(layout_pat, args.boot_b_timeout)
-        n_layout = boot_b.count_re(layout_pat)
-        n_layoutw_b = boot_b.count(MARK_LAYOUTW)
-        n_click_b = boot_b.count(MARK_CLICK_ANY)
-        if n_layoutw_b != 0:
-            raise SmokeError(
-                f"boot B: 出现 {n_layoutw_b} 次 {MARK_LAYOUTW}——"
-                "已有布局不应再走写路径（一次性状态门破）",
-                boot_b.log_path,
-            )
-        if n_click_b != 0:
-            raise SmokeError(
-                f"boot B: 出现 {n_click_b} 次 {MARK_CLICK_ANY}——"
-                "Boot B 未注入点击（自动点击面破）",
-                boot_b.log_path,
-            )
-        log(
-            f"boot B: LAYOUT ok n={args.expected_cells}×{n_layout}、"
-            "LAYOUTW×0、CLICK×0"
-        )
+        boot_b.wait_markers(_boot_base_markers(), args.boot_b_timeout)
+        boot_b.wait_regex(RE_LAYOUT_N2, args.boot_b_timeout)
 
+        watcher_b = boot_b.log
+        log_path_b = boot_b.log_path
         boot_b.stop()
         boot_b = None
+        watcher_b.poll()
+        verify_boot_b(watcher_b.text, log_path_b)
+        log("boot B: 精确计数 LAYOUT×1 LAYOUTW×0 CLICK×0")
+
         hash_after_b = sha256_file(disk)
         if hash_before_b != hash_after_b:
             raise SmokeError(
@@ -1068,22 +1247,17 @@ def run_dual_boot(args) -> int:
                 f"(before={hash_before_b[:16]}… after={hash_after_b[:16]}…)"
             )
         verify_data_disk(disk)
-        cells_b = read_layout_cells(disk)
-        if cells_b is None:
-            raise SmokeError("boot B: LAYOUT.JSN 消失（跨 boot 存活失败）")
-        if len(cells_b) != args.expected_cells:
-            raise SmokeError(
-                f"boot B: 宿主读回格数 {len(cells_b)} != {args.expected_cells}"
-            )
+        cells_b = read_layout_canonical(disk)
         log(
             f"boot B: 数据盘 sha256 前后一致（{hash_after_b[:16]}…），"
-            f"LAYOUT.JSN {len(cells_b)} 格跨 boot 存活"
+            f"LAYOUT.JSN canonical {len(LAYOUT_CANONICAL)}B / "
+            f"{len(cells_b)} cells 跨 boot 存活"
         )
 
         success = True
         log(
-            "PASS：EFI GUI 交互相双 boot（A: CLICK ok n=1 + LAYOUTW ok；"
-            f"B: LAYOUT ok n={args.expected_cells} + 零重写）"
+            "PASS：EFI GUI 交互相双 boot（A: CLICK ok n=1 + LAYOUTW ok + "
+            f"APPDEMO up；B: LAYOUT ok n=2 + 零重写 + canonical 109B）"
         )
         return 0
     finally:
@@ -1101,6 +1275,111 @@ def run_dual_boot(args) -> int:
 
 
 # =====================================================================
+# --normal-boot：哨兵缺席的常态隔离（spawn 仍发生，标记零打印）
+# =====================================================================
+
+
+def run_normal_boot(args) -> int:
+    preflight(args)
+    print_marker_status()
+    if args.only_a:
+        raise SmokeError("--normal-boot 与 --only-a 互斥")
+
+    run_dir = Path(args.work_dir) if args.work_dir else Path(
+        tempfile.mkdtemp(prefix="gui8-normal.", dir=args.tmp_dir)
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log(f"normal-boot run dir：{run_dir}")
+
+    disk = Path(args.data_disk) if args.data_disk else run_dir / "normal.img"
+    if disk.exists():
+        if not args.reuse_data_disk:
+            raise SmokeError(f"数据盘已存在：{disk}（覆盖请删或 --reuse-data-disk）")
+        verify_data_disk(disk, expect_smoke=False)
+        log(f"复用常态盘：{disk}（无 GUI8.SMK，sha256={sha256_file(disk)[:16]}…）")
+    else:
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        create_data_disk(disk, with_smoke=False)
+        log(
+            f"新常态盘：{disk}（{disk.stat().st_size}B，"
+            f"sha256={sha256_file(disk)[:16]}…，LBA0 印章，零 GUI8.SMK）"
+        )
+
+    boot: Boot | None = None
+    success = False
+    try:
+        boot = Boot("normal", args, run_dir, disk, "normal")
+        boot.start()
+        _wait_boot_batch(boot, args.boot_a_timeout)
+        _warn_input_armed(boot)
+
+        # 快照点 = 注入前（哨兵缺席时 click ready 结构性不打印，不能拿它
+        # 当门）。boot 批 APPDEMO up 已吃完，此后的新增只能来自本次点击。
+        boot.log.poll()
+        snapshot_pos = len(boot.log.text)
+        demo_before = boot.log.text.count(MARK_APP_DEMO_UP)
+        quiet_before = boot.log.text.count(MARK_APP_QUIET_UP)
+        if MARK_CLICK_READY in boot.log.text:
+            raise SmokeError(
+                f"normal boot: 哨兵缺席却打印 {MARK_CLICK_READY!r}——"
+                "click ready 未按 GUI8.SMK 门控",
+                boot.log_path,
+            )
+
+        w, h, src = geometry_from_log(boot.log)
+        cx, cy = cell0_center(w, h)
+        log(f"normal-boot: display {w}x{h}（{src}）→ cell(0,0) 中心 ({cx},{cy})")
+
+        boot.qmp_connect()
+        log("normal-boot: QMP 注入单击（abs → btn down → btn up）")
+        boot.qmp.click(cx, cy, w, h)
+
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_APP_DEMO_UP) > demo_before,
+                f"新 {MARK_APP_DEMO_UP}（常态 spawn 活证）",
+                args.click_timeout,
+                "normal boot click",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal boot click",
+                f"新 {MARK_APP_DEMO_UP}（常态 spawn 活证）",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        watcher = boot.log
+        log_path = boot.log_path
+        boot.stop()
+        boot = None
+        watcher.poll()
+        verify_normal_boot(
+            watcher.text, snapshot_pos, demo_before, quiet_before, log_path
+        )
+        verify_data_disk(disk, expect_smoke=False)
+        log(
+            "normal-boot: spawn 仍发生（新增 APPDEMO up×1），"
+            "且 CLICK/LAYOUTW/LAYOUT/click ready 全零"
+        )
+
+        success = True
+        log("PASS（--normal-boot）：哨兵缺席的常态点击隔离成立")
+        return 0
+    finally:
+        if boot is not None:
+            boot.stop()
+        if success and not args.keep:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        else:
+            log(f"artifacts 保留：{run_dir}")
+            log(f"  串口：{run_dir}/boot-normal.log")
+            log(f"  数据盘：{disk}")
+            log(f"  命令：{run_dir}/boot-normal.cmd.txt")
+
+
+# =====================================================================
 # dry-run
 # =====================================================================
 
@@ -1112,51 +1391,87 @@ def dry_run(args) -> int:
         tempfile.mkdtemp(prefix="gui8-smoke-dry.", dir=args.tmp_dir)
     )
     run_dir.mkdir(parents=True, exist_ok=True)
+    normal = bool(args.normal_boot)
     try:
-        disk = Path(args.data_disk) if args.data_disk else run_dir / "layout.img"
+        disk = Path(args.data_disk) if args.data_disk else (
+            run_dir / ("normal.img" if normal else "layout.img")
+        )
         if disk.exists():
-            verify_data_disk(disk)
+            verify_data_disk(disk, expect_smoke=not normal)
         else:
-            create_data_disk(disk)
+            create_data_disk(disk, with_smoke=not normal)
+        log(f"dry-run: mode  = {'normal-boot（无 GUI8.SMK）' if normal else 'dual-boot（精确 GUI8.SMK）'}")
         log(f"dry-run: image = {args.image}")
         log(f"dry-run: code  = {args.code}")
         log(f"dry-run: vars  = {args.vars or '(未给；每 boot 仍产 fresh blank)'}")
         log(f"dry-run: disk  = {disk}（sha256={sha256_file(disk)}）")
         log(f"dry-run: disk 根目录 = {Fat12Volume(disk).list_root()}")
-        for suffix, markers in (
-            (
-                "a",
-                [
-                    MARK_BERRYBOOT,
-                    MARK_ROOTFS,
-                    MARK_APP,
-                    MARK_LAUNCH,
-                    MARK_PAGE,
-                    MARK_CLICK,
-                    MARK_LAYOUTW,
-                ],
-            ),
-            (
-                "b",
-                [
-                    MARK_BERRYBOOT,
-                    MARK_ROOTFS,
-                    MARK_APP,
-                    MARK_LAUNCH,
-                    MARK_PAGE,
-                    f"LAYOUT ok n={args.expected_cells}",
-                ],
-            ),
-        ):
+        if normal:
+            markers = [
+                MARK_BERRYBOOT,
+                MARK_ROOTFS,
+                MARK_APP_N2,
+                MARK_LAUNCH,
+                MARK_PAGE,
+                MARK_APP_DEMO_UP,
+                f"ZERO {MARK_CLICK_ANY} / {MARK_LAYOUTW} / {MARK_LAYOUT} / "
+                f"{MARK_CLICK_READY}",
+            ]
             cmd = qemu_command(
                 args,
                 disk,
-                run_dir / f"vars-{suffix}.fd",
-                run_dir / f"qmp-{suffix}.sock",
-                run_dir / f"boot-{suffix}.log",
+                run_dir / "vars-normal.fd",
+                run_dir / "qmp-normal.sock",
+                run_dir / "boot-normal.log",
             )
-            log(f"dry-run: boot {suffix.upper()} QEMU = {shlex.join(cmd)}")
-            log(f"dry-run: boot {suffix.upper()} 期望标记 = {markers}")
+            log(f"dry-run: boot NORMAL QEMU = {shlex.join(cmd)}")
+            log(f"dry-run: boot NORMAL 期望标记 = {markers}")
+        else:
+            for suffix, markers, zero in (
+                (
+                    "a",
+                    [
+                        MARK_BERRYBOOT,
+                        MARK_ROOTFS,
+                        MARK_APP_N2,
+                        MARK_LAUNCH,
+                        MARK_PAGE,
+                        MARK_APP_DEMO_UP,
+                        MARK_CLICK_READY,
+                        MARK_CLICK,
+                        MARK_LAYOUTW,
+                    ],
+                    [MARK_LAYOUT],
+                ),
+                (
+                    "b",
+                    [
+                        MARK_BERRYBOOT,
+                        MARK_ROOTFS,
+                        MARK_APP_N2,
+                        MARK_LAUNCH,
+                        MARK_PAGE,
+                        "LAYOUT ok n=2",
+                    ],
+                    [MARK_LAYOUTW, MARK_CLICK_ANY],
+                ),
+            ):
+                cmd = qemu_command(
+                    args,
+                    disk,
+                    run_dir / f"vars-{suffix}.fd",
+                    run_dir / f"qmp-{suffix}.sock",
+                    run_dir / f"boot-{suffix}.log",
+                )
+                log(f"dry-run: boot {suffix.upper()} QEMU = {shlex.join(cmd)}")
+                log(
+                    f"dry-run: boot {suffix.upper()} 期望标记 = {markers}；"
+                    f"零标记 = {zero}"
+                )
+            log(
+                f"dry-run: LAYOUT.JSN 验收 = 恰 {len(LAYOUT_CANONICAL)} canonical "
+                f"bytes + {LAYOUT_CELLS_EXPECTED!r}"
+            )
         w, h = 800, 600
         cx, cy = cell0_center(w, h)
         log(f"dry-run: 800x600 cell(0,0) 中心 = ({cx},{cy})")
@@ -1245,18 +1560,81 @@ class MockQmp:
 
 def self_test(args) -> int:
     tmp = Path(tempfile.mkdtemp(prefix="gui8-smoke-selftest.", dir=args.tmp_dir))
+
+    def expect_error(label: str, fn) -> None:
+        try:
+            fn()
+        except SmokeError:
+            return
+        raise SmokeError(f"自检负样本未失败：{label}")
+
     try:
-        # 1) FAT12 + 印章 + GUI8.SMK + LAYOUT.JSN 往返
+        # 1) FAT12 + 印章 + 精确 GUI8.SMK payload
         disk = tmp / "layout.img"
         create_data_disk(disk)
         verify_data_disk(disk)
-        cells = write_layout_cells_for_selftest(disk)
-        if cells != 2:
-            raise SmokeError(f"自检 LAYOUT 格数 {cells} != 2")
+        if Fat12Volume(disk).read_file(SMK_NAME11) != SMK_MAGIC:
+            raise SmokeError("GUI8.SMK 读回 != 精确 magic")
         roots = Fat12Volume(disk).list_root()
-        if "GUI8    SMK" not in roots or "LAYOUT  JSN" not in roots:
+        if "GUI8    SMK" not in roots:
             raise SmokeError(f"自检 FAT12 根目录异常：{roots}")
-        log(f"self-test: FAT12 ok（根目录 {roots}，LAYOUT 2 格）")
+        log(f"self-test: FAT12 ok（GUI8.SMK 精确 magic，根目录 {roots}）")
+
+        # 1b) 无哨兵盘：常态校验通过，冒烟校验 fail closed
+        no_smk = tmp / "no-smk.img"
+        create_data_disk(no_smk, with_smoke=False)
+        verify_data_disk(no_smk, expect_smoke=False)
+        expect_error(
+            "缺 GUI8.SMK 仍进冒烟支路", lambda: verify_data_disk(no_smk)
+        )
+        expect_error(
+            "哨兵盘冒充常态盘",
+            lambda: verify_data_disk(disk, expect_smoke=False),
+        )
+        log("self-test: 无哨兵盘 ok（常态接受 / 冒烟 fail closed）")
+
+        # 1c) 用户自造同名文件但 payload 错：必须 fail closed
+        bad_smk = tmp / "bad-smk.img"
+        create_data_disk(bad_smk, with_smoke=False)
+        Fat12Volume(bad_smk).add_file(SMK_NAME11, SMK_MAGIC.rstrip(b"\n"))
+        expect_error(
+            "同名 GUI8.SMK 错 payload", lambda: verify_data_disk(bad_smk)
+        )
+        bad_smk2 = tmp / "bad-smk2.img"
+        create_data_disk(bad_smk2, with_smoke=False)
+        Fat12Volume(bad_smk2).add_file(SMK_NAME11, SMK_MAGIC + b"x")
+        expect_error(
+            "GUI8.SMK magic 带尾随字节", lambda: verify_data_disk(bad_smk2)
+        )
+        log("self-test: 错 payload ok（缺 LF / 尾随字节均 fail closed）")
+
+        # 1d) LAYOUT.JSN 恰 109 canonical bytes + 精确双 cell
+        write_layout_for_selftest(disk)
+        blob = Fat12Volume(disk).read_file(LAYOUT_NAME11)
+        if blob != LAYOUT_CANONICAL or len(blob) != 109:
+            raise SmokeError(
+                f"canonical LAYOUT 读回漂移：len={len(blob or b'')}"
+            )
+        bad_len = tmp / "bad-len.img"
+        create_data_disk(bad_len)
+        Fat12Volume(bad_len).add_file(LAYOUT_NAME11, LAYOUT_CANONICAL + b"\n")
+        expect_error("LAYOUT 多一字节", lambda: read_layout_canonical(bad_len))
+        bad_cell = tmp / "bad-cell.img"
+        create_data_disk(bad_cell)
+        bad_payload = LAYOUT_CANONICAL.replace(b"APPDEMO", b"APPDEMX")
+        if len(bad_payload) != 109:
+            raise SmokeError("自检坏 cell payload 长度漂移")
+        Fat12Volume(bad_cell).add_file(LAYOUT_NAME11, bad_payload)
+        expect_error("LAYOUT 错 app id", lambda: read_layout_canonical(bad_cell))
+        bad_page = tmp / "bad-page.img"
+        create_data_disk(bad_page)
+        Fat12Volume(bad_page).add_file(
+            LAYOUT_NAME11, LAYOUT_CANONICAL.replace(b'"page":3', b'"page":2')
+        )
+        expect_error("LAYOUT 错 page", lambda: read_layout_canonical(bad_page))
+        log(
+            "self-test: LAYOUT canonical ok（109B 精确双 cell；超长/错 id/错 page 均 FAIL）"
+        )
 
         # 2) 几何
         if cell0_center(800, 600) != (95, 130):
@@ -1280,19 +1658,131 @@ def self_test(args) -> int:
             raise SmokeError("缺标记未抛 MissingMarkers")
         log("self-test: log predicate ok（缺标记显式 MissingMarkers）")
 
-        # 3b) Boot B 断言形态：n=2 不得吃 n=20；CLICK n=1 不得吃 n=10；
-        #     读路径日志必须零 LAYOUTW/零 CLICK。
-        layout_pat = r"LAYOUT ok n=2(?![0-9])"
-        fake_b = "LAUNCH ok\nLAYOUT ok n=2\n"
-        if re.search(layout_pat, fake_b) is None:
-            raise SmokeError("Boot B LAYOUT 正则未命中正常形态")
-        if re.search(layout_pat, "LAYOUT ok n=20"):
-            raise SmokeError("Boot B LAYOUT 正则误吞 n=20")
+        # 3b) 精确计数 / 顺序：正向通过 + 每个重复/顺序假绿负样本
+        if re.search(RE_LAYOUT_N2, "LAYOUT ok n=2"):
+            pass
+        else:
+            raise SmokeError("LAYOUT n=2 正则未命中正常形态")
+        if re.search(RE_LAYOUT_N2, "LAYOUT ok n=20"):
+            raise SmokeError("LAYOUT 正则误吞 n=20")
         if re.search(RE_CLICK_N1, "CLICK ok n=10"):
             raise SmokeError("CLICK 正则误吞 n=10")
-        if "LAYOUTW ok" in fake_b or "CLICK ok n=" in fake_b:
-            raise SmokeError("Boot B 负向断言形态自检失败")
-        log("self-test: boot-B 断言形态 ok（n=2 不吃 n=20 / n=1 不吃 n=10 / 零重写）")
+
+        fake_a = (
+            f"{MARK_APP_DEMO_UP}\n"
+            f"{MARK_LAYOUTW}\n"
+            f"{MARK_CLICK_READY}\n"
+            f"{MARK_CLICK}\n"
+            f"{MARK_APP_DEMO_UP}\n"
+        )
+        pos_a = fake_a.index(MARK_CLICK_READY)
+        verify_boot_a_click(fake_a, pos_a, 1, 0)
+        expect_error(
+            "Boot A 重复 CLICK",
+            lambda: verify_boot_a_click(
+                fake_a + MARK_CLICK + "\n", pos_a, 1, 0
+            ),
+        )
+        expect_error(
+            "Boot A 重复 LAYOUTW",
+            lambda: verify_boot_a_click(
+                fake_a + MARK_LAYOUTW + "\n", pos_a, 1, 0
+            ),
+        )
+        expect_error(
+            "Boot A 出现 LAYOUT",
+            lambda: verify_boot_a_click(
+                fake_a + "LAYOUT ok n=2\n", pos_a, 1, 0
+            ),
+        )
+        expect_error(
+            "Boot A 缺新 APPDEMO",
+            lambda: verify_boot_a_click(
+                f"{MARK_APP_DEMO_UP}\n{MARK_CLICK_READY}\n"
+                f"{MARK_CLICK}\n{MARK_LAYOUTW}\n",
+                fake_a.index(MARK_CLICK_READY),
+                1,
+                0,
+            ),
+        )
+        expect_error(
+            "Boot A 误 spawn APPQUIET",
+            lambda: verify_boot_a_click(
+                fake_a + MARK_APP_QUIET_UP + "\n", pos_a, 1, 0
+            ),
+        )
+        order_bad = fake_a.replace(MARK_CLICK_READY + "\n", "").replace(
+            MARK_CLICK + "\n", MARK_CLICK + "\n" + MARK_CLICK_READY + "\n"
+        )
+        expect_error(
+            "Boot A CLICK 早于 click ready",
+            lambda: verify_boot_a_click(
+                order_bad, order_bad.index(MARK_CLICK_READY), 1, 0
+            ),
+        )
+        expect_error(
+            "Boot A 缺 click ready",
+            lambda: verify_boot_a_click(
+                fake_a.replace(MARK_CLICK_READY + "\n", ""),
+                fake_a.index(MARK_CLICK_READY),
+                1,
+                0,
+            ),
+        )
+        log(
+            "self-test: Boot A 精确断言 ok（1/1/0 + 新 APPDEMO；"
+            "重复/错序/缺 ready/APPQUIET 均 FAIL）"
+        )
+
+        fake_b = "LAUNCH ok\nLAYOUT ok n=2\n"
+        verify_boot_b(fake_b)
+        expect_error(
+            "Boot B 重复 LAYOUT",
+            lambda: verify_boot_b(fake_b + "LAYOUT ok n=2\n"),
+        )
+        expect_error(
+            "Boot B 出现 LAYOUTW",
+            lambda: verify_boot_b(fake_b + MARK_LAYOUTW + "\n"),
+        )
+        expect_error(
+            "Boot B 出现 CLICK",
+            lambda: verify_boot_b(fake_b + MARK_CLICK_ANY + "1\n"),
+        )
+        expect_error(
+            "Boot B LAYOUT n 漂移",
+            lambda: verify_boot_b("LAUNCH ok\nLAYOUT ok n=3\n"),
+        )
+        log(
+            "self-test: Boot B 精确断言 ok（LAYOUT×1 / LAYOUTW×0 / CLICK×0）"
+        )
+
+        fake_n = f"{MARK_APP_DEMO_UP}\n"
+        snap_n = len(fake_n)
+        fake_n += f"{MARK_APP_DEMO_UP}\n"
+        verify_normal_boot(fake_n, snap_n, 1, 0)
+        for needle, label in (
+            (MARK_CLICK_ANY + "1\n", "CLICK"),
+            (MARK_LAYOUTW + "\n", "LAYOUTW"),
+            ("LAYOUT ok n=2\n", "LAYOUT"),
+            (MARK_CLICK_READY + "\n", "click ready"),
+            (MARK_APP_QUIET_UP + "\n", "APPQUIET"),
+        ):
+            expect_error(
+                f"常态隔离出现 {label}",
+                lambda n=needle: verify_normal_boot(
+                    fake_n + n, snap_n, 1, 0
+                ),
+            )
+        expect_error(
+            "常态隔离无新 APPDEMO",
+            lambda: verify_normal_boot(
+                f"{MARK_APP_DEMO_UP}\n", snap_n, 1, 0
+            ),
+        )
+        log(
+            "self-test: 常态隔离断言 ok（新 APPDEMO×1；CLICK/LAYOUTW/"
+            "LAYOUT/click ready/APPQUIET 全零）"
+        )
 
         # 4) QMP 协议 + no-device 广播 + 三批单击
         sock = tmp / "qmp.sock"
@@ -1311,7 +1801,10 @@ def self_test(args) -> int:
             raise SmokeError("QMP 第三批非 btn up")
         log("self-test: QMP ok（no-device 广播 3 批，坐标 3891/7100）")
 
-        log("SELFTEST PASS（FAT12/geometry/log/QMP；零 QEMU）")
+        log(
+            "SELFTEST PASS（精确哨兵/canonical 109B/精确计数与顺序/"
+            "常态隔离/geometry/log/QMP；零 QEMU）"
+        )
         return 0
     finally:
         if not args.keep:
@@ -1335,7 +1828,9 @@ def parse_args(argv=None):
             "示例：\n"
             "  python3 tools/gui8-smoke.py --self-test\n"
             "  python3 tools/gui8-smoke.py --dry-run\n"
+            "  python3 tools/gui8-smoke.py --dry-run --normal-boot\n"
             "  python3 tools/gui8-smoke.py --image out/berryos.img\n"
+            "  python3 tools/gui8-smoke.py --normal-boot\n"
             "  GUI8_KEEP=1 just gui8-smoke\n"
         ),
     )
@@ -1355,7 +1850,7 @@ def parse_args(argv=None):
     ap.add_argument(
         "--reuse-data-disk",
         action="store_true",
-        help="允许复用已存在数据盘（缺失 GUI8.SMK/印章即 FAIL）",
+        help="允许复用已存在数据盘（dual 必须精确 GUI8.SMK；normal 必须无哨兵）",
     )
     ap.add_argument("--work-dir", help="指定 run 目录（默认 mktemp）")
     ap.add_argument(
@@ -1367,12 +1862,16 @@ def parse_args(argv=None):
     ap.add_argument("--boot-b-timeout", type=float, default=300.0)
     ap.add_argument("--click-timeout", type=float, default=120.0)
     ap.add_argument(
-        "--settle-seconds",
+        "--click-ready-timeout",
         type=float,
-        default=5.0,
-        help="无 click-ready 时 PAGE 后静置秒数（snap 收敛）",
+        default=60.0,
+        help="dual Boot A 等 click ready 的秒数（缺席即 FAIL，无 sleep 回退）",
     )
-    ap.add_argument("--expected-cells", type=int, default=2)
+    ap.add_argument(
+        "--normal-boot",
+        action="store_true",
+        help="常态隔离：不造 GUI8.SMK，点击后断言 spawn 仍发生且零标记",
+    )
     ap.add_argument("--only-a", action="store_true", help="只跑 Boot A（plumbing）")
     ap.add_argument("--dry-run", action="store_true", help="只建盘并打印 QEMU 命令")
     ap.add_argument("--self-test", action="store_true", help="无 QEMU 自检")
@@ -1388,13 +1887,15 @@ def main(argv=None) -> int:
             return self_test(args)
         if args.dry_run:
             return dry_run(args)
+        if args.normal_boot:
+            return run_normal_boot(args)
         return run_dual_boot(args)
     except MissingMarkers as e:
         print(f"gui8-smoke: FAIL: {e}", file=sys.stderr, flush=True)
         print(
-            "  hint: 基线 014623d 的 launcher 尚未合并段④ 标记"
-            "（CLICK/LAYOUTW/LAYOUT）；先跑 --self-test/--dry-run 验 plumbing，"
-            "或等待段④ launcher 合并。",
+            "  hint: dual 相要求 launcher 段④ 标记在哨兵支路出现"
+            "（click ready / CLICK / LAYOUTW / LAYOUT）；先跑 "
+            "--self-test/--dry-run 验 plumbing。",
             file=sys.stderr,
             flush=True,
         )
