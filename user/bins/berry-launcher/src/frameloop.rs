@@ -51,12 +51,14 @@
 //!
 //! **段④ 点击面（真实输入 → APP_SPAWN）**：`Msg::Click` 槽命中 →
 //! `app_cli_h()!=0` 时真发 APP_SPAWN；**首例 ok 回执恰一次**打 `CLICK
-//! ok n=1`（失败回执维持 eprintln 诊断、零标记——spawn 是旁路动作，不
-//! 打断帧循环）。冻结相 `app_cli_h()==0` 早退：零 RPC 零打印。
+//! ok n=1`——**仅当 `smoke` 为真**（main 经 GUI8.SMK 精确载荷判定）。
+//! 失败回执维持 eprintln 诊断、零标记——spawn 是旁路动作，不打断帧循环。
+//! **正常交互 boot（smoke=false）点击照常 spawn，但 CLICK 行与 click
+//! ready 行都不打**（冻结相 app_cli_h()==0 更早退：零 RPC 零打印）。
 //! `launcher: click ready` 非标记行 = 宿主注入的**状态谓词**门（规则/07
 //! A32 禁睡等竞速）：`PAGE ok` 后 `snap_to(0)` 落位且其后已再呈一帧
 //!（presented 增长——吸附完成帧已出，命中面回到 page 0 的 app 格）
-//! 才打，恰一次；`hi==0`（无 input gift）恒不打。
+//! 才打，且同样仅限 `smoke`；恰一次；`hi==0`（无 input gift）恒不打。
 //!
 //! 裁决四-c（输入拓扑）：真实输入订阅 = 段④（input extras 冻结相结构
 //! 性缺席）；裁决四-e（归属）：状态栏/壁纸/桌面全在 launcher 进程内。
@@ -121,9 +123,56 @@ enum Selftest {
     Done,
 }
 
+/// `launcher: click ready` 标记的纯谓词（单元测试面）：**冒烟模式** +
+/// input gift 在场 + 本进程未打过 + `snap_to(0)` 的呈现基线存在且其后
+/// 已再呈帧（presented > pc）+ 命中面在 page 0。任一不满足 = 不打。
+fn click_ready_gate(
+    smoke: bool,
+    has_input: bool,
+    already: bool,
+    snap_frame: Option<u64>,
+    presented: u64,
+    page: u8,
+) -> bool {
+    smoke
+        && has_input
+        && !already
+        && page == 0
+        && matches!(snap_frame, Some(pc) if presented > pc)
+}
+
+/// `CLICK ok n=1` 标记的纯谓词（单元测试面）：**冒烟模式** + 恰为第 1 个
+/// 成功 APP_SPAWN 回执（count 0 = 尚无成功回执；count≥2 = 非首例）。
+/// 调用方只在 `parse_spawn_ack == Some((true, _))` 分支递增——失败回执
+/// 永不置 count，故永不产标记。
+fn click_marker_gate(smoke: bool, spawn_ok: u32) -> bool {
+    smoke && spawn_ok == 1
+}
+
+/// APP_SPAWN ack 记账（纯函数，测试面）：仅 `Some((true, _))` 递增计数；
+/// 失败 ack（`Some((false, _))`）/ 坏 ack（`None`）不递增、不打标记。
+/// 返回值 = 本次是否该打 `CLICK ok n=1`——冒烟模式且恰为第 1 个成功回执。
+fn note_spawn_ack(smoke: bool, spawn_ok: &mut u32, ack: Option<(bool, u32)>) -> bool {
+    match ack {
+        Some((true, _)) => {
+            *spawn_ok += 1;
+            click_marker_gate(smoke, *spawn_ok)
+        }
+        _ => false,
+    }
+}
+
 /// 帧循环入口（签名 = W2 冻结面——`hw` = wm 客户端端柄（wm/present 同
-/// 端混流，ADR #61 中继），`ui` = 泄堆 arena，`desktop` = 静态面句柄）。
-pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop) -> ! {
+/// 端混流，ADR #61 中继），`ui` = 泄堆 arena，`desktop` = 静态面句柄，
+/// `smoke` = main 单次读取的 GUI8.SMK 精确载荷判定——只门控段④两标记，
+/// 不改点击/帧链行为）。
+pub fn run(
+    hw: Handle,
+    hi: Handle,
+    ui: &'static mut UiMain,
+    mut desktop: Desktop,
+    smoke: bool,
+) -> ! {
     // —— present GETINFO（wmd 中继同端）：能力面轻断言（gfxdemo 同面）
     //    + 几何真值源（present 权威；与 wm 缓存一致性 = 内部不变量，
     //    失配 fail loud）。——
@@ -306,7 +355,7 @@ pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
             match m {
-                Msg::Click { node } => on_click(*node, &desktop, &mut spawn_ok),
+                Msg::Click { node } => on_click(*node, &desktop, &mut spawn_ok, smoke),
                 _ => {
                     // pager.on_msg true = 翻页目标变更 → a11y 重挂当前页
                     //（幂等；Err = 容量违例 fail 收口）。
@@ -497,15 +546,18 @@ pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop
 
         // —— 段④ click ready 非标记门（规则/07 A32：状态谓词，禁睡等竞速）
         //    `snap_to(0)` 落位后须已再呈一帧（presented 增长 = 吸附完成帧
-        //    出，命中面稳落 page 0）才宣布可注入；`has_input` 缺席恒不打
-        //    （冻结相字节零扰动）。恰一次。
-        if has_input && !click_ready {
-            if let Some(pc) = snap_frame {
-                if presented > pc && desktop.pager.page() == 0 {
-                    println!("launcher: click ready");
-                    click_ready = true;
-                }
-            }
+        //    出，命中面稳落 page 0）才宣布可注入；`has_input` 缺席或非冒烟
+        //    模式恒不打（冻结相/正常 boot 字节零扰动）。恰一次。
+        if click_ready_gate(
+            smoke,
+            has_input,
+            click_ready,
+            snap_frame,
+            presented,
+            desktop.pager.page(),
+        ) {
+            println!("launcher: click ready");
+            click_ready = true;
         }
 
         // —— 稳态等待（S1 判词：wait_many n=1 [wm READABLE] + deadline =
@@ -633,11 +685,12 @@ fn inject_swipe(ui: &mut UiMain, base: u64) {
 
 /// CLICK 面（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆归本
 /// 格——最深叶命中面）→ 注册表条目 → `app_cli_h()==0`（冻结相 extras 恰
-/// [wm]）静默跳过零 RPC 零打印；在场 = APP_SPAWN 真跑。**首例 ok 回执**
-/// 打 `CLICK ok n=1`（恰一次，`spawn_ok` 计数门——后续成功点击静默，
-/// 避免重启/连点制造重复标记）；失败回执维持 eprintln 诊断（spawn 是旁
-/// 路动作，不打断帧循环、不 fail）。
-fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32) {
+/// [wm]）静默跳过零 RPC 零打印；在场 = APP_SPAWN 真跑（**正常 boot 与
+/// 冒烟 boot 同路**）。**首例 ok 回执**仅在 `smoke` 为真时打 `CLICK ok
+/// n=1`（恰一次，`spawn_ok` 计数门——后续成功点击静默，避免重启/连点
+/// 制造重复标记）；失败回执维持 eprintln 诊断（spawn 是旁路动作，不打
+/// 断帧循环、不 fail、**不产标记**）。
+fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
     let slot = desktop
         .slots
         .iter()
@@ -656,14 +709,14 @@ fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32) {
     match ap::encode_spawn_request(&mut req, entry.id_bytes()) {
         Some(m) => {
             let (n, _) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
-            match ap::parse_spawn_ack(&rep, n) {
-                Some((true, _)) => {
-                    *spawn_ok += 1;
-                    if *spawn_ok == 1 {
-                        // 标记（字节精确）：真实 APP_SPAWN ok 回执恰一次。
-                        println!("CLICK ok n=1");
-                    }
-                }
+            let ack = ap::parse_spawn_ack(&rep, n);
+            if note_spawn_ack(smoke, spawn_ok, ack) {
+                // 标记（字节精确）：真实 APP_SPAWN ok 回执恰一次，且仅
+                // 冒烟模式（正常 boot 零 CLICK）。
+                println!("CLICK ok n=1");
+            }
+            match ack {
+                Some((true, _)) => {}
                 Some((false, err)) => eprintln!(
                     "launcher: spawn {} err={err}",
                     String::from_utf8_lossy(entry.id_bytes())
@@ -672,5 +725,64 @@ fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32) {
             }
         }
         None => eprintln!("launcher: spawn id bad"),
+    }
+}
+
+// ---- 标记门纯谓词测试（同 layout_io：aarch64-musl 目标可编译，宿主
+// ---- 无 qemu-user 不可执行；用例零 RPC/零 fd，只验门控真值表）----
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// click ready 必须同满足冒烟 + input + 未打 + 吸附后已再呈帧 + page 0；
+    /// 任一不满足即 false（正常 boot 的 smoke=false 是首要负例）。
+    #[test]
+    fn click_ready_gate_truth_table() {
+        // 正例：冒烟、input 在场、未打、基线 pc=7、presented=8、page 0。
+        assert!(click_ready_gate(true, true, false, Some(7), 8, 0));
+        // smoke=false（正常交互 boot）：其余全真也不打。
+        assert!(!click_ready_gate(false, true, false, Some(7), 8, 0));
+        // 无 input gift（冻结相）。
+        assert!(!click_ready_gate(true, false, false, Some(7), 8, 0));
+        // 已打过（恰一次）。
+        assert!(!click_ready_gate(true, true, true, Some(7), 8, 0));
+        // 吸附基线未建立。
+        assert!(!click_ready_gate(true, true, false, None, 8, 0));
+        // 基线后尚未再呈帧（presented == pc）。
+        assert!(!click_ready_gate(true, true, false, Some(8), 8, 0));
+        // 命中面不在 page 0。
+        assert!(!click_ready_gate(true, true, false, Some(7), 8, 1));
+    }
+
+    /// CLICK 标记只在冒烟模式且恰为第 1 个成功 ack 时打；0（失败回执未
+    /// 递增）与 ≥2（非首例）皆 false。
+    #[test]
+    fn click_marker_gate_truth_table() {
+        assert!(click_marker_gate(true, 1));
+        assert!(!click_marker_gate(false, 1)); // 正常 boot 零 CLICK
+        assert!(!click_marker_gate(true, 0)); // 失败 ack 不产标记
+        assert!(!click_marker_gate(true, 2)); // 后续成功静默
+        assert!(!click_marker_gate(false, 0));
+    }
+
+    /// ack 记账：失败/坏 ack 不递增即不产标记；首个成功 ack 恰打一次；
+    /// 后续成功静默；正常 boot（smoke=false）即使成功也零标记。
+    #[test]
+    fn spawn_ack_marker_only_after_first_success() {
+        let mut n = 0u32;
+        assert!(!note_spawn_ack(true, &mut n, Some((false, 7))));
+        assert_eq!(n, 0);
+        assert!(!note_spawn_ack(true, &mut n, None));
+        assert_eq!(n, 0);
+        assert!(note_spawn_ack(true, &mut n, Some((true, 0))));
+        assert_eq!(n, 1);
+        assert!(!note_spawn_ack(true, &mut n, Some((true, 0))));
+        assert_eq!(n, 2);
+        // 正常 boot：成功 spawn 仍记账，但永不产 CLICK。
+        let mut quiet = 0u32;
+        assert!(!note_spawn_ack(false, &mut quiet, Some((true, 0))));
+        assert_eq!(quiet, 1);
+        assert!(!note_spawn_ack(false, &mut quiet, Some((true, 0))));
+        assert_eq!(quiet, 2);
     }
 }

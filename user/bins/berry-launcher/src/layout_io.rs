@@ -20,12 +20,14 @@
 //! 进），读入缓冲是 `load()` 局部——镜像拷出（app id ≤24B/格）让布局
 //! 值跟调用方走，免 static mut 缓冲 + 生命周期穿透。
 //!
-//! **段④ 冒烟往返（本模块唯一标记面）**：数据盘根有 `GUI8.SMK` 时进
-//! 冒烟支路——`LAYOUT.JSN` 已存在且 == 确定性变体 → 打 `LAYOUT ok
-//! n=<cells>`（跨 boot 读回证明，恰一次）；否则写变体 + 读回自检，
-//! 过链才打 `LAYOUTW ok`（写后 close=commit 已落）。哨兵缺席（常态
-//! boot）= 上述零打印零额外语义——冻结相更被 `fs_h()==0` 结构性短路
-//!（哨兵探测本身也是 RPC，故必须排在此门之后）。
+//! **段④ 冒烟往返（本模块唯一标记面）**：数据盘根 `GUI8.SMK` 的**全部
+//! 字节** == [`SMOKE_MAGIC`] 时才进冒烟支路——`LAYOUT.JSN` 已存在且 ==
+//! 确定性变体 → 打 `LAYOUT ok n=<cells>`（跨 boot 读回证明，恰一次）；
+//! 否则写变体 + 读回自检，过链才打 `LAYOUTW ok`（写后 close=commit 已
+//! 落）。哨兵缺席/载荷不符（常态 boot）= 上述零打印零额外语义；冻结相
+//! 更被 `fs_h()==0` 结构性短路（哨兵探测本身也是 RPC，故必须排在此门
+//! 之后）。**哨兵只读一次**：main 调 [`smoke_mode`] 取 bool，再传入
+//! [`load`] 与 frameloop——本模块不再二次 open（避免读写窗内哨兵被换）。
 //!
 //! 变体形态（确定性，见 [`smoke_variant`]）：注册表首 app 钉 (page 0,
 //! row 0, col 0)——冒烟点击靶；其余格移 page 3 并保 row/col（冲突时
@@ -45,9 +47,21 @@ use crate::icons::AppEntry;
 /// 相对路径同形）。
 const PATH: &[u8] = b"LAYOUT.JSN\0";
 
-/// 冒烟相哨兵文件（8.3 大写；smoke-image 交互相数据盘根造此件）。在场
-/// = 走 [`load`] 的冒烟往返支路；常态 boot 绝无此文件。
+/// 冒烟相哨兵文件（8.3 大写；smoke-image 交互相数据盘根造此件）。**授权
+/// 面 = 内容不是文件名**：仅当载荷逐字节 == [`SMOKE_MAGIC`] 才进 [`load`]
+/// 的冒烟往返支路；常态 boot 绝无此载荷。
 const SMOKE_PATH: &[u8] = b"GUI8.SMK\0";
+
+/// 冒烟哨兵载荷魔数（22B，含结尾换行）。GUI8.SMK 是普通用户可创建的
+/// 文件名——只凭存在性可被任意文件误触发标记面，故必须全字节精确匹配；
+/// 短读/长读/任一异字节 = 非冒烟（fail closed）。
+pub const SMOKE_MAGIC: &[u8] = b"BERRYOS-GUI8-SMOKE-V1\n";
+
+/// 纯函数：哨兵载荷是否恰为 [`SMOKE_MAGIC`]（缺失由调用方以空切片表达；
+/// 前缀、尾随字节、旧版文本一律 false）。
+pub fn smoke_payload_matches(payload: &[u8]) -> bool {
+    payload == SMOKE_MAGIC
+}
 
 /// 冒烟变体目标页（`PAGES-1` = 3——末页，非默认装填页）。
 const SMOKE_VARIANT_PAGE: usize = PAGES - 1;
@@ -110,15 +124,16 @@ pub fn default_layout(reg: &[AppEntry]) -> OwnedLayout {
     l
 }
 
-/// 读-判-自愈三约束收口（main 单次调用）。冒烟哨兵在场 → 冒烟往返支路
-///（段④ 标记面，见模块头注）；否则原三约束面逐字节不变。
-pub fn load(reg: &[AppEntry]) -> OwnedLayout {
+/// 读-判-自愈三约束收口（main 单次调用）。`smoke` = main 经 [`smoke_mode`]
+/// 单次读取的哨兵判定（真 = 冒烟往返支路，段④ 标记面；假 = 原三约束面逐
+/// 字节不变）。
+pub fn load(reg: &[AppEntry], smoke: bool) -> OwnedLayout {
     if fs_h() == 0 {
         // 冻结相：extras 恰 [wm]——布局持久化面结构性缺席，默认直返
         //（零 RPC 零 fd 面；W1 冻结十段零字节扰动的结构性保证）。
         return default_layout(reg);
     }
-    if smoke_marker() {
+    if smoke {
         return smoke_load(reg);
     }
     match read_file() {
@@ -132,19 +147,30 @@ pub fn load(reg: &[AppEntry]) -> OwnedLayout {
     }
 }
 
-/// 冒烟哨兵探测（存在性 = open 成功；读 fd 的 close 无 commit 面）。
-/// 调用点恒在 `fs_h()!=0` 之后——冻结相零 RPC 不受扰。
-fn smoke_marker() -> bool {
+/// 冒烟模式探测（main 单次调用；结果同时门控 layout 冒烟往返与 frameloop
+/// 的 `CLICK ok` / `launcher: click ready`）。**fail closed**：`fs_h()==0`
+/// 冻结相直返 false（零 RPC）；文件缺席、I/O 失败、短读/长读、任一异字节
+/// 一律 false——只认 [`SMOKE_MAGIC`] 全字节精确匹配。
+pub fn smoke_mode() -> bool {
+    if fs_h() == 0 {
+        return false;
+    }
+    // 多读 1 字节：长于魔数的文件必得 len+1（不可能误判为精确匹配）。
+    let mut buf = [0u8; SMOKE_MAGIC.len() + 1];
     // SAFETY: SMOKE_PATH 是 NUL 结尾字面量；fd 按 libc 契约使用。
     let fd = unsafe { open(SMOKE_PATH.as_ptr() as *const _, O_RDONLY) };
     if fd < 0 {
         return false;
     }
-    let _ = close(fd);
-    true
+    let n = read(fd, buf.as_mut_ptr() as *mut _, buf.len());
+    let _ = close(fd); // 只读 fd 的 close 无 commit 面
+    if n < 0 {
+        return false;
+    }
+    smoke_payload_matches(&buf[..n as usize])
 }
 
-/// 冒烟往返支路（`GUI8.SMK` 在场）：
+/// 冒烟往返支路（`GUI8.SMK` 载荷精确匹配）：
 ///
 /// - 卷根 `LAYOUT.JSN` 已在册且与 [`smoke_variant`] 全等（无视书写序，
 ///   按四元组多重集比对）→ 打 `LAYOUT ok n=<cells>` 后直接用（跨 boot
@@ -523,5 +549,25 @@ mod tests {
         let v = smoke_variant(&[]);
         assert_eq!(v.cells().len(), 0);
         assert!(persist(&v).is_ok());
+    }
+
+    /// 哨兵授权面 = 精确载荷（不是文件名/存在性）：只认全字节相等；旧
+    /// 文本、缺尾换行、多一字节、前缀截断、任意异字节一律 fail closed。
+    #[test]
+    fn smoke_payload_requires_exact_magic_bytes() {
+        assert_eq!(SMOKE_MAGIC, b"BERRYOS-GUI8-SMOKE-V1\n");
+        assert_eq!(SMOKE_MAGIC.len(), 22);
+        assert!(smoke_payload_matches(SMOKE_MAGIC));
+        // 历史 harness 文本（旧版内容）不再授权。
+        assert!(!smoke_payload_matches(b"BERRYOS GUI8 INTERACTIVE SMOKE MARKER v1\n"));
+        // 缺尾换行 / 多一字节 / 空文件 / 前缀。
+        assert!(!smoke_payload_matches(b"BERRYOS-GUI8-SMOKE-V1"));
+        assert!(!smoke_payload_matches(b"BERRYOS-GUI8-SMOKE-V1\n\n"));
+        assert!(!smoke_payload_matches(b""));
+        assert!(!smoke_payload_matches(b"BERRYOS-GUI8-SMOKE"));
+        // 单字节替换（大小写敏感）。
+        let mut bad = SMOKE_MAGIC.to_vec();
+        bad[0] = b'b';
+        assert!(!smoke_payload_matches(&bad));
     }
 }

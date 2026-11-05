@@ -39,12 +39,15 @@
 //! 常态零打印（eprintln 仅失败诊断面）。
 //!
 //! **段④ 标记面（全部结构性门控——EFI 冻结相字节零扰动）**：
-//! `LAYOUTW ok` / `LAYOUT ok n=<cells>`（数据盘根有 `GUI8.SMK` 才进
-//! layout_io 冒烟往返；`fs_h()==0` 冻结相在哨兵探测之前直返）+ `CLICK
-//! ok n=1`（真实 `Msg::Click` → APP_SPAWN ok 回执首例；`app_cli_h()==0`
-//! 早退）+ `launcher: click ready`（非标记状态谓词门，`input_h()==0`
-//! 恒不打）。四者皆「每进程一次」——监督重启可合法重打，smoke 侧一律
-//! grep -qF 存在性断言，禁升恰一次。
+//! `LAYOUTW ok` / `LAYOUT ok n=<cells>`（数据盘根 `GUI8.SMK` **载荷恰为**
+//! `BERRYOS-GUI8-SMOKE-V1\n` 才进 layout_io 冒烟往返；`fs_h()==0` 冻结相
+//! 在哨兵探测之前直返）+ `CLICK ok n=1`（真实 `Msg::Click` → APP_SPAWN
+//! ok 回执首例，且仅在冒烟模式）+ `launcher: click ready`（非标记状态谓词
+//! 门，仅冒烟模式 + `input_h()==0` 恒不打）。哨兵在主 main **只读一次**
+//! （[`layout_io::smoke_mode`]），bool 同时传入 layout 与 frameloop；缺失/
+//! 错载荷 = false（fail closed）。CLICK/click ready 皆「每进程一次」——
+//! 监督重启可合法重打，smoke 侧一律 grep -qF 存在性断言，禁升恰一次。
+//! **正常交互 boot 仍可点击 spawn，但不打 CLICK / click ready 任一行。**
 
 mod desktop;
 mod frameloop;
@@ -229,11 +232,17 @@ fn main() {
 
     // —— 段③ 静态面接线（W1：树成帧不驱——frameloop 静默 park）——
     // 注册表初始化（W2 = app 域 APP_LIST 拉取装载；冻结相 app_cli_h()==0
-    //（extras 恰 [wm]）→ 空注册表——草案 R1 修约 1/2）。
+    //（extras 恰 [wm]）→ 空注册表——草案 R1 修约 1/2）。此步也是 fs 挂载
+    // 就绪的串行点：APP_LIST 应答前 appd/fsmgr 已进稳态。
     icons::init(app_cli_h());
+    // 冒烟模式 = 数据盘根 GUI8.SMK 载荷精确匹配（main 单次读取；缺失/
+    // 错载荷 fail closed → false）。**在 layout_io::load 之前**取一次，
+    // bool 同时门控布局冒烟往返与 frameloop 的 CLICK/click ready 两行；
+    // 正常 boot 的点击 spawn 行为不受影响（只是不打标记）。
+    let smoke = layout_io::smoke_mode();
     // 布局装载（冻结相 fs_h()==0 → 默认布局直返零 RPC；三约束自愈面
     // 见 layout_io 头注）。
-    let layout = layout_io::load(icons::registry());
+    let layout = layout_io::load(icons::registry(), smoke);
     // Ui<512> arena ≈ 75KB+（Node 144B×512 + 走查/序/快照缓冲侧表）——
     // guest 栈 stack_pages=64 = 256KB（R5 仪器定谳，svcmgr 装配注释为
     // 单源——8 页下 main+0x1c 序言即穿保护页）栈置仍不稳：Box::leak
@@ -247,6 +256,8 @@ fn main() {
         Ok(d) => d,
         Err(e) => fail(&format!("desktop build err={e:?}")),
     };
-    // 帧循环（W1 静默 park；LAUNCH ok/PAGE ok = W2 产物）。
-    frameloop::run(hw, input_h(), ui, desktop);
+    // 帧循环（W1 静默 park；LAUNCH ok/PAGE ok = W2 产物）。smoke = 段④
+    // 两标记的唯一门（CLICK ok / launcher: click ready）；正常 boot 传
+    // false = 点击照常 spawn、零新标记。
+    frameloop::run(hw, input_h(), ui, desktop, smoke);
 }
