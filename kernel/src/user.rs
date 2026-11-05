@@ -1935,6 +1935,14 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                     // off 臂替代标记（与 BENCHWAKE 同位：G1.5 ok 之后、
                     // exit_current 之前——恰一次；含空格 = 矩阵字符流不可
                     // 伪命中，全形状正则收割面同 BENCHWAKE 纪律）。
+                    // 真空执法〔f4 F14〕：total() 只在环写路径递增，off 面
+                    // 钩子整体让位 ⇒ 必恒 0——锚打印前断言，替代锚自身
+                    // 携带「记录面真关」证据（对半开泄漏：TRACE_OFF 置位
+                    // 过迟/新写路径未让位，在此 loud 红而非 TRACE_CAP 盲区
+                    // 照绿）。
+                    assert!(crate::telemetry::total() == 0,
+                            "watchdog: trace off 而 telemetry total={} ≠ 0（记录面泄漏——门置位过迟或新写路径未让位）",
+                            crate::telemetry::total());
                     berry_hal_aarch64::kern_lock::with_print_lock(|| {
                         berry_hal_aarch64::uart_puts(b"TRACE off ok (record face closed)\n");
                     });

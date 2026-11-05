@@ -114,6 +114,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
     // PanicMessage 实现了 Display（1.95 起 message() 不再返回 Option）。
     let _ = writeln!(UartWriter, "  {}", info.message());
+    // 语义声明〔f4 F9〕：SMP 下 halt 只停当核——fail-loud 是消息级非系统
+    // 级，他核续跑直至外部收杀（G3-4b 首跑双 panic ~60s 间隔实录）；系统
+    // 级停机不归本 handler（后续 kill criteria 面）。
     berry_hal_aarch64::halt();
 }
 
@@ -3565,6 +3568,14 @@ pub(crate) static LATSGI_ENTER: core::sync::atomic::AtomicUsize =
 /// happens-before，单写者下计数即槽位）。
 pub(crate) static LATSGI_DONE: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
+/// SGI 路 sleeper 落核背书（wait_enter 钩子记 `cpu_id()`；waker 每轮断言
+/// ==1〔f4 F3〕）。必要性：spread→CPU1 靠 `place()` 队列深度失衡启发，
+/// 失衡不满足时静默留 CPU0 = lane=sgi 退化同核测量而 ENTER/n==1/DONE 全
+/// 断言照过——跨核量级签名（p50 数量级差）此前只有人眼察觉；本原子把
+/// 落核事实升为结构保证。发布序：Relaxed 先写，紧随的 ENTER fetch_add
+///（Release）一并发布——waker Acquire 读到 ENTER 即读到本值。
+pub(crate) static LATSGI_CPU: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 /// SGI 路样本柜（CPU1 写/CPU0 读；Relaxed 访问 + DONE 的 Release/Acquire
 /// 配对提供跨核发布序）。
 pub(crate) static LATSGI_BUF: [core::sync::atomic::AtomicU64; LAT_SAMPLES] =
@@ -3574,6 +3585,10 @@ pub(crate) static LATSGI_BUF: [core::sync::atomic::AtomicU64; LAT_SAMPLES] =
 /// 调用面已过 `signals == LAT_SGI_BIT && LATSGI_ARMED` 双过滤）。
 pub(crate) fn latsgi_wait_enter(obj: usize) {
     LATSGI_OBJ.store(obj, core::sync::atomic::Ordering::Release);
+    LATSGI_CPU.store(
+        berry_hal_aarch64::smp::cpu_id(),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     LATSGI_ENTER.fetch_add(1, core::sync::atomic::Ordering::Release);
 }
 
@@ -3594,6 +3609,8 @@ pub(crate) fn latsgi_wake(reason: berry_sched::WakeReason) {
     // 单写者（sleeper 的 SVC 路径 CPU1）：DONE 即本样本槽位，先存样本后
     // 发布计数（Release）——waker Acquire 读到计数即读到样本。
     let i = LATSGI_DONE.load(core::sync::atomic::Ordering::Relaxed);
+    assert!(i < LAT_SAMPLES,
+            "latsgi_wake: 样本柜索引 {i} ≥ {LAT_SAMPLES}（一轮多睡/位复用/改样本数类演化先在此 fail-loud，非静默越界写静态数组〔f4 F4〕）");
     LATSGI_BUF[i].store(lat, core::sync::atomic::Ordering::Relaxed);
     LATSGI_DONE.fetch_add(1, core::sync::atomic::Ordering::Release);
 }
@@ -3621,9 +3638,11 @@ pub(crate) fn latsgi_ret(ret: i64) {
 ///   （hook_enter 在 sleeper 的 SVC 屏蔽窗内递增；block 的 insert_sorted
 ///   先于 klock_release_switch ⇒ waker 观察到序号后取 KL，sleeper 必已
 ///   在 SLEEPQ——KL 串行闭 TOCTOU 窗），再发信号。n==1 断言保留 = 终背书。
-/// - 被测段 = note_wake 戳（CPU0 唤醒侧）→ SGI → CPU1 park 出场 → sleeper
-///   醒后首段内核执行取戳——跨核 SGI + 远端 RQ 入队 + park 出场全在被测
-///   段内（IPC 路 = 同核直切段，两路对照即段分解）。
+/// - 被测段 = note_wake 戳（CPU0 唤醒侧）→ SGI 到达尾延 → CPU1 park 出场
+///   → 派发切回 → sleeper 醒后首段内核执行取戳。**勘正〔f4 F2〕：远端 RQ
+///   入队与 SGI 发送（`enqueue_with_kick` 内含 send_sgi MMIO）在 wake_one_inner
+///   实序中先于 note_wake 戳完成、不在被测段内**；IPC 路 = 同核直切段
+///   （两 lane 同点打戳，对照差 = 尾延+出场+切回段的跨核增量）。
 /// - 收尾等位：DONE 计数 Acquire 读到 32（有界轮询，超时 L0——TCG 副核
 ///   滞后同因，预算按 lag 容忍非按工作量）→ 排序打印 → exit_current
 ///   （一次性采样任务非常驻，rt_probe 同形）。
@@ -3653,6 +3672,12 @@ extern "C" fn task_latsgi_wak(_arg: usize) -> ! {
         assert!(enter >= i + 1,
                 "latsgi_wak: 第 {} 轮 wait 进入序号超时（enter={enter}——sleeper 断链/err 早退）",
                 i + 1);
+        // 落核结构背书（f4 F3）：ENTER 的 Release/Acquire 对同时发布了钩子
+        // 先写的 CPU 落点——place() 失衡启发未跨核时在此 fail-loud，杜绝
+        // lane=sgi 静默退化同核。
+        let cpu = LATSGI_CPU.load(core::sync::atomic::Ordering::Acquire);
+        assert!(cpu == 1,
+                "latsgi_wak: sleeper 落 CPU{cpu} ≠ 1（place() 未跨核——lane=sgi 将退化为同核测量）");
         if obj == 0 {
             obj = LATSGI_OBJ.load(core::sync::atomic::Ordering::Acquire);
         }

@@ -76,6 +76,7 @@
 """
 
 import argparse
+import os
 import re
 import signal
 import subprocess
@@ -86,6 +87,26 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BASELINE = REPO / "tools" / "bench_baseline.txt"
+# 回执落盘目录（f4 F1/F6 补修）：icount/trace-dual/lat 家族每跑原始串口 +
+# 收割面归档——此前 tempfile 每跑 unlink = 工具结构性不留档，数值主张全凭
+# 转述无工件背书。out/ 已 gitignore（机器持久、不入版本库），证据档引路径。
+RECEIPT_DIR = REPO / "out" / "bench-receipts"
+
+
+def write_receipt(kind: str, serial_text: str, summary: str) -> Path:
+    """icount/trace-dual/lat 家族回执：summary（收割面）+ 原始串口全文落
+    out/bench-receipts/，stdout 同步打路径行 = 转录自身携带工件指针。"""
+    RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    path = RECEIPT_DIR / f"{kind}-{ts}-{os.getpid()}.log"
+    path.write_text(
+        f"bench.py receipt kind={kind} ts={ts} pid={os.getpid()}"
+        f" argv={' '.join(sys.argv)}\n--- summary ---\n{summary}"
+        f"\n--- serial ---\n{serial_text}",
+        encoding="utf-8",
+    )
+    print(f"bench.py: 回执落盘 {path.relative_to(REPO)}")
+    return path
 ROOTFS = REPO / "rootfs.cpio"
 BOOT_TIMEOUT = 120  # 秒：boot 到 BENCH ok 的帽（与 smoke DEADLINE_BOOT 同口径）
 # B-1 通道帽：rootfs 走查 ~90s + bench1 spawn/SVC 链 + 稳态矩阵尾段——与
@@ -95,9 +116,13 @@ BOOT_TIMEOUT_EL0 = 300
 # R-1 通道帽（设计 §10 定帽）：boot 头 ~10-20s + rt_probe 三档
 # 32×(50+200+800)ms ≈ 34s（TCG 半率）——3x 余量。
 BOOT_TIMEOUT_RT = 120
-# G3-4 lat 通道帽：RT 同口径（lane 采样 ≈32×½slice ≈2s 于 boot 窗内完成；
-# -smp 2 boot 略重于裸跑但不放大帽——超帽 = loud 上报不硬凑绿）。
-BOOT_TIMEOUT_LAT = 120
+# G3-4 lat 通道帽（f4 F5 勘正）：规则/08 S-1③ 冻结律「`-smp 2` 线一切时限
+# 帽 ×2 起步」——本通道全脚本唯一 -smp 2 线，旧 120 未放大 = 规则抵触；
+# 且 SGI 路 boot 实测 ≈10s（g3-4a 期「≈2s」为 IPC 单路旧估算，已废），
+# 内核侧等位预算（¼ slice × LATSGI_POLL_MAX ≈ 100s guest 钟，TCG 半率折
+# 墙钟更长）远超旧帽——宿主争用（§A128 同因）下 python 先杀 = 假超时红。
+# 240 = ×2 律下限；超帽仍 loud 上报不硬凑绿。
+BOOT_TIMEOUT_LAT = 240
 # B-2 通道帽：与 vanilla BOOT_TIMEOUT=120 同口径、不放大。实测依据（M 系
 # mac，QEMU 11.0.3，2026-10-27 首跑探针）：boot 到 BENCHWAKE 全程 ≈2s——
 # sleep=off 下虚拟时钟纯指令驱动，「-icount 慢 2-4x」预期被实测反驳
@@ -582,6 +607,12 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
             f"bench.py: BENCHLAT 收割不齐（lanes={sorted(rows)} done={done_ns} "
             f"——须恰 {LAT_LANES} 各一行、n=={LAT_N}、每路完成标记 n=={LAT_N}；"
             f"改 task_lat_* 后同步）")
+    write_receipt(
+        "lat", text,
+        "\n".join(
+            f"lane={lane} n,pmin,p50,p90,p99,pmax={','.join(map(str, vals))}"
+            for lane, vals in sorted(rows.items())
+        ))
     return rows
 
 
@@ -688,6 +719,10 @@ def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], di
         raise SystemExit(
             f"bench.py: BENCH 行数 {len(metrics)} ≠ BENCH ok n={done_n}"
             "（内核侧计数与出表不一致——改 bench.rs 后同步 N_METRICS）")
+    write_receipt(
+        f"icount{'-off' if trace_off else ''}", text,
+        "\n".join(f"{n} iters={iters_seen[n]} cyc={metrics[n]}"
+                  for n in sorted(metrics)) + f"\n{wake_line}")
     return metrics, iters_seen, wake_line
 
 
@@ -728,6 +763,7 @@ def prove_icount(kernel: str) -> None:
                 f"（{sorted(set(r) ^ set(all_runs[0]))}）——收割面破碎，非数值漂移")
     exact = True
     worst = 0.0
+    prove_lines: list[str] = []  # 回执面（f4 F1）：漂移谱随 verdict 一并归档
     for name in sorted(all_runs[0]):
         pairs = [r[name] for r in all_runs]
         vals = [c for (_it, c) in pairs]
@@ -748,7 +784,14 @@ def prove_icount(kernel: str) -> None:
         exact = exact and (len(set(pairs)) == 1)
         worst = max(worst, dev)
         print(f"ICOUNT,{name},{','.join(map(str, vals))},max_dev={dev:.3f}%")
-    print(f"ICOUNT verdict={'exact' if exact else 'drift'} max_dev={worst:.3f}%")
+        prove_lines.append(f"ICOUNT,{name},{','.join(map(str, vals))},max_dev={dev:.3f}%")
+    verdict = f"ICOUNT verdict={'exact' if exact else 'drift'} max_dev={worst:.3f}%"
+    print(verdict)
+    prove_lines.append(verdict)
+    prove_lines.append(
+        f"BENCHWAKE five-run byte-identical: {len(set(wakes)) == 1}"
+        f"{': ' + wakes[0] if len(set(wakes)) == 1 else ''}")
+    write_receipt("icount-prove", "", "\n".join(prove_lines))
     # R-0 依赖注记的观测面（§13「依赖」段）：五跑 BENCHWAKE 整行比对。
     if len(set(wakes)) == 1:
         print(f"bench.py: BENCHWAKE 五跑逐字节相同（wake 路径确定性佐证，"
@@ -1142,6 +1185,17 @@ def main() -> None:
                            "见其注释〕")
         print(f"[G3-4(trace-dual)] on 臂观测行：{wake}")
         print(f"[G3-4(trace-dual)] off 臂替代标记行：{mark}")
+        # 双跑汇总回执（f4 F1）：两臂数值 + 帽 verdict + 违约单归档（两臂
+        # 原始串口在各自 icount/icount-off 回执；update 刷新行随 stdout）。
+        write_receipt(
+            "trace-dual", "",
+            f"on-wake-line: {wake}\noff-mark-line: {mark}\n"
+            + "\n".join(
+                f"{name} off={metrics_off[name]} on={metrics_on[name]}"
+                f" delta={metrics_on[name] - metrics_off[name]:+}"
+                for name in sorted(metrics_on))
+            + f"\ncap: TRACE_CAP={TRACE_CAP} bad={len(bad)}"
+            + ("\n" + "\n".join(f"BAD {b}" for b in bad) if bad else ""))
         if args.update:
             if bad:
                 # 帽不过不许刷基线（--icount 单臂无此交点——单臂 update 只是

@@ -19,10 +19,14 @@
   `wake_matching` 直驱的实质差异：IPC sleeper 经 `block_current` 直睡不经
   重验面）。位签名 `1<<49` 在册 USER_SIGNAL_BITS（LAT_EV_BIT 1<<48 邻位）。
 - **测量口径**（与 IPC 路同族）：wake 侧锚 = note_wake 戳（CPU0 唤醒侧）；
-  run 侧读点 = 醒后首段内核执行（wait 返程钩子取戳+cntvct）——被测段含
-  跨核 SGI + 远端 RQ 入队 + CPU1 park 出场（IPC 路 = 同核直切段，两路对照
-  即段分解）。L0 执法：醒因恒 Signaled（Timeout = waker 漏醒）、唤醒数恒 1、
-  戳非 0、负延迟 panic。
+  run 侧读点 = 醒后首段内核执行（wait 返程钩子取戳+cntvct）。**被测段
+  勘正〔f4 F2〕：远端 RQ 入队与 SGI 发送（`enqueue_with_kick` 内含
+  send_sgi MMIO）在 `wake_one_inner` 实序中先于 note_wake 戳完成、不在
+  被测段内**——段内 = SGI 到达尾延 + CPU1 park 出场 + 派发切回 + 取戳
+  （IPC 路 = 同核直切段；两 lane 同点打戳，对照差 = 跨核增量）。L0 执法：
+  醒因恒 Signaled（Timeout = waker 漏醒）、唤醒数恒 1、戳非 0、负延迟
+  panic、**sleeper 落核断言 ==1〔f4 F3 补：place() 失衡启发不满足时原先
+  静默退化同核，量级签名只有人眼察觉——现 LATSGI_CPU 结构背书〕**。
 
 ### 踩坑实录（判例 §A128 已立）
 
@@ -41,12 +45,24 @@
 
 ### 实跑数据（本机 mac，QEMU 11.x TCG，-smp 2；绝对值跨机不可比——B-2 纪律）
 
+> **环境声明〔f4 F7〕**：本段（段②起）= **双路同 boot**（lat=1 门下一次
+> 起 IPC+SGI 两对）；段①（evidence-g3-4a）= 单路 boot（SGI 对未在树）
+> ——跨段数值不可直接互拍，段内对照为准。
+
 | 跑 | lane | min | p50 | p90 | p99 | max |
 |----|------|-----|-----|-----|-----|-----|
 | 手跑 90s 窗 | ipc | 500 | 812 | 2000 | 4312 | 4312 |
 | 手跑 90s 窗 | sgi | 19562 | 9690187 | 13751437 | 14685750 | 14685750 |
 | bench.py --lat | ipc | 563 | 1875 | 2562 | 4312 | 4312 |
 | bench.py --lat | sgi | 18187 | 10494312 | 13517063 | 15135750 | 15135750 |
+| bench.py --lat〔f4 F1/F6 回执复跑〕 | ipc | 562 | 875 | 2250 | 5000 | 5000 |
+| bench.py --lat〔f4 F1/F6 回执复跑〕 | sgi | 16500 | 8755500 | 13780125 | 15234750 | 15234750 |
+
+> 上四行 = 修复批前史档行（当时无回执通道——f4 F1/F6 缺档面；行值跨跑
+> 浮动属 TCG 载荷纪律 §A118 族，非漂移判据）。**修复批起 write_receipt
+> 落 `out/bench-receipts/`（gitignored 机内持久），复跑行有档可引**：
+> `lat-20261105-093156-41389.log`（argv 头 + lane 表 + 全 serial）。本跑
+> 同时 = **F3 落核断言（LATSGI_CPU==1）首活检验 PASS**。
 
 62.5MHz 口径：ipc p50 ≈ 13-30µs（同核直切）；sgi min ≈ 291µs 但 p50 ≈ 168ms
 ——**跨核段被 TCG 宿主 vCPU 调度主导**（MTTCG 下副核 vCPU 线的宿主唤醒+
@@ -88,7 +104,7 @@
 | cargo build（default 面） | ok（既有 2 警告 = hal target-feature 噪声，非本刀） |
 | QEMU -smp 2 + lat 门（手跑） | BENCHLAT,lane=ipc + lane=sgi 双路齐 + LATIPC/LATSGI ok n=32，零 PANIC |
 | bench.py --lat 通道（双路收割/一致性） | PASS（表见上） |
-| QEMU trace=0 手跑 | TRACE off ok 标记在位 + G1.5 ok + tele total=0 + BENCHWAKE 让位，零 PANIC |
+| QEMU trace=0 手跑 | TRACE off ok 标记在位 + G1.5 ok + tele total=0 + BENCHWAKE 让位，零 PANIC〔f4 F12 注：该跑实为**单核 boot**——cpu_on 回落（traceoff.log `SMP: cpu_on ret=… -> single-core, skip`），故只作单核 off 臂定性面；双核 off 臂数值面由 --trace-dual off 臂覆盖〕 |
 | bench.py --trace-dual（帽 + 双臂 L2） | PASS：六行 δ=0 过帽（TRACE_CAP=0.0）+ on/off 两家族 12 项 L2 全界内 |
 | off 臂五跑证明 | 逐值相同 {0,82,37,165,1617,6937}（L2 资格，notes.md 台账） |
 | B-2 icount prove 五跑 | verdict=exact max_dev=0.000%；对旧基线漂移 = 172→82 / 1706→1617（反向 = 轨道骰换轨非 envelope）+ handle_evt 166→165（−1 微位移）；BENCHWAKE 五跑逐字节同；`--trace-dual --update` 双份重立 |
@@ -97,3 +113,19 @@
 | just smoke（八跑） | PASS exit=0（金丝雀 43 条严格递增〔=switches 行数随时钟节奏浮动，门=≥3 且严格递增，G3-3c 跑同 43〕+ rootfs 47 + RX 交互相 + FAT 子目录 74 + 持久化 + B4 掉电三 boot 恢复；全卷 PANIC/VIOLATION 零命中；本机宿主争用下全链 ~40min） |
 | just smoke-smp（八相） | PASS exit=0（相 1/2 boot 执法 + 裸 27 + rootfs 47 + PAR d1 + 金丝雀递增；LB c0=0/c1≥24/n=4、ASIDR n≥1、TLBS n=10、ALLOC n=320、HT n=320、PP 320/320 全门；VIOLATION/PANIC 零命中） |
 | just bench（B-0 对拍 + docs_guard + abi-check） | PASS exit=0（B-0 ×3.0 六项全在界：4/28/18/29/270/760 + docs_guard 0 警 + abi-check v1 34 号四面单源一致） |
+
+## f4 修复批复验矩阵（F1-F15 回写后，2026-11-05）
+
+| 项 | 结果 |
+|----|------|
+| B-2 icount prove 五跑（回执化） | verdict=exact max_dev=0.000%；{0,82,37,165,1617,6937} 对在库双基线**零漂移**——修复批内核增量全冷径零布局漂移，双基线不重烘续役（回执 icount-20261105-09305{0,1,2,3,4}-41274 + icount-prove-20261105-093054） |
+| bench.py --trace-dual（回执化） | TRACE_CAP=0.0 六行 δ=0 过帽 + 双家族 12 项 L2 全界内；**off 臂 F14 记录面真空断言（total()==0）活检验 PASS**（回执 trace-dual-20261105-093122-41343） |
+| bench.py --lat（回执化） | 双路齐；**F3 落核断言（LATSGI_CPU==1）首活检验 PASS**——sleeper 结构性落 CPU1（回执 lat-20261105-093156-41389；表见上节复跑行） |
+| 拒绝三形取证（F15） | --lat --rt / --lat --update / --trace-dual --icount 全拒 exit=2（回执 reject-trio-20261105-093026） |
+| just test-host 取证（F15） | 78 suite 全 ok 0 failed exit=0（回执 testhost-20261105-093131） |
+| F2/F7/F12/F13 文档面 | 测量口径勘正（被测段不含 RQ 入队+SGI 发送）+ 段①②环境声明×4（单路→双路 boot 不可跨段互拍）+ trace=0 手跑单核注记 + 命令速览措辞耐久化 |
+| F5/F8/F9/F10/F11 内核面 | BOOT_TIMEOUT_LAT 240（规则/08 ×2 律）+ 注释四条（wait 位纪律前提 / SMP halt 语义 / wake_stamp_take SQ 序边 / TRACE_OFF 显式边 Release-Acquire） |
+| F1 结构根治 | write_receipt 回执面落 out/bench-receipts/（argv 头 + summary + 全 serial）；史档缺档勘误见 notes.md f4 修复批复验条 |
+| just smoke（八跑） | PASS exit=0（金丝雀 43 条严格递增〔G3-4b 批同值，门=≥3 且严格递增〕+ rootfs 相全链 + RX 交互相 + FAT 子目录/持久化相 + B4 掉电三相恢复终验；全卷 PANIC/VIOLATION 零命中；/tmp/g34fix-smoke.log 2026-11-05 本机跑） |
+| just smoke-smp（八相） | PASS exit=0（相 1/2 boot 执法 SMP/SGI/SGI2 恰一次 + 裸 27 + rootfs 47 + PAR d1；LB c0=0/c1≥24/n=4、ASIDR n≥1、TLBS n=10、ALLOC n=320、HT n=320、PP 320/320 全门；VIOLATION/PANIC 零命中；/tmp/g34fix-smoke-smp.log 2026-11-05 本机跑） |
+| just bench（B-0 对拍 + docs_guard + abi-check） | PASS exit=0（B-0 ×3.0 六项全在界：4/29/17/26/273/750 + docs_guard 0 警 + abi-check PASS；/tmp/g34fix-bench.log 2026-11-05 本机跑） |

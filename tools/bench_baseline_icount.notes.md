@@ -70,4 +70,19 @@ bench_baseline_icount_traceoff.txt L2 资格。关-开六行全零差 = **结构
 （bench 六窗前置调度器纪元，遥测钩子窗口内不可能发射——TRACE_CAP=0.0
 首标定即此定谳，单一事实源在 bench.py 常量注）。
 
+## f4 修复批复验（2026-11-05，prove 五跑 max_dev=0.000%，对在库基线零漂移）
+
+**勘误〔f4 F1〕**：G3-4a 烘基 / G3-4b 批 / off 臂五跑三组 icount 数值主张
+当时**无档可引**——六份存档日志不含 icount 跑（run_icount tempfile 即跑即
+删；「off 臂五跑」无工具通道）。修复 = bench.py 回执面（`write_receipt`
+落 `out/bench-receipts/`，gitignored 机内持久；argv 头 + summary + 全
+serial），本批起一切 bench 数值主张有档。复验五跑
+{0,82,37,165,1617,6937} **与在库双基线逐值同**——修复批内核增量（F3
+LATSGI_CPU 静态+断言 / F4 界断言 / F11 Release-Acquire / F14 total()==0
+断言 / 三条注释）**零布局漂移**（断言与注释全冷径；静态并入既有段对齐），
+双基线不重烘直接续役。BENCHWAKE 五跑逐字节同（n=209 max=46257626——
+观测面 max 与 G3-4b 批的 46257624 差 2 cyc：wake 分布统计行非 L2 面，
+五跑内自洽即定态）。回执：icount 五份 + icount-prove + icount/off +
+trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）。
+
 

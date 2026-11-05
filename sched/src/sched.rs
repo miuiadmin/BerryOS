@@ -1402,6 +1402,10 @@ pub fn wake_stamp_take() -> u64 {
     // 契约（block_current 返后锁窗内）⇒ 非空（调用者即 current，副核
     // park null 空哨兵语境到不了这里）。读后清零同一窗，无并发写者
     // （note_wake 只在本任务沉睡时写）。
+    // 跨核序边承重〔f4 F10〕：waker 的 wake_vct 写在其 SQ 释放（Release）
+    // 窗内 → sleeper 经 klock_acquire_switch 的 SQ 获取（Acquire）于
+    // block_current 返回前重取该值——边成立依赖这对 SQ 序；未来若拆 wait
+    // 路的 SVC 屏蔽窗 SQ 位，本取戳的单消费值序论证随之重审。
     unsafe {
         let cur = current_task();
         let v = (*cur).wake_vct.get();

@@ -38,14 +38,18 @@
 
 ## 实跑数据（本机 mac，QEMU 11.x TCG，-smp 2；绝对值跨机不可比——B-2 纪律）
 
+> **环境声明〔f4 F7〕**：段① 首锚 = **单路 boot**（lat 门下仅 IPC 对在树；
+> SGI 对未在树）——段②起 lat=1 同 boot 起双对，单路环境不再复现，
+> **跨段数值不可直接互拍**（对拍须同段内跑）。
+
 | 跑 | min | p50 | p90 | p99 | max |
 |----|-----|-----|-----|-----|-----|
 | 1（手跑 90s 窗） | 875 | 1937 | 3000 | 4500 | 4500 |
 | 2（bench.py --lat 通道首跑） | 750 | 2125 | 2500 | 3813 | 3813 |
 
 62.5MHz 口径：p50 ≈ 30-34µs，max < 80µs——P-B 直切面（G3-2 段①）下
-wake→run 同核段亚百微秒量级。G3 阶段对照：本表 = G3-4 段首锚（后续段
-复跑对拍进本档）。
+wake→run 同核段亚百微秒量级。G3 阶段对照：本表 = G3-4 段首锚（环境 =
+单路 boot、段②起不可复现——跨段互拍无效，段内复跑为准〔f4 F7〕）。
 
 ## 踩坑实录（判例 §A127 已立）
 
@@ -64,7 +68,7 @@ wake→run 同核段亚百微秒量级。G3 阶段对照：本表 = G3-4 段首�
 | cargo build（default 面） | ok（既有 2 警告 = hal target-feature 噪声，非本刀） |
 | QEMU -smp 2 + lat 门（手跑 ×2） | BENCHLAT,lane=ipc + LATIPC ok n=32 双跑齐 |
 | bench.py --lat 通道（含 qemu_preflight/收割/一致性） | PASS（表见上） |
-| bench.py --lat/--rt/--update 组合拒绝集 | 拒绝文案三形齐 |
+| bench.py --lat/--rt/--update 组合拒绝集 | 拒绝文案三形齐（f4 F15 复验回执：`out/bench-receipts/reject-trio-20261105-093026.log` 三形全拒 exit=2） |
 | just test-host | 全 suite ok 0 failed |
 | just smoke（八跑） | PASS（SMOKE_EXIT=0）：金丝雀 42 严格递增 + rootfs 相全链 + RX 交互相 + FAT 子目录/持久化相 + B4 掉电三相（采样 A/B + 毒环注入 + Boot C 恢复终验）——零漂移 |
 | B-2 icount prove 五跑 + 重立 | 五跑自洽 exact（max_dev 0.000%；BENCHWAKE 行五跑逐字节同）；**对旧基线两行漂**：frame_alloc4k 37→172（+135）、vmo_commit1p 1574→1706（+132）——**轨道对翻转 + 微位移**（{172,1706} = 在册轨道对 {171,1708} 加 +1/−2；G3-4a 新码叠掷布局骰，notes.md「G3-4a 烘基」条 + §A95/§A109 先例。**勘误〔f4 P-1，2026-11-05〕**：本行原归因「note_wake 戳+Task 增域的 icount 足迹」机制上不可能——bench::run() 前置 berry_sched::init()，note_wake 调用面在 bench 窗内不可达）；`--update` 重立后过门禁（回执见下） |

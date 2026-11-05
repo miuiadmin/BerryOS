@@ -2029,6 +2029,9 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
     unsafe { (*obj.as_ptr()).retain() };
     // G3-4b SGI 路进入点钩子（位签名 + armed 双过滤——默认面恒短路，仅
     // 付一次寄存器比较；钉住后调用 = 落笔的 ObjRef 活性由本 wait 钉着）。
+    // 前提〔f4 F8〕：「wait 入口位已清」是 EL0 payload 纪律而非内核执法——
+    // 位已置时下方快查命中即返，ENTER 已计入而 sleeper 不睡；该违例由
+    // waker 侧 n==1 断言 fail-loud 收口（G3-4b 首跑 first.log 实证形态）。
     if signals == crate::LAT_SGI_BIT
         && crate::LATSGI_ARMED.load(core::sync::atomic::Ordering::Relaxed)
     {

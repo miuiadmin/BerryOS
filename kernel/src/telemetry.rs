@@ -145,7 +145,11 @@ pub fn init() {
         if e.size == 1 {
             let mut v = [0u8; 1];
             if berry_hal_aarch64::fwcfg::read_to(&e, &mut v) && v[0] == b'0' {
-                TRACE_OFF.store(true, Ordering::Relaxed);
+                // Release/Acquire〔f4 F11〕：今日跨核可见性由 boot 序结构
+                // 承重（本 init 早于副核出生 + PSCI CPU_ON 串行边界，副核
+                // 首次读即见终值）；显式边为真机移植/bring-up 提前的形态
+                // 兜底——钩子槽写与读本标志间不再依赖位置巧合。
+                TRACE_OFF.store(true, Ordering::Release);
             }
         }
     }
@@ -163,7 +167,7 @@ static TRACE_OFF: AtomicBool = AtomicBool::new(false);
 /// 记录面是否关（true = 环/直方图写让位；watchdog 的 G1.5 环断言与
 /// BENCHWAKE 打印同让位——断言对象不在场还执法即错杀，`user.rs` 同步门）。
 pub fn trace_off() -> bool {
-    TRACE_OFF.load(Ordering::Relaxed)
+    TRACE_OFF.load(Ordering::Acquire) // 与置位 Release 配对〔f4 F11〕
 }
 
 /// seqlock 读者：取 `cpu` 环内第 k 新条目（k=0 最新；空/越界 None；版本
