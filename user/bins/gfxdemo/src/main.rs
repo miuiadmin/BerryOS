@@ -307,7 +307,7 @@ fn main() {
     }
 
     // —— 帧缓冲 VMO 三连（mmp_selftest/pthread 栈同链）：create → 整段
-    // commit（v1 无 demand paging）→ vmar_map(self_vmar_h())。GETINFO 无
+    // commit（eager VMO 面；demand G4-1 起另路）→ vmar_map(self_vmar_h())。GETINFO 无
     // stride 域：stride = w*4 tight packing（ramfb GOP 实测同值——服务端
     // blit 的源布局）；len 页取整（vmar_map 页倍执法；尾页零无害，need =
     // stride*(h-1)+w*4 ≤ len 由 submit 期第四拒面复检）。

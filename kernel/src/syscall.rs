@@ -495,7 +495,8 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     }
 }
 
-/// `vmo_commit(vmo, offset, len)`：立即出页清零（v1 无 demand paging）。
+/// `vmo_commit(vmo, offset, len)`：立即出页清零（eager VMO 面；demand
+/// VMO 供给链自 commit——G4-1 起）。
 /// 门控：handle 类型 Vmo + **WRITE**（提交即写入清零内容）。
 extern "C" fn sys_vmo_commit(tf: &mut TrapFrame) -> i64 {
     let (h, off, len) = (tf.regs[1] as u32, tf.regs[2] as usize, tf.regs[3] as usize);

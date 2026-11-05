@@ -20,9 +20,9 @@ type berry_time uint64
 # ---- 常量注释（abi.toml 单源字面量；非 syz const 引用）----
 # clock id:
 #   CLOCK_MONOTONIC = 0
-# options 位（未知位一律 -EINVAL）:
-#   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)
-#   VMO_OPT_DEMAND = 1 << 0  (0x1)
+# options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:
+#   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)（scope: channel_create）
+#   VMO_OPT_DEMAND = 1 << 0  (0x1)（scope: vmo_create）
 # rights 位（berry_rights；权限在 handle 不在对象）:
 #   BERRY_RIGHT_READ = 1 << 0  (0x1)
 #   BERRY_RIGHT_WRITE = 1 << 1  (0x2)
@@ -83,7 +83,7 @@ object_get_info(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # **内存 / VMO / Vmar**
 # 0x11 vmo_create（v1）——建内存对象
 vmo_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x12 vmo_commit（v1）——提交物理页（v1 无 pager 时直接分配）
+# 0x12 vmo_commit（v1）——提交物理页（eager VMO 面直接分配；demand VMO 供给链自 commit——G4-1 起）
 vmo_commit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x13 vmo_decommit（v1）——归还页
 vmo_decommit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)

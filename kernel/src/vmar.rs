@@ -135,7 +135,8 @@ pub enum VmarError {
     Overlap,
     /// unmap/protect 找不到精确匹配的已映射区间。
     NotMapped,
-    /// VMO 覆盖的页未全部 commit（v1 无 demand paging，映射前须提交）。
+    /// VMO 覆盖的页未全部 commit（eager 映射面先查后填；demand VMO 另走
+    /// map_demand 不经此门——G4-1 起）。
     VmoNotCommitted,
     /// 帧分配器无空闲页（建中间表/提交页）。
     NoFrames,
@@ -274,7 +275,8 @@ impl Vmar {
         if vmo_offset % PAGE_SIZE != 0 {
             return Err(VmarError::Unaligned);
         }
-        // 先查后填：VMO 覆盖页须全部提交（v1 无 demand paging）。
+        // 先查后填：VMO 覆盖页须全部提交（eager 面；demand 区间走
+        // map_demand 不填叶）。
         let npages = len / PAGE_SIZE;
         let first_page = vmo_offset / PAGE_SIZE;
         for i in 0..npages {

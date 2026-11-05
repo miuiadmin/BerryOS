@@ -259,7 +259,10 @@ def gen_user_rs(d: dict) -> str:
     L.append("pub(crate) mod nr {")
     for s in rows:
         if s.get("note"):
-            L.append("    /// " + s["note"].split("\n")[0])
+            # 多行 note 全文逐行（DOC-6 修：旧「取首行」把 0x21 §5-⑤ 整段
+            # 截尾——berry-sys 读者只见「…睡 pager」断句）。
+            for nl in s["note"].split("\n"):
+                L.append("    /// " + nl)
         if not s.get("implemented", True):
             L.append("    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。")
             L.append("    #[allow(dead_code)]")
@@ -431,9 +434,10 @@ def gen_syz(d: dict) -> str:
     L.append("# clock id:")
     for c in d["clock"]:
         L.append(f"#   CLOCK_{c['name']} = {syz_val(c['expr'])}")
-    L.append("# options 位（未知位一律 -EINVAL）:")
+    L.append("# options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值"
+             "异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:")
     for o in d["option"]:
-        L.append(f"#   {o['name']} = {syz_val(o['expr'])}")
+        L.append(f"#   {o['name']} = {syz_val(o['expr'])}（scope: {o.get('scope', '全局')}）")
     L.append("# rights 位（berry_rights；权限在 handle 不在对象）:")
     for r in d["right"]:
         cn = r.get("c") or f"BERRY_RIGHT_{r['name']}"

@@ -64,7 +64,7 @@ pub const BERRY_ERR_NO_MEMORY: Status = -12;
 pub const BERRY_ERR_ACCESS_DENIED: Status = -13;
 /// ENOENT：区间不存在（unmap/protect 找不到精确匹配）。
 pub const BERRY_ERR_NOT_FOUND: Status = -2;
-/// EBADSTATE：对象状态不满足（读/映射未提交页——v1 无 demand paging）。
+/// EBADSTATE：对象状态不满足（读/映射未提交页——eager VMO 面；demand 页 G4-1 起缺页供给）。
 pub const BERRY_ERR_BAD_STATE: Status = -37;
 /// ETIMEDOUT：阻塞等待到点未命中（object_wait_one deadline 到期——4-1）。
 pub const BERRY_ERR_TIMEDOUT: Status = -110;
@@ -106,6 +106,10 @@ pub(crate) mod nr {
     /// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
     pub(crate) const VMO_GET_PHYS: usize = 0x1B;
     /// G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
+    /// 裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
+    /// pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款）+ 唤 faulter。
+    /// 源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
+    /// （§5-⑤ 裁决）。
     pub(crate) const PAGER_SUPPLY_PAGES: usize = 0x21;
     pub(crate) const PROCESS_CREATE: usize = 0x31;
     pub(crate) const PROCESS_START: usize = 0x32;

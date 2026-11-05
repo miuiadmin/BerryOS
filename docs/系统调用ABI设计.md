@@ -39,7 +39,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x07 | `object_get_info` | 查询对象信息（topic 分派） | v2 |
 | **内存 / VMO / Vmar** ||||
 | 0x11 | `vmo_create` | 建内存对象 | v1 |
-| 0x12 | `vmo_commit` | 提交物理页（v1 无 pager 时直接分配） | v1 |
+| 0x12 | `vmo_commit` | 提交物理页（eager VMO 面直接分配；demand VMO 供给链自 commit——G4-1 起） | v1 |
 | 0x13 | `vmo_decommit` | 归还页 | v1 |
 | 0x14 | `vmo_read` | 内核中介读（非映射访问） | v1 |
 | 0x15 | `vmo_write` | 内核中介写 | v1 |
@@ -131,8 +131,8 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 
 ## 7. 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1（实际 35 号在册 / 34 已实现——T-1 后在册真语义全实现 + A7-4 `signal_send`(0x86)/`signal_take`(0x87) 落地（2026-10）+ G4-2 `pager_supply_pages`(0x21) v2 号激活（2026-11；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地）；SEC-01 件 11 起 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，ktest 样本挂 kernel 解冻）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
-- **v2**：pager（demand paging）、futex、timer、异常通道、调度策略、设备 syscall。（G3–G4）
+- **v1（实际 35 号在册 / 34 已实现——T-1 后在册真语义全实现 + A7-4 `signal_send`(0x86)/`signal_take`(0x87) 落地（2026-10）+ G4-2 `pager_supply_pages`(0x21) v2 号激活（2026-11；原预算 ~26，`thread_start`(0x35) 已随 T-1 多线程首刀落地）；SEC-01 件 11 起 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，ktest 样本挂 kernel 解冻）**：handle/object + VMO/Vmar 基础 + process/thread 基础 + channel/event + clock_read + demand paging 首形（0x21 `pager_supply_pages` 阻塞收货——G4-2）。足够跑通"首个用户进程 + 能力门控 syscall + 服务间 IPC"。**intent 预埋（ADR #42，零新号）**：`thread_create`/`process_create` options 低 8 位 = intent 域 + `berry_intent` 枚举冻结（§8.1/§8.2）+ intent/标注来源/通胀计数器进遥测落盘。（测试关卡 G0–G2）
+- **v2**：futex、timer、异常通道、调度策略、设备 syscall。（G3–G4；pager 首形已随 G4-2 提前入 v1——0x21 v2 号激活，v2 无 pager 面；脏页/换出通知 0x22 留 v3。）
 - **v3**：namespace（open/mount）、**AI 策略注入/遥测控制 syscall**（`policy_bind`/`telemetry_open`，见 `AI调度设计.md`）、完整 POSIX 兼容库（含受限 fork 探索）。（G4+）
 
 ## 8. v1 ABI 骨架（冻结合约）
@@ -287,7 +287,11 @@ berry_status_t berry_object_signal(berry_handle_t h, uint64_t clear, uint64_t se
 
 /* —— VMO / Vmar —— */
 berry_status_t berry_vmo_create(uint64_t size, uint32_t options, berry_handle_t *out);
-                               /* v1：options 须 0；size ∈ (0, 16MiB]，超限 -ENOMEM（no-panic 防线） */
+                               /* v1：bit0 = VMO_OPT_DEMAND（G4-2 demand 后备，
+                                  附加授 SET_POLICY）；options 寄存器全宽 u64 执法
+                                  ——未知位（含高 32 位）一律 -EINVAL（MECH-2 修；
+                                  本原型 u32 镜像零扩展恒合法）；size ∈ (0, 16MiB]，
+                                  超限 -ENOMEM（no-panic 防线） */
 berry_status_t berry_vmo_commit(berry_handle_t vmo, uint64_t offset, uint64_t len);
 berry_status_t berry_vmo_decommit(berry_handle_t vmo, uint64_t offset, uint64_t len);
                                /* 映射中页 -EBUSY（悬空 PTE 防线，先 unmap） */

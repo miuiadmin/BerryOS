@@ -182,7 +182,7 @@ desc = "ENOENT：区间不存在（unmap/protect 找不到精确匹配）。"
 name = "BAD_STATE"
 expr = "-37"
 c_note = "对象状态不对（未 start / 已关）"
-desc = "EBADSTATE：对象状态不满足（读/映射未提交页——v1 无 demand paging）。"
+desc = "EBADSTATE：对象状态不满足（读/映射未提交页——eager VMO 面；demand 页 G4-1 起缺页供给）。"
 [[errno]]
 name = "TIMEDOUT"
 expr = "-110"
@@ -269,7 +269,7 @@ stage = "v1"
 [[group.syscall]]
 num = 0x12
 name = "vmo_commit"
-desc = '提交物理页（v1 无 pager 时直接分配）'
+desc = '提交物理页（eager VMO 面直接分配；demand VMO 供给链自 commit——G4-1 起）'
 stage = "v1"
 [[group.syscall]]
 num = 0x13

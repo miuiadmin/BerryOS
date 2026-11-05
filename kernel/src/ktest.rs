@@ -2264,7 +2264,7 @@ fn test_vmo() {
     assert_eq!(
         vmo.read(PAGE_SIZE, &mut buf),
         Err(VmoError::NotCommitted),
-        "VMO：未提交页必须拒读（v1 无 demand paging）"
+        "VMO：未提交页必须拒读（eager VMO 面；demand G4-1 起另路供给）"
     );
 
     // B. map 即填表 + §5.1 验收：内核经 VMO 映射读写一页（VA 视角）。

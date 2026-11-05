@@ -120,7 +120,7 @@ pub const ERR_NO_MEMORY: i32 = -12;
 pub const ERR_ACCESS_DENIED: i32 = -13;
 /// ENOENT：区间不存在（unmap/protect 找不到精确匹配）。
 pub const ERR_NOT_FOUND: i32 = -2;
-/// EBADSTATE：对象状态不满足（读/映射未提交页——v1 无 demand paging）。
+/// EBADSTATE：对象状态不满足（读/映射未提交页——eager VMO 面；demand 页 G4-1 起缺页供给）。
 pub const ERR_BAD_STATE: i32 = -37;
 /// ETIMEDOUT：阻塞等待到点未命中（object_wait_one deadline 到期——4-1）。
 pub const ERR_TIMEDOUT: i32 = -110;

@@ -855,8 +855,9 @@ QEMU_PID=$!
 # spawn = 零 fs 盘面，链位置 clk 后 fat 族前（A 系契约位，EFI 路无盘亦打
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
-# GUI-7（appd [ui] 资产面）：+ APPUI ok n=——rootfs 相第 46 标记，
-# **GUI-7 验收线**。带 [ui] 声明的 .bap 逐项对账：icon 声明 ↔ 包内
+# GUI-7（appd [ui] 资产面）：+ APPUI ok n=——rootfs 相第 24 标记，
+# **GUI-7 验收线**（DOC-1 勘误：原注误标「第 46」——46 = THR，
+# markers.sh 枚举为准）。带 [ui] 声明的 .bap 逐项对账：icon 声明 ↔ 包内
 # icons/<stem>.byi 条目（BYI1 头校验：magic/ver/flags/尺寸帽）；views
 # 声明 ↔ views/ 条目在场；未声明 ⇔ 零条目 = mkapp 交叉门禁（§5.3 ⑥）
 # 的运行时镜像。ui_decl>0 且 ui_ok==ui_decl 才打——**与 APP ok 独立判**
@@ -872,7 +873,8 @@ QEMU_PID=$!
 # 静默不打 = 拓扑真值（LSN/EVS 同款））。"INPUT ok" 与现役标记两两互
 # 非子串（"INT ok" 位 2 P≠T；RX 相专用行 "INPUTP ok n=3" 不含 "INPUT ok"
 # ——位 5 P≠空格）；不进 assert_marker 特判面。rootfs 相第 48 标记
-# （G4-2 后计数——APPUI(46)+DPGP(47)+INPUT(48) 并存）。
+# （G4-2 后计数——THR(46)+DPGP(47)+INPUT(48) 并存；DOC-1 勘误：原注
+# 误标 APPUI(46)——APPUI=24 元，46=THR，markers.sh 枚举为准）。
 # 数组本体 → tools/markers.sh 单源（S-5 后测试基建收尾刀起，此处仅注记）。
 t2=$(date +%s)
 while :; do

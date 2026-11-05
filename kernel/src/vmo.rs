@@ -23,7 +23,8 @@ pub enum VmoError {
     OutOfRange,
     /// offset/len 未页对齐（v1 整页粒度，与 Zircon 一致）。
     Unaligned,
-    /// 读/写的页尚未 commit（v1 无 demand paging：映射前须显式提交）。
+    /// 读/写的页尚未 commit（eager VMO 面映射前须显式提交；demand VMO
+    /// 走缺页供给——G4-1 起，无此错）。
     NotCommitted,
     /// 帧分配器无空闲页。
     NoFrames,
