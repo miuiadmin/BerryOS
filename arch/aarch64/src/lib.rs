@@ -211,6 +211,41 @@ pub unsafe fn user_fault_exit() -> Option<UserFaultExit> {
     USER_FAULT_EXIT
 }
 
+// ---- G4-1 按需调页故障探针槽（HAL→内核 mm，同上反转模式）----
+//
+// D-abort（current-EL 0x25 / lower-EL 0x24）在杀链**之前**先问此槽：
+// 「FAR 命中 demand 区间吗？」——命中则槽内实现（内核 dpg 模块）走 pager
+// 协议（阻塞/供给/唤醒）并返回 true，eret 重试；未命中返回 false，原
+// 杀链不变量保持。未注册（boot 早期）恒 false = 零行为面。
+
+/// 按需调页故障探针类型：`far` = 故障 VA；`true` = 已处理（fault 线程已
+/// 阻塞又唤醒、页已供给），eret 重试即可；`false` = 非 demand 面，调用方
+/// 走原路径。实现契约：同步异常上下文调用（PSTATE.I=1）；返回 true 前
+/// 须完成供给（或保证重试指令再 fault 时有出路——递归防线归内核侧）。
+pub type DemandFaultProbe = unsafe extern "C" fn(far: usize) -> bool;
+
+static mut DEMAND_FAULT_PROBE: Option<DemandFaultProbe> = None;
+
+/// 注册按需调页故障探针。须在首个可能触 demand 区间访问的任务被调度之前
+/// 调用一次（boot DAIF 屏蔽窗）。
+pub fn set_demand_fault_probe(f: DemandFaultProbe) {
+    // SAFETY: 启动单线程、DAIF 屏蔽；无并发 IRQ、无竞态。
+    unsafe { DEMAND_FAULT_PROBE = Some(f) };
+}
+
+/// 取已注册的按需调页探针（`exception_sync`/`exception_sync_el0` 用）。
+/// 未注册/未命中 → `false`（= 原路径不变量保持）。
+///
+/// # Safety
+/// 读 `static mut`。仅同步异常上下文（单核顺序）调用。
+pub unsafe fn demand_fault_probe(far: usize) -> bool {
+    // SAFETY: 本函数自身契约即异常上下文；槽注册于 boot 屏蔽窗后恒定。
+    match DEMAND_FAULT_PROBE {
+        Some(f) => unsafe { f(far) },
+        None => false,
+    }
+}
+
 // ---- G3-1b 落点①：syscall 返回边界检查点槽（HAL→sched 反转，避循环依赖；
 // 上方 IRQ/SGI/用户故障槽同模式——HAL 永不知 scheduler 之名）----
 //

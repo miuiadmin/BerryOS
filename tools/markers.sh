@@ -4,10 +4,10 @@
 # 对拍守卫随退役（两脚本 source 本文件，漂移面构造性消失）。
 # 元素约束沿袭：元素 = 引号串，**元素内不得含 `)`/引号**（历史 awk 计数
 # 器的解析约束；今虽无计数器，加标记仍守此约束防回归）。
-# 消费方：smoke.sh 裸相 27 + rootfs 相 47；smoke-smp.sh 各相同双数组。
+# 消费方：smoke.sh 裸相 28 + rootfs 相 47；smoke-smp.sh 各相同双数组。
 
-# 裸相 27 标记（boot 全链）。
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok")
+# 裸相 28 标记（boot 全链；G4-1 起 +DPG ok——demand 闭环自证）。
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok")
 
 # rootfs 相 47 标记（gui3 并线后计数——APPUI(46)+INPUT(47) 并存）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \

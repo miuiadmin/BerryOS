@@ -233,7 +233,7 @@ DEADLINE_BOOTB=360   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3
                      # FAT @sw1700 慢 ~6% = c-1 源致 +2% + TCG 波动），外推 FATW
                      # ~245-250s 撞穿 240——与 Boot C 同债族早一相发作；360 ≈
                      # 最坏观测 ×1.45（与 Boot C 420/304 同口径）。
-# 标记单源：裸相 27 + rootfs 47 双数组抽出 tools/markers.sh（smoke-smp.sh
+# 标记单源：裸相 28 + rootfs 47 双数组抽出 tools/markers.sh（smoke-smp.sh
 # 同源消费——原「复制+awk 计数对拍」方案退役，S-5 后测试基建收尾刀）。
 source "$SCRIPT_DIR/markers.sh"
 

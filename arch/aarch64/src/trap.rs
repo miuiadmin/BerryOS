@@ -345,6 +345,14 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
             return;
         }
         0x25 => {
+            // G4-1：D-abort(current-EL) 先问 demand 探针（期望故障槽**之前**
+            // ——demand 是架构路径，ktest 期望槽是测试机制；两 FAR 域不交）。
+            // 探针命中 → 槽内已走 pager 协议（阻塞/供给/唤醒），eret 重试
+            // 本指令；未命中 → 原路径逐位不变。
+            // SAFETY: 同步异常上下文（PSTATE.I=1）；槽 boot 屏蔽窗注册。
+            if unsafe { crate::demand_fault_probe(tf.far as usize) } {
+                return;
+            }
             // D-abort(current-EL)：先查期望故障槽（2b-2 低半退役正向断言）——
             // arm 且 FAR 命中 → 恢复（证「该地址确实无映射」）；否则原 fatal 路径。
             let want = EXPECTED_FAULT_FAR.swap(0, Ordering::AcqRel);
@@ -401,6 +409,13 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             if ec == 0x24 && canary_consume(tf.far as usize) {
                 tf.elr = tf.elr.wrapping_add(4);
                 return;
+            }
+            // G4-1：EL0 D-abort 同插 demand 探针（canary 之后、杀链 svc_enter
+            // 之前——快路径零锁）。G4-1 无 EL0 demand 区间 = 探针恒 false
+            // 零行为漂移；G4-2 pager 服务激活后面即此臂。
+            // SAFETY: 同步异常上下文（PSTATE.I=1）；槽 boot 屏蔽窗注册。
+            if ec == 0x24 && unsafe { crate::demand_fault_probe(tf.far as usize) } {
+                return; // 槽内已完成 pager 协议——eret 重试
             }
             // S-2 E0（草案 3.1-2）→ S-3c c-2c slice 2b 全量形：EL0 fault kill
             // 链与 SVC 同构——dump 前按 SVC_CLASS_ALL 取五锁 + 全位记账 +

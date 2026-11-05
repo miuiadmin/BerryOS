@@ -1,9 +1,10 @@
 //! 匿名 VMO（内存对象，`内存管理设计.md` §2；2b-3 物理页后备先行）。
 //!
-//! v1 范围（ADR #20 无 demand paging）：`create/commit/read/write`——commit
-//! **立即**从帧分配器出页并清零（启动时全映射）；`decommit`（3-2）归还已提交
-//! 且**未被映射**的物理页；`share/CoW/pager` 与 5 类后备全集（ADR #29）留
-//! Phase 3+，pager 接口留空。
+//! v1 范围（ADR #20）：`create/commit/read/write`——commit **立即**从帧分配器
+//! 出页并清零（启动时全映射）；`decommit`（3-2）归还已提交且**未被映射**的
+//! 物理页。G4-1 起 demand 先形（ADR #4/#9 激活）：[`Vmo::create_demand`] +
+//! 缺页路径逐页 commit（两值页态不动，只移 commit 时机）；EL0 pager 服务与
+//! 0x21 ABI 面 = G4-2。`share/CoW` 与 5 类后备全集（ADR #29）留 Phase 3+。
 //!
 //! 放置说明（与 ADR #29「直接落 `mm/`」的偏差，已记设计文档落地记录）：
 //! VMO 是内核对象（Ziron 务实派，ADR #4），页记账 `Vec` 需堆——落 `kernel/`
@@ -57,6 +58,11 @@ pub struct Vmo {
     /// 归还仍被映射的物理页 → PA 被 buddy 复用 → 残留 PTE 经旧 VA 静默写坏
     /// 新主人。本计数让 `decommit`/对象销毁拒绝（或泄漏）此类页。
     mapcnt: alloc::vec::Vec<u16>,
+    /// 按需后备（G4-1，ADR #4/#9）：`true` = 本 VMO 页由 pager 路径在缺页时
+    /// 逐页 commit（对象级属性——`vmo_create` options 对象级落位的内核侧
+    /// 先形，ABI 位激活留 G4-2）。两值页态（`pages`）不动：demand 只是
+    /// 「commit 的触发时机」从 map 前（eager）移到缺页时，提交语义复用。
+    demand: bool,
 }
 
 impl Vmo {
@@ -80,7 +86,22 @@ impl Vmo {
             mmio_pa: None,
             pages,
             mapcnt,
+            demand: false,
         })
+    }
+
+    /// 建按需 VMO（G4-1）：同 [`Vmo::create`] 的记账面，但标记 demand——
+    /// 页在缺页时由 pager 路径逐页 commit（`Vmar::supply_page`）。boot/测试
+    /// 直构面（无 syscall 口——options 位激活 = G4-2 ABI 面）。
+    pub fn create_demand(size: usize) -> Result<Self, VmoError> {
+        let mut v = Self::create(size)?;
+        v.demand = true;
+        Ok(v)
+    }
+
+    /// 按需后备？（fault 探针分派用：demand 区间的缺页走 pager 协议。）
+    pub fn is_demand(&self) -> bool {
+        self.demand
     }
 
     /// 建 MMIO 物理窗口 VMO（P6 A-2，**boot-only**——无 syscall 面：物理窗口
@@ -112,6 +133,7 @@ impl Vmo {
             mmio_pa: Some(pa_base),
             pages: alloc::vec::Vec::new(),
             mapcnt,
+            demand: false,
         })
     }
 

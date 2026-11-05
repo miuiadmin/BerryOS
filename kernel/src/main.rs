@@ -19,6 +19,7 @@ mod aspace;
 mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
 mod channel;
 mod dtb;
+mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案.md）
 mod event;
 mod handle;
 mod handoff; // V-0b 刀 3：BerryBoot 交接协议双镜像（const assert 执法，消费随刀 4 起）
@@ -661,6 +662,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     pi::init();
     berry_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
     berry_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
+
+    // G4-1：demand paging 内核机制自喂闭环（内核任务 faulter/pager 对——无
+    // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。
+    dpg::init();
 
     // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡。good 打 'u'
     // （syscall 往返在 EL0 生效的活证）；rogue_ptr 野指针自作死 → 只死自己
@@ -3026,6 +3031,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 48, "lat 握手 Event（G3-4 bench-lat IPC 路——waker wake_matching 唤醒，sleeper 测 wake→run 段）"),
     (1 << 49, "latsgi 位签名（G3-4b bench-lat SGI 路——EL0 sleeper wait_one 位签名门 + 内核 waker Event 置位跨核唤醒）"),
     (1 << 50, "lat 触发 Event 内部位（G3-5 候选① C 形常驻再触发——soakmon 拍后 signal+wake_matching；Event 落内核私有表不经 ABI object_signal 面，登记 = 防撞/去重面〔f4 F8 补〕）"),
+    (1 << 51, "dpg 握手位（G4-1 demand 闭环——fault/pager/done 三裸键共用；不经 Event 对象，登记 = 防撞/去重面）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {

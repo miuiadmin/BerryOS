@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 use berry_hal_aarch64 as hal;
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SIZE};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 
 /// 用户 VA 上界：T0SZ=25 → TTBR0 区 = `[0, 2^39)`。
 pub const USER_VA_TOP: usize = 1 << 39;
@@ -168,6 +168,12 @@ enum RegionKind {
     Mapped(Perm),
     /// 子 Vmar 预留（allocate 占位，禁止父直接映射）。
     Reserved,
+    /// 按需映射（G4-1）：登记区间不填叶——首触缺页走 fault 探针 → pager
+    /// 协议逐页供给（`supply_page` 填叶后该页与 `Mapped` 同形）。带权限 =
+    /// 供给时叶 AP 位来源。unmap 收割（供给页清叶 + untrack，未供给页天然
+    /// 零动作）；protect 对 demand 区间 v1 拒（`NotMapped`——混合供给态的
+    /// 语义留 G4-2 后裁）。
+    Demand(Perm),
 }
 
 /// 地址区间对象。root 与子 Vmar 同构（子共享表根/ASID，base/len 收窄）。
@@ -330,18 +336,132 @@ impl Vmar {
         Ok(vaddr)
     }
 
+    /// 按需映射（G4-1）：登记 `RegionKind::Demand` 区间——**不查 commit、不填
+    /// 叶、零帧分配**（中间表留待供给时按需建）。VMO 须 demand 后备
+    /// （[`crate::vmo::Vmo::is_demand`]——混投 eager VMO 显式拒
+    /// [`VmarError::VmoNotCommitted`]，语义 = 「此 VMO 不是按需后备」）。
+    /// 成功后**不** track_map（记账起点 = 供给填叶成功时，§5-⑥ 裁决）。
+    /// fault 语境的反查经 [`register_demand_root`] 全局登记表（本 AS 有
+    /// demand 区间方可被探针命中）。
+    ///
+    /// 返回映射基 VA。错误集 = 纯校验面（`Unaligned`/`OutOfBounds`/`Overlap`
+    /// /`NoMem`）——无副作用中途态，无回滚臂。
+    pub fn map_demand(
+        &mut self,
+        vmo: &mut Vmo,
+        vaddr: usize,
+        vmo_offset: usize,
+        len: usize,
+        perm: Perm,
+    ) -> Result<usize, VmarError> {
+        let _pt = pt_lock(self.asid);
+        self.check_slot(vaddr, len)?;
+        if vmo_offset % PAGE_SIZE != 0 {
+            return Err(VmarError::Unaligned);
+        }
+        if !vmo.is_demand() {
+            return Err(VmarError::VmoNotCommitted);
+        }
+        self.regions.try_reserve_exact(1).map_err(|_| VmarError::NoMem)?;
+        self.regions.push(Region {
+            start: vaddr,
+            len,
+            kind: RegionKind::Demand(perm),
+            vmo: vmo as *mut Vmo,
+            vmo_off: vmo_offset,
+        });
+        Ok(vaddr)
+    }
+
+    /// 供给一页（G4-1，pager 侧）：`vaddr` 所在 demand 区间内该页 commit +
+    /// 填叶 + 屏障失效——此后该 VA 翻译有效，fault 线程 eret 重试即命中。
+    /// **幂等**：叶已存在（并发供给/虚醒重供给）直接返回 Ok——重供给不是
+    /// 错误，页内容经 VMO 写路径保证一致。
+    ///
+    /// 错误：VA 不在任何 demand 区间 → `NotMapped`（探针命中后区间被 unmap
+    /// 的竞窗 = 供给方拿 `Err` 自理）；建表/出帧失败 → `NoFrames`（pager
+    /// fail loud 面）。
+    pub fn supply_page(&mut self, fa: &mut FrameAllocator, vaddr: usize) -> Result<(), VmarError> {
+        // 页内对齐收口（探针传 FAR 原值时容页中偏移）。
+        let va = vaddr & !(PAGE_SIZE - 1);
+        let _pt = pt_lock(self.asid);
+        let idx = self.demand_index(va).ok_or(VmarError::NotMapped)?;
+        let (vmo, vmo_off) = {
+            // SAFETY: Region 的 vmo 指针有效性同 map 的两层政策（见 Region 注释）。
+            let r = &self.regions[idx];
+            (unsafe { &mut *r.vmo }, r.vmo_off)
+        };
+        // 幂等门：叶已在（前次供给）→ 零动作成功。
+        if let Some(slot) = self.l3_slot_peek(va) {
+            // SAFETY: 只读表项。
+            if unsafe { slot.read_volatile() } & 1 != 0 {
+                return Ok(());
+            }
+        }
+        let page_off = vmo_off + (va - self.regions[idx].start);
+        // commit 幂等（已提交页跳过）——两值页态复用，见 vmo 模块注释。
+        vmo.commit(fa, page_off, PAGE_SIZE).map_err(|e| match e {
+            crate::vmo::VmoError::NoFrames => VmarError::NoFrames,
+            crate::vmo::VmoError::NoMem => VmarError::NoMem,
+            _ => VmarError::NotMapped, // 区间/页参数已上验——不可达兜底
+        })?;
+        let pa = vmo.page_pa(page_off / PAGE_SIZE).expect("刚 commit 过");
+        let slot = self.l3_slot_create(fa, va)?;
+        // 供给叶 AP 位取区间登记权限（Demand 构造时定）。
+        let ap = match self.regions[idx].kind {
+            RegionKind::Demand(p) => p.ap(),
+            _ => unreachable!("demand_index 已验 kind"),
+        };
+        // SAFETY: 槽位属本表树独占；volatile 防重排。匿名 demand 页 = Normal
+        // WB + inner-shareable（eager map 同款——demand VMO 无 MMIO 后备）。
+        unsafe {
+            slot.write_volatile(hal::page_descriptor(pa, hal::ATTR_NORMAL, hal::SH_INNER) | ap);
+        }
+        // SAFETY: 特权指令；EL1。表写入对页表走查可见。
+        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        hal::tlbi_aside1(self.asid);
+        // S-4 4-2⑤：他核历史缓存项作废——锁窗内只发不待（map/unmap 同款）。
+        hal::tlbshoot::broadcast();
+        // §5-⑥：mapcnt 记账起点 = 供给成功（unmap 的整体 untrack 对未供给
+        // 页 saturating_sub 天然零动作——防线对 demand 区间自洽）。
+        vmo.track_map(page_off, PAGE_SIZE);
+        Ok(())
+    }
+
+    /// `va` 所在 demand 区间下标（只读查——fault 探针命中判定 + 供给定位）。
+    fn demand_index(&self, va: usize) -> Option<usize> {
+        self.regions.iter().position(|r| {
+            va >= r.start
+                && va < r.start + r.len
+                && matches!(r.kind, RegionKind::Demand(_))
+        })
+    }
+
+    /// fault 探针面（G4-1）：`far` 命中本 AS 的 demand 区间 → `(vmo 指针,
+    /// vmo_off, 区间基 VA)`——探针据此进 pager 协议；未命中（含 Mapped/
+    /// Reserved/界外）→ `None` = 原杀链不变量保持。只读不锁（探针在异常
+    /// 上下文；区间表仅经 PT 锁窗变更——单核屏蔽窗 = 快照一致，SMP 面由
+    /// 探针→供给链的 PT 锁窗收口）。
+    pub fn demand_region_at(&self, far: usize) -> Option<(*mut Vmo, usize, usize)> {
+        let idx = self.demand_index(far)?;
+        let r = &self.regions[idx];
+        Some((r.vmo, r.vmo_off, r.start))
+    }
+
     /// 解除映射：清 L3 叶（此后访问该 VA 必 fault）+ 按号失效 + 回调 VMO 映射
     /// 计数 -1（此后该页可 decommit/销毁）。**不退物理页**（页属 VMO；v1 也不
     /// 回收中间表帧）。区间须与本 Vmar 登记的映射**精确匹配**（子区间解映射留 v2）。
     pub fn unmap(&mut self, vaddr: usize, len: usize) -> Result<(), VmarError> {
         // per-AS PT 锁（S-4 4-2①），整方法串行（同 map）。
         let _pt = pt_lock(self.asid);
-        let idx = self.find_mapped(vaddr, len)?;
+        let idx = self.find_exact(vaddr, len)?;
         // SAFETY: Region 的 vmo 指针经 map 的 &mut 传入；有效性依托两层政策
         // （见 Region 注释：handle 层 close -EBUSY 拒面 + drain 泄漏兜底）。
         // 并发面（S-4 4-2 起 SMP，原「单核 + IRQ 屏蔽」假设退役）：本方法
         // 全程 PT 锁 + KL 双串行——同 AS 他核写者被 PT 锁挡；同 VMO 映两 AS
         // 的跨核 untrack_map 被 KL 挡；对象销毁被 -EBUSY 挡在 PTE 外。
+        // demand 区间（G4-1）整体 untrack 安全：track_map 只在供给成功时
+        // +1（§5-⑥），未供给页 saturating_sub(0) 零动作——防线自洽。
         unsafe {
             let r = &self.regions[idx];
             (*r.vmo).untrack_map(r.vmo_off, r.len);
@@ -397,6 +517,20 @@ impl Vmar {
             return Err(VmarError::Overlap);
         }
         Ok(())
+    }
+
+    /// 找精确匹配的已登记区间（Mapped 或 Demand——G4-1 起 unmap 对 demand
+    /// 区间同收割），返回其下标。protect 仍走 [`Self::find_mapped`]
+    /// （Mapped-only——demand 区间 protect v1 拒）。
+    fn find_exact(&self, vaddr: usize, len: usize) -> Result<usize, VmarError> {
+        self.regions
+            .iter()
+            .position(|r| {
+                r.start == vaddr
+                    && r.len == len
+                    && matches!(r.kind, RegionKind::Mapped(_) | RegionKind::Demand(_))
+            })
+            .ok_or(VmarError::NotMapped)
     }
 
     /// 找精确匹配的已映射区间，返回其下标。
@@ -469,6 +603,52 @@ impl Vmar {
             }
         }
     }
+}
+
+// ---- asid → root Vmar 反查登记表（G4-1，草案 §5-④ 裁决：全局小表）----
+//
+// fault 语境（异常处理器）只有硬件现值——TTBR0_EL1 现读 ASID（`hal::
+// current_asid`，单一事实源）——到 root Vmar 对象的映射在本表。**为什么
+// 不是 task 字段**（§5-④ 备选）：TTBR0 现读已消掉 asid 来源面，登记面
+// 只剩「对象指针」一项；全局小表零 sched 改动、boot 直构/handle 表两语境
+// 同形（task 字段对 handle 表 Vmar 还要解决装/卸窗）。
+//
+// 形：16 槽定长线性扫（boot 语境 demand AS 个位数；探针未命中 16 次原子
+// 载入 ≈ 数十周期——fault 快路径可受）。**只登记不注销**（v1 boot-held：
+// 登记者 = 对象生存期保证人，map_demand 的调用方持有 Vmar 同寿；G4-2
+// process 退出语境再裁注销面）。ASID 0 = 空槽哨兵（分配器从 1 起）。
+
+/// 登记槽数（boot/测试语境上界；满 = 后续登记失败 fail loud）。
+const DEMAND_ROOT_SLOTS: usize = 16;
+
+static DEMAND_ROOTS: [(AtomicU16, AtomicUsize); DEMAND_ROOT_SLOTS] =
+    [const { (AtomicU16::new(0), AtomicUsize::new(0)) }; DEMAND_ROOT_SLOTS];
+
+/// 登记 asid → root Vmar（map_demand 的调用方/对象属主；boot DAIF 屏蔽窗
+/// 或 PT 锁窗内调用）。满表 panic——fail loud（静默丢登记 = 探针永不命中
+/// = demand 页死循环杀链，宁响雷）。
+pub fn register_demand_root(asid: u16, root: *mut Vmar) {
+    for (a, p) in DEMAND_ROOTS.iter() {
+        if a.load(Ordering::Relaxed) == 0 {
+            p.store(root as usize, Ordering::Relaxed);
+            a.store(asid, Ordering::Release);
+            return;
+        }
+    }
+    panic!("vmar: demand root 登记表满（{} 槽）", DEMAND_ROOT_SLOTS);
+}
+
+/// 反查 asid → root Vmar（fault 探针用；未登记 → `None` = 探针不命中）。
+pub fn demand_root(asid: u16) -> Option<*mut Vmar> {
+    if asid == 0 {
+        return None;
+    }
+    for (a, p) in DEMAND_ROOTS.iter() {
+        if a.load(Ordering::Acquire) == asid {
+            return Some(p.load(Ordering::Acquire) as *mut Vmar);
+        }
+    }
+    None
 }
 
 /// 只读走查任意表树的 L3 叶描述符（3-2：syscall copy 路径的用户缓冲校验——
