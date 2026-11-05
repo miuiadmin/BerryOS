@@ -194,7 +194,11 @@ impl Device {
     pub fn wait_with_restart(&mut self) {
         loop {
             self.wait();
-            if self.stop_requested() || !self.restart_on_crash {
+            let saved = run_dir::read_state(self.run.path()).unwrap_or_default();
+            if self.stop_requested()
+                || !self.restart_on_crash
+                || matches!(saved.as_str(), "stopping" | "stopped" | "failed")
+            {
                 break;
             }
             if let Err(e) = self.restart_in_place() {
@@ -231,6 +235,16 @@ impl Device {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// Graceful toolbar OFF: ACPI power button, 5s grace, then stop.
+    pub fn power_off(&mut self) {
+        if self.stopped {
+            return;
+        }
+        let _ = self.qmp.lock().unwrap().system_powerdown();
+        std::thread::sleep(Duration::from_secs(5));
+        self.stop();
     }
 
     pub fn stop(&mut self) {

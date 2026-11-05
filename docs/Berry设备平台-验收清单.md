@@ -27,6 +27,7 @@ berry device stop --run "$RUN" --json
 - [ ] `restart` 走 QMP `system_reset`，run 不变。
 - [ ] `stop` 后 state=`stopped`，QEMU 退出。
 - [ ] `cleanup` 对 stopped/stale 可删 run + 杀 orphan QEMU；running 拒绝；`--all` 批量清理。
+- [ ] `power off` 优雅关机：system_powerdown→5s→quit；`--force` 直接 quit；工具栏 OFF 同优雅路径。
 
 ## 2. 截图 / 录帧
 

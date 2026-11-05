@@ -298,12 +298,27 @@ fn dispatch(
                     Ok(json!({"state":"rebooting"}))
                 }
                 "off" => {
-                    q.quit_now().map_err(|e| {
-                        BerryError::device(format!("qmp quit: {e}"))
-                    })?;
-                    stop.store(true, Ordering::Relaxed);
+                    let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
                     crate::run_dir::write_state(run, "stopping");
                     append_event(run, json!({"v":1,"t":"action","action":"power.off","source":"control"}));
+                    drop(q);
+                    if !force {
+                        // ACPI power button; give the guest 5s to flush/sync,
+                        // then force quit. Host sees state=stopping and will
+                        // not auto-restart if QEMU exits during this window.
+                        {
+                            let mut q = qmp.lock().unwrap();
+                            let _ = q.system_powerdown();
+                        }
+                        std::thread::sleep(Duration::from_secs(5));
+                    }
+                    {
+                        let mut q = qmp.lock().unwrap();
+                        // Guest may already have powered off; quit failure is
+                        // not an error once state=stopping.
+                        let _ = q.quit_now();
+                    }
+                    stop.store(true, Ordering::Relaxed);
                     Ok(json!({"state":"stopping"}))
                 }
                 _ => Err(BerryError::new(2, "power action must be off|reboot")),

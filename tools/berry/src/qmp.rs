@@ -129,6 +129,11 @@ impl QmpClient {
         Ok(())
     }
 
+    pub fn system_powerdown(&mut self) -> Result<()> {
+        self.execute("system_powerdown", json!({}))?;
+        Ok(())
+    }
+
     pub fn quit(&mut self) -> Result<()> {
         // QEMU may close the socket before replying; both outcomes are success.
         let _ = self.execute("quit", json!({}));

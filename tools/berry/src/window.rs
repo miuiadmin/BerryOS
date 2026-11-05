@@ -357,7 +357,7 @@ impl Session {
 
     fn power_off(&mut self) {
         match self {
-            Self::Host(d) => d.stop(),
+            Self::Host(d) => d.power_off(),
             Self::Attach(a) => {
                 let _ = control::request(&a.run, "power", serde_json::json!({"action":"off"}));
                 a.dead = true;
