@@ -240,6 +240,8 @@ struct Srv<'a> {
     // —— 标记 / console 记账 ——
     served: bool,
     gfxf: bool,
+    /// GUI 首帧起 console 文本不再上屏（桌面预览；标记仍走串口）。
+    gui_active: bool,
     console_full_n: u64,
     /// SUBMIT 行弹舱（vmo_read 行读出 → 直写 fb；帽 = ROW_BOUNCE_MAX）。
     bounce: [u8; ROW_BOUNCE_MAX],
@@ -269,6 +271,7 @@ impl<'a> Srv<'a> {
             slots: [Slot { vmo: 0, w: 0, h: 0, stride: 0, commit_target: 0 }; SLOTS],
             served: false,
             gfxf: false,
+            gui_active: false,
             console_full_n: 0,
             bounce: [0; ROW_BOUNCE_MAX],
         }
@@ -391,8 +394,10 @@ impl<'a> Srv<'a> {
         // UTF-8，lossy 容错（无效序列 U+FFFD——显示面语义，串口主路不受
         // 影响）。**恒同步直写**（A2-a 立法）：console 文本路禁入任何
         // vsync 排队呈现路径——误读形 = 文本路 +16.67ms/队深打满/屏显冻结。
-        let s = String::from_utf8_lossy(&msg[..nb]);
-        self.con.put_str(&s, CON_FG, CON_BG);
+        if !self.gui_active {
+            let s = String::from_utf8_lossy(&msg[..nb]);
+            self.con.put_str(&s, CON_FG, CON_BG);
+        }
         // FULL 纯记账：每条消息语义 = 一次 submit(FULL) 走同一呈现谱系
         // （「无 damage 不提交」day-one 执法面）——console 不占 credits、
         // 不发 token、不入 held（R2 A2-a：同步直写与记账并行不悖）。
@@ -555,6 +560,8 @@ impl<'a> Srv<'a> {
             st_rep(ch, gp::ST_FULL);
             return;
         }
+        // 首帧 GUI 提交后 console 不再覆盖桌面（标记仍走串口）。
+        self.gui_active = true;
         // SUBMIT_F_UNSQUASHABLE：v1 恒不判弃（blit-at-SUBMIT 钉板）——
         // 旗标收到即合规忽略。
         let fullrect = gp::Rect { x: 0, y: 0, w: self.w as u32, h: self.h as u32 };

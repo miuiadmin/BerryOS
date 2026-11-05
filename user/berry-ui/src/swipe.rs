@@ -188,6 +188,19 @@ impl SwipePager {
         self.pages[i as usize]
     }
 
+    /// 直接落位到指定页（段④ 自测收尾用：合成翻页只验状态机，验完回
+    /// page 0，避免用户开机落在空页；越界/未 attach 静默拒）。
+    pub fn snap_to<const N: usize>(&mut self, ui: &mut Ui<N>, page: u8) {
+        if !self.attached || page >= self.page_count {
+            return;
+        }
+        self.dragging = false;
+        self.snap = None;
+        self.page = page;
+        self.update_dots(ui);
+        self.apply_ox(ui, self.page_ofs(page));
+    }
+
     /// Msg 消费（§6 冻结——app update 内调；true = pager 状态已变需重
     /// 摆；未 attach → false）。页域 = 起拖点落在**全页带**（base..base
     /// + page_count×页宽——由 ox 镜像重建 base，吸附途中判定仍准）；

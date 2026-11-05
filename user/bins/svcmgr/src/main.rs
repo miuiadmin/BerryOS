@@ -4089,6 +4089,12 @@ const INPUT_SUB_CAP_NS: u64 = 60 * 1_000_000_000;
 /// 放弃，**非致命**——B4「vnet 无 net 槽 trap 干净自死、标记自然缺席不设
 /// 门」先例同款；墙钟零影响（B4 kill 全由 bsh 侧标记触发）。
 fn input_selftest(console: Handle) {
+    // GUI 形（wmd 在位）跳过 boot 自验：launcher 与 svcmgr 共享 INPUT_A
+    // 客户端端；自验若与 launcher 的 INPUT_POLL 并发，会抢走事件应答，
+    // 真实输入永久失效。桌面态把端点让给 launcher，INPUT ok 只在非 GUI 形打。
+    if WMD_CLI_DUP.load(Ordering::Relaxed) != 0 {
+        return;
+    }
     let h = INPUT_A.load(Ordering::Relaxed);
     if h == 0 {
         return;

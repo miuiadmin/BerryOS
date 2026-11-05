@@ -44,7 +44,7 @@ mod icons;
 mod layout_io;
 
 use berry_guiproto as gp;
-use berry_libc::io::{app_cli_h, wm_cli_h};
+use berry_libc::io::{app_cli_h, input_h, wm_cli_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
@@ -57,9 +57,9 @@ use berry_ui::UiMain;
 #[used]
 static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
-/// RPC 收侧 READABLE 帽（gfxdemo `RPC_CAP_NS` 同值 10s——A6-a 形态；本
-/// 程序无 exit 面，超时/错码 = eprintln 诊断 + park 挂起，不留半开态）。
-const RPC_CAP_NS: u64 = 10 * 1_000_000_000;
+/// RPC 收侧 READABLE 帽（gfxdemo 10s A6-a 形态；launcher 120s：首启要等
+/// svcmgr 跑完 boot 自验进稳态 app serve，10s 会把 APP_LIST 误判成超时）。
+const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
 
 /// 诊断 + park 收口（gfxdemo `fail` 的 park 形——launcher 常驻不被 reap，
 /// exit 码无消费者；park = stdout EOF + 10s 周期睡眠，guifbd 自验后
@@ -215,8 +215,8 @@ fn main() {
     // 相 launcher 全程唯一输出行（段③ W1 注：icons/layout_io 冻结相零
     // 打印，桌面链在此行后静默）。原值直报（v0 fmt 原值先例延续）。
     println!(
-        "LAUNCH v={} wmax={} {}x{}",
-        info.version_wm, info.windows_max, info.disp_w, info.disp_h
+        "LAUNCH v={} wmax={} {}x{} input={}",
+        info.version_wm, info.windows_max, info.disp_w, info.disp_h, input_h()
     );
 
     // —— 段③ 静态面接线（W1：树成帧不驱——frameloop 静默 park）——
@@ -240,5 +240,5 @@ fn main() {
         Err(e) => fail(&format!("desktop build err={e:?}")),
     };
     // 帧循环（W1 静默 park；LAUNCH ok/PAGE ok = W2 产物）。
-    frameloop::run(hw, ui, desktop);
+    frameloop::run(hw, input_h(), ui, desktop);
 }

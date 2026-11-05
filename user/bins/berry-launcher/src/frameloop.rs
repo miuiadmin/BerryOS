@@ -62,8 +62,10 @@ use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, self_vmar_h};
 use berry_sys::{
-    berry_handle_duplicate, berry_object_wait_many, berry_vmar_map, berry_vmo_commit,
-    berry_vmo_create, Handle, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE,
+    berry_channel_recv, berry_channel_send, berry_handle_duplicate, berry_object_wait_many,
+    berry_object_wait_one, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_WRITE,
+    SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_ui::damage::DamageSet;
 use berry_ui::frame::VoteBallot;
@@ -114,7 +116,7 @@ enum Selftest {
 
 /// 帧循环入口（签名 = W2 冻结面——`hw` = wm 客户端端柄（wm/present 同
 /// 端混流，ADR #61 中继），`ui` = 泄堆 arena，`desktop` = 静态面句柄）。
-pub fn run(hw: Handle, ui: &'static mut UiMain, mut desktop: Desktop) -> ! {
+pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop) -> ! {
     // —— present GETINFO（wmd 中继同端）：能力面轻断言（gfxdemo 同面）
     //    + 几何真值源（present 权威；与 wm 缓存一致性 = 内部不变量，
     //    失配 fail loud）。——
@@ -208,11 +210,87 @@ pub fn run(hw: Handle, ui: &'static mut UiMain, mut desktop: Desktop) -> ! {
     let mut launched = false; // LAUNCH ok 恰一次
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
     let mut st = Selftest::WaitFirst;
+    // 段④：真实输入（inputd INPUT_POLL 阻塞批拉；hi==0 = 冻结相静默）。
+    let mut hi = hi;
+    let mut input_pending = false;
+    let mut input_logged = false;
+    let mut input_buf = [0u8; gp::INPUT_REP_MAX];
+    let mut input_hs = [0 as Handle; 8];
 
     loop {
         let t_now = now();
 
-        // —— 输入泵 + Msg 分发（段④ 前真实输入恒空——合成注入同口）——
+        // —— 段④ 真实输入：先收上一轮 INPUT_POLL 应答，再挂下一轮 poll。
+        //    非阻塞排空（-EAGAIN = 事件尚未到，poll 仍在服务端阻塞）；事件
+        //    逐条 push 进引擎，与合成注入共用 push_pointer 口。
+        if hi != 0 && input_pending {
+            let mut nb = input_buf.len();
+            let mut nh = input_hs.len();
+            let s = berry_channel_recv(
+                hi,
+                input_buf.as_mut_ptr(),
+                &mut nb,
+                input_hs.as_mut_ptr(),
+                &mut nh,
+            );
+            if s == 0 {
+                input_pending = false;
+                for h in &input_hs[..nh] {
+                    close_h(*h);
+                }
+                match gp::parse_input_events_rep(&input_buf[..nb]) {
+                    Some(Ok(view)) => {
+                        if !input_logged {
+                            eprintln!("launcher: input events n={}", view.count());
+                            input_logged = true;
+                        }
+                        for i in 0..view.count() {
+                            if let Some(ev) = view.event(i) {
+                                let pe = PtrEvent::from_wire(
+                                    ev.phase,
+                                    ev.pointer_id,
+                                    ev.x,
+                                    ev.y,
+                                    ev.timestamp_ns,
+                                    ev.buttons,
+                                    ev.pressure,
+                                );
+                                if let Err(e) = ui.push_pointer(pe) {
+                                    eprintln!("launcher: input push err={e:?}");
+                                }
+                            }
+                        }
+                        ui.wake(now());
+                    }
+                    Some(Err(gp::ST_EAGAIN)) => {
+                        if !input_logged {
+                            eprintln!("launcher: input poll EAGAIN");
+                            input_logged = true;
+                        }
+                    }
+                    Some(Err(st)) => eprintln!("launcher: input poll st={st}"),
+                    None => eprintln!("launcher: input poll rep bad len={nb}"),
+                }
+            } else if s != BERRY_ERR_AGAIN {
+                eprintln!("launcher: input recv err={s}");
+                hi = 0;
+                input_pending = false;
+            }
+        }
+        if hi != 0 && !input_pending {
+            if input_arm(hi) {
+                input_pending = true;
+                if !input_logged {
+                    eprintln!("launcher: input poll armed h={hi}");
+                    input_logged = true;
+                }
+            } else {
+                eprintln!("launcher: input poll arm failed -- disable");
+                hi = 0;
+            }
+        }
+
+        // —— 输入泵 + Msg 分发（合成注入与真实输入同口）——
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
             match m {
@@ -385,6 +463,12 @@ pub fn run(hw: Handle, ui: &'static mut UiMain, mut desktop: Desktop) -> ! {
                 if desktop.pager.page() == 2 && presented > pc {
                     // 标记（字节精确）：两轮翻页各落一帧呈现。
                     println!("PAGE ok n=2");
+                    // 段④ 收尾：自测只验状态机，落回 page 0（默认布局的
+                    // app 全在第 0 页；停在 page 2 = 用户看到空桌面）。
+                    desktop.pager.snap_to(ui, 0);
+                    if let Err(e) = desktop::rehang_a11y(ui, &mut desktop, 0) {
+                        fail(&format!("rehang a11y reset err={e:?}"));
+                    }
                     st = Selftest::Done;
                 } else if t_now > deadline {
                     eprintln!(
@@ -404,11 +488,16 @@ pub fn run(hw: Handle, ui: &'static mut UiMain, mut desktop: Desktop) -> ! {
         let nw = now();
         let cap = nw + IDLE_CAP_NS;
         let deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
-        let hs = [hw];
-        let ss = [SIGNAL_READABLE];
+        let mut hs = [hw, 0 as Handle];
+        let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
+        let mut n = 1usize;
+        if hi != 0 && input_pending {
+            hs[1] = hi;
+            n = 2;
+        }
         let mut idx = 0usize;
         let mut obs = 0u64;
-        let wst = berry_object_wait_many(hs.as_ptr(), ss.as_ptr(), 1, deadline, &mut idx, &mut obs);
+        let wst = berry_object_wait_many(hs.as_ptr(), ss.as_ptr(), n, deadline, &mut idx, &mut obs);
         if wst != 0 && wst != BERRY_ERR_TIMEDOUT {
             fail(&format!("wait err={wst}"));
         }
@@ -435,6 +524,33 @@ fn damage_envelope(dmg: &DamageSet) -> GfxRect {
         i32::try_from(ew).unwrap_or(0).max(0),
         i32::try_from(eh).unwrap_or(0).max(0),
     )
+}
+
+/// 挂一轮 INPUT_POLL（段④）：inputd 阻塞批拉 ≤3 事件；-EBUSY = 通道满
+///（前一轮未收），等 WRITABLE 后重试；其余错 = 输入面失效，返回 false。
+fn input_arm(h: Handle) -> bool {
+    let mut req = [0u8; 4];
+    let n = gp::encode_input_poll_req(&mut req, gp::INPUT_EVENTS_MAX as u8);
+    let mut deadline = 0u64;
+    loop {
+        let s = berry_channel_send(h, req.as_ptr(), n, core::ptr::null(), 0);
+        if s == 0 {
+            return true;
+        }
+        if s != BERRY_ERR_BUSY {
+            eprintln!("launcher: input send err={s}");
+            return false;
+        }
+        if deadline == 0 {
+            deadline = now() + 10_000_000_000;
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
+            eprintln!("launcher: input send wait timeout");
+            return false;
+        }
+        deadline = 0;
+    }
 }
 
 /// 合成 swipe 注入（裁决七：push_pointer 逻辑真线——视口广义坐标）。
