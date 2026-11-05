@@ -728,6 +728,13 @@ pub fn shortcut(run: Option<&str>, action: &str, json: bool) -> Result<()> {
     let v = control::request(&run, "shortcut", json!({"action":action}))?;
     if json {
         println!("{}", json!({"v":1,"t":"shortcut","run":run,"action":action,"result":v}));
+    } else if action == "resolution" {
+        println!(
+            "shortcut resolution: profile {} {}x{}",
+            v.get("profile").and_then(|s| s.as_str()).unwrap_or("-"),
+            v.get("render_w").and_then(|n| n.as_u64()).unwrap_or(0),
+            v.get("render_h").and_then(|n| n.as_u64()).unwrap_or(0),
+        );
     } else {
         println!("shortcut {action}: {}", run.display());
     }

@@ -45,6 +45,7 @@ just berry shot --image out/berryos.img --out out/shot.png --timeout 120
 just berry shot --image out/berryos.img --profile phone --out out/phone.png
 just berry screenshot --out out/shot.png --settle-ms 500   # 抓正在跑的 shell，不重启
 just shell                                  # = berry shell --image out/berryos.img
+just desktop                                # GUI 桌面预览：berryos-desktop.img + out/gui-data.img + tablet
 just berry shell --profile phone --timeout 30
 just berry device list
 just berry device status --run <id>
@@ -95,6 +96,7 @@ C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异�
 | `BERRY_HOME` | run dir 根（默认 `~/.berry`，Windows `%LOCALAPPDATA%\BerryOS`） |
 | `BERRY_QEMU` | 指定 `qemu-system-aarch64` |
 | `BERRY_KERNEL` / `BERRY_IMAGE` | 默认内核/镜像 |
+| `BERRY_DATA_DISK` | GUI 桌面数据盘（FAT12 + `BERRYOSVBLK!`；launcher 需它拿 fs/app/input gift） |
 | `AAVMF_CODE` | AAVMF code pflash（默认 brew / 发行版路径） |
 
 ## 窗口快捷键

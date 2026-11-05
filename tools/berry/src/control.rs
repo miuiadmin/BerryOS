@@ -394,7 +394,20 @@ fn dispatch(
                     run,
                     stop,
                 ),
-                "resolution" => dispatch("display", args, qmp, vnc, run, stop),
+                "resolution" => {
+                    let meta: Value = std::fs::read(run.join("meta.json"))
+                        .ok()
+                        .and_then(|b| serde_json::from_slice(&b).ok())
+                        .unwrap_or_else(|| json!({}));
+                    let id = meta.get("profile").and_then(|v| v.as_str()).unwrap_or("phone");
+                    let p = crate::profile::get(id)?;
+                    Ok(json!({
+                        "profile": p.id,
+                        "render_w": p.render_w,
+                        "render_h": p.render_h,
+                        "note": "resolution menu is window-only; use display set to change",
+                    }))
+                }
                 "fullscreen" => Err(BerryError::new(2, "fullscreen is window-only")),
                 _ => Err(BerryError::new(2, "unknown shortcut action")),
             }

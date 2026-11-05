@@ -286,7 +286,7 @@ NDJSON：一行一个 JSON 对象。
 | `text` | `text` | — | 逐字符 keysym |
 | `power` | `action:off|reboot,force?` | `state` | QMP |
 | `display` | `profile,restart?` | `applied/requires_restart` | v1 重启；WxH 走 CLI 新 host，rotate 未落 |
-| `shortcut` | `action:screenshot|reboot|power` | `result` | UI 动作表；resolution/fullscreen 未落 |
+| `shortcut` | `action:screenshot|resolution|reboot|power` | `result` | resolution 只读查询；fullscreen 窗口-only |
 | `logs` | `tail?` | `lines` | 串口尾 |
 | `stats` | — | `state/profile/memory_mib/qemu_pid/started` | 会话统计 |
 | `events` | `tail?` | `lines` | events.jsonl 尾 |
@@ -338,7 +338,7 @@ power off|reboot [--run] [--force] [--json]
 display list|set <profile|WxH> [--restart] [--run] [--json]
 # WxH 自定义需 --restart（起新 host + display_mode）；rotate 未落
 
-shortcut screenshot|reboot|power [--run] [--json]
+shortcut screenshot|resolution|reboot|power [--run] [--json]
 
 logs [--run] [-f] [--tail N] [--json]
 events [--run] [--json]

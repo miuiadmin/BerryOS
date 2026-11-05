@@ -160,7 +160,7 @@ struct DisplaySetCmd {
 
 #[derive(Parser, Debug)]
 struct ShortcutCmd {
-    #[arg(value_parser = ["screenshot", "reboot", "power"])]
+    #[arg(value_parser = ["screenshot", "resolution", "reboot", "power"])]
     action: String,
     #[arg(long)]
     run: Option<String>,

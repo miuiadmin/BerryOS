@@ -20,7 +20,7 @@
 | data disk 图标实验 | ⬜ 失败已回退 | `vblk` 找到 slot 31，但 `fs_gift` 未成立；FAT/mkfat 有效 | `MMAP/ROOTFS/LAUNCH ok` + app registry | 中：可能污染 boot |
 | 顶层 tap/key/swipe/text 别名 | ✅ 已落 | `input` 子命令 + 顶层 4 别名 | `berry tap 1 2` 等 | 低 |
 | `display rotate` | ⬜ 仅 `display set <profile|WxH>` | 需客机/呈现面旋转 | `display rotate 90` 后截图方向正确 | 中 |
-| `shortcut resolution/fullscreen` | ⬜ CLI 已删；窗口 RES/F 可用 | resolution 需 profile 参数；fullscreen 窗口-only | 仅窗口侧验收 | 低 |
+| `shortcut resolution/fullscreen` | 🟡 resolution 已做只读查询；fullscreen 窗口-only | CLI 无 profile 参数，菜单仍窗口侧 | `shortcut resolution` 返回 profile/render | 低 |
 | `pack verify/install` | ⬜ C4 规划 | 无 runtime pack 格式 | 命令/JSON 契约 | 低 |
 | attach 自动重连 GUI 实测 | 🟡 代码已接 `down_since`/`try_reconnect` | 无显示环境，GUI 进程级未跑通 | kill QEMU → attach 窗口恢复画面 | 中：VNC 重连时序 |
 
