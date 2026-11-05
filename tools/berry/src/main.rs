@@ -231,6 +231,9 @@ struct StopCmd {
 struct CleanupCmd {
     #[arg(long)]
     run: Option<String>,
+    /// Remove every stale/stopped session (skip running).
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -430,7 +433,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             DeviceAction::Status(s) => commands::device_status(s.run.as_deref(), cli.json),
             DeviceAction::Restart(s) => commands::device_restart(s.run.as_deref(), cli.json),
             DeviceAction::Stop(s) => commands::device_stop(s.run.as_deref(), cli.json),
-            DeviceAction::Cleanup(s) => commands::device_cleanup(s.run.as_deref(), cli.json),
+            DeviceAction::Cleanup(s) => {
+                commands::device_cleanup(s.run.as_deref(), s.all, cli.json)
+            }
         },
         Some(Cmd::Power(c)) => {
             commands::power(c.run.as_deref(), &c.action, c.force, cli.json)

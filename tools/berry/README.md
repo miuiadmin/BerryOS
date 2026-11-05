@@ -132,7 +132,8 @@ C1g 还差 Windows 实机验证/打包、host 自动重启。完整刀序见平�
 - attach 窗口的 `RES` 已自动重附着：`restart_profile` 停旧 host/起新 profile host，
   窗口重连新 run VNC，无需手动 re-attach。按钮 hover 高亮 + tooltip 已落（C2f）；旧 run 清理/新 host 先起（失败不伤旧）= C2g。
 `state.json` 已落（C1d）：正常 stop 显示 stopped；host 被杀后 list/status 显示 stale。
-C1e：`berry device cleanup` 对 stale/stopped run 杀 orphan QEMU 并删 run；running 拒绝。
+C1e：`berry device cleanup [--run|--all]` 对 stale/stopped run 杀 orphan QEMU 并删 run；
+running 拒绝/跳过。
 C1f：Unix 默认 `control.sock`；非 Unix 用 loopback TCP + `control.port`/`control.token`。
 `BERRY_CONTROL_TCP=1` 可在 macOS 强制走 TCP 路径（已实测 status/logs/power）。
 C2h：attach RES 新 host 失败保留旧 host；VNC 重连失败按旧 profile 回滚重连。

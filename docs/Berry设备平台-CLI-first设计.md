@@ -319,7 +319,7 @@ device
   status [--run] [--json]
   stop [--run] [--json]
   restart [--run] [--json]
-  cleanup [--run] [--json]
+  cleanup [--run] [--all] [--json]
 
 shell [--attach <id>] [--profile] [--scale] [--timeout]
 run [--kernel|--image] [--marker] [--timeout]

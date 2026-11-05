@@ -747,14 +747,50 @@ pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn device_cleanup(run: Option<&str>, json: bool) -> Result<()> {
-    let run = find_run(run)?;
-    if control::is_up(&run) {
-        if control::request(&run, "status", json!({})).is_ok() {
-            return Err(BerryError::device(
-                "device is still running; stop it before cleanup",
-            ));
+pub fn device_cleanup(run: Option<&str>, all: bool, json: bool) -> Result<()> {
+    if all {
+        let root = run_dir::home().join("run");
+        let mut cleaned = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                if control::is_up(&p) && control::request(&p, "status", json!({})).is_ok() {
+                    continue; // running; skip
+                }
+                if cleanup_one(&p).is_ok() {
+                    cleaned.push(p.display().to_string());
+                }
+            }
         }
+        if json {
+            println!("{}", json!({"v":1,"t":"device.cleanup","all":true,"runs":cleaned}));
+        } else if cleaned.is_empty() {
+            println!("cleanup: nothing stale/stopped");
+        } else {
+            for p in &cleaned {
+                println!("cleanup: {p}");
+            }
+        }
+        return Ok(());
+    }
+    let run = find_run(run)?;
+    let pid = cleanup_one(&run)?;
+    if json {
+        println!("{}", json!({"v":1,"t":"device.cleanup","run":run,"qemu_pid":pid}));
+    } else {
+        println!("cleanup: {}", run.display());
+    }
+    Ok(())
+}
+
+fn cleanup_one(run: &Path) -> Result<u64> {
+    if control::is_up(run) && control::request(run, "status", json!({})).is_ok() {
+        return Err(BerryError::device(
+            "device is still running; stop it before cleanup",
+        ));
     }
     let meta: serde_json::Value = std::fs::read(run.join("meta.json"))
         .ok()
@@ -783,13 +819,8 @@ pub fn device_cleanup(run: Option<&str>, json: bool) -> Result<()> {
                 .status();
         }
     }
-    let _ = std::fs::remove_dir_all(&run);
-    if json {
-        println!("{}", json!({"v":1,"t":"device.cleanup","run":run,"qemu_pid":qemu_pid}));
-    } else {
-        println!("cleanup: {}", run.display());
-    }
-    Ok(())
+    let _ = std::fs::remove_dir_all(run);
+    Ok(qemu_pid)
 }
 
 pub fn stats(run: Option<&str>, json: bool) -> Result<()> {
