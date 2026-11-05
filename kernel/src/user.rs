@@ -1499,16 +1499,21 @@ core::arch::global_asm!(
     "__user_soakload_end:",
 
     // G3-4b bench-lat SGI 路 sleeper 子模板（arg 分流：root x0=0 = fleet 占位
-    // 即刻退；写者 x0=1 = sleeper，thread_start spread→CPU1）。N=32 轮
-    // 「clock_read(0x61) 锚 → wait_one(0x04, Event, 1<<49, now+60s ns) 阻塞
-    // 跨核睡 → 被 CPU0 内核 waker（Event::signal 置位 + wake_matching 跨核
-    // 唤醒——sys_object_signal 尾同链）→ 醒来 object_signal(0x06, clear=
-    // 1<<49) 消费位再睡」。测量读点在内核钩子（syscall 层 wait 醒来侧——
-    // main.rs latsgi_* 面）；载荷只管握手循环 + err/DONE 窗口汇报（PP 同形）。
-    // 位不锁存兜底：wait 超时（waker 漏醒）→ cbnz 早退 err++（内核尾钩
-    // L0 panic 先响——双保险）。窗口槽：0x0 clock 出参 / 0x40 event 句柄 /
-    // 0x48 observed / 0x80 err / 0x90 DONE。寄存器合同：x20 窗口基、x21 句柄
-    // （svc 只回写 x0——其余跨 svc 常驻）。
+    // 即刻退；写者 x0=1 = sleeper，thread_start spread→CPU1）。G3-5 候选①
+    // C 形常驻化（2026-11-05）：永续「clock_read(0x61) 锚 → wait_one(0x04,
+    // Event, 1<<49, now+480s ns) 阻塞跨核睡 → 被 CPU0 内核 waker（Event::
+    // signal 置位 + wake_matching 跨核唤醒——sys_object_signal 尾同链）→
+    // 醒来 object_signal(0x06, clear=1<<49) 消费位再睡」——无 N 计数/无
+    // 退出路径（批界由 waker 周期信号面定义；boot 周期照跑）。480s = 首
+    // 拍网格远界（soakmon 首触发 t0+5×60s=300s，LAT_TRIG_FAR_S 同值口径）
+    // ——waker 退场（bench --lat 单门）/断流时超时走 err 早退，末线程收口
+    // 自回收。测量
+    // 读点在内核钩子（syscall 层 wait 醒来侧——main.rs latsgi_* 面）；载荷
+    // 只管握手循环 + err 窗口汇报（PP 同形）。位不锁存兜底：wait 超时 →
+    // cbnz 早退 err++（稳态破链时内核 waker 侧 L0 panic 先响——双保险）。
+    // 窗口槽：0x0 clock 出参 / 0x40 event 句柄 / 0x48 observed / 0x80 err
+    //（0x90 DONE 槽随一次性形退役——内核收柜走 LATSGI_DONE 静态）。
+    // 寄存器合同：x20 窗口基、x21 句柄（svc 只回写 x0——其余跨 svc 常驻）。
     ".globl __user_latslp",
     "__user_latslp:",
     "    cmp  x0, #1",                // arg 分流：1 = sleeper，0 = root 占位
@@ -1525,18 +1530,16 @@ core::arch::global_asm!(
     "    svc  #0",                    // 唤醒——v1 无跨表 handle 传递的替代桥）
     "    cbnz x0, 9f",
     "    ldr  x21, [x20, #0x40]",     // x21 = Event 句柄
-    "    movz x8, #32",               // N=32（三面钉：LAT_SAMPLES/bench.py）
-    "    mov  x7, xzr",               // i
     "3:  movz x0, #0x61",             // now = clock_read(MONOTONIC, win+0x0)
     "    movz x1, #0",                // §A118：deadline = ns 绝对时刻，锚
     "    mov  x2, x20",               // 必经 clock_read——勿喂 CNTVCT 周期
     "    svc  #0",
     "    cbnz x0, 9f",
     "    ldr  x3, [x20, #0x0]",
-    "    movz x6, #0x5800",           // δ = 60s ns（0xD_F847_5800 远界漏醒兜）
-    "    movk x6, #0xF847, lsl #16",
-    "    movk x6, #0xD, lsl #32",
-    "    add  x3, x3, x6",            // deadline = now + 60s
+    "    movz x6, #0xC000",           // δ = 480s ns（0x6F_C23A_C000 = 首拍
+    "    movk x6, #0xC23A, lsl #16",  // 网格 300s + 裕量——首触发在 soakmon
+    "    movk x6, #0x6F, lsl #32",    // t0+5×60s 才来，180s 会先到期双 PANIC
+    "    add  x3, x3, x6",            // deadline = now + 480s
     "    movz x0, #0x04",             // wait_one(h, 1<<49, deadline, win+0x48)
     "    mov  x1, x21",               //   ——阻塞跨核睡，醒因 = waker 置位
     "    movz x2, #2, lsl #48",       // LAT_SGI_BIT = 1<<49（位签名门——内核
@@ -1549,15 +1552,11 @@ core::arch::global_asm!(
     "    movz x3, #0",
     "    svc  #0",
     "    cbnz x0, 9f",
-    "    add  x7, x7, #1",
-    "    cmp  x7, x8",
-    "    b.lo 3b",
-    "    str  x8, [x20, #0x90]",      // DONE = N（waker 交叉核对备面）
-    "    movz x0, #0x36",             // thread_exit（一次性采样载荷退场）
-    "    svc  #0",
-    "    b    .",
-    "9:  ldr  x6, [x20, #0x80]",      // err++ → 早退（waker 侧 done 轮询超时
-    "    add  x6, x6, #1",            // L0 兜底——不挂死）
+    "    b    3b",                    // C 形永续（批界 = waker 周期信号面——
+                                      // 无 N 计数/无退出，boot 周期照跑）
+    "9:  ldr  x6, [x20, #0x80]",      // err++ → 早退（超时 = waker 退场/断流
+    "    add  x6, x6, #1",            // 3 拍——末线程收口自回收；稳态破链时
+                                      // waker 侧 L0 先响）
     "    str  x6, [x20, #0x80]",
     "    movz x0, #0x36",
     "    svc  #0",

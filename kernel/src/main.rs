@@ -1577,6 +1577,36 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_sched::spawn_with_tag(task_soakmon, p_soak.as_ptr() as usize, b"soakmon", 8,
                                     ht_soak as *mut HandleTable as usize);
         berry_hal_aarch64::uart_puts(b"SOAK gate on\n");
+        // G3-5 候选① C 形（常驻再触发）：soak∧lat 双门都在位 → 装两路
+        // 触发 Event（每路一个——恰一等待者/位，杜绝共享事件双等待者的
+        // 清位竞速）。复用本表 boot 单例（+2 Event 句柄，有界）；地址置
+        // 静态供 waker 侧读。顺序安全：本块微秒级落笔，两路 waker 的静态
+        // 读点在各自 boot 周期（秒级）之后——waker prio 0，init 直通本块
+        // 不 block = 结构性无竞速。自证行 `LAT trig armed`（门键漂移 =
+        // 常驻面静默退化一次性，宿主 COVER + 恰 N+1 行断言双抓）。
+        if berry_hal_aarch64::fwcfg::find_file(LAT_PROBE_NAME).is_some() {
+            let h_trig_ipc = ht_soak
+                .insert(KernelObj::Event(crate::event::Event::new()),
+                        handle::RIGHT_SIGNAL)
+                .expect("main: lat 触发 Event(ipc) 进 soak 表");
+            let p_trig_ipc = ht_soak
+                .get_raw(h_trig_ipc, ObjType::Event, 0)
+                .expect("main: 取 lat 触发 ObjRef(ipc)")
+                .0;
+            LAT_TRIG_IPC_OBJ.store(p_trig_ipc.as_ptr() as usize,
+                                   core::sync::atomic::Ordering::Release);
+            let h_trig_sgi = ht_soak
+                .insert(KernelObj::Event(crate::event::Event::new()),
+                        handle::RIGHT_SIGNAL)
+                .expect("main: lat 触发 Event(sgi) 进 soak 表");
+            let p_trig_sgi = ht_soak
+                .get_raw(h_trig_sgi, ObjType::Event, 0)
+                .expect("main: 取 lat 触发 ObjRef(sgi)")
+                .0;
+            LAT_TRIG_SGI_OBJ.store(p_trig_sgi.as_ptr() as usize,
+                                   core::sync::atomic::Ordering::Release);
+            berry_hal_aarch64::uart_puts(b"LAT trig armed\n");
+        }
     }
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
@@ -3444,73 +3474,116 @@ const _: () = {
     assert!(LAT_SAMPLES == 32, "LAT_SAMPLES 变更须同步分位秩与 bench.py 镜像");
 };
 
-/// lat sleeper（G3-4 IPC 路）：N=32 轮「睡握手 Event → 被 wake_matching
-/// 唤醒 → run 侧测 wake→run 段」。
+/// G3-5 候选① C 形（常驻再触发，evidence-g3-5recon.md 后继刀形 1）：
+/// 两路 lat 触发 Event 的 ObjRef 地址（soak∧lat 双门在位时 soakmon 门块
+/// 创建置入——soak-g3.sh 三键齐发形态；0 = 未装）。bench.py --lat 单门
+/// （无 soakmon）= 两路保持一次性原形：waker/sleeper boot 周期毕读静态
+/// 得 0 → exit_current 退场（bench.py --lat 收割面零改动）。
+/// 信号面：task_soakmon 每拍行后在锁窗内 signal(LAT_TRIG_BIT) +
+/// wake_matching；位清理由被唤醒 waker 自做（每事件恰一等待者——共享
+/// 清位竞速结构性不发生）。漏拍自愈：signal 置位先于 wake_matching，
+/// waker 周期竞速中未在等 = 位锁存，下轮 poll-first 即醒（追拍不丢；
+/// 连续多拍并至只并成一次周期 = 收割行数短于拍数——宿主恰 N+1 行断言
+/// 抓形破）。
+static LAT_TRIG_IPC_OBJ: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+static LAT_TRIG_SGI_OBJ: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+/// 触发位（LAT 家族位段 1<<48/49 顺延；内核内部位——Event 对象落内核
+/// 私有表，不过 ABI object_signal 面；(obj,bit) 匹配键因对象隔离不撞）。
+const LAT_TRIG_BIT: u64 = 1 << 50;
+/// 触发等待远界（秒）：**首拍网格 t0+5×period=300s**（soakmon 意意留 5
+/// 拍前置让基线落稳态）——boot 周期末重睡点到首触发 gap 恒 <300s（重睡点
+/// X>0 ⟹ gap<300），稳态拍距 60s+jitter；480 = 300 + 60% 裕量。首验红案
+/// （2026-11-05 验形跑）：180s「3 拍裕量」误按稳态拍距算——首拍前 180s
+/// 界先到期 → 两路 sleeper 双 Timeout panic。连漏 8 拍 = Timeout 醒因断言
+/// 红（fail-loud，不挂死）。同值喂 IPC 路 sleeper 握手 far（周期间隔同
+/// 拍距）与 EL0 latslp 模板 δ（480e9 ns）。
+const LAT_TRIG_FAR_S: u64 = 480;
+
+/// lat sleeper（G3-4 IPC 路；G3-5 候选① C 形常驻化）：批环「32 轮睡
+/// 唤醒 → run 侧测 wake→run 段 → 批毕打 BENCHLAT 行 → 回睡等下周期」。
 ///
 /// - 睡点直调 `block_current`（rt_probe 同款：SVC 面折算被绕过，deadline
-///   本来就是 CNTVCT 周期；**不走 ns 换算**——公约 5）。deadline = 60s 远界
-///   （漏醒兜底 = Timeout 醒因断言 fail-loud，不挂死）。
+///   本来就是 CNTVCT 周期；**不走 ns 换算**——公约 5）。deadline = 480s
+///   远界（C 形：首触发在 soakmon 首拍网格 t0+300s，稳态 60s 拍距——远界
+///   口径见 LAT_TRIG_FAR_S 注；漏醒兜底 = Timeout 醒因断言 fail-loud，
+///   不挂死）。
 /// - **run 侧读点**（本路的被测量）：醒后续行锁窗内先取 `wake_stamp_take`
 ///   （= note_wake 戳）再读 now（rt_probe wake_vct 读序同款——读点与醒点
 ///   之间零 tick/切换噪声混入）；样本 = now − 戳，`checked_sub` 负值 panic
 ///   （L0 严格执法，R-0 on_wake 负延迟同族）。
 /// - 醒因恒须 Signaled（waker 侧 wake_matching 按位唤醒；Timeout = 漏醒
 ///   = 握手面破损）；戳缺位（0）= note_wake 戳面破损——双双 L0 断言。
-/// - 收尾：全排序 → 单行 `BENCHLAT,lane=ipc,n=,min=,p50=,p90=,p99=,max=`
+/// - 批尾：全排序 → 单行 `BENCHLAT,lane=ipc,n=,min=,p50=,p90=,p99=,max=`
 ///   （BENCHRT 六字段族形，G43 拼行）+ 完成标记 `LATIPC ok n=32`
-///   （bench.py --lat 通道 DONE 面，`RT ok` 同形）→ exit_current 退场
-///   （一次性采样任务，非常驻）。
+///   （bench.py --lat 通道 DONE 面，`RT ok` 同形）。
+/// - **C 形常驻再触发**（evidence-g3-5recon.md 后继刀形 1，2026-11-05）：
+///   批毕读 `LAT_TRIG_IPC_OBJ`——非 0（soak∧lat 双门）= 回睡续批（下周期
+///   由 soakmon 拍后触发 waker 再发起，批界即周期界恰一唤醒一样本）；
+///   0（bench --lat 单门）= 原一次性形逐字保留（boot 周期照跑，采样毕
+///   exit_current 退场——bench.py --lat 收割面零改动）。
 extern "C" fn task_lat_slp(arg: usize) -> ! {
     use berry_sched::WakeReason;
-    let far = 60 * berry_hal_aarch64::timer::cntfrq();
+    // 480s 远界（LAT_TRIG_FAR_S 注——首拍网格 300s 后才首触发，180s 会
+    // 先到期；boot 周期毫秒-秒级轮转不贴界）。
+    let far = LAT_TRIG_FAR_S * berry_hal_aarch64::timer::cntfrq();
     let mut samples = [0u64; LAT_SAMPLES];
-    for slot in samples.iter_mut() {
-        berry_hal_aarch64::kern_lock::klock_enter();
-        let r = berry_sched::block_current(
-            arg, LAT_EV_BIT,
-            berry_hal_aarch64::timer::cntvct() + far,
-        );
-        // 顺序例外（rt_probe 行同款，F33/F42 分工）：醒后锁窗内先取戳、
-        // 后 klock_exit——读点即 run 侧首段内核执行（被测段的下界锚）。
-        let wv = berry_sched::wake_stamp_take();
-        let now = berry_hal_aarch64::timer::cntvct();
-        berry_hal_aarch64::kern_lock::klock_exit();
-        assert!(r == WakeReason::Signaled,
-                "lat_slp: 醒因非 Signaled（Timeout = waker 漏醒——握手面破损）");
-        assert!(wv != 0, "lat_slp: wake 戳缺位（note_wake 戳面破损）");
-        *slot = match now.checked_sub(wv) {
-            Some(l) => l,
-            None => panic!("lat_slp: 负 wake→run（now={} < 戳={}）= 时序破损",
-                           now, wv),
-        };
+    loop {
+        for slot in samples.iter_mut() {
+            berry_hal_aarch64::kern_lock::klock_enter();
+            let r = berry_sched::block_current(
+                arg, LAT_EV_BIT,
+                berry_hal_aarch64::timer::cntvct() + far,
+            );
+            // 顺序例外（rt_probe 行同款，F33/F42 分工）：醒后锁窗内先取戳、
+            // 后 klock_exit——读点即 run 侧首段内核执行（被测段的下界锚）。
+            let wv = berry_sched::wake_stamp_take();
+            let now = berry_hal_aarch64::timer::cntvct();
+            berry_hal_aarch64::kern_lock::klock_exit();
+            assert!(r == WakeReason::Signaled,
+                    "lat_slp: 醒因非 Signaled（Timeout = waker 漏醒——握手面破损）");
+            assert!(wv != 0, "lat_slp: wake 戳缺位（note_wake 戳面破损）");
+            *slot = match now.checked_sub(wv) {
+                Some(l) => l,
+                None => panic!("lat_slp: 负 wake→run（now={} < 戳={}）= 时序破损",
+                               now, wv),
+            };
+        }
+        samples.sort_unstable(); // core 面板全排序（32 元素，零分配；rt_probe 同形）
+        // 分位 = 最近秩 ceil(p·n/100)（n=32：p50=s[15]/p90=s[28]/p99=s[31]，
+        // p99==max 是 32 样本最近秩的诚实结果——rt_probe 注同款，勿为观感改
+        // 次大值）。行包络：with_print_lock 整行拼完（G43；每批一行，
+        // BENCHRT 同形先例）。
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"BENCHLAT,lane=ipc,n=");
+            berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+            berry_hal_aarch64::uart_puts(b",min=");
+            berry_hal_aarch64::uart_put_dec(samples[0]);
+            berry_hal_aarch64::uart_puts(b",p50=");
+            berry_hal_aarch64::uart_put_dec(samples[15]);
+            berry_hal_aarch64::uart_puts(b",p90=");
+            berry_hal_aarch64::uart_put_dec(samples[28]);
+            berry_hal_aarch64::uart_puts(b",p99=");
+            berry_hal_aarch64::uart_put_dec(samples[31]);
+            berry_hal_aarch64::uart_puts(b",max=");
+            berry_hal_aarch64::uart_put_dec(samples[31]);
+            berry_hal_aarch64::uart_puts(b"\n");
+            berry_hal_aarch64::uart_puts(b"LATIPC ok n=");
+            berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+        // C 形分叉：触发未装 = 一次性原形退场（bench --lat 单门）；已装 =
+        // 回睡续批（批界即周期界——waker 拍后再发起恰 32 轮）。
+        if LAT_TRIG_IPC_OBJ.load(core::sync::atomic::Ordering::Acquire) == 0 {
+            break;
+        }
     }
-    samples.sort_unstable(); // core 面板全排序（32 元素，零分配；rt_probe 同形）
-    // 分位 = 最近秩 ceil(p·n/100)（n=32：p50=s[15]/p90=s[28]/p99=s[31]，
-    // p99==max 是 32 样本最近秩的诚实结果——rt_probe 注同款，勿为观感改
-    // 次大值）。行包络：with_print_lock 整行拼完（G43；boot 尾打印窗，
-    // BENCHRT 同形先例）。
-    berry_hal_aarch64::kern_lock::with_print_lock(|| {
-        berry_hal_aarch64::uart_puts(b"BENCHLAT,lane=ipc,n=");
-        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
-        berry_hal_aarch64::uart_puts(b",min=");
-        berry_hal_aarch64::uart_put_dec(samples[0]);
-        berry_hal_aarch64::uart_puts(b",p50=");
-        berry_hal_aarch64::uart_put_dec(samples[15]);
-        berry_hal_aarch64::uart_puts(b",p90=");
-        berry_hal_aarch64::uart_put_dec(samples[28]);
-        berry_hal_aarch64::uart_puts(b",p99=");
-        berry_hal_aarch64::uart_put_dec(samples[31]);
-        berry_hal_aarch64::uart_puts(b",max=");
-        berry_hal_aarch64::uart_put_dec(samples[31]);
-        berry_hal_aarch64::uart_puts(b"\n");
-        berry_hal_aarch64::uart_puts(b"LATIPC ok n=");
-        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
-        berry_hal_aarch64::uart_puts(b"\n");
-    });
     berry_sched::exit_current()
 }
 
-/// lat waker（G3-4 IPC 路）：N 轮「间隔纯睡 → `wake_matching` 唤醒 sleeper」。
+/// lat waker（G3-4 IPC 路；G3-5 候选① C 形常驻化）：周期环「32 轮间隔
+/// 纯睡 + `wake_matching` 唤醒 sleeper → 等 soakmon 拍后触发 → 下周期」。
 ///
 /// - 间隔 = ¼ slice 纯睡（obj=0，唯一醒因 Timeout——间隔面的定时器唤醒
 ///   **不入** IPC 路测量窗：被测的是 sleeper 的 Signaled 唤醒）。
@@ -3519,23 +3592,55 @@ extern "C" fn task_lat_slp(arg: usize) -> ! {
 ///   （0 = sleeper 未在睡 = 握手竞速破损，L0 fail-loud 不静默重试）。
 /// - P-B 直切（G3-2 段①）：8>0 触发 sleeper 即时抢占——wake_matching
 ///   返回时 sleeper 已续行（测完已再睡下），waker 下一轮间隔睡随即发起。
-/// - 跑完即退（REAPQ 单条流量，rt_probe 同形非常驻）。
+/// - **C 形触发等待**（evidence-g3-5recon.md 后继刀形 1，2026-11-05）：
+///   boot 周期照跑（bench.py --lat 收割面零改动）后等 `LAT_TRIG_IPC_OBJ`
+///   （soakmon 每拍行后 signal+wake_matching）。醒来同窗清触发位（§A61
+///   清位纪律内核版：不清 = 恒真锁存下轮 poll 直醒变自旋；每事件恰一
+///   等待者 = 无共享清位竞速）。静态 0（bench --lat 单门）= 原一次性形
+///   退场。远界 480s（LAT_TRIG_FAR_S）：连漏 8 拍 = Timeout 醒因断言
+///   fail-loud（soakmon 断流/周期竞速超 far）。
 extern "C" fn task_lat_wak(arg: usize) -> ! {
     use berry_sched::WakeReason;
     let spacer = berry_hal_aarch64::timer::slice_cycles() / 4;
-    for _ in 0..LAT_SAMPLES {
+    let trig_far = LAT_TRIG_FAR_S * berry_hal_aarch64::timer::cntfrq();
+    loop {
+        for _ in 0..LAT_SAMPLES {
+            berry_hal_aarch64::kern_lock::klock_enter();
+            let r = berry_sched::block_current(
+                0, 0,
+                berry_hal_aarch64::timer::cntvct() + spacer,
+            );
+            berry_hal_aarch64::kern_lock::klock_exit();
+            assert!(r == WakeReason::Timeout,
+                    "lat_wak: 间隔睡醒因非 Timeout（obj=0 纯睡——跨表 wake 面破损）");
+            berry_hal_aarch64::kern_lock::klock_enter();
+            let n = berry_sched::wake_matching(arg, LAT_EV_BIT);
+            berry_hal_aarch64::kern_lock::klock_exit();
+            assert!(n == 1, "lat_wak: 唤醒数 {n} ≠ 1（sleeper 未在睡——首轮竞速面破损）");
+        }
+        // C 形：等 soakmon 拍后触发再发起下周期（0 = 一次性原形退场）。
+        let trig = LAT_TRIG_IPC_OBJ.load(core::sync::atomic::Ordering::Acquire);
+        if trig == 0 {
+            break;
+        }
         berry_hal_aarch64::kern_lock::klock_enter();
         let r = berry_sched::block_current(
-            0, 0,
-            berry_hal_aarch64::timer::cntvct() + spacer,
+            trig, LAT_TRIG_BIT,
+            berry_hal_aarch64::timer::cntvct() + trig_far,
         );
+        // SAFETY: trig = soakmon 门块置入 ht_soak（boot Box::leak 永生表）
+        // 的 Event ObjRef——常驻任务生命周期内恒有效。block_current 返回
+        // 已重取 KL（soakmon 包络同款），清位同窗后释放。
+        unsafe {
+            (*(trig as *mut crate::handle::ObjRef))
+                .obj
+                .as_event_mut()
+                .expect("lat_wak: 触发 ObjRef 非 Event")
+                .signal(LAT_TRIG_BIT, 0);
+        }
         berry_hal_aarch64::kern_lock::klock_exit();
-        assert!(r == WakeReason::Timeout,
-                "lat_wak: 间隔睡醒因非 Timeout（obj=0 纯睡——跨表 wake 面破损）");
-        berry_hal_aarch64::kern_lock::klock_enter();
-        let n = berry_sched::wake_matching(arg, LAT_EV_BIT);
-        berry_hal_aarch64::kern_lock::klock_exit();
-        assert!(n == 1, "lat_wak: 唤醒数 {n} ≠ 1（sleeper 未在睡——首轮竞速面破损）");
+        assert!(r == WakeReason::Signaled,
+                "lat_wak: 触发醒因非 Signaled（Timeout = 连漏 8 拍——soakmon 断流/竞速超 far）");
     }
     berry_sched::exit_current()
 }
@@ -3623,10 +3728,12 @@ pub(crate) fn latsgi_ret(ret: i64) {
     }
 }
 
-/// SGI 路 waker/master（G3-4b）：spawn EL0 舰队（root 占位 + sleeper
-/// spread→CPU1）→ N 轮「**等 sleeper wait 进入序号** → Event 置位 +
-/// `wake_matching` 跨核唤醒」→ 收 32 样本 → 全排序打印 `BENCHLAT,lane=sgi`
-/// + `LATSGI ok`。
+/// SGI 路 waker/master（G3-4b；G3-5 候选① C 形常驻化）：spawn EL0 舰队
+/// （root 占位 + sleeper spread→CPU1，恰一次——A45 泄漏 × 周期 respawn =
+/// 线性累积判死，侦察档三形裁决 C 形）→ 周期环「N 轮**等 sleeper wait
+/// 进入序号** → Event 置位 + `wake_matching` 跨核唤醒」→ 收 32 样本 →
+/// 全排序打印 `BENCHLAT,lane=sgi` + `LATSGI ok` → 复位样本柜 → 等
+/// soakmon 拍后触发 → 下周期。
 ///
 /// - **唤醒面 = sys_object_signal 尾同链**（`Event::signal(0, bit)` +
 ///   `wake_matching(addr, bit)`）：跨核睡的醒来重验（`signal_state` 重读
@@ -3634,18 +3741,24 @@ pub(crate) fn latsgi_ret(ret: i64) {
 ///   （LAT_EV_BIT 注同源口径）。klock 窗内调用（真实调用面同屏蔽窗契约）。
 /// - **跨 vCPU 握手 = 序号面非钟面**（首跑实录：guest 钟 spacer 盲 pacing
 ///   在 TCG boot 高载下饿副核 vCPU——CPU0 钟睡了 slice/4 而 CPU1 尚未跑
-///   完上轮回睡，n==0 竞速 panic）。每轮先有界轮询 `LATSGI_ENTER ≥ i+1`
+///   完上轮回睡，n==0 竞速 panic）。每轮先有界轮询 `LATSGI_ENTER ≥ 目标`
 ///   （hook_enter 在 sleeper 的 SVC 屏蔽窗内递增；block 的 insert_sorted
 ///   先于 klock_release_switch ⇒ waker 观察到序号后取 KL，sleeper 必已
 ///   在 SLEEPQ——KL 串行闭 TOCTOU 窗），再发信号。n==1 断言保留 = 终背书。
+/// - **C 形绝对序号目标**（2026-11-05）：EL0 sleeper 永续等待不清零 →
+///   ENTER 单调永续，轮目标 = cyc*32+i+1（boot 周期 cyc=0 照跑 = bench.py
+///   --lat 收割面零改动）。每周期毕复位 LATSGI_DONE=0（单写者交接窗：
+///   末样本已发布、sleeper 已回睡，下周期首轮 signal 前零写者——KL 串行
+///   闭并发窗；latsgi_wake 的 i<LAT_SAMPLES 断言逐周期照执法）。
 /// - 被测段 = note_wake 戳（CPU0 唤醒侧）→ SGI 到达尾延 → CPU1 park 出场
 ///   → 派发切回 → sleeper 醒后首段内核执行取戳。**勘正〔f4 F2〕：远端 RQ
 ///   入队与 SGI 发送（`enqueue_with_kick` 内含 send_sgi MMIO）在 wake_one_inner
 ///   实序中先于 note_wake 戳完成、不在被测段内**；IPC 路 = 同核直切段
 ///   （两 lane 同点打戳，对照差 = 尾延+出场+切回段的跨核增量）。
 /// - 收尾等位：DONE 计数 Acquire 读到 32（有界轮询，超时 L0——TCG 副核
-///   滞后同因，预算按 lag 容忍非按工作量）→ 排序打印 → exit_current
-///   （一次性采样任务非常驻，rt_probe 同形）。
+///   滞后同因，预算按 lag 容忍非按工作量）→ 排序打印 → 触发等待
+///   （`LAT_TRIG_SGI_OBJ`，同 task_lat_wak 形——0 = bench --lat 单门
+///   一次性原形退场）。
 extern "C" fn task_latsgi_wak(_arg: usize) -> ! {
     use berry_sched::WakeReason;
     // 舰队 spawn（PP 同形：svc 链落本任务私有表，handle 常驻泄漏持有）。
@@ -3654,88 +3767,121 @@ extern "C" fn task_latsgi_wak(_arg: usize) -> ! {
     // 轮询节拍 = ¼ slice 纯睡（obj=0，唯一醒因 Timeout——序号未到位时的
     // 让位等，不参与测量窗）。
     let spacer = berry_hal_aarch64::timer::slice_cycles() / 4;
+    let trig_far = LAT_TRIG_FAR_S * berry_hal_aarch64::timer::cntfrq();
     let mut obj = 0usize;
-    for i in 0..LAT_SAMPLES {
-        // 等 sleeper 第 i+1 次 wait 进入（单调 ≥——首轮兼就位握手；有界，
-        // 超时 L0：sleeper spawn 链断/err 早退同状收口）。
-        let mut enter = 0usize;
+    // 周期序（boot 周期 = 0 立跑；此后每 soakmon 拍一周期）。
+    let mut cyc = 0usize;
+    loop {
+        for i in 0..LAT_SAMPLES {
+            // 等 sleeper 第 cyc*32+i+1 次 wait 进入（单调 ≥——首轮兼就位
+            // 握手；有界，超时 L0：sleeper 断链/err 早退同状收口）。
+            let target = cyc * LAT_SAMPLES + i + 1;
+            let mut enter = 0usize;
+            for _ in 0..LATSGI_POLL_MAX {
+                enter = LATSGI_ENTER.load(core::sync::atomic::Ordering::Acquire);
+                if enter >= target {
+                    break;
+                }
+                berry_hal_aarch64::kern_lock::klock_enter();
+                let r = berry_sched::block_current(0, 0, berry_hal_aarch64::timer::cntvct() + spacer);
+                berry_hal_aarch64::kern_lock::klock_exit();
+                assert!(r == WakeReason::Timeout, "latsgi_wak: 等位睡醒因非 Timeout");
+            }
+            assert!(enter >= target,
+                    "latsgi_wak: 周期 {cyc} 第 {} 轮 wait 进入序号超时（enter={enter}——sleeper 断链/err 早退）",
+                    i + 1);
+            // 落核结构背书（f4 F3）：ENTER 的 Release/Acquire 对同时发布了钩子
+            // 先写的 CPU 落点——place() 失衡启发未跨核时在此 fail-loud，杜绝
+            // lane=sgi 静默退化同核。
+            let cpu = LATSGI_CPU.load(core::sync::atomic::Ordering::Acquire);
+            assert!(cpu == 1,
+                    "latsgi_wak: sleeper 落 CPU{cpu} ≠ 1（place() 未跨核——lane=sgi 将退化为同核测量）");
+            if obj == 0 {
+                obj = LATSGI_OBJ.load(core::sync::atomic::Ordering::Acquire);
+            }
+            berry_hal_aarch64::kern_lock::klock_enter();
+            // SAFETY: OBJ = wait 进入点钩子钉住的活 ObjRef——deref 时 sleeper
+            // 恒在睡（wait_one 的 retain 钉住覆盖全部睡眠轮次，§A28 跨睡眠
+            // 版；C 形 sleeper 永续等待 = 钉住永不解除，比一次性形更强）；
+            // 序号+KL 串行背书；n==1 断言即时复核。
+            let objp = obj as *mut crate::handle::ObjRef;
+            unsafe {
+                (*objp)
+                    .obj
+                    .as_event_mut()
+                    .expect("latsgi_wak: ObjRef 非 Event")
+                    .signal(0, LAT_SGI_BIT);
+            }
+            let n = berry_sched::wake_matching(obj, LAT_SGI_BIT);
+            berry_hal_aarch64::kern_lock::klock_exit();
+            assert!(n == 1, "latsgi_wak: 唤醒数 {n} ≠ 1（sleeper 未在睡——握手竞速面破损）");
+        }
+        // 收尾等位：末轮样本由 CPU1 异步落柜（DONE Acquire 读 32 = 全发布）。
+        let mut done = 0usize;
         for _ in 0..LATSGI_POLL_MAX {
-            enter = LATSGI_ENTER.load(core::sync::atomic::Ordering::Acquire);
-            if enter >= i + 1 {
+            done = LATSGI_DONE.load(core::sync::atomic::Ordering::Acquire);
+            if done == LAT_SAMPLES {
                 break;
             }
             berry_hal_aarch64::kern_lock::klock_enter();
             let r = berry_sched::block_current(0, 0, berry_hal_aarch64::timer::cntvct() + spacer);
             berry_hal_aarch64::kern_lock::klock_exit();
-            assert!(r == WakeReason::Timeout, "latsgi_wak: 等位睡醒因非 Timeout");
+            assert!(r == WakeReason::Timeout, "latsgi_wak: 收尾等位醒因非 Timeout");
         }
-        assert!(enter >= i + 1,
-                "latsgi_wak: 第 {} 轮 wait 进入序号超时（enter={enter}——sleeper 断链/err 早退）",
-                i + 1);
-        // 落核结构背书（f4 F3）：ENTER 的 Release/Acquire 对同时发布了钩子
-        // 先写的 CPU 落点——place() 失衡启发未跨核时在此 fail-loud，杜绝
-        // lane=sgi 静默退化同核。
-        let cpu = LATSGI_CPU.load(core::sync::atomic::Ordering::Acquire);
-        assert!(cpu == 1,
-                "latsgi_wak: sleeper 落 CPU{cpu} ≠ 1（place() 未跨核——lane=sgi 将退化为同核测量）");
-        if obj == 0 {
-            obj = LATSGI_OBJ.load(core::sync::atomic::Ordering::Acquire);
+        assert!(done == LAT_SAMPLES,
+                "latsgi_wak: 样本落柜超时（done={done} < {}——sleeper err 早退或挂死）",
+                LAT_SAMPLES);
+        let mut samples = [0u64; LAT_SAMPLES];
+        for i in 0..LAT_SAMPLES {
+            samples[i] = LATSGI_BUF[i].load(core::sync::atomic::Ordering::Relaxed);
         }
-        berry_hal_aarch64::kern_lock::klock_enter();
-        // SAFETY: OBJ = wait 进入点钩子钉住的活 ObjRef——deref 时 sleeper
-        // 恒在睡（wait_one 的 retain 钉住覆盖全部睡眠轮次，§A28 跨睡眠版；
-        // 序号+KL 串行背书；n==1 断言即时复核）。末轮后 sleeper 退出，
-        // 本任务不再 deref。
-        let objp = obj as *mut crate::handle::ObjRef;
-        unsafe {
-            (*objp)
-                .obj
-                .as_event_mut()
-                .expect("latsgi_wak: ObjRef 非 Event")
-                .signal(0, LAT_SGI_BIT);
-        }
-        let n = berry_sched::wake_matching(obj, LAT_SGI_BIT);
-        berry_hal_aarch64::kern_lock::klock_exit();
-        assert!(n == 1, "latsgi_wak: 唤醒数 {n} ≠ 1（sleeper 未在睡——握手竞速面破损）");
-    }
-    // 收尾等位：末轮样本由 CPU1 异步落柜（DONE Acquire 读 32 = 全发布）。
-    let mut done = 0usize;
-    for _ in 0..LATSGI_POLL_MAX {
-        done = LATSGI_DONE.load(core::sync::atomic::Ordering::Acquire);
-        if done == LAT_SAMPLES {
+        samples.sort_unstable(); // 全排序精确分位（IPC 路同形；p99==max=最近秩诚实结果）
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"BENCHLAT,lane=sgi,n=");
+            berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+            berry_hal_aarch64::uart_puts(b",min=");
+            berry_hal_aarch64::uart_put_dec(samples[0]);
+            berry_hal_aarch64::uart_puts(b",p50=");
+            berry_hal_aarch64::uart_put_dec(samples[15]);
+            berry_hal_aarch64::uart_puts(b",p90=");
+            berry_hal_aarch64::uart_put_dec(samples[28]);
+            berry_hal_aarch64::uart_puts(b",p99=");
+            berry_hal_aarch64::uart_put_dec(samples[31]);
+            berry_hal_aarch64::uart_puts(b",max=");
+            berry_hal_aarch64::uart_put_dec(samples[31]);
+            berry_hal_aarch64::uart_puts(b"\n");
+            berry_hal_aarch64::uart_puts(b"LATSGI ok n=");
+            berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+        // C 形周期复位（交接窗安全性见任务注「C 形绝对序号目标」——
+        // 复位先于下周期首轮 signal，窗内零 BUF/DONE 写者）。
+        LATSGI_DONE.store(0, core::sync::atomic::Ordering::Release);
+        cyc += 1;
+        // C 形：等 soakmon 拍后触发再发起下周期（同 task_lat_wak 形；0 =
+        // bench --lat 单门一次性原形退场——EL0 sleeper 不随退：480s wait
+        // 超时走 err 早退自尽，末线程收口回收，waker 不必拉幕）。
+        let trig = LAT_TRIG_SGI_OBJ.load(core::sync::atomic::Ordering::Acquire);
+        if trig == 0 {
             break;
         }
         berry_hal_aarch64::kern_lock::klock_enter();
-        let r = berry_sched::block_current(0, 0, berry_hal_aarch64::timer::cntvct() + spacer);
+        let r = berry_sched::block_current(
+            trig, LAT_TRIG_BIT,
+            berry_hal_aarch64::timer::cntvct() + trig_far,
+        );
+        // SAFETY: 同 task_lat_wak 注——ht_soak 永生表 ObjRef，KL 窗内清位。
+        unsafe {
+            (*(trig as *mut crate::handle::ObjRef))
+                .obj
+                .as_event_mut()
+                .expect("latsgi_wak: 触发 ObjRef 非 Event")
+                .signal(LAT_TRIG_BIT, 0);
+        }
         berry_hal_aarch64::kern_lock::klock_exit();
-        assert!(r == WakeReason::Timeout, "latsgi_wak: 收尾等位醒因非 Timeout");
+        assert!(r == WakeReason::Signaled,
+                "latsgi_wak: 触发醒因非 Signaled（Timeout = 连漏 8 拍——soakmon 断流/竞速超 far）");
     }
-    assert!(done == LAT_SAMPLES,
-            "latsgi_wak: 样本落柜超时（done={done} < {}——sleeper err 早退或挂死）",
-            LAT_SAMPLES);
-    let mut samples = [0u64; LAT_SAMPLES];
-    for i in 0..LAT_SAMPLES {
-        samples[i] = LATSGI_BUF[i].load(core::sync::atomic::Ordering::Relaxed);
-    }
-    samples.sort_unstable(); // 全排序精确分位（IPC 路同形；p99==max=最近秩诚实结果）
-    berry_hal_aarch64::kern_lock::with_print_lock(|| {
-        berry_hal_aarch64::uart_puts(b"BENCHLAT,lane=sgi,n=");
-        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
-        berry_hal_aarch64::uart_puts(b",min=");
-        berry_hal_aarch64::uart_put_dec(samples[0]);
-        berry_hal_aarch64::uart_puts(b",p50=");
-        berry_hal_aarch64::uart_put_dec(samples[15]);
-        berry_hal_aarch64::uart_puts(b",p90=");
-        berry_hal_aarch64::uart_put_dec(samples[28]);
-        berry_hal_aarch64::uart_puts(b",p99=");
-        berry_hal_aarch64::uart_put_dec(samples[31]);
-        berry_hal_aarch64::uart_puts(b",max=");
-        berry_hal_aarch64::uart_put_dec(samples[31]);
-        berry_hal_aarch64::uart_puts(b"\n");
-        berry_hal_aarch64::uart_puts(b"LATSGI ok n=");
-        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
-        berry_hal_aarch64::uart_puts(b"\n");
-    });
     berry_sched::exit_current()
 }
 
@@ -3792,6 +3938,10 @@ const SOAK_PROBE_NAME: &str = "opt/berry/soak";
 ///   （canary 带 \n）若撕进 SOAK 行中段会碎字段（`sw=5switches=300`）→
 ///   宿主正则失配漏拍 = 断言假阴性。
 ///   行 ≤256B（v2.1 固定段 56B + 9 数值字段各至多 20 位 = 绝对界 236B）。
+/// - **G3-5 候选① C 形拍后触发**（2026-11-05）：拍行打出后、同 klock 窗
+///   内 signal+wake_matching 两路 lat 触发 Event（静态 0 = 未装，寄存器
+///   比较零开销跳过）——BENCHLAT 周期行与 SOAK 拍行一一对应（宿主恰
+///   N+1 行断言），周期时延即稳态受扰时延（被测对象本体）。
 /// - 常驻不退出：活性心跳不是死线，超时醒 = 正常节拍（「服务端 wait 超时
 ///   是心跳不是死线」纪律的内核任务版）；私有表 + 哑 Event `Box::leak`
 ///   有意泄漏（有界、boot 生命周期）。醒因恒 Timeout（哑 Event 表私有、
@@ -3843,6 +3993,26 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
             berry_hal_aarch64::uart_put_dec(churn);
             berry_hal_aarch64::uart_puts(b"\n");
         });
+        // G3-5 候选① C 形：拍后触发两路 lat waker（恰在本拍行后——周期行
+        // 与拍行一一对应）。锁窗序 = sys_object_signal 尾同链（signal 置位
+        // → wake_matching；latsgi_wak 真实调用面同款）；n 不断言：waker
+        // 周期竞速中未在等 = 位锁存 poll-first 自愈追拍（收割面恰 N+1 行
+        // 断言兜形破，LAT_TRIG_IPC_OBJ 静态注）。SAFETY: 静态值 = 门块置入
+        // ht_soak（boot Box::leak 永生表）的 Event ObjRef——本任务生命周期
+        // 内恒有效。
+        for trig in [&LAT_TRIG_IPC_OBJ, &LAT_TRIG_SGI_OBJ] {
+            let t = trig.load(core::sync::atomic::Ordering::Acquire);
+            if t != 0 {
+                unsafe {
+                    (*(t as *mut crate::handle::ObjRef))
+                        .obj
+                        .as_event_mut()
+                        .expect("soakmon: 触发 ObjRef 非 Event")
+                        .signal(0, LAT_TRIG_BIT);
+                }
+                berry_sched::wake_matching(t, LAT_TRIG_BIT);
+            }
+        }
         berry_hal_aarch64::kern_lock::klock_exit();
     }
 }

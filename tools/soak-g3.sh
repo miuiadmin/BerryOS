@@ -14,21 +14,23 @@
 #      终验三计数（ok 恰 1 / selftest FAIL 0 / VIOLATION 0——smoke-lockdep
 #      同款执法面搬入长跑：VIOLATION fail-loud 停机由心跳帽兜，selftest
 #      FAIL 非停机必须末尾计数执法）。
-#   ② 尾延迟帽（§4 基线）：fw_cfg 三键齐发（soak + soakload + lat）——
-#      G3-4 lat 载荷（一次性 ×32 样本/路，boot 窗 spawn）在 soakload 舰队
-#      共窗下采样（spawn序：soakload master :1791 → SGI 路 waker :1818——
-#      lane=sgi 满载受扰采样；lane=ipc 在舰队前 = 净态+lockdep 开销面）；
-#      BENCHLAT 双路行收割 + LATIPC/LATSGI ok 终验 + max 帽（n=32 时
-#      p99 秩 = max 秩，p99==max 恒成立——单 max 帽全覆盖）。
-#      **限界诚实记档**：lat 载荷一次性（rt_probe 同形），覆盖 = boot 窗
-#      ~首拍前；稳态时延面由既有活性断言族承载（均拍下界 40s / 单拍帽
-#      240s / park 窗 / Δsw1 地板全时延敏感）。常驻再装形（周期重启采样）
-#      = 转正流程后继刀候选，本刀不开。
+#   ② 尾延迟帽（§4 基线 → 候选① C 形常驻化 2026-11-05）：fw_cfg 三键
+#      齐发（soak + soakload + lat）——lat 载荷常驻再触发（boot 一次
+#      spawn 采样毕回睡不退；soakmon 每拍行后触发两路再采 ×32 样本/路，
+#      evidence-g3-5recon.md 三形裁决 C 最优）→ BENCHLAT 每路恰 拍数+1
+#      行（boot 周期 + 每拍一周期）+ LATIPC/LATSGI ok 计数同 +
+#      max-over-cycles 帽（n=32 时 p99 秩 = max 秩——单 max 帽全覆盖
+#      全部周期行）。boot 周期 lane=sgi 满载受扰采样（spawn 序在 soakload
+#      master 后）；稳态周期行 = 全时全负载受扰时延（被测对象本体）。
 #
 # 帽值首跑标定（S-5d SW1_FLOOR 先例）：SOAKG3_CALIBRATE=1 跑一次 →
-# 末尾定标行给观测 max → 观测 ×3.0（B-0 界同款裕量）向上取整烘焙默认值，
-# 附推导注。他机复跑可 LAT_CAP_IPC / LAT_CAP_SGI 环境变量覆盖（TCG 载荷
-# §A118 跨机不可比——B-2 纪律）。
+# 末尾定标行给全周期观测 max → 观测 ×3.0（B-0 界同款裕量）向上取整烘焙
+# 默认值，附推导注。**C 形注（2026-11-05）**：现行默认帽 = 一次性形
+# boot 窗标定（bank 跑 ipc 6063/sgi 20635000 ×3.0）——boot 数字不可外推
+# 稳态，常驻形首跑须 CALIBRATE 重标定后烘焙。kill criteria（侦察档后继
+# 刀形 4）：CALIBRATE 观测稳态 max 超银行跑帽 ×3.0 量级 = 候选① 降级线
+#（候选② lockdep N 跑顶上），定标行顾问提示。他机复跑可 LAT_CAP_IPC /
+# LAT_CAP_SGI 环境变量覆盖（TCG 载荷 §A118 跨机不可比——B-2 纪律）。
 #
 # 用法：cargo build --features lockdep && \
 #       bash tools/soak-g3.sh "$(bash tools/paths.sh kernel)" [分钟]
@@ -82,9 +84,17 @@ POLL=2
 # 裕量，S-5d SW1_FLOOR 先例）：lockdep 面 + soakload boot 窗满载受扰观测
 # ipc max=6063 / sgi max=20635000（对 §4 净态基线 5000/15234750 增量
 # ×1.21/×1.35 = lockdep 开销 + 满载受扰的合成分解面，详 evidence-g3-5.md）。
+# 稳态帽（2026-11-05 C 形 12 拍 CALIBRATE PASS 定标：稳态 max-over-cycles
+# ipc=8187 / sgi=20728250，×3.0 烘入——稳态 ≈ boot 同量级，soakload 干扰
+# 未抬尾；boot 窗数字 18189/61905000 降为银行跑参照线 BANK_CAP_*）。
 # 环境变量可覆盖（TCG 载荷 §A118 跨机不可比——B-2 纪律）。
-LAT_CAP_IPC=${LAT_CAP_IPC:-18189}
-LAT_CAP_SGI=${LAT_CAP_SGI:-61905000}
+LAT_CAP_IPC=${LAT_CAP_IPC:-24561}
+LAT_CAP_SGI=${LAT_CAP_SGI:-62184750}
+# 银行跑帽（2026-11-05 bank PASS 60/60 拍，一次性形 boot 窗标定）——
+# kill criteria 参照线（CALIBRATE 观测稳态 max 超其 ×3.0 = 候选① 降级），
+# 不随 LAT_CAP_* 环境变量覆盖漂移。
+BANK_CAP_IPC=18189
+BANK_CAP_SGI=61905000
 CALIBRATE=0
 [ -n "${SOAKG3_CALIBRATE:-}" ] && CALIBRATE=1
 
@@ -191,39 +201,52 @@ validate_beats() {
     END { if (bad) exit 1; printf "n=%d last_t=%d last_sw=%d last_sw0=%d last_sw1=%d parkD0=%d parkD1=%d Δsw1min=%d pages=%d..%d churn=%d", n, pt, psw, ps0, ps1, mq0-pq0, mq1-pq1, mind1+0, pmin, pmax, pch+0 }'
 }
 
-# 尾延迟帽执法 + 定标观测（G3-5 新增面②）：BENCHLAT 每路恰一行（一次性
-# 载荷 ×32 样本收尾单行——零行 = 载荷未完成/断链；多行 = 载荷形态演化先
-# 在此红）。n=32 时 p99 秩 = max 秩（p99==max 恒成立）——单 max 帽全覆盖，
-# p99 同时报告入定标行。CALIBRATE 模式跳帽只出观测。
+# 尾延迟帽执法 + 定标观测（G3-5 新增面②；候选① C 形常驻升级 2026-11-05）：
+# BENCHLAT 每路恰 beats+1 行（boot 周期 1 + 每拍后触发 1——周期行与拍行
+# 一一对应；零行 = 载荷断链；少行 = 触发漏发/竞速超 far；多行 = 自由跑
+# 〔清位破〕——恰 N+1 断言全形执法）。max-over-cycles 对帽（n=32 时 p99
+# 秩 = max 秩，p99==max 恒成立——单 max 帽覆盖全部周期行含 boot 行）。
+# CALIBRATE 模式跳帽只出观测（含 kill criteria 顾问行——稳态 max 超银行
+# 跑帽 ×3.0 量级 = 候选① 降级线，evidence-g3-5recon.md 后继刀形 4）。
+# 用法：lat_face <拍数>（末拍周期行结算等待在调用面完成）。
 lat_face() {
+  local beats="$1"
+  local want=$(( beats + 1 ))
   local lines_ipc lines_sgi bad=0
   lines_ipc=$(grep -aoE 'BENCHLAT,lane=ipc,n=32,[^ ]+' "$LOG" 2>/dev/null || true)
   lines_sgi=$(grep -aoE 'BENCHLAT,lane=sgi,n=32,[^ ]+' "$LOG" 2>/dev/null || true)
   local n_ipc n_sgi
   n_ipc=$(printf '%s\n' "$lines_ipc" | command grep -c . || true)
   n_sgi=$(printf '%s\n' "$lines_sgi" | command grep -c . || true)
-  [ "${n_ipc:-0}" -eq 1 ] || { echo "lat 面：lane=ipc BENCHLAT 行数 ${n_ipc:-0} ≠ 1（载荷未完成/形态演化）" >&2; bad=1; }
-  [ "${n_sgi:-0}" -eq 1 ] || { echo "lat 面：lane=sgi BENCHLAT 行数 ${n_sgi:-0} ≠ 1（载荷未完成/形态演化）" >&2; bad=1; }
+  [ "${n_ipc:-0}" -eq "$want" ] || { echo "lat 面：lane=ipc BENCHLAT 行数 ${n_ipc:-0} ≠ $want（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
+  [ "${n_sgi:-0}" -eq "$want" ] || { echo "lat 面：lane=sgi BENCHLAT 行数 ${n_sgi:-0} ≠ $want（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
+  # 全周期行取 max（单帽覆盖 boot + 稳态全周期）。
   local m_ipc m_sgi p99_ipc p99_sgi
-  m_ipc=$(printf '%s\n' "$lines_ipc" | awk -F'max=' '{print $2}' | command grep -oE '^[0-9]+' || echo "")
-  m_sgi=$(printf '%s\n' "$lines_sgi" | awk -F'max=' '{print $2}' | command grep -oE '^[0-9]+' || echo "")
-  p99_ipc=$(printf '%s\n' "$lines_ipc" | awk -F'p99=' '{print $2}' | command grep -oE '^[0-9]+' || echo "")
-  p99_sgi=$(printf '%s\n' "$lines_sgi" | awk -F'p99=' '{print $2}' | command grep -oE '^[0-9]+' || echo "")
+  m_ipc=$(printf '%s\n' "$lines_ipc" | awk -F'max=' '{print $2}' | command grep -oE '^[0-9]+' | sort -n | tail -1 || echo "")
+  m_sgi=$(printf '%s\n' "$lines_sgi" | awk -F'max=' '{print $2}' | command grep -oE '^[0-9]+' | sort -n | tail -1 || echo "")
+  p99_ipc=$(printf '%s\n' "$lines_ipc" | awk -F'p99=' '{print $2}' | command grep -oE '^[0-9]+' | sort -n | tail -1 || echo "")
+  p99_sgi=$(printf '%s\n' "$lines_sgi" | awk -F'p99=' '{print $2}' | command grep -oE '^[0-9]+' | sort -n | tail -1 || echo "")
   [ -n "$m_ipc" ] && [ -n "$m_sgi" ] || { echo "lat 面：BENCHLAT 字段解析失败（ipc max='${m_ipc}' sgi max='${m_sgi}'）" >&2; bad=1; }
   [ "$bad" -eq 1 ] && return 1
   if [ "$CALIBRATE" -eq 1 ]; then
-    # 定标行（S-5d SW1_FLOOR 先例同形）：观测 ×3.0 向上取整烘焙。
-    echo "soak-g3: lat 定标：ipc p99=${p99_ipc} max=${m_ipc}（帽建议 ×3.0 → $(( m_ipc * 3 ))）/ sgi p99=${p99_sgi} max=${m_sgi}（帽建议 ×3.0 → $(( m_sgi * 3 ))）——烘焙 LAT_CAP_IPC/LAT_CAP_SGI 后复跑执法"
-    LAT_OBS="CALIBRATE 观测（ipc p99=${p99_ipc} max=${m_ipc} / sgi p99=${p99_sgi} max=${m_sgi}——帽未执法）"
+    # 定标行（S-5d SW1_FLOOR 先例同形）：全周期观测 max ×3.0 向上取整烘焙。
+    local kil=""
+    [ "$m_ipc" -gt $(( BANK_CAP_IPC * 3 )) ] && kil="${kil} ipc"
+    [ "$m_sgi" -gt $(( BANK_CAP_SGI * 3 )) ] && kil="${kil} sgi"
+    if [ -n "$kil" ]; then
+      echo "soak-g3: lat kill criteria 破线（${kil} 稳态 max 超银行跑帽 ×3.0）——候选① 降级，候选②（lockdep N 跑）顶上（evidence-g3-5recon.md 后继刀形 4）" >&2
+    fi
+    echo "soak-g3: lat 定标（${beats}+1 周期行）：ipc p99max=${p99_ipc} max=${m_ipc}（帽建议 ×3.0 → $(( m_ipc * 3 ))）/ sgi p99max=${p99_sgi} max=${m_sgi}（帽建议 ×3.0 → $(( m_sgi * 3 ))）——烘焙 LAT_CAP_IPC/LAT_CAP_SGI 后复跑执法"
+    LAT_OBS="CALIBRATE 观测 ${beats}+1 周期（ipc p99max=${p99_ipc} max=${m_ipc} / sgi p99max=${p99_sgi} max=${m_sgi}——帽未执法）"
     return 0
   fi
   if [ "$m_ipc" -gt "$LAT_CAP_IPC" ]; then
-    echo "lat 面：lane=ipc max=${m_ipc} > 帽 ${LAT_CAP_IPC}（激进面尾延迟回归——lockdep 开销/满载受扰超标）" >&2; bad=1
+    echo "lat 面：lane=ipc max-over-cycles=${m_ipc} > 帽 ${LAT_CAP_IPC}（稳态尾延迟回归——lockdep 开销/满载受扰超标）" >&2; bad=1
   fi
   if [ "$m_sgi" -gt "$LAT_CAP_SGI" ]; then
-    echo "lat 面：lane=sgi max=${m_sgi} > 帽 ${LAT_CAP_SGI}（激进面尾延迟回归——lockdep 开销/满载受扰超标）" >&2; bad=1
+    echo "lat 面：lane=sgi max-over-cycles=${m_sgi} > 帽 ${LAT_CAP_SGI}（稳态尾延迟回归——lockdep 开销/满载受扰超标）" >&2; bad=1
   fi
-  LAT_OBS="ipc p99=${p99_ipc} max=${m_ipc} ≤ ${LAT_CAP_IPC} / sgi p99=${p99_sgi} max=${m_sgi} ≤ ${LAT_CAP_SGI}"
+  LAT_OBS="ipc p99max=${p99_ipc} max=${m_ipc} ≤ ${LAT_CAP_IPC}（${beats}+1 周期恰形）/ sgi p99max=${p99_sgi} max=${m_sgi} ≤ ${LAT_CAP_SGI}"
   [ "$bad" -eq 1 ] && return 1
   return 0
 }
@@ -274,11 +297,13 @@ echo "soak-g3: QEMU 启动（-smp 2 + lockdep feature 镜像 + soak/soakload/lat
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：boot 覆盖十四标记（soak-smp 十二 + lockdep face 两件：
+# —— 阶段 1：boot 覆盖十五标记（soak-smp 十二 + lockdep/lat 面三件：
 # `LOCKDEP selftest ok`〔G3-3 六阳性三负对照自证——face 缺席即静默非绿〕
-# + `LATSGI gate on`〔lat 门键命中自证——键名漂移则 lat 面必假绿〕）——
+# + `LATSGI gate on`〔lat 门键命中自证——键名漂移则 lat 面必假绿〕
+# + `LAT trig armed`〔C 形触发装配自证 2026-11-05——soak∧lat 双门且触发
+# Event 落静态；缺席 = 常驻面静默退化一次性，恰 N+1 行断言红〕）——
 t0=$(date +%s)
-COVER=("SMP ok ncores=2" "SOAK gate on" "SOAKLOAD fleet on n=3" "LOCKDEP selftest ok" "LATSGI gate on" "ECO ok" "VIRTIO ok" "SKT ok n=" "FAT ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "EVS ok n=2")
+COVER=("SMP ok ncores=2" "SOAK gate on" "LAT trig armed" "SOAKLOAD fleet on n=3" "LOCKDEP selftest ok" "LATSGI gate on" "ECO ok" "VIRTIO ok" "SKT ok n=" "FAT ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "TCPS ok echo=" "EVS ok n=2")
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 提前退出（boot 期崩溃？）"
   missing=""
@@ -384,12 +409,27 @@ LD_VIO=$(command grep -ac 'LOCKDEP VIOLATION' "$LOG" 2>/dev/null || true); LD_VI
 [ "$LD_OK" -eq 1 ] || fail "lockdep 面：selftest ok 计数 ${LD_OK}（期望恰 1；boot COVER 见过行后又被覆写 = 环丢字面）"
 [ "$LD_FAIL" -eq 0 ] || fail "lockdep 面：selftest FAIL 计数 ${LD_FAIL}（六阳性三负对照有臂翻车）"
 [ "$LD_VIO" -eq 0 ] || fail "lockdep 面：VIOLATION 计数 ${LD_VIO}（真锁序违约——长跑暴露）"
-# lat 面（BENCHLAT 收割 + 双路帽/定标；LATIPC/LATSGI ok 完成标记恰一次）。
+# lat 面（C 形常驻：LATIPC/LATSGI ok 计数 = 拍数+1——boot 周期 + 每拍一
+# 周期）。末拍周期行在末拍行后数秒落（周期秒级 vs 拍 60s）——先结算等待
+#（45s 帽 < 拍距余量 ≈58s：等得到末周期行、等不到下拍），落齐即收 QEMU
+# 冻结日志再终验（后续拍不再进账——计数面闭形）。
+N_FINAL=$(beats_raw | wc -l | tr -d ' ')
+ts=$(date +%s)
+while :; do
+  LAT_OK_IPC=$(command grep -ac 'LATIPC ok n=32' "$LOG" 2>/dev/null || true); LAT_OK_IPC=${LAT_OK_IPC:-0}
+  LAT_OK_SGI=$(command grep -ac 'LATSGI ok n=32' "$LOG" 2>/dev/null || true); LAT_OK_SGI=${LAT_OK_SGI:-0}
+  [ "$LAT_OK_IPC" -ge $(( N_FINAL + 1 )) ] && [ "$LAT_OK_SGI" -ge $(( N_FINAL + 1 )) ] && break
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "lat 结算期 QEMU 退出（周期内崩溃/panic？——心跳表与日志尾部见上）"
+  [ $(( $(date +%s) - ts )) -gt 45 ] \
+    && fail "lat 面：末拍周期行 45s 未落齐（LATIPC ${LAT_OK_IPC}/LATSGI ${LAT_OK_SGI} ≠ $(( N_FINAL + 1 ))——触发断链/周期挂死）"
+  sleep 2
+done
+kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null; QEMU_PID=""
 LAT_OK_IPC=$(command grep -ac 'LATIPC ok n=32' "$LOG" 2>/dev/null || true); LAT_OK_IPC=${LAT_OK_IPC:-0}
 LAT_OK_SGI=$(command grep -ac 'LATSGI ok n=32' "$LOG" 2>/dev/null || true); LAT_OK_SGI=${LAT_OK_SGI:-0}
-[ "$LAT_OK_IPC" -eq 1 ] || fail "lat 面：LATIPC ok n=32 计数 ${LAT_OK_IPC}（期望恰 1——载荷断链/未完成）"
-[ "$LAT_OK_SGI" -eq 1 ] || fail "lat 面：LATSGI ok n=32 计数 ${LAT_OK_SGI}（期望恰 1——载荷断链/未完成）"
-lat_face || fail "尾延迟帽面破（收割与帽判定见上）"
+[ "$LAT_OK_IPC" -eq $(( N_FINAL + 1 )) ] || fail "lat 面：LATIPC ok n=32 计数 ${LAT_OK_IPC} ≠ $(( N_FINAL + 1 ))（boot+每拍一周期——断链/漏触发/自由跑）"
+[ "$LAT_OK_SGI" -eq $(( N_FINAL + 1 )) ] || fail "lat 面：LATSGI ok n=32 计数 ${LAT_OK_SGI} ≠ $(( N_FINAL + 1 ))（boot+每拍一周期——断链/漏触发/自由跑）"
+lat_face "$N_FINAL" || fail "尾延迟帽面破（收割与帽判定见上）"
 
 # S-5e m6 同款措辞边界：pages 稳态窗真比较最早第 7 拍。
 if [ "$MINUTES" -ge 7 ]; then
