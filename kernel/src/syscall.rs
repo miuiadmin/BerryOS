@@ -776,8 +776,10 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
 /// （pager 重调 0x21 自愈）；pager 不再调 = faulter 永久阻塞（§5-⑤ 裁决
 /// ——PS 可见/不传染）。
 ///
-/// 首形界（单 faulter/单 pager；多 faulter 错醒由重 fault 自愈）：目标
-/// Vmo 指针须与武装请求区间匹配（冒充/跨进程请求拒 -EINVAL）。
+/// 多 faulter 面（G4-3 B 刀键化后）：K=8 槽池认领 + 每槽定向唤，错醒仅
+/// 存池满溢出 convoy（≤N-K 有界；C-lite 时代「错醒由重 fault 自愈」的
+/// 广播面退役）；目标 Vmo 指针须与武装请求区间匹配（冒充/跨进程请求拒
+/// -EINVAL——池化后不变，0x21 按 take 到的 (far,asid) 验属主）。
 extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
     let (vh, sh, soff) = (tf.regs[1] as u32, tf.regs[2] as u32, tf.regs[3] as usize);
     if soff % PAGE_SIZE != 0 {
@@ -806,10 +808,12 @@ extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
     }
     let ret = loop {
         match crate::dpg::el0_take() {
-            Some((far, asid)) => {
+            Some((far, asid, slot)) => {
                 let r = pager_supply_one(vd, sv, soff, far, asid);
-                // 恒唤 faulter（自愈语义——供给窗收口后出环）。
-                crate::dpg::el0_wake_faulter();
+                // 恒唤**本槽** faulter（B 刀键化定向唤——自愈语义不变：
+                // 成功 = eret 命中新叶；失败 = 重试再 fault 再认领，pager
+                // 重调 0x21 自愈；供给窗收口后出环）。
+                crate::dpg::el0_wake_faulter(slot);
                 break r;
             }
             None => {

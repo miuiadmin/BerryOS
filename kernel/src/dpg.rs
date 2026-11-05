@@ -33,7 +33,9 @@
 //! G4-2 增 EL0 面（§5-③ 裁决：0x21 阻塞收货）：EL0 D-abort 探针武装
 //! EL0 请求槽 + 唤 EL0 pager 键；用户态 pager 经 `pager_supply_pages`
 //! (0x21) poll-first 收货（无请求睡 pager 键）→ 供给 → 唤 faulter。
-//! 与 EL1 面分槽分键（内核 pager 对不劫 EL0 请求）。
+//! 与 EL1 面分槽分键（内核 pager 对不劫 EL0 请求）。G4-3 B 刀：EL0 面
+//! per-request 键化——K=8 槽池认领 + 每槽 fault 键定向唤 + 池满溢出
+//! convoy（单槽覆写/全局广播错醒退役，详 EL0 面块注）。
 
 use crate::mm;
 use crate::vmar::{self, Perm, Vmar};
@@ -179,14 +181,36 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     true
 }
 
-// ---- G4-2 EL0 面（§5-③ 裁决：0x21 阻塞收货——请求单槽照旧 + 专用键；
-// 与 EL1 面分槽，内核 dpg_pager 不劫 EL0 请求。arm 侧按臂唤不同键。）----
+// ---- G4-2 EL0 面（§5-③ 裁决：0x21 阻塞收货；与 EL1 面分槽，内核 dpg_pager
+// 不劫 EL0 请求。G4-3 B 刀 per-request 键化：单槽盲覆写 + 全局单键广播
+// 退役〔C-lite 实证自愈无恙后降级为 O(N²) 错醒热点〕——K=8 槽池认领制 +
+// 每槽专属 fault 键定向唤 + 池满溢出 convoy。）----
 
-static EREQ_FAR: AtomicU64 = AtomicU64::new(0);
-static EREQ_ASID: AtomicU16 = AtomicU16::new(0);
-static EREQ_ARMED: AtomicBool = AtomicBool::new(false);
+/// EL0 请求槽池容量（B 刀 K=8）。选型：C-full soak N=15 > K → 溢出
+/// convoy 面天然压过（免死码）；池满 faulter 睡 [`EOVERFLOW_KEY`]，take
+/// 侧消费即放槽唤醒、重扫续环（poll-first 同构，§5-⑤ 挂死帽语义不变）。
+const EREQ_SLOTS: usize = 8;
 
-static EFAULT_KEY: u8 = 0; // EL0 faulter 睡此（探针内；0x21 供给毕唤醒）
+/// EL0 武装请求槽（ADR #9 零分配：boot 静态池。互斥依托 **KL 全谱锁**
+/// 非单核〔G4-2 修批 C3 口径〕——探针写者与 0x21 读者被 KL 串行，扫描/
+/// 写槽/消费全程原子；armed 位 Release 收口，take 侧 Acquire 后 far/asid
+/// 必可见）。
+struct EReqSlot {
+    far: AtomicU64,
+    asid: AtomicU16,
+    armed: AtomicBool,
+}
+
+const fn ereq_slot() -> EReqSlot {
+    EReqSlot { far: AtomicU64::new(0), asid: AtomicU16::new(0), armed: AtomicBool::new(false) }
+}
+
+const EREQ_INIT: EReqSlot = ereq_slot();
+
+static EREQ: [EReqSlot; EREQ_SLOTS] = [EREQ_INIT; EREQ_SLOTS];
+
+static EFAULT_KEYS: [u8; EREQ_SLOTS] = [0; EREQ_SLOTS]; // faulter[i] 睡此（0x21 供给毕**定向**唤醒——N-1 错醒清零）
+static EOVERFLOW_KEY: u8 = 0; // 槽池满的 faulter 睡此（take 消费放槽即唤——convoy ≤ N-K 有界）
 static EPAGER_KEY: u8 = 0; // EL0 pager 睡此（0x21 无请求时；探针武装后唤醒）
 
 /// EL0 fault 探针（hal 第二槽 `*_el0`；`exception_sync_el0` D-abort 臂）。
@@ -219,16 +243,37 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     }
     // 命中 = 提交路径：入深（G4-3 深度帽，shape (a) 同 [`probe`]）。
     depth_enter();
-    // 命中：武装 + 唤 pager + 睡（时序合同同 [`probe`]——Release 收口后
-    // far/asid 对 0x21 Acquire 侧必可见；全 KL 窗）。
-    EREQ_FAR.store(far as u64, Ordering::Relaxed);
-    EREQ_ASID.store(asid, Ordering::Relaxed);
-    EREQ_ARMED.store(true, Ordering::Release);
+    // B 刀键化认领环：扫槽池取空闲槽武装（KL 全谱串行——扫描/写槽原子，
+    // C3 口径；far/asid 先行、armed Release 收口）；池满睡溢出 convoy 键，
+    // take 侧消费放槽即唤、醒后重扫（block_current 放锁入队/醒后重取同
+    // 舞蹈——重扫仍在 KL 窗，无丢唤窗）。
+    let slot = loop {
+        match (0..EREQ_SLOTS).find(|i| !EREQ[*i].armed.load(Ordering::Relaxed)) {
+            Some(i) => {
+                EREQ[i].far.store(far as u64, Ordering::Relaxed);
+                EREQ[i].asid.store(asid, Ordering::Relaxed);
+                EREQ[i].armed.store(true, Ordering::Release);
+                break i;
+            }
+            None => {
+                // 出深再睡（shape (a)：睡眠不计）。
+                depth_exit();
+                let _ = berry_sched::block_current(
+                    &EOVERFLOW_KEY as *const u8 as usize,
+                    DPG_WAKE_BIT,
+                    u64::MAX,
+                );
+                depth_enter();
+            }
+        }
+    };
+    // 唤 pager（KL 窗内 SQ 嵌套 = SVC 同构；双序通吃：已睡 → 摘队，未睡 →
+    // 位/槽锁存 + pager poll-first 追平——f4 F1 纪律同源）。
     berry_sched::wake_matching(&EPAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
     // 出深再睡（shape (a)：睡眠不计）。
     depth_exit();
     let r = berry_sched::block_current(
-        &EFAULT_KEY as *const u8 as usize,
+        &EFAULT_KEYS[slot] as *const u8 as usize,
         DPG_WAKE_BIT,
         u64::MAX,
     );
@@ -250,12 +295,17 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
 ///（0x21 SVC 类 KL 在身；探针写点同在 KL 窗）。互斥依托 **KL 全谱锁**非
 ///「单核」（G4-2 修批 C3 改口：SMP 下跨核探针写者与 0x21 读者被 KL 串行
 /// ——smoke-smp 跨核供给已实发，「单核屏蔽」论证退役，防 G4-3 误放宽）。
-pub(crate) fn el0_take() -> Option<(usize, u16)> {
-    if EREQ_ARMED.swap(false, Ordering::Acquire) {
-        Some((EREQ_FAR.load(Ordering::Relaxed) as usize, EREQ_ASID.load(Ordering::Relaxed)))
-    } else {
-        None
+/// B 刀键化：扫池取**最低索引** armed 槽（确定性），返回 `(far, asid,
+/// slot)`——供给毕经 [`el0_wake_faulter`] 定向唤本槽；消费即放槽，恒唤
+/// 溢出 convoy（池满等待者重扫认领——无等待者即无操作）。
+pub(crate) fn el0_take() -> Option<(usize, u16, usize)> {
+    for (i, s) in EREQ.iter().enumerate() {
+        if s.armed.swap(false, Ordering::Acquire) {
+            berry_sched::wake_matching(&EOVERFLOW_KEY as *const u8 as usize, DPG_WAKE_BIT);
+            return Some((s.far.load(Ordering::Relaxed) as usize, s.asid.load(Ordering::Relaxed), i));
+        }
     }
+    None
 }
 
 /// EL0 pager 等待键（0x21 阻塞收货的睡点）。
@@ -263,10 +313,11 @@ pub(crate) fn el0_pager_key() -> usize {
     &EPAGER_KEY as *const u8 as usize
 }
 
-/// 唤 EL0 faulter（0x21 出口恒唤——成功 = eret 命中新叶；失败 = 重试再
-/// fault 再武装，pager 重调 0x21 自愈；不再调 = 永久阻塞 §5-⑤）。
-pub(crate) fn el0_wake_faulter() {
-    berry_sched::wake_matching(&EFAULT_KEY as *const u8 as usize, DPG_WAKE_BIT);
+/// 唤本槽 EL0 faulter（B 刀键化：**定向唤**——单槽单键，N-1 广播错醒
+/// 清零；0x21 出口恒唤语义不变：成功 = eret 命中新叶；失败 = 重试再
+/// fault 再认领，pager 重调 0x21 自愈；不再调 = 永久阻塞 §5-⑤）。
+pub(crate) fn el0_wake_faulter(slot: usize) {
+    berry_sched::wake_matching(&EFAULT_KEYS[slot] as *const u8 as usize, DPG_WAKE_BIT);
 }
 
 /// 0x21 源拷贝缓冲（4K 静态：ADR #9 零分配 + SVC 栈预算）。独占窗 = 调用方
@@ -314,7 +365,8 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         unsafe { (*root).supply_page(mm::frames(), va) }
             .expect("dpg_pager: supply_page 失败（帧耗尽/建表失败——fail loud）");
         // 数据面：供给页是清零页——写 magic（经 VMO direct map 写路径；
-        // faulter 经其 VA 读同 PA，单核调度切换序即全屏障）。
+        // faulter 经其 VA 读同 PA——跨核可见性 = 供给窗 dsb ish + tlbi/
+        // broadcast 在场〔supply_page 链〕，KL 全谱串行同 C3 口径）。
         let off = vmo_off + (va - base);
         // SAFETY: Region 的 vmo 指针有效性 = init 泄漏持有（boot 装配恒活）
         // × demand 钉防线（G4-2 修批——handle 层销毁拒面第二分量）双保险。
