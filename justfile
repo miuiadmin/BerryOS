@@ -739,6 +739,30 @@ smoke-smp: build build-user
 smoke-image: image
     bash tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
 
+# GUI-8 段④ EFI GUI 交互相双 boot 冒烟（独立关卡；**不并入 smoke-image**，
+# 冻结十段/生态 33 断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
+# mkfat FAT12 数据盘（LBA0 `BERRYOSVBLK!` + 根 `GUI8.SMK`）+ 256M + ramfb +
+# display fw_cfg 800x600@60 + virtio-blk + virtio-tablet + QMP unix sock：
+#   Boot A：等 LAUNCH/PAGE → QMP 单击 APPDEMO 格 → CLICK ok n=1 + LAYOUTW ok；
+#   Boot B：同一数据盘（不重造）→ LAYOUT ok n=<N> + LAUNCH ok，零 LAYOUTW、
+#           零 CLICK，且数据盘 sha256 前后一致（读路径零重写）。
+# 依赖 launcher 段④ 标记（CLICK/LAYOUTW/LAYOUT）合并；未合并时脚本以显式
+# 缺标记 FAIL（plumbing 先跑 `python3 tools/gui8-smoke.py --self-test` /
+# `--dry-run`）。
+# GUI8_REBUILD=1 强制重建镜像；GUI8_KEEP=1 保留日志/数据盘。
+# gui8-smoke：双 boot 交互相验收（依赖段④ 标记合并）。
+gui8-smoke:
+    #!/bin/sh
+    set -eu
+    if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
+        just image
+    fi
+    set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}"
+    if [ "${GUI8_KEEP:-0}" = 1 ]; then
+        set -- "$@" --keep
+    fi
+    exec python3 tools/gui8-smoke.py "$@"
+
 # ---------- V-0a BerryBoot（EFI 骨架；VM 草案 §V-0，AAVMF 引导链）----------
 # 独立小工作区（同 x86_64 模式——根 workspace 不含本目录；构建必须显式
 # --target，根 .cargo/config.toml 锁的 build.target 跨 workspace 边界仍命中）。
