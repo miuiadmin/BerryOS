@@ -9,7 +9,7 @@
 | --- | --- | --- | --- | --- |
 | Windows 实机 | 🟡 `windows/build.ps1` + `run-berry.cmd`；无 `berry.exe` | 本机无 Windows target；`rustup target add` 下载失败 | Windows 上 `run-berry.cmd` → `berry shell`；`doctor` 绿；截图 | 高：未知 DLL/路径/控制台行为 |
 | Windows GUI subsystem | ⬜ `berry.exe` 仍是 console binary | 需 `windows_subsystem` + `AttachConsole`/`AllocConsole` 分支 | 双击不闪控制台；cmd 调用仍能看输出 | 中：Rust std stdout 重定向 |
-| Linux 实机 | 🟡 `build-linux-binary.sh` 已产 aarch64-musl **ELF**；AppDir 26 ok/0 warning | 无 Linux 运行环境 | Linux 上 `AppRun` → shell/截图/power off | 高：GUI/QEMU/桌面集成 |
+| Linux 实机 | 🟡 `build-linux-binary.sh` 产 aarch64-musl **ELF**；AppDir 26 ok/0 warning；tar.gz 20.5MB | 无 Linux 运行环境 | Linux 解包 `AppRun` → shell/截图/power off | 高：GUI/QEMU/桌面集成 |
 | Linux AppImage | 🟡 脚本支持 `APPIMAGETOOL` | 本机无 appimagetool；非 ELF 主动跳过 | `APPIMAGETOOL=... build-appdir.sh` 出 `.AppImage` 并运行 | 中：FUSE/沙箱 |
 
 ## P1（功能可见缺口）

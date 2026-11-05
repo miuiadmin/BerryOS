@@ -25,7 +25,14 @@ tools/berry/packaging/linux/check-appdir.sh --require-elf --file --sha256 \
   out/BerryOS.AppDir-linux
 ```
 
-`check-appdir.sh` 应输出 `0 failure`。有 `appimagetool` 时：
+`check-appdir.sh` 应输出 `0 failure`。也可打成便携 tar.gz：
+
+```bash
+tools/berry/packaging/linux/build-tarball.sh out/BerryOS.AppDir-linux
+# out/BerryOS-linux-aarch64.tar.gz
+```
+
+有 `appimagetool` 时：
 
 ```bash
 APPIMAGETOOL=/path/to/appimagetool BERRY_BIN=... build-appdir.sh
