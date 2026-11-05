@@ -339,7 +339,7 @@ shortcut screenshot|reboot|power [--run] [--json]
 logs [--run] [-f] [--tail N] [--json]
 events [--run] [--json]
 record [--run] --out <dir> --frames N --interval-ms MS [--apng file] [--json]
-play <file.json> [--run] [--json]     # 步骤：screenshot/tap/key/text/swipe/wait/power/display
+play <file.json> [--run] [--json]     # 步骤：screenshot/tap/key/text/swipe/wait/power/display/expect
 stats [--run] [--json]
 doctor [--json]
 pack verify|install <path>       # C4 规划，未落

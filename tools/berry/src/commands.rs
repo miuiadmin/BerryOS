@@ -431,6 +431,61 @@ pub fn host(args: HostArgs) -> Result<()> {
     Ok(())
 }
 
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+fn expect_step(run: &Path, args: &serde_json::Value, step: usize) -> Result<()> {
+    let mut checked = false;
+    if let Some(want) = args.get("state").and_then(|v| v.as_str()) {
+        checked = true;
+        let v = control::request(run, "status", json!({}))?;
+        let got = v.get("state").and_then(|s| s.as_str()).unwrap_or("?");
+        if got != want {
+            return Err(BerryError::device(format!(
+                "expect step {step}: state {got:?} != {want:?}"
+            )));
+        }
+    }
+    if let Some(path) = args.get("file").and_then(|v| v.as_str()) {
+        checked = true;
+        let data = std::fs::read(path)
+            .map_err(|e| BerryError::device(format!("expect step {step}: read {path}: {e}")))?;
+        if let Some(min) = args.get("min_bytes").and_then(|v| v.as_u64()) {
+            if data.len() < min as usize {
+                return Err(BerryError::device(format!(
+                    "expect step {step}: {path} {} bytes < {min}",
+                    data.len()
+                )));
+            }
+        }
+        if let Some(want) = args.get("fnv1a64").and_then(|v| v.as_str()) {
+            let want = want
+                .trim_start_matches("0x")
+                .parse::<u64>()
+                .map_err(|_| BerryError::new(2, format!("expect step {step}: bad fnv1a64")))?;
+            let got = fnv1a64(&data);
+            if got != want {
+                return Err(BerryError::device(format!(
+                    "expect step {step}: fnv1a64 {got:016x} != {want:016x}"
+                )));
+            }
+        }
+    }
+    if !checked {
+        return Err(BerryError::new(
+            2,
+            format!("expect step {step}: needs state or file"),
+        ));
+    }
+    Ok(())
+}
+
 pub fn play(script: &Path, run: Option<&str>, json: bool) -> Result<()> {
     let run = find_run(run)?;
     let raw = std::fs::read(script)
@@ -455,7 +510,9 @@ pub fn play(script: &Path, run: Option<&str>, json: bool) -> Result<()> {
                 }
                 a
             });
-        if op == "wait" {
+        if op == "expect" {
+            expect_step(&run, &args, i + 1)?;
+        } else if op == "wait" {
             let ms = args.get("ms").and_then(|v| v.as_u64()).unwrap_or(100);
             std::thread::sleep(Duration::from_millis(ms));
         } else {
