@@ -202,6 +202,17 @@ fn pull(app_h: Handle) -> Option<&'static [AppEntry]> {
         }
     }
 
+    // 通用图标 fallback：无 [ui] 图标的 app（测试控制件/系统件）不再
+    // 裸 label 浮在桌面；给一枚中性圆角 tile（48×48，1-bit alpha），
+    // app 域/APPUI 记账不受影响。
+    let generic_id = faces.len() as u16;
+    faces.push(generic_face());
+    for e in &mut entries {
+        if e.icon == NO_ICON {
+            e.icon = generic_id;
+        }
+    }
+
     let leaked: &'static [AppEntry] = Box::leak(entries.into_boxed_slice());
     let _ = FACES.set(Box::leak(faces.into_boxed_slice()));
     Some(leaked)
@@ -241,6 +252,38 @@ fn finish_entry(entries: &mut Vec<AppEntry>, faces: &mut Vec<IconFace>, px_used:
         label_len: pe.label_len,
         icon,
     });
+}
+
+/// 通用图标面（无图标 app 的 fallback；中性石板底 + 白环，1-bit alpha）。
+fn generic_face() -> IconFace {
+    const S: usize = 48;
+    let mut px = vec![0u32; S * S];
+    let mut y = 0usize;
+    while y < S {
+        let mut x = 0usize;
+        while x < S {
+            // 圆角半径 10：四角外 = 透明。
+            let cx = if x < 10 { 10 - x } else if x >= S - 10 { x - (S - 11) } else { 0 };
+            let cy = if y < 10 { 10 - y } else if y >= S - 10 { y - (S - 11) } else { 0 };
+            if cx * cx + cy * cy > 100 {
+                px[y * S + x] = 0;
+                x += 1;
+                continue;
+            }
+            let dx = x as i32 - 23;
+            let dy = y as i32 - 23;
+            let d2 = dx * dx + dy * dy;
+            // 白环：半径 15..=18。
+            px[y * S + x] = if (225..=324).contains(&d2) {
+                0xFFFF_FFFF
+            } else {
+                0xFF45_5A7A
+            };
+            x += 1;
+        }
+        y += 1;
+    }
+    IconFace { w: S as u32, h: S as u32, px }
 }
 
 /// launcher 图标供件（berry-ui D28 供给槽真身——`Ui::set_icon_source`

@@ -338,7 +338,7 @@ fn main() {
 
     // —— berry-gfx soft 渲一帧（确定性图案：Clear 深蓝灰底 + 顶部红带 +
     // 底部绿条 + 白字 "GFX" 深蓝衬底；dirty 无 = 整帧）。
-    let desc = match TextureDesc::new(w, h, stride, TextureFormat::Bgrx) {
+    let desc = match TextureDesc::new(w, h, stride, TextureFormat::Rgbx) {
         Ok(d) => d,
         Err(e) => fail(&format!("texture desc {e:?}")),
     };
