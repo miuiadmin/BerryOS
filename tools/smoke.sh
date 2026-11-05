@@ -878,7 +878,7 @@ QEMU_PID=$!
 # G4-3 C-lite：+ DPGS ok n=4——rootfs 相第 49 标记（INPUT(48) 后随实发
 # 序），svcmgr dpg_storm 缺页风暴 N=4 自愈收敛自证（boot 序 input 后打，
 # 4 子 join 7 齐才发）。"DPGS ok n=4" 与现役标记两两互非子串（"DPGP ok"/
-# "DPG ok" 位 4 S≠P；位 5 空格≠P——同 INPUT 防混叠口径）；不进
+# "DPG ok" 位 4 S≠P）；不进
 # assert_marker 特判面。
 # 数组本体 → tools/markers.sh 单源（S-5 后测试基建收尾刀起，此处仅注记）。
 t2=$(date +%s)

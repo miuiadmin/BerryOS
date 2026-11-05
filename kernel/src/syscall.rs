@@ -815,7 +815,8 @@ extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
             None => {
                 // 无武装请求：睡 EL0 pager 键（0x21 = 阻塞收货）。SVC 入口
                 // 类持锁的放/取舞蹈由 block_current 承担（wait_one 先例）；
-                // 单核 KL 窗内查位+入队 = 无丢唤醒（dpg_pager 同构）。
+                // KL 全谱锁窗内查位+入队 = 无丢唤醒（跨核供给者/探针写者
+                // 被 KL 串行，SMP 同验——dpg_pager 同构；G4-2 修批 C3 口径）。
                 let _ = berry_sched::block_current(
                     crate::dpg::el0_pager_key(),
                     crate::dpg::DPG_WAKE_BIT,

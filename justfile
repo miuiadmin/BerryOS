@@ -726,7 +726,7 @@ smoke-x86: build-x86
     bash tools/smoke-x86.sh "{{X86_KERNEL}}"
 
 # S-2b 副核参与冒烟——双相（`SMP-S2实施设计草案.md` §5.1）：相 1 裸相
-# （27 标记 + SMP 握手）+ 相 2 rootfs 生态相（45 标记 + EVS/SKT 对拍
+# （28 标记 + SMP 握手）+ 相 2 rootfs 生态相（49 标记 + EVS/SKT 对拍
 # client + PAR absent d1 副核参与活证——真并行 witness 归 S-3）。
 # 断言面：`SMP ok ncores=2` 按相各恰一次 + 标记与 smoke.sh 计数对拍机器
 # 守卫 + 金丝雀按相严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐），

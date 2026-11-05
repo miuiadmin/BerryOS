@@ -26,9 +26,11 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// 活进程帽（`sys_process_create` 门控）：创建权未设防（`job` 恒 0）且
-/// root Vmar 的 L1 帧 + Process/Vmar Box 在 v1 **不回收**（Plan B 回收链止于
-/// 映射帧与任务体；Vmar 无 Drop、ASID 释放留 v2）——无帽则单 EL0 循环
-/// create 可把全系统耗到 -ENOMEM 停摆（no-panic 守住不死、但一切服务停摆）；
+/// root Vmar 的 L1 表树帧在 v1 **不回收**（Box 回收链已实：handle 三释放
+/// 点 `drop(Box::from_raw)` + `Vmar::Drop` 注销 asid 反查槽/放 demand 钉
+/// 〔63b7abc〕；但表树帧/ASID 号留 v2——vmar.rs Drop 自述「v1 不回收表树
+/// 帧」模块政策）——无帽则单 EL0 循环 create 泄漏 L1 表树帧，可把全系统
+/// 耗到 -ENOMEM 停摆（no-panic 守住不死、但一切服务停摆）；
 /// 计数把无界封为有界——`vmo_create` 的 `VMO_MAX_SIZE` 帽同哲学。
 /// per-caller 配额随 v2 Job 收口（届时按调用方分账）。
 pub const PROCESS_MAX: usize = 64;
