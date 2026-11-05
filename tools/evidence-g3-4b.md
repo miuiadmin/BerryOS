@@ -126,6 +126,6 @@
 | F2/F7/F12/F13 文档面 | 测量口径勘正（被测段不含 RQ 入队+SGI 发送）+ 段①②环境声明×4（单路→双路 boot 不可跨段互拍）+ trace=0 手跑单核注记 + 命令速览措辞耐久化 |
 | F5/F8/F9/F10/F11 内核面 | BOOT_TIMEOUT_LAT 240（规则/08 ×2 律）+ 注释四条（wait 位纪律前提 / SMP halt 语义 / wake_stamp_take SQ 序边 / TRACE_OFF 显式边 Release-Acquire） |
 | F1 结构根治 | write_receipt 回执面落 out/bench-receipts/（argv 头 + summary + 全 serial）；史档缺档勘误见 notes.md f4 修复批复验条 |
-| just smoke（八跑） | PASS exit=0（金丝雀 43 条严格递增〔G3-4b 批同值，门=≥3 且严格递增〕+ rootfs 相全链 + RX 交互相 + FAT 子目录/持久化相 + B4 掉电三相恢复终验；全卷 PANIC/VIOLATION 零命中；/tmp/g34fix-smoke.log 2026-11-05 本机跑） |
-| just smoke-smp（八相） | PASS exit=0（相 1/2 boot 执法 SMP/SGI/SGI2 恰一次 + 裸 27 + rootfs 47 + PAR d1；LB c0=0/c1≥24/n=4、ASIDR n≥1、TLBS n=10、ALLOC n=320、HT n=320、PP 320/320 全门；VIOLATION/PANIC 零命中；/tmp/g34fix-smoke-smp.log 2026-11-05 本机跑） |
-| just bench（B-0 对拍 + docs_guard + abi-check） | PASS exit=0（B-0 ×3.0 六项全在界：4/29/17/26/273/750 + docs_guard 0 警 + abi-check PASS；/tmp/g34fix-bench.log 2026-11-05 本机跑） |
+| just smoke（八跑） | PASS exit=0（金丝雀 43 条严格递增〔G3-4b 批同值，门=≥3 且严格递增〕+ rootfs 相全链 + RX 交互相 + FAT 子目录/持久化相 + B4 掉电三相恢复终验；全卷 PANIC/VIOLATION 零命中；回执 `out/bench-receipts/smoke-20261105.log`〔f4 复验抢救归档，/tmp 易失路径不入 committed 证据〕） |
+| just smoke-smp（八相） | PASS exit=0（相 1/2 boot 执法 SMP/SGI/SGI2 恰一次 + 裸 27 + rootfs 47 + PAR d1；LB c0=0/c1≥24/n=4、ASIDR n≥1、TLBS n=10、ALLOC n=320、HT n=320、PP 320/320 全门；VIOLATION/PANIC 零命中；回执 `out/bench-receipts/smoke-smp-20261105.log`） |
+| just bench（B-0 对拍 + docs_guard + abi-check） | PASS exit=0（B-0 ×3.0 六项全在界：4/29/17/26/273/750 + docs_guard 0 警 + abi-check PASS；回执 `out/bench-receipts/bench-20261105.log`） |
