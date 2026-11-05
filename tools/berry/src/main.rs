@@ -66,6 +66,14 @@ enum Cmd {
     Shell(ShellCmd),
     /// Inject input into a running device via VNC.
     Input(InputCmd),
+    /// Top-level tap alias for `input tap`.
+    Tap(TapCmd),
+    /// Top-level key alias for `input key`.
+    Key(KeyCmd),
+    /// Top-level swipe alias for `input swipe`.
+    Swipe(SwipeCmd),
+    /// Top-level text alias for `input text`.
+    Text(TextCmd),
     /// Print version.
     Version,
 }
@@ -329,6 +337,40 @@ struct ShellCmd {
 }
 
 #[derive(Parser, Debug)]
+struct TapCmd {
+    x: u16,
+    y: u16,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct KeyCmd {
+    code: String,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct SwipeCmd {
+    x1: u16,
+    y1: u16,
+    x2: u16,
+    y2: u16,
+    #[arg(long, default_value_t = 300)]
+    ms: u64,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct TextCmd {
+    text: String,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
 struct InputCmd {
     #[arg(long)]
     run: Option<String>,
@@ -492,6 +534,32 @@ fn dispatch(cli: Cli) -> Result<()> {
                     InputAction::Swipe { x1, y1, x2, y2, ms }
                 }
             },
+            json: cli.json,
+        }),
+        Some(Cmd::Tap(c)) => commands::input(InputArgs {
+            run: c.run,
+            action: InputAction::Tap(c.x, c.y),
+            json: cli.json,
+        }),
+        Some(Cmd::Key(c)) => commands::input(InputArgs {
+            run: c.run,
+            action: InputAction::Key(c.code),
+            json: cli.json,
+        }),
+        Some(Cmd::Swipe(c)) => commands::input(InputArgs {
+            run: c.run,
+            action: InputAction::Swipe {
+                x1: c.x1,
+                y1: c.y1,
+                x2: c.x2,
+                y2: c.y2,
+                ms: c.ms,
+            },
+            json: cli.json,
+        }),
+        Some(Cmd::Text(c)) => commands::input(InputArgs {
+            run: c.run,
+            action: InputAction::Text(c.text),
             json: cli.json,
         }),
         Some(Cmd::Version) => {

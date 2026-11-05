@@ -53,7 +53,7 @@ berry play script.json --run "$RUN"
 - [ ] `input key/tap/swipe` 到达客机。
 - [ ] `play` 支持 `screenshot/tap/key/text/swipe/wait/power/display/expect`。
 - [ ] `play` 失败标明 step 序号；`--json` 返回 steps。
-- [ ] 顶层 `berry tap/key` 别名、`input text`：⬜ 未落（当前用 `berry input ...` / `play`）。
+- [ ] 顶层 `berry tap/key/swipe/text` 与 `input text` 已落；实测 4 条均 ok。
 
 ## 4. 控制面
 

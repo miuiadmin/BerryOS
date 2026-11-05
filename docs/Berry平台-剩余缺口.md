@@ -18,7 +18,7 @@
 | --- | --- | --- | --- | --- |
 | GUI-8 图标 dash | 🟡 540/256 全桌面可起，但图标占位 | `launcher_assemble` 在 `fs_gift==0` 时只给 `[wm]`，`app_cli_h()==0`；`icons::init` 空 registry | 串口 `LAUNCH v=1` 且桌面出现 APPDEMO/APPQUIET 图标 | 中：需 fsmgr/vblk 或改冻结相 [wm] |
 | data disk 图标实验 | ⬜ 失败已回退 | `vblk` 找到 slot 31，但 `fs_gift` 未成立；FAT/mkfat 有效 | `MMAP/ROOTFS/LAUNCH ok` + app registry | 中：可能污染 boot |
-| 顶层 tap/key/text 别名 | ⬜ 仅 `berry input ...` | clap 未加 alias；`input text` 已有 | `berry tap 1 2` 等 | 低 |
+| 顶层 tap/key/swipe/text 别名 | ✅ 已落 | `input` 子命令 + 顶层 4 别名 | `berry tap 1 2` 等 | 低 |
 | `display rotate` | ⬜ 仅 `display set <profile|WxH>` | 需客机/呈现面旋转 | `display rotate 90` 后截图方向正确 | 中 |
 | `shortcut resolution/fullscreen` | ⬜ CLI 已删；窗口 RES/F 可用 | resolution 需 profile 参数；fullscreen 窗口-only | 仅窗口侧验收 | 低 |
 | `pack verify/install` | ⬜ C4 规划 | 无 runtime pack 格式 | 命令/JSON 契约 | 低 |

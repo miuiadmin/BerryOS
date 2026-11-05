@@ -55,6 +55,9 @@ just berry input key ret
 just berry input tap 400 300
 just berry input swipe 400 500 400 200 --ms 300
 just berry input text hello
+just berry tap 240 500
+just berry key ret
+just berry text hello
 just berry-smoke                            # doctor + kernel marker + EFI shot
 ```
 

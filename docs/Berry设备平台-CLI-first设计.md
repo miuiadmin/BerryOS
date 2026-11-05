@@ -329,7 +329,11 @@ run [--kernel|--image] [--marker] [--timeout]
 screenshot [--run] [--out] [--settle-ms] [--json]
 shot [--image] [--profile] [--accel] [--memory] [--display-mode] [--wait-marker] [--delay-ms] [--timeout] [--out] [--keep] [--json]
 
-input key|tap|swipe|text <...>   # 顶层别名未落，先用 input
+input key|tap|swipe|text <...>
+tap <x> <y> [--run]              # input tap 顶层别名
+key <code> [--run]               # input key
+swipe <x1> <y1> <x2> <y2> [--ms] [--run]
+text <str> [--run]
 power off|reboot [--run] [--force] [--json]
 display list|set <profile|WxH> [--restart] [--run] [--json]
 # WxH 自定义需 --restart（起新 host + display_mode）；rotate 未落
