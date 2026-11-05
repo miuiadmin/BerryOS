@@ -362,6 +362,12 @@ impl Vmar {
         if !vmo.is_demand() {
             return Err(VmarError::VmoNotCommitted);
         }
+        // mech-M-1（G4-1 三镜）：demand 后备 bounds 检查——`off+len` 超 VMO
+        // 容量即拒；checked 加法（溢出先行拒，不落 wrap——:512 check_slot
+        // 同款口径）。
+        if vmo_offset.checked_add(len).map_or(true, |end| end > vmo.size()) {
+            return Err(VmarError::OutOfBounds);
+        }
         self.regions.try_reserve_exact(1).map_err(|_| VmarError::NoMem)?;
         self.regions.push(Region {
             start: vaddr,
@@ -439,9 +445,10 @@ impl Vmar {
 
     /// fault 探针面（G4-1）：`far` 命中本 AS 的 demand 区间 → `(vmo 指针,
     /// vmo_off, 区间基 VA)`——探针据此进 pager 协议；未命中（含 Mapped/
-    /// Reserved/界外）→ `None` = 原杀链不变量保持。只读不锁（探针在异常
-    /// 上下文；区间表仅经 PT 锁窗变更——单核屏蔽窗 = 快照一致，SMP 面由
-    /// 探针→供给链的 PT 锁窗收口）。
+    /// Reserved/界外）→ `None` = 原杀链不变量保持。**调用方均持 KL 窗**
+    ///（G4-1 三镜 P2-2/M-3 修后口径：探针两段式第二段权威重验 + pager
+    /// 供给链全程 KL——无锁外读者；「只读不锁」旧注安全性仅单核成立，
+    /// 已改口）。
     pub fn demand_region_at(&self, far: usize) -> Option<(*mut Vmo, usize, usize)> {
         let idx = self.demand_index(far)?;
         let r = &self.regions[idx];

@@ -10,6 +10,9 @@
 #     ① `LOCKDEP selftest ok` 恰一次
 #     ② `LOCKDEP selftest FAIL` 零次
 #     ③ `LOCKDEP VIOLATION` 零次
+#     ④ `DPG ok` ≥1 且行号晚于 selftest ok（C-3，G4-1 三镜：selftest 在
+#       boot 窗先于 dpg::init——断言窗延到 dpg 闭环毕，执法「feature boot
+#       含 dpg 锁序」不再靠借位）
 #
 # 用法：bash tools/smoke-lockdep.sh <内核 ELF>（须 feature 面——脚本先验
 # marker 串在镜像内，default 面二进制直拒 loud，不烧 60s 帽）。镜像出法：
@@ -53,10 +56,15 @@ keep_log() {
 QPID=$!
 
 # 有界等待：marker 三态任一即止（ok / FAIL / VIOLATION），帽 60s（本机实测
-# boot→marker ≈2s；帽对宿主争用保守 ×30）。
+# boot→marker ≈2s；帽对宿主争用保守 ×30）。C-3：ok 态续等到 `DPG ok`
+#（dpg::init 在 selftest 后——锁序执法面须盖到 dpg 闭环毕）；FAIL/VIOLATION/
+# panicked = 终态坏，早断交断言面自红。
 deadline=$((SECONDS + 60))
 while [ $SECONDS -lt $deadline ]; do
-  if grep -qE 'LOCKDEP selftest (ok|FAIL)|LOCKDEP VIOLATION|panicked' "$LOG" 2>/dev/null; then
+  if grep -qE 'LOCKDEP selftest FAIL|LOCKDEP VIOLATION|panicked' "$LOG" 2>/dev/null; then
+    break
+  fi
+  if grep -q 'LOCKDEP selftest ok' "$LOG" 2>/dev/null && grep -q 'DPG ok' "$LOG" 2>/dev/null; then
     break
   fi
   if ! kill -0 "$QPID" 2>/dev/null; then
@@ -84,9 +92,20 @@ if [ "$VIO" -ne 0 ]; then
   echo "smoke-lockdep: FAIL——VIOLATION 计数 $VIO（真锁序违约——检测器命中）" >&2
   rc=1
 fi
+# ④（C-3）：DPG ok ≥1 且行号晚于 selftest ok 行（执法窗盖到 dpg 闭环）。
+DPG=$(grep -c 'DPG ok' "$LOG" 2>/dev/null || true)
+SF_LINE=$(grep -n 'LOCKDEP selftest ok' "$LOG" 2>/dev/null | head -1 | cut -d: -f1)
+DPG_LINE=$(grep -n 'DPG ok' "$LOG" 2>/dev/null | head -1 | cut -d: -f1)
+if [ "$DPG" -lt 1 ]; then
+  echo "smoke-lockdep: FAIL——DPG ok 计数 $DPG（C-3：断言窗已延至 dpg 闭环后，0 = dpg 链未毕/超时）" >&2
+  rc=1
+elif [ -z "$SF_LINE" ] || [ -z "$DPG_LINE" ] || [ "$DPG_LINE" -le "$SF_LINE" ]; then
+  echo "smoke-lockdep: FAIL——DPG ok 行号($DPG_LINE) 不晚于 selftest ok 行号($SF_LINE)（C-3 行序断言）" >&2
+  rc=1
+fi
 
 if [ "$rc" -eq 0 ]; then
-  echo "smoke-lockdep: PASS（selftest ok 恰 1 + FAIL 0 + VIOLATION 0，-smp 2 快启）"
+  echo "smoke-lockdep: PASS（selftest ok 恰 1 + FAIL 0 + VIOLATION 0 + DPG ok 行序对，-smp 2 快启）"
   keep_log drop
 else
   keep_log keep

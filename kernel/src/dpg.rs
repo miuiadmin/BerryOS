@@ -18,9 +18,15 @@
 //! （防线 1）；请求面 boot 预分配、探针零分配零用户态访问（防线 2）；
 //! 深度帽/多 faulter 面 = G4-3 压测档。
 //!
-//! 死锁防线：探针异常上下文 IRQ 天然屏蔽、block 前零锁在手（§2.3①）；
-//! pager 供给全链 KL 窗内（SVC vmar_map 同构，§2.3②）；填叶 pt_lock 嵌
-//! KL 正序、broadcast 只发不待（§2.3③）；pager 单线程首形（§2.3④）。
+//! 死锁防线（G4-1 三镜 P1-1/P2-2① 修后口径）：探针**两段式 klock 窗**——
+//! same-EL 同步异常不自动屏蔽 PSTATE.I（硬件只在 taken-to-higher-EL 置位；
+//! trampoline `daifclr,#2` 起步即解蔽），klock_enter = disable_irq + 全谱
+//! 结构锁即 block_current 契约的「显式 disable_irq」。第一段 asid 反查留
+//! KL 外（append-only 登记锁外读安全，miss 零锁即拒）；第二段（命中臂）
+//! 全程 KL 窗——与 pager 供给窗互斥（SMP 双向丢唤窗闭）。block_current
+//! 舞蹈放锁入队、醒后重取——睡不持锁（§2.3① 语义保持）；pager 供给全链
+//! KL 窗内（SVC vmar_map 同构，§2.3②）；填叶 pt_lock 嵌 KL 正序、
+//! broadcast 只发不待（§2.3③）；pager 单线程首形（§2.3④）。
 
 use crate::mm;
 use crate::vmar::{self, Perm, Vmar};
@@ -58,18 +64,42 @@ static REQ_ARMED: AtomicBool = AtomicBool::new(false);
 /// fault 探针（hal `DemandFaultProbe` 槽注册；异常上下文调用）。
 ///
 /// 返回 true = 已处理（fault 线程已睡又醒、页已供给），eret 重试即命中；
-/// false = 非 demand 面（未登记 asid / FAR 未落 demand 区间），原杀链
-/// 不变量保持。block_current 契约对位：IRQ 屏蔽窗 = 异常入口 PSTATE.I=1
-/// 天然满足；条件已验 = 缺页指令本身；醒后重验 = eret 重试天然重验（供给
-/// 失败则再 fault 再进探针——pager 侧 fail loud 兜底）。
-unsafe extern "C" fn probe(far: usize) -> bool {
+/// false = 非 demand 面（非翻译缺页 / 未登记 asid / FAR 未落 demand 区间），
+/// 原杀链不变量保持。
+///
+/// 上下文纪律（G4-1 三镜 P1-1/P2-2① 修）：same-EL 同步异常**不**自动屏蔽
+/// PSTATE.I——命中路径全程 klock 窗（disable_irq + 全谱结构锁 =
+/// block_current 契约「内核任务显式 disable_irq」），且与 pager 供给窗
+///（KL）互斥：SMP 双向丢唤窗（FAULT/PAGER 两键方向）闭。**两段式**
+///（f4 复核推荐形）：asid 反查表查找留 KL 外（append-only + Release/
+/// Acquire 原子对——锁外读安全无 ABA；miss 零锁即拒，rogue fault 快路径
+/// 不付全谱窗——trap.rs EL0 臂「快路径零锁」承诺保持）；命中才入 KL 窗
+/// **重验** regions（M-3 读竞窗闭）+ arm/wake/block。block_current 舞蹈
+/// 放锁入队、醒后重取（dpg_pager 同构）；eret 弹 SPSR 自然恢复 fault 前
+/// 屏蔽态。
+///
+/// fsc 滤（三镜 mech-M-2）：只收翻译缺页（fsc 4..=7，L0-L3）——权限/
+/// 访问标志 fault（已映射只读页写等）走原杀链；否则 armed→供给幂等短路→
+/// 回 block = 活锁株。醒后重验 = eret 重试天然重验（供给失败则再 fault
+/// 再进探针——pager 侧 fail loud 兜底）。
+unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
+    // DFSC = ISS[5:0] = ESR[5:0]（ISS 占 ESR[24:0]——低 6 位直达，勿移位）。
+    if !matches!(esr & 0x3f, 4..=7) {
+        return false; // 非翻译缺页（权限/访问标志/…）——原杀链
+    }
+    // 第一段（KL 外零锁快拒）：asid 反查——登记 append-only + 原子对，
+    // 锁外读安全；miss = 本 AS 无 demand 面，不付全谱窗。
     let asid = hal::current_asid();
     let Some(root) = vmar::demand_root(asid) else {
         return false;
     };
+    // 第二段（KL 窗）：regions 权威重验（M-3——变更方经 PT 锁嵌 KL 同序，
+    // 锁外快查与入锁间的变更由本窗收口）。
+    hal::kern_lock::klock_enter();
     // SAFETY: 登记方（init / G4-2 process 组装面）保证对象常驻（登记只进
-    // 不出，Boot-held 先形）；异常上下文单核无并发注销面。
+    // 不出，Boot-held 先形）。
     if unsafe { (*root).demand_region_at(far).is_none() } {
+        hal::kern_lock::klock_exit();
         return false;
     }
     // 命中：武装请求面（far/asid 先行、armed 收口 Release——pager 侧
@@ -77,16 +107,17 @@ unsafe extern "C" fn probe(far: usize) -> bool {
     REQ_FAR.store(far as u64, Ordering::Relaxed);
     REQ_ASID.store(asid, Ordering::Relaxed);
     REQ_ARMED.store(true, Ordering::Release);
-    // 唤 pager（双序通吃：已睡 → 摘队；未睡 → 位/槽锁存 + pager poll-first
-    // 追平——f4 F1 纪律同源）。异常上下文裸调（SQ 锁自取，与 IRQ 生产者
-    // `wake_matching_locked` 同窗纪律）。
+    // 唤 pager（KL 窗内 SQ 嵌套 = SVC 同构；双序通吃：已睡 → 摘队，未睡 →
+    // 位/槽锁存 + pager poll-first 追平——f4 F1 纪律同源）。
     berry_sched::wake_matching(&PAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
-    // 睡 fault 等待面（无限等——无超时语义；唯一唤醒者 = pager 供给毕）。
+    // 睡 fault 等待面（无限等——§5-⑤：pager 不再供给 = 永久阻塞；唯一
+    // 唤醒者违约即断言响雷）；舞蹈放 KL 入队、醒后重取。
     let r = berry_sched::block_current(
         &FAULT_KEY as *const u8 as usize,
         DPG_WAKE_BIT,
         u64::MAX,
     );
+    hal::kern_lock::klock_exit();
     assert!(
         matches!(r, berry_sched::WakeReason::Signaled),
         "dpg probe: 醒因非 Signaled（fault 键无超时/无他者——唤醒面破损）"
