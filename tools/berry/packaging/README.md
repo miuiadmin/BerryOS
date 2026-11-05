@@ -10,8 +10,9 @@
 `linux/smoke-docker.sh` 用 arm64 Linux 容器 + QEMU TCG 实跑 doctor/480/540；
 有 `appimagetool` 时顺带产 AppImage。
   QEMU 用发行版 `qemu-system-arm`，外部依赖。
-- **Windows**: `windows/build.ps1` → `out/BerryOS-win64`（berry.exe + image + AAVMF +
-  README）；需先 cross-build `x86_64-pc-windows-gnu`，QEMU 外部。
+- **Windows**: `windows/build-cross-docker.sh` → `out/berry.exe`；
+  `windows/assemble.sh` → `out/BerryOS-win64` + zip；`smoke-wine-docker.sh` 做 Wine
+  `--version` 验证。QEMU 外部；GUI subsystem 仍未落。
 - **Windows**: `windows/README.md`；GUI-subsystem + `AttachConsole` 仍未落。
 
 Double-click semantics: no args + no TTY → `berry shell`; the image/firmware

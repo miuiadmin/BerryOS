@@ -1,23 +1,33 @@
 # Windows packaging
 
-```powershell
-# Requires a Windows cross-build first:
-#   cargo build --release --target x86_64-pc-windows-gnu
-.\tools\berry\packaging\windows\build.ps1
+## Cross-build（macOS arm64 → Windows x86_64）
+
+```bash
+tools/berry/packaging/windows/build-cross-docker.sh
+# out/berry.exe（PE32+ console x86-64）
 ```
 
-Outputs `out/BerryOS-win64`:
+内部用 `--platform linux/amd64` 的 `rust:1.97-slim` + mingw-w64 +
+`x86_64-pc-windows-gnu`；QEMU 不参与链接。
 
-- `berry.exe`
-- `berryos.img`
-- `AAVMF_CODE.fd`
-- `run-berry.cmd`（设置 `BERRY_IMAGE`/`AAVMF_CODE` 后启动 `berry shell`）
-- `README.txt`
+## 组装发行目录
 
-Overrides: `BERRY_EXE`, `BERRY_IMAGE`, `AAVMF_CODE`, `-Target`, `-TargetDir`.
+```bash
+tools/berry/packaging/windows/assemble.sh
+# out/BerryOS-win64/{berry.exe,berryos.img,AAVMF_CODE.fd,run-berry.cmd,README.txt}
+# out/BerryOS-win64.zip
+```
+
+## Wine smoke（不是实机）
+
+```bash
+tools/berry/packaging/windows/smoke-wine-docker.sh
+# berry 0.1.0
+```
 
 ## 限制
 
-- QEMU 不打包（GPLv2 进程边界）；需 `qemu-system-aarch64` 在 PATH 或 `BERRY_QEMU`。
-- `berry.exe` 当前是 console binary；Windows GUI subsystem / AttachConsole 仍是 C1g 尾项。
-- 未在 Windows 实机验证；脚本仅做结构/路径静态检查。
+- QEMU 不打包（GPLv2）；目标机需 `qemu-system-aarch64.exe` 或 `BERRY_QEMU`。
+- `berry.exe` 当前是 **console binary**；GUI subsystem / AttachConsole 仍是 C1g 尾项。
+- 未在真实 Windows 上跑；仅 Wine `--version` 验证。
+- 未刷新图标/安装器/签名。
