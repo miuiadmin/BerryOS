@@ -13,6 +13,9 @@ use berry::commands::{
 };
 use berry::error::{BerryError, Result};
 
+#[cfg(windows)]
+mod windows_console;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "berry",
@@ -398,6 +401,10 @@ enum InputActionCmd {
 }
 
 fn main() {
+    #[cfg(windows)]
+    if std::env::args_os().len() == 1 {
+        windows_console::hide_console();
+    }
     let cli = Cli::parse();
     let json = cli.json;
     let verbose = cli.verbose;
