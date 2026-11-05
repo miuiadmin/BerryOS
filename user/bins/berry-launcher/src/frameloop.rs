@@ -48,8 +48,15 @@
 //! 4 事件 1ms 间隔 → MOVE 滑窗 span=1ms < RESAMPLE_MIN_DELTA_MS=2ms
 //! 恒 None 直通——原始坐标保真；位移 0.41·vp_w > 0.4·vp_w 翻页阈 +
 //! 速度环远超 500px/s fling 阈，双判据同向）各落定 → `PAGE ok n=2`。
-//! CLICK = 门控桩（`app_cli_h()==0` 冻结相静默跳过零 RPC——段④接线，
-//! 修约 1）。
+//!
+//! **段④ 点击面（真实输入 → APP_SPAWN）**：`Msg::Click` 槽命中 →
+//! `app_cli_h()!=0` 时真发 APP_SPAWN；**首例 ok 回执恰一次**打 `CLICK
+//! ok n=1`（失败回执维持 eprintln 诊断、零标记——spawn 是旁路动作，不
+//! 打断帧循环）。冻结相 `app_cli_h()==0` 早退：零 RPC 零打印。
+//! `launcher: click ready` 非标记行 = 宿主注入的**状态谓词**门（规则/07
+//! A32 禁睡等竞速）：`PAGE ok` 后 `snap_to(0)` 落位且其后已再呈一帧
+//!（presented 增长——吸附完成帧已出，命中面回到 page 0 的 app 格）
+//! 才打，恰一次；`hi==0`（无 input gift）恒不打。
 //!
 //! 裁决四-c（输入拓扑）：真实输入订阅 = 段④（input extras 冻结相结构
 //! 性缺席）；裁决四-e（归属）：状态栏/壁纸/桌面全在 launcher 进程内。
@@ -208,10 +215,15 @@ pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop
     let mut last_vote: Option<VoteBallot> = None; // 票面变化才发
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（自测基线）
     let mut launched = false; // LAUNCH ok 恰一次
+    let mut spawn_ok: u32 = 0; // 真实 APP_SPAWN ok 回执计数（CLICK ok 恰一次）
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
     let mut st = Selftest::WaitFirst;
     // 段④：真实输入（inputd INPUT_POLL 阻塞批拉；hi==0 = 冻结相静默）。
     let mut hi = hi;
+    let has_input = hi != 0; // 礼物在场（hi 后续可因输入面失效置 0——门仍真）
+    // PAGE ok 后 snap_to(0) 的呈现基线：Some(pc) 且 presented>pc 才 click ready。
+    let mut snap_frame: Option<u64> = None;
+    let mut click_ready = false;
     let mut input_pending = false;
     let mut input_logged = false;
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
@@ -294,7 +306,7 @@ pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
             match m {
-                Msg::Click { node } => on_click(*node, &desktop),
+                Msg::Click { node } => on_click(*node, &desktop, &mut spawn_ok),
                 _ => {
                     // pager.on_msg true = 翻页目标变更 → a11y 重挂当前页
                     //（幂等；Err = 容量违例 fail 收口）。
@@ -469,6 +481,8 @@ pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop
                     if let Err(e) = desktop::rehang_a11y(ui, &mut desktop, 0) {
                         fail(&format!("rehang a11y reset err={e:?}"));
                     }
+                    // 命中面回 page 0 的呈现基线（click ready 状态谓词用）。
+                    snap_frame = Some(presented);
                     st = Selftest::Done;
                 } else if t_now > deadline {
                     eprintln!(
@@ -479,6 +493,19 @@ pub fn run(hw: Handle, hi: Handle, ui: &'static mut UiMain, mut desktop: Desktop
                 }
             }
             Selftest::Done => {}
+        }
+
+        // —— 段④ click ready 非标记门（规则/07 A32：状态谓词，禁睡等竞速）
+        //    `snap_to(0)` 落位后须已再呈一帧（presented 增长 = 吸附完成帧
+        //    出，命中面稳落 page 0）才宣布可注入；`has_input` 缺席恒不打
+        //    （冻结相字节零扰动）。恰一次。
+        if has_input && !click_ready {
+            if let Some(pc) = snap_frame {
+                if presented > pc && desktop.pager.page() == 0 {
+                    println!("launcher: click ready");
+                    click_ready = true;
+                }
+            }
         }
 
         // —— 稳态等待（S1 判词：wait_many n=1 [wm READABLE] + deadline =
@@ -604,11 +631,13 @@ fn inject_swipe(ui: &mut UiMain, base: u64) {
     ui.wake(base);
 }
 
-/// CLICK 门控桩（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆
-/// 归本格——最深叶命中面）→ 注册表条目 → `app_cli_h()==0`（冻结相
-/// extras 恰 [wm]）静默跳过零 RPC 零打印；在场 = APP_SPAWN 真跑（回执
-/// 失败 eprintln 诊断——spawn 是旁路动作，不打断帧循环）。
-fn on_click(node: NodeId, desktop: &Desktop) {
+/// CLICK 面（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆归本
+/// 格——最深叶命中面）→ 注册表条目 → `app_cli_h()==0`（冻结相 extras 恰
+/// [wm]）静默跳过零 RPC 零打印；在场 = APP_SPAWN 真跑。**首例 ok 回执**
+/// 打 `CLICK ok n=1`（恰一次，`spawn_ok` 计数门——后续成功点击静默，
+/// 避免重启/连点制造重复标记）；失败回执维持 eprintln 诊断（spawn 是旁
+/// 路动作，不打断帧循环、不 fail）。
+fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32) {
     let slot = desktop
         .slots
         .iter()
@@ -628,7 +657,13 @@ fn on_click(node: NodeId, desktop: &Desktop) {
         Some(m) => {
             let (n, _) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
             match ap::parse_spawn_ack(&rep, n) {
-                Some((true, _)) => {}
+                Some((true, _)) => {
+                    *spawn_ok += 1;
+                    if *spawn_ok == 1 {
+                        // 标记（字节精确）：真实 APP_SPAWN ok 回执恰一次。
+                        println!("CLICK ok n=1");
+                    }
+                }
                 Some((false, err)) => eprintln!(
                     "launcher: spawn {} err={err}",
                     String::from_utf8_lossy(entry.id_bytes())

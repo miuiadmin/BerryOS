@@ -37,6 +37,14 @@
 //!（GETINFO 后）+ 帧循环两标记（`LAUNCH ok` 首帧呈现 / `PAGE ok n=2`
 //! 合成 swipe 双翻页——字节精确，frameloop 自测产物）；icons/layout_io
 //! 常态零打印（eprintln 仅失败诊断面）。
+//!
+//! **段④ 标记面（全部结构性门控——EFI 冻结相字节零扰动）**：
+//! `LAYOUTW ok` / `LAYOUT ok n=<cells>`（数据盘根有 `GUI8.SMK` 才进
+//! layout_io 冒烟往返；`fs_h()==0` 冻结相在哨兵探测之前直返）+ `CLICK
+//! ok n=1`（真实 `Msg::Click` → APP_SPAWN ok 回执首例；`app_cli_h()==0`
+//! 早退）+ `launcher: click ready`（非标记状态谓词门，`input_h()==0`
+//! 恒不打）。四者皆「每进程一次」——监督重启可合法重打，smoke 侧一律
+//! grep -qF 存在性断言，禁升恰一次。
 
 mod desktop;
 mod frameloop;

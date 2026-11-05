@@ -19,18 +19,38 @@
 //! Owned 镜像动机：`parse` 产物 `Layout<'a>` 钉在输入缓冲（零拷贝切
 //! 进），读入缓冲是 `load()` 局部——镜像拷出（app id ≤24B/格）让布局
 //! 值跟调用方走，免 static mut 缓冲 + 生命周期穿透。
+//!
+//! **段④ 冒烟往返（本模块唯一标记面）**：数据盘根有 `GUI8.SMK` 时进
+//! 冒烟支路——`LAYOUT.JSN` 已存在且 == 确定性变体 → 打 `LAYOUT ok
+//! n=<cells>`（跨 boot 读回证明，恰一次）；否则写变体 + 读回自检，
+//! 过链才打 `LAYOUTW ok`（写后 close=commit 已落）。哨兵缺席（常态
+//! boot）= 上述零打印零额外语义——冻结相更被 `fs_h()==0` 结构性短路
+//!（哨兵探测本身也是 RPC，故必须排在此门之后）。
+//!
+//! 变体形态（确定性，见 [`smoke_variant`]）：注册表首 app 钉 (page 0,
+//! row 0, col 0)——冒烟点击靶；其余格移 page 3 并保 row/col（冲突时
+//! 自 page 3 倒序 row-major 找空位）。APPDEMO+APPQUIET 下 canonical
+//! emit = `{"schema":1,"cells":[{"app":"APPDEMO","page":0,"row":0,
+//! "col":0},{"app":"APPQUIET","page":3,"row":0,"col":1}]}`。
 
 use berry_layout::{emit, parse, Cell, Layout, CELL_MAX, ID_MAX, LAYOUT_BYTES_MAX};
 use berry_libc::fs::{open, O_CREAT, O_RDONLY, O_WRONLY};
 use berry_libc::io::{close, fs_h, read, write};
 use berry_libc::{get_errno, EIO, ENOENT};
 
-use crate::desktop::{GRID_COLS, SLOTS_PER_PAGE};
+use crate::desktop::{GRID_COLS, PAGES, SLOTS_PER_PAGE};
 use crate::icons::AppEntry;
 
 /// 卷根布局文件（8.3 大写名单——fsmgr 单 FAT 卷根；CWD 默认根，bsh
 /// 相对路径同形）。
 const PATH: &[u8] = b"LAYOUT.JSN\0";
+
+/// 冒烟相哨兵文件（8.3 大写；smoke-image 交互相数据盘根造此件）。在场
+/// = 走 [`load`] 的冒烟往返支路；常态 boot 绝无此文件。
+const SMOKE_PATH: &[u8] = b"GUI8.SMK\0";
+
+/// 冒烟变体目标页（`PAGES-1` = 3——末页，非默认装填页）。
+const SMOKE_VARIANT_PAGE: usize = PAGES - 1;
 
 /// 单次读块（bsh `get_file` 同款 256B）。
 const CHUNK: usize = 256;
@@ -90,12 +110,16 @@ pub fn default_layout(reg: &[AppEntry]) -> OwnedLayout {
     l
 }
 
-/// 读-判-自愈三约束收口（main 单次调用）。
+/// 读-判-自愈三约束收口（main 单次调用）。冒烟哨兵在场 → 冒烟往返支路
+///（段④ 标记面，见模块头注）；否则原三约束面逐字节不变。
 pub fn load(reg: &[AppEntry]) -> OwnedLayout {
     if fs_h() == 0 {
         // 冻结相：extras 恰 [wm]——布局持久化面结构性缺席，默认直返
         //（零 RPC 零 fd 面；W1 冻结十段零字节扰动的结构性保证）。
         return default_layout(reg);
+    }
+    if smoke_marker() {
+        return smoke_load(reg);
     }
     match read_file() {
         ReadOutcome::Absent => heal(reg, None),
@@ -106,6 +130,136 @@ pub fn load(reg: &[AppEntry]) -> OwnedLayout {
             Err(e) => heal(reg, Some(format!("parse {} at {}", e.desc(), e.at()))),
         },
     }
+}
+
+/// 冒烟哨兵探测（存在性 = open 成功；读 fd 的 close 无 commit 面）。
+/// 调用点恒在 `fs_h()!=0` 之后——冻结相零 RPC 不受扰。
+fn smoke_marker() -> bool {
+    // SAFETY: SMOKE_PATH 是 NUL 结尾字面量；fd 按 libc 契约使用。
+    let fd = unsafe { open(SMOKE_PATH.as_ptr() as *const _, O_RDONLY) };
+    if fd < 0 {
+        return false;
+    }
+    let _ = close(fd);
+    true
+}
+
+/// 冒烟往返支路（`GUI8.SMK` 在场）：
+///
+/// - 卷根 `LAYOUT.JSN` 已在册且与 [`smoke_variant`] 全等（无视书写序，
+///   按四元组多重集比对）→ 打 `LAYOUT ok n=<cells>` 后直接用（跨 boot
+///   读回证明；本 boot 零写）。
+/// - 缺席/异常/不等 → 写确定性变体；`persist` 过链（含 close=commit）
+///   后再全量读回比对，仍全等才打 `LAYOUTW ok`。写失败非致命（沿用
+///   `save` 的 eprintln 收口，launcher 照用内存变体）。
+///
+/// 诊断一律小写 `layout` 前缀——绝不产 `LAYOUT ok` / `LAYOUTW ok` 子串
+///（标记 canon：grep -qF 存在性断言）。
+fn smoke_load(reg: &[AppEntry]) -> OwnedLayout {
+    let want = smoke_variant(reg);
+    if want.cells().is_empty() {
+        return want; // 空注册表：无可持久化内容（persist 同 save 静默跳过）
+    }
+    match read_file() {
+        ReadOutcome::Bytes(b) => match parse(&b) {
+            Ok(l) => {
+                let got = owned_from(&l);
+                if same_cells(&got, &want) {
+                    println!("LAYOUT ok n={}", got.cells().len());
+                    return got;
+                }
+                eprintln!("launcher: layout smoke variant differs -- rewrite");
+            }
+            Err(e) => eprintln!("launcher: layout smoke parse {} at {}", e.desc(), e.at()),
+        },
+        ReadOutcome::Absent => {}
+        ReadOutcome::Oversize(n) => eprintln!("launcher: layout smoke too big {n} -- rewrite"),
+        ReadOutcome::Failed(e) => eprintln!("launcher: layout smoke read errno={e} -- rewrite"),
+    }
+    if let Err(e) = persist(&want) {
+        eprintln!("launcher: layout {e}");
+        return want;
+    }
+    // 读回自检（同 boot 二次读——fs 面写后读一致；不一致 = 落盘面破缺，
+    // 不打标记，smoke 侧由标记缺失 loud）。
+    match read_file() {
+        ReadOutcome::Bytes(b) => match parse(&b) {
+            Ok(l) if same_cells(&owned_from(&l), &want) => println!("LAYOUTW ok"),
+            Ok(_) => eprintln!("launcher: layout smoke readback differs"),
+            Err(e) => eprintln!("launcher: layout smoke readback parse {}", e.desc()),
+        },
+        ReadOutcome::Absent => eprintln!("launcher: layout smoke readback absent"),
+        ReadOutcome::Oversize(n) => eprintln!("launcher: layout smoke readback too big {n}"),
+        ReadOutcome::Failed(e) => eprintln!("launcher: layout smoke readback errno={e}"),
+    }
+    want
+}
+
+/// 确定性冒烟变体：注册表首 app 钉 (page 0, row 0, col 0)（保持可点
+/// 靶——冒烟点击注入落此格）；其余格移 [`SMOKE_VARIANT_PAGE`] 并保
+/// row/col，目标位已被占（默认布局跨页同 row/col = 常态）时自页 3 倒序
+/// row-major 找首个空位——48 格容量域内恒有解（`CELL_MAX` 与
+/// `PAGES×SLOTS_PER_PAGE` 编译期恒等，desktop.rs 钉板）。
+fn smoke_variant(reg: &[AppEntry]) -> OwnedLayout {
+    let mut l = default_layout(reg);
+    if l.len <= 1 {
+        return l;
+    }
+    let mut used = [[false; SLOTS_PER_PAGE]; PAGES];
+    used[0][0] = true; // 首格目标位（default_layout 首项恒 (0,0,0)）
+    for i in 1..l.len {
+        let row = l.cells[i].row as usize;
+        let col = l.cells[i].col as usize;
+        let mut slot = Some((SMOKE_VARIANT_PAGE, row, col));
+        if used[SMOKE_VARIANT_PAGE][row * GRID_COLS + col] {
+            slot = None;
+        }
+        if slot.is_none() {
+            'find: for p in (0..PAGES).rev() {
+                for s in 0..SLOTS_PER_PAGE {
+                    if !used[p][s] {
+                        slot = Some((p, s / GRID_COLS, s % GRID_COLS));
+                        break 'find;
+                    }
+                }
+            }
+        }
+        if let Some((p, r, c)) = slot {
+            used[p][r * GRID_COLS + c] = true;
+            l.cells[i].page = p as u8;
+            l.cells[i].row = r as u8;
+            l.cells[i].col = c as u8;
+        }
+    }
+    l
+}
+
+/// 布局全等（四元组多重集——parse 产物按 canonical 序，变体按注册表
+/// 序：书写序非语义，比对必须无视排列）。
+fn same_cells(a: &OwnedLayout, b: &OwnedLayout) -> bool {
+    if a.len != b.len {
+        return false;
+    }
+    let mut used = [false; CELL_MAX];
+    for ca in a.cells() {
+        let mut hit = false;
+        for (j, cb) in b.cells().iter().enumerate() {
+            if !used[j]
+                && ca.app_bytes() == cb.app_bytes()
+                && ca.page == cb.page
+                && ca.row == cb.row
+                && ca.col == cb.col
+            {
+                used[j] = true;
+                hit = true;
+                break;
+            }
+        }
+        if !hit {
+            return false;
+        }
+    }
+    true
 }
 
 /// 回默认 + 重写自愈（`why` = 诊断前缀，None = 缺席常态零打印——首
@@ -174,33 +328,43 @@ fn save(owned: &OwnedLayout) {
     if owned.len == 0 {
         return; // 0 cell：emit 拒 EmptyCells——无可持久化内容
     }
+    if let Err(e) = persist(owned) {
+        eprintln!("launcher: layout {e}");
+    }
+}
+
+/// 写盘收口（`save` 与冒烟往返共用）：Ok = write 全量 + close(commit)
+/// 过链。Err = 诊断串（调用方决定非致命收口；串面与历史 eprintln 逐
+/// 字节同形）。
+fn persist(owned: &OwnedLayout) -> Result<(), String> {
+    if owned.len == 0 {
+        return Ok(()); // 0 cell：无可持久化内容（同 save 静默语义）
+    }
+    let (n, out) = encode_owned(owned)?;
+    put_file(&out[..n]).map_err(|e| format!("write errno={e}"))
+}
+
+/// Owned → canonical 字节（容量 ≤ `LAYOUT_BYTES_MAX` 单簇）。`save` 的
+/// 非致命 eprintln 与冒烟往返的读回自检共用本编码面（测试亦直接消费）。
+fn encode_owned(owned: &OwnedLayout) -> Result<(usize, [u8; LAYOUT_BYTES_MAX]), String> {
     let mut l = Layout::new();
     for c in owned.cells() {
         // id 域 = parse 产物（ASCII 词法）或默认装配（ASCII id）——
         // from_utf8 失败 = 镜像破缺防御面，非致命拒写。
         let app = match core::str::from_utf8(c.app_bytes()) {
             Ok(s) => s,
-            Err(_) => {
-                eprintln!("launcher: layout save bad utf8");
-                return;
-            }
+            Err(_) => return Err("save bad utf8".into()),
         };
         if let Err(e) = l.push(Cell { app, page: c.page, row: c.row, col: c.col }) {
-            eprintln!("launcher: layout save {}", e.desc());
-            return;
+            return Err(format!("save {}", e.desc()));
         }
     }
     let mut out = [0u8; LAYOUT_BYTES_MAX];
     let n = match emit(&l, &mut out) {
         Ok(n) => n,
-        Err(e) => {
-            eprintln!("launcher: layout emit {}", e.desc());
-            return;
-        }
+        Err(e) => return Err(format!("emit {}", e.desc())),
     };
-    if let Err(e) = put_file(&out[..n]) {
-        eprintln!("launcher: layout write errno={e}");
-    }
+    Ok((n, out))
 }
 
 /// 全量写（open → write 循环 → close=commit；Err(errno) 透传，调用方
@@ -248,4 +412,116 @@ fn owned_from(l: &Layout<'_>) -> OwnedLayout {
         o.len += 1;
     }
     o
+}
+
+// ---- host/交叉编译测试面（纯逻辑：变体装配 + 四元组全等 + canonical
+// ---- 编码；RPC 面经 `fs_h()`/`open` 不可宿主机执行——见下注）----
+//
+// 可执行性注记：本 crate 唯一可编译目标是 aarch64-unknown-linux-musl
+// （berry-libc 全定义 libc shim，含 AArch64 ELF 专用 inline asm/crt0）。
+// 宿主机（aarch64-apple-darwin）构建在 berry-libc 的 `adrp
+// BERRY_ARGV` 处硬失败，故 `cargo test` 宿主路结构性不可达；本仓
+// `just test-host` 亦不收 launcher（独立 escape 小工作区，不入
+// user/Cargo.toml members）。测试构建经
+// `cargo test --no-run --target aarch64-unknown-linux-musl` 编译过链，
+// 执行需 qemu-user（本机未装）。下列用例只碰纯函数，零 RPC/零 fd。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造一条注册表条目（label/icon 面不参与布局逻辑）。
+    fn entry(id: &str) -> AppEntry {
+        let mut e = AppEntry {
+            id: [0; ID_MAX],
+            id_len: 0,
+            label: [0; 64],
+            label_len: 0,
+            icon: crate::icons::NO_ICON,
+        };
+        e.id[..id.len()].copy_from_slice(id.as_bytes());
+        e.id_len = id.len() as u8;
+        e
+    }
+
+    fn emit_owned(o: &OwnedLayout) -> String {
+        let (n, buf) = encode_owned(o).expect("encode ok");
+        core::str::from_utf8(&buf[..n]).expect("utf8").to_string()
+    }
+
+    /// 双 app 冒烟镜像：变体 = 首格钉 (0,0,0) + 其余移 page 3，canonical
+    /// emit 恰 109B（22+36×2+7+8）——冒烟相宿主侧字节对拍基准。
+    #[test]
+    fn smoke_variant_two_apps_canonical_bytes() {
+        let reg = [entry("APPDEMO"), entry("APPQUIET")];
+        let v = smoke_variant(&reg);
+        assert_eq!(v.cells().len(), 2);
+        assert_eq!(v.cells()[0].app_bytes(), b"APPDEMO");
+        assert_eq!((v.cells()[0].page, v.cells()[0].row, v.cells()[0].col), (0, 0, 0));
+        assert_eq!(v.cells()[1].app_bytes(), b"APPQUIET");
+        assert_eq!((v.cells()[1].page, v.cells()[1].row, v.cells()[1].col), (3, 0, 1));
+        let doc = emit_owned(&v);
+        assert_eq!(
+            doc,
+            r#"{"schema":1,"cells":[{"app":"APPDEMO","page":0,"row":0,"col":0},{"app":"APPQUIET","page":3,"row":0,"col":1}]}"#
+        );
+        assert_eq!(doc.len(), 109);
+        // 变体 ≠ 默认（LAYOUTW/LAYOUT 判据的判别力前提）。
+        assert!(!same_cells(&smoke_variant(&reg), &default_layout(&reg)));
+    }
+
+    /// 注满 CELL_MAX（48）仍须无重复格（emit DupCell 硬门）且首格不动
+    /// ——默认布局跨页同 row/col 是常态，变体冲突回退面活证。
+    #[test]
+    fn smoke_variant_cell_max_is_collision_free() {
+        let ids: Vec<String> = (0..CELL_MAX).map(|i| format!("APP{i:02}")).collect();
+        let reg: Vec<AppEntry> = ids.iter().map(|s| entry(s)).collect();
+        let d = default_layout(&reg);
+        let v = smoke_variant(&reg);
+        assert_eq!(v.cells().len(), CELL_MAX);
+        assert_eq!(
+            (v.cells()[0].app_bytes(), v.cells()[0].page, v.cells()[0].row, v.cells()[0].col),
+            (&b"APP00"[..], 0, 0, 0)
+        );
+        let mut seen = [[false; SLOTS_PER_PAGE]; PAGES];
+        for c in v.cells() {
+            let s = c.row as usize * GRID_COLS + c.col as usize;
+            assert!(!seen[c.page as usize][s], "duplicate slot in variant");
+            seen[c.page as usize][s] = true;
+        }
+        // 每 app 恰一格（变体只搬坐标，不增不减）。
+        for a in d.cells() {
+            assert_eq!(
+                v.cells().iter().filter(|b| a.app_bytes() == b.app_bytes()).count(),
+                1
+            );
+        }
+        let _ = emit_owned(&v); // 过 emit 全域执法（Range/DupCell/TooBig）
+    }
+
+    /// 全等 = 四元组多重集（parse canonical 序 vs 注册表序）；坐标/身份
+    /// 任一不同即不等。
+    #[test]
+    fn same_cells_order_insensitive_and_strict() {
+        let reg = [entry("APPDEMO"), entry("APPQUIET")];
+        let a = smoke_variant(&reg);
+        let doc = emit_owned(&a);
+        let b = owned_from(&parse(doc.as_bytes()).expect("parse ok"));
+        assert!(same_cells(&a, &b));
+        assert!(same_cells(&b, &a));
+        let mut bad = b;
+        bad.cells[1].page = 0;
+        assert!(!same_cells(&a, &bad));
+        let mut short = b;
+        short.len = 1;
+        assert!(!same_cells(&a, &short));
+    }
+
+    /// 空注册表：0 cell（emit 拒 EmptyCells——`persist`/`save` 静默跳过，
+    /// 冒烟支路亦不打标记）。
+    #[test]
+    fn smoke_variant_empty_registry_is_empty() {
+        let v = smoke_variant(&[]);
+        assert_eq!(v.cells().len(), 0);
+        assert!(persist(&v).is_ok());
+    }
 }
