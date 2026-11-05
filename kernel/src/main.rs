@@ -1788,6 +1788,34 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_sched::spawn_with_tag(task_soakload, p_sl_ev.as_ptr() as usize, b"soakload", 0,
                                     ht_sl as *mut HandleTable as usize);
     }
+    // ---- G3-4b：bench-lat SGI 路门控 spawn（fw_cfg `opt/berry/lat`——与
+    // IPC 路同键双消费者，bench.py --lat 单 boot 收两路；pp 同款双门）----
+    // 双门：smp_active（SGI 路 = EL0 sleeper spread→CPU1 的跨核对，单核无
+    // 形态）+ fw_cfg 具名项（与 IPC 路共用 `opt/berry/lat`——缺席 =
+    // run/smoke 零扰动 + EFI 天然缺席）。waker prio 0（soakload master
+    // 同档：纯背景司机，被测方 sleeper 在 CPU1 不受 CPU0 档位干扰）。
+    // ARMED 置位在 spawn 前同块（钩子三落点此起恒可入；Release 写 +
+    // thread_start 锁链保 CPU1 可见序）。`LATSGI gate on` 自证行（storm
+    // 门族同款：行在 ⟺ waker 已 spawn——缺席侧抽查短窗 grep 判别）。
+    if berry_hal_aarch64::smp::smp_active()
+        && berry_hal_aarch64::fwcfg::find_file(LAT_PROBE_NAME).is_some()
+    {
+        let ht_latsgi: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 表内仅一个哑 Event（storm master 族同形：表 = fleet spawn 的 svc
+        // 落脚点，Event 纯占位无等待面）。
+        let h_latsgi_ev = ht_latsgi
+            .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+            .expect("main: latsgi 哑 Event 进表");
+        let p_latsgi_ev = ht_latsgi
+            .get_raw(h_latsgi_ev, ObjType::Event, 0)
+            .expect("main: 取 latsgi ObjRef")
+            .0;
+        LATSGI_ARMED.store(true, core::sync::atomic::Ordering::Release);
+        berry_sched::spawn_with_tag(task_latsgi_wak, p_latsgi_ev.as_ptr() as usize,
+                                    b"latsgi", 0, ht_latsgi as *mut HandleTable as usize);
+        berry_hal_aarch64::uart_puts(b"LATSGI gate on\n");
+    }
     // 武装首个时间片 + 解蔽 IRQ：之后 timer 每 slice（10Hz）落 exception_irq → on_irq_tick。
     // SAFETY: 写 CNTV_CTL/CVAL（绝对截止）；EL1。arm_slice 设 ENABLE+不屏蔽（0b01）。
     unsafe { berry_hal_aarch64::timer::arm_slice() };
@@ -2963,6 +2991,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 46, "pp 哑 Event（S-5c 相 8 ping-pong 压测 master——永不置位，仅超时醒）"),
     (1 << 47, "soakload 哑 Event（S-5d 双核 soak 满载载荷 master——永不置位，仅超时醒）"),
     (1 << 48, "lat 握手 Event（G3-4 bench-lat IPC 路——waker wake_matching 唤醒，sleeper 测 wake→run 段）"),
+    (1 << 49, "latsgi 位签名（G3-4b bench-lat SGI 路——EL0 sleeper wait_one 位签名门 + 内核 waker Event 置位跨核唤醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -3507,6 +3536,188 @@ extern "C" fn task_lat_wak(arg: usize) -> ! {
     }
     berry_sched::exit_current()
 }
+
+// ---- G3-4b：bench-lat SGI 路（EL0 用户对——内核任务对跨核被 place() 堵死
+// 后的唯一可落形态；boot 门控 spawn 块见 main 尾段 SGI 门；载荷 =
+// user.rs __user_latslp，测量钩子 = syscall.rs wait 醒来侧三落点）----
+
+/// SGI 路 armed 门（boot SGI 门块置 true；缺席 = 钩子三落点恒短路——
+/// 默认面每次 wait_one 只付一次寄存器比较）。Release 写：门块在 fleet
+/// spawn 前落笔，thread_start 锁链保证 CPU1 侧可见序。
+pub(crate) static LATSGI_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+/// SGI 路握手就绪面：wait 进入点钩子钉住的 sleeper Event ObjRef 地址
+///（Release 写/Acquire 读）。也是 v1 无跨表 handle 传递下 waker 拿到
+/// sleeper 进程私有表内对象的唯一桥。
+pub(crate) static LATSGI_OBJ: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+/// SGI 路 wait 进入序号（每轮 wait_enter 递增——单调）。**跨 vCPU 握手序号
+/// 面**：waker 轮询 `ENTER ≥ i+1` 才发信号——替代 guest 钟 spacer 盲 pacing
+///（TCG 下 CPU0 的钟睡不保证 CPU1 vCPU 被宿主调度过——boot 高载饿副核，
+/// sleeper 未及回睡即被下一轮信号 = n==0 竞速，首跑实录）。正确性根基 =
+/// KL 串行：hook_enter 在 sleeper 的 SVC 屏蔽窗内执行，block_current 的
+/// insert_sorted 先于 klock_release_switch——waker 取到 KL 时 sleeper
+/// 必已入 SLEEPQ（观察 ENTER ≥ i+1 后取 KL = 无 TOCTOU 窗）。
+pub(crate) static LATSGI_ENTER: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+/// SGI 路样本落柜计数（单写者 = sleeper 的 wait 醒来侧钩子 CPU1；waker
+/// CPU0 Acquire 读到 32 = 全样本已发布——Release/Acquire 对 BUF 建
+/// happens-before，单写者下计数即槽位）。
+pub(crate) static LATSGI_DONE: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+/// SGI 路样本柜（CPU1 写/CPU0 读；Relaxed 访问 + DONE 的 Release/Acquire
+/// 配对提供跨核发布序）。
+pub(crate) static LATSGI_BUF: [core::sync::atomic::AtomicU64; LAT_SAMPLES] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; LAT_SAMPLES];
+
+/// SGI 路 wait 进入点钩子（`sys_object_wait_one` 解析并钉住 obj 后调用；
+/// 调用面已过 `signals == LAT_SGI_BIT && LATSGI_ARMED` 双过滤）。
+pub(crate) fn latsgi_wait_enter(obj: usize) {
+    LATSGI_OBJ.store(obj, core::sync::atomic::Ordering::Release);
+    LATSGI_ENTER.fetch_add(1, core::sync::atomic::Ordering::Release);
+}
+
+/// SGI 路 wait 醒来侧钩子（`sys_object_wait_one` 的 block_current 返回后
+/// 调用——**run 侧读点本体**：醒后首段内核执行取戳+now，与 IPC 路
+/// task_lat_slp 读点同定义）。非 Signaled 醒因不采样（重验/尾钩执法面）。
+pub(crate) fn latsgi_wake(reason: berry_sched::WakeReason) {
+    if reason != berry_sched::WakeReason::Signaled {
+        return;
+    }
+    let wv = berry_sched::wake_stamp_take();
+    assert!(wv != 0, "latsgi: wake 戳缺位（note_wake 戳面破损）");
+    let now = berry_hal_aarch64::timer::cntvct();
+    let lat = match now.checked_sub(wv) {
+        Some(l) => l,
+        None => panic!("latsgi: 负 wake→run（now={now} < 戳={wv}）= 时序破损"),
+    };
+    // 单写者（sleeper 的 SVC 路径 CPU1）：DONE 即本样本槽位，先存样本后
+    // 发布计数（Release）——waker Acquire 读到计数即读到样本。
+    let i = LATSGI_DONE.load(core::sync::atomic::Ordering::Relaxed);
+    LATSGI_BUF[i].store(lat, core::sync::atomic::Ordering::Relaxed);
+    LATSGI_DONE.fetch_add(1, core::sync::atomic::Ordering::Release);
+}
+
+/// SGI 路 wait 返程尾钩子（`sys_object_wait_one` 出口调用；非 0 返回 =
+/// 超时/错路 = waker 漏醒——L0 fail-loud，与 IPC 路醒因断言同族执法）。
+pub(crate) fn latsgi_ret(ret: i64) {
+    if ret != 0 {
+        panic!("latsgi: wait 返程 ret={ret}（Timeout = waker 漏醒——握手面破损）");
+    }
+}
+
+/// SGI 路 waker/master（G3-4b）：spawn EL0 舰队（root 占位 + sleeper
+/// spread→CPU1）→ N 轮「**等 sleeper wait 进入序号** → Event 置位 +
+/// `wake_matching` 跨核唤醒」→ 收 32 样本 → 全排序打印 `BENCHLAT,lane=sgi`
+/// + `LATSGI ok`。
+///
+/// - **唤醒面 = sys_object_signal 尾同链**（`Event::signal(0, bit)` +
+///   `wake_matching(addr, bit)`）：跨核睡的醒来重验（`signal_state` 重读
+///   Event 态）须真置位才命中——纯 `wake_matching` 不写 Event 态即漏醒
+///   （LAT_EV_BIT 注同源口径）。klock 窗内调用（真实调用面同屏蔽窗契约）。
+/// - **跨 vCPU 握手 = 序号面非钟面**（首跑实录：guest 钟 spacer 盲 pacing
+///   在 TCG boot 高载下饿副核 vCPU——CPU0 钟睡了 slice/4 而 CPU1 尚未跑
+///   完上轮回睡，n==0 竞速 panic）。每轮先有界轮询 `LATSGI_ENTER ≥ i+1`
+///   （hook_enter 在 sleeper 的 SVC 屏蔽窗内递增；block 的 insert_sorted
+///   先于 klock_release_switch ⇒ waker 观察到序号后取 KL，sleeper 必已
+///   在 SLEEPQ——KL 串行闭 TOCTOU 窗），再发信号。n==1 断言保留 = 终背书。
+/// - 被测段 = note_wake 戳（CPU0 唤醒侧）→ SGI → CPU1 park 出场 → sleeper
+///   醒后首段内核执行取戳——跨核 SGI + 远端 RQ 入队 + park 出场全在被测
+///   段内（IPC 路 = 同核直切段，两路对照即段分解）。
+/// - 收尾等位：DONE 计数 Acquire 读到 32（有界轮询，超时 L0——TCG 副核
+///   滞后同因，预算按 lag 容忍非按工作量）→ 排序打印 → exit_current
+///   （一次性采样任务非常驻，rt_probe 同形）。
+extern "C" fn task_latsgi_wak(_arg: usize) -> ! {
+    use berry_sched::WakeReason;
+    // 舰队 spawn（PP 同形：svc 链落本任务私有表，handle 常驻泄漏持有）。
+    // root x0=0 占位即刻退；写者 x0=1 = sleeper spread→CPU1。
+    let _fleet = storm_spawn_fleet("latsgi", crate::user::user_latslp_code(), 1, 1);
+    // 轮询节拍 = ¼ slice 纯睡（obj=0，唯一醒因 Timeout——序号未到位时的
+    // 让位等，不参与测量窗）。
+    let spacer = berry_hal_aarch64::timer::slice_cycles() / 4;
+    let mut obj = 0usize;
+    for i in 0..LAT_SAMPLES {
+        // 等 sleeper 第 i+1 次 wait 进入（单调 ≥——首轮兼就位握手；有界，
+        // 超时 L0：sleeper spawn 链断/err 早退同状收口）。
+        let mut enter = 0usize;
+        for _ in 0..LATSGI_POLL_MAX {
+            enter = LATSGI_ENTER.load(core::sync::atomic::Ordering::Acquire);
+            if enter >= i + 1 {
+                break;
+            }
+            berry_hal_aarch64::kern_lock::klock_enter();
+            let r = berry_sched::block_current(0, 0, berry_hal_aarch64::timer::cntvct() + spacer);
+            berry_hal_aarch64::kern_lock::klock_exit();
+            assert!(r == WakeReason::Timeout, "latsgi_wak: 等位睡醒因非 Timeout");
+        }
+        assert!(enter >= i + 1,
+                "latsgi_wak: 第 {} 轮 wait 进入序号超时（enter={enter}——sleeper 断链/err 早退）",
+                i + 1);
+        if obj == 0 {
+            obj = LATSGI_OBJ.load(core::sync::atomic::Ordering::Acquire);
+        }
+        berry_hal_aarch64::kern_lock::klock_enter();
+        // SAFETY: OBJ = wait 进入点钩子钉住的活 ObjRef——deref 时 sleeper
+        // 恒在睡（wait_one 的 retain 钉住覆盖全部睡眠轮次，§A28 跨睡眠版；
+        // 序号+KL 串行背书；n==1 断言即时复核）。末轮后 sleeper 退出，
+        // 本任务不再 deref。
+        let objp = obj as *mut crate::handle::ObjRef;
+        unsafe {
+            (*objp)
+                .obj
+                .as_event_mut()
+                .expect("latsgi_wak: ObjRef 非 Event")
+                .signal(0, LAT_SGI_BIT);
+        }
+        let n = berry_sched::wake_matching(obj, LAT_SGI_BIT);
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(n == 1, "latsgi_wak: 唤醒数 {n} ≠ 1（sleeper 未在睡——握手竞速面破损）");
+    }
+    // 收尾等位：末轮样本由 CPU1 异步落柜（DONE Acquire 读 32 = 全发布）。
+    let mut done = 0usize;
+    for _ in 0..LATSGI_POLL_MAX {
+        done = LATSGI_DONE.load(core::sync::atomic::Ordering::Acquire);
+        if done == LAT_SAMPLES {
+            break;
+        }
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = berry_sched::block_current(0, 0, berry_hal_aarch64::timer::cntvct() + spacer);
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(r == WakeReason::Timeout, "latsgi_wak: 收尾等位醒因非 Timeout");
+    }
+    assert!(done == LAT_SAMPLES,
+            "latsgi_wak: 样本落柜超时（done={done} < {}——sleeper err 早退或挂死）",
+            LAT_SAMPLES);
+    let mut samples = [0u64; LAT_SAMPLES];
+    for i in 0..LAT_SAMPLES {
+        samples[i] = LATSGI_BUF[i].load(core::sync::atomic::Ordering::Relaxed);
+    }
+    samples.sort_unstable(); // 全排序精确分位（IPC 路同形；p99==max=最近秩诚实结果）
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"BENCHLAT,lane=sgi,n=");
+        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+        berry_hal_aarch64::uart_puts(b",min=");
+        berry_hal_aarch64::uart_put_dec(samples[0]);
+        berry_hal_aarch64::uart_puts(b",p50=");
+        berry_hal_aarch64::uart_put_dec(samples[15]);
+        berry_hal_aarch64::uart_puts(b",p90=");
+        berry_hal_aarch64::uart_put_dec(samples[28]);
+        berry_hal_aarch64::uart_puts(b",p99=");
+        berry_hal_aarch64::uart_put_dec(samples[31]);
+        berry_hal_aarch64::uart_puts(b",max=");
+        berry_hal_aarch64::uart_put_dec(samples[31]);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LATSGI ok n=");
+        berry_hal_aarch64::uart_put_dec(LAT_SAMPLES as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    berry_sched::exit_current()
+}
+
+/// SGI 路有界轮询帽（就位/收尾两等位共用；¼ slice × 4096 ≈ 1024 slice ≈
+/// 100s @10Hz 片频——sleeper 就位/回环实测 ≪ 单个 spacer，帽 = 故障时
+/// fail-loud 上界非正常路径预算）。
+const LATSGI_POLL_MAX: usize = 4096;
 
 // ---- S-1：soakmon（soak 长跑心跳，boot 门控 spawn 块见 main 尾段；
 // 设计 = docs/基准与压力测试设计.md §11 + 落地实录。命名注记：sched.rs 的
@@ -4534,6 +4745,14 @@ const SOAKLOAD_EV_BIT: u64 = 1 << 47;
 /// 位本身不锁存（wake_matching 只扫睡眠队不写 Event 态），漏醒由 waker
 /// 侧 n==1 断言 + sleeper 侧醒因/醒时断言双 L0 执法兜底。
 const LAT_EV_BIT: u64 = 1 << 48;
+
+/// bench-lat SGI 路位签名（G3-4b，占用登记见 [`USER_SIGNAL_BITS`]——
+/// LAT_EV_BIT 的续位）。与 IPC 路不同源的两用位：EL0 sleeper `wait_one`
+/// 的请求位（位签名 = 内核钩子双过滤之一）+ 内核 waker `Event::signal`
+/// 真置位（跨核睡的醒来重验靠它命中——`wake_matching` 只扫睡眠队不写
+/// Event 态，位不锁存即重验失败再睡 = 漏醒）。sleeper 逐轮 `object_signal`
+/// clear 消费（§A61 清位纪律）——下轮 wait 前 Event 态恒零，恒真睡不 poll。
+pub(crate) const LAT_SGI_BIT: u64 = 1 << 49;
 
 /// storm 舰队装配（S-5b 相 6/7 + S-5c 相 8 共用；svc 落脚 = 本任务私有表，
 /// caller_table 经 current_tag 取）：进程 + 代码页 + 单 data VMO

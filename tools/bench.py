@@ -40,6 +40,15 @@
   **load-bearing**，删掉它虚拟时钟重新耦合宿主时钟，确定性通道失效。组合
   拒绝：--el0/--rt（通道混跑——一进程一种 QEMU 形态）、--factor（L2 形态 =
   烘焙常量 ICOUNT_TOL，可调因子会把 L2 静默降级回 L1 语义）。
+- --trace-dual（G3-4b）：`可观测性设计.md` :52「trace 开/关两套基准都过」
+  过关要件的载体——--icount 同形态两臂（默认 vs `-fw_cfg opt/berry/trace=0`
+  记录面关）背靠背：①关-开行差帽 TRACE_CAP（单一事实源常量——首标定
+  2026-11-05 = 0.0 **结构性零**：bench 六窗前置调度器纪元，遥测钩子窗口内
+  不发射；任一非零差 = 门泄漏〔报警〕或 bench 面迁纪元〔合法演进须重标定〕，
+  见常量注）；②两臂各对拍自家家族基线（L2 同 ICOUNT_TOL；off 家族独立文件
+  bench_baseline_icount_traceoff.txt——基线双份入库，草案 §4）；③`--update`
+  刷双份（帽不过不许刷）。off 臂 done 标记 = `TRACE off ok`（BENCHWAKE 结构性
+  缺席——直方图零样本，watchdog 断言面同让位）。
 
 用法（仓库根）：
   python3 tools/bench.py             # B-0：跑一次 + 对拍基线（无基线 = 只出表）
@@ -56,6 +65,12 @@
                                       # 文件，bench_baseline.txt 双段不动）
   python3 tools/bench.py --icount --prove   # B-2：五跑证明（漂移谱 + verdict，
                                       # 观测 only——不写基线不进门禁）
+  python3 tools/bench.py --trace-dual # G3-4b：trace 开/关双跑（--icount 形态
+                                      # 两臂：默认 vs opt/berry/trace=0）+ 关-
+                                      # 开行差帽 TRACE_CAP + 双家族基线对拍
+  python3 tools/bench.py --trace-dual --update  # 立刷双份基线（on 家族文件
+                                      # bench_baseline_icount.txt + off 家族
+                                      # bench_baseline_icount_traceoff.txt）
 
 退出码：0 = 过/仅出表；1 = 劣化超因子或收割不齐（可作 CI 步骤）。
 """
@@ -103,6 +118,32 @@ ICOUNT_ARGS = ["-icount", "shift=1,sleep=off"]
 # B-2 基线独立文件（§13 证明协议：跨机与跨模式都不可比——与 bench_baseline
 # .txt 双段分离；单段裸 CSV 无前缀，独立文件即分段）。
 BASELINE_ICOUNT = REPO / "tools" / "bench_baseline_icount.txt"
+
+# G3-4b trace 双跑 off 臂基线（草案 §4「基线双份入库——bench_baseline 家族
+# 扩」）：与 BASELINE_ICOUNT 同形裸 CSV、同 ELF 同 bench 面，仅记录面关
+#（opt/berry/trace=0）——**三态不可比**（on/off 跨配置、icount/实时跨模式、
+# 跨机），独立文件即分段（load/save 与 on 家族严格同形——P6 A-5 双源漂移雷）。
+BASELINE_ICOUNT_OFF = REPO / "tools" / "bench_baseline_icount_traceoff.txt"
+
+# G3-4b trace 双跑：off 臂 done 标记（user.rs watchdog 的 BENCHWAKE 替代位
+# ——记录面关时环/直方图断言对象不在场，执法同让位；含空格/括号 = 矩阵
+# 字符流〔A-Z/a-z 无空格〕结构性不可伪命中；全形状正则三处共用——
+# BENCHWAKE_RE 同纪律，撕裂半行不可能早退）。
+TRACE_OFF_DONE_RE = re.compile(r"TRACE off ok \(record face closed\)")
+
+# G3-4b trace 劣化帽（单一事实源——(on−off) 行差上界 = off 值的此倍率，
+# 草案 §4「帽 = 关基线的 x%，x 实施刀首标定」）。**首标定（2026-11-05，
+# M 系 mac，QEMU 11.x）= 0.0——全六行关/开逐值恰等**，且这是**结构性零**
+# 非「量不到」：bench::run()（main.rs boot 序）前置于 berry_sched::init()
+# ——bench 六窗全在调度器存在之前的串行 boot 纪元执行，遥测钩子（切换环/
+# 唤醒环/直方图，经 set_switch_hook/set_wake_hook 注册后才可能发射）在
+# 窗口内**结构性不可能发射**（P-1 勘误的机制面在此反向承重）。故帽收敛为
+# ④' 控制列断言的**全行推广**：任一行非零差 = 二选一——①trace 门泄漏进
+# 前调度器路径（gate 面 bug，L0 级报警）②bench 面迁入调度器纪元（合法
+# 演进——届时遥测足迹真入窗、行分类〔控制/混叠/机制〕须重立，本帽过时
+# 须按新形态重标定，注释与本常量同步）。off 臂五跑逐值相同（2026-11-05
+# 证明，见 notes.md 台账）= off 家族 L2 资格同源。
+TRACE_CAP = 0.0
 
 # L2 紧门禁形态（**单一事实源**——基线文件头注释与设计文档 §13 只做镜像
 # 引用，执法点唯一在此常量；防双源漂移 = P6 A-5 基准漂移雷教训）：
@@ -208,16 +249,19 @@ RT_TIERS = 3   # 档数（slice/4、slice、4·slice——kernel deltas 定值�
 RT_N = 32      # 每档样本数（kernel RT_SAMPLES 定值镜像）
 
 # G3-4 bench-lat（wake→run 段补盲，草案 §4）。收割同 BENCHRT 族**不做行
-# 锚定**：lane 行由 prio 8 sleeper 抢占矩阵打印流打出（首跑实录：行嵌
-# 矩阵流中段）。全形状含 lane 分组（ipc|sgi——G3-4a 只 ipc 在册，SGI 路
-# G3-4b 扩入时只动 LAT_LANES 断言集不动正则）；n=32 字面 = task_lat_slp
-# LAT_SAMPLES 镜像（wire 面冻结——内核侧 const assert 同步执法）。
-# done 轮询/缺席诊断/整行收割三处共用：DONE 按路分记（LATIPC ok——每路
-# 各自的完成标记，RT ok 同形）；lane 行与标记行字面互非子串。
+# 锚定**：lane 行由 prio 8 sleeper/内核 waker 抢占矩阵打印流打出（首跑
+# 实录：行嵌矩阵流中段）。全形状含 lane 分组（ipc|sgi 两路在册：ipc =
+# 内核任务对同核直切段〔G3-4a〕、sgi = EL0 用户对跨核段〔G3-4b〕）；
+# n=32 字面 = task_lat_slp/task_latsgi_wak LAT_SAMPLES 镜像（wire 面冻结
+# ——内核侧 const assert 同步执法）。done 轮询/缺席诊断/整行收割三处
+# 共用：DONE 按路分记（每路各自的完成标记 LATIPC/LATSGI ok——RT ok
+# 同形，**须两路齐**才收）；lane 行与标记行字面互非子串。
 BENCHLAT_RE = re.compile(
     r"BENCHLAT,lane=(ipc|sgi),n=(\d+),min=(\d+),p50=(\d+),p90=(\d+),p99=(\d+),max=(\d+)")
-DONE_LAT_RE = re.compile(r"LATIPC ok n=(\d+)")
-LAT_LANES = ("ipc",)  # 在册路（G3-4b SGI 路落地后扩 ("ipc", "sgi")）
+# 每路完成标记前缀（lane → 标记；新增路只扩本表与 LAT_LANES）。
+LAT_DONE_MARKERS = {"ipc": "LATIPC", "sgi": "LATSGI"}
+DONE_LAT_RE = re.compile(r"(LATIPC|LATSGI) ok n=(\d+)")
+LAT_LANES = ("ipc", "sgi")  # 在册路（G3-4a ipc + G3-4b sgi）
 LAT_N = 32            # 每路样本数（kernel LAT_SAMPLES 定值镜像）
 
 # B-2：BENCHWAKE 行**非锚定**收割/轮询（B-1/R-1 矩阵巨行中段教训同族）：
@@ -452,12 +496,13 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
 
 def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
     """G3-4 bench-lat 通道：-smp 2 裸跑（+fw_cfg 具名项 opt/berry/lat 门控
-    lat 任务对 spawn）等 `LATIPC ok n=32`，非锚定收割 BENCHLAT lane 行 →
-    {lane: (n, min, p50, p90, p99, max)}。
+    lat 任务对 spawn——IPC 路内核对 + SGI 路 EL0 舰队）等 **LAT_LANES 全路
+    完成标记齐**（每路 `LATxxx ok n=32`，SGI 路舰队 spawn 较慢后到），
+    非锚定收割 BENCHLAT lane 行 → {lane: (n, min, p50, p90, p99, max)}。
 
     run_rt 同款独立函数不复用 run_once（收割面/一致性校验不同构，零回归面
-    优先）。一致性 = 恰 LAT_LANES 在册路各一行、n 逐路 == LAT_N、done_n ==
-    行 n 合计（改 task_lat_* 后同步）。
+    优先）。一致性 = 恰 LAT_LANES 在册路各一行、n 逐路 == LAT_N、每路
+    完成标记恰一个且 n == LAT_N（改 task_lat_* 后同步）。
     """
     qemu_cmd = [
         "qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72",
@@ -486,7 +531,10 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
             if proc.poll() is not None:
                 break  # QEMU 提前退出（崩溃）——带着现有日志走收割失败路径
             text = Path(log_path).read_text(encoding="utf-8", errors="replace")
-            if DONE_LAT_RE.search(text):
+            # 全路完成标记齐才收（SGI 路舰队 spawn + 32 轮 paced 握手较慢
+            # 后到——恰 IPC 先齐即退 = SGI 路行缺收假绿）。
+            marks = {m.group(1) for m in DONE_LAT_RE.finditer(text)}
+            if all(LAT_DONE_MARKERS[l] in marks for l in LAT_LANES):
                 break
             time.sleep(1)
         text = Path(log_path).read_text(encoding="utf-8", errors="replace")
@@ -500,13 +548,23 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
             proc.wait()
         Path(log_path).unlink(missing_ok=True)
 
-    d = DONE_LAT_RE.search(text)
-    if d is None:
+    # 完成标记按路分记（恰一个/路、n 逐路 == LAT_N；缺席诊断按缺失路点名）。
+    lane_of = {v: k for k, v in LAT_DONE_MARKERS.items()}
+    done_ns: dict[str, int] = {}
+    for m in DONE_LAT_RE.finditer(text):
+        mark, n = m.group(1), int(m.group(2))
+        lane = lane_of[mark]
+        if lane in done_ns:
+            raise SystemExit(
+                f"bench.py: {mark} ok 行重复收割（每路恰一行——改 task_lat_* 后同步）")
+        done_ns[lane] = n
+    missing = [l for l in LAT_LANES if l not in done_ns]
+    if missing:
+        marks_hint = ", ".join(f"{LAT_DONE_MARKERS[l]} ok" for l in missing)
         raise SystemExit(
-            f"bench.py: LATIPC ok 行 {BOOT_TIMEOUT_LAT}s 未出现（boot 失败 / "
-            f"lat 任务对 panic（负延迟是 L0 执法）/ fw_cfg 门控未命中？）——"
+            f"bench.py: {marks_hint} 行 {BOOT_TIMEOUT_LAT}s 未出现（boot 失败 / "
+            f"lat 任务 panic（负延迟是 L0 执法）/ fw_cfg 门控未命中？）——"
             f"串口尾部：{' | '.join(text.splitlines()[-5:])}")
-    done_n = int(d.group(1))
     rows: dict[str, tuple[int, ...]] = {}
     for m in BENCHLAT_RE.finditer(text):
         lane = m.group(1)
@@ -516,20 +574,26 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
                 f"bench.py: BENCHLAT lane={lane} 重复收割（每路恰一行——"
                 f"改 task_lat_* 后同步）")
         rows[lane] = vals
-    # 一致性（run_rt 镜像形）：在册路恰齐、逐路 n==LAT_N、done_n == Σn。
+    # 一致性（run_rt 镜像形）：在册路恰齐、逐路 n==LAT_N、完成标记 n 对路相等。
     if (tuple(sorted(rows)) != tuple(sorted(LAT_LANES))
             or any(v[0] != LAT_N for v in rows.values())
-            or sum(v[0] for v in rows.values()) != done_n):
+            or any(done_ns[l] != LAT_N for l in LAT_LANES)):
         raise SystemExit(
-            f"bench.py: BENCHLAT 收割不齐（lanes={sorted(rows)} done_n={done_n} "
-            f"——须恰 {LAT_LANES} 各一行、n=={LAT_N}、Σn==done_n；"
+            f"bench.py: BENCHLAT 收割不齐（lanes={sorted(rows)} done={done_ns} "
+            f"——须恰 {LAT_LANES} 各一行、n=={LAT_N}、每路完成标记 n=={LAT_N}；"
             f"改 task_lat_* 后同步）")
     return rows
 
 
-def run_icount(kernel: str) -> tuple[dict[str, int], dict[str, int], str]:
+def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], dict[str, int], str]:
     """B-2 通道：`-icount shift=1,sleep=off` 裸跑，等 boot 尾 `BENCHWAKE n=`，
     双面收割 → ({name: cyc_per_op}, {name: iters}, BENCHWAKE 整行)。
+
+    trace_off=False（默认臂）：如上。trace_off=True（G3-4b 双跑 off 臂，
+    草案 §4）：追加 `-fw_cfg name=opt/berry/trace,string=0`（内核侧记录面
+    关——环写/直方图让位，`TRACE off ok` 替代标记上），done 标记与观测行
+    换 TRACE_OFF_DONE_RE（BENCHWAKE 在 off 臂结构性缺席——直方图零样本，
+    等它 = 必超帽假红）。
 
     独立函数不复用 run_once（run_rt 先例，bench.py 零回归面优先——smoke/
     bench 依赖既有两通道）：与 run_once 的差异五处——①qemu_cmd 追加定值
@@ -545,9 +609,10 @@ def run_icount(kernel: str) -> tuple[dict[str, int], dict[str, int], str]:
     内结构性不变；一并比对 = 把收割面（正则分组）也钉进证明，防「只比
     cyc 掩盖收割回退」）——门禁/立基线侧仍只用 cyc（iters 列由
     _iter_table 静态镜像写盘，两源一致性由 prove 元组比对背书）；
-    ⑤qemu_preflight 跨进程串行守卫。
+    ⑤qemu_preflight 跨进程串行守卫；⑥trace_off 参数（off 臂 fw_cfg +
+    done/观测行换面——收割协议与六行 BENCH 面两臂全同）。
 
-    -icount 下 boot 不达 BENCHWAKE = 合法发现（§13 语义② boot 时序全变）
+    -icount 下 boot 不达 done 标记 = 合法发现（§13 语义② boot 时序全变）
     ——本函数只 loud 上报（SystemExit 带串口尾），绝不放宽帽硬凑绿。
     """
     qemu_cmd = [
@@ -556,6 +621,11 @@ def run_icount(kernel: str) -> tuple[dict[str, int], dict[str, int], str]:
         # 定值注见 ICOUNT_ARGS（shift 不可参数化）。
         *ICOUNT_ARGS,
     ]
+    done_re = TRACE_OFF_DONE_RE if trace_off else BENCHWAKE_RE
+    if trace_off:
+        # G3-4b off 臂门控键（rt/lat 同形具名门；内核 telemetry::init 读值
+        # 一次定值——string=0 恰 1 字节 = 记录面关）。
+        qemu_cmd += ["-fw_cfg", "name=opt/berry/trace,string=0"]
     with tempfile.NamedTemporaryFile(
         prefix="berryos-bench-icount.", suffix=".log", delete=False
     ) as tf:
@@ -573,7 +643,7 @@ def run_icount(kernel: str) -> tuple[dict[str, int], dict[str, int], str]:
             if proc.poll() is not None:
                 break  # QEMU 提前退出（崩溃）——带着现有日志走收割失败路径
             text = Path(log_path).read_text(encoding="utf-8", errors="replace")
-            if BENCHWAKE_RE.search(text):
+            if done_re.search(text):
                 break
             time.sleep(1)
         text = Path(log_path).read_text(encoding="utf-8", errors="replace")
@@ -587,15 +657,16 @@ def run_icount(kernel: str) -> tuple[dict[str, int], dict[str, int], str]:
             proc.wait()
         Path(log_path).unlink(missing_ok=True)
 
-    if BENCHWAKE_RE.search(text) is None:
+    if done_re.search(text) is None:
         raise SystemExit(
-            f"bench.py: BENCHWAKE 行 {BOOT_TIMEOUT_ICOUNT}s 未出现（-icount 下 "
-            f"boot 不达 = 合法发现，如实上报勿放宽帽——串口尾部："
-            f"{' | '.join(text.splitlines()[-5:])})")
-    print(f"[B-2(icount)] boot→BENCHWAKE {time.time() - t0:.1f}s wall"
-          f"（帽 {BOOT_TIMEOUT_ICOUNT}s）")
-    # 观测面：BENCHWAKE 整行（R-0 依赖注记——wake 延迟确定性观测，不动门禁）。
-    wake_line = BENCHWAKE_RE.search(text).group(0)
+            f"bench.py: done 标记（{'TRACE off ok' if trace_off else 'BENCHWAKE'}）"
+            f" {BOOT_TIMEOUT_ICOUNT}s 未出现（-icount 下 boot 不达 = 合法发现，"
+            f"如实上报勿放宽帽——串口尾部：{' | '.join(text.splitlines()[-5:])})")
+    print(f"[B-2(icount{',off' if trace_off else ''})] boot→done 标记 "
+          f"{time.time() - t0:.1f}s wall（帽 {BOOT_TIMEOUT_ICOUNT}s）")
+    # 观测面：done 标记整行（on 臂 = BENCHWAKE〔R-0 依赖注记——wake 延迟确定性
+    # 观测，不动门禁〕；off 臂 = TRACE off ok 替代标记行）。
+    wake_line = done_re.search(text).group(0)
     # 门禁面：六行 BENCH 行锚定收割 + BENCH ok n= 一致性校验（镜像 run_once
     # 的 B-0 分支）。BENCHWAKE 已在而 BENCH ok 缺席 = 「严格后于」时序假设
     # 被打破（user.rs 打印序变化？）——loud 不容静默降级。
@@ -611,8 +682,8 @@ def run_icount(kernel: str) -> tuple[dict[str, int], dict[str, int], str]:
         if d:
             done_n = int(d.group(1))
     if done_n is None:
-        raise SystemExit("bench.py: BENCHWAKE 已在而 BENCH ok 行缺席——时序假设"
-                         "「BENCHWAKE 严格后于 BENCH ok」被打破，门禁面不可收割")
+        raise SystemExit("bench.py: done 标记已在而 BENCH ok 行缺席——时序假设"
+                         "「done 标记严格后于 BENCH ok」被打破，门禁面不可收割")
     if len(metrics) != done_n:
         raise SystemExit(
             f"bench.py: BENCH 行数 {len(metrics)} ≠ BENCH ok n={done_n}"
@@ -790,6 +861,48 @@ def save_baseline_icount(metrics: dict[str, int]) -> None:
     BASELINE_ICOUNT.write_text("\n".join(lines) + "\n")
 
 
+def load_baseline_icount_off() -> dict[str, int]:
+    """icount off 臂基线解析：与 load_baseline_icount 严格同形（裸 CSV
+    `name,iters,cyc`；独立文件即分段）——P6 A-5 双源漂移雷：读侧与 save
+    侧同形。文件缺席 = 空 dict（首跑自立）。"""
+    base: dict[str, int] = {}
+    if not BASELINE_ICOUNT_OFF.exists():
+        return base
+    for raw in BASELINE_ICOUNT_OFF.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = BENCH_RE.match(f"BENCH,{line}")
+        if m:
+            base[m.group(1)] = int(m.group(3))
+    return base
+
+
+def save_baseline_icount_off(metrics: dict[str, int]) -> None:
+    """刷新 off 臂基线整个文件（单段独立文件；**绝不经 save_baseline_icount**
+    ——那是 on 家族文件，两文件数据源不同臂不能互写）。头注释镜像 on 家族
+    六件 + 关臂语义/结构性零足迹定谳（TRACE_CAP 注释为单一事实源，此处只
+    镜像）。"""
+    iters = _iter_table()  # 与 on 家族同六项（同一 bench 面，分文件不分项）
+    lines = [
+        "# BerryOS -icount 确定性通道 **trace 记录面关** 臂基线（G3-4b 双跑，",
+        "# `python3 tools/bench.py --trace-dual`；fw_cfg opt/berry/trace=0）。",
+        "# 口径 = CNTVCT 周期数在 -icount shift=1 虚拟时钟下的指令数代理",
+        "# （每指令 2ns，折算 ≈0.125 cyc/instr）——与 tools/bench_baseline.txt",
+        "# （实时）跨模式、与 bench_baseline_icount.txt（on 臂）**跨配置**、",
+        "# 跨机三态皆不可比（§2 铁律 1）。",
+        "# 结构性零足迹：bench 六窗前置调度器纪元，遥测钩子窗口内不发射——",
+        "# off 臂值 = on 臂值的镜像（关-开差恒 0，TRACE_CAP=0.0 执法）；本文件",
+        "# 存在的意义 = off 宇宙指令流的独立漂移绊线（门面回退/记录面让位",
+        "# 过宽都会在此先红）。",
+        "# 刷新：python3 tools/bench.py --trace-dual --update（on 家族文件随同刷）。",
+        "# 史档/勘误记事 → tools/bench_baseline_icount.notes.md（on/off 家族共册）。",
+    ]
+    for name, cyc in sorted(metrics.items()):
+        lines.append(f"{name},{iters.get(name, 0)},{cyc}")
+    BASELINE_ICOUNT_OFF.write_text("\n".join(lines) + "\n")
+
+
 def _iter_table() -> dict[str, int]:
     """B-0 基准项 → 迭代数（与 bench.rs 定值镜像——漂移只影响基线可读性，对拍按名）。"""
     return {
@@ -813,6 +926,33 @@ def _iter_table_el0() -> dict[str, int]:
     }
 
 
+def _l2_bad(tag: str, metrics: dict[str, int], base: dict[str, int]) -> list[str]:
+    """L2 对拍（--icount 门禁的家族镜像，供 --trace-dual 两臂复用）：双侧带
+    [old×(1−tol), old×(1+tol)]（tol=ICOUNT_TOL，确定性通道双向漂移都是指令流
+    变化）；0 基线行 0→0 恰等过、0→非零 = 无界漂移（prove 同口径零语义）；
+    缺席行记 FAIL（改基准源后须 --update）。既有 --icount 内联门禁块不动
+    （零回归面），本 helper 只服务双跑。"""
+    bad: list[str] = []
+    for name, cyc in sorted(metrics.items()):
+        old = base.get(name)
+        if old is None:
+            print(f"bench.py: [{tag}] 新基准项 {name}（基线缺席，不过门禁）")
+            continue
+        if old == 0:
+            if cyc != 0:
+                bad.append(f"[{tag}] {name}: 0 → {cyc}（+inf%，出 L2 界 [0, 0]"
+                           "——基线 0 出非零 = 量化粒度级无界漂移）")
+            continue
+        lo, hi = old * (1.0 - ICOUNT_TOL), old * (1.0 + ICOUNT_TOL)
+        if not lo <= cyc <= hi:
+            dev = (cyc - old) * 100.0 / old
+            bad.append(f"[{tag}] {name}: {old} → {cyc}（{dev:+.2f}%，出 L2 界 "
+                       f"[{lo:g}, {hi:g}]——确定性通道双向漂移都是指令流变化）")
+    for m in sorted(set(base) - set(metrics)):
+        bad.append(f"[{tag}] 基准项 {m} 从输出消失（改基准源后须 --update）")
+    return bad
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--update", action="store_true", help="刷新基线文件（本模式对应段）")
@@ -830,6 +970,10 @@ def main() -> None:
                     help="B-2 通道：-icount shift=1,sleep=off 确定性裸跑，收割六行"
                          " BENCH 做 L2 紧门禁对拍（基线 bench_baseline_icount.txt"
                          " 独立文件）+ BENCHWAKE 观测行")
+    ap.add_argument("--trace-dual", action="store_true",
+                    help="G3-4b trace 开/关双跑：--icount 同形态两臂（默认 vs "
+                         "opt/berry/trace=0）+ 关-开行差帽 TRACE_CAP（首标定"
+                         "=0.0 结构性零）+ 两臂各对拍自家基线（--update 刷双份）")
     ap.add_argument("--prove", action="store_true",
                     help="五跑证明（--icount 专属：漂移谱 + verdict，观测 only"
                          "——不写基线不进门禁）")
@@ -837,25 +981,27 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.rt and (args.update or args.el0 or args.factor is not None
-                    or args.icount or args.prove or args.lat):
+                    or args.icount or args.prove or args.lat or args.trace_dual):
         # RT 无基线段（设计 §10 只出表）——误触 save_baseline 会按双段前缀
         # 逻辑误写 bench_baseline.txt；--el0/--icount 同样不进 --rt 早退
         # 分支：静默忽略 = 用户要的通道/门禁凭空蒸发（--el0 --rt 实际只跑
         # RT、B-1 静默缺席且退出码 0——三镜审查实抓）。组合一律拒绝
         # （B-2 起 --icount/--prove 入拒绝集——prove 只对 --icount 立法；
-        # --lat 入拒绝集同因——一进程一种 QEMU 形态）。
+        # --lat 入拒绝集同因——一进程一种 QEMU 形态；--trace-dual 入拒绝集
+        # 同因——双跑独占两臂 QEMU 形态）。
         raise SystemExit(
             "bench.py: --rt 独立通道（只出表无基线）——不与 --update/--el0/"
-            "--factor/--icount/--prove/--lat 组合（--update 误写基线双段；--el0/"
-            "--icount/--lat 通道会被静默丢弃——一进程一种 QEMU 形态；--factor "
-            "在 RT 无门禁面；--prove 只对 --icount 立法）")
+            "--factor/--icount/--prove/--lat/--trace-dual 组合（--update 误写"
+            "基线双段；--el0/--icount/--lat/--trace-dual 通道会被静默丢弃"
+            "——一进程一种 QEMU 形态；--factor 在 RT 无门禁面；--prove 只对 "
+            "--icount 立法）")
 
     # --- G3-4 --lat 专属校验（--rt 同款独立通道纪律）---
     if args.lat and (args.update or args.el0 or args.factor is not None
-                     or args.icount or args.prove):
+                     or args.icount or args.prove or args.trace_dual):
         raise SystemExit(
             "bench.py: --lat 独立通道（R-1 同族只出表无基线）——不与 --update/"
-            "--el0/--factor/--icount/--prove 组合（--rt 已在上互斥）")
+            "--el0/--factor/--icount/--prove/--trace-dual 组合（--rt 已在上互斥）")
 
     # --- B-2 --icount 专属校验（§13 参数矩阵；拒绝消息逐组合说因，教学体
     # 同上——「不静默忽略」先例）：单跑/--update/--prove 三形态合法，
@@ -878,6 +1024,14 @@ def main() -> None:
         raise SystemExit(
             "bench.py: --prove 观测 only 不写基线——证明是 L2 开门前置不是立档"
             "动作；立/刷基线 = python3 tools/bench.py --icount --update")
+    # --- G3-4b --trace-dual 专属校验（icount 家族双臂形态；--update/--kernel
+    # 外不与任何通道组合——双跑独占两臂 QEMU 形态，混入任一通道即静默蒸发）。
+    if args.trace_dual and (args.el0 or args.factor is not None
+                            or args.icount or args.prove):
+        raise SystemExit(
+            "bench.py: --trace-dual 不与 --el0/--factor/--icount/--prove 组合"
+            "（双跑独占两臂 QEMU 形态——icount 家族双臂自含；--factor 会把 L2"
+            " 形态降级回可调因子；--prove 只对单臂 --icount 立法）")
 
     kernel = args.kernel or kernel_elf()
     if args.lat:
@@ -958,6 +1112,74 @@ def main() -> None:
             raise SystemExit(1)
         print(f"bench.py: L2 对拍过（ICOUNT_TOL={ICOUNT_TOL}，"
               f"{len(metrics)} 项全在界内）")
+        return
+    if args.trace_dual:
+        metrics_on, _it_on, wake = run_icount(kernel)
+        metrics_off, _it_off, mark = run_icount(kernel, trace_off=True)
+        if set(metrics_on) != set(metrics_off):
+            raise SystemExit(
+                f"bench.py: 双臂基准项集合不同"
+                f"（{sorted(set(metrics_on) ^ set(metrics_off))}）——同 ELF 同 "
+                "bench 面两臂必同集，收割面破碎")
+        print(f"[G3-4(trace-dual)] {'name':<16} {'off':>10} {'on':>10} {'delta':>8}")
+        bad: list[str] = []
+        for name in sorted(metrics_on):
+            off, on = metrics_off[name], metrics_on[name]
+            delta = on - off
+            print(f"{'':<8} {name:<16} {off:>10} {on:>10} {delta:>+8}")
+            # 帽 = 双侧（L2 教义：确定性通道双向漂移都是指令流变化——on 臂
+            # 「变快」同样异常）；off=0 面 = 零混非零即无界漂移（prove 零语义
+            # 同口径）。
+            if off == 0:
+                if on != 0:
+                    bad.append(f"{name}: off=0 → on={on}（off 臂 0 出非零——"
+                               "量化粒度级无界漂移）")
+            elif abs(delta) > off * TRACE_CAP:
+                bad.append(f"{name}: off={off} → on={on}（δ={delta:+}，出帽 "
+                           f"|δ| ≤ off×TRACE_CAP={off * TRACE_CAP:g}——trace 门"
+                           "泄漏进前调度器路径〔gate 面 bug，报警〕，或 bench 面"
+                           "已迁入调度器纪元〔合法演进——须重标定 TRACE_CAP，"
+                           "见其注释〕")
+        print(f"[G3-4(trace-dual)] on 臂观测行：{wake}")
+        print(f"[G3-4(trace-dual)] off 臂替代标记行：{mark}")
+        if args.update:
+            if bad:
+                # 帽不过不许刷基线（--icount 单臂无此交点——单臂 update 只是
+                # 数值记录；双跑的 update 是**门禁面**：把违约数值写进基线 =
+                # 把报警器拆了）。
+                for b in bad:
+                    print(f"bench.py: FAIL {b}", file=sys.stderr)
+                raise SystemExit(1)
+            save_baseline_icount(metrics_on)
+            save_baseline_icount_off(metrics_off)
+            print(f"bench.py: 双份基线已刷新 → "
+                  f"{BASELINE_ICOUNT.relative_to(REPO)} + "
+                  f"{BASELINE_ICOUNT_OFF.relative_to(REPO)}")
+            return
+        if bad:
+            for b in bad:
+                print(f"bench.py: FAIL {b}", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"bench.py: trace 双跑关-开差过帽（TRACE_CAP={TRACE_CAP}，"
+              f"{len(metrics_on)} 行全在界内）")
+        base_on = load_baseline_icount()
+        base_off = load_baseline_icount_off()
+        if not base_on or not base_off:
+            missing = []
+            if not base_on:
+                missing.append(str(BASELINE_ICOUNT.relative_to(REPO)))
+            if not base_off:
+                missing.append(str(BASELINE_ICOUNT_OFF.relative_to(REPO)))
+            print(f"bench.py: 基线缺席（{'、'.join(missing)}）——仅出表+帽；"
+                  "`python3 tools/bench.py --trace-dual --update` 立双份")
+            return
+        l2 = _l2_bad("on", metrics_on, base_on) + _l2_bad("off", metrics_off, base_off)
+        if l2:
+            for b in l2:
+                print(f"bench.py: FAIL {b}", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"bench.py: 双臂 L2 对拍过（ICOUNT_TOL={ICOUNT_TOL}，on/off "
+              f"两家族 {len(base_on) + len(base_off)} 项全在界内）")
         return
     # --factor 默认 None（非 3.0）：default 值会淹没「显式传参」信号——上方
     # --rt 组合检测靠 None 区分「用户真传了 --factor」。

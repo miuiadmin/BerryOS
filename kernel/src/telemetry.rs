@@ -26,7 +26,7 @@
 
 use berry_hal_aarch64::smp::cpu_id;
 use berry_sched::{SwitchKind, Task, WakeReason};
-use core::sync::atomic::{fence, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
 
 /// 环容量（静态预储——2KB 级常驻 .bss，boot 后永不增长；per-CPU 后总量
 /// = 2×两环，仍 2KB 级）。
@@ -121,6 +121,9 @@ unsafe fn ring_write(rec: SwitchRec) {
 /// 切换钩子本体（`init` 注册进 `berry_sched`）。**零分配**：只写本核静态环
 /// + 计数。
 fn on_switch(prev: &Task, next: &Task, kind: SwitchKind) {
+    if trace_off() {
+        return; // G3-4b 记录面关：rec 构造（cntvct + 双名字哈希）与环写整体让位。
+    }
     let rec = SwitchRec {
         vct: berry_hal_aarch64::timer::cntvct(),
         prev: name_id(prev.name),
@@ -134,8 +137,33 @@ fn on_switch(prev: &Task, next: &Task, kind: SwitchKind) {
 
 /// 注册切换钩子（`rust_main` 在 `berry_sched::init` 后、首个切换前调用一次）。
 pub fn init() {
+    // G3-4b trace 开/关双跑门（草案 §4）：fw_cfg 具名项 `opt/berry/trace` 值
+    // "0"（恰 1 字节）= 记录面关；缺席/他值 = 开（默认面零漂移——run/smoke
+    // 不递送该键，全部既有通道行为不变；rt/lat 同形具名门先例）。一次定值
+    // 在此（init 早于首个钩子发射；boot 串行窗无竞速面），此后只读。
+    if let Some(e) = berry_hal_aarch64::fwcfg::find_file("opt/berry/trace") {
+        if e.size == 1 {
+            let mut v = [0u8; 1];
+            if berry_hal_aarch64::fwcfg::read_to(&e, &mut v) && v[0] == b'0' {
+                TRACE_OFF.store(true, Ordering::Relaxed);
+            }
+        }
+    }
     berry_sched::set_switch_hook(Some(on_switch));
     berry_sched::set_wake_hook(Some(on_wake));
+}
+
+/// 遥测记录面关标志（G3-4b 双跑通道的 off 臂）。关 = 两个钩子整体让位
+/// （环写 seqlock + 24/32B 拷贝 + 栅栏 + 直方图五计数器）——被测的就是
+/// 这笔热路径足迹。**计数器族（intent/IPC fastpath）与 `note_wake` 戳不
+/// 随关**：前者是 boot 断言面（intent_borrows 等在册执法），后者是
+/// bench-lat 测量基座（G3-4a）——观测计数 ≠ 环记录面，双跑只切后者。
+static TRACE_OFF: AtomicBool = AtomicBool::new(false);
+
+/// 记录面是否关（true = 环/直方图写让位；watchdog 的 G1.5 环断言与
+/// BENCHWAKE 打印同让位——断言对象不在场还执法即错杀，`user.rs` 同步门）。
+pub fn trace_off() -> bool {
+    TRACE_OFF.load(Ordering::Relaxed)
 }
 
 /// seqlock 读者：取 `cpu` 环内第 k 新条目（k=0 最新；空/越界 None；版本
@@ -325,6 +353,9 @@ unsafe fn wake_ring_write(rec: WakeRec) {
 /// + 原子计数 + R-0 增量直方图（同窗 O(1) 算术，与环写同量级——热路径纪律
 /// 不破）。
 fn on_wake(task: &Task, reason: WakeReason) {
+    if trace_off() {
+        return; // G3-4b 记录面关：环写 + 直方图（BENCHWAKE 源）整体让位。
+    }
     let rec = WakeRec {
         vct: berry_hal_aarch64::timer::cntvct(),
         since_vct: task.wait_since,

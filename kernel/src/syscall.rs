@@ -2027,6 +2027,13 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
     // SAFETY: 活对象（表内 handle 钉着）；睡眠期间全表 handle 被关光也不销毁
     //（3-3 钉住纪律的跨睡眠版）。
     unsafe { (*obj.as_ptr()).retain() };
+    // G3-4b SGI 路进入点钩子（位签名 + armed 双过滤——默认面恒短路，仅
+    // 付一次寄存器比较；钉住后调用 = 落笔的 ObjRef 活性由本 wait 钉着）。
+    if signals == crate::LAT_SGI_BIT
+        && crate::LATSGI_ARMED.load(core::sync::atomic::Ordering::Relaxed)
+    {
+        crate::latsgi_wait_enter(obj.as_ptr() as usize);
+    }
     let ret = loop {
         // SAFETY: 钉住在身对象必活；只读（signal/send/recv 写路径与本读点同
         // 为屏蔽串行）。
@@ -2051,7 +2058,21 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         // Signaled 时位可能又被清；未命中且未到点则再睡，循环兜底。
         let _reason =
             berry_sched::block_current(obj.as_ptr() as usize, signals, deadline_vct);
+        // G3-4b SGI 路醒来侧钩子（run 侧读点本体——醒后首段内核执行取戳；
+        // Signaled 才采样，重验循环/返程尾钩执法其余路径）。
+        if signals == crate::LAT_SGI_BIT
+            && crate::LATSGI_ARMED.load(core::sync::atomic::Ordering::Relaxed)
+        {
+            crate::latsgi_wake(_reason);
+        }
     };
+    // G3-4b SGI 路返程尾钩子（非 0 返回 = waker 漏醒 L0 fail-loud；钉住窗内
+    // 与进入点钩子成对包络整个 wait）。
+    if signals == crate::LAT_SGI_BIT
+        && crate::LATSGI_ARMED.load(core::sync::atomic::Ordering::Relaxed)
+    {
+        crate::latsgi_ret(ret);
+    }
     // SAFETY: 与上面的 retain 成对（唯一出口）；若等待期间 handle 全关光，
     // 此处归零 drop（屏蔽窗内、Drop 链纯指针操作不回表）。
     unsafe { ObjRef::release(obj) };

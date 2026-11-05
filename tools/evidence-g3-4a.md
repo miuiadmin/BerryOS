@@ -67,6 +67,6 @@ wake→run 同核段亚百微秒量级。G3 阶段对照：本表 = G3-4 段首�
 | bench.py --lat/--rt/--update 组合拒绝集 | 拒绝文案三形齐 |
 | just test-host | 全 suite ok 0 failed |
 | just smoke（八跑） | PASS（SMOKE_EXIT=0）：金丝雀 42 严格递增 + rootfs 相全链 + RX 交互相 + FAT 子目录/持久化相 + B4 掉电三相（采样 A/B + 毒环注入 + Boot C 恢复终验）——零漂移 |
-| B-2 icount prove 五跑 + 重立 | 五跑自洽 exact（max_dev 0.000%；BENCHWAKE 行五跑逐字节同）；**对旧基线两行漂**：frame_alloc4k 37→172（+135）、vmo_commit1p 1574→1706（+132）——note_wake 无条件戳+Task.wake_vct 增域的 icount 足迹（alloc/commit 族独漂，copy 环主导行 vmo_rw4k 与 handle_evt 不动）；`--update` 重立后过门禁（回执见下） |
+| B-2 icount prove 五跑 + 重立 | 五跑自洽 exact（max_dev 0.000%；BENCHWAKE 行五跑逐字节同）；**对旧基线两行漂**：frame_alloc4k 37→172（+135）、vmo_commit1p 1574→1706（+132）——**轨道对翻转 + 微位移**（{172,1706} = 在册轨道对 {171,1708} 加 +1/−2；G3-4a 新码叠掷布局骰，notes.md「G3-4a 烘基」条 + §A95/§A109 先例。**勘误〔f4 P-1，2026-11-05〕**：本行原归因「note_wake 戳+Task 增域的 icount 足迹」机制上不可能——bench::run() 前置 berry_sched::init()，note_wake 调用面在 bench 窗内不可达）；`--update` 重立后过门禁（回执见下） |
 | just bench（B-0 对拍） | PASS（6 项全在 ×3.0 界内：4/48/17/28/293/784；顺带 docs_guard 0 警 + abi-check PASS） |
 | just smoke-smp（八相） | PASS（SMP_EXIT=0）：相 1/2 boot 执法（SMP/SGI/SGI2 恰一次 + 裸 27 + rootfs 47 + PAR d1）+ 相 3 LB 三硬门 + 相 4 ASIDR + 相 5 TLBS n=10 + 相 6 ALLOC n=320 + 相 7 HT n=320 + 相 8 PP 320/320 |

@@ -1498,6 +1498,74 @@ core::arch::global_asm!(
     ".globl __user_soakload_end",
     "__user_soakload_end:",
 
+    // G3-4b bench-lat SGI 路 sleeper 子模板（arg 分流：root x0=0 = fleet 占位
+    // 即刻退；写者 x0=1 = sleeper，thread_start spread→CPU1）。N=32 轮
+    // 「clock_read(0x61) 锚 → wait_one(0x04, Event, 1<<49, now+60s ns) 阻塞
+    // 跨核睡 → 被 CPU0 内核 waker（Event::signal 置位 + wake_matching 跨核
+    // 唤醒——sys_object_signal 尾同链）→ 醒来 object_signal(0x06, clear=
+    // 1<<49) 消费位再睡」。测量读点在内核钩子（syscall 层 wait 醒来侧——
+    // main.rs latsgi_* 面）；载荷只管握手循环 + err/DONE 窗口汇报（PP 同形）。
+    // 位不锁存兜底：wait 超时（waker 漏醒）→ cbnz 早退 err++（内核尾钩
+    // L0 panic 先响——双保险）。窗口槽：0x0 clock 出参 / 0x40 event 句柄 /
+    // 0x48 observed / 0x80 err / 0x90 DONE。寄存器合同：x20 窗口基、x21 句柄
+    // （svc 只回写 x0——其余跨 svc 常驻）。
+    ".globl __user_latslp",
+    "__user_latslp:",
+    "    cmp  x0, #1",                // arg 分流：1 = sleeper，0 = root 占位
+    "    b.eq 2f",
+    "    movz x0, #0x36",             // root：仅 bootstrap 占位，即刻退（0x36
+    "    svc  #0",                    // 仅退自身——sleeper 不受牵连，PP 同注）
+    "    b    .",
+    "2:  mov  x21, sp",               // SP 自推导（PP/soakload 同式）
+    "    lsr  x21, x21, #12",
+    "    lsl  x20, x21, #12",         // x20 = 自身窗口页基
+    "    movz x0, #0x54",             // event_create(0, win+0x40)——sleeper
+    "    movz x1, #0",                // 自建 Event（进程私有表；内核钩子在
+    "    add  x2, x20, #0x40",        // wait 进入点钉 ObjRef 供 waker 跨表
+    "    svc  #0",                    // 唤醒——v1 无跨表 handle 传递的替代桥）
+    "    cbnz x0, 9f",
+    "    ldr  x21, [x20, #0x40]",     // x21 = Event 句柄
+    "    movz x8, #32",               // N=32（三面钉：LAT_SAMPLES/bench.py）
+    "    mov  x7, xzr",               // i
+    "3:  movz x0, #0x61",             // now = clock_read(MONOTONIC, win+0x0)
+    "    movz x1, #0",                // §A118：deadline = ns 绝对时刻，锚
+    "    mov  x2, x20",               // 必经 clock_read——勿喂 CNTVCT 周期
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    ldr  x3, [x20, #0x0]",
+    "    movz x6, #0x5800",           // δ = 60s ns（0xD_F847_5800 远界漏醒兜）
+    "    movk x6, #0xF847, lsl #16",
+    "    movk x6, #0xD, lsl #32",
+    "    add  x3, x3, x6",            // deadline = now + 60s
+    "    movz x0, #0x04",             // wait_one(h, 1<<49, deadline, win+0x48)
+    "    mov  x1, x21",               //   ——阻塞跨核睡，醒因 = waker 置位
+    "    movz x2, #2, lsl #48",       // LAT_SGI_BIT = 1<<49（位签名门——内核
+    "    add  x4, x20, #0x48",        // 钩子双过滤之一；USER_SIGNAL_BITS 在册）
+    "    svc  #0",
+    "    cbnz x0, 9f",                // 超时/错路兜底（内核尾钩 L0 先响）
+    "    movz x0, #0x06",             // object_signal(h, clear=1<<49, set=0)
+    "    mov  x1, x21",               //   ——消费锁存位（§A61 清位纪律），下轮
+    "    movz x2, #2, lsl #48",       // wait 前 Event 态归零 → 恒真睡不 poll
+    "    movz x3, #0",
+    "    svc  #0",
+    "    cbnz x0, 9f",
+    "    add  x7, x7, #1",
+    "    cmp  x7, x8",
+    "    b.lo 3b",
+    "    str  x8, [x20, #0x90]",      // DONE = N（waker 交叉核对备面）
+    "    movz x0, #0x36",             // thread_exit（一次性采样载荷退场）
+    "    svc  #0",
+    "    b    .",
+    "9:  ldr  x6, [x20, #0x80]",      // err++ → 早退（waker 侧 done 轮询超时
+    "    add  x6, x6, #1",            // L0 兜底——不挂死）
+    "    str  x6, [x20, #0x80]",
+    "    movz x0, #0x36",
+    "    svc  #0",
+    "    b    .",
+    ".balign 4",
+    ".globl __user_latslp_end",
+    "__user_latslp_end:",
+
     // 4-5b/4-6 svcmgr 模板已随 G-eco-b 退役换编译产物（user/bins/svcmgr，
     // include_bytes! 内嵌 echo/talker 平像——原模板内嵌的 echo 段（268B）与
     // talker 段（936B）随之换轨 user/bins/{echo,talker}）。契约逐字保留
@@ -1529,6 +1597,8 @@ extern "C" {
     static __user_pp_end: u8;
     static __user_soakload: u8;
     static __user_soakload_end: u8;
+    static __user_latslp: u8;
+    static __user_latslp_end: u8;
 }
 
 /// 取 `[start,end)` 机器码模板。
@@ -1639,6 +1709,15 @@ pub fn user_pp_code() -> &'static [u8] {
 pub fn user_soakload_code() -> &'static [u8] {
     // SAFETY: 同上。
     unsafe { blob(&__user_soakload, &__user_soakload_end) }
+}
+
+/// bench-lat SGI 路 sleeper 子模板（G3-4b：root x0=0 占位即刻退 + 写者
+/// x0=1 sleeper spread→CPU1——`wait_one(1<<49)` 跨核阻塞对，waker = 内核
+/// 任务 `task_latsgi_wak`（Event 置位 + wake_matching 跨核唤醒 + 醒来侧
+/// 内核钩子取戳采样）。arg 分流/window 槽/N=32 三面钉见模板头注。
+pub fn user_latslp_code() -> &'static [u8] {
+    // SAFETY: 同上。
+    unsafe { blob(&__user_latslp, &__user_latslp_end) }
 }
 
 /// svcmgr 用户程序模板（4-5b 验收：服务管理器拉起 echo 服务——真 syscall
@@ -1776,6 +1855,12 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 panic!("G1.5 FAIL: 错杀（须只杀 rogue_ptr；死者看上一条 kill dump）");
             }
             if puts > last_puts && switches > last_switches {
+                // G3-4b trace 记录面关适配：环/直方图断言对象不在场（钩子
+                // 整体让位）还执法即错杀——断言块与 BENCHWAKE 打印随记录面
+                // 让位，替代标记 `TRACE off ok`（off 通道 done 锚，bench.py
+                // --trace-dual 收割面）。金丝雀/杀数断言不动（不属记录面）。
+                let t_off = crate::telemetry::trace_off();
+                if !t_off {
                 // 3-4c 遥测环存活断言：环计**全部**三型切换 ≥ SWITCHES（只计抢占），
                 // 且环内 vct 从旧到新单调（乱序 = 写路径并发/覆盖 bug）。
                 let tel = crate::telemetry::total();
@@ -1794,6 +1879,7 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                         assert!(mask == 0b11, "G1.5 FAIL: 唤醒环缺路径（mask={:#b}，须 Signaled|Timeout 双覆盖）", mask);
                     }
                 }
+                }
                 // S-4 4-2：双核窗标记行 PRINT_LOCK 收编（bringup 后裸打撕行面，
                 // 同 main.rs K BLOCK 判例）。
                 berry_hal_aarch64::kern_lock::with_print_lock(|| {
@@ -1811,6 +1897,7 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 // + 8 数值字段各至多 20 位）——触发需某延迟 ≥2^63 周期
                 // （62.5MHz 下 ≈293 年），不可达；实践界远低于此（boot 实
                 // 测 81B、一年 soak 上界约 152B）。
+                if !t_off {
                 let h = crate::telemetry::wake_hist();
                 assert!(
                     h.n > 0,
@@ -1844,6 +1931,14 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                     berry_hal_aarch64::uart_put_dec(h.tmo);
                     berry_hal_aarch64::uart_puts(b"\n");
                 });
+                } else {
+                    // off 臂替代标记（与 BENCHWAKE 同位：G1.5 ok 之后、
+                    // exit_current 之前——恰一次；含空格 = 矩阵字符流不可
+                    // 伪命中，全形状正则收割面同 BENCHWAKE 纪律）。
+                    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                        berry_hal_aarch64::uart_puts(b"TRACE off ok (record face closed)\n");
+                    });
+                }
                 berry_sched::exit_current()
             }
         }
