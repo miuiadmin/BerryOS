@@ -32,13 +32,34 @@
 | 验收面 | 标记（命名候选，canon 两两互非子串复验 = 落码义务） | 相 |
 |---|---|---|
 | V1 桌面到达 | `LAUNCH ok`（首帧呈现 + 布局装载毕；现役非标记行 `LAUNCH v=` 保留） | EFI 冻结十段 |
-| V2 合成交互 | `PAGE ok n=2`（合成 swipe 翻页两格）/ `CLICK ok n=1`（合成 click → **真** spawn RPC 全程） | PAGE 冻结十段；CLICK 随段④ 交互相（修约 1：冻结相 launcher 恰 [wm]，点击输入面结构性缺席——CI 覆盖经 smoke-image 不失） |
-| V3 真链注入 | 复用 V2 标记（virtio-tablet→inputd→gift→launcher 真线） | EFI GUI 交互相（新） |
+| V2 合成交互 | `PAGE ok n=2`（合成 swipe 翻页两格；合成 click 未采用——见下注） | PAGE 冻结十段 |
+| V3 真链注入 | `CLICK ok n=1`（virtio-tablet→inputd→gift→launcher 真 click → **真** APP_SPAWN RPC 全程；复用 `PAGE ok n=2`） | EFI GUI 交互相（新） |
 | V4 跨 boot | `LAYOUTW ok`（变体布局落盘 + 回读自洽）/ `LAYOUT ok n=`（Boot B 读回变体格数） | EFI GUI 交互相双 boot |
 
 合成 selftest 语义：合成点只在 berry-ui 输入泵入口（`push_pointer`）——referee→
-SwipePager→Click 全逻辑真、唯 pointer wire 假；CLICK 的 spawn RPC 与 reap 真跑。
-真链（V3）与跨 boot（V4）共挂新相。
+SwipePager→Click 全逻辑真、唯 pointer wire 假；合成 selftest 只产 `PAGE ok n=2`。
+真链（V3）的 CLICK spawn RPC 与 reap 真跑；真链（V3）与跨 boot（V4）共挂新相。
+
+> **段④ 落定注记（integration）**：`CLICK ok n=1` 判据 = **首个真实
+> `Msg::Click` → APP_SPAWN ok 回执**（真链 V3），非合成 click；冻结相
+> `app_cli_h()==0` 结构性静默，故 CLICK 只在交互相出现。探针实测：QMP
+> 单击必须落在格容器命中面内——格 Col 原 `h: None` 只占 Grid 轨首 68px
+> （内在 icon 48+gap 4+label 16），点轨心会落到 Grid 容器（`Msg::Click`
+> 无槽可映射，CLICK 永缺）；desktop 格改定高 = 轨高后 CLICK 链通
+> （integration 修，透明容器零视觉差）。
+
+> **哨兵/常态隔离注记（acceptance fix B）**：`GUI8.SMK` 文件名本身用户可
+> 创建，故哨兵判据 = payload **逐字节恰** `BERRYOS-GUI8-SMOKE-V1\n`（缺/
+> 错 payload 一律 fail closed；harness 建盘写该串）。`CLICK ok` 与
+> `launcher: click ready` 同挂此哨兵门——常态 boot 点击仍真 spawn，但不
+> 打印任何新标记。harness `--normal-boot` = 该隔离门：同镜像/tablet/数据
+> 盘拓扑但无哨兵，点击 APPDEMO 后只认新增 `app APPDEMO up`×1，断言
+> `CLICK`/`LAYOUTW`/`LAYOUT`/`click ready` 全零。dual 相 `click ready` 为
+> **强制状态谓词**（缺席 FAIL，不 sleep 回退）；Boot A 精确
+> `CLICK ok n=1`×1 / `LAYOUTW ok`×1 / `LAYOUT ok`×0 + 新增 APPDEMO up×1 /
+> APPQUIET×0，Boot B 精确 `LAYOUT ok n=2`×1 / `LAYOUTW`×0 / `CLICK`×0；
+> 宿主 `LAYOUT.JSN` 验收 = 恰 **109 canonical bytes** +
+> `APPDEMO(0,0,0)`/`APPQUIET(page=3,row=0,col=1)`（不再只数格数）。
 
 ### 1.2 smoke 相拓扑（结构裁决展开见 §3-裁决一）
 
@@ -48,9 +69,11 @@ SwipePager→Click 全逻辑真、唯 pointer wire 假；CLICK 的 spawn RPC 与
 - **新相「EFI GUI 交互相」**（smoke-image 增段，独立于冻结十段）：挂
   `-device virtio-tablet-device` + `-qmp unix:` + 独立 mkfat FAT12 数据盘
   （LBA0 印章 `BERRYOSVBLK!`，fsmgr 挂载门零改即收——`fat.rs` 锚 `for &cand in
-  &[0u64, 16u64]`/`FatBits::Fat12` 当场验真）。双 boot：A 注入 swipe/click +
-  变体落盘 → SIGTERM；B 同盘复挂（B4 `disk.pwr.img` 三 boot 同 `-drive` 先例）
-  → 读回断言 `LAYOUT ok n=`。
+  &[0u64, 16u64]`/`FatBits::Fat12` 当场验真；根 `GUI8.SMK` payload 逐字节
+  恰 `BERRYOS-GUI8-SMOKE-V1\n`）。双 boot：A 注入 swipe/click + 变体落盘
+  → SIGTERM；B 同盘复挂（B4 `disk.pwr.img` 三 boot 同 `-drive` 先例）→ 读回
+  断言 `LAYOUT ok n=2` + 宿主 canonical 109B。`--normal-boot` 常态隔离
+  （无哨兵）另起一 boot，spawn 仍发生且四标记全零。
 - **rootfs 47 冻结面零扰动**：结构性保（fb 门链层层短路——`WMD_CLI_DUP` 门 +
   fb 探测门不变，scout S5-F7 验证），无需加防。
 - 涉 smoke.sh 家族改动归主线串行（规划 §4:97）；smoke-smp.sh ROOTFS_MARKERS
@@ -231,18 +254,21 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
   FRAME_CALLBACK → note_presented → RELEASE → vote；per-SUBMIT fresh VMO
   dup 别名池 + credits≤2 背压 + IDLE sticky 停帧票）+ 布局读写（berry-layout
   parse/emit + libc fs 面；缺席回落默认 + 读失败回默认重写自愈 + 写失败非致命
-  三约束）+ 合成 selftest（PAGE/CLICK 标记 + 变体布局写）+ LAUNCH ok 首帧标记。
+  三约束）+ 合成 selftest（PAGE 标记 + 变体布局写；CLICK 归段④ 真链）+ LAUNCH ok 首帧标记。
 - 依赖接线：berry-ui/berry-gfx/berry-layout 进 launcher 独立 workspace
   （guifbd 同形先例：no_std crate 入 musl std 程序）。
 - 验收：EFI 冻结十段新两标记（LAUNCH ok/PAGE ok）到齐 + UTM 手验桌面起；
   CLICK ok 随段④ 交互相验（修约 1）。
 
 **段④ smoke 新相 + 文书收官**
-- EFI GUI 交互相（tablet+QMP+数据盘双 boot）+ LAYOUT 族标记 + 标记族 canon
-  全量复验 + smoke 三脚本/规则 07 相构成表/沿革五件套 + justfile :215-218
-  stale 注释回写 + smoke.sh 六处 stale `73` 顺手清 + ADR 修订（#58 收官注记/
-  #61 义务②兑现/psproto 18 追记）+ 索引登记 + S7 终判数据采集（双打点进
-  遥测档，判 s7 转 CI or kill）+ m-gui-wip 分支处置注记。
+- EFI GUI 交互相（tablet+QMP+数据盘双 boot；哨兵 payload 精确 magic；
+  click ready 强制；精确计数 + 新增 APPDEMO up + canonical 109B 读回）+
+  `gui8-smoke-normal` 常态隔离（无哨兵，spawn 仍发生而四标记全零）+
+  LAYOUT 族标记 + 标记族 canon 全量复验 + smoke 三脚本/规则 07 相构成表/
+  沿革五件套 + justfile :215-218 stale 注释回写 + smoke.sh 六处 stale `73`
+  顺手清 + ADR 修订（#58 收官注记/#61 义务②兑现/psproto 18 追记）+
+  索引登记 + S7 终判数据采集（双打点进遥测档，判 s7 转 CI or kill）+
+  m-gui-wip 分支处置注记。
 
 ## §5 协议面：berry-appproto v1
 

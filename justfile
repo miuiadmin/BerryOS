@@ -739,6 +739,53 @@ smoke-smp: build build-user
 smoke-image: image
     bash tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
 
+# GUI-8 段④ EFI GUI 交互相双 boot 冒烟（独立关卡；**不并入 smoke-image**，
+# 冻结十段/生态 33 断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
+# mkfat FAT12 数据盘（LBA0 `BERRYOSVBLK!` + 根 `GUI8.SMK`，payload 必须
+# 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
+# 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +
+# QMP unix sock：
+#   Boot A：等基础 5 + boot 批 `app APPDEMO up` → `launcher: click ready`
+#           强制在席（缺席 FAIL，不 sleep 回退）→ QMP 单击 APPDEMO 格 →
+#           精确 CLICK ok n=1×1 / LAYOUTW ok×1 / LAYOUT ok×0；新增
+#           `app APPDEMO up`×1、APPQUIET×0；宿主 LAYOUT.JSN 恰 109 canonical
+#           bytes + APPDEMO(0,0,0)/APPQUIET(page=3,row=0,col=1)。
+#   Boot B：同一数据盘（不重造）→ 精确 LAYOUT ok n=2×1 / LAYOUTW×0 /
+#           CLICK×0，且数据盘 sha256 前后一致（读路径零重写）。
+# click ready / CLICK / LAYOUTW / LAYOUT 四门在哨兵支路才打印；缺失/重复/
+# 错序均显式 FAIL（不静默跳过）。plumbing 先跑
+# `python3 tools/gui8-smoke.py --self-test` / `--dry-run`。
+# GUI8_REBUILD=1 强制重建镜像；GUI8_KEEP=1 保留日志/数据盘。
+# gui8-smoke：双 boot 交互相验收（精确哨兵 + 精确计数 + canonical 109B）。
+gui8-smoke:
+    #!/bin/sh
+    set -eu
+    if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
+        just image
+    fi
+    set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}"
+    if [ "${GUI8_KEEP:-0}" = 1 ]; then
+        set -- "$@" --keep
+    fi
+    exec python3 tools/gui8-smoke.py "$@"
+
+# GUI-8 常态隔离（可选验收）：同一镜像/tablet/数据盘拓扑但**不造
+# GUI8.SMK**；boot 一次、点击 APPDEMO，断言 spawn 仍发生（新增
+# `app APPDEMO up`×1）而 CLICK/LAYOUTW/LAYOUT/click ready 全零——证明
+# 标记只在哨兵支路出现、常态点击行为不变。GUI8_KEEP=1 同上。
+# gui8-smoke-normal：哨兵缺席的常态点击隔离。
+gui8-smoke-normal:
+    #!/bin/sh
+    set -eu
+    if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
+        just image
+    fi
+    set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}" --normal-boot
+    if [ "${GUI8_KEEP:-0}" = 1 ]; then
+        set -- "$@" --keep
+    fi
+    exec python3 tools/gui8-smoke.py "$@"
+
 # ---------- V-0a BerryBoot（EFI 骨架；VM 草案 §V-0，AAVMF 引导链）----------
 # 独立小工作区（同 x86_64 模式——根 workspace 不含本目录；构建必须显式
 # --target，根 .cargo/config.toml 锁的 build.target 跨 workspace 边界仍命中）。
