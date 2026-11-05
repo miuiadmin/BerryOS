@@ -1,0 +1,14 @@
+[package]
+name = "berry-appproto"
+version = "0.1.0"
+edition = "2021"
+# GUI-8 段①（docs/GUI-8实施设计草案.md §3-裁决二 + §5）：app 域 RPC 协议
+# 纯函数 crate，`berry-psproto`/`berry-fsproto` 先例（「解析器即产品」）
+# ——`cfg_attr(not(test), no_std)`：库本体 no_std（svcmgr 段② 在
+# aarch64-unknown-none 下消费），test 构建放开 std 仅为默认测试挂具。
+# 双消费 = svcmgr 服务端（app 域常驻 serve，本工作区成员）+ berry-launcher
+# 客户端（GUI-8 段③ 独立小工作区编 musl target，同 stdhello 不入 members）。
+description = "BerryOS app-domain RPC protocol: pure encoder/parser for GUI-8 launcher APP_LIST/APP_SPAWN"
+license = "Apache-2.0"
+
+[dependencies]

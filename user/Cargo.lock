@@ -10,6 +10,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-appproto"
+version = "0.1.0"
+
+[[package]]
 name = "berry-blkproto"
 version = "0.1.0"
 
@@ -63,6 +67,9 @@ dependencies = [
 [[package]]
 name = "berry-guiproto"
 version = "0.1.0"
+dependencies = [
+ "berry-manifest",
+]
 
 [[package]]
 name = "berry-layout"
@@ -150,6 +157,7 @@ dependencies = [
 name = "svcmgr"
 version = "0.1.0"
 dependencies = [
+ "berry-appproto",
  "berry-blkproto",
  "berry-exec",
  "berry-guiproto",

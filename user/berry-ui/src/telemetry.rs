@@ -31,6 +31,13 @@ pub struct FrameRec {
     pub discarded: bool,
     pub damage_full: bool,
     pub damage_rects: u8,
+    /// 本帧 damage `add` 入集尝试数（pre-merge——GUI-6 段E D19 S7
+    /// 度量；与 `damage_rects` 对拍 = 合并率可观测面）。
+    pub damage_adds: u16,
+    /// relayout 耗时 ns（GUI-6 段E D19 S7 度量）。引擎无钟恒 0——
+    /// 真耗时 host bench（tests/bench_s7.rs）围帧双打点（frame_end_ns
+    /// 同型注记，GUI-9 embedder 双打点接管）。
+    pub relayout_ns: u64,
     pub overdraw_x256: u32,
     pub jank: bool,
 }
@@ -47,6 +54,8 @@ const fn zero_rec() -> FrameRec {
         discarded: false,
         damage_full: false,
         damage_rects: 0,
+        damage_adds: 0,
+        relayout_ns: 0,
         overdraw_x256: 0,
         jank: false,
     }

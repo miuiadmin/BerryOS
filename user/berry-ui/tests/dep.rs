@@ -183,7 +183,7 @@ fn set_props_kind_mismatch_loud_state_preserved() {
     assert!(ui.damage().is_empty(), "前置自检：已静默");
 
     assert_eq!(
-        ui.set_props(a, Props::Col(ColProps { gap: 4 })),
+        ui.set_props(a, Props::Col(ColProps { gap: 4, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })),
         Err(UiError::NodeBad),
         "Rect 槽塞 Col props → NodeBad（无 kind 失配变体，NodeBad 兼任）"
     );
@@ -206,7 +206,7 @@ fn remove_parent_unbinds_descendant_edges() {
     let mut ui = Ui::<16>::new(100, 100);
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     let a = ui.add(col, rect_spec(10, 10)).unwrap();
     let b = ui.add(col, rect_spec(10, 10)).unwrap();

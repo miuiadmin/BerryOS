@@ -18,6 +18,9 @@ version = "0.1.0"
 [[package]]
 name = "berry-guiproto"
 version = "0.1.0"
+dependencies = [
+ "berry-manifest",
+]
 
 [[package]]
 name = "berry-libc"
@@ -30,6 +33,10 @@ dependencies = [
  "berry-sys",
  "berry-tls",
 ]
+
+[[package]]
+name = "berry-manifest"
+version = "0.1.0"
 
 [[package]]
 name = "berry-mmap"

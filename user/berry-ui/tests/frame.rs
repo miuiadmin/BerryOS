@@ -7,8 +7,8 @@
 
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
 use berry_guiproto::{
-    CREDITS_MAX, DAMAGE_MAX, FRAME_DISCARDED, FRAME_PRESENTED, PHASE_DOWN, PHASE_MOVE, PHASE_UP,
-    SCENE_ANIMATED, SCENE_DRAG, SCENE_IDLE, SCENE_NORMAL,
+    CREDITS_MAX, DAMAGE_MAX, FRAME_DISCARDED, FRAME_PRESENTED, Intent, PHASE_DOWN, PHASE_MOVE,
+    PHASE_UP,
 };
 use berry_ui::anim::{Anim, AnimProp, Easing};
 use berry_ui::desc::{Props, RectProps, ViewSpec};
@@ -112,7 +112,13 @@ fn idle_no_wakeup_and_idle_ballot() {
     assert_eq!(ui.telemetry().idle_exits(), 0);
     assert_eq!(
         ui.vote_hint(),
-        VoteBallot { min_hz: 0, max_hz: 0, preferred_hz: 0, scene: SCENE_IDLE, sticky: 1 }
+        VoteBallot {
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 0,
+            scene: Intent::Background as u8,
+            sticky: 1
+        }
     );
 }
 
@@ -314,24 +320,37 @@ fn credits_and_inflight_bookkeeping() {
 #[test]
 fn vote_hint_shapes_by_phase_and_scene() {
     let mut ui = UiMain::new(64, 48);
-    // IDLE：全 0 + SCENE_IDLE + sticky 1（停帧粘滞）
+    // IDLE：全 0 + BACKGROUND（旧 SCENE_IDLE 档折算）+ sticky 1（停帧粘滞）
     assert_eq!(
         ui.vote_hint(),
-        VoteBallot { min_hz: 0, max_hz: 0, preferred_hz: 0, scene: SCENE_IDLE, sticky: 1 }
+        VoteBallot {
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 0,
+            scene: Intent::Background as u8,
+            sticky: 1
+        }
     );
 
-    // Run 常态：{0, 60, 60, NORMAL, sticky 0}——min 0 = 可降频下限（常态
-    // 不锁底；帧率话语权在协商倒数面 rate_hint_hz）
+    // Run 常态：{0, 60, 60, INTERACTIVE, sticky 0}——min 0 = 可降频下限
+    // （常态不锁底；帧率话语权在协商倒数面 rate_hint_hz）
     ui.set_vsync(P, 0);
     let root = ui.root();
     ui.wake(0);
     assert_eq!(
         ui.vote_hint(),
-        VoteBallot { min_hz: 0, max_hz: 60, preferred_hz: 60, scene: SCENE_NORMAL, sticky: 0 }
+        VoteBallot {
+            min_hz: 0,
+            max_hz: 60,
+            preferred_hz: 60,
+            scene: Intent::Interactive as u8,
+            sticky: 0
+        }
     );
 
-    // 动画在表 → SCENE_ANIMATED {30, 120, 60}（动画保底 30——与常态
-    // {0,60,60} 不同档，动画存在本身是提档信号）
+    // 动画在表 → {30, 120, 60}（动画保底 30——与常态 {0,60,60} 不同档，
+    // 动画存在本身是提档信号；scene 位 GUI-8 折算后仍 INTERACTIVE——
+    // hz 三元组才是图形相位特化面）
     ui.anim_add(Anim {
         node: root,
         prop: AnimProp::OffsetX,
@@ -344,27 +363,28 @@ fn vote_hint_shapes_by_phase_and_scene() {
     .unwrap();
     assert!(ui.anim_active());
     let v = ui.vote_hint();
-    assert_eq!(v.scene, SCENE_ANIMATED);
+    assert_eq!(v.scene, Intent::Interactive as u8);
     assert_eq!((v.min_hz, v.max_hz, v.preferred_hz), (30, 120, 60));
     assert_eq!(v.sticky, 0);
 
     // 清动画 → 回常态
     ui.anim_clear();
     assert!(!ui.anim_active());
-    assert_eq!(ui.vote_hint().scene, SCENE_NORMAL);
+    assert_eq!(ui.vote_hint().scene, Intent::Interactive as u8);
 
     // 周期 0（vsync 未协商）→ 票面不依周期（场景定值表）不 panic；
     // rate_hint_hz 才是协商倒数面（跳过帧诚实 0——上见）
     ui.set_vsync(0, 0);
     let z = ui.vote_hint();
     assert_eq!((z.min_hz, z.max_hz, z.preferred_hz), (0, 60, 60));
-    assert_eq!(z.scene, SCENE_NORMAL);
+    assert_eq!(z.scene, Intent::Interactive as u8);
 }
 
 #[test]
 fn vote_drag_scene_interacting_ballot() {
-    // interacting（任一指 dragging）= 第三信号 → SCENE_DRAG {60,120,120}
-    //（指尖跟手最高档，压过动画/常态两档）；抬指后回常态
+    // interacting（任一指 dragging）= 第三信号 → {60,120,120}（旧
+    // SCENE_DRAG 档折算后 scene = INTERACTIVE——指尖跟手最高档，压过
+    // 动画/常态两档）；抬指后回常态
     let mut ui = UiMain::new(100, 100);
     ui.set_vsync(P, 0);
     let root = ui.root();
@@ -385,27 +405,111 @@ fn vote_drag_scene_interacting_ballot() {
     let down = berry_ui::hit::PtrEvent::from_wire(PHASE_DOWN, 0, 10, 10, 1, 0, 0);
     ui.push_pointer(down).unwrap();
     let _ = ui.pump_input(2);
-    // 恰在 slop 圈上（dx=8）：按压 ≠ dragging——票面仍常态
+    // 恰在 slop 圈上（dx=8）：按压 ≠ dragging——票面仍常态（scene 位折算
+    // 后常态/拖拽同档 INTERACTIVE，判别信号移 hz 三元组——GUI-8 §4 段①）
     let mv0 = berry_ui::hit::PtrEvent::from_wire(PHASE_MOVE, 0, 18, 10, 3, 0, 0);
     ui.push_pointer(mv0).unwrap();
     let _ = ui.pump_input(4);
-    assert_eq!(ui.vote_hint().scene, SCENE_NORMAL, "圈内挪动不是拖——interacting 不亮");
+    let v0 = ui.vote_hint();
+    assert_eq!(v0.scene, Intent::Interactive as u8);
+    assert_eq!((v0.min_hz, v0.max_hz, v0.preferred_hz), (0, 60, 60), "圈内挪动不是拖——interacting 不亮");
 
-    // 出圈（dx=15 > slop）→ dragging → DRAG 票
+    // 出圈（dx=15 > slop）→ dragging → INTERACTIVE 票（120 档）
     let mv = berry_ui::hit::PtrEvent::from_wire(PHASE_MOVE, 0, 25, 10, 5, 0, 0);
     ui.push_pointer(mv).unwrap();
     let _ = ui.pump_input(6);
     let v = ui.vote_hint();
     assert_eq!(
         (v.min_hz, v.max_hz, v.preferred_hz, v.scene, v.sticky),
-        (60, 120, 120, SCENE_DRAG, 0)
+        (60, 120, 120, Intent::Interactive as u8, 0)
     );
 
-    // 抬指 → 手势终止 → 回常态
+    // 抬指 → 手势终止 → 回常态（判别同上：hz 回 {0,60,60}）
     let up = berry_ui::hit::PtrEvent::from_wire(PHASE_UP, 0, 25, 10, 7, 0, 0);
     ui.push_pointer(up).unwrap();
     let _ = ui.pump_input(8);
-    assert_eq!(ui.vote_hint().scene, SCENE_NORMAL);
+    let v2 = ui.vote_hint();
+    assert_eq!(v2.scene, Intent::Interactive as u8);
+    assert_eq!((v2.min_hz, v2.max_hz, v2.preferred_hz), (0, 60, 60));
+}
+
+#[test]
+#[allow(deprecated)] // 对拍源域 = 退役 SCENE 词表（guiproto 折算表键域）
+fn vote_scene_intent_tiers_all_phases() {
+    // intent 面（GUI-8 §4 段①/ADR #58 收官新增）：四相位票值逐项断言——
+    // scene 位携 berry_intent 六档值，交互谱系（常态/动画/拖拽）恒
+    // INTERACTIVE(0x02)、idle 恒 BACKGROUND(0x04)；并与 guiproto
+    // `scene_to_intent` 折算表单源对拍（两侧共识钉板——旧词表退役后
+    // 映射仍以彼为键域，任何一侧改动此处炸响）。
+    let mut ui = UiMain::new(100, 100);
+    ui.set_vsync(P, 0);
+    let root = ui.root();
+    let _pane = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(40), h: Some(40) }),
+            },
+        )
+        .unwrap();
+    ui.layout();
+    ui.drain_damage();
+
+    // idle 相位（未醒）：BACKGROUND + sticky 1。
+    let v = ui.vote_hint();
+    assert_eq!((v.scene, v.sticky), (Intent::Background as u8, 1));
+    assert_eq!((v.min_hz, v.max_hz, v.preferred_hz), (0, 0, 0));
+    assert_eq!(
+        v.scene,
+        berry_guiproto::scene_to_intent(berry_guiproto::SCENE_IDLE).unwrap()
+    );
+
+    // 常态相位：INTERACTIVE + {0,60,60}。
+    ui.wake(1);
+    let v = ui.vote_hint();
+    assert_eq!(v.scene, Intent::Interactive as u8);
+    assert_eq!((v.min_hz, v.max_hz, v.preferred_hz), (0, 60, 60));
+    assert_eq!(
+        v.scene,
+        berry_guiproto::scene_to_intent(berry_guiproto::SCENE_NORMAL).unwrap()
+    );
+
+    // 动画相位：INTERACTIVE（旧 ANIMATED 档折算）+ {30,120,60}。
+    ui.anim_add(Anim {
+        node: root,
+        prop: AnimProp::OffsetX,
+        from: 0,
+        to: 8,
+        start_ns: 1,
+        dur_ns: 10 * P,
+        easing: Easing::Linear,
+    })
+    .unwrap();
+    let v = ui.vote_hint();
+    assert_eq!(v.scene, Intent::Interactive as u8);
+    assert_eq!((v.min_hz, v.max_hz, v.preferred_hz), (30, 120, 60));
+    assert_eq!(
+        v.scene,
+        berry_guiproto::scene_to_intent(berry_guiproto::SCENE_ANIMATED).unwrap()
+    );
+    ui.anim_clear();
+
+    // 拖拽相位（interacting 第三信号）：INTERACTIVE（旧 DRAG 档折算）+
+    // {60,120,120}。
+    ui.wake(2);
+    ui.push_pointer(berry_ui::hit::PtrEvent::from_wire(PHASE_DOWN, 0, 10, 10, 3, 0, 0)).unwrap();
+    let _ = ui.pump_input(4);
+    ui.push_pointer(berry_ui::hit::PtrEvent::from_wire(PHASE_MOVE, 0, 25, 10, 5, 0, 0)).unwrap();
+    let _ = ui.pump_input(6);
+    let v = ui.vote_hint();
+    assert_eq!(v.scene, Intent::Interactive as u8);
+    assert_eq!((v.min_hz, v.max_hz, v.preferred_hz), (60, 120, 120));
+    assert_eq!(
+        v.scene,
+        berry_guiproto::scene_to_intent(berry_guiproto::SCENE_DRAG).unwrap()
+    );
 }
 
 #[test]

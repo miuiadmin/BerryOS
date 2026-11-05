@@ -170,7 +170,9 @@ fn wire_envelope(a: &Rect, b: &Rect) -> Rect {
     }
 }
 
-fn u64_to_u32_sat(v: u64) -> u32 {
+/// u64 → u32 饱和（pub(crate) 单源：本面 wire_envelope + layout/metrics
+/// 的 u64 宽累计收口共用——GUI-6 D28 metrics 抽出）。
+pub(crate) fn u64_to_u32_sat(v: u64) -> u32 {
     if v > u32::MAX as u64 {
         u32::MAX
     } else {
@@ -209,6 +211,11 @@ pub struct DamageSet {
     pub rects: [Rect; berry_guiproto::DAMAGE_MAX],
     pub count: u8,
     pub full: bool,
+    /// pre-merge 入集尝试计数（GUI-6 段E D19 S7 度量面）：`add` 入口
+    /// 逐次 +1（饱和 u16；含 FULL/零面积早退者——「入集尝试」口径），
+    /// 与合并后存活 `count` 对拍 = 合并率可观测。`add_full` 不计（非
+    /// add 入口）；`new`/`clear` 归零（drain 换新即每帧重置）。
+    pub adds: u16,
 }
 
 impl DamageSet {
@@ -217,6 +224,7 @@ impl DamageSet {
             rects: [Rect { x: 0, y: 0, w: 0, h: 0 }; berry_guiproto::DAMAGE_MAX],
             count: 0,
             full: false,
+            adds: 0,
         }
     }
 
@@ -232,6 +240,7 @@ impl DamageSet {
     /// 3. count == 8 → 找既有两两最小包络可并对（并出一槽）再挂；
     /// 4. 无可并可并 → `full=true` 清矩形集。
     pub fn add(&mut self, r: Rect) {
+        self.adds = self.adds.saturating_add(1); // 入集尝试计数（见字段注）
         if self.full || r.w == 0 || r.h == 0 {
             return;
         }
@@ -340,6 +349,7 @@ impl DamageSet {
     pub fn clear(&mut self) {
         self.full = false;
         self.count = 0;
+        self.adds = 0; // 换新归零（drain 面每帧重置口径）
     }
 }
 
