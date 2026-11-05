@@ -651,14 +651,52 @@ pub fn display_list(json: bool) -> Result<()> {
     Ok(())
 }
 
+fn parse_mode(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once('x')?;
+    let w: u32 = w.parse().ok()?;
+    let h: u32 = h.parse().ok()?;
+    (w > 0 && h > 0 && w <= 8192 && h <= 8192).then_some((w, h))
+}
+
 pub fn display_set(
     run: Option<&str>,
-    profile_id: &str,
+    value: &str,
     restart: bool,
     json: bool,
 ) -> Result<()> {
     let run = find_run(run)?;
-    let profile = profile::get(profile_id)?;
+    if let Some((w, h)) = parse_mode(value) {
+        if !restart {
+            return Err(BerryError::new(
+                2,
+                "custom resolution requires --restart (it starts a new host)",
+            ));
+        }
+        let meta: serde_json::Value = std::fs::read(run.join("meta.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| json!({}));
+        let pid = meta
+            .get("profile")
+            .and_then(|v| v.as_str())
+            .unwrap_or("phone");
+        let profile = profile::get(pid)?;
+        let mode = format!("{w}x{h}@60");
+        let new_run = restart_with(&run, &profile, Some(mode.clone()))?;
+        if json {
+            println!("{}", json!({"v":1,"t":"display.set","run":new_run,"old_run":run,
+                "profile":profile.id,"display_mode":mode,"applied":true}));
+        } else {
+            println!(
+                "display: {} → {} (new run: {})",
+                run.display(),
+                mode,
+                new_run.display()
+            );
+        }
+        return Ok(());
+    }
+    let profile = profile::get(value)?;
     if !restart {
         let v = control::request(
             &run,
@@ -676,7 +714,7 @@ pub fn display_set(
         }
         return Ok(());
     }
-    let new_run = restart_profile(&run, profile.id)?;
+    let new_run = restart_with(&run, &profile, None)?;
     if json {
         println!("{}", json!({"v":1,"t":"display.set","run":new_run,"old_run":run,"profile":profile.id,"applied":true}));
     } else {
@@ -818,6 +856,10 @@ fn device_start_run(args: DeviceStartArgs) -> Result<(PathBuf, u32)> {
 /// the new run id (C2c/C2e). Used by `display set --restart` and attach RES.
 pub fn restart_profile(run: &Path, profile_id: &str) -> Result<PathBuf> {
     let profile = profile::get(profile_id)?;
+    restart_with(run, &profile, None)
+}
+
+fn restart_with(run: &Path, profile: &profile::Profile, display_mode: Option<String>) -> Result<PathBuf> {
     let meta: serde_json::Value = std::fs::read(run.join("meta.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -835,14 +877,14 @@ pub fn restart_profile(run: &Path, profile_id: &str) -> Result<PathBuf> {
         profile: profile.id.to_string(),
         accel: "tcg".to_string(),
         memory,
-        display_mode: None,
+        display_mode,
         keep,
         foreground: false,
         restart_on_crash: false,
         json: false,
     })?;
     let _ = control::request(run, "power", json!({"action":"off"}));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while control::is_up(&run) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }

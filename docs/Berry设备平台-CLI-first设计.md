@@ -285,7 +285,7 @@ NDJSON：一行一个 JSON 对象。
 | `swipe` | `x1,y1,x2,y2,ms` | — | 插值 |
 | `text` | `text` | — | 逐字符 keysym |
 | `power` | `action:off|reboot,force?` | `state` | QMP |
-| `display` | `profile,restart?` | `applied/requires_restart` | v1 重启；WxH/rotate 未落 |
+| `display` | `profile,restart?` | `applied/requires_restart` | v1 重启；WxH 走 CLI 新 host，rotate 未落 |
 | `shortcut` | `action:screenshot|reboot|power` | `result` | UI 动作表；resolution/fullscreen 未落 |
 | `logs` | `tail?` | `lines` | 串口尾 |
 | `stats` | — | `state/profile/memory_mib/qemu_pid/started` | 会话统计 |
@@ -331,8 +331,8 @@ shot [--image] [--profile] [--accel] [--memory] [--display-mode] [--wait-marker]
 
 input key|tap|swipe|text <...>   # 顶层别名未落，先用 input
 power off|reboot [--run] [--force] [--json]
-display list|set <profile> [--restart] [--run] [--json]
-# display rotate / WxH 自定义：未落（C2+）
+display list|set <profile|WxH> [--restart] [--run] [--json]
+# WxH 自定义需 --restart（起新 host + display_mode）；rotate 未落
 
 shortcut screenshot|reboot|power [--run] [--json]
 
