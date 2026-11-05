@@ -42,6 +42,10 @@ fn text_spec(bytes: &[u8]) -> ViewSpec {
     }
 }
 
+fn col_spec() -> ViewSpec {
+    ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) }
+}
+
 /// damage 覆盖判定（逐点全采样——值级，不依赖合并策略内部形态）。
 fn covers(d: &berry_ui::damage::DamageSet, r: RectI) -> bool {
     if d.full || r.is_empty() {
@@ -111,7 +115,7 @@ fn remove_takes_whole_subtree_and_dangles_descendants() {
     let mut ui = Ui::<16>::new(100, 100);
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     let a = ui.add(col, rect_spec(Some(10), Some(10))).unwrap();
     let t = ui.add(col, text_spec(b"ab")).unwrap();
@@ -132,7 +136,7 @@ fn remove_leaf_records_old_bounds_damage() {
     let mut ui = Ui::<16>::new(100, 100);
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     let a = ui.add(col, rect_spec(Some(20), Some(10))).unwrap();
     ui.layout();
@@ -151,9 +155,9 @@ fn sibling_chain_shape_via_preorder_bytes() {
     let mut ui = Ui::<16>::new(100, 100);
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 2 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 2, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
-    let col_props = Props::Col(ColProps { gap: 2 });
+    let col_props = Props::Col(ColProps { gap: 2, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch });
     let _a = ui.add(col, rect_spec(Some(20), Some(10))).unwrap();
     let b = ui.add(col, rect_spec(Some(20), Some(10))).unwrap();
     let _c = ui.add(col, rect_spec(Some(20), Some(10))).unwrap();
@@ -211,6 +215,45 @@ fn remove_root_clears_scene_then_rebuild() {
     assert_ne!(root, root2);
     assert_eq!(ui.kind_of(root2), Ok(ViewKind::Root));
     assert!(ui.add(root2, rect_spec(Some(10), Some(10))).is_ok());
+}
+
+#[test]
+fn tree_depth_cap_96_loud() {
+    // GUI-6 D29：arena 树深帽 TREE_DEPTH_MAX=96——递归面（measure/place/
+    // cull/emit）未迭代化，512 深链 × ~200B/帧 ≈ 数十 KB 穿 32KB guest
+    // 栈；96 层内可建、第 97 层 add → NodeBad loud（与 builder 帽
+    // DESC_DEPTH_MAX=64 分工——64 < 96 自洽）。
+    let mut ui = Ui::<128>::new(10, 10);
+    let mut cur = ui.root(); // 深度 1（根）
+    for _ in 1..berry_ui::TREE_DEPTH_MAX {
+        cur = ui.add(cur, col_spec()).unwrap(); // 深度 2..=96 全可建
+    }
+    assert_eq!(ui.add(cur, col_spec()), Err(UiError::NodeBad), "第 97 层超帽 loud");
+    // 深帽内兄弟分支不受牵连（帽按链深非总量）
+    let root = ui.root();
+    assert!(ui.add(root, col_spec()).is_ok(), "浅层兄弟照常可建");
+}
+
+#[test]
+fn capacity_pin_max_nodes_absolute_value() {
+    // R3-1（§11-8 钦定 const 路径形态补面）：MAX_NODES **绝对值**运行时
+    // 钉板。const 比值断言族（CAP/ORDER_CAP = 2*MAX_NODES）与随源右移的
+    // Ui<OVERFLOW_NODES> 对帽值整体漂移（512→4096）同缩放不响——唯本测
+    // 红：Ui<MAX_NODES> 满场必恰在第 MAX_NODES 节点（含 root）后 loud。
+    const CAP_PROBE: usize = berry_ui::MAX_NODES;
+    // 绝对值钉：符号面（CAP_PROBE 随源右移）对 512→N 漂移同缩放不响 =
+    // 假守护——唯此字面量断言红。§9 栈账锚 512，改帽须同步重审。
+    assert_eq!(CAP_PROBE, 512, "MAX_NODES 绝对值漂移——§9 栈账锚 512 须同步重审");
+    let mut ui = Ui::<CAP_PROBE>::new(100, 100);
+    let root = ui.root();
+    for _ in 1..CAP_PROBE {
+        ui.add(root, rect_spec(Some(1), Some(1))).unwrap(); // 恰填满 = root + CAP_PROBE-1 子
+    }
+    assert_eq!(
+        ui.add(root, rect_spec(Some(1), Some(1))),
+        Err(UiError::NodeFull),
+        "满场恰在总节点数 = MAX_NODES 处（帽值漂移本测即红）"
+    );
 }
 
 #[test]

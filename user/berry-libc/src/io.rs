@@ -40,7 +40,9 @@ static mut STDIN_H: u32 = 0; // d-3b 预留（env 块 handles[1]；read 面随�
 // （`wm_push_h()`）与 gui-wmd 的推送服务端端（`wm_push_srv_h()`）、
 // 第三/四位再产 gui-wmd 的 present/hdi 客户端端（`wm_present_h()`/
 // `wm_hdi_h()`——guifbd 客户端端换手件）——同槽多产面惯例
-// （gift2/gift3 同款）。
+// （gift2/gift3 同款）；GUI-8 段② 起第三位再产 berry-launcher 的 app
+// 域客户端端（`app_cli_h()`——app 域 serve 对的客户端端，dormant 至
+// 段③ 消费）。
 // T-1 自描述对占固定位 gift[2]/[3]（前缀紧致律——自描述对前移、extras
 // 后挪，产侧 extra<2 不再中段留 0 洞）：GIFT_H[2] = self_proc MANAGE|
 // DUPLICATE dup（`self_proc_h()`——pthread_create 的 thread_create 面）、
@@ -336,6 +338,22 @@ pub fn present_srv_h() -> u32 {
 /// [`present_srv_h`] 同槽不同名：spawn 侧同一 gift 位对不同程序承载
 /// 不同对象（多产面惯例）。
 pub fn wm_present_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[4] }
+}
+
+/// env 块 extras[2]（gift[6] 位）的同槽访问器（GUI-8 段②：berry-launcher
+/// 的 app 域 channel 客户端端——svcmgr launcher arm 门内 `channel_pair()`
+/// 建对后客户端端随 extras 第三位直递，launcher 经它发 berry-appproto
+/// APP_LIST/APP_SPAWN RPC（GUI-8 草案 §5；服务端 = svcmgr 稳态 serve
+/// 常驻第二通道）；0 = 未交付 = app 域面缺，非 launcher 程序恒 0）。槽序
+/// 固定注记：launcher extras 前缀紧致装配 wm→fs→app→input（[`wm_cli_h`]
+/// /[`fs_h`]/[`app_cli_h`]/[`input_h`] 四访问器面），app 恒在 extras[2]
+/// ——fs 缺席的 recipe 现不存在。与 [`netd_h`]/[`present_srv_h`]/
+/// [`wm_present_h`] 同槽不同名：spawn 侧同一 gift 位对不同程序承载不同
+/// 对象（多产面惯例）。dormant 访问器——段③ launcher 主体才消费（RPC
+/// 面随段③ 接线），段② 先落编译面。
+pub fn app_cli_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[4] }
 }

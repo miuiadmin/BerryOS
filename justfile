@@ -539,6 +539,11 @@ test-host:
     # 产品」第 9 例，host 61 测：schema/canonical 钉板 + 帽双侧执法 +
     # 负例全家桶（parse 侧 39 逐条独立 + emit 侧收口 5，at 位点逐条钉死））。
     cargo test --manifest-path user/Cargo.toml -p berry-layout --target {{host}}
+    # GUI-8 段①：berry-appproto（app 域 RPC 协议纯函数面——APP_LIST
+    # 分片流/APP_SPAWN 编解码 + idx 单调 +1（乱序/重放/跳帧拒，0c 钉
+    # v1 冻结）/blob 收支/END 对账三执法 + 帧帽 256 编译期断言 + 黄金
+    # 字节钉板 + recv 复用缓冲脏尾回归钉，host 22 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-appproto --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
@@ -724,7 +729,7 @@ smoke-smp: build build-user
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
 # 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 27 +
-# EFI 路生态 29 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# EFI 路生态 33 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image

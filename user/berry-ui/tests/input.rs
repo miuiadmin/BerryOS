@@ -12,7 +12,7 @@
 //! 确定性：pump_input(0) 使重采样惰性（target=0 < 首采样 ts≥1 →
 //! None——坐标原样透传），手势断言全值级。
 
-use berry_ui::desc::{ColProps, Msg, Props, RectProps, ViewSpec};
+use berry_ui::desc::{Axis, ColProps, Msg, Props, RectProps, ViewSpec};
 use berry_ui::{Ui, UiError, ViewKind};
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
 use berry_guiproto::{
@@ -36,7 +36,7 @@ fn rect_spec(w: u32, h: u32) -> ViewSpec {
 fn two_pane(ui: &mut Ui<16>) -> (berry_ui::NodeId, berry_ui::NodeId) {
     let root = ui.root();
     let col = ui
-        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0 }) })
+        .add(root, ViewSpec { kind: ViewKind::Col, key: 0, props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch }) })
         .unwrap();
     let a = ui.add(col, rect_spec(30, 30)).unwrap();
     let b = ui.add(col, rect_spec(30, 30)).unwrap();
@@ -80,18 +80,22 @@ fn slop_boundary_eight_stays_nine_drags() {
     pump_one(&mut ui, PHASE_DOWN, 0, 10, 10, 1);
     // slop 圈上（dx=8：64 不严格大于 64）→ 不出手势
     assert_eq!(pump_one(&mut ui, PHASE_MOVE, 0, 18, 10, 2), vec![], "恰在 slop 圈上不出 DragStart");
-    // 圈外（dx=9：81 > 64）→ DragStart
+    // 圈外（dx=9：81 > 64）→ DragStart（D15：携锁轴——纯横向 dx>dy → X）
     assert_eq!(
         pump_one(&mut ui, PHASE_MOVE, 0, 19, 10, 3),
-        vec![Msg::DragStart { node: a, x: 19, y: 10 }]
+        vec![Msg::DragStart { node: a, axis: Axis::X, x: 19, y: 10 }]
     );
     // 拖中 MOVE → DragMove（v1 引擎非重采样路恒 resampled=false）
     assert_eq!(
         pump_one(&mut ui, PHASE_MOVE, 0, 25, 10, 4),
         vec![Msg::DragMove { node: a, x: 25, y: 10, resampled: false }]
     );
-    // 拖后 UP → 仅 DragEnd（无 Release/Click）
-    assert_eq!(pump_one(&mut ui, PHASE_UP, 0, 25, 12, 5), vec![Msg::DragEnd { node: a }]);
+    // 拖后 UP → 仅 DragEnd（D25 扩域：速度环差分——环 [(2M,18),(3M,19),
+    // (4M,25)] 全落 96ms 窗，dt=2ns、dx=7px → 3.5e9 px/s 钳 ±32768）
+    assert_eq!(
+        pump_one(&mut ui, PHASE_UP, 0, 25, 12, 5),
+        vec![Msg::DragEnd { node: a, vx: 32768, vy: 0 }]
+    );
 }
 
 #[test]
@@ -103,7 +107,7 @@ fn cancel_terminates_without_up() {
     pump_one(&mut ui, PHASE_MOVE, 0, 19, 10, 2); // DragStart
     assert_eq!(
         pump_one(&mut ui, PHASE_CANCEL, 0, 19, 10, 3),
-        vec![Msg::DragEnd { node: a }, Msg::Cancel { node: a }]
+        vec![Msg::DragEnd { node: a, vx: 0, vy: 0 }, Msg::Cancel { node: a }]
     );
     // 手势已终止：后续 MOVE/UP 无状态可续——全忽略
     assert_eq!(pump_one(&mut ui, PHASE_MOVE, 0, 20, 10, 4), vec![]);
@@ -253,7 +257,7 @@ fn resampled_move_flags_resampled_bit() {
         vec![
             Msg::Press { node: a, x: 10, y: 10 },
             // 首采样 n<2 → 无重采样，透传 wire 原值
-            Msg::DragStart { node: a, x: 19, y: 10 },
+            Msg::DragStart { node: a, axis: Axis::X, x: 19, y: 10 },
             // target = 8M − 5ms = 3M ∈ [2M,4M] → 括值 19 + 10×(1M/2M) = 24
             Msg::DragMove { node: a, x: 24, y: 10, resampled: true },
         ]
@@ -264,4 +268,177 @@ fn resampled_move_flags_resampled_bit() {
     ui.push_pointer(m3).unwrap();
     let msgs: Vec<Msg> = ui.pump_input(0).iter().copied().collect();
     assert_eq!(msgs, vec![Msg::DragMove { node: a, x: 35, y: 10, resampled: false }]);
+}
+
+// ---------- GUI-6 D15 referee v2 钉板（§11 项 11/12） ----------
+
+/// 多事件一 pump（指定 expected）——首 MOVE ts ≥ 100M，expected 可控
+/// 激活/惰性重采样面。
+fn pump_seq(ui: &mut Ui<16>, evs: &[(u8, u16, u32, u32, u64)], expected: u64) -> Vec<Msg> {
+    for &(phase, pid, x, y, ts) in evs {
+        let ev = berry_ui::hit::PtrEvent::from_wire(phase, pid, x, y, ts, 0, 0);
+        ui.push_pointer(ev).unwrap();
+    }
+    ui.pump_input(expected).iter().copied().collect()
+}
+
+/// §11 项 11a：96ms 窗差分精确值 + 窗外老样本剔除。环（ms→x）：
+/// (100,324),(200,100),(240,132),(280,164)——最新 280ms 回看：240/200
+/// 落窗（40/80ms ≤ 96ms），100ms 样本 d=180ms 出窗即停。差分 =
+/// (164-100)px / 80ms = **800 px/s**（若误纳 (100,324)：-888——判别值）。
+#[test]
+fn drag_end_velocity_window_drops_old_samples() {
+    let mut ui = Ui::<16>::new(100, 100);
+    let (a, _) = two_pane(&mut ui);
+    let m = 1_000_000u64;
+    let msgs = pump_seq(
+        &mut ui,
+        &[
+            (PHASE_DOWN, 0, 10, 10, 1),
+            (PHASE_MOVE, 0, 324, 10, 100 * m), // dx=314 → DragStart（入环）
+            (PHASE_MOVE, 0, 100, 10, 200 * m),
+            (PHASE_MOVE, 0, 132, 10, 240 * m),
+            (PHASE_MOVE, 0, 164, 10, 280 * m),
+            (PHASE_UP, 0, 164, 10, 281 * m),
+        ],
+        0,
+    );
+    let end = msgs.iter().find(|m| matches!(m, Msg::DragEnd { .. }));
+    assert_eq!(
+        end,
+        Some(&Msg::DragEnd { node: a, vx: 800, vy: 0 }),
+        "96ms 窗首末差分：64px/80ms = 800 px/s（(100ms,324) 出窗不参与）"
+    );
+}
+
+/// §11 项 11b：resample 激活时速度取**原始流**——环入点在替换前。
+/// DOWN(1M) → MOVE(2M,19) DragStart → MOVE(4M,29)（重采样替换 x=24，
+/// 但环持原始 29）→ UP(8M)：差分 = (29-19)px/2ms = **5000 px/s**
+/// （若 resampled 入环：(24-19)/2ms = 2500——判别值）。
+#[test]
+fn drag_end_velocity_uses_raw_samples_under_resample() {
+    let mut ui = Ui::<16>::new(100, 100);
+    let (a, _) = two_pane(&mut ui);
+    let msgs = pump_seq(
+        &mut ui,
+        &[
+            (PHASE_DOWN, 0, 10, 10, 1_000_000),
+            (PHASE_MOVE, 0, 19, 10, 2_000_000),
+            (PHASE_MOVE, 0, 29, 10, 4_000_000), // target 3M → 括值 24（替换）
+            (PHASE_UP, 0, 29, 10, 8_000_000),
+        ],
+        8_000_000,
+    );
+    // 前置自检：重采样确激活（DragMove 携 24 + resampled=true）
+    assert!(msgs.contains(&Msg::DragMove { node: a, x: 24, y: 10, resampled: true }));
+    assert_eq!(
+        msgs.iter().find(|m| matches!(m, Msg::DragEnd { .. })),
+        Some(&Msg::DragEnd { node: a, vx: 5000, vy: 0 }),
+        "速度环持原始样本（29）非重采样值（24）"
+    );
+}
+
+/// §11 项 11c/11d：Δt==0（同拍双样本）→ 0；样本 <2 → 0。
+#[test]
+fn drag_end_velocity_zero_edges() {
+    // 同拍：两 MOVE 同 ts=2——差分 Δt=0 → (0,0)
+    let mut ui = Ui::<16>::new(100, 100);
+    let (a, _) = two_pane(&mut ui);
+    let msgs = pump_seq(
+        &mut ui,
+        &[
+            (PHASE_DOWN, 0, 10, 10, 1),
+            (PHASE_MOVE, 0, 19, 10, 2), // DragStart（入环 (2,19)）
+            (PHASE_MOVE, 0, 25, 10, 2), // 同拍（入环 (2,25)——非单调由 resample 拒，环照收）
+            (PHASE_UP, 0, 25, 10, 3),
+        ],
+        0,
+    );
+    assert_eq!(
+        msgs.iter().find(|m| matches!(m, Msg::DragEnd { .. })),
+        Some(&Msg::DragEnd { node: a, vx: 0, vy: 0 }),
+        "Δt==0 → 速度 0"
+    );
+
+    // 单样本：DOWN → 一条 MOVE（DragStart）→ UP——环 n=1 <2 → (0,0)
+    let mut ui = Ui::<16>::new(100, 100);
+    let (a, _) = two_pane(&mut ui);
+    let msgs = pump_seq(
+        &mut ui,
+        &[
+            (PHASE_DOWN, 0, 10, 10, 1),
+            (PHASE_MOVE, 0, 30, 10, 2),
+            (PHASE_UP, 0, 30, 10, 3),
+        ],
+        0,
+    );
+    assert_eq!(
+        msgs.iter().find(|m| matches!(m, Msg::DragEnd { .. })),
+        Some(&Msg::DragEnd { node: a, vx: 0, vy: 0 }),
+        "样本 <2 → 速度 0"
+    );
+}
+
+/// §11 项 12：锁轴三面——(6,6) 对角 = 欧氏触发（72 > 64）且 tie 取 X；
+/// (2,9) → Y；DragMove 跨轴分量冻结在 DragStart 触发样本值。
+#[test]
+fn axis_lock_dominant_axis_and_cross_freeze() {
+    // 对角 (6,6)：欧氏 6²+6²=72 > 64 触发（曼哈顿/单轴判定会拒——欧氏
+    // 零漂判别）；|dx|>=|dy| tie → X。
+    let mut ui = Ui::<16>::new(100, 100);
+    let (a, _) = two_pane(&mut ui);
+    let msgs = pump_seq(
+        &mut ui,
+        &[
+            (PHASE_DOWN, 0, 10, 10, 1),
+            (PHASE_MOVE, 0, 16, 16, 2), // dx=6 dy=6 → DragStart axis=X
+            (PHASE_MOVE, 0, 20, 40, 3), // 纵向大幅走——X 锁下 y 冻结 16
+            (PHASE_UP, 0, 20, 40, 4),
+        ],
+        0,
+    );
+    assert_eq!(
+        msgs.iter().find(|m| matches!(m, Msg::DragStart { .. })),
+        Some(&Msg::DragStart { node: a, axis: Axis::X, x: 16, y: 16 }),
+        "对角 (6,6) 欧氏径 8.49>8 触发；tie |dx|>=|dy| → X"
+    );
+    assert_eq!(
+        msgs.iter().find(|m| matches!(m, Msg::DragMove { .. })),
+        Some(&Msg::DragMove { node: a, x: 20, y: 16, resampled: false }),
+        "X 锁：只透传 x 分量，y 冻结在触发样本值 16"
+    );
+
+    // (2,9)：|dy|>|dx| → Y；x 分量冻结 12。
+    let mut ui = Ui::<16>::new(100, 100);
+    let (a, _) = two_pane(&mut ui);
+    let msgs = pump_seq(
+        &mut ui,
+        &[
+            (PHASE_DOWN, 0, 10, 10, 1),
+            (PHASE_MOVE, 0, 12, 19, 2), // dx=2 dy=9 → 4+81=85>64 → axis=Y
+            (PHASE_MOVE, 0, 45, 25, 3), // 横向大幅走——Y 锁下 x 冻结 12
+            (PHASE_UP, 0, 45, 25, 4),
+        ],
+        0,
+    );
+    assert_eq!(
+        msgs.iter().find(|m| matches!(m, Msg::DragStart { .. })),
+        Some(&Msg::DragStart { node: a, axis: Axis::Y, x: 12, y: 19 })
+    );
+    assert_eq!(
+        msgs.iter().find(|m| matches!(m, Msg::DragMove { .. })),
+        Some(&Msg::DragMove { node: a, x: 12, y: 25, resampled: false }),
+        "Y 锁：只透传 y 分量，x 冻结在触发样本值 12"
+    );
+
+    // slop 圈内对角 (5,5)：50 < 64 不触发（欧氏保持——单轴判据 5<8 也
+    // 不触发，此处钉「圈上原语义不动」）。
+    let mut ui = Ui::<16>::new(100, 100);
+    let _ = two_pane(&mut ui);
+    let msgs = pump_seq(
+        &mut ui,
+        &[(PHASE_DOWN, 0, 10, 10, 1), (PHASE_MOVE, 0, 15, 15, 2)],
+        0,
+    );
+    assert_eq!(msgs.len(), 1, "对角 (5,5) 欧氏 50 ≤ 64 不出手势（仅 Press）");
 }

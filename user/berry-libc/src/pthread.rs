@@ -191,8 +191,16 @@ unsafe fn run_dtors(pd: *mut pthread) {
 pub struct pthread_attr_t {
     /// 0 = 默认（2MiB）。
     pub stacksize: usize,
-    pub _pad: [u8; 48],
+    /// berry_intent（ADR #42 两段式；GUI-8 §4 段① SDK 透传口①）：
+    /// [`pthread_attr_setintent`] 落位，`pthread_create` 收进
+    /// `berry_thread_create` options 低 8 位。0 = 默认（init 整块清零）。
+    pub intent: u8,
+    pub _pad: [u8; 47],
 }
+
+// 编译期形状钉（intent 位自 _pad 划出后 8+1+47 = 56 不变——musl b64 外形
+// 合同；`pthread_attr_init` 的 56B 整块清零同钉，改字段须同步两处）。
+const _: () = assert!(core::mem::size_of::<pthread_attr_t>() == 56);
 
 #[no_mangle]
 pub extern "C" fn pthread_attr_init(attr: *mut pthread_attr_t) -> c_int {
@@ -214,6 +222,30 @@ pub extern "C" fn pthread_attr_setstacksize(attr: *mut pthread_attr_t, s: size_t
         return crate::EINVAL;
     }
     unsafe { (*attr).stacksize = s };
+    0
+}
+
+/// berry_intent 位（BerryOS 扩展，POSIX 无此名）。值域 = 六档冻结词表
+/// （单源 `sched/src/intent.rs`；userland 镜像 `berry-manifest::Intent`
+/// 判别值 0x00..0x05）——本层不设词表第三份手抄，原值透传。**dormant**：
+/// v1 内核 `sys_thread_create` 只收 options==0（非 0 即 -EINVAL），故非 0
+/// 值当下走到 `pthread_create` 折 EAGAIN（内核收 intent 后自然激活）。
+#[no_mangle]
+pub extern "C" fn pthread_attr_setintent(attr: *mut pthread_attr_t, intent: u8) -> c_int {
+    if attr.is_null() {
+        return crate::EINVAL;
+    }
+    unsafe { (*attr).intent = intent };
+    0
+}
+
+/// [`pthread_attr_setintent`] 的对偶读（attr_init 整块清零 → 默认 0 零漂）。
+#[no_mangle]
+pub extern "C" fn pthread_attr_getintent(attr: *const pthread_attr_t, intent: *mut u8) -> c_int {
+    if attr.is_null() || intent.is_null() {
+        return crate::EINVAL;
+    }
+    unsafe { *intent = (*attr).intent };
     0
 }
 
@@ -241,10 +273,11 @@ pub extern "C" fn pthread_create(
     if hp == 0 || hv == 0 || memsz == 0 {
         return crate::EAGAIN;
     }
-    let want = if attr.is_null() {
-        0
+    let (want, intent) = if attr.is_null() {
+        (0, 0u8)
     } else {
-        unsafe { (*attr).stacksize }
+        // intent 透传口①：attr 位随 stacksize 同点读出（0 = 现行为零漂）。
+        unsafe { ((*attr).stacksize, (*attr).intent) }
     };
     let stack_len = match want {
         0 => DEFAULT_STACK,
@@ -304,7 +337,10 @@ pub extern "C" fn pthread_create(
             let _ = berry_handle_close(sv);
         };
         let mut th = 0 as Handle;
-        if berry_thread_create(hp, 0, &mut th) != 0 || th == 0 {
+        // options = intent 低 8 位（ADR #42 占位；berry-sys `berry_thread_create`
+        // 同口径）。v1 内核只收 0——非 0（dormant 调用面）-EINVAL 折 EAGAIN
+        // （词表与激活时序见 `pthread_attr_setintent`）。
+        if berry_thread_create(hp, intent as u32, &mut th) != 0 || th == 0 {
             unmap_stack(svmo);
             rollback_block(None);
             return crate::EAGAIN;
