@@ -904,8 +904,9 @@ shell: berry-build
 desktop: berry-build
     #!/bin/sh
     set -e
-    # 主镜像优先（gui6 已并 main）；桌面预览件仅作旧工作区回退。
-    IMG=out/berryos.img
+    # 视觉基线镜像优先（R/B 修正 + 新桌面）；主镜像/旧预览件回退。
+    IMG=out/berryos-visual.img
+    [ -f "$IMG" ] || IMG=out/berryos.img
     [ -f "$IMG" ] || IMG=out/berryos-desktop.img
     test -f "$IMG" || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
     python3 tools/mkfat.py out/gui-data.img
