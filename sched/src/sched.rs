@@ -28,6 +28,12 @@ static IRQ_TICKS: AtomicU64 = AtomicU64::new(0);
 /// 两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 =
 /// switch 坏（卡死/饿死）。A12 同上原子化。
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
+/// S-6 ③ 心跳诊断：上一行打点时的双核 ticks_pre 总数（跨 500 节流——
+/// [`on_irq_tick`] 心跳行用）。诊断面，定谳后随探针一并退役。
+static HB_LAST: AtomicU64 = AtomicU64::new(0);
+/// S-6 ③ 卡死等待者扫描：上一轮扫描时的双核 ticks_pre 总数（跨 5000
+/// 节流——[`on_irq_tick`] stuck 行用）。诊断面，定谳后随探针一并退役。
+static STUCK_LAST: AtomicU64 = AtomicU64::new(0);
 /// S-6 ② 拉取金丝雀行真序号（run5 曾误用 diag_readout().2——那是 CPU1
 /// 派发计数非拉取数，行号全标 #1）。仅诊断打印用。
 static PULL_CNT: AtomicU64 = AtomicU64::new(0);
@@ -644,6 +650,56 @@ pub fn init() {
             t.capacity[c] = hal::smp::cpu_capacity(c as u32);
         }
     }
+    // S-6 ③b：自旋看门狗 bark 自装（spin.rs 零依赖槽的 hal 面）。
+    crate::spin::set_spin_bark(spin_bark_hal);
+    // S-6 ③b：KERN_LOCK 持者点名钩子自装（arch 反向注入槽）。
+    hal::kern_lock::set_kl_name_hook(current_name_ptrs);
+}
+
+/// S-6 ③b：本核当前任务名指针（arch KERN_LOCK 看门狗持者点名；诊断面，
+/// 定谳后随探针一并退役）。返回 (名指针, 名长)；(0, 0) = park 态/防御窗。
+/// 名 = 任务字面量 &'static [u8]——跨核读不悬垂。
+fn current_name_ptrs() -> (usize, usize) {
+    // SAFETY: current_task 本核槽读契约（锁窗/屏蔽窗内由持锁调用点满足）；
+    // 名切片 'static 字面量。
+    unsafe {
+        let t = current_task();
+        if t.is_null() {
+            return (0, 0);
+        }
+        let task: &Task = &*t;
+        (task.name.as_ptr() as usize, task.name.len())
+    }
+}
+
+// ---- S-6 ③b 自旋看门狗 bark（hal 面；诊断面，定谳后随探针一并退役）----
+
+/// bark 节流锚（上次 bark 的 cntvct；0 起点 = 首报即过门）。
+static SPIN_BARK_LAST: AtomicU64 = AtomicU64::new(0);
+/// bark 总量帽记账（超 32 行静默——wedge 尸检足够，串口不再刷屏）。
+static SPIN_BARK_CNT: AtomicU64 = AtomicU64::new(0);
+
+/// 自旋看门狗 bark：par 门（单核零漂移）+ 1s 全局节流 + 32 行总量帽，
+/// **原始 UART 直写不吃 PRINT_LOCK**（泄漏锁可能就是它——arch 侧
+/// PRINT_LOCK 自旋同款自报）。lock 地址供尸检 `nm` 反查（REAPQ/SLEEPQ
+/// 静态有名；Runqueue.lock 动态地址按区段归属）。
+fn spin_bark_hal(addr: usize) {
+    if !hal::smp::par_enabled() {
+        return;
+    }
+    let now = hal::timer::cntvct();
+    if now.saturating_sub(SPIN_BARK_LAST.load(Ordering::Relaxed)) < hal::timer::cntfrq() {
+        return; // 1s 节流（全局；多锁并发 wedge 轮流报，总量帽兜底）
+    }
+    if SPIN_BARK_CNT.fetch_add(1, Ordering::Relaxed) >= 32 {
+        return;
+    }
+    SPIN_BARK_LAST.store(now, Ordering::Relaxed);
+    hal::uart_puts(b"spin! cpu=");
+    hal::uart_put_dec(hal::smp::cpu_id() as u64);
+    hal::uart_puts(b" lock=0x");
+    hal::uart_put_hex64(addr as u64);
+    hal::uart_puts(b"\n");
 }
 
 /// S-3b（子案 §9.6 填充点）bring-up 成功后真化拓扑：`nr_cpus=2` +
@@ -732,6 +788,18 @@ pub fn spawn(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8]) 
 
 /// 同 [`spawn`]，但挂地址空间（2b-2）：`ttbr0` 页表 PA + `asid`（0/0 = 无 AS）。
 /// 表须已填好且对页表走查可见（调用方 `dsb ish`），activate 只管寄存器。
+pub fn spawn_as_spread(entry: extern "C" fn(usize) -> !, arg: usize,
+                          name: &'static [u8], ttbr0: usize, asid: u16) {
+    let task: &'static mut Task =
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, ttbr0, asid));
+    // S-6：显式可迁移内核带 AS 任务（矩阵对等金丝雀）。服务/ pager 根任务
+    // 保持 spread=false 恒家核；跨核偷取只消费显式可迁移面。
+    task.spread = true;
+    unsafe {
+        enqueue_with_kick(task, place(task));
+    }
+}
+
 pub fn spawn_as(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
                 ttbr0: usize, asid: u16) {
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
@@ -2551,6 +2619,64 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         if preempt_count() > 0 {
             return;
         }
+        // S-6 ③ per-CPU 心跳（诊断面，定谳后退役）：双核 ticks_pre 快照对照
+        // 行——挂死尸检一跑定谳「单侧冻结 = 核 wedge（tick/抢占链死）」vs
+        // 「双爬 = 内核活、服务协议死锁」。安全位 = preempt_count 门后
+        // （PRINT_LOCK 持窗任务被 tick 打断不进本区，G43 同防线）；par 门
+        // 内 = 单核零漂移；tot 每 500 跳一行（phase2 ~840s 量级 ≈ 数十行）。
+        if hal::smp::par_enabled() {
+            let (hb0, hb1, _) = hal::smp::diag_readout();
+            let tot = hb0 + hb1;
+            if tot / 500 != HB_LAST.swap(tot, Ordering::Relaxed) / 500 {
+                hal::kern_lock::with_print_lock(|| {
+                    hal::uart_puts(b"hb c0=");
+                    hal::uart_put_dec(hb0);
+                    hal::uart_puts(b" c1=");
+                    hal::uart_put_dec(hb1);
+                    hal::uart_puts(b"\n");
+                });
+            }
+            // S-6 ③ 卡死等待者扫描（诊断面，与心跳同退役）：每 2500 tot-tick
+            //（run10 定谳：wedge 后全靠对核独爬，5000 门槛只扫到一轮即被
+            // smoke 超时杀——降到 2500 换死前两轮）持 SQ 窗走 SLEEPQ，>10s
+            // 高龄等待者点名（名/obj/年龄）。与心跳行配对一跑定谳「谁在对谁
+            // 断供」：尸末年龄持续爬升的 stuck 行 = 永久丢醒（跨核唤醒丢失）
+            // 候选；出现一两次即消失 = 慢链路非死锁。窗纪律同 expire_timeouts
+            // （SQ 自旋锁跨核互斥）；采集在窗内、打印在窗外——不新增锁序边。
+            if tot / 2500 != STUCK_LAST.swap(tot, Ordering::Relaxed) / 2500 {
+                let freq = hal::timer::cntfrq();
+                let now = hal::timer::cntvct();
+                const STUCK_MAX: usize = 8;
+                let mut hits = [(0usize, 0usize, 0usize, 0u64); STUCK_MAX];
+                let mut n_hits = 0usize;
+                let phys = sq_lock();
+                for_each_sleeper(|t| {
+                    let age = now.saturating_sub(t.wait_since);
+                    if age > freq * 10 && n_hits < STUCK_MAX {
+                        hits[n_hits] =
+                            (t.name.as_ptr() as usize, t.name.len(), t.wait_obj, age / freq);
+                        n_hits += 1;
+                    }
+                });
+                sq_unlock(phys);
+                for i in 0..n_hits {
+                    // SAFETY: 指针取自 Task.name（&'static [u8] 字面量——
+                    // 'static 生命周期，任务离队/退出均不悬垂）。
+                    let name: &[u8] = unsafe {
+                        core::slice::from_raw_parts(hits[i].0 as *const u8, hits[i].1)
+                    };
+                    hal::kern_lock::with_print_lock(|| {
+                        hal::uart_puts(b"stuck '");
+                        hal::uart_puts(name);
+                        hal::uart_puts(b"' obj=0x");
+                        hal::uart_put_hex64(hits[i].2 as u64);
+                        hal::uart_puts(b" age=");
+                        hal::uart_put_dec(hits[i].3);
+                        hal::uart_puts(b"s\n");
+                    });
+                }
+            }
+        }
         // S-6 ②（沿革九十四发现②收口）：定时拉取——设计 §3.4「空闲核
         // **定时**或被唤醒时从忙核拉任务」的定时半句最小兑现。旧触发面仅
         // 「本核 pick None」（idle/park 空转点）：对核忙但独占（副核单任务
@@ -2869,7 +2995,10 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     let mut victim = None;
     loop {
         let p = cur.as_ptr();
-        if (*p).ttbr0 != 0 && crate::class::eligible(core::ptr::null_mut(), p) {
+        if (*p).spread
+            && (*p).ttbr0 != 0
+            && crate::class::eligible(core::ptr::null_mut(), p)
+        {
             victim = Some(cur);
             break;
         }

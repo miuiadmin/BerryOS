@@ -661,8 +661,20 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 4-3b PI：注册 SLEEPQ 变更钩子（block 睡下后 / wake 摘队后全图重推；
     // 与 telemetry 同位——均须在首个切换前）。
     pi::init();
-    berry_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
-    berry_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
+    berry_sched::spawn_as_spread(
+        task_a,
+        TASK_A_MAGIC as usize,
+        b"task_a",
+        as_a.ttbr0_pa,
+        as_a.asid,
+    );
+    berry_sched::spawn_as_spread(
+        task_b,
+        TASK_B_MAGIC as usize,
+        b"task_b",
+        as_b.ttbr0_pa,
+        as_b.asid,
+    );
 
     // G4-1：demand paging 内核机制自喂闭环（内核任务 faulter/pager 对——无
     // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。

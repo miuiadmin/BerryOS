@@ -1176,7 +1176,17 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     // bootstrap 迁移——失败零回滚面）：栈/TCB OOM → -ENOMEM。spread=true
     // （b-1 判谳）：同进程计算线程 = 铺核面（thread_start 专属——process 根
     // 恒家核，详 sched::place ④）。
-    match berry_sched::try_spawn_user(
+    // S-6 SMP 竞态收口：一切可被新任务退出钩子观察的簿记必须在 enqueue
+    // 前完成。旧序“先入环、后 started/live_threads/retain”，在跨核偷取下
+    // 新线程可能在父 syscall 继续前退出：live_threads 先减会使 Process 被
+    // 误判末线程并 drain 活主线程的表（SMP run7 DF/du 实录）。
+    thrd.started = true;
+    proc.live_threads += 1;
+    // SAFETY: 双 retain 与退出钩子 release 成对；对象均在表且类型已验。
+    unsafe { (*proc_ref.as_ptr()).retain() };
+    unsafe { (*vt.as_ptr()).retain() };
+    let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
+    let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         arg as usize,
         sp as usize,
@@ -1188,21 +1198,19 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
         vt.as_ptr() as usize,
         true,
     ) {
-        Some(task_ptr) => {
-            // 1.1/S5-a：Thread effective = Process 默认 ∪ Thread 覆盖。
-            let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
-            apply_sched_attr_to_task(task_ptr, eff);
+        Some(p) => p,
+        None => {
+            thrd.started = false;
+            proc.live_threads -= 1;
+            // SAFETY: 与上方预登记 retain 成对回滚。
+            unsafe { ObjRef::release(proc_ref) };
+            unsafe { ObjRef::release(vt) };
+            return ERR_NO_MEMORY as i64;
         }
-        None => return ERR_NO_MEMORY as i64,
-    }
-    thrd.started = true;
-    proc.live_threads += 1;
-    // F-E1 前移（S-3b §9.6 步 b-1）：pinned/thread_key 两写点已随本刀前移进
-    // try_spawn_user（enqueue 前、出表窗闭）——此处只剩成对的 retain（引用
-    // 计数与字段值同在任务可运行前落定，E0 全量锁下无观测差）。
-    // SAFETY: 双 retain 与 spawn 内双字段写成对（任务已入队未运行，单核无竞态）。
-    unsafe { (*proc_ref.as_ptr()).retain() };
-    unsafe { (*vt.as_ptr()).retain() };
+    };
+    apply_sched_attr_to_task(task_ptr, eff);
+    // SAFETY: prepare 后、簿记/属性已毕；本函数全程 IRQ 屏蔽。
+    unsafe { berry_sched::enqueue_prepared_user(task_ptr) };
     0
 }
 
@@ -1290,7 +1298,16 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     // 失败回滚）→ -ENOMEM；thrd/started/retain 全未动。单核 IRQ 屏蔽：已入队
     // 任务在 eret 前不会运行，下面字段补写无竞态。spread=false（b-1 判谳）：
     // process 根 = 服务/IPC 公民恒家核（详 sched::place ④）。
-    match berry_sched::try_spawn_user(
+    // S-6 SMP：与 thread_start 同款“簿记先于入环”。首线程可在对核立刻运行，
+    // Process.started/live_threads 与运行 retain/Thread retain 不得后补。
+    thrd.started = true;
+    proc.started = true;
+    proc.live_threads = 1;
+    // SAFETY: 双 retain 与退出钩子 release 成对；对象均在表且归属已验。
+    unsafe { (*vr.as_ptr()).retain() };
+    unsafe { (*vt.as_ptr()).retain() };
+    let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
+    let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         child_x0,
         sp as usize,
@@ -1302,15 +1319,16 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         vt.as_ptr() as usize,
         false,
     ) {
-        Some(task_ptr) => {
-            // 1.1/S5-a：首线程同样消费 Process 默认 ∪ Thread 覆盖。
-            let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
-            apply_sched_attr_to_task(task_ptr, eff);
-        }
+        Some(p) => p,
         None => {
+            thrd.started = false;
+            proc.started = false;
+            proc.live_threads = 0;
+            // SAFETY: 与上方预登记 retain 成对回滚。
+            unsafe { ObjRef::release(vr) };
+            unsafe { ObjRef::release(vt) };
             if bootstrap != 0 {
-                // 回滚迁移（子表刚插入、单核无插队 → take 必成；防御面下令牌泄漏，
-                // 安全向）。
+                // 迁移回滚：把子表令牌搬回调用者表（值可变，语义存活）。
                 if let Ok((obj, rights)) = proc.ht.take(child_x0 as u32) {
                     let _ = t.insert_ref(obj, rights);
                 }
@@ -1318,23 +1336,9 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
             return ERR_NO_MEMORY as i64;
         }
     };
-    thrd.started = true;
-    proc.started = true; // per-Process 单次执法（见上方对抗审查修注释）
-    proc.live_threads = 1; // T-1：首线程入账（thread_start 起再 +=1；减点唯一 = 退出钩子）
-    // Plan B v0.5：替运行中的任务钉一次 Process（retain）——退出钩子据
-    // Task.pinned 置 Exited/唤醒/drain/成对 release。F-E1 前移（S-3b §9.6
-    // 步 b-1）：字段写已前移进 try_spawn_user（enqueue 前、出表窗闭）——
-    // 此处只剩成对 retain（E0 全量锁下任务入队后到 eret 前不会跑，无观测差）。
-    // SAFETY: vr 在表（get_raw 过）；retain 与 spawn 内 pinned 写成对（任务已
-    // 入队未运行，无竞态）。
-    unsafe { (*vr.as_ptr()).retain() };
-    // T-1 修复（对抗审查②）：首线程**同样钉 Thread**——join 面（wait Thread
-    // TERMINATED）对首线程成立：thread_key 落 Task 后退出钩子① 才会置
-    // `exited`/唤醒 join 者/成对 release。不钉 = thread_key 恒 0 → 首线程
-    // join 结构性死等（与 sys_thread_start 成功尾同形）。
-    // SAFETY: vt 在表（get_raw 过）；retain 与 spawn 内 thread_key 写成对
-    // （任务已入队未运行，无竞态）。
-    unsafe { (*vt.as_ptr()).retain() };
+    apply_sched_attr_to_task(task_ptr, eff);
+    // SAFETY: prepare 后、Process/Thread 簿记与 effective 属性已毕。
+    unsafe { berry_sched::enqueue_prepared_user(task_ptr) };
     0
 }
 
