@@ -31,6 +31,8 @@
 mod font_data_s2;
 #[path = "font_data_s3.rs"]
 mod font_data_s3;
+#[path = "font_data_hd.rs"]
+mod font_data_hd;
 
 /// 单色位图视图（字形/图标/图像共用——见模块头）。字段 pub 供命令
 /// 构造直排，**权威构造口 = [`GlyphBits::new`]（恰长铁律 + 坐标域先验）**；
@@ -142,6 +144,8 @@ pub enum FontSize {
     S16x32,
     /// 24×48（1x 整数最近邻放大档）。
     S24x48,
+    /// 32×48 HD（Noto Sans OFL 原生光栅化档——非 8×16 放大）。
+    S32x48,
 }
 
 impl FontSize {
@@ -151,6 +155,7 @@ impl FontSize {
             FontSize::S8x16 => 8,
             FontSize::S16x32 => 16,
             FontSize::S24x48 => 24,
+            FontSize::S32x48 => 32,
         }
     }
 
@@ -160,6 +165,7 @@ impl FontSize {
             FontSize::S8x16 => 16,
             FontSize::S16x32 => 32,
             FontSize::S24x48 => 48,
+            FontSize::S32x48 => 48,
         }
     }
 
@@ -175,6 +181,7 @@ impl FontSize {
             FontSize::S8x16 => &FontAtlas8x16,
             FontSize::S16x32 => &FontAtlas16x32,
             FontSize::S24x48 => &FontAtlas24x48,
+            FontSize::S32x48 => &FontAtlas32x48,
         }
     }
 }
@@ -263,6 +270,35 @@ impl GlyphAtlas for FontAtlas24x48 {
     }
 }
 
+/// 32×48 HD 图集：Noto Sans OFL 原生光栅化（`font_data_hd::FONT_HD`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontAtlas32x48;
+
+impl FontAtlas32x48 {
+    /// 本图集字号档（恒 [`FontSize::S32x48`]）。
+    pub fn size(&self) -> FontSize {
+        FontSize::S32x48
+    }
+}
+
+impl GlyphAtlas for FontAtlas32x48 {
+    fn cell_w(&self) -> usize {
+        font_data_hd::CELL_W
+    }
+    fn cell_h(&self) -> usize {
+        font_data_hd::CELL_H
+    }
+    fn glyph(&self, ch: u8) -> Option<GlyphBits<'static>> {
+        let i = usize::from(ch).checked_sub(32)?;
+        let g = font_data_hd::FONT_HD.get(i)?;
+        Some(GlyphBits {
+            w: font_data_hd::CELL_W,
+            h: font_data_hd::CELL_H,
+            rows: g.as_slice(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +331,10 @@ mod tests {
         assert_eq!((a2.cell_w(), a2.cell_h()), (16, 32));
         let a3 = FontAtlas24x48;
         assert_eq!(a3.size(), FontSize::S24x48);
+        let ah = FontAtlas32x48;
+        assert_eq!(ah.size(), FontSize::S32x48);
+        assert_eq!((ah.cell_w(), ah.cell_h()), (32, 48));
+        assert!(ah.glyph(b'B').is_some());
         assert_eq!((a3.cell_w(), a3.cell_h()), (24, 48));
         // 全 95 形恰长（32 行 × 2B / 48 行 × 3B）+ bit() 行末越界恒 false。
         for ch in 32u8..=126 {
@@ -319,6 +359,7 @@ mod tests {
             (FontSize::S8x16, 8, 16),
             (FontSize::S16x32, 16, 32),
             (FontSize::S24x48, 24, 48),
+            (FontSize::S32x48, 32, 48),
         ] {
             assert_eq!((size.cell_w(), size.cell_h()), (w, h));
             let a = size.atlas();
@@ -335,6 +376,7 @@ mod tests {
             (&FontAtlas8x16 as &dyn GlyphAtlas, FontSize::S8x16),
             (&FontAtlas16x32 as &dyn GlyphAtlas, FontSize::S16x32),
             (&FontAtlas24x48 as &dyn GlyphAtlas, FontSize::S24x48),
+            (&FontAtlas32x48 as &dyn GlyphAtlas, FontSize::S32x48),
         ] {
             assert_eq!(atlas.cell(), size.cell(), "trait 缺省口与档位面同几何");
             assert_eq!(atlas.cell(), GlyphCell { w: size.cell_w(), h: size.cell_h() });
@@ -342,6 +384,7 @@ mod tests {
         assert_eq!(FontSize::S8x16.cell(), GlyphCell { w: 8, h: 16 });
         assert_eq!(FontSize::S16x32.cell(), GlyphCell { w: 16, h: 32 });
         assert_eq!(FontSize::S24x48.cell(), GlyphCell { w: 24, h: 48 });
+        assert_eq!(FontSize::S32x48.cell(), GlyphCell { w: 32, h: 48 });
     }
 
     // —— GlyphBits 构造口拒面 + 防御采样 ——

@@ -88,9 +88,6 @@ pub struct Process {
     /// 0x87 syscall 侧协议）；序归锁窗（Relaxed）。投递执行全在用户态 libc
     /// （协同式，A7-4 §2 方案 B——内核不存 handler 表、不唤醒目标）。
     pub pending_signals: core::sync::atomic::AtomicU64,
-    /// 1.1/S3-b：pager 角色引用计数（`vmo_create(DEMAND)` +1 / 进程销毁归零）。
-    /// > 0 → `process_suspend` 拒（-EBUSY，D6）。
-    pub pager_refs: u32,
     /// 1.1/S3-b：冻结嵌套深度（`process_suspend` +1 / `SuspendTok::drop` -1）。
     /// > 0 → 冻结中；归 0 → `thaw_by_pinned` 解冻。多 token 同进程：最后一个
     /// close 才解冻。上限 8（超限 -EBUSY）。
@@ -117,7 +114,6 @@ impl Process {
             live_threads: 0,
             exit_code: 0,
             pending_signals: core::sync::atomic::AtomicU64::new(0),
-            pager_refs: 0,
             freeze_depth: 0,
         }
     }

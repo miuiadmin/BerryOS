@@ -1,7 +1,7 @@
 [app]
-id = "MUSIC"
+id = "MMS"
 version = "0.1.0"
-entry = "bin/music"
+entry = "bin/messages"
 type = "app"
 intent = "utility"
 
@@ -13,5 +13,5 @@ stack_pages = 8
 
 [ui]
 icon = "icons/icon.byi"
-label = "MUSIC"
+label = "Messages"
 views = "views/main.bui"

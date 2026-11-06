@@ -15,13 +15,15 @@
 
 use berry_gfx::font::FontSize;
 
-/// 档位 id → FontSize（与 desc wire 域同序：0/1/2 = S8x16/S16x32/S24x48；
-/// 越域 = 敌意/漂移供件——debug_assert loud + 折最小档保守收口）。
+/// 档位 id → FontSize（与 desc wire 域同序：0/1/2/3 =
+/// S8x16/S16x32/S24x48/S32x48；越域 = 敌意/漂移供件——debug_assert
+/// loud + 折最小档保守收口）。
 fn tier(scale: u8) -> FontSize {
     match scale {
         0 => FontSize::S8x16,
         1 => FontSize::S16x32,
         2 => FontSize::S24x48,
+        3 => FontSize::S32x48,
         other => {
             debug_assert!(false, "TextMetrics scale 档位 id 越域: {other}");
             FontSize::S8x16
