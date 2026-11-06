@@ -42,7 +42,7 @@ just test-host    # host 侧 315 单元测试（无需 QEMU）
 
 ## 文档
 
-设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（49 条 ADR）→ [`docs/路线图.md`](docs/路线图.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
+设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（49 条 ADR）→ [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
 
 ## 许可证
 

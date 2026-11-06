@@ -625,7 +625,7 @@
 | sched/src/class.rs | 56 | block | 其它 | unsafe { rq.link_back(NonNull::from(&mut *t)) }; // S-3a 义务①（子案 |
 | sched/src/class.rs | 63 | block | 其它 | unsafe { rq.unlink(NonNull::from(&mut *t)) }; t.state = TaskStat |
 | sched/src/class.rs | 70 | block | 其它 | unsafe { let h = rq.head()?; // 一圈记最高 effective（环上节点必有 next——环形不 |
-| sched/src/class.rs | 91 | block | 其它 | unsafe { &mut *chosen.as_ptr() }; // AI 策略注入留桩（3-4c，`AI调度设计.md` |
+| sched/src/class.rs | 91 | block | 其它 | unsafe { &mut *chosen.as_ptr() }; // AI 策略注入留桩（3-4c，`AI调度设计-v1.0.md` |
 | sched/src/class.rs | 111 | block | 其它 | unsafe { match hal::smp::last_vct_slot() { Some(p) => { let last |
 | sched/src/class.rs | 146 | block | 其它 | unsafe { !((*t).state == TaskState::Running && (t as *mut Task) |
 | sched/src/class.rs | 173 | block | 其它 | unsafe { rq.advance_past(chosen) }; let t = unsafe { &mut *chose |

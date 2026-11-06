@@ -33,7 +33,7 @@ Phase 0–6 shipped on ARM64 (QEMU `virt`), x86_64 minimal port in CI. Highlight
 | Apps | `bsh` shell (pipes, mini-readline, env), **unmodified `hexyl` 0.17.0** running via a musl-target libc shim, `.bap` application packages (manifest → capability grant → supervised lifecycle) |
 | x86_64 | PVH boot, PIT/PIC timer, exception vectors, context switching, SYSCALL/SYSRET — 7 smoke markers gated in CI |
 
-Current milestone **M-VM**: a self-hosting disk image (BerryBoot EFI loader → kernel handoff), then a virtualization bring-up window, then a usable CLI. Full plan (Chinese) in [`docs/VM里程碑设计草案.md`](docs/VM里程碑设计草案.md).
+Current milestone **M-VM**: a self-hosting disk image (BerryBoot EFI loader → kernel handoff), then a virtualization bring-up window, then a usable CLI. Full plan (Chinese) in [`docs/VM里程碑设计草案-v1.0.md`](docs/VM里程碑设计草案-v1.0.md).
 
 ## Quick start
 
@@ -72,9 +72,9 @@ docs/         design documents (Chinese)
 Design documents are written in Chinese and live in [`docs/`](docs/). Start from the index: [`docs/索引.md`](docs/索引.md). Key entries:
 
 - Architecture decisions — 49 ADRs, the single source of truth: [`docs/架构决策.md`](docs/架构决策.md)
-- Roadmap: [`docs/路线图.md`](docs/路线图.md)
-- Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计.md`](docs/调度器设计.md)
-- Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计.md`](docs/系统调用ABI设计.md)
+- Roadmap: [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md)
+- Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计-v1.0.md`](docs/调度器设计-v1.0.md)
+- Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计-v1.0.md`](docs/系统调用ABI设计-v1.0.md)
 - App development guide — writing `.bap` apps, manifest v1, build toolchain: [`docs/应用开发指南.md`](docs/应用开发指南.md)
 
 ## License

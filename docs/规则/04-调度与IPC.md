@@ -16,7 +16,7 @@
 - **双线并行**：省电（tickless/idle/PM）与多核性能同为 v1 一等公民，路线见 M1a/M1b。
 - **intent 两段式（ADR #42）**：**公平是机制默认，intent 是策略输入，叠加永不替代**。v1/v2 intent = u8 查表键，`berry_intent` 编码冻结 0x00 UNSPECIFIED–0x05 MAINTENANCE(冻结不启用)；M4 起 class_fair ×4 带实例 + 预算包络 + deadline-server 兜底，**凭 v1 遥测入场券**；band/intent **不入 AI 动作空间**。
 
-细节 → `docs/调度器设计.md`。
+细节 → `docs/调度器设计-v1.0.md`。
 
 ### 现役用户信号位登记表
 
@@ -71,7 +71,7 @@
 
 ## 深读
 
-- docs/调度器设计.md —— 机制 + M 里程碑权威：runqueue/抢占点/tickless/intent 两段式与省电双线的完整设计。
-- docs/IPC设计.md —— channel/Event/信号位与 object_wait/wait_many 协议的第一手语义。
-- docs/AI调度设计.md —— AI 干涉面现行口径：限带内、机制预留 + 实验轨道 + kill criteria（ADR #21 修订版）。
-- docs/SMP设计草案.md —— S 系拆步与锁序/BKL 出路的现行依据（SMP 锁改动前必读）。
+- docs/调度器设计-v1.0.md —— 机制 + M 里程碑权威：runqueue/抢占点/tickless/intent 两段式与省电双线的完整设计。
+- docs/IPC设计-v1.0.md —— channel/Event/信号位与 object_wait/wait_many 协议的第一手语义。
+- docs/AI调度设计-v1.0.md —— AI 干涉面现行口径：限带内、机制预留 + 实验轨道 + kill criteria（ADR #21 修订版）。
+- docs/SMP设计草案-v1.0.md —— S 系拆步与锁序/BKL 出路的现行依据（SMP 锁改动前必读）。
