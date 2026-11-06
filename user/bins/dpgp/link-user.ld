@@ -6,7 +6,12 @@
    布局（svcmgr dpg_selftest 装载侧镜像，两文件各持 const 改须双改）：
    像窗 [0x1000,0x6000) eager（image + 零页，主 sp=0x6000 窗顶）；demand
    VMO 一页 @ 0x6000（窗界外，读它必走缺页路径）。elf2flat --max 8192
-   = 2 页墙（本像 1 页 + 头寸）。 */
+   = 2 页墙（本像 1 页 + 头寸）。
+   G4-4 X-2：第二入口 dpgi_entry 段钉 **0x2000**（`dpgi_start` ——I-abort
+   腿专用；svcmgr `DPGI_ENTRY` 同值双改）——.text 膨胀过 0x2000 = 段
+   VMA 叠 = lld 链接期炸响（fail loud）；像随 dpgi 页占满 2 页墙
+   （[0x1000,0x3000) ≤ 8192）。段名 dpgi_entry 不匹配 .text.* 通配 =
+   不会被首段吞并。 */
 ENTRY(_start)
 
 SECTIONS {
@@ -14,6 +19,10 @@ SECTIONS {
     .text : {
         KEEP(*(.text.entry))
         *(.text .text.*)
+    }
+    . = 0x2000;
+    .dpgi : {
+        KEEP(*(dpgi_entry))
     }
     . = ALIGN(16);
     .rodata : {

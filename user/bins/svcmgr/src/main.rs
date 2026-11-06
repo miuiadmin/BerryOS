@@ -2433,9 +2433,20 @@ const DPG_ENTRY: usize = 0x1000;
 const DPG_SP: usize = 0x6000;
 /// demand 页 VA（dpgp 侧 `DPGP_VA` 同值——两文件各持 const，改须双改）。
 const DPG_VA: usize = 0x6000;
+/// G4-4 X-2：I-abort 腿 demand 代码页 VA（dpgp `DPGP_VA2` 同值双改）。
+const DPG_VA2: usize = 0x7000;
+/// G4-4 X-2：**I 腿第二入口 VA**（dpgp `dpgi_entry` 段钉 0x2000——
+/// link-user.ld 同值双改）。`_start` 主径零漂移 = storm/negative/soak/
+/// bench 消费面不变（共享嵌内 bin = 共享行为面——新腿走新入口）。
+const DPGI_ENTRY: usize = 0x2000;
+/// I 腿供给页字节：`movz w0,#0x5a; ret`（aarch64 手排两指——LE：
+/// 0x52800B40 / 0xD65F03C0；余页零填，供给后取指即此函数体；期望返回
+/// 0x5a 比对面在 dpgp `DPGP_IFN_RET`——父只认终态 exit 7）。
+const DPG_IFN_CODE: [u8; 8] = [0x40, 0x0b, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6];
 /// 供给页首 8 字节期望值（"DPGPmagi" LE——dpgp 侧 `DPGP_MAGIC` 同值）。
 const DPG_MAGIC: u64 = 0x6967_616d_5047_5044;
-/// 期望退出码（读值对 → 7 / 错值 → 9，thrchild 同码面）。
+/// 期望退出码（三态：两腿全过 → 7 / magic 腿错值 → 9 / I 腿错值 → 11，
+/// thrchild 同码面扩一态）。
 const DPG_OK_CODE: i32 = 7;
 /// join 应答帽 60s（THR_CAP_NS 同口径；0x21 供给步在 wait 之前已收口，
 /// 本帽只罩「子读值 → exit → TERMINATED」尾段）。
@@ -2453,6 +2464,15 @@ const DPGP_OK: &[u8; 8] = b"DPGP ok\n";
 /// 双序天然安全：子先 fault / 本步先睡两序由 poll-first + 位锁存兜底。
 /// 供给步非 0（身份验/源读错）= 早退降级——子重 fault 再武装后无人收货
 /// = 永久阻塞（§5-⑤ fail loud-on-hang，标记缺席 = smoke FAIL 执法）。
+///
+/// G4-4 X-2 **I-abort 腿**（§5-⑦ 留面兑现）：子改走**第二入口**
+/// `dpgi_start`（0x2000，`_start` 主径零漂移 = storm/negative/soak/
+/// bench 消费面不变——共享嵌内 bin 新腿走新入口判例）；再加一对源/
+/// demand VMO（0x7000 代码页，源 = 手排 `movz w0,#0x5a; ret`），子读
+/// magic（D 腿）后 call 0x7000——首取指走 EL0 I-abort(0x20)（trap.rs
+/// 同臂并探针）→ 二供 → eret 重执行 → 返 0x5a。子触序与父供给序同向
+///（magic 先/代码后，单子顺序 pin 无交错竞窗）；两腿全过 exit 7
+///（`DPGP ok` 不变——0x20 面回归即 DPGP 缺席 FAIL 执法）。
 fn dpg_selftest(console: Handle) {
     let mut hp = 0 as Handle;
     let mut hv = 0 as Handle;
@@ -2491,6 +2511,24 @@ fn dpg_selftest(console: Handle) {
         eco_note(console, b"dpg dv");
         return;
     }
+    // G4-4 X-2 I 腿：源 VMO（手排 `movz w0,#0x5a; ret` 函数体——防线 4
+    // 同款 pre-commit）+ 第二 demand VMO（0x20 I-abort 首取指受验页）。
+    let mut sv2 = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut sv2) != 0 || sv2 == 0 {
+        eco_note(console, b"dpg sv2");
+        return;
+    }
+    if berry_vmo_commit(sv2, 0, 4096) != 0
+        || berry_vmo_write(sv2, DPG_IFN_CODE.as_ptr(), 0, DPG_IFN_CODE.len()) != 0
+    {
+        eco_note(console, b"dpg sv2w");
+        return;
+    }
+    let mut dv2 = 0 as Handle;
+    if berry_vmo_create(4096, VMO_OPT_DEMAND, &mut dv2) != 0 || dv2 == 0 {
+        eco_note(console, b"dpg dv2");
+        return;
+    }
     // 像窗 + demand 页映入子 root Vmar（demand 映射触发内核 asid 反查
     // 登记——探针第一段的供给可达性由此建立）。
     let mut vaddr = DPG_ENTRY;
@@ -2503,13 +2541,19 @@ fn dpg_selftest(console: Handle) {
         eco_note(console, b"dpg dmap");
         return;
     }
+    let mut dva2 = DPG_VA2;
+    if berry_vmar_map(hv, 0, dv2, 0, &mut dva2, 4096, RIGHT_READ | RIGHT_WRITE) != 0 {
+        eco_note(console, b"dpg dmap2");
+        return;
+    }
     let mut ht = 0 as Handle;
     if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
         eco_note(console, b"dpg tc");
         return;
     }
-    // 零句柄形态：bootstrap=0（dpgp 不建线程不碰对象，x0=0）。
-    if berry_process_start(hp, ht, DPG_ENTRY, DPG_SP, 0) != 0 {
+    // 零句柄形态：bootstrap=0（dpgp 不建线程不碰对象，x0=0）。**X-2 起
+    // 本测走第二入口 dpgi_start（0x2000）**——_start 主径留给其余消费面。
+    if berry_process_start(hp, ht, DPGI_ENTRY, DPG_SP, 0) != 0 {
         eco_note(console, b"dpg start");
         return;
     }
@@ -2517,6 +2561,13 @@ fn dpg_selftest(console: Handle) {
     // 唤子（失败亦唤——子重 fault 再武装，本步非 0 早退即 fail loud）。
     if berry_pager_supply_pages(dv, sv, 0) != 0 {
         eco_note(console, b"dpg sup");
+        return;
+    }
+    // X-2 I 腿二供：子先读 magic（exit 前序）后 call 0x7000——父供给序
+    // 与子触序同向（magic 页先、代码页后）；双序安全同上（poll-first +
+    // 位锁存）。0x20 I-abort 首取指 → 探针武装 → 本供 → eret 重执行 call。
+    if berry_pager_supply_pages(dv2, sv2, 0) != 0 {
+        eco_note(console, b"dpg sup2");
         return;
     }
     // 子读到 magic → exit 7 → TERMINATED（0x21 返 0 = 供给页已就位，本等
@@ -2536,9 +2587,12 @@ fn dpg_selftest(console: Handle) {
     // 收口回收（thr_selftest 同序）：先 unmap 像窗 + demand 页（Demand 区间
     // unmap 同收割、mapcnt 归零）再关 vmo；dv 已供给页随 unmap 解除映射。
     if berry_vmar_unmap(hv, DPG_VA, 4096) != 0
+        || berry_vmar_unmap(hv, DPG_VA2, 4096) != 0
         || berry_vmar_unmap(hv, DPG_ENTRY, DPG_MAP_LEN) != 0
         || berry_handle_close(dv) != 0
         || berry_handle_close(sv) != 0
+        || berry_handle_close(dv2) != 0
+        || berry_handle_close(sv2) != 0
         || berry_handle_close(iv) != 0
         || berry_handle_close(ht) != 0
         || berry_handle_close(hp) != 0

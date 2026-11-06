@@ -418,8 +418,14 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // 之前——快路径零锁；未注册/未命中/非翻译缺页（esr 自滤 fsc）
             // 恒 false = 原杀链不变量保持。EL0 异常 taken-to-higher-EL
             // 自动屏蔽 PSTATE.I；SMP KL 窗由探针实现方自管（P2-2①）。
+            // G4-4 X-2：EL0 I-abort（0x20）同臂并入（§5-⑦ 留面的 exec 代码
+            // 页用例——dpgp I 腿受验）：IFSC 与 DFSC 同 fsc 编码（翻译缺页
+            // 0b00101 同值），I-abort FAR = 取指 VA 有效可查；探针内滤
+            // fsc 4..=7 语义两态同形。
             // SAFETY: 同步异常上下文；槽 boot 屏蔽窗注册。
-            if ec == 0x24 && unsafe { crate::demand_fault_probe_el0(tf.esr as usize, tf.far as usize) } {
+            if (ec == 0x24 || ec == 0x20)
+                && unsafe { crate::demand_fault_probe_el0(tf.esr as usize, tf.far as usize) }
+            {
                 return; // 槽内已完成 pager 协议——eret 重试
             }
             // S-2 E0（草案 3.1-2）→ S-3c c-2c slice 2b 全量形：EL0 fault kill
