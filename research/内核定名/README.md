@@ -14,7 +14,9 @@
 ## 用途
 
 - **开源前商标人工终验**（中国商标网第 9/42 类 + USPTO/EUIPO/WIPO 终核）
-  的检索源 URL 与检索细节都在 JSON 的 `result.research[*].findings[*]`
-  ——人工复核时以此为本底对拍增量。
+  的检索源 URL 与检索细节分两层：首轮在 JSON 的
+  `result.research[*].findings[*]`，**对抗复核层在 `result.flagged[*].recheck`**
+  （第二商标 SN 98099678、RN 5670056 注销定谳等只进 recheck 层——
+  只读 findings 层必漏，复核后增量以 recheck 层为准）。
 - 判词收拢版（五面要点 / 软雷三条对策 / 官方口径 / 占位清单）以
   `docs/内核定名-v1.0.md` 为准；本目录只存证据不存结论。
