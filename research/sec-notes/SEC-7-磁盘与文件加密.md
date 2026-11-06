@@ -139,10 +139,10 @@ day-one 动作清单（按现仓库触点对号）：
 | # | 动作 | 触点 | 成本 |
 |---|---|---|---|
 | A | MBR 分区表预留密钥材料分区槽位（不挂载）| `tools/mkimage.py` | ~十行，零运行时影响 |
-| B | 现代 FS inode 布局含 16B nonce + u8 class 域（设计冻结，不实现）| `docs/文件系统设计.md`（ADR #27 展开）| 文档改动 |
+| B | 现代 FS inode 布局含 16B nonce + u8 class 域（设计冻结，不实现）| `docs/文件系统设计-v1.0.md`（ADR #27 展开）| 文档改动 |
 | C | 「fsmgr 永不持根密钥、密钥经会话句柄」原则入册 | 同上 + 未来 keyproto 设计段 | 文档改动 |
 | D | 单调计数器能力接口形态（计数器句柄 + increment/read）| 未来 keymgr/keyproto 设计段 | 文档改动 |
-| E | 挂载/盘格式参数显式分「格式域 vs 策略域」，格式域 first-format-only + 版本号 | `docs/文件系统设计.md` 挂载参数节 | 文档改动 |
+| E | 挂载/盘格式参数显式分「格式域 vs 策略域」，格式域 first-format-only + 版本号 | `docs/文件系统设计-v1.0.md` 挂载参数节 | 文档改动 |
 
 1. **盘格式缝（成本最低、最贵的后补雷）**：Android 官方结论「fileencryption 定义盘上格式、不可 OTA 改」[1]——加密参数是 first-format 决策。现在动作：①未来现代 FS（ADR #27）inode 布局 day-one 含 **16B per-file nonce + u8 保护类** 域（fscrypt v2/APFS 同型 [8][10]，FAT 无处可放、不硬塞）；②`tools/mkimage.py` MBR 分区表 day-one 预留**密钥材料分区槽位**（Android /metadata 16MB 独立分区同型 [2]——现单 FAT16 分区布局下加第二分区项，不挂载、零运行时影响）；③FAT 阶段唯一可做的形态是**整卷元数据加密**（dm-default-key 同型 [2]），但 v1 不实现，只在 vblk→fsmgr 协议里给「数据单元经变换」留一层（见缝 2）。
 2. **密钥服务缝（keyproto 的接口形状先于实现）**：业界一致把「持根密钥者」与「FS」分离（vold/KeyMint [1]、fxfs-crypt [20]、QNX 第三方 master key [22]）。BerryOS 落点：未来 keymgr 服务三 op——`WRAP/UNWRAP/DERIVE(label, context)`，**fsmgr 永不接收裸根密钥、只收会话句柄与派生结果**（fxfs-crypt「unlock 时递 handle」同型 [20]）。现在动作：遵循 berry-psproto/netdproto 家族的「严格串行 RPC + ver 域」既有模式，在 FS 设计文档冻结该原则即可，协议 crate 到 v2 再立。

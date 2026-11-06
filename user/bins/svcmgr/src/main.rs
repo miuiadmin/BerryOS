@@ -24,10 +24,11 @@
 #![no_main]
 
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one, berry_pager_supply_pages,
-    berry_process_create, berry_process_get_exit_code, berry_process_start, berry_thread_create,
-    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
+    berry_handle_close, berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
+    berry_pager_supply_pages, berry_process_create, berry_process_get_exit_code,
+    berry_process_start, berry_thread_create, berry_thread_start, berry_vmar_map,
+    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
     berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED, BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, BERRY_ERR_INVALID_ARG,
     BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
@@ -177,6 +178,14 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // 镜像内嵌零 rootfs 依赖 = 裸跑/EFI 路同打；链内坏面 = eco 降级行 +
     // 标记缺失（smoke FAIL 兜底）。----
     dpgn_selftest(console);
+
+    // ---- G4-3 C-full：缺页 soak 满配 N=15（`DPGF ok n=15` + C-4 回卷
+    // `DPGF2 ok n=3`）——16 槽登记恰满 + K=8 溢出首压 + CONC-1 真跨核 +
+    // MECH-1 convoy 轮供。**cpio 具名文件 `dpgf.on` 门控**：正装 rootfs/
+    // run/smoke/EFI 缺席 = 静默跳过零扰动零新标记（rootfs 相 50 / 主
+    // smoke 78 / EFI 36 计数零漂——变体卷 = tools/smoke-dpgsoak.sh 专属）；
+    // 链内坏面 = eco 降级行 + 标记缺失（smoke FAIL 兜底）。----
+    dpgf_selftest(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
     // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
@@ -2886,6 +2895,208 @@ fn dpgn_selftest(console: Handle) {
         trap();
     }
     send_retry(console, DPGN_OK.as_ptr(), DPGN_OK.len());
+}
+
+// ---- G4-3 C-full：缺页 soak 满配（`DPGF ok n=15` + C-4 回卷 `DPGF2 ok n=3`）----
+
+/// C-full 满配子数：16 槽登记帽恰满（boot `dpg::init` 永占 1〔Box::leak
+/// 不 Drop〕+ 15 子根 Vmar 各登记 1）；第 17 方 = ktest OwnerConflict 已
+/// 单测，本测不打该面。
+const DPGF_N: usize = 15;
+/// C-4 槽回收二轮子数（declare「16 槽并发帽非终身帽」压测级定谳——全子
+/// join + 收口后登记回落 1，再 spawn 再登记 Ok 的活证）。
+const DPGF2_N: usize = 3;
+/// spread 线程栈顶（像窗 [0x1000,0x6000) 对切：主栈顶 0x6000 用页 0x5000，
+/// 本栈顶 0x4000 用页 0x3000——各 8KiB 无叠，像驻页 0x1000）。
+const DPG_SP2: usize = 0x4000;
+/// C-full 标记（13 字节）。**cpio 具名文件门控专属**：正装 rootfs/run/
+/// smoke/EFI 无 `dpgf.on` = 恒不打——rootfs 相 50 / 主 smoke 78 / EFI 36
+/// 计数零漂；变体卷 = `tools/smoke-dpgsoak.sh` 专属断言面。"DPGF ok n=15"
+/// 与现役标记两两互非子串（"DPG ok"/"DPGP ok"/"DPGS ok"/"DPGN ok" 位 3
+/// 后 F≠空格/P/S/N；"DPGF2 ok n=3" 位 4 后空格≠'2'，反向亦异）。
+const DPGF_OK: &[u8; 13] = b"DPGF ok n=15\n";
+/// 标记 n= 双位与子数同源（DPGN 单位同族）：改 N 忘改标记即编译拒。
+const _: () =
+    assert!(DPGF_OK[10] == b'0' + DPGF_N as u8 / 10 && DPGF_OK[11] == b'0' + DPGF_N as u8 % 10);
+/// C-4 二轮标记（13 字节；同门控同专属面）。
+const DPGF2_OK: &[u8; 13] = b"DPGF2 ok n=3\n";
+const _: () = assert!(DPGF2_OK[11] == b'0' + DPGF2_N as u8 && DPGF2_N < 10);
+
+/// dpgf 波（dpg_storm 满配放大 + spread 分流）：N 子并发首触 → N× 0x21
+/// 轮供（MECH-1 convoy 服务序——单 pager 无单独超时，DPG_CAP_NS join 帽
+/// 兜底）→ N× join 7 → N× 收口。偶数下标 = 现形（main 首触 DPG_VA，家核
+/// CPU0）；奇数下标 = main 停泊（bootstrap 事件句柄迁移 → 子 x0 非 0 =
+/// sleep 帽循环）+ 本服务
+/// 侧 `thread_start`（spread=true——失衡 ≥2 翻核）线程同 DPG_ENTRY 首触：
+/// 两核皆有 faulter = CONC-1 真跨核（CPU1 faulter ⇄ CPU0 pager 跨核供给
+/// 对成立；偷取随迁 home 附加非确定，不作断言面）。fault 代码位置无关
+/// ——读 magic → 进程 exit 7/9，非 main 线程同义；spread 线程
+/// process_exit → kill_all 收割停泊 main。败 = Some(相位)（1 拉起 /
+/// 2 轮供 / 3 join——降级路径子泄漏 = §5-⑤ fail loud 先例同款，标记缺席
+/// = smoke FAIL 执法）。
+fn dpgf_wave<const N: usize>(iv: Handle, sv: Handle, dv: Handle) -> Option<u8> {
+    let mut hps = [0 as Handle; N];
+    let mut hvs = [0 as Handle; N];
+    let mut hts = [0 as Handle; N];
+    let mut hts2 = [0 as Handle; N]; // 奇数子 spread 线程柄（偶 = 0）
+    for i in 0..N {
+        if berry_process_create(0, 0, &mut hps[i], &mut hvs[i]) != 0 || hps[i] == 0 || hvs[i] == 0
+        {
+            return Some(1);
+        }
+        let mut vaddr = DPG_ENTRY;
+        if berry_vmar_map(hvs[i], 0, iv, 0, &mut vaddr, DPG_MAP_LEN, RIGHT_READ | RIGHT_WRITE) != 0
+        {
+            return Some(1);
+        }
+        let mut dva = DPG_VA;
+        if berry_vmar_map(hvs[i], 0, dv, 0, &mut dva, 4096, RIGHT_READ | RIGHT_WRITE) != 0 {
+            return Some(1);
+        }
+        if berry_thread_create(hps[i], 0, &mut hts[i]) != 0 || hts[i] == 0 {
+            return Some(1);
+        }
+        if i % 2 == 0 {
+            if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, 0) != 0 {
+                return Some(1);
+            }
+        } else {
+            // main 停泊 + spread 首触。停泊令 = **bootstrap 事件句柄迁移**
+            //（首光实证修正：process_start 第 5 参非裸 arg——非 0 = 调用者
+            // 表 take 迁入子表、子 x0 = 子表新句柄值〔gen≥1 恒非 0，dpgp 侧
+            // `x0 != 0` 即停泊判据〕；magic 值假 arg 被 take 当句柄拒
+            // -EBADF）。take 即离本表——子 exit 收表释放，零泄漏零复用面。
+            let mut hev = 0 as Handle;
+            if berry_event_create(0, &mut hev) != 0 || hev == 0 {
+                return Some(1);
+            }
+            if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, hev) != 0 {
+                return Some(1);
+            }
+            if berry_thread_create(hps[i], 0, &mut hts2[i]) != 0 || hts2[i] == 0 {
+                return Some(1);
+            }
+            if berry_thread_start(hts2[i], DPG_ENTRY, DPG_SP2, 0) != 0 {
+                return Some(1);
+            }
+        }
+    }
+    // N× 0x21 阻塞收货（poll-first 逐轮取一认领槽；15 请求 > K=8 → 溢出
+    // convoy `DPG ovfl` 行首见——B 刀零计断言的镜像反转）。
+    for _round in 0..N {
+        if berry_pager_supply_pages(dv, sv, 0) != 0 {
+            return Some(2);
+        }
+    }
+    // N× join 7（帽同口径——供给步已毕，本等只罩「子读值 → exit →
+    // TERMINATED」尾段；丢唤子永睡 = 帽到点标记缺席）。
+    for i in 0..N {
+        let mut obs = 0u64;
+        if berry_object_wait_one(hps[i], SIGNAL_TERMINATED, now() + DPG_CAP_NS, &mut obs) != 0
+            || obs != SIGNAL_TERMINATED
+        {
+            return Some(3);
+        }
+        let mut code: i32 = 0;
+        if berry_process_get_exit_code(hps[i], &mut code) != 0 {
+            return Some(3);
+        }
+        if code != DPG_OK_CODE {
+            return Some(3);
+        }
+    }
+    // 收口（dpg_storm 同序：先 unmap demand 再 unmap 像 → 关柄——奇数子
+    // 多一 spread 柄；Vmar Drop 注销 asid 槽 = C-4 回落面）。收口非 0 =
+    // 内核侧异常，loud。
+    for i in 0..N {
+        if berry_vmar_unmap(hvs[i], DPG_VA, 4096) != 0
+            || berry_vmar_unmap(hvs[i], DPG_ENTRY, DPG_MAP_LEN) != 0
+            || (hts2[i] != 0 && berry_handle_close(hts2[i]) != 0)
+            || berry_handle_close(hts[i]) != 0
+            || berry_handle_close(hps[i]) != 0
+            || berry_handle_close(hvs[i]) != 0
+        {
+            trap();
+        }
+    }
+    None
+}
+
+/// 波失败相位 → 降级行（wave 号 + 相位定位失败点）。
+fn dpgf_note(console: Handle, wave: u8, phase: u8) {
+    let tag: &[u8] = match (wave, phase) {
+        (1, 1) => b"dpgf1 sp",
+        (1, 2) => b"dpgf1 sup",
+        (1, 3) => b"dpgf1 join",
+        (2, 1) => b"dpgf2 sp",
+        (2, 2) => b"dpgf2 sup",
+        _ => b"dpgf2 join",
+    };
+    eco_note(console, tag);
+}
+
+/// G4-3 C-full 自验：**缺页 soak 满配 N=15**（`DPGF ok n=15`）+ C-4 槽
+/// 回收二轮（`DPGF2 ok n=3`）——16 槽登记恰满（boot 1 + 15）+ K=8 池溢出
+/// 首压 + CONC-1 真跨核（奇数子 spread 两核 faulter）+ MECH-1 convoy
+/// 轮供 + MECH-3 满配时序（join 帽内收敛 + ovfl 计数有界——宿主侧断言，
+/// 帽待首跑实测定）。**门 = cpio 具名文件 `dpgf.on`**（fw_cfg opt/berry/*
+/// 仅内核可读、用户态无探测 syscall → cpio 直查；正装 rootfs/run/smoke/
+/// EFI 缺席 = 静默跳过零扰动零新标记）。链内坏面 = eco 降级行 + 标记缺失
+/// （smoke FAIL 兜底）。
+fn dpgf_selftest(console: Handle) {
+    if cpio_find(H_ROOTFS, b"dpgf.on").is_none() {
+        return;
+    }
+    // 共享三 VMO（dpg_storm 同形：源 eager 预写 magic / 像 eager 内嵌 /
+    // demand 同页 ×N asid 反查登记——15 子同 dv 页 = 15 请求，K=8 池恰
+    // 溢出 7 convoy）。
+    let mut sv = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut sv) != 0 || sv == 0 {
+        eco_note(console, b"dpgf sv");
+        return;
+    }
+    if berry_vmo_commit(sv, 0, 4096) != 0
+        || berry_vmo_write(sv, DPG_MAGIC.to_le_bytes().as_ptr(), 0, 8) != 0
+    {
+        eco_note(console, b"dpgf svw");
+        return;
+    }
+    let mut iv = 0 as Handle;
+    if berry_vmo_create(DPG_MAP_LEN as u64, 0, &mut iv) != 0 || iv == 0 {
+        eco_note(console, b"dpgf iv");
+        return;
+    }
+    if berry_vmo_commit(iv, 0, DPG_MAP_LEN as u64) != 0
+        || berry_vmo_write(iv, DPGP_BIN.as_ptr(), 0, DPGP_BIN.len()) != 0
+    {
+        eco_note(console, b"dpgf ivw");
+        return;
+    }
+    let mut dv = 0 as Handle;
+    if berry_vmo_create(4096, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
+        eco_note(console, b"dpgf dv");
+        return;
+    }
+    // 波 1：满配 15（登记恰满 + 溢出 convoy 首压）。
+    if let Some(p) = dpgf_wave::<DPGF_N>(iv, sv, dv) {
+        dpgf_note(console, 1, p);
+        return;
+    }
+    send_retry(console, DPGF_OK.as_ptr(), DPGF_OK.len());
+    // C-4 波 2：登记回落 1（波 1 全子 Vmar Drop）→ 再登记 3 Ok——「并发
+    // 帽非终身帽」定谳活证。
+    if let Some(p) = dpgf_wave::<DPGF2_N>(iv, sv, dv) {
+        dpgf_note(console, 2, p);
+        return;
+    }
+    send_retry(console, DPGF2_OK.as_ptr(), DPGF2_OK.len());
+    // 收口三 VMO（dv 钉已随两波子 unmap 归零——关面不 -EBUSY）。
+    if berry_handle_close(dv) != 0
+        || berry_handle_close(sv) != 0
+        || berry_handle_close(iv) != 0
+    {
+        trap();
+    }
 }
 
 /// smoke 第 24 标记（7 字节，尾插随合并序）。

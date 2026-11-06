@@ -1,6 +1,6 @@
 # SEC-6 业界调研：运行期硬件安全（IOMMU/SMMU · PAC/BTI · MTE · CFI）
 
-> 调研日期：2026-10-29。纪律：每条硬事实带来源编号 [n]；【证】= 一手来源可查（含本机 QEMU 11.0.3 实验），【推】= 笔者推断。业界现状与「对 BerryOS 的启示」严格分开（§5 才是启示）。BerryOS 既有设计见 `docs/安全与硬件隔离设计.md`，本文不复述。
+> 调研日期：2026-10-29。纪律：每条硬事实带来源编号 [n]；【证】= 一手来源可查（含本机 QEMU 11.0.3 实验），【推】= 笔者推断。业界现状与「对 BerryOS 的启示」严格分开（§5 才是启示）。BerryOS 既有设计见 `docs/安全与硬件隔离设计-v1.0.md`，本文不复述。
 
 ## 1. 概述：本维度解决什么问题、信任边界在哪
 
@@ -110,7 +110,7 @@ VFIO = 设备直通框架（组内全部设备绑 vfio-pci 后用户态可 mmap 
 - Zircon IOMMU 类型常量：STUB=0 / INTEL=1 / ARM_SMMU=2（`zx_iommu_create` desc 上限 4096B）[16]
 - KFENCE 与 KASAN HW_TAGS 互斥（MTE 在场即让位）[32]
 
-> 以下为对照建议（非业界事实）。BerryOS 既有规划：v2 SMMU+PAC/BTI/MTE+devmgr、v3 度量链、v4+ 签名（`docs/安全与硬件隔离设计.md` §7）。
+> 以下为对照建议（非业界事实）。BerryOS 既有规划：v2 SMMU+PAC/BTI/MTE+devmgr、v3 度量链、v4+ 签名（`docs/安全与硬件隔离设计-v1.0.md` §7）。
 
 **v2 落点**
 

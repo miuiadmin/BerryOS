@@ -8,7 +8,7 @@
 //! 承载不变式（plan Bug 2）：`switch` 永不在 `PSTATE.I=0`（中断解蔽）时到达——
 //! `yield_now`/`exit_current` 均先 `disable_irq` 再切。
 
-use crate::class::{RoundRobin, SchedClass};
+use crate::class::{Fair, SchedClass};
 use crate::runqueue::{Runqueue, Topo};
 use crate::spin::SpinLock;
 use crate::task::{
@@ -185,7 +185,7 @@ static mut PER_CPU_RQ: [Runqueue; 2] = [Runqueue::new(), Runqueue::new()];
 /// EAS 面 v2+）。
 static mut TOPO: Topo = Topo::single();
 /// 调度类（round-robin，G0/G1 默认）。
-static RR: RoundRobin = RoundRobin;
+static RR: Fair = Fair;
 
 /// idle / 初始任务 = `rust_main` 的活上下文（boot 栈 `__stack_top`）。**不分配栈**
 /// （Bug 4）：`kstack=None`、`ctx` 留零——首切出时由 `switch` 覆盖为活的 callee-saved
@@ -196,6 +196,8 @@ static mut IDLE_TASK: Task = Task {
     name: b"idle",
     state: TaskState::Running,
     slice_left: 0,
+    vruntime: 0,
+    vdeadline: 0,
     ttbr0: 0,
     asid: 0,
     prio_base: 0,

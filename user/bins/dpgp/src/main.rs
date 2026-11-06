@@ -20,7 +20,7 @@
 #![no_std]
 #![no_main]
 
-use berry_sys::berry_process_exit;
+use berry_sys::{berry_clock_read, berry_process_exit, berry_thread_sleep, CLOCK_MONOTONIC};
 
 /// demand 页 VA（svcmgr `dpg_selftest` 同值单源——两文件各持 const，
 /// 改须双改；0x6000 = 像窗 [0x1000,0x6000) 界外首页，读它必走缺页路径）。
@@ -28,10 +28,31 @@ const DPGP_VA: usize = 0x6000;
 
 /// 供给页首 8 字节期望值（svcmgr 预写入源 VMO 同值——"DPGPmagi" LE）。
 const DPGP_MAGIC: u64 = 0x6967_616d_5047_5044;
+/// C-full 奇数子停泊判据：process_start **bootstrap 非 0**——句柄迁移
+/// （syscall.rs 3-4a：非 0 = 调用者表 take 迁入子表，子 x0 = 子表新句柄
+/// 值，gen≥1 恒 ≥0x1_0000 **非 0 保证**；0 = 现形首触路径）。main 停泊 =
+/// fault 面移交 svcmgr 侧 thread_start(spread=true) 线程——奇偶同像 x0
+/// 分流，零第二入口零链接器面。停泊令载体 = 迁入的 Event 句柄（本像
+/// 不解引用，子 exit 收表即释——首光实证：magic 值 arg 被 take 当句柄
+/// 拒 -EBADF，裸 arg 落 x0 是 thread_start 语义、process_start 是迁移）。
+const DPGP_PARK_NS: u64 = 1_000_000_000;
 
 #[link_section = ".text.entry"]
 #[no_mangle]
-pub extern "C" fn _start(_x0: usize) -> ! {
+pub extern "C" fn _start(x0: usize) -> ! {
+    // C-full 奇数子：main 停泊（bootstrap 事件句柄在场 = 停泊令；fault 面
+    // 在 svcmgr 侧 spread 线程——本线程只让路：sleep 帽循环不烧 TCG 墙钟，
+    // pager 轮供与 spread 首触独享；spread 线程 process_exit → kill_all
+    // 收割本睡者）。钟读败 = exit 9 fail loud（停泊变自旋才是污染面）。
+    if x0 != 0 {
+        loop {
+            let mut now = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+                berry_process_exit(9);
+            }
+            berry_thread_sleep(now + DPGP_PARK_NS);
+        }
+    }
     // SAFETY: 读本 AS demand 页（供给前无翻译——本读即断言「EL0 缺页 →
     // 探针 → 0x21 供给 → eret 重试」全链；错值非安全问题是正确性问题）。
     let v = unsafe { core::ptr::read_volatile(DPGP_VA as *const u64) };

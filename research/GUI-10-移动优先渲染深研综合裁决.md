@@ -1,9 +1,9 @@
 # GUI-10 移动优先渲染终局深研——综合裁决建议（2026-10）
 
-> **定位**：M-GUI 线第二 wave 深度调研——在 2026-10-29 八维调研（`research/GUI-01..09`）+ ADR #50–#54 + BerryUI 全面自研追裁之上的**补刀式深研**，不推翻既有裁决；与既有裁决冲突处单列冲突项（C1/C2）供用户拍板；**同日晚已拍板（均路线 A，用户授权按「最优秀最优雅」原则代拍）——细目见 `docs/GUI里程碑规划-2026-10.md` 修订记录与 ADR #52/#53**。
+> **定位**：M-GUI 线第二 wave 深度调研——在 2026-10-29 八维调研（`research/GUI-01..09`）+ ADR #50–#54 + BerryUI 全面自研追裁之上的**补刀式深研**，不推翻既有裁决；与既有裁决冲突处单列冲突项（C1/C2）供用户拍板；**同日晚已拍板（均路线 A，用户授权按「最优秀最优雅」原则代拍）——细目见 `docs/GUI里程碑规划-2026-10-v1.0.md` 修订记录与 ADR #52/#53**。
 > **触发**：用户重申六原则——①最先进图形渲染方案；②手机单线走到底、手表=能力非锚点（ADR #39 现行口径重申）；③吸取安卓渲染响应慢教训；④又低功耗又优秀；⑤渲染 API 兼容但「兼容≠适配好」；⑥SDK 要「容易渲染、高效、正确」。
 > **生成方式**：workflow 两跑——主跑 `berryui-mobile-first-research-mvstcxas-nyrurg`（9 agents：仓库基线×2 + 六角度 web 深研 + 综合员，1.9M tok）；w-sdk 角度首跑产出残缺（误报「已存 store」只回速览），补跑 `berryui-sdk-angle-rerun-mvsukavk-ucager` 得全文——正文 §7 综合时消费的是速览+基线 GUI-07，附录 F 补跑全文为权威版，两者结论一致、补跑证据更全。
-> **配套维护**：`research/GUI-07` / `GUI-09` 已加「2026-10-29 全面自研追裁」追记（防误导）；现行口径单一事实源 = `docs/GUI里程碑规划-2026-10.md` 修订记录 + `docs/架构决策.md` ADR #50–#54。
+> **配套维护**：`research/GUI-07` / `GUI-09` 已加「2026-10-29 全面自研追裁」追记（防误导）；现行口径单一事实源 = `docs/GUI里程碑规划-2026-10-v1.0.md` 修订记录 + `docs/架构决策.md` ADR #50–#54。
 
 ---
 
@@ -108,7 +108,7 @@ SDK 面同理：不带 embedded 排除项（Slint 对 embedded 收费/或 GPL �
 | GUI-8 launcher | 确认（主验收） | — |
 | GUI-9 验收+SDK-1 | **调整：加两件** | FrameTimeline 四桶归因（app/合成 deadline miss、stuffing、起振延迟）；稳态零唤醒断言 |
 
-维护项：research/GUI-07、GUI-09 正文仍是追裁前口径（宏 DSL/Taffy 优先/vello_cpu 候选），须加追记防误导（以 docs/GUI里程碑规划-2026-10.md 修订记录为准）。
+维护项：research/GUI-07、GUI-09 正文仍是追裁前口径（宏 DSL/Taffy 优先/vello_cpu 候选），须加追记防误导（以 docs/GUI里程碑规划-2026-10-v1.0.md 修订记录为准）。
 
 ## 九、开放问题与 spike 清单（含 kill criteria）
 
@@ -134,7 +134,7 @@ SDK 面同理：不带 embedded 排除项（Slint 对 embedded 收费/或 GPL �
 - **GPU 适配**：rosenzweig.io/blog/{asahi-gpu-part-2, first-conformant-m1-gpu-driver, vk13-on-the-m1-in-1-month, vulkan-14-sur-asahi-linux}.html；docs.mesa3d.org/drivers/{asahi, freedreno, zink}.html；gfx-rs.github.io/2019/03/22/dolphin-macos-performance.html；chromium.googlesource.com/angle/angle README；github.com/ARM-software/perfdoc
 - **渲染栈**：docs.flutter.dev/perf/impeller（+3.10/3.27 blog）；flutter/flutter impeller README；github.com/linebender/vello（ARCHITECTURE.md）；github.com/gfx-rs/wgpu；developer.apple.com Metal TBDR 文档；learn.microsoft.com/windows/win32/direct3darticles/directx-warp
 - **Rust UI/AI**：github.com/linebender/xilem；iced 0.14 release；Dioxus；github.com/slint-ui/slint LICENSE.md；makepad；arxiv.org/abs/2403.03163；swiftlang/swift-evolution 0289；developer.apple.com/documentation/Observation；openharmony docs arkts-new-observedV2-and-trace
-- **仓库**：docs/架构决策.md（ADR #39–#42、#50–#54）；docs/GUI里程碑规划-2026-10.md §3–§5；docs/GUI渲染调研-2026-10.md；research/GUI-01..09；AGENTS.md
+- **仓库**：docs/架构决策.md（ADR #39–#42、#50–#54）；docs/GUI里程碑规划-2026-10-v1.0.md §3–§5；docs/GUI渲染调研-2026-10-v1.0.md；research/GUI-01..09；AGENTS.md
 
 ---
 
@@ -210,7 +210,7 @@ SDK 面同理：不带 embedded 排除项（Slint 对 embedded 收费/或 GPL �
 10. 帧内零分配的嵌入式 GUI 生态实践：embedded-graphics/lvgl-rs 的池化与分配策略，供自研光栅核借鉴。
 
 ---
-**核对于 2026-10-29 裁决现状**：已对照 `docs/架构决策.md` ADR #50–#54 与 `docs/GUI里程碑规划-2026-10.md` 修订记录——注意 GUI-03/04 报告中的「vello_cpu spike 过门候选」「S1 spike」两项已被 2026-10-29 用户追裁改写（前者退役降思想参考、后者暂缓），上表已按现行口径标注。全程只读，未改任何仓库文件。
+**核对于 2026-10-29 裁决现状**：已对照 `docs/架构决策.md` ADR #50–#54 与 `docs/GUI里程碑规划-2026-10-v1.0.md` 修订记录——注意 GUI-03/04 报告中的「vello_cpu spike 过门候选」「S1 spike」两项已被 2026-10-29 用户追裁改写（前者退役降思想参考、后者暂缓），上表已按现行口径标注。全程只读，未改任何仓库文件。
 
 ### A.2 架构侧（GUI-05..09 + 规划 + ADR 摘要）
 
@@ -221,7 +221,7 @@ SDK 面同理：不带 embedded 排除项（Slint 对 embedded 收费/或 GPL �
 
 # 仓库基线·架构侧通读纪要（ground-arch）
 
-依据：`research/GUI-05..09` + `docs/GUI里程碑规划-2026-10.md` + `docs/架构决策.md` ADR #39–#41/#50–#54 + 姊妹综合 `docs/GUI渲染调研-2026-10.md`。只读，未改任何文件。
+依据：`research/GUI-05..09` + `docs/GUI里程碑规划-2026-10-v1.0.md` + `docs/架构决策.md` ADR #39–#41/#50–#54 + 姊妹综合 `docs/GUI渲染调研-2026-10-v1.0.md`。只读，未改任何文件。
 
 ## 一、现行裁决全清单
 
@@ -460,7 +460,7 @@ Android HWC：<https://source.android.com/docs/core/graphics/hwc>
 
 # 低功耗图形栈结构性深研（w-lowpower）
 
-> 定位：对 `docs/GUI渲染调研-2026-10.md` 轴五（低功耗）的定量与协议层补深。全部关键论断经一手来源核验（本轮逐条抓取原文），标注「推断」者为本人综合。协议洁净：均只取结构与思路。
+> 定位：对 `docs/GUI渲染调研-2026-10-v1.0.md` 轴五（低功耗）的定量与协议层补深。全部关键论断经一手来源核验（本轮逐条抓取原文），标注「推断」者为本人综合。协议洁净：均只取结构与思路。
 
 ## 1 脏区 / PSR / DPU overlay：三张牌的定量地位
 

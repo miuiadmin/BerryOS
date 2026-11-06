@@ -1,8 +1,8 @@
 # GUI-04：Rust 渲染/UI 生态盘点——哪些能进 BerryOS（许可证+架构双过关）、哪些只借思路
 
-> 调研日期：2026-10-28。任务来源：M-GUI 立项（`docs/GUI里程碑规划-2026-10.md`）+ 用户 2026-10-28 六条裁决（最先进渲染方案 / 移动设备基准 / 吸取安卓教训 / 低功耗且优秀 / 先进 API 兼容且原生适配 / 最先进开发套件）。
+> 调研日期：2026-10-28。任务来源：M-GUI 立项（`docs/GUI里程碑规划-2026-10-v1.0.md`）+ 用户 2026-10-28 六条裁决（最先进渲染方案 / 移动设备基准 / 吸取安卓教训 / 低功耗且优秀 / 先进 API 兼容且原生适配 / 最先进开发套件）。
 >
-> 方法：联网调研（WebSearch/WebFetch/crates.io API/GitHub API，关键论断逐条带 URL）+ 本地文档源码对读（`docs/GUI里程碑规划-2026-10.md`、`docs/架构决策.md` ADR #37、`reference/README.md`、`user/berry-fbcon/`）。独立信息源 > 25 个（联网 20+ / 本地 5）。
+> 方法：联网调研（WebSearch/WebFetch/crates.io API/GitHub API，关键论断逐条带 URL）+ 本地文档源码对读（`docs/GUI里程碑规划-2026-10-v1.0.md`、`docs/架构决策.md` ADR #37、`reference/README.md`、`user/berry-fbcon/`）。独立信息源 > 25 个（联网 20+ / 本地 5）。
 >
 > 立场：每条判定带证据与确定度（高/中/低）；矛盾证据如实并列。
 
@@ -16,7 +16,7 @@
 
 1. **许可证纪律**：仓库 Apache-2.0，**GPL/AGPL 代码零进入**，MPL-2.0 = 文件级弱传染「语义可借、文件不搬」（`docs/架构决策.md` ADR #37；`reference/README.md` 协议提醒节）。
 2. **验证环境无 GPU**：QEMU aarch64 virt + AAVMF + ramfb/GOP，TCG 模拟（CLAUDE.md / GUI 规划 §5 风险表）。任何「必须有原生 GPU API」的库在 v1/v2 结构性不可跑——除非自建整套 GPU 用户态驱动栈（非 Rust，见 §1.4）。
-3. **全 Rust 纪律**：内核 no_std；用户态服务 std（musl 形态 berry-libc）但 GUI 规划已定「三薄服务 + 单 GUI 进程 + 软渲染脏区起步」（`docs/GUI里程碑规划-2026-10.md` §3 裁决 C、§4 GUI-2/3）。
+3. **全 Rust 纪律**：内核 no_std；用户态服务 std（musl 形态 berry-libc）但 GUI 规划已定「三薄服务 + 单 GUI 进程 + 软渲染脏区起步」（`docs/GUI里程碑规划-2026-10-v1.0.md` §3 裁决 C、§4 GUI-2/3）。
 4. **性能哲学**：软渲染 + 脏区刷新 day-one（GUI 规划 §2 结论引用附录 B「lite 最值钱的一件」）；低功耗是一等公民（用户裁决④）——与「每帧全量重绘」模型存在结构性张力。
 5. **AI 原生调度**：GUI 输入/渲染优先级是 intent 机制的天然消费面（任务书背景）。
 

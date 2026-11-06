@@ -149,14 +149,14 @@ AVB 2.0 vbmeta 结构（BerryBoot 若消费 vbmeta 可照抄的槽位）[21][22]
 
 ## 5. 对 BerryOS 的启示（建议，非现状）
 
-以下为对照 §3/§4 的落点建议；tag 对应 docs/路线图.md 的 v2/v3/v4 与 day-one 留缝：
+以下为对照 §3/§4 的落点建议；tag 对应 docs/路线图-v1.0.md 的 v2/v3/v4 与 day-one 留缝：
 
 - **【day-one 留缝】句柄 0 = INVALID 立约 + 能力拒面遥测**：CVE-2022-0882 的直接教训——现在就在 ABI 文档钉死 handle 0 永为非法值，并把每次 `-EBADF/-EACCES` 作为结构化遥测事件落环（handle/rights/调用号）。成本近零，未来审计/入侵检测的地基。对应既有「AI 测试友好化」原则。
 - **【day-one 留缝】授予记录一等化**（§3.7 冒名分析的落点）：svcmgr（未来的名字/服务管理面）每次把服务通道授予进程时落一条结构化授予事件（谁、何时、哪类服务、经谁路由）——配合上一条拒面遥测，构成「能力系统自己的审计日志」；Fuchsia 用静态清单路由解决的问题，我们用「可测量 + 可回放」覆盖到动态授予面【推】。
 - **【day-one 留缝】初始授能表显式化**：内核给 svcmgr 的 boot 期 handle 直插面（现散在 main.rs 定值断言）收敛为一张带版本域的显式授予表（seL4 BootInfo 模式）——未来测量链/远程证明可对「谁出生时拿到什么」直接哈希。
 - **【day-one 留缝】syscall fuzz 面 = abi.toml 可再生产物**：从 ABI 单源生成 syzkaller 描述的通道先立项（哪怕只生成骨架）——Zircon fuzzer 烂掉的教训是 fuzz 基建必须 CI 化、且与 ABI 同源演进。
 - **【v2】job/policy 表进 svcmgr spawn 面**：照 Zircon 模式给进程子树配策略（禁 WX 映射、禁自我可执行化、违规 kill/告警）+ critical 标记（父死陪葬）——在纯能力检查之外补「子树级最小特权」层，接口位现在就能在 `SpawnSpec` 预留 policy 字段。
-- **【v2】SMMU = 不可拖的顶线**：seL4 证明至今把 IOMMU 留作缺口，业界没有现成答案可抄——我们的用户态 virtio 驱动（vblk/vnet）在 SMMU 落地前就是事实 TCB，v2 的 per-device domain 设计（docs/安全与硬件隔离设计.md）正踩在业界前沿上，须按「自研负担」预留人力而不是等参考实现。
+- **【v2】SMMU = 不可拖的顶线**：seL4 证明至今把 IOMMU 留作缺口，业界没有现成答案可抄——我们的用户态 virtio 驱动（vblk/vnet）在 SMMU 落地前就是事实 TCB，v2 的 per-device domain 设计（docs/安全与硬件隔离设计-v1.0.md）正踩在业界前沿上，须按「自研负担」预留人力而不是等参考实现。
 - **【v3】verified boot 直接采 AVB 兼容 vbmeta**：测量链升级为验证链时，头结构照抄 §3.3 四描述符 + rollback index 数组 + 锁定态机——BerryBoot 消费 vbmeta = 免费拿 avbtool/U-Boot 生态；测量槽位编号（kernel/initrd/rootfs/每个 .bap manifest）现在就定进文档。
 - **【v4】抗回滚与密钥分层**：rollback index 的存储介质（RPMB/安全元件）与 chained partition 式密钥委托（授权分区用独立密钥）一并设计。
 - **【day-one 留缝】「时间/应答权」对象化预埋**：MCS 的教训（§3.2）——第一版不把 CPU 预算与「应答权」做成显式对象，日后补要动 ABI。现 `intent` u8 已是调度输入；在 thread/process 对象里预留 budget/period 字段位（可以恒 0 不启用），IPC 会话里预留 reply 右位，让 v3 想上 MCS 式隔离时无需 ABI 断裂。

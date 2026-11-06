@@ -145,9 +145,11 @@ impl Device {
         self.source.take();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        #[cfg(unix)]
         if let Endpoint::Unix(p) = &self.vnc {
             let _ = std::fs::remove_file(p);
         }
+        #[cfg(unix)]
         if let Endpoint::Unix(p) = &self.qmp_ep {
             let _ = std::fs::remove_file(p);
         }

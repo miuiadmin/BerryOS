@@ -1,4 +1,4 @@
-//! 调度类 trait（**冻结**）+ RoundRobin 实现。
+//! 调度类 trait（**冻结**）+ Fair（1.1/S2：带内 EEVDF）实现。
 
 use crate::runqueue::{Runqueue, Topo};
 use crate::task::{Task, TaskState};
@@ -47,11 +47,62 @@ static mut LAST_VCT: u64 = 0;
 /// pick 扫描、**不摘除**任务（runnable 任务常驻环；当前任务也在环里）——故
 /// 协作 `yield_now` / 抢占 `tick` 只需调一次 `pick_next`，无需每次 enqueue/dequeue
 /// 翻动。仅 `spawn`(enqueue) 与 `exit`(dequeue) 动环。
-pub struct RoundRobin;
+/// 公平调度类（1.1/S2）：`prio_effective` 作为带序，带内 EEVDF。
+///
+/// 带内排序键 = `(eligible, vdeadline, vruntime)`；同键保持 head 侧先见
+/// （游标推进 = 等权任务的 FIFO 轮转，既有 RR 矩阵零扰动）。`lag` 的工程
+/// 近似 = `vruntime <= avg_vruntime`；带内无 eligible 时退化为最小
+/// `(vdeadline, vruntime)`，不空转。
+pub struct Fair;
 
-impl SchedClass for RoundRobin {
+/// 兼容别名：既有调用点仍以 `RoundRobin` 指类型（1.1/S2 语义已是 Fair）。
+pub type RoundRobin = Fair;
+
+/// 虚拟时间刻度（权重基准）。
+const SCALE: u64 = 1024;
+
+#[inline]
+fn weight_of(t: &Task) -> u64 {
+    // 基线 1024；PI/策略 boost 每级 +64，封顶 1<<20（防 u64 溢出）。
+    let boost = t.prio_effective.max(0) as u64;
+    (SCALE + boost.saturating_mul(64)).min(1 << 20)
+}
+
+#[inline]
+fn slice_virtual(t: &Task) -> u64 {
+    let s = hal::timer::slice_cycles() as u128 * SCALE as u128 / weight_of(t) as u128;
+    (s as u64).max(1)
+}
+
+/// 环上平均虚拟时间（EEVDF 的 V 的工程近似；O(n)、零分配）。
+fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
+    let h = rq.head()?;
+    // SAFETY: 环上任务均调度器拥有；调用方在 IRQ 屏蔽/调度窗内（同 pick）。
+    unsafe {
+        let mut cur = h;
+        let mut sum: u128 = 0;
+        let mut n: u64 = 0;
+        loop {
+            sum += (*cur.as_ptr()).vruntime as u128;
+            n += 1;
+            cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+            if cur == h {
+                break;
+            }
+        }
+        Some((sum / n as u128) as u64)
+    }
+}
+
+impl SchedClass for Fair {
     fn enqueue(&self, t: &mut Task, rq: &mut Runqueue) {
         t.state = TaskState::Ready;
+        // 新/醒任务不得带着睡眠期攒下的 lag 回场：抬到当前平均虚拟时间。
+        let avg = avg_vruntime(rq).unwrap_or(0);
+        if t.vruntime < avg {
+            t.vruntime = avg;
+        }
+        t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
         // SAFETY: t 是调度器拥有、当前不在任何 runqueue 上的新任务。
         unsafe { rq.link_back(NonNull::from(&mut *t)) };
         // [S-3a 义务①除名] enqueue 尾跨核 SGI 戳被实验证伪除名，降级 S-3b
@@ -65,62 +116,41 @@ impl SchedClass for RoundRobin {
     }
 
     fn pick_next(&self, rq: &Runqueue, _topo: &Topo) -> Option<&mut Task> {
-        // SAFETY: 环上任务均调度器拥有且在环（rotate 同款不变式）；单核无并发
-        // pick（IRQ 屏蔽切换位互斥）——扫描期间无并发出/入环。
-        let chosen = unsafe {
-            let h = rq.head()?;
-            // 一圈记最高 effective（环上节点必有 next——环形不变式）。
-            let mut max = (*h.as_ptr()).prio_effective;
-            let mut cur = (*h.as_ptr()).rq_next.get().expect("环上节点必有 next");
-            while cur != h {
-                let e = (*cur.as_ptr()).prio_effective;
-                if e > max {
-                    max = e;
-                }
-                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-            }
-            // 二圈从 head 起取第一个 == 最高者（同高 FIFO——head 侧即等待最久者，
-            // 层内轮转公平保持）。max 必在环上（来自第一圈），循环至多一圈终止。
-            let mut cur = h;
-            while (*cur.as_ptr()).prio_effective != max {
-                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-            }
-            rq.advance_past(cur);
-            cur
-        };
+        let chosen = self.scan_filtered(rq, core::ptr::null_mut())?;
+        // SAFETY: scan_filtered 契约（环上节点在环、调用侧屏蔽窗）。
+        unsafe { rq.advance_past(chosen) };
         let t = unsafe { &mut *chosen.as_ptr() };
-        // AI 策略注入留桩（3-4c，`AI调度设计.md` §2/§9）：出选后查表——未绑/空表
-        // 零写入，与接口缺席逐位等价（ktest POLICY 段断言）。4-3a 起注入的权重
-        // 真消费（pick 看 effective——写进 TCB 即影响下一轮出选）。
+        // AI 策略注入留桩（3-4c）：出选后查表——未绑/空表零写入，与接口
+        // 缺席逐位等价；4-3a 起注入的权重真消费（写 prio_effective，带内
+        // EEVDF 的 weight_of 下一轮读它）。
         crate::policy::apply(t);
         Some(t)
     }
 
     fn tick(&self, t: &mut Task, _rq: &mut Runqueue) {
-        // 周期数记账（2b-4）：按 CNTVCT 增量递减时间片（饱和到 0）；scheduler 读
-        // `slice_left == 0` 决定重调度。基准 0 起步 → 首次 tick 增量巨大 → 必切
-        // （与旧「每 tick 减 1、quantum=1」行为等价：仍一次 slice 一换）。
-        //
-        // S-2 前置件 2（A11 per-CPU 化）：基准挪本核 SmpCpu.last_vct——双 tick
-        // 结构性必须（两核共享全局时每核只对「自对方核上次 tick 以来的增量」
-        // 扣减 = slice 约半速不确定燃烧，§3.4 红线）；本核只写本核块（tick
-        // 锁窗内单写者）。槽未装（TPIDR_EL1==0，cpu0_init 前防御窗——本路径
-        // 实际不可达）回落旧全局 static，null-safe 零新 panic 面。
+        // 周期数记账（2b-4）：按 CNTVCT 增量递减时间片；同时按权重累加
+        // 虚拟运行时间（EEVDF 记账）。片耗尽时重算虚拟截止期。
         let now = hal::timer::cntvct();
         // SAFETY: IRQ 上下文、本核独占写（per-CPU 块 / 回落位单核窗）。
-        unsafe {
+        let delta = unsafe {
             match hal::smp::last_vct_slot() {
                 Some(p) => {
                     let last = p.read_volatile();
                     p.write_volatile(now);
-                    t.slice_left = t.slice_left.saturating_sub(now.wrapping_sub(last));
+                    if last == 0 { 0 } else { now.wrapping_sub(last) }
                 }
                 None => {
                     let last = (&raw const LAST_VCT).read_volatile();
                     (&raw mut LAST_VCT).write_volatile(now);
-                    t.slice_left = t.slice_left.saturating_sub(now.wrapping_sub(last));
+                    if last == 0 { 0 } else { now.wrapping_sub(last) }
                 }
             }
+        };
+        t.slice_left = t.slice_left.saturating_sub(delta);
+        let vdelta = (delta as u128 * SCALE as u128 / weight_of(t) as u128) as u64;
+        t.vruntime = t.vruntime.saturating_add(vdelta);
+        if t.slice_left == 0 {
+            t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
         }
     }
 
@@ -146,22 +176,13 @@ pub(crate) fn eligible(my_cur: *mut Task, t: *const Task) -> bool {
     unsafe { !((*t).state == TaskState::Running && (t as *mut Task) != my_cur) }
 }
 
-impl RoundRobin {
-    /// 过滤版出选（S-2b inherent 方法——trait 冻结不动，`docs/SMP-S2实施设计草案.md`
-    /// §2.3）。语义 = 旧 `pick_next`（两圈：最高 effective、同高取 head 侧等待
-    /// 最久者）叠加 [`eligible`] 门。
+impl Fair {
+    /// 过滤版出选（S-2b inherent 方法——trait 冻结不动）：
+    /// 先取环上最高 `prio_effective` 带，再在带内按 EEVDF 选。
     ///
-    /// 实现为**单圈严格 > 替换**：首个 eligible 者起步，遇严格更高者替换——
-    /// 与两圈「记最高再从头取第一个 == 最高」恒等（严格 > 保住首见位置 = head
-    /// 侧优先），且正确处理 head 不 eligible 形态（两圈版 max 初值取自 head、
-    /// 头部被滤时二圈起点也是 head——本实现直接以首个 eligible 为锚，无该
-    /// 隐患）。选中后 `advance_past` + `policy::apply` 与旧版逐位同序。
-    /// **消费版**出选：选中即 `advance_past` 消耗本队游标（FIFO 公平轮转的
-    /// 推进器）+ `policy::apply`。
-    ///
-    /// S-3b（§9.6 步 b-1/F8）：peek/pick 双视图退役——per-CPU 队列游标私有，
-    /// 副核回卷饥饿的前提（共享游标）不复在，副核与本核同径消费版。filter
-    /// 参数改 `my_cur` 裸指针（PickFilter struct 随 user_only 臂退役消亡）。
+    /// 带内：优先 `vruntime <= avg`（eligible）者，键 `(vdeadline, vruntime)`；
+    /// 同键保持 head 侧先见（`advance_past` 推进游标 = 等权 FIFO 轮转）。
+    /// 带内无 eligible 时取最小键（不空转）。
     pub fn pick_next_filtered(
         &self,
         rq: &Runqueue,
@@ -176,40 +197,65 @@ impl RoundRobin {
         Some(t)
     }
 
-    /// 单圈严格 > 替换扫描（消费版公共体；选中者未出环、未动游标）。
-    fn scan_filtered(
-        &self,
-        rq: &Runqueue,
-        my_cur: *mut Task,
-    ) -> Option<NonNull<Task>> {
+    /// 单圈两段扫描：先定最高带，再带内 EEVDF（零分配）。
+    fn scan_filtered(&self, rq: &Runqueue, my_cur: *mut Task) -> Option<NonNull<Task>> {
+        let h = rq.head()?;
+        let avg = avg_vruntime(rq).unwrap_or(0);
         // SAFETY: 环上任务均调度器拥有且在环；调用侧全在 KERN_LOCK 窗内
         // （SVC/tick/klock 包络）——扫描期间无并发出/入环（E0 BKL 执法面）。
         unsafe {
-            let mut cur = rq.head()?;
-            // 锚定首个 eligible 节点（环上节点必有 next——环形不变式）。
-            while !eligible(my_cur, cur.as_ptr()) {
-                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-                if cur == rq.head().expect("head 已取过") {
-                    return None; // 整圈无 eligible
-                }
-            }
-            let mut best = cur;
-            let mut best_eff = (*cur.as_ptr()).prio_effective;
+            // 段 1：最高 prio_effective 带（严格带序——PI 仍即时生效）。
+            let mut max_eff = i32::MIN;
+            let mut cur = h;
             loop {
+                if eligible(my_cur, cur.as_ptr()) {
+                    let e = (*cur.as_ptr()).prio_effective;
+                    if e > max_eff {
+                        max_eff = e;
+                    }
+                }
                 cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-                if cur == rq.head().expect("head 已取过") {
-                    break; // 整圈扫完
-                }
-                if !eligible(my_cur, cur.as_ptr()) {
-                    continue;
-                }
-                let e = (*cur.as_ptr()).prio_effective;
-                if e > best_eff {
-                    best = cur;
-                    best_eff = e;
+                if cur == h {
+                    break;
                 }
             }
-            Some(best)
+            if max_eff == i32::MIN {
+                return None;
+            }
+            // 段 2：带内 EEVDF（eligible 优先；同键首见保序）。
+            let mut best: Option<NonNull<Task>> = None;
+            let mut best_elig = false;
+            let mut best_key = (u64::MAX, u64::MAX);
+            let mut cur = h;
+            loop {
+                if eligible(my_cur, cur.as_ptr())
+                    && (*cur.as_ptr()).prio_effective == max_eff
+                {
+                    let t = &*cur.as_ptr();
+                    let elig = t.vruntime <= avg;
+                    let key = (t.vdeadline, t.vruntime);
+                    let better = match best {
+                        None => true,
+                        Some(_) => {
+                            if elig != best_elig {
+                                elig
+                            } else {
+                                key < best_key
+                            }
+                        }
+                    };
+                    if better {
+                        best = Some(cur);
+                        best_elig = elig;
+                        best_key = key;
+                    }
+                }
+                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+                if cur == h {
+                    break;
+                }
+            }
+            best
         }
     }
 }

@@ -2,7 +2,7 @@
 
 > 调研位：M-GUI 专题第八篇。聚焦两个用户裁决面：③「吸取安卓渲染响应慢的教训」→ 输入响应管线延迟分解与输入优先调度；⑥「开发套件要最先进的 GUI 开发方式」→ 热重载/可视化/性能工具/AI 生成 UI 的形态盘点与 BerryOS 演进序。
 > 方法：联网调研（WebSearch/WebFetch，证据逐条带 URL）+ 本地文档/源码（路径标注）。确定度分 高（一手源码/官方文档）/ 中（可信二手/推算）/ 低（估计）。
-> 基线：本地参照 = `docs/GUI里程碑规划-2026-10.md`（三薄服务 + 单 GUI 进程、GUI-1..9 刀序）、`docs/AI调度设计.md`（intent 机制）、`docs/可观测性设计.md`（双环遥测）、`docs/开发体验.md`（宿主交叉编译循环）、CLAUDE.md（设计总原则三条 / Gotchas 雷册）。
+> 基线：本地参照 = `docs/GUI里程碑规划-2026-10-v1.0.md`（三薄服务 + 单 GUI 进程、GUI-1..9 刀序）、`docs/AI调度设计-v1.0.md`（intent 机制）、`docs/可观测性设计-v1.0.md`（双环遥测）、`docs/开发体验.md`（宿主交叉编译循环）、CLAUDE.md（设计总原则三条 / Gotchas 雷册）。
 
 ---
 
@@ -24,7 +24,7 @@
 | 2 | 触控 IC 内部滤波/积分 + 中断递送 | ~1–5ms（OEM 黑盒，公开无精确数） | 仅能量入端到端总量（[Ars Technica 讨论](https://arstechnica.com/civis/threads/input-lag-in-android.1213685)） | 低 |
 | 3 | 驱动 → 内核 input 队列（evdev 等） | ~1ms 量级 | 通用 Linux 估计（无单一权威源） | 中 |
 | 4 | 输入服务读取 + 重采样 + 派发 | ~1ms 派发 + **重采样固定加 5ms**（`RESAMPLE_LATENCY = 5ms`，外推上限 `min(Δ/2, 8ms)`） | AOSP 源码注释逐条（[InputTransport.cpp](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-10.0.0_r36/libs/input/InputTransport.cpp)） | 高 |
-| 5 | 窗口路由 / hit test | <1ms（Z 序表坐标查表） | WWM↔MMI 窗口信息契约形态（本地 `docs/GUI里程碑规划-2026-10.md` 附录 B L1；OpenHarmony 同构） | 中 |
+| 5 | 窗口路由 / hit test | <1ms（Z 序表坐标查表） | WWM↔MMI 窗口信息契约形态（本地 `docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L1；OpenHarmony 同构） | 中 |
 | 6 | 应用主线程：等下一 vsync + 事件处理 | **0–16.7ms 排队（均值 ~8.3）** + 处理时长 | INP 三段分解之 input delay（[web.dev](https://web.dev/articles/inp)） | 高 |
 | 7 | 布局/绘制/录制帧 | 与 6 共享 **16.7ms 帧预算**，超时=掉帧（jank） | FrameTimeline expected/actual 双轨（[Perfetto](https://android.googlesource.com/platform/external/perfetto/+/9bb045f3ec2d9b34869903263b29415e731eb8be/docs/data-sources/frametimeline.md)） | 高 |
 | 8 | 渲染/GPU 队列 + 合成器 | **0–2 帧**（随队列深度；跨框架层每多一级缓冲多一帧） | Flutter 相对原生多一帧（[flutter#110431](https://github.com/flutter/flutter/issues/110431)）；缓冲深度↔延迟讨论（[HN: Rendering is fast on Chrome, however latency is high](https://news.ycombinator.com/item?id=28783719)） | 高 |
@@ -39,14 +39,14 @@
 
 ### 1.3 吸取的教训（对应用户裁决③「安卓渲染响应慢」）
 
-1. **每加一级缓冲就加一帧**：Flutter 框架层自绘多一帧是公开 issue（[flutter#110431](https://github.com/flutter/flutter/issues/110431)）；Chromium 的讨论同样指出延迟主要来自缓冲深度而非渲染慢（[HN](https://news.ycombinator.com/item?id=28783719)）。→ **BerryOS v1 单 GUI 进程 + 直接持有 framebuffer 的三薄服务结构天然少两级**（无跨进程渲染命令录制回放、无 GPU 队列），这是「lite 实现」路线在延迟上的结构性红利（`docs/GUI里程碑规划-2026-10.md` §3-C）。
+1. **每加一级缓冲就加一帧**：Flutter 框架层自绘多一帧是公开 issue（[flutter#110431](https://github.com/flutter/flutter/issues/110431)）；Chromium 的讨论同样指出延迟主要来自缓冲深度而非渲染慢（[HN](https://news.ycombinator.com/item?id=28783719)）。→ **BerryOS v1 单 GUI 进程 + 直接持有 framebuffer 的三薄服务结构天然少两级**（无跨进程渲染命令录制回放、无 GPU 队列），这是「lite 实现」路线在延迟上的结构性红利（`docs/GUI里程碑规划-2026-10-v1.0.md` §3-C）。
 2. **deadline 模型要 day-one 内建**：Android 用 FrameTimeline 的 expected/actual 双轨把「谁吃掉了帧预算」变成可归因数据。BerryOS 应在软 vsync 帧循环第一刀就打点「输入时间戳 → 帧各阶段 → flush 完成」全链时间戳（详见 §8 启示 3）。
 3. **统一时基是前提**：Android/Chromium 的全链归因都建立在「输入事件自带内核时间戳、逐级透传不重盖」上。BerryOS 有现成的 CNTVCT——注意 TCG 下推进率 ≈1/2 真时的既有坑（CLAUDE.md Gotchas），帧预算与重采样计算在 TCG 相应按 CNTVCT 时基走或用 `-icount` 通道（`just bench-icount` 已在册）。
 
 ### 1.4 QEMU/ramfb 环境的特殊性
 
-- ramfb 无真 vsync、无 flip/tear 同步（`docs/GUI里程碑规划-2026-10.md` §5 已载：模拟器容忍撕裂）→ 帧 pacing 完全由**软 vsync 定时器**自控，本调研的「扫出一帧」环节在 QEMU 下退化为「memcpy 到 fb 后立即有效」。因此 **BerryOS 的延迟预算主战场是环节 1–7（事件到帧完成）**，环节 8–9 的代价在 QEMU 中测不准——真机/UTM 阶段再补测。确定度：高（本地实测背景）。
-- OpenHarmony 同样以「进程内软 vsync 16ms 兜底 + 跨进程 vsync 递送走专用通道（非通用 IPC）」解决该问题（本地 `docs/GUI里程碑规划-2026-10.md` 附录 B L0「VSync 生成与分发」行）——与 BerryOS「高频小信号专用通道」纪律同构。
+- ramfb 无真 vsync、无 flip/tear 同步（`docs/GUI里程碑规划-2026-10-v1.0.md` §5 已载：模拟器容忍撕裂）→ 帧 pacing 完全由**软 vsync 定时器**自控，本调研的「扫出一帧」环节在 QEMU 下退化为「memcpy 到 fb 后立即有效」。因此 **BerryOS 的延迟预算主战场是环节 1–7（事件到帧完成）**，环节 8–9 的代价在 QEMU 中测不准——真机/UTM 阶段再补测。确定度：高（本地实测背景）。
+- OpenHarmony 同样以「进程内软 vsync 16ms 兜底 + 跨进程 vsync 递送走专用通道（非通用 IPC）」解决该问题（本地 `docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L0「VSync 生成与分发」行）——与 BerryOS「高频小信号专用通道」纪律同构。
 
 ---
 
@@ -82,7 +82,7 @@ AOSP `libs/input/InputTransport.cpp` 的 `resampleTouchState()`（[源码](https
 1. **PointerEvent 携带采样时间戳序列**（不折叠历史样本）——等价 coalesced 语义：采样 100Hz+、按帧消费，历史样本对齐在消费侧做。
 2. **重采样放 gui-wmd/消费侧、放最终一跳**：内插优先（有下一样本）、外推上限按 Android 常数起步（Δ/2 且 ≤8ms）、固定安全垫 4–5ms 可调；**参数做成常量集中定义 + host 纯函数测试**（`user/berry-complete` 先例：token 切分/三态匹配全部 host 测）。
 3. **预测与真值分离**：预测点只用于渲染跟手（SwipeView 拖拽跟随），不进手势状态机判定（tap/pan 仲裁只吃真样本）——Apple 移植经验 + flutter#73286 教训合并。
-4. OpenHarmony 同构佐证：MMI 有 `service/event_resample/` 模块（本地 `docs/GUI里程碑规划-2026-10.md` 附录 B L1「事件重采样」行）——方向已验证，v1 可后补但结构留位（该行本就标注「模拟器鼠标输入可后补」）。
+4. OpenHarmony 同构佐证：MMI 有 `service/event_resample/` 模块（本地 `docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L1「事件重采样」行）——方向已验证，v1 可后补但结构留位（该行本就标注「模拟器鼠标输入可后补」）。
 
 ---
 
@@ -111,13 +111,13 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 
 ### 3.3 BerryOS 映射：GUI 事件流成为 AI 调度的一等输入
 
-现有地基（本地证据）：intent = 第一类调度输入（u8 两段式查表，ADR #42，CLAUDE.md 调度表）；AI 调度动作空间四类封顶（①放置 ②频率/热 hint ③包络内权重微调 ④EPP），遥测环双环在位（`docs/AI调度设计.md`、`docs/可观测性设计.md`）。映射建议：
+现有地基（本地证据）：intent = 第一类调度输入（u8 两段式查表，ADR #42，CLAUDE.md 调度表）；AI 调度动作空间四类封顶（①放置 ②频率/热 hint ③包络内权重微调 ④EPP），遥测环双环在位（`docs/AI调度设计-v1.0.md`、`docs/可观测性设计-v1.0.md`）。映射建议：
 
 1. **「interaction 脉冲」= 一个用户态 PM 服务的频率 hint（动作空间②）**：gui-inputd 在 touch down/scroll 期向 PM/AI 策略服务发「交互中」事件 → PM 抬频一个短窗（touch up 后 ~200–500ms 衰减），等价 `POWER_HINT_INTERACTION`。**功耗/响应交换显式化**——正是「又要低功耗又要优秀」的机制位：无输入时照常 tickless 深睡，脉冲只在交互窗。
-2. **焦点进程 intent 提升（非 AI 路径的机制默认）**：前台 GUI 进程 spawn/获得焦点时 `intent_declared` 定 INTERACTIVE 档（ berry_intent 编码冻结在册，ADR #42）——公平仍是机制默认，intent 只是叠加；**短窗 touch boost**（事件到达 → effective 提升数百 ms）用内核已有的防饥饿 boost 形态（「紧急晋升只走内核防饥饿 boost」的既有语义，`docs/AI调度设计.md` §词汇表）。
-3. **GUI 遥测三键进环**：input_ts（IRQ 入口 CNTVCT）、frame_begin/frame_end（软 vsync 帧循环）、flush_done——AI 的 ①放置 ③权重决策的数据面，同时就是 smoke 的机器断言面（「AI 测试友好化」支柱两面一体）。AI 只消费遥测、动作走四类封顶——**GUI 事件流不进内核动作空间，进的是 AI 的观测空间**（`docs/AI调度设计.md`「band/intent 不入 AI 动作空间」同款边界）。
+2. **焦点进程 intent 提升（非 AI 路径的机制默认）**：前台 GUI 进程 spawn/获得焦点时 `intent_declared` 定 INTERACTIVE 档（ berry_intent 编码冻结在册，ADR #42）——公平仍是机制默认，intent 只是叠加；**短窗 touch boost**（事件到达 → effective 提升数百 ms）用内核已有的防饥饿 boost 形态（「紧急晋升只走内核防饥饿 boost」的既有语义，`docs/AI调度设计-v1.0.md` §词汇表）。
+3. **GUI 遥测三键进环**：input_ts（IRQ 入口 CNTVCT）、frame_begin/frame_end（软 vsync 帧循环）、flush_done——AI 的 ①放置 ③权重决策的数据面，同时就是 smoke 的机器断言面（「AI 测试友好化」支柱两面一体）。AI 只消费遥测、动作走四类封顶——**GUI 事件流不进内核动作空间，进的是 AI 的观测空间**（`docs/AI调度设计-v1.0.md`「band/intent 不入 AI 动作空间」同款边界）。
 4. **输入服务自身的调度形态铁律**（本地雷册直接适用）：gui-inputd/guifbd 常驻等待必须 wait_many 阻塞形态、永不自旋（CLAUDE.md「console 通道纯自旋 send = 结构性饿死」）；高优服务必须真睡，严格优先下单核不真睡的高优服务=饿死别人（4-3a 级联坑）。virtio-input IRQ → event 唤醒路径复用 PL011 RX 的「去活电平在 EOIR 前」纪律（CLAUDE.md Gotchas）。
-5. **单核 v1 的现实序**：v1 单核下「放置」动作空转，先落 ①intent 档位语义 + ②PM 频率脉冲 + ③遥测三键；SMP（S-1 已 Bring-up）后再展开放置面——与 `docs/SMP设计草案.md` 的推进序天然对齐。
+5. **单核 v1 的现实序**：v1 单核下「放置」动作空转，先落 ①intent 档位语义 + ②PM 频率脉冲 + ③遥测三键；SMP（S-1 已 Bring-up）后再展开放置面——与 `docs/SMP设计草案-v1.0.md` 的推进序天然对齐。
 
 ---
 
@@ -147,7 +147,7 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 
 - **Perfetto/systrace**：FrameTimeline 双轨（§1.1）+ **trace 全量可 SQL 查询**（PerfettoSQL 标准库含 EventLatency 表：输入事件与其触发的帧的映射，[PerfettoSQL stdlib](https://perfetto.dev/docs/analysis/stdlib-docs)）——**机器可读不是导出 CSV，是「时序事件库 + 查询语言」**。
 - **Apple Instruments**：同代形态（时间轴 + 帧级追踪），闭源对照。
-- **OpenHarmony DFX 三件**：FPS 统计 + 视图树 DOM dump + 事件注入器 + PC 端 TCP 注入 server/Qt 模拟器（本地 `docs/GUI里程碑规划-2026-10.md` 附录 B L2「DFX 三件」行，规划已标「第一梯队」）。
+- **OpenHarmony DFX 三件**：FPS 统计 + 视图树 DOM dump + 事件注入器 + PC 端 TCP 注入 server/Qt 模拟器（本地 `docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L2「DFX 三件」行，规划已标「第一梯队」）。
 - BerryOS 设计原则（从三家提炼）：①帧时间线 = **expected/actual 双轨**（有 deadline 才有 jank 判定）；②事件→帧**可关联**（EventLatency 同构：input_ts 字段透传）；③消费面 = **结构化查询**而非 grep 日志——与既有 smoke 标记断言（`tools/smoke.sh`）同源但更细粒度；④遥测写入零分配（`telemetry.rs` 双环纪律，CLAUDE.md）。
 
 ### 4.4 项目工具链 / SDK 分发
@@ -193,7 +193,7 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 | **SDK-2（声明式 UI 层 = Slint 形态的关键一跳）** | UI 描述 DSL（文本格式：树/属性/样式三段）+ 设备侧解释器（berry-ui 消费）+ **热重载第一形态**：FAT 热区（`docs/开发体验.md` L2 fat:rw）+ 文件监视 → 重载 DSL → 重求值（样式/布局秒级热换，结构变更自动重启 app 由 appd 监督承接） | SDK-1 注入/断言（验证热换正确性）；berry-ui 视图树 | 改 DSL 文件 <1s 屏幕变化；状态保持（页面位置不丢） | SDK-4 AI 生成面、SDK-5 设计器 |
 | **SDK-3（性能遥测成库）** | 帧时间线 trace 导出（JSON/proto，Perfetto-可消费格式为参照）+ input_ts→frame 关联（EventLatency 同构）+ 交互延迟指标命令（p50/p90，机器可读输出）——喂 AI 调度遥测环（§3.3 三键） | SDK-1 帧统计；遥测环（`telemetry.rs` 已在） | `berryctl gui perf` 出 p50/p90 JSON；AI 调度 demo 消费同数据 | AI 调度 GUI 消费面（M4 intent 遥测入场券的数据面之一） |
 | **SDK-4（AI 生成 UI 闭环）** | 组件语义库（DSL 的组件词汇表 + 截图集 = AI 可学语料）+ 生成产物校验器（DSL schema 校验 + SDK-1 自动化验证 + 像素对拍 + agent 修复环）+ MCP 式 agent 口（TCP 服务：dump/inject/screenshot/reload 四 verb） | SDK-1/2/3 全部 | agent 从截图/描述生成界面 → 自动验证 → 迭代收敛的端到端样例 | SDK-5 |
-| **SDK-5（终态件：设计器与 Rust 级热重载）** | ①可视化设计器（预览窗口+属性面板，预览=guifbd/模拟器真渲染，Slint LSP 同构）②Rust 代码级热重载：需要动态加载面（ELF 服务化加载 + berry-ui 组件 so 化/dlopen 语义）——**v2 依赖**（动态链接在 v1 排除盒外，`docs/兼容子系统设计.md` 档期）；过渡形态 = 「逻辑热替换走脚本层（若引入）或快速 spawn 重启 + 状态序列化恢复」 | SDK-2/4；动态加载 = v2 内核/加载器面 | 设计器改属性即时预览；逻辑改动 <5s 见效（重启+状态恢复形态） | — |
+| **SDK-5（终态件：设计器与 Rust 级热重载）** | ①可视化设计器（预览窗口+属性面板，预览=guifbd/模拟器真渲染，Slint LSP 同构）②Rust 代码级热重载：需要动态加载面（ELF 服务化加载 + berry-ui 组件 so 化/dlopen 语义）——**v2 依赖**（动态链接在 v1 排除盒外，`docs/兼容子系统设计-v1.0.md` 档期）；过渡形态 = 「逻辑热替换走脚本层（若引入）或快速 spawn 重启 + 状态序列化恢复」 | SDK-2/4；动态加载 = v2 内核/加载器面 | 设计器改属性即时预览；逻辑改动 <5s 见效（重启+状态恢复形态） | — |
 
 **演进序的三条硬依赖**（每步依赖显式化）：
 1. **热重载的每一步都踩在「UI 即数据」上**：SDK-1 的 dump 格式 → SDK-2 的 DSL → SDK-4 的生成 schema 是同一条数据线的三段——**格式从第一刀就带稳定 id 和可 round-trip 设计**，后面全是消费者。
@@ -214,7 +214,7 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 8. Compose Live Edit 的工程目标值可当 BerryOS 标尺：增量编译 ~200ms、键入到重组 <250ms、编辑期异常自动回退上一好状态。（Android 官方 deep dive，高）
 9. JetBrains Compose Hot Reload v1.2.0 内置 MCP server——「AI agent 实时驱动运行中应用」已产品化；Android 官方已发布 agent 技能文档、Google issue 在案要求 dump 带截图服务 AI 测试——AI 消费面正成为平台一等发布物。（JetBrains GH / developer.android.com/agents / issuetracker，高）
 10. AI 生成 UI（v0/Builder.io/Figma AI）的商品化产物强绑定「组件库语义规整度 + 结构化设计资产」；生成已不稀缺，**确定性验证环才是差异化**——BerryOS「AI 测试友好化」支柱（确定性回放/注入/像素断言）与 AI 开发套件是同一地基。（v0.app / Builder.io / 本地 CLAUDE.md 原则 #3，高）
-11. BerryOS 现有结构在延迟上有先天红利：单 GUI 进程直持 framebuffer 的三薄服务 = 比「自绘框架 + 独立渲染服务」少两级缓冲；QEMU ramfb 无 vsync 使环节 8–9（合成/扫出）在本环境测不准，主战场在输入→帧完成段。（本地 `docs/GUI里程碑规划-2026-10.md` §3/§5，高）
+11. BerryOS 现有结构在延迟上有先天红利：单 GUI 进程直持 framebuffer 的三薄服务 = 比「自绘框架 + 独立渲染服务」少两级缓冲；QEMU ramfb 无 vsync 使环节 8–9（合成/扫出）在本环境测不准，主战场在输入→帧完成段。（本地 `docs/GUI里程碑规划-2026-10-v1.0.md` §3/§5，高）
 
 ## 8. 对 BerryOS 的架构启示
 
@@ -230,7 +230,7 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 
 ## 9. 开放问题
 
-1. **QEMU 输入源三层递降（裁决 A）的实测次序**：virtio-input 设备类在 AAVMF+virtio-mmio 下的可用性未实测（QEMU 支持 virtio-tablet-device，但 EFI 固件枚举路径未验证）；GUI-4 首刀需按 virtio-input → USB 平板 → 串口鼠标协议递降验证，结构性风险已在 `docs/GUI里程碑规划-2026-10.md` §5 立项。
+1. **QEMU 输入源三层递降（裁决 A）的实测次序**：virtio-input 设备类在 AAVMF+virtio-mmio 下的可用性未实测（QEMU 支持 virtio-tablet-device，但 EFI 固件枚举路径未验证）；GUI-4 首刀需按 virtio-input → USB 平板 → 串口鼠标协议递降验证，结构性风险已在 `docs/GUI里程碑规划-2026-10-v1.0.md` §5 立项。
 2. **TCG 下交互延迟预算的标定口径**：CNTVCT 1/2 推进使 wall-clock 与虚拟时基分歧——SDK-3 的指标在 TCG 相用哪个时基报数（虚拟时基自洽 vs `-icount` 通道）待定标；倾向：功能断言用事件序（确定性），数值报数挂 `-icount` 通道（`just bench-icount` 先例）。
 3. **预测渲染的收益边界**：SwipeView 拖拽跟随在 60Hz 软 vsync + TCG 软渲染下，预测点收益是否可感（帧时间本身就 >16ms 时预测反而放大错位）——建议 GUI-6 动画刀后用 SDK-3 指标 A/B 后再决定默认开关（Chromium 默认关的教训）。
 4. **interaction 脉冲在单核 v1 的实效**：单核 + tickless 下短窗抬频的收益与功耗实测（QEMU 无法测功耗，真机/UTM 阶段验证）；M4 intent 遥测入场券（ADR #42）是否纳入 GUI 交互延迟数据待裁。
@@ -243,4 +243,4 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 
 **联网（16）**：Perfetto FrameTimeline 文档；web.dev INP；AOSP InputTransport.cpp（android-10.0.0_r36）；WWDC 2015 Session 233 索引（nonstrict.eu）；W3C Pointer Events / MDN pointerrawupdate；One Euro Filter（lifl.fr/~casiez/Ng 论文页 + one-euro-rs + HN）；android.os.Process 文档（THREAD_PRIORITY_URGENT_DISPLAY）；AOSP device/google/coral powerhint.json + CarbonROM cpu_input_boost 补丁 + XDA mpdiscussion；developer.android.com ADPF/Game Mode interventions/GameState（XDA）；flutter#110431 + flutter#73286；docs.flutter.dev hot reload；fatbobman/NSHipster/Guardsquare（SwiftUI Preview）；Android 官方 Live Edit deep dive + iterative-development 文档；JetBrains compose-hot-reload GH discussions；Vite HMR 文档 + bjornlu 原理文；Slint VS Code 文档/Marketplace/issue；v0.app + Medium 机制文 + Builder.io AI + gendesigns 对比；uiautomator dump（SO/testRigor/issuetracker/developer.android.com agents-skills）；Ars Technica 输入延迟讨论；Ng et al. CHI 2012（Semantic Scholar）。
 
-**本地（6）**：`docs/GUI里程碑规划-2026-10.md`（附录 B 全景 + 裁决 A–F + GUI-1..9 刀序）；`docs/AI调度设计.md`（动作空间四类/intent 词表/遥测）；`docs/可观测性设计.md`（双环遥测/通道分离）；`docs/开发体验.md`（L0–L3 阶梯/fat:rw/hvf-TCG 双模）；CLAUDE.md（设计总原则三条/调度 intent 表/Gotchas 雷册）；`user/berry-fbcon`（host 像素断言先例）。
+**本地（6）**：`docs/GUI里程碑规划-2026-10-v1.0.md`（附录 B 全景 + 裁决 A–F + GUI-1..9 刀序）；`docs/AI调度设计-v1.0.md`（动作空间四类/intent 词表/遥测）；`docs/可观测性设计-v1.0.md`（双环遥测/通道分离）；`docs/开发体验.md`（L0–L3 阶梯/fat:rw/hvf-TCG 双模）；CLAUDE.md（设计总原则三条/调度 intent 表/Gotchas 雷册）；`user/berry-fbcon`（host 像素断言先例）。

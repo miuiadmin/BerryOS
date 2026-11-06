@@ -19,6 +19,9 @@
 - **阻塞语义**：满则阻塞、空则阻塞；可设超时/非阻塞标志。
 - **badge**：server 端连接带 badge，server 据此区分 client（不为每个 client 建独立 channel）。
 - **msg_intent: u8（内核可见元数据槽，ADR #42，4-3c 已落）**：消息头 `MsgIntent{intent, hop, acc_ns}`（内核可见、用户不传参不回写）携带发送者 `intent_effective` 快照；server recv 结算 `intent_effective = min(declared, msg_intent)`（数值越小档越高——语义 max）、**每消息重导**（弱消息自然回落 = reply 即回退的无 reply 等价物）；channel 级 opt-out = `channel_create` options bit0。三道帽：跳数 ≤8 / 每跳预算 50ms / 链累计 400ms，超顶降级为不传播。
+- **msg_billing（内核可见，S4/1.1 契约）**：消息头追加 `{domain_id, charged_ns}`
+  16B；send 快照发送者域，recv 后 server 运行记 client；reply/abort 回退。
+  详见 `docs/调点调度-v1.1.md` §7.5。
 - **快路径**：短消息缓存行级、无通用堆拷贝；handle 迁移 O(1)。全可抢占下保持临界区短、锁粒度细。
 
 ### 2.1 优先级继承（PI，QNX 发送者语义 · 战略裁决 S9 / D4 无悔项）

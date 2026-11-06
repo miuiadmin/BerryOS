@@ -25,7 +25,7 @@ pub mod sched;
 pub mod spin;
 pub mod task;
 
-pub use class::{RoundRobin, SchedClass};
+pub use class::{Fair, RoundRobin, SchedClass};
 pub use intent::{
     intent_valid, settle, snapshot, MsgIntent, SettleOut, SnapOut, INTENT_BACKGROUND,
     INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS, INTENT_HOP_MAX, INTENT_INTERACTIVE,

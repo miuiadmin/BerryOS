@@ -3,7 +3,7 @@
 > 调研日期 2026-10-28 · 调研者 = M-GUI 架构层深挖 workflow（run wf GUI-05）
 > 对象谱系：Fuchsia（同宗微内核+能力模型）· Wayland 协议族（二十年协议教训）· Android SurfaceFlinger（移动延迟工程）· QNX Screen（车载实时）· OpenHarmony Rosen（本地源码走读）
 > 证据纪律：联网论断标 URL；本地源码/文档标路径。确定度三级——【高】= 一手官方文档或源码直读、多源互证；【中】= 单一来源或二手转述、方向可信细节待核；【低】= 社区传闻/推断。
-> 边界：本报告不做功能清单（`docs/GUI里程碑规划-2026-10.md` 附录 B 已有），只做**系统级架构**层：进程怎么摆、buffer 怎么过、帧怎么调度、输入怎么进。
+> 边界：本报告不做功能清单（`docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B 已有），只做**系统级架构**层：进程怎么摆、buffer 怎么过、帧怎么调度、输入怎么进。
 
 ---
 
@@ -413,7 +413,7 @@ Rosen = Fuchsia Flatland 的「双侧树+命令流」形态 + Android 的 Buffer
 - `~/Documents/harmony/openharmony/graphic_graphic_2d/rosen/modules/render_service_client/core/ui/rs_node.cpp`
 
 **BerryOS 内部**
-- `docs/GUI里程碑规划-2026-10.md`（附录 B 功能清单与 §3 裁决候选）
+- `docs/GUI里程碑规划-2026-10-v1.0.md`（附录 B 功能清单与 §3 裁决候选）
 - `research/05-Zircon-Fuchsia.md`（handle/rights/VMO/能力模型既有调研）
 - `research/06-QNX-Neutrino.md`（QNX 内核/IPC/调度既有调研）
 - `user/bins/guifbd/src/main.rs`（GUI-1 首刀在途：fb VMO 授能链 + FBW 自验）

@@ -58,6 +58,8 @@ pub const CLOCK_MONOTONIC: u32 = 0;
 pub const BERRY_ERR_BAD_HANDLE: Status = -9;
 /// EINVAL：参数非法（如 replace 两值相同）。
 pub const BERRY_ERR_INVALID_ARG: Status = -22;
+/// E2BIG：调度属性长度超界（size > 内核结构且尾部非零；1.1/S1）。
+pub const BERRY_ERR_E2BIG: Status = -7;
 /// ENOMEM：无空间（表满 / gen 耗尽 / 超尺寸）。
 pub const BERRY_ERR_NO_MEMORY: Status = -12;
 /// EACCES：权限位不足（能力拒绝）。
@@ -79,7 +81,7 @@ pub const BERRY_ERR_OUT_OF_RANGE: Status = -34;
 /// EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用户区）——3-2 copy 路径。
 pub const BERRY_ERR_FAULT: Status = -14;
 
-// ---- syscall 号（v1 在册；私有——用户程序不写编号，只经本 crate 的
+// ---- syscall 号（v1/1.1 在册；私有——用户程序不写编号，只经本 crate 的
 // `berry_*` 封 `svc`，§8.3；在册未实现号常量照发、无 wrapper（原型层
 // v2 挂账——dead_code 豁免随生成器），内核回落 -ENOTSUP）----
 pub(crate) mod nr {
@@ -125,6 +127,22 @@ pub(crate) mod nr {
     pub(crate) const PROCESS_GET_EXIT_CODE: usize = 0x3A;
     /// C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。
     pub(crate) const PROCESS_TERMINATE: usize = 0x3B;
+    /// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册，S2/S5 消费。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const SCHED_SETATTR: usize = 0x3C;
+    /// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const SCHED_GETATTR: usize = 0x3D;
+    /// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §5/§7.3；S1 只入册，S3 落语义。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const PROCESS_SUSPEND: usize = 0x3E;
+    /// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.1；S1 只入册，S2 落语义。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const THREAD_YIELD: usize = 0x3F;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;

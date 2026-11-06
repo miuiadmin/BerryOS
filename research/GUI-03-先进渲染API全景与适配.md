@@ -1,8 +1,8 @@
 # GUI-03 先进渲染 API 全景与适配 —— 「兼容≠适配好」案例库 + BerryOS 后端序列裁决输入
 
-> 调研日期：2026-10-28。服务对象：M-GUI 里程碑（`docs/GUI里程碑规划-2026-10.md`）+ 用户 2026-10-28 六条裁决（最先进渲染方案 / 移动设备基准 / 安卓响应慢教训 / 低功耗且优秀 / 先进 API 兼容但原生适配才算数 / 最先进开发套件）。
+> 调研日期：2026-10-28。服务对象：M-GUI 里程碑（`docs/GUI里程碑规划-2026-10-v1.0.md`）+ 用户 2026-10-28 六条裁决（最先进渲染方案 / 移动设备基准 / 安卓响应慢教训 / 低功耗且优秀 / 先进 API 兼容但原生适配才算数 / 最先进开发套件）。
 >
-> 方法：联网调研（WebSearch/WebFetch，30+ 独立来源，关键论断随文标注 URL）+ 本地源码/文档（`docs/GUI里程碑规划-2026-10.md`、`user/berry-fbcon/`、`user/bins/guifbd/`、`drivers/berry-virtio/`、CLAUDE.md 工程事实）。每条关键论断标注确定度：**[高]** = 官方文档/一手 issue 实证；**[中]** = 可信二手/社区证据或时效敏感；**[低]** = 单源推测，需复核。
+> 方法：联网调研（WebSearch/WebFetch，30+ 独立来源，关键论断随文标注 URL）+ 本地源码/文档（`docs/GUI里程碑规划-2026-10-v1.0.md`、`user/berry-fbcon/`、`user/bins/guifbd/`、`drivers/berry-virtio/`、CLAUDE.md 工程事实）。每条关键论断标注确定度：**[高]** = 官方文档/一手 issue 实证；**[中]** = 可信二手/社区证据或时效敏感；**[低]** = 单源推测，需复核。
 
 ---
 
@@ -173,7 +173,7 @@
 - **llvmpipe**（Mesa 软 GL）：Mesa 官方称「最快软光栅器」，LLVM JIT；实践报告对 SwiftShader 约 4 倍吞吐（[Mesa 文档](https://docs.mesa3d.org)、[Microlink 实测博客](https://microlink.io/blog/webgl-without-a-gpu)）[高]
 - **lavapipe**（Mesa 软 Vulkan）：2025-01 已暴露 **Vulkan 1.4**；自报「非合格实现」警告（[Phoronix](https://www.phoronix.com)、[Mesa 文档](https://docs.mesa3d.org)）[高]；wgpu 曾因合格性问题拒收后恢复（[wgpu #3622](https://github.com/gfx-rs/wgpu/issues/3622)）[高]
 - **SwiftShader**：**Chrome 已弃用**（GPU 进程内 JIT 的安全风险 + 软渲染体验差），WebGL 上下文创建将直接失败；Edge 144 起需 `EnableUnsafeSwiftShader` 策略（[Chromium swiftshader.md](https://chromium.googlesource.com/chromium/src/+/main/docs/gpu/swiftshader.md)、[chromestatus](https://chromestatus.com/feature/5166674414927872)、[Edge 策略文档](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/enableunsafeswiftshader)）[高]
-- **对 BerryOS 的含义**：① 软渲染是产业一等路线而非降级（OpenHarmony RASTER 后端同判，见 `docs/GUI里程碑规划-2026-10.md` 附录 B L0「渲染后端三分支 + 纯软回退」）；② Mesa 移植（llvmpipe/lavapipe）对 BerryOS 不现实——LLVM 依赖巨重且是 C 栈，自研软光栅（fbcon 路线）是对的；③ SwiftShader 的退场说明「软后端也要有安全与质量纪律」。
+- **对 BerryOS 的含义**：① 软渲染是产业一等路线而非降级（OpenHarmony RASTER 后端同判，见 `docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L0「渲染后端三分支 + 纯软回退」）；② Mesa 移植（llvmpipe/lavapipe）对 BerryOS 不现实——LLVM 依赖巨重且是 C 栈，自研软光栅（fbcon 路线）是对的；③ SwiftShader 的退场说明「软后端也要有安全与质量纪律」。
 
 ### 5.3 UTM / macOS Apple 虚拟化
 
@@ -207,7 +207,7 @@
    - 后端矩阵错位：wgpu 的后端是 Vulkan/Metal/D3D12/GL，BerryOS 需要的后端是 **软光栅 / virtio-gpu-2D / (远期)Vulkan**——套 wgpu 等于在 wgpu 的 N 后端下再垫自研后端，双层抽象、最低公分母双倍生效（§4.6 教训 2/4）；
    - 依赖面：wgpu 带来的完整依赖树与 BerryOS 服务形态（no_std 起步、自有 libc）暂不匹配。
 3. **但语义兼容 wgpu/WebGPU 本身**：API 命名/概念/limits 对齐后，未来「把 wgpu 移植到 BerryOS HAL 之上」（用户态 std 面已具备——T-1 线程/TLS 已落地，CLAUDE.md）或「应用直接用 WebGPU 形状写渲染代码」都是顺路而非翻新。这正是用户「先进 API 要能兼容，但原生适配才算数」的落地形态：**兼容在语义层，适配在后端层**。
-4. 产业平行案例：OpenHarmony Rosen 的「后端三分支 + RASTER 软回退」、Google 的「Dawn 单抽象 + 原生后端」、Impeller 的「直 Metal/Vulkan」——全部是「一薄层 + 逐后端原生」，无一例外（`docs/GUI里程碑规划-2026-10.md` 附录 B L0；§4.5）。
+4. 产业平行案例：OpenHarmony Rosen 的「后端三分支 + RASTER 软回退」、Google 的「Dawn 单抽象 + 原生后端」、Impeller 的「直 Metal/Vulkan」——全部是「一薄层 + 逐后端原生」，无一例外（`docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L0；§4.5）。
 
 ### 6.2 推荐后端序列（软 → virtio-gpu 2D → 真机 GPU）
 
@@ -284,4 +284,4 @@
 
 联网（26）：web.dev WebGPU 博客 / gpuweb wiki / Wikipedia WebGPU / caniuse / zircon.tech Firefox141 / Android arch-vulkan 页 / Android 11 CDD PDF / Khronos VP_ANDROID_15 与 VP_ANDROID_16 profile / Mishaal Rahman X×2 / Vulkanised 2025 T15 PDF / Krita 论坛 / ANGLE issues×2 / filament #1102 / ARM 社区 / wgpu #6340 / igl #333 / organicmaps #2946 / Medium 两三星 / MoltenVK issues×4 + Stride3D 论坛 + ESO 论坛 / Khronos 博客 + VK_KHR_dynamic_rendering 提案 / r/vulkan / PowerVR 文档 + Rys Sommefeldt + Meta 文档 + Vulkan 教程 / Flutter 官方文档 + flutter issues×3 + Level Up 报道 / Chromium Graphite issues×2 + Chrome 博客镜像 / QEMU virtio-gpu 官方文档 + QEMU #1141 + virt 平台页 / Mesa venus + llvmpipe 文档 + Phoronix×2 + Collabora / Chromium swiftshader.md + chromestatus + Edge 策略 + Microlink / UTM discussions×3 + farzon.org / Cuttlefish 仓库 + GPU.md 镜像 / Wikipedia Metal + Apple Metal 4 文档 + MoltenVK #2560。
 
-本地（5）：`docs/GUI里程碑规划-2026-10.md`（功能全景与架构裁决默认值）/ `user/berry-fbcon/src/lib.rs`（软光栅种子）/ `user/bins/guifbd/src/main.rs`（GUI-1 显示服务雏形与 VMO 授能链）/ `drivers/berry-virtio/`（mmio 驱动框架先例）/ CLAUDE.md（工程事实：V-6a GOP、VMO 32MiB 帽、T-1 std 面、P6 A-5 基准守卫先例）。
+本地（5）：`docs/GUI里程碑规划-2026-10-v1.0.md`（功能全景与架构裁决默认值）/ `user/berry-fbcon/src/lib.rs`（软光栅种子）/ `user/bins/guifbd/src/main.rs`（GUI-1 显示服务雏形与 VMO 授能链）/ `drivers/berry-virtio/`（mmio 驱动框架先例）/ CLAUDE.md（工程事实：V-6a GOP、VMO 32MiB 帽、T-1 std 面、P6 A-5 基准守卫先例）。

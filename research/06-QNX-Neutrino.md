@@ -61,7 +61,7 @@ typedef struct _resmgr_attr {
 ```
 
   connect_funcs/io_funcs 两张函数表让 iofunc 层提供全部 POSIX 语义默认实现（`iofunc_attr_t` 为每路径对象头）；flags 里 `_RESMGR_FLAG_BEFORE/_AFTER` 支持**同路径叠层**（多驱动排队，如过滤器/加密层叠在磁盘驱动上）——与 Plan 9 union mount 同思想。
-- **对照**：BerryOS `open("/svc/fs") → 返回 Channel 端点 handle`、服务把端点挂到 `/svc/*`、namespace 服务持根做查找授权（`docs/IPC设计.md` §5）——语义同构；差异在宿主：**QNX 的路径树宿主是 procnto（与内核同地址空间），BerryOS 是独立用户态 namespace 服务**，后者失败域更小、更符合能力模型（你能看到哪些路径=持有的 namespace handle 权限，QNX 则靠 uid/gid+abilities）。
+- **对照**：BerryOS `open("/svc/fs") → 返回 Channel 端点 handle`、服务把端点挂到 `/svc/*`、namespace 服务持根做查找授权（`docs/IPC设计-v1.0.md` §5）——语义同构；差异在宿主：**QNX 的路径树宿主是 procnto（与内核同地址空间），BerryOS 是独立用户态 namespace 服务**，后者失败域更小、更符合能力模型（你能看到哪些路径=持有的 namespace handle 权限，QNX 则靠 uid/gid+abilities）。
 
 ### 3.3 调度：FIFO/RR/Sporadic + 自适应分区 AP（6.x/7.x）
 
@@ -119,7 +119,7 @@ Qnet（`lsm-qnet.so`，6.x/7.x）把 MsgSend 透明延伸到网络：远端节�
 ## 7. 对 BerryOS 的借鉴与警示（对照四支柱）
 
 **支柱① 微kernel/IPC**
-- 借鉴 1——**同步 channel 必须带发送者优先级继承**：QNX 证明这是微内核服务化后软实时的命门（服务器以客户优先级工作）。BerryOS `docs/IPC设计.md` 的 Channel 设计尚未写优先级继承语义，建议补为内核机制（并学其精确时序：高优先级发送者在 send 时刻即提升 server，而非 recv 时刻）。
+- 借鉴 1——**同步 channel 必须带发送者优先级继承**：QNX 证明这是微内核服务化后软实时的命门（服务器以客户优先级工作）。BerryOS `docs/IPC设计-v1.0.md` 的 Channel 设计尚未写优先级继承语义，建议补为内核机制（并学其精确时序：高优先级发送者在 send 时刻即提升 server，而非 recv 时刻）。
 - 借鉴 2——**通道三队列语义可抄**：Send 队列按优先级 FIFO、Receive 队列 LIFO、Reply 无序列表，这是被 45 年实践打磨的最小完备结构；BerryOS 的"有界队列 FIFO"宜升级为"按优先级入队"。
 - 借鉴 3——**"连接即 handle"验证了 BerryOS open→handle 设计**：QNX 连接=FD 与 BerryOS open("/svc/fs")→Channel 端点 handle 是同一洞察，BerryOS 还更进一步把 handle 做成能力（QNX 做不到）。
 - 借鉴 4——**小消息复制、大块共享**的分层被 QNX 数据背书（拷两次胜过页表操作），BerryOS inline≤256B + VMO 大块的双层设计与其同构，可安心。
@@ -131,7 +131,7 @@ Qnet（`lsm-qnet.so`，6.x/7.x）把 MsgSend 透明延伸到网络：远端节�
 - 警示——QNX 不是电池驱动系统，无深度睡眠/wakelock 体系可抄；BerryOS 的 tickless idle（Phase 2a 已落地）+ PM 用户态服务路线仍应对照 Linux/Zircon 而非 QNX。
 
 **支柱③ AI 原生调度（对照 APS 最深）**
-- 借鉴 1——**APS=BerryOS 护栏思想的直系原型**：预算包络（budget%）+突发借用（freetime 分发）+RT 豁免（critical budget≈"class_rt 屏蔽"）+越界处置（bankruptcy）与 `docs/AI调度设计.md` §5 的护栏表逐行同构；BerryOS 可直接引用这套词汇与边界条件定义。
+- 借鉴 1——**APS=BerryOS 护栏思想的直系原型**：预算包络（budget%）+突发借用（freetime 分发）+RT 豁免（critical budget≈"class_rt 屏蔽"）+越界处置（bankruptcy）与 `docs/AI调度设计-v1.0.md` §5 的护栏表逐行同构；BerryOS 可直接引用这套词汇与边界条件定义。
 - 借鉴 2——**分区继承=per-task 归因的现成答案**：服务/驱动时间计费给发起方分区，等价于 BerryOS 遥测 ABI 中 per-task 运行时长分布的内核侧归因规则，值得在遥测环设计里落实"服务时间记到触发者"。
 - 警示——**APS 之死是 BerryOS 最重要的反面教材**：把预算策略焊进调度热路径（每次决策扫描全部分区、分区上限 8、策略互相打架出 Ref# 28035），最终连原作者都砍掉。BerryOS"机制在内核 O(1) 查表、策略（含 AI）在用户态慢循环、越界拒收"的架构恰好规避了死因——应视为路线正确性的独立佐证，并把"快路径开销与策略复杂度无关"列为不可妥协的验收线。
 - 借鉴 3——QNX 用"安全变体不同默认值"（procnto safety 版）实现认证与通用版同源分叉，BerryOS 未来认证可采同法。
@@ -173,4 +173,4 @@ Qnet（`lsm-qnet.so`，6.x/7.x）把 MsgSend 透明延伸到网络：远端节�
 - Adaptive partition scheduler 概念：https://en.wikipedia.org/wiki/Adaptive_partition_scheduler
 - Ferrocene QNX8 手册（Rust 工具链支持）：https://public-docs.ferrocene.dev/main/targets/qnx8-manual/targets/x86_64-pc-qnx.html
 
-BerryOS 内部对照文件：`docs/IPC设计.md`、`docs/AI调度设计.md`、`docs/架构综合纲领.md`、`CLAUDE.md`（本次调研已通读核对）。
+BerryOS 内部对照文件：`docs/IPC设计-v1.0.md`、`docs/AI调度设计-v1.0.md`、`docs/架构综合纲领.md`、`CLAUDE.md`（本次调研已通读核对）。
