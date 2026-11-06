@@ -47,7 +47,7 @@ pub use sched::{
     set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
     sleepq_insertable, sleepq_unlink, spawn, spawn_as, spawn_intent, spawn_user, spawn_with,
-    spawn_with_tag, switches, svc_window, thaw_by_pinned, topo_smp_online, try_preempt, try_spawn_user,
+    spawn_with_tag, switches, switches_tt, svc_window, thaw_by_pinned, topo_smp_online, try_preempt, try_spawn_user,
     user_fault_exit,
     user_kills,
     wake_matching, wake_matching_locked, wake_stamp_take, yield_now, yield_now_keep_irq, KlockOps, SleepqHook, SwitchHook, SwitchKind,

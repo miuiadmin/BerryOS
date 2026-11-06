@@ -24,10 +24,48 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 /// S-2 E0 前置件 A12：原子化（写点全在 KERN_LOCK 锁窗，读侧锁外——Relaxed 无
 /// 序角色、仅计数；同时执法 static mut 别名 UB）。
 static IRQ_TICKS: AtomicU64 = AtomicU64::new(0);
-/// 上下文切换计数（`on_irq_tick` 抢占切一次自增）。里程碑金丝雀：两任务在 timer slice
-/// 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 = switch 坏（卡死/饿死）。
-/// A12 同上原子化。
+/// 上下文切换计数（六切换原语位共享递增——[`bump_switches`]）。里程碑金丝雀：
+/// 两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 =
+/// switch 坏（卡死/饿死）。A12 同上原子化。
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
+
+/// SWITCHES 递增 + 金丝雀打印（S-6 ①：全域唯一递增/打印口径）。
+/// 全部十一个切换原语位（yield/exit/block 三函数的直切臂 + park 切点 + tick
+/// 抢占 + SGI resched 直切 + try_preempt 直切 + park/idle 两派发位）共享本
+/// helper：%100 判定走**全局**计数——哪个位跨点哪个位打印。
+/// 沿革九十四发现①收口（两层）：打印若只挂 tick 抢占支（旧单点）SMP 稳态
+/// 忙对各占核时结构性冷；更深的洞 = **直切臂（出选有货即切）旧完全不计数**
+/// ——park 臂冷、直切臂热，漏计 = 金丝雀对 SMP 稳态主干结构性失明（S-6
+/// 复跑 0/53K 切换字符实证）。A12「SWITCHES 计入金丝雀」至此全量兑现。
+/// 返回 true = 本次跨过打印点（调用方可据此做**锁窗已证面**的附带走查）。
+///
+/// SAFETY 契约（print_lock_raw 要求）：调用点 IRQ 屏蔽窗内——六位皆然
+/// （切换原语锁窗/屏蔽窗，见各位注）。只取 PRINT_LOCK（与任务态
+/// with_print_lock 同锁——G43 拼行互斥保持），不触 RQ/SQ/REAPQ 结构锁；
+/// 任务持 PRINT_LOCK 期不可达切换原语（with_print_lock 为作用域闭包、
+/// 窗内禁切）⇒ 无自死锁面。
+fn bump_switches() -> bool {
+    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+    // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
+    const SOAK_PRINT_EVERY: u64 = 100;
+    if sw % SOAK_PRINT_EVERY == 0 {
+        // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行原子
+        //（IRQ 屏蔽窗内调用——print 对不带 irqsave，纪律见 kern_lock 模块头）；
+        // sw 快照供整除判定与打印同值。
+        print_lock_raw();
+        hal::uart_puts(b"switches=");
+        hal::uart_put_dec(sw);
+        // S-3c c-2c 前置微刀：行尾拼 KL 争用计数（C20 收缩前后对照观测，
+        // 非门禁）。kl_contention 经 hal 直调——with_print_lock 同款先例
+        //（ops 槽只服务取放对，读数无语境约束）。
+        hal::uart_puts(b" kl=");
+        hal::uart_put_dec(hal::kern_lock::kl_contention());
+        hal::uart_puts(b"\n");
+        print_unlock_raw();
+        return true;
+    }
+    false
+}
 
 /// 当前在 CPU 上跑的任务。S-2b 起为**回落位**：主位 = 本核 `SmpCpu.current`
 ///（TPIDR_EL1 寻址，经 [`current_task`]/[`set_current`] 存取）；boot 起 =
@@ -1016,6 +1054,10 @@ fn yield_now_impl(enable_irq_at_end: bool) {
                 // SAFETY: IRQ 已被 disable_irq 屏蔽；写 CNTV 系统寄存器；EL1。
                 hal::timer::arm_slice();
                 set_current(next_ptr);
+                // S-6 ① 补数：直切臂（出选有货）旧不计 SWITCHES——SMP 稳态忙对
+                // 占双核时 park 切点结构性冷、本臂才是热路径，漏计=金丝雀盲区。
+                bump_switches();
+                hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
                 activate_if_changed(prev, next_ptr);
                 note_switch(prev, next_ptr, SwitchKind::Yield);
                 // S-2 E0 舞蹈（草案 §2.3）：SVC 持锁窗内走到切换点 → 切前放锁
@@ -1033,7 +1075,7 @@ fn yield_now_impl(enable_irq_at_end: bool) {
             if (*prev).ttbr0 != 0 {
                 hal::activate_aspace(0, 0);
             }
-            SWITCHES.fetch_add(1, Ordering::Relaxed);
+            bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
             hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             note_switch(prev, core::ptr::null_mut(), SwitchKind::Yield);
             klock_release_switch(prev);
@@ -1172,7 +1214,7 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
             if (*cur).ttbr0 != 0 {
                 hal::activate_aspace(0, 0);
             }
-            SWITCHES.fetch_add(1, Ordering::Relaxed);
+            bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
             hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             note_switch(cur, core::ptr::null_mut(), SwitchKind::Exit);
             // 「-> ! 的 syscall 永不返回」同款：cur 已 dequeue 永不回——park
@@ -1193,6 +1235,9 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
         hal::timer::arm_slice();
     }
     set_current(next_ptr);
+    // S-6 ① 补数：退出直切臂（含切 IDLE）旧不计——同 park 臂口径补齐。
+    bump_switches();
+    hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     activate_if_changed(cur, next_ptr);
     note_switch(cur, next_ptr, SwitchKind::Exit);
     // S-2 E0（草案 3.2 边界②收口点）：`-> !` 唯一放锁点——EXIT_HOOK（Process
@@ -1431,8 +1476,22 @@ pub unsafe fn kill_all_tasks_by_pinned(
 }
 
 /// switches 金丝雀只读访问（watchdog / 遥测读；A12 原子化后锁外读合法）。
+/// 任务↔任务切换计数（S-6 ① 双计数器契约）：只在 [`note_switch`] 非空臂
+/// 单点自增 = 遥测环的精确分母（每次自增恰对应一次环写——hook 在场时）。
+/// 缘起：SWITCHES 自 A12/S-6 起计全部 11 位（含 park 语境 4 位——3 park
+/// 切点 + park 派发），而遥测环只记任务↔任务（note_switch 空参跳过发射）
+///——G1.5「遥测环存活」断言旧比 SWITCHES 的契约在 A12 扩面时即过期，
+/// S-6 复跑 3 实证踩中（total=456 < switches=457，park 事件先于断言落地）。
+/// 金丝雀（switches= 行）继续走 SWITCHES 原口径——park 语境切换也是活性。
+static SWITCHES_TT: AtomicU64 = AtomicU64::new(0);
+
 pub fn switches() -> u64 {
     SWITCHES.load(Ordering::Relaxed)
+}
+
+/// 任务↔任务切换数（遥测环分母——G1.5 断言比较面，详 [`SWITCHES_TT`] 注）。
+pub fn switches_tt() -> u64 {
+    SWITCHES_TT.load(Ordering::Relaxed)
 }
 
 // ---- 切换遥测钩子（3-4c；`可观测性设计.md` per-CPU 无锁环的注入点）----
@@ -1473,6 +1532,10 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     if prev.is_null() || next.is_null() {
         return;
     }
+    // S-6 ① 双计数器：非空臂 = 遥测环分母同点自增（环写与计数同窗——
+    // G1.5 断言 tel >= switches_tt 的配平点；hook 缺席期（boot 前窗）也计
+    //——telemetry::init 先于首个切换，实际不可达，防御性保持对称）。
+    SWITCHES_TT.fetch_add(1, Ordering::Relaxed);
     // SAFETY: 两指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
     unsafe {
         let hook = SWITCH_HOOK;
@@ -1839,7 +1902,7 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
                 if (*cur).ttbr0 != 0 {
                     hal::activate_aspace(0, 0);
                 }
-                SWITCHES.fetch_add(1, Ordering::Relaxed);
+                bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
                 hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
                 note_switch(cur, core::ptr::null_mut(), SwitchKind::Block);
                 klock_release_switch(cur);
@@ -1868,6 +1931,10 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         note_sleepq_changed();
         sq_unlock(sq_phys); // SQ 窗闭（CURRENT 翻转前——窗主上下文闭窗）
         set_current(next_ptr);
+        // S-6 ① 补数：入睡直切臂（出选有货）旧不计——服务 IPC 蓄睡/唤醒往返
+        // 的主干切点，漏计=金丝雀盲区（SMP 稳态 park 臂结构性冷）。
+        bump_switches();
+        hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
         activate_if_changed(cur, next_ptr);
         note_switch(cur, next_ptr, SwitchKind::Block);
         // S-2 E0 舞蹈（草案 §2.3）：SLEEPQ 入队后放锁入睡（睡眠点先放锁 = 持锁者
@@ -2100,6 +2167,10 @@ pub fn try_preempt() -> bool {
             // SAFETY: IRQ 已屏蔽（调用方契约）；写 CNTV 系统寄存器；EL1。
             hal::timer::arm_slice();
             set_current(next_ptr);
+            // S-6 ① 补数：try_preempt 直切臂（fastpath/send 授片切换）旧不计
+            //——IPC ping-pong 最热切点，漏计=金丝雀对服务往返结构性失明。
+            bump_switches();
+            hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             activate_if_changed(cur, next_ptr);
             note_switch(cur, next_ptr, SwitchKind::Preempt);
             // S-2 E0 舞蹈（草案 §2.3）：fastpath/send 授片切换——切前放锁
@@ -2487,31 +2558,21 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // 授片重编已由 timer::handle 的 rearm-before-EOIR 在 IRQ 入口覆盖
             // （同一中断上下文、微秒级差）——CVAL 已是满片终点，此处不再 arm。
             set_current(next_ptr);
-            let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+            // S-6 ①：递增+打印迁共享 helper（六位全域口径——沿革九十四发现①
+            // 收口；SMP 稳态忙对各占核时本支结构性冷，打印只挂此位 = 金丝雀
+            // 0 条假败）。
+            let crossed = bump_switches();
             hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             activate_if_changed(cur, next_ptr);
             note_switch(cur, next_ptr, SwitchKind::Preempt);
-            // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
-            // 过关后移除或 feature 门控（plan Step 7）。
-            const SOAK_PRINT_EVERY: u64 = 100;
-            if sw % SOAK_PRINT_EVERY == 0 {
-                // 完整性走查（复盘雷 2 残留诊断）：金丝雀拍点顺带对账环/
-                // SLEEPQ（integrity_check 注释——孤儿段形态对 pick 不可见，
-                // 只有记账对账显形）。成功路径零输出零分配。
+            // 完整性走查（复盘雷 2 残留诊断）：金丝雀拍点顺带对账环/SLEEPQ
+            //（integrity_check 注释——孤儿段形态对 pick 不可见，只有记账对账
+            // 显形）。成功路径零输出零分配。**只在 tick 抢占支跑**（S-6 ① 拆面
+            // 定谳：走查裸取 RQ×2+SQ 三锁，无自持前提仅在已证调用面成立——
+            // 本点 rq_unlock 先行 + preempt_count 门挡 PRINT_LOCK 窗；park
+            // 切点位锁窗状态不可廉价证明，不扩面）。
+            if crossed {
                 integrity_check();
-                // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行
-                // 原子（IRQ 上下文本已屏蔽——print 对不带 irqsave，纪律见
-                // kern_lock 模块头）；sw 快照供整除判定与打印同值。
-                print_lock_raw();
-                hal::uart_puts(b"switches=");
-                hal::uart_put_dec(sw);
-                // S-3c c-2c 前置微刀：行尾拼 KL 争用计数（C20 收缩前后对照观测，
-                // 非门禁）。kl_contention 经 hal 直调——with_print_lock :2125 同款
-                // 先例（ops 槽只服务取放对，读数无语境约束）。
-                hal::uart_puts(b" kl=");
-                hal::uart_put_dec(hal::kern_lock::kl_contention());
-                hal::uart_puts(b"\n");
-                print_unlock_raw();
             }
             // 切出 cur：存 callee-saved+sp，载 next；ret 进 next（首切→trampoline，
             // 否则→next 上次切出处）。切回 cur 时续行于下一行。
@@ -2596,6 +2657,9 @@ pub unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFrame) {
         // SAFETY: IRQ 屏蔽窗内；写 CNTV 系统寄存器；EL1。
         hal::timer::arm_slice();
         set_current(next_ptr);
+        // S-6 ① 补数：SGI resched 直切臂旧不计——跨核唤醒直切主干，同口径补齐。
+        bump_switches();
+        hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
         activate_if_changed(cur, next_ptr);
         note_switch(cur, next_ptr, SwitchKind::Preempt);
         // 切走前无锁可放 + 切后不重取（on_irq_tick 同款协议 3-1b 形，详彼处注）：
@@ -2804,7 +2868,7 @@ unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
     // SAFETY: 本核 CVAL 重臂；PSTATE.I=1。
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
-    SWITCHES.fetch_add(1, Ordering::Relaxed);
+    bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
     // SAFETY: prev=本核 park ctx（惰性捕获——首次派发把调用帧存进本核槽）、
@@ -2840,7 +2904,7 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     // idle 派发无 CNTV IRQ 先行：wfi 醒 / SGI 醒 / 环顶重查三种入口皆然）。
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
-    SWITCHES.fetch_add(1, Ordering::Relaxed);
+    bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     activate_if_changed(idle, next_ptr);
     note_switch(idle, next_ptr, SwitchKind::Preempt);
