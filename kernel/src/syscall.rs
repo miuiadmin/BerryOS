@@ -1888,6 +1888,16 @@ fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i
         {
             return Err(ERR_INVALID_ARG);
         }
+        // S5 admission：Σ(C_i/T_i) + 新申请 ≤ 1 − reserve（5% 固定——
+        // 计划 §6.3 EDF 可行性）。超载 → -EBUSY（诚实拒——不静默丢帧）。
+        // 全局原子累计（sched_setattr 成功 +、覆盖旧值 −；单核 SVC 窗序）。
+        let new_u = a.budget_ns as u128 * 4096 / a.period_ns as u128; // Q12 定点
+        let cur_u = DL_TOTAL_UTIL_Q12.load(Ordering::Relaxed) as u128;
+        // 1.0 − 0.05 = 0.95 → Q12 = 3891
+        if cur_u + new_u > 3891 {
+            return Err(ERR_BUSY);
+        }
+        DL_TOTAL_UTIL_Q12.fetch_add(new_u as u64, Ordering::Relaxed);
     }
     if a.flags & SA_F_DEADLINE != 0 {
         if a.flags & SA_F_BUDGET == 0 || a.deadline_ns == 0 || a.deadline_ns > a.period_ns {
@@ -1896,6 +1906,11 @@ fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i
     }
     Ok((a, size))
 }
+
+/// S5 admission：deadline 任务总利用率（Q12 定点——1.0 = 4096）。
+/// sched_setattr budget 置位成功 +、清位/覆盖 −（budget_ns=0 覆盖回退）。
+static DL_TOTAL_UTIL_Q12: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 
 /// Thread effective 属性：Process 默认 ∪ Thread 覆盖。位不设 = 继承；位设
 /// 后字段取 Thread 值（含 0=UNSPECIFIED 的显式语义）。
@@ -1931,6 +1946,12 @@ extern "C" fn sys_sched_setattr(tf: &mut TrapFrame) -> i64 {
         match &mut r.obj {
             KernelObj::Thread(th) => {
                 if attr.flags & SA_F_FREEZE_READY != 0 {
+                }
+                // S5 admission 扣减面：旧 attr 带 budget → 先退回（防覆盖双计）。
+                let old = th.sched_attr;
+                if old.flags & SA_F_BUDGET != 0 && old.period_ns > 0 {
+                    let old_u = old.budget_ns as u128 * 4096 / old.period_ns as u128;
+                    DL_TOTAL_UTIL_Q12.fetch_sub(old_u as u64, Ordering::Relaxed);
                 }
                 th.sched_attr = attr;
             }
