@@ -48,6 +48,7 @@ arch/                              HAL + 内联汇编（aarch64/ 现役 + x86_64
 bootloader/ drivers/ fs/ net/      EFI 引导 / 用户态驱动工作区 / 用户态服务
 user/ tools/                       应用生态与 berry-sys/libc / 构建脚本（just + smoke）
 docs/ research/ reference/         文档 / 调研报告（仅私密仓）/ 参考实现（仅私密仓，协议隔离）
+.agents/                           Curia 文档工作区
 ```
 
 ## 常用命令（全表 → `docs/命令速览.md`）
@@ -65,5 +66,6 @@ TCG 下 CNTV tick 实测 ≈ `SLICE_HZ/2`（非内核 bug；详 `规则/08-QEMU�
 - 入口预算/探针/锚点/迁出目标由 `tools/docs_guard.py` 执法：AGENTS ≤200 行 / ≤3400 字符。
   行长 >100 警 >120 拒；CLAUDE 仅 `@AGENTS.md` 指针。
 - 新文档落库/标签更新 → `docs/索引.md`；写前先查 `reference/` 对照实现。小步提交：能在 QEMU 独立验证的里程碑单独成提交。
+- 文档工作区 Curia（一事实一归属）：规格 → `.agents/README.md`。
 - **文档版本**：设计/实施/规划/调研/验收类统一 `名-v主.次.md`（如 `xxx-v1.1.md`），
   文件名+抬头双标；升版改名并同步索引/引用；存量下次大改迁移。细则 → `docs/索引.md`。
