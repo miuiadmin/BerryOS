@@ -7,8 +7,8 @@
 //! - glyph 位序：MSB = 最左列（`bits & (0x80 >> gx)`，fbcon 对偶）——
 //!   段② 起经 `GlyphBits::bit` 推广到任意几何（字形蜂格与图像/
 //!   图标位图同一 [`mono_blit`] 共核，一条位法两处消费）；ARGB 面
-//!   经 [`argb_blit`]（BYI1 解码产物消费口——A 位 1-bit 透明键，无
-//!   blend，铁律不破）；
+//!   经 [`argb_blit`]（BYI1 解码产物消费口——A 位 8-bit straight
+//!   alpha，与目标逐通道混合）；
 //! - blit 重叠：**memmove 语义**——逐行 `core::ptr::copy`（行内水平
 //!   重叠安全；`copy_from_slice` 自重叠 = UB，P6 A-7/fbcon 滚动同款
 //!   立法）+ 行序按重叠方向取安全向（dst 整体在 src 下方时自底向上，
@@ -20,7 +20,7 @@
 
 use crate::cmd::{Cmd, GlyphRun, ImageSrc, Rect};
 use crate::color::TextureDesc;
-use crate::font::GlyphBits;
+use crate::font::{GlyphA8, GlyphBits};
 
 /// 命令分派（回放入口——`Queue::submit` 逐命令驱动）。
 pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect) {
@@ -28,6 +28,10 @@ pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect
         Cmd::FillRect { rect, paint } => {
             let px = desc.format().pack(paint.color.r, paint.color.g, paint.color.b);
             fill_rect(target, desc, rect, px, clip);
+        }
+        Cmd::FillCircle { rect, paint } => {
+            let color = (paint.color.r, paint.color.g, paint.color.b);
+            fill_circle(target, desc, rect, color, clip);
         }
         Cmd::DrawLine { x0, y0, x1, y1, paint } => {
             let px = desc.format().pack(paint.color.r, paint.color.g, paint.color.b);
@@ -51,6 +55,54 @@ pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect
 /// `off+4 ≤ (h-1)*stride + w*4 = need ≤ target.len()`（desc 构造期 +
 /// submit 入口 `check_buf` 双执法钉死）——乘加无需逐写点再 checked
 /// （先验界内再算，模块级纪律）。
+/// 8-bit straight-alpha 混合写。a=0 不写、a=255 直写；中间值按
+/// `(src*a + dst*(255-a)+127)/255` 通道独立取整。资产为 straight RGBA。
+#[inline]
+fn blend_px(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    clip: &Rect,
+    x: i32,
+    y: i32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+) {
+    if a == 0 {
+        return;
+    }
+    if a == 255 {
+        let px = desc.format().pack(r, g, b);
+        put_px(target, desc, clip, x, y, px);
+        return;
+    }
+    if x < clip.x
+        || y < clip.y
+        || x >= clip.x.saturating_add(clip.w)
+        || y >= clip.y.saturating_add(clip.h)
+    {
+        return;
+    }
+    let (Ok(xu), Ok(yu)) = (usize::try_from(x), usize::try_from(y)) else {
+        return;
+    };
+    if xu >= desc.w() || yu >= desc.h() {
+        return;
+    }
+    let off = yu * desc.stride() + xu * 4;
+    let Some(raw) = target.get(off..off + 4) else {
+        return;
+    };
+    let dst = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+    let (dr, dg, db) = desc.format().unpack(dst);
+    let mix = |s: u8, d: u8| -> u8 {
+        ((u16::from(s) * u16::from(a) + u16::from(d) * u16::from(255 - a) + 127) / 255) as u8
+    };
+    let px = desc.format().pack(mix(r, dr), mix(g, dg), mix(b, db));
+    put_px(target, desc, clip, x, y, px);
+}
+
 #[inline]
 fn put_px(target: &mut [u8], desc: &TextureDesc, clip: &Rect, x: i32, y: i32, px: u32) {
     // 第一重：clip 界（dirty 区外 = 别人的画面）。
@@ -72,6 +124,46 @@ fn put_px(target: &mut [u8], desc: &TextureDesc, clip: &Rect, x: i32, y: i32, px
     }
     let off = yu * desc.stride() + xu * 4;
     target[off..off + 4].copy_from_slice(&px.to_le_bytes());
+}
+
+/// 抗锯齿圆填充：像素中心到圆心的半像素整数距离，边缘按面积近似
+/// 覆盖率混合。bounding box 必须为正方形（submit 先验执法）。
+fn fill_circle(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    rect: &Rect,
+    color: (u8, u8, u8),
+    clip: &Rect,
+) {
+    if rect.w != rect.h {
+        return;
+    }
+    let Some(vis) = rect.intersect(clip) else { return };
+    let r = i64::from(rect.w);
+    let cx = i64::from(rect.x) * 2 + r;
+    let cy = i64::from(rect.y) * 2 + r;
+    let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
+    let mut y = vis.y;
+    while y < y_end {
+        let dy = i64::from(y) * 2 + 1 - cy;
+        let mut x = vis.x;
+        while x < x_end {
+            let dx = i64::from(x) * 2 + 1 - cx;
+            let d2 = dx * dx + dy * dy;
+            let a = if d2 <= (r - 1) * (r - 1) {
+                255u8
+            } else if d2 >= (r + 1) * (r + 1) {
+                0u8
+            } else {
+                (((r * r - d2) * 255 + r) / (2 * r)).clamp(0, 255) as u8
+            };
+            if a != 0 {
+                blend_px(target, desc, clip, x, y, color.0, color.1, color.2, a);
+            }
+            x += 1;
+        }
+        y += 1;
+    }
 }
 
 /// 矩形填充：rect ∩ clip 后整铺（空交叠 = no-op；零宽/高在此自然短路）。
@@ -249,6 +341,40 @@ fn mono_blit(
     }
 }
 
+/// A8 字形：coverage 与 fg straight-alpha 混合；bg=Some 时蜂格底已由
+/// 调用方铺好，coverage=0 不写。
+fn a8_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    glyph: &GlyphA8<'_>,
+    dx: i32,
+    dy: i32,
+    fg: crate::cmd::Color,
+    clip: &Rect,
+) {
+    let dw = i32::try_from(glyph.w).unwrap_or(i32::MAX);
+    let dh = i32::try_from(glyph.h).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw, dh).intersect(clip) else {
+        return;
+    };
+    let (y_end, x_end) = (vis.y.saturating_add(vis.h), vis.x.saturating_add(vis.w));
+    let mut y = vis.y;
+    while y < y_end {
+        let sy = (y - dy) as usize;
+        let mut x = vis.x;
+        while x < x_end {
+            let sx = (x - dx) as usize;
+            let idx = sy * glyph.w + sx;
+            let a = glyph.coverage.get(idx).copied().unwrap_or(0);
+            if a != 0 {
+                blend_px(target, desc, clip, x, y, fg.r, fg.g, fg.b, a);
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
 /// glyph-run：逐字形经图集位图走 [`mono_blit`] 共核。几何随图集档位
 /// （8×16 / 16×32 / 24×48——`font` 三档）；位序/小端/pack 逐位复刻
 /// fbcon `put_char`（共识契约，1x 档的等价性由 caps_misc/consensus
@@ -259,6 +385,15 @@ fn glyph_run(target: &mut [u8], desc: &TextureDesc, run: &GlyphRun, clip: &Rect)
     let fg_px = desc.format().pack(run.fg.r, run.fg.g, run.fg.b);
     let bg_px = run.bg.map(|c| desc.format().pack(c.r, c.g, c.b));
     for p in run.glyphs {
+        if let Some(a8) = run.atlas.coverage(p.ch) {
+            if let Some(bg) = bg_px {
+                let cw = i32::try_from(run.atlas.cell_w()).unwrap_or(i32::MAX);
+                let ch = i32::try_from(run.atlas.cell_h()).unwrap_or(i32::MAX);
+                fill_rect(target, desc, &Rect::new(p.x, p.y, cw, ch), bg, clip);
+            }
+            a8_blit(target, desc, &a8, p.x, p.y, run.fg, clip);
+            continue;
+        }
         match run.atlas.glyph(p.ch) {
             Some(bits) => mono_blit(target, desc, &bits, p.x, p.y, fg_px, bg_px, clip),
             None => {
@@ -310,17 +445,17 @@ fn draw_image(
         ImageSrc::SmoothArgb { sw, sh, dw, dh, px } => {
             smooth_argb_blit(target, desc, *sw, *sh, *dw, *dh, px, x, y, clip)
         }
+        ImageSrc::SmoothRgb565 { sw, sh, dw, dh, px } => {
+            smooth_rgb565_blit(target, desc, *sw, *sh, *dw, *dh, px, x, y, clip)
+        }
     }
 }
 
 /// ARGB 彩色位图 blit（段②：`icon::decode` 产物的绘制消费口）：
 /// `px` = `0xAARRGGBB` row-major 画到 `(dx,dy)`。
 ///
-/// **A 位 = 1-bit 透明键**：`A==0` 跳过不写（区外画面穿透——图标
-/// 圆角/异形轮廓的透明底）；`A!=0` 一律不透明覆盖 RGB（`(px>>16)&0xFF`
-/// 等三通道 `pack` 经 [`put_px`] 单口落盘）。**这不是 blend**：无
-/// `src*a+dst*(1-a)` 混合——半透明是留位的真 blend 语义，v1 铁律
-/// 不破；与 mono 面 `bg=None` 零位不写同族（1-bit 透明先例）。
+/// **A 位 = 8-bit straight alpha**：`A==0` 跳过；`1..=255` 经
+/// [`blend_px`] 与目标逐通道混合（抗锯齿圆角/边缘消费口）。
 ///
 /// 有界性/防御（与 [`mono_blit`] 同纪律）：迭代以 `dst ∩ clip` 可见窗
 /// 为界（巨位图成本 = 可见面）；巨 w/h 夹到 i32::MAX（usize 域外结构
@@ -353,13 +488,13 @@ fn argb_blit(
         while x < x_end {
             let p = px.get(row_base + (x - dx) as usize).copied();
             if let Some(p) = p {
-                if p >> 24 != 0 {
+                let a = ((p >> 24) & 0xFF) as u8;
+                if a != 0 {
                     let r = ((p >> 16) & 0xFF) as u8;
                     let g = ((p >> 8) & 0xFF) as u8;
                     let b = (p & 0xFF) as u8;
-                    let packed = desc.format().pack(r, g, b);
-                    put_px(target, desc, clip, x, y, packed);
-                } // A==0：透明键跳过（不写）
+                    blend_px(target, desc, clip, x, y, r, g, b, a);
+                }
             } // get() None = 防御采样（短切片旁路 → 透明，不 panic）
             x += 1;
         }
@@ -368,7 +503,7 @@ fn argb_blit(
 }
 
 /// ScaledArgb 最近邻回放臂：目标可见窗逐像素取源 `(x*sw/dw, y*sh/dh)`
-///（中心偏移取整，放大无系统性左偏）。透明键与 Argb 同律；u64 乘法
+///（中心偏移取整，放大无系统性左偏）。alpha 与 RGB 同步采样；u64 乘法
 /// 只做坐标映射，源下标最终以 usize 收窄（可见窗已保证界内）。
 fn scaled_argb_blit(
     target: &mut [u8],
@@ -400,12 +535,12 @@ fn scaled_argb_blit(
                 .min(sw.saturating_sub(1) as u64);
             let p = px.get((sy as usize) * sw as usize + sx as usize).copied();
             if let Some(p) = p {
-                if p >> 24 != 0 {
+                let a = ((p >> 24) & 0xFF) as u8;
+                if a != 0 {
                     let r = ((p >> 16) & 0xFF) as u8;
                     let g = ((p >> 8) & 0xFF) as u8;
                     let b = (p & 0xFF) as u8;
-                    let packed = desc.format().pack(r, g, b);
-                    put_px(target, desc, clip, x, y, packed);
+                    blend_px(target, desc, clip, x, y, r, g, b, a);
                 }
             }
             x += 1;
@@ -417,8 +552,7 @@ fn scaled_argb_blit(
 
 /// SmoothArgb 双线性回放臂（放大质量面——缩小无低通会走样）：目标中心
 /// 映射回源中心，Q16 求floor/Q8 权重。
-/// 透明键仍二值：四个采样 alpha 加权 ≥128 视为不透明；RGB 只按不透明
-/// 采样归一，避免透明底 (0,0,0) 在边缘渗黑。壁纸源全不透明，主路径无分支。
+/// Alpha 与 RGB 先预乘再四采样、后反预乘——抗锯齿边不渗透明底色。
 fn smooth_argb_blit(
     target: &mut [u8],
     desc: &TextureDesc,
@@ -458,32 +592,104 @@ fn smooth_argb_blit(
             let p01 = px.get(y0 * sw as usize + x1).copied().unwrap_or(0);
             let p10 = px.get(y1 * sw as usize + x0).copied().unwrap_or(0);
             let p11 = px.get(y1 * sw as usize + x1).copied().unwrap_or(0);
-            let samples = [(p00, (256 - fx) * (256 - fy)), (p01, fx * (256 - fy)), (p10, (256 - fx) * fy), (p11, fx * fy)];
-            let mut aw = 0u32;
+            let samples = [
+                (p00, (256 - fx) * (256 - fy)),
+                (p01, fx * (256 - fy)),
+                (p10, (256 - fx) * fy),
+                (p11, fx * fy),
+            ];
+            // Premultiply 后四采样，再 unpremultiply——透明底 RGB 不渗边。
+            let mut am = 0u32;
+            let mut pm = [0u32; 3];
             for (p, w) in samples {
-                if p >> 24 != 0 {
-                    aw += w / 256;
-                }
+                let a = u32::from(((p >> 24) & 0xFF) as u8);
+                am += a * w;
+                pm[0] += ((p >> 16) & 0xFF) * a * w / 255;
+                pm[1] += ((p >> 8) & 0xFF) * a * w / 255;
+                pm[2] += (p & 0xFF) * a * w / 255;
             }
-            if aw >= 128 {
-                let mut rgb = [0u32; 3];
-                let mut norm = 0u32;
-                for (p, w) in samples {
-                    if p >> 24 != 0 {
-                        norm += w / 256;
-                        rgb[0] += ((p >> 16) & 0xFF) * (w / 256);
-                        rgb[1] += ((p >> 8) & 0xFF) * (w / 256);
-                        rgb[2] += (p & 0xFF) * (w / 256);
-                    }
-                }
-                if norm != 0 {
-                    let r = (rgb[0] / norm) as u8;
-                    let g = (rgb[1] / norm) as u8;
-                    let b = (rgb[2] / norm) as u8;
-                    let packed = desc.format().pack(r, g, b);
-                    put_px(target, desc, clip, x, y, packed);
-                }
+            let a = ((am + 32768) / 65536).min(255) as u8;
+            if a != 0 {
+                let scale = u32::from(a);
+                let unp = |v: u32| -> u8 { ((v * 255 + scale / 2) / scale).min(255) as u8 };
+                blend_px(
+                    target,
+                    desc,
+                    clip,
+                    x,
+                    y,
+                    unp(pm[0] / 65536),
+                    unp(pm[1] / 65536),
+                    unp(pm[2] / 65536),
+                    a,
+                );
             }
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+
+/// RGB565 壁纸双线性放大（不透明；源 u16 = RRRRRGGGGGGBBBBB）。
+fn smooth_rgb565_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    sw: u32,
+    sh: u32,
+    dw: u32,
+    dh: u32,
+    px: &[u16],
+    dx: i32,
+    dy: i32,
+    clip: &Rect,
+) {
+    let dw_i = i32::try_from(dw).unwrap_or(i32::MAX);
+    let dh_i = i32::try_from(dh).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw_i, dh_i).intersect(clip) else {
+        return;
+    };
+    let unpack = |v: u16| -> (u8, u8, u8) {
+        let r5 = ((v >> 11) & 0x1F) as u32;
+        let g6 = ((v >> 5) & 0x3F) as u32;
+        let b5 = (v & 0x1F) as u32;
+        (
+            ((r5 * 255 + 15) / 31) as u8,
+            ((g6 * 255 + 31) / 63) as u8,
+            ((b5 * 255 + 15) / 31) as u8,
+        )
+    };
+    let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
+    let mut y = vis.y;
+    while y < y_end {
+        let cy = ((2 * (y - dy) as i64 + 1) * sh as i64 * 65536 / (2 * dh as i64))
+            - 32768;
+        let y0 = (cy / 65536).clamp(0, sh.saturating_sub(1) as i64) as usize;
+        let y1 = (y0 + 1).min(sh.saturating_sub(1) as usize);
+        let fy = ((cy - (y0 as i64) * 65536).max(0) / 256) as u32;
+        let mut x = vis.x;
+        while x < x_end {
+            let cx = ((2 * (x - dx) as i64 + 1) * sw as i64 * 65536 / (2 * dw as i64))
+                - 32768;
+            let x0 = (cx / 65536).clamp(0, sw.saturating_sub(1) as i64) as usize;
+            let x1 = (x0 + 1).min(sw.saturating_sub(1) as usize);
+            let fx = ((cx - (x0 as i64) * 65536).max(0) / 256) as u32;
+            let p00 = px.get(y0 * sw as usize + x0).copied().unwrap_or(0);
+            let p01 = px.get(y0 * sw as usize + x1).copied().unwrap_or(0);
+            let p10 = px.get(y1 * sw as usize + x0).copied().unwrap_or(0);
+            let p11 = px.get(y1 * sw as usize + x1).copied().unwrap_or(0);
+            let ps = [(p00, (256 - fx) * (256 - fy)), (p01, fx * (256 - fy)), (p10, (256 - fx) * fy), (p11, fx * fy)];
+            let mut rgb = [0u32; 3];
+            for (p, w) in ps {
+                let (r, g, b) = unpack(p);
+                rgb[0] += u32::from(r) * w;
+                rgb[1] += u32::from(g) * w;
+                rgb[2] += u32::from(b) * w;
+            }
+            let r = (rgb[0] / 65536) as u8;
+            let g = (rgb[1] / 65536) as u8;
+            let b = (rgb[2] / 65536) as u8;
+            put_px(target, desc, clip, x, y, desc.format().pack(r, g, b));
             x += 1;
         }
         y += 1;

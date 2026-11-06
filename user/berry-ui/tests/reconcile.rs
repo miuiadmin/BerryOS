@@ -13,7 +13,8 @@
 //! 确定性：无随机无时钟；拒面断言到变体载荷字段。
 
 use berry_ui::desc::{
-    AstError, ColProps, DescBuilder, PadProps, Props, RectProps, RowProps, TextProps, TextStyle,
+    AstError, CircleProps, ColProps, DescBuilder, PadProps, Props, RectProps, RowProps, TextProps,
+    TextStyle,
     ViewKind, ViewSpec, KIND_COL, KIND_RECT, KIND_ROOT, KIND_TEXT,
 };
 use berry_ui::damage::RectI;
@@ -221,9 +222,9 @@ fn rebuilt_tree_semantically_equivalent() {
 #[test]
 fn apply_reject_unknown_kind_and_flags() {
     let mut ui = Ui::<32>::new(100, 100);
-    // 未知 kind 字节（段B 后值域 0..=8：6/7/8 = Image/Icon/Grid——GUI-6 D5）
+    // 未知 kind 字节（值域 0..=9：8=Grid、9=Circle——圆点指示器刀）
     assert_eq!(ui.apply_desc(&[0x99, 0]), Err(AstError::UnknownKind { got: 0x99 }));
-    assert_eq!(ui.apply_desc(&[9, 0]), Err(AstError::UnknownKind { got: 9 }));
+    assert_eq!(ui.apply_desc(&[10, 0]), Err(AstError::UnknownKind { got: 10 }));
     // flags 未知位绊线（GUI-6 D5 改钉）：bit1/2/3 = SIZE/A11Y/ALIGN 合法化
     // 后，未知位域起点 = bit4（0x10 拒；0x80 拒保）；bit1 本体转
     // HAS_SIZE×Root 拒（§8.2 合法域表——UnknownProp 载 kind×块失配）。
@@ -417,4 +418,30 @@ fn desc_builder_child_cap_255_retry_stable() {
         .unwrap();
     assert_eq!(b.end(), Err(AstError::TooSmall { need: 256, got: 255 }));
     assert_eq!(b.end(), Err(AstError::TooSmall { need: 256, got: 255 }), "拒绝零半执行——重试同错");
+}
+
+
+// —— Circle wire add-only：建树→encode→apply→再 encode 字节闭环 ——
+#[test]
+fn circle_view_roundtrips_additive_wire_kind() {
+    let mut ui = Ui::<16>::new(100, 100);
+    let root = ui.root();
+    ui.add(root, ViewSpec {
+        kind: ViewKind::Circle,
+        key: 9,
+        props: Props::Circle(CircleProps { bg: bg(12, 34, 56), w: Some(16), h: Some(16) }),
+    })
+    .unwrap();
+    let mut first = [0u8; 64];
+    let n1 = ui.encode_desc(&mut first).unwrap();
+    let mut ui2 = Ui::<16>::new(100, 100);
+    ui2.apply_desc(&first[..n1]).unwrap();
+    let mut second = [0u8; 64];
+    let n2 = ui2.encode_desc(&mut second).unwrap();
+    assert_eq!(&first[..n1], &second[..n2]);
+    ui2.layout();
+    ui2.drain_damage();
+    let id = ui2.node_at(8, 8).unwrap();
+    assert_eq!(ui2.kind_of(id).unwrap(), ViewKind::Circle);
+    assert_eq!(ui2.bounds(id).unwrap(), RectI::new(0, 0, 16, 16));
 }

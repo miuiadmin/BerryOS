@@ -18,8 +18,9 @@
 //! 确定性：无随机无时钟；拒面断言到变体载荷字段。
 
 use berry_ui::desc::{
-    AstError, ColProps, DescBuilder, GridProps, IconProps, ImageProps, Props, RectProps, RowProps,
-    ViewKind, ViewSpec, KIND_GRID, KIND_IMAGE, KIND_ICON, KIND_ROOT,
+    AstError, ColProps, DescBuilder, GridProps, IconProps, ImageProps, Props,
+    RectProps, RowProps, ViewKind, ViewSpec, KIND_CIRCLE, KIND_GRID, KIND_IMAGE, KIND_ICON,
+    KIND_ROOT,
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::{A11Y_MAX, Ui, ROLE_BUTTON, ROLE_IMAGE};
@@ -130,6 +131,7 @@ fn aligned_stream(kind: u8, props: &[u8], cross: u8) -> Vec<u8> {
 }
 
 const RECT_PROPS: &[u8] = &[1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+const CIRCLE_PROPS: &[u8] = RECT_PROPS;
 const TEXT_PROPS: &[u8] = &[1, b'h', 0x00, 1, 1, 1, 0x00];
 const IMAGE_PROPS: &[u8] = &[9, 0, 0xFF, 0xFF, 0xFF, 0xFF, 4, 0, 0, 0];
 const ICON_PROPS: &[u8] = &[7, 0, 10, 20, 30, 8, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF];
@@ -137,12 +139,13 @@ const GRID_PROPS: &[u8] = &[2, 2, 1, 0, 0, 0, 2];
 
 #[test]
 fn has_size_matrix_legal_and_rejects() {
-    // 合法四件：Col/Row/Grid 块值落扩展字段；Rect = 容读折入面（块胜）
+    // 合法五件：Col/Row/Grid 块值落扩展字段；Rect/Circle = 容读折入面
     let mut ui = Ui::<32>::new(100, 100);
     ui.apply_desc(&sized_stream(3, &[3, 0, 0, 0])).unwrap(); // Col gap=3
     ui.apply_desc(&sized_stream(4, &[0, 0, 0, 0])).unwrap(); // Row gap=0
     ui.apply_desc(&sized_stream(KIND_GRID, GRID_PROPS)).unwrap(); // Grid 2x2
     // Rect：props 块 w=None + SIZE 块 w=7 → 块胜折入 w=Some(7)
+    ui.apply_desc(&sized_stream(KIND_CIRCLE, CIRCLE_PROPS)).unwrap(); // Circle 同 Rect 容读折入
     ui.apply_desc(&sized_stream(1, RECT_PROPS)).unwrap();
     let mut out = [0u8; 64];
     let n = ui.encode_desc(&mut out).unwrap();
@@ -182,12 +185,13 @@ fn has_align_matrix_legal_and_rejects() {
         let n = ui.encode_desc(&mut out).unwrap();
         assert_eq!(&out[..n], &aligned_stream(kb, &[0, 0, 0, 0], 0x00)[..], "ALIGN 块 roundtrip");
     }
-    // 拒七件：Grid（cross 在 props 块内——ALIGN 块双源歧义）/ Text/Rect/
-    // Image/Icon/Pad/Root
-    let cases: [(u8, &[u8], ViewKind); 7] = [
+    // 拒八件：Grid（cross 在 props 块内——ALIGN 块双源歧义）/ Text/Rect/
+    // Circle/Image/Icon/Pad/Root
+    let cases: [(u8, &[u8], ViewKind); 8] = [
         (KIND_GRID, GRID_PROPS, ViewKind::Grid),
         (2, TEXT_PROPS, ViewKind::Text),
         (1, RECT_PROPS, ViewKind::Rect),
+        (KIND_CIRCLE, CIRCLE_PROPS, ViewKind::Circle),
         (KIND_IMAGE, IMAGE_PROPS, ViewKind::Image),
         (KIND_ICON, ICON_PROPS, ViewKind::Icon),
         (5, &[1, 0, 0, 0], ViewKind::Pad),

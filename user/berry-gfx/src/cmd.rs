@@ -5,7 +5,7 @@
 //! v1 操作集边界（规划钦定最小面，防过度设计）：fill_rect / line /
 //! blit（纹理内区域拷贝）/ glyph-run / draw_image（段②：单色位图图像/
 //! 图标——与字形同一位法、任意几何；ARGB 彩色面——BYI1 解码产物的
-//! 绘制消费口，A 位 1-bit 透明键）/ present——fbcon 六原语超集 +
+//! 绘制消费口，A 位 8-bit straight alpha 混合）/ present——fbcon 六原语超集 +
 //! 文本/图像位；AA/宽色域/compute/3D 可后补。
 //!
 //! 坐标域：全 i32。[`Rect`] 负宽/负高 = 非法（push 期 loud 拒
@@ -144,17 +144,16 @@ pub enum ImageSrc<'a> {
     /// 切片，`px.len()` 必须 `== w*h`（submit 期恰长硬门同 [`ImageSrc::Bits`]
     /// ——`ImagePixelMismatch`）。
     ///
-    /// **A 位 = 1-bit 透明键**：`A==0` 跳过不写（透明）、`A!=0` 一律
-    /// 不透明覆盖 RGB——这不是 blend（半透明混合留位；与 mono 面
-    /// `bg=None` 透明底同族先例）。[`Cmd::DrawImage`] 的 `fg/bg` 参数
-    /// 对本变体不适用（像素自带色，绘制忽略）。
+    /// **A 位 = 8-bit straight alpha**：`A==0` 跳过不写；`1..=255`
+    /// 与目标逐通道混合，RGB 非预乘。[`Cmd::DrawImage`] 的 `fg/bg`
+    /// 参数对本变体不适用（像素自带色与覆盖率）。
     Argb {
         w: u32,
         h: u32,
         px: &'a [u32],
     },
     /// ARGB 最近邻缩放面：源 `sw×sh` 借用像素按请求几何 `dw×dh`
-    /// 回放期采样（v1 无 float/无 blend——透明键语义与 Argb 同律）。
+    /// 回放期最近邻采样（无 float；alpha 与 RGB 同步采样）。
     /// 源恰长门同 Argb；`dw/h` 零值在 submit 期拒绝。
     ScaledArgb {
         sw: u32,
@@ -163,13 +162,21 @@ pub enum ImageSrc<'a> {
         dh: u32,
         px: &'a [u32],
     },
-    /// ARGB 双线性缩放面（壁纸等全不透明大面；Q8 定点，无 float）。
+    /// ARGB 双线性缩放面（图标/Dock 抗锯齿边；预乘四采样，Q8 定点）。
     SmoothArgb {
         sw: u32,
         sh: u32,
         dw: u32,
         dh: u32,
         px: &'a [u32],
+    },
+    /// RGB565 双线性缩放面（不透明壁纸专用；2B/px 控 rootfs 常驻面）。
+    SmoothRgb565 {
+        sw: u32,
+        sh: u32,
+        dw: u32,
+        dh: u32,
+        px: &'a [u16],
     },
 }
 
@@ -205,6 +212,14 @@ impl core::fmt::Debug for ImageSrc<'_> {
                 .field("dh", dh)
                 .field("px", &px.len())
                 .finish(),
+            ImageSrc::SmoothRgb565 { sw, sh, dw, dh, px } => f
+                .debug_struct("ImageSrc::SmoothRgb565")
+                .field("sw", sw)
+                .field("sh", sh)
+                .field("dw", dw)
+                .field("dh", dh)
+                .field("px", &px.len())
+                .finish(),
         }
     }
 }
@@ -214,6 +229,11 @@ impl core::fmt::Debug for ImageSrc<'_> {
 pub enum Cmd<'a> {
     /// 矩形填充（回放期裁剪到 纹理界 ∩ dirty 区）。
     FillRect {
+        rect: Rect,
+        paint: PaintDesc,
+    },
+    /// 抗锯齿圆填充（`rect` 必须为正方形；圆半径 = 边长/2）。
+    FillCircle {
         rect: Rect,
         paint: PaintDesc,
     },
@@ -238,7 +258,7 @@ pub enum Cmd<'a> {
     /// 语义按变体分派：单色面（`Bits`/`Icon`）走 `raster::mono_blit`
     /// 共核——着墨位 fg、零位 bg（`None` = 透明不写），像素语义与
     /// glyph-run 同一条；ARGB 面（`Argb`）走 `raster::argb_blit`——
-    /// 像素自带色，`fg/bg` 不适用（A 位 1-bit 透明键，见变体注）。
+    /// 像素自带色，`fg/bg` 不适用（A 位 8-bit straight alpha，见变体注）。
     DrawImage {
         src: ImageSrc<'a>,
         x: i32,
@@ -333,6 +353,11 @@ impl<'a> CommandEncoder<'a> {
         self.record(Cmd::FillRect { rect, paint: PaintDesc { color } })
     }
 
+    /// 抗锯齿圆填充（正方形 bounding box；半径 = 边长/2）。
+    pub fn fill_circle(&mut self, rect: Rect, color: Color) -> Result<(), CmdError> {
+        self.record(Cmd::FillCircle { rect, paint: PaintDesc { color } })
+    }
+
     /// 整数线。
     pub fn draw_line(
         &mut self,
@@ -388,7 +413,7 @@ impl Default for CommandEncoder<'_> {
 /// 命令携带矩形的提取（BadRect 先验的执法点；无矩形命令返 None）。
 fn rect_of<'a>(cmd: &'a Cmd<'_>) -> Option<&'a Rect> {
     match cmd {
-        Cmd::FillRect { rect, .. } => Some(rect),
+        Cmd::FillRect { rect, .. } | Cmd::FillCircle { rect, .. } => Some(rect),
         Cmd::Blit { src, .. } => Some(src),
         Cmd::Present { rect } => Some(rect),
         Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } | Cmd::DrawImage { .. } => None,

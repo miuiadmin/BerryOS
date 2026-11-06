@@ -8,7 +8,7 @@
 - 外轮廓 = OpenHarmony `ohos_icon_mask.png`（非自绘圆角）。
 - glyph = OpenHarmony SVG/PNG 源光栅化后的 alpha 形。
 - 渐变色底 = 本仓生成的 OH 风格配色；仅色值自造，资产形状来自 OH。
-- BYI1 消费面是 1-bit alpha：生成末段统一 threshold，防宿主预览与客机不一致。
+- BYI1 消费面支持 8-bit alpha：生成末段保留抗锯齿 coverage。
 """
 from pathlib import Path
 from PIL import Image
@@ -58,10 +58,9 @@ def make_icon(app: str, glyph: str, c0: tuple, c1: tuple) -> None:
     if exact is not None:
         im = Image.open(ROOT / "raw" / exact).convert("RGBA")
         im = im.resize((S, S), Image.Resampling.LANCZOS)
-        # 6-bit/channel 量化：视觉无级差，BYI1 RLE 显著小于照片级原图。
-        step = 255 // 63
-        im = im.point(lambda v: round(v / step) * step)
-        alpha = im.getchannel("A").point(lambda a: 255 if a >= 128 else 0)
+        # RGB 5-bit + alpha 4-bit：抗锯齿边平滑，RLE 段数受控。
+        im = im.point(lambda v: min(255, round(v / 8) * 8))
+        alpha = im.getchannel("A").point(lambda a: round(a / 17) * 17)
         im.putalpha(alpha)
         dest = OUT_ROOT / app / "icons" / "icon.png"
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +89,8 @@ def make_icon(app: str, glyph: str, c0: tuple, c1: tuple) -> None:
     tile.paste(solid, (gx, gy), g)
 
     out = tile.resize((S, S), R)
-    alpha = out.getchannel("A").point(lambda a: 255 if a >= 128 else 0)
+    out = out.point(lambda v: min(255, round(v / 8) * 8))
+    alpha = out.getchannel("A").point(lambda a: round(a / 17) * 17)
     out.putalpha(alpha)
     dest = OUT_ROOT / app / "icons" / "icon.png"
     dest.parent.mkdir(parents=True, exist_ok=True)

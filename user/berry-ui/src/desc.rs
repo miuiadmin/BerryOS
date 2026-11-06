@@ -56,8 +56,8 @@ pub struct NodeId(pub(crate) u32);
 
 // ---------- 视图集（v1 六件 + GUI-6 段B 三新件——§3.2/§8） ----------
 
-/// 视图种类：`Root/Rect/Text`、容器 `Col/Row/Pad/Grid` 与新叶
-/// `Image/Icon`（叶子带子 = AST 拒面——Rect/Text/Image/Icon 四叶）。
+/// 视图种类：`Root/Rect/Text`、容器 `Col/Row/Pad/Grid` 与叶
+/// `Image/Icon/Circle`（叶子带子 = AST 拒面；Circle = AA 圆点指示器）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     Root,
@@ -69,11 +69,20 @@ pub enum ViewKind {
     Image,
     Icon,
     Grid,
+    Circle,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RectProps {
+    pub bg: Color,
+    pub w: Option<u32>,
+    pub h: Option<u32>,
+}
+
+/// 抗锯齿圆叶属性（bounding box 正方形；w/h 缺一即尺寸随父）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CircleProps {
     pub bg: Color,
     pub w: Option<u32>,
     pub h: Option<u32>,
@@ -167,6 +176,7 @@ pub enum Props {
     Image(ImageProps),
     Icon(IconProps),
     Grid(GridProps),
+    Circle(CircleProps),
 }
 
 /// builder 入口（入口①）的单节点描述：`key != 0` = 调和键（v1 仅随
@@ -338,6 +348,7 @@ pub const KIND_PAD: u8 = 5;
 pub const KIND_IMAGE: u8 = 6;
 pub const KIND_ICON: u8 = 7;
 pub const KIND_GRID: u8 = 8;
+pub const KIND_CIRCLE: u8 = 9;
 
 /// flags bit0 = has_key（v1）。
 pub const FLAG_HAS_KEY: u8 = 1;
@@ -380,6 +391,7 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::Image => KIND_IMAGE,
         ViewKind::Icon => KIND_ICON,
         ViewKind::Grid => KIND_GRID,
+        ViewKind::Circle => KIND_CIRCLE,
     }
 }
 
@@ -394,6 +406,7 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_IMAGE => Some(ViewKind::Image),
         KIND_ICON => Some(ViewKind::Icon),
         KIND_GRID => Some(ViewKind::Grid),
+        KIND_CIRCLE => Some(ViewKind::Circle),
         _ => None,
     }
 }
@@ -487,6 +500,14 @@ pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstEr
             c += put_u32le(&mut out[c..], p.w.unwrap_or(OPT_NONE))?;
             c += put_u32le(&mut out[c..], p.h.unwrap_or(OPT_NONE))?;
         }
+        // Circle 与 Rect 同定长域（kind 字节区分圆形 raster 面）。
+        Props::Circle(p) => {
+            c += put_u8(&mut out[c..], p.bg.r)?;
+            c += put_u8(&mut out[c..], p.bg.g)?;
+            c += put_u8(&mut out[c..], p.bg.b)?;
+            c += put_u32le(&mut out[c..], p.w.unwrap_or(OPT_NONE))?;
+            c += put_u32le(&mut out[c..], p.h.unwrap_or(OPT_NONE))?;
+        }
         Props::Text(p) => {
             let bytes = p.text.as_bytes();
             c += put_u8(&mut out[c..], bytes.len() as u8)?;
@@ -563,6 +584,19 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
             let h = u32at(7);
             Ok((
                 Props::Rect(RectProps {
+                    bg: Color { r: src[0], g: src[1], b: src[2] },
+                    w: if w == OPT_NONE { None } else { Some(w) },
+                    h: if h == OPT_NONE { None } else { Some(h) },
+                }),
+                11,
+            ))
+        }
+        ViewKind::Circle => {
+            need(11)?;
+            let w = u32at(3);
+            let h = u32at(7);
+            Ok((
+                Props::Circle(CircleProps {
                     bg: Color { r: src[0], g: src[1], b: src[2] },
                     w: if w == OPT_NONE { None } else { Some(w) },
                     h: if h == OPT_NONE { None } else { Some(h) },
@@ -755,7 +789,8 @@ fn apply_size_block(
     pos: &mut usize,
 ) -> Result<Props, AstError> {
     match kind {
-        ViewKind::Col | ViewKind::Row | ViewKind::Grid | ViewKind::Rect => {}
+        ViewKind::Col | ViewKind::Row | ViewKind::Grid | ViewKind::Rect
+        | ViewKind::Circle => {}
         _ => return Err(AstError::UnknownProp { kind, got: FLAG_HAS_SIZE }),
     }
     if src.len() < 8 {
@@ -778,6 +813,10 @@ fn apply_size_block(
             p.h = h;
         }
         Props::Grid(p) => {
+            p.w = w;
+            p.h = h;
+        }
+        Props::Circle(p) => {
             p.w = w;
             p.h = h;
         }
@@ -1032,7 +1071,7 @@ fn build_node(
     // child_count（树形走查域——节点本体之后恰一字节）
     let cc = *src.get(*pos).ok_or(AstError::Truncated)? as usize;
     *pos += 1;
-    if matches!(spec.kind, ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon)
+    if matches!(spec.kind, ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle)
         && cc > 0
     {
         return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24）
@@ -1199,7 +1238,7 @@ impl DescBuilder {
             if kind == ViewKind::Root {
                 return Err(AstError::BadParent); // Root 不能为子
             }
-            if matches!(parent_kind, ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon)
+            if matches!(parent_kind, ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle)
             {
                 return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24）
             }

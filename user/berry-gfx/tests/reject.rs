@@ -300,3 +300,19 @@ fn submit_image_pixel_mismatch_handbuilt_cmd() {
     assert_eq!(px(&fb, 2, 3), 0x00FF_FFFF, "on = 白");
     assert_eq!(px(&fb, 3, 3), 0x0000_00FF, "off = 衬底蓝");
 }
+
+#[test]
+fn submit_rejects_non_square_circle() {
+    let d = TextureDesc::new(16, 16, 64, TextureFormat::Rgbx).unwrap();
+    let mut dl = DisplayList::new();
+    dl.push(Cmd::FillCircle {
+        rect: Rect::new(0, 0, 8, 6),
+        paint: berry_gfx::cmd::PaintDesc { color: Color { r: 255, g: 255, b: 255 } },
+    })
+    .unwrap();
+    let mut fb = vec![0u8; d.need_bytes()];
+    assert_eq!(
+        Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()),
+        Err(SubmitError::CircleNotSquare { index: 0 })
+    );
+}

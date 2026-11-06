@@ -219,8 +219,8 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     let cell_gap = if big { 12 } else { 2 };
     let root = ui.root();
 
-    // OpenHarmony phone 默认壁纸：官方 JPEG 宿主预采样成 135×240
-    // 静态源，SmoothArgb 双线性放大到 1080×1920；rodata 直供零堆。
+    // OpenHarmony phone 默认壁纸：官方 JPEG 宿主预采样成 324×576 RGB565
+    // 静态源，SmoothRgb565 双线性放大到 1080×1920；rodata 直供零堆。
     // 800×600 compact 调试档会拉伸该 9:16 源（非 OH phone 精确面）。
     ui.add(
         root,

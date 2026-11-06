@@ -25,6 +25,8 @@ pub enum SubmitError {
     BufferTooSmall { need: usize, got: usize },
     /// dirty 矩形负宽/高（零字节落笔即拒）。
     BadDirtyRect,
+    /// FillCircle bounding box 非正方形（圆语义唯一形）。
+    CircleNotSquare { index: usize },
     /// Blit 源区越纹理界（`index` = 命令序号）。源区必须**整区**在界内
     /// ——半出界裁剪源 = 静默改语义，禁；零尺寸源恒放行（空操作）。
     BlitSrcOutOfBounds { index: usize },
@@ -90,9 +92,11 @@ impl Queue {
                     }
                 }
                 Cmd::DrawImage {
-                    src:
-                    ImageSrc::ScaledArgb { sw, sh, dw, dh, px }
-                    | ImageSrc::SmoothArgb { sw, sh, dw, dh, px },
+                    src: ImageSrc::ScaledArgb { sw, sh, dw, dh, px },
+                    ..
+                }
+                | Cmd::DrawImage {
+                    src: ImageSrc::SmoothArgb { sw, sh, dw, dh, px },
                     ..
                 } => {
                     if *sw == 0
@@ -102,6 +106,24 @@ impl Queue {
                         || (*sw as u64) * (*sh as u64) != px.len() as u64
                     {
                         return Err(SubmitError::ImagePixelMismatch { index: i });
+                    }
+                }
+                Cmd::DrawImage {
+                    src: ImageSrc::SmoothRgb565 { sw, sh, dw, dh, px },
+                    ..
+                } => {
+                    if *sw == 0
+                        || *sh == 0
+                        || *dw == 0
+                        || *dh == 0
+                        || (*sw as u64) * (*sh as u64) != px.len() as u64
+                    {
+                        return Err(SubmitError::ImagePixelMismatch { index: i });
+                    }
+                }
+                Cmd::FillCircle { rect, .. } => {
+                    if rect.w != rect.h {
+                        return Err(SubmitError::CircleNotSquare { index: i });
                     }
                 }
                 Cmd::DrawImage { .. } => {}

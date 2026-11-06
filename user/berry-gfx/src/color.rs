@@ -42,6 +42,22 @@ impl TextureFormat {
             TextureFormat::Bgrx => (b as u32) << 16 | (g as u32) << 8 | r as u32,
         }
     }
+
+    /// 32 位像素值 → RGB 三元组（`pack` 的反函数；soft blend 消费口）。
+    pub fn unpack(&self, px: u32) -> (u8, u8, u8) {
+        match self {
+            TextureFormat::Rgbx => (
+                ((px >> 16) & 0xFF) as u8,
+                ((px >> 8) & 0xFF) as u8,
+                (px & 0xFF) as u8,
+            ),
+            TextureFormat::Bgrx => (
+                (px & 0xFF) as u8,
+                ((px >> 8) & 0xFF) as u8,
+                ((px >> 16) & 0xFF) as u8,
+            ),
+        }
+    }
 }
 
 /// 纹理几何拒面错误（loud 拒——畸形几何绝不带病进光栅核）。

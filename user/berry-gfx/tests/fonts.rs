@@ -192,3 +192,100 @@ fn scaled_clipping_and_dirty() {
         }
     }
 }
+
+// —— HD A8 抗锯齿：HD 图集覆盖面必须产生中间覆盖率像素 ——
+#[test]
+fn hd_font_coverage_blends_edge_pixels() {
+    let d = TextureDesc::new(64, 64, 256, TextureFormat::Rgbx).unwrap();
+    let positions = [GlyphPos { ch: b'B', x: 0, y: 0 }];
+    let run = GlyphRun {
+        atlas: FontSize::S32x48.atlas(),
+        glyphs: &positions,
+        fg: WHITE,
+        bg: None,
+    };
+    let mut fb = vec![0xEEu8; d.need_bytes()];
+    let mut enc = CommandEncoder::new();
+    enc.draw_glyph_run(run).unwrap();
+    let dl = enc.finish();
+    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
+    let mut edge = 0usize;
+    for y in 0..48 {
+        for x in 0..32 {
+            let p = px(&fb, 256, x as i32, y as i32);
+            if p != 0xEEEE_EEEE && p != 0x00FF_FFFF {
+                edge += 1;
+            }
+        }
+    }
+    assert!(edge >= 16, "A8 边缘中间像素过少：{edge}");
+}
+
+// —— HD A8 几何钉板：覆盖率核心与 1-bit HD 形状同位（≤2px） ——
+fn bbox_u8(pixels: &[(usize, usize)]) -> Option<(usize, usize, usize, usize)> {
+    pixels.iter().fold(None, |acc, &(x, y)| match acc {
+        None => Some((x, y, x, y)),
+        Some((x0, y0, x1, y1)) => Some((x0.min(x), y0.min(y), x1.max(x), y1.max(y))),
+    })
+}
+
+#[test]
+fn hd_font_a8_geometry_matches_hd_bits() {
+    let atlas = FontSize::S32x48.atlas();
+    for ch in 33u8..=126 {
+        let bits = atlas.glyph(ch).unwrap();
+        let a8 = atlas.coverage(ch).unwrap();
+        let bit_pts: Vec<_> = (0..bits.h)
+            .flat_map(|y| (0..bits.w).filter(move |&x| bits.bit(x, y)).map(move |x| (x, y)))
+            .collect();
+        let cov_pts: Vec<_> = (0..a8.h)
+            .flat_map(|y| (0..a8.w).filter(move |&x| a8.coverage[y * a8.w + x] >= 32).map(move |x| (x, y)))
+            .collect();
+        let b = bbox_u8(&bit_pts).expect("HD bitmap glyph");
+        let c = bbox_u8(&cov_pts).expect("A8 glyph");
+        for (name, a, d) in [("x0", b.0, c.0), ("y0", b.1, c.1), ("x1", b.2, c.2), ("y1", b.3, c.3)] {
+            assert!(a.abs_diff(d) <= 2, "HD/A8 {name} ch={ch}: {b:?} vs {c:?}");
+        }
+    }
+}
+
+// —— A8 bg=Some：整格衬底 + 白字边缘中间覆盖率 ——
+#[test]
+fn hd_font_a8_with_opaque_background_blends_coverage() {
+    let d = TextureDesc::new(64, 64, 256, TextureFormat::Rgbx).unwrap();
+    let positions = [GlyphPos { ch: b'B', x: 2, y: 3 }];
+    let run = GlyphRun {
+        atlas: FontSize::S32x48.atlas(),
+        glyphs: &positions,
+        fg: WHITE,
+        bg: Some(BLACK),
+    };
+    let mut fb = vec![0x77u8; d.need_bytes()];
+    let mut enc = CommandEncoder::new();
+    enc.draw_glyph_run(run).unwrap();
+    let dl = enc.finish();
+    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
+    assert_eq!(px(&fb, 256, 2, 3), 0, "蜂格衬底铺黑");
+    let mut edge = 0usize;
+    for y in 3..51 {
+        for x in 2..34 {
+            let p = px(&fb, 256, x as i32, y as i32);
+            if p != 0 && p != 0x00FF_FFFF {
+                edge += 1;
+            }
+        }
+    }
+    assert!(edge >= 8, "bg=Some 下仍需中间覆盖率：{edge}");
+}
+
+// —— 非 HD 图集保持 1-bit mono：coverage 面恒 None ——
+#[test]
+fn legacy_font_atlases_have_no_a8_coverage() {
+    for size in [FontSize::S8x16, FontSize::S16x32, FontSize::S24x48] {
+        let atlas = size.atlas();
+        for ch in [b' ', b'A', b'z'] {
+            assert!(atlas.glyph(ch).is_some());
+            assert!(atlas.coverage(ch).is_none(), "{size:?} ch={ch}");
+        }
+    }
+}

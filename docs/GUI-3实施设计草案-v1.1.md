@@ -1,6 +1,8 @@
 # GUI-3 实施设计草案 —— berry-ui 保留树 + 脏区引擎内核（视图 crate）
 
-> 版本：**1.0**（v1.0）｜2026-11-06
+> 版本：**1.1**（v1.1）｜2026-11-06
+>
+> **v1.1 勘误（2026-11-06 视觉质量刀）**：soft 渲染已落 **8-bit straight-alpha 混合**（ARGB/A8/SmoothArgb）；本文早期「v1 无 alpha 无 blend」表述仅保留为 GUI-3 首刀历史前提。遮挡剔除安全性不变：**只有 Rect 叶计入遮挡源**，Image/Icon/Text/Circle 均不 opaque-cover。
 
 > 状态：**契约冻结**（本文 §6 即 impl 契约——workflow impl 逐字照此落码，改契约先改本文）。
 > 钦定源：`docs/GUI里程碑规划-2026-10-v1.0.md` GUI-3 行 + ADR #52/#53 + GUI-10 增件 +3。
@@ -73,7 +75,7 @@
 
 ### 3.5 paint（paint.rs）——验收③主体 + 遮挡剔除
 - **前到后剔除、后到前发射**（OH ui_lite 同路）：按 damage 矩形逐个走树，维护 `RectSet` 已覆盖集（**仅 Rect 叶子（实心不透明）计遮挡源**——Text 蜂格有洞不计，保守正确）；节点可见区 = `bounds ∩ damage − covered` 为空 → skip（`culled++`）；否则记入发射序。
-- 发射序 = 画家算法背到前（后者盖前者——v1 无 alpha 无 blend，gfx 坑 7 立法）；逐节点：Rect → `fill_rect`；Text → GlyphPos run 组进调用方 scratch → `draw_glyph_run`（bg=None 透明底）。尾部必录 `Present{ damage 包络 }`（soft no-op 也要录——真后端零改语义，gfx 坑 8）。
+- 发射序 = 画家算法背到前（后者盖前者；soft 已支持 straight-alpha，但遮挡源仍只计实心 Rect——v1.1 勘误）；逐节点：Rect → `fill_rect`；Text → GlyphPos run 组进调用方 scratch → `draw_glyph_run`（bg=None 透明底）。尾部必录 `Present{ damage 包络 }`（soft no-op 也要录——真后端零改语义，gfx 坑 8）。
 - **overdraw 计数**：`drawn_px`（实际发射面积 ∩ viewport）×256 / viewport 面素 = `overdraw_x256`；预算断言 `≤640`（= 2.5×256，整数比较无浮点）。测试守卫真伪自检：对照场景关剔除必超预算（consensus.rs:12「故意构造破坏形态断言必不相等」同法）。
 - **借用形态**（gfx 坑 1/2 对策）：paint 收 `&self` + 调用方 `scratch: &'a mut [GlyphPos]` + `&mut CommandEncoder<'a>`——DisplayList 的 `'a` 钉在调用方 scratch 与 `'static` 图集上，**不钉在引擎上**（树与列表解耦，无自引用）。`FontSize::atlas()` 返 `&'static dyn GlyphAtlas` 单源。
 
@@ -120,7 +122,7 @@
 | 4 | 录成功 ≠ submit 过 | 诊断面两层：UiError vs SubmitError 分呈（embedder 职责注记） |
 | 5 | 零尺寸 no-op / 负界错误 | §3.4：damage 入口 clip + 零面积丢弃；负 w/h 内部恒非法（RectI 构造收口） |
 | 6 | dirty 只管写不管读 | 本刀无 blit 消费；滚动搬运挂账时回读此条 |
-| 7 | 无 alpha 无 blend | §3.5 画家算法不透明覆盖；遮挡剔除恰因此成立 |
+| 7 | alpha/blend 语义易破遮挡假设 | v1.1 起 soft 支持 8-bit straight-alpha；遮挡剔除只把实心 **Rect** 计遮挡源，Image/Icon/Text/Circle 保守不 cover |
 | 8 | Present 照录 | §3.5 尾命令恒 Present{damage 包络} |
 | 9 | stride/need_bytes | 离屏测试缓冲按 `need_bytes()` 开（末行无 padding） |
 | 10 | 坐标三套 | §0 换算铁律；测试断言含跨界样本 |
@@ -378,7 +380,7 @@ impl Telemetry {
 | `user/berry-ui/tests/{damage,frame,offscreen,tree,layout,reconcile,input,anim,resample,dep}.rs` | 新建 ×10 |
 | `user/Cargo.toml` | members 追加 `"berry-ui"`（guiproto 行后 + 一行注释） |
 | `justfile` | test-host 段 berry-gfx 行后 + 注释 + `cargo test … -p berry-ui --target {{host}}` |
-| `docs/GUI-3实施设计草案-v1.0.md` | 新建（本文件） |
+| `docs/GUI-3实施设计草案-v1.1.md` | 新建（本文件） |
 
 验证（gui3 worktree，`CARGO_TARGET_DIR=$HOME/.cargo-target-gui3`）：
 

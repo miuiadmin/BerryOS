@@ -17,6 +17,7 @@ CELL_H = 48
 FONT_SIZE = 34
 BASELINE = 38
 THRESHOLD = 128
+SS = 4
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -37,12 +38,33 @@ def glyph_rows(font: ImageFont.FreeTypeFont, ch: int) -> list[int]:
     return rows
 
 
+def glyph_coverage(font_ss: ImageFont.FreeTypeFont, ch: int) -> list[int]:
+    # 4x 超采样 + box filter：一个 32×48 输出像素聚合 16 个子样本，
+    # 保持 34px/基线 38 的 HD 形状不变，仅把硬边换成覆盖率。
+    big_w, big_h = CELL_W * SS, CELL_H * SS
+    img = Image.new("L", (big_w, big_h), 0)
+    draw = ImageDraw.Draw(img)
+    advance = round(font_ss.getlength(chr(ch)))
+    x = max(0, (big_w - advance) // 2)
+    draw.text((x, BASELINE * SS), chr(ch), font=font_ss, fill=255, anchor="ls")
+    out: list[int] = []
+    for y in range(CELL_H):
+        for x in range(CELL_W):
+            total = 0
+            for sy in range(SS):
+                for sx in range(SS):
+                    total += img.getpixel((x * SS + sx, y * SS + sy))
+            out.append(total // (SS * SS))
+    return out
+
+
 def build(font_path: Path) -> str:
     font = ImageFont.truetype(str(font_path), FONT_SIZE)
+    font_ss = ImageFont.truetype(str(font_path), FONT_SIZE * SS)
     lines = [
         "//! 本文件由 tools/genhdfont.py 生成——勿手改；改字源/字号后重跑生成器。",
         "//! 字源：Noto Sans CJK SC Regular（ASCII 子集）（SIL Open Font License 1.1，见 fonts/OFL.txt）。",
-        "//! 32×48 HD 档：ASCII 32..126，原生矢量光栅化（非 8×16 最近邻放大）。",
+        "//! 32×48 HD 档：ASCII 32..126，原生矢量光栅化；A8 覆盖子表供抗锯齿。",
         "//! 行序自上而下；每行 4 字节，MSB=最左列。",
         "",
         "pub const CELL_W: usize = 32;",
@@ -58,6 +80,18 @@ def build(font_path: Path) -> str:
             f"0x{((v >> 24) & 0xff):02X}, 0x{((v >> 16) & 0xff):02X}, "
             f"0x{((v >> 8) & 0xff):02X}, 0x{v & 0xff:02X}" for v in vals
         )
+        label = "SP" if ch == 32 else chr(ch)
+        lines.append(f"    /* {ch:3} {label:>2} */ [{body}],")
+    lines.append("];")
+    lines.extend([
+        "",
+        "/// HD 抗锯齿覆盖面：ASCII 32..126，行主序 8-bit coverage。",
+        f"pub static FONT_HD_A8: [[u8; {CELL_W * CELL_H}]; 95] = [",
+    ])
+    for ch in range(32, 127):
+        vals = glyph_coverage(font_ss, ch)
+        assert len(vals) == CELL_W * CELL_H
+        body = ", ".join(f"0x{v:02X}" for v in vals)
         label = "SP" if ch == 32 else chr(ch)
         lines.append(f"    /* {ch:3} {label:>2} */ [{body}],")
     lines.append("];")

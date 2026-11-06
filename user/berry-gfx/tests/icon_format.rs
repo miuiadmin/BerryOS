@@ -289,7 +289,7 @@ fn byi1_every_error_leaves_out_untouched() {
 // —— 端到端：BYI1 wire → decode → DrawImage(Argb) → 像素断言 ——
 //
 // 段② 资产管线的闭环验收：解码产物经 `cmd::ImageSrc::Argb` 绘制消费
-// （同序直用零转换——decode 的 out 即 Argb 的 px）；A 位 1-bit 透明键
+// （同序直用零转换——decode 的 out 即 Argb 的 px）；A 位 8-bit straight alpha
 // 在绘制面执法（数据面只保证 A 原样保留，两半各司其职）。
 #[test]
 fn byi1_to_draw_image_end_to_end() {
@@ -299,9 +299,9 @@ fn byi1_to_draw_image_end_to_end() {
     use berry_gfx::queue::Queue;
 
     // 3×2，四段恰 6 像素：[透明, 半透绿, 蓝, 纯绿, 蓝, 蓝]——半透绿
-    // （A=0x80, RGB=绿）与纯绿渲染必须同值（A 只做非零键、无 blend）。
+    // 与 0xEE 底 straight-alpha 混合（A=0x80 → RGB≈0x77F777）。
     // 注意：本文件既有 BLUE/GREEN 常量的 A 位 = 0（decode 面不消费
-    // alpha 故随手定义）——1-bit 键下是透明像素，此处局部带 A=0xFF。
+    // alpha 故随手定义）——A=0 是透明像素，此处局部带 A=0xFF。
     let wire = byi1(
         3,
         2,
@@ -333,11 +333,11 @@ fn byi1_to_draw_image_end_to_end() {
         u32::from_le_bytes(fb[o..o + 4].try_into().unwrap())
     };
     assert_eq!(rd(2, 3), 0xEEEE_EEEE, "A=0 透明键：底穿透");
-    assert_eq!(rd(3, 3), 0x0000_FF00, "半透绿 → 不透明绿（A 只做非零键，无 blend）");
+    assert_eq!(rd(3, 3), 0x0077_F777, "半透绿 straight-alpha 混合底色");
     assert_eq!(rd(4, 3), 0x0000_00FF, "蓝");
     assert_eq!(rd(2, 4), 0x0000_00FF, "蓝（段序展开：第 3 段跨行延续）");
     assert_eq!(rd(3, 4), 0x0000_00FF);
-    assert_eq!(rd(4, 4), 0x0000_FF00, "纯绿——与半透绿同值（no-blend 对照）");
+    assert_eq!(rd(4, 4), 0x0000_FF00, "纯绿不透明对照");
     assert_eq!(rd(1, 3), 0xEEEE_EEEE, "图像区外未触（左）");
     assert_eq!(rd(2, 2), 0xEEEE_EEEE, "图像区外未触（上）");
     assert_eq!(rd(5, 4), 0xEEEE_EEEE, "图像区外未触（右）");

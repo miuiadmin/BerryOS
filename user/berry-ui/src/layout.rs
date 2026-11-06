@@ -242,6 +242,7 @@ fn intrinsic(
     match &n.props {
         Props::Root => (vp_w, vp_h),
         Props::Rect(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
+        Props::Circle(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
         Props::Text(p) => {
             tm.measure(p.text.as_bytes(), crate::desc::scale_to_u8(p.style.scale))
         }
@@ -412,6 +413,10 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
     match &n.props {
         Props::Root => (avail_w, avail_h),
         Props::Rect(p) => (
+            p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
+            p.h.map(u32_to_i32_sat).unwrap_or(avail_h),
+        ),
+        Props::Circle(p) => (
             p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
             p.h.map(u32_to_i32_sat).unwrap_or(avail_h),
         ),

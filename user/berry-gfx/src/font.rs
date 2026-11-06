@@ -116,6 +116,14 @@ pub struct GlyphCell {
     pub h: usize,
 }
 
+/// 8-bit 覆盖率字形（HD 抗锯齿面；行主序、每像素 1字节 0..=255）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphA8<'a> {
+    pub w: usize,
+    pub h: usize,
+    pub coverage: &'a [u8],
+}
+
 /// 字形图集：codepoint → 单色位图（几何随实现档位——见模块头三档表）。
 /// v1 三个静态实现（[`FontAtlas8x16`]/[`FontAtlas16x32`]/[`FontAtlas24x48`]）；
 /// 图标 LRU 图集走 `icon::IconAtlas` → `cmd::ImageSrc::Icon`（不混入
@@ -132,6 +140,10 @@ pub trait GlyphAtlas {
     }
     /// 取字形位图。域外/缺字形返 `None`。
     fn glyph(&self, ch: u8) -> Option<GlyphBits<'_>>;
+    /// 取 8-bit 抗锯齿覆盖面；缺省 `None` = 图集只有 1-bit 位图。
+    fn coverage(&self, _ch: u8) -> Option<GlyphA8<'_>> {
+        None
+    }
 }
 
 /// 字号档位（段② genfbfont 三档；几何与档位一一对应——`atlas()` 直取
@@ -295,6 +307,15 @@ impl GlyphAtlas for FontAtlas32x48 {
             w: font_data_hd::CELL_W,
             h: font_data_hd::CELL_H,
             rows: g.as_slice(),
+        })
+    }
+    fn coverage(&self, ch: u8) -> Option<GlyphA8<'static>> {
+        let i = usize::from(ch).checked_sub(32)?;
+        let a = font_data_hd::FONT_HD_A8.get(i)?;
+        Some(GlyphA8 {
+            w: font_data_hd::CELL_W,
+            h: font_data_hd::CELL_H,
+            coverage: a.as_slice(),
         })
     }
 }

@@ -5,7 +5,7 @@
 //! - **数据面**（[`IconFormat`]/[`ImageDesc`]/[`decode`]，本模块下半）：
 //!   BYI1 线上格式解码——**裁决 B**（自定义紧凑格式；PNG→ARGB blob/
 //!   RLE 打包在宿主 mkapp 侧完成，guest 只吃定长小头 + RLE 段流）。
-//!   alpha 位**原样保留**（解码不消费——v1 无 blend 铁律；绘制面消费
+//!   alpha 位**原样保留**（解码不消费；绘制面消费
 //!   与否是后端/后续刀决策，此处只保证不丢不猜）；
 //! - **图集面**（[`IconAtlas`]/[`IconLruCache`]，本模块上半）：图标 v1
 //!   绘制面 = **任意几何单色位图**（[`GlyphBits`] 同一位法：行主序、
@@ -16,8 +16,8 @@
 //! 两半的接驳（图标 id → BYI1 blob → `decode` → LRU 装载）是**消费侧
 //! 组合编排**，不进本仓（GUI-4/7——no_std 下解码缓冲归属是消费方决策，
 //! 见 `crate::lru` 头注）。ARGB 像素的绘制消费口 = `cmd::ImageSrc::Argb`
-//! （decode 产物同序直用，`raster::argb_blit` 执行——A 位 1-bit 透明
-//! 键：`A==0` 跳过 / `A!=0` 不透明覆盖，无 blend，v1 铁律不破）。
+//! （decode 产物同序直用，`raster::argb_blit` 执行——A 位 8-bit
+//! straight alpha：0 跳过、1..=255 与目标逐通道混合）。
 //!
 //! 图集两件：
 //! - [`IconAtlas`] trait：id → 位图的查询面（`&self` 口——LRU 碰热经

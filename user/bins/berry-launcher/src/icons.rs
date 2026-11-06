@@ -288,7 +288,7 @@ fn pull(app_h: Handle) -> Option<&'static [AppEntry]> {
     }
 
     // 通用图标 fallback：无 [ui] 图标的 app（测试控制件/系统件）不再
-    // 裸 label 浮在桌面；给一枚中性圆角 tile（48×48，1-bit alpha），
+    // 裸 label 浮在桌面；给一枚中性圆角 tile（48×48，8-bit alpha），
     // app 域/APPUI 记账不受影响。
     let generic_id = faces.len() as u16;
     faces.push(generic_face());
@@ -339,9 +339,9 @@ fn finish_entry(entries: &mut Vec<AppEntry>, faces: &mut Vec<IconFace>, px_used:
     });
 }
 
-/// 通用图标面（无图标 app 的 fallback；中性石板底 + 白环，1-bit alpha）。
+/// 通用图标面（无图标 app 的 fallback；中性石板底 + 白环，8-bit alpha）。
 fn generic_face() -> IconFace {
-    // 108px 源：目标 162px 由 ScaledArgb 1.5x 采样（省 1MiB 堆）。
+    // 108px 源：目标 162px 由 SmoothArgb 1.5x 双线性采样（省 1MiB 堆）。
     const S: usize = 108;
     let mut px = vec![0u32; S * S];
     let mut y = 0usize;
@@ -394,15 +394,16 @@ impl IconSource for LauncherIcons {
     }
 
     fn pixels(&self, id: u16) -> Option<&[u32]> {
-        if id == WALLPAPER {
-            return Some(&wallpaper::WALLPAPER_PX);
-        }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
         Some(&f.px)
     }
 
-    fn smooth_scale(&self, id: u16) -> bool {
-        id == WALLPAPER
+    fn pixels_rgb565(&self, id: u16) -> Option<&[u16]> {
+        (id == WALLPAPER).then_some(&wallpaper::WALLPAPER_PX)
+    }
+
+    fn smooth_scale(&self, _id: u16) -> bool {
+        true
     }
 }

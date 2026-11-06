@@ -233,7 +233,7 @@ fn cull_walk(
     // 子格各自发射）；Image/Icon = 可见叶（§4.3——Text 同列走查，
     // 恒不计遮挡源）。
     match n.kind {
-        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {}
+        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -290,7 +290,7 @@ fn emit_walk_all<'a>(
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
     match n.kind {
-        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {
+        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
@@ -347,13 +347,24 @@ fn emit_node<'a>(
                 rep.cmds += 1;
             }
         }
+        Props::Circle(p) => {
+            if enc
+                .fill_circle(
+                    berry_gfx::cmd::Rect::new(b.x, b.y, b.w, b.h),
+                    p.bg,
+                )
+                .is_ok()
+            {
+                rep.cmds += 1;
+            }
+        }
         Props::Image(p) => {
             emit_image(
-                icons, p.res, Color { r: 0, g: 0, b: 0 }, p.w, p.h, b.x, b.y, enc, rep,
+                icons, p.res, Color { r: 0, g: 0, b: 0 }, p.w, p.h, b.x, b.y, b.w.max(0) as u32, b.h.max(0) as u32, enc, rep,
             );
         }
         Props::Icon(p) => {
-            emit_image(icons, p.id, p.fg, p.w, p.h, b.x, b.y, enc, rep);
+            emit_image(icons, p.id, p.fg, p.w, p.h, b.x, b.y, b.w.max(0) as u32, b.h.max(0) as u32, enc, rep);
         }
         Props::Text(p) => {
             // run 截断到 scratch 余量（容量不足的尾部字形丢弃——调用
@@ -400,9 +411,35 @@ fn emit_image<'a>(
     dh: Option<u32>,
     x: i32,
     y: i32,
+    bw: u32,
+    bh: u32,
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
 ) {
+    let px16 = icons.pixels_rgb565(id);
+    if let (Some(p16), Some((w, h))) = (px16, icons.dims(id)) {
+        // RGB565 供件只有壁纸：目标缺省时用布局终值；1:1 也走同一路
+        //（SmoothRgb565 的比例因子退化为 1，不落回不存在的 ARGB 面）。
+        let (tw, th) = match (dw, dh) {
+            (Some(tw), Some(th)) => (tw, th),
+            _ => (bw, bh),
+        };
+        if tw != 0
+            && th != 0
+            && enc
+                .draw_image(
+                    ImageSrc::SmoothRgb565 { sw: w, sh: h, dw: tw, dh: th, px: p16 },
+                    x,
+                    y,
+                    fg,
+                    None,
+                )
+                .is_ok()
+        {
+            rep.cmds += 1;
+        }
+        return;
+    }
     let px = icons.pixels(id);
     if px.is_none() && !icons.is_empty() {
         debug_assert!(false, "IconSource 真供件缺注册 id={id}（pixels None——注册 bug）");
