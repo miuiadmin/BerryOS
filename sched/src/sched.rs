@@ -824,9 +824,12 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
             let t = &*t;
             t.pi_inherited == 0
                 && t.wait_signals & (SIG_READABLE | SIG_WRITABLE) == 0
-                // 排除 HELD_FROZEN（bit6）——嵌套冻结时已置位，不应被当作
-                // 持锁拒（只有结构锁位 bit1–5 + 未来义务位 bit7 才拒）。
-                && t.held_locks & !crate::task::HELD_FROZEN == 0
+                // 排除 HELD_FROZEN（bit6，嵌套冻结）+ HELD_THROTTLE（bit7，
+                // S5-c 预算限流——调度态非持锁，限流中的 deadline 任务仍可
+                // 被进程冻结）。只有结构锁位 bit1–5 才拒。
+                && t.held_locks
+                    & !(crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE)
+                    == 0
                 && t.svc_mask == 0
         };
         // SLEEPQ
