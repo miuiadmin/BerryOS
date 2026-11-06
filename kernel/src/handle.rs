@@ -101,6 +101,7 @@ pub enum KernelObj {
     Thread(crate::process::Thread),
     Channel(crate::channel::ChannelEnd),
     Event(crate::event::Event),
+    #[allow(dead_code)] // Drop 即语义（thaw_by_pinned）——field 不被直接读
     SuspendToken(crate::suspend::SuspendTok),
 }
 
