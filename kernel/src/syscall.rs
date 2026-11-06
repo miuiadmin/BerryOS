@@ -1141,6 +1141,17 @@ fn apply_sched_attr_to_task(task_ptr: usize, attr: crate::process::SchedAttr) {
                 (*tp).prio_base = berry_sched::PRIO_DEADLINE;
                 (*tp).prio_effective = berry_sched::PRIO_DEADLINE;
                 (*tp).vdeadline = vct;
+                // S5-c 预算执法：周期存 duration_hint_ns（lazy unthrottle 重臂
+                // vdeadline 消费）；预算存 preempt_threshold（tick 面切预算
+                // 尺寸 slice 消费）。两字段此前零消费——零 Task 布局变化。
+                if let Some(period_vct) = ns_to_vct(attr.period_ns) {
+                    (*tp).duration_hint_ns = period_vct;
+                }
+                if let Some(budget_vct) = ns_to_vct(attr.budget_ns) {
+                    let b = budget_vct.min(i32::MAX as u64) as i32;
+                    (*tp).preempt_threshold = b;
+                    (*tp).slice_left = b as u64; // 首期预算 = slice 尺寸
+                }
             }
         }
     }
@@ -2296,6 +2307,28 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // 1.1/S4：受益者付费——send 侧快照发送者域 ID（= Task.pinned）。
     // 零分配（纯填字段）；recv 侧可读（S4 只记不罚——telemetry 计数）。
     msg.billing.domain_id = berry_sched::current_pinned() as u64;
+    // 1.1/S4-b 区间计费终末：本任务是 server（此前 recv 设过区间起点）→
+    // 算差 → 记 client 域账户 → 清起点。Wall-clock 近似（穿插任务混入
+    // ——精确 per-task CPU 需 TCB 扩字段，S5-c 后再议）。
+    {
+        use core::sync::atomic::Ordering;
+        let d = crate::telemetry::BILLING_RECV_DOMAIN.load(Ordering::Relaxed);
+        if d != 0 {
+            let since = crate::telemetry::BILLING_RECV_VCT.load(Ordering::Relaxed);
+            let now = berry_hal_aarch64::timer::cntvct();
+            if now > since {
+                let cycles = now - since;
+                // CNTVCT→ns：频率走 CNTFRQ（QEMU virt 62.5MHz，真机可变）。
+                let freq = berry_hal_aarch64::timer::cntfrq();
+                if freq != 0 {
+                    let ns = cycles * 1_000_000_000 / freq;
+                    crate::telemetry::billing_charge(d, ns);
+                }
+            }
+            // 清起点（下一个 recv 重设）。
+            crate::telemetry::BILLING_RECV_DOMAIN.store(0, Ordering::Relaxed);
+        }
+    }
     // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核禁切
     // 无插队，g3-1c-2 段守卫在持）：无随行 handle + 队列空 + 恰一个非哨兵
     // READABLE 等待者且无哨兵在场 → fastpath；否则 slowpath（检查链其余项
@@ -2496,12 +2529,13 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     // 超帽的语义与遥测见 `berry_sched::intent`；CURRENT 无效则跳过不记）。
     // SAFETY: 本端门控过；只读 no_intent 标志。
     let opt_out = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).map_or(false, |e| e.no_intent());
-    // 1.1/S4：recv 侧读取 billing 域 ID——S4 只记（telemetry 计数）不罚。
-    // domain_id != 0 = 有归属（跨进程消息）；== 0 = 内核任务（记 system）。
-    // `msg` 在此行之前已被 dequeue 弹出（所有权已移）——billing 字段随行。
-    // S5 起：server 侧运行时将记到此 domain（受益者付费的执行半边）。
+    // 1.1/S4-b：recv 侧——记跨域计数 + 设区间计费起点（domain + CNTVCT 戳）。
+    // S4-a 计数 + S4-b 区间起点：send 侧（server 回复时）算差 → 记 client 域。
     if msg.billing.domain_id != 0 {
         crate::telemetry::billing_cross_domain();
+        // S4-b 区间起点：per-CPU 槽（v1 单核 0 号；SMP 需 per-CPU 数组）。
+        crate::telemetry::BILLING_RECV_DOMAIN.store(msg.billing.domain_id, core::sync::atomic::Ordering::Relaxed);
+        crate::telemetry::BILLING_RECV_VCT.store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
     }
     if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
         match out {

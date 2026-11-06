@@ -106,6 +106,38 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
     }
 }
 
+/// S5-c lazy unthrottle：扫环上被冻结的 deadline 任务——`cntvct() ≥ vdeadline`
+/// 者周期到：解冻（清 HELD_FROZEN）+ 重臂 vdeadline（+= duration_hint_ns =
+/// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义：
+/// 每期至多 budget CPU 时长；超了等下期。
+///
+/// # Safety
+/// rq 环节点有效；调用侧屏蔽窗（pick_next 语境）。
+unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) {
+    let now = hal::timer::cntvct();
+    let head = rq.head();
+    let mut cur = head;
+    while let Some(c) = cur {
+        let t = c.as_ptr();
+        cur = (*t).rq_next.get();
+        // 快路径：非 deadline 或未冻结 → 一比较跳过。
+        if (*t).prio_effective >= PRIO_DEADLINE
+            && (*t).held_locks & crate::task::HELD_FROZEN != 0
+            && now >= (*t).vdeadline
+            && (*t).duration_hint_ns > 0
+        {
+            // 慢路径：周期到 → 解冻 + 重臂 + 新预算。
+            (*t).held_locks &= !crate::task::HELD_FROZEN;
+            (*t).vdeadline = (*t).vdeadline.saturating_add((*t).duration_hint_ns);
+            let b = (*t).preempt_threshold.max(0) as u64;
+            if b > 0 {
+                (*t).slice_left = b;
+            }
+        }
+        if cur == head { break; } // 环回起点 → 一圈完成
+    }
+}
+
 impl SchedClass for Fair {
     fn enqueue(&self, t: &mut Task, rq: &mut Runqueue) {
         t.state = TaskState::Ready;
@@ -131,6 +163,11 @@ impl SchedClass for Fair {
     }
 
     fn pick_next(&self, rq: &Runqueue, _topo: &Topo) -> Option<&mut Task> {
+        // S5-c lazy unthrottle：周期到的冻结 deadline 任务——解冻 + 重臂
+        // vdeadline（+= period，存 duration_hint_ns）+ 授新预算 slice。
+        // 零额外定时器：pick_next 高频调用的顺带扫（is_deadline 一比较快
+        // 路过；冻结位零任务直接跳过）。
+        unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, core::ptr::null_mut())?;
         // SAFETY: scan_filtered 契约（环上节点在环、调用侧屏蔽窗）。
         unsafe { rq.advance_past(chosen) };
@@ -166,6 +203,17 @@ impl SchedClass for Fair {
         t.vruntime = t.vruntime.saturating_add(vdelta);
         if t.slice_left == 0 && !is_deadline(t) {
             t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
+        }
+        // S5-c 预算执法：deadline 任务的 slice = 预算尺寸（spawn 时由
+        // preempt_threshold 设定）。slice 耗尽 = 本期预算用完 → throttle
+        //（HELD_FROZEN 置位 → eligible 过滤 → 不再出选）。周期到 →
+        // lazy_unthrottle（pick_next 面扫）解冻 + 重臂 + 新预算。
+        if t.slice_left == 0
+            && is_deadline(t)
+            && t.preempt_threshold > 0
+            && t.held_locks & crate::task::HELD_FROZEN == 0
+        {
+            t.held_locks |= crate::task::HELD_FROZEN;
         }
     }
 

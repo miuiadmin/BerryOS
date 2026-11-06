@@ -44,6 +44,7 @@ pub fn run() {
     test_fast();
     test_freeze();
     test_deadline();
+    test_billing();
     test_sched_attr();
     test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
@@ -3020,6 +3021,32 @@ fn test_freeze() {
     berry_hal_aarch64::uart_puts(b"FREEZE-K ok\n");
 }
 
+/// 1.1/S4-b：per-domain CPU 账户——charge / query / 表满覆写。
+fn test_billing() {
+    use crate::telemetry;
+
+    // BL1：charge + query 往返。
+    telemetry::billing_charge(100, 1_000);
+    telemetry::billing_charge(100, 2_000);
+    assert_eq!(telemetry::billing_domain_total(100), Some(3_000),
+               "BL：BL1 域 100 须累计 3000ns");
+
+    // BL2：多域隔离。
+    telemetry::billing_charge(200, 500);
+    assert_eq!(telemetry::billing_domain_total(100), Some(3_000),
+               "BL：BL2 域 100 不受域 200 影响");
+    assert_eq!(telemetry::billing_domain_total(200), Some(500),
+               "BL：BL2 域 200 须 500ns");
+
+    // BL3：域 0 / 零时长拒收（无副作用）。
+    telemetry::billing_charge(0, 999);
+    telemetry::billing_charge(300, 0);
+    assert_eq!(telemetry::billing_domain_total(300), None,
+               "BL：BL3 零时长 charge 须无副作用（不建槽）");
+
+    berry_hal_aarch64::uart_puts(b"BL-K ok\n");
+}
+
 /// 1.1/S1：SchedAttr effective 组合（Process 默认 ∪ Thread 覆盖）。
 fn test_sched_attr() {
     use crate::process::{SchedAttr, SA_FLAG_INTENT, SA_FLAG_POLICY, SA_FLAG_WEIGHT};
@@ -3049,7 +3076,7 @@ fn test_sched_attr() {
 /// 序 = 天然 EDF。deadline 任务设 `prio_effective ≥ PRIO_DEADLINE` +
 /// `vdeadline = 绝对截止期`，Fair 不覆盖 VD。
 fn test_deadline() {
-    use berry_sched::{Fair, PRIO_DEADLINE, Runqueue, SchedClass, Task, Topo};
+    use berry_sched::{Fair, PRIO_DEADLINE, Runqueue, SchedClass, Task, Topo, HELD_FROZEN};
 
     extern "C" fn dl_dummy(_arg: usize) -> ! {
         berry_hal_aarch64::halt()
@@ -3097,6 +3124,43 @@ fn test_deadline() {
     // D3：deadline 带空 → 所有任务退回 fair——任一出选即通过（不验具体是谁，
     // 因为 advance_past 游标位置决定首见者——三任务均合法）。
     let _p3 = rr.pick_next(&rq, &topo).expect("DL：D3 非空环须有出选");
+
+    // —— S5-c：预算执法——budget 耗尽 throttle + 周期到 lazy unthrottle ——
+    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_FROZEN 置位。
+    let tb = mk(b"dlB".as_slice()); // budget 任务
+    let tf2 = mk(b"dlF2".as_slice()); // fair 陪跑
+    let mut rq2 = Runqueue::new();
+
+    // 设 deadline + 预算。
+    tb.prio_effective = PRIO_DEADLINE;
+    tb.preempt_threshold = 100; // 预算 = 100 cycles
+    tb.duration_hint_ns = 1000; // 周期 = 1000 cycles
+    tb.vdeadline = u64::MAX; // 截止远（永不到——测 throttle 持续）
+    tb.slice_left = 100; // 当前 slice = 预算
+    rr.enqueue(&mut *tb, &mut rq2);
+    rr.enqueue(&mut *tf2, &mut rq2);
+
+    // tick 到 slice 耗尽 → 应 throttle（HELD_FROZEN 置位）。
+    // tick 读 timer 内部算 delta——直接置 slice_left=0 后 tick 模拟到期。
+    tb.slice_left = 0;
+    let rq_mut = &mut rq2;
+    let cur2 = tb as *mut berry_sched::Task;
+    let _ = rq_mut; // tick 签名需 rq 但 Fair::tick 未用——传 ref
+    rr.tick(unsafe { &mut *cur2 }, unsafe { &mut *core::ptr::addr_of_mut!(rq2) });
+    assert!(tb.held_locks & HELD_FROZEN != 0,
+            "DL：B1 slice 耗尽须置 HELD_FROZEN（throttle）");
+    // fair 陪跑不受影响。
+    assert!(tf2.held_locks & HELD_FROZEN == 0,
+            "DL：B1 fair 任务不受 deadline 预算执法影响");
+
+    // DL-B2：周期到（vdeadline 过去）→ lazy_unthrottle 解冻。
+    tb.vdeadline = 1; // 截止已过（cntvct ≥ 1）
+    // 触发 pick_next → lazy_unthrottle → 解冻。
+    let picked = rr.pick_next(&rq2, &topo).expect("DL：B2 非空环须有出选");
+    assert!(picked.held_locks & HELD_FROZEN == 0,
+            "DL：B2 周期到后 lazy_unthrottle 须解冻");
+    assert!(picked.slice_left == 100,
+            "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
