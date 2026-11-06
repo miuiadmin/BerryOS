@@ -1823,7 +1823,7 @@ const SA_F_KNOWN: u16 = 0x00FF;
 
 /// 读入并校验一个 `berry_sched_attr`。返回 `(属性, 调用方声明 size)`——
 /// `getattr` 需要原 size 决定回写尾部长度。
-fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i32> {
+pub(crate) fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i32> {
     let mut buf = [0u8; SCHED_ATTR_MAX];
     if let Err(e) = copy_from_user(el1, ptr, &mut buf[..SCHED_ATTR_SIZE]) {
         return Err(e);

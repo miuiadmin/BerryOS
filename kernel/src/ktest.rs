@@ -46,6 +46,9 @@ pub fn run() {
     test_deadline();
     test_billing();
     test_cmp();
+    test_suspend_negative();
+    test_billing_overflow();
+    test_sched_attr_negative();
     test_sched_attr();
     test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
@@ -3046,6 +3049,110 @@ fn test_billing() {
                "BL：BL3 零时长 charge 须无副作用（不建槽）");
 
     berry_hal_aarch64::uart_puts(b"BL-K ok\n");
+}
+
+/// 1.1/S5.12 负向：`count_type` 类型过滤语义（token 上限执法读侧判据）。
+fn test_suspend_negative() {
+    use crate::handle::{HandleTable, KernelObj, ObjType, RIGHT_READ, RIGHT_WRITE};
+    use crate::vmo::Vmo;
+
+    // A. 空表 → SuspendToken 计数 0。
+    let mut ht = HandleTable::new();
+    assert_eq!(ht.count_type(ObjType::SuspendToken), 0,
+        "SUS-NEG：空表 SuspendToken 计数须 0");
+
+    // B. 插 2 个 Vmo → SuspendToken 计数仍 0（类型隔离）。
+    let rw = RIGHT_READ | RIGHT_WRITE;
+    let h1 = ht.insert(KernelObj::Vmo(Vmo::create(4096).unwrap()), rw).unwrap();
+    let h2 = ht.insert(KernelObj::Vmo(Vmo::create(4096).unwrap()), rw).unwrap();
+    assert_eq!(ht.count_type(ObjType::Vmo), 2, "SUS-NEG：Vmo 计数须 2");
+    assert_eq!(ht.count_type(ObjType::SuspendToken), 0,
+        "SUS-NEG：Vmo 不污染 SuspendToken 计数");
+
+    // C. 全关归零。
+    ht.close(h1).unwrap();
+    ht.close(h2).unwrap();
+    assert_eq!(ht.count_type(ObjType::Vmo), 0, "SUS-NEG：全关归零");
+
+    berry_hal_aarch64::uart_puts(b"SUS-NEG-K ok\n");
+}
+
+/// 1.1/S4-b 补测：billing 表满覆写（9 域逼满 8 槽）。
+fn test_billing_overflow() {
+    use crate::telemetry;
+    assert_eq!(telemetry::BILLING_SLOTS, 8, "BL-OVF：槽位须 8");
+    for d in 300u64..=308 { // 避开 test_billing 的 100/200
+        telemetry::billing_charge(d, 1_000);
+    }
+    // 第 9 域（308）落账可查——覆写是新顶旧不丢账。
+    assert_eq!(telemetry::billing_domain_total(308), Some(1_000),
+        "BL-OVF：域 308 须覆写落账 1000ns");
+    berry_hal_aarch64::uart_puts(b"BL-OVF-K ok\n");
+}
+
+/// 1.1/S1 负向：sa_parse 输入校验面（sched_setattr 底层验证器直测）。
+fn test_sched_attr_negative() {
+    use crate::syscall::sa_parse;
+    const ERR_INVAL: i32 = -22;
+    const ERR_NOTSUP: i32 = -95;
+
+    // 构造 56B attr 并填字段。
+    fn mk_attr(version: u16, flags: u16, weight: u32, policy: u8,
+               budget: u64, period: u64) -> ([u8; 56], u64) {
+        let mut b = [0u8; 56];
+        b[0..4].copy_from_slice(&56u32.to_le_bytes());
+        b[4..6].copy_from_slice(&version.to_le_bytes());
+        b[6..8].copy_from_slice(&flags.to_le_bytes());
+        b[8..12].copy_from_slice(&weight.to_le_bytes());
+        b[12] = policy;
+        b[40..48].copy_from_slice(&budget.to_le_bytes());
+        b[48..56].copy_from_slice(&period.to_le_bytes());
+        // 写入静态槽取地址（EL1 形态——ktest 跑在 EL1）。
+        (b, 0) // 地址由调用方填
+    }
+
+    // 静态 attr 槽（SA_PARSE 测试面——每次覆写）。
+    static mut ATTR_BUF: [u8; 56] = [0; 56];
+
+    fn parse(version: u16, flags: u16, weight: u32, policy: u8,
+             budget: u64, period: u64) -> Result<(), i32> {
+        unsafe {
+            ATTR_BUF[0..4].copy_from_slice(&56u32.to_le_bytes());
+            ATTR_BUF[4..6].copy_from_slice(&version.to_le_bytes());
+            ATTR_BUF[6..8].copy_from_slice(&flags.to_le_bytes());
+            ATTR_BUF[8..12].copy_from_slice(&weight.to_le_bytes());
+            ATTR_BUF[12] = policy;
+            ATTR_BUF[40..48].copy_from_slice(&budget.to_le_bytes());
+            ATTR_BUF[48..56].copy_from_slice(&period.to_le_bytes());
+            let ptr = core::ptr::addr_of!(ATTR_BUF) as u64;
+            sa_parse(true, ptr).map(|_| ())
+        }
+    }
+
+    // AN-1: weight=0 → EINVAL。
+    assert_eq!(parse(1, 0x0001, 0, 1, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：weight=0 须拒");
+    // AN-2: weight=10001 → EINVAL。
+    assert_eq!(parse(1, 0x0001, 10001, 1, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：weight=10001 须拒");
+    // AN-3: version=2 → ENOTSUP。
+    assert_eq!(parse(2, 0, 100, 1, 0, 0), Err(ERR_NOTSUP),
+        "ATTR-NEG：version=2 须 ENOTSUP");
+    // AN-4: flags 未知位 → EINVAL。
+    assert_eq!(parse(1, 0x1000, 100, 1, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：未知 flags 位须拒");
+    // AN-5: policy=5 → EINVAL。
+    assert_eq!(parse(1, 0x0004, 100, 5, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：policy=5 须拒");
+    // AN-6: budget > period → EINVAL。
+    assert_eq!(parse(1, 0x0084, 100, 3, 100, 50), Err(ERR_INVAL),
+        "ATTR-NEG：budget>period 须拒");
+    // AN-7: budget=0 → EINVAL。
+    assert_eq!(parse(1, 0x0084, 100, 3, 0, 100), Err(ERR_INVAL),
+        "ATTR-NEG：budget=0 须拒");
+
+    let _ = mk_attr; // 消 unused 警
+    berry_hal_aarch64::uart_puts(b"ATTR-NEG-K ok\n");
 }
 
 /// 1.1 §4.5 CMP 验收——单比较器全序 property（ktest 形态）。
