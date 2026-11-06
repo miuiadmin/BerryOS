@@ -28,7 +28,8 @@ BerryOS 文档此前全数平铺在 `docs/`（85 项）与 `research/`：知识�
 - 本批同批落地件：载荷 20 文件 + 2 桥 + `docs/README.md` 改写 + `.agents/research/README.md` BerryOS 特记 + 本笔记；check-docs 默认面（`.agents/` + `docs/`）基线 108 篇 0 告警，`docs_guard` PASS 0 警。
 - `--strict` 提交闸门可挂未挂：本仓多会话重度并行，pre-commit 会因兄弟会话的工作树半成品而误拦无关提交；是否挂钩留给仓主决定。
 - AGENTS.md 预算用到 3000/3400（警线恰压线零警）：入口再有任何增量即触警，扩充前需先迁出。
-- 三份共笔登记文件（`docs/索引.md`、`docs/阶段沿革.md`、`docs/命令速览.md`）落地当时有兄弟会话活动改动，为不夹带未登记（并行会话纪律优先）；待文件空闲后补：索引补 `.agents/` 与 `docs/README.md` 条目、沿革追记一行、命令速览补 `node .agents/tools/check-docs.mjs`。
+- `--strict` 提交闸门已装**路径过滤版** pre-commit（`f5de7e0` 同日补）：仅当暂存面含 `docs/` 或 `.agents/` 路径时跑 `check-docs --strict`，纯代码提交零影响；卸载即 `rm .git/hooks/pre-commit`。本仓多会话重度并行，故不采用 Curia 文档示例的无过滤全局钩子。
+- 三份共笔登记文件的补登（同日二刀 `f11c8fb`，选择性构造提交——私有 index 双基 blob + 真 index 修补，零扰动兄弟会话）：`docs/索引.md` 已入册 README.md 行（总数 79→80、一区计数 5→6 同动）；`docs/命令速览.md` 已补 `check-docs.mjs` 行；`docs/阶段沿革.md` 因兄弟会话正在尾部重写流水节（七十八→八十）继续顺延，待其落地后补一行 Curia 引入节。
 - fork-and-own：上游无 upgrade 子命令，日后同步靠对空目录重跑 init 做 diff。
 - `.claude/skills` 桥因 `.claude/` 整目录在 `.gitignore` 而不入库（本机在位）；新 clone 后 Claude Code 技能桥需手工重建 `ln -s ../.agents/skills .claude/skills`，规则读取不受影响（CLAUDE.md `@import` 在位）；`.codex/skills` 桥以符号链接对象入库，clone 自动还原。
 
