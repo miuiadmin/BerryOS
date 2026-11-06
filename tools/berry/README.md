@@ -45,7 +45,7 @@ just berry shot --image out/berryos.img --out out/shot.png --timeout 120
 just berry shot --image out/berryos.img --profile phone --out out/phone.png
 just berry screenshot --out out/shot.png --settle-ms 500   # 抓正在跑的 shell，不重启
 just shell                                  # GUI 优先（out/berryos.img）/ console 回退
-just desktop                                # GUI 桌面：out/berryos-hd.img + out/gui-data.img + tablet + 1280×720@60
+just desktop                                # GUI 桌面：out/berryos-fullhd.img + out/gui-data.img + tablet + 1920×1080@60
 just berry shell --profile phone --timeout 30
 just berry device list
 just berry device status --run <id>
@@ -116,7 +116,7 @@ C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异�
 | id | 面板 | 客机渲染 | 备注 |
 | --- | --- | --- | --- |
 | `default` | 800×600 | 800×600 | P1 兼容档 / CI |
-| `desktop` | 1280×720 | 1280×720 | GUI 16:9 桌面档（`just desktop`） |
+| `desktop` | 1920×1080 | 1920×1080 | GUI 16:9 桌面档（`just desktop`） |
 | `phone` | 1080×2250 | 480×1000 | 默认；恰好用满 800×600 GOP 缓冲 |
 | `phone16` | 1080×1920 | 480×854 | 16:9 |
 | `phone20` | 1080×2400 | 540×1200 | 已支持：buddy 4MB 连续 fb + ramfb 重编程 |
