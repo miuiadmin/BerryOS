@@ -925,7 +925,7 @@ shell: berry-build
 desktop: berry-build
     #!/bin/sh
     set -e
-    # 16:9 HD 镜像优先；视觉基线/主镜像/旧预览件依次回退。
+    # 竖屏 1080×1920 镜像优先；横屏/旧视觉/主镜像依次回退。
     IMG=out/berryos-portrait.img
     [ -f "$IMG" ] || IMG=out/berryos-hd.img
     [ -f "$IMG" ] || IMG=out/berryos-visual.img
