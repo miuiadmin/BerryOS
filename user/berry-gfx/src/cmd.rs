@@ -80,8 +80,8 @@ pub struct PaintDesc {
 /// 直映射点阵索引，无整形引擎——文字三段解耦的第一段在此最薄）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlyphPos {
-    /// 字节码点（v1 图集面 = 8×16 点阵 ASCII，与 fbcon 同域）。
-    pub ch: u8,
+    /// Unicode 码点（v1 常用面 = ASCII；HD A8 另携桌面中文标签子集）。
+    pub ch: u32,
     /// 字形左上角像素 x。
     pub x: i32,
     /// 字形左上角像素 y。

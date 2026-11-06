@@ -76,7 +76,7 @@ fn missing_glyph_blank_consensus() {
         let mut b = vec![0xEEu8; d.need_bytes()];
         let run = GlyphRun {
             atlas: &FontAtlas8x16,
-            glyphs: &[GlyphPos { ch, x: 8, y: 16 }], // 蜂格 (1,1)
+            glyphs: &[GlyphPos { ch: u32::from(ch), x: 8, y: 16 }], // 蜂格 (1,1)
             fg: Color { r: fg.0, g: fg.1, b: fg.2 },
             bg: Some(Color { r: bg.0, g: bg.1, b: bg.2 }),
         };
@@ -110,7 +110,7 @@ fn display_list_replay_two_targets_and_formats() {
         .unwrap();
     let run = GlyphRun {
         atlas: &FontAtlas8x16,
-        glyphs: &[GlyphPos { ch: b'#', x: 0, y: 0 }],
+        glyphs: &[GlyphPos { ch: u32::from(b'#'), x: 0, y: 0 }],
         fg: Color { r: 255, g: 255, b: 255 },
         bg: Some(Color { r: 0x12, g: 0x34, b: 0x56 }),
     };
@@ -169,7 +169,7 @@ fn hostile_glyph_run_missing_glyph_clamps_cell() {
     // [10,16)×[4,16)——缺字形 + bg=Some → 全 bg 空格蜂格（fill_rect 面）。
     let run = GlyphRun {
         atlas: &HostileGlyphAtlas,
-        glyphs: &[GlyphPos { ch: b'#', x: 10, y: 4 }],
+        glyphs: &[GlyphPos { ch: u32::from(b'#'), x: 10, y: 4 }],
         fg: Color { r: 255, g: 255, b: 255 },
         bg: Some(Color { r: 0, g: 0, b: 255 }),
     };

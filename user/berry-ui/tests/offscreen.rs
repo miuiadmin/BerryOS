@@ -157,9 +157,9 @@ fn golden_cmd_stream_col_scene() {
     match cmds[1] {
         Cmd::DrawGlyphRun { run } => {
             assert_eq!(run.glyphs.len(), 2);
-            assert_eq!(run.glyphs[0].ch, b'A');
+            assert_eq!(run.glyphs[0].ch, u32::from(b'A'));
             assert_eq!((run.glyphs[0].x, run.glyphs[0].y), (0, 16));
-            assert_eq!(run.glyphs[1].ch, b'B');
+            assert_eq!(run.glyphs[1].ch, u32::from(b'B'));
             assert_eq!((run.glyphs[1].x, run.glyphs[1].y), (8, 16));
             assert_eq!(run.fg, FG);
             assert_eq!(run.bg, None, "TextStyle.bg None 透传透明底");
@@ -179,6 +179,47 @@ fn golden_cmd_stream_col_scene() {
         Cmd::Present { rect } => assert_eq!((rect.x, rect.y, rect.w, rect.h), (0, 0, 64, 48)),
         other => panic!("cmd3 应为 Present，实为 {:?}", other),
     }
+}
+
+// ---------- UTF-8 CJK 标签：字节存储、码点测量/绘制同源 ----------
+#[test]
+fn utf8_cjk_label_layout_and_paint_codepoints() {
+    let mut ui = UiMain::new(W as u32, H as u32);
+    let root = ui.root();
+    let text = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Text,
+                key: 0,
+                props: Props::Text(TextProps {
+                    style: TextStyle { fg: FG, bg: None, scale: FontSize::S32x48 },
+                    text: TextBuf::new("设置".as_bytes()).unwrap(),
+                }),
+            },
+        )
+        .unwrap();
+    ui.layout();
+    // UTF-8 6B → 2 个全宽码点（不是 6 蜂格）。
+    assert_eq!(ui.bounds(text).unwrap(), RectI::new(0, 0, 64, 48));
+    ui.wake(0);
+    let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+    let mut enc = CommandEncoder::new();
+    let rep = ui.paint(&mut scr, &mut enc);
+    assert_eq!(rep.cmds, 2, "GlyphRun + Present");
+    let dl = enc.finish();
+    let mut seen = 0;
+    for cmd in dl.iter() {
+        if let Cmd::DrawGlyphRun { run } = cmd {
+            assert_eq!(run.glyphs.len(), 2);
+            assert_eq!(run.glyphs[0].ch, 0x8BBE);
+            assert_eq!(run.glyphs[1].ch, 0x7F6E);
+            assert_eq!((run.glyphs[0].x, run.glyphs[1].x), (0, 32));
+            assert!(run.atlas.coverage_cp(0x8BBE).is_some());
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 1);
 }
 
 // ---------- ② 逐像素 golden：soft 光栅共识 ----------

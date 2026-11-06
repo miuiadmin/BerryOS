@@ -43,6 +43,7 @@ pub mod paint;
 pub mod resample;
 pub mod swipe;
 pub mod telemetry;
+pub mod utf8;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
 
 // 扁平面 re-export：门面签名里不限定模块路径的名字（§6 用法对齐）。
@@ -903,10 +904,14 @@ impl<const N: usize> Ui<N> {
                 Some(Props::Text(tp)) => tp.text,
                 _ => return Err(UiError::NodeBad), // unreachable（is_text 已验）——loud 防御
             };
+            let old_size = self.tm.measure(old.as_bytes(), desc::scale_to_u8(old.style.scale));
+            let new_size = self.tm.measure(buf.as_bytes(), desc::scale_to_u8(old.style.scale));
             let m = if old.as_bytes() == buf.as_bytes() {
                 mask::ChangeMask::NONE // 同文：零操作（D2）
-            } else if old.len == buf.len {
-                mask::ChangeMask::TEXT.union(mask::ChangeMask::BG) // 等长换文：纯 PAINT
+            } else if old.len == buf.len && old_size == new_size {
+                // 等长且内在宽同（ASCII 等宽常态）：纯 PAINT。UTF-8 下等字节
+                // 长不必然等码点数，故尺寸面入判（CJK 首刀）。
+                mask::ChangeMask::TEXT.union(mask::ChangeMask::BG)
             } else {
                 mask::ChangeMask::TEXT
                     .union(mask::ChangeMask::BG)

@@ -58,7 +58,7 @@ fn golden_small_literal_rgbx() {
     enc.fill_rect(Rect::new(2, 2, 4, 4), Color { r: 0, g: 0, b: 255 }).unwrap();
     let run = GlyphRun {
         atlas: &FontAtlas8x16,
-        glyphs: &[GlyphPos { ch: b'A', x: 8, y: 0 }],
+        glyphs: &[GlyphPos { ch: u32::from(b'A'), x: 8, y: 0 }],
         fg: Color { r: 255, g: 255, b: 255 },
         bg: Some(Color { r: 0, g: 0, b: 0 }),
     };
@@ -143,7 +143,7 @@ fn golden_scene_reference_algorithm() {
     let positions: Vec<GlyphPos> = text
         .bytes()
         .enumerate()
-        .map(|(i, ch)| GlyphPos { ch, x: (i * 8) as i32, y: 0 })
+        .map(|(i, ch)| GlyphPos { ch: u32::from(ch), x: (i * 8) as i32, y: 0 })
         .collect();
     let run = GlyphRun {
         atlas: &FontAtlas8x16,
@@ -178,7 +178,7 @@ fn golden_scene_reference_algorithm() {
     };
     fill(&mut ex, 24, 4, 16, 8, pack(255, 0, 0)); // 红条
     for &GlyphPos { ch, x, y } in &positions {
-        let g = berry_fbcon::font::glyph(ch).unwrap();
+        let g = berry_fbcon::font::glyph(u8::try_from(ch).unwrap()).unwrap();
         for (gy, &bits) in g.iter().enumerate() {
             for gx in 0..8usize {
                 let on = bits & (0x80 >> gx) != 0;

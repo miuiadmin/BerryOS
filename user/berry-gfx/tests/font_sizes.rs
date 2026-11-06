@@ -91,7 +91,7 @@ fn three_size_string_render_consensus() {
         let positions: Vec<GlyphPos> = text
             .iter()
             .enumerate()
-            .map(|(i, &ch)| GlyphPos { ch, x: (i * cw) as i32, y: 0 })
+            .map(|(i, &ch)| GlyphPos { ch: u32::from(ch), x: (i * cw) as i32, y: 0 })
             .collect();
         let run = GlyphRun { atlas: size.atlas(), glyphs: &positions, fg, bg: Some(bg) };
         let mut enc = CommandEncoder::new();

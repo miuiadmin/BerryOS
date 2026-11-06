@@ -111,6 +111,30 @@ const TEST_IDS: [&[u8]; 2] = [b"APPDEMO", b"APPQUIET"];
 /// OH PhonePresetDockItem 官方顺序。
 const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"PHOTOS", b"SETTINGS", b"MMS"];
 
+/// 1080p phone 档的官方系统 app 中文标签（compact 调试面保留 manifest
+/// 英文标签，保证 ASCII 调试/冒烟几何零漂）。
+const ZH_LABELS: &[(&[u8], &[u8])] = &[
+    (b"SETTINGS", "设置".as_bytes()),
+    (b"FILES", "文件".as_bytes()),
+    (b"PHOTOS", "图库".as_bytes()),
+    (b"CAMERA", "相机".as_bytes()),
+    (b"CONTACTS", "通讯录".as_bytes()),
+    (b"MMS", "信息".as_bytes()),
+    (b"BROWSER", "浏览器".as_bytes()),
+];
+
+/// 显示 label 单源：phone 大屏取官方中文短名，小屏/未知 app 取 manifest。
+fn display_label(e: &crate::icons::AppEntry, big: bool) -> &[u8] {
+    if big {
+        for (id, label) in ZH_LABELS {
+            if *id == e.id_bytes() {
+                return label;
+            }
+        }
+    }
+    e.label_bytes()
+}
+
 /// 文本配色（白色 = systemui TintStateManager 默认 contentColor）。
 const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
@@ -384,7 +408,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         cursor += 1;
         plan[page][slot] = match reg.iter().position(|e| e.id_bytes() == c.app_bytes()) {
             Some(i) => SlotPlan {
-                label: reg[i].label_bytes(),
+                label: display_label(&reg[i], big),
                 icon: icon_of(&reg[i]),
                 app: Some(i),
             },
@@ -548,7 +572,9 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                 }),
             },
         )?;
-        let label = entry_idx.map(|idx| reg[idx].label_bytes()).unwrap_or(b"");
+        let label = entry_idx
+            .map(|idx| display_label(&reg[idx], big))
+            .unwrap_or(b"");
         ui.set_a11y(icon_node, ROLE_BUTTON, label)?;
         dock.push(Slot {
             cell: icon_node,

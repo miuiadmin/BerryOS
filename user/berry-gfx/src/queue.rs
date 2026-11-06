@@ -471,7 +471,7 @@ mod tests {
         let mut fb = vec![0u8; d.need_bytes()];
         let run = GlyphRun {
             atlas: &atlas,
-            glyphs: &[GlyphPos { ch: b'K', x: 2, y: 3 }],
+            glyphs: &[GlyphPos { ch: u32::from(b'K'), x: 2, y: 3 }],
             fg: WHITE,
             bg: Some(BLUE),
         };
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(px(&fb, 64, 1, 3), 0, "字形区外未触（清屏黑）");
         // 透明底：零位不写（衬底色穿透）。
         let mut fb2 = vec![0xEEu8; d.need_bytes()];
-        let run = GlyphRun { atlas: &atlas, glyphs: &[GlyphPos { ch: b'K', x: 2, y: 3 }], fg: WHITE, bg: None };
+        let run = GlyphRun { atlas: &atlas, glyphs: &[GlyphPos { ch: u32::from(b'K'), x: 2, y: 3 }], fg: WHITE, bg: None };
         let mut enc = CommandEncoder::new();
         enc.draw_glyph_run(run).unwrap();
         let dl = enc.finish();
@@ -500,7 +500,7 @@ mod tests {
         // 缺字形（'Z' 不在 FakeAtlas）：bg=Some → 全 bg 蜂格。
         let run = GlyphRun {
             atlas: &atlas,
-            glyphs: &[GlyphPos { ch: b'Z', x: 0, y: 0 }],
+            glyphs: &[GlyphPos { ch: u32::from(b'Z'), x: 0, y: 0 }],
             fg: WHITE,
             bg: Some(RED),
         };
@@ -538,7 +538,7 @@ mod tests {
         let atlas = FontAtlas8x16;
         let run = GlyphRun {
             atlas: &atlas,
-            glyphs: &[GlyphPos { ch: b'#', x: 16, y: 16 }], // 蜂格 (2,1) = 像素 (16,16)
+            glyphs: &[GlyphPos { ch: u32::from(b'#'), x: 16, y: 16 }], // 蜂格 (2,1) = 像素 (16,16)
             fg: Color { r: 0x11, g: 0x22, b: 0x33 },
             bg: Some(Color { r: 0x44, g: 0x55, b: 0x66 }),
         };

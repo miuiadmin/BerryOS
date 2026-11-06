@@ -346,9 +346,9 @@ fn main() {
     let fb: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(va as *mut u8, len) };
     let atlas = FontAtlas8x16;
     let glyphs = [
-        GlyphPos { ch: b'G', x: 16, y: 16 },
-        GlyphPos { ch: b'F', x: 24, y: 16 },
-        GlyphPos { ch: b'X', x: 32, y: 16 },
+        GlyphPos { ch: u32::from(b'G'), x: 16, y: 16 },
+        GlyphPos { ch: u32::from(b'F'), x: 24, y: 16 },
+        GlyphPos { ch: u32::from(b'X'), x: 32, y: 16 },
     ];
     let mut enc = CommandEncoder::new();
     record(

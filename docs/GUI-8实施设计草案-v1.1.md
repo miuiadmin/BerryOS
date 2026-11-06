@@ -1,6 +1,12 @@
 # GUI-8 实施设计草案（berry-launcher 桌面）——2026-11
 
-> 版本：**1.0**（v1.0）｜2026-11-06
+> 版本：**1.1**（v1.1）｜2026-11-07
+>
+> **v1.1 增量（真链收官补强）**：Boot A 在 CLICK 后追加 **真实 virtio-tablet
+> 横滑**，`SWIPE ok n=1` = page0→1 裁定 + 后续 present 帧双门；点击拉起的
+> APPDEMO 必须新增 `app APPDEMO fs ok 23`（真实进程 fs RPC）；`--layout-selfheal`
+> 可追加 Boot C，在真实 FAT 原簇覆写非法 LAYOUT 后验 `LAYOUTW` 自愈重写
+> canonical 109B。v1.0 合成 `PAGE ok n=2` 保留，但不再是唯一翻页证据。
 
 > 依据：`docs/GUI-8实施侦察-2026-11.md`（裁决编号承袭其 §4）+ 五路 scout 复勘
 > （2026-11-03，berry-ui 能力面/launcher+契约/fs+spawn/记账+预算/smoke 验收面，

@@ -367,20 +367,27 @@ fn emit_node<'a>(
             emit_image(icons, p.id, p.fg, p.w, p.h, b.x, b.y, b.w.max(0) as u32, b.h.max(0) as u32, enc, rep);
         }
         Props::Text(p) => {
-            // run 截断到 scratch 余量（容量不足的尾部字形丢弃——调用
-            // 方 scratch 尺寸义务见 §7 用例）
-            let take = (p.text.len as usize).min(rest.len());
+            // UTF-8 字节 → Unicode 码点（ASCII/CJK 等宽蜂格；非法序列折
+            // U+FFFD 且测量/绘制同计数）。run 截断到 scratch 余量，容量
+            // 不足的尾部字形丢弃——调用方 scratch 尺寸义务见 §7 用例。
+            let bytes = p.text.as_bytes();
+            let take = crate::utf8::count(bytes).min(rest.len());
             if take > 0 {
                 if let Some(piece) = take_scratch(rest, take) {
                     let cw = p.style.scale.cell_w() as i64;
-                    for i in 0..take {
-                        piece[i] = GlyphPos {
-                            ch: p.text.bytes[i],
-                            x: i64_to_i32_sat(b.x as i64 + i as i64 * cw),
+                    let (mut bi, mut gi) = (0usize, 0usize);
+                    while bi < bytes.len() && gi < take {
+                        let (cp, step) = crate::utf8::next(&bytes[bi..])
+                            .unwrap_or((crate::utf8::REPLACEMENT, 1));
+                        piece[gi] = GlyphPos {
+                            ch: cp,
+                            x: i64_to_i32_sat(b.x as i64 + gi as i64 * cw),
                             y: b.y,
                         };
+                        bi = bi.saturating_add(step.max(1));
+                        gi += 1;
                     }
-                    let glyphs: &'a [GlyphPos] = piece; // 冻结为共享——run 引用钉调用方缓冲
+                    let glyphs: &'a [GlyphPos] = &piece[..gi]; // 冻结为共享——run 引用钉调用方缓冲
                     let run = GlyphRun {
                         atlas: p.style.scale.atlas(),
                         glyphs,

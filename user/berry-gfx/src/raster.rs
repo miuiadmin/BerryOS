@@ -385,7 +385,7 @@ fn glyph_run(target: &mut [u8], desc: &TextureDesc, run: &GlyphRun, clip: &Rect)
     let fg_px = desc.format().pack(run.fg.r, run.fg.g, run.fg.b);
     let bg_px = run.bg.map(|c| desc.format().pack(c.r, c.g, c.b));
     for p in run.glyphs {
-        if let Some(a8) = run.atlas.coverage(p.ch) {
+        if let Some(a8) = run.atlas.coverage_cp(p.ch) {
             if let Some(bg) = bg_px {
                 let cw = i32::try_from(run.atlas.cell_w()).unwrap_or(i32::MAX);
                 let ch = i32::try_from(run.atlas.cell_h()).unwrap_or(i32::MAX);
@@ -394,7 +394,7 @@ fn glyph_run(target: &mut [u8], desc: &TextureDesc, run: &GlyphRun, clip: &Rect)
             a8_blit(target, desc, &a8, p.x, p.y, run.fg, clip);
             continue;
         }
-        match run.atlas.glyph(p.ch) {
+        match run.atlas.glyph_cp(p.ch) {
             Some(bits) => mono_blit(target, desc, &bits, p.x, p.y, fg_px, bg_px, clip),
             None => {
                 let bg = match bg_px {

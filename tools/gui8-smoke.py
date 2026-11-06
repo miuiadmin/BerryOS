@@ -81,6 +81,7 @@ MARK_BERRYBOOT = "BERRYBOOT ok"
 MARK_ROOTFS = "ROOTFS ok src=handoff"
 MARK_APP_N9 = "APP ok n=9"
 MARK_APP_DEMO_UP = "app APPDEMO up"
+MARK_APP_DEMO_FS = "app APPDEMO fs ok 23"
 MARK_APP_QUIET_UP = "app APPQUIET up"
 MARK_LAUNCH = "LAUNCH ok"
 MARK_PAGE = "PAGE ok n=2"
@@ -89,6 +90,7 @@ MARK_CLICK_ANY = "CLICK ok n="
 MARK_LAYOUTW = "LAYOUTW ok"
 MARK_LAYOUT = "LAYOUT ok n="
 MARK_CLICK_READY = "launcher: click ready"
+MARK_SWIPE = "SWIPE ok n=1"
 MARK_INPUT_ARMED = "launcher: input poll armed"
 # 负向前瞻：`n=10` 不得命中 `n=1`（CLICK 恰一发的期望形态）。
 RE_CLICK_N1 = r"CLICK ok n=1(?![0-9])"
@@ -404,6 +406,45 @@ class QmpClient:
             self.input_send(batch)
             time.sleep(0.25)  # 让 guest 输入泵逐批消费（非时序断言）
 
+    def drag(
+        self,
+        x0: float,
+        x1: float,
+        y: float,
+        w: int,
+        h: int,
+        steps: int = 10,
+    ) -> None:
+        """注入真实 virtio-tablet 横滑（abs 定位 → down → move×N → up）。
+
+        steps=10 加首尾共 12 个接触事件，低于 inputd eventq 16 深帽；
+        40ms 间隔让时间戳跨过 resampler 的 2ms 最小步长。
+        """
+        def ax(x: float) -> int:
+            return max(0, min(32767, int(round(x * 32768.0 / max(1, w)))))
+
+        ay = max(0, min(32767, int(round(y * 32768.0 / max(1, h)))))
+        a0, a1 = ax(x0), ax(x1)
+        self.input_send([
+            {"type": "abs", "data": {"axis": "x", "value": a0}},
+            {"type": "abs", "data": {"axis": "y", "value": ay}},
+        ])
+        time.sleep(0.04)
+        self.input_send([
+            {"type": "btn", "data": {"down": True, "button": "left"}},
+            {"type": "abs", "data": {"axis": "x", "value": a0}},
+            {"type": "abs", "data": {"axis": "y", "value": ay}},
+        ])
+        for i in range(1, steps + 1):
+            x = x0 + (x1 - x0) * i / steps
+            self.input_send([
+                {"type": "abs", "data": {"axis": "x", "value": ax(x)}},
+                {"type": "abs", "data": {"axis": "y", "value": ay}},
+            ])
+            time.sleep(0.04)
+        self.input_send([{"type": "btn", "data": {"down": False, "button": "left"}}])
+        time.sleep(0.2)
+
     def quit(self) -> None:
         try:
             self.execute("quit")
@@ -557,6 +598,32 @@ class Fat12Volume:
             )
         return blob[:size]
 
+    def write_existing(self, name11: bytes, content: bytes) -> None:
+        """原目录项原簇链覆写（自愈负样本专用；content 不得超过现尺寸）。"""
+        found = self._find_root(name11)
+        if found is None:
+            raise SmokeError(f"FAT12 文件不存在：{name11!r}（{self.path}）")
+        _, _, first, size = found
+        if len(content) > size:
+            raise SmokeError(
+                f"FAT12 覆写超尺寸：{name11!r} {len(content)}>{size}"
+            )
+        padded = content + b"\x00" * (size - len(content))
+        clus = first
+        out_off = 0
+        while 2 <= clus < 0xFF8 and out_off < len(padded):
+            off = self._cluster_off(clus)
+            take = min(self.cluster_bytes, len(padded) - out_off)
+            self.data[off : off + take] = padded[out_off : out_off + take]
+            out_off += take
+            nxt = self._fat_get(clus)
+            if nxt >= 0xFF8:
+                break
+            clus = nxt
+        if out_off != len(padded):
+            raise SmokeError(f"FAT12 覆写链过短：{name11!r}（{self.path}）")
+        self._write()
+
     def _alloc_chain(self, nbytes: int):
         nclus = max(1, (nbytes + self.cluster_bytes - 1) // self.cluster_bytes)
         free = [
@@ -707,6 +774,13 @@ def write_layout_for_selftest(
     return read_layout_canonical(path)
 
 
+def corrupt_layout_for_selfheal(path: Path) -> bytes:
+    """真实 FAT 自愈负样本：原尺寸覆写为非法 JSON，返回损坏 payload。"""
+    bad = (b"{" + b"X" * (len(LAYOUT_CANONICAL) - 2) + b"}")
+    Fat12Volume(path).write_existing(LAYOUT_NAME11, bad)
+    return bad
+
+
 # =====================================================================
 # 几何 / QEMU 命令 / Boot 生命周期
 # =====================================================================
@@ -775,6 +849,7 @@ def verify_boot_a_click(
     ready_pos: int,
     demo_before: int,
     quiet_before: int,
+    fs_before: int = 0,
     log_path: Path | None = None,
 ) -> None:
     """Boot A 点击后精确验收：1/1/0 + 新 APPDEMO 恰一 + 零 APPQUIET。
@@ -805,6 +880,18 @@ def verify_boot_a_click(
             f"{quiet_after - quiet_before} 行——点击误 spawn APPQUIET",
             log_path,
         )
+    fs_after = text.count(MARK_APP_DEMO_FS)
+    if fs_after != fs_before + 1:
+        raise SmokeError(
+            f"boot A click: 点击拉起的 APPDEMO fs RPC 标记新增 "
+            f"{fs_after - fs_before} 行 != 1（真实进程未走文件系统链）",
+            log_path,
+        )
+    if text.rfind(MARK_APP_DEMO_FS) <= ready_pos:
+        raise SmokeError(
+            "boot A click: APPDEMO fs 标记不在 click ready 之后",
+            log_path,
+        )
     _require_pos_after(text, MARK_CLICK_ANY, ready_pos, "boot A click", log_path)
     # LAYOUTW 由 layout 装载面在启动期落盘后打印（可早于 click ready），
     # 只做精确计数，不参与点击顺序断言。
@@ -813,6 +900,30 @@ def verify_boot_a_click(
             f"boot A click: 新增 {MARK_APP_DEMO_UP!r} 不在 click ready 之后",
             log_path,
         )
+
+
+def verify_boot_a_real_swipe(
+    text: str,
+    click_pos: int,
+    demo_after_click: int,
+    fs_after_click: int = 0,
+    log_path: Path | None = None,
+) -> None:
+    """Boot A 真实输入 swipe 精确验收：SWIPE 恰一且不产生新点击/spawn。"""
+    _require_exact_count(text, MARK_SWIPE, 1, "boot A real swipe", log_path)
+    _require_exact_count(text, MARK_CLICK_ANY, 1, "boot A real swipe", log_path)
+    if text.count(MARK_APP_DEMO_UP) != demo_after_click:
+        raise SmokeError(
+            f"boot A real swipe: 新增 {MARK_APP_DEMO_UP!r} "
+            f"{text.count(MARK_APP_DEMO_UP) - demo_after_click} 行（滑动误判点击）",
+            log_path,
+        )
+    if text.count(MARK_APP_DEMO_FS) != fs_after_click:
+        raise SmokeError(
+            "boot A real swipe: 滑动产生了新 APPDEMO/fs 行",
+            log_path,
+        )
+    _require_pos_after(text, MARK_SWIPE, click_pos, "boot A real swipe", log_path)
 
 
 def verify_boot_b(text: str, log_path: Path | None = None) -> None:
@@ -827,6 +938,13 @@ def verify_boot_b(text: str, log_path: Path | None = None) -> None:
     _require_exact_count(text, MARK_CLICK_ANY, 0, "boot B", log_path)
 
 
+def verify_layout_selfheal_boot(text: str, log_path: Path | None = None) -> None:
+    """损坏 LAYOUT 自愈 boot：解析失败 → 默认布局 → LAYOUTW 恰一次。"""
+    _require_exact_count(text, MARK_LAYOUTW, 1, "layout self-heal", log_path)
+    _require_exact_count(text, MARK_LAYOUT, 0, "layout self-heal", log_path)
+    _require_exact_count(text, MARK_CLICK_ANY, 0, "layout self-heal", log_path)
+
+
 def verify_normal_boot(
     text: str,
     snapshot_pos: int,
@@ -839,6 +957,7 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_CLICK_READY, 0, "normal boot", log_path)
+    _require_exact_count(text, MARK_SWIPE, 0, "normal boot", log_path)
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
@@ -1039,6 +1158,7 @@ def launcher_marker_status() -> dict[str, bool | None]:
     src = ROOT / "user" / "bins" / "berry-launcher" / "src"
     checks = {
         "CLICK": (src / "frameloop.rs", "CLICK ok n="),
+        "SWIPE": (src / "frameloop.rs", "SWIPE ok n="),
         "LAYOUTW": (src / "layout_io.rs", "LAYOUTW ok"),
         "LAYOUT": (src / "layout_io.rs", "LAYOUT ok n="),
     }
@@ -1157,6 +1277,7 @@ def run_dual_boot(args) -> int:
         ready_pos = boot_a.log.text.find(MARK_CLICK_READY)
         demo_before = boot_a.log.text.count(MARK_APP_DEMO_UP)
         quiet_before = boot_a.log.text.count(MARK_APP_QUIET_UP)
+        fs_before = boot_a.log.text.count(MARK_APP_DEMO_FS)
         log(
             f"boot A: click ready 在席（pos={ready_pos}，"
             f"boot 批 APPDEMO up×{demo_before}）"
@@ -1176,8 +1297,9 @@ def run_dual_boot(args) -> int:
                 boot_a.proc,
                 lambda t: re.search(RE_CLICK_N1, t) is not None
                 and MARK_LAYOUTW in t
-                and t.count(MARK_APP_DEMO_UP) > demo_before,
-                f"{MARK_CLICK} + {MARK_LAYOUTW} + 新 {MARK_APP_DEMO_UP}",
+                and t.count(MARK_APP_DEMO_UP) > demo_before
+                and t.count(MARK_APP_DEMO_FS) > fs_before,
+                f"{MARK_CLICK} + {MARK_LAYOUTW} + 新 {MARK_APP_DEMO_UP}/fs ok",
                 args.click_timeout,
                 "boot A click",
             )
@@ -1190,12 +1312,27 @@ def run_dual_boot(args) -> int:
                 miss.append(MARK_LAYOUTW)
             if text.count(MARK_APP_DEMO_UP) <= demo_before:
                 miss.append(f"新 {MARK_APP_DEMO_UP}")
+            if text.count(MARK_APP_DEMO_FS) <= fs_before:
+                miss.append("新 APPDEMO fs ok")
             raise MissingMarkers(
                 "boot A click",
                 ", ".join(miss) or f"{MARK_CLICK} + {MARK_LAYOUTW}",
                 args.click_timeout,
                 boot_a.log_path,
             ) from None
+
+        # —— 真实输入 swipe 相：同一 virtio-tablet 链从 QMP 注入横滑。
+        #    SWIPE 标记由 page0→1 裁定 + 后续呈现帧共同门控；此处再验
+        #    不新增 CLICK/APPDEMO，防止“滑动被误判点击”的假绿。
+        click_pos = boot_a.log.text.find(MARK_CLICK_ANY)
+        demo_after_click = boot_a.log.text.count(MARK_APP_DEMO_UP)
+        fs_after_click = boot_a.log.text.count(MARK_APP_DEMO_FS)
+        log(
+            "boot A: QMP 注入真实横滑 "
+            f"({int(w * 0.78)},{int(h * 0.52)}) → ({int(w * 0.20)},{int(h * 0.52)})"
+        )
+        boot_a.qmp.drag(w * 0.78, w * 0.20, h * 0.52, w, h)
+        boot_a.wait_markers([MARK_SWIPE], args.click_timeout)
 
         # 先停 QEMU 再对最终串口日志做精确计数（重复/顺序假绿 fail loud）。
         watcher_a = boot_a.log
@@ -1204,11 +1341,14 @@ def run_dual_boot(args) -> int:
         boot_a = None
         watcher_a.poll()
         verify_boot_a_click(
-            watcher_a.text, ready_pos, demo_before, quiet_before, log_path_a
+            watcher_a.text, ready_pos, demo_before, quiet_before, fs_before, log_path_a
+        )
+        verify_boot_a_real_swipe(
+            watcher_a.text, click_pos, demo_after_click, fs_after_click, log_path_a
         )
         log(
-            "boot A: 精确计数 CLICK×1 LAYOUTW×1 LAYOUT×0；"
-            f"新增 {MARK_APP_DEMO_UP}×1、APPQUIET×0"
+            "boot A: 精确计数 CLICK×1 SWIPE×1 LAYOUTW×1 LAYOUT×0；"
+            f"新增 {MARK_APP_DEMO_UP}×1 + fs RPC×1、APPQUIET×0"
         )
 
         verify_data_disk(disk)
@@ -1219,10 +1359,13 @@ def run_dual_boot(args) -> int:
             f"（{LAYOUT_CELLS_EXPECTED!r}）"
         )
 
+        if args.layout_selfheal and args.only_a:
+            raise SmokeError("--layout-selfheal 需要 dual Boot 全跑（不能与 --only-a 同用）")
+
         if args.only_a:
             success = True
             log(
-                "PASS（--only-a）：Boot A 单击 + LAYOUTW + canonical 落盘读回；"
+                "PASS（--only-a）：Boot A 单击 + 真实横滑 + LAYOUTW + canonical 落盘读回；"
                 "Boot B 未跑"
             )
             return 0
@@ -1256,10 +1399,42 @@ def run_dual_boot(args) -> int:
             f"{len(cells_b)} cells 跨 boot 存活"
         )
 
+        if args.layout_selfheal:
+            bad = corrupt_layout_for_selfheal(disk)
+            try:
+                read_layout_canonical(disk)
+            except SmokeError:
+                pass
+            else:
+                raise SmokeError("layout self-heal: 宿主损坏 LAYOUT 后仍被读成合法")
+            log(
+                "layout self-heal: 宿主已在真实 FAT 簇上覆写 "
+                f"{len(bad)}B 非法 JSON，启动 Boot C"
+            )
+
+            boot_c = Boot("C", args, run_dir, disk, "c")
+            boot_c.start()
+            boot_c.wait_markers(
+                _boot_base_markers() + [MARK_APP_DEMO_UP, MARK_LAYOUTW],
+                args.boot_b_timeout,
+            )
+            watcher_c = boot_c.log
+            log_path_c = boot_c.log_path
+            boot_c.stop()
+            boot_c = None
+            watcher_c.poll()
+            verify_layout_selfheal_boot(watcher_c.text, log_path_c)
+            cells_c = read_layout_canonical(disk)
+            log(
+                "layout self-heal: Boot C LAYOUTW×1，"
+                f"canonical {len(LAYOUT_CANONICAL)}B / {len(cells_c)} cells 已重写"
+            )
+
         success = True
         log(
-            "PASS：EFI GUI 交互相双 boot（A: CLICK ok n=1 + LAYOUTW ok + "
-            f"APPDEMO up；B: LAYOUT ok n=2 + 零重写 + canonical 109B）"
+            "PASS：EFI GUI 交互相双 boot（A: CLICK ok n=1 + 真实 SWIPE ok n=1 + "
+            "LAYOUTW ok + APPDEMO up；B: LAYOUT ok n=2 + 零重写 + canonical 109B）"
+            + ("；C: 损坏 LAYOUT 真路径自愈" if args.layout_selfheal else "")
         )
         return 0
     finally:
@@ -1370,7 +1545,7 @@ def run_normal_boot(args) -> int:
         )
 
         success = True
-        log("PASS（--normal-boot）：哨兵缺席的常态点击隔离成立")
+        log("PASS（--normal-boot）：哨兵缺席的常态点击/滑动标记隔离成立")
         return 0
     finally:
         if boot is not None:
@@ -1637,8 +1812,19 @@ def self_test(args) -> int:
             LAYOUT_NAME11, LAYOUT_CANONICAL.replace(b'"page":3', b'"page":2')
         )
         expect_error("LAYOUT 错 page", lambda: read_layout_canonical(bad_page))
+        heal = tmp / "self-heal.img"
+        create_data_disk(heal)
+        write_layout_for_selftest(heal)
+        corrupt_layout_for_selfheal(heal)
+        expect_error("损坏 LAYOUT 未 fail", lambda: read_layout_canonical(heal))
+        Fat12Volume(heal).write_existing(LAYOUT_NAME11, LAYOUT_CANONICAL)
+        heal_cells = read_layout_canonical(heal)
+        if len(heal_cells) != len(LAYOUT_CELLS_EXPECTED):
+            raise SmokeError("FAT 原簇覆写后 canonical cell 数漂移")
+        verify_layout_selfheal_boot(f"{MARK_LAYOUTW}\n")
         log(
-            "self-test: LAYOUT canonical ok（109B 精确双 cell；超长/错 id/错 page 均 FAIL）"
+            "self-test: LAYOUT canonical ok（109B 双 cell / 原簇损坏覆写 / "
+            "错 id、错 page、多字节均 FAIL）"
         )
 
         # 2) 几何
@@ -1679,6 +1865,7 @@ def self_test(args) -> int:
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
             f"{MARK_APP_DEMO_UP}\n"
+            f"{MARK_APP_DEMO_FS}\n"
         )
         pos_a = fake_a.index(MARK_CLICK_READY)
         verify_boot_a_click(fake_a, pos_a, 1, 0)
@@ -1716,6 +1903,12 @@ def self_test(args) -> int:
                 fake_a + MARK_APP_QUIET_UP + "\n", pos_a, 1, 0
             ),
         )
+        expect_error(
+            "Boot A 缺 APPDEMO fs RPC",
+            lambda: verify_boot_a_click(
+                fake_a.replace(MARK_APP_DEMO_FS + "\n", ""), pos_a, 1, 0
+            ),
+        )
         order_bad = fake_a.replace(MARK_CLICK_READY + "\n", "").replace(
             MARK_CLICK + "\n", MARK_CLICK + "\n" + MARK_CLICK_READY + "\n"
         )
@@ -1734,8 +1927,30 @@ def self_test(args) -> int:
                 0,
             ),
         )
+        fake_swipe = fake_a + MARK_SWIPE + "\n"
+        verify_boot_a_real_swipe(
+            fake_swipe,
+            fake_swipe.index(MARK_CLICK_ANY),
+            2,
+            1,
+        )
+        expect_error(
+            "Boot A 真实 swipe 缺标记",
+            lambda: verify_boot_a_real_swipe(
+                fake_a, fake_a.index(MARK_CLICK_ANY), 2, 1
+            ),
+        )
+        expect_error(
+            "Boot A 真实 swipe 误点击",
+            lambda: verify_boot_a_real_swipe(
+                fake_swipe + MARK_CLICK + "\n",
+                fake_swipe.index(MARK_CLICK_ANY),
+                2,
+                1,
+            ),
+        )
         log(
-            "self-test: Boot A 精确断言 ok（1/1/0 + 新 APPDEMO；"
+            "self-test: Boot A 精确断言 ok（1/1/0 + 新 APPDEMO + fs RPC；"
             "重复/错序/缺 ready/APPQUIET 均 FAIL）"
         )
 
@@ -1878,6 +2093,11 @@ def parse_args(argv=None):
         help="常态隔离：不造 GUI8.SMK，点击后断言 spawn 仍发生且零标记",
     )
     ap.add_argument("--only-a", action="store_true", help="只跑 Boot A（plumbing）")
+    ap.add_argument(
+        "--layout-selfheal",
+        action="store_true",
+        help="dual Boot 后追加 Boot C：宿主损坏 FAT 上 LAYOUT.JSN，验真路径自愈重写",
+    )
     ap.add_argument("--dry-run", action="store_true", help="只建盘并打印 QEMU 命令")
     ap.add_argument("--self-test", action="store_true", help="无 QEMU 自检")
     ap.add_argument("--require-markers", action="store_true", help="launcher 标记未合并即提前 FAIL")

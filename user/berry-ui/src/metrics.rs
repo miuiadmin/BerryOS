@@ -2,8 +2,9 @@
 //!
 //! - [`TextMetrics`]：文本内在测量缝（`scale` = 档位 id u8，**不焊**
 //!   FontSize——GUI-2 增件⑧ 真字体面的迁移缝）；[`MonospaceTextMetrics`]
-//!   逐位复刻 v1 现状测量（宽 = `len × cell_w`、高 = `cell_h`——
-//!   `FontSize` 单源），换件前的默认供件。
+//!   按 UTF-8 码点等宽测量（宽 = `codepoints × cell_w`、高 =
+//!   `cell_h`——`FontSize` 单源）；ASCII 与旧字节语义零漂，CJK 多字节
+//!   折一个全宽码点。
 //! - [`IconSource`]：图标/图片资源缝（dims 内在尺寸 + 解码后 ARGB 借用
 //!   ——LRU/解码编排留消费侧）；[`EmptyIconSource`] = 默认空供件（未
 //!   注册资源恒 None——空绘不炸的供给面）。
@@ -34,23 +35,23 @@ fn tier(scale: u8) -> FontSize {
 /// 文本内在测量缝（§6 冻结签名）：`text` = 有效字节切片；`scale` = 档位
 /// id（u8，不焊 FontSize——GUI-2 增件⑧ 迁移缝）。返回 (w, h)。
 ///
-/// **v1 契约不变量（R2-8 钉）**：等长字节串必等宽（等宽字体假设）——
-/// B 面 set_text「等长换文 = 纯 PAINT 零重测」三态判据的正确性前提。
-/// 自定义供件（比例字体）须自证或回避该面；GUI-2 真字体落地时三态
-/// 判据改经度量缓存比对内在宽（equal-len 不再蕴含等尺寸）。
+/// **v1 契约（R2-8 修订）**：同一字节序列测量恒等宽（确定性）；UTF-8
+/// 下**等字节长不再必然等宽**（1 个 CJK 与 3 个 ASCII 同为 3B）。S7
+/// `set_text` 的“等长换文 = 纯 PAINT”判据必须并列比较旧/新测量宽；
+/// 自定义供件（比例字体）同样不得只看字节长度。
 pub trait TextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32);
 }
 
-/// v1 等宽供件：`FontSize` 单源——宽 = `len × cell_w`（u64 累计饱和
-/// u32）、高 = `cell_h`。逐位复刻 layout 现状 Text 内在测量（既有 layout
-/// 测试零漂移的生命线）。
+/// v1 等宽供件：`FontSize` 单源——宽 = `UTF-8 码点数 × cell_w`
+/// （u64 累计饱和 u32）、高 = `cell_h`。ASCII 与旧字节长度语义零漂；
+/// CJK UTF-8 三字节折一个全宽码点。
 pub struct MonospaceTextMetrics;
 
 impl TextMetrics for MonospaceTextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32) {
         let fs = tier(scale);
-        let w = text.len() as u64 * fs.cell_w() as u64;
+        let w = crate::utf8::count(text) as u64 * fs.cell_w() as u64;
         (crate::damage::u64_to_u32_sat(w), fs.cell_h() as u32)
     }
 }

@@ -31,6 +31,10 @@ EXACT_ICONS = {
     "MMS": "mms_app.png",
 }
 
+EXACT_LAYERS = {
+    "BROWSER": ("browser_background.png", "browser_foreground.png"),
+}
+
 APPS = {
     "SETTINGS": ("settings", (31, 143, 255), (0, 199, 190)),
     "FILES": ("files", (255, 159, 46), (255, 106, 0)),
@@ -54,6 +58,24 @@ def gradient_tile(w: int, h: int, c0: tuple[int, int, int], c1: tuple[int, int, 
 
 
 def make_icon(app: str, glyph: str, c0: tuple, c1: tuple) -> None:
+    if app in EXACT_LAYERS:
+        bg_stem, fg_stem = EXACT_LAYERS[app]
+        bg = Image.open(ROOT / "raw" / bg_stem).convert("RGBA")
+        fg = Image.open(ROOT / "raw" / fg_stem).convert("RGBA")
+        bg = bg.resize((S, S), Image.Resampling.LANCZOS)
+        fg = fg.resize((S, S), Image.Resampling.LANCZOS)
+        im = Image.alpha_composite(bg, fg)
+        mask = Image.open(ROOT / "raw/icon_mask.png").convert("RGBA").getchannel("A")
+        mask = mask.resize((S, S), Image.Resampling.LANCZOS)
+        alpha = mask.point(lambda a: round(a / 17) * 17)
+        im = im.point(lambda v: min(255, round(v / 8) * 8))
+        im.putalpha(alpha)
+        dest = OUT_ROOT / app / "icons" / "icon.png"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        im.save(dest)
+        print(f"genohicons: {dest.relative_to(REPO)} official-layer ({dest.stat().st_size}B)")
+        return
+
     exact = EXACT_ICONS.get(app)
     if exact is not None:
         im = Image.open(ROOT / "raw" / exact).convert("RGBA")

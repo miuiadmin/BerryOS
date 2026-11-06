@@ -16,6 +16,7 @@
 //! | 1x | 8×16 | berry-fbcon `font::FONT` | `tools/genfbfont.py`（fbcon 单一事实源） |
 //! | 2x | 16×32 | [`font_data_s2::FONT_S2`] | 同生成器 NN 放大档 |
 //! | 3x | 24×48 | [`font_data_s3::FONT_S3`] | 同生成器 NN 放大档 |
+//! | HD | 32×48 | [`font_data_hd::FONT_HD`] + A8 | `tools/genhdfont.py`（ASCII + 桌面中文标签 A8 子表） |
 //!
 //! 契约名注记：规划草案的 `GlyphBitmap` 落地为 [`GlyphBits`]（「位图
 //! 视图」语义更准——同一位法三处消费：字形/图标/图像，不专属 glyph，
@@ -143,6 +144,18 @@ pub trait GlyphAtlas {
     /// 取 8-bit 抗锯齿覆盖面；缺省 `None` = 图集只有 1-bit 位图。
     fn coverage(&self, _ch: u8) -> Option<GlyphA8<'_>> {
         None
+    }
+
+    /// Unicode 码点位图（默认折回 u8 ASCII 面——非 ASCII 图集返 None）。
+    fn glyph_cp(&self, cp: u32) -> Option<GlyphBits<'_>> {
+        let ch = u8::try_from(cp).ok()?;
+        self.glyph(ch)
+    }
+
+    /// Unicode 码点 A8 覆盖面（默认折回 u8 ASCII 面）。
+    fn coverage_cp(&self, cp: u32) -> Option<GlyphA8<'_>> {
+        let ch = u8::try_from(cp).ok()?;
+        self.coverage(ch)
     }
 }
 
@@ -317,6 +330,37 @@ impl GlyphAtlas for FontAtlas32x48 {
             h: font_data_hd::CELL_H,
             coverage: a.as_slice(),
         })
+    }
+
+    fn coverage_cp(&self, cp: u32) -> Option<GlyphA8<'static>> {
+        if let Ok(ch) = u8::try_from(cp) {
+            let i = usize::from(ch).checked_sub(32)?;
+            let a = font_data_hd::FONT_HD_A8.get(i)?;
+            return Some(GlyphA8 {
+                w: font_data_hd::CELL_W,
+                h: font_data_hd::CELL_H,
+                coverage: a.as_slice(),
+            });
+        }
+        let table = font_data_hd::CJK_CODEPOINTS;
+        let mut lo = 0usize;
+        let mut hi = table.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match table[mid].cmp(&cp) {
+                core::cmp::Ordering::Less => lo = mid + 1,
+                core::cmp::Ordering::Greater => hi = mid,
+                core::cmp::Ordering::Equal => {
+                    let a = font_data_hd::FONT_HD_CJK_A8.get(mid)?;
+                    return Some(GlyphA8 {
+                        w: font_data_hd::CELL_W,
+                        h: font_data_hd::CELL_H,
+                        coverage: a.as_slice(),
+                    });
+                }
+            }
+        }
+        None
     }
 }
 

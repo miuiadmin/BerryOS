@@ -72,7 +72,7 @@ fn scaled_render_pixel_exact_nn() {
         let (w, h, stride) = (16usize, 32usize, 64usize);
         let d = TextureDesc::new(w, h, stride, TextureFormat::Rgbx).unwrap();
         let src = fbfont::glyph(b'#').unwrap();
-        let positions = [GlyphPos { ch: b'#', x: 0, y: 0 }];
+        let positions = [GlyphPos { ch: u32::from(b'#'), x: 0, y: 0 }];
         let run = GlyphRun { atlas: FontSize::S16x32.atlas(), glyphs: &positions, fg: WHITE, bg: Some(BLACK) };
         let mut fb = vec![0u8; d.need_bytes()];
         let mut enc = CommandEncoder::new();
@@ -91,7 +91,7 @@ fn scaled_render_pixel_exact_nn() {
         let (w, h, stride) = (24usize, 48usize, 96usize);
         let d = TextureDesc::new(w, h, stride, TextureFormat::Rgbx).unwrap();
         let src = fbfont::glyph(b'A').unwrap();
-        let positions = [GlyphPos { ch: b'A', x: 0, y: 0 }];
+        let positions = [GlyphPos { ch: u32::from(b'A'), x: 0, y: 0 }];
         let run = GlyphRun {
             atlas: FontSize::S24x48.atlas(),
             glyphs: &positions,
@@ -119,7 +119,7 @@ fn scaled_missing_glyph_blank_cell() {
     let d = TextureDesc::new(w, h, stride, TextureFormat::Rgbx).unwrap();
     // 0x7F（DEL）/ 0x00（控制符）都域外（图集域 = 32..=126）。
     for ch in [0x7Fu8, 0x00] {
-        let positions = [GlyphPos { ch, x: 8, y: 0 }];
+        let positions = [GlyphPos { ch: u32::from(ch), x: 8, y: 0 }];
         // bg=Some：整 16×32 字格铺 bg（红）——「全零位图」的等价语义。
         let run = GlyphRun { atlas: FontSize::S16x32.atlas(), glyphs: &positions, fg: WHITE, bg: Some(RED) };
         let mut fb = vec![0u8; d.need_bytes()];
@@ -154,7 +154,7 @@ fn scaled_clipping_and_dirty() {
     let (w, h, stride) = (16usize, 32usize, 64usize);
     let d = TextureDesc::new(w, h, stride, TextureFormat::Rgbx).unwrap();
     let src = fbfont::glyph(b'#').unwrap();
-    let positions = [GlyphPos { ch: b'#', x: -8, y: -16 }];
+    let positions = [GlyphPos { ch: u32::from(b'#'), x: -8, y: -16 }];
     let run = GlyphRun { atlas: FontSize::S24x48.atlas(), glyphs: &positions, fg: WHITE, bg: Some(BLACK) };
     let mut fb = vec![0u8; d.need_bytes()];
     let mut enc = CommandEncoder::new();
@@ -197,7 +197,7 @@ fn scaled_clipping_and_dirty() {
 #[test]
 fn hd_font_coverage_blends_edge_pixels() {
     let d = TextureDesc::new(64, 64, 256, TextureFormat::Rgbx).unwrap();
-    let positions = [GlyphPos { ch: b'B', x: 0, y: 0 }];
+    let positions = [GlyphPos { ch: u32::from(b'B'), x: 0, y: 0 }];
     let run = GlyphRun {
         atlas: FontSize::S32x48.atlas(),
         glyphs: &positions,
@@ -253,7 +253,7 @@ fn hd_font_a8_geometry_matches_hd_bits() {
 #[test]
 fn hd_font_a8_with_opaque_background_blends_coverage() {
     let d = TextureDesc::new(64, 64, 256, TextureFormat::Rgbx).unwrap();
-    let positions = [GlyphPos { ch: b'B', x: 2, y: 3 }];
+    let positions = [GlyphPos { ch: u32::from(b'B'), x: 2, y: 3 }];
     let run = GlyphRun {
         atlas: FontSize::S32x48.atlas(),
         glyphs: &positions,
@@ -288,4 +288,17 @@ fn legacy_font_atlases_have_no_a8_coverage() {
             assert!(atlas.coverage(ch).is_none(), "{size:?} ch={ch}");
         }
     }
+}
+
+// —— HD 中文标签 A8：码点表可命中且渲染出中间覆盖率 ——
+#[test]
+fn hd_cjk_label_coverage_renders_antialiased() {
+    let atlas = FontSize::S32x48.atlas();
+    for ch in ["设".chars().next().unwrap(), "浏".chars().next().unwrap()] {
+        let cp = ch as u32;
+        let a8 = atlas.coverage_cp(cp).expect("CJK label coverage");
+        assert_eq!((a8.w, a8.h), (32, 48));
+        assert!(a8.coverage.iter().any(|&v| v > 0), "{ch} 空字形");
+    }
+    assert!(atlas.coverage_cp(0x4E00).is_none(), "常用字全表仍未声明");
 }

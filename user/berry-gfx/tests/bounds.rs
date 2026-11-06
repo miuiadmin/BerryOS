@@ -118,7 +118,7 @@ fn dirty_outside_untouched_sentinels() {
     enc.fill_rect(Rect::new(0, 0, 16, 16), WHITE).unwrap(); // 全域命令
     let run = GlyphRun {
         atlas: &FontAtlas8x16,
-        glyphs: &[GlyphPos { ch: b'A', x: 2, y: 2 }], // 蜂格横跨 dirty 边界
+        glyphs: &[GlyphPos { ch: u32::from(b'A'), x: 2, y: 2 }], // 蜂格横跨 dirty 边界
         fg: RED,
         bg: None, // 透明底：非着墨位不写（白底穿透）
     };
@@ -188,11 +188,11 @@ fn glyph_clipped_right_bottom_edges() {
     let run = GlyphRun {
         atlas: &FontAtlas8x16,
         glyphs: &[
-            GlyphPos { ch: b'A', x: 12, y: 0 },  // 右缘：仅 gx 0..4 可见
-            GlyphPos { ch: b'A', x: 4, y: 14 },  // 下缘：仅 gy 0..2 可见
-            GlyphPos { ch: b'A', x: 24, y: 0 },  // 全外（右）
-            GlyphPos { ch: b'A', x: 0, y: 20 },  // 全外（下）
-            GlyphPos { ch: b'A', x: -9, y: 0 },  // 全外（左：8 宽全负）
+            GlyphPos { ch: u32::from(b'A'), x: 12, y: 0 },  // 右缘：仅 gx 0..4 可见
+            GlyphPos { ch: u32::from(b'A'), x: 4, y: 14 },  // 下缘：仅 gy 0..2 可见
+            GlyphPos { ch: u32::from(b'A'), x: 24, y: 0 },  // 全外（右）
+            GlyphPos { ch: u32::from(b'A'), x: 0, y: 20 },  // 全外（下）
+            GlyphPos { ch: u32::from(b'A'), x: -9, y: 0 },  // 全外（左：8 宽全负）
         ],
         fg: WHITE,
         bg: None, // 透明底：未写区必是哨兵
@@ -225,7 +225,7 @@ fn stride_padding_blit_and_glyph_never_written() {
     let mut enc = CommandEncoder::new();
     let run = GlyphRun {
         atlas: &FontAtlas8x16,
-        glyphs: &[GlyphPos { ch: b'H', x: 8, y: 16 }],
+        glyphs: &[GlyphPos { ch: u32::from(b'H'), x: 8, y: 16 }],
         fg: Color { r: 0x11, g: 0x22, b: 0x33 },
         bg: Some(Color { r: 0, g: 0, b: 0 }),
     };
@@ -258,7 +258,7 @@ fn store_discard_is_noop_equals_store() {
         enc.draw_line(0, 15, 15, 0, WHITE).unwrap();
         let run = GlyphRun {
             atlas: &FontAtlas8x16,
-            glyphs: &[GlyphPos { ch: b'Q', x: 8, y: 0 }],
+            glyphs: &[GlyphPos { ch: u32::from(b'Q'), x: 8, y: 0 }],
             fg: WHITE,
             bg: Some(Color { r: 0, g: 0, b: 0 }),
         };
@@ -365,13 +365,13 @@ fn glyph_overlap_later_wins() {
     let mut enc = CommandEncoder::new();
     let run_red = GlyphRun {
         atlas: &FontAtlas8x16,
-        glyphs: &[GlyphPos { ch: b'#', x: 0, y: 0 }],
+        glyphs: &[GlyphPos { ch: u32::from(b'#'), x: 0, y: 0 }],
         fg: RED,
         bg: None,
     };
     let run_green = GlyphRun {
         atlas: &FontAtlas8x16,
-        glyphs: &[GlyphPos { ch: b'#', x: 0, y: 0 }],
+        glyphs: &[GlyphPos { ch: u32::from(b'#'), x: 0, y: 0 }],
         fg: Color { r: 0, g: 255, b: 0 },
         bg: None,
     };
@@ -393,8 +393,8 @@ fn glyph_overlap_later_wins() {
     let run = GlyphRun {
         atlas: &FontAtlas8x16,
         glyphs: &[
-            GlyphPos { ch: b'#', x: 0, y: 0 },
-            GlyphPos { ch: b'A', x: 0, y: 0 },
+            GlyphPos { ch: u32::from(b'#'), x: 0, y: 0 },
+            GlyphPos { ch: u32::from(b'A'), x: 0, y: 0 },
         ],
         fg: WHITE,
         bg: Some(Color { r: 0, g: 0, b: 255 }),

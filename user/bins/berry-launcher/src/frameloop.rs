@@ -39,7 +39,7 @@
 //! 运行时，main+0x1c 序言即穿保护页 D-abort；gfxdemo 8 页先例无 berry-ui
 //! 链不可平移，装配面注释为单源）：
 //! CommandEncoder（DisplayList [Option<Cmd>; 256] ≈18KB）每帧栈构
-//! （256KB 预算内）；glyph scratch（1024×12B）Box::leak 堆置；
+//! （256KB 预算内）；glyph scratch（1024×16B，Unicode GlyphPos）Box::leak 堆置；
 //! Ui arena 堆置（main）。elf2flat 物化 .bss（单页墙判例）——零大 static
 //! 缓冲。
 //!
@@ -147,6 +147,25 @@ fn click_ready_gate(
 /// 永不置 count，故永不产标记。
 fn click_marker_gate(smoke: bool, spawn_ok: u32) -> bool {
     smoke && spawn_ok == 1
+}
+
+/// 真实输入 swipe 标记的启动门：仅 GUI8 冒烟、click ready 已落位、
+/// 未打过、且真实消息把 page 0 翻到 page 1。合成自测先于 click ready，
+/// 结构性不会命中。
+fn real_swipe_start_gate(
+    smoke: bool,
+    click_ready: bool,
+    already: bool,
+    page_before: u8,
+    page_after: u8,
+) -> bool {
+    smoke && click_ready && !already && page_before == 0 && page_after == 1
+}
+
+/// 真实输入 swipe 标记的完成门：翻页裁定后必须再呈现一帧（presented >
+/// 记录基线），证明 wmd→guifbd 提交链已落，不只是内存状态翻页。
+fn real_swipe_done_gate(frame: Option<u64>, presented: u64) -> bool {
+    matches!(frame, Some(pc) if presented > pc)
 }
 
 /// APP_SPAWN ack 记账（纯函数，测试面）：仅 `Some((true, _))` 递增计数；
@@ -273,6 +292,8 @@ pub fn run(
     // PAGE ok 后 snap_to(0) 的呈现基线：Some(pc) 且 presented>pc 才 click ready。
     let mut snap_frame: Option<u64> = None;
     let mut click_ready = false;
+    let mut real_swipe_frame: Option<u64> = None;
+    let mut real_swipe_done = false;
     let mut input_pending = false;
     let mut input_logged = false;
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
@@ -352,6 +373,7 @@ pub fn run(
         }
 
         // —— 输入泵 + Msg 分发（合成注入与真实输入同口）——
+        let page_before_msgs = desktop.pager.page();
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
             match m {
@@ -368,6 +390,17 @@ pub fn run(
                 }
             }
         }
+        let page_after_msgs = desktop.pager.page();
+        if real_swipe_start_gate(
+            smoke,
+            click_ready,
+            real_swipe_done,
+            page_before_msgs,
+            page_after_msgs,
+        ) {
+            real_swipe_frame = Some(presented);
+        }
+
         // snap 动画步进（每迭代必调——snap 驱动面；返回值仅为「有吸附
         // 在推进」观察位，自测判据已不依赖——见 Settle1 注）。
         desktop.pager.tick(ui, t_now);
@@ -468,6 +501,13 @@ pub fn run(
             buf_id = buf_id.wrapping_add(1);
             if buf_id == 0 {
                 buf_id = 1;
+            }
+            if !real_swipe_done && real_swipe_done_gate(real_swipe_frame, presented) {
+                // 标记（字节精确）：真实 virtio-tablet 事件流翻页且完成帧
+                // 已经 wmd 中继提交；合成 PAGE 标记不消费本行。
+                println!("SWIPE ok n=1");
+                real_swipe_done = true;
+                real_swipe_frame = None;
             }
             if !launched {
                 // 标记（字节精确）：首帧呈现回执过链恰一次。
@@ -753,6 +793,26 @@ mod tests {
         assert!(!click_ready_gate(true, true, false, Some(8), 8, 0));
         // 命中面不在 page 0。
         assert!(!click_ready_gate(true, true, false, Some(7), 8, 1));
+    }
+
+    /// 真实 swipe 标记只在 GUI8 click ready 后的 page0→1 真翻页启动；
+    /// 正常 boot、未 ready、重复、非 0→1 均不打。
+    #[test]
+    fn real_swipe_start_gate_truth_table() {
+        assert!(real_swipe_start_gate(true, true, false, 0, 1));
+        assert!(!real_swipe_start_gate(false, true, false, 0, 1));
+        assert!(!real_swipe_start_gate(true, false, false, 0, 1));
+        assert!(!real_swipe_start_gate(true, true, true, 0, 1));
+        assert!(!real_swipe_start_gate(true, true, false, 1, 2));
+        assert!(!real_swipe_start_gate(true, true, false, 0, 0));
+    }
+
+    /// 真实 swipe 完成门要求翻页后 presented 计数增长。
+    #[test]
+    fn real_swipe_done_gate_requires_new_frame() {
+        assert!(real_swipe_done_gate(Some(7), 8));
+        assert!(!real_swipe_done_gate(Some(8), 8));
+        assert!(!real_swipe_done_gate(None, 8));
     }
 
     /// CLICK 标记只在冒烟模式且恰为第 1 个成功 ack 时打；0（失败回执未
