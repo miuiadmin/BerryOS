@@ -58,6 +58,10 @@ pub const HELD_RQ1: u8 = 1 << 3;
 pub const HELD_REAPQ: u8 = 1 << 4;
 /// 1.1/S3：冻结位（held_locks bit5——process_suspend 置 / SuspendToken close 清）。
 pub const HELD_FROZEN: u8 = 1 << 6;
+/// 1.1/S5-c：预算限流位（budget 耗尽 → 置位；周期到 lazy_unthrottle → 清位）。
+/// 与 [`HELD_FROZEN`]（进程/线程冻结）**分立**——共用一位会导致预算周期到期
+/// 误清进程冻结位（进程冻结须由 SuspendToken close 独占解除）。
+pub const HELD_THROTTLE: u8 = 1 << 7;
 
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

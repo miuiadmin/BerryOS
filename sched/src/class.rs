@@ -122,12 +122,13 @@ unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) {
         cur = (*t).rq_next.get();
         // 快路径：非 deadline 或未冻结 → 一比较跳过。
         if (*t).prio_effective >= PRIO_DEADLINE
-            && (*t).held_locks & crate::task::HELD_FROZEN != 0
+            && (*t).held_locks & crate::task::HELD_THROTTLE != 0
             && now >= (*t).vdeadline
             && (*t).duration_hint_ns > 0
         {
-            // 慢路径：周期到 → 解冻 + 重臂 + 新预算。
-            (*t).held_locks &= !crate::task::HELD_FROZEN;
+            // 慢路径：周期到 → 解限流（只清 THROTTLE 位——FROZEN 位是进程
+            // 冻结独占语义，由 SuspendToken close 解除，不受预算周期影响）。
+            (*t).held_locks &= !crate::task::HELD_THROTTLE;
             (*t).vdeadline = (*t).vdeadline.saturating_add((*t).duration_hint_ns);
             let b = (*t).preempt_threshold.max(0) as u64;
             if b > 0 {
@@ -211,9 +212,9 @@ impl SchedClass for Fair {
         if t.slice_left == 0
             && is_deadline(t)
             && t.preempt_threshold > 0
-            && t.held_locks & crate::task::HELD_FROZEN == 0
+            && t.held_locks & crate::task::HELD_THROTTLE == 0
         {
-            t.held_locks |= crate::task::HELD_FROZEN;
+            t.held_locks |= crate::task::HELD_THROTTLE;
         }
     }
 
@@ -238,7 +239,8 @@ impl SchedClass for Fair {
 pub(crate) fn eligible(my_cur: *mut Task, t: *const Task) -> bool {
     unsafe {
         !((*t).state == TaskState::Running && (t as *mut Task) != my_cur)
-            && (*t).held_locks & crate::task::HELD_FROZEN == 0
+            // FROZEN（进程/线程冻结）+ THROTTLE（预算限流）双位过滤。
+            && (*t).held_locks & (crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE) == 0
     }
 }
 

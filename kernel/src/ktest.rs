@@ -3076,7 +3076,7 @@ fn test_sched_attr() {
 /// 序 = 天然 EDF。deadline 任务设 `prio_effective ≥ PRIO_DEADLINE` +
 /// `vdeadline = 绝对截止期`，Fair 不覆盖 VD。
 fn test_deadline() {
-    use berry_sched::{Fair, PRIO_DEADLINE, Runqueue, SchedClass, Task, Topo, HELD_FROZEN};
+    use berry_sched::{Fair, PRIO_DEADLINE, Runqueue, SchedClass, Task, Topo, HELD_FROZEN, HELD_THROTTLE};
 
     extern "C" fn dl_dummy(_arg: usize) -> ! {
         berry_hal_aarch64::halt()
@@ -3147,18 +3147,20 @@ fn test_deadline() {
     let cur2 = tb as *mut berry_sched::Task;
     let _ = rq_mut; // tick 签名需 rq 但 Fair::tick 未用——传 ref
     rr.tick(unsafe { &mut *cur2 }, unsafe { &mut *core::ptr::addr_of_mut!(rq2) });
-    assert!(tb.held_locks & HELD_FROZEN != 0,
-            "DL：B1 slice 耗尽须置 HELD_FROZEN（throttle）");
+    assert!(tb.held_locks & HELD_THROTTLE != 0,
+            "DL：B1 slice 耗尽须置 HELD_THROTTLE（预算限流）");
+    assert!(tb.held_locks & HELD_FROZEN == 0,
+            "DL：B1 预算限流不得误置 HELD_FROZEN（进程冻结独占语义）");
     // fair 陪跑不受影响。
-    assert!(tf2.held_locks & HELD_FROZEN == 0,
+    assert!(tf2.held_locks & (HELD_FROZEN | HELD_THROTTLE) == 0,
             "DL：B1 fair 任务不受 deadline 预算执法影响");
 
     // DL-B2：周期到（vdeadline 过去）→ lazy_unthrottle 解冻。
     tb.vdeadline = 1; // 截止已过（cntvct ≥ 1）
     // 触发 pick_next → lazy_unthrottle → 解冻。
     let picked = rr.pick_next(&rq2, &topo).expect("DL：B2 非空环须有出选");
-    assert!(picked.held_locks & HELD_FROZEN == 0,
-            "DL：B2 周期到后 lazy_unthrottle 须解冻");
+    assert!(picked.held_locks & HELD_THROTTLE == 0,
+            "DL：B2 周期到后 lazy_unthrottle 须解限流（清 THROTTLE 位）");
     assert!(picked.slice_left == 100,
             "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 

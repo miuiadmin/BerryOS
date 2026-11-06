@@ -54,4 +54,4 @@ pub use sched::{
     wake_matching, wake_matching_locked, wake_stamp_take, yield_now, yield_now_keep_irq, KlockOps, SleepqHook, SwitchHook, SwitchKind,
     WakeHook, WAIT_ANY,
 };
-pub use task::{EppHint, Task, TaskState, WakeReason, HELD_FROZEN, STACK_SIZE};
+pub use task::{EppHint, Task, TaskState, WakeReason, HELD_FROZEN, HELD_THROTTLE, STACK_SIZE};
