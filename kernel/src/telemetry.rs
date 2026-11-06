@@ -591,6 +591,20 @@ pub fn intent_borrowed() {
     INTENT_BORROWS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// 1.1/S4：记一次跨域消息（recv 侧 billing.domain_id != 0——受益者付费
+/// 的观测面；S5 起从此计数升级为 per-domain CPU 时长账户）。
+pub fn billing_cross_domain() {
+    BILLING_CROSS_DOMAIN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// S4 跨域消息累计。
+pub fn billing_cross_domain_total() -> u64 {
+    BILLING_CROSS_DOMAIN.load(Ordering::Relaxed)
+}
+
+static BILLING_CROSS_DOMAIN: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
 /// 记一次跳数帽拒绝（recv 结算 slowpath）。
 pub fn intent_hop_capped_inc() {
     INTENT_HOP_CAPPED.fetch_add(1, Ordering::Relaxed);

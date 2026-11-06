@@ -50,6 +50,19 @@ pub struct Message {
     /// send 侧快照发送者 `intent_effective`、recv 侧结算——用户不可见不传参，
     /// 纯内核随行数据（recv ABI 不回写）。
     pub meta: berry_sched::intent::MsgIntent,
+    /// 1.1/S4：受益者付费记账头（`docs/调点调度-v1.1.md` §7.5）——
+    /// send 侧快照发送者域 ID（= Process ObjRef 地址 = `Task.pinned`），
+    /// recv 侧可读（S4 只记不罚）。`charged_ns` 预留（S5 消费）。
+    pub billing: MsgBilling,
+}
+
+/// 1.1/S4：消息记账头（内核可见，用户不传参不回写——同 MsgIntent 模式）。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MsgBilling {
+    /// 发送者域 ID（= Process ObjRef 地址；0 = 内核任务/无归属）。
+    pub domain_id: u64,
+    /// 本消息已记账 CPU 时长（ns；S5 起 server 侧填充——S4 恒 0）。
+    pub charged_ns: u64,
 }
 
 impl Message {
@@ -61,6 +74,7 @@ impl Message {
             handles: [(NonNull::dangling(), 0); CHAN_HND_MAX],
             nhandles: 0,
             meta: berry_sched::intent::MsgIntent::default(),
+            billing: MsgBilling::default(),
         }
     }
 }

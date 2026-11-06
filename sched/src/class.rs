@@ -61,6 +61,18 @@ pub type RoundRobin = Fair;
 /// 虚拟时间刻度（权重基准）。
 const SCALE: u64 = 1024;
 
+/// 1.1/S5：deadline 带优先级（≥ 此值 = deadline 任务）。
+/// 设 `prio_effective = PRIO_DEADLINE + n`（n 越小截止越紧）+ `vdeadline = 绝对
+/// 截止期`，Fair 的带序 + 带内 VD 排序即 **天然 EDF**（最早截止先出）。
+/// `enqueue`/`tick` 对 deadline 任务**不覆盖 vdeadline**（保留手动设的绝对值）。
+pub const PRIO_DEADLINE: i32 = 1000;
+
+/// 判定：是否 deadline 任务（带序 ≥ PRIO_DEADLINE）。
+#[inline]
+fn is_deadline(t: &Task) -> bool {
+    t.prio_effective >= PRIO_DEADLINE
+}
+
 #[inline]
 fn weight_of(t: &Task) -> u64 {
     // 基线 1024；PI/策略 boost 每级 +64，封顶 1<<20（防 u64 溢出）。
@@ -102,7 +114,10 @@ impl SchedClass for Fair {
         if t.vruntime < avg {
             t.vruntime = avg;
         }
-        t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
+        // 1.1/S5：deadline 任务不覆盖 vdeadline（保留手动设的绝对截止期）。
+        if !is_deadline(t) {
+            t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
+        }
         // SAFETY: t 是调度器拥有、当前不在任何 runqueue 上的新任务。
         unsafe { rq.link_back(NonNull::from(&mut *t)) };
         // [S-3a 义务①除名] enqueue 尾跨核 SGI 戳被实验证伪除名，降级 S-3b
@@ -149,7 +164,7 @@ impl SchedClass for Fair {
         t.slice_left = t.slice_left.saturating_sub(delta);
         let vdelta = (delta as u128 * SCALE as u128 / weight_of(t) as u128) as u64;
         t.vruntime = t.vruntime.saturating_add(vdelta);
-        if t.slice_left == 0 {
+        if t.slice_left == 0 && !is_deadline(t) {
             t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
         }
     }

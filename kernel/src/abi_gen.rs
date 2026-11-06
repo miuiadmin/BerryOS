@@ -51,13 +51,13 @@ pub const NR_THREAD_SLEEP: usize = 0x37;
 pub const NR_PROCESS_GET_EXIT_CODE: usize = 0x3A;
 /// C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。
 pub const NR_PROCESS_TERMINATE: usize = 0x3B;
-/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册，S2/S5 消费。
+/// S1 收口：56B attr 解析/校验/存储（Thread 覆盖 + Process 默认）已落；S2/S5 消费随后续刀。
 pub const NR_SCHED_SETATTR: usize = 0x3C;
-/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册。
+/// S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。
 pub const NR_SCHED_GETATTR: usize = 0x3D;
 /// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §5/§7.3；S1 只入册，S3 落语义。
 pub const NR_PROCESS_SUSPEND: usize = 0x3E;
-/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.1；S1 只入册，S2 落语义。
+/// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
 pub const NR_THREAD_YIELD: usize = 0x3F;
 pub const NR_CHANNEL_CREATE: usize = 0x51;
 pub const NR_CHANNEL_SEND: usize = 0x52;

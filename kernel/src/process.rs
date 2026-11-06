@@ -88,9 +88,8 @@ pub struct Process {
     /// 0x87 syscall 侧协议）；序归锁窗（Relaxed）。投递执行全在用户态 libc
     /// （协同式，A7-4 §2 方案 B——内核不存 handler 表、不唤醒目标）。
     pub pending_signals: core::sync::atomic::AtomicU64,
-    /// 1.1/S3-b：pager 角色引用计数（`vmo_create(DEMAND)` +1 / 进程销毁归零）。
-    /// > 0 → `process_suspend` 拒（-EBUSY，D6）。
-    pub pager_refs: u32,
+    /// 1.1/S1：本进程线程的调度属性默认值（Thread 覆盖前的 base）。
+    pub sched_attr: SchedAttr,
     /// 1.1/S3-b：冻结嵌套深度（`process_suspend` +1 / `SuspendTok::drop` -1）。
     /// > 0 → 冻结中；归 0 → `thaw_by_pinned` 解冻。多 token 同进程：最后一个
     /// close 才解冻。上限 8（超限 -EBUSY）。
@@ -117,7 +116,7 @@ impl Process {
             live_threads: 0,
             exit_code: 0,
             pending_signals: core::sync::atomic::AtomicU64::new(0),
-            pager_refs: 0,
+            sched_attr: SchedAttr::default(),
             freeze_depth: 0,
         }
     }
@@ -143,6 +142,64 @@ impl Drop for Process {
     }
 }
 
+/// 1.1/S1：调度属性声明（ABI `berry_sched_attr` 的内核侧浓缩——布局字段
+/// 见 `调点调度-v1.1.md` §7.2；`flags=0` = 清除覆盖/回继承）。
+///
+/// `Process` 持有的是该进程线程的默认值；`Thread` 持有的是覆盖值。S2/S5
+/// 消费侧（weight/intent/policy/deadline）从 **effective**（默认 ∪ 覆盖）
+/// 读取；S1 只存不执法。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SchedAttr {
+    /// 生效字段位（bit0 weight / bit1 intent / bit2 policy / bit3 freeze_clock /
+    /// bit4 FREEZE_READY / bit5 reserve / bit6 deadline / bit7 budget）。
+    pub flags: u16,
+    pub weight: u32,
+    pub policy: u8,
+    pub intent: u8,
+    pub freeze_clock: u8,
+    pub min_ns: u64,
+    pub max_ns: u64,
+    pub deadline_ns: u64,
+    pub budget_ns: u64,
+    pub period_ns: u64,
+}
+
+impl SchedAttr {
+    /// Process 默认 ∪ Thread 覆盖：位置位取覆盖值，未置位继承默认；
+    /// FREEZE_READY 只可能来自 Thread 覆盖（Process 声明该位非法）。
+    pub fn merge(base: Self, over: Self) -> Self {
+        let mut out = base;
+        out.flags |= over.flags;
+        if over.flags & SA_FLAG_WEIGHT != 0 { out.weight = over.weight; }
+        if over.flags & SA_FLAG_INTENT != 0 { out.intent = over.intent; }
+        if over.flags & SA_FLAG_POLICY != 0 { out.policy = over.policy; }
+        if over.flags & SA_FLAG_FREEZE_CLOCK != 0 { out.freeze_clock = over.freeze_clock; }
+        if over.flags & SA_FLAG_RESERVE != 0 {
+            out.min_ns = over.min_ns;
+            out.max_ns = over.max_ns;
+        }
+        if over.flags & SA_FLAG_DEADLINE != 0 { out.deadline_ns = over.deadline_ns; }
+        if over.flags & SA_FLAG_BUDGET != 0 {
+            out.budget_ns = over.budget_ns;
+            out.period_ns = over.period_ns;
+        }
+        if over.flags & SA_FLAG_FREEZE_READY == 0 {
+            out.flags &= !SA_FLAG_FREEZE_READY;
+        }
+        out
+    }
+}
+
+/// `SchedAttr.flags` 位（ABI §7.2；与 berry-sys 侧同名位语义一致）。
+pub const SA_FLAG_WEIGHT: u16 = 1 << 0;
+pub const SA_FLAG_INTENT: u16 = 1 << 1;
+pub const SA_FLAG_POLICY: u16 = 1 << 2;
+pub const SA_FLAG_FREEZE_CLOCK: u16 = 1 << 3;
+pub const SA_FLAG_FREEZE_READY: u16 = 1 << 4;
+pub const SA_FLAG_RESERVE: u16 = 1 << 5;
+pub const SA_FLAG_DEADLINE: u16 = 1 << 6;
+pub const SA_FLAG_BUDGET: u16 = 1 << 7;
+
 /// 线程 = 挂在某 Process 下的执行流描述。`process_start` 前不进调度器。
 pub struct Thread {
     /// 所属 Process（ObjRef 钉住——父进程的 process handle 关光后仍可 start）。
@@ -153,7 +210,8 @@ pub struct Thread {
     pub sp: usize,
     /// 已启动（true = 已 spawn，再 start → -EBADSTATE）。
     pub started: bool,
-    /// 已退出（T-1 join 面）：退出钩子在任务「永不再跑点」置位、单调永不清
+    /// 1.1/S1：`sched_setattr` 写入的线程覆盖属性（flags=0 = 回 Process 默认）。
+    pub sched_attr: SchedAttr,
     /// ——`signal_state` 映射为 Thread `SIGNAL_TERMINATED`（join 等待者由
     /// `object_wait_one(th, TERMINATED, …)` 收割，裁决二：内核侧 join 的
     /// 死透保证）。与 started 并存两 bool 不上 enum——最小扰动 process_start
@@ -168,7 +226,8 @@ impl Thread {
     /// `proc_ref` 须为在表、类型 Process 的活对象。
     pub unsafe fn new(proc_ref: NonNull<ObjRef>) -> Self {
         (*proc_ref.as_ptr()).retain();
-        Self { proc: proc_ref, entry: 0, sp: 0, started: false, exited: false }
+        Self { proc: proc_ref, entry: 0, sp: 0, started: false, exited: false,
+               sched_attr: SchedAttr::default() }
     }
 
     /// 所属 Process 对象标识（process_start 校验 thread↔process 归属）。

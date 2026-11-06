@@ -47,7 +47,7 @@
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
     berry_event_create, berry_handle_close, berry_object_signal, berry_object_wait_one,
-    berry_vmo_commit, berry_vmo_create, berry_vmo_read, berry_vmo_write, Handle, Status,
+    berry_thread_yield, berry_vmo_commit, berry_vmo_create, berry_vmo_read, berry_vmo_write, Handle, Status,
     BERRY_ERR_BUSY, CLOCK_MONOTONIC,
 };
 
@@ -88,6 +88,12 @@ fn cntvct() -> u64 {
 }
 
 fn main() {
+    // 1.1/S1：0x3F 用户态活证（SVC 类/切换锁舞蹈走真链；输出面零变化——
+    // B1 形状不变，yield 失败即 bail 退出非 0）。
+    let s = berry_thread_yield();
+    if s != 0 {
+        bail("thread_yield", s);
+    }
     bench_sys_null();
     bench_vmo_rw4k();
     bench_ipc_enqueue8();

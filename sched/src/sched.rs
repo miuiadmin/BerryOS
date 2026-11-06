@@ -977,6 +977,17 @@ unsafe fn activate_if_changed(prev: *mut Task, next: *mut Task) {
 /// PickFilter user_only 臂随放置纯度退役）；副核 pick None = 本核队无货 →
 /// 切回 park 探测环（**防御面**——生产不可达；park 三切点保舞蹈完备）。
 pub fn yield_now() {
+    yield_now_impl(true);
+}
+
+/// SVC 0x3F 专用协作让出：与 [`yield_now`] 同舞蹈，但**出口保持 IRQ 屏蔽**——
+/// syscall 派发尾仍需 `svc_exit_class` 放锁；提前解蔽 = 「持锁开窗」违反
+/// S-3c 锁窗纪律（tick 可在锁内闯入）。eret 由异常返回路径恢复 PSTATE。
+pub fn yield_now_keep_irq() {
+    yield_now_impl(false);
+}
+
+fn yield_now_impl(enable_irq_at_end: bool) {
     hal::disable_irq();
     assert_preempt_balanced("yield_now");
     // SAFETY: IRQ 已屏蔽；CURRENT/本核 runqueue 顺序访问。
@@ -1040,7 +1051,9 @@ pub fn yield_now() {
     if hal::smp::cpu_id() == 0 {
         reap_drain();
     }
-    hal::enable_irq();
+    if enable_irq_at_end {
+        hal::enable_irq();
+    }
 }
 
 /// 当前任务退出：出 runqueue + 切到下一个（或 idle）。永不返回。

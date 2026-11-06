@@ -55,7 +55,7 @@ use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
     ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
-    RIGHT_TRANSFER,
+    RIGHT_TRANSFER, RIGHT_INSPECT,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
     SIGNAL_TERMINATED, SIGNAL_USER_MASK, SIGNAL_WRITABLE,
 };
@@ -80,13 +80,14 @@ pub use crate::abi_gen::{
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
+    NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_THREAD_YIELD,
     NR_PROCESS_TERMINATE,
     NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
     NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
     NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
     NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
-use crate::abi_gen::{CLOCK_MONOTONIC, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
+use crate::abi_gen::{CLOCK_MONOTONIC, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
 /// `内存管理设计.md` §4；copy_out 的界检同源）。
@@ -1103,6 +1104,43 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
 /// 堆尽由 try_spawn_user 折 -ENOMEM 优雅兜底）。sp 不做映射校验
 /// （process_start 同政策：错 sp = 首切 fault 杀兜底）；线程入口不得返回
 /// （返回 = fault 杀兜底）。
+/// 1.1/S5-a：把 effective `SchedAttr` 消费到刚 spawn 的 Task。
+///
+/// - `intent`：声明/有效档双写（flag 未置 = 继承调度器默认 0）。
+/// - `policy=3`：`prio_base/effective = PRIO_DEADLINE`，并把相对 deadline
+///  （缺省 = period）换算成绝对 CNTVCT 写 `vdeadline`——Fair 带序 + 带内 VD
+///   即 EDF；deadline 带的 enqueue/tick 不覆盖 VD。
+/// - `weight` 消费挂 S2b（TCB 不扩字段，映射方案随纯 EEVDF 刀定）。
+fn apply_sched_attr_to_task(task_ptr: usize, attr: crate::process::SchedAttr) {
+    let tp = task_ptr as *mut berry_sched::Task;
+    if attr.flags & crate::process::SA_FLAG_INTENT != 0 {
+        // SAFETY: task 刚由 try_spawn_user 返回且尚未运行（单核 IRQ 屏蔽窗）。
+        unsafe {
+            (*tp).intent_declared = attr.intent;
+            (*tp).intent_effective = attr.intent;
+        }
+    }
+    if attr.flags & crate::process::SA_FLAG_POLICY != 0
+        && attr.policy == 3
+        && attr.flags & crate::process::SA_FLAG_BUDGET != 0
+    {
+        let rel_ns = if attr.flags & crate::process::SA_FLAG_DEADLINE != 0 {
+            attr.deadline_ns
+        } else {
+            attr.period_ns
+        };
+        let abs_ns = vct_ns().saturating_add(rel_ns);
+        if let Some(vct) = ns_to_vct(abs_ns) {
+            // SAFETY: 同上；spawn 后、eret 前无并发执行。
+            unsafe {
+                (*tp).prio_base = berry_sched::PRIO_DEADLINE;
+                (*tp).prio_effective = berry_sched::PRIO_DEADLINE;
+                (*tp).vdeadline = vct;
+            }
+        }
+    }
+}
+
 extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     let (th, entry, sp, arg) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3], tf.regs[4]);
     if entry == 0 || sp == 0 || sp % 16 != 0 {
@@ -1150,7 +1188,11 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
         vt.as_ptr() as usize,
         true,
     ) {
-        Some(_) => (),
+        Some(task_ptr) => {
+            // 1.1/S5-a：Thread effective = Process 默认 ∪ Thread 覆盖。
+            let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
+            apply_sched_attr_to_task(task_ptr, eff);
+        }
         None => return ERR_NO_MEMORY as i64,
     }
     thrd.started = true;
@@ -1260,7 +1302,11 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         vt.as_ptr() as usize,
         false,
     ) {
-        Some(_) => (),
+        Some(task_ptr) => {
+            // 1.1/S5-a：首线程同样消费 Process 默认 ∪ Thread 覆盖。
+            let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
+            apply_sched_attr_to_task(task_ptr, eff);
+        }
         None => {
             if bootstrap != 0 {
                 // 回滚迁移（子表刚插入、单核无插队 → take 必成；防御面下令牌泄漏，
@@ -1601,6 +1647,210 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
     0
 }
 
+// ---- 1.1/S1：sched_setattr / sched_getattr（0x3C / 0x3D）----
+
+/// `berry_sched_attr` 内核已知布局长度（ABI §7.2；前向兼容读入上限 256B）。
+const SCHED_ATTR_SIZE: usize = 56;
+const SCHED_ATTR_MAX: usize = 256;
+const SA_F_WEIGHT: u16 = 1 << 0;
+const SA_F_INTENT: u16 = 1 << 1;
+const SA_F_POLICY: u16 = 1 << 2;
+const SA_F_FREEZE_CLOCK: u16 = 1 << 3;
+const SA_F_FREEZE_READY: u16 = 1 << 4;
+const SA_F_RESERVE: u16 = 1 << 5;
+const SA_F_DEADLINE: u16 = 1 << 6;
+const SA_F_BUDGET: u16 = 1 << 7;
+const SA_F_KNOWN: u16 = 0x00FF;
+
+/// 读入并校验一个 `berry_sched_attr`。返回 `(属性, 调用方声明 size)`——
+/// `getattr` 需要原 size 决定回写尾部长度。
+fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i32> {
+    let mut buf = [0u8; SCHED_ATTR_MAX];
+    if let Err(e) = copy_from_user(el1, ptr, &mut buf[..SCHED_ATTR_SIZE]) {
+        return Err(e);
+    }
+    let size = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    if size < SCHED_ATTR_SIZE || size > SCHED_ATTR_MAX {
+        return Err(ERR_INVALID_ARG);
+    }
+    // 前向兼容：size > 内核布局时尾部必须全零（Linux sched_attr 同款）。
+    if size > SCHED_ATTR_SIZE {
+        if let Err(e) = copy_from_user(el1, ptr + SCHED_ATTR_SIZE as u64, &mut buf[SCHED_ATTR_SIZE..size]) {
+            return Err(e);
+        }
+        if buf[SCHED_ATTR_SIZE..size].iter().any(|&b| b != 0) {
+            return Err(ERR_E2BIG);
+        }
+    }
+    let version = u16::from_le_bytes([buf[4], buf[5]]);
+    if version != 1 {
+        return Err(ERR_NOT_SUPPORTED);
+    }
+    let a = crate::process::SchedAttr {
+        flags: u16::from_le_bytes([buf[6], buf[7]]),
+        weight: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+        policy: buf[12],
+        intent: buf[13],
+        freeze_clock: buf[14],
+        min_ns: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+        max_ns: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+        deadline_ns: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
+        budget_ns: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
+        period_ns: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
+    };
+    // reserved0 与未知 flags：保留字段错 = EINVAL（不是 NOT_SUPPORTED——
+    // 调用方可通过清零修复；高 flags 位未在本 ABI 版本定义）。
+    if buf[15] != 0 || a.flags & !SA_F_KNOWN != 0 {
+        return Err(ERR_INVALID_ARG);
+    }
+    if a.flags & SA_F_WEIGHT != 0 && (a.weight == 0 || a.weight > 10000) {
+        return Err(ERR_INVALID_ARG);
+    }
+    if a.flags & SA_F_INTENT != 0 && a.intent > 0x05 {
+        return Err(ERR_INVALID_ARG);
+    }
+    if a.flags & SA_F_POLICY != 0 && !(1..=4).contains(&a.policy) {
+        return Err(ERR_INVALID_ARG);
+    }
+    // policy=3 是 admission-aware deadline 档：必须同时携带 budget/period
+    //（§7.2「policy=3 必须置 bit7」），否则 Task 无重臂周期可消费。
+    if a.flags & SA_F_POLICY != 0 && a.policy == 3 && a.flags & SA_F_BUDGET == 0 {
+        return Err(ERR_INVALID_ARG);
+    }
+    if a.flags & SA_F_FREEZE_CLOCK != 0 && a.freeze_clock > 1 {
+        return Err(ERR_INVALID_ARG);
+    }
+    if a.flags & SA_F_RESERVE != 0 {
+        if a.min_ns > a.max_ns || a.flags & SA_F_POLICY != 0 && a.policy == 3 {
+            return Err(ERR_INVALID_ARG);
+        }
+    }
+    if a.flags & SA_F_BUDGET != 0 {
+        if a.budget_ns == 0
+            || a.period_ns == 0
+            || a.budget_ns > a.period_ns
+            || a.flags & SA_F_POLICY == 0
+            || a.policy != 3
+        {
+            return Err(ERR_INVALID_ARG);
+        }
+    }
+    if a.flags & SA_F_DEADLINE != 0 {
+        if a.flags & SA_F_BUDGET == 0 || a.deadline_ns == 0 || a.deadline_ns > a.period_ns {
+            return Err(ERR_INVALID_ARG);
+        }
+    }
+    Ok((a, size))
+}
+
+/// Thread effective 属性：Process 默认 ∪ Thread 覆盖。位不设 = 继承；位设
+/// 后字段取 Thread 值（含 0=UNSPECIFIED 的显式语义）。
+fn sched_effective(th: &crate::process::Thread) -> crate::process::SchedAttr {
+    // SAFETY: Thread 持 owner ObjRef retain；SVC 单核窗内对象存活。
+    let owner = unsafe { &*th.owner().as_ptr() };
+    let base = owner.obj.as_process().map(|p| p.sched_attr).unwrap_or_default();
+    crate::process::SchedAttr::merge(base, th.sched_attr)
+}
+
+/// `berry_sched_setattr(handle, attr_ptr)`（0x3C）。目标 Process = 写该进程
+/// 线程默认；目标 Thread = 写覆盖（flags=0 = 清覆盖回默认）。S1 只存；
+/// S2/S5 消费 weight/intent/policy/deadline。
+extern "C" fn sys_sched_setattr(tf: &mut TrapFrame) -> i64 {
+    let (h, attr_ptr) = (tf.regs[1] as u32, tf.regs[2] as u64);
+    let el1 = caller_is_el1(tf);
+    let (attr, _) = match sa_parse(el1, attr_ptr) {
+        Ok(v) => v,
+        Err(e) => return e as i64,
+    };
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 精确类型门控：先 Thread（覆盖），再 Process（默认）。两者都需 SET_POLICY。
+    let obj = match t.get_raw(h, ObjType::Thread, RIGHT_SET_POLICY) {
+        Ok((o, _)) => o,
+        Err(e) => match t.get_raw(h, ObjType::Process, RIGHT_SET_POLICY) {
+            Ok((o, _)) => o,
+            Err(_) => return e as i64,
+        },
+    };
+    // SAFETY: get_raw 已三门控；SVC IRQ 屏蔽窗内单核访问。
+    unsafe {
+        let r = &mut *obj.as_ptr();
+        match &mut r.obj {
+            KernelObj::Thread(th) => {
+                th.sched_attr = attr;
+            }
+            KernelObj::Process(p) => {
+                // FREEZE_READY 是 Thread 自证位；对 Process 默认声明非法。
+                if attr.flags & SA_F_FREEZE_READY != 0 {
+                    return ERR_INVALID_ARG as i64;
+                }
+                p.sched_attr = attr;
+            }
+            _ => return ERR_BAD_HANDLE as i64,
+        }
+    }
+    0
+}
+
+/// `berry_sched_getattr(handle, attr_ptr)`（0x3D）。返回 effective 属性；
+/// 调用方 size > 内核布局时尾部写零（前向兼容写侧对称）。
+extern "C" fn sys_sched_getattr(tf: &mut TrapFrame) -> i64 {
+    let (h, attr_ptr) = (tf.regs[1] as u32, tf.regs[2] as u64);
+    let el1 = caller_is_el1(tf);
+    // 先读调用方声明 size（<56 / >256 直接 EINVAL）。
+    let mut head = [0u8; 4];
+    if let Err(e) = copy_from_user(el1, attr_ptr, &mut head) {
+        return e as i64;
+    }
+    let out_size = u32::from_le_bytes(head) as usize;
+    if out_size < SCHED_ATTR_SIZE || out_size > SCHED_ATTR_MAX {
+        return ERR_INVALID_ARG as i64;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let obj = match t.get_raw(h, ObjType::Thread, RIGHT_INSPECT) {
+        Ok((o, _)) => o,
+        Err(e) => match t.get_raw(h, ObjType::Process, RIGHT_INSPECT) {
+            Ok((o, _)) => o,
+            Err(_) => return e as i64,
+        },
+    };
+    // SAFETY: get_raw 已门控；只读组合。
+    let attr = unsafe {
+        let r = &*obj.as_ptr();
+        match &r.obj {
+            KernelObj::Thread(th) => sched_effective(th),
+            KernelObj::Process(p) => p.sched_attr,
+            _ => return ERR_BAD_HANDLE as i64,
+        }
+    };
+    let mut raw = [0u8; SCHED_ATTR_SIZE];
+    raw[0..4].copy_from_slice(&(SCHED_ATTR_SIZE as u32).to_le_bytes());
+    raw[4..6].copy_from_slice(&1u16.to_le_bytes());
+    raw[6..8].copy_from_slice(&attr.flags.to_le_bytes());
+    raw[8..12].copy_from_slice(&attr.weight.to_le_bytes());
+    raw[12] = attr.policy;
+    raw[13] = attr.intent;
+    raw[14] = attr.freeze_clock;
+    raw[16..24].copy_from_slice(&attr.min_ns.to_le_bytes());
+    raw[24..32].copy_from_slice(&attr.max_ns.to_le_bytes());
+    raw[32..40].copy_from_slice(&attr.deadline_ns.to_le_bytes());
+    raw[40..48].copy_from_slice(&attr.budget_ns.to_le_bytes());
+    raw[48..56].copy_from_slice(&attr.period_ns.to_le_bytes());
+    let mut out = [0u8; SCHED_ATTR_MAX];
+    out[..SCHED_ATTR_SIZE].copy_from_slice(&raw);
+    match copy_to_user(el1, attr_ptr, &out[..out_size]) {
+        Ok(()) => 0,
+        Err(e) => e as i64,
+    }
+}
+
+/// `berry_thread_yield()`（0x3F）：主动让出当前片。无 handle、无参数；
+/// 无其他可跑任务时立即返回 0。等价内核 `yield_now`（含切前放锁/切回重取
+/// 舞蹈——SVC 入口类位集被完整继承）。
+extern "C" fn sys_thread_yield(_tf: &mut TrapFrame) -> i64 {
+    berry_sched::yield_now_keep_irq();
+    0
+}
+
 /// `berry_signal_send(h_process, sig)`（0x86，A7-4 段②）：向进程 pending
 /// 集位置位（幂等 = POSIX 标准信号合并语义）。`h=0` → 当前进程（raise 面，
 /// 零 handle 需求）；`h≠0` 门控 Process **MANAGE**（同 terminate 权利面）。
@@ -1898,6 +2148,9 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             berry_hal_aarch64::uart_puts(b"intent: hop budget cap (send)\n");
         }
     }
+    // 1.1/S4：受益者付费——send 侧快照发送者域 ID（= Task.pinned）。
+    // 零分配（纯填字段）；recv 侧可读（S4 只记不罚——telemetry 计数）。
+    msg.billing.domain_id = berry_sched::current_pinned() as u64;
     // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核禁切
     // 无插队，g3-1c-2 段守卫在持）：无随行 handle + 队列空 + 恰一个非哨兵
     // READABLE 等待者且无哨兵在场 → fastpath；否则 slowpath（检查链其余项
@@ -2098,6 +2351,13 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     // 超帽的语义与遥测见 `berry_sched::intent`；CURRENT 无效则跳过不记）。
     // SAFETY: 本端门控过；只读 no_intent 标志。
     let opt_out = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).map_or(false, |e| e.no_intent());
+    // 1.1/S4：recv 侧读取 billing 域 ID——S4 只记（telemetry 计数）不罚。
+    // domain_id != 0 = 有归属（跨进程消息）；== 0 = 内核任务（记 system）。
+    // `msg` 在此行之前已被 dequeue 弹出（所有权已移）——billing 字段随行。
+    // S5 起：server 侧运行时将记到此 domain（受益者付费的执行半边）。
+    if msg.billing.domain_id != 0 {
+        crate::telemetry::billing_cross_domain();
+    }
     if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
         match out {
             berry_sched::SettleOut::Borrowed => crate::telemetry::intent_borrowed(),
@@ -2578,6 +2838,11 @@ pub fn install() {
     reg(NR_PROCESS_TERMINATE, sys_process_terminate, SVC_CLASS_ALL);
     // —— TABLE：suspend（表门控 + freeze 扫描，不触 SQ/RQ 结构面）——
     reg(NR_PROCESS_SUSPEND, sys_process_suspend, SVC_CLASS_TABLE);
+    // —— TABLE：sched attr 双号（表门控 + Thread 字段写/读）——
+    reg(NR_SCHED_SETATTR, sys_sched_setattr, SVC_CLASS_TABLE);
+    reg(NR_SCHED_GETATTR, sys_sched_getattr, SVC_CLASS_TABLE);
+    // —— RQ+TABLE：yield（pick/requeue + 切换舞蹈；表位保守对称）——
+    reg(NR_THREAD_YIELD, sys_thread_yield, SVC_CLASS_RQ_TABLE);
     reg(NR_CHANNEL_CREATE, sys_channel_create, SVC_CLASS_ALL);
     // —— SQ+RQ+TABLE：send/recv（fastpath sq_phys 外提已备，slice 2a）——
     reg(NR_CHANNEL_SEND, sys_channel_send, SVC_CLASS_SQ_RQ_TABLE);

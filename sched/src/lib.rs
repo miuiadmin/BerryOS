@@ -25,7 +25,7 @@ pub mod sched;
 pub mod spin;
 pub mod task;
 
-pub use class::{Fair, RoundRobin, SchedClass};
+pub use class::{Fair, RoundRobin, SchedClass, PRIO_DEADLINE};
 pub use intent::{
     intent_valid, settle, snapshot, MsgIntent, SettleOut, SnapOut, INTENT_BACKGROUND,
     INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS, INTENT_HOP_MAX, INTENT_INTERACTIVE,
@@ -50,7 +50,7 @@ pub use sched::{
     spawn_with_tag, switches, svc_window, thaw_by_pinned, topo_smp_online, try_preempt, try_spawn_user,
     user_fault_exit,
     user_kills,
-    wake_matching, wake_matching_locked, wake_stamp_take, yield_now, KlockOps, SleepqHook, SwitchHook, SwitchKind,
+    wake_matching, wake_matching_locked, wake_stamp_take, yield_now, yield_now_keep_irq, KlockOps, SleepqHook, SwitchHook, SwitchKind,
     WakeHook, WAIT_ANY,
 };
 pub use task::{EppHint, Task, TaskState, WakeReason, HELD_FROZEN, STACK_SIZE};

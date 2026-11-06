@@ -43,6 +43,30 @@ pub type Rights = u64;
 pub type Status = i32; // 0 = Ok，负 = 错误码
 pub type Time = u64; // MONOTONIC 纳秒
 
+/// `berry_sched_attr`（调度 1.1 ABI §7.2，56B 定长）。
+///
+/// `size` 由调用方填 `size_of::<SchedAttr>()`（内核接受更大且尾部全零的
+/// 前向兼容形态）；`version` 目前恒 1；`flags` 决定字段生效，未置位 = 继承。
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SchedAttr {
+    pub size: u32,
+    pub version: u16,
+    pub flags: u16,
+    pub weight: u32,
+    pub policy: u8,
+    pub intent: u8,
+    pub freeze_clock: u8,
+    pub reserved0: u8,
+    pub min_ns: u64,
+    pub max_ns: u64,
+    pub deadline_ns: u64,
+    pub budget_ns: u64,
+    pub period_ns: u64,
+}
+const _: () = assert!(core::mem::size_of::<SchedAttr>() == 56);
+const _: () = assert!(core::mem::align_of::<SchedAttr>() == 8);
+
 // —— ABI 常量层（生成文件 `src/abi_gen.rs`，单源 = `tools/abi.toml`）——
 // glob 转发维持既有路径（`berry_sys::RIGHT_*`/`BERRY_ERR_*` 等）；`nr` 模块
 // 是 pub(crate)——glob 不带出，编号仍只在下方 wrapper 的 `svc` 里出现（§8.3）。
@@ -379,6 +403,27 @@ pub extern "C" fn berry_thread_exit() -> ! {
 #[no_mangle]
 pub extern "C" fn berry_thread_sleep(deadline: Time) -> Status {
     unsafe { sys(nr::THREAD_SLEEP, deadline as usize, 0, 0, 0, 0, 0) }
+}
+
+/// 调度 1.1（0x3C）：声明/更新调度属性。目标可为 Thread（覆盖）或 Process
+///（该进程线程默认）；需 `RIGHT_SET_POLICY`。S1 存储面，S2/S5 消费。
+#[no_mangle]
+pub extern "C" fn berry_sched_setattr(target: Handle, attr: *const SchedAttr) -> Status {
+    unsafe { sys(nr::SCHED_SETATTR, target as usize, attr as usize, 0, 0, 0, 0) }
+}
+
+/// 调度 1.1（0x3D）：查询 effective 调度属性。目标可为 Thread/Process；
+/// 需 `RIGHT_INSPECT`。`attr.size` 入参 = 调用方缓冲长度。
+#[no_mangle]
+pub extern "C" fn berry_sched_getattr(target: Handle, attr: *mut SchedAttr) -> Status {
+    unsafe { sys(nr::SCHED_GETATTR, target as usize, attr as usize, 0, 0, 0, 0) }
+}
+
+/// 调度 1.1（0x3F）：主动让出当前时间片；无 handle/参数；无可跑任务时立即
+/// 返回 0。
+#[no_mangle]
+pub extern "C" fn berry_thread_yield() -> Status {
+    unsafe { sys(nr::THREAD_YIELD, 0, 0, 0, 0, 0, 0) }
 }
 
 // —— IPC / event ——

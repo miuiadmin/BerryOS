@@ -43,6 +43,8 @@ pub fn run() {
     test_intent();
     test_fast();
     test_freeze();
+    test_deadline();
+    test_sched_attr();
     test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -2946,6 +2948,87 @@ fn test_freeze() {
     assert_eq!(p8.name, b"fzC".as_slice(), "FREEZE：F5 最终解冻后 C 须可出选");
 
     berry_hal_aarch64::uart_puts(b"FREEZE-K ok\n");
+}
+
+/// 1.1/S1：SchedAttr effective 组合（Process 默认 ∪ Thread 覆盖）。
+fn test_sched_attr() {
+    use crate::process::{SchedAttr, SA_FLAG_INTENT, SA_FLAG_POLICY, SA_FLAG_WEIGHT};
+    let base = SchedAttr {
+        flags: SA_FLAG_WEIGHT | SA_FLAG_POLICY,
+        weight: 100,
+        policy: 1,
+        intent: 2,
+        ..SchedAttr::default()
+    };
+    let over = SchedAttr {
+        flags: SA_FLAG_INTENT | SA_FLAG_POLICY,
+        intent: 4,
+        policy: 3,
+        ..SchedAttr::default()
+    };
+    let eff = SchedAttr::merge(base, over);
+    assert_eq!(eff.flags, SA_FLAG_WEIGHT | SA_FLAG_INTENT | SA_FLAG_POLICY);
+    assert_eq!((eff.weight, eff.intent, eff.policy), (100, 4, 3));
+    // flags=0 = 清除覆盖：effective 回 Process 默认。
+    let cleared = SchedAttr::merge(base, SchedAttr::default());
+    assert_eq!(cleared, base);
+    berry_hal_aarch64::uart_puts(b"ATTR-K ok\n");
+}
+
+/// 1.1/S5：最小 deadline class（EDF）——`PRIO_DEADLINE` 带序 + 带内 VD 排
+/// 序 = 天然 EDF。deadline 任务设 `prio_effective ≥ PRIO_DEADLINE` +
+/// `vdeadline = 绝对截止期`，Fair 不覆盖 VD。
+fn test_deadline() {
+    use berry_sched::{Fair, PRIO_DEADLINE, Runqueue, SchedClass, Task, Topo};
+
+    extern "C" fn dl_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8]) -> &'static mut Task {
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(dl_dummy, 0, name, 0, 0))
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // 三个任务：一个 fair（prio 0）、两个 deadline（不同截止期）。
+    let tf = mk(b"dlF".as_slice()); // fair
+    let td1 = mk(b"dl1".as_slice()); // deadline 截止 3000
+    let td2 = mk(b"dl2".as_slice()); // deadline 截止 2000（更紧）
+
+    // fair 任务正常入环。
+    rr.enqueue(&mut *tf, &mut rq);
+
+    // deadline 任务：高带 + 绝对截止期为 VD。
+    td1.prio_effective = PRIO_DEADLINE;
+    td1.vdeadline = 3000; // 截止 3000
+    rr.enqueue(&mut *td1, &mut rq);
+
+    td2.prio_effective = PRIO_DEADLINE;
+    td2.vdeadline = 2000; // 截止 2000（更紧）
+    rr.enqueue(&mut *td2, &mut rq);
+
+    // D1：EDF——截止 2000（dl2）先于截止 3000（dl1），fair（dlF）最后。
+    let p1 = rr.pick_next(&rq, &topo).unwrap();
+    assert_eq!(p1.name, b"dl2".as_slice(), "DL：D1 最早截止（2000）须先出");
+    // 模拟 dl2 已跑完本轮——VD 推到 MAX（防 D2 重复选 dl2）。
+    td2.vdeadline = u64::MAX;
+
+    let p2 = rr.pick_next(&rq, &topo).unwrap();
+    assert_eq!(p2.name, b"dl1".as_slice(), "DL：D2 次早截止（3000）须次出");
+
+    // fair 任务在 deadline 带空后才出。
+    td1.prio_effective = 0; // 降回 fair
+    td2.prio_effective = 0;
+    td1.vruntime = 0; td1.vdeadline = 0;
+    td2.vruntime = 0; td2.vdeadline = 0;
+    // D3：deadline 带空 → 所有任务退回 fair——任一出选即通过（不验具体是谁，
+    // 因为 advance_past 游标位置决定首见者——三任务均合法）。
+    let _p3 = rr.pick_next(&rq, &topo).expect("DL：D3 非空环须有出选");
+
+    berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
 
 fn test_pi() {

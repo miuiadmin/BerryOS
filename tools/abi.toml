@@ -411,31 +411,31 @@ title = "**调度 1.1（S0–S3 ABI）**"
 [[group.syscall]]
 num = 0x3C
 name = "sched_setattr"
-desc = '声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；1.1/S1 在册，S2/S5 落语义；size 超界且尾部非零 → -E2BIG'
+desc = '声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；目标 Thread 覆盖 / Process 默认；size 超界且尾部非零 → -E2BIG'
 stage = "1.1"
-implemented = false
-note = '1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册，S2/S5 消费。'
+implemented = true
+note = 'S1 收口：56B attr 解析/校验/存储（Thread 覆盖 + Process 默认）已落；S2/S5 消费随后续刀。'
 [[group.syscall]]
 num = 0x3D
 name = "sched_getattr"
-desc = '查询 effective 调度属性（declared/source 走 telemetry；size 超界同 0x3C）'
+desc = '查询 effective 调度属性（Thread = Process 默认 ∪ Thread 覆盖；declared/source 走 telemetry；size 前向兼容）'
 stage = "1.1"
-implemented = false
-note = '1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册。'
+implemented = true
+note = 'S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。'
 [[group.syscall]]
 num = 0x3E
 name = "process_suspend"
 desc = '冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token)'
 stage = "1.1"
-implemented = false
+implemented = true
 note = '1.1 ABI 契约，见 docs/调点调度-v1.1.md §5/§7.3；S1 只入册，S3 落语义。'
 [[group.syscall]]
 num = 0x3F
 name = "thread_yield"
-desc = '主动让出当前时间片；无 handle，等价内核 yield_now'
+desc = '主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0'
 stage = "1.1"
-implemented = false
-note = '1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.1；S1 只入册，S2 落语义。'
+implemented = true
+note = 'S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。'
 
 [[group]]
 title = "**异常**"
