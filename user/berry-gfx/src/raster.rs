@@ -644,6 +644,140 @@ fn smooth_rgb565_blit(
     dy: i32,
     clip: &Rect,
 ) {
+    // 实机两档（800×600/1080×1920）走横向行缓存快路；超宽纹理保守
+    // 落逐像素通用路径（无栈大数组风险）。
+    if dw as usize <= 1280 && sw <= u16::MAX as u32 && sh <= u16::MAX as u32 {
+        smooth_rgb565_fast_blit(target, desc, sw, sh, dw, dh, px, dx, dy, clip);
+    } else {
+        smooth_rgb565_slow_blit(target, desc, sw, sh, dw, dh, px, dx, dy, clip);
+    }
+}
+
+/// 目标宽 ≤2048 的快路：x 映射一次预计算；源行横向插值缓存后，输出
+/// 行只做三通道纵向混合。壁纸满帧从“每像素两除”降为“每行一次 y 映射”。
+fn smooth_rgb565_fast_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    sw: u32,
+    sh: u32,
+    dw: u32,
+    dh: u32,
+    px: &[u16],
+    dx: i32,
+    dy: i32,
+    clip: &Rect,
+) {
+    const MAX_W: usize = 1280; // 当前桌面最宽 1080；超宽落慢路径防大栈
+    let dw_i = i32::try_from(dw).unwrap_or(i32::MAX);
+    let dh_i = i32::try_from(dh).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw_i, dh_i).intersect(clip) else {
+        return;
+    };
+    let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
+    let unpack = |v: u16| -> (u8, u8, u8) {
+        let r5 = ((v >> 11) & 0x1F) as u32;
+        let g6 = ((v >> 5) & 0x3F) as u32;
+        let b5 = (v & 0x1F) as u32;
+        (
+            ((r5 * 255 + 15) / 31) as u8,
+            ((g6 * 255 + 31) / 63) as u8,
+            ((b5 * 255 + 15) / 31) as u8,
+        )
+    };
+
+    // x0/x1 用 u16 足够（source 边 ≤65535）；fx 为 Q8 权重。
+    let mut xs0 = [0u16; MAX_W];
+    let mut xs1 = [0u16; MAX_W];
+    let mut fxs = [0u8; MAX_W];
+    for i in 0..dw as usize {
+        let cx = ((2 * i as i64 + 1) * sw as i64 * 65536 / (2 * dw as i64)) - 32768;
+        let x0 = (cx / 65536).clamp(0, sw.saturating_sub(1) as i64) as usize;
+        let x1 = (x0 + 1).min(sw.saturating_sub(1) as usize);
+        let fx = ((cx - (x0 as i64) * 65536).max(0) / 256) as u8;
+        xs0[i] = u16::try_from(x0).unwrap_or(u16::MAX);
+        xs1[i] = u16::try_from(x1).unwrap_or(u16::MAX);
+        fxs[i] = fx;
+    }
+
+    // 两条源行横向 RGB888 缓存 + 各自源行号（usize::MAX = 未装载）。
+    let mut row0 = [(0u8, 0u8, 0u8); MAX_W];
+    let mut row1 = [(0u8, 0u8, 0u8); MAX_W];
+    let mut cached0 = usize::MAX;
+    let mut cached1 = usize::MAX;
+    let width = dw as usize;
+    let mut y = vis.y;
+    while y < y_end {
+        let cy = ((2 * (y - dy) as i64 + 1) * sh as i64 * 65536 / (2 * dh as i64))
+            - 32768;
+        let y0 = (cy / 65536).clamp(0, sh.saturating_sub(1) as i64) as usize;
+        let y1 = (y0 + 1).min(sh.saturating_sub(1) as usize);
+        let fy = ((cy - (y0 as i64) * 65536).max(0) / 256) as u32;
+
+        if cached0 != y0 {
+            let base = y0 * sw as usize;
+            for i in 0..width {
+                let (r0, g0, b0) = unpack(px.get(base + xs0[i] as usize).copied().unwrap_or(0));
+                let (r1, g1, b1) = unpack(px.get(base + xs1[i] as usize).copied().unwrap_or(0));
+                let fx = u32::from(fxs[i]);
+                let inv = 256 - fx;
+                row0[i] = (
+                    ((u32::from(r0) * inv + u32::from(r1) * fx ) >> 8) as u8,
+                    ((u32::from(g0) * inv + u32::from(g1) * fx ) >> 8) as u8,
+                    ((u32::from(b0) * inv + u32::from(b1) * fx ) >> 8) as u8,
+                );
+            }
+            cached0 = y0;
+        }
+        if cached1 != y1 {
+            if y1 == y0 {
+                row1 = row0;
+                cached1 = y1;
+            } else {
+                let base = y1 * sw as usize;
+                for i in 0..width {
+                    let (r0, g0, b0) = unpack(px.get(base + xs0[i] as usize).copied().unwrap_or(0));
+                    let (r1, g1, b1) = unpack(px.get(base + xs1[i] as usize).copied().unwrap_or(0));
+                    let fx = u32::from(fxs[i]);
+                    let inv = 256 - fx;
+                    row1[i] = (
+                        ((u32::from(r0) * inv + u32::from(r1) * fx ) >> 8) as u8,
+                        ((u32::from(g0) * inv + u32::from(g1) * fx ) >> 8) as u8,
+                        ((u32::from(b0) * inv + u32::from(b1) * fx ) >> 8) as u8,
+                    );
+                }
+                cached1 = y1;
+            }
+        }
+
+        let inv_y = 256 - fy;
+        let mut x = vis.x;
+        while x < x_end {
+            let i = (x - dx) as usize;
+            let (r0, g0, b0) = row0[i];
+            let (r1, g1, b1) = row1[i];
+            let r = ((u32::from(r0) * inv_y + u32::from(r1) * fy ) >> 8) as u8;
+            let g = ((u32::from(g0) * inv_y + u32::from(g1) * fy ) >> 8) as u8;
+            let b = ((u32::from(b0) * inv_y + u32::from(b1) * fy ) >> 8) as u8;
+            put_px(target, desc, clip, x, y, desc.format().pack(r, g, b));
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+/// 通用慢路径：目标宽 >2048 时保守保留原逐像素算法。
+fn smooth_rgb565_slow_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    sw: u32,
+    sh: u32,
+    dw: u32,
+    dh: u32,
+    px: &[u16],
+    dx: i32,
+    dy: i32,
+    clip: &Rect,
+) {
     let dw_i = i32::try_from(dw).unwrap_or(i32::MAX);
     let dh_i = i32::try_from(dh).unwrap_or(i32::MAX);
     let Some(vis) = Rect::new(dx, dy, dw_i, dh_i).intersect(clip) else {
@@ -678,7 +812,12 @@ fn smooth_rgb565_blit(
             let p01 = px.get(y0 * sw as usize + x1).copied().unwrap_or(0);
             let p10 = px.get(y1 * sw as usize + x0).copied().unwrap_or(0);
             let p11 = px.get(y1 * sw as usize + x1).copied().unwrap_or(0);
-            let ps = [(p00, (256 - fx) * (256 - fy)), (p01, fx * (256 - fy)), (p10, (256 - fx) * fy), (p11, fx * fy)];
+            let ps = [
+                (p00, (256 - fx) * (256 - fy)),
+                (p01, fx * (256 - fy)),
+                (p10, (256 - fx) * fy),
+                (p11, fx * fy),
+            ];
             let mut rgb = [0u32; 3];
             for (p, w) in ps {
                 let (r, g, b) = unpack(p);
