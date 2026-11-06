@@ -150,6 +150,10 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GUI-8 视觉补全：appstub 共用 no_std 静默壳（零 argv0 断言/console=false/
+    # EOF+0 退出）复制成 7 个占位 app；真 app 内容后续替换。
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appstub/Cargo.toml \
+        --target aarch64-unknown-none
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
     # 单次构建 12 命令（=0.12.0 锁步，MIT，上游逐字不动；薄 harness =
     # CRT0 锚 + uumain 直传——`#[uucore::main]` proc 宏已统一改写 -> i32）。
@@ -252,6 +256,16 @@ build-user:
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
     python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
+    # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。
+    for spec in SETTINGS:settings FILES:files PHOTOS:photos MUSIC:music CAMERA:camera BROWSER:browser CLOCK:clock; do
+        id=${spec%%:*}; bin=${spec##*:}
+        mkdir -p "userbins/app-stage/$id/bin"
+        cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"
+        cp cargo-target/aarch64-unknown-none/release/appstub "userbins/app-stage/$id/bin/$bin"
+        cp -R "bins/appstub/apps/$id/icons" "userbins/app-stage/$id/"
+        cp -R "bins/appstub/apps/$id/views" "userbins/app-stage/$id/"
+        python3 ../tools/mkapp.py "userbins/app/$id.bap" "userbins/app-stage/$id"
+    done
     # G-eco-c/d + app-0：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + bench1 + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出。app-0 起加
@@ -260,6 +274,13 @@ build-user:
     python3 ../tools/mkcpio.py ../rootfs.cpio \
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
+        app/BROWSER.bap=userbins/app/BROWSER.bap \
+        app/CAMERA.bap=userbins/app/CAMERA.bap \
+        app/CLOCK.bap=userbins/app/CLOCK.bap \
+        app/FILES.bap=userbins/app/FILES.bap \
+        app/MUSIC.bap=userbins/app/MUSIC.bap \
+        app/PHOTOS.bap=userbins/app/PHOTOS.bap \
+        app/SETTINGS.bap=userbins/app/SETTINGS.bap \
         bin/bench1=cargo-target/aarch64-unknown-linux-musl/release/bench1 \
         bin/berry-launcher=cargo-target/aarch64-unknown-linux-musl/release/berry-launcher \
         bin/berryctl=cargo-target/aarch64-unknown-linux-musl/release/berryctl \
