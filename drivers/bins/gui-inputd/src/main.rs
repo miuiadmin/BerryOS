@@ -92,10 +92,9 @@ mod guest {
     /// GUI-5：wmd 推送快照超龄帽（Q11-②——age 超此值视同缺席，旁注降级
     /// 记账不命中；③降级态每帽值一跳重发 WAIT(0) 重探测）。
     const SNAPSHOT_STALE_CAP_NS: u64 = 10_000_000_000;
-    /// 屏幕几何兜底：GUI-1 ramfb 800×600 档（GUI-5 起降级为**无快照态
-    /// 兜底**——泵构造先于首快照，归一化域用此定值；wmd 快照头携真显示
-    /// 几何域（Q15），v1 EFI 链两域同源同值（ramfb 800×600）命中零偏移；
-    /// 快照几何与定值分歧面的运行期联动 = GUI-8 挂账）。
+    /// 屏幕几何兜底：泵构造先于首张 wmd 快照时的 800×600 初值；快照
+    /// 到达即经 `PointerPump::set_geom` 换真显示域（Q15）。快照缺席/畸形
+    /// 的降级态保留初值，事件坐标按兜底域归一。
     const SCREEN_W: u32 = 800;
     const SCREEN_H: u32 = 600;
 
@@ -709,13 +708,18 @@ mod guest {
     /// 重臂 WAIT(new_version)（表变更恰醒一次收一张，Q17）；`Some(Err)` /
     /// `None`（1B 拒 / 畸形）= wmd 侧病——**降级记账不 trap**（失败隔离：
     /// wmd 病不连坐输入服务；Q11-③ 每 10s WAIT(0) 重探测兜底闭环）。
-    fn wm_on_reply(push: Handle, buf: &[u8]) {
+    fn wm_on_reply(push: Handle, buf: &[u8], pump: &mut PointerPump) {
         // SAFETY: 单线程进程（serve 调用链内独占）。
         let c = unsafe { &mut *core::ptr::addr_of_mut!(WM_CACHE) };
         // 应答到达 = 在途 WAIT 已消费（一请求一应答——1B 拒/畸形同面，
         // 三态解析前先清位；Ok 路随重臂再置位）。
         c.outstanding = false;
         match gp::parse_wm_snapshot_rep(buf) {
+            Some(Ok(snap)) if snap.disp_w == 0 || snap.disp_h == 0 => {
+                println!("gui-inputd: wm 快照显示域退化（{}x{}）", snap.disp_w, snap.disp_h);
+                c.probe_ns = now();
+                return;
+            }
             Some(Ok(snap)) => {
                 if !c.logged {
                     c.logged = true;
@@ -724,6 +728,10 @@ mod guest {
                         snap.version, snap.count, snap.disp_w, snap.disp_h
                     );
                 }
+                pump.set_geom(ScreenGeom {
+                    w: u32::from(snap.disp_w),
+                    h: u32::from(snap.disp_h),
+                });
                 let v = snap.version;
                 c.snap = Some(snap);
                 c.born_ns = now();
@@ -944,7 +952,7 @@ mod guest {
                             let _ = berry_handle_close(phs[i]);
                         }
                     }
-                    wm_on_reply(push, &msg[..nb]);
+                    wm_on_reply(push, &msg[..nb], pump);
                     continue;
                 }
                 if s != BERRY_ERR_AGAIN {

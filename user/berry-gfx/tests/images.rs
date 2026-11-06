@@ -332,6 +332,73 @@ fn draw_image_argb_alpha_key_and_clip() {
     assert_eq!(px(&fb, 2, 3), 0xEEEE_EEEE, "A=0 + 窗内：穿透");
 }
 
+// —— ScaledArgb：非整数 1.5x 与 2x 最近邻采样、透明键同律 ——
+#[test]
+fn draw_image_scaled_argb_nearest_and_guard() {
+    let d = desc16();
+    // 2×2 → 4×2：列采样中心取整为 0,1,1,1；A=0 仍透明键。
+    let img: [u32; 4] = [
+        0xFFFF_0000, 0x0000_0000, //
+        0xFF00_FF00, 0xFF00_00FF,
+    ];
+    let mut fb = vec![0xEEu8; d.need_bytes()];
+    let mut enc = CommandEncoder::new();
+    enc.draw_image(
+        ImageSrc::ScaledArgb { sw: 2, sh: 2, dw: 4, dh: 2, px: &img },
+        0,
+        0,
+        WHITE,
+        None,
+    )
+    .unwrap();
+    let dl = enc.finish();
+    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
+    let want = [0x00FF_0000, 0xEEEE_EEEE, 0xEEEE_EEEE, 0xEEEE_EEEE];
+    for (x, v) in want.iter().enumerate() {
+        assert_eq!(px(&fb, x as i32, 0), *v, "row0 x={x}");
+    }
+    assert_eq!(px(&fb, 0, 1), 0x0000_FF00);
+    assert_eq!(px(&fb, 1, 1), 0x0000_00FF);
+    assert_eq!(px(&fb, 2, 1), 0x0000_00FF);
+    assert_eq!(px(&fb, 3, 1), 0x0000_00FF);
+
+    // 生产形 2→3 非整数放大：中心取整列映射 0,1,1。
+    let img3: [u32; 2] = [0xFFFF_0000, 0xFF00_00FF];
+    let mut enc = CommandEncoder::new();
+    enc.draw_image(
+        ImageSrc::ScaledArgb { sw: 2, sh: 1, dw: 3, dh: 1, px: &img3 },
+        0,
+        4,
+        WHITE,
+        None,
+    )
+    .unwrap();
+    let dl = enc.finish();
+    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
+    assert_eq!(px(&fb, 0, 4), 0x00FF_0000);
+    assert_eq!(px(&fb, 1, 4), 0x0000_00FF);
+    assert_eq!(px(&fb, 2, 4), 0x0000_00FF);
+
+    // 零目标几何 / 源恰长破裂：submit 先验拒，帧面零落笔。
+    let short: [u32; 3] = [0xFFFF_0000; 3];
+    let mut enc = CommandEncoder::new();
+    enc.draw_image(
+        ImageSrc::ScaledArgb { sw: 2, sh: 2, dw: 4, dh: 2, px: &short },
+        0,
+        0,
+        WHITE,
+        None,
+    )
+    .unwrap();
+    let before = fb.clone();
+    let dl = enc.finish();
+    assert_eq!(
+        Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()),
+        Err(SubmitError::ImagePixelMismatch { index: 0 })
+    );
+    assert_eq!(fb, before);
+}
+
 // —— ARGB 恰长拒面：短/长切片 + 手搓 Cmd 旁路 + 巨参（先验后写）——
 #[test]
 fn draw_image_argb_pixel_mismatch() {

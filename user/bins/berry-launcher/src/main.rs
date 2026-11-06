@@ -7,8 +7,8 @@
 //!   骨架——W2 = APP_LIST 拉取装载）。
 //! - [`layout_io`]：LAYOUT.JSN 读写三约束（缺席/坏件回默认 + 重写自愈
 //!   + 写失败非致命；冻结相 `fs_h()==0` 默认直返零 RPC）。
-//! - [`desktop`]：桌面静态面建树（壁纸三带/状态栏/SwipePager 四页
-//!   Grid 4×3/a11y 骨架 18/32——裁决六/八；几何全 GETINFO 动态——
+//! - [`desktop`]：桌面静态面建树（壁纸三带/OH 状态栏/SwipePager 四页
+//!   Grid 5×4/常驻 Dock/a11y 32/32——裁决六/八；几何全 GETINFO 动态——
 //!   裁决 D）。
 //! - [`frameloop`]：长活帧循环（W2 填充——W1 静默 park）。
 //!

@@ -31,7 +31,7 @@ pub enum SubmitError {
     /// DrawImage 位图畸形（`index` = 命令序号）。两族恰长铁律：
     /// `ImageSrc::Bits` 字面构造绕过 `GlyphBits::new` 的，`rows.len() !=
     /// h * 行字节`（短行 = 越界位静默错位、长行 = 尾字节静默丢弃）；
-    /// `ImageSrc::Argb` 的 `px.len() != w*h`（同族先验——短切片缺像素、
+    /// `ImageSrc::Argb/ScaledArgb` 源像素恰长破裂（同族先验——短切片缺像素、
     /// 长切片尾随静默丢，两者都禁）。图标槽位面不在此门（实现契约 +
     /// `bit()`/`get()` 防御采样兜）。
     ImagePixelMismatch { index: usize },
@@ -86,6 +86,19 @@ impl Queue {
                 }
                 Cmd::DrawImage { src: ImageSrc::Argb { w, h, px }, .. } => {
                     if (*w as u64) * (*h as u64) != px.len() as u64 {
+                        return Err(SubmitError::ImagePixelMismatch { index: i });
+                    }
+                }
+                Cmd::DrawImage {
+                    src: ImageSrc::ScaledArgb { sw, sh, dw, dh, px },
+                    ..
+                } => {
+                    if *sw == 0
+                        || *sh == 0
+                        || *dw == 0
+                        || *dh == 0
+                        || (*sw as u64) * (*sh as u64) != px.len() as u64
+                    {
                         return Err(SubmitError::ImagePixelMismatch { index: i });
                     }
                 }

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""生成 berry-gfx 32×48 HD ASCII 点阵（Noto Sans OFL 源）。
+"""生成 berry-gfx 32×48 HD ASCII 点阵（Noto Sans CJK SC / 思源黑体 OFL 源）。
 
 用法：
-  python3 tools/genhdfont.py [font.ttf]
+  python3 tools/genhdfont.py [font.otf]
 
-默认读取 `user/berry-gfx/fonts/NotoSans-Regular.ttf`，写出
+默认读取 `user/berry-gfx/fonts/NotoSansCJKsc-Regular-ASCII.otf`，写出
 `user/berry-gfx/src/font_data_hd.rs`。设备仍只消费静态单色点阵；
 本脚本仅在宿主改字源/字号时手工运行，生成物随源入册。
 """
@@ -41,7 +41,7 @@ def build(font_path: Path) -> str:
     font = ImageFont.truetype(str(font_path), FONT_SIZE)
     lines = [
         "//! 本文件由 tools/genhdfont.py 生成——勿手改；改字源/字号后重跑生成器。",
-        "//! 字源：Noto Sans Regular（SIL Open Font License 1.1，见 fonts/OFL.txt）。",
+        "//! 字源：Noto Sans CJK SC Regular（ASCII 子集）（SIL Open Font License 1.1，见 fonts/OFL.txt）。",
         "//! 32×48 HD 档：ASCII 32..126，原生矢量光栅化（非 8×16 最近邻放大）。",
         "//! 行序自上而下；每行 4 字节，MSB=最左列。",
         "",
@@ -65,10 +65,10 @@ def build(font_path: Path) -> str:
 
 
 def main() -> int:
-    arg = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "user/berry-gfx/fonts/NotoSans-Regular.ttf"
+    arg = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "user/berry-gfx/fonts/NotoSansCJKsc-Regular-ASCII.otf"
     out = REPO / "user/berry-gfx/src/font_data_hd.rs"
     out.write_text(build(arg))
-    print(f"genhdfont: {out} ({out.stat().st_size}B, Noto Sans {FONT_SIZE}px → {CELL_W}×{CELL_H})")
+    print(f"genhdfont: {out} ({out.stat().st_size}B, Noto Sans CJK SC {FONT_SIZE}px → {CELL_W}×{CELL_H})")
     return 0
 
 

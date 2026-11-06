@@ -123,10 +123,12 @@ if len(LAYOUT_CELLS_EXPECTED) != 2:
 # —— 桌面几何（launcher desktop.rs 常量镜像；仅用于算 cell(0,0) 中心，
 #    屏幕宽高从串口 LAUNCH/FB 行动态解析——裁决 D：不把 800x600 写死）——
 STATUS_H = 44
-DOT_H = 8
+# 小屏档无 Dock，只保留 SwipePager 16px 视觉点行（OH 96px 指示区仅 phone 档）。
+DOT_H = 16
+GRID_TOP = 8
 BOTTOM_PAD = 8
 GRID_COLS = 4
-GRID_ROWS = 3
+GRID_ROWS = 5
 GRID_GAP = 12
 
 DEFAULT_CODE = "/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
@@ -711,11 +713,11 @@ def write_layout_for_selftest(
 
 
 def cell0_center(w: int, h: int) -> tuple[int, int]:
-    """cell(0,0) 中心（status 栏之下，4×3 网格第一格）。"""
-    grid_h = max(0, h - (STATUS_H + DOT_H + BOTTOM_PAD))
+    """cell(0,0) 中心（status 栏之下，4×5 网格第一格；800×600 调试档）。"""
+    grid_h = max(0, h - (STATUS_H + GRID_TOP + DOT_H + BOTTOM_PAD))
     cell_w = max(1, (w - (GRID_COLS - 1) * GRID_GAP) // GRID_COLS)
     cell_h = max(1, (grid_h - (GRID_ROWS - 1) * GRID_GAP) // GRID_ROWS)
-    return cell_w // 2, STATUS_H + cell_h // 2
+    return cell_w // 2, STATUS_H + GRID_TOP + cell_h // 2
 
 
 RE_LAUNCH_GEOM = re.compile(r"LAUNCH v=\d+ wmax=\d+ (\d+)x(\d+)")
@@ -1637,11 +1639,11 @@ def self_test(args) -> int:
         )
 
         # 2) 几何
-        if cell0_center(800, 600) != (95, 130):
+        if cell0_center(800, 600) != (95, 99):
             raise SmokeError(f"cell0_center 异常：{cell0_center(800, 600)}")
-        if cell0_center(480, 1000) != (55, 196):
+        if cell0_center(480, 1000) != (55, 139):
             raise SmokeError(f"cell0_center 480x1000 异常：{cell0_center(480, 1000)}")
-        log("self-test: geometry ok（800x600→(95,130)，480x1000→(55,196)）")
+        log("self-test: geometry ok（800x600→(95,99)，480x1000→(55,139)）")
 
         # 3) 日志谓词 + 缺标记显式失败
         lp = tmp / "fake.log"

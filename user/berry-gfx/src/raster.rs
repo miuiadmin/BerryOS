@@ -304,6 +304,9 @@ fn draw_image(
             None => {} // 缺图标 no-op（icon.rs 头注语义）
         },
         ImageSrc::Argb { w, h, px } => argb_blit(target, desc, *w, *h, px, x, y, clip),
+        ImageSrc::ScaledArgb { sw, sh, dw, dh, px } => {
+            scaled_argb_blit(target, desc, *sw, *sh, *dw, *dh, px, x, y, clip)
+        }
     }
 }
 
@@ -355,6 +358,53 @@ fn argb_blit(
                     put_px(target, desc, clip, x, y, packed);
                 } // A==0：透明键跳过（不写）
             } // get() None = 防御采样（短切片旁路 → 透明，不 panic）
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+/// ScaledArgb 最近邻回放臂：目标可见窗逐像素取源 `(x*sw/dw, y*sh/dh)`
+///（中心偏移取整，放大无系统性左偏）。透明键与 Argb 同律；u64 乘法
+/// 只做坐标映射，源下标最终以 usize 收窄（可见窗已保证界内）。
+fn scaled_argb_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    sw: u32,
+    sh: u32,
+    dw: u32,
+    dh: u32,
+    px: &[u32],
+    dx: i32,
+    dy: i32,
+    clip: &Rect,
+) {
+    let dw_i = i32::try_from(dw).unwrap_or(i32::MAX);
+    let dh_i = i32::try_from(dh).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw_i, dh_i).intersect(clip) else {
+        return;
+    };
+    let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
+    let mut y = vis.y;
+    while y < y_end {
+        let sy = (((y - dy) as u64 * sh as u64 + dh.max(1) as u64 / 2)
+            / dh.max(1) as u64)
+            .min(sh.saturating_sub(1) as u64);
+        let mut x = vis.x;
+        while x < x_end {
+            let sx = (((x - dx) as u64 * sw as u64 + dw.max(1) as u64 / 2)
+                / dw.max(1) as u64)
+                .min(sw.saturating_sub(1) as u64);
+            let p = px.get((sy as usize) * sw as usize + sx as usize).copied();
+            if let Some(p) = p {
+                if p >> 24 != 0 {
+                    let r = ((p >> 16) & 0xFF) as u8;
+                    let g = ((p >> 8) & 0xFF) as u8;
+                    let b = (p & 0xFF) as u8;
+                    let packed = desc.format().pack(r, g, b);
+                    put_px(target, desc, clip, x, y, packed);
+                }
+            }
             x += 1;
         }
         y += 1;

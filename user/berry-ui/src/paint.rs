@@ -348,10 +348,12 @@ fn emit_node<'a>(
             }
         }
         Props::Image(p) => {
-            emit_image(icons, p.res, Color { r: 0, g: 0, b: 0 }, b.x, b.y, enc, rep);
+            emit_image(
+                icons, p.res, Color { r: 0, g: 0, b: 0 }, p.w, p.h, b.x, b.y, enc, rep,
+            );
         }
         Props::Icon(p) => {
-            emit_image(icons, p.id, p.fg, b.x, b.y, enc, rep);
+            emit_image(icons, p.id, p.fg, p.w, p.h, b.x, b.y, enc, rep);
         }
         Props::Text(p) => {
             // run 截断到 scratch 余量（容量不足的尾部字形丢弃——调用
@@ -386,7 +388,7 @@ fn emit_node<'a>(
     rep.drawn_px = rep.drawn_px.saturating_add(b.intersect(vp_rect).area());
 }
 
-/// Image/Icon 叶发射共核（§4.3）：`pixels(id)` 借用 → `ImageSrc::Argb`
+/// Image/Icon 叶发射共核（§4.3）：`pixels(id)` 借用 → Argb/ScaledArgb
 ///（恰长 `px.len() == w*h` 由 submit 期硬门双保险——此处先验矛盾源即
 /// 跳过）。未注册分档 loud：默认空供件 = 静默空绘（guest 未注册不炸）
 ///；真供件缺注册/pixels-dims 不一致 = debug_assert loud（注册 bug）。
@@ -394,6 +396,8 @@ fn emit_image<'a>(
     icons: &'a dyn IconSource,
     id: u16,
     fg: Color,
+    dw: Option<u32>,
+    dh: Option<u32>,
     x: i32,
     y: i32,
     enc: &mut CommandEncoder<'a>,
@@ -407,10 +411,18 @@ fn emit_image<'a>(
         match icons.dims(id) {
             // 一致源：dims × pixels 恰长 → Argb 直发（blit = 源内在尺寸）
             Some((w, h)) if px.len() as u64 == w as u64 * h as u64 => {
-                if enc
-                    .draw_image(ImageSrc::Argb { w, h, px }, x, y, fg, None)
-                    .is_ok()
-                {
+                let same = dw.is_none() || dh.is_none() || (dw == Some(w) && dh == Some(h));
+                let src = match (dw, dh) {
+                    (Some(tw), Some(th)) if !same => ImageSrc::ScaledArgb {
+                        sw: w,
+                        sh: h,
+                        dw: tw,
+                        dh: th,
+                        px,
+                    },
+                    _ => ImageSrc::Argb { w, h, px },
+                };
+                if enc.draw_image(src, x, y, fg, None).is_ok() {
                     rep.cmds += 1;
                 }
             }

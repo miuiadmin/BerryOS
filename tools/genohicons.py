@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从 OpenHarmony 原始视觉资产生成 appstub 96×96 桌面图标。
+"""从 OpenHarmony 原始视觉资产生成 appstub 108×108 桌面图标。
 
 产物：`user/bins/appstub/apps/<ID>/icons/icon.png`。
 输入：`user/bins/appstub/ohassets/`（raw 源 + glyphs 白色 alpha 形）。
@@ -16,7 +16,7 @@ from PIL import Image
 REPO = Path(__file__).resolve().parent.parent
 ROOT = REPO / "user/bins/appstub/ohassets"
 OUT_ROOT = REPO / "user/bins/appstub/apps"
-S = 96
+S = 108
 SS = 4
 R = Image.Resampling.LANCZOS
 

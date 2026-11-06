@@ -60,7 +60,7 @@ fn dot_colors(dl: &berry_gfx::cmd::DisplayList) -> Vec<(i32, Color)> {
     let mut out = Vec::new();
     for c in dl.iter() {
         if let Cmd::FillRect { rect, paint } = c {
-            if rect.w == 8 && rect.h == 8 && rect.y == 0 {
+            if rect.w == 16 && rect.h == 16 && rect.y == 0 {
                 out.push((rect.x, paint.color));
             }
         }
@@ -73,7 +73,7 @@ fn attach_builds_tree_and_domain_loud() {
     let (ui, pager, track) = pager3();
 
     // 建树：页行满幅 (0,0,100,100)；三页各 100 宽横排（空页 h=0——内容
-    // 由 app 经 page_node 填）；圆点行 (0,0) 起 8×8 三点 + 8 gap。
+    // 由 app 经 page_node 填）；圆点行 (0,0) 起 16×16 三点 + 16 gap（OH indicator 档）。
     assert_eq!(ui.bounds(track).unwrap(), berry_ui::damage::RectI::new(0, 0, 100, 100));
     for (i, expect_x) in [0, 100, 200].into_iter().enumerate() {
         let p = pager.page_node(i as u8).expect("页 0..3 在域内");
@@ -82,11 +82,11 @@ fn attach_builds_tree_and_domain_loud() {
     }
     assert_eq!(pager.page_node(3), None, "域外页 → None");
     assert_eq!(pager.page(), 0);
-    // 圆点：三 dot @ x=0/16/32（8 边 + 8 gap）
-    for expect_x in [0u32, 16, 32] {
-        let hit = ui.node_at(expect_x + 4, 4).expect("圆点可命中");
+    // 圆点：三 dot @ x=0/32/64（16 边 + 16 gap）
+    for expect_x in [0u32, 32, 64] {
+        let hit = ui.node_at(expect_x + 8, 8).expect("圆点可命中");
         let b = ui.bounds(hit).unwrap();
-        assert_eq!((b.x, b.y, b.w, b.h), (expect_x as i32, 0, 8, 8));
+        assert_eq!((b.x, b.y, b.w, b.h), (expect_x as i32, 0, 16, 16));
     }
 
     // page_count 域端点合法（0/9 的 panic 面见下两测）
@@ -243,8 +243,8 @@ fn dot_highlight_follows_page_immediately() {
     let dots = dot_colors(&dl);
     assert_eq!(dots.len(), 3, "三圆点");
     assert_eq!(dots[0], (0, DOT_ON), "初态页 0 亮");
-    assert_eq!(dots[1], (16, DOT_OFF));
-    assert_eq!(dots[2], (32, DOT_OFF));
+    assert_eq!(dots[1], (32, DOT_OFF));
+    assert_eq!(dots[2], (64, DOT_OFF));
 
     // 翻页 1：圆点**即时**直摆（不等吸附收尾——on_msg 返 true 时直摆）
     assert!(drag_start(&mut pager, &mut ui, track, 50));
@@ -255,7 +255,7 @@ fn dot_highlight_follows_page_immediately() {
     let dl = enc.finish();
     let seen = dot_colors(&dl);
     assert!(
-        seen.contains(&(0, DOT_OFF)) && seen.contains(&(16, DOT_ON)),
+        seen.contains(&(0, DOT_OFF)) && seen.contains(&(32, DOT_ON)),
         "页 0 点转暗 + 页 1 点转亮：{seen:?}"
     );
 }
