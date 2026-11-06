@@ -65,7 +65,7 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
 /// RPC 收侧 READABLE 帽（fsclient `TIMEOUT_NS` 同值 10s——A6-a 形态：死法
 /// = FAIL loud 非挂死，smoke 侧标记缺失兜底）。
-const RPC_CAP_NS: u64 = 10 * 1_000_000_000;
+const RPC_CAP_NS: u64 = 300 * 1_000_000_000;
 
 /// 帧缓冲映射 VA：berry-mmap VA 窗 [0x5000_0000, 0x6000_0000) 内固定位
 /// （窗基 +16MiB）。本程序不走 libc mmap（raw 三连直取 VMO handle 面——

@@ -28,6 +28,15 @@ pub const PROFILES: &[Profile] = &[
         memory_mib: 128,
     },
     Profile {
+        id: "desktop",
+        panel_w: 1280,
+        panel_h: 720,
+        render_w: 1280,
+        render_h: 720,
+        refresh: 60,
+        memory_mib: 256,
+    },
+    Profile {
         id: "phone",
         panel_w: 1080,
         panel_h: 2250,

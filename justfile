@@ -892,7 +892,7 @@ shell: berry-build
     set -e
     # GUI 优先：主镜像（含 gui6 launcher）在位 → just desktop（数据盘/tablet/
     # 真实输入/display fw_cfg）。缺席才回落 console 窗口（P2 手机窗口）。
-    if [ -f out/berryos.img ] || [ -f out/berryos-desktop.img ]; then
+    if [ -f out/berryos-hd.img ] || [ -f out/berryos.img ] || [ -f out/berryos-visual.img ] || [ -f out/berryos-desktop.img ]; then
         exec just desktop
     fi
     test -f out/berryos.img || { echo "缺 out/berryos.img——先 just image"; exit 1; }
@@ -904,8 +904,9 @@ shell: berry-build
 desktop: berry-build
     #!/bin/sh
     set -e
-    # 视觉基线镜像优先（R/B 修正 + 新桌面）；主镜像/旧预览件回退。
-    IMG=out/berryos-visual.img
+    # 16:9 HD 镜像优先；视觉基线/主镜像/旧预览件依次回退。
+    IMG=out/berryos-hd.img
+    [ -f "$IMG" ] || IMG=out/berryos-visual.img
     [ -f "$IMG" ] || IMG=out/berryos.img
     [ -f "$IMG" ] || IMG=out/berryos-desktop.img
     test -f "$IMG" || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
@@ -913,7 +914,7 @@ desktop: berry-build
     printf 'BERRYOSVBLK!' | dd of=out/gui-data.img conv=notrunc status=none
     HOST=$(rustc -vV | sed -n 's/^host: //p')
     # display fw_cfg 是 gui 位真值源：不传则 guifbd console 不静音、桌面被日志盖。
-    BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile default --memory 256 --display-mode 800x600@60
+    BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile desktop --memory 256
 
 # P0 宿主面冒烟：doctor + 内核 marker + EFI 截图（不建窗口；TCG 确定性）。
 berry-smoke: berry-build

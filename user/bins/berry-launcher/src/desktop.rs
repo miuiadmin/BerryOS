@@ -62,24 +62,13 @@ const _: () = assert!(CELL_MAX == PAGES * SLOTS_PER_PAGE, "CELL_MAX = 4页×12�
 
 // —— 派生几何（字体档单源派生，非屏幕参数硬编——裁决 D 注记）——
 
-/// 状态栏高 = S8x16 双行（16×2）+ Pad 6×2 = 44px。
-const STATUS_H: u32 = 44;
+/// 状态栏高（800 宽 8x16 双行+6px pad；1280 宽 16x32 双行+8px pad）。
 /// 圆点行高（swipe.rs DOT_SIZE=8 镜像——彼处私有常量，改彼处须同步此处）。
 const DOT_H: u32 = 8;
-/// 内容区底缘留白（圆点行下呼吸隙）。
-const BOTTOM_PAD: u32 = 8;
-/// 格内图标显示边长（IconProps w/h 定值——不查 dims 内在）。
-const ICON_PX: u32 = 48;
-/// 格内图标与 label 间距。
-const CELL_GAP: u32 = 4;
-/// 网格格隙。
-const GRID_GAP: u32 = 12;
-/// 状态栏内缩。
-const STATUS_PAD: u32 = 6;
-/// 状态栏两 Text 间距。
-const STATUS_GAP: u32 = 8;
-/// 状态栏下强调线高。
-const ACCENT_H: u32 = 2;
+/// 内容区底缘留白（800/1280 两档在 build 内派生）。
+/// 格内图标显示边长（IconProps w/h 定值——v1 无缩放；72px 源图标直出）。
+const ICON_PX: u32 = 72;
+/// 状态栏下强调线高（800/1280 两档在 build 内派生）。
 /// 壁纸竖向渐变色带数（Rect 无渐变原语——多带近似；奇高余量归末带）。
 const WALLPAPER_BANDS: u32 = 48;
 
@@ -96,6 +85,10 @@ const STATUS_CLOCK: &[u8] = b"12:00";
 const PAGE_LABELS: [&[u8]; PAGES] = [b"page 0", b"page 1", b"page 2", b"page 3"];
 /// 空槽占位 label。
 const PLACEHOLDER: &[u8] = b"";
+/// 桌面品牌件（page0 slot2 空位）：大字号 wordmark + 小字副标，填掉
+/// 1280×720 顶行右侧的大片死白；非 app、不可 spawn（app=None）。
+const WIDGET_TITLE: &[u8] = b"BerryOS";
+const WIDGET_SUB: &[u8] = b"DESKTOP";
 
 /// 壁纸/文本配色（裁决六三带 + 白系前景；stub 常量——位图通道 v2）。
 const WALLPAPER_TOP: Color = Color { r: 24, g: 34, b: 58 }; // 夜空蓝
@@ -187,6 +180,17 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     // 宽不消费：三带/Grid 宽全 None 随父拉满（Root 子 avail = viewport
     // 宽——裁决六满幅语义），仅带高/Grid 高需显式派生。
     let (vp_w, vp_h) = ui.viewport();
+    // 16:9 桌面（1280×720）与旧 4:3（800×600）两档：字号/状态栏/格隙
+    // 随视口走；图标源 72px 固定（v1 无运行时缩放），窄屏也不溢出格。
+    let big = vp_w >= 1200;
+    let status_h = if big { 64 } else { 44 };
+    let status_pad = if big { 8 } else { 6 };
+    let accent_h = if big { 3 } else { 2 };
+    let grid_gap = if big { 18 } else { 12 };
+    let cell_gap = if big { 6 } else { 4 };
+    let bottom_pad = if big { 12 } else { 8 };
+    let status_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+    let label_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
     let root = ui.root();
 
     // —— 壁纸竖向多带渐变（Rect 无渐变原语；18 带在 TCG 下仍是一次
@@ -233,7 +237,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             props: Props::Rect(RectProps {
                 bg: STATUS_BG,
                 w: None,
-                h: Some(STATUS_H),
+                h: Some(status_h),
             }),
         },
     )?;
@@ -261,7 +265,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             props: Props::Col(ColProps {
                 gap: 0,
                 w: None,
-                h: Some(STATUS_H),
+                h: Some(status_h),
                 cross: CrossAlign::Stretch,
             }),
         },
@@ -271,7 +275,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         ViewSpec {
             kind: ViewKind::Pad,
             key: 0,
-            props: Props::Pad(PadProps { all: STATUS_PAD }),
+            props: Props::Pad(PadProps { all: status_pad }),
         },
     )?;
     let srow = ui.add(
@@ -282,9 +286,9 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             props: Props::Row(RowProps {
                 // 时间右对齐：宽 - 两侧 pad - 两串字宽；窄屏饱和 0。
                 gap: vp_w.saturating_sub(
-                    STATUS_PAD * 2
+                    status_pad * 2
                         + (STATUS_NAME.len() + STATUS_CLOCK.len()) as u32
-                            * FontSize::S16x32.cell_w() as u32,
+                            * status_size.cell_w() as u32,
                 ),
                 w: None,
                 h: None,
@@ -293,9 +297,9 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         },
     )?;
     // 状态栏 2 件 ROLE_TEXT（裁决八；时钟占位——W2 真时钟）。
-    let t1 = ui.add(srow, text_spec(STATUS_NAME, TEXT_FG, FontSize::S16x32)?)?;
+    let t1 = ui.add(srow, text_spec(STATUS_NAME, TEXT_FG, status_size)?)?;
     ui.set_a11y(t1, ROLE_TEXT, STATUS_NAME)?;
-    let t2 = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG, FontSize::S16x32)?)?;
+    let t2 = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
     ui.set_a11y(t2, ROLE_TEXT, STATUS_CLOCK)?;
 
     // 状态栏下 2px 强调线（内容列直子；色带逐帧只读）。
@@ -304,7 +308,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         ViewSpec {
             kind: ViewKind::Rect,
             key: 0,
-            props: Props::Rect(RectProps { bg: ACCENT, w: None, h: Some(ACCENT_H) }),
+            props: Props::Rect(RectProps { bg: ACCENT, w: None, h: Some(accent_h) }),
         },
     )?;
 
@@ -341,14 +345,14 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     // —— 每页 Grid 4×3 槽板（格 = Col[Icon?, Text]；Center 十字居中）——
     // Grid 高定值 = 视口派生（Grid 主轴内在不吃 avail——Col/Row/Grid
     // 主轴恒内在，定值才撑满；宽随页 Col 拉满 viewport）。
-    let grid_h = vp_h.saturating_sub(STATUS_H + ACCENT_H + DOT_H + BOTTOM_PAD);
+    let grid_h = vp_h.saturating_sub(status_h + accent_h + DOT_H + bottom_pad);
     // 格高 = Grid 轨高（与 berry-ui §4.2 place 的 track_h 同式：等分轨 −
     // 行间 gap）。**必须定高**：Cell 是 Col 容器，`h: None` 时引擎按子
     // 内在聚合（icon 48 + gap 4 + label 16 = 68）落界，格只占轨首 68px，
     // 轨余下空间命中落到 Grid 容器（Click 无槽可映射——smoke 实抓：
     // QMP 点轨心 → node=Grid → CLICK 永缺）。定高把命中面铺满槽（透明
     // 容器零视觉差），a11y ROLE_BUTTON 界同步为整槽。
-    let cell_h = (grid_h.saturating_sub((GRID_ROWS as u32 - 1) * GRID_GAP))
+    let cell_h = (grid_h.saturating_sub((GRID_ROWS as u32 - 1) * grid_gap))
         / GRID_ROWS as u32;
     let mut slots: [[Option<Slot>; SLOTS_PER_PAGE]; PAGES] = [[None; SLOTS_PER_PAGE]; PAGES];
     for p in 0..PAGES {
@@ -361,7 +365,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                 props: Props::Grid(GridProps {
                     cols: GRID_COLS as u8,
                     rows: GRID_ROWS as u8,
-                    gap: GRID_GAP,
+                    gap: grid_gap,
                     cross: CrossAlign::Stretch,
                     w: None,
                     h: Some(grid_h),
@@ -378,7 +382,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                     kind: ViewKind::Col,
                     key: 0,
                     props: Props::Col(ColProps {
-                        gap: CELL_GAP,
+                        gap: cell_gap,
                         w: None,
                         h: Some(cell_h),
                         cross: CrossAlign::Center,
@@ -406,7 +410,19 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                 ),
                 None => None,
             };
-            let label_node = ui.add(cell, text_spec(pn.label, LABEL_FG, FontSize::S16x32)?)?;
+            let label_node = ui.add(cell, text_spec(pn.label, LABEL_FG, label_size)?)?;
+            // page0 / slot2：品牌 wordmark 件（顶行右侧视觉锚点；不是 app）。
+            if p == 0 && s == 2 && pn.app.is_none() {
+                let title_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+                ui.add(cell, text_spec(WIDGET_TITLE, TEXT_FG, title_size)?)?;
+                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S8x16)?)?;
+            }
+            // page0 / slot5（第二行中间）：大时钟 widget，填中段空白。
+            if p == 0 && s == 5 && pn.app.is_none() {
+                let clock_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+                ui.add(cell, text_spec(b"12:00", TEXT_FG, clock_size)?)?;
+                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S8x16)?)?;
+            }
             slots[p][s] = Some(Slot {
                 cell,
                 label_node,
