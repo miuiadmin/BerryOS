@@ -2405,6 +2405,22 @@ pub fn current_thread_key() -> usize {
     if cur.is_null() { 0 } else { unsafe { (*cur).thread_key } }
 }
 
+/// 1.1/v1.2：当前任务的运行时 deadline 状态（sched_getattr 自查面消费）。
+/// 返回 `(vdeadline, slice_left)`——(0,0) = 无当前任务或非 deadline。
+/// vdeadline = 绝对截止期（CNTVCT cycles）；slice_left = 剩余预算/片。
+pub fn current_deadline_state() -> (u64, u64) {
+    let cur = unsafe { current_task() };
+    if cur.is_null() {
+        return (0, 0);
+    }
+    unsafe {
+        if (*cur).prio_effective < crate::class::PRIO_DEADLINE {
+            return (0, 0); // 非 deadline 任务无运行时截止态
+        }
+        ((*cur).vdeadline, (*cur).slice_left)
+    }
+}
+
 /// 1.1/S3-b：按 thread_key 冻结前置谓词（单线程版 freeze_precheck）。
 pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
     // 扫双 RQ + SLEEPQ 找匹配 thread_key 的任务，检查 PI/派生位/持锁。

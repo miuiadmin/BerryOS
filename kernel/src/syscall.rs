@@ -1991,6 +1991,20 @@ extern "C" fn sys_sched_getattr(tf: &mut TrapFrame) -> i64 {
     raw[32..40].copy_from_slice(&attr.deadline_ns.to_le_bytes());
     raw[40..48].copy_from_slice(&attr.budget_ns.to_le_bytes());
     raw[48..56].copy_from_slice(&attr.period_ns.to_le_bytes());
+    // v1.2：**运行时态注入**——自查（queried Thread = current task）时，
+    // deadline_ns/budget_ns 覆写为实际 Task 状态（绝对截止期 + 剩余预算，
+    // CNTVCT→ns 换算）。非自查（查别的线程）保持存值。
+    if obj.as_ptr() as usize == berry_sched::current_thread_key() {
+        let (vd, sl) = berry_sched::current_deadline_state();
+        if vd > 0 {
+            let ns = vd.saturating_mul(1_000_000_000) / berry_hal_aarch64::timer::cntfrq();
+            raw[32..40].copy_from_slice(&ns.to_le_bytes());
+        }
+        if sl > 0 {
+            let ns = sl.saturating_mul(1_000_000_000) / berry_hal_aarch64::timer::cntfrq();
+            raw[40..48].copy_from_slice(&ns.to_le_bytes());
+        }
+    }
     let mut out = [0u8; SCHED_ATTR_MAX];
     out[..SCHED_ATTR_SIZE].copy_from_slice(&raw);
     match copy_to_user(el1, attr_ptr, &out[..out_size]) {
@@ -2312,9 +2326,10 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // ——精确 per-task CPU 需 TCB 扩字段，S5-c 后再议）。
     {
         use core::sync::atomic::Ordering;
-        let d = crate::telemetry::BILLING_RECV_DOMAIN.load(Ordering::Relaxed);
+        let slot = crate::telemetry::billing_slot();
+        let d = crate::telemetry::BILLING_RECV_DOMAIN[slot].load(Ordering::Relaxed);
         if d != 0 {
-            let since = crate::telemetry::BILLING_RECV_VCT.load(Ordering::Relaxed);
+            let since = crate::telemetry::BILLING_RECV_VCT[slot].load(Ordering::Relaxed);
             let now = berry_hal_aarch64::timer::cntvct();
             if now > since {
                 let cycles = now - since;
@@ -2326,7 +2341,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
                 }
             }
             // 清起点（下一个 recv 重设）。
-            crate::telemetry::BILLING_RECV_DOMAIN.store(0, Ordering::Relaxed);
+            crate::telemetry::BILLING_RECV_DOMAIN[slot].store(0, Ordering::Relaxed);
         }
     }
     // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核禁切
@@ -2534,8 +2549,9 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     if msg.billing.domain_id != 0 {
         crate::telemetry::billing_cross_domain();
         // S4-b 区间起点：per-CPU 槽（v1 单核 0 号；SMP 需 per-CPU 数组）。
-        crate::telemetry::BILLING_RECV_DOMAIN.store(msg.billing.domain_id, core::sync::atomic::Ordering::Relaxed);
-        crate::telemetry::BILLING_RECV_VCT.store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
+        let slot = crate::telemetry::billing_slot();
+        crate::telemetry::BILLING_RECV_DOMAIN[slot].store(msg.billing.domain_id, core::sync::atomic::Ordering::Relaxed);
+        crate::telemetry::BILLING_RECV_VCT[slot].store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
     }
     if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
         match out {

@@ -3148,6 +3148,20 @@ fn tele_dump() {
     berry_hal_aarch64::uart_puts(b" tmo=");
     berry_hal_aarch64::uart_put_dec(t);
     berry_hal_aarch64::uart_puts(b"\n");
+    // 1.1/S4-b：billing 遥测面——跨域消息计数 + 各域 CPU 时长（非零槽）。
+    berry_hal_aarch64::uart_puts(b"tele: billing cross=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::billing_cross_domain_total());
+    for i in 0..crate::telemetry::BILLING_SLOTS {
+        let (d, ns) = crate::telemetry::billing_slot_at(i);
+        if d != 0 {
+            berry_hal_aarch64::uart_puts(b" d");
+            berry_hal_aarch64::uart_put_dec(d);
+            berry_hal_aarch64::uart_puts(b"=");
+            berry_hal_aarch64::uart_put_dec(ns);
+            berry_hal_aarch64::uart_puts(b"ns");
+        }
+    }
+    berry_hal_aarch64::uart_puts(b"\n");
 }
 
 /// ai_demo 私助：clock_read → wait_one(h, bit, now+cap) → 断言命中 → 清用户

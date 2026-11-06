@@ -608,13 +608,20 @@ static BILLING_CROSS_DOMAIN: core::sync::atomic::AtomicU64 =
 
 // ---- 1.1/S4-b：per-domain CPU 时长账户（区间计费法）----
 
-/// S4-b 区间计费 per-CPU 槽（v1 单核 0 号）：recv 侧设 domain + CNTVCT 戳，
-/// send 侧算差 → billing_charge。v1 诚实近似：send 前可能穿插其他任务
-///（wall-clock 而非 pure CPU——精确 per-task 需 TCB 扩字段，留 S5-c 后）。
-pub static BILLING_RECV_DOMAIN: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-pub static BILLING_RECV_VCT: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+/// S4-b 区间计费 per-CPU 槽（SMP 数组化——cpu_id() 索引）：recv 侧设
+/// domain + CNTVCT 戳，send 侧算差 → billing_charge。v1 诚实近似：send
+/// 前可能穿插其他任务（wall-clock 而非 pure CPU——精确 per-task 需
+/// TCB 扩字段，留 S5-c 后）。
+pub static BILLING_RECV_DOMAIN: [core::sync::atomic::AtomicU64; 2] = [
+    const { core::sync::atomic::AtomicU64::new(0) }; 2];
+pub static BILLING_RECV_VCT: [core::sync::atomic::AtomicU64; 2] = [
+    const { core::sync::atomic::AtomicU64::new(0) }; 2];
+
+/// 当前 CPU 的计费槽索引（SMP 安全——cpu_id() 本核恒有效）。
+#[inline]
+pub fn billing_slot() -> usize {
+    berry_hal_aarch64::smp::cpu_id() as usize & 1 // 2 核帽
+}
 
 /// 账户表容量（v1 目标 ≤4 deadline 进程 + fair 域——8 槽余量）。
 pub const BILLING_SLOTS: usize = 8;
@@ -673,6 +680,15 @@ pub fn billing_domain_total(domain_id: u64) -> Option<u64> {
         }
     }
     None
+}
+
+/// S4-b：按槽索引查询（telemetry 打印面——非零槽遍历）。
+pub fn billing_slot_at(i: usize) -> (u64, u64) {
+    use core::sync::atomic::Ordering;
+    (
+        BILLING_DOMAINS[i].load(Ordering::Relaxed),
+        BILLING_CPU_NS[i].load(Ordering::Relaxed),
+    )
 }
 
 /// 记一次跳数帽拒绝（recv 结算 slowpath）。
