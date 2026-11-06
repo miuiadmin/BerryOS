@@ -94,7 +94,7 @@ svcmgr（稳态 echo 往返 + app 域 serve 常驻 ← 新增第二通道）
  ├─ fsmgr（数据盘在位 ⇒ FAT12 挂载；冻结相 RAM-only）
  ├─ berry-launcher（wm 客户端 + present 客户端 + input 客户端 + fs 客户端
  │                  + app 域客户端——首个长活 GUI 进程）
- └─ APPDEMO/APPQUIET（点击 spawn 经 app 域 RPC；boot 批照旧零漂）
+ └─ 9 app boot 批（APPDEMO/APPQUIET + 7 个 appstub 视觉占位；点击 spawn 走 app 域 RPC）
 ```
 
 ### 2.2 extras 装配表（env 8/8 恰满，bsh 满配先例，零内核抬帽）

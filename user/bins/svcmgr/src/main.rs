@@ -3965,6 +3965,9 @@ fn app_launch(
         eco_app(console, id, b"entry mismatch");
         return (false, UiFace::Absent, None);
     }
+    // PS 账本门（见 AppSpawnTail.ledger）：只登记 console=true 的可观测
+    // app；静默占位 app 不占 PS_MAX/ps 渲染窗。
+    let ledger = man.console;
     // SDK-1a §5.2 步骤 1：compat min 装载期检查（ADR #55 工具链三值域的
     // 运行时执法点）。min > SDK_CURRENT = 本系统比包声称的最低线还老 →
     // loud 降级行拒拉（fsmgr diag("geom") 同式）；target/compile 是打包
@@ -4080,7 +4083,9 @@ fn app_launch(
                     trap();
                 }
             }
-            ps_reg(id, psp::STATE_SPAWNFAIL, 0);
+            if ledger {
+                ps_reg(id, psp::STATE_SPAWNFAIL, 0);
+            }
             eco_app(console, id, b"elf bad");
             if out_s != 0
                 && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
@@ -4092,7 +4097,9 @@ fn app_launch(
             // SDK-1a §5.2 步骤 7：fs 两 dup 已被 take 随 env 块迁移（子表
             // 所有）——本表勿关（旧值已失效，关 = -EBADF；bsh arm 同款
             // 注释义务）。
-            ps_reg(id, psp::STATE_ALIVE, 0);
+            if ledger {
+                ps_reg(id, psp::STATE_ALIVE, 0);
+            }
             // M-C γ-分：收口尾不在此兑现——原值打包随三元返（boot 批同步
             // 消费 / SPAWN 形入 APP_CHILDREN 异步）。id 拷贝 owned（tail
             // 存活越出本帧，&id 借用撑不过——AppSlot 同款 [u8; ID_MAX]
@@ -4108,6 +4115,7 @@ fn app_launch(
                     // console=true：子表持 console 原值，本表零收口面（
                     // 勿关 console）；console=false：原值 c 留尾。
                     stdout_c: if out_s != 0 { stdout } else { 0 },
+                    ledger,
                     id: tid,
                     id_len: id.len(),
                     eof_seen: false,
@@ -4125,6 +4133,10 @@ struct AppSpawnTail {
     out_s: Handle,
     stdout_c: Handle, // 0 = console=true（子表即 console，本表零收口面）
     id: [u8; ID_MAX],
+    /// PS 账本登记门：console=false 的静默 app（APPQUIET/appstub 视觉占位）
+    /// 是瞬态装载验证，不入常驻/启动批账本——PS_MAX=18/REPLY_MAX=256 双帽
+    /// 下 9 app 桌面不挤掉 ps/berryctl 自验行。
+    ledger: bool,
     id_len: usize,
     /// 稳态 drain 已消费 EOF 帧（`app_supervise` 管堵防线吞掉的 0 长帧
     /// 记账——reap 侧 `collect_eof` 免死等已被消费的 EOF）。boot 批恒
@@ -4136,7 +4148,7 @@ struct AppSpawnTail {
 /// ps_exit——与段② 前 inline 形逐句同源（boot 批行为零漂义务）。返回 =
 /// 「退出码 0」谓词（原 `(true, uface)` 首值语义：true 仅当 reap Ok(0)）。
 fn app_reap_tail(console: Handle, t: AppSpawnTail) -> bool {
-    let AppSpawnTail { child, out_s, stdout_c, id, id_len, eof_seen } = t;
+    let AppSpawnTail { child, out_s, stdout_c, id, id_len, ledger, eof_seen } = t;
     let id = &id[..id_len];
     if out_s != 0 && !eof_seen {
         // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
@@ -4153,11 +4165,15 @@ fn app_reap_tail(console: Handle, t: AppSpawnTail) -> bool {
     }
     match child.reap() {
         Ok(0) => {
-            ps_exit(id, 0);
+            if ledger {
+                ps_exit(id, 0);
+            }
             true
         }
         Ok(c) => {
-            ps_exit(id, c);
+            if ledger {
+                ps_exit(id, c);
+            }
             eco_app(console, id, b"exit code");
             false
         }
