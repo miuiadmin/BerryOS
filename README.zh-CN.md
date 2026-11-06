@@ -4,6 +4,8 @@
 
 **全 Rust 微内核操作系统 —— 省电优先、能力安全、AI 原生。** 首发目标为手表级 ARM64 设备（MB 级内存 rich 档），向手机 / PC 延伸。本仓库为发布镜像；开发主仓（含调研报告与参考实现）为私密仓 BerryOS-private。
 
+内核定名 **Meihe（莓核）**——Meihe (MAY-huh), the microkernel of BerryOS（莓核，莓果之核）；莓核——小到近乎没有的核。
+
 [![CI](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml/badge.svg)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/miuiadmin/BerryOS?label=release)](https://github.com/miuiadmin/BerryOS/tags)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
