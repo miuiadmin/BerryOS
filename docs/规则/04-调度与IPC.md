@@ -81,7 +81,7 @@
 - docs/AI调度设计-v1.0.md —— AI 干涉面现行口径：限带内、机制预留 + 实验轨道 + kill criteria（ADR #21 修订版）。
 - docs/SMP设计草案-v1.0.md —— S 系拆步与锁序/BKL 出路的现行依据（SMP 锁改动前必读）。
 
-- **环形 Runqueue 外部扫描必须 `cur == head` 终止（1.1 终审六处全踩）**：freeze/thaw/precheck × pinned/thread 六函数全漏终止判据——TCG 下必现挂死（smoke-smp「kill 后冻结」定谳根因之一）。先问：这个 RQ while 循环有 `if cur == head { break; }` 吗？ → 雷册 §A136 扩展
+- **环形 Runqueue 外部扫描必须「处理完当前节点后」以 `cur == head` 终止（1.1 终审六处全踩，0cca 反踩）**：只补终止检查但放在节点处理前，单元素环一次不进 body、多元素环漏尾。freeze/thaw/precheck × pinned/thread 六函数统一 §A136 顺序：检查/置位/清位当前节点 → 推进 cur → 回 head 才 break。先问：终止检查是在当前节点处理之后吗？ → 雷册 §A136 扩展
 - **HELD_FROZEN(bit6) 与 HELD_THROTTLE(bit7) 分立不可共位**：预算限流周期到期 lazy_unthrottle 若与进程冻结共位——误清冻结位（SuspendToken close 独占解除语义破坏）。freeze_precheck 须排除双位（限流是调度态非持锁）。先问：新增 held_locks 位消费者是否与冻结位互斥？ → 沿革 #102/#103
 - **admission 计数只在成功尾记账**：sa_parse 校验面 fetch_add → 错误路径泄漏额度（caller_table/get_raw 失败无配对 fetch_sub）。校验只查不写，sys_sched_setattr 成功尾一次 add + 旧值 sub。先问：这个计数器的增减是否在同一函数内原子配对？ → 沿革 #109
 - **msg_type=REPLY 不设计费区间**：client recv server 回复时 billing.domain_id 是 server 域——误归 client 的 think-time 给 server。内核无法区分请求/回复（微内核消息不透明）——msg_type 是 v2 协议标签钩子，v1 全 0 照设（已知局限）。 → 沿革 #106

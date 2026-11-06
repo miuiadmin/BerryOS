@@ -847,11 +847,13 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if cur == head { break; } // 环终止
+                // §A136：先访当前节点，再推进并判回 head——先 break 会漏尾/单元素。
                 if (*t).pinned == pinned && !check(t) {
                     return false;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
     }
@@ -884,12 +886,14 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if cur == head { break; } // 环终止
+                // §A136：先访当前节点，再推进并判回 head。
                 if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
                     (*t).held_locks |= crate::task::HELD_FROZEN;
                     count += 1;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
     }
@@ -916,11 +920,13 @@ pub fn thaw_by_pinned(pinned: usize) {
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if cur == head { break; } // 环终止
+                // §A136：先访当前节点，再推进并判回 head。
                 if (*t).pinned == pinned {
                     (*t).held_locks &= !crate::task::HELD_FROZEN;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
     }
@@ -2441,9 +2447,11 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
+                // §A136：先访当前节点，再推进并判回 head。
+                if (*t).thread_key == thread_key && !check(t) { return false; }
                 cur = (*t).rq_next.get();
                 if cur == head { break; } // 环终止
-                if (*t).thread_key == thread_key && !check(t) { return false; }
+
             }
         }
         let mut cur = sleepq().head.get();
@@ -2465,12 +2473,14 @@ pub fn freeze_by_thread(thread_key: usize) -> usize {
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if cur == head { break; } // 环终止
+                // §A136：先访当前节点，再推进并判回 head。
                 if (*t).thread_key == thread_key {
                     (*t).held_locks |= crate::task::HELD_FROZEN;
                     return 1;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
         let mut cur = sleepq().head.get();
@@ -2495,11 +2505,13 @@ pub fn thaw_by_thread(thread_key: usize) {
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if cur == head { break; } // 环终止
+                // §A136：先访当前节点，再推进并判回 head。
                 if (*t).thread_key == thread_key {
                     (*t).held_locks &= !crate::task::HELD_FROZEN;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
         let mut cur = sleepq().head.get();
