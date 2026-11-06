@@ -6,16 +6,18 @@
 
 | 写什么 | 家 |
 |---|---|
-| 设计规格 / 域规则 / 路线图 / ADR（知识与契约） | 本目录（BerryOS 版本命名 `名-v主.次.md`，细则见 [索引](索引.md)） |
+| 设计/实施/规划/调研/验收类知识文档——**含在途设计草案**（BerryOS 版本化制度 `名-v主.次.md`，细则见 [索引](索引.md)） | 本目录 |
 | 调研报告 | 根 `research/`（存量纳管根；等价 `.agents/research/` 的角色，不进默认扫描面） |
-| 计划 / 提案（还没做的） | [`.agents/plans/`](../.agents/plans/)（3 行头块） |
+| 轻量计划 / 工作提案（**不进版本化制度**的：步骤清单、立项对齐、agent 工作计划） | [`.agents/plans/`](../.agents/plans/)（3 行头块） |
 | 决策因果（为什么、否决了什么） | [`.agents/notes/`](../.agents/notes/)（两行头块） |
 | 可复用干法 / 技能 / 操作手册 | [`.agents/skills/`](../.agents/skills/) |
-| 冷历史（不再维护、不再被引用） | [`.agents/archive/`](../.agents/archive/)（归档四步，永不删除） |
+| 本目录知识文档的冷历史 | 按既有制度：原地冻结或 `docs/归档/`（索引维护规则 5；不走 `.agents/archive/`） |
+| `.agents/` 内文档的冷历史 | [`.agents/archive/`](../.agents/archive/)（归档四步，永不删除） |
 
 ## 约定
 
 - 存量只读纳管（2026-11-06 采用 Curia 起）：既有文档的命名与结构保持原样，规则不回溯；下次实质修改时自然对齐。
+- 判例与笔记分工：踩坑执法类判例仍走雷册三处一动（域文件瘦行 + [雷册](雷册-判例库.md)全文 + 判例索引）；决策因果类（选型/否决/权衡）走 `.agents/notes/`——同一变更两类都涉及时各写各的、互链。
 - 无头块、无状态机；不写计划与决策因果——那些归 `.agents/` 的家（规范全文见 [`.agents/README.md`](../.agents/README.md)）。
-- 引用一律相对 Markdown 链接；指向 `.agents/` 时写 `../.agents/…`。
+- 引用一律相对 Markdown 链接；指向 `.agents/` 时写 `../.agents/…`；`索引.md` 是本目录既有详表（维护合同），Curia 的「禁全局 INDEX」不回溯于它。
 - 自检：`node .agents/tools/check-docs.mjs`（默认面 = 本目录 + `.agents/`）；提交把关加 `--strict`。

@@ -18,6 +18,12 @@ jobs:
       - name: docs-guard（AGENTS 注入预算 + 探针/锚点）
         run: python3 tools/docs_guard.py
 
+      # Curia 文档面自检（fail-fast）：.agents/ + docs/ 的头块/归属/断链
+      # 机械子集。零依赖 Node ≥ 18（ubuntu-latest 预装），不联网——与
+      # docs-guard 并列作文档面双门禁。
+      - name: check-docs（Curia 文档面：头块/归属/断链）
+        run: node .agents/tools/check-docs.mjs --strict
+
       - name: writable-globals（可写全局清单门禁）
         run: python3 tools/writable_globals.py --check
 
