@@ -838,14 +838,20 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
                 return false;
             }
         }
-        // 双 RQ
+        // 双 RQ（A136：环形链先访当前节点，后判回到 head）。
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
-            while let Some(c) = cur {
-                let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if (*t).pinned == pinned && !check(t) {
-                    return false;
+            if let Some(h) = rq_of(cpu).head() {
+                let mut cur = h;
+                loop {
+                    let t = cur.as_ptr();
+                    if (*t).pinned == pinned && !check(t) {
+                        return false;
+                    }
+                    // SAFETY: 环上节点必有 next（环形不变式）。
+                    cur = (*t).rq_next.get().expect("RQ ring next");
+                    if cur == h {
+                        break;
+                    }
                 }
             }
         }
@@ -873,15 +879,23 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
                 count += 1;
             }
         }
-        // 双 RQ 扫描
+        // 双 RQ 扫描（A136：环形链先访当前节点，后判回到 head）。
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
-            while let Some(c) = cur {
-                let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
-                    (*t).held_locks |= crate::task::HELD_FROZEN;
-                    count += 1;
+            if let Some(h) = rq_of(cpu).head() {
+                let mut cur = h;
+                loop {
+                    let t = cur.as_ptr();
+                    if (*t).pinned == pinned
+                        && (*t).held_locks & crate::task::HELD_FROZEN == 0
+                    {
+                        (*t).held_locks |= crate::task::HELD_FROZEN;
+                        count += 1;
+                    }
+                    // SAFETY: 环上节点必有 next（环形不变式）。
+                    cur = (*t).rq_next.get().expect("RQ ring next");
+                    if cur == h {
+                        break;
+                    }
                 }
             }
         }
@@ -905,12 +919,18 @@ pub fn thaw_by_pinned(pinned: usize) {
             }
         }
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
-            while let Some(c) = cur {
-                let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if (*t).pinned == pinned {
-                    (*t).held_locks &= !crate::task::HELD_FROZEN;
+            if let Some(h) = rq_of(cpu).head() {
+                let mut cur = h;
+                loop {
+                    let t = cur.as_ptr();
+                    if (*t).pinned == pinned {
+                        (*t).held_locks &= !crate::task::HELD_FROZEN;
+                    }
+                    // SAFETY: 环上节点必有 next（环形不变式）。
+                    cur = (*t).rq_next.get().expect("RQ ring next");
+                    if cur == h {
+                        break;
+                    }
                 }
             }
         }
@@ -2412,11 +2432,19 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
             t.pi_inherited == 0 && t.held_locks == 0 && t.svc_mask == 0
         };
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
-            while let Some(c) = cur {
-                let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if (*t).thread_key == thread_key && !check(t) { return false; }
+            if let Some(h) = rq_of(cpu).head() {
+                let mut cur = h;
+                loop {
+                    let t = cur.as_ptr();
+                    if (*t).thread_key == thread_key && !check(t) {
+                        return false;
+                    }
+                    // SAFETY: 环上节点必有 next（环形不变式）。
+                    cur = (*t).rq_next.get().expect("RQ ring next");
+                    if cur == h {
+                        break;
+                    }
+                }
             }
         }
         let mut cur = sleepq().head.get();
@@ -2434,13 +2462,19 @@ pub fn freeze_by_thread(thread_key: usize) -> usize {
     // SAFETY: SVC 路径 KL 已持。
     unsafe {
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
-            while let Some(c) = cur {
-                let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if (*t).thread_key == thread_key {
-                    (*t).held_locks |= crate::task::HELD_FROZEN;
-                    return 1;
+            if let Some(h) = rq_of(cpu).head() {
+                let mut cur = h;
+                loop {
+                    let t = cur.as_ptr();
+                    if (*t).thread_key == thread_key {
+                        (*t).held_locks |= crate::task::HELD_FROZEN;
+                        return 1;
+                    }
+                    // SAFETY: 环上节点必有 next（环形不变式）。
+                    cur = (*t).rq_next.get().expect("RQ ring next");
+                    if cur == h {
+                        break;
+                    }
                 }
             }
         }
@@ -2462,12 +2496,18 @@ pub fn thaw_by_thread(thread_key: usize) {
     // SAFETY: handle close 路径。
     unsafe {
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
-            while let Some(c) = cur {
-                let t = c.as_ptr();
-                cur = (*t).rq_next.get();
-                if (*t).thread_key == thread_key {
-                    (*t).held_locks &= !crate::task::HELD_FROZEN;
+            if let Some(h) = rq_of(cpu).head() {
+                let mut cur = h;
+                loop {
+                    let t = cur.as_ptr();
+                    if (*t).thread_key == thread_key {
+                        (*t).held_locks &= !crate::task::HELD_FROZEN;
+                    }
+                    // SAFETY: 环上节点必有 next（环形不变式）。
+                    cur = (*t).rq_next.get().expect("RQ ring next");
+                    if cur == h {
+                        break;
+                    }
                 }
             }
         }

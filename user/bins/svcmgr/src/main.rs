@@ -857,7 +857,9 @@ fn run_rootfs_child(console: Handle) {
                     data_off,
                     data_len,
                     stdout: console,
-                    stack_pages: 8,
+                    // 32 页：gfxdemo 链 berry-gfx/VMO 三连后启动栈深超
+                    // 8 页（1080p 质量刀实测 8 页 = main 前静默栈穿退 0）。
+                    stack_pages: 32,
                     stdin_feed: Some(&[]),
                     stdin_handle: None,
                     args: &[],
