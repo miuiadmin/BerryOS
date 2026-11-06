@@ -26,7 +26,7 @@ fn monospace_replicates_len_times_cell_all_tiers() {
     // MonospaceTextMetrics 逐位复刻现状 Text 内在测量（宽 = len × cell_w、
     // 高 = cell_h；scale id = 档位序号 0/1/2——与 desc wire 域同序）。
     let tm = MonospaceTextMetrics;
-    for (id, fs) in [(0u8, FontSize::S8x16), (1, FontSize::S16x32), (2, FontSize::S24x48)] {
+    for (id, fs) in [(0u8, FontSize::S8x16), (1, FontSize::S16x32), (2, FontSize::S24x48), (3, FontSize::S32x48)] {
         let (w, h) = tm.measure(b"berry", id);
         assert_eq!(w, (5 * fs.cell_w()) as u32, "宽 = len × cell_w（档 {id}）");
         assert_eq!(h, fs.cell_h() as u32, "高 = cell_h（档 {id}）");

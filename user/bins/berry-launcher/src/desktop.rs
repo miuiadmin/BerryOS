@@ -189,8 +189,8 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     let grid_gap = if big { 24 } else { 12 };
     let cell_gap = if big { 8 } else { 4 };
     let bottom_pad = if big { 16 } else { 8 };
-    let status_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
-    let label_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+    let status_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
+    let label_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
     let root = ui.root();
 
     // —— 壁纸竖向多带渐变（Rect 无渐变原语；18 带在 TCG 下仍是一次
@@ -413,15 +413,15 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             let label_node = ui.add(cell, text_spec(pn.label, LABEL_FG, label_size)?)?;
             // page0 / slot2：品牌 wordmark 件（顶行右侧视觉锚点；不是 app）。
             if p == 0 && s == 2 && pn.app.is_none() {
-                let title_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+                let title_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
                 ui.add(cell, text_spec(WIDGET_TITLE, TEXT_FG, title_size)?)?;
-                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S8x16)?)?;
+                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S16x32)?)?;
             }
             // page0 / slot5（第二行中间）：大时钟 widget，填中段空白。
             if p == 0 && s == 5 && pn.app.is_none() {
-                let clock_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+                let clock_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
                 ui.add(cell, text_spec(b"12:00", TEXT_FG, clock_size)?)?;
-                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S8x16)?)?;
+                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S16x32)?)?;
             }
             slots[p][s] = Some(Slot {
                 cell,
