@@ -1,7 +1,7 @@
 [app]
-id = "CLOCK"
+id = "CONTACTS"
 version = "0.1.0"
-entry = "bin/clock"
+entry = "bin/contacts"
 type = "app"
 intent = "utility"
 
@@ -13,5 +13,5 @@ stack_pages = 8
 
 [ui]
 icon = "icons/icon.byi"
-label = "CLOCK"
+label = "Contacts"
 views = "views/main.bui"

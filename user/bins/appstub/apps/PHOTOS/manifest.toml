@@ -13,5 +13,5 @@ stack_pages = 8
 
 [ui]
 icon = "icons/icon.byi"
-label = "PHOTOS"
+label = "Photos"
 views = "views/main.bui"

@@ -257,7 +257,7 @@ build-user:
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
     python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
     # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。
-    for spec in SETTINGS:settings FILES:files PHOTOS:photos MUSIC:music CAMERA:camera BROWSER:browser CLOCK:clock; do
+    for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser; do
         id=${spec%%:*}; bin=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
         cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"
@@ -276,9 +276,9 @@ build-user:
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         app/BROWSER.bap=userbins/app/BROWSER.bap \
         app/CAMERA.bap=userbins/app/CAMERA.bap \
-        app/CLOCK.bap=userbins/app/CLOCK.bap \
+        app/CONTACTS.bap=userbins/app/CONTACTS.bap \
+        app/MMS.bap=userbins/app/MMS.bap \
         app/FILES.bap=userbins/app/FILES.bap \
-        app/MUSIC.bap=userbins/app/MUSIC.bap \
         app/PHOTOS.bap=userbins/app/PHOTOS.bap \
         app/SETTINGS.bap=userbins/app/SETTINGS.bap \
         bin/bench1=cargo-target/aarch64-unknown-linux-musl/release/bench1 \
