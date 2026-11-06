@@ -1075,7 +1075,12 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
     };
     // SAFETY: get_raw 已验在表且类型 Process；Thread 构造即钉住它。
     let thrd = unsafe { crate::process::Thread::new(pobj) };
-    match t.insert(KernelObj::Thread(thrd), RIGHT_MANAGE | RIGHT_DUPLICATE) {
+    // 1.1/S1/S3-b：创建者初始授 SET_POLICY（attr/FREEZE_READY 声明权）与
+    // INSPECT（effective 查询）。仍可通过 duplicate 收紧/委托，不新增提权口。
+    match t.insert(
+        KernelObj::Thread(thrd),
+        RIGHT_MANAGE | RIGHT_DUPLICATE | RIGHT_SET_POLICY | RIGHT_INSPECT,
+    ) {
         Ok(h) => match copy_out_u32(el1, out, h) {
             Ok(()) => 0,
             Err(e) => e as i64,
@@ -1550,98 +1555,236 @@ extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
     0
 }
 
-/// `berry_process_suspend(h_process, options, *token)`（0x3E，1.1/S3-a）：
-/// 冻结目标进程全部任务，出 SuspendToken 句柄。options 恒 0（SINGLE_THREAD
-/// 留 S3-b）。解冻 = `handle_close(token)`（Drop → `thaw_by_pinned`）。
+/// `berry_process_suspend(target, options, *token)`（0x3E，1.1/S3）：
 ///
-/// 谓词（1.1/S3-a 单核简化）：
-/// - 自冻 → -EINVAL（单核下 freeze 自己 = 永久停摆）
-/// - 目标已退 → -EBADSTATE
-/// - PI / 派生位 / 持锁：`freeze_precheck_by_pinned` 一步扫描。
+/// - `options=0`：目标必须为 Process，冻结该进程全部任务。
+/// - `options bit0=SINGLE_THREAD`：目标必须为 Thread，且目标已以
+///   `sched_setattr(FREEZE_READY)` 自证用户锁到达安全点；无自证 → `-EBUSY`。
+/// - `options bits1+` 保留 → `-ENOTSUP`。
+///
+/// 解冻 = `handle_close(token)`；多 token 以 depth 计数，最后一个 close 才
+/// thaw。单线程最后一次 thaw 会自动清 `FREEZE_READY`。1.1 拒绝自冻与
+/// 「进程全冻 × 单线程冻」重叠（单 `HELD_FROZEN` 位不能表达交叉持有）。
 extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
-    use crate::handle::KernelObj;
+    use crate::process::SA_FLAG_FREEZE_READY;
+    const SUSPEND_OPT_SINGLE_THREAD: u32 = 1 << 0;
+
     let (h, options) = (tf.regs[1] as u32, tf.regs[2] as u32);
     let token_out = tf.regs[3] as *mut u32;
-    if options != 0 {
-        return ERR_NOT_SUPPORTED as i64; // SINGLE_THREAD 留 S3-b
+    if options & !SUSPEND_OPT_SINGLE_THREAD != 0 {
+        return ERR_NOT_SUPPORTED as i64; // INCLUDE_CHILDREN 等 v2
     }
+    let single = options & SUSPEND_OPT_SINGLE_THREAD != 0;
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
-        Ok((o, _)) => o,
-        Err(e) => return e as i64,
-    };
-    if obj.as_ptr() as usize == berry_sched::current_pinned() {
-        return ERR_INVALID_ARG as i64; // 1.1/S3-a：自冻拒绝
-    }
-    // SAFETY: get_raw 已三门控；单核 IRQ 屏蔽。
-    let pinned = obj.as_ptr() as usize;
-    unsafe {
-        let r = &mut *obj.as_ptr();
-        let Some(p) = r.obj.as_process_mut() else {
-            return ERR_BAD_HANDLE as i64;
+
+    if !single {
+        // ---- 进程全冻（S3-a；depth 支持嵌套 token）----
+        let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
+            Ok((o, _)) => o,
+            // options=0 只收 Process：活 handle 但类型不符 → EINVAL（§5.4）。
+            Err(ERR_BAD_HANDLE) if t.alive(h) => return ERR_INVALID_ARG as i64,
+            Err(e) => return e as i64,
         };
-        if p.state == crate::process::ProcState::Exited {
+        if obj.as_ptr() as usize == berry_sched::current_pinned() {
+            return ERR_INVALID_ARG as i64; // 自冻拒绝（单核永久停摆）
+        }
+        let pinned = obj.as_ptr() as usize;
+        let first_process_token;
+        unsafe {
+            let r = &mut *obj.as_ptr();
+            let Some(p) = r.obj.as_process_mut() else {
+                return ERR_BAD_HANDLE as i64;
+            };
+            first_process_token = p.freeze_depth == 0;
+            if p.state == ProcState::Exited {
+                return ERR_BAD_STATE as i64;
+            }
+            // D6：冻 pager = 缺页者永久阻塞。demand VMO + SET_POLICY 合取
+            // 扫描派生，close/take/drain/迁移天然随表走。
+            if p.ht.pager_load() > 0 {
+                return ERR_BUSY as i64;
+            }
+            // 单一位图不能同时表达进程冻与线程冻的交叉 close；两种粒度互斥。
+            if p.freeze_depth == 0 && p.thread_freezes > 0 {
+                return ERR_BUSY as i64;
+            }
+            if p.freeze_depth >= 8 {
+                return ERR_BUSY as i64;
+            }
+        }
+        if !berry_sched::freeze_precheck_by_pinned(pinned) {
+            return ERR_BUSY as i64;
+        }
+        unsafe {
+            let r = &mut *obj.as_ptr();
+            let Some(p) = r.obj.as_process_mut() else {
+                return ERR_BAD_HANDLE as i64;
+            };
+            p.freeze_depth += 1;
+            r.retain();
+        }
+        // 已冻任务也计匹配数：嵌套第二 token 不要求找到新的未冻任务。
+        if berry_sched::freeze_by_pinned(pinned) == 0 {
+            unsafe {
+                let r = &mut *obj.as_ptr();
+                if let Some(p) = r.obj.as_process_mut() {
+                    p.freeze_depth -= 1;
+                }
+                ObjRef::release(obj);
+            }
             return ERR_BAD_STATE as i64;
         }
-        // 1.1/S3-b：pager 角色检查（D6：冻 pager = 缺页者永久阻塞）。
-        // 持 demand VMO 的 SET_POLICY handle 即在册 pager 义务——扫描派生
-        // 取代 sidecar 计数：close/take/drain/迁移天然随表走，无漏减/UAF。
+        let tok = crate::suspend::SuspendTok {
+            target: crate::suspend::SuspendTarget::Process(obj),
+            key: pinned,
+            since_vct: berry_hal_aarch64::timer::cntvct(),
+        };
+        let ret = insert_suspend_token(tf, t, tok, token_out);
+        if ret == ERR_NO_MEMORY as i64 {
+            // insert 失败时 token 未入表，手动撤销本层 depth/retain；仅首枚
+            // token 需撤冻面（嵌套失败时既有 token 仍持有冻结义务）。
+            if first_process_token {
+                berry_sched::thaw_by_pinned(pinned);
+            }
+            unsafe {
+                let r = &mut *obj.as_ptr();
+                if let Some(p) = r.obj.as_process_mut() {
+                    if p.freeze_depth > 0 {
+                        p.freeze_depth -= 1;
+                    }
+                }
+                ObjRef::release(obj);
+            }
+        }
+        return ret;
+    }
+
+    // ---- 单线程冻结（S3-b SINGLE_THREAD）----
+    let obj = match t.get_raw(h, ObjType::Thread, RIGHT_MANAGE) {
+        Ok((o, _)) => o,
+        // SINGLE_THREAD 只收 Thread：活 handle 但类型不符 → EINVAL（§5.4）。
+        Err(ERR_BAD_HANDLE) if t.alive(h) => return ERR_INVALID_ARG as i64,
+        Err(e) => return e as i64,
+    };
+    let thread_key = obj.as_ptr() as usize;
+    if thread_key == berry_sched::current_thread_key() {
+        return ERR_INVALID_ARG as i64; // 当前线程自冻拒绝
+    }
+    unsafe {
+        let r = &mut *obj.as_ptr();
+        let Some(thrd) = r.obj.as_thread_mut() else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        if !thrd.started || thrd.exited {
+            return ERR_BAD_STATE as i64;
+        }
+        // 目标所属 Process 必须活着且已启动；pager 义务同进程全冻口径保守拒绝。
+        let owner = thrd.owner();
+        let Some(p) = (*owner.as_ptr()).obj.as_process_mut() else {
+            return ERR_BAD_STATE as i64;
+        };
+        if p.state == ProcState::Exited || !p.started {
+            return ERR_BAD_STATE as i64;
+        }
         if p.ht.pager_load() > 0 {
             return ERR_BUSY as i64;
         }
+        // FREEZE_READY 是应用自证，不是内核安全担保（D8）。
+        if thrd.sched_attr.flags & SA_FLAG_FREEZE_READY == 0 {
+            return ERR_BUSY as i64;
+        }
+        // 进程级 token 在席时不再引入单线程 token，防止交叉 close 提前解冻。
+        if thrd.freeze_depth == 0 && p.freeze_depth > 0 {
+            return ERR_BUSY as i64;
+        }
+        if thrd.freeze_depth >= 8 {
+            return ERR_BUSY as i64;
+        }
     }
-    // 谓词预检（PI / 派生位 / 持锁——false → -EBUSY）。
-    if !berry_sched::freeze_precheck_by_pinned(pinned) {
+    if !berry_sched::freeze_precheck_by_thread(thread_key) {
         return ERR_BUSY as i64;
     }
-    // 1.1/S3-b：嵌套 depth +1（上限 8）+ retain ObjRef（token 生命周期）。
+    let first_thread_token;
     unsafe {
         let r = &mut *obj.as_ptr();
-        let Some(p) = r.obj.as_process_mut() else {
+        let Some(thrd) = r.obj.as_thread_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
-        if p.freeze_depth >= 8 {
-            return ERR_BUSY as i64; // depth 帽（D 裁定）
+        first_thread_token = thrd.freeze_depth == 0;
+        thrd.freeze_depth += 1;
+        if first_thread_token {
+            let owner = thrd.owner();
+            if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() {
+                p.thread_freezes += 1;
+            }
         }
-        p.freeze_depth += 1;
-        r.retain(); // SuspendTok 持有期间 Process 不销毁
+        r.retain(); // token 持有 Thread；Thread 自身 retain 所属 Process
     }
-    let n = berry_sched::freeze_by_pinned(pinned);
-    if n == 0 {
-        // 回滚：depth -1 + release。
+    if berry_sched::freeze_by_thread(thread_key) != 1 {
+        // 防御面：started 任务必在 SLEEPQ/RQ；失败全量回滚，不留半冻。
         unsafe {
             let r = &mut *obj.as_ptr();
-            if let Some(p) = r.obj.as_process_mut() {
-                p.freeze_depth -= 1;
+            if let Some(thrd) = r.obj.as_thread_mut() {
+                thrd.freeze_depth -= 1;
+                if first_thread_token {
+                    let owner = thrd.owner();
+                    if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() {
+                        p.thread_freezes -= 1;
+                    }
+                }
             }
-            crate::handle::ObjRef::release(obj);
+            ObjRef::release(obj);
         }
-        return ERR_BAD_STATE as i64; // 无任务可冻（未 start 或已全退）
+        return ERR_BAD_STATE as i64;
     }
-    // 造 SuspendToken 入调用方表。
     let tok = crate::suspend::SuspendTok {
-        proc: obj,
-        pinned,
+        target: crate::suspend::SuspendTarget::Thread(obj),
+        key: thread_key,
         since_vct: berry_hal_aarch64::timer::cntvct(),
     };
-    let Ok(token_h) = t.insert(
-        KernelObj::SuspendToken(tok),
-        RIGHT_DUPLICATE | RIGHT_TRANSFER,
-    ) else {
-        // 回滚：thaw + depth -1 + release。
-        berry_sched::thaw_by_pinned(pinned);
+    let ret = insert_suspend_token(tf, t, tok, token_out);
+    if ret == ERR_NO_MEMORY as i64 {
+        // insert 失败：token 未入表，手动撤销本层 depth/retain。仅首枚
+        // token 撤冻面/READY/Process 占位；嵌套失败时既有 token 仍持冻。
         unsafe {
             let r = &mut *obj.as_ptr();
-            if let Some(p) = r.obj.as_process_mut() {
-                p.freeze_depth -= 1;
+            if let Some(thrd) = r.obj.as_thread_mut() {
+                if thrd.freeze_depth > 0 {
+                    thrd.freeze_depth -= 1;
+                }
+                if first_thread_token {
+                    thrd.sched_attr.flags &= !SA_FLAG_FREEZE_READY;
+                    let owner = thrd.owner();
+                    if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() {
+                        p.thread_freezes -= 1;
+                    }
+                    berry_sched::thaw_by_thread(thread_key);
+                }
             }
-            crate::handle::ObjRef::release(obj);
+            ObjRef::release(obj);
         }
+    }
+    ret
+}
+
+/// SuspendToken 入调用方表 + 出参 copy_out。0 = 成功；`insert` 失败回
+/// `-ENOMEM`；出参坏指针回 `-EFAULT`（此时 close 刚入表 token，由 Drop 完成
+/// depth/thaw/release 全回滚）。
+fn insert_suspend_token(
+    tf: &TrapFrame,
+    t: &mut HandleTable,
+    tok: crate::suspend::SuspendTok,
+    token_out: *mut u32,
+) -> i64 {
+    use crate::handle::KernelObj;
+    let Ok(token_h) = t.insert(
+        KernelObj::SuspendToken(tok),
+        RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_INSPECT,
+    ) else {
         return ERR_NO_MEMORY as i64;
     };
-    // 出参写 token handle。
     if copy_out_u32(caller_is_el1(tf), token_out as u64, token_h).is_err() {
-        let _ = t.close(token_h); // Drop → thaw
+        let _ = t.close(token_h); // Drop → thaw/depth/release
         return ERR_FAULT as i64;
     }
     0
@@ -1776,6 +1919,8 @@ extern "C" fn sys_sched_setattr(tf: &mut TrapFrame) -> i64 {
         let r = &mut *obj.as_ptr();
         match &mut r.obj {
             KernelObj::Thread(th) => {
+                if attr.flags & SA_F_FREEZE_READY != 0 {
+                }
                 th.sched_attr = attr;
             }
             KernelObj::Process(p) => {

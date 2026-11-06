@@ -101,11 +101,10 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 |
 <!-- @gen:syscalls end -->
 
-**计数**：v1 35 号在册 / 34 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11）；**1.1 增 4（0x3C–0x3F；0x3C/0x3D/0x3F 已随 S1 收口落地注册；0x3E 进程级 + 嵌套 depth 已落——唯 SINGLE_THREAD 仍 `-ENOTSUP` 待 S3-b 余项，abi.toml `implemented` 至整号收口仍 `false`）**；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 55**（39 在册 = 35 v1 实现 + 3 个 1.1 实现 + 0x3E 在册未收口；再 + v2 11 + v3 5；add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
+**计数**：v1 35 号在册 / 34 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11）；**1.1 增 4（0x3C–0x3F；0x3C/0x3D/0x3F 已随 S1 收口；0x3E 进程全冻 + SINGLE_THREAD/FREEZE_READY 已随 S3-b 收口，四号 `implemented=true`）**；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 55**（39 在册 = 35 v1 实现 + 4 个 1.1 实现；再 + v2 11 + v3 5；add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
 
 > **调点调度 1.1（S1 三号已收口）**：`0x3C`/`0x3D`/`0x3F` 已入
-> `tools/abi.toml` 并注册 handler（attr 存储/effective 查询/主动 yield）；`0x3E` 已注册进程级 + 嵌套
-> depth，唯 `SINGLE_THREAD` 待 S3-b，整号 `implemented` 仍 `false`；新增 `-E2BIG`（-7）。语义见
+> `tools/abi.toml` 并注册 handler（attr 存储/effective 查询/主动 yield）；`0x3E` 进程全冻与 `SINGLE_THREAD` 均已收口；新增 `-E2BIG`（-7）。语义见
 > `docs/调点调度-v1.1.md` §7。
 
 > **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x87`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。

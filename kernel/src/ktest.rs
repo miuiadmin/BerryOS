@@ -2947,6 +2947,76 @@ fn test_freeze() {
     let p8 = rr.pick_next(&rq2, &topo).unwrap();
     assert_eq!(p8.name, b"fzC".as_slice(), "FREEZE：F5 最终解冻后 C 须可出选");
 
+    // —— F6：S3-b SINGLE_THREAD token 收口——手工构造 Process/Thread ObjRef，
+    // 两枚嵌套 token 逐个 Drop：depth 只在最后一枚归零、FREEZE_READY 只在
+    // 最后一次 thaw 清位、Process.thread_freezes 占位同步撤销。
+    {
+        use crate::handle::{
+            HandleTable, KernelObj, ObjType, RIGHT_MANAGE,
+        };
+        use crate::process::{Process, Thread, SA_FLAG_FREEZE_READY};
+        use crate::vmar::Vmar;
+
+        let mut ht = HandleTable::new();
+        let vm = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()).unwrap();
+        let (pa, asid) = (vm.ttbr0_pa(), vm.asid());
+        let hv = ht
+            .insert(KernelObj::Vmar(vm), RIGHT_MANAGE)
+            .unwrap();
+        let (vref, _) = ht.get_raw(hv, ObjType::Vmar, 0).unwrap();
+        let hp = ht
+            .insert(
+                KernelObj::Process(unsafe { Process::new(vref, pa, asid) }),
+                RIGHT_MANAGE,
+            )
+            .unwrap();
+        let (pref, _) = ht.get_raw(hp, ObjType::Process, RIGHT_MANAGE).unwrap();
+        let ht_handle = ht
+            .insert(KernelObj::Thread(unsafe { Thread::new(pref) }), RIGHT_MANAGE)
+            .unwrap();
+        let (tref, _) = ht.get_raw(ht_handle, ObjType::Thread, RIGHT_MANAGE).unwrap();
+
+        unsafe {
+            let pr = &mut *pref.as_ptr();
+            let p = pr.obj.as_process_mut().unwrap();
+            p.started = true;
+            p.thread_freezes = 1;
+            let tr = &mut *tref.as_ptr();
+            let th = tr.obj.as_thread_mut().unwrap();
+            th.started = true;
+            th.freeze_depth = 2;
+            th.sched_attr.flags |= SA_FLAG_FREEZE_READY;
+
+            tr.retain();
+            let tok1 = crate::suspend::SuspendTok {
+                target: crate::suspend::SuspendTarget::Thread(tref),
+                key: tref.as_ptr() as usize,
+                since_vct: 0,
+            };
+            drop(tok1); // depth 2→1：不得 thaw/清 READY
+            let th = (*tref.as_ptr()).obj.as_thread_mut().unwrap();
+            assert_eq!(th.freeze_depth, 1, "FREEZE：F6 首 token close 后 depth=1");
+            assert!(th.sched_attr.flags & SA_FLAG_FREEZE_READY != 0,
+                "FREEZE：F6 嵌套未归零不得清 READY");
+            assert_eq!((*pref.as_ptr()).obj.as_process().unwrap().thread_freezes, 1);
+
+            tr.retain();
+            let tok2 = crate::suspend::SuspendTok {
+                target: crate::suspend::SuspendTarget::Thread(tref),
+                key: tref.as_ptr() as usize,
+                since_vct: 0,
+            };
+            drop(tok2); // depth 1→0：清 READY + 撤占位（无任务，thaw 空扫无害）
+            let th = (*tref.as_ptr()).obj.as_thread_mut().unwrap();
+            assert_eq!(th.freeze_depth, 0, "FREEZE：F6 末 token close 后 depth=0");
+            assert!(th.sched_attr.flags & SA_FLAG_FREEZE_READY == 0,
+                "FREEZE：F6 最后 thaw 须清 FREEZE_READY");
+            assert_eq!((*pref.as_ptr()).obj.as_process().unwrap().thread_freezes, 0,
+                "FREEZE：F6 Process 单线程占位须同步归零");
+        }
+        ht.drain();
+    }
+
     berry_hal_aarch64::uart_puts(b"FREEZE-K ok\n");
 }
 
