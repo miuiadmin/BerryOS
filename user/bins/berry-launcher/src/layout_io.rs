@@ -182,7 +182,11 @@ pub fn smoke_mode() -> bool {
 /// 诊断一律小写 `layout` 前缀——绝不产 `LAYOUT ok` / `LAYOUTW ok` 子串
 ///（标记 canon：grep -qF 存在性断言）。
 fn smoke_load(reg: &[AppEntry]) -> OwnedLayout {
-    let want = smoke_variant(reg);
+    // GUI-8 冒烟验收是双 app 基准（APPDEMO 点击 + APPQUIET 跨页）；
+    // 桌面常态注册表现在有 9 app，冒烟支路仍取前两格钉板——canonical
+    // 109B / host 对拍 /点击靶全部零漂。
+    let n = reg.len().min(2);
+    let want = smoke_variant(&reg[..n]);
     if want.cells().is_empty() {
         return want; // 空注册表：无可持久化内容（persist 同 save 静默跳过）
     }
@@ -497,6 +501,18 @@ mod tests {
 
     /// 注满 CELL_MAX（48）仍须无重复格（emit DupCell 硬门）且首格不动
     /// ——默认布局跨页同 row/col 是常态，变体冲突回退面活证。
+    #[test]
+    fn smoke_pair_from_nine_apps_is_canonical_two_cells() {
+        let reg: Vec<AppEntry> = ["APPDEMO", "APPQUIET", "BROWSER", "CAMERA", "CLOCK"]
+            .iter()
+            .map(|s| entry(s))
+            .collect();
+        let n = reg.len().min(2);
+        let v = smoke_variant(&reg[..n]);
+        assert_eq!(v.cells().len(), 2);
+        assert_eq!(emit_owned(&v).len(), 109);
+    }
+
     #[test]
     fn smoke_variant_cell_max_is_collision_free() {
         let ids: Vec<String> = (0..CELL_MAX).map(|i| format!("APP{i:02}")).collect();
