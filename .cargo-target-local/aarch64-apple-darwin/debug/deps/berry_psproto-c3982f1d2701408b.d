@@ -1,0 +1,5 @@
+/Users/murongcheng/Documents/code/berryos/.cargo-target-local/aarch64-apple-darwin/debug/deps/berry_psproto-c3982f1d2701408b.d: berry-psproto/src/lib.rs
+
+/Users/murongcheng/Documents/code/berryos/.cargo-target-local/aarch64-apple-darwin/debug/deps/berry_psproto-c3982f1d2701408b: berry-psproto/src/lib.rs
+
+berry-psproto/src/lib.rs:
