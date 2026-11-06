@@ -695,6 +695,7 @@ fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
         .slots
         .iter()
         .flatten()
+        .chain(desktop.dock.iter())
         .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node));
     let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
     let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn

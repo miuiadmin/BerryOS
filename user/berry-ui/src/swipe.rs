@@ -33,7 +33,7 @@ pub const SNAP_DUR_NS: u64 = 240_000_000;
 pub const FLIP_VEL_PX_S: i32 = 500;
 
 /// 圆点边长（px）+ 圆点行 gap。
-const DOT_SIZE: u32 = 8;
+const DOT_SIZE: u32 = 16;
 
 /// 当前页圆点亮色（白）。
 pub const DOT_ON: berry_gfx::cmd::Color = berry_gfx::cmd::Color { r: 255, g: 255, b: 255 };
@@ -134,7 +134,7 @@ impl SwipePager {
                         gap: 0,
                         w: Some(vp_w), // 页定宽——Row 游标按 meas_w 步进
                         h: None,
-                        cross: CrossAlign::Stretch,
+                        cross: CrossAlign::Center, // 固定宽 Grid/Dock 水平居中
                     }),
                 },
             )?;
@@ -162,7 +162,7 @@ impl SwipePager {
                     props: Props::Rect(RectProps {
                         bg: if i == 0 { DOT_ON } else { DOT_OFF },
                         w: Some(DOT_SIZE),
-                        h: None, // 随行（行 h=DOT_SIZE 定值 → 8×8）
+                        h: None, // 随行（行 h=DOT_SIZE 定值 → 16×16）
                     }),
                 },
             )?;

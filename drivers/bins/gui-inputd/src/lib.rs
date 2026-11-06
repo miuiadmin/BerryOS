@@ -353,6 +353,14 @@ impl PointerPump {
         }
     }
 
+    /// 更新屏幕几何（wmd 快照域真值；分辨率热切/首拍均走这里）。
+    /// 零几何 = 配置错误，构造同口径 loud；接触中更新按新域归一后续事件，
+    /// 历史 raw 采样保持旧域（v1 分辨率热切非同帧精确面，wmd 版本已换）。
+    pub fn set_geom(&mut self, geom: ScreenGeom) {
+        assert!(geom.w > 0 && geom.h > 0, "gui-inputd: 屏幕几何为零");
+        self.cfg.geom = geom;
+    }
+
     /// 喂原始事件（一个 wire 事件一次调用）。
     pub fn feed(&mut self, ev: RawInputEvent) {
         if self.dropped_pending {
@@ -757,6 +765,23 @@ mod tests {
         for i in 0..64 {
             assert_eq!(src.pop().map(|e| e.value), Some(i));
         }
+    }
+
+    #[test]
+    fn set_geom_updates_normalization_domain() {
+        // wmd 快照域是几何真值：800×600 泵切 1080×1920 后，同一 ABS
+        // 原始对必须按新域归一（2026-11-06 竖屏实抓回归：固定 800×600
+        // 会把 (135,200) 映成 (99,62)，真实点击全偏）。
+        let mut p = pump();
+        p.set_geom(ScreenGeom { w: 1080, h: 1920 });
+        p.feed(ev(1, EV_KEY, BTN_LEFT, 1));
+        for e in xy(2, 500, 500) {
+            p.feed(e);
+        }
+        p.feed(syn(4));
+        let evs = take(&mut p, 1);
+        assert_eq!(evs[0].phase, PHASE_DOWN);
+        assert_eq!((evs[0].x, evs[0].y), (539, 959));
     }
 
     // ---- normalize_axis ----

@@ -1,8 +1,8 @@
 //! desktop —— 桌面静态面（GUI-8 段③ W1，docs/GUI-8实施设计草案.md §4
 //! 段③「布局桩」）。
 //!
-//! 责任：一次性建桌面保留树——壁纸三带 + 状态栏 + SwipePager 四页 ×
-//! Grid 4×3 槽板 + a11y 骨架（18/32）。数据源 = berry-layout 布局 ×
+//! 责任：一次性建桌面保留树——OH 官方壁纸 + phone 状态栏 + SwipePager
+//! 四页 × Grid 5×4 槽板 + 常驻 Dock + a11y 骨架（32/32）。数据源 = berry-layout 布局 ×
 //! icons 注册表（注册表空 → 布局 0 cell → 全占位格 label "-"，W1 冻结
 //! 相常态形态）。**帧循环/翻页/点击全无**——`frameloop`（W2）经本模块
 //! 公开面驱动：`pager`（on_msg/tick）+ `slots` 槽表（命中映射/spawn）+
@@ -16,25 +16,23 @@
 //!   全幅底 → 深蓝灰盖上 2/3 → 状态栏黑带顶——三 Rect 零资产零缩放。
 //! - **裁决四-e（归属）**：状态栏/壁纸 = launcher 窗口内容层（非 wmd
 //!   系统窗）——D3 单 wm 客户端不变量保持，gfxdemo `WM ok` 零连带。
-//! - **裁决八（a11y 18/32）**：状态栏 2 件 ROLE_TEXT + 4 页 Grid 容器
-//!   ROLE_LIST + 当前页 12 格容器 ROLE_BUTTON（label = app 名/幽灵 id/
-//!   "-"）= 18/32；翻页 take/set 重挂当前页（`rehang_a11y`）。press_map
-//!   v1 不做（砍单——视觉反馈归 W2 spawn 回执标记行）。
+//! - **裁决八（a11y OH phone 形 32/32）**：状态栏 4 件 ROLE_TEXT + 4 页
+//!   Grid 容器 ROLE_LIST + 当前页 20 格 ROLE_BUTTON + 4 个 Dock 位
+//!   ROLE_BUTTON = 32/32；翻页 take/set 重挂当前页（`rehang_a11y`）。
+//!   press_map v1 不做（视觉反馈归 W2 spawn 回执标记行）。
 //! - **裁决 D（几何）**：屏幕几何全经 wm GETINFO 动态（`ui.viewport()`
 //!   ——Root/带高/Grid 高全派生），禁硬编 800×600；字号档/图标 px 等
 //!   字体面常量不属屏幕参数，不在此列。
 //!
-//! 树规模（裁决八实树数义务；对抗审查勘正——W1 初值漏算 48 个格
-//! label Text）：1 Root + 3 壁纸 + 1 内容列 + 状态栏 5 + pager 10
-//! （track+4 页+圆点行+4 圆点）+ 4×(Grid+12 格×3[cell+label+icon 位])
-//! = **120 节点** < MAX_NODES=512（在册图标节点 +48 上限 = 168，
-//! 裕量足）。
+//! 树规模（最坏满图标）：1 Root + 壁纸 1 + 内容列 1 + 状态栏 10 +
+//! grid top 1 + pager 10 + 4×(Grid+20 Pad+20 内Col+20 Icon+20 Text)
+//! + filler 1 + Dock 5 = **354 节点** < MAX_NODES=512。
 
 use berry_gfx::cmd::Color;
 use berry_gfx::font::FontSize;
 use berry_layout::{CELL_MAX, PAGE_MAX};
 use berry_ui::desc::{
-    ColProps, GridProps, IconProps, PadProps, RectProps, RowProps, TextProps, TextStyle,
+    ColProps, GridProps, IconProps, PadProps, RowProps, TextProps, TextStyle,
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::swipe::SwipePager;
@@ -42,6 +40,7 @@ use berry_ui::{
     NodeId, Props, TextBuf, UiError, UiMain, ViewKind, ViewSpec, ROLE_BUTTON, ROLE_TEXT,
 };
 
+use crate::icons;
 use crate::icons::{AppEntry, NO_ICON};
 use crate::layout_io::OwnedLayout;
 
@@ -49,53 +48,70 @@ use crate::layout_io::OwnedLayout;
 
 /// 桌面页数 = berry-layout `PAGE_MAX` 权威 4（裁决三定谳）。
 pub(crate) const PAGES: usize = PAGE_MAX as usize;
-/// 每页网格列数（草案 §4 段③「Grid 4×3」）。
+/// 每页网格列数（OH phone 5×4 档）。
 pub(crate) const GRID_COLS: usize = 4;
 /// 每页网格行数。
-pub(crate) const GRID_ROWS: usize = 3;
-/// 每页槽数 = 4×3 = 12。
+pub(crate) const GRID_ROWS: usize = 5;
+/// 每页槽数 = 4×5 = 20（OH 手机 5×4 档；CELL_MAX=48 覆盖前三页）。
 pub(crate) const SLOTS_PER_PAGE: usize = GRID_COLS * GRID_ROWS;
 
-/// 48 = 4 页 × 12 格恰满（裁决三容量公式）——编译期钉视窗与 berry-layout
-/// 容量域一致性。
-const _: () = assert!(CELL_MAX == PAGES * SLOTS_PER_PAGE, "CELL_MAX = 4页×12格 恰满");
+/// 编译期钉视窗覆盖 berry-layout 容量域（4×20 ≥ CELL_MAX=48——第四页
+/// 渲染面可空，持久化域不缩）。
+const _: () = assert!(PAGES * SLOTS_PER_PAGE >= CELL_MAX, "OH 5×4 视窗覆盖布局容量");
 
 // —— 派生几何（字体档单源派生，非屏幕参数硬编——裁决 D 注记）——
 
-/// 状态栏高（800 宽 8x16 双行+6px pad；1280 宽 16x32 双行+8px pad）。
-/// 圆点行高（swipe.rs DOT_SIZE=8 镜像——彼处私有常量，改彼处须同步此处）。
-const DOT_H: u32 = 8;
-/// 内容区底缘留白（800/1280 两档在 build 内派生）。
-/// 格内图标显示边长（IconProps w/h 定值——v1 无缩放；72px 源图标直出）。
-const ICON_PX: u32 = 96;
-/// 状态栏下强调线高（800/1280 两档在 build 内派生）。
-/// 壁纸竖向渐变色带数（Rect 无渐变原语——多带近似；奇高余量归末带）。
-const WALLPAPER_BANDS: u32 = 48;
+/// 页指示器视觉点行高（swipe.rs DOT_SIZE 镜像）。
+const DOT_ROW_H: u32 = 16;
+/// 格内图标目标边长（OH phone icon 54vp×3；108px 源经 ScaledArgb 采样）。
+const ICON_PX: u32 = 162;
+
+// —— OpenHarmony phone launcher 几何（applications_launcher 源仓
+//    PhonePresetStyleConstants / PhoneSmartDockStyleConfig；1080×1920
+//    = 360×640vp @3x 折算）——
+/// 密度（1080 物理宽 / 360vp 逻辑宽）。
+const OH_DENSITY: u32 = 3;
+/// 状态栏可见高 39vp（phone statusbar float；launcher 布局保留 44vp）。
+const OH_STATUS_H: u32 = 39;
+/// 状态栏左右 padding 24vp。
+const OH_STATUS_PAD: u32 = 24;
+/// 桌面网格左右 margin 12vp。
+const OH_GRID_MARGIN: u32 = 12;
+/// 桌面 app item 80vp（网格 5×4 的行高）。
+const OH_ITEM_H: u32 = 80;
+/// 桌面网格 gap 5.33vp（LayoutViewModel 360vp 宽实算后 ×3）。
+const OH_GRID_GAP: u32 = 16;
+/// 桌面首行 app item 的绝对 top 53.83vp（含状态栏 44vp）。
+const OH_DESKTOP_TOP: u32 = 162;
+/// Dock 视觉高 78vp（不含外层 bottom margin）。
+const OH_DOCK_H: u32 = 78;
+/// Dock 下方保留区 45vp（sysUI bottom 36vp + dock margin 9vp）。
+const OH_DOCK_BOTTOM: u32 = 45;
+/// Dock 源资产密度（目标 3x；源段 167×156 → 目标段 ~250×234）。
+const DOCK_SRC_DENSITY: u32 = 2;
+/// Dock 目标分段宽（167×1.5 四舍分配，和 = 1002）。
+const DOCK_TARGET_W: [u32; DOCK_SLOTS] = [251, 250, 250, 251];
+/// Dock 常驻图标数（PhoneSmartDock max=4）。
+const DOCK_SLOTS: usize = 4;
 
 /// ROLE_LIST —— berry-ui 角色常量域（wire u8 0..=5 在册）之外的**开放
 /// 值域 host 扩展**（lib.rs 角色常量族头注明文「host 可扩」）：6 =
 /// launcher 扩 LIST（页 Grid 容器）。
 const ROLE_LIST: u8 = 6;
 
-/// 状态栏左件（系统名）。
-const STATUS_NAME: &[u8] = b"BerryOS";
 /// 状态栏右件（时钟占位——TODO(W2)：真时钟经 berry_clock_read 摆字）。
 const STATUS_CLOCK: &[u8] = b"12:00";
 /// a11y 页容器 label。
 const PAGE_LABELS: [&[u8]; PAGES] = [b"page 0", b"page 1", b"page 2", b"page 3"];
 /// 空槽占位 label。
 const PLACEHOLDER: &[u8] = b"";
-/// 桌面品牌件（page0 slot2 空位）：大字号 wordmark + 小字副标，填掉
-/// 1280×720 顶行右侧的大片死白；非 app、不可 spawn（app=None）。
-const WIDGET_TITLE: &[u8] = b"BerryOS";
-const WIDGET_SUB: &[u8] = b"DESKTOP";
+/// 常驻 Dock app（Contacts/Messages/Browser/Camera；从网格去重）。
+/// GUI 验收双 app（官方桌面常态隐藏，只保留后台/spawn 面）。
+const TEST_IDS: [&[u8]; 2] = [b"APPDEMO", b"APPQUIET"];
+/// OH PhonePresetDockItem 官方顺序。
+const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"PHOTOS", b"SETTINGS", b"MMS"];
 
-/// 壁纸/文本配色（裁决六三带 + 白系前景；stub 常量——位图通道 v2）。
-const WALLPAPER_TOP: Color = Color { r: 10, g: 28, b: 74 }; // OH 深海蓝
-const WALLPAPER_MID: Color = Color { r: 22, g: 100, b: 190 }; // OH 亮蓝
-const WALLPAPER_BOTTOM: Color = Color { r: 8, g: 150, b: 136 }; // OH 青绿
-const STATUS_BG: Color = Color { r: 10, g: 28, b: 74 }; // 与壁纸顶融合
-const ACCENT: Color = Color { r: 82, g: 156, b: 255 }; // 状态栏下 2px 强调线
+/// 文本配色（白色 = systemui TintStateManager 默认 contentColor）。
 const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
 const ICON_FG: Color = Color { r: 230, g: 230, b: 235 };
@@ -121,6 +137,8 @@ pub struct Desktop {
     pub pager: SwipePager,
     /// 槽表 `[页][行×GRID_COLS+列]`。
     pub slots: [[Slot; SLOTS_PER_PAGE]; PAGES],
+    /// 常驻 dock 槽（PhoneSmartDock max=4；点击与网格同映射）。
+    pub dock: [Slot; DOCK_SLOTS],
     /// a11y 当前挂载页（`u8::MAX` 哨兵 = 未挂——build 尾经 rehang(0) 初挂）。
     a11y_page: u8,
 }
@@ -133,32 +151,6 @@ struct SlotPlan<'a> {
     label: &'a [u8],
     icon: Option<u16>,
     app: Option<usize>,
-}
-
-/// 线性插值两色（`t` = 0..=den；Q16 不需要——整数通道足够，18 带近似）。
-fn wallpaper_color(i: u32, den: u32) -> Color {
-    // 三停渐变：深蓝 → 亮蓝 → 青绿（OpenHarmony 风格冷暖过渡）。
-    if i * 2 <= den {
-        lerp_color(WALLPAPER_TOP, WALLPAPER_MID, i * 2, den)
-    } else {
-        lerp_color(WALLPAPER_MID, WALLPAPER_BOTTOM, i * 2 - den, den)
-    }
-}
-
-fn lerp_color(a: Color, b: Color, t: u32, den: u32) -> Color {
-    if den == 0 {
-        return b;
-    }
-    let f = |x: u8, y: u8| -> u8 {
-        let x = x as u32;
-        let y = y as u32;
-        ((x * (den - t) + y * t) / den) as u8
-    };
-    Color {
-        r: f(a.r, b.r),
-        g: f(a.g, b.g),
-        b: f(a.b, b.b),
-    }
 }
 
 /// S8x16 文本叶子 spec（label/状态栏共用字号档；超 `TEXT_INLINE`=64B
@@ -183,77 +175,68 @@ fn icon_of(e: &AppEntry) -> Option<u16> {
     }
 }
 
+/// 是否 dock 常驻 app（PhoneSmartDock max=4）。
+fn is_dock_app(id: &[u8]) -> bool {
+    DOCK_IDS.iter().any(|d| *d == id)
+}
+
+fn is_test_app(id: &[u8]) -> bool {
+    TEST_IDS.iter().any(|d| *d == id)
+}
+
+/// 状态栏 Icon spec（内建 id；宽高来自 OH 资产真值，不做运行时缩放）。
+fn status_icon_spec(id: u16) -> Result<ViewSpec, UiError> {
+    let (w, h) = match id {
+        icons::STATUS_SIGNAL => icons::STATUS_SIGNAL_DIM,
+        icons::STATUS_WIFI => icons::STATUS_WIFI_DIM,
+        icons::STATUS_BATTERY => icons::STATUS_BATTERY_DIM,
+        _ => return Err(UiError::NodeBad),
+    };
+    Ok(ViewSpec {
+        kind: ViewKind::Icon,
+        key: 0,
+        props: Props::Icon(IconProps { id, fg: TEXT_FG, w: Some(w), h: Some(h) }),
+    })
+}
+
 /// 桌面建树（main 单次调用；几何全 `ui.viewport()` 动态——裁决 D）。
 /// Err = 容量/文本域违例（NodeFull/NodeBad/TextTooLong 族）——调用方
 /// `fail` 收口（eprintln + park；监督重启归 svcmgr 域，本进程不自救）。
 pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<Desktop, UiError> {
-    // 宽不消费：三带/Grid 宽全 None 随父拉满（Root 子 avail = viewport
-    // 宽——裁决六满幅语义），仅带高/Grid 高需显式派生。
     let (vp_w, vp_h) = ui.viewport();
-    // 16:9 桌面（1280×720）与旧 4:3（800×600）两档：字号/状态栏/格隙
-    // 随视口走；图标源 72px 固定（v1 无运行时缩放），窄屏也不溢出格。
-    let big = vp_w >= 1000 || vp_h >= 1000;
-    let status_h = if big { 72 } else { 44 };
-    let status_pad = if big { 12 } else { 6 };
-    let accent_h = if big { 4 } else { 2 };
-    let grid_gap = if big { 24 } else { 12 };
-    let cell_gap = if big { 8 } else { 4 };
-    let bottom_pad = if big { 16 } else { 8 };
+    // OH phone 固定几何只给 1080×1920（360×640vp @3x）；横屏/调试档走
+    // 紧凑分支，防 Dock/top 常量把 1280×720 挤出视口。
+    let big = vp_w >= 600 && vp_h >= 1800;
+
+    // OpenHarmony phone 档：1080×1920 = 360×640vp @3x，直接消费 OH
+    // launcher 源仓 phone 常量。800×600 调试档保留紧凑布局。
+    let status_h = if big { OH_STATUS_H * OH_DENSITY } else { 44 };
     let status_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
     let label_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
+    // 800×600 调试档：56px 源采样 + 16px label 恰容 95px 轨高。
+    let icon_px = if big { ICON_PX } else { 56 };
+    let grid_gap = if big { OH_GRID_GAP } else { 12 };
+    let cell_gap = if big { 12 } else { 2 };
     let root = ui.root();
 
-    // —— 壁纸竖向多带渐变（Rect 无渐变原语；18 带在 TCG 下仍是一次
-    //    整帧 fill，零资产/零缩放）。插入序 = 自底向上 z 序：先插者先绘。
-    let wall = ui.add(
-        root,
-        ViewSpec {
-            kind: ViewKind::Col,
-            key: 0,
-            props: Props::Col(ColProps {
-                gap: 0,
-                w: None,
-                h: Some(vp_h),
-                cross: CrossAlign::Stretch,
-            }),
-        },
-    )?;
-    let band_h = vp_h / WALLPAPER_BANDS;
-    for i in 0..WALLPAPER_BANDS {
-        let h = if i + 1 == WALLPAPER_BANDS {
-            vp_h.saturating_sub(band_h.saturating_mul(WALLPAPER_BANDS - 1))
-        } else {
-            band_h
-        };
-        ui.add(
-            wall,
-            ViewSpec {
-                kind: ViewKind::Rect,
-                key: 0,
-                props: Props::Rect(RectProps {
-                    bg: wallpaper_color(i, WALLPAPER_BANDS - 1),
-                    w: None,
-                    h: Some(h),
-                }),
-            },
-        )?;
-    }
-    // 状态栏底带（Root 直子；内容列的状态栏 Col 叠在其上，同高）。
+    // OpenHarmony phone 默认壁纸：官方 JPEG 宿主预采样成 135×240
+    // 静态源，SmoothArgb 双线性放大到 1080×1920；rodata 直供零堆。
+    // 800×600 compact 调试档会拉伸该 9:16 源（非 OH phone 精确面）。
     ui.add(
         root,
         ViewSpec {
-            kind: ViewKind::Rect,
+            kind: ViewKind::Icon,
             key: 0,
-            props: Props::Rect(RectProps {
-                bg: STATUS_BG,
-                w: None,
-                h: Some(status_h),
+            props: Props::Icon(IconProps {
+                id: icons::WALLPAPER,
+                fg: ICON_FG,
+                w: Some(vp_w),
+                h: Some(vp_h),
             }),
         },
     )?;
 
-    // —— 内容列（第 4 个 Root 子 = z 序顶；透明底——三带透出）：
-    //    状态栏 Col + pager(track + 圆点行) 纵向叠放 ——
+    // 内容列满屏：cross=Center 让固定宽 Grid/Dock 在页内水平居中。
     let content = ui.add(
         root,
         ViewSpec {
@@ -261,12 +244,14 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             key: 0,
             props: Props::Col(ColProps {
                 gap: 0,
-                w: None,
-                h: None,
-                cross: CrossAlign::Stretch,
+                w: Some(vp_w),
+                h: Some(vp_h),
+                cross: CrossAlign::Center,
             }),
         },
     )?;
+
+    // 状态栏：左时间、右 signal/wifi/battery（OH systemui phone 资产）。
     let status = ui.add(
         content,
         ViewSpec {
@@ -274,96 +259,159 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             key: 0,
             props: Props::Col(ColProps {
                 gap: 0,
-                w: None,
+                w: Some(vp_w),
                 h: Some(status_h),
                 cross: CrossAlign::Stretch,
             }),
         },
     )?;
-    let pad = ui.add(
-        status,
-        ViewSpec {
-            kind: ViewKind::Pad,
-            key: 0,
-            props: Props::Pad(PadProps { all: status_pad }),
-        },
-    )?;
+    // OH systemui phone：左右 24vp；左 = signal/wifi，右 = battery/clock
+    // （StatusbarConfig LayoutGroups 1/3；clock rightmost）。
+    let status_pad = if big { OH_STATUS_PAD * OH_DENSITY } else { 6 };
+    let time_w = STATUS_CLOCK.len() as u32 * status_size.cell_w() as u32;
+    let status_icon_gap = if big { 15 } else { 6 };
+    let left_w = icons::STATUS_SIGNAL_DIM.0
+        + status_icon_gap
+        + icons::STATUS_WIFI_DIM.0;
+    let right_w = icons::STATUS_BATTERY_DIM.0 + status_icon_gap + time_w;
+    let status_flex = vp_w.saturating_sub(status_pad * 2 + left_w + right_w);
     let srow = ui.add(
-        pad,
+        status,
         ViewSpec {
             kind: ViewKind::Row,
             key: 0,
             props: Props::Row(RowProps {
-                // 时间右对齐：宽 - 两侧 pad - 两串字宽；窄屏饱和 0。
-                gap: vp_w.saturating_sub(
-                    status_pad * 2
-                        + (STATUS_NAME.len() + STATUS_CLOCK.len()) as u32
-                            * status_size.cell_w() as u32,
-                ),
-                w: None,
-                h: None,
-                cross: CrossAlign::Start,
+                gap: 0,
+                w: Some(vp_w),
+                h: Some(status_h),
+                cross: CrossAlign::Center,
             }),
         },
     )?;
-    // 状态栏 2 件 ROLE_TEXT（裁决八；时钟占位——W2 真时钟）。
-    let t1 = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
-    ui.set_a11y(t1, ROLE_TEXT, STATUS_CLOCK)?;
-    let t2 = ui.add(srow, text_spec(STATUS_NAME, TEXT_FG, status_size)?)?;
-    ui.set_a11y(t2, ROLE_TEXT, STATUS_NAME)?;
+    let add_status_spacer = |ui: &mut UiMain, w: u32| -> Result<NodeId, UiError> {
+        ui.add(
+            srow,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: Some(w),
+                    h: Some(1),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )
+    };
+    add_status_spacer(ui, status_pad)?;
+    let left_group = ui.add(
+        srow,
+        ViewSpec {
+            kind: ViewKind::Row,
+            key: 0,
+            props: Props::Row(RowProps {
+                gap: status_icon_gap,
+                w: Some(left_w),
+                h: None,
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    let sig = ui.add(left_group, status_icon_spec(icons::STATUS_SIGNAL)?)?;
+    ui.set_a11y(sig, ROLE_TEXT, b"signal full")?;
+    let wifi = ui.add(left_group, status_icon_spec(icons::STATUS_WIFI)?)?;
+    ui.set_a11y(wifi, ROLE_TEXT, b"wifi full")?;
+    add_status_spacer(ui, status_flex)?;
+    let right_group = ui.add(
+        srow,
+        ViewSpec {
+            kind: ViewKind::Row,
+            key: 0,
+            props: Props::Row(RowProps {
+                gap: status_icon_gap,
+                w: Some(right_w),
+                h: None,
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    let battery = ui.add(right_group, status_icon_spec(icons::STATUS_BATTERY)?)?;
+    ui.set_a11y(battery, ROLE_TEXT, b"battery 100")?;
+    let time_node = ui.add(right_group, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
+    ui.set_a11y(time_node, ROLE_TEXT, STATUS_CLOCK)?;
+    add_status_spacer(ui, status_pad)?;
 
-    // 状态栏下 2px 强调线（内容列直子；色带逐帧只读）。
+    // OH calculateDesktop：首 item top 绝对 162px；扣除状态栏 132px。
+    let grid_top = if big { OH_DESKTOP_TOP.saturating_sub(status_h) } else { 8 };
     ui.add(
         content,
         ViewSpec {
-            kind: ViewKind::Rect,
+            kind: ViewKind::Col,
             key: 0,
-            props: Props::Rect(RectProps { bg: ACCENT, w: None, h: Some(accent_h) }),
+            props: Props::Col(ColProps {
+                gap: 0,
+                w: Some(1),
+                h: Some(grid_top),
+                cross: CrossAlign::Center,
+            }),
         },
     )?;
 
-    // —— 分页器建树（attach 自管：track Row(w=viewport) + 页 Col×4 +
-    //    圆点行 + 圆点×4——swipe.rs；页宽 = viewport 动态）——
     let mut pager = SwipePager::new(PAGES as u8);
     pager.attach(ui, content)?;
 
-    // —— 布局 × 注册表 → 槽计划折算（先算后建——建树单源）——
+    // 布局 → 槽计划；dock 常驻 app 不重复进网格（OH SmartDock 语义）。
+    // 剔除 dock 后非 dock app 按原相对序**紧致重排**——否则默认 9 app
+    // 布局会在网格里留下 dock 取走的洞，不像 OH。
     let mut plan: [[SlotPlan<'_>; SLOTS_PER_PAGE]; PAGES] =
         [[SlotPlan { label: PLACEHOLDER, icon: None, app: None }; SLOTS_PER_PAGE]; PAGES];
+    let mut cursor = 0usize;
+    // 常态布局若含官方系统 app，则验收 APPDEMO/APPQUIET 不进官方桌面；
+    // GUI8 canonical 双 app 布局仍全显示（冒烟/常态隔离点击面不变）。
+    let official_present = layout
+        .cells()
+        .iter()
+        .any(|c| !is_test_app(c.app_bytes()) && !is_dock_app(c.app_bytes()));
     for c in layout.cells() {
-        // 桌面视窗 = 4 页 × 行 0..3 × 列 0..4；布局域 8×8——窗外格
-        // 不渲染（渲染面视窗裁剪，持久化数据保留——重装 app 后再现）。
-        if c.page as usize >= PAGES
-            || c.row as usize >= GRID_ROWS
-            || c.col as usize >= GRID_COLS
+        if cursor >= PAGES * SLOTS_PER_PAGE
+            || is_dock_app(c.app_bytes())
+            || (official_present && is_test_app(c.app_bytes()))
         {
             continue;
         }
-        let s = c.row as usize * GRID_COLS + c.col as usize;
-        plan[c.page as usize][s] = match reg.iter().position(|e| e.id_bytes() == c.app_bytes()) {
+        let page = cursor / SLOTS_PER_PAGE;
+        let slot = cursor % SLOTS_PER_PAGE;
+        cursor += 1;
+        plan[page][slot] = match reg.iter().position(|e| e.id_bytes() == c.app_bytes()) {
             Some(i) => SlotPlan {
                 label: reg[i].label_bytes(),
                 icon: icon_of(&reg[i]),
                 app: Some(i),
             },
-            // 幽灵格：布局在册、注册表缺席——label 显示 id（诚实可见），
-            // 不可 spawn。
             None => SlotPlan { label: c.app_bytes(), icon: None, app: None },
         };
     }
 
-    // —— 每页 Grid 4×3 槽板（格 = Col[Icon?, Text]；Center 十字居中）——
-    // Grid 高定值 = 视口派生（Grid 主轴内在不吃 avail——Col/Row/Grid
-    // 主轴恒内在，定值才撑满；宽随页 Col 拉满 viewport）。
-    let grid_h = vp_h.saturating_sub(status_h + accent_h + DOT_H + bottom_pad);
-    // 格高 = Grid 轨高（与 berry-ui §4.2 place 的 track_h 同式：等分轨 −
-    // 行间 gap）。**必须定高**：Cell 是 Col 容器，`h: None` 时引擎按子
-    // 内在聚合（icon 48 + gap 4 + label 16 = 68）落界，格只占轨首 68px，
-    // 轨余下空间命中落到 Grid 容器（Click 无槽可映射——smoke 实抓：
-    // QMP 点轨心 → node=Grid → CLICK 永缺）。定高把命中面铺满槽（透明
-    // 容器零视觉差），a11y ROLE_BUTTON 界同步为整槽。
-    let cell_h = (grid_h.saturating_sub((GRID_ROWS as u32 - 1) * grid_gap))
-        / GRID_ROWS as u32;
+    // OH 5×4：grid宽 1008px、item 240px、gap 16px（360vp 公式实算 ×3）。
+    // 32px HD label 最长 256px，轨宽 240px 时向 16px gap 两侧各溢 8px，
+    // 不压相邻图标；小屏回落“铺满可用高”。
+    let grid_w = if big {
+        vp_w.saturating_sub(OH_GRID_MARGIN * OH_DENSITY * 2)
+    } else {
+        vp_w
+    };
+    let grid_h = if big {
+        OH_ITEM_H * OH_DENSITY * GRID_ROWS as u32
+            + OH_GRID_GAP * (GRID_ROWS as u32 - 1)
+    } else {
+        // 小屏无 Dock：只让 16px 视觉点行，OH 96px 指示区预留仅 phone 档。
+        vp_h.saturating_sub(status_h + grid_top + DOT_ROW_H + 8)
+    };
+    let cell_h = if big {
+        OH_ITEM_H * OH_DENSITY
+    } else {
+        (grid_h.saturating_sub((GRID_ROWS as u32 - 1) * grid_gap)) / GRID_ROWS as u32
+    };
     let mut slots: [[Option<Slot>; SLOTS_PER_PAGE]; PAGES] = [[None; SLOTS_PER_PAGE]; PAGES];
     for p in 0..PAGES {
         let page = pager.page_node(p as u8).ok_or(UiError::NodeBad)?;
@@ -377,62 +425,57 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                     rows: GRID_ROWS as u8,
                     gap: grid_gap,
                     cross: CrossAlign::Stretch,
-                    w: None,
+                    w: Some(grid_w),
                     h: Some(grid_h),
                 }),
             },
         )?;
-        // 4 页 Grid 容器 ROLE_LIST（翻页不变——恒挂；裁决八）。
         ui.set_a11y(grid, ROLE_LIST, PAGE_LABELS[p])?;
         for s in 0..SLOTS_PER_PAGE {
             let pn = plan[p][s];
+            // OH app item 内边距 3vp×3：240 = 9 + icon162 + gap12 +
+            // label48 + 9。Pad 直接作 Grid 子（内在恰满轨高，命中面整格）。
+            let item_pad = if big { 9 } else { 2 };
             let cell = ui.add(
                 grid,
+                ViewSpec {
+                    kind: ViewKind::Pad,
+                    key: 0,
+                    props: Props::Pad(PadProps { all: item_pad }),
+                },
+            )?;
+            let item = ui.add(
+                cell,
                 ViewSpec {
                     kind: ViewKind::Col,
                     key: 0,
                     props: Props::Col(ColProps {
                         gap: cell_gap,
                         w: None,
-                        h: Some(cell_h),
+                        h: Some(cell_h.saturating_sub(item_pad * 2)),
                         cross: CrossAlign::Center,
                     }),
                 },
             )?;
-            // 仅稠密域内 id 建 Icon 节点——IconSource 真供件契约：域外
-            // id 查 dims/pixels = debug_assert loud（注册 bug）；占位/
-            // 无图标/幽灵格零节点零查表（icons.rs 头注契约面）。
             let icon_node = match pn.icon {
                 Some(id) => Some(
                     ui.add(
-                        cell,
+                        item,
                         ViewSpec {
                             kind: ViewKind::Icon,
                             key: 0,
                             props: Props::Icon(IconProps {
                                 id,
                                 fg: ICON_FG,
-                                w: Some(ICON_PX),
-                                h: Some(ICON_PX),
+                                w: Some(icon_px),
+                                h: Some(icon_px),
                             }),
                         },
                     )?,
                 ),
                 None => None,
             };
-            let label_node = ui.add(cell, text_spec(pn.label, LABEL_FG, label_size)?)?;
-            // page0 / slot2：品牌 wordmark 件（顶行右侧视觉锚点；不是 app）。
-            if p == 0 && s == 2 && pn.app.is_none() {
-                let title_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
-                ui.add(cell, text_spec(WIDGET_TITLE, TEXT_FG, title_size)?)?;
-                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S16x32)?)?;
-            }
-            // page0 / slot5（第二行中间）：大时钟 widget，填中段空白。
-            if p == 0 && s == 5 && pn.app.is_none() {
-                let clock_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
-                ui.add(cell, text_spec(b"12:00", TEXT_FG, clock_size)?)?;
-                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S16x32)?)?;
-            }
+            let label_node = ui.add(item, text_spec(pn.label, LABEL_FG, label_size)?)?;
             slots[p][s] = Some(Slot {
                 cell,
                 label_node,
@@ -442,11 +485,82 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             });
         }
     }
-    // 槽填满不变量（建槽循环恰覆盖 (p,s) 全域）——结构不可达防御面。
     let slots = slots.map(|page| page.map(|s| s.expect("slot 填满不变量破缺")));
 
-    let mut d = Desktop { pager, slots, a11y_page: u8::MAX };
-    // 初挂页 0（a11y 12 ROLE_BUTTON——合计 2+4+12 = 18/32，裁决八）。
+    // OH SmartDock：官方 1002×234 条切成四段内建 Icon——每段是一个命中
+    // 面，拼回仍是整条 radius66 圆角 dock（无容器背景原语也不失真）。
+    let dock_w = icons::DOCK_DIMS
+        .iter()
+        .map(|&(w, _)| w)
+        .sum::<u32>()
+        .saturating_mul(OH_DENSITY)
+        / DOCK_SRC_DENSITY;
+    if big {
+        // SwipePager 点行是 16px 视觉件；OH 32vp 指示区差额并入 filler，
+        // 保证 dock top = 1920 − 45vp×3 − 78vp×3 = 1551px。
+        let before_dock = status_h + grid_top + grid_h + DOT_ROW_H;
+        let target = vp_h.saturating_sub((OH_DOCK_BOTTOM + OH_DOCK_H) * OH_DENSITY);
+        let filler = target.saturating_sub(before_dock);
+        ui.add(
+            content,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: Some(1),
+                    h: Some(filler),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+    }
+    let dock_row = ui.add(
+        content,
+        ViewSpec {
+            kind: ViewKind::Row,
+            key: 0,
+            props: Props::Row(RowProps {
+                gap: 0,
+                w: Some(if big { dock_w } else { 0 }),
+                h: Some(if big { OH_DOCK_H * OH_DENSITY } else { 0 }),
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    let mut dock = Vec::with_capacity(DOCK_SLOTS);
+    for (i, id) in DOCK_IDS.iter().enumerate() {
+        let entry_idx = reg.iter().position(|e| e.id_bytes() == *id);
+        let (seg_w, seg_h) = (
+            DOCK_TARGET_W[i],
+            icons::DOCK_DIMS[i].1 * OH_DENSITY / DOCK_SRC_DENSITY,
+        );
+        let icon_node = ui.add(
+            dock_row,
+            ViewSpec {
+                kind: ViewKind::Icon,
+                key: 0,
+                props: Props::Icon(IconProps {
+                    id: icons::DOCK_FACE_IDS[i],
+                    fg: ICON_FG,
+                    w: Some(if big { seg_w } else { 0 }),
+                    h: Some(if big { seg_h } else { 0 }),
+                }),
+            },
+        )?;
+        let label = entry_idx.map(|idx| reg[idx].label_bytes()).unwrap_or(b"");
+        ui.set_a11y(icon_node, ROLE_BUTTON, label)?;
+        dock.push(Slot {
+            cell: icon_node,
+            label_node: icon_node,
+            icon: None,
+            app: entry_idx,
+            label_buf: TextBuf::new(label)?,
+        });
+    }
+    let dock: [Slot; DOCK_SLOTS] = dock.try_into().ok().expect("dock 恰四槽");
+
+    let mut d = Desktop { pager, slots, dock, a11y_page: u8::MAX };
     rehang_a11y(ui, &mut d, 0)?;
     Ok(d)
 }

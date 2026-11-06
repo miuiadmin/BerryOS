@@ -304,6 +304,12 @@ fn draw_image(
             None => {} // 缺图标 no-op（icon.rs 头注语义）
         },
         ImageSrc::Argb { w, h, px } => argb_blit(target, desc, *w, *h, px, x, y, clip),
+        ImageSrc::ScaledArgb { sw, sh, dw, dh, px } => {
+            scaled_argb_blit(target, desc, *sw, *sh, *dw, *dh, px, x, y, clip)
+        }
+        ImageSrc::SmoothArgb { sw, sh, dw, dh, px } => {
+            smooth_argb_blit(target, desc, *sw, *sh, *dw, *dh, px, x, y, clip)
+        }
     }
 }
 
@@ -355,6 +361,129 @@ fn argb_blit(
                     put_px(target, desc, clip, x, y, packed);
                 } // A==0：透明键跳过（不写）
             } // get() None = 防御采样（短切片旁路 → 透明，不 panic）
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+/// ScaledArgb 最近邻回放臂：目标可见窗逐像素取源 `(x*sw/dw, y*sh/dh)`
+///（中心偏移取整，放大无系统性左偏）。透明键与 Argb 同律；u64 乘法
+/// 只做坐标映射，源下标最终以 usize 收窄（可见窗已保证界内）。
+fn scaled_argb_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    sw: u32,
+    sh: u32,
+    dw: u32,
+    dh: u32,
+    px: &[u32],
+    dx: i32,
+    dy: i32,
+    clip: &Rect,
+) {
+    let dw_i = i32::try_from(dw).unwrap_or(i32::MAX);
+    let dh_i = i32::try_from(dh).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw_i, dh_i).intersect(clip) else {
+        return;
+    };
+    let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
+    let mut y = vis.y;
+    while y < y_end {
+        let sy = (((y - dy) as u64 * sh as u64 + dh.max(1) as u64 / 2)
+            / dh.max(1) as u64)
+            .min(sh.saturating_sub(1) as u64);
+        let mut x = vis.x;
+        while x < x_end {
+            let sx = (((x - dx) as u64 * sw as u64 + dw.max(1) as u64 / 2)
+                / dw.max(1) as u64)
+                .min(sw.saturating_sub(1) as u64);
+            let p = px.get((sy as usize) * sw as usize + sx as usize).copied();
+            if let Some(p) = p {
+                if p >> 24 != 0 {
+                    let r = ((p >> 16) & 0xFF) as u8;
+                    let g = ((p >> 8) & 0xFF) as u8;
+                    let b = (p & 0xFF) as u8;
+                    let packed = desc.format().pack(r, g, b);
+                    put_px(target, desc, clip, x, y, packed);
+                }
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+
+/// SmoothArgb 双线性回放臂（放大质量面——缩小无低通会走样）：目标中心
+/// 映射回源中心，Q16 求floor/Q8 权重。
+/// 透明键仍二值：四个采样 alpha 加权 ≥128 视为不透明；RGB 只按不透明
+/// 采样归一，避免透明底 (0,0,0) 在边缘渗黑。壁纸源全不透明，主路径无分支。
+fn smooth_argb_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    sw: u32,
+    sh: u32,
+    dw: u32,
+    dh: u32,
+    px: &[u32],
+    dx: i32,
+    dy: i32,
+    clip: &Rect,
+) {
+    let dw_i = i32::try_from(dw).unwrap_or(i32::MAX);
+    let dh_i = i32::try_from(dh).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw_i, dh_i).intersect(clip) else {
+        return;
+    };
+    let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
+    let mut y = vis.y;
+    while y < y_end {
+        let mut x = vis.x;
+        while x < x_end {
+            // 目标像素中心 → 源坐标（Q16；-0.5 边界由 clamp 退化为边缘色）。
+            let cx = ((2 * (x - dx) as i64 + 1) * sw as i64 * 65536
+                / (2 * dw as i64))
+                - 32768;
+            let cy = ((2 * (y - dy) as i64 + 1) * sh as i64 * 65536
+                / (2 * dh as i64))
+                - 32768;
+            let x0 = (cx / 65536).clamp(0, sw.saturating_sub(1) as i64) as usize;
+            let y0 = (cy / 65536).clamp(0, sh.saturating_sub(1) as i64) as usize;
+            let x1 = (x0 + 1).min(sw.saturating_sub(1) as usize);
+            let y1 = (y0 + 1).min(sh.saturating_sub(1) as usize);
+            let fx = ((cx - (x0 as i64) * 65536).max(0) / 256) as u32; // 0..=255
+            let fy = ((cy - (y0 as i64) * 65536).max(0) / 256) as u32;
+            let p00 = px.get(y0 * sw as usize + x0).copied().unwrap_or(0);
+            let p01 = px.get(y0 * sw as usize + x1).copied().unwrap_or(0);
+            let p10 = px.get(y1 * sw as usize + x0).copied().unwrap_or(0);
+            let p11 = px.get(y1 * sw as usize + x1).copied().unwrap_or(0);
+            let samples = [(p00, (256 - fx) * (256 - fy)), (p01, fx * (256 - fy)), (p10, (256 - fx) * fy), (p11, fx * fy)];
+            let mut aw = 0u32;
+            for (p, w) in samples {
+                if p >> 24 != 0 {
+                    aw += w / 256;
+                }
+            }
+            if aw >= 128 {
+                let mut rgb = [0u32; 3];
+                let mut norm = 0u32;
+                for (p, w) in samples {
+                    if p >> 24 != 0 {
+                        norm += w / 256;
+                        rgb[0] += ((p >> 16) & 0xFF) * (w / 256);
+                        rgb[1] += ((p >> 8) & 0xFF) * (w / 256);
+                        rgb[2] += (p & 0xFF) * (w / 256);
+                    }
+                }
+                if norm != 0 {
+                    let r = (rgb[0] / norm) as u8;
+                    let g = (rgb[1] / norm) as u8;
+                    let b = (rgb[2] / norm) as u8;
+                    let packed = desc.format().pack(r, g, b);
+                    put_px(target, desc, clip, x, y, packed);
+                }
+            }
             x += 1;
         }
         y += 1;

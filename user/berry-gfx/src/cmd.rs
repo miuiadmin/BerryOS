@@ -153,6 +153,24 @@ pub enum ImageSrc<'a> {
         h: u32,
         px: &'a [u32],
     },
+    /// ARGB 最近邻缩放面：源 `sw×sh` 借用像素按请求几何 `dw×dh`
+    /// 回放期采样（v1 无 float/无 blend——透明键语义与 Argb 同律）。
+    /// 源恰长门同 Argb；`dw/h` 零值在 submit 期拒绝。
+    ScaledArgb {
+        sw: u32,
+        sh: u32,
+        dw: u32,
+        dh: u32,
+        px: &'a [u32],
+    },
+    /// ARGB 双线性缩放面（壁纸等全不透明大面；Q8 定点，无 float）。
+    SmoothArgb {
+        sw: u32,
+        sh: u32,
+        dw: u32,
+        dh: u32,
+        px: &'a [u32],
+    },
 }
 
 impl core::fmt::Debug for ImageSrc<'_> {
@@ -169,6 +187,22 @@ impl core::fmt::Debug for ImageSrc<'_> {
                 .debug_struct("ImageSrc::Argb")
                 .field("w", w)
                 .field("h", h)
+                .field("px", &px.len())
+                .finish(),
+            ImageSrc::ScaledArgb { sw, sh, dw, dh, px } => f
+                .debug_struct("ImageSrc::ScaledArgb")
+                .field("sw", sw)
+                .field("sh", sh)
+                .field("dw", dw)
+                .field("dh", dh)
+                .field("px", &px.len())
+                .finish(),
+            ImageSrc::SmoothArgb { sw, sh, dw, dh, px } => f
+                .debug_struct("ImageSrc::SmoothArgb")
+                .field("sw", sw)
+                .field("sh", sh)
+                .field("dw", dw)
+                .field("dh", dh)
                 .field("px", &px.len())
                 .finish(),
         }

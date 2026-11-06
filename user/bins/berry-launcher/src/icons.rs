@@ -37,6 +37,37 @@ use berry_ui::IconSource;
 
 use crate::{rpc_recv, rpc_send};
 
+#[path = "status_icons.rs"]
+mod status_icons;
+
+#[path = "wallpaper.rs"]
+mod wallpaper;
+
+/// 内建状态/dock 图标 id（desktop 直建 Icon 节点；位于 app 图标稠密域
+/// 前缀，app id 从 7 起——launcher 是唯一消费者，契约不外泄）。
+pub const STATUS_SIGNAL: u16 = 0;
+pub const STATUS_WIFI: u16 = 1;
+pub const STATUS_BATTERY: u16 = 2;
+/// 静态壁纸源 id（稠密 app 域外的唯一固定特例——rodata 直供零堆）。
+pub const WALLPAPER: u16 = 0xFFFE;
+pub const WALLPAPER_DIM: (u32, u32) = (wallpaper::WALLPAPER_W, wallpaper::WALLPAPER_H);
+/// dock 分段内建面 id（0..3 号 app 对应 Contacts/Photos/Settings/MMS 官方顺序）。
+pub const DOCK0: u16 = 3;
+pub const DOCK1: u16 = 4;
+pub const DOCK2: u16 = 5;
+pub const DOCK3: u16 = 6;
+pub const DOCK_FACE_IDS: [u16; 4] = [DOCK0, DOCK1, DOCK2, DOCK3];
+pub const DOCK0_DIM: (u32, u32) = (status_icons::DOCK0_W, status_icons::DOCK0_H);
+pub const DOCK1_DIM: (u32, u32) = (status_icons::DOCK1_W, status_icons::DOCK1_H);
+pub const DOCK2_DIM: (u32, u32) = (status_icons::DOCK2_W, status_icons::DOCK2_H);
+pub const DOCK3_DIM: (u32, u32) = (status_icons::DOCK3_W, status_icons::DOCK3_H);
+pub const DOCK_DIMS: [(u32, u32); 4] = [DOCK0_DIM, DOCK1_DIM, DOCK2_DIM, DOCK3_DIM];
+pub const STATUS_SIGNAL_DIM: (u32, u32) = (status_icons::SIGNAL_W, status_icons::SIGNAL_H);
+pub const STATUS_WIFI_DIM: (u32, u32) = (status_icons::WIFI_W, status_icons::WIFI_H);
+pub const STATUS_BATTERY_DIM: (u32, u32) = (status_icons::BATTERY_W, status_icons::BATTERY_H);
+const BUILTIN_FACES: usize = 7;
+const _: () = assert!(BUILTIN_FACES == 7, "状态三 + dock 四内建面钉板");
+
 /// 无图标哨兵（icon 域外值——desktop 不建 Icon 节点）。
 pub const NO_ICON: u16 = u16::MAX;
 
@@ -48,8 +79,9 @@ const REG_MAX: usize = 64;
 /// 最坏 RLE 流 ≈ 384KiB，512KiB 帽 = 慷慨上界；超帽弃整流）。
 const BLOB_MAX: usize = 512 * 1024;
 
-/// 像素常驻帽（32MiB / 4B = 8'388'608 px 累计；kill criteria ③）。
-const PX_CAP: u64 = 32 * 1024 * 1024 / 4;
+/// 像素常驻帽（225'000 px ≈ 879KiB——launcher 静态堆实为 1MiB；超帽
+/// 单条降 label-only，防 std 分配失败把桌面进程整杀）。
+const PX_CAP: u64 = 225_000;
 
 /// 注册表条目（APP_LIST 应答逐条镜像；id 域 = berry-layout/
 /// berry-manifest ID_MAX=24 同源词法；label 域 = wire APP_ENTRY label[64]
@@ -109,8 +141,57 @@ pub fn init(app_h: Handle) {
     }
     match pull(app_h) {
         Some(entries) => set_registry(entries),
-        None => eprintln!("launcher: app list unavailable -- empty registry"),
+        None => {
+            eprintln!("launcher: app list unavailable -- empty registry");
+            set_registry(Box::leak(Vec::new().into_boxed_slice()));
+            let _ = FACES.set(Box::leak(status_faces().into_boxed_slice()));
+        }
     }
+}
+
+/// 宿主生成期 BYI1 → 运行期 IconFace（dock 大面走 RLE，launcher 二进制
+/// 只携压缩字节；decode 契约与 APP_LIST 图标同源）。
+fn decoded_face(blob: &[u8]) -> IconFace {
+    let need = match decode(blob, &mut []) {
+        Err(IconError::BufferTooSmall { need, .. }) => need,
+        _ => {
+            eprintln!("launcher: builtin icon probe bad");
+            return IconFace { w: 1, h: 1, px: vec![0] };
+        }
+    };
+    let mut px = vec![0u32; need];
+    match decode(blob, &mut px) {
+        Ok(desc) => IconFace { w: desc.w, h: desc.h, px },
+        Err(e) => {
+            eprintln!("launcher: builtin icon decode {e:?}");
+            IconFace { w: 1, h: 1, px: vec![0] }
+        }
+    }
+}
+
+/// 状态栏三内建面 + dock 四分段面。
+fn status_faces() -> Vec<IconFace> {
+    vec![
+        IconFace {
+            w: status_icons::SIGNAL_W,
+            h: status_icons::SIGNAL_H,
+            px: status_icons::SIGNAL_PX.to_vec(),
+        },
+        IconFace {
+            w: status_icons::WIFI_W,
+            h: status_icons::WIFI_H,
+            px: status_icons::WIFI_PX.to_vec(),
+        },
+        IconFace {
+            w: status_icons::BATTERY_W,
+            h: status_icons::BATTERY_H,
+            px: status_icons::BATTERY_PX.to_vec(),
+        },
+        decoded_face(&status_icons::DOCK0_BYI),
+        decoded_face(&status_icons::DOCK1_BYI),
+        decoded_face(&status_icons::DOCK2_BYI),
+        decoded_face(&status_icons::DOCK3_BYI),
+    ]
 }
 
 /// 流中待竣工条目（ENTRY 开工 → CHUNK 供料 → 满员转竣工解码）。
@@ -132,8 +213,12 @@ fn pull(app_h: Handle) -> Option<&'static [AppEntry]> {
     let mut rhs = [0 as Handle; 8];
     let mut dec = ap::ListDecoder::new();
     let mut entries: Vec<AppEntry> = Vec::new();
-    let mut faces: Vec<IconFace> = Vec::new();
+    let mut faces: Vec<IconFace> = status_faces();
     let mut px_used: u64 = 0;
+    px_used += (status_icons::SIGNAL_W as u64 * status_icons::SIGNAL_H as u64)
+        + (status_icons::WIFI_W as u64 * status_icons::WIFI_H as u64)
+        + (status_icons::BATTERY_W as u64 * status_icons::BATTERY_H as u64)
+        + DOCK_DIMS.iter().map(|&(w, h)| w as u64 * h as u64).sum::<u64>();
     let mut pending: Option<Pending> = None;
 
     loop {
@@ -256,26 +341,26 @@ fn finish_entry(entries: &mut Vec<AppEntry>, faces: &mut Vec<IconFace>, px_used:
 
 /// 通用图标面（无图标 app 的 fallback；中性石板底 + 白环，1-bit alpha）。
 fn generic_face() -> IconFace {
-    // 96px：与 APPDEMO 源图标同档（v1 无运行时缩放）。
-    const S: usize = 96;
+    // 108px 源：目标 162px 由 ScaledArgb 1.5x 采样（省 1MiB 堆）。
+    const S: usize = 108;
     let mut px = vec![0u32; S * S];
     let mut y = 0usize;
     while y < S {
         let mut x = 0usize;
         while x < S {
             // 圆角半径 10：四角外 = 透明。
-            let cx = if x < 20 { 20 - x } else if x >= S - 20 { x - (S - 21) } else { 0 };
-            let cy = if y < 20 { 20 - y } else if y >= S - 20 { y - (S - 21) } else { 0 };
-            if cx * cx + cy * cy > 400 {
+            let cx = if x < 24 { 24 - x } else if x >= S - 24 { x - (S - 25) } else { 0 };
+            let cy = if y < 24 { 24 - y } else if y >= S - 24 { y - (S - 25) } else { 0 };
+            if cx * cx + cy * cy > 576 {
                 px[y * S + x] = 0;
                 x += 1;
                 continue;
             }
-            let dx = x as i32 - 47;
-            let dy = y as i32 - 47;
+            let dx = x as i32 - 53;
+            let dy = y as i32 - 53;
             let d2 = dx * dx + dy * dy;
             // 白环：半径 30..=40。
-            px[y * S + x] = if (900..=1600).contains(&d2) {
+            px[y * S + x] = if (1225..=2025).contains(&d2) {
                 0xFFFF_FFFF
             } else {
                 0xFF45_5A7A
@@ -300,14 +385,24 @@ pub fn icon_source() -> &'static dyn IconSource {
 
 impl IconSource for LauncherIcons {
     fn dims(&self, id: u16) -> Option<(u32, u32)> {
+        if id == WALLPAPER {
+            return Some(WALLPAPER_DIM);
+        }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
         Some((f.w, f.h))
     }
 
     fn pixels(&self, id: u16) -> Option<&[u32]> {
+        if id == WALLPAPER {
+            return Some(&wallpaper::WALLPAPER_PX);
+        }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
         Some(&f.px)
+    }
+
+    fn smooth_scale(&self, id: u16) -> bool {
+        id == WALLPAPER
     }
 }
