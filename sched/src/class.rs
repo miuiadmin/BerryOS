@@ -55,6 +55,15 @@ static mut LAST_VCT: u64 = 0;
 /// `(vdeadline, vruntime)`，不空转。
 pub struct Fair;
 
+/// **S2b 纯 EEVDF 开关**（实验轨道）：
+/// - `false`（默认，S2a）：严格带序 + 带内 EEVDF——PI boost 即时生效
+///   （高带先出），deadline 带（≥1000）恒先于 fair。v1 安全形态。
+/// - `true`（S2b）：去带序——所有任务纯 `(eligible, vdeadline, vruntime)`
+///   竞争。PI boost 经 weight 影响 VD（软优先——高权→短 VD→常先但不保证）。
+///   deadline 带语义失效（绝对截止期 VD 与 fair VD 尺度不可比——需 v2
+///   归一化）。**仅实验用——v1 测试全按 S2a 假设构建**。
+pub const PURE_EEVDF: bool = false;
+
 /// 兼容别名：既有调用点仍以 `RoundRobin` 指类型（1.1/S2 语义已是 Fair）。
 pub type RoundRobin = Fair;
 
@@ -272,32 +281,43 @@ impl Fair {
         // SAFETY: 环上任务均调度器拥有且在环；调用侧全在 KERN_LOCK 窗内
         // （SVC/tick/klock 包络）——扫描期间无并发出/入环（E0 BKL 执法面）。
         unsafe {
-            // 段 1：最高 prio_effective 带（严格带序——PI 仍即时生效）。
-            let mut max_eff = i32::MIN;
-            let mut cur = h;
-            loop {
-                if eligible(my_cur, cur.as_ptr()) {
-                    let e = (*cur.as_ptr()).prio_effective;
-                    if e > max_eff {
-                        max_eff = e;
+            // S2b 实验开关：true = 跳过段 1（无带序），段 2 对所有任务开放。
+            // false（S2a 默认）= 段 1 先选最高带，段 2 带内 EEVDF。
+            let max_eff = if PURE_EEVDF {
+                i32::MIN // 哨兵：段 2 的 `prio_effective == max_eff` 判恒假
+                        // → 改用 `!= i32::MIN`（即无条件通过）。
+                } else {
+                // 段 1：最高 prio_effective 带（严格带序——PI 仍即时生效）。
+                let mut me = i32::MIN;
+                let mut cur = h;
+                loop {
+                    if eligible(my_cur, cur.as_ptr()) {
+                        let e = (*cur.as_ptr()).prio_effective;
+                        if e > me {
+                            me = e;
+                        }
+                    }
+                    cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+                    if cur == h {
+                        break;
                     }
                 }
-                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-                if cur == h {
-                    break;
-                }
-            }
-            if max_eff == i32::MIN {
+                me
+            };
+            if !PURE_EEVDF && max_eff == i32::MIN {
                 return None;
             }
-            // 段 2：带内 EEVDF（eligible 优先；同键首见保序）。
+            // 段 2：EEVDF（eligible 优先；同键首见保序）。S2a 带内 / S2b 全环。
+            let in_band = |e: i32| -> bool {
+                if PURE_EEVDF { true } else { e == max_eff }
+            };
             let mut best: Option<NonNull<Task>> = None;
             let mut best_elig = false;
             let mut best_key = (u64::MAX, u64::MAX);
             let mut cur = h;
             loop {
                 if eligible(my_cur, cur.as_ptr())
-                    && (*cur.as_ptr()).prio_effective == max_eff
+                    && in_band((*cur.as_ptr()).prio_effective)
                 {
                     let t = &*cur.as_ptr();
                     let elig = t.vruntime <= avg;

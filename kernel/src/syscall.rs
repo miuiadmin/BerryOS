@@ -2549,9 +2549,13 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     if msg.billing.domain_id != 0 {
         crate::telemetry::billing_cross_domain();
         // S4-b 区间起点：per-CPU 槽（v1 单核 0 号；SMP 需 per-CPU 数组）。
-        let slot = crate::telemetry::billing_slot();
-        crate::telemetry::BILLING_RECV_DOMAIN[slot].store(msg.billing.domain_id, core::sync::atomic::Ordering::Relaxed);
-        crate::telemetry::BILLING_RECV_VCT[slot].store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
+        // v2 协议标签过滤：reply(msg_type=2) 不设计费区间——client recv
+        // server 回复不误归 server 域（v1 全部 msg_type=0 照设——已知局限）。
+        if msg.billing.msg_type != crate::channel::MSG_BILLING_REPLY {
+            let slot = crate::telemetry::billing_slot();
+            crate::telemetry::BILLING_RECV_DOMAIN[slot].store(msg.billing.domain_id, core::sync::atomic::Ordering::Relaxed);
+            crate::telemetry::BILLING_RECV_VCT[slot].store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
+        }
     }
     if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
         match out {
