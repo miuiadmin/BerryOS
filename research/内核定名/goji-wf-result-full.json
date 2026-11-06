@@ -1,0 +1,1020 @@
+{
+  "summary": "内核候选名 Goji 深度研究：五面并行风险扫描 + 风险项对抗复核",
+  "agentCount": 23,
+  "logs": [
+    "五面并行扫描启动：软件撞名 / 商标商业 / 语言文化 / 生态占位 / 先例策略",
+    "扫描完成：5/5 面返回，风险项（blocker/caution）共 18 条，进入对抗复核"
+  ],
+  "result": {
+    "research": [
+      {
+        "angle": "软件撞名面",
+        "findings": [
+          {
+            "detail": "两代同源项目：zenazn/goji（\"minimalistic web framework for Golang... high in antioxidants\"，3,644 星，2020-10-27 后停更）与社区后继 goji/goji（973 星、66 fork，最后 push 2022-07-26，未归档）。pkg.go.dev 显示 goji.io 模块被 720 个包 import，v2.0.2 发布于 2019-01-26、最高 tag 已到 v3。它是 HTTP 路由器/中间件库，领域与 OS 内核相距甚远（没人会把路由器和内核认错），但知名度足以让『goji + 编程/开发』类搜索首屏被它占据，开源传播时内核的 SEO 会被稀释。休眠 4 年但从未宣布死亡。",
+            "severity": "caution",
+            "source": "https://github.com/goji/goji（经 https://api.github.com/repos/goji/goji 实测 973★/pushed 2022-07-26）；https://pkg.go.dev/goji.io；https://goji.io",
+            "title": "最大的占名者是 Go 语言 Web 框架 Goji：两仓库合计约 4,600 星但已休眠，与内核领域距离远、混淆低但占搜索结果"
+          },
+          {
+            "detail": "传闻『goji.io 域名项目』属实：goji.io 是 Go 框架官网（『A minimalistic and flexible request multiplexer for Go』），域名无法为本内核所用。GitHub 组织名 goji（ID 7555056，2014-05-12 注册，8 个仓库，bio『Goji community contributions』）也被该框架社区占用——若 BerryOS 开源后想用 github.com/goji 作为内核组织名，已不可能，只能用 berryos/goji 之类嵌套路径。",
+            "severity": "caution",
+            "source": "https://goji.io（WebFetch 实测）；https://api.github.com/users/goji（type: Organization）",
+            "title": "命名空间硬资源已被占：goji.io 域名与 GitHub org『goji』（2014 年注册）都归 Go 框架所有"
+          },
+          {
+            "detail": "精确名 goji 已被 softprops/goji（『Rust interface for Jira』）注册：0.2.4 版、7 个版本、总下载 17,992，最后更新 2018-07-22，休眠 8 年。值得注意的是其活跃后继已改用拼音名 gouqi（wunderfrucht/gouqi，0.20.0，2025-10-21 仍更新，30.5 万下载），说明原作者阵营已主动弃用 goji 之名——生态存量使用者极少。但 crates.io 不允许重名发布，若未来想把内核或其组件以 crate 名 goji 发布，只能走 crates.io 的弃置接管流程或换名（如 goji-kernel）。同域近名还有 wp_goji_patch（同仓库补丁分支，2020 年停）与 gojira（游戏引擎，2025 年新作，非同族）。",
+            "severity": "caution",
+            "source": "https://crates.io/api/v1/crates/goji 与 https://crates.io/api/v1/crates?q=goji（WebFetch 实测）",
+            "title": "crates.io 上精确名 goji 已被注册：休眠 8 年的 Jira 客户端，而 BerryOS 内核正是 Rust 生态——这是本维度里最『贴身』的撞名"
+          },
+          {
+            "detail": "RubyGems 无 goji 宝石（rubygems.org/gems/goji 返回 404，WebSearch \"goji ruby gem Sinatra\" 零相关命中；唯一 Ruby 关联是 Go 框架 README 自述『inspired by Sinatra』）。Clojure 官方生态文档 clojure-doc.org 的 Web Development 页通篇列 Luminus/Kit/Biff/Pedestal/Electric/Ripley，无任何 Goji。传闻把语言张冠李戴了：框架真实存在，但只属于 Go 生态。",
+            "severity": "clean",
+            "source": "https://rubygems.org/gems/goji（404 实测）；https://clojure-doc.org/articles/ecosystem/web_development/（全文核对无 goji）",
+            "title": "传闻核实：「Goji Web 框架属 Ruby 或 Clojure 生态」不成立——框架确实存在但属 Go 生态，Ruby/Clojure 两边均零命中"
+          },
+          {
+            "detail": "Blue Goji（bluegoji.com，LinkedIn/Crunchbase 在册）主打『Embodied Health』健身游戏：GojiPlay 有氧游戏系统（iOS/Android，CNET 2015 年测评过 Goji Play 2）、Infinity 互动跑步机、Expresso 互动单车与 CyberCycle（2022 年收购 Interactive Fitness Holdings 所得）、面向游戏开发者的 Blue Goji SDK，并持有 US10080958B2 等专利（专利 boilerplate 里出现过『可在操作系统内核中实现』字样，与内核命名无关）。其软件产品名是 GojiPlay 而非裸名 Goji，与操作系统内核零用户重叠；商标风险属其他维度，本维度仅记背景。",
+            "severity": "info",
+            "source": "https://www.bluegoji.com；https://www.linkedin.com/company/blue-goji；https://patents.google.com/patent/US10080958B2/fr",
+            "title": "传闻核实：Blue Goji 公司及其产品属实——健身游戏公司，软件叫 GojiPlay，与内核领域距离极远"
+          },
+          {
+            "detail": "『React ❤️ Mini Program』，TypeScript，252 星、32 fork，api.github.com 实测 pushed_at 2026-11-04（检索前两天仍有提交），MIT，主页 goji.js.org（js.org 子域也被其占用）。这说明 2026 年的今天『goji』之名仍被活跃开源项目使用，但小程序 UI 框架与内核毫无混淆可能。",
+            "severity": "info",
+            "source": "https://github.com/airbnb/goji-js（https://api.github.com/repos/airbnb/goji-js 实测）",
+            "title": "airbnb/goji-js 是当前最活跃的同名开源项目：Airbnb 出品的微信小程序 React 框架，2026-11-04 仍在提交"
+          },
+          {
+            "detail": "muandane/goji：Commitizen 风格 emoji 提交工具，79 星，pushed 2026-10-19，说明裸名 goji 在 Go 工具圈仍有新增使用者。tomtom-international/goji-http-client（Groovy 的 Apache HttpClient 封装）与 hypebeast/goji-boilerplate（Go 框架脚手架）为配套小项目。规模都不足与内核争名，仅造成搜索噪音。",
+            "severity": "info",
+            "source": "https://github.com/muandane/goji（api.github.com 搜索实测）；https://github.com/tomtom-international/goji-http-client",
+            "title": "另有多个活跃小项目叫 goji：emoji 提交工具（79 星，2026-10 仍在更新）、TomTom HTTP 客户端等，均为长尾"
+          },
+          {
+            "detail": "goji 0.6.0，2025-03-10 发布，作者 Kyle Fuller（kylef），BSD，Python >=3.9，未挂主页仓库链接。同一作者的 CLI 还以 goji 0.4.0 进了 AUR。命令行工具与内核无混淆，仅说明 Python 打包命名空间里此名也被占。",
+            "severity": "info",
+            "source": "https://pypi.org/project/goji/ 与 https://pypi.org/pypi/goji/json（实测）",
+            "title": "PyPI 的 goji 是命令行 JIRA 客户端，2025 年仍有发布"
+          },
+          {
+            "detail": "npm 包 goji：『An HTML templating engine inspired by Thymeleaf』，作者 James Sumners（jsumners），11 个版本（0.1.0–0.9.1），最后发布 2015-06-09，仓库 github.com/jsumners/goji，十年无更新。对内核命名无实际影响。",
+            "severity": "info",
+            "source": "https://registry.npmjs.org/goji（WebFetch 实测）",
+            "title": "npm 的 goji 是 2015 年就停更的 HTML 模板引擎，无人维护"
+          },
+          {
+            "detail": "Debian 匹配 goji 的 4 个包全为 Go 框架库包：golang-goji-dev（trixie 稳定版+sid）、golang-github-zenazn-goji-dev、golang-github-goji-httpauth-dev、golang-github-goji-param-dev（含 stable/testing/unstable）。Repology API 显示 AUR 有 goji 0.4.0（kylef 的 JIRA CLI，标记 unique）；Arch 官方仓库按名搜索 0 命中；Homebrew formula goji 404。结论：Linux 打包面没有终端用户应用叫 goji，只有库包与一个 AUR 小工具——内核未来若做发行版打包，名字冲突面很小。",
+            "severity": "info",
+            "source": "https://packages.debian.org/search?keywords=goji&searchon=names&suite=all；https://repology.org/api/v1/project/goji；https://archlinux.org/packages/?name=goji（0 命中）；https://formulae.brew.sh/api/formula/goji.json（404）",
+            "title": "Linux 打包面：Debian 有 4 个包、AUR 有 1 个包，全是 Go 框架库包和 Jira CLI；Arch 官方仓库与 Homebrew 零命中"
+          },
+          {
+            "detail": "GitHub 仓库搜索 goji 共 1,009 个结果（API 实测，非截断）。星数前十中真撞名的只有 Go 框架两家（3644/973）、airbnb/goji-js（252）、muandane/goji（79）、softprops/goji（78）；其余为近名：gojieba 中文分词 2,652 星（『结巴』谐音，非 goji）、nelhage/gojit（JIT）、Kong/gojira、romangojiberryAI/gojiberryai-sales-os（AI 销售工具，195 星，名字含 gojiberryai）。名字拥挤但无巨无霸，星数千级即封顶。",
+            "severity": "info",
+            "source": "https://api.github.com/search/repositories?q=goji&sort=stars&order=desc&per_page=10（total_count=1009）",
+            "title": "GitHub 全域撞名规模中等：1,009 个仓库命中，星数前十里真撞名 5 个、近名（gojieba/gojit/gojira）5 个"
+          },
+          {
+            "detail": "以『\"goji\" operating system kernel』检索，首屏全部是枸杞果实检测/溯源论文（PMC、MDPI、ScienceDirect）与 Blue Goji 专利的 boilerplate 文字；没有任何操作系统、内核、hypervisor、固件、RTOS 项目以 Goji 为名。也就是说撞名全部发生在远域（Web 框架、Jira CLI、模板引擎、健身 App、外包公司），系统软件这个本域内名字反而是空白——这是对内核命名最有利的一条证据。",
+            "severity": "clean",
+            "source": "检索方式：WebSearch 查询 \"goji\" operating system kernel（等价 https://www.google.com/search?q=%22goji%22+operating+system+kernel ），零软件项目命中，结果均为果实论文与专利",
+            "title": "系统软件领域零撞名：不存在任何名为 Goji 的操作系统、内核或固件项目"
+          },
+          {
+            "detail": "Gojiberry AI（gojiberry.ai，2025 年创，约 7 人，读网站+监听 LinkedIn 购买信号的 B2B 暖线索工具）与 Goji Labs（gojilabs.com，洛杉矶数字产品代理所，2014 年创，承接 AI 产品/App 开发并发布技术指南）都不是裸名 Goji，法律与混淆风险低，但会分走搜索流量。另有小众的 Goji Editor（Pocketeers 出品的游戏关卡/App 布局编辑器）。",
+            "severity": "info",
+            "source": "https://gojiberry.ai；https://gojilabs.com；https://www.drmop.com/index.php/categories/pocketeers-limited/apps",
+            "title": "AI/科技公司里只有近名：Gojiberry AI（2025 年销售 AI）与 Goji Labs（LA 软件代理所），均非精确名 Goji"
+          }
+        ],
+        "verdict": "撞但不致命：软件圈最大的占名者是休眠中的 Go 语言 Web 框架 Goji（连带 goji.io 域名、GitHub org、Debian 四个包一起锁死了这个名字的\"门面资源\"），加上 crates.io 上休眠八年的同名 Jira 客户端——后者因 BerryOS 内核正是 Rust 生态而最贴身；但系统软件/OS 内核本域内零同名，没有任何一条达到 blocker 级，可用，代价是 crates.io 与 GitHub 命名空间被占、搜索分流，以及对外介绍时需与 Go 框架做语境切割。"
+      },
+      {
+        "angle": "商标与商业面（Goji 候选名评估）",
+        "findings": [
+          {
+            "detail": "Currys（原 Dixons Carphone）官网存在活的 GOJI 品类页：https://www.currys.co.uk/tv-and-audio/headphones/headphones/goji ，并有无线/降噪/白色/黑色等子品类页（搜索索引 2026-11-06 仍收录在售型号如 GSHOKBT18）。Wikipedia《Goji Electronics》条目：品牌 2011 年 12 月创立于 Hemel Hempstead，股份由 Currys plc、说唱歌手 Tinchy Stryder（Kwasi Danquah III）与 Lord Kalms 持有，产品线除耳机/音频外还包括平板/手机配件、笔记本内胆包，至今仍在 Currys plc 品牌导航模板中（页面挂 2025-09 需更新横幅）。注意：直接抓取 currys.co.uk 被 403 拒（反爬），现状依据为搜索索引在售页 + Wikipedia。风险面：这是全球曝光度最高的 Goji 商业品牌，属尼斯第 9 类（电子硬件），与操作系统内核商品类别距离远、无诉之虞；但 BerryOS v1 主战场是移动设备→PC，若未来以 Goji 名义出硬件或移动产品线，将与 Currys 在售的 Goji 手机/平板配件明显贴近，届时需重新评估。",
+            "severity": "caution",
+            "source": "https://www.currys.co.uk/tv-and-audio/headphones/headphones/goji ；https://en.wikipedia.org/wiki/Goji_Electronics",
+            "title": "英国 Currys 旗下 Goji 消费电子品牌仍然活跃，且产品线含手机/平板配件——与移动设备 OS 场景有贴近风险"
+          },
+          {
+            "detail": "美国奥斯汀健身游戏公司 Blue Goji LLC（Guitar Hero 联创 Charles Huang 创办）2021-03-28 递交 GOJI 文字商标申请（Serial 90608024），类别为第 9 类 Computer Product & Electrical & Scientific Products；Justia 索引页显示其状态为 641 Non-Final Action Mailed（审查员首次驳回待答复，第三方索引可能滞后）。取证限制：TSDR 的 JSON 端点（tsdr.uspto.gov/ts/cd/casedocs/sn90608024/info.json 与 /statusinfo/sn90608024.json）均返回 404，Justia/LegalHoop 页面直抓 403，状态以搜索结果摘要为准。即使最终注册，其商品描述面向健身/游戏软件与设备，与 OS 内核类别尚有距离。",
+            "severity": "caution",
+            "source": "https://trademarks.justia.com/906/08/goji-90608024.html ；https://www.legalhoop.com/trademark/detail/90608024/GOJI（两站直抓 403，经 WebSearch 摘要取证）",
+            "title": "Blue Goji LLC 在美申请 GOJI 独立文字商标（SN 90608024，第 9 类），截至索引时点尚未注册成功"
+          },
+          {
+            "detail": "USPTO TTABVUE 按当事人检索可见多起 Blue Goji, LLC 参与的程序，包括撤销程序 No. 92079346（pno=92079346, pty=CAN）；其 GOJI GEOTAINMENT 申请（SN 90419171/90480703）也在案。TTAB 在案记录另显示其 GOJI PLAY（SN 86177917，注册号 4706514）与 BLUE GOJI（SN 90608015，注册号 8439096）为已注册商标。含义：Goji 一词在美的注册者有主动维权记录，但现有注册覆盖健身娱乐软件/服务，不覆盖操作系统；开源内核与其商品/服务不构成类似，冲突概率低，属『知道有这位积极维权者即可』级别。",
+            "severity": "caution",
+            "source": "https://ttabvue.uspto.gov/ttabvue/v?pno=92079346&pty=CAN&eno=1&mode=frame ；https://ttabvue.uspto.gov/ttabvue/v?pnam=Blue%20Goji,%20LLC%20%20",
+            "title": "Blue Goji 已注册的 GOJI 系列商标（GOJI PLAY、BLUE GOJI）且在 TTAB 有维权活跃记录"
+          },
+          {
+            "detail": "goji.io 是 Go 语言的极简 HTTP 路由/微框架（GitHub zenazn/goji，口号『high in antioxidants』），pkg.go.dev 在册，2019 年后基本停更但仍出现在 Awesome Go 各类清单里；另有 Node.js 模板引擎 jsumners/goji（约 2016 年后沉寂）。两者无商标维权迹象，法律风险≈0；实际影响是开发者社区里『Goji』已有默认指称（Go 路由器），文档/演讲/搜索场景可能出现口头混淆与 SEO 竞争。这与多个 Python 商标跨类共存的先例同理（重名、类别/领域不同、通常无诉），只作背景参照。",
+            "severity": "caution",
+            "source": "https://goji.io ；https://github.com/zenazn/goji ；https://pkg.go.dev/goji.io ；https://github.com/jsumners/goji",
+            "title": "软件圈已有多个同名 Goji 项目（goji.io Go 路由器、Node.js 模板引擎），开源内核将进入同名拥挤区"
+          },
+          {
+            "detail": "伦敦金融科技公司 Goji（原 goji.co.uk，P2P 借贷技术/支付基础设施起家）2022 年 12 月被 Euroclear 收购，现以 goji.investments 运营私募基金数字化白标平台，2024 年 1 月还与 Ocorian 宣布新合作，运营正常。类别为金融服务软件（第 36/42 类），与 OS 内核距离远；但其作为活跃 B2B 软件品牌在用同名，构成商业图景里的一处背景噪音而非风险。",
+            "severity": "info",
+            "source": "https://goji.investments ；https://www.euroclear.com/innovation/en/goji.html",
+            "title": "英国 fintech Goji（Euroclear 旗下）活跃运营，是金融科技方向的同名主体"
+          },
+          {
+            "detail": "Goji Labs（gojilabs.com）是洛杉矶市中心的应用开发/UX 咨询公司，51–200 人，2025 年 9 月刚庆祝成立 10 周年，服务 500+ 客户。它是服务商品牌而非产品名，与开源内核无商品冲突；仅作为『Goji 在软件行业已是多主体共用词』的又一例证。",
+            "severity": "info",
+            "source": "https://gojilabs.com ；https://gojilabs.com/blog/goji-labs-celebrates-10-years-of-global-growth-and-strategic-product-development",
+            "title": "美国洛杉矶软件外包公司 Goji Labs 活跃，软件服务方向同名"
+          },
+          {
+            "detail": "USPTO 检索到的其他 GOJI 记录均非软件/电子平台类：SN 86979882（广告、商业与零售服务类）、RUBY GOJI FARM SN 87243822（农业/食品，2016-11-21 递交）；另有多起枸杞食品类记录及 2009 年食品类 opposition。TTAB 在案文件（76680112 程序证据）显示『goji』一词在浆果商品上被主张为通用词/仅描述性——即食品空间里无人能独占该词。这些与 OS 内核类别距离极大，可视为干净。",
+            "severity": "clean",
+            "source": "https://www.legalhoop.com/trademark/detail/87243822/RUBY-GOJI-FARM ；https://ttabvue.uspto.gov/ttabvue/ttabvue-76680112-EXA-4.pdf ；SN 86979882 经 WebSearch『Goji trademark registered USPTO electronics』命中（索引摘要，无直连 URL）",
+            "title": "食品/农业方向的 GOJI 商标群与『goji 为通用词』判例，对本用途无碍"
+          },
+          {
+            "detail": "检索方式：WebSearch 多组查询（\"GOJI\" trademark EUIPO / European Union trade mark + DSG/Currys/headphones/class 9/042）。命中全部为枸杞食品、化妆品、地理标志类引用（如 EUTM 1325580 加工枸杞、某喜马拉雅枸杞 EUTM 申请被拒的 JSTOR 论文、EUIPO 申诉研究 R 466/2022-5），未见任何第 9 类（电子/软件）或第 42 类的 GOJI 注册指向 Currys/DSG 或软件产品。EUIPO eSearch 为 JS 应用无法被本工具直查，此为零命中结论而非穷尽证明；如需终验可人工过 euipo.europa.eu/eSearch。英国侧同理：检索未见 Currys/DSG 名下 Goji 音频商标的具体注册号（UK IPO 库需交互查询），但品牌在售事实已由 Currys 官网品类页证实。",
+            "severity": "clean",
+            "source": "检索方式：WebSearch \"GOJI\" EUTM / EUIPO / class 9 / 042 多组查询零命中软件类记录（含 https://euipo.europa.eu/tunnel-web/secure/webdav/guest/document_library/contentPdfs/about_euipo/boards_of_appeal/research_reports/Overlap_in_a_weak_or_non-distinctive_element_en.pdf 等周边命中均为食品/化妆品）",
+            "title": "欧盟（EUIPO）面：公开检索未见 GOJI 在第 9/42 类（电子/软件服务）的注册记录"
+          },
+          {
+            "detail": "中国商标网（sbj.cnipa.gov.cn）商标查询为交互式系统，本工具无法直查；WebSearch『GOJI 商标 注册 中国 商标网』仅返回官方入口与流程说明（含 2025-10-20 起旧系统只查不申的公告）、阿里云商标/路标网等聚合站入口，未返回任何具体 GOJI 记录（申请人/号/状态）。评估：枸杞（goji）在中文语境首先是水果通用名，宁夏枸杞为食品类地理标志，通用词汇在软件类被主张宽泛独占的可能性低；但中国第 9 类软件商品上是否存在在先 GOJI 申请无法在本轮排除，开源/对外传播前建议人工过一遍 CNIPA 第 9/42 类检索。",
+            "severity": "info",
+            "source": "https://sbj.cnipa.gov.cn（交互查询未执行，检索方式：WebSearch『GOJI 商标 注册 中国 商标网』零具体记录命中）",
+            "title": "中国大陆商标情况未能网检索实——官方库需交互查询，公开搜索零具体命中"
+          }
+        ],
+        "verdict": "商标面无硬雷：多法域检索未发现任何覆盖操作系统/内核/软件平台的 GOJI 注册商标，非商用开源内核用此名可走；软雷有三处——①英国 Currys 旗下活跃的 Goji 消费电子品牌（耳机/音箱/手机配件，第 9 类，一旦 BerryOS 以 Goji 名义出硬件或移动产品线距离会显著缩短）；②美国 Blue Goji 持有 GOJI 系列注册并在 TTAB 有维权活跃记录（健身软件，当前类别尚远）；③软件圈同名拥挤（goji.io 路由器、Goji Labs 外包、Goji fintech），造成检索与口头指称混淆而非法律风险；中国大陆商标需在开源前人工查 CNIPA 第 9/42 类补一块拼图。"
+      },
+      {
+        "angle": "语言与文化面：Goji 的语言学表现（读音/联想/俚语/文化形象/拼写出错率）",
+        "findings": [
+          {
+            "detail": "Merriam-Webster、Collins、Cambridge 均收录 goji berry，读音 GOH-jee（GOH 押 go，重音在首音节）；另有少数读音变体 \"gow-gee\"（更贴近中文 gǒuqǐ，某浆果商行采用）。双音节、全短元音开音节、无辅音丛，各语种母语者都能近似读出；无任何主流词典标注俚语义。",
+            "severity": "clean",
+            "source": "https://www.merriam-webster.com/dictionary/goji%20berry ; https://www.collinsdictionary.com/us/dictionary/english/goji",
+            "title": "英语读音稳、无歧音：主流词典一致标 /ˈɡoʊ.dʒi/（GOH-jee），双音节易读易记"
+          },
+          {
+            "detail": "实测抓取 UD 词条页：7 条定义全部 0 赞 0 踩（2003–2021 年），其中唯一的\"负面\"条目是 2013 年 \"Goji Squad\"（指北新泽西人，自称 'in no way a complement'），零社区穿透力，可视为死条目；另一条 2009 年直接把 Goji 定义为 'a nickname for Godzilla'；还有 2021 年正面条目（\"like the fruit, a sweet boy/girl\"）。英语世界对 goji 的真实联想就是浆果本体。",
+            "severity": "clean",
+            "source": "https://www.urbandictionary.com/define.php?term=Goji",
+            "title": "英语俚语扫雷零命中：Urban Dictionary 仅存零票冷条目，唯一的\"贬义\"条目（北新泽西人）0 赞 0 踩、2013 年后无任何渗透"
+          },
+          {
+            "detail": "ゴジラ=ゴリラ(猩猩)+クジラ(鲸) 的合成词（Wikipedia/Gojipedia/官方资料一致）。英语粉圈标准缩写体系就是 'Goji' 系（Heisei Goji / Legendary Goji / Minus One Goji，r/GODZILLA 实证），哥斯拉 Fandom 维基站名就叫 Gojipedia；日语 5ch 粉丝同样用 シンゴジ、ゴジマイ。联想色调是喜爱/戏谑正面（怪兽=力量感，对内核反而加分），但在日本 'ゴジ' 会先于枸杞被联想到（日本枸杞读クコ）。注：Toho 商标攻击性属商标维度，此处只记语言联想。",
+            "severity": "caution",
+            "source": "https://en.wikipedia.org/wiki/Godzilla ; https://godzilla.fandom.com/wiki/Godzilla_(1954) ; https://www.reddit.com/r/GODZILLA/comments/15oyjx1/oh_your_a_godzilla_fan_eh_name_every_godzilla ; https://itest.5ch.net/mevius/test/read.cgi/toy/1696350043/l-",
+            "title": "哥斯拉（Gojira）联想强且无害：Goji 是日语和英语粉圈公认的哥斯拉爱称缩写，在日语语境甚至是第一联想"
+          },
+          {
+            "detail": "平假名ごじ的同音词：五時（五点钟，JLPT N5 基础词）、護持（'駄目にならないように大切に守り続けること'——守护维持，语义上恰合内核'守护进程/维持系统运转'的角色，佛教用语如国体護持、護持僧）；五時八教为天台宗判教术语。片假名ゴジ则归入哥斯拉爱称（见上条）。全部中性或正面。",
+            "severity": "clean",
+            "source": "https://jodoshuzensho.jp/daijiten/index.php/%E4%BA%94%E6%99%82%E5%85%AB%E6%95%99 ；另检索 Google「ごじ 五時 護持 意味」命中国语辞典「護持（ごじ）の意味」（Weblio 系）",
+            "title": "日语同音词全部中性偏正：ごじ＝五時（5 点）/護持（守护维持），无脏话无负面俚语"
+          },
+          {
+            "detail": "Namuwiki 同音词表：고지=高地（高地战고지전）/告知（行政法上的通知）/高志（大志）等，均为普通中性词；负面词是派生形容词 고지식（固执不知变通），单独 'goji' 并不携带该义，顶多被韩国开发者拿来调侃'고지식한 스케줄러'（死板的调度器），属可接的玩笑级。另：枸杞在韩语叫 구기자（gugija，汉字枸杞子），贷款式新词写作 고지베리。无任何脏话/猥琐义命中。",
+            "severity": "clean",
+            "source": "https://namu.wiki/w/%EA%B3%A0%EC%A7%80%EC%8B%9D ; https://korean.mercola.com/sites/articles/archive/2017/08/14/%EA%B3%A0%EC%A7%80-%EB%B2%A0%EB%A6%AC-%EA%B5%AC%EA%B8%B0%EC%9E%90.aspx",
+            "title": "韩语고지（goji）同音词全中性：高地/告知/高志，无脏话；仅派生词 고지식（死板）可被轻度玩梗，且枸杞在韩语根本不叫 goji"
+          },
+          {
+            "detail": "百度百科词条「保温杯配枸杞」明确其为网络流行语，完整版 '人到中年不得已，保温杯里泡枸杞'，指中年养生/自嘲式健康管理，衍生段子（'枸杞难挡岁月催，还得往里加当归'）流传极广，新华社也做过科普跟进。项目文档以中文为主，内核名 Goji 必然第一时间触发这个梗：会被善意开涮'养生内核''中年内核'；但 BerryOS 身份支柱恰含'省电'，养生梗可顺势转化为'对电池温柔/低功耗养生'的正向叙事。需要传播口径上主动接梗，而非回避。",
+            "severity": "caution",
+            "source": "https://baike.baidu.com/item/%E4%BF%9D%E6%B8%A9%E6%9D%AF%E9%85%8D%E6%9E%B8%E6%9D%9E/22839301 ; https://www.news.cn/politics/20251210/1018bc5b824447b6be87c9fdd01c0dbb/c.html",
+            "title": "中文语境：枸杞绑定「保温杯里泡枸杞」中年养生自嘲梗——项目主语言里 100% 会被玩梗，需按品牌资产管理"
+          },
+          {
+            "detail": "俄语区 2014–2016 年减肥神果营销轰炸后，'ягоды годжи' 成为过度营销/骗局的代名词：Дзен 视频直接标题《Ягоды годжи или как нас обманули китайцы》（浆果还是中国人怎么骗我们的），otzovik/irecommend 大量 2014–2019 年差评称卖家为 мошенники（骗子），梗义='被吹爆实则无用的东西'。词本身不脏，但俄语受众听到 годжи 第一反应可能是'又一个智商税'。仅在有俄语传播诉求时计入权重。",
+            "severity": "caution",
+            "source": "检索 Yandex/Google「ягоды годжи мем развод скам」（2026-11-06）；Дзен视频 https://www.yandex.com.tr/video/touch/preview/1095714312600754942 ；otzovik/irecommend 评测页命中同一结论",
+            "title": "俄语圈是唯一较硬的负面联想：годжи（goji）已成'超级食物骗局/夸大营销'的代名词（黑红梗）"
+          },
+          {
+            "detail": "Harvard 公卫学院 Nutrition Source「Superfoods or Superhype?」把 goji 列为超级食物营销典型，多项报道指出无证据优于普通水果；法语区有 Test Achats 2018 农药残留检测（14 种残留）与 France Inter 'miracle fruit' 质疑；德语喜剧播客 Sound Memes 用 'Mokka-Soja mit fairtrade Goji-Beeren' 当笑点讽刺小资饮食。全是'时髦健康食物'的刻板印象，无任何脏话或人身攻击义——对内核名属背景噪音，反带'健康/养护'正向底色。",
+            "severity": "info",
+            "source": "https://nutritionsource.hsph.harvard.edu/superfoods ; https://www.lesoir.be/187068/article/2018-10-29/pourquoi-vaut-il-mieux-eviter-de-consommer-les-baies-de-goji ; https://www.fritz.de/programm/podcasts/sound-memes.html",
+            "title": "英法德语境一致：goji=超级食物营销符号，是被温和嘲讽的'养生潮'标签，非脏话非笑柄"
+          },
+          {
+            "detail": "goji.io 自述 'a minimalistic and flexible request multiplexer for Go'，slogan 玩梗 'high in antioxidants'，旧版 github.com/zenazn/goji。开发者看到 Rust 内核叫 Goji 有相当概率第一眼读成 'Go + ji'（Go 语言项目），且搜索 'goji github/framework' 时会先撞它和浆果电商。这属于'会被念歪一层含义'的实际风险：需要命名后主动锚定 'Goji kernel/BerryOS' 关键词。撞名/商标归属本身归其他维度评估。",
+            "severity": "caution",
+            "source": "https://goji.io ; https://github.com/zenazn/goji",
+            "title": "开发者圈误读面：goji.io 是既有 Go 语言微型 web 框架，Rust 内核叫 Goji 会被误读成 Go 系项目并产生搜索撞名"
+          },
+          {
+            "detail": "实查误拼证据：主流误拼只有一个 'gogi'——StreetDirectory 食品专栏明确写 'There is also a misspelling gogi berries'；连锁 Smoothie King 菜单拼成 'Gogi Bowl'；亚马逊评论数据集里 goji/gogi 双 token 并存。gojie/gojee/gojii 检索无显著真实用例（2026-11-06 查）。四字母、发音即拼写，整体出错率低；若做包名/仓库名，注意 gogi 与韩语'烤肉'撞形即可。",
+            "severity": "info",
+            "source": "https://www.streetdirectory.com/food_editorials/health_food/fruits/emperors_new_clothes_tibetan_goji_berries.html ；检索 Google '\"gojee\" OR \"gojie\" OR \"gojii\" goji misspelling'——gojee/gojie 无商业或语料命中",
+            "title": "拼写出错率低：唯一有实证的主流误拼是 gogi（还撞韩语'肉'고기），gojie/gojee 基本无人写"
+          }
+        ],
+        "verdict": "不会被判死刑式笑话、也不会被念歪：英/日/韩/俄/法/德/中七大语种实搜无一处脏话或真实负面俚语命中（无 blocker），读音各语种稳定（英语 GOH-jee）、拼写四字母近零误拼；代价是必然自带三类温和戏谑联想——哥斯拉爱称（日语圈第一联想，正面戏谑）、中文「保温杯泡枸杞」中年养生梗（与省电支柱可正向互文）、俄语圈超级食物骗局黑话（仅俄语受众）——外加开发者圈会被误读成 Go 语言系项目（goji.io 既有框架），均为可控的接梗级风险而非否决级。"
+      },
+      {
+        "angle": "生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）的占位情况",
+        "findings": [
+          {
+            "detail": "goji crate 已被 softprops/goji（github.com/softprops/goji）占用，描述 'Rust interface for Jira'（Jira 客户端）。创建 2016-12-02，最后发版 0.2.4 于 2018-07-22（crate 层面休眠约 8 年，仅 182 近期下载/1.8 万总下载）；仓库层面最后一次 push 2022-09-11，78 星、未 archive。含义：裸名 crate `goji` 拿不到，除非联系作者转让（crates.io 不回收休眠名）；若内核生态 crate 用 goji-os / goji-kernel 等带后缀名则无碍。注意：Rust 的 goji 与 PyPI 的 goji 同源（softprops 版从 kylef 版 fork 而来），包管理器世界里 goji 这个词与 JIRA 工具强关联。",
+            "severity": "caution",
+            "source": "https://crates.io/api/v1/crates/goji；复核 https://github.com/softprops/goji",
+            "title": "最重要项：crates.io 裸名 goji 已被占，但占用者休眠约 8 年"
+          },
+          {
+            "detail": "github.com/goji 是 'Goji community contributions' 组织（2014-05-12 创建，8 个公开仓库，全部 Go 语言），即 zenazn 的 Go 极简 HTTP 路由框架 goji.io。主仓库 goji 973 星，最后更新 2022-07-26，已不活跃但社区和历史影响力仍在——搜索 'goji github' 会先命中它。含义：开源时 GitHub 组织只能用 goji-os / goji-kernel 之类的带后缀名，且 'Goji' 在 Go 圈有既存认知（一个过气的 HTTP 框架），对 Rust 内核项目是轻微噪音而非硬冲突。",
+            "severity": "caution",
+            "source": "https://github.com/goji（组织页）+ gh api orgs/goji 复核",
+            "title": "GitHub 组织 github.com/goji 被 Go 语言 HTTP 框架社区占用，2014 年至今，2022 年后不活跃"
+          },
+          {
+            "detail": "PyPI project goji 已被 Kyle Fuller（kylef，Sourcery 作者）占用，是 JIRA 命令行客户端，最新版 0.6.0 于 2025-03-10 发布——四个包管理器里唯一活跃维护的 goji。含义：BerryOS 若有 Python 工具链组件想叫 goji 不行，需带后缀。对全 Rust 的 BerryOS 影响有限但需知晓。",
+            "severity": "caution",
+            "source": "https://pypi.org/project/goji/",
+            "title": "PyPI goji 已被占且活跃维护中（2025-03 仍在发版）"
+          },
+          {
+            "detail": "npm 包 goji 已被占：'An HTML templating engine inspired by Thymeleaf'（Hapi 的 Node.js 视图引擎，作者 jsumners，github.com/jsumners/goji）。0.1.0 于 2014-12 发布，最新 0.9.1 于 2015-06-09，休眠超 10 年。含义：裸名不可得但占用者已死透，实际冲突极小；仅当未来发 Node 工具（文档站 CLI 等）才相关。npmjs.com 页面直接 fetch 返回 403（反爬），经 registry API 取证。",
+            "severity": "caution",
+            "source": "https://registry.npmjs.org/goji（npmjs.com/package/goji 页面 403 拒抓，改走 registry API）",
+            "title": "npm goji 已被占，2015 年起休眠 10 年余"
+          },
+          {
+            "detail": "goji.io 是 Go 语言 Goji 路由框架的官网（'A minimalistic and flexible request multiplexer for Go'），仍在线（HTTP 200）。含义：与内核同名的理想短域名不可得，等于 GitHub org 被占的延伸；替代位 goji.dev 空置（见下）。",
+            "severity": "caution",
+            "source": "https://goji.io",
+            "title": "goji.io 域名被旧 Go 框架官网占用的额外发现"
+          },
+          {
+            "detail": "github.com/goji-os WebFetch 与 gh api users/goji-os 双路 404——GitHub 无此用户/组织，可注册。附带核验 goji-kernel 亦 404 空置。开源发布时组织名可落。",
+            "severity": "clean",
+            "source": "https://github.com/goji-os（404）+ gh api users/goji-os、users/goji-kernel（均 404 Not Found）",
+            "title": "GitHub 组织名 goji-os 空置，可直接抢占"
+          },
+          {
+            "detail": "crates.io API 查询 goji-os 与 goji-kernel 均 404 Not Found——两个 Rust crate 名都未被注册。结合裸名 goji 被占的情况，Rust 生态可用带后缀名完整落位。",
+            "severity": "clean",
+            "source": "https://crates.io/api/v1/crates/goji-os（404）、https://crates.io/api/v1/crates/goji-kernel（404）",
+            "title": "crates.io 上 goji-os / goji-kernel 相邻名全部空置"
+          },
+          {
+            "detail": "goji.dev 经 Google Registry 权威 RDAP 查询返回 404（未注册），whois.nic.google 无记录。goji-os.org 与 gojikernel.org 经 PIR（.org 注册局）RDAP 查询均 404，whois 明确返回 'Domain not found'。三个域名当前均可按注册价直接注册。取证说明：本地 dig 处于代理 fake-ip 模式（连已知在线的 goji.io 也返回 198.18.x 假地址），故域名判定以注册局 RDAP+whois 为准而非 DNS/curl。",
+            "severity": "clean",
+            "source": "https://www.registry.google/rdap/domain/goji.dev（404）；https://rdap.publicinterestregistry.org/rdap/domain/goji-os.org（404）；https://rdap.publicinterestregistry.org/rdap/domain/gojikernel.org（404）；whois 三域旁证（两 org 域报 Domain not found）",
+            "title": "域名 goji.dev 未注册，可购——这是最值得立刻抢的位"
+          },
+          {
+            "detail": "英文维基 'Goji' 是完整词条（非重定向），内容为枸杞果实（Lycium barbarum / L. chinense，即 wolfberry）：词源（音译自汉语 gǒuqǐ，约 2000 年起进入英语）、食用/药用、宁夏产区（占全球商品产量约 61%）、保健品营销争议与 FDA 警告信。零技术/软件含义——百科层面 'Goji' 是纯植物词，对内核命名无冲突，反而与 BerryOS 的浆果族命名一脉相承。",
+            "severity": "info",
+            "source": "https://en.wikipedia.org/wiki/Goji",
+            "title": "维基百科 Goji 词条 100% 指果实，无任何科技/软件指向"
+          },
+          {
+            "detail": "百度百科检索 'GOJI'：主词条为 2022-06-24 发布的英文枸杞专著《GOJI》（国家枸杞工程技术研究中心编撰）；另有英文版子站 'Goji berry' 植物词条与'枸杞莓'词条（讲 21 世纪初 Goji Berry 作为 superfood 在海外走红）。中文世界里 GOJI 一词零科技歧义，全部指向枸杞植物与产业——对以中文文档为主的 BerryOS 是中性偏好。百度百科直接 fetch 返回 403（反爬），经 WebSearch 侧证取得词条 URL。",
+            "severity": "info",
+            "source": "https://baike.baidu.com/item/GOJI/61589978（直接 fetch 403，经 WebSearch「百度百科 goji 枸杞 英文 词条」侧证）",
+            "title": "百度百科 GOJI 词条指向枸杞产业专著与植物本体"
+          }
+        ],
+        "verdict": "无 blocker：裸名 goji 在 crates.io/GitHub org/PyPI/npm/goji.io 五处均已被占（占用者几乎全是休眠旧项目，仅 PyPI 的 JIRA CLI 在 2025-03 仍活跃发版），但关键替代位——GitHub org goji-os、crate goji-os/goji-kernel、域名 goji.dev/goji-os.org/gojikernel.org——经注册局 RDAP+whois+API 直查全部空置可抢；开源发布用带后缀主名即可完整落位，裸名 goji 的 crate 拿不到是唯一实质代价。"
+      },
+      {
+        "angle": "先例与策略面：水果/自然名科技产品的先例、商标教训与 Goji 配 BerryOS 的品牌一致性",
+        "findings": [
+          {
+            "detail": "创始人 Eben Upton 原话：'Raspberry is a reference to a fruit-naming tradition in the old days of microcomputers'（致敬 Apple、Tangerine、Apricot、Acorn）；'Pi' 原拼 'Py'，指只跑 Python 的原始设计，后改数学常数 π 的拼法。取名逻辑是「短、具体、有传承、有故事」，与树莓的功能属性毫无关系——这证明自然名成立的关键不在「名字说明了什么」，而在好念好记、自带视觉形象（红色小果子=低成本 logo/吉祥物）、降低教育/极客项目的距离感。Goji 完全复用这套逻辑：枸杞红、两音节、中英双通。",
+            "severity": "clean",
+            "source": "https://www.howtogeek.com/786795/why-is-it-called-the-raspberry-pi ; https://opensource.com/article/18/3/how-11-open-source-projects-got-their-names",
+            "title": "Raspberry Pi 先例：水果名是微机行业明文传统，名字与水果本身无关反而成立"
+          },
+          {
+            "detail": "1998 年 Lexicon 命名：QWERTY 小圆键像浆果籽；先考虑 Strawberry，创始人嫌元音拖沓 'too slow-sounding'，BlackBerry 从约 40 个候选中胜出（反直觉教训：名字的「音感」比语义更重要，Goji 两音节干脆利落）。鼎盛期公众把一切无线邮件机叫 'blackberry'，一度逼近商标通用化（genericide），Forbes 称其是靠失去市场支配才退回普通品牌——'success by failure'。硬件已死（2016 品牌授权 TCL、2020 后停产、5G 复活失败），但 BlackBerry Limited 转型软件/IoT，商标组合至今活跃经营授权。教训：名字的命运独立于产品的命运，自然名商标是可持续资产；通用化是巨头才配担心的「幸福的问题」，初创内核项目不必理会。",
+            "severity": "info",
+            "source": "https://www.lexiconbranding.com/case-studies/tech-names-research-in-motion-blackberry ; https://www.forbes.com/sites/jesscollen/2013/09/23/the-trademark-dilemma-how-blackberry-in-its-prime-found-success-by-failure ; https://www.blackberry.com/en/legal/trademarks",
+            "title": "BlackBerry 先例：自然名可以比产品活得久——品牌因产品而亡、商标仍在经营"
+          },
+          {
+            "detail": "披头士 Apple Corps 与 Apple Computer 三度和解：1981 年 8 万美元、1991 年 2650 万美元、2007 年 5 亿美元买断全部 Apple 商标。战火之所以烧 30 年，是因为 Apple Computer 后来做起了音乐（iTunes），双方市场重叠才引爆。对 Goji 的映射：现有 Goji 持有者（金融科技/消费电子代工牌/开发工具）与开源内核市场均不重叠，跨类撞名风险低；该提前做的只有软件相关类别（尼斯第 9 类软件、第 42 类软件服务）的商标清查与自有辖区注册，不必做跨行业防御性广撒网。",
+            "severity": "info",
+            "source": "https://en.wikipedia.org/wiki/Apple_Corps_v_Apple_Computer",
+            "title": "Apple Corps 商标战（一句带过）：水果名战争只在双方市场互相长入时爆发"
+          },
+          {
+            "detail": "浏览器原名 Phoenix，被 BIOS 厂商 Phoenix Technologies 商标主张逼改；改名 Firebird 又撞上同名开源数据库项目引发社区纠纷；最终 Firefox（红熊猫俗名）因在浏览器生态内足够独特而稳定 20 年。映射到 Goji：选名时必须清查「内核/OS/Rust/嵌入式」这一自己生态内的占用，确保从第一天就独特，避免中途改名带来的文档、链接、品牌资产损耗——这是自然名策略里唯一真正致命的坑，其余都可修复。",
+            "severity": "caution",
+            "source": "https://en.wikipedia.org/wiki/Firefox ; http://kb.mozillazine.org/Former_product_names",
+            "title": "Firefox 教训：自然名在开发者生态内撞车，两年被迫改名两次（Phoenix→Firebird→Firefox）"
+          },
+          {
+            "detail": "① Go 语言生态：goji/goji HTTP 路由器（原作者 zenazn 的旧框架已被社区版本取代），README tagline 就是 'high in antioxidants'——反证果味梗在开发者品牌里读得通，但也意味着 Go 社区对 'Goji' 已有认知占位；② Rust 生态：crates.io 上 `goji` 已被占用（softprops 的 Jira 客户端，v0.2.4，2018-07-22 后未更新，累计下载 1.8 万、近期下载仅约 182/月，长期休眠）——经 crates.io API 实测；若内核未来以 crate 形式发布需改名（如 goji-kernel），且搜索 'goji rust' 会先命中 Jira 库；③ Goji Electronics（英国 Currys 自有消费电子品牌，商标类别离硬件最近的既有权利人）；④ Goji 金融科技（Euroclear 旗下私募基金数字化平台）。检索 'goji kernel/OS/operating system'：内核/OS 品类零命中，无人占坑。结论：无 blocker，发布前做一次目标类别商标清查 + crate 名规划即可。",
+            "severity": "caution",
+            "source": "https://github.com/goji/goji ; https://crates.io/crates/goji (经 crates.io API 实测: 2018-07-22 最后更新, v0.2.4) ; https://en.wikipedia.org/wiki/Goji_Electronics ; https://www.euroclear.com/innovation/en/goji.html",
+            "title": "「Goji」在科技界已有先占：内核/OS 品类无人使用，但开发者命名空间相当拥挤"
+          },
+          {
+            "detail": "任务前提「枸杞严格说不是 berry」经实测证伪：Lycium barbarum 属茄科（Solanaceae，与番茄同科），维基物种条目原文 'The fruit of L. barbarum, the main variety of goji berry, is a bright orange-red, ellipsoid berry'；Flora of Australia 第 29 卷（茄科专卷）对 Lycium 所在族的描述为 'Fruit a berry or drupe'。而植物学上草莓是假果、树莓/黑莓是聚合果，统统不是 true berry——即 BerryOS 若叫「莓」，Goji 反而是全家唯一的植物学真浆果，恰好坐镇内核（最里层最「真」），这是可写进 README 的极客彩蛋，与「香蕉是浆果而草莓不是」同款冷知识气质。英文侧 'goji berry' 自 2000 年前后即为标准俗名（goji 为汉语 gǒuqǐ 音译），英文读者会自动把 Goji 归入 berry 家族，品牌一致性双向无碍，另附赠中文文化桥接叙事。",
+            "severity": "clean",
+            "source": "https://en.wikipedia.org/wiki/Lycium_barbarum (原文: 'is a bright orange-red, ellipsoid berry') ; https://en.wikipedia.org/wiki/Goji ; Flora of Australia Vol.29 Solanaceae(检索 'Lycium barbarum fruit a berry flora' 命中: 'Fruit a berry or drupe')",
+            "title": "植物学事实核查推翻任务前提：枸杞恰恰是「真浆果」，raspberry/blackberry 反而不是——加分项"
+          },
+          {
+            "detail": "利：具体名词好记好念（BlackBerry 案例：音感优先于语义）、自带吉祥物与视觉资产（Linux Foundation 博客：mascot 是叙事装置与社区认同载体）、降低开源项目距离感，Python（Monty Python）/Raspberry Pi/Firefox（红熊猫）均为自然名登顶案例；家族谱系命名（OS=莓属、内核=具体品种）与 Red Hat/Fedora 同构，还为未来组件预留命名空间（cranberry/blueberry…）。弊：商标显著性弱于造词（Firefox 两次被逼改名）、命名空间拥挤（goji 在 Go/Rust 已有先占）、初期搜索区分度低（'goji' 四字母独特词、且无内核同名人，此弊较轻）。综合：利显著大于弊，弊均可通过提前清查规避。",
+            "severity": "info",
+            "source": "https://www.linuxfoundation.org/blog/open-source-symbolism-exploring-the-stories-behind-linux-foundation-project-mascots-and-logos ; https://opensource.com/article/18/3/how-11-open-source-projects-got-their-names",
+            "title": "自然名在开发者生态的传播利弊综合：具象、有故事、社区亲和 vs 显著性弱、命名空间拥挤"
+          }
+        ],
+        "verdict": "从传播学看 Goji 是好名：两音节四字母、中英双通（gǒuqǐ 音译）、自动挂靠 berry 家族，且植物学上是莓家族唯一的「真浆果」坐镇内核（可讲的故事），内核/OS 品类零先例——无 blocker；唯二 caution 是开发者相邻命名空间先占（Go 的 goji 框架、Rust crates.io 的 goji crate）与软件类商标提前清查，均属可控注意事项而非放弃理由。"
+      }
+    ],
+    "flagged": [
+      {
+        "detail": "两代同源项目：zenazn/goji（\"minimalistic web framework for Golang... high in antioxidants\"，3,644 星，2020-10-27 后停更）与社区后继 goji/goji（973 星、66 fork，最后 push 2022-07-26，未归档）。pkg.go.dev 显示 goji.io 模块被 720 个包 import，v2.0.2 发布于 2019-01-26、最高 tag 已到 v3。它是 HTTP 路由器/中间件库，领域与 OS 内核相距甚远（没人会把路由器和内核认错），但知名度足以让『goji + 编程/开发』类搜索首屏被它占据，开源传播时内核的 SEO 会被稀释。休眠 4 年但从未宣布死亡。",
+        "severity": "caution",
+        "source": "https://github.com/goji/goji（经 https://api.github.com/repos/goji/goji 实测 973★/pushed 2022-07-26）；https://pkg.go.dev/goji.io；https://goji.io",
+        "title": "最大的占名者是 Go 语言 Web 框架 Goji：两仓库合计约 4,600 星但已休眠，与内核领域距离远、混淆低但占搜索结果",
+        "angle": "软件撞名面",
+        "holds": true,
+        "recheck": "反驳失败，断言事实核心全部独立复核命中，且定性方向也成立。逐项查证（2026-11-06 实测）：(1) GitHub API https://api.github.com/repos/zenazn/goji → stargazers_count=3644、pushed_at=2020-10-27T15:42:27Z、archived=false、描述确为 \"minimalistic web framework for Golang... high in antioxidants\"，与断言逐字吻合；(2) https://api.github.com/repos/goji/goji → 973★、forks=66、pushed_at=2022-07-26T04:51:22Z、未归档，逐项命中；3644+973=4617≈\"合计约4,600星\"成立；(3) https://pkg.go.dev/goji.io → \"Imported by: 720\"、v2.0.2+incompatible Published Jan 26, 2019、页面明示 \"The highest tagged major version is v3\"，三数字全中；仓库 tag 实测（https://api.github.com/repos/goji/goji/tags）含 v3.0.0，且 Go module proxy（https://proxy.golang.org/goji.io/@latest）@latest 仍停 v2.0.2+incompatible（2019-01-26）——「休眠4年但从未宣布死亡」准确：距最后 push 4.3 年、无归档、无死亡声明；(4) https://goji.io 仍在线且为该框架主页，属 HTTP request multiplexer，与 OS 内核领域距离确实远；(5) WebSearch \"goji github project library\" 首屏即 goji/goji 与 zenazn/goji，其他同名技术项目（sourcenetwork/goji JS互操作库、Gamified ObJect-based Interpreter、goji-boilerplate）体量均远小，「最大技术占名者」在 GitHub 语境下成立；(6) WebSearch \"goji operating system kernel\" 零命中同名内核/OS——命名空间内无内核前占者，反向印证混淆低。唯一可打的折扣：实测 \"goji programming development\" 搜索首屏被 Goji Labs（洛杉矶软件开发代理商，gojilabs.com，Clutch 91 评价）占据而非该框架——即开发向搜索首屏确被占，但占据者不总是这个框架，SEO 稀释风险实际比断言所述还略重（技术圈叫 Goji 的不止一家）。此为措辞级 nuance，不动摇断言成立。结论：数字全对、休眠状态属实、领域距离与混淆低判断正确、SEO 稀释方向成立——作为 caution 级风险断言成立，不可反驳为 blocker 或无碍。来源：https://api.github.com/repos/zenazn/goji 、https://api.github.com/repos/goji/goji 、https://api.github.com/repos/goji/goji/tags 、https://pkg.go.dev/goji.io 、https://proxy.golang.org/goji.io/@latest 、https://goji.io 、https://gojilabs.com"
+      },
+      {
+        "detail": "传闻『goji.io 域名项目』属实：goji.io 是 Go 框架官网（『A minimalistic and flexible request multiplexer for Go』），域名无法为本内核所用。GitHub 组织名 goji（ID 7555056，2014-05-12 注册，8 个仓库，bio『Goji community contributions』）也被该框架社区占用——若 BerryOS 开源后想用 github.com/goji 作为内核组织名，已不可能，只能用 berryos/goji 之类嵌套路径。",
+        "severity": "caution",
+        "source": "https://goji.io（WebFetch 实测）；https://api.github.com/users/goji（type: Organization）",
+        "title": "命名空间硬资源已被占：goji.io 域名与 GitHub org『goji』（2014 年注册）都归 Go 框架所有",
+        "angle": "软件撞名面",
+        "holds": true,
+        "recheck": "反驳失败，断言完全成立。(1) goji.io 域名：WebFetch 实测（2026-11-06，https://goji.io）确认其为 Go 语言 HTTP request multiplexer 框架官网，副标题逐字为 \"A minimalistic and flexible request multiplexer for Go\"，安装方式 `go get goji.io`——域名直接充当 Go module import path，是框架硬依赖标识，无法为 Rust 内核所用。(2) GitHub org：API 实测（https://api.github.com/users/goji）返回 login=goji, id=7555056, type=Organization, name=\"Goji\", bio=\"Goji community contributions\", created_at=2014-05-12T07:45:47Z, public_repos=8, blog=https://goji.io——断言中 ID、注册日期、仓库数、bio、组织类型五个细节全部逐字吻合，零偏差。(3) 佐证：WebSearch 确认 github.com/goji/goji 为该框架现行 canonical 仓库，zenazn/goji 为已被其取代的原始仓库。对抗角度逐一尝试均不成立：领域距离（Go web 框架 vs Rust OS 内核）不影响硬资源占用这一客观事实；来源不过时（域名今仍在线、org 今仍存在且为 Organization 类型）；无夸大（裸 org 名 github.com/goji 确实不可得，只能用 berryos/goji 嵌套路径）。唯一 severity 校准 nuance（info 级）：该框架属小众项目（org 仅 9 followers，前身仓库已标 superseded），但不改变硬资源已被占用的事实。结论：断言成立，severity 定为 caution——硬资源占用属实但均有变通（嵌套路径 org + 非 goji.io 域名），不构成必须放弃此名的 blocker。来源：https://goji.io ；https://api.github.com/users/goji ；https://github.com/goji/goji ；https://github.com/zenazn/goji"
+      },
+      {
+        "detail": "精确名 goji 已被 softprops/goji（『Rust interface for Jira』）注册：0.2.4 版、7 个版本、总下载 17,992，最后更新 2018-07-22，休眠 8 年。值得注意的是其活跃后继已改用拼音名 gouqi（wunderfrucht/gouqi，0.20.0，2025-10-21 仍更新，30.5 万下载），说明原作者阵营已主动弃用 goji 之名——生态存量使用者极少。但 crates.io 不允许重名发布，若未来想把内核或其组件以 crate 名 goji 发布，只能走 crates.io 的弃置接管流程或换名（如 goji-kernel）。同域近名还有 wp_goji_patch（同仓库补丁分支，2020 年停）与 gojira（游戏引擎，2025 年新作，非同族）。",
+        "severity": "caution",
+        "source": "https://crates.io/api/v1/crates/goji 与 https://crates.io/api/v1/crates?q=goji（WebFetch 实测）",
+        "title": "crates.io 上精确名 goji 已被注册：休眠 8 年的 Jira 客户端，而 BerryOS 内核正是 Rust 生态——这是本维度里最『贴身』的撞名",
+        "angle": "软件撞名面",
+        "holds": true,
+        "recheck": "核心事实全部独立复现成立，反驳失败，但断言有两处细节需修正（均不削弱风险本体）。【已证实部分】(1) crates.io API (https://crates.io/api/v1/crates/goji) 实测：goji 精确名已注册（exact_match=true），softprops/goji \"Rust interface for Jira\"，最新版 0.2.4、共 7 个版本、总下载 17,992、updated_at 2018-07-22——与断言逐项一致；GitHub 仓库 (https://github.com/softprops/goji) 143 commits、README 署名止于 2018（Doug Tangren 2016-2018），休眠 8 年属实。(2) 同域近名搜索 (https://crates.io/api/v1/crates?q=goji)：wp_goji_patch（指向 softprops/goji 的补丁分支，2020-12-29 停）、gouqi（0.20.0，2025-10-21 更新，总下载 304,915≈30.5 万，近期下载 23.4 万 vs goji 近期仅 182——Jira 客户端生态已实质迁移）、gojira（游戏引擎，0.1.1，2025-04-02，与 Jira 无关）——全部与断言吻合。(3) crates.io 名称先到先得、重名不可发布属实 (https://crates.io/policies)。【修正一：gouqi 非\"原作者阵营\"】gouqi (https://crates.io/api/v1/crates/gouqi) 全部 23 个版本由 avrabe（Ralf Anton Beier）发布，仓库归 wunderfrucht/gouqi，是第三方社区 fork/重写；softprops/goji 仓库内亦无指向后继的说明。准确表述应为\"社区后继已改用拼音名 gouqi\"，\"原作者阵营主动弃用\"查无实据——但这不推翻结论，反而佐证 goji 之名在 Jira 语义下已实质废弃、存量使用者极少。【修正二：\"弃置接管流程\"不存在且比断言更难】RFC 3646 (https://rust-lang.github.io/rfcs/3646-remove-crate-transfer-mediation-policy.html，2024-05 起) 已移除 crates.io 团队的所有权转让调解：联系不上所有者时\"Any requests to the crates.io team to mediate will be declined\"，唯一路径是 softprops 本人同意添加 owner，否则只能换名（如 goji-kernel）——即名字占用比断言描述的更硬，该偏差方向上加重而非削弱风险。【量级】对 BerryOS 而言这是 caution 级而非 blocker 级：仅约束\"未来以 crate 精确名 goji 发布内核/组件\"这一路径，项目名/内核代号本身不受 crates.io 管辖；断言的严重度定位合理。"
+      },
+      {
+        "detail": "Currys（原 Dixons Carphone）官网存在活的 GOJI 品类页：https://www.currys.co.uk/tv-and-audio/headphones/headphones/goji ，并有无线/降噪/白色/黑色等子品类页（搜索索引 2026-11-06 仍收录在售型号如 GSHOKBT18）。Wikipedia《Goji Electronics》条目：品牌 2011 年 12 月创立于 Hemel Hempstead，股份由 Currys plc、说唱歌手 Tinchy Stryder（Kwasi Danquah III）与 Lord Kalms 持有，产品线除耳机/音频外还包括平板/手机配件、笔记本内胆包，至今仍在 Currys plc 品牌导航模板中（页面挂 2025-09 需更新横幅）。注意：直接抓取 currys.co.uk 被 403 拒（反爬），现状依据为搜索索引在售页 + Wikipedia。风险面：这是全球曝光度最高的 Goji 商业品牌，属尼斯第 9 类（电子硬件），与操作系统内核商品类别距离远、无诉之虞；但 BerryOS v1 主战场是移动设备→PC，若未来以 Goji 名义出硬件或移动产品线，将与 Currys 在售的 Goji 手机/平板配件明显贴近，届时需重新评估。",
+        "severity": "caution",
+        "source": "https://www.currys.co.uk/tv-and-audio/headphones/headphones/goji ；https://en.wikipedia.org/wiki/Goji_Electronics",
+        "title": "英国 Currys 旗下 Goji 消费电子品牌仍然活跃，且产品线含手机/平板配件——与移动设备 OS 场景有贴近风险",
+        "angle": "商标与商业面（Goji 候选名评估）",
+        "holds": true,
+        "recheck": "对抗复核失败，断言成立且各事实腿均经 2026-11-06 实搜独立查证：\n\n1) 品牌活跃——直证。用服务端 reader 直接抓取断言所引品类页 https://www.currys.co.uk/tv-and-audio/headphones/headphones/goji 返回完整在售页：12 款 GOJI 耳机可加购（GTCBTNC24/GTCNCPM21/GKDTWSW24/GLITVBT18/GMNTWS25/GTSTWSW25/GTCNCTW22/GSKTWS25/GKIDBTB25 等），SKU 年缀 21/22/24/25 显示逐年续新至 2025 型号年；另一品类页 https://www.currys.co.uk/computing/computer-accessories/tablet-cases-and-keyboards/goji/tablet-cases 同样直抓成功：17 款 GOJI 平板保护壳在售。Currys Business 侧 GSHOKBT18 在目录有活条目（business.currys.co.uk/catalogue/tv-entertainment/headphones/goji-gshokbt18-wireless-bluetooth-headphones-black-green/N228771W，直抓 403 但搜索索引收录）。Wikipedia Currys plc 导航模板 Template:Currys_plc 现列 Goji 为现役品牌，公司官网 Our Brands 页（currysplc.com/our-brands/）为其引源；Goji Electronics 条目（en.wikipedia.org/wiki/Goji_Electronics）最后编辑 2026-06-15，股东 Currys plc/Tinchy Stryder/Lord Kalms（Kalms 2025-03 去世）、2011-12 创立于 Hemel Hempstead 等断言细节逐条属实。\n\n2) 手机/平板配件为现役产品线而非陈迹——直证加强。平板壳页在售型号含 iPad Pro (M4) 2024 适配款（GIPO13SK25/GIPP13BK25）、iPad Air 11\" 套装（GIPA12SK25）、儿童平板壳（G10UKCPK25/G8UKCGN25/G10ZOODG25）、Galaxy Tab A9+ 兼容项；搜索索引另见 GOJI Laptop Sleeves 品类页带 26 年缀型号（G14PLSLNV26R/G14WPSLBK26R/G15PFSLRD26）＝2026 型号年仍在出新品。这击破最强反驳角度（\"配件线只是 2012 历史\"）。\n\n3) 断言所记 currys.co.uk 直抓 403 属反爬——复现（WebFetch 对 www 与 business 子域均 403），但页面经服务端 reader 可达且内容为当前在售目录，403 不构成\"页面死链/品牌停摆\"证据。\n\n4) 风险框定评估：断言自带 caution 级定性（品类距离远、内核/OS 场景当前无诉讼之虞；若以 Goji 名义出硬件/移动产品需重估）经查证准确甚至偏保守——现役平板配件线强化贴近点。唯一细微保留：现役目录中\"手机配件\"直接证据弱于平板/iPad 壳与笔记本内胆包（智能手机壳仅见于 Wikipedia 对早期产品的记述），不构成对断言的推翻。\n\n结论：品牌在售、移动设备配件线现役两点均为当日直证，断言成立（holds=true），维持 caution 级定性。来源：currys.co.uk GOJI headphones/tablet-cases 品类页（直抓）、business.currys.co.uk GSHOKBT18 条目、en.wikipedia.org/wiki/Goji_Electronics、en.wikipedia.org/wiki/Currys（Template:Currys_plc）、currysplc.com/our-brands/、uk.news.yahoo.com/currys-pc-world-sign-tinchy-stryder-face-goji-114022865.html。"
+      },
+      {
+        "detail": "美国奥斯汀健身游戏公司 Blue Goji LLC（Guitar Hero 联创 Charles Huang 创办）2021-03-28 递交 GOJI 文字商标申请（Serial 90608024），类别为第 9 类 Computer Product & Electrical & Scientific Products；Justia 索引页显示其状态为 641 Non-Final Action Mailed（审查员首次驳回待答复，第三方索引可能滞后）。取证限制：TSDR 的 JSON 端点（tsdr.uspto.gov/ts/cd/casedocs/sn90608024/info.json 与 /statusinfo/sn90608024.json）均返回 404，Justia/LegalHoop 页面直抓 403，状态以搜索结果摘要为准。即使最终注册，其商品描述面向健身/游戏软件与设备，与 OS 内核类别尚有距离。",
+        "severity": "caution",
+        "source": "https://trademarks.justia.com/906/08/goji-90608024.html ；https://www.legalhoop.com/trademark/detail/90608024/GOJI（两站直抓 403，经 WebSearch 摘要取证）",
+        "title": "Blue Goji LLC 在美申请 GOJI 独立文字商标（SN 90608024，第 9 类），截至索引时点尚未注册成功",
+        "angle": "商标与商业面（Goji 候选名评估）",
+        "holds": true,
+        "recheck": "对抗复核结论：断言核心成立（holds=true），但两处细节需修正——一处削弱风险面，一处反而加重。已核事实：(1) 申请真实存在——GOJI，SN 90608024，申请人 Blue Goji LLC（Austin, TX），2021-03-28 提交，覆盖 5 类（9/28/41/42/44），第 9 类商品为\"可下载或录制计算机游戏软件；健身软件；健康追踪软件；健康功能评估软件\"（Justia 页实抓：https://trademarks.justia.com/906/08/goji-90608024.html ；Trademarkia 页实抓：https://www.trademarkia.com/goji-90608024 ）。(2) \"尚未注册\"成立——Trademarkia 实时页显示 Status=Live/Pending、Registered On=N/A、Registration Number=N/A，最近状态为 2025-05-12 \"FIRST EXTENSION - GRANTED\"（SOU 首次延期获批），申请基础为 intent-to-use、尚未商业使用；今日（2026-11-06）未检索到任何其已注册的证据，Justia 拥有者页（https://trademarks.justia.com/owners/blue-goji-llc-3307027 ）也仅列 2013 年 BLUE GOJI（SN 85971123）等注册商标而未列此件。(3) 取证限制复现——TSDR JSON 端点 curl 实测 404（tsdr.uspto.gov/ts/cd/casedocs/sn90608024/info.json 与 statusinfo.json），Justia/Trademarkia 直抓 403，与断言所述一致。需修正的两点：A.（削弱面）断言称\"独立文字商标\"不准确——Justia 页 Mark Drawing 3000 + 设计检索码 260102/260108 + 声明蓝色为特征，该标记实为字母 G-O-J-I 圆形排列的stylized 设计标记（组合/图形性质，非纯文字商标），且 Trademarkia 标注 Mark Type=Service Mark；纯文字 \"Goji\" 内核名与该圆形图形标记整体差异明显，保护范围窄于纯文字注册。B.（加重面）Justia 的 \"641 Non-Final Action Mailed\" 是 2021-11 的陈旧快照——实际进程已推进：2024-09-10 核准公示（Approved for Pub - Principal Register）、2024-10-15 公告异议期（Published for Opposition）、2024-11-26 NOA 下发、2025-05-12 SOU 延期获批，即已过关异议期（TTABVUE 无针对 90608024 的异议案；Valve v. Blue Goji 案 91299609 系争 CARDIO PORTALS SN 98275626，与 GOJI 无关，https://ttabvue.uspto.gov/ttabvue/v?pno=91299609 ），距注册仅差一份使用声明。风险面综合：Blue Goji 另有已注册 BLUE GOJI 文字系商标（SN 85971123，2013 年申请，第 9 类移动健身软件），且有对 goji 近似名的 TTAB 维权实绩（2022-03 对 Gojji, Inc. 提撤销 92079346，2025-09-09 终结；https://ttabvue.uspto.gov/ttabvue/v?pno=92079346 ），维权意愿真实。定级：caution（可用但要注意）——商品领域（健身/游戏/健康软件）与操作系统内核距离显著，且本案为图形性质标记未注册；但权利人持有含 GOJI 主导词的已注册商标且好诉，若未来开源传播与商业化（尤其软件类商品语境）使用 \"Goji\" 名，存在异议/撤销与混淆主张的现实风险。"
+      },
+      {
+        "detail": "USPTO TTABVUE 按当事人检索可见多起 Blue Goji, LLC 参与的程序，包括撤销程序 No. 92079346（pno=92079346, pty=CAN）；其 GOJI GEOTAINMENT 申请（SN 90419171/90480703）也在案。TTAB 在案记录另显示其 GOJI PLAY（SN 86177917，注册号 4706514）与 BLUE GOJI（SN 90608015，注册号 8439096）为已注册商标。含义：Goji 一词在美的注册者有主动维权记录，但现有注册覆盖健身娱乐软件/服务，不覆盖操作系统；开源内核与其商品/服务不构成类似，冲突概率低，属『知道有这位积极维权者即可』级别。",
+        "severity": "caution",
+        "source": "https://ttabvue.uspto.gov/ttabvue/v?pno=92079346&pty=CAN&eno=1&mode=frame ；https://ttabvue.uspto.gov/ttabvue/v?pnam=Blue%20Goji,%20LLC%20%20",
+        "title": "Blue Goji 已注册的 GOJI 系列商标（GOJI PLAY、BLUE GOJI）且在 TTAB 有维权活跃记录",
+        "angle": "商标与商业面（Goji 候选名评估）",
+        "holds": true,
+        "recheck": "复核成立（反驳失败），但断言有两处事实错误和一处时效过时，均经 TTABVUE 官方一手数据核验（2026-11-06 实抓）。【证实部分】(1) TTABVUE 按当事人检索 \"Blue Goji\" 命中 9 条程序记录（https://ttabvue.uspto.gov/ttabvue/v?pnam=Blue+Goji）；(2) 撤销程序 92079346 确实存在且 Blue Goji, LLC 是 Petitioner（原告）：Blue Goji, LLC v. Gojji, Inc.，2022-03-26 立案，申请撤销 Gojji 的 GOJJI 注册 6007893/6007896，理由 Section 2(d) 混淆可能（程序页 https://ttabvue.uspto.gov/ttabvue/v?pno=92079346&pty=CAN；申请书全文 https://ttabvue.uspto.gov/ttabvue/ttabvue-92079346-CAN-1.pdf）；(3) GOJI PLAY 确为在册注册：SN 86177917 / R# 4706514，状态 SECTION 8-ACCEPTED，Class 009「下载型移动/平板健身目标设定与活动追踪应用」+ Class 028；(4) Blue Goji 名下另有 BLUE GOJI（SN 85971123/R# 4728263，REGISTERED AND RENEWED）、BLUE GOJI（SN 90728609/R# 8439105）、裸词 GOJI×2（SN 90608015/R# 8439096、SN 90608024/R# 8439097，均 REGISTERED）、GOJIGO 5065741、GOJITATE 5271835、GOJIVERSE 5556118、GOJICARE 5904055——「GOJI 系列商标组合」名副其实。【修正一（归属错误）】GOJI GEOTAINMENT（SN 90419171/90480703）不是 Blue Goji 的申请，而是 Gotham Studios, Inc. 的申请；Blue Goji 仅以潜在异议方身份两度申请延长异议时限（TTABVUE 程序类型 EXT，https://ttabvue.uspto.gov/ttabvue/v?pno=90419171&pty=EXT），未升级为正式异议，该商标最终照常注册为 R# 6704023。【修正二（号名配对错误）】SN 90608015/R# 8439096 官方记录对应商标是裸词 GOJI 而非 BLUE GOJI——实际事实比断言更强：Blue Goji 持有裸词 GOJI 的两项在册注册。【修正三（时效）】断言所引的 92079346 已于 2025-09-09 终结（Terminated）：Blue Goji 2025-09-04 撤回撤销请求，Board 裁定 CAN DENIED W/PREJ，撤销失败、Gojji 保住注册；其 2024-12（GGVERSE，79362840）与 2025-07（CYBERCASE，98932695）两次 EXT 也均终止且对方商标照常注册（R# 7699626 / 8370655）。截至 2026-11-06，Blue Goji 无任何未决的主动维权程序，仅作为被告在 Valve Corporation 的异议 91299609（CARDIO PORTALS，2025-05 立案，https://www.plainsite.org/dockets/6fn2igjcx/uspto-trademark-trial-and-appeal-board/valve-corporation-v-blue-goji-llc）中应诉。【风险评估核验】断言的定性方向正确：已核验的 6 项 Blue Goji 注册商品/服务全部限于健身健康娱乐（Class 009 健身应用、028 器材、041 娱乐激励、042 健康 PAAS、044），无一覆盖操作系统，与开源内核的商品/服务类似度低；且其唯一一次正式维权以失败告终，实际维权效力弱于断言的「积极维权」画像。结论：caution 级定级恰当——知道有这位 GOJI 字眼的活跃监控者即可，其正式注册与维权记录均不构成对操作系统内核命名的直接障碍；裸词 GOJI 注册（8439096/8439097）的具体类别未逐条核验（检索渠道均被反爬），但同族申请均为健身健康方向。"
+      },
+      {
+        "detail": "goji.io 是 Go 语言的极简 HTTP 路由/微框架（GitHub zenazn/goji，口号『high in antioxidants』），pkg.go.dev 在册，2019 年后基本停更但仍出现在 Awesome Go 各类清单里；另有 Node.js 模板引擎 jsumners/goji（约 2016 年后沉寂）。两者无商标维权迹象，法律风险≈0；实际影响是开发者社区里『Goji』已有默认指称（Go 路由器），文档/演讲/搜索场景可能出现口头混淆与 SEO 竞争。这与多个 Python 商标跨类共存的先例同理（重名、类别/领域不同、通常无诉），只作背景参照。",
+        "severity": "caution",
+        "source": "https://goji.io ；https://github.com/zenazn/goji ；https://pkg.go.dev/goji.io ；https://github.com/jsumners/goji",
+        "title": "软件圈已有多个同名 Goji 项目（goji.io Go 路由器、Node.js 模板引擎），开源内核将进入同名拥挤区",
+        "angle": "商标与商业面（Goji 候选名评估）",
+        "holds": true,
+        "recheck": "对抗复核失败，断言成立（caution 级，定级恰当）。逐点实查：(1) goji.io 确为 Go 极简 HTTP 路由/复用器，zenazn/goji README 原口号 \"high in antioxidants\"，3.6k stars（https://goji.io；https://github.com/zenazn/goji）；(2) pkg.go.dev 在册 module goji.io（v2.0.2+incompatible 发布 2019-01-26，最高 v3，720 包导入），现仓库 github.com/goji/goji 973 stars、README 仍引早已停服的 Travis CI，2026 年视角明确休眠——「2019 后基本停更」与实况相符（https://pkg.go.dev/goji.io；https://github.com/goji/goji）；(3) Awesome Go 收录属实：awesome-go.com/routers 现列 Goji 专页，uhub/awesome-go 亦以 antioxidants 口号收录（https://awesome-go.com/routers）；(4) jsumners/goji 确为 Node.js 模板引擎且比断言更死：1 star、2016-03-17 README 即声明 \"Do not use this\"、2021-01-10 已 archive（https://github.com/jsumners/goji）——把它计入「拥挤」略宽松，实为噪声级；(5) 「无商标维权、法律风险≈0」经定向检索验证：Goji 软件商标纠纷/C&D 零命中（近似命中仅东宝对哥斯拉粉丝周边，无关软件；另有 Goji Electronics/Goji Labs/Goji Group Ltd 等跨类商标共存，未见诉讼）。反驳尝试均告失败，且独立发现反向加重：crates.io 存在同名 Rust crate goji（Jira 客户端，v0.2.4 约 2018 年后弃维护，后继者改名 gouqi，https://crates.io/crates/goji）——对全 Rust 的 BerryOS 而言同名已延伸进自家语言生态；另有 Go 写的 emoji commit 工具同名。可挑瑕疵仅为引注小误：goji.io v2/v3 实际托管于 github.com/goji/goji，zenazn/goji 是被替代的 v1 线，不动摇结论。综合：领域距离（Go Web 框架 vs no_std 内核）确实远、裸词搜索被枸杞健康食品 dominate，实际影响限于开发者语境的口头混淆与 SEO 竞争——断言自身的克制定级（法律≈0、仅混淆/SEO）与实况一致，成立。"
+      },
+      {
+        "detail": "ゴジラ=ゴリラ(猩猩)+クジラ(鲸) 的合成词（Wikipedia/Gojipedia/官方资料一致）。英语粉圈标准缩写体系就是 'Goji' 系（Heisei Goji / Legendary Goji / Minus One Goji，r/GODZILLA 实证），哥斯拉 Fandom 维基站名就叫 Gojipedia；日语 5ch 粉丝同样用 シンゴジ、ゴジマイ。联想色调是喜爱/戏谑正面（怪兽=力量感，对内核反而加分），但在日本 'ゴジ' 会先于枸杞被联想到（日本枸杞读クコ）。注：Toho 商标攻击性属商标维度，此处只记语言联想。",
+        "severity": "caution",
+        "source": "https://en.wikipedia.org/wiki/Godzilla ; https://godzilla.fandom.com/wiki/Godzilla_(1954) ; https://www.reddit.com/r/GODZILLA/comments/15oyjx1/oh_your_a_godzilla_fan_eh_name_every_godzilla ; https://itest.5ch.net/mevius/test/read.cgi/toy/1696350043/l-",
+        "title": "哥斯拉（Gojira）联想强且无害：Goji 是日语和英语粉圈公认的哥斯拉爱称缩写，在日语语境甚至是第一联想",
+        "angle": "语言与文化面：Goji 的语言学表现（读音/联想/俚语/文化形象/拼写出错率）",
+        "holds": true,
+        "recheck": "对抗复核后断言成立，五项事实主张均经独立来源证实，反驳尝试全部失败：(1) 词源——Wikipedia 原文确认 Gojira 为 gorira(ゴリラ)+kujira(クジラ) 合成词（https://en.wikipedia.org/wiki/Godzilla；Honda 遗孀争议仅针对命名轶事由来，不动摇合成词结构本身）。(2) 英语粉圈缩写体系——被引 Reddit 帖实测含 Shodaigoji/GyakushuGoji/KingGoji/MosuGoji/Biogoji/GareGoji 等「〜Goji」系列（https://www.reddit.com/r/GODZILLA/comments/15oyjx1/oh_your_a_godzilla_fan_eh_name_every_godzilla），Wikizilla 记载 GareGoji 为日本粉丝首创（https://godzilla.fandom.com/wiki/Godzilla_(MonsterVerse) 同站），另有论坛帖标题即 \"Let's Make A New Nickname For Goji\"，证明 Goji 独立成词为粉圈通用语；唯一反向证据是 Wikipedia 词条本身不列 Goji 昵称，但百科非粉圈词汇载体，不构成反驳。(3) Fandom 站名——godzilla.fandom.com 页面标题即「… | Gojipedia - Fandom」，属实。(4) 日语粉圈——シンゴジ(シン・ゴジラ)/ゴジマイ(ゴジラ-1.0) 在 5ch/jbbs 兴收帖实证（如 \"実力で売れたゴジマイ、ミームで売れたシンゴジか\"，https://itest.5ch.net/lavender/test/read.cgi/movie/1736928192/l-），且「〜ゴジ」命名法（初ゴジ/キンゴジ/モスゴジ/ミレゴジ/FWゴジ）有 Yahoo!知恵袋（https://detail.chiebukuro.yahoo.co.jp/qa/question_detail/q11119823621）与命名专栏（https://namae.co.jp/column/2129）佐证；注：原引 itest.5ch.net/mevius 帖因反爬 308 跳转无法直读，属部分核验，但等效 5ch 证据充分。(5) 日本第一联想——枸杞传统读法确为クコ/クコの実（https://www.kojima-ya.com/blog/about-dried-fruit/gojiberry、https://www.gyomusuper.jp/topics/gojiberry），而ゴジ是国民级 IP 哥斯拉的活跃语素；轻微修正：カタカナ借词ゴジベリー在日本养生圈亦流通（乐天榜「クコの実（ゴジベリー）」），故ゴジ在日本并非零浆果联想，但ゴジベリー从不缩写为ゴジ，独立语素ゴジ指向哥斯拉的排序判断成立。两点保留：①「无害」为断言自带的编辑性判断，语言层面证据确支持「强联想+爱称化正面色调」（粉圈以起爱称表达喜爱；个别粉嫌 \"Legendary Goji\" 类命名 pretentious 反证其流通度）；②商标维度断言已自我排除，但复核中 Wikipedia 记载 Toho 曾迫使 Sea Shepherd 船只 MV Gojira 改名、乐队 Gojira 弃前名 Godzilla（乐队保留了 Gojira 本名），提示该联想并非零法律外溢，供项目方知悉，不计入本断言裁定。"
+      },
+      {
+        "detail": "百度百科词条「保温杯配枸杞」明确其为网络流行语，完整版 '人到中年不得已，保温杯里泡枸杞'，指中年养生/自嘲式健康管理，衍生段子（'枸杞难挡岁月催，还得往里加当归'）流传极广，新华社也做过科普跟进。项目文档以中文为主，内核名 Goji 必然第一时间触发这个梗：会被善意开涮'养生内核''中年内核'；但 BerryOS 身份支柱恰含'省电'，养生梗可顺势转化为'对电池温柔/低功耗养生'的正向叙事。需要传播口径上主动接梗，而非回避。",
+        "severity": "caution",
+        "source": "https://baike.baidu.com/item/%E4%BF%9D%E6%B8%A9%E6%9D%AF%E9%85%8D%E6%9E%B8%E6%9D%9E/22839301 ; https://www.news.cn/politics/20251210/1018bc5b824447b6be87c9fdd01c0dbb/c.html",
+        "title": "中文语境：枸杞绑定「保温杯里泡枸杞」中年养生自嘲梗——项目主语言里 100% 会被玩梗，需按品牌资产管理",
+        "angle": "语言与文化面：Goji 的语言学表现（读音/联想/俚语/文化形象/拼写出错率）",
+        "holds": true,
+        "recheck": "对抗复核后断言成立（severity: caution，非 blocker）。逐项独立查证如下：\n\n1) 百度百科词条【核实】。WebFetch 直接抓取 baike.baidu.com/item/保温杯配枸杞/22839301 返回 403（百科反爬），但 WebSearch 以「人到中年不得已 保温杯里泡枸杞 网络流行语」检索，该词条原 URL 即为榜首命中，摘要确认其为网络流行语词条、释义为中年养生/自嘲式健康管理——与断言引用一致。检索方式已注明（403 拦截 + 搜索引擎快照交叉验证）。\n\n2) 新华社科普跟进【核实，且为近事】。直接抓取断言所附 news.cn 原链接成功：2025-12-10 新华社音视频部《秀我中国｜\"保温杯泡枸杞\"不是人人适宜 中医教你科学食用》，开篇即\"'保温杯里泡枸杞'已经成为不少人的日常养生习惯\"——距今日（2026-11）不足一年，主流媒体仍在为该梗做科普跟进，证明梗未过气。\n\n3) 衍生段子【核实，措辞微差不害意】。流传标准版为「人到中年不得已，保温杯里泡枸杞；枸杞难挡岁月催，杯里再加点当归；……」（知乎 zhuanlan.zhihu.com/p/403165191、新北青网 ec.ctiforum.com/life/2022/0918/3336.html 等多源）；断言写作\"还得往里加当归\"仅是变体转述，实质一致。\n\n4) 时效性【核实，反驳\"梗已过时\"失败】。杭州新闻 2026-10-13《中年人的保温杯里为什么放的是枸杞？》（hznews.hangzhou.com.cn/kejiao/content/2026-10/13/content_9336340.htm）——梗在检索当月仍被媒体讨论；且 2023 年起元气森林/茶百道枸杞产品、2024「脆皮青年/新中式养生」延续其商业与文化生命力。\n\n5) 受众匹配【核实，这是反驳未能成立的关键】。该梗的承载群体正是程序员/科技从业者的自嘲文化（脱发、格子衫、保温杯枸杞同属一套程序员中年自嘲符号，人民周刊等多篇媒体报道印证）；内核是纯程序员向工件，受众即玩梗主力。且 goji 本为枸杞的汉语借词（gǒuqǐ），中文读者零门槛反查——中文科技媒体报道时几乎必然写作「Goji（枸杞）」，主动把联想摆上台面。\n\n反驳尝试中唯一站得住的两点，均不足以翻转结论：(a) 「100% 会被玩梗」「第一时间」是不可证的绝对化修辞，只能降格为\"高概率/几乎必然\"；(b) 该梗全部来源显示其为善意自嘲而非贬义或低俗联想——这与断言自身的定性（可顺势转「省电=电池养生」正向叙事、主动接梗）一致，故为 caution 级而非 blocker。另查 Rust 生态既有同名先例：crates.io 早有 goji（softprops 的 Jira REST 客户端，docs.rs/goji），其活跃维护的 fork 干脆就叫 gouqi（枸杞拼音，2025-10 仍在发版，crates.io/crates/gouqi）——英文生态无恙，但因该项目几乎无中文曝光，不能推翻「中文语境会被玩梗」的预测，反而印证开发者对 goji=枸杞的映射毫无门槛。\n\n结论：词条、新华社来源、衍生段子、梗的持续热度与受众匹配全部实证成立；断言仅需把「100%」降为「高概率」，管理建议（接梗而非回避）与证据相容。建议维持 caution 定级并纳入传播口径预案。\n\n来源：\n- https://baike.baidu.com/item/%E4%BF%9D%E6%B8%A9%E6%9D%AF%E9%85%8D%E6%9E%B8%E6%9D%9E/22839301（403，经 WebSearch 快照验证）\n- https://www.news.cn/politics/20251210/1018bc5b824447b6be87c9fdd01c0dbb/c.html\n- https://hznews.hangzhou.com.cn/kejiao/content/2026-10/13/content_9336340.htm\n- https://zhuanlan.zhihu.com/p/403165191\n- https://ec.ctiforum.com/life/2022/0918/3336.html\n- https://docs.rs/goji 、https://crates.io/crates/goji 、https://crates.io/crates/gouqi"
+      },
+      {
+        "detail": "俄语区 2014–2016 年减肥神果营销轰炸后，'ягоды годжи' 成为过度营销/骗局的代名词：Дзен 视频直接标题《Ягоды годжи или как нас обманули китайцы》（浆果还是中国人怎么骗我们的），otzovik/irecommend 大量 2014–2019 年差评称卖家为 мошенники（骗子），梗义='被吹爆实则无用的东西'。词本身不脏，但俄语受众听到 годжи 第一反应可能是'又一个智商税'。仅在有俄语传播诉求时计入权重。",
+        "severity": "caution",
+        "source": "检索 Yandex/Google「ягоды годжи мем развод скам」（2026-11-06）；Дзен视频 https://www.yandex.com.tr/video/touch/preview/1095714312600754942 ；otzovik/irecommend 评测页命中同一结论",
+        "title": "俄语圈是唯一较硬的负面联想：годжи（goji）已成'超级食物骗局/夸大营销'的代名词（黑红梗）",
+        "angle": "语言与文化面：Goji 的语言学表现（读音/联想/俚语/文化形象/拼写出错率）",
+        "holds": true,
+        "recheck": "对抗复核结论：断言核心成立，反驳失败；但其严重度自评（caution 级、仅俄语传播诉求计入权重）恰好恰当，不升不降。逐项查证：① otzovik 差评实锤——直接抓取 https://otzovik.com/review_1886770.html ，标题原文《Ягоды Годжи — Развод для дураков》（\"傻子才买的骗局\"），发布 2015-03-13、购买年份 2014，缺点栏\"Эффекта нет\"（无效果）、\"推荐朋友：否\"，该品类共 241 条评测，与断言\"2014–2019 大量差评\"吻合；② Дзен视频《Ягоды годжи или как нас обманули китайцы》按精确标题检索命中断言所引同一 URL（https://www.yandex.com.tr/video/touch/preview/1095714312600754942 ），存在性属实；③ irecommend 侧有《Годжи, годжи весь интернет пестрит рекламой》（\"全网充斥枸杞广告\"）等评测（https://irecommend.ru/content/godzhi-godzhi-ves-internet-pestrit-reklamoi ），Woman.ru 2014 帖《панацея или очередной развод?》、dukandiet.ru《Сила рекламы: 5 мифов о ягодах годжи》等\"骗局/夸大营销\"框架铺天盖地；④ 梗义存活但已降温——检索见讽刺帖\"куда делись ягоды годжи? раньше о них со всех дыр вещали\"（\"枸杞莓哪去了？当年到处吹\"）及梗图模板\"ЯГОДЫ ГОДЖИ НЕТ БЛЯТЬ ОВОЩИ СУКУНЫ\"；2026-05-02 kuzbass.media 仍有毒理学家打假文（https://kuzbass.media/2026/05/02/142494.html ，但该文是\"神话辟谣\"口吻，无 мошенники/обман 措辞）。反驳中打掉的三个细节（不改结论）：(a) 断言称差评用\"мошенники（骗子）\"称呼卖家——逐字核实到的是\"развод для дураков\"及防骗论坛把枸杞列入\"осторожно мошенники\"类目，语义同域但字面措辞未逐字验证；(b) 专查\"годжи мошенники приговор суд\"未发现任何专门针对枸杞销售的刑事判决，断言的\"骗局\"定性靠消费者评测+媒体，不靠刑案，站得住；(c) \"唯一较硬\"略过强——英语圈也有 FreeLife/Earl Mindell 枸杞汁虚假宣传集体诉讼史（https://quackwatch.org/mlm/c/freelife/suit 、https://behindmlm.com/companies/freelife-international-review-over-extension ），但那是 2009 年 MLM 公司层面丑闻，未沉淀为\"goji 一词≈智商税\"的日常俚语，俄语圈确实是口语层面最硬的负面联想。综合：годжи 在俄语中=超级食物营销骗局代名词的黑红梗属实（2014–2016 减肥神果营销潮产物），词本身不脏、不涉脏字或政治敏感，且到 2026 已转为\"过气网红产品\"式的怀旧反讽；对一款拉丁字母书写的内核名 Goji，俄语开发者至多联想到\"超级食物段子\"，属可自嘲的轻微玩梗而非污名。维持 caution 级、仅在有俄语传播诉求时计入权重；无俄语传播计划时可视同 clean。"
+      },
+      {
+        "detail": "goji.io 自述 'a minimalistic and flexible request multiplexer for Go'，slogan 玩梗 'high in antioxidants'，旧版 github.com/zenazn/goji。开发者看到 Rust 内核叫 Goji 有相当概率第一眼读成 'Go + ji'（Go 语言项目），且搜索 'goji github/framework' 时会先撞它和浆果电商。这属于'会被念歪一层含义'的实际风险：需要命名后主动锚定 'Goji kernel/BerryOS' 关键词。撞名/商标归属本身归其他维度评估。",
+        "severity": "caution",
+        "source": "https://goji.io ; https://github.com/zenazn/goji",
+        "title": "开发者圈误读面：goji.io 是既有 Go 语言微型 web 框架，Rust 内核叫 Goji 会被误读成 Go 系项目并产生搜索撞名",
+        "angle": "语言与文化面：Goji 的语言学表现（读音/联想/俚语/文化形象/拼写出错率）",
+        "holds": true,
+        "recheck": "断言成立（caution 级，非 blocker）。逐项独立查证：(1) 事实引文准确——goji.io 首页自述原文即 \"A minimalistic and flexible request multiplexer for Go\"（https://goji.io）；\"high in antioxidants\" slogan 确认在旧仓库 About 描述 \"Goji is a minimalistic web framework for Golang that's high in antioxidants\"（https://github.com/zenazn/goji，3644 stars，未归档）。(2) 搜索撞名实测成立——Google 搜 \"goji github\" 前排即 github.com/goji/goji 与 pkg.go.dev/github.com/zenazn/goji；搜 \"goji framework\" 前两位即 goji.io 与 goji/goji，Go 框架完全占据前排，Rust 内核同名后搜索必被稀释。(3) \"读成 Go 系项目\"的误读面客观存在：项目明示 \"for Go\"、名字前缀即 \"Go\"，且开发者语境下搜索联想被该框架占据；但 \"相当概率\" 略偏高——goji 主流第一含义仍是枸杞（goji berry），且该框架在 Go 圈属小众老项目（新版 goji/goji 仅 973 stars，对比 Gin 80k+），可作弱化注记而非反驳。(4) 唯一可削弱的细节：断言称搜索会先撞\"浆果电商\"，实测 \"goji github/framework\" 搜索中未见浆果电商，出现的是 Goji Labs（产品策略咨询）与 Goji Investments（金融 API），系细节瑕疵不动摇主断言。(5) 项目活跃度：GitHub API 实测 goji/goji 最后 push 2022-07-26、最后 release v2.0.1 为 2018-11-13；zenazn/goji 最后 push 2020-10-27——事实停滞 4 年+，未 archived、官网在线、搜索排名仍占前排，故撞名为持续性低烈度存在而非活跃竞品冲突。结论：风险真实存在但可用，与断言自身定性一致——命名后需主动锚定 \"Goji kernel/BerryOS\" 关键词。来源：https://goji.io ; https://github.com/zenazn/goji ; https://github.com/goji/goji ; https://pkg.go.dev/github.com/zenazn/goji ; https://pkg.go.dev/goji.io"
+      },
+      {
+        "detail": "goji crate 已被 softprops/goji（github.com/softprops/goji）占用，描述 'Rust interface for Jira'（Jira 客户端）。创建 2016-12-02，最后发版 0.2.4 于 2018-07-22（crate 层面休眠约 8 年，仅 182 近期下载/1.8 万总下载）；仓库层面最后一次 push 2022-09-11，78 星、未 archive。含义：裸名 crate `goji` 拿不到，除非联系作者转让（crates.io 不回收休眠名）；若内核生态 crate 用 goji-os / goji-kernel 等带后缀名则无碍。注意：Rust 的 goji 与 PyPI 的 goji 同源（softprops 版从 kylef 版 fork 而来），包管理器世界里 goji 这个词与 JIRA 工具强关联。",
+        "severity": "caution",
+        "source": "https://crates.io/api/v1/crates/goji；复核 https://github.com/softprops/goji",
+        "title": "最重要项：crates.io 裸名 goji 已被占，但占用者休眠约 8 年",
+        "angle": "生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）的占位情况",
+        "holds": true,
+        "recheck": "对抗复核失败，断言核心全部逐字坐实，无法推翻；仅一处次要谱系细节（fork 说法）被证伪，且该细节被证伪后反而略微加强风险。逐项核验：【坐实·裸名被占】crates.io API (https://crates.io/api/v1/crates/goji) 返回：name=\"goji\"，description=\"Rust interface for Jira\"，created_at=2016-12-02T14:20:49Z，updated_at=2018-07-22，max_version=0.2.4（发版于 2018-07-22），总下载 17992（≈1.8 万）、近 90 天 182——与断言的每个数字完全一致。休眠时长：2018-07-22 → 2026-11-06 = 8 年 3 个月，\"休眠约 8 年\"成立。【坐实·仓库状态】GitHub API (https://api.github.com/repos/softprops/goji)：pushed_at=2022-09-11T15:26:47Z（断言的 2022-09-11 精确命中）、stargazers_count=78、archived=false、language=Rust。当前唯一 crate 属主为 softprops (Doug Tangren)（https://crates.io/api/v1/crates/goji/owners）。【坐实·不回收政策】crates.io 官方政策页 (https://crates.io/policies)：无自动回收/无休眠除名机制，唯二途径=联系属主自愿转让或申请官方调解；2025-12 社区提案\"5 年陈旧名可回收\"(https://users.rust-lang.org/t/proposal-allow-crate-names-to-be-reclaimed-after-being-stale-for-5-years/136778) 至今未采纳，2024-05 RFC #3646 甚至动议删除转让调解政策。故\"裸名拿不到（除非作者转让）\"为现行事实。补充利好：softprops 是活跃知名 Rust 开发者，转让协商并非死路，但无任何强制渠道。【坐实·后缀可用】goji-os 与 goji-kernel 在 crates.io API 均 404（未注册），\"带后缀名无碍\"成立（检索方式：直接 GET https://crates.io/api/v1/crates/goji-os 与 /goji-kernel，均零命中）。【证伪一处细节】\"softprops 版从 kylef 版 fork 而来\"不成立：GitHub 元数据 softprops/goji fork=false 且无 parent 字段；kylef/goji 是 Python 项目（\"Command line JIRA client\"，2014 年创建，https://api.github.com/repos/kylef/goji）；PyPI goji 属 Kyle Fuller、独立活跃（最新 0.6.0 发于 2025-03-10，https://pypi.org/pypi/goji/json）。两个 goji 是各自独立借 \"gojira→Jira\" 双关命名的项目，无 fork 谱系。但此误不救名：PyPI goji 至 2025 年仍在发版，\"包管理器世界里 goji 与 JIRA 工具强关联\"这一结论反而更稳。结论：风险真实存在，定级 caution 恰当（非 blocker——内核可叫 Goji，只是 Rust 裸 crate 名被锁死，需用 goji-os/goji-kernel 类后缀名或协商转让）。来源：https://crates.io/api/v1/crates/goji · https://api.github.com/repos/softprops/goji · https://crates.io/policies · https://api.github.com/repos/kylef/goji · https://pypi.org/pypi/goji/json · https://users.rust-lang.org/t/proposal-allow-crate-names-to-be-reclaimed-after-being-stale-for-5-years/136778"
+      },
+      {
+        "detail": "github.com/goji 是 'Goji community contributions' 组织（2014-05-12 创建，8 个公开仓库，全部 Go 语言），即 zenazn 的 Go 极简 HTTP 路由框架 goji.io。主仓库 goji 973 星，最后更新 2022-07-26，已不活跃但社区和历史影响力仍在——搜索 'goji github' 会先命中它。含义：开源时 GitHub 组织只能用 goji-os / goji-kernel 之类的带后缀名，且 'Goji' 在 Go 圈有既存认知（一个过气的 HTTP 框架），对 Rust 内核项目是轻微噪音而非硬冲突。",
+        "severity": "caution",
+        "source": "https://github.com/goji（组织页）+ gh api orgs/goji 复核",
+        "title": "GitHub 组织 github.com/goji 被 Go 语言 HTTP 框架社区占用，2014 年至今，2022 年后不活跃",
+        "angle": "生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）的占位情况",
+        "holds": true,
+        "recheck": "对抗复核失败——断言全部数据点经独立取证精确成立。(1) GitHub API（https://api.github.com/users/goji，2026-11-06 实查）：type=Organization，bio=\"Goji community contributions\"，blog=https://goji.io，created_at=2014-05-12T07:45:47Z（与断言\"2014-05-12\"逐位一致），public_repos=8。(2) 仓库清单（https://api.github.com/users/goji/repos）：8/8 全部为 Go 语言；主仓库 goji 973 星、pushed_at=2022-07-26T04:51:22Z、未归档——与断言\"973 星 / 最后更新 2022-07-26\"精确一致，最晚推送距今 4 年余，\"2022 年后不活跃\"成立。(3) 组织页（https://github.com/goji）实访确认成员含 zenazn，即 zenazn 的 Go 极简 HTTP 路由框架；官网 goji.io 实访确认为该项目官网（\"A minimalistic and flexible request multiplexer for Go\"）。(4) WebSearch \"goji github\" 实测：第一名即 github.com/goji/goji，第二名为其前身 zenazn/goji——\"搜索先命中它\"成立。尝试的反驳角度均失败：组织现存未删未改名、数据非过时（今日实时值逐位吻合）、不活跃判定有客观推送记录支撑（组织 updated_at=2026-04-04 仅元数据更新，非代码活动）。唯一细微保留：goji.io 页面未挂\"停止维护\"声明，\"过气\"系依推送时间线的推断而非官方弃维声明，但不影响结论。断言的定性（GitHub org 短名被占、开源需用 goji-os/goji-kernel 等后缀名；Go 圈既存认知对 Rust 内核项目为轻微噪音非硬冲突）与所查事实相符，定性恰当。"
+      },
+      {
+        "detail": "PyPI project goji 已被 Kyle Fuller（kylef，Sourcery 作者）占用，是 JIRA 命令行客户端，最新版 0.6.0 于 2025-03-10 发布——四个包管理器里唯一活跃维护的 goji。含义：BerryOS 若有 Python 工具链组件想叫 goji 不行，需带后缀。对全 Rust 的 BerryOS 影响有限但需知晓。",
+        "severity": "caution",
+        "source": "https://pypi.org/project/goji/",
+        "title": "PyPI goji 已被占且活跃维护中（2025-03 仍在发版）",
+        "angle": "生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）的占位情况",
+        "holds": true,
+        "recheck": "对抗复核失败，断言核心成立。(1) 占名与作者属实：PyPI goji 页面与 JSON API 均显示 author \"Kyle Fuller\" <kyle@fuller.li>、maintainer kylef、摘要 \"Command line JIRA client\"（https://pypi.org/project/goji/ 、https://pypi.org/pypi/goji/json）。(2) 版本与日期属实：info.version=0.6.0，wheel/sdist 上传时间 2025-03-10T19:41:56Z/58Z，且截至 2026-11-06 无更新版（0.6.0 仍为最新），\"最新版 0.6.0 于 2025-03-10 发布\"精确成立。(3) \"四个包管理器里唯一活跃\"在可查 registry 全部得到印证：crates.io goji（\"Rust interface for Jira\"，softprops）末版 2018-07-22 已沉寂（https://crates.io/api/v1/crates/goji）；npm goji（HTML 模板引擎）末版 2015-06（https://registry.npmjs.org/goji）；RubyGems goji 404 不存在（https://rubygems.org/api/v1/gems/goji.json）；PyPI 版是其中唯一近十年内有发版的。(4) 两处瑕疵但不推翻结论：a) \"Sourcery 作者\"查无实据——kylef 的 GitHub 25 个组织（apiaryio/CocoaPods-Fonts/QueryKit 等）无 sourcery 或 sourcery-ai（https://api.github.com/users/kylef/orgs 、https://api.github.com/users/kylef），其定位是 Swift/iOS 工具开发者（https://fuller.li/about），疑为把 Swift Sourcery（作者 Krzysztof Zabłocki）所依赖的 kylef 模板引擎 Stencil 误记成\"Sourcery 作者\"，该括号应删；b) \"活跃维护中\"按 2026-11 视角略慷慨——末版距今约 20 个月，但该项目历来隔年发版（0.4.0 2021-03→0.5.0 2023-07→0.6.0 2025-03），且断言自带的限定语\"2025-03 仍在发版\"准确。风险结论不变：PyPI 名额确被占用且项目未死，BerryOS 若出 Python 组件叫 goji 必须带后缀；对全 Rust 主仓影响有限（真正相关的 crates.io goji 反而已沉寂 8 年，与断言的对比口径一致）。"
+      },
+      {
+        "detail": "npm 包 goji 已被占：'An HTML templating engine inspired by Thymeleaf'（Hapi 的 Node.js 视图引擎，作者 jsumners，github.com/jsumners/goji）。0.1.0 于 2014-12 发布，最新 0.9.1 于 2015-06-09，休眠超 10 年。含义：裸名不可得但占用者已死透，实际冲突极小；仅当未来发 Node 工具（文档站 CLI 等）才相关。npmjs.com 页面直接 fetch 返回 403（反爬），经 registry API 取证。",
+        "severity": "caution",
+        "source": "https://registry.npmjs.org/goji（npmjs.com/package/goji 页面 403 拒抓，改走 registry API）",
+        "title": "npm goji 已被占，2015 年起休眠 10 年余",
+        "angle": "生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）的占位情况",
+        "holds": true,
+        "recheck": "断言成立，对抗复核未能推翻，实情甚至更甚。证据：(1) https://registry.npmjs.org/goji —— name=goji，description 逐字为 \"An HTML templating engine inspired by Thymeleaf\"，author=James Sumners、maintainer=jsumners，repository=git+https://github.com/jsumners/goji.git，dist-tags.latest=0.9.1；time 显示 0.1.0 发布于 2014-12-10、0.9.1 发布于 2015-06-09（0.9.0 同日更早），共 11 个版本，与断言的版本号/日期完全一致；time.modified=2022-06-18 仅为元数据刷新而非新发版，最后真实发版仍是 2015-06-09，至今 11.4 年无版本更新，\"休眠 10 年余\"成立。(2) https://github.com/jsumners/goji —— 仓库存在但 2021-01-10 已被作者归档只读，README 自 2016-03-17 起声明 \"Do not use this. I don't have time to fix the issues with it.\" 并指引用户改用 Marko，1 star/0 forks，占用者不仅死透且作者亲口弃坑。(3) https://www.npmjs.com/search?q=keywords:thymeleaf 与 https://www.npmjs.com/package/goji —— goji 仍在此关键词搜索结果中且从未 unpublish，名字至今被 jsumners 持有，npm 不允许注册同名包，\"裸名不可得\"成立。风险定性恰当：BerryOS 为 Rust no_std 内核，与死寂的 Node/hapi 视图引擎领域距离极远，仅当未来以 goji 之名发 npm 包（如文档站 CLI）才实际撞名——severity=caution，非 blocker。断言中\"npmjs.com 页面 403 拒抓、经 registry API 取证\"为方法性描述，不影响风险本身，本次复核同样经 registry API 与 npm 搜索双通道命中。"
+      },
+      {
+        "detail": "goji.io 是 Go 语言 Goji 路由框架的官网（'A minimalistic and flexible request multiplexer for Go'），仍在线（HTTP 200）。含义：与内核同名的理想短域名不可得，等于 GitHub org 被占的延伸；替代位 goji.dev 空置（见下）。",
+        "severity": "caution",
+        "source": "https://goji.io",
+        "title": "goji.io 域名被旧 Go 框架官网占用的额外发现",
+        "angle": "生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）的占位情况",
+        "holds": true,
+        "recheck": "断言成立，独立查证无法反驳，且实际情况比断言所述更不利一分（goji.dev 并非无主空置）。【goji.io 占用与在线】2026-11-06 WebFetch 实抓 https://goji.io 成功：页面即 Go 语言 Goji 路由框架官网，副标题逐字为 \"A minimalistic and flexible request multiplexer for Go\"，Quick Start 含 `go get goji.io`，链接指向 github.com/goji/goji；同日 curl 直测返回 `200 https://goji.io/`，「仍在线 HTTP 200」属实。DoH（dns.google）证实 goji.io → A 66.241.125.4（Fly.io 托管）、NS 为 Google Cloud DNS（ns-cloud-c1~c4），即域名被该项目实际持有并在用，\"理想短域名不可得\"结论成立。GitHub 侧 goji/goji 973 stars、未归档（https://github.com/goji/goji），项目长期休眠但官网持续在线，\"旧框架占用\"定性公允。【一处修正，但不构成反驳】\"goji.dev 空置\"不准确的读法是该域名可自由注册：RDAP（https://rdap.org/domain/goji.dev，引 .dev 官方 pubapi.registry.google）显示 goji.dev 已于 2021-01-29 注册、注册商 Namecheap、有效期续至 2027-01-29、status clientTransferProhibited；DNS 上 apex 指向 Namecheap 停放 IP 162.255.119.203，www 为 CNAME → parkingpage.namecheap.com → parking.d.parity.domains（典型停放/待售配置），HTTP 仅 302 转发（X-Served-By: Namecheap URL Forward）无实际内容。即 goji.dev \"无真实站点\"为真但\"无主\"为假——这使域名格局比断言更紧，强化而非削弱原风险。综合：断言核心（goji.io 被 Go 框架官网占用、在线 200、短域名不可得）经独立取证全部证实，holds=true；severity 维持 caution——域名不可得属品牌/传播层面的可用性代价，不构成必须弃名的 blocker。"
+      },
+      {
+        "detail": "浏览器原名 Phoenix，被 BIOS 厂商 Phoenix Technologies 商标主张逼改；改名 Firebird 又撞上同名开源数据库项目引发社区纠纷；最终 Firefox（红熊猫俗名）因在浏览器生态内足够独特而稳定 20 年。映射到 Goji：选名时必须清查「内核/OS/Rust/嵌入式」这一自己生态内的占用，确保从第一天就独特，避免中途改名带来的文档、链接、品牌资产损耗——这是自然名策略里唯一真正致命的坑，其余都可修复。",
+        "severity": "caution",
+        "source": "https://en.wikipedia.org/wiki/Firefox ; http://kb.mozillazine.org/Former_product_names",
+        "title": "Firefox 教训：自然名在开发者生态内撞车，两年被迫改名两次（Phoenix→Firebird→Firefox）",
+        "angle": "先例与策略面：水果/自然名科技产品的先例、商标教训与 Goji 配 BerryOS 的品牌一致性",
+        "holds": true,
+        "recheck": "反驳失败，断言核心事实全部经独立来源证实。(1) Phoenix 时期与商标逼改：Wikipedia Firefox 条目明言\"Phoenix was renamed in 2003 due to a trademark claim from Phoenix Technologies\"；Mozilla 官方博客（Phoenix 0.1 里程碑帖，亲历者 Gervase Markham 评论）第一方佐证\"an approach from the Phoenix BIOS people because of their Phoenix FirstView Connect product\"，且当时 Phoenix 名还同时撞了开源 Java Server 框架与邮件客户端——自然名在开发者生态内连环撞车的实锤（https://en.wikipedia.org/wiki/Firefox ; https://blog.mozilla.org/community/2013/05/13/milestone-phoenix-0-1-released-first-version-of-firefox/）。(2) Firebird 撞开源数据库：Wikipedia 两条目均证实改名 Firebird（2003-04）\"provoked an intense response from the Firebird database software project\"，\"Due to continuing pressure from the Firebird community\"于 2004-02-09 定名 Firefox——社区压力（非法律强制）驱动，与断言\"引发社区纠纷\"措辞一致（https://en.wikipedia.org/wiki/History_of_Firefox）。(3) Firefox=红熊猫俗名且因独特而稳：History of Firefox 明言名字\"references the red panda\"且\"chosen for its similarity to 'Firebird', and its uniqueness in the computing industry\"；自 2004-02-09 至今 22 年无改名，\"稳定 20 年\"成立。(4) 原始来源 http://kb.mozillazine.org/Former_product_names 被 Anubis 反爬拦截（error 9e4edb5b6b850c41，直取零命中），但事实链已被上述独立来源完全覆盖。两处轻微不精确、不足以推翻：a)\"两年改名两次\"实为 Phoenix 0.1（2002-09-23）至定名 Firefox 约 17 个月、两次改名相隔仅 10 个月——比断言更急促；b) Firefox 定名后仍在英国撞过 Charlton Company 的既有注册致 0.8 延期，说明\"足够独特\"也未保证零摩擦，但确未再改名。映射到 Goji 的推论（须清查 kernel/OS/Rust/嵌入式生态占用、首日即独特、避免中途改名的文档/链接/品牌损耗）由该判例直接支撑，逻辑成立。"
+      },
+      {
+        "detail": "① Go 语言生态：goji/goji HTTP 路由器（原作者 zenazn 的旧框架已被社区版本取代），README tagline 就是 'high in antioxidants'——反证果味梗在开发者品牌里读得通，但也意味着 Go 社区对 'Goji' 已有认知占位；② Rust 生态：crates.io 上 `goji` 已被占用（softprops 的 Jira 客户端，v0.2.4，2018-07-22 后未更新，累计下载 1.8 万、近期下载仅约 182/月，长期休眠）——经 crates.io API 实测；若内核未来以 crate 形式发布需改名（如 goji-kernel），且搜索 'goji rust' 会先命中 Jira 库；③ Goji Electronics（英国 Currys 自有消费电子品牌，商标类别离硬件最近的既有权利人）；④ Goji 金融科技（Euroclear 旗下私募基金数字化平台）。检索 'goji kernel/OS/operating system'：内核/OS 品类零命中，无人占坑。结论：无 blocker，发布前做一次目标类别商标清查 + crate 名规划即可。",
+        "severity": "caution",
+        "source": "https://github.com/goji/goji ; https://crates.io/crates/goji (经 crates.io API 实测: 2018-07-22 最后更新, v0.2.4) ; https://en.wikipedia.org/wiki/Goji_Electronics ; https://www.euroclear.com/innovation/en/goji.html",
+        "title": "「Goji」在科技界已有先占：内核/OS 品类无人使用，但开发者命名空间相当拥挤",
+        "angle": "先例与策略面：水果/自然名科技产品的先例、商标教训与 Goji 配 BerryOS 的品牌一致性",
+        "holds": true,
+        "recheck": "对抗复核失败，断言核心全部成立，仅两处措辞瑕疵不改变实质。(1) crates.io API 实测（https://crates.io/api/v1/crates/goji）逐项命中断言②：softprops 的 \"Rust interface for Jira\"，v0.2.4，updated_at=2018-07-22，downloads=17992（≈1.8万），recent_downloads=182，7 版本未 yank，休眠 8 年——若以 crate 形式发布确需改名。(2) Go 生态属实但归属有瑕疵：'high in antioxidants' tagline 实测在旧仓库 zenazn/goji 的 GitHub description（https://github.com/zenazn/goji，3644 stars，\"Goji is a minimalistic web framework for Golang that's high in antioxidants.\"），断言引用的 goji/goji 新仓库 README/description 现均无此句（https://github.com/goji/goji，973 stars，description 为 \"minimalistic and flexible HTTP request multiplexer\"）；且 zenazn/goji README 原话是 \"superseded by a new version of Goji by the same author\"——即同一作者（Carl Jackson/zenazn）的重写，非\"社区版本取代\"。但 Go 社区对 Goji 有认知占位这一实质结论不受影响。(3) Goji Electronics 属实：Wikipedia（https://en.wikipedia.org/wiki/Goji_Electronics）确认 Currys plc/DSG 体系消费电子品牌，音频部门由 Tinchy Stryder 与 Lord Kalms 共创，DSG 持独家制造开发权，英国 600+ 零售点，产品为耳机/音频/配件——确为离硬件品类最近的既有权利人。(4) Euroclear Goji 属实：官方页 https://www.euroclear.com/innovation/en/goji.html 存在（直抓 403 系反爬），多源确认 Euroclear 2022-12 收购伦敦私募基金数字化平台 Goji，LinkedIn 现名 \"Goji, Euroclear group\"（https://uk.linkedin.com/company/goji）。(5) 内核/OS 品类零占坑独立复核成立：WebSearch '\"goji\" kernel OR \"operating system\" OR OS microkernel' 无任何名为 Goji 的内核/OS 项目，命中项为 Jira Rust 库/Goji Labs 设计公司/枸杞农业 ML 论文。结论复核：'无 blocker，发布前做目标类别商标清查 + crate 名规划' 的判断与证据相符—— BerryOS 内核是 no_std 独立内核非 crate 分发，crates.io 休眠同名库与 Go 路由器均非法律/技术障碍，属 caution 级命名空间拥挤。断言 holds=true，两处瑕疵（tagline 归属旧仓库、\"社区接管\"实为原作者重写）建议在引用时修正但不推翻结论。来源：https://github.com/zenazn/goji ; https://github.com/goji/goji ; https://crates.io/api/v1/crates/goji ; https://en.wikipedia.org/wiki/Goji_Electronics ; https://www.euroclear.com/innovation/en/goji.html ; https://uk.linkedin.com/company/goji"
+      }
+    ]
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Research"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Verify"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "goji:sw-collision",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a74fcdcf6dad3e018",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793972976442,
+      "queuedAt": 1793972976427,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "软件撞名面",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【软件撞名面】：全面搜索名为 Goji 的软件项目/库/产品。必查：GitHub 仓库与组织（搜 \"goji\" 语言过滤）、Rust crates.io、npm、PyPI、RubyGem…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973342560,
+      "tokens": 61345,
+      "toolCalls": 31,
+      "durationMs": 366118,
+      "resultPreview": "{\"angle\":\"软件撞名面\",\"findings\":[{\"detail\":\"两代同源项目：zenazn/goji（\\\"minimalistic web framework for Golang... high in antioxidants\\\"，3,644 星，2020-10-27 后停更）与社区后继 goji/goji（973 星、66 fork，最后 push 2022-07-26，未归档）。pkg.go.dev 显示 goji.io 模块被 720 个包 import，v2.0.2 发布于 2019-01-26、最高 tag 已到 v3。它是 HTTP 路由器/中间件库，领域与 OS 内核相距甚远（没人会把路由器和内核认错），但知名度足以让『goji + 编程/开发』类搜索首屏被它占据，开源传播时内核的 SEO 会被稀释。休眠 4 年但从未宣布死亡。\",\"severity\":\"c…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "goji:trademark",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a9861df60c5bc9d41",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793972976442,
+      "queuedAt": 1793972976428,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "商标与商业面（Goji 候选名评估）",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【商标与商业面】：搜索 Goji 相关商标与商业品牌。必查：英国 Currys/Dixons Carphone 旗下 Goji 消费电子品牌（耳机/音箱，确认现状）、美/欧/中的 Goj…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973397263,
+      "tokens": 61796,
+      "toolCalls": 22,
+      "durationMs": 418454,
+      "resultPreview": "{\"angle\":\"商标与商业面（Goji 候选名评估）\",\"findings\":[{\"detail\":\"Currys（原 Dixons Carphone）官网存在活的 GOJI 品类页：https://www.currys.co.uk/tv-and-audio/headphones/headphones/goji ，并有无线/降噪/白色/黑色等子品类页（搜索索引 2026-11-06 仍收录在售型号如 GSHOKBT18）。Wikipedia《Goji Electronics》条目：品牌 2011 年 12 月创立于 Hemel Hempstead，股份由 Currys plc、说唱歌手 Tinchy Stryder（Kwasi Danquah III）与 Lord Kalms 持有，产品线除耳机/音频外还包括平板/手机配件、笔记本内胆包，至今仍在 Currys plc 品牌导航模板中（…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "goji:linguistic",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "acdd23db1a670d88b",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793972976442,
+      "queuedAt": 1793972976428,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "语言与文化面：Goji 的语言学表现（读音/联想/俚语/文化形象/拼…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【语言与文化面】：评估 Goji 一词的语言学表现。必查：英语/日语/韩语/主要欧语种里 goji 的读音与联想（搜索 goji pronunciation / goji slang /…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973471057,
+      "tokens": 67131,
+      "toolCalls": 17,
+      "durationMs": 492247,
+      "resultPreview": "{\"angle\":\"语言与文化面：Goji 的语言学表现（读音/联想/俚语/文化形象/拼写出错率）\",\"findings\":[{\"detail\":\"Merriam-Webster、Collins、Cambridge 均收录 goji berry，读音 GOH-jee（GOH 押 go，重音在首音节）；另有少数读音变体 \\\"gow-gee\\\"（更贴近中文 gǒuqǐ，某浆果商行采用）。双音节、全短元音开音节、无辅音丛，各语种母语者都能近似读出；无任何主流词典标注俚语义。\",\"severity\":\"clean\",\"source\":\"https://www.merriam-webster.com/dictionary/goji%20berry ; https://www.collinsdictionary.com/us/dictionary/english/goji\",\"title\":\"英语读音…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "goji:eco-avail",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a0b0490b8bb8b4c7e",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793972976442,
+      "queuedAt": 1793972976428,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【生态占位面】：检查 Goji 在开发者生态的占位情况。必查（尽量 WebFetch 直取）：https://crates.io/api/v1/crates/goji （Rust cra…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973236328,
+      "tokens": 44692,
+      "toolCalls": 26,
+      "durationMs": 257518,
+      "resultPreview": "{\"angle\":\"生态占位面：Goji 在开发者生态（包管理器/GitHub/域名/百科）的占位情况\",\"findings\":[{\"detail\":\"goji crate 已被 softprops/goji（github.com/softprops/goji）占用，描述 'Rust interface for Jira'（Jira 客户端）。创建 2016-12-02，最后发版 0.2.4 于 2018-07-22（crate 层面休眠约 8 年，仅 182 近期下载/1.8 万总下载）；仓库层面最后一次 push 2022-09-11，78 星、未 archive。含义：裸名 crate `goji` 拿不到，除非联系作者转让（crates.io 不回收休眠名）；若内核生态 crate 用 goji-os / goji-kernel 等带后缀名则无碍。注意：Rust 的 goji 与 …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "goji:precedent",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a69a8e73e68c22444",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793972976442,
+      "queuedAt": 1793972976428,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "先例与策略面：水果/自然名科技产品的先例、商标教训与 Goji 配…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【先例与策略面】：研究水果/莓类命名科技产品的先例与教训。必查：Apple（与 Apple Corps 披头士商标战只点一句）、BlackBerry（手机品牌兴衰，商标仍存）、Raspb…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973431798,
+      "tokens": 67777,
+      "toolCalls": 21,
+      "durationMs": 452988,
+      "resultPreview": "{\"angle\":\"先例与策略面：水果/自然名科技产品的先例、商标教训与 Goji 配 BerryOS 的品牌一致性\",\"findings\":[{\"detail\":\"创始人 Eben Upton 原话：'Raspberry is a reference to a fruit-naming tradition in the old days of microcomputers'（致敬 Apple、Tangerine、Apricot、Acorn）；'Pi' 原拼 'Py'，指只跑 Python 的原始设计，后改数学常数 π 的拼法。取名逻辑是「短、具体、有传承、有故事」，与树莓的功能属性毫无关系——这证明自然名成立的关键不在「名字说明了什么」，而在好念好记、自带视觉形象（红色小果子=低成本 logo/吉祥物）、降低教育/极客项目的距离感。Goji 完全复用这套逻辑：枸杞红、两音节、中英双通。\"…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "verify:最大的占名者是 Go 语言 Web 框架 Goj",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a48623efd4188c896",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "反驳失败，断言事实核心全部独立复核命中，且定性方向也成立。…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：最大的占名…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973638354,
+      "tokens": 42030,
+      "toolCalls": 12,
+      "durationMs": 167283,
+      "resultPreview": "{\"holds\":true,\"note\":\"反驳失败，断言事实核心全部独立复核命中，且定性方向也成立。逐项查证（2026-11-06 实测）：(1) GitHub API https://api.github.com/repos/zenazn/goji → stargazers_count=3644、pushed_at=2020-10-27T15:42:27Z、archived=false、描述确为 \\\"minimalistic web framework for Golang... high in antioxidants\\\"，与断言逐字吻合；(2) https://api.github.com/repos/goji/goji → 973★、forks=66、pushed_at=2022-07-26T04:51:22Z、未归档，逐项命中；3644+973=4617≈\\\"合计约4,600星…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "verify:命名空间硬资源已被占：goji.io 域名与 G",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a136737cbb7a912e7",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "反驳失败，断言完全成立。(1) goji.io 域名：WebFetch 实测（20…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：命名空间硬…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973551042,
+      "tokens": 34451,
+      "toolCalls": 4,
+      "durationMs": 77925,
+      "resultPreview": "{\"holds\":true,\"note\":\"反驳失败，断言完全成立。(1) goji.io 域名：WebFetch 实测（2026-11-06，https://goji.io）确认其为 Go 语言 HTTP request multiplexer 框架官网，副标题逐字为 \\\"A minimalistic and flexible request multiplexer for Go\\\"，安装方式 `go get goji.io`——域名直接充当 Go module import path，是框架硬依赖标识，无法为 Rust 内核所用。(2) GitHub org：API 实测（https://api.github.com/users/goji）返回 login=goji, id=7555056, type=Organization, name=\\\"Goji\\\", bio=\\\"Goji co…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "verify:crates.io 上精确名 goji 已被注册",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a1f3998b0b08ed8a9",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "核心事实全部独立复现成立，反驳失败，但断言有两处细节需修正…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：crate…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973627224,
+      "tokens": 38818,
+      "toolCalls": 7,
+      "durationMs": 154106,
+      "resultPreview": "{\"holds\":true,\"note\":\"核心事实全部独立复现成立，反驳失败，但断言有两处细节需修正（均不削弱风险本体）。【已证实部分】(1) crates.io API (https://crates.io/api/v1/crates/goji) 实测：goji 精确名已注册（exact_match=true），softprops/goji \\\"Rust interface for Jira\\\"，最新版 0.2.4、共 7 个版本、总下载 17,992、updated_at 2018-07-22——与断言逐项一致；GitHub 仓库 (https://github.com/softprops/goji) 143 commits、README 署名止于 2018（Doug Tangren 2016-2018），休眠 8 年属实。(2) 同域近名搜索 (https://crates.io/…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "verify:英国 Currys 旗下 Goji 消费电子品牌",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "accca86c3bff920a8",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败，断言成立且各事实腿均经 2026-11-06 实搜独立查…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：英国 Cu…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973773770,
+      "tokens": 59015,
+      "toolCalls": 9,
+      "durationMs": 300652,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败，断言成立且各事实腿均经 2026-11-06 实搜独立查证：\\n\\n1) 品牌活跃——直证。用服务端 reader 直接抓取断言所引品类页 https://www.currys.co.uk/tv-and-audio/headphones/headphones/goji 返回完整在售页：12 款 GOJI 耳机可加购（GTCBTNC24/GTCNCPM21/GKDTWSW24/GLITVBT18/GMNTWS25/GTSTWSW25/GTCNCTW22/GSKTWS25/GKIDBTB25 等），SKU 年缀 21/22/24/25 显示逐年续新至 2025 型号年；另一品类页 https://www.currys.co.uk/computing/computer-accessories/tablet-cases-and-keyboa…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "verify:Blue Goji LLC 在美申请 GOJI",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a2f004ffa1d2e3eb7",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核结论：断言核心成立（holds=true），但两处细节需修正—…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：Blue …",
+      "promptFramed": true,
+      "lastProgressAt": 1793973814462,
+      "tokens": 92043,
+      "toolCalls": 10,
+      "durationMs": 341344,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核结论：断言核心成立（holds=true），但两处细节需修正——一处削弱风险面，一处反而加重。已核事实：(1) 申请真实存在——GOJI，SN 90608024，申请人 Blue Goji LLC（Austin, TX），2021-03-28 提交，覆盖 5 类（9/28/41/42/44），第 9 类商品为\\\"可下载或录制计算机游戏软件；健身软件；健康追踪软件；健康功能评估软件\\\"（Justia 页实抓：https://trademarks.justia.com/906/08/goji-90608024.html ；Trademarkia 页实抓：https://www.trademarkia.com/goji-90608024 ）。(2) \\\"尚未注册\\\"成立——Trademarkia 实时页显示 Status=Live/Pendin…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 11,
+      "label": "verify:Blue Goji 已注册的 GOJI 系列商标",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a30230e8d8109e4d2",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "复核成立（反驳失败），但断言有两处事实错误和一处时效过时，…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：Blue …",
+      "promptFramed": true,
+      "lastProgressAt": 1793974040933,
+      "tokens": 63302,
+      "toolCalls": 26,
+      "durationMs": 567815,
+      "resultPreview": "{\"holds\":true,\"note\":\"复核成立（反驳失败），但断言有两处事实错误和一处时效过时，均经 TTABVUE 官方一手数据核验（2026-11-06 实抓）。【证实部分】(1) TTABVUE 按当事人检索 \\\"Blue Goji\\\" 命中 9 条程序记录（https://ttabvue.uspto.gov/ttabvue/v?pnam=Blue+Goji）；(2) 撤销程序 92079346 确实存在且 Blue Goji, LLC 是 Petitioner（原告）：Blue Goji, LLC v. Gojji, Inc.，2022-03-26 立案，申请撤销 Gojji 的 GOJJI 注册 6007893/6007896，理由 Section 2(d) 混淆可能（程序页 https://ttabvue.uspto.gov/ttabvue/v?pno=92079346&…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 12,
+      "label": "verify:软件圈已有多个同名 Goji 项目（goji.i",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a179a8fa404f04932",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败，断言成立（caution 级，定级恰当）。逐点实查：(…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：软件圈已有…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973644905,
+      "tokens": 42519,
+      "toolCalls": 9,
+      "durationMs": 171787,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败，断言成立（caution 级，定级恰当）。逐点实查：(1) goji.io 确为 Go 极简 HTTP 路由/复用器，zenazn/goji README 原口号 \\\"high in antioxidants\\\"，3.6k stars（https://goji.io；https://github.com/zenazn/goji）；(2) pkg.go.dev 在册 module goji.io（v2.0.2+incompatible 发布 2019-01-26，最高 v3，720 包导入），现仓库 github.com/goji/goji 973 stars、README 仍引早已停服的 Travis CI，2026 年视角明确休眠——「2019 后基本停更」与实况相符（https://pkg.go.dev/goji.io；http…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 13,
+      "label": "verify:哥斯拉（Gojira）联想强且无害：Goji 是",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a952d77aa6537de9d",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471070,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核后断言成立，五项事实主张均经独立来源证实，反驳尝试…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：哥斯拉（G…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973758719,
+      "tokens": 48662,
+      "toolCalls": 14,
+      "durationMs": 285601,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核后断言成立，五项事实主张均经独立来源证实，反驳尝试全部失败：(1) 词源——Wikipedia 原文确认 Gojira 为 gorira(ゴリラ)+kujira(クジラ) 合成词（https://en.wikipedia.org/wiki/Godzilla；Honda 遗孀争议仅针对命名轶事由来，不动摇合成词结构本身）。(2) 英语粉圈缩写体系——被引 Reddit 帖实测含 Shodaigoji/GyakushuGoji/KingGoji/MosuGoji/Biogoji/GareGoji 等「〜Goji」系列（https://www.reddit.com/r/GODZILLA/comments/15oyjx1/oh_your_a_godzilla_fan_eh_name_every_godzilla），Wikizilla 记载 Gar…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 14,
+      "label": "verify:中文语境：枸杞绑定「保温杯里泡枸杞」中年养生自嘲",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "aad1a053085cf5c38",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471071,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核后断言成立（severity: caution，非 blocker）。逐项独…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：中文语境：…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973668589,
+      "tokens": 43530,
+      "toolCalls": 7,
+      "durationMs": 195471,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核后断言成立（severity: caution，非 blocker）。逐项独立查证如下：\\n\\n1) 百度百科词条【核实】。WebFetch 直接抓取 baike.baidu.com/item/保温杯配枸杞/22839301 返回 403（百科反爬），但 WebSearch 以「人到中年不得已 保温杯里泡枸杞 网络流行语」检索，该词条原 URL 即为榜首命中，摘要确认其为网络流行语词条、释义为中年养生/自嘲式健康管理——与断言引用一致。检索方式已注明（403 拦截 + 搜索引擎快照交叉验证）。\\n\\n2) 新华社科普跟进【核实，且为近事】。直接抓取断言所附 news.cn 原链接成功：2025-12-10 新华社音视频部《秀我中国｜\\\"保温杯泡枸杞\\\"不是人人适宜 中医教你科学食用》，开篇即\\\"'保温杯里泡枸杞'已经成为不少人的日常养生习…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 15,
+      "label": "verify:俄语圈是唯一较硬的负面联想：годжи（goji",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a7bdb1e12545806d8",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973471071,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核结论：断言核心成立，反驳失败；但其严重度自评（cauti…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：俄语圈是唯…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973708665,
+      "tokens": 52574,
+      "toolCalls": 10,
+      "durationMs": 235546,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核结论：断言核心成立，反驳失败；但其严重度自评（caution 级、仅俄语传播诉求计入权重）恰好恰当，不升不降。逐项查证：① otzovik 差评实锤——直接抓取 https://otzovik.com/review_1886770.html ，标题原文《Ягоды Годжи — Развод для дураков》（\\\"傻子才买的骗局\\\"），发布 2015-03-13、购买年份 2014，缺点栏\\\"Эффекта нет\\\"（无效果）、\\\"推荐朋友：否\\\"，该品类共 241 条评测，与断言\\\"2014–2019 大量差评\\\"吻合；② Дзен视频《Ягоды годжи или как нас обманули китайцы》按精确标题检索命中断言所引同一 URL（https://www.yandex.com.tr/video/to…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 16,
+      "label": "verify:开发者圈误读面：goji.io 是既有 Go 语",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a7cd667533b435b83",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973551043,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立（caution 级，非 blocker）。逐项独立查证：(1) 事实…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：开发者圈误…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973706253,
+      "tokens": 39879,
+      "toolCalls": 9,
+      "durationMs": 155209,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立（caution 级，非 blocker）。逐项独立查证：(1) 事实引文准确——goji.io 首页自述原文即 \\\"A minimalistic and flexible request multiplexer for Go\\\"（https://goji.io）；\\\"high in antioxidants\\\" slogan 确认在旧仓库 About 描述 \\\"Goji is a minimalistic web framework for Golang that's high in antioxidants\\\"（https://github.com/zenazn/goji，3644 stars，未归档）。(2) 搜索撞名实测成立——Google 搜 \\\"goji github\\\" 前排即 github.com/goji/goji 与 …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 17,
+      "label": "verify:最重要项：crates.io 裸名 goji 已",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a2ad81aef10884196",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973627225,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败，断言核心全部逐字坐实，无法推翻；仅一处次要谱…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：最重要项：…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973786698,
+      "tokens": 39022,
+      "toolCalls": 10,
+      "durationMs": 159473,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败，断言核心全部逐字坐实，无法推翻；仅一处次要谱系细节（fork 说法）被证伪，且该细节被证伪后反而略微加强风险。逐项核验：【坐实·裸名被占】crates.io API (https://crates.io/api/v1/crates/goji) 返回：name=\\\"goji\\\"，description=\\\"Rust interface for Jira\\\"，created_at=2016-12-02T14:20:49Z，updated_at=2018-07-22，max_version=0.2.4（发版于 2018-07-22），总下载 17992（≈1.8 万）、近 90 天 182——与断言的每个数字完全一致。休眠时长：2018-07-22 → 2026-11-06 = 8 年 3 个月，\\\"休眠约 8 年\\\"成立。【坐实·仓库状…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 18,
+      "label": "verify:GitHub 组织 github.com/goj",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a42b68952629a707c",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973638355,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败——断言全部数据点经独立取证精确成立。(1) GitHub …",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：GitHu…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973729128,
+      "tokens": 37184,
+      "toolCalls": 5,
+      "durationMs": 90773,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败——断言全部数据点经独立取证精确成立。(1) GitHub API（https://api.github.com/users/goji，2026-11-06 实查）：type=Organization，bio=\\\"Goji community contributions\\\"，blog=https://goji.io，created_at=2014-05-12T07:45:47Z（与断言\\\"2014-05-12\\\"逐位一致），public_repos=8。(2) 仓库清单（https://api.github.com/users/goji/repos）：8/8 全部为 Go 语言；主仓库 goji 973 星、pushed_at=2022-07-26T04:51:22Z、未归档——与断言\\\"973 星 / 最后更新 2022-07-26…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 19,
+      "label": "verify:PyPI goji 已被占且活跃维护中（2025",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a20a65fed3e9176f3",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973644906,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败，断言核心成立。(1) 占名与作者属实：PyPI goji …",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：PyPI …",
+      "promptFramed": true,
+      "lastProgressAt": 1793973829369,
+      "tokens": 41560,
+      "toolCalls": 10,
+      "durationMs": 184463,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败，断言核心成立。(1) 占名与作者属实：PyPI goji 页面与 JSON API 均显示 author \\\"Kyle Fuller\\\" <kyle@fuller.li>、maintainer kylef、摘要 \\\"Command line JIRA client\\\"（https://pypi.org/project/goji/ 、https://pypi.org/pypi/goji/json）。(2) 版本与日期属实：info.version=0.6.0，wheel/sdist 上传时间 2025-03-10T19:41:56Z/58Z，且截至 2026-11-06 无更新版（0.6.0 仍为最新），\\\"最新版 0.6.0 于 2025-03-10 发布\\\"精确成立。(3) \\\"四个包管理器里唯一活跃\\\"在可查 registry …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 20,
+      "label": "verify:npm goji 已被占，2015 年起休眠 1",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a58367fea10e42585",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973668590,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立，对抗复核未能推翻，实情甚至更甚。证据：(1) https:/…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：npm g…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973746935,
+      "tokens": 36036,
+      "toolCalls": 5,
+      "durationMs": 78345,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立，对抗复核未能推翻，实情甚至更甚。证据：(1) https://registry.npmjs.org/goji —— name=goji，description 逐字为 \\\"An HTML templating engine inspired by Thymeleaf\\\"，author=James Sumners、maintainer=jsumners，repository=git+https://github.com/jsumners/goji.git，dist-tags.latest=0.9.1；time 显示 0.1.0 发布于 2014-12-10、0.9.1 发布于 2015-06-09（0.9.0 同日更早），共 11 个版本，与断言的版本号/日期完全一致；time.modified=2022-06-18 仅为元数据刷新而非新…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 21,
+      "label": "verify:goji.io 域名被旧 Go 框架官网占用的额",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "ae1d4f07251c59753",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973706254,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立，独立查证无法反驳，且实际情况比断言所述更不利一分…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：goji.…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973960756,
+      "tokens": 42396,
+      "toolCalls": 17,
+      "durationMs": 254502,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立，独立查证无法反驳，且实际情况比断言所述更不利一分（goji.dev 并非无主空置）。【goji.io 占用与在线】2026-11-06 WebFetch 实抓 https://goji.io 成功：页面即 Go 语言 Goji 路由框架官网，副标题逐字为 \\\"A minimalistic and flexible request multiplexer for Go\\\"，Quick Start 含 `go get goji.io`，链接指向 github.com/goji/goji；同日 curl 直测返回 `200 https://goji.io/`，「仍在线 HTTP 200」属实。DoH（dns.google）证实 goji.io → A 66.241.125.4（Fly.io 托管）、NS 为 Google Cloud DNS（…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 22,
+      "label": "verify:Firefox 教训：自然名在开发者生态内撞车，",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a5481055b27f17ce6",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973708665,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "反驳失败，断言核心事实全部经独立来源证实。(1) Phoenix 时期…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：Firef…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973882877,
+      "tokens": 40249,
+      "toolCalls": 9,
+      "durationMs": 174211,
+      "resultPreview": "{\"holds\":true,\"note\":\"反驳失败，断言核心事实全部经独立来源证实。(1) Phoenix 时期与商标逼改：Wikipedia Firefox 条目明言\\\"Phoenix was renamed in 2003 due to a trademark claim from Phoenix Technologies\\\"；Mozilla 官方博客（Phoenix 0.1 里程碑帖，亲历者 Gervase Markham 评论）第一方佐证\\\"an approach from the Phoenix BIOS people because of their Phoenix FirstView Connect product\\\"，且当时 Phoenix 名还同时撞了开源 Java Server 框架与邮件客户端——自然名在开发者生态内连环撞车的实锤（https://en.wikipe…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 23,
+      "label": "verify:「Goji」在科技界已有先占：内核/OS 品类无",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "af5159216b6325fe1",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793973729129,
+      "queuedAt": 1793973471060,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败，断言核心全部成立，仅两处措辞瑕疵不改变实质。(…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Goji」（枸杞的英文名）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在技术文档、commit 信息、对外介绍里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到 URL 的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Goji，有人提出以下风险断言，你的职责是独立查证并尽力反驳它（风险可能被夸大、来源过时、领域距离其实很远、或断言本身查无实据）。断言标题：「Goji…",
+      "promptFramed": true,
+      "lastProgressAt": 1793973901888,
+      "tokens": 43696,
+      "toolCalls": 12,
+      "durationMs": 172759,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败，断言核心全部成立，仅两处措辞瑕疵不改变实质。(1) crates.io API 实测（https://crates.io/api/v1/crates/goji）逐项命中断言②：softprops 的 \\\"Rust interface for Jira\\\"，v0.2.4，updated_at=2018-07-22，downloads=17992（≈1.8万），recent_downloads=182，7 版本未 yank，休眠 8 年——若以 crate 形式发布确需改名。(2) Go 生态属实但归属有瑕疵：'high in antioxidants' tagline 实测在旧仓库 zenazn/goji 的 GitHub description（https://github.com/zenazn/goji，3644 stars，\\\"…"
+    }
+  ],
+  "totalTokens": 1139707,
+  "totalToolCalls": 302
+}
