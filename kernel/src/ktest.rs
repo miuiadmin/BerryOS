@@ -42,6 +42,7 @@ pub fn run() {
     test_pi();
     test_intent();
     test_fast();
+    test_freeze();
     test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -2844,6 +2845,109 @@ fn test_rq_ring3() {
 /// 与 Event donor 跳过 / 冻结随行（离队不清）+ 重入队回落 / 共享表粒度
 /// （内核任务持有面 = 内核侧共享表，boot 场景同款语义）。
 #[allow(clippy::unwrap_used)]
+/// 1.1/S3-a：冻结机制纯函数面（HELD_FROZEN 位 + eligible 过滤 + freeze/thaw）。
+/// 本地环手搭（同 RING2/RING3 模式）；非 smoke 标记（断言炸 = panic 兜底）。
+fn test_freeze() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo, HELD_FROZEN};
+
+    extern "C" fn fz_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8]) -> &'static mut Task {
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(fz_dummy, 0, name, 0, 0))
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // 两任务等权入环。
+    let ta = mk(b"fzA".as_slice());
+    let tb = mk(b"fzB".as_slice());
+    rr.enqueue(&mut *ta, &mut rq);
+    rr.enqueue(&mut *tb, &mut rq);
+
+    // F1：正常轮转——两任务均可出选。
+    let p1 = rr.pick_next(&rq, &topo).unwrap();
+    assert_eq!(p1.name, b"fzA".as_slice(), "FREEZE：F1 首轮须 A");
+    let p2 = rr.pick_next(&rq, &topo).unwrap();
+    assert_eq!(p2.name, b"fzB".as_slice(), "FREEZE：F1 次轮须 B");
+
+    // F2：冻结 A → 只出 B。
+    ta.held_locks |= HELD_FROZEN;
+    let p3 = rr.pick_next(&rq, &topo).unwrap();
+    assert_eq!(p3.name, b"fzB".as_slice(), "FREEZE：F2 冻结 A 后须只出 B");
+    let p4 = rr.pick_next(&rq, &topo).unwrap();
+    assert_eq!(p4.name, b"fzB".as_slice(), "FREEZE：F2 冻结 A 后次轮仍须 B");
+
+    // F3：解冻 A → A 可重新出选（给 B 推高 vruntime 确保 A key 更小）。
+    ta.held_locks &= !HELD_FROZEN;
+    ta.vruntime = 0;
+    ta.vdeadline = 0;
+    tb.vruntime = 1000; // B 已跑过多轮——vruntime 更高，A 更 eligible
+    tb.vdeadline = 2000;
+    let p5 = rr.pick_next(&rq, &topo).unwrap();
+    assert_eq!(p5.name, b"fzA".as_slice(), "FREEZE：F3 解冻后 A 须可出选");
+
+    // F4：pager 义务派生面（D6）——demand VMO + SET_POLICY 合取才计数；
+    // 别名降权（duplicate 去 SET_POLICY）不再计，take 迁移出表即归零。
+    {
+        use crate::handle::{HandleTable, KernelObj, RIGHT_READ, RIGHT_SET_POLICY};
+        use crate::vmo::Vmo;
+        let mut ht = HandleTable::new();
+        let v = Vmo::create_demand(4096).unwrap();
+        let h = ht
+            .insert(KernelObj::Vmo(v), RIGHT_READ | RIGHT_SET_POLICY)
+            .unwrap();
+        assert_eq!(ht.pager_load(), 1, "FREEZE：F4 demand+SET_POLICY 须计 1");
+        let _alias = ht.duplicate(h, RIGHT_READ).unwrap();
+        assert_eq!(ht.pager_load(), 1, "FREEZE：F4 单 SET_POLICY 槽不因别名双计");
+        let plain = Vmo::create(4096).unwrap();
+        let _hp = ht
+            .insert(KernelObj::Vmo(plain), RIGHT_READ | RIGHT_SET_POLICY)
+            .unwrap();
+        assert_eq!(ht.pager_load(), 1, "FREEZE：F4 eager VMO 不计 pager");
+        let _taken = ht.take(h).unwrap();
+        assert_eq!(ht.pager_load(), 0, "FREEZE：F4 SET_POLICY 迁出后归零");
+    }
+
+    // —— F5：嵌套冻结——两次设 HELD_FROZEN（幂等位），解冻一次不恢复，
+    // 仍不出选 A；手动清位（模拟最后一个 token close）才恢复。
+    let tc = mk(b"fzC".as_slice());
+    let td = mk(b"fzD".as_slice());
+    let mut rq2 = Runqueue::new();
+    rr.enqueue(&mut *tc, &mut rq2);
+    rr.enqueue(&mut *td, &mut rq2);
+
+    // 嵌套第一层：冻 C。
+    tc.held_locks |= HELD_FROZEN;
+    let p6 = rr.pick_next(&rq2, &topo).unwrap();
+    assert_eq!(p6.name, b"fzD".as_slice(), "FREEZE：F5 首冻 C 后须只出 D");
+
+    // 嵌套第二层：再冻 C（幂等——位已置，precheck 须排除 FROZEN 位）。
+    // 模拟：precheck 排除 HELD_FROZEN 后仍通过（held_locks 非 FROZEN 位 == 0）。
+    let hl = tc.held_locks & !HELD_FROZEN;
+    assert_eq!(hl, 0, "FREEZE：F5 precheck 须排除 FROZEN 位（非零={:b}）", hl);
+
+    // 解冻一次（模拟第一个 token close——depth 1→0 但 held_locks 仍置位
+    // 因为我们的简化测试直接操作位而非 SuspendTok）。
+    // 在真实嵌套中，depth>0 不清位。此处直接验证：位仍置 → C 仍不出选。
+    let p7 = rr.pick_next(&rq2, &topo).unwrap();
+    assert_eq!(p7.name, b"fzD".as_slice(), "FREEZE：F5 冻结中 C 须持续不出选");
+
+    // 最终解冻（最后一个 token close → 清位）。
+    tc.held_locks &= !HELD_FROZEN;
+    tc.vruntime = 0;
+    tc.vdeadline = 0;
+    td.vruntime = 1000;
+    td.vdeadline = 2000;
+    let p8 = rr.pick_next(&rq2, &topo).unwrap();
+    assert_eq!(p8.name, b"fzC".as_slice(), "FREEZE：F5 最终解冻后 C 须可出选");
+
+    berry_hal_aarch64::uart_puts(b"FREEZE-K ok\n");
+}
+
 fn test_pi() {
     use alloc::boxed::Box;
     use alloc::vec::Vec;

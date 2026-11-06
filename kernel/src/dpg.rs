@@ -260,7 +260,8 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
                 // syscall——池满即印作**溢出观测面**唯一活证（区别于子刀 A
                 // 的 `DPG dm=` 深度峰值证据行——同为非标记观测族）。smoke
                 // 全拓扑 N=4<K=8 零发（lockdep 相 2 断零计）；C-full N=15
-                // 每次遇满池即印，总量待 C-full 实测。KL→PRINT（rank 7 最内）锁序合法；非标记
+                // 满配实测（两树双相 + 复建）五跑恒 7（ovfl=7 档 = dpgsoak
+                // 四绿档 + face-1 复建档实证）。KL→PRINT（rank 7 最内）锁序合法；非标记
                 // 不入数组）。
                 hal::kern_lock::with_print_lock(|| {
                     hal::uart_puts(b"DPG ovfl\n");

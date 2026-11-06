@@ -59,6 +59,8 @@
   python3 tools/bench.py --rt        # R-1：裸跑（fw_cfg 门控 rt_probe）出三档表
   python3 tools/bench.py --lat       # G3-4 bench-lat：-smp 2（fw_cfg 门控 lat 对）
                                       # wake→run 出 lane 表（IPC 路在册）
+  python3 tools/bench.py --dpg       # G4-3 D/E 刀：dpgb/dpge 门控变体卷双 boot
+                                      #（D 首触延迟出表 + E footprint 差分断言）
   python3 tools/bench.py --icount    # B-2：-icount 确定性跑一次 + L2 对拍
                                       #（无基线 = 只出表 + 提示 --update）
   python3 tools/bench.py --icount --update  # B-2：立/刷 icount 基线（独立单段
@@ -123,6 +125,13 @@ BOOT_TIMEOUT_RT = 120
 # 墙钟更长）远超旧帽——宿主争用（§A128 同因）下 python 先杀 = 假超时红。
 # 240 = ×2 律下限；超帽仍 loud 上报不硬凑绿。
 BOOT_TIMEOUT_LAT = 240
+# G4-3 D 刀帽（--dpg D 臂）：rootfs 走查 ~60-90s + dpg_bench 32 供给（TCG
+# 弹性）+ 余量——300s = ~3x。
+DPG_BOOT_TIMEOUT_D = 600
+# G4-3 E 刀帽（--dpg E 臂）：boot ~60s + svcmgr 预滚 340s + 4×130s 窗 +
+# spawn/poll 余量 ≈ 16min guest 钟（TCG guest 钟 = 墙钟，§A8；宿主争用面
+# §A128 只多不少）——1600s ≈ 1.7x 余量；超帽 loud 上报不硬凑绿。
+DPG_BOOT_TIMEOUT_E = 1600
 # B-2 通道帽：与 vanilla BOOT_TIMEOUT=120 同口径、不放大。实测依据（M 系
 # mac，QEMU 11.0.3，2026-10-27 首跑探针）：boot 到 BENCHWAKE 全程 ≈2s——
 # sleep=off 下虚拟时钟纯指令驱动，「-icount 慢 2-4x」预期被实测反驳
@@ -616,6 +625,197 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
     return rows
 
 
+# ---- G4-3 D/E 刀通道（--dpg；调页 breakdown §7 D/E 面）----
+
+# D 刀收割行（svcmgr dpg_bench 手排行；带参形态防子串混叠——与 DPGF/DPG ok
+# 位 3 B≠F 双距互斥）。**非锚定**：串口多生产者拼行（run5 实证 PAR 字母流
+# 与 DPGB 同行无换行、内核 switches= 行亦拼在字母流中）——^…$ 锚必 miss。
+DPGB_RE = re.compile(r"DPGB p50=(\d+) p99=(\d+) min=(\d+) max=(\d+) n=(\d+)")
+# E 刀相位标记（svcmgr dpg_foot 6 字节行；帧序 A→B→C→E）——子串 find，
+# 拼行免疫。
+DPGE_MARKERS = ("DPGE A", "DPGE B", "DPGE C", "DPGE E")
+# soakmon 心跳 pages= 字段（内核 main.rs 9 字段行 `SOAK t=… pages=<n> lost=…`；
+# 60s 拍、首拍潜伏 5 拍 ≈ 300s）。**非锚定**同 DPGB_RE——内核行也会被并发
+# 前缀拼行（switches= 实证）；行内原子性由单次 uart_puts 整行写保证。
+SOAK_PAGES_RE = re.compile(r"SOAK .*?pages=(\d+)")
+
+
+def dpg_variant(gate: str) -> Path:
+    """门控变体卷：rootfs.cpio TRAILER 前手术追 `<gate>.on` 空档（smoke-
+    dpgsoak 同款 newc 逻辑；TRAILER 名域 rfind 定位 = 档尾真 trailer，数据
+    内偶合 ASCII 被跳过）。确定性产物：同输入同字节。"""
+    sys.path.insert(0, str(REPO / "tools"))
+    from mkcpio import entry
+
+    variant = REPO / f"rootfs.{gate}.cpio"
+    blob = ROOTFS.read_bytes()
+    name_pos = blob.rfind(b"TRAILER!!!")
+    if name_pos <= 0:
+        raise SystemExit("bench.py: rootfs.cpio 无 TRAILER——档坏（先 just build-user）")
+    out = blob[: name_pos - 110]
+    out += entry(gate.encode() + b".on", b"", 0xF0000001)  # ino 避开正装递增域
+    out += entry(b"TRAILER!!!", b"", 0)
+    out += b"\0" * (-len(out) % 4)
+    variant.write_bytes(out)
+    return variant
+
+
+def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
+             log_kind: str) -> str:
+    """D/E 共形 boot：**满配设备面**（dpgsoak 同款——vblk 预拉扫 MMIO 无盘
+    即 loud 自陷 → G1.5 杀数 2>1 panic；TCPS 相先于 dpg 位 ⇒ echod 对端
+    在席；evs/skt 非本终态依赖〔f4 C-full concur-2〕）+ -smp 2（家族对照
+    口径一致）→ 轮询临时日志至 done_pat → SIGTERM+wait+3s 串口落定 →
+    杀 echod → 返回串口全文。E 臂 soak=True 追加 opt/berry/soak 心跳门。"""
+    # 变体越帽执法（CRIT-CF1 判例：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB =
+    # main.rs 静默 return None，门 miss → 烧帽且无成因行——越帽即 loud 拒入）。
+    vsz = variant.stat().st_size
+    if vsz > 33_554_432:
+        raise SystemExit(
+            f"bench.py: 变体卷 {variant.name} {vsz}B 越内核 ROOTFS_MAX 32MiB "
+            "帽（fw_cfg 静默拒收面）——瘦身 rootfs 后重建")
+    # 端口让场（smoke/soak 族同值端口 = 天然串行协议；被占即退）。
+    if subprocess.run(["lsof", "-nP", "-iTCP:18080-18083", "-sTCP:LISTEN"],
+                      capture_output=True).returncode == 0:
+        raise SystemExit("bench.py: 18080-18083 端口族被占（lsof）——兄弟 "
+                         "smoke/soak 线在跑？让场后重试")
+    # 1MiB 盘 + LBA0 印章（dpgsoak 同款；盘名专属防覆写兄弟线活盘）。
+    disk = REPO / "disk.dpg.img"
+    subprocess.run([sys.executable, str(REPO / "tools" / "mkfat.py"), str(disk)],
+                   check=True)
+    with open(disk, "r+b") as f:
+        f.write(b"BERRYOSVBLK!")
+    qemu_cmd = [
+        "qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72",
+        "-m", "128M", "-nographic", "-kernel", kernel, "-smp", "2",
+        "-fw_cfg", f"name=opt/berry/rootfs,file={variant.resolve()}",
+        "-global", "virtio-mmio.force-legacy=false",
+        "-drive", f"if=none,id=drv0,format=raw,file={disk},"
+                  "cache.writeback=off",
+        "-device", "virtio-blk-device,drive=drv0",
+        "-netdev", "user,id=n0,hostfwd=tcp::18081-:18081,"
+                   "hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083",
+        "-device", "virtio-net-device,netdev=n0",
+        "-device", "virtio-tablet-device,id=tab0",
+    ]
+    if soak:
+        qemu_cmd += ["-fw_cfg", "name=opt/berry/soak,string=1"]
+    with tempfile.NamedTemporaryFile(
+        prefix=f"berryos-bench-dpg-{log_kind}.", suffix=".log", delete=False
+    ) as tf:
+        log_path = tf.name
+    # echod 对端（宿主 18080；guest 经 10.0.2.2 撞回环，无需 hostfwd）。
+    echod = subprocess.Popen(
+        [sys.executable, str(REPO / "tools" / "echod.py")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    qemu_preflight()  # 跨进程串行守卫（run_rt 同款）
+    proc = subprocess.Popen(
+        qemu_cmd,
+        stdin=subprocess.DEVNULL, stdout=open(log_path, "w"),
+        stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    try:
+        deadline = time.time() + cap
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break  # QEMU 提前退出（崩溃）——带现有日志走收割失败路径
+            text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            if done_pat in text:
+                break
+            time.sleep(1)
+    finally:
+        # run_rt 同款：halt 后不退出，收完即杀（kill 后补 wait 收尸）；
+        # SIGTERM 后 3s 串口落定（dpgsoak A-6 实证同款）再读终态。
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        time.sleep(3)
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+        echod.terminate()
+        echod.wait(timeout=5)
+    if done_pat in text:
+        Path(log_path).unlink(missing_ok=True)
+        return text
+    # 失败保留串口全文（诊断面：S-C2 同族——烧帽档须可复核）。
+    raise SystemExit(
+        f"bench.py: `{done_pat}` {cap}s 未出现（boot 失败 / svcmgr dpg 链"
+        f"降级（eco 行）/ 门控卷未递？）——串口全文保留：{log_path}"
+        f"（尾部：{' | '.join(text.splitlines()[-5:])}）")
+
+
+def run_dpg(kernel: str) -> None:
+    """G4-3 D/E 刀通道（只出表不对拍——R-1/lat 同族独立通道：D 延迟 = TCG
+    墙钟面无基线门禁语义；证据档 = write_receipt 落盘）。
+
+    D 臂（dpgb.on）：单子 32 页顺序首触 × 一对一供给，faulter 侧 clock 环夹
+    → `DPGB p50= p99= min= max= n=32` 收割出表。
+    E 臂（dpge.on + opt/berry/soak）：demand 8 触 vs eager 32 页 commit 的
+    soakmon `pages=` 心拍差分——「标记前最近拍」配对 d=pB−pA / e=pC−pB
+    （**窗在标记前** = svcmgr dpg_foot 帧序契约），d<e 结构断言（demand 省
+    ≈24 页面 + 元页）；帧序 DPGE A→B→C→E + 相邻标记间 ≥2 拍窗完整性。
+    """
+    if not ROOTFS.exists():
+        raise SystemExit("bench.py: rootfs.cpio 缺席——先 just build-user")
+    # D 臂。
+    text_d = dpg_boot(kernel, dpg_variant("dpgb"), False, "DPGB p50=",
+                      DPG_BOOT_TIMEOUT_D, "d")
+    m = DPGB_RE.search(text_d)
+    if m is None:
+        raise SystemExit(
+            "bench.py: DPGB 行形态不符（改 svcmgr dpg_bench 后同步本正则）"
+            f"——串口尾部：{' | '.join(text_d.splitlines()[-5:])}")
+    p50, p99, mn, mx, n = (int(x) for x in m.groups())
+    if n != 32:
+        raise SystemExit(f"bench.py: DPGB n={n} ≠ 32（行生成/收割双源漂移）")
+    print(f"[G4-3(D)] p50={p50}ns p99={p99}ns min={mn}ns max={mx}ns n={n}")
+    # E 臂。
+    text_e = dpg_boot(kernel, dpg_variant("dpge"), True, "DPGE E",
+                      DPG_BOOT_TIMEOUT_E, "e")
+    beats = [(b.start(), int(b.group(1))) for b in SOAK_PAGES_RE.finditer(text_e)]
+    if not beats:
+        raise SystemExit(
+            "bench.py: E 臂无 SOAK 心跳行（fw_cfg opt/berry/soak 未递 / 内核"
+            " soakmon 未启？）——串口尾部："
+            f"{' | '.join(text_e.splitlines()[-5:])}")
+    pos: dict[str, int] = {}
+    for mk in DPGE_MARKERS:
+        p = text_e.find(mk)
+        if p < 0:
+            raise SystemExit(f"bench.py: E 臂 `{mk}` 标记缺席（帧中断）")
+        pos[mk] = p
+    if [pos[mk] for mk in DPGE_MARKERS] != sorted(pos.values()):
+        raise SystemExit(f"bench.py: E 臂 DPGE 标记行序错乱（{pos}）")
+    # 标记前最近拍（配对口径单一事实源在本处 + svcmgr 帧序注释）。
+    last: dict[str, int] = {}
+    for mk, p in pos.items():
+        prev = [v for s, v in beats if s < p]
+        if not prev:
+            raise SystemExit(f"bench.py: E 臂 `{mk}` 前无 SOAK 拍（预滚不足？）")
+        last[mk] = prev[-1]
+    # 窗完整性：相邻标记间 ≥2 拍（130s 窗 × 60s 拍契约）。
+    for lo, hi in (("DPGE A", "DPGE B"), ("DPGE B", "DPGE C"), ("DPGE C", "DPGE E")):
+        n_between = sum(1 for s, _ in beats if pos[lo] < s < pos[hi])
+        if n_between < 2:
+            raise SystemExit(
+                f"bench.py: E 臂 {lo}→{hi} 窗内拍数 {n_between} < 2（窗口/心跳"
+                "契约破——改 svcmgr DPGE_WINDOW_NS 或内核心跳周期须同步）")
+    pa, pb, pc = last["DPGE A"], last["DPGE B"], last["DPGE C"]
+    d, e = pb - pa, pc - pb
+    if not (d < e):
+        raise SystemExit(
+            f"bench.py: E 刀结构断言败：d={d} !< e={e}（demand 8 触增量应显著"
+            f"小于 eager 32 页 commit 增量；pA={pa} pB={pb} pC={pc}）")
+    print(f"[G4-3(E)] pA={pa} pB={pb} pC={pc} | d(demand 8触)={d} "
+          f"e(eager 32页)={e} | d<e ok（差 {e - d} 页）")
+    write_receipt(
+        "dpg", text_d + "\n===== E 臂 =====\n" + text_e,
+        f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}\n"
+        f"E: pA={pa} pB={pb} pC={pc} d={d} e={e} (d<e)")
+
+
 def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], dict[str, int], str]:
     """B-2 通道：`-icount shift=1,sleep=off` 裸跑，等 boot 尾 `BENCHWAKE n=`，
     双面收割 → ({name: cyc_per_op}, {name: iters}, BENCHWAKE 整行)。
@@ -1020,6 +1220,10 @@ def main() -> None:
     ap.add_argument("--prove", action="store_true",
                     help="五跑证明（--icount 专属：漂移谱 + verdict，观测 only"
                          "——不写基线不进门禁）")
+    ap.add_argument("--dpg", action="store_true",
+                    help="G4-3 D/E 通道：dpgb/dpge 门控变体卷双 boot——D 首触"
+                         "延迟 p50/p99 出表 + E demand/eager footprint 差分"
+                         "（d<e 结构断言；R-1 同族只出表无基线，回执落盘）")
     ap.add_argument("--kernel", default=None, help="内核 ELF 路径（默认 paths.sh 解析）")
     args = ap.parse_args()
 
@@ -1076,7 +1280,22 @@ def main() -> None:
             "（双跑独占两臂 QEMU 形态——icount 家族双臂自含；--factor 会把 L2"
             " 形态降级回可调因子；--prove 只对单臂 --icount 立法）")
 
+    # --- G4-3 --dpg 专属校验（R-1/lat 同族独立通道纪律）：双臂 boot 独占
+    # 两 QEMU 形态 + 无基线段——与任一别通道组合 = 其中一条静默蒸发，一律
+    # 拒绝（逐组合说因，教学体同上）。
+    if args.dpg and (args.update or args.el0 or args.factor is not None
+                     or args.rt or args.lat or args.icount or args.prove
+                     or args.trace_dual):
+        raise SystemExit(
+            "bench.py: --dpg 独立通道（R-1 同族只出表无基线）——不与 --update/"
+            "--el0/--factor/--rt/--lat/--icount/--prove/--trace-dual 组合"
+            "（一进程一种 QEMU 形态 + 本通道双臂 boot 自含独占；D 延迟 = TCG"
+            "墙钟面无基线门禁语义，证据档 = 回执落盘；E 断言 d<e 内建于通道）")
+
     kernel = args.kernel or kernel_elf()
+    if args.dpg:
+        run_dpg(kernel)
+        return
     if args.lat:
         rows = run_lat(kernel)
         print(f"[G3-4(lat)] {'lane':<5} {'n':>4} {'min':>10} {'p50':>10} "

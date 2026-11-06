@@ -169,11 +169,14 @@ impl SchedClass for Fair {
 // 自豁免指针；park 派发态传 null：park 上下文非调度语义 Task，park 态环上
 // 无 Running 残留，null = 全跳 Running 行为等价）。
 
-/// 出选资格（S-3b 单臂形）：非 Running，或 Running 但正是 `my_cur`
-/// （pick 返自身 = 续跑不切）。
+/// 出选资格（S-3b 单臂形 + 1.1/S3 冻结位）：非 Running（或 Running 但正是
+/// `my_cur`），且未被冻结。冻结任务留在环上但永不出选——thaw 后恢复。
 #[inline]
 pub(crate) fn eligible(my_cur: *mut Task, t: *const Task) -> bool {
-    unsafe { !((*t).state == TaskState::Running && (t as *mut Task) != my_cur) }
+    unsafe {
+        !((*t).state == TaskState::Running && (t as *mut Task) != my_cur)
+            && (*t).held_locks & crate::task::HELD_FROZEN == 0
+    }
 }
 
 impl Fair {

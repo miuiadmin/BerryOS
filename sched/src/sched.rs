@@ -806,6 +806,117 @@ pub fn current_pinned() -> usize {
     }
 }
 
+/// 1.1/S3-a：冻结前置谓词——按钉住键扫描，任一任务命中即返 false。
+/// 检查项：① `pi_inherited != 0`（PI 捐赠边）；② `wait_signals` 含内核
+/// 派生位（READABLE/WRITABLE——donor 面）；③ `held_locks != 0` 或
+/// `svc_mask != 0`（SMP Running 者防御面——单核 Ready/Blocked 结构性 0）。
+pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
+    // ABI 冻结值（abi_gen SIGNAL_READABLE=1 / SIGNAL_WRITABLE=2——sched crate
+    // 不依赖 kernel handle 模块，本地镜像同值）。
+    const SIG_READABLE: u64 = 1;
+    const SIG_WRITABLE: u64 = 2;
+    if pinned == 0 {
+        return false;
+    }
+    // SAFETY: SVC 路径 KL 已持；只读扫描。
+    unsafe {
+        let check = |t: *mut Task| -> bool {
+            let t = &*t;
+            t.pi_inherited == 0
+                && t.wait_signals & (SIG_READABLE | SIG_WRITABLE) == 0
+                // 排除 HELD_FROZEN（bit6）——嵌套冻结时已置位，不应被当作
+                // 持锁拒（只有结构锁位 bit1–5 + 未来义务位 bit7 才拒）。
+                && t.held_locks & !crate::task::HELD_FROZEN == 0
+                && t.svc_mask == 0
+        };
+        // SLEEPQ
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            if (*t).pinned == pinned && !check(t) {
+                return false;
+            }
+        }
+        // 双 RQ
+        for cpu in 0..2 {
+            let mut cur = rq_of(cpu).head();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).rq_next.get();
+                if (*t).pinned == pinned && !check(t) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// 1.1/S3-a：按钉住键冻结该进程全部任务（SLEEPQ + 双 RQ 扫描）。
+/// 仅置 `frozen` 位——不改队列结构（任务留队，`Fair::eligible` 过滤）。
+/// 返回冻结数（0 = 无匹配任务）。调用侧：SVC 路径（KL 已持——单核无并发）。
+pub fn freeze_by_pinned(pinned: usize) -> usize {
+    if pinned == 0 {
+        return 0;
+    }
+    let mut count = 0;
+    // SAFETY: SVC 路径 KL 已持（单核无并发队列变更）；只写 Cell 不动链。
+    unsafe {
+        // SLEEPQ 扫描
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
+                (*t).held_locks |= crate::task::HELD_FROZEN;
+                count += 1;
+            }
+        }
+        // 双 RQ 扫描
+        for cpu in 0..2 {
+            let mut cur = rq_of(cpu).head();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).rq_next.get();
+                if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
+                    (*t).held_locks |= crate::task::HELD_FROZEN;
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+/// 1.1/S3-a：按钉住键解冻（SuspendToken Drop 路径调用）。
+pub fn thaw_by_pinned(pinned: usize) {
+    if pinned == 0 {
+        return;
+    }
+    // SAFETY: 同 freeze_by_pinned——handle close 也在 SVC/IRQ 屏蔽路径。
+    unsafe {
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            if (*t).pinned == pinned {
+                (*t).held_locks &= !crate::task::HELD_FROZEN;
+            }
+        }
+        for cpu in 0..2 {
+            let mut cur = rq_of(cpu).head();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).rq_next.get();
+                if (*t).pinned == pinned {
+                    (*t).held_locks &= !crate::task::HELD_FROZEN;
+                }
+            }
+        }
+    }
+}
+
 /// 同 [`spawn`]，但带声明档（4-3c intent 验收：借入/拒借的档位差源）。
 /// `intent` 直落 `intent_declared`/`intent_effective` 双字段——boot 可信语境
 /// 一步到位；非法值（编码域外）直接 panic（同 `new_kernel` 系 expect 政策）。

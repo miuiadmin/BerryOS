@@ -27,10 +27,11 @@ use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
     berry_pager_supply_pages, berry_process_create, berry_process_get_exit_code,
-    berry_process_start, berry_thread_create, berry_thread_sleep, berry_thread_start,
-    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
-    berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED, BERRY_ERR_AGAIN,
-    BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, BERRY_ERR_INVALID_ARG,
+    berry_process_start, berry_process_terminate, berry_thread_create, berry_thread_sleep,
+    berry_thread_start, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
+    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED,
+    BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY,
+    BERRY_ERR_INVALID_ARG,
     BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
     SIGNAL_WRITABLE, VMO_OPT_DEMAND,
@@ -186,6 +187,11 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // smoke 78 / EFI 36 计数零漂——变体卷 = tools/smoke-dpgsoak.sh 专属）；
     // 链内坏面 = eco 降级行 + 标记缺失（smoke FAIL 兜底）。----
     dpgf_selftest(console);
+    // G4-3 D/E 刀（bench.py --dpg 通道）：dpgb.on = D 首触延迟 p50/p99 /
+    // dpge.on = E footprint 差分（soakmon pages= 心跳）——cpio 具名门同
+    // dpgf.on 族，正装缺席静默零扰动。
+    dpg_bench(console);
+    dpg_foot(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
     // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
@@ -2910,9 +2916,10 @@ const DPGF2_N: usize = 3;
 /// 本栈顶 0x4000 用页 0x3000——各 8KiB 无叠，像驻页 0x1000）。
 const DPG_SP2: usize = 0x4000;
 /// 波内停泊窗（spawn 环毕 → 轮供环前）：faulter 到齐窗，把「池满溢出」
-/// 从调度竞速面升格结构面（C-3 lockdep 首跑实证：无窗 = 流水线化零溢出
-/// 假败）。250ms = 15 任务 × 双核 TCG 调度余量（含 lockdep 开销 + 宿主
-/// 争用劣化）。
+/// 从调度竞速面升格结构面（无窗 = 流水线化零溢出假败——实证档
+/// ry8D79/MdG8Xe〔lockdep banner=1 + ovfl=0 快红〕；RCjWfp 484s 烧帽 =
+/// 变体越 ROOTFS_MAX 门 miss〔CRIT-CF1〕，非本面）。250ms = 15 任务 ×
+/// 双核 TCG 调度余量（含 lockdep 开销 + 宿主争用劣化）。
 const DPGF_SETTLE_NS: u64 = 250_000_000;
 /// C-full 标记（13 字节）。**cpio 具名文件门控专属**：正装 rootfs/run/
 /// smoke/EFI 无 `dpgf.on` = 恒不打——rootfs 相 50 / 主 smoke 78 / EFI 36
@@ -2927,9 +2934,483 @@ const _: () =
 const DPGF2_OK: &[u8; 13] = b"DPGF2 ok n=3\n";
 const _: () = assert!(DPGF2_OK[11] == b'0' + DPGF2_N as u8 && DPGF2_N < 10);
 
+// ---- G4-3 D/E 刀（bench.py --dpg 通道）----
+
+/// D 刀 bench 区形状（dpgp `DPGP_BENCH_*` 同值双源——两文件各持 const 改
+/// 须双改）：32 页 demand 区 + 1 页结果区。
+const DPGB_PAGES: usize = 32;
+const DPGB_VA: usize = 0x20_0000;
+const DPGB_RES_VA: usize = 0x30_0000;
+/// bench 子标签（dpgp `DPGP_BENCH_ALL/8` 同值双源；usize = thread_start
+/// arg 形参同型）。
+const DPGB_TAG_ALL: usize = 0xB301;
+const DPGB_TAG_8: usize = 0xB302;
+/// 结果页 done 哨槽位（dpgp `DPGP_RES_DONE` 同值双源；字节偏移 = ×8）。
+const DPGB_RES_DONE: usize = 511;
+/// D 相 join 帽：32 供给 × TCG 弹性 + 余量（供给步阻塞收货无重发语义——
+/// 帽到点 = eco 降级行 + 标记缺席 = bench FAIL loud）。
+const DPGB_CAP_NS: u64 = 120 * 1_000_000_000;
+/// E 相预滚/窗宽：footprint 差分走内核 soakmon `pages=` 心跳（fw_cfg
+/// opt/berry/soak 门，60s 拍、**首拍潜伏 5 拍** = 300s）。预滚 340s =
+/// 越过首拍（本相调用点 ≈ 内核起 +45s，首拍 ≈ +345s；+余量）；窗
+/// 130s = **标记前**垫 ≥2 拍（标记先于窗 = 上一窗拍不含本相位增量——
+/// 帧序：A → 基线窗 → 起 demand 子 → B 窗毕打 B → 起 eager 子 → C 窗
+/// 毕打 C → 尾窗 → E）。
+const DPGE_PREROLL_NS: u64 = 340 * 1_000_000_000;
+const DPGE_WINDOW_NS: u64 = 130 * 1_000_000_000;
+/// E 相 done 哨轮询：250ms 步进读结果页哨位（子触面毕打 magic 哨后停泊
+/// 保活）；30s 帽 = 8 页首触 TCG 弹性 ×5 余量。
+const DPGE_POLL_NS: u64 = 250 * 1_000_000;
+const DPGE_POLL_CAP_NS: u64 = 30 * 1_000_000_000;
+/// E 相收尾 terminate 等 TERMINATED 帽（kill_all 收割停泊睡者——join 同
+/// 语义尾部，宽帽不押时序）。
+const DPGE_TERM_CAP_NS: u64 = 30 * 1_000_000_000;
+/// E 相相位标记（6 字节；"DPGE " 与 "DPGF"/"DPG ok" 位 3 E≠F/位 4 E≠空格
+/// 双距互斥——互非子串）。
+const DPGE_A: &[u8; 7] = b"DPGE A\n";
+const DPGE_B: &[u8; 7] = b"DPGE B\n";
+const DPGE_C: &[u8; 7] = b"DPGE C\n";
+const DPGE_E: &[u8; 7] = b"DPGE E\n";
+
+/// u64 十进制追加（eco 降级行手排同款无 fmt 依赖；返回新尾位）。
+fn append_u64_dec(buf: &mut [u8], at: usize, v: u64) -> usize {
+    let mut dig = [0u8; 20];
+    let mut dn = 0usize;
+    let mut x = v;
+    loop {
+        dig[dn] = b'0' + (x % 10) as u8;
+        dn += 1;
+        x /= 10;
+        if x == 0 {
+            break;
+        }
+    }
+    let mut i = at;
+    while dn > 0 {
+        dn -= 1;
+        buf[i] = dig[dn];
+        i += 1;
+    }
+    i
+}
+
+/// D 刀：缺页首触延迟 p50/p99——**faulter 侧 clock 环夹**（0x21 内 KL 窗
+/// 不可测；用户态视角含唤醒延迟最诚实——breakdown 裁决）。单子 32 页
+/// 顺序首触 × 一对一供给（单 faulter 顺序 fault = 请求序 = 供给序，源页
+/// offset 递推零错配面）；样本经结果页 VMO 回传 → 插入排序 →
+/// `DPGB p50=<ns> p99=<ns> min=<ns> max=<ns> n=32`（宿主 bench.py --dpg
+/// 收割落档）。**门 = cpio 具名文件 `dpgb.on`**（dpgf.on 同族：正装面
+/// 缺席 = 静默零扰动零新标记）；链内坏面 = eco 降级行 + 标记缺席。
+fn dpg_bench(console: Handle) {
+    if cpio_find(H_ROOTFS, b"dpgb.on").is_none() {
+        return;
+    }
+    // 源 VMO：32 页 eager，每页首 8B 预写 magic（供给页 = 源页逐字节拷贝
+    // ——子逐页验值随测正确性）。
+    let mut sv = 0 as Handle;
+    if berry_vmo_create((DPGB_PAGES * 4096) as u64, 0, &mut sv) != 0 || sv == 0 {
+        eco_note(console, b"dpgb sv");
+        return;
+    }
+    if berry_vmo_commit(sv, 0, (DPGB_PAGES * 4096) as u64) != 0 {
+        eco_note(console, b"dpgb svc");
+        return;
+    }
+    for i in 0..DPGB_PAGES {
+        if berry_vmo_write(sv, DPG_MAGIC.to_le_bytes().as_ptr(), (i * 4096) as u64, 8) != 0 {
+            eco_note(console, b"dpgb svw");
+            return;
+        }
+    }
+    // 像 VMO（dpg_selftest 同形：DPGP_BIN eager 内嵌）。
+    let mut iv = 0 as Handle;
+    if berry_vmo_create(DPG_MAP_LEN as u64, 0, &mut iv) != 0 || iv == 0 {
+        eco_note(console, b"dpgb iv");
+        return;
+    }
+    if berry_vmo_commit(iv, 0, DPG_MAP_LEN as u64) != 0
+        || berry_vmo_write(iv, DPGP_BIN.as_ptr(), 0, DPGP_BIN.len()) != 0
+    {
+        eco_note(console, b"dpgb ivw");
+        return;
+    }
+    // demand 区 VMO（32 页 demand）+ 结果页 VMO（1 页 eager——样本回传面）。
+    let mut dv = 0 as Handle;
+    if berry_vmo_create((DPGB_PAGES * 4096) as u64, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
+        eco_note(console, b"dpgb dv");
+        return;
+    }
+    let mut rv = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut rv) != 0 || rv == 0 {
+        eco_note(console, b"dpgb rv");
+        return;
+    }
+    if berry_vmo_commit(rv, 0, 4096) != 0 {
+        eco_note(console, b"dpgb rvc");
+        return;
+    }
+    // 子 = dpgf_wave 奇数形（**映射先行**——park/stbench 代码皆在像窗内，
+    // 映射后起跑零竞速）：main 停泊（bootstrap 事件句柄迁移）+ worker
+    // thread_start 裸 arg = B3_ALL（process_start 第 5 参 = 迁移语义不可传
+    // 标签，判例）。像窗@DPG_ENTRY + demand 区@DPGB_VA + 结果页@RES。
+    let mut hp = 0 as Handle;
+    let mut hv = 0 as Handle;
+    if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
+        eco_note(console, b"dpgb pc");
+        return;
+    }
+    let mut va = DPG_ENTRY;
+    if berry_vmar_map(hv, 0, iv, 0, &mut va, DPG_MAP_LEN, RIGHT_READ | RIGHT_WRITE) != 0 {
+        eco_note(console, b"dpgb imap");
+        return;
+    }
+    let mut dva = DPGB_VA;
+    if berry_vmar_map(
+        hv,
+        0,
+        dv,
+        0,
+        &mut dva,
+        DPGB_PAGES * 4096,
+        RIGHT_READ | RIGHT_WRITE,
+    ) != 0 {
+        eco_note(console, b"dpgb dmap");
+        return;
+    }
+    let mut rva = DPGB_RES_VA;
+    if berry_vmar_map(hv, 0, rv, 0, &mut rva, 4096, RIGHT_READ | RIGHT_WRITE) != 0 {
+        eco_note(console, b"dpgb rmap");
+        return;
+    }
+    let mut hev = 0 as Handle;
+    if berry_event_create(0, &mut hev) != 0 || hev == 0 {
+        eco_note(console, b"dpgb ev");
+        return;
+    }
+    let mut ht = 0 as Handle;
+    if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
+        eco_note(console, b"dpgb tc");
+        return;
+    }
+    if berry_process_start(hp, ht, DPG_ENTRY, DPG_SP, hev) != 0 {
+        eco_note(console, b"dpgb ps");
+        return;
+    }
+    let mut htw = 0 as Handle;
+    if berry_thread_create(hp, 0, &mut htw) != 0 || htw == 0 {
+        eco_note(console, b"dpgb tw");
+        return;
+    }
+    if berry_thread_start(htw, DPG_ENTRY, DPG_SP2, DPGB_TAG_ALL) != 0 {
+        eco_note(console, b"dpgb ts");
+        return;
+    }
+    // 32× 0x21 阻塞收货：源 offset 逐页递推（请求序 = 供给序）。
+    for i in 0..DPGB_PAGES {
+        if berry_pager_supply_pages(dv, sv, (i * 4096) as u64) != 0 {
+            eco_note(console, b"dpgb sup");
+            return;
+        }
+    }
+    // join 7（供给步已毕只罩尾段；错码 = 供给链正确性面已随测）。
+    let mut obs = 0u64;
+    if berry_object_wait_one(hp, SIGNAL_TERMINATED, now() + DPGB_CAP_NS, &mut obs) != 0
+        || obs != SIGNAL_TERMINATED
+    {
+        eco_note(console, b"dpgb join");
+        return;
+    }
+    let mut code: i32 = 0;
+    if berry_process_get_exit_code(hp, &mut code) != 0 || code != DPG_OK_CODE {
+        eco_note(console, b"dpgb code");
+        return;
+    }
+    // 样本收割（[u64;64] = 512B 恰页内样本区）+ 插入排序（no_std 无 sort
+    // 面；n=32 小排序）。
+    let mut lat = [0u64; 64];
+    if berry_vmo_read(rv, lat.as_mut_ptr() as *mut u8, 0, 512) != 0 {
+        eco_note(console, b"dpgb rd");
+        return;
+    }
+    for i in 1..DPGB_PAGES {
+        let mut j = i;
+        while j > 0 && lat[j - 1] > lat[j] {
+            lat.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    // `DPGB p50= p99= min= max= n=32`（n 恰 2 位定长——改 DPGB_PAGES 须
+    // 同步行尾；带参形态防子串混叠）。标签宽 vs 字面长编译期钉板——首跑
+    // 实踩：p99 切 6 配 5 字面 = copy_from_slice panic → rust_begin_unwind
+    // → trap，svcmgr 死在收尾行组装（雷册 §A135）。
+    const _: () = assert!(b"DPGB p50=".len() == 9);
+    const _: () = assert!(b" p99=".len() == 5);
+    const _: () = assert!(b" min=".len() == 5);
+    const _: () = assert!(b" max=".len() == 5);
+    const _: () = assert!(b" n=32".len() == 5);
+    let mut line = [0u8; 160];
+    let mut i = 0usize;
+    line[..9].copy_from_slice(b"DPGB p50=");
+    i = 9;
+    i = append_u64_dec(&mut line, i, lat[DPGB_PAGES / 2]);
+    line[i..i + 5].copy_from_slice(b" p99=");
+    i += 5;
+    i = append_u64_dec(&mut line, i, lat[DPGB_PAGES - 1]);
+    line[i..i + 5].copy_from_slice(b" min=");
+    i += 5;
+    i = append_u64_dec(&mut line, i, lat[0]);
+    line[i..i + 5].copy_from_slice(b" max=");
+    i += 5;
+    i = append_u64_dec(&mut line, i, lat[DPGB_PAGES - 1]);
+    line[i..i + 5].copy_from_slice(b" n=32");
+    i += 5;
+    line[i] = b'\n';
+    send_retry(console, line.as_ptr(), i + 1);
+    // 收口（dpgf_wave 同序：先 unmap 三区再关全柄——Vmar Drop 注销登记
+    // 槽）。非 0 = 内核侧异常，loud。
+    if berry_vmar_unmap(hv, DPGB_RES_VA, 4096) != 0
+        || berry_vmar_unmap(hv, DPGB_VA, DPGB_PAGES * 4096) != 0
+        || berry_vmar_unmap(hv, DPG_ENTRY, DPG_MAP_LEN) != 0
+        || berry_handle_close(htw) != 0
+        || berry_handle_close(ht) != 0
+        || berry_handle_close(hp) != 0
+        || berry_handle_close(hv) != 0
+        || berry_handle_close(rv) != 0
+        || berry_handle_close(dv) != 0
+        || berry_handle_close(iv) != 0
+        || berry_handle_close(sv) != 0
+    {
+        trap();
+    }
+}
+
+/// E 刀公共拉起：停泊子（dpgf_wave 奇数形，**映射先行**）+ worker
+/// thread_start 裸 arg = B3_8（触前 8 页）。败 = None（调用方降级）。
+/// 返回 (hp, hv, ht, htw)——收口面（hev 已迁移离表，勿关）。
+fn dpg_foot_spawn(
+    hp_hv: &mut (Handle, Handle),
+    ht_htw: &mut (Handle, Handle),
+    iv: Handle,
+    region: Handle,
+    rv: Handle,
+) -> bool {
+    if berry_process_create(0, 0, &mut hp_hv.0, &mut hp_hv.1) != 0
+        || hp_hv.0 == 0
+        || hp_hv.1 == 0
+    {
+        return false;
+    }
+    let mut va = DPG_ENTRY;
+    if berry_vmar_map(hp_hv.1, 0, iv, 0, &mut va, DPG_MAP_LEN, RIGHT_READ | RIGHT_WRITE) != 0 {
+        return false;
+    }
+    let mut dva = DPGB_VA;
+    if berry_vmar_map(
+        hp_hv.1,
+        0,
+        region,
+        0,
+        &mut dva,
+        DPGB_PAGES * 4096,
+        RIGHT_READ | RIGHT_WRITE,
+    ) != 0 {
+        return false;
+    }
+    let mut rva = DPGB_RES_VA;
+    if berry_vmar_map(hp_hv.1, 0, rv, 0, &mut rva, 4096, RIGHT_READ | RIGHT_WRITE) != 0 {
+        return false;
+    }
+    let mut hev = 0 as Handle;
+    if berry_event_create(0, &mut hev) != 0 || hev == 0 {
+        return false;
+    }
+    if berry_thread_create(hp_hv.0, 0, &mut ht_htw.0) != 0 || ht_htw.0 == 0 {
+        return false;
+    }
+    if berry_process_start(hp_hv.0, ht_htw.0, DPG_ENTRY, DPG_SP, hev) != 0 {
+        return false;
+    }
+    if berry_thread_create(hp_hv.0, 0, &mut ht_htw.1) != 0 || ht_htw.1 == 0 {
+        return false;
+    }
+    berry_thread_start(ht_htw.1, DPG_ENTRY, DPG_SP2, DPGB_TAG_8) == 0
+}
+
+/// E 相 done 哨轮询：结果页哨槽 == magic 即真；30s 帽尽/读败 = 假。
+fn dpg_foot_done(rv: Handle) -> bool {
+    let deadline = now() + DPGE_POLL_CAP_NS;
+    loop {
+        let mut v = [0u8; 8];
+        if berry_vmo_read(rv, v.as_mut_ptr(), (DPGB_RES_DONE * 8) as u64, 8) != 0 {
+            return false;
+        }
+        let mut got = 0u64;
+        for b in v.iter().rev() {
+            got = (got << 8) | *b as u64;
+        }
+        if got == DPG_MAGIC {
+            return true;
+        }
+        if now() >= deadline {
+            return false;
+        }
+        berry_thread_sleep(now() + DPGE_POLL_NS);
+    }
+}
+
+/// E 刀：demand 8 触 vs eager 同形 32 页 footprint 差分——**子在册停泊**
+///（进程退 = Vmar 收割映射页还池 delta 归零——done 哨后停泊保活，本侧
+/// terminate 收割）。pages 口径 = 内核 soakmon 心跳（opt/berry/soak 门
+/// fw_cfg——bench.py E 臂专递；60s 拍/首拍潜伏 5 拍）。帧序（**窗在标记
+/// 前**——标记 = 上一窗的收割点）：预滚 340s → `A`（基线）→ 窗 → 起
+/// demand 子（8 供给）→ 窗 → `B` → 起 eager 子（32 页全 commit）→ 窗
+/// → `C` → 尾窗 → `E`。宿主配对「标记前最近拍」差分：d = pB−pA /
+/// e = pC−pB，d<e 断言在宿主（eager 32 页全 commit vs demand 8 页实供，
+/// 结构差 ≈24 页 + 映射元页）。**门 = `dpge.on`**（同族缺席静默）；
+/// 链内坏面 = eco 降级行 + 相位标记缺席。
+fn dpg_foot(console: Handle) {
+    if cpio_find(H_ROOTFS, b"dpge.on").is_none() {
+        return;
+    }
+    // 共享件：像 VMO + 源 VMO（demand 供给源，8 页用量；eager 侧不消费）。
+    let mut iv = 0 as Handle;
+    if berry_vmo_create(DPG_MAP_LEN as u64, 0, &mut iv) != 0 || iv == 0 {
+        eco_note(console, b"dpge iv");
+        return;
+    }
+    if berry_vmo_commit(iv, 0, DPG_MAP_LEN as u64) != 0
+        || berry_vmo_write(iv, DPGP_BIN.as_ptr(), 0, DPGP_BIN.len()) != 0
+    {
+        eco_note(console, b"dpge ivw");
+        return;
+    }
+    let mut sv = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut sv) != 0 || sv == 0 {
+        eco_note(console, b"dpge sv");
+        return;
+    }
+    if berry_vmo_commit(sv, 0, 4096) != 0
+        || berry_vmo_write(sv, DPG_MAGIC.to_le_bytes().as_ptr(), 0, 8) != 0
+    {
+        eco_note(console, b"dpge svw");
+        return;
+    }
+    // 预滚 340s（越过心跳首拍）→ 基线标记 A。
+    let mut t0 = 0u64;
+    if berry_clock_read(CLOCK_MONOTONIC, &mut t0) != 0 {
+        eco_note(console, b"dpge clk");
+        return;
+    }
+    berry_thread_sleep(t0 + DPGE_PREROLL_NS);
+    send_retry(console, DPGE_A.as_ptr(), DPGE_A.len());
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    // demand 子：32 页 demand 区（**映射全宽、触面仅前 8**——d 增量 =
+    // 8 实供页 + 子映射元），B3_8 触毕打哨停泊。
+    let mut dv = 0 as Handle;
+    if berry_vmo_create((DPGB_PAGES * 4096) as u64, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
+        eco_note(console, b"dpge dv");
+        return;
+    }
+    let mut rv1 = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut rv1) != 0 || rv1 == 0 {
+        eco_note(console, b"dpge rv1");
+        return;
+    }
+    if berry_vmo_commit(rv1, 0, 4096) != 0 {
+        eco_note(console, b"dpge rv1c");
+        return;
+    }
+    let mut c1 = ((0 as Handle, 0 as Handle), (0 as Handle, 0 as Handle));
+    if !dpg_foot_spawn(&mut c1.0, &mut c1.1, iv, dv, rv1) {
+        eco_note(console, b"dpge c1");
+        return;
+    }
+    // 8× 供给（源 1 页 magic 复用——触面前 8 页每页首 8B 同 magic）。
+    for _i in 0..8 {
+        if berry_pager_supply_pages(dv, sv, 0) != 0 {
+            eco_note(console, b"dpge sup");
+            return;
+        }
+    }
+    if !dpg_foot_done(rv1) {
+        eco_note(console, b"dpge w1");
+        return;
+    }
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, DPGE_B.as_ptr(), DPGE_B.len());
+    // eager 子：32 页 eager 区（全 commit + 每页首 8B magic——e 增量含
+    // ev 本体 32 页，触面同前 8 零 fault 对照）。
+    let mut ev = 0 as Handle;
+    if berry_vmo_create((DPGB_PAGES * 4096) as u64, 0, &mut ev) != 0 || ev == 0 {
+        eco_note(console, b"dpge ev");
+        return;
+    }
+    if berry_vmo_commit(ev, 0, (DPGB_PAGES * 4096) as u64) != 0 {
+        eco_note(console, b"dpge evc");
+        return;
+    }
+    for i in 0..DPGB_PAGES {
+        if berry_vmo_write(ev, DPG_MAGIC.to_le_bytes().as_ptr(), (i * 4096) as u64, 8) != 0 {
+            eco_note(console, b"dpge evw");
+            return;
+        }
+    }
+    let mut rv2 = 0 as Handle;
+    if berry_vmo_create(4096, 0, &mut rv2) != 0 || rv2 == 0 {
+        eco_note(console, b"dpge rv2");
+        return;
+    }
+    if berry_vmo_commit(rv2, 0, 4096) != 0 {
+        eco_note(console, b"dpge rv2c");
+        return;
+    }
+    let mut c2 = ((0 as Handle, 0 as Handle), (0 as Handle, 0 as Handle));
+    if !dpg_foot_spawn(&mut c2.0, &mut c2.1, iv, ev, rv2) {
+        eco_note(console, b"dpge c2");
+        return;
+    }
+    if !dpg_foot_done(rv2) {
+        eco_note(console, b"dpge w2");
+        return;
+    }
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, DPGE_C.as_ptr(), DPGE_C.len());
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, DPGE_E.as_ptr(), DPGE_E.len());
+    // 收尾：两子 terminate（停泊睡者 kill_all 收割）→ 等 TERMINATED →
+    // unmap 三区 → 关全柄（hev 已迁移勿关）；非 0 = 内核侧异常，loud。
+    if berry_process_terminate(c1.0.0, 9) != 0 || berry_process_terminate(c2.0.0, 9) != 0 {
+        trap();
+    }
+    for (((hp, hv), (ht, htw)), rv, region) in [(c1, rv1, dv), (c2, rv2, ev)] {
+        let mut obs = 0u64;
+        if berry_object_wait_one(hp, SIGNAL_TERMINATED, now() + DPGE_TERM_CAP_NS, &mut obs) != 0
+            || obs != SIGNAL_TERMINATED
+        {
+            trap();
+        }
+        if berry_vmar_unmap(hv, DPGB_RES_VA, 4096) != 0
+            || berry_vmar_unmap(hv, DPGB_VA, DPGB_PAGES * 4096) != 0
+            || berry_vmar_unmap(hv, DPG_ENTRY, DPG_MAP_LEN) != 0
+            || berry_handle_close(htw) != 0
+            || berry_handle_close(ht) != 0
+            || berry_handle_close(hp) != 0
+            || berry_handle_close(hv) != 0
+            || berry_handle_close(rv) != 0
+            || berry_handle_close(region) != 0
+        {
+            trap();
+        }
+    }
+    if berry_handle_close(sv) != 0 || berry_handle_close(iv) != 0 {
+        trap();
+    }
+}
+
 /// dpgf 波（dpg_storm 满配放大 + spread 分流）：N 子并发首触 → N× 0x21
-/// 轮供（MECH-1 convoy 服务序——单 pager 无单独超时，DPG_CAP_NS join 帽
-/// 兜底）→ N× join 7 → N× 收口。偶数下标 = 现形（main 首触 DPG_VA，家核
+/// 轮供（MECH-1 convoy 服务序——单 pager 无单独超时；轮供相挂死 = 脚本
+/// DPGF_CAP_S 帽兜底〔§5-⑤〕，DPG_CAP_NS join 帽只罩尾段——供环在
+/// join 环前，挂死到不了 join）→ N× join 7 → N× 收口。偶数下标 = 现形（main 首触 DPG_VA，家核
 /// CPU0）；奇数下标 = main 停泊（bootstrap 事件句柄迁移 → 子 x0 非 0 =
 /// sleep 帽循环）+ 本服务
 /// 侧 `thread_start`（spread=true——失衡 ≥2 翻核）线程同 DPG_ENTRY 首触：
@@ -2989,9 +3470,10 @@ fn dpgf_wave<const N: usize>(iv: Handle, sv: Handle, dv: Handle) -> Option<u8> {
     // 停泊窗 250ms（C-3 lockdep 首跑实证补）：让 N faulter 全员先到齐再开
     // 轮供——否则「fault 到达 vs 0x21 消费」成流水线竞速（lockdep 面拖慢
     // 内核路径后 15 请求逐个到逐个消，从未 9 并发在飞 → ovfl 零计断言假
-    // 败）。停泊后池满 = 结构必现：K=8 满 + N−K convoy，`DPG ovfl` 计数
-    // = 溢出下界确定（非调度运气面）；§5-⑤ 语义不变（pager 有界延迟必
-    // 至）。波 2（N=3<K）同窗无害。
+    // 败；实证档 = ry8D79/MdG8Xe 快红形）。停泊后**若全员在窗内到齐**则
+    // 池满 = 结构必现（K=8 满 + N−K convoy），ovfl ≥ N−K；TCG 实测五跑
+    // 恒 7 = 前提在实测成立（慢宿主可 <7——S-4 族；断言面 [1,40] 兜底）；
+    // §5-⑤ 语义不变（pager 有界延迟必至）。波 2（N=3<K）同窗无害。
     let mut t0 = 0u64;
     if berry_clock_read(CLOCK_MONOTONIC, &mut t0) != 0 {
         return Some(2);

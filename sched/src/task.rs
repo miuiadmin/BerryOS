@@ -56,6 +56,8 @@ pub const HELD_RQ0: u8 = 1 << 2;
 pub const HELD_RQ1: u8 = 1 << 3;
 /// REAPQ 持有位（c-2b slice 2 起随 `reapq_push`/`reap_drain` 置/清）。
 pub const HELD_REAPQ: u8 = 1 << 4;
+/// 1.1/S3：冻结位（held_locks bit5——process_suspend 置 / SuspendToken close 清）。
+pub const HELD_FROZEN: u8 = 1 << 6;
 
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +246,7 @@ pub struct Task {
     /// `wake_stamp_take` 取走即消费——run 侧读点 = 醒后首段内核执行，
     /// rt_probe 的 wake_vct 读点同族。0 = 无在途戳）。
     pub wake_vct: Cell<u64>,
+
 }
 
 impl Task {

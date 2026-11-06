@@ -22,11 +22,12 @@
 #   ④ dpg 五行行序 DPGP < DPGS < DPGN < DPGF < DPGF2 严格递增
 #   ⑤ `eco: dpgf` 降级行零计（波内坏面 = fail loud 早断）
 #
-# kernel 面无关（default / lockdep ELF 皆可跑）：LOCKDEP 行缺席不断言；
-# lockdep 面 VIOLATION 0 + 行序延伸 = C-3 刀另挂。宿主对端三件套
-# echod/evsclient/sktclient 必在（§A122：缺 18083 → svcmgr 卡 SKT 无帽
-# accept → 终态标记永缺）；-smp 2 必须（spread 失衡翻核需双核——CONC-1
-# 真跨核面）。
+# kernel 面无关（default / lockdep ELF 皆可跑）：LOCKDEP banner 在席时
+# VIOLATION=0 机器执法（⑥，concur-1）；行序延伸 = C-3 刀另挂。宿主对端
+# **echod 必在**（TCPS 相 :141 先于 dpgf 位 :188——缺席则走链卡死在终态
+# 标记前）；evsclient/sktclient = 拓扑镜像惯例，**非本终态依赖**（四绿档
+# 全无 EVS ok/SKT ok——懒门从未放行，concur-2 定谳）；-smp 2 必须
+# （spread 失衡翻核需双核——CONC-1 真跨核面）。
 #
 # 用法：bash tools/smoke-dpgsoak.sh "$(bash tools/paths.sh kernel)"
 # 前置：just build（内核内嵌新 svcmgr/dpgp 像）→ rootfs.cpio 在席。
@@ -79,6 +80,14 @@ out += b"\0" * (-len(out) % 4)
 open(dst, "wb").write(out)
 print(f"smoke-dpgsoak: 变体卷 {dst} {len(out)}B（正装 {len(blob)}B + dpgf.on 门）")
 PY
+# 变体越帽执法（CRIT-CF1）：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB = 静默
+# return None（无成因行）→ 门 miss → 烧满 DPGF_CAP_S 且诊断看不到死因
+# （GUI 线 rootfs 增重已实证烧过一跑：35,313,184B）——越帽即 loud 拒跑。
+VSZ=$(wc -c < "$VARIANT" | tr -d ' ')
+[ "$VSZ" -le 33554432 ] || {
+  echo "smoke-dpgsoak: FAIL——变体越帽 ${VSZ}B > 32MiB ROOTFS_MAX（内核 fw_cfg 单卷路静默拒收→门 miss 烧帽）——瘦身 rootfs 后重建" >&2
+  exit 1
+}
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-dpgsoak.XXXXXX")
 EVS_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-evsclient.XXXXXX")
@@ -132,9 +141,9 @@ done
 
 # 宿主对端三件套（§A122 面；sktclient 懒启动 = guest `EVS ok` 后才 exec
 # ——smoke-lockdep 相 2 同款）。
-# evsclient 帽 env 覆盖（§5.1 帽序不变量「client 帽 ≥ 相帽 + 60s」：本帽
-# 600s > evsclient 默认 TOTAL 480s 倒挂——CONC-B2-1 同判；960/90 覆盖）。
-export BERRY_EVS_TOTAL_CAP_S=960
+# evsclient 帽 env 覆盖（S-C5：由 DL_S 派生 = 帽序「client 帽 ≥ 相帽 +
+# 360s」恒成立；concur-2 定谳 = 断言族无 EVS 面，此帽纯卫生无执法受害者）。
+export BERRY_EVS_TOTAL_CAP_S=$((DL_S + 360))
 export BERRY_EVS_ATTEMPT_CAP_S=90
 python3 "$SCRIPT_DIR/evsclient.py" 18082 EVS > "$EVS_LOG" 2>&1 & EVS_PID=$!
 ( until grep -q 'EVS ok' "$LOG" 2>/dev/null; do sleep 2; done
@@ -182,7 +191,7 @@ done
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
 sleep 3   # SIGTERM 后串口落定（P6 A-6 实证同款）
-echo "smoke-dpgsoak: 墙钟 $(( $(date +%s) - t0 ))s（QEMU 起→DPGF2 终态收割；帽 ${DL_S}s）"
+echo "smoke-dpgsoak: 墙钟 $(( $(date +%s) - t0 ))s（QEMU 起→DPGF2 终态收割；帽 ${DL_S}s）" | tee -a "$LOG"
 kill "$EVS_PID" "$SKT_PID" "$ECHO_PID" 2>/dev/null
 wait "$EVS_PID" "$SKT_PID" "$ECHO_PID" 2>/dev/null
 P2_PIDS=""
@@ -232,10 +241,21 @@ if [ "$PN" -ne 0 ]; then
   rc=1
 fi
 
+# ⑥ lockdep 面 VIOLATION 零执法（concur-1）：banner 在席才断言（default
+# 面 ELF 无 LOCKDEP 自测——缺席不断言，C-3 行序延伸仍另挂）。
+if grep -q 'LOCKDEP selftest ok' "$LOG" 2>/dev/null; then
+  LV=$(grep -c 'VIOLATION' "$LOG" 2>/dev/null || true)
+  if [ "$LV" -ne 0 ]; then
+    echo "smoke-dpgsoak: FAIL——lockdep VIOLATION $LV 条（banner 在席须 0——头注头号不变量机器执法）" >&2
+    rc=1
+  fi
+fi
+
 if [ "$rc" -eq 0 ]; then
-  echo "smoke-dpgsoak: PASS（DPGF n=15 满配 + DPGF2 n=3 槽回收 + ovfl $OV ∈ [1,$OVFL_CAP] + 五行行序 + 降级/panic 零）"
+  echo "smoke-dpgsoak: PASS（DPGF n=15 满配 + DPGF2 n=3 槽回收 + ovfl $OV ∈ [1,$OVFL_CAP] + 五行行序 + 降级/panic 零）" | tee -a "$LOG"
   keep_log drop
 else
+  echo "smoke-dpgsoak: FAIL（判词见上/stderr；串口 + 三 client 档随 keep 留存）" >> "$LOG"
   echo "---- 串口日志尾部（$LOG）----" >&2
   tail -40 "$LOG" >&2
   # ovfl 观测行全量随失败打印（首跑标定面：重印分布 = 帽值依据）。

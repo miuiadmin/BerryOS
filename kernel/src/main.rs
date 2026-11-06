@@ -29,6 +29,7 @@ mod mem; // GUI-0：本仓 mem* 整数版覆写（内核 SIMD-free 合同 builti
 mod mm;
 mod pi;
 mod process;
+mod suspend; // 1.1/S3-a：冻结令牌对象（process_suspend handler 配对）
 mod syscall;
 mod telemetry;
 mod user;

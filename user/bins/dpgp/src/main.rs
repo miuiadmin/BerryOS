@@ -37,9 +37,72 @@ const DPGP_MAGIC: u64 = 0x6967_616d_5047_5044;
 /// 拒 -EBADF，裸 arg 落 x0 是 thread_start 语义、process_start 是迁移）。
 const DPGP_PARK_NS: u64 = 1_000_000_000;
 
+/// G4-3 D/E 刀 bench 子标签——**thread_start 裸 arg 通道**入（process_start
+/// 第 5 参 = 句柄迁移不可传裸值，首光判例）。两值恒 < 0x1_0000（句柄
+/// gen≥1 下界）与停泊判据（x0 ≥ 0x1_0000）零交叠，且 ≠ 0（现形）：
+/// B3_ALL = 触遍区域全 32 页（D 延迟逐页样本）；B3_8 = 只触前 8 页
+///（E 足迹 demand/eager 同形对照触面）。
+const DPGP_BENCH_ALL: usize = 0xB301;
+const DPGP_BENCH_8: usize = 0xB302;
+/// bench 区域/结果页 VA 与页数（svcmgr `dpg_bench`/`dpg_foot` 同值单源
+/// ——两文件各持 const 改须双改；0x20_0000/0x30_0000 = 像窗/栈/demand
+/// 首页〔<0x7000〕界外，两段互不邻接）。
+const DPGP_BENCH_VA: usize = 0x20_0000;
+const DPGP_BENCH_PAGES: usize = 32;
+const DPGP_RES_VA: usize = 0x30_0000;
+/// 结果页布局：[0..n) = 逐页首触延迟 ns；[511] = done 哨（magic——E 相
+/// svcmgr 轮询此位收「触面毕」，D 相走 exit join 不经它）。
+const DPGP_RES_DONE: usize = 511;
+
+/// bench 相：逐页首触环夹 t0=clock → volatile 读 → t1=clock，延迟样本
+/// 写结果页（经共享 VMO 回传——零句柄零 console 零 ABI 新面）；值 ≠
+/// magic = exit 9（供给链正确性随测）。B3_ALL（D 相）：写毕 exit 7——
+/// 父 join 收割走 `DPGP ok` 同码面。B3_8（E 相）：写毕打 done 哨后
+/// **停泊不退**——进程退 = Vmar 收割映射页还池，footprint delta 归零
+/// 测不了；保活由父 terminate 收割（park 同形 sleep 帽循环）。
+fn bench(tag: usize) -> ! {
+    let n = if tag == DPGP_BENCH_8 { 8 } else { DPGP_BENCH_PAGES };
+    let res = DPGP_RES_VA as *mut u64;
+    for i in 0..n {
+        let mut t0 = 0u64;
+        if berry_clock_read(CLOCK_MONOTONIC, &mut t0) != 0 {
+            berry_process_exit(9);
+        }
+        // SAFETY: 读本 AS bench 区域页——demand 映射 = 供给前无翻译，本读
+        // 即首触断言；volatile = 延迟测量的被测对象本体（防重排/折叠）。
+        let v = unsafe { core::ptr::read_volatile((DPGP_BENCH_VA + i * 4096) as *const u64) };
+        let mut t1 = 0u64;
+        if berry_clock_read(CLOCK_MONOTONIC, &mut t1) != 0 {
+            berry_process_exit(9);
+        }
+        // SAFETY: 结果页父预映 RW——本相唯一出口，页内偏移恒 < 512。
+        unsafe { *res.add(i) = t1.wrapping_sub(t0) };
+        if v != DPGP_MAGIC {
+            berry_process_exit(9);
+        }
+    }
+    if tag == DPGP_BENCH_8 {
+        // SAFETY: done 哨位 = 页内第 511 槽（4096B 页内恒在界）。
+        unsafe { *res.add(DPGP_RES_DONE) = DPGP_MAGIC };
+        loop {
+            let mut now = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+                berry_process_exit(9);
+            }
+            berry_thread_sleep(now + DPGP_PARK_NS);
+        }
+    }
+    berry_process_exit(7);
+}
+
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(x0: usize) -> ! {
+    // G4-3 D/E bench 相优先分流（两标签 < 0x1_0000 = 句柄域外，先于停泊
+    // 判据零误吞）。
+    if x0 == DPGP_BENCH_ALL || x0 == DPGP_BENCH_8 {
+        bench(x0);
+    }
     // C-full 奇数子：main 停泊（bootstrap 事件句柄在场 = 停泊令；fault 面
     // 在 svcmgr 侧 spread 线程——本线程只让路：sleep 帽循环不烧 TCG 墙钟，
     // pager 轮供与 spread 首触独享；spread 线程 process_exit → kill_all

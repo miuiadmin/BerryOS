@@ -55,6 +55,7 @@ use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
     ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
+    RIGHT_TRANSFER,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
     SIGNAL_TERMINATED, SIGNAL_USER_MASK, SIGNAL_WRITABLE,
 };
@@ -78,7 +79,8 @@ pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
-    NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_TERMINATE,
+    NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
+    NR_PROCESS_TERMINATE,
     NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
     NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
     NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
@@ -1502,6 +1504,103 @@ extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
     0
 }
 
+/// `berry_process_suspend(h_process, options, *token)`（0x3E，1.1/S3-a）：
+/// 冻结目标进程全部任务，出 SuspendToken 句柄。options 恒 0（SINGLE_THREAD
+/// 留 S3-b）。解冻 = `handle_close(token)`（Drop → `thaw_by_pinned`）。
+///
+/// 谓词（1.1/S3-a 单核简化）：
+/// - 自冻 → -EINVAL（单核下 freeze 自己 = 永久停摆）
+/// - 目标已退 → -EBADSTATE
+/// - PI / 派生位 / 持锁：`freeze_precheck_by_pinned` 一步扫描。
+extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
+    use crate::handle::KernelObj;
+    let (h, options) = (tf.regs[1] as u32, tf.regs[2] as u32);
+    let token_out = tf.regs[3] as *mut u32;
+    if options != 0 {
+        return ERR_NOT_SUPPORTED as i64; // SINGLE_THREAD 留 S3-b
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
+        Ok((o, _)) => o,
+        Err(e) => return e as i64,
+    };
+    if obj.as_ptr() as usize == berry_sched::current_pinned() {
+        return ERR_INVALID_ARG as i64; // 1.1/S3-a：自冻拒绝
+    }
+    // SAFETY: get_raw 已三门控；单核 IRQ 屏蔽。
+    let pinned = obj.as_ptr() as usize;
+    unsafe {
+        let r = &mut *obj.as_ptr();
+        let Some(p) = r.obj.as_process_mut() else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        if p.state == crate::process::ProcState::Exited {
+            return ERR_BAD_STATE as i64;
+        }
+        // 1.1/S3-b：pager 角色检查（D6：冻 pager = 缺页者永久阻塞）。
+        // 持 demand VMO 的 SET_POLICY handle 即在册 pager 义务——扫描派生
+        // 取代 sidecar 计数：close/take/drain/迁移天然随表走，无漏减/UAF。
+        if p.ht.pager_load() > 0 {
+            return ERR_BUSY as i64;
+        }
+    }
+    // 谓词预检（PI / 派生位 / 持锁——false → -EBUSY）。
+    if !berry_sched::freeze_precheck_by_pinned(pinned) {
+        return ERR_BUSY as i64;
+    }
+    // 1.1/S3-b：嵌套 depth +1（上限 8）+ retain ObjRef（token 生命周期）。
+    unsafe {
+        let r = &mut *obj.as_ptr();
+        let Some(p) = r.obj.as_process_mut() else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        if p.freeze_depth >= 8 {
+            return ERR_BUSY as i64; // depth 帽（D 裁定）
+        }
+        p.freeze_depth += 1;
+        r.retain(); // SuspendTok 持有期间 Process 不销毁
+    }
+    let n = berry_sched::freeze_by_pinned(pinned);
+    if n == 0 {
+        // 回滚：depth -1 + release。
+        unsafe {
+            let r = &mut *obj.as_ptr();
+            if let Some(p) = r.obj.as_process_mut() {
+                p.freeze_depth -= 1;
+            }
+            crate::handle::ObjRef::release(obj);
+        }
+        return ERR_BAD_STATE as i64; // 无任务可冻（未 start 或已全退）
+    }
+    // 造 SuspendToken 入调用方表。
+    let tok = crate::suspend::SuspendTok {
+        proc: obj,
+        pinned,
+        since_vct: berry_hal_aarch64::timer::cntvct(),
+    };
+    let Ok(token_h) = t.insert(
+        KernelObj::SuspendToken(tok),
+        RIGHT_DUPLICATE | RIGHT_TRANSFER,
+    ) else {
+        // 回滚：thaw + depth -1 + release。
+        berry_sched::thaw_by_pinned(pinned);
+        unsafe {
+            let r = &mut *obj.as_ptr();
+            if let Some(p) = r.obj.as_process_mut() {
+                p.freeze_depth -= 1;
+            }
+            crate::handle::ObjRef::release(obj);
+        }
+        return ERR_NO_MEMORY as i64;
+    };
+    // 出参写 token handle。
+    if copy_out_u32(caller_is_el1(tf), token_out as u64, token_h).is_err() {
+        let _ = t.close(token_h); // Drop → thaw
+        return ERR_FAULT as i64;
+    }
+    0
+}
+
 /// `berry_signal_send(h_process, sig)`（0x86，A7-4 段②）：向进程 pending
 /// 集位置位（幂等 = POSIX 标准信号合并语义）。`h=0` → 当前进程（raise 面，
 /// 零 handle 需求）；`h≠0` 门控 Process **MANAGE**（同 terminate 权利面）。
@@ -2477,6 +2576,8 @@ pub fn install() {
     reg(NR_PROCESS_GET_EXIT_CODE, sys_process_get_exit_code, SVC_CLASS_TABLE);
     // —— ALL：terminate kill 链（同 fault 面）——
     reg(NR_PROCESS_TERMINATE, sys_process_terminate, SVC_CLASS_ALL);
+    // —— TABLE：suspend（表门控 + freeze 扫描，不触 SQ/RQ 结构面）——
+    reg(NR_PROCESS_SUSPEND, sys_process_suspend, SVC_CLASS_TABLE);
     reg(NR_CHANNEL_CREATE, sys_channel_create, SVC_CLASS_ALL);
     // —— SQ+RQ+TABLE：send/recv（fastpath sq_phys 外提已备，slice 2a）——
     reg(NR_CHANNEL_SEND, sys_channel_send, SVC_CLASS_SQ_RQ_TABLE);

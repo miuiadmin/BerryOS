@@ -89,6 +89,7 @@ pub enum ObjType {
     Resource = 9,
     Timer = 10,
     Job = 11,
+    SuspendToken = 12,
 }
 
 /// 内核对象壳（Zircon 务实派，ADR #4：对象在内核、用户态只见整数 handle）。
@@ -100,6 +101,7 @@ pub enum KernelObj {
     Thread(crate::process::Thread),
     Channel(crate::channel::ChannelEnd),
     Event(crate::event::Event),
+    SuspendToken(crate::suspend::SuspendTok),
 }
 
 impl KernelObj {
@@ -111,6 +113,7 @@ impl KernelObj {
             KernelObj::Thread(_) => ObjType::Thread,
             KernelObj::Channel(_) => ObjType::Channel,
             KernelObj::Event(_) => ObjType::Event,
+            KernelObj::SuspendToken(_) => ObjType::SuspendToken,
         }
     }
 
@@ -431,6 +434,25 @@ impl HandleTable {
         let (obj, rights) = self.get_raw(h, ty, need)?;
         // SAFETY: 槽在表、gen 匹配 → 指针有效；`&self` 下只读借用。
         Ok((&unsafe { &*obj.as_ptr() }.obj, rights))
+    }
+
+    /// 1.1/S3-b：本表在册 pager 义务数——`Used` 槽持 demand VMO 且带
+    /// `RIGHT_SET_POLICY` 的计数（0x21 门权与 demand 属性合取 = 真 pager 面）。
+    /// `process_suspend` 消费（D6：冻 pager = 缺页者永久阻塞）。扫描派生而非
+    /// sidecar 计数：close/take/drain/handle 迁移天然随表走，无漏减/UAF。
+    pub fn pager_load(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|s| match s {
+                SlotState::Used { obj, rights, .. } => {
+                    *rights & RIGHT_SET_POLICY != 0
+                        && unsafe {
+                            (*obj.as_ptr()).obj.as_vmo().map_or(false, |v| v.is_demand())
+                        }
+                }
+                SlotState::Free { .. } => false,
+            })
+            .count()
     }
 
     /// 本表是否持有 `obj`（ObjRef 指针相等）且 rights 含 `any` 中**任一位**
