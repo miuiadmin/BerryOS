@@ -603,6 +603,31 @@ pub fn billing_cross_domain_total() -> u64 {
     BILLING_CROSS_DOMAIN.load(Ordering::Relaxed)
 }
 
+// ---- 1.1/S5.11 freeze 遥测（进现有环——不建第二数据库 #45）----
+
+/// S5.11：freeze 成功计数（process_suspend 成功尾）。
+pub fn freeze_ok() {
+    FREEZE_OK.fetch_add(1, Ordering::Relaxed);
+}
+
+/// S5.11：freeze 拒绝计数（谓词不过/token 上限/pager 拒）。
+pub fn freeze_busy() {
+    FREEZE_BUSY.fetch_add(1, Ordering::Relaxed);
+}
+
+/// S5.11：auto-thaw 计数（SuspendToken Drop → thaw）。
+pub fn auto_thaw() {
+    AUTO_THAW.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn freeze_ok_total() -> u64 { FREEZE_OK.load(Ordering::Relaxed) }
+pub fn freeze_busy_total() -> u64 { FREEZE_BUSY.load(Ordering::Relaxed) }
+pub fn auto_thaw_total() -> u64 { AUTO_THAW.load(Ordering::Relaxed) }
+
+static FREEZE_OK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FREEZE_BUSY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static AUTO_THAW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 static BILLING_CROSS_DOMAIN: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 

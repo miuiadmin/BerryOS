@@ -1503,6 +1503,11 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
     let (h, code) = (tf.regs[1] as u32, tf.regs[2] as i32);
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // S5.12 防 freeze DoS：每 caller 活跃 SuspendToken 上限 64——超限 -EBUSY。
+    if t.count_type(ObjType::SuspendToken) >= 64 {
+        crate::telemetry::freeze_busy();
+        return ERR_BUSY as i64;
+    }
     let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
         Ok((o, _)) => o,
         Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES

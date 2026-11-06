@@ -3161,6 +3161,13 @@ fn tele_dump() {
             berry_hal_aarch64::uart_puts(b"ns");
         }
     }
+    // 1.1/S5.11 freeze 遥测面。
+    berry_hal_aarch64::uart_puts(b" freeze=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::freeze_ok_total());
+    berry_hal_aarch64::uart_puts(b"/busy=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::freeze_busy_total());
+    berry_hal_aarch64::uart_puts(b"/thaw=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::auto_thaw_total());
     berry_hal_aarch64::uart_puts(b"\n");
 }
 

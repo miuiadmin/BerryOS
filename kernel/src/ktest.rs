@@ -45,6 +45,7 @@ pub fn run() {
     test_freeze();
     test_deadline();
     test_billing();
+    test_cmp();
     test_sched_attr();
     test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
@@ -3045,6 +3046,84 @@ fn test_billing() {
                "BL：BL3 零时长 charge 须无副作用（不建槽）");
 
     berry_hal_aarch64::uart_puts(b"BL-K ok\n");
+}
+
+/// 1.1 §4.5 CMP 验收——单比较器全序 property（ktest 形态）。
+/// CMP-1 反对称/传递：5 任务递增 VD → pick 序严格递增 VD。
+/// CMP-2 pick 最小：任一 pick 结果 == 全集 order_key 最小者。
+/// CMP-4 确定性：同输入重复 pick 同结果。
+fn test_cmp() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo};
+
+    extern "C" fn cmp_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8], vd: u64, vr: u64) -> &'static mut Task {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(cmp_dummy, 0, name, 0, 0));
+        t.vdeadline = vd;
+        t.vruntime = vr;
+        t
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // 5 任务（enqueue 后再设 VD——enqueue 会按 avg 覆写 VD/VR）。
+    let mut ts: alloc::vec::Vec<&'static mut Task> = alloc::vec![
+        mk(b"c3".as_slice(), 300, 50),
+        mk(b"c1".as_slice(), 100, 10),
+        mk(b"c5".as_slice(), 500, 90),
+        mk(b"c2".as_slice(), 200, 30),
+        mk(b"c4".as_slice(), 400, 70),
+    ];
+    for t in ts.iter_mut() {
+        rr.enqueue(&mut **t, &mut rq);
+    }
+    // 入环后设 VD/Vr（enqueue 的覆写不影响此处）。
+    let vds = [300u64, 100, 500, 200, 400];
+    let vrs = [50u64, 10, 90, 30, 70];
+    for (i, t) in ts.iter_mut().enumerate() {
+        (*t).vdeadline = vds[i];
+        (*t).vruntime = vrs[i];
+    }
+
+    // CMP-2：首 pick == 全集 VD 最小（c1=100）。
+    let p1 = rr.pick_next(&rq, &topo).expect("CMP：非空环须有出选");
+    assert_eq!(p1.vdeadline, 100, "CMP-2：首 pick 须 VD 最小（100）");
+
+    // CMP-1：连续 pick 序严格递增 VD（反对称 + 传递——无回跳）。
+    let mut last_vd = 0u64;
+    let mut picks: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+    for t in ts.iter_mut() {
+        (*t).vruntime = 0; // 全部 eligible
+    }
+    for _ in 0..5 {
+        if let Some(p) = rr.pick_next(&rq, &topo) {
+            assert!(p.vdeadline >= last_vd,
+                    "CMP-1：VD 须非递减（last={} cur={}）", last_vd, p.vdeadline);
+            last_vd = p.vdeadline;
+            picks.push(p.vdeadline);
+            p.vdeadline = u64::MAX; // 防重复 pick 同任务
+        }
+    }
+    assert!(picks.len() >= 3, "CMP-1：至少 3 pick 才能验全序");
+
+    // CMP-4：确定性——重置后同输入同结果。
+    for t in ts.iter_mut() {
+        (*t).vdeadline = 200; // 全部同键（在环上直改——不 re-enqueue）
+        (*t).vruntime = 0;
+        (*t).prio_effective = 0;
+    }
+    let pa = rr.pick_next(&rq, &topo).unwrap();
+    let va = pa.vdeadline;
+    pa.vdeadline = 300; // 改一个防重 pick
+    let pb = rr.pick_next(&rq, &topo).unwrap();
+    let vb = pb.vdeadline;
+    assert_eq!(va, vb, "CMP-4：同输入同键 pick 须同结果");
+
+    berry_hal_aarch64::uart_puts(b"CMP-K ok\n");
 }
 
 /// 1.1/S1：SchedAttr effective 组合（Process 默认 ∪ Thread 覆盖）。

@@ -67,6 +67,7 @@ impl Drop for SuspendTok {
             }
         }
         if let Some(key) = thaw_key {
+            crate::telemetry::auto_thaw(); // S5.11 遥测
             match self.target {
                 SuspendTarget::Process(_) => berry_sched::thaw_by_pinned(key),
                 SuspendTarget::Thread(_) => berry_sched::thaw_by_thread(key),
