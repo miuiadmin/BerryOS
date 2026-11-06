@@ -892,7 +892,7 @@ shell: berry-build
     set -e
     # GUI 优先：主镜像（含 gui6 launcher）在位 → just desktop（数据盘/tablet/
     # 真实输入/display fw_cfg）。缺席才回落 console 窗口（P2 手机窗口）。
-    if [ -f out/berryos.img ] || [ -f out/berryos-desktop.img ]; then
+    if [ -f out/berryos-hd.img ] || [ -f out/berryos.img ] || [ -f out/berryos-visual.img ] || [ -f out/berryos-desktop.img ]; then
         exec just desktop
     fi
     test -f out/berryos.img || { echo "缺 out/berryos.img——先 just image"; exit 1; }
@@ -904,8 +904,9 @@ shell: berry-build
 desktop: berry-build
     #!/bin/sh
     set -e
-    # 视觉基线镜像优先（R/B 修正 + 新桌面）；主镜像/旧预览件回退。
-    IMG=out/berryos-visual.img
+    # 16:9 HD 镜像优先；视觉基线/主镜像/旧预览件依次回退。
+    IMG=out/berryos-hd.img
+    [ -f "$IMG" ] || IMG=out/berryos-visual.img
     [ -f "$IMG" ] || IMG=out/berryos.img
     [ -f "$IMG" ] || IMG=out/berryos-desktop.img
     test -f "$IMG" || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
