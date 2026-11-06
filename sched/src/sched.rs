@@ -28,6 +28,9 @@ static IRQ_TICKS: AtomicU64 = AtomicU64::new(0);
 /// 两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 =
 /// switch 坏（卡死/饿死）。A12 同上原子化。
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
+/// S-6 ② 拉取金丝雀行真序号（run5 曾误用 diag_readout().2——那是 CPU1
+/// 派发计数非拉取数，行号全标 #1）。仅诊断打印用。
+static PULL_CNT: AtomicU64 = AtomicU64::new(0);
 
 /// SWITCHES 递增 + 金丝雀打印（S-6 ①：全域唯一递增/打印口径）。
 /// 全部十一个切换原语位（yield/exit/block 三函数的直切臂 + park 切点 + tick
@@ -797,24 +800,44 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
 /// Plan B v0.5：返回新任务的裸指针（usize 不透明值——语义层写入 `pinned`
 /// 钉住字段；crate 边界纪律同 `proc_tag`）。任务已入 runqueue，指针即
 /// `&'static mut Task` 的地址（Box::leak）。
-pub fn try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
-                      ttbr0: usize, asid: u16, proc_tag: usize,
-                      pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
+pub fn try_prepare_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
+                         ttbr0: usize, asid: u16, proc_tag: usize,
+                         pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
     let task = Task::try_new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)?;
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪；IRQ 屏蔽态。
     let task: &'static mut Task = alloc::boxed::Box::leak(task);
-    // F-E1（S-3b 步 b-1）：钉住双字段随装配写入、**enqueue 之前**——消灭
-    // 「任务已入队而 pinned/thread_key 未写」半初始化窗（E0 全量锁下本就
-    // benign；S-3c 拆锁后为真窗，结构先正）。语义层 set_task_pinned/
-    // set_task_thread 写点随签名并入退役。spread（可铺核资格——b-1 判谳
-    // 补）同窗写入：thread_start 真 / process_start 假。
+    // F-E1 / S-6 SMP：pinned/thread_key/spread 在 enqueue 前写入。SMP 下
+    // 远端核可能在入环后立刻偷取并运行新任务；一切调用侧簿记（started、
+    // live_threads、retain、调度属性）都必须在 enqueue 前完成。
     task.pinned = pinned;
     task.thread_key = thread_key;
     task.spread = spread;
-    unsafe {
-        enqueue_with_kick(task, place(task));
-    }
     Some(task as *mut Task as usize)
+}
+
+/// 把 [`try_prepare_user`] 产出的已初始化任务入环。调用侧必须已完成一切
+/// 可被新任务退出钩子/属性消费观察的簿记；本函数不再分配、不可失败。
+///
+/// # Safety
+/// IRQ 屏蔽窗内；`task` 来自 `try_prepare_user` 且尚未入任何 runqueue。
+pub unsafe fn enqueue_prepared_user(task_ptr: usize) {
+    let task = task_ptr as *mut Task;
+    // SAFETY: 上述调用契约；place 只读本/对核长度。
+    let cpu = place(unsafe { &*task });
+    // SAFETY: 同 try_spawn_user 旧路径。
+    unsafe { enqueue_with_kick(&mut *task, cpu) };
+}
+
+pub fn try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
+                      ttbr0: usize, asid: u16, proc_tag: usize,
+                      pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
+    let task_ptr = try_prepare_user(
+        entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag,
+        pinned, thread_key, spread,
+    )?;
+    // SAFETY: prepare 返回尚未入环；本 wrapper 无调用侧额外簿记。
+    unsafe { enqueue_prepared_user(task_ptr) };
+    Some(task_ptr)
 }
 
 /// 当前任务的进程标签（3-4a per-process handle 表派发用）。0 = 无（内核任务/
@@ -2527,6 +2550,45 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         // 持 PRINT_LOCK 窗外（G43 改版的死锁防线另一半）。
         if preempt_count() > 0 {
             return;
+        }
+        // S-6 ②（沿革九十四发现②收口）：定时拉取——设计 §3.4「空闲核
+        // **定时**或被唤醒时从忙核拉任务」的定时半句最小兑现。旧触发面仅
+        // 「本核 pick None」（idle/park 空转点）：对核忙但独占（副核单任务
+        // 连续运行）→ 本核永不为空 → 一次偷取后拓扑锁死（run4 实证：22+
+        // 任务挤一核各得公平内卷份额，独占者 672:1）。判据 = 环深失衡
+        // K=2（place() ⑤ 同 K，AtomicUsize 免锁读——失衡不成立零锁成本）；
+        // 拉取复用 try_steal_one 全套（只持远端锁形 / F-E2 双过滤 / 随迁
+        // 改写 home / 回插本环置 Ready）——**不直派**：入环即归，本 tick
+        // 随后出选自然轮转（直派是 idle 空转点的特权——本点 cur 在跑）。
+        // 单向拉 + 迁移粘性 = 无乒乓；触发在 slice 燃尽支 = 每 slice 至多
+        // 一拉天然限速；单核 gate 零漂移。
+        if hal::smp::par_enabled() {
+            let me = hal::smp::cpu_id();
+            // SAFETY: rq_of 触 static mut 访问（IRQ 屏蔽窗）；len 为
+            // AtomicUsize（c-2b）Relaxed 免锁读，不触环结构。
+            let (mine, theirs) = unsafe { (rq_of(me).len(), rq_of(1 - me).len()) };
+            // 定时拉取只做“近空闲补偿”：本核环只有当前 monopolist（len<=1）
+            // 且对核显著更重时才拉一任务。若两核各自已有可轮转负载仍持续
+            // 按 K=2 拉取，会把服务/子进程反复迁移，SMP TCG 下形成 20 万+
+            // 切换与 KL 争用（run6 实录），rootfs 后段 FAT/DIR/DF 族超时。
+            if mine <= 1 && theirs >= mine + 2 {
+                // SAFETY: 调用契约面扩张（第三调用点）：IRQ 屏蔽 ✓、本核
+                // RQ 窗未开（rq_lock 在后）✓、preempt_count==0（PRINT_LOCK
+                // 持窗已让）✓——与 idle/park 两点的差异仅「本核出选非
+                // None」：失衡判据已保证只在对核显著更重时拉。
+                if let Some(p) = unsafe { try_steal_one() } {
+                    let st = PULL_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+                    if st <= 8 {
+                        hal::kern_lock::with_print_lock(|| {
+                            hal::uart_puts(b"sS6: pull #");
+                            hal::uart_put_dec(st);
+                            hal::uart_puts(b" '");
+                            hal::uart_puts((*p).name);
+                            hal::uart_puts(b"'\n");
+                        });
+                    }
+                }
+            }
         }
         // S-3a 义务⑥：mod4 切回 park 门退役——副核 slice 尽与 CPU0 同径出选；
         // 副核 park 化只经任务自身 block/exit/yield 的切回 sec_park_ctx 点，
