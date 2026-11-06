@@ -1,3 +1,0 @@
-cargo:rustc-link-arg=-T/Users/murongcheng/Documents/code/berryos/user/bins/thrchild/link-user.ld
-cargo:rustc-link-arg=-zmax-page-size=4096
-cargo:rerun-if-changed=/Users/murongcheng/Documents/code/berryos/user/bins/thrchild/link-user.ld

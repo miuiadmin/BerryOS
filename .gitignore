@@ -91,3 +91,5 @@ __pycache__/
 # berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
 /shot.png
 /berry-shot-*.png
+.cargo-target-local/
+.tmp_report.md
