@@ -66,6 +66,11 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x39 | `thread_set_deadline` | 设截止期（软实时） | v2 |
 | 0x3A | `process_get_exit_code` | 查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查） | v1 |
 | 0x3B | `process_terminate` | 外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。 | v1 |
+| **调度 1.1（S0–S3 ABI）** ||||
+| 0x3C | `sched_setattr` | 声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；1.1/S1 在册，S2/S5 落语义；size 超界且尾部非零 → -E2BIG | 1.1 |
+| 0x3D | `sched_getattr` | 查询 effective 调度属性（declared/source 走 telemetry；size 超界同 0x3C） | 1.1 |
+| 0x3E | `process_suspend` | 冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token) | 1.1 |
+| 0x3F | `thread_yield` | 主动让出当前时间片；无 handle，等价内核 yield_now | 1.1 |
 | **异常** ||||
 | 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 |
 | **IPC / event / futex** ||||
@@ -86,7 +91,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **命名空间**（路径式） ||||
 | 0x81 | `namespace_open` | `open("/svc/fs")` → handle | v3 |
 | 0x82 | `namespace_mount` | 服务把 channel 挂到路径 | v3 |
-| **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`） ||||
+| **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`） ||||
 | 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 |
 | 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 |
 | **安全 / 远程证明**（预留） ||||
@@ -96,7 +101,11 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 |
 <!-- @gen:syscalls end -->
 
-**计数**：v1 35 号在册 / 34 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11）；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 51**（add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
+**计数**：v1 35 号在册 / 34 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11）；**1.1 增 4（0x3C–0x3F，S1 在册未实现，S2/S3 落语义）**；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 55**（39 在册 + 11 + 5；add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
+
+> **调点调度 1.1（已进表，S1 在册未实现）**：`0x3C`–`0x3F` 已入
+> `tools/abi.toml` 并生成上表；handler 待 S2/S3，未注册号走 HAL 默认
+> `-ENOTSUP`；新增 `-E2BIG`（-7）。语义见 `docs/调点调度-v1.1.md` §7。
 
 > **调试范围（非 ABI，已退役）**：`0xFE`（debug echo）/ `0xFF`（debug putchar）= 内核自测/金丝雀槽，**不冻结、不进 berry-sys**——**4-5a（2026-10）随 console 服务通道落地退役**：EL0 输出改走 `channel_send`（console 服务 drain 到 UART，真 IPC），两槽回落 `-ENOTSUP`（ktest A 段退役面断言在册；watchdog 用户活证改 `CONSOLE_DRAINED` 服务侧计数）。真号一律 ≤ `0x87`；未知/未实现号（含退役槽引用）一律 `-ENOTSUP`——3-1 起内核执法（撤 2b-4「EL0 畸形号杀」临时政策，对齐 §8.0 承诺）。原 0x61/0x62 临时测试槽已让位 `clock_read`/`timer_create`（2026-10，3-1）。
 
@@ -229,6 +238,7 @@ enum berry_intent {
 #define BERRY_ERR_BAD_HANDLE     (-9)    /* EBADF 等价：坏 handle / 类型不符 */
 #define BERRY_ERR_DEAD           (-52)   /* 代号作废：对象/服务已死（旧代 handle），决策 #28 */
 #define BERRY_ERR_INVALID_ARG    (-22)   /* EINVAL */
+#define BERRY_ERR_E2BIG          (-7)    /* E2BIG：sched_attr size 超界且尾部非零 */
 #define BERRY_ERR_NO_MEMORY      (-12)   /* ENOMEM */
 #define BERRY_ERR_ACCESS_DENIED  (-13)   /* EACCES：权限位不足 */
 #define BERRY_ERR_NOT_FOUND      (-2)    /* ENOENT */

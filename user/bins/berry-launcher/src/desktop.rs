@@ -67,7 +67,7 @@ const _: () = assert!(CELL_MAX == PAGES * SLOTS_PER_PAGE, "CELL_MAX = 4页×12�
 const DOT_H: u32 = 8;
 /// 内容区底缘留白（800/1280 两档在 build 内派生）。
 /// 格内图标显示边长（IconProps w/h 定值——v1 无缩放；72px 源图标直出）。
-const ICON_PX: u32 = 72;
+const ICON_PX: u32 = 96;
 /// 状态栏下强调线高（800/1280 两档在 build 内派生）。
 /// 壁纸竖向渐变色带数（Rect 无渐变原语——多带近似；奇高余量归末带）。
 const WALLPAPER_BANDS: u32 = 48;
@@ -183,12 +183,12 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     // 16:9 桌面（1280×720）与旧 4:3（800×600）两档：字号/状态栏/格隙
     // 随视口走；图标源 72px 固定（v1 无运行时缩放），窄屏也不溢出格。
     let big = vp_w >= 1200;
-    let status_h = if big { 64 } else { 44 };
-    let status_pad = if big { 8 } else { 6 };
-    let accent_h = if big { 3 } else { 2 };
-    let grid_gap = if big { 18 } else { 12 };
-    let cell_gap = if big { 6 } else { 4 };
-    let bottom_pad = if big { 12 } else { 8 };
+    let status_h = if big { 72 } else { 44 };
+    let status_pad = if big { 12 } else { 6 };
+    let accent_h = if big { 4 } else { 2 };
+    let grid_gap = if big { 24 } else { 12 };
+    let cell_gap = if big { 8 } else { 4 };
+    let bottom_pad = if big { 16 } else { 8 };
     let status_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
     let label_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
     let root = ui.root();

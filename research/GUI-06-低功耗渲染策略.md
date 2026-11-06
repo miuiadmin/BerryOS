@@ -21,7 +21,7 @@ PSR 是 VESA eDP（嵌入式 DisplayPort）标准特性：面板端 TCON（时�
 
 1. **链路/面板层**：PSR2 selective update 按 damage 矩形对齐传部分帧（上节）。
 2. **嵌入式面板指令层**：SPI/MIPI 小面板（手表/穿戴主流形态）的 set_column/set_page 地址窗 + 部分写——更新 10% 屏幕就只传 10% 的字节，传输能耗与脏区面积成正比。
-3. **软件合成层**：Android SurfaceFlinger 只在有 damage 时重合成；OpenHarmony 合成器 HDI 契约里有显式 `SetScreenClientDamage(screenId, damageRects)` 接口（本地源码 `graphic_graphic_2d/rosen/modules/composer/hdi_backend/include/hdi_device_impl.h:54`）；ui_lite 有完整脏区代数——`AddInvalidateRect` / `DivideInvalidateRect`（被遮挡区域切分）/ `OptimizeInvalidateRects`（合并优化）（本地源码 `arkui_ui_lite/frameworks/components/root_view.cpp:79,308,427,449`）。GUI 里程碑规划附录 B 已把「脏区刷新」评为「lite 栈最值钱的一件」（`docs/GUI里程碑规划-2026-10.md` §5 风险表）。
+3. **软件合成层**：Android SurfaceFlinger 只在有 damage 时重合成；OpenHarmony 合成器 HDI 契约里有显式 `SetScreenClientDamage(screenId, damageRects)` 接口（本地源码 `graphic_graphic_2d/rosen/modules/composer/hdi_backend/include/hdi_device_impl.h:54`）；ui_lite 有完整脏区代数——`AddInvalidateRect` / `DivideInvalidateRect`（被遮挡区域切分）/ `OptimizeInvalidateRects`（合并优化）（本地源码 `arkui_ui_lite/frameworks/components/root_view.cpp:79,308,427,449`）。GUI 里程碑规划附录 B 已把「脏区刷新」评为「lite 栈最值钱的一件」（`docs/GUI里程碑规划-2026-10-v1.0.md` §5 风险表）。
 
 ### 1.3 GPU idle gating【确定度：中（概念高、量化数据缺）】
 
@@ -42,7 +42,7 @@ PSR 是 VESA eDP（嵌入式 DisplayPort）标准特性：面板端 TCON（时�
 1. **帧循环三态**：RUN（有 damage 或活跃动画 → vsync 驱动）/ SETTLE（尾帧已提交，等下一个事件）/ IDLE（脏区空 + 动画表空 → **撤销 vsync 定时器**，睡在输入/damage 事件上）。
 2. **不欠拍**：从 IDLE 被唤醒的第一个事件（输入或新 damage）应立即渲一步，不等下一个 vsync 周期（否则点按延迟 = 一个帧周期，这正是安卓教训的镜像，见 §2.2 touch boost）。
 3. **画面不变量**：「上屏内容 = 已提交的最后一帧」永远成立；维持画面是显示端的事（面板自刷新 / ramfb 的 DRAM 恒扫 / 嵌入式面板显存驻留），软件侧 IDLE 期间零周期活动。
-4. **周期活动 = 能耗**：这条与 BerryOS tickless day-one 铁律同构（`docs/调度器设计.md` §4「空闲不白醒」）——软 vsync 定时器 idle 时还开着，等价于把 tickless 架构在 GUI 层重新戳了个洞。
+4. **周期活动 = 能耗**：这条与 BerryOS tickless day-one 铁律同构（`docs/调度器设计-v1.0.md` §4「空闲不白醒」）——软 vsync 定时器 idle 时还开着，等价于把 tickless 架构在 GUI 层重新戳了个洞。
 
 ---
 
@@ -86,7 +86,7 @@ OpenHarmony 的 HGM（Hyper Graphic Manager）是「投票制变帧率」的完�
 - **VoteInfo = {voterName, min Hz, max Hz, pid, bundleName, extInfo}**——**票面是区间不是单值**（`hyper_graphic_manager/core/utils/hgm_voter.h:27-49`，`OLED_NULL_HZ` 表示未投票）；`HgmFrameVoter` 维护 voter 名单与投票记录，按优先级合并区间（`MergeRangeByPriority`）。
 - **多个具名 voter**：视频帧率投票（按 buffer 时戳推视频帧率，`frame_rate_vote/rs_frame_rate_vote.h`）、动画、游戏、触控、LTPO idle 等；`HgmEnergyConsumptionPolicy` 管节能策略（动画 idle 2000ms、触控后 LTPO 首周期 1000ms 等常量）。
 - **LTPO/LTPS 分型**：屏幕策略按 LTPO/LTPS 分表（`hgm_frame_rate_manager.cpp:132,140`「LTPO-DEFAULT」），LTPO 屏开 `VSYNC_MODE_LTPO`；触控抬起后有「LTPO 优先」的动态模式窗口（`TOUCH_EXT_ENABLED_LTPO_FIRST`）。
-- BerryOS GUI 规划当前把 HGM 评为「低——QEMU 单帧率环境无消费面」（`docs/GUI里程碑规划-2026-10.md` 附录 B L0）——**对 v1 实现成立，对协议面不成立**（§7 论证「砍实现不砍协议位」）。
+- BerryOS GUI 规划当前把 HGM 评为「低——QEMU 单帧率环境无消费面」（`docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L0）——**对 v1 实现成立，对协议面不成立**（§7 论证「砍实现不砍协议位」）。
 
 ### 2.5 静态内容降帧实践汇总
 
@@ -136,11 +136,11 @@ BerryOS 的对应件**全部已在册**，缺的只是 GUI 侧的消费者：
 
 | ADPF 概念 | BerryOS 既有对应 | 出处 |
 |---|---|---|
-| target duration + actual 反馈 | PM 服务共享环形缓冲（利用率事件/设频请求，禁通用 IPC 拷贝） | `docs/调度器设计.md` §5.1 |
-| 大小核/频率干涉面 | AI 调度：内核留第一类接口，用户态策略服务经共享环干涉放置/频率/优先级（per-cluster 频率 hint 由 PM 裁决执行） | `docs/AI调度设计.md`、CLAUDE.md 身份支柱 |
-| 每 task 能耗倾向 | EPP hint（perf/efficiency）+ intent u8 查表（IntentProfile→latency-nice/EPP/uclamp/timer slack） | `docs/调度器设计.md` ADR #42 |
-| 时间片随频率漂移 | slice 按周期数记账（DVFS 预埋，已落地 2b-4） | `docs/调度器设计.md` §3 |
-| 唤醒合并省电 | timer slack+policy 三元组（zx_timer_set 式） | `docs/调度器设计.md` §3 |
+| target duration + actual 反馈 | PM 服务共享环形缓冲（利用率事件/设频请求，禁通用 IPC 拷贝） | `docs/调度器设计-v1.0.md` §5.1 |
+| 大小核/频率干涉面 | AI 调度：内核留第一类接口，用户态策略服务经共享环干涉放置/频率/优先级（per-cluster 频率 hint 由 PM 裁决执行） | `docs/AI调度设计-v1.0.md`、CLAUDE.md 身份支柱 |
+| 每 task 能耗倾向 | EPP hint（perf/efficiency）+ intent u8 查表（IntentProfile→latency-nice/EPP/uclamp/timer slack） | `docs/调度器设计-v1.0.md` ADR #42 |
+| 时间片随频率漂移 | slice 按周期数记账（DVFS 预埋，已落地 2b-4） | `docs/调度器设计-v1.0.md` §3 |
+| 唤醒合并省电 | timer slack+policy 三元组（zx_timer_set 式） | `docs/调度器设计-v1.0.md` §3 |
 
 **渲染会话形态建议**（详见 §7.5）：帧循环每帧把 `{target_ns, actual_ns}` 写共享环 → PM 调频；GUI 线程 intent/翻 EPP 档随帧态切换（动画=performance、静止=efficiency）。这是「AI 原生调度的输入/渲染优先级天然是其消费面」的第一次真实兑现。
 
@@ -151,7 +151,7 @@ BerryOS 的对应件**全部已在册**，缺的只是 GUI 侧的消费者：
 ### 5.1 分辨率 / DPI / 像素格式
 
 - 帧缓冲字节数 = w×h×bpp，**带宽与像素数线性**：RGB32→RGB565 直接砍半传输字节；降分辨率是平方杠杆。移动 GPU 动态分辨率缩放（DRS）是成熟省电技术（[USENIX HotPower'14: Mobile GPU Power Consumption Reduction via Dynamic Resolution Scaling](https://www.usenix.org/system/files/conference/hotpower14/hotpower14_nixon.pdf)）。
-- BerryOS 规划已含此判断：GUI 裁决 D「RGB32 800x600 起步；TCG 吞吐不足时降 RGB565 或 640×480」（`docs/GUI里程碑规划-2026-10.md` §3-D）——TCG 吞吐压力与带宽功耗在软渲染时代**同源**（都是搬字节数），一个降载手段同时服务两端。
+- BerryOS 规划已含此判断：GUI 裁决 D「RGB32 800x600 起步；TCG 吞吐不足时降 RGB565 或 640×480」（`docs/GUI里程碑规划-2026-10-v1.0.md` §3-D）——TCG 吞吐压力与带宽功耗在软渲染时代**同源**（都是搬字节数），一个降载手段同时服务两端。
 - fbcon 侧像素格式已做成运行时事实（`PixelFormat::from_raw` 宁缺勿猜，`user/berry-fbcon/src/render.rs:36-38`）——这条纪律要保持到 berry-gfx/berry-ui：**不把任何像素格式/几何烧进协议常量**。
 
 ### 5.2 AFBC / ASTC 压缩与在管线中的位置【确定度：高（概念）/ 中（量化）】
@@ -212,7 +212,7 @@ BerryOS 的对应件**全部已在册**，缺的只是 GUI 侧的消费者：
 
 ## §7 对 BerryOS：低功耗 day-one 设计项（软渲染阶段就该定死的）
 
-> 原则：**砍实现不砍协议位**。GUI 规划 v1 砍「变帧率/双缓冲/HWC」是对的（`docs/GUI里程碑规划-2026-10.md` 附录 B「二」末段）；本节论证的是这些缝的**协议形态**要在 GUI-1..5 定协议时就留好，后补 = 协议版本破裂或全局改写。
+> 原则：**砍实现不砍协议位**。GUI 规划 v1 砍「变帧率/双缓冲/HWC」是对的（`docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B「二」末段）；本节论证的是这些缝的**协议形态**要在 GUI-1..5 定协议时就留好，后补 = 协议版本破裂或全局改写。
 
 ### 7.1 damage 协议形态（guifbd ↔ berry-ui/未来合成器）
 
@@ -245,7 +245,7 @@ BerryOS 的对应件**全部已在册**，缺的只是 GUI 侧的消费者：
 
 - **渲染会话**：guifbd/launcher 帧循环每帧向 PM 共享环写 `{target_ns = 1e9/negotiated_hz, actual_ns = CNTVCT 差}`——ADPF `createHintSession + reportActualWorkDuration` 的 BerryOS 版（§4.2 映射表全在册）。
 - **intent/EPP 联动**：帧态 RUN → intent/performance 档；IDLE → efficiency；AOD → maintenance 位（`berry_intent` 0x05 编码已冻结在册，恰好是 GUI 第一个真实消费者——ADR #42「机制预留」的兑现样本）。
-- **方向单向化**：GUI 只投票不设频（频率由 PM 裁决执行，`docs/调度器设计.md` §5.1 同款护栏）；PM 崩 → 帧循环照跑（上次频率保活，内核降级保活在册）。
+- **方向单向化**：GUI 只投票不设频（频率由 PM 裁决执行，`docs/调度器设计-v1.0.md` §5.1 同款护栏）；PM 崩 → 帧循环照跑（上次频率保活，内核降级保活在册）。
 - **别犯的错**（Android 官方反模式）：不用 busy-loop 伪造负载拉频；touch boost 用事件真值不用轮询。
 
 ### 7.6 现役代码的具体落点（对齐 GUI-1..9 刀序）
@@ -267,7 +267,7 @@ BerryOS 的对应件**全部已在册**，缺的只是 GUI 侧的消费者：
 5. **ADPF 证明 deadline 反馈调频是必需品**：governor 爬升 ~200ms vs 帧预算 8–16ms，target+actual 双值闭环是现役答案；BerryOS 的 PM 共享环/intent/EPP/slice 周期记账全部在册，GUI 只差当第一个消费者（证据：source.android.com，§4）。
 6. **手表可落性的本质是「无假设」**：Wear OS 15% OPR 预算、watchOS AOD 1Hz、LVGL 1bpp 单缓冲直写共同定义了低档形态；会杀死移植的只有协议层的烧死假设（像素格式/整屏 flush/自由跑帧循环/单值帧率/无 mode op），不是功能缺位（证据：三星官方/Apple/LVGL，§6）。
 7. **AFBC/ASTC 的软渲染时代等价物已在 BerryOS 规划里**：脏区=只搬变化像素、紧凑图标格式=降采样带宽——带宽省电在无 GPU 阶段同样真实（证据：ARM 资料 + HotPower'14，§5）。
-8. **本地实证**：BerryOS GUI-1 guifbd（进行中）当前是单缓冲直写 ramfb、无 flip 无 damage——协议窗口正开着，damage/vote/mode 三缝现在定形成本最低（证据：`user/bins/guifbd/src/main.rs`、`docs/GUI里程碑规划-2026-10.md`，§7.6）。
+8. **本地实证**：BerryOS GUI-1 guifbd（进行中）当前是单缓冲直写 ramfb、无 flip 无 damage——协议窗口正开着，damage/vote/mode 三缝现在定形成本最低（证据：`user/bins/guifbd/src/main.rs`、`docs/GUI里程碑规划-2026-10-v1.0.md`，§7.6）。
 
 ## 对 BerryOS 的架构启示
 

@@ -8,6 +8,7 @@ use crate::handle::Rights;
 
 // ---- syscall 号（ABI §4 编号表；v1 35 号在册、34 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
+// 1.1/S1 在册未实现：0x3C sched_setattr、0x3D sched_getattr、0x3E process_suspend、0x3F thread_yield（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;
@@ -50,6 +51,14 @@ pub const NR_THREAD_SLEEP: usize = 0x37;
 pub const NR_PROCESS_GET_EXIT_CODE: usize = 0x3A;
 /// C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。
 pub const NR_PROCESS_TERMINATE: usize = 0x3B;
+/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册，S2/S5 消费。
+pub const NR_SCHED_SETATTR: usize = 0x3C;
+/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.2；S1 只入册。
+pub const NR_SCHED_GETATTR: usize = 0x3D;
+/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §5/§7.3；S1 只入册，S3 落语义。
+pub const NR_PROCESS_SUSPEND: usize = 0x3E;
+/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §7.1；S1 只入册，S2 落语义。
+pub const NR_THREAD_YIELD: usize = 0x3F;
 pub const NR_CHANNEL_CREATE: usize = 0x51;
 pub const NR_CHANNEL_SEND: usize = 0x52;
 pub const NR_CHANNEL_RECV: usize = 0x53;
@@ -114,6 +123,8 @@ pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 pub const ERR_BAD_HANDLE: i32 = -9;
 /// EINVAL：参数非法（如 replace 两值相同）。
 pub const ERR_INVALID_ARG: i32 = -22;
+/// E2BIG：调度属性长度超界（size > 内核结构且尾部非零；1.1/S1）。
+pub const ERR_E2BIG: i32 = -7;
 /// ENOMEM：无空间（表满 / gen 耗尽 / 超尺寸）。
 pub const ERR_NO_MEMORY: i32 = -12;
 /// EACCES：权限位不足（能力拒绝）。

@@ -2559,7 +2559,7 @@ fn test_handle() {
 fn test_policy() {
     use alloc::vec::Vec;
     use berry_sched::policy::{self, Directive, Entry};
-    use berry_sched::{EppHint, RoundRobin, Runqueue, SchedClass, Task, Topo};
+    use berry_sched::{EppHint, Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
 
     /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
     extern "C" fn pol_dummy(_arg: usize) -> ! {
@@ -2575,7 +2575,7 @@ fn test_policy() {
     /// 可信语境走 expect 包装——3b3 try 化的裁定点）。
     fn setup() -> (Runqueue, RoundRobin, Topo, Vec<&'static mut Task>) {
         let mut rq = Runqueue::new();
-        let rr = RoundRobin;
+        let rr = Fair;
         let topo = Topo::single();
         let mut tasks = Vec::new();
         for (tag, name) in [(7usize, b"p7".as_slice()), (8, b"p8".as_slice()), (9, b"p9".as_slice())] {
@@ -2655,7 +2655,7 @@ fn test_policy() {
 /// 非 smoke 标记（TAGTAB 模式：断言炸 = panic = 后续标记缺失兜底）。
 #[allow(clippy::unwrap_used)]
 fn test_rq_ring2() {
-    use berry_sched::{RoundRobin, Runqueue, SchedClass, Task, Topo};
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo};
 
     /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
     extern "C" fn rq_dummy(_arg: usize) -> ! {
@@ -2667,7 +2667,7 @@ fn test_rq_ring2() {
     }
 
     let mut rq = Runqueue::new();
-    let rr = RoundRobin;
+    let rr = Fair;
     let topo = Topo::single();
 
     // —— 两元环：摘其一，幸存者必须仍可出选（bug 下 head=None → pick None）。
@@ -2735,7 +2735,7 @@ fn test_rq_ring2() {
 /// 回归面）。本地环手搭（不动全局 RUNQUEUE——ktest 在 `berry_sched::init`
 /// 前）；非 smoke 标记（RING2 模式：断言炸 = panic = 后续标记缺失兜底）。
 fn test_rq_ring3() {
-    use berry_sched::{linkable, RoundRobin, Runqueue, SchedClass, Task, Topo};
+    use berry_sched::{linkable, Fair, Runqueue, SchedClass, Task, Topo};
 
     /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
     extern "C" fn rq3_dummy(_arg: usize) -> ! {
@@ -2747,7 +2747,7 @@ fn test_rq_ring3() {
     }
 
     let mut rq = Runqueue::new();
-    let rr = RoundRobin;
+    let rr = Fair;
     let topo = Topo::single();
 
     // —— ① 判据直测（执法断言的判据本身）。

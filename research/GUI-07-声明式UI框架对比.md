@@ -1,12 +1,12 @@
 # GUI-07 声明式 UI 框架对比——「容易开发 + 渲染高效 + 正确」的现代解法与 BerryOS SDK 形态建议
 
-> **调研定位**：M-GUI 线（`docs/GUI里程碑规划-2026-10.md`）专项问题报告。用户 2026-10-28 裁决六条（最先进渲染方案 / 移动设备为基准 / 吸取安卓渲染响应慢教训 / 又低功耗又优秀 / 先进渲染 API 兼容但原生适配才算数 / 开发套件要「容易渲染、高效、正确」）中，本报告主答**编程模型与 SDK 语言形态**（裁决第 ⑥ 条 + 第 ③④ 条的模型面）；渲染后端（GPU/合成器）归 GUI 线其它报告。
+> **调研定位**：M-GUI 线（`docs/GUI里程碑规划-2026-10-v1.0.md`）专项问题报告。用户 2026-10-28 裁决六条（最先进渲染方案 / 移动设备为基准 / 吸取安卓渲染响应慢教训 / 又低功耗又优秀 / 先进渲染 API 兼容但原生适配才算数 / 开发套件要「容易渲染、高效、正确」）中，本报告主答**编程模型与 SDK 语言形态**（裁决第 ⑥ 条 + 第 ③④ 条的模型面）；渲染后端（GPU/合成器）归 GUI 线其它报告。
 >
 > **证据纪律**：联网论断标 URL；本地论断标仓库路径。确定度分三级：**高**（官方文档/一手源码/多篇独立佐证）、**中**（单一高质量来源或社区共识）、**低**（推断，需原型验证）。
 >
 > **协议洁净**：Slint 为 GPL/商业双许可、Flutter/Compose/React 各有非 Apache 许可——**全部只看思路与机制，不搬代码**（CLAUDE.md 协议洁净铁律）。
 
-> **追记（2026-10-29 全面自研追裁后，防误导）**：本报告写于追裁前。正文 §7「宏 DSL 为终态主形态（v1.5 叠加）」等载体建议已被用户追裁改为「**宏 vs 文本载体 SDK-1 后用真实数据裁**」（`docs/GUI里程碑规划-2026-10.md` 修订记录 + ADR #50–#54）；布局自研不引 Taffy、光栅核全面自研（vello_cpu 降思想参考/对拍基准）。本报告保留作机制对比与证据基座，**勿当现行口径引用**。
+> **追记（2026-10-29 全面自研追裁后，防误导）**：本报告写于追裁前。正文 §7「宏 DSL 为终态主形态（v1.5 叠加）」等载体建议已被用户追裁改为「**宏 vs 文本载体 SDK-1 后用真实数据裁**」（`docs/GUI里程碑规划-2026-10-v1.0.md` 修订记录 + ADR #50–#54）；布局自研不引 Taffy、光栅核全面自研（vello_cpu 降思想参考/对拍基准）。本报告保留作机制对比与证据基座，**勿当现行口径引用**。
 
 ---
 
@@ -67,7 +67,7 @@
 
 ### 2.7 ArkUI（OpenHarmony）：状态装饰器两代（V1 对象级 → V2 属性级）
 
-**机制**：V1 = `@State`/`@Prop`/`@Link`/`@Provide` 族，类观测为**对象级**（`@Observed`+`@Track` 才能到属性级，且无深度观测）；V2 = `@ObservedV2`+`@Trace` **属性级精确观测 + 深度观测**、`@Local`/`@Param`/`@Monitor`，状态变量独立于 UI 组件。证据：华为官方《状态管理 V1 和 V2 更新机制差异》（[developer.huawei.com](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-v1-v2-update-difference)）、官方总览（[developer.huawei.com/en](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/arkts-state-management-overview)）、社区迁移实战（[掘金](https://juejin.cn/post/7536109341255925760)、[segmentfault](https://segmentfault.com/a/1190000046864738)）。源码结构同样两代并存：ace_engine 仓 `frameworks/bridge/declarative_frontend/state_mgmt/src/lib/` 下 `full_update`/`partial_update`/`v2` 三目录（本地转引：`docs/GUI里程碑规划-2026-10.md` 附录 B L2「状态管理装饰器」条，源码基线 `~/Documents/harmony/openharmony/`）。
+**机制**：V1 = `@State`/`@Prop`/`@Link`/`@Provide` 族，类观测为**对象级**（`@Observed`+`@Track` 才能到属性级，且无深度观测）；V2 = `@ObservedV2`+`@Trace` **属性级精确观测 + 深度观测**、`@Local`/`@Param`/`@Monitor`，状态变量独立于 UI 组件。证据：华为官方《状态管理 V1 和 V2 更新机制差异》（[developer.huawei.com](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-v1-v2-update-difference)）、官方总览（[developer.huawei.com/en](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/arkts-state-management-overview)）、社区迁移实战（[掘金](https://juejin.cn/post/7536109341255925760)、[segmentfault](https://segmentfault.com/a/1190000046864738)）。源码结构同样两代并存：ace_engine 仓 `frameworks/bridge/declarative_frontend/state_mgmt/src/lib/` 下 `full_update`/`partial_update`/`v2` 三目录（本地转引：`docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L2「状态管理装饰器」条，源码基线 `~/Documents/harmony/openharmony/`）。
 
 **评价**：V1 的痛点（嵌套对象不触发刷新、未 @Track 全对象重刷、V1/V2 不能混用）正是华为自造 V2 的原因——**OpenHarmony 自己用两代状态管理的迭代证明了「组件/对象级失效不够，属性级细粒度才是终局」**，与 SwiftUI Observable 的代差方向完全一致。差量更新管线（UINode 最小差量 + ForEach/LazyForEach 懒加载 + 任务合批）在完整档 ace_engine 落地（GUI 规划附录 B 转引：`frameworks/core/components_ng/` + `pipeline_ng/ui_task_scheduler.cpp`）。
 
@@ -105,10 +105,10 @@
 - **无稳定对象标识**：每帧重建 → 无障碍树/自动化测试的稳定锚点弱（Slint 的 AI 验证方案恰恰靠无障碍树驱动 UI，见 §6.4——对照出即时模式的缺口）；
 - 每帧全量布局：树大后成本线性涨，靠缓存层（egui 内部也有 pass 缓存）部分缓解，但架构上仍是全帧重算。
 
-**保留模式**：UI 是持久树 + 失效标记 + 按需重绘（invalidate/脏区）。OpenHarmony ui_lite 是嵌入式保留模式的现成实证：**ROM 900KB / RAM ≈90KB** 跑完整组件集 + 脏区刷新（本地证据：`docs/GUI里程碑规划-2026-10.md` 附录 B L0/L2 多条带 UIL 源码路径；社区综述 [users.rust-lang.org](https://users.rust-lang.org/t/egui-vs-iced-in-regards-to-game-engine-integration/74569/6) 亦指出连 Unity 都从即时转回保留）。
+**保留模式**：UI 是持久树 + 失效标记 + 按需重绘（invalidate/脏区）。OpenHarmony ui_lite 是嵌入式保留模式的现成实证：**ROM 900KB / RAM ≈90KB** 跑完整组件集 + 脏区刷新（本地证据：`docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L0/L2 多条带 UIL 源码路径；社区综述 [users.rust-lang.org](https://users.rust-lang.org/t/egui-vs-iced-in-regards-to-game-engine-integration/74569/6) 亦指出连 Unity 都从即时转回保留）。
 
 **选择依据（落到 BerryOS）**：
-- **常驻系统 UI / 移动设备主屏 = 保留模式 + 脏区，无悬念**：低功耗是 BerryOS 身份支柱（CLAUDE.md），空闲零重绘 + 事件驱动是硬需求；现行规划 GUI-3 berry-ui（View/ViewGroup/Invalidate + 脏区合并 + 软 vsync 帧循环）已按此裁决（`docs/GUI里程碑规划-2026-10.md` §4 GUI-3 行、§2 闭包第 5 件）——**本报告确认该裁决与行业证据一致**。
+- **常驻系统 UI / 移动设备主屏 = 保留模式 + 脏区，无悬念**：低功耗是 BerryOS 身份支柱（CLAUDE.md），空闲零重绘 + 事件驱动是硬需求；现行规划 GUI-3 berry-ui（View/ViewGroup/Invalidate + 脏区合并 + 软 vsync 帧循环）已按此裁决（`docs/GUI里程碑规划-2026-10-v1.0.md` §4 GUI-3 行、§2 闭包第 5 件）——**本报告确认该裁决与行业证据一致**。
 - **即时模式的合理生态位**：调试 overlay、DFX 工具、boot 画面、游戏内 HUD——每帧本来就要重画、生命周期短、无省电约束的面。BerryOS 可在 DFX 三件（GUI-9）里给一个小型即时模式面，但**不进主线 UI 框架**。
 - fbcon 现状定位：`user/berry-fbcon`（28 host 测，font.rs/render.rs 43 个函数）本质是立即模式绘制原语集——它升级为 berry-gfx 六原语 trait 层（GUI-2 规划在册）后正好同时服务两种模式（保留树的 Render 遍历与即时工具都消费同一组原语）。
 
@@ -223,11 +223,11 @@ React 心智 + `rsx!` 宏内类 JSX 语法；热重载专门化——`dioxus-rsx
 3. **失效粒度细化的代差在两家巨头同向发生**：SwiftUI ObservableObject→@Observable（属性访问级依赖）、ArkUI V1 对象级→V2 属性级+深度观测——OpenHarmony 用自家两代并存自证了 V1 粒度不够。证据：[Apple 迁移指南](https://developer.apple.com/documentation/swiftui/migrating-from-the-observable-object-protocol-to-the-observable-macro)、[华为 V1/V2 差异文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-v1-v2-update-difference)。
 4. **Flutter 是七模型中分配压力与失效粒度最差一档**（setState 整子树配置重建 + 组件级失效），靠 Element diff 与应用层状态库补救。证据：[docs.flutter.dev](https://docs.flutter.dev/resources/inside-flutter)、[hashnode](https://ishaquehassan.hashnode.dev)。
 5. **Android jank 三机制根源**：vsync 16ms 硬预算（超时帧翻倍 32ms）、深树全遍历、主线程重活——BerryOS 可用帧预算断言 + 输入→首像素短路径 + 浅树对策 day-one 化。证据：[Unity 论坛](https://discussions.unity.com/t/removing-touch-drag-lag-for-android/778730)、[vocal.media](https://vocal.media/journal/how-to-handle-slow-rendering-in-complex-android-ui-layouts)。
-6. **即时模式（egui）微秒级重建但与低功耗结构性冲突**（空闲重绘 + 无稳定标识弱化自动化验证）；OpenHarmony ui_lite（900KB ROM/90KB RAM + 脏区）是移动/嵌入式保留模式的现成实证。证据：[HN](https://news.ycombinator.com/item?id=44395421)、本地 `docs/GUI里程碑规划-2026-10.md` 附录 B。
+6. **即时模式（egui）微秒级重建但与低功耗结构性冲突**（空闲重绘 + 无稳定标识弱化自动化验证）；OpenHarmony ui_lite（900KB ROM/90KB RAM + 脏区）是移动/嵌入式保留模式的现成实证。证据：[HN](https://news.ycombinator.com/item?id=44395421)、本地 `docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B。
 7. **AI UI 生成业界双轨**：v0/Figma Make 直产 JSX 代码（语料最丰），Builder.io/daily.dev 主张受约束组件词表 + 结构化 UI intent（受控生成、可校验）；「完美 JSON ≠ 语义正确」是结构化路线的公认残余风险。证据：[daily.dev](https://daily.dev/posts/a-better-approach-to-generative-ui-hwpqccf9w)、[Towards AI](https://pub.towardsai.net/structured-output-from-an-llm-can-be-perfect-json-and-completely-wrong-cbd630be2306)。
 8. **Slint 的 AI 工具链（skill + 内嵌 MCP：无障碍树检查 + 事件驱动验证）是 GUI AI 验证的业界首例**，形态上与 BerryOS DFX 三件（视图树 dump + 事件注入器）直接同构，可对标；但 Slint GPL/商业双许可，BerryOS 只可看思路。证据：[docs.slint.dev](https://docs.slint.dev/latest/docs/slint/guide/tooling/ai-coding-assistants)。
 9. **Rust 宏 DSL 的 IDE/热重载/增量编译是结构性已知税**（rust-analyzer proc-macro 补全缺口、Leptos 宏内补全弱、proc-macro 展开不进增量缓存）——选宏 DSL 必须同时设计「域窄 DSL + rustc 诊断闭环」的缓解策略。证据：[rust-analyzer#18834](https://github.com/rust-lang/rust-analyzer/issues/18834)、[leptos#1781](https://github.com/leptos-rs/leptos/issues/1781)。
-10. **BerryOS 现行规划（GUI-3 保留树+脏区、纯 Rust 构建）与行业终局兼容**：保留树是 Solid/Svelte 之下共同的物理层；在其上叠宏 DSL + 属性级失效即可达「AI 生成/编译器验证/运行时高效」三全，无需推翻任何已裁决刀序。证据：本地 `docs/GUI里程碑规划-2026-10.md` §4、`user/berry-fbcon/src/`（渲染核种子）。
+10. **BerryOS 现行规划（GUI-3 保留树+脏区、纯 Rust 构建）与行业终局兼容**：保留树是 Solid/Svelte 之下共同的物理层；在其上叠宏 DSL + 属性级失效即可达「AI 生成/编译器验证/运行时高效」三全，无需推翻任何已裁决刀序。证据：本地 `docs/GUI里程碑规划-2026-10-v1.0.md` §4、`user/berry-fbcon/src/`（渲染核种子）。
 
 ## 9. 对 BerryOS 的架构启示
 

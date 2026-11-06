@@ -129,7 +129,7 @@ Apple 不用单调计数器当主防线，而是**每次刷机/启动随机 nonc
 
 ## 5. 对 BerryOS 的启示（v2/v3/v4 落点 + day-one 留缝）
 
-> 对照基线：BerryOS 现状 = 度量启动 v1 留桩 / v2 SMMU+PAC / v3 度量链完整 / v4+ 签名+反回滚（`docs/安全与硬件隔离设计.md` §6）；L0 boot slot A/B + 启动计数回退已设计（ADR #47）；引导链 = BerryBoot（UEFI 应用）→ handoff → kernel。
+> 对照基线：BerryOS 现状 = 度量启动 v1 留桩 / v2 SMMU+PAC / v3 度量链完整 / v4+ 签名+反回滚（`docs/安全与硬件隔离设计-v1.0.md` §6）；L0 boot slot A/B + 启动计数回退已设计（ADR #47）；引导链 = BerryBoot（UEFI 应用）→ handoff → kernel。
 
 **v2 落点（SMMU 同期）**
 - AAVMF 验签链可先行：换 `-D SECURE_BOOT_ENABLE=TRUE` 构建的 AAVMF + 自签 PK/KEK/db，让固件验 BOOTAA64.EFI 真实发生在 CI——BerryBoot 源码零改动，验证面在固件【推，机制见 38/40】。

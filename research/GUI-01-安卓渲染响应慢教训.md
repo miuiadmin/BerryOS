@@ -1,7 +1,7 @@
 # GUI-01 安卓渲染响应慢的教训：根因考古与 BerryOS day-one 预防清单
 
 > **调研任务**：安卓渲染响应慢的根因考古 + 新 OS 的 day-one 预防清单。
-> **背景落点**：BerryOS M-GUI 里程碑（`docs/GUI里程碑规划-2026-10.md`）已立项；用户 2026-10-28 裁决「用最先进的图形渲染方案、按移动设备设计、吸取安卓渲染响应慢的教训、又要低功耗又要优秀」——本报告即第 ③ 条裁决的证据底座。
+> **背景落点**：BerryOS M-GUI 里程碑（`docs/GUI里程碑规划-2026-10-v1.0.md`）已立项；用户 2026-10-28 裁决「用最先进的图形渲染方案、按移动设备设计、吸取安卓渲染响应慢的教训、又要低功耗又要优秀」——本报告即第 ③ 条裁决的证据底座。
 > **方法**：联网调研（WebSearch/WebFetch，每条论断标 URL）+ 本地文档/源码（标仓库路径）。确定度分级：**高**（官方文档/一手演讲/源码）、**中**（知名工程师博客/权威媒体实测）、**低**（社区二手转述/未定案）。
 > **调研日期**：2026-10-28。
 
@@ -18,7 +18,7 @@ Android 图形栈十五年演进有一条清晰主线：**每一代都在把「�
   - 每次绘制整棵子树重跑绘制代码——即使内容没变（Romain Guy 官方博文对旧模型的批判，见 1.2 的来源）；
   - 无 GPU、无 display list、无 vsync 对齐，CPU 绘制就是硬上限；
   - 绘制与主线程业务（输入、GC、Binder）串行在一个线程上，任何一件慢事都直接吃帧。
-- **残留**：软件渲染并未消失——今天的 HWUI 仍有软件回退路径；BerryOS 的 QEMU 软渲染路线与之同族（本地 `docs/GUI里程碑规划-2026-10.md` §5 风险表把 TCG 吞吐列为第一风险，并引 OpenHarmony RASTER 纯软回退为同路证据）。
+- **残留**：软件渲染并未消失——今天的 HWUI 仍有软件回退路径；BerryOS 的 QEMU 软渲染路线与之同族（本地 `docs/GUI里程碑规划-2026-10-v1.0.md` §5 风险表把 TCG 吞吐列为第一风险，并引 OpenHarmony RASTER 纯软回退为同路证据）。
 
 ### 1.2 Honeycomb / HWUI（Android 3.0，2011）：GPU 加速 + display list
 
@@ -110,7 +110,7 @@ Romain Guy 官方博文《Android 3.0 Hardware Acceleration》给出了完整一
 - **量化**：For Butter or Worst 案例里问题应用绘制只花 4ms，瓶颈是 `deliverInputEvent` 里 52ms 的 contacts content provider 查询（Traceview 抓到）（[changliu.cc](https://changliu.cc/2020/07/15/For-Butter-or-Worse-Smoothing-Out-Performance-in-Android-UIs)）；Perfetto 实战案例：主线程在 doFrame 前 Runnable 排队 21ms、处理 18ms、ACK 后到呈现还有 50ms——read-to-present 合计 76ms（[androidperformance.com Perfetto 18](https://androidperformance.com/en/2026/05/04/Android-Perfetto-18-Input-Response-Latency)）。
 - **BerryOS day-one 免疫**：
   1. GUI 服务（launcher/未来各 GUI 进程）内部**帧循环线程与业务线程分离**（RenderThread 教训直接移植：Lollipop 用一代版本还的债，BerryOS 从第一刀就分）；
-  2. 资源（图标/字体/壁纸）**启动期预解码 + LRU**（规划 §2 闭包件 3/4 已含——本地 `docs/GUI里程碑规划-2026-10.md` §2）；
+  2. 资源（图标/字体/壁纸）**启动期预解码 + LRU**（规划 §2 闭包件 3/4 已含——本地 `docs/GUI里程碑规划-2026-10-v1.0.md` §2）；
   3. **同步 IPC 不上 UI 线程**（见 2.5）；
   4. 单核 v1 下「分离线程」退化为「分离阶段」：帧循环内固定顺序 input→animation→layout→render，各阶段设预算断言（与 androidperformance.com 的 Perfetto 检查顺序同构）。
 
@@ -123,13 +123,13 @@ Romain Guy 官方博文《Android 3.0 Hardware Acceleration》给出了完整一
 ### 2.4 过度绘制 overdraw
 
 - **机制**：每帧重复绘制被完全遮挡的像素（背景叠背景、列表项叠窗口底色）。GPU 时代成了填充率浪费与功耗黑洞。官方可视化工具按蓝/绿/粉/红标 1x–4x（开发者选项 Debug GPU overdraw，[dev.to 综述](https://dev.to/tohemt/overdraw-memory-leaks-anr-and-slow-rendering-in-android-apps-3njb)、[BrowserStack 指南](https://www.browserstack.com/docs/app-performance/app-performance-guides/android/ui-rendering-performance)）；官方经验法则「每帧绘制像素 ≤ 屏幕像素 ×2.5」（[Romain Guy 2011 官方博文](https://android-developers.googleblog.com/2011/03/android-30-hardware-acceleration.html)）；React Native 应用红区 4x overdraw 常见（[NativeScript issue](https://github.com/NativeScript/NativeScript/issues/3665)、[r/reactnative 讨论](https://www.reddit.com/r/reactnative/comments/1hi5te3/how_is_your_production_apps_gpu_overdraw/)）。
-- **BerryOS day-one 免疫**：合成器视角天然免疫大部分 overdraw——脏区合成时按**不透明矩形遮挡剔除**（occlusion culling）：被不透明窗口/区域完全遮住的脏区不重绘。OpenHarmony ui_lite 的脏区合并/遮挡排除正是此路（本地 `docs/GUI里程碑规划-2026-10.md` 附录 B L0「脏区刷新」条，源码证据 `frameworks/components/root_view.cpp`）；fbcon 蜂格渲染核已是矩形原语友好（本地 `user/berry-fbcon/src/render.rs`）。**建议在 berry-ui 的 Invalidate 合并算法里把「遮挡排除」列为与「矩形合并」同级的验收项。**
+- **BerryOS day-one 免疫**：合成器视角天然免疫大部分 overdraw——脏区合成时按**不透明矩形遮挡剔除**（occlusion culling）：被不透明窗口/区域完全遮住的脏区不重绘。OpenHarmony ui_lite 的脏区合并/遮挡排除正是此路（本地 `docs/GUI里程碑规划-2026-10-v1.0.md` 附录 B L0「脏区刷新」条，源码证据 `frameworks/components/root_view.cpp`）；fbcon 蜂格渲染核已是矩形原语友好（本地 `user/berry-fbcon/src/render.rs`）。**建议在 berry-ui 的 Invalidate 合并算法里把「遮挡排除」列为与「矩形合并」同级的验收项。**
 
 ### 2.5 Binder IPC 阻塞
 
 - **机制**：Android 的跨进程调用（拿窗口信息、资源、content provider、启动 Activity）默认同步阻塞直到对端返回；主线程上的同步 `Binder.transact()` 会挂起 UI（[Stack Overflow: Binder.transact() can block UI](https://stackoverflow.com/questions/15051569/android-os-binder-transact-can-block-ui)、[Medium: How Binder Decides Whether Your App Crashes](https://medium.com/@sivavishnu0705/the-hidden-toll-booth-how-binder-decides-whether-your-app-crashes-stutters-or-freezes-75cacb1246de)）。经典案例：For Butter or Worse 里 getView 中的 52ms contacts 查询就是主线程 Binder（content provider）调用。
 - **BerryOS 对位**：BerryOS 的同步 channel 语义上与 Binder 同族——**同步等待 IPC 是同一类病，换了传输层不会自愈**。预防立法：
-  1. GUI 进程的帧循环线程**永不发起同步 RPC**——所有跨服务取数（窗口信息、图标枚举、事件流）走订阅/推送或 wait_many 多路复用（本地 IPC 设计：channel 同步 + event 异步，`docs/IPC设计.md` 在册）；
+  1. GUI 进程的帧循环线程**永不发起同步 RPC**——所有跨服务取数（窗口信息、图标枚举、事件流）走订阅/推送或 wait_many 多路复用（本地 IPC 设计：channel 同步 + event 异步，`docs/IPC设计-v1.0.md` 在册）；
   2. gui-inputd→launcher 的事件流用「发送方不等待渲染方」的方向（输入服务永不阻塞在慢消费者上——OpenHarmony vsync 分发「高频小信号走专用通道」同理，规划附录 B L0 VSync 条）；
   3. smoke/DFX 面加一条「UI 线程 RPC 等待」遥测（对标 Perfetto 的 dispatch_latency_dur 字段思想）。
 
@@ -178,7 +178,7 @@ Perfetto 实战给出的分解框架（一手技术文档，[androidperformance.
 
 **架构归因（为何 iOS 长期快）**：多方综述指向三点——①iOS 触摸事件与 UI 渲染跑在**专用高（实时）优先级线程**，触摸发生时调度器优先服务 UI；②GPU 加速是第一原则（从未有软件渲染时代）；③硬件/固件校准（触控 IC 采样与合并策略）（[PhoneArena: myth busted](https://www.phonearena.com/news/Android-can-never-be-as-smooth-as-iOS-myth-busted_id26252)、[Zhihu 讨论汇](https://www.zhihu.com/question/24180748/answer/24746921)，确定度中——非官方文档，属合理共识）。
 
-**对 BerryOS**：第 ① 条恰是 BerryOS 的机制本位优势——intent 第一类调度输入（`CLAUDE.md` 调度 intent 段，ADR #42）+ 调度器 class_rt/deadline 预留（`docs/调度器设计.md`）让「GUI 帧循环线程申报高 intent/RT 档」成为 day-one 可用能力，不靠事后打补丁。
+**对 BerryOS**：第 ① 条恰是 BerryOS 的机制本位优势——intent 第一类调度输入（`CLAUDE.md` 调度 intent 段，ADR #42）+ 调度器 class_rt/deadline 预留（`docs/调度器设计-v1.0.md`）让「GUI 帧循环线程申报高 intent/RT 档」成为 day-one 可用能力，不靠事后打补丁。
 
 ---
 
@@ -230,14 +230,14 @@ Compose 用五年时间把「响应式/声明式 UI」的性能坑填到与手�
 | 2 | 主线程包办 | 输入/动画/布局/绘制/资源一线串行 | 案例 52ms provider 查询吃帧；76ms read-to-present | 帧循环线程独立（v1 单核=固定阶段顺序）；资源启动期预解码 + LRU；UI 线程禁同步 IPC | 规划 §2 闭包 3/4、GUI-3 |
 | 3 | 双遍 measure / 深层级 | RelativeLayout/weight 两遍测量，深度放大 | I/O 2013 扁平化叙事 | berry-ui **单遍约束协议立法**（trait 层钉死）；GridLayout/SwipeView 天然单遍 | 规划 GUI-3/GUI-6 |
 | 4 | overdraw | 遮挡像素重复绘制 | 官方 ≤2.5x 屏幕像素 | 脏区合成 + 不透明遮挡剔除同列验收；矩形原语渲染核（fbcon 同族） | `user/berry-fbcon/src/render.rs` |
-| 5 | Binder 同步阻塞 | 主线程同步跨进程调用挂起 | 52ms 案例；StrictMode 默认抓主线程 I/O | 同步 channel 同病同治：**UI 线程零同步 RPC**；输入/窗口信息走推送 + wait_many 多路 | `docs/IPC设计.md` |
+| 5 | Binder 同步阻塞 | 主线程同步跨进程调用挂起 | 52ms 案例；StrictMode 默认抓主线程 I/O | 同步 channel 同病同治：**UI 线程零同步 RPC**；输入/窗口信息走推送 + wait_many 多路 | `docs/IPC设计-v1.0.md` |
 | 6 | 无 vsync 对齐（历史起点） | 绘制随机时刻开始，跨 vsync 即 jank | ICS→JB 叙事 | 软 vsync 帧循环 day-one（16ms 定时器起步），真 vsync 接缝留位 | 规划 GUI-3、风险表 ramfb 行 |
 | 7 | 缓冲饥饿 | 双缓冲下三环节排队 | Butter 三缓冲叙事 | 双缓冲起步 + 「需要时第三缓冲」留缝（QEMU 撕裂容忍已裁决） | 规划 §5 风险表 |
 | 8 | 输入攒批雪崩 | 事件打包延迟可见 + dispatcher 落后 | pre-JB 输入管线叙事 | gui-inputd 事件流直达消费进程、不攒批；处理时刻取最新态 | 规划 §3 服务图 |
 | 9 | 触摸分发开销 | 逐层 View 遍历 + 中心枢纽排队 | deliverInputEvent 吃帧案例 | Z 序表坐标命中（无深度遍历）；无 system_server 单点 | 规划 GUI-5 |
 | 10 | 「晚到帧」型延迟 | 帧不慢但呈现偏移 | FrameTimeline expected/actual | 遥测记双指标：帧耗时直方图 + 呈现偏移；BENCHWAKE 直方图先例 | `CLAUDE.md` boot 速览 |
 | 11 | 度量后置 | jank 十年后才有官方指标体系 | JankStats/FrameTimeline 时间线 | FPS 统计 + 视图树 dump + 事件注入器 = GUI-9 第一梯队（AI 测试友好化支柱） | 规划 GUI-9、附录 B L2 DFX 条 |
-| 12 | 优先级不保证 | UI 线程与后台公平竞争 | iOS 实时优先级线程对照 | intent 第一类调度输入 + class_rt/deadline 预留：GUI 帧线程申报高 intent；AI 调度面天然消费 | `docs/调度器设计.md`、ADR #42 |
+| 12 | 优先级不保证 | UI 线程与后台公平竞争 | iOS 实时优先级线程对照 | intent 第一类调度输入 + class_rt/deadline 预留：GUI 帧线程申报高 intent；AI 调度面天然消费 | `docs/调度器设计-v1.0.md`、ADR #42 |
 | 13 | 声明式层性能税（Compose 病） | 重组/不稳定参数/记忆化成本 | Strong Skipping 五年补课 | 保留模式 Rust 视图树 = 常驻显示列表（记忆化极限）；状态→Invalidate 绑定 API 留缝 | 规划裁决 C |
 | 14 | JIT/预热依赖 | 冷路径解释执行 | Baseline Profiles 叙事 | AOT 编译（无 JIT 面）；spawn 预热（appd 先例） | `CLAUDE.md` G-eco 段 |
 | 15 | 低功耗与流畅的对立 | 渲染全速=耗电 | Tickless vs 帧率治理（HGM/变帧率） | tickless day-one + GUI 空闲静默帧循环（无脏区不合成不唤醒）；PM 服务共管 | `CLAUDE.md` 调度/电源段 |

@@ -256,26 +256,26 @@ fn finish_entry(entries: &mut Vec<AppEntry>, faces: &mut Vec<IconFace>, px_used:
 
 /// 通用图标面（无图标 app 的 fallback；中性石板底 + 白环，1-bit alpha）。
 fn generic_face() -> IconFace {
-    // 72px：与 APPDEMO 源图标同档（v1 无运行时缩放）。
-    const S: usize = 72;
+    // 96px：与 APPDEMO 源图标同档（v1 无运行时缩放）。
+    const S: usize = 96;
     let mut px = vec![0u32; S * S];
     let mut y = 0usize;
     while y < S {
         let mut x = 0usize;
         while x < S {
             // 圆角半径 10：四角外 = 透明。
-            let cx = if x < 15 { 15 - x } else if x >= S - 15 { x - (S - 16) } else { 0 };
-            let cy = if y < 15 { 15 - y } else if y >= S - 15 { y - (S - 16) } else { 0 };
-            if cx * cx + cy * cy > 225 {
+            let cx = if x < 20 { 20 - x } else if x >= S - 20 { x - (S - 21) } else { 0 };
+            let cy = if y < 20 { 20 - y } else if y >= S - 20 { y - (S - 21) } else { 0 };
+            if cx * cx + cy * cy > 400 {
                 px[y * S + x] = 0;
                 x += 1;
                 continue;
             }
-            let dx = x as i32 - 35;
-            let dy = y as i32 - 35;
+            let dx = x as i32 - 47;
+            let dy = y as i32 - 47;
             let d2 = dx * dx + dy * dy;
-            // 白环：半径 22..=30。
-            px[y * S + x] = if (484..=900).contains(&d2) {
+            // 白环：半径 30..=40。
+            px[y * S + x] = if (900..=1600).contains(&d2) {
                 0xFFFF_FFFF
             } else {
                 0xFF45_5A7A

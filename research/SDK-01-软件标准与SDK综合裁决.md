@@ -15,12 +15,12 @@
 
 ## BerryOS 软件标准与 SDK 综合裁决建议（synthesis · 2026-10-29）
 
-> 通道形态声明：本报告 = 八份基线报告（base:app / base:plan / w:android / w:oh / w:apple / w:xplat / w:sys / w:ai）综合 + 仓内定向核验（`docs/架构决策.md` ADR #37–#54 逐行、`docs/GUI里程碑规划-2026-10.md` 裁决表与 §4 刀表、`docs/应用模型设计.md` §2/§3/§6 词表现状）。未使用外部网络检索——外部事实以基线报告转引的一手 URL 为准（URL 见 §七），仓内事实引基线:xx 或仓内路径；综合判断标【推】。
+> 通道形态声明：本报告 = 八份基线报告（base:app / base:plan / w:android / w:oh / w:apple / w:xplat / w:sys / w:ai）综合 + 仓内定向核验（`docs/架构决策.md` ADR #37–#54 逐行、`docs/GUI里程碑规划-2026-10-v1.0.md` 裁决表与 §4 刀表、`docs/应用模型设计-v1.0.md` §2/§3/§6 词表现状）。未使用外部网络检索——外部事实以基线报告转引的一手 URL 为准（URL 见 §七），仓内事实引基线:xx 或仓内路径；综合判断标【推】。
 
 ### 一、执行摘要（13 条硬结论）
 
-1. **「一个 BerryOS 应用」= 一份 manifest（能力申请表）+ 静态 ELF + 资源，封进 cpio 容器（.bap）**；内核零「应用」概念、appd 是唯一翻译官——GUI 应用/CLI 工具/系统服务/驱动不是四种包，是**同一格式 × type 词表值 × 能力集**的形态谱。【证】基线:app #1、`docs/架构决策.md` #43、`docs/应用模型设计.md` §2
-2. **能力词表是软件标准的第一缺口**：机制全兑现（manifest→授权集→gift，「没申请就没有 handle」），但 v0 词表恰 1 词（console）——「要 fs 的应用只能伪装 bin/ 程序走 bsh gift」是标准缺位不是实现欠账。【证】基线:app #4、`docs/应用模型设计.md` §3
+1. **「一个 BerryOS 应用」= 一份 manifest（能力申请表）+ 静态 ELF + 资源，封进 cpio 容器（.bap）**；内核零「应用」概念、appd 是唯一翻译官——GUI 应用/CLI 工具/系统服务/驱动不是四种包，是**同一格式 × type 词表值 × 能力集**的形态谱。【证】基线:app #1、`docs/架构决策.md` #43、`docs/应用模型设计-v1.0.md` §2
+2. **能力词表是软件标准的第一缺口**：机制全兑现（manifest→授权集→gift，「没申请就没有 handle」），但 v0 词表恰 1 词（console）——「要 fs 的应用只能伪装 bin/ 程序走 bsh gift」是标准缺位不是实现欠账。【证】基线:app #4、`docs/应用模型设计-v1.0.md` §3
 3. **.bap 演进方向 = 「小 cml」+ 内容寻址**：gift 装配从 svcmgr 硬编码迁为 manifest 声明段（能力拓扑变数据、可审计可校验），mkapp day-one 记录每文件 sha256（Merkle 全树留 v2）——Fuchsia .cml/包模型同构。【证】w:sys #1/#3
 4. **三值治理（min/target/compile）有三份独立收敛证据**（Android targetSdk 行为门控 + Play 政策杠杆 + 鸿蒙 hvigor 三元组编译期报错 00303015），add-only 进 manifest v2、mkapp 编译期执法——把兼容问题从运行时提前到工具期。【证】w:android #2/#3、w:oh #5
 5. **签名/版本化维持 v2「分发面出现时再立」（#44 已裁），但两条 day-one 免费动作**：manifest 预留 profile/key-lineage 字段位 + 每文件摘要——签名方案上来就该全文件覆盖 + 轮换预留（Android v1→v4 全是事故驱动）。【证】w:android #9、base:plan #9
@@ -37,7 +37,7 @@
 
 #### Q1 我们的软件标准到底是什么样？
 
-**定义立法（建议原文落 `docs/应用模型设计.md` §0）**：凡由 appd 依据 manifest 翻译出 handle 授权集、以静态 ELF 运行于 EL0 的进程 = BerryOS 应用；系统服务与驱动是同一格式的持证形态；CLI 工具是无 manifest 的裸进程，权限由调用者（bsh gift）即时授予。**最低线** = 确定性构建（mkapp 同输入同字节）+ 每文件 sha256 + manifest 机器可读；签名 v2 全文件方案 + lineage 预留。
+**定义立法（建议原文落 `docs/应用模型设计-v1.0.md` §0）**：凡由 appd 依据 manifest 翻译出 handle 授权集、以静态 ELF 运行于 EL0 的进程 = BerryOS 应用；系统服务与驱动是同一格式的持证形态；CLI 工具是无 manifest 的裸进程，权限由调用者（bsh gift）即时授予。**最低线** = 确定性构建（mkapp 同输入同字节）+ 每文件 sha256 + manifest 机器可读；签名 v2 全文件方案 + lineage 预留。
 
 | 形态 | type（v0→v2） | 打包 | 能力集 | 生命周期 / 失败隔离 |
 |---|---|---|---|---|
@@ -126,7 +126,7 @@
 
 ### 七、参考文献（去重分组）
 
-**仓内（本报告定向核验）**：`docs/架构决策.md`（ADR #37–#54）、`docs/GUI里程碑规划-2026-10.md`（裁决 F/H/I + §4 刀表）、`docs/应用模型设计.md`（§2/§3/§6）、`docs/更新与OTA设计.md`；基线报告八份（base:app / base:plan / w:android / w:oh / w:apple / w:xplat / w:sys / w:ai——全文由主会话拼接为附录）。
+**仓内（本报告定向核验）**：`docs/架构决策.md`（ADR #37–#54）、`docs/GUI里程碑规划-2026-10-v1.0.md`（裁决 F/H/I + §4 刀表）、`docs/应用模型设计-v1.0.md`（§2/§3/§6）、`docs/更新与OTA设计-v1.0.md`；基线报告八份（base:app / base:plan / w:android / w:oh / w:apple / w:xplat / w:sys / w:ai——全文由主会话拼接为附录）。
 
 **Android 域**：developer.android.com（uses-sdk-element / app-bundle / app-signing / ndk/guides / java8-support）、source.android.com（core/runtime、setup/build/java-library）、support.google.com/googleplay/android-developer/answer/11926878、android-developers.googleblog.com（Kotlin-first、Live Edit）、developer.android.com/jetpack/androidx/migrate、EFF/CCA（Oracle v. Google）。
 
@@ -153,23 +153,23 @@
 ### 一、硬结论清单
 
 1. **.bap v0 是纯用户态协议约定，内核零「应用」概念**——svcmgr 兼任 appd 雏形，boot 期收集槽 ≤4、走查毕统一拉起、一次性 collect→reap，**无监督重启**。【证】`user/bins/svcmgr/src/main.rs:242-261`（appd 注释 + APP_SLOTS）、`:2297-2406`（app_launch 无重试/重启循环）。
-2. **manifest v0 白名单恰 7 个语义位**（id/version/entry/type/intent + console + stack_pages）；「扩 icon/label/views」只是 GUI 里程碑裁决 F 的**规划**（GUI-7 刀），解析器与 mkapp 均未实现——当前背景描述「已裁扩」实为「已裁决未落地」。【证】`user/berry-manifest/src/lib.rs:370-401`（键白名单 match）、`docs/GUI里程碑规划-2026-10.md:75,91`。
+2. **manifest v0 白名单恰 7 个语义位**（id/version/entry/type/intent + console + stack_pages）；「扩 icon/label/views」只是 GUI 里程碑裁决 F 的**规划**（GUI-7 刀），解析器与 mkapp 均未实现——当前背景描述「已裁扩」实为「已裁决未落地」。【证】`user/berry-manifest/src/lib.rs:370-401`（键白名单 match）、`docs/GUI里程碑规划-2026-10-v1.0.md:75,91`。
 3. **mkapp 五道门禁 + 规范形逐字节重序列化**是 TOML 子集冻结的唯一 build 期执法点，9 负样本 + 2 正对照自检挂 `just test-host` 前置。【证】`tools/mkapp.py:13-27,242-287`、`justfile:451-453`。
-4. **能力到达 = env 块 gift 数组（handle 随 channel 消息迁移）**：安装期翻译 manifest→授权集、启动期 spawn 授能，「没申请就没有 handle」的能力模型已兑现——但 v0 词表只有 `console` 一个词。【证】`user/berry-exec/src/lib.rs:407-484`、`svcmgr main.rs:2337-2347`、`docs/应用模型设计.md:123,205`。
+4. **能力到达 = env 块 gift 数组（handle 随 channel 消息迁移）**：安装期翻译 manifest→授权集、启动期 spawn 授能，「没申请就没有 handle」的能力模型已兑现——但 v0 词表只有 `console` 一个词。【证】`user/berry-exec/src/lib.rs:407-484`、`svcmgr main.rs:2337-2347`、`docs/应用模型设计-v1.0.md:123,205`。
 5. **ABI 常量层已单源生成三面 + 逐字节守卫**：v1 在册 31 号全实现、17 号 v2 预留（实测解析）；原型层（berry_* 签名）仍手写双镜像挂 v2。【证】`tools/abi.toml [meta]`、`tools/gen_abi.py` 头注、`justfile:264`（build: abi-check build-user）。
 6. **berry-libc 是「零 musl 字节」全定义 shim**：152 个 `#[no_mangle]` 符号；malloc 静态 256KiB 堆、futex=SYS_futex(98) 拦截落 Event 池、pthread_create 真身（T-1）；fork/exec/socket 全 ENOSYS 桩（v1 无 fork 铁律的 libc 侧执法）。【证】`user/berry-libc/src/lib.rs:1-24` 头注、各文件 no_mangle 计数、`futex.rs:1-20`。
 7. **第三方 std 程序编译路径已存在且免 nightly**（musl target + berry-ld 剥 crt/剥 -lc + [workspace] 自绝小工作区），但这条咒语**只活在 justfile 内嵌注释里，零开发者文档**。【证】`justfile:69-107`、`tools/berry-ld`（shell 脚本头注）、`user/bins/appdemo/Cargo.toml`。
 8. **uutils 23 命令家族工作区 + rustix use-libc 翻转**（防 Linux raw svc 号对撞）是「移植未修改第三方 Rust 程序」的成熟先例；getrandom 0.2.17/0.4.3 双版本共存于 `user/bins/uu/Cargo.lock:667,678`。【证】`user/bins/uu/Cargo.toml` 头注与 workspace.dependencies。
 9. **rootfs 组装 = justfile 硬编码条目表调 mkcpio**——新程序进系统今天必须改 justfile（加 build 行 + mkapp/mkcpio 条目），**无任何 out-of-tree 机制**；.bap 也只是 mkcpio 的一个条目。【证】`justfile:197-240`。
 10. **交互面与 app 面是两个世界**：bsh `run`/管道可交互拉起 `bin/<name>`（berry-exec SpawnSpec + fs gift 四元装配），但 .bap 应用只能 boot 批拉起，bsh 无 app 启动命令。【证】`user/bins/bsh/src/main.rs:100,628-641`、`svcmgr main.rs:923-947`。
-11. **文档全是系统视角**：42 份 docs 的两条阅读路径（AI/人类）无一条「应用开发者路径」；事实上的应用开发资料 = app-0 草案 + 应用模型设计 + ABI 文档 §8 + appdemo 源码。【证】`docs/索引.md:93-100`、`docs/app-0实施设计草案.md`。
+11. **文档全是系统视角**：42 份 docs 的两条阅读路径（AI/人类）无一条「应用开发者路径」；事实上的应用开发资料 = app-0 草案 + 应用模型设计 + ABI 文档 §8 + appdemo 源码。【证】`docs/索引.md:93-100`、`docs/app-0实施设计草案-v1.0.md`。
 12. **README 前置缺 musl target**：quickstart 只让装 none/x86_64-none 两个 target，而 `build-user` 硬依赖 `aarch64-unknown-linux-musl`——照抄 README 跑 `just run-rootfs` 会挂在 rustup target 缺失。【证】`README.md:42` vs `justfile:76`。
 
 ### 二、正文论证
 
 #### 1. .bap v0 全链
 
-解析器 `berry-manifest` 是「解析器即产品」家族第 8 例：no_std、零分配、零依赖，TOML 子集冻结到字节级（LF-only、拒 tab、拒反斜杠、纯十进制整数、可打印 ASCII 串），严格拒面覆盖未知节/键、重复、缺必填、越界共 20+ 类，host 23 测。打包器 `mkapp.py` 复用 mkcpio 单编码器，五道门禁中最关键的是**规范形重序列化逐字节相等**——tomllib 收全集而门禁只收子集，这是「宽松解析器 + 严格打包器」分层的执法点。消费端 appd（svcmgr 内 ~200 行）：主走查收集 `app/<ID>.bap` 条目几何（≤4 槽，超帽 `eco: app too many`）→ 走查毕逐槽 bap_scan（内层 cpio 恰两条目形状守卫）→ manifest parse → **双守卫**（manifest.id↔文件名、entry↔包内条目）→ console=true 直连串口/false 走私有采集对 → spawn → collect EOF → reap 真码 0 才计数，`APP ok n=` 是 smoke 断言位（`tools/smoke.sh:565`）。**生命周期 v0 无监督重启、无增删事件**——GUI-7（`docs/GUI里程碑规划-2026-10.md:91`）已把它列为下一刀。demo 双 app 的 manifest 实貌即 schema 教科书：APPDEMO（console=true、省 runtime）与 APPQUIET（console=false、显式 stack_pages=8）互为能力授予/缺席两半活证。spawn 链统一走 `berry-exec::SpawnSpec`（stdout/stdin/args/extra_gifts/mmio_vmo 十字段），argv0=entry 串是隐式契约（appdemo 以断言自检，错值 abort(134)→`APP ok` 缺失 loud）。
+解析器 `berry-manifest` 是「解析器即产品」家族第 8 例：no_std、零分配、零依赖，TOML 子集冻结到字节级（LF-only、拒 tab、拒反斜杠、纯十进制整数、可打印 ASCII 串），严格拒面覆盖未知节/键、重复、缺必填、越界共 20+ 类，host 23 测。打包器 `mkapp.py` 复用 mkcpio 单编码器，五道门禁中最关键的是**规范形重序列化逐字节相等**——tomllib 收全集而门禁只收子集，这是「宽松解析器 + 严格打包器」分层的执法点。消费端 appd（svcmgr 内 ~200 行）：主走查收集 `app/<ID>.bap` 条目几何（≤4 槽，超帽 `eco: app too many`）→ 走查毕逐槽 bap_scan（内层 cpio 恰两条目形状守卫）→ manifest parse → **双守卫**（manifest.id↔文件名、entry↔包内条目）→ console=true 直连串口/false 走私有采集对 → spawn → collect EOF → reap 真码 0 才计数，`APP ok n=` 是 smoke 断言位（`tools/smoke.sh:565`）。**生命周期 v0 无监督重启、无增删事件**——GUI-7（`docs/GUI里程碑规划-2026-10-v1.0.md:91`）已把它列为下一刀。demo 双 app 的 manifest 实貌即 schema 教科书：APPDEMO（console=true、省 runtime）与 APPQUIET（console=false、显式 stack_pages=8）互为能力授予/缺席两半活证。spawn 链统一走 `berry-exec::SpawnSpec`（stdout/stdin/args/extra_gifts/mmio_vmo 十字段），argv0=entry 串是隐式契约（appdemo 以断言自检，错值 abort(134)→`APP ok` 缺失 loud）。
 
 #### 2. 系统接口面
 
@@ -185,7 +185,7 @@ user/ 工作区 19 个 berry-* crate **全部 no_std**（逐一验证 lib.rs）�
 
 #### 5. 能力/权限到达路径：设计 vs 实现
 
-设计的完整链（`docs/应用模型设计.md:123`）：manifest 能力申请表 → appd 翻译成 handle 授权集 → spawn 经 gift 授能。实现兑现了**机制**（console=true→console 发端 dup 交付；false→私有采集对，appquiet 静默活证）但词表冻结在 1 个词：fs/net/gpu/bg 全无。boot 直插 handle（H_ROOTFS/H_MMIO/H_FB…）与 extra_gifts（blk 端/fs 端/fbinfo）是服务间授能的现役通道，但**只服务系统内置拓扑**，应用声明位够不到。intent 字段已解析进 Manifest（六档词表镜像 sched/intent.rs 判别值钉板）但调度零消费（ADR #42 两段式，v2 EEVDF 消费）。
+设计的完整链（`docs/应用模型设计-v1.0.md:123`）：manifest 能力申请表 → appd 翻译成 handle 授权集 → spawn 经 gift 授能。实现兑现了**机制**（console=true→console 发端 dup 交付；false→私有采集对，appquiet 静默活证）但词表冻结在 1 个词：fs/net/gpu/bg 全无。boot 直插 handle（H_ROOTFS/H_MMIO/H_FB…）与 extra_gifts（blk 端/fs 端/fbinfo）是服务间授能的现役通道，但**只服务系统内置拓扑**，应用声明位够不到。intent 字段已解析进 Manifest（六档词表镜像 sched/intent.rs 判别值钉板）但调度零消费（ADR #42 两段式，v2 EEVDF 消费）。
 
 #### 6. 复盘：第三方开发者今天的真实路径与缺口分级
 
@@ -204,7 +204,7 @@ user/ 工作区 19 个 berry-* crate **全部 no_std**（逐一验证 lib.rs）�
 4. **appd 枚举/增删事件（GUI-7）评估「FAT 盘 app/ 扫描」作递送面**，绕开 rootfs rebuild 即破缺口②④。挂点：svcmgr appd + fsmgr。
 5. **docs/索引.md 两条阅读路径外补第三条「应用开发者路径」**（app-0 草案→ABI §8→appdemo→mkapp→justfile 接线），一行索引闭环。挂点：docs/索引.md:93。
 6. **README/CLAUDE.md 前置补 musl target**（quickstart 一致性 bug）。挂点：README.md:42、README.zh-CN.md:33、CLAUDE.md:152。
-7. **把 argv0=entry/EOF/退出码等隐式契约升格为「应用侧契约清单」**进应用模型文档——SDK-4 AI 生成 app 时代价最低的防错投资。挂点：docs/应用模型设计.md。
+7. **把 argv0=entry/EOF/退出码等隐式契约升格为「应用侧契约清单」**进应用模型文档——SDK-4 AI 生成 app 时代价最低的防错投资。挂点：docs/应用模型设计-v1.0.md。
 
 ### 四、主要来源（仓内路径，去重）
 
@@ -231,14 +231,14 @@ user/ 工作区 19 个 berry-* crate **全部 no_std**（逐一验证 lib.rs）�
 ### 一、硬结论清单
 
 1. **SDK 演进序已整体锁定为 SDK-1..5（ADR #54，2026-10-29 落册）**——从 GUI-8/9 随刀的 dump round-trip 注入起，到 SDK-5 设计器止，五段全有名有验收物。【证】`docs/架构决策.md` #54 行
-2. **SDK-2 的 DSL 载体已提前拍板（C2）**：文本 DSL 为主、Rust 宏仅类型安全糖层，硬要求「声明即数据」AST 导出 day-one——原计划「SDK-1 后用真实数据裁」的悬案已收口。【证】`docs/GUI里程碑规划-2026-10.md` 修订记录（2026-10-29 晚）
-3. **SDK 三件套实物已在仓**：`berry-sys` + `berry-libc`（musl shim）+ 协议 crate 家族（fsproto/blkproto/netproto 模式），hexyl 0.17.0 被文档明文称为「SDK 的第一个活证据」。【证】`docs/应用模型设计.md` :64/:125
+2. **SDK-2 的 DSL 载体已提前拍板（C2）**：文本 DSL 为主、Rust 宏仅类型安全糖层，硬要求「声明即数据」AST 导出 day-one——原计划「SDK-1 后用真实数据裁」的悬案已收口。【证】`docs/GUI里程碑规划-2026-10-v1.0.md` 修订记录（2026-10-29 晚）
+3. **SDK 三件套实物已在仓**：`berry-sys` + `berry-libc`（musl shim）+ 协议 crate 家族（fsproto/blkproto/netproto 模式），hexyl 0.17.0 被文档明文称为「SDK 的第一个活证据」。【证】`docs/应用模型设计-v1.0.md` :64/:125
 4. **中间层不设稳定 ABI（ADR #43）**：冻结面仅 `berry_*` syscall + 各服务 wire 协议 add-only，工具包静态链接随应用——SDK 兼容策略由此定形，不存在「针对旧 SDK 编的二进制跑在新系统」承诺。【证】`docs/架构决策.md` #43
 5. **manifest 已裁扩 `icon`/`label`/`views/`（裁决 F，add-only）但代码未落**：`user/berry-manifest/src/lib.rs` grep 无此三字段——裁决与实现存在刀序时差（挂 GUI-7）。【证】裁决 F 行 + 2026-10-29 grep 核验
-6. **存储是 SDK 分发/落盘面的隐性结构阻塞**：四棵树「v1 还摆不了」——fsmgr RAM 层平名线性表 FILE_COUNT_MAX=9、FAT 仅根目录 16 项，层级待 v2 S3。【证】`docs/存储布局与沙箱设计.md` :163
-7. **生态正面战（SDK 对外/分发/文档）排在 H3 v3+**，但 SDK-1..3 已内嵌进 M-GUI 刀序、SDK-2 起独立成刀可与 GUI 线并行——对内 SDK 先行、对外 SDK 远期，双轨分明。【证】`docs/战略路线总规划-2026-10.md` §3 + 规划 §4 并行性注
-8. **AI 生成 UI 产物 = 数据文件非 Rust 代码**；AI 工程面 v1 零代码、红线 =「本文不新增任何『只有 AI 能调』的接口」。【证】裁决 F 行 + `docs/AI工程面设计.md` §5
-9. **签名/版本化现状为无**，文档明文「v2 ADR（分发面出现时再立）」；pthread/线程库封装仍缺（0x35 thread_start 已落）。【证】`docs/应用模型设计.md` 诚实缺口表 :214/:219
+6. **存储是 SDK 分发/落盘面的隐性结构阻塞**：四棵树「v1 还摆不了」——fsmgr RAM 层平名线性表 FILE_COUNT_MAX=9、FAT 仅根目录 16 项，层级待 v2 S3。【证】`docs/存储布局与沙箱设计-v1.0.md` :163
+7. **生态正面战（SDK 对外/分发/文档）排在 H3 v3+**，但 SDK-1..3 已内嵌进 M-GUI 刀序、SDK-2 起独立成刀可与 GUI 线并行——对内 SDK 先行、对外 SDK 远期，双轨分明。【证】`docs/战略路线总规划-2026-10-v1.0.md` §3 + 规划 §4 并行性注
+8. **AI 生成 UI 产物 = 数据文件非 Rust 代码**；AI 工程面 v1 零代码、红线 =「本文不新增任何『只有 AI 能调』的接口」。【证】裁决 F 行 + `docs/AI工程面设计-v1.0.md` §5
+9. **签名/版本化现状为无**，文档明文「v2 ADR（分发面出现时再立）」；pthread/线程库封装仍缺（0x35 thread_start 已落）。【证】`docs/应用模型设计-v1.0.md` 诚实缺口表 :214/:219
 10. **响应式机制（信号核 vs 键路径 diff）明确留到 v1.5 原型对拍再定**——这是 SDK-2 解释器与 SDK-4 校验器共同的上游未定项。【证】规划修订记录用户拍板第②项
 
 ### 二、正文论证
@@ -279,23 +279,23 @@ user/ 工作区 19 个 berry-* crate **全部 no_std**（逐一验证 lib.rs）�
 2. **热重载状态边界 ADR 前置**：SDK-2 开工前立「状态保持矩阵」（保留/复位/重建三态逐类枚举）入 `docs/架构决策.md`，挂点 = SDK-2 刀前 ADR。
 3. **AST 中立性写进 #52 补注**：berryui AST 设计时显式记录「信号核/键路径两案可互换」约束并加 host 对拍测试，挂点 = `user/berryui`（未建）+ ADR #52 行。
 4. **manifest 三字段随 GUI-7 落码**：`user/berry-manifest/src/lib.rs` + `tools/mkapp.py` add-only 扩键，selftest 负样本（旧包无新键必须过）同刀，挂点 = GUI-7。
-5. **manifest v2 词表与 capabilities 扩键合并一次 ADR**：避免两次破面，挂点 = `docs/应用模型设计.md` §3 + GUI-7/SDK-2 前置。
+5. **manifest v2 词表与 capabilities 扩键合并一次 ADR**：避免两次破面，挂点 = `docs/应用模型设计-v1.0.md` §3 + GUI-7/SDK-2 前置。
 6. **SDK 脚手架模板走单源生成**：.bap 脚手架若带头文件/ABI 面，复用 `tools/gen_abi.py` 生成而非手抄（A4 纪律前移），挂点 = tools/。
 7. **SDK-4 校验器复用 dump 通道 + 零特权红线**：四 verb 全走普通应用能力，结构化 dump 优于截图（Playwright MCP browser_snapshot 同构，GUI-10 附录 F 已论证），挂点 = SDK-4 刀。
 8. **许可纪律入 SDK 选型 checklist**：Slint 三许可警示（闭源嵌入式须商业授权）已写入 GUI-10——印证 berryui 全自研，SDK 依赖引入时逐个过 `docs/架构综合纲领.md` 排除 8 问 + 许可栏。
-9. **SDK 排期叙事双轨化**：对内 SDK-1..3 随 M-GUI、对外生态正面战 H3——文档与对外话术勿混用两个时点，挂点 = `docs/战略路线总规划-2026-10.md` §3。
+9. **SDK 排期叙事双轨化**：对内 SDK-1..3 随 M-GUI、对外生态正面战 H3——文档与对外话术勿混用两个时点，挂点 = `docs/战略路线总规划-2026-10-v1.0.md` §3。
 
 ### 四、主要来源
 
-- /Users/murongcheng/Documents/code/berryos/docs/GUI里程碑规划-2026-10.md（修订记录、裁决 F/H 行、GUI-9+SDK-1 行、§4 并行性）
+- /Users/murongcheng/Documents/code/berryos/docs/GUI里程碑规划-2026-10-v1.0.md（修订记录、裁决 F/H 行、GUI-9+SDK-1 行、§4 并行性）
 - /Users/murongcheng/Documents/code/berryos/docs/架构决策.md（ADR #43/#44/#47/#54 行、#50-#54 增补记录）
-- /Users/murongcheng/Documents/code/berryos/docs/应用模型设计.md（§3 SDK 三件套/:64/:125、§6 诚实缺口表/:214/:219）
-- /Users/murongcheng/Documents/code/berryos/docs/存储布局与沙箱设计.md（:163 v1 现状行）
-- /Users/murongcheng/Documents/code/berryos/docs/AI工程面设计.md（§5 红线/:91）
-- /Users/murongcheng/Documents/code/berryos/docs/战略路线总规划-2026-10.md（§2 线A A4、§3 H3、§7 待裁决）
+- /Users/murongcheng/Documents/code/berryos/docs/应用模型设计-v1.0.md（§3 SDK 三件套/:64/:125、§6 诚实缺口表/:214/:219）
+- /Users/murongcheng/Documents/code/berryos/docs/存储布局与沙箱设计-v1.0.md（:163 v1 现状行）
+- /Users/murongcheng/Documents/code/berryos/docs/AI工程面设计-v1.0.md（§5 红线/:91）
+- /Users/murongcheng/Documents/code/berryos/docs/战略路线总规划-2026-10-v1.0.md（§2 线A A4、§3 H3、§7 待裁决）
 - /Users/murongcheng/Documents/code/berryos/research/GUI-10-移动优先渲染深研综合裁决.md（附录 F w-sdk、§七）
 - /Users/murongcheng/Documents/code/berryos/research/GUI-09-综合裁决建议.md（§2.g SDK 详情——裁决过程记录，结论以 ADR 为准）
-- /Users/murongcheng/Documents/code/berryos/docs/更新与OTA设计.md、docs/兼容子系统设计.md、docs/开发体验.md、docs/索引.md（辅证）
+- /Users/murongcheng/Documents/code/berryos/docs/更新与OTA设计-v1.0.md、docs/兼容子系统设计-v1.0.md、docs/开发体验.md、docs/索引.md（辅证）
 - /Users/murongcheng/Documents/code/berryos/user/berry-manifest/src/lib.rs + tools/mkapp.py（2026-10-29 grep 字段核验：icon/label/views 未落码）
 
 ---
@@ -348,14 +348,14 @@ AAB 的本质是“把最终安装物的组装权从开发者手里移到商店�
 
 ### 三、对 BerryOS 的可迁移启示
 
-1. ABI/SDK 单源是 android.jar 桩之痛的结构解，坚持“消费面 API 全部单源生成”:abi.toml 之外，berry-gfx 的 cmd/常量表(user/berry-gfx/src/cmd.rs)同样保持命令面单源+测试钉板，禁止出现第二份手写镜像。挂点：docs/系统调用ABI设计.md §8、tools/gen_abi.py、berry-gfx tests。
-2. 把 Android 三值治理裁进 .bap manifest(add-only 裁决已有先例):`target_level`(行为门控：新 OS 行为变化按 manifest 声明级别生效)+`min_level`(安装门槛，appd 拒装面)；行为变化按 target_level 门控写进文档而非事后补丁。挂点：user/berry-manifest、docs/应用模型设计.md、app-0 线(appd)。
-3. 库版本与平台版本解耦立法：berry-* 用户态 crate 家族一律语义版本、命名不绑内核/ABI 序号(AndroidX 教训)；写进应用模型文档作铁律，防 v4/v7 式语义漂移。挂点：docs/应用模型设计.md。
-4. 全 Rust 单语言 = Oracle 类诉讼风险 + JNI/脱糖双语言税的免疫；NDK 教训转译为“性能路径做进服务与 pass API,不给应用开绕过通道”——berry-gfx 的 VMO 零拷贝/队列路径优先，不给 app 直戳驱动的 blessed 通道。挂点：docs/驱动模型设计.md(驱动=持证应用)、GUI ADR #52 pass 形态。
-5. .bap 签名 day-one 用全文件方案(v2 形态：对整包字节签名)，manifest 预留 key lineage 字段(add-only);安装物=构建产物(mkapp 确定性)，拒绝“商店侧重组”式分发——保住同输入同字节与可复现安装。挂点：tools/mkapp.py、docs/应用模型设计.md、与 just image 确定性同口径。
-6. 构建面：坚持 just+cargo 串联，不引入插件式构建 DSL;把构建耗时纳入机器可读遥测(AI 测试友好化第三原则的构建版)，防 Gradle 式复杂度温水。挂点：justfile、tools/smoke.sh、docs/测试策略.md。
-7. profile 思想迁移：ART 的“真实使用画像驱动预编译”对应 BerryOS 的 IntentProfile 查表+遥测入场券(ADR #42)——应用行为画像(启动窗口/交互节奏)应设计为 SDK 可见资产而非运行时内部，供 AI 调度消费。挂点：docs/AI调度设计.md、内核遥测环。
-8. 生态数据保持公开机器可读(Android dashboard 撤退的反例)：遥测/兼容性数据出口格式化、可导出。挂点：docs/可观测性设计.md。
+1. ABI/SDK 单源是 android.jar 桩之痛的结构解，坚持“消费面 API 全部单源生成”:abi.toml 之外，berry-gfx 的 cmd/常量表(user/berry-gfx/src/cmd.rs)同样保持命令面单源+测试钉板，禁止出现第二份手写镜像。挂点：docs/系统调用ABI设计-v1.0.md §8、tools/gen_abi.py、berry-gfx tests。
+2. 把 Android 三值治理裁进 .bap manifest(add-only 裁决已有先例):`target_level`(行为门控：新 OS 行为变化按 manifest 声明级别生效)+`min_level`(安装门槛，appd 拒装面)；行为变化按 target_level 门控写进文档而非事后补丁。挂点：user/berry-manifest、docs/应用模型设计-v1.0.md、app-0 线(appd)。
+3. 库版本与平台版本解耦立法：berry-* 用户态 crate 家族一律语义版本、命名不绑内核/ABI 序号(AndroidX 教训)；写进应用模型文档作铁律，防 v4/v7 式语义漂移。挂点：docs/应用模型设计-v1.0.md。
+4. 全 Rust 单语言 = Oracle 类诉讼风险 + JNI/脱糖双语言税的免疫；NDK 教训转译为“性能路径做进服务与 pass API,不给应用开绕过通道”——berry-gfx 的 VMO 零拷贝/队列路径优先，不给 app 直戳驱动的 blessed 通道。挂点：docs/驱动模型设计-v1.0.md(驱动=持证应用)、GUI ADR #52 pass 形态。
+5. .bap 签名 day-one 用全文件方案(v2 形态：对整包字节签名)，manifest 预留 key lineage 字段(add-only);安装物=构建产物(mkapp 确定性)，拒绝“商店侧重组”式分发——保住同输入同字节与可复现安装。挂点：tools/mkapp.py、docs/应用模型设计-v1.0.md、与 just image 确定性同口径。
+6. 构建面：坚持 just+cargo 串联，不引入插件式构建 DSL;把构建耗时纳入机器可读遥测(AI 测试友好化第三原则的构建版)，防 Gradle 式复杂度温水。挂点：justfile、tools/smoke.sh、docs/测试策略-v1.0.md。
+7. profile 思想迁移：ART 的“真实使用画像驱动预编译”对应 BerryOS 的 IntentProfile 查表+遥测入场券(ADR #42)——应用行为画像(启动窗口/交互节奏)应设计为 SDK 可见资产而非运行时内部，供 AI 调度消费。挂点：docs/AI调度设计-v1.0.md、内核遥测环。
+8. 生态数据保持公开机器可读(Android dashboard 撤退的反例)：遥测/兼容性数据出口格式化、可导出。挂点：docs/可观测性设计-v1.0.md。
 9. QEMU-first+确定性 smoke 是模拟器税的正解，维持裸相零漂移与 smoke 时限纪律；GUI 线扩面时截图/golden 对拍沿用此基建(SDK-1 已有此方向)。挂点：tools/smoke.sh、GUI里程碑规划 SDK-1。
 
 ### 四、主要来源
@@ -432,13 +432,13 @@ eTS 时代是「JS 超集 + 声明式范式」并存过渡；ArkTS 反向操作�
 
 ### 三、对 BerryOS 的可迁移启示（可执行）
 
-1. **manifest 学 module.json5 三件：`deviceTypes`、`min/targetAPIVersion` 双字段、`requestPermissions`（能力集语义）**。BerryOS 是纯能力系统，比鸿蒙更该把 requestPermissions 做成「安装时授予 capability 名单」而非权限位。挂点：`user/berry-manifest` 字段扩展 + `docs/应用模型设计.md` + app-0 后续刀；BerryOS 三端（手表/手机/PC）同族，deviceTypes 直接可简化复用。
-2. **SysCap 式「接口级能力标注 + canIUse 查询」移植进 abi.toml 单源**：每个 syscall/@ohos 式接口标 `berry.cap.*` 能力标签 + 支持端型集，gen_abi.py 生成机器可读能力表，运行时留一个 `cap_query` 类接口。这是「AI 友好化/测试友好化」的教科书落地。挂点：`tools/abi.toml` + `tools/gen_abi.py` 扩展列 + `docs/系统调用ABI设计.md` §8。
+1. **manifest 学 module.json5 三件：`deviceTypes`、`min/targetAPIVersion` 双字段、`requestPermissions`（能力集语义）**。BerryOS 是纯能力系统，比鸿蒙更该把 requestPermissions 做成「安装时授予 capability 名单」而非权限位。挂点：`user/berry-manifest` 字段扩展 + `docs/应用模型设计-v1.0.md` + app-0 后续刀；BerryOS 三端（手表/手机/PC）同族，deviceTypes 直接可简化复用。
+2. **SysCap 式「接口级能力标注 + canIUse 查询」移植进 abi.toml 单源**：每个 syscall/@ohos 式接口标 `berry.cap.*` 能力标签 + 支持端型集，gen_abi.py 生成机器可读能力表，运行时留一个 `cap_query` 类接口。这是「AI 友好化/测试友好化」的教科书落地。挂点：`tools/abi.toml` + `tools/gen_abi.py` 扩展列 + `docs/系统调用ABI设计-v1.0.md` §8。
 3. **版本三元组编译期规则**进 mkapp.py：`compatible <= target <= compile` 违反即打包失败，学 hvigor 00303015 把兼容问题从运行时提前到工具期。挂点：`tools/mkapp.py --selftest` 加负样本。
-4. **ArkTS 收敛印证 berryui「文本 DSL + AST 导出」路线的深层价值：编译期定死组件树/状态依赖图，运行时解释器零反射零字符串分派**；并在 DSL 编译目标里预留脏区/最小更新语义（ArkTSPartialUpdate 同型）。挂点：SDK-2 刀（`docs/GUI里程碑规划-2026-10.md` ADR #54）+ `user/berry-gfx` 渲染脏区接口。
-5. **skills/entities/actions 结构反哺 IPC intent**：BerryOS 已有 intent 五件套（调度语义），可加「应用注册 intent 过滤器」面（`entity.berry.home` 锚主屏/默认应用），为未来 launcher/服务发现预留。挂点：`docs/IPC设计.md` + appd（svcmgr appd 雏形）后续刀。
-6. **签名链三件套与「调试/发布 Profile 不混用」记入应用模型挂 v2 条目**：v1 无签名，但 manifest 里预留 profile 类型字段免得后补破格式。挂点：`docs/应用模型设计.md` v2 节 + `user/berry-manifest` 注释。
-7. **冷启动生态策略量化预期入路线图**：以「头部 N 应用覆盖 X% 时长」为生态验收口径而非应用总数；开发者工具（SDK-1..5 已裁）与云侧脚手架先于生态动员 12 个月。挂点：`docs/路线图.md` M-G3 后生态节 + `docs/GUI里程碑规划-2026-10.md` SDK 序。
+4. **ArkTS 收敛印证 berryui「文本 DSL + AST 导出」路线的深层价值：编译期定死组件树/状态依赖图，运行时解释器零反射零字符串分派**；并在 DSL 编译目标里预留脏区/最小更新语义（ArkTSPartialUpdate 同型）。挂点：SDK-2 刀（`docs/GUI里程碑规划-2026-10-v1.0.md` ADR #54）+ `user/berry-gfx` 渲染脏区接口。
+5. **skills/entities/actions 结构反哺 IPC intent**：BerryOS 已有 intent 五件套（调度语义），可加「应用注册 intent 过滤器」面（`entity.berry.home` 锚主屏/默认应用），为未来 launcher/服务发现预留。挂点：`docs/IPC设计-v1.0.md` + appd（svcmgr appd 雏形）后续刀。
+6. **签名链三件套与「调试/发布 Profile 不混用」记入应用模型挂 v2 条目**：v1 无签名，但 manifest 里预留 profile 类型字段免得后补破格式。挂点：`docs/应用模型设计-v1.0.md` v2 节 + `user/berry-manifest` 注释。
+7. **冷启动生态策略量化预期入路线图**：以「头部 N 应用覆盖 X% 时长」为生态验收口径而非应用总数；开发者工具（SDK-1..5 已裁）与云侧脚手架先于生态动员 12 个月。挂点：`docs/路线图-v1.0.md` M-G3 后生态节 + `docs/GUI里程碑规划-2026-10-v1.0.md` SDK 序。
 8. **DevEco 的 IntelliJ 得失印证 BerryOS「不做 IDE、做 MCP 式四 verb（dump/inject/screenshot/reload）」的裁决**：编辑器面挂 VS Code/CLI 即可，把投资放在确定性协议与机器可读遥测上。挂点：SDK-4 刀（ADR #54 已裁，无需改动，此为外部佐证）。
 
 ### 四、主要来源
@@ -493,9 +493,9 @@ eTS 时代是「JS 超集 + 声明式范式」并存过渡；ArkTS 反向操作�
 ### 三、对 BerryOS 的可迁移启示
 
 1. **ABI 单源+「单行道」自觉**（挂点 `tools/gen_abi.py`/abi.toml）：Swift 教训是冻结前把不确定面挡在冻结面外。建议 abi.toml 显式加 `experimental` 标记通道，v2 字段生成期即拒入冻结产物——比事后拆 ABI 便宜百倍。
-2. **稳定性执法工具化**（挂点 `docs/系统调用ABI设计.md` + berry-libc 测试）：BerryOS 的「31 号全实现+永不 panic」承诺已由 ktest/smoke 执法，同构于 Apple「静态分析拒私有 API」——保持「每个承诺配一个自动执法点」的清单化（可观测性文档补一节「承诺-执法对照表」）。
-3. **os_signpost 同构件**（挂点 SDK-3：`docs/GUI里程碑规划-2026-10.md` ADR #54 + berry-gfx 帧循环）：帧时间线 p50/p90 应定义统一事件 schema（begin/end 事件+稳定字段名），让 berryui 解释器、gfx pass、内核遥测环三方打点同轨可对齐——这正是 Instruments 的核心设计。
-4. **MetricKit 形态借给 smoke 遥测**（挂点 `docs/可观测性设计.md` + tools/smoke.sh）：boot 期遥测环+泄漏金丝雀已是雏形；补「聚合回传、机器可读 JSON、批量不实时」的输出形态，AI 测试友好化原则的直接兑现。
+2. **稳定性执法工具化**（挂点 `docs/系统调用ABI设计-v1.0.md` + berry-libc 测试）：BerryOS 的「31 号全实现+永不 panic」承诺已由 ktest/smoke 执法，同构于 Apple「静态分析拒私有 API」——保持「每个承诺配一个自动执法点」的清单化（可观测性文档补一节「承诺-执法对照表」）。
+3. **os_signpost 同构件**（挂点 SDK-3：`docs/GUI里程碑规划-2026-10-v1.0.md` ADR #54 + berry-gfx 帧循环）：帧时间线 p50/p90 应定义统一事件 schema（begin/end 事件+稳定字段名），让 berryui 解释器、gfx pass、内核遥测环三方打点同轨可对齐——这正是 Instruments 的核心设计。
+4. **MetricKit 形态借给 smoke 遥测**（挂点 `docs/可观测性设计-v1.0.md` + tools/smoke.sh）：boot 期遥测环+泄漏金丝雀已是雏形；补「聚合回传、机器可读 JSON、批量不实时」的输出形态，AI 测试友好化原则的直接兑现。
 5. **弱链接思想的 v1 替身**（挂点 berry-manifest views/ 字段）：v1 无动态链接，dyld 题不存在；但 .bap manifest 的 add-only 纪律 + appd 对未知字段的容忍策略就是「deployment target 宽容带」的镜像，建议 manifest 文档明示「读者忽略未知字段」为协议承诺。
 6. **反向教训——不做双轨**（挂点 berryui 拍板）：SwiftUI 双轨 6 年是资源性特权；BerryOS 应坚持「单一声明式 UI 框架+内核 console 退化透传」（C-4 已定形态），永不为过渡期维护第二套 UI 栈。
 
@@ -566,13 +566,13 @@ eTS 时代是「JS 超集 + 声明式范式」并存过渡；ArkTS 反向操作�
 
 ### 三、对 BerryOS 的可迁移启示
 
-1. **SDK-2 热重载边界单页成文**（挂 `docs/GUI里程碑规划-2026-10.md` SDK-2 段 + berryui 刀）：仿 Flutter "Hot reload" limitations 段，明列「DSL 哪些改动热更生效 / 哪些需重装 .bap / Model 与 Msg 绑定是否保留」，并把 Slint 的三条语义（properties/callbacks/models preserved；语法错误旧版留屏；改宿主接口需重编）逐条对位写死。
+1. **SDK-2 热重载边界单页成文**（挂 `docs/GUI里程碑规划-2026-10-v1.0.md` SDK-2 段 + berryui 刀）：仿 Flutter "Hot reload" limitations 段，明列「DSL 哪些改动热更生效 / 哪些需重装 .bap / Model 与 Msg 绑定是否保留」，并把 Slint 的三条语义（properties/callbacks/models preserved；语法错误旧版留屏；改宿主接口需重编）逐条对位写死。
 2. **解释器失败面 = 产品面**（挂 berryui 设备侧解释器 + SDK-4 reload verb）：坏 DSL 拒载保旧树 + 机器可读错误码（行/列/期望 token），对齐「AI 测试友好化」支柱；学 Compose Live Edit 的 last-known-good 回退并打遥测事件。
 3. **跨界类型契约单源**（挂 berryui AST + `tools/mkapp.py` 校验器 + SDK-4 校验器）：本仓 abi.toml→gen_abi.py 已是先例，把 AST 版本域与 manifest 校验统一到「单源生成/单源校验」形态——RN 官方对跨界类型错误的教训原话可直接引作动机。
 4. **dev/release 双形态同语义承诺**（挂 SDK-2→SDK-5 路线）：解释器常驻（dev 热更）与 AST 预编译（release，Rust 常量/字节码）双通道共用同一 AST 单源，并在 SDK 文档显式承诺「两形态语义无差」（学 Dart）。
 5. **SDK-1 DFX 报错质量**（挂 dump/inject verb 与 mkapp 校验器）：拒绝路径一律打「位置+建议动作」而非裸 FAIL；错误码结构化（语义化错误码总原则的 SDK 落点）。
 6. **版本治理反面教材入册**（挂 `.bap` manifest/AST 版本域立法）：每刀冻结 DSL 语法版本、坏版本 loud 拒载，防 RN 式多版本共存地狱；远期若开放三方投递，把 pub points 式六类质量分做进 berryctl/appd 的机器复查面（v1 先留口，不实做）。【推】
-7. **Web 栈否决记录**（挂 `docs/GUI里程碑规划-2026-10.md` 或对应 ADR 附录）：以 Tauri 一致性代价 + 多实例内存账作为「移动主战场不走 Web UI 层」的引证备案。
+7. **Web 栈否决记录**（挂 `docs/GUI里程碑规划-2026-10-v1.0.md` 或对应 ADR 附录）：以 Tauri 一致性代价 + 多实例内存账作为「移动主战场不走 Web UI 层」的引证备案。
 
 ### 四、主要来源
 
@@ -646,15 +646,15 @@ seL4 裸面 = 全部资源管理在用户态 + 能力直传，系统形态用 ca
 
 ### 三、对 BerryOS 的可迁移启示
 
-1. **manifest 长成「小 cml」**：把 spawn 的 gift 装配（fs gift 四元组、console 通道等）从 svcmgr 硬编码迁为 manifest 声明段（`[gifts]`/`[caps]`），appd 按声明装配——能力拓扑变成数据、可审计可校验。挂点：`user/berry-manifest`（icon/label/views 已裁扩后顺势加）、`user/svcmgr appd`、`docs/应用模型设计.md`。
-2. **abi.toml 补版本域**：为 syscall/op 加 `added`/`deprecated` 元数据（FIDL `@available` 的最小版），`tools/gen_abi.py` 支持 `--version` 选面生成 + 兼容性守卫；ABI 演化叙事从 git 历史升格为单源数据。挂点：`tools/gen_abi.py`、`docs/系统调用ABI设计.md` §8。
+1. **manifest 长成「小 cml」**：把 spawn 的 gift 装配（fs gift 四元组、console 通道等）从 svcmgr 硬编码迁为 manifest 声明段（`[gifts]`/`[caps]`），appd 按声明装配——能力拓扑变成数据、可审计可校验。挂点：`user/berry-manifest`（icon/label/views 已裁扩后顺势加）、`user/svcmgr appd`、`docs/应用模型设计-v1.0.md`。
+2. **abi.toml 补版本域**：为 syscall/op 加 `added`/`deprecated` 元数据（FIDL `@available` 的最小版），`tools/gen_abi.py` 支持 `--version` 选面生成 + 兼容性守卫；ABI 演化叙事从 git 历史升格为单源数据。挂点：`tools/gen_abi.py`、`docs/系统调用ABI设计-v1.0.md` §8。
 3. **CTF 式兼容执法**：把「上一版 ABI 产物生成的旧用户程序二进制」存为 fixture，新版内核必须原样跑过——对齐 Fuchsia CTF 思路与本仓「跨实现共识基准」纪律。挂点：`tools/smoke.sh` 新相或 `tools/mkapp.py --selftest` 扩展。
 4. **mkapp 内容寻址先落 sha256**：manifest 记录每文件摘要（Merkle 全树留 v2），day-one 具备去重与完整性校验面。挂点：`tools/mkapp.py`。
-5. **语言面只承诺 Rust 单语言**：SDK-1..5 每刀的绑定/文档/工具只做 Rust；「多语言绑定支持」明文列为非目标（Fuchsia 教训：开语言面 = FIDL 后端+工具链+文档+DevRel 四线持续投资）。挂点：`docs/GUI里程碑规划-2026-10.md` SDK 节、`docs/架构决策.md` 新 ADR。
-6. **POSIX 边界立法成文**：仿 "Dot Dot Considered Harmful" 写一篇 berry-libc 立场文档——便利 API 全给、POSIX 语义（fork/全局命名空间/`..` 语义）明确不承诺，防后人「顺手补齐」腐蚀能力模型。挂点：`docs/兼容子系统设计.md`（v2 挂账四份之一）。
+5. **语言面只承诺 Rust 单语言**：SDK-1..5 每刀的绑定/文档/工具只做 Rust；「多语言绑定支持」明文列为非目标（Fuchsia 教训：开语言面 = FIDL 后端+工具链+文档+DevRel 四线持续投资）。挂点：`docs/GUI里程碑规划-2026-10-v1.0.md` SDK 节、`docs/架构决策.md` 新 ADR。
+6. **POSIX 边界立法成文**：仿 "Dot Dot Considered Harmful" 写一篇 berry-libc 立场文档——便利 API 全给、POSIX 语义（fork/全局命名空间/`..` 语义）明确不承诺，防后人「顺手补齐」腐蚀能力模型。挂点：`docs/兼容子系统设计-v1.0.md`（v2 挂账四份之一）。
 7. **运行时策略定死全静态**：v1 禁 .so、禁动态链接器，App ELF 全静态（musl 口径现状即正确态），写 ADR 钉死；未来开动态链接必须整案裁决（Android namespace 隔离就是补丁的代价）。挂点：`docs/架构决策.md` 新 ADR、`user/berry-libc`。
-8. **.bap 停应用包、系统走整映像 A/B**：系统包层立项判据 = 出现第三方系统组件交付需求；在此之前 `just image` + 双分区 A/B 是系统更新的完整答案。挂点：`docs/更新与OTA设计.md`（v2 挂账）。
-9. **APS 对照 AI 调度 M4**：M4「×4 带 + 预算包络 + deadline-server 兜底」与 APS「最小预算 + 闲置借用」同构，可借其「负载时硬执法/空闲时借用」的表述与验收形态（分区预算越界可遥测验证）。挂点：`docs/AI调度设计.md`、`docs/调度器设计.md` M4 节。
+8. **.bap 停应用包、系统走整映像 A/B**：系统包层立项判据 = 出现第三方系统组件交付需求；在此之前 `just image` + 双分区 A/B 是系统更新的完整答案。挂点：`docs/更新与OTA设计-v1.0.md`（v2 挂账）。
+9. **APS 对照 AI 调度 M4**：M4「×4 带 + 预算包络 + deadline-server 兜底」与 APS「最小预算 + 闲置借用」同构，可借其「负载时硬执法/空闲时借用」的表述与验收形态（分区预算越界可遥测验证）。挂点：`docs/AI调度设计-v1.0.md`、`docs/调度器设计-v1.0.md` M4 节。
 
 ### 四、主要来源
 
@@ -719,10 +719,10 @@ seL4 裸面 = 全部资源管理在用户态 + 能力直传，系统形态用 ca
 ### 三、对 BerryOS 的可迁移启示
 
 1. **SDK-4 dump verb 定形为语义树**：节点带稳定 ref（对照 Playwright 元素 ref 贯穿交互），附范围/过滤参数（browser_find 同款）；screenshot 保持辅助。挂点：SDK-1 DFX dump 设计 + `user/berry-gfx`（pass API 已有结构信息，补树序列化导出）。
-2. **verb 面扩展裁决（ADR #54 add-only）**：加 `logs`/`trace` verb（消费内核遥测环/SDK-3 帧时间线，mobile-mcp 的 get_device_logs 直接先例）；评估 `batch` verb 收编多步注入省 RPC 往返。挂点：SDK-3/SDK-4 刀序设计、`docs/GUI里程碑规划-2026-10.md`。
+2. **verb 面扩展裁决（ADR #54 add-only）**：加 `logs`/`trace` verb（消费内核遥测环/SDK-3 帧时间线，mobile-mcp 的 get_device_logs 直接先例）；评估 `batch` verb 收编多步注入省 RPC 往返。挂点：SDK-3/SDK-4 刀序设计、`docs/GUI里程碑规划-2026-10-v1.0.md`。
 3. **verb 协议学 MCP 双 Schema + 两层错误**：应答定 JSON Schema 进 host 测试钉板（`user/berry-psproto`/`berry-netdproto` 严格串行 RPC+host 测是现成模式）；错误分「协议错（不可自修）」与「执行错（必带下一步可操作建议）」。挂点：SDK-4 新协议 crate 或 svcmgr 扩展 + 三条总原则之「语义化错误码」落地。
 4. **berryui 校验器按 LLM 可修设计**：错误信息含「位置+期望+修法」三元组；组件/属性白名单在解析期执法（约束解码思想）。挂点：SDK-2 设备侧解释器 + `user/berry-manifest`（views 字段已裁，校验器同族）。
-5. **文档双产物**：abi-gen 增第四面——为 SDK/berryui 生成 llms.txt 式策展入口 + JSON Schema 导出（MCP 官网吃狗粮为证）。挂点：`tools/gen_abi.py`/`docs/系统调用ABI设计.md` §8 延伸。
+5. **文档双产物**：abi-gen 增第四面——为 SDK/berryui 生成 llms.txt 式策展入口 + JSON Schema 导出（MCP 官网吃狗粮为证）。挂点：`tools/gen_abi.py`/`docs/系统调用ABI设计-v1.0.md` §8 延伸。
 6. **.bap 治理**：manifest 校验拒绝未注册组件/未声明能力引用（slopsquatting 教训的包内版）；appd spawn 守卫维持能力最小化默认。挂点：`user/berry-manifest` 负样本测试 + svcmgr appd。
 7. **AGENTS.md 纪律延续**：SDK 发布时随 crate 附「AI 最小上下文文件」（就近优先合并语义已内建）。挂点：各 SDK crate 根。
 

@@ -105,6 +105,12 @@ pub struct Task {
     /// 剩余时间片（**周期数**，2b-4 起）：由 `tick` 按 CNTVCT 增量递减（DVFS 后
     /// 实际时长不随频率漂移）；0 表示该被重调度。授予量 = `timer::slice_cycles()`。
     pub slice_left: u64,
+    /// 1.1/S2：EEVDF 虚拟运行时间（权重归一后的周期数；`tick` 按实际周期增量
+    /// 累加，`enqueue` 抬到当前平均虚拟时间）。仅 `Fair` 类消费。
+    pub vruntime: u64,
+    /// 1.1/S2：EEVDF 虚拟截止期（`vruntime + slice/weight`）；`Fair` 在
+    /// `enqueue`/片耗尽时重算，作为同 `prio_effective` 带内的第一排序键。
+    pub vdeadline: u64,
     /// 2b-2：任务地址空间 = TTBR0 页表 PA + ASID。`ttbr0 == 0` = 无 AS（内核空表，
     /// 低半必然 fault——身份表已退役）。switch 时经 HAL 激活（变化才写寄存器）。
     pub ttbr0: usize,
@@ -343,6 +349,8 @@ impl Task {
             name,
             state: TaskState::Ready,
             slice_left: 0,
+            vruntime: 0,
+            vdeadline: 0,
             ttbr0,
             asid,
             proc_tag,

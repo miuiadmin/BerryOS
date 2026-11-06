@@ -1,6 +1,6 @@
 # GUI-02 领先图形管线实践——iOS Core Animation / Metal / ProMotion 剖析与 DWM、Chromium 对照的普适原则提炼
 
-> **调研定位**：M-GUI 立项后的第二份 GUI 专项调研。第一手问题 = 「iOS 与领先商用系统的图形管线『优秀』在哪」——为 BerryOS 的显示/合成/输入/帧调度服务形态提炼可迁移的普适原则。与 `docs/GUI里程碑规划-2026-10.md`（OpenHarmony 功能面参照、三薄服务 + 单 GUI 进程的档位裁决）互补：那份答「做什么」，本报告答「为什么这样分工会优秀」。
+> **调研定位**：M-GUI 立项后的第二份 GUI 专项调研。第一手问题 = 「iOS 与领先商用系统的图形管线『优秀』在哪」——为 BerryOS 的显示/合成/输入/帧调度服务形态提炼可迁移的普适原则。与 `docs/GUI里程碑规划-2026-10-v1.0.md`（OpenHarmony 功能面参照、三薄服务 + 单 GUI 进程的档位裁决）互补：那份答「做什么」，本报告答「为什么这样分工会优秀」。
 >
 > **方法与证据等级**：官方一手资料（Apple Tech Talks / Apple Developer Docs / Microsoft Learn / Chrome for Developers / chromium.googlesource）＞ 权威社区逆向与实证（EthanArbuckle 逆向文档、objc.io、fabernovel、Jacob's Tech Tavern、MoltenVK issue）＞ 论坛级佐证。关键论断均标【确定度：高/中/低】；逆向与推断混合处如实标注。iOS 内部机制无官方文档，凡涉 backboardd/RenderLoop 内部均属逆向共识。
 
@@ -158,7 +158,7 @@ Tech Talks 10855 给出官方全貌（本节引文均出自该页）：
 
 ## 7. 对 BerryOS 的映射：微内核服务形态下的落地
 
-> 本地依据：`docs/GUI里程碑规划-2026-10.md`（三薄服务 guifbd/gui-inputd/gui-wmd + 单 GUI 进程 + berry-ui 内嵌的现行裁决；§3 服务摆位总图；「lite 实现 + 完整架构缝」档位判断）、`user/berry-fbcon/src/lib.rs` + `render.rs`（软渲染核现状）、`user/bins/guifbd/`（GUI-1 种子：boot 经 MMIO VMO 授能 fb 窗 + 几何 info VMO）、`CLAUDE.md`（VMO/Vmar 能力模型、channel/event IPC、intent 机制 ADR #42、PM 共享环、单核 v1、QEMU 无真 GPU/vsync）。
+> 本地依据：`docs/GUI里程碑规划-2026-10-v1.0.md`（三薄服务 guifbd/gui-inputd/gui-wmd + 单 GUI 进程 + berry-ui 内嵌的现行裁决；§3 服务摆位总图；「lite 实现 + 完整架构缝」档位判断）、`user/berry-fbcon/src/lib.rs` + `render.rs`（软渲染核现状）、`user/bins/guifbd/`（GUI-1 种子：boot 经 MMIO VMO 授能 fb 窗 + 几何 info VMO）、`CLAUDE.md`（VMO/Vmar 能力模型、channel/event IPC、intent 机制 ADR #42、PM 共享环、单核 v1、QEMU 无真 GPU/vsync）。
 
 ### 7.1 概念对位表
 
@@ -213,11 +213,11 @@ intent 联动：帧管线各阶段天然分档——输入事件处理 = 最高 
 11. Windows 侧收敛同构：flip 模型缓冲与 DWM 共享零拷贝、DirectFlip/MPO 直扫阶梯（含窗口化直扫）、present statistics 使丢帧可对账可恢复；DirectComposition 的 visual 树动画「独立于 UI 线程」。证据：Microsoft Learn（S10/S11/S12）。
 12. Chromium 侧收敛同构：display list + property trees 经 commit 原子拷贝到 compositor thread、pending/active 四树、光栅异步、滚动手势在合成线程直改属性树（首事件后跳过主线程）、Viz 进程跨源聚合——主线程忙不卡滚动。证据：RenderingNG（S13）+ how_cc_works.md（S18）。
 13. 三系统对照提炼出十条普适原则（P1–P10，§6），其中「提交变更描述而非像素」「帧时钟权威单点」「背压内建缓冲池」「直扫是优化阶梯」四条在软渲染/无 GPU 环境依然完全可迁移。综合 S2/S10/S13/S18。
-14. 本地对照：BerryOS 现行规划（三薄服务 + 单 GUI 进程 + lite 实现/完整架构缝）与本调研原则兼容——「lite 档」恰好对应 Chromium 的「分离强度降档」先例；关键缺口不在形态而在「提交语义/帧预算/hitch 度量」三个尚未成文的协议面。证据：docs/GUI里程碑规划-2026-10.md（本地）。
+14. 本地对照：BerryOS 现行规划（三薄服务 + 单 GUI 进程 + lite 实现/完整架构缝）与本调研原则兼容——「lite 档」恰好对应 Chromium 的「分离强度降档」先例；关键缺口不在形态而在「提交语义/帧预算/hitch 度量」三个尚未成文的协议面。证据：docs/GUI里程碑规划-2026-10-v1.0.md（本地）。
 
 ## 对 BerryOS 的架构启示
 
-1. **把 guifbd 定位成「帧调度权威 + 合成器」而非 mere fb 持有者**：软 vsync 生成/分发、帧率 hint 仲裁、缓冲池管理三权归它单点（对应 P3）；GUI-1 已授 fb VMO，方向顺延即可（docs/GUI里程碑规划-2026-10.md §3/§4 + S2/S8）。
+1. **把 guifbd 定位成「帧调度权威 + 合成器」而非 mere fb 持有者**：软 vsync 生成/分发、帧率 hint 仲裁、缓冲池管理三权归它单点（对应 P3）；GUI-1 已授 fb VMO，方向顺延即可（docs/GUI里程碑规划-2026-10-v1.0.md §3/§4 + S2/S8）。
 2. **berry-ui 的 commit 面按「变更描述」设计**：一 pass 一提交、提交物 = 脏区矩形集 +（v2）图层属性 diff，像素只经共享 VMO 流动（对应 P1）；GUI-3 视图树 API 从第一天就把「记录变更」与「执行渲染」分开，v2 拆合成器时协议面零翻修（S2/S13/S18 + 规划附录 B L0「命令录制回放」条）。
 3. **帧循环四相位化 + 每相位帧预算**：输入排空→动画→Measure/Render→提交 flush，各相位独立计时；单核下错相的收益是 deadline 隔离而非并行（对应 P4）；软 vsync 周期按 TCG 实测校准（CLAUDE.md tick 率实录）。
 4. **背压走缓冲池不走协议**：v1 进程内双缓冲；v2 每窗口 2–3 帧池 + channel credit 授权取帧，池空阻塞（对应 P5）；GUI 常驻服务挂私有 handle 表 + wait_many 哑项（CLAUDE.md 4-5/4-6 纪律直接适用）。
@@ -264,7 +264,7 @@ intent 联动：帧管线各阶段天然分档——输入事件处理 = 最高 
 
 **本地来源**
 
-- L1. `docs/GUI里程碑规划-2026-10.md` — M-GUI 立项规划、三薄服务摆位、15 件闭包、lite/完整档裁决、OpenHarmony 功能全景（附录 B）
+- L1. `docs/GUI里程碑规划-2026-10-v1.0.md` — M-GUI 立项规划、三薄服务摆位、15 件闭包、lite/完整档裁决、OpenHarmony 功能全景（附录 B）
 - L2. `user/berry-fbcon/src/lib.rs` + `render.rs` — 软渲染核现状（蜂格/glyph blit/像素打包，28 host 测）
 - L3. `user/bins/guifbd/Cargo.toml` + `src/main.rs` — GUI-1 种子：fb MMIO VMO 授能 + 几何 info VMO + FBW ok 自验形态
 - L4. `CLAUDE.md` — VMO/Vmar 能力模型、channel/event/wait_many、intent 机制（ADR #42）、常驻服务私有表纪律（4-5/4-6）、TCG tick 率实录、QEMU/ramfb 环境事实、微内核失败隔离原则

@@ -4,7 +4,7 @@
 产物：
   1. kernel/src/abi_gen.rs              —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR（syscall.rs/handle.rs 转发）
   2. user/berry-sys/src/abi_gen.rs  —— 同面镜像（+ INVALID_HANDLE + 私有 mod nr）
-  3. docs/系统调用ABI设计.md           —— §4 编号表体 + §8.2 两段 C 定义列（marker 块替换）
+  3. docs/系统调用ABI设计-v1.0.md    —— §4 编号表体 + §8.2 两段 C 定义列（marker 块替换）
   4. tools/abi.syz                      —— syzkaller syscall 描述骨架（SEC-01 §4.5 件 25；未过
                                           syz-sysgen 编译验证——头注如实声明，详见 gen_syz）
 
@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parent.parent
 IDL = ROOT / "tools" / "abi.toml"
 KERNEL_RS = ROOT / "kernel" / "src" / "abi_gen.rs"
 USER_RS = ROOT / "user" / "berry-sys" / "src" / "abi_gen.rs"
-DOC = ROOT / "docs" / "系统调用ABI设计.md"
+DOC = ROOT / "docs" / "系统调用ABI设计-v1.0.md"
 SYZ = ROOT / "tools" / "abi.syz"
 
 # 每端类型映射（u32/u64 按端约定不同是** ABI 决策**，不是漂移——berry-sys 的
@@ -138,6 +138,16 @@ def v1_rows(d: dict) -> list:
     return [s for g in d["group"] for s in g["syscall"] if s["stage"] == "v1"]
 
 
+def all_rows(d: dict) -> list:
+    """所有在册号（含 1.1/v2/v3）——文档/ syz 全量表用；常量只发 v1+1.1。"""
+    return [s for g in d["group"] for s in g["syscall"]]
+
+
+def const_rows(d: dict) -> list:
+    """常量层镜像 v1 + 1.1（v2/v3 未到号，不提前发常量）。"""
+    return [s for g in d["group"] for s in g["syscall"] if s["stage"] in ("v1", "1.1")]
+
+
 # ---------------------------------------------------------------- Rust 生成
 
 def pick_desc(e: dict) -> str:
@@ -163,8 +173,10 @@ GEN_HEADER = [
 
 def gen_kernel_rs(d: dict) -> str:
     meta = d["meta"]
-    rows = v1_rows(d)
-    unimpl = [s for s in rows if not s.get("implemented", True)]
+    rows = const_rows(d)
+    v1 = v1_rows(d)
+    unimpl = [s for s in v1 if not s.get("implemented", True)]
+    extra = [s for s in rows if s["stage"] != "v1"]
     L = list(GEN_HEADER)
     L.append("//! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径")
     L.append("//! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。")
@@ -176,6 +188,9 @@ def gen_kernel_rs(d: dict) -> str:
     if unimpl:
         names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in unimpl)
         L.append(f"// 在册未实现：{names}（派发回落 -ENOTSUP，永不 panic）")
+    if extra:
+        names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in extra)
+        L.append(f"// 1.1/S1 在册未实现：{names}（派发回落 -ENOTSUP，永不 panic）")
     for s in rows:
         push_doc(L, s.get("note", ""))
         L.append(f"pub const NR_{s['name'].upper()}: {KERNEL_NR_T} = 0x{s['num']:02X};")
@@ -217,7 +232,7 @@ def gen_kernel_rs(d: dict) -> str:
 
 
 def gen_user_rs(d: dict) -> str:
-    rows = v1_rows(d)
+    rows = const_rows(d)
     L = list(GEN_HEADER)
     L.append("//! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见")
     L.append("//! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。")
@@ -253,7 +268,7 @@ def gen_user_rs(d: dict) -> str:
         push_doc(L, pick_desc(e))
         L.append(f"pub const BERRY_ERR_{e['name']}: Status = {e['expr']};")
     L.append("")
-    L.append("// ---- syscall 号（v1 在册；私有——用户程序不写编号，只经本 crate 的")
+    L.append("// ---- syscall 号（v1/1.1 在册；私有——用户程序不写编号，只经本 crate 的")
     L.append("// `berry_*` 封 `svc`，§8.3；在册未实现号常量照发、无 wrapper（原型层")
     L.append("// v2 挂账——dead_code 豁免随生成器），内核回落 -ENOTSUP）----")
     L.append("pub(crate) mod nr {")
