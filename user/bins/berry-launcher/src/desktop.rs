@@ -182,7 +182,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     let (vp_w, vp_h) = ui.viewport();
     // 16:9 桌面（1280×720）与旧 4:3（800×600）两档：字号/状态栏/格隙
     // 随视口走；图标源 72px 固定（v1 无运行时缩放），窄屏也不溢出格。
-    let big = vp_w >= 1200;
+    let big = vp_w >= 1000 || vp_h >= 1000;
     let status_h = if big { 72 } else { 44 };
     let status_pad = if big { 12 } else { 6 };
     let accent_h = if big { 4 } else { 2 };
