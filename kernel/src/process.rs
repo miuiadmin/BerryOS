@@ -90,10 +90,12 @@ pub struct Process {
     pub pending_signals: core::sync::atomic::AtomicU64,
     /// 1.1/S1：本进程线程的调度属性默认值（Thread 覆盖前的 base）。
     pub sched_attr: SchedAttr,
-    /// 1.1/S3-b：冻结嵌套深度（`process_suspend` +1 / `SuspendTok::drop` -1）。
-    /// > 0 → 冻结中；归 0 → `thaw_by_pinned` 解冻。多 token 同进程：最后一个
-    /// close 才解冻。上限 8（超限 -EBUSY）。
+    /// 1.1/S3-b：进程级冻结嵌套深度（最后一个 token close 才 thaw）。
     pub freeze_depth: u32,
+    /// 1.1/S3-b：当前持有单线程冻结 token 的 Thread 数（非 token 数）。
+    /// 用于拒绝「进程全冻 × 单线程冻」重叠：HELD_FROZEN 目前只有一位，
+    /// 两种粒度交叉 close 会提前解冻。
+    pub thread_freezes: u32,
 }
 
 impl Process {
@@ -118,6 +120,7 @@ impl Process {
             pending_signals: core::sync::atomic::AtomicU64::new(0),
             sched_attr: SchedAttr::default(),
             freeze_depth: 0,
+            thread_freezes: 0,
         }
     }
 
@@ -212,6 +215,8 @@ pub struct Thread {
     pub started: bool,
     /// 1.1/S1：`sched_setattr` 写入的线程覆盖属性（flags=0 = 回 Process 默认）。
     pub sched_attr: SchedAttr,
+    /// 1.1/S3-b：单线程冻结嵌套深度（最后一个 token close 才 thaw）。
+    pub freeze_depth: u32,
     /// ——`signal_state` 映射为 Thread `SIGNAL_TERMINATED`（join 等待者由
     /// `object_wait_one(th, TERMINATED, …)` 收割，裁决二：内核侧 join 的
     /// 死透保证）。与 started 并存两 bool 不上 enum——最小扰动 process_start
@@ -227,7 +232,7 @@ impl Thread {
     pub unsafe fn new(proc_ref: NonNull<ObjRef>) -> Self {
         (*proc_ref.as_ptr()).retain();
         Self { proc: proc_ref, entry: 0, sp: 0, started: false, exited: false,
-               sched_attr: SchedAttr::default() }
+               sched_attr: SchedAttr::default(), freeze_depth: 0 }
     }
 
     /// 所属 Process 对象标识（process_start 校验 thread↔process 归属）。

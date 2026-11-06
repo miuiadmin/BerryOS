@@ -131,9 +131,7 @@ pub(crate) mod nr {
     pub(crate) const SCHED_SETATTR: usize = 0x3C;
     /// S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。
     pub(crate) const SCHED_GETATTR: usize = 0x3D;
-    /// 进程级 + 嵌套 depth handler 已落；唯 options bit0=SINGLE_THREAD 仍 -ENOTSUP 待 S3-b——整号收口前 implemented 保持 false。
-    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
-    #[allow(dead_code)]
+    /// S3-b 收口：进程全冻 + Thread SINGLE_THREAD（FREEZE_READY 自证、末 token thaw 自动清位）均落。
     pub(crate) const PROCESS_SUSPEND: usize = 0x3E;
     /// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
     pub(crate) const THREAD_YIELD: usize = 0x3F;

@@ -427,8 +427,8 @@ num = 0x3E
 name = "process_suspend"
 desc = '冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token)'
 stage = "1.1"
-implemented = false
-note = '进程级 + 嵌套 depth handler 已落；唯 options bit0=SINGLE_THREAD 仍 -ENOTSUP 待 S3-b——整号收口前 implemented 保持 false。'
+implemented = true
+note = 'S3-b 收口：进程全冻 + Thread SINGLE_THREAD（FREEZE_READY 自证、末 token thaw 自动清位）均落。'
 [[group.syscall]]
 num = 0x3F
 name = "thread_yield"

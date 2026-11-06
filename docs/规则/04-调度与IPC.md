@@ -69,6 +69,8 @@
 - **包络内 preempt 检查点合法 ⇔ RQ 位在集——「空探」不空锁（G3-1c-2 域②设计交叉，2026-11-04）**：`preempt_checkpoint` 真探形 `try_preempt` 入口即 `rq_lock()`，位感知退化只在 RQ 位在集时成立——TABLE 类（KL-only）号体内检查点 = 物理取 RQ 于 KL 下 = 七类序逆序（g3-1b 曾埋 vmo_read/write 块间两落点，§A115 降档在先 = 生而违约，双核窄概率 ABBA 窗，§A126 已死）；切换诉求由落点①派发尾（零锁点）无条件探承接，无需 need_resched 闩。同因衍生：tick 入解蔽窗安全 ⇔ SQ 位在集（expire_timeouts 的 sq_lock 同机制）。vmo 中介拷贝解蔽留专门刀（升档/包络分裂均开 PT 锁序新验证边）。首域落地 = 管道域 send/recv（0x2E 双位在集，g3-1c-2）：`PreemptSpan` 守卫段 + **调用点**拷贝窗（内置 copy 家族对 TABLE 类 = tick 面活体违约）+ 检查点 wake 链尾（义务④窗不打断）；窗内可达 IRQ 源四类（tick/SGI-resched/PL011 RX/SGI-TLB，全过退化锁）——新增源先过审计；**窗内可达 IRQ handler 禁取 PT 锁**（持有者可被断但有界——handler 取 PT = 同核自旋等被断者硬死锁，§A113 TTAS 活性前提改判）。先问：检查点真承重时探峰路径每把物理锁在类位集下退化吗——位不在集 = 空探也是物理取。 → 雷册 §A126
 - **SMP 形态读「当前任务」一律 `current_task()` 正统读法（G3-4a 首跑）**：`set_current` SMP 形态恒写 per-CPU 槽，`CURRENT` 静态自 boot 恒 null（唯一合法读者 = 其自身无槽回落分支）——裸读静态 = null+字段偏移空解引用（实录 FAR=0x320 = `Task.wake_vct` 偏移：**FAR 小值 + 恰为某字段偏移 = null 基址签名，先查基地址寄存器再怪字段**）。单核绿不构成证据（静态单核有值）。先问：读当前任务的 API 走 current_task() 了吗？ → 雷册 §A127
 
+- **环形 Runqueue 的外部扫描必须「先访当前节点、后判回到 head」**：环尾 `rq_next == head`、单元素环自指——若在处理节点前检测 `next == head` 就 break，尾节点（单元素环则是唯一节点）被跳过；freeze/thaw 这类按键扫描会表现成 `started` 目标「找不到」或匹配计数少一。SLEEPQ 是尾置 `None` 的单向链，不能把它的 while-None 惯例原样搬到 RQ。先问：这个遍历的终止判据是在处理完当前节点之后吗？ → 雷册 §A136
+
 ## 深读
 
 - docs/调度器设计-v1.0.md —— 机制 + M 里程碑权威：runqueue/抢占点/tickless/intent 两段式与省电双线的完整设计。

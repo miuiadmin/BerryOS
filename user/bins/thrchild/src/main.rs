@@ -21,9 +21,10 @@
 #![no_main]
 
 use berry_sys::{
-    berry_clock_read, berry_object_wait_one, berry_process_exit, berry_thread_create,
-    berry_thread_exit, berry_thread_start, Handle, BERRY_ERR_BAD_STATE, CLOCK_MONOTONIC,
-    SIGNAL_TERMINATED,
+    berry_clock_read, berry_handle_close, berry_object_wait_one, berry_process_exit,
+    berry_process_suspend, berry_sched_getattr, berry_sched_setattr, berry_thread_create,
+    berry_thread_exit, berry_thread_start, Handle, SchedAttr, SCHED_FLAG_FREEZE_READY,
+    SUSPEND_OPT_SINGLE_THREAD, BERRY_ERR_BAD_STATE, CLOCK_MONOTONIC, SIGNAL_TERMINATED,
 };
 
 /// join 帽：TCG 下次线程 5 指令即退，10s 是宽帽不是竞速（状态谓词帽）。
@@ -49,6 +50,12 @@ static mut STACK2: Stack2 = Stack2([0; STACK2_SZ]);
 /// 信号定序（wait 返回 ⟹ 写已发生）。
 static mut SENTINEL: u64 = 0;
 const SENTINEL_MAGIC: u64 = 0x5448_5232_4d41_47; // "THR2MAG"
+
+/// S3-b 单线程冻结验收：t3 等 GO，被 t1 冻结期间不可能越过闸门；
+/// thaw 后 GO=1，t3 写第二哨兵并退出。
+static mut THR3_GO: u64 = 0;
+static mut SENTINEL3: u64 = 0;
+const SENTINEL3_MAGIC: u64 = 0x5355_5350_334d_47; // "SUSP3MG"
 
 #[link_section = ".text.entry"]
 #[no_mangle]
@@ -82,7 +89,66 @@ pub extern "C" fn _start(self_proc: Handle) -> ! {
         if berry_thread_start(t2, thr2_entry as *const () as usize, sp2, 0) != BERRY_ERR_BAD_STATE {
             berry_process_exit(9);
         }
-        // ⑤ t1 末线程收口，码 7 上抛父侧。
+
+        // ⑤ S3-b SINGLE_THREAD 活证：t3 先自证 FREEZE_READY，t1 冻结它；
+        // 冻结在席时 GO 不可能变 1（内核侧 HELD_FROZEN 过滤出选）。末
+        // token close thaw 后 READY 自动清位，再放行 t3 并 join。
+        let mut t3: Handle = 0;
+        if berry_thread_create(self_proc, 0, &mut t3) != 0 || t3 == 0 {
+            berry_process_exit(9);
+        }
+        let mut attr = SchedAttr {
+            size: core::mem::size_of::<SchedAttr>() as u32,
+            version: 1,
+            flags: SCHED_FLAG_FREEZE_READY,
+            ..SchedAttr::default()
+        };
+        if berry_sched_setattr(t3, &attr) != 0 {
+            berry_process_exit(9);
+        }
+        if berry_thread_start(t3, thr3_entry as *const () as usize, sp2, 0) != 0 {
+            berry_process_exit(9);
+        }
+        let mut token: Handle = 0;
+        if berry_process_suspend(t3, SUSPEND_OPT_SINGLE_THREAD, &mut token) != 0
+            || token == 0
+        {
+            berry_process_exit(9);
+        }
+        // 冻结中 effective 仍可查询（READY 尚未清——最后一个 token close 才清）。
+        attr = SchedAttr::default();
+        attr.size = core::mem::size_of::<SchedAttr>() as u32;
+        if berry_sched_getattr(t3, &mut attr) != 0
+            || attr.flags & SCHED_FLAG_FREEZE_READY == 0
+            || core::ptr::read_volatile(core::ptr::addr_of!(THR3_GO)) != 0
+        {
+            berry_process_exit(9);
+        }
+        if berry_handle_close(token) != 0 {
+            berry_process_exit(9);
+        }
+        // thaw 契约：READY 自动清位，下次冻结必须重新自证。
+        attr = SchedAttr::default();
+        attr.size = core::mem::size_of::<SchedAttr>() as u32;
+        if berry_sched_getattr(t3, &mut attr) != 0
+            || attr.flags & SCHED_FLAG_FREEZE_READY != 0
+        {
+            berry_process_exit(9);
+        }
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(THR3_GO), 1);
+        let mut t3_deadline: u64 = 0;
+        if berry_clock_read(CLOCK_MONOTONIC, &mut t3_deadline) != 0 {
+            berry_process_exit(9);
+        }
+        let mut obs3: u64 = 0;
+        if berry_object_wait_one(t3, SIGNAL_TERMINATED, t3_deadline + JOIN_CAP_NS, &mut obs3) != 0
+            || obs3 != SIGNAL_TERMINATED
+            || core::ptr::read_volatile(core::ptr::addr_of!(SENTINEL3)) != SENTINEL3_MAGIC
+        {
+            berry_process_exit(9);
+        }
+
+        // ⑥ t1 末线程收口，码 7 上抛父侧。
         berry_process_exit(7);
     }
 }
@@ -92,6 +158,19 @@ pub extern "C" fn _start(self_proc: Handle) -> ! {
 fn thr2_entry() -> ! {
     unsafe {
         core::ptr::write_volatile(core::ptr::addr_of_mut!(SENTINEL), SENTINEL_MAGIC);
+    }
+    berry_thread_exit();
+}
+
+/// ⑤ t3 体：等 t1 thaw 后放行，再写 S3-b 哨兵并退出。冻结期间该入口
+/// 不可能运行——GO 保持 0 是 freeze 语义的用户态观察面。
+#[no_mangle]
+fn thr3_entry() -> ! {
+    unsafe {
+        while core::ptr::read_volatile(core::ptr::addr_of!(THR3_GO)) == 0 {
+            berry_sys::berry_thread_yield();
+        }
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(SENTINEL3), SENTINEL3_MAGIC);
     }
     berry_thread_exit();
 }

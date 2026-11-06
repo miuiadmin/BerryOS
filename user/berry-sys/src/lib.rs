@@ -48,7 +48,7 @@ pub type Time = u64; // MONOTONIC 纳秒
 /// `size` 由调用方填 `size_of::<SchedAttr>()`（内核接受更大且尾部全零的
 /// 前向兼容形态）；`version` 目前恒 1；`flags` 决定字段生效，未置位 = 继承。
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SchedAttr {
     pub size: u32,
     pub version: u16,
@@ -66,6 +66,19 @@ pub struct SchedAttr {
 }
 const _: () = assert!(core::mem::size_of::<SchedAttr>() == 56);
 const _: () = assert!(core::mem::align_of::<SchedAttr>() == 8);
+
+/// `SchedAttr.flags`：字段生效位（未置位 = 继承；bit4 只对 Thread 有效）。
+pub const SCHED_FLAG_WEIGHT: u16 = 1 << 0;
+pub const SCHED_FLAG_INTENT: u16 = 1 << 1;
+pub const SCHED_FLAG_POLICY: u16 = 1 << 2;
+pub const SCHED_FLAG_FREEZE_CLOCK: u16 = 1 << 3;
+pub const SCHED_FLAG_FREEZE_READY: u16 = 1 << 4;
+pub const SCHED_FLAG_RESERVE: u16 = 1 << 5;
+pub const SCHED_FLAG_DEADLINE: u16 = 1 << 6;
+pub const SCHED_FLAG_BUDGET: u16 = 1 << 7;
+
+/// `process_suspend(options)`：bit0 = 只冻结目标 Thread（需 FREEZE_READY）。
+pub const SUSPEND_OPT_SINGLE_THREAD: u32 = 1 << 0;
 
 // —— ABI 常量层（生成文件 `src/abi_gen.rs`，单源 = `tools/abi.toml`）——
 // glob 转发维持既有路径（`berry_sys::RIGHT_*`/`BERRY_ERR_*` 等）；`nr` 模块
@@ -371,6 +384,28 @@ pub extern "C" fn berry_process_get_exit_code(process: Handle, code: *mut i32) -
 #[no_mangle]
 pub extern "C" fn berry_process_terminate(process: Handle, code: i32) -> Status {
     unsafe { sys(nr::PROCESS_TERMINATE, process as usize, code as usize, 0, 0, 0, 0) }
+}
+
+/// 调度 1.1（0x3E）：冻结 Process（options=0）或 Thread（bit0
+/// `SINGLE_THREAD`，目标须先以 `SCHED_FLAG_FREEZE_READY` 自证）。出参为
+/// SuspendToken；最后一个 token 经 `berry_handle_close` 关闭时解冻。
+#[no_mangle]
+pub extern "C" fn berry_process_suspend(
+    target: Handle,
+    options: u32,
+    token: *mut Handle,
+) -> Status {
+    unsafe {
+        sys(
+            nr::PROCESS_SUSPEND,
+            target as usize,
+            options as usize,
+            token as usize,
+            0,
+            0,
+            0,
+        )
+    }
 }
 
 /// options 低 8 位 = berry_intent（ADR #42 占位；v1 内核只收 0）。

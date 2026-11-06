@@ -55,7 +55,7 @@ pub const NR_PROCESS_TERMINATE: usize = 0x3B;
 pub const NR_SCHED_SETATTR: usize = 0x3C;
 /// S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。
 pub const NR_SCHED_GETATTR: usize = 0x3D;
-/// 进程级 + 嵌套 depth handler 已落；唯 options bit0=SINGLE_THREAD 仍 -ENOTSUP 待 S3-b——整号收口前 implemented 保持 false。
+/// S3-b 收口：进程全冻 + Thread SINGLE_THREAD（FREEZE_READY 自证、末 token thaw 自动清位）均落。
 pub const NR_PROCESS_SUSPEND: usize = 0x3E;
 /// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
 pub const NR_THREAD_YIELD: usize = 0x3F;

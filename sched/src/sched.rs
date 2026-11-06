@@ -2395,6 +2395,111 @@ pub fn idle_loop() -> ! {
 ///
 /// # Safety
 /// IRQ 上下文（`exception_irq` 调，`PSTATE.I=1`）；C-ABI fn 指针槽。
+
+/// 当前任务的 thread_key（S3-b 线程级 freeze 自冻判别用）。
+pub fn current_thread_key() -> usize {
+    let cur = unsafe { current_task() };
+    if cur.is_null() { 0 } else { unsafe { (*cur).thread_key } }
+}
+
+/// 1.1/S3-b：按 thread_key 冻结前置谓词（单线程版 freeze_precheck）。
+pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
+    // 扫双 RQ + SLEEPQ 找匹配 thread_key 的任务，检查 PI/派生位/持锁。
+    // SAFETY: SVC 路径 KL 已持；只读扫描。
+    unsafe {
+        let check = |t: *mut Task| -> bool {
+            let t = &*t;
+            t.pi_inherited == 0 && t.held_locks == 0 && t.svc_mask == 0
+        };
+        for cpu in 0..2 {
+            let mut cur = rq_of(cpu).head();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).rq_next.get();
+                if (*t).thread_key == thread_key && !check(t) { return false; }
+            }
+        }
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            if (*t).thread_key == thread_key && !check(t) { return false; }
+        }
+    }
+    true
+}
+
+/// 1.1/S3-b：按 thread_key 冻结单任务（返回冻结数 0/1）。
+pub fn freeze_by_thread(thread_key: usize) -> usize {
+    // SAFETY: SVC 路径 KL 已持。
+    unsafe {
+        for cpu in 0..2 {
+            let mut cur = rq_of(cpu).head();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).rq_next.get();
+                if (*t).thread_key == thread_key {
+                    (*t).held_locks |= crate::task::HELD_FROZEN;
+                    return 1;
+                }
+            }
+        }
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            if (*t).thread_key == thread_key {
+                (*t).held_locks |= crate::task::HELD_FROZEN;
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+/// 1.1/S3-b：按 thread_key 解冻。
+pub fn thaw_by_thread(thread_key: usize) {
+    // SAFETY: handle close 路径。
+    unsafe {
+        for cpu in 0..2 {
+            let mut cur = rq_of(cpu).head();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).rq_next.get();
+                if (*t).thread_key == thread_key {
+                    (*t).held_locks &= !crate::task::HELD_FROZEN;
+                }
+            }
+        }
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            if (*t).thread_key == thread_key {
+                (*t).held_locks &= !crate::task::HELD_FROZEN;
+            }
+        }
+    }
+}
+
+/// A12 金丝雀打印（全覆盖——从所有 SWITCHES 递增位调用）。
+/// SMP 稳态忙对各占一核 → preempt 支冷 → park/idle 派发位须也能打印。
+fn canary_print(sw: u64, with_integrity: bool) {
+    const SOAK_PRINT_EVERY: u64 = 100;
+    if sw % SOAK_PRINT_EVERY == 0 {
+        if with_integrity {
+            integrity_check();
+        }
+        print_lock_raw();
+        hal::uart_puts(b"switches=");
+        hal::uart_put_dec(sw);
+        hal::uart_puts(b" kl=");
+        hal::uart_put_dec(hal::kern_lock::kl_contention());
+        hal::uart_puts(b"\n");
+        print_unlock_raw();
+    }
+}
+
 pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // S-2b 排障期诊断面：tick 入口计数（pre 涨/ticks 冻 = 卡锁；
     // 同冻 = CNTV/IRQ 链死）——含下方 gate 早退轮，两核都计。
@@ -2491,28 +2596,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             activate_if_changed(cur, next_ptr);
             note_switch(cur, next_ptr, SwitchKind::Preempt);
-            // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
-            // 过关后移除或 feature 门控（plan Step 7）。
-            const SOAK_PRINT_EVERY: u64 = 100;
-            if sw % SOAK_PRINT_EVERY == 0 {
-                // 完整性走查（复盘雷 2 残留诊断）：金丝雀拍点顺带对账环/
-                // SLEEPQ（integrity_check 注释——孤儿段形态对 pick 不可见，
-                // 只有记账对账显形）。成功路径零输出零分配。
-                integrity_check();
-                // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行
-                // 原子（IRQ 上下文本已屏蔽——print 对不带 irqsave，纪律见
-                // kern_lock 模块头）；sw 快照供整除判定与打印同值。
-                print_lock_raw();
-                hal::uart_puts(b"switches=");
-                hal::uart_put_dec(sw);
-                // S-3c c-2c 前置微刀：行尾拼 KL 争用计数（C20 收缩前后对照观测，
-                // 非门禁）。kl_contention 经 hal 直调——with_print_lock :2125 同款
-                // 先例（ops 槽只服务取放对，读数无语境约束）。
-                hal::uart_puts(b" kl=");
-                hal::uart_put_dec(hal::kern_lock::kl_contention());
-                hal::uart_puts(b"\n");
-                print_unlock_raw();
-            }
+            // A12 金丝雀打印（tick 抢占位——含完整性走查）。
+            canary_print(sw, true);
             // 切出 cur：存 callee-saved+sp，载 next；ret 进 next（首切→trampoline，
             // 否则→next 上次切出处）。切回 cur 时续行于下一行。
             // S-2 E0 舞蹈（草案 3.1-3，五切走点之一）→ 3-1b KL 剥除：切走前
@@ -2804,7 +2889,8 @@ unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
     // SAFETY: 本核 CVAL 重臂；PSTATE.I=1。
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
-    SWITCHES.fetch_add(1, Ordering::Relaxed);
+    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+    canary_print(sw, false); // A12 SMP：park 派发位也打印
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
     // SAFETY: prev=本核 park ctx（惰性捕获——首次派发把调用帧存进本核槽）、
@@ -2840,7 +2926,8 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     // idle 派发无 CNTV IRQ 先行：wfi 醒 / SGI 醒 / 环顶重查三种入口皆然）。
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
-    SWITCHES.fetch_add(1, Ordering::Relaxed);
+    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+    canary_print(sw, false); // A12 SMP：idle 派发位也打印
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     activate_if_changed(idle, next_ptr);
     note_switch(idle, next_ptr, SwitchKind::Preempt);
