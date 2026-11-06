@@ -913,7 +913,7 @@ desktop: berry-build
     printf 'BERRYOSVBLK!' | dd of=out/gui-data.img conv=notrunc status=none
     HOST=$(rustc -vV | sed -n 's/^host: //p')
     # display fw_cfg 是 gui 位真值源：不传则 guifbd console 不静音、桌面被日志盖。
-    BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile default --memory 256 --display-mode 800x600@60
+    BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile desktop --memory 256
 
 # P0 宿主面冒烟：doctor + 内核 marker + EFI 截图（不建窗口；TCG 确定性）。
 berry-smoke: berry-build

@@ -31,7 +31,7 @@ use berry_sys::{
 
 /// 中继收侧 READABLE 帽（10s 量级——gfxdemo `RPC_CAP_NS` 同值；帽 ≥
 /// 客户端帽 = 客户端侧先超时降级，wmd trap 面只兜真死亡）。
-const RELAY_CAP_NS: u64 = 10 * 1_000_000_000;
+const RELAY_CAP_NS: u64 = 300 * 1_000_000_000;
 
 /// 期望随行数（`Some((min, max))` = 执法；`None` = 不执法——畸形帧透传
 /// 交 guifbd 拒（wmd 不做 present/hdi 域第二解析器，帧形校验单源）。

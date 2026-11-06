@@ -70,7 +70,7 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
 /// RPC 收侧 READABLE 帽（gfxdemo 10s A6-a 形态；launcher 120s：首启要等
 /// svcmgr 跑完 boot 自验进稳态 app serve，10s 会把 APP_LIST 误判成超时）。
-const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
+const RPC_CAP_NS: u64 = 300 * 1_000_000_000;
 
 /// 诊断 + park 收口（gfxdemo `fail` 的 park 形——launcher 常驻不被 reap，
 /// exit 码无消费者；park = stdout EOF + 10s 周期睡眠，guifbd 自验后
