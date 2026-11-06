@@ -1302,6 +1302,9 @@ def run_normal_boot(args) -> int:
     else:
         disk.parent.mkdir(parents=True, exist_ok=True)
         create_data_disk(disk, with_smoke=False)
+        # 常态桌面默认隐藏 APPDEMO/APPQUIET（官方系统 app 在席时）；
+        # 注入 canonical 双 app 布局保持常态隔离点击面，不造 GUI8.SMK。
+        write_layout_for_selftest(disk)
         log(
             f"新常态盘：{disk}（{disk.stat().st_size}B，"
             f"sha256={sha256_file(disk)[:16]}…，LBA0 印章，零 GUI8.SMK）"

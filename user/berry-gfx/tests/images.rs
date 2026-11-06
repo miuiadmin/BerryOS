@@ -399,6 +399,28 @@ fn draw_image_scaled_argb_nearest_and_guard() {
     assert_eq!(fb, before);
 }
 
+// —— SmoothArgb：全不透明大面壁纸的 Q8 双线性路径 ——
+#[test]
+fn draw_image_smooth_argb_bilinear() {
+    let d = desc16();
+    let img: [u32; 2] = [0xFFFF_0000, 0xFF00_00FF];
+    let mut fb = vec![0xEEu8; d.need_bytes()];
+    let mut enc = CommandEncoder::new();
+    enc.draw_image(
+        ImageSrc::SmoothArgb { sw: 2, sh: 1, dw: 3, dh: 1, px: &img },
+        0,
+        0,
+        WHITE,
+        None,
+    )
+    .unwrap();
+    let dl = enc.finish();
+    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
+    assert_eq!(px(&fb, 0, 0), 0x00FF_0000);
+    assert_eq!(px(&fb, 1, 0), 0x007F_007F);
+    assert_eq!(px(&fb, 2, 0), 0x0000_00FF);
+}
+
 // —— ARGB 恰长拒面：短/长切片 + 手搓 Cmd 旁路 + 巨参（先验后写）——
 #[test]
 fn draw_image_argb_pixel_mismatch() {

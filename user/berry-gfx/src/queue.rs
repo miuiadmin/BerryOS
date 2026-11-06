@@ -90,7 +90,9 @@ impl Queue {
                     }
                 }
                 Cmd::DrawImage {
-                    src: ImageSrc::ScaledArgb { sw, sh, dw, dh, px },
+                    src:
+                    ImageSrc::ScaledArgb { sw, sh, dw, dh, px }
+                    | ImageSrc::SmoothArgb { sw, sh, dw, dh, px },
                     ..
                 } => {
                     if *sw == 0

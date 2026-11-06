@@ -412,7 +412,15 @@ fn emit_image<'a>(
             // 一致源：dims × pixels 恰长 → Argb 直发（blit = 源内在尺寸）
             Some((w, h)) if px.len() as u64 == w as u64 * h as u64 => {
                 let same = dw.is_none() || dh.is_none() || (dw == Some(w) && dh == Some(h));
+                let smooth = icons.smooth_scale(id);
                 let src = match (dw, dh) {
+                    (Some(tw), Some(th)) if !same && smooth => ImageSrc::SmoothArgb {
+                        sw: w,
+                        sh: h,
+                        dw: tw,
+                        dh: th,
+                        px,
+                    },
                     (Some(tw), Some(th)) if !same => ImageSrc::ScaledArgb {
                         sw: w,
                         sh: h,

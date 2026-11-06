@@ -21,6 +21,16 @@ SS = 4
 R = Image.Resampling.LANCZOS
 
 # app ID -> (glyph stem, 渐变起色, 渐变止色)。色底为本仓生成的 OH 风格配色。
+# 官方 AppScope/entry 图标可直接使用的应用（其余继续 OH glyph + 本仓色底）。
+EXACT_ICONS = {
+    "SETTINGS": "settings_app.png",
+    "FILES": "files.png",
+    "PHOTOS": "photos_app.png",
+    "CAMERA": "camera_app.png",
+    "CONTACTS": "contacts_app.png",
+    "MMS": "mms_app.png",
+}
+
 APPS = {
     "SETTINGS": ("settings", (31, 143, 255), (0, 199, 190)),
     "FILES": ("files", (255, 159, 46), (255, 106, 0)),
@@ -44,6 +54,21 @@ def gradient_tile(w: int, h: int, c0: tuple[int, int, int], c1: tuple[int, int, 
 
 
 def make_icon(app: str, glyph: str, c0: tuple, c1: tuple) -> None:
+    exact = EXACT_ICONS.get(app)
+    if exact is not None:
+        im = Image.open(ROOT / "raw" / exact).convert("RGBA")
+        im = im.resize((S, S), Image.Resampling.LANCZOS)
+        # 6-bit/channel 量化：视觉无级差，BYI1 RLE 显著小于照片级原图。
+        step = 255 // 63
+        im = im.point(lambda v: round(v / step) * step)
+        alpha = im.getchannel("A").point(lambda a: 255 if a >= 128 else 0)
+        im.putalpha(alpha)
+        dest = OUT_ROOT / app / "icons" / "icon.png"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        im.save(dest)
+        print(f"genohicons: {dest.relative_to(REPO)} exact ({dest.stat().st_size}B)")
+        return
+
     big = S * SS
     mask = Image.open(ROOT / "raw/icon_mask.png").convert("RGBA").getchannel("A")
     mask = mask.resize((big, big), R)

@@ -1,7 +1,7 @@
 //! desktop —— 桌面静态面（GUI-8 段③ W1，docs/GUI-8实施设计草案.md §4
 //! 段③「布局桩」）。
 //!
-//! 责任：一次性建桌面保留树——壁纸三带 + OH phone 状态栏 + SwipePager
+//! 责任：一次性建桌面保留树——OH 官方壁纸 + phone 状态栏 + SwipePager
 //! 四页 × Grid 5×4 槽板 + 常驻 Dock + a11y 骨架（32/32）。数据源 = berry-layout 布局 ×
 //! icons 注册表（注册表空 → 布局 0 cell → 全占位格 label "-"，W1 冻结
 //! 相常态形态）。**帧循环/翻页/点击全无**——`frameloop`（W2）经本模块
@@ -24,15 +24,15 @@
 //!   ——Root/带高/Grid 高全派生），禁硬编 800×600；字号档/图标 px 等
 //!   字体面常量不属屏幕参数，不在此列。
 //!
-//! 树规模（最坏满图标）：1 Root + 壁纸 49 + 内容列 1 + 状态栏 10 +
+//! 树规模（最坏满图标）：1 Root + 壁纸 1 + 内容列 1 + 状态栏 10 +
 //! grid top 1 + pager 10 + 4×(Grid+20 Pad+20 内Col+20 Icon+20 Text)
-//! + filler 1 + Dock 5 = **402 节点** < MAX_NODES=512。
+//! + filler 1 + Dock 5 = **354 节点** < MAX_NODES=512。
 
 use berry_gfx::cmd::Color;
 use berry_gfx::font::FontSize;
 use berry_layout::{CELL_MAX, PAGE_MAX};
 use berry_ui::desc::{
-    ColProps, GridProps, IconProps, PadProps, RectProps, RowProps, TextProps, TextStyle,
+    ColProps, GridProps, IconProps, PadProps, RowProps, TextProps, TextStyle,
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::swipe::SwipePager;
@@ -65,16 +65,14 @@ const _: () = assert!(PAGES * SLOTS_PER_PAGE >= CELL_MAX, "OH 5×4 视窗覆盖�
 const DOT_ROW_H: u32 = 16;
 /// 格内图标目标边长（OH phone icon 54vp×3；108px 源经 ScaledArgb 采样）。
 const ICON_PX: u32 = 162;
-/// 壁纸渐变色带数（Rect 无渐变原语——多带近似；奇高余量归末带）。
-const WALLPAPER_BANDS: u32 = 48;
 
 // —— OpenHarmony phone launcher 几何（applications_launcher 源仓
 //    PhonePresetStyleConstants / PhoneSmartDockStyleConfig；1080×1920
 //    = 360×640vp @3x 折算）——
 /// 密度（1080 物理宽 / 360vp 逻辑宽）。
 const OH_DENSITY: u32 = 3;
-/// 状态栏高 44vp。
-const OH_STATUS_H: u32 = 44;
+/// 状态栏可见高 39vp（phone statusbar float；launcher 布局保留 44vp）。
+const OH_STATUS_H: u32 = 39;
 /// 状态栏左右 padding 24vp。
 const OH_STATUS_PAD: u32 = 24;
 /// 桌面网格左右 margin 12vp。
@@ -108,12 +106,12 @@ const PAGE_LABELS: [&[u8]; PAGES] = [b"page 0", b"page 1", b"page 2", b"page 3"]
 /// 空槽占位 label。
 const PLACEHOLDER: &[u8] = b"";
 /// 常驻 Dock app（Contacts/Messages/Browser/Camera；从网格去重）。
-const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"MMS", b"BROWSER", b"CAMERA"];
+/// GUI 验收双 app（官方桌面常态隐藏，只保留后台/spawn 面）。
+const TEST_IDS: [&[u8]; 2] = [b"APPDEMO", b"APPQUIET"];
+/// OH PhonePresetDockItem 官方顺序。
+const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"PHOTOS", b"SETTINGS", b"MMS"];
 
-/// 壁纸/文本配色（裁决六三带 + 白系前景；stub 常量——位图通道 v2）。
-const WALLPAPER_TOP: Color = Color { r: 10, g: 28, b: 74 }; // OH 深海蓝
-const WALLPAPER_MID: Color = Color { r: 22, g: 100, b: 190 }; // OH 亮蓝
-const WALLPAPER_BOTTOM: Color = Color { r: 8, g: 150, b: 136 }; // OH 青绿
+/// 文本配色（白色 = systemui TintStateManager 默认 contentColor）。
 const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
 const ICON_FG: Color = Color { r: 230, g: 230, b: 235 };
@@ -155,32 +153,6 @@ struct SlotPlan<'a> {
     app: Option<usize>,
 }
 
-/// 线性插值两色（`t` = 0..=den；Q16 不需要——整数通道足够，18 带近似）。
-fn wallpaper_color(i: u32, den: u32) -> Color {
-    // 三停渐变：深蓝 → 亮蓝 → 青绿（OpenHarmony 风格冷暖过渡）。
-    if i * 2 <= den {
-        lerp_color(WALLPAPER_TOP, WALLPAPER_MID, i * 2, den)
-    } else {
-        lerp_color(WALLPAPER_MID, WALLPAPER_BOTTOM, i * 2 - den, den)
-    }
-}
-
-fn lerp_color(a: Color, b: Color, t: u32, den: u32) -> Color {
-    if den == 0 {
-        return b;
-    }
-    let f = |x: u8, y: u8| -> u8 {
-        let x = x as u32;
-        let y = y as u32;
-        ((x * (den - t) + y * t) / den) as u8
-    };
-    Color {
-        r: f(a.r, b.r),
-        g: f(a.g, b.g),
-        b: f(a.b, b.b),
-    }
-}
-
 /// S8x16 文本叶子 spec（label/状态栏共用字号档；超 `TEXT_INLINE`=64B
 /// loud Err——id≤24/label≤64 域内不可达）。
 fn text_spec(text: &[u8], fg: Color, scale: FontSize) -> Result<ViewSpec, UiError> {
@@ -206,6 +178,10 @@ fn icon_of(e: &AppEntry) -> Option<u16> {
 /// 是否 dock 常驻 app（PhoneSmartDock max=4）。
 fn is_dock_app(id: &[u8]) -> bool {
     DOCK_IDS.iter().any(|d| *d == id)
+}
+
+fn is_test_app(id: &[u8]) -> bool {
+    TEST_IDS.iter().any(|d| *d == id)
 }
 
 /// 状态栏 Icon spec（内建 id；宽高来自 OH 资产真值，不做运行时缩放）。
@@ -243,41 +219,22 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     let cell_gap = if big { 12 } else { 2 };
     let root = ui.root();
 
-    // 壁纸：三停渐变。状态栏不再画黑/同色底——OH 是透明覆盖在壁纸上。
-    let wall = ui.add(
+    // OpenHarmony phone 默认壁纸：官方 JPEG 宿主预采样成 135×240
+    // 静态源，SmoothArgb 双线性放大到 1080×1920；rodata 直供零堆。
+    // 800×600 compact 调试档会拉伸该 9:16 源（非 OH phone 精确面）。
+    ui.add(
         root,
         ViewSpec {
-            kind: ViewKind::Col,
+            kind: ViewKind::Icon,
             key: 0,
-            props: Props::Col(ColProps {
-                gap: 0,
-                w: None,
+            props: Props::Icon(IconProps {
+                id: icons::WALLPAPER,
+                fg: ICON_FG,
+                w: Some(vp_w),
                 h: Some(vp_h),
-                cross: CrossAlign::Stretch,
             }),
         },
     )?;
-    let band_h = vp_w.max(vp_h) / WALLPAPER_BANDS;
-    let band_h = if big { vp_h / WALLPAPER_BANDS } else { band_h };
-    for i in 0..WALLPAPER_BANDS {
-        let h = if i + 1 == WALLPAPER_BANDS {
-            vp_h.saturating_sub(band_h.saturating_mul(WALLPAPER_BANDS - 1))
-        } else {
-            band_h
-        };
-        ui.add(
-            wall,
-            ViewSpec {
-                kind: ViewKind::Rect,
-                key: 0,
-                props: Props::Rect(RectProps {
-                    bg: wallpaper_color(i, WALLPAPER_BANDS - 1),
-                    w: None,
-                    h: Some(h),
-                }),
-            },
-        )?;
-    }
 
     // 内容列满屏：cross=Center 让固定宽 Grid/Dock 在页内水平居中。
     let content = ui.add(
@@ -308,17 +265,16 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             }),
         },
     )?;
-    // OH systemui phone：左右 padding 24vp；时间左、signal/wifi/battery
-    // 右组。Pad 只有四向单值，横向 padding 用透明 spacer 表达，纵向由
-    // 132px 行内 Center 对齐。
+    // OH systemui phone：左右 24vp；左 = signal/wifi，右 = battery/clock
+    // （StatusbarConfig LayoutGroups 1/3；clock rightmost）。
     let status_pad = if big { OH_STATUS_PAD * OH_DENSITY } else { 6 };
     let time_w = STATUS_CLOCK.len() as u32 * status_size.cell_w() as u32;
-    let icons_w = icons::STATUS_SIGNAL_DIM.0
-        + icons::STATUS_WIFI_DIM.0
-        + icons::STATUS_BATTERY_DIM.0;
-    let status_icon_gap = if big { 9 } else { 6 };
-    let status_group_w = icons_w + status_icon_gap * 2;
-    let status_flex = vp_w.saturating_sub(status_pad * 2 + time_w + status_group_w);
+    let status_icon_gap = if big { 15 } else { 6 };
+    let left_w = icons::STATUS_SIGNAL_DIM.0
+        + status_icon_gap
+        + icons::STATUS_WIFI_DIM.0;
+    let right_w = icons::STATUS_BATTERY_DIM.0 + status_icon_gap + time_w;
+    let status_flex = vp_w.saturating_sub(status_pad * 2 + left_w + right_w);
     let srow = ui.add(
         status,
         ViewSpec {
@@ -348,32 +304,45 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         )
     };
     add_status_spacer(ui, status_pad)?;
-    let time_node = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
-    ui.set_a11y(time_node, ROLE_TEXT, STATUS_CLOCK)?;
-    add_status_spacer(ui, status_flex)?;
-    let igroup = ui.add(
+    let left_group = ui.add(
         srow,
         ViewSpec {
             kind: ViewKind::Row,
             key: 0,
             props: Props::Row(RowProps {
                 gap: status_icon_gap,
-                w: Some(status_group_w),
+                w: Some(left_w),
                 h: None,
                 cross: CrossAlign::Center,
             }),
         },
     )?;
-    let sig = ui.add(igroup, status_icon_spec(icons::STATUS_SIGNAL)?)?;
+    let sig = ui.add(left_group, status_icon_spec(icons::STATUS_SIGNAL)?)?;
     ui.set_a11y(sig, ROLE_TEXT, b"signal full")?;
-    let wifi = ui.add(igroup, status_icon_spec(icons::STATUS_WIFI)?)?;
+    let wifi = ui.add(left_group, status_icon_spec(icons::STATUS_WIFI)?)?;
     ui.set_a11y(wifi, ROLE_TEXT, b"wifi full")?;
-    let battery = ui.add(igroup, status_icon_spec(icons::STATUS_BATTERY)?)?;
+    add_status_spacer(ui, status_flex)?;
+    let right_group = ui.add(
+        srow,
+        ViewSpec {
+            kind: ViewKind::Row,
+            key: 0,
+            props: Props::Row(RowProps {
+                gap: status_icon_gap,
+                w: Some(right_w),
+                h: None,
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    let battery = ui.add(right_group, status_icon_spec(icons::STATUS_BATTERY)?)?;
     ui.set_a11y(battery, ROLE_TEXT, b"battery 100")?;
+    let time_node = ui.add(right_group, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
+    ui.set_a11y(time_node, ROLE_TEXT, STATUS_CLOCK)?;
     add_status_spacer(ui, status_pad)?;
 
     // OH calculateDesktop：首 item top 绝对 162px；扣除状态栏 132px。
-    let grid_top = if big { OH_DESKTOP_TOP.saturating_sub(OH_STATUS_H * OH_DENSITY) } else { 8 };
+    let grid_top = if big { OH_DESKTOP_TOP.saturating_sub(status_h) } else { 8 };
     ui.add(
         content,
         ViewSpec {
@@ -393,12 +362,21 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
 
     // 布局 → 槽计划；dock 常驻 app 不重复进网格（OH SmartDock 语义）。
     // 剔除 dock 后非 dock app 按原相对序**紧致重排**——否则默认 9 app
-    // 布局会在 row0 留两个洞（BROWSER/CAMERA 被 dock 取走），不像 OH。
+    // 布局会在网格里留下 dock 取走的洞，不像 OH。
     let mut plan: [[SlotPlan<'_>; SLOTS_PER_PAGE]; PAGES] =
         [[SlotPlan { label: PLACEHOLDER, icon: None, app: None }; SLOTS_PER_PAGE]; PAGES];
     let mut cursor = 0usize;
+    // 常态布局若含官方系统 app，则验收 APPDEMO/APPQUIET 不进官方桌面；
+    // GUI8 canonical 双 app 布局仍全显示（冒烟/常态隔离点击面不变）。
+    let official_present = layout
+        .cells()
+        .iter()
+        .any(|c| !is_test_app(c.app_bytes()) && !is_dock_app(c.app_bytes()));
     for c in layout.cells() {
-        if cursor >= PAGES * SLOTS_PER_PAGE || is_dock_app(c.app_bytes()) {
+        if cursor >= PAGES * SLOTS_PER_PAGE
+            || is_dock_app(c.app_bytes())
+            || (official_present && is_test_app(c.app_bytes()))
+        {
             continue;
         }
         let page = cursor / SLOTS_PER_PAGE;

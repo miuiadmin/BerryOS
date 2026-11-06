@@ -7,7 +7,7 @@ edition = "2021"
 # guifbd 同形独立小工作区（空 [workspace] escape 根 workspace，不入
 # user/Cargo.toml members；musl target + berry-libc shim + berry-ld 链）。
 # 前置 wiring 刀（gui3）面 = wm 域门控 + GETINFO 握手 + 单行 LAUNCH 非
-# 标记日志后 park；段③ 起长成模块树：desktop（静态面建树：壁纸三带/
+# 标记日志后 park；段③ 起长成模块树：desktop（静态面建树：OH 官方壁纸/
 # 状态栏/SwipePager 四页 Grid 5×4/常驻 Dock/a11y 骨架）+ icons（app 注册表 +
 # IconSource 供件桥）+ layout_io（LAYOUT.JSN 读写三约束自愈）+
 # frameloop（长活帧循环——W2 填充，W1 静默 park）。依赖接线四件

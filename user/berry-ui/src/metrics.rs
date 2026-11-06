@@ -67,6 +67,10 @@ impl TextMetrics for MonospaceTextMetrics {
 pub trait IconSource {
     fn dims(&self, id: u16) -> Option<(u32, u32)>;
     fn pixels(&self, id: u16) -> Option<&[u32]>;
+    /// 请求 SmoothArgb 缩放（大面壁纸；小图标默认保持最近邻硬边）。
+    fn smooth_scale(&self, _id: u16) -> bool {
+        false
+    }
     /// 空供件（恒 None）标记——见 trait 注；真供件不覆写。
     fn is_empty(&self) -> bool {
         false

@@ -163,6 +163,14 @@ pub enum ImageSrc<'a> {
         dh: u32,
         px: &'a [u32],
     },
+    /// ARGB 双线性缩放面（壁纸等全不透明大面；Q8 定点，无 float）。
+    SmoothArgb {
+        sw: u32,
+        sh: u32,
+        dw: u32,
+        dh: u32,
+        px: &'a [u32],
+    },
 }
 
 impl core::fmt::Debug for ImageSrc<'_> {
@@ -183,6 +191,14 @@ impl core::fmt::Debug for ImageSrc<'_> {
                 .finish(),
             ImageSrc::ScaledArgb { sw, sh, dw, dh, px } => f
                 .debug_struct("ImageSrc::ScaledArgb")
+                .field("sw", sw)
+                .field("sh", sh)
+                .field("dw", dw)
+                .field("dh", dh)
+                .field("px", &px.len())
+                .finish(),
+            ImageSrc::SmoothArgb { sw, sh, dw, dh, px } => f
+                .debug_struct("ImageSrc::SmoothArgb")
                 .field("sw", sw)
                 .field("sh", sh)
                 .field("dw", dw)

@@ -40,12 +40,18 @@ use crate::{rpc_recv, rpc_send};
 #[path = "status_icons.rs"]
 mod status_icons;
 
+#[path = "wallpaper.rs"]
+mod wallpaper;
+
 /// 内建状态/dock 图标 id（desktop 直建 Icon 节点；位于 app 图标稠密域
 /// 前缀，app id 从 7 起——launcher 是唯一消费者，契约不外泄）。
 pub const STATUS_SIGNAL: u16 = 0;
 pub const STATUS_WIFI: u16 = 1;
 pub const STATUS_BATTERY: u16 = 2;
-/// dock 分段内建面 id（0..3 号 app 对应 CONTACTS/MMS/BROWSER/CAMERA）。
+/// 静态壁纸源 id（稠密 app 域外的唯一固定特例——rodata 直供零堆）。
+pub const WALLPAPER: u16 = 0xFFFE;
+pub const WALLPAPER_DIM: (u32, u32) = (wallpaper::WALLPAPER_W, wallpaper::WALLPAPER_H);
+/// dock 分段内建面 id（0..3 号 app 对应 Contacts/Photos/Settings/MMS 官方顺序）。
 pub const DOCK0: u16 = 3;
 pub const DOCK1: u16 = 4;
 pub const DOCK2: u16 = 5;
@@ -379,14 +385,24 @@ pub fn icon_source() -> &'static dyn IconSource {
 
 impl IconSource for LauncherIcons {
     fn dims(&self, id: u16) -> Option<(u32, u32)> {
+        if id == WALLPAPER {
+            return Some(WALLPAPER_DIM);
+        }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
         Some((f.w, f.h))
     }
 
     fn pixels(&self, id: u16) -> Option<&[u32]> {
+        if id == WALLPAPER {
+            return Some(&wallpaper::WALLPAPER_PX);
+        }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
         Some(&f.px)
+    }
+
+    fn smooth_scale(&self, id: u16) -> bool {
+        id == WALLPAPER
     }
 }
