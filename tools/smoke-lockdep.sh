@@ -21,7 +21,10 @@
 # `DPGN ok n=4`（rootfs 相末标记——它到 = 上游全链已过）；断言 = ①②③
 # 复验 + dpg 四行行序（selftest < DPGP ok < DPGS ok n=4 < DPGN ok n=4
 # 严格递增——键化/风暴/负序三链在仪表下依序走毕）+ `DPG ovfl` 零计
-#（N=4<K=8 池永不满——B 刀 ow 观测面只在 C-full 满载拓扑见行）。
+#（N=4<K=8 池永不满——B 刀 ovfl 溢出观测面只在 C-full 满载拓扑见行）。
+# 执法窗边界 = boot → eco 链末标记（DPGN）即止；稳态 echo 环与
+# PAR/park/偷取窗不属本面（真覆盖 = 远期可选项，CONC-1 跨核交错族
+# declare 同册）。
 #
 # 用法：bash tools/smoke-lockdep.sh <内核 ELF>（须 feature 面——脚本先验
 # marker 串在镜像内，default 面二进制直拒 loud，不烧 60s 帽；相 2 另验
@@ -68,9 +71,14 @@ LOG2=""
 keep_log() {
   if [ -n "${SMOKE_LOCKDEP_KEEP_LOG:-}" ] || [ "$1" = "keep" ]; then
     echo "smoke-lockdep: 串口日志保留：$LOG ${LOG2:+$LOG2}" >&2
+    # 相 2 对端三件套日志随留档点名列（smoke-smp 同款）。
+    for p in "${EVS_LOG:-}" "${SKT_LOG:-}" "${ECHO_LOG:-}"; do
+      [ -n "$p" ] && echo "smoke-lockdep: 客户端日志保留：$p" >&2
+    done
   else
     rm -f "$LOG"
     [ -n "$LOG2" ] && rm -f "$LOG2"
+    rm -f "${EVS_LOG:-}" "${SKT_LOG:-}" "${ECHO_LOG:-}"
   fi
 }
 
@@ -198,6 +206,13 @@ LOG2=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-lockdep.XXXXXX")
 EVS_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-evsclient.XXXXXX")
 SKT_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-sktclient.XXXXXX")
 ECHO_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-echod.XXXXXX")
+# evsclient 帽 env 覆盖（§5.1 帽序不变量「client 帽 ≥ 相帽 + 60s」：相 2
+# 帽 840s > evsclient 默认 TOTAL 480s 倒挂——慢宿主下健康跑被自家对端转
+# §A122 形假挂死〔EVS 缺 → DPGN 永缺 → 烧满 840s 红且死因误指〕；TOTAL
+# 480→960 / ATTEMPT 45→90，smoke-smp:85-86 同款。echod/sktclient 无帽面
+# 不涉〔sktclient SYN 重试流 + echod 无 TOTAL〕。verdict CONC-B2-1。）
+export BERRY_EVS_TOTAL_CAP_S=960
+export BERRY_EVS_ATTEMPT_CAP_S=90
 python3 "$SCRIPT_DIR/evsclient.py" 18082 EVS > "$EVS_LOG" 2>&1 & EVS_PID=$!
 ( until grep -q 'EVS ok' "$LOG2" 2>/dev/null; do sleep 2; done
   exec python3 "$SCRIPT_DIR/evsclient.py" 18083 SKT ) > "$SKT_LOG" 2>&1 & SKT_PID=$!
@@ -278,7 +293,7 @@ if [ -z "$l_sf" ] || [ -z "$l_p" ] || [ -z "$l_s" ] || [ -z "$l_n" ] \
   echo "smoke-lockdep: FAIL——dpg 四行行序断言（sf=$l_sf < DPGP=$l_p < DPGS=$l_s < DPGN=$l_n 须全非空严格递增）" >&2
   rc2=1
 fi
-# ow 观测面零计（N=4<K=8：池永不满——ovfl 行在 = 槽释放链断/键化泄漏旁证）。
+# ovfl 溢出观测面零计（N=4<K=8：池永不满——ovfl 行在 = 槽释放链断/键化泄漏旁证）。
 OV=$(grep -c 'DPG ovfl' "$LOG2" 2>/dev/null || true)
 if [ "$OV" -ne 0 ]; then
   echo "smoke-lockdep: FAIL——DPG ovfl 计数 $OV（N=4<K=8 拓扑池满不该发生——槽释放链查）" >&2
@@ -291,6 +306,15 @@ if [ "$rc2" -eq 0 ]; then
 else
   echo "---- 相 2 串口日志尾部（$LOG2）----" >&2
   tail -40 "$LOG2" >&2
+  # 客户端死因随失败即打印不留文件（smoke-smp 同款纪律——§A122 第一手
+  # 死因就在三件套日志里）。
+  for p in "echod:${ECHO_LOG:-}" "evsclient:${EVS_LOG:-}" "sktclient:${SKT_LOG:-}"; do
+    lg="${p#*:}"
+    if [ -n "$lg" ] && [ -s "$lg" ]; then
+      echo "---- ${p%%:*} 日志尾部（$lg）----" >&2
+      tail -10 "$lg" >&2
+    fi
+  done
   keep_log keep
 fi
 exit "$rc2"

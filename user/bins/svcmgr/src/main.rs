@@ -183,7 +183,7 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // serve 泵（APP_SVC READABLE——命中帧消化毕续泵至 -EAGAIN 静默）+
     // launcher 监督探活 + SPAWN 活子探活/drain（app_supervise，M-C 异步
     // 收口的稳态兑现点）。三路皆空（APP_SVC==0 且无 launcher 子且子表空
-    // ——rootfs/裸跑/重启帽尽形）= **保现状纯 echo 紧环**（49 标记零漂，
+    // ——rootfs/裸跑/重启帽尽形）= **保现状纯 echo 紧环**（50 标记零漂，
     // n=1 字面落实）；GUI 形才并等（n≤2+2×APP_SPAWN_LIVE_MAX=10：svc
     // READABLE + launcher hp TERMINATED + 每活子 out_s READABLE（drain
     // 唤醒面——EOF 后停挂）+ hp TERMINATED）——deadline =

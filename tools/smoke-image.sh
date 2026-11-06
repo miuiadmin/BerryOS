@@ -41,7 +41,7 @@
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
 #      生态 36 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
 #      EXIT / APP / APPUI / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT /
-#      POLL / PS / BC / THR / DPGP / DPGS / MMP / CLK / SIG / FBW / FBSERVE /
+#      POLL / PS / BC / THR / DPGP / DPGS / DPGN / MMP / CLK / SIG / FBW / FBSERVE /
 #      GFX 双 / WM /
 #      LAUNCH 双（GUI-8 段③ 起 EFI 专属——launcher 首帧 LAUNCH ok + 合成
 #      swipe 两轮翻页 PAGE ok n=2，冻结相自测面）
@@ -249,7 +249,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 监督死亡面另由 eco 行盯——'launcher died'（eco_line 前缀 `eco: `，行首
 # 无 \n 可与上帧 art 行尾残字拼成 `veco: …`——grep 用无前缀子串）不进
 # canon。裸 grep -qF 足够——"LAUNCH ok"/"PAGE ok n="
-# 与现役 33 枚互非子串（LAUNCH/PAGE 词头独有）。
+# 与现役 34 枚互非子串（LAUNCH/PAGE 词头独有）。
 ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
