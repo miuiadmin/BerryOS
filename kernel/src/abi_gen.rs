@@ -55,7 +55,7 @@ pub const NR_PROCESS_TERMINATE: usize = 0x3B;
 pub const NR_SCHED_SETATTR: usize = 0x3C;
 /// S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。
 pub const NR_SCHED_GETATTR: usize = 0x3D;
-/// 1.1 ABI 契约，见 docs/调点调度-v1.1.md §5/§7.3；S1 只入册，S3 落语义。
+/// 进程级 + 嵌套 depth handler 已落；唯 options bit0=SINGLE_THREAD 仍 -ENOTSUP 待 S3-b——整号收口前 implemented 保持 false。
 pub const NR_PROCESS_SUSPEND: usize = 0x3E;
 /// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
 pub const NR_THREAD_YIELD: usize = 0x3F;

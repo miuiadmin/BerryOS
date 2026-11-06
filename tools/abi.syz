@@ -155,7 +155,7 @@ sched_setattr(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 #   note: S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。
 sched_getattr(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x3E process_suspend（1.1·未实现）——冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token)
-#   note: 1.1 ABI 契约，见 docs/调点调度-v1.1.md §5/§7.3；S1 只入册，S3 落语义。
+#   note: 进程级 + 嵌套 depth handler 已落；唯 options bit0=SINGLE_THREAD 仍 -ENOTSUP 待 S3-b——整号收口前 implemented 保持 false。
 process_suspend(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x3F thread_yield（1.1·未实现）——主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0
 #   note: S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。

@@ -101,7 +101,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 |
 <!-- @gen:syscalls end -->
 
-**计数**：v1 35 号在册 / 34 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11）；**1.1 增 4（0x3C–0x3F；0x3C/0x3D/0x3F 已随 S1 收口落地注册；0x3E 进程级 + 嵌套 depth 已落——唯 SINGLE_THREAD 仍 `-ENOTSUP` 待 S3-b 余项，abi.toml `implemented` 至整号收口仍 `false`）**；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 55**（39 在册（35 实现 + 4 1.1 实现）+ 11 + 5；add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
+**计数**：v1 35 号在册 / 34 已实现（唯 0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11）；**1.1 增 4（0x3C–0x3F；0x3C/0x3D/0x3F 已随 S1 收口落地注册；0x3E 进程级 + 嵌套 depth 已落——唯 SINGLE_THREAD 仍 `-ENOTSUP` 待 S3-b 余项，abi.toml `implemented` 至整号收口仍 `false`）**；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 55**（39 在册 = 35 v1 实现 + 3 个 1.1 实现 + 0x3E 在册未收口；再 + v2 11 + v3 5；add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。
 
 > **调点调度 1.1（S1 三号已收口）**：`0x3C`/`0x3D`/`0x3F` 已入
 > `tools/abi.toml` 并注册 handler（attr 存储/effective 查询/主动 yield）；`0x3E` 已注册进程级 + 嵌套

@@ -91,9 +91,10 @@ const WIDGET_TITLE: &[u8] = b"BerryOS";
 const WIDGET_SUB: &[u8] = b"DESKTOP";
 
 /// 壁纸/文本配色（裁决六三带 + 白系前景；stub 常量——位图通道 v2）。
-const WALLPAPER_TOP: Color = Color { r: 24, g: 34, b: 58 }; // 夜空蓝
-const WALLPAPER_BOTTOM: Color = Color { r: 86, g: 98, b: 124 }; // 冷灰蓝
-const STATUS_BG: Color = Color { r: 10, g: 14, b: 24 }; // 状态栏深色带
+const WALLPAPER_TOP: Color = Color { r: 10, g: 28, b: 74 }; // OH 深海蓝
+const WALLPAPER_MID: Color = Color { r: 22, g: 100, b: 190 }; // OH 亮蓝
+const WALLPAPER_BOTTOM: Color = Color { r: 8, g: 150, b: 136 }; // OH 青绿
+const STATUS_BG: Color = Color { r: 10, g: 28, b: 74 }; // 与壁纸顶融合
 const ACCENT: Color = Color { r: 82, g: 156, b: 255 }; // 状态栏下 2px 强调线
 const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
@@ -135,6 +136,15 @@ struct SlotPlan<'a> {
 }
 
 /// 线性插值两色（`t` = 0..=den；Q16 不需要——整数通道足够，18 带近似）。
+fn wallpaper_color(i: u32, den: u32) -> Color {
+    // 三停渐变：深蓝 → 亮蓝 → 青绿（OpenHarmony 风格冷暖过渡）。
+    if i * 2 <= den {
+        lerp_color(WALLPAPER_TOP, WALLPAPER_MID, i * 2, den)
+    } else {
+        lerp_color(WALLPAPER_MID, WALLPAPER_BOTTOM, i * 2 - den, den)
+    }
+}
+
 fn lerp_color(a: Color, b: Color, t: u32, den: u32) -> Color {
     if den == 0 {
         return b;
@@ -189,8 +199,8 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     let grid_gap = if big { 24 } else { 12 };
     let cell_gap = if big { 8 } else { 4 };
     let bottom_pad = if big { 16 } else { 8 };
-    let status_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
-    let label_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+    let status_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
+    let label_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
     let root = ui.root();
 
     // —— 壁纸竖向多带渐变（Rect 无渐变原语；18 带在 TCG 下仍是一次
@@ -221,7 +231,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                 kind: ViewKind::Rect,
                 key: 0,
                 props: Props::Rect(RectProps {
-                    bg: lerp_color(WALLPAPER_TOP, WALLPAPER_BOTTOM, i, WALLPAPER_BANDS - 1),
+                    bg: wallpaper_color(i, WALLPAPER_BANDS - 1),
                     w: None,
                     h: Some(h),
                 }),
@@ -297,10 +307,10 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         },
     )?;
     // 状态栏 2 件 ROLE_TEXT（裁决八；时钟占位——W2 真时钟）。
-    let t1 = ui.add(srow, text_spec(STATUS_NAME, TEXT_FG, status_size)?)?;
-    ui.set_a11y(t1, ROLE_TEXT, STATUS_NAME)?;
-    let t2 = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
-    ui.set_a11y(t2, ROLE_TEXT, STATUS_CLOCK)?;
+    let t1 = ui.add(srow, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
+    ui.set_a11y(t1, ROLE_TEXT, STATUS_CLOCK)?;
+    let t2 = ui.add(srow, text_spec(STATUS_NAME, TEXT_FG, status_size)?)?;
+    ui.set_a11y(t2, ROLE_TEXT, STATUS_NAME)?;
 
     // 状态栏下 2px 强调线（内容列直子；色带逐帧只读）。
     ui.add(
@@ -413,15 +423,15 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             let label_node = ui.add(cell, text_spec(pn.label, LABEL_FG, label_size)?)?;
             // page0 / slot2：品牌 wordmark 件（顶行右侧视觉锚点；不是 app）。
             if p == 0 && s == 2 && pn.app.is_none() {
-                let title_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+                let title_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
                 ui.add(cell, text_spec(WIDGET_TITLE, TEXT_FG, title_size)?)?;
-                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S8x16)?)?;
+                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S16x32)?)?;
             }
             // page0 / slot5（第二行中间）：大时钟 widget，填中段空白。
             if p == 0 && s == 5 && pn.app.is_none() {
-                let clock_size = if big { FontSize::S24x48 } else { FontSize::S16x32 };
+                let clock_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
                 ui.add(cell, text_spec(b"12:00", TEXT_FG, clock_size)?)?;
-                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S8x16)?)?;
+                ui.add(cell, text_spec(WIDGET_SUB, ACCENT, FontSize::S16x32)?)?;
             }
             slots[p][s] = Some(Slot {
                 cell,

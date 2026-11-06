@@ -417,13 +417,15 @@ pub(crate) fn cross_from_u8(kind: ViewKind, v: u8) -> Result<crate::layout::Cros
     }
 }
 
-/// FontSize → 档位 id（wire 值域 0/1/2；TextMetrics 缝同序单源——
-/// pub(crate) 供 layout Text 臂经 `tm.measure(text, id)` 走缝）。
+/// FontSize → 档位 id（wire 值域 0/1/2/3；TextMetrics 缝同序单源——
+/// pub(crate) 供 layout Text 臂经 `tm.measure(text, id)` 走缝）。0..=2
+/// 是 GUI-6 冻结旧值；3 = 32×48 HD 档，add-only 扩域。
 pub(crate) fn scale_to_u8(s: FontSize) -> u8 {
     match s {
         FontSize::S8x16 => 0,
         FontSize::S16x32 => 1,
         FontSize::S24x48 => 2,
+        FontSize::S32x48 => 3,
     }
 }
 
@@ -432,6 +434,7 @@ fn scale_from_u8(kind: ViewKind, v: u8) -> Result<FontSize, AstError> {
         0 => Ok(FontSize::S8x16),
         1 => Ok(FontSize::S16x32),
         2 => Ok(FontSize::S24x48),
+        3 => Ok(FontSize::S32x48),
         _ => Err(AstError::UnknownProp { kind, got: v }),
     }
 }
