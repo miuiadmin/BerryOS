@@ -598,6 +598,7 @@ pub fn billing_cross_domain() {
 }
 
 /// S4 跨域消息累计。
+#[allow(dead_code)] // S5-b 起遥测环消费
 pub fn billing_cross_domain_total() -> u64 {
     BILLING_CROSS_DOMAIN.load(Ordering::Relaxed)
 }

@@ -62,6 +62,7 @@ pub struct MsgBilling {
     /// 发送者域 ID（= Process ObjRef 地址；0 = 内核任务/无归属）。
     pub domain_id: u64,
     /// 本消息已记账 CPU 时长（ns；S5 起 server 侧填充——S4 恒 0）。
+    #[allow(dead_code)] // S5 起消费（server 侧 CPU 时长记域）
     pub charged_ns: u64,
 }
 
