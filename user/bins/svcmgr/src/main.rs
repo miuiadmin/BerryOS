@@ -3148,6 +3148,10 @@ fn dpg_bench(console: Handle) {
     const _: () = assert!(b" min=".len() == 5);
     const _: () = assert!(b" max=".len() == 5);
     const _: () = assert!(b" n=32".len() == 5);
+    /// n= 字面与 DPGB_PAGES 数字同源（DPGF_OK :2931 同款 digit tie）：len
+    /// 钉板拦不住「行印 n=32、实跑 16」——改 PAGES 忘改行尾即编译拒。
+    const _: () = assert!(b" n=32"[3] == b'0' + DPGB_PAGES as u8 / 10
+        && b" n=32"[4] == b'0' + DPGB_PAGES as u8 % 10);
     let mut line = [0u8; 160];
     let mut i = 0usize;
     line[..9].copy_from_slice(b"DPGB p50=");
