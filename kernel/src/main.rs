@@ -661,8 +661,20 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 4-3b PI：注册 SLEEPQ 变更钩子（block 睡下后 / wake 摘队后全图重推；
     // 与 telemetry 同位——均须在首个切换前）。
     pi::init();
-    berry_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
-    berry_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
+    berry_sched::spawn_as_spread(
+        task_a,
+        TASK_A_MAGIC as usize,
+        b"task_a",
+        as_a.ttbr0_pa,
+        as_a.asid,
+    );
+    berry_sched::spawn_as_spread(
+        task_b,
+        TASK_B_MAGIC as usize,
+        b"task_b",
+        as_b.ttbr0_pa,
+        as_b.asid,
+    );
 
     // G4-1：demand paging 内核机制自喂闭环（内核任务 faulter/pager 对——无
     // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。
@@ -4300,6 +4312,9 @@ const TLBS_WRITER_N: usize = 4;
 /// （decommit/Drop）毕 `TLBS ok n=` 行 n = 2 × 本值 = 10，与 smoke 相 5
 /// n==10 断言三面钉同值——改此须三处同步。
 const TLBS_PARTICIPANTS: usize = 1 + TLBS_WRITER_N;
+/// TLBS 诊断：本轮 root Thread handle（fleet 装配期单写；收割失败时 poll
+/// TERMINATED 区分「root 未跑」与「root 已写成功 = CPU0 stale TLB」）。
+static TLBS_ROOT_H: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// S-5b 相 6 ALLOC churn 压测门控名（smoke-smp 相 6 专递：
 /// `-fw_cfg name=opt/berry/alloc,string=1`；lb/asidroll/tlbs 同款「两侧
@@ -4782,6 +4797,7 @@ fn tlbs_spawn_fleet(tag: &str) -> (u32, u32, u32) {
         "tlbs{}: process_start[root]",
         tag
     );
+    TLBS_ROOT_H.store(hth_root, core::sync::atomic::Ordering::Relaxed);
     for i in 0..TLBS_WRITER_N {
         assert_eq!(
             svc4(
@@ -4863,6 +4879,21 @@ fn tlbs_round(arg: usize, tag: &str, how: TlbsFree, budget: u64) {
         "tlbs{}: 本轮写者全落 CPU0（Δwarm[1]=0）——K=2 路由结构性意外，查 place/park 面",
         tag
     );
+    {
+        let (wc0, wc1) = (
+            berry_hal_aarch64::trap::canary_hits(0, 1),
+            berry_hal_aarch64::trap::canary_hits(1, 1),
+        );
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"tlbs");
+            berry_hal_aarch64::uart_puts(tag.as_bytes());
+            berry_hal_aarch64::uart_puts(b" warm c0=");
+            berry_hal_aarch64::uart_put_dec(wc0 as u64);
+            berry_hal_aarch64::uart_puts(b" c1=");
+            berry_hal_aarch64::uart_put_dec(wc1 as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+    }
     // ③ unmap + 还帧（双构造分岔点）+ 复用。
     let h_base = hits(0);
     let (c0_base, c1_base) = (
@@ -4931,6 +4962,25 @@ fn tlbs_round(arg: usize, tag: &str, how: TlbsFree, budget: u64) {
         berry_hal_aarch64::trap::canary_hits(1, 0),
     );
     let hd = (c0_now + c1_now) - h_base;
+    if hd < TLBS_PARTICIPANTS {
+        use crate::abi_gen::SIGNAL_TERMINATED;
+        use crate::syscall::NR_OBJECT_WAIT_ONE;
+        let rh = TLBS_ROOT_H.load(core::sync::atomic::Ordering::Relaxed);
+        let mut obs = 0u64;
+        let rr = svc6(
+            NR_OBJECT_WAIT_ONE as u64, rh as u64, SIGNAL_TERMINATED, 0,
+            core::ptr::addr_of_mut!(obs) as u64, 0, 0,
+        );
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"tlbs");
+            berry_hal_aarch64::uart_puts(tag.as_bytes());
+            berry_hal_aarch64::uart_puts(b" rootpoll ret=");
+            berry_hal_aarch64::uart_put_dec(rr as u64);
+            berry_hal_aarch64::uart_puts(b" obs=");
+            berry_hal_aarch64::uart_put_dec(obs);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+    }
     assert!(
         hd >= TLBS_PARTICIPANTS,
         "tlbs{}: canary 收割超时（Δslot0 {}/{}——Δc0={} Δc1={}；计数不足 = 有写入成功 = stale 残留 = shootdown 断链）",

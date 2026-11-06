@@ -84,6 +84,10 @@ const ECHO_REQ: u64 = 0x00C0_FFEE_E000_0E30;
 const SVC_OK: &[u8; 7] = b"SVC ok\n";
 
 const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
+/// S-6 ③ 临终诊断用 console 柄快照（_start 首行单写；wait() 自陷前一读）
+/// ——console 逐层传参到不了 wait()（send_retry/roundtrip 均无此参），全局
+/// 快照是最小侵入面。0 = 未初始化（裸测/异常早跑）→ 诊断行跳过。
+static CONSOLE_H: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 const THROTTLE: u64 = 0x30_0000;
 /// 子进程布局：镜像首页 @0x1000 + 零栈页，映射 [0x1000,0x3000)，sp0=0x3000。
 const CHILD_MAP_LEN: usize = 0x2000;
@@ -93,6 +97,7 @@ const CHILD_SP: usize = 0x3000;
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(console: Handle) -> ! {
+    CONSOLE_H.store(console as usize, core::sync::atomic::Ordering::Relaxed);
     // C-3 段①：拉起账本开卷——svcmgr 自身行（报告者恒 alive；裸跑也记，
     // 表零消费者无害）。
     ps_reg(b"svcmgr", psp::STATE_ALIVE, 0);
@@ -3792,9 +3797,22 @@ fn send_retry(h: Handle, buf: *const u8, len: usize) {
 /// 82fe305 全场阻塞化消失。
 
 /// 阻塞等信号（10s 绝对帽；超时/错码自陷——对端断供即链断）。
+/// S-6 ③ 临终诊断：自陷前把柄/信号/错码一行单发 console（非阻塞单发，
+/// console 本身即断供源时发不出即罢——不递归 send_retry/wait）。定位
+/// 「谁断供」用；定谳后此行退役或转常设 low-noise 诊断。
 fn wait(h: Handle, signals: u64) {
     let mut obs = 0u64;
-    if berry_object_wait_one(h, signals, now() + TIMEOUT_NS, &mut obs) != 0 {
+    let s = berry_object_wait_one(h, signals, now() + TIMEOUT_NS, &mut obs);
+    if s != 0 {
+        let c = CONSOLE_H.load(core::sync::atomic::Ordering::Relaxed);
+        if c != 0 {
+            let mut line = *b"WTDIE h=0x00000000 sig=0x0000 e=0x0000\n";
+            put_hex4(&mut line[10..14], (h >> 16) as usize);
+            put_hex4(&mut line[14..18], (h & 0xffff) as usize);
+            put_hex4(&mut line[25..29], signals as usize);
+            put_hex4(&mut line[34..38], s as usize);
+            let _ = berry_channel_send(c as Handle, line.as_ptr(), line.len(), core::ptr::null(), 0);
+        }
         trap();
     }
 }
