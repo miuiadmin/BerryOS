@@ -27,8 +27,8 @@ use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
     berry_pager_supply_pages, berry_process_create, berry_process_get_exit_code,
-    berry_process_start, berry_thread_create, berry_thread_start, berry_vmar_map,
-    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
+    berry_process_start, berry_thread_create, berry_thread_sleep, berry_thread_start,
+    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
     berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED, BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, BERRY_ERR_INVALID_ARG,
     BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
@@ -2909,6 +2909,11 @@ const DPGF2_N: usize = 3;
 /// spread 线程栈顶（像窗 [0x1000,0x6000) 对切：主栈顶 0x6000 用页 0x5000，
 /// 本栈顶 0x4000 用页 0x3000——各 8KiB 无叠，像驻页 0x1000）。
 const DPG_SP2: usize = 0x4000;
+/// 波内停泊窗（spawn 环毕 → 轮供环前）：faulter 到齐窗，把「池满溢出」
+/// 从调度竞速面升格结构面（C-3 lockdep 首跑实证：无窗 = 流水线化零溢出
+/// 假败）。250ms = 15 任务 × 双核 TCG 调度余量（含 lockdep 开销 + 宿主
+/// 争用劣化）。
+const DPGF_SETTLE_NS: u64 = 250_000_000;
 /// C-full 标记（13 字节）。**cpio 具名文件门控专属**：正装 rootfs/run/
 /// smoke/EFI 无 `dpgf.on` = 恒不打——rootfs 相 50 / 主 smoke 78 / EFI 36
 /// 计数零漂；变体卷 = `tools/smoke-dpgsoak.sh` 专属断言面。"DPGF ok n=15"
@@ -2981,6 +2986,17 @@ fn dpgf_wave<const N: usize>(iv: Handle, sv: Handle, dv: Handle) -> Option<u8> {
             }
         }
     }
+    // 停泊窗 250ms（C-3 lockdep 首跑实证补）：让 N faulter 全员先到齐再开
+    // 轮供——否则「fault 到达 vs 0x21 消费」成流水线竞速（lockdep 面拖慢
+    // 内核路径后 15 请求逐个到逐个消，从未 9 并发在飞 → ovfl 零计断言假
+    // 败）。停泊后池满 = 结构必现：K=8 满 + N−K convoy，`DPG ovfl` 计数
+    // = 溢出下界确定（非调度运气面）；§5-⑤ 语义不变（pager 有界延迟必
+    // 至）。波 2（N=3<K）同窗无害。
+    let mut t0 = 0u64;
+    if berry_clock_read(CLOCK_MONOTONIC, &mut t0) != 0 {
+        return Some(2);
+    }
+    berry_thread_sleep(t0 + DPGF_SETTLE_NS);
     // N× 0x21 阻塞收货（poll-first 逐轮取一认领槽；15 请求 > K=8 → 溢出
     // convoy `DPG ovfl` 行首见——B 刀零计断言的镜像反转）。
     for _round in 0..N {
