@@ -1902,7 +1902,7 @@ fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i
         if cur_u + new_u > 3891 {
             return Err(ERR_BUSY);
         }
-        DL_TOTAL_UTIL_Q12.fetch_add(new_u as u64, Ordering::Relaxed);
+        // 计数在 sys_sched_setattr 成功尾累加（此处仅校验——防错误路径泄漏）。
     }
     if a.flags & SA_F_DEADLINE != 0 {
         if a.flags & SA_F_BUDGET == 0 || a.deadline_ns == 0 || a.deadline_ns > a.period_ns {
@@ -1952,11 +1952,16 @@ extern "C" fn sys_sched_setattr(tf: &mut TrapFrame) -> i64 {
             KernelObj::Thread(th) => {
                 if attr.flags & SA_F_FREEZE_READY != 0 {
                 }
-                // S5 admission 扣减面：旧 attr 带 budget → 先退回（防覆盖双计）。
+                // S5 admission 扣减/累加面：旧 budget 退回 + 新 budget 累加
+                //（原子对——sa_parse 只校验不写，成功尾一次记账防泄漏）。
                 let old = th.sched_attr;
                 if old.flags & SA_F_BUDGET != 0 && old.period_ns > 0 {
                     let old_u = old.budget_ns as u128 * 4096 / old.period_ns as u128;
                     DL_TOTAL_UTIL_Q12.fetch_sub(old_u as u64, Ordering::Relaxed);
+                }
+                if attr.flags & SA_F_BUDGET != 0 && attr.period_ns > 0 {
+                    let new_u = attr.budget_ns as u128 * 4096 / attr.period_ns as u128;
+                    DL_TOTAL_UTIL_Q12.fetch_add(new_u as u64, Ordering::Relaxed);
                 }
                 th.sched_attr = attr;
             }

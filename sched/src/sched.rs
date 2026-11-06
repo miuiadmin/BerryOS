@@ -843,10 +843,12 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
         }
         // 双 RQ
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
+            let head = rq_of(cpu).head();
+            let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
                 if (*t).pinned == pinned && !check(t) {
                     return false;
                 }
@@ -878,10 +880,12 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
         }
         // 双 RQ 扫描
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
+            let head = rq_of(cpu).head();
+            let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
                 if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
                     (*t).held_locks |= crate::task::HELD_FROZEN;
                     count += 1;
@@ -908,10 +912,12 @@ pub fn thaw_by_pinned(pinned: usize) {
             }
         }
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
+            let head = rq_of(cpu).head();
+            let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
                 if (*t).pinned == pinned {
                     (*t).held_locks &= !crate::task::HELD_FROZEN;
                 }
@@ -2431,10 +2437,12 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
             t.pi_inherited == 0 && t.held_locks == 0 && t.svc_mask == 0
         };
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
+            let head = rq_of(cpu).head();
+            let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
                 if (*t).thread_key == thread_key && !check(t) { return false; }
             }
         }
@@ -2453,10 +2461,12 @@ pub fn freeze_by_thread(thread_key: usize) -> usize {
     // SAFETY: SVC 路径 KL 已持。
     unsafe {
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
+            let head = rq_of(cpu).head();
+            let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
                 if (*t).thread_key == thread_key {
                     (*t).held_locks |= crate::task::HELD_FROZEN;
                     return 1;
@@ -2481,10 +2491,12 @@ pub fn thaw_by_thread(thread_key: usize) {
     // SAFETY: handle close 路径。
     unsafe {
         for cpu in 0..2 {
-            let mut cur = rq_of(cpu).head();
+            let head = rq_of(cpu).head();
+            let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
                 if (*t).thread_key == thread_key {
                     (*t).held_locks &= !crate::task::HELD_FROZEN;
                 }
