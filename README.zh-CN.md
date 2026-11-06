@@ -34,7 +34,7 @@ rustup target add aarch64-unknown-none x86_64-unknown-none
 
 just run          # QEMU 冷启动到串口控制台
 just run-rootfs   # 完整服务栈：rootfs / FAT / DNS / TCP / .bap 应用
-just smoke        # 无人值守五跑关卡：裸相 23 + rootfs 24 + RX 交互 47 + FAT 子目录/持久化相
+just smoke        # 无人值守八跑关卡：裸相 28 + rootfs 相 50 + RX 交互 78 + FAT 子目录/持久化相
 just test-host    # host 侧 315 单元测试（无需 QEMU）
 ```
 

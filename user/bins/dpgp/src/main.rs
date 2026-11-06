@@ -58,8 +58,9 @@ const DPGP_RES_DONE: usize = 511;
 /// 写结果页（经共享 VMO 回传——零句柄零 console 零 ABI 新面）；值 ≠
 /// magic = exit 9（供给链正确性随测）。B3_ALL（D 相）：写毕 exit 7——
 /// 父 join 收割走 `DPGP ok` 同码面。B3_8（E 相）：写毕打 done 哨后
-/// **停泊不退**——进程退 = Vmar 收割映射页还池，footprint delta 归零
-/// 测不了；保活由父 terminate 收割（park 同形 sleep 帽循环）。
+/// **停泊不退**——父持 rv/dv/ev 柄至 E 臂终局 = 记账面稳定（v1 无
+/// Vmar 页表回收〔vmar.rs:11〕，页属 VMO 对象）；停泊由父 terminate
+/// 收口（park 同形 sleep 帽循环）。
 fn bench(tag: usize) -> ! {
     let n = if tag == DPGP_BENCH_8 { 8 } else { DPGP_BENCH_PAGES };
     let res = DPGP_RES_VA as *mut u64;

@@ -3259,8 +3259,9 @@ fn dpg_foot_done(rv: Handle) -> bool {
 }
 
 /// E 刀：demand 8 触 vs eager 同形 32 页 footprint 差分——**子在册停泊**
-///（进程退 = Vmar 收割映射页还池 delta 归零——done 哨后停泊保活，本侧
-/// terminate 收割）。pages 口径 = 内核 soakmon 心跳（opt/berry/soak 门
+///（父持 rv/dv/ev 柄至 E 臂终局 = 记账面稳定——v1 无 Vmar 页表回收
+///（vmar.rs:11），页属 VMO 对象；done 哨后停泊，本侧 terminate 收口）。
+/// pages 口径 = 内核 soakmon 心跳（opt/berry/soak 门
 /// fw_cfg——bench.py E 臂专递；60s 拍/首拍潜伏 5 拍）。帧序（**窗在标记
 /// 前**——标记 = 上一窗的收割点）：预滚 340s → `A`（基线）→ 窗 → 起
 /// demand 子（8 供给）→ 窗 → `B` → 起 eager 子（32 页全 commit）→ 窗

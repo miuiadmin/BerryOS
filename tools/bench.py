@@ -78,6 +78,7 @@
 """
 
 import argparse
+import hashlib
 import os
 import re
 import signal
@@ -101,9 +102,13 @@ def write_receipt(kind: str, serial_text: str, summary: str) -> Path:
     RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
     path = RECEIPT_DIR / f"{kind}-{ts}-{os.getpid()}.log"
+    # K-DE2：serial 段内容指纹——回执跨树 cp 后 inode birth ≠ 文件名 ts
+    # （cp 造新 inode），元数据链断时以 sha256 对拷贝件可验内容同源。
+    serial_sha = hashlib.sha256(serial_text.encode("utf-8")).hexdigest()
     path.write_text(
         f"bench.py receipt kind={kind} ts={ts} pid={os.getpid()}"
-        f" argv={' '.join(sys.argv)}\n--- summary ---\n{summary}"
+        f" argv={' '.join(sys.argv)}\nserial_sha256={serial_sha}"
+        f"\n--- summary ---\n{summary}"
         f"\n--- serial ---\n{serial_text}",
         encoding="utf-8",
     )
@@ -631,6 +636,11 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
 # 位 3 B≠F 双距互斥）。**非锚定**：串口多生产者拼行（run5 实证 PAR 字母流
 # 与 DPGB 同行无换行、内核 switches= 行亦拼在字母流中）——^…$ 锚必 miss。
 DPGB_RE = re.compile(r"DPGB p50=(\d+) p99=(\d+) min=(\d+) max=(\d+) n=(\d+)")
+# 标签钉板（svcmgr 侧五枚 const assert 同族——§A135 镜像）：正则标签须与
+# dpg_bench 手排行字面一一对应，漂移即 import 时炸响。
+assert all(_lbl in DPGB_RE.pattern
+           for _lbl in (" p50=", " p99=", " min=", " max=", " n=")), \
+    "DPGB_RE 标签漂移（须与 svcmgr dpg_bench 手排行字面同步）"
 # E 刀相位标记（svcmgr dpg_foot 6 字节行；帧序 A→B→C→E）——子串 find，
 # 拼行免疫。
 DPGE_MARKERS = ("DPGE A", "DPGE B", "DPGE C", "DPGE E")
@@ -679,6 +689,14 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
                       capture_output=True).returncode == 0:
         raise SystemExit("bench.py: 18080-18083 端口族被占（lsof）——兄弟 "
                          "smoke/soak 线在跑？让场后重试")
+    # 门控串预检（smoke-dpgsoak :44 同款）：内核 ELF 缺 dpg 手排/相位串 =
+    # 陈旧内核（改嵌用户 bin 未重建——§A53 两遍构建纪律）——预拒不烧帽。
+    kernel_blob = Path(kernel).read_bytes()
+    for sig in (b"DPGB p50=", b"DPGE A"):
+        if sig not in kernel_blob:
+            raise SystemExit(
+                f"bench.py: 内核 ELF 无 `{sig.decode()}` 串——陈旧内核（改嵌"
+                "用户 bin 未重建）？重建后再跑")
     # 1MiB 盘 + LBA0 印章（dpgsoak 同款；盘名专属防覆写兄弟线活盘）。
     disk = REPO / "disk.dpg.img"
     subprocess.run([sys.executable, str(REPO / "tools" / "mkfat.py"), str(disk)],
@@ -708,7 +726,12 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
     echod = subprocess.Popen(
         [sys.executable, str(REPO / "tools" / "echod.py")],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    qemu_preflight()  # 跨进程串行守卫（run_rt 同款）
+    try:
+        qemu_preflight()  # 跨进程串行守卫（run_rt 同款）
+    except BaseException:  # C-DE1：拒入先收 echod——preflight raise 不孤儿化对端
+        echod.terminate()
+        echod.wait(timeout=5)
+        raise
     proc = subprocess.Popen(
         qemu_cmd,
         stdin=subprocess.DEVNULL, stdout=open(log_path, "w"),
@@ -742,7 +765,8 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
     # 失败保留串口全文（诊断面：S-C2 同族——烧帽档须可复核）。
     raise SystemExit(
         f"bench.py: `{done_pat}` {cap}s 未出现（boot 失败 / svcmgr dpg 链"
-        f"降级（eco 行）/ 门控卷未递？）——串口全文保留：{log_path}"
+        f"降级（eco 行）/ 门控卷未递 / 内核陈旧〔改 bin 未重建〕？）"
+        f"——串口全文保留：{log_path}"
         f"（尾部：{' | '.join(text.splitlines()[-5:])}）")
 
 
@@ -771,6 +795,9 @@ def run_dpg(kernel: str) -> None:
     if n != 32:
         raise SystemExit(f"bench.py: DPGB n={n} ≠ 32（行生成/收割双源漂移）")
     print(f"[G4-3(D)] p50={p50}ns p99={p99}ns min={mn}ns max={mx}ns n={n}")
+    # C-DE2：D 臂收割即先落一档——E 臂独立盘/独立 boot，E 败时 D 证据不陪葬。
+    write_receipt("dpg-d", text_d,
+                  f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}")
     # E 臂。
     text_e = dpg_boot(kernel, dpg_variant("dpge"), True, "DPGE E",
                       DPG_BOOT_TIMEOUT_E, "e")
