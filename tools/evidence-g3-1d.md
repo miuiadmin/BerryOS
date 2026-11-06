@@ -6,6 +6,10 @@
 > f4 档案，扬失后以本摘要为准。smoke-smp 钩子面：`SMOKE_KEEP_LOG=1` 八 boot
 > 各留档（tools/smoke-smp.sh :109-129 在册；g3-1d 跑未用——smoke-smp 证据走
 > 手工重定向归档 f4 档案，后续 smoke-smp 跑建议带之。f4 复审 e1 勘正）。
+> 计数豁免注记（2026-11-06 G4-3 收官补）：下文「裸相 27 + rootfs 相 47」
+> 为 g3-1d 时点（2026-11-04）真值；G4-1 起 +`DPG ok`（裸相 28）、G4-2/
+> C-lite/B-2 起 dpg 三标记（rootfs 50、主 smoke 78）落地后，现役计数以
+> `tools/markers.sh` 单源为准——冻结回执原文不追改，本注为唯一勘正面。
 
 ## 树态与产物
 
