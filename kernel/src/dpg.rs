@@ -209,8 +209,8 @@ const EREQ_INIT: EReqSlot = ereq_slot();
 
 static EREQ: [EReqSlot; EREQ_SLOTS] = [EREQ_INIT; EREQ_SLOTS];
 
-static EFAULT_KEYS: [u8; EREQ_SLOTS] = [0; EREQ_SLOTS]; // faulter[i] 睡此（0x21 供给毕**定向**唤醒——N-1 错醒清零）
-static EOVERFLOW_KEY: u8 = 0; // 槽池满的 faulter 睡此（take 消费放槽即唤——convoy ≤ N-K 有界）
+static EFAULT_KEYS: [u8; EREQ_SLOTS] = [0; EREQ_SLOTS]; // faulter[i] 睡此（0x21 供给毕**定向**唤醒——认领直路径 N-1 错醒清零；池满溢出者睡 EOVERFLOW_KEY 另计）
+static EOVERFLOW_KEY: u8 = 0; // 槽池满的 faulter 睡此（take 消费放槽即唤——convoy N>K 时 ≤N-K 有界，N≤K 恒空）
 static EPAGER_KEY: u8 = 0; // EL0 pager 睡此（0x21 无请求时；探针武装后唤醒）
 
 /// EL0 fault 探针（hal 第二槽 `*_el0`；`exception_sync_el0` D-abort 臂）。
@@ -256,6 +256,15 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
                 break i;
             }
             None => {
+                // 溢出观测面（G4-3 B 刀 OQ-B4：v1 35 号冻结无 debug/info
+                // syscall——池满即印作**溢出观测面**唯一活证（区别于子刀 A
+                // 的 `DPG dm=` 深度峰值证据行——同为非标记观测族）。smoke
+                // 全拓扑 N=4<K=8 零发（lockdep 相 2 断零计）；C-full N=15
+                // 满载见 ≤7 行。KL→PRINT（rank 7 最内）锁序合法；非标记
+                // 不入数组）。
+                hal::kern_lock::with_print_lock(|| {
+                    hal::uart_puts(b"DPG ovfl\n");
+                });
                 // 出深再睡（shape (a)：睡眠不计）。
                 depth_exit();
                 let _ = berry_sched::block_current(

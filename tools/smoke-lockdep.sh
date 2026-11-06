@@ -14,15 +14,31 @@
 #       boot 窗先于 dpg::init——断言窗延到 dpg 闭环毕，执法「feature boot
 #       含 dpg 锁序」不再靠借位）
 #
+# G4-3 B 刀起 + 相 2 rootfs 生态面：执法窗从 boot 裸链延到满拓扑生态
+#（fw_cfg 多卷 rootfs + virtio-blk/net hostfwd 三口 + tablet + -smp 2，
+# 拓扑镜像 smoke-smp 相 2；宿主对端三件套 echod/evsclient/sktclient 必在
+# ——§A122：缺 18083 → svcmgr 卡 SKT 无帽 accept → 终态标记永缺）。终态 =
+# `DPGN ok n=4`（rootfs 相末标记——它到 = 上游全链已过）；断言 = ①②③
+# 复验 + dpg 四行行序（selftest < DPGP ok < DPGS ok n=4 < DPGN ok n=4
+# 严格递增——键化/风暴/负序三链在仪表下依序走毕）+ `DPG ovfl` 零计
+#（N=4<K=8 池永不满——B 刀 ow 观测面只在 C-full 满载拓扑见行）。
+#
 # 用法：bash tools/smoke-lockdep.sh <内核 ELF>（须 feature 面——脚本先验
-# marker 串在镜像内，default 面二进制直拒 loud，不烧 60s 帽）。镜像出法：
-#   cargo build --features lockdep && bash tools/smoke-lockdep.sh "$(bash tools/paths.sh kernel)"
-# （无 just 配方：justfile 为兄弟会话 WIP 占用时 script 直调同效——
-# smoke-smp 先例，内核路径参数化单一事实源。）
+# marker 串在镜像内，default 面二进制直拒 loud，不烧 60s 帽；相 2 另验
+# `DPGN ok n=4` 串在镜像——陈旧 userbins 烘的内核快拒，不烧 840s 帽）。
+# 镜像出法：
+#   just build-user && cargo build --features lockdep && \
+#     bash tools/smoke-lockdep.sh "$(bash tools/paths.sh kernel)"
+#（无 just 配方：justfile 为兄弟会话 WIP 占用时 script 直调同效——
+# smoke-smp 先例，内核路径参数化单一事实源。cwd 无关——工具/盘/卷均
+# 经 SCRIPT_DIR/ROOT 绝对解析。）
 #
 # 不并入主 smoke 族（ARM64 四跑零扰动纪律——主族 default 面单核；feature
 # 面独立通道）。FAIL 恒留档；SMOKE_LOCKDEP_KEEP_LOG=1 成功亦留。
 set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 KERNEL="${1:-}"
 if [ -z "$KERNEL" ] || [ ! -f "$KERNEL" ]; then
@@ -36,22 +52,42 @@ if ! strings "$KERNEL" | grep -q 'LOCKDEP selftest ok'; then
   echo "smoke-lockdep: 镜像非 lockdep feature 面（marker 串零命中）——先 cargo build --features lockdep" >&2
   exit 2
 fi
+# 相 2 前置自证（B 刀）：镜像须含 DPGN 串——build-user 未跑/旧 userbins 烘
+# 的内核直拒，不烧 840s 帽才发现终态永缺。
+if ! strings "$KERNEL" | grep -q 'DPGN ok n=4'; then
+  echo "smoke-lockdep: 镜像缺 DPGN ok n=4 串（陈旧 userbins）——先 just build-user 再 cargo build --features lockdep" >&2
+  exit 2
+fi
 
 PATH="$HOME/.cargo/bin:$PATH"
 QEMU="qemu-system-aarch64"
 MACH="-machine virt -cpu cortex-a72 -m 128M -nographic"
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-lockdep.XXXXXX")
+LOG2=""
 keep_log() {
   if [ -n "${SMOKE_LOCKDEP_KEEP_LOG:-}" ] || [ "$1" = "keep" ]; then
-    echo "smoke-lockdep: 串口日志保留：$LOG" >&2
+    echo "smoke-lockdep: 串口日志保留：$LOG ${LOG2:+$LOG2}" >&2
   else
     rm -f "$LOG"
+    [ -n "$LOG2" ] && rm -f "$LOG2"
   fi
 }
 
-# 快启 -smp 2（selftest 在 boot 窗 G3-1a assert 后；-smp 2 = 快启直验同形态，
-# 亦是最强面——per-CPU 链栈双核各走 selftest 点）。
+# 相 2 实体收尸（QEMU + 三 client——fail-fast 各出口统一兜底；相 1 QPID
+# 内联收割不入列）。
+P2_PIDS=""
+p2_cleanup() {
+  local p
+  for p in $P2_PIDS; do
+    kill "$p" 2>/dev/null
+    wait "$p" 2>/dev/null
+  done
+}
+trap p2_cleanup EXIT
+
+# ============ 相 1：裸相（-smp 2 快启，原 G3-3 面） ============
+
 "$QEMU" $MACH -smp 2 -kernel "$KERNEL" >"$LOG" 2>&1 &
 QPID=$!
 
@@ -104,10 +140,157 @@ elif [ -z "$SF_LINE" ] || [ -z "$DPG_LINE" ] || [ "$DPG_LINE" -le "$SF_LINE" ]; 
   rc=1
 fi
 
-if [ "$rc" -eq 0 ]; then
-  echo "smoke-lockdep: PASS（selftest ok 恰 1 + FAIL 0 + VIOLATION 0 + DPG ok 行序对，-smp 2 快启）"
+if [ "$rc" -ne 0 ]; then
+  keep_log keep
+  exit "$rc"
+fi
+echo "smoke-lockdep: 相 1 PASS（selftest ok 恰 1 + FAIL 0 + VIOLATION 0 + DPG ok 行序对，-smp 2 快启）"
+
+# ============ 相 2：rootfs 生态面（G4-3 B 刀） ============
+
+# rootfs 卷前置检查（smoke-smp 相 2 同款：缺产物 loud 快败，不烧 840s 帽）。
+[ -f "$ROOT/rootfs.cpio" ] || {
+  echo "smoke-lockdep: FAIL——缺 rootfs.cpio（相 2 需 build-user 产物——先 just build-user）" >&2
+  keep_log keep
+  exit 1
+}
+# fw_cfg 多卷发现环（smoke-smp/smoke.sh 同款：rootfs0..9 连续前缀拼接，
+# 缺席回落旧名单单卷）。
+FWCFG=""
+vi=0
+while [ -f "$ROOT/rootfs$vi.cpio" ]; do
+  FWCFG="$FWCFG -fw_cfg name=opt/berry/rootfs$vi,file=$ROOT/rootfs$vi.cpio"
+  vi=$((vi+1))
+done
+[ -n "$FWCFG" ] || FWCFG="-fw_cfg name=opt/berry/rootfs,file=$ROOT/rootfs.cpio"
+
+# 盘名专属 disk.lockdep.img + LBA0 印章（smoke-smp 同款：防覆写兄弟线活盘）。
+DISK="$ROOT/disk.lockdep.img"
+python3 "$SCRIPT_DIR/mkfat.py" "$DISK" || {
+  echo "smoke-lockdep: FAIL——mkfat 造盘失败（$DISK）" >&2
+  keep_log keep
+  exit 1
+}
+printf 'BERRYOSVBLK!' | dd of="$DISK" conv=notrunc status=none
+
+# 端口让场（18080-18083 兄弟线在用即退——与主 smoke/smoke-smp/soak 同值
+# 端口族 = 两线天然串行协议）。
+if lsof -nP -iTCP:18080-18083 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "smoke-lockdep: FAIL——18080-18083 端口族被占（lsof）——兄弟 smoke/soak 线在跑？让场后重试" >&2
+  keep_log keep
+  exit 1
+fi
+
+# QEMU 字段让行（smoke-smp 同款签名——本仓 QEMU 签名 pgrep，不抢跑兄弟线）。
+waited=0
+while pgrep -f 'qemu-system.*(-machine virt|-kernel)' >/dev/null 2>&1; do
+  waited=$((waited + 1))
+  [ "$waited" -gt 5 ] && { echo "smoke-lockdep: FAIL——QEMU 字段被占，放弃" >&2; keep_log keep; exit 1; }
+  echo "smoke-lockdep: QEMU 字段被占，等待 15s（第 ${waited} 轮）…" >&2
+  sleep 15
+done
+
+# 宿主对端三件套（§A122 教训面：缺席 = svcmgr 卡 SKT 无帽 accept，终态标记
+# 永缺）。echod 即起（guest 出网回声对端）；evsclient 即起；sktclient 懒
+# 启动（guest `EVS ok` 后才 exec——SYN 重试流不与 EVS 帧同环排队，smoke-smp
+# A3-3 同款）。
+LOG2=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-lockdep.XXXXXX")
+EVS_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-evsclient.XXXXXX")
+SKT_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-sktclient.XXXXXX")
+ECHO_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-echod.XXXXXX")
+python3 "$SCRIPT_DIR/evsclient.py" 18082 EVS > "$EVS_LOG" 2>&1 & EVS_PID=$!
+( until grep -q 'EVS ok' "$LOG2" 2>/dev/null; do sleep 2; done
+  exec python3 "$SCRIPT_DIR/evsclient.py" 18083 SKT ) > "$SKT_LOG" 2>&1 & SKT_PID=$!
+python3 "$SCRIPT_DIR/echod.py" > "$ECHO_LOG" 2>&1 & ECHO_PID=$!
+P2_PIDS="$EVS_PID $SKT_PID $ECHO_PID"
+te=$(date +%s)
+until grep -q 'listening on' "$ECHO_LOG" 2>/dev/null; do
+  kill -0 "$ECHO_PID" 2>/dev/null || {
+    echo "smoke-lockdep: FAIL——echod 启动失败（18080 被占？）：$(cat "$ECHO_LOG")" >&2
+    keep_log keep
+    exit 1
+  }
+  [ $(( $(date +%s) - te )) -gt 5 ] && {
+    echo "smoke-lockdep: FAIL——echod 5s 未 listening" >&2
+    keep_log keep
+    exit 1
+  }
+  sleep 0.2
+done
+
+echo "smoke-lockdep: QEMU 启动（-smp 2，相 2 rootfs 生态面：fw_cfg rootfs 卷 + virtio-blk + virtio-net hostfwd 三口 + tablet）"
+t2=$(date +%s)
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
+  $FWCFG \
+  -global virtio-mmio.force-legacy=false \
+  -drive if=none,id=drv0,format=raw,file="$DISK",cache.writeback=off \
+  -device virtio-blk-device,drive=drv0 \
+  -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
+  -device virtio-tablet-device,id=tab0 \
+  < /dev/null > "$LOG2" 2>&1 &
+Q2=$!
+P2_PIDS="$Q2 $P2_PIDS"
+
+# 终态轮询：`DPGN ok n=4`（帽 840s = smoke-smp 相 2 同值——lockdep 仪表化
+# 开销另盖；fail-fast 面早断真断链，帽只兜挂死）。
+dl2=$((SECONDS + 840))
+while :; do
+  grep -qE 'LOCKDEP selftest FAIL|LOCKDEP VIOLATION|panicked' "$LOG2" 2>/dev/null && break
+  grep -q 'DPGN ok n=4' "$LOG2" 2>/dev/null && break
+  kill -0 "$Q2" 2>/dev/null || break
+  [ $SECONDS -ge $dl2 ] && break
+  sleep 1
+done
+kill "$Q2" 2>/dev/null
+wait "$Q2" 2>/dev/null
+sleep 3   # SIGTERM 后串口落定（P6 A-6 实证同款）
+# 相 2 墙钟（R3/qemu-tcg 判例对照面——lockdep 插桩膨胀 vs 840s 帽的回执
+# 数字；QEMU 起 → DPGN 终态收割毕）。
+echo "smoke-lockdep: 相 2 墙钟 $(( $(date +%s) - t2 ))s（QEMU 起→终态收割；帽 840s）"
+kill "$EVS_PID" "$SKT_PID" "$ECHO_PID" 2>/dev/null
+wait "$EVS_PID" "$SKT_PID" "$ECHO_PID" 2>/dev/null
+P2_PIDS=""
+
+rc2=0
+OK2=$(grep -c 'LOCKDEP selftest ok' "$LOG2" 2>/dev/null || true)
+FL2=$(grep -c 'LOCKDEP selftest FAIL' "$LOG2" 2>/dev/null || true)
+VI2=$(grep -c 'LOCKDEP VIOLATION' "$LOG2" 2>/dev/null || true)
+if [ "$OK2" -ne 1 ]; then
+  echo "smoke-lockdep: FAIL——相 2 selftest ok 计数 $OK2（0 = boot 未达/QEMU 早退/超时）" >&2
+  rc2=1
+fi
+if [ "$FL2" -ne 0 ]; then
+  echo "smoke-lockdep: FAIL——相 2 selftest FAIL 计数 $FL2" >&2
+  rc2=1
+fi
+if [ "$VI2" -ne 0 ]; then
+  echo "smoke-lockdep: FAIL——相 2 VIOLATION 计数 $VI2（生态载荷下真锁序违约）" >&2
+  rc2=1
+fi
+# dpg 四行行序（B 刀执法面：selftest → DPGP → DPGS → DPGN 严格递增行号；
+# 空 = 对应链未毕）。
+l_sf=$(grep -n 'LOCKDEP selftest ok' "$LOG2" 2>/dev/null | head -1 | cut -d: -f1)
+l_p=$(grep -nF 'DPGP ok' "$LOG2" 2>/dev/null | head -1 | cut -d: -f1)
+l_s=$(grep -nF 'DPGS ok n=4' "$LOG2" 2>/dev/null | head -1 | cut -d: -f1)
+l_n=$(grep -nF 'DPGN ok n=4' "$LOG2" 2>/dev/null | head -1 | cut -d: -f1)
+if [ -z "$l_sf" ] || [ -z "$l_p" ] || [ -z "$l_s" ] || [ -z "$l_n" ] \
+   || [ "$l_sf" -ge "$l_p" ] || [ "$l_p" -ge "$l_s" ] || [ "$l_s" -ge "$l_n" ]; then
+  echo "smoke-lockdep: FAIL——dpg 四行行序断言（sf=$l_sf < DPGP=$l_p < DPGS=$l_s < DPGN=$l_n 须全非空严格递增）" >&2
+  rc2=1
+fi
+# ow 观测面零计（N=4<K=8：池永不满——ovfl 行在 = 槽释放链断/键化泄漏旁证）。
+OV=$(grep -c 'DPG ovfl' "$LOG2" 2>/dev/null || true)
+if [ "$OV" -ne 0 ]; then
+  echo "smoke-lockdep: FAIL——DPG ovfl 计数 $OV（N=4<K=8 拓扑池满不该发生——槽释放链查）" >&2
+  rc2=1
+fi
+
+if [ "$rc2" -eq 0 ]; then
+  echo "smoke-lockdep: PASS（双相：相 1 裸相 selftest/DPG ok 行序 + 相 2 rootfs 满拓扑 DPGN 终态 + dpg 四行行序 + ovfl 零计 + FAIL/VIOLATION 0×2 boot）"
   keep_log drop
 else
+  echo "---- 相 2 串口日志尾部（$LOG2）----" >&2
+  tail -40 "$LOG2" >&2
   keep_log keep
 fi
-exit "$rc"
+exit "$rc2"

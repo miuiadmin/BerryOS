@@ -388,6 +388,37 @@ fn test_syscall() {
         assert!(crate::vmar::demand_root(asid).is_none(),
             "SYSCALL：E3c 第 {} 轮 Drop 注销后反查须空", round);
     }
+    // OwnerConflict 负面（G4-3 B 刀前件 ②）：同 asid 异根双登记 = 单 root
+    // 不变量破 → 防御拒；未遂者不落表不误清（demand_root 仍 p1；p2 Drop
+    // 双匹配 no-op）；同根幂等重登 Ok（回卷复用同号清后再登的快路径）。
+    // Box 形同上——登记 ptr 与 Vmar::Drop 须同址（地址耦合保证面）。
+    let asid_oc = crate::aspace::alloc_asid();
+    let p1 = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
+        Vmar::new_root(crate::mm::frames(), asid_oc)
+            .expect("SYSCALL：E3c OwnerConflict 建 p1（可信语境）"),
+    ));
+    crate::vmar::register_demand_root(asid_oc, p1)
+        .expect("SYSCALL：E3c OwnerConflict 首登记 Ok");
+    crate::vmar::register_demand_root(asid_oc, p1)
+        .expect("SYSCALL：E3c OwnerConflict 同根幂等重登 Ok（非冲突）");
+    let p2 = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
+        Vmar::new_root(crate::mm::frames(), asid_oc)
+            .expect("SYSCALL：E3c OwnerConflict 建 p2（异根同 asid）"),
+    ));
+    assert_eq!(crate::vmar::register_demand_root(asid_oc, p2),
+        Err(crate::vmar::DemandRootError::OwnerConflict),
+        "SYSCALL：E3c 同 asid 异根须 OwnerConflict 拒");
+    assert_eq!(crate::vmar::demand_root(asid_oc), Some(p1),
+        "SYSCALL：E3c 未遂双登记不落表（仍 p1）");
+    // SAFETY: p2 未登记（被拒）——from_raw 原址回收，Drop 双匹配 no-op
+    //（不误清 p1 槽——下方反查即证）。
+    drop(unsafe { alloc::boxed::Box::from_raw(p2) });
+    assert_eq!(crate::vmar::demand_root(asid_oc), Some(p1),
+        "SYSCALL：E3c 未遂者 Drop 后在席者仍在（不误清）");
+    // SAFETY: p1 已登记——Drop 注销收尾。
+    drop(unsafe { alloc::boxed::Box::from_raw(p1) });
+    assert!(crate::vmar::demand_root(asid_oc).is_none(),
+        "SYSCALL：E3c OwnerConflict 收尾注销后反查须空");
     // 容量面（P3#10 前置件）：并发登记**动态填到满**（boot 面 dpg::init 常驻
     // 占 1 槽——不写死计数，满即停）→ 未登记者 Drop 后再验仍满（双匹配
     // no-op，不误清他人槽）→ 全 Drop 后槽回收再登记 Ok。
