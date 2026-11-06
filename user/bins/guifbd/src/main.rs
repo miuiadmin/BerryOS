@@ -90,7 +90,7 @@ const TOKEN_RING: usize = 8;
 /// 行弹舱帽（= ramfb stride 800×4；启动门执法——越帽说明几何非 ramfb
 /// 基线，blit 行弹越界 = 未定义行为，宁可不起服务）。
 // 行弹舱：≥ 1280×4（16:9 桌面）；1920×4 同帽可容。
-const ROW_BOUNCE_MAX: usize = 8192;
+const ROW_BOUNCE_MAX: usize = 16384;
 /// SUBMIT 抽样点数（全落 damage 并集内——A5-b）。
 const SAMPLE_N: usize = 7;
 /// present 域 credits 帽（= [`gp::CREDITS_MAX`]，usize 面给 held 定容）。
