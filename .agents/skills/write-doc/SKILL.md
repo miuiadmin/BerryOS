@@ -12,6 +12,8 @@ description: 在 Curia .agents 工作区新建或修改文档的完整流程—�
 1. **定家**：按四句口诀——为什么 → `notes/`（走 [write-note](../write-note/SKILL.md)）；没做的 → `plans/`；做完的 → `research/`；可复用的干法 → `skills/`；外部事实 → 根 `docs/`；冷历史 → `archive/`。
 2. **定型**：同一家里类型互斥，判据查[规范全文](../../README.md)的「9 类文档」表（每类的家与建议节都在表里，不要背表）。两组最常混的：`survey` 会过时、`reference` 持续维护；`spec` 做完仍是权威（`done` 不退役）、`plan` 做完就是历史。
 
+> **BerryOS 特记（定家门口诀的本地修正）**：本仓 `docs/` 装的是**项目知识文档**（设计/实施/规划/调研/验收，版本化 `名-v主.次.md`、无头块）——不止「外部事实」，设计规格**不走 9 类**；调研报告的家 = 根 `research/`（非 `.agents/research/`）。写前先查归属裁决表：`docs/README.md`。
+
 ## 流程
 
 1. **建档**：按[规范全文](../../README.md)「规范格式（骨架）」手抄骨架、定文件名（日期型带 `yyyy-mm-dd-` 前缀；`skill` 与 `runbook` 的 topic 是目录名，须 kebab-case）。

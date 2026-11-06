@@ -65,6 +65,7 @@ fs/ net/      user-space service slots
 user/         ABI bindings, protocol crates, programs (bsh, svcmgr, ...)
 tools/        build recipes, smoke harness, deterministic packers, ABI generator
 docs/         design documents (Chinese)
+.agents/      documentation workspace: plans / decision notes / skills (Curia, spec in .agents/README.md)
 ```
 
 ## Documentation
@@ -76,6 +77,7 @@ Design documents are written in Chinese and live in [`docs/`](docs/). Start from
 - Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计-v1.0.md`](docs/调度器设计-v1.0.md)
 - Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计-v1.0.md`](docs/系统调用ABI设计-v1.0.md)
 - App development guide — writing `.bap` apps, manifest v1, build toolchain: [`docs/应用开发指南.md`](docs/应用开发指南.md)
+- Documentation workspace (plans / decision notes / skills, Curia): [`.agents/README.md`](.agents/README.md)
 
 ## License
 

@@ -44,6 +44,8 @@ just test-host    # host 侧 315 单元测试（无需 QEMU）
 
 设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（49 条 ADR）→ [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
 
+过程与制度文档（计划/决策笔记/技能）在 [`.agents/`](.agents/)（Curia 工作区，规范 = [`.agents/README.md`](.agents/README.md)）；新写文档的归属裁决表 = [`docs/README.md`](docs/README.md)。
+
 ## 许可证
 
 Apache-2.0。第三方系统仅作调研参考——本树不引入任何第三方代码，GPL 实现一律排除。

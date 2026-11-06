@@ -13,3 +13,4 @@ rg --hidden -g '!.agents/notes/archived/**' <关键词> .agents/notes/
 - **禁建全局 `INDEX.md`**；检索用上面的 rg 命令。
 - 改完可跑 `node .agents/tools/check-docs.mjs` 自检（可选）。
 - `archived/` 是冻结历史快照：永不修改，不作为当前权威。
+- **BerryOS 分工**：踩坑执法类判例走雷册三处一动（域文件瘦行 + 雷册全文 + 判例索引）；本树只收决策因果——裁决表 → `docs/README.md`。

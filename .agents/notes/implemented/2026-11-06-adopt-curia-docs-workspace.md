@@ -31,6 +31,7 @@ BerryOS 文档此前全数平铺在 `docs/`（85 项）与 `research/`：知识�
 - `--strict` 提交闸门已装**路径过滤版** pre-commit（`f5de7e0` 同日补）：仅当暂存面含 `docs/` 或 `.agents/` 路径时跑 `check-docs --strict`，纯代码提交零影响；卸载即 `rm .git/hooks/pre-commit`。本仓多会话重度并行，故不采用 Curia 文档示例的无过滤全局钩子。
 - 三份共笔登记文件的补登（同日二刀 `f11c8fb`、四刀 `27b9a3d`，选择性构造提交——私有 index 双基 blob + 真 index 修补，零扰动兄弟会话）：`docs/索引.md` 已入册 README.md 行（总数 79→80、一区计数 5→6 同动）；`docs/命令速览.md` 已补 `check-docs.mjs` 行；`docs/阶段沿革.md` 已补 Curia 引入节——构造提交落（七十九）位，工作树在兄弟流水（七十八 S2a→八十 S3-b 尚未提交）之后占（八十一）尾号位，兄弟落地后节驻八十一位、编号连续、无撞号。
 - 遗漏排查（同日终刀）：`research/`（46 篇）与根 README 显式路径巡检均 0 告警；GLOSSARY「你的领域」占位术语已换 BerryOS 领域 8 词（雷册/判例瘦行/排除 8 问/G0–G5/smoke/intent/能力/.bap）；裁决表消除三处歧义——版本化设计草案（含在途）仍归 `docs/`、`.agents/plans/` 只收不进版本化制度的轻量计划，冷历史双轨（`docs/` 知识文档走原地冻结或 `docs/归档/`，`.agents/` 内文档走归档四步），判例（雷册三处一动）与笔记（`.agents/notes/`）按「踩坑执法 vs 决策因果」分工；CI fail-fast 段补 `check-docs --strict`（与 docs-guard 并列文档面双门禁，ubuntu-latest 预装 Node 零新增依赖）。
+- 遗漏排查二轮（agent 入口面）：write-doc 技能定家门口诀「外部事实 → 根 `docs/`」与本仓语义冲突（本仓 `docs/` = 项目知识文档，设计规格不走 9 类）——技能内加 BerryOS 特记修正；规范全文头部、笔记树目录指令（`.agents/notes/AGENTS.md` 雷册分工行）、规则路由表（`docs/规则/README.md`）各加裁决表指针；主 README（英/中）补 `.agents/` 工作区入口与布局树行。全部入口只放指针，单一事实源 = `docs/README.md` 裁决表。
 - fork-and-own：上游无 upgrade 子命令，日后同步靠对空目录重跑 init 做 diff。
 - `.claude/skills` 桥因 `.claude/` 整目录在 `.gitignore` 而不入库（本机在位）；新 clone 后 Claude Code 技能桥需手工重建 `ln -s ../.agents/skills .claude/skills`，规则读取不受影响（CLAUDE.md `@import` 在位）；`.codex/skills` 桥以符号链接对象入库，clone 自动还原。
 
