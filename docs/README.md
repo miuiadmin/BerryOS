@@ -6,7 +6,8 @@
 
 | 写什么 | 家 |
 |---|---|
-| 设计/实施/规划/调研/验收类知识文档——**含在途设计草案与模块总体设计**（BerryOS 版本化制度 `名-v主.次.md`，细则见 [索引](索引.md)；Curia 2.3 `plans/<模块>/design.md` 固定形态**不启用**——防与 docs/ 制度一主题双轨） | 本目录 |
+| 设计/实施/规划/调研/验收类知识文档——含在途设计草案（BerryOS 版本化制度 `名-v主.次.md`，细则见 [索引](索引.md)）；**存量主题**演进原地改，同主题不另建 `.agents/plans/` 副本（一主题一现行承载点） | 本目录 |
+| **新模块**总体设计（2.3 固定形态：`Type: spec` + `Version: MAJOR.MINOR.PATCH` 头块、免日期前缀、`ls .agents/plans/*/design.md` 即全模块索引） | [`.agents/plans/`](../.agents/plans/) 下 `<模块>/design.md` |
 | 调研报告 | 根 `research/`（存量纳管根；等价 `.agents/research/` 的角色，不进默认扫描面） |
 | 轻量计划 / 工作提案（**不进版本化制度**的：步骤清单、立项对齐、agent 工作计划） | [`.agents/plans/`](../.agents/plans/)（3 行头块） |
 | 决策因果（为什么、否决了什么） | [`.agents/notes/`](../.agents/notes/)（两行头块） |

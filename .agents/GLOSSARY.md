@@ -26,6 +26,14 @@
 
 **取代（superseded）**：文档被取代后的终态；必须带 `Superseded-by:` 指向取代者，不得迁出。_Avoid_: 废弃、作废
 
+**取代链（supersession chain）**：从 `Superseded-by:` 逐跳追下去必须终结在现行态文档；成环、断链、终结于笔记/`docs/`/归档件/退役态都算错——检查器执法（2.3）。_Avoid_: 版本历史
+
+**现行态（current status）**：链终点判据口径——`proposal`/`plan` 的 `draft`/`active`、`spec` 的 `draft`/`active`/`done`、`research` 族与 `runbook` 的 `current`；其余取值是历史，可上链不可当终点（2.3）。_Avoid_: 最新版
+
+**一主题一现行承载点**：同一主题同一时刻只有一份现行文档；新全局指导要么原地改现行份、要么新开一份并取代旧的（2.3 纪律律，机器判不出同主题）。_Avoid_: 双轨并行
+
+**模块设计文档（module design doc）**：模块总体设计的固定形态 `.agents/plans/<模块>/design.md`——`Type: spec` + `Version: MAJOR.MINOR.PATCH` 必填、免日期前缀、目录即索引；BerryOS 口径 = **新模块**默认形态，存量主题承载点留 `docs/` 原地演进（2.3）。_Avoid_: 设计规格书（泛称）
+
 **存量树只读纳管**：采用本规范时存量文档保持原样、规则不回溯、下次实质修改时自然补齐。_Avoid_: 迁移、批量修复
 
 **原始语料豁免（raw marker）**：目录内放空标记文件 `.agents-raw` 即整目录免检，用于外部镜像等批量采集物。_Avoid_: 白名单、忽略目录
