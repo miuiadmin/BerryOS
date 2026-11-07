@@ -1591,15 +1591,30 @@ fn run_rootfs_child(console: Handle) {
                     // `docs/sim设备通道与契约设计-v1.1.md` §6）——fd0 = 帧
                     // 通道 RECV 端（task_simcon 转发的 UART1 字节流）、
                     // gift[0] = ACK SEND 端（libc `sim_ack_h()`）、fd1/2 =
-                    // console 直打。门 = boot 插的 sim 礼物对在席（dup 探针
-                    // -EBADF = 门闭）：**门闭静默跳过**——裸相/smoke/EFI 每
-                    // boot 都走本 arm，eco_skip 会污染无门相串口（B4 零扰动
+                    // console 直打。门 = boot 插的 sim 礼物对**双双**在席
+                    // （双 dup 探针：RX 探 RECV + ACK 探 SEND，任一 -EBADF
+                    // = 门闭）：**门闭静默跳过**——裸相/smoke/EFI 每 boot
+                    // 都走本 arm，eco_skip 会污染无门相串口（B4 零扰动
                     // 硬线）；门开 spawn 失败才 loud（SIMBAT 标记缺失 +
                     // 宿主 client 超时双兜底）。常驻不 reap（hello 同款
                     // ps_reg 入账）。
+                    // 双探针的由来（2026-11-07 红 smoke 定谳，单探针假开
+                    // 事故）：无 sim 相 slot5/6 被 _start 首 channel_pair
+                    // 占用——end0 值恰=H_SIM_RX 且自留真 RECV 权（RX 单探
+                    // 真通过=假开），而 end1 迁入 echo 子（spawn_child 迁移
+                    // 自证）后 slot6 整 boot 反复换主 gen 翻，ACK 陈值
+                    // 0x0001_0006 查表必 -EBADF——假开下场 = extra_gifts
+                    // 带陈值进礼物 channel_send → -EBADF → berry-exec
+                    // send!=0 自陷杀 svcmgr（死档 x0=-9 PC=0x8b44，walk
+                    // 悬于本 arm，vprobe/BSH/INPUT 起全缺）。ACK 探针把
+                    // 假开掐死在门前：slot6 陈值必败 → 门真闭静默跳过。
                     let mut probe: Handle = 0;
-                    if berry_handle_duplicate(H_SIM_RX, RIGHT_RECV, &mut probe) == 0 {
+                    let mut probe_ack: Handle = 0;
+                    if berry_handle_duplicate(H_SIM_RX, RIGHT_RECV, &mut probe) == 0
+                        && berry_handle_duplicate(H_SIM_ACK, RIGHT_SEND, &mut probe_ack) == 0
+                    {
                         berry_handle_close(probe);
+                        berry_handle_close(probe_ack);
                         match spawn_rootfs_elf(
                             H_ROOTFS,
                             &SpawnSpec {
