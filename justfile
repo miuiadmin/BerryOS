@@ -149,7 +149,7 @@ build-user:
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-none
     # GUI-8 视觉补全：appstub 共用静默壳（零 argv0 断言/console=false/0 退出）
-    # 复制成 3 个占位 app 的 bin/<name>。Browser/Settings/Files/Photos 已换真实 Shell。
+    # 复制成 2 个占位 app 的 bin/<name>。Browser/Settings/Files/Photos/Contacts 已换真实 Shell。
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appstub/Cargo.toml \
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/browser/Cargo.toml \
@@ -159,6 +159,8 @@ build-user:
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/files/Cargo.toml \
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/photos/Cargo.toml \
+        --target aarch64-unknown-none
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/contacts/Cargo.toml \
         --target aarch64-unknown-none
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
     # 单次构建 12 命令（=0.12.0 锁步，MIT，上游逐字不动；薄 harness =
@@ -291,8 +293,15 @@ build-user:
     cp -R bins/appstub/apps/PHOTOS/icons userbins/app-stage/PHOTOS/
     cp -R bins/appstub/apps/PHOTOS/views userbins/app-stage/PHOTOS/
     python3 ../tools/mkapp.py userbins/app/PHOTOS.bap userbins/app-stage/PHOTOS
-    # 其余三 app 仍是诚实静默占位（不冒充真实现）。
-    for spec in CAMERA:camera CONTACTS:contacts MMS:messages; do
+    # Contacts Native Shell：独立 ELF + 官方图标/views 组包。
+    mkdir -p userbins/app-stage/CONTACTS/bin
+    cp bins/contacts/manifest.toml userbins/app-stage/CONTACTS/
+    cp cargo-target/aarch64-unknown-none/release/contacts userbins/app-stage/CONTACTS/bin/contacts
+    cp -R bins/appstub/apps/CONTACTS/icons userbins/app-stage/CONTACTS/
+    cp -R bins/appstub/apps/CONTACTS/views userbins/app-stage/CONTACTS/
+    python3 ../tools/mkapp.py userbins/app/CONTACTS.bap userbins/app-stage/CONTACTS
+    # 其余两 app 仍是诚实静默占位（不冒充真实现）。
+    for spec in CAMERA:camera MMS:messages; do
         id=${spec%%:*}; bin=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
         cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"

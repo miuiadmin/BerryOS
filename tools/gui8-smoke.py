@@ -99,6 +99,7 @@ MARK_WM_CONN4 = "WMCONN ok id=4"
 MARK_WM_CONN5 = "WMCONN ok id=5"
 MARK_WM_CONN6 = "WMCONN ok id=6"
 MARK_WM_CONN7 = "WMCONN ok id=7"
+MARK_WM_CONN8 = "WMCONN ok id=8"
 MARK_WM_ROUTE_WINDOW_UP = "WMRTWIN ok id="
 MARK_WM_DENIED = "WMDENY ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
@@ -147,6 +148,17 @@ MARK_PHOTOS_VIEW = "PHOTOSVIEW ok"
 MARK_PHOTOS_PROBE = "PHOTOSPROBE ok"
 MARK_PHOTOS_DESTROY = "PHOTOSDESTROY ok"
 MARK_PHOTOS_EXIT = "PHOTSEXIT ok"
+MARK_CONTACTS_UP = "CONTACTS up"
+MARK_CONTACTS_WIN = "CONTACTSWIN ok"
+MARK_CONTACTS_LIST = "CONTACTSLIST ok n="
+MARK_CONTACTS_READ = "CONTACTSREAD ok n=4"
+MARK_CONTACTS_LOCAL = "CONTACTSLOCAL ok n=4"
+MARK_CONTACTS_FRAME = "CONTACTSFRAME ok"
+MARK_CONTACTS_DETAIL = "CONTACTSDETAIL ok i=1"
+MARK_CONTACTS_FAV = "CONTACTSFAV ok n=1"
+MARK_CONTACTS_PROBE = "CONTACTSPROBE ok"
+MARK_CONTACTS_DESTROY = "CONTACTSDESTROY ok"
+MARK_CONTACTS_EXIT = "CONTACTSEXIT ok"
 MARK_WM_INPUT_DROP = "WMIDROP bad"
 MARK_INPUT_ROUTE_BAD = "INPUTROUTE bad"
 MARK_CJK_PROBE = "CJKPROBE ok n=2"
@@ -1039,15 +1051,16 @@ def verify_normal_boot(
     settings_before: int,
     files_before: int,
     photos_before: int,
+    contacts_before: int,
     demo_before: int,
     log_path: Path | None = None,
 ) -> None:
-    """常态隔离 + Browser/Settings/Files/Photos Native Shell 验收。
+    """常态隔离 + 五 Native Shell 验收。
 
-    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；四个 shell 都
+    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；五个 shell 都
     必须完成第二个真实进程生命周期。Settings 要求两次状态重绘；Files 要求
-    READDIR/STAT/GET 真实 fs RPC；Photos 要求 5000B 图像数据、查看/返回
-    两次重绘。
+    READDIR/STAT/GET；Photos 要求 5000B 图像数据；Contacts 要求 4 条真实
+    记录、详情/收藏/返回三次重绘。
     """
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
@@ -1099,6 +1112,17 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_PHOTOS_DESTROY, photos_before + 1, "normal Photos", log_path)
     _require_exact_count(text, MARK_PHOTOS_EXIT, photos_before + 1, "normal Photos", log_path)
 
+    _require_exact_count(text, MARK_CONTACTS_UP, contacts_before + 1, "normal Contacts", log_path)
+    _require_exact_count(text, MARK_CONTACTS_WIN, contacts_before + 1, "normal Contacts", log_path)
+    _require_exact_count(text, MARK_CONTACTS_LIST, contacts_before + 2, "normal Contacts", log_path)
+    _require_exact_count(text, MARK_CONTACTS_READ, contacts_before + 1, "normal Contacts", log_path)
+    # runtime 初帧 + 详情 + 收藏 + 返回列表。
+    _require_exact_count(text, MARK_CONTACTS_FRAME, contacts_before + 4, "normal Contacts", log_path)
+    _require_exact_count(text, MARK_CONTACTS_DETAIL, 1, "normal Contacts detail", log_path)
+    _require_exact_count(text, MARK_CONTACTS_FAV, 1, "normal Contacts favorite", log_path)
+    _require_exact_count(text, MARK_CONTACTS_DESTROY, contacts_before + 1, "normal Contacts", log_path)
+    _require_exact_count(text, MARK_CONTACTS_EXIT, contacts_before + 1, "normal Contacts", log_path)
+
     # 常态布局把 APPDEMO 放 page1；Native Shell 点击不得误 spawn。
     if text.count(MARK_APP_DEMO_UP) != demo_before:
         raise SmokeError(
@@ -1119,6 +1143,10 @@ def verify_normal_boot(
         raise SmokeError("normal Photos: VIEW 早于快照", log_path)
     if text.rfind(MARK_PHOTOS_EXIT) < snapshot_pos:
         raise SmokeError("normal Photos: EXIT 不在快照后", log_path)
+    if text.find(MARK_CONTACTS_DETAIL) < snapshot_pos:
+        raise SmokeError("normal Contacts: DETAIL 早于快照", log_path)
+    if text.rfind(MARK_CONTACTS_EXIT) < snapshot_pos:
+        raise SmokeError("normal Contacts: EXIT 不在快照后", log_path)
 
 def ppm_pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
     """读 QEMU P6 PPM 指定像素（Native Shell 反 mock 像素锚）。"""
@@ -1410,13 +1438,28 @@ def _boot_base_markers() -> list[str]:
         MARK_WM_CONN7, MARK_PHOTOS_UP, MARK_PHOTOS_WIN,
         MARK_PHOTOS_LIST, MARK_PHOTOS_DATA, MARK_PHOTOS_FRAME,
         MARK_PHOTOS_PROBE, MARK_PHOTOS_DESTROY, MARK_PHOTOS_EXIT,
+        MARK_WM_CONN8, MARK_CONTACTS_UP, MARK_CONTACTS_WIN,
+        MARK_CONTACTS_LIST, MARK_CONTACTS_FRAME,
+        MARK_CONTACTS_PROBE, MARK_CONTACTS_DESTROY, MARK_CONTACTS_EXIT,
         MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
     ]
 
 
 def _wait_boot_batch(boot: Boot, timeout: float) -> None:
-    """基础 5 + boot 批 app 证据：先把 boot 批 APPDEMO up 吃完再点击。"""
+    """基础 5 + boot 批 app 证据：先把 boot 批 APPDEMO up 吃完再点击。
+
+    Contacts 数据源分拓扑：GUI8 哨兵盘无 CONTACTS.TXT → LOCAL；
+    normal 盘写入 CONTACTS.TXT → READ。二者必居其一，不能同时缺席。
+    """
     boot.wait_markers(_boot_base_markers(), timeout)
+    if not boot.wait_any(
+        [MARK_CONTACTS_LOCAL, MARK_CONTACTS_READ], timeout
+    ):
+        raise MissingMarkers(
+            "boot batch",
+            f"{MARK_CONTACTS_LOCAL} 或 {MARK_CONTACTS_READ}",
+            timeout, boot.log_path,
+        )
     boot.wait_markers([MARK_APP_DEMO_UP], timeout)
 
 
@@ -1580,7 +1623,7 @@ def run_dual_boot(args) -> int:
                 f"(window {rw}x{rh})",
                 boot_a.log_path,
             )
-        owner_marker = f"WMROUTE ok sid=8 window={rw_id}"
+        owner_marker = f"WMROUTE ok sid=9 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
 
@@ -1740,6 +1783,11 @@ def run_normal_boot(args) -> int:
             b'{"app":"APPDEMO","page":1,"row":0,"col":0}]}'
         )
         Fat12Volume(disk).add_file(LAYOUT_NAME11, native_layout)
+        contacts_payload = (
+            b"Alice Chen,13800000001\nBerry Wang,13800000002\n"
+            b"Cedar Li,13800000003\nDawn Zhou,13800000004\n"
+        )
+        Fat12Volume(disk).add_file(b"CONTACTSTXT", contacts_payload)
         log(
             f"新常态盘：{disk}（{disk.stat().st_size}B，"
             f"sha256={sha256_file(disk)[:16]}…，LBA0 印章，零 GUI8.SMK，"
@@ -1766,7 +1814,8 @@ def run_normal_boot(args) -> int:
         settings_before = boot.log.text.count(MARK_SETTINGS_UP)
         files_before = boot.log.text.count(MARK_FILES_UP)
         photos_before = boot.log.text.count(MARK_PHOTOS_UP)
-        if browser_before < 1 or settings_before < 1 or files_before < 1 or photos_before < 1:
+        contacts_before = boot.log.text.count(MARK_CONTACTS_UP)
+        if browser_before < 1 or settings_before < 1 or files_before < 1 or photos_before < 1 or contacts_before < 1:
             raise MissingMarkers(
                 "normal boot", "Browser boot-probe BROWSER up", 1, boot.log_path
             )
@@ -1785,7 +1834,8 @@ def run_normal_boot(args) -> int:
             )
         log(
             "normal-boot: display 1080x1920 product portrait；"
-            "BROWSER/FILES 首行 (156/412,282)，SETTINGS dock (626,1668)"
+            "BROWSER/FILES 首行 (156/412,282)，CONTACTS/PHOTOS/SETTINGS dock "
+            "(125/376/626,1668)"
         )
 
         boot.qmp_connect()
@@ -2097,6 +2147,119 @@ def run_normal_boot(args) -> int:
                 args.click_timeout, boot.log_path,
             ) from None
 
+        # —— Contacts Native Shell：dock 首格 → 4 条真实记录 → 收藏。 ——
+        time.sleep(1.0)
+        log("normal-contacts: QMP 点击 SmartDock CONTACTS（真实 APP_SPAWN）")
+        boot.qmp.click(125, 1668, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_CONTACTS_UP) > contacts_before
+                and t.count(MARK_CONTACTS_FRAME) > contacts_before,
+                f"runtime {MARK_CONTACTS_UP} + {MARK_CONTACTS_FRAME}",
+                args.click_timeout,
+                "normal Contacts launch",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Contacts launch",
+                f"新增 {MARK_CONTACTS_UP} + {MARK_CONTACTS_FRAME}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        if boot.log.count(MARK_CONTACTS_READ) <= contacts_before:
+            raise MissingMarkers(
+                "normal Contacts remote records",
+                MARK_CONTACTS_READ, args.click_timeout, boot.log_path,
+            )
+
+        # Berry Wang = row 1（bar=160,row=180,top=184）。
+        boot.qmp.click(400, 454, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_CONTACTS_DETAIL) >= 1
+                and t.count(MARK_CONTACTS_FRAME) > contacts_before + 1,
+                f"{MARK_CONTACTS_DETAIL} + 详情帧",
+                args.click_timeout,
+                "normal Contacts detail",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Contacts detail",
+                f"{MARK_CONTACTS_DETAIL} + 详情帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        # Favorite pill：x0=852,y0=196,w=180,h=84。
+        boot.qmp.click(942, 238, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_CONTACTS_FAV) >= 1
+                and t.count(MARK_CONTACTS_FRAME) > contacts_before + 2,
+                f"{MARK_CONTACTS_FAV} + 收藏帧",
+                args.click_timeout,
+                "normal Contacts favorite",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Contacts favorite",
+                f"{MARK_CONTACTS_FAV} + 收藏帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        contacts_shot = run_dir / "contacts-native.ppm"
+        boot.qmp.screendump(contacts_shot)
+        assert_pixel_close(
+            ppm_pixel(contacts_shot, 540, 60), (0, 121, 107),
+            "Contacts 顶栏", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(contacts_shot, 540, 360), (67, 160, 71),
+            "Contacts Berry 头像", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(contacts_shot, 900, 272), (251, 140, 0),
+            "Contacts 收藏底条", boot.log_path,
+        )
+        log("normal-contacts: QEMU 截图像素锚 ok（顶栏/头像/收藏底条）")
+
+        log("normal-contacts: 返回列表（第三真实重绘）")
+        boot.qmp.click(80, 80, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_CONTACTS_LIST) > contacts_before + 1
+                and t.count(MARK_CONTACTS_FRAME) > contacts_before + 3,
+                f"返回列表 {MARK_CONTACTS_LIST} + 第四帧",
+                args.click_timeout,
+                "normal Contacts back-to-list",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Contacts back-to-list",
+                f"返回列表 {MARK_CONTACTS_LIST} + 第四帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        log("normal-contacts: 返回退出（销毁窗口）")
+        boot.qmp.click(80, 80, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_CONTACTS_EXIT) > contacts_before,
+                f"新 {MARK_CONTACTS_EXIT}",
+                args.click_timeout,
+                "normal Contacts exit",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Contacts exit", f"新 {MARK_CONTACTS_EXIT}",
+                args.click_timeout, boot.log_path,
+            ) from None
+
         watcher = boot.log
         log_path = boot.log_path
         boot.stop()
@@ -2104,18 +2267,19 @@ def run_normal_boot(args) -> int:
         watcher.poll()
         verify_normal_boot(
             watcher.text, snapshot_pos, browser_before, settings_before,
-            files_before, photos_before, demo_before, log_path,
+            files_before, photos_before, contacts_before, demo_before,
+            log_path,
         )
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-native: Browser/Settings/Files/Photos 独立进程、真实 WM "
-            "窗口/帧、Settings 状态重绘、Files fs RPC 与 Photos 5000B 图像全过；"
+            "normal-native: Browser/Settings/Files/Photos/Contacts 五独立进程、"
+            "真实 WM 窗口/帧、状态/fs/图像/联系人记录全链全过；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：Browser + Settings + Files + Photos Native Shell 真链 + "
+            "PASS（--normal-boot）：Browser + Settings + Files + Photos + Contacts Native Shell 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -2600,16 +2764,32 @@ def self_test(args) -> int:
             f"{MARK_PHOTOS_FRAME}\nPHOTOSBACK ok\n{MARK_PHOTOS_DESTROY}\n"
             f"{MARK_PHOTOS_EXIT}\n"
         )
+        contacts_boot = (
+            f"{MARK_CONTACTS_UP}\n{MARK_CONTACTS_WIN}\n{MARK_CONTACTS_LIST}\n"
+            f"{MARK_CONTACTS_READ}\n{MARK_CONTACTS_FRAME}\n"
+            f"{MARK_CONTACTS_PROBE}\n{MARK_CONTACTS_DESTROY}\n"
+            f"{MARK_CONTACTS_EXIT}\n"
+        )
+        contacts_runtime = (
+            f"{MARK_CONTACTS_UP}\n{MARK_CONTACTS_WIN}\n{MARK_CONTACTS_LIST}\n"
+            f"{MARK_CONTACTS_READ}\n{MARK_CONTACTS_FRAME}\n"
+            f"{MARK_CONTACTS_DETAIL}\n{MARK_CONTACTS_FRAME}\n"
+            f"{MARK_CONTACTS_FAV}\n{MARK_CONTACTS_FRAME}\n"
+            f"{MARK_CONTACTS_LIST}\n{MARK_CONTACTS_FRAME}\n"
+            f"CONTACTSBACK ok\n{MARK_CONTACTS_DESTROY}\n"
+            f"{MARK_CONTACTS_EXIT}\n"
+        )
         fake_n = (
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-            f"{photos_boot}"
+            f"{photos_boot}{contacts_boot}"
         )
         snap_n = len(fake_n)
         fake_n += (
             f"{browser_boot}{MARK_BROWSER_BACK}\n{MARK_WM_ROUTE_DESKTOP}\n"
             f"{settings_runtime}{files_runtime}{photos_runtime}"
+            f"{contacts_runtime}"
         )
-        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1)
+        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),
             (MARK_LAYOUTW + "\n", "LAYOUTW"),
@@ -2620,47 +2800,50 @@ def self_test(args) -> int:
             expect_error(
                 f"常态隔离出现 {label}",
                 lambda n=needle: verify_normal_boot(
-                    fake_n + n, snap_n, 1, 1, 1, 1, 1
+                    fake_n + n, snap_n, 1, 1, 1, 1, 1, 1
                 ),
             )
         expect_error(
             "常态 Browser 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{settings_runtime}{files_runtime}{photos_runtime}",
-                snap_n, 1, 1, 1, 1, 1,
+                f"{photos_boot}{contacts_boot}{settings_runtime}"
+                f"{files_runtime}{photos_runtime}{contacts_runtime}",
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{browser_boot}{MARK_BROWSER_BACK}\n"
-                f"{files_runtime}{photos_runtime}",
-                snap_n, 1, 1, 1, 1, 1,
+                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{MARK_BROWSER_BACK}\n{files_runtime}{photos_runtime}"
+                f"{contacts_runtime}",
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 缺第二重绘帧",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_SETTINGS_FRAME}\n", "", 2),
-                snap_n, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Files 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{browser_boot}{MARK_BROWSER_BACK}\n"
-                f"{settings_runtime}{photos_runtime}",
-                snap_n, 1, 1, 1, 1, 1,
+                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{MARK_BROWSER_BACK}\n{settings_runtime}{photos_runtime}"
+                f"{contacts_runtime}",
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Files 缺真实 GET",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_FILES_READ}28\n", ""),
-                snap_n, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
@@ -2670,23 +2853,24 @@ def self_test(args) -> int:
                     f"{MARK_FILES_READ}28\n{MARK_FILES_FRAME}\n",
                     f"{MARK_FILES_READ}28\n", 1,
                 ),
-                snap_n, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Photos 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{browser_boot}{MARK_BROWSER_BACK}\n"
-                f"{settings_runtime}{files_runtime}",
-                snap_n, 1, 1, 1, 1, 1,
+                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{MARK_BROWSER_BACK}\n{settings_runtime}{files_runtime}"
+                f"{contacts_runtime}",
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Photos 缺真实 5000B 图",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_PHOTOS_DATA}\n", "", 2),
-                snap_n, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
@@ -2696,18 +2880,46 @@ def self_test(args) -> int:
                     f"{MARK_PHOTOS_VIEW}\n{MARK_PHOTOS_FRAME}\n",
                     f"{MARK_PHOTOS_VIEW}\n", 1,
                 ),
-                snap_n, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Contacts 无第二进程",
+            lambda: verify_normal_boot(
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
+                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{MARK_BROWSER_BACK}\n{settings_runtime}{files_runtime}"
+                f"{photos_runtime}",
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Contacts 缺真实记录",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_CONTACTS_READ}\n", ""),
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Contacts 缺收藏帧",
+            lambda: verify_normal_boot(
+                fake_n.replace(
+                    f"{MARK_CONTACTS_FAV}\n{MARK_CONTACTS_FRAME}\n",
+                    f"{MARK_CONTACTS_FAV}\n", 1,
+                ),
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Native Shell 误 spawn APPDEMO",
             lambda: verify_normal_boot(
-                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1, 1, 1, 1
+                fake_n + MARK_APP_DEMO_UP + "\n",
+                snap_n, 1, 1, 1, 1, 1, 1,
             ),
         )
         log(
-            "self-test: Browser + Settings + Files + Photos Native Shell 常态断言 ok"
-            "（四独立进程、真实状态/文件/图像 RPC、重绘与销毁；冒烟标记全零）"
+            "self-test: 五 Native Shell 常态断言 ok（五独立进程、状态/文件/"
+            "图像/联系人记录、重绘与销毁；冒烟标记全零）"
         )
 
         # 4) QMP 协议 + no-device 广播 + 三批单击

@@ -1,0 +1,23 @@
+[package]
+name = "contacts"
+version = "0.1.0"
+edition = "2021"
+# Contacts Native Shell：独立 no_std GUI 进程。真实 READDIR/STAT/GET 走
+# fsmgr RPC；v1 是只读联系人样本 + 进程内收藏状态，不做拨号/短信。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-fbcon = { path = "../../berry-fbcon" }
+berry-fsclient = { path = "../../berry-fsclient" }
+berry-fsproto = { path = "../../berry-fsproto" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-sys = { path = "../../berry-sys" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
