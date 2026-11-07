@@ -17,6 +17,7 @@ use berry_sys::{
     SIGNAL_WRITABLE,
 };
 use berry_fsproto as fp;
+use berry_gfx::font::{FontAtlas32x48, GlyphAtlas};
 
 const FRAME_VA: usize = 0x5200_0000;
 const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
@@ -419,8 +420,7 @@ fn render_list(
 ) {
     fill(fb, stride, 0, 0, w, h, [0xF6, 0xF8, 0xFA, 0]);
     fill(fb, stride, 0, 0, w, lay.bar, [0x00, 0x79, 0x6B, 0]);
-    let scale = if w >= 1000 { 4 } else { 3 };
-    text(fb, stride, b"Contacts", lay.bar + 18, (lay.bar - 16 * scale) / 2, scale, [0xFF, 0xFF, 0xFF, 0]);
+    text(fb, stride, b"Contacts", lay.bar + 18, (lay.bar - 48) / 2, [0xFF, 0xFF, 0xFF, 0]);
     let cx = lay.bar / 2;
     let r = lay.bar.saturating_sub(18) / 2;
     for y in 0..lay.bar {
@@ -448,10 +448,10 @@ fn render_list(
                 }
             }
         }
-        let ty = y + (lay.row_h - 16 * scale) / 2;
-        text(fb, stride, &contacts[i].name[..contacts[i].name_len], ax + avatar + 22, ty, scale, [0x20, 0x2B, 0x38, 0]);
+        let ty = y + (lay.row_h - 48) / 2;
+        text(fb, stride, &contacts[i].name[..contacts[i].name_len], ax + avatar + 26, ty, [0x20, 0x2B, 0x38, 0]);
         if contacts[i].favorite {
-            text(fb, stride, b"*", w - 72, ty, scale, [0xFB, 0x8C, 0x00, 0]);
+            text(fb, stride, b"*", w - 80, ty + 8, [0xFB, 0x8C, 0x00, 0]);
         }
     }
 }
@@ -463,7 +463,6 @@ fn render_detail(
     render_list(fb, stride, w, h, lay, contacts, MAX_CONTACTS);
     fill(fb, stride, 0, lay.bar, w, h.saturating_sub(lay.bar), [0xF6, 0xF8, 0xFA, 0]);
     let c = &contacts[index];
-    let scale = if w >= 1000 { 4 } else { 3 };
     let avatar = if w >= 1000 { 180 } else { 120 };
     let ax = (w.saturating_sub(avatar)) / 2;
     let ay = lay.bar + 36;
@@ -478,15 +477,15 @@ fn render_detail(
         }
     }
     let name_y = ay + avatar + 20;
-    let name_x = (w.saturating_sub(c.name_len * 8 * scale)) / 2;
-    text(fb, stride, &c.name[..c.name_len], name_x, name_y, scale, [0x1B, 0x25, 0x40, 0]);
-    let num_x = (w.saturating_sub(c.number_len * 8 * 3)) / 2;
-    text(fb, stride, &c.number[..c.number_len], num_x, name_y + 24 + 18 * scale, 3, [0x4F, 0x5D, 0x75, 0]);
+    let name_x = (w.saturating_sub(c.name_len * 32)) / 2;
+    text(fb, stride, &c.name[..c.name_len], name_x, name_y, [0x1B, 0x25, 0x40, 0]);
+    let num_x = (w.saturating_sub(c.number_len * 32)) / 2;
+    text(fb, stride, &c.number[..c.number_len], num_x, name_y + 72, [0x4F, 0x5D, 0x75, 0]);
     fill(fb, stride, lay.fav_x0, lay.fav_y0, lay.fav_w, lay.fav_h, [0xE2, 0xE8, 0xF0, 0]);
     let label: &[u8] = if c.favorite { b"Favorite" } else { b"Favorite" };
-    let lx = lay.fav_x0 + (lay.fav_w.saturating_sub(label.len() * 8 * 3)) / 2;
-    let ly = lay.fav_y0 + (lay.fav_h.saturating_sub(16 * 3)) / 2;
-    text(fb, stride, label, lx, ly, 3, [0x2B, 0x38, 0x4A, 0]);
+    let lx = lay.fav_x0 + (lay.fav_w.saturating_sub(label.len() * 32)) / 2;
+    let ly = lay.fav_y0 + (lay.fav_h.saturating_sub(48)) / 2;
+    text(fb, stride, label, lx, ly, [0x2B, 0x38, 0x4A, 0]);
     if c.favorite {
         fill(fb, stride, lay.fav_x0, lay.fav_y0 + lay.fav_h - 8, lay.fav_w, 8, [0xFB, 0x8C, 0x00, 0]);
     }
@@ -505,18 +504,32 @@ fn fill(fb: &mut [u8], stride: usize, x0: usize, y0: usize, w: usize, h: usize, 
     }
 }
 
-fn text(fb: &mut [u8], stride: usize, s: &[u8], x0: usize, y0: usize, scale: usize, c: [u8; 4]) {
+fn text(fb: &mut [u8], stride: usize, s: &[u8], x0: usize, y0: usize, c: [u8; 4]) {
+    // 32×48 Noto Sans HD A8 原生抗锯齿（非 8×16 console 字 4x 放大）。
     for (i, ch) in s.iter().enumerate() {
-        let Some(g) = berry_fbcon::font::glyph(*ch) else { continue };
-        for gy in 0..16usize {
-            for gx in 0..8usize {
-                if g.as_slice()[gy] & (0x80 >> gx) == 0 {
+        let Some(g) = FontAtlas32x48.coverage(*ch) else { continue };
+        for y in 0..g.h {
+            for x in 0..g.w {
+                let a = usize::from(g.coverage[y * g.w + x]);
+                if a == 0 {
                     continue;
                 }
-                fill(
-                    fb, stride, x0 + i * 8 * scale + gx * scale,
-                    y0 + gy * scale, scale, scale, c,
-                );
+                let px = x0 + i * g.w + x;
+                let py = y0 + y;
+                let off = py * stride + px * 4;
+                if a == 255 {
+                    put_px(fb, stride, px, py, c);
+                    continue;
+                }
+                let inv = 255 - a;
+                let bg = &fb[off..off + 3];
+                let mixed: [u8; 4] = [
+                    ((usize::from(c[2]) * a + usize::from(bg[0]) * inv) / 255) as u8,
+                    ((usize::from(c[1]) * a + usize::from(bg[1]) * inv) / 255) as u8,
+                    ((usize::from(c[0]) * a + usize::from(bg[2]) * inv) / 255) as u8,
+                    0,
+                ];
+                fb[off..off + 4].copy_from_slice(&mixed);
             }
         }
     }

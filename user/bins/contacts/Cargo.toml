@@ -12,6 +12,7 @@ license = "Apache-2.0"
 berry-fbcon = { path = "../../berry-fbcon" }
 berry-fsclient = { path = "../../berry-fsclient" }
 berry-fsproto = { path = "../../berry-fsproto" }
+berry-gfx = { path = "../../berry-gfx" }
 berry-guiproto = { path = "../../berry-guiproto" }
 berry-sys = { path = "../../berry-sys" }
 
