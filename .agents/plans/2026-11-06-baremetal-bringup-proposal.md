@@ -47,4 +47,5 @@ Updated: 2026-11-07
 
 ## 参考
 
-- 调研 12 号 §4/§5、13 号 §2/§4；G4 草案 §7-9；测试策略 §G5/§已知非内核因素；swift-os NOTES.md（Hetzner/分配器坑）；TrustOS README（UDP 三通道）
+- 调研 12 号 §4/§5、13 号 §2/§4、14 号 §1.2（urthr 板级矩阵）；G4 草案 §7-9；测试策略 §G5/§已知非内核因素；swift-os NOTES.md（Hetzner/分配器坑）；TrustOS README（UDP 三通道）
+- **并线提示（2026-11-07）**：sched-1.3 预研真机线（`1a6eb25`，bench 视角：seL4bench 骨架/HDR 1024 桶/RPi4 规程 GIC/PL011/DVFS）与本 proposal（bring-up 视角）共享 PL011/GIC 三件套——**目标板分歧待并线裁决**（bench 线 RPi4 vs bring-up 线 RPi5 翻案）；另注：RPi4/RPi5 均为单簇 4 核（A72/A76），真机 EAS 异构放置验证两板皆不可达，异构面另需评估。
