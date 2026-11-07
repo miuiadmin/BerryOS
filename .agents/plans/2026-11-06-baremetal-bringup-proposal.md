@@ -6,7 +6,9 @@ Updated: 2026-11-07
 
 一句话说明：把「QEMU→真机」从无限期风险变成有里程碑的工程——三台阶（云 VM 关 → RPi5 三件套关 → rootfs 真机通道），零架构分叉。
 
-> **2026-11-07 事实修正（调研 14 号 §1.2，urthr 板级矩阵实证）**：台阶二目标板 RPi4 → **RPi5 翻案**——① GICv2 两板相同（`gic.rs` 复用判断不变）；② SDHC **只在 RPi5 有完整先例**（RPi4B 的 SD 通道 urthr 亦未铺）；③ PSCI 只有 RPi5 有（RPi4B SMP 须 spin-table，前置雷 6 自动消失于 RPi5）；④ PCIe/xHCI/Cadence 网卡/RP1 南桥全套活样本在 RPi5（Zig 实现可参照语义）。原拒 RPi5 理由（BCM2712 陌生）被实证推翻一半；真机 CI 形态先例同步获得（Build RPi5 + Runtime Test 分行 Actions）。翻案待仓主裁。
+> **2026-11-07 延后条款（仓主裁）**：暂不购板——台阶二/三挂起，**台阶一（云 VM，按小时租用非购板）照常独立开工**；目标板并线裁决（RPi5 翻案 vs RPi4 bench 规程）**随采购推迟**，待台阶一云 VM 数据回来后重评（届时对真机缺口面的判断更精确，板型选择可能超出 RPi 系）。再购板触发条件：① 台阶一全绿且裸机面成为当前瓶颈；② sched-1.3 需要 DVFS/功耗真数据；③ i-cache 雷（G4-3 C4）已无板先修、就位待验。无板期间不受影响的：仿真面全部、i-cache 修码、云 VM 真时钟/持久/网络验证。
+
+> **2026-11-07 事实修正（调研 14 号 §1.2，urthr 板级矩阵实证）**：台阶二目标板 RPi4 → **RPi5 翻案**——① GICv2 两板相同（`gic.rs` 复用判断不变）；② SDHC **只在 RPi5 有完整先例**（RPi4B 的 SD 通道 urthr 亦未铺）；③ PSCI 只有 RPi5 有（RPi4B SMP 须 spin-table，前置雷 6 自动消失于 RPi5）；④ PCIe/xHCI/Cadence 网卡/RP1 南桥全套活样本在 RPi5（Zig 实现可参照语义）。原拒 RPi5 理由（BCM2712 陌生）被实证推翻一半；真机 CI 形态先例同步获得（Build RPi5 + Runtime Test 分行 Actions）。翻案随延后条款一并冻结，采购时复评。
 
 ## 背景
 
