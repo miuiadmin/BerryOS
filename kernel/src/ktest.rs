@@ -40,6 +40,7 @@ pub fn run() {
     test_policy_v3();
     test_policy_bind_syscall();
     test_policy_perf();
+    test_policy_shadow();
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
@@ -3177,6 +3178,156 @@ fn test_policy_perf() {
 
     // 任务体 16KiB 栈 × 4 + 满表快照泄漏不回收（ktest 语境同 PV3/PBS 政策）。
     berry_hal_aarch64::uart_puts(b"PP-K ok\n");
+}
+
+/// SH（policy shadow）：双轨道决策计算——shadow 谱系（COMMIT/PROMOTE/DEMOTE）
+/// 的行为收口（`policy.rs` Shadow 谱系段；只经 pub 接口 `bind_gen_shadow`/
+/// `promote`/`demote`/`shadow_gen`/`gen`/`unbind` 驱动，`apply` 由 pick_next
+/// 间接跑——决策路径真消费，不直接调）：
+/// - **SH-1 shadow 不扰 active**：`bind_gen_shadow`（表A p7+32）受理后
+///   ACTIVE 零感知（`bound()` 仍 false、`gen()` 仍 0——「只算不用」），
+///   12 轮 pick 与未绑基线**逐位全等**（选人+eff+epp——约束①「快路径
+///   零改动」的行为面活证：shadow 槽经 ACTIVE 无别名可达）；
+/// - **SH-2 promote 转正**：`promote()` → true，shadow 表即刻成为 active
+///   ——p7 +32 独占 12 轮（含首轮：head 即 p7，出选即 apply 写 eff=32）；
+///   `gen()` 随转正 = shadow gen（转正后 active 谱系以 shadow 世代起算，
+///   此后 `bind_gen` 的陈旧拒收比照该值）；
+/// - **SH-3 demote 降级**：`demote()` 后 active 即刻回空表（接口缺席等价
+///   ：`bound()` false）——12 轮逐位回基线；shadow 谱系**保留**
+///   （`shadow_gen()` 不动——双轨道计算可继续，随时复转正）；
+/// - **SH-4 shadow 陈旧拒收**：`bind_gen_shadow(gen == shadow_gen())` →
+///   false（重放）、`gen < shadow_gen()` → false（乱序旧表），拒收后
+///   shadow 谱系未动（`shadow_gen()` 不变）；陈旧比照 **shadow 谱系**，
+///   与 active 侧 gen 无关（demote 后 active=0 亦不误收）；
+/// - **SH-5 promote 空 shadow 防御**：unbind（active 哨兵）+ shadow 从未
+///   绑定 → `promote()` → false 且 ACTIVE 不动（无表可转正）。shadow 无
+///   清空接口，「空 shadow」态全局仅存在于首次 `bind_gen_shadow` 之前
+///   ——本段物理**前置**到 SH-1 前执行（本测试是 shadow 谱系唯一消费者，
+///   测试开头前置态构造性成立；SH-1 起绑后该态不复现）。
+///
+/// 形态同 `test_policy_v3`：本地 `Runqueue` + 双任务（proc_tag = 7/8——同
+/// PV3/PBS 键域口径；7 = 表 A 受益者）ROUNDS=12 轮 pick。QEMU ktest 是唯一家
+/// （同 PV3/PBS——进程调度 crate 无 host 测试面）。非 smoke 注册标记
+/// （TAGTAB 模式：断言炸 = panic = 后续标记缺失兜底，同 PV3-K/PBS-K/PP-K）。
+#[allow(clippy::unwrap_used)]
+fn test_policy_shadow() {
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{EppHint, Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn sh_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 单轮观测（比对单位）：选中者名 + 两个被注入面字段。
+    type Obs = (&'static [u8], i32, EppHint);
+
+    const ROUNDS: usize = 12;
+
+    /// 双任务本地环（proc_tag = 7/8——7 = 表 A 受益者、8 = 旁证零写入位）。
+    fn setup2() -> (Runqueue, RoundRobin, Topo) {
+        let mut rq = Runqueue::new();
+        let rr = Fair;
+        let topo = Topo::single();
+        for (tag, name) in [(7usize, b"p7".as_slice()), (8, b"p8".as_slice())] {
+            let mut t = Task::new_kernel_with_as(sh_dummy, tag, name, 0, 0);
+            t.proc_tag = tag; // 策略表 key（v1 = proc_tag；new_kernel 默认 0）
+            let t: &'static mut Task = alloc::boxed::Box::leak(t);
+            rr.enqueue(t, &mut rq);
+        }
+        (rq, rr, topo)
+    }
+
+    /// 跑 ROUNDS 轮 pick 记 (name, eff, epp) 序列（apply 由 pick_next 挂钩）。
+    fn probe(rq: &Runqueue, rr: &RoundRobin, topo: &Topo) -> [Obs; ROUNDS] {
+        let mut seq: [Obs; ROUNDS] = [(b"", 0, EppHint::Efficiency); ROUNDS];
+        for s in seq.iter_mut() {
+            let t = rr.pick_next(rq, topo).expect("SH：非空 runqueue 必有出选");
+            *s = (t.name, t.prio_effective, t.epp);
+        }
+        seq
+    }
+
+    // 前序状态防御性清零（同 PV3/PBS 口径）——SH-5 与 SH-1 基线共同前提：
+    // active 哨兵 + shadow 从未绑定（本测试是 shadow 谱系唯一消费者）。
+    policy::unbind();
+    assert!(!policy::bound(), "SH：前置须 active 未绑（哨兵）");
+    assert_eq!(policy::shadow_gen(), 0, "SH：前置须 shadow 从未绑定（gen=0）");
+
+    // SH-5（物理前置——「空 shadow」态只在首次 bind_gen_shadow 前存在）：
+    // active 空 + 无 shadow → promote() → false，且 ACTIVE 不动（仍哨兵）
+    //——无表可转正的防御面。
+    assert!(!policy::promote(), "SH-5：空 shadow promote 须 false（防御面）");
+    assert!(!policy::bound(), "SH-5：false 转正后 active 须不动（仍哨兵）");
+
+    // SH-1 前半：基线（active 接口缺席——12 轮参照序列）。
+    let (rq_b, rr_b, topo_b) = setup2();
+    let base = probe(&rq_b, &rr_b, &topo_b);
+
+    // SH-1 后半：bind shadow 表 A（p7 +32）→ ACTIVE 零感知（bound/gen 不动）
+    // 且 12 轮 pick 逐位全等（选人+eff+epp——快路径零改动的行为面）。
+    let tab_a = [Entry {
+        task_key: 7,
+        directive: Directive { placement: 0, weight: 32, epp: None },
+    }];
+    assert!(policy::bind_gen_shadow(&tab_a, 1), "SH-1：新 shadow gen 须受理");
+    assert_eq!(policy::shadow_gen(), 1, "SH-1：shadow_gen 须即刻反映新世代");
+    assert!(!policy::bound(), "SH-1：shadow bind 后 active 须仍哨兵（只算不用）");
+    assert_eq!(policy::gen(), 0, "SH-1：active 侧 gen 须零感知（EMPTY_SNAP）");
+    let (rq_1, rr_1, topo_1) = setup2();
+    let sh1 = probe(&rq_1, &rr_1, &topo_1);
+    for i in 0..ROUNDS {
+        assert_eq!(base[i].0, sh1[i].0, "SH-1：shadow 在席第 {} 轮选人须与基线全同", i);
+        assert_eq!(base[i].1, sh1[i].1, "SH-1：shadow 在席第 {} 轮 eff 须零写入", i);
+        assert_eq!(base[i].2, sh1[i].2, "SH-1：shadow 在席第 {} 轮 epp 须零写入", i);
+    }
+
+    // SH-2：promote 转正——shadow 表即刻成为 active：p7 +32 独占 12 轮（含
+    // 首轮：head 即 p7，出选即 apply 写 eff=32）；gen() 随转正 = shadow gen。
+    assert!(policy::promote(), "SH-2：非空 shadow promote 须 true");
+    assert!(policy::bound(), "SH-2：转正后须已绑（shadow 表成为 active）");
+    assert_eq!(policy::gen(), 1, "SH-2：转正后 active gen 须 = shadow gen");
+    let (rq_2, rr_2, topo_2) = setup2();
+    let sh2 = probe(&rq_2, &rr_2, &topo_2);
+    for i in 0..ROUNDS {
+        assert_eq!(sh2[i].0, b"p7".as_slice(), "SH-2：转正后第 {} 轮须 p7 独占", i);
+        assert_eq!(sh2[i].1, 32, "SH-2：转正后 p7 eff 须恒 32（第 {} 轮）", i);
+    }
+
+    // SH-3：demote 降级——active 即刻回空表（接口缺席等价）：12 轮逐位回
+    // 基线；shadow 谱系保留（shadow_gen 不动——随时可复转正）。
+    policy::demote();
+    assert!(!policy::bound(), "SH-3：demote 后须回哨兵（接口缺席）");
+    assert_eq!(policy::shadow_gen(), 1, "SH-3：demote 不得动 shadow 谱系（保留）");
+    let (rq_3, rr_3, topo_3) = setup2();
+    let sh3 = probe(&rq_3, &rr_3, &topo_3);
+    for i in 0..ROUNDS {
+        assert_eq!(base[i].0, sh3[i].0, "SH-3：demote 后第 {} 轮选人须回基线", i);
+        assert_eq!(base[i].1, sh3[i].1, "SH-3：demote 后第 {} 轮 eff 须回基线（零写入）", i);
+        assert_eq!(base[i].2, sh3[i].2, "SH-3：demote 后第 {} 轮 epp 须回基线（零写入）", i);
+    }
+
+    // SH-4：shadow 陈旧拒收——gen == shadow_gen()（重放）与 gen <
+    // shadow_gen()（乱序旧表）均拒；拒收后 shadow 谱系未动、active 不扰。
+    let tab_b = [Entry {
+        task_key: 8,
+        directive: Directive { placement: 0, weight: 32, epp: None },
+    }];
+    let cur = policy::shadow_gen();
+    assert!(!policy::bind_gen_shadow(&tab_b, cur),
+        "SH-4：gen == shadow_gen() 须拒（重放陈旧）");
+    assert!(!policy::bind_gen_shadow(&tab_b, cur.saturating_sub(1)),
+        "SH-4：gen < shadow_gen() 须拒（乱序旧表）");
+    assert_eq!(policy::shadow_gen(), cur, "SH-4：拒收后 shadow 谱系须未动");
+    assert!(!policy::bound(), "SH-4：shadow 拒收不得扰动 active（仍哨兵）");
+
+    // 收尾：恢复缺席态（同 PV3/PBS——smoke 稳态全程未绑，等价性延续真实
+    // 调度路径；shadow 谱系留 gen=1 无清空接口——boot 期单测语境不外泄）。
+    policy::unbind();
+    assert!(!policy::bound(), "SH：收尾须回到未绑");
+
+    // 任务体 16KiB 栈 × 4 泄漏不回收（ktest 语境同 PV3 政策——v1 无 reap）。
+    berry_hal_aarch64::uart_puts(b"SHD-K ok\n");
 }
 
 /// P4 收官审计实踩的 runqueue 摘环回归：`unlink` 旧单元素判据 `prev == next`

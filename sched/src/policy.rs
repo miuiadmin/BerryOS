@@ -350,3 +350,95 @@ pub(crate) fn weight_of(task: &Task) -> i32 {
         None => 0,
     }
 }
+
+// ---- Shadow 谱系：双轨道决策计算（COMMIT + PROMOTE/DEMOTE）----
+//
+// 双轨道隔离的**结构性**保证（约束①：快路径零改动）：[`ACTIVE`] 的值域只有
+// 0..=2/哨兵——经 [`active_snap`] 永远只达 [`SNAPS`]/[`EMPTY_SNAP`]，shadow
+// 槽对快路径**不可达**（非口头约定，是地址空间上无别名）。shadow 侧写纪律
+// 同 [`SNAPS`]（约束②）：单核 SVC 屏蔽窗单写者、只写非活跃槽 + 翻转
+// [`SHD_WHERE`]，全部裸写、零原子；双槽（而非三槽）即足——shadow 无快路径
+// 读者，翻转后旧槽只剩写者自己会再碰（约束③的拷贝源/目的地都在写者手里）。
+
+/// shadow 双槽轮转区：写者写 `SHD[SHD_WHERE ^ 1]`（非活跃槽）→ 翻转
+/// [`SHD_WHERE`] 发布。`static mut` 纪律同 [`SNAPS`]（`&raw mut` 取裸指针，
+/// 不立引用——E0596）。
+static mut SHD: [Snap; 2] = [const { Snap::empty() }; 2];
+/// 当前活 shadow 槽号（0/1）。写者翻转本位 = shadow 侧发布（无原子——
+/// 单写者窗内序即全序）。
+static mut SHD_WHERE: u8 = 0;
+
+/// shadow 活槽裸指针（读窗纪律同 [`active_snap`]：静态区槽位、'static 生存期
+/// ——解引用读窗的 SAFETY 在调用点挂）。
+fn shadow_snap() -> *const Snap {
+    // SAFETY: `static mut` 取 `&raw const` 裸指针（不立引用——E0133 解除的就
+    // 是这一层）；SHD_WHERE 仅单写者（SVC 屏蔽窗）翻转，读点同窗——值稳定
+    // 0/1，`& 1` 收口防越界（冗余防线，槽号 < 2 编译期可证）。
+    unsafe { &raw const SHD[(SHD_WHERE & 1) as usize] }
+}
+
+/// shadow 侧 gen 观察（双轨道遥测/对账）：从未绑定 → 0（[`Snap::empty`]
+/// 基底），已绑 → 最后一次 [`bind_gen_shadow`] 受理的 gen。读窗纪律同
+/// [`self_gen_now`]（单核屏蔽窗读写互斥——读窗内稳定）。
+pub fn shadow_gen() -> u64 {
+    // SAFETY: 指针源自 shadow_snap（静态区槽位，'static 生存期）；已发布
+    // shadow 槽内容不可变（写者只写非活跃槽）+ 单核屏蔽窗读写互斥——本读
+    // 窗内快照稳定（读纪律同 self_gen_now，仅多读一个 gen 字段）。
+    unsafe { (*shadow_snap()).gen }
+}
+
+/// 绑 shadow 表（COMMIT + SHADOW flag 语义——双轨道写侧）：校验 +
+/// [`build_snap`]（gen 须**严格大于** shadow 侧当前 gen——陈旧拒收同
+/// [`bind_gen`] 语义，但比照对象换 **shadow 谱系**，与 active 侧 gen 无关）
+/// → 写非活跃 shadow 槽 → 翻转 [`SHD_WHERE`]。**ACTIVE 不动**：shadow 只算
+/// 不用，决策路径（apply/weight_of）零感知（约束①）。
+///
+/// 返回：true = shadow 表已换；false = 陈旧拒收（shadow 谱系未动）。
+pub fn bind_gen_shadow(tbl: &[Entry], gen: u64) -> bool {
+    if gen <= shadow_gen() {
+        return false; // 陈旧拒收：shadow 世代必须严格递增（同 bind_gen 语义）
+    }
+    let snap = build_snap(tbl, gen);
+    // SAFETY: 单写者（SVC/IRQ 屏蔽窗）独占写**非活跃** shadow 槽——shadow
+    // 无快路径读者（ACTIVE 不指向 SHD）、单写者自身此窗不读该槽，写窗内无
+    // 别名引用；static 存储期 = 整个程序运行期，ptr::write 不越界（槽号
+    // < 2 编译期可证）。写后翻转 SHD_WHERE：同窗裸 u8 写，单核无重排面。
+    unsafe {
+        core::ptr::write(&raw mut SHD[(SHD_WHERE ^ 1) as usize], snap);
+        SHD_WHERE ^= 1;
+    }
+    true
+}
+
+/// shadow → enforced 原子转正（PROMOTE）：读当前 shadow 活槽 → **一次 ~4KiB
+/// 受控拷贝**（`Snap` 按值 4112B，源/目的地均在写者手里的静态区——无逃逸、
+/// 无分配、非共享数据竞争面）→ [`publish`] 单条 Release store 原子可见
+/// （约束③：机制面完全复用三槽轮转 publish，不新开同步原语）。gen 取
+/// shadow 侧的 gen：转正后 active 谱系 gen = shadow gen——此后 active 侧
+/// [`bind_gen`] 的陈旧拒收比照该值。
+///
+/// 返回：true = 已转正（ACTIVE 指向新表，立即参与决策）；false = shadow
+/// 表为空（gen == 0，从未 [`bind_gen_shadow`] 受理）——无表可转正，ACTIVE
+/// 不动。
+pub fn promote() -> bool {
+    let src = shadow_snap();
+    // SAFETY: 指针源自 shadow_snap（静态区槽位，'static 生存期）；单核 SVC
+    // 屏蔽窗单写者——读窗内 shadow 槽稳定。ptr::read 按值拷出（4112B 受控
+    // 拷贝），源槽内容保留在 shadow 谱系（demote 后可再次 promote 复转正）。
+    unsafe {
+        if (*src).gen == 0 {
+            return false; // shadow 空（从未绑定）：无表可转正
+        }
+        publish(core::ptr::read(src));
+    }
+    true
+}
+
+/// enforced → shadow 降级（DEMOTE）：单条 Release store 把 [`ACTIVE`] 打回
+/// [`SENTINEL_EMPTY`]——读路径立即回落 [`EMPTY_SNAP`]，等价 [`unbind`] 的
+/// 「接口缺席」态（apply/weight_of 空表两次分支即返、零写入——约束④：active
+/// 立即回空表语义）。**shadow 表保留**（SHD/SHD_WHERE 不动）：双轨道计算
+/// 可继续，随时 [`promote`] 复转正。
+pub fn demote() {
+    ACTIVE.store(SENTINEL_EMPTY, Ordering::Release);
+}

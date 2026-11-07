@@ -50,7 +50,9 @@ kernel/src/syscall.rs::BOOTSTRAP_HT	boot
 kernel/src/telemetry.rs::SWITCH_RINGS	telemetry
 kernel/src/telemetry.rs::WAKE_RINGS	telemetry
 sched/src/class.rs::LAST_VCT	scheduler
-sched/src/policy.rs::TABLE	scheduler
+sched/src/policy.rs::SHD	scheduler
+sched/src/policy.rs::SHD_WHERE	scheduler
+sched/src/policy.rs::SNAPS	scheduler
 sched/src/sched.rs::CURRENT	scheduler
 sched/src/sched.rs::EXIT_HOOK	scheduler
 sched/src/sched.rs::IDLE_TASK	scheduler
