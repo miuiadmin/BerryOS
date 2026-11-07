@@ -535,6 +535,10 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-fatfs --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-netproto --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-netdproto --target {{host}}
+    # sim-S1：berry-pwproto（sim 三设备快照协议纯函数面——帧头/定长快照/
+    # ACK/流式再同步解码 + 值域双向执法 + 黄金字节钉板，host 9 测；
+    # PM-16 §4.1 契约冻结）。
+    cargo test --manifest-path user/Cargo.toml -p berry-pwproto --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-tcp --target {{host}}
     # C-3：berry-psproto（ps 查询 RPC 协议纯函数面——表/ver/mem 三 op
     # 编解码 + 严格解析全拒面 + 黄金字节钉板，host 15 测）。
