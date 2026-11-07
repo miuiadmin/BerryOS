@@ -15,7 +15,7 @@
 //! Status: experimental (0.1.0) — the byte layouts move with the BerryOS
 //! v1 services. Repo docs are mostly zh-CN.
 //!
-//! ## 帧布局（v1，`docs/sim设备通道与契约设计-v1.0.md` §5 冻结）
+//! ## 帧布局（v1，`docs/sim设备通道与契约设计-v1.1.md` §5 冻结）
 //!
 //! 共同头 8B + 定长载荷（per 设备全量快照）+ 事件位图 u32 = 每帧全量
 //! 替换、宿主禁止多帧拼装（§4.1「原子快照」）。多字节数值全 LE：
@@ -310,9 +310,13 @@ pub fn encode_ack(out: &mut [u8], dev: u8, seq: u16, st: u8) -> Option<usize> {
     Some(ACK_LEN)
 }
 
-/// ACK 帧解析（宿主注入 client 用）：恰长，尾随/魔数/ver/st 越界全拒。
+/// ACK 帧解析（宿主注入 client 用）：恰长，尾随/魔数/dev/ver/st 越界全拒。
 pub fn decode_ack(buf: &[u8]) -> Option<(u8, u16, u8)> {
-    if buf.len() != ACK_LEN || rd_u32(buf) != MAGIC || buf[5] != VER {
+    if buf.len() != ACK_LEN
+        || rd_u32(buf) != MAGIC
+        || buf[5] != VER
+        || !matches!(buf[4], DEV_BATTERY | DEV_THERMAL | DEV_MODEM)
+    {
         return None;
     }
     let st = buf[HEADER_LEN];
@@ -626,9 +630,13 @@ mod tests {
         let mut buf = [0u8; ACK_LEN];
         assert_eq!(encode_ack(&mut buf, DEV_BATTERY, 42, ST_OK), Some(ACK_LEN));
         assert_eq!(decode_ack(&buf), Some((DEV_BATTERY, 42, ST_OK)));
-        // st 越界 / 未知 dev / 尾随字节 / 魔数破坏 全拒。
+        // st 越界 / 未知 dev / 尾随字节 / 魔数破坏 全拒（编码与解码对称）。
         assert_eq!(encode_ack(&mut buf, DEV_BATTERY, 1, 3), None);
         assert_eq!(encode_ack(&mut buf, 9, 1, ST_OK), None);
+        encode_ack(&mut buf, DEV_BATTERY, 1, ST_OK);
+        let mut bad_dev = buf;
+        bad_dev[4] = 9;
+        assert_eq!(decode_ack(&bad_dev), None);
         assert_eq!(decode_ack(&buf[..ACK_LEN - 1]), None);
         let mut bad = buf;
         bad[0] ^= 0xFF;
