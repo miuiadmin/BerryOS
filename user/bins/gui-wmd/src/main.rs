@@ -115,10 +115,11 @@ struct InputLock {
     window: u16,
 }
 
-/// Phase 1/3 session 表（静态定容；v1 帽 4）。WM RPC 与输入分通道，避免
+/// Phase 1/3/Browser session 表（静态定容；帽 7 = gfxdemo×2、launcher、
+/// 路由验证、Browser 与两个未来真实 app）。WM RPC 与输入分通道，避免
 /// launcher 异步 INPUT_POLL 与 present RPC 在同一 channel 上响应错配。
 struct WmSessions {
-    slots: [Option<WmSession>; 4],
+    slots: [Option<WmSession>; 7],
     next_id: u16,
     input_lock: Option<InputLock>,
 }
@@ -145,7 +146,7 @@ const fn zero_event() -> gp::PointerEvent {
 impl WmSessions {
     fn new() -> Self {
         Self {
-            slots: [None, None, None, None],
+            slots: [None, None, None, None, None, None, None],
             next_id: 0,
             input_lock: None,
         }
@@ -595,8 +596,11 @@ fn main() {
             continue;
         }
 
-        let mut hs = [0 as Handle; 14];
-        let mut sigs = [0u64; 14];
+        // wait_many 内核帽 16：broker+push + 7×(WM RPC/input) 恰 16。
+        // Process TERMINATED 不入等待集；serve 顶 poll-first + 10s idle 帽
+        // 兜死亡探测（无事件最长 10s 清理，事件路径即时）。
+        let mut hs = [0 as Handle; 16];
+        let mut sigs = [0u64; 16];
         hs[0] = wm_srv;
         sigs[0] = SIGNAL_READABLE;
         hs[1] = push_srv;
@@ -608,9 +612,6 @@ fn main() {
             n += 1;
             hs[n] = sess.input;
             sigs[n] = SIGNAL_READABLE;
-            n += 1;
-            hs[n] = sess.process;
-            sigs[n] = SIGNAL_TERMINATED;
             n += 1;
         }
         let mut idx = 0usize;

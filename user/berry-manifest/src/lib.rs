@@ -302,6 +302,9 @@ pub struct Manifest<'a> {
     /// 完整包内路径，含 `bin/` 前缀（如 `bin/appdemo`）。
     pub entry: &'a str,
     pub console: bool,
+    /// GUI Browser Native Shell 面：wm broker 端点授能（缺省 false——旧包
+    /// 零漂移；appd 在位时才把 WMD client 端 fresh dup 给 app）。
+    pub wm: bool,
     pub stack_pages: u32,
     pub intent: Intent,
     // ---- SDK-1a 增量（add-only：缺省全 None = v0 旧包路径零漂移）----
@@ -380,6 +383,7 @@ struct Fields<'a> {
     ty: Option<&'a [u8]>,
     intent: Option<Intent>,
     console: Option<bool>,
+    wm: Option<bool>,
     stack_pages: Option<u32>,
     // SDK-1a 增量槽（齐备或齐缺的裁断在收尾）
     c_min: Option<SdkVer>,
@@ -588,6 +592,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         ty: None,
         intent: None,
         console: None,
+        wm: None,
         stack_pages: None,
         c_min: None,
         c_target: None,
@@ -690,6 +695,12 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 f.console = Some(parse_bool(val).ok_or_else(|| err("bad value"))?);
             }
             // SDK-1a：fs/net 作用域数组（词表闭集执法在 set_scope）
+            (Sec::Caps, b"wm") => {
+                if f.wm.is_some() {
+                    return Err(err("dup key"));
+                }
+                f.wm = Some(parse_bool(val).ok_or_else(|| err("bad value"))?);
+            }
             (Sec::Caps, b"fs") => set_scope(&mut f.fs, val, FS_SCOPES)?,
             (Sec::Caps, b"net") => set_scope(&mut f.net, val, NET_SCOPES)?,
             (Sec::Run, b"stack_pages") => {
@@ -753,6 +764,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
     }
     let intent = f.intent.ok_or_else(|| err("missing intent"))?;
     let console = f.console.ok_or_else(|| err("missing console"))?;
+    let wm = f.wm.unwrap_or(false);
 
     // ---- SDK-1a 收尾：三值/两键「齐备或齐缺」+ 缺省 None（add-only）----
     let compat = match (f.c_min, f.c_target, f.c_compile) {
@@ -788,6 +800,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         version: from_utf8(version).unwrap_or(""),
         entry: from_utf8(entry).unwrap_or(""),
         console,
+        wm,
         stack_pages: f.stack_pages.unwrap_or(STACK_PAGES_DEFAULT),
         intent,
         compat,
@@ -1344,6 +1357,16 @@ stack_pages = 16
     fn caps_unknown_key() {
         let s = BASE.replace("console = true", "console = true\ndisplay = true");
         assert_eq!(bad(&s).reason_str(), "unknown key");
+        // Browser Native Shell：wm 缺省 false、显式 true、坏值/重复键均执法。
+        let wm_base = BASE.replace("console = true", "console = true\nwm = true");
+        assert!(parse(wm_base.as_bytes()).unwrap().wm);
+        assert!(!parse(BASE.as_bytes()).unwrap().wm);
+        assert!(parse(
+            BASE.replace("console = true", "console = true\nwm = \"true\"").as_bytes()
+        ).is_err());
+        assert!(parse(
+            BASE.replace("console = true", "console = true\nwm = true\nwm = false").as_bytes()
+        ).is_err());
         // fs 不能顶替 console（必填缺失面不受新键扰动）
         let s = BASE.replace("console = true", "fs = [\"rootfs\"]");
         assert_eq!(bad(&s).reason_str(), "missing console");

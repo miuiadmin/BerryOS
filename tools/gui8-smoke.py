@@ -104,6 +104,13 @@ MARK_WM_DEAD1 = "WMDEAD ok id=1 wins=0"
 MARK_WM_DEAD2 = "WMDEAD ok id=2 wins=1"
 MARK_WM_ROUTE_DESKTOP = "WMROUTE ok sid=3 window=0"
 MARK_WM_ROUTE_WINDOW = "WMROUTEWIN ok phase="
+MARK_BROWSER_UP = "BROWSER up"
+MARK_BROWSER_WIN = "BROWSERWIN ok"
+MARK_BROWSER_FRAME = "BROWSERFRAME ok"
+MARK_BROWSER_BACK = "BROWSERBACK ok"
+MARK_BROWSER_PROBE = "BROWSERPROBE ok"
+MARK_BROWSER_DESTROY = "BROWSERDESTROY ok"
+MARK_BROWSER_EXIT = "BROWSEREXIT ok"
 MARK_WM_INPUT_DROP = "WMIDROP bad"
 MARK_INPUT_ROUTE_BAD = "INPUTROUTE bad"
 MARK_CJK_PROBE = "CJKPROBE ok n=2"
@@ -988,38 +995,37 @@ def verify_layout_selfheal_boot(text: str, log_path: Path | None = None) -> None
 def verify_normal_boot(
     text: str,
     snapshot_pos: int,
+    browser_before: int,
     demo_before: int,
-    quiet_before: int,
     log_path: Path | None = None,
 ) -> None:
-    """常态隔离验收：spawn 仍发生，但零 CLICK/LAYOUTW/LAYOUT/click ready。"""
+    """常态隔离 + Browser Native Shell 验收。
+
+    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；真实
+    APP_SPAWN 从 APPDEMO 换成 BROWSER（首格布局），必须完成第二个
+    Browser 窗口/帧，返回键经 wmd owner 路由后 DESTROY/EXIT。
+    """
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_CLICK_READY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_SWIPE, 0, "normal boot", log_path)
-    _require_exact_count(text, MARK_WM_ROUTE_DESKTOP, 1, "normal boot", log_path)
-    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal boot", log_path)
-    _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "normal boot", log_path)
-    demo_after = text.count(MARK_APP_DEMO_UP)
-    if demo_after != demo_before + 1:
+    _require_exact_count(text, MARK_APP_QUIET_UP, 0, "normal boot", log_path)
+    _require_exact_count(text, MARK_BROWSER_UP, browser_before + 1, "normal Browser", log_path)
+    _require_exact_count(text, MARK_BROWSER_WIN, browser_before + 1, "normal Browser", log_path)
+    _require_exact_count(text, MARK_BROWSER_FRAME, browser_before + 1, "normal Browser", log_path)
+    _require_exact_count(text, MARK_BROWSER_BACK, 1, "normal Browser back", log_path)
+    _require_exact_count(text, MARK_BROWSER_DESTROY, browser_before + 1, "normal Browser", log_path)
+    _require_exact_count(text, MARK_BROWSER_EXIT, browser_before + 1, "normal Browser", log_path)
+    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal Browser", log_path)
+    # 常态布局把 APPDEMO 放 page1，Browser 点击不得误 spawn APPDEMO。
+    if text.count(MARK_APP_DEMO_UP) != demo_before:
         raise SmokeError(
-            f"normal boot: 新增 {MARK_APP_DEMO_UP!r} "
-            f"{demo_after - demo_before} 行 != 1（常态点击未 spawn APPDEMO）",
+            "normal Browser: APPDEMO 计数漂移（Browser 点击误命中/误 spawn）",
             log_path,
         )
-    quiet_after = text.count(MARK_APP_QUIET_UP)
-    if quiet_after != quiet_before:
-        raise SmokeError(
-            f"normal boot: 新增 {MARK_APP_QUIET_UP!r} "
-            f"{quiet_after - quiet_before} 行——常态点击误 spawn APPQUIET",
-            log_path,
-        )
-    if text.rfind(MARK_APP_DEMO_UP) < snapshot_pos:
-        raise SmokeError(
-            f"normal boot: 新增 {MARK_APP_DEMO_UP!r} 不在注入前快照之后",
-            log_path,
-        )
+    if text.find(MARK_BROWSER_BACK) < snapshot_pos:
+        raise SmokeError("normal Browser: BACK 早于快照", log_path)
 
 
 def qemu_command(
@@ -1247,6 +1253,8 @@ def preflight(args) -> None:
     require_file(ROOT / "tools" / "mkfat.py", "mkfat.py")
 
 
+
+
 # =====================================================================
 # Boot A / Boot B 主流程
 # =====================================================================
@@ -1257,6 +1265,8 @@ def _boot_base_markers() -> list[str]:
         MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N9,
         MARK_WM_CONN1, MARK_WM_CONN2, MARK_WM_DENIED, MARK_WM_SURFACE_DENIED, MARK_WM_ORPHAN, MARK_WM_2FRAME,
         MARK_WM_DEAD1, MARK_WM_DEAD2, MARK_WM_CLEAN, MARK_WM_CONN3,
+        MARK_WM_CONN4, MARK_BROWSER_UP, MARK_BROWSER_WIN, MARK_BROWSER_FRAME,
+        MARK_BROWSER_PROBE, MARK_BROWSER_DESTROY, MARK_BROWSER_EXIT,
         MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
     ]
 
@@ -1427,7 +1437,7 @@ def run_dual_boot(args) -> int:
                 f"(window {rw}x{rh})",
                 boot_a.log_path,
             )
-        owner_marker = f"WMROUTE ok sid=4 window={rw_id}"
+        owner_marker = f"WMROUTE ok sid=5 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
 
@@ -1580,10 +1590,15 @@ def run_normal_boot(args) -> int:
         create_data_disk(disk, with_smoke=False)
         # 常态桌面默认隐藏 APPDEMO/APPQUIET（官方系统 app 在席时）；
         # 注入 canonical 双 app 布局保持常态隔离点击面，不造 GUI8.SMK。
-        write_layout_for_selftest(disk)
+        browser_layout = (
+            b'{"schema":1,"cells":[{"app":"BROWSER","page":0,"row":0,"col":0},'
+            b'{"app":"APPDEMO","page":1,"row":0,"col":0}]}'
+        )
+        Fat12Volume(disk).add_file(LAYOUT_NAME11, browser_layout)
         log(
             f"新常态盘：{disk}（{disk.stat().st_size}B，"
-            f"sha256={sha256_file(disk)[:16]}…，LBA0 印章，零 GUI8.SMK）"
+            f"sha256={sha256_file(disk)[:16]}…，LBA0 印章，零 GUI8.SMK，"
+            "BROWSER 首格）"
         )
 
     boot: Boot | None = None
@@ -1600,6 +1615,11 @@ def run_normal_boot(args) -> int:
         snapshot_pos = len(boot.log.text)
         demo_before = boot.log.text.count(MARK_APP_DEMO_UP)
         quiet_before = boot.log.text.count(MARK_APP_QUIET_UP)
+        browser_before = boot.log.text.count(MARK_BROWSER_UP)
+        if browser_before < 1:
+            raise MissingMarkers(
+                "normal boot", "Browser boot-probe BROWSER up", 1, boot.log_path
+            )
         if MARK_CLICK_READY in boot.log.text:
             raise SmokeError(
                 f"normal boot: 哨兵缺席却打印 {MARK_CLICK_READY!r}——"
@@ -1612,21 +1632,41 @@ def run_normal_boot(args) -> int:
         log(f"normal-boot: display {w}x{h}（{src}）→ cell(0,0) 中心 ({cx},{cy})")
 
         boot.qmp_connect()
-        log("normal-boot: QMP 注入单击（abs → btn down → btn up）")
+        log("normal-boot: QMP 点击首格 BROWSER（真实 APP_SPAWN Native Shell）")
         boot.qmp.click(cx, cy, w, h)
-
         try:
             boot.log.wait_until(
                 boot.proc,
-                lambda t: t.count(MARK_APP_DEMO_UP) > demo_before,
-                f"新 {MARK_APP_DEMO_UP}（常态 spawn 活证）",
+                lambda t: t.count(MARK_BROWSER_UP) > browser_before
+                and t.count(MARK_BROWSER_FRAME) > browser_before,
+                f"runtime {MARK_BROWSER_UP} + {MARK_BROWSER_FRAME}",
                 args.click_timeout,
-                "normal boot click",
+                "normal Browser launch",
             )
         except MissingMarkers:
             raise MissingMarkers(
-                "normal boot click",
-                f"新 {MARK_APP_DEMO_UP}（常态 spawn 活证）",
+                "normal Browser launch",
+                f"新增 {MARK_BROWSER_UP} + {MARK_BROWSER_FRAME}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        # 等待真实帧进入 ramfb 后再抓返回键。Browser 顶栏左上即 back。
+        time.sleep(1.0)
+        log("normal-browser: QMP 点击 Browser 返回键（wmd owner-local 输入）")
+        boot.qmp.click(24, 24, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_BROWSER_BACK) >= 1
+                and t.count(MARK_BROWSER_EXIT) > browser_before,
+                f"{MARK_BROWSER_BACK} + 新 {MARK_BROWSER_EXIT}",
+                args.click_timeout,
+                "normal Browser back",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Browser back",
+                f"{MARK_BROWSER_BACK} + 新 {MARK_BROWSER_EXIT}",
                 args.click_timeout,
                 boot.log_path,
             ) from None
@@ -1637,16 +1677,19 @@ def run_normal_boot(args) -> int:
         boot = None
         watcher.poll()
         verify_normal_boot(
-            watcher.text, snapshot_pos, demo_before, quiet_before, log_path
+            watcher.text, snapshot_pos, browser_before, demo_before, log_path
         )
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-boot: spawn 仍发生（新增 APPDEMO up×1），"
-            "且 CLICK/LAYOUTW/LAYOUT/click ready 全零"
+            "normal-browser: 独立进程真实 WM 窗口/帧/返回键生命周期全过；"
+            "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
-        log("PASS（--normal-boot）：哨兵缺席的常态点击/滑动标记隔离成立")
+        log(
+            "PASS（--normal-boot）：Browser Native Shell 真链 + "
+            "哨兵缺席冒烟标记隔离成立"
+        )
         return 0
     finally:
         if boot is not None:
@@ -1695,6 +1738,12 @@ def dry_run(args) -> int:
                 MARK_LAUNCH,
                 MARK_PAGE,
                 MARK_APP_DEMO_UP,
+                MARK_BROWSER_UP,
+                MARK_BROWSER_WIN,
+                MARK_BROWSER_FRAME,
+                MARK_BROWSER_BACK,
+                MARK_BROWSER_DESTROY,
+                MARK_BROWSER_EXIT,
                 f"ZERO {MARK_CLICK_ANY} / {MARK_LAYOUTW} / {MARK_LAYOUT} / "
                 f"{MARK_CLICK_READY}",
             ]
@@ -2080,10 +2129,15 @@ def self_test(args) -> int:
             "self-test: Boot B 精确断言 ok（LAYOUT×1 / LAYOUTW×0 / CLICK×0）"
         )
 
-        fake_n = f"{MARK_APP_DEMO_UP}\n"
+        browser_boot = (
+            f"{MARK_BROWSER_UP}\n{MARK_BROWSER_WIN}\n"
+            f"{MARK_BROWSER_FRAME}\n{MARK_BROWSER_PROBE}\n"
+            f"{MARK_BROWSER_DESTROY}\n{MARK_BROWSER_EXIT}\n"
+        )
+        fake_n = f"{MARK_APP_DEMO_UP}\n{browser_boot}"
         snap_n = len(fake_n)
-        fake_n += f"{MARK_APP_DEMO_UP}\n{MARK_WM_ROUTE_DESKTOP}\n"
-        verify_normal_boot(fake_n, snap_n, 1, 0)
+        fake_n += f"{browser_boot}{MARK_BROWSER_BACK}\n{MARK_WM_ROUTE_DESKTOP}\n"
+        verify_normal_boot(fake_n, snap_n, 1, 1)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),
             (MARK_LAYOUTW + "\n", "LAYOUTW"),
@@ -2094,18 +2148,24 @@ def self_test(args) -> int:
             expect_error(
                 f"常态隔离出现 {label}",
                 lambda n=needle: verify_normal_boot(
-                    fake_n + n, snap_n, 1, 0
+                    fake_n + n, snap_n, 1, 1
                 ),
             )
         expect_error(
-            "常态隔离无新 APPDEMO",
+            "常态 Browser 无第二进程",
             lambda: verify_normal_boot(
-                f"{MARK_APP_DEMO_UP}\n", snap_n, 1, 0
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}", snap_n, 1, 1
+            ),
+        )
+        expect_error(
+            "常态 Browser 误 spawn APPDEMO",
+            lambda: verify_normal_boot(
+                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1
             ),
         )
         log(
-            "self-test: 常态隔离断言 ok（新 APPDEMO×1；CLICK/LAYOUTW/"
-            "LAYOUT/click ready/APPQUIET 全零）"
+            "self-test: Browser Native Shell 常态断言 ok（独立进程×2 生命周期；"
+            "CLICK/LAYOUTW/LAYOUT/click ready/APPQUIET 全零）"
         )
 
         # 4) QMP 协议 + no-device 广播 + 三批单击

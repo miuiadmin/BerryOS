@@ -1533,6 +1533,7 @@ fn run_rootfs_child(console: Handle) {
                 console,
                 fs_a_h,
                 &apps[i].id[..apps[i].id_len],
+                false,
                 apps[i].bap_off,
                 apps[i].bap_len,
                 step,
@@ -4438,6 +4439,7 @@ fn app_launch(
     console: Handle,
     fs_a: Handle,
     id: &[u8],
+    runtime: bool,
     bap_off: u64,
     bap_len: u64,
     step: &mut [u8],
@@ -4554,9 +4556,60 @@ fn app_launch(
             return (false, uface, None);
         }
     }
-    // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）；
-    // !wants_fs 时两枚恒 0、数组不被引用。
-    let fs_gifts = [rootfs_dup, fs_dup];
+    // Browser Native Shell：manifest `wm=true` 时 fresh dup WMD broker
+    // 客户端端。app 自建 WM/input session 两通道并在 WM_CONNECT 请求里
+    // 迁回 wmd；本端只是 broker 入场券，不含 present/hdi 服务端能力。
+    let wants_wm = man.wm;
+    let mut wm_dup: Handle = 0;
+    if wants_wm {
+        let src = WMD_CLI_DUP.load(Ordering::Relaxed);
+        if src == 0 {
+            eco_app(console, id, b"wm none");
+            if wants_fs {
+                if berry_handle_close(rootfs_dup) != 0
+                    || berry_handle_close(fs_dup) != 0
+                {
+                    trap();
+                }
+            }
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+            return (false, uface, None);
+        }
+        if berry_handle_duplicate(src, RIGHT_SEND | RIGHT_RECV, &mut wm_dup) != 0 {
+            eco_app(console, id, b"wm dup");
+            if wants_fs {
+                if berry_handle_close(rootfs_dup) != 0
+                    || berry_handle_close(fs_dup) != 0
+                {
+                    trap();
+                }
+            }
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+            return (false, uface, None);
+        }
+    }
+    // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）。
+    // 前缀纪律：fs 双件 [rootfs,fs]、wm 单件随后；空前缀不引用 0 洞。
+    let mut extra_gifts = [0 as Handle; 3];
+    let mut extra_n = 0usize;
+    if wants_fs {
+        extra_gifts[extra_n] = rootfs_dup;
+        extra_gifts[extra_n + 1] = fs_dup;
+        extra_n += 2;
+    }
+    if wants_wm {
+        extra_gifts[extra_n] = wm_dup;
+        extra_n += 1;
+    }
+    let extra_gifts = &extra_gifts[..extra_n];
     match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -4565,14 +4618,16 @@ fn app_launch(
             data_len: sc.elf_len,
             stdout,
             stack_pages: man.stack_pages as u64,
-            // stdin 无数据面（hello/vprobe 同款——appdemo/appquiet 都不读
-            // fd0）。SDK-1a：wants_fs 时改 `Some(&[])`——berry-exec 契约
-            // extras 非空须 stdin 槽在位（:446-449 assert），零长 feed =
-            // 纯槽位占位无数据。
-            stdin_feed: if wants_fs { Some(&[]) } else { None },
+            // stdin 无数据面（hello/vprobe 同款）。SDK-1a/Browser：extras
+            // 非空时 `Some(&[])`——berry-exec 要求 stdin 槽在位，零长 feed
+            // = 纯占位。
+            stdin_feed: if extra_n > 0 { Some(&[]) } else { None },
             stdin_handle: None,
-            args: &[],
-            extra_gifts: if wants_fs { &fs_gifts } else { &[] },
+            // wm=true 的 boot 批仍是真实拉起，但携 `boot-probe` argv：
+            // Browser 走完整 WM/窗口/帧/destroy 后退出，避免常驻 app 卡
+            // 死同步 boot reap；桌面点击 runtime 形无该 argv，正常常驻。
+            args: if wants_wm && !runtime { &[b"boot-probe"] } else { &[] },
+            extra_gifts,
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
@@ -4588,6 +4643,9 @@ fn app_launch(
                     trap();
                 }
             }
+            if wants_wm && berry_handle_close(wm_dup) != 0 {
+                trap();
+            }
             if ledger {
                 ps_reg(id, psp::STATE_SPAWNFAIL, 0);
             }
@@ -4599,7 +4657,7 @@ fn app_launch(
             }
         }
         Ok(child) => {
-            // SDK-1a §5.2 步骤 7：fs 两 dup 已被 take 随 env 块迁移（子表
+            // SDK-1a/Browser：fs/wm dup 已被 take 随 env 块迁移（子表
             // 所有）——本表勿关（旧值已失效，关 = -EBADF；bsh arm 同款
             // 注释义务）。
             if ledger {
@@ -5096,6 +5154,7 @@ fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
                 console,
                 FS_A.load(Ordering::Relaxed),
                 id,
+                true,
                 off,
                 len,
                 step,

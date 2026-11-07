@@ -1,0 +1,22 @@
+[package]
+name = "browser"
+version = "0.1.0"
+edition = "2021"
+# Browser Native Shell（真实系统化 Browser 阶段）：独立 no_std 进程，
+# 经 manifest `wm=true` 获 WMD broker 端点，自建 WM/input session 并呈现
+# 真实窗口。v1 是诚实本地壳：无网络、无 HTML 引擎、不声称 web。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-fbcon = { path = "../../berry-fbcon" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-sys = { path = "../../berry-sys" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

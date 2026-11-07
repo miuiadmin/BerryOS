@@ -154,6 +154,7 @@ class M:
         self.version = app["version"]
         self.entry = app["entry"]
         self.console = caps["console"]
+        self.wm = caps.get("wm", False)
         self.has_runtime = runtime is not None
         self.stack_pages = runtime["stack_pages"] if runtime else 8
         self.intent = app["intent"]
@@ -186,6 +187,8 @@ class M:
             mn, tg, cp = self.compat
             out += "\n[compat]\n" f'min = "{_ver(mn)}"\ntarget = "{_ver(tg)}"\ncompile = "{_ver(cp)}"\n'
         out += f"\n[capabilities]\nconsole = {'true' if self.console else 'false'}\n"
+        if self.wm:
+            out += "wm = true\n"
         if self.fs:
             out += f'fs = ["{self.fs}"]\n'
         if self.net:
@@ -273,10 +276,12 @@ def check_manifest_text(text: str) -> M:
             raise Reject(f"manifest: compile {_ver(vs[2])} 超工具链当前级 {SDK_CURRENT_STR}")
 
     caps = doc["capabilities"]
-    if not {"console"} <= set(caps) or set(caps) - {"console", "fs", "net"}:
-        raise Reject("manifest: [capabilities] 键集应为 console(+fs/net)")
+    if not {"console"} <= set(caps) or set(caps) - {"console", "wm", "fs", "net"}:
+        raise Reject("manifest: [capabilities] 键集应为 console(+wm/fs/net)")
     if type(caps["console"]) is not bool:
         raise Reject("manifest: console 应为 bool")
+    if type(caps.get("wm", False)) is not bool:
+        raise Reject("manifest: wm 应为 bool")
     for key, vocab in (("fs", FS_SCOPES), ("net", NET_SCOPES)):
         if key in caps:
             v = caps[key]
@@ -675,7 +680,7 @@ def build(out_path: str, app_dir: str) -> None:
     # 产包摘要行（宿主侧可见性，无消费面）；SDK-1a 尾随增量在场才打
     line = (
         f"mkapp: {out_path} {len(blob)}B {m.id} v{m.version} "
-        f"console={'true' if m.console else 'false'} "
+        f"console={'true' if m.console else 'false'} wm={'true' if m.wm else 'false'} "
         f"stack={m.stack_pages} intent={m.intent}"
     )
     if m.compat is not None:

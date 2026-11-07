@@ -54,7 +54,7 @@ mod frameloop;
 mod icons;
 mod layout_io;
 
-use berry_gfx::font::{FontSize, GlyphAtlas};
+use berry_gfx::font::FontSize;
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, input_h, self_proc_h, wm_cli_h};
 use berry_sys::{
