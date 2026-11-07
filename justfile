@@ -149,7 +149,7 @@ build-user:
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-none
     # GUI-8 视觉补全：appstub 共用静默壳（零 argv0 断言/console=false/0 退出）
-    # 复制成 4 个占位 app 的 bin/<name>。Browser/Settings/Files 已换真实 Shell。
+    # 复制成 3 个占位 app 的 bin/<name>。Browser/Settings/Files/Photos 已换真实 Shell。
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appstub/Cargo.toml \
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/browser/Cargo.toml \
@@ -157,6 +157,8 @@ build-user:
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/settings/Cargo.toml \
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/files/Cargo.toml \
+        --target aarch64-unknown-none
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/photos/Cargo.toml \
         --target aarch64-unknown-none
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
     # 单次构建 12 命令（=0.12.0 锁步，MIT，上游逐字不动；薄 harness =
@@ -282,8 +284,15 @@ build-user:
     cp -R bins/appstub/apps/FILES/icons userbins/app-stage/FILES/
     cp -R bins/appstub/apps/FILES/views userbins/app-stage/FILES/
     python3 ../tools/mkapp.py userbins/app/FILES.bap userbins/app-stage/FILES
-    # 其余四 app 仍是诚实静默占位（不冒充真实现）。
-    for spec in PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages; do
+    # Photos Native Shell：独立 ELF + 官方图标/views 组包。
+    mkdir -p userbins/app-stage/PHOTOS/bin
+    cp bins/photos/manifest.toml userbins/app-stage/PHOTOS/
+    cp cargo-target/aarch64-unknown-none/release/photos userbins/app-stage/PHOTOS/bin/photos
+    cp -R bins/appstub/apps/PHOTOS/icons userbins/app-stage/PHOTOS/
+    cp -R bins/appstub/apps/PHOTOS/views userbins/app-stage/PHOTOS/
+    python3 ../tools/mkapp.py userbins/app/PHOTOS.bap userbins/app-stage/PHOTOS
+    # 其余三 app 仍是诚实静默占位（不冒充真实现）。
+    for spec in CAMERA:camera CONTACTS:contacts MMS:messages; do
         id=${spec%%:*}; bin=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
         cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"

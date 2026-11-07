@@ -98,6 +98,7 @@ MARK_WM_CONN3 = "WMCONN ok id=3"
 MARK_WM_CONN4 = "WMCONN ok id=4"
 MARK_WM_CONN5 = "WMCONN ok id=5"
 MARK_WM_CONN6 = "WMCONN ok id=6"
+MARK_WM_CONN7 = "WMCONN ok id=7"
 MARK_WM_ROUTE_WINDOW_UP = "WMRTWIN ok id="
 MARK_WM_DENIED = "WMDENY ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
@@ -136,6 +137,16 @@ MARK_FILES_BACK = "FILESBACK ok"
 MARK_FILES_PROBE = "FILESPROBE ok"
 MARK_FILES_DESTROY = "FILESDESTROY ok"
 MARK_FILES_EXIT = "FILESEXIT ok"
+MARK_PHOTOS_UP = "PHOTOS up"
+MARK_PHOTOS_WIN = "PHOTOSWIN ok"
+MARK_PHOTOS_LIST = "PHOTOSLIST ok n="
+MARK_PHOTOS_DATA = "PHOTOSDATA ok n=5000"
+MARK_PHOTOS_FRAME = "PHOTOSFRAME ok"
+MARK_PHOTOS_OPEN = "PHOTOSOPEN ok"
+MARK_PHOTOS_VIEW = "PHOTOSVIEW ok"
+MARK_PHOTOS_PROBE = "PHOTOSPROBE ok"
+MARK_PHOTOS_DESTROY = "PHOTOSDESTROY ok"
+MARK_PHOTOS_EXIT = "PHOTSEXIT ok"
 MARK_WM_INPUT_DROP = "WMIDROP bad"
 MARK_INPUT_ROUTE_BAD = "INPUTROUTE bad"
 MARK_CJK_PROBE = "CJKPROBE ok n=2"
@@ -1027,14 +1038,16 @@ def verify_normal_boot(
     browser_before: int,
     settings_before: int,
     files_before: int,
+    photos_before: int,
     demo_before: int,
     log_path: Path | None = None,
 ) -> None:
-    """常态隔离 + Browser/Settings/Files Native Shell 验收。
+    """常态隔离 + Browser/Settings/Files/Photos Native Shell 验收。
 
-    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；三个 shell 都
+    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；四个 shell 都
     必须完成第二个真实进程生命周期。Settings 要求两次状态重绘；Files 要求
-    READDIR/STAT/GET 真实 fs RPC 与详情/返回两次重绘。
+    READDIR/STAT/GET 真实 fs RPC；Photos 要求 5000B 图像数据、查看/返回
+    两次重绘。
     """
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
@@ -1075,6 +1088,17 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_FILES_DESTROY, files_before + 1, "normal Files", log_path)
     _require_exact_count(text, MARK_FILES_EXIT, files_before + 1, "normal Files", log_path)
 
+    _require_exact_count(text, MARK_PHOTOS_UP, photos_before + 1, "normal Photos", log_path)
+    _require_exact_count(text, MARK_PHOTOS_WIN, photos_before + 1, "normal Photos", log_path)
+    _require_exact_count(text, MARK_PHOTOS_LIST, photos_before + 2, "normal Photos", log_path)
+    _require_exact_count(text, MARK_PHOTOS_DATA, photos_before + 1, "normal Photos", log_path)
+    # runtime 缩略图初帧 + 查看大图 + 返回网格。
+    _require_exact_count(text, MARK_PHOTOS_FRAME, photos_before + 3, "normal Photos", log_path)
+    _require_exact_count(text, MARK_PHOTOS_OPEN, 1, "normal Photos view", log_path)
+    _require_exact_count(text, MARK_PHOTOS_VIEW, 1, "normal Photos view", log_path)
+    _require_exact_count(text, MARK_PHOTOS_DESTROY, photos_before + 1, "normal Photos", log_path)
+    _require_exact_count(text, MARK_PHOTOS_EXIT, photos_before + 1, "normal Photos", log_path)
+
     # 常态布局把 APPDEMO 放 page1；Native Shell 点击不得误 spawn。
     if text.count(MARK_APP_DEMO_UP) != demo_before:
         raise SmokeError(
@@ -1091,6 +1115,10 @@ def verify_normal_boot(
         raise SmokeError("normal Files: READ 早于快照", log_path)
     if text.rfind(MARK_FILES_EXIT) < snapshot_pos:
         raise SmokeError("normal Files: EXIT 不在快照后", log_path)
+    if text.find(MARK_PHOTOS_VIEW) < snapshot_pos:
+        raise SmokeError("normal Photos: VIEW 早于快照", log_path)
+    if text.rfind(MARK_PHOTOS_EXIT) < snapshot_pos:
+        raise SmokeError("normal Photos: EXIT 不在快照后", log_path)
 
 def ppm_pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
     """读 QEMU P6 PPM 指定像素（Native Shell 反 mock 像素锚）。"""
@@ -1379,6 +1407,9 @@ def _boot_base_markers() -> list[str]:
         MARK_WM_CONN6, MARK_FILES_UP, MARK_FILES_WIN, MARK_FILES_LIST,
         MARK_FILES_SEL, MARK_FILES_FRAME, MARK_FILES_PROBE,
         MARK_FILES_DESTROY, MARK_FILES_EXIT,
+        MARK_WM_CONN7, MARK_PHOTOS_UP, MARK_PHOTOS_WIN,
+        MARK_PHOTOS_LIST, MARK_PHOTOS_DATA, MARK_PHOTOS_FRAME,
+        MARK_PHOTOS_PROBE, MARK_PHOTOS_DESTROY, MARK_PHOTOS_EXIT,
         MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
     ]
 
@@ -1549,7 +1580,7 @@ def run_dual_boot(args) -> int:
                 f"(window {rw}x{rh})",
                 boot_a.log_path,
             )
-        owner_marker = f"WMROUTE ok sid=7 window={rw_id}"
+        owner_marker = f"WMROUTE ok sid=8 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
 
@@ -1734,7 +1765,8 @@ def run_normal_boot(args) -> int:
         browser_before = boot.log.text.count(MARK_BROWSER_UP)
         settings_before = boot.log.text.count(MARK_SETTINGS_UP)
         files_before = boot.log.text.count(MARK_FILES_UP)
-        if browser_before < 1 or settings_before < 1 or files_before < 1:
+        photos_before = boot.log.text.count(MARK_PHOTOS_UP)
+        if browser_before < 1 or settings_before < 1 or files_before < 1 or photos_before < 1:
             raise MissingMarkers(
                 "normal boot", "Browser boot-probe BROWSER up", 1, boot.log_path
             )
@@ -1974,6 +2006,97 @@ def run_normal_boot(args) -> int:
                 args.click_timeout, boot.log_path,
             ) from None
 
+        # —— Photos Native Shell：SmartDock 第二格 → 5000B 真图 → 查看。 ——
+        time.sleep(1.0)
+        log("normal-photos: QMP 点击 SmartDock PHOTOS（真实 APP_SPAWN）")
+        boot.qmp.click(376, 1668, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_PHOTOS_UP) > photos_before
+                and t.count(MARK_PHOTOS_FRAME) > photos_before,
+                f"runtime {MARK_PHOTOS_UP} + {MARK_PHOTOS_FRAME}",
+                args.click_timeout,
+                "normal Photos launch",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Photos launch",
+                f"新增 {MARK_PHOTOS_UP} + {MARK_PHOTOS_FRAME}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        if boot.log.count(MARK_PHOTOS_DATA) <= photos_before:
+            raise MissingMarkers(
+                "normal Photos remote image",
+                MARK_PHOTOS_DATA, args.click_timeout, boot.log_path,
+            )
+
+        # 1080×1920 下缩略图：tile 360×360 @ (360,453)。
+        boot.qmp.click(540, 633, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_PHOTOS_VIEW) >= 1
+                and t.count(MARK_PHOTOS_FRAME) > photos_before + 1,
+                f"{MARK_PHOTOS_VIEW} + 查看大图帧",
+                args.click_timeout,
+                "normal Photos view",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Photos view",
+                f"{MARK_PHOTOS_VIEW} + 查看大图帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        photos_shot = run_dir / "photos-native.ppm"
+        boot.qmp.screendump(photos_shot)
+        assert_pixel_close(
+            ppm_pixel(photos_shot, 540, 60), (94, 53, 177),
+            "Photos 顶栏", boot.log_path,
+        )
+        # 源图 (17,11) 由 PATTERN 公式得 148；该像素证明真实文件字节上屏。
+        assert_pixel_close(
+            ppm_pixel(photos_shot, 405, 354), (148, 148, 148),
+            "Photos PATTERN 像素", boot.log_path,
+        )
+        log("normal-photos: QEMU 截图像素锚 ok（顶栏 + PATTERN 真字节）")
+
+        log("normal-photos: 返回网格（第二真实重绘）")
+        boot.qmp.click(80, 80, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_PHOTOS_LIST) > photos_before + 1
+                and t.count(MARK_PHOTOS_FRAME) > photos_before + 2,
+                f"返回网格 {MARK_PHOTOS_LIST} + 第三帧",
+                args.click_timeout,
+                "normal Photos back-to-grid",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Photos back-to-grid",
+                f"返回网格 {MARK_PHOTOS_LIST} + 第三帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        log("normal-photos: 返回退出（销毁窗口）")
+        boot.qmp.click(80, 80, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_PHOTOS_EXIT) > photos_before,
+                f"新 {MARK_PHOTOS_EXIT}",
+                args.click_timeout,
+                "normal Photos exit",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Photos exit", f"新 {MARK_PHOTOS_EXIT}",
+                args.click_timeout, boot.log_path,
+            ) from None
+
         watcher = boot.log
         log_path = boot.log_path
         boot.stop()
@@ -1981,18 +2104,18 @@ def run_normal_boot(args) -> int:
         watcher.poll()
         verify_normal_boot(
             watcher.text, snapshot_pos, browser_before, settings_before,
-            files_before, demo_before, log_path,
+            files_before, photos_before, demo_before, log_path,
         )
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-native: Browser/Settings/Files 独立进程、真实 WM 窗口/帧、"
-            "Settings 双状态重绘与 Files 真实 fs RPC 全过；"
+            "normal-native: Browser/Settings/Files/Photos 独立进程、真实 WM "
+            "窗口/帧、Settings 状态重绘、Files fs RPC 与 Photos 5000B 图像全过；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：Browser + Settings + Files Native Shell 真链 + "
+            "PASS（--normal-boot）：Browser + Settings + Files + Photos Native Shell 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -2465,15 +2588,28 @@ def self_test(args) -> int:
             f"{MARK_FILES_LIST}\n{MARK_FILES_FRAME}\n{MARK_FILES_BACK}\n"
             f"{MARK_FILES_DESTROY}\n{MARK_FILES_EXIT}\n"
         )
+        photos_boot = (
+            f"{MARK_PHOTOS_UP}\n{MARK_PHOTOS_WIN}\n{MARK_PHOTOS_LIST}\n"
+            f"{MARK_PHOTOS_DATA}\n{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_PROBE}\n"
+            f"{MARK_PHOTOS_DESTROY}\n{MARK_PHOTOS_EXIT}\n"
+        )
+        photos_runtime = (
+            f"{MARK_PHOTOS_UP}\n{MARK_PHOTOS_WIN}\n{MARK_PHOTOS_LIST}\n"
+            f"{MARK_PHOTOS_DATA}\n{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_OPEN}\n"
+            f"{MARK_PHOTOS_VIEW}\n{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_LIST}\n"
+            f"{MARK_PHOTOS_FRAME}\nPHOTOSBACK ok\n{MARK_PHOTOS_DESTROY}\n"
+            f"{MARK_PHOTOS_EXIT}\n"
+        )
         fake_n = (
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
+            f"{photos_boot}"
         )
         snap_n = len(fake_n)
         fake_n += (
             f"{browser_boot}{MARK_BROWSER_BACK}\n{MARK_WM_ROUTE_DESKTOP}\n"
-            f"{settings_runtime}{files_runtime}"
+            f"{settings_runtime}{files_runtime}{photos_runtime}"
         )
-        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1)
+        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),
             (MARK_LAYOUTW + "\n", "LAYOUTW"),
@@ -2484,45 +2620,47 @@ def self_test(args) -> int:
             expect_error(
                 f"常态隔离出现 {label}",
                 lambda n=needle: verify_normal_boot(
-                    fake_n + n, snap_n, 1, 1, 1, 1
+                    fake_n + n, snap_n, 1, 1, 1, 1, 1
                 ),
             )
         expect_error(
             "常态 Browser 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{settings_runtime}{files_runtime}",
-                snap_n, 1, 1, 1, 1,
+                f"{photos_boot}{settings_runtime}{files_runtime}{photos_runtime}",
+                snap_n, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{browser_boot}{MARK_BROWSER_BACK}\n{files_runtime}",
-                snap_n, 1, 1, 1, 1,
+                f"{photos_boot}{browser_boot}{MARK_BROWSER_BACK}\n"
+                f"{files_runtime}{photos_runtime}",
+                snap_n, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 缺第二重绘帧",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_SETTINGS_FRAME}\n", "", 2),
-                snap_n, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Files 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{browser_boot}{MARK_BROWSER_BACK}\n{settings_runtime}",
-                snap_n, 1, 1, 1, 1,
+                f"{photos_boot}{browser_boot}{MARK_BROWSER_BACK}\n"
+                f"{settings_runtime}{photos_runtime}",
+                snap_n, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Files 缺真实 GET",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_FILES_READ}28\n", ""),
-                snap_n, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
@@ -2532,18 +2670,44 @@ def self_test(args) -> int:
                     f"{MARK_FILES_READ}28\n{MARK_FILES_FRAME}\n",
                     f"{MARK_FILES_READ}28\n", 1,
                 ),
-                snap_n, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Photos 无第二进程",
+            lambda: verify_normal_boot(
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
+                f"{photos_boot}{browser_boot}{MARK_BROWSER_BACK}\n"
+                f"{settings_runtime}{files_runtime}",
+                snap_n, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Photos 缺真实 5000B 图",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_PHOTOS_DATA}\n", "", 2),
+                snap_n, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Photos 缺查看帧",
+            lambda: verify_normal_boot(
+                fake_n.replace(
+                    f"{MARK_PHOTOS_VIEW}\n{MARK_PHOTOS_FRAME}\n",
+                    f"{MARK_PHOTOS_VIEW}\n", 1,
+                ),
+                snap_n, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Native Shell 误 spawn APPDEMO",
             lambda: verify_normal_boot(
-                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1, 1, 1
+                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1, 1, 1, 1
             ),
         )
         log(
-            "self-test: Browser + Settings + Files Native Shell 常态断言 ok"
-            "（三独立进程、真实状态/文件 RPC、重绘与销毁；冒烟标记全零）"
+            "self-test: Browser + Settings + Files + Photos Native Shell 常态断言 ok"
+            "（四独立进程、真实状态/文件/图像 RPC、重绘与销毁；冒烟标记全零）"
         )
 
         # 4) QMP 协议 + no-device 广播 + 三批单击
