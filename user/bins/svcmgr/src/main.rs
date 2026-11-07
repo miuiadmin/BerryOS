@@ -3610,6 +3610,25 @@ fn dpg_foot_done(rv: Handle) -> bool {
     }
 }
 
+/// 停泊收割 terminate 容差刀（X-5 E 臂定谳 2026-11-08：svcmgr E 臂「停摆」
+/// 实为拆台序 terminate 撞已退出子 → 内核幂等面 -37 → 旧「非 0 = loud」
+/// trap 自杀——dump 寄存器逐槽 = 0x314c 调用点原形）。停泊子可先退
+///（d-3b libc exit EOF 先行面）→ terminate 返 -37 = 合法收割态非异常
+///（内核侧「已终止：幂等面在 wait/get_exit_code」）；真死活由随后
+/// wait TERMINATED / reap 收割面裁决。-37 打 eco 标记暴露先退频率
+///（tag ≤18B 同 eco_note 截断纪律）。
+fn park_terminate(console: Handle, hp: Handle, tag: &[u8]) -> bool {
+    let rc = berry_process_terminate(hp, 9);
+    if rc == 0 {
+        return true;
+    }
+    if rc == BERRY_ERR_BAD_STATE {
+        eco_note(console, tag);
+        return true;
+    }
+    false
+}
+
 /// E 刀：demand 8 触 vs eager 同形 32 页 footprint 差分——**子在册停泊**
 ///（父持 rv/dv/ev 柄至 E 臂终局 = 记账面稳定——v1 无 Vmar 页表回收
 ///（vmar.rs:11），页属 VMO 对象；done 哨后停泊，本侧 terminate 收口）。
@@ -3731,9 +3750,12 @@ fn dpg_foot(console: Handle) {
     send_retry(console, DPGE_C.as_ptr(), DPGE_C.len());
     berry_thread_sleep(now() + DPGE_WINDOW_NS);
     send_retry(console, DPGE_E.as_ptr(), DPGE_E.len());
-    // 收尾：两子 terminate（停泊睡者 kill_all 收割）→ 等 TERMINATED →
-    // unmap 三区 → 关全柄（hev 已迁移勿关）；非 0 = 内核侧异常，loud。
-    if berry_process_terminate(c1.0.0, 9) != 0 || berry_process_terminate(c2.0.0, 9) != 0 {
+    // 收尾：两子 terminate（停泊睡者 kill_all 收割；子可先退——d-3b 面，
+    // -37 容差见 park_terminate）→ 等 TERMINATED →
+    // unmap 三区 → 关全柄（hev 已迁移勿关）；其余非 0 = 内核侧异常，loud。
+    if !park_terminate(console, c1.0.0, b"dpgf t-37")
+        || !park_terminate(console, c2.0.0, b"dpgf t-37")
+    {
         trap();
     }
     for (((hp, hv), (ht, htw)), rv, region) in [(c1, rv1, dv), (c2, rv2, ev)] {
@@ -3910,10 +3932,11 @@ fn dpgx_foot(console: Handle) {
     send_retry(console, DPGX_C.as_ptr(), DPGX_C.len());
     berry_thread_sleep(now() + DPGE_WINDOW_NS);
     send_retry(console, DPGX_E.as_ptr(), DPGX_E.len());
-    // 收尾：双 terminate（停泊睡者 kill_all 收割）→ 双 reap（完整回收链，
-    // 含 demand 槽注销）→ 关本侧端；非 0 = 内核侧异常，loud。
-    if berry_process_terminate(p1.child.hp, 9) != 0
-        || berry_process_terminate(p2.child.hp, 9) != 0
+    // 收尾：双 terminate（停泊睡者 kill_all 收割；子可先退——d-3b 面，
+    // -37 容差见 park_terminate）→ 双 reap（完整回收链，
+    // 含 demand 槽注销）→ 关本侧端；其余非 0 = 内核侧异常，loud。
+    if !park_terminate(console, p1.child.hp, b"dpgx t-37")
+        || !park_terminate(console, p2.child.hp, b"dpgx t-37")
     {
         trap();
     }
@@ -3973,7 +3996,7 @@ fn x5_foot(console: Handle) {
     let p2 = match x5_spawn_parked(b"bin/grep", &[b"zzz"], 16, gp_off, gp_len, console) {
         Some(p) => p,
         None => {
-            x5_park_drop(&[p1]);
+            x5_park_drop(&[p1], console);
             return;
         }
     };
@@ -3990,14 +4013,14 @@ fn x5_foot(console: Handle) {
     let p3 = match p3 {
         Some(p) => p,
         None => {
-            x5_park_drop(&[p1, p2]);
+            x5_park_drop(&[p1, p2], console);
             return;
         }
     };
     let p4 = match p4 {
         Some(p) => p,
         None => {
-            x5_park_drop(&[p1, p2, p3]);
+            x5_park_drop(&[p1, p2, p3], console);
             return;
         }
     };
@@ -4007,7 +4030,7 @@ fn x5_foot(console: Handle) {
     send_retry(console, X5_E.as_ptr(), X5_E.len());
     // 收尾：四 terminate（停泊读中被杀 = 干净路径）→ 四 reap（完整回收
     // 链，含 demand 槽注销）→ 关持有端三件套。
-    x5_park_drop(&[p1, p2, p3, p4]);
+    x5_park_drop(&[p1, p2, p3, p4], console);
 }
 
 /// x5_foot 停泊拉起（dpgx_spawn_parked 同形，name/args/栈档参数化面）：
@@ -4064,10 +4087,11 @@ fn x5_spawn_parked(
 
 /// x5_foot 收尾（成功路径全四包；败路径已泊前缀）：先全员 terminate 再
 /// 逐包 reap（demand 槽注销在 reap 内，先于 close dv）+ 关持有端三件套。
-/// 任何非 0 = 内核侧异常，loud（trap 纪律）。
-fn x5_park_drop(ps: &[DpgxParked]) {
+/// 子可先退（d-3b 面）→ -37 容差（park_terminate，eco 标记暴露频率）；
+/// 其余非 0 = 内核侧异常，loud（trap 纪律）。
+fn x5_park_drop(ps: &[DpgxParked], console: Handle) {
     for p in ps {
-        if berry_process_terminate(p.child.hp, 9) != 0 {
+        if !park_terminate(console, p.child.hp, b"x5 t-37") {
             trap();
         }
     }
