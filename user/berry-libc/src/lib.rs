@@ -188,3 +188,58 @@ pub fn park() -> ! {
         }
     }
 }
+
+// —— errno 值域探针（host 单元测试；P1-d）——
+//
+// 对照 Linux 通用 errno 值域（musl 同）——swift-os 坑二回归锚，调研 13 号
+// （research/13-2026新OS四家轨迹与踩坑.md §2 坑二：内核返回 EADDRINUSE=98
+// 而目标 newlib 头定义 112，nginx -t 拒掉合法配置）。abi-check 只对拍
+// syscall 号位、不对拍 errno 值域——本探针补该盲区，值域单源即上方
+// 「errno（Linux 数值面；musl 同值）」区。
+//
+// 实况勘定：本 crate 结构性不可 `cargo test`——①crt0 `global_asm!` 为
+// ELF 目标写法（darwin 汇编器拒 ADRP 非 GOT 形式）；②libc 同名符号对
+// host libSystem 符号插入（见 Cargo.toml 头注「纯面外迁」idiom 起因）。
+// 本模块经 `cargo check --tests` 做编译验证；可跑执法锚在 berry-fsclient
+// errno 立值镜像（与本单源经 net.rs「errno 单源对拍」const assert 钉死）。
+#[cfg(test)]
+mod errno_probe {
+    use super::*;
+
+    /// 核心档：Linux 通用值域（asm-generic；musl 同）。
+    #[test]
+    fn errno_core_matches_linux_generic() {
+        assert_eq!(EPERM, 1);
+        assert_eq!(ENOENT, 2);
+        assert_eq!(EAGAIN, 11);
+        assert_eq!(EINVAL, 22);
+        // ENOTSUP == EOPNOTSUPP == 95（asm-generic 与 x86 两值域同值，无分岔）。
+        assert_eq!(ENOTSUP, 95);
+    }
+
+    /// 网络/杂项族：Linux 通用值域（asm-generic；musl 同）。
+    #[test]
+    fn errno_net_family_matches_linux_generic() {
+        assert_eq!(ENODEV, 19);
+        assert_eq!(EPIPE, 32);
+        assert_eq!(ENOSYS, 38);
+        assert_eq!(EPROTONOSUPPORT, 93);
+        assert_eq!(ESOCKTNOSUPPORT, 94);
+        assert_eq!(EAFNOSUPPORT, 97);
+        assert_eq!(ENETUNREACH, 101);
+        assert_eq!(ETIMEDOUT, 110);
+    }
+
+    /// 断差事实（不改语义——值域选择是 ABI 决策归仓主裁）：现值
+    /// EADDRINUSE=98 是 Linux x86/i386 值域的值；Linux 通用值域
+    /// （asm-generic，musl aarch64 同）= **112**。同文件网络族
+    /// （EAFNOSUPPORT=97 / ENETUNREACH=101 / ETIMEDOUT=110 等）均按
+    /// asm-generic，唯 EADDRINUSE 按 x86 值——与 swift-os 坑二同款
+    /// 混搭（98 vs 112）。对齐决策落定后去 `#[ignore]` 让本探针执法
+    /// （berry-fsclient 镜像锚同步）。
+    #[test]
+    #[ignore = "断差：EADDRINUSE=98 为 x86 值域；Linux 通用值域/musl aarch64=112——ABI 决策归仓主裁"]
+    fn eaddrinuse_matches_linux_generic() {
+        assert_eq!(EADDRINUSE, 112);
+    }
+}

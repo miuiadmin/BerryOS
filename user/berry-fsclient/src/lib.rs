@@ -1759,3 +1759,43 @@ mod tests {
         assert!(!t.free(26));
     }
 }
+
+// —— errno 值域镜像锚（host 执法锚；P1-d）——
+//
+// 对照 Linux 通用 errno 值域（musl 同）——swift-os 坑二回归锚，调研 13 号
+// （research/13-2026新OS四家轨迹与踩坑.md §2 坑二：内核返回 EADDRINUSE=98
+// 而目标 newlib 头定义 112，nginx -t 拒掉合法配置）。abi-check 只对拍
+// syscall 号位、不对拍 errno 值域——本锚补该盲区。
+//
+// 执法链：本 crate 上述 errno 立值 ←（berry-libc/src/net.rs「errno 单源
+// 对拍」const assert 钉死）→ berry-libc lib.rs 值域单源——本锚跑绿即
+// 对拍面内单源值域与 Linux 通用值域对齐的物理证明。EPERM/ENOENT/ENOTSUP
+// 等超对拍面值的正牌探针在 berry-libc lib.rs `errno_probe`（该 crate
+// 结构性不可 host test——crt0 ELF-only asm + libc 同名符号插入——仅
+// `cargo check --tests` 编译验证）。
+#[cfg(test)]
+mod errno_probe {
+    use super::*;
+
+    /// 镜像六档：Linux 通用值域（asm-generic；musl 同）。
+    #[test]
+    fn errno_mirror_matches_linux_generic() {
+        assert_eq!(EIO, 5);
+        assert_eq!(ENODEV, 19);
+        assert_eq!(EAGAIN, 11);
+        assert_eq!(EINVAL, 22);
+        assert_eq!(EPIPE, 32);
+        assert_eq!(ETIMEDOUT, 110);
+    }
+
+    /// 断差事实（不改语义——值域选择是 ABI 决策归仓主裁）：EADDRINUSE
+    /// 现值 98 是 Linux x86/i386 值域；Linux 通用值域（asm-generic，musl
+    /// aarch64 同）= **112**——swift-os 坑二同款（98 vs 112 混搭）。本
+    /// crate 立值经 berry-libc net.rs const 对拍与单源钉死，裁决时两侧
+    /// 须同步；对齐决策落定后去 `#[ignore]`（berry-libc 探针同步）。
+    #[test]
+    #[ignore = "断差：EADDRINUSE=98 为 x86 值域；Linux 通用值域/musl aarch64=112——ABI 决策归仓主裁"]
+    fn eaddrinuse_mirror_matches_linux_generic() {
+        assert_eq!(EADDRINUSE, 112);
+    }
+}
