@@ -2,14 +2,14 @@
 # G4-3 C-full 缺页 soak 满配专用关卡（smoke-lockdep 同例直调 bash，不进
 # CI；无 just 配方——内核路径参数化单一事实源）。
 #
-# 载体：门控变体卷——正装 rootfs.cpio 手术在 TRAILER 前追空标记文件
-# `dpgf.on`（newc 编码复用 tools/mkcpio.py `entry()` 单编码器纪律，无第
+# 载体：门控变体卷——正装 rootfs **末 split 卷**手术在 TRAILER 前追空标记
+# 文件 `dpgf.on`（newc 编码复用 tools/mkcpio.py `entry()` 单编码器纪律，无第
 # 二份 newc 逻辑；TRAILER 名域 rfind 定位 = 档尾真 trailer，数据内偶合
-# ASCII 不扰）→ fw_cfg **单卷**递送（手动 mkcpio 无 --split 的树同款消费
-# 面，justfile 注：单卷路照跑）。svcmgr `dpgf_selftest` 门 = cpio_find
-# 命中 dpgf.on 才跑——正装 rootfs/run/smoke/EFI 缺席 = 零扰动零新标记
-#（rootfs 相 51 / 主 smoke 83 / EFI 断言 36 计数零漂）；本脚本是 DPGF/DPGF2
-# 标记唯一生产面。
+# ASCII 不扰）→ fw_cfg 递送（X-3c 后 rootfs 越单卷帽 = split 形 rootfs0..N
+# 多卷名递送，单卷形退旧名——bench.py dpg_variant/dpg_boot 同款，本脚本是
+# DPGF/DPGF2 标记唯一生产面）。svcmgr `dpgf_selftest` 门 = cpio_find 命中
+# dpgf.on 才跑——正装 rootfs/run/smoke/EFI 缺席 = 零扰动零新标记（rootfs
+# 相 51 / 主 smoke 83 / EFI 断言 36 计数零漂）。
 #
 # 断言（终态 = `DPGF2 ok n=3`，帽 DPGF_CAP_S 默认 600s）：
 #   ① `DPGF ok n=15` 恰 1（15× join 7 满配终态——16 槽登记恰满〔boot 1
@@ -52,11 +52,28 @@ if ! strings "$KERNEL" | grep -q 'DPGF ok n=15'; then
   echo "smoke-dpgsoak: 镜像缺 DPGF ok n=15 串（陈旧 userbins）——先 just build" >&2
   exit 2
 fi
-# rootfs 卷前置（smoke-lockdep 相 2 同款：缺产物 loud 快败）。
-[ -f "$ROOT/rootfs.cpio" ] || {
-  echo "smoke-dpgsoak: FAIL——缺 rootfs.cpio（先 just build）" >&2
+# rootfs 卷集解析（split 形优先——X-3c 后 rootfs 越单卷帽，正装 rootfs.cpio
+# 34.5MB > 32MiB fw_cfg 单卷帽 = 先天不可递；手术面迁末 split 卷 = bench.py
+# dpg_variant 同款，门档落归档尾与单卷时代同字节位。缺产物 loud 快败
+# （smoke-lockdep 相 2 同款）。
+VOL_COUNT=0
+if [ -f "$ROOT/rootfs0.cpio" ]; then
+  while [ -f "$ROOT/rootfs${VOL_COUNT}.cpio" ]; do VOL_COUNT=$((VOL_COUNT + 1)); done
+elif [ -f "$ROOT/rootfs.cpio" ]; then
+  VOL_COUNT=1
+fi
+[ "$VOL_COUNT" -ge 1 ] || {
+  echo "smoke-dpgsoak: FAIL——缺 rootfs 卷（rootfs.cpio / rootfs0.cpio.. 均无——先 just build）" >&2
   exit 1
 }
+LAST_IDX=$((VOL_COUNT - 1))
+if [ "$VOL_COUNT" -eq 1 ]; then
+  LAST_VOL="$ROOT/rootfs.cpio"
+  VARIANT="$ROOT/rootfs.dpgf.cpio"
+else
+  LAST_VOL="$ROOT/rootfs${LAST_IDX}.cpio"
+  VARIANT="$ROOT/rootfs${LAST_IDX}.dpgf.cpio"
+fi
 
 PATH="$HOME/.cargo/bin:$PATH"
 QEMU="qemu-system-aarch64"
@@ -68,9 +85,9 @@ OVFL_CAP="${DPGF_OVFL_CAP:-40}"
 DPGF_K="${DPGF_K:-32}"
 DL_S="${DPGF_CAP_S:-600}"
 
-# 门控变体卷：rootfs.cpio 手术 + dpgf.on（确定性产物：同输入同字节）。
-VARIANT="$ROOT/rootfs.dpgf.cpio"
-python3 - "$ROOT/rootfs.cpio" "$VARIANT" "$SCRIPT_DIR" <<'PY' || exit 1
+# 门控变体卷：末卷手术 + dpgf.on（确定性产物：同输入同字节；bench.py
+# dpg_variant 同款逻辑——split 形手术 rootfs<末>.cpio，单卷形手术 rootfs.cpio）。
+python3 - "$LAST_VOL" "$VARIANT" "$SCRIPT_DIR" <<'PY' || exit 1
 import sys
 sys.path.insert(0, sys.argv[3])
 from mkcpio import entry
@@ -80,22 +97,41 @@ blob = open(src, "rb").read()
 # TRAILER!!! 名域唯一档尾（newc 头恰 110B = magic 6 + 13×hex8；rfind 取
 # 最后一次 = 真 trailer——数据内偶合 ASCII 被跳过）。
 name_pos = blob.rfind(b"TRAILER!!!")
-assert name_pos > 0, "rootfs.cpio 无 TRAILER——档坏"
+assert name_pos > 0, f"{src} 无 TRAILER——档坏"
 out = blob[: name_pos - 110]
 out += entry(b"dpgf.on", b"", 0xF0000001)  # ino 避开正装递增域；字段余同定值
 out += entry(b"TRAILER!!!", b"", 0)
 out += b"\0" * (-len(out) % 4)
 open(dst, "wb").write(out)
-print(f"smoke-dpgsoak: 变体卷 {dst} {len(out)}B（正装 {len(blob)}B + dpgf.on 门）")
+print(f"smoke-dpgsoak: 变体卷 {dst} {len(out)}B（末卷 {src} {len(blob)}B + dpgf.on 门）")
 PY
-# 变体越帽执法（CRIT-CF1）：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB = 静默
-# return None（无成因行）→ 门 miss → 烧满 DPGF_CAP_S 且诊断看不到死因
-# （GUI 线 rootfs 增重已实证烧过一跑：35,313,184B）——越帽即 loud 拒跑。
-VSZ=$(wc -c < "$VARIANT" | tr -d ' ')
-[ "$VSZ" -le 33554432 ] || {
-  echo "smoke-dpgsoak: FAIL——变体越帽 ${VSZ}B > 32MiB ROOTFS_MAX（内核 fw_cfg 单卷路静默拒收→门 miss 烧帽）——瘦身 rootfs 后重建" >&2
-  exit 1
-}
+# 递送集逐卷越帽执法（CRIT-CF1）：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB =
+# 静默 return None（无成因行）→ 门 miss → 烧满 DPGF_CAP_S 且诊断看不到
+# 死因——split 形前缀卷同查防手改盘外档（bench.py dpg_boot 同款）。
+i=0
+while [ "$i" -lt "$VOL_COUNT" ]; do
+  if [ "$i" -eq "$LAST_IDX" ]; then CHK="$VARIANT"; else CHK="$ROOT/rootfs${i}.cpio"; fi
+  VSZ=$(wc -c < "$CHK" | tr -d ' ')
+  [ "$VSZ" -le 33554432 ] || {
+    echo "smoke-dpgsoak: FAIL——递送卷 $CHK ${VSZ}B 越帽 32MiB ROOTFS_MAX（内核 fw_cfg 静默拒收→门 miss 烧帽）——瘦身 rootfs 后重建" >&2
+    exit 1
+  }
+  i=$((i + 1))
+done
+
+# 递送卷 fw_cfg 参数集（多卷名 = 内核连续前缀发现域 opt/berry/rootfs0..9，
+# smoke.sh A1-3b / bench.py dpg_boot 同口径；单卷形退旧名 opt/berry/rootfs）。
+FW_ARGS=()
+if [ "$VOL_COUNT" -eq 1 ]; then
+  FW_ARGS=(-fw_cfg "name=opt/berry/rootfs,file=$VARIANT")
+else
+  i=0
+  while [ "$i" -lt "$VOL_COUNT" ]; do
+    if [ "$i" -eq "$LAST_IDX" ]; then DELIVER="$VARIANT"; else DELIVER="$ROOT/rootfs${i}.cpio"; fi
+    FW_ARGS+=(-fw_cfg "name=opt/berry/rootfs${i},file=$DELIVER")
+    i=$((i + 1))
+  done
+fi
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-dpgsoak.XXXXXX")
 EVS_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-evsclient.XXXXXX")
@@ -176,7 +212,7 @@ done
 echo "smoke-dpgsoak: QEMU 启动（-smp 2，门控变体卷 + virtio-blk/net hostfwd 三口 + tablet）"
 t0=$(date +%s)
 "$QEMU" $MACH -smp 2 -kernel "$KERNEL" \
-  -fw_cfg name=opt/berry/rootfs,file="$VARIANT" \
+  "${FW_ARGS[@]}" \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file="$DISK",cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
