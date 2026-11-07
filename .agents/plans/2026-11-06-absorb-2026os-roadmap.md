@@ -24,7 +24,7 @@ Updated: 2026-11-06
 
 ## 未完成事项
 
-- [ ] P0-a proposal 起草
+- [x] P0-a proposal 起草（→ [2026-11-06-baremetal-bringup-proposal.md](2026-11-06-baremetal-bringup-proposal.md)，三台阶：云 VM→RPi4→rootfs 通道，Status: draft 待裁）
 - [ ] P0-b 存储设计节追加
 - [ ] P1-a 拒收入账实施（含遥测词汇表扩号）
 - [ ] P1-b 纲领充实
