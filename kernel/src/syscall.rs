@@ -2173,6 +2173,118 @@ extern "C" fn sys_signal_take(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+// ---- 策略注入（S6-b 最小版：0x83 policy_bind——COMMIT 面）----
+
+/// `berry_policy_bind` 用户态表条目（16B，#[repr(C)]——与内核 `policy::SnapSlot`
+/// 布局兼容：key 落偏移 0，可按位审计同源）。
+#[repr(C)]
+struct PolicyEntryABI {
+    key: u64,
+    weight: i32,
+    placement: u8,
+    epp_flags: u8,
+    _rsv: u16,
+}
+const _: () = assert!(core::mem::size_of::<PolicyEntryABI>() == 16);
+
+/// `PolicyEntryABI::epp_flags` 位定义：bit0 = 带 EPP 覆盖，bit1 = EPP 取值
+/// （0 = Efficiency / 1 = Perf）——镜像 `sched/policy.rs` 私有 EPP_HAS/EPP_VAL；
+/// bit2.. 未定义（非 0 尾 → -EINVAL，options 纪律）。
+const PE_EPP_HAS: u8 = 1 << 0;
+const PE_EPP_VAL: u8 = 1 << 1;
+
+/// 单次收表上限（限流面）：镜像 `sched/policy.rs` 私有 `TBL_MAX = 128`（桶 256
+/// 装载因子 ≤50% 上界）。policy 侧 build 时自会截尾，但那是**内核侧写者的宽容
+/// 面**——用户态超限在此提前诚实拒收（-E2BIG），不做静默截断。
+const POLICY_TBL_MAX: usize = 128;
+
+/// 空条目（`entries` 栈数组 const 初始化基底）。
+const PE_ZERO: berry_sched::policy::Entry = berry_sched::policy::Entry {
+    task_key: 0,
+    directive: berry_sched::policy::Directive {
+        placement: 0,
+        weight: 0,
+        epp: None,
+    },
+};
+
+/// `berry_policy_bind(auth, op, p1, p2, p3, p4)`（0x83，S6-b 最小版）。
+///
+/// op=1 (COMMIT)：p1 = 表指针（用户态 `&[PolicyEntryABI]`），p2 = 条目数
+/// （0 = 空表提交，「接口在位、表空」合法态），p3 = gen（世代数），p4 = 保留 0。
+/// → copy_from_user 整表拷入 → 逐条转换 `policy::Entry`（weight 夹紧 ±64
+/// ——handler 第一道，policy build/消费点再夹，三点执法；0 键/重复/溢出由
+/// `bind_gen` 的 build_snap 语义丢弃——first-wins）→ `policy::bind_gen(tbl, gen)`：
+/// true = 0 / false = **-EAGAIN**（陈旧拒收——gen ≤ 活跃世代，写者重放/乱序
+/// 到达的旧表不得覆盖新表，世代单调性在 policy 侧收口；活跃快照未动，调用方
+/// 对账 gen 后携新 gen 重试）。
+///
+/// 其他 op → -ENOTSUP（S6-c 扩展：BIND/STATUS/PROMOTE/DEMOTE/UNBIND）。
+///
+/// 门控：v1 **无 handle 需求**（系统全局单通道；SET_POLICY 门控随 S6-c Job
+/// 对象落地——`auth` 预留不消费）。锁类 TABLE：copy 链页表走查（§A113 读者
+/// 面，同 clock_read）+ `SNAPS` 全局单写者跨核 KL 串行；SVC 主体 IRQ 屏蔽
+/// （单核）下无读者竞态窗。
+extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
+    use berry_sched::policy::{Directive, Entry, WEIGHT_MAX};
+    let (auth, op, tbl_p, n, gen, rsv) =
+        (tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5], tf.regs[6]);
+    let _ = auth; // v1 全局单通道：预留（S6-c Job 对象 SET_POLICY 门控面）
+    if op != 1 {
+        return ERR_NOT_SUPPORTED as i64; // S6-c 扩展 op 词汇未实现
+    }
+    if rsv != 0 {
+        return ERR_INVALID_ARG as i64; // p4 保留 0（options 纪律）
+    }
+    if n > POLICY_TBL_MAX as u64 {
+        return ERR_E2BIG as i64; // 限流：单次表 ≤128 条（TBL_MAX）
+    }
+    let n = n as usize;
+    let el1 = caller_is_el1(tf);
+    let mut raw = [0u8; POLICY_TBL_MAX * core::mem::size_of::<PolicyEntryABI>()];
+    if let Err(e) = copy_from_user(el1, tbl_p, &mut raw[..n * 16]) {
+        return e as i64;
+    }
+    let mut entries = [PE_ZERO; POLICY_TBL_MAX];
+    for i in 0..n {
+        let o = i * 16;
+        let e = PolicyEntryABI {
+            key: u64::from_le_bytes(raw[o..o + 8].try_into().unwrap()),
+            weight: i32::from_le_bytes(raw[o + 8..o + 12].try_into().unwrap()),
+            placement: raw[o + 12],
+            epp_flags: raw[o + 13],
+            _rsv: u16::from_le_bytes([raw[o + 14], raw[o + 15]]),
+        };
+        // 保留位/未定义 flags 非零 → -EINVAL（调用方可清零修复，同 sa_parse
+        // reserved0 口径——不是 NOT_SUPPORTED）。
+        if e._rsv != 0 || e.epp_flags & !(PE_EPP_HAS | PE_EPP_VAL) != 0 {
+            return ERR_INVALID_ARG as i64;
+        }
+        entries[i] = Entry {
+            task_key: e.key,
+            directive: Directive {
+                placement: e.placement,
+                // 夹紧 ±WEIGHT_MAX（±64）：包络是内核执法，不信任注入方自律。
+                weight: e.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX),
+                epp: if e.epp_flags & PE_EPP_HAS != 0 {
+                    Some(if e.epp_flags & PE_EPP_VAL != 0 {
+                        berry_sched::EppHint::Perf
+                    } else {
+                        berry_sched::EppHint::Efficiency
+                    })
+                } else {
+                    None
+                },
+            },
+        };
+    }
+    if berry_sched::policy::bind_gen(&entries[..n], gen) {
+        0
+    } else {
+        ERR_AGAIN as i64 // 陈旧拒收：gen ≤ 活跃世代，活跃快照未动
+    }
+}
+
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
 
 /// `channel_create(options, *out0, *out1)`（4-3c 起 options 首参，Zircon/
@@ -3041,7 +3153,9 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// signal_send(0x86)/signal_take(0x87) = 33 号；G4-2 加
 /// pager_supply_pages(0x21，v2 号激活) = 34 号；G4-4 X-3b 加
 /// pager_supply_mapped(0x23，门 C 裁 A add-only——恒等选源挂派发) = 35 号
-/// ——v1 在册 36 号（唯 0x85 `berry_attest` 预留）真语义全部实现**。
+/// ——v1 在册 36 号（唯 0x85 `berry_attest` 预留）真语义全部实现**；
+/// **S6-b 加 policy_bind(0x83，v3 号提前实现最小 COMMIT 面——v1 号面之外
+/// 首个真注册的 v3 号，ABI §4 在册同名单源）**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
 /// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住；T-1 分序版：Thread
 /// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）。
@@ -3131,4 +3245,11 @@ pub fn install() {
     // 出参 copy_out 链走查本进程页表（§A113 读者面，同 0x61）——升 TABLE。
     reg(NR_SIGNAL_SEND, sys_signal_send, SVC_CLASS_TABLE);
     reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_TABLE);
+    // —— TABLE：S6-b 策略注入最小 COMMIT 面。0x83 policy_bind 在 abi.toml §4
+    // 在册但 stage=v3——abi_gen 常量层只产 v1/1.1 行（gen_abi.py defined 集），
+    // NR_POLICY_BIND 不存在，故字面量挂派发（v3 常量层落地后换常量名）。
+    // TABLE 理由：copy_from_user 整表拷入走查本进程页表（§A113 读者面，同
+    // 0x87 signal_take）+ policy SNAPS 三槽轮转区是全局单写者共享面（KL 串
+    // 行跨核 SVC 写者；读者 apply/weight_of 在 RQ 屏蔽决策窗，无共同写窗）。
+    reg(0x83, sys_policy_bind, SVC_CLASS_TABLE);
 }

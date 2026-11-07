@@ -38,6 +38,7 @@ pub fn run() {
     test_handle();
     test_policy();
     test_policy_v3();
+    test_policy_bind_syscall();
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
@@ -2848,6 +2849,165 @@ fn test_policy_v3() {
 
     // 任务体 16KiB 栈 × 18 + 满表快照泄漏不回收（ktest 语境同 test_policy 政策）。
     berry_hal_aarch64::uart_puts(b"PV3-K ok\n");
+}
+
+/// S6-b `policy_bind`（0x83）COMMIT 面直测——syscall handler `sys_policy_bind`
+/// 需 TrapFrame + 用户态 copy 链，ktest 不便直调（同 `test_sched_attr_negative`
+/// 直测 sa_parse 的口径），改测其**内核侧底座** `berry_sched::policy` 的 pub 面
+/// （handler 语义全在这收口：陈旧拒收 → `bind_gen` false、超限 → `build_snap`
+/// 截尾、weight 夹紧 → build/消费点执法）：
+/// - **PBS-1 合法 COMMIT**：3 条目表携新 gen 走 `bind_gen` → 受理（true 即
+///   handler 映射 0）+ `bound()` + `gen()` 即刻反映新世代；
+/// - **PBS-2 陈旧 gen 拒收**：两段——①重放同 gen（gen == 活跃世代）→ 拒
+///   （false 即 handler 映射 -EAGAIN）且活跃快照未动（gen/bound 不变，调用
+///   方对账后携新 gen 重试）；②unbind 回哨兵后当前 gen=0，gen=0 → 拒
+///   （0 <= 0——世代单调性在哨兵态同样收口）；
+/// - **PBS-3 表超限**：129 条目（TBL_MAX+1）。用户态超限由 handler 侧
+///   `POLICY_TBL_MAX` 前置诚实拒收 -E2BIG（不做静默截断），本测直证内核
+///   写者底座 `build_snap` 的 `take(TBL_MAX)` **截尾背书**：policy 侧受理
+///   不拒，前 128 条全活（key 8 命中 +32 独占）、第 129 条（key 7）不得
+///   入表（零写入活证；散列预演——截尾失效时 key 7 探测窗有空槽必入槽
+///   可查，断言必炸，真判别式）；
+/// - **PBS-4 weight 超包络**：weight=100 条目 → bind → pick → 出选者
+///   `prio_effective == 64`（±`WEIGHT_MAX` 包络是内核执法不信任注入方
+///   自律：build 点夹紧 + 消费点再夹三点执法，100 不得渗入决策路径）。
+///
+/// 形态同 `test_policy_v3`：本地 `Runqueue` + 双任务（proc_tag = 7/8 探测
+/// 键域——7 = PBS-3 截尾键、8 = 命中键），pick_next 间接驱动 `apply`（决策
+/// 路径真消费，不直接调）。QEMU ktest 是唯一家（同 PV3）。
+#[allow(clippy::unwrap_used)]
+fn test_policy_bind_syscall() {
+    use alloc::vec::Vec;
+    use berry_sched::policy::{self, Directive, Entry, WEIGHT_MAX};
+    use berry_sched::{Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn pbs_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 探测轮数（首 2 轮定相位、余轮证稳态独占/幂等不漂移）。
+    const ROUNDS: usize = 8;
+
+    /// 双任务本地环（proc_tag = 7/8——同 PV3 键域口径；7 = 截尾键、8 = 命中键）。
+    fn setup2() -> (Runqueue, RoundRobin, Topo) {
+        let mut rq = Runqueue::new();
+        let rr = Fair;
+        let topo = Topo::single();
+        for (tag, name) in [(7usize, b"p7".as_slice()), (8, b"p8".as_slice())] {
+            let mut t = Task::new_kernel_with_as(pbs_dummy, tag, name, 0, 0);
+            t.proc_tag = tag; // 策略表 key（v1 = proc_tag；new_kernel 默认 0）
+            let t: &'static mut Task = alloc::boxed::Box::leak(t);
+            rr.enqueue(t, &mut rq);
+        }
+        (rq, rr, topo)
+    }
+
+    /// 跑 ROUNDS 轮 pick 记 (name, prio_effective) 序列（apply 由 pick_next 挂钩）。
+    fn probe(rq: &Runqueue, rr: &RoundRobin, topo: &Topo) -> [(&'static [u8], i32); ROUNDS] {
+        let mut seq: [(&'static [u8], i32); ROUNDS] = [(b"", 0); ROUNDS];
+        for s in seq.iter_mut() {
+            let t = rr.pick_next(rq, topo).expect("PBS：非空 runqueue 必有出选");
+            *s = (t.name, t.prio_effective);
+        }
+        seq
+    }
+
+    // 前序状态防御性清零（同 PV3 口径）——哨兵态 gen()==0 是 PBS-2 段②前提。
+    policy::unbind();
+    assert!(!policy::bound(), "PBS：基线前提须未绑");
+    assert_eq!(policy::gen(), 0, "PBS：哨兵态 gen 须 0（EMPTY_SNAP）");
+
+    // PBS-1 合法 COMMIT：3 条目表（键 7/8/9）携新 gen → bind_gen 受理路径。
+    let tab3 = [
+        Entry {
+            task_key: 7,
+            directive: Directive { placement: 0, weight: 16, epp: None },
+        },
+        Entry {
+            task_key: 8,
+            directive: Directive { placement: 0, weight: 32, epp: None },
+        },
+        Entry {
+            task_key: 9,
+            directive: Directive { placement: 0, weight: 48, epp: None },
+        },
+    ];
+    assert!(policy::bind_gen(&tab3, 1),
+        "PBS-1：新 gen 须受理（true = handler 映射 0 面）");
+    assert!(policy::bound(), "PBS-1：COMMIT 后须已绑");
+    assert_eq!(policy::gen(), 1, "PBS-1：gen() 须即刻反映新世代");
+
+    // PBS-2 段①：重放同 gen（== 活跃世代）→ 拒，且活跃快照未动。
+    assert!(!policy::bind_gen(&tab3, 1),
+        "PBS-2：gen == 活跃世代 须拒（重放，false = handler 映射 -EAGAIN）");
+    assert_eq!(policy::gen(), 1, "PBS-2：拒收后活跃 gen 须不动");
+    assert!(policy::bound(), "PBS-2：拒收后须仍绑定（快照未动）");
+    // PBS-2 段②：unbind 回哨兵 → 当前 gen=0，gen=0 → 拒（0 <= 0）。
+    policy::unbind();
+    assert_eq!(policy::gen(), 0, "PBS-2：哨兵态当前 gen 须 0");
+    assert!(!policy::bind_gen(&tab3, 0),
+        "PBS-2：gen=0（当前=0）须拒——世代单调性在哨兵态同样收口");
+    assert!(!policy::bound(), "PBS-2：拒收后须仍处哨兵态");
+
+    // PBS-3 表超限：129 条目 = 前 128 域 {1..=130}\{7,9}（PV3-5 同域黄金比
+    // 全入槽零拒收）+ 第 129 条 key 7（截尾对象；其探测窗预演有空槽——截尾
+    // 失效时必入槽可查，缺席断言即真判别式）。
+    let mut tbl: Vec<Entry> = Vec::new();
+    for k in 1u64..=130 {
+        if k != 7 && k != 9 {
+            tbl.push(Entry {
+                task_key: k,
+                directive: Directive { placement: 0, weight: 32, epp: None },
+            });
+        }
+    }
+    tbl.push(Entry {
+        task_key: 7,
+        directive: Directive { placement: 0, weight: 32, epp: None },
+    }); // 第 129 条（TBL_MAX 之外——截尾对象）
+    assert_eq!(tbl.len(), 129, "PBS-3：构造须 129 条（TBL_MAX+1）");
+    assert!(policy::bind_gen(&tbl, 2),
+        "PBS-3：policy 侧须受理（截尾是内核写者宽容面；-E2BIG 是 handler 用户态面）");
+    assert_eq!(policy::gen(), 2, "PBS-3：截尾表受理后 gen 须反映");
+    let (rq3, rr3, topo3) = setup2();
+    let seq3 = probe(&rq3, &rr3, &topo3);
+    // 首轮：head p7 出选——key 7 被截尾 → 缺席零写入（截尾失效则 +32 现形即炸）。
+    assert_eq!(seq3[0].0, b"p7".as_slice(), "PBS-3：首轮须同 head p7");
+    assert_eq!(seq3[0].1, 0, "PBS-3：第 129 条（key 7）须被截尾——零写入");
+    // 次轮起：key 8（前 128 域内）命中 +32 独占（截尾只切尾不伤前 128 条）。
+    for i in 1..ROUNDS {
+        assert_eq!(seq3[i].0, b"p8".as_slice(),
+            "PBS-3：第 {} 轮须 p8 命中独占", i);
+        assert_eq!(seq3[i].1, 32, "PBS-3：key 8 命中 eff 须 = 32（第 {} 轮）", i);
+    }
+
+    // PBS-4 weight 超包络：weight=100 → 夹紧 64 活证（构造 → bind → pick → eff）。
+    let tab_w = [Entry {
+        task_key: 8,
+        directive: Directive { placement: 0, weight: 100, epp: None },
+    }];
+    assert!(policy::bind_gen(&tab_w, 3), "PBS-4：新 gen 须受理");
+    let (rq4, rr4, topo4) = setup2();
+    let seq4 = probe(&rq4, &rr4, &topo4);
+    for i in 0..ROUNDS {
+        let (name, eff) = seq4[i];
+        if name == b"p8".as_slice() {
+            assert_eq!(eff, WEIGHT_MAX,
+                "PBS-4：weight=100 须夹紧到 {}（第 {} 轮，幂等重 pick 不漂移）", WEIGHT_MAX, i);
+        } else {
+            assert_eq!(eff, 0, "PBS-4：p7 无条目须零写入（第 {} 轮）", i);
+        }
+    }
+    assert!(seq4.iter().any(|(n, _)| *n == b"p8".as_slice()),
+        "PBS-4：p8 须有出选记录（活证锚点——不只「未爆 100」的弱断言）");
+
+    // 收尾：恢复缺席态（同 PV3——smoke 稳态全程未绑，等价性延续真实调度路径）。
+    policy::unbind();
+    assert!(!policy::bound(), "PBS：收尾须回到未绑");
+
+    // 任务体 16KiB 栈 × 4 + 129 条表快照泄漏不回收（ktest 语境同 PV3 政策）。
+    berry_hal_aarch64::uart_puts(b"PBS-K ok\n");
 }
 
 /// P4 收官审计实踩的 runqueue 摘环回归：`unlink` 旧单元素判据 `prev == next`
