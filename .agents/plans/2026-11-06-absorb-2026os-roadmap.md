@@ -17,8 +17,10 @@ Updated: 2026-11-06
 3. **P1-a 拒收入账**：AI 调度护栏拒收事件进 trace 环（astrid「审计链含 deny」启示）；改动面 = 遥测环词汇表 + 护栏拒收路径各一处。
 4. **P1-b 哑内核三理由充实纲领**：`docs/架构综合纲领.md` §1 补「业务逻辑不进内核」三论证（schema 耦合/沙箱逃逸/共享状态污染），注明出处调研 12 号。
 5. **P1-c AI 同意面设计**：新设计文档草案（consent-by-identity：SET_POLICY 委托时用户可见审批——Veda 机制 + BerryOS 能力委托链的接合）；依赖 G 线 GUI 收口。
-6. **P2（期权，不排期）**：presence 语义（移动档语音 idle 交互）、describe/state/invoke 三动词（berryui typed action 参照）、云真机门禁（Hetzner 形态）、「为什么不是 BKL」ADR。
-7. **同批笔记**：每项落地时各写一篇 note（决策因果），本计划翻 Status。
+6. **P1-d errno 值域探针**（13 号 §2 坑二）：berry-sys/libc 兼容层把目标 libc 宏实际值纳入对拍（swift-os 断层教训：内核 98 vs newlib 112 害 nginx 拒合法配置）；翻译只住 shim 层，内核 errno 编号不动。
+7. **P1-e 对抗性分配器 ktest**（13 号 §2 坑一）：mm 域连续分配低区边界测试——预留全部低帧复现越界形态、验证有界失败与精确边界成功（swift-os trap_return fault 实录）。
+8. **P2（期权，不排期）**：presence 语义（移动档语音 idle 交互）、describe/state/invoke 三动词（berryui typed action 参照）、云真机门禁（Hetzner 形态）、「为什么不是 BKL」ADR。
+9. **同批笔记**：每项落地时各写一篇 note（决策因果），本计划翻 Status。
 
 ## 未完成事项
 
@@ -27,4 +29,6 @@ Updated: 2026-11-06
 - [ ] P1-a 拒收入账实施（含遥测词汇表扩号）
 - [ ] P1-b 纲领充实
 - [ ] P1-c 同意面草案
+- [ ] P1-d errno 值域探针（随 berry-sys 下一刀）
+- [ ] P1-e 对抗性分配器 ktest（随 mm 域下一刀）
 - [ ] P2 四项挂账（Presence/三动词/云真机/BKL-ADR）
