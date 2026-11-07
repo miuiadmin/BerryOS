@@ -251,6 +251,16 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/simbattery/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # G4 X-4：dpgx（exec 装载差分子——单 PT_LOAD 特形链接脚本
+    # bins/dpgx/link-dpgx.ld：单 LOAD 单 k=−0x1ff000 + tdata pad 页齐 →
+    # filesz 端==fs_top = bss 文件域窗空 → berry-exec congruent 六查全过
+    # = demand 首个真消费者（现役 musl 族分段多 k 全走 eager 兜底，X-4
+    # 宿主清点实证）。仅 bench dpgx_foot 配对拉起，rootfs `dpgx.on` 缺席
+    # 即整段静默 = smoke 零漂移 by construction。-T 走绝对路径（linker
+    # CWD 随 cargo/rustc 调用链漂移，相对路径不可靠——lab 实证）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096 -C link-arg=-T -C link-arg=$ROOT/user/bins/dpgx/link-dpgx.ld" \
+        cargo build --release --manifest-path bins/dpgx/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
@@ -298,6 +308,7 @@ build-user:
         bin/date=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/date \
         bin/df=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/df \
         bin/du=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/du \
+        bin/dpgx=cargo-target/aarch64-unknown-linux-musl/release/dpgx \
         bin/echo=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/echo \
         bin/env=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/env \
         bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
@@ -316,6 +327,7 @@ build-user:
         bin/mkdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mkdir \
         bin/mv=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mv \
         bin/netprobe=cargo-target/aarch64-unknown-linux-musl/release/netprobe \
+        bin/policydemo=cargo-target/aarch64-unknown-none/release/policydemo \
         bin/ps=cargo-target/aarch64-unknown-linux-musl/release/ps \
         bin/pwd=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd \
         bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
