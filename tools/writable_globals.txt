@@ -60,7 +60,6 @@ kernel/src/telemetry.rs::WAKE_RINGS	telemetry
 sched/src/band.rs::BANDS	scheduler
 sched/src/class.rs::LAST_VCT	scheduler
 sched/src/policy.rs::SHD	scheduler
-sched/src/policy.rs::SHD_WHERE	scheduler
 sched/src/policy.rs::SNAPS	scheduler
 sched/src/sched.rs::CURRENT	scheduler
 sched/src/sched.rs::EXIT_HOOK	scheduler

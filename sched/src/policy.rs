@@ -36,7 +36,7 @@
 
 use crate::task::{EppHint, Task};
 use berry_hal_aarch64 as hal;
-use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 /// 权重微调包络（±）：注入值由内核**夹紧**到本界内（动作空间③的 min/max
 /// 夹紧——包络是内核执法，不信任注入方自律）。
@@ -404,8 +404,11 @@ pub fn placement_hint(task_key: u64) -> u8 {
 // 0..=2/哨兵——经 [`active_snap`] 永远只达 [`SNAPS`]/[`EMPTY_SNAP`]，shadow
 // 槽对快路径**不可达**（非口头约定，是地址空间上无别名）。shadow 侧写纪律
 // 同 [`SNAPS`]（约束②）：单核 SVC 屏蔽窗单写者、只写非活跃槽 + 翻转
-// [`SHD_WHERE`]，全部裸写、零原子；双槽（而非三槽）即足——shadow 无快路径
-// 读者，翻转后旧槽只剩写者自己会再碰（约束③的拷贝源/目的地都在写者手里）。
+// [`SHD_WHERE`] 发布——翻转位自 SMP 安全三件套①（原子化）起为 AtomicU8
+// （写侧「槽写 + fence(Release) + store(Release)」/ 读侧 Acquire），
+// 槽数据仍裸写；hazard-lite 槽回收（②）与写者锁（③）留后续刀。双槽
+// （而非三槽）即足——shadow 无快路径读者，翻转后旧槽只剩写者自己会再碰
+// （约束③的拷贝源/目的地都在写者手里）。
 //
 // **divergence 对账**（计数器/判定见文件尾「Shadow divergence 对账」节）：
 // [`apply`] 每调一次，shadow 谱系非空即对同一 key 双表各算一份决策、只读
@@ -416,17 +419,23 @@ pub fn placement_hint(task_key: u64) -> u8 {
 /// [`SHD_WHERE`] 发布。`static mut` 纪律同 [`SNAPS`]（`&raw mut` 取裸指针，
 /// 不立引用——E0596）。
 static mut SHD: [Snap; 2] = [const { Snap::empty() }; 2];
-/// 当前活 shadow 槽号（0/1）。写者翻转本位 = shadow 侧发布（无原子——
-/// 单写者窗内序即全序）。
-static mut SHD_WHERE: u8 = 0;
+/// 当前活 shadow 槽号（0/1）。写者翻转本位 = shadow 侧发布。SMP 安全
+/// 三件套①（原子化）：AtomicU8——写侧「先写槽 + fence(Release) +
+/// store(Release)」、读侧 load(Acquire)，见新槽号必见新槽内容；单核
+/// Acquire/Release 无重排面 = 行为零变化。②hazard-lite 槽回收 / ③写者
+/// 锁未落——槽数据的读写仍靠单核屏蔽窗串行。
+static SHD_WHERE: AtomicU8 = AtomicU8::new(0);
 
 /// shadow 活槽裸指针（读窗纪律同 [`active_snap`]：静态区槽位、'static 生存期
 /// ——解引用读窗的 SAFETY 在调用点挂）。
 fn shadow_snap() -> *const Snap {
-    // SAFETY: `static mut` 取 `&raw const` 裸指针（不立引用——E0133 解除的就
-    // 是这一层）；SHD_WHERE 仅单写者（SVC 屏蔽窗）翻转，读点同窗——值稳定
-    // 0/1，`& 1` 收口防越界（冗余防线，槽号 < 2 编译期可证）。
-    unsafe { &raw const SHD[(SHD_WHERE & 1) as usize] }
+    // Acquire 读 = 与 bind_gen_shadow 的「槽写 + fence(Release) +
+    // store(Release)」发布序配对：见新槽号即见新槽内容（三件套①）。
+    // `& 1` 收口防越界（冗余防线，槽号 < 2 编译期可证）。
+    let slot = SHD_WHERE.load(Ordering::Acquire) & 1;
+    // SAFETY: `static mut` 取 `&raw const` 裸指针（不立引用——E0133 解除的
+    // 就是这一层）。
+    unsafe { &raw const SHD[slot as usize] }
 }
 
 /// shadow 侧 gen 观察（双轨道遥测/对账）：从未绑定 → 0（[`Snap::empty`]
@@ -451,14 +460,20 @@ pub fn bind_gen_shadow(tbl: &[Entry], gen: u64) -> bool {
         return false; // 陈旧拒收：shadow 世代必须严格递增（同 bind_gen 语义）
     }
     let snap = build_snap(tbl, gen);
+    // 写者读自身上次发布值选非活跃槽（单写者窗内自见，Relaxed 足够）。
+    let next = SHD_WHERE.load(Ordering::Relaxed) ^ 1;
     // SAFETY: 单写者（SVC/IRQ 屏蔽窗）独占写**非活跃** shadow 槽——shadow
     // 无快路径读者（ACTIVE 不指向 SHD）、单写者自身此窗不读该槽，写窗内无
     // 别名引用；static 存储期 = 整个程序运行期，ptr::write 不越界（槽号
-    // < 2 编译期可证）。写后翻转 SHD_WHERE：同窗裸 u8 写，单核无重排面。
+    // < 2 编译期可证）。
     unsafe {
-        core::ptr::write(&raw mut SHD[(SHD_WHERE ^ 1) as usize], snap);
-        SHD_WHERE ^= 1;
+        core::ptr::write(&raw mut SHD[next as usize], snap);
     }
+    // 发布序（三件套①）：槽写在前、fence(Release) 定序、Release store 翻转
+    // 在后——读者（shadow_snap 的 Acquire load）见新槽号必见新槽内容。
+    // 单核 Release = 普通 u8 写，零行为变化。
+    fence(Ordering::Release);
+    SHD_WHERE.store(next, Ordering::Release);
     true
 }
 
