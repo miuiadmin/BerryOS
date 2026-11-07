@@ -252,7 +252,9 @@ build-user:
         cargo build --release --manifest-path bins/simbattery/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # G4 X-4：dpgx（exec 装载差分子——单 PT_LOAD 特形链接脚本
-    # bins/dpgx/link-dpgx.ld：单 LOAD 单 k=−0x1ff000 + tdata pad 页齐 →
+    # bins/dpgx/link-dpgx.ld：单 LOAD 单 k=−0x200000（X-4e：FILEHDR
+    # PHDRS 吃头进段——先前 −0x1ff000 时头在段外，__ehdr_start=0 杀胎）
+    # + tdata pad 页齐 →
     # filesz 端==fs_top = bss 文件域窗空 → berry-exec congruent 六查全过
     # = demand 首个真消费者（现役 musl 族分段多 k 全走 eager 兜底，X-4
     # 宿主清点实证）。仅 bench dpgx_foot 配对拉起，rootfs `dpgx.on` 缺席
