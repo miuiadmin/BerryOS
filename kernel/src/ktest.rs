@@ -46,12 +46,14 @@ pub fn run() {
     test_rq_ring3();
     test_pi();
     test_intent();
+    test_band();
     test_fast();
     test_freeze();
     test_deadline();
     test_billing();
     test_cmp();
     test_suspend_negative();
+    test_freeze_cycles();
     test_billing_overflow();
     test_sched_attr_negative();
     test_sched_perf();
@@ -4010,6 +4012,192 @@ fn test_suspend_negative() {
     berry_hal_aarch64::uart_puts(b"SUS-NEG-K ok\n");
 }
 
+/// sim-S2 A2（PM-16 §4.4 步 2「断言第一批」）：freeze/thaw 两轮**全真 svc**
+/// 循环——`svc #0` 走 `sys_process_suspend` 全链路（HAL dispatch →
+/// `caller_table` 落 bootstrap 表 → token 入表 + copy_out 回写），
+/// `handle_close(token)` → `SuspendTok::drop` → depth 递减 → auto_thaw。
+/// 判据（学 suspend_stress_test 计数器断言）：①N≥2 轮 telemetry
+/// freeze_ok/auto_thaw **计数严格递增**（递增载体 = 计数器非 handle 值
+/// ——slot|gen 最低空槽分配，数值不单调）；②末轮全量标记在席（`FRZCYC
+/// ok r=2`，smoke 收割）；③金丝雀不熄（异钉任务 pinned|1 恒不被冻——
+/// ObjRef 8B 对齐 ⇒ 恒不撞钉键；「不熄」= HELD_FROZEN 两轮恒清）。
+/// 负例先行：pager 义务在身（D6：demand VMO + SET_POLICY 进程表）→
+/// `-EBUSY` 且零状态残留。ktest 在 sched::init 前跑：任务手搭 SLEEPQ
+/// （test_pi 同款）、CURRENT=null ⇒ 自冻检查（current_pinned=0）恒过。
+#[allow(clippy::unwrap_used)]
+fn test_freeze_cycles() {
+    use crate::abi_gen::{ERR_BUSY, NR_PROCESS_SUSPEND};
+    use crate::handle::{KernelObj, ObjType, RIGHT_MANAGE, RIGHT_READ, RIGHT_SET_POLICY};
+    use crate::process::Process;
+    use crate::telemetry;
+    use crate::vmar::Vmar;
+    use crate::vmo::Vmo;
+    use berry_sched::{Task, HELD_FROZEN};
+
+    extern "C" fn fc_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8], key: usize) -> &'static mut Task {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(fc_dummy, 0, name, 0, 0));
+        t.pinned = key; // freeze 扫描键（freeze/thaw_by_pinned 匹配面）
+        t
+    }
+
+    // token 出参槽（EL1 静态直映——copy_out_u32 的 access_ok 高半直映区）。
+    static mut TOK: u32 = 0;
+
+    // 调用方表 = bootstrap 表（ktest 期 tag=0 → caller_table 落此，test_syscall
+    // 同通道）。Process 手搭同 F6（Vmar::new_root + Process::new）。
+    let ht = crate::syscall::bootstrap_table();
+    let vm = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()).unwrap();
+    let (pa, asid) = (vm.ttbr0_pa(), vm.asid());
+    let hv = ht.insert(KernelObj::Vmar(vm), RIGHT_MANAGE).unwrap();
+    let (vref, _) = ht.get_raw(hv, ObjType::Vmar, 0).unwrap();
+    let hp = ht
+        .insert(KernelObj::Process(unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE)
+        .unwrap();
+    let (pref, _) = ht.get_raw(hp, ObjType::Process, RIGHT_MANAGE).unwrap();
+    let pinned = pref.as_ptr() as usize;
+    // 两受害任务 + 金丝雀（异钉 pinned|1）全进 SLEEPQ——freeze 扫描面。
+    let t1 = mk(b"fzT1".as_slice(), pinned);
+    let t2 = mk(b"fzT2".as_slice(), pinned);
+    let canary = mk(b"fzCan".as_slice(), pinned | 1);
+    berry_sched::sleepq_insert(t1);
+    berry_sched::sleepq_insert(t2);
+    berry_sched::sleepq_insert(canary);
+
+    // 基线快照（计数器单调判据的起点）。
+    let tok_base = ht.count_type(ObjType::SuspendToken);
+    let fok0 = telemetry::freeze_ok_total();
+    let ath0 = telemetry::auto_thaw_total();
+
+    // —— 负例：pager 义务在身 → -EBUSY 且零残留（depth/位/token 全不动）。
+    let hv_d = unsafe {
+        let p = (*pref.as_ptr()).obj.as_process_mut().unwrap();
+        p.ht
+            .insert(
+                KernelObj::Vmo(Vmo::create_demand(4096).unwrap()),
+                RIGHT_READ | RIGHT_SET_POLICY,
+            )
+            .unwrap()
+    };
+    let rc = svc4(
+        NR_PROCESS_SUSPEND as u64,
+        hp as u64,
+        0,
+        core::ptr::addr_of_mut!(TOK) as u64,
+    );
+    assert_eq!(rc, ERR_BUSY as i64, "FRZCYC：负例 pager 义务须 -EBUSY");
+    unsafe {
+        let p = (*pref.as_ptr()).obj.as_process_mut().unwrap();
+        assert_eq!(p.freeze_depth, 0, "FRZCYC：负例 depth 零残留");
+        p.ht.close(hv_d).unwrap(); // 撤义务，转正轮
+    }
+    assert!(
+        t1.held_locks & HELD_FROZEN == 0 && t2.held_locks & HELD_FROZEN == 0,
+        "FRZCYC：负例零冻结位残留"
+    );
+    assert!(canary.held_locks & HELD_FROZEN == 0, "FRZCYC：负例金丝雀未被波及");
+    assert_eq!(
+        ht.count_type(ObjType::SuspendToken),
+        tok_base,
+        "FRZCYC：负例零 token 残留"
+    );
+
+    // —— 两轮 freeze/thaw 循环（A2 主判据）。金丝雀执法点 = 每轮冻结窗
+    // 「未被误冻」+ thaw 窗「不熄」两条 held_locks 断言（装饰性计数器
+    // 永绿，审查裁决拆除）。
+    let (mut fok_prev, mut ath_prev) = (fok0, ath0);
+    for r in 1..=2u32 {
+        // freeze：全真 svc（成功尾 freeze_ok 计数 +1——sim-S2 补的写点）。
+        let rc = svc4(
+            NR_PROCESS_SUSPEND as u64,
+            hp as u64,
+            0,
+            core::ptr::addr_of_mut!(TOK) as u64,
+        );
+        assert_eq!(rc, 0, "FRZCYC：r{} suspend 须成功", r);
+        unsafe {
+            let p = (*pref.as_ptr()).obj.as_process_mut().unwrap();
+            // 顺序轮语义：每轮 close 归零后再冻，depth 恒 1（嵌套轮才是 2——
+            // 那是 SuspendTok 深度帽测试的辖区，本测不动）。
+            assert_eq!(
+                p.freeze_depth,
+                1,
+                "FRZCYC：r{} 冻结后 depth 须 1（顺序轮）",
+                r
+            );
+        }
+        assert!(
+            t1.held_locks & HELD_FROZEN != 0 && t2.held_locks & HELD_FROZEN != 0,
+            "FRZCYC：r{} 受害双任务须全冻",
+            r
+        );
+        assert!(
+            canary.held_locks & HELD_FROZEN == 0,
+            "FRZCYC：r{} 金丝雀被误冻（异钉失效）",
+            r
+        );
+        assert_eq!(
+            ht.count_type(ObjType::SuspendToken),
+            tok_base + 1,
+            "FRZCYC：r{} 冻结窗 token 须在席恰 +1",
+            r
+        );
+        let fok_now = telemetry::freeze_ok_total();
+        assert!(
+            fok_now > fok_prev,
+            "FRZCYC：r{} freeze_ok 计数须严格递增（{} → {}）",
+            r,
+            fok_prev,
+            fok_now
+        );
+
+        // thaw：close(token) → Drop → depth 归零 → auto_thaw + thaw_by_pinned。
+        let tok = unsafe { *core::ptr::addr_of!(TOK) };
+        assert_ne!(tok, 0, "FRZCYC：r{} token 出参须非零", r);
+        ht.close(tok).unwrap();
+        unsafe {
+            let p = (*pref.as_ptr()).obj.as_process_mut().unwrap();
+            assert_eq!(p.freeze_depth, 0, "FRZCYC：r{} close 后 depth 须归零", r);
+        }
+        assert!(
+            t1.held_locks & HELD_FROZEN == 0 && t2.held_locks & HELD_FROZEN == 0,
+            "FRZCYC：r{} thaw 后受害双任务须全解冻",
+            r
+        );
+        assert!(canary.held_locks & HELD_FROZEN == 0, "FRZCYC：r{} 金丝雀不熄", r);
+        assert_eq!(
+            ht.count_type(ObjType::SuspendToken),
+            tok_base,
+            "FRZCYC：r{} close 后 token 归基线",
+            r
+        );
+        let ath_now = telemetry::auto_thaw_total();
+        assert!(
+            ath_now > ath_prev,
+            "FRZCYC：r{} auto_thaw 计数须严格递增（{} → {}）",
+            r,
+            ath_prev,
+            ath_now
+        );
+        (fok_prev, ath_prev) = (fok_now, ath_now);
+    }
+    // 末轮全量收口：两轮末值恰 +2（计数器严格递增的终点锚）。
+    assert_eq!(telemetry::freeze_ok_total(), fok0 + 2, "FRZCYC：两轮 freeze_ok 恰 +2");
+    assert_eq!(telemetry::auto_thaw_total(), ath0 + 2, "FRZCYC：两轮 auto_thaw 恰 +2");
+
+    // 清场：摘队（勿扰后续测试的 SLEEPQ 面）+ 表收口（Process 先于 Vmar——
+    // Drop 链方向）。
+    berry_sched::sleepq_unlink(t1);
+    berry_sched::sleepq_unlink(t2);
+    berry_sched::sleepq_unlink(canary);
+    ht.close(hp).unwrap();
+    ht.close(hv).unwrap();
+    berry_hal_aarch64::uart_puts(b"FRZCYC ok r=2\n");
+}
+
 /// 1.1/S4-b 补测：billing 表满覆写（9 域逼满 8 槽）。
 fn test_billing_overflow() {
     use crate::telemetry;
@@ -4317,18 +4505,20 @@ fn test_sched_attr() {
 
 /// 刀1 P10：唤醒源枚举/谓词/布局**纯面**（ktest 在 sched::init 前跑——
 /// 记账槽表 pristine，未触槽断言有效；运行期执法在 G1.5 WAKESRC 块）。
-/// A. 8 枚举值互异且 ≤0x7F（值直槽表容量界）+ 端点锚（NONE=0x00 哨兵 /
-///    UNKNOWN=0x7F）；B. `wake_src_valid` 6 真源过、NONE/UNKNOWN/未定义段
-///    （0x07/0x50）拒——「可进环」白名单与 [[wakesrc]] 生成器同源；
-/// C. `wake_src_class` 分类位映射（TIMER=class 位 / UART=IRQ 线位 /
-///    SGI×2=内部位 / IPC·KB=0 / 未定义=0）；D. 布局钉（WakeRec 32B——
-///    `source` 吃掉 _pad[0]、_pad 缩 [u8;2]；WakeSrcRec 64B——128 槽 ×64B
-///    = 8KB .bss）+ 未触槽快照原语（0x50 ∈ 未定义段：first_ts=u64::MAX
-///    哨兵、计数全 0、ts_domain=0）。
+/// A. 9 枚举值互异且 ≤0x7F（值直槽表容量界）+ 端点锚（NONE=0x00 哨兵 /
+///    UNKNOWN=0x7F；sim-S2：POWER_KEY=0x07 到达-only 锚）；B. `wake_src_valid`
+///    6 真源过、NONE/UNKNOWN/POWER_KEY/未定义段（0x08/0x50）拒——「可进环」
+///    白名单与 [[wakesrc]] 生成器同源（POWER_KEY 有意不在环白名单：v1 电源键
+///    恒无唤醒，到达-only 三号位）；C. `wake_src_class` 分类位映射（TIMER=
+///    class 位 / UART·POWER_KEY=IRQ 线位 / SGI×2=内部位 / IPC·KB=0 /
+///    未定义=0）；D. 布局钉（WakeRec 32B——`source` 吃掉 _pad[0]、_pad 缩
+///    [u8;2]；WakeSrcRec 64B——128 槽 ×64B = 8KB .bss）+ 未触槽快照原语
+///    （0x50 ∈ 未定义段：first_ts=u64::MAX 哨兵、计数全 0、ts_domain=0）。
 fn test_wake_src() {
     use berry_hal_aarch64::wake_gen::{
-        WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_SGI_RESCHED,
-        WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+        WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_POWER_KEY,
+        WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX,
+        WAKE_SRC_UNKNOWN,
     };
     use crate::telemetry::{
         self, WSRC_F_HAD_NO_WAITER, WSRC_F_IRQ_LINE, WSRC_F_SGI_INTERNAL, WSRC_F_SLEPT,
@@ -4344,6 +4534,7 @@ fn test_wake_src() {
         WAKE_SRC_SGI_RESCHED,
         WAKE_SRC_SGI_TLB,
         WAKE_SRC_IPC,
+        WAKE_SRC_POWER_KEY,
         WAKE_SRC_UNKNOWN,
     ];
     for (i, &v) in all.iter().enumerate() {
@@ -4353,9 +4544,10 @@ fn test_wake_src() {
         }
     }
     assert_eq!(WAKE_SRC_NONE, 0x00, "WSRC-K A：NONE 哨兵锚");
+    assert_eq!(WAKE_SRC_POWER_KEY, 0x07, "WSRC-K A：POWER_KEY 到达-only 锚（sim-S2 A4②）");
     assert_eq!(WAKE_SRC_UNKNOWN, 0x7F, "WSRC-K A：UNKNOWN 端点锚");
 
-    // B. 白名单谓词：6 真源过；哨兵/未知/未定义段拒。
+    // B. 白名单谓词：6 真源过；哨兵/未知/POWER_KEY/未定义段拒。
     for &v in &[
         WAKE_SRC_KERNEL_BOOT,
         WAKE_SRC_TIMER,
@@ -4366,13 +4558,14 @@ fn test_wake_src() {
     ] {
         assert!(telemetry::wake_src_valid(v), "WSRC-K B：真源 {:#04x} 被拒", v);
     }
-    for &v in &[WAKE_SRC_NONE, WAKE_SRC_UNKNOWN, 0x07, 0x50] {
+    for &v in &[WAKE_SRC_NONE, WAKE_SRC_UNKNOWN, WAKE_SRC_POWER_KEY, 0x08, 0x50] {
         assert!(!telemetry::wake_src_valid(v), "WSRC-K B：非白名单 {:#04x} 竟过", v);
     }
 
     // C. 分类位映射。
     assert_eq!(telemetry::wake_src_class(WAKE_SRC_TIMER), WSRC_F_TIMER_CLASS);
     assert_eq!(telemetry::wake_src_class(WAKE_SRC_UART_RX), WSRC_F_IRQ_LINE);
+    assert_eq!(telemetry::wake_src_class(WAKE_SRC_POWER_KEY), WSRC_F_IRQ_LINE);
     assert_eq!(telemetry::wake_src_class(WAKE_SRC_SGI_RESCHED), WSRC_F_SGI_INTERNAL);
     assert_eq!(telemetry::wake_src_class(WAKE_SRC_SGI_TLB), WSRC_F_SGI_INTERNAL);
     assert_eq!(telemetry::wake_src_class(WAKE_SRC_IPC), 0);
@@ -4888,6 +5081,214 @@ fn test_intent() {
     let _ = (RIGHT_SEND, RIGHT_RECV); // 面上引用（rights 门控面 H 段已盖）
 
     berry_hal_aarch64::uart_puts(b"INTENT-K ok\n");
+}
+
+/// v1.2/S6-e（`调点调度-v1.2.md` §7 / ADR #42 第二段）：band 预算包络
+/// （`sched/src/band.rs`）四段验证——**消耗 / 耗尽 / 周期 / 隔离**。
+///
+/// 带级 CBS 同形语义：每期至多 quota CPU 周期数，超了 throttle 到下期翻期。
+/// 记账面 = `consume` 微记账 + `throttle_all` 环执法（分两步，热路径可合并）
+/// ；周期面 = `period_check` 事件驱动翻期（零周期 tick）；隔离面 = 带键 =
+/// `intent_effective`（§11）——异带 / deadline 任务（RT 屏蔽不变量 §10）/
+/// 关态带互不波及，`HELD_FROZEN` 位独占语义不被带执法触碰。
+///
+/// ktest 纪律（sched::init 前跑、单核——`BANDS` slot 契约的 ktest 等价）
+/// ：全局静态表 → 末段按「先 `unthrottle_all` 清环上位再 `configure(0)`」
+/// 收口义务关全带，不污染后续测试。附带 BD5 = `Process.band_id` 内核侧
+/// 记账字段最小往返（spawn 映射点载体；ABI 零关联——intent 即带键）。
+#[allow(clippy::unwrap_used)]
+fn test_band() {
+    use berry_sched::{
+        band_on, configure, consume, period_check, state, throttle_all, unthrottle_all,
+        BandBudget, BAND_SLOTS, Fair, Runqueue, SchedClass, Task, Topo,
+        INTENT_BACKGROUND, INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL, PRIO_DEADLINE,
+        HELD_FROZEN, HELD_THROTTLE,
+    };
+
+    /// 占位入口（手搭带成员永不执行；halt 兜底——同 test_deadline）。
+    extern "C" fn bd_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭带成员：intent 即带键（§11——band_member 判定面读 effective）；
+    /// fair 任务（prio_effective=0 < PRIO_DEADLINE）。deadline 豁免面在
+    /// 用例内单独置 `prio_effective = PRIO_DEADLINE`。
+    fn mk(name: &'static [u8], band: u8) -> &'static mut Task {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(bd_dummy, 0, name, 0, 0));
+        t.intent_effective = band;
+        t
+    }
+
+    const QUOTA: u64 = 1_000;
+    const PERIOD: u64 = 10_000;
+    /// 手拨首期起点（band 事件驱动——比较 `now` 参数，不依赖真 CNTVCT）。
+    const NOW: u64 = 100_000;
+    /// 三带键取 #58 intent 冻结编码（0x01/0x02/0x04——均 < BAND_SLOTS）。
+    const B1: u8 = INTENT_LATENCY_CRITICAL;
+    const B2: u8 = INTENT_INTERACTIVE;
+    const B3: u8 = INTENT_BACKGROUND;
+
+    // —— BD0. 配置门控 + 越界负例：quota/period 均正才武装；带越界全拒 ——
+    let empty = Runqueue::new();
+    assert!(!configure(BAND_SLOTS as u8, QUOTA, PERIOD, NOW),
+            "BAND：BD0 带越界 configure 须拒");
+    assert!(state(BAND_SLOTS as u8).is_none(), "BAND：BD0 越界 state 须 None");
+    assert!(!consume(BAND_SLOTS as u8, 1), "BAND：BD0 越界 consume 须 false");
+    assert!(!period_check(BAND_SLOTS as u8, u64::MAX),
+            "BAND：BD0 越界 period_check 须 false");
+    assert_eq!(throttle_all(BAND_SLOTS as u8, &empty), 0,
+               "BAND：BD0 越界 throttle 零扫描");
+    assert_eq!(unthrottle_all(BAND_SLOTS as u8, &empty), 0,
+               "BAND：BD0 越界 unthrottle 零扫描");
+    assert!(!configure(B1, 0, PERIOD, NOW), "BAND：BD0 quota=0 须不武装");
+    assert!(!configure(B1, QUOTA, 0, NOW), "BAND：BD0 period=0 须不武装");
+    assert!(!band_on(B1), "BAND：BD0 未配置带须不执法");
+    assert_eq!(state(B1), Some(BandBudget::OFF), "BAND：BD0 槽初值须 OFF");
+    assert!(configure(B1, QUOTA, PERIOD, NOW), "BAND：BD0 均正须武装");
+    assert!(band_on(B1), "BAND：BD0 武装后 band_on");
+    assert_eq!(
+        (state(B1).unwrap().quota, state(B1).unwrap().period,
+         state(B1).unwrap().consumed, state(B1).unwrap().deadline,
+         state(B1).unwrap().throttled),
+        (QUOTA, PERIOD, 0, NOW + PERIOD, false),
+        "BAND：BD0 首期槽形态（清账 + deadline=now+period）"
+    );
+
+    // —— BD1. 消耗：微记账累计，未越线不报不限流 ——
+    assert!(!consume(B1, 400), "BAND：BD1 未越线不报");
+    assert!(!consume(B1, 500), "BAND：BD1 900/1000 仍未越线");
+    assert_eq!(state(B1).unwrap().consumed, 900, "BAND：BD1 微记账累计");
+    assert!(!state(B1).unwrap().throttled, "BAND：BD1 未越线不得限流");
+    assert!(!consume(B3, 999), "BAND：BD1 关态带 consume 须 false");
+    assert_eq!(state(B3).unwrap().consumed, 0, "BAND：BD1 关态零记账");
+
+    // —— BD2. 耗尽：首越线一次性信号 + 环执法（限流 → eligible 不再出选）——
+    let mut rq = Runqueue::new();
+    let fair = Fair;
+    let t1 = mk(b"bdA".as_slice(), B1);      // 同带 fair ×2（受害面）
+    let t2 = mk(b"bdB".as_slice(), B1);
+    let tother = mk(b"bdO".as_slice(), B2);  // 异带 fair（隔离对照）
+    let tdl = mk(b"bdD".as_slice(), B1);     // 同带 deadline（RT 屏蔽豁免）
+    let tfrz = mk(b"bdF".as_slice(), B1);    // 同带 fair 预冻结（位分立对照）
+    tdl.prio_effective = PRIO_DEADLINE;
+    tfrz.held_locks |= HELD_FROZEN;
+    for t in [&mut *t1, &mut *t2, &mut *tother, &mut *tdl, &mut *tfrz] {
+        fair.enqueue(t, &mut rq);
+    }
+    assert!(consume(B1, 200), "BAND：BD2 900+200≥quota 首越线须报");
+    assert!(!consume(B1, 5), "BAND：BD2 已限流不重复报（一次性信号）");
+    assert_eq!(
+        (state(B1).unwrap().consumed, state(B1).unwrap().throttled),
+        (1_105, true),
+        "BAND：BD2 账面（越线后续记 + 限流位置位）"
+    );
+    assert_eq!(throttle_all(B1, &rq), 3, "BAND：BD2 须置 3 个同带 fair 成员");
+    assert_eq!(throttle_all(B1, &rq), 0, "BAND：BD2 幂等（已置不重复计）");
+    for t in [&*t1, &*t2, &*tfrz] {
+        assert!(t.held_locks & HELD_THROTTLE != 0,
+                "BAND：BD2 同带 fair 须置 THROTTLE");
+    }
+    assert!(tother.held_locks & (HELD_THROTTLE | HELD_FROZEN) == 0,
+            "BAND：BD2 异带不受限");
+    assert!(tdl.held_locks & HELD_THROTTLE == 0,
+            "BAND：BD2 deadline 任务豁免（THROTTLE 位归 S5-c 逐任务执法）");
+    // 限流效果经 eligible 过滤兑现：被限流者留环但不出选（同 S5-c 语义）
+    //——豁免的 deadline 者先出（最高带），摘走后唯一可出选者只剩异带 bdO。
+    let topo = Topo::single();
+    let p1 = fair.pick_next(&rq, &topo).expect("BAND：BD2 非空环须有出选");
+    assert_eq!(p1.name, b"bdD".as_slice(),
+               "BAND：BD2 deadline 豁免者须先出（最高带）");
+    fair.dequeue(&mut *tdl, &mut rq); // 摘豁免者——环上剩被限流三员 + 异带者
+    let p2 = fair.pick_next(&rq, &topo).expect("BAND：BD2 摘豁免者后仍须有出选");
+    assert_eq!(p2.name, b"bdO".as_slice(),
+               "BAND：BD2 被限流三员不得出选（只剩异带 bdO）");
+
+    // —— BD3. 周期：事件驱动翻期（清账+清限流+deadline 饱和步进追赶）——
+    assert!(!period_check(B1, NOW + PERIOD - 1), "BAND：BD3 未到期不翻");
+    assert!(state(B1).unwrap().throttled, "BAND：BD3 未到期限流保持");
+    // 长眠一次跨两期（now = 首期起点 + 2×PERIOD + 500）：deadline 一步
+    // 追到 NOW+3×PERIOD（饱和步进，防死循环）。
+    assert!(period_check(B1, NOW + 2 * PERIOD + 500), "BAND：BD3 到期须翻期");
+    assert_eq!(
+        (state(B1).unwrap().consumed, state(B1).unwrap().throttled),
+        (0, false),
+        "BAND：BD3 翻期清账清限流"
+    );
+    assert_eq!(state(B1).unwrap().deadline, NOW + 3 * PERIOD,
+               "BAND：BD3 跨多期饱和步进（一步跨两期）");
+    assert_eq!(unthrottle_all(B1, &rq), 3, "BAND：BD3 翻期后须清 3 个限流位");
+    assert_eq!(unthrottle_all(B1, &rq), 0, "BAND：BD3 幂等");
+    for t in [&*t1, &*t2] {
+        assert_eq!(t.held_locks, 0, "BAND：BD3 fair 成员位须全清");
+    }
+    assert_eq!(tfrz.held_locks, HELD_FROZEN,
+               "BAND：BD3 只清 THROTTLE 位（FROZEN 归 SuspendToken close 独占）");
+    assert!(!consume(B1, QUOTA - 1), "BAND：BD3 新期未越线（预算重置生效）");
+    assert!(consume(B1, 1), "BAND：BD3 新期首越线再报");
+
+    // —— BD4. 隔离：带间账面/执法/翻期互不波及 ——
+    assert!(configure(B2, 100, PERIOD, NOW), "BAND：BD4 B2 武装");
+    assert!(configure(B3, 5_000, PERIOD, NOW), "BAND：BD4 B3 武装");
+    let mut rq4 = Runqueue::new();
+    let u1 = mk(b"bdU".as_slice(), B2);
+    let u2 = mk(b"bdU2".as_slice(), B2);
+    let v1 = mk(b"bdV".as_slice(), B3);
+    for t in [&mut *u1, &mut *u2, &mut *v1] {
+        fair.enqueue(t, &mut rq4);
+    }
+    let b1_snap = state(B1).unwrap(); // B1 耗尽态快照（隔离对照）
+    assert!(consume(B2, 100), "BAND：BD4 B2 首越线（小配额）");
+    assert_eq!(throttle_all(B2, &rq4), 2, "BAND：BD4 只限 B2 两成员");
+    assert!(u1.held_locks & HELD_THROTTLE != 0 && u2.held_locks & HELD_THROTTLE != 0,
+            "BAND：BD4 B2 成员须置位");
+    assert_eq!(v1.held_locks, 0, "BAND：BD4 B3 成员不受 B2 执法");
+    assert_eq!(state(B1).unwrap(), b1_snap, "BAND：BD4 B2 消耗不波及 B1 账面");
+    assert_eq!(throttle_all(B1, &rq4), 0, "BAND：BD4 B1 执法不越带扫 rq4");
+    assert!(!consume(B3, 4_999), "BAND：BD4 B3 走自己的账（未越线）");
+    assert!(period_check(B2, NOW + PERIOD), "BAND：BD4 B2 到期翻期");
+    assert_eq!(state(B3).unwrap().consumed, 4_999, "BAND：BD4 B2 翻期不重置 B3 账");
+    assert_eq!(state(B2).unwrap().consumed, 0, "BAND：BD4 B2 翻期清自己");
+    assert_eq!(unthrottle_all(B2, &rq4), 2, "BAND：BD4 B2 解限流");
+
+    // —— BD5. Process.band_id 记账面（S6-e 内核侧字段：出生 0 = 未编带；
+    //         spawn 映射点写档 → band 消费面读档的往返。test_freeze_cycles
+    //         同款手搭：Vmar::new_root + Process::new 经 bootstrap 表）。——
+    {
+        use crate::handle::{KernelObj, ObjType, RIGHT_MANAGE};
+        use crate::process::Process;
+        use crate::vmar::Vmar;
+
+        let ht = crate::syscall::bootstrap_table();
+        let vm = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()).unwrap();
+        let (pa, asid) = (vm.ttbr0_pa(), vm.asid());
+        let hv = ht.insert(KernelObj::Vmar(vm), RIGHT_MANAGE).unwrap();
+        let (vref, _) = ht.get_raw(hv, ObjType::Vmar, 0).unwrap();
+        let hp = ht
+            .insert(KernelObj::Process(unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE)
+            .unwrap();
+        let (pref, _) = ht.get_raw(hp, ObjType::Process, RIGHT_MANAGE).unwrap();
+        // SAFETY: 刚 get_raw 过（在表、类型 Process）；ktest 单核顺序。
+        let p = unsafe { (*pref.as_ptr()).obj.as_process_mut().unwrap() };
+        assert_eq!(p.band_id, 0, "BAND：BD5 Process 出生 band_id=0（未编带）");
+        p.band_id = B3; // spawn 映射点同形写档（intent 档映射）
+        assert_eq!(p.band_id, INTENT_BACKGROUND, "BAND：BD5 band_id 写读往返");
+        ht.drain(); // Drop 链：release vmar 钉住 + PROCESS_LIVE 归位
+    }
+
+    // —— 收口：mid-flight 翻配置义务——先清环上位（BD4 尾已 unthrottle）
+    //         再 configure(0) 关全带；关态 = 与接口缺席逐位等价（零扫描）。——
+    assert!(!configure(B1, 0, 0, 0), "BAND：收口关 B1");
+    assert!(!configure(B2, 0, 0, 0), "BAND：收口关 B2");
+    assert!(!configure(B3, 0, 0, 0), "BAND：收口关 B3");
+    for b in [B1, B2, B3] {
+        assert!(!band_on(b), "BAND：收口后须全关（默认全关）");
+        assert_eq!(state(b), Some(BandBudget::OFF), "BAND：收口槽须 OFF");
+    }
+    assert_eq!(throttle_all(B2, &rq4), 0,
+               "BAND：收口关态零扫描（u1/u2 仍在环）");
+    assert_eq!(u1.held_locks, 0, "BAND：收口不再执法");
+
+    berry_hal_aarch64::uart_puts(b"BAND-K ok\n");
 }
 
 /// 4-4：fastpath 检查链的 SLEEPQ 侧纯函数面（`find_single_waiter`）+ send 尾部

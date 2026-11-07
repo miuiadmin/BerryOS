@@ -96,6 +96,14 @@ pub struct Process {
     /// 用于拒绝「进程全冻 × 单线程冻」重叠：HELD_FROZEN 目前只有一位，
     /// 两种粒度交叉 close 会提前解冻。
     pub thread_freezes: u32,
+    /// v1.2/S6-e：进程 band 成员号（0 = 未编带——扁平 fair 默认；1..=4 =
+    /// class_fair ×4 带实例〔`调点调度-v1.2.md` §7〕）。**内核侧记账字段**
+    /// ——ABI `sched_attr` 不加 band 字段（§11「intent 即带键」；本字段与
+    /// ABI 零关联，35+ 号零漂移）。消费面 = `sched::band` 预算包络：spawn
+    /// 时随任务带键（intent 档）映射，quota 0 全关 = 与接口缺席逐位等价。
+    /// plain u8——单核 IRQ 屏蔽路径专用（同 freeze_depth）。
+    #[allow(dead_code)] // S6-e band 执法刀消费（spawn 映射点 + sched::band）
+    pub band_id: u8,
 }
 
 impl Process {
@@ -121,6 +129,7 @@ impl Process {
             sched_attr: SchedAttr::default(),
             freeze_depth: 0,
             thread_freezes: 0,
+            band_id: 0,
         }
     }
 

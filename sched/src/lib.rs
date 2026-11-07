@@ -17,6 +17,7 @@
 
 extern crate alloc;
 
+pub mod band;
 pub mod class;
 pub mod intent;
 pub mod policy;
@@ -25,6 +26,10 @@ pub mod sched;
 pub mod spin;
 pub mod task;
 
+pub use band::{
+    band_on, configure, consume, period_check, state, throttle_all, unthrottle_all, BandBudget,
+    BAND_SLOTS,
+};
 pub use class::{Fair, RoundRobin, SchedClass, PRIO_DEADLINE};
 pub use intent::{
     intent_valid, settle, snapshot, MsgIntent, SettleOut, SnapOut, INTENT_BACKGROUND,

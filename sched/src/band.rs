@@ -1,0 +1,234 @@
+//! band 预算包络（v1.2 `调点调度-v1.2.md` §7 / ADR #42 第二段）——S5-c
+//! 逐任务 deadline 预算的**带级**同构最小面。
+//!
+//! 已裁机制清单的最小子集：静态 8 槽 [`BandBudget`] 表 + **整数微记账**
+//! （QNX 三件套之一——CNTVCT 周期数整数累加，无小数无换算堆）+ **事件驱动
+//! 周期翻转**（[`period_check`] 对 CNTVCT 一比较，消费点顺带调——绝不复活
+//! 周期 tick）。带键 = intent（§11「band 不加 attr 字段（intent 即带键）」
+//! ）：任务侧读 `intent_effective`（§3.6 调度决策一律看 effective），进程
+//! 侧 `Process.band_id` 记账（kernel crate——sched 不反向依赖内核，同
+//! `proc_tag` 的 crate 边界纪律）。
+//!
+//! **默认全关**：槽初值 quota/period = 0 = 该带不设包络——`consume` 恒
+//! false、`throttle_all` 零扫描，与接口缺席逐位等价（v1.2 §7 入场券〔v1
+//! 遥测实证 + loadgen + 尾延迟断言〕未过前 band 执法不并线；本刀 = 机制
+//! 先行，执法开关在启动配置 [`configure`]，trait 签名零改动）。
+//!
+//! **与 S5-c 逐任务预算分立**：deadline 任务（`prio_effective ≥
+//! PRIO_DEADLINE`）被 RT/deadline 屏蔽不变量豁免（§10）——本模块环扫均
+//! 跳过之；其 [`HELD_THROTTLE`] 位只归 S5-c 逐任务执法（`class.rs::tick`
+//! 置 / `lazy_unthrottle_deadlines` 清），带级执法永不触碰。fair 任务的
+//! THROTTLE 位同理只归本模块（双位分立纪律的位内版本：一消费者一位）。
+
+use crate::class::PRIO_DEADLINE;
+use crate::runqueue::Runqueue;
+use crate::task::{Task, HELD_THROTTLE};
+
+/// band 静态表槽数。带词汇 0x00–0x05（intent 冻结编码，#58）+ 余量：
+/// v1.2 §7 现役 = 0x01–0x04 ×4 带实例（0x05 MAINTENANCE 冻结不启用），
+/// 0x00 = UNSPECIFIED 默认带（不设包络）。
+pub const BAND_SLOTS: usize = 8;
+
+/// 每带预算槽（CBS 同形语义，同 S5-c：每期至多 quota CPU 时长，超了等
+/// 下期——整数周期数记账）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BandBudget {
+    /// 每期预算（CNTVCT 周期数；0 = 该带不设包络）。
+    pub quota: u64,
+    /// 周期长度（CNTVCT 周期数；0 = 该带不设包络）。
+    pub period: u64,
+    /// 本期已耗（整数微记账）。
+    pub consumed: u64,
+    /// 本期截止时刻（CNTVCT 周期数；事件驱动——无周期 tick）。
+    pub deadline: u64,
+    /// 本期预算是否已耗尽（[`consume`] 首越线置位；[`period_check`] 翻期清）。
+    pub throttled: bool,
+}
+
+impl BandBudget {
+    /// 关闭态槽（quota/period 0 = 不设包络——表初值）。
+    pub const OFF: BandBudget = BandBudget {
+        quota: 0,
+        period: 0,
+        consumed: 0,
+        deadline: 0,
+        throttled: false,
+    };
+}
+
+/// band 静态表（8 槽）。G0 单核静态例外——与 `class.rs::LAST_VCT` /
+/// `policy.rs::SNAPS` 同款纪律：`static mut` 写面只经 `&raw mut` 取裸指针
+/// （不立引用），全部调用点在 IRQ 屏蔽/调度窗内（tick / pick_next 语境）
+/// 单核顺序访问；表已入册 `tools/writable_globals.txt`（scheduler 组）。
+static mut BANDS: [BandBudget; BAND_SLOTS] = [const { BandBudget::OFF }; BAND_SLOTS];
+
+/// 取带槽裸指针（band 越界 → None）。
+///
+/// # Safety（解引用窗，各访问点挂）
+/// 调用点须在 IRQ 屏蔽/调度窗内（单核独占写，同 `LAST_VCT`）。
+#[inline]
+fn slot(band: u8) -> Option<*mut BandBudget> {
+    if band as usize >= BAND_SLOTS {
+        return None;
+    }
+    // SAFETY: 声明点取裸指针不立引用（E0133 解除的就是这一层，同 policy.rs
+    // SNAPS）；不解引用、无别名窗问题。
+    Some(unsafe { &raw mut BANDS[band as usize] })
+}
+
+/// 带成员判定：intent 即带键（§11），读 effective（§3.6 一律看 effective）
+/// ；deadline 任务豁免（RT/deadline 屏蔽不变量，§10——其 THROTTLE 位归
+/// S5-c 逐任务执法独占）。
+#[inline]
+fn band_member(t: *const Task, band: u8) -> bool {
+    // SAFETY: 环上任务均调度器拥有；调用侧屏蔽窗内（同 pick）。
+    unsafe { (*t).intent_effective == band && (*t).prio_effective < PRIO_DEADLINE }
+}
+
+/// 配置某带包络（启动配置面——§7「数字进启动配置」；quota/period **均正**
+/// 才开执法，任一 0 = 关）。`now` = 当前 CNTVCT（首期起点）。
+///
+/// 返回是否已武装。重配即清账翻期（本期已耗归零）——mid-flight 翻配置的
+/// 收口义务：**先 `unthrottle_all` 清环上残留限流位，再 configure(0)**。
+pub fn configure(band: u8, quota: u64, period: u64, now: u64) -> bool {
+    let Some(s) = slot(band) else { return false };
+    if quota == 0 || period == 0 {
+        // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
+        unsafe { *s = BandBudget::OFF };
+        return false;
+    }
+    // SAFETY: 同上。
+    unsafe {
+        *s = BandBudget {
+            quota,
+            period,
+            consumed: 0,
+            deadline: now.saturating_add(period),
+            throttled: false,
+        }
+    }
+    true
+}
+
+/// 该带包络是否在执法（quota/period 均正且带在表内）。
+pub fn band_on(band: u8) -> bool {
+    let Some(s) = slot(band) else { return false };
+    // SAFETY: 只读；屏蔽窗内无并发写（slot 契约）。
+    unsafe { (*s).quota != 0 && (*s).period != 0 }
+}
+
+/// 槽快照拷出（ktest / telemetry 观测面；越界 → None）。
+pub fn state(band: u8) -> Option<BandBudget> {
+    let s = slot(band)?;
+    // SAFETY: 只读拷贝；屏蔽窗内无并发写（slot 契约）。
+    Some(unsafe { *s })
+}
+
+/// 微记账：把 `cycles` 周期数记到 `band` 本期账上（tick 记账点按 CNTVCT
+/// 增量调——同 `Fair::tick` 的 delta 口径）。返回 true = 本期预算**首**越
+/// 线（调用方随后 [`throttle_all`]——记账与环执法分两步，热路径可合并）。
+/// 包络关 / 带越界 → false 不记账。
+pub fn consume(band: u8, cycles: u64) -> bool {
+    let Some(s) = slot(band) else { return false };
+    // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
+    unsafe {
+        if (*s).quota == 0 || (*s).period == 0 {
+            return false;
+        }
+        (*s).consumed = (*s).consumed.saturating_add(cycles);
+        if (*s).consumed >= (*s).quota && !(*s).throttled {
+            (*s).throttled = true;
+            return true;
+        }
+        false
+    }
+}
+
+/// 事件驱动周期翻转：`now ≥ deadline` 即翻期（tick / pick_next 顺带调——
+/// 零额外定时器，同 S5-c lazy unthrottle 的消费点形态）。翻期 = 清账 +
+/// 清限流标记 + 重臂 deadline（+= period；长眠一次跨多期时饱和步进追赶）。
+///
+/// 返回 true = 已翻期（调用方随后 [`unthrottle_all`]）。包络关 / 未到期 /
+/// 带越界 → false。
+pub fn period_check(band: u8, now: u64) -> bool {
+    let Some(s) = slot(band) else { return false };
+    // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
+    unsafe {
+        if (*s).quota == 0 || (*s).period == 0 || now < (*s).deadline {
+            return false;
+        }
+        (*s).consumed = 0;
+        (*s).throttled = false;
+        // 追赶环：饱和步进（deadline 钉 u64::MAX 即出——防死循环）。
+        while (*s).deadline <= now {
+            let next = (*s).deadline.saturating_add((*s).period);
+            if next == (*s).deadline {
+                break;
+            }
+            (*s).deadline = next;
+        }
+        true
+    }
+}
+
+/// 带级限流：扫环上带成员（intent_effective == band 的 fair 任务）置
+/// [`HELD_THROTTLE`]（eligible 过滤 → 不再出选，同 S5-c）。幂等（已置位
+/// 不重复计数）。deadline 任务豁免（[`band_member`]）；FROZEN 位不碰
+/// （进程冻结独占语义）。返回本次置位数。
+///
+/// # Safety 契约（调用方）
+/// rq 环节点有效且在环；屏蔽窗内调用（tick / pick_next 语境——同
+/// `lazy_unthrottle_deadlines`）。包络关 / 带越界 → 0 零扫描。
+pub fn throttle_all(band: u8, rq: &Runqueue) -> usize {
+    if !band_on(band) {
+        return 0;
+    }
+    let mut count = 0;
+    let head = rq.head();
+    let mut cur = head;
+    while let Some(c) = cur {
+        let t = c.as_ptr();
+        // SAFETY: 环上任务均调度器拥有且在环；调用侧屏蔽窗内（同 pick）。
+        unsafe {
+            // §A136：先访当前节点，再推进并判回 head。
+            if band_member(t, band) && (*t).held_locks & HELD_THROTTLE == 0 {
+                (*t).held_locks |= HELD_THROTTLE;
+                count += 1;
+            }
+            cur = (*t).rq_next.get();
+        }
+        if cur == head {
+            break; // 环终止（尾节点处理后才判——§A136）
+        }
+    }
+    count
+}
+
+/// 带级解限流：扫环上带成员清 [`HELD_THROTTLE`]（**只清本位**——FROZEN
+/// 是 SuspendToken close 独占解除语义，同 S5-c 惰性解冻的单位纪律）。
+/// 翻期（[`period_check`] 返 true）后调；也可独立调（关包络前清残留）。
+/// 返回本次清位数。
+///
+/// # Safety 契约（调用方）
+/// 同 [`throttle_all`]（环节点有效、屏蔽窗内；带越界 → 0）。
+pub fn unthrottle_all(band: u8, rq: &Runqueue) -> usize {
+    let mut count = 0;
+    let head = rq.head();
+    let mut cur = head;
+    while let Some(c) = cur {
+        let t = c.as_ptr();
+        // SAFETY: 环上任务均调度器拥有且在环；调用侧屏蔽窗内（同 pick）。
+        unsafe {
+            // §A136：先访当前节点，再推进并判回 head。
+            if band_member(t, band) && (*t).held_locks & HELD_THROTTLE != 0 {
+                (*t).held_locks &= !HELD_THROTTLE;
+                count += 1;
+            }
+            cur = (*t).rq_next.get();
+        }
+        if cur == head {
+            break; // 环终止（尾节点处理后才判——§A136）
+        }
+    }
+    count
+}
