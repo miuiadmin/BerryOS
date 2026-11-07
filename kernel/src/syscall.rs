@@ -780,10 +780,16 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
 /// （pager 重调 0x21 自愈）；pager 不再调 = faulter 永久阻塞（§5-⑤ 裁决
 /// ——PS 可见/不传染）。
 ///
-/// 多 faulter 面（G4-3 B 刀键化后）：K=8 槽池认领 + 每槽定向唤，错醒仅
-/// 存池满溢出 convoy（N>K 时 ≤N-K 有界，N≤K 恒空；C-lite 时代「错醒由
-/// 重 fault 自愈」的广播面退役）；目标 Vmo 指针须与武装请求区间匹配（冒充/跨进程请求拒
-/// -EINVAL——池化后不变，0x21 按 take 到的 (far,asid) 验属主）。
+/// 多 faulter 面（G4-3 B 刀键化后）：K 槽池认领（B 刀 8 → X-5 扩 32）+
+/// 每槽定向唤，错醒仅存池满溢出 convoy（N>K 时 ≤N-K 有界，N≤K 恒空；
+/// C-lite 时代「错醒由重 fault 自愈」的广播面退役）。X-5 起收货 = **属主
+/// 过滤取**（`el0_take_for(vd)` 只取属主匹配本 vmo 的武装槽）：有武装槽但
+/// 无一属主匹配 → **-EINVAL 让位**（不消费不唤醒——老形「全局取最低位 +
+/// 身份验 -EINVAL + 恒唤重臂」的错配消耗舞收敛纯靠时序运气，此根因拔除，
+/// pager 换窗/换轮再收。rc 与老形冒充臂同码 -EINVAL：svcmgr dpgn ④ 冒充
+/// 断言零漂移、X-5 仪器 rc 词表稳定）；供给体身份验保留（同窗不变量
+/// 防御——属主过滤后 take 到的槽已证属 vd，残余 TOCTOU 路收窄为 belt-
+/// and-suspenders）。
 extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
     let (vh, sh, soff) = (tf.regs[1] as u32, tf.regs[2] as u32, tf.regs[3] as usize);
     if soff % PAGE_SIZE != 0 {
@@ -815,8 +821,9 @@ enum SrcOff {
 }
 
 /// 0x21/0x23 共体（阻塞收货主环）：门控先行（错柄 fail fast 不入睡）→
-/// retain 钉活 → poll-first 收货环（无武装请求睡 EL0 pager 键）→ 出口成对
-/// release。两号仅源偏选择不同（SrcOff）。
+/// retain 钉活 → poll-first 收货环（无武装请求睡 EL0 pager 键；有武装但
+/// 属主无一匹配 → -EINVAL 让位不入睡，X-5）→ 出口成对 release。两号仅
+/// 源偏选择不同（SrcOff）。
 fn pager_supply_common(tf: &mut TrapFrame, vh: u32, sh: u32, sel: SrcOff) -> i64 {
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     // 目标/源门控先行——错柄 fail fast 不入睡（阻塞收货前收口校验面）。
@@ -839,9 +846,24 @@ fn pager_supply_common(tf: &mut TrapFrame, vh: u32, sh: u32, sel: SrcOff) -> i64
     if let Some(s) = sv {
         unsafe { (*s.as_ptr()).retain() };
     }
+    // X-5 过滤取输入：dv 本体指针先行解析一次（retain 已钉活 → 跨 block
+    // 睡眠有效；供给体 pager_supply_one 身份验同源口径——get_raw 已门控
+    // ObjType::Vmo，None 臂防御复检同风格）。
+    // SAFETY: get_raw 门控后取本体（只取地址；retain 钉活跨睡眠）。
+    let dv_ptr = match unsafe { (*vd.as_ptr()).obj.as_vmo_mut() } {
+        Some(v) => v as *mut Vmo,
+        None => {
+            // SAFETY: 与入口 retain 成对（防御臂收尾，同唯一出口）。
+            unsafe { ObjRef::release(vd) };
+            if let Some(s) = sv {
+                unsafe { ObjRef::release(s) };
+            }
+            return ERR_BAD_HANDLE as i64;
+        }
+    };
     let ret = loop {
-        match crate::dpg::el0_take() {
-            Some((far, asid, slot)) => {
+        match crate::dpg::el0_take_for(dv_ptr) {
+            crate::dpg::El0Take::Supplied { far, asid, slot } => {
                 let r = pager_supply_one(vd, sv, &sel, far, asid);
                 // 恒唤**本槽** faulter（B 刀键化定向唤——自愈语义不变：
                 // 成功 = eret 命中新叶；失败 = 重试再 fault 再认领，pager
@@ -849,7 +871,18 @@ fn pager_supply_common(tf: &mut TrapFrame, vh: u32, sh: u32, sel: SrcOff) -> i64
                 crate::dpg::el0_wake_faulter(slot);
                 break r;
             }
-            None => {
+            crate::dpg::El0Take::NoneForVd => {
+                // 有武装请求但无一属主匹配本 dv（X-5 错配消耗舞修刀）：
+                // 不消费不唤醒直接出——-EINVAL 让 pager 出让收货窗（svcmgr
+                // 恒扫环换下一 dv 窗/下一轮再收；chan 非阻塞空取同语义）。
+                // 老形此局取走他槽 → 身份验 -EINVAL + 槽已耗 + faulter 恒唤
+                // 重臂 → 舞不收敛（收敛纯靠时序运气）。rc 取 -EINVAL 非
+                // -EAGAIN：与老形冒充臂同码——dpgn ④ 冒充断言
+                // （`supply_pages(dvb,0,0) != -EINVAL` 即早退）零漂移、四
+                // smoke 面不破；`let _ =` 盲进恒扫环消费 rc 无面。
+                break ERR_INVALID_ARG as i64;
+            }
+            crate::dpg::El0Take::PoolEmpty => {
                 // 无武装请求：睡 EL0 pager 键（0x21/0x23 = 阻塞收货）。SVC 入口
                 // 类持锁的放/取舞蹈由 block_current 承担（wait_one 先例）；
                 // KL 全谱锁窗内查位+入队 = 无丢唤醒（跨核供给者/探针写者

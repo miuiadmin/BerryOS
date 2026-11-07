@@ -3500,7 +3500,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 48, "lat 握手 Event（G3-4 bench-lat IPC 路——waker wake_matching 唤醒，sleeper 测 wake→run 段）"),
     (1 << 49, "latsgi 位签名（G3-4b bench-lat SGI 路——EL0 sleeper wait_one 位签名门 + 内核 waker Event 置位跨核唤醒）"),
     (1 << 50, "lat 触发 Event 内部位（G3-5 候选① C 形常驻再触发——soakmon 拍后 signal+wake_matching；Event 落内核私有表不经 ABI object_signal 面，登记 = 防撞/去重面〔f4 F8 补〕）"),
-    (1 << 51, "dpg 握手位（G4-1 demand 闭环——裸键族共用一位：内核 fault/pager/done 三键 + EL0 键化族 EFAULT×8/EOVERFLOW/EPAGER〔G4-2 起、B-1 池化〕共 13 键；不经 Event 对象，登记 = 防撞/去重面）"),
+    (1 << 51, "dpg 握手位（G4-1 demand 闭环——裸键族共用一位：内核 fault/pager/done 三键 + EL0 键化族 EFAULT×32〔X-5 扩池 8→32〕/EOVERFLOW/EPAGER〔G4-2 起、B-1 池化〕共 37 键；不经 Event 对象，登记 = 防撞/去重面）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {

@@ -34,8 +34,10 @@
 //! EL0 请求槽 + 唤 EL0 pager 键；用户态 pager 经 `pager_supply_pages`
 //! (0x21) poll-first 收货（无请求睡 pager 键）→ 供给 → 唤 faulter。
 //! 与 EL1 面分槽分键（内核 pager 对不劫 EL0 请求）。G4-3 B 刀：EL0 面
-//! per-request 键化——K=8 槽池认领 + 每槽 fault 键定向唤 + 池满溢出
-//! convoy（单槽覆写/全局广播错醒退役，详 EL0 面块注）。
+//! per-request 键化——K 槽池认领（B 刀 8 → X-5 扩 32）+ 每槽 fault 键定向唤
+//! + 池满溢出 convoy（单槽覆写/全局广播错醒退役，详 EL0 面块注）。X-5 起
+//! 0x21/0x23 收货走 `el0_take_for(vd)` **属主过滤取**：错配窗 -EINVAL 让位
+//! 不消费（「错配消耗舞」修刀，详函数注）。
 
 use crate::mm;
 use crate::vmar::{self, Perm, Vmar};
@@ -186,10 +188,13 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
 // 退役〔C-lite 实证自愈无恙后降级为 O(N²) 错醒热点〕——K=8 槽池认领制 +
 // 每槽专属 fault 键定向唤 + 池满溢出 convoy。）----
 
-/// EL0 请求槽池容量（B 刀 K=8）。选型：C-full soak N=15 > K → 溢出
-/// convoy 面天然压过（免死码）；池满 faulter 睡 [`EOVERFLOW_KEY`]，take
-/// 侧消费即放槽唤醒、重扫续环（poll-first 同构，§5-⑤ 挂死帽语义不变）。
-const EREQ_SLOTS: usize = 8;
+/// EL0 请求槽池容量（B 刀 K=8 → X-5 扩 32：与用户态 svcmgr `PAGER_SLOTS=32`
+/// 镜像对齐——X-5 每子 ~5 臂多窗并存时 8 槽高发错配/池满）。选型不变：
+/// N > K 才有溢出 convoy 面天然压过（免死码；K=8 时代 C-full soak N=15 实测
+/// ovfl=7 档，K=32 后现役拓扑 N≤15 < K → 零发，历史档存照）；池满 faulter 睡
+/// [`EOVERFLOW_KEY`]，take 侧消费即放槽唤醒、重扫续环（poll-first 同构，
+/// §5-⑤ 挂死帽语义不变）。
+pub(crate) const EREQ_SLOTS: usize = 32;
 
 /// EL0 武装请求槽（ADR #9 零分配：boot 静态池。互斥依托 **KL 全谱锁**
 /// 非单核〔G4-2 修批 C3 口径〕——探针写者与 0x21 读者被 KL 串行，扫描/
@@ -262,7 +267,8 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
                 // 全拓扑 N=4<K=8 零发（lockdep 相 2 断零计）；C-full N=15
                 // 满配实测（两树双相 + 复建）五跑恒 7（ovfl=7 档 = dpgsoak
                 // 四绿档 + face-1 复建档实证）。KL→PRINT（rank 7 最内）锁序合法；非标记
-                // 不入数组）。
+                // 不入数组）。X-5 K=32 后现役拓扑 N≤15 < K → 零发（历史档
+                // 存照，观测面保留）。
                 hal::kern_lock::with_print_lock(|| {
                     hal::uart_puts(b"DPG ovfl\n");
                 });
@@ -301,21 +307,104 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
 // ---- 0x21 面小件（syscall.rs `sys_pager_supply_pages` 用；键/槽私有，经
 // 函数面外借——SVC 面不触裸键纪律）----
 
-/// 取走武装请求（consume-on-read，dpg_pager swap 同款）——**KL 窗内**调用
-///（0x21 SVC 类 KL 在身；探针写点同在 KL 窗）。互斥依托 **KL 全谱锁**非
-///「单核」（G4-2 修批 C3 改口：SMP 下跨核探针写者与 0x21 读者被 KL 串行
-/// ——smoke-smp 跨核供给已实发，「单核屏蔽」论证退役，防 G4-3 误放宽）。
-/// B 刀键化：扫池取**最低索引** armed 槽（确定性），返回 `(far, asid,
-/// slot)`——供给毕经 [`el0_wake_faulter`] 定向唤本槽；消费即放槽，恒唤
-/// 溢出 convoy（池满等待者重扫认领——无等待者即无操作）。
-pub(crate) fn el0_take() -> Option<(usize, u16, usize)> {
+/// `el0_take_for` 三态返回（X-5 错配消耗舞修刀：「全局取最低位」改属主
+/// 过滤取——错配窗让位不消费）。
+pub(crate) enum El0Take {
+    /// 属主匹配槽已消费（`(far, asid, slot)`）——供给毕经
+    /// [`el0_wake_faulter`] 定向唤本槽。
+    Supplied { far: usize, asid: u16, slot: usize },
+    /// 池有武装槽但无一属主匹配 `vd`——**零消费零唤醒**（老形此局消费他槽
+    /// → 身份验 -EINVAL + 槽已耗 + 他槽 faulter 恒唤重臂 = 舞不收敛根因）。
+    NoneForVd,
+    /// 全池空（无武装槽）——pager 睡 EL0 pager 键。
+    PoolEmpty,
+}
+
+/// 属主过滤取武装请求（X-5 改形：`el0_take` 全局取最低位 → `el0_take_for(vd)`
+/// 只取**属主匹配** vd 的最低索引 armed 槽）——**KL 窗内**调用（0x21/0x23
+/// SVC 类 KL 在身；探针写点同在 KL 窗——改形保持同窗）。互斥依托 **KL 全谱
+/// 锁**非「单核」（G4-2 修批 C3 改口：SMP 下跨核探针写者与 0x21 读者被 KL
+/// 串行——smoke-smp 跨核供给已实发，「单核屏蔽」论证退役，防 G4-3 误放宽）。
+///
+/// 扫 `0..EREQ_SLOTS`：对每个武装槽解析属主（`vmar::demand_root(asid)` →
+/// `demand_region_at(far)` 得 rvmo，与 vd 指针比对——供给体身份验同口径：
+/// rvmo 经 demand 钉活、vd 经调用方 retain 活，双活对象同址即同体）；首个
+/// 匹配槽 swap(false, Acquire) 消费（latch 习语同 `dpg_pager`；消费即放槽
+/// 恒唤溢出 convoy——池满等待者重扫认领，无等待者即无操作），返回
+/// [`El0Take::Supplied`]；有武装槽但无一匹配 → [`El0Take::NoneForVd`]
+/// （不消费任何槽、不 wake 任何 faulter——调用方 -EINVAL 让位）；全池空
+/// → [`El0Take::PoolEmpty`]。解析失败槽（demand_root None / 区间 miss）
+/// = **孤儿槽 GC 臂**（非「理论不可达」：armed 钉只保 demand VMO 不放，
+/// 不保区间在册——跨窗 `sys_vmar_unmap` 摘区间 / `Vmar::Drop` 注销登记 /
+/// faulter 所属进程被杀，三路都留死臂且无人取；老形错配烧槽是它的意外
+/// GC，过滤取后无烧 → 死臂囤池即漏。此臂恢复 GC：消费 + 定向唤本槽
+/// faulter〔活者重 fault 走区间 miss kill 链；死者无等待者即无操作〕+
+/// 放槽唤溢出 convoy + 续扫；不置 any_armed（消费后池态如实）。）
+pub(crate) fn el0_take_for(vd: *mut Vmo) -> El0Take {
+    let mut any_armed = false;
     for (i, s) in EREQ.iter().enumerate() {
-        if s.armed.swap(false, Ordering::Acquire) {
-            berry_sched::wake_matching(&EOVERFLOW_KEY as *const u8 as usize, DPG_WAKE_BIT);
-            return Some((s.far.load(Ordering::Relaxed) as usize, s.asid.load(Ordering::Relaxed), i));
+        if !s.armed.load(Ordering::Acquire) {
+            continue;
         }
+        let far = s.far.load(Ordering::Relaxed) as usize;
+        let asid = s.asid.load(Ordering::Relaxed);
+        let owner = match vmar::demand_root(asid) {
+            // SAFETY: root = KL 窗内查得（本函数 KL 契约——窗内查得即窗内
+            // 活，注销与对象释放同窗互斥，0x21 供给窗同口径）；region 查只读。
+            Some(root) => match unsafe { (*root).demand_region_at(far) } {
+                Some((rvmo, _, _)) => Some(rvmo),
+                None => None,
+            },
+            None => None,
+        };
+        match owner {
+            // 合法他窗（属主在册且非本 vd）——让位面：跳过，不消费不唤醒。
+            Some(o) if o != vd => {
+                any_armed = true;
+                continue;
+            }
+            // 孤儿槽（GC 臂，详函数注）：消费 + 定向唤本槽 faulter（空
+            // SLEEPQ = 无操作）+ 放槽唤溢出 convoy + 续扫——非本 vd 窗，
+            // 不置 any_armed（消费后池态如实：无他臂则 PoolEmpty）。
+            None => {
+                if s.armed.swap(false, Ordering::Acquire) {
+                    el0_wake_faulter(i);
+                    berry_sched::wake_matching(
+                        &EOVERFLOW_KEY as *const u8 as usize,
+                        DPG_WAKE_BIT,
+                    );
+                }
+                continue;
+            }
+            // 属主匹配（Some(vd)）——落出 match 走下方消费。
+            Some(_) => {}
+        }
+        // 消费（swap(false, Acquire) latch 收口——KL 串行下 load(true) 后无人
+        // 可抢先；false 臂 = KL 契约破的防御跳过，零 panic 零半态）。
+        if !s.armed.swap(false, Ordering::Acquire) {
+            continue;
+        }
+        berry_sched::wake_matching(&EOVERFLOW_KEY as *const u8 as usize, DPG_WAKE_BIT);
+        return El0Take::Supplied { far, asid, slot: i };
     }
-    None
+    if any_armed {
+        El0Take::NoneForVd
+    } else {
+        El0Take::PoolEmpty
+    }
+}
+
+/// ktest 装配面：直接武装一个 EL0 请求槽（X-5 过滤取用例专用——复刻
+/// [`probe_el0`] 的武装动作，绕过异常上下文；ktest 在 `sched::init` 前跑、
+/// 池零占用零 pager/faulter 在飞，无干扰面）。返回认领槽号。
+pub(crate) fn ktest_arm_el0(far: usize, asid: u16) -> usize {
+    let i = (0..EREQ_SLOTS)
+        .find(|i| !EREQ[*i].armed.load(Ordering::Relaxed))
+        .expect("dpg: ktest_arm_el0 池满（ktest 独占池——容量用例满装后须先 take 放槽）");
+    EREQ[i].far.store(far as u64, Ordering::Relaxed);
+    EREQ[i].asid.store(asid, Ordering::Relaxed);
+    EREQ[i].armed.store(true, Ordering::Release);
+    i
 }
 
 /// EL0 pager 等待键（0x21 阻塞收货的睡点）。

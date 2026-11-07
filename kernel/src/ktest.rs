@@ -493,6 +493,230 @@ fn test_syscall() {
     // SAFETY: 同上；Drop 注销收尾。
     drop(unsafe { alloc::boxed::Box::from_raw(p18) });
 
+    // E3d. EL0 槽池属主过滤取（X-5 错配消耗舞修刀，dpg::el0_take_for 三态）：
+    //      双窗错位——vd_b 先臂（占**低位**槽）、vd_a 后臂，take_for(a) 须跳过
+    //      b 槽只取 a 的（b 槽仍 armed；老形「全局取最低位」此局必先咬 b 槽 →
+    //      身份验 -EINVAL + 槽已耗 + 恒唤重臂 = 舞根因）；take_for(无关 vd_c)
+    //      = NoneForVd 且零消费（b 槽原位存活可续取）；全收讫后 = PoolEmpty。
+    //      属主解析走登记面真链（demand_root → demand_region_at → rvmo 指针
+    //      比对）。断言静默融入 E 族（X-5 零新增串口标记）；槽装配 =
+    //      dpg::ktest_arm_el0（复刻 probe_el0 武装动作——ktest 在 sched::init
+    //      前跑，池零占用、零 pager/faulter 在飞）。
+    {
+        use crate::dpg::{ktest_arm_el0, El0Take};
+        let vmo_a = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmo::create_demand(PAGE_SIZE).expect("SYSCALL：E3d 建 demand VMO a（可信语境）"),
+        ));
+        let vmo_b = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmo::create_demand(PAGE_SIZE).expect("SYSCALL：E3d 建 demand VMO b（可信语境）"),
+        ));
+        let asid_a = crate::aspace::alloc_asid();
+        let asid_b = crate::aspace::alloc_asid();
+        let root_a = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid_a)
+                .expect("SYSCALL：E3d 建 root Vmar a（可信语境）"),
+        ));
+        let root_b = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid_b)
+                .expect("SYSCALL：E3d 建 root Vmar b（可信语境）"),
+        ));
+        const VA_A: usize = 0x5000_0000;
+        const VA_B: usize = 0x5100_0000;
+        root_a
+            .map_demand(vmo_a, VA_A, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
+            .expect("SYSCALL：E3d map_demand a");
+        root_b
+            .map_demand(vmo_b, VA_B, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
+            .expect("SYSCALL：E3d map_demand b");
+        crate::vmar::register_demand_root(asid_a, root_a as *mut Vmar)
+            .expect("SYSCALL：E3d 登记 root a");
+        crate::vmar::register_demand_root(asid_b, root_b as *mut Vmar)
+            .expect("SYSCALL：E3d 登记 root b");
+        // 武装：b 先 a 后——b 占低位槽（跳过面的证明前提）。
+        let slot_b = ktest_arm_el0(VA_B, asid_b);
+        let slot_a = ktest_arm_el0(VA_A, asid_a);
+        assert!(slot_b < slot_a, "SYSCALL：E3d 装配前提（b 先臂占低位槽）");
+        // ① take_for(a)：跳过低位 b 槽只取 a 槽（far/asid/slot 全对号）。
+        match crate::dpg::el0_take_for(vmo_a as *mut Vmo) {
+            El0Take::Supplied { far, asid, slot } => assert_eq!(
+                (far, asid, slot),
+                (VA_A, asid_a, slot_a),
+                "SYSCALL：E3d take_for(a) 须只取 a 槽（跳过低位 b 槽）"
+            ),
+            El0Take::NoneForVd => panic!("SYSCALL：E3d take_for(a) 须 Supplied（a 槽在席）"),
+            El0Take::PoolEmpty => panic!("SYSCALL：E3d take_for(a) 须 Supplied（两槽在席）"),
+        }
+        // ② take_for(无关 vd_c)：NoneForVd——b 槽在席但属主不匹配，零消费
+        //    零唤醒。
+        let vmo_c = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmo::create_demand(PAGE_SIZE).expect("SYSCALL：E3d 建 demand VMO c（可信语境）"),
+        ));
+        assert!(
+            matches!(
+                crate::dpg::el0_take_for(vmo_c as *mut Vmo),
+                El0Take::NoneForVd
+            ),
+            "SYSCALL：E3d take_for(无关 vd) 须 NoneForVd（b 槽在席不匹配）"
+        );
+        // ③ b 槽未被 ①/② 误消费——take_for(b) 原位收讫（NoneForVd 零消费
+        //    的活证）。
+        match crate::dpg::el0_take_for(vmo_b as *mut Vmo) {
+            El0Take::Supplied { far, asid, slot } => assert_eq!(
+                (far, asid, slot),
+                (VA_B, asid_b, slot_b),
+                "SYSCALL：E3d b 槽须原位存活（跳过/NoneForVd 零消费）"
+            ),
+            El0Take::NoneForVd => panic!("SYSCALL：E3d take_for(b) 须 Supplied（b 槽未被误消费）"),
+            El0Take::PoolEmpty => panic!("SYSCALL：E3d take_for(b) 须 Supplied（b 槽在席）"),
+        }
+        // ④ 全池空（三态收口）。
+        assert!(
+            matches!(
+                crate::dpg::el0_take_for(vmo_a as *mut Vmo),
+                El0Take::PoolEmpty
+            ),
+            "SYSCALL：E3d 全消费后须 PoolEmpty"
+        );
+        // 收尾：Vmar 先放（Drop 注销登记 + 放 demand 钉）→ Vmo 后放（钉已
+        // 放可回收）；c 无映射直接放。Box 泄漏形 from_raw 原址回收（E3c
+        // 地址耦合同纪律）。
+        // SAFETY: 指针全自 Box::leak 未动；from_raw → drop_in_place 原址
+        //（登记/Region 指针地址耦合面）。
+        drop(unsafe { alloc::boxed::Box::from_raw(root_a as *mut Vmar) });
+        drop(unsafe { alloc::boxed::Box::from_raw(root_b as *mut Vmar) });
+        drop(unsafe { alloc::boxed::Box::from_raw(vmo_a as *mut Vmo) });
+        drop(unsafe { alloc::boxed::Box::from_raw(vmo_b as *mut Vmo) });
+        drop(unsafe { alloc::boxed::Box::from_raw(vmo_c as *mut Vmo) });
+    }
+
+    // E3e. 孤儿槽 GC（X-5 三镜头可达面：跨窗 sys_vmar_unmap 摘区间 /
+    //      Vmar::Drop 注销登记 / faulter 进程被杀——armed 不随亡，老形错配
+    //      烧槽即它的意外 GC，过滤取后须自持）。装配：幽灵臂（asid 永不
+    //      登记 root → demand_root None）占低位 + 合法臂占高位；take_for(vd)
+    //      须先 GC 消费幽灵（唤醒面 = 空 SLEEPQ 无操作）续扫收合法臂；幽灵
+    //      槽放归（复臂同号 = 消费活证）；再 GC 后无 any_armed 残留 →
+    //      PoolEmpty（池态如实——误置则 NoneForVd 假报、pager 拒睡空转）。
+    {
+        use crate::dpg::{ktest_arm_el0, El0Take};
+        let vmo_e = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmo::create_demand(PAGE_SIZE).expect("SYSCALL：E3e 建 demand VMO e（可信语境）"),
+        ));
+        let asid_e = crate::aspace::alloc_asid();
+        let root_e = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid_e)
+                .expect("SYSCALL：E3e 建 root Vmar e（可信语境）"),
+        ));
+        const VA_E: usize = 0x5200_0000;
+        root_e
+            .map_demand(vmo_e, VA_E, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
+            .expect("SYSCALL：E3e map_demand e");
+        crate::vmar::register_demand_root(asid_e, root_e as *mut Vmar)
+            .expect("SYSCALL：E3e 登记 root e");
+        let asid_ghost = crate::aspace::alloc_asid(); // 永不登记——孤儿装配
+        // 幽灵先臂占低位（GC 臂先于合法臂被扫到）。
+        let slot_ghost = ktest_arm_el0(VA_E, asid_ghost);
+        let slot_e = ktest_arm_el0(VA_E, asid_e);
+        assert!(slot_ghost < slot_e, "SYSCALL：E3e 装配前提（幽灵先臂占低位槽）");
+        // ① take_for(e)：扫到幽灵臂 → GC 消费 → 续扫收合法 e 臂（对号）。
+        match crate::dpg::el0_take_for(vmo_e as *mut Vmo) {
+            El0Take::Supplied { far, asid, slot } => assert_eq!(
+                (far, asid, slot),
+                (VA_E, asid_e, slot_e),
+                "SYSCALL：E3e 须 GC 幽灵后续扫收合法 e 臂"
+            ),
+            El0Take::NoneForVd => panic!("SYSCALL：E3e 须 Supplied（e 臂在席）"),
+            El0Take::PoolEmpty => panic!("SYSCALL：E3e 须 Supplied（两臂在席）"),
+        }
+        // ② 幽灵槽已被 GC 消费放归：复臂得同号（消费活证）。
+        assert_eq!(
+            ktest_arm_el0(VA_E, asid_ghost),
+            slot_ghost,
+            "SYSCALL：E3e 幽灵槽须已被 GC 消费（复臂同号）"
+        );
+        // ③ 仅剩幽灵臂 → 再 GC → 全池空 = PoolEmpty（孤儿不置 any_armed）。
+        assert!(
+            matches!(
+                crate::dpg::el0_take_for(vmo_e as *mut Vmo),
+                El0Take::PoolEmpty
+            ),
+            "SYSCALL：E3e GC 后须 PoolEmpty（any_armed 不残留）"
+        );
+        // 收尾同 E3d 纪律：Vmar 先放（Drop 注销）→ Vmo 后放（钉已放可回收）。
+        // SAFETY: 指针全自 Box::leak 未动；from_raw → drop_in_place 原址
+        //（登记/Region 指针地址耦合面）。
+        drop(unsafe { alloc::boxed::Box::from_raw(root_e as *mut Vmar) });
+        drop(unsafe { alloc::boxed::Box::from_raw(vmo_e as *mut Vmo) });
+    }
+
+    // E3f. 池容量边界（EREQ_SLOTS=32，X-5 扩池 8→32）：满装 K 臂全属 vd →
+    //      take_for 收最低位 → 复臂回收同号（消费即放槽活证）→ 抽干 K 臂 →
+    //      PoolEmpty。溢出 convoy 的 park/rescan 面（池满 faulter 睡
+    //      EOVERFLOW_KEY + 放槽定向唤重扫）需 sched 在飞——ktest 前置窗
+    //      不可达，该面由 smoke dpgsoak/svcmgr 变体档覆盖（N>K 拓扑，K=32
+    //      后现役 N≤15 零发、K=8 历史档存照）。
+    {
+        use crate::dpg::{ktest_arm_el0, El0Take};
+        let vmo_f = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmo::create_demand(PAGE_SIZE).expect("SYSCALL：E3f 建 demand VMO f（可信语境）"),
+        ));
+        let asid_f = crate::aspace::alloc_asid();
+        let root_f = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid_f)
+                .expect("SYSCALL：E3f 建 root Vmar f（可信语境）"),
+        ));
+        const VA_F: usize = 0x5300_0000;
+        root_f
+            .map_demand(vmo_f, VA_F, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
+            .expect("SYSCALL：E3f map_demand f");
+        crate::vmar::register_demand_root(asid_f, root_f as *mut Vmar)
+            .expect("SYSCALL：E3f 登记 root f");
+        let k = crate::dpg::EREQ_SLOTS;
+        let mut lowest = usize::MAX;
+        for j in 0..k {
+            let s = ktest_arm_el0(VA_F, asid_f);
+            if j == 0 {
+                lowest = s;
+            }
+        }
+        // ① 满装首收 = 最低位（K 臂全属主匹配）。
+        match crate::dpg::el0_take_for(vmo_f as *mut Vmo) {
+            El0Take::Supplied { slot, .. } => {
+                assert_eq!(slot, lowest, "SYSCALL：E3f 满装首收须最低位槽")
+            }
+            El0Take::NoneForVd => panic!("SYSCALL：E3f 满装须 Supplied（K 臂全属 f）"),
+            El0Take::PoolEmpty => panic!("SYSCALL：E3f 满装须 Supplied（K 臂在席）"),
+        }
+        // ② 消费即放槽：复臂回收刚放槽（最低空闲 = 被消费位）。
+        assert_eq!(
+            ktest_arm_el0(VA_F, asid_f),
+            lowest,
+            "SYSCALL：E3f 复臂须回收刚放槽"
+        );
+        // ③ 抽干 K 臂 → PoolEmpty。
+        for j in 0..k {
+            assert!(
+                matches!(
+                    crate::dpg::el0_take_for(vmo_f as *mut Vmo),
+                    El0Take::Supplied { .. }
+                ),
+                "SYSCALL：E3f 抽干第 {} 臂须 Supplied",
+                j
+            );
+        }
+        assert!(
+            matches!(
+                crate::dpg::el0_take_for(vmo_f as *mut Vmo),
+                El0Take::PoolEmpty
+            ),
+            "SYSCALL：E3f 抽干后须 PoolEmpty"
+        );
+        // 收尾同 E3d 纪律：Vmar 先放 → Vmo 后放。
+        // SAFETY: 指针全自 Box::leak 未动；from_raw → drop_in_place 原址
+        //（登记/Region 指针地址耦合面）。
+        drop(unsafe { alloc::boxed::Box::from_raw(root_f as *mut Vmar) });
+        drop(unsafe { alloc::boxed::Box::from_raw(vmo_f as *mut Vmo) });
+    }
+
     // E5. vmo_get_size（0x1A，G-eco 入机侧：svcmgr 消费 rootfs 需要 cpio 总长；
     //     add-only 顺延）。盖四路：往返 + 页对齐语义（create 即取整，非 blob
     //     实长——消费端 cpio 遍历以 newc 头自描述长度为准）/ 坏 handle /
