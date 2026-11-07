@@ -22,6 +22,7 @@ Updated: 2026-11-06
 8. **P2（期权，不排期）**：presence 语义（移动档语音 idle 交互）、describe/state/invoke 三动词（berryui typed action 参照）、云真机门禁（Hetzner 形态）、「为什么不是 BKL」ADR、**编译期执法议题**（moss「编译器禁持自旋锁跨睡眠点」——类型系统消灭违规类别的思路，评估 handle 权限位类型化/lockdep 热路径子集编译期化，调研 14 号 §3）。
 9. **同批笔记**：每项落地时各写一篇 note（决策因果），本计划翻 Status。
 10. **2025 段增量（调研 14 号）**：P0-a proposal 已按 urthr 实证修订（目标板 RPi4→RPi5 翻案候选 + 真机 CI 形态参照）；EEVDF 选型获 moss/Linux 双点主流确认（S2a 无回归风险）。
+11. **源码级增量（调研 15 号）**：① EEVDF 时钟增量化（moss VClock——`avg_vruntime` O(n) 重算改增量维护 Σ/Σw，入队 O(1)，挂 S2b+ 议题）；② yield 片归还语义自查（moss `yield_slice`，随调度域下一刀）；③ SDHC ≈2,600 行实测（P0-a 台阶三量化锚点）；④「为什么不是 async 内核」ADR 候选（与 BKL-ADR 并列）；⑤ **Veda 许可修正 GPL-3.0-only**——其两项吸收（consent/三动词）降为纯语义参照、代码永不进。
 
 ## 未完成事项
 
