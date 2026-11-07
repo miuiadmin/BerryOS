@@ -78,6 +78,9 @@ pub(crate) fn src_of(id: u32) -> u8 {
     match id as usize {
         crate::gic::IRQ_CNTV => WAKE_SRC_TIMER,
         crate::gic::IRQ_PL011_RX => WAKE_SRC_UART_RX,
+        // sim-S1：UART1 与 UART0 同 U 类**归并不拆**（PL011 同设备类；设计
+        // 文档 §3 裁决——per-UART 粒度归 0x84 telemetry_open 终身面）。
+        crate::gic::IRQ_PL1_RX => WAKE_SRC_UART_RX,
         SGI_RESCHED_US => WAKE_SRC_SGI_RESCHED,
         SGI_TLB_US => WAKE_SRC_SGI_TLB,
         _ => WAKE_SRC_UNKNOWN,

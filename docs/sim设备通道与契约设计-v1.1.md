@@ -1,10 +1,17 @@
-# sim 设备通道与契约设计 v1.0
+# sim 设备通道与契约设计 v1.1
 
 > sim-S1（PM-17 §3.2 刀序表首列 sim 刀；PM-16 §4.1 契约具体化 + §4.4 步 1
 > 开刀清单的**实施设计**）。裁决上游：PM-16（T0 形态 = UART1 字节流 + 消息层
 > 原子快照 + 用户态服务 + 契约 crate 三消费）、PM-17 v1.1 §3.3-2（S1 提前，
 > 唯一内核触碰 = IRQ 常量 + 派发分支）。本文冻结节拍/归属/帧布局三件，收口
 > S1 全部实施级开问题；里程碑切分见 §10。
+> **v1.1（M2 实施期修正，2026-11-07）**：四处实测推翻 v1.0 设计面——
+> ①UART1 在席门由 PID 探测改为 fw_cfg 具名键（单串口配置下 0x0904_0000 是
+> **洞**，盲探 PID = external abort，§2/§4.2）；②svcmgr 礼物对槽位 7/8 改
+> 5/6（7 在 EFI-GOP 相被 endB_fb 占，§4.4）；③FIFO 实深 1 非文档值 16B
+> （FEN=0，§2）——案 C 论证反而更强；④libc `read(0)` 的 10s 空闲帽 EOF
+> 化返 0 与 §6「永睡」冲突 → 服务主循环改 echo 形直收（wait READABLE
+> 1h 长帽重臂 + recv，§6）。
 
 ## 1. 定位与验收线
 
@@ -15,13 +22,21 @@ sim-S1 = **通道 + 契约面**：UART1（virt 板第二 PL011）注入字节流
 S1 只交付它们赖以成立的通道与契约。零号 syscall 消耗（全部走既有
 channel/event/wait 面）；v1 35 号口径零违例。
 
-## 2. 通道物象（QEMU 事实，PM-16 §2/§3 已证）
+## 2. 通道物象（QEMU 实测，PM-16 §2/§3 + M2 dumpdtb/mtree 复核）
 
-- **UART1 = pl011@0x0904_0000，SPI 8 = GIC ID 40**；存在条件 = 配置第二个
-  `-serial` 且无 TrustZone（`-kernel` 路恒满足）。地址属 virt 机型稳定 ABI
-  （virt-2.4 起未变）——**无 DTB 可查（`-kernel` 路无设备树），按 UART0 同款
-  钉板级常量**。
-- 每 RX 一 IRQ（电平触发，DTB LEVEL_HIGH）；FIFO 16B、阈值默认 1/8。
+- **UART1 = pl011@0x0904_0000，SPI 8 = GIC INTID 40，LEVEL_HIGH**；存在条件 =
+  配置第二个 `-serial`（QEMU 11.0.3 dumpdtb：双串口配置出 `pl011@9040000`
+  节点、`interrupts = <0x00 0x08 0x04>`）。**单串口配置该地址是洞**（info
+  mtree 无映射）——盲探 PID = external abort = boot 崩。地址属 virt 机型
+  稳定 ABI（virt-2.4 起未变）——**无 DTB 可查（`-kernel` 路无设备树），按
+  UART0 同款钉板级常量**。
+- **在席门 = fw_cfg 具名键 `opt/berry/simdev`**（GUI P2 `opt/berry/display`
+  同款拓扑真值纪律）：justfile 配方**同一行**配 serial1 与此键（拓扑契约——
+  只配键不配 serial = 门开撞洞）；不带键的 run/smoke/smoke-image/EFI 路零
+  扰动（EFI 无 fw_cfg 具名文件面，门恒闭）。
+- 每 RX 一 IRQ（电平触发）；**FEN=0（复位默认，v1 不写 LCR_H）= FIFO 有效
+  深度 1 字节**（UART0 实测同款——QEMU chardev 流控把 host 输入押在设备
+  外不丢字，唯一丢字向量 = 内核环满）。
 - 内核早页表以 2MiB Device 块覆盖 `[0x0900_0000, 0x0920_0000)`（
   `mmu.rs build_boot_pt` dev_blocks）——**UART1 页已在图内，零页表工作**；
   PL061（0x0903_0000，S2 GPIO3 电源键面）同块同免。
@@ -51,23 +66,27 @@ channel/event/wait 面）；v1 35 号口径零违例。
 
 1. **gic.rs**：`pub const IRQ_PL1_RX: usize = 40`（注释体例对齐 IRQ_PL011_RX）
    + SPI 配置表项 `(IRQ_PL1_RX, 0xa0, 0x01, 0b01)`（电平，同 UART0 行）。
-2. **uart.rs**：第二实例参数化——`RxRing`/`rx_pop_all`/`lost` 计数泛化为
-   `uart1_*`（静态双份，避免泛型化搅动现役 UART0 面）；`uart1_init()`：
-   PID0/1/2 探测（QEMU pl011 = 0x11/0x10/0x14）在席才开 RXIM + CR.RXE——
-   serial1 未配（裸跑/无第二 chardev）时静默缺席零扰动（拓扑真值纪律，
-   LSN/EVS 同款）；`uart1_rx()`（IRQ 语境排水 FIFO→环）+ `set_uart1_notify`
-   槽（返回 bool 供直切检查点，`set_rx_notify` 同口）+ `uart1_tx()`（DR 写
-   + FR.TXFF 轮询，ACK 回程用）。
+2. **uart.rs**：第二实例静态双份——`RxRing`/`rx_pop_all`/`lost` 计数克隆为
+   `uart1_*`（避免泛型化搅动现役 UART0 面）；**在席门 = fw_cfg 具名键
+   `opt/berry/simdev`**（v1.0 原案 PID 探测被 §2 洞事实否决——单串口配置下
+   盲探即 external abort；门开才调 `uart1_init()` 开 RXIM + CR，serial1 未配
+   = 键缺席 = 静默零扰动，拓扑真值纪律 LSN/EVS 同款）；`uart1_rx()`（IRQ
+   语境排水 FIFO→环）+ `set_uart1_notify` 槽（返回 bool 供直切检查点，
+   `set_rx_notify` 同口）+ `uart1_tx()`（DR 写 + FR.TXFF 有界自旋，ACK 回程
+   用）。
 3. **trap.rs**：IRQ 40 分派臂 = `wake_src_irq_enter(src_of(40))` →
    `uart1_rx()`（内调 notify 槽：置 UART1_EV 位 + `wake_matching` +
    `note_irq_arrival`，n==0 → `note_irq_no_waiter`）→ `gic::end` →
    （n>0 时）直切检查点 → `wake_src_irq_exit`——PL011_RX 臂逐句同形。
-4. **main.rs**：boot 手搭（`rootfs_present` 门，virtio VMO 同门）：
+4. **main.rs**：boot 手搭（门 = `rootfs_present` ∧ fw_cfg `opt/berry/simdev`
+   键在——virtio VMO 同 rootfs 门再叠拓扑键）：
    UART1_EV Event 对 + 帧通道对（task_simcon→simbattery）+ ACK 通道对
-   （simbattery→task_simcon）；帧端/ACK 端进 svcmgr 表**第 7/8 插定值
-   0x0001_0007/0x0001_0008**（boot assert 拦表序漂移，console 1/rootfs
-   2/endB2 3/virtio 4/fb 5/info 6 之后）；`UART1_EV_REF` 静态（RX_EV_REF
-   同款）。
+   （simbattery→task_simcon）；simbattery 礼物对进 svcmgr 表**第 5/6 插定值
+   0x0001_0005/0x0001_0006**（boot assert 拦表序漂移，console 1/rootfs
+   2/endB2 3/virtio 4 之后；v1.0 原案 7/8 被否——EFI-GOP 相 5/6/7 被
+   fb/info/endB_fb 占，而 fw_cfg 键在 EFI 不可见 = 两相**结构性互斥**，
+   assert 即并存绊网）；simcon 私有表（Event 1/帧 SEND 2/ACK RECV 3）+
+   `UART1_EV_REF` 静态（RX_EV_REF 同款）。
 5. **task_simcon**（EL1 转发任务，task_console 骨架克隆减编辑面）：
    `wait_many [UART1_EV 位, ack端 READABLE]`（10s 心跳帽）→ 醒即
    `disable_irq` 包络 `uart1_rx_pop_all` + 清位 → `channel_send` 帧端
@@ -104,23 +123,31 @@ channel/event/wait 面）；v1 35 号口径零违例。
 
 ## 6. 服务面（`user/bins/simbattery`，musl std bin，bsh 同产链）
 
-- **spawn**：svcmgr boot 序（rootfs 相；门 = 0x0001_0007 在席——裸相/表缺
-  插自然缺席，拓扑真值）；`SpawnSpec { stdin_handle = Some(帧端 7 插)，
-  extra_gifts = [ACK 端 8 插]，stdout = console 发端，… }`——fd0 = 帧字节
-  流（与 bsh 键盘行同形）、fd1/2 = 直打 serial0。
-- **主循环**：`read(0)`（libc，通道 READABLE 经 berry-libc shim 醒）→
-  逐字节 `StreamDecoder::push` → `Frame`：seq 单调校验 → ACK ST_OK/STALE
-  写 ACK 端（channel_send）→ **`SIMBAT ok seq=N\n` 单消息 stdout**（A60
-  纪律：整行一条 channel 消息，console 单写者拼行，不走逐字节分片）；
-  `Bad` → ACK ST_BAD。无注入 = `read` 永睡，零唤醒零标记（B4/裸相零扰动）。
+- **spawn**：svcmgr boot 序（rootfs 相；门 = 0x0001_0005 在席——裸相/表缺
+  插自然缺席，拓扑真值；EFI 相 fw_cfg 键不可见恒缺席）；`SpawnSpec {
+  stdin_handle = Some(帧端 5 插)，extra_gifts = [ACK 端 6 插]，stdout =
+  console 发端，… }`——fd0 = 帧字节流（与 bsh 键盘行同形）、fd1/2 = 直打
+  serial0。
+- **主循环**：echo 形直收（`berry_channel_recv` → 空 -EAGAIN →
+  `wait_one` READABLE **1h 长帽重臂** → 重收；v1.1 修正④：libc `read(0)`
+  10s 空闲帽 EOF 化返 0，与「永睡」冲突，弃用）→ 逐字节
+  `StreamDecoder::push` → `Frame`：dev 须 battery（他设备帧拒 BAD）、
+  seq 单调（首帧或 > last → ST_OK 并更新；否则 ST_STALE 不应用）→ ACK
+  写 gift[0] 端（channel_send，EBUSY→wait WRITABLE 重试）→ **仅 ST_OK**
+  打 `SIMBAT ok seq=N\n` 单消息 stdout（A60 纪律：整行一条 channel 消息，
+  console 单写者拼行，不走逐字节分片；BAD/STALE 无 SIMBAT 行）；`Bad` →
+  ACK ST_BAD。无注入 = 永睡，零唤醒（1h 重臂在 10s 粒度 wake 记账下为零）
+  零标记（B4/裸相零扰动）。
 - 标记互非子串核对：`SIMBAT` 与现役标记两两互非前缀（`SIG ok`/`INPUTP`/
   `INT ok` 首字符即分；裸 grep 足够，`(^|[^A-Z])SIMBAT` 兜底不加——现役
   无 `-SIMBAT` 形）。
 
 ## 7. 宿主面（里程碑 M3）
 
-- `justfile` run-rootfs/smoke：+`-serial unix:$TMPDIR/berryos-sim1.sock,
-  server=on,wait=off`（serial1）；QEMU 退出时 socket 随 TMPDIR 清。
+- `justfile` run-rootfs：+`-serial mon:stdio -serial unix:/tmp/berryos-sim1.sock,
+  server=on,wait=off`（serial0 显式钉 stdio 防吞、serial1 = 注入通道；路径
+  固定供 M3 client 复用，recipe 起手 rm -f 残留 socket）+
+  `-fw_cfg name=opt/berry/simdev,string=1`（在席门键，与 serial1 同线配对）。
 - 注入 client（python，抄 qmp_inject socket 模式）：连 sock → 发黄金帧
   （或参数帧）→ **读回 ACK 9B 对拍**（ST_OK + seq）→ 串口日志 grep
   `SIMBAT ok`。挂点 = RX 注入相内追加段（serial0/serial1 两串口独立，

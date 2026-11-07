@@ -1662,6 +1662,140 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::uart::set_rx_notify(rx_irq_notify);
     // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽。
     unsafe { berry_hal_aarch64::uart::rx_init() };
+    // sim-S1（`docs/sim设备通道与契约设计-v1.1.md` §4）：UART1 注入通道全链
+    // 接线——**在席门 = fw_cfg 具名键 `opt/berry/simdev`**（GUI P2
+    // `opt/berry/display` 同款拓扑真值纪律：justfile 同一行配第二 `-serial`
+    // 与此键，键缺 = 设备不存在——0x0904_0000 是洞，盲配即 external abort
+    // boot 崩；EFI 路无具名键面 = 门恒闭零扰动；既有 run/smoke 不带键零漂移）。
+    // 门开四件（全在 DAIF 屏蔽窗内）：
+    // ① simbattery 礼物对进 svcmgr 表（帧 RECV **0x0001_0005** / 回执 SEND
+    //   **0x0001_0006**——-kernel rootfs 相专属槽位：EFI-GOP 相 5/6/7 被
+    //   fb/info/endB_fb 占（上方块），而 fw_cfg 键在 EFI 不可见 = 两相结构性
+    //   互斥；assert = 并存绊网——真并存即拓扑互斥裁决破产，boot 期炸响）；
+    // ② task_simcon 私有表（Event 1 / 帧 SEND 2 / 回执 RECV 3——console
+    //   私有表同款错捐断根）+ 双通道 pair（endK2/endB2 同款：两端异地入表、
+    //   配对延到后插入侧；boot 单线程中间无人能发）+ 静态槽/retain 钉住；
+    // ③ 通知槽先注册（rx_notify 同款次序硬约束——槽空时首字节静默落环）；
+    // ④ spawn + `uart1_init`（IMSC.RXIM 最后开——线一拉高即真数据，等待者
+    //   与任务须已就位）。
+    if rootfs_present
+        && berry_hal_aarch64::fwcfg::find_file(SIM_DEV_KEY).is_some()
+    {
+        // ① simbattery 礼物对（svcmgr 表，rootfs 相槽 5/6——simbattery 由
+        // svcmgr spawn 时经 SpawnSpec stdin/extra_gifts 领走，M2 后段接线）。
+        let h_simb_rx = ht_svcmgr
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 帧通道 simbattery 端"),
+                ),
+                handle::RIGHT_RECV,
+            )
+            .expect("main: sim 帧 RECV 端进 svcmgr 表");
+        assert_eq!(
+            h_simb_rx, 0x0001_0005,
+            "main: svcmgr 表 sim 帧 RECV 须 0x0001_0005（-kernel 相第 5 插；EFI-GOP 相此槽 = fb VMO——并存即互斥裁决破产）"
+        );
+        let h_simb_tx = ht_svcmgr
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 回执通道 simbattery 端"),
+                ),
+                handle::RIGHT_SEND,
+            )
+            .expect("main: sim 回执 SEND 端进 svcmgr 表");
+        assert_eq!(
+            h_simb_tx, 0x0001_0006,
+            "main: svcmgr 表 sim 回执 SEND 须 0x0001_0006（-kernel 相第 6 插）"
+        );
+        // ② simcon 私有表三插（表序定值断言惯例——错值 boot 期炸响）。
+        let ht_sim: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_ev = ht_sim
+            .insert(
+                KernelObj::Event(crate::event::Event::new()),
+                handle::RIGHT_SIGNAL,
+            )
+            .expect("main: UART1 Event 进 simcon 表");
+        assert_eq!(h_ev, 0x0001_0001, "main: simcon 表 Event 须首插 0x0001_0001");
+        let h_tx = ht_sim
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 帧通道 simcon 端"),
+                ),
+                handle::RIGHT_SEND,
+            )
+            .expect("main: sim 帧 SEND 端进 simcon 表");
+        assert_eq!(h_tx, 0x0001_0002, "main: simcon 表帧 SEND 须 0x0001_0002");
+        let h_ack = ht_sim
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 回执通道 simcon 端"),
+                ),
+                handle::RIGHT_RECV,
+            )
+            .expect("main: sim 回执 RECV 端进 simcon 表");
+        assert_eq!(h_ack, 0x0001_0003, "main: simcon 表回执 RECV 须 0x0001_0003");
+        // ObjRef 四取：Event（IRQ 通知/清位共用）+ simcon 双端（pair 用）+
+        // svcmgr 双端（pair 对侧）。get_raw 即过在表/类型门控。
+        let (p_ev, p_tx, p_ack) = (
+            ht_sim
+                .get_raw(h_ev, handle::ObjType::Event, 0)
+                .expect("main: 取 sim Event ObjRef")
+                .0,
+            ht_sim
+                .get_raw(h_tx, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 帧 SEND ObjRef")
+                .0,
+            ht_sim
+                .get_raw(h_ack, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 回执 RECV ObjRef")
+                .0,
+        );
+        let (p_b_rx, p_b_tx) = (
+            ht_svcmgr
+                .get_raw(h_simb_rx, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 帧 RECV ObjRef")
+                .0,
+            ht_svcmgr
+                .get_raw(h_simb_tx, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 回执 SEND ObjRef")
+                .0,
+        );
+        // SAFETY: 四端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成
+        // 互钉（endK2/endB2 同款：两表异地、配对在后插入侧；boot 单线程）。
+        unsafe {
+            crate::channel::ChannelEnd::pair(p_tx, p_b_rx); // 帧通道
+            crate::channel::ChannelEnd::pair(p_b_tx, p_ack); // 回执通道
+        }
+        // 静态槽 + retain 钉住（RX Event 块同款有意泄漏双保险：永不 close +
+        // 永不 release = IRQ 语境无 UAF 面）。
+        // SAFETY: boot 单线程写、先于一切任务与 IRQ 读（DAIF 屏蔽窗无竞态）。
+        unsafe {
+            (*p_ev.as_ptr()).retain();
+            *core::ptr::addr_of_mut!(UART1_EV_H) = h_ev;
+            *core::ptr::addr_of_mut!(UART1_EV_REF) = Some(p_ev);
+            *core::ptr::addr_of_mut!(SIM_TX_H) = h_tx;
+            *core::ptr::addr_of_mut!(SIM_ACK_H) = h_ack;
+        }
+        // ③④ spawn → 通知槽 → 使能（次序硬约束：消费者就位先于线拉高）。
+        // prio 0（console 同层常驻——系统转发服务，瞬态验收任务之下靠轮转）。
+        berry_sched::spawn_with_tag(
+            task_simcon,
+            0,
+            b"simcon",
+            0,
+            ht_sim as *mut HandleTable as usize,
+        );
+        berry_hal_aarch64::uart::set_uart1_notify(uart1_notify);
+        // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽；fw_cfg 门开 = 第二 serial
+        // 已配、设备在席（0x0904_0000 非洞）。
+        unsafe { berry_hal_aarch64::uart::uart1_init() };
+        berry_hal_aarch64::uart_puts(b"SIM gate on\n");
+    }
     // S-1 副核 bring-up（`SMP设计草案.md` §3.2/§4）：窗口 = DAIF 屏蔽尾窗
     //（全 spawn/回调注册后、arm_slice/enable_irq 前）——主核 CPU_ON 后静默
     // 轮询心跳，无中断无调度，与副核 bring-up 窗口结构性无重叠（UART 单写者
@@ -2298,6 +2432,101 @@ fn fb_pipe_h() -> u32 {
     unsafe { *core::ptr::addr_of!(FB_PIPE_H) }
 }
 
+// ---- sim-S1：UART1 注入面静态槽（task_simcon 等待/消费侧——
+// `docs/sim设备通道与契约设计-v1.1.md` §4）----
+//
+// console 输入面三件套全套镜像（RX_EV_BIT/RX_EV_H/RX_EV_REF 同形）：IRQ 侧
+// 置位（`uart1_notify`）、simcon 消费包络内清位（`uart1_ev_clear`）。差异两
+// 点：①唤醒记账与 UART0 **归并不拆**（`wake.rs src_of` 同 U 类——per-UART
+// 粒度归 0x84 telemetry_open 终身面，设计文档 §3 裁决）；②多一对通道槽
+// （`SIM_TX_H` 帧 SEND / `SIM_ACK_H` 回执 RECV——spawn arg=0，handle 全走
+// 静态槽，RX_EV_H/BSH_IN_H 惯例）。
+
+/// sim-S1 在席门键：fw_cfg 具名文件 `opt/berry/simdev`（LAT_PROBE_NAME 同款
+/// `opt/berry/` 命名空间——justfile 配方同一行配第二 `-serial` 与此键，键在
+/// = UART1 设备在席的拓扑真值）。值本身不消费（在席即门开）。
+const SIM_DEV_KEY: &str = "opt/berry/simdev";
+
+/// UART1 RX Event 的用户位（RX_EV_BIT=1<<39 顺延 1<<40；高半用户位纪律同
+/// `USER_SIGNAL_BITS`）。
+const UART1_EV_BIT: u64 = 1 << 40;
+
+/// UART1 RX Event handle 静态槽（task_simcon 读；写点 = boot sim 接线段，
+/// 先于一切任务）。
+static mut UART1_EV_H: u32 = 0;
+/// UART1 RX Event 的 ObjRef（`uart1_notify` 置位 / `uart1_ev_clear` 清位共用；
+/// boot 写入后不变 + retain 钉住永不 release——RX_EV_REF 同款双保险）。
+static mut UART1_EV_REF: Option<core::ptr::NonNull<handle::ObjRef>> = None;
+
+/// 读 UART1 RX Event handle 静态槽（task_simcon 侧）。
+fn uart1_ev_h() -> u32 {
+    // SAFETY: 只读；全部写点先于任务启动（boot 顺序）。
+    unsafe { *core::ptr::addr_of!(UART1_EV_H) }
+}
+
+/// sim 帧通道 simcon 发端 handle 静态槽（UART1 排水 → simbattery）。
+static mut SIM_TX_H: u32 = 0;
+/// sim 回执通道 simcon 收端 handle 静态槽（simbattery ACK → UART1 TX 回写）。
+static mut SIM_ACK_H: u32 = 0;
+
+/// 读 SIM_TX_H 静态槽（task_simcon 侧）。
+fn sim_tx_h() -> u32 {
+    // SAFETY: 只读；写点先于任务启动。
+    unsafe { *core::ptr::addr_of!(SIM_TX_H) }
+}
+
+/// 读 SIM_ACK_H 静态槽（task_simcon 侧）。
+fn sim_ack_h() -> u32 {
+    // SAFETY: 只读；写点先于任务启动。
+    unsafe { *core::ptr::addr_of!(SIM_ACK_H) }
+}
+
+/// 「UART1 RX 到数据」通知（HAL `exception_irq` PL1_RX 臂 → `uart::uart1_rx`
+/// 经槽调；`rx_irq_notify` 逐句同形——IRQ 上下文 PSTATE.I=1、pre-EOI）。到达
+/// 记账归 `WAKE_SRC_UART_RX`（与 UART0 归并口径）→ SQ 窗内置位 + `wake_
+/// matching_locked`（义务③写位+扫描同窗）→ n=0 记 no_waiter → 回报 n>0
+/// （检查点决策在 trap.rs PL1_RX 臂 EOIR 后——本槽不切，EOIR 饿死防线）。
+unsafe extern "C" fn uart1_notify() -> bool {
+    // SAFETY: IRQ 上下文（单核屏蔽窗串行）；UART1_EV_REF boot 后不变。
+    let p = unsafe { *core::ptr::addr_of!(UART1_EV_REF) }
+        .expect("uart1_notify: UART1_EV_REF 未初始化（boot 接线缺失）");
+    // sim-S1：与 UART0 同源归并记账（per-UART 拆分归 v2 0x84 遥测面）。
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX,
+        berry_hal_aarch64::timer::cntvct(),
+    );
+    unsafe {
+        // 写位+扫描同窗（c-2b slice 4 自锁面；KL 外层包络剥除后的纯 SQ 单锁窗）。
+        let sq_phys = berry_sched::sq_lock(); // 位感知退化形（c-2c slice 2a）
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(0, UART1_EV_BIT);
+        }
+        let n = berry_sched::wake_matching_locked(p.as_ptr() as usize, UART1_EV_BIT);
+        berry_sched::sq_unlock(sq_phys);
+        if n == 0 {
+            crate::telemetry::note_irq_no_waiter(berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX);
+        }
+        // 只回报不检查点（F1 定谳——检查点在 trap 臂 EOIR 后）。
+        n > 0
+    }
+}
+
+/// 清 UART1 RX Event 位（task_simcon 消费包络内调；`rx_ev_clear` 同形——
+/// IRQ 在包络内被屏蔽，位只可能在包络外被置，置后下轮 poll-first 必命中）。
+///
+/// # Safety
+/// 须在 `disable_irq` 包络内调（与 UART1 RX IRQ 生产者串行）；引用不变。
+unsafe fn uart1_ev_clear() {
+    // SAFETY: 调用方保证屏蔽包络 + 引用不变。
+    let p = unsafe { *core::ptr::addr_of!(UART1_EV_REF) }
+        .expect("uart1_ev_clear: UART1_EV_REF 未初始化");
+    unsafe {
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(UART1_EV_BIT, 0);
+        }
+    }
+}
+
 /// 刀1：CNTV tick 槽计数包装（HAL `exception_irq` CNTV 臂经 `irq_dispatch`
 /// 槽调，post-EOIR）。先记 TIMER 到达 + 派发戳（`last_ack_ts` = 槽派发点
 /// ——post-EOI 语义；per-source 记账面见 `telemetry::WAKE_SRC_TABLE`）再转
@@ -2638,6 +2867,149 @@ extern "C" fn task_console(arg: usize) -> ! {
                     fb_drop += 1;
                 }
             }
+        }
+    }
+}
+
+/// sim-S1 EL1 转发任务（`docs/sim设备通道与契约设计-v1.1.md` §3 裁决案 C：
+/// 内核 drain + EL1 转发 + 纯协议 bin）。链 = UART1 RX（HAL 环）→ 帧通道 →
+/// simbattery（解码/验证/打 `SIMBAT ok seq=N`）→ 回执通道 → `uart1_tx` 回写
+/// 宿主 client。**task_console 全套镜像**：wait_many [UART1 Event:1<<40,
+/// 回执:READABLE, (条件)帧SEND:WRITABLE] 10s 心跳帽 → `disable_irq` 包络内
+/// `uart1_rx_pop_all` + 清位（「位 0 ⟺ 环空」不变量包络内闭环；包络内无
+/// SVC/阻塞）→ 帧块发（`CHAN_MSG_MAX`=256 ≥ 帧帽 98B——一次 drained burst
+/// 恰一条 send；-EBUSY = simbattery 欠账，记 pending 偏移等 WRITABLE——
+/// console C-4r 吸收环的块级简化版）→ 回执 drain（-EAGAIN 即空）→ 逐字节
+/// `uart1_tx`（自带 TXFF 有界自旋）。opt-out 通道 + 私有表 + WAIT_ANY 哨兵
+/// （console 同款三保险：固定优先级常驻、错捐断根、退出 donor 面）。常驻
+/// 不退出；spawn arg=0（三 handle 全走静态槽）。
+extern "C" fn task_simcon(_arg: usize) -> ! {
+    use crate::handle::{ERR_AGAIN, ERR_BUSY, ERR_TIMEDOUT, SIGNAL_READABLE, SIGNAL_WRITABLE};
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_MANY};
+    let h_ev = uart1_ev_h();
+    let h_tx = sim_tx_h();
+    let h_ack = sim_ack_h();
+    // wait_many 三数组（栈上 EL1 内核高半——copy_from_user 的 EL1 分支收）。
+    // 第 3 项（帧 SEND WRITABLE）只在 pending 非空时入列——console endK2 条件
+    // 项同纪律（恒满足项钉死 drain 相位 = A-2 自旋饿死面）。
+    let hs = [h_ev, h_ack, h_tx];
+    let sigs = [UART1_EV_BIT, SIGNAL_READABLE, SIGNAL_WRITABLE];
+    let mut now: u64 = 0;
+    // SAFETY: svc 同步异常；栈变量私有（内核高半，copy 直拷）。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    let (mut idx, mut observed): (u64, u64) = (0, 0);
+    let (pidx, pobs) = (
+        core::ptr::addr_of_mut!(idx) as u64,
+        core::ptr::addr_of_mut!(observed) as u64,
+    );
+    // 排水缓冲 = 环容量（包络内必搬空）；pending 缓冲 = 环帽 + 帧帽余量
+    //（EBUSY 残余 ≤ 帧帽 + 新排水 ≤ 环帽 → 352 几何不溢；溢 = simbattery
+    // 死面，丢新计数、SIMBAT 缺席由 smoke 兜底——不 panic 不 wedge）。
+    let mut rxbuf = [0u8; berry_hal_aarch64::uart::RX_RING_SIZE];
+    let mut pend = [0u8; 352];
+    let (mut pend_off, mut pend_len) = (0usize, 0usize);
+    let mut sim_drop: u64 = 0;
+    let mut ackbuf = [0u8; 256];
+    let (mut n, mut nh): (u64, u64);
+    loop {
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "simcon: clock_read");
+        let n_items: u64 = if pend_off < pend_len { 3 } else { 2 };
+        let r = svc6(
+            NR_OBJECT_WAIT_MANY as u64,
+            hs.as_ptr() as u64,
+            sigs.as_ptr() as u64,
+            n_items,
+            now + 10 * 1_000_000_000,
+            pidx,
+            pobs,
+        );
+        assert!(
+            r == 0 || r == ERR_TIMEDOUT as i64,
+            "simcon: wait_many 异常 ret={}",
+            r
+        );
+        if r == 0 {
+            // 命中面全集：ev(0) 注入数据 / ack(1) 回执到 / tx(2) 队列腾位
+            //（仅 pending 非空轮入列）。
+            assert!(
+                idx == 0 || idx == 1 || idx == 2,
+                "simcon: wait 命中须 ev(0)/ack(1)/tx(2)，得 {}",
+                idx
+            );
+        }
+        // UART1 消费——**每次唤醒无条件执行**（console 同款：wait 返回与 IRQ
+        // 置位任意交错——早到/迟到/心跳顺带——都收敛到「环搬空 + 位清零」）。
+        // 包络内无 SVC/阻塞（屏蔽窗内切走 = 违约）。
+        berry_hal_aarch64::disable_irq();
+        let nrx = berry_hal_aarch64::uart::uart1_rx_pop_all(&mut rxbuf);
+        // SAFETY: 包络内与 UART1 RX IRQ 生产者串行；引用不变。
+        unsafe { uart1_ev_clear() };
+        berry_hal_aarch64::enable_irq();
+        // 新排水并 pending（残余 + 新到；满 = 消费者死面丢新计数）。
+        for i in 0..nrx {
+            if pend_len < pend.len() {
+                pend[pend_len] = rxbuf[i];
+                pend_len += 1;
+            } else {
+                sim_drop += 1;
+            }
+        }
+        // 帧块发：chunk ≤ CHAN_MSG_MAX(256)——StreamDecoder 字节流语义对任意
+        // 分片边界鲁棒（§5 静默重同步）；-EBUSY 停排留余量（下轮第 3 项
+        // WRITABLE 唤醒续发）。其它错码 = 接线错乱（boot 定值 + SEND right
+        // 在手），panic 兜底。
+        while pend_off < pend_len {
+            let chunk = core::cmp::min(pend_len - pend_off, 256);
+            let rs = svc6(
+                NR_CHANNEL_SEND as u64,
+                h_tx as u64,
+                core::ptr::addr_of!(pend[pend_off]) as u64,
+                chunk as u64,
+                0,
+                0,
+                0,
+            );
+            if rs == ERR_BUSY as i64 {
+                break;
+            }
+            assert_eq!(rs, 0, "simcon: sim 帧 send ret={}", rs);
+            pend_off += chunk;
+        }
+        if pend_off >= pend_len {
+            pend_off = 0;
+            pend_len = 0;
+        }
+        // 回执 drain：排空本端队列（simbattery 逐条回 9B ACK；深度 8 → 批量
+        // 有界）→ 逐字节 uart1_tx。UART1 单写者 = simcon，无需 PRINT_LOCK
+        //（UART0 多写者争面不存在；ACK 帧定界由宿主 client 解码器负责）。
+        loop {
+            n = 256;
+            nh = 0;
+            let r2 = svc6(
+                NR_CHANNEL_RECV as u64,
+                h_ack as u64,
+                ackbuf.as_mut_ptr() as u64,
+                core::ptr::addr_of_mut!(n) as u64,
+                0,
+                core::ptr::addr_of_mut!(nh) as u64,
+                0,
+            );
+            if r2 == ERR_AGAIN as i64 {
+                break; // 排空——回外层阻塞等
+            }
+            assert_eq!(r2, 0, "simcon: ack recv 异常 ret={}", r2);
+            for i in 0..n as usize {
+                berry_hal_aarch64::uart::uart1_tx(ackbuf[i]);
+            }
+        }
+        // 诊断面：心跳顺带打丢弃计数（健康路径恒 0 且无行——只在丢过才打，
+        // 零扰动 smoke 面；TXFF 触界同 UART1_TX_LOST 静默计数面）。
+        if sim_drop > 0 {
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                berry_hal_aarch64::uart_puts(b"SIM drop=");
+                berry_hal_aarch64::uart_put_dec(sim_drop);
+                berry_hal_aarch64::uart_puts(b"\n");
+            });
         }
     }
 }

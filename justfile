@@ -431,12 +431,21 @@ run-smp: build
 # 首 -device 落最高槽，tablet 追加在 blk/net 之后取更低槽 = 既有设备槽位
 # 零漂移；gui-inputd 按设备类扫 input 槽恰一认领）。**手跑无 QMP**：
 # INPUT ok 照打（boot 自验不依赖注入）；INPUTP 只属 smoke RX 注入相。
+# sim-S1（`docs/sim设备通道与契约设计-v1.1.md` §7）：+第二 PL011（serial1 =
+# sim 注入通道，unix socket 宿主外接）+ fw_cfg 具名键 `opt/berry/simdev`
+#（= UART1 在席门——**serial1 与键同线配对**是拓扑契约：只配键不配 serial
+# 则 0x0904_0000 是洞、内核门开即 boot 崩；run/smoke/smoke-image/EFI 不带
+# 二者 = 零漂移）。serial0 显式钉 mon:stdio（-nographic 隐式默认的显式形
+# ——防唯一 -serial 被解释为 serial0 吞走 console）。注入 client 连
+# /tmp/berryos-sim1.sock（M3 smoke 面同路径）；boot 标记 `SIM gate on`。
 run-rootfs: build
     #!/bin/sh
     set -e
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
     python3 tools/mkfat.py disk.img
     printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
+    # sim-S1：残留 socket 清理（QEMU 字段协议——server=on 对残文件 bind 拒）。
+    rm -f /tmp/berryos-sim1.sock
     # T-c：宿主 TCP 回显服务（vnet TCP 自验对端；QEMU 退出后 trap 统一收）。
     ECHO_LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-echod.XXXXXX")
     python3 tools/echod.py > "$ECHO_LOG" 2>&1 &
@@ -470,7 +479,10 @@ run-rootfs: build
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
         -device virtio-blk-device,drive=drv0 \
         -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
-        -device virtio-tablet-device,id=tab0
+        -device virtio-tablet-device,id=tab0 \
+        -serial mon:stdio \
+        -serial unix:/tmp/berryos-sim1.sock,server=on,wait=off \
+        -fw_cfg name=opt/berry/simdev,string=1
 
 run-release: docs-guard abi-check build-user
     cargo build --release

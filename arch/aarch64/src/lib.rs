@@ -44,6 +44,14 @@ pub const RAM_TOP: usize = 0x5000_0000;
 pub const RAM_TOP_DEFAULT: usize = 0x4800_0000;
 /// QEMU `virt` PL011 UART0 基址。
 pub const UART0_BASE: usize = 0x0900_0000;
+/// QEMU `virt` 第二 PL011（UART1）基址（sim-S1：PM-16 §2/§3、`docs/sim设备通道
+/// 与契约设计-v1.1.md` §2）。**存在性 = 拓扑事实非常量**：DTB 实证（QEMU 11.0.3
+/// dumpdtb + info mtree）——配置第二个 `-serial` 才建设备（节点 pl011@9040000，
+/// SPI 8/GIC INTID 40、LEVEL_HIGH）；单串口配置**该地址是洞**（mtree 无映射——
+/// 盲探 PID = external abort）。内核面在席门 = fw_cfg 具名键 `opt/berry/simdev`
+///（GUI P2 `opt/berry/display` 同款拓扑真值纪律；justfile 同一行配 serial1+键，
+/// 裸跑/EFI 零扰动）——门开才许碰此基址。virt 机型稳定 ABI（virt-2.4 起未变）。
+pub const UART1_BASE: usize = 0x0904_0000;
 /// GICv2 distributor 基址（QEMU `virt`）。
 pub const GICD_BASE: usize = 0x0800_0000;
 /// GICv2 CPU interface 基址（QEMU `virt`）。

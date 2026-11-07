@@ -589,6 +589,21 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
                 }
             }
         }
+        crate::gic::IRQ_PL1_RX => {
+            // sim-S1：第二 PL011 RX——与 SPI33 臂逐句同形（uart1_rx 内部 drain
+            // 到 RXFE 去活电平 → 静态环 → 通知槽；唤醒语境经上方 wake_src_irq_enter
+            // 已并入 WAKE_SRC_UART_RX 归并不拆）。检查点同在 **EOIR 后**（Bug 1
+            // 同纪律——本臂 woke 走与 SPI33 臂同一 SVC_EXIT_CHECKPOINT 槽）。
+            let woke = crate::uart::uart1_rx();
+            crate::gic::end(id);
+            if woke {
+                // SAFETY: IRQ 上下文（PSTATE.I=1）；槽由 boot 在 enable_irq 前
+                // 注册（set_svc_exit_checkpoint），与 SPI33 臂同一面。
+                if let Some(checkpoint) = unsafe { crate::SVC_EXIT_CHECKPOINT } {
+                    checkpoint();
+                }
+            }
+        }
         SGI_RESCHED_US => {
             // 义务⑧（S-3b b-1）接收侧半件：入队 SGI 不再只计数——tickful 核
             //（CPU0）经独立 SGI 槽快速重调度（跨核唤醒不再等整 tick；无
