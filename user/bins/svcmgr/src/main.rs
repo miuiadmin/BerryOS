@@ -26,12 +26,12 @@
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
-    berry_pager_supply_pages, berry_process_create, berry_process_get_exit_code,
-    berry_process_start, berry_process_terminate, berry_thread_create, berry_thread_sleep,
-    berry_thread_start, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED,
-    BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY,
-    BERRY_ERR_INVALID_ARG,
+    berry_pager_supply_mapped, berry_pager_supply_pages, berry_process_create,
+    berry_process_get_exit_code, berry_process_start, berry_process_terminate,
+    berry_thread_create, berry_thread_sleep, berry_thread_start, berry_vmar_map,
+    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
+    berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE,
+    BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, BERRY_ERR_INVALID_ARG,
     BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
     SIGNAL_WRITABLE, VMO_OPT_DEMAND,
@@ -40,7 +40,8 @@ use berry_sys::{
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
 // 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
 use berry_exec::{
-    channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec, FB_VA, VIRTIO_MMIO_VA,
+    channel_pair, cpio_find, set_demand_hooks, spawn_rootfs_elf, ChildHandles, SpawnSpec, FB_VA,
+    VIRTIO_MMIO_VA,
 };
 // P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
@@ -61,7 +62,8 @@ use berry_guiproto as gp;
 // 编解码——段① 落库，本刀接 serve 消费侧）。
 use berry_appproto as appp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
-use core::sync::atomic::{AtomicU32, Ordering};
+// X-3c-3：pager 寄存表三宽原子（bool/usize/i64——槽 handshake 见 [`PagerReq`]）。
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -94,10 +96,175 @@ const CHILD_MAP_LEN: usize = 0x2000;
 const CHILD_ENTRY: usize = 0x1000;
 const CHILD_SP: usize = 0x3000;
 
+// —— X-3c-3 exec demand 装载 pager ——
+//
+// 内核 boot 直拉的第二裸任务（kernel/src/main.rs X-3c-1）与本任务共享
+// ttbr0/asid/句柄表：寄存表即本 .bss 静态，零 IPC。berry-exec 经
+// `set_demand_hooks`（_start 首段注入 [`pager_register`]/[`pager_unregister`]）
+// 走 congruent→demand 路；bsh 链接副本无钩子恒 eager = 零漂移隔离。
+
+/// 寄存表槽数（32 = 并发在册 demand 子进程帽；满 = reg false → berry-exec
+/// eager 回退，不阻塞不等待）。
+const PAGER_SLOTS: usize = 32;
+/// 全槽空时的小睡帽（供给阻塞收货由内核 0x23 承担——本臂只防空转烧 CPU）。
+const PAGER_IDLE_POLL_NS: u64 = 50 * 1_000_000;
+/// 活跃轮间让步睡（X-3c 首轮 smoke 教训）：活槽在册即热转供给环，单核
+/// 上会把同抢全局武装槽的他供给者（dpg 族 0x21）饿死在 pager 键竞速里
+/// ——每轮 1ms 让步把竞速让成公平轮。供给延迟 +1ms/轮，TCG 噪声级。
+const PAGER_ACTIVE_YIELD_NS: u64 = 1 * 1_000_000;
+
+/// X-3c-3 pager 让位闸：dpg 自供族（selftest/storm/negative/bench/foot/
+/// dpgf）运行期间 boot pager 挂起（零供给调用）。机制：0x21/0x23 供给
+/// 共用「全局取货 + 身份验」复用面——双供给者并发时 pager 的 supply 调用
+/// 会取到他槽武装请求（rvmo ≠ dv 拒 + 唤 faulter → 重武装 → 再取，热转
+/// 环永远先赢键竞速），dpg 供给者永久饿死（首轮 smoke 实炸：DPGP/INPUT/
+/// DPGS/DPGN 四标记 420s 连坐缺席）。hold 期间 registry 子供给暂停——
+/// 非死锁（demand 缺页本就透明阻塞，闸放即续）；dpg 族皆短窗自包含测试。
+static PAGER_HOLD: AtomicBool = AtomicBool::new(false);
+
+/// 让位闸守卫：构造取闸、Drop 放闸（多早退路径免漏放；panic=abort 无
+/// unwind 面，Drop 只覆盖正常/早退返回路径）。
+struct PagerHold;
+
+impl PagerHold {
+    fn new() -> Self {
+        PAGER_HOLD.store(true, Ordering::Release);
+        PagerHold
+    }
+}
+
+impl Drop for PagerHold {
+    fn drop(&mut self) {
+        PAGER_HOLD.store(false, Ordering::Release);
+    }
+}
+
+/// 一条 demand 装载登记：**单写者**（本服务主任务）Relaxed 填四值 →
+/// `active` Release 发布；pager 侧 `active` Acquire 读后取值（无 CAS 面
+/// ——写者唯一，空槽并发复用不存在）。
+struct PagerReq {
+    active: AtomicBool,
+    /// file 域 demand VMO（0 = 不该出现——active 真时恒非 0）。
+    dv_file: AtomicUsize,
+    /// 零尾域 demand VMO（0 = 无零尾的满幅形）。
+    dv_zero: AtomicUsize,
+    /// 源 VMO（svcmgr 恒 H_ROOTFS——boot 授能 READ，服务生命期不关）。
+    sv: AtomicUsize,
+    /// 0x23 恒等供给常数（页对齐 i64，可负——congruent ELF 的 vaddr 偏置）。
+    delta: AtomicI64,
+}
+
+/// 槽初值（const 数组Repeat 面用）。
+const PAGER_REQ_INIT: PagerReq = PagerReq {
+    active: AtomicBool::new(false),
+    dv_file: AtomicUsize::new(0),
+    dv_zero: AtomicUsize::new(0),
+    sv: AtomicUsize::new(0),
+    delta: AtomicI64::new(0),
+};
+
+/// 寄存表（32 槽 .bss 静态——flat 零垫覆盖，boot 即就位）。
+static PAGER_REQS: [PagerReq; PAGER_SLOTS] = [PAGER_REQ_INIT; PAGER_SLOTS];
+
+/// berry-exec 注册钩子：找空槽 Relaxed 填四值 → `active` Release 发布；
+/// 返 false = 槽满（调用方 eager 回退）。
+fn pager_register(dv_file: Handle, dv_zero: Handle, sv: Handle, delta: i64) -> bool {
+    for slot in PAGER_REQS.iter() {
+        if slot.active.load(Ordering::Relaxed) {
+            continue;
+        }
+        slot.dv_file.store(dv_file as usize, Ordering::Relaxed);
+        slot.dv_zero.store(dv_zero as usize, Ordering::Relaxed);
+        slot.sv.store(sv as usize, Ordering::Relaxed);
+        slot.delta.store(delta, Ordering::Relaxed);
+        slot.active.store(true, Ordering::Release);
+        return true;
+    }
+    false
+}
+
+/// berry-exec 注销钩子（reap 在 close dv **前**调）：按 dv 值扫描回收。
+/// 句柄值在表内存活期唯一 ⇒ 活句柄扫描无假命中；先 `active=false`
+/// （Release）停供，reap 后续才 close——在途供给（已读旧值）碰 close 后
+/// 句柄 = EBADF/EINVAL 单发误差，pager 推进即自愈，无害。
+fn pager_unregister(dv_file: Handle, dv_zero: Handle) {
+    for slot in PAGER_REQS.iter() {
+        if !slot.active.load(Ordering::Acquire) {
+            continue;
+        }
+        if slot.dv_file.load(Ordering::Relaxed) == dv_file as usize
+            || (dv_zero != 0 && slot.dv_zero.load(Ordering::Relaxed) == dv_zero as usize)
+        {
+            slot.active.store(false, Ordering::Release);
+        }
+    }
+}
+
+/// pager 任务入口（link-user.ld 钉 `pager_entry` 段@0x1E000、栈顶 0x20000
+/// ——kernel/src/main.rs X-3c-1 同值双改）。恒扫供给环：每活槽两供——
+/// file 域 0x23 恒等供给（sv/delta）/ 零尾域 0x23 src=0（内核零页臂）。
+/// 返值忽略：EINVAL = 全局取货错配（`el0_take` 取到的是他槽请求，内核
+/// 身份验 rvmo != dv 拒 + 唤 faulter 重试再武装——错配供给环的 mux 面）
+/// 或陈旧槽（close 后句柄 EBADF），推进即自愈；无请求时 0x23 阻塞收货
+/// （内核 EL0 pager 键，u64::MAX 帽 = 空闲 pager 零 CPU），全槽空才小睡。
+/// **函数名 ≠ 段名**（dpgi_start/dpgi_entry 同款纪律）：dotless link_section
+/// 与 no_mangle 符号同名 = rustc fat-LTO 双定义撞车（首版实踩：changed
+/// binding to STB_GLOBAL）；内核按地址直跳（0x1E000），符号名无关紧要，
+/// no_mangle 仅作防 DCE 根。
+#[link_section = "pager_entry"]
+#[no_mangle]
+pub extern "C" fn pager_main() -> ! {
+    loop {
+        // 让位闸（X-3c-3）：dpg 自供族在跑 = 本 pager 静默（零供给调用，
+        // 不入键竞速）；空转小睡同空闲臂。
+        if PAGER_HOLD.load(Ordering::Acquire) {
+            let mut t = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut t) == 0 {
+                let _ = berry_thread_sleep(t + PAGER_IDLE_POLL_NS);
+            }
+            continue;
+        }
+        let mut any = false;
+        for slot in PAGER_REQS.iter() {
+            if !slot.active.load(Ordering::Acquire) {
+                continue;
+            }
+            any = true;
+            let dvf = slot.dv_file.load(Ordering::Relaxed) as Handle;
+            let dvz = slot.dv_zero.load(Ordering::Relaxed) as Handle;
+            let sv = slot.sv.load(Ordering::Relaxed) as Handle;
+            let delta = slot.delta.load(Ordering::Relaxed);
+            if dvf != 0 {
+                let _ = berry_pager_supply_mapped(dvf, sv, delta);
+            }
+            if dvz != 0 {
+                let _ = berry_pager_supply_mapped(dvz, 0, 0);
+            }
+        }
+        if !any {
+            let mut t = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut t) == 0 {
+                let _ = berry_thread_sleep(t + PAGER_IDLE_POLL_NS);
+            }
+            // clock 失败 = 契约面破（紧扫不睡）；供给正确性不依赖本臂。
+        } else {
+            // 活跃让步（见 PAGER_ACTIVE_YIELD_NS 注）。
+            let mut t = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut t) == 0 {
+                let _ = berry_thread_sleep(t + PAGER_ACTIVE_YIELD_NS);
+            }
+        }
+    }
+}
+
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(console: Handle) -> ! {
     CONSOLE_H.store(console as usize, core::sync::atomic::Ordering::Relaxed);
+    // X-3c-3：demand 装载钩子面开张（pager 任务已由内核 boot 直拉——
+    // main.rs X-3c-1；此后本服务 spawn_rootfs_elf 走 congruent→demand
+    // 路，bsh 链接副本无钩子恒 eager = exec 面零漂移隔离）。
+    set_demand_hooks(pager_register, pager_unregister);
     // C-3 段①：拉起账本开卷——svcmgr 自身行（报告者恒 alive；裸跑也记，
     // 表零消费者无害）。
     ps_reg(b"svcmgr", psp::STATE_ALIVE, 0);
@@ -2474,6 +2641,7 @@ const DPGP_OK: &[u8; 8] = b"DPGP ok\n";
 ///（magic 先/代码后，单子顺序 pin 无交错竞窗）；两腿全过 exit 7
 ///（`DPGP ok` 不变——0x20 面回归即 DPGP 缺席 FAIL 执法）。
 fn dpg_selftest(console: Handle) {
+    let _pager_hold = PagerHold::new(); // X-3c-3：本族自供 0x21，boot pager 让位（见 PAGER_HOLD 注）
     let mut hp = 0 as Handle;
     let mut hv = 0 as Handle;
     if berry_process_create(0, 0, &mut hp, &mut hv) != 0 || hp == 0 || hv == 0 {
@@ -2652,6 +2820,7 @@ const _: () = assert!(DPGS_OK[10] == b'0' + DPGS_N as u8 && DPGS_N < 10);
 /// 帽到点 → 标记缺席 = smoke FAIL loud（§5-⑤ 执法）；收敛 = 4× join
 /// exit 7 within 帽。
 fn dpg_storm(console: Handle) {
+    let _pager_hold = PagerHold::new(); // X-3c-3：同 dpg_selftest——自供期间 pager 让位
     // 共享源 VMO（防线 4：pre-commit + 预写 magic——供给链零缺页）。
     let mut sv = 0 as Handle;
     if berry_vmo_create(4096, 0, &mut sv) != 0 || sv == 0 {
@@ -2849,6 +3018,7 @@ fn dpgn_reap(hv: Handle, ht: Handle, hp: Handle) {
 ///   fault 再武装；正调 0x21(vd=dv, sv=ss) 自愈 → **join 7**（重武装-
 ///   自愈闭环锚，§5-③ 恒唤语义活证）。
 fn dpgn_selftest(console: Handle) {
+    let _pager_hold = PagerHold::new(); // X-3c-3：同 dpg_selftest——自供期间 pager 让位
     // 公共 demand VMO（③④子区间属主；SET_POLICY 门内柄）。
     let mut dv = 0 as Handle;
     if berry_vmo_create(4096, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
@@ -3061,6 +3231,7 @@ fn append_u64_dec(buf: &mut [u8], at: usize, v: u64) -> usize {
 /// 收割落档）。**门 = cpio 具名文件 `dpgb.on`**（dpgf.on 同族：正装面
 /// 缺席 = 静默零扰动零新标记）；链内坏面 = eco 降级行 + 标记缺席。
 fn dpg_bench(console: Handle) {
+    let _pager_hold = PagerHold::new(); // X-3c-3：同 dpg_selftest——自供期间 pager 让位
     if cpio_find(H_ROOTFS, b"dpgb.on").is_none() {
         return;
     }
@@ -3333,6 +3504,7 @@ fn dpg_foot_done(rv: Handle) -> bool {
 /// 结构差 ≈24 页 + 映射元页）。**门 = `dpge.on`**（同族缺席静默）；
 /// 链内坏面 = eco 降级行 + 相位标记缺席。
 fn dpg_foot(console: Handle) {
+    let _pager_hold = PagerHold::new(); // X-3c-3：同 dpg_selftest——自供期间 pager 让位
     if cpio_find(H_ROOTFS, b"dpge.on").is_none() {
         return;
     }
@@ -3606,6 +3778,7 @@ fn dpgf_note(console: Handle, wave: u8, phase: u8) {
 /// EFI 缺席 = 静默跳过零扰动零新标记）。链内坏面 = eco 降级行 + 标记缺失
 /// （smoke FAIL 兜底）。
 fn dpgf_selftest(console: Handle) {
+    let _pager_hold = PagerHold::new(); // X-3c-3：同 dpg_selftest——自供期间 pager 让位
     if cpio_find(H_ROOTFS, b"dpgf.on").is_none() {
         return;
     }

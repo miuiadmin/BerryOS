@@ -20,7 +20,8 @@
 //!   READ dup；P6 A-1：fsmgr 端/fs 客户端端；A2-3：netd 服务端端）。**随行
 //!   handle 被 send take**——调用方需保留原值者先 duplicate；
 //! - **回收（Plan B v0.5）**：成功返 [`ChildHandles`]，调用方收完输出后
-//!   `reap()`（wait TERMINATED → unmap×3 → close×5——P6 A-2 起含 MMIO 窗口）
+//!   `reap()`（wait TERMINATED →（X-3c：demand 槽注销先于 close）→ unmap×3
+//!   〔+零尾域〕 → close×5〔+zvmo〕——P6 A-2 起含 MMIO 窗口）
 //!   ——完整回收映像/栈帧与对象 Box；不 reap = 有界泄漏（root Vmar L1/PT
 //!   帧与 ASID v1 恒泄漏，见 [`ChildHandles::reap`] 注释）。
 
@@ -33,7 +34,7 @@ use berry_sys::{
     berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
     berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY, BERRY_ERR_NO_MEMORY,
     CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_SEND,
-    RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE, VMO_OPT_DEMAND,
 };
 
 /// ELF 首窗：ehdr + 全部 phdr（真实 lld 产物 phnum ≤ 10 量级，4KiB 绰绰）。
@@ -48,6 +49,129 @@ static mut STEP_WIN: [u8; 512] = [0; 512];
 /// vmo_create 才 -ENOMEM → 自陷——span 属 rootfs **输入面**（非内核契约
 /// 面），按解析侧同款契约 Err 降级；真实 std 镜像 ~283KB，余量充足。
 const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
+
+// —— X-3c demand 装载钩子面 ——
+//
+// 注入式可选路径：svcmgr boot 期（`set_demand_hooks`）把 pager 寄存表
+// 钩子注入本 crate；bsh **从不注入** → 其链接副本恒 None → 永远 eager
+// = exec 面零漂移隔离 by construction（X-3 spec：bsh 面保持 eager）。
+/// 注册钩子：demand 双 VMO（file 域 + 零尾域）入寄存表；返 false = 槽满
+/// → 调用方 eager 回退。
+pub type DemandRegFn = fn(dv_file: Handle, dv_zero: Handle, sv: Handle, delta: i64) -> bool;
+/// 注销钩子：reap 在 close demand VMO **前**调（防句柄值复用后 pager 误供
+/// 新主——槽表按 dv 值扫描回收）。
+pub type DemandUnregFn = fn(dv_file: Handle, dv_zero: Handle);
+
+static mut DEMAND_REG: Option<DemandRegFn> = None;
+static mut DEMAND_UNREG: Option<DemandUnregFn> = None;
+
+/// boot 期一次性注入（svcmgr `_start` 首段；单调用方契约，无并发写面）。
+pub fn set_demand_hooks(reg: DemandRegFn, unreg: DemandUnregFn) {
+    // SAFETY: boot 单线程期写、此后只读（ELF_WIN/PUMP_WIN 同款纪律）。
+    unsafe {
+        core::ptr::addr_of_mut!(DEMAND_REG).write(Some(reg));
+        core::ptr::addr_of_mut!(DEMAND_UNREG).write(Some(unreg));
+    }
+}
+
+/// 读注册钩子（spawn 路径每调用读一次；None = 未注入 → eager）。
+fn demand_reg_hook() -> Option<DemandRegFn> {
+    // SAFETY: 只读（boot 后无写者——单调用方契约）。
+    unsafe { core::ptr::addr_of!(DEMAND_REG).read() }
+}
+
+/// X-3c congruent 门（demand 装载资格检，纯几何 + 根档尾读）——通过 =
+/// `Some((S, delta))`：S = file 背书幅（页顶），delta = 0x23 恒等供给常数
+/// （映像页偏 p 的源偏 = p + delta，即 rootfs 内 ELF 首字节对映像基 0 页
+/// 的偏移差）。五门任一不满足 → None → eager 回退（非 congruent ELF 永有
+/// eager 兜底）：
+/// (a) 全部 filesz>0 的 PT_LOAD 同一 `file_off − vaddr` 常量 k（musl 族
+///     lld 产物恒真：base=0x200000、k=−0x200000 → base+k=0 → delta =
+///     data_off；纯 bss 段（filesz==0）无文件面，不参与）；
+/// (b) data_off 页对齐（mkcpio X-3c 垫页几何产链兑现，此处只验不垫）；
+/// (c) delta ≥ 0 且页对齐（0x23 的 `delta % PAGE` EINVAL 门 + 源偏下溢面）；
+/// (d) S ∈ (0, len]（S == len = 无零尾域的合法满幅形）；
+/// (e) delta + S ≤ rootfs 幅（越界供给 = faulter 永久重试 livelock，
+///     资格层拦死——ELF 头谎报 filesz 的输入面）。
+/// 另有 (f) live-bss 尾零验（函数体内）：demand 供给页 = rootfs 原字节
+/// 整页、eager 侧 bss 恒零——凡 memsz>filesz 段的 bss 落在 file 域
+/// [base, base+S) 内的字节（musl 族常态 = 末段尾页 ≤4095B）须根档原字节
+/// 全零，否则 eager 回退（否则 .bss 首页会被 symtab 类文件尾字节污染）。
+fn demand_plan(
+    h: &berry_loader::ElfHead,
+    base: u64,
+    len: u64,
+    data_off: u64,
+    h_rootfs: Handle,
+) -> Option<(u64, i64)> {
+    let mut k: Option<i64> = None;
+    let mut fmax = base; // 文件背书上界（映像坐标）
+    for seg in h.segments() {
+        if seg.filesz == 0 {
+            continue;
+        }
+        let fe = seg.vaddr.checked_add(seg.filesz)?;
+        fmax = fmax.max(fe);
+        // i64 域安全：file_off/vaddr 均 < USER_TOP=2^39。
+        let sk = (seg.file_off as i64) - (seg.vaddr as i64);
+        match k {
+            None => k = Some(sk),
+            Some(prev) if prev == sk => {}
+            Some(_) => return None, // (a) 多常量 → 非 congruent
+        }
+    }
+    let k = k?;
+    let ps = berry_loader::PAGE_SIZE as i64;
+    // (b)+(c)：delta = data_off + base + k（i64 域内：三项均 < 2^40）。
+    let delta = data_off as i64 + base as i64 + k;
+    if delta < 0 || delta % ps != 0 {
+        return None;
+    }
+    // (d)：S = 页顶(fmax) − base（filesz>0 段存在 ⇒ fmax > base ⇒ S > 0）。
+    let s = berry_loader::page_ceil(fmax) - base;
+    if s == 0 || s > len {
+        return None;
+    }
+    // (e)：根幅门（get_size 失败 = 无 rootfs 面，eager 由调用方 pump 报）。
+    let mut cap = 0u64;
+    if berry_vmo_get_size(h_rootfs, &mut cap) != 0 {
+        return None;
+    }
+    if (delta as u64).checked_add(s)? > cap {
+        return None;
+    }
+    // (f)：live-bss 尾零验（全段通用形；musl 族常态恰一段一次短读）。
+    let fs_top = base + s;
+    for seg in h.segments() {
+        if seg.memsz <= seg.filesz {
+            continue;
+        }
+        let vend = seg.vaddr.checked_add(seg.memsz)?;
+        let fe = seg.vaddr.checked_add(seg.filesz)?;
+        let lo = fe.max(base);
+        let hi = vend.min(fs_top);
+        if lo >= hi {
+            continue; // bss 全在零尾 VMO（或空）
+        }
+        // SAFETY: 调用方单线程顺序调用，本窗独占（eager 段泵同窗后行）。
+        let win: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PUMP_WIN) as *mut u8, 4096)
+        };
+        let mut off = lo;
+        while off < hi {
+            let n = ((hi - off).min(win.len() as u64)) as usize;
+            let foff = delta as u64 + (off - base);
+            if berry_vmo_read(h_rootfs, win.as_mut_ptr(), foff, n) != 0 {
+                return None;
+            }
+            if win[..n].iter().any(|&b| b != 0) {
+                return None; // bss 位文件字节非零 → eager（零语义保真）
+            }
+            off += n as u64;
+        }
+    }
+    Some((s, delta))
+}
 
 /// `ChildHandles::reap` 的等待帽（绝对）：EOF 先行约定下子进程退出在
 /// EOF 后微秒量级，30s 帽只兜挂死面（未退出 = Err 交调用方定死法）。
@@ -87,9 +211,15 @@ pub struct ChildHandles {
     pub vmo: Handle,
     /// 栈 VMO（同上）。
     pub svmo: Handle,
-    /// 映像映射基址/幅（unmap 精确匹配用）。
+    /// 映像映射基址/幅（unmap 精确匹配用）。X-3c demand 路 = file 域幅 S
+    ///（零尾域幅另计 [`Self::zlen`]）；eager 路 = 全幅 len。
     pub img_base: u64,
     pub img_len: u64,
+    /// 零尾 demand VMO（X-3c；0 = eager 路 / demand 无零尾——reap 第三
+    /// unmap 与第四 close 以 zlen/自身值双缺席判）。
+    pub zvmo: Handle,
+    /// 零尾域幅（映像坐标 [img_base+img_len, +zlen)；0 = 缺席）。
+    pub zlen: u64,
     /// 栈映射基址/幅。
     pub stack_va: u64,
     pub stack_len: u64,
@@ -127,10 +257,26 @@ impl ChildHandles {
         if berry_process_get_exit_code(self.hp, &mut code) != 0 {
             return Err(());
         }
+        // X-3c：demand 槽注销——**先于 close dv**（防句柄值复用后 pager 误供
+        // 新主）。按值扫描在活句柄域内唯一 ⇒ eager 子（vmo 非 demand VMO）
+        // 无假命中；钩子缺席（bsh 副本）= 恒跳过，零漂移。
+        // SAFETY: 只读（boot 后无写者）。
+        if let Some(unreg) = unsafe { core::ptr::addr_of!(DEMAND_UNREG).read() } {
+            unreg(self.vmo, self.zvmo);
+        }
         if berry_vmar_unmap(self.hv, self.img_base as usize, self.img_len as usize) != 0
             || berry_vmar_unmap(self.hv, self.stack_va as usize, self.stack_len as usize) != 0
         {
             return Err(());
+        }
+        if self.zlen != 0
+            && berry_vmar_unmap(
+                self.hv,
+                (self.img_base + self.img_len) as usize,
+                self.zlen as usize,
+            ) != 0
+        {
+            return Err(()); // 零尾域残留（AS 将销毁，只脏死表）
         }
         if self.mmio_len != 0
             && berry_vmar_unmap(self.hv, self.mmio_base as usize, self.mmio_len as usize) != 0
@@ -139,6 +285,7 @@ impl ChildHandles {
         }
         if berry_handle_close(self.svmo) != 0
             || berry_handle_close(self.vmo) != 0
+            || (self.zvmo != 0 && berry_handle_close(self.zvmo) != 0)
             || berry_handle_close(self.ht) != 0
             || berry_handle_close(self.hv) != 0
             || berry_handle_close(self.hp) != 0
@@ -341,36 +488,107 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     if s != 0 || hp == 0 || hv == 0 {
         trap();
     }
+    // —— X-3c demand 装载（congruent 门 + 钩子在位才走；bsh 无钩子恒
+    //    eager）：file 域 [base, base+S) = 恒等映射 demand VMO（sv=rootfs,
+    //    delta），零尾域 [base+S, base+len) = 零供给 demand VMO（0x23
+    //    src=0 臂 = 零页）。任一失面（含 reg false 槽满）= 半途全回收走
+    //    下方 eager 原路——启动内存足迹 ∝ 实触页（X-3 验收面），非
+    //    congruent/无钩子永有 eager 兜底。
     let mut vmo = 0 as Handle;
-    if berry_vmo_create(len, 0, &mut vmo) != 0 || vmo == 0 {
-        trap();
-    }
-    if berry_vmo_commit(vmo, 0, len) != 0 {
-        trap();
-    }
-    // 段文件字节泵：rootfs VMO [data_off+file_off, +filesz) → 子 VMO。
-    // SAFETY: 同上，泵窗独占。
-    let pump: &mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PUMP_WIN) as *mut u8, 4096)
-    };
-    for seg in h.segments() {
-        let mut off = 0u64;
-        while off < seg.filesz {
-            let n = ((seg.filesz - off).min(pump.len() as u64)) as usize;
-            if berry_vmo_read(h_rootfs, pump.as_mut_ptr(), data_off + seg.file_off + off, n) != 0 {
-                trap();
+    let mut zvmo = 0 as Handle;
+    let mut zlen = 0u64;
+    let mut img_len = len;
+    if let (Some((s, delta)), Some(reg)) = (
+        demand_plan(&h, base, len, data_off, h_rootfs),
+        demand_reg_hook(),
+    ) {
+        let zneed = len - s;
+        let mut dv = 0 as Handle;
+        let mut zv = 0 as Handle;
+        if berry_vmo_create(s, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
+            dv = 0; // 创建失面 = 降级 eager（trap-free：资格面非契约面）
+        } else if zneed != 0 && (berry_vmo_create(zneed, VMO_OPT_DEMAND, &mut zv) != 0 || zv == 0)
+        {
+            let _ = berry_handle_close(dv);
+            dv = 0;
+        }
+        if dv != 0 {
+            let mut faddr = base as usize;
+            let m1 = berry_vmar_map(
+                hv,
+                0,
+                dv,
+                0,
+                &mut faddr,
+                s as usize,
+                RIGHT_READ | RIGHT_WRITE,
+            ) == 0
+                && faddr == base as usize;
+            let m2 = zneed == 0 || {
+                let mut zaddr = (base + s) as usize;
+                berry_vmar_map(
+                    hv,
+                    0,
+                    zv,
+                    0,
+                    &mut zaddr,
+                    zneed as usize,
+                    RIGHT_READ | RIGHT_WRITE,
+                ) == 0
+                    && zaddr == (base + s) as usize
+            };
+            if m1 && m2 && reg(dv, zv, h_rootfs, delta) {
+                vmo = dv;
+                zvmo = zv;
+                zlen = zneed;
+                img_len = s;
+            } else {
+                // 半途回收（已映片 + VMO 对），eager 原路重走（同一 hv）。
+                if m1 {
+                    let _ = berry_vmar_unmap(hv, base as usize, s as usize);
+                }
+                if m2 && zneed != 0 {
+                    let _ = berry_vmar_unmap(hv, (base + s) as usize, zneed as usize);
+                }
+                let _ = berry_handle_close(zv);
+                let _ = berry_handle_close(dv);
             }
-            if berry_vmo_write(vmo, pump.as_ptr(), seg.vaddr - base + off, n) != 0 {
-                trap();
-            }
-            off += n as u64;
         }
     }
-    let mut vaddr = base as usize; // 映射基址提示（in-out 槽预写）
-    if berry_vmar_map(hv, 0, vmo, 0, &mut vaddr, len as usize, RIGHT_READ | RIGHT_WRITE) != 0
-        || vaddr != base as usize
-    {
-        trap(); // v1 无重排：回写须 == 请求基址
+    if vmo == 0 {
+        // —— eager 原路（全量铺 + 全幅一次 commit/map；v1 既有行为零漂移）——
+        if berry_vmo_create(len, 0, &mut vmo) != 0 || vmo == 0 {
+            trap();
+        }
+        if berry_vmo_commit(vmo, 0, len) != 0 {
+            trap();
+        }
+        // 段文件字节泵：rootfs VMO [data_off+file_off, +filesz) → 子 VMO。
+        // SAFETY: 同上，泵窗独占。
+        let pump: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PUMP_WIN) as *mut u8, 4096)
+        };
+        for seg in h.segments() {
+            let mut off = 0u64;
+            while off < seg.filesz {
+                let n = ((seg.filesz - off).min(pump.len() as u64)) as usize;
+                if berry_vmo_read(h_rootfs, pump.as_mut_ptr(), data_off + seg.file_off + off, n)
+                    != 0
+                {
+                    trap();
+                }
+                if berry_vmo_write(vmo, pump.as_ptr(), seg.vaddr - base + off, n) != 0 {
+                    trap();
+                }
+                off += n as u64;
+            }
+        }
+        let mut vaddr = base as usize; // 映射基址提示（in-out 槽预写）
+        if berry_vmar_map(hv, 0, vmo, 0, &mut vaddr, len as usize, RIGHT_READ | RIGHT_WRITE) != 0
+            || vaddr != base as usize
+        {
+            trap(); // v1 无重排：回写须 == 请求基址
+        }
     }
     // 栈页映在映像之上——中间隔一页**保护页**：栈用穿 = 踩未映射页 → 干净
     // D-abort 被杀（dump SP/FAR 直指祸首）；无保护页时下行栈会静默扎进
@@ -538,7 +756,9 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         vmo,
         svmo,
         img_base: base,
-        img_len: len,
+        img_len,
+        zvmo,
+        zlen,
         stack_va,
         stack_len,
         mmio_base: if mmio_len > 0 { mmio_va } else { 0 },

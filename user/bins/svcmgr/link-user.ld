@@ -32,5 +32,20 @@ SECTIONS {
         . = ALIGN(8);
         __bss_end = .;
     }
+    /* X-3c-3：pager 任务入口/栈钉位（内核 boot 直拉第二裸任务共享本映像
+       ——kernel/src/main.rs X-3c-1 同值双改：入口 0x1E000 / 栈顶 0x20000；
+       dpgp `dpgi_entry` 同款 idiom）。栈区 [入口段尾, 0x20000) NOLOAD
+       （elf2flat memsz 尾零垫覆盖——.bss 同机制，UserProcess::build 整
+       映像 RW 映射即含栈页）。text+bss 长过 0x1E000 = 位置计数器回退 →
+       链接失败（fail loud 二道几何钉：128KiB --max 帽之前先炸）。段名
+       pager_entry 不匹配 .text.* 通配 = 不会被首段吞并。 */
+    . = 0x1E000;
+    .pager_entry : {
+        KEEP(*(pager_entry))
+    }
+    . = ALIGN(16);
+    .pager_stack (NOLOAD) : {
+        . = 0x20000;
+    }
     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
