@@ -55,9 +55,9 @@ mod icons;
 mod layout_io;
 
 use berry_guiproto as gp;
-use berry_libc::io::{app_cli_h, input_h, wm_cli_h};
+use berry_libc::io::{app_cli_h, input_h, self_proc_h, wm_cli_h};
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
+    berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
@@ -198,16 +198,41 @@ fn expect_ok(
     }
 }
 
+/// Phase 1 WM_CONNECT：把共享 broker 端换成 per-session 端。launcher 声明
+/// SYSTEM client_type；self Process 迁给 wmd 用于死亡清窗。
+fn wm_connect(broker: Handle) -> Handle {
+    let mut local: Handle = 0;
+    let mut remote: Handle = 0;
+    if berry_channel_create(0, &mut local, &mut remote) != 0 || local == 0 || remote == 0 {
+        fail("wm connect channel");
+    }
+    let process = self_proc_h();
+    if process == 0 {
+        close_h(remote);
+        fail("wm connect process");
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let attach = [remote, process];
+    let m = enc_req(gp::encode_wm_connect_req(&mut req, gp::WM_CLIENT_SYSTEM));
+    let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
+    let _ = gp::parse_wm_connect_rep(&rep[..n]).unwrap_or_else(|| fail("wm connect rep bad"));
+    close_h(broker);
+    local
+}
+
 fn main() {
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + park（v0 骨架
     // 形态延续——理论不可达兜底，hdi_srv_h 先例；勿改成 gfxdemo 的
     // exit(0) 形）。
-    let hw = wm_cli_h();
-    if hw == 0 {
+    let broker = wm_cli_h();
+    if broker == 0 {
         eprintln!("LAUNCH wm absent (no wm client gift)");
         berry_libc::park();
     }
+    let hw = wm_connect(broker);
 
     // —— WM_GETINFO 一次握手（4B 无参请求 / 12B 应答——wmd 权威能力面，
     // disp 域 = wmd 启动期 present GETINFO 缓存同源）。原值宁报勿猜——

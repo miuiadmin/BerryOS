@@ -97,9 +97,17 @@ pub const OP_WM_SET: u8 = 0x63;
 pub const OP_WM_TABLE_GET: u8 = 0x64;
 /// wm 域：等表变更快照（阻塞应答——携 last_seen 版本号，表已新立即答）。
 pub const OP_WM_TABLE_WAIT: u8 = 0x65;
+/// wm 域：建立 per-client session（Phase 1 多客户端所有权面）。请求在
+/// broker 通道上携带两枚 handle：[0] 客户端自建 session 通道对端，
+/// [1] self Process handle（死亡观察 / owner 清理）；应答携 session_id。
+pub const OP_WM_CONNECT: u8 = 0x66;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
+/// WM_CONNECT client_type：普通 app session。
+pub const WM_CLIENT_APP: u8 = 0;
+/// WM_CONNECT client_type：桌面/系统壳 session（权限位 v1 仅记账）。
+pub const WM_CLIENT_SYSTEM: u8 = 1;
 /// 窗口层：应用层（桌面/普通窗）。
 pub const WM_LAYER_APP: u8 = 0;
 /// 窗口层：系统层（状态栏等——压应用层任意 Z）。
@@ -137,6 +145,8 @@ pub const ST_NOENT: u8 = 4;
 pub const ST_FULL: u8 = 5;
 /// 能力不支持（格式不在协商集等）。
 pub const ST_UNSUPPORTED: u8 = 6;
+/// 会话/所有权拒绝（非 owner 改删他人窗口等）。
+pub const ST_DENIED: u8 = 7;
 
 /// SUBMIT flags：整面 damage（K 必须为 0）。
 pub const SUBMIT_F_DAMAGE_FULL: u8 = 1 << 0;
@@ -351,6 +361,9 @@ const WM_DESTROY_REQ_LEN: usize = 8;
 const WM_SET_REQ_LEN: usize = 20;
 /// WM_TABLE_WAIT 请求恰长 8B。
 const WM_TABLE_WAIT_REQ_LEN: usize = 8;
+/// WM_CONNECT 请求 / 应答均 8B（请求 client_type；应答 session_id）。
+const WM_CONNECT_REQ_LEN: usize = 8;
+const WM_CONNECT_REP_LEN: usize = 8;
 /// 窗口表快照定长头 / 表项单项宽。
 const WM_SNAP_HEAD: usize = 12;
 const WM_ENTRY_LEN: usize = 16;
@@ -358,7 +371,7 @@ const WM_ENTRY_LEN: usize = 16;
 // ---------- 值域谓词（const fn——位域/域值双侧对称执法）----------
 
 const fn st_known(st: u8) -> bool {
-    st <= ST_UNSUPPORTED
+    st <= ST_DENIED
 }
 
 const fn phase_known(p: u8) -> bool {
@@ -1671,6 +1684,57 @@ pub fn parse_wm_table_wait_req(buf: &[u8]) -> Option<u32> {
     le32(buf, 4)
 }
 
+/// 编码 WM_CONNECT 请求（broker 面；两枚随行 handle 由调用方传入
+/// `berry_channel_send`，不进字节帧）。
+pub fn encode_wm_connect_req(out: &mut [u8], client_type: u8) -> Option<usize> {
+    if client_type > WM_CLIENT_SYSTEM || out.len() < WM_CONNECT_REQ_LEN {
+        return None;
+    }
+    out[0] = OP_WM_CONNECT;
+    out[1] = client_type;
+    out[2] = 0;
+    out[3] = 0;
+    out[4..8].fill(0);
+    Some(WM_CONNECT_REQ_LEN)
+}
+
+/// 解析 WM_CONNECT 请求，返回 client_type。
+pub fn parse_wm_connect_req(buf: &[u8]) -> Option<u8> {
+    if buf.len() != WM_CONNECT_REQ_LEN
+        || buf[0] != OP_WM_CONNECT
+        || buf[1] > WM_CLIENT_SYSTEM
+        || buf[2..8].iter().any(|&v| v != 0)
+    {
+        return None;
+    }
+    Some(buf[1])
+}
+
+/// 编码 WM_CONNECT 成功应答（session_id != 0 由 wmd 分配）。
+pub fn encode_wm_connect_rep(out: &mut [u8], session_id: u16) -> Option<usize> {
+    if session_id == 0 || out.len() < WM_CONNECT_REP_LEN {
+        return None;
+    }
+    out[0] = ST_OK;
+    out[1] = 0;
+    out[2..4].copy_from_slice(&session_id.to_le_bytes());
+    out[4..8].fill(0);
+    Some(WM_CONNECT_REP_LEN)
+}
+
+/// 解析 WM_CONNECT 成功应答。
+pub fn parse_wm_connect_rep(buf: &[u8]) -> Option<u16> {
+    if buf.len() != WM_CONNECT_REP_LEN
+        || buf[0] != ST_OK
+        || buf[1] != 0
+        || buf[4..8].iter().any(|&v| v != 0)
+    {
+        return None;
+    }
+    let id = le16(buf, 2)?;
+    (id != 0).then_some(id)
+}
+
 /// 窗口表项（快照 16B 定宽，Q5）。x/y/w/h = **有效几何域**——避让裁剪后的
 /// 实际可用矩形（wmd 不变量式重推导维护，任何 CREATE/DESTROY/SET 触发受
 /// 影响表项重算）；申请几何不回显（v1 无系统层重叠时有效 == 申请，GUI-8
@@ -2338,13 +2402,13 @@ mod tests {
     #[test]
     fn status_rep_domain_and_baking_line() {
         let mut out = [0u8; 1];
-        for st in [ST_OK, ST_BAD, ST_EAGAIN, ST_BUSY, ST_NOENT, ST_FULL, ST_UNSUPPORTED] {
+        for st in [ST_OK, ST_BAD, ST_EAGAIN, ST_BUSY, ST_NOENT, ST_FULL, ST_UNSUPPORTED, ST_DENIED] {
             assert_eq!(encode_status_rep(&mut out, st), 1);
             assert_eq!(parse_status_rep(&out), Some(st));
         }
         // 烘焙线：一切错误应答恒 1B、不携数据——多字节非 OK 形在
         // input_events_rep 面单独钉板（见 three_state 测试）。
-        assert_eq!(parse_status_rep(&[ST_UNSUPPORTED + 1]), None);
+        assert_eq!(parse_status_rep(&[ST_DENIED + 1]), None);
         assert_eq!(parse_status_rep(&[ST_OK, 0]), None);
         assert_eq!(parse_status_rep(&[]), None);
     }
@@ -2353,7 +2417,7 @@ mod tests {
     #[should_panic(expected = "guiproto")]
     fn encode_status_rep_rejects_unknown_st() {
         let mut out = [0u8; 1];
-        encode_status_rep(&mut out, ST_UNSUPPORTED + 1);
+        encode_status_rep(&mut out, ST_DENIED + 1);
     }
 
     #[test]
@@ -2608,7 +2672,7 @@ mod tests {
         assert_eq!(parse_input_events_rep(&[ST_BUSY, 1, 0, 0]), None);
         assert_eq!(parse_input_events_rep(&[ST_FULL, 0xEE]), None);
         // 未知 st / 1B OK 形（成功必携 count ≥ 1）/ 空帧 → None。
-        assert_eq!(parse_input_events_rep(&[ST_UNSUPPORTED + 1]), None);
+        assert_eq!(parse_input_events_rep(&[ST_DENIED + 1]), None);
         assert_eq!(parse_input_events_rep(&[ST_OK]), None);
         assert_eq!(parse_input_events_rep(&[]), None);
         // count 0 / 越帽 / 头截断。
@@ -3279,7 +3343,7 @@ mod tests {
         assert_eq!(parse_wm_snapshot_rep(&[ST_BAD, 0, 0, 0]), None);
         assert_eq!(parse_wm_snapshot_rep(&[ST_FULL, 0xEE]), None);
         // 未知 st / 1B OK 形（成功必携 12B 头）/ 空帧 → None。
-        assert_eq!(parse_wm_snapshot_rep(&[ST_UNSUPPORTED + 1]), None);
+        assert_eq!(parse_wm_snapshot_rep(&[ST_DENIED + 1]), None);
         assert_eq!(parse_wm_snapshot_rep(&[ST_OK]), None);
         assert_eq!(parse_wm_snapshot_rep(&[]), None);
         // 头截断（2..12B OK 形非法）/ count=1 表项截断。
@@ -3293,6 +3357,16 @@ mod tests {
         // 保留位解析侧恒不校验（前向兼容锚——0xEE 塞槽仍解析）。
         let mut buf = [0u8; WM_REP_MAX];
         // GETINFO req r/r16。
+        let mut f = [0u8; WM_CONNECT_REQ_LEN];
+        assert_eq!(encode_wm_connect_req(&mut f, WM_CLIENT_SYSTEM), Some(WM_CONNECT_REQ_LEN));
+        assert_eq!(parse_wm_connect_req(&f), Some(WM_CLIENT_SYSTEM));
+        assert_eq!(parse_wm_connect_req(&{
+            let mut b = f; b[1] = WM_CLIENT_SYSTEM + 1; b
+        }), None);
+        let mut ack = [0u8; WM_CONNECT_REP_LEN];
+        assert_eq!(encode_wm_connect_rep(&mut ack, 0x1234), Some(WM_CONNECT_REP_LEN));
+        assert_eq!(parse_wm_connect_rep(&ack), Some(0x1234));
+        assert_eq!(encode_wm_connect_rep(&mut ack, 0), None);
         assert_eq!(parse_wm_getinfo_req(&[OP_WM_GETINFO, 0xEE, 0xEE, 0xEE]), Some(()));
         // TABLE_GET req r/r16。
         assert_eq!(parse_wm_table_get_req(&[OP_WM_TABLE_GET, 0xEE, 0xEE, 0xEE]), Some(()));

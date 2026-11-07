@@ -1,7 +1,8 @@
 //! 权威窗口表（GUI-5 §3 #5）——静态定容（guifbd `Srv` 先例：无堆分配、
 //! 无生长面）。服务状态四件：
 //!
-//! - **entries**：两层窗（APP/SYSTEM）+ Z 序 + parent/group 缝 + 单焦点；
+//! - **entries**：两层窗（APP/SYSTEM）+ owner session + Z 序 +
+//!   parent/group 缝 + 单焦点；
 //!   表项携**有效几何**（AVOID_SYS 避让推导后——wire 回显面），申请几何
 //!   不回显但内部在案（重推导需要申请值，Q10 wire 语义钉板）。
 //! - **version**：`(epoch u8 << 24) | counter u24`，counter ∈ 1..=0xFFFFFF
@@ -20,7 +21,8 @@
 //!   与 hit-test 隐藏恒不中一致）；单矩形保形裁剪（四条剩余带取面积
 //!   最大者：状态栏顶条 → 应用窗自顶收缩；全覆盖 → w/h=0 恒不中）。
 //!
-//! 错误码面：id/parent 无效 ST_NOENT、表满 ST_FULL、野值已在 wire 层拒
+//! 错误码面：id/parent 无效 ST_NOENT、表满 ST_FULL、跨 owner
+//! SET/DESTROY 为 ST_DENIED、野值已在 wire 层拒
 //! （guiproto parse 域执法——本表不做第二解析器）。
 
 use crate::{close_all, now_ns, send_rep, st_rep, trap};
@@ -32,6 +34,8 @@ use berry_sys::Handle;
 #[derive(Clone, Copy)]
 struct Win {
     id: u16,
+    /// 拥有者 session id（Phase 1；CREATE 绑定，SET/DESTROY 同 owner 执法）。
+    owner: u16,
     parent: u16,
     group: u8,
     /// 申请几何（客户端 CREATE/SET 原值——有效几何的推导输入）。
@@ -95,6 +99,7 @@ impl WmTable {
         let epoch = (now_ns() & 0xFF) as u8;
         let blank = Win {
             id: 0,
+            owner: 0,
             parent: 0,
             group: 0,
             req: (0, 0, 0, 0),
@@ -251,7 +256,7 @@ impl WmTable {
     /// WM_CREATE：parent≠0 须在册（ST_NOENT）；表满 ST_FULL；新窗默认
     /// 可见 + 接焦（CREATE 无 vis 域——显隐走 SET_F_VIS）；AVOID_SYS 旗
     /// 驱动有效几何避让。应答 8B ack(window_id)。
-    fn create(&mut self, ch: Handle, req: gp::WmCreateReq) {
+    fn create(&mut self, ch: Handle, owner: u16, req: gp::WmCreateReq) {
         if req.parent != 0 && self.find(req.parent).is_none() {
             st_rep(ch, gp::ST_NOENT);
             return;
@@ -264,6 +269,7 @@ impl WmTable {
         let geom = (req.x, req.y, req.w, req.h);
         self.wins[self.count] = Win {
             id,
+            owner,
             parent: req.parent,
             group: req.group,
             req: geom,
@@ -284,11 +290,15 @@ impl WmTable {
 
     /// WM_DESTROY：摘窗（表序移除保建序——hit-test 平局表序语义）；持
     /// 焦点则归还；系统窗摘除 = 解除避让（recompute）。
-    fn destroy(&mut self, ch: Handle, id: u16) {
+    fn destroy(&mut self, ch: Handle, owner: u16, id: u16) {
         let Some(i) = self.find(id) else {
             st_rep(ch, gp::ST_NOENT);
             return;
         };
+        if self.wins[i].owner != owner {
+            st_rep(ch, gp::ST_DENIED);
+            return;
+        }
         for j in i..self.count - 1 {
             self.wins[j] = self.wins[j + 1];
         }
@@ -304,11 +314,15 @@ impl WmTable {
     /// WM_SET：masked-out 槽位不动（「编什么收什么」——wire 层不清零，
     /// 本表只应用掩内槽）；SET_F_VIS 显隐驱动焦点策略（SHOW 接焦 / HIDE
     /// 持焦则归还）；几何/Z 变更（含系统窗）触发重算。1B OK。
-    fn set(&mut self, ch: Handle, req: gp::WmSetReq) {
+    fn set(&mut self, ch: Handle, owner: u16, req: gp::WmSetReq) {
         let Some(i) = self.find(req.window_id) else {
             st_rep(ch, gp::ST_NOENT);
             return;
         };
+        if self.wins[i].owner != owner {
+            st_rep(ch, gp::ST_DENIED);
+            return;
+        }
         if req.mask & gp::WM_SET_F_GEOM != 0 {
             self.wins[i].req = (req.x, req.y, req.w, req.h);
         }
@@ -347,9 +361,9 @@ impl WmTable {
         self.parked = Some((ch, last_seen));
     }
 
-    /// wm 域分发（wm_srv 面）：六 op 之外（0x66..=0x7F 未定形）1B
-    /// ST_BAD；wm 域六 op **零随行 handle**——非空即拒面 close。
-    pub fn handle_wm(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
+    /// wm 域分发（session 面）：GETINFO/TABLE 只读无 owner 门；
+    /// CREATE 绑定当前 session；SET/DESTROY 必须 owner。
+    pub fn handle_wm(&mut self, ch: Handle, owner: u16, msg: &[u8], hs: &[Handle]) {
         if !hs.is_empty() {
             close_all(hs);
             st_rep(ch, gp::ST_BAD);
@@ -358,15 +372,15 @@ impl WmTable {
         match msg.first() {
             Some(&gp::OP_WM_GETINFO) if gp::parse_wm_getinfo_req(msg).is_some() => self.getinfo(ch),
             Some(&gp::OP_WM_CREATE) => match gp::parse_wm_create_req(msg) {
-                Some(req) => self.create(ch, req),
+                Some(req) => self.create(ch, owner, req),
                 None => st_rep(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_DESTROY) => match gp::parse_wm_destroy_req(msg) {
-                Some(id) => self.destroy(ch, id),
+                Some(id) => self.destroy(ch, owner, id),
                 None => st_rep(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_SET) => match gp::parse_wm_set_req(msg) {
-                Some(req) => self.set(ch, req),
+                Some(req) => self.set(ch, owner, req),
                 None => st_rep(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_TABLE_GET) if gp::parse_wm_table_get_req(msg).is_some() => {
@@ -378,5 +392,28 @@ impl WmTable {
             },
             _ => st_rep(ch, gp::ST_BAD),
         }
+    }
+
+    /// session 死亡清理：一次性摘除该 owner 全部窗口。返回清理数。
+    pub fn destroy_owned(&mut self, owner: u16) -> usize {
+        let mut removed = 0usize;
+        let mut i = 0usize;
+        while i < self.count {
+            if self.wins[i].owner != owner {
+                i += 1;
+                continue;
+            }
+            for j in i..self.count - 1 {
+                self.wins[j] = self.wins[j + 1];
+            }
+            self.count -= 1;
+            removed += 1;
+        }
+        if removed > 0 {
+            self.refocus_after_removal();
+            self.recompute();
+            self.bump();
+        }
+        removed
     }
 }

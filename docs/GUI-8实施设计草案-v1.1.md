@@ -94,7 +94,7 @@ SwipePager→Click 全逻辑真、唯 pointer wire 假；合成 selftest 只产 
 ```
 svcmgr（稳态 echo 往返 + app 域 serve 常驻 ← 新增第二通道）
  ├─ guifbd（present/hdi 服务端，现状）
- ├─ gui-wmd（wm 服务端；单 wm 客户端不变量 D3 保持——状态栏/壁纸=launcher
+ ├─ gui-wmd（wm 服务端；Phase 1 起 WM_CONNECT per-session/owner（gfxdemo 两 session 负例 + launcher session）——状态栏/壁纸=launcher
  │           窗口内容层，非 wmd 系统窗 ⇒ gfxdemo WM ok 断言零连带改）
  ├─ gui-inputd（H_MMIO 门 = tablet 在位；仅交互相活）
  ├─ fsmgr（数据盘在位 ⇒ FAT12 挂载；冻结相 RAM-only）
@@ -121,7 +121,7 @@ svcmgr（稳态 echo 往返 + app 域 serve 常驻 ← 新增第二通道）
 现序：… gfxdemo(+阻塞 reap) → **launcher** → fsmgr → vnet → inputd → … → bsh。
 新序：… gfxdemo(+reap) → fsmgr → vnet → inputd → **launcher** → stdhello → … → bsh。
 
-- 追认 D3 不变量：launcher 仍在 gfxdemo reap 之后（D3 本意单 wm 客户端序，
+- Phase 1 后 D3 升格为 session/owner 序：launcher 仍在 gfxdemo reap 之后，但 wmd 可承载多 session；
   fsmgr/vnet/inputd 皆不触 wm 域，重排安全——scout S3-F3 论证）。
 - launcher 移到 fsmgr 后 = fs_client 已存在可赠；移到 inputd 后 = INPUT_A 可 dup。
 - bsh arm（:1413 `gifts[1] = fs_client`）改条件路由（修约 1 后判别 =

@@ -19,27 +19,26 @@
 //! 常量副本，Q15）→ ④表初始化空表 version≥1 → ⑤`gui-wmd: up` 诊断行
 //! （小写 wmd 前缀防误配 `WM ok` 标记——本行永不进 MARKERS）转 serve。
 //!
-//! **serve 两路 poll-first**：wm_srv→push_srv 确定性轮询（一路至多一条：
-//! 两客户端面各自严格串行 RPC），全 EAGAIN 才 `berry_object_wait_many`
-//! n=2 并等；deadline = now+10s **进调用本身**（guifbd 三路 serve 同款
-//! ——醒来后补查不够）；到点 = 合法空闲重臂续等（真断链面 = recv 非
-//! -EAGAIN 错码照 trap）。每轮 poll 前重置 nb/nh 容量（recv 出参 in-out，
-//! 漏重置 = 恒 -EINVAL 死循环）。
+//! **serve 三族 poll-first**：wm_srv broker→push_srv→session 表确定性
+//! 轮询（每通道一请求一应答，串行 RPC），全 EAGAIN 才 wait_many
+//! broker/push/session READABLE + Process TERMINATED；deadline=now+10s
+//! 进调用本身。到点 = 合法空闲重臂；recv 非 EAGAIN / Process wait 错码
+//! = 死亡面 trap。
 //!
-//! **新鲜度结构注记（§7 Q10）**：单 wm 客户端串行下中继期间表不可能变 =
-//! 零新鲜度损失——serve 单线程，中继透传（present/hdi RPC）阻塞期间不可
-//! 能处理另一 CREATE/SET，TABLE_GET/TABLE_WAIT 应答携带的快照与请求到达
-//! 时表态一致；v1 wm 客户端恰一个（gfxdemo，严格串行 RPC 更无并发两请求）。
-//! **后刀第二 wm 客户端注意**：中继阻塞期间对端可变更表 → TABLE_GET
-//! 应答快照与「请求到达时」表态可能有出入（新鲜度窗口 = 一次中继时长），
-//! 届时须评估 per-request 快照戳或拆线程，勿直接加客户端。
+//! **Phase 1 session/owner 形态**：wm_srv 只收 WM_CONNECT；客户端随行迁
+//! per-session endpoint + self Process，业务通道按 session 分流。窗口
+//! owner 归 session，跨 owner SET/DESTROY = ST_DENIED；Process TERMINATED
+//! 自动 destroy_owned。多客户端下 TABLE 快照是「应答生成时」 truth：
+//! present 中继阻塞期间其它 session 可变更表，快照不声称「请求到达时」
+//! 一致；需要该语义时后续加 per-request snapshot stamp，勿静默扩大承诺。
 
 use berry_guiproto as gp;
 use berry_libc::io::{wm_hdi_h, wm_present_h, wm_push_srv_h, wm_srv_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_object_wait_many, berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
-    BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_TERMINATED,
+    SIGNAL_WRITABLE,
 };
 
 mod relay;
@@ -53,6 +52,89 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// serve 空闲并等帽：wait_many deadline 外层上界（合法空闲非死线——到点
 /// 重臂续等；guifbd `IDLE_CAP_NS` 同款）。
 const WMD_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
+
+/// 单个 wm 客户端 session：专通道 + owner id + self Process 死亡观察柄。
+struct WmSession {
+    id: u16,
+    ch: Handle,
+    process: Handle,
+}
+
+/// Phase 1 session 表（静态定容；v1 先帽 4，覆盖 gfxdemo/launcher 与两个
+/// 未来真实 app，不引入分配面）。
+struct WmSessions {
+    slots: [Option<WmSession>; 4],
+    next_id: u16,
+}
+
+impl WmSessions {
+    fn new() -> Self {
+        Self { slots: [None, None, None, None], next_id: 0 }
+    }
+
+    /// broker 面 WM_CONNECT：请求恰携 [session endpoint, self process]。
+    /// 成功后 per-session 通道成为唯一 WM/present/hdi 会话面。
+    fn connect(&mut self, broker: Handle, msg: &[u8], hs: &[Handle]) {
+        let bad = |hs: &[Handle]| {
+            close_all(hs);
+            st_rep(broker, gp::ST_BAD);
+        };
+        if hs.len() != 2 || hs.iter().any(|&h| h == 0) {
+            bad(hs);
+            return;
+        }
+        if gp::parse_wm_connect_req(msg).is_none() {
+            bad(hs);
+            return;
+        }
+        let Some(slot) = (0..self.slots.len()).find(|&i| self.slots[i].is_none()) else {
+            close_all(hs);
+            st_rep(broker, gp::ST_FULL);
+            return;
+        };
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        let id = self.next_id;
+        self.slots[slot] = Some(WmSession { id, ch: hs[0], process: hs[1] });
+        let mut out = [0u8; 8];
+        let n = match gp::encode_wm_connect_rep(&mut out, id) {
+            Some(n) => n,
+            None => trap(),
+        };
+        send_rep(broker, &out[..n]);
+        println!("WMCONN ok id={id}");
+    }
+
+    /// poll-first 死亡探测：Process TERMINATED 即摘 session、清 owner 窗。
+    fn reap_dead(&mut self, table: &mut table::WmTable) {
+        let mut i = 0;
+        while i < self.slots.len() {
+            let Some(sess) = self.slots[i].as_ref() else {
+                i += 1;
+                continue;
+            };
+            let mut observed = 0u64;
+            let st = berry_object_wait_one(
+                sess.process,
+                SIGNAL_TERMINATED,
+                0,
+                &mut observed,
+            );
+            if st == BERRY_ERR_AGAIN {
+                i += 1;
+                continue;
+            }
+            if st != 0 {
+                trap();
+            }
+            let sess = self.slots[i].take().expect("checked slot");
+            let wins = table.destroy_owned(sess.id);
+            println!("WMDEAD ok id={} wins={}", sess.id, wins);
+            if berry_handle_close(sess.ch) != 0 || berry_handle_close(sess.process) != 0 {
+                trap();
+            }
+        }
+    }
+}
 
 /// 单调钟现值（失败 = clock 面断链，loud）。
 pub(crate) fn now_ns() -> u64 {
@@ -133,12 +215,20 @@ pub(crate) fn trap() -> ! {
     }
 }
 
-/// wm_srv 帧分发（§3 #6 分发表执法）：present 1..=6 → present_cli 透传；
-/// hdi 0x40..=0x43 → hdi_cli 透传；wm 0x60..=0x7F → 本地表处理（六 op
-/// 之外 0x66..=0x7F 未定形 → 1B ST_BAD）；**其余一切 op（含 0x20/0x21
-/// input 域错投）→ 1B ST_BAD + close 随行**。
-fn on_wm(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
-         msg: &[u8], hs: &[Handle]) {
+/// broker 面只收 WM_CONNECT；present/hdi/wm 业务必须走 per-session 通道。
+fn on_broker(sessions: &mut WmSessions, ch: Handle, msg: &[u8], hs: &[Handle]) {
+    if msg.first() == Some(&gp::OP_WM_CONNECT) {
+        sessions.connect(ch, msg, hs);
+        return;
+    }
+    close_all(hs);
+    st_rep(ch, gp::ST_BAD);
+}
+
+/// session 面分发：present/hdi relay；wm 域带 owner 执法。
+fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
+              sess: &WmSession, msg: &[u8], hs: &[Handle]) {
+    let ch = sess.ch;
     match msg.first() {
         Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
@@ -147,7 +237,7 @@ fn on_wm(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle, ch: H
             relay::relay(ch, hdi_cli, msg, hs);
         }
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {
-            table.handle_wm(ch, msg, hs);
+            table.handle_wm(ch, sess.id, msg, hs);
         }
         _ => {
             close_all(hs);
@@ -211,36 +301,62 @@ fn main() {
     // WAIT(0) 恒立即答；epoch = 启动 CNTVCT 派生 u8——无持久化下唯一跨
     // 启动区分源）。
     let mut table = table::WmTable::new(info.display_w as u16, info.display_h as u16);
+    let mut sessions = WmSessions::new();
 
     // —— 启动序⑤：诊断行转 serve（小写 wmd 前缀——永不进 MARKERS）。
     println!("gui-wmd: up");
 
-    // —— serve 两路 poll-first：wm_srv→push_srv 确定性轮询；全 EAGAIN
-    // 才 wait_many n=2 并等（deadline 进调用本身）。命中/到点皆回环顶
-    // 两路重询（poll-first 无丢唤醒）。
+    // —— serve：broker/push/session 三族 poll-first；全 EAGAIN 才
+    // wait_many（session 通道 READABLE，Process handle TERMINATED）。
     loop {
+        sessions.reap_dead(&mut table);
         if let Some((msg, hs)) = poll(wm_srv) {
-            on_wm(&mut table, present_cli, hdi_cli, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
+            on_broker(&mut sessions, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             continue;
         }
         if let Some((msg, hs)) = poll(push_srv) {
             on_push(&mut table, push_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             continue;
         }
-        let hs = [wm_srv, push_srv];
-        let sigs = [SIGNAL_READABLE, SIGNAL_READABLE];
+        let mut handled = false;
+        for slot in sessions.slots.iter().flatten() {
+            if let Some((msg, hs)) = poll(slot.ch) {
+                on_session(&mut table, present_cli, hdi_cli, slot, &msg.0[..msg.1], &hs.0[..hs.1]);
+                handled = true;
+                break;
+            }
+        }
+        if handled {
+            continue;
+        }
+
+        let mut hs = [0 as Handle; 10];
+        let mut sigs = [0u64; 10];
+        hs[0] = wm_srv;
+        sigs[0] = SIGNAL_READABLE;
+        hs[1] = push_srv;
+        sigs[1] = SIGNAL_READABLE;
+        let mut n = 2usize;
+        for sess in sessions.slots.iter().flatten() {
+            hs[n] = sess.ch;
+            sigs[n] = SIGNAL_READABLE;
+            n += 1;
+            hs[n] = sess.process;
+            sigs[n] = SIGNAL_TERMINATED;
+            n += 1;
+        }
         let mut idx = 0usize;
         let mut obs = 0u64;
         let s = berry_object_wait_many(
             hs.as_ptr(),
             sigs.as_ptr(),
-            2,
+            n,
             now_ns() + WMD_IDLE_CAP_NS,
             &mut idx,
             &mut obs,
         );
         if s != 0 && s != BERRY_ERR_TIMEDOUT {
-            trap(); // 到点 = 空闲重臂（回环顶兜底）；余错 = 死亡面
+            trap(); // 到点 = 空闲重臂；余错 = 死亡面
         }
     }
 }

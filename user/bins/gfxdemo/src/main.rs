@@ -49,12 +49,12 @@ use berry_gfx::font::FontAtlas8x16;
 use berry_gfx::pass::PassDescriptor;
 use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
-use berry_libc::io::{self_vmar_h, wm_cli_h};
+use berry_libc::io::{self_proc_h, self_vmar_h, wm_cli_h};
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
+    berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_vmar_map,
     berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use std::process::exit;
 
@@ -190,17 +190,52 @@ fn expect_ok(
     }
 }
 
+/// Phase 1 WM_CONNECT：broker 只换 session；返回本进程保留的 session 端。
+/// 随行迁移 [对端 session endpoint, Process]，wmd 用后者做死亡清理。
+/// broker 生命周期由调用方管理（本测试进程要开两个 session 做跨 owner 负例）。
+fn wm_connect_process(broker: Handle, process: Handle) -> Handle {
+    let mut local: Handle = 0;
+    let mut remote: Handle = 0;
+    if process == 0
+        || berry_channel_create(0, &mut local, &mut remote) != 0
+        || local == 0
+        || remote == 0
+    {
+        fail("wm connect channel");
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let attach = [remote, process];
+    let m = enc_req(gp::encode_wm_connect_req(&mut req, gp::WM_CLIENT_APP));
+    let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
+    let _ = gp::parse_wm_connect_rep(&rep[..n]).unwrap_or_else(|| fail("wm connect rep bad"));
+    local
+}
+
 fn main() {
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + exit(0)（netd
     // 双门先例同款——非错误面，`gfx: wm absent` 永不进 MARKERS）。present/
     // hdi 客户端端已随 wmd 换手中继——本程序不再直持，单门即全链门（GUI-5
     // §7 Q12：extras 恰 wm_cli 一枚）。
-    let hw = wm_cli_h();
-    if hw == 0 {
+    let broker = wm_cli_h();
+    if broker == 0 {
         println!("gfx: wm absent");
         exit(0);
     }
+    let process = self_proc_h();
+    if process == 0 {
+        fail("wm self process");
+    }
+    let mut process2: Handle = 0;
+    if berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process2) != 0 || process2 == 0 {
+        fail("wm self process dup");
+    }
+    let hw = wm_connect_process(broker, process);
+    let rogue = wm_connect_process(broker, process2);
+    // 两个 session 建立后 broker 才退役；后续业务全部走 owner 通道。
+    close_h(broker);
 
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
@@ -260,6 +295,16 @@ fn main() {
     };
     let m = enc_req(gp::encode_wm_set_req(&mut req, &sreq));
     expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm set");
+
+    // Phase 1 反 owner 负例：第二个 session 不得修改第一个 session 的窗。
+    // 静默成功 / ST_BAD 都不合格，必须精确 ST_DENIED。
+    let m = enc_req(gp::encode_wm_set_req(&mut req, &sreq));
+    let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(gp::ST_DENIED) => {}
+        other => fail(&format!("wm cross-owner set got {other:?}")),
+    }
+    println!("WMDENY ok");
 
     // ④ TABLE_GET：全表快照对拍——count≥1 ∧ window_id 回显 ∧ 有效几何
     // == 申请几何（v1 无系统层重叠 = 恒等；GUI-8 裁决四-e 定谳：状态栏/
@@ -528,6 +573,27 @@ fn main() {
         fail(&format!("wm destroy leaves count={}", after.count));
     }
     println!("WMDTY ok n=0");
+
+    // Phase 1 死亡清理正例：rogue session 建一个“孤儿窗”后不 destroy，
+    // 本进程退出时 wmd 必须 process TERMINATED → destroy_owned(owner)。
+    // 这不是泄漏演示，而是把 unclean client death 清理纳入 smoke 真值。
+    let orphan_req = gp::WmCreateReq {
+        layer: gp::WM_LAYER_APP,
+        flags: 0,
+        parent: 0,
+        group: 0,
+        x: 16,
+        y: 16,
+        w: 64,
+        h: 64,
+    };
+    let m = enc_req(gp::encode_wm_create_req(&mut req, &orphan_req));
+    let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
+    let orphan = match gp::parse_wm_create_ack(&rep[..n]) {
+        Some(id) if id != 0 => id,
+        _ => fail(&format!("wm orphan ack bad st={}", rep[0])),
+    };
+    println!("WMORPHAN ok id={orphan}");
 
     // 客户端全链断言过（服务端真值 GFXF ok n= 由 guifbd 首呈现时打出）
     // ——结构性恰一次：svcmgr 单次预拉 + 阻塞 reap + 单 println。
