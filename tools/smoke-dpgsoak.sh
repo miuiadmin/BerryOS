@@ -13,12 +13,16 @@
 #
 # 断言（终态 = `DPGF2 ok n=3`，帽 DPGF_CAP_S 默认 600s）：
 #   ① `DPGF ok n=15` 恰 1（15× join 7 满配终态——16 槽登记恰满〔boot 1
-#      + 15〕+ K=8 池溢出 convoy 首压 + CONC-1 奇数子 spread 两核 faulter）
+#      + 15，demand 声明表独立池不受 EREQ 抬幅影响〕+ CONC-1 奇数子
+#      spread 两核 faulter）
 #   ② `DPGF2 ok n=3` 恰 1（C-4 槽回收二轮：全子 Vmar Drop 回落 1 → 再
 #      spawn 再登记 Ok——「16 槽并发帽非终身帽」declare 定谳活证）
-#   ③ `DPG ovfl` ∈ [1, DPGF_OVFL_CAP]（池满真触达 + 有界——B 刀零计
-#      断言的镜像反转；convoy 醒后重扫仍满再印，精确值非确定——下界 1
-#      上界首跑实测定，env DPGF_OVFL_CAP 覆盖〔默认 40〕）
+#   ③ `DPG ovfl` 极性随 DPGF_K 派生（X-5 过滤取刀 EREQ_SLOTS 8→32 起
+#      默认 32）：K ≥ 15 → 恰 0（容量余量证明——15 并发 fault-阻塞臂
+#      全驻留不触池满）；K < 15 → ∈ [1, DPGF_OVFL_CAP]（原 C-full 池满
+#      必触达 + 有界镜像反转面）。溢出机器面（EOVERFLOW_KEY convoy
+#      醒-放槽-重扫再印）已迁 ktest 确定性单测（X-5 同刀），本脸不再
+#      承担其覆盖；env DPGF_OVFL_CAP 覆盖〔默认 40〕仅 K < N 路消费。
 #   ④ dpg 五行行序 DPGP < DPGS < DPGN < DPGF < DPGF2 严格递增
 #   ⑤ `eco: dpgf` 降级行零计（波内坏面 = fail loud 早断）
 #
@@ -58,6 +62,10 @@ PATH="$HOME/.cargo/bin:$PATH"
 QEMU="qemu-system-aarch64"
 MACH="-machine virt -cpu cortex-a72 -m 128M -nographic"
 OVFL_CAP="${DPGF_OVFL_CAP:-40}"
+# 内核 EREQ 缺页池槽数（dpg.rs EREQ_SLOTS 单源镜像——X-5 过滤取刀 8→32
+# 起默认 32；env 覆盖供旧内核对跑/二分）。断言③极性由此派生（K≥15 期
+# 望 ovfl 恰 0 = 容量余量证明；K<15 走原 C-full 池满面）。
+DPGF_K="${DPGF_K:-32}"
 DL_S="${DPGF_CAP_S:-600}"
 
 # 门控变体卷：rootfs.cpio 手术 + dpgf.on（确定性产物：同输入同字节）。
@@ -209,10 +217,17 @@ if [ "$N2" -ne 1 ]; then
   echo "smoke-dpgsoak: FAIL——DPGF2 ok n=3 计数 $N2（期望恰 1；0 = C-4 二轮未毕——槽回收面查）" >&2
   rc=1
 fi
-# ③ ovfl ∈ [1, OVFL_CAP]（镜像反转面：B 刀零计 ←→ 本刀必见且有界）。
+# ③ ovfl 极性随 K 派生：K ≥ N=15 → 期望恰 0（容量余量——15 并发臂全
+#    驻留不触池满，非零 = EREQ_SLOTS 抬幅/过滤取回归）；K < N → 原面
+#    [1, OVFL_CAP]（池满必触达 + 有界；溢出机器面本体已迁 ktest 同刀）。
 OV=$(grep -c 'DPG ovfl' "$LOG" 2>/dev/null || true)
-if [ "$OV" -lt 1 ]; then
-  echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV（15>K=8 池满必触达——零计 = 溢出观测面断）" >&2
+if [ "$DPGF_K" -ge 15 ]; then
+  if [ "$OV" -ne 0 ]; then
+    echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV（K=$DPGF_K ≥ 15 容量余量面期望 0——非零 = 池容量/过滤取回归，查 EREQ_SLOTS）" >&2
+    rc=1
+  fi
+elif [ "$OV" -lt 1 ]; then
+  echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV（15>K=$DPGF_K 池满必触达——零计 = 溢出观测面断）" >&2
   rc=1
 elif [ "$OV" -gt "$OVFL_CAP" ]; then
   echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV 超帽 $OVFL_CAP（convoy 重印失稳？env DPGF_OVFL_CAP 校准）" >&2

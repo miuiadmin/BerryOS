@@ -208,9 +208,10 @@ fn pager_unregister(dv: Handle) {
 /// ——kernel/src/main.rs X-3c-1 同值双改）。恒扫供给环：每活槽一供
 /// 0x23(dv, sv, delta)——file 窗 = rootfs 恒等供给、零窗 = sv 0 内核零页
 /// 臂（X-5 逐窗化；X-3c 的 dvf/dvz 双供对拆成两槽单供）。
-/// 返值忽略：EINVAL = 全局取货错配（`el0_take` 取到的是他槽请求，内核
-/// 身份验 rvmo != dv 拒 + 唤 faulter 重试再武装——错配供给环的 mux 面）
-/// 或陈旧槽（close 后句柄 EBADF），推进即自愈；无请求时 0x23 阻塞收货
+/// 返值忽略：EINVAL = 本窗无武装臂（X-5 过滤取刀 72e5789 起 `el0_take_for`
+/// 只取属本 dv 的臂——他窗臂在池不烧不扰，-22 = NoneForVd 快跳推进；
+/// 刀前旧语义「全局取货错配烧臂」= repro4 定谳的失配消耗舞，已灭）或
+/// 陈旧槽（close 后句柄 EBADF），推进即自愈；无请求时 0x23 阻塞收货
 /// （内核 EL0 pager 键，u64::MAX 帽 = 空闲 pager 零 CPU），全槽空才小睡。
 /// **函数名 ≠ 段名**（dpgi_start/dpgi_entry 同款纪律）：dotless link_section
 /// 与 no_mangle 符号同名 = rustc fat-LTO 双定义撞车（首版实踩：changed
@@ -3237,11 +3238,13 @@ const DPGF2_N: usize = 3;
 /// spread 线程栈顶（像窗 [0x1000,0x6000) 对切：主栈顶 0x6000 用页 0x5000，
 /// 本栈顶 0x4000 用页 0x3000——各 8KiB 无叠，像驻页 0x1000）。
 const DPG_SP2: usize = 0x4000;
-/// 波内停泊窗（spawn 环毕 → 轮供环前）：faulter 到齐窗，把「池满溢出」
-/// 从调度竞速面升格结构面（无窗 = 流水线化零溢出假败——实证档
-/// ry8D79/MdG8Xe〔lockdep banner=1 + ovfl=0 快红〕；RCjWfp 484s 烧帽 =
-/// 变体越 ROOTFS_MAX 门 miss〔CRIT-CF1〕，非本面）。250ms = 15 任务 ×
-/// 双核 TCG 调度余量（含 lockdep 开销 + 宿主争用劣化）。
+/// 波内停泊窗（spawn 环毕 → 轮供环前）：faulter 到齐窗（波相干性——
+/// 无窗 = 流水线化，DPGF 终态行序面退化）。X-5 过滤取刀（EREQ_SLOTS
+/// 8→32）前本窗兼把「池满溢出」升格结构面（15>K=8；实证档 ry8D79/
+/// MdG8Xe〔lockdep banner=1 + ovfl=0 快红〕）；K 抬 32 后容量面恒不
+/// 触、溢出机器覆盖迁 ktest 确定性单测（X-5 同刀），本窗仅存到齐职责
+///（RCjWfp 484s 烧帽 = 变体越 ROOTFS_MAX 门 miss〔CRIT-CF1〕，非本面）。
+/// 250ms = 15 任务 × 双核 TCG 调度余量（含 lockdep 开销 + 宿主争用劣化）。
 const DPGF_SETTLE_NS: u64 = 250_000_000;
 /// C-full 标记（13 字节）。**cpio 具名文件门控专属**：正装 rootfs/run/
 /// smoke/EFI 无 `dpgf.on` = 恒不打——rootfs 相 50 / 主 smoke 78 / EFI 36
@@ -4745,8 +4748,10 @@ fn stall_kick(console: Handle, tag: &[u8], ch: Handle) -> bool {
         }
         n += 1;
     }
-    // 分拣仪三件套：0x23 返码（0=供上 / 负 errno=EBADF 陈旧句柄·EINVAL 错配
-    // 消耗）+ 扫供圈数前后快照（冻结=S2 pager 楔死；爬升=S1/S3 活着没供上）。
+    // 分拣仪三件套：0x23 返码（0=供上 / 负 errno：EBADF 陈旧句柄；EINVAL
+    // 刀前=全局取臂错配消耗（repro4 三发实锚）/ 过滤取刀 72e5789 起=本窗
+    // 无武装臂 NoneForVd 快跳——舞已灭）+ 圈数快照（冻结=S2 pager 楔死；
+    // 爬升=活着——语义历两刀不变）。
     let mut rc = 0i64;
     let sw0 = PAGER_SWEEPS.load(Ordering::Relaxed);
     if n > 0 {
