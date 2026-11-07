@@ -25,8 +25,10 @@
 use crate::{close_all, now_ns, send_rep_handles, st_rep, trap};
 use berry_guiproto as gp;
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_object_wait_one, Handle, BERRY_ERR_AGAIN,
-    BERRY_ERR_BUSY, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_channel_recv, berry_channel_send, berry_handle_close, berry_handle_duplicate,
+    berry_object_wait_one, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
+    berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, RIGHT_READ,
+    SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 
 /// 中继收侧 READABLE 帽（10s 量级——gfxdemo `RPC_CAP_NS` 同值；帽 ≥
@@ -194,5 +196,208 @@ pub fn boot_getinfo(cli: Handle) -> gp::GetinfoRep {
     match gp::parse_getinfo_rep(&rep[..nb]) {
         Some(info) => info,
         None => trap(),
+    }
+}
+
+
+/// Phase 2 wmd 合成面：全屏 XRGB8888 VMO + 行弹舱。wmd 是 guifbd 唯一
+/// present client；每个 session SUBMIT 先按 owner 窗口拷入此 VMO，再以
+/// surface_id=0 聚合提交 guifbd。
+pub struct Compositor {
+    pub vmo: Handle,
+    pub w: u32,
+    pub h: u32,
+    pub stride: usize,
+    bounce: &'static mut [u8],
+}
+
+impl Compositor {
+    pub fn new(w: u32, h: u32) -> Compositor {
+        let stride = w as usize * 4;
+        let len = ((stride * h as usize + 0xFFF) / 0x1000) * 0x1000;
+        let mut vmo: Handle = 0;
+        if berry_vmo_create(len as u64, 0, &mut vmo) != 0
+            || vmo == 0
+            || berry_vmo_commit(vmo, 0, len as u64) != 0
+        {
+            trap();
+        }
+        let bounce: &'static mut [u8] =
+            std::boxed::Box::leak(std::vec![0u8; 16384].into_boxed_slice());
+        Compositor { vmo, w, h, stride, bounce }
+    }
+
+    /// 拷一个已裁剪矩形。src stride 由 surface 宽决定；dst stride 是全屏。
+    fn copy_rect(&mut self, src: Handle, src_stride: usize, dst_xy: (u32, u32),
+                 r: gp::Rect) -> bool {
+        let x0 = r.x.min(self.w);
+        let y0 = r.y.min(self.h);
+        let x1 = r.x.saturating_add(r.w).min(self.w);
+        let y1 = r.y.saturating_add(r.h).min(self.h);
+        if x1 <= x0 || y1 <= y0 {
+            return true;
+        }
+        let row = (x1 - x0) as usize * 4;
+        if row > self.bounce.len() {
+            return false;
+        }
+        for y in y0..y1 {
+            let dst_x = dst_xy.0.saturating_add(x0);
+            let dst_y = dst_xy.1.saturating_add(y);
+            if dst_x >= self.w || dst_y >= self.h {
+                return false;
+            }
+            let src_off = y as usize * src_stride + x0 as usize * 4;
+            let dst_off = dst_y as usize * self.stride + dst_x as usize * 4;
+            if berry_vmo_read(src, self.bounce.as_mut_ptr(), src_off as u64, row) != 0
+                || berry_vmo_write(self.vmo, self.bounce.as_ptr(), dst_off as u64, row) != 0
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// SUBMIT 专用合成中继：校验 surface owner → 拷入 wmd 全屏合成 VMO →
+/// guifbd 收到的永远是 surface_id=0 的 wmd 聚合帧。真实 token/credits 仍
+///由 guifbd 产生，wmd 不合成 present 成功应答。
+pub fn submit_composite(
+    ch: Handle,
+    cli: Handle,
+    owner: u16,
+    surface_rect: impl Fn(u16, u16) -> Option<(u16, u16, u16, u16)>,
+    comp: &mut Compositor,
+    msg: &[u8],
+    hs: &[Handle],
+) {
+    if hs.len() != 1 {
+        close_all(hs);
+        st_rep(ch, gp::ST_BAD);
+        return;
+    }
+    let src = hs[0];
+    let Some(gp::PresentReq::Submit { surface_id, flags, rects, rect_count, .. }) =
+        gp::parse_present_req(msg)
+    else {
+        let _ = berry_handle_close(src);
+        st_rep(ch, gp::ST_BAD);
+        return;
+    };
+
+    // surface_id=0 = 全局桌面 surface；非 0 = 必须绑定当前 owner 的可见窗。
+    let (dst_xy, src_w, src_h): ((u32,u32),u16,u16) = if surface_id == 0 {
+        ((0, 0), comp.w as u16, comp.h as u16)
+    } else {
+        let id = u16::try_from(surface_id).unwrap_or(0);
+        match surface_rect(owner, id) {
+            Some((x, y, w, h)) if w != 0 && h != 0 => ((u32::from(x), u32::from(y)), w, h),
+            _ => {
+                let _ = berry_handle_close(src);
+                st_rep(ch, gp::ST_DENIED);
+                return;
+            }
+        }
+    };
+    let src_stride = src_w as usize * 4;
+    let mut size = 0u64;
+    if berry_vmo_get_size(src, &mut size) != 0
+        || size < src_stride.saturating_mul(src_h as usize) as u64
+    {
+        let _ = berry_handle_close(src);
+        st_rep(ch, gp::ST_BAD);
+        return;
+    }
+
+    let full = flags & gp::SUBMIT_F_DAMAGE_FULL != 0;
+    let mut out_rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+    let mut out_n = 0usize;
+    let ok = if full {
+        out_n = 0;
+        comp.copy_rect(src, src_stride, dst_xy, gp::Rect {
+            x: 0, y: 0, w: src_w as u32, h: src_h as u32,
+        })
+    } else {
+        let mut ok = true;
+        for i in 0..rect_count {
+            let r = rects[i];
+            ok = ok && comp.copy_rect(src, src_stride, dst_xy, r);
+            if !ok {
+                break;
+            }
+            out_rects[out_n] = gp::Rect {
+                x: dst_xy.0.saturating_add(r.x),
+                y: dst_xy.1.saturating_add(r.y),
+                w: r.w,
+                h: r.h,
+            };
+            out_n += 1;
+        }
+        ok
+    };
+    let _ = berry_handle_close(src);
+    if !ok {
+        st_rep(ch, gp::ST_BAD);
+        return;
+    }
+
+    let mut alias: Handle = 0;
+    if berry_handle_duplicate(comp.vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        trap();
+    }
+    let creq = gp::PresentReq::Submit {
+        surface_id: 0,
+        buffer_id: 0x57444D43,
+        flags,
+        rate_hint: msg.get(13).copied().unwrap_or(0),
+        target_present_ns: u64::from_le_bytes(
+            msg.get(16..24).unwrap_or(&[0; 8]).try_into().unwrap(),
+        ),
+        rects: out_rects,
+        rect_count: out_n,
+    };
+    let mut req = [0u8; 256];
+    let n = match gp::encode_present_req(&mut req, &creq) {
+        Some(n) => n,
+        None => trap(),
+    };
+    let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
+    send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
+}
+
+/// present 域内部 RPC（wmd 自产 SUBMIT 用）：send 即 take alias；应答
+///随行恒 0（SUBMIT ack 无 handle）。
+fn rpc_present(cli: Handle, req: &[u8], attach: &[Handle]) -> ([u8; 256], usize, [Handle; 8], usize) {
+    let deadline = now_ns() + RELAY_CAP_NS;
+    loop {
+        let s = berry_channel_send(cli, req.as_ptr(), req.len(), attach.as_ptr(), attach.len());
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(cli, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
+            trap();
+        }
+    }
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let deadline = now_ns() + RELAY_CAP_NS;
+    loop {
+        let mut nb = rep.len();
+        let mut nh = rhs.len();
+        let s = berry_channel_recv(cli, rep.as_mut_ptr(), &mut nb, rhs.as_mut_ptr(), &mut nh);
+        if s == 0 {
+            return (rep, nb, rhs, nh);
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(cli, SIGNAL_READABLE, deadline, &mut obs) != 0 {
+            trap();
+        }
     }
 }

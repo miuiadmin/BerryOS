@@ -227,9 +227,22 @@ fn on_broker(sessions: &mut WmSessions, ch: Handle, msg: &[u8], hs: &[Handle]) {
 
 /// session 面分发：present/hdi relay；wm 域带 owner 执法。
 fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
-              sess: &WmSession, msg: &[u8], hs: &[Handle]) {
+              comp: &mut relay::Compositor, sess: &WmSession,
+              msg: &[u8], hs: &[Handle]) {
     let ch = sess.ch;
     match msg.first() {
+        Some(&gp::OP_SUBMIT) => {
+            let owner = sess.id;
+            relay::submit_composite(
+                ch,
+                present_cli,
+                owner,
+                |owner, id| table.surface_rect(owner, id),
+                comp,
+                msg,
+                hs,
+            );
+        }
         Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
         }
@@ -302,8 +315,11 @@ fn main() {
     // 启动区分源）。
     let mut table = table::WmTable::new(info.display_w as u16, info.display_h as u16);
     let mut sessions = WmSessions::new();
+    let mut compositor =
+        relay::Compositor::new(info.display_w, info.display_h);
 
-    // —— 启动序⑤：诊断行转 serve（小写 wmd 前缀——永不进 MARKERS）。
+    // —— 启动序⑤：Phase 2 合成 VMO（wmd 成为 guifbd 唯一 present
+    // client）+ 诊断行转 serve（小写 wmd 前缀——永不进 MARKERS）。
     println!("gui-wmd: up");
 
     // —— serve：broker/push/session 三族 poll-first；全 EAGAIN 才
@@ -321,7 +337,10 @@ fn main() {
         let mut handled = false;
         for slot in sessions.slots.iter().flatten() {
             if let Some((msg, hs)) = poll(slot.ch) {
-                on_session(&mut table, present_cli, hdi_cli, slot, &msg.0[..msg.1], &hs.0[..hs.1]);
+                on_session(
+                    &mut table, present_cli, hdi_cli, &mut compositor, slot,
+                    &msg.0[..msg.1], &hs.0[..hs.1],
+                );
                 handled = true;
                 break;
             }

@@ -52,7 +52,8 @@ use berry_guiproto as gp;
 use berry_libc::io::{self_proc_h, self_vmar_h, wm_cli_h};
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
-    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_vmar_map,
+    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_thread_sleep,
+    berry_vmar_map,
     berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
     CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
@@ -213,6 +214,123 @@ fn wm_connect_process(broker: Handle, process: Handle) -> Handle {
     local
 }
 
+/// 页取整帧 VMO（窗口局部 buffer；Phase 2 不再要求 app 分配全屏）。
+fn frame_vmo(w: usize, h: usize) -> (Handle, usize, usize) {
+    let stride = w.checked_mul(4).unwrap_or_else(|| fail("tile stride overflow"));
+    let frame = stride.checked_mul(h).unwrap_or_else(|| fail("tile frame overflow"));
+    let len = frame.checked_add(0xFFF).map(|v| v & !0xFFF)
+        .unwrap_or_else(|| fail("tile page round overflow"));
+    let mut vmo: Handle = 0;
+    if berry_vmo_create(len as u64, 0, &mut vmo) != 0
+        || vmo == 0
+        || berry_vmo_commit(vmo, 0, len as u64) != 0
+    {
+        fail("tile vmo");
+    }
+    (vmo, stride, len)
+}
+
+/// 固定 VA 映射（caller 指定互不重叠窗口）。
+fn map_frame(vmo: Handle, len: usize, va: usize) {
+    let hv = self_vmar_h();
+    if hv == 0 {
+        fail("no self vmar gift");
+    }
+    let mut got = va;
+    if berry_vmar_map(hv, 0, vmo, 0, &mut got, len, RIGHT_READ | RIGHT_WRITE) != 0
+        || got != va
+    {
+        fail("tile vmar map");
+    }
+}
+
+/// 渲一个确定性窗口 tile：底色 + 顶带 + 底条 + 三字符标签。
+fn render_tile(va: usize, w: usize, h: usize, stride: usize,
+               bg: (u8,u8,u8), band: (u8,u8,u8), strip: (u8,u8,u8), label: [u8;3]) {
+    let desc = match TextureDesc::new(w, h, stride, TextureFormat::Rgbx) {
+        Ok(d) => d,
+        Err(e) => fail(&format!("tile texture {e:?}")),
+    };
+    let fb: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(va as *mut u8,
+        stride.saturating_mul(h)) };
+    let atlas = FontAtlas8x16;
+    let glyphs = [
+        GlyphPos { ch: u32::from(label[0]), x: 12, y: 12 },
+        GlyphPos { ch: u32::from(label[1]), x: 20, y: 12 },
+        GlyphPos { ch: u32::from(label[2]), x: 28, y: 12 },
+    ];
+    let mut enc = CommandEncoder::new();
+    record(enc.fill_rect(
+        Rect::new(0, 0, w as i32, (h / 3) as i32),
+        Color { r: band.0, g: band.1, b: band.2 },
+    ), "tile band");
+    record(enc.fill_rect(
+        Rect::new(0, (h - h / 12) as i32, w as i32, (h / 12) as i32),
+        Color { r: strip.0, g: strip.1, b: strip.2 },
+    ), "tile strip");
+    record(enc.draw_glyph_run(GlyphRun {
+        atlas: &atlas,
+        glyphs: &glyphs,
+        fg: Color { r: 255, g: 255, b: 255 },
+        bg: Some(Color { r: bg.0, g: bg.1, b: bg.2 }),
+    }), "tile glyph");
+    let dl = enc.finish();
+    if let Err(e) = Queue::new().submit(&dl, fb, &desc,
+        &PassDescriptor::clear(bg.0, bg.1, bg.2)) {
+        fail(&format!("tile render {e:?}"));
+    }
+}
+
+/// 经 wmd 合成链提交一个窗口 tile：SUBMIT(surface=window) → FRAME_CALLBACK
+/// → RELEASE。返回 guifbd 真实 token；RELEASE 归还的是 wmd composition
+/// alias，客户端收下即关（本窗口 VMO 原值保留给 hdi PREPARE 复用）。
+fn submit_tile(ch: Handle, vmo: Handle, _w: usize, _h: usize,
+               surface_id: u32, buffer_id: u32) -> u32 {
+    let mut alias: Handle = 0;
+    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        fail("tile dup");
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let sreq = gp::PresentReq::Submit {
+        surface_id,
+        buffer_id,
+        flags: gp::SUBMIT_F_DAMAGE_FULL,
+        rate_hint: 0,
+        target_present_ns: 0,
+        rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+        rect_count: 0,
+    };
+    let m = enc_req(gp::encode_present_req(&mut req, &sreq));
+    let (n, _) = rpc(ch, &req[..m], &[alias], &mut rep, &mut rhs);
+    let token = match gp::parse_submit_ack(&rep[..n]) {
+        Some(t) => t,
+        None => fail(&format!("tile submit ack bad st={}", rep[0])),
+    };
+    let m = enc_req(gp::encode_present_req(&mut req,
+        &gp::PresentReq::FrameCallback { frame_token: token }));
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    let done = match gp::parse_frame_done_rep(&rep[..n]) {
+        Some(d) => d,
+        None => fail(&format!("tile frame bad st={}", rep[0])),
+    };
+    if done.status != gp::FRAME_PRESENTED {
+        fail(&format!("tile frame status={}", done.status));
+    }
+    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
+    let (n, nh) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    let rel = match gp::parse_release_rep(&rep[..n]) {
+        Some(r) => r,
+        None => fail(&format!("tile release bad st={}", rep[0])),
+    };
+    if rel.count != 1 || nh != 1 {
+        fail(&format!("tile release count={} nh={}", rel.count, nh));
+    }
+    close_h(rhs[0]);
+    token
+}
+
 fn main() {
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + exit(0)（netd
@@ -264,6 +382,12 @@ fn main() {
 
     // ② CREATE：全屏 APP 层窗 + AVOID_SYS 旗标（v1 无系统层窗 = 避让空
     // 转，旗标面先接线）；id≠0 由 wmd 分配策略保证——建窗成功断言面。
+    // Phase 2：两个真实非重叠窗口（左右半屏），各自用窗口局部 buffer。
+    let tile_w = wminfo.disp_w / 2;
+    let tile_h = wminfo.disp_h;
+    if tile_w == 0 || tile_h == 0 {
+        fail("wm tile geometry zero");
+    }
     let creq = gp::WmCreateReq {
         layer: gp::WM_LAYER_APP,
         flags: gp::WM_CREATE_F_AVOID_SYS,
@@ -271,8 +395,8 @@ fn main() {
         group: 0,
         x: 0,
         y: 0,
-        w: wminfo.disp_w,
-        h: wminfo.disp_h,
+        w: tile_w,
+        h: tile_h,
     };
     let m = enc_req(gp::encode_wm_create_req(&mut req, &creq));
     let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
@@ -306,6 +430,26 @@ fn main() {
     }
     println!("WMDENY ok");
 
+    // Phase 2 第二真实窗口：rogue session 拥有右半屏，不 destroy，
+    // 退出时由 wmd Process-terminated 清理（unclean death 正例）。
+    let creq2 = gp::WmCreateReq {
+        layer: gp::WM_LAYER_APP,
+        flags: 0,
+        parent: 0,
+        group: 0,
+        x: tile_w,
+        y: 0,
+        w: wminfo.disp_w - tile_w,
+        h: tile_h,
+    };
+    let m = enc_req(gp::encode_wm_create_req(&mut req, &creq2));
+    let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
+    let wid2 = match gp::parse_wm_create_ack(&rep[..n]) {
+        Some(id) if id != 0 => id,
+        _ => fail(&format!("wm create2 ack bad st={}", rep[0])),
+    };
+    println!("WMORPHAN ok id={wid2}");
+
     // ④ TABLE_GET：全表快照对拍——count≥1 ∧ window_id 回显 ∧ 有效几何
     // == 申请几何（v1 无系统层重叠 = 恒等；GUI-8 裁决四-e 定谳：状态栏/
     // 壁纸 = launcher 窗口内容层非 wmd 系统窗，恒等不破——真系统窗/避让
@@ -317,8 +461,19 @@ fn main() {
         Some(Err(st)) => fail(&format!("wm table st={st}")),
         None => fail(&format!("wm table rep bad len={n}")),
     };
-    if snap.count < 1 {
+    if snap.count != 2 {
         fail(&format!("wm table count={}", snap.count));
+    }
+    match snap.entries[..snap.count].iter().find(|e| e.id == wid2) {
+        Some(e) => {
+            if e.x != creq2.x || e.y != creq2.y || e.w != creq2.w || e.h != creq2.h {
+                fail(&format!(
+                    "wm geom2 echo {}x{}+{}+{} vs req {}x{}+{}+{}",
+                    e.w, e.h, e.x, e.y, creq2.w, creq2.h, creq2.x, creq2.y
+                ));
+            }
+        }
+        None => fail(&format!("wm table no win2 id={wid2}")),
     }
     match snap.entries[..snap.count].iter().find(|e| e.id == wid) {
         Some(e) => {
@@ -351,135 +506,55 @@ fn main() {
         ));
     }
 
-    // —— 帧缓冲 VMO 三连（mmp_selftest/pthread 栈同链）：create → 整段
-    // commit（eager VMO 面；demand G4-1 起另路）→ vmar_map(self_vmar_h())。GETINFO 无
-    // stride 域：stride = w*4 tight packing（ramfb GOP 实测同值——服务端
-    // blit 的源布局）；len 页取整（vmar_map 页倍执法；尾页零无害，need =
-    // stride*(h-1)+w*4 ≤ len 由 submit 期第四拒面复检）。
-    let (w, h) = (info.display_w as usize, info.display_h as usize);
-    let stride = w.checked_mul(4).unwrap_or_else(|| fail("stride overflow"));
-    let frame = stride.checked_mul(h).unwrap_or_else(|| fail("frame overflow"));
-    let len = frame
-        .checked_add(0xFFF)
-        .map(|v| v & !0xFFF)
-        .unwrap_or_else(|| fail("page round overflow"));
-    let mut vmo: Handle = 0;
-    if berry_vmo_create(len as u64, 0, &mut vmo) != 0 || vmo == 0 {
-        fail("vmo create");
-    }
-    if berry_vmo_commit(vmo, 0, len as u64) != 0 {
-        fail("vmo commit");
-    }
-    let hv = self_vmar_h();
-    if hv == 0 {
-        fail("no self vmar gift");
-    }
-    let mut va = FRAME_VA;
-    if berry_vmar_map(hv, 0, vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
-        || va != FRAME_VA
+    // —— Phase 2 两窗口局部帧：session 1 左半屏，session 2 右半屏。
+    // wmd 是 guifbd 唯一 present client：两个 SUBMIT 都先拷入 wmd
+    // composition VMO，再聚合提交 guifbd。
+    let (w, h) = (tile_w as usize, tile_h as usize);
+    let (vmo, stride, len) = frame_vmo(w, h);
+    map_frame(vmo, len, FRAME_VA);
+    render_tile(FRAME_VA, w, h, stride,
+        (0x10,0x18,0x28),(0x7F,0,0),(0,0x60,0),[b'W',b'I',b'N']);
+    // Phase 2 surface-owner 负例：rogue session 不得以 session 1 的窗口 id
+    // 提交 buffer；wmd 必须在拷贝前拒绝 ST_DENIED。
     {
-        fail("vmar map");
+        let mut alias: Handle = 0;
+        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+            fail("wm surface deny dup");
+        }
+        let sreq = gp::PresentReq::Submit {
+            surface_id: u32::from(wid),
+            buffer_id: 0xD1,
+            flags: gp::SUBMIT_F_DAMAGE_FULL,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+            rect_count: 0,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &sreq));
+        let (n, _) = rpc(rogue, &req[..m], &[alias], &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_DENIED) => {}
+            other => fail(&format!("wm surface deny got {other:?}")),
+        }
+        println!("WMSDENY ok");
     }
+    let token1 = submit_tile(hw, vmo, w, h, u32::from(wid), 1);
 
-    // —— berry-gfx soft 渲一帧（确定性图案：Clear 深蓝灰底 + 顶部红带 +
-    // 底部绿条 + 白字 "GFX" 深蓝衬底；dirty 无 = 整帧）。
-    let desc = match TextureDesc::new(w, h, stride, TextureFormat::Rgbx) {
-        Ok(d) => d,
-        Err(e) => fail(&format!("texture desc {e:?}")),
-    };
-    // SAFETY: [FRAME_VA, FRAME_VA+len) 刚由 vmar_map 落位且整段已 commit。
-    let fb: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(va as *mut u8, len) };
-    let atlas = FontAtlas8x16;
-    let glyphs = [
-        GlyphPos { ch: u32::from(b'G'), x: 16, y: 16 },
-        GlyphPos { ch: u32::from(b'F'), x: 24, y: 16 },
-        GlyphPos { ch: u32::from(b'X'), x: 32, y: 16 },
-    ];
-    let mut enc = CommandEncoder::new();
-    record(
-        enc.fill_rect(
-            Rect::new(0, 0, w as i32, (h / 3) as i32),
-            Color { r: 0x7F, g: 0x00, b: 0x00 },
-        ),
-        "fill band",
-    );
-    record(
-        enc.fill_rect(
-            Rect::new(0, (h - h / 16) as i32, w as i32, (h / 16) as i32),
-            Color { r: 0x00, g: 0x60, b: 0x00 },
-        ),
-        "fill strip",
-    );
-    record(
-        enc.draw_glyph_run(GlyphRun {
-            atlas: &atlas,
-            glyphs: &glyphs,
-            fg: Color { r: 0xFF, g: 0xFF, b: 0xFF },
-            bg: Some(Color { r: 0x10, g: 0x18, b: 0x28 }),
-        }),
-        "glyph run",
-    );
-    let dl = enc.finish();
-    if let Err(e) = Queue::new().submit(&dl, fb, &desc, &PassDescriptor::clear(0x10, 0x18, 0x28)) {
-        fail(&format!("render submit {e:?}"));
+    let w2 = (wminfo.disp_w - tile_w) as usize;
+    let (vmo2, stride2, len2) = frame_vmo(w2, h);
+    map_frame(vmo2, len2, FRAME_VA + 0x0100_0000);
+    render_tile(FRAME_VA + 0x0100_0000, w2, h, stride2,
+        (0x18,0x10,0x28),(0,0x7F,0xFF),(0xBF,0x5A,0),[b'2',b'N',b'D']);
+    let token2 = submit_tile(rogue, vmo2, w2, h, u32::from(wid2), 2);
+    if token1 == 0 || token2 == 0 || token1 == token2 {
+        fail(&format!("wm2 tokens {token1}/{token2}"));
     }
-
-    // —— SUBMIT（K=2 damage rect：上下半帧分区，并集 = 整帧——服务端
-    // px() 抽样 7 点恒落并集内，§9 A5-b；flags=0 非 FULL =「K>0 或 FULL
-    // 二取一」立法的 K 侧）。随行 = 本 VMO 的 READ dup 别名：send 即 take
-    // （A6-b）——原 vmo handle 留表，PREPARE 时再 dup 新别名。
-    let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
-        fail("dup alias");
+    println!("WM2FRAME ok n=2");
+    // 留 2s 呈现窗：QEMU/serial 观察者可在此窗口抓屏（机器标记之外
+    // 的像素证据面）；不影响协议，只推迟本一次性测试客户端退出。
+    if berry_thread_sleep(now() + 2_000_000_000) != 0 {
+        fail("wm2 present sleep");
     }
-    let half = (h / 2) as u32;
-    let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
-    rects[0] = gp::Rect { x: 0, y: 0, w: w as u32, h: half };
-    rects[1] = gp::Rect { x: 0, y: half, w: w as u32, h: h as u32 - half };
-    let sreq = gp::PresentReq::Submit {
-        surface_id: 0,
-        buffer_id: 1,
-        flags: 0,
-        rate_hint: 0,
-        target_present_ns: 0,
-        rects,
-        rect_count: 2,
-    };
-    let m = enc_req(gp::encode_present_req(&mut req, &sreq));
-    let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
-    let token = match gp::parse_submit_ack(&rep[..n]) {
-        Some(t) => t,
-        None => fail(&format!("submit ack bad st={}", rep[0])),
-    };
-
-    // —— FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即答）。
-    // 断 PRESENTED；credits ≥0 对 u8 恒真、≤ CREDITS_MAX 由 parse 面执法。
-    let m = enc_req(gp::encode_present_req(
-        &mut req,
-        &gp::PresentReq::FrameCallback { frame_token: token },
-    ));
-    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-    let done = match gp::parse_frame_done_rep(&rep[..n]) {
-        Some(d) => d,
-        None => fail(&format!("frame done bad st={}", rep[0])),
-    };
-    if done.status != gp::FRAME_PRESENTED {
-        fail(&format!("frame status={}", done.status));
-    }
-
-    // —— RELEASE：归还别名——应答随行 count 个 VMO handle 重挂本表，即关。
-    // 断 count==1 恰归还本次 SUBMIT 的在途别名（credits 记账清零）；ids
-    // 域 v1 单客户端 echo 面，不断言精确值免过度约束服务端。
-    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
-    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-    let rel = match gp::parse_release_rep(&rep[..n]) {
-        Some(r) => r,
-        None => fail(&format!("release rep bad st={}", rep[0])),
-    };
-    if rel.count != 1 || nh != 1 {
-        fail(&format!("release count={} nh={}", rel.count, nh));
-    }
-    close_h(rhs[0]);
 
     // —— VOTE/POWER_MODE：1B 烘焙线成功形（§0「只记账不仲裁」——票收下
     // 即回执；POWER_DIM = §3#6 钉的 DIM 档）。VOTE scene 位携 berry_intent
@@ -569,31 +644,13 @@ fn main() {
         Some(Err(st)) => fail(&format!("wm after destroy st={st}")),
         None => fail(&format!("wm after destroy rep bad st={}", rep[0])),
     };
-    if after.entries[..after.count].iter().any(|e| e.id == wid) || after.count != 0 {
+    if after.entries[..after.count].iter().any(|e| e.id == wid) || after.count != 1 {
         fail(&format!("wm destroy leaves count={}", after.count));
     }
-    println!("WMDTY ok n=0");
-
-    // Phase 1 死亡清理正例：rogue session 建一个“孤儿窗”后不 destroy，
-    // 本进程退出时 wmd 必须 process TERMINATED → destroy_owned(owner)。
-    // 这不是泄漏演示，而是把 unclean client death 清理纳入 smoke 真值。
-    let orphan_req = gp::WmCreateReq {
-        layer: gp::WM_LAYER_APP,
-        flags: 0,
-        parent: 0,
-        group: 0,
-        x: 16,
-        y: 16,
-        w: 64,
-        h: 64,
-    };
-    let m = enc_req(gp::encode_wm_create_req(&mut req, &orphan_req));
-    let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
-    let orphan = match gp::parse_wm_create_ack(&rep[..n]) {
-        Some(id) if id != 0 => id,
-        _ => fail(&format!("wm orphan ack bad st={}", rep[0])),
-    };
-    println!("WMORPHAN ok id={orphan}");
+    if !after.entries[..after.count].iter().any(|e| e.id == wid2) {
+        fail("wm destroy dropped unowned second window");
+    }
+    println!("WMDTY ok n=1");
 
     // 客户端全链断言过（服务端真值 GFXF ok n= 由 guifbd 首呈现时打出）
     // ——结构性恰一次：svcmgr 单次预拉 + 阻塞 reap + 单 println。

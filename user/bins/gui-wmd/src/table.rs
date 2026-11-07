@@ -224,6 +224,16 @@ impl WmTable {
         (0..self.count).find(|&i| self.wins[i].id == id)
     }
 
+    /// Phase 2 surface 绑定：surface_id 必须是本 owner 的可见窗，返回有效
+    ///几何 `(x,y,w,h)`（合成落位与裁剪域）。
+    pub fn surface_rect(&self, owner: u16, id: u16) -> Option<(u16, u16, u16, u16)> {
+        let i = (0..self.count).find(|&i| {
+            self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
+        })?;
+        let w = &self.wins[i];
+        Some((w.eff.0, w.eff.1, w.eff.2, w.eff.3))
+    }
+
     /// id 分配（u16 单调回绕；跳 0 哨兵与在册 id——N≤15 恒可解）。
     fn alloc_id(&mut self) -> u16 {
         loop {
