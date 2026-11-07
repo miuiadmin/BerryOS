@@ -472,7 +472,8 @@ pub extern "C" fn berry_thread_yield() -> Status {
     unsafe { sys(nr::THREAD_YIELD, 0, 0, 0, 0, 0, 0) }
 }
 
-// —— 策略注入（S6-b 最小版：0x83 COMMIT 面——机制在内核、策略可插拔的带内接口）——
+// —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/
+// SHADOW_COMMIT）+ STATUS 面逐 op 包装）——
 
 /// 用户态策略表条目（16B——与内核 `PolicyEntryABI`（`kernel/src/syscall.rs`）
 /// 逐字段一致，`#[repr(C)]` 镜像；内核侧按 LE 字节流手工解码，偏移即 ABI）。
@@ -512,17 +513,25 @@ pub const POLICY_EPP_HAS: u8 = 1 << 0;
 /// 镜像内核 `PE_EPP_VAL`。
 pub const POLICY_EPP_VAL: u8 = 1 << 1;
 
-/// `op = 1`：COMMIT——整表提交为活跃策略快照（S6-b 最小版唯一 op，其他 op
-/// → -ENOTSUP；BIND/STATUS/PROMOTE/DEMOTE/UNBIND 随 S6-c）。
+/// op 词汇表（内核 0x83 dispatch 已扩至六臂，S6-e）：1 COMMIT / 2 STATUS /
+/// 3 PROMOTE / 4 DEMOTE / 5 UNBIND / 6 SHADOW_COMMIT——本 crate 按消费面逐
+/// op 包装（先 COMMIT/STATUS，其余随需求落）。
+///
+/// `op = 1`：COMMIT——整表提交为活跃策略快照（表形参走
+/// [`berry_policy_bind`]；op=6 SHADOW_COMMIT 同形，比照对象换 shadow 谱系）。
 pub const POLICY_OP_COMMIT: u64 = 1;
+
+/// `op = 2`：STATUS——双谱系世代 + 调用者自身策略键一次读全（见
+/// [`berry_policy_status`]）。
+pub const POLICY_OP_STATUS: u64 = 2;
 
 /// 0x83：v3 号提前实现（S6-b 最小 COMMIT 面）。abi.toml 在册但 stage=v3——
 /// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::POLICY_BIND` 不存在，
 /// 故本文件私有字面量封 svc（v3 常量层落地后换 `nr::` 常量名——同内核派发注）。
 const POLICY_BIND_NR: usize = 0x83;
 
-/// `berry_policy_bind(auth, op, tbl, count, gen, rsv)`（0x83，S6-b 最小版）：
-/// 用户态策略表注入（x1..x6 依次 = 六参）。
+/// `berry_policy_bind(auth, op, tbl, count, gen, rsv)`（0x83 表形面：op=1
+/// COMMIT / op=6 SHADOW_COMMIT）：用户态策略表注入（x1..x6 依次 = 六参）。
 ///
 /// op=COMMIT：`tbl` = `&[PolicyEntry]` 首址、`count` = 条目数（0 = 空表提交
 /// 合法——「接口在位、表空」）；内核 copy_from_user 整表拷入（无 TOCTOU）后
@@ -548,6 +557,33 @@ pub extern "C" fn berry_policy_bind(
             count as usize,
             gen as usize,
             rsv as usize,
+        )
+    }
+}
+
+/// `berry_policy_status(packed, self_key)`（0x83 op=2，S6-e STATUS 面）：
+/// 双谱系世代 + 调用者自身策略键一次读全（写者对账/遥测）。`auth` 预留
+/// 不消费（v1 全局单通道）；p3/p4 保留恒 0（非 0 → -EINVAL，options 纪律）。
+///
+/// `packed`（u64 出参，**必填**——内核无条件写出，NULL → -EFAULT）：
+/// bit 0-31 = active gen、bit 32-63 = shadow gen（各截低 32 位）——内核
+/// 单读窗打包（双谱系无撕裂），位布局是 ABI 冻结面（内核 ktest SH-6 钉板）。
+/// `self_key`（u64 出参，**可选**——NULL 跳过）= 调用者自身策略键：v1 key
+/// 载体即 `Task::proc_tag`（内核态指针，用户态不可合成、只可经此查询），
+/// 内核经 `current_tag` 与 apply/weight_of 消费点同源读取——表里给自己
+/// 加权前先对账「我是几号键」；内核任务/boot 期 = 0（哨兵键——表侧本就
+/// 丢弃，诚实透出不伪装）。
+#[no_mangle]
+pub extern "C" fn berry_policy_status(packed: *mut u64, self_key: *mut u64) -> Status {
+    unsafe {
+        sys(
+            POLICY_BIND_NR,
+            0, // auth：v1 全局单通道预留（同 berry_policy_bind 不消费）
+            POLICY_OP_STATUS as usize,
+            packed as usize,
+            self_key as usize,
+            0, // p3 保留
+            0, // p4 保留（rsv）
         )
     }
 }

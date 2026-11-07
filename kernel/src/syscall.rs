@@ -2220,11 +2220,17 @@ const PE_ZERO: berry_sched::policy::Entry = berry_sched::policy::Entry {
 /// 到达的旧表不得覆盖新表，世代单调性在 policy 侧收口；活跃快照未动，调用方
 /// 对账 gen 后携新 gen 重试）。
 ///
-/// op=2 (STATUS)：p1 = `*out`（u64 出参）——bit 0-31 = active gen
+/// op=2 (STATUS)：p1 = `*out_packed`（u64 出参）——bit 0-31 = active gen
 /// （`policy::gen()` 截低 32 位），bit 32-63 = shadow gen
 /// （`policy::shadow_gen()` 截低 32 位）——双谱系一次读全（写者对账/遥测）。
 /// 打包算式下放 [`policy_status_packed`]（ktest SHD-K SH-6 直测面）。
-/// → 0 + copy_out_u64（写失败 → -EFAULT 透传）。
+/// p2 = `*out_self_key`（u64 出参，**可选**——0 = NULL 指针跳过）= 调用者
+/// 自身 proc_tag/policy key：v1 key 载体即 `Task::proc_tag`（见
+/// `sched/policy.rs`——apply/weight_of 消费点读 `task.proc_tag`），handler 经
+/// `berry_sched::current_tag()` 同源读取——用户态据此发现「我现在是几号键」
+/// （表里给别的进程加权前先对账自己）。内核任务/boot 期 = 0（哨兵键——0 键
+/// 条目表侧本就丢弃，天然诚实）。p3 = 0（保留）。
+/// → 0 + copy_out_u64 ×2（任一写失败 → -EFAULT 透传）。
 ///
 /// op=3 (PROMOTE)：`policy::promote()`——shadow → enforced 原子转正：
 /// true = 0 / false = **-EBADSTATE**（shadow 空——gen == 0 从未
@@ -2267,13 +2273,23 @@ extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
                 ERR_AGAIN as i64 // 陈旧拒收：gen ≤ 活跃世代，活跃快照未动
             }
         }
-        // STATUS：p1 = *out u64——bit0-31 active gen / bit32-63 shadow gen。
+        // STATUS：p1 = *out_packed（gen 双谱系）、p2 = *out_self_key（调用者
+        // proc_tag——可选出参，0 = NULL 跳过）。p3 保留 0。
         2 => {
             let packed = policy_status_packed();
-            match copy_out_u64(el1, p1, packed) {
-                Ok(()) => 0,
-                Err(e) => e as i64,
+            if let Err(e) = copy_out_u64(el1, p1, packed) {
+                return e as i64;
             }
+            if p2 != 0 {
+                // 自身策略键：与 apply/weight_of 消费点同源（v1 key =
+                // Task::proc_tag，current_tag 只读透传；单核屏蔽窗内值稳定）。
+                // 内核任务/ktest 期 = 0——哨兵键语义诚实透出，不伪装。
+                let self_key = berry_sched::current_tag() as u64;
+                if let Err(e) = copy_out_u64(el1, p2, self_key) {
+                    return e as i64;
+                }
+            }
+            0
         }
         // PROMOTE：shadow → enforced 转正；shadow 空 → -EBADSTATE。
         3 => {
@@ -2309,9 +2325,11 @@ extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
     }
 }
 
-/// STATUS（op=2）打包算式：bit 0-31 = active gen（`policy::gen()` 截低 32
-/// 位）、bit 32-63 = shadow gen（`policy::shadow_gen()` 截低 32 位）——双谱系
-/// 一次读全。抽成 pub(crate) 的动因：op=1/3/4/6 的 bool→errno 是字面映射
+/// STATUS（op=2）**p1 面**打包算式：bit 0-31 = active gen（`policy::gen()` 截低
+/// 32 位）、bit 32-63 = shadow gen（`policy::shadow_gen()` 截低 32 位）——双谱系
+/// 一次读全。（op=2 的 p2 面 = 调用者自身 proc_tag/policy key，handler 直读
+/// `berry_sched::current_tag()` 整值写出——无位布局组合，不经本函数、无需
+/// 下放直测面。）抽成 pub(crate) 的动因：op=1/3/4/6 的 bool→errno 是字面映射
 /// （底座 ktest 全覆盖后映射面零风险），但本算式是 **ABI 可见的位布局组合**
 /// ——半区对调/位移宽度/gen 侧截断缺失都静默错（写者对账读反双谱系），且原本
 /// 只存在于 handler 内（TrapFrame + copy 链挡住 ktest 直调）。按 [`sa_parse`]
