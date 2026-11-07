@@ -90,50 +90,62 @@ pub extern "C" fn _start(self_proc: Handle) -> ! {
             berry_process_exit(9);
         }
 
-        // ⑤ S3-b SINGLE_THREAD 活证：t3 先自证 FREEZE_READY，t1 冻结它；
-        // 冻结在席时 GO 不可能变 1（内核侧 HELD_FROZEN 过滤出选）。末
-        // token close thaw 后 READY 自动清位，再放行 t3 并 join。
+        // ⑤ S3-b SINGLE_THREAD 活证 + sim-S2 A2 两轮冻结循环：每轮都重新
+        // 自证 FREEZE_READY（上一轮最后一个 token close 会清位）→ 冻结 →
+        // 观察闸门 GO==0 → close thaw → 验 READY 已清。两轮后才放行 t3；
+        // 「二跑才炸」的挂起类缺陷由此进入每个 rootfs smoke。
         let mut t3: Handle = 0;
         if berry_thread_create(self_proc, 0, &mut t3) != 0 || t3 == 0 {
-            berry_process_exit(9);
-        }
-        let mut attr = SchedAttr {
-            size: core::mem::size_of::<SchedAttr>() as u32,
-            version: 1,
-            flags: SCHED_FLAG_FREEZE_READY,
-            ..SchedAttr::default()
-        };
-        if berry_sched_setattr(t3, &attr) != 0 {
             berry_process_exit(9);
         }
         if berry_thread_start(t3, thr3_entry as *const () as usize, sp2, 0) != 0 {
             berry_process_exit(9);
         }
-        let mut token: Handle = 0;
-        if berry_process_suspend(t3, SUSPEND_OPT_SINGLE_THREAD, &mut token) != 0
-            || token == 0
-        {
-            berry_process_exit(9);
+        // 0 = 基础 T-1 链；1 = A2 第一轮；2 = A2 第二轮。svcmgr 以退出码
+        // 分档：7 = 仅 THR，8 = THR + FRZ n=2（把轮数带出进程，防标记字面量
+        // 与循环上界漂移成假绿）。
+        let mut freeze_rounds: u32 = 0;
+        for _round in 0..2 {
+            let mut attr = SchedAttr {
+                size: core::mem::size_of::<SchedAttr>() as u32,
+                version: 1,
+                flags: SCHED_FLAG_FREEZE_READY,
+                ..SchedAttr::default()
+            };
+            if berry_sched_setattr(t3, &attr) != 0 {
+                berry_process_exit(9);
+            }
+            let mut token: Handle = 0;
+            if berry_process_suspend(t3, SUSPEND_OPT_SINGLE_THREAD, &mut token) != 0
+                || token == 0
+            {
+                berry_process_exit(9);
+            }
+            // 冻结中 effective 仍可查询（READY 尚未清——最后一个 token close 才清）。
+            attr = SchedAttr::default();
+            attr.size = core::mem::size_of::<SchedAttr>() as u32;
+            if berry_sched_getattr(t3, &mut attr) != 0
+                || attr.flags & SCHED_FLAG_FREEZE_READY == 0
+                || core::ptr::read_volatile(core::ptr::addr_of!(THR3_GO)) != 0
+            {
+                berry_process_exit(9);
+            }
+            if berry_handle_close(token) != 0 {
+                berry_process_exit(9);
+            }
+            // thaw 契约：READY 自动清位，下一轮必须重新自证。
+            attr = SchedAttr::default();
+            attr.size = core::mem::size_of::<SchedAttr>() as u32;
+            if berry_sched_getattr(t3, &mut attr) != 0
+                || attr.flags & SCHED_FLAG_FREEZE_READY != 0
+            {
+                berry_process_exit(9);
+            }
+            freeze_rounds += 1;
         }
-        // 冻结中 effective 仍可查询（READY 尚未清——最后一个 token close 才清）。
-        attr = SchedAttr::default();
-        attr.size = core::mem::size_of::<SchedAttr>() as u32;
-        if berry_sched_getattr(t3, &mut attr) != 0
-            || attr.flags & SCHED_FLAG_FREEZE_READY == 0
-            || core::ptr::read_volatile(core::ptr::addr_of!(THR3_GO)) != 0
-        {
-            berry_process_exit(9);
-        }
-        if berry_handle_close(token) != 0 {
-            berry_process_exit(9);
-        }
-        // thaw 契约：READY 自动清位，下次冻结必须重新自证。
-        attr = SchedAttr::default();
-        attr.size = core::mem::size_of::<SchedAttr>() as u32;
-        if berry_sched_getattr(t3, &mut attr) != 0
-            || attr.flags & SCHED_FLAG_FREEZE_READY != 0
-        {
-            berry_process_exit(9);
+        if freeze_rounds != 2 {
+            // 一轮冻结仍是合法 T-1/S3-b 基线（码7），但不冒充 A2 两轮。
+            berry_process_exit(7);
         }
         core::ptr::write_volatile(core::ptr::addr_of_mut!(THR3_GO), 1);
         let mut t3_deadline: u64 = 0;
@@ -148,8 +160,8 @@ pub extern "C" fn _start(self_proc: Handle) -> ! {
             berry_process_exit(9);
         }
 
-        // ⑥ t1 末线程收口，码 7 上抛父侧。
-        berry_process_exit(7);
+        // ⑥ t1 末线程收口：A2 两轮全毕 = 码8；一轮/基础链 = 码7 由 svcmgr 分档。
+        berry_process_exit(8);
     }
 }
 

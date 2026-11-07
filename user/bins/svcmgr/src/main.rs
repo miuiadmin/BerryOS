@@ -2540,13 +2540,16 @@ fn bc_selftest(console: Handle) {
 const THR_MAP_LEN: usize = 0x6000;
 const THR_ENTRY: usize = 0x1000;
 const THR_SP: usize = 0x7000;
-/// 期望退出码：五步链全过 = 7；任何步失败 = 9（thrchild src/main.rs 头注）。
+/// 期望退出码：T-1/S3-b 基础链 = 7；sim-S2 A2 两轮冻结全毕 = 8；失败 = 9。
 const THR_OK_CODE: i32 = 7;
+const THR_FRZ2_CODE: i32 = 8;
 /// join 应答帽 60s：TCG 下 spawn→跑→收口「慢而活」不误杀（M3DEMO cp 步
 /// ≈17s 定标同口径）；超帽 = 降级行 + 标记缺失 = smoke FAIL，不重发。
 const THR_CAP_NS: u64 = 60 * 1_000_000_000;
 /// T-1 §2 标记（7 字节；rootfs 相第 36 标记，EFI 路 ECO 同面）。
 const THR_OK: &[u8; 7] = b"THR ok\n";
+/// sim-S2 A2 标记：仅退出码 8（两轮 freeze/thaw 全毕）才打；码7 只打 THR。
+const FRZ_OK: &[u8; 11] = b"FRZ ok n=2\n";
 
 /// T-1 §2 自验：拉起 thrchild（进程内 thread_create/thread_start/join/
 /// 复启拒面/末线程收口五步链，见其 src/main.rs 头注）——bootstrap 自句柄
@@ -2626,6 +2629,11 @@ fn thr_selftest(console: Handle) {
     }
     if code == THR_OK_CODE {
         send_retry(console, THR_OK.as_ptr(), THR_OK.len());
+        return;
+    }
+    if code == THR_FRZ2_CODE {
+        send_retry(console, THR_OK.as_ptr(), THR_OK.len());
+        send_retry(console, FRZ_OK.as_ptr(), FRZ_OK.len());
         return;
     }
     // 错码降级行：`eco: thr exit <n>\n`（十进制带符号，i32 全域 ≤ 26B）。
