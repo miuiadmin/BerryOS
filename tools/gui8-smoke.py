@@ -97,6 +97,7 @@ MARK_WM_CONN2 = "WMCONN ok id=2"
 MARK_WM_CONN3 = "WMCONN ok id=3"
 MARK_WM_CONN4 = "WMCONN ok id=4"
 MARK_WM_CONN5 = "WMCONN ok id=5"
+MARK_WM_CONN6 = "WMCONN ok id=6"
 MARK_WM_ROUTE_WINDOW_UP = "WMRTWIN ok id="
 MARK_WM_DENIED = "WMDENY ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
@@ -123,6 +124,18 @@ MARK_SETTINGS_BACK = "SETTINGSBACK ok"
 MARK_SETTINGS_PROBE = "SETTINGSPROBE ok"
 MARK_SETTINGS_DESTROY = "SETTINGSDESTROY ok"
 MARK_SETTINGS_EXIT = "SETTINGSEXIT ok"
+MARK_FILES_UP = "FILES up"
+MARK_FILES_WIN = "FILESWIN ok"
+MARK_FILES_LIST = "FILESLIST ok n="
+MARK_FILES_SEL = "FILESSEL ok i="
+MARK_FILES_FRAME = "FILESFRAME ok"
+MARK_FILES_OPEN = "FILESOPEN ok"
+MARK_FILES_STAT = "FILESSTAT ok size="
+MARK_FILES_READ = "FILESREAD ok n="
+MARK_FILES_BACK = "FILESBACK ok"
+MARK_FILES_PROBE = "FILESPROBE ok"
+MARK_FILES_DESTROY = "FILESDESTROY ok"
+MARK_FILES_EXIT = "FILESEXIT ok"
 MARK_WM_INPUT_DROP = "WMIDROP bad"
 MARK_INPUT_ROUTE_BAD = "INPUTROUTE bad"
 MARK_CJK_PROBE = "CJKPROBE ok n=2"
@@ -1013,14 +1026,15 @@ def verify_normal_boot(
     snapshot_pos: int,
     browser_before: int,
     settings_before: int,
+    files_before: int,
     demo_before: int,
     log_path: Path | None = None,
 ) -> None:
-    """常态隔离 + Browser/Settings Native Shell 验收。
+    """常态隔离 + Browser/Settings/Files Native Shell 验收。
 
-    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；Browser 与
-    Settings 都必须完成第二个真实进程生命周期。Settings 另要求两个设置项
-    状态切换（每次真实重绘 + 新帧）与 owner-local 返回销毁。
+    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；三个 shell 都
+    必须完成第二个真实进程生命周期。Settings 要求两次状态重绘；Files 要求
+    READDIR/STAT/GET 真实 fs RPC 与详情/返回两次重绘。
     """
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
@@ -1049,7 +1063,19 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal Native Shell", log_path)
     _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "normal Native Shell", log_path)
 
-    # 常态布局把 APPDEMO 放 page1；Browser/Settings 点击不得误 spawn。
+    _require_exact_count(text, MARK_FILES_UP, files_before + 1, "normal Files", log_path)
+    _require_exact_count(text, MARK_FILES_WIN, files_before + 1, "normal Files", log_path)
+    _require_exact_count(text, MARK_FILES_SEL, files_before + 1, "normal Files", log_path)
+    # runtime 初帧 + 详情帧 + 返回列表帧。
+    _require_exact_count(text, MARK_FILES_FRAME, files_before + 3, "normal Files", log_path)
+    _require_exact_count(text, MARK_FILES_LIST, files_before + 2, "normal Files", log_path)
+    _require_exact_count(text, MARK_FILES_OPEN, 1, "normal Files detail", log_path)
+    _require_exact_count(text, MARK_FILES_STAT, 1, "normal Files detail", log_path)
+    _require_exact_count(text, MARK_FILES_READ, 1, "normal Files detail", log_path)
+    _require_exact_count(text, MARK_FILES_DESTROY, files_before + 1, "normal Files", log_path)
+    _require_exact_count(text, MARK_FILES_EXIT, files_before + 1, "normal Files", log_path)
+
+    # 常态布局把 APPDEMO 放 page1；Native Shell 点击不得误 spawn。
     if text.count(MARK_APP_DEMO_UP) != demo_before:
         raise SmokeError(
             "normal Native Shell: APPDEMO 计数漂移（误命中/误 spawn）",
@@ -1061,6 +1087,10 @@ def verify_normal_boot(
         raise SmokeError("normal Settings: TOGGLE1 早于快照", log_path)
     if text.find(MARK_SETTINGS_BACK) < snapshot_pos:
         raise SmokeError("normal Settings: BACK 早于快照", log_path)
+    if text.find(MARK_FILES_READ) < snapshot_pos:
+        raise SmokeError("normal Files: READ 早于快照", log_path)
+    if text.rfind(MARK_FILES_EXIT) < snapshot_pos:
+        raise SmokeError("normal Files: EXIT 不在快照后", log_path)
 
 def ppm_pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
     """读 QEMU P6 PPM 指定像素（Native Shell 反 mock 像素锚）。"""
@@ -1346,6 +1376,9 @@ def _boot_base_markers() -> list[str]:
         MARK_WM_CONN5, MARK_SETTINGS_UP, MARK_SETTINGS_WIN,
         MARK_SETTINGS_FRAME, MARK_SETTINGS_GEOM, MARK_SETTINGS_PROBE,
         MARK_SETTINGS_DESTROY, MARK_SETTINGS_EXIT,
+        MARK_WM_CONN6, MARK_FILES_UP, MARK_FILES_WIN, MARK_FILES_LIST,
+        MARK_FILES_SEL, MARK_FILES_FRAME, MARK_FILES_PROBE,
+        MARK_FILES_DESTROY, MARK_FILES_EXIT,
         MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
     ]
 
@@ -1516,7 +1549,7 @@ def run_dual_boot(args) -> int:
                 f"(window {rw}x{rh})",
                 boot_a.log_path,
             )
-        owner_marker = f"WMROUTE ok sid=6 window={rw_id}"
+        owner_marker = f"WMROUTE ok sid=7 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
 
@@ -1671,7 +1704,8 @@ def run_normal_boot(args) -> int:
         # 注入 canonical 双 app 布局保持常态隔离点击面，不造 GUI8.SMK。
         native_layout = (
             b'{"schema":1,"cells":[{"app":"BROWSER","page":0,"row":0,"col":0},'
-            b'{"app":"SETTINGS","page":0,"row":0,"col":1},'
+            b'{"app":"FILES","page":0,"row":0,"col":1},'
+            b'{"app":"SETTINGS","page":0,"row":0,"col":2},'
             b'{"app":"APPDEMO","page":1,"row":0,"col":0}]}'
         )
         Fat12Volume(disk).add_file(LAYOUT_NAME11, native_layout)
@@ -1699,7 +1733,8 @@ def run_normal_boot(args) -> int:
         quiet_before = boot.log.text.count(MARK_APP_QUIET_UP)
         browser_before = boot.log.text.count(MARK_BROWSER_UP)
         settings_before = boot.log.text.count(MARK_SETTINGS_UP)
-        if browser_before < 1 or settings_before < 1:
+        files_before = boot.log.text.count(MARK_FILES_UP)
+        if browser_before < 1 or settings_before < 1 or files_before < 1:
             raise MissingMarkers(
                 "normal boot", "Browser boot-probe BROWSER up", 1, boot.log_path
             )
@@ -1718,7 +1753,7 @@ def run_normal_boot(args) -> int:
             )
         log(
             "normal-boot: display 1080x1920 product portrait；"
-            "BROWSER 首格 (156,282)，SETTINGS dock (626,1668)"
+            "BROWSER/FILES 首行 (156/412,282)，SETTINGS dock (626,1668)"
         )
 
         boot.qmp_connect()
@@ -1849,6 +1884,96 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
+        # —— Files Native Shell：首行第二格点击 → 真实 READDIR/STAT/GET。 ——
+        time.sleep(1.0)
+        log("normal-files: QMP 点击 FILES 首行第二格（真实 APP_SPAWN）")
+        boot.qmp.click(412, 282, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_FILES_UP) > files_before
+                and t.count(MARK_FILES_FRAME) > files_before,
+                f"runtime {MARK_FILES_UP} + {MARK_FILES_FRAME}",
+                args.click_timeout,
+                "normal Files launch",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Files launch",
+                f"新增 {MARK_FILES_UP} + {MARK_FILES_FRAME}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        boot.log.poll()
+        sel_matches = re.findall(r"FILESSEL ok i=([0-9])", boot.log.text)
+        if not sel_matches:
+            raise SmokeError("normal Files: 缺 FILESSEL 索引", boot.log_path)
+        file_row = int(sel_matches[-1])
+        log(f"normal-files: HELLO.TXT 列表行 index={file_row}")
+        y_file = 184 + file_row * 180 + 90
+        boot.qmp.click(400, y_file, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_FILES_READ) >= 1
+                and t.count(MARK_FILES_FRAME) > files_before + 1,
+                f"{MARK_FILES_READ} + 详情重绘帧",
+                args.click_timeout,
+                "normal Files detail",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Files detail",
+                f"{MARK_FILES_READ} + 详情重绘帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        if not re.search(r"FILESSTAT ok size=28", boot.log.text):
+            raise SmokeError("normal Files: HELLO.TXT size != 28", boot.log_path)
+        if not re.search(r"FILESREAD ok n=28", boot.log.text):
+            raise SmokeError("normal Files: HELLO.TXT GET != 28B", boot.log_path)
+
+        files_shot = run_dir / "files-native.ppm"
+        boot.qmp.screendump(files_shot)
+        assert_pixel_close(ppm_pixel(files_shot, 540, 60), (63, 81, 181), "Files 顶栏", boot.log_path)
+        assert_pixel_close(ppm_pixel(files_shot, 540, 250), (255, 255, 255), "Files 详情底", boot.log_path)
+        assert_pixel_close(ppm_pixel(files_shot, 44, 230), (27, 37, 64), "Files 文件名文本", boot.log_path)
+        log("normal-files: QEMU 截图像素锚 ok（顶栏/详情底/文件名文本）")
+
+        log("normal-files: 返回列表（第二真实重绘）")
+        boot.qmp.click(80, 80, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_FILES_LIST) > files_before + 1
+                and t.count(MARK_FILES_FRAME) > files_before + 2,
+                f"返回列表 {MARK_FILES_LIST} + 第三帧",
+                args.click_timeout,
+                "normal Files back-to-list",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Files back-to-list",
+                f"返回列表 {MARK_FILES_LIST} + 第三帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        log("normal-files: 返回退出（销毁窗口）")
+        boot.qmp.click(80, 80, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_FILES_EXIT) > files_before,
+                f"新 {MARK_FILES_EXIT}",
+                args.click_timeout,
+                "normal Files exit",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Files exit", f"新 {MARK_FILES_EXIT}",
+                args.click_timeout, boot.log_path,
+            ) from None
+
         watcher = boot.log
         log_path = boot.log_path
         boot.stop()
@@ -1856,18 +1981,18 @@ def run_normal_boot(args) -> int:
         watcher.poll()
         verify_normal_boot(
             watcher.text, snapshot_pos, browser_before, settings_before,
-            demo_before, log_path,
+            files_before, demo_before, log_path,
         )
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-native: Browser 与 Settings 独立进程、真实 WM 窗口/帧、"
-            "Settings 双状态重绘与返回销毁全过；"
+            "normal-native: Browser/Settings/Files 独立进程、真实 WM 窗口/帧、"
+            "Settings 双状态重绘与 Files 真实 fs RPC 全过；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：Browser + Settings Native Shell 真链 + "
+            "PASS（--normal-boot）：Browser + Settings + Files Native Shell 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -2328,13 +2453,27 @@ def self_test(args) -> int:
             f"{MARK_SETTINGS_BACK}\n{MARK_SETTINGS_DESTROY}\n"
             f"{MARK_SETTINGS_EXIT}\n"
         )
-        fake_n = f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}"
+        files_boot = (
+            f"{MARK_FILES_UP}\n{MARK_FILES_WIN}\n{MARK_FILES_LIST}\n"
+            f"{MARK_FILES_SEL}1\n{MARK_FILES_FRAME}\n{MARK_FILES_PROBE}\n"
+            f"{MARK_FILES_DESTROY}\n{MARK_FILES_EXIT}\n"
+        )
+        files_runtime = (
+            f"{MARK_FILES_UP}\n{MARK_FILES_WIN}\n{MARK_FILES_LIST}\n"
+            f"{MARK_FILES_SEL}1\n{MARK_FILES_FRAME}\n{MARK_FILES_OPEN}\n"
+            f"{MARK_FILES_STAT}28\n{MARK_FILES_READ}28\n{MARK_FILES_FRAME}\n"
+            f"{MARK_FILES_LIST}\n{MARK_FILES_FRAME}\n{MARK_FILES_BACK}\n"
+            f"{MARK_FILES_DESTROY}\n{MARK_FILES_EXIT}\n"
+        )
+        fake_n = (
+            f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
+        )
         snap_n = len(fake_n)
         fake_n += (
             f"{browser_boot}{MARK_BROWSER_BACK}\n{MARK_WM_ROUTE_DESKTOP}\n"
-            f"{settings_runtime}"
+            f"{settings_runtime}{files_runtime}"
         )
-        verify_normal_boot(fake_n, snap_n, 1, 1, 1)
+        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),
             (MARK_LAYOUTW + "\n", "LAYOUTW"),
@@ -2345,41 +2484,66 @@ def self_test(args) -> int:
             expect_error(
                 f"常态隔离出现 {label}",
                 lambda n=needle: verify_normal_boot(
-                    fake_n + n, snap_n, 1, 1, 1
+                    fake_n + n, snap_n, 1, 1, 1, 1
                 ),
             )
         expect_error(
             "常态 Browser 无第二进程",
             lambda: verify_normal_boot(
-                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}"
-                f"{settings_runtime}",
-                snap_n, 1, 1, 1,
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
+                f"{settings_runtime}{files_runtime}",
+                snap_n, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 无第二进程",
             lambda: verify_normal_boot(
-                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}"
-                f"{browser_boot}{MARK_BROWSER_BACK}\n",
-                snap_n, 1, 1, 1,
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
+                f"{browser_boot}{MARK_BROWSER_BACK}\n{files_runtime}",
+                snap_n, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 缺第二重绘帧",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_SETTINGS_FRAME}\n", "", 2),
-                snap_n, 1, 1, 1,
+                snap_n, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Files 无第二进程",
+            lambda: verify_normal_boot(
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
+                f"{browser_boot}{MARK_BROWSER_BACK}\n{settings_runtime}",
+                snap_n, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Files 缺真实 GET",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_FILES_READ}28\n", ""),
+                snap_n, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Files 缺详情重绘",
+            lambda: verify_normal_boot(
+                fake_n.replace(
+                    f"{MARK_FILES_READ}28\n{MARK_FILES_FRAME}\n",
+                    f"{MARK_FILES_READ}28\n", 1,
+                ),
+                snap_n, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Native Shell 误 spawn APPDEMO",
             lambda: verify_normal_boot(
-                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1, 1
+                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1, 1, 1
             ),
         )
         log(
-            "self-test: Browser + Settings Native Shell 常态断言 ok"
-            "（双独立进程、双生命周期、Settings 双状态重绘；冒烟标记全零）"
+            "self-test: Browser + Settings + Files Native Shell 常态断言 ok"
+            "（三独立进程、真实状态/文件 RPC、重绘与销毁；冒烟标记全零）"
         )
 
         # 4) QMP 协议 + no-device 广播 + 三批单击

@@ -187,12 +187,12 @@ class M:
             mn, tg, cp = self.compat
             out += "\n[compat]\n" f'min = "{_ver(mn)}"\ntarget = "{_ver(tg)}"\ncompile = "{_ver(cp)}"\n'
         out += f"\n[capabilities]\nconsole = {'true' if self.console else 'false'}\n"
-        if self.wm:
-            out += "wm = true\n"
         if self.fs:
             out += f'fs = ["{self.fs}"]\n'
         if self.net:
             out += f'net = ["{self.net}"]\n'
+        if self.wm:
+            out += "wm = true\n"
         if self.has_runtime:
             out += f"\n[runtime]\nstack_pages = {self.stack_pages}\n"
         if self.sec:
