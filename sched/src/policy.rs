@@ -17,13 +17,16 @@
 //! 服务**、不经调度路径——不在表里）；③包络内权重微调；④EPP 二值。**没有
 //! 第五类**（尤其没有「直接改 RT 优先级/创建/杀任务」）。
 //!
-//! 并发纪律（单核，同 `sched.rs` 计数器）：[`apply`]/[`weight_of`] 对**表**
-//! 只读——IRQ 屏蔽的决策路径调用，每次调用取一次快照指针、窗内不换（RCU
-//! 读临界区形态；apply 另递 divergence 对账计数器——纯原子统计，非表写、
-//! 非 TCB 写，见文件尾「Shadow divergence 对账」节）；写点 [`bind`]/[`unbind`] 仅在 SVC/IRQ 屏蔽的 boot/ktest 期（v3
-//! 由 `policy_bind` 经共享环换表，仍是单写者）。槽一经发布内容不再改写
-//! （写者只写**非活跃**槽），读者手里的引用至多在下下次轮转被复用——单核
-//! 屏蔽窗下读者早已退出，无踩踏面。
+//! 并发纪律（SMP 三件套②hazard-lite 槽回收已落；①原子化在前刀）：
+//! [`apply`]/[`weight_of`] 对**表**只读——IRQ 屏蔽的决策路径调用，每次
+//! 调用取一次快照指针、窗内不换（RCU 读临界区形态；apply 另递 divergence
+//! 对账计数器——纯原子统计，非表写、非 TCB 写，见文件尾「Shadow
+//! divergence 对账」节）；写点 [`bind`]/[`unbind`] 仅在 SVC/IRQ 屏蔽的
+//! boot/ktest 期（v3 由 `policy_bind` 经共享环换表，仍是单写者）。槽一经
+//! 发布内容不再改写——②起写者只写**非活跃且无 hazard**槽（读者进窗向
+//! 本核 [`HAZARD`] 位发布在读槽号并验证 ACTIVE 未翻转，写者 [`publish`]
+//! 扫描避让），他核在用槽不被覆写；读窗串行（现状屏蔽窗/KL）形态下两核
+//! hazard 收敛同槽、阻塞集 ≤2 恒有空闲——单核/现状与旧固定轮转等价。
 //!
 //! 语义映射的边界（写者是受信内核侧，拒收面在此收口）：
 //! - **key == 0 保留**：空槽哨兵键，注入条目带 0 键直接丢弃（`proc_tag = 0`
@@ -131,7 +134,8 @@ impl Snap {
 
 // ---- 三槽轮转 + 哨兵空表 ----
 
-/// 三槽轮转区：写者写**非活跃**槽、翻转 [`ACTIVE`] 发布——读者经指针取整表。
+/// 三槽轮转区：写者写**非活跃且无 hazard**槽（三件套②）、翻转 [`ACTIVE`]
+/// 发布——读者经指针取整表。
 /// `static mut`（写面——`&raw mut` 取裸指针，不立引用；`static` 非 mut 拒
 /// 可变裸指针借用，E0596——同 `class.rs` LAST_VCT 纪律）。
 static mut SNAPS: [Snap; 3] = [const { Snap::empty() }; 3];
@@ -143,6 +147,25 @@ static ACTIVE: AtomicU32 = AtomicU32::new(SENTINEL_EMPTY);
 /// 世代计数器（单写者递增，非通信值——Relaxed 足够）。
 static GEN_NEXT: AtomicU64 = AtomicU64::new(1);
 
+// ---- hazard-lite 槽回收（SMP 安全三件套②）----
+//
+// 防写者覆写他核在用槽：读者进窗先向**本核固定位**发布在读槽号，写者
+// [`publish`] 扫描 {ACTIVE} ∪ HAZARD 避让。比真 hazard pointer 简在结构：
+// 固定位（无链表、无动态分配）+ 无回收回调（避让判定内联在 publish）。
+// 读者出窗**不清**（简化）：读窗在 IRQ 屏蔽窗内有限，下次进窗覆盖旧值
+// 自然释放；单核形态 HAZARD[1] 恒 [`SLOT_NONE`] → 写者扫描恒让过。
+
+/// hazard 位核数（NCPUS=2 冻结配置，同 `telemetry.rs` 口径；拓扑扩核时
+/// 本数组与 [`publish`] 扫描同扩）。
+const HAZARD_CPUS: usize = 2;
+/// [`HAZARD`] 的未在读哨兵：0xFF，远离 ACTIVE 值域（0..=3）——永不与任何
+/// 槽号/哨兵相等，写者扫描视同「该核未在读」。
+const SLOT_NONE: u32 = 0xFF;
+/// 每核在读槽号发布位：值 = 本核当前/最近读窗的槽号。ACTIVE 哨兵 3 原样
+/// 落位——EMPTY_SNAP 不可变无需保护，且 ∉0..=2 对写者扫描惰性（顺带 =
+/// 读者回落哨兵态时自然释放旧槽号）。
+static HAZARD: [AtomicU32; HAZARD_CPUS] = [const { AtomicU32::new(SLOT_NONE) }; HAZARD_CPUS];
+
 /// 黄金比例乘移散列（乘 2^64/φ 取高 8 位 = 桶号）：键位（指针/标签）分布
 /// 不均也摊平；`>> 56` 与 [`BUCKETS`] = 2^8 绑定。
 #[inline]
@@ -150,29 +173,70 @@ fn bucket_of(key: u64) -> usize {
     (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize
 }
 
-/// 发布新快照：三槽轮转写 + fence(Release) + ACTIVE.store(Release)。
+/// 发布新快照（写者协议，三件套②）：扫描选**非活跃且无 hazard** 的槽
+/// 写入 → fence(Release) → ACTIVE.store(Release) 翻转。
 ///
-/// 轮转 `next = (cur + 1) % 3` 恒 ≠ 当前活跃槽（读者在读的槽不被写；哨兵
-/// 态 3 → 1 同样成立）。单写者（IRQ 屏蔽窗）无需 CAS。
+/// 槽选择不再固定 `(cur+1)%3` 轮转，改避让扫描——跳过①当前活跃槽（新
+/// 读者持续经 ACTIVE 进入）②两核 [`HAZARD`] 位（他核在读/最近读窗的槽，
+/// 未确认退出前不得复用）。hazard 位 Acquire 载入与读者「store(Release)
+/// + fence」发布序配对：读者先发 hazard 后读数据、写者先读 hazard 后写
+/// 槽。**「3 槽 2 核恒有空闲」**：读窗串行（现状屏蔽窗/KL）形态下两核
+/// hazard 收敛同槽号 → 阻塞集 ≤2；真并发拆锁（三件套③）后若满 3 即
+/// expect 响——响 = 协议违约当场抓住（wedge 优于静默跨核腐坏，同
+/// `smp.rs` park 槽纪律），③落地时再补等待路径。单写者（IRQ 屏蔽窗）
+/// 无需 CAS；ACTIVE 入口载 Relaxed 即精确（单写者自见 + 写点全串行）。
 fn publish(new: Snap) {
-    let cur = ACTIVE.load(Ordering::Relaxed);
-    let next = (cur + 1) % 3; // 三槽轮转：永避当前活跃槽（哨兵 3 → 1）
-    // SAFETY: 单写者独占写**非活跃**槽；该槽自上次发布翻转后无读者可达
-    // （读者只经 ACTIVE 指针到槽）——写窗内无别名引用。static 存储期 =
-    // 整个程序运行期，ptr::write 不越界（槽号 < 3 编译期可证）。
-    unsafe { core::ptr::write(&raw mut SNAPS[next as usize], new) };
+    let active_idx = ACTIVE.load(Ordering::Relaxed);
+    let mut write_idx = None;
+    for i in 0..3u32 {
+        if i == active_idx {
+            continue; // 活跃槽：新读者持续进入，不可覆写
+        }
+        if HAZARD[0].load(Ordering::Acquire) == i || HAZARD[1].load(Ordering::Acquire) == i {
+            continue; // 他核在用（不清简化下含最近用）槽：跳过
+        }
+        write_idx = Some(i);
+        break;
+    }
+    let w = write_idx.expect("3 槽 2 核恒有空闲：hazard+active 满覆盖 = 协议违约");
+    // SAFETY: 单写者独占写**非活跃且无 hazard**槽——在窗读者只经 ACTIVE
+    // 指针到槽且在读槽号已发布 HAZARD（写者扫描已避让），写窗内无别名
+    // 引用。static 存储期 = 整个程序运行期，ptr::write 不越界（槽号 < 3
+    // 编译期可证）。
+    unsafe { core::ptr::write(&raw mut SNAPS[w as usize], new) };
     fence(Ordering::Release);
-    ACTIVE.store(next, Ordering::Release);
+    ACTIVE.store(w, Ordering::Release);
 }
 
-/// 取活跃快照指针：Acquire 载入槽号映射到静态区地址（哨兵 → [`EMPTY_SNAP`]）。
-/// 返回裸指针——发布后槽内容不可变，调用点一次解引用挂 SAFETY（读临界区
-/// 内快照稳定）。
+/// 取活跃快照指针（读者协议，三件套②）：Acquire 载入槽号 → 发布本核
+/// hazard（store(Release)）→ fence(Acquire) → **验证 ACTIVE 未在发布窗内
+/// 翻转**——翻了则刚发布的槽号可能在发布生效前已被复用（load→store 窗，
+/// 写者背靠背 publish 可回收该槽），换新槽号重发再验。这是经典 hazard
+/// pointer 的验证环；lite 在结构（固定位/无回收回调），不在省略验证。
+/// 验证 Acquire 载入把后续快照数据读定在 hazard 发布之后（AArch64 上
+/// STLR→LDAR 的 RCsc 全序 + fence 挡编译期重排）。单核/读窗串行（现状）
+/// 形态下验证首次即过，零行为变化。返回裸指针——发布后槽内容不可变，
+/// 调用点一次解引用挂 SAFETY（读临界区内快照稳定）。
 fn active_snap() -> *const Snap {
+    // 拓扑外防御收敛（同 telemetry.rs 口径）：cpu_id 只应 0..=1。
+    let cpu = hal::smp::cpu_id().min(HAZARD_CPUS - 1);
+    let mut idx = ACTIVE.load(Ordering::Acquire);
+    loop {
+        // 发布：本核在读 idx（哨兵 3 原样落位——对写者扫描惰性）。
+        HAZARD[cpu].store(idx, Ordering::Release);
+        fence(Ordering::Acquire); // 发布先于验证读/数据读
+        // 验证：hazard 生效前 ACTIVE 未翻转。翻转 ⇒ 换当前槽号重发；
+        // 单写者下 ACTIVE 静默期必至，环有限步收敛。
+        let recheck = ACTIVE.load(Ordering::Acquire);
+        if recheck == idx {
+            break;
+        }
+        idx = recheck;
+    }
     // SAFETY: `static mut` 取 `&raw const` 裸指针（不立引用——E0133 解除的
     // 就是这一层）；解引用的读窗纪律在调用点（apply/weight_of 各挂 SAFETY）。
     unsafe {
-        match ACTIVE.load(Ordering::Acquire) {
+        match idx {
             0 => &raw const SNAPS[0],
             1 => &raw const SNAPS[1],
             2 => &raw const SNAPS[2],
@@ -266,8 +330,9 @@ pub fn bind(tbl: &'static [Entry]) {
 /// （同 [`bind`] 纪律）——单核读窗内无换表，无竞态。
 fn self_gen_now() -> u64 {
     // SAFETY: 指针源自 active_snap（静态区槽位/哨兵，'static 生存期）；
-    // 已发布槽内容不可变（写者只写非活跃槽）+ 单核屏蔽窗读写互斥——本读
-    // 窗内快照稳定（读纪律同 apply/weight_of，仅多读一个 gen 字段）。
+    // 已发布槽内容不可变（写者只写非活跃且无 hazard 槽，②）+ 读窗串行
+    // 互斥——本读窗内快照稳定（读纪律同 apply/weight_of，仅多读一个 gen
+    // 字段）。
     unsafe { (*active_snap()).gen }
 }
 
@@ -324,8 +389,9 @@ pub fn bound() -> bool {
 pub fn apply(task: &mut Task) {
     shadow_reconcile(task);
     // SAFETY: 指针源自 active_snap（静态区槽位/哨兵，'static 生存期）；
-    // 已发布槽内容不可变（写者只写非活跃槽）+ 单核读写窗互斥——读窗内快照
-    // 稳定，本调用内无写者。
+    // 已发布槽内容不可变（写者只写非活跃且无 hazard 槽——本核在读槽号
+    // 已经 active_snap 发布，②）+ 读窗串行互斥（现状屏蔽窗/KL）——读窗
+    // 内快照稳定，本调用内无写者踩踏。
     let snap: &Snap = unsafe { &*active_snap() };
     if snap.count == 0 {
         return; // 空表/哨兵：零写入快路径
@@ -406,7 +472,8 @@ pub fn placement_hint(task_key: u64) -> u8 {
 // 同 [`SNAPS`]（约束②）：单核 SVC 屏蔽窗单写者、只写非活跃槽 + 翻转
 // [`SHD_WHERE`] 发布——翻转位自 SMP 安全三件套①（原子化）起为 AtomicU8
 // （写侧「槽写 + fence(Release) + store(Release)」/ 读侧 Acquire），
-// 槽数据仍裸写；hazard-lite 槽回收（②）与写者锁（③）留后续刀。双槽
+// 槽数据仍裸写；hazard-lite 槽回收（②——active 三槽侧已落 HAZARD，shadow
+// 双槽侧本刀不动）与写者锁（③）留后续刀。双槽
 // （而非三槽）即足——shadow 无快路径读者，翻转后旧槽只剩写者自己会再碰
 // （约束③的拷贝源/目的地都在写者手里）。
 //
@@ -422,7 +489,8 @@ static mut SHD: [Snap; 2] = [const { Snap::empty() }; 2];
 /// 当前活 shadow 槽号（0/1）。写者翻转本位 = shadow 侧发布。SMP 安全
 /// 三件套①（原子化）：AtomicU8——写侧「先写槽 + fence(Release) +
 /// store(Release)」、读侧 load(Acquire)，见新槽号必见新槽内容；单核
-/// Acquire/Release 无重排面 = 行为零变化。②hazard-lite 槽回收 / ③写者
+/// Acquire/Release 无重排面 = 行为零变化。②hazard-lite 槽回收（active
+/// 侧已落——见 HAZARD；shadow 侧未覆盖）/ ③写者
 /// 锁未落——槽数据的读写仍靠单核屏蔽窗串行。
 static SHD_WHERE: AtomicU8 = AtomicU8::new(0);
 
