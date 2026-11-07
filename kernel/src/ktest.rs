@@ -37,6 +37,7 @@ pub fn run() {
     test_vmo();
     test_handle();
     test_policy();
+    test_policy_v3();
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
@@ -2655,6 +2656,182 @@ fn test_policy() {
 
     // 任务体 16KiB 栈 × 9 泄漏不回收（ktest 语境同 sched spawn 政策——v1 无 reap）。
     berry_hal_aarch64::uart_puts(b"POLICY ok\n");
+}
+
+/// 3-4c-v3 三槽 RCU 原子换表测试（`policy.rs` 快照化机制升级——`bind` 建
+/// [`Snap`] + `publish` 轮转发布——的**换表面**行为收口；对照 `test_policy`
+/// （POLICY ok）的单表注入面）。
+///
+/// 形态同 `test_policy`：本地 `Runqueue` + 三任务（proc_tag = 7/8/9）12 轮
+/// pick，比对（选中者, prio_effective, epp）序列；只经 pub 接口
+/// `bind`/`unbind`/`bound` 驱动——`apply` 由 pick_next 出选后间接跑（决策路径
+/// 真消费，不直接调）：
+/// - **PV3-1 空表等价**：bind 空表 → 12 轮与未绑基线逐位全等（快照化后
+///   count==0 快路径的「零写入 = 接口缺席」不变量重验）；
+/// - **PV3-2 原子换表**：bind 表 A（p7 weight +32）→ 12 轮 p7 独占 → bind
+///   表 B（p8 weight +32）→ fresh 任务下 p7（旧表受益者）**恒零写入**、p8 自
+///   首次选中即 +32 独占——无「新旧混读」过渡轮，且跨两次 bind `bound()`
+///   连续 true（不经历 OFF 回退态）；
+/// - **PV3-3 unbind 回退**：unbind → 序列逐位回基线（哨兵态回落 EMPTY_SNAP）；
+/// - **PV3-4 gen 拒陈旧**：**跳过**——`GEN_NEXT`/`Snap::gen` 均 crate 私有，
+///   policy 未暴露 gen 观察接口（单核屏蔽窗下三槽轮转写非活跃槽，本无陈旧
+///   读者踩踏面）；v3 `policy_bind`（0x83）换表协议带 gen 词汇落地时补；
+/// - **PV3-5 O(1) 满表查表**：bind 128 条目（TBL_MAX 满载，键域
+///   {1..=130}\\{7,9}——黄金比散列实测全入槽零拒收）：key 8 命中（+32 独占）、
+///   key 7 首轮可观测不命中零写入（满表开放寻址的缺席判定）。
+///
+/// 四次 bind 依次轮转槽 1→2→0→1（空表/A/B/满表）——三槽全历 + 最早槽复用
+/// 路径顺带覆盖。进程调度 crate 无 host 测试面（HAL aarch64 asm），QEMU ktest
+/// 是唯一家（同 `test_policy`）。
+#[allow(clippy::unwrap_used)]
+fn test_policy_v3() {
+    use alloc::vec::Vec;
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{EppHint, Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn pv3_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 单轮观测（比对单位）：选中者名 + 两个被注入面字段。
+    type Obs = (&'static [u8], i32, EppHint);
+
+    const ROUNDS: usize = 12;
+
+    /// 建本地 runqueue + 三任务（proc_tag = 7/8/9 = 策略表 key 域）。
+    fn setup() -> (Runqueue, RoundRobin, Topo, Vec<&'static mut Task>) {
+        let mut rq = Runqueue::new();
+        let rr = Fair;
+        let topo = Topo::single();
+        let mut tasks = Vec::new();
+        for (tag, name) in [(7usize, b"p7".as_slice()), (8, b"p8".as_slice()), (9, b"p9".as_slice())] {
+            let mut t = Task::new_kernel_with_as(pv3_dummy, tag, name, 0, 0);
+            t.proc_tag = tag; // 策略表 key（v1 = proc_tag；new_kernel 默认 0）
+            let t: &'static mut Task = alloc::boxed::Box::leak(t);
+            rr.enqueue(t, &mut rq);
+            tasks.push(t);
+        }
+        (rq, rr, topo, tasks)
+    }
+
+    /// 跑 ROUNDS 轮 pick_next 记录观测序列（apply 由 pick_next 内部挂钩注入）。
+    fn probe(rq: &Runqueue, rr: &RoundRobin, topo: &Topo) -> [Obs; ROUNDS] {
+        let mut seq: [Obs; ROUNDS] = [(b"", 0, EppHint::Efficiency); ROUNDS];
+        for s in seq.iter_mut() {
+            let t = rr.pick_next(rq, topo).expect("PV3：非空 runqueue 必有出选");
+            *s = (t.name, t.prio_effective, t.epp);
+        }
+        seq
+    }
+
+    // PV3-1 前半：未绑基线（前序状态防御性清零——ktest 期望 boot 期即未绑）。
+    policy::unbind();
+    assert!(!policy::bound(), "PV3：基线前提须未绑");
+    let (rq_base, rr_base, topo_base, _tbase) = setup();
+    let base = probe(&rq_base, &rr_base, &topo_base);
+
+    // PV3-1 后半：bind 空表 → 快照化后仍逐位等价（count==0 零写入快路径）。
+    static EMPTY: [Entry; 0] = [];
+    policy::bind(&EMPTY);
+    assert!(policy::bound(), "PV3-1：空表 bind 后须已绑");
+    let (rq_blank, rr_blank, topo_blank, _tblank) = setup();
+    let blank = probe(&rq_blank, &rr_blank, &topo_blank);
+    for i in 0..ROUNDS {
+        assert_eq!(base[i].0, blank[i].0, "PV3-1：空表第 {} 轮选人须与基线全同", i);
+        assert_eq!(base[i].1, blank[i].1, "PV3-1：空表第 {} 轮 prio_effective 须零写入", i);
+        assert_eq!(base[i].2, blank[i].2, "PV3-1：空表第 {} 轮 epp 须零写入", i);
+    }
+
+    // PV3-2：表 A（p7 +32）→ 表 B（p8 +32）原子换。
+    static TAB_A: [Entry; 1] = [Entry {
+        task_key: 7,
+        directive: Directive { placement: 0, weight: 32, epp: None },
+    }];
+    static TAB_B: [Entry; 1] = [Entry {
+        task_key: 8,
+        directive: Directive { placement: 0, weight: 32, epp: None },
+    }];
+
+    // 相位 A：p7 独占 12 轮（含首轮——head 即 p7，出选即 apply 写 eff=32）。
+    policy::bind(&TAB_A);
+    assert!(policy::bound(), "PV3-2：表 A bind 后须已绑");
+    let (rq_pa, rr_pa, topo_pa, _tpa) = setup();
+    let phase_a = probe(&rq_pa, &rr_pa, &topo_pa);
+    for i in 0..ROUNDS {
+        assert_eq!(phase_a[i].0, b"p7".as_slice(), "PV3-2：表 A 下第 {} 轮须 p7 独占", i);
+        assert_eq!(phase_a[i].1, 32, "PV3-2：表 A 下 p7 eff 须恒 32（第 {} 轮）", i);
+    }
+
+    // 相位 B（换表点）：fresh 三任务——无表 A 写入可继承，残留只可能来自
+    // 换表机制本身（混读旧表即在此轮现形）。
+    policy::bind(&TAB_B);
+    assert!(policy::bound(), "PV3-2：换表后 bound 须连续（不经历 OFF 态）");
+    let (rq_pb, rr_pb, topo_pb, _tpb) = setup();
+    let phase_b = probe(&rq_pb, &rr_pb, &topo_pb);
+    // 首轮：全 eff=0 → 出选同基线 head（p7；表 B 无其条目 → 零写入）。
+    assert_eq!(phase_b[0].0, base[0].0, "PV3-2：换表首轮出选须同基线 head");
+    assert_eq!(phase_b[0].1, 0, "PV3-2：p7 在表 B 无条目，首轮须零写入（无旧表残留）");
+    // 第 2 轮起 p8 独占——新表语义即刻全生效，无新旧混读的过渡轮。
+    for i in 1..ROUNDS {
+        assert_eq!(phase_b[i].0, b"p8".as_slice(), "PV3-2：换表后第 {} 轮须 p8 主导（无过渡态）", i);
+    }
+    for i in 0..ROUNDS {
+        let (name, eff, epp) = phase_b[i];
+        if name == b"p8".as_slice() {
+            assert_eq!(eff, 32, "PV3-2：p8 自首次选中起 eff 须 = 32（第 {} 轮）", i);
+            assert_eq!(epp, EppHint::Efficiency, "PV3-2：表 B epp=None 须零 EPP 写入（第 {} 轮）", i);
+        } else {
+            assert_eq!(eff, 0, "PV3-2：p7（表 A 旧受益者）在表 B 下须恒零写入（第 {} 轮）", i);
+        }
+    }
+
+    // PV3-3：unbind → 哨兵回落，序列逐位回基线。
+    policy::unbind();
+    assert!(!policy::bound(), "PV3-3：unbind 后须未绑");
+    let (rq_back, rr_back, topo_back, _tback) = setup();
+    let back = probe(&rq_back, &rr_back, &topo_back);
+    for i in 0..ROUNDS {
+        assert_eq!(base[i].0, back[i].0, "PV3-3：回退第 {} 轮选人须回基线", i);
+        assert_eq!(base[i].1, back[i].1, "PV3-3：回退第 {} 轮 prio_effective 须回基线", i);
+        assert_eq!(base[i].2, back[i].2, "PV3-3：回退第 {} 轮 epp 须回基线", i);
+    }
+
+    // PV3-4：跳过——policy 未暴露 gen 接口（GEN_NEXT/Snap::gen crate 私有）；
+    // 陈旧槽拒收语义随 v3 policy_bind 换表协议落地时补（见函数级 doc 注）。
+
+    // PV3-5：128 条目满表（TBL_MAX 满载，键域 {1..=130}\{7,9}——黄金比散列
+    // 实测全入槽零拒收；p9 同路径缺席）：key 8 命中、key 7 不命中零写入。
+    let mut tbl: Vec<Entry> = Vec::new();
+    for k in 1u64..=130 {
+        if k != 7 && k != 9 {
+            tbl.push(Entry {
+                task_key: k,
+                directive: Directive { placement: 0, weight: 32, epp: None },
+            });
+        }
+    }
+    let full: &'static [Entry] = alloc::boxed::Box::leak(tbl.into_boxed_slice());
+    policy::bind(full);
+    assert!(policy::bound(), "PV3-5：满表 bind 后须已绑");
+    let (rq_full, rr_full, topo_full, _tfull) = setup();
+    let seq5 = probe(&rq_full, &rr_full, &topo_full);
+    // 首轮：p7 不在表 → 出选同基线 head 且零写入（满表 O(1) 查表的缺席判定）。
+    assert_eq!(seq5[0].0, base[0].0, "PV3-5：满表首轮出选须同基线 head（p7 不在表）");
+    assert_eq!(seq5[0].1, 0, "PV3-5：p7 不在满表 → 首轮须零写入");
+    // 第 2 轮起：p8 命中（探测窗内找到）→ +32 独占；无 EPP 条目 → 零 EPP 写入。
+    for i in 1..ROUNDS {
+        assert_eq!(seq5[i].0, b"p8".as_slice(), "PV3-5：满表下第 {} 轮须 p8 命中独占", i);
+        assert_eq!(seq5[i].1, 32, "PV3-5：p8 命中 eff 须 = 32（第 {} 轮）", i);
+        assert_eq!(seq5[i].2, EppHint::Efficiency, "PV3-5：满表无 EPP 条目 → 零 EPP 写入（第 {} 轮）", i);
+    }
+
+    // 收尾：恢复缺席态（之后 smoke 稳态全程未绑——等价性延续到真实调度路径）。
+    policy::unbind();
+    assert!(!policy::bound(), "PV3：收尾须回到未绑");
+
+    // 任务体 16KiB 栈 × 18 + 满表快照泄漏不回收（ktest 语境同 test_policy 政策）。
+    berry_hal_aarch64::uart_puts(b"PV3-K ok\n");
 }
 
 /// P4 收官审计实踩的 runqueue 摘环回归：`unlink` 旧单元素判据 `prev == next`

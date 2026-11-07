@@ -1417,6 +1417,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, up_svcmgr.stack_top,
                           b"user_svcmgr", up_svcmgr.ttbr0_pa, up_svcmgr.asid,
                           ht_svcmgr as *mut HandleTable as usize);
+    // X-3c-1：svcmgr pager 任务（exec demand 装载收货面）——共享同
+    // ttbr0/asid/句柄表：寄存表即 svcmgr .bss 静态（PAGER_REQS），零 IPC。
+    // 入口/栈顶 = svcmgr link-user.ld 钉位（.pager_entry@0x1E000 /
+    // .pager_stack 顶 0x20000——**同值双改**）；x0=0（pager 无 console 面，
+    // 入口不读参数）。boot 即在（svcmgr _start 装钩子前空转小睡，无害）。
+    berry_sched::spawn_user(0x1E_000, 0, 0x20_000, b"user_svcmgr_pager",
+                          up_svcmgr.ttbr0_pa, up_svcmgr.asid,
+                          ht_svcmgr as *mut HandleTable as usize);
 
     // ---- 4-6 B 半（AI 最小演示，`docs/4-6出口演示设计草案.md` B 半管线）：
     // 遥测 dump（`tele:` 行）→ host 侧 advisor.py（`tools/`，工具非关卡）规则
