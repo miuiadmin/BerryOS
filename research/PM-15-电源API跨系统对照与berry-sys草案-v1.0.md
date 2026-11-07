@@ -2,7 +2,7 @@
 
 > 调研日期：2026-11-07 · 方法：仓内精读（SDK-01/02/03 结论节、PM-00..12、`user/berry-sys`+`berry-manifest`+`berry-psproto` 现有 API 风格盘点）+ 联网取证（WebSearch/WebFetch 抓 Android developer/Apple 官方页与 OpenHarmony GitHub 官方 md 全文，中英文并用）。
 > 确定度图例：**高** = 官方文档/一手源码；**中** = 二手转述或社区实测；**低** = 推断或单一来源。
-> 系列分工：PM-15 = **函数级对照 + SDK 立法形状**——把 PM-00 §5.2 契约十一项（`research/PM-00-全系统省电架构综合裁决-v1.0.md:248-262`）与 PM-02 启示 1–10（`research/PM-02-iOS与鸿蒙省电哲学对照-v1.0.md:285-296`）压到签名/错误码/能力位/默认值层；机制证据不重查（归 PM-00..12）。PM-13（SoC 平台）/PM-14（充电电池）为三期并行刀，本文 §2.6 充电面按「PM-14 落稿后对表」标注。SDK 文档实位于 `research/`（SDK-01:749 行/SDK-02:941 行/SDK-03:282 行），非 docs/ 下。
+> 系列分工：PM-15 = **函数级对照 + SDK 立法形状**——把 PM-00 §5.2 契约十一项（`research/PM-00-全系统省电架构综合裁决-v1.1.md:248-262`）与 PM-02 启示 1–10（`research/PM-02-iOS与鸿蒙省电哲学对照-v1.0.md:285-296`）压到签名/错误码/能力位/默认值层；机制证据不重查（归 PM-00..12）。PM-13（SoC 平台）/PM-14（充电电池）为三期并行刀，本文 §2.6 充电面按「PM-14 落稿后对表」标注。SDK 文档实位于 `research/`（SDK-01:749 行/SDK-02:941 行/SDK-03:282 行），非 docs/ 下。
 
 ---
 
@@ -19,7 +19,7 @@
 | ⑤热状态 | 7 档 + headroom 预测 | thermalState 4 档只读 | ThermalLevel 0–7 | berry-thermal（u8 四档只读） |
 | ⑥电池/充电 | 读属性 + **无充电控制 API** | 读三件 + **无充电控制 API** | batteryInfo 常量 + 广播键 | berry-power BATTERY op（15 字段 + 计量标注位） |
 
-**35 syscall 挂接总裁决（详见 §4.1）：六面零新号。** v1 在册 35 号（`tools/abi.toml:14-16`）无一电源 app 面；PM-00 §2 已裁「服务面 op 不占 ~35 syscall 预算」（`research/PM-00-全系统省电架构综合裁决-v1.0.md:118`）；precise(wake) 闹钟的内核面落在已在册预留的 v2 `timer_create/timer_set`（0x62/0x63，`tools/abi.toml` 时间组）。
+**35 syscall 挂接总裁决（详见 §4.1）：六面零新号。** v1 在册 35 号（`tools/abi.toml:14-16`）无一电源 app 面；PM-00 §2 已裁「服务面 op 不占 ~35 syscall 预算」（`research/PM-00-全系统省电架构综合裁决-v1.1.md:118`）；precise(wake) 闹钟的内核面落在已在册预留的 v2 `timer_create/timer_set`（0x62/0x63，`tools/abi.toml` 时间组）。
 
 ---
 
@@ -253,7 +253,7 @@ pub fn berry_battery_subscribe(ch: Handle) -> Status;    // 变更事件（SOC/�
 - Pixel charge_limit 侧通道（中）— https://www.reddit.com/r/tasker/comments/1bcgz0s/found_how_to_control_charging_optimization_80/
 
 **仓内**
-- `research/PM-00-全系统省电架构综合裁决-v1.0.md`（§2 op 表 :118-131 · §5.1 P1–P10 :229-246 · §5.2 契约 :248-262 · §5.3 反面清单）
+- `research/PM-00-全系统省电架构综合裁决-v1.1.md`（§2 op 表 :118-131 · §5.1 P1–P10 :229-246 · §5.2 契约 :248-262 · §5.3 反面清单）
 - `research/PM-02-iOS与鸿蒙省电哲学对照-v1.0.md`（§4 moves :285-296 · thermalState 表 :118-131）
 - `research/PM-04-触摸与交互功耗-v1.0.md`（§5.1 batching 契约 :136-143 · §8.3-9 :212）
 - `research/PM-07-热管理与电源耦合-v1.0.md`（§4-5 thermal_level 四档 :196）

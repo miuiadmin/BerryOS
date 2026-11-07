@@ -341,5 +341,5 @@ WakeLease2 previous_client_token）——不是文档纪律，是 ABI 位。
 [F27 notes](https://fuchsia.dev/whats-new/release-notes/f27) · [F28 notes](https://fuchsia.dev/whats-new/release-notes/f28) ·
 [F29 notes](https://fuchsia.dev/whats-new/release-notes/f29) · [F30 notes](https://fuchsia.dev/whats-new/release-notes/f30)
 
-**仓内对照**：`research/PM-00-全系统省电架构综合裁决-v1.0.md` §5.1（P1–P10）/§2（四层模型）·
+**仓内对照**：`research/PM-00-全系统省电架构综合裁决-v1.1.md` §5.1（P1–P10）/§2（四层模型）·
 `research/PM-03-Linux电源机制与微内核归属-v1.0.md` §5（文档级 Fuchsia）/§8.2（可执行建议）· `research/PM-04/05`（P4/P6/P7 票面出处）

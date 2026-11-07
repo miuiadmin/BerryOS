@@ -197,7 +197,7 @@
 
 仓内锚点：
 
-- `research/PM-00-全系统省电架构综合裁决-v1.0.md:238-239`（P3/P3a 定义）、`:316`（高频路径不跨特权界）
+- `research/PM-00-全系统省电架构综合裁决-v1.1.md:238-239`（P3/P3a 定义）、`:316`（高频路径不跨特权界）
 - `research/PM-08-Fuchsia电源栈源码级-v1.0.md:218`（板级电源配置 FIDL）、`:285`（抄/改表，latency 无人消费实证）
 - `research/PM-10-无真机电源验证-v1.0.md`（QEMU 无 PSCI SYSTEM_SUSPEND）
 - `research/PM-12-二期深研综合与PM00回填表-v1.0.md`（确定度图例与报告格式基线）

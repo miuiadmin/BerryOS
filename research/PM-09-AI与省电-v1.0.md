@@ -215,7 +215,7 @@
 - NEAT（硬件实测 vs 软件模型）— http://sensys.acm.org/2014/papers/p16-brouwers.pdf
 
 仓内互引：
-- `research/PM-00-全系统省电架构综合裁决-v1.0.md`（§0/§2/§5 四层模型与 berry-power 裁决）
+- `research/PM-00-全系统省电架构综合裁决-v1.1.md`（§0/§2/§5 四层模型与 berry-power 裁决）
 - `research/PM-01-安卓省电演化史与历史包袱-v1.0.md`（§1.4 桶位 ML 时代线、§2.1 vitals 罚则、B7 wake admission）
 - `research/PM-02-iOS与鸿蒙省电哲学对照-v1.0.md`（iOS 治理哲学，本篇 §1.4 只引）
 - `research/PM-06-PC桌面与系统级协调架构-v1.0.md`（§4 现役 AI 清单与口径校准、教训 4/7）
