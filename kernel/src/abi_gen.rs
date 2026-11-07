@@ -3,6 +3,9 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=35（v1 在册）/
+//! nr_defined=39（v1+1.1 常量层）/ nr_registered=38（已挂派发）/
+//! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
 

@@ -25,6 +25,7 @@ pub mod tlbshoot;
 pub mod timer;
 pub mod trap;
 pub mod uart;
+pub mod wake_gen;
 
 // P5 A-1：UART TX 四函数迁入 `uart` 模块——crate root 重导出转发，crate 内
 // 既有 `use crate::uart_putc` 与下游 `berry_hal_aarch64::uart_putc` 均零改动。

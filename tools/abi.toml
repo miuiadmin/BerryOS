@@ -8,7 +8,9 @@
 #   3. docs/系统调用ABI设计-v1.0.md  —— §4 编号表体 + §8.2 C 定义列（marker 块）
 #   4. tools/abi.syz                  —— syzkaller 描述骨架（SEC-01 §4.5 件 25；
 #                                       未过 syz-sysgen 编译验证——头注如实声明）
-# 四面同源 ⇒ 漂移按构造不可能；--check 只拦「改了本文件忘再生成 / 手改产物」。
+#   5. arch/aarch64/src/wake_gen.rs  —— 唤醒源枚举常量（刀 1：内核 wakeup 记账
+#                                       面；trap 臂/cell 初值消费；PM-17 终审问① A1）
+# 五面同源 ⇒ 漂移按构造不可能；--check 只拦「改了本文件忘再生成 / 手改产物」。
 # Plan B v0.5 的 abi_check.py 三方对账关卡随之退役（生成即一致）。
 #
 # 改 ABI 的流程：改本文件 → `just abi-gen` → 提交（产物 diff 一并入册）。
@@ -25,6 +27,51 @@ implemented = 34     # 已实现（T-1 后在册真语义全实现 + A7-4 段②
                      # G4-2 0x21 pager_supply_pages v2 号激活；
                      # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
                      # ABI §8.0 永不 panic 执法）
+nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端）。生成器执法
+                     # nr_defined（v1+1.1 常量层行数）≤ 本值，并把四元组
+                     # nr_total/nr_defined/nr_registered/nr_ceiling 打进两端
+                     # abi_gen 头注——预算口径唯一收口处（刀 1 前置 #8：消灭
+                     # 35/39/38 三口径打架的文档面；PM-17 终审 §4 裁 B 机制）
+
+# ---- 唤醒源枚举（刀 1：内核 wakeup 记账面；PM-17 终审问①裁 A1 静态穷举）----
+# add-only 纪律：新源只追加（不改值/不改义/不复用退役值）；0x07–0x7E 为预留段，
+# 值域 u8 且 ≤ 0x7F。生成：arch/aarch64/src/wake_gen.rs（第五产物）；内核
+# telemetry per-source 记账与用户侧 berry-power（0x84 telemetry_open 快照面，
+# 落地刀再生用户侧常量——本刀只冻形状）同源同值。语义详注 →
+# research/pm-notes/刀1-前置两问-裁决.md §5 与 docs/内核唤醒记账设计（刀 1 落库）。
+
+[[wakesrc]]
+name = "NONE"
+expr = "0x00"
+desc = '哨兵：未接线语境（仅 CPU1 首任务切入前窗口可持有）；到达 on_wake = 绊网 panic（写点 L0 执法，负延迟同族）。'
+[[wakesrc]]
+name = "KERNEL_BOOT"
+expr = "0x01"
+desc = 'boot 期非 IRQ 语境（rust_main 直跑窗的 spawn/唤醒）；首任务切入后冻结——G1.5 断言其不再增长（无主-3 空类证明）。'
+[[wakesrc]]
+name = "TIMER"
+expr = "0x02"
+desc = 'CNTV PPI 27（tick 重编程与超时到期唤醒——expire_timeouts 路径）。'
+[[wakesrc]]
+name = "UART_RX"
+expr = "0x03"
+desc = 'PL011 SPI 33（控制台 RX 到达唤醒——rx_irq_notify 路径）。'
+[[wakesrc]]
+name = "SGI_RESCHED"
+expr = "0x04"
+desc = 'SGI 1（跨核重调度投递）。'
+[[wakesrc]]
+name = "SGI_TLB"
+expr = "0x05"
+desc = 'SGI 2（TLB shootdown 收端——无唤醒路径，只计到达）。'
+[[wakesrc]]
+name = "IPC"
+expr = "0x06"
+desc = '任务语境基线：SVC/同步异常/内核任务（note_switch 切入即设）语境的一切 wake_matching 唤醒。'
+[[wakesrc]]
+name = "UNKNOWN"
+expr = "0x7F"
+desc = '未知 IRQ 号（GIC IAR 落未知臂）：只进 IRQ 级到达计数、永不进环；到达 on_wake = 写路径 bug → panic。'
 
 # G2 冻结面：基础类型宽度（生成两端 const assert——「CI 结构体布局断言」的
 # v1 标量层；真 ABI 结构体出现即在此入册同源）。

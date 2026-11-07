@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BerryOS ABI 单源生成器（`tools/abi.toml` → 四面产物）。
+"""BerryOS ABI 单源生成器（`tools/abi.toml` → 五面产物）。
 
 产物：
   1. kernel/src/abi_gen.rs              —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR（syscall.rs/handle.rs 转发）
@@ -7,6 +7,9 @@
   3. docs/系统调用ABI设计-v1.0.md    —— §4 编号表体 + §8.2 两段 C 定义列（marker 块替换）
   4. tools/abi.syz                      —— syzkaller syscall 描述骨架（SEC-01 §4.5 件 25；未过
                                           syz-sysgen 编译验证——头注如实声明，详见 gen_syz）
+  5. arch/aarch64/src/wake_gen.rs   —— 唤醒源枚举常量 WAKE_SRC_*（刀 1：trap 臂源映射/
+                                          cell 初值/内核 telemetry per-source 记账同源；用户侧
+                                          berry-power 刀落地时从同 [[wakesrc]] 再生用户面常量）
 
 用法：
   python3 tools/gen_abi.py           # 生成（写盘；文档块外的内容一字不动）
@@ -43,6 +46,7 @@ ROOT = Path(__file__).resolve().parent.parent
 IDL = ROOT / "tools" / "abi.toml"
 KERNEL_RS = ROOT / "kernel" / "src" / "abi_gen.rs"
 USER_RS = ROOT / "user" / "berry-sys" / "src" / "abi_gen.rs"
+ARCH_RS = ROOT / "arch" / "aarch64" / "src" / "wake_gen.rs"
 DOC = ROOT / "docs" / "系统调用ABI设计-v1.0.md"
 SYZ = ROOT / "tools" / "abi.syz"
 
@@ -101,7 +105,7 @@ def load() -> dict:
     for key in ("meta", "types"):
         if key not in d:
             raise Fail(f"abi.toml: 缺 [{key}] 段")
-    for key in ("clock", "option", "right", "signal", "errno", "group"):
+    for key in ("clock", "option", "right", "signal", "errno", "group", "wakesrc"):
         if key not in d:
             raise Fail(f"abi.toml: 缺 [[{key}]] 段")
         if not d[key]:
@@ -117,7 +121,19 @@ def load() -> dict:
         raise Fail(f"abi.toml: meta.nr_total={meta['nr_total']} != v1 行数 {len(v1)}")
     if len(impl) != meta["implemented"]:
         raise Fail(f"abi.toml: meta.implemented={meta['implemented']} != 实际 {len(impl)}")
-    for sec in ("clock", "option", "right", "signal", "errno"):
+    # 预算四元组（刀 1 前置 #8，PM-17 终审 §4 裁 B 机制）：nr_ceiling 在册 +
+    # nr_defined ≤ 帽执法；口径唯一收口进两端 abi_gen 头注——消灭 35/39/38
+    # 三口径打架的文档面（「稳定性靠执法工具不靠文档承诺」，ADR #55）。
+    for key in ("nr_total", "implemented", "nr_ceiling"):
+        if key not in meta:
+            raise Fail(f"abi.toml: [meta] 缺 {key}（四元组执法面）")
+    _, nr_defined, nr_registered, _ = four_tuple(d)
+    if nr_defined > meta["nr_ceiling"]:
+        raise Fail(f"abi.toml: nr_defined={nr_defined} > nr_ceiling={meta['nr_ceiling']}"
+                   "（ADR #11 号面帽——回收/合并后再加号）")
+    if nr_registered > nr_defined:
+        raise Fail(f"abi.toml: nr_registered={nr_registered} > nr_defined={nr_defined}（口径反常）")
+    for sec in ("clock", "option", "right", "signal", "errno", "wakesrc"):
         names = [e["name"] for e in d[sec]]
         if len(set(names)) != len(names):
             raise Fail(f"abi.toml: [[{sec}]] name 重复")
@@ -131,6 +147,17 @@ def load() -> dict:
             vals = [eval_expr(e["expr"]) for e in d[sec]]
             if len(set(vals)) != len(vals):
                 raise Fail(f"abi.toml: [[{sec}]] expr 值重复")
+    # [[wakesrc]] 值域纪律：u8 且 ≤ 0x7F；NONE=0x00 / UNKNOWN=0x7F 两语义锚
+    # 必在册（cell 哨兵与未知臂映射的编译期前提——缺任一 = 消费面悬空）。
+    wv = {w["name"]: eval_expr(w["expr"]) for w in d["wakesrc"]}
+    for name, val in wv.items():
+        if not 0 <= val <= 0x7F:
+            raise Fail(f"abi.toml: wakesrc {name}={val} 出值域（u8 且 ≤ 0x7F——"
+                       "0x7F 即 UNKNOWN 锚，预留段 0x07–0x7E 追加用）")
+    for anchor, want in (("NONE", 0x00), ("UNKNOWN", 0x7F)):
+        if wv.get(anchor) != want:
+            raise Fail(f"abi.toml: wakesrc 语义锚 {anchor}=0x{want:02X} 缺失或变值"
+                       "（add-only 纪律——哨兵/未知锚不得改值）")
     return d
 
 
@@ -146,6 +173,17 @@ def all_rows(d: dict) -> list:
 def const_rows(d: dict) -> list:
     """常量层镜像 v1 + 1.1（v2/v3 未到号，不提前发常量）。"""
     return [s for g in d["group"] for s in g["syscall"] if s["stage"] in ("v1", "1.1")]
+
+
+def four_tuple(d: dict) -> tuple:
+    """预算四元组（刀 1 前置 #8，PM-17 终审 §4）：(nr_total, nr_defined,
+    nr_registered, nr_ceiling)。nr_total = v1 在册行数；nr_defined = v1+1.1
+    常量层在册（abi_gen `pub const NR_` 计数面）；nr_registered = 其中
+    implemented 行数（= 已挂派发号数——在册未实现号恒 -ENOTSUP 回落不挂
+    reg）；nr_ceiling = ADR #11 号面帽。load() 执法 nr_defined ≤ 帽。"""
+    defined = const_rows(d)
+    registered = [s for s in defined if s.get("implemented", True)]
+    return (d["meta"]["nr_total"], len(defined), len(registered), d["meta"]["nr_ceiling"])
 
 
 # ---------------------------------------------------------------- Rust 生成
@@ -180,6 +218,10 @@ def gen_kernel_rs(d: dict) -> str:
     L = list(GEN_HEADER)
     L.append("//! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径")
     L.append("//! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。")
+    nt, nd, nr, nc = four_tuple(d)
+    L.append(f"//! 预算四元组（生成器执法，ADR #11 帽）：nr_total={nt}（v1 在册）/")
+    L.append(f"//! nr_defined={nd}（v1+1.1 常量层）/ nr_registered={nr}（已挂派发）/")
+    L.append(f"//! nr_ceiling={nc}（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。")
     L.append("")
     L.append("use crate::handle::Rights;")
     L.append("")
@@ -233,9 +275,12 @@ def gen_kernel_rs(d: dict) -> str:
 
 def gen_user_rs(d: dict) -> str:
     rows = const_rows(d)
+    nt, nd, nr, nc = four_tuple(d)
     L = list(GEN_HEADER)
     L.append("//! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见")
     L.append("//! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。")
+    L.append(f"//! 预算四元组（生成器执法，ADR #11 帽）：nr_total={nt} / nr_defined={nd} /")
+    L.append(f"//! nr_registered={nr} / nr_ceiling={nc}（口径与内核侧头注同源同值）。")
     L.append("")
     L.append("use crate::{Handle, Rights, Status, Time};")
     L.append("")
@@ -288,6 +333,31 @@ def gen_user_rs(d: dict) -> str:
     t = d["types"]
     for cn, key in (("Handle", "handle"), ("Rights", "rights"), ("Status", "status"), ("Time", "time")):
         L.append(f"const _: () = assert!(core::mem::size_of::<{cn}>() == {t[key]});")
+    L.append("")
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------- 唤醒源生成（第五产物）
+
+def gen_arch_rs(d: dict) -> str:
+    """arch/aarch64/src/wake_gen.rs —— [[wakesrc]] → WAKE_SRC_* u8 常量。
+
+    消费面：`wake.rs` per-CPU cell 初值（KERNEL_BOOT/NONE）、`trap.rs` IRQ 臂
+    IAR→源映射、内核 telemetry per-source 记账（kernel 经
+    `berry_hal_aarch64::wake_gen` 同名直引——arch 与 kernel 同值同源，
+    漂移被 --check 逐字节拦）。用户侧常量随 berry-power 刀（0x84
+    telemetry_open 快照面）从同 toml 段再生——本刀只冻形状不实现。"""
+    L = list(GEN_HEADER)
+    L.append("//! 唤醒源枚举（`tools/abi.toml` [[wakesrc]]；add-only——新源只追加，")
+    L.append("//! 不改值/不改义/不复用退役值，值域 u8 ≤ 0x7F，预留段 0x07–0x7E）。")
+    L.append("//! 消费：`wake.rs`（per-CPU cell 初值）+ `trap.rs`（IRQ 臂 IAR→源")
+    L.append("//! 映射）；内核 telemetry per-source 记账同名常量直引。语义协议详注 →")
+    L.append("//! research/pm-notes/刀1-前置两问-裁决.md §5（PM-17 终审问①裁 A1）。")
+    L.append("")
+    L.append("// ---- 唤醒源（哨兵/锚 = NONE 0x00 与 UNKNOWN 0x7F，add-only）----")
+    for w in d["wakesrc"]:
+        push_doc(L, w.get("desc", ""))
+        L.append(f"pub const WAKE_SRC_{w['name']}: u8 = {w['expr']};")
     L.append("")
     return "\n".join(L)
 
@@ -494,7 +564,8 @@ def build_all(d: dict) -> tuple:
         doc_text = DOC.read_text("utf-8")
     except OSError as e:
         raise Fail(f"读 ABI 文档失败：{DOC}（{e}）")
-    return (gen_kernel_rs(d), gen_user_rs(d), patch_doc(doc_text, d), gen_syz(d))
+    return (gen_kernel_rs(d), gen_user_rs(d), patch_doc(doc_text, d), gen_syz(d),
+            gen_arch_rs(d))
 
 
 def main() -> int:
@@ -504,9 +575,9 @@ def main() -> int:
     args = ap.parse_args()
     try:
         d = load()
-        k, u, doc, syz = build_all(d)
+        k, u, doc, syz, arch = build_all(d)
         if args.check:
-            targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz)]
+            targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz), (ARCH_RS, arch)]
             bad = []
             for path, want in targets:
                 got = path.read_text("utf-8") if path.exists() else None
@@ -518,14 +589,17 @@ def main() -> int:
                           f"（改了 abi.toml 跑 `just abi-gen`；手改了产物请改回）")
                 return 1
             n = len(v1_rows(d))
-            print(f"abi-check: PASS（NR v1 {n} 号在册——内核 ↔ berry-sys ↔ 文档 ↔ syz 四面单源一致）")
+            print(f"abi-check: PASS（NR v1 {n} 号在册——内核 ↔ berry-sys ↔ 文档 ↔ syz ↔"
+                  " arch-wake 五面单源一致）")
             return 0
         KERNEL_RS.write_text(k, "utf-8")
         USER_RS.write_text(u, "utf-8")
         DOC.write_text(doc, "utf-8")
         SYZ.write_text(syz, "utf-8")
+        ARCH_RS.write_text(arch, "utf-8")
         print(f"abi-gen: 写 {KERNEL_RS.relative_to(ROOT)} / {USER_RS.relative_to(ROOT)}"
-              f" / 文档三 marker 块 / {SYZ.relative_to(ROOT)}——提交时产物 diff 一并入册")
+              f" / 文档三 marker 块 / {SYZ.relative_to(ROOT)} /"
+              f" {ARCH_RS.relative_to(ROOT)}——提交时产物 diff 一并入册")
         return 0
     except Fail as e:
         print(f"abi-gen: FAIL——{e}", file=sys.stderr)
