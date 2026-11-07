@@ -658,6 +658,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     #[cfg(feature = "lockdep")]
     berry_hal_aarch64::lockdep::selftest();
 
+    // v1.3 §7 EAS：EM 表形状注册——QEMU virt 手动默认表（真机 DT/OPP 解析
+    // 后由 boot 换注重注册；算法面留 M2/真机）。ktest 后调 = ktest 自管
+    // 注册面不被预填污染（EM-0 未注册态断言）；boot DAIF 屏蔽窗内单写者
+    //（EM_TABLE static mut 契约同 BANDS）。
+    assert!(berry_sched::em_register_qemu_virt(), "EM：QEMU virt 默认表注册");
+
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     berry_sched::init();
     // 3-4c 遥测环：注册切换钩子（init 后、首个切换前——rust_main 尾部的
