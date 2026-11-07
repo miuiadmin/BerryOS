@@ -696,7 +696,8 @@ def _cpio_entries(blob: bytes) -> list[tuple[bytes, bytes]]:
     """cpio(newc) 走查器（--check 专用；mkcpio 只产不收、svcmgr 侧在
     guest 内——宿主侧无第二实现可借，本函数对读 mkcpio.entry 的编码
     几何：magic 070701 + 13 × hex8，filesize = 域[6]、namesize = 域[11]，
-    名起 off+110 不含 NUL，头+名垫 4、数据垫 4，TRAILER!!! 终止）。
+    名起 off+110 不含 NUL，头+名垫页、数据垫页（X-3c：垫 4096，与
+    berry-loader cpio_walk/cpio_step 同口径四点一动），TRAILER!!! 终止）。
     越界/坏魔数 = Reject（敌意包 loud，不静默截断）。"""
     out: list[tuple[bytes, bytes]] = []
     off = 0
@@ -719,13 +720,13 @@ def _cpio_entries(blob: bytes) -> list[tuple[bytes, bytes]]:
         if name_off + namesize > len(blob):
             raise Reject(f"bap: cpio 名越界 @ {off}")
         name = blob[name_off : name_off + namesize - 1]  # 剥尾 NUL
-        data_off = (name_off + namesize + 3) & ~3  # 头+名垫 4
+        data_off = (name_off + namesize + 4095) & ~4095  # 头+名垫页（X-3c）
         if data_off + filesize > len(blob):
             raise Reject(f"bap: cpio 数据越界 @ {off}")
         if name == b"TRAILER!!!":
             break
         out.append((name, blob[data_off : data_off + filesize]))
-        off = (data_off + filesize + 3) & ~3  # 数据垫 4
+        off = (data_off + filesize + 4095) & ~4095  # 数据垫页（X-3c）
     return out
 
 

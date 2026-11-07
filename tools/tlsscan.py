@@ -37,6 +37,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mkapp import Reject, _cpio_entries  # noqa: E402（解码单源：X-3c 4096 垫几何）
 from mkcpio import build_archive  # noqa: E402（单编码器纪律：合成档复用，不长第二套 newc 编码）
 
 # ---- python 侧镜像（对账锚点：user/berry-tls/src/lib.rs）----
@@ -46,9 +47,6 @@ TLS_ARENA_CAP = 4096
 PT_LOAD = 1
 PT_TLS = 7
 PF_X = 1
-
-CPIO_MAGIC = (b"070701", b"070702")
-CPIO_TRAILER = b"TRAILER!!!"
 
 
 def tls_place(base: int, cap: int, filesz: int, memsz: int, align: int):
@@ -63,34 +61,18 @@ def tls_place(base: int, cap: int, filesz: int, memsz: int, align: int):
     return data
 
 
-# ---- cpio newc 解码（消费端对照 = user/berry-loader cpio_walk；编码面
-#      单源在 mkcpio.build_archive，本工具只解码不长第二套）----
+# ---- cpio newc 解码（单源 = mkapp._cpio_entries，宿主侧唯一解码器；
+#      X-3c 起头+名/数据垫 4096。本地旧 4 垫步进 = 几何第二套，rootfs
+#      垫页化后即撞（build-user 实证），已删）----
 
 
 def parse_cpio(blob: bytes):
-    """newc 归档 → [(name bytes, data bytes)]；walk 到 TRAILER!!! 即停。"""
-    out = []
-    off = 0
-    while off + 110 <= len(blob):
-        if blob[off:off + 6] not in CPIO_MAGIC:
-            raise ValueError(f"cpio: 坏 magic @{off:#x}")
-        fields = [
-            int(blob[off + 6 + i * 8: off + 14 + i * 8], 16) for i in range(13)
-        ]
-        # ino mode uid gid nlink mtime filesize devmaj devmin
-        # rdevmaj rdevmin namesize check
-        (filesize, namesize) = (fields[6], fields[11])
-        name_off = off + 110
-        data_off = (name_off + namesize + 3) & ~3
-        name = blob[name_off:name_off + namesize - 1]  # 去 NUL
-        data = blob[data_off:data_off + filesize]
-        if len(data) != filesize:
-            raise ValueError(f"cpio: 条目 {name!r} 截断")
-        if name == CPIO_TRAILER:
-            return out
-        out.append((name, data))
-        off = (data_off + filesize + 3) & ~3
-    raise ValueError("cpio: 无 TRAILER!!!（截断或非 cpio）")
+    """newc 归档 → [(name bytes, data bytes)]；walk 到 TRAILER!!! 即停。
+    Reject → ValueError 翻译：iter_rootfs 的 .bap 内层面捕 ValueError。"""
+    try:
+        return _cpio_entries(blob)
+    except Reject as e:
+        raise ValueError(f"cpio: {e}") from e
 
 
 # ---- ELF 面 ----

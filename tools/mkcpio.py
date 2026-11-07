@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """mkcpio——cpio newc 打包器（G-eco-c rootfs 产出端，配对消费端
-`user/berry-loader` 的 cpio_walk；格式对读 GNU cpio(1) `newc`）。
+`user/berry-loader` 的 cpio_walk；头/字段面对读 GNU cpio(1) `newc`——
+垫料面 X-3c 起垫 4096（见 `entry()`，GNU cpio 的 4 垫步进不再兼容；
+宿主侧对读 = mkapp `_cpio_entries` 单源）。
 
 用法：mkcpio.py <out.cpio> name=path [name=path ...] [--split <MiB>]
   - name 归档内路径（如 bin/hello），path 本地文件（ELF 本体，非平像）；
@@ -9,7 +11,7 @@
     纯编码器**不排序**——排序归调用方，勿混）；
   - 字段全定值（mtime=0/uid=gid=0/mode 0755/nlink 1/ino 递增）：归档字节
     只随内容变，不随打包时刻变；
-  - TRAILER!!! 自终止 + 尾垫 4（消费端 walk 到 trailer 即停）；
+  - TRAILER!!! 自终止 + 尾垫页（消费端 walk 到 trailer 即停）；
   - `--split <MiB>`：单卷帽分卷产链（容量工程前置-A1 §3.3）——归档照常
     单档落盘（既有消费面零扰动），另出 `<stem>0.cpio/<stem>1.cpio/…`
     编号卷（每卷 ≤MiB、末卷可小；**只切字节流不做条目对齐**，TRAILER!!!
@@ -19,6 +21,13 @@
 """
 import os
 import sys
+
+# 垫料粒度（X-3c）：头+名与数据都垫到 4096——条目长恒页倍数 → 每条
+# data_off 页对齐，0x23 pager_supply_mapped 的 delta 页对齐门（delta %
+# PAGE != 0 → EINVAL）在产链侧直接兑现，berry-exec congruent 检查无需
+# 自垫。消费端同口径四点：berry-loader cpio_walk/cpio_step + mkapp
+# _cpio_entries + 本文件（单编码器纪律的伴生义务——改此值四点同步）。
+CPIO_PAD = 4096
 
 
 def hex8(v: int) -> bytes:
@@ -34,15 +43,16 @@ def entry(name: bytes, data: bytes, ino: int) -> bytes:
         for v in (ino, 0o100755, 0, 0, 1, 0, len(data), 0, 0, 0, 0, namesize, 0)
     )
     out += name + b"\0"
-    out += b"\0" * (-len(out) % 4)  # 头+名垫到 4
+    out += b"\0" * (-len(out) % CPIO_PAD)  # 头+名垫到页（entry 内相对）
     out += data
-    out += b"\0" * (-len(data) % 4)  # 数据垫到 4
+    out += b"\0" * (-len(data) % CPIO_PAD)  # 数据垫到页（data_off 起点页对齐）
     return out
 
 
 def build_archive(items: list[tuple[bytes, bytes]]) -> bytes:
     """纯编码器（app-0 §4 单编码器纪律）：不排序、按传入序编码、ino =
-    传入序号 + 1——**排序归调用方**。TRAILER + 尾垫 4 在内。
+    传入序号 + 1——**排序归调用方**。TRAILER + 尾垫页在内。条目自垫
+    恒页倍数（见 `entry()`）→ 拼接后每条起点页对齐，data_off 亦然。
 
     mkapp（.bap 打包）`from mkcpio import build_archive` 复用——禁止任何
     第二份 newc 编码/trailer 逻辑（双编码器 = 漂移面）。CLI main() 的
@@ -52,7 +62,7 @@ def build_archive(items: list[tuple[bytes, bytes]]) -> bytes:
     for i, (name, data) in enumerate(items):
         blob += entry(name, data, i + 1)
     blob += entry(b"TRAILER!!!", b"", 0)
-    blob += b"\0" * (-len(blob) % 4)
+    blob += b"\0" * (-len(blob) % CPIO_PAD)
     return bytes(blob)
 
 
@@ -118,6 +128,19 @@ def selftest_split() -> int:
     ]
     blob = build_archive(items)
     assert len(blob) > 128, "selftest: 合成归档体量不足以覆盖多边界形态"
+    # ⑦ X-3c 垫页几何钉：预测边界步进全档走查——每条头魔数落在预测起点、
+    #    data_off 恒页对齐、数据逐字节在位、步进终点 == 归档总长（产链侧
+    #    兑现 0x23 delta % PAGE == 0 门；走查算术与消费端 cpio_step/
+    #    _cpio_entries 同口径，改 CPIO_PAD 此锚必炸）。
+    off = 0
+    for nm, dt in [*items, (b"TRAILER!!!", b"")]:
+        assert blob[off : off + 6] == b"070701", f"selftest: 头边界漂 @ {off}"
+        data_off = (off + 110 + len(nm) + 1 + CPIO_PAD - 1) & ~(CPIO_PAD - 1)
+        assert data_off % CPIO_PAD == 0, f"selftest: data_off 非页对齐 @ {off}"
+        if dt:
+            assert blob[data_off : data_off + len(dt)] == dt, f"selftest: 数据漂 @ {data_off}"
+        off = (data_off + len(dt) + CPIO_PAD - 1) & ~(CPIO_PAD - 1)
+    assert off == len(blob), f"selftest: 步进终点 {off} != 归档总长 {len(blob)}"
     # ① 重装恒等 + 卷帽 + 无空尾卷：任意卷宽（含 1B/全长-1/恰全长/超全长）。
     for vol in (1, 7, 64, len(blob) - 1, len(blob), len(blob) + 100):
         vols = split_volumes(blob, vol)
