@@ -63,7 +63,7 @@ use berry_guiproto as gp;
 use berry_appproto as appp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
 // X-3c-3：pager 寄存表三宽原子（bool/usize/i64——槽 handshake 见 [`PagerReq`]）。
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -167,6 +167,12 @@ const PAGER_REQ_INIT: PagerReq = PagerReq {
 /// = reg false → berry-exec 逐窗回退 eager，不阻塞不等待）。
 static PAGER_REQS: [PagerReq; PAGER_SLOTS] = [PAGER_REQ_INIT; PAGER_SLOTS];
 
+/// pager_main 扫供圈数（X-5 停摆分拣仪）：踢门时前后各快照一次。定谳
+/// （repro4，2026-11-08）：**冻结** = pager 用户态楔死（S2——本轮实测未现）；
+/// **爬升** = pager 活着——停摆根因 = 0x23 全局取臂与 walk 问窗错位的
+/// 失配消耗舞（kick rc=-22 三发全一），非楔死。Relaxed 纯取证计数，无同步语义。
+static PAGER_SWEEPS: AtomicU64 = AtomicU64::new(0);
+
 /// berry-exec 注册钩子（X-5 逐窗）：找空槽 Relaxed 填三值 → `active`
 /// Release 发布；返 false = 槽满（调用方回滚已注窗走 eager）。
 fn pager_register(dv: Handle, sv: Handle, delta: i64) -> bool {
@@ -214,6 +220,7 @@ fn pager_unregister(dv: Handle) {
 #[no_mangle]
 pub extern "C" fn pager_main() -> ! {
     loop {
+        PAGER_SWEEPS.fetch_add(1, Ordering::Relaxed);
         // 让位闸（X-3c-3）：dpg 自供族在跑 = 本 pager 静默（零供给调用，
         // 不入键竞速）；空转小睡同空闲臂。
         if PAGER_HOLD.load(Ordering::Acquire) {
@@ -4738,21 +4745,42 @@ fn stall_kick(console: Handle, tag: &[u8], ch: Handle) -> bool {
         }
         n += 1;
     }
+    // 分拣仪三件套：0x23 返码（0=供上 / 负 errno=EBADF 陈旧句柄·EINVAL 错配
+    // 消耗）+ 扫供圈数前后快照（冻结=S2 pager 楔死；爬升=S1/S3 活着没供上）。
+    let mut rc = 0i64;
+    let sw0 = PAGER_SWEEPS.load(Ordering::Relaxed);
     if n > 0 {
-        let _ = berry_pager_supply_mapped(first.0, first.1, first.2);
+        rc = berry_pager_supply_mapped(first.0, first.1, first.2) as i64;
     }
+    // 2s 圈数采样窗（兼当早收哨）：pager 若活着，活跃让步 1ms/圈必爬升。
     let mut obs = 0u64;
+    let _ = berry_object_wait_one(ch, SIGNAL_READABLE, now() + 2_000_000_000, &mut obs);
+    let sw1 = PAGER_SWEEPS.load(Ordering::Relaxed);
     let ok = berry_object_wait_one(ch, SIGNAL_READABLE, now() + 5_000_000_000, &mut obs) == 0;
     let head: &[u8] = if ok {
-        b": kick ok win="
+        b": kick ok rc="
     } else {
-        b": kick dead win="
-    };    let mut line = [0u8; 40];
+        b": kick dead rc="
+    };
+    let mut line = [0u8; 72];
     let mut len = 0usize;
     line[..tag.len()].copy_from_slice(tag);
     len += tag.len();
     line[len..len + head.len()].copy_from_slice(head);
     len += head.len();
+    if rc < 0 {
+        line[len] = b'-';
+        len += 1;
+    }
+    len = push_dec(&mut line, len, rc.unsigned_abs());
+    line[len..len + 4].copy_from_slice(b" sw=");
+    len += 4;
+    len = push_dec(&mut line, len, sw0);
+    line[len] = b'/';
+    len += 1;
+    len = push_dec(&mut line, len, sw1);
+    line[len..len + 5].copy_from_slice(b" win=");
+    len += 5;
     line[len] = b'0' + (n / 10) as u8;
     line[len + 1] = b'0' + (n % 10) as u8;
     len += 2;
@@ -4760,6 +4788,24 @@ fn stall_kick(console: Handle, tag: &[u8], ch: Handle) -> bool {
     len += 1;
     send_retry(console, line.as_ptr(), len);
     ok
+}
+
+/// 十进制无符号追加写（stall_kick 分拣仪行组装用；返回新长度）。
+fn push_dec(line: &mut [u8], len: usize, mut v: u64) -> usize {
+    let mut tmp = [0u8; 20];
+    let mut t = 0usize;
+    loop {
+        tmp[t] = b'0' + (v % 10) as u8;
+        t += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    for i in 0..t {
+        line[len + i] = tmp[t - 1 - i];
+    }
+    len + t
 }
 
 fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<(i32, usize)> {
