@@ -4473,8 +4473,9 @@ fn app_launch(
         return (false, UiFace::Absent, None);
     }
     // PS 账本门（见 AppSpawnTail.ledger）：只登记 console=true 的可观测
-    // app；静默占位 app 不占 PS_MAX/ps 渲染窗。
-    let ledger = man.console;
+    // app。wm app 的 boot-probe 是同步验收件（必退出），不占 PS_MAX；
+    // runtime APP_SPAWN 形仍是可观测常驻/用户可见进程，入账。
+    let ledger = man.console && !(man.wm && !runtime);
     // SDK-1a §5.2 步骤 1：compat min 装载期检查（ADR #55 工具链三值域的
     // 运行时执法点）。min > SDK_CURRENT = 本系统比包声称的最低线还老 →
     // loud 降级行拒拉（fsmgr diag("geom") 同式）；target/compile 是打包

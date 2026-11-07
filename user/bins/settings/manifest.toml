@@ -1,0 +1,18 @@
+[app]
+id = "SETTINGS"
+version = "0.1.0"
+entry = "bin/settings"
+type = "app"
+intent = "utility"
+
+[capabilities]
+console = true
+wm = true
+
+[runtime]
+stack_pages = 16
+
+[ui]
+icon = "icons/icon.byi"
+label = "Settings"
+views = "views/main.bui"

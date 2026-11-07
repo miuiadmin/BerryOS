@@ -34,11 +34,12 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
   - 精确计数：`LAYOUT ok n=2` == 1、`LAYOUTW ok` == 0、
     `CLICK ok n=` == 0（写路径一次性状态门）；
   - 宿主侧 sha256 前后相等 = 数据盘零重写；LAYOUT.JSN 仍为 canonical。
-- `--normal-boot`（常态隔离，可选）：同一镜像/tablet/数据盘拓扑但
-  **不造 `GUI8.SMK`**；boot 一次，点击 APPDEMO，断言 spawn 仍发生
-  （新增 `app APPDEMO up` == 1）、而 `CLICK`/`LAYOUTW`/`LAYOUT` 以及
-  `launcher: click ready` 零打印——证明标记只在哨兵支路出现，常态点击
-  行为不变且不新增任何标记。
+- `--normal-boot`（常态隔离 + Native Shell，可选）：同一镜像/tablet/
+  数据盘拓扑但 **不造 `GUI8.SMK`**，display 1080×1920。BROWSER 首格 +
+  SETTINGS dock 真实 APP_SPAWN：Browser 完成窗口/帧/返回销毁；Settings
+  完成 WLAN/Bluetooth 两态切换重绘、截图像素检查与返回销毁。
+  `CLICK`/`LAYOUTW`/`LAYOUT`/`launcher: click ready` 仍零打印——证明
+  GUI8 冒烟标记只在哨兵支路出现。
 
 plumbing 自检（零 QEMU；含错 payload / 无哨兵 / 错 canonical / 重复计数
 / 顺序倒置负样本）：
@@ -95,6 +96,7 @@ MARK_WM_CONN1 = "WMCONN ok id=1"
 MARK_WM_CONN2 = "WMCONN ok id=2"
 MARK_WM_CONN3 = "WMCONN ok id=3"
 MARK_WM_CONN4 = "WMCONN ok id=4"
+MARK_WM_CONN5 = "WMCONN ok id=5"
 MARK_WM_ROUTE_WINDOW_UP = "WMRTWIN ok id="
 MARK_WM_DENIED = "WMDENY ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
@@ -111,6 +113,16 @@ MARK_BROWSER_BACK = "BROWSERBACK ok"
 MARK_BROWSER_PROBE = "BROWSERPROBE ok"
 MARK_BROWSER_DESTROY = "BROWSERDESTROY ok"
 MARK_BROWSER_EXIT = "BROWSEREXIT ok"
+MARK_SETTINGS_UP = "SETTINGS up"
+MARK_SETTINGS_WIN = "SETTINGSWIN ok"
+MARK_SETTINGS_FRAME = "SETTINGSFRAME ok"
+MARK_SETTINGS_GEOM = "SETTINGSGEOM ok"
+MARK_SETTINGS_TOGGLE1 = "SETTINGSTOGGLE ok n=1"
+MARK_SETTINGS_TOGGLE2 = "SETTINGSTOGGLE ok n=2"
+MARK_SETTINGS_BACK = "SETTINGSBACK ok"
+MARK_SETTINGS_PROBE = "SETTINGSPROBE ok"
+MARK_SETTINGS_DESTROY = "SETTINGSDESTROY ok"
+MARK_SETTINGS_EXIT = "SETTINGSEXIT ok"
 MARK_WM_INPUT_DROP = "WMIDROP bad"
 MARK_INPUT_ROUTE_BAD = "INPUTROUTE bad"
 MARK_CJK_PROBE = "CJKPROBE ok n=2"
@@ -404,6 +416,10 @@ class QmpClient:
                 desc = err.get("desc", json.dumps(err))
                 raise QmpError(f"QMP {cmd} 被拒：{desc}")
             return msg.get("return")
+
+    def screendump(self, path: Path):
+        """QEMU PPM 截图（native shell 像素反 mock 面）。"""
+        return self.execute("screendump", {"filename": str(path)})
 
     def input_send(self, events):
         # 省 device 键 = 广播到 unbound handler 链（QEMU ui/input.c:
@@ -996,14 +1012,15 @@ def verify_normal_boot(
     text: str,
     snapshot_pos: int,
     browser_before: int,
+    settings_before: int,
     demo_before: int,
     log_path: Path | None = None,
 ) -> None:
-    """常态隔离 + Browser Native Shell 验收。
+    """常态隔离 + Browser/Settings Native Shell 验收。
 
-    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；真实
-    APP_SPAWN 从 APPDEMO 换成 BROWSER（首格布局），必须完成第二个
-    Browser 窗口/帧，返回键经 wmd owner 路由后 DESTROY/EXIT。
+    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；Browser 与
+    Settings 都必须完成第二个真实进程生命周期。Settings 另要求两个设置项
+    状态切换（每次真实重绘 + 新帧）与 owner-local 返回销毁。
     """
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
@@ -1011,25 +1028,79 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_CLICK_READY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_SWIPE, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_APP_QUIET_UP, 0, "normal boot", log_path)
+
     _require_exact_count(text, MARK_BROWSER_UP, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_WIN, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_FRAME, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_BACK, 1, "normal Browser back", log_path)
     _require_exact_count(text, MARK_BROWSER_DESTROY, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_EXIT, browser_before + 1, "normal Browser", log_path)
-    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal Browser", log_path)
-    # 常态布局把 APPDEMO 放 page1，Browser 点击不得误 spawn APPDEMO。
+
+    _require_exact_count(text, MARK_SETTINGS_UP, settings_before + 1, "normal Settings", log_path)
+    _require_exact_count(text, MARK_SETTINGS_WIN, settings_before + 1, "normal Settings", log_path)
+    # runtime 初帧 + WLAN 重绘 + Bluetooth 重绘。
+    _require_exact_count(text, MARK_SETTINGS_FRAME, settings_before + 3, "normal Settings", log_path)
+    _require_exact_count(text, MARK_SETTINGS_GEOM, settings_before + 1, "normal Settings", log_path)
+    _require_exact_count(text, MARK_SETTINGS_TOGGLE1, 1, "normal Settings toggle", log_path)
+    _require_exact_count(text, MARK_SETTINGS_TOGGLE2, 1, "normal Settings toggle", log_path)
+    _require_exact_count(text, MARK_SETTINGS_BACK, 1, "normal Settings back", log_path)
+    _require_exact_count(text, MARK_SETTINGS_DESTROY, settings_before + 1, "normal Settings", log_path)
+    _require_exact_count(text, MARK_SETTINGS_EXIT, settings_before + 1, "normal Settings", log_path)
+    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal Native Shell", log_path)
+    _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "normal Native Shell", log_path)
+
+    # 常态布局把 APPDEMO 放 page1；Browser/Settings 点击不得误 spawn。
     if text.count(MARK_APP_DEMO_UP) != demo_before:
         raise SmokeError(
-            "normal Browser: APPDEMO 计数漂移（Browser 点击误命中/误 spawn）",
+            "normal Native Shell: APPDEMO 计数漂移（误命中/误 spawn）",
             log_path,
         )
     if text.find(MARK_BROWSER_BACK) < snapshot_pos:
         raise SmokeError("normal Browser: BACK 早于快照", log_path)
+    if text.find(MARK_SETTINGS_TOGGLE1) < snapshot_pos:
+        raise SmokeError("normal Settings: TOGGLE1 早于快照", log_path)
+    if text.find(MARK_SETTINGS_BACK) < snapshot_pos:
+        raise SmokeError("normal Settings: BACK 早于快照", log_path)
+
+def ppm_pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
+    """读 QEMU P6 PPM 指定像素（Native Shell 反 mock 像素锚）。"""
+    data = path.read_bytes()
+    fields: list[bytes] = []
+    pos = 0
+    while len(fields) < 4:
+        while pos < len(data) and data[pos : pos + 1].isspace():
+            pos += 1
+        if pos < len(data) and data[pos] == ord(b"#"):
+            pos = data.index(b"\n", pos) + 1
+            continue
+        end = pos
+        while end < len(data) and not data[end : end + 1].isspace():
+            end += 1
+        fields.append(data[pos:end])
+        pos = end
+    if fields[0] != b"P6":
+        raise SmokeError(f"非 P6 PPM：{path} magic={fields[0]!r}")
+    w, h, maxv = (int(v) for v in fields[1:4])
+    if maxv != 255 or x >= w or y >= h:
+        raise SmokeError(f"PPM 域非法/越界：{path} {w}x{h} max={maxv} ({x},{y})")
+    off = pos + 1 + y * w * 3 + x * 3
+    raw = data[off : off + 3]
+    if len(raw) != 3:
+        raise SmokeError(f"PPM 像素越界：{path} ({x},{y})")
+    return raw[0], raw[1], raw[2]
+
+
+def assert_pixel_close(
+    got: tuple[int, int, int], want: tuple[int, int, int], what: str,
+    log_path: Path | None = None,
+) -> None:
+    if any(abs(a - b) > 8 for a, b in zip(got, want)):
+        raise SmokeError(f"像素锚 {what}: {got} != {want}±8", log_path)
 
 
 def qemu_command(
-    args, disk: Path, vars_path: Path, sock_path: Path, serial_path: Path
+    args, disk: Path, vars_path: Path, sock_path: Path, serial_path: Path,
+    display: str = "800x600@60",
 ) -> list[str]:
     cmd = [
         args.qemu,
@@ -1076,7 +1147,7 @@ def qemu_command(
         "-device",
         "ramfb",
         "-fw_cfg",
-        "name=opt/berry/display,string=800x600@60",
+        f"name=opt/berry/display,string={display}",
         "-qmp",
         f"unix:{sock_path},server=on,wait=off",
     ]
@@ -1102,12 +1173,16 @@ def qemu_command(
 class Boot:
     """一次 QEMU boot 的 serial/QMP/生命周期封装。"""
 
-    def __init__(self, phase: str, args, run_dir: Path, disk: Path, suffix: str):
+    def __init__(
+        self, phase: str, args, run_dir: Path, disk: Path, suffix: str,
+        display: str = "800x600@60",
+    ):
         self.phase = phase
         self.args = args
         self.run_dir = run_dir
         self.disk = disk
         self.suffix = suffix
+        self.display = display
         self.vars_path = run_dir / f"vars-{suffix}.fd"
         self.sock_path = run_dir / f"qmp-{suffix}.sock"
         self.log_path = run_dir / f"boot-{suffix}.log"
@@ -1123,7 +1198,8 @@ class Boot:
         if self.sock_path.exists():
             self.sock_path.unlink()
         cmd = qemu_command(
-            self.args, self.disk, self.vars_path, self.sock_path, self.log_path
+            self.args, self.disk, self.vars_path, self.sock_path,
+            self.log_path, self.display,
         )
         self.cmd_path.write_text(shlex.join(cmd) + "\n", encoding="utf-8")
         # 串口走 -serial file；QEMU 自身诊断另落 .qemu.log（不污染 guest 流）。
@@ -1267,6 +1343,9 @@ def _boot_base_markers() -> list[str]:
         MARK_WM_DEAD1, MARK_WM_DEAD2, MARK_WM_CLEAN, MARK_WM_CONN3,
         MARK_WM_CONN4, MARK_BROWSER_UP, MARK_BROWSER_WIN, MARK_BROWSER_FRAME,
         MARK_BROWSER_PROBE, MARK_BROWSER_DESTROY, MARK_BROWSER_EXIT,
+        MARK_WM_CONN5, MARK_SETTINGS_UP, MARK_SETTINGS_WIN,
+        MARK_SETTINGS_FRAME, MARK_SETTINGS_GEOM, MARK_SETTINGS_PROBE,
+        MARK_SETTINGS_DESTROY, MARK_SETTINGS_EXIT,
         MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
     ]
 
@@ -1437,7 +1516,7 @@ def run_dual_boot(args) -> int:
                 f"(window {rw}x{rh})",
                 boot_a.log_path,
             )
-        owner_marker = f"WMROUTE ok sid=5 window={rw_id}"
+        owner_marker = f"WMROUTE ok sid=6 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
 
@@ -1590,11 +1669,12 @@ def run_normal_boot(args) -> int:
         create_data_disk(disk, with_smoke=False)
         # 常态桌面默认隐藏 APPDEMO/APPQUIET（官方系统 app 在席时）；
         # 注入 canonical 双 app 布局保持常态隔离点击面，不造 GUI8.SMK。
-        browser_layout = (
+        native_layout = (
             b'{"schema":1,"cells":[{"app":"BROWSER","page":0,"row":0,"col":0},'
+            b'{"app":"SETTINGS","page":0,"row":0,"col":1},'
             b'{"app":"APPDEMO","page":1,"row":0,"col":0}]}'
         )
-        Fat12Volume(disk).add_file(LAYOUT_NAME11, browser_layout)
+        Fat12Volume(disk).add_file(LAYOUT_NAME11, native_layout)
         log(
             f"新常态盘：{disk}（{disk.stat().st_size}B，"
             f"sha256={sha256_file(disk)[:16]}…，LBA0 印章，零 GUI8.SMK，"
@@ -1604,7 +1684,9 @@ def run_normal_boot(args) -> int:
     boot: Boot | None = None
     success = False
     try:
-        boot = Boot("normal", args, run_dir, disk, "normal")
+        boot = Boot(
+            "normal", args, run_dir, disk, "normal", display="1080x1920@60"
+        )
         boot.start()
         _wait_boot_batch(boot, args.boot_a_timeout)
         _warn_input_armed(boot)
@@ -1616,7 +1698,8 @@ def run_normal_boot(args) -> int:
         demo_before = boot.log.text.count(MARK_APP_DEMO_UP)
         quiet_before = boot.log.text.count(MARK_APP_QUIET_UP)
         browser_before = boot.log.text.count(MARK_BROWSER_UP)
-        if browser_before < 1:
+        settings_before = boot.log.text.count(MARK_SETTINGS_UP)
+        if browser_before < 1 or settings_before < 1:
             raise MissingMarkers(
                 "normal boot", "Browser boot-probe BROWSER up", 1, boot.log_path
             )
@@ -1628,12 +1711,21 @@ def run_normal_boot(args) -> int:
             )
 
         w, h, src = geometry_from_log(boot.log)
-        cx, cy = cell0_center(w, h)
-        log(f"normal-boot: display {w}x{h}（{src}）→ cell(0,0) 中心 ({cx},{cy})")
+        if (w, h) != (1080, 1920):
+            raise SmokeError(
+                f"normal Native Shell 须 product portrait 1080x1920，got {w}x{h}（{src}）",
+                boot.log_path,
+            )
+        log(
+            "normal-boot: display 1080x1920 product portrait；"
+            "BROWSER 首格 (156,282)，SETTINGS dock (626,1668)"
+        )
 
         boot.qmp_connect()
-        log("normal-boot: QMP 点击首格 BROWSER（真实 APP_SPAWN Native Shell）")
-        boot.qmp.click(cx, cy, w, h)
+
+        # —— Browser Native Shell：首格真实 APP_SPAWN → 窗口/帧 → back。 ——
+        log("normal-browser: QMP 点击 BROWSER 首格（真实 APP_SPAWN）")
+        boot.qmp.click(156, 282, w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -1650,10 +1742,9 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        # 等待真实帧进入 ramfb 后再抓返回键。Browser 顶栏左上即 back。
         time.sleep(1.0)
         log("normal-browser: QMP 点击 Browser 返回键（wmd owner-local 输入）")
-        boot.qmp.click(24, 24, w, h)
+        boot.qmp.click(80, 80, w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -1671,23 +1762,112 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
+        # —— Settings Native Shell：dock 点击 → 两项状态切换 → back。 ——
+        time.sleep(1.0)
+        log("normal-settings: QMP 点击 SmartDock SETTINGS（真实 APP_SPAWN）")
+        boot.qmp.click(626, 1668, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_SETTINGS_UP) > settings_before
+                and t.count(MARK_SETTINGS_FRAME) > settings_before,
+                f"runtime {MARK_SETTINGS_UP} + {MARK_SETTINGS_FRAME}",
+                args.click_timeout,
+                "normal Settings launch",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Settings launch",
+                f"新增 {MARK_SETTINGS_UP} + {MARK_SETTINGS_FRAME}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        log("normal-settings: QMP 点击 WLAN 行（owner-local 状态切换 + 重绘）")
+        boot.qmp.click(400, 274, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_SETTINGS_TOGGLE1) >= 1
+                and t.count(MARK_SETTINGS_FRAME) > settings_before + 1,
+                f"{MARK_SETTINGS_TOGGLE1} + 重绘帧",
+                args.click_timeout,
+                "normal Settings WLAN",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Settings WLAN",
+                f"{MARK_SETTINGS_TOGGLE1} + 重绘帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        log("normal-settings: QMP 点击 Bluetooth 行（第二状态 + 重绘）")
+        boot.qmp.click(400, 454, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_SETTINGS_TOGGLE2) >= 1
+                and t.count(MARK_SETTINGS_FRAME) > settings_before + 2,
+                f"{MARK_SETTINGS_TOGGLE2} + 第二重绘帧",
+                args.click_timeout,
+                "normal Settings Bluetooth",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Settings Bluetooth",
+                f"{MARK_SETTINGS_TOGGLE2} + 第二重绘帧",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        # 像素反 mock：两个开关都必须真实变绿，顶栏/行底同步对锚。
+        shot = run_dir / "settings-native.ppm"
+        boot.qmp.screendump(shot)
+        assert_pixel_close(ppm_pixel(shot, 540, 60), (13, 110, 143), "Settings 顶栏", boot.log_path)
+        assert_pixel_close(ppm_pixel(shot, 540, 285), (255, 255, 255), "WLAN 行底", boot.log_path)
+        assert_pixel_close(ppm_pixel(shot, 900, 270), (0, 139, 111), "WLAN 开关", boot.log_path)
+        assert_pixel_close(ppm_pixel(shot, 900, 450), (0, 139, 111), "Bluetooth 开关", boot.log_path)
+        log("normal-settings: QEMU 截图像素锚 ok（双开关绿色、顶栏/行底在席）")
+
+        log("normal-settings: QMP 点击 Settings 返回键（销毁窗口）")
+        boot.qmp.click(80, 80, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_SETTINGS_BACK) >= 1
+                and t.count(MARK_SETTINGS_EXIT) > settings_before,
+                f"{MARK_SETTINGS_BACK} + 新 {MARK_SETTINGS_EXIT}",
+                args.click_timeout,
+                "normal Settings back",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Settings back",
+                f"{MARK_SETTINGS_BACK} + 新 {MARK_SETTINGS_EXIT}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
         watcher = boot.log
         log_path = boot.log_path
         boot.stop()
         boot = None
         watcher.poll()
         verify_normal_boot(
-            watcher.text, snapshot_pos, browser_before, demo_before, log_path
+            watcher.text, snapshot_pos, browser_before, settings_before,
+            demo_before, log_path,
         )
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-browser: 独立进程真实 WM 窗口/帧/返回键生命周期全过；"
+            "normal-native: Browser 与 Settings 独立进程、真实 WM 窗口/帧、"
+            "Settings 双状态重绘与返回销毁全过；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：Browser Native Shell 真链 + "
+            "PASS（--normal-boot）：Browser + Settings Native Shell 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -2134,10 +2314,27 @@ def self_test(args) -> int:
             f"{MARK_BROWSER_FRAME}\n{MARK_BROWSER_PROBE}\n"
             f"{MARK_BROWSER_DESTROY}\n{MARK_BROWSER_EXIT}\n"
         )
-        fake_n = f"{MARK_APP_DEMO_UP}\n{browser_boot}"
+        settings_boot = (
+            f"{MARK_SETTINGS_UP}\n{MARK_SETTINGS_WIN}\n"
+            f"{MARK_SETTINGS_FRAME}\n{MARK_SETTINGS_GEOM}\n"
+            f"{MARK_SETTINGS_PROBE}\n{MARK_SETTINGS_DESTROY}\n"
+            f"{MARK_SETTINGS_EXIT}\n"
+        )
+        settings_runtime = (
+            f"{MARK_SETTINGS_UP}\n{MARK_SETTINGS_WIN}\n"
+            f"{MARK_SETTINGS_FRAME}\n{MARK_SETTINGS_GEOM}\n"
+            f"{MARK_SETTINGS_TOGGLE1}\n{MARK_SETTINGS_FRAME}\n"
+            f"{MARK_SETTINGS_TOGGLE2}\n{MARK_SETTINGS_FRAME}\n"
+            f"{MARK_SETTINGS_BACK}\n{MARK_SETTINGS_DESTROY}\n"
+            f"{MARK_SETTINGS_EXIT}\n"
+        )
+        fake_n = f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}"
         snap_n = len(fake_n)
-        fake_n += f"{browser_boot}{MARK_BROWSER_BACK}\n{MARK_WM_ROUTE_DESKTOP}\n"
-        verify_normal_boot(fake_n, snap_n, 1, 1)
+        fake_n += (
+            f"{browser_boot}{MARK_BROWSER_BACK}\n{MARK_WM_ROUTE_DESKTOP}\n"
+            f"{settings_runtime}"
+        )
+        verify_normal_boot(fake_n, snap_n, 1, 1, 1)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),
             (MARK_LAYOUTW + "\n", "LAYOUTW"),
@@ -2148,24 +2345,41 @@ def self_test(args) -> int:
             expect_error(
                 f"常态隔离出现 {label}",
                 lambda n=needle: verify_normal_boot(
-                    fake_n + n, snap_n, 1, 1
+                    fake_n + n, snap_n, 1, 1, 1
                 ),
             )
         expect_error(
             "常态 Browser 无第二进程",
             lambda: verify_normal_boot(
-                f"{MARK_APP_DEMO_UP}\n{browser_boot}", snap_n, 1, 1
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}"
+                f"{settings_runtime}",
+                snap_n, 1, 1, 1,
             ),
         )
         expect_error(
-            "常态 Browser 误 spawn APPDEMO",
+            "常态 Settings 无第二进程",
             lambda: verify_normal_boot(
-                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1
+                f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}"
+                f"{browser_boot}{MARK_BROWSER_BACK}\n",
+                snap_n, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Settings 缺第二重绘帧",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_SETTINGS_FRAME}\n", "", 2),
+                snap_n, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态 Native Shell 误 spawn APPDEMO",
+            lambda: verify_normal_boot(
+                fake_n + MARK_APP_DEMO_UP + "\n", snap_n, 1, 1, 1
             ),
         )
         log(
-            "self-test: Browser Native Shell 常态断言 ok（独立进程×2 生命周期；"
-            "CLICK/LAYOUTW/LAYOUT/click ready/APPQUIET 全零）"
+            "self-test: Browser + Settings Native Shell 常态断言 ok"
+            "（双独立进程、双生命周期、Settings 双状态重绘；冒烟标记全零）"
         )
 
         # 4) QMP 协议 + no-device 广播 + 三批单击

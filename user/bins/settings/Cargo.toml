@@ -1,0 +1,22 @@
+[package]
+name = "settings"
+version = "0.1.0"
+edition = "2021"
+# Settings Native Shell：独立 no_std GUI 进程。真实 WM session/窗口/
+# 局部 VMO/owner 输入；WLAN 与 Bluetooth 是本进程内存态的真实切换控件
+# （v1 不接驱动/持久化，不声称系统级设置已生效）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-fbcon = { path = "../../berry-fbcon" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-sys = { path = "../../berry-sys" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

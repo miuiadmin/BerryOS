@@ -149,10 +149,12 @@ build-user:
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-none
     # GUI-8 视觉补全：appstub 共用静默壳（零 argv0 断言/console=false/0 退出）
-    # 复制成 6 个占位 app 的 bin/<name>。Browser 已替换为独立 Native Shell。
+    # 复制成 5 个占位 app 的 bin/<name>。Browser/Settings 已换真实 Shell。
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appstub/Cargo.toml \
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/browser/Cargo.toml \
+        --target aarch64-unknown-none
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/settings/Cargo.toml \
         --target aarch64-unknown-none
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
     # 单次构建 12 命令（=0.12.0 锁步，MIT，上游逐字不动；薄 harness =
@@ -264,8 +266,15 @@ build-user:
     cp -R bins/appstub/apps/BROWSER/icons userbins/app-stage/BROWSER/
     cp -R bins/appstub/apps/BROWSER/views userbins/app-stage/BROWSER/
     python3 ../tools/mkapp.py userbins/app/BROWSER.bap userbins/app-stage/BROWSER
-    # 其余六 app 仍是诚实静默占位（不冒充真实现）。
-    for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages; do
+    # Settings Native Shell：独立 ELF + 官方图标/views 组包。
+    mkdir -p userbins/app-stage/SETTINGS/bin
+    cp bins/settings/manifest.toml userbins/app-stage/SETTINGS/
+    cp cargo-target/aarch64-unknown-none/release/settings userbins/app-stage/SETTINGS/bin/settings
+    cp -R bins/appstub/apps/SETTINGS/icons userbins/app-stage/SETTINGS/
+    cp -R bins/appstub/apps/SETTINGS/views userbins/app-stage/SETTINGS/
+    python3 ../tools/mkapp.py userbins/app/SETTINGS.bap userbins/app-stage/SETTINGS
+    # 其余五 app 仍是诚实静默占位（不冒充真实现）。
+    for spec in FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages; do
         id=${spec%%:*}; bin=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
         cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"
