@@ -24,11 +24,11 @@ nr_total = 36        # v1 在册号数（生成器校验 = 下方 stage="v1" 行
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号；含 0x23
                      # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号）
-implemented = 34     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
-                     # G4-2 0x21 pager_supply_pages v2 号激活；
-                     # 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
-                     # ABI §8.0 永不 panic 执法；0x23 X-3a 入册，X-3b 落实现
-                     # 前暂同 -ENOTSUP）
+implemented = 35     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+                     # G4-2 0x21 pager_supply_pages v2 号激活 + G4-4 X-3b
+                     # 0x23 pager_supply_mapped 挂派发翻真；
+                     # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
+                     # ABI §8.0 永不 panic 执法）
 nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端）。生成器执法
                      # nr_defined（v1+1.1 常量层行数）≤ 本值，并把四元组
                      # nr_total/nr_defined/nr_registered/nr_ceiling 打进两端
@@ -396,7 +396,6 @@ num = 0x23
 name = "pager_supply_mapped"
 desc = '用户态 pager 给 demand VMO 供给一页（delta 恒等选源）：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ delta（源页偏移 = demand 页偏移 + delta，congruent ELF 段装载形）'
 stage = "v1"
-implemented = false
 note = '''X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
 多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
 2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/

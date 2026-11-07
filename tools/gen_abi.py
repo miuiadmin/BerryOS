@@ -230,8 +230,11 @@ def gen_kernel_rs(d: dict) -> str:
     if unimpl:
         names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in unimpl)
         L.append(f"// 在册未实现：{names}（派发回落 -ENOTSUP，永不 panic）")
-    if extra:
-        names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in extra)
+    # 1.1 行只在真未实现时列（S1/S3-b 翻真后全实现——stage 全集 ≠ 未实现集，
+    # 陈旧「全列」标签曾与 nr_registered=已挂派发自相矛盾，2026-11 X-3b 收口）。
+    extra_unimpl = [s for s in extra if not s.get("implemented", True)]
+    if extra_unimpl:
+        names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in extra_unimpl)
         L.append(f"// 1.1/S1 在册未实现：{names}（派发回落 -ENOTSUP，永不 panic）")
     for s in rows:
         push_doc(L, s.get("note", ""))

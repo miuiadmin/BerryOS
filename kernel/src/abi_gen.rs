@@ -4,14 +4,13 @@
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
 //! 预算四元组（生成器执法，ADR #11 帽）：nr_total=36（v1 在册）/
-//! nr_defined=40（v1+1.1 常量层）/ nr_registered=38（已挂派发）/
+//! nr_defined=40（v1+1.1 常量层）/ nr_registered=39（已挂派发）/
 //! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 36 号在册、34 已实现）----
-// 在册未实现：0x23 pager_supply_mapped、0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
-// 1.1/S1 在册未实现：0x3C sched_setattr、0x3D sched_getattr、0x3E process_suspend、0x3F thread_yield（派发回落 -ENOTSUP，永不 panic）
+// ---- syscall 号（ABI §4 编号表；v1 36 号在册、35 已实现）----
+// 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;

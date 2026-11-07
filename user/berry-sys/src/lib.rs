@@ -311,6 +311,17 @@ pub extern "C" fn berry_pager_supply_pages(vmo: Handle, src: Handle, src_off: u6
     unsafe { sys(nr::PAGER_SUPPLY_PAGES, vmo as usize, src as usize, src_off as usize, 0, 0, 0) }
 }
 
+/// `pager_supply_mapped(vmo, src, delta)`（0x23，G4-4 X-3，门 C 裁 A add-only）：
+/// 0x21 的恒等选源变体——门控/阻塞收货/供给/唤醒链全同（见
+/// `berry_pager_supply_pages`），唯源页偏不由调用方钉死、按**请求页现算**：
+/// `src_off = 目标页偏 + delta`（页对齐 i64，可负——congruent ELF 段装载的
+/// vaddr 偏置典型为负）。exec 装载 demand 化供给面：pager 无法预知下一缺页
+/// 页位（0x21 impasse 根因），本号以常量 delta 换「任意页请求一次供给」。
+#[no_mangle]
+pub extern "C" fn berry_pager_supply_mapped(vmo: Handle, src: Handle, delta: i64) -> Status {
+    unsafe { sys(nr::PAGER_SUPPLY_MAPPED, vmo as usize, src as usize, delta as usize, 0, 0, 0) }
+}
+
 // —— 进程 / 线程 ——
 
 /// 双出参（`*process, *vmar`——Zircon 同形：父须拿子地址空间根才能装代码）。

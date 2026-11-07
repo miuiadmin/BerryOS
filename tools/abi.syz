@@ -59,7 +59,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 36 号、已实现 34；
+# ---- syscall 入口（§4 编号表全量在册；v1 36 号、已实现 35；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -117,7 +117,7 @@ vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 pager_supply_pages(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x22 pager_op_range（v3·已实现）——脏页/换出通知
 pager_op_range(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x23 pager_supply_mapped（v1·在册未实现）——用户态 pager 给 demand VMO 供给一页（delta 恒等选源）：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ delta（源页偏移 = demand 页偏移 + delta，congruent ELF 段装载形）
+# 0x23 pager_supply_mapped（v1）——用户态 pager 给 demand VMO 供给一页（delta 恒等选源）：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ delta（源页偏移 = demand 页偏移 + delta，congruent ELF 段装载形）
 #   note: X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
 #   多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
 #   2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
