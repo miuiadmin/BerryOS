@@ -17,9 +17,10 @@
 //! 服务**、不经调度路径——不在表里）；③包络内权重微调；④EPP 二值。**没有
 //! 第五类**（尤其没有「直接改 RT 优先级/创建/杀任务」）。
 //!
-//! 并发纪律（单核，同 `sched.rs` 计数器）：[`apply`]/[`weight_of`] 只读——
-//! IRQ 屏蔽的决策路径调用，每次调用取一次快照指针、窗内不换（RCU 读临界区
-//! 形态）；写点 [`bind`]/[`unbind`] 仅在 SVC/IRQ 屏蔽的 boot/ktest 期（v3
+//! 并发纪律（单核，同 `sched.rs` 计数器）：[`apply`]/[`weight_of`] 对**表**
+//! 只读——IRQ 屏蔽的决策路径调用，每次调用取一次快照指针、窗内不换（RCU
+//! 读临界区形态；apply 另递 divergence 对账计数器——纯原子统计，非表写、
+//! 非 TCB 写，见文件尾「Shadow divergence 对账」节）；写点 [`bind`]/[`unbind`] 仅在 SVC/IRQ 屏蔽的 boot/ktest 期（v3
 //! 由 `policy_bind` 经共享环换表，仍是单写者）。槽一经发布内容不再改写
 //! （写者只写**非活跃**槽），读者手里的引用至多在下下次轮转被复用——单核
 //! 屏蔽窗下读者早已退出，无踩踏面。
@@ -304,7 +305,13 @@ pub fn bound() -> bool {
 /// 写入**，字段保持基线，与接口缺席逐位等价（ktest `POLICY ok` 断言对象）。
 /// IRQ 热路径零分配。快路径：哨兵/空表两次分支即返（§2「开销恒定」的
 /// 空态兑现）。
+///
+/// **shadow 对账挂最前**（每次调用都对账，active 决策逻辑零改动）：
+/// [`shadow_reconcile`] 只读只计数——shadow 谱系空时一次 gen 读即返，热
+/// 路径开销恒定。须在 active 早退路径**之前**：active 空表/未命中的 pick
+/// 也要对账（demote 后 active 空、shadow 有表正是双轨观测的主场景）。
 pub fn apply(task: &mut Task) {
+    shadow_reconcile(task);
     // SAFETY: 指针源自 active_snap（静态区槽位/哨兵，'static 生存期）；
     // 已发布槽内容不可变（写者只写非活跃槽）+ 单核读写窗互斥——读窗内快照
     // 稳定，本调用内无写者。
@@ -359,6 +366,11 @@ pub(crate) fn weight_of(task: &Task) -> i32 {
 // 同 [`SNAPS`]（约束②）：单核 SVC 屏蔽窗单写者、只写非活跃槽 + 翻转
 // [`SHD_WHERE`]，全部裸写、零原子；双槽（而非三槽）即足——shadow 无快路径
 // 读者，翻转后旧槽只剩写者自己会再碰（约束③的拷贝源/目的地都在写者手里）。
+//
+// **divergence 对账**（计数器/判定见文件尾「Shadow divergence 对账」节）：
+// [`apply`] 每调一次，shadow 谱系非空即对同一 key 双表各算一份决策、只读
+// 对比**只计数**（shadow 差异永不应用——只算不用原则的观测面延伸）；轨道
+// 切换（promote/demote）自动清零，对账期与轨道绑定。
 
 /// shadow 双槽轮转区：写者写 `SHD[SHD_WHERE ^ 1]`（非活跃槽）→ 翻转
 /// [`SHD_WHERE`] 发布。`static mut` 纪律同 [`SNAPS`]（`&raw mut` 取裸指针，
@@ -419,7 +431,8 @@ pub fn bind_gen_shadow(tbl: &[Entry], gen: u64) -> bool {
 ///
 /// 返回：true = 已转正（ACTIVE 指向新表，立即参与决策）；false = shadow
 /// 表为空（gen == 0，从未 [`bind_gen_shadow`] 受理）——无表可转正，ACTIVE
-/// 不动。
+/// 不动。转正即**轨道切换**：对账计数自动清零（[`divergence_reset`]——
+/// shadow 表已成 active，此后偏差开新对账期从零计；false 支不切换不清零）。
 pub fn promote() -> bool {
     let src = shadow_snap();
     // SAFETY: 指针源自 shadow_snap（静态区槽位，'static 生存期）；单核 SVC
@@ -431,6 +444,7 @@ pub fn promote() -> bool {
         }
         publish(core::ptr::read(src));
     }
+    divergence_reset(); // 轨道切换 = 新对账期（仅成功支）
     true
 }
 
@@ -438,7 +452,78 @@ pub fn promote() -> bool {
 /// [`SENTINEL_EMPTY`]——读路径立即回落 [`EMPTY_SNAP`]，等价 [`unbind`] 的
 /// 「接口缺席」态（apply/weight_of 空表两次分支即返、零写入——约束④：active
 /// 立即回空表语义）。**shadow 表保留**（SHD/SHD_WHERE 不动）：双轨道计算
-/// 可继续，随时 [`promote`] 复转正。
+/// 可继续，随时 [`promote`] 复转正。降级即**轨道切换**：对账计数自动清零
+/// （[`divergence_reset`]）——此后 active 空 vs shadow 有表，每次命中都是
+/// divergence，降级态偏差从零观测。
 pub fn demote() {
     ACTIVE.store(SENTINEL_EMPTY, Ordering::Release);
+    divergence_reset(); // 轨道切换 = 新对账期
+}
+
+// ---- Shadow divergence 对账：shadow「会做什么」vs active「做了什么」----
+//
+// 语义：[`apply`] 每次调用时，shadow 谱系非空（gen > 0）即对**同一 task
+// key** 双表各算一份消费点决策（夹紧权重 + EPP 覆盖位；未命中/空表/key 0 =
+// 「无意见」），决策不同（weight **或** EPP 差异）只**计数**不应用——shadow
+// 侧零 TCB 写、零表写（纯读 + 原子计数），active 决策与写入逻辑零改动。
+// 计数是**对账期**口径：轨道切换（promote/demote）自动清零，新旧表的偏差
+// 不混账；divergence_count / shadow_eval_count = 当前对账期的 divergence 率。
+
+/// 对账期内 shadow/active 决策不一致次数（weight 或 EPP 差异）。
+static DIVERGENCE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// 对账期内 shadow 决策评估次数（shadow 谱系非空时的 apply 调用数）——
+/// divergence 率的分母。
+static SHADOW_EVAL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// 单次对账（apply 每调一次、shadow 谱系非空时生效）：同 key 双表决策对比
+/// + 计数。**只读不写**——不写 TCB（差异不应用）、不写表（shadow 侧纯
+/// 观察）。谱系空时一次 gen 读即返：apply 热路径开销恒定（空 shadow 的
+/// 快路径零感知——约束①在对账侧的兑现）。
+fn shadow_reconcile(task: &Task) {
+    // SAFETY: 指针源自 shadow_snap（静态区槽位，'static 生存期）；已发布
+    // shadow 槽内容不可变（写者只写非活跃槽）+ 单核屏蔽窗读写互斥——本读
+    // 窗内快照稳定（读纪律同 shadow_gen）。
+    let shd: &Snap = unsafe { &*shadow_snap() };
+    if shd.gen == 0 {
+        return; // shadow 谱系空：一次 gen 读 + 分支即返（不进对账）
+    }
+    // SAFETY: 读纪律同 apply（active_snap 静态区指针 + 已发布槽不可变）。
+    let act: &Snap = unsafe { &*active_snap() };
+    // key 0（内核任务）：lookup_o1 早退返 None → 双方同为「无意见」，计入
+    // eval 不可能 divergence——与注入侧「0 键丢弃」同一语义边界。
+    let key = task.proc_tag as u64;
+    let a = lookup_o1(act, key);
+    let s = lookup_o1(shd, key);
+    // 消费点语义的决策：命中取夹紧权重（同 apply/weight_of 的第三道夹紧），
+    // 未命中/空表 = 0。
+    let aw = a.map_or(0, |sl| sl.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX));
+    let sw = s.map_or(0, |sl| sl.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX));
+    // EPP 决策 = epp_flags 整字节（bit0 有无覆盖 + bit1 取值两位打包）——
+    // None↔Some、Efficiency↔Perf 的差异都落在字节差异上。
+    let ae = a.map_or(0, |sl| sl.epp_flags);
+    let se = s.map_or(0, |sl| sl.epp_flags);
+    if aw != sw || ae != se {
+        // Relaxed：纯统计计数，非通信值（同 GEN_NEXT 纪律）。
+        DIVERGENCE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    SHADOW_EVAL_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// 对账期内决策不一致次数（shadow 会做的 ≠ active 做了的：weight 或 EPP
+/// 差异）。遥测口径：`divergence_count() / shadow_eval_count()` = 当前
+/// 对账期的 divergence 率。
+pub fn divergence_count() -> u64 {
+    DIVERGENCE_COUNT.load(Ordering::Relaxed)
+}
+
+/// 对账期内 shadow 决策评估次数（divergence 率的分母）。
+pub fn shadow_eval_count() -> u64 {
+    SHADOW_EVAL_COUNT.load(Ordering::Relaxed)
+}
+
+/// 清零对账计数（两个计数器同清——新对账期从零起算）。[`promote`]/
+/// [`demote`] 轨道切换时自动调用；测试观察亦可用。
+pub fn divergence_reset() {
+    DIVERGENCE_COUNT.store(0, Ordering::Relaxed);
+    SHADOW_EVAL_COUNT.store(0, Ordering::Relaxed);
 }

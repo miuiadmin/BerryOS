@@ -41,6 +41,7 @@ pub fn run() {
     test_policy_bind_syscall();
     test_policy_perf();
     test_policy_shadow();
+    test_policy_divergence();
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
@@ -3363,6 +3364,200 @@ fn test_policy_shadow() {
 
     // 任务体 16KiB 栈 × 4 泄漏不回收（ktest 语境同 PV3 政策——v1 无 reap）。
     berry_hal_aarch64::uart_puts(b"SHD-K ok\n");
+}
+
+/// DV（policy divergence）：shadow 对账——「shadow 会做的」vs「active 做了的」
+/// 双轨决策差异捕获的行为收口（`policy.rs` 文件尾「Shadow divergence 对账」
+/// 节；只经 pub 接口 `bind_gen`/`bind_gen_shadow`/`promote`/`demote`/
+/// `divergence_count`/`shadow_eval_count`/`divergence_reset` 驱动，对账挂
+/// `apply` 头部、由 `pick_next` 间接跑——决策路径真消费，不直接调）：
+/// - **DV-1 无 shadow 意见 → divergence 不增长**：`shadow_gen()==0` 的谱系
+///   空跳过面（`shadow_reconcile` 一次 gen 读即返、不进分母）全局仅存在于
+///   首次 `bind_gen_shadow` 之前——已被 SHD-K 消费（其 SH-5 物理前置同判；
+///   收尾遗留 gen=0x1_0000_0004 无清空接口），本测试后置其后者不可复入。
+///   本段收口**邻接可行面**：绑空 shadow 表（谱系在席、对任一 key 恒「无
+///   意见」）→ 12 轮 pick divergence 恒 0——「无 shadow 意见 → 不增长」
+///   判据在谱系在席的可行形态下成立；`shadow_eval_count == 12` 活证走的是
+///   对账路径而非跳过路径（判别面在分母、不在分子）；
+/// - **DV-2 双表同决策 → divergence == 0**：active p7+32（gen 0x…11）+
+///   shadow p7+32（gen 0x…12——**同表不同 gen**，谱系各记各的）→ p7 +32
+///   独占 12 轮（active 表真在用，SH-2 同观测口径）而零分歧：任一 key 的
+///   消费点决策（夹紧权重 + EPP 位）双表逐位相同；
+/// - **DV-3 双表异键 → 分歧全捕获**：shadow 换 p8+32 表（active p7+32
+///   不动——gen 不扰）→ p7 出选时 active 给 32、shadow 给 0（p7 不在
+///   shadow 表）；p8 出选时反向（0 vs 32）——任一出选组合必差异，
+///   divergence == 12 == eval（分歧率 100%，非「>0 即过」弱判）；
+/// - **DV-4 轨道切换 → 对账清零**：DV-3 遗留分子 12 为前提，`promote()`
+///   后双计数器即刻归零（reset 内联于轨道切换，非测试侧显式清）；转正后
+///   active = shadow 表（p8+32）双表同源——新对账期 12 轮仍零分歧且转正
+///   表真在用（首轮 head p7 零写入、次轮起 p8 独占 eff=32）；`demote()`
+///   对偶同清零，此后 active 空 vs shadow 有表（`policy.rs` 注记的双轨
+///   观测主场景）：p8 命中即分歧、p7 恒同意 → 分子开区间 (0, 12)——
+///   分歧按 key 判别，非全量分歧。
+///
+/// 形态同 `test_policy_shadow`：本地 `Runqueue` + 双任务（proc_tag = 7/8）
+/// ROUNDS=12 轮 pick（setup2/probe 模式沿用）；对账期间隔离用显式
+/// `divergence_reset`（轨道切换的**自动**清零由 DV-4 专测——两机制不混证）。
+/// **后置于 SHD-K**（run() 序，前置断言钉死其收尾谱系）：其 SH-5/SH-1 依赖
+/// 「shadow 从未绑定」的全局前置，本测试只消费其遗留谱系而不破坏之（SHD-K
+/// 「唯一消费者」注记自此由本测试接力）。QEMU ktest 是唯一家（同 SHD-K——
+/// 进程调度 crate 无 host 测试面）；非 smoke 注册标记（TAGTAB 模式：断言炸
+/// = panic = 后续标记缺失兜底，同 PV3-K/PBS-K/PP-K/SHD-K）。
+#[allow(clippy::unwrap_used)]
+fn test_policy_divergence() {
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn dv_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 单轮观测（比对单位）：选中者名 + 消费点权重面（eff）。
+    type Obs = (&'static [u8], i32);
+
+    const ROUNDS: usize = 12;
+
+    /// 双任务本地环（proc_tag = 7/8——同 SHD-K 键域口径；7/8 = 两表各自受益者）。
+    fn setup2() -> (Runqueue, RoundRobin, Topo) {
+        let mut rq = Runqueue::new();
+        let rr = Fair;
+        let topo = Topo::single();
+        for (tag, name) in [(7usize, b"p7".as_slice()), (8, b"p8".as_slice())] {
+            let mut t = Task::new_kernel_with_as(dv_dummy, tag, name, 0, 0);
+            t.proc_tag = tag; // 策略表 key（v1 = proc_tag；new_kernel 默认 0）
+            let t: &'static mut Task = alloc::boxed::Box::leak(t);
+            rr.enqueue(t, &mut rq);
+        }
+        (rq, rr, topo)
+    }
+
+    /// 跑 ROUNDS 轮 pick 记 (name, eff) 序列（apply→对账由 pick_next 挂钩）。
+    fn probe(rq: &Runqueue, rr: &RoundRobin, topo: &Topo) -> [Obs; ROUNDS] {
+        let mut seq: [Obs; ROUNDS] = [(b"", 0); ROUNDS];
+        for s in seq.iter_mut() {
+            let t = rr.pick_next(rq, topo).expect("DV：非空 runqueue 必有出选");
+            *s = (t.name, t.prio_effective);
+        }
+        seq
+    }
+
+    // 前序状态收口（同 PV3/PBS/SHD 口径）：active 回哨兵 + 对账计数清零
+    //（SHD-K 收尾 promote 重置后无 pick——0/0 契约 loud 成立）；shadow 谱系
+    // 为 SHD-K 遗留（无清空接口——DV-1 的 gen==0 跳过态不可复入，见段注）。
+    policy::unbind();
+    assert!(!policy::bound(), "DV：前置须 active 未绑（哨兵）");
+    assert_eq!(policy::shadow_gen(), 0x1_0000_0004,
+        "DV：前置须 SHD-K 遗留 shadow 谱系（0x1_0000_0004）——本测试须后置 SHD-K");
+    policy::divergence_reset();
+    assert_eq!(policy::divergence_count(), 0, "DV：前置对账分子须零");
+    assert_eq!(policy::shadow_eval_count(), 0, "DV：前置对账分母须零");
+
+    // 两张单条表：p7/p8 各自 +32（同 SHD-K tab_a/tab_b 键域与词汇表）。
+    let tab_p7 = [Entry {
+        task_key: 7,
+        directive: Directive { placement: 0, weight: 32, epp: None },
+    }];
+    let tab_p8 = [Entry {
+        task_key: 8,
+        directive: Directive { placement: 0, weight: 32, epp: None },
+    }];
+    // gen 台账（shadow 谱系严格递增；基点 = SHD-K 遗留 0x1_0000_0004）。
+    let g_empty = 0x1_0000_0010u64; // DV-1 空 shadow 表
+    let g_act2 = 0x1_0000_0011u64; // DV-2 active 表（与 shadow 同表不同 gen）
+    let g_shd2 = 0x1_0000_0012u64; // DV-2 shadow 表
+    let g_shd3 = 0x1_0000_0013u64; // DV-3 shadow 表（换 p8——与 active 分叉）
+
+    // DV-1：无 shadow 意见 → divergence 不增长。绑**空 shadow 表**（谱系
+    // 在席、对任一 key 恒无意见）→ 双方恒同意；分母恰增 ROUNDS 活证走的是
+    // 对账路径而非 gen==0 跳过路径（该态已被 SHD-K 消费，见段注——判别面
+    // 在分母、不在分子）。
+    assert!(policy::bind_gen_shadow(&[], g_empty), "DV-1：空表 shadow gen 须受理");
+    assert_eq!(policy::shadow_gen(), g_empty, "DV-1：shadow_gen 须即刻反映新世代");
+    let (rq, rr, topo) = setup2();
+    probe(&rq, &rr, &topo);
+    assert_eq!(policy::divergence_count(), 0,
+        "DV-1：shadow 空表（无意见）→ divergence 不得增长");
+    assert_eq!(policy::shadow_eval_count(), ROUNDS as u64,
+        "DV-1：谱系在席对账须逐 pick 计分母（非 gen==0 跳过路径）");
+
+    // DV-2：shadow 与 active 同表（同决策）→ divergence == 0。active p7+32
+    //（gen 0x…11）+ shadow p7+32（gen 0x…12——同表不同 gen，谱系各记各的）。
+    assert!(policy::bind_gen(&tab_p7, g_act2), "DV-2：active 新 gen 须受理");
+    assert!(policy::bind_gen_shadow(&tab_p7, g_shd2), "DV-2：shadow 同表新 gen 须受理");
+    assert_eq!(policy::gen(), g_act2, "DV-2：active gen 前提");
+    assert_eq!(policy::shadow_gen(), g_shd2, "DV-2：shadow gen 前提（同表不同 gen）");
+    policy::divergence_reset(); // 新对账期（DV-1 分母 12 不混账）
+    let (rq, rr, topo) = setup2();
+    let seq = probe(&rq, &rr, &topo);
+    for i in 0..ROUNDS {
+        assert_eq!(seq[i].0, b"p7".as_slice(), "DV-2：active 表在用——第 {} 轮须 p7 独占", i);
+        assert_eq!(seq[i].1, 32, "DV-2：active 表在用——第 {} 轮 p7 eff 须 32", i);
+    }
+    assert_eq!(policy::divergence_count(), 0, "DV-2：双表同决策 → 零分歧");
+    assert_eq!(policy::shadow_eval_count(), ROUNDS as u64, "DV-2：分母须逐 pick 计");
+
+    // DV-3：shadow 换 p8 表（与 active p7 表异键分叉）→ 每轮 pick 均捕获。
+    // p7 出选：active 给 32、shadow 给 0（p7 不在 shadow 表）；p8 出选反向
+    //（0 vs 32）——任一出选组合必差异，分歧率 100%。
+    assert!(policy::bind_gen_shadow(&tab_p8, g_shd3), "DV-3：shadow 换表 gen 须受理");
+    assert_eq!(policy::gen(), g_act2, "DV-3：shadow 换表不得扰动 active");
+    policy::divergence_reset(); // 新对账期
+    let (rq, rr, topo) = setup2();
+    let seq = probe(&rq, &rr, &topo);
+    for i in 0..ROUNDS {
+        assert_eq!(seq[i].0, b"p7".as_slice(), "DV-3：active 仍 p7 表——第 {} 轮须 p7 独占", i);
+        assert_eq!(seq[i].1, 32, "DV-3：active 仍给 32（shadow 侧给 0）——第 {} 轮", i);
+    }
+    assert_eq!(policy::divergence_count(), ROUNDS as u64,
+        "DV-3：异键双表 → 每轮 pick 均须捕获分歧（p7 出选：active 32 vs shadow 0）");
+    assert_eq!(policy::shadow_eval_count(), ROUNDS as u64, "DV-3：分母同 pick 数");
+
+    // DV-4：promote 轨道切换 → 对账清零（新对账期从零起算）。DV-3 遗留分子
+    // ROUNDS > 0 为前提；promote 后双计数器即刻归零（reset 内联于轨道切换
+    //——非测试侧显式清）。转正后 active = shadow 表（p8+32、gen 随 shadow）
+    //→ 双表同源：新对账期 12 轮仍零分歧 + 转正表真在用（首轮 head p7 无
+    // 意见零写入、次轮起 p8 独占 eff=32——SH-2 同观测口径）。
+    assert_eq!(policy::divergence_count(), ROUNDS as u64, "DV-4：前提——DV-3 遗留非零分子");
+    assert!(policy::promote(), "DV-4：非空 shadow promote 须 true");
+    assert!(policy::bound(), "DV-4：转正后须已绑");
+    assert_eq!(policy::gen(), g_shd3, "DV-4：转正后 active gen 须 = shadow gen");
+    assert_eq!(policy::divergence_count(), 0, "DV-4：promote 轨道切换须清零分子");
+    assert_eq!(policy::shadow_eval_count(), 0, "DV-4：promote 轨道切换须清零分母");
+    let (rq, rr, topo) = setup2();
+    let seq = probe(&rq, &rr, &topo);
+    assert_eq!(seq[0].0, b"p7".as_slice(), "DV-4：首轮 head p7 须先出（双表皆未写它）");
+    assert_eq!(seq[0].1, 0, "DV-4：p7 不在转正表——eff 须零写入");
+    for i in 1..ROUNDS {
+        assert_eq!(seq[i].0, b"p8".as_slice(), "DV-4：转正表在用——第 {} 轮须 p8 独占", i);
+        assert_eq!(seq[i].1, 32, "DV-4：转正表在用——第 {} 轮 p8 eff 须 32", i);
+    }
+    assert_eq!(policy::divergence_count(), 0, "DV-4：转正后双表同源 → 新对账期零分歧");
+    assert_eq!(policy::shadow_eval_count(), ROUNDS as u64, "DV-4：新对账期分母须逐 pick 计");
+
+    // DV-4 尾（轨道切换对偶面）：demote 亦自动清零——此后 active 空 vs
+    // shadow 有表（p8+32）正是 `policy.rs` 注记的双轨观测主场景：p8 出选
+    // 即分歧、p7 出选恒同意 → 分子开区间 (0, ROUNDS)（按 key 判别）。
+    policy::demote();
+    assert!(!policy::bound(), "DV-4 尾：demote 后须回哨兵");
+    assert_eq!(policy::divergence_count(), 0, "DV-4 尾：demote 轨道切换须清零分子");
+    assert_eq!(policy::shadow_eval_count(), 0, "DV-4 尾：demote 轨道切换须清零分母");
+    let (rq, rr, topo) = setup2();
+    probe(&rq, &rr, &topo);
+    assert!(policy::divergence_count() > 0,
+        "DV-4 尾：demote 后新对账期须重新捕获分歧（p8 命中：active 0 vs shadow 32）");
+    assert!((policy::divergence_count() as usize) < ROUNDS,
+        "DV-4 尾：分歧须按 key 判别（p7 出选恒同意——非全量分歧）");
+    assert_eq!(policy::shadow_eval_count(), ROUNDS as u64, "DV-4 尾：分母同 pick 数");
+
+    // 收尾：恢复缺席态（同 SHD-K——smoke 稳态全程未绑；shadow 谱系留
+    // g_shd3 无清空接口，后续测试 pick 只进对账计数、行为零感知——boot 期
+    // 单测语境不外泄）。
+    policy::unbind();
+    assert!(!policy::bound(), "DV：收尾须回到未绑");
+
+    // 任务体 16KiB 栈 × 5 泄漏不回收（ktest 语境同 PV3/SHD 政策——v1 无 reap）。
+    berry_hal_aarch64::uart_puts(b"DV-K ok\n");
 }
 
 /// P4 收官审计实踩的 runqueue 摘环回归：`unlink` 旧单元素判据 `prev == next`
