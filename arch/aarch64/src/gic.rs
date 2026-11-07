@@ -36,6 +36,11 @@ pub const IRQ_PL011_RX: usize = 33;
 /// <0x00 0x08 0x04>` = SPI 8/LEVEL_HIGH；单串口配置设备不存在——在席门见
 /// [`crate::UART1_BASE`] 注，fw_cfg `opt/berry/simdev`）。
 pub const IRQ_PL1_RX: usize = 40;
+/// IRQ 编号：PL061 GPIO（SPI 7 + 16 SGI + 16 PPI，sim-S2 A4②）。QEMU `virt`
+/// DTB 实证：`pl061@9030000` `interrupts = <0x00 0x07 0x04>` = SPI 7/LEVEL_HIGH
+///（GPIO3 = 电源键——QMP `system_powerdown` 脉冲）。电平去活 = PL061 ICR
+/// 写 1 清边沿锁存（handler pre-EOI 铁序，`pl061.rs` 模块头）。
+pub const IRQ_PL061: usize = 39;
 /// SGI 号分配（S-3 §2.2）：1 = `SGI_RESCHEDULE`（跨核唤醒戳）；2 = TLB
 /// shootdown 回执（S-4 4-1 现役——收端 = trap.rs SGI_TLB 臂 + tlbshoot 模块）；
 /// **0 保留不用**（复位默认值域，观测面干净性）。
@@ -256,6 +261,7 @@ pub fn sgi_pending_this_core(id: usize) -> bool {
 pub const SPI_ROUTES: &[(usize, u8, u8, u32)] = &[
     (IRQ_PL011_RX, 0xa0, 0x01, 0b01), // PL011 RX：电平触发（DTB LEVEL_HIGH）
     (IRQ_PL1_RX, 0xa0, 0x01, 0b01),   // PL011#1 RX（sim-S1）：电平（DTB 实证同上）
+    (IRQ_PL061, 0xa0, 0x01, 0b01),    // PL061 电源键（sim-S2 A4②）：电平（DTB 实证）
 ];
 
 /// 经 [`SPI_ROUTES`] 使能一个 SPI：查表命中才动 GICD（表外源返 false——

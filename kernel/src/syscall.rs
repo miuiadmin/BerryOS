@@ -1717,6 +1717,11 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
                 ObjRef::release(obj);
             }
         }
+        if ret == 0 {
+            // sim-S2 A2：freeze 成功遥测（S5.11 既有 doc 面、调用点本刀补齐——
+            // ktest freeze 循环「轮际 token 计数严格递增」断言的载体）。
+            crate::telemetry::freeze_ok();
+        }
         return ret;
     }
 
@@ -1824,6 +1829,10 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
             }
             ObjRef::release(obj);
         }
+    }
+    if ret == 0 {
+        // sim-S2 A2：单线程冻结成功遥测（process 臂同款——计数器族）。
+        crate::telemetry::freeze_ok();
     }
     ret
 }

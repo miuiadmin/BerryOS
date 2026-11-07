@@ -45,7 +45,7 @@
 #      C-4b 起七段、GUI-4 段② 起八段（+h QMP 注入往返）、sim-S1 M3 起
 #      +serial1 battery 快照四流（OK×2/BAD/STALE，ACK 宿主逐字节对拍））：
 #      三拉 QEMU 带 -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），
-#      79 基础标记 + RX 专属 SIMBAT（boot 29 + rootfs 50——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      81 基础标记 + RX 专属 SIMBAT/PWRKEY（boot 30 + rootfs 51——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/APPUI ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
@@ -107,7 +107,7 @@
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. C-0 刀 4 FAT 子目录相（第四跑）：盘 = mkfat **--fixture 模式**（fixture
 #      专列 DATA/ 目录 + DATA/NOTE.TXT——默认盘不含，默认盘字节零漂移硬线
-#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），79 标记载明全链
+#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），81 标记载明全链
 #      在目录盘上照跑后注入三段（断言与注入行互非子串 + 顺序防回声）：
 #      `ls DATA` → grep 'NOTE.TXT'（READDIR FAT 回落链走查——断言先于一切
 #      含 NOTE.TXT 的注入行回显）→ `cat DATA/NOTE.TXT` → grep
@@ -116,7 +116,7 @@
 #      类型冲突面）。
 #   7. P6 A-6 FAT 持久化相（第五跑）：**不重造盘**（复用第 5 相已写的
 #      disk.img——mkfat 重产 = 持久化零验收；disk_dirs.img 不复用——无
-#      跨盘盘混），79 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
+#      跨盘盘混），81 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
 #      旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT` → grep 'f42t'——
 #      `>` 落的是真扇区、跨 boot 存活。盘 cache writeback=off：QEMU 由
 #      SIGTERM 终止，writeback 模式可能不刷页缓存（所有 -drive 行统一，
@@ -234,7 +234,7 @@ DEADLINE_BOOTB=360   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3
                      # FAT @sw1700 慢 ~6% = c-1 源致 +2% + TCG 波动），外推 FATW
                      # ~245-250s 撞穿 240——与 Boot C 同债族早一相发作；360 ≈
                      # 最坏观测 ×1.45（与 Boot C 420/304 同口径）。
-# 标记单源：裸相 29 + rootfs 50 双数组抽出 tools/markers.sh（smoke-smp.sh
+# 标记单源：裸相 30 + rootfs 51 双数组抽出 tools/markers.sh（smoke-smp.sh
 # 同源消费——原「复制+awk 计数对拍」方案退役，S-5 后测试基建收尾刀）。
 source "$SCRIPT_DIR/markers.sh"
 
@@ -937,7 +937,8 @@ skt_client_wait "rootfs 相"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 29 + rootfs 50 = 79
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 30 + rootfs 51 = 81
+#（sim-S2 A2 双载体：EL1 ktest +FRZCYC / EL0 thrchild+svcmgr +FRZ）
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块
 # 设备服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络
@@ -1000,7 +1001,7 @@ SIM_SOCK="$QMP_DIR/sim1"   # sim-S1 serial1（与 QMP 同临时目录统一 clea
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：79 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：81 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -1112,6 +1113,54 @@ while :; do
     "SIMBAT 60s 未达正形（须恰 seq=1/seq=2 两行，实得 ${n_sim} 行——查 siminj ACK 与 task_simcon）"
   sleep 1
 done
+# sim-S2 A4②（PM-16 §4.2）：PM 微相——QMP system_powerdown 注入 PL061 GPIO3
+# 脉冲（v1 无主 IRQ 正向对照三件）：①PWRKEY unowned n= 标记在席（IRQ 级
+# 到达 + no_waiter 双台账落账）；②系统存活（QEMU 不退——v1 无 ACPI 面时
+# powerdown 只脉冲 GPIO3，无主 IRQ 不许击杀内核）；③计数 +1 且风暴上界
+# n≤6（IBE 双沿单脉冲 ≤2 IRQ × 重注入帽 3——超帽 = PL061 去活序破绽，红）。
+qmp_powerdown() {
+  python3 - "$QMP_SOCK" <<'PYEOF'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sys.argv[1])
+f = s.makefile("rw", encoding="utf-8", newline="\n")
+while True:                            # greeting → qmp_capabilities → 应答
+    line = f.readline()
+    if not line:
+        raise SystemExit("qmp: eof（QEMU 退出？）")
+    m = json.loads(line)
+    if "QMP" in m:
+        f.write('{"execute": "qmp_capabilities"}\n'); f.flush()
+    elif "return" in m or "error" in m:
+        break
+f.write('{"execute": "system_powerdown"}\n'); f.flush()
+while True:                            # 等命令应答（异步事件行跳过）
+    line = f.readline()
+    if not line:
+        raise SystemExit("qmp: eof（QEMU 退出？）")
+    m = json.loads(line)
+    if "return" in m:
+        break
+    if "error" in m:
+        raise SystemExit("qmp: {}".format(m))
+PYEOF
+}
+pm_inj=0
+t4=$(date +%s)
+until grep -aqF 'PWRKEY unowned n=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 在 PWRKEY 阶段退出（无主 IRQ 击杀 = A4② 反例红）"
+  [ $(( $(date +%s) - t4 )) -gt 60 ] && fail \
+    "PWRKEY 60s 未达（注入 ${pm_inj} 次无标记——查 SIM gate on 与 SPI39 使能）"
+  pm_inj=$((pm_inj + 1))
+  [ "$pm_inj" -gt 3 ] && fail "PWRKEY 三次重注入仍无标记（PL061 接线断）"
+  qmp_powerdown || fail "QMP system_powerdown 注入失败"
+  sleep 1
+done
+pm_max=$(grep -ao 'PWRKEY unowned n=[0-9]*' "$LOG" | cut -d= -f2 | sort -n | tail -1)
+[ -n "$pm_max" ] && [ "$pm_max" -ge 1 ] && [ "$pm_max" -le 6 ] || fail \
+  "PWRKEY 计数越界 n=${pm_max:-none}（须 1..6：0=漏记、>6=风暴/去活破绽）"
+echo "smoke: PWRKEY 无主 IRQ 正向对照过（n=${pm_max}，系统存活，注入 ${pm_inj} 次）"
 # markers.sh RX_MARKERS 数组在此消费（防死单源：数组行 = 段门必查面——
 # 后续追加 RX 注入行只改 markers.sh 即自动入执法；boot 双数组不受染）。
 for m in "${RX_MARKERS[@]}"; do
@@ -1312,7 +1361,7 @@ fi
 # DATA/NOTE.TXT = `berryos fat subdir note\n`——与 berry-fatfs host 共识
 # 基准同源字节）；**独立盘 disk_dirs.img**：disk.img（RX 相已写、阶段 6
 # 持久化相将复用）零扰动——默认盘字节零漂移硬线不破（子目录只在 fixture
-# 模式，正是刀 3 的设计面）。79 标记载明全链在目录盘上照跑（DIR/CD ok 自验
+# 模式，正是刀 3 的设计面）。81 标记载明全链在目录盘上照跑（DIR/CD ok 自验
 # + FATW/RW.TXT 覆写幂等 + FAT 基准读）后注入三段，断言三重防回声：
 # ① `ls DATA` → grep 'NOTE.TXT'——断言先于一切含 NOTE.TXT 的注入行回显
 #   （顺序防线：本注入行自身只含 'ls DATA'，NOTE.TXT 只能来自 READDIR
@@ -1396,7 +1445,7 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收；
 # disk_dirs.img 本相不复用——两盘链零混）；
 # 不关 fd3（本相注入完 cat 行后 FIFO 再无消费者——阶段 7 掉电相三 boot
-# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。79 标记载明
+# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。81 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读；
 # DF 自验的差分面同走覆写路径（RW.TXT 3000→2048→3000 双向，绝对 free 跨
@@ -1591,12 +1640,19 @@ echo "smoke: 毒环注入就位（$PWR_P）"
 
 # Boot C：毒环盘恢复终验——guest 标记（fsmgr/bsh fat 族 + DF/DIR/CD）+ 盘面双面。
 rotate_log
-echo "smoke: QEMU 启动（B4 掉电 Boot C：毒环恢复终验，无 netdev）"
+# sim-S2 A8：Boot C 加 serial1 + simdev 同线配对，毒环后注入电源类别非法帧；
+# A/B 两 boot 保持无门零扰动。sock 独立文件，避免复用 RX 相残留 server 路径。
+SIM_C_SOCK="$QMP_DIR/simc"
+rm -f "$SIM_C_SOCK"
+echo "smoke: QEMU 启动（B4 掉电 Boot C：毒环恢复终验 + A8 电源类别毒环，无 netdev）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
+  -fw_cfg name=opt/berry/simdev,string=1 \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
+  -serial mon:stdio \
+  -serial unix:"$SIM_C_SOCK",server=on,wait=off \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 # FAT/FATW 精确形（盘确定性：PATTERN 5000B / RW 3000B）；DF/CD 证明 resize
@@ -1618,6 +1674,22 @@ while :; do
     && fail "掉电 Boot C ${DEADLINE_BOOTC}s 标记未到齐（毒环恢复链断？），缺：$missing"
   sleep 1
 done
+# sim-S2 A8 电源类别毒环：未 init 非法类/错服务类/未知类 + stale/坏值连环
+# 注入，随后合法帧恢复。非法帧零持久腐蚀：last_seq 不推进、无 SIMBAT；恢复
+# 后恰 seq=1/2/3 三行。PWR_MARKERS 已先到齐 = 毒盘恢复链与系统活性在前。
+# 真正 lease/power·mode -EINVAL 仍归 berry-power（v2 面落）——本相只毒类别位。
+if ! python3 "$SCRIPT_DIR/siminj.py" "$SIM_C_SOCK" --profile a8; then
+  fail "sim-S2 A8 电源类别毒环/恢复对拍失败（查 SIM gate、simbattery 与 serial1）"
+fi
+kill -0 "$QEMU_PID" 2>/dev/null \
+  || fail "sim-S2 A8 注入后 QEMU 退出（毒环须零腐蚀且系统存活）"
+n_a8=$(grep -aoF 'SIMBAT ok seq=' "$LOG" | wc -l | tr -d ' ')
+grep -aqF 'SIMBAT ok seq=1' "$LOG" \
+  && grep -aqF 'SIMBAT ok seq=2' "$LOG" \
+  && grep -aqF 'SIMBAT ok seq=3' "$LOG" \
+  && [ "$n_a8" -eq 3 ] \
+  || fail "sim-S2 A8 标记形状错（须恰 seq=1/2/3 三行，实得 ${n_a8} 行）"
+echo "smoke: A8 电源类别毒环到齐（非法样本静默 + 恢复帧照打 + 系统存活）"
 # 盘取证前优雅退 + 等真退（P6 A-6 纪律）。
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -1631,4 +1703,4 @@ esac
 echo "smoke: B4 掉电相到齐（采样 A/B + 毒环注入 + 恢复终验 $PWR_C）"
 
 exec 3>&-
-echo "smoke: PASS（金丝雀 ${n:-0} 条诊断 + rootfs 相全链 + RX 交互相（SIMBAT 双正例 + ACK 四流 + RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + Boot C 恢复终验盘面 clean））"
+echo "smoke: PASS（金丝雀 ${n:-0} 条诊断 + rootfs 相全链 + RX 交互相（A4② PM 微相 PWRKEY 无主对照 + SIMBAT 双正例 + ACK 四流 + RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + A8 电源类别毒环 + Boot C 恢复终验盘面 clean））"

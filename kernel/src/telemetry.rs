@@ -32,8 +32,8 @@
 
 use berry_hal_aarch64::smp::cpu_id;
 use berry_hal_aarch64::wake_gen::{
-    WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB,
-    WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+    WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_POWER_KEY, WAKE_SRC_SGI_RESCHED,
+    WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
 };
 use berry_sched::{SwitchKind, Task, WakeReason};
 use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -388,6 +388,14 @@ fn on_wake(task: &Task, reason: WakeReason) {
         src != WAKE_SRC_UNKNOWN,
         "WAKE: 源=UNKNOWN 到达记账（未知 IRQ 不该有唤醒路径——src_of 漏臂或 cell 直写）"
     );
+    // sim-S2 A4②：POWER_KEY 同 NONE/UNKNOWN 写点纪律——v1 电源键恒无持有者
+    //（无 Event/wake_matching 面，通知槽回报恒 false），到达只许 IRQ 级计数；
+    // 此处到场 = 无主 IRQ 长出了唤醒路径（v2 电源服务面违约前置），L0 执行
+    // 在写点炸响（环侧 wake_check ⑤ 是事后审计面）。
+    assert!(
+        src != WAKE_SRC_POWER_KEY,
+        "WAKE: 源=POWER_KEY 到达记账（v1 电源键恒无唤醒路径——通知槽契约违约）"
+    );
     let now = berry_hal_aarch64::timer::cntvct();
     {
         let slot = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
@@ -545,15 +553,17 @@ pub fn wake_acct_conserved() -> bool {
 pub fn wake_src_class(src: u8) -> u16 {
     match src {
         WAKE_SRC_TIMER => WSRC_F_TIMER_CLASS,
-        WAKE_SRC_UART_RX => WSRC_F_IRQ_LINE,
+        WAKE_SRC_UART_RX | WAKE_SRC_POWER_KEY => WSRC_F_IRQ_LINE,
         WAKE_SRC_SGI_RESCHED | WAKE_SRC_SGI_TLB => WSRC_F_SGI_INTERNAL,
         _ => 0,
     }
 }
 
-/// 源值是否「可进环」的已定义唤醒源（NONE 哨兵 / UNKNOWN 只进 IRQ 级
-/// 到达计数、永不进环——写点 panic 在前，本谓词是环条目事后审计面；
-/// ktest 面）。未定义值（0x07–0x7E 预留段）恒 false。
+/// 源值是否「可进环」的已定义唤醒源（NONE 哨兵 / UNKNOWN / POWER_KEY
+/// 只进 IRQ 级到达计数、永不进环——写点 panic 在前，本谓词是环条目事后
+/// 审计面；ktest 面）。未定义值（0x08–0x7E 预留段——0x07 自 sim-S2 起为
+/// POWER_KEY 到达-only 占用）恒 false。POWER_KEY 有意不在白名单：v1 无主
+/// 到达恒无唤醒，若进环 = 写路径违约，wake_check ⑤ 在此收口。
 pub fn wake_src_valid(src: u8) -> bool {
     matches!(
         src,
@@ -572,7 +582,7 @@ pub fn wake_src_wakes(src: u8) -> u64 {
 }
 
 /// Σ 全槽 wakes（守恒断言左侧——只有已定义源可递增，NONE/UNKNOWN 写点
-/// panic 先拦，含 0x07–0x7E 未触槽）。
+/// panic 先拦；POWER_KEY 槽到达-only 不计 wakes，0x08–0x7E 未触）。
 pub fn wake_src_total_wakes() -> u64 {
     let mut sum = 0u64;
     for s in &WAKE_SRC_TABLE {

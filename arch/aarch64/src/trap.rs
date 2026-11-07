@@ -604,6 +604,16 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
                 }
             }
         }
+        crate::gic::IRQ_PL061 => {
+            // sim-S2 A4②（PM-16 §4.2）：PL061 电源键（SPI 7 → INTID 39）——
+            // v1 无主 IRQ 正向对照：power_key_irq 内 MIS 确认 + **ICR 清锁存
+            //（EOIR 前去活电平铁序——GIC 电平触发，线挂 MIS!=0，不 ICR 则
+            // EOIR 后立即重投）** + 通知槽（内核侧到达/no_waiter 双台账 +
+            // `PWRKEY unowned n=` 标记行）。恒无唤醒 ⇒ 无 woke-检查点面
+            //（uart 双臂的检查点在此结构性缺席——无等待者可醒）。
+            let _woke = crate::pl061::power_key_irq();
+            crate::gic::end(id);
+        }
         SGI_RESCHED_US => {
             // 义务⑧（S-3b b-1）接收侧半件：入队 SGI 不再只计数——tickful 核
             //（CPU0）经独立 SGI 槽快速重调度（跨核唤醒不再等整 tick；无

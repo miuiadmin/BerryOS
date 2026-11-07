@@ -1983,8 +1983,9 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 crate::telemetry::wake_src_merge_hal();
                 {
                     use berry_hal_aarch64::wake_gen::{
-                        WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_SGI_RESCHED,
-                        WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+                        WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_POWER_KEY,
+                        WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX,
+                        WAKE_SRC_UNKNOWN,
                     };
                     use crate::telemetry as tel;
                     // ① 守恒：双读稳定窗内 Σ槽 wakes == 独立总账。写序
@@ -2000,6 +2001,10 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                         "WAKESRC FAIL: NONE 槽 wakes ≠ 0");
                     assert!(tel::wake_src_wakes(WAKE_SRC_UNKNOWN) == 0,
                         "WAKESRC FAIL: UNKNOWN 槽 wakes ≠ 0");
+                    // sim-S2 A4②：POWER_KEY 到达-only 同款终检（写点 on_wake
+                    // 已 panic 在前，此处收口防线——wakes 恒 0 = 恒无持有者）。
+                    assert!(tel::wake_src_wakes(WAKE_SRC_POWER_KEY) == 0,
+                        "WAKESRC FAIL: POWER_KEY 槽 wakes ≠ 0（无主 IRQ 出现唤醒路径——A4② 契约违约）");
                     // ③ 环境活水兜底：TIMER（expire_timeouts ← on_irq_tick
                     //    全程在跑）与 IPC（任务语境基线）必有唤醒——零值
                     //    = 记账链断而非「静默全绿」。
@@ -2019,7 +2024,8 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                     let i = tel::wake_src_snapshot(WAKE_SRC_IPC);
                     let k = tel::wake_src_snapshot(WAKE_SRC_KERNEL_BOOT);
                     let x = tel::wake_src_snapshot(WAKE_SRC_UNKNOWN);
-                    for s in [t, u, r, l, i, k, x] {
+                    let pw = tel::wake_src_snapshot(WAKE_SRC_POWER_KEY);
+                    for s in [t, u, r, l, i, k, x, pw] {
                         if s.wakes > 0 || s.irq > 0 || s.no_waiter > 0 {
                             assert!(s.ts_domain == 0,
                                 "WAKESRC FAIL: src={} ts_domain={} ≠ 0", s.src, s.ts_domain);
@@ -2056,6 +2062,19 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                         berry_hal_aarch64::uart_put_dec(i.wakes);
                         berry_hal_aarch64::uart_puts(b" K=");
                         berry_hal_aarch64::uart_put_dec(k.wakes);
+                        // sim-S2 A4②：POWER_KEY 三段面（w/i/nw）。**boot 期快照
+                        // 面**——本行打印点在 watchdog 稳态窗收口（早于 smoke RX
+                        // 相的 QMP system_powerdown 注入数分钟），故 i/nw 在本行
+                        // 恒 0/0：其语义 = 「boot 期恒无持有者」的证据（非注入期
+                        // 数值面）。注入期数值面由 `PWRKEY unowned n=` 标记行承载
+                        // （读 telemetry no_waiter 台账 + smoke n∈[1,6] 值域门）；
+                        // 注入后读点挂 0x84 telemetry_open 终身面落地刀再补。
+                        berry_hal_aarch64::uart_puts(b" P=");
+                        berry_hal_aarch64::uart_put_dec(pw.wakes);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(pw.irq);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(pw.no_waiter);
                         berry_hal_aarch64::uart_puts(b" X=");
                         berry_hal_aarch64::uart_put_dec(x.wakes);
                         berry_hal_aarch64::uart_putc(b'/');
@@ -2071,6 +2090,26 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
         // 刀1 稳态窗：KERNEL_BOOT 冻结（round-over-round——watchdog 是任务
         // 语境，此断言 = 调度器启动后 boot 归因零复活）。
         wake_kb_freeze_round(&mut kb_wake_prev);
+        // sim-S2 A4①（PM-16 §4.2）：稳态窗逐醒因查持有者——①未知醒因
+        // 绝对零（任一未知 IRQ 号到达 = 归因面破洞，boot 起全程不许有，
+        // 非仅窗口内增量；trap.rs 未知臂首 4 loud `irq? id=` 是人肉排查面）；
+        // ②唤醒环归因合法性（wake_check ⑤：环内每条源 ∈ 可进环白名单——
+        // NONE/UNKNOWN/POWER_KEY 到达-only 源进环即红）。trace off 时环
+        // 记录面已关（复检无对象），只留 ①；BLOCK_BOOT_DONE 前 boot 双路径
+        // 未落环，同 4-0 断言的置位前提。
+        assert_eq!(
+            berry_hal_aarch64::wake::unknown_arrivals(),
+            0,
+            "A4① FAIL: 未知醒因到达 ≠ 0（无主 IRQ 漏归因——查串口 irq? id= 行）"
+        );
+        if crate::BLOCK_BOOT_DONE.load(core::sync::atomic::Ordering::Relaxed)
+            && !crate::telemetry::trace_off()
+        {
+            assert!(
+                crate::telemetry::wake_check(),
+                "A4① FAIL: 稳态窗唤醒环含无主/非法归因源（wake_check ⑤）"
+            );
+        }
         berry_hal_aarch64::kern_lock::klock_exit();
     }
     panic!("G1.5 FAIL: 超时（kills={} drained={}）", berry_sched::user_kills(), last_puts);

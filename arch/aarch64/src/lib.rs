@@ -18,6 +18,7 @@ pub mod lockdep;
 mod mmio;
 mod mmu;
 mod paging;
+pub mod pl061;
 pub mod smp;
 pub mod syscall;
 pub mod task;
@@ -52,6 +53,13 @@ pub const UART0_BASE: usize = 0x0900_0000;
 ///（GUI P2 `opt/berry/display` 同款拓扑真值纪律；justfile 同一行配 serial1+键，
 /// 裸跑/EFI 零扰动）——门开才许碰此基址。virt 机型稳定 ABI（virt-2.4 起未变）。
 pub const UART1_BASE: usize = 0x0904_0000;
+/// QEMU `virt` PL061 GPIO 基址（sim-S2 A4②：电源键通道——GPIO3 = QMP
+/// `system_powerdown` 脉冲，SPI 7 → GIC INTID 39）。与 UART1 的关键差异：
+/// PL061 是**板级常在设备**（非 `-serial` 配置依赖）——内核面在席门仍与
+/// UART1 同线（fw_cfg `opt/berry/simdev` 注入族策略门，PM-16 §2/§3）：门开
+/// 才使能 SPI 39，裸跑/EFI 零扰动。同落 2MiB Device 块（`mmu.rs
+/// build_boot_pt` 已覆盖），零页表工作。
+pub const PL061_BASE: usize = 0x0903_0000;
 /// GICv2 distributor 基址（QEMU `virt`）。
 pub const GICD_BASE: usize = 0x0800_0000;
 /// GICv2 CPU interface 基址（QEMU `virt`）。

@@ -27,8 +27,8 @@
 use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use crate::wake_gen::{
-    WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB,
-    WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+    WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_POWER_KEY, WAKE_SRC_SGI_RESCHED,
+    WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
 };
 
 /// per-CPU cell 数（QEMU virt `-smp 2` 钉 2——canary 表同口径）。
@@ -81,6 +81,9 @@ pub(crate) fn src_of(id: u32) -> u8 {
         // sim-S1：UART1 与 UART0 同 U 类**归并不拆**（PL011 同设备类；设计
         // 文档 §3 裁决——per-UART 粒度归 0x84 telemetry_open 终身面）。
         crate::gic::IRQ_PL1_RX => WAKE_SRC_UART_RX,
+        // sim-S2 A4②：电源键——到达-only 源（无主 IRQ：IRQ 级记账 + no_waiter
+        // 台账，恒无唤醒、永不进环；v2 电源管理服务醒面落地后才可进环）。
+        crate::gic::IRQ_PL061 => WAKE_SRC_POWER_KEY,
         SGI_RESCHED_US => WAKE_SRC_SGI_RESCHED,
         SGI_TLB_US => WAKE_SRC_SGI_TLB,
         _ => WAKE_SRC_UNKNOWN,

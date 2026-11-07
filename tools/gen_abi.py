@@ -93,6 +93,14 @@ def c_value(expr: str) -> str:
     raise Fail(f"abi.toml: right.expr 无 C 宏映射（只收 `1 << N` / `u64::MAX` / 整数字面）：{expr!r}")
 
 
+def next_free_wakesrc(wv: dict) -> int | None:
+    """号段下一个空闲号（0x01–0x7E 最小未占；NONE/UNKNOWN 两语义锚永不入
+    空闲集）。报错文案与 wake_gen 头注共用——空闲段活算而非硬抄区间，
+    再占一号不需回头改文案（sim-S2 审查裁决：0x07=POWER_KEY 后三处
+    『预留段 0x07–0x7E』旧文全数漂移，根因即硬编码区间）。"""
+    return next((v for v in range(1, 0x7F) if v not in wv.values()), None)
+
+
 # ---------------------------------------------------------------- 装载 + 校验
 
 def load() -> dict:
@@ -152,8 +160,10 @@ def load() -> dict:
     wv = {w["name"]: eval_expr(w["expr"]) for w in d["wakesrc"]}
     for name, val in wv.items():
         if not 0 <= val <= 0x7F:
+            free = next_free_wakesrc(wv)
+            hint = f"下一位空闲 0x{free:02X}" if free is not None else "号段已满"
             raise Fail(f"abi.toml: wakesrc {name}={val} 出值域（u8 且 ≤ 0x7F——"
-                       "0x7F 即 UNKNOWN 锚，预留段 0x07–0x7E 追加用）")
+                       f"0x7F 即 UNKNOWN 锚，{hint}；占用以在册为准）")
     for anchor, want in (("NONE", 0x00), ("UNKNOWN", 0x7F)):
         if wv.get(anchor) != want:
             raise Fail(f"abi.toml: wakesrc 语义锚 {anchor}=0x{want:02X} 缺失或变值"
@@ -352,7 +362,10 @@ def gen_arch_rs(d: dict) -> str:
     telemetry_open 快照面）从同 toml 段再生——本刀只冻形状不实现。"""
     L = list(GEN_HEADER)
     L.append("//! 唤醒源枚举（`tools/abi.toml` [[wakesrc]]；add-only——新源只追加，")
-    L.append("//! 不改值/不改义/不复用退役值，值域 u8 ≤ 0x7F，预留段 0x07–0x7E）。")
+    wv = {w["name"]: eval_expr(w["expr"]) for w in d["wakesrc"]}
+    free = next_free_wakesrc(wv)
+    hint = f"下一位空闲 0x{free:02X}" if free is not None else "号段已满"
+    L.append(f"//! 不改值/不改义/不复用退役值，值域 u8 ≤ 0x7F，{hint}，占用以在册为准）。")
     L.append("//! 消费：`wake.rs`（per-CPU cell 初值）+ `trap.rs`（IRQ 臂 IAR→源")
     L.append("//! 映射）；内核 telemetry per-source 记账同名常量直引。语义协议详注 →")
     L.append("//! research/pm-notes/刀1-前置两问-裁决.md §5（PM-17 终审问①裁 A1）。")

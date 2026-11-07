@@ -36,8 +36,8 @@ nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端�
                      # 35/39/38 三口径打架的文档面；PM-17 终审 §4 裁 B 机制）
 
 # ---- 唤醒源枚举（刀 1：内核 wakeup 记账面；PM-17 终审问①裁 A1 静态穷举）----
-# add-only 纪律：新源只追加（不改值/不改义/不复用退役值）；0x07–0x7E 为预留段，
-# 值域 u8 且 ≤ 0x7F。生成：arch/aarch64/src/wake_gen.rs（第五产物）；内核
+# add-only 纪律：新源只追加（不改值/不改义/不复用退役值）；0x08–0x7E 为预留段
+#（0x07 自 sim-S2 A4② 起为 POWER_KEY 占用），值域 u8 且 ≤ 0x7F。生成：arch/aarch64/src/wake_gen.rs（第五产物）；内核
 # telemetry per-source 记账与用户侧 berry-power（0x84 telemetry_open 快照面，
 # 落地刀再生用户侧常量——本刀只冻形状）同源同值。语义详注 →
 # research/pm-notes/刀1-前置两问-裁决.md §5 与 docs/内核唤醒记账设计（刀 1 落库）。
@@ -70,6 +70,10 @@ desc = 'SGI 2（TLB shootdown 收端——无唤醒路径，只计到达）。'
 name = "IPC"
 expr = "0x06"
 desc = '任务语境基线：SVC/同步异常/内核任务（note_switch 切入即设）语境的一切 wake_matching 唤醒。'
+[[wakesrc]]
+name = "POWER_KEY"
+expr = "0x07"
+desc = 'PL061 GPIO3 电源键（sim-S2 A4②：QEMU virt gpio-keys/poweroff，SPI 7=GIC INTID 39，QMP system_powerdown 脉冲）。v1 无主到达：只进 IRQ 级记账 + no_waiter 台账（unowned），恒无唤醒——永不进环（wake_src_valid 有意不含本源，到达-only 三号位与 NONE/UNKNOWN 同类；进环即 wake_check ⑤ 红）。'
 [[wakesrc]]
 name = "UNKNOWN"
 expr = "0x7F"

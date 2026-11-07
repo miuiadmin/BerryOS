@@ -1794,6 +1794,15 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽；fw_cfg 门开 = 第二 serial
         // 已配、设备在席（0x0904_0000 非洞）。
         unsafe { berry_hal_aarch64::uart::uart1_init() };
+        // sim-S2 A4②：PL061 电源键接线（同门同窗——PL061 板级常在但裸跑/EFI
+        // 零扰动，策略门与 UART1 同线）。次序硬约束同 UART1：通知槽先注册、
+        // `pl061_init` 内 IMSC 等价面（GPIO_IE）最后开——首脉冲即真到达时
+        // 记账/标记面已就位。SPI 39 不在路由表时 init 内 loud 让位（拓扑
+        // 漂移在 enable 处炸响，不静默）。
+        berry_hal_aarch64::pl061::set_pl061_notify(pl061_notify);
+        // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽；PL061 板级常在（0x0903_0000
+        // 恒非洞）——门只裁「是否使能」，不裁「是否存在」。
+        unsafe { berry_hal_aarch64::pl061::pl061_init() };
         berry_hal_aarch64::uart_puts(b"SIM gate on\n");
     }
     // S-1 副核 bring-up（`SMP设计草案.md` §3.2/§4）：窗口 = DAIF 屏蔽尾窗
@@ -2509,6 +2518,41 @@ unsafe extern "C" fn uart1_notify() -> bool {
         // 只回报不检查点（F1 定谳——检查点在 trap 臂 EOIR 后）。
         n > 0
     }
+}
+
+/// 「PL061 电源键到达」通知（HAL `exception_irq` SPI39 臂 → `pl061::power_
+/// key_irq` 经槽调；调用语境与 [`uart1_notify`] 同：IRQ 上下文 PSTATE.I=1、
+/// pre-EOI——ICR 去活在槽调用方已完成）。v1 无主 IRQ 正向对照（A4②）：
+/// 电源管理服务 v2 才落，**恒无等待者/恒无唤醒**——无 Event 置位、无
+/// wake_matching，只做双台账：到达 `note_irq_arrival`（POWER_KEY，IRQ 级）
+/// + no_waiter `note_irq_no_waiter`（结构性无主——每次到达都记，与
+/// uart1_notify 的「n==0 才记」语义不同）；回报恒 false（trap 臂无
+/// woke-检查点面）。标记行 `PWRKEY unowned n=` 的数值**读自 telemetry
+/// no_waiter 台账**（记账为 unowned 的验收本体——telemetry 被拆/漏记时
+/// n=0 直红，本地计数器会让变异假绿，审查裁决改源）。打印门 = trap.rs
+/// 未知臂同款 preempt_count 门（count>0 = 被打断者可能在 PRINT_LOCK 窗
+/// 内，裸取 = 同核自旋等不可运行者自死锁——只记账让位；QMP 重注入可补拍
+/// 标记行，台账不丢）。
+unsafe extern "C" fn pl061_notify() -> bool {
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_POWER_KEY,
+        berry_hal_aarch64::timer::cntvct(),
+    );
+    crate::telemetry::note_irq_no_waiter(berry_hal_aarch64::wake_gen::WAKE_SRC_POWER_KEY);
+    let in_preempt_window = berry_hal_aarch64::smp::preempt_count_slot()
+        .map_or(false, |c| c.load(core::sync::atomic::Ordering::Relaxed) > 0);
+    if !in_preempt_window {
+        let n = crate::telemetry::wake_src_snapshot(
+            berry_hal_aarch64::wake_gen::WAKE_SRC_POWER_KEY,
+        )
+        .no_waiter;
+        berry_hal_aarch64::kern_lock::print_lock();
+        berry_hal_aarch64::uart_puts(b"PWRKEY unowned n=");
+        berry_hal_aarch64::uart_put_dec(n);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::kern_lock::print_unlock();
+    }
+    false
 }
 
 /// 清 UART1 RX Event 位（task_simcon 消费包络内调；`rx_ev_clear` 同形——

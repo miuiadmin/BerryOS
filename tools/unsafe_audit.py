@@ -70,6 +70,7 @@ FILE_DEFAULTS = {
     "arch/aarch64/src/uart.rs": "MMIO",
     "arch/aarch64/src/gic.rs": "MMIO",
     "arch/aarch64/src/timer.rs": "MMIO",
+    "arch/aarch64/src/pl061.rs": "MMIO",
     "arch/aarch64/src/fwcfg.rs": "MMIO",
     "arch/aarch64/src/smp.rs": "MMIO",
     # 分配器：SlabHeap/GlobalAlloc/freelist/Task Box 分配基元
@@ -93,7 +94,7 @@ CONTENT_RULES = (
     (r'asm!\(\s*"(msr|mrs|dsb|isb|tlbi|wfi|sev|hvc|smc|sti|cli|hlt|out |in |rdmsr|wrmsr|mov %cr)',
      "MMIO"),
     (r"\boutb\b|\binb\b|\brdmsr\b|\bwrmsr\b", "MMIO"),
-    (r"timer::|uart::|gic::|mmio::", "MMIO"),
+    (r"timer::|uart::|gic::|mmio::|pl061::", "MMIO"),
     (r"mmu::", "页表"),
     (r"\bFRAMES\b", "分配器"),
 )
