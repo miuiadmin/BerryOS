@@ -49,6 +49,8 @@ pub fn run() {
     test_suspend_negative();
     test_billing_overflow();
     test_sched_attr_negative();
+    test_sched_perf();
+    test_sched_fairness();
     test_sched_attr();
     test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
@@ -3153,6 +3155,130 @@ fn test_sched_attr_negative() {
 
     let _ = mk_attr; // 消 unused 警
     berry_hal_aarch64::uart_puts(b"ATTR-NEG-K ok\n");
+}
+
+/// 1.1 性能基准：调度器核心操作 cycles 开销（CNTVCT 前后差）。
+/// 供 tools/sched_perf_analyze.py 对照验收标准（记账 <1% / freeze <5ms / pick <5µs@1k）。
+fn test_sched_perf() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo};
+
+    extern "C" fn perf_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8]) -> &'static mut Task {
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(perf_dummy, 0, name, 0, 0))
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // —— pick_next 开销：8 任务环 ×1000 次 ——
+    let tasks: alloc::vec::Vec<&'static mut Task> = (0..8).map(|i| {
+        mk(b"perf".as_slice())
+    }).collect::<alloc::vec::Vec<_>>();
+    // 先收集再入环（所有权）。
+    let mut refs: alloc::vec::Vec<*mut Task> = alloc::vec::Vec::new();
+    for t in tasks {
+        refs.push(t as *mut Task);
+    }
+    for r in &refs {
+        unsafe { rr.enqueue(&mut **r, &mut rq) };
+    }
+
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    for i in 0..1000u64 {
+        if let Some(p) = rr.pick_next(&rq, &topo) {
+            // 轮转：给选中者推高 VD 防连选。
+            p.vdeadline = 1000 + i;
+        }
+    }
+    let dt_pick = berry_hal_aarch64::timer::cntvct() - t0;
+    let avg_pick = dt_pick / 1000;
+    berry_hal_aarch64::uart_puts(b"PERF pick avg=");
+    berry_hal_aarch64::uart_put_dec(avg_pick);
+    berry_hal_aarch64::uart_puts(b" n=1000\n");
+
+    // —— freeze/thaw 开销：2 任务 ×100 次 ——
+    let ft = mk(b"fz".as_slice());
+    ft.pinned = 0x1000;
+    rr.enqueue(&mut *ft, &mut rq);
+    let t1 = berry_hal_aarch64::timer::cntvct();
+    for _ in 0..100 {
+        let _ = berry_sched::freeze_by_pinned(0x1000);
+        berry_sched::thaw_by_pinned(0x1000);
+    }
+    let dt_fz = berry_hal_aarch64::timer::cntvct() - t1;
+    let avg_fz = dt_fz / 200; // 100 freeze + 100 thaw = 200 ops
+    berry_hal_aarch64::uart_puts(b"PERF freeze avg=");
+    berry_hal_aarch64::uart_put_dec(avg_fz);
+    berry_hal_aarch64::uart_puts(b" n=200\n");
+
+    // —— billing_charge 开销：×1000 次 ——
+    let t2 = berry_hal_aarch64::timer::cntvct();
+    for _ in 0..1000 {
+        crate::telemetry::billing_charge(0xF00D, 100);
+    }
+    let dt_bl = berry_hal_aarch64::timer::cntvct() - t2;
+    let avg_bl = dt_bl / 1000;
+    berry_hal_aarch64::uart_puts(b"PERF billing avg=");
+    berry_hal_aarch64::uart_put_dec(avg_bl);
+    berry_hal_aarch64::uart_puts(b" n=1000\n");
+
+    berry_hal_aarch64::uart_puts(b"PERF-K ok\n");
+}
+
+/// 1.1 公平性：4 等权任务 ×100 轮 pick——各任务选中次数偏差 ≤20。
+fn test_sched_fairness() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo};
+
+    extern "C" fn fair_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // 4 等权任务。
+    let names: [&'static [u8]; 4] = [b"fa".as_slice(), b"fb".as_slice(), b"fc".as_slice(), b"fd".as_slice()];
+    let mut ptrs: alloc::vec::Vec<*mut Task> = alloc::vec::Vec::new();
+    for n in names {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(fair_dummy, 0, n, 0, 0));
+        ptrs.push(t as *mut Task);
+    }
+    for p in &ptrs {
+        unsafe { rr.enqueue(&mut **p, &mut rq) };
+    }
+
+    // 100 轮 pick + 计数（指针身份定位）。
+    let mut hits = [0usize; 4];
+    for i in 0..100u64 {
+        if let Some(p) = rr.pick_next(&rq, &topo) {
+            let pp = p as *mut Task;
+            for (j, base) in ptrs.iter().enumerate() {
+                if core::ptr::eq(*base, pp) {
+                    hits[j] += 1;
+                    break;
+                }
+            }
+            // 轮转：推 VD 让下一轮选别人。
+            unsafe { (*pp).vdeadline = 100 + i };
+        }
+    }
+
+    let spread = hits.iter().max().unwrap() - hits.iter().min().unwrap();
+    berry_hal_aarch64::uart_puts(b"FAIR-K spread=");
+    berry_hal_aarch64::uart_put_dec(spread as u64);
+    berry_hal_aarch64::uart_puts(b" hits=[");
+    for h in hits {
+        berry_hal_aarch64::uart_put_dec(h as u64);
+        berry_hal_aarch64::uart_puts(b",");
+    }
+    berry_hal_aarch64::uart_puts(b"]\n");
+    assert!(spread <= 20,
+        "FAIR：等权 4 任务 100 轮偏差须 ≤20（实测 {}）", spread);
 }
 
 /// 1.1 §4.5 CMP 验收——单比较器全序 property（ktest 形态）。
