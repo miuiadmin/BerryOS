@@ -472,6 +472,86 @@ pub extern "C" fn berry_thread_yield() -> Status {
     unsafe { sys(nr::THREAD_YIELD, 0, 0, 0, 0, 0, 0) }
 }
 
+// —— 策略注入（S6-b 最小版：0x83 COMMIT 面——机制在内核、策略可插拔的带内接口）——
+
+/// 用户态策略表条目（16B——与内核 `PolicyEntryABI`（`kernel/src/syscall.rs`）
+/// 逐字段一致，`#[repr(C)]` 镜像；内核侧按 LE 字节流手工解码，偏移即 ABI）。
+///
+/// `weight` 内核侧夹紧 ±64（包络执法，不信任注入方自律）；0 键/重复/溢出由
+/// `bind_gen` first-wins 语义丢弃；`_rsv`/未定义 `epp_flags` 位非 0 → -EINVAL
+/// （options 纪律，调用方可清零修复）；单次收表 ≤ 128 条（`TBL_MAX` 限流 →
+/// -E2BIG，诚实拒收不静默截断）。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PolicyEntry {
+    pub key: u64,
+    pub weight: i32,
+    pub placement: u8,
+    /// bit0 = `POLICY_EPP_HAS`（带 EPP 覆盖），bit1 = `POLICY_EPP_VAL`
+    /// （0 = Efficiency / 1 = Perf）；bit2.. 未定义（非 0 → -EINVAL）。
+    pub epp_flags: u8,
+    pub _rsv: u16,
+}
+const _: () = assert!(core::mem::size_of::<PolicyEntry>() == 16);
+const _: () = assert!(core::mem::align_of::<PolicyEntry>() == 8);
+// C-2a 钉板：偏移逐字段钉死（对内核 copy_from_user 后 from_le_bytes 的
+// 手工解码位对位——key@0/weight@8/placement@12/epp_flags@13/_rsv@14）。
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(PolicyEntry, key) == 0);
+    assert!(offset_of!(PolicyEntry, weight) == 8);
+    assert!(offset_of!(PolicyEntry, placement) == 12);
+    assert!(offset_of!(PolicyEntry, epp_flags) == 13);
+    assert!(offset_of!(PolicyEntry, _rsv) == 14);
+};
+
+/// `PolicyEntry.epp_flags` bit0：本条带 EPP 覆盖（bit1 才有意义）。
+/// 镜像内核 `PE_EPP_HAS`（其又镜像 `sched/policy.rs` 私有 EPP_HAS）。
+pub const POLICY_EPP_HAS: u8 = 1 << 0;
+/// `PolicyEntry.epp_flags` bit1：EPP 取值（0 = Efficiency / 1 = Perf）。
+/// 镜像内核 `PE_EPP_VAL`。
+pub const POLICY_EPP_VAL: u8 = 1 << 1;
+
+/// `op = 1`：COMMIT——整表提交为活跃策略快照（S6-b 最小版唯一 op，其他 op
+/// → -ENOTSUP；BIND/STATUS/PROMOTE/DEMOTE/UNBIND 随 S6-c）。
+pub const POLICY_OP_COMMIT: u64 = 1;
+
+/// 0x83：v3 号提前实现（S6-b 最小 COMMIT 面）。abi.toml 在册但 stage=v3——
+/// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::POLICY_BIND` 不存在，
+/// 故本文件私有字面量封 svc（v3 常量层落地后换 `nr::` 常量名——同内核派发注）。
+const POLICY_BIND_NR: usize = 0x83;
+
+/// `berry_policy_bind(auth, op, tbl, count, gen, rsv)`（0x83，S6-b 最小版）：
+/// 用户态策略表注入（x1..x6 依次 = 六参）。
+///
+/// op=COMMIT：`tbl` = `&[PolicyEntry]` 首址、`count` = 条目数（0 = 空表提交
+/// 合法——「接口在位、表空」）；内核 copy_from_user 整表拷入（无 TOCTOU）后
+/// 逐条转换提交。`gen` = 世代数，**陈旧拒收**：gen ≤ 活跃世代 → -EAGAIN
+/// （写者重放/乱序到达的旧表不得覆盖新表；活跃快照未动，调用方对账 gen 后
+/// 携新 gen 重试）。v1 无 handle 需求（系统全局单通道；SET_POLICY 门控随
+/// S6-c Job 对象落地）——`auth` 预留不消费，`rsv` 须 0（非 0 → -EINVAL）。
+#[no_mangle]
+pub extern "C" fn berry_policy_bind(
+    auth: Handle,
+    op: u64,
+    tbl: *const PolicyEntry,
+    count: u64,
+    gen: u64,
+    rsv: u64,
+) -> Status {
+    unsafe {
+        sys(
+            POLICY_BIND_NR,
+            auth as usize,
+            op as usize,
+            tbl as usize,
+            count as usize,
+            gen as usize,
+            rsv as usize,
+        )
+    }
+}
+
 // —— IPC / event ——
 
 /// 一次建一对端点（两端均授 SEND|RECV|DUPLICATE）；出参先置 0 再写新值
