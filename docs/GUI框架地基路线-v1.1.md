@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.0**｜2026-11-08
+> 版本：**1.1**｜2026-11-08
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -38,7 +38,7 @@ App：业务状态、数据读取、页面语义
  ↓
 berry-ui：描述式 UI / 状态失效 / 布局 / 主题 / 组件
  ↓
-berry-shell：Native Shell 宿主（WM、窗口、frame、输入、生命周期）
+berry-room：Berry Room 应用运行室（WM、窗口、frame、输入、生命周期）
  ↓
 berry-gfx：纯光栅与字形绘制
  ↓
@@ -50,7 +50,7 @@ gui-wmd / guifbd / gui-inputd：窗口、呈现、输入服务
 ```text
 berry-gfx 不认识 app、窗口、主题或业务
 berry-ui 不收发 WM RPC，不映射 VMO
-berry-shell 不定义业务页面
+berry-room 不定义业务页面
 App 不直接操作 channel、VMO、stride 或像素
 ```
 
@@ -60,11 +60,11 @@ App 不直接操作 channel、VMO、stride 或像素
 |---|---|---|
 | `berry-gfx` | 纯绘制：矩形、圆角、圆、字形、图像、混合、显示列表 | 不处理 WM、输入、布局、主题或业务状态 |
 | `berry-ui` | 保留树、状态失效、布局、命中测试、主题 token、组件、页面模型 | 不直接调用 syscall，不持有 WM endpoint，不写 app 业务 |
-| `berry-shell` | APP env 解析、WM 连接、字体供给、窗口与 frame VMO、输入循环、frame callback、销毁生命周期 | 不绘制业务 UI，不定义控件样式 |
+| `berry-room` | APP env 解析、WM 连接、字体供给、窗口与 frame VMO、输入循环、frame callback、销毁生命周期 | 不绘制业务 UI，不定义控件样式 |
 | GUI 服务 | 窗口/呈现/输入所有权与仲裁 | 不为了某个 app 特判 |
 | App | 状态、业务数据、页面描述、消息处理 | 不手写像素、不手写 WM RPC、不复制主题常量 |
 
-现有 `berry-nshfont` 是 Native Shell 迁移期的临时客户端/基元集合。地基完成后，其映射能力归 `berry-shell`，绘制基元归 `berry-gfx`，文本与控件消费归 `berry-ui`，该 crate 必须退役，不得成为第三套 UI 框架。
+`berry-nshfont` 是五个迁移前 Native Shell 的临时客户端/基元集合。字形 VMO 映射已归 `berry-room`；F9 时绘制基元归 `berry-gfx`、文本与控件消费归 `berry-ui`，该 crate 删除，不得成为第三套 UI 框架。
 
 ## §2 地基优先里程碑
 
@@ -73,12 +73,12 @@ App 不直接操作 channel、VMO、stride 或像素
 | 里程碑 | 交付 | 出口门 |
 |---|---|---|
 | **F0 路线冻结** | 本路线 + `规则/14-GUI与UI框架.md` | GUI 工作按本表排刀；Camera/MMS 等新 app 停止扩张 |
-| **F1 Shell 宿主** | `berry-shell`：抽取五个 Native Shell 重复的 WM、frame、字体、输入、销毁生命周期 | 一个不写像素的 host probe 完成窗口、帧、输入、销毁全链；现有五 app 仍可运行 |
+| **F1 Berry Room 宿主** | `berry-room`：抽取五个 Native Shell 重复的 WM、frame、字体、输入、销毁生命周期 | 一个不写像素的 host probe 完成窗口、帧、输入、销毁全链；现有五 app 仍可运行 |
 | **F2 UI core 夯实** | 盘点并补齐 `berry-ui` 保留树、布局、状态失效、命中测试、文本测量与 dirty 语义 | host 单测 + 离屏 golden + 布局 dump + hit-test dump 全绿；冻结 SDK 侧最小接口 |
 | **F3 主题与基元** | 主题 token、排版、间距、圆角、阴影、颜色、按压/禁用/选中态；`berry-gfx` 基件单源化 | 同一描述在 800×600 与 1080×1920 得到正确布局；禁止 app 硬编码视觉常量 |
 | **F4 组件第一版** | Scaffold、AppBar、Card、Column、Row、Text、Icon、Button、ListItem、Switch、Divider、Scroll、EmptyState | 每组件有布局、状态、hit-test 与离屏视觉测试 |
 | **F5 UI 系统验收 app** | `uitest` 覆盖组件、主题、滚动、状态与返回栈 | 新 GUI 冒烟关卡同时验证标记、帧、截图像素、布局 dump 与输入命中 |
-| **F6 Settings 迁移** | Settings 改为 `berry-shell + berry-ui` | 源码不再出现 WM RPC、VMO 映射或像素绘制；真实状态切换与重绘行为不回退 |
+| **F6 Settings 迁移** | Settings 改为 `berry-room + berry-ui` | 源码不再出现 WM RPC、VMO 映射或像素绘制；真实状态切换与重绘行为不回退 |
 | **F7 Files/Contacts 迁移** | 列表/详情/收藏/文件读取迁到 UI SDK | READDIR/STAT/GET 真链保留；UI 与数据边界清晰 |
 | **F8 Photos/Browser 迁移** | 图像网格、查看页、URL pill、诚实状态页迁移 | 5000B 图像与 owner-local 输入真链保留 |
 | **F9 收口与守卫** | 删除迁移期重复客户端，静态守卫入 CI | Native Shell app 无直接 syscall/像素绘制；rootfs 在帽内；文档与 SDK 示例同步 |
@@ -112,7 +112,7 @@ frame stride 计算
 ```text
 修复阻断性缺陷
 保持既有冒烟与真链行为
-为抽取 berry-shell 提供对照样本
+为抽取 berry-room 提供对照样本
 ```
 
 不得继续新增手写控件、手写页面或新的视觉体系。

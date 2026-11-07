@@ -8,7 +8,7 @@ Status: implemented — 2026-11-08 用户裁决地基优先；路线已入 docs 
 
 ## Decision
 
-GUI 执行序改为地基优先：先建 `berry-shell`、夯实 `berry-ui` core、主题与基础组件，再用 `uitest` 验收框架，最后迁移 Settings、Files/Contacts、Photos/Browser。`docs/GUI框架地基路线-v1.0.md` 是执行序权威，`docs/规则/14-GUI与UI框架.md` 是开工铁律。现有五个 Native Shell 只作迁移前兼容基线，不能作为新 app 模板。
+GUI 执行序改为地基优先：先建 `berry-shell`、夯实 `berry-ui` core、主题与基础组件，再用 `uitest` 验收框架，最后迁移 Settings、Files/Contacts、Photos/Browser。`docs/GUI框架地基路线-v1.1.md` 是执行序权威，`docs/规则/14-GUI与UI框架.md` 是开工铁律。现有五个 Native Shell 只作迁移前兼容基线，不能作为新 app 模板。
 
 ## Alternatives considered
 
@@ -22,5 +22,5 @@ GUI 目标形态与既有 ADR 不变；变化的是实施顺序。F6 起 GUI app
 
 ## Related
 
-- [GUI框架地基路线-v1.0.md](../../../docs/GUI框架地基路线-v1.0.md)
+- [GUI框架地基路线-v1.1.md](../../../docs/GUI框架地基路线-v1.1.md)
 - [14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)

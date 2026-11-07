@@ -14,7 +14,7 @@ name = "berry-manifest"
 version = "0.1.0"
 
 [[package]]
-name = "berry-shell"
+name = "berry-room"
 version = "0.1.0"
 dependencies = [
  "berry-guiproto",
@@ -29,5 +29,5 @@ version = "0.1.0"
 name = "uitest"
 version = "0.1.0"
 dependencies = [
- "berry-shell",
+ "berry-room",
 ]

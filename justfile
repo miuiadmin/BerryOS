@@ -162,7 +162,7 @@ build-user:
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/contacts/Cargo.toml \
         --target aarch64-unknown-none
-    # GUI F1：uitest 只消费 berry-shell，不写像素/WM RPC/VMO。
+    # GUI F1：uitest 只消费 berry-room，不写像素/WM RPC/VMO。
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/uitest/Cargo.toml \
         --target aarch64-unknown-none
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
@@ -303,7 +303,7 @@ build-user:
     cp -R bins/appstub/apps/CONTACTS/icons userbins/app-stage/CONTACTS/
     cp -R bins/appstub/apps/CONTACTS/views userbins/app-stage/CONTACTS/
     python3 ../tools/mkapp.py userbins/app/CONTACTS.bap userbins/app-stage/CONTACTS
-    # GUI F1 host probe：无 UI 资产、无像素路径，只验证 berry-shell 真链。
+    # GUI F1 host probe：无 UI 资产、无像素路径，只验证 Berry Room 真链。
     mkdir -p userbins/app-stage/UITEST/bin
     cp bins/uitest/manifest.toml userbins/app-stage/UITEST/
     cp cargo-target/aarch64-unknown-none/release/uitest userbins/app-stage/UITEST/bin/uitest

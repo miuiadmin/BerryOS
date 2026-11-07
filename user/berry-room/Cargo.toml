@@ -1,8 +1,8 @@
 [package]
-name = "berry-shell"
+name = "berry-room"
 version = "0.1.0"
 edition = "2021"
-# GUI F1：Native Shell 宿主单一事实源——APP env/WM session/系统字体/窗口
+# GUI F1：Berry Room 应用运行室单一事实源——APP env/WM session/系统字体/窗口
 # frame VMO/present/input/destroy 生命周期归此，不绘制业务 UI。
 license = "Apache-2.0"
 

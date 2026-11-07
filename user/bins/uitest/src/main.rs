@@ -1,13 +1,13 @@
-//! UITEST —— GUI F1 的 NativeShellHost 真链探针。
+//! UITEST —— GUI F1 的 AppRoom 真链探针。
 //!
 //! 本 app 故意不写像素、不包含 GUI wire 编解码、不映射 VMO。它只驱动
-//! `berry-shell` 完成 env → WM session → 窗口 → 零页 frame → 输入 →
+//! `berry-room` 完成 env → WM session → 窗口 → 零页 frame → 输入 →
 //! destroy → exit，作为后续 UI SDK 迁移的宿主契约样本。
 
 #![no_std]
 #![no_main]
 
-use berry_shell::{NativeShellHost, ShellConfig};
+use berry_room::{AppRoom, RoomConfig};
 
 fn append_decimal(out: &mut [u8], mut value: u32) -> usize {
     let mut digits = [0u8; 10];
@@ -58,65 +58,65 @@ fn input_line(x: u32, y: u32) -> ([u8; 48], usize) {
     (line, n + 1)
 }
 
-fn fail(host: &NativeShellHost, what: &str) -> ! {
+fn fail(room: &AppRoom, what: &str) -> ! {
     let mut line = [0u8; 64];
     let head = b"uitest: ";
     line[..head.len()].copy_from_slice(head);
     let n = head.len() + what.len().min(line.len() - head.len());
     line[head.len()..n].copy_from_slice(&what.as_bytes()[..n - head.len()]);
-    host.print(&line[..n]);
-    host.exit(134)
+    room.print(&line[..n]);
+    room.exit(134)
 }
 
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(env_ch: u32) -> ! {
-    let config = ShellConfig {
+    let config = RoomConfig {
         argv0: b"bin/uitest",
         uses_fs: false,
     };
-    let mut host = match NativeShellHost::connect(env_ch, config) {
-        Ok(host) => host,
+    let mut room = match AppRoom::connect(env_ch, config) {
+        Ok(room) => room,
         Err(_) => {
             // env 失败时没有可靠 console；非 0 退出让标记缺失兜底。
-            berry_shell::panic_exit(134)
+            berry_room::panic_exit(134)
         }
     };
-    host.print(b"UITEST up\n");
-    let (width, height) = match host.open_window() {
+    room.print(b"UITEST up\n");
+    let (width, height) = match room.open_window() {
         Ok(size) => size,
-        Err(e) => fail(&host, e.as_str()),
+        Err(e) => fail(&room, e.as_str()),
     };
-    host.print(b"UITESTHOST ok\n");
+    room.print(b"UITESTROOM ok\n");
     let (line, line_len) = geometry_line(width, height);
-    host.print(&line[..line_len]);
+    room.print(&line[..line_len]);
 
-    if host.submit(1).is_err() {
-        fail(&host, "submit");
+    if room.submit(1).is_err() {
+        fail(&room, "submit");
     }
-    host.print(b"UITESTFRAME ok\n");
+    room.print(b"UITESTFRAME ok\n");
 
-    if host.boot_probe() {
-        host.print(b"UITESTPROBE ok\n");
+    if room.boot_probe() {
+        room.print(b"UITESTPROBE ok\n");
     } else {
-        let event = match host.wait_pointer_up() {
+        let event = match room.wait_pointer_up() {
             Ok(event) => event,
-            Err(e) => fail(&host, e.as_str()),
+            Err(e) => fail(&room, e.as_str()),
         };
         let (input, len) = input_line(event.x, event.y);
-        host.print(&input[..len]);
+        room.print(&input[..len]);
     }
 
-    if host.destroy().is_err() {
-        fail(&host, "destroy");
+    if room.destroy().is_err() {
+        fail(&room, "destroy");
     }
-    host.print(b"UITESTDESTROY ok\n");
-    host.print(b"UITESTEXIT ok\n");
-    host.exit(0)
+    room.print(b"UITESTDESTROY ok\n");
+    room.print(b"UITESTEXIT ok\n");
+    room.exit(0)
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     // no_std release panic=abort 家族约定：退出码 134。
-    berry_shell::panic_exit(134)
+    berry_room::panic_exit(134)
 }

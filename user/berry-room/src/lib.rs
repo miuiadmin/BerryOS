@@ -1,9 +1,9 @@
-//! # berry-shell —— Native Shell 宿主
+//! # berry-room —— Berry Room 应用运行室
 //!
-//! GUI F1 的分层边界：本 crate 只持有系统会话与生命周期（APP env、WM
+//! Berry Room 的分层边界：本 crate 只持有系统会话与生命周期（APP env、WM
 //! session、per-app 字形 VMO、全屏窗口、frame VMO、present callback、
 //! INPUT_POLL、WM_DESTROY）。它不布局、不画像素、不定义控件样式，也不
-//! 知道业务页面。app 通过 [`NativeShellHost`] 消费这些能力。
+//! 知道业务页面。app 通过 [`AppRoom`] 消费这些能力。
 
 #![cfg_attr(not(test), no_std)]
 
@@ -28,14 +28,14 @@ const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
 /// 宿主启动配置。`uses_fs` 决定 env gift 中 broker 的位置：
 /// 无 fs = hs[4]；`fs=["rootfs"]` 时 fs 双 gift 插前，broker = hs[6]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShellConfig {
+pub struct RoomConfig {
     pub argv0: &'static [u8],
     pub uses_fs: bool,
 }
 
 /// 从 APP env 块解析出的基础能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShellEnv {
+pub struct RoomEnv {
     pub boot_probe: bool,
     pub console: Handle,
     pub process: Handle,
@@ -46,7 +46,7 @@ pub struct ShellEnv {
 
 /// 宿主错误。调用方应打印诊断并以非 0 退出；本 crate 不 panic。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellError {
+pub enum RoomError {
     Env,
     Channel,
     BusyTimeout,
@@ -65,14 +65,14 @@ pub enum ShellError {
     Table,
 }
 
-pub type ShellResult<T> = Result<T, ShellError>;
+pub type RoomResult<T> = Result<T, RoomError>;
 
-/// no_std app panic/early-exit 收口。正常生命周期用 NativeShellHost::exit。
+/// no_std app panic/early-exit 收口。正常生命周期用 AppRoom::exit。
 pub fn panic_exit(code: i32) -> ! {
     berry_process_exit(code)
 }
 
-impl ShellError {
+impl RoomError {
     /// 诊断短名（ASCII，无分配）。调用方可拼进自己的 app 前缀。
     pub fn as_str(self) -> &'static str {
         match self {
@@ -107,8 +107,8 @@ fn now_ns() -> u64 {
     t
 }
 
-fn send_bytes(ch: Handle, bytes: &[u8], attach: &[Handle]) -> ShellResult<()> {
-    let deadline = now_ns().checked_add(RPC_CAP_NS).ok_or(ShellError::BusyTimeout)?;
+fn send_bytes(ch: Handle, bytes: &[u8], attach: &[Handle]) -> RoomResult<()> {
+    let deadline = now_ns().checked_add(RPC_CAP_NS).ok_or(RoomError::BusyTimeout)?;
     loop {
         let (hp, hn) = if attach.is_empty() {
             (core::ptr::null(), 0)
@@ -120,11 +120,11 @@ fn send_bytes(ch: Handle, bytes: &[u8], attach: &[Handle]) -> ShellResult<()> {
             return Ok(());
         }
         if st != BERRY_ERR_BUSY {
-            return Err(ShellError::Send(st));
+            return Err(RoomError::Send(st));
         }
         let mut observed = 0u64;
         if berry_object_wait_one(ch, SIGNAL_WRITABLE, deadline, &mut observed) != 0 {
-            return Err(ShellError::BusyTimeout);
+            return Err(RoomError::BusyTimeout);
         }
     }
 }
@@ -133,7 +133,7 @@ fn recv_message(
     ch: Handle,
     rep: &mut [u8; 256],
     rhs: &mut [Handle; 8],
-) -> ShellResult<(usize, usize)> {
+) -> RoomResult<(usize, usize)> {
     loop {
         let mut nbytes = rep.len();
         let mut nhandles = rhs.len();
@@ -148,12 +148,12 @@ fn recv_message(
             return Ok((nbytes, nhandles));
         }
         if st != BERRY_ERR_AGAIN {
-            return Err(ShellError::Recv(st));
+            return Err(RoomError::Recv(st));
         }
-        let deadline = now_ns().checked_add(RPC_CAP_NS).ok_or(ShellError::BusyTimeout)?;
+        let deadline = now_ns().checked_add(RPC_CAP_NS).ok_or(RoomError::BusyTimeout)?;
         let mut observed = 0u64;
         if berry_object_wait_one(ch, SIGNAL_READABLE, deadline, &mut observed) != 0 {
-            return Err(ShellError::BusyTimeout);
+            return Err(RoomError::BusyTimeout);
         }
     }
 }
@@ -164,24 +164,24 @@ fn rpc(
     attach: &[Handle],
     reply: &mut [u8; 256],
     rhs: &mut [Handle; 8],
-) -> ShellResult<(usize, usize)> {
+) -> RoomResult<(usize, usize)> {
     send_bytes(ch, request, attach)?;
     recv_message(ch, reply, rhs)
 }
 
-fn pair() -> ShellResult<(Handle, Handle)> {
+fn pair() -> RoomResult<(Handle, Handle)> {
     let mut a: Handle = 0;
     let mut b: Handle = 0;
     if berry_channel_create(0, &mut a, &mut b) != 0 || a == 0 || b == 0 {
-        return Err(ShellError::Channel);
+        return Err(RoomError::Channel);
     }
     Ok((a, b))
 }
 
-impl ShellEnv {
+impl RoomEnv {
     /// 读取并验证 APP bootstrap env。argv0 是 manifest entry 的完整
     /// `bin/<name>` 串；boot-probe 由 svcmgr 追加 argv 派生。
-    pub fn read(env_ch: Handle, config: ShellConfig) -> ShellResult<Self> {
+    pub fn read(env_ch: Handle, config: RoomConfig) -> RoomResult<Self> {
         let mut blob = [0u8; 192];
         let mut handles = [0 as Handle; 8];
         let mut nbytes = blob.len();
@@ -194,7 +194,7 @@ impl ShellEnv {
             &mut nhandles,
         );
         if st != 0 {
-            return Err(ShellError::Env);
+            return Err(RoomError::Env);
         }
         let minimum = if config.uses_fs { 7 } else { 5 };
         let broker_index = if config.uses_fs { 6 } else { 4 };
@@ -207,7 +207,7 @@ impl ShellEnv {
             || handles[broker_index] == 0
             || (config.uses_fs && handles[5] == 0)
         {
-            return Err(ShellError::Env);
+            return Err(RoomError::Env);
         }
         let boot_probe = blob[..nbytes]
             .windows(b"\0boot-probe".len())
@@ -225,8 +225,8 @@ impl ShellEnv {
 
 /// Native Shell 宿主。成功 `open_window` 后持有一个全屏窗口与其局部
 /// frame VMO；`destroy` 显式走 WM_DESTROY + 空表回读 + 资源关闭。
-pub struct NativeShellHost {
-    env: ShellEnv,
+pub struct AppRoom {
+    env: RoomEnv,
     wm: Handle,
     input: Handle,
     font_vmo: Handle,
@@ -240,17 +240,17 @@ pub struct NativeShellHost {
     opened: bool,
 }
 
-impl NativeShellHost {
+impl AppRoom {
     /// 解析 env、建立 WM/input session、接收并映射 wmd 私有字形 VMO。
-    pub fn connect(env_ch: Handle, config: ShellConfig) -> ShellResult<Self> {
-        let env = ShellEnv::read(env_ch, config)?;
+    pub fn connect(env_ch: Handle, config: RoomConfig) -> RoomResult<Self> {
+        let env = RoomEnv::read(env_ch, config)?;
         let (wm, wm_peer) = pair()?;
         let (input, input_peer) = pair()?;
         let mut request = [0u8; 256];
         let mut reply = [0u8; 256];
         let mut rhs = [0 as Handle; 8];
         let n = gp::encode_wm_connect_req(&mut request, gp::WM_CLIENT_APP)
-            .ok_or(ShellError::Encode)?;
+            .ok_or(RoomError::Encode)?;
         let attach = [wm_peer, input_peer, env.process];
         let (n, nhandles) = rpc(env.broker, &request[..n], &attach, &mut reply, &mut rhs)?;
         if gp::parse_wm_connect_rep(&reply[..n]).is_none()
@@ -259,7 +259,7 @@ impl NativeShellHost {
         {
             let _ = berry_handle_close(wm_peer);
             let _ = berry_handle_close(input_peer);
-            return Err(ShellError::Decode);
+            return Err(RoomError::Decode);
         }
         let font_vmo = rhs[0];
         let mut font_va = FONT_VA;
@@ -273,10 +273,10 @@ impl NativeShellHost {
             RIGHT_READ | RIGHT_WRITE,
         ) != 0 || font_va != FONT_VA
         {
-            return Err(ShellError::FontMap);
+            return Err(RoomError::FontMap);
         }
         if berry_handle_close(env.broker) != 0 {
-            return Err(ShellError::Handle);
+            return Err(RoomError::Handle);
         }
         Ok(Self {
             env,
@@ -336,16 +336,16 @@ impl NativeShellHost {
     }
 
     /// 创建全屏窗口并映射局部 frame VMO。返回 `(width, height)`。
-    pub fn open_window(&mut self) -> ShellResult<(usize, usize)> {
+    pub fn open_window(&mut self) -> RoomResult<(usize, usize)> {
         if self.opened {
-            return Err(ShellError::Window);
+            return Err(RoomError::Window);
         }
         let mut request = [0u8; 256];
         let mut reply = [0u8; 256];
         let mut rhs = [0 as Handle; 8];
         let n = gp::encode_wm_getinfo_req(&mut request);
         let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
-        let info = gp::parse_wm_getinfo_rep(&reply[..n]).ok_or(ShellError::Decode)?;
+        let info = gp::parse_wm_getinfo_rep(&reply[..n]).ok_or(RoomError::Decode)?;
         let create = gp::WmCreateReq {
             layer: gp::WM_LAYER_APP,
             flags: 0,
@@ -356,26 +356,26 @@ impl NativeShellHost {
             w: info.disp_w,
             h: info.disp_h,
         };
-        let n = gp::encode_wm_create_req(&mut request, &create).ok_or(ShellError::Encode)?;
+        let n = gp::encode_wm_create_req(&mut request, &create).ok_or(RoomError::Encode)?;
         let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
         let window = match gp::parse_wm_create_ack(&reply[..n]) {
             Some(id) if id != 0 => id,
-            _ => return Err(ShellError::Decode),
+            _ => return Err(RoomError::Decode),
         };
         let width = usize::from(info.disp_w);
         let height = usize::from(info.disp_h);
-        let stride = width.checked_mul(4).ok_or(ShellError::Geometry)?;
-        let frame_bytes = stride.checked_mul(height).ok_or(ShellError::Geometry)?;
+        let stride = width.checked_mul(4).ok_or(RoomError::Geometry)?;
+        let frame_bytes = stride.checked_mul(height).ok_or(RoomError::Geometry)?;
         let map_len = frame_bytes
             .checked_add(0xFFF)
             .and_then(|v| v.checked_sub(v & 0xFFF))
-            .ok_or(ShellError::Geometry)?;
+            .ok_or(RoomError::Geometry)?;
         let mut frame_vmo: Handle = 0;
         if berry_vmo_create(map_len as u64, 0, &mut frame_vmo) != 0
             || frame_vmo == 0
             || berry_vmo_commit(frame_vmo, 0, map_len as u64) != 0
         {
-            return Err(ShellError::Vmo);
+            return Err(RoomError::Vmo);
         }
         let mut va = FRAME_VA;
         if berry_vmar_map(
@@ -389,7 +389,7 @@ impl NativeShellHost {
         ) != 0 || va != FRAME_VA
         {
             let _ = berry_handle_close(frame_vmo);
-            return Err(ShellError::Map);
+            return Err(RoomError::Map);
         }
         self.window = window;
         self.width = width;
@@ -402,17 +402,17 @@ impl NativeShellHost {
         Ok((width, height))
     }
 
-    pub fn size(&self) -> ShellResult<(usize, usize)> {
+    pub fn size(&self) -> RoomResult<(usize, usize)> {
         if !self.opened {
-            return Err(ShellError::Window);
+            return Err(RoomError::Window);
         }
         Ok((self.width, self.height))
     }
 
     /// 借出窗口局部 XRGB buffer。宿主不写它；业务渲染归上层 UI/光栅。
-    pub fn frame_mut(&mut self) -> ShellResult<&mut [u8]> {
+    pub fn frame_mut(&mut self) -> RoomResult<&mut [u8]> {
         if !self.opened {
-            return Err(ShellError::Window);
+            return Err(RoomError::Window);
         }
         // SAFETY：open_window 成功后 FRAME_VA..+frame_bytes 是本进程独占
         // 映射；&mut self 保证调用方借用与后续 host 方法互斥。
@@ -422,13 +422,13 @@ impl NativeShellHost {
     }
 
     /// SUBMIT → FRAME_CALLBACK → RELEASE_WAIT。返回 frame token。
-    pub fn submit(&mut self, buffer_id: u32) -> ShellResult<u32> {
+    pub fn submit(&mut self, buffer_id: u32) -> RoomResult<u32> {
         if !self.opened {
-            return Err(ShellError::Window);
+            return Err(RoomError::Window);
         }
         let mut alias: Handle = 0;
         if berry_handle_duplicate(self.frame_vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
-            return Err(ShellError::Handle);
+            return Err(RoomError::Handle);
         }
         let mut request = [0u8; 256];
         let mut reply = [0u8; 256];
@@ -442,39 +442,39 @@ impl NativeShellHost {
             rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
             rect_count: 0,
         };
-        let n = gp::encode_present_req(&mut request, &submit).ok_or(ShellError::Encode)?;
+        let n = gp::encode_present_req(&mut request, &submit).ok_or(RoomError::Encode)?;
         let (n, _) = rpc(self.wm, &request[..n], &[alias], &mut reply, &mut rhs)?;
-        let token = gp::parse_submit_ack(&reply[..n]).ok_or(ShellError::Decode)?;
+        let token = gp::parse_submit_ack(&reply[..n]).ok_or(RoomError::Decode)?;
         let n = gp::encode_present_req(
             &mut request,
             &gp::PresentReq::FrameCallback { frame_token: token },
         )
-        .ok_or(ShellError::Encode)?;
+        .ok_or(RoomError::Encode)?;
         let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
         match gp::parse_frame_done_rep(&reply[..n]) {
             Some(done) if done.status == gp::FRAME_PRESENTED => {}
-            _ => return Err(ShellError::Decode),
+            _ => return Err(RoomError::Decode),
         }
         let n = gp::encode_present_req(
             &mut request,
             &gp::PresentReq::ReleaseWait,
         )
-        .ok_or(ShellError::Encode)?;
+        .ok_or(RoomError::Encode)?;
         let (n, nhandles) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
-        let release = gp::parse_release_rep(&reply[..n]).ok_or(ShellError::Decode)?;
+        let release = gp::parse_release_rep(&reply[..n]).ok_or(RoomError::Decode)?;
         if release.count != 1 || nhandles != 1 || rhs[0] == 0 {
-            return Err(ShellError::Decode);
+            return Err(RoomError::Decode);
         }
         if berry_handle_close(rhs[0]) != 0 {
-            return Err(ShellError::Handle);
+            return Err(RoomError::Handle);
         }
         Ok(token)
     }
 
     /// 非阻塞 INPUT_POLL。空批返回 `Ok(0)`；返回数为复制到 `out` 的事件数。
-    pub fn poll_input(&mut self, out: &mut [PointerEvent]) -> ShellResult<usize> {
+    pub fn poll_input(&mut self, out: &mut [PointerEvent]) -> RoomResult<usize> {
         if out.is_empty() {
-            return Err(ShellError::Input);
+            return Err(RoomError::Input);
         }
         let max = out.len().min(gp::INPUT_EVENTS_MAX) as u8;
         let mut request = [0u8; 4];
@@ -486,20 +486,20 @@ impl NativeShellHost {
             Some(Ok(events)) => {
                 let count = events.count();
                 if count > out.len() {
-                    return Err(ShellError::Input);
+                    return Err(RoomError::Input);
                 }
                 for i in 0..count {
-                    out[i] = events.event(i).ok_or(ShellError::Decode)?;
+                    out[i] = events.event(i).ok_or(RoomError::Decode)?;
                 }
                 Ok(count)
             }
             Some(Err(_)) => Ok(0),
-            None => Err(ShellError::Decode),
+            None => Err(RoomError::Decode),
         }
     }
 
     /// 阻塞等待第一个 Phase_UP 事件。返回事件原样，坐标已是窗口局部。
-    pub fn wait_pointer_up(&mut self) -> ShellResult<PointerEvent> {
+    pub fn wait_pointer_up(&mut self) -> RoomResult<PointerEvent> {
         let mut events = [PointerEvent {
             phase: gp::PHASE_CANCEL,
             device_id: 0,
@@ -527,9 +527,9 @@ impl NativeShellHost {
     }
 
     /// 显式销毁窗口、回读空表、解除映射并关闭宿主资源。
-    pub fn destroy(&mut self) -> ShellResult<()> {
+    pub fn destroy(&mut self) -> RoomResult<()> {
         if !self.opened {
-            return Err(ShellError::Destroy);
+            return Err(RoomError::Destroy);
         }
         let mut request = [0u8; 256];
         let mut reply = [0u8; 256];
@@ -538,13 +538,13 @@ impl NativeShellHost {
         let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
         match gp::parse_status_rep(&reply[..n]) {
             Some(gp::ST_OK) => {}
-            _ => return Err(ShellError::Destroy),
+            _ => return Err(RoomError::Destroy),
         }
         let n = gp::encode_wm_table_get_req(&mut request);
         let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
         match gp::parse_wm_snapshot_rep(&reply[..n]) {
             Some(Ok(snapshot)) if snapshot.count == 0 => {}
-            _ => return Err(ShellError::Table),
+            _ => return Err(RoomError::Table),
         }
         // 映射先解除，再关句柄；失败不掩盖 WM 已销毁的真相，统一 Destroy。
         if berry_vmar_unmap(self.env.vmar, FRAME_VA, self.frame_map_len) != 0
@@ -554,7 +554,7 @@ impl NativeShellHost {
             || berry_handle_close(self.frame_vmo) != 0
             || berry_handle_close(self.font_vmo) != 0
         {
-            return Err(ShellError::Destroy);
+            return Err(RoomError::Destroy);
         }
         self.opened = false;
         self.input = 0;

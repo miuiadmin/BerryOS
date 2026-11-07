@@ -161,7 +161,7 @@ MARK_CONTACTS_PROBE = "CONTACTSPROBE ok"
 MARK_CONTACTS_DESTROY = "CONTACTSDESTROY ok"
 MARK_CONTACTS_EXIT = "CONTACTSEXIT ok"
 MARK_UITEST_UP = "UITEST up"
-MARK_UITEST_HOST = "UITESTHOST ok"
+MARK_UITEST_ROOM = "UITESTROOM ok"
 MARK_UITEST_WIN = "UITESTWIN ok w="
 MARK_UITEST_FRAME = "UITESTFRAME ok"
 MARK_UITEST_PROBE = "UITESTPROBE ok"
@@ -1196,9 +1196,9 @@ def assert_pixel_close(
 def verify_uitest_normal(
     text: str, snapshot_pos: int, before: int, log_path: Path | None = None,
 ) -> None:
-    """GUI F1：berry-shell host probe 的零像素生命周期验收。"""
+    """GUI F1：Berry Room host probe 的零像素生命周期验收。"""
     _require_exact_count(text, MARK_UITEST_UP, before + 1, "normal UITEST", log_path)
-    _require_exact_count(text, MARK_UITEST_HOST, before + 1, "normal UITEST", log_path)
+    _require_exact_count(text, MARK_UITEST_ROOM, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_WIN, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_FRAME, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_PROBE, before, "normal UITEST boot-probe", log_path)
@@ -1518,7 +1518,7 @@ def _boot_base_markers() -> list[str]:
         MARK_WM_CONN8, MARK_CONTACTS_UP, MARK_CONTACTS_WIN,
         MARK_CONTACTS_LIST, MARK_CONTACTS_FRAME,
         MARK_CONTACTS_PROBE, MARK_CONTACTS_DESTROY, MARK_CONTACTS_EXIT,
-        MARK_WM_CONN9, MARK_UITEST_UP, MARK_UITEST_HOST,
+        MARK_WM_CONN9, MARK_UITEST_UP, MARK_UITEST_ROOM,
         MARK_UITEST_WIN, MARK_UITEST_FRAME, MARK_UITEST_PROBE,
         MARK_UITEST_DESTROY, MARK_UITEST_EXIT,
         MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
@@ -2371,7 +2371,7 @@ def run_normal_boot(args) -> int:
                 args.click_timeout, boot.log_path,
             ) from None
 
-        # —— UITEST host probe：berry-shell 全链，不写任何像素。 ——
+        # —— UITEST Room probe：Berry Room 全链，不写任何像素。 ——
         time.sleep(1.0)
         log("normal-uitest: QMP 点击 UITEST 第三格（真实 APP_SPAWN）")
         boot.qmp.click(668, 282, w, h)
@@ -2436,13 +2436,13 @@ def run_normal_boot(args) -> int:
         log(
             "normal-native: Browser/Settings/Files/Photos/Contacts 五独立进程、"
             "真实 WM 窗口/帧、状态/fs/图像/联系人记录全链全过；"
-            "UITEST host probe 以零像素走 berry-shell 全链；"
+            "UITEST Room probe 以零像素走 Berry Room 全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：五 Native Shell + UITEST/berry-shell 真链 + "
+            "PASS（--normal-boot）：五 Native Shell + UITEST/Berry Room 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -3086,13 +3086,13 @@ def self_test(args) -> int:
         )
 
         uitest_boot = (
-            f"{MARK_UITEST_UP}\n{MARK_UITEST_HOST}\n"
+            f"{MARK_UITEST_UP}\n{MARK_UITEST_ROOM}\n"
             f"{MARK_UITEST_WIN}1080 h=1920\n{MARK_UITEST_FRAME}\n"
             f"{MARK_UITEST_PROBE}\n{MARK_UITEST_DESTROY}\n"
             f"{MARK_UITEST_EXIT}\n"
         )
         uitest_runtime = (
-            f"{MARK_UITEST_UP}\n{MARK_UITEST_HOST}\n"
+            f"{MARK_UITEST_UP}\n{MARK_UITEST_ROOM}\n"
             f"{MARK_UITEST_WIN}1080 h=1920\n{MARK_UITEST_FRAME}\n"
             "UITESTINPUT ok x=539 y=799\n"
             f"{MARK_UITEST_DESTROY}\n{MARK_UITEST_EXIT}\n"
@@ -3124,7 +3124,7 @@ def self_test(args) -> int:
                 snap_u, 1,
             ),
         )
-        log("self-test: UITEST host probe 常态断言 ok（零像素/几何/输入/销毁）")
+        log("self-test: UITEST Room probe 常态断言 ok（零像素/几何/输入/销毁）")
 
         # 4) QMP 协议 + no-device 广播 + 三批单击
         sock = tmp / "qmp.sock"
