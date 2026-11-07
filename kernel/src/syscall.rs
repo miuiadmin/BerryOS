@@ -6,7 +6,7 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 35 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**34 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形）**——
+//! v1 36 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**34 号已实现（0x85 `berry_attest` 预留位 + 0x23 `pager_supply_mapped` X-3a 入册位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形）**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
 //! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
@@ -67,7 +67,7 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 35 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// ---- v1 36 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
 // 常量本体在 `crate::abi_gen`（`tools/abi.toml` 生成文件）；此处 re-export
 // 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
 // abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
@@ -2998,8 +2998,9 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// **P6 A-3 加 vmo_get_phys(0x1B) = 29 号**；**C-4b 加 process_terminate(0x3B)
 /// = 30 号**；**T-1 加 thread_start(0x35) = 31 号；A7-4 加
 /// signal_send(0x86)/signal_take(0x87) = 33 号；G4-2 加
-/// pager_supply_pages(0x21，v2 号激活) = 34 号——v1 在册 35 号
-/// （唯 0x85 `berry_attest` 预留）真语义全部实现**。
+/// pager_supply_pages(0x21，v2 号激活) = 34 号——v1 在册 36 号
+/// （0x85 `berry_attest` 预留 + 0x23 `pager_supply_mapped` X-3a 入册未落）
+/// 真语义 34 号全部实现**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
 /// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住；T-1 分序版：Thread
 /// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）。

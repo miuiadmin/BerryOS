@@ -3,14 +3,14 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=35（v1 在册）/
-//! nr_defined=39（v1+1.1 常量层）/ nr_registered=38（已挂派发）/
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=36（v1 在册）/
+//! nr_defined=40（v1+1.1 常量层）/ nr_registered=38（已挂派发）/
 //! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 35 号在册、34 已实现）----
-// 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
+// ---- syscall 号（ABI §4 编号表；v1 36 号在册、34 已实现）----
+// 在册未实现：0x23 pager_supply_mapped、0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 // 1.1/S1 在册未实现：0x3C sched_setattr、0x3D sched_getattr、0x3E process_suspend、0x3F thread_yield（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -40,6 +40,12 @@ pub const NR_VMO_GET_PHYS: usize = 0x1B;
 /// 源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
 /// （§5-⑤ 裁决）。
 pub const NR_PAGER_SUPPLY_PAGES: usize = 0x21;
+/// X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
+/// 多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
+/// 2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
+/// 唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
+/// VMO 页须 pre-commit（§2.2 防线 4）。
+pub const NR_PAGER_SUPPLY_MAPPED: usize = 0x23;
 pub const NR_PROCESS_CREATE: usize = 0x31;
 pub const NR_PROCESS_START: usize = 0x32;
 /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。

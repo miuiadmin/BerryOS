@@ -3,7 +3,7 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见
 //! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=35 / nr_defined=39 /
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=36 / nr_defined=40 /
 //! nr_registered=38 / nr_ceiling=45（口径与内核侧头注同源同值）。
 
 use crate::{Handle, Rights, Status, Time};
@@ -115,6 +115,14 @@ pub(crate) mod nr {
     /// 源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
     /// （§5-⑤ 裁决）。
     pub(crate) const PAGER_SUPPLY_PAGES: usize = 0x21;
+    /// X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
+    /// 多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
+    /// 2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
+    /// 唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
+    /// VMO 页须 pre-commit（§2.2 防线 4）。
+    // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
+    #[allow(dead_code)]
+    pub(crate) const PAGER_SUPPLY_MAPPED: usize = 0x23;
     pub(crate) const PROCESS_CREATE: usize = 0x31;
     pub(crate) const PROCESS_START: usize = 0x32;
     /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
