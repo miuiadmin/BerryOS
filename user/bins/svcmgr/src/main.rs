@@ -139,42 +139,42 @@ impl Drop for PagerHold {
     }
 }
 
-/// 一条 demand 装载登记：**单写者**（本服务主任务）Relaxed 填四值 →
-/// `active` Release 发布；pager 侧 `active` Acquire 读后取值（无 CAS 面
-/// ——写者唯一，空槽并发复用不存在）。
+/// 一条 demand 装载窗登记（X-5 逐窗化：一子进程 = N 窗 N 槽）：**单写者**
+/// （本服务主任务）Relaxed 填三值 → `active` Release 发布；pager 侧
+/// `active` Acquire 读后取值（无 CAS 面——写者唯一，空槽并发复用不存在）。
 struct PagerReq {
     active: AtomicBool,
-    /// file 域 demand VMO（0 = 不该出现——active 真时恒非 0）。
-    dv_file: AtomicUsize,
-    /// 零尾域 demand VMO（0 = 无零尾的满幅形）。
-    dv_zero: AtomicUsize,
-    /// 源 VMO（svcmgr 恒 H_ROOTFS——boot 授能 READ，服务生命期不关）。
+    /// 本窗 demand VMO（0 = 不该出现——active 真时恒非 0）。
+    dv: AtomicUsize,
+    /// 源 VMO（file 窗 = H_ROOTFS——boot 授能 READ 服务生命期不关；零窗
+    /// = 0 → 内核 0x23 零页臂）。
     sv: AtomicUsize,
-    /// 0x23 恒等供给常数（页对齐 i64，可负——congruent ELF 的 vaddr 偏置）。
+    /// 0x23 恒等供给常数（页对齐 i64，可负——本窗自己的 k_i 偏置；零窗
+    /// 恒 0）。
     delta: AtomicI64,
 }
 
 /// 槽初值（const 数组Repeat 面用）。
 const PAGER_REQ_INIT: PagerReq = PagerReq {
     active: AtomicBool::new(false),
-    dv_file: AtomicUsize::new(0),
-    dv_zero: AtomicUsize::new(0),
+    dv: AtomicUsize::new(0),
     sv: AtomicUsize::new(0),
     delta: AtomicI64::new(0),
 };
 
-/// 寄存表（32 槽 .bss 静态——flat 零垫覆盖，boot 即就位）。
+/// 寄存表（32 槽 .bss 静态——flat 零垫覆盖，boot 即就位；X-5 起 musl 族
+/// 一子 ≈ 5 槽（4 file + 1 零尾，hybrid 不占槽）→ 32 槽 ≈ 并发 6 子，满
+/// = reg false → berry-exec 逐窗回退 eager，不阻塞不等待）。
 static PAGER_REQS: [PagerReq; PAGER_SLOTS] = [PAGER_REQ_INIT; PAGER_SLOTS];
 
-/// berry-exec 注册钩子：找空槽 Relaxed 填四值 → `active` Release 发布；
-/// 返 false = 槽满（调用方 eager 回退）。
-fn pager_register(dv_file: Handle, dv_zero: Handle, sv: Handle, delta: i64) -> bool {
+/// berry-exec 注册钩子（X-5 逐窗）：找空槽 Relaxed 填三值 → `active`
+/// Release 发布；返 false = 槽满（调用方回滚已注窗走 eager）。
+fn pager_register(dv: Handle, sv: Handle, delta: i64) -> bool {
     for slot in PAGER_REQS.iter() {
         if slot.active.load(Ordering::Relaxed) {
             continue;
         }
-        slot.dv_file.store(dv_file as usize, Ordering::Relaxed);
-        slot.dv_zero.store(dv_zero as usize, Ordering::Relaxed);
+        slot.dv.store(dv as usize, Ordering::Relaxed);
         slot.sv.store(sv as usize, Ordering::Relaxed);
         slot.delta.store(delta, Ordering::Relaxed);
         slot.active.store(true, Ordering::Release);
@@ -183,26 +183,25 @@ fn pager_register(dv_file: Handle, dv_zero: Handle, sv: Handle, delta: i64) -> b
     false
 }
 
-/// berry-exec 注销钩子（reap 在 close dv **前**调）：按 dv 值扫描回收。
-/// 句柄值在表内存活期唯一 ⇒ 活句柄扫描无假命中；先 `active=false`
-/// （Release）停供，reap 后续才 close——在途供给（已读旧值）碰 close 后
-/// 句柄 = EBADF/EINVAL 单发误差，pager 推进即自愈，无害。
-fn pager_unregister(dv_file: Handle, dv_zero: Handle) {
+/// berry-exec 注销钩子（逐窗；reap/回滚在 close dv **前**调）：按 dv 值
+/// 扫描回收。句柄值在表内存活期唯一 ⇒ 活句柄扫描无假命中；先
+/// `active=false`（Release）停供，reap 后续才 close——在途供给（已读旧
+/// 值）碰 close 后句柄 = EBADF/EINVAL 单发误差，pager 推进即自愈，无害。
+fn pager_unregister(dv: Handle) {
     for slot in PAGER_REQS.iter() {
         if !slot.active.load(Ordering::Acquire) {
             continue;
         }
-        if slot.dv_file.load(Ordering::Relaxed) == dv_file as usize
-            || (dv_zero != 0 && slot.dv_zero.load(Ordering::Relaxed) == dv_zero as usize)
-        {
+        if slot.dv.load(Ordering::Relaxed) == dv as usize {
             slot.active.store(false, Ordering::Release);
         }
     }
 }
 
 /// pager 任务入口（link-user.ld 钉 `pager_entry` 段@0x1E000、栈顶 0x20000
-/// ——kernel/src/main.rs X-3c-1 同值双改）。恒扫供给环：每活槽两供——
-/// file 域 0x23 恒等供给（sv/delta）/ 零尾域 0x23 src=0（内核零页臂）。
+/// ——kernel/src/main.rs X-3c-1 同值双改）。恒扫供给环：每活槽一供
+/// 0x23(dv, sv, delta)——file 窗 = rootfs 恒等供给、零窗 = sv 0 内核零页
+/// 臂（X-5 逐窗化；X-3c 的 dvf/dvz 双供对拆成两槽单供）。
 /// 返值忽略：EINVAL = 全局取货错配（`el0_take` 取到的是他槽请求，内核
 /// 身份验 rvmo != dv 拒 + 唤 faulter 重试再武装——错配供给环的 mux 面）
 /// 或陈旧槽（close 后句柄 EBADF），推进即自愈；无请求时 0x23 阻塞收货
@@ -230,16 +229,10 @@ pub extern "C" fn pager_main() -> ! {
                 continue;
             }
             any = true;
-            let dvf = slot.dv_file.load(Ordering::Relaxed) as Handle;
-            let dvz = slot.dv_zero.load(Ordering::Relaxed) as Handle;
+            let dv = slot.dv.load(Ordering::Relaxed) as Handle;
             let sv = slot.sv.load(Ordering::Relaxed) as Handle;
             let delta = slot.delta.load(Ordering::Relaxed);
-            if dvf != 0 {
-                let _ = berry_pager_supply_mapped(dvf, sv, delta);
-            }
-            if dvz != 0 {
-                let _ = berry_pager_supply_mapped(dvz, 0, 0);
-            }
+            let _ = berry_pager_supply_mapped(dv, sv, delta);
         }
         if !any {
             let mut t = 0u64;
@@ -367,6 +360,9 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // G4 X-4：E 面 exec 装载差分（dpg_foot 同形帧、真 exec 消费者版）——
     // `dpgx.on` 门（bench E 臂 rootfs 专递，正装/smoke 缺席整段静默零漂移）。
     dpgx_foot(console);
+    // G4 X-5：同形帧、现役 musl 多段族版（hexyl/grep 双件两胎）——`x5.on`
+    // 门（bench E2 臂 rootfs 专递；多段 k 表逐窗分解新路的首个现役差分面）。
+    x5_foot(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
     // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
@@ -801,6 +797,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_vmo: Some(H_MMIO),
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
+                force_eager: true,
             },
         ) {
             Ok(_child) => {
@@ -887,6 +884,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_vmo: Some(H_FB),
                 mmio_va: FB_VA,
                 intent: 0,
+                force_eager: true,
             },
         ) {
             Ok(_child) => {
@@ -957,6 +955,7 @@ fn run_rootfs_child(console: Handle) {
                     mmio_vmo: None,
                     mmio_va: 0,
                     intent: 0,
+                    force_eager: true,
                 },
             ) {
                 Ok(_child) => {
@@ -1054,6 +1053,7 @@ fn run_rootfs_child(console: Handle) {
                     mmio_vmo: None,
                     mmio_va: 0,
                     intent: 0,
+                    force_eager: false,
                 },
             ) {
                 Ok(child) => {
@@ -1148,6 +1148,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_vmo: None,
                 mmio_va: 0,
                 intent: 0,
+                force_eager: true,
             },
         ) {
             Ok(_) => {
@@ -1209,6 +1210,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_vmo: Some(H_MMIO),
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
+                force_eager: true,
             },
         ) {
             Ok(_child) => {
@@ -1280,6 +1282,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_vmo: Some(H_MMIO),
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
+                force_eager: true,
             },
         ) {
             Ok(_child) => {
@@ -1426,6 +1429,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_vmo: None,
                 mmio_va: 0,
                 intent: 0,
+                force_eager: false,
             },
         ) {
             Ok(child) => {
@@ -1495,6 +1499,7 @@ fn run_rootfs_child(console: Handle) {
                             mmio_vmo: None,
                             mmio_va: 0,
                             intent: 0,
+                            force_eager: false,
                         },
                     ) {
                         // hello 常驻（10s 周期睡眠不回收）——入账。
@@ -1558,6 +1563,7 @@ fn run_rootfs_child(console: Handle) {
                             mmio_vmo: None,
                             mmio_va: 0,
                             intent: 0,
+                            force_eager: false,
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -1633,6 +1639,7 @@ fn run_rootfs_child(console: Handle) {
                                 mmio_vmo: None,
                                 mmio_va: 0,
                                 intent: 0,
+                                force_eager: false,
                             },
                         ) {
                             Ok(_) => ps_reg(b"simbattery", psp::STATE_ALIVE, 0),
@@ -1672,6 +1679,7 @@ fn run_rootfs_child(console: Handle) {
                                 mmio_vmo: Some(H_MMIO),
                                 mmio_va: VIRTIO_MMIO_VA,
                                 intent: 0,
+                                force_eager: false,
                             },
                         ) {
                             Ok(child) => {
@@ -1902,6 +1910,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_vmo: None,
                 mmio_va: 0,
                 intent: 0,
+                force_eager: true,
             },
         )
         .is_err()
@@ -2061,6 +2070,7 @@ fn ps_selftest(console: Handle) {
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
+            force_eager: false,
         },
     ) {
         Ok(c) => c,
@@ -2329,6 +2339,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
+            force_eager: false,
         },
     ) {
         Ok(c) => c,
@@ -3283,6 +3294,11 @@ const DPGX_C: &[u8; 7] = b"DPGX C\n";
 const DPGX_E: &[u8; 7] = b"DPGX E\n";
 const DPGX_READY: &[u8; 11] = b"DPGX ready\n";
 const DPGX_READY_CAP_NS: u64 = 60 * 1_000_000_000;
+// X-5 现役族差分帧（x5_foot；dpgx_foot 同形，bench.py E2 臂配对）。
+const X5_A: &[u8; 5] = b"X5 A\n";
+const X5_B: &[u8; 5] = b"X5 B\n";
+const X5_C: &[u8; 5] = b"X5 C\n";
+const X5_E: &[u8; 5] = b"X5 E\n";
 
 /// u64 十进制追加（eco 降级行手排同款无 fmt 依赖；返回新尾位）。
 fn append_u64_dec(buf: &mut [u8], at: usize, v: u64) -> usize {
@@ -3757,6 +3773,7 @@ fn dpgx_spawn_parked(data_off: u64, data_len: u64, console: Handle) -> Option<Dp
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
+            force_eager: false,
         },
     ) {
         Ok(c) => c,
@@ -3889,6 +3906,159 @@ fn dpgx_foot(console: Handle) {
         if berry_handle_close(p.0.out_s) != 0
             || berry_handle_close(p.0.out_c) != 0
             || berry_handle_close(p.0.in_s) != 0
+        {
+            trap();
+        }
+    }
+}
+
+/// X-5 E 面 exec 装载差分（dpgx_foot 同形帧，**现役 musl 多段族版**）：
+/// 现役 bin 双件（hexyl 无参 stdin 回落 / grep 无 FILE stdin 回落——首读
+/// 即泊）各两胎：demand 胎（钩子在位 → 多段 k 表逐窗分解，X-5 新装载路）
+/// vs eager 胎（`EagerGuard` 摘钩 → 全幅 commit 泵送，足迹 = len 全量）。
+/// 停泊锚 = `stdin_handle` 持端不发不 EOF（dpgx「父持对端」经 spawn 既有
+/// 口落现役 bin）；**无 ready 行**——eager 胎 spawn 返回即全幅在册、
+/// demand 胎泊于首读 warm 集只增不越，d<e 两侧皆无过采样风险（130s 窗
+/// 兼 std musl TCG 冷起动）。帧：A → demand 双胎 + 窗 → B → EagerGuard
+/// 罩 eager 双胎 + 窗 → C → 窗 → E → 四 terminate/reap（demand 槽注销
+/// 在 reap 内）→ 关持有端。pages 口径 = soakmon 心跳（bench.py E2 臂配对
+/// 「标记前最近拍」：d = pB−pA / e = pC−pB，d<e 断言在宿主）。门 =
+/// rootfs `x5.on`（bench 专递；正装/smoke/EFI 缺席 = 整段静默零标记零漂
+/// 移）。**无 PagerHold**（dpgx_foot 同款：0x23 恒等供给 = 内核侧表驱动）。
+fn x5_foot(console: Handle) {
+    if cpio_find(H_ROOTFS, b"x5.on").is_none() {
+        return;
+    }
+    let Some((hx_off, hx_len)) = cpio_find(H_ROOTFS, b"bin/hexyl") else {
+        eco_note(console, b"x5 hexyl");
+        return;
+    };
+    let Some((gp_off, gp_len)) = cpio_find(H_ROOTFS, b"bin/grep") else {
+        eco_note(console, b"x5 grep");
+        return;
+    };
+    // 预滚（dpgx_foot 同源：越心跳首拍潜伏）→ 基线 A。
+    let mut t0 = 0u64;
+    if berry_clock_read(CLOCK_MONOTONIC, &mut t0) != 0 {
+        eco_note(console, b"x5 clk");
+        return;
+    }
+    berry_thread_sleep(t0 + DPGE_PREROLL_NS);
+    send_retry(console, X5_A.as_ptr(), X5_A.len());
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    // demand 双胎（多段 k 表逐窗分解新路——X-5 验收面本体）。
+    let p1 = match x5_spawn_parked(b"bin/hexyl", &[], 32, hx_off, hx_len, console) {
+        Some(p) => p,
+        None => return,
+    };
+    let p2 = match x5_spawn_parked(b"bin/grep", &[b"zzz"], 16, gp_off, gp_len, console) {
+        Some(p) => p,
+        None => {
+            x5_park_drop(&[p1]);
+            return;
+        }
+    };
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, X5_B.as_ptr(), X5_B.len());
+    // eager 双胎：EagerGuard 摘钩罩 spawn 窗（装载分支决策点）——同 bin
+    // 同形 → 全幅 commit；对照面 = 装载分支本身，非 ELF 形状。
+    let (p3, p4) = {
+        let _eg = EagerGuard::new();
+        let p3 = x5_spawn_parked(b"bin/hexyl", &[], 32, hx_off, hx_len, console);
+        let p4 = x5_spawn_parked(b"bin/grep", &[b"zzz"], 16, gp_off, gp_len, console);
+        (p3, p4)
+    };
+    let p3 = match p3 {
+        Some(p) => p,
+        None => {
+            x5_park_drop(&[p1, p2]);
+            return;
+        }
+    };
+    let p4 = match p4 {
+        Some(p) => p,
+        None => {
+            x5_park_drop(&[p1, p2, p3]);
+            return;
+        }
+    };
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, X5_C.as_ptr(), X5_C.len());
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, X5_E.as_ptr(), X5_E.len());
+    // 收尾：四 terminate（停泊读中被杀 = 干净路径）→ 四 reap（完整回收
+    // 链，含 demand 槽注销）→ 关持有端三件套。
+    x5_park_drop(&[p1, p2, p3, p4]);
+}
+
+/// x5_foot 停泊拉起（dpgx_spawn_parked 同形，name/args/栈档参数化面）：
+/// 现役 bin + `stdin_handle` 持端停泊锚（不发不 EOF）。stdout = 私有通道
+/// 对端（held 不读——停泊子零写；走写 = 队满自泊，零串口污染面）。
+fn x5_spawn_parked(
+    name: &'static [u8],
+    args: &'static [&'static [u8]],
+    stack_pages: u64,
+    data_off: u64,
+    data_len: u64,
+    console: Handle,
+) -> Option<DpgxParked> {
+    let (out_s, out_c) = channel_pair();
+    let (in_s, in_c) = channel_pair();
+    let child = match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name,
+            data_off,
+            data_len,
+            stdout: out_c,
+            stack_pages,
+            stdin_feed: None,
+            stdin_handle: Some(in_c), // 停泊锚：held 不发不 EOF
+            args,
+            extra_gifts: &[],
+            mmio_vmo: None,
+            mmio_va: 0,
+            intent: 0,
+            force_eager: false,
+        },
+    ) {
+        Ok(c) => c,
+        Err(()) => {
+            if berry_handle_close(in_c) != 0
+                || berry_handle_close(in_s) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            eco_note(console, b"x5 sp");
+            return None;
+        }
+    };
+    Some(DpgxParked {
+        child,
+        out_s,
+        out_c,
+        in_s,
+    })
+}
+
+/// x5_foot 收尾（成功路径全四包；败路径已泊前缀）：先全员 terminate 再
+/// 逐包 reap（demand 槽注销在 reap 内，先于 close dv）+ 关持有端三件套。
+/// 任何非 0 = 内核侧异常，loud（trap 纪律）。
+fn x5_park_drop(ps: &[DpgxParked]) {
+    for p in ps {
+        if berry_process_terminate(p.child.hp, 9) != 0 {
+            trap();
+        }
+    }
+    for p in ps {
+        if p.child.reap().is_err() {
+            trap();
+        }
+        if berry_handle_close(p.out_s) != 0
+            || berry_handle_close(p.out_c) != 0
+            || berry_handle_close(p.in_s) != 0
         {
             trap();
         }
@@ -4203,6 +4373,11 @@ fn verify_hexyl(h: Handle, console: Handle) {
         // 空队：阻塞等 READABLE（10s 活动帽，收包刷新——慢而不僵不误杀）
         let mut obs = 0u64;
         if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
+            // X-5 踢门（u1 同款：复活续收——hexyl 需百页级供给，一轮踢门
+            // ~5 页，多轮 wait→kick 循环缓爬；死寂才降级）。
+            if stall_kick(console, b"hexyl", h) {
+                continue;
+            }
             send_retry(console, b"hexyl: no EOF\n".as_ptr(), 14);
             return; // EOF 永不来 = 子进程断链/卡死（Plan B 起 exit 族必经 EOF——abort 亦先行）——loud 降级
         }
@@ -4533,6 +4708,60 @@ fn u1_selftest(console: Handle, fs_a: Handle) -> bool {
 /// stdout（收进 [`U1_WIN`]）+ 阻塞 reap，返 Some((真码, 长度))。失败（档
 /// 缺/spawn Err/无 EOF/reap Err）返 None——步链上层打诊断行（arm 不自
 /// 陷：标记缺失已 loud，诊断留给 u1_diag 汇总）。
+/// X-5 停滞踢门（no-EOF 超帽面专用，happy path 零面）：一次手动供给扫
+/// （pager_main 内环同形——0x23 逐活槽，全 identity 验）+ 5s 二次 READABLE
+/// 等。复活（true）= 供给链竞速丢服务（内核 el0 pager 唤醒面待修——踢门
+/// 即自愈：arm 在池可服务，唯 pager_main 久未轮到；2026-11-07 三跑三形
+/// 实证 + 踢门复现腿定谳），调用方续收不降级；死寂（false）= 子不在缺页
+/// 等待（IPC 等待/更深处），降级路径走僵尸收口。行前缀参数化（u1/hexyl
+/// 两用）；在册窗数一并打（注册表面取证——滞子窗恒在册，0 = 注册已丢）。
+fn stall_kick(console: Handle, tag: &[u8], ch: Handle) -> bool {
+    // 单发踢门：只打**首个活槽**一次 0x23。疗效不在供一页，而在 take→
+    // 唤 faulter→其重武装→唤 el0_pager_key 这条链把「卡睡在旧 0x23 里
+    // 的 pager_main」重新叫醒（丢唤醒后首个新 arm 即复活 pager，后续全
+    // 速续供——hexyl 百页级也一轮即愈）。**单发纪律**：0x23 空池无限
+    // 阻塞——多槽扫会在 arm 耗尽时把本任务吊死；单发只碰确知在池的
+    // 那个 arm，空池窗 = 超帽→踢门间 μs 级（且该窗内 pager 已自愈，
+    // 任意后续 arm 都会放行本调用）。窗数普查（纯原子读零调用）随行。
+    let mut n = 0usize;
+    let mut first = (0 as Handle, 0 as Handle, 0i64);
+    for slot in PAGER_REQS.iter() {
+        if !slot.active.load(Ordering::Acquire) {
+            continue;
+        }
+        if n == 0 {
+            first = (
+                slot.dv.load(Ordering::Relaxed) as Handle,
+                slot.sv.load(Ordering::Relaxed) as Handle,
+                slot.delta.load(Ordering::Relaxed),
+            );
+        }
+        n += 1;
+    }
+    if n > 0 {
+        let _ = berry_pager_supply_mapped(first.0, first.1, first.2);
+    }
+    let mut obs = 0u64;
+    let ok = berry_object_wait_one(ch, SIGNAL_READABLE, now() + 5_000_000_000, &mut obs) == 0;
+    let head: &[u8] = if ok {
+        b": kick ok win="
+    } else {
+        b": kick dead win="
+    };    let mut line = [0u8; 40];
+    let mut len = 0usize;
+    line[..tag.len()].copy_from_slice(tag);
+    len += tag.len();
+    line[len..len + head.len()].copy_from_slice(head);
+    len += head.len();
+    line[len] = b'0' + (n / 10) as u8;
+    line[len + 1] = b'0' + (n % 10) as u8;
+    len += 2;
+    line[len] = b'\n';
+    len += 1;
+    send_retry(console, line.as_ptr(), len);
+    ok
+}
+
 fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<(i32, usize)> {
     let (data_off, data_len) = cpio_find(H_ROOTFS, name)?;
     let (out_s, out_c) = channel_pair();
@@ -4560,6 +4789,7 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
+            force_eager: false,
         },
     ) {
         Ok(c) => c,
@@ -4601,6 +4831,8 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
             } else {
                 if got + nb > cap.len() {
                     send_retry(console, b"u1: overflow\n".as_ptr(), 13);
+                    // 溢出 = 子活跃面：同款 terminate→reap 收口（免僵尸）。
+                    let _ = berry_process_terminate(child.hp, 9);
                     let _ = child.reap();
                     if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
                         trap();
@@ -4617,7 +4849,13 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
         }
         let mut obs = 0u64;
         if berry_object_wait_one(out_s, SIGNAL_READABLE, now() + U1_EOF_CAP, &mut obs) != 0 {
+            // X-5 踢门（诊断+自愈双面）：复活 = 续收不降级（竞速瞬滞 ~5s
+            // 自愈；判决行保留取证）；死寂 = no-EOF 降级 + 僵尸收口。
+            if stall_kick(console, b"u1", out_s) {
+                continue;
+            }
             send_retry(console, b"u1: no EOF\n".as_ptr(), 11);
+            let _ = berry_process_terminate(child.hp, 9);
             let _ = child.reap();
             if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
                 trap();
@@ -5071,6 +5309,7 @@ fn app_launch(
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
+            force_eager: false,
         },
     ) {
         Err(()) => {
@@ -5274,6 +5513,7 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
+            force_eager: false,
         },
     ) {
         Ok(child) => {
