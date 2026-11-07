@@ -16,22 +16,23 @@
 //! | 1x | 8×16 | berry-fbcon `font::FONT` | `tools/genfbfont.py`（fbcon 单一事实源） |
 //! | 2x | 16×32 | [`font_data_s2::FONT_S2`] | 同生成器 NN 放大档 |
 //! | 3x | 24×48 | [`font_data_s3::FONT_S3`] | 同生成器 NN 放大档 |
-//! | HD | 32×48 | [`font_data_hd::FONT_HD`] + A8 | `tools/genhdfont.py`（ASCII + 桌面中文标签 A8 子表） |
+//! | HD | 32×48 | ASCII [`font_data_hd::FONT_HD`] + A8；CJK A2 页包 | `tools/genhdfont.py` + `tools/gencjkfont.py` |
 //!
 //! 契约名注记：规划草案的 `GlyphBitmap` 落地为 [`GlyphBits`]（「位图
 //! 视图」语义更准——同一位法三处消费：字形/图标/图像，不专属 glyph，
 //! 名字不撒谎）；草案的 `cell()` 几何口以 [`GlyphCell`] 组合形保留
 //! （`cell_w`/`cell_h` 拆分口为主面——单值消费点省结构解构）。
 //!
-//! 缓存裁剪注记：三档皆**静态表直索引**（O(1) 数组下标、全表常驻 ~
-//! 1.5KB/档），无运行时字形缓存面——规划项「缓存」实指图标侧 blob
-//! 解码产物的 [`crate::lru`]（静态字形表直索引零成本，缓存它没有价值
-//! 面；「砍」的是不存在的成本，不是砍了功能）。
+//! 缓存注记：1x/2x/3x/HD-ASCII 为静态表直索引；HD-CJK 为 64 字/页 zlib
+//! A2 包，运行期只解压当前页到 24,576B 静态缓存（spin mutex + zero
+//! alloc）。图标 blob 解码产物另走 [`crate::lru`]；两者不混表。
 
 #[path = "font_data_s2.rs"]
 mod font_data_s2;
 #[path = "font_data_s3.rs"]
 mod font_data_s3;
+#[path = "font_data_cjk.rs"]
+mod font_data_cjk;
 #[path = "font_data_hd.rs"]
 mod font_data_hd;
 
@@ -125,6 +126,49 @@ pub struct GlyphA8<'a> {
     pub coverage: &'a [u8],
 }
 
+/// A2 压缩字形视图：每像素 2bit，解包后 coverage 只为 0/85/170/255。
+/// `guard` 持有单页静态缓存的 spin mutex 共享锁；soft 光栅语境锁无竞争。
+pub struct GlyphA2<'a> {
+    pub w: usize,
+    pub h: usize,
+    offset: usize,
+    guard: spin::MutexGuard<'a, (usize, [u8; font_data_cjk::CJK_PAGE_RAW_BYTES])>,
+}
+
+impl<'a> GlyphA2<'a> {
+    /// 防御采样：越界/短数据恒 0；MSB 起每 2bit 一像素。
+    pub fn coverage(&self, x: usize, y: usize) -> u8 {
+        if x >= self.w || y >= self.h {
+            return 0;
+        }
+        let idx = y * self.w + x;
+        let byte = match self.guard.1.get(self.offset + idx / 4) {
+            Some(&b) => b,
+            None => return 0,
+        };
+        // A2：每字节 4 像素，MSB 起两位一档（0/85/170/255）。
+        let level = (byte >> (6 - 2 * (idx % 4))) & 0x03;
+        level * 85
+    }
+}
+
+/// `coverage_cp` 的实际返回面：ASCII A8 直表或 CJK A2 页缓存。
+pub enum GlyphCoverage<'a> {
+    A8(GlyphA8<'a>),
+    A2(GlyphA2<'a>),
+}
+
+impl core::fmt::Debug for GlyphCoverage<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::A8(g) => f.debug_struct("GlyphCoverage::A8")
+                .field("w", &g.w).field("h", &g.h).finish_non_exhaustive(),
+            Self::A2(g) => f.debug_struct("GlyphCoverage::A2")
+                .field("w", &g.w).field("h", &g.h).finish_non_exhaustive(),
+        }
+    }
+}
+
 /// 字形图集：codepoint → 单色位图（几何随实现档位——见模块头三档表）。
 /// v1 三个静态实现（[`FontAtlas8x16`]/[`FontAtlas16x32`]/[`FontAtlas24x48`]）；
 /// 图标 LRU 图集走 `icon::IconAtlas` → `cmd::ImageSrc::Icon`（不混入
@@ -153,9 +197,9 @@ pub trait GlyphAtlas {
     }
 
     /// Unicode 码点 A8 覆盖面（默认折回 u8 ASCII 面）。
-    fn coverage_cp(&self, cp: u32) -> Option<GlyphA8<'_>> {
+    fn coverage_cp(&self, cp: u32) -> Option<GlyphCoverage<'_>> {
         let ch = u8::try_from(cp).ok()?;
-        self.coverage(ch)
+        self.coverage(ch).map(GlyphCoverage::A8)
     }
 }
 
@@ -332,17 +376,18 @@ impl GlyphAtlas for FontAtlas32x48 {
         })
     }
 
-    fn coverage_cp(&self, cp: u32) -> Option<GlyphA8<'static>> {
+    fn coverage_cp(&self, cp: u32) -> Option<GlyphCoverage<'static>> {
         if let Ok(ch) = u8::try_from(cp) {
             let i = usize::from(ch).checked_sub(32)?;
             let a = font_data_hd::FONT_HD_A8.get(i)?;
-            return Some(GlyphA8 {
+            return Some(GlyphCoverage::A8(GlyphA8 {
                 w: font_data_hd::CELL_W,
                 h: font_data_hd::CELL_H,
                 coverage: a.as_slice(),
-            });
+            }));
         }
-        let table = font_data_hd::CJK_CODEPOINTS;
+
+        let table = &font_data_cjk::CJK_CODEPOINTS;
         let mut lo = 0usize;
         let mut hi = table.len();
         while lo < hi {
@@ -351,17 +396,59 @@ impl GlyphAtlas for FontAtlas32x48 {
                 core::cmp::Ordering::Less => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
                 core::cmp::Ordering::Equal => {
-                    let a = font_data_hd::FONT_HD_CJK_A8.get(mid)?;
-                    return Some(GlyphA8 {
-                        w: font_data_hd::CELL_W,
-                        h: font_data_hd::CELL_H,
-                        coverage: a.as_slice(),
-                    });
+                    let coverage = cjk_a2_coverage(mid)?;
+                    return Some(GlyphCoverage::A2(coverage));
                 }
             }
         }
         None
     }
+}
+
+/// Phase 4 CJK 单页缓存。spin mutex 使静态 Sync 且零分配；软光栅单线程
+/// 下锁无竞争，guardo 随 `GlyphA2` 存活到该字形绘制完成。
+static CJK_PAGE_CACHE: spin::Mutex<(usize, [u8; font_data_cjk::CJK_PAGE_RAW_BYTES])> =
+    spin::Mutex::new((usize::MAX, [0; font_data_cjk::CJK_PAGE_RAW_BYTES]));
+
+fn cjk_a2_coverage(index: usize) -> Option<GlyphA2<'static>> {
+    let page = index / font_data_cjk::CJK_PAGE_CHARS;
+    let slot = index % font_data_cjk::CJK_PAGE_CHARS;
+    let start = font_data_cjk::CJK_PAGE_OFFSETS.get(page).copied()? as usize;
+    let end = font_data_cjk::CJK_PAGE_OFFSETS.get(page + 1).copied()? as usize;
+    let input = font_data_cjk::CJK_A2_DATA.get(start..end)?;
+    let chars_left = font_data_cjk::CJK_CHAR_COUNT.saturating_sub(
+        page * font_data_cjk::CJK_PAGE_CHARS,
+    );
+    let glyph_count = chars_left.min(font_data_cjk::CJK_PAGE_CHARS);
+    let raw_len = glyph_count
+        .checked_mul(font_data_cjk::CJK_GLYPH_A2_BYTES)?;
+
+    let mut guard = CJK_PAGE_CACHE.lock();
+    if guard.0 != page {
+        let out = guard.1.get_mut(..raw_len)?;
+        let n = miniz_oxide::inflate::decompress_slice_iter_to_slice(
+            out,
+            Some(input).into_iter(),
+            true,
+            false,
+        )
+        .ok()?;
+        if n != raw_len {
+            return None;
+        }
+        guard.0 = page;
+    }
+    let begin = slot * font_data_cjk::CJK_GLYPH_A2_BYTES;
+    let finish = begin.checked_add(font_data_cjk::CJK_GLYPH_A2_BYTES)?;
+    if finish > raw_len {
+        return None;
+    }
+    Some(GlyphA2 {
+        w: font_data_hd::CELL_W,
+        h: font_data_hd::CELL_H,
+        offset: begin,
+        guard,
+    })
 }
 
 #[cfg(test)]
@@ -430,6 +517,54 @@ mod tests {
             let a = size.atlas();
             assert_eq!((a.cell_w(), a.cell_h()), (w, h), "atlas() 档位一致");
             assert!(a.glyph(b'#').is_some());
+        }
+    }
+
+    // —— Phase 4 CJK A2：生成期 golden + 码点表/页缓存结构性钉板 ——
+    #[test]
+    fn cjk_a2_golden_and_table_structure() {
+        let table = &font_data_cjk::CJK_CODEPOINTS;
+        assert_eq!(table.len(), font_data_cjk::CJK_CHAR_COUNT);
+        assert!(table.windows(2).all(|w| w[0] < w[1]), "码点必须严格升序");
+
+        assert!(font_data_cjk::CJK_PAGE_OFFSETS.windows(2).all(|w| w[0] < w[1]));
+
+        for gold in font_data_cjk::CJK_GOLDEN.iter() {
+            let idx = table.binary_search(&gold.cp).expect("golden cp in table");
+            assert_eq!(table[idx], gold.cp);
+            let coverage = FontAtlas32x48.coverage_cp(gold.cp).expect("A2 glyph");
+            let GlyphCoverage::A2(g) = coverage else {
+                panic!("CJK golden cp={:#x} 必须走 A2", gold.cp)
+            };
+            assert_eq!((g.w, g.h), (32, 48));
+            let mut bbox = [usize::MAX, usize::MAX, 0usize, 0usize];
+            let mut ink = 0usize;
+            let mut first = usize::MAX;
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    let level = g.coverage(x, y);
+                    if level != 0 {
+                        ink += 1;
+                        first = first.min(y * g.w + x);
+                        bbox[0] = bbox[0].min(x);
+                        bbox[1] = bbox[1].min(y);
+                        bbox[2] = bbox[2].max(x);
+                        bbox[3] = bbox[3].max(y);
+                    }
+                }
+            }
+            assert_eq!(bbox, gold.bbox, "bbox cp={:#x}", gold.cp);
+            assert_eq!(ink, gold.ink, "ink cp={:#x}", gold.cp);
+            assert_eq!(first, gold.first, "first cp={:#x}", gold.cp);
+            let head = [g.coverage(0, 0), g.coverage(1, 0)];
+            let tail = [g.coverage(30, 47), g.coverage(31, 47)];
+            assert_eq!(usize::from(head[0]), usize::from(gold.head) * 85);
+            assert_eq!(usize::from(tail[1]), usize::from(gold.tail) * 85);
+            let _ = tail[0]; // head/tail 生成值逐字节见 GOLDEN；此两锚覆盖行首行尾。
+        }
+        // 强制跨页：首/中/尾三页先后取，验证单页缓存换页可复用。
+        for cp in [table[0], table[table.len() / 2], table[table.len() - 1]] {
+            assert!(FontAtlas32x48.coverage_cp(cp).is_some());
         }
     }
 

@@ -19,7 +19,6 @@ FONT_SIZE = 34
 BASELINE = 38
 THRESHOLD = 128
 SS = 4
-CJK_LABELS = "".join(sorted("设置相机通讯录文件图库信息浏览器"))
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -65,8 +64,8 @@ def build(font_path: Path) -> str:
     font_ss = ImageFont.truetype(str(font_path), FONT_SIZE * SS)
     lines = [
         "//! 本文件由 tools/genhdfont.py 生成——勿手改；改字源/字号后重跑生成器。",
-        "//! 字源：Noto Sans CJK SC Regular（ASCII + 桌面中文标签子集）（SIL Open Font License 1.1）。",
-        "//! 32×48 HD 档：ASCII 位表 + A8；中文标签字形仅 A8 覆盖表（HD 消费面）。",
+        "//! 字源：Noto Sans CJK SC Regular（ASCII 子集）（SIL Open Font License 1.1）。",
+        "//! 32×48 HD 档：ASCII 位表 + A8；CJK A2 全量另见 font_data_cjk.rs。",
         "//! 行序自上而下；每行 4 字节，MSB=最左列。",
         "",
         "pub const CELL_W: usize = 32;",
@@ -97,24 +96,6 @@ def build(font_path: Path) -> str:
         label = "SP" if ch == 32 else chr(ch)
         lines.append(f"    /* {ch:3} {label:>2} */ [{body}],")
     lines.append("];")
-    lines.extend([
-        "",
-        "/// HD 中文标签 A8 覆盖面（Unicode 码点表见 CJK_CODEPOINTS）。",
-        f"pub static FONT_HD_CJK_A8: [[u8; {CELL_W * CELL_H}]; {len(CJK_LABELS)}] = [",
-    ])
-    for ch in CJK_LABELS:
-        vals = glyph_coverage(font_ss, ord(ch))
-        assert len(vals) == CELL_W * CELL_H
-        body = ", ".join(f"0x{v:02X}" for v in vals)
-        lines.append(f"    /* U+{ord(ch):04X} {ch} */ [{body}],")
-    lines.append("];")
-    lines.extend([
-        "",
-        "/// 与 FONT_HD_CJK_A8 同序的 Unicode 码点（升序——运行期二分查找）。",
-        f"pub static CJK_CODEPOINTS: [u32; {len(CJK_LABELS)}] = [",
-    ])
-    lines.append("    " + ", ".join(f"0x{ord(ch):X}" for ch in CJK_LABELS) + ",")
-    lines.append("];")
     return "\n".join(lines) + "\n"
 
 
@@ -122,7 +103,7 @@ def main() -> int:
     arg = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "user/berry-gfx/fonts/NotoSansCJKsc-Regular-Desktop-ZH.otf"
     out = REPO / "user/berry-gfx/src/font_data_hd.rs"
     out.write_text(build(arg))
-    print(f"genhdfont: {out} ({out.stat().st_size}B, Noto Sans CJK SC {FONT_SIZE}px → {CELL_W}×{CELL_H} + 中文标签{len(CJK_LABELS)}字)")
+    print(f"genhdfont: {out} ({out.stat().st_size}B, Noto Sans CJK SC {FONT_SIZE}px → {CELL_W}×{CELL_H} ASCII)")
     return 0
 
 

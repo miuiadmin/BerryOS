@@ -20,7 +20,7 @@
 
 use crate::cmd::{Cmd, GlyphRun, ImageSrc, Rect};
 use crate::color::TextureDesc;
-use crate::font::{GlyphA8, GlyphBits};
+use crate::font::{GlyphA2, GlyphA8, GlyphBits, GlyphCoverage};
 
 /// 命令分派（回放入口——`Queue::submit` 逐命令驱动）。
 pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect) {
@@ -375,6 +375,39 @@ fn a8_blit(
     }
 }
 
+/// A2 字形：2bit nibble 直读并按 0/85/170/255 straight-alpha 混合；
+/// 不展开整页 A8（缓存恒 24,576B，而非每页 1.5MiB A8）。
+fn a2_blit(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    glyph: &GlyphA2<'_>,
+    dx: i32,
+    dy: i32,
+    fg: crate::cmd::Color,
+    clip: &Rect,
+) {
+    let dw = i32::try_from(glyph.w).unwrap_or(i32::MAX);
+    let dh = i32::try_from(glyph.h).unwrap_or(i32::MAX);
+    let Some(vis) = Rect::new(dx, dy, dw, dh).intersect(clip) else {
+        return;
+    };
+    let (y_end, x_end) = (vis.y.saturating_add(vis.h), vis.x.saturating_add(vis.w));
+    let mut y = vis.y;
+    while y < y_end {
+        let sy = (y - dy) as usize;
+        let mut x = vis.x;
+        while x < x_end {
+            let sx = (x - dx) as usize;
+            let a = glyph.coverage(sx, sy);
+            if a != 0 {
+                blend_px(target, desc, clip, x, y, fg.r, fg.g, fg.b, a);
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
 /// glyph-run：逐字形经图集位图走 [`mono_blit`] 共核。几何随图集档位
 /// （8×16 / 16×32 / 24×48——`font` 三档）；位序/小端/pack 逐位复刻
 /// fbcon `put_char`（共识契约，1x 档的等价性由 caps_misc/consensus
@@ -385,13 +418,16 @@ fn glyph_run(target: &mut [u8], desc: &TextureDesc, run: &GlyphRun, clip: &Rect)
     let fg_px = desc.format().pack(run.fg.r, run.fg.g, run.fg.b);
     let bg_px = run.bg.map(|c| desc.format().pack(c.r, c.g, c.b));
     for p in run.glyphs {
-        if let Some(a8) = run.atlas.coverage_cp(p.ch) {
+        if let Some(coverage) = run.atlas.coverage_cp(p.ch) {
             if let Some(bg) = bg_px {
                 let cw = i32::try_from(run.atlas.cell_w()).unwrap_or(i32::MAX);
                 let ch = i32::try_from(run.atlas.cell_h()).unwrap_or(i32::MAX);
                 fill_rect(target, desc, &Rect::new(p.x, p.y, cw, ch), bg, clip);
             }
-            a8_blit(target, desc, &a8, p.x, p.y, run.fg, clip);
+            match coverage {
+                GlyphCoverage::A8(a8) => a8_blit(target, desc, &a8, p.x, p.y, run.fg, clip),
+                GlyphCoverage::A2(a2) => a2_blit(target, desc, &a2, p.x, p.y, run.fg, clip),
+            }
             continue;
         }
         match run.atlas.glyph_cp(p.ch) {

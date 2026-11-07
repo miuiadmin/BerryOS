@@ -16,7 +16,7 @@
 //!   全幅底 → 深蓝灰盖上 2/3 → 状态栏黑带顶——三 Rect 零资产零缩放。
 //! - **裁决四-e（归属）**：状态栏/壁纸 = launcher 窗口内容层（非 wmd
 //!   系统窗）——Phase 1/3 起 wmd 按 session/owner 承载多客户端与输入路由，
-gfxdemo `WM ok` 语义零连带。
+//!   gfxdemo `WM ok` 语义零连带。
 //! - **裁决八（a11y OH phone 形 32/32）**：状态栏 4 件 ROLE_TEXT + 4 页
 //!   Grid 容器 ROLE_LIST + 当前页 20 格 ROLE_BUTTON + 4 个 Dock 位
 //!   ROLE_BUTTON = 32/32；翻页 take/set 重挂当前页（`rehang_a11y`）。

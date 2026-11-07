@@ -54,6 +54,7 @@ mod frameloop;
 mod icons;
 mod layout_io;
 
+use berry_gfx::font::{FontSize, GlyphAtlas};
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, input_h, self_proc_h, wm_cli_h};
 use berry_sys::{
@@ -274,6 +275,19 @@ fn main() {
         "LAUNCH v={} wmax={} {}x{} input={}",
         info.version_wm, info.windows_max, info.disp_w, info.disp_h, input_h()
     );
+
+    // Phase 4 全量 CJK A2 面 boot 实探：两个高频字都不在旧 16 字标签
+    // 子集中，必须在客机完成 zlib 页解压 + A2 nibble 解包后才可能命中。
+    for cp in [u32::from('中'), u32::from('国')] {
+        if FontSize::S32x48
+            .atlas()
+            .coverage_cp(cp)
+            .is_none()
+        {
+            fail(&format!("CJK A2 probe cp={cp:#x}"));
+        }
+    }
+    println!("CJKPROBE ok n=2");
 
     // —— 段③ 静态面接线（W1：树成帧不驱——frameloop 静默 park）——
     // 注册表初始化（W2 = app 域 APP_LIST 拉取装载；冻结相 app_cli_h()==0

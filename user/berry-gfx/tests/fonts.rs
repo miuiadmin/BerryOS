@@ -290,15 +290,63 @@ fn legacy_font_atlases_have_no_a8_coverage() {
     }
 }
 
-// —— HD 中文标签 A8：码点表可命中且渲染出中间覆盖率 ——
+// —— HD CJK A2：3500 常用字全表可命中且渲染出中间覆盖率 ——
 #[test]
-fn hd_cjk_label_coverage_renders_antialiased() {
+fn hd_cjk_full_coverage_renders_antialiased() {
     let atlas = FontSize::S32x48.atlas();
-    for ch in ["设".chars().next().unwrap(), "浏".chars().next().unwrap()] {
+    for ch in ["设".chars().next().unwrap(), "浏".chars().next().unwrap(), "中".chars().next().unwrap()] {
         let cp = ch as u32;
-        let a8 = atlas.coverage_cp(cp).expect("CJK label coverage");
-        assert_eq!((a8.w, a8.h), (32, 48));
-        assert!(a8.coverage.iter().any(|&v| v > 0), "{ch} 空字形");
+        let coverage = atlas.coverage_cp(cp).expect("CJK A2 coverage");
+        match coverage {
+            berry_gfx::font::GlyphCoverage::A2(a2) => {
+                assert_eq!((a2.w, a2.h), (32, 48));
+                assert!((0..48).any(|y| (0..32).any(|x| a2.coverage(x, y) > 0)), "{ch} 空字形");
+            }
+            other => panic!("{ch} 不应走 ASCII A8：{other:?}"),
+        }
     }
-    assert!(atlas.coverage_cp(0x4E00).is_none(), "常用字全表仍未声明");
+    // 频率表首字与末字都在册；明显不在频率表的 CJK Extension 字缺字形。
+    assert!(atlas.coverage_cp(0x4E00).is_some());
+    assert!(atlas.coverage_cp(0x9F9F).is_some());
+    assert!(atlas.coverage_cp(0x20000).is_none());
+}
+
+// —— HD CJK A2 光栅链路：zlib 页缓存 → nibble 解包 → straight-alpha 混合 ——
+#[test]
+fn hd_cjk_a2_render_blends_edge_pixels() {
+    let d = TextureDesc::new(64, 64, 256, TextureFormat::Rgbx).unwrap();
+    let positions = [
+        GlyphPos { ch: u32::from('中'), x: 4, y: 8 },
+        GlyphPos { ch: u32::from('浏'), x: 4 + 32, y: 8 },
+    ];
+    let run = GlyphRun {
+        atlas: FontSize::S32x48.atlas(),
+        glyphs: &positions,
+        fg: WHITE,
+        bg: None,
+    };
+    let mut fb = vec![0x77u8; d.need_bytes()];
+    let mut enc = CommandEncoder::new();
+    enc.draw_glyph_run(run).unwrap();
+    let dl = enc.finish();
+    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
+    let mut edge = 0usize;
+    let mut levels = [false; 4];
+    for y in 8..56 {
+        for x in 4..100 {
+            let p = px(&fb, 256, x as i32, y as i32);
+            let old = 0x0077_7777;
+            if p == old || p == 0x00FF_FFFF {
+                continue;
+            }
+            edge += 1;
+            match p {
+                0x00A4_A4A4 => levels[1] = true,
+                0x00D2_D2D2 => levels[2] = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(edge >= 16, "CJK A2 边缘中间像素过少：{edge}");
+    assert!(levels[1] && levels[2], "A2 85/170 两档都必须实际落帧");
 }
