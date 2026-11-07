@@ -94,12 +94,18 @@ MARK_WM_CLEAN = "WMDTY ok n=1"
 MARK_WM_CONN1 = "WMCONN ok id=1"
 MARK_WM_CONN2 = "WMCONN ok id=2"
 MARK_WM_CONN3 = "WMCONN ok id=3"
+MARK_WM_CONN4 = "WMCONN ok id=4"
+MARK_WM_ROUTE_WINDOW_UP = "WMRTWIN ok id="
 MARK_WM_DENIED = "WMDENY ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
 MARK_WM_ORPHAN = "WMORPHAN ok id="
 MARK_WM_2FRAME = "WM2FRAME ok n=2"
 MARK_WM_DEAD1 = "WMDEAD ok id=1 wins=0"
 MARK_WM_DEAD2 = "WMDEAD ok id=2 wins=1"
+MARK_WM_ROUTE_DESKTOP = "WMROUTE ok sid=3 window=0"
+MARK_WM_ROUTE_WINDOW = "WMROUTEWIN ok phase="
+MARK_WM_INPUT_DROP = "WMIDROP bad"
+MARK_INPUT_ROUTE_BAD = "INPUTROUTE bad"
 MARK_INPUT_DROPS_OK = "INPUTDROPS ok n=0"
 MARK_INPUT_DROPS_BAD = "INPUTDROPS bad n="
 MARK_SWIPE = "SWIPE ok n=1"
@@ -892,6 +898,9 @@ def verify_boot_a_click(
     _require_exact_count(text, MARK_CLICK_READY, 1, "boot A click", log_path)
     _require_exact_count(text, MARK_INPUT_DROPS_OK, 1, "boot A click", log_path)
     _require_exact_count(text, MARK_INPUT_DROPS_BAD, 0, "boot A click", log_path)
+    _require_exact_count(text, MARK_WM_ROUTE_DESKTOP, 2, "boot A click", log_path)
+    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "boot A click", log_path)
+    _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "boot A click", log_path)
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
@@ -938,6 +947,10 @@ def verify_boot_a_real_swipe(
     """Boot A 真实输入 swipe 精确验收：SWIPE 恰一且不产生新点击/spawn。"""
     _require_exact_count(text, MARK_SWIPE, 1, "boot A real swipe", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 1, "boot A real swipe", log_path)
+    _require_exact_count(text, MARK_WM_ROUTE_DESKTOP, 2, "boot A real swipe", log_path)
+    _require_exact_count(text, MARK_WM_ROUTE_WINDOW, 1, "boot A real swipe", log_path)
+    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "boot A real swipe", log_path)
+    _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "boot A real swipe", log_path)
     if text.count(MARK_APP_DEMO_UP) != demo_after_click:
         raise SmokeError(
             f"boot A real swipe: 新增 {MARK_APP_DEMO_UP!r} "
@@ -984,6 +997,9 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_CLICK_READY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_SWIPE, 0, "normal boot", log_path)
+    _require_exact_count(text, MARK_WM_ROUTE_DESKTOP, 1, "normal boot", log_path)
+    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal boot", log_path)
+    _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "normal boot", log_path)
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
@@ -1304,7 +1320,10 @@ def run_dual_boot(args) -> int:
 
         # click ready = snap-to-0 已收敛的状态谓词，**强制在席恰一次**；
         # 缺席即 FAIL，不再 sleep-and-click 回退。
-        boot_a.wait_markers([MARK_CLICK_READY], args.click_ready_timeout)
+        boot_a.wait_markers(
+            [MARK_WM_CONN4, MARK_WM_ROUTE_WINDOW_UP, MARK_CLICK_READY],
+            args.click_ready_timeout,
+        )
         ready_pos = boot_a.log.text.find(MARK_CLICK_READY)
         demo_before = boot_a.log.text.count(MARK_APP_DEMO_UP)
         quiet_before = boot_a.log.text.count(MARK_APP_QUIET_UP)
@@ -1378,6 +1397,39 @@ def run_dual_boot(args) -> int:
         boot_a.qmp.drag(w * 0.78, w * 0.20, h * 0.52, w, h)
         boot_a.wait_markers([MARK_SWIPE], args.click_timeout)
 
+        # Phase 3 真实 owner 路由：点入 launcher 内嵌 APP session 的右下
+        # 角窗口。事件必须由 inputd→wmd→APP input channel，且坐标已被
+        # wmd 转成 window-local；不得触发桌面 CLICK/spawn。
+        rt = re.search(
+            r"WMRTWIN ok id=([0-9]+) x=([0-9]+) y=([0-9]+) "
+            r"w=([0-9]+) h=([0-9]+)",
+            boot_a.log.text,
+        )
+        if rt is None:
+            raise SmokeError("boot A route window geometry absent", boot_a.log_path)
+        rw_id, rx, ry, rw, rh = map(int, rt.groups())
+        rcx, rcy = rx + rw // 2, ry + rh // 2
+        log(f"boot A: QMP 点入 APP session 窗口 id={rw_id} 中心 ({rcx},{rcy})")
+        boot_a.qmp.click(rcx, rcy, w, h)
+        boot_a.wait_markers([MARK_WM_ROUTE_WINDOW], args.click_timeout)
+        boot_a.log.poll()
+        local = re.search(
+            r"WMROUTEWIN ok phase=1 x=([0-9]+) y=([0-9]+)",
+            boot_a.log.text,
+        )
+        if local is None:
+            raise SmokeError("boot A APP route 缺 phase=1/local 坐标", boot_a.log_path)
+        lx, ly = map(int, local.groups())
+        if lx >= rw or ly >= rh:
+            raise SmokeError(
+                f"boot A APP route 坐标 ({lx},{ly}) 未local化 "
+                f"(window {rw}x{rh})",
+                boot_a.log_path,
+            )
+        owner_marker = f"WMROUTE ok sid=4 window={rw_id}"
+        if owner_marker not in boot_a.log.text:
+            raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
+
         # 先停 QEMU 再对最终串口日志做精确计数（重复/顺序假绿 fail loud）。
         watcher_a = boot_a.log
         log_path_a = boot_a.log_path
@@ -1419,6 +1471,9 @@ def run_dual_boot(args) -> int:
         boot_b = Boot("B", args, run_dir, disk, "b")
         boot_b.start()
         boot_b.wait_markers(_boot_base_markers(), args.boot_b_timeout)
+        boot_b.wait_markers(
+            [MARK_WM_CONN4, MARK_WM_ROUTE_WINDOW_UP], args.boot_b_timeout
+        )
         boot_b.wait_regex(RE_LAYOUT_N2, args.boot_b_timeout)
 
         watcher_b = boot_b.log
@@ -1459,7 +1514,8 @@ def run_dual_boot(args) -> int:
             boot_c = Boot("C", args, run_dir, disk, "c")
             boot_c.start()
             boot_c.wait_markers(
-                _boot_base_markers() + [MARK_APP_DEMO_UP, MARK_LAYOUTW],
+                _boot_base_markers()
+                + [MARK_APP_DEMO_UP, MARK_WM_CONN4, MARK_WM_ROUTE_WINDOW_UP, MARK_LAYOUTW],
                 args.boot_b_timeout,
             )
             watcher_c = boot_c.log
@@ -1909,6 +1965,8 @@ def self_test(args) -> int:
             f"{MARK_INPUT_DROPS_OK}\n"
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
+            f"{MARK_WM_ROUTE_DESKTOP}\n"
+            f"{MARK_WM_ROUTE_DESKTOP}\n"
             f"{MARK_APP_DEMO_UP}\n"
             f"{MARK_APP_DEMO_FS}\n"
         )
@@ -1972,7 +2030,7 @@ def self_test(args) -> int:
                 0,
             ),
         )
-        fake_swipe = fake_a + MARK_SWIPE + "\n"
+        fake_swipe = fake_a + MARK_SWIPE + "\n" + MARK_WM_ROUTE_WINDOW + "1 x=50 y=32\n"
         verify_boot_a_real_swipe(
             fake_swipe,
             fake_swipe.index(MARK_CLICK_ANY),
@@ -2023,7 +2081,7 @@ def self_test(args) -> int:
 
         fake_n = f"{MARK_APP_DEMO_UP}\n"
         snap_n = len(fake_n)
-        fake_n += f"{MARK_APP_DEMO_UP}\n"
+        fake_n += f"{MARK_APP_DEMO_UP}\n{MARK_WM_ROUTE_DESKTOP}\n"
         verify_normal_boot(fake_n, snap_n, 1, 0)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),

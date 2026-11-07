@@ -188,6 +188,7 @@ fn note_spawn_ack(smoke: bool, spawn_ok: &mut u32, ack: Option<(bool, u32)>) -> 
 pub fn run(
     hw: Handle,
     hi: Handle,
+    route_input: Option<Handle>,
     ui: &'static mut UiMain,
     mut desktop: Desktop,
     smoke: bool,
@@ -299,6 +300,13 @@ pub fn run(
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
     let mut input_hs = [0 as Handle; 8];
 
+    // Phase 3 APP session 输入面：只验证 wmd owner/local 路由，不进桌面 UI。
+    let mut route_ch = route_input;
+    let mut route_pending = false;
+    let mut route_done = false;
+    let mut route_buf = [0u8; gp::INPUT_REP_MAX];
+    let mut route_hs = [0 as Handle; 8];
+
     loop {
         let t_now = now();
 
@@ -369,6 +377,46 @@ pub fn run(
             } else {
                 eprintln!("launcher: input poll arm failed -- disable");
                 hi = 0;
+            }
+        }
+
+        if let Some(rh) = route_ch {
+            if route_pending {
+                let mut nb = route_buf.len();
+                let mut nh = route_hs.len();
+                let st = berry_channel_recv(
+                    rh,
+                    route_buf.as_mut_ptr(),
+                    &mut nb,
+                    route_hs.as_mut_ptr(),
+                    &mut nh,
+                );
+                if st == 0 {
+                    route_pending = false;
+                    for h in &route_hs[..nh] {
+                        close_h(*h);
+                    }
+                    if let Some(Ok(view)) = gp::parse_input_events_rep(&route_buf[..nb]) {
+                        if let Some(ev) = view.event(0) {
+                            if !route_done {
+                                println!(
+                                    "WMROUTEWIN ok phase={} x={} y={}",
+                                    ev.phase, ev.x, ev.y
+                                );
+                                route_done = true;
+                            }
+                        }
+                    }
+                } else if st != BERRY_ERR_AGAIN {
+                    eprintln!("launcher: route input recv err={st}");
+                    route_ch = None;
+                    route_pending = false;
+                }
+            }
+            if let Some(rh) = route_ch {
+                if !route_pending && input_arm(rh) {
+                    route_pending = true;
+                }
             }
         }
 

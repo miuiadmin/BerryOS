@@ -53,40 +53,119 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// 重臂续等；guifbd `IDLE_CAP_NS` 同款）。
 const WMD_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 
-/// 单个 wm 客户端 session：专通道 + owner id + self Process 死亡观察柄。
-struct WmSession {
-    id: u16,
-    ch: Handle,
-    process: Handle,
+/// Phase 3 per-session 输入环（16 深；溢出 loud 计数，不覆盖旧事件）。
+struct InputQueue {
+    events: [gp::PointerEvent; 16],
+    head: usize,
+    tail: usize,
+    len: usize,
+    dropped: u64,
 }
 
-/// Phase 1 session 表（静态定容；v1 先帽 4，覆盖 gfxdemo/launcher 与两个
-/// 未来真实 app，不引入分配面）。
+impl InputQueue {
+    fn new() -> Self {
+        Self {
+            events: [zero_event(); 16],
+            head: 0,
+            tail: 0,
+            len: 0,
+            dropped: 0,
+        }
+    }
+
+    fn push(&mut self, ev: gp::PointerEvent) -> bool {
+        if self.len == self.events.len() {
+            self.dropped += 1;
+            return false;
+        }
+        self.events[self.tail] = ev;
+        self.tail = (self.tail + 1) % self.events.len();
+        self.len += 1;
+        true
+    }
+
+    fn pop_into(&mut self, out: &mut [gp::PointerEvent]) -> usize {
+        let mut n = 0usize;
+        while n < out.len() && self.len > 0 {
+            out[n] = self.events[self.head];
+            self.head = (self.head + 1) % self.events.len();
+            self.len -= 1;
+            n += 1;
+        }
+        n
+    }
+}
+
+/// 单个 wm 客户端 session：WM/RPC 专通道、输入专通道、owner id、
+/// client_type 与 self Process 死亡观察柄。
+struct WmSession {
+    id: u16,
+    client_type: u8,
+    ch: Handle,
+    input: Handle,
+    process: Handle,
+    queue: InputQueue,
+}
+
+/// 接触粘滞锁：pointer_id → (session, window_id)；window_id=0 表示桌面。
+#[derive(Clone, Copy)]
+struct InputLock {
+    pointer_id: u16,
+    session: u16,
+    window: u16,
+}
+
+/// Phase 1/3 session 表（静态定容；v1 帽 4）。WM RPC 与输入分通道，避免
+/// launcher 异步 INPUT_POLL 与 present RPC 在同一 channel 上响应错配。
 struct WmSessions {
     slots: [Option<WmSession>; 4],
     next_id: u16,
+    input_lock: Option<InputLock>,
+}
+
+const fn zero_event() -> gp::PointerEvent {
+    gp::PointerEvent {
+        phase: gp::PHASE_CANCEL,
+        device_id: 0,
+        buttons: 0,
+        flags: 0,
+        pointer_id: 0,
+        timestamp_ns: 0,
+        x: 0,
+        y: 0,
+        pressure: gp::PRESSURE_UNAVAILABLE,
+        contact_major: 0,
+        contact_minor: 0,
+        history: [gp::Sample { timestamp_ns: 0, x: 0, y: 0 };
+            gp::INPUT_SAMPLES_MAX - 1],
+        history_len: 0,
+    }
 }
 
 impl WmSessions {
     fn new() -> Self {
-        Self { slots: [None, None, None, None], next_id: 0 }
+        Self {
+            slots: [None, None, None, None],
+            next_id: 0,
+            input_lock: None,
+        }
     }
 
-    /// broker 面 WM_CONNECT：请求恰携 [session endpoint, self process]。
-    /// 成功后 per-session 通道成为唯一 WM/present/hdi 会话面。
+    /// broker 面 WM_CONNECT：请求恰携 [WM endpoint, input endpoint,
+    /// self process]。成功后 WM/present/hdi 与输入分别走两根专通道。
     fn connect(&mut self, broker: Handle, msg: &[u8], hs: &[Handle]) {
         let bad = |hs: &[Handle]| {
             close_all(hs);
             st_rep(broker, gp::ST_BAD);
         };
-        if hs.len() != 2 || hs.iter().any(|&h| h == 0) {
+        if hs.len() != 3 || hs.iter().any(|&h| h == 0) {
             bad(hs);
             return;
         }
-        if gp::parse_wm_connect_req(msg).is_none() {
+        let Some(client_type) = gp::parse_wm_connect_req(msg) else {
             bad(hs);
             return;
-        }
+        };
         let Some(slot) = (0..self.slots.len()).find(|&i| self.slots[i].is_none()) else {
             close_all(hs);
             st_rep(broker, gp::ST_FULL);
@@ -94,7 +173,14 @@ impl WmSessions {
         };
         self.next_id = self.next_id.wrapping_add(1).max(1);
         let id = self.next_id;
-        self.slots[slot] = Some(WmSession { id, ch: hs[0], process: hs[1] });
+        self.slots[slot] = Some(WmSession {
+            id,
+            client_type,
+            ch: hs[0],
+            input: hs[1],
+            process: hs[2],
+            queue: InputQueue::new(),
+        });
         let mut out = [0u8; 8];
         let n = match gp::encode_wm_connect_rep(&mut out, id) {
             Some(n) => n,
@@ -102,6 +188,117 @@ impl WmSessions {
         };
         send_rep(broker, &out[..n]);
         println!("WMCONN ok id={id}");
+    }
+
+    fn slot_index(&self, id: u16) -> Option<usize> {
+        (0..self.slots.len()).find(|&i| self.slots[i].as_ref().map(|s| s.id) == Some(id))
+    }
+
+    fn system_slot(&self) -> Option<usize> {
+        (0..self.slots.len()).find(|&i| {
+            self.slots[i]
+                .as_ref()
+                .map(|s| s.client_type == gp::WM_CLIENT_SYSTEM)
+                .unwrap_or(false)
+        })
+    }
+
+    fn localize(ev: &mut gp::PointerEvent, x: u16, y: u16) {
+        ev.x = ev.x.saturating_sub(u32::from(x));
+        ev.y = ev.y.saturating_sub(u32::from(y));
+        for s in ev.history[..ev.history_len].iter_mut() {
+            s.x = s.x.saturating_sub(u32::from(x));
+            s.y = s.y.saturating_sub(u32::from(y));
+        }
+    }
+
+    /// inputd 原始事件 → 权威 owner 路由。DOWN hit-test；MOVE/UP 粘滞；
+    /// 锁定窗失踪合成 CANCEL；桌面 MISS 落 SYSTEM session（launcher）。
+    fn route(&mut self, table: &mut table::WmTable, ev: &gp::PointerEvent) {
+        let mut out = *ev;
+        let mut clear_lock = false;
+        let (sid, window, origin) = match out.phase {
+            gp::PHASE_DOWN => {
+                let target = match table.hit_route(out.x, out.y) {
+                    Some((owner, win, x, y)) => (owner, win, Some((x, y))),
+                    None => match self.system_slot() {
+                        Some(i) => (self.slots[i].as_ref().unwrap().id, 0, None),
+                        None => return,
+                    },
+                };
+                self.input_lock = Some(InputLock {
+                    pointer_id: out.pointer_id,
+                    session: target.0,
+                    window: target.1,
+                });
+                target
+            }
+            _ => {
+                let Some(lock) = self.input_lock else { return };
+                if lock.pointer_id != out.pointer_id {
+                    return;
+                }
+                clear_lock = out.phase == gp::PHASE_UP || out.phase == gp::PHASE_CANCEL;
+                let origin = if lock.window == 0 {
+                    None
+                } else {
+                    match table.route_geometry(lock.session, lock.window) {
+                        Some(xy) => Some(xy),
+                        None => {
+                            out.phase = gp::PHASE_CANCEL;
+                            out.flags |= gp::PE_FL_SYNTHESIZED;
+                            clear_lock = true;
+                            None
+                        }
+                    }
+                };
+                (lock.session, lock.window, origin)
+            }
+        };
+        if let Some((x, y)) = origin {
+            Self::localize(&mut out, x, y);
+        }
+        let Some(i) = self.slot_index(sid) else {
+            self.input_lock = None;
+            return;
+        };
+        let sess = self.slots[i].as_mut().unwrap();
+        if !sess.queue.push(out) {
+            eprintln!(
+                "WMIDROP bad sid={} window={} dropped={}",
+                sid, window, sess.queue.dropped
+            );
+        } else if out.phase == gp::PHASE_DOWN {
+            println!("WMROUTE ok sid={} window={}", sid, window);
+        }
+        if clear_lock {
+            self.input_lock = None;
+        }
+    }
+
+    /// 输入专通道 INPUT_POLL：非阻塞批答。空批 ST_EAGAIN 由客户端重臂。
+    fn poll_input(&mut self, ch: Handle, max: u8) {
+        let Some(i) = self.slots.iter().position(|s| {
+            s.as_ref().map(|s| s.input == ch).unwrap_or(false)
+        }) else {
+            st_rep(ch, gp::ST_BAD);
+            return;
+        };
+        let sess = self.slots[i].as_mut().unwrap();
+        let mut events = [zero_event(); gp::INPUT_EVENTS_MAX];
+        let n = sess.queue.pop_into(&mut events[..max as usize]);
+        if n == 0 {
+            let mut rep = [0u8; 1];
+            let m = gp::encode_status_rep(&mut rep, gp::ST_EAGAIN);
+            send_rep(ch, &rep[..m]);
+            return;
+        }
+        let mut rep = [0u8; gp::INPUT_REP_MAX];
+        let m = match gp::encode_input_events_rep(&mut rep, &events[..n]) {
+            Some(m) => m,
+            None => trap(),
+        };
+        send_rep(ch, &rep[..m]);
     }
 
     /// poll-first 死亡探测：Process TERMINATED 即摘 session、清 owner 窗。
@@ -128,13 +325,20 @@ impl WmSessions {
             }
             let sess = self.slots[i].take().expect("checked slot");
             let wins = table.destroy_owned(sess.id);
+            if self.input_lock.map(|l| l.session == sess.id).unwrap_or(false) {
+                self.input_lock = None;
+            }
             println!("WMDEAD ok id={} wins={}", sess.id, wins);
-            if berry_handle_close(sess.ch) != 0 || berry_handle_close(sess.process) != 0 {
+            if berry_handle_close(sess.ch) != 0
+                || berry_handle_close(sess.input) != 0
+                || berry_handle_close(sess.process) != 0
+            {
                 trap();
             }
         }
     }
 }
+
 
 /// 单调钟现值（失败 = clock 面断链，loud）。
 pub(crate) fn now_ns() -> u64 {
@@ -227,7 +431,7 @@ fn on_broker(sessions: &mut WmSessions, ch: Handle, msg: &[u8], hs: &[Handle]) {
 
 /// session 面分发：present/hdi relay；wm 域带 owner 执法。
 fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
-              comp: &mut relay::Compositor, sess: &WmSession,
+              comp: &mut relay::Compositor, sess: &mut WmSession,
               msg: &[u8], hs: &[Handle]) {
     let ch = sess.ch;
     match msg.first() {
@@ -259,9 +463,33 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
     }
 }
 
-/// push_srv 帧分发：**只收 TABLE_WAIT**（inputd 单客户端串行 WAIT 面）；
-/// 其余帧（含其它 wm op 错投）1B ST_BAD + close 随行。
-fn on_push(table: &mut table::WmTable, ch: Handle, msg: &[u8], hs: &[Handle]) {
+/// push_srv 帧分发：inputd 面收 TABLE_WAIT 与 Phase 3 INPUT_ROUTE；
+/// 其余帧（含 wm op 错投）1B ST_BAD + close 随行。
+fn on_push(
+    table: &mut table::WmTable,
+    sessions: &mut WmSessions,
+    ch: Handle,
+    msg: &[u8],
+    hs: &[Handle],
+) {
+    if msg.first() == Some(&gp::OP_INPUT_ROUTE) {
+        if !hs.is_empty() {
+            close_all(hs);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        match gp::parse_input_route_req(msg) {
+            Some(route) => {
+                for i in 0..route.count() {
+                    if let Some(ev) = route.event(i) {
+                        sessions.route(table, &ev);
+                    }
+                }
+            }
+            None => st_rep(ch, gp::ST_BAD),
+        }
+        return;
+    }
     if !hs.is_empty() {
         close_all(hs);
         st_rep(ch, gp::ST_BAD);
@@ -331,16 +559,34 @@ fn main() {
             continue;
         }
         if let Some((msg, hs)) = poll(push_srv) {
-            on_push(&mut table, push_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
+            on_push(&mut table, &mut sessions, push_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             continue;
         }
         let mut handled = false;
-        for slot in sessions.slots.iter().flatten() {
-            if let Some((msg, hs)) = poll(slot.ch) {
-                on_session(
-                    &mut table, present_cli, hdi_cli, &mut compositor, slot,
-                    &msg.0[..msg.1], &hs.0[..hs.1],
-                );
+        for i in 0..sessions.slots.len() {
+            let Some(sess) = sessions.slots[i].as_ref() else { continue };
+            let (session_ch, input_ch) = (sess.ch, sess.input);
+            if let Some((msg, _hs)) = poll(input_ch) {
+                match gp::parse_input_poll_req(&msg.0[..msg.1]) {
+                    Some(max) => sessions.poll_input(input_ch, max),
+                    None => st_rep(input_ch, gp::ST_BAD),
+                }
+                handled = true;
+                break;
+            }
+            if let Some((msg, hs)) = poll(session_ch) {
+                if msg.0.first() == Some(&gp::OP_INPUT_POLL) {
+                    match gp::parse_input_poll_req(&msg.0[..msg.1]) {
+                        Some(max) => sessions.poll_input(input_ch, max),
+                        None => st_rep(input_ch, gp::ST_BAD),
+                    }
+                } else {
+                    let slot = sessions.slots[i].as_mut().unwrap();
+                    on_session(
+                        &mut table, present_cli, hdi_cli, &mut compositor,
+                        slot, &msg.0[..msg.1], &hs.0[..hs.1],
+                    );
+                }
                 handled = true;
                 break;
             }
@@ -349,8 +595,8 @@ fn main() {
             continue;
         }
 
-        let mut hs = [0 as Handle; 10];
-        let mut sigs = [0u64; 10];
+        let mut hs = [0 as Handle; 14];
+        let mut sigs = [0u64; 14];
         hs[0] = wm_srv;
         sigs[0] = SIGNAL_READABLE;
         hs[1] = push_srv;
@@ -358,6 +604,9 @@ fn main() {
         let mut n = 2usize;
         for sess in sessions.slots.iter().flatten() {
             hs[n] = sess.ch;
+            sigs[n] = SIGNAL_READABLE;
+            n += 1;
+            hs[n] = sess.input;
             sigs[n] = SIGNAL_READABLE;
             n += 1;
             hs[n] = sess.process;

@@ -224,6 +224,33 @@ impl WmTable {
         (0..self.count).find(|&i| self.wins[i].id == id)
     }
 
+    /// Phase 3 权威输入命中：返回 (owner, window_id, 有效几何原点)。
+    pub fn hit_route(&self, x: u32, y: u32) -> Option<(u16, u16, u16, u16)> {
+        let mut entries = [gp::WmEntry {
+            id: 0, parent: 0, group: 0, x: 0, y: 0, w: 0, h: 0,
+            layer: gp::WM_LAYER_APP, z: 0, flags: 0,
+        }; gp::WM_WINDOWS_MAX];
+        for (dst, src) in entries.iter_mut().zip(self.wins.iter()).take(self.count) {
+            *dst = gp::WmEntry {
+                id: src.id, parent: src.parent, group: src.group,
+                x: src.eff.0, y: src.eff.1, w: src.eff.2, h: src.eff.3,
+                layer: src.layer, z: src.z,
+                flags: if src.vis { gp::WM_WIN_F_VISIBLE } else { 0 },
+            };
+        }
+        let id = gp::wm_hit_test(&entries[..self.count], x, y)?;
+        let i = self.find(id)?;
+        Some((self.wins[i].owner, id, self.wins[i].eff.0, self.wins[i].eff.1))
+    }
+
+    /// 输入锁定窗的现几何（owner 不匹配/窗失踪 = None）。
+    pub fn route_geometry(&self, owner: u16, id: u16) -> Option<(u16, u16)> {
+        let i = (0..self.count).find(|&i| {
+            self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
+        })?;
+        Some((self.wins[i].eff.0, self.wins[i].eff.1))
+    }
+
     /// Phase 2 surface 绑定：surface_id 必须是本 owner 的可见窗，返回有效
     ///几何 `(x,y,w,h)`（合成落位与裁剪域）。
     pub fn surface_rect(&self, owner: u16, id: u16) -> Option<(u16, u16, u16, u16)> {

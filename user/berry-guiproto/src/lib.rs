@@ -76,6 +76,10 @@ pub const OP_POWER_MODE: u8 = 6;
 pub const OP_INPUT_SUBSCRIBE: u8 = 0x20;
 /// input 域：拉事件批（可阻塞：阻塞到至少 1 个完整事件）。
 pub const OP_INPUT_POLL: u8 = 0x21;
+/// input 域内部路由帧（Phase 3）：inputd → wmd。头与 INPUT_POLL 事件批
+/// 同形，但它是请求而非应答；wmd 以权威 WM 表做 owner hit-test 后入
+/// per-session 输入队列。
+pub const OP_INPUT_ROUTE: u8 = 0x22;
 /// hdi 域：注册 vblank 通知源（随行 1 个 Event handle）。
 pub const OP_REG_VBLANK: u8 = 0x40;
 /// hdi 域：等下一次 vblank（阻塞应答）。
@@ -281,6 +285,8 @@ pub const PRESENT_REP_MAX: usize = 24;
 pub const INPUT_EVT_MAX_LEN: usize = 80;
 /// INPUT_POLL 应答帧帽 = 4 + 3×80。
 pub const INPUT_REP_MAX: usize = 244;
+/// INPUT_ROUTE 请求帧帽（与 INPUT_POLL 应答同算术）。
+pub const INPUT_ROUTE_MAX: usize = 244;
 /// hdi 域请求帧帽（PREPARE 请求 20B）。
 pub const HDI_REQ_MAX: usize = 20;
 /// hdi 域应答帧帽（VBLANK_WAIT 应答 16B）。
@@ -1112,6 +1118,82 @@ pub fn parse_input_poll_req(buf: &[u8]) -> Option<u8> {
         return None;
     }
     Some(m)
+}
+
+/// 编码 INPUT_ROUTE 请求（inputd → wmd 内部帧；空批/越帽/总长越帽拒）。
+pub fn encode_input_route_req(out: &mut [u8], events: &[PointerEvent]) -> Option<usize> {
+    if events.is_empty() || events.len() > INPUT_EVENTS_MAX {
+        return None;
+    }
+    let mut total = INPUT_REP_HEAD;
+    for ev in events {
+        total += pointer_event_len(ev.history_len)?;
+    }
+    if total > INPUT_ROUTE_MAX {
+        return None;
+    }
+    let m = out.get_mut(..total)?;
+    m[0] = OP_INPUT_ROUTE;
+    m[1] = events.len() as u8;
+    m[2] = 0;
+    m[3] = 0;
+    let mut off = INPUT_REP_HEAD;
+    for ev in events {
+        off += encode_pointer_event(&mut m[off..], ev)?;
+    }
+    Some(off)
+}
+
+/// INPUT_ROUTE 请求借用视图（逐事件惰性解析——wmd 侧零分配）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputRouteReq<'a> {
+    pub(crate) buf: &'a [u8],
+    pub(crate) count: u8,
+}
+
+impl<'a> InputRouteReq<'a> {
+    pub fn count(&self) -> usize {
+        self.count as usize
+    }
+
+    pub fn event(&self, i: usize) -> Option<PointerEvent> {
+        if i >= self.count as usize {
+            return None;
+        }
+        let mut off = 0usize;
+        for k in 0..=i {
+            let span = event_span(self.buf, off)?;
+            let end = off.checked_add(span)?;
+            if k == i {
+                return parse_pointer_event(self.buf.get(off..end)?);
+            }
+            off = end;
+        }
+        None
+    }
+}
+
+/// 解析 INPUT_ROUTE 请求：恰 4B 头 + count 个 PointerEvent；保留位、
+/// 截断与尾随字节双侧拒。
+pub fn parse_input_route_req(buf: &[u8]) -> Option<InputRouteReq<'_>> {
+    if buf.len() < INPUT_REP_HEAD || buf[0] != OP_INPUT_ROUTE {
+        return None;
+    }
+    let count = buf[1] as usize;
+    if count == 0 || count > INPUT_EVENTS_MAX || buf[2] != 0 || buf[3] != 0 {
+        return None;
+    }
+    let mut off = INPUT_REP_HEAD;
+    for _ in 0..count {
+        let span = event_span(buf, off)?;
+        let end = off.checked_add(span)?;
+        parse_pointer_event(buf.get(off..end)?)?;
+        off = end;
+    }
+    if off != buf.len() {
+        return None;
+    }
+    Some(InputRouteReq { buf: buf.get(INPUT_REP_HEAD..)?, count: count as u8 })
 }
 
 /// 编码 INPUT_POLL 事件批应答（`[st=0][count u8][r16][count 个
@@ -2632,6 +2714,16 @@ mod tests {
         );
         // 尾随 / 错 op。
         assert_eq!(parse_input_poll_req(&[OP_INPUT_POLL, 1, 0, 0, 0]), None);
+        let ev = sample_ev(1, 9);
+        let mut route = [0u8; INPUT_ROUTE_MAX];
+        let rn = encode_input_route_req(&mut route, &[ev]).unwrap();
+        let parsed = parse_input_route_req(&route[..rn]).unwrap();
+        assert_eq!(parsed.count(), 1);
+        assert_eq!(parsed.event(0), Some(ev));
+        assert_eq!(parse_input_route_req(&{
+            let mut b = route; b[2] = 1; b
+        }), None);
+        assert_eq!(encode_input_route_req(&mut route, &[]), None);
         assert_eq!(parse_input_poll_req(&[OP_INPUT_SUBSCRIBE, 1, 0, 0]), None);
     }
 

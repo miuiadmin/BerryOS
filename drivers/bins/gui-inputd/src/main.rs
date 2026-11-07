@@ -27,8 +27,8 @@
 //! **GUI-5（docs/GUI-5实施设计草案.md §3 #10）**：serve 升格两路
 //! poll-first——wmd 推送端在席（`wm_push_h()`≠0，EFI 链 wmd 起）时并监
 //! wm 表快照通道：WM_TABLE_WAIT 串行 park-应答循环（快照静态缓存 +
-//! 超龄三层失效 Q11）+ drain 后逐事件 `wm_hit_test` **内存旁注**（Q9
-//! 单源驻 berry-guiproto；Q10 粘滞锁定；Q16——INPUT_POLL 恒为泵唯一
+//! 超龄三层失效 Q11）+ legacy direct poll 的 `wm_hit_test` 内存旁注
+//!（Q9 单源；Phase 3 真路由已上收 wmd——inputd 向 wmd 转原始全局事件）
 //! drain 者，旁注非第二消费、不进 wire）。==0（rootfs 相 wmd 未起）时
 //! 两路面/旁注/步进睡改形全门控——单通道现行为逐字节保留（46 标记面
 //! 零漂移的构造保证）。
@@ -562,6 +562,45 @@ mod guest {
         }
     }
 
+    /// Phase 3：自主 drain → INPUT_ROUTE 原始事件帧 → wmd。这里不做
+    /// owner 裁决（wmd 权威表才是路由源）；本函数与 legacy INPUT_POLL
+    /// 共用泵唯一 drain 纪律——serve 单线程串行调用，不构成第二消费者。
+    fn route_wmd(d: &mut Dma, regs: *mut u32, pump: &mut PointerPump, push: Handle) {
+        harvest(d, regs, pump);
+        let mut evs = [ZERO_PE; gp::INPUT_EVENTS_MAX];
+        let k = pump.drain(&mut evs[..]);
+        if k == 0 {
+            return;
+        }
+        let mut wes = [ZERO_WPE; gp::INPUT_EVENTS_MAX];
+        for (dst, src) in wes.iter_mut().zip(evs.iter()).take(k) {
+            // 旁注仅诊断；wire 保持原始全局坐标，owner/local 化归 wmd。
+            wm_annotate(src);
+            *dst = to_wire(src);
+        }
+        let mut frame = [0u8; gp::INPUT_ROUTE_MAX];
+        let n = match gp::encode_input_route_req(&mut frame, &wes[..k]) {
+            Some(n) => n,
+            None => trap(),
+        };
+        let deadline = now() + SEND_REARM_NS;
+        loop {
+            let st = berry_channel_send(push, frame.as_ptr(), n, core::ptr::null(), 0);
+            if st == 0 {
+                return;
+            }
+            if st != BERRY_ERR_BUSY {
+                println!("gui-inputd: route send 失败 {}", st);
+                trap();
+            }
+            let mut obs = 0u64;
+            if berry_object_wait_one(push, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
+                eprintln!("INPUTROUTE bad send-busy");
+                return;
+            }
+        }
+    }
+
     // ---- GUI-5：wmd 推送消费 + 命中旁注（§3 #10 / §7 Q9-Q11/Q16）----
 
     /// 命中旁注结果（**内存面记账，v1 不进 wire**——Q9 注解形）。
@@ -887,6 +926,9 @@ mod guest {
             harvest(d, regs, pump); // 空闲期收割（tick 心跳的消费点）
             // 丢事件证据：启动打一次零基线；后续只在计数变化时打 bad 行。
             // GUI8 burst 相据此既可断言基线，也可抓 eventq/pump 溢出。
+            if push != 0 {
+                route_wmd(d, regs, pump, push);
+            }
             let drops = pump.dropped_events();
             if drops != drop_seen {
                 eprintln!("INPUTDROPS bad n={drops}");

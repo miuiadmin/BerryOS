@@ -194,24 +194,29 @@ fn expect_ok(
 /// Phase 1 WM_CONNECT：broker 只换 session；返回本进程保留的 session 端。
 /// 随行迁移 [对端 session endpoint, Process]，wmd 用后者做死亡清理。
 /// broker 生命周期由调用方管理（本测试进程要开两个 session 做跨 owner 负例）。
-fn wm_connect_process(broker: Handle, process: Handle) -> Handle {
+fn wm_connect_process(broker: Handle, process: Handle) -> (Handle, Handle) {
     let mut local: Handle = 0;
     let mut remote: Handle = 0;
+    let mut input_local: Handle = 0;
+    let mut input_remote: Handle = 0;
     if process == 0
         || berry_channel_create(0, &mut local, &mut remote) != 0
         || local == 0
         || remote == 0
+        || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
+        || input_local == 0
+        || input_remote == 0
     {
         fail("wm connect channel");
     }
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
-    let attach = [remote, process];
+    let attach = [remote, input_remote, process];
     let m = enc_req(gp::encode_wm_connect_req(&mut req, gp::WM_CLIENT_APP));
     let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
     let _ = gp::parse_wm_connect_rep(&rep[..n]).unwrap_or_else(|| fail("wm connect rep bad"));
-    local
+    (local, input_local)
 }
 
 /// 页取整帧 VMO（窗口局部 buffer；Phase 2 不再要求 app 分配全屏）。
@@ -350,8 +355,8 @@ fn main() {
     if berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process2) != 0 || process2 == 0 {
         fail("wm self process dup");
     }
-    let hw = wm_connect_process(broker, process);
-    let rogue = wm_connect_process(broker, process2);
+    let (hw, _input1) = wm_connect_process(broker, process);
+    let (rogue, _input2) = wm_connect_process(broker, process2);
     // 两个 session 建立后 broker 才退役；后续业务全部走 owner 通道。
     close_h(broker);
 

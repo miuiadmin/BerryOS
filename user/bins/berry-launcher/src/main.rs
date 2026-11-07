@@ -57,8 +57,9 @@ mod layout_io;
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, input_h, self_proc_h, wm_cli_h};
 use berry_sys::{
-    berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
+    berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
+    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, Handle,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_ui::UiMain;
@@ -198,28 +199,36 @@ fn expect_ok(
     }
 }
 
-/// Phase 1 WM_CONNECT：把共享 broker 端换成 per-session 端。launcher 声明
-/// SYSTEM client_type；self Process 迁给 wmd 用于死亡清窗。
-fn wm_connect(broker: Handle) -> Handle {
+/// Phase 1/3 WM_CONNECT：为调用方建立一对独立通道（WM/RPC + input）。
+/// broker 生命周期由调用方管理——launcher 需再开一个 APP session 做真实
+/// owner 输入路由验收。
+fn wm_connect_client(
+    broker: Handle,
+    process: Handle,
+    client_type: u8,
+) -> (Handle, Handle) {
     let mut local: Handle = 0;
     let mut remote: Handle = 0;
-    if berry_channel_create(0, &mut local, &mut remote) != 0 || local == 0 || remote == 0 {
+    let mut input_local: Handle = 0;
+    let mut input_remote: Handle = 0;
+    if process == 0
+        || berry_channel_create(0, &mut local, &mut remote) != 0
+        || local == 0
+        || remote == 0
+        || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
+        || input_local == 0
+        || input_remote == 0
+    {
         fail("wm connect channel");
-    }
-    let process = self_proc_h();
-    if process == 0 {
-        close_h(remote);
-        fail("wm connect process");
     }
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
-    let attach = [remote, process];
-    let m = enc_req(gp::encode_wm_connect_req(&mut req, gp::WM_CLIENT_SYSTEM));
+    let attach = [remote, input_remote, process];
+    let m = enc_req(gp::encode_wm_connect_req(&mut req, client_type));
     let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
     let _ = gp::parse_wm_connect_rep(&rep[..n]).unwrap_or_else(|| fail("wm connect rep bad"));
-    close_h(broker);
-    local
+    (local, input_local)
 }
 
 fn main() {
@@ -232,7 +241,18 @@ fn main() {
         eprintln!("LAUNCH wm absent (no wm client gift)");
         berry_libc::park();
     }
-    let hw = wm_connect(broker);
+    let process = self_proc_h();
+    if process == 0 {
+        fail("wm self process");
+    }
+    let mut app_process: Handle = 0;
+    if berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut app_process) != 0
+        || app_process == 0
+    {
+        fail("wm app process dup");
+    }
+    let (hw, session_input) =
+        wm_connect_client(broker, process, gp::WM_CLIENT_SYSTEM);
 
     // —— WM_GETINFO 一次握手（4B 无参请求 / 12B 应答——wmd 权威能力面，
     // disp 域 = wmd 启动期 present GETINFO 缓存同源）。原值宁报勿猜——
@@ -248,8 +268,8 @@ fn main() {
         None => fail(&format!("wm getinfo rep bad st={}", rep[0])),
     };
     // 单行非标记日志（LAUNCH 前缀 canon 零碰撞；无 " ok" 形）——EFI 冻结
-    // 相 launcher 全程唯一输出行（段③ W1 注：icons/layout_io 冻结相零
-    // 打印，桌面链在此行后静默）。原值直报（v0 fmt 原值先例延续）。
+    // 相 launcher 常态启动唯一输出行（GUI8 哨兵相另有 WMRTWIN/交互标记；
+    // icons/layout_io 仍保持冻结相静默）。原值直报（v0 fmt 先例延续）。
     println!(
         "LAUNCH v={} wmax={} {}x{} input={}",
         info.version_wm, info.windows_max, info.disp_w, info.disp_h, input_h()
@@ -260,11 +280,43 @@ fn main() {
     //（extras 恰 [wm]）→ 空注册表——草案 R1 修约 1/2）。此步也是 fs 挂载
     // 就绪的串行点：APP_LIST 应答前 appd/fsmgr 已进稳态。
     icons::init(app_cli_h());
-    // 冒烟模式 = 数据盘根 GUI8.SMK 载荷精确匹配（main 单次读取；缺失/
-    // 错载荷 fail closed → false）。**在 layout_io::load 之前**取一次，
-    // bool 同时门控布局冒烟往返与 frameloop 的 CLICK/click ready 两行；
-    // 正常 boot 的点击 spawn 行为不受影响（只是不打标记）。
+    // —— Phase 3 真实 owner 输入路由验收面（仅 GUI8 哨兵模式）：launcher
+    // 再开一个 APP session，在右下角建可见窗。该窗口不参与桌面 UI；QMP
+    // 点入它时，wmd 必须把 window-local 事件投到 APP input 通道。常态
+    // boot 不建，避免产品桌面右下角出现不可见输入占位。
     let smoke = layout_io::smoke_mode();
+    let mut app_input: Handle = 0;
+    if smoke {
+        let (app_hw, input) =
+            wm_connect_client(broker, app_process, gp::WM_CLIENT_APP);
+        app_input = input;
+        let aw = (info.disp_w / 8).max(64);
+        let ah = (info.disp_h / 10).max(64);
+        let ax = info.disp_w.saturating_sub(aw);
+        let ay = info.disp_h.saturating_sub(ah);
+        let areq = gp::WmCreateReq {
+            layer: gp::WM_LAYER_APP,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: ax,
+            y: ay,
+            w: aw,
+            h: ah,
+        };
+        let m = enc_req(gp::encode_wm_create_req(&mut req, &areq));
+        let (n, _) = rpc(app_hw, &req[..m], &[], &mut rep, &mut rhs);
+        let app_win = match gp::parse_wm_create_ack(&rep[..n]) {
+            Some(id) if id != 0 => id,
+            _ => fail(&format!("wm route window ack bad st={}", rep[0])),
+        };
+        println!("WMRTWIN ok id={app_win} x={ax} y={ay} w={aw} h={ah}");
+    } else {
+        close_h(app_process);
+    }
+    // broker 的连接使命完成；session 均已换到专通道（常态仅 SYSTEM）。
+    close_h(broker);
+
     // 布局装载（冻结相 fs_h()==0 → 默认布局直返零 RPC；三约束自愈面
     // 见 layout_io 头注）。
     let layout = layout_io::load(icons::registry(), smoke);
@@ -284,5 +336,12 @@ fn main() {
     // 帧循环（W1 静默 park；LAUNCH ok/PAGE ok = W2 产物）。smoke = 段④
     // 两标记的唯一门（CLICK ok / launcher: click ready）；正常 boot 传
     // false = 点击照常 spawn、零新标记。
-    frameloop::run(hw, input_h(), ui, desktop, smoke);
+    frameloop::run(
+        hw,
+        session_input,
+        (app_input != 0).then_some(app_input),
+        ui,
+        desktop,
+        smoke,
+    );
 }
