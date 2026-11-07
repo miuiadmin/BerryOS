@@ -165,6 +165,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "policydemo"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
 name = "svcmgr"
 version = "0.1.0"
 dependencies = [
