@@ -251,6 +251,40 @@ pub fn bind(tbl: &'static [Entry]) {
     publish(build_snap(tbl, gen));
 }
 
+/// 读活跃快照 gen（内部）：[`ACTIVE`] Acquire 载入映射到对应 [`Snap`] 取
+/// `.gen`；哨兵态自然落到 [`EMPTY_SNAP`]（gen = 0）。写点在 IRQ 屏蔽窗内
+/// （同 [`bind`] 纪律）——单核读窗内无换表，无竞态。
+fn self_gen_now() -> u64 {
+    // SAFETY: 指针源自 active_snap（静态区槽位/哨兵，'static 生存期）；
+    // 已发布槽内容不可变（写者只写非活跃槽）+ 单核屏蔽窗读写互斥——本读
+    // 窗内快照稳定（读纪律同 apply/weight_of，仅多读一个 gen 字段）。
+    unsafe { (*active_snap()).gen }
+}
+
+/// 当前活跃快照的世代数（读点观察用）：未绑（哨兵 [`EMPTY_SNAP`]）→ 0，
+/// 已绑 → 最后一次 [`bind`]/[`bind_gen`] 发布的 gen。v3 `policy_bind`
+/// 换表协议世代词汇的读侧——写者带 gen 重放对账、遥测基准值。
+pub fn gen() -> u64 {
+    self_gen_now()
+}
+
+/// 带世代的换表 + 陈旧拒收（v3 `policy_bind` 换表协议的写侧底座）：传入
+/// gen 必须**严格大于**当前活跃世代（`gen <= self_gen_now()` 即拒收）——
+/// 写者重放/乱序到达的旧表不得覆盖新表，世代单调性在此收口。受理则用
+/// **传入 gen**（非 [`GEN_NEXT`] 自增——那是 [`bind`] 的自动通道）
+/// build_snap + publish，gen 记入 [`Snap::gen`]。输入放宽到非 `'static`
+/// `&[Entry]`：快照化后条目 build 时全量拷入 [`Snap`]，发布即与调用方
+/// 数据解耦，无需静态生存期。
+///
+/// 返回：true = 换表成功；false = 陈旧拒收（活跃快照未动）。
+pub fn bind_gen(tbl: &[Entry], gen: u64) -> bool {
+    if gen <= self_gen_now() {
+        return false; // 陈旧拒收：世代必须严格递增
+    }
+    publish(build_snap(tbl, gen));
+    true
+}
+
 /// 解绑：翻转 [`ACTIVE`] 回 [`SENTINEL_EMPTY`] 哨兵（读路径回落
 /// [`EMPTY_SNAP`]，恢复「接口缺席」态——等价性测试的对照分支；ktest 收尾
 /// 清理）。

@@ -2664,8 +2664,8 @@ fn test_policy() {
 ///
 /// 形态同 `test_policy`：本地 `Runqueue` + 三任务（proc_tag = 7/8/9）12 轮
 /// pick，比对（选中者, prio_effective, epp）序列；只经 pub 接口
-/// `bind`/`unbind`/`bound` 驱动——`apply` 由 pick_next 出选后间接跑（决策路径
-/// 真消费，不直接调）：
+/// `bind`/`bind_gen`/`gen`/`unbind`/`bound` 驱动——`apply` 由 pick_next 出选
+/// 后间接跑（决策路径真消费，不直接调）：
 /// - **PV3-1 空表等价**：bind 空表 → 12 轮与未绑基线逐位全等（快照化后
 ///   count==0 快路径的「零写入 = 接口缺席」不变量重验）；
 /// - **PV3-2 原子换表**：bind 表 A（p7 weight +32）→ 12 轮 p7 独占 → bind
@@ -2673,16 +2673,18 @@ fn test_policy() {
 ///   首次选中即 +32 独占——无「新旧混读」过渡轮，且跨两次 bind `bound()`
 ///   连续 true（不经历 OFF 回退态）；
 /// - **PV3-3 unbind 回退**：unbind → 序列逐位回基线（哨兵态回落 EMPTY_SNAP）；
-/// - **PV3-4 gen 拒陈旧**：**跳过**——`GEN_NEXT`/`Snap::gen` 均 crate 私有，
-///   policy 未暴露 gen 观察接口（单核屏蔽窗下三槽轮转写非活跃槽，本无陈旧
-///   读者踩踏面）；v3 `policy_bind`（0x83）换表协议带 gen 词汇落地时补；
+/// - **PV3-4 gen 拒陈旧**：`bind_gen` 写侧三段——gen == 当前拒、gen < 当前
+///   拒（`saturating_sub` 防下界）、gen > 当前收且 `gen()` 即刻反映新世代
+///   （重放/乱序旧表不得覆盖新表，世代单调性收口；PV3-3 unbind 后哨兵
+///   gen=0，cur_gen 从此起读，后续 PV3-5 `bind` 走 GEN_NEXT 自动通道
+///   不受影响）；
 /// - **PV3-5 O(1) 满表查表**：bind 128 条目（TBL_MAX 满载，键域
 ///   {1..=130}\\{7,9}——黄金比散列实测全入槽零拒收）：key 8 命中（+32 独占）、
 ///   key 7 首轮可观测不命中零写入（满表开放寻址的缺席判定）。
 ///
-/// 四次 bind 依次轮转槽 1→2→0→1（空表/A/B/满表）——三槽全历 + 最早槽复用
-/// 路径顺带覆盖。进程调度 crate 无 host 测试面（HAL aarch64 asm），QEMU ktest
-/// 是唯一家（同 `test_policy`）。
+/// 五次发布依次轮转槽 1→2→0→1→2（空表/A/B/PV3-4 gen 换表/满表）——三槽全
+/// 历 + 最早槽复用路径顺带覆盖。进程调度 crate 无 host 测试面（HAL aarch64
+/// asm），QEMU ktest 是唯一家（同 `test_policy`）。
 #[allow(clippy::unwrap_used)]
 fn test_policy_v3() {
     use alloc::vec::Vec;
@@ -2797,8 +2799,22 @@ fn test_policy_v3() {
         assert_eq!(base[i].2, back[i].2, "PV3-3：回退第 {} 轮 epp 须回基线", i);
     }
 
-    // PV3-4：跳过——policy 未暴露 gen 接口（GEN_NEXT/Snap::gen crate 私有）；
-    // 陈旧槽拒收语义随 v3 policy_bind 换表协议落地时补（见函数级 doc 注）。
+    // PV3-4 gen 拒陈旧：bind_gen 陈旧 gen 拒收 + 新 gen 接受 + gen() 观察。
+    {
+        let cur_gen = policy::gen();
+        // 陈旧：gen = cur_gen（等于当前）→ 须拒。
+        assert!(!policy::bind_gen(&TAB_A, cur_gen),
+            "PV3-4：gen == 当前 须拒（陈旧）");
+        // 更陈旧：gen = cur_gen - 1 → 须拒。
+        assert!(!policy::bind_gen(&TAB_A, cur_gen.saturating_sub(1)),
+            "PV3-4：gen < 当前 须拒");
+        // 新 gen：cur_gen + 1 → 须收。
+        assert!(policy::bind_gen(&TAB_B, cur_gen + 1),
+            "PV3-4：gen > 当前 须收");
+        // 观察：gen() 现在应等于 cur_gen + 1。
+        assert_eq!(policy::gen(), cur_gen + 1,
+            "PV3-4：gen() 须反映新世代");
+    }
 
     // PV3-5：128 条目满表（TBL_MAX 满载，键域 {1..=130}\{7,9}——黄金比散列
     // 实测全入槽零拒收；p9 同路径缺席）：key 8 命中、key 7 不命中零写入。
