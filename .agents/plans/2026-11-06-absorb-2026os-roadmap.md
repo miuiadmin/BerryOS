@@ -19,8 +19,9 @@ Updated: 2026-11-06
 5. **P1-c AI 同意面设计**：新设计文档草案（consent-by-identity：SET_POLICY 委托时用户可见审批——Veda 机制 + BerryOS 能力委托链的接合）；依赖 G 线 GUI 收口。
 6. **P1-d errno 值域探针**（13 号 §2 坑二）：berry-sys/libc 兼容层把目标 libc 宏实际值纳入对拍（swift-os 断层教训：内核 98 vs newlib 112 害 nginx 拒合法配置）；翻译只住 shim 层，内核 errno 编号不动。
 7. **P1-e 对抗性分配器 ktest**（13 号 §2 坑一）：mm 域连续分配低区边界测试——预留全部低帧复现越界形态、验证有界失败与精确边界成功（swift-os trap_return fault 实录）。
-8. **P2（期权，不排期）**：presence 语义（移动档语音 idle 交互）、describe/state/invoke 三动词（berryui typed action 参照）、云真机门禁（Hetzner 形态）、「为什么不是 BKL」ADR。
+8. **P2（期权，不排期）**：presence 语义（移动档语音 idle 交互）、describe/state/invoke 三动词（berryui typed action 参照）、云真机门禁（Hetzner 形态）、「为什么不是 BKL」ADR、**编译期执法议题**（moss「编译器禁持自旋锁跨睡眠点」——类型系统消灭违规类别的思路，评估 handle 权限位类型化/lockdep 热路径子集编译期化，调研 14 号 §3）。
 9. **同批笔记**：每项落地时各写一篇 note（决策因果），本计划翻 Status。
+10. **2025 段增量（调研 14 号）**：P0-a proposal 已按 urthr 实证修订（目标板 RPi4→RPi5 翻案候选 + 真机 CI 形态参照）；EEVDF 选型获 moss/Linux 双点主流确认（S2a 无回归风险）。
 
 ## 未完成事项
 

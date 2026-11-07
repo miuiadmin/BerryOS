@@ -1,10 +1,12 @@
-# 真机 bring-up 预研（云 VM → 树莓派 4 三台阶）
+# 真机 bring-up 预研（云 VM → RPi5 三台阶）
 
 Type: proposal
 Status: draft
-Updated: 2026-11-06
+Updated: 2026-11-07
 
-一句话说明：把「QEMU→真机」从无限期风险变成有里程碑的工程——三台阶（云 VM 关 → RPi4 三件套关 → rootfs 真机通道），零架构分叉。
+一句话说明：把「QEMU→真机」从无限期风险变成有里程碑的工程——三台阶（云 VM 关 → RPi5 三件套关 → rootfs 真机通道），零架构分叉。
+
+> **2026-11-07 事实修正（调研 14 号 §1.2，urthr 板级矩阵实证）**：台阶二目标板 RPi4 → **RPi5 翻案**——① GICv2 两板相同（`gic.rs` 复用判断不变）；② SDHC **只在 RPi5 有完整先例**（RPi4B 的 SD 通道 urthr 亦未铺）；③ PSCI 只有 RPi5 有（RPi4B SMP 须 spin-table，前置雷 6 自动消失于 RPi5）；④ PCIe/xHCI/Cadence 网卡/RP1 南桥全套活样本在 RPi5（Zig 实现可参照语义）。原拒 RPi5 理由（BCM2712 陌生）被实证推翻一半；真机 CI 形态先例同步获得（Build RPi5 + Runtime Test 分行 Actions）。翻案待仓主裁。
 
 ## 背景
 
@@ -15,7 +17,7 @@ Updated: 2026-11-06
 ## 目标（三台阶）
 
 1. **台阶一 · 云 VM 关**：aarch64 KVM 云 VM（Hetzner CAX 类，swift-os 同形态先例）跑 `berryos.img`——设备面不变（virtio），验证**真时钟**（KVM 无 TCG 2×）、**真存储持久性**、**真网络/TLS 出网**。近乎零移植。
-2. **台阶二 · RPi4 裸机三件套关**：pftf RPi UEFI（成熟度待核实）+ BerryBoot EFI 链直落 SD 卡；三件套 = PL011 串口 → ARM generic timer（固件设 CNTFRQ）→ GIC-400（GICv2 兼容，`gic.rs` 理论可复用、改地址与中断拓扑——中断号待 DTB 核实）；ktest + 最小裸相 smoke。
+2. **台阶二 · RPi5 裸机三件套关**（2026-11-07 由 RPi4 翻案，见头部修正注）：pftf RPi UEFI（成熟度待核实）+ BerryBoot EFI 链直落 SD 卡；三件套 = PL011 串口 → ARM generic timer（固件设 CNTFRQ）→ GIC-400（GICv2，`gic.rs` 理论复用、中断拓扑待板级 DTB 核实）；参照 urthr（Zig 同板全套外设先例）与真机 CI 形态（Build 镜像与真机运行时测试分行）；ktest + 最小裸相 smoke。
 3. **台阶三 · rootfs 真机通道**：EMMC2 SD 驱动替代 fw_cfg rootfs；UDP netconsole/log/screencap 预埋（TrustOS 三通道形态，调研 13 号）。
 
 ## 成功判据
@@ -26,9 +28,9 @@ Updated: 2026-11-06
 
 ## 方案选项
 
-- **A（推荐）：云 VM 先行 → RPi4 跟进**。最大验证面/最低成本先行；RPi4 GICv2 兼容使 `gic.rs` 复用面大；每台阶独立可验，符合小步纪律。
-- B：直上 RPi4 UEFI——首验即同时动内存图/设备树/SD 驱动/i-cache 雷全深水，拒。
-- C：RPi5（BCM2712）——更新、资料少、GIC 拓扑陌生（待核实项更多）；TrustOS 教训（调研 13 号 §4）：铺陌生平台 = 单人项目死亡前置信号，拒。
+- **A（推荐）：云 VM 先行 → RPi5 跟进**。最大验证面/最低成本先行；RPi5 GICv2 兼容使 `gic.rs` 复用面大，SDHC/PSCI/PCIe/网卡全套 urthr 先例；每台阶独立可验，符合小步纪律。
+- B：跳过云 VM 直上 RPi5——首验即同时动内存图/设备树/SD 驱动/i-cache 雷全深水，拒。
+- ~~C：RPi4~~（2026-11-07 降级）：SDHC 与 PSCI 双缺（urthr 实证，14 号 §1.2），SD 通道无人铺路——降为 RPi5 之后的次选；TrustOS 教训（陌生平台 = 死亡前置）对 4B 的 SD/启动协议面同样适用。
 
 ## 前置雷清单（实施前逐项落刀）
 
