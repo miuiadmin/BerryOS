@@ -23,6 +23,7 @@ Updated: 2026-11-06
 9. **同批笔记**：每项落地时各写一篇 note（决策因果），本计划翻 Status。
 10. **2025 段增量（调研 14 号）**：P0-a proposal 已按 urthr 实证修订（目标板 RPi4→RPi5 翻案候选 + 真机 CI 形态参照）；EEVDF 选型获 moss/Linux 双点主流确认（S2a 无回归风险）。
 11. **源码级增量（调研 15 号）**：① EEVDF 时钟增量化（moss VClock——`avg_vruntime` O(n) 重算改增量维护 Σ/Σw，入队 O(1)，挂 S2b+ 议题）；② yield 片归还语义自查（moss `yield_slice`，随调度域下一刀）；③ SDHC ≈2,600 行实测（P0-a 台阶三量化锚点）；④「为什么不是 async 内核」ADR 候选（与 BKL-ADR 并列）；⑤ **Veda 许可修正 GPL-3.0-only**——其两项吸收（consent/三动词）降为纯语义参照、代码永不进。
+12. **sans-IO 四手法（调研 17 号，2026-11-08 入账）**：P6-A8 网络线设计输入——① 时间外置（RTO 由注入 tick 驱动 = 确定性可测）；② 零拷贝边界（RX/TX DMA 直指 + syscall 边界单次拷贝）；③ 每包零分配（堆只在控制面）；④ scope 诚实清单（in/out-of-scope 明列）。量级锚：最小真网络栈 ≈3,572 行。
 
 ## 未完成事项
 
