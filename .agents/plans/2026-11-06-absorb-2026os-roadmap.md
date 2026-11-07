@@ -25,9 +25,9 @@ Updated: 2026-11-06
 ## 未完成事项
 
 - [x] P0-a proposal 起草（→ [2026-11-06-baremetal-bringup-proposal.md](2026-11-06-baremetal-bringup-proposal.md)，三台阶：云 VM→RPi4→rootfs 通道，Status: draft 待裁）
-- [ ] P0-b 存储设计节追加
+- [x] P0-b 存储设计节追加（→ `docs/存储布局与沙箱设计-v1.0.md` §8.5 吸收议程）
 - [ ] P1-a 拒收入账实施（含遥测词汇表扩号）
-- [ ] P1-b 纲领充实
+- [x] P1-b 纲领充实（→ `docs/架构综合纲领.md` §1「机制极简的三条结构性论证」+ churn 反证）
 - [ ] P1-c 同意面草案
 - [ ] P1-d errno 值域探针（随 berry-sys 下一刀）
 - [ ] P1-e 对抗性分配器 ktest（随 mm 域下一刀）
