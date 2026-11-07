@@ -2208,42 +2208,143 @@ const PE_ZERO: berry_sched::policy::Entry = berry_sched::policy::Entry {
     },
 };
 
-/// `berry_policy_bind(auth, op, p1, p2, p3, p4)`（0x83，S6-b 最小版）。
+/// `berry_policy_bind(auth, op, p1, p2, p3, p4)`（0x83，S6-b COMMIT 面 +
+/// S6-c shadow 谱系 op 词汇扩展）。
 ///
 /// op=1 (COMMIT)：p1 = 表指针（用户态 `&[PolicyEntryABI]`），p2 = 条目数
 /// （0 = 空表提交，「接口在位、表空」合法态），p3 = gen（世代数），p4 = 保留 0。
-/// → copy_from_user 整表拷入 → 逐条转换 `policy::Entry`（weight 夹紧 ±64
-/// ——handler 第一道，policy build/消费点再夹，三点执法；0 键/重复/溢出由
-/// `bind_gen` 的 build_snap 语义丢弃——first-wins）→ `policy::bind_gen(tbl, gen)`：
+/// → [`policy_tbl_parse`] 整表拷入转换（weight 夹紧 ±64——handler 第一道，
+/// policy build/消费点再夹，三点执法；0 键/重复/溢出由 `bind_gen` 的 build_snap
+/// 语义丢弃——first-wins）→ `policy::bind_gen(tbl, gen)`：
 /// true = 0 / false = **-EAGAIN**（陈旧拒收——gen ≤ 活跃世代，写者重放/乱序
 /// 到达的旧表不得覆盖新表，世代单调性在 policy 侧收口；活跃快照未动，调用方
 /// 对账 gen 后携新 gen 重试）。
 ///
-/// 其他 op → -ENOTSUP（S6-c 扩展：BIND/STATUS/PROMOTE/DEMOTE/UNBIND）。
+/// op=2 (STATUS)：p1 = `*out`（u64 出参）——bit 0-31 = active gen
+/// （`policy::gen()` 截低 32 位），bit 32-63 = shadow gen
+/// （`policy::shadow_gen()` 截低 32 位）——双谱系一次读全（写者对账/遥测）。
+/// 打包算式下放 [`policy_status_packed`]（ktest SHD-K SH-6 直测面）。
+/// → 0 + copy_out_u64（写失败 → -EFAULT 透传）。
+///
+/// op=3 (PROMOTE)：`policy::promote()`——shadow → enforced 原子转正：
+/// true = 0 / false = **-EBADSTATE**（shadow 空——gen == 0 从未
+/// `bind_gen_shadow` 受理，无表可转正，ACTIVE 不动）。
+///
+/// op=4 (DEMOTE)：`policy::demote()`——enforced → shadow 降级（ACTIVE 回
+/// 哨兵空表、shadow 表保留可复转正）→ 恒 0。
+///
+/// op=5 (UNBIND)：`policy::unbind()`——解绑回「接口缺席」哨兵态 → 恒 0。
+///
+/// op=6 (SHADOW_COMMIT)：表形同 COMMIT（p1/p2/p3 同参、经同一
+/// [`policy_tbl_parse`]）→ `policy::bind_gen_shadow(tbl, gen)`：true = 0 /
+/// false = **-EAGAIN**（陈旧拒收——gen ≤ shadow 侧世代，**比照对象换 shadow
+/// 谱系**、与 active 侧 gen 无关；shadow 未动）。
+///
+/// 其他 op → -ENOTSUP。全 op 面 p4 保留 0（非 0 → -EINVAL，options 纪律）。
 ///
 /// 门控：v1 **无 handle 需求**（系统全局单通道；SET_POLICY 门控随 S6-c Job
 /// 对象落地——`auth` 预留不消费）。锁类 TABLE：copy 链页表走查（§A113 读者
 /// 面，同 clock_read）+ `SNAPS` 全局单写者跨核 KL 串行；SVC 主体 IRQ 屏蔽
 /// （单核）下无读者竞态窗。
 extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
-    use berry_sched::policy::{Directive, Entry, WEIGHT_MAX};
-    let (auth, op, tbl_p, n, gen, rsv) =
+    let (auth, op, p1, p2, p3, rsv) =
         (tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5], tf.regs[6]);
     let _ = auth; // v1 全局单通道：预留（S6-c Job 对象 SET_POLICY 门控面）
-    if op != 1 {
-        return ERR_NOT_SUPPORTED as i64; // S6-c 扩展 op 词汇未实现
-    }
     if rsv != 0 {
-        return ERR_INVALID_ARG as i64; // p4 保留 0（options 纪律）
+        return ERR_INVALID_ARG as i64; // p4 保留 0（options 纪律，全 op 面）
     }
+    let el1 = caller_is_el1(tf);
+    match op {
+        // COMMIT：p1 = 表指针、p2 = 条目数、p3 = gen → active 谱系换表。
+        1 => {
+            let (entries, n) = match policy_tbl_parse(el1, p1, p2) {
+                Ok(v) => v,
+                Err(e) => return e as i64,
+            };
+            if berry_sched::policy::bind_gen(&entries[..n], p3) {
+                0
+            } else {
+                ERR_AGAIN as i64 // 陈旧拒收：gen ≤ 活跃世代，活跃快照未动
+            }
+        }
+        // STATUS：p1 = *out u64——bit0-31 active gen / bit32-63 shadow gen。
+        2 => {
+            let packed = policy_status_packed();
+            match copy_out_u64(el1, p1, packed) {
+                Ok(()) => 0,
+                Err(e) => e as i64,
+            }
+        }
+        // PROMOTE：shadow → enforced 转正；shadow 空 → -EBADSTATE。
+        3 => {
+            if berry_sched::policy::promote() {
+                0
+            } else {
+                ERR_BAD_STATE as i64 // shadow 从未绑定（gen==0）：无表可转正
+            }
+        }
+        // DEMOTE：enforced → shadow 降级（幂等面 → 恒 0）。
+        4 => {
+            berry_sched::policy::demote();
+            0
+        }
+        // UNBIND：回「接口缺席」哨兵态（幂等面 → 恒 0）。
+        5 => {
+            berry_sched::policy::unbind();
+            0
+        }
+        // SHADOW_COMMIT：表形同 COMMIT → shadow 谱系换表（陈旧比照 SHD gen）。
+        6 => {
+            let (entries, n) = match policy_tbl_parse(el1, p1, p2) {
+                Ok(v) => v,
+                Err(e) => return e as i64,
+            };
+            if berry_sched::policy::bind_gen_shadow(&entries[..n], p3) {
+                0
+            } else {
+                ERR_AGAIN as i64 // 陈旧拒收：gen ≤ shadow 世代，shadow 谱系未动
+            }
+        }
+        _ => ERR_NOT_SUPPORTED as i64, // 未定义 op（options 纪律）
+    }
+}
+
+/// STATUS（op=2）打包算式：bit 0-31 = active gen（`policy::gen()` 截低 32
+/// 位）、bit 32-63 = shadow gen（`policy::shadow_gen()` 截低 32 位）——双谱系
+/// 一次读全。抽成 pub(crate) 的动因：op=1/3/4/6 的 bool→errno 是字面映射
+/// （底座 ktest 全覆盖后映射面零风险），但本算式是 **ABI 可见的位布局组合**
+/// ——半区对调/位移宽度/gen 侧截断缺失都静默错（写者对账读反双谱系），且原本
+/// 只存在于 handler 内（TrapFrame + copy 链挡住 ktest 直调）。按 [`sa_parse`]
+/// 直测先例下放为可测单元，由 ktest SHD-K SH-6 真数据源驱动直测（连「哪个
+/// 谱系进哪个半区」的绑定序一并收口）。读窗纪律同 policy 读接口（单核
+/// 屏蔽窗——两读间无写者，无双谱系撕裂）。
+pub(crate) fn policy_status_packed() -> u64 {
+    ((berry_sched::policy::shadow_gen() & 0xFFFF_FFFF) << 32)
+        | (berry_sched::policy::gen() & 0xFFFF_FFFF)
+}
+
+/// COMMIT（op=1）/SHADOW_COMMIT（op=6）公共表解析：`tbl_p` = 表指针（用户态
+/// `&[PolicyEntryABI]`）、`n` = 条目数（0 = 空表合法）→ copy_from_user 整表
+/// 拷入 → 逐条转换 `policy::Entry`。拒收面全在 handler 侧收口：超限 →
+/// **-E2BIG**（单次表 ≤128 条 TBL_MAX 限流——policy 侧 build 会截尾，但那是
+/// 内核写者的宽容面，用户态超限提前诚实拒收、不静默截断）、拷页失败 →
+/// -EFAULT 透传、保留位/未定义 flags 非 0 → **-EINVAL**（调用方可清零修复，
+/// 同 sa_parse reserved0 口径——不是 NOT_SUPPORTED）。返回 `(entries, n)`：
+/// 前 n 槽就绪（0 键/重复/溢出留给 policy 侧 build_snap 语义丢弃——
+/// first-wins，此处不预审）。
+fn policy_tbl_parse(
+    el1: bool,
+    tbl_p: u64,
+    n: u64,
+) -> Result<([berry_sched::policy::Entry; POLICY_TBL_MAX], usize), i32> {
+    use berry_sched::policy::{Directive, Entry, WEIGHT_MAX};
     if n > POLICY_TBL_MAX as u64 {
-        return ERR_E2BIG as i64; // 限流：单次表 ≤128 条（TBL_MAX）
+        return Err(ERR_E2BIG); // 限流：单次表 ≤128 条（TBL_MAX）
     }
     let n = n as usize;
-    let el1 = caller_is_el1(tf);
     let mut raw = [0u8; POLICY_TBL_MAX * core::mem::size_of::<PolicyEntryABI>()];
     if let Err(e) = copy_from_user(el1, tbl_p, &mut raw[..n * 16]) {
-        return e as i64;
+        return Err(e);
     }
     let mut entries = [PE_ZERO; POLICY_TBL_MAX];
     for i in 0..n {
@@ -2258,7 +2359,7 @@ extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
         // 保留位/未定义 flags 非零 → -EINVAL（调用方可清零修复，同 sa_parse
         // reserved0 口径——不是 NOT_SUPPORTED）。
         if e._rsv != 0 || e.epp_flags & !(PE_EPP_HAS | PE_EPP_VAL) != 0 {
-            return ERR_INVALID_ARG as i64;
+            return Err(ERR_INVALID_ARG);
         }
         entries[i] = Entry {
             task_key: e.key,
@@ -2278,11 +2379,7 @@ extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
             },
         };
     }
-    if berry_sched::policy::bind_gen(&entries[..n], gen) {
-        0
-    } else {
-        ERR_AGAIN as i64 // 陈旧拒收：gen ≤ 活跃世代，活跃快照未动
-    }
+    Ok((entries, n))
 }
 
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----

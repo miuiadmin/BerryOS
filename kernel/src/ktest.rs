@@ -3204,6 +3204,14 @@ fn test_policy_perf() {
 ///   清空接口，「空 shadow」态全局仅存在于首次 `bind_gen_shadow` 之前
 ///   ——本段物理**前置**到 SH-1 前执行（本测试是 shadow 谱系唯一消费者，
 ///   测试开头前置态构造性成立；SH-1 起绑后该态不复现）。
+/// - **SH-6 STATUS 打包位布局**：`crate::syscall::policy_status_packed`
+///   （op=2 打包算式下放——sys_policy_bind 需 TrapFrame 不便直调，算式是
+///   ABI 可见位布局而非 bool→errno 字面映射，按 sa_parse 直测同口径收口）
+///   两态直测：①分叉态（active 哨兵 gen=0 + shadow gen=1）→ packed ==
+///   0x1_0000_0000（半区对调 → 0x1 必炸）；②双半非零 + u32 截断面：
+///   promote（gen=1）后携跨 2^32 的 gen 双绑（`bind_gen(0x1_0000_0003)` +
+///   `bind_gen_shadow(0x1_0000_0004)`）→ packed == 0x0000_0004_0000_0003
+///   （对调 0x3_…04 / gen 侧截断缺失 0x5_…03 / 位移宽度错三变异全判别）。
 ///
 /// 形态同 `test_policy_v3`：本地 `Runqueue` + 双任务（proc_tag = 7/8——同
 /// PV3/PBS 键域口径；7 = 表 A 受益者）ROUNDS=12 轮 pick。QEMU ktest 是唯一家
@@ -3213,6 +3221,7 @@ fn test_policy_perf() {
 fn test_policy_shadow() {
     use berry_sched::policy::{self, Directive, Entry};
     use berry_sched::{EppHint, Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
+    use crate::syscall::policy_status_packed;
 
     /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
     extern "C" fn sh_dummy(_arg: usize) -> ! {
@@ -3321,8 +3330,34 @@ fn test_policy_shadow() {
     assert_eq!(policy::shadow_gen(), cur, "SH-4：拒收后 shadow 谱系须未动");
     assert!(!policy::bound(), "SH-4：shadow 拒收不得扰动 active（仍哨兵）");
 
+    // SH-6：STATUS（op=2）打包位布局——handler 需 TrapFrame 不便直调，但打包
+    // 算式已下放 syscall::policy_status_packed（sa_parse 直测同口径），真数据源
+    // 驱动直测（「哪个谱系进哪个半区」的绑定序一并收口）。
+    // ① 分叉态判别：active 哨兵（gen=0）+ shadow gen=1——两半取值非对称，
+    //    packed == shadow << 32（半区对调 → 0x1，必炸）。
+    assert_eq!(policy::gen(), 0, "SH-6：分叉态前提须 active gen=0（哨兵）");
+    assert_eq!(policy::shadow_gen(), 1, "SH-6：分叉态前提须 shadow gen=1");
+    assert_eq!(policy_status_packed(), 0x1_0000_0000,
+        "SH-6：分叉态 packed 须 = shadow<<32（0x1_0000_0000——对调必炸）");
+    // ② 双半非零 + u32 截断面：promote（active gen=1）后携跨 2^32 的 gen 双绑
+    //    ——低半区只留 active gen 低 32 位（3）、高半区只留 shadow gen 低 32
+    //    位（4）；对调（0x3_0000_0004）/ gen 侧截断缺失（0x5_0000_0003）/
+    //    位移宽度错三变异全判别（shadow 侧掩码因 <<32 溢出丢弃天然冗余）。
+    assert!(policy::promote(), "SH-6：复转正前提（shadow gen=1 非空）");
+    assert!(policy::bind_gen(&tab_a, 0x1_0000_0003),
+        "SH-6：跨 2^32 gen 须受理（0x1_0000_0003 > 活跃 1）");
+    assert!(policy::bind_gen_shadow(&tab_b, 0x1_0000_0004),
+        "SH-6：跨 2^32 shadow gen 须受理（0x1_0000_0004 > shadow 1）");
+    assert_eq!(policy::gen(), 0x1_0000_0003,
+        "SH-6：active gen 前提（低 32 位 = 3）");
+    assert_eq!(policy::shadow_gen(), 0x1_0000_0004,
+        "SH-6：shadow gen 前提（低 32 位 = 4）");
+    assert_eq!(policy_status_packed(), 0x0000_0004_0000_0003,
+        "SH-6：packed 须 = (shadow低32 << 32) | gen低32（对调/截断/位移全判别）");
+
     // 收尾：恢复缺席态（同 PV3/PBS——smoke 稳态全程未绑，等价性延续真实
-    // 调度路径；shadow 谱系留 gen=1 无清空接口——boot 期单测语境不外泄）。
+    // 调度路径；shadow 谱系留 0x1_0000_0004 无清空接口——boot 期单测语境
+    // 不外泄）。
     policy::unbind();
     assert!(!policy::bound(), "SH：收尾须回到未绑");
 
