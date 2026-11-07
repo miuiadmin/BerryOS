@@ -32,5 +32,5 @@ Updated: 2026-11-06
 - [x] P1-b 纲领充实（→ `docs/架构综合纲领.md` §1「机制极简的三条结构性论证」+ churn 反证）
 - [ ] P1-c 同意面草案
 - [ ] P1-d errno 值域探针（随 berry-sys 下一刀）
-- [ ] P1-e 对抗性分配器 ktest（随 mm 域下一刀）
+- [x] P1-e 对抗性分配器 ktest（mm 域 2026-11-07 落地：`fragmented_terrain_high_order_fails_clean`（§A21 判例机器复现 + buddy 对语义钉板）+ `exact_window_order_fits_then_oom`（对齐块边界 + 「物理连续≠buddy 可分配」语义文档化）；BerryOS 全 RAM identity 直映使 swift-os 越界形态结构性不存在，坑精神翻译为本仓边界测试）
 - [ ] P2 四项挂账（Presence/三动词/云真机/BKL-ADR）

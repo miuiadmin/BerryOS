@@ -1076,4 +1076,68 @@ mod tests {
         assert_eq!(ba.allocated_pages(), 0, "全释放后水位非零 = 泄漏口径破");
         assert_eq!(ba.allocated_pages(), ba.allocated_pages_scan());
     }
+
+    /// §A21 判例的机器复现（吸收调研 13/15 号，swift-os 坑一精神的本仓翻译）：
+    /// **确定性最大碎片化地形**（偶数页空闲、奇数页占用——任意相邻对必被
+    /// 切断，最大连续空闲 = 1 页）下，order≥1 分配必须**干净 OOM**（Err 而
+    /// 非 panic/错块——「宁可失败不给不可达块」），order-0 不受碎片影响仍
+    /// 可得；且 OOM 不破坏结构——释放一偶邻奇对即合并恢复 order-1 可得。
+    #[test]
+    fn fragmented_terrain_high_order_fails_clean() {
+        let n = 32usize;
+        let mut ba = make(n);
+        // 占满全窗（收集顺序不假设升序，排序后按页号奇偶释放）。
+        let mut all = Vec::new();
+        while let Ok(p) = ba.alloc() {
+            all.push(p);
+        }
+        all.sort_unstable();
+        for &p in all.iter().filter(|p| **p % 2 == 0) {
+            ba.free(p, 0).unwrap();
+        }
+        // 最大碎片化断言面：2 页连续（order-1）结构性不可得 → 干净 OOM。
+        assert_eq!(
+            ba.alloc_order(1),
+            Err(AllocError::OutOfMemory),
+            "最大碎片化地形 order-1 必须干净失败（§A21 形态）"
+        );
+        // 恢复路径（**buddy 对语义**：合并不是「任意相邻」——只认 2^k 对齐
+        // 的兄弟块。页 3 的 order-0 buddy = 页 2（3^1=2，空闲）→ 释放页 3
+        // 必与页 2 合并出 order-1；若误选页 1（buddy=页 0），其 buddy 被
+        // 占则永不可合——这正是交错碎片按 buddy 边界钉死的形态）。
+        ba.free(3, 0).unwrap();
+        assert!(
+            ba.alloc_order(1).is_ok(),
+            "释放 buddy 对齐奇数页后 order-1 必须恢复（OOM 不可逆 = 结构破坏）"
+        );
+        // 碎片不影响 order-0：其余偶数页仍逐个可得。
+        assert!(ba.alloc_order(0).is_ok());
+    }
+
+    /// 精确边界形态（吸收调研 13 号 swift-os「精确边界成功」教训）：恰剩
+    /// 一个**对齐** `2^k` 块（前半保留夹出）时，order-k 必须精确成功且头页
+    /// = 对齐块起点；再要同阶立即 OOM；回收后恢复。**语义边界**：物理连续
+    /// ≠ buddy 可分配——`[16,48)` 物理连续 32 页但跨 32 对齐边界，结构性
+    /// 不可得（是两半块被钉死），故本测用对齐窗 `[32,64)`。
+    #[test]
+    fn exact_window_order_fits_then_oom() {
+        let n = 64usize;
+        let mut ba = make(n);
+        // 保留 [0,32) → 恰剩 [32,64) = 完整对齐 order-5 块。
+        ba.reserve_range(0, 32);
+        let p = ba
+            .alloc_order(5)
+            .expect("恰剩对齐 2^5 块时 order-5 必须精确成功");
+        assert_eq!(p, 32, "头页必须是对齐块起点（边界 off-by-one）");
+        assert_eq!(
+            ba.alloc_order(5),
+            Err(AllocError::OutOfMemory),
+            "再要同阶必须立即 OOM"
+        );
+        // 阶内降级可得：块已整块占用，order-0 也应 OOM（无剩余空闲）。
+        assert_eq!(ba.alloc_order(0), Err(AllocError::OutOfMemory));
+        ba.free(p, 5).unwrap();
+        // 回收后窗完整恢复。
+        assert!(ba.alloc_order(5).is_ok(), "回收后 order-5 必须恢复");
+    }
 }
