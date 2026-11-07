@@ -512,6 +512,23 @@ fn main() {
     let m = gp::encode_reg_vblank_req(&mut req, 0);
     expect_ok(hw, &req[..m], &[ev2], &mut rep, &mut rhs, "reg vblank off");
 
+    // 生命周期收口：全链成功后显式销毁测试窗，并回读 WM 表验证本窗无
+    // 残留。单客户端时代这是“CREATE/SET/TABLE_GET 的反向下限”；后续多
+    // session owner 刀沿用同一验收语义。
+    let m = gp::encode_wm_destroy_req(&mut req, wid);
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm destroy");
+    let m = gp::encode_wm_table_get_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let after = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+        Some(Ok(s)) => s,
+        Some(Err(st)) => fail(&format!("wm after destroy st={st}")),
+        None => fail(&format!("wm after destroy rep bad st={}", rep[0])),
+    };
+    if after.entries[..after.count].iter().any(|e| e.id == wid) || after.count != 0 {
+        fail(&format!("wm destroy leaves count={}", after.count));
+    }
+    println!("WMDTY ok n=0");
+
     // 客户端全链断言过（服务端真值 GFXF ok n= 由 guifbd 首呈现时打出）
     // ——结构性恰一次：svcmgr 单次预拉 + 阻塞 reap + 单 println。
     println!("GFX ok");

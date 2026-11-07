@@ -62,13 +62,13 @@ mod guest {
     #[used]
     static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
-    /// 队列深（vnet/vblk 同档：2 的幂、整环落一页）。
-    const QSIZE: u16 = 16;
+    /// 队列深（Phase 0：16→64。ring 仍 <4KiB、64×8B 缓冲仍一页内）。
+    const QSIZE: u16 = 64;
     /// eventq 读缓冲数（= qsize）：每缓冲一描述符恰容一事件（QEMU
     /// virtio_input_send 逐描述符取一元素——8B 恰长是最优投递形态）。
     const EVT_BUF_SZ: usize = vio::input::INPUT_EVENT_SZ;
-    /// DMA VMO 几何：页 0 event ring / 页 1 事件缓冲带（16×8B——结构分页
-    /// vnet 惯例；缓冲带只用页首 128B，清晰优先于字节节省）。
+    /// DMA VMO 几何：页 0 event ring / 页 1 事件缓冲带（64×8B——结构分页
+    /// vnet 惯例；缓冲带只用页首 512B，清晰优先于字节节省）。
     const DMA_LEN: u64 = 8192;
     const RING_PAGE: u64 = 0;
     const BUF_PAGE: u64 = 4096;
@@ -81,11 +81,12 @@ mod guest {
     const POLL_BLOCK_CAP_NS: u64 = 30_000_000_000;
     /// serve 空闲心跳 tick：100ms（超时 = 心跳非死线——回环顶重查 used 环
     /// 后重臂续等；P6 A-3 echo 同款语义，段② 按消费节奏可调）。tick 同时是
-    /// **无消费窗口的设备层收割节奏**：eventq 预投 QSIZE=16 缓冲、QEMU
+    /// **无消费窗口的设备层收割节奏**：eventq 预投 QSIZE=64 缓冲、QEMU
     /// virtio_input_send 逐事件取描述符，耗尽即丢批尾——空闲期输入超过
-    /// 16 事件/tick 时尾部被设备静默丢弃（press 送达而 release 丢弃可致泵
-    /// 接触态滞留，至下次真实接触自愈）；100ms = 160 事件/s 窗口，覆盖
-    /// 注入/人工形态。离散转移零丢的结构性根治 = v2 IRQ 面（§5.2-5 注）。
+    /// 64 事件/tick 时尾部仍会被设备丢弃（press 送达而 release 丢弃可致
+    /// 泵接触态滞留，至下次真实接触/SYN_DROPPED 自愈）。Phase 0 = 64 深
+    /// 覆盖 GUI8 burst/人工形态并打丢事件证据；离散转移零丢的结构性根治
+    /// 仍是 v2 IRQ 面（§5.2-5 注）。
     const SVC_TICK_NS: u64 = 100_000_000;
     /// 应答 send EBUSY 重臂帽：10s（vnet 同档）。
     const SEND_REARM_NS: u64 = 10_000_000_000;
@@ -372,7 +373,7 @@ mod guest {
     fn setup_dma() -> Dma {
         let lay = match vio::RingLayout::new(QSIZE as usize) {
             Some(l) => l,
-            None => trap(), // qsize=16 恒成立；防御面
+            None => trap(), // qsize=64 仍在一页 ring 内；防御面
         };
         let mut vmo = 0 as Handle;
         if berry_vmo_create(DMA_LEN, 0, &mut vmo) != 0 || vmo == 0 {
@@ -418,7 +419,7 @@ mod guest {
         }
     }
 
-    /// 挂 16 个事件读缓冲（页 1 逐 8B 一格，DESC_F_WRITE——设备写；QEMU
+    /// 挂 64 个事件读缓冲（页 1 逐 8B 一格，DESC_F_WRITE——设备写；QEMU
     /// virtio_input_send 逐描述符取一元素，8B 恰长 = 最优投递）：RINGSTAGE
     /// 零基组 desc 表 + avail 环 → 整页落盘（vnet post_rx 同形）。
     fn post_events(d: &mut Dma) {
@@ -880,8 +881,20 @@ mod guest {
         // push 路收口同口径（快照应答零随行 + 富余）
         let mut phs = [0 as Handle; 4];
         let mut sub_delivery: Option<u8> = None;
+        let mut drop_reported = false;
+        let mut drop_seen = 0u64;
         loop {
             harvest(d, regs, pump); // 空闲期收割（tick 心跳的消费点）
+            // 丢事件证据：启动打一次零基线；后续只在计数变化时打 bad 行。
+            // GUI8 burst 相据此既可断言基线，也可抓 eventq/pump 溢出。
+            let drops = pump.dropped_events();
+            if drops != drop_seen {
+                eprintln!("INPUTDROPS bad n={drops}");
+                drop_seen = drops;
+            } else if !drop_reported {
+                println!("INPUTDROPS ok n={drops}");
+                drop_reported = true;
+            }
             // —— 路①：input 域（既有分派零扰动）
             let mut nb = msg.len();
             let mut nh = hs.len();

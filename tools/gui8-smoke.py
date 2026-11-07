@@ -90,6 +90,9 @@ MARK_CLICK_ANY = "CLICK ok n="
 MARK_LAYOUTW = "LAYOUTW ok"
 MARK_LAYOUT = "LAYOUT ok n="
 MARK_CLICK_READY = "launcher: click ready"
+MARK_WM_CLEAN = "WMDTY ok n=0"
+MARK_INPUT_DROPS_OK = "INPUTDROPS ok n=0"
+MARK_INPUT_DROPS_BAD = "INPUTDROPS bad n="
 MARK_SWIPE = "SWIPE ok n=1"
 MARK_INPUT_ARMED = "launcher: input poll armed"
 # 负向前瞻：`n=10` 不得命中 `n=1`（CLICK 恰一发的期望形态）。
@@ -405,6 +408,18 @@ class QmpClient:
         for batch in batches:
             self.input_send(batch)
             time.sleep(0.25)  # 让 guest 输入泵逐批消费（非时序断言）
+
+    def abs_burst(self, x: float, y: float, w: int, h: int, count: int = 48) -> None:
+        """无按键绝对坐标 burst：填 eventq 但不生成 pointer 手势。"""
+        ax = max(0, min(32767, int(round(x * 32768.0 / max(1, w)))))
+        ay = max(0, min(32767, int(round(y * 32768.0 / max(1, h)))))
+        for i in range(count):
+            # 小幅摆动避免设备端合并/去重；仍保持同一点附近，不触发翻页。
+            value = ax + (1 if i % 2 == 0 else -1)
+            self.input_send([
+                {"type": "abs", "data": {"axis": "x", "value": value}},
+                {"type": "abs", "data": {"axis": "y", "value": ay}},
+            ])
 
     def drag(
         self,
@@ -866,6 +881,8 @@ def verify_boot_a_click(
     _require_exact_count(text, MARK_LAYOUTW, 1, "boot A click", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "boot A click", log_path)
     _require_exact_count(text, MARK_CLICK_READY, 1, "boot A click", log_path)
+    _require_exact_count(text, MARK_INPUT_DROPS_OK, 1, "boot A click", log_path)
+    _require_exact_count(text, MARK_INPUT_DROPS_BAD, 0, "boot A click", log_path)
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
@@ -1210,7 +1227,10 @@ def preflight(args) -> None:
 
 
 def _boot_base_markers() -> list[str]:
-    return [MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N9, MARK_LAUNCH, MARK_PAGE]
+    return [
+        MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N9, MARK_WM_CLEAN,
+        MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
+    ]
 
 
 def _wait_boot_batch(boot: Boot, timeout: float) -> None:
@@ -1288,6 +1308,19 @@ def run_dual_boot(args) -> int:
         log(f"boot A: display {w}x{h}（{src}）→ cell(0,0) 中心 ({cx},{cy})")
 
         boot_a.qmp_connect()
+        log(f"boot A: QMP 注入无按键 ABS burst×48（旧 eventq16 会尾丢）")
+        boot_a.qmp.abs_burst(cx, cy, w, h, count=48)
+        time.sleep(1.0)
+        boot_a.log.poll()
+        if MARK_INPUT_DROPS_BAD in boot_a.log.text:
+            raise SmokeError(
+                "boot A burst: gui-inputd 报 pump 丢事件",
+                boot_a.log_path,
+            )
+        _require_exact_count(
+            boot_a.log.text, MARK_INPUT_DROPS_OK, 1, "boot A burst", boot_a.log_path
+        )
+
         log("boot A: QMP 注入单击（abs → btn down → btn up）")
         boot_a.qmp.click(cx, cy, w, h)
 
@@ -1432,7 +1465,7 @@ def run_dual_boot(args) -> int:
 
         success = True
         log(
-            "PASS：EFI GUI 交互相双 boot（A: CLICK ok n=1 + 真实 SWIPE ok n=1 + "
+            "PASS：EFI GUI 交互相双 boot（A: ABS burst 零丢 + CLICK ok n=1 + 真实 SWIPE ok n=1 + "
             "LAYOUTW ok + APPDEMO up；B: LAYOUT ok n=2 + 零重写 + canonical 109B）"
             + ("；C: 损坏 LAYOUT 真路径自愈" if args.layout_selfheal else "")
         )
@@ -1862,6 +1895,7 @@ def self_test(args) -> int:
         fake_a = (
             f"{MARK_APP_DEMO_UP}\n"
             f"{MARK_LAYOUTW}\n"
+            f"{MARK_INPUT_DROPS_OK}\n"
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
             f"{MARK_APP_DEMO_UP}\n"

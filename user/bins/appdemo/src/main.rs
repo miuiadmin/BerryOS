@@ -1,42 +1,98 @@
-//! appdemo —— app-0 demo app A（`docs/app-0实施设计草案.md` §4）。
+//! appdemo —— GUI8 canonical 真链测试 app（no_std 轻量壳）。
 //!
-//! manifest `console = true`：能力授予面活证——stdout = console 发端别名
-//! （appd 翻译授权集：spawn 内 dup RIGHT_SEND 经 env 块 gift[0] 交付），
-//! `app APPDEMO up` 一行经 console 服务落串口（smoke 的独立 grep 断言位，
-//! `ROOTFS_MARKERS` 数组之外——设计 §6 钉板）。
+//! 契约与 std 版逐字等价：
+//! 1. argv0 必须是 `bin/appdemo`；
+//! 2. console 输出 `app APPDEMO up`；
+//! 3. 用 fs gift 直接走 fsclient RPC 读 `/etc/mtab`，内容恰 23B；
+//! 4. 输出 `app APPDEMO fs ok 23`；
+//! 5. 零长 EOF + `process_exit(0)`。
 //!
-//! SDK-1a：manifest 升新形态（[compat] 三值 + `fs = ["rootfs"]`）——本
-//! bin 是 fs 词的**消费侧自证**（`/etc/mtab` 读回，见 main 内注释）。
-//!
-//! argv0 自检 = manifest `entry` 串 `bin/appdemo`（stdhello argv[0] 先例）：
-//! appd 以 entry 串作 `SpawnSpec.name`——错值 = 断言炸 → abort(134) →
-//! appd `reap != Ok(0)` → `APP ok` 缺失 = smoke FAIL loud。
-//!
-//! `ExitCode::from(0)` 真退出（0x33，EOF 先行）——appd reap 收 0 是
-//! `APP ok n=` 谓词的一环（确定性状态谓词，EXIT ok 同族）。
+//! Phase 0 去 Rust std/libc 链，直接消费 env 与 berry-fsclient，把约
+//! 332KiB ELF 降到几十 KiB，为全量 CJK 分页字库回收 rootfs 预算。
 
-use std::process::ExitCode;
+#![no_std]
+#![no_main]
 
-// 链接种子（stdhello 同款）：无引用则 berry-libc 的 crt0（含 `_start`）
-// 不进链接；`#[used]` 防死码消除。
-#[used]
-static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
+use berry_fsclient::{get_chunk, resolve_path, PATH_MAX, RPC_BUF};
+use berry_sys::{
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_object_wait_one,
+    berry_process_exit, Handle, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_WRITABLE,
+};
 
-fn main() -> ExitCode {
-    assert_eq!(
-        std::env::args().next().as_deref(),
-        Some("bin/appdemo"),
-        "argv0 should be manifest entry"
-    );
-    println!("app APPDEMO up");
-    // fs 词自证（SDK-1a §6.2）：libc open/read 经 fsclient → fs_h gift
-    // （env hs[5]）→ fsmgr RPC 真往返——「词表 = 镜子」执法面：manifest
-    // 声明 fs 且 appd 装了四元 gift，此读才可能成功。mtab = fsmgr RAM
-    // 树预建定值（盘相无关——FAT 子目录/持久化/B4/EFI 全相位恒在）。
-    // 失败全 loud：expect/assert panic → abort(134) → reap 非 0 →
-    // `APP ok n=2` 缺失 = smoke FAIL。
-    let mtab = std::fs::read("/etc/mtab").expect("appdemo: mtab read");
-    assert_eq!(mtab, b"/dev/root / fat rw 0 0\n", "mtab 内容漂移");
-    println!("app APPDEMO fs ok 23");
-    ExitCode::from(0)
+const ENTRY: &[u8] = b"bin/appdemo";
+const MTAB: &[u8] = b"/dev/root / fat rw 0 0\n";
+const UP: &[u8] = b"app APPDEMO up\n";
+const FS_OK: &[u8] = b"app APPDEMO fs ok 23\n";
+
+fn now() -> u64 {
+    let mut t = 0u64;
+    if berry_clock_read(CLOCK_MONOTONIC, &mut t) != 0 {
+        return 0;
+    }
+    t
+}
+
+fn send_console(h: Handle, data: &[u8]) -> bool {
+    let deadline = now().saturating_add(10_000_000_000);
+    loop {
+        let s = berry_channel_send(h, data.as_ptr(), data.len(), core::ptr::null(), 0);
+        if s == 0 {
+            return true;
+        }
+        if s != BERRY_ERR_BUSY {
+            return false;
+        }
+        let mut observed = 0u64;
+        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut observed) != 0 {
+            return false;
+        }
+    }
+}
+
+#[link_section = ".text.entry"]
+#[no_mangle]
+pub extern "C" fn _start(env: Handle) -> ! {
+    let mut blob = [0u8; 192];
+    let mut nb = blob.len();
+    let mut hs = [0 as Handle; 8];
+    let mut nh = hs.len();
+    let s = berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh);
+    if s != 0 || nb <= ENTRY.len() || &blob[..ENTRY.len()] != ENTRY || nh < 1 {
+        berry_process_exit(134);
+    }
+    let console = hs[0];
+    // appd 的 fs 四元装配：env gift[4]=rootfs、gift[5]=fsmgr client。
+    // 本 app 只消费后者做真实 RPC；rootfs 只在 manifest 词面授权。
+    if nh < 6 || hs[5] == 0 || !send_console(console, UP) {
+        berry_process_exit(134);
+    }
+
+    let mut path = [0u8; PATH_MAX];
+    let Some(plen) = resolve_path(&[], b"/etc/mtab", &mut path) else {
+        berry_process_exit(134);
+    };
+    let mut buf = [0u8; RPC_BUF];
+    let Ok((len, more)) = get_chunk(hs[5], &path[..plen], 0, &mut buf) else {
+        berry_process_exit(134);
+    };
+    if len != MTAB.len() || more || buf[..len].iter().zip(MTAB).any(|(&a,&b)| a != b) {
+        berry_process_exit(134);
+    }
+
+    if !send_console(console, FS_OK) {
+        berry_process_exit(134);
+    }
+    // appd collect 契约：console=true 的 stdout 同样补零长 EOF。
+    loop {
+        let s = berry_channel_send(console, core::ptr::null(), 0, core::ptr::null(), 0);
+        if s == 0 || s != BERRY_ERR_BUSY {
+            break;
+        }
+    }
+    berry_process_exit(0)
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    berry_process_exit(134)
 }

@@ -141,15 +141,13 @@ build-user:
         cargo build --release --manifest-path ../drivers/bins/gui-inputd/Cargo.toml \
         --target aarch64-unknown-linux-musl
     # app-0（ADR #43/#44）：demo 双 app（appdemo console=true / appquiet
-    # console=false——能力授予/缺席两半活证）musl 同链 → staging 组装
+    # console=false——能力授予/缺席两半活证）no_std 同链 → staging 组装
     # {manifest.toml, bin/<名>} → mkapp 门禁五道产 .bap（cpio(newc) 包 =
     # manifest + 唯一 bin/ 条目）。staging 与产物都在 userbins/（gitignored）。
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
-        cargo build --release --manifest-path bins/appdemo/Cargo.toml \
-        --target aarch64-unknown-linux-musl
-    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
-        cargo build --release --manifest-path bins/appquiet/Cargo.toml \
-        --target aarch64-unknown-linux-musl
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appdemo/Cargo.toml \
+        --target aarch64-unknown-none
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appquiet/Cargo.toml \
+        --target aarch64-unknown-none
     # GUI-8 视觉补全：appstub 共用静默壳（零 argv0 断言/console=false/0 退出）
     # 复制成 8 个占位 app 的 bin/<name>；真 app 内容后续替换。
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appstub/Cargo.toml \
@@ -247,13 +245,13 @@ build-user:
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
-    cp cargo-target/aarch64-unknown-linux-musl/release/appdemo userbins/app-stage/APPDEMO/bin/
+    cp cargo-target/aarch64-unknown-none/release/appdemo userbins/app-stage/APPDEMO/bin/
     # GUI-7：[ui] 资产入 staging——icons/ PNG 源由 mkapp 编码成 .byi 入包
     # （源不入包），views/ 原样整包；对应 manifest icon/views 声明位。
     cp -R bins/appdemo/icons userbins/app-stage/APPDEMO/
     cp -R bins/appdemo/views userbins/app-stage/APPDEMO/
     cp bins/appquiet/manifest.toml userbins/app-stage/APPQUIET/
-    cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
+    cp cargo-target/aarch64-unknown-none/release/appquiet userbins/app-stage/APPQUIET/bin/
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
     python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
     # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。

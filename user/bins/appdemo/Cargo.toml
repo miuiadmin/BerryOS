@@ -4,17 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 # app-0 demo 双 app 之一（`docs/app-0实施设计草案.md` §4）：manifest
-# `console = true` + 省 [runtime]（stack_pages 缺省 8 路径）——能力授予面
-# 的活证。stdhello 同链独立小工作区：musl target 与主工作区 none 全家
-# 互不渗漏。打一行 `app APPDEMO up` 后 exit(0) 真退出，appd（svcmgr arm）
-# reap 收 0；包经 tools/mkapp.py 产 .bap 进 rootfs.cpio（构建期接线
-# 见 justfile build-user）。
+# `console = true` + `[fs]` 授权。2026-11-07 真实系统化 Phase 0 改
+# no_std + berry-fsclient direct RPC：保留 argv0 / 两行标记 / mtab 23B
+# / EOF / exit(0) 五件验收，同时回收 std 链 rootfs 预算。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
+berry-fsclient = { path = "../../berry-fsclient" }
+berry-sys = { path = "../../berry-sys" }
 
 [profile.release]
 opt-level = "z"

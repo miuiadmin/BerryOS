@@ -47,7 +47,7 @@ use berry_virtio::input::{
 const BATCH_CAP: usize = 32;
 /// 完整事件队列帽：drain 消费节奏下的弹性容量；满则丢新 + 计数
 /// （常驻输入源恒有消费方——POLL 阻塞语义兜底，帽只是防御面）。
-const QUEUE_CAP: usize = 32;
+const QUEUE_CAP: usize = 128;
 
 /// 驱动侧原始事件（wire 解码后、归一化前）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,6 +323,12 @@ impl PointerPump {
     /// 构造。**配置执法**（构造期 loud，非数据面）：校准域退化（max ≤ min
     /// 任一轴）或零几何 = 配置错误——`assert` panic（调用方 = main 的设备
     /// 自述装配，错误配置不该带病上岗）。
+    /// pump 输出环满后丢弃的新事件累计（诊断面；不影响 SYN_DROPPED 的
+    /// 手势作废计数——那是设备协议层另一个丢事件源）。
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped_events
+    }
+
     pub fn new(cfg: PumpConfig) -> Self {
         assert!(cfg.cal.max_x > cfg.cal.min_x, "gui-inputd: X 校准域退化（max ≤ min）");
         assert!(cfg.cal.max_y > cfg.cal.min_y, "gui-inputd: Y 校准域退化（max ≤ min）");
@@ -1129,6 +1135,22 @@ mod tests {
     }
 
     #[test]
+    fn queue_capacity_and_drop_counter_are_pinned() {
+        assert_eq!(QUEUE_CAP, 128, "Phase 0：eventq=64 时 pump 需要更大吸收环");
+        let mut p = pump();
+        assert_eq!(p.dropped_events(), 0);
+        p.feed(ev(1, EV_KEY, BTN_TOUCH, 1));
+        for i in 0..(QUEUE_CAP + 2) {
+            let t = 2 + i as u64 * 2;
+            for e in xy(t, 100 + i as i32, 100) {
+                p.feed(e);
+            }
+            p.feed(syn(t + 1));
+        }
+        assert!(p.dropped_events() > 0, "输出环满必须计数，不得静默假装全收");
+    }
+
+    #[test]
     fn pump_syn_dropped_cancel() {
         // 接触中 SYN_DROPPED → 下批（SYN_REPORT）合成 CANCEL +
         // PE_FL_SYNTHESIZED；手势作废、后续重按 = 新 pointer_id。
@@ -1180,7 +1202,7 @@ mod tests {
         p.feed(ev(1, 4, 0, 0)); // EV_MSC
         p.feed(ev(2, 2, 0x08, 1)); // EV_REL REL_WHEEL
         p.feed(ev(3, 3, 0x2f, 0)); // ABS_MT_SLOT（多点留位）
-        p.feed(ev(4, 3, 0x35, 100)); // ABS_MT_POSITION_X
+        p.feed(ev(4, 3, 0x35, 100)); // 0x35
         p.feed(ev(5, 1, 0x1e, 1)); // EV_KEY KEY_A（未知按钮 code）
         p.feed(ev(6, 3, 2, 500)); // ABS_Z（未知轴）
         p.feed(syn(7));

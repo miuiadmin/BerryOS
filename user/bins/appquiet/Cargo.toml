@@ -6,14 +6,15 @@ edition = "2021"
 # app-0 demo 双 app 之二（`docs/app-0实施设计草案.md` §4）：manifest
 # `console = false` + 显式 [runtime] stack_pages = 8（显式路径）——能力
 # 缺席可运行的活证：stdout = appd 私有采集对端（输出不进串口），main
-# 静默真退出，appd collect 面只收 libc exit 先行的零长 EOF（fail 同款
-# 快路径）。stdhello 同链独立小工作区。
+# 静默真退出，appd collect 面只收零长 EOF（fail 同款快路径）。
+# 2026-11-07 真实系统化 Phase 0：改 no_std 直接 syscall，回收 std 链
+# rootfs 预算；行为仍以 argv0 + EOF + exit(0) 三件验收。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
 
 [profile.release]
 opt-level = "z"

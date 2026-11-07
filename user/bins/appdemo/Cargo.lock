@@ -6,7 +6,8 @@ version = 4
 name = "appdemo"
 version = "0.1.0"
 dependencies = [
- "berry-libc",
+ "berry-fsclient",
+ "berry-sys",
 ]
 
 [[package]]
@@ -23,33 +24,9 @@ name = "berry-fsproto"
 version = "0.1.0"
 
 [[package]]
-name = "berry-libc"
-version = "0.1.0"
-dependencies = [
- "berry-fsclient",
- "berry-mmap",
- "berry-netdproto",
- "berry-signal",
- "berry-sys",
- "berry-tls",
-]
-
-[[package]]
-name = "berry-mmap"
-version = "0.1.0"
-
-[[package]]
 name = "berry-netdproto"
 version = "0.1.0"
 
 [[package]]
-name = "berry-signal"
-version = "0.1.0"
-
-[[package]]
 name = "berry-sys"
-version = "0.1.0"
-
-[[package]]
-name = "berry-tls"
 version = "0.1.0"
