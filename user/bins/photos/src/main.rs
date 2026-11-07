@@ -9,6 +9,7 @@
 
 use berry_fsclient::dirent_next;
 use berry_guiproto as gp;
+use berry_nshfont::{circle, map as map_font, round_rect, shadow, text};
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_exit,
@@ -209,7 +210,9 @@ fn pair(console: Handle) -> (Handle, Handle) {
     (a, b)
 }
 
-fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Handle) {
+fn wm_connect(
+    console: Handle, broker: Handle, process: Handle, vmar: Handle,
+) -> (Handle, Handle, Handle) {
     let (wm, wm_peer) = pair(console);
     let (input, input_peer) = pair(console);
     let mut req = [0u8; 256];
@@ -220,14 +223,18 @@ fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Hand
         None => fail(console, "connect encode"),
     };
     let attach = [wm_peer, input_peer, process];
-    let (n, _) = wm_rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
-    if gp::parse_wm_connect_rep(&rep[..n]).is_none() {
+    let (n, nh) = wm_rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
+    if gp::parse_wm_connect_rep(&rep[..n]).is_none() || nh != 1 || rhs[0] == 0 {
         fail(console, "connect rep");
+    }
+    let font_vmo = rhs[0];
+    if !map_font(vmar, font_vmo) {
+        fail(console, "font map");
     }
     if berry_handle_close(broker) != 0 {
         fail(console, "broker close");
     }
-    (wm, input)
+    (wm, input, font_vmo)
 }
 
 fn fs_call(fs: Handle, req: &[u8], rep: &mut [u8; 256]) -> usize {
@@ -369,25 +376,21 @@ fn render_grid(
 ) {
     fill(fb, stride, 0, 0, w, h, [0xF7, 0xF9, 0xFC, 0]);
     fill(fb, stride, 0, 0, w, lay.bar, [0x5E, 0x35, 0xB1, 0]);
-    let scale = if w >= 1000 { 4 } else { 3 };
-    text(fb, stride, b"Photos", lay.bar + 18, (lay.bar - 16 * scale) / 2, scale, [0xFF, 0xFF, 0xFF, 0]);
+    text(fb, stride, b"Photos", lay.bar + 18, (lay.bar - 48) / 2, [0xFF, 0xFF, 0xFF, 0]);
     let cx = lay.bar / 2;
     let r = lay.bar.saturating_sub(18) / 2;
-    for y in 0..lay.bar {
-        for x in 0..lay.bar {
-            let dx = x as i32 - cx as i32;
-            let dy = y as i32 - cx as i32;
-            if dx * dx + dy * dy <= r as i32 * r as i32 {
-                put_px(fb, stride, x, y, [0xEF, 0xE7, 0xFF, 0]);
-            }
-        }
-    }
+    circle(fb, stride, cx, cx, r, [0xEF, 0xE7, 0xFF]);
+    shadow(fb, stride, lay.tile_x - 6, lay.tile_y - 2, lay.tile_w + 12, lay.tile_w + 12, 44);
+    round_rect(
+        fb, stride, lay.tile_x - 10, lay.tile_y - 10,
+        lay.tile_w + 20, lay.tile_w + 20, 44, [0xFF, 0xFF, 0xFF],
+    );
     draw_pattern_tile(fb, stride, data, lay.tile_x, lay.tile_y, lay.tile_w);
     let ty = lay.tile_y + lay.tile_w + 12;
-    text(fb, stride, b"PATTERN.BIN", lay.tile_x, ty, 3, [0x33, 0x3B, 0x4F, 0]);
+    text(fb, stride, b"PATTERN.BIN", lay.tile_x, ty, [0x33, 0x3B, 0x4F, 0]);
     let mut line = *b"Items 0";
     line[6] = b'0' + count as u8;
-    text(fb, stride, &line, lay.tile_x, ty + 28, 2, [0x69, 0x74, 0x88, 0]);
+    text(fb, stride, &line, lay.tile_x, ty + 64, [0x69, 0x74, 0x88, 0]);
 }
 
 fn render_view(
@@ -401,7 +404,7 @@ fn render_view(
         fb, stride, data, lay.view_x, lay.view_y, lay.view_scale,
     );
     let ty = lay.bar + 12;
-    text(fb, stride, b"PATTERN.BIN 50x100", 40, ty, 3, [0xFF, 0xFF, 0xFF, 0]);
+    text(fb, stride, b"PATTERN.BIN 50x100", 40, ty, [0xFF, 0xFF, 0xFF, 0]);
 }
 fn put_px(fb: &mut [u8], stride: usize, x: usize, y: usize, c: [u8; 4]) {
     let off = y * stride + x * 4;
@@ -413,23 +416,6 @@ fn fill(fb: &mut [u8], stride: usize, x0: usize, y0: usize, w: usize, h: usize, 
     for y in y0..y0.saturating_add(h) {
         for x in x0..x0.saturating_add(w) {
             put_px(fb, stride, x, y, c);
-        }
-    }
-}
-
-fn text(fb: &mut [u8], stride: usize, s: &[u8], x0: usize, y0: usize, scale: usize, c: [u8; 4]) {
-    for (i, ch) in s.iter().enumerate() {
-        let Some(g) = berry_fbcon::font::glyph(*ch) else { continue };
-        for gy in 0..16usize {
-            for gx in 0..8usize {
-                if g.as_slice()[gy] & (0x80 >> gx) == 0 {
-                    continue;
-                }
-                fill(
-                    fb, stride, x0 + i * 8 * scale + gx * scale,
-                    y0 + gy * scale, scale, scale, c,
-                );
-            }
         }
     }
 }
@@ -487,7 +473,6 @@ fn frame(console: Handle, wm: Handle, vmo: Handle, surface: u32, buffer_id: u32)
     token
 }
 
-
 fn wait_action(console: Handle, input: Handle, lay: &PhotoLayout) -> Action {
     let mut req = [0u8; 4];
     let mut rep = [0u8; 256];
@@ -527,7 +512,8 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let env = read_env(env_ch);
     let c = env.console;
     send(c, b"PHOTOS up\n");
-    let (wm, input) = wm_connect(c, env.broker, env.process);
+    let (wm, input, font_vmo) =
+        wm_connect(c, env.broker, env.process, env.vmar);
 
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
@@ -645,6 +631,7 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let _ = berry_handle_close(input);
     let _ = berry_handle_close(wm);
     let _ = berry_handle_close(vmo);
+    let _ = berry_handle_close(font_vmo);
     send(c, b"PHOTSEXIT ok\n");
     berry_process_exit(0)
 }

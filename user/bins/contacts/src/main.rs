@@ -17,7 +17,7 @@ use berry_sys::{
     SIGNAL_WRITABLE,
 };
 use berry_fsproto as fp;
-use berry_gfx::font::{FontAtlas32x48, GlyphAtlas};
+use berry_nshfont::{circle, map as map_font, round_rect, shadow, text};
 
 const FRAME_VA: usize = 0x5200_0000;
 const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
@@ -57,7 +57,7 @@ fn send(console: Handle, bytes: &[u8]) {
 
 fn fail(console: Handle, what: &str) -> ! {
     let mut line = [0u8; 96];
-    let head = b"files: ";
+    let head = b"contacts: ";
     line[..head.len()].copy_from_slice(head);
     let n = what.len().min(line.len() - head.len());
     line[head.len()..head.len() + n].copy_from_slice(&what.as_bytes()[..n]);
@@ -181,7 +181,9 @@ fn pair(console: Handle) -> (Handle, Handle) {
     (a, b)
 }
 
-fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Handle) {
+fn wm_connect(
+    console: Handle, broker: Handle, process: Handle, vmar: Handle,
+) -> (Handle, Handle, Handle) {
     let (wm, wm_peer) = pair(console);
     let (input, input_peer) = pair(console);
     let mut req = [0u8; 256];
@@ -192,14 +194,18 @@ fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Hand
         None => fail(console, "connect encode"),
     };
     let attach = [wm_peer, input_peer, process];
-    let (n, _) = wm_rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
-    if gp::parse_wm_connect_rep(&rep[..n]).is_none() {
+    let (n, nh) = wm_rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
+    if gp::parse_wm_connect_rep(&rep[..n]).is_none() || nh != 1 || rhs[0] == 0 {
         fail(console, "connect rep");
+    }
+    let font_vmo = rhs[0];
+    if !map_font(vmar, font_vmo) {
+        fail(console, "font map");
     }
     if berry_handle_close(broker) != 0 {
         fail(console, "broker close");
     }
-    (wm, input)
+    (wm, input, font_vmo)
 }
 
 const MAX_CONTACTS: usize = 4;
@@ -434,20 +440,12 @@ fn render_list(
     }
     for i in 0..count {
         let y = lay.top + i * lay.row_h;
-        fill(fb, stride, 18, y + 8, w - 36, lay.row_h - 16, [0xFF, 0xFF, 0xFF, 0]);
+        round_rect(fb, stride, 18, y + 8, w - 36, lay.row_h - 16, 36, [0xFF, 0xFF, 0xFF]);
         let avatar = (lay.row_h - 44).max(32);
         let ax = 42;
         let ay = y + (lay.row_h - avatar) / 2;
         let color = avatar_color(i);
-        for yy in 0..avatar {
-            for xx in 0..avatar {
-                let dx = xx as i32 - avatar as i32 / 2;
-                let dy = yy as i32 - avatar as i32 / 2;
-                if dx * dx + dy * dy <= (avatar as i32 / 2) * (avatar as i32 / 2) {
-                    put_px(fb, stride, ax + xx, ay + yy, color);
-                }
-            }
-        }
+        circle(fb, stride, ax + avatar / 2, ay + avatar / 2, avatar / 2, [color[0], color[1], color[2]]);
         let ty = y + (lay.row_h - 48) / 2;
         text(fb, stride, &contacts[i].name[..contacts[i].name_len], ax + avatar + 26, ty, [0x20, 0x2B, 0x38, 0]);
         if contacts[i].favorite {
@@ -462,26 +460,22 @@ fn render_detail(
 ) {
     render_list(fb, stride, w, h, lay, contacts, MAX_CONTACTS);
     fill(fb, stride, 0, lay.bar, w, h.saturating_sub(lay.bar), [0xF6, 0xF8, 0xFA, 0]);
+    let detail_y = lay.bar + 20;
+    let detail_h = h.saturating_sub(detail_y + 28);
+    shadow(fb, stride, 36, detail_y + 4, w - 68, detail_h, 56);
+    round_rect(fb, stride, 28, detail_y, w - 56, detail_h, 56, [0xFF, 0xFF, 0xFF]);
     let c = &contacts[index];
     let avatar = if w >= 1000 { 180 } else { 120 };
     let ax = (w.saturating_sub(avatar)) / 2;
     let ay = lay.bar + 36;
     let color = avatar_color(index);
-    for yy in 0..avatar {
-        for xx in 0..avatar {
-            let dx = xx as i32 - avatar as i32 / 2;
-            let dy = yy as i32 - avatar as i32 / 2;
-            if dx * dx + dy * dy <= (avatar as i32 / 2) * (avatar as i32 / 2) {
-                put_px(fb, stride, ax + xx, ay + yy, color);
-            }
-        }
-    }
+    circle(fb, stride, ax + avatar / 2, ay + avatar / 2, avatar / 2, [color[0], color[1], color[2]]);
     let name_y = ay + avatar + 20;
     let name_x = (w.saturating_sub(c.name_len * 32)) / 2;
     text(fb, stride, &c.name[..c.name_len], name_x, name_y, [0x1B, 0x25, 0x40, 0]);
     let num_x = (w.saturating_sub(c.number_len * 32)) / 2;
     text(fb, stride, &c.number[..c.number_len], num_x, name_y + 72, [0x4F, 0x5D, 0x75, 0]);
-    fill(fb, stride, lay.fav_x0, lay.fav_y0, lay.fav_w, lay.fav_h, [0xE2, 0xE8, 0xF0, 0]);
+    round_rect(fb, stride, lay.fav_x0, lay.fav_y0, lay.fav_w, lay.fav_h, lay.fav_h / 2, [0xE2, 0xE8, 0xF0]);
     let label: &[u8] = if c.favorite { b"Favorite" } else { b"Favorite" };
     let lx = lay.fav_x0 + (lay.fav_w.saturating_sub(label.len() * 32)) / 2;
     let ly = lay.fav_y0 + (lay.fav_h.saturating_sub(48)) / 2;
@@ -500,37 +494,6 @@ fn fill(fb: &mut [u8], stride: usize, x0: usize, y0: usize, w: usize, h: usize, 
     for y in y0..y0.saturating_add(h) {
         for x in x0..x0.saturating_add(w) {
             put_px(fb, stride, x, y, c);
-        }
-    }
-}
-
-fn text(fb: &mut [u8], stride: usize, s: &[u8], x0: usize, y0: usize, c: [u8; 4]) {
-    // 32×48 Noto Sans HD A8 原生抗锯齿（非 8×16 console 字 4x 放大）。
-    for (i, ch) in s.iter().enumerate() {
-        let Some(g) = FontAtlas32x48.coverage(*ch) else { continue };
-        for y in 0..g.h {
-            for x in 0..g.w {
-                let a = usize::from(g.coverage[y * g.w + x]);
-                if a == 0 {
-                    continue;
-                }
-                let px = x0 + i * g.w + x;
-                let py = y0 + y;
-                let off = py * stride + px * 4;
-                if a == 255 {
-                    put_px(fb, stride, px, py, c);
-                    continue;
-                }
-                let inv = 255 - a;
-                let bg = &fb[off..off + 3];
-                let mixed: [u8; 4] = [
-                    ((usize::from(c[2]) * a + usize::from(bg[0]) * inv) / 255) as u8,
-                    ((usize::from(c[1]) * a + usize::from(bg[1]) * inv) / 255) as u8,
-                    ((usize::from(c[0]) * a + usize::from(bg[2]) * inv) / 255) as u8,
-                    0,
-                ];
-                fb[off..off + 4].copy_from_slice(&mixed);
-            }
         }
     }
 }
@@ -640,7 +603,8 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let env = read_env(env_ch);
     let c = env.console;
     send(c, b"CONTACTS up\n");
-    let (wm, input) = wm_connect(c, env.broker, env.process);
+    let (wm, input, font_vmo) =
+        wm_connect(c, env.broker, env.process, env.vmar);
 
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
@@ -766,6 +730,7 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let _ = berry_handle_close(input);
     let _ = berry_handle_close(wm);
     let _ = berry_handle_close(vmo);
+    let _ = berry_handle_close(font_vmo);
     send(c, b"CONTACTSEXIT ok\n");
     berry_process_exit(0)
 }

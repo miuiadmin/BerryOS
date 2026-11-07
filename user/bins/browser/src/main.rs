@@ -9,6 +9,7 @@
 #![no_main]
 
 use berry_guiproto as gp;
+use berry_nshfont::{circle, map as map_font, round_rect, shadow, text};
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_exit,
@@ -136,7 +137,9 @@ fn pair(console: Handle) -> (Handle, Handle) {
     (a, b)
 }
 
-fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Handle) {
+fn wm_connect(
+    console: Handle, broker: Handle, process: Handle, vmar: Handle,
+) -> (Handle, Handle, Handle) {
     let (wm, wm_peer) = pair(console);
     let (input, input_peer) = pair(console);
     let mut req = [0u8; 256];
@@ -147,14 +150,18 @@ fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Hand
         None => fail(console, "connect encode"),
     };
     let attach = [wm_peer, input_peer, process];
-    let (n, _) = rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
-    if gp::parse_wm_connect_rep(&rep[..n]).is_none() {
+    let (n, nh) = rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
+    if gp::parse_wm_connect_rep(&rep[..n]).is_none() || nh != 1 || rhs[0] == 0 {
         fail(console, "connect rep");
+    }
+    let font_vmo = rhs[0];
+    if !map_font(vmar, font_vmo) {
+        fail(console, "font map");
     }
     if berry_handle_close(broker) != 0 {
         fail(console, "broker close");
     }
-    (wm, input)
+    (wm, input, font_vmo)
 }
 
 fn put_px(fb: &mut [u8], stride: usize, x: usize, y: usize, c: [u8; 4]) {
@@ -172,43 +179,13 @@ fn fill(fb: &mut [u8], stride: usize, x0: usize, y0: usize, w: usize, h: usize, 
     }
 }
 
-fn text(fb: &mut [u8], stride: usize, s: &[u8], x0: usize, y0: usize, scale: usize, c: [u8; 4]) {
-    for (i, ch) in s.iter().enumerate() {
-        let Some(g) = berry_fbcon::font::glyph(*ch) else { continue };
-        for gy in 0..16usize {
-            for gx in 0..8usize {
-                if g.as_slice()[gy] & (0x80 >> gx) == 0 {
-                    continue;
-                }
-                fill(
-                    fb,
-                    stride,
-                    x0 + i * 8 * scale + gx * scale,
-                    y0 + gy * scale,
-                    scale,
-                    scale,
-                    c,
-                );
-            }
-        }
-    }
-}
-
 fn render(fb: &mut [u8], stride: usize, w: usize, h: usize) -> usize {
     let bar = (h / 12).max(64).min(160);
     fill(fb, stride, 0, 0, w, bar, [0x10, 0x74, 0xE5, 0]);
     // 返回键：圆底 + 左三角。
     let cx = bar / 2;
     let r = bar.saturating_sub(18) / 2;
-    for y in 0..bar {
-        for x in 0..bar {
-            let dx = x as i32 - cx as i32;
-            let dy = y as i32 - cx as i32;
-            if dx * dx + dy * dy <= r as i32 * r as i32 {
-                put_px(fb, stride, x, y, [0xE8, 0xF2, 0xFF, 0]);
-            }
-        }
-    }
+    circle(fb, stride, cx, cx, r, [0xE8, 0xF2, 0xFF]);
     for y in 0..(r / 2) {
         let half = y as i32 - r as i32 / 4;
         for dx in 0..(r / 2) {
@@ -219,16 +196,22 @@ fn render(fb: &mut [u8], stride: usize, w: usize, h: usize) -> usize {
             }
         }
     }
-    let scale = if w >= 1000 { 4 } else { 3 };
-    text(fb, stride, b"Browser", bar + 16, (bar - 16 * scale) / 2, scale, [0xFF, 0xFF, 0xFF, 0]);
-    // 地址栏与诚实状态页。
+    text(fb, stride, b"Browser", bar + 18, (bar - 48) / 2, [0xFF, 0xFF, 0xFF, 0]);
+    // 地址栏与诚实状态页：OH 风格圆角 URL pill + 内容卡片。
     let url_h = bar;
     fill(fb, stride, 0, bar, w, url_h, [0xEC, 0xF4, 0xFC, 0]);
-    fill(fb, stride, 16, bar + 12, w - 32, url_h - 24, [0xFF, 0xFF, 0xFF, 0]);
-    text(fb, stride, b"berry://native-shell", 32, bar + (url_h - 16 * scale) / 2, scale, [0x24, 0x2D, 0x37, 0]);
-    fill(fb, stride, 0, bar + url_h, w, h - bar - url_h, [0xF7, 0xFA, 0xFD, 0]);
-    text(fb, stride, b"Native shell ready", 32, bar + url_h + 40, scale, [0x12, 0x34, 0x5C, 0]);
-    text(fb, stride, b"No web engine in v1", 32, bar + url_h + 40 + 24 * scale, scale, [0x5F, 0x6E, 0x81, 0]);
+    round_rect(
+        fb, stride, 20, bar + 10, w - 40, url_h - 20,
+        (url_h - 20) / 2, [0xFF, 0xFF, 0xFF],
+    );
+    text(fb, stride, b"berry://native-shell", 48, bar + (url_h - 48) / 2, [0x24, 0x2D, 0x37, 0]);
+    fill(fb, stride, 0, bar + url_h, w, h - bar - url_h, [0xF2, 0xF6, 0xFB, 0]);
+    let card_y = bar + url_h + 36;
+    let card_h = h.saturating_sub(card_y + 40);
+    shadow(fb, stride, 36, card_y, w - 72, card_h, 56);
+    round_rect(fb, stride, 32, card_y, w - 64, card_h, 56, [0xFF, 0xFF, 0xFF]);
+    text(fb, stride, b"Native shell ready", 76, card_y + 54, [0x12, 0x34, 0x5C, 0]);
+    text(fb, stride, b"No web engine in v1", 76, card_y + 144, [0x5F, 0x6E, 0x81, 0]);
     bar
 }
 
@@ -314,7 +297,8 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let env = read_env(env_ch);
     let c = env.console;
     send(c, b"BROWSER up\n");
-    let (wm, input) = wm_connect(c, env.broker, env.process);
+    let (wm, input, font_vmo) =
+        wm_connect(c, env.broker, env.process, env.vmar);
 
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
@@ -390,6 +374,7 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let _ = berry_handle_close(input);
     let _ = berry_handle_close(wm);
     let _ = berry_handle_close(vmo);
+    let _ = berry_handle_close(font_vmo);
     send(c, b"BROWSEREXIT ok\n");
     berry_process_exit(0)
 }

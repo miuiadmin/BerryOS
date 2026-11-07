@@ -10,8 +10,8 @@ license = "Apache-2.0"
 [workspace]
 
 [dependencies]
-berry-fbcon = { path = "../../berry-fbcon" }
 berry-guiproto = { path = "../../berry-guiproto" }
+berry-nshfont = { path = "../../berry-nshfont" }
 berry-sys = { path = "../../berry-sys" }
 
 [profile.release]

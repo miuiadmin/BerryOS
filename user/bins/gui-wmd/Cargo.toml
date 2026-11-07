@@ -23,6 +23,7 @@ license = "Apache-2.0"
 
 [dependencies]
 berry-libc = { path = "../../berry-libc" }
+berry-gfx = { path = "../../berry-gfx" }
 berry-sys = { path = "../../berry-sys" }
 berry-guiproto = { path = "../../berry-guiproto" }
 

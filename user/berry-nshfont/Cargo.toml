@@ -1,0 +1,15 @@
+[package]
+name = "berry-nshfont"
+version = "0.1.0"
+edition = "2021"
+# Native Shell 系统 HD 字形客户端：wmd 在 APP WM_CONNECT ack 随行
+# 32×48 A8 字形 VMO；本 crate 只提供固定地址映射与 straight-alpha 文本。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-sys = { path = "../berry-sys" }
+
+[features]
+default = []

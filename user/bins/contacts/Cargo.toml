@@ -9,10 +9,9 @@ license = "Apache-2.0"
 [workspace]
 
 [dependencies]
-berry-fbcon = { path = "../../berry-fbcon" }
 berry-fsclient = { path = "../../berry-fsclient" }
+berry-nshfont = { path = "../../berry-nshfont" }
 berry-fsproto = { path = "../../berry-fsproto" }
-berry-gfx = { path = "../../berry-gfx" }
 berry-guiproto = { path = "../../berry-guiproto" }
 berry-sys = { path = "../../berry-sys" }
 

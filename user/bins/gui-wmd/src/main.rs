@@ -32,13 +32,15 @@
 //! present 中继阻塞期间其它 session 可变更表，快照不声称「请求到达时」
 //! 一致；需要该语义时后续加 per-request snapshot stamp，勿静默扩大承诺。
 
+use berry_gfx::font::{FontAtlas32x48, GlyphAtlas};
 use berry_guiproto as gp;
 use berry_libc::io::{wm_hdi_h, wm_present_h, wm_push_srv_h, wm_srv_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_object_wait_many, berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
-    BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_TERMINATED,
-    SIGNAL_WRITABLE,
+    berry_object_wait_many, berry_object_wait_one,
+    berry_vmo_commit, berry_vmo_create, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
+    BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC,
+    SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 
 mod relay;
@@ -52,6 +54,12 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// serve 空闲并等帽：wait_many deadline 外层上界（合法空闲非死线——到点
 /// 重臂续等；guifbd `IDLE_CAP_NS` 同款）。
 const WMD_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
+
+/// 系统字形供给：95 个 ASCII HD A8 字形，恰 32×48×95B。每个 APP
+/// WM_CONNECT 成功应答随行一枚私有填充 VMO（v1 映射恒 UserRw，私有拷贝
+/// 防跨 app 写穿）；rootfs 不再由各 app 重复携带字表。
+const FONT_GLYPH_BYTES: usize = 32 * 48;
+const FONT_VMO_LEN: usize = 0x24000;
 
 /// Phase 3 per-session 输入环（16 深；溢出 loud 计数，不覆盖旧事件）。
 struct InputQueue {
@@ -187,7 +195,16 @@ impl WmSessions {
             Some(n) => n,
             None => trap(),
         };
-        send_rep(broker, &out[..n]);
+        if client_type == gp::WM_CLIENT_APP {
+            // APP connect ack：body 8B 不变，随行 [私有 font VMO]。
+            // v1 vmar_map 只有 UserRw，若共享同一字形 VMO，任一 app 可
+            // 写穿破坏全局字体；因此每个 APP 收独立填充 VMO（物理页私有，
+            // rootfs 不重复字表）。system 消费者不带该能力。
+            let font_vmo = make_font_vmo();
+            send_rep_handles(broker, &out[..n], &[font_vmo]);
+        } else {
+            send_rep(broker, &out[..n]);
+        }
         println!("WMCONN ok id={id}");
     }
 
@@ -340,6 +357,32 @@ impl WmSessions {
     }
 }
 
+
+/// 为一个 APP 构建私有字形 VMO。HD A8 表由 berry-gfx 单源提供；每次
+/// connect 独立填充，避免 v1 UserRw 映射下跨 app 写穿。失败 = GUI 关键
+/// 能力断链，trap loud（WMCONN 缺失由 smoke 兜底）。
+fn make_font_vmo() -> Handle {
+    let mut vmo: Handle = 0;
+    if berry_vmo_create(FONT_VMO_LEN as u64, 0, &mut vmo) != 0
+        || vmo == 0
+        || berry_vmo_commit(vmo, 0, FONT_VMO_LEN as u64) != 0
+    {
+        trap();
+    }
+    for ch in 32u8..=126 {
+        let Some(g) = FontAtlas32x48.coverage(ch) else {
+            trap();
+        };
+        let off = u64::try_from(usize::from(ch - 32) * FONT_GLYPH_BYTES)
+            .unwrap_or_else(|_| trap());
+        if g.coverage.len() != FONT_GLYPH_BYTES
+            || berry_vmo_write(vmo, g.coverage.as_ptr(), off, g.coverage.len()) != 0
+        {
+            trap();
+        }
+    }
+    vmo
+}
 
 /// 单调钟现值（失败 = clock 面断链，loud）。
 pub(crate) fn now_ns() -> u64 {

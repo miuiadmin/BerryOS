@@ -3,10 +3,6 @@
 version = 4
 
 [[package]]
-name = "berry-fbcon"
-version = "0.1.0"
-
-[[package]]
 name = "berry-guiproto"
 version = "0.1.0"
 dependencies = [
@@ -18,6 +14,13 @@ name = "berry-manifest"
 version = "0.1.0"
 
 [[package]]
+name = "berry-nshfont"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
 name = "berry-sys"
 version = "0.1.0"
 
@@ -25,7 +28,7 @@ version = "0.1.0"
 name = "settings"
 version = "0.1.0"
 dependencies = [
- "berry-fbcon",
  "berry-guiproto",
+ "berry-nshfont",
  "berry-sys",
 ]

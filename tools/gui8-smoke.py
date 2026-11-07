@@ -1184,6 +1184,52 @@ def assert_pixel_close(
         raise SmokeError(f"像素锚 {what}: {got} != {want}±8", log_path)
 
 
+def ppm_crop_colors(path: Path, box: tuple[int, int, int, int]) -> set[tuple[int, int, int]]:
+    """读 P6 PPM 裁剪区 RGB 集合（HD A8 反马赛克锚的客观面）。"""
+    x0, y0, x1, y1 = box
+    if x0 >= x1 or y0 >= y1:
+        raise SmokeError(f"PPM 裁剪域非法：{path} {box}")
+    data = path.read_bytes()
+    fields: list[bytes] = []
+    pos = 0
+    while len(fields) < 4:
+        while pos < len(data) and data[pos : pos + 1].isspace():
+            pos += 1
+        if pos < len(data) and data[pos] == ord(b"#"):
+            pos = data.index(b"\n", pos) + 1
+            continue
+        end = pos
+        while end < len(data) and not data[end : end + 1].isspace():
+            end += 1
+        fields.append(data[pos:end])
+        pos = end
+    if fields[0] != b"P6":
+        raise SmokeError(f"非 P6 PPM：{path} magic={fields[0]!r}")
+    w, h, maxv = (int(v) for v in fields[1:4])
+    if maxv != 255 or x1 > w or y1 > h:
+        raise SmokeError(f"PPM 裁剪越界：{path} {w}x{h} max={maxv} box={box}")
+    base = pos + 1
+    out: set[tuple[int, int, int]] = set()
+    for y in range(y0, y1):
+        row = base + y * w * 3
+        for x in range(x0, x1):
+            off = row + x * 3
+            out.add((data[off], data[off + 1], data[off + 2]))
+    return out
+
+
+def assert_color_count(
+    path: Path, box: tuple[int, int, int, int], minimum: int, what: str,
+    log_path: Path | None = None,
+) -> None:
+    got = len(ppm_crop_colors(path, box))
+    if got < minimum:
+        raise SmokeError(
+            f"反马赛克色数锚 {what}: {got} < {minimum}（疑似点阵整数放大）",
+            log_path,
+        )
+
+
 def qemu_command(
     args, disk: Path, vars_path: Path, sock_path: Path, serial_path: Path,
     display: str = "800x600@60",
@@ -1860,6 +1906,25 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
         time.sleep(1.0)
+        browser_shot = run_dir / "browser-native.ppm"
+        boot.qmp.screendump(browser_shot)
+        assert_pixel_close(
+            ppm_pixel(browser_shot, 540, 60), (16, 116, 229),
+            "Browser 顶栏", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(browser_shot, 540, 250), (255, 255, 255),
+            "Browser URL pill", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(browser_shot, 540, 800), (255, 255, 255),
+            "Browser 内容卡", boot.log_path,
+        )
+        assert_color_count(
+            browser_shot, (60, 370, 900, 560), 128,
+            "Browser HD A8 文本", boot.log_path,
+        )
+        log("normal-browser: QEMU 截图像素/色数锚 ok（顶栏/URL/内容卡/HD A8）")
         log("normal-browser: QMP 点击 Browser 返回键（wmd owner-local 输入）")
         boot.qmp.click(80, 80, w, h)
         try:
@@ -1945,7 +2010,10 @@ def run_normal_boot(args) -> int:
         assert_pixel_close(ppm_pixel(shot, 540, 285), (255, 255, 255), "WLAN 行底", boot.log_path)
         assert_pixel_close(ppm_pixel(shot, 900, 270), (0, 139, 111), "WLAN 开关", boot.log_path)
         assert_pixel_close(ppm_pixel(shot, 900, 450), (0, 139, 111), "Bluetooth 开关", boot.log_path)
-        log("normal-settings: QEMU 截图像素锚 ok（双开关绿色、顶栏/行底在席）")
+        assert_color_count(
+            shot, (30, 220, 320, 300), 128, "Settings HD A8 文本", boot.log_path,
+        )
+        log("normal-settings: QEMU 截图像素/色数锚 ok（双开关/顶栏/行底/HD A8）")
 
         log("normal-settings: QMP 点击 Settings 返回键（销毁窗口）")
         boot.qmp.click(80, 80, w, h)
@@ -2019,8 +2087,11 @@ def run_normal_boot(args) -> int:
         boot.qmp.screendump(files_shot)
         assert_pixel_close(ppm_pixel(files_shot, 540, 60), (63, 81, 181), "Files 顶栏", boot.log_path)
         assert_pixel_close(ppm_pixel(files_shot, 540, 250), (255, 255, 255), "Files 详情底", boot.log_path)
-        assert_pixel_close(ppm_pixel(files_shot, 44, 230), (27, 37, 64), "Files 文件名文本", boot.log_path)
-        log("normal-files: QEMU 截图像素锚 ok（顶栏/详情底/文件名文本）")
+        assert_pixel_close(ppm_pixel(files_shot, 48, 230), (27, 37, 64), "Files 文件名文本", boot.log_path)
+        assert_color_count(
+            files_shot, (30, 180, 500, 280), 128, "Files HD A8 文本", boot.log_path,
+        )
+        log("normal-files: QEMU 截图像素/色数锚 ok（顶栏/详情底/文件名/HD A8）")
 
         log("normal-files: 返回列表（第二真实重绘）")
         boot.qmp.click(80, 80, w, h)
@@ -2224,7 +2295,11 @@ def run_normal_boot(args) -> int:
             ppm_pixel(contacts_shot, 900, 272), (251, 140, 0),
             "Contacts 收藏底条", boot.log_path,
         )
-        log("normal-contacts: QEMU 截图像素锚 ok（顶栏/头像/收藏底条）")
+        assert_color_count(
+            contacts_shot, (360, 380, 720, 460), 128,
+            "Contacts HD A8 文本", boot.log_path,
+        )
+        log("normal-contacts: QEMU 截图像素/色数锚 ok（顶栏/头像/收藏/HD A8）")
 
         log("normal-contacts: 返回列表（第三真实重绘）")
         boot.qmp.click(80, 80, w, h)

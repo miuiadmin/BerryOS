@@ -10,6 +10,7 @@
 
 use berry_fsclient::dirent_next;
 use berry_guiproto as gp;
+use berry_nshfont::{circle, map as map_font, round_rect, shadow, text};
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_exit,
@@ -217,7 +218,9 @@ fn pair(console: Handle) -> (Handle, Handle) {
     (a, b)
 }
 
-fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Handle) {
+fn wm_connect(
+    console: Handle, broker: Handle, process: Handle, vmar: Handle,
+) -> (Handle, Handle, Handle) {
     let (wm, wm_peer) = pair(console);
     let (input, input_peer) = pair(console);
     let mut req = [0u8; 256];
@@ -228,14 +231,18 @@ fn wm_connect(console: Handle, broker: Handle, process: Handle) -> (Handle, Hand
         None => fail(console, "connect encode"),
     };
     let attach = [wm_peer, input_peer, process];
-    let (n, _) = wm_rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
-    if gp::parse_wm_connect_rep(&rep[..n]).is_none() {
+    let (n, nh) = wm_rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
+    if gp::parse_wm_connect_rep(&rep[..n]).is_none() || nh != 1 || rhs[0] == 0 {
         fail(console, "connect rep");
+    }
+    let font_vmo = rhs[0];
+    if !map_font(vmar, font_vmo) {
+        fail(console, "font map");
     }
     if berry_handle_close(broker) != 0 {
         fail(console, "broker close");
     }
-    (wm, input)
+    (wm, input, font_vmo)
 }
 
 fn fs_call(fs: Handle, req: &[u8], rep: &mut [u8; 256]) -> usize {
@@ -323,23 +330,6 @@ fn fill(fb: &mut [u8], stride: usize, x0: usize, y0: usize, w: usize, h: usize, 
     }
 }
 
-fn text(fb: &mut [u8], stride: usize, s: &[u8], x0: usize, y0: usize, scale: usize, c: [u8; 4]) {
-    for (i, ch) in s.iter().enumerate() {
-        let Some(g) = berry_fbcon::font::glyph(*ch) else { continue };
-        for gy in 0..16usize {
-            for gx in 0..8usize {
-                if g.as_slice()[gy] & (0x80 >> gx) == 0 {
-                    continue;
-                }
-                fill(
-                    fb, stride, x0 + i * 8 * scale + gx * scale,
-                    y0 + gy * scale, scale, scale, c,
-                );
-            }
-        }
-    }
-}
-
 fn layout(_w: usize, h: usize) -> Layout {
     let bar = (h / 12).max(64).min(160);
     let natural = (bar * 3 / 2).max(72).min(180);
@@ -354,26 +344,17 @@ fn render_list(
 ) {
     fill(fb, stride, 0, 0, w, _h, [0xF5, 0xF7, 0xFA, 0]);
     fill(fb, stride, 0, 0, w, lay.bar, [0x3F, 0x51, 0xB5, 0]);
-    let scale = if w >= 1000 { 4 } else { 3 };
-    text(fb, stride, b"Files", lay.bar + 18, (lay.bar - 16 * scale) / 2, scale, [0xFF, 0xFF, 0xFF, 0]);
+    text(fb, stride, b"Files", lay.bar + 18, (lay.bar - 48) / 2, [0xFF, 0xFF, 0xFF, 0]);
     let cx = lay.bar / 2;
     let r = lay.bar.saturating_sub(18) / 2;
-    for y in 0..lay.bar {
-        for x in 0..lay.bar {
-            let dx = x as i32 - cx as i32;
-            let dy = y as i32 - cx as i32;
-            if dx * dx + dy * dy <= r as i32 * r as i32 {
-                put_px(fb, stride, x, y, [0xE8, 0xEB, 0xFF, 0]);
-            }
-        }
-    }
+    circle(fb, stride, cx, cx, r, [0xE8, 0xEB, 0xFF]);
     for i in 0..count {
         let y = lay.top + i * lay.row_h;
-        let bg = if i == selected { [0xE3, 0xE9, 0xFF, 0] } else { [0xFF, 0xFF, 0xFF, 0] };
-        fill(fb, stride, 18, y + 8, w - 36, lay.row_h - 16, bg);
-        let ty = y + (lay.row_h - 16 * scale) / 2;
-        text(fb, stride, &entries[i].name[..entries[i].len], 40, ty, scale, [0x21, 0x2B, 0x36, 0]);
-        text(fb, stride, b">", w - 56, ty, scale, [0x8A, 0x96, 0xA5, 0]);
+        let bg = if i == selected { [0xE3, 0xE9, 0xFF] } else { [0xFF, 0xFF, 0xFF] };
+        round_rect(fb, stride, 18, y + 8, w - 36, lay.row_h - 16, 36, bg);
+        let ty = y + (lay.row_h - 48) / 2;
+        text(fb, stride, &entries[i].name[..entries[i].len], 40, ty, [0x21, 0x2B, 0x36, 0]);
+        text(fb, stride, b">", w - 80, ty, [0x8A, 0x96, 0xA5, 0]);
     }
 }
 
@@ -385,9 +366,10 @@ fn render_detail(
     render_list(fb, stride, w, h, lay, entries, data.index + 1, data.index);
     // 用详情页覆盖列表主体，保留同一顶栏/返回键。
     let y0 = lay.bar + 12;
-    fill(fb, stride, 18, y0, w - 36, h.saturating_sub(y0 + 12), [0xFF, 0xFF, 0xFF, 0]);
-    let scale = if w >= 1000 { 4 } else { 3 };
-    text(fb, stride, &e.name[..e.len], 40, y0 + 28, scale, [0x1B, 0x25, 0x40, 0]);
+    let card_h = h.saturating_sub(y0 + 12);
+    shadow(fb, stride, 24, y0 + 4, w - 44, card_h, 52);
+    round_rect(fb, stride, 18, y0, w - 36, card_h, 48, [0xFF, 0xFF, 0xFF]);
+    text(fb, stride, &e.name[..e.len], 40, y0 + 28, [0x1B, 0x25, 0x40, 0]);
     let mut size_line = [0u8; 32];
     let head = b"Size ";
     size_line[..head.len()].copy_from_slice(head);
@@ -409,12 +391,12 @@ fn render_detail(
         size_line[n] = dig[dn];
         n += 1;
     }
-    text(fb, stride, &size_line[..n], 40, y0 + 48 + 24 * scale, scale, [0x4F, 0x5D, 0x75, 0]);
+    text(fb, stride, &size_line[..n], 40, y0 + 104, [0x4F, 0x5D, 0x75, 0]);
     let mut preview = [0u8; 96];
     for (dst, src) in preview.iter_mut().zip(data.bytes[..data.len].iter()) {
         *dst = if src.is_ascii_graphic() || *src == b' ' { *src } else { b'.' };
     }
-    text(fb, stride, &preview[..data.len], 40, y0 + 80 + 30 * scale, scale, [0x21, 0x2B, 0x36, 0]);
+    text(fb, stride, &preview[..data.len], 40, y0 + 188, [0x21, 0x2B, 0x36, 0]);
 }
 
 fn frame(console: Handle, wm: Handle, vmo: Handle, surface: u32, buffer_id: u32) -> u32 {
@@ -508,7 +490,8 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let env = read_env(env_ch);
     let c = env.console;
     send(c, b"FILES up\n");
-    let (wm, input) = wm_connect(c, env.broker, env.process);
+    let (wm, input, font_vmo) =
+        wm_connect(c, env.broker, env.process, env.vmar);
 
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
@@ -659,6 +642,7 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     let _ = berry_handle_close(input);
     let _ = berry_handle_close(wm);
     let _ = berry_handle_close(vmo);
+    let _ = berry_handle_close(font_vmo);
     send(c, b"FILESEXIT ok\n");
     berry_process_exit(0)
 }
