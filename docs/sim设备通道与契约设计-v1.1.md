@@ -12,6 +12,11 @@
 > （FEN=0，§2）——案 C 论证反而更强；④libc `read(0)` 的 10s 空闲帽 EOF
 > 化返 0 与 §6「永睡」冲突 → 服务主循环改 echo 形直收（wait READABLE
 > 1h 长帽重臂 + recv，§6）。
+> **v1.1 补记⑤（M3 实施期，2026-11-07）**：§7 固定 sock 路径
+> `/tmp/berryos-sim1.sock` 仅 run-rootfs 相保持；smoke RX 相 serial1 改
+> 用 QMP 同款 mktemp 临时目录 sock（残留文件 bind 拒问题构造性消失 +
+> 多跑并行零路径撞）。注入 client `tools/siminj.py` 取 argv[1] sock、
+> 缺省回落固定路径——两相同一 client。
 
 ## 1. 定位与验收线
 
@@ -146,7 +151,8 @@ channel/event/wait 面）；v1 35 号口径零违例。
 
 - `justfile` run-rootfs：+`-serial mon:stdio -serial unix:/tmp/berryos-sim1.sock,
   server=on,wait=off`（serial0 显式钉 stdio 防吞、serial1 = 注入通道；路径
-  固定供 M3 client 复用，recipe 起手 rm -f 残留 socket）+
+  固定供手跑 client 缺省复用——smoke RX 相改 mktemp 临时目录 sock，补记⑤
+  ——recipe 起手 rm -f 残留 socket）+
   `-fw_cfg name=opt/berry/simdev,string=1`（在席门键，与 serial1 同线配对）。
 - 注入 client（python，抄 qmp_inject socket 模式）：连 sock → 发黄金帧
   （或参数帧）→ **读回 ACK 9B 对拍**（ST_OK + seq）→ 串口日志 grep

@@ -439,4 +439,16 @@ while :; do
   sleep 2
 done
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 29 + 生态 36 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
+# —— 阶段 7：sim 面零计数（sim-S1 M3 负例镜——主 smoke RX 相正例镜的对偶）——
+# EFI 路 launch 不挂 serial1/simdev 同线配对（GUI8 同款冻结纪律）→ fw_cfg
+# 门键缺席 = 内核门闭（无 `SIM gate on`）+ svcmgr dup 探针门闭静默跳过
+# （无 SIMBAT/无 spawn 噪声）。SIM 行 >0 = launch 误挂配对或门判定漏——
+# loud 拒，不静默（B4 零扰动面在此成执法不变量）。
+n_gate=$(grep -acF 'SIM gate on' "$LOG" || true)
+[ "$n_gate" -eq 0 ] \
+  || fail "EFI 路 SIM gate on ${n_gate} 行（应 0——launch 误挂 simdev/serial1 配对？）"
+n_bat=$(grep -acF 'SIMBAT' "$LOG" || true)
+[ "$n_bat" -eq 0 ] \
+  || fail "EFI 路 SIMBAT ${n_bat} 行（应 0——门闭相注入面泄漏/静默跳过漂移？）"
+
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 29 + 生态 36 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"

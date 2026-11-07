@@ -18,9 +18,14 @@ MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TAS
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
   "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "DPGP ok" "INPUT ok" "DPGS ok n=4" "DPGN ok n=4")
 
+# sim-S1 RX 专属标记（smoke.sh RX 相 serial1 注入后才出现；rootfs 相无
+# 注入 client，不并入 ROOTFS_MARKERS——否则 rootfs 相标记门恒假红）。
+# 消费点 = smoke.sh RX 相 sim 段（对拍 sweep，防死单源）。
+RX_MARKERS=("SIMBAT ok seq=")
+
 # 防假绿兜底：单源被误清空 = 轮询零等待恒过——非空断言 loud 拒（P6 A-5
 # 「基准重产义务要有机器守卫」族精神沿袭）。
-[ "${#MARKERS[@]}" -gt 0 ] && [ "${#ROOTFS_MARKERS[@]}" -gt 0 ] || {
+[ "${#MARKERS[@]}" -gt 0 ] && [ "${#ROOTFS_MARKERS[@]}" -gt 0 ] && [ "${#RX_MARKERS[@]}" -gt 0 ] || {
   echo "markers.sh: 标记数组为空（单源被误清？）——拒跑防假绿" >&2
   exit 1
 }

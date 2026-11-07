@@ -42,9 +42,10 @@
 #      族前——EFI 路无盘亦打）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段、
-#      C-4b 起七段、GUI-4 段② 起八段（+h QMP 注入往返））：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），79 标记
-#      （boot 29 + rootfs 50——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      C-4b 起七段、GUI-4 段② 起八段（+h QMP 注入往返）、sim-S1 M3 起
+#      +serial1 battery 快照四流（OK×2/BAD/STALE，ACK 宿主逐字节对拍））：
+#      三拉 QEMU 带 -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），
+#      79 基础标记 + RX 专属 SIMBAT（boot 29 + rootfs 50——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/APPUI ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
@@ -984,13 +985,17 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + vir
 #（brew 新版 QEMU 已废 server=nowait 简写——解析期即拒，首跑实录）。
 QMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-qmp.XXXXXX")
 QMP_SOCK="$QMP_DIR/sock"   # unix socket 路径帽 107B——mktemp 短前缀必达
+SIM_SOCK="$QMP_DIR/sim1"   # sim-S1 serial1（与 QMP 同临时目录统一 cleanup）
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
+  -fw_cfg name=opt/berry/simdev,string=1 \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -serial mon:stdio \
+  -serial unix:"$SIM_SOCK",server=on,wait=off \
   -qmp unix:"$QMP_SOCK",server=on,wait=off \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
@@ -1090,6 +1095,29 @@ send([{"type": "btn", "data": {"down": False, "button": "left"}}])
 PYEOF
 }
 exec 3> "$RX_FIFO"
+# sim-S1 M3：serial1 独立注入 battery 原子快照（serial0 FIFO 编辑序列零
+# 干扰）。四流 = seq1 OK / seq2 OK / capacity=101 BAD / 重放 seq1 STALE；
+# ACK 全部由宿主 client 从同一 Unix socket 逐字节对拍，串口只允许出现两行
+# SIMBAT（BAD/STALE 无标记——回声与消费的消费面歧义在此消去）。
+if ! python3 "$SCRIPT_DIR/siminj.py" "$SIM_SOCK"; then
+  fail "sim-S1 注入/ACK 四流失败（查 SIM gate on、simbattery alive、serial1 socket）"
+fi
+t4=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 SIMBAT 阶段退出"
+  n_sim=$(grep -aoF 'SIMBAT ok seq=' "$LOG" | wc -l | tr -d ' ')
+  grep -aqF 'SIMBAT ok seq=1' "$LOG" && grep -aqF 'SIMBAT ok seq=2' "$LOG" \
+    && [ "$n_sim" -eq 2 ] && break
+  [ $(( $(date +%s) - t4 )) -gt 60 ] && fail \
+    "SIMBAT 60s 未达正形（须恰 seq=1/seq=2 两行，实得 ${n_sim} 行——查 siminj ACK 与 task_simcon）"
+  sleep 1
+done
+# markers.sh RX_MARKERS 数组在此消费（防死单源：数组行 = 段门必查面——
+# 后续追加 RX 注入行只改 markers.sh 即自动入执法；boot 双数组不受染）。
+for m in "${RX_MARKERS[@]}"; do
+  grep -aqF "$m" "$LOG" || fail "RX 注入段标记缺席：$m（markers.sh RX_MARKERS 对拍）"
+done
+echo "smoke: SIMBAT 双正例到齐（BAD/STALE 静默 + ACK 四流对拍过）"
 # a. token 行：RX ok（A-1 console token 面；`rx` 行入历史但不转发）。
 printf 'r' >&3; sleep 0.5
 printf 'x' >&3; sleep 0.5
@@ -1603,4 +1631,4 @@ esac
 echo "smoke: B4 掉电相到齐（采样 A/B + 毒环注入 + 恢复终验 $PWR_C）"
 
 exec 3>&-
-echo "smoke: PASS（金丝雀 ${n:-0} 条诊断 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + Boot C 恢复终验盘面 clean））"
+echo "smoke: PASS（金丝雀 ${n:-0} 条诊断 + rootfs 相全链 + RX 交互相（SIMBAT 双正例 + ACK 四流 + RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + Boot C 恢复终验盘面 clean））"
