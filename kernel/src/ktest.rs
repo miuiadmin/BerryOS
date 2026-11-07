@@ -3393,7 +3393,13 @@ fn test_policy_shadow() {
 ///   表真在用（首轮 head p7 零写入、次轮起 p8 独占 eff=32）；`demote()`
 ///   对偶同清零，此后 active 空 vs shadow 有表（`policy.rs` 注记的双轨
 ///   观测主场景）：p8 命中即分歧、p7 恒同意 → 分子开区间 (0, 12)——
-///   分歧按 key 判别，非全量分歧。
+///   分歧按 key 判别，非全量分歧；
+/// - **DV-5 STATUS（op=2）p3 打包位布局**：`crate::syscall::
+///   policy_divergence_packed`（算式下放——SH-6 直测同口径）以 DV-4 尾
+///   遗留计数直测：分子开区间 (0, 12) 且分母 == 12 → 两半非对称（对调
+///   必炸——对调后率倒置，A/B 判据全反）；随后串口打
+///   `PERF policy divergence=<N> eval=<N>` 遥测行——宿主侧
+///   `tools/policy_ab_eval.py` 的解析面（端到端 A/B 评估链收口）。
 ///
 /// 形态同 `test_policy_shadow`：本地 `Runqueue` + 双任务（proc_tag = 7/8）
 /// ROUNDS=12 轮 pick（setup2/probe 模式沿用）；对账期间隔离用显式
@@ -3407,6 +3413,7 @@ fn test_policy_shadow() {
 fn test_policy_divergence() {
     use berry_sched::policy::{self, Directive, Entry};
     use berry_sched::{Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
+    use crate::syscall::policy_divergence_packed;
 
     /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
     extern "C" fn dv_dummy(_arg: usize) -> ! {
@@ -3549,6 +3556,26 @@ fn test_policy_divergence() {
     assert!((policy::divergence_count() as usize) < ROUNDS,
         "DV-4 尾：分歧须按 key 判别（p7 出选恒同意——非全量分歧）");
     assert_eq!(policy::shadow_eval_count(), ROUNDS as u64, "DV-4 尾：分母同 pick 数");
+
+    // DV-5：STATUS（op=2）p3 面打包位布局——sys_policy_bind 需 TrapFrame
+    // 不便直调，算式已下放 syscall::policy_divergence_packed（SH-6 直测同
+    // 口径），以 DV-4 尾遗留计数真数据源直测：分子开区间 (0, ROUNDS) 且
+    // 分母 == ROUNDS → 两半取值非对称（半区对调必炸——对调 = 分子分母
+    // 互换 → divergence 率倒置，PROMOTE/DEMOTE 判据全反）。
+    let (dv_n, ev_n) = (policy::divergence_count(), policy::shadow_eval_count());
+    assert!(dv_n > 0 && dv_n < ev_n, "DV-5：直测前提——分子分母须非对称");
+    assert_eq!(
+        policy_divergence_packed(),
+        ((ev_n & 0xFFFF_FFFF) << 32) | (dv_n & 0xFFFF_FFFF),
+        "DV-5：packed 须 = (eval低32 << 32) | divergence低32（对调/截断全判别）"
+    );
+    // 串口遥测行（A/B 评估链内核侧收口）：宿主 tools/policy_ab_eval.py 从
+    // QEMU 串口解析本行 → divergence 率 → PROMOTE/DEMOTE 判定。
+    berry_hal_aarch64::uart_puts(b"PERF policy divergence=");
+    berry_hal_aarch64::uart_put_dec(dv_n);
+    berry_hal_aarch64::uart_puts(b" eval=");
+    berry_hal_aarch64::uart_put_dec(ev_n);
+    berry_hal_aarch64::uart_puts(b"\n");
 
     // 收尾：恢复缺席态（同 SHD-K——smoke 稳态全程未绑；shadow 谱系留
     // g_shd3 无清空接口，后续测试 pick 只进对账计数、行为零感知——boot 期

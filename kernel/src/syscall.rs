@@ -2229,8 +2229,15 @@ const PE_ZERO: berry_sched::policy::Entry = berry_sched::policy::Entry {
 /// `sched/policy.rs`——apply/weight_of 消费点读 `task.proc_tag`），handler 经
 /// `berry_sched::current_tag()` 同源读取——用户态据此发现「我现在是几号键」
 /// （表里给别的进程加权前先对账自己）。内核任务/boot 期 = 0（哨兵键——0 键
-/// 条目表侧本就丢弃，天然诚实）。p3 = 0（保留）。
-/// → 0 + copy_out_u64 ×2（任一写失败 → -EFAULT 透传）。
+/// 条目表侧本就丢弃，天然诚实）。
+/// p3 = `*out_divergence`（u64 出参，**可选**——0 = NULL 指针跳过）= 对账
+/// 遥测双计数打包：bit 0-31 = `policy::divergence_count()`（截低 32 位）、
+/// bit 32-63 = `policy::shadow_eval_count()`（截低 32 位）——A/B 评估消费面
+/// （divergence 率 = 分子/分母 → PROMOTE/DEMOTE 判据，宿主侧
+/// `tools/policy_ab_eval.py`；两计数器经 promote/demote 轨道切换自动清零，
+/// 读数即当前对账期）。打包算式下放 [`policy_divergence_packed`]（ktest
+/// DV-K DV-5 直测面）。
+/// → 0 + copy_out_u64 ×3（任一写失败 → -EFAULT 透传；跳过面不计）。
 ///
 /// op=3 (PROMOTE)：`policy::promote()`——shadow → enforced 原子转正：
 /// true = 0 / false = **-EBADSTATE**（shadow 空——gen == 0 从未
@@ -2274,7 +2281,8 @@ extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
             }
         }
         // STATUS：p1 = *out_packed（gen 双谱系）、p2 = *out_self_key（调用者
-        // proc_tag——可选出参，0 = NULL 跳过）。p3 保留 0。
+        // proc_tag——可选出参，0 = NULL 跳过）、p3 = *out_divergence（对账
+        // 双计数——可选出参，0 = NULL 跳过）。
         2 => {
             let packed = policy_status_packed();
             if let Err(e) = copy_out_u64(el1, p1, packed) {
@@ -2286,6 +2294,14 @@ extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
                 // 内核任务/ktest 期 = 0——哨兵键语义诚实透出，不伪装。
                 let self_key = berry_sched::current_tag() as u64;
                 if let Err(e) = copy_out_u64(el1, p2, self_key) {
+                    return e as i64;
+                }
+            }
+            if p3 != 0 {
+                // 对账遥测双计数（分子 divergence / 分母 eval 各截低 32 打包）
+                //——A/B 评估面（tools/policy_ab_eval.py），读窗纪律同 p1 面。
+                let divergence = policy_divergence_packed();
+                if let Err(e) = copy_out_u64(el1, p3, divergence) {
                     return e as i64;
                 }
             }
@@ -2339,6 +2355,21 @@ extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
 pub(crate) fn policy_status_packed() -> u64 {
     ((berry_sched::policy::shadow_gen() & 0xFFFF_FFFF) << 32)
         | (berry_sched::policy::gen() & 0xFFFF_FFFF)
+}
+
+/// STATUS（op=2）**p3 面**打包算式：bit 0-31 = divergence_count（截低 32
+/// 位）、bit 32-63 = shadow_eval_count（截低 32 位）——对账遥测双计数一次
+/// 读全（A/B 评估面：divergence 率 = 分子/分母，宿主侧
+/// `tools/policy_ab_eval.py` 消费）。同 [`policy_status_packed`] 的下放动因：
+/// 本算式是 **ABI 可见的位布局组合**——半区对调/位移宽度/截断缺失都静默错
+/// （对调 = 分子分母互换 → 率倒置，PROMOTE/DEMOTE 判据全反），且 handler 内
+/// TrapFrame + copy 链挡住 ktest 直调。ktest DV-K DV-5 真数据源驱动直测
+/// （分母 == ROUNDS、分子开区间 (0, ROUNDS)——两半非对称，对调必炸）。读窗
+/// 纪律同 p1 面：SVC 主体 IRQ 屏蔽（单核）下两读间无写者，双计数器无撕裂
+/// （Relaxed 纯统计读，非通信值）。
+pub(crate) fn policy_divergence_packed() -> u64 {
+    ((berry_sched::policy::shadow_eval_count() & 0xFFFF_FFFF) << 32)
+        | (berry_sched::policy::divergence_count() & 0xFFFF_FFFF)
 }
 
 /// COMMIT（op=1）/SHADOW_COMMIT（op=6）公共表解析：`tbl_p` = 表指针（用户态

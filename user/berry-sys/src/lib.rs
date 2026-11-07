@@ -563,7 +563,7 @@ pub extern "C" fn berry_policy_bind(
 
 /// `berry_policy_status(packed, self_key)`（0x83 op=2，S6-e STATUS 面）：
 /// 双谱系世代 + 调用者自身策略键一次读全（写者对账/遥测）。`auth` 预留
-/// 不消费（v1 全局单通道）；p3/p4 保留恒 0（非 0 → -EINVAL，options 纪律）。
+/// 不消费（v1 全局单通道）；p4 保留恒 0（非 0 → -EINVAL，options 纪律）。
 ///
 /// `packed`（u64 出参，**必填**——内核无条件写出，NULL → -EFAULT）：
 /// bit 0-31 = active gen、bit 32-63 = shadow gen（各截低 32 位）——内核
@@ -573,6 +573,11 @@ pub extern "C" fn berry_policy_bind(
 /// 内核经 `current_tag` 与 apply/weight_of 消费点同源读取——表里给自己
 /// 加权前先对账「我是几号键」；内核任务/boot 期 = 0（哨兵键——表侧本就
 /// 丢弃，诚实透出不伪装）。
+///
+/// 内核 op=2 另有 **p3 出参**（divergence 对账遥测：bit 0-31 =
+/// divergence_count、bit 32-63 = shadow_eval_count——A/B 评估面，内核
+/// ktest DV-5 钉板、宿主 `tools/policy_ab_eval.py` 消费）；本 wrapper 尚
+/// 未暴露（恒传 0 = NULL 跳过），用户态 A/B 评估器落地时扩参。
 #[no_mangle]
 pub extern "C" fn berry_policy_status(packed: *mut u64, self_key: *mut u64) -> Status {
     unsafe {
