@@ -100,6 +100,7 @@ MARK_WM_CONN5 = "WMCONN ok id=5"
 MARK_WM_CONN6 = "WMCONN ok id=6"
 MARK_WM_CONN7 = "WMCONN ok id=7"
 MARK_WM_CONN8 = "WMCONN ok id=8"
+MARK_WM_CONN9 = "WMCONN ok id=9"
 MARK_WM_ROUTE_WINDOW_UP = "WMRTWIN ok id="
 MARK_WM_DENIED = "WMDENY ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
@@ -159,6 +160,14 @@ MARK_CONTACTS_FAV = "CONTACTSFAV ok n=1"
 MARK_CONTACTS_PROBE = "CONTACTSPROBE ok"
 MARK_CONTACTS_DESTROY = "CONTACTSDESTROY ok"
 MARK_CONTACTS_EXIT = "CONTACTSEXIT ok"
+MARK_UITEST_UP = "UITEST up"
+MARK_UITEST_HOST = "UITESTHOST ok"
+MARK_UITEST_WIN = "UITESTWIN ok w="
+MARK_UITEST_FRAME = "UITESTFRAME ok"
+MARK_UITEST_PROBE = "UITESTPROBE ok"
+MARK_UITEST_INPUT = "UITESTINPUT ok x="
+MARK_UITEST_DESTROY = "UITESTDESTROY ok"
+MARK_UITEST_EXIT = "UITESTEXIT ok"
 MARK_WM_INPUT_DROP = "WMIDROP bad"
 MARK_INPUT_ROUTE_BAD = "INPUTROUTE bad"
 MARK_CJK_PROBE = "CJKPROBE ok n=2"
@@ -1184,6 +1193,28 @@ def assert_pixel_close(
         raise SmokeError(f"像素锚 {what}: {got} != {want}±8", log_path)
 
 
+def verify_uitest_normal(
+    text: str, snapshot_pos: int, before: int, log_path: Path | None = None,
+) -> None:
+    """GUI F1：berry-shell host probe 的零像素生命周期验收。"""
+    _require_exact_count(text, MARK_UITEST_UP, before + 1, "normal UITEST", log_path)
+    _require_exact_count(text, MARK_UITEST_HOST, before + 1, "normal UITEST", log_path)
+    _require_exact_count(text, MARK_UITEST_WIN, before + 1, "normal UITEST", log_path)
+    _require_exact_count(text, MARK_UITEST_FRAME, before + 1, "normal UITEST", log_path)
+    _require_exact_count(text, MARK_UITEST_PROBE, before, "normal UITEST boot-probe", log_path)
+    if not re.search(r"UITESTWIN ok w=1080 h=1920", text):
+        raise SmokeError("normal UITEST: runtime 窗口几何缺失/错误", log_path)
+    if not re.search(r"UITESTINPUT ok x=539 y=799", text):
+        raise SmokeError("normal UITEST: owner-local PhaseUP 坐标错误", log_path)
+    _require_exact_count(text, MARK_UITEST_INPUT, 1, "normal UITEST input", log_path)
+    _require_exact_count(text, MARK_UITEST_DESTROY, before + 1, "normal UITEST", log_path)
+    _require_exact_count(text, MARK_UITEST_EXIT, before + 1, "normal UITEST", log_path)
+    if text.find(MARK_UITEST_INPUT) < snapshot_pos:
+        raise SmokeError("normal UITEST: INPUT 早于快照", log_path)
+    if text.rfind(MARK_UITEST_EXIT) < snapshot_pos:
+        raise SmokeError("normal UITEST: EXIT 不在快照后", log_path)
+
+
 def ppm_crop_colors(path: Path, box: tuple[int, int, int, int]) -> set[tuple[int, int, int]]:
     """读 P6 PPM 裁剪区 RGB 集合（HD A8 反马赛克锚的客观面）。"""
     x0, y0, x1, y1 = box
@@ -1487,6 +1518,9 @@ def _boot_base_markers() -> list[str]:
         MARK_WM_CONN8, MARK_CONTACTS_UP, MARK_CONTACTS_WIN,
         MARK_CONTACTS_LIST, MARK_CONTACTS_FRAME,
         MARK_CONTACTS_PROBE, MARK_CONTACTS_DESTROY, MARK_CONTACTS_EXIT,
+        MARK_WM_CONN9, MARK_UITEST_UP, MARK_UITEST_HOST,
+        MARK_UITEST_WIN, MARK_UITEST_FRAME, MARK_UITEST_PROBE,
+        MARK_UITEST_DESTROY, MARK_UITEST_EXIT,
         MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
     ]
 
@@ -1669,7 +1703,7 @@ def run_dual_boot(args) -> int:
                 f"(window {rw}x{rh})",
                 boot_a.log_path,
             )
-        owner_marker = f"WMROUTE ok sid=9 window={rw_id}"
+        owner_marker = f"WMROUTE ok sid=10 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
 
@@ -1825,7 +1859,8 @@ def run_normal_boot(args) -> int:
         native_layout = (
             b'{"schema":1,"cells":[{"app":"BROWSER","page":0,"row":0,"col":0},'
             b'{"app":"FILES","page":0,"row":0,"col":1},'
-            b'{"app":"SETTINGS","page":0,"row":0,"col":2},'
+            b'{"app":"UITEST","page":0,"row":0,"col":2},'
+            b'{"app":"SETTINGS","page":0,"row":0,"col":3},'
             b'{"app":"APPDEMO","page":1,"row":0,"col":0}]}'
         )
         Fat12Volume(disk).add_file(LAYOUT_NAME11, native_layout)
@@ -1861,7 +1896,8 @@ def run_normal_boot(args) -> int:
         files_before = boot.log.text.count(MARK_FILES_UP)
         photos_before = boot.log.text.count(MARK_PHOTOS_UP)
         contacts_before = boot.log.text.count(MARK_CONTACTS_UP)
-        if browser_before < 1 or settings_before < 1 or files_before < 1 or photos_before < 1 or contacts_before < 1:
+        uitest_before = boot.log.text.count(MARK_UITEST_UP)
+        if browser_before < 1 or settings_before < 1 or files_before < 1 or photos_before < 1 or contacts_before < 1 or uitest_before < 1:
             raise MissingMarkers(
                 "normal boot", "Browser boot-probe BROWSER up", 1, boot.log_path
             )
@@ -1880,8 +1916,8 @@ def run_normal_boot(args) -> int:
             )
         log(
             "normal-boot: display 1080x1920 product portrait；"
-            "BROWSER/FILES 首行 (156/412,282)，CONTACTS/PHOTOS/SETTINGS dock "
-            "(125/376/626,1668)"
+            "BROWSER/FILES/UITEST 首行 (156/412/668,282)，"
+            "CONTACTS/PHOTOS/SETTINGS dock (125/376/626,1668)"
         )
 
         boot.qmp_connect()
@@ -2335,6 +2371,56 @@ def run_normal_boot(args) -> int:
                 args.click_timeout, boot.log_path,
             ) from None
 
+        # —— UITEST host probe：berry-shell 全链，不写任何像素。 ——
+        time.sleep(1.0)
+        log("normal-uitest: QMP 点击 UITEST 第三格（真实 APP_SPAWN）")
+        boot.qmp.click(668, 282, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_UITEST_UP) > uitest_before
+                and t.count(MARK_UITEST_FRAME) > uitest_before,
+                f"runtime {MARK_UITEST_UP} + {MARK_UITEST_FRAME}",
+                args.click_timeout,
+                "normal UITEST launch",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST launch",
+                f"新增 {MARK_UITEST_UP} + {MARK_UITEST_FRAME}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+        if not re.search(r"UITESTWIN ok w=1080 h=1920", boot.log.text):
+            raise SmokeError("normal UITEST: 窗口几何 != 1080x1920", boot.log_path)
+        uitest_shot = run_dir / "uitest-zero.ppm"
+        boot.qmp.screendump(uitest_shot)
+        for xy in ((540, 60), (540, 800), (100, 1800), (900, 1700)):
+            assert_pixel_close(
+                ppm_pixel(uitest_shot, *xy), (0, 0, 0),
+                f"UITEST 零页帧 {xy}", boot.log_path,
+            )
+        log("normal-uitest: QEMU 截图零页锚 ok（宿主帧 VMO 未被 app 写像素）")
+
+        log("normal-uitest: QMP 点击窗口中心（owner-local PhaseUP）")
+        boot.qmp.click(540, 800, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: re.search(r"UITESTINPUT ok x=539 y=799", t) is not None
+                and t.count(MARK_UITEST_EXIT) > uitest_before,
+                "UITESTINPUT x=539 y=799 + 新 EXIT",
+                args.click_timeout,
+                "normal UITEST input/exit",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST input/exit",
+                "UITESTINPUT x=539 y=799 + 新 EXIT",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
         watcher = boot.log
         log_path = boot.log_path
         boot.stop()
@@ -2345,16 +2431,18 @@ def run_normal_boot(args) -> int:
             files_before, photos_before, contacts_before, demo_before,
             log_path,
         )
+        verify_uitest_normal(watcher.text, snapshot_pos, uitest_before, log_path)
         verify_data_disk(disk, expect_smoke=False)
         log(
             "normal-native: Browser/Settings/Files/Photos/Contacts 五独立进程、"
             "真实 WM 窗口/帧、状态/fs/图像/联系人记录全链全过；"
+            "UITEST host probe 以零像素走 berry-shell 全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：Browser + Settings + Files + Photos + Contacts Native Shell 真链 + "
+            "PASS（--normal-boot）：五 Native Shell + UITEST/berry-shell 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -2996,6 +3084,47 @@ def self_test(args) -> int:
             "self-test: 五 Native Shell 常态断言 ok（五独立进程、状态/文件/"
             "图像/联系人记录、重绘与销毁；冒烟标记全零）"
         )
+
+        uitest_boot = (
+            f"{MARK_UITEST_UP}\n{MARK_UITEST_HOST}\n"
+            f"{MARK_UITEST_WIN}1080 h=1920\n{MARK_UITEST_FRAME}\n"
+            f"{MARK_UITEST_PROBE}\n{MARK_UITEST_DESTROY}\n"
+            f"{MARK_UITEST_EXIT}\n"
+        )
+        uitest_runtime = (
+            f"{MARK_UITEST_UP}\n{MARK_UITEST_HOST}\n"
+            f"{MARK_UITEST_WIN}1080 h=1920\n{MARK_UITEST_FRAME}\n"
+            "UITESTINPUT ok x=539 y=799\n"
+            f"{MARK_UITEST_DESTROY}\n{MARK_UITEST_EXIT}\n"
+        )
+        fake_u = uitest_boot + uitest_runtime
+        snap_u = len(uitest_boot)
+        verify_uitest_normal(fake_u, snap_u, 1)
+        expect_error(
+            "UITEST 缺 owner-local 输入",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTINPUT ok x=539 y=799\n", ""),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺零页帧",
+            lambda: verify_uitest_normal(
+                fake_u.replace(f"{MARK_UITEST_FRAME}\n", "", 2),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 输入早于快照",
+            lambda: verify_uitest_normal(
+                uitest_boot.replace(
+                    f"{MARK_UITEST_PROBE}\n",
+                    f"{MARK_UITEST_PROBE}\nUITESTINPUT ok x=539 y=799\n",
+                ) + uitest_runtime,
+                snap_u, 1,
+            ),
+        )
+        log("self-test: UITEST host probe 常态断言 ok（零像素/几何/输入/销毁）")
 
         # 4) QMP 协议 + no-device 广播 + 三批单击
         sock = tmp / "qmp.sock"

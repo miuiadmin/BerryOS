@@ -1,0 +1,13 @@
+[app]
+id = "UITEST"
+version = "0.1.0"
+entry = "bin/uitest"
+type = "app"
+intent = "utility"
+
+[capabilities]
+console = true
+wm = true
+
+[runtime]
+stack_pages = 16

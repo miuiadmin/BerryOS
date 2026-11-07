@@ -162,6 +162,9 @@ build-user:
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/contacts/Cargo.toml \
         --target aarch64-unknown-none
+    # GUI F1：uitest 只消费 berry-shell，不写像素/WM RPC/VMO。
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/uitest/Cargo.toml \
+        --target aarch64-unknown-none
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
     # 单次构建 12 命令（=0.12.0 锁步，MIT，上游逐字不动；薄 harness =
     # CRT0 锚 + uumain 直传——`#[uucore::main]` proc 宏已统一改写 -> i32）。
@@ -300,8 +303,13 @@ build-user:
     cp -R bins/appstub/apps/CONTACTS/icons userbins/app-stage/CONTACTS/
     cp -R bins/appstub/apps/CONTACTS/views userbins/app-stage/CONTACTS/
     python3 ../tools/mkapp.py userbins/app/CONTACTS.bap userbins/app-stage/CONTACTS
-    # 其余两 app 仍是诚实静默占位（不冒充真实现）。
-    for spec in CAMERA:camera MMS:messages; do
+    # GUI F1 host probe：无 UI 资产、无像素路径，只验证 berry-shell 真链。
+    mkdir -p userbins/app-stage/UITEST/bin
+    cp bins/uitest/manifest.toml userbins/app-stage/UITEST/
+    cp cargo-target/aarch64-unknown-none/release/uitest userbins/app-stage/UITEST/bin/uitest
+    python3 ../tools/mkapp.py userbins/app/UITEST.bap userbins/app-stage/UITEST
+    # 其余一 app 仍是诚实静默占位（不冒充真实现）。
+    for spec in MMS:messages; do
         id=${spec%%:*}; bin=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
         cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"
@@ -319,12 +327,12 @@ build-user:
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         app/BROWSER.bap=userbins/app/BROWSER.bap \
-        app/CAMERA.bap=userbins/app/CAMERA.bap \
         app/CONTACTS.bap=userbins/app/CONTACTS.bap \
         app/MMS.bap=userbins/app/MMS.bap \
         app/FILES.bap=userbins/app/FILES.bap \
         app/PHOTOS.bap=userbins/app/PHOTOS.bap \
         app/SETTINGS.bap=userbins/app/SETTINGS.bap \
+        app/UITEST.bap=userbins/app/UITEST.bap \
         bin/bench1=cargo-target/aarch64-unknown-linux-musl/release/bench1 \
         bin/berry-launcher=cargo-target/aarch64-unknown-linux-musl/release/berry-launcher \
         bin/berryctl=cargo-target/aarch64-unknown-linux-musl/release/berryctl \

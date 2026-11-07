@@ -1,0 +1,19 @@
+[package]
+name = "uitest"
+version = "0.1.0"
+edition = "2021"
+# GUI F1 host probe：只消费 berry-shell，不写像素、不解析 WM RPC、不映射
+# VMO。窗口 frame VMO 提交的是 commit 后零页，验证宿主生命周期本身。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-shell = { path = "../../berry-shell" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
