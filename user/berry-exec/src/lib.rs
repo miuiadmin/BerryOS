@@ -80,14 +80,52 @@ fn demand_reg_hook() -> Option<DemandRegFn> {
     unsafe { core::ptr::addr_of!(DEMAND_REG).read() }
 }
 
+/// X-4b eager 双生护栏：临时摘 demand 钩子（两 static None 化，Drop 原值
+/// 恢复）——**同 bin 二次拉起走 eager 原路径的唯一变量对照**（dpgx_foot
+/// eager 胎：congruent ELF 在钩子缺席下恒走 eager 全幅 commit，对照面 =
+/// 装载分支本身，非 ELF 形状）。
+///
+/// SAFETY 契约：boot 期后写 static 仅此一处——**持有窗内不得并发拉起任何
+/// 进程**（svcmgr 主循环串行 spawn 契约面；dpgx_foot 帧内无并发 spawn，
+/// 满足）。
+pub struct EagerGuard {
+    reg: Option<DemandRegFn>,
+    unreg: Option<DemandUnregFn>,
+}
+
+impl EagerGuard {
+    pub fn new() -> Self {
+        // SAFETY: 单线程 spawn 窗写（见类型注）；Drop 恢复原值。
+        unsafe {
+            let reg = core::mem::replace(&mut *core::ptr::addr_of_mut!(DEMAND_REG), None);
+            let unreg = core::mem::replace(&mut *core::ptr::addr_of_mut!(DEMAND_UNREG), None);
+            Self { reg, unreg }
+        }
+    }
+}
+
+impl Drop for EagerGuard {
+    fn drop(&mut self) {
+        // SAFETY: 同 new 的写窗（guard 存活期 = 临界区，drop 即出界）。
+        unsafe {
+            core::ptr::addr_of_mut!(DEMAND_REG).write(self.reg.take());
+            core::ptr::addr_of_mut!(DEMAND_UNREG).write(self.unreg.take());
+        }
+    }
+}
+
 /// X-3c congruent 门（demand 装载资格检，纯几何 + 根档尾读）——通过 =
 /// `Some((S, delta))`：S = file 背书幅（页顶），delta = 0x23 恒等供给常数
 /// （映像页偏 p 的源偏 = p + delta，即 rootfs 内 ELF 首字节对映像基 0 页
 /// 的偏移差）。五门任一不满足 → None → eager 回退（非 congruent ELF 永有
 /// eager 兜底）：
-/// (a) 全部 filesz>0 的 PT_LOAD 同一 `file_off − vaddr` 常量 k（musl 族
-///     lld 产物恒真：base=0x200000、k=−0x200000 → base+k=0 → delta =
-///     data_off；纯 bss 段（filesz==0）无文件面，不参与）；
+/// (a) 全部 filesz>0 的 PT_LOAD 同一 `file_off − vaddr` 常量 k（**现役
+///     musl 族 berry-ld 产物恒假**：X-4 宿主清点 24 bins 全为 3-4 段多 k
+///     分段布局 {−0x20{0,1,2,3}000}、base=0x200000——分段各持异 k →
+///     (a) 拒 → eager 兜底为 exec 装载常态；单 k 需链接特形，首例 =
+///     dpgx `link-dpgx.ld` 单 PT_LOAD（k=−0x1ff000 页倍数）。X-3 期旧注
+///     「musl 恒真」系笔误，X-4 修正。纯 bss 段（filesz==0）无文件面，
+///     不参与）；
 /// (b) data_off 页对齐（mkcpio X-3c 垫页几何产链兑现，此处只验不垫）；
 /// (c) delta ≥ 0 且页对齐（0x23 的 `delta % PAGE` EINVAL 门 + 源偏下溢面）；
 /// (d) S ∈ (0, len]（S == len = 无零尾域的合法满幅形）；

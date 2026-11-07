@@ -40,8 +40,8 @@ use berry_sys::{
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
 // 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
 use berry_exec::{
-    channel_pair, cpio_find, set_demand_hooks, spawn_rootfs_elf, ChildHandles, SpawnSpec, FB_VA,
-    VIRTIO_MMIO_VA,
+    channel_pair, cpio_find, set_demand_hooks, spawn_rootfs_elf, ChildHandles, EagerGuard,
+    SpawnSpec, FB_VA, VIRTIO_MMIO_VA,
 };
 // P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
@@ -364,6 +364,9 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // dpgf.on 族，正装缺席静默零扰动。
     dpg_bench(console);
     dpg_foot(console);
+    // G4 X-4：E 面 exec 装载差分（dpg_foot 同形帧、真 exec 消费者版）——
+    // `dpgx.on` 门（bench E 臂 rootfs 专递，正装/smoke 缺席整段静默零漂移）。
+    dpgx_foot(console);
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
     // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
@@ -3264,6 +3267,14 @@ const DPGE_A: &[u8; 7] = b"DPGE A\n";
 const DPGE_B: &[u8; 7] = b"DPGE B\n";
 const DPGE_C: &[u8; 7] = b"DPGE C\n";
 const DPGE_E: &[u8; 7] = b"DPGE E\n";
+// X-4 E 面 exec 差分（dpgx_foot）：帧标记 A/B/C/E + 子定泊信号行（子单行
+// 打后阻塞 stdin read——§A61 时序不是契约，行到 = 停泊点确定性锚）。
+const DPGX_A: &[u8; 7] = b"DPGX A\n";
+const DPGX_B: &[u8; 7] = b"DPGX B\n";
+const DPGX_C: &[u8; 7] = b"DPGX C\n";
+const DPGX_E: &[u8; 7] = b"DPGX E\n";
+const DPGX_READY: &[u8; 11] = b"DPGX ready\n";
+const DPGX_READY_CAP_NS: u64 = 60 * 1_000_000_000;
 
 /// u64 十进制追加（eco 降级行手排同款无 fmt 依赖；返回新尾位）。
 fn append_u64_dec(buf: &mut [u8], at: usize, v: u64) -> usize {
@@ -3704,6 +3715,175 @@ fn dpg_foot(console: Handle) {
     }
     if berry_handle_close(sv) != 0 || berry_handle_close(iv) != 0 {
         trap();
+    }
+}
+
+/// dpgx 停泊子包：child + 本侧三端（out_s 收流 / out_c 交叠端自留 /
+/// in_s 停泊锚——本侧永持不发不关 = 子 stdin read 永阻塞；in_c 已随 env
+/// 块 take 迁入子表，子死随表释放）。
+struct DpgxParked {
+    child: ChildHandles,
+    out_s: Handle,
+    out_c: Handle,
+    in_s: Handle,
+}
+
+/// dpgx 拉起（stdout 私有通道 + stdin held 端停泊形；SpawnSpec 全零 gift
+/// 面——dpgx 无 fs/net 依赖）。败 = None（Err 全在 env send 前，四端显式
+/// 回收防表槽泄漏——ps 同款）。
+fn dpgx_spawn_parked(data_off: u64, data_len: u64, console: Handle) -> Option<DpgxParked> {
+    let (out_s, out_c) = channel_pair();
+    let (in_s, in_c) = channel_pair();
+    let child = match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: b"bin/dpgx",
+            data_off,
+            data_len,
+            stdout: out_c,
+            stack_pages: 8, // std 小程序档（SpawnSpec 注）
+            stdin_feed: None,
+            stdin_handle: Some(in_c), // 停泊锚：held 不发不 EOF
+            args: &[],
+            extra_gifts: &[],
+            mmio_vmo: None,
+            mmio_va: 0,
+            intent: 0,
+        },
+    ) {
+        Ok(c) => c,
+        Err(()) => {
+            if berry_handle_close(in_c) != 0
+                || berry_handle_close(in_s) != 0
+                || berry_handle_close(out_c) != 0
+                || berry_handle_close(out_s) != 0
+            {
+                trap();
+            }
+            eco_note(console, b"dpgx sp");
+            return None;
+        }
+    };
+    Some(DpgxParked {
+        child,
+        out_s,
+        out_c,
+        in_s,
+    })
+}
+
+/// 收定泊信号：out_s 流含 `DPGX ready\n` 即真（行缓冲单消息；EOF 先行
+/// 〔子早死 libc exit 零长，d-3b〕= 假）。帽 60s——std musl TCG 冷起动慢
+/// 而活着不误杀（PS_CAP_NS 同档）。杂行（理论无）保守续收。
+fn dpgx_wait_ready(p: &DpgxParked) -> bool {
+    let deadline = now() + DPGX_READY_CAP_NS;
+    let mut m = [0u8; 64];
+    loop {
+        let mut nb = m.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(p.out_s, m.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        if s == 0 {
+            if nb == 0 {
+                return false; // EOF = 子已退
+            }
+            if has_sub(&m[..nb], DPGX_READY) {
+                return true;
+            }
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(p.out_s, SIGNAL_READABLE, deadline, &mut obs) != 0 {
+            return false; // 帽尽（挂死/未达停泊）
+        }
+    }
+}
+
+/// X-4 E 面 exec 装载差分（dpg_foot 同形帧，**真 exec 消费者版**）：同一
+/// `bin/dpgx`（单 PT_LOAD 特形链接 = congruent 六查全过首例）两次拉起——
+/// demand 胎（钩子在位 → 映像 = file 域 demand VMO + 零尾 zv + 恒等供给
+/// 注册，启动足迹 ∝ 实触页）vs eager 胎（`EagerGuard` 摘钩 → 全幅 commit
+/// 泵送，足迹 = len 全量）——pages 口径同 dpg_foot（内核 soakmon 心跳，
+/// bench.py E 臂配对「标记前最近拍」：d = pB−pA / e = pC−pB，d<e 断言
+/// 在宿主）。帧：预滚 → `A` → 窗 → demand 胎拉起 + `DPGX ready` 定泊 →
+/// 窗 → `B` → eager 胎（guard 罩 spawn 窗）+ ready → 窗 → `C` → 窗 →
+/// `E` → 双 terminate → 双 reap（demand 槽注销在 reap 内，先于 close
+/// dv）→ 关本侧端。
+///
+/// **无 PagerHold**（与 dpg_foot 反）：0x23 恒等供给 = 内核侧表驱动，
+/// 子映像 fault 由内核直供 rootfs 字节——svcmgr 本尊 pager 角色不动；
+/// EagerGuard 只摘 spawn 决策面（boot 期注入的钩子读点），guard 出窗即
+/// 恢复（demand 胎后续 fault 照常内核表供——表注册在 spawn 期已落）。
+/// **门 = `dpgx.on`**（bench E 臂 rootfs 专递；正装/smoke/EFI 缺席 =
+/// 整段静默零标记零漂移）。链内坏面 = eco 降级行 + 相位标记缺席（中段
+/// 败的已停泊子有界留存至本服务终身——§5-⑤ fail loud 先例同款）。
+fn dpgx_foot(console: Handle) {
+    if cpio_find(H_ROOTFS, b"dpgx.on").is_none() {
+        return;
+    }
+    let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/dpgx") else {
+        eco_note(console, b"dpgx bin");
+        return;
+    };
+    // 预滚 340s（越心跳首拍潜伏，DPGE 同源）→ 基线 A。
+    let mut t0 = 0u64;
+    if berry_clock_read(CLOCK_MONOTONIC, &mut t0) != 0 {
+        eco_note(console, b"dpgx clk");
+        return;
+    }
+    berry_thread_sleep(t0 + DPGE_PREROLL_NS);
+    send_retry(console, DPGX_A.as_ptr(), DPGX_A.len());
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    // demand 胎：钩子在位（boot 注入未摘）→ congruent 命中 → demand 装载
+    //（映像 fault 后续由内核表供——warm-up 页集 = println+stdin 触的页）。
+    let p1 = match dpgx_spawn_parked(data_off, data_len, console) {
+        Some(p) => p,
+        None => return,
+    };
+    if !dpgx_wait_ready(&p1) {
+        eco_note(console, b"dpgx w1");
+        return;
+    }
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, DPGX_B.as_ptr(), DPGX_B.len());
+    // eager 胎：EagerGuard 摘钩罩住 spawn 窗（装载分支决策点）——同 bin
+    // 同形 → eager 全幅 commit；对照面 = 装载分支本身，非 ELF 形状。
+    let p2 = {
+        let _eg = EagerGuard::new();
+        dpgx_spawn_parked(data_off, data_len, console)
+    };
+    let p2 = match p2 {
+        Some(p) => p,
+        None => return,
+    };
+    if !dpgx_wait_ready(&p2) {
+        eco_note(console, b"dpgx w2");
+        return;
+    }
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, DPGX_C.as_ptr(), DPGX_C.len());
+    berry_thread_sleep(now() + DPGE_WINDOW_NS);
+    send_retry(console, DPGX_E.as_ptr(), DPGX_E.len());
+    // 收尾：双 terminate（停泊睡者 kill_all 收割）→ 双 reap（完整回收链，
+    // 含 demand 槽注销）→ 关本侧端；非 0 = 内核侧异常，loud。
+    if berry_process_terminate(p1.child.hp, 9) != 0
+        || berry_process_terminate(p2.child.hp, 9) != 0
+    {
+        trap();
+    }
+    if p1.child.reap().is_err() || p2.child.reap().is_err() {
+        trap();
+    }
+    for p in [(&p1, 0), (&p2, 1)] {
+        let _ = p.1; // 数组同型占位（两包字段面一致）
+        if berry_handle_close(p.0.out_s) != 0
+            || berry_handle_close(p.0.out_c) != 0
+            || berry_handle_close(p.0.in_s) != 0
+        {
+            trap();
+        }
     }
 }
 

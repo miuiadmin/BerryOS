@@ -1,0 +1,29 @@
+[package]
+name = "dpgx"
+version = "0.1.0"
+edition = "2021"
+
+# X-4 E 面 exec 差分子（docs/G4按需调页实施设计草案-v1.0.md §8 X-4）：
+# stdhello 同款独立小工作区（嵌套 [workspace] 脱离 user/ 主工作区）；
+# musl target + berry-ld 链由 justfile build-user 注入——**额外挂本目录
+# `link-dpgx.ld` 单 PT_LOAD 特形脚本**（bin 家族独一份）：单 LOAD 单 k
+# （−0x1ff000 页倍数）+ tdata pad 页齐 → filesz 端 == fs_top = bss 文件
+# 域窗空 → berry-exec congruent 门六查全过 = 首个真消费者（现役 musl
+# 族分段多 k 全走 eager 兜底，X-4 宿主清点实证；--nmagic 曾试出单 k 但
+# SHT 尾字节落 bss 窗吃 (f)，弃）。仅 bench dpgx_foot 配对拉起（门 =
+# rootfs `dpgx.on` 标记缺席即整段静默），smoke 零漂移 by construction。
+
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+# 链接种子（crt0 含 `_start`）——stdhello 同款 #[used] 面。
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
