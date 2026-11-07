@@ -39,6 +39,7 @@ pub fn run() {
     test_policy();
     test_policy_v3();
     test_policy_bind_syscall();
+    test_policy_perf();
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
@@ -3008,6 +3009,174 @@ fn test_policy_bind_syscall() {
 
     // 任务体 16KiB 栈 × 4 + 129 条表快照泄漏不回收（ktest 语境同 PV3 政策）。
     berry_hal_aarch64::uart_puts(b"PBS-K ok\n");
+}
+
+/// PP（policy perf）：策略注入对 `pick_next` 开销的影响——三态 CNTVCT 差测
+/// （同 `test_sched_perf` 口径；`AI调度设计.md` §3.4「有/无 AI pick p99 相等」
+/// 的 ktest 形态——等价性从逐位语义（POLICY/PV3/PBS）延伸到开销面）：
+/// - **PP-1 基线（未绑）**：哨兵态，[`policy::apply`] 两次分支即返（§2「AI
+///   不在线时表为空/默认，等价于纯启发式」）；
+/// - **PP-2 空表**：bind 空表（接口在位、表空 ≠ 未绑——`count == 0` 快路径）；
+/// - **PP-3 满表（128 条 = TBL_MAX 满载）**：4 命中键（tag 1..4）+ 124 不命
+///   中键（0x1000 起键域，黄金比散列 50% 装载——PV3-5/PBS-3 同构造口径），
+///   O(1) 查表全路径（哈希 + ≤PROBE_MAX 探测 + 命中写回）；
+/// - **PP-4 等价断言**：三态 avg 差 < 20%（千分比整数门控 < 200‰，防整除
+///   截断放行 20.x%）。
+///
+/// 命中键取 `weight = 0` + EPP 覆盖：pick 按 `prio_effective` 带序**严格
+/// 分层**（跨层带序优先于带内 EEVDF），非零权重会让首个出选者独占高层带、
+/// VD 推挤失效连选（PBS-3「p8 命中 +32 独占」即此形态）——weight 0 守基线
+/// 带让三态跑**同一 pick 序列**（差测等价性前提：测注入开销差，非任务形态
+/// 差），命中活证锚在 EPP 翻转（默认 Efficiency → Perf，查到即写；查表/
+/// 写回路径与 weight 值无关）。每次 pick 后推 VD 防连选（同 `test_sched_perf`
+/// 模式）；三态测量间 unbind + re-bind。
+///
+/// 输出：`PERF policy base=<N> empty=<N> full=<N> delta=<percent>%`。
+fn test_policy_perf() {
+    use alloc::vec::Vec;
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{EppHint, Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn pp_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 差测轮数（同 test_sched_perf pick 段口径 ×1000）。
+    const N: u64 = 1000;
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // 4 任务本地环：proc_tag 1..4（v1 策略键 = proc_tag——满表的 4 命中键；
+    // new_kernel 默认 0 = 哨兵键不可注入，须手动挂键）。先收集再入环（所有权）。
+    let mut ptrs: Vec<*mut Task> = Vec::new();
+    for tag in 1usize..=4 {
+        let mut t = Task::new_kernel_with_as(pp_dummy, 0, b"pp".as_slice(), 0, 0);
+        t.proc_tag = tag;
+        ptrs.push(alloc::boxed::Box::leak(t) as *mut Task);
+    }
+    for p in &ptrs {
+        unsafe { rr.enqueue(&mut **p, &mut rq) };
+    }
+
+    /// 相位复位：上一态循环推高的 VD/vruntime 清零（prio_effective/epp 不动
+    /// ——apply 幂等自基线重算），三态同一起跑相位。
+    fn rephase(ptrs: &[*mut Task]) {
+        for p in ptrs {
+            unsafe {
+                (**p).vruntime = 0;
+                (**p).vdeadline = 0;
+            }
+        }
+    }
+
+    /// 单态差测：N 次 pick，每次推 VD 防连选，返 avg cycles（CNTVCT 差 / N）。
+    /// pick_next 内挂钩 apply——测得差即策略注入的决策路径开销差。
+    fn measure(rq: &Runqueue, rr: &RoundRobin, topo: &Topo) -> u64 {
+        let t0 = berry_hal_aarch64::timer::cntvct();
+        for i in 0..N {
+            if let Some(p) = rr.pick_next(rq, topo) {
+                p.vdeadline = 1000 + i;
+            }
+        }
+        (berry_hal_aarch64::timer::cntvct() - t0) / N
+    }
+
+    // 前序状态防御清零（同 PBS 口径）——基线前提：未绑。
+    policy::unbind();
+    assert!(!policy::bound(), "PP：基线前提须未绑");
+
+    // PP-1 基线（未绑——apply 走哨兵 EMPTY_SNAP 快路径）。
+    let base = {
+        rephase(&ptrs);
+        measure(&rq, &rr, &topo)
+    };
+
+    // PP-2 空表：接口在位、表空（count == 0 两次分支即返、零写入）。
+    static EMPTY_TBL: [Entry; 0] = [];
+    policy::bind(&EMPTY_TBL);
+    assert!(policy::bound(), "PP-2：空表 bind 后须在位（表空 ≠ 未绑）");
+    let empty = {
+        rephase(&ptrs);
+        measure(&rq, &rr, &topo)
+    };
+    policy::unbind(); // 三态间 unbind + re-bind。
+    assert!(!policy::bound(), "PP-2：测后须回未绑");
+
+    // PP-3 满表（128 = TBL_MAX 满载）：4 命中键（tag 1..4——weight 0 + EPP
+    // 覆盖，见模块注）+ 124 不命中键（0x1000 起——无任务持此键，纯查表
+    // 负载填充）。
+    let mut tbl: Vec<Entry> = Vec::new();
+    for k in 1u64..=4 {
+        tbl.push(Entry {
+            task_key: k,
+            directive: Directive {
+                placement: 0,
+                weight: 0,
+                epp: Some(EppHint::Perf),
+            },
+        });
+    }
+    for j in 0u64..124 {
+        tbl.push(Entry {
+            task_key: 0x1000 + j,
+            directive: Directive { placement: 0, weight: 32, epp: None },
+        });
+    }
+    assert_eq!(tbl.len(), 128, "PP-3：满表须恰 128 条（TBL_MAX）");
+    let full_tbl: &'static [Entry] = alloc::boxed::Box::leak(tbl.into_boxed_slice());
+    policy::bind(full_tbl);
+    assert!(policy::bound(), "PP-3：满表 bind 后须已绑");
+
+    // 命中活证（测量前置信——4 命中键真在表内，缺席则差测测了个寂寞）：
+    // 出选者（必为 tag 1..4 之一）EPP 须翻 Perf；prio_effective 须守 0
+    // （不离基线带——三态同序列的前提，兼证 apply 写路径真执行）。
+    rephase(&ptrs);
+    {
+        let p = rr.pick_next(&rq, &topo).expect("PP：非空环必有出选");
+        assert_eq!(p.epp, EppHint::Perf, "PP-3：命中键 EPP 须翻 Perf（活证）");
+        assert_eq!(p.prio_effective, 0, "PP-3：weight=0 须守基线带（连选防护前提）");
+    }
+    let full = {
+        rephase(&ptrs);
+        measure(&rq, &rr, &topo)
+    };
+
+    // 收尾：恢复缺席态（同 PBS/PV3——smoke 稳态全程未绑，等价性延续真实
+    // 调度路径）。
+    policy::unbind();
+    assert!(!policy::bound(), "PP：收尾须回到未绑");
+
+    // PP-4 等价断言：delta = (max - min) / min × 100 < 20%。
+    let mn = base.min(empty).min(full);
+    let mx = base.max(empty).max(full);
+    assert!(mn > 0, "PP-4：avg 须非零（CNTVCT 停走则差测无效）");
+    let permille = (mx - mn) * 1000 / mn; // 千分比（整除门控不失真）
+    assert!(
+        permille < 200,
+        "PP-4：三态 avg 差须 <20%（base={} empty={} full={}，实测 {}‰）",
+        base,
+        empty,
+        full,
+        permille
+    );
+
+    berry_hal_aarch64::uart_puts(b"PERF policy base=");
+    berry_hal_aarch64::uart_put_dec(base);
+    berry_hal_aarch64::uart_puts(b" empty=");
+    berry_hal_aarch64::uart_put_dec(empty);
+    berry_hal_aarch64::uart_puts(b" full=");
+    berry_hal_aarch64::uart_put_dec(full);
+    berry_hal_aarch64::uart_puts(b" delta=");
+    berry_hal_aarch64::uart_put_dec(permille / 10);
+    berry_hal_aarch64::uart_puts(b".");
+    berry_hal_aarch64::uart_put_dec(permille % 10);
+    berry_hal_aarch64::uart_puts(b"%\n");
+
+    // 任务体 16KiB 栈 × 4 + 满表快照泄漏不回收（ktest 语境同 PV3/PBS 政策）。
+    berry_hal_aarch64::uart_puts(b"PP-K ok\n");
 }
 
 /// P4 收官审计实踩的 runqueue 摘环回归：`unlink` 旧单元素判据 `prev == next`
