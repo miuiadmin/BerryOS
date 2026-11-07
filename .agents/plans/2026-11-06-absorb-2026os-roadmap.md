@@ -28,7 +28,7 @@ Updated: 2026-11-06
 
 - [x] P0-a proposal 起草（→ [2026-11-06-baremetal-bringup-proposal.md](2026-11-06-baremetal-bringup-proposal.md)，三台阶：云 VM→RPi4→rootfs 通道，Status: draft 待裁）
 - [x] P0-b 存储设计节追加（→ `docs/存储布局与沙箱设计-v1.0.md` §8.5 吸收议程）
-- [ ] P1-a 拒收入账实施（含遥测词汇表扩号）
+- [x] P1-a 拒收入账实施（2026-11-07 落地：`sched/src/policy.rs` 四计数 key0/overflow/probe_full/clamped + `reject_stats()` 读出口；`kernel/src/ktest.rs` `test_policy_reject_stats`（POLS-R ok）QEMU 实证——拒收/夹取面从静默处置变有账可查）
 - [x] P1-b 纲领充实（→ `docs/架构综合纲领.md` §1「机制极简的三条结构性论证」+ churn 反证）
 - [ ] P1-c 同意面草案
 - [ ] P1-d errno 值域探针（随 berry-sys 下一刀）

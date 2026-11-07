@@ -42,6 +42,7 @@ pub fn run() {
     test_policy_perf();
     test_policy_shadow();
     test_policy_divergence();
+    test_policy_reject_stats();
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
@@ -3415,6 +3416,51 @@ fn test_policy_shadow() {
 /// 进程调度 crate 无 host 测试面）；非 smoke 注册标记（TAGTAB 模式：断言炸
 /// = panic = 后续标记缺失兜底，同 PV3-K/PBS-K/PP-K/SHD-K）。
 #[allow(clippy::unwrap_used)]
+/// P1-a 拒收入账（吸收调研 13 号 astrid「审计链含 deny」精神）：bind 一张
+/// 混合处置表——key0 哨兵丢弃 ×2 / 越包络 weight 夹取 ±各一 / TBL_MAX 截
+/// 尾 ×3——四计数逐一以增量验证（probe_full 是散列聚簇概率面，不在此强
+/// 造，留 v3 环接后观测）。POLS-R ok。
+fn test_policy_reject_stats() {
+    use berry_sched::policy::{self, Directive, Entry};
+
+    // 基线快照（计数自 boot 起单调累计——断言用增量不用绝对值）。
+    let base = policy::reject_stats();
+
+    // 混合表：key0 ×2、越包络 ±各一、有效键 7/8/9（避 0）。bind_gen 收
+    // &[Entry] 借用——栈构造，无 'static 请求。
+    let tbl = [
+        Entry { task_key: 0, directive: Directive { placement: 0, weight: 0, epp: None } },
+        Entry { task_key: 0, directive: Directive { placement: 0, weight: 9, epp: None } },
+        Entry { task_key: 7, directive: Directive { placement: 0, weight: policy::WEIGHT_MAX + 1, epp: None } },
+        Entry { task_key: 8, directive: Directive { placement: 0, weight: -policy::WEIGHT_MAX - 1, epp: None } },
+        Entry { task_key: 9, directive: Directive { placement: 0, weight: 3, epp: None } },
+    ];
+    let gen = policy::gen();
+    assert!(policy::bind_gen(&tbl, gen + 1), "新鲜世代的 bind 必须受理");
+    let s = policy::reject_stats();
+    assert_eq!(s.key0, base.key0 + 2, "key0 哨兵 ×2 必须入账");
+    assert_eq!(s.clamped, base.clamped + 2, "越包络 ±各一必须入账");
+    assert_eq!(s.overflow, base.overflow, "5 条表无截尾面");
+
+    // 截尾面：TBL_MAX(128)+3 = 131 条各异键 → overflow 恰 +3（栈数组 ~3KB）。
+    let mut big = [Entry {
+        task_key: 1,
+        directive: Directive { placement: 0, weight: 0, epp: None },
+    }; 131];
+    for (i, e) in big.iter_mut().enumerate() {
+        e.task_key = i as u64 + 1;
+    }
+    let base2 = policy::reject_stats();
+    assert!(policy::bind_gen(&big, gen + 2), "第二次 bind 世代须严格递增");
+    let s2 = policy::reject_stats();
+    assert_eq!(s2.overflow, base2.overflow + 3, "131 条超 TBL_MAX=128 → 截尾恰 3 条入账");
+    assert_eq!(s2.clamped, base2.clamped, "全零权重无新增夹取");
+
+    // 收尾：解绑回接口缺席态（同其他 policy ktest 清理纪律）。
+    policy::unbind();
+    berry_hal_aarch64::uart_puts(b"POLS-R ok\n");
+}
+
 fn test_policy_divergence() {
     use berry_sched::policy::{self, Directive, Entry};
     use berry_sched::{Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};

@@ -213,7 +213,11 @@ fn snap_insert(snap: &mut Snap, key: u64, d: &Directive) -> bool {
         if slot.key == 0 {
             slot.key = key;
             // build 点夹紧（第一道；消费点 apply/weight_of 再夹——三点执法）。
-            slot.weight = d.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX);
+            let clamped = d.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX);
+            if clamped != d.weight {
+                CLAMP_WEIGHT.fetch_add(1, Ordering::Relaxed); // 越包络被夹入账
+            }
+            slot.weight = clamped;
             slot.placement = d.placement;
             slot.epp_flags = match d.epp {
                 None => 0,
@@ -224,6 +228,7 @@ fn snap_insert(snap: &mut Snap, key: u64, d: &Directive) -> bool {
         }
         idx = (idx + 1) & (BUCKETS - 1);
     }
+    REJECT_PROBE_FULL.fetch_add(1, Ordering::Relaxed); // 窗满拒收入账
     false // 探测窗满：拒收（O(1) 查表上界的代价面）
 }
 
@@ -232,8 +237,11 @@ fn snap_insert(snap: &mut Snap, key: u64, d: &Directive) -> bool {
 fn build_snap(tbl: &[Entry], gen: u64) -> Snap {
     let mut snap = Snap::empty();
     let mut n: u32 = 0;
+    // 拒收入账：超载截尾（take 前先记——被截掉的每条都是注入方给多的）。
+    REJECT_OVERFLOW.fetch_add(tbl.len().saturating_sub(TBL_MAX) as u64, Ordering::Relaxed);
     for e in tbl.iter().take(TBL_MAX) {
         if e.task_key == 0 {
+            REJECT_KEY0.fetch_add(1, Ordering::Relaxed); // 哨兵键丢弃入账
             continue; // 哨兵键保留
         }
         if snap_insert(&mut snap, e.task_key, &e.directive) {
@@ -474,6 +482,39 @@ static DIVERGENCE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// 对账期内 shadow 决策评估次数（shadow 谱系非空时的 apply 调用数）——
 /// divergence 率的分母。
 static SHADOW_EVAL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// —— 拒收入账（P1-a，吸收调研 13 号 astrid「审计链含 deny」精神）——
+// 注入受理面的四类静默处置从此有账：拒收/截尾/窗满/夹取各一计。写点在
+// bind/unbind（boot/ktest 期 SVC 屏蔽、单写者），Relaxed 纯统计同
+// divergence 对账形态——决策路径（apply/weight_of）零新增写面。
+/// key==0 哨兵键丢弃数（proc_tag=0 的内核任务不可注入——语义性丢弃）。
+static REJECT_KEY0: AtomicU64 = AtomicU64::new(0);
+/// build 期 TBL_MAX 截尾丢弃的条目数（表超载——注入方一次给太多）。
+static REJECT_OVERFLOW: AtomicU64 = AtomicU64::new(0);
+/// 探测窗满拒收数（散列聚簇到 PROBE_MAX 仍无空槽——O(1) 上界的代价面）。
+static REJECT_PROBE_FULL: AtomicU64 = AtomicU64::new(0);
+/// weight 被包络夹取数（注入越 ±WEIGHT_MAX 被夹——护栏生效频率的量化）。
+static CLAMP_WEIGHT: AtomicU64 = AtomicU64::new(0);
+
+/// 拒收/夹取面快照（遥测/ktest 消费；v3 接环前的读出口）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RejectStats {
+    pub key0: u64,
+    pub overflow: u64,
+    pub probe_full: u64,
+    pub clamped: u64,
+}
+
+/// 读拒收入账四计数（Relaxed 快照——纯统计，无重置面；对账期语义归
+/// divergence 族，本账自 bind 以来单调累计）。
+pub fn reject_stats() -> RejectStats {
+    RejectStats {
+        key0: REJECT_KEY0.load(Ordering::Relaxed),
+        overflow: REJECT_OVERFLOW.load(Ordering::Relaxed),
+        probe_full: REJECT_PROBE_FULL.load(Ordering::Relaxed),
+        clamped: CLAMP_WEIGHT.load(Ordering::Relaxed),
+    }
+}
 
 /// 单次对账（apply 每调一次、shadow 谱系非空时生效）：同 key 双表决策对比
 /// + 计数。**只读不写**——不写 TCB（差异不应用）、不写表（shadow 侧纯
