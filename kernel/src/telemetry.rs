@@ -23,10 +23,20 @@
 //! fetch_min/fetch_max——单核直写形态退役），写序 = 桶/极值在前、N 的
 //! Release 递增**最后**，读者 N 的 Acquire 读**最先**——「桶和 ≥ n」与
 //! 「n>0 ⇒ min≠哨兵」两条形状断言在无锁窗下仍立（读序纪律见 [`wake_hist`]）。
+//!
+//! **刀1（PM-17 §5）：per-source 唤醒记账**（[`WAKE_SRC_TABLE`]——归因 =
+//! hal 语境 cell，见 `berry_hal_aarch64::wake`）。**不随 trace_off 关**
+//! （计数器族先例——观测计数 ≠ 环记录面，双跑只切后者）；环条目随之带
+//! `source` 字段（`WakeRec`），G1.5 出守恒/双路径/冻结断言 + `WAKESRC`
+//! 单行。
 
 use berry_hal_aarch64::smp::cpu_id;
+use berry_hal_aarch64::wake_gen::{
+    WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB,
+    WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+};
 use berry_sched::{SwitchKind, Task, WakeReason};
-use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 /// 环容量（静态预储——2KB 级常驻 .bss，boot 后永不增长；per-CPU 后总量
 /// = 2×两环，仍 2KB 级）。
@@ -297,9 +307,13 @@ pub struct WakeRec {
     pub task_id: u32,
     /// 唤醒原因（[`REASON_SIGNALED`]/[`REASON_TIMEOUT`]）。
     pub reason: u8,
+    /// 唤醒归因源（刀1：[`WAKE_SRC_*`](berry_hal_aarch64::wake_gen)——
+    /// `on_wake` 读 hal cell；NONE/UNKNOWN 写点 panic，环内恒 ∈ 6 真源）。
+    pub source: u8,
     /// 定宽对齐垫（ABI 演进保留，恒 0）。
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 2],
 }
+const _: () = assert!(core::mem::size_of::<WakeRec>() == 32);
 
 /// `WakeReason` → 环内 u8 编码（`Pending` 到不了这里——`note_wake` 只在
 /// 置因之后发射）。
@@ -331,7 +345,8 @@ impl WakeRing {
                 wait_obj: 0,
                 task_id: 0,
                 reason: 0,
-                _pad: [0; 3],
+                source: 0,
+                _pad: [0; 2],
             }; WAKE_RING_LEN],
         }
     }
@@ -358,16 +373,46 @@ unsafe fn wake_ring_write(rec: WakeRec) {
 /// + 原子计数 + R-0 增量直方图（同窗 O(1) 算术，与环写同量级——热路径纪律
 /// 不破）。
 fn on_wake(task: &Task, reason: WakeReason) {
+    // 刀1 per-source 记账（**不随 trace_off 关**——计数器族先例，见
+    // [`TRACE_OFF`] 注：观测计数 ≠ 环记录面）。归因读 hal cell：任务语境
+    // 基线 IPC / IRQ 臂源（TIMER/UART_RX/SGI）/ boot 期 KERNEL_BOOT。
+    // NONE 到场 = cell 未接线语境（写点漏路由）、UNKNOWN 到场 = 未知 IRQ
+    // 有唤醒路径（src_of 漏臂）——皆写路径 bug，写点 panic（L0 执法，盖
+    // 全历史——负延迟同族）。
+    let src = berry_hal_aarch64::wake::wake_src_current();
+    assert!(
+        src != WAKE_SRC_NONE,
+        "WAKE: 源=NONE 到达记账（cell 未接线语境——note_switch/exception_irq 写点漏路由）"
+    );
+    assert!(
+        src != WAKE_SRC_UNKNOWN,
+        "WAKE: 源=UNKNOWN 到达记账（未知 IRQ 不该有唤醒路径——src_of 漏臂或 cell 直写）"
+    );
+    let now = berry_hal_aarch64::timer::cntvct();
+    {
+        let slot = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+        slot.wakes.fetch_add(1, Ordering::Relaxed);
+        slot.first_ts.fetch_min(now, Ordering::Relaxed);
+        slot.last_ts.fetch_max(now, Ordering::Relaxed);
+        slot.last_woken_id.store(name_id(task.name), Ordering::Relaxed);
+        let cls = wake_src_class(src);
+        if cls != 0 {
+            slot.flags.fetch_or(cls, Ordering::Relaxed);
+        }
+    }
+    // 独立总账（守恒断言的右侧：Σ 槽 wakes == 本值——漏记/双记执法）。
+    WAKE_ACCT_N.fetch_add(1, Ordering::Relaxed);
     if trace_off() {
-        return; // G3-4b 记录面关：环写 + 直方图（BENCHWAKE 源）整体让位。
+        return; // 环/直方图记录面关（上方 per-source 计数不随关）
     }
     let rec = WakeRec {
-        vct: berry_hal_aarch64::timer::cntvct(),
+        vct: now,
         since_vct: task.wait_since,
         wait_obj: task.wait_obj as u64,
         task_id: name_id(task.name),
         reason: reason_code(reason),
-        _pad: [0; 3],
+        source: src,
+        _pad: [0; 2],
     };
     // SAFETY: 写方限本核（见 wake_ring_write）；调用点 = 两个唤醒位。
     unsafe { wake_ring_write(rec) }
@@ -396,6 +441,202 @@ fn on_wake(task: &Task, reason: WakeReason) {
         WAKE_HIST_TMO.fetch_add(1, Ordering::Relaxed);
     }
     WAKE_HIST_N.fetch_add(1, Ordering::Release);
+}
+
+// ---- 刀1 per-source 唤醒记账（PM-17 终审 §5；不随 trace_off 关）----
+//
+// 形状决策（vs 裁决原案的两处记录在案偏差，详见 docs/内核唤醒记账设计）：
+// 槽表 128 槽**值直索引**（裁决案 32 槽计数枚举——值直索引让 UNKNOWN 0x7F
+// 有真槽可落到达计数，槽表 .bss 8KB 同量级）；`last_woken_id` 记名字哈希
+//（Process 无 pid 面，id 稳定性名字承重——演进节）。
+
+/// 槽表槽数 = 值域上界 + 1（源值 ≤ 0x7F；值直索引——`table[src]`）。
+pub const WAKE_SRC_SLOTS: usize = 128;
+
+/// 源分类位（add-only 位面；未定义源恒 0——未知位 mask 语义归消费方）。
+pub const WSRC_F_TIMER_CLASS: u16 = 1 << 0; // 定时器类（TIMER）
+pub const WSRC_F_IRQ_LINE: u16 = 1 << 1; // 外设线（UART_RX）
+pub const WSRC_F_SGI_INTERNAL: u16 = 1 << 2; // SGI 内部（RESCHED/TLB）
+pub const WSRC_F_HAD_NO_WAITER: u16 = 1 << 3; // 曾零唤醒 sticky（UART 到达无等待者）
+pub const WSRC_F_SLEPT: u16 = 1 << 4; // SLEPT 域事件见过（v2 挂起双钟预留，v1 恒不置）
+
+/// 单源记账槽（`#[repr(C)]` 64B 整——`telemetry_open` 快照面的 ABI 形状
+/// day-one 定型；字段全定宽原子——多写者 = 本核 on_wake / IRQ 臂计数点 /
+/// G1.5 合并，全原子无锁。原子字段 !Copy !Clone ⇒ 槽表初始化走 inline
+/// const 数组（`[const { new() }; 128]`）。
+#[repr(C)]
+pub struct WakeSrcRec {
+    /// 本源唤醒事件数（on_wake 记）。
+    pub wakes: AtomicU64,
+    /// 本源 IRQ 到达数（TIMER/UART 计数点直入；SGI×2/UNKNOWN = G1.5 快照
+    /// 合并——HAL 侧臂计数无内核回调槽）。
+    pub irq_count: AtomicU64,
+    /// 到达而无等待者（UART：醒-再睡窗内到达的良性竞态——位已置、
+    /// poll-first 必命中，无丢唤醒；只出数不设门禁）。
+    pub no_waiter: AtomicU64,
+    /// 首次唤醒时刻 CNTVCT（哨兵 `u64::MAX`，fetch_min——未触槽可判）。
+    pub first_ts: AtomicU64,
+    /// 最近唤醒时刻（fetch_max）。
+    pub last_ts: AtomicU64,
+    /// 最近 IRQ 到达/ack 戳（v1 = 到达戳：TIMER 槽派发点、UART rx_notify
+    /// pre-EOI；post-EOI ack 接力精化归 v2——设计文档演进节）。
+    pub last_ack_ts: AtomicU64,
+    /// 最近被唤醒任务 id（名字 FNV-1a-32）。
+    pub last_woken_id: AtomicU32,
+    /// 分类/sticky 位（上方 [`WSRC_F_*`]）。
+    pub flags: AtomicU16,
+    /// 时戳域（v1 恒 0 = CNTVCT 单域；v2 SLEPT 域引入后区分——G1.5 断言
+    /// v1 活动槽恒 0）。
+    pub ts_domain: u8,
+    pub _pad: [u8; 5],
+}
+const _: () = assert!(core::mem::size_of::<WakeSrcRec>() == 64);
+
+impl WakeSrcRec {
+    const fn new() -> Self {
+        Self {
+            wakes: AtomicU64::new(0),
+            irq_count: AtomicU64::new(0),
+            no_waiter: AtomicU64::new(0),
+            first_ts: AtomicU64::new(u64::MAX),
+            last_ts: AtomicU64::new(0),
+            last_ack_ts: AtomicU64::new(0),
+            last_woken_id: AtomicU32::new(0),
+            flags: AtomicU16::new(0),
+            ts_domain: 0,
+            _pad: [0; 5],
+        }
+    }
+}
+
+/// per-source 记账槽表（值直索引；.bss 8KB 静态预储——boot 后永不增长。
+/// `WakeSrcRec` 原子字段 !Copy ⇒ inline const 数组初始化）。
+pub static WAKE_SRC_TABLE: [WakeSrcRec; WAKE_SRC_SLOTS] =
+    [const { WakeSrcRec::new() }; WAKE_SRC_SLOTS];
+
+/// 唤醒记账独立总账（守恒断言右侧：Σ 全槽 wakes == 本值）。
+static WAKE_ACCT_N: AtomicU64 = AtomicU64::new(0);
+
+/// 读独立总账（G1.5 守恒断言/打印）。
+pub fn wake_acct_n() -> u64 {
+    WAKE_ACCT_N.load(Ordering::Relaxed)
+}
+
+/// 源值 → 分类位（纯函数；ktest 面）。未定义源 = 0。
+pub fn wake_src_class(src: u8) -> u16 {
+    match src {
+        WAKE_SRC_TIMER => WSRC_F_TIMER_CLASS,
+        WAKE_SRC_UART_RX => WSRC_F_IRQ_LINE,
+        WAKE_SRC_SGI_RESCHED | WAKE_SRC_SGI_TLB => WSRC_F_SGI_INTERNAL,
+        _ => 0,
+    }
+}
+
+/// 源值是否「可进环」的已定义唤醒源（NONE 哨兵 / UNKNOWN 只进 IRQ 级
+/// 到达计数、永不进环——写点 panic 在前，本谓词是环条目事后审计面；
+/// ktest 面）。未定义值（0x07–0x7E 预留段）恒 false。
+pub fn wake_src_valid(src: u8) -> bool {
+    matches!(
+        src,
+        WAKE_SRC_KERNEL_BOOT
+            | WAKE_SRC_TIMER
+            | WAKE_SRC_UART_RX
+            | WAKE_SRC_SGI_RESCHED
+            | WAKE_SRC_SGI_TLB
+            | WAKE_SRC_IPC
+    )
+}
+
+/// 源 wakes 计数读点（G1.5 断言/打印）。
+pub fn wake_src_wakes(src: u8) -> u64 {
+    WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)].wakes.load(Ordering::Relaxed)
+}
+
+/// Σ 全槽 wakes（守恒断言左侧——只有已定义源可递增，NONE/UNKNOWN 写点
+/// panic 先拦，含 0x07–0x7E 未触槽）。
+pub fn wake_src_total_wakes() -> u64 {
+    let mut sum = 0u64;
+    for s in &WAKE_SRC_TABLE {
+        sum = sum.wrapping_add(s.wakes.load(Ordering::Relaxed));
+    }
+    sum
+}
+
+/// per-source 记账快照（G1.5 消费；各字段独立原子读，非一致快照——计数族
+/// 只增不减，撕裂只在读窗内自差，断言面不承重）。
+#[derive(Debug, Clone, Copy)]
+pub struct WakeSrcSnapshot {
+    pub src: u8,
+    pub wakes: u64,
+    pub irq: u64,
+    pub no_waiter: u64,
+    pub first_ts: u64,
+    pub last_ts: u64,
+    pub last_ack_ts: u64,
+    pub last_woken_id: u32,
+    pub flags: u16,
+    pub ts_domain: u8,
+}
+
+/// 取 `src` 槽快照（未触槽：first_ts = `u64::MAX`、计数全 0——ktest 面）。
+pub fn wake_src_snapshot(src: u8) -> WakeSrcSnapshot {
+    let s = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+    WakeSrcSnapshot {
+        src,
+        wakes: s.wakes.load(Ordering::Relaxed),
+        irq: s.irq_count.load(Ordering::Relaxed),
+        no_waiter: s.no_waiter.load(Ordering::Relaxed),
+        first_ts: s.first_ts.load(Ordering::Relaxed),
+        last_ts: s.last_ts.load(Ordering::Relaxed),
+        last_ack_ts: s.last_ack_ts.load(Ordering::Relaxed),
+        last_woken_id: s.last_woken_id.load(Ordering::Relaxed),
+        flags: s.flags.load(Ordering::Relaxed),
+        ts_domain: s.ts_domain,
+    }
+}
+
+/// IRQ 到达记账（内核侧计数点：TIMER tick 槽包装 / UART rx_notify）。
+/// `stamp` = 到达/派发戳（`last_ack_ts` 语义见 [`WakeSrcRec`]）。IRQ 语境
+/// 纪律同 rx_irq_notify：零分配、纯原子。
+pub fn note_irq_arrival(src: u8, stamp: u64) {
+    let slot = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+    slot.irq_count.fetch_add(1, Ordering::Relaxed);
+    slot.last_ack_ts.store(stamp, Ordering::Relaxed);
+    let cls = wake_src_class(src);
+    if cls != 0 {
+        slot.flags.fetch_or(cls, Ordering::Relaxed);
+    }
+}
+
+/// 「到达而无等待者」记账（UART rx_notify n==0 臂——良性竞态，见
+/// [`WSRC_F_HAD_NO_WAITER`]；计数 + sticky，不设门禁）。
+pub fn note_irq_no_waiter(src: u8) {
+    let slot = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+    slot.no_waiter.fetch_add(1, Ordering::Relaxed);
+    slot.flags.fetch_or(WSRC_F_HAD_NO_WAITER, Ordering::Relaxed);
+}
+
+/// HAL 侧到达计数快照合并（G1.5 boot 尾一次）：SGI×2 / 未知臂计数在 HAL
+/// （无内核回调槽），此处并入槽表——store 单调值幂等，可重入。
+pub fn wake_src_merge_hal() {
+    let r = berry_hal_aarch64::wake::sgi_resched_arrivals() as u64;
+    WAKE_SRC_TABLE[(WAKE_SRC_SGI_RESCHED as usize).min(WAKE_SRC_SLOTS - 1)]
+        .irq_count
+        .store(r, Ordering::Relaxed);
+    WAKE_SRC_TABLE[(WAKE_SRC_SGI_RESCHED as usize).min(WAKE_SRC_SLOTS - 1)]
+        .flags
+        .fetch_or(WSRC_F_SGI_INTERNAL, Ordering::Relaxed);
+    let t = berry_hal_aarch64::wake::sgi_tlb_arrivals() as u64;
+    WAKE_SRC_TABLE[(WAKE_SRC_SGI_TLB as usize).min(WAKE_SRC_SLOTS - 1)]
+        .irq_count
+        .store(t, Ordering::Relaxed);
+    WAKE_SRC_TABLE[(WAKE_SRC_SGI_TLB as usize).min(WAKE_SRC_SLOTS - 1)]
+        .flags
+        .fetch_or(WSRC_F_SGI_INTERNAL, Ordering::Relaxed);
+    let u = berry_hal_aarch64::wake::unknown_arrivals() as u64;
+    WAKE_SRC_TABLE[(WAKE_SRC_UNKNOWN as usize).min(WAKE_SRC_SLOTS - 1)]
+        .irq_count
+        .store(u, Ordering::Relaxed);
 }
 
 /// seqlock 读者：取 `cpu` 唤醒环内第 k 新条目（同 [`ring_peek`] 协议）。
@@ -496,7 +737,8 @@ pub fn wake_reason_mask() -> u8 {
 /// 环健康自检（watchdog 周期断言）：①有货；②每条原因合法（∈
 /// Signaled/Timeout——出现 0 = Pending 漏进环 = 写路径 bug）；③延迟非负
 ///（`vct ≥ since_vct`——唤醒时刻早于入睡 = 戳或环有 bug）；④vct 从旧到新
-/// 单调不减（两环各单调 + vct 归并不破单调）。
+/// 单调不减（两环各单调 + vct 归并不破单调）；⑤刀1：归因源合法（∈ 6 真源
+/// ——NONE/UNKNOWN/未定义值进环 = on_wake 断言被绕过或环撕写）。
 pub fn wake_check() -> bool {
     let s = wake_span();
     if s == 0 {
@@ -505,6 +747,7 @@ pub fn wake_check() -> bool {
     for i in 0..s {
         let r = wake_last(i).expect("span 内必有");
         if (r.reason != REASON_SIGNALED && r.reason != REASON_TIMEOUT)
+            || !wake_src_valid(r.source)
             || r.vct < r.since_vct
         {
             return false;

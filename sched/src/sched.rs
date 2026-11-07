@@ -1635,6 +1635,11 @@ pub fn set_switch_hook(hook: Option<SwitchHook>) {
 /// Task，无 TCB 可记）跳过发射；遥测环只记任务↔任务切换。
 #[inline]
 unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
+    // 刀1 唤醒归因基线：切入任务/idle 语境即设 IPC（含 boot→首任务与
+    // park↔任务 null 对——空对早退**前**先落：park 醒来在 IRQ 语境外的
+    // wake_matching 同归任务侧基线；NONE 只属于副核首任务切入前的未接线窗，
+    // 到达记账即绊网）。首个切换后 KERNEL_BOOT 归因冻结（G1.5 断言）。
+    hal::wake::wake_src_task_ctx();
     if prev.is_null() || next.is_null() {
         return;
     }

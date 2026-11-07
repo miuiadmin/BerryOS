@@ -52,6 +52,7 @@ pub fn run() {
     test_sched_perf();
     test_sched_fairness();
     test_sched_attr();
+    test_wake_src();
     test_dtb();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -3175,7 +3176,7 @@ fn test_sched_perf() {
     let topo = Topo::single();
 
     // —— pick_next 开销：8 任务环 ×1000 次 ——
-    let tasks: alloc::vec::Vec<&'static mut Task> = (0..8).map(|i| {
+    let tasks: alloc::vec::Vec<&'static mut Task> = (0..8).map(|_| {
         mk(b"perf".as_slice())
     }).collect::<alloc::vec::Vec<_>>();
     // 先收集再入环（所有权）。
@@ -3382,6 +3383,90 @@ fn test_sched_attr() {
     let cleared = SchedAttr::merge(base, SchedAttr::default());
     assert_eq!(cleared, base);
     berry_hal_aarch64::uart_puts(b"ATTR-K ok\n");
+}
+
+/// 刀1 P10：唤醒源枚举/谓词/布局**纯面**（ktest 在 sched::init 前跑——
+/// 记账槽表 pristine，未触槽断言有效；运行期执法在 G1.5 WAKESRC 块）。
+/// A. 8 枚举值互异且 ≤0x7F（值直槽表容量界）+ 端点锚（NONE=0x00 哨兵 /
+///    UNKNOWN=0x7F）；B. `wake_src_valid` 6 真源过、NONE/UNKNOWN/未定义段
+///    （0x07/0x50）拒——「可进环」白名单与 [[wakesrc]] 生成器同源；
+/// C. `wake_src_class` 分类位映射（TIMER=class 位 / UART=IRQ 线位 /
+///    SGI×2=内部位 / IPC·KB=0 / 未定义=0）；D. 布局钉（WakeRec 32B——
+///    `source` 吃掉 _pad[0]、_pad 缩 [u8;2]；WakeSrcRec 64B——128 槽 ×64B
+///    = 8KB .bss）+ 未触槽快照原语（0x50 ∈ 未定义段：first_ts=u64::MAX
+///    哨兵、计数全 0、ts_domain=0）。
+fn test_wake_src() {
+    use berry_hal_aarch64::wake_gen::{
+        WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_SGI_RESCHED,
+        WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+    };
+    use crate::telemetry::{
+        self, WSRC_F_HAD_NO_WAITER, WSRC_F_IRQ_LINE, WSRC_F_SGI_INTERNAL, WSRC_F_SLEPT,
+        WSRC_F_TIMER_CLASS,
+    };
+
+    // A. 值域：互异 + ≤0x7F + 端点锚。
+    let all = [
+        WAKE_SRC_NONE,
+        WAKE_SRC_KERNEL_BOOT,
+        WAKE_SRC_TIMER,
+        WAKE_SRC_UART_RX,
+        WAKE_SRC_SGI_RESCHED,
+        WAKE_SRC_SGI_TLB,
+        WAKE_SRC_IPC,
+        WAKE_SRC_UNKNOWN,
+    ];
+    for (i, &v) in all.iter().enumerate() {
+        assert!(v <= 0x7F, "WSRC-K A：src[{}]={:#04x} 超 0x7F（值直槽界）", i, v);
+        for &w in &all[..i] {
+            assert!(v != w, "WSRC-K A：源值撞号 {:#04x}", v);
+        }
+    }
+    assert_eq!(WAKE_SRC_NONE, 0x00, "WSRC-K A：NONE 哨兵锚");
+    assert_eq!(WAKE_SRC_UNKNOWN, 0x7F, "WSRC-K A：UNKNOWN 端点锚");
+
+    // B. 白名单谓词：6 真源过；哨兵/未知/未定义段拒。
+    for &v in &[
+        WAKE_SRC_KERNEL_BOOT,
+        WAKE_SRC_TIMER,
+        WAKE_SRC_UART_RX,
+        WAKE_SRC_SGI_RESCHED,
+        WAKE_SRC_SGI_TLB,
+        WAKE_SRC_IPC,
+    ] {
+        assert!(telemetry::wake_src_valid(v), "WSRC-K B：真源 {:#04x} 被拒", v);
+    }
+    for &v in &[WAKE_SRC_NONE, WAKE_SRC_UNKNOWN, 0x07, 0x50] {
+        assert!(!telemetry::wake_src_valid(v), "WSRC-K B：非白名单 {:#04x} 竟过", v);
+    }
+
+    // C. 分类位映射。
+    assert_eq!(telemetry::wake_src_class(WAKE_SRC_TIMER), WSRC_F_TIMER_CLASS);
+    assert_eq!(telemetry::wake_src_class(WAKE_SRC_UART_RX), WSRC_F_IRQ_LINE);
+    assert_eq!(telemetry::wake_src_class(WAKE_SRC_SGI_RESCHED), WSRC_F_SGI_INTERNAL);
+    assert_eq!(telemetry::wake_src_class(WAKE_SRC_SGI_TLB), WSRC_F_SGI_INTERNAL);
+    assert_eq!(telemetry::wake_src_class(WAKE_SRC_IPC), 0);
+    assert_eq!(telemetry::wake_src_class(WAKE_SRC_KERNEL_BOOT), 0);
+    assert_eq!(telemetry::wake_src_class(0x50), 0);
+    // 位面冻结值（add-only：HAD_NO_WAITER sticky / SLEPT v2 预留恒不置）。
+    assert_eq!(WSRC_F_HAD_NO_WAITER, 1 << 3, "WSRC-K C：sticky 位冻结值");
+    assert_eq!(WSRC_F_SLEPT, 1 << 4, "WSRC-K C：SLEPT 预留位冻结值（v2 恒不置）");
+
+    // D. 布局钉 + 未触槽原语（0x50 永不被写——未定义段无定义写点）。
+    assert_eq!(core::mem::size_of::<telemetry::WakeRec>(), 32, "WSRC-K D：WakeRec 布局漂移");
+    assert_eq!(core::mem::size_of::<telemetry::WakeSrcRec>(), 64, "WSRC-K D：WakeSrcRec 布局漂移");
+    let s = telemetry::wake_src_snapshot(0x50);
+    assert_eq!(s.wakes, 0, "WSRC-K D：未触槽 wakes≠0");
+    assert_eq!(s.first_ts, u64::MAX, "WSRC-K D：未触槽 first_ts 哨兵漂移");
+    assert_eq!(s.ts_domain, 0, "WSRC-K D：未触槽 ts_domain≠0");
+    // 快照余四字段（telemetry_open 冻结形状，v2 读点）未触槽同零。
+    assert_eq!(
+        (s.last_ts, s.last_ack_ts, s.last_woken_id, s.flags),
+        (0, 0, 0, 0),
+        "WSRC-K D：未触槽快照四字段非零"
+    );
+
+    berry_hal_aarch64::uart_puts(b"WSRC-K ok\n");
 }
 
 /// 1.1/S5：最小 deadline class（EDF）——`PRIO_DEADLINE` 带序 + 带内 VD 排

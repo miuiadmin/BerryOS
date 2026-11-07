@@ -4,7 +4,7 @@
 
 为什么单独立脚本（不并回 smoke-image.sh）
 ----------------------------------------
-冻结相 smoke-image 的断言面是「EFI 十段恰一次 + 裸相 28 + 生态 36 + 字节
+冻结相 smoke-image 的断言面是「EFI 十段恰一次 + 裸相 29 + 生态 36 + 字节
 对拍 + 金丝雀」，其 QEMU 拓扑**结构性无 virtio**（不挂 blk/tablet/QMP）。
 交互相需要另一套拓扑（FAT12 数据盘 + virtio-tablet + QMP unix sock）和
 另一套标记族（fs 端点让给 launcher 后 bsh 在 fs_selftest park，ECO 36 里

@@ -1629,8 +1629,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill；SGI 槽（义务⑧
-    // S-3b b-1）驱动 CPU0 快速重调度（跨核唤醒不等整 tick）。
-    berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
+    // S-3b b-1）驱动 CPU0 快速重调度（跨核唤醒不等整 tick）。刀1：tick 槽外套
+    // 计数包装 [`irq_tick_acct`]（TIMER 到达 + 派发戳入 per-source 表）——转发
+    // 原 on_irq_tick，语义零漂移。
+    berry_hal_aarch64::set_irq_dispatch(irq_tick_acct);
     berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
     // G3-1b 落点①接线：syscall 返回边界检查点（SVC 派发尾空探；sched 侧
@@ -2288,6 +2290,20 @@ fn fb_pipe_h() -> u32 {
     unsafe { *core::ptr::addr_of!(FB_PIPE_H) }
 }
 
+/// 刀1：CNTV tick 槽计数包装（HAL `exception_irq` CNTV 臂经 `irq_dispatch`
+/// 槽调，post-EOIR）。先记 TIMER 到达 + 派发戳（`last_ack_ts` = 槽派发点
+/// ——post-EOI 语义；per-source 记账面见 `telemetry::WAKE_SRC_TABLE`）再转
+/// [`berry_sched::on_irq_tick`]。IRQ 语境纪律：零分配、纯原子，槽原语义
+/// 零漂移。
+unsafe extern "C" fn irq_tick_acct(tf: &mut berry_hal_aarch64::trap::TrapFrame) {
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_TIMER,
+        berry_hal_aarch64::timer::cntvct(),
+    );
+    // SAFETY: IRQ 上下文（PSTATE.I=1，post-EOIR）；转发原槽契约不变。
+    unsafe { berry_sched::on_irq_tick(tf) }
+}
+
 /// 「RX 到数据」通知（HAL `exception_irq` → `uart::rx_irq` 经槽调；IRQ 上下文
 /// PSTATE.I=1）。置位 RX Event（用户半位）+ `wake_matching`（匹配键 = ObjRef
 /// 地址，同 4-1 `sys_object_signal` 唤醒路径；console 的 wait_many 挂
@@ -2310,6 +2326,12 @@ unsafe extern "C" fn rx_irq_notify() -> bool {
     // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
     let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
         .expect("rx_irq_notify: RX_EV_REF 未初始化（boot 接线缺失）");
+    // 刀1：UART_RX 到达记账（pre-EOI 到达戳——本槽在 uart::rx_irq 内、
+    // gic::end 之前跑；post-EOI ack 接力精化归 v2，设计文档演进节）。
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX,
+        berry_hal_aarch64::timer::cntvct(),
+    );
     unsafe {
         // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描
         // 同窗**——Event 位写与 SLEEPQ 扫描摘队在同一 SQ 窗内原子（分段后
@@ -2323,6 +2345,11 @@ unsafe extern "C" fn rx_irq_notify() -> bool {
         }
         let n = berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
         berry_sched::sq_unlock(sq_phys);
+        // 刀1：n=0 = 到达无等待者（console 醒-再睡窗内到达的良性竞态——位
+        // 已置、下轮 poll-first 必命中，无丢唤醒；计数 + sticky，不设门禁）。
+        if n == 0 {
+            crate::telemetry::note_irq_no_waiter(berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX);
+        }
         // G3-2 修复批（F1）：本槽只回报，不检查点——SQ 窗内禁切换（义务③
         // 「写位+扫描同窗」契约不破）且检查点须在 trap 臂 EOIR 之后（EOIR
         // 饿死防线，详见函数头注）。n=0 = 无唤醒诉求，false 不探。

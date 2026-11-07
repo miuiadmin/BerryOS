@@ -1819,6 +1819,25 @@ fn benchwake_percentile(h: &crate::telemetry::WakeHist, num: u64, den: u64) -> u
     u64::MAX
 }
 
+/// 刀1 G1.5 私助：KERNEL_BOOT 冻结 round-over-round 检查。`*prev ==
+/// u64::MAX` = 首轮只采样建基；此后每轮等值——调度器启动后 boot 归因再涨
+/// = `note_switch` 基线写点漏路由（cell 残留 KERNEL_BOOT 语境），L0 红线。
+/// 消费两点：watchdog 环尾（稳态窗）+ G1.5 退出块（终检，同轮内先于
+/// exit_current）。
+fn wake_kb_freeze_round(prev: &mut u64) {
+    let kb =
+        crate::telemetry::wake_src_wakes(berry_hal_aarch64::wake_gen::WAKE_SRC_KERNEL_BOOT);
+    if *prev != u64::MAX {
+        assert!(
+            kb == *prev,
+            "G1.5 FAIL: KERNEL_BOOT 唤醒在调度器启动后再涨（{} → {}）——cell 基线写点漏路由",
+            *prev,
+            kb
+        );
+    }
+    *prev = kb;
+}
+
 /// G1.5 验收看门狗（内核任务）：等 rogue_ptr 被杀、abuser（坏 handle 滥用）与
 /// good 的 console 排水 / switches 金丝雀仍在涨 → 打关卡标记 `G1.5 ok` 后
 /// `exit_current` 退场（A/B/good/abuser 继续分时）。杀数超期望（abuser 被误杀
@@ -1829,6 +1848,10 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
     const TRIES: u32 = 2_000;
     let mut last_puts = crate::console_drained();
     let mut last_switches = berry_sched::switches();
+    // 刀1：KERNEL_BOOT 冻结基线（u64::MAX = 首轮只采样不比对——见
+    // [`wake_kb_freeze_round`]；稳态窗 = watchdog 环尾 round-over-round，
+    // 终检 = G1.5 退出块内一锤）。
+    let mut kb_wake_prev: u64 = u64::MAX;
     for _ in 0..TRIES {
         // 忙等一拍（无 sleep 原语——Phase 4 通知落地前的土法；轮到别的任务跑）。
         // **留在锁窗外**（F37）：IRQ 解蔽 tick 才轮转、金丝雀才能涨——进了窗
@@ -1951,11 +1974,103 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                         berry_hal_aarch64::uart_puts(b"TRACE off ok (record face closed)\n");
                     });
                 }
+                // 刀1 G1.5 WAKESRC 块（**无条件**——不随 TRACE off 让位：
+                // per-source 记账面独立于 WakeRing 记录面，trace_off 早退
+                // 只关环记录，不关记账）。位置契约同 BENCHWAKE：watchdog
+                // 尾单次执行 + 下行 exit_current 切走不归 → 恰一次（R-0
+                // 落点）。先并 HAL 侧到达计数（SGI×2/未知臂无内核回调槽，
+                // store 单调值幂等）。
+                crate::telemetry::wake_src_merge_hal();
+                {
+                    use berry_hal_aarch64::wake_gen::{
+                        WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_SGI_RESCHED,
+                        WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+                    };
+                    use crate::telemetry as tel;
+                    // ① 守恒：Σ槽 wakes == 独立总账（on_wake 两路同增——
+                    //    失衡 = 写点漏记账/多记）。
+                    let acct = tel::wake_acct_n();
+                    let sum = tel::wake_src_total_wakes();
+                    assert!(sum == acct,
+                        "WAKESRC FAIL: 槽和 {} ≠ 总账 {}（wake 写点两路失联）", sum, acct);
+                    // ② 无主零容忍终检：NONE 哨兵/UNKNOWN 只许 IRQ 级到达
+                    //    计数，wakes 恒 0（on_wake 写点 panic 在前，此处
+                    //    收口防线）。
+                    assert!(tel::wake_src_wakes(WAKE_SRC_NONE) == 0,
+                        "WAKESRC FAIL: NONE 槽 wakes ≠ 0");
+                    assert!(tel::wake_src_wakes(WAKE_SRC_UNKNOWN) == 0,
+                        "WAKESRC FAIL: UNKNOWN 槽 wakes ≠ 0");
+                    // ③ 环境活水兜底：TIMER（expire_timeouts ← on_irq_tick
+                    //    全程在跑）与 IPC（任务语境基线）必有唤醒——零值
+                    //    = 记账链断而非「静默全绿」。
+                    assert!(tel::wake_src_wakes(WAKE_SRC_TIMER) >= 1,
+                        "WAKESRC FAIL: TIMER wakes==0（expire_timeouts 归因链断）");
+                    assert!(tel::wake_src_wakes(WAKE_SRC_IPC) >= 1,
+                        "WAKESRC FAIL: IPC wakes==0（任务语境基线断链）");
+                    // ④ KERNEL_BOOT 冻结终检（环尾已 round-over-round 跑
+                    //    多轮，此处同轮收口——u64::MAX 首轮早退不触发）。
+                    wake_kb_freeze_round(&mut kb_wake_prev);
+                    // ⑤ ts_domain==0（v1 恒虚拟单调域；活跃槽查——未触槽
+                    //    构造即 0，断言无执法意义）。
+                    let t = tel::wake_src_snapshot(WAKE_SRC_TIMER);
+                    let u = tel::wake_src_snapshot(WAKE_SRC_UART_RX);
+                    let r = tel::wake_src_snapshot(WAKE_SRC_SGI_RESCHED);
+                    let l = tel::wake_src_snapshot(WAKE_SRC_SGI_TLB);
+                    let i = tel::wake_src_snapshot(WAKE_SRC_IPC);
+                    let k = tel::wake_src_snapshot(WAKE_SRC_KERNEL_BOOT);
+                    let x = tel::wake_src_snapshot(WAKE_SRC_UNKNOWN);
+                    for s in [t, u, r, l, i, k, x] {
+                        if s.wakes > 0 || s.irq > 0 || s.no_waiter > 0 {
+                            assert!(s.ts_domain == 0,
+                                "WAKESRC FAIL: src={} ts_domain={} ≠ 0", s.src, s.ts_domain);
+                        }
+                    }
+                    // 单行标记（smoke 收割面）。行宽上界：acct/计数各 ≤20
+                    // 位 ×16 ≈ 340B 绝对最坏，实际量级 ~80B——串口缓冲窗
+                    // 同 BENCHWAKE 纪律（with_print_lock 内逐段 puts，IRQ
+                    // 已屏蔽）。U 的 nw = UART 无等待者计数：**良性竞态值，
+                    // 只打印不断言**（控制台醒-复睡窗内 n==0 不丢唤醒，
+                    // 设计文档 §no_waiter）。
+                    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                        berry_hal_aarch64::uart_puts(b"WAKESRC acct=");
+                        berry_hal_aarch64::uart_put_dec(acct);
+                        berry_hal_aarch64::uart_puts(b" T=");
+                        berry_hal_aarch64::uart_put_dec(t.wakes);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(t.irq);
+                        berry_hal_aarch64::uart_puts(b" U=");
+                        berry_hal_aarch64::uart_put_dec(u.wakes);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(u.irq);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(u.no_waiter);
+                        berry_hal_aarch64::uart_puts(b" R=");
+                        berry_hal_aarch64::uart_put_dec(r.wakes);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(r.irq);
+                        berry_hal_aarch64::uart_puts(b" L=");
+                        berry_hal_aarch64::uart_put_dec(l.wakes);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(l.irq);
+                        berry_hal_aarch64::uart_puts(b" I=");
+                        berry_hal_aarch64::uart_put_dec(i.wakes);
+                        berry_hal_aarch64::uart_puts(b" K=");
+                        berry_hal_aarch64::uart_put_dec(k.wakes);
+                        berry_hal_aarch64::uart_puts(b" X=");
+                        berry_hal_aarch64::uart_put_dec(x.wakes);
+                        berry_hal_aarch64::uart_putc(b'/');
+                        berry_hal_aarch64::uart_put_dec(x.irq);
+                        berry_hal_aarch64::uart_puts(b"\n");
+                    });
+                }
                 berry_sched::exit_current()
             }
         }
         last_puts = puts;
         last_switches = switches;
+        // 刀1 稳态窗：KERNEL_BOOT 冻结（round-over-round——watchdog 是任务
+        // 语境，此断言 = 调度器启动后 boot 归因零复活）。
+        wake_kb_freeze_round(&mut kb_wake_prev);
         berry_hal_aarch64::kern_lock::klock_exit();
     }
     panic!("G1.5 FAIL: 超时（kills={} drained={}）", berry_sched::user_kills(), last_puts);

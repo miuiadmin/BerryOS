@@ -547,6 +547,11 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
         crate::lockdep::irq_floor_lower();
         return;
     }
+    // 刀1 唤醒归因：本臂语境存入（save → 四臂分派 → 单出口 restore）。窗口
+    // 闭合论证：IRQ 不嵌套（handler 全程 PSTATE.I=1）⇒ 同核串行；SPURIOUS
+    // 早退在 store 之前 = 零字节窗口；臂内 dispatch 槽经 EOIR 后纪律切换、
+    // 若真切走则本帧不归（restore 死码同 load_frame——归者必经此单出口）。
+    let saved_wake_src = crate::wake::wake_src_irq_enter(crate::wake::src_of(id));
     // SGI 号常量转 usize 模式位（pattern 不收 `as` 表达式——函数内 const 落地）。
     const SGI_RESCHED_US: usize = crate::gic::SGI_RESCHEDULE as usize;
     const SGI_TLB_US: usize = crate::gic::SGI_TLB_SHOOTDOWN as usize;
@@ -603,17 +608,18 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             // S-4 4-1：TLB shootdown 收端——EOIR 先行（Bug 1 纪律：dispatch 类
             // 工作必须在 EOIR 后），随后本地全量失效 + dsb ish + 回执计数
             //（tlbshoot::irq_ack——零锁零打印零分配，SGI_SEEN 同款 IRQ 上下文
-            // 纪律；§3.2 无环判据的收端半边：handler 取锁面恒零）。
+            // 纪律；§3.2 无环判据的收端半边：handler 取锁面恒零）。刀1：到达
+            // 计数（wake::TLB_SEEN——无唤醒路径，G1.5 快照合并面）。
             crate::gic::end(id);
+            crate::wake::TLB_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             crate::tlbshoot::irq_ack();
         }
         _ => {
             // 未知源：EOI 后忽略；首 4 个 loud（防新源接错号静默吞），之后静默
-            //（防电平未清源的重投打印风暴）。
+            //（防电平未清源的重投打印风暴）。刀1：计数自函数内 static 升格到
+            // wake::UNKNOWN_SEEN（永续——只进 IRQ 级到达计数，永不进环）。
             crate::gic::end(id);
-            static UNKNOWN_SEEN: core::sync::atomic::AtomicU32 =
-                core::sync::atomic::AtomicU32::new(0);
-            let k = UNKNOWN_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let k = crate::wake::UNKNOWN_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if k < 4 {
                 // m1 门（errata 批，§A114 追记二）：G3-1c-1 后任务态
                 // with_print_lock = preempt 包络（IRQ 可入窗）——本核
@@ -634,6 +640,8 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             }
         }
     }
+    // 刀1：语境 cell 单出口恢复（match 不可达早退只有 SPURIOUS——在 store 之前）。
+    crate::wake::wake_src_irq_exit(saved_wake_src);
     // G3-3 lockdep IRQ 地板收回：断言深度恰归地板（handler 配平执法——
     // 留残 = 有锁未放跨流泄漏）后归 0（IRQ 不可嵌套：handler 全程 PSTATE.I=1）。
     #[cfg(feature = "lockdep")]
