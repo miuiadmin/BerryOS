@@ -401,7 +401,9 @@ fn on_wake(task: &Task, reason: WakeReason) {
         }
     }
     // 独立总账（守恒断言的右侧：Σ 槽 wakes == 本值——漏记/双记执法）。
-    WAKE_ACCT_N.fetch_add(1, Ordering::Relaxed);
+    // Release 末位与 wake_hist N 同纪律：读者先 Acquire 总账，则凡已计入
+    // N 的样本槽写已可见；并发瞬态只保证 Σ≥N。
+    WAKE_ACCT_N.fetch_add(1, Ordering::Release);
     if trace_off() {
         return; // 环/直方图记录面关（上方 per-source 计数不随关）
     }
@@ -517,9 +519,26 @@ pub static WAKE_SRC_TABLE: [WakeSrcRec; WAKE_SRC_SLOTS] =
 /// 唤醒记账独立总账（守恒断言右侧：Σ 全槽 wakes == 本值）。
 static WAKE_ACCT_N: AtomicU64 = AtomicU64::new(0);
 
-/// 读独立总账（G1.5 守恒断言/打印）。
+/// 读独立总账（WAKESRC 打印面；守恒断言走 [`wake_acct_conserved`]）。
 pub fn wake_acct_n() -> u64 {
-    WAKE_ACCT_N.load(Ordering::Relaxed)
+    WAKE_ACCT_N.load(Ordering::Acquire)
+}
+
+/// 稳定窗守恒检查：双读总账与槽和，两对读数均无变化且相等才真。写序为
+/// 槽先、N 末位 Release；并发瞬态 Σ≥N，一次广播可醒任意多任务，因此不
+/// 用固定差值帽。64 次仍不稳定 = 高频写流中的读窗失败，由调用方 loud。
+pub fn wake_acct_conserved() -> bool {
+    for _ in 0..64 {
+        let n1 = WAKE_ACCT_N.load(Ordering::Acquire);
+        let s1 = wake_src_total_wakes();
+        let n2 = WAKE_ACCT_N.load(Ordering::Acquire);
+        let s2 = wake_src_total_wakes();
+        if n1 == n2 && s1 == s2 {
+            return n1 == s1;
+        }
+        core::hint::spin_loop();
+    }
+    false
 }
 
 /// 源值 → 分类位（纯函数；ktest 面）。未定义源 = 0。

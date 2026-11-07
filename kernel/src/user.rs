@@ -1987,12 +1987,12 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                         WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
                     };
                     use crate::telemetry as tel;
-                    // ① 守恒：Σ槽 wakes == 独立总账（on_wake 两路同增——
-                    //    失衡 = 写点漏记账/多记）。
+                    // ① 守恒：双读稳定窗内 Σ槽 wakes == 独立总账。写序
+                    //    槽先、N 末位 Release；并发瞬态 Σ≥N，固定差值帽会
+                    //    被一次多任务广播假红，故不读一次即断等。
+                    assert!(tel::wake_acct_conserved(),
+                        "WAKESRC FAIL: 稳定窗槽和≠总账（wake 写点两路失联）");
                     let acct = tel::wake_acct_n();
-                    let sum = tel::wake_src_total_wakes();
-                    assert!(sum == acct,
-                        "WAKESRC FAIL: 槽和 {} ≠ 总账 {}（wake 写点两路失联）", sum, acct);
                     // ② 无主零容忍终检：NONE 哨兵/UNKNOWN 只许 IRQ 级到达
                     //    计数，wakes 恒 0（on_wake 写点 panic 在前，此处
                     //    收口防线）。

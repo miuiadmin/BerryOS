@@ -7,7 +7,8 @@
 //! 1. **per-CPU 语境 cell**（`AtomicU8`）：当前「唤醒归因语境」——下一次
 //!    `note_wake`（→ 内核 `on_wake` per-source 记账）应归的唤醒源。写点三处：
 //!    - `berry_sched::note_switch` 顶（任务语境基线 = `WAKE_SRC_IPC`：切入
-//!      任务/idle 即设，**含 park↔任务 null 对**——空对早退前先落基线）；
+//!      任务/idle 即设；park 派发 prev=null 不走 note_switch，故
+//!      `dispatch_from_park_ctx` 在 context_switch 前显式同写）；
 //!    - `exception_irq` 四臂前（save 旧值 → store `src_of(id)` → 分派 →
 //!      **单出口**恢复；SPURIOUS 早退在 store 之前，零字节窗口）。IRQ 不
 //!      嵌套（handler 全程 PSTATE.I=1）⇒ save/restore 窗同核串行闭合；

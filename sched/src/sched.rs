@@ -3192,6 +3192,9 @@ unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
     set_current(next_ptr);
     bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
+    // 刀1：park 派发无 note_switch（prev=null 不发射遥测），但任务语境基线
+    // 仍须落 IPC——否则 CPU1 首任务/下次 park 醒来前的唤醒会读到初始 NONE。
+    hal::wake::wake_src_task_ctx();
     hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
     // SAFETY: prev=本核 park ctx（惰性捕获——首次派发把调用帧存进本核槽）、
     // next 有效。next 首切经 trampoline eret 落 EL0；任务侧 block/preempt 回
