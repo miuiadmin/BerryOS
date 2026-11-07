@@ -172,7 +172,7 @@ python3 "$(dirname "$0")/gen_abi.py" --check \
   || { echo "smoke: FAIL: ABI 单源守卫失败（改了 abi.toml 跑 just abi-gen）" >&2; exit 1; }
 
 DEADLINE_BOOT=120    # 秒：boot 全部标记到齐（裸相）
-DEADLINE_ROOTFS=420  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
+DEADLINE_ROOTFS=600  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
                      # 自验含整链 commit（fsmgr 侧 ~13 次串行扇区 RPC，TCG
                      # 下每次 ~0.8s）+ GET 读回 ≈ +30-40s，120s 结构性不够；
                      # T-d 起 svcmgr TCPS 三 op（每 op 一轮 TCP 会话相位，
@@ -208,7 +208,15 @@ DEADLINE_ROOTFS=420  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # 不能倒）；**A3-3 起 SKT 链入 bsh 尾**（evs 后：
                      # ⓪ client 段单连接 RT ≈ T-c TCP 同量级 + ①纯本地
                      # 面 + ②两连接对拍 ≈ EVS 同量级——合计每相估
-                     # +10-30s，420 帽首跑盯实测，压力显性再升）
+                     # +10-30s，420 帽首跑盯实测，压力显性再升）；
+                     # **X-5 起 420→600**：musl 族 demand 化后逐页
+                     # fault→arm→0x23→醒往返 TCG 实测 ≈6 页/s（2026-11-08
+                     # 净窗复跑 kick 行定锚），hexyl 工作集 ~150-250 页
+                     # = +50-90s 装载（eager 时代 spawn 全幅预拷即完），
+                     # U1/APP 批同机制小工作集已消化；两跑同脸缺
+                     # HEXYL ok（verify 10s 帽误判慢为死，svcmgr 侧另修
+                     # HEXYL_EOF_CAP）+ 全链余量见底，依「压力显性再升」
+                     # 政策升 600。
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
 DEADLINE_BOOTC=420   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史：初值 300
                      # 沿 rootfs 相旧帽（Boot C = 同源 bsh 全链重跑），但

@@ -86,6 +86,15 @@ const ECHO_REQ: u64 = 0x00C0_FFEE_E000_0E30;
 const SVC_OK: &[u8; 7] = b"SVC ok\n";
 
 const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
+
+/// hexyl 终验活动帽（verify_hexyl 专用——与 [`TIMEOUT_NS`]（wait() 链断自陷
+/// 面）分立）：X-5 demand 化后 hexyl 工作集（clap/fmt 链 ~150-250 页）走
+/// 逐页 fault→arm→0x23→醒往返，TCG 实测 ≈6 页/s（2026-11-08 净窗复跑
+/// kick 行 sw 爬 12 圈/2s 定锚）→ 50-90s 级装载期；且 musl stdio 全缓冲
+/// （HEXYL_PLAIN 2156B < 4096）= exit 单刷，装载期零包不刷帽——10s 帽
+/// 把「慢」误判成「死」（kick dead + no EOF 双跑同脸定谳）。180s = 实测
+/// 最坏 ×2 余量；eager 时代 10s 即足（spawn 全幅预拷）。
+const HEXYL_EOF_CAP: u64 = 180 * 1_000_000_000;
 /// S-6 ③ 临终诊断用 console 柄快照（_start 首行单写；wait() 自陷前一读）
 /// ——console 逐层传参到不了 wait()（send_retry/roundtrip 均无此参），全局
 /// 快照是最小侵入面。0 = 未初始化（裸测/异常早跑）→ 诊断行跳过。
@@ -4353,6 +4362,8 @@ const U1_EOF_CAP: u64 = 60 * 1_000_000_000;
 /// （无 EOF → 打可见降级行，标记缺失 = smoke FAIL）。
 /// 比对通过后全表回放 console（人类可读面；与稳态矩阵插花无碍——已非
 /// 标记）。
+/// X-5 起 EOF 等待帽 = [`HEXYL_EOF_CAP`]（180s——demand 逐页往返装载期，
+/// 见其注；10s 帽时代 = eager 全幅预拷即完）。
 fn verify_hexyl(h: Handle, console: Handle) {
     // SAFETY: svcmgr 单线程独占（同 ELF_WIN/PUMP_WIN 纪律）。
     let cap: &mut [u8] =
@@ -4382,7 +4393,7 @@ fn verify_hexyl(h: Handle, console: Handle) {
         }
         // 空队：阻塞等 READABLE（10s 活动帽，收包刷新——慢而不僵不误杀）
         let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
+        if berry_object_wait_one(h, SIGNAL_READABLE, now() + HEXYL_EOF_CAP, &mut obs) != 0 {
             // X-5 踢门（u1 同款：复活续收——hexyl 需百页级供给，一轮踢门
             // ~5 页，多轮 wait→kick 循环缓爬；死寂才降级）。
             if stall_kick(console, b"hexyl", h) {
