@@ -244,6 +244,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/sigchild/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # sim-S1 M2-b：simbattery（sim 电池快照注入服务——UART1 帧字节流经
+    # task_simcon 转发至 fd0，逐字节 pwproto 解码 → seq 单调校验 → 9B ACK
+    # 回 gift[0] 端 + `SIMBAT ok seq=N` 单消息标记；svcmgr 门控预拉 = 表
+    # 0x0001_0005 在席（fw_cfg simdev 门开相）。stdhello 同链。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/simbattery/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     rm -rf userbins/app-stage userbins/app
     mkdir -p userbins/app-stage/APPDEMO/bin userbins/app-stage/APPQUIET/bin userbins/app
     cp bins/appdemo/manifest.toml userbins/app-stage/APPDEMO/
@@ -314,6 +321,7 @@ build-user:
         bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
         bin/rmdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir \
         bin/sigchild=cargo-target/aarch64-unknown-linux-musl/release/sigchild \
+        bin/simbattery=cargo-target/aarch64-unknown-linux-musl/release/simbattery \
         bin/sort=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/sort \
         bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
         bin/tail=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tail \

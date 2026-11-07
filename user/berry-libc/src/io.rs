@@ -247,6 +247,18 @@ pub fn wm_srv_h() -> u32 {
     unsafe { GIFT_H[0] }
 }
 
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（sim-S1 M2-b：simbattery 的
+/// ACK 通道 SEND 端——boot 手搭 simbattery↔task_simcon ACK 对后随 svcmgr
+/// 预拉 extras 首位交付，服务逐帧回 9B ACK（宿主 client 读回对拍面，
+/// `docs/sim设备通道与契约设计-v1.1.md` §6）；0 = 未交付 = 未在 sim 门相
+/// spawn（bsh 手跑/裸相），调用方单行诊断降级 park。与 [`rootfs_h`]/
+/// [`gift2_h`]/[`present_h`]/[`wm_cli_h`]/[`wm_srv_h`] 同槽不同名：spawn
+/// 侧同一 gift 位对不同程序承载不同对象（多产面惯例）。
+pub fn sim_ack_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
 /// env 块 extras[1]（gift[5] 位）的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
 /// RPC；0 = 未交付 = fs 未拉起，调用方降级「fs not available」不死）。
 pub fn fs_h() -> u32 {

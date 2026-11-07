@@ -525,6 +525,20 @@ const H_FBINFO: Handle = 0x0001_0006;
 /// 转发（满丢弃计数，见内核 console 任务体）。
 const H_FBPIPE: Handle = 0x0001_0007;
 
+/// sim-S1 M2-b：boot 手搭 sim 礼物对之**帧通道 RECV 端**第 5 插定值
+/// （`-kernel`+rootfs+fw_cfg `opt/berry/simdev` 门开相——task_simcon 转发
+/// 的 UART1 字节流对端）。**与 [`H_FB`] 同值异相**：fw_cfg 具名键在 EFI 路
+/// 不可见 → 门恒闭 → 两相结构性互斥，boot 侧 assert 绊网（并存即 boot 期
+/// 炸响，设计 v1.1 §4.4）。随 env 块 `stdin_handle` **take 迁入**
+/// simbattery 表（fd0，libc `stdin_h()`）。
+const H_SIM_RX: Handle = 0x0001_0005;
+
+/// sim 礼物对之 **ACK 通道 SEND 端**第 6 插定值（同上门相；与
+/// [`H_FBINFO`] 同值异相互斥）。simbattery 逐帧回 9B ACK 的对端；随 env
+/// 块 `extra_gifts[0]` **take 迁入**（libc `sim_ack_h()`——gift[0] 同槽
+/// 别名惯例）。宿主注入 client 经 serial1 读回 ACK 对拍（§7）。
+const H_SIM_ACK: Handle = 0x0001_0006;
+
 /// cpio 步进窗：头 110B + 名（mkcpio 名 ≤ 56B 绰绰有余，盖不住 = 诚实拒）。
 /// （ELF_WIN/PUMP_WIN/ELF_MAP_MAX 随 spawn_rootfs_elf 迁 berry-exec——A-2。）
 static mut STEP_WIN: [u8; 512] = [0; 512];
@@ -1571,6 +1585,41 @@ fn run_rootfs_child(console: Handle) {
                         eco_skip(b"bsh dup");
                     } else {
                         bsh_geom = Some((data_off, data_len));
+                    }
+                } else if name == "bin/simbattery" {
+                    // sim-S1 M2-b：sim 电池快照注入服务（常驻 daemon，
+                    // `docs/sim设备通道与契约设计-v1.1.md` §6）——fd0 = 帧
+                    // 通道 RECV 端（task_simcon 转发的 UART1 字节流）、
+                    // gift[0] = ACK SEND 端（libc `sim_ack_h()`）、fd1/2 =
+                    // console 直打。门 = boot 插的 sim 礼物对在席（dup 探针
+                    // -EBADF = 门闭）：**门闭静默跳过**——裸相/smoke/EFI 每
+                    // boot 都走本 arm，eco_skip 会污染无门相串口（B4 零扰动
+                    // 硬线）；门开 spawn 失败才 loud（SIMBAT 标记缺失 +
+                    // 宿主 client 超时双兜底）。常驻不 reap（hello 同款
+                    // ps_reg 入账）。
+                    let mut probe: Handle = 0;
+                    if berry_handle_duplicate(H_SIM_RX, RIGHT_RECV, &mut probe) == 0 {
+                        berry_handle_close(probe);
+                        match spawn_rootfs_elf(
+                            H_ROOTFS,
+                            &SpawnSpec {
+                                name: name.as_bytes(),
+                                data_off,
+                                data_len,
+                                stdout: console,
+                                stack_pages: 8,
+                                stdin_feed: None,
+                                stdin_handle: Some(H_SIM_RX),
+                                args: &[],
+                                extra_gifts: &[H_SIM_ACK],
+                                mmio_vmo: None,
+                                mmio_va: 0,
+                                intent: 0,
+                            },
+                        ) {
+                            Ok(_) => ps_reg(b"simbattery", psp::STATE_ALIVE, 0),
+                            Err(()) => eco_skip(b"sim spawn"),
+                        }
                     }
                 } else if name == "bin/vprobe" {
                     // P6 A-2：virtio-mmio 探测（用户态驱动地基第一刀）——
