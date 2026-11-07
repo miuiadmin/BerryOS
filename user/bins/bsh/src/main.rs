@@ -707,6 +707,7 @@ fn int_selftest() {
         mmio_vmo: None,
         mmio_va: 0,
         intent: 0,
+        force_eager: false,
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -3113,6 +3114,7 @@ fn sig_selftest() {
         mmio_vmo: None,
         mmio_va: 0,
         intent: 0,
+        force_eager: false,
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -3503,6 +3505,7 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
         mmio_vmo: None,
         mmio_va: 0,
         intent: 0,
+        force_eager: false,
     };
     let (data, code) = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
         // C-4b：交互态 = 前台 Ctrl-C 武装（collect_fg 三项等待）；boot 自验
@@ -4640,6 +4643,7 @@ fn pipe_capture(
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
+            force_eager: false,
         };
         match spawn_rootfs_elf(rootfs_h(), &spec) {
             Ok(c) => children.push(c),
@@ -5418,6 +5422,7 @@ fn run_capture_gifts_cap(
         mmio_vmo: None,
         mmio_va: 0,
         intent: 0,
+        force_eager: false,
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,

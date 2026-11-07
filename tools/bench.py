@@ -59,7 +59,7 @@
   python3 tools/bench.py --rt        # R-1：裸跑（fw_cfg 门控 rt_probe）出三档表
   python3 tools/bench.py --lat       # G3-4 bench-lat：-smp 2（fw_cfg 门控 lat 对）
                                       # wake→run 出 lane 表（IPC 路在册）
-  python3 tools/bench.py --dpg       # G4-3 D/E 刀 + X-4 exec 面：dpgb / dpge+dpgx 变体卷双 boot
+  python3 tools/bench.py --dpg       # G4-3 D/E 刀 + X-4/X-5 exec 面：dpgb / dpge+dpgx+x5 变体卷双 boot
                                       #（D 首触延迟出表 + E footprint 差分断言）
   python3 tools/bench.py --icount    # B-2：-icount 确定性跑一次 + L2 对拍
                                       #（无基线 = 只出表 + 提示 --update）
@@ -133,11 +133,11 @@ BOOT_TIMEOUT_LAT = 240
 # G4-3 D 刀帽（--dpg D 臂）：rootfs 走查 ~60-90s + dpg_bench 32 供给（TCG
 # 弹性）+ 余量——300s = ~3x。
 DPG_BOOT_TIMEOUT_D = 600
-# G4-3 E 刀帽（--dpg E 臂）：boot ~60s + **两帧**（X-4 起 DPGE 帧后叠 DPGX
-# exec 差分帧：各预滚 340s + 4×130s 窗）+ spawn/poll 余量 ≈ 30min guest 钟
-# （TCG guest 钟 = 墙钟，§A8；宿主争用面 §A128 只多不少）——2600s ≈ 1.4x
-# 余量；超帽 loud 上报不硬凑绿。
-DPG_BOOT_TIMEOUT_E = 2600
+# G4-3 E 刀帽（--dpg E 臂）：boot ~60s + **三帧**（X-4 起 DPGE 帧后叠 DPGX
+# exec 差分帧；X-5 起再叠 X5 现役 bin 差分帧：各预滚 340s + 4×130s 窗）
+# + spawn/poll 余量 ≈ 42min guest 钟（TCG guest 钟 = 墙钟，§A8；宿主争用面
+# §A128 只多不少）——3600s ≈ 1.4x 余量；超帽 loud 上报不硬凑绿。
+DPG_BOOT_TIMEOUT_E = 3600
 # B-2 通道帽：与 vanilla BOOT_TIMEOUT=120 同口径、不放大。实测依据（M 系
 # mac，QEMU 11.0.3，2026-10-27 首跑探针）：boot 到 BENCHWAKE 全程 ≈2s——
 # sleep=off 下虚拟时钟纯指令驱动，「-icount 慢 2-4x」预期被实测反驳
@@ -648,6 +648,9 @@ DPGE_MARKERS = ("DPGE A", "DPGE B", "DPGE C", "DPGE E")
 # X-4 E 面 exec 差分帧标记（svcmgr dpgx_foot 行；帧序 A→B→C→E，DPGE 同形）
 # ——非锚定子串 find 同上；`DPGX ready` 走私有通道不进串口，不作断言面。
 DPGX_MARKERS = ("DPGX A", "DPGX B", "DPGX C", "DPGX E")
+# X-5 现役 bin 差分帧标记（svcmgr x5_foot 行；帧序 A→B→C→E，DPGX 同形）
+# ——hexyl/grep 停泊双胎 demand vs eager 装载差分（第三组 d''<e''）。
+X5_MARKERS = ("X5 A", "X5 B", "X5 C", "X5 E")
 # soakmon 心跳 pages= 字段（内核 main.rs 9 字段行 `SOAK t=… pages=<n> lost=…`；
 # 60s 拍、首拍潜伏 5 拍 ≈ 300s）。**非锚定**同 DPGB_RE——内核行也会被并发
 # 前缀拼行（switches= 实证）；行内原子性由单次 uart_puts 整行写保证。
@@ -670,7 +673,7 @@ def dpg_variant(*gates: str) -> list[Path]:
     """门控变体卷集：末卷 TRAILER 前手术追各 `<gate>.on` 空档（smoke-
     dpgsoak 同款 newc 逻辑；TRAILER 名域 rfind 定位 = 档尾真 trailer，数据
     内偶合 ASCII 被跳过——rootfs0 卷内十余处数据偶合实证同防；X-4 起 E 臂
-    双门 dpge+dpgx 同卷共递；X-3c 后 rootfs 越单卷帽，手术面从 rootfs.cpio
+    三门 dpge+dpgx+x5 同卷共递；X-3c 后 rootfs 越单卷帽，手术面从 rootfs.cpio
     迁末 split 卷——门档落归档尾 = 与单卷时代同字节位）。确定性产物：同输入
     同字节。返回 = 递送序全卷（前缀卷原样引用 + 手术末卷）。"""
     sys.path.insert(0, str(REPO / "tools"))
@@ -722,7 +725,7 @@ def dpg_boot(kernel: str, volumes: list[Path], soak: bool, done_pat: str,
     # 门控串预检（smoke-dpgsoak :44 同款）：内核 ELF 缺 dpg 手排/相位串 =
     # 陈旧内核（改嵌用户 bin 未重建——§A53 两遍构建纪律）——预拒不烧帽。
     kernel_blob = Path(kernel).read_bytes()
-    for sig in (b"DPGB p50=", b"DPGE A", b"DPGX A"):
+    for sig in (b"DPGB p50=", b"DPGE A", b"DPGX A", b"X5 A"):
         if sig not in kernel_blob:
             raise SystemExit(
                 f"bench.py: 内核 ELF 无 `{sig.decode()}` 串——陈旧内核（改嵌"
@@ -814,14 +817,17 @@ def run_dpg(kernel: str) -> None:
 
     D 臂（dpgb.on）：单子 32 页顺序首触 × 一对一供给，faulter 侧 clock 环夹
     → `DPGB p50= p99= min= max= n=32` 收割出表。
-    E 臂（dpge.on + dpgx.on + opt/berry/soak，X-4 起双门同卷）：DPGE 帧 =
+    E 臂（dpge.on + dpgx.on + x5.on + opt/berry/soak，X-5 起三门同卷）：DPGE 帧 =
     demand 8 触 vs eager 32 页 commit 的 soakmon `pages=` 心拍差分——「标记
     前最近拍」配对 d=pB−pA / e=pC−pB（**窗在标记前** = svcmgr dpg_foot 帧
     序契约），d<e 结构断言（demand 省 ≈24 页面 + 元页）；帧序 DPGE A→B→C→E
     + 相邻标记间 ≥2 拍窗完整性。DPGX 帧（X-4 E 面 exec 实装载差分）= 同形
     帧跑 bin/dpgx 双生 spawn（demand 胎 = congruent 单 k 特形真消费者；
     eager 胎 = EagerGuard 摘钩对照，唯一变量 = 装载分支）——第二组 d'<e'
-    配对 + 同套帧序/窗完整性断言；done 标记 = `DPGX E`（全帧最后行）。
+    配对 + 同套帧序/窗完整性断言。X5 帧（X-5 现役 bin 差分）= 同形帧跑
+    bin/hexyl+bin/grep 停泊双胎（demand 双胎 stdin 持端停泊锚 warm 集 vs
+    eager 双胎全幅 commit）——第三组 d''<e'' 配对 + 同套断言；done 标记 =
+    `X5 E`（全帧最后行）。
     """
     if not ROOTFS.exists():
         raise SystemExit("bench.py: rootfs.cpio 缺席——先 just build-user")
@@ -851,7 +857,7 @@ def run_dpg(kernel: str) -> None:
     write_receipt("dpg-d", text_d,
                   f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}")
     # E 臂。
-    text_e = dpg_boot(kernel, dpg_variant("dpge", "dpgx"), True, "DPGX E",
+    text_e = dpg_boot(kernel, dpg_variant("dpge", "dpgx", "x5"), True, "X5 E",
                       DPG_BOOT_TIMEOUT_E, "e")
     beats = [(b.start(), int(b.group(1))) for b in SOAK_PAGES_RE.finditer(text_e)]
     if not beats:
@@ -923,11 +929,48 @@ def run_dpg(kernel: str) -> None:
             f" 装载触集应小于 eager 胎全幅 commit；pA'={xa} pB'={xb} pC'={xc}）")
     print(f"[X-4(X)] pA'={xa} pB'={xb} pC'={xc} | d'(demand胎exec)={dx} "
           f"e'(eager胎全幅)={ex} | d'<e' ok（差 {ex - dx} 页）")
+    # X-5 面（现役 musl 多段族 exec demand 化差分）：X5 帧同套断言——帧序/
+    # 叠序（X5 A 后随 DPGX E）/≥2 拍窗完整性/第三组 d''<e''（demand 双胎
+    # 停泊 warm 集 vs eager 双胎全幅 commit）。
+    pos_x5: dict[str, int] = {}
+    for mk in X5_MARKERS:
+        p = text_e.find(mk)
+        if p < 0:
+            raise SystemExit(f"bench.py: E 臂 `{mk}` 标记缺席（X-5 帧中断）")
+        pos_x5[mk] = p
+    if [pos_x5[mk] for mk in X5_MARKERS] != sorted(pos_x5.values()):
+        raise SystemExit(f"bench.py: E 臂 X5 标记行序错乱（{pos_x5}）")
+    if pos_x["DPGX E"] >= pos_x5["X5 A"]:
+        raise SystemExit("bench.py: E 臂 X5 A 未后随 DPGX E（帧叠序破）")
+    last_x5: dict[str, int] = {}
+    for mk, p in pos_x5.items():
+        prev = [v for s, v in beats if s < p]
+        if not prev:
+            raise SystemExit(
+                f"bench.py: E 臂 `{mk}` 前无 SOAK 拍（X-5 预滚不足？）")
+        last_x5[mk] = prev[-1]
+    for lo, hi in (("X5 A", "X5 B"), ("X5 B", "X5 C"), ("X5 C", "X5 E")):
+        n_between = sum(1 for s, _ in beats if pos_x5[lo] < s < pos_x5[hi])
+        if n_between < 2:
+            raise SystemExit(
+                f"bench.py: E 臂 {lo}→{hi} 窗内拍数 {n_between} < 2（X-5 帧"
+                "窗口/心跳契约破）")
+    x5a, x5b, x5c = last_x5["X5 A"], last_x5["X5 B"], last_x5["X5 C"]
+    dx5, ex5 = x5b - x5a, x5c - x5b
+    if not (dx5 < ex5):
+        raise SystemExit(
+            f"bench.py: X-5 结构断言败：d''={dx5} !< e''={ex5}（demand 双胎"
+            f"停泊 warm 集应小于 eager 双胎全幅 commit；pA''={x5a} "
+            f"pB''={x5b} pC''={x5c}）")
+    print(f"[X-5(X5)] pA''={x5a} pB''={x5b} pC''={x5c} | "
+          f"d''(demand双胎停泊)={dx5} e''(eager双胎全幅)={ex5} | "
+          f"d''<e'' ok（差 {ex5 - dx5} 页）")
     write_receipt(
         "dpg", text_d + "\n===== E 臂 =====\n" + text_e,
         f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}\n"
         f"E: pA={pa} pB={pb} pC={pc} d={d} e={e} (d<e)\n"
-        f"X: pA'={xa} pB'={xb} pC'={xc} d'={dx} e'={ex} (d'<e')")
+        f"X: pA'={xa} pB'={xb} pC'={xc} d'={dx} e'={ex} (d'<e')\n"
+        f"X5: pA''={x5a} pB''={x5b} pC''={x5c} d''={dx5} e''={ex5} (d''<e'')")
 
 
 def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], dict[str, int], str]:

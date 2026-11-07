@@ -50,17 +50,18 @@ static mut STEP_WIN: [u8; 512] = [0; 512];
 /// 面），按解析侧同款契约 Err 降级；真实 std 镜像 ~283KB，余量充足。
 const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
 
-// —— X-3c demand 装载钩子面 ——
+// —— X-3c/X-5 demand 装载钩子面 ——
 //
 // 注入式可选路径：svcmgr boot 期（`set_demand_hooks`）把 pager 寄存表
 // 钩子注入本 crate；bsh **从不注入** → 其链接副本恒 None → 永远 eager
 // = exec 面零漂移隔离 by construction（X-3 spec：bsh 面保持 eager）。
-/// 注册钩子：demand 双 VMO（file 域 + 零尾域）入寄存表；返 false = 槽满
-/// → 调用方 eager 回退。
-pub type DemandRegFn = fn(dv_file: Handle, dv_zero: Handle, sv: Handle, delta: i64) -> bool;
-/// 注销钩子：reap 在 close demand VMO **前**调（防句柄值复用后 pager 误供
-/// 新主——槽表按 dv 值扫描回收）。
-pub type DemandUnregFn = fn(dv_file: Handle, dv_zero: Handle);
+/// 注册钩子（X-5 起逐窗）：一窗 = (dv, sv, delta) 三元组——file 窗
+/// sv=rootfs 恒等供给、零窗 sv=0（内核 0x23 零页臂，delta 恒 0）；返
+/// false = 槽满 → 调用方回滚已注窗走 eager。
+pub type DemandRegFn = fn(dv: Handle, sv: Handle, delta: i64) -> bool;
+/// 注销钩子（逐窗）：reap 在 close demand VMO **前**调（防句柄值复用后
+/// pager 误供新主——槽表按 dv 值扫描回收）。
+pub type DemandUnregFn = fn(dv: Handle);
 
 static mut DEMAND_REG: Option<DemandRegFn> = None;
 static mut DEMAND_UNREG: Option<DemandUnregFn> = None;
@@ -78,6 +79,12 @@ pub fn set_demand_hooks(reg: DemandRegFn, unreg: DemandUnregFn) {
 fn demand_reg_hook() -> Option<DemandRegFn> {
     // SAFETY: 只读（boot 后无写者——单调用方契约）。
     unsafe { core::ptr::addr_of!(DEMAND_REG).read() }
+}
+
+/// 读注销钩子（spawn 半途回滚 + reap 摘槽两用；None = 未注入 → 跳过）。
+fn demand_unreg_hook() -> Option<DemandUnregFn> {
+    // SAFETY: 只读（同上）。
+    unsafe { core::ptr::addr_of!(DEMAND_UNREG).read() }
 }
 
 /// X-4b eager 双生护栏：临时摘 demand 钩子（两 static None 化，Drop 原值
@@ -114,101 +121,166 @@ impl Drop for EagerGuard {
     }
 }
 
-/// X-3c congruent 门（demand 装载资格检，纯几何 + 根档尾读）——通过 =
-/// `Some((S, delta))`：S = file 背书幅（页顶），delta = 0x23 恒等供给常数
-/// （映像页偏 p 的源偏 = p + delta，即 rootfs 内 ELF 首字节对映像基 0 页
-/// 的偏移差）。五门任一不满足 → None → eager 回退（非 congruent ELF 永有
-/// eager 兜底）：
-/// (a) 全部 filesz>0 的 PT_LOAD 同一 `file_off − vaddr` 常量 k（**现役
-///     musl 族 berry-ld 产物恒假**：X-4 宿主清点 24 bins 全为 3-4 段多 k
-///     分段布局 {−0x20{0,1,2,3}000}、base=0x200000——分段各持异 k →
-///     (a) 拒 → eager 兜底为 exec 装载常态；单 k 需链接特形，首例 =
-///     dpgx `link-dpgx.ld` 单 PT_LOAD（k=−0x1ff000 页倍数）。X-3 期旧注
-///     「musl 恒真」系笔误，X-4 修正。纯 bss 段（filesz==0）无文件面，
-///     不参与）；
-/// (b) data_off 页对齐（mkcpio X-3c 垫页几何产链兑现，此处只验不垫）；
-/// (c) delta ≥ 0 且页对齐（0x23 的 `delta % PAGE` EINVAL 门 + 源偏下溢面）；
-/// (d) S ∈ (0, len]（S == len = 无零尾域的合法满幅形）；
-/// (e) delta + S ≤ rootfs 幅（越界供给 = faulter 永久重试 livelock，
-///     资格层拦死——ELF 头谎报 filesz 的输入面）。
-/// 另有 (f) live-bss 尾零验（函数体内）：demand 供给页 = rootfs 原字节
-/// 整页、eager 侧 bss 恒零——凡 memsz>filesz 段的 bss 落在 file 域
-/// [base, base+S) 内的字节（musl 族常态 = 末段尾页 ≤4095B）须根档原字节
-/// 全零，否则 eager 回退（否则 .bss 首页会被 symtab 类文件尾字节污染）。
-fn demand_plan(
+/// X-5 映像窗数帽（berry-exec 侧规划/回收表容量；怪形 ELF 超 → None →
+/// eager 兜底不硬塞）。现役 musl 族 4 PT_LOAD 实测 8 窗（4 file + 3
+/// hybrid + 1 零尾）——16 留一倍余量。
+pub const WIN_MAX: usize = 16;
+
+/// X-5 窗计划条目（`demand_plan_wins` 产物）：映像幅内一段连续页域的
+/// 装载法。三色窗升序铺满 [base, base+len)——eager 全幅单 VMO 语义的
+/// demand 分解（file 字节按窗恒等供给、其余页恒零）。
+#[derive(Clone, Copy)]
+struct WinPlan {
+    /// 窗基（绝对 VA；页对齐）。
+    start: u64,
+    /// 窗幅（页倍数；hybrid 恒 1 页）。
+    len: u64,
+    kind: WinKind,
+}
+
+#[derive(Clone, Copy)]
+enum WinKind {
+    /// file 域 demand 窗：0x23(dv, rootfs, delta) 恒等供给——窗内页偏 p
+    /// 的源偏 = p + delta（**本窗自己的**常数：delta_i = data_off +
+    /// k_i + wstart，k_i = 该段 file_off − vaddr——X-3c 单 k 全局门在此
+    /// 逐段化，musl 族 {−0x20{0,1,2,3}000} 多 k 布局由此过门）。
+    File { delta: i64 },
+    /// 零域 demand 窗：0x23(dv, 0, 0) 内核零页臂——段间 gap / 纯 bss
+    /// 段 / 末尾域（eager 全幅 VMO 零语义的 demand 等价面）。
+    Zero,
+    /// hybrid 尾页（eager 预填 1 页）：段尾 filesz 非页对齐时的混合页
+    /// ——前 `flen` 字节 = 根档 `soff` 起的段尾文件字节、余零。该页的
+    /// 文件侧背后（根档坐标）已是**下一段首字节**，demand 整页供给会
+    /// 把邻段字节灌进本段 bss 尾（X-3c 检查 (f) 在 musl 族恒拒的根因
+    /// ——bss 尾页与邻段文件字节同页共存）——eager 预填是零污染解
+    /// （内核 0x23 无部分页供给面，v1 ABI 冻结不扩；X-5 起 (f) 整条
+    /// 退役：混合页不再走 demand 供给面）。
+    Hybrid { soff: u64, flen: u32 },
+}
+
+/// X-5 多窗 congruent 门（X-3c 单 k 门对现役 musl 多段族的推广；纯几何
+/// + 根幅验，**零根档内容读**——(f) live-bss 尾零验退役，见
+/// `WinKind::Hybrid`）。各门任一不满足 → None → eager 回退（非
+/// congruent ELF 永有 eager 兜底）：
+/// (a') 段序 = vaddr 升序且窗页不相交（含「本段文件窗扎进前段 hybrid
+///      页」形；berry-ld musl 族 3-4 段恒升序页邻接，X-4 宿主清点 24
+///      bins 全过；纯 bss 段 filesz==0 不参与——其页域由零窗覆盖）；
+/// (b)  data_off 页对齐（mkcpio X-3c 垫页几何产链兑现，此处只验不垫）；
+/// (c') 每段 k_i = file_off − vaddr 页倍数（0x23 `delta % PAGE` EINVAL
+///      门的窗级化：k_i 页倍 + data_off/wstart 页对齐 ⇒ delta_i 自动
+///      页对齐，只需再拦 delta_i < 0 下溢面）；
+/// (d') 每窗顶 ≤ base+len（X-3c (d) 的逐窗版——filesz 谎报在几何层拦）；
+/// (e') 每窗源域在 rootfs 幅内：delta_i + wlen ≤ cap / hybrid 的
+///      soff+flen ≤ cap（越界供给 = faulter 永久重试 livelock，资格层
+///      拦死——ELF 头谎报 filesz 的输入面）。
+/// 窗数 > `WIN_MAX` 或全段 filesz==0（无 file 面，X-3c `k?` 同款保守
+/// 拒）→ None。通过 = `Some(nw)`：out[..nw] 升序**完备**铺满
+/// [base, base+len)（walk 保证——reap 逐窗 unmap 即全幅回收）。
+fn demand_plan_wins(
     h: &berry_loader::ElfHead,
     base: u64,
     len: u64,
     data_off: u64,
     h_rootfs: Handle,
-) -> Option<(u64, i64)> {
-    let mut k: Option<i64> = None;
-    let mut fmax = base; // 文件背书上界（映像坐标）
-    for seg in h.segments() {
-        if seg.filesz == 0 {
-            continue;
-        }
-        let fe = seg.vaddr.checked_add(seg.filesz)?;
-        fmax = fmax.max(fe);
-        // i64 域安全：file_off/vaddr 均 < USER_TOP=2^39。
-        let sk = (seg.file_off as i64) - (seg.vaddr as i64);
-        match k {
-            None => k = Some(sk),
-            Some(prev) if prev == sk => {}
-            Some(_) => return None, // (a) 多常量 → 非 congruent
-        }
-    }
-    let k = k?;
-    let ps = berry_loader::PAGE_SIZE as i64;
-    // (b)+(c)：delta = data_off + base + k（i64 域内：三项均 < 2^40）。
-    let delta = data_off as i64 + base as i64 + k;
-    if delta < 0 || delta % ps != 0 {
+    out: &mut [WinPlan],
+) -> Option<usize> {
+    // (b)：data_off 页对齐。
+    if data_off % berry_loader::PAGE_SIZE as u64 != 0 {
         return None;
     }
-    // (d)：S = 页顶(fmax) − base（filesz>0 段存在 ⇒ fmax > base ⇒ S > 0）。
-    let s = berry_loader::page_ceil(fmax) - base;
-    if s == 0 || s > len {
-        return None;
-    }
-    // (e)：根幅门（get_size 失败 = 无 rootfs 面，eager 由调用方 pump 报）。
+    // 根幅门基准（get_size 失败 = 无 rootfs 面，eager 由调用方 pump 报）。
     let mut cap = 0u64;
     if berry_vmo_get_size(h_rootfs, &mut cap) != 0 {
         return None;
     }
-    if (delta as u64).checked_add(s)? > cap {
-        return None;
-    }
-    // (f)：live-bss 尾零验（全段通用形；musl 族常态恰一段一次短读）。
-    let fs_top = base + s;
+    let top = base.checked_add(len)?;
+    let mut nw = 0usize;
+    let mut nfile = 0usize;
+    let mut cursor = base; // 已规划上沿（零覆盖游标）
     for seg in h.segments() {
-        if seg.memsz <= seg.filesz {
-            continue;
+        if seg.filesz == 0 {
+            continue; // 纯 bss 段：页域由零窗/gap 收口
         }
-        let vend = seg.vaddr.checked_add(seg.memsz)?;
-        let fe = seg.vaddr.checked_add(seg.filesz)?;
-        let lo = fe.max(base);
-        let hi = vend.min(fs_top);
-        if lo >= hi {
-            continue; // bss 全在零尾 VMO（或空）
+        let wlo = berry_loader::page_floor(seg.vaddr);
+        let fend = seg.vaddr.checked_add(seg.filesz)?;
+        let ftop = berry_loader::page_floor(fend);
+        let whi = berry_loader::page_ceil(fend);
+        // (a')+(d')：升序不重叠 + 窗顶在映像幅内。
+        if wlo < cursor || whi > top {
+            return None;
         }
-        // SAFETY: 调用方单线程顺序调用，本窗独占（eager 段泵同窗后行）。
-        let win: &mut [u8] = unsafe {
-            core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PUMP_WIN) as *mut u8, 4096)
-        };
-        let mut off = lo;
-        while off < hi {
-            let n = ((hi - off).min(win.len() as u64)) as usize;
-            let foff = delta as u64 + (off - base);
-            if berry_vmo_read(h_rootfs, win.as_mut_ptr(), foff, n) != 0 {
+        // (c')：k_i 页倍数（i64 域安全：file_off/vaddr 均 < USER_TOP=2^39）。
+        let k = (seg.file_off as i64) - (seg.vaddr as i64);
+        if k % berry_loader::PAGE_SIZE as i64 != 0 {
+            return None;
+        }
+        // gap 零窗 [cursor, wlo)（段前空档——eager 零语义等价）。
+        if wlo > cursor {
+            if nw == out.len() {
                 return None;
             }
-            if win[..n].iter().any(|&b| b != 0) {
-                return None; // bss 位文件字节非零 → eager（零语义保真）
-            }
-            off += n as u64;
+            out[nw] = WinPlan {
+                start: cursor,
+                len: wlo - cursor,
+                kind: WinKind::Zero,
+            };
+            nw += 1;
         }
+        // file 窗 [wlo, ftop)：delta_i = data_off + k_i + wlo（推导：窗内
+        // va 的绝对源偏 = data_off + file_off + (va − vaddr) = data_off +
+        // k_i + va = delta_i + (va − wlo)，toff = va − wlo）。
+        if ftop > wlo {
+            let delta = data_off as i64 + k + wlo as i64;
+            // (e')：下溢 + 根幅（checked 链防谎报 filesz 溢出）。
+            if delta < 0 || (delta as u64).checked_add(ftop - wlo)? > cap {
+                return None;
+            }
+            if nw == out.len() {
+                return None;
+            }
+            out[nw] = WinPlan {
+                start: wlo,
+                len: ftop - wlo,
+                kind: WinKind::File { delta },
+            };
+            nw += 1;
+            nfile += 1;
+        }
+        // hybrid 尾页 [ftop, whi)：段尾非页对齐时整页 eager 预填。
+        if whi > ftop {
+            let soff = (data_off as i64 + k + ftop as i64) as u64;
+            let flen = (fend - ftop) as u32;
+            if soff.checked_add(flen as u64)? > cap {
+                return None; // (e') hybrid 面
+            }
+            if nw == out.len() {
+                return None;
+            }
+            out[nw] = WinPlan {
+                start: ftop,
+                len: whi - ftop,
+                kind: WinKind::Hybrid { soff, flen },
+            };
+            nw += 1;
+        }
+        cursor = whi;
     }
-    Some((s, delta))
+    if nfile == 0 {
+        return None; // 无 file 面（X-3c `k?` 同款保守拒——全零映像无 demand 意义）
+    }
+    // 末零窗 [cursor, top)：末段 bss/尾域收口（walk 完备性保证）。
+    if cursor < top {
+        if nw == out.len() {
+            return None;
+        }
+        out[nw] = WinPlan {
+            start: cursor,
+            len: top - cursor,
+            kind: WinKind::Zero,
+        };
+        nw += 1;
+    }
+    Some(nw)
 }
 
 /// `ChildHandles::reap` 的等待帽（绝对）：EOF 先行约定下子进程退出在
@@ -235,6 +307,21 @@ pub const VIRTIO_MMIO_SLOTS: usize = 32;
 /// 单槽寄存器组幅（virtio 1.x 规范）。
 pub const VIRTIO_MMIO_STRIDE: usize = 0x200;
 
+/// 单窗回收记录（X-5）：`ChildHandles::wins` 表的一项——三色窗统一
+/// 回收面（demand 窗注销 → 逐窗 unmap → 逐窗 close）。
+#[derive(Clone, Copy)]
+pub struct ChildWin {
+    /// 窗 VMO 句柄（0 = 空槽；demand 窗 = `VMO_OPT_DEMAND`、hybrid 窗 =
+    /// 常规预填页、eager 路 = 全幅单窗）。
+    pub vmo: Handle,
+    /// 窗基（绝对 VA，页对齐）+ 幅（页倍数）。
+    pub start: u64,
+    pub len: u64,
+    /// demand 窗标记（true = reap 先经注销钩子摘 pager 槽再回收；
+    /// hybrid/eager 窗 false——无 pager 面）。
+    pub demand: bool,
+}
+
 /// [`spawn_rootfs_elf`] 的产物（Plan B v0.5）：回收面所需的全部子进程
 /// 句柄 + 几何。**所有权归调用方**——不回收 = 有界泄漏（v1 前 `run` 一次
 /// 漏一个子进程的旧常态）；`reap()` = 完整回收链。
@@ -245,24 +332,17 @@ pub struct ChildHandles {
     pub hv: Handle,
     /// thread handle。
     pub ht: Handle,
-    /// 映像 VMO（unmap 后 close = destroy → Drop 还帧）。
-    pub vmo: Handle,
-    /// 栈 VMO（同上）。
+    /// 栈 VMO（unmap 后 close = destroy → Drop 还帧）。
     pub svmo: Handle,
-    /// 映像映射基址/幅（unmap 精确匹配用）。X-3c demand 路 = file 域幅 S
-    ///（零尾域幅另计 [`Self::zlen`]）；eager 路 = 全幅 len。
-    pub img_base: u64,
-    pub img_len: u64,
-    /// 零尾 demand VMO（X-3c；0 = eager 路 / demand 无零尾——reap 第三
-    /// unmap 与第四 close 以 zlen/自身值双缺席判）。
-    pub zvmo: Handle,
-    /// 零尾域幅（映像坐标 [img_base+img_len, +zlen)；0 = 缺席）。
-    pub zlen: u64,
+    /// 映像窗表（X-5：升序铺满映像幅 [base, base+len)——demand 路 =
+    /// 规划窗序、eager 路 = 全幅单窗；`wins[..nwin]` 为有效前缀）。
+    pub wins: [ChildWin; WIN_MAX],
+    pub nwin: usize,
     /// 栈映射基址/幅。
     pub stack_va: u64,
     pub stack_len: u64,
     /// MMIO 窗口映射基址/幅（P6 A-2；幅 0 = 无窗口——`SpawnSpec::mmio_vmo`
-    /// 为 None 时）。reap 第三 unmap 用（mapcnt 归零，设备窗口不受影响——
+    /// 为 None 时）。reap 末刀 unmap 用（mapcnt 归零，设备窗口不受影响——
     /// 只清叶失效 TLB）。
     pub mmio_base: u64,
     pub mmio_len: u64,
@@ -295,39 +375,51 @@ impl ChildHandles {
         if berry_process_get_exit_code(self.hp, &mut code) != 0 {
             return Err(());
         }
-        // X-3c：demand 槽注销——**先于 close dv**（防句柄值复用后 pager 误供
-        // 新主）。按值扫描在活句柄域内唯一 ⇒ eager 子（vmo 非 demand VMO）
-        // 无假命中；钩子缺席（bsh 副本）= 恒跳过，零漂移。
+        // X-5：demand 槽注销——**先于 close dv**（防句柄值复用后 pager 误供
+        // 新主）。按值扫描在活句柄域内唯一 ⇒ hybrid/eager 窗（非 demand
+        // VMO）无假命中；钩子缺席（bsh 副本）= 恒跳过，零漂移。
         // SAFETY: 只读（boot 后无写者）。
         if let Some(unreg) = unsafe { core::ptr::addr_of!(DEMAND_UNREG).read() } {
-            unreg(self.vmo, self.zvmo);
+            for w in &self.wins[..self.nwin] {
+                if w.demand {
+                    unreg(w.vmo);
+                }
+            }
         }
-        if berry_vmar_unmap(self.hv, self.img_base as usize, self.img_len as usize) != 0
-            || berry_vmar_unmap(self.hv, self.stack_va as usize, self.stack_len as usize) != 0
-        {
-            return Err(());
+        // 逐窗 unmap（X-5：窗表升序铺满映像幅——逐刀即全幅）+ 栈/MMIO。
+        // 任一失败记账不早退（后续 close 照走——比早退泄漏面更紧；失败
+        // 路径只影响死账可观测面，绿色路径零差）。
+        let mut ok = true;
+        for w in &self.wins[..self.nwin] {
+            if w.vmo != 0 && berry_vmar_unmap(self.hv, w.start as usize, w.len as usize) != 0 {
+                ok = false;
+            }
         }
-        if self.zlen != 0
-            && berry_vmar_unmap(
-                self.hv,
-                (self.img_base + self.img_len) as usize,
-                self.zlen as usize,
-            ) != 0
-        {
-            return Err(()); // 零尾域残留（AS 将销毁，只脏死表）
+        if berry_vmar_unmap(self.hv, self.stack_va as usize, self.stack_len as usize) != 0 {
+            ok = false;
         }
         if self.mmio_len != 0
             && berry_vmar_unmap(self.hv, self.mmio_base as usize, self.mmio_len as usize) != 0
         {
-            return Err(()); // 设备窗口 unmap 失败 = 叶残留（AS 将销毁，只脏死表）
+            ok = false; // 设备窗口 unmap 失败 = 叶残留（AS 将销毁，只脏死表）
         }
-        if berry_handle_close(self.svmo) != 0
-            || berry_handle_close(self.vmo) != 0
-            || (self.zvmo != 0 && berry_handle_close(self.zvmo) != 0)
-            || berry_handle_close(self.ht) != 0
+        // close 链：栈 VMO → 各窗 VMO → thread/vmar/process（destroy-close
+        // 不再拒，Drop 还帧）。
+        if berry_handle_close(self.svmo) != 0 {
+            ok = false;
+        }
+        for w in &self.wins[..self.nwin] {
+            if w.vmo != 0 && berry_handle_close(w.vmo) != 0 {
+                ok = false;
+            }
+        }
+        if berry_handle_close(self.ht) != 0
             || berry_handle_close(self.hv) != 0
             || berry_handle_close(self.hp) != 0
         {
+            ok = false;
+        }
+        if !ok {
             return Err(());
         }
         Ok(code)
@@ -420,6 +512,14 @@ pub struct SpawnSpec<'a> {
     /// -EINVAL 走本 crate syscall 面自陷纪律 trap()——消费面保持 0，内核
     /// 收 intent 后（ADR #42 v2 段）此口自然激活。
     pub intent: u8,
+    /// X-5 常驻豁免：true = 跳过 demand 规划直走 eager。恢复 X-3c-3 让位
+    /// 闸的隔离不变式「dpg 窗内无外来在册 demand 窗」——长命常驻子
+    /// （vblk/guifbd/gui-wmd/fsmgr/vnet/gui-inputd/bsh）任意时刻武装缺页
+    /// 会毒化 0x21 全局取货（rvmo≠dv 身份错配 EINVAL 单发 bail）+ hold
+    /// 期供给暂停挂常驻子（首轮 X-5 smoke 实炸：`eco: dpg sup` 后死寂 /
+    /// INPUT 步挂死）。短命测试族保持 demand（X-5 足迹收益主体）；dpg 自
+    /// 测族子必须 false（0x21 测试本体）。
+    pub force_eager: bool,
 }
 
 /// rootfs ELF 流式拉起（页铺平单 VMO，同 `tools/elf2flat.py` 语义）：
@@ -449,6 +549,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         mmio_vmo,
         mmio_va,
         intent,
+        force_eager,
     } = spec;
     assert!(
         stdin_feed.is_none() || stdin_handle.is_none(),
@@ -526,75 +627,145 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     if s != 0 || hp == 0 || hv == 0 {
         trap();
     }
-    // —— X-3c demand 装载（congruent 门 + 钩子在位才走；bsh 无钩子恒
-    //    eager）：file 域 [base, base+S) = 恒等映射 demand VMO（sv=rootfs,
-    //    delta），零尾域 [base+S, base+len) = 零供给 demand VMO（0x23
-    //    src=0 臂 = 零页）。任一失面（含 reg false 槽满）= 半途全回收走
-    //    下方 eager 原路——启动内存足迹 ∝ 实触页（X-3 验收面），非
-    //    congruent/无钩子永有 eager 兜底。
-    let mut vmo = 0 as Handle;
-    let mut zvmo = 0 as Handle;
-    let mut zlen = 0u64;
-    let mut img_len = len;
-    if let (Some((s, delta)), Some(reg)) = (
-        demand_plan(&h, base, len, data_off, h_rootfs),
+    // —— X-5 demand 装载（多窗 congruent 门 + 钩子在位才走；bsh 无钩子恒
+    //    eager）：映像幅 [base, base+len) 按 `demand_plan_wins` 分解为升序
+    //    三色窗——file 窗 = 本窗恒等映射 demand VMO（0x23 sv=rootfs,
+    //    delta_i）、零窗 = 零供给 demand VMO（0x23 src=0 臂）、hybrid 尾页
+    //    = eager 预填 1 页（段尾混合页零语义保真，见 `WinKind::Hybrid`）。
+    //    任一失面（含 reg false 槽满）= 已建已注窗全回滚走下方 eager 原路
+    //    ——启动内存足迹 ∝ 实触页（X-3 验收面），非 congruent/无钩子永有
+    //    eager 兜底。
+    let mut wins: [ChildWin; WIN_MAX] =
+        [ChildWin { vmo: 0, start: 0, len: 0, demand: false }; WIN_MAX];
+    let mut nwin = 0usize;
+    let mut plan: [WinPlan; WIN_MAX] = [WinPlan { start: 0, len: 0, kind: WinKind::Zero }; WIN_MAX];
+    if let (Some(nw), Some(reg)) = (
+        if *force_eager {
+            None // 常驻豁免（SpawnSpec::force_eager）：直落 eager 原路
+        } else {
+            demand_plan_wins(&h, base, len, data_off, h_rootfs, &mut plan)
+        },
         demand_reg_hook(),
     ) {
-        let zneed = len - s;
-        let mut dv = 0 as Handle;
-        let mut zv = 0 as Handle;
-        if berry_vmo_create(s, VMO_OPT_DEMAND, &mut dv) != 0 || dv == 0 {
-            dv = 0; // 创建失面 = 降级 eager（trap-free：资格面非契约面）
-        } else if zneed != 0 && (berry_vmo_create(zneed, VMO_OPT_DEMAND, &mut zv) != 0 || zv == 0)
-        {
-            let _ = berry_handle_close(dv);
-            dv = 0;
-        }
-        if dv != 0 {
-            let mut faddr = base as usize;
-            let m1 = berry_vmar_map(
-                hv,
-                0,
-                dv,
-                0,
-                &mut faddr,
-                s as usize,
-                RIGHT_READ | RIGHT_WRITE,
-            ) == 0
-                && faddr == base as usize;
-            let m2 = zneed == 0 || {
-                let mut zaddr = (base + s) as usize;
-                berry_vmar_map(
-                    hv,
-                    0,
-                    zv,
-                    0,
-                    &mut zaddr,
-                    zneed as usize,
-                    RIGHT_READ | RIGHT_WRITE,
-                ) == 0
-                    && zaddr == (base + s) as usize
+        for w in &plan[..nw] {
+            let mut dv = 0 as Handle;
+            let mut mapped = false;
+            let mut regd = false;
+            let demand = match w.kind {
+                WinKind::File { delta } => {
+                    // file 域窗：demand VMO + 恒等供给注册。
+                    if berry_vmo_create(w.len, VMO_OPT_DEMAND, &mut dv) == 0 && dv != 0 {
+                        let mut addr = w.start as usize;
+                        mapped = berry_vmar_map(
+                            hv,
+                            0,
+                            dv,
+                            0,
+                            &mut addr,
+                            w.len as usize,
+                            RIGHT_READ | RIGHT_WRITE,
+                        ) == 0
+                            && addr == w.start as usize;
+                        if mapped {
+                            regd = reg(dv, h_rootfs, delta);
+                        }
+                    }
+                    mapped && regd
+                }
+                WinKind::Zero => {
+                    // 零域窗：demand VMO + 零供给注册（sv=0 → 内核零页臂）。
+                    if berry_vmo_create(w.len, VMO_OPT_DEMAND, &mut dv) == 0 && dv != 0 {
+                        let mut addr = w.start as usize;
+                        mapped = berry_vmar_map(
+                            hv,
+                            0,
+                            dv,
+                            0,
+                            &mut addr,
+                            w.len as usize,
+                            RIGHT_READ | RIGHT_WRITE,
+                        ) == 0
+                            && addr == w.start as usize;
+                        if mapped {
+                            regd = reg(dv, 0 as Handle, 0);
+                        }
+                    }
+                    mapped && regd
+                }
+                WinKind::Hybrid { soff, flen } => {
+                    // hybrid 尾页：常规 VMO + commit + flen 字节泵（余零——
+                    // fresh VMO 零底 = eager 全幅 VMO 零语义同源）+ 映射；
+                    // 无 pager 面（不注册）。
+                    if berry_vmo_create(w.len, 0, &mut dv) == 0 && dv != 0 {
+                        if berry_vmo_commit(dv, 0, w.len) == 0 {
+                            // SAFETY: 同 eager 段泵窗纪律（单线程顺序调用）。
+                            let pump: &mut [u8] = unsafe {
+                                core::slice::from_raw_parts_mut(
+                                    core::ptr::addr_of_mut!(PUMP_WIN) as *mut u8,
+                                    4096,
+                                )
+                            };
+                            let n = flen as usize;
+                            if berry_vmo_read(h_rootfs, pump.as_mut_ptr(), soff, n) == 0
+                                && berry_vmo_write(dv, pump.as_ptr(), 0, n) == 0
+                            {
+                                let mut addr = w.start as usize;
+                                mapped = berry_vmar_map(
+                                    hv,
+                                    0,
+                                    dv,
+                                    0,
+                                    &mut addr,
+                                    w.len as usize,
+                                    RIGHT_READ | RIGHT_WRITE,
+                                ) == 0
+                                    && addr == w.start as usize;
+                            }
+                        }
+                    }
+                    mapped
+                }
             };
-            if m1 && m2 && reg(dv, zv, h_rootfs, delta) {
-                vmo = dv;
-                zvmo = zv;
-                zlen = zneed;
-                img_len = s;
-            } else {
-                // 半途回收（已映片 + VMO 对），eager 原路重走（同一 hv）。
-                if m1 {
-                    let _ = berry_vmar_unmap(hv, base as usize, s as usize);
+            if !demand {
+                // 本窗失面：先回滚本窗半成品（unreg → unmap → close，序同
+                // reap），再回滚此前已建成窗，eager 原路重走（同一 hv）。
+                if regd {
+                    if let Some(unreg) = demand_unreg_hook() {
+                        unreg(dv);
+                    }
                 }
-                if m2 && zneed != 0 {
-                    let _ = berry_vmar_unmap(hv, (base + s) as usize, zneed as usize);
+                if mapped {
+                    let _ = berry_vmar_unmap(hv, w.start as usize, w.len as usize);
                 }
-                let _ = berry_handle_close(zv);
-                let _ = berry_handle_close(dv);
+                if dv != 0 {
+                    let _ = berry_handle_close(dv);
+                }
+                if let Some(unreg) = demand_unreg_hook() {
+                    for w2 in &wins[..nwin] {
+                        if w2.demand {
+                            unreg(w2.vmo);
+                        }
+                    }
+                }
+                for w2 in &wins[..nwin] {
+                    let _ = berry_vmar_unmap(hv, w2.start as usize, w2.len as usize);
+                    let _ = berry_handle_close(w2.vmo);
+                }
+                nwin = 0;
+                break;
             }
+            wins[nwin] = ChildWin {
+                vmo: dv,
+                start: w.start,
+                len: w.len,
+                demand: !matches!(w.kind, WinKind::Hybrid { .. }),
+            };
+            nwin += 1;
         }
     }
-    if vmo == 0 {
+    if nwin == 0 {
         // —— eager 原路（全量铺 + 全幅一次 commit/map；v1 既有行为零漂移）——
+        let mut vmo = 0 as Handle;
         if berry_vmo_create(len, 0, &mut vmo) != 0 || vmo == 0 {
             trap();
         }
@@ -627,6 +798,13 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         {
             trap(); // v1 无重排：回写须 == 请求基址
         }
+        wins[0] = ChildWin {
+            vmo,
+            start: base,
+            len,
+            demand: false,
+        };
+        nwin = 1;
     }
     // 栈页映在映像之上——中间隔一页**保护页**：栈用穿 = 踩未映射页 → 干净
     // D-abort 被杀（dump SP/FAR 直指祸首）；无保护页时下行栈会静默扎进
@@ -791,12 +969,9 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         hp,
         hv,
         ht,
-        vmo,
         svmo,
-        img_base: base,
-        img_len,
-        zvmo,
-        zlen,
+        wins,
+        nwin,
         stack_va,
         stack_len,
         mmio_base: if mmio_len > 0 { mmio_va } else { 0 },
