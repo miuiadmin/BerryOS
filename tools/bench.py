@@ -654,19 +654,38 @@ DPGX_MARKERS = ("DPGX A", "DPGX B", "DPGX C", "DPGX E")
 SOAK_PAGES_RE = re.compile(r"SOAK .*?pages=(\d+)")
 
 
-def dpg_variant(*gates: str) -> Path:
-    """门控变体卷：rootfs.cpio TRAILER 前手术追各 `<gate>.on` 空档（smoke-
+def dpg_volumes() -> list[Path]:
+    """rootfs 递送卷集发现（X-3c 后 rootfs >32MiB 常态双卷，smoke.sh A1-3b
+    同口径）：rootfs0..N 连续前缀在席即 split 形（手术面 = 末卷，真
+    TRAILER 恒在末卷——mkcpio 切分器条目对齐保证）；缺席回落旧单卷
+    rootfs.cpio。返回 = 递送序全卷（前缀卷原样 + 末卷待手术）。"""
+    vols, i = [], 0
+    while (REPO / f"rootfs{i}.cpio").exists():
+        vols.append(REPO / f"rootfs{i}.cpio")
+        i += 1
+    return vols or [ROOTFS]
+
+
+def dpg_variant(*gates: str) -> list[Path]:
+    """门控变体卷集：末卷 TRAILER 前手术追各 `<gate>.on` 空档（smoke-
     dpgsoak 同款 newc 逻辑；TRAILER 名域 rfind 定位 = 档尾真 trailer，数据
-    内偶合 ASCII 被跳过；X-4 起 E 臂双门 dpge+dpgx 同卷共递）。确定性产物：
-    同输入同字节。"""
+    内偶合 ASCII 被跳过——rootfs0 卷内十余处数据偶合实证同防；X-4 起 E 臂
+    双门 dpge+dpgx 同卷共递；X-3c 后 rootfs 越单卷帽，手术面从 rootfs.cpio
+    迁末 split 卷——门档落归档尾 = 与单卷时代同字节位）。确定性产物：同输入
+    同字节。返回 = 递送序全卷（前缀卷原样引用 + 手术末卷）。"""
     sys.path.insert(0, str(REPO / "tools"))
     from mkcpio import entry
 
-    variant = REPO / f"rootfs.{'.'.join(gates)}.cpio"
-    blob = ROOTFS.read_bytes()
+    vols = dpg_volumes()
+    last = vols[-1]
+    if len(vols) == 1:
+        variant = REPO / f"rootfs.{'.'.join(gates)}.cpio"
+    else:
+        variant = REPO / f"rootfs{len(vols) - 1}.{'.'.join(gates)}.cpio"
+    blob = last.read_bytes()
     name_pos = blob.rfind(b"TRAILER!!!")
     if name_pos <= 0:
-        raise SystemExit("bench.py: rootfs.cpio 无 TRAILER——档坏（先 just build-user）")
+        raise SystemExit("bench.py: 末卷无 TRAILER——档坏（先 just build-user）")
     out = blob[: name_pos - 110]
     for i, gate in enumerate(gates):
         # ino 避开正装递增域（双门错开 0xF0000001/2）。
@@ -674,23 +693,27 @@ def dpg_variant(*gates: str) -> Path:
     out += entry(b"TRAILER!!!", b"", 0)
     out += b"\0" * (-len(out) % 4)
     variant.write_bytes(out)
-    return variant
+    return vols[:-1] + [variant]
 
 
-def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
-             log_kind: str) -> str:
+def dpg_boot(kernel: str, volumes: list[Path], soak: bool, done_pat: str,
+             cap: int, log_kind: str) -> str:
     """D/E 共形 boot：**满配设备面**（dpgsoak 同款——vblk 预拉扫 MMIO 无盘
     即 loud 自陷 → G1.5 杀数 2>1 panic；TCPS 相先于 dpg 位 ⇒ echod 对端
     在席；evs/skt 非本终态依赖〔f4 C-full concur-2〕）+ -smp 2（家族对照
     口径一致）→ 轮询临时日志至 done_pat → SIGTERM+wait+3s 串口落定 →
-    杀 echod → 返回串口全文。E 臂 soak=True 追加 opt/berry/soak 心跳门。"""
-    # 变体越帽执法（CRIT-CF1 判例：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB =
-    # main.rs 静默 return None，门 miss → 烧帽且无成因行——越帽即 loud 拒入）。
-    vsz = variant.stat().st_size
-    if vsz > 33_554_432:
-        raise SystemExit(
-            f"bench.py: 变体卷 {variant.name} {vsz}B 越内核 ROOTFS_MAX 32MiB "
-            "帽（fw_cfg 静默拒收面）——瘦身 rootfs 后重建")
+    杀 echod → 返回串口全文。E 臂 soak=True 追加 opt/berry/soak 心跳门。
+    卷递送（X-3c 后 split 形）：单卷名 opt/berry/rootfs 旧口径；多卷 =
+    内核连续前缀发现域 opt/berry/rootfs0..9（smoke.sh A1-3b 同口径）。"""
+    # 每卷越帽执法（CRIT-CF1 判例：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB =
+    # main.rs 静默 return None，门 miss → 烧帽且无成因行——越帽即 loud 拒入；
+    # split 形逐卷查——手术只胀末卷，但前缀卷同查防手改盘外档）。
+    for vol in volumes:
+        vsz = vol.stat().st_size
+        if vsz > 33_554_432:
+            raise SystemExit(
+                f"bench.py: 递送卷 {vol.name} {vsz}B 越内核 ROOTFS_MAX 32MiB "
+                "帽（fw_cfg 静默拒收面）——瘦身 rootfs 后重建")
     # 端口让场（smoke/soak 族同值端口 = 天然串行协议；被占即退）。
     if subprocess.run(["lsof", "-nP", "-iTCP:18080-18083", "-sTCP:LISTEN"],
                       capture_output=True).returncode == 0:
@@ -710,10 +733,18 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
                    check=True)
     with open(disk, "r+b") as f:
         f.write(b"BERRYOSVBLK!")
+    # rootfs 递送（split 形多卷名 / 单卷旧名——dpg_volumes 同口径）。
+    if len(volumes) == 1:
+        fw_rootfs = ["-fw_cfg", f"name=opt/berry/rootfs,file={volumes[0].resolve()}"]
+    else:
+        fw_rootfs = [
+            arg for i, vol in enumerate(volumes)
+            for arg in ("-fw_cfg", f"name=opt/berry/rootfs{i},file={vol.resolve()}")
+        ]
     qemu_cmd = [
         "qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72",
         "-m", "128M", "-nographic", "-kernel", kernel, "-smp", "2",
-        "-fw_cfg", f"name=opt/berry/rootfs,file={variant.resolve()}",
+        *fw_rootfs,
         "-global", "virtio-mmio.force-legacy=false",
         "-drive", f"if=none,id=drv0,format=raw,file={disk},"
                   "cache.writeback=off",
@@ -794,6 +825,16 @@ def run_dpg(kernel: str) -> None:
     """
     if not ROOTFS.exists():
         raise SystemExit("bench.py: rootfs.cpio 缺席——先 just build-user")
+    # 内核字节冻结（X-4 判例：双臂逐 boot，臂间主树重编 = 活臂下静默换 ELF
+    # ——门控串预检只防「串缺席」不防「同串不同码」；D 臂旧码绿 + E 臂新码
+    # 楔的混态跑实踩）。run 起点快照 + sha256 回执，双臂恒用快照件。
+    with tempfile.NamedTemporaryFile(
+        prefix="berryos-bench-dpg-kernel.", suffix=".elf", delete=False
+    ) as kf:
+        kf.write(Path(kernel).read_bytes())
+        kernel = kf.name
+    ksha = hashlib.sha256(Path(kernel).read_bytes()).hexdigest()
+    print(f"bench.py: 内核冻结 {kernel} sha256={ksha[:16]}…（双臂恒用此字节）")
     # D 臂。
     text_d = dpg_boot(kernel, dpg_variant("dpgb"), False, "DPGB p50=",
                       DPG_BOOT_TIMEOUT_D, "d")
