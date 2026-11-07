@@ -61,6 +61,9 @@ pub fn run() {
     test_sched_attr();
     test_wake_src();
     test_dtb();
+    // sim-S3（PM-16 §4.4 步3）：末位新号（ktest done 前；既有序不动）——
+    // PSCI 探测已在 boot 早期跑，request_deep_sleep 读缓存降级。
+    test_deep_sleep_degrade();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -4012,6 +4015,24 @@ fn test_suspend_negative() {
     berry_hal_aarch64::uart_puts(b"SUS-NEG-K ok\n");
 }
 
+/// sim-S2/S3 freeze 面共用钉板（`test_freeze_cycles` 原内联手搭面提出——
+/// 行为零变；sim-S3 PWRDEG 同源复用）。ktest 在 sched::init 前跑：任务
+/// 手搭 SLEEPQ（test_pi 同款）作 freeze 扫描面，调用方负责 `sleepq_insert`
+/// 钉队与 `sleepq_unlink` 收尾（SLEEPQ 清理纪律——勿扰后续测试的队列面）。
+extern "C" fn fc_dummy(_arg: usize) -> ! {
+    berry_hal_aarch64::halt()
+}
+
+/// 手搭冻结受害/金丝雀任务：内核任务体 + `pinned = key`（freeze/thaw_by_pinned
+/// 匹配键）。
+fn mk_freeze_task(name: &'static [u8], key: usize) -> &'static mut berry_sched::Task {
+    let t = alloc::boxed::Box::leak(berry_sched::Task::new_kernel_with_as(
+        fc_dummy, 0, name, 0, 0,
+    ));
+    t.pinned = key; // freeze 扫描键（freeze/thaw_by_pinned 匹配面）
+    t
+}
+
 /// sim-S2 A2（PM-16 §4.4 步 2「断言第一批」）：freeze/thaw 两轮**全真 svc**
 /// 循环——`svc #0` 走 `sys_process_suspend` 全链路（HAL dispatch →
 /// `caller_table` 落 bootstrap 表 → token 入表 + copy_out 回写），
@@ -4032,17 +4053,7 @@ fn test_freeze_cycles() {
     use crate::telemetry;
     use crate::vmar::Vmar;
     use crate::vmo::Vmo;
-    use berry_sched::{Task, HELD_FROZEN};
-
-    extern "C" fn fc_dummy(_arg: usize) -> ! {
-        berry_hal_aarch64::halt()
-    }
-
-    fn mk(name: &'static [u8], key: usize) -> &'static mut Task {
-        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(fc_dummy, 0, name, 0, 0));
-        t.pinned = key; // freeze 扫描键（freeze/thaw_by_pinned 匹配面）
-        t
-    }
+    use berry_sched::HELD_FROZEN;
 
     // token 出参槽（EL1 静态直映——copy_out_u32 的 access_ok 高半直映区）。
     static mut TOK: u32 = 0;
@@ -4060,9 +4071,9 @@ fn test_freeze_cycles() {
     let (pref, _) = ht.get_raw(hp, ObjType::Process, RIGHT_MANAGE).unwrap();
     let pinned = pref.as_ptr() as usize;
     // 两受害任务 + 金丝雀（异钉 pinned|1）全进 SLEEPQ——freeze 扫描面。
-    let t1 = mk(b"fzT1".as_slice(), pinned);
-    let t2 = mk(b"fzT2".as_slice(), pinned);
-    let canary = mk(b"fzCan".as_slice(), pinned | 1);
+    let t1 = mk_freeze_task(b"fzT1".as_slice(), pinned);
+    let t2 = mk_freeze_task(b"fzT2".as_slice(), pinned);
+    let canary = mk_freeze_task(b"fzCan".as_slice(), pinned | 1);
     berry_sched::sleepq_insert(t1);
     berry_sched::sleepq_insert(t2);
     berry_sched::sleepq_insert(canary);
@@ -4196,6 +4207,81 @@ fn test_freeze_cycles() {
     ht.close(hp).unwrap();
     ht.close(hv).unwrap();
     berry_hal_aarch64::uart_puts(b"FRZCYC ok r=2\n");
+}
+
+/// sim-S3（PM-16 §4.4 步3）：深睡降级断言（run() 末位新号——ktest done 前；
+/// probe 已在 boot 早期跑过、缓存面就位）。TCG 路探测 `PSCI susp=0` ⇒
+/// `request_deep_sleep` 走 freeze 原语降级：**真冻结证据链** = degrade/
+/// freeze_ok/auto_thaw 三计数恰 +1（隔离「只 bump 计数器没真冻结」假绿
+/// ——freeze_ok+auto_thaw 成对才是真冻结往返）+ canary 零持窗后已 thaw。
+/// 标记行 `PWRDEG ok d=1` 读 telemetry 台账（PWRKEY 先例——d 非本地变量）。
+fn test_deep_sleep_degrade() {
+    use crate::abi_gen::{ERR_BAD_STATE, ERR_BUSY};
+    use crate::telemetry;
+    use berry_sched::HELD_FROZEN;
+
+    // KVM/真机 susp=1 相不在这里赌 HVC：x1=0 是无效 re-entry，hypervisor 行为不可假设（受理/拒绝/关机均可能）。主 smoke 在该相先因 `PSCI susp=1` 与 TCG 硬编码标记
+    // 不符而红；真 SYSTEM_SUSPEND 断言归独立 KVM/真机 spike 相。
+    if berry_hal_aarch64::psci::suspend_supported() {
+        berry_hal_aarch64::uart_puts(b"PWRDEG skip susp=1\n");
+        return;
+    }
+
+    // 目标 + 跨钉金丝雀（异钉键）：目标可冻、金丝雀不可被顺手冻。
+    let target = mk_freeze_task(b"pwTgt".as_slice(), 0x5157_0000);
+    let canary = mk_freeze_task(b"pwCan".as_slice(), 0x5158_0000);
+    berry_sched::sleepq_insert(target);
+    berry_sched::sleepq_insert(canary);
+
+    // 错误两臂：pinned=0 谓词拒 -EBUSY；无匹配键 freeze 返 0 → -EBADSTATE。
+    assert_eq!(
+        crate::syscall::request_deep_sleep(0),
+        ERR_BUSY as i64,
+        "PWRDEG：pinned=0 须 -EBUSY"
+    );
+    assert_eq!(
+        crate::syscall::request_deep_sleep(0x5159_0000),
+        ERR_BAD_STATE as i64,
+        "PWRDEG：无匹配任务须 -EBADSTATE"
+    );
+
+    // 基线快照（三计数恰 +N 判据起点）。
+    let d0 = telemetry::degrade_freeze_total();
+    let fok0 = telemetry::freeze_ok_total();
+    let ath0 = telemetry::auto_thaw_total();
+
+    let rc = crate::syscall::request_deep_sleep(target.pinned);
+    assert_eq!(rc, 0, "PWRDEG：深睡降级请求须返回 0");
+    assert_eq!(
+        telemetry::degrade_freeze_total(),
+        d0 + 1,
+        "PWRDEG：degrade 计数须恰 +1"
+    );
+    assert_eq!(
+        telemetry::freeze_ok_total(),
+        fok0 + 1,
+        "PWRDEG：freeze_ok 须恰 +1（真冻结证据链）"
+    );
+    assert_eq!(
+        telemetry::auto_thaw_total(),
+        ath0 + 1,
+        "PWRDEG：auto_thaw 须恰 +1（token 立即 Drop 语义）"
+    );
+    assert!(
+        target.held_locks & HELD_FROZEN == 0,
+        "PWRDEG：零持窗后目标须已 thaw"
+    );
+    assert!(
+        canary.held_locks & HELD_FROZEN == 0,
+        "PWRDEG：跨钉金丝雀不可被误冻/误 thaw"
+    );
+
+    // 清场：摘队（SLEEPQ 清理纪律）+ 标记行读台账。
+    berry_sched::sleepq_unlink(target);
+    berry_sched::sleepq_unlink(canary);
+    berry_hal_aarch64::uart_puts(b"PWRDEG ok d=");
+    berry_hal_aarch64::uart_put_dec(telemetry::degrade_freeze_total());
+    berry_hal_aarch64::uart_puts(b"\n");
 }
 
 /// 1.1/S4-b 补测：billing 表满覆写（9 域逼满 8 槽）。

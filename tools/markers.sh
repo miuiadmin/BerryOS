@@ -4,14 +4,16 @@
 # 对拍守卫随退役（两脚本 source 本文件，漂移面构造性消失）。
 # 元素约束沿袭：元素 = 引号串，**元素内不得含 `)`/引号**（历史 awk 计数
 # 器的解析约束；今虽无计数器，加标记仍守此约束防回归）。
-# 消费方：smoke.sh 裸相 30 + rootfs 相 51；smoke-smp.sh 各相同双数组；
+# 消费方：smoke.sh 裸相 32 + rootfs 相 51；smoke-smp.sh 各相同双数组；
 # smoke-image.sh KERNEL_MARKERS 硬拷贝（G4-1 三镜 P2-3 补列——改 MARKERS
 # 须连 smoke-image.sh 同步，第三消费方漏同步即静默失覆盖）。
 
-# 裸相 30 标记（boot 全链；G4-1 起 +DPG ok——demand 闭环自证；刀1 起
+# 裸相 32 标记（boot 全链；G4-1 起 +DPG ok——demand 闭环自证；刀1 起
 # +WAKESRC——per-source 唤醒记账 G1.5 单行，尾随 G1.5 ok；sim-S2 A2 起
-# +FRZCYC——ktest freeze/thaw 两轮循环（SUS-NEG 之后、BL-OVF 之前））。
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2")
+# +FRZCYC——ktest freeze/thaw 两轮循环（SUS-NEG 之后、BL-OVF 之前）；
+# sim-S3 起 +PSCI susp=0——boot 期 PSCI 深睡探测（EFI/EL2 门与 TCG
+# FEATURES 拒三路同打）+PWRDEG——ktest 深睡降级证据链（ktest done 前））。
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
 
 # rootfs 相 51 标记（G4-3 B 刀 +DPGN ok n=4——0x21 四早退负序（门/对齐/
 # commit/身份验各断精确 errno）；C-lite +DPGS ok n=4——缺页风暴 N=4；G4-2

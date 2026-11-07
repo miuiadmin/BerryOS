@@ -36,7 +36,7 @@ rustup target add aarch64-unknown-none x86_64-unknown-none
 
 just run          # QEMU 冷启动到串口控制台
 just run-rootfs   # 完整服务栈：rootfs / FAT / DNS / TCP / .bap 应用
-just smoke        # 无人值守八跑关卡：裸相 28 + rootfs 相 50 + RX 交互 78 + FAT 子目录/持久化相
+just smoke        # 无人值守八跑关卡：裸相 32 + rootfs 相 51 + RX 交互 83 + FAT 子目录/持久化相
 just test-host    # host 侧 315 单元测试（无需 QEMU）
 ```
 
@@ -44,7 +44,7 @@ just test-host    # host 侧 315 单元测试（无需 QEMU）
 
 ## 文档
 
-设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（49 条 ADR）→ [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
+设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（67 条 ADR）→ [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
 
 过程与制度文档（计划/决策笔记/技能）在 [`.agents/`](.agents/)（Curia 工作区，规范 = [`.agents/README.md`](.agents/README.md)）；新写文档的归属裁决表 = [`docs/README.md`](docs/README.md)。
 

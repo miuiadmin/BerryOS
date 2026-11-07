@@ -241,6 +241,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // S-1：EFI 路标记（handoff 后续被 rootfs 装载消费 move 走，先钉存）——
     // smp_bringup 的 conduit 门之一（EFI 路 PSCI 归固件管，S-1 盒子跳过）。
     let efi_boot = handoff.is_some();
+    // sim-S3（PM-16 §4.4 步3）：PSCI 深睡能力探测——EFI/EL2/TCG/KVM 四路
+    // 同点打 `PSCI susp=`（EL1 路前置 `PSCI version 0x…` conduit 活证行）。
+    // **必须在 ktest::run 之前**：PWRDEG 断言读缓存；probe 只读 boot EL 静态
+    // 量 + 至多两条 HVC，对后续 boot 链零扰动。
+    berry_hal_aarch64::psci::probe(efi_boot);
     // GUI-1：GOP 事实五域钉存（V-6a 只打点，GUI-1 起消费——fb VMO 授能块
     // 在 rootfs/virtio 插表段；handoff @下文 move 进 mm::init 前取走，
     // `efi_boot` 同款先例）。

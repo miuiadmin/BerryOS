@@ -11,7 +11,7 @@ The kernel is named **Meihe (莓核)** — Meihe (MAY-huh), the microkernel of B
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable_%C2%B7_no_nightly-dea584)](https://www.rust-lang.org/)
 ![Arch](https://img.shields.io/badge/arch-ARM64_%C2%B7_x86__64-9b59b6)
-[![Tests](https://img.shields.io/badge/tests-315_host_%C2%B7_5--phase_smoke-2ea44f)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-315_host_%C2%B7_8--boot_smoke-2ea44f)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
 
 BerryOS targets battery-class devices first (watch-tier ARM64) and grows toward phones and PCs. The design borrows deliberately: Zircon's pragmatic kernel objects, seL4's capability discipline, and a scheduler built for tickless operation from day one.
 
@@ -46,7 +46,7 @@ rustup target add aarch64-unknown-linux-musl   # user-space std programs & .bap 
 
 just run          # boot the kernel to a serial console in QEMU (ARM64 virt)
 just run-rootfs   # full service stack: rootfs, FAT, DNS, TCP, .bap apps
-just smoke        # unattended 5-phase gate: bare 23 + rootfs 24 + interactive RX 47 markers,
+just smoke        # unattended 8-boot gate: bare 32 + rootfs 51 + interactive RX 83 markers,
                   #   plus FAT subdirectory and cross-boot persistence phases
 just test-host    # 315 host-side unit tests, no QEMU required
 ```
@@ -74,7 +74,7 @@ docs/         design documents (Chinese)
 
 Design documents are written in Chinese and live in [`docs/`](docs/). Start from the index: [`docs/索引.md`](docs/索引.md). Key entries:
 
-- Architecture decisions — 49 ADRs, the single source of truth: [`docs/架构决策.md`](docs/架构决策.md)
+- Architecture decisions — 67 ADRs, the single source of truth: [`docs/架构决策.md`](docs/架构决策.md)
 - Roadmap: [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md)
 - Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计-v1.0.md`](docs/调度器设计-v1.0.md)
 - Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计-v1.0.md`](docs/系统调用ABI设计-v1.0.md)

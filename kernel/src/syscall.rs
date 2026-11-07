@@ -1837,6 +1837,53 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
     ret
 }
 
+/// sim-S3（PM-16 §4.4 步3）：深睡请求执行体（ktest 直调，零 syscall 号——
+/// EL0 深睡入口随 PM-03 挂起原语刀另裁，本刀只立机制面）。
+///
+/// PSCI SYSTEM_SUSPEND 可达（probe 缓存 `susp=1`）→ 完整 HVC 形（fnid
+/// 0x8400000C，x0 inout，x1=0 = NULL re-entry：规范要求 INVALID_PARAMETERS，真臂只归独立 spike）；SMCCC 语义成功 = 下电不归，**返回即失败**
+/// → 落降级兜底（TCG 不可达面：probe 后 `suspend_supported()`=false 恒门住）。
+///
+/// 降级分支原语级复用 freeze 机器：`freeze_precheck_by_pinned` +
+/// `freeze_by_pinned` + 成功尾 `freeze_ok` 既有写点照走 + 深睡降级记账
+/// `note_degrade_freeze` + token 立即 Drop 语义（零持窗——ktest 前窗口无
+/// 定时器、TCG 无唤醒事件，冻结即 thaw）：`auto_thaw` + `thaw_by_pinned`，
+/// 与 SuspendTok Drop 在 depth 归零时的效果逐位同（无 ObjRef 面的原语级）。
+///
+/// ADR #67：slept_ns/suspend_count 记账待 KVM spike 回填三档表后裁，本刀
+/// 只留钩。打印零（标记归 ktest 断言层——PWRKEY 先例：标记行读台账）。
+///
+/// 调用窗契约：当前 ktest 直调在 sched::init/timer::init 前（DAIF 屏蔽、
+/// CURRENT=null）；PM-03 接 EL0 时必须持有 KL 并补自冻/交叉 token 门。
+///
+/// 与 sys_process_suspend 的语义差：**无自冻拒绝门**（彼 :1652 有
+/// `current_pinned()` 拒绝——单核永久停摆防线）——本面调用面唯 ktest 直调
+/// + 降级形零持窗返回前自愈（thaw 内联完成），不构成停摆；PM-03 EL0 入口
+/// 接机制面时补同款门。
+pub(crate) fn request_deep_sleep(pinned: usize) -> i64 {
+    if berry_hal_aarch64::psci::suspend_supported() {
+        // 真 SYSTEM_SUSPEND 面：成功 = 下电不归（无返回）；任何返回 = 失败，
+        // 落降级兜底。TCG 路结构性不可达。
+        let _ = berry_hal_aarch64::psci::system_suspend_hvc();
+    }
+    // 失败路径照 sys_process_suspend 的错误返回形（precheck 不过 -EBUSY /
+    // 无匹配任务 -EBADSTATE）。
+    if !berry_sched::freeze_precheck_by_pinned(pinned) {
+        return ERR_BUSY as i64;
+    }
+    if berry_sched::freeze_by_pinned(pinned) == 0 {
+        return ERR_BAD_STATE as i64;
+    }
+    // 成功尾 freeze_ok 既有写点照走（sys_process_suspend 成功尾同款）。
+    crate::telemetry::freeze_ok();
+    // 深睡降级记账（sim-S3 PWRDEG 判据载体）。
+    crate::telemetry::note_degrade_freeze();
+    // token 立即 Drop（零持窗）→ auto_thaw + thaw_by_pinned。
+    crate::telemetry::auto_thaw();
+    berry_sched::thaw_by_pinned(pinned);
+    0
+}
+
 /// SuspendToken 入调用方表 + 出参 copy_out。0 = 成功；`insert` 失败回
 /// `-ENOMEM`；出参坏指针回 `-EFAULT`（此时 close 刚入表 token，由 Drop 完成
 /// depth/thaw/release 全回滚）。

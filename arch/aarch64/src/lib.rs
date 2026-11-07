@@ -19,6 +19,7 @@ mod mmio;
 mod mmu;
 mod paging;
 pub mod pl061;
+pub mod psci;
 pub mod smp;
 pub mod syscall;
 pub mod task;

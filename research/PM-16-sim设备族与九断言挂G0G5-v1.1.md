@@ -177,6 +177,7 @@
 - `arch/aarch64/src/`（smp.rs 旁新 psci.rs 或扩展现有）：PSCI_VERSION + PSCI_FEATURES 探测函数（HVC conduit 分型门复用，`smp.rs:572-573`）。
 - boot 遥测加能力行 `PSCI susp=n`(0/1)；深睡请求路径接 A2 冻结循环 + `degrade_to` 遥测。
 - 验收：TCG 上探测行 `susp=0` + 深睡请求后降级事件在册 + 系统存活全标记照打。
+- ✅ 已落（PM仿真S3 v1.0）——`docs/PM仿真S3断言实施设计-v1.0.md`；载体 = arch `psci.rs` 探测行 + ktest `PWRDEG ok d=1` 降级证据链（裸相 30→32）。
 
 **押后不排期**：A3（等 timer slack 刀）、A5/A9（等 M4/berry-power/power·mode op）、T1/T2 fork QEMU（等「断言需求清单盖过构建管线成本」判据触发）、KVM spike（等 CI 窗口）。
 

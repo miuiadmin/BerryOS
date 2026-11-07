@@ -36,7 +36,7 @@
 #      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
 #   2. 内核接续恰一次：HANDOFF ok ver=1 / MMAP ok segs= / ROOTFS ok
 #      **src=handoff**（handoff 源专属形态——fw_cfg/DTB 路不通于此）；
-#   3. 裸相 30 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
+#   3. 裸相 32 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
 #      生态 36 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
@@ -122,11 +122,13 @@ EFI_ERE=(
 # 内核接续恰一次面（src=handoff 是 handoff 路专属——fw_cfg 路打 src=fw_cfg
 # 串，混源即 FAIL）。
 CONT_MARKERS=("HANDOFF ok ver=1" "MMAP ok segs=" "ROOTFS ok src=handoff")
-# 裸相 30（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
+# 裸相 32（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
 # 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行；
 # G4-1 起 +DPG ok demand 闭环行——P2-3 补同步；刀1 起 +WAKESRC acct=
-# per-source 唤醒记账行；sim-S2 A2 起 +FRZCYC ok r=2 freeze/thaw 循环行）。
-KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2")
+# per-source 唤醒记账行；sim-S2 A2 起 +FRZCYC ok r=2 freeze/thaw 循环行；
+# sim-S3 起 +PSCI susp=0（EFI 路探测行带原因后缀——子串可 grep）+
+# PWRDEG ok d=1（ktest 在 EFI 路照跑，两行都在））。
+KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
 # EFI 路生态 36（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
 # 日志观察面，本脚本断言为 grep -cF 存在性 ≥1；除
 # WM ok 与 LAUNCH 双（GUI-5/GUI-8 起 EFI 专属）外与 smoke.sh rootfs 相断言
@@ -347,7 +349,7 @@ echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 30 + 生态 36 = 79）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 32 + 生态 36 = 81）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
@@ -367,7 +369,7 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 30 + 生态 36）"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 36）"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -451,4 +453,4 @@ n_bat=$(grep -acF 'SIMBAT' "$LOG" || true)
 [ "$n_bat" -eq 0 ] \
   || fail "EFI 路 SIMBAT ${n_bat} 行（应 0——门闭相注入面泄漏/静默跳过漂移？）"
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 30 + 生态 36 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + 生态 36 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"

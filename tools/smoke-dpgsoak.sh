@@ -8,7 +8,7 @@
 # ASCII 不扰）→ fw_cfg **单卷**递送（手动 mkcpio 无 --split 的树同款消费
 # 面，justfile 注：单卷路照跑）。svcmgr `dpgf_selftest` 门 = cpio_find
 # 命中 dpgf.on 才跑——正装 rootfs/run/smoke/EFI 缺席 = 零扰动零新标记
-#（rootfs 相 51 / 主 smoke 81 / EFI 断言 36 计数零漂）；本脚本是 DPGF/DPGF2
+#（rootfs 相 51 / 主 smoke 83 / EFI 断言 36 计数零漂）；本脚本是 DPGF/DPGF2
 # 标记唯一生产面。
 #
 # 断言（终态 = `DPGF2 ok n=3`，帽 DPGF_CAP_S 默认 600s）：

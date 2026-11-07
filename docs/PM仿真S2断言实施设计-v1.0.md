@@ -217,4 +217,4 @@ just smoke
 
 - A3 唤醒风暴合并率：等 timer slack 刀；PL061 `GPIOIC` 清锁也在 A3。
 - lease/power·mode 真 `-EINVAL` 面：随 berry-power 骨架刀。
-- PSCI 探测与深睡降级：sim-S3。
+- PSCI 探测与深睡降级：sim-S3（已落 v1.0——`PM仿真S3断言实施设计-v1.0.md`）。

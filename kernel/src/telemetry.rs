@@ -897,9 +897,19 @@ pub fn freeze_ok_total() -> u64 { FREEZE_OK.load(Ordering::Relaxed) }
 pub fn freeze_busy_total() -> u64 { FREEZE_BUSY.load(Ordering::Relaxed) }
 pub fn auto_thaw_total() -> u64 { AUTO_THAW.load(Ordering::Relaxed) }
 
+/// sim-S3（PM-16 §4.4 步3）：深睡降级计数（request_deep_sleep 落 freeze
+/// 原语降级路径——PWRDEG `d=` 判据载体，进 freeze 族现有环）。
+pub fn note_degrade_freeze() {
+    DEGRADE_FREEZE.fetch_add(1, Ordering::Relaxed);
+}
+
+/// sim-S3：深睡降级累计（ktest PWRDEG 标记行直读台账）。
+pub fn degrade_freeze_total() -> u64 { DEGRADE_FREEZE.load(Ordering::Relaxed) }
+
 static FREEZE_OK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FREEZE_BUSY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static AUTO_THAW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static DEGRADE_FREEZE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 static BILLING_CROSS_DOMAIN: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
