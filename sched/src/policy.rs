@@ -35,6 +35,7 @@
 //!   （±[`WEIGHT_MAX`] 单调收窄，F9②——夹取是唯一方向，无提权路径）。
 
 use crate::task::{EppHint, Task};
+use berry_hal_aarch64 as hal;
 use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 
 /// 权重微调包络（±）：注入值由内核**夹紧**到本界内（动作空间③的 min/max
@@ -312,7 +313,9 @@ pub fn bound() -> bool {
 /// 自基线重算、EPP 直接赋值——非累积，重复 pick 不漂移）；查不到 → **零
 /// 写入**，字段保持基线，与接口缺席逐位等价（ktest `POLICY ok` 断言对象）。
 /// IRQ 热路径零分配。快路径：哨兵/空表两次分支即返（§2「开销恒定」的
-/// 空态兑现）。
+/// 空态兑现）。v1.3 起顺带消费 ①放置偏置：SMP 参与门开且 placement≠0
+/// 才写 `Task::placement_hint`（单核 = 零写入——空表等价纪律延伸到放置
+/// 面；**只存不路由**，唤醒选核的真消费面随 SMP 路由接，见函数尾注）。
 ///
 /// **shadow 对账挂最前**（每次调用都对账，active 决策逻辑零改动）：
 /// [`shadow_reconcile`] 只读只计数——shadow 谱系空时一次 gen 读即返，热
@@ -345,6 +348,14 @@ pub fn apply(task: &mut Task) {
             EppHint::Efficiency
         };
     }
+    // v1.3 EAS-1 首刀（`调点调度-v1.3` §6 placement 第一消费者·基础设施）：
+    // ①放置偏置的 TCB 落点——**只存不路由**（唤醒选核的真路由面等
+    // smoke-smp 三相 LB 稳定后再接）。单核形态（SMP 参与门关）→ 零写入：
+    // placement 有值 = 无操作，不改变任何行为（空表等价纪律延伸到放置面）。
+    // 短路序 = placement==0 先判：无放置偏置的常见态零新增原子读。
+    if slot.placement != 0 && hal::smp::par_enabled() {
+        task.placement_hint = slot.placement;
+    }
 }
 
 /// 该任务当前绑定的夹紧权重（未绑/无表/空表 → 0）。[`crate::sched::
@@ -363,6 +374,27 @@ pub(crate) fn weight_of(task: &Task) -> i32 {
     match lookup_o1(snap, key) {
         Some(s) => s.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX),
         None => 0,
+    }
+}
+
+/// 该 key 当前绑定的放置偏置（动作空间①：`调点调度-v1.3` §6 placement
+/// 第一消费者——唤醒路径核选择的读出口）：读活跃快照 O(1) 查表透传
+/// [`SnapSlot::placement`]。三值词汇表：**0 = 无意见**（默认——未绑/空表/
+/// 未命中/哨兵键，与接口缺席等价）、1 = 偏 little（省电核 CPU0）、2 = 偏
+/// big（性能核 CPU1）。越域注入值原样透传（v1 注入面 = 受信内核侧，词汇
+/// 执法随 SMP 真消费面定）。v1.3 首刀只立读出口——「placement 值经策略表
+/// 正确可达」的 ktest 断言对象；唤醒选核的真消费随 SMP 路由（smoke-smp
+/// 三相 LB 稳定后）接，单核形态下 placement 有值 = 无操作。
+pub fn placement_hint(task_key: u64) -> u8 {
+    // SAFETY: 读纪律同 apply/weight_of（active_snap 静态区指针 + 已发布槽
+    // 不可变 + 单核屏蔽窗读写互斥——读窗内快照稳定）。
+    let snap: &Snap = unsafe { &*active_snap() };
+    if snap.count == 0 {
+        return 0; // 未绑（哨兵）/空表：无意见
+    }
+    match lookup_o1(snap, task_key) {
+        Some(s) => s.placement,
+        None => 0, // 未命中/哨兵键（0 保留，lookup 早退）：无意见
     }
 }
 

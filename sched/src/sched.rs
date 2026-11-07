@@ -263,6 +263,7 @@ static mut IDLE_TASK: Task = Task {
     thread_key: 0,
     home_cpu: 0,
     spread: false,
+    placement_hint: 0,
     held_locks: 0,
     svc_mask: 0,
     rq_prev: core::cell::Cell::new(None),

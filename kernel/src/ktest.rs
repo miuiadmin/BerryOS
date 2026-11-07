@@ -43,6 +43,7 @@ pub fn run() {
     test_policy_shadow();
     test_policy_divergence();
     test_policy_reject_stats();
+    test_placement_hint();
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
@@ -2660,6 +2661,34 @@ fn test_policy() {
         }
     }
 
+    // D. placement 可达（v1.3 EAS-1 首刀，`调点调度-v1.3` §6）：placement 值经
+    //    策略表正确可达——键命中 → 透传槽内值（1 = 偏 little / 2 = 偏 big）；
+    //    未命中/哨兵键/空表/未绑 → 0（无意见 = 与接口缺席等价）。且单核形态
+    //    （ktest 先于 smp_bringup/par_enable 跑——SMP 参与门恒关）下 apply 对
+    //    placement **零写入**：绑 placement 表跑 12 轮 pick（apply 每轮真跑），
+    //    TCB `placement_hint` 仍恒 0——「placement 有值 = 无操作」的机器断言
+    //    （空表等价纪律延伸到放置面；真消费面随 SMP 路由接）。
+    static PLACE: [Entry; 2] = [
+        Entry { task_key: 7, directive: Directive { placement: 1, weight: 0, epp: None } },
+        Entry { task_key: 8, directive: Directive { placement: 2, weight: 0, epp: None } },
+    ];
+    policy::bind(&PLACE);
+    assert_eq!(policy::placement_hint(7), 1, "POLICY：命中键 placement=1 须经表可达（偏 little）");
+    assert_eq!(policy::placement_hint(8), 2, "POLICY：命中键 placement=2 须经表可达（偏 big）");
+    assert_eq!(policy::placement_hint(9), 0, "POLICY：未命中键 placement 须 0（无意见）");
+    assert_eq!(policy::placement_hint(0), 0, "POLICY：哨兵键 placement 须 0（不可注入面）");
+    policy::unbind();
+    assert_eq!(policy::placement_hint(7), 0, "POLICY：未绑（哨兵态）placement 须 0（接口缺席）");
+    policy::bind(&EMPTY);
+    assert_eq!(policy::placement_hint(7), 0, "POLICY：空表 placement 须 0（无意见）");
+    // 单核零写入：placement 有值的表 + apply 真跑 → TCB hint 仍恒 0。
+    policy::bind(&PLACE);
+    let (rq_d, rr_d, topo_d, td) = setup();
+    let _ = probe(&rq_d, &rr_d, &topo_d);
+    for (i, t) in td.iter().enumerate() {
+        assert_eq!(t.placement_hint, 0, "POLICY：单核形态 apply 须零放置写入（任务 {}）", i);
+    }
+
     // 收尾：恢复缺席态（之后 smoke 稳态全程未绑——等价性延续到真实调度路径）。
     policy::unbind();
     assert!(!policy::bound(), "POLICY：收尾须回到未绑");
@@ -3459,6 +3488,51 @@ fn test_policy_reject_stats() {
     // 收尾：解绑回接口缺席态（同其他 policy ktest 清理纪律）。
     policy::unbind();
     berry_hal_aarch64::uart_puts(b"POLS-R ok\n");
+}
+
+/// PL 系：placement_hint 读出口五分支收口（v1.3 EAS-1 首刀——
+/// `调点调度-v1.3` §6 placement 第一消费者；对照 `test_policy` D 段内嵌于
+/// 单表注入面的断言，本测把 pub 读接口 [`berry_sched::policy::
+/// placement_hint`] 独立成键域透传面）：
+/// - PL-1 空表 → 0（无意见）；
+/// - PL-2 命中键 7 → 透传槽值 1（偏 little）；
+/// - PL-3 命中键 8 → 透传槽值 2（偏 big）；
+/// - PL-4 未命中键 9 → 0（未命中回退）；
+/// - PL-5 unbind 后 → 0（接口缺席等价）。
+///
+/// 全程走 `bind_gen`（带世代换表——v3 `policy_bind` 写侧底座）而非 `bind`
+/// 自动通道：gen 取 `policy::gen() + 1` 即时读（哨兵态 gen()=0、已发布态
+/// = 该快照 gen——+1 恒严格递增，受理性不依赖前序 ktest 的 bind 次数）。
+/// 只测读出口，不建任务/不跑 pick——TCB 写入面（单核零写入）归 POLICY D 段。
+/// PLACEMENT ok。
+fn test_placement_hint() {
+    use berry_sched::policy::{self, Directive, Entry};
+
+    // 前序状态防御性清零（同 POLICY/PV3 纪律——ktest 期望 boot 期即未绑；
+    // 哨兵态 gen()=0，本测世代从此起算，与前序测试的 GEN_NEXT 历史解耦）。
+    policy::unbind();
+
+    // PL-1: 空表 → placement_hint(key) == 0（无意见）。
+    static EMPTY: [Entry; 0] = [];
+    assert!(policy::bind_gen(&EMPTY, policy::gen() + 1), "PL-1：空表 bind_gen 须受理");
+    assert_eq!(policy::placement_hint(7), 0, "PL-1：空表 placement_hint 须 0（无意见）");
+
+    // PL-2/PL-3/PL-4: 双条目放置表（key=7 偏 little / key=8 偏 big；9 不在表）。
+    static PLACE: [Entry; 2] = [
+        Entry { task_key: 7, directive: Directive { placement: 1, weight: 0, epp: None } },
+        Entry { task_key: 8, directive: Directive { placement: 2, weight: 0, epp: None } },
+    ];
+    assert!(policy::bind_gen(&PLACE, policy::gen() + 1), "PL-2/3：放置表 bind_gen 须受理");
+    assert_eq!(policy::placement_hint(7), 1, "PL-2：命中键 7 须透传 placement=1（偏 little）");
+    assert_eq!(policy::placement_hint(8), 2, "PL-3：命中键 8 须透传 placement=2（偏 big）");
+    assert_eq!(policy::placement_hint(9), 0, "PL-4：未命中键 9 须 0（未命中回退）");
+
+    // PL-5: unbind 后 → 0（接口缺席等价；命中过的键同落回退）。
+    policy::unbind();
+    assert_eq!(policy::placement_hint(7), 0, "PL-5：unbind 后键 7 须 0（接口缺席等价）");
+    assert_eq!(policy::placement_hint(8), 0, "PL-5：unbind 后键 8 须 0（接口缺席等价）");
+
+    berry_hal_aarch64::uart_puts(b"PLACEMENT ok\n");
 }
 
 fn test_policy_divergence() {

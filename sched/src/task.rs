@@ -154,6 +154,14 @@ pub struct Task {
     /// 线程**（并行收益面），服务根留家核；b-2 偷取迁移再放开。语义归
     /// `内核` crate，sched 只存取（同 `pinned` 的 crate 边界纪律）。
     pub spread: bool,
+    /// v1.3 EAS-1 首刀（`调点调度-v1.3` §6 placement 第一消费者·基础设施）：
+    /// 放置偏置 hint——策略表 [`crate::policy::Directive::placement`] 三值
+    /// 词汇（0 = 无意见（默认）/ 1 = 偏 little 省电核 / 2 = 偏 big 性能核）。
+    /// 写点 = [`crate::policy::apply`]（表命中且 SMP 参与门开——**只存不
+    /// 路由**）；消费点 = 唤醒路径核选择（真路由面等 smoke-smp 三相 LB
+    /// 稳定后接）。单核形态恒 0（gate 关 = 写点零触发——空表等价纪律延伸
+    /// 到放置面：placement 有值 = 无操作）。
+    pub placement_hint: u8,
     /// S-2 E0（BKL 纪元，`SMP-S2实施设计草案.md` §2.3）：持锁义务位——「本任务
     /// 当前处于 KERN_LOCK 持锁窗」随任务走（不放 per-CPU——SVC 入口/切走点
     /// 可能换核）。置位 = arch SVC/fault 入口（`kern_lock::svc_enter` 经槽）；
@@ -365,6 +373,7 @@ impl Task {
             thread_key: 0,
             home_cpu: 0,
             spread: false,
+            placement_hint: 0,
             held_locks: 0,
             svc_mask: 0,
             prio_base: 0,
