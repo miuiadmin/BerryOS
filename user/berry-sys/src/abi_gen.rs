@@ -38,8 +38,16 @@ pub const SIGNAL_WRITABLE: u64 = 1 << 1;
 /// Process 已退出（Plan B v0.5 内核派生位；Exited 置位时唤醒，永久置位——
 /// 同 Zircon TASK_TERMINATED 口径；父进程 wait 到该位后 unmap/close 回收）。
 pub const SIGNAL_TERMINATED: u64 = 1 << 2;
+/// 冻结进程收讯挂起位（AM-1.5 内核派生位——SuspendToken 的 wait 面唯一可
+/// 命中位）：目标进程冻结期间任一 send 成功入队即置位（一次语义防风暴，同窗
+/// 多跳不重复通知），全解冻（最后一枚 token close）清零；所有在册 token 同刻
+/// 同视（signal_state 直接读目标 Process.wake_pending 派生，零 per-token 存储）。
+/// 消费形：object_wait_one(token, SIGNAL_WAKE_PENDING, deadline, &observed)——
+/// deadline=0 即 poll 探针；零新 syscall。
+pub const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
 /// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
-/// 内核派生信号 READABLE/WRITABLE/TERMINATED——位面冲突由内核执法拒绝）。
+/// 内核派生信号 READABLE/WRITABLE/TERMINATED/WAKE_PENDING——位面冲突由内核
+/// 执法拒绝）。
 pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 
 // ---- options 位 / clock id ----

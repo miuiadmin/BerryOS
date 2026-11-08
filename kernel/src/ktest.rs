@@ -83,6 +83,10 @@ pub fn run() {
     // v1.3 §9 三路基准之路 2 首刀：定时器唤醒延迟基准（cyclictest 口径的
     // 忙等简化）——HDR 首个真实消费者，record_wake_lat → 合并分位全链验证。
     test_hdr_wake();
+    // 全栈交叉验证（末位新号纪律——单面钉板之后、ktest done 之前）：一个
+    // 场景串起 freeze × policy × band × deadline × billing × EAS，验
+    // 「两两同席不打架」（单面钉板验「各自对」，本测验组合面）。
+    test_scheduler_integration();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -5048,7 +5052,7 @@ fn test_wake_pending() {
         ERR_AGAIN, KernelObj, ObjType, RIGHT_MANAGE, RIGHT_RECV, RIGHT_SEND,
     };
     use crate::process::{Process, Thread};
-    use crate::suspend::SIGNAL_WAKE_PENDING;
+    use crate::handle::SIGNAL_WAKE_PENDING;
     use crate::syscall::{NR_CHANNEL_SEND, NR_OBJECT_WAIT_ONE, NR_PROCESS_SUSPEND};
     use crate::vmar::Vmar;
     use berry_sched::HELD_FROZEN;
@@ -7281,5 +7285,288 @@ fn test_dtb() {
     assert_eq!(find_initrd(&trunc), None, "DTB：截断");
 
     berry_hal_aarch64::uart_puts(b"DTB-K ok\n");
+}
+
+/// 全栈交叉验证（integration）：一个场景串起调度器全部特性面——freeze ×
+/// policy × band × deadline × billing × EAS（overutilized/placement）。
+/// 单面钉板（`test_freeze`/`test_policy_v3`/`test_band`/`test_deadline`/
+/// `test_billing`/`test_overutil`）各自验「机制对」，本测验**同席组合**——
+/// 两两机制同时在场互不打架（改任一机制的接缝在此现形）。四段独立：
+///
+/// - **IS-1 freeze × policy**：表给 A(键7)/B(键8) 各 +32（A 另有
+///   `prio_base=16`——apply 合成 16+32=48 带）。A 冻结 → pick 只出 B：
+///   freeze 的 eligible 过滤在带比较**前**——更高带（48）的 A 也拒，
+///   「只出 B」同时活证冻结过滤（A 不出）与策略注入（B eff=32）双生效；
+///   解冻 A → A 立即出选（48 带压制 32）——thaw 只清位不抹策略权重；
+/// - **IS-2 band × deadline**：带 X（LATENCY_CRITICAL）小配额 quota=100
+///   武装；耗尽 → `throttle_all` 只限同带 fair 任务 C，同带 deadline
+///   任务 D 豁免（RT 屏蔽不变量）且持续出选；翻期解限流后 C 复可选；
+/// - **IS-3 billing × policy**：bind_gen 设表期间 `billing_charge` 计数
+///   精确（累加/域隔离/零时长拒收），且记账写不扰动策略快照（gen/bound
+///   不动、pick 消费面照常 +32）、策略消费不改记账——双向不干扰活证；
+/// - **IS-4 EAS overutilized × placement**：placement=1 表在绑 → 合成
+///   满载窗泵 CPU0 util 越阈（> 域容量 80%）→ `placement_hint` 归 0
+///   （EAS 机会主义回退，表在绑也不透传）；idle 窗真衰减回阈下 →
+///   hint 恢复 1。
+///
+/// ktest 纪律同源（sched::init 前跑、单核）：每段自带前置清零 + 段尾收口
+/// （policy unbind / band configure(0) / util 全槽清零——ktest 瞬态不外泄）
+/// ，段间零状态耦合——一段 panic 由断言消息的 `IS-N` 前缀直接定位。任务体
+/// 16KiB 栈 leak 不回收（ktest 语境同 spawn 政策）。占位入口手搭任务永不
+/// 执行（halt 兜底——同 PV3/FREEZE/BAND）。
+#[allow(clippy::unwrap_used)]
+fn test_scheduler_integration() {
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{
+        any_overutilized, band_on, configure, consume, cpu_util, em_max_capacity,
+        em_register_qemu_virt, overutilized, period_check, state, throttle_all,
+        unthrottle_all, util_accumulate, util_reset, util_tick_window, util_window_vct,
+        BandBudget, Fair, Runqueue, SchedClass, Task, Topo, HELD_FROZEN, HELD_THROTTLE,
+        INTENT_LATENCY_CRITICAL, PRIO_DEADLINE, UTIL_NR_CPU,
+    };
+    use crate::telemetry;
+
+    /// 占位入口（pick_next 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn isg_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭内核任务：`tag` 即 proc_tag（策略表 key 域，v1 = proc_tag；
+    /// new_kernel 默认 0——同 PV3 setup 的键域口径）。
+    fn mk(name: &'static [u8], tag: usize) -> &'static mut Task {
+        let mut t = Task::new_kernel_with_as(isg_dummy, tag, name, 0, 0);
+        t.proc_tag = tag; // 策略表 key（0 = 哨兵键，apply 早退不注入）
+        alloc::boxed::Box::leak(t)
+    }
+
+    // —— IS-1：freeze × policy 共存——冻结过滤与策略注入互不打架 ——
+    {
+        // 前置：策略回哨兵（PV3/PL 同款防御性清零——gen 从 0 起算）。
+        policy::unbind();
+        // 双条目表：A(键7)/B(键8) 各 +32（B 的 +32 即场景指定的策略权重；
+        // A 同入表 + prio_base=16 使冻结对照更强——A 合成带 48 > B 的 32，
+        // 冻结过滤若接在带比较后，高带的 A 仍会出选，断言即炸响）。
+        static TAB: [Entry; 2] = [
+            Entry {
+                task_key: 7,
+                directive: Directive { placement: 0, weight: 32, epp: None },
+            },
+            Entry {
+                task_key: 8,
+                directive: Directive { placement: 0, weight: 32, epp: None },
+            },
+        ];
+        assert!(policy::bind_gen(&TAB, policy::gen() + 1),
+                "INTEG：IS-1 双条目表 bind_gen 须受理");
+
+        let mut rq = Runqueue::new();
+        let rr = Fair;
+        let topo = Topo::single();
+        let ta = mk(b"isA".as_slice(), 7);
+        ta.prio_base = 16; // 策略叠加面：apply 后 eff = 16+32 = 48
+        let tb = mk(b"isB".as_slice(), 8);
+        rr.enqueue(&mut *ta, &mut rq);
+        rr.enqueue(&mut *tb, &mut rq);
+
+        // 基线轮：双 eff=0 平键 → head 侧先见出 A（FREEZE F1 同款确定性），
+        // apply 即刻消费策略 → A.eff = 16+32 = 48。
+        let p = rr.pick_next(&rq, &topo).expect("INTEG：IS-1 非空环须有出选");
+        assert_eq!(p.name, b"isA".as_slice(), "INTEG：IS-1 基线轮须出 A（head 先见）");
+        assert_eq!(ta.prio_effective, 48, "INTEG：IS-1 策略叠加须 16+32=48");
+
+        // 冻结 A（F2 同款直接置位——ktest 无 SuspendTok 链，位即冻结语义）
+        // → 只出 B：eligible 过滤在带比较前，带 48 的 A 也不得出选。
+        ta.held_locks |= HELD_FROZEN;
+        for i in 0..3 {
+            let p = rr.pick_next(&rq, &topo).expect("INTEG：IS-1 冻结期须有出选");
+            assert_eq!(p.name, b"isB".as_slice(),
+                       "INTEG：IS-1 冻结期第 {i} 轮须只出 B（高带 A 亦拒）");
+        }
+        assert_eq!(tb.prio_effective, 32,
+                   "INTEG：IS-1 冻结期策略注入须照常（B = 0+32 双生效）");
+        assert_eq!(ta.prio_effective, 48,
+                   "INTEG：IS-1 冻结不得抹已注入的策略权重（两不干扰）");
+
+        // 解冻 A → A 立即出选（48 带压制 32；thaw 只清位不动策略面）。
+        ta.held_locks &= !HELD_FROZEN;
+        let p = rr.pick_next(&rq, &topo).expect("INTEG：IS-1 解冻后须有出选");
+        assert_eq!(p.name, b"isA".as_slice(), "INTEG：IS-1 解冻后 A 须可出选（48 带先出）");
+        assert_eq!(ta.prio_effective, 48, "INTEG：IS-1 解冻后策略权重须保持（幂等再注入）");
+
+        // 段尾收口：策略回哨兵（后续段/smoke 稳态全程未绑）。
+        policy::unbind();
+        assert!(!policy::bound(), "INTEG：IS-1 段尾须回未绑");
+    }
+
+    // —— IS-2：band × deadline 共存——带限流 fair 不波及同带 deadline ——
+    {
+        const X: u8 = INTENT_LATENCY_CRITICAL; // 带键 = intent_effective（§11）
+        const QUOTA: u64 = 100; // 小配额（场景指定）
+        const PERIOD: u64 = 10_000;
+        const NOW: u64 = 100_000; // 手拨首期起点（band 比较传入的 now 参数）
+        assert!(!band_on(X), "INTEG：IS-2 段首 X 带须默认关（test_band 收口态）");
+
+        let mut rq = Runqueue::new();
+        let rr = Fair;
+        let topo = Topo::single();
+        let tc = mk(b"isC".as_slice(), 0); // fair 受害者：intent 即带键
+        tc.intent_effective = X;
+        let td = mk(b"isD".as_slice(), 0); // deadline 豁免者（RT 屏蔽对照）
+        td.prio_effective = PRIO_DEADLINE;
+        td.vdeadline = NOW + PERIOD; // 远截止（只证带豁免，不触 lazy_unthrottle 面）
+        rr.enqueue(&mut *tc, &mut rq);
+        rr.enqueue(&mut *td, &mut rq);
+
+        assert!(configure(X, QUOTA, PERIOD, NOW), "INTEG：IS-2 小配额须武装");
+        assert!(band_on(X), "INTEG：IS-2 武装后 band_on");
+
+        // 消耗至耗尽：微记账累计 + 首越线一次性信号（BD1/BD2 同口径）。
+        assert!(!consume(X, 60), "INTEG：IS-2 60/100 未越线不报");
+        assert!(consume(X, 40), "INTEG：IS-2 100/100 首越线须报");
+        // 环执法：只 C 置位——D 同带但 deadline 豁免（band_member 判定面）。
+        assert_eq!(throttle_all(X, &rq), 1, "INTEG：IS-2 须只限流同带 fair 成员 C");
+        assert!(tc.held_locks & HELD_THROTTLE != 0, "INTEG：IS-2 C 须置 THROTTLE");
+        assert!(td.held_locks & HELD_THROTTLE == 0, "INTEG：IS-2 D 须豁免（RT 屏蔽）");
+
+        // 限流效果 × RT 屏蔽双向不干扰：pick 连出 D——C 留环但不出选。
+        for i in 0..2 {
+            let p = rr.pick_next(&rq, &topo).expect("INTEG：IS-2 限流期须有出选");
+            assert_eq!(p.name, b"isD".as_slice(),
+                       "INTEG：IS-2 限流期第 {i} 轮须出 D（C 被限流不出选）");
+        }
+
+        // 翻期：清账清限流 → C 复可选（先摘 D 消除 deadline 带压制——
+        // BD2 同款 dequeue 口径；不摘则 D 恒先出，与限流无关）。
+        assert!(period_check(X, NOW + PERIOD), "INTEG：IS-2 到期须翻期");
+        assert_eq!(unthrottle_all(X, &rq), 1, "INTEG：IS-2 翻期后须清 C 限流位");
+        assert_eq!(tc.held_locks, 0, "INTEG：IS-2 翻期后 C 位须全清");
+        rr.dequeue(&mut *td, &mut rq);
+        let p = rr.pick_next(&rq, &topo).expect("INTEG：IS-2 解限流后须有出选");
+        assert_eq!(p.name, b"isC".as_slice(), "INTEG：IS-2 解限流后 C 须复可选");
+
+        // 段尾收口：先清环上位（已清）再 configure(0) 关带（mid-flight 义务序）。
+        assert!(!configure(X, 0, 0, 0), "INTEG：IS-2 段尾关 X 带");
+        assert!(!band_on(X), "INTEG：IS-2 段尾须回关态");
+        assert_eq!(state(X), Some(BandBudget::OFF), "INTEG：IS-2 段尾槽须 OFF");
+    }
+
+    // —— IS-3：billing × policy 共存——策略注入期间记账精确且双向不扰动 ——
+    {
+        policy::unbind();
+        static TAB: [Entry; 1] = [Entry {
+            task_key: 7,
+            directive: Directive { placement: 0, weight: 32, epp: None },
+        }];
+        assert!(policy::bind_gen(&TAB, policy::gen() + 1), "INTEG：IS-3 设表须受理");
+        let g0 = policy::gen();
+
+        // 记账精确（BL1/BL2/BL3 交叉复验）。域键取 0x770/0x780——避开
+        // test_billing(100/200)/overflow(300..=308)/perf(0xF00D) 已占域；
+        // 8 槽表已满（前序测试填满），D1 首笔落账须大于既有最小槽值
+        // （1000ns），否则 D2 落账的满表覆写会反噬 D1 槽——6000ns 即此用。
+        const D1: u64 = 0x770;
+        const D2: u64 = 0x780;
+        telemetry::billing_charge(D1, 400);
+        telemetry::billing_charge(D1, 600);
+        telemetry::billing_charge(D1, 5_000);
+        assert_eq!(telemetry::billing_domain_total(D1), Some(6_000),
+                   "INTEG：IS-3 域 D1 须精确累计 6000ns（策略注入期间）");
+        telemetry::billing_charge(D2, 250);
+        assert_eq!(telemetry::billing_domain_total(D2), Some(250),
+                   "INTEG：IS-3 域 D2 须落账 250ns");
+        assert_eq!(telemetry::billing_domain_total(D1), Some(6_000),
+                   "INTEG：IS-3 域隔离（D2 落账不波及 D1——含满表覆写路径）");
+        telemetry::billing_charge(D1, 0); // 零时长拒收（无副作用）
+        assert_eq!(telemetry::billing_domain_total(D1), Some(6_000),
+                   "INTEG：IS-3 零时长 charge 须无副作用");
+
+        // 反向不扰动：记账写后策略快照原样（gen/bound 不动）+ pick 消费面
+        // 照常 +32——billing 静态原子表与 policy 快照无共享写面，活证。
+        assert_eq!(policy::gen(), g0, "INTEG：IS-3 记账不得扰动策略世代");
+        assert!(policy::bound(), "INTEG：IS-3 记账不得扰动绑定态");
+        let mut rq = Runqueue::new();
+        let rr = Fair;
+        let topo = Topo::single();
+        let t = mk(b"isP".as_slice(), 7);
+        rr.enqueue(&mut *t, &mut rq);
+        let p = rr.pick_next(&rq, &topo).expect("INTEG：IS-3 须有出选");
+        assert_eq!(p.name, b"isP".as_slice(), "INTEG：IS-3 单任务环须出 isP");
+        assert_eq!(t.prio_effective, 32, "INTEG：IS-3 记账期间策略注入须照常（+32）");
+        assert_eq!(telemetry::billing_domain_total(D1), Some(6_000),
+                   "INTEG：IS-3 策略消费不得改记账");
+
+        // 段尾收口：策略回哨兵。
+        policy::unbind();
+        assert!(!policy::bound(), "INTEG：IS-3 段尾须回未绑");
+    }
+
+    // —— IS-4：EAS overutilized × placement——饱和回退与衰减恢复 ——
+    {
+        // 前置：EM 默认表（test_em/test_overutil 收口态幂等重注册——域 0
+        // 最高容量 1024 → 阈值 819）+ util 全槽清零（OU 系同款防御）。
+        assert!(em_register_qemu_virt(), "INTEG：IS-4 EM 默认表注册须受理");
+        assert_eq!(em_max_capacity(0), 1024, "INTEG：IS-4 域 0 容量须 1024（→ 阈值 819）");
+        policy::unbind();
+        for c in 0..UTIL_NR_CPU {
+            util_reset(c);
+        }
+        assert!(!any_overutilized(), "INTEG：IS-4 前置须非 over 态");
+
+        // placement=1 表（key 7 偏 little——OU-4 同款三值词汇）。
+        static PLACE: [Entry; 1] = [Entry {
+            task_key: 7,
+            directive: Directive { placement: 1, weight: 0, epp: None },
+        }];
+        assert!(policy::bind_gen(&PLACE, policy::gen() + 1), "INTEG：IS-4 放置表须受理");
+        assert_eq!(policy::placement_hint(7), 1, "INTEG：IS-4 阈下 hint 须透传 1");
+
+        // 泵 CPU0 满载（OU 系同款合成窗折叠）：step = ≥ 名义窗的最小
+        // 1024 整倍 → accum = k×1024 / elapsed = k×1024 → util_raw 精确
+        // 1024（满载）；EWMA α=1/8 收敛 13 窗内越阈 819——64 窗帽防挂死。
+        let k = util_window_vct() / 1024 + 1;
+        let step = k * 1024;
+        let mut t0 = 1_000_000u64;
+        util_tick_window(0, t0); // 开首窗（首调只开窗不折叠）
+        let mut pumped = false;
+        for _ in 0..64 {
+            util_accumulate(0, k * 1024); // 满载窗：util_raw = 1024
+            t0 += step;
+            util_tick_window(0, t0);
+            if overutilized(0) {
+                pumped = true;
+                break;
+            }
+        }
+        assert!(pumped, "INTEG：IS-4 满载泵 64 窗内须越阈（EWMA 收敛 > 819）");
+        assert!(any_overutilized(), "INTEG：IS-4 CPU0 over → any 须 true（CPU1 仍 0）");
+        assert_eq!(policy::placement_hint(7), 0,
+                   "INTEG：IS-4 over 态 hint 须失效归 0（表在绑也不透传）");
+
+        // util 回落：idle 空窗真衰减（ewma -= ewma>>3，量化死区 ≤7 远低于
+        // 阈带宽）→ 回阈下 → hint 恢复（非 reset 直清——走生产衰减路径）。
+        let mut decayed = false;
+        for _ in 0..64 {
+            util_accumulate(0, 0); // idle 窗：util_raw = 0
+            t0 += step;
+            util_tick_window(0, t0);
+            if !overutilized(0) {
+                decayed = true;
+                break;
+            }
+        }
+        assert!(decayed, "INTEG：IS-4 idle 衰减 64 窗内须回阈下");
+        assert!(!any_overutilized(), "INTEG：IS-4 衰减后全域须非 over 态");
+        assert_eq!(policy::placement_hint(7), 1, "INTEG：IS-4 衰减后 hint 须恢复 1");
+
+        // 段尾收口：unbind + util 全槽清零（boot 稳态等价——OU 收口同款）。
+        policy::unbind();
+        assert!(!policy::bound(), "INTEG：IS-4 段尾须回未绑");
+        for c in 0..UTIL_NR_CPU {
+            util_reset(c);
+            assert_eq!(cpu_util(c), 0, "INTEG：IS-4 收口须回未启态（CPU{c}）");
+        }
+    }
+
+    berry_hal_aarch64::uart_puts(b"INTEG-K ok\n");
 }
 

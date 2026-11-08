@@ -34,6 +34,7 @@ use berry_sys::{
     berry_vmo_read, berry_vmo_write, Handle, PagerWindow, BERRY_ERR_ACCESS_DENIED,
     BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY,
     BERRY_ERR_INVALID_ARG, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
+    SIGNAL_WAKE_PENDING,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
     SIGNAL_WRITABLE, VMO_OPT_DEMAND,
 };
@@ -5735,8 +5736,7 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     // 义务（消费臂收口刀再生——经 abi-gen 会再生产 kernel/ 产物，非本刀
     // 域），此处镜像 const 消费：值漂移由内核 WAKEP-K ktest + 本 WAKE 臂
     // 双兜底）。
-    const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
-    // WAKE 通知帽：send 收敛点在 berry_channel_send 返回前同步置位 +
+        // WAKE 通知帽：send 收敛点在 berry_channel_send 返回前同步置位 +
     // 广播（内核 syscall.rs AM-1.5 注），wait 命中即回——2s 纯活性兜底
     // 非测量判据（RESUME_CAP 同口径）。
     const WAKE_CAP_NS: u64 = 2 * 1_000_000_000;

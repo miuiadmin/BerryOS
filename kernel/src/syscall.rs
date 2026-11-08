@@ -3060,7 +3060,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
                     p.wake_pending = true;
                     berry_sched::wake_matching(
                         owner.as_ptr() as usize,
-                        crate::suspend::SIGNAL_WAKE_PENDING,
+                        crate::handle::SIGNAL_WAKE_PENDING,
                     );
                 }
             }
@@ -3315,7 +3315,7 @@ unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
                 crate::suspend::SuspendTarget::Process(p) => {
                     // SAFETY: token retain 过目标（Drop 链保活）；只读一位。
                     let wp = (*p.as_ptr()).obj.as_process().map_or(false, |pr| pr.wake_pending);
-                    if wp { crate::suspend::SIGNAL_WAKE_PENDING } else { 0 }
+                    if wp { crate::handle::SIGNAL_WAKE_PENDING } else { 0 }
                 }
                 crate::suspend::SuspendTarget::Thread(_) => 0,
             }),

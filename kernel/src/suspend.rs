@@ -12,14 +12,6 @@ use core::ptr::NonNull;
 /// Q1 裁决「唤醒即解冻」的机制面）。**内核派生位**（低 32 位域——与
 /// READABLE(1<<0)/WRITABLE(1<<1)/TERMINATED(1<<2) 同域共处、位不重叠；
 /// 用户位高 32 位不受扰，`object_signal` 的用户半门控照旧）。语义：置位 =
-/// 冻结期间有 send 命中本进程端点（消息已照常入队）——SuspendToken 的
-/// wait 面**唯一可命中位**，所有在册 token 同刻同视（零 per-token 存储，
-/// `signal_state` 直接读目标 `Process.wake_pending` 派生）；全解冻清零。
-/// 消费 ABI（零新 syscall）：`object_wait_one(token, SIGNAL_WAKE_PENDING,
-/// deadline, &observed)`——poll(deadline=0) 即探针。位值本刀先立内核侧；
-/// `tools/abi.toml` 冻结表 + berry-sys 常量归消费臂（下一段）落库。
-pub const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
-
 /// 冻结目标（token 持有期间 retain）。
 pub enum SuspendTarget {
     Process(NonNull<ObjRef>),
