@@ -6,6 +6,7 @@
 > **依据**：`应用模型设计-v1.0.md` §4/§4.1 + `应用规范-v1.0.md` §4.1/§4.1-5 + ADR #64（调点 1.1 S3 freeze 已落内核侧；调点调度-v1.1.md §5.5/§5.6/§5.8）+ `research/AM-01-墓碑模式开源对标-v1.0.md`（开源谱系四层+八判据，本刀裁形业界互证基座）+ `.agents/plans/am/design.md` v0.3.0（am↔app-1 梯度互证：段 a=L2 freeze-first、段 b=L3 v0）+ ADR #67（双钟）。
 > **时点**：GUI-8 段④ 收官窗后、SDK-2 开刀前——appd 域纯用户态一刀。
 > **形态先例**：`app-0实施设计草案-v1.0.md` + T-1 `thr_selftest`（标记/帽/eco 形）+ app_launch/app_serve_spawn（spawn 面）。
+> **DEADLINE 核账（2026-11-08）**：rootfs 相 600s 帽 − 在案 EFI 窗 ≈270s − tomb 串行睡预算 ≈23s（8s 窗+10s deadline+5s 帽）≈ 余量 307s，充足。
 > **执行结果**：段 a-1/b-1 已落地实证（刀 `ba11596`/`aaef81d`——`FROZEN ok n=1` + `TOMB ok n=1` + `apptomb restored c=3` counter 续接，沿革一五六/一五七/一六〇；冻结谓词双残影内核残修 + 判例 §A144/§A145 三处一动 = `d563485` 完结）。
 > **负路径三件 = 人工验收面挂账**（CI 不可达、降级臂在码未实跑；机制位 §4，每件一句触发法）：①pause 超时杀——apptomb 换慢变体（收 PAUSESV1 后 >10s 不回 SAVED）→ 期望 `eco: tomb ptmo` + 监督杀 + 不入墓碑表 + 不重启；②blob 越写——变体向 state VMO 直写 >64KiB → 期望 `vmo_write` 越界返错（64KiB 定尺寸即帽，结构性拒、无静默截断）；③墓碑表满 LRU——变体连灌 8 相异 id 后第 9 个记入 → 期望 epoch 最小槽淘汰回收、新条目在席（`tomb_put` LRU victim 臂）。④restore-fail/⑤二次 spawn 失败降级臂同在码（`tomb rfail`/`tomb respawn`），同挂人工面、随负路径变体刀一并验。
 
