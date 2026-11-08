@@ -1155,6 +1155,22 @@ def selftest() -> int:
             + "".join(f'act{i:02} = "routine"\n' for i in range(AGENT_ACTIONS_MAX + 1)),
         ),
         ("aa-empty-section", f0 + "\n[agent-actions]\n"),
+        # app-1 段 b-2 补件（调和审计 mkapp 路余量）：APPTOMB id 25B 越界——
+        # 钉 [app].id 长度门（ID_MAX=24 与墓碑表 id[24] 定长槽镜像同值，
+        # app-1 草案 v1.2 §4/§7）；值变异唯一违规则 = 长度（"A"*25 过字符集，
+        # 其余字节零扰动）——门删则 canonical 恒等重发射放行 → selftest FAIL。
+        ("apptomb-id-25b", (
+            "[app]\n"
+            'id = "' + "A" * 25 + '"\n'
+            'version = "0.1.0"\n'
+            'entry = "bin/apptomb"\n'
+            'type = "app"\n'
+            'intent = "background"\n'
+            "\n[capabilities]\n"
+            "console = true\n"
+            "\n[runtime]\n"
+            "stack_pages = 4\n"
+        )),
     ]
     bad = 0
     for label, text in neg:
