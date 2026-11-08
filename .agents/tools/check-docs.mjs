@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 /**
- * check-docs.mjs —— Curia 2.3 文档自检（纯 node 标准库、零依赖、Node ≥ 18、不联网、不执行文档内代码）。
- * 权威：Curia 2.3 规范「配套脚本规格」与「豁免清单」——编码预检 + 3 组检查（报告组号 0 至 3）、退出码 0/1/2、
+ * check-docs.mjs —— Curia 2.4 文档自检（纯 node 标准库、零依赖、Node ≥ 18、不联网、不执行文档内代码）。
+ * 权威：Curia 2.4 规范「配套脚本规格」与「豁免清单」——编码预检 + 3 组检查（报告组号 0 至 3）、退出码 0/1/2、
  * 目录级与组级豁免、诚实条款（空集必红、根锚点缺失必红、只证明机械子集、不读 git、异常非零）。用法：
  *   node .agents/tools/check-docs.mjs [--strict] [--exclude <路径或 glob>]… [路径…]
  *   报告模式列发现不失败（0）；--strict 任一发现即 1；
  *   2 = 无法完成检查：扫描面为空、路径不存在、根锚点缺失、内部错误——两种模式都不得返回 0。
- * 锚点：工作区根 = 调用时的工作目录，该目录须自身含 `.agents/` 目录——默认调用下不满足即退出码 2，
+ * 锚点：工作区根 = 调用时的工作目录，该目录须自身含 `.agents/` 或 `docs/` 目录——两者皆无时默认调用退出码 2，
  *   不自脚本位置、不向父目录上溯（上溯会命中 `~/.agents` 一类无关祖先）；脚本文件位置不限，一律以调用目录为基准。
  *   结构判定以根下 `.agents/` 目录为锚；显式路径的面内无 `.agents/` 子树时结构组不执行，stderr 注明、汇总行自带标注；
- *   结构锚下五个家一个都没有时同样标注（空 `.agents/` 会与完整树同形全绿）。
- * 扫描面：未给路径时取默认两根 `.agents/` 与 `docs/`（`.agents/` 是根锚点，缺失即退出码 2；`docs/` 存在才扫），
+ *   结构锚下五个家一个都没有时同样标注（空 `.agents/` 会与完整树同形全绿）。只有 `docs/` 时走 docs-only 模式：
+ *   不跑 `.agents/` 结构组，仍跑编码预检、docs 标准头块与链接组。
+ * 扫描面：未给路径时取默认两根 `.agents/` 与 `docs/`（两者存在才扫，至少一个存在即合法根），
  *   默认两根与 --exclude 的相对值以调用目录（即工作区根）为基准；只收 `.md`（大小写不敏感），`.mdx`/`.markdown` 不进面。
  * 取舍：目录名 kebab-case 只查 `.agents/` 子树；日期型文件名只查 plans/research 家与 notes 活动区；
+ *   `docs/` 标准只查 `Version` 格式与文件名版本一致性，`docs/` 自由知识命名不查；
  *   组 0「编码」在文件无法按 UTF-8 解码或含 NUL 字节时报出；纯文件系统遍历，不读 git；
  *   仅 POSIX 实测：Windows 未实测、路径大小写不做归一（绝对 --exclude 按逐字前缀比较）。
  */
@@ -20,11 +22,18 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-/** 工作区根：调用时的工作目录，须自身含 `.agents/` 目录；否则 null（默认调用下即根锚点缺失）。不做上溯——上溯会命中 `~/.agents` 一类无关祖先。 */
-const ROOT = (() => { try { return statSync(join(process.cwd(), '.agents')).isDirectory() ? process.cwd() : null; } catch { return null; } })();
+/** 工作区根：调用时的工作目录，须自身含 `.agents/` 或 `docs/` 目录；否则 null（默认调用下即根锚点缺失）。不做上溯——上溯会命中 `~/.agents` 一类无关祖先。 */
+const ROOT = (() => {
+  const cwd = process.cwd();
+  for (const name of ['.agents', 'docs']) {
+    try { if (statSync(join(cwd, name)).isDirectory()) return cwd; } catch {}
+  }
+  return null;
+})();
 const realOr = (p) => { try { return realpathSync(p); } catch { return p; } };
+const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
-/** 类型枚举（机器读的一份；人读权威在规范「9 类文档」表）：类型 → 家 → 允许状态（null = 无 Status）。 */
+/** 类型枚举（机器读的一份；人读权威在规范「10 类文档」表）：类型 → 家 → 允许状态（null = 无 Status）。 */
 const TYPES = {
   proposal: { home: 'plans', statuses: ['draft', 'active', 'done', 'superseded'] },
   spec: { home: 'plans', statuses: ['draft', 'active', 'done', 'superseded'] },
@@ -35,17 +44,19 @@ const TYPES = {
   reference: { home: 'research', statuses: ['current', 'historical', 'superseded'] },
   runbook: { home: 'skills', statuses: ['current', 'superseded'] },
   skill: { home: 'skills', statuses: null },
+  standard: { home: 'docs', statuses: ['current', 'historical', 'superseded'] },
 };
 
 /** 现行态集（取代链终点判据用）：该类型的 Status 落在集合内才算「现行依据」，取代链必须终结在这里。`spec` 的 `done` 仍是权威（规范「状态与退役」）；`plan`/`proposal` 的 `done` 是历史；`research` 三类的 `historical` 是时效过去。 */
 const CURRENT = {
   proposal: ['active'], spec: ['draft', 'active', 'done'], plan: ['draft', 'active'],
   survey: ['current'], evidence: ['current'], postmortem: ['current'], reference: ['current'], runbook: ['current'],
+  standard: ['current'],
 };
 
 const GROUP_NAMES = { 0: '编码', 1: '头块与生命周期', 2: '家与命名', 3: '链接' };
 const SKIP_DIR_NAMES = new Set(['.git', 'node_modules']);
-const TYPED_HOMES = new Set(['plans', 'research', 'skills']); // 3 行头块的三个类型化家
+const TYPED_HOMES = new Set(['plans', 'research', 'skills']); // `.agents/` 下 3 行头块的三个家；docs 标准在 checkDoc 的 docs 分支单独判
 const HOMES = ['plans', 'research', 'notes', 'skills', 'archive']; // `.agents/` 下五个家——结构组「有没有结构可判」的判据
 const NOTE_STATUSES = new Set(['proposed', 'implemented', 'rejected']);
 const INDEX_NAMES = new Set(['README.md', 'AGENTS.md']); // 目录说明文件不进类型化面
@@ -59,6 +70,9 @@ const LINK_RE = /\[[^\]]*\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:"[^"]*"|'[^']*'
 
 /** 结构锚（绝对路径）：结构判定以这些 `.agents/` 目录为锚——默认调用为根下 `.agents/`；显式路径为扫描面内找到的 `.agents/` 目录（无则不判结构）。 */
 let STRUCT_ANCHORS = [];
+
+/** docs 锚（绝对路径）：`docs/` 自由知识与标准的判定基准——默认调用为根下 `docs/`；显式路径为扫描面内找到的 `docs/` 目录。 */
+let DOCS_ANCHORS = [];
 
 /** 输出用路径：两侧统一 realpath（macOS /tmp → /private/tmp 符号链接下输出才不失真）；相对工作区根（= 调用目录），失败回退原值。 */
 function relOf(abs) {
@@ -180,7 +194,7 @@ function parseHeader(lines, fenced) {
   return { titleIdx, fields };
 }
 
-/** 定位文件/目录在结构锚下的位置（家、归档区、笔记 lifecycle）；不在任何 `.agents/` 锚下时 inAgents=false。 */
+/** 定位文件/目录在结构锚下的位置（家、归档区、笔记 lifecycle；docs 根与 docs 归档区）；不在任何锚下时 inAgents/inDocs 均为 false。 */
 function locate(abs, isDir = false) {
   let anchor = null;
   for (const a of STRUCT_ANCHORS) {
@@ -189,9 +203,16 @@ function locate(abs, isDir = false) {
   const rel = anchor === null ? null : relative(anchor, abs).split(sep).join('/');
   const after = rel === null || rel === '' ? [] : rel.split('/');
   const home = after.length > (isDir ? 0 : 1) ? after[0] : null;
+  let docsAnchor = null;
+  for (const a of DOCS_ANCHORS) {
+    if ((abs === a || abs.startsWith(a + sep)) && (docsAnchor === null || a.length > docsAnchor.length)) docsAnchor = a;
+  }
+  const docsRel = docsAnchor === null ? null : relative(docsAnchor, abs).split(sep).join('/');
+  const inDocs = docsAnchor !== null;
+  const inDocsArchive = inDocs && (docsRel === 'archive' || docsRel.startsWith('archive/'));
   return { inAgents: anchor !== null, home, lifecycle: home === 'notes' ? after[1] ?? null : null,
-    inArchive: home === 'archive' || (home === 'notes' && after[1] === 'archived'),
-    inNotesActive: home === 'notes' && NOTE_STATUSES.has(after[1]) };
+    inArchive: home === 'archive' || (home === 'notes' && after[1] === 'archived') || inDocsArchive,
+    inNotesActive: home === 'notes' && NOTE_STATUSES.has(after[1]), inDocs, docsRel, inDocsArchive };
 }
 
 /** 行内代码掩码：成对反引号（同长引号串）之间的内容替换为 INLINE_MARK；未闭合的按普通文本处理。 */
@@ -222,7 +243,7 @@ function checkHeaderBlock(rel, hdr, out) {
   if (!updF) add(out, 1, rel, anchor, '头块缺 `Updated:` 行');
   if (!statusF && !(typeF && typeF.value === 'skill')) add(out, 1, rel, anchor, '头块缺 `Status:` 行');
   if (typeF && statusF && updF && !(typeF.idx < statusF.idx && statusF.idx < updF.idx)) add(out, 1, rel, typeF.idx + 1, '头块三行顺序应为 `Type:`、`Status:`、`Updated:`');
-  if (typeF && !def) add(out, 1, rel, typeF.idx + 1, `Type 值 \`${typeF.value}\` 不在 9 类内`);
+  if (typeF && !def) add(out, 1, rel, typeF.idx + 1, `Type 值 \`${typeF.value}\` 不在 10 类内`);
   if (statusF && def && def.statuses !== null && !def.statuses.includes(statusF.value)) add(out, 1, rel, statusF.idx + 1, `Status 值 \`${statusF.value}\` 不在 \`${typeF.value}\` 的允许集（${def.statuses.join('/')}）内`);
   if (updF && !DATE_RE.test(updF.value)) add(out, 1, rel, updF.idx + 1, `Updated 值 \`${updF.value}\` 非 yyyy-mm-dd`);
   for (const f of hdr.fields) { const m = PLACEHOLDER_RE.exec(f.value); if (m) add(out, 1, rel, f.idx + 1, `字段值残留占位符 \`${m[0]}\``); }
@@ -368,13 +389,41 @@ function checkModuleDesign(rel, hdr, lines, out) {
   if (!title.includes(slug)) add(out, 1, rel, hdr.titleIdx >= 0 ? hdr.titleIdx + 1 : 1, `标题应含模块标识 \`${slug}\`——模块设计文档的名字就是这个模块`);
 }
 
-/** 组 2：`.agents/` 下类型与家不符；带类型头块的文档住到 `.agents/` 之外（如 `docs/`）同样报；日期型文件名不以 `yyyy-mm-dd-` 开头。 */
+/** 组 1：docs 标准——必须有 `Version:` semver；文件名带版本时须与头块一致（文件名是人读标签，头块是权威）。 */
+function checkStandard(rel, hdr, out) {
+  const typeF = hdr.fields.find((f) => f.key === 'Type');
+  if (!typeF || typeF.value !== 'standard') return;
+  const verF = hdr.fields.find((f) => f.key === 'Version');
+  const anchor = hdr.titleIdx >= 0 ? hdr.titleIdx + 1 : 1;
+  if (!verF) add(out, 1, rel, anchor, '标准缺 `Version:` 行（形如 1.2.0，记这份标准自己的契约版本）');
+  else if (!SEMVER_RE.test(verF.value)) add(out, 1, rel, verF.idx + 1, `Version 值 \`${verF.value}\` 非 MAJOR.MINOR.PATCH`);
+  else {
+    const m = /v(\d+(?:\.\d+){0,2})/i.exec(basename(rel));
+    if (m && !(verF.value === m[1] || verF.value.startsWith(`${m[1]}.`))) {
+      add(out, 1, rel, verF.idx + 1, `文件名版本 \`v${m[1]}\` 与头块 Version \`${verF.value}\` 不一致`);
+    }
+  }
+}
+
+/** 组 2：按类型表判家——`.agents/` 下类型与家不符、`docs/` 下非 standard、面外带类型头块的文档。日期型文件名不以 `yyyy-mm-dd-` 开头也报。 */
 function checkHomeName(rel, hdr, loc, base, isIndex, out, exemptDated = false) {
   const typeF = hdr.fields.find((f) => f.key === 'Type');
   const def = typeF && TYPES[typeF.value];
-  if (def && !isIndex && loc.inAgents && loc.home !== def.home) add(out, 2, rel, typeF.idx + 1, `类型 \`${typeF.value}\` 应住 \`${def.home}/\`，实际在 \`${loc.home ?? '（不在任何家）'}\``);
-  // 面外类型化文档：结构锚存在时可判（规范「docs/ 不装计划与提案」——九类的家都在 `.agents/` 下）；扫描面内无锚时不判，避免误伤外部路径巡检
-  else if (def && !isIndex && !loc.inAgents && STRUCT_ANCHORS.length) add(out, 2, rel, typeF.idx + 1, `类型 \`${typeF.value}\` 的文档住在 \`.agents/\` 之外（应住 \`.agents/${def.home}/\`）——\`docs/\` 等面外根不装带类型头块的文档`);
+  if (def && !isIndex) {
+    if (loc.inAgents) {
+      if (def.home === 'docs') {
+        add(out, 2, rel, typeF.idx + 1, `类型 \`${typeF.value}\` 应住 \`docs/\`，实际在 \`.agents/${loc.home ?? '（不在任何家）'}\``);
+      } else if (loc.home !== def.home) {
+        add(out, 2, rel, typeF.idx + 1, `类型 \`${typeF.value}\` 应住 \`${def.home}/\`，实际在 \`${loc.home ?? '（不在任何家）'}\``);
+      }
+    } else if (loc.inDocs && def.home !== 'docs') {
+      add(out, 2, rel, typeF.idx + 1, `类型 \`${typeF.value}\` 应住 \`.agents/${def.home}/\`，实际在 \`docs/\``);
+    } else if (!loc.inAgents && !loc.inDocs && STRUCT_ANCHORS.length) {
+      // 面外类型化文档：扫描面内有 .agents/ 结构锚时可判；无锚时不判，避免误伤外部路径巡检
+      const expected = def.home === 'docs' ? '`docs/`' : `\`.agents/${def.home}/\``;
+      add(out, 2, rel, typeF.idx + 1, `类型 \`${typeF.value}\` 的文档住在受管根之外（应住 ${expected}）`);
+    }
+  }
   const dated = loc.home === 'plans' || loc.home === 'research' || loc.inNotesActive;
   if (dated && !isIndex && !exemptDated && !DATED_NAME_RE.test(base)) add(out, 2, rel, 1, '日期型文档文件名应以 `yyyy-mm-dd-` 开头');
 }
@@ -384,9 +433,11 @@ function checkLinks(rel, abs, lines, a, out, hdr, loc) {
   const dir = dirname(abs);
   const typeF = hdr ? hdr.fields.find((f) => f.key === 'Type') : null;
   const statusF = hdr ? hdr.fields.find((f) => f.key === 'Status') : null;
-  // 「现行依据」只可能是 plans/ 与 skills/ 里、自身未被取代的类型化文档：research/ 是某一时点的快照，引用旧文本属正常；笔记与归档区同理
+  // 「现行依据」只可能是 plans/、skills/ 与 docs/ 下 current 的 standard：research/ 是某一时点的快照，引用旧文本属正常；笔记、归档与 docs 自由知识同理
   const referrerCurrent = Boolean(typeF) && (!statusF || statusF.value !== 'superseded')
-    && Boolean(loc) && (loc.home === 'plans' || loc.home === 'skills') && !loc.inArchive && !loc.inNotesActive;
+    && Boolean(loc) && !loc.inArchive && !loc.inNotesActive
+    && (loc.home === 'plans' || loc.home === 'skills'
+      || (loc.inDocs && typeF.value === 'standard' && statusF && statusF.value === 'current'));
   for (let i = 0; i < lines.length; i++) {
     if (a.fenced[i]) continue;
     const masked = maskInline(a.cmask[i]);
@@ -425,6 +476,12 @@ function checkDoc(f, out) {
     checkHeaderBlock(f.rel, hdr, out);
     checkSuperseded(f.rel, f.abs, hdr, out);
     checkModuleDesign(f.rel, hdr, lines, out);
+  } else if (loc.inDocs && hdr.fields.some((f) => f.key === 'Type') && !isIndex) {
+    // docs/ 自由知识无头块；一旦出现 `Type:` 就按类型化文档判——standard 是唯一合法类型，其余由组 2 报家归属
+    checkHeaderBlock(f.rel, hdr, out);
+    checkSuperseded(f.rel, f.abs, hdr, out);
+    checkStandard(f.rel, hdr, out);
+    checkModuleDesign(f.rel, hdr, lines, out); // `design.md` 仍是模块设计文档的固定名，docs 下出现同样报
   }
   const relParts = f.rel.split('/'), underAnchorLen = relParts[0] === '.agents' ? relParts.length - 1 : relParts.length;
   const moduleDesign = base === 'design.md' && underAnchorLen === 3 && relParts.includes('plans'); // 免日期前缀（固定名，见规范「模块设计文档」）
@@ -459,23 +516,30 @@ function main(argv) {
     for (const [i, r] of roots.entries()) if (!existsSync(r)) { console.error(`路径不存在：${opts.paths[i]}`); return 2; }
   } else {
     if (ROOT === null) {
-      console.error(`根锚点缺失：调用目录 ${process.cwd()} 自身不含 \`.agents/\` 目录；默认调用一律退出码 2，不静默降级、不向父目录上溯（先 cd 到工作区根，或显式传路径只跑编码预检与链接组）`);
+      console.error(`根锚点缺失：调用目录 ${process.cwd()} 自身既不含 \`.agents/\` 也不含 \`docs/\` 目录；默认调用一律退出码 2，不静默降级、不向父目录上溯（先 cd 到工作区根，或显式传路径只跑编码预检与链接组）`);
       return 2;
     }
-    roots = [join(ROOT, '.agents'), join(ROOT, 'docs')].filter((p) => existsSync(p));
+    roots = [join(ROOT, '.agents'), join(ROOT, 'docs')].filter(isDir);
   }
-  console.log(`被检树：${process.cwd()}（${explicit ? `显式面 ${roots.length} 个路径` : '默认面 .agents/ + docs/'}）`);
+  const defaultFace = roots.map((p) => `${basename(p)}/`).join(' + ');
+  console.log(`被检树：${process.cwd()}（${explicit ? `显式面 ${roots.length} 个路径` : `默认面 ${defaultFace}`}）`);
   const { files, dirs } = collect(roots, opts.excludes);
   if (!files.length) { console.error(`未检查任何文件：扫描面为空（${roots.map(relOf).join('、')}）`); return 2; }
   let structNote = '';
   if (explicit) {
     STRUCT_ANCHORS = dirs.filter((d) => basename(d.abs) === '.agents').map((d) => d.abs);
+    DOCS_ANCHORS = dirs.filter((d) => basename(d.abs) === 'docs').map((d) => d.abs);
     if (!STRUCT_ANCHORS.length) {
       structNote = '结构组未执行：扫描面内无 `.agents/` 子树';
-      console.error('注：扫描面内没有 `.agents/` 子树，结构组不执行（只跑编码预检与链接组）');
+      console.error('注：扫描面内没有 `.agents/` 子树，结构组不执行（只跑编码预检与链接组；扫描面内有 `docs/` 时另跑标准头块）');
     }
   } else {
-    STRUCT_ANCHORS = [realOr(join(ROOT, '.agents'))];
+    STRUCT_ANCHORS = isDir(join(ROOT, '.agents')) ? [realOr(join(ROOT, '.agents'))] : [];
+    DOCS_ANCHORS = isDir(join(ROOT, 'docs')) ? [realOr(join(ROOT, 'docs'))] : [];
+    if (!STRUCT_ANCHORS.length) {
+      structNote = '结构组未执行：仅 docs/ 根（无 `.agents/` 结构锚）';
+      console.error(`注：${structNote}——只跑编码预检、docs 标准头块与链接组`);
+    }
   }
   // 锚存在不等于有结构可判：空 `.agents/`（部分载荷落地、文件级搬运后的形态）会与完整树同形全绿
   if (!structNote && STRUCT_ANCHORS.length && !STRUCT_ANCHORS.some((a) => HOMES.some((h) => existsSync(join(a, h))))) {
