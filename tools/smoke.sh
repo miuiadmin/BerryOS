@@ -945,7 +945,7 @@ skt_client_wait "rootfs 相"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 32 + rootfs 51 = 83
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 32 + rootfs 52 = 84
 #（sim-S2 A2 双载体：EL1 ktest +FRZCYC / EL0 thrchild+svcmgr +FRZ）
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块

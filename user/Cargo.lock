@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "apptomb"
+version = "0.1.0"
+dependencies = [
+ "berry-sys",
+]
+
+[[package]]
 name = "berry-appproto"
 version = "0.1.0"
 

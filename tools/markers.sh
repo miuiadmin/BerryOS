@@ -21,7 +21,10 @@ MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TAS
 #——EL0 载体：thrchild 冻结轮数以退出码带出，svcmgr 收码打标（防子进程
 # 标记字面量被冻结路径吞掉）；EL1 ktest 载体 = 裸相 FRZCYC，双载体执法）。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "FRZ ok n=2" "DPGP ok" "INPUT ok" "DPGS ok n=4" "DPGN ok n=4")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "FRZ ok n=2" "DPGP ok" "INPUT ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1")
+# app-1 段 a-1 +FROZEN ok n=1（51→52）：freeze-first 自验——tomb_selftest 通道
+# 判据（UP → suspend → 8s 零收 → thaw → RESUMED 全过才打）。与 T-1 的
+# 「FRZ ok n=2」互非子串（F-R-O-Z-E-N 插元音），canon 机查已复核（对抗审查 L2）。
 
 # sim-S1/sim-S2 RX 专属标记（smoke.sh RX 相 serial1 注入后才出现；rootfs 相
 # 无注入 client，不并入 ROOTFS_MARKERS——否则 rootfs 相标记门恒假红）。

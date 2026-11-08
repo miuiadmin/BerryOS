@@ -28,6 +28,7 @@ use berry_sys::{
     berry_handle_close, berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
     berry_pager_supply_mapped, berry_pager_supply_mapped_table, berry_pager_supply_pages,
     berry_process_create, berry_process_get_exit_code, berry_process_start,
+    berry_process_suspend,
     berry_process_terminate, berry_thread_create, berry_thread_sleep, berry_thread_start,
     berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
     berry_vmo_read, berry_vmo_write, Handle, PagerWindow, BERRY_ERR_ACCESS_DENIED,
@@ -1866,11 +1867,21 @@ fn run_rootfs_child(console: Handle) {
     // collect_eof+reap，任一时刻至多一个 app 存活发 fs RPC）。
     if app_n > 0 {
         let mut ok = 0usize;
+        // app-1 段 a-1（对抗审查 M4）：自验 app 族白名单——boot 批跳过
+        // （拉起权归 tomb_selftest）；分母同步排除（ok==app_n-skipped）。
+        // 漏 skip 且 console 形批内阻塞 reap = boot 批永挂（M4 死锁警示）。
+        let mut skipped = 0usize;
         // GUI-7：ui 面独立谓词（与拉起成败解耦——失败隔离两方向：ui 元数据
         // 坏不拦拉起、拉起坏不抹 ui 验证；Absent 不计入 decl）。
         let mut ui_decl = 0usize;
         let mut ui_ok = 0usize;
         for i in 0..app_n {
+            // app-1：APPTOMB = tomb_selftest 专属（不进 boot 批——APP ok 语义
+            // 零漂移的前提）。
+            if apps[i].id[..apps[i].id_len] == *b"APPTOMB" {
+                skipped += 1;
+                continue;
+            }
             let (launched, uface, tail) = app_launch(
                 console,
                 fs_a_h,
@@ -1900,7 +1911,7 @@ fn run_rootfs_child(console: Handle) {
                 UiFace::Absent => {}
             }
         }
-        if ok == app_n {
+        if app_n > skipped && ok == app_n - skipped {
             // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 单
             // 位数字——抬 APP_SLOTS ≥ 10 前先扩带参宽度（b'0'+ok 会溢出
             // ASCII 数字域；TCPS_PATTERN 定值钉板同款编译期拦）。
@@ -1923,6 +1934,11 @@ fn run_rootfs_child(console: Handle) {
             send_retry(console, line.as_ptr(), line.len());
         }
     }
+    // ---- app-1 段 a-1：freeze-first 自验（tomb_selftest——APPTOMB 从批
+    // 跳过后由此拉起：suspend → 8s 静默窗零收 → 解冻 → resumed，全过打
+    // `FROZEN ok n=1`；判据载体 = lifecycle 通道〔审修 H1〕）----
+    tomb_selftest(console, step, mf, icons, views);
+
     // ---- A-2：bsh 拉起（SDK-1a §1.2 延后段——原主走查 arm 体逐字迁居，
     // data_off/data_len 换绑 off/len，其余零改动）----
     // 交互 shell bsh——stdhello/hexyl 同链（musl target + berry-libc
@@ -5565,6 +5581,244 @@ fn app_launch(
 
 /// SPAWN 收口尾载荷（M-C γ-分）：`app_launch` spawn Ok 后的异步收口包——
 /// boot 批同步消费、SPAWN RPC 形入 `APP_CHILDREN` 子表由稳态探活兑现。
+/// app-1 段 a-1：freeze-first 自验（`docs/app-1实施设计草案-v1.0.md` §3——
+/// 对抗审查 H1/M1/M2 修后口径）。序列（确定性状态谓词，非竞速）：
+/// spawn（extras[4]=lifecycle 端 B、stdin_feed 直传零长——M1）→ 通道收 UP
+/// → drain 在途 beat → `berry_process_suspend(hp,0)` → 8s 窗通道零收
+/// （冻结进程不跑 = 无 BEAT；drain 后开窗，冻结前在途一拍不误报）→
+/// `handle_close(token)` 解冻 → 通道收 RESUMED → terminate+reap 收口 →
+/// `FROZEN ok n=1`。任一步降级 = eco 行 + 同款收口 + 标记缺席（smoke FAIL）。
+fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [UiEntry], views: &mut [UiEntry]) {
+    // lifecycle 消息（与 apptomb 同套常量）：8B 定长 tag+pad+counter LE。
+    const MSG: usize = 8;
+    const TAG_UP: u8 = 1;
+    // （TAG_BEAT=2：drain 臂不区分 tag 抽干一切在途，窗判只看可读性——
+    // 常量面归 apptomb 侧，此处不重复声明免死码。）
+    const TAG_RESUMED: u8 = 3;
+    const UP_CAP_NS: u64 = 10 * 1_000_000_000;
+    const WIN_NS: u64 = 8 * 1_000_000_000; // TCG 放宽（≥3 心跳周期）
+    const RESUME_CAP_NS: u64 = 10 * 1_000_000_000;
+
+    // ① 白名单表查 APPTOMB 槽（批已跳过它——apps 走查表为源）。
+    let account = unsafe { core::ptr::addr_of!(APP_ACCOUNT_N).read() };
+    let tbl: &[AppSlot] = unsafe {
+        core::slice::from_raw_parts(core::ptr::addr_of!(APP_SLOTS_TBL) as *const AppSlot, APP_SLOTS)
+    };
+    let mut off = 0u64;
+    let mut len = 0u64;
+    let mut found = false;
+    for i in 0..account {
+        if tbl[i].id[..tbl[i].id_len] == *b"APPTOMB" {
+            off = tbl[i].bap_off;
+            len = tbl[i].bap_len;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        eco_note(console, b"tomb absent");
+        return; // 裸相/无 APPTOMB 拓扑：静默降级（标记缺席面归 smoke 门）
+    }
+
+    // ② lifecycle 对 + bap 解析 + 双守卫（app_launch 同款）。
+    let (lc_a, lc_b) = channel_pair();
+    let mut entry_name = [0u8; ENTRY_MAX];
+    let sc = match bap_scan(step, mf, &mut entry_name, icons, views, off, len) {
+        Ok(sc) => sc,
+        Err(why) => {
+            eco_note(console, why);
+            if berry_handle_close(lc_a) != 0 || berry_handle_close(lc_b) != 0 {
+                trap();
+            }
+            return;
+        }
+    };
+    let man = match berry_manifest::parse(&mf[..sc.mf_len]) {
+        Ok(m) => m,
+        Err(e) => {
+            eco_note(console, e.reason_str().as_bytes());
+            if berry_handle_close(lc_a) != 0 || berry_handle_close(lc_b) != 0 {
+                trap();
+            }
+            return;
+        }
+    };
+    if man.id.as_bytes() != *b"APPTOMB" || man.entry.as_bytes() != &entry_name[..sc.entry_len] {
+        eco_note(console, b"tomb guard");
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(lc_b) != 0 {
+            trap();
+        }
+        return;
+    }
+
+    // ③ spawn（gift[4] = lifecycle 端 B fresh 迁入；stdin_feed=Some(&[])
+    // 直传——M1：extras 在位断言要求 stdin 槽；console 诊断 = spawn stdout
+    // 面，不进判据〔H1〕）。
+    let gifts = [lc_b];
+    let child = match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: man.entry.as_bytes(),
+            data_off: off + sc.elf_off,
+            data_len: sc.elf_len,
+            stdout: console,
+            stack_pages: man.stack_pages as u64,
+            stdin_feed: Some(&[]),
+            stdin_handle: None,
+            args: &[],
+            extra_gifts: &gifts,
+            mmio_vmo: None,
+            mmio_va: 0,
+            intent: 0,
+            force_eager: false,
+        },
+    ) {
+        Ok(c) => c,
+        Err(()) => {
+            eco_note(console, b"tomb spawn");
+            // Err 早退面 extra_gifts 未迁移——两端都关。
+            if berry_handle_close(lc_a) != 0 || berry_handle_close(lc_b) != 0 {
+                trap();
+            }
+            return;
+        }
+    };
+    // spawn Ok：lc_b 已随 env 块迁入子进程——只持 lc_a。
+
+    // ④ 收 UP（通道判据起点；超时 = app 未活或通道面破）。嵌套 fn（非闭包
+    // ——闭包捕 msg 借用会与 ⑤ drain 循环冲突）。
+    fn recv_tag(lc: Handle, buf: &mut [u8; MSG], cap_ns: u64) -> Option<u8> {
+        let mut obs = 0u64;
+        if berry_object_wait_one(lc, SIGNAL_READABLE, now() + cap_ns, &mut obs) != 0 {
+            return None;
+        }
+        let mut nb = buf.len();
+        let mut nh = 0usize;
+        if berry_channel_recv(lc, buf.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh) != 0
+            || nb < 1
+        {
+            return None;
+        }
+        Some(buf[0])
+    }
+    let mut msg = [0u8; MSG];
+    match recv_tag(lc_a, &mut msg, UP_CAP_NS) {
+        Some(TAG_UP) => {}
+        _ => {
+            eco_note(console, b"tomb up");
+            let _ = berry_process_terminate(child.hp, 9);
+            let _ = child.reap();
+            if berry_handle_close(lc_a) != 0 {
+                trap();
+            }
+            return;
+        }
+    }
+
+    // ⑤ 冻结（options=0 进程全冻；hp 全权——对抗审查 L2 预证 R1）。有界退避
+    // 重试：三重正交谓词在目标醒窗在飞（BEAT 发送/clock 读）时返瞬态错——
+    // 2s 心跳睡窗占比 >99.9%，50ms 退避 16 试必落窗（醒窗亚 ms）；连败才降级。
+    let mut token: Handle = 0;
+    let mut susp_fail: berry_sys::Status = 0;
+    for _ in 0..16 {
+        susp_fail = berry_process_suspend(child.hp, 0, &mut token);
+        if susp_fail == 0 && token != 0 {
+            break;
+        }
+        berry_thread_sleep(now() + 50_000_000);
+    }
+    if susp_fail != 0 || token == 0 {
+        // 取证行带 errno（thr exit 十进制同款）：-EBUSY/-EACCES/-EINVAL/
+        // -EBADSTATE 各对应内核侧一个明确拒绝点。
+        // 「eco: tomb susp 」前缀 = 15B（thr 先例 14B 是因 'thr'3B vs 'tomb'4B
+        // ——首版 15 进 14 槽 panic 连灭四跑的根因，雷册候选）。
+        let mut line = [0u8; 24];
+        let pre = b"eco: tomb susp ";
+        let mut i = pre.len();
+        line[..i].copy_from_slice(pre);
+        if susp_fail < 0 {
+            line[i] = b'-';
+            i += 1;
+        }
+        let mut v = (susp_fail as i64).unsigned_abs();
+        let mut digits = [0u8; 10];
+        let mut dn = 0;
+        loop {
+            digits[dn] = b'0' + (v % 10) as u8;
+            dn += 1;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        while dn > 0 {
+            dn -= 1;
+            line[i] = digits[dn];
+            i += 1;
+        }
+        line[i] = b'\n';
+        send_retry(console, line.as_ptr(), i + 1);
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 {
+            trap();
+        }
+        return;
+    }
+    // drain：冻结生效后冻结前在途 beat 已全入队——抽干再开窗（竞态封口）。
+    loop {
+        let mut nb = msg.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(lc_a, msg.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        if s == BERRY_ERR_AGAIN {
+            break;
+        }
+        if s != 0 {
+            trap();
+        }
+    }
+
+    // ⑥ 静默窗：8s 内通道零收（可读 = 冻结失效/迟到 beat——K1 降级面）。
+    let mut obs = 0u64;
+    let w = berry_object_wait_one(lc_a, SIGNAL_READABLE, now() + WIN_NS, &mut obs);
+    if w != BERRY_ERR_TIMEDOUT {
+        eco_note(console, b"tomb win");
+        let _ = berry_handle_close(token); // 解冻收口（无论窗判成败）
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 {
+            trap();
+        }
+        return;
+    }
+
+    // ⑦ 解冻（thaw = close(token)，1.1-S3 语义）→ 收 RESUMED（app 醒后
+    // 差值判先发 RESUMED 再发当拍 BEAT）。
+    if berry_handle_close(token) != 0 {
+        trap();
+    }
+    match recv_tag(lc_a, &mut msg, RESUME_CAP_NS) {
+        Some(TAG_RESUMED) => {}
+        _ => {
+            eco_note(console, b"tomb res");
+            let _ = berry_process_terminate(child.hp, 9);
+            let _ = child.reap();
+            if berry_handle_close(lc_a) != 0 {
+                trap();
+            }
+            return;
+        }
+    }
+
+    // ⑧ 收口（u1 先例同序：terminate → reap；lc_a 终关）+ 标记。
+    let _ = berry_process_terminate(child.hp, 9);
+    let _ = child.reap();
+    if berry_handle_close(lc_a) != 0 {
+        trap();
+    }
+    send_retry(console, b"FROZEN ok n=1\n".as_ptr(), 14);
+}
+
 struct AppSpawnTail {
     child: ChildHandles,
     out_s: Handle,
@@ -5844,6 +6098,10 @@ fn app_serve_list(console: Handle, svc: Handle) {
     let mut sent = 0u32;
     for i in 0..account {
         let id = &tbl[i].id[..tbl[i].id_len];
+        // app-1（L3）：自验 app 族不进 launcher 列表（拉起权归 tomb_selftest）。
+        if *id == *b"APPTOMB" {
+            continue;
+        }
         let mut entry_name = [0u8; ENTRY_MAX];
         let sc = match bap_scan(
             step,

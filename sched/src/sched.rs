@@ -967,9 +967,22 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
         // 的冻结设计矛盾。睡眠者已放全部结构锁（舞蹈语义），mask 只是
         // 「syscall 尚未走完出口」的记账残影——真正在飞（可被抢占于 SVC
         // 窗内）的形态 = RQ 在席。故 svc_mask 只对 RQ 任务拒。
+
+        // app-1 段 a-1 双残影定谳（2026-11-08 实证 16 试全拒：pc:sl×15 =
+        // 睡眠者 held_locks 位非零）：svc_mask 与 held_locks 位都是 SVC 窗
+        // 记账，随「睡在 syscall 内」的任务带进 SLEEPQ（block 舞蹈放的是
+        // 物理锁，位不清——醒后重取复用）。睡眠者位是残影、锁已放：冻结
+        // 只暂停执行、不动锁，无停摆面（防停摆的是 pi_inherited 检查，保留
+        // ——PI 边上冻结 = 捐赠链断）。真在飞 = RQ 在席（窗内可抢占形），
+        // svc_mask + held 结构位都对 RQ 任务拒。冻结可能延迟「睡眠者真持
+        // 锁时的等待者」= 策略域代价（AM-01 Q1-c 唤醒即解冻配套），非谓词域。
         let sleep_ok = |t: &Task| -> bool {
             t.pi_inherited == 0
                 && t.wait_signals & (SIG_READABLE | SIG_WRITABLE) == 0
+        };
+        let rq_ok = |t: &Task| -> bool {
+            sleep_ok(t)
+                && t.svc_mask == 0
                 // 排除 HELD_FROZEN（bit6，嵌套冻结）+ HELD_THROTTLE（bit7，
                 // S5-c 预算限流——调度态非持锁，限流中的 deadline 任务仍可
                 // 被进程冻结）。只有结构锁位 bit1–5 才拒。
@@ -977,7 +990,6 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
                     & !(crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE)
                     == 0
         };
-        let rq_ok = |t: &Task| -> bool { sleep_ok(t) && t.svc_mask == 0 };
         // SLEEPQ
         let mut cur = sleepq().head.get();
         while let Some(c) = cur {

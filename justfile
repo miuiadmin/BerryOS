@@ -275,6 +275,13 @@ build-user:
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
     python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
+    # app-1 段 a-1：APPTOMB（freeze-first 自验件——none target 随全量 build 行
+    # 产出；staging 同 appstub 形。不进 boot 批〔svcmgr 白名单 skip〕，拉起权
+    # 归 tomb_selftest——`FROZEN ok n=1` rootfs 相标记）。
+    mkdir -p userbins/app-stage/APPTOMB/bin
+    cp bins/apptomb/manifest.toml userbins/app-stage/APPTOMB/
+    cp cargo-target/aarch64-unknown-none/release/apptomb userbins/app-stage/APPTOMB/bin/
+    python3 ../tools/mkapp.py userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
     # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。
     for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser; do
         id=${spec%%:*}; bin=${spec##*:}
@@ -293,6 +300,7 @@ build-user:
     python3 ../tools/mkcpio.py ../rootfs.cpio \
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
+        app/APPTOMB.bap=userbins/app/APPTOMB.bap \
         app/BROWSER.bap=userbins/app/BROWSER.bap \
         app/CAMERA.bap=userbins/app/CAMERA.bap \
         app/CONTACTS.bap=userbins/app/CONTACTS.bap \

@@ -266,6 +266,25 @@ pub fn fs_h() -> u32 {
     unsafe { GIFT_H[1] }
 }
 
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（app-1：apptomb / 未来生命周期
+/// app 的 lifecycle 通道端——svcmgr tomb_selftest 建对后端 B 随 extras 首位
+/// 迁入，up/beat/resumed/saved/restored 上报与 PAUSESV1 下行都走它；
+/// 0 = 未交付 = 未在生命周期 spawn 面。与 [`rootfs_h`] 族同槽不同名（多产面
+/// 惯例）。v0 apptomb 自解析 env 块不经 libc——本访问器为规范 §4.1-5 回调
+/// 三口/app-2 的 libc 路备。
+pub fn lifecycle_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（app-1 段 b：墓碑 state VMO
+/// ——appd 预建 64KiB 定尺寸（结构性帽）+ commit 后 dup 授子；relaunch 时
+/// duplicate(READ) 收紧授子，复活者只读。与 [`fs_h`] 同槽不同名）。
+pub fn state_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
 /// env 块 extras[1]（gift[5] 位）的同槽访问器（P6 A-5：fsmgr 的块设备服务端——svcmgr
 /// 预拉 vblk 后把 blk_a 经 fsmgr 的 env 块 extras 次位交付，fsmgr 据此读 FAT
 /// 卷；0 = 未交付 = 无 FAT 层，RAM-only 降级续走）。与 [`fs_h`] 同槽不同
