@@ -139,24 +139,15 @@ fn fill_circle(
         return;
     }
     let Some(vis) = rect.intersect(clip) else { return };
-    let r = i64::from(rect.w);
-    let cx = i64::from(rect.x) * 2 + r;
-    let cy = i64::from(rect.y) * 2 + r;
+    let radius = i64::from(rect.w) / 2;
+    let cx = i64::from(rect.x) + radius;
+    let cy = i64::from(rect.y) + radius;
     let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
     let mut y = vis.y;
     while y < y_end {
-        let dy = i64::from(y) * 2 + 1 - cy;
         let mut x = vis.x;
         while x < x_end {
-            let dx = i64::from(x) * 2 + 1 - cx;
-            let d2 = dx * dx + dy * dy;
-            let a = if d2 <= (r - 1) * (r - 1) {
-                255u8
-            } else if d2 >= (r + 1) * (r + 1) {
-                0u8
-            } else {
-                (((r * r - d2) * 255 + r) / (2 * r)).clamp(0, 255) as u8
-            };
+            let a = crate::surface::circle_coverage(cx, cy, radius, x, y);
             if a != 0 {
                 blend_px(target, desc, clip, x, y, color.0, color.1, color.2, a);
             }

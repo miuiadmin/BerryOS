@@ -29,4 +29,5 @@
 - [../GUI里程碑规划-2026-10-v1.0.md](../GUI里程碑规划-2026-10-v1.0.md) —— M-GUI 目标形态、GUI-0..9 长期架构与既有 ADR 依据。
 - [../GUI-3实施设计草案-v1.1.md](../GUI-3实施设计草案-v1.1.md) —— `berry-ui` 保留树、脏区、帧循环与 impl 契约。
 - [../BerryUI-F2核心盘点-v1.0.md](../BerryUI-F2核心盘点-v1.0.md) —— berry-ui core 现状、布局/命中诊断与 SDK 最小冻结面。
+- [../BerryDesign-F3主题与基元-v1.0.md](../BerryDesign-F3主题与基元-v1.0.md) —— Berry Design token、密度换算、交互状态与 BerryGFX 表面基元单源。
 - [../GUI渲染调研-2026-10-v1.0.md](../GUI渲染调研-2026-10-v1.0.md) —— 渲染路线与自研光栅决策依据。

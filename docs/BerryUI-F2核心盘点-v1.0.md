@@ -130,7 +130,7 @@ bash tools/smoke-image.sh out/berryos.img <AAVMF_CODE> <AAVMF_VARS>
 
 ## §5 边界
 
-- F2 不引入 Berry Design token；颜色/字号/圆角/间距仍散在调用方，归 F3 收敛。
+- F2 不引入 Berry Design token；颜色/字号/圆角/间距的收敛面见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。
 - F2 不新增 Button/Card/Switch 组件；归 F4。
 - F2 不把 UITEST 扩成组件 showcase；归 F5。
 - F2 不迁移 Settings/Files/Contacts/Photos/Browser；归 F6..F8。

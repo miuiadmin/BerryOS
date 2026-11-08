@@ -59,3 +59,4 @@ pub mod lru;
 pub mod pass;
 pub mod queue;
 mod raster;
+pub mod surface;

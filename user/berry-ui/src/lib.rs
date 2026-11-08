@@ -45,6 +45,7 @@ pub mod resample;
 pub mod sdk;
 pub mod swipe;
 pub mod telemetry;
+pub mod theme;
 pub mod utf8;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
 

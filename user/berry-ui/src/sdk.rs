@@ -13,4 +13,8 @@ pub use crate::desc::{
 pub use crate::diagnostic::{HitDumpEntry, LayoutDumpEntry};
 pub use crate::layout::{CrossAlign, LayoutStat};
 pub use crate::metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, TextMetrics};
+pub use crate::theme::{
+    Density, InteractionState, RadiusToken, SpacingToken, StateColors, Theme, ThemeColors,
+    ThemeMetrics, TypographyToken,
+};
 pub use crate::{Ui, UiError, UiMain};
