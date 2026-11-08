@@ -50,8 +50,9 @@ pub use intent::{
 };
 pub use runqueue::{linkable, Runqueue, Topo};
 pub use util::{
-    cpu_util, util_accumulate, util_reset, util_tick_window, util_window_vct, EWMA_ALPHA_SHIFT,
-    UTIL_NR_CPU, UTIL_WINDOW_HZ, UTIL_WINDOW_VCT_REF,
+    any_overutilized, cpu_util, overutilized, util_accumulate, util_reset, util_tick_window,
+    util_window_vct, EWMA_ALPHA_SHIFT, OVERUTIL_THRESHOLD, UTIL_NR_CPU, UTIL_WINDOW_HZ,
+    UTIL_WINDOW_VCT_REF,
 };
 pub use sched::{
     block_current, current_pinned, current_tag, exit_current,

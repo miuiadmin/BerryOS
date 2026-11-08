@@ -492,7 +492,18 @@ pub(crate) fn weight_of(task: &Task) -> i32 {
 /// 执法随 SMP 真消费面定）。v1.3 首刀只立读出口——「placement 值经策略表
 /// 正确可达」的 ktest 断言对象；唤醒选核的真消费随 SMP 路由（smoke-smp
 /// 三相 LB 稳定后）接，单核形态下 placement 有值 = 无操作。
+///
+/// **overutilized 门控**（§7 回退——EAS 永远是机会主义）：任一核 util 超
+/// 域最高容量 80%（[`crate::util::any_overutilized`]）→ 恒 0（放置 hint
+/// 失效）——饱和系统里能量/放置比较失真（所有候选都「贵」），回退普通
+/// 负载均衡（= 无 hint 默认行为）。Linux EAS 同名纪律：overutilized 时
+/// 能量感知选核整域让位。
 pub fn placement_hint(task_key: u64) -> u8 {
+    // overutilized 回退（v1.3 §7）：任一核超容量 80% → 放置 hint 失效
+    //（短路序 = 门控最前：饱和态下表查不查都无意义，热路径省一次快照读）。
+    if crate::util::any_overutilized() {
+        return 0; // 无意见（= 回退到无 hint 的默认行为）
+    }
     // SAFETY: 读纪律同 apply/weight_of（active_snap 静态区指针 + 已发布槽
     // 不可变 + 单核屏蔽窗读写互斥——读窗内快照稳定）。
     let snap: &Snap = unsafe { &*active_snap() };

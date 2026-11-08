@@ -70,6 +70,9 @@ pub fn run() {
     test_em();
     // v1.3 §6/§7 EAS：per-CPU util EWMA（调度器→PM 频率信号；同款末位新号）。
     test_util();
+    // v1.3 §7 EAS：overutilized 回退（EM × util 首个交叉消费者——EAS 放置
+    // hint 门控；同款末位新号）。
+    test_overutil();
     // v1.3 §9 真机框架：HDR 直方图（对数线性桶 + 分位 + per-CPU/合并读面；
     // 同款末位新号——sched::init 前跑，纯原子静态无 CURRENT 面，ktest 窗合法）。
     test_hdr();
@@ -5946,6 +5949,123 @@ fn test_util() {
     }
 
     berry_hal_aarch64::uart_puts(b"UTIL ok\n");
+}
+
+/// OU 系：overutilized 回退（v1.3 §7 预研建议⑤——「EAS 永远是机会主义」：
+/// 任一核 util 超域最高容量 80% → EAS 放置 hint 失效，Linux 同名机制的
+/// BerryOS 最小面）：
+/// - OU-1 cpu_util < 80% 容量 → overutilized == false（含 819 == 阈值的
+///   边界钉板——严格 > 才判、等于不算）；
+/// - OU-2 cpu_util > 80% 容量（820）→ overutilized == true；any_overutilized
+///   任一核口径双向（CPU0 over / CPU1 over 各自单核饱和即真）；
+/// - OU-3 overutilized 态 placement_hint → 0（表里有 placement 值也失效）；
+/// - OU-4 非 overutilized 态 placement_hint 正常查表透传。
+///
+/// 驱动面 = 合成窗折叠（UTIL 系同款——util_raw 精确可控）：窗长取 ≥ 名义
+/// 窗的最小 1024 整倍 step（k = w/1024+1），accum = k×u / elapsed = k×1024
+/// → util_raw = u 逐位精确（u128 分子零舍入）。满载链 ewma_{n+1} =
+/// ewma_n + (1024-ewma_n)>>3 确定性收敛：12 折至 815（79.6% < 80%）、精调
+/// 两折 819（== 阈值）→ 820（首越阈）——80% 边界两侧各一钉板。EM 前提 =
+/// QEMU 默认表（域 0 最高容量 1024 → 阈值 1024×819/1024 = 819；test_em
+/// 收口态的幂等重注册）。ktest 纪律同 UTIL：sched::init 前跑、纯合成时间
+/// 轴；收口 unbind + 全槽清零（ktest 瞬态不外泄）。OVERUTIL ok。
+fn test_overutil() {
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{
+        any_overutilized, cpu_util, em_max_capacity, em_register_qemu_virt, overutilized,
+        util_accumulate, util_reset, util_tick_window, util_window_vct, EWMA_ALPHA_SHIFT,
+        UTIL_NR_CPU,
+    };
+
+    // 合成时间轴参数：step = ≥ 名义窗的最小 1024 整倍（62.5MHz → w=625_000
+    // → k=611、step=625_664）；elapsed = step 下 accum = k×u → util_raw = u。
+    let k = util_window_vct() / 1024 + 1;
+    let step = k * 1024;
+
+    /// 折一窗：util_raw = u 精确进 EWMA（`t` 单调推进合成时间轴）。
+    fn fold(cpu: usize, u: u32, t: &mut u64, k: u64, step: u64) {
+        util_accumulate(cpu, k * u as u64);
+        *t += step;
+        util_tick_window(cpu, *t);
+    }
+
+    // —— 前置清场（EM 幂等重注册 = test_em 收口同表；util 全槽清零 =
+    //      test_util 收口态防御性重申；policy 回哨兵——PL 系同款）。
+    assert!(em_register_qemu_virt(), "OU：QEMU 默认 EM 表注册须受理");
+    assert_eq!(em_max_capacity(0), 1024, "OU：域 0 最高容量须 1024（→ 阈值 819）");
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+    assert!(!any_overutilized(), "OU：前置全零须不 over");
+
+    // —— OU-1：cpu_util < 80% 容量 → false。满载链 12 折至 815（79.6%）
+    //      + 精调一折至 819（== 阈值——严格 > 语义：等于不判）。
+    let mut t0 = 1_000_000u64;
+    util_tick_window(0, t0); // 开首窗（start==0 → 只开窗不折叠）
+    let mut expect = 0u32;
+    for i in 1..=12u32 {
+        fold(0, 1024, &mut t0, k, step); // 满载窗：util_raw = 1024
+        expect += (1024 - expect) >> EWMA_ALPHA_SHIFT;
+        assert_eq!(cpu_util(0), expect, "OU：满载第 {i} 折须精确（{expect}）");
+    }
+    assert_eq!(expect, 815, "OU：12 折满载须至 815（< 819.2 = 80%）");
+    assert!(!overutilized(0), "OU-1：util 815 < 80% 须不判 over");
+    fold(0, 847, &mut t0, k, step); // 815 + (847-815)>>3 = 819（== 阈值）
+    assert_eq!(cpu_util(0), 819, "OU：精调一折须至 819（== 阈值）");
+    assert!(!overutilized(0), "OU-1：util == 阈值 819 须不判 over（严格 >）");
+    assert!(!any_overutilized(), "OU-1：全域阈下 any 须 false");
+    assert!(!overutilized(UTIL_NR_CPU), "OU-1：越界 cpu 须 false（util 0）");
+
+    // —— OU-2：cpu_util > 80% 容量 → true。819 + (827-819)>>3 = 820（首越阈）。
+    fold(0, 827, &mut t0, k, step); // 819 + 8>>3 = 820
+    assert_eq!(cpu_util(0), 820, "OU：再折须至 820（> 819）");
+    assert!(overutilized(0), "OU-2：util 820 > 80% 须判 over");
+    assert!(any_overutilized(), "OU-2：CPU0 over → any 须 true（CPU1 仍 0）");
+
+    // —— OU-3：overutilized 态 placement_hint → 0（表里有 placement 值也失效
+    //      ——EAS 机会主义纪律：饱和即回退普通均衡）。
+    static PLACE: [Entry; 2] = [
+        Entry { task_key: 7, directive: Directive { placement: 1, weight: 0, epp: None } },
+        Entry { task_key: 8, directive: Directive { placement: 2, weight: 0, epp: None } },
+    ];
+    assert!(policy::bind_gen(&PLACE, policy::gen() + 1), "OU：放置表 bind_gen 须受理");
+    assert_eq!(policy::placement_hint(7), 0, "OU-3：over 态命中键 7 须 0（hint 失效）");
+    assert_eq!(policy::placement_hint(8), 0, "OU-3：over 态命中键 8 须 0（hint 失效）");
+
+    // —— OU-2b：任一核口径——CPU0 清零后 CPU1 泵越阈 → any 仍 true
+    //      （迭代面覆盖到 CPU1，非只看 0 号核）。
+    util_reset(0);
+    assert!(!any_overutilized(), "OU：CPU0 清零后须暂不 over（CPU1 仍 0）");
+    let mut t1 = 3_000_000u64;
+    util_tick_window(1, t1); // 开首窗
+    let mut e1 = 0u32;
+    while e1 <= 819 {
+        fold(1, 1024, &mut t1, k, step);
+        e1 += (1024 - e1) >> EWMA_ALPHA_SHIFT;
+    }
+    assert_eq!(cpu_util(1), e1, "OU：CPU1 满载泵越阈须精确（{e1}）");
+    assert!(e1 > 819 && e1 < 1024, "OU：CPU1 泵值域须 (819, 1024)");
+    assert!(overutilized(1), "OU-2：CPU1 越阈须判 over");
+    assert!(any_overutilized(), "OU-2：任一核 over（CPU1）→ any 须 true");
+
+    // —— OU-4：非 overutilized 态（全清）→ placement_hint 正常查表透传。
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+    assert!(!any_overutilized(), "OU-4：前置须回非 over 态");
+    assert_eq!(policy::placement_hint(7), 1, "OU-4：非 over 命中键 7 须透传 1（偏 little）");
+    assert_eq!(policy::placement_hint(8), 2, "OU-4：非 over 命中键 8 须透传 2（偏 big）");
+    assert_eq!(policy::placement_hint(9), 0, "OU-4：未命中键 9 须 0（查表原语义不动）");
+
+    // —— 收口：unbind + 全槽清零（ktest 瞬态不外泄——UTIL/EM 同款）。
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "OU：收口须回未启态（CPU{c}）");
+    }
+
+    berry_hal_aarch64::uart_puts(b"OVERUTIL ok\n");
 }
 
 /// v1.3 §9 真机框架：HDR 直方图（`sched/src/hdr.rs` 最小版）——①桶形状

@@ -116,6 +116,39 @@ pub fn cpu_util(cpu: usize) -> u32 {
     UTIL_EWMA[cpu].load(Ordering::Relaxed)
 }
 
+// ---- overutilized 判定（v1.3 §7 预研建议⑤「overutilized 回退」）----
+//
+// Linux EAS 同名机制的 BerryOS 最小面：任一核 util 超域最高容量 80% →
+// 整个调度域 EAS 失效退化纯负载均衡（消费点 = `policy::placement_hint`
+// 门控）。EAS 永远是机会主义——饱和系统里能量/放置比较失真（所有候选
+// 都「贵」），省电让位吞吐。
+
+/// overutilized 判定阈值（0..=1024 尺度——80%）：1024 × 0.8 = 819.2 →
+/// 819（整数截断；Linux `sched_capacity_margin` 的 80% 同款口径）。
+pub const OVERUTIL_THRESHOLD: u32 = 819;
+
+/// 指定核是否 overutilized（EAS 回退判据——任一核超阈值即整个调度域
+/// 回退）。判据 = `cpu_util > 域最高容量 × 80%`（严格大于——恰在阈值
+/// 上不算，滞回带留 §7 裁决后续接）。util 与 [`crate::em::
+/// em_max_capacity`] 同尺度（1024 = 满格）直接比较。
+///
+/// 退化面：EM 未注册（capacity 0 → 钳 1 → 阈值 0）时任何非零 util 即
+/// over——保守侧正确：无能量模型则 EAS 无据可依，本就该回退普通均衡。
+/// 越界 cpu → util 0 → 恒 false（同 [`cpu_util`] 口径）。
+pub fn overutilized(cpu: usize) -> bool {
+    let util = cpu_util(cpu);
+    let cap = crate::em::em_max_capacity(0).max(1); // 域 0 最高容量
+    // util 已是 0..=1024 与 cap 同尺度——直接比较
+    util > (cap * OVERUTIL_THRESHOLD) / 1024
+}
+
+/// 全域 overutilized（任一核超 → true——Linux EAS 全域回退口径：
+/// overutilized 是调度域级标志，单核饱和即全域 EAS 失效，恢复须全域
+/// 阈下）。[`crate::policy::placement_hint`] 的门控判据。
+pub fn any_overutilized() -> bool {
+    (0..UTIL_NR_CPU).any(|i| overutilized(i))
+}
+
 /// 清零重开窗（ktest/boot 期清场专用——生产路径无重置消费面；单写者
 /// 语境调用）。
 pub fn util_reset(cpu: usize) {
