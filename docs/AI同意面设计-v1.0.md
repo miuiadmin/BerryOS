@@ -133,13 +133,13 @@
 1. **manifest 风险档声明格式**：manifest schema add-only 扩节——动作名 → 三档词表（串形 ↔ 有序
    u8 1/2/3，对齐 Veda Risk 枚举序）；执法 = berry-manifest 白名单 + mkapp 规范形门禁（应用模型 §3
    现役执法对）。v1 收格式不消费（运行时消费者 v3 才出现）；「未知节/未知键一律拒」现行纪律下扩节
-   即立法动作，须随 berry-manifest 测试面同刀。目标态形（节名与键字符集随 v0 冻结子集裁定）：
+   即立法动作，须随 berry-manifest 测试面同刀。目标态形（2026-11-08 实施裁定：节名 [agent-actions]，键 kebab-case，值三档字符串）：
 
 ```toml
 [agent-actions]          # 动作风险档声明（add-only；v1 收格式不消费）
 open = "routine"         # 动作名 → routine|sensitive|destructive（有序 u8 1/2/3）
-save = "sensitive"       # 与 provides 语义槽（应用模型 §8.2）同面演进，实施时定节形
-empty_trash = "destructive"
+save = "sensitive"       # 与 provides 语义槽（应用模型 §8.2）同面演进
+empty-trash = "destructive"
 ```
 
 2. **trace 审计事件词汇**：`consent` 类别五事件定名 + 同意面计数组形状（四计数模式同形）；词汇与

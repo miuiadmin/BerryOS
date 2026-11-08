@@ -49,6 +49,20 @@
 //! - 帽/前缀常量 `ICON_PREFIX`/`VIEWS_PREFIX`/`UI_PATH_MAX`/`LABEL_MAX`
 //!   单一事实源 = 本 crate，mkapp.py 镜像（双侧同步义务同上）。
 //!
+//! ## schema v1 增量（同意面先落件二，`docs/AI同意面设计-v1.0.md` §5——
+//! add-only：v1 收格式不消费，运行时消费者 v3 才出现）
+//!
+//! - `[agent-actions]` 整节可省：键 = 动作名（kebab-case：首字符小写
+//!   字母、全串 `[a-z0-9-]`、1..=ACTION_NAME_MAX——[security] 值域与
+//!   id 首字符律的循例合成），值 = 风险档三词闭集（`RiskTier`：
+//!   routine/sensitive/destructive，同意面 §1 三档；判别值有序 u8
+//!   1/2/3 对齐 Veda Risk 枚举序——Intent 判别值钉板同款「形状钉子」，
+//!   v2/v3 消费点 `as u8` 即得编码）。条目数帽 AGENT_ACTIONS_MAX（零
+//!   分配定长槽）；节内任何失败（键字符集/值域/重复动作名/越帽）统一
+//!   `bad agent-actions`（compat/security/ui 理由单一化同款，节名入
+//!   理由）。空节文本形态解析合法（= 缺席同义空集），mkapp 规范形门禁
+//!   拒——空 [runtime]/[ui] 两级执法同款。
+//!
 //! ## 语法子集（冻结到字节级——「编不出就拒绝，不截断」）
 //!
 //! - 换行 **LF-only**：任何 CR 出现即拒（git autocrlf 检出即触发，build
@@ -111,6 +125,13 @@ pub const LABEL_MAX: usize = 32;
 pub const ICON_PREFIX: &str = "icons/";
 /// [ui] views 值前缀（包内 views/ 目录——berryui 声明式资源挂点）。
 pub const VIEWS_PREFIX: &str = "views/";
+// ---- 同意面先落件二帽（docs/AI同意面设计-v1.0.md §5；mkapp.py 镜像
+// ——双侧同步义务见模块头注）----
+/// [agent-actions] 动作名帽（kebab-case：首字符小写字母、全串 [a-z0-9-]）。
+pub const ACTION_NAME_MAX: usize = 24;
+/// [agent-actions] 条目数帽（零分配定长槽——APP_SLOTS 静态收集槽同思路；
+/// MANIFEST_MAX 天然界外再设显式帽，解析产物尺寸可预算）。
+pub const AGENT_ACTIONS_MAX: usize = 16;
 
 /// `ManifestErr` 理由帽——appd 降级行 `eco: app <id> <理由>` 的发射窗按
 /// 24B 设计（§5）；超长理由自身截断后接省略号（「截断不 panic」）。
@@ -162,6 +183,45 @@ impl Intent {
             Intent::Utility => "utility",
             Intent::Background => "background",
             Intent::Maintenance => "maintenance",
+        }
+    }
+}
+
+// ---- RiskTier：同意面三档冻结词表（docs/AI同意面设计-v1.0.md §1/§5）----
+
+/// 动作风险档——同意面 §1 三值有序枚举（判据轴 = 可撤销性 × 影响范围，
+/// 不是概率风险）。判别值 1/2/3 对齐 Veda Risk 枚举序（Intent 判别值
+/// 钉板同款「形状钉子」：v1 收格式不消费，v2/v3 消费点 `as u8` 即得
+/// 正确编码）。词面 = manifest 值域闭集 routine/sensitive/destructive。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RiskTier {
+    Routine = 0x01,
+    Sensitive = 0x02,
+    Destructive = 0x03,
+}
+
+// 编译期钉（首/尾；三变体全量断言在 host 测试 risk_tier_words_and_discriminants）。
+const _: () = assert!(RiskTier::Routine as u8 == 0x01);
+const _: () = assert!(RiskTier::Destructive as u8 == 0x03);
+
+impl RiskTier {
+    /// manifest 小写词 → 枚举（大小写敏感；野词 None）。
+    pub fn from_word(w: &str) -> Option<Self> {
+        Some(match w {
+            "routine" => RiskTier::Routine,
+            "sensitive" => RiskTier::Sensitive,
+            "destructive" => RiskTier::Destructive,
+            _ => return None,
+        })
+    }
+
+    /// 枚举 → manifest 小写词（canonical 重序列化 / 诊断行用）。
+    pub fn word(self) -> &'static str {
+        match self {
+            RiskTier::Routine => "routine",
+            RiskTier::Sensitive => "sensitive",
+            RiskTier::Destructive => "destructive",
         }
     }
 }
@@ -293,6 +353,52 @@ pub struct Ui<'a> {
     pub views: Option<&'a str>,
 }
 
+/// `[agent-actions]` 动作风险档声明（同意面 §5 先落件二）——零分配定长
+/// 槽（帽 AGENT_ACTIONS_MAX；APP_SLOTS 静态收集槽同思路）。v1 收格式
+/// 不消费（运行时消费者 v3 才出现）；空集 = 节缺席或空节（add-only：
+/// v0 旧包路径零漂移）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentActions<'a> {
+    slots: [(&'a str, RiskTier); AGENT_ACTIONS_MAX],
+    len: usize,
+}
+
+impl<'a> AgentActions<'a> {
+    /// 空集（Fields 缺省构造用）。
+    pub const EMPTY: Self =
+        Self { slots: [("", RiskTier::Routine); AGENT_ACTIONS_MAX], len: 0 };
+
+    /// 声明条数（0..=AGENT_ACTIONS_MAX）。
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// 空集 = 节缺席/空节（缺省形态）。
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// 声明序（manifest 文档序保序）迭代——mkapp 规范形重发射同序。
+    pub fn iter(&self) -> impl Iterator<Item = (&'a str, RiskTier)> + '_ {
+        self.slots[..self.len].iter().copied()
+    }
+
+    /// 动作名 → 档位（v3 同意面分类步查询面；帽 16 线性扫即可）。
+    pub fn get(&self, name: &str) -> Option<RiskTier> {
+        self.iter().find(|&(n, _)| n == name).map(|(_, t)| t)
+    }
+
+    /// 定长槽压入（帽满 false = 调用方 loud 拒）。
+    fn push(&mut self, name: &'a str, tier: RiskTier) -> bool {
+        if self.len >= AGENT_ACTIONS_MAX {
+            return false;
+        }
+        self.slots[self.len] = (name, tier);
+        self.len += 1;
+        true
+    }
+}
+
 /// 解析成功的 manifest（全借用——零拷贝切进输入缓冲）。type 恒 `"app"`
 /// （§2 唯一值），不入结构；stack_pages 已合并缺省。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,6 +420,9 @@ pub struct Manifest<'a> {
     pub security: Option<Security<'a>>,
     /// GUI-7：三键独立可选（全缺省 None——add-only 执法锚同 compat 族）。
     pub ui: Option<Ui<'a>>,
+    /// 同意面先落件二：动作风险档声明（缺席/空节 = 空集——add-only
+    /// 执法锚同上；v1 收格式不消费）。
+    pub agent_actions: AgentActions<'a>,
 }
 
 /// 解析失败理由（定长内联，零分配）——appd 降级行按 `reason_str()` 打印。
@@ -362,6 +471,8 @@ enum Sec {
     Compat,
     Secu,
     Ui,
+    /// [agent-actions]（同意面先落件二——键 = 开放动作名词表）。
+    Acts,
 }
 
 // ---- SDK-1a 词表/值域（mkapp.py FS_SCOPES/NET_SCOPES/SEC_RE 镜像）----
@@ -393,6 +504,8 @@ struct Fields<'a> {
     ui_icon: Option<&'a [u8]>,
     ui_label: Option<&'a [u8]>,
     ui_views: Option<&'a [u8]>,
+    // 同意面先落件二槽（定长槽 + 在用数——动态键词表，Option 族不适用）
+    agent_actions: AgentActions<'a>,
 }
 
 /// 两端去空格（空格是唯一合法空白——CR/tab 已在全文级拒）。
@@ -569,6 +682,40 @@ fn set_ui_path<'a>(
     Ok(())
 }
 
+/// [agent-actions] 键槽（同意面 §5 先落件二）：键 = 动作名（kebab-case：
+/// 首字符小写字母、全串 `[a-z0-9-]`、1..=ACTION_NAME_MAX），值 =
+/// RiskTier 三词闭集。键字符集已验 ⇒ ASCII ⇒ from_utf8 必然成功
+/// （unwrap_or 仅防御，永不 panic 承诺）。节内任何失败统一
+/// `bad agent-actions`（compat/security/ui 理由单一化同款——节名入理由）。
+fn set_agent_action<'a>(
+    aa: &mut AgentActions<'a>,
+    key: &'a [u8],
+    val: &'a [u8],
+) -> Result<(), ManifestErr> {
+    const WHY: &str = "bad agent-actions";
+    let bad = || err(WHY);
+    if key.is_empty() || key.len() > ACTION_NAME_MAX {
+        return Err(bad());
+    }
+    if !key[0].is_ascii_lowercase()
+        || !key
+            .iter()
+            .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(bad());
+    }
+    let name = from_utf8(key).unwrap_or("");
+    if aa.get(name).is_some() {
+        return Err(bad()); // 重复动作名（dup key 键粒度同执法）
+    }
+    let s = parse_string(val).ok_or_else(bad)?;
+    let tier = RiskTier::from_word(from_utf8(s).unwrap_or("")).ok_or_else(bad)?;
+    if !aa.push(name, tier) {
+        return Err(bad()); // 条目越帽 AGENT_ACTIONS_MAX
+    }
+    Ok(())
+}
+
 /// manifest v0 解析主入口。永不 panic；一切拒绝经 `ManifestErr` 带理由。
 pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
     if bytes.len() > MANIFEST_MAX {
@@ -599,9 +746,11 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         ui_icon: None,
         ui_label: None,
         ui_views: None,
+        agent_actions: AgentActions::EMPTY,
     };
     let (mut saw_app, mut saw_caps, mut saw_run, mut saw_compat, mut saw_secu, mut saw_ui) =
         (false, false, false, false, false, false);
+    let mut saw_acts = false; // [agent-actions]（同意面先落件二——add-only 加行）
     let mut cur: Option<Sec> = None;
 
     for raw in bytes.split(|&b| b == b'\n') {
@@ -629,6 +778,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 b"compat" => Sec::Compat,
                 b"security" => Sec::Secu,
                 b"ui" => Sec::Ui,
+                b"agent-actions" => Sec::Acts,
                 _ => return Err(err("unknown section")),
             };
             let dup = match sec {
@@ -638,6 +788,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 Sec::Compat => saw_compat,
                 Sec::Secu => saw_secu,
                 Sec::Ui => saw_ui,
+                Sec::Acts => saw_acts,
             };
             if dup {
                 return Err(err("dup section"));
@@ -649,6 +800,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 Sec::Compat => saw_compat = true,
                 Sec::Secu => saw_secu = true,
                 Sec::Ui => saw_ui = true,
+                Sec::Acts => saw_acts = true,
             }
             cur = Some(sec);
             continue;
@@ -722,6 +874,10 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 }
                 f.ui_label = Some(s);
             }
+            // 同意面先落件二：[agent-actions] 键 = 动作名（开放词表——
+            // kebab-case/三档值域/重复名/越帽执法在 set_agent_action，
+            // 节内失败统一 bad agent-actions）
+            (Sec::Acts, k) => set_agent_action(&mut f.agent_actions, k, val)?,
             _ => return Err(err("unknown key")),
         }
     }
@@ -795,6 +951,9 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         net,
         security,
         ui,
+        // 同意面先落件二：缺席/空节 = 空集（收尾无齐缺裁断——动态键
+        // 无「必填集」概念，UI 独立可选族的自然延伸）。
+        agent_actions: f.agent_actions,
     })
 }
 
@@ -1171,7 +1330,7 @@ stack_pages = 16
             "bad intent", "bad int", "range", "missing [app]", "missing [capabilities]",
             "missing id", "bad id", "missing version", "bad version", "missing entry",
             "bad entry", "missing type", "bad type", "missing intent", "missing console",
-            "bad compat", "bad scope", "bad security", "bad ui",
+            "bad compat", "bad scope", "bad security", "bad ui", "bad agent-actions",
         ] {
             assert!(r.len() <= REASON_MAX, "{r}");
             assert_eq!(ManifestErr::new(r).reason_str(), r);
@@ -1501,6 +1660,118 @@ stack_pages = 16
         assert_eq!(m.ui, None);
     }
 
+    // ---- 同意面先落件二测试面（[agent-actions] + 拒面单一化
+    // bad agent-actions）----
+
+    /// BASE 尾插 [agent-actions] 段（F4/F7 尾追加定位同款）。
+    fn with_actions(base: &str, body: &str) -> String {
+        format!("{base}\n[agent-actions]\n{body}")
+    }
+
+    // 32d. 合法三档全钉板：逐条目断言 + get 查询 + 文档序保序 + 单键形。
+    #[test]
+    fn agent_actions_parse_pin() {
+        let s = with_actions(
+            BASE,
+            "open = \"routine\"\nsave = \"sensitive\"\nempty-trash = \"destructive\"",
+        );
+        let m = ok(&s);
+        let aa = &m.agent_actions;
+        assert_eq!(aa.len(), 3);
+        assert_eq!(aa.get("open"), Some(RiskTier::Routine));
+        assert_eq!(aa.get("save"), Some(RiskTier::Sensitive));
+        assert_eq!(aa.get("empty-trash"), Some(RiskTier::Destructive));
+        assert_eq!(aa.get("nope"), None);
+        // 文档序保序（mkapp 规范形重发射同序——iter 契约）
+        let words: Vec<&str> = aa.iter().map(|(_, t)| t.word()).collect();
+        assert_eq!(words, ["routine", "sensitive", "destructive"]);
+        // 单键形合法（无齐备约束——[ui] 三键独立同款）
+        let s = with_actions(BASE, "open = \"routine\"");
+        assert_eq!(ok(&s).agent_actions.len(), 1);
+        // 恰满动作名边界（24B——帽值 `<` vs `<=` 漂移防线）
+        let n24 = "a".repeat(ACTION_NAME_MAX);
+        let s = with_actions(BASE, &format!("{} = \"routine\"", n24));
+        assert_eq!(ok(&s).agent_actions.get(&n24), Some(RiskTier::Routine));
+    }
+
+    // 32e. 拒面统一 `bad agent-actions`：未知档值/大小写敏感/裸词值/键
+    // 字符集（snake_case、大写、数字/连字符开头、超长）/重复动作名/越帽。
+    #[test]
+    fn agent_actions_rejects() {
+        let k25 = format!("{} = \"routine\"", "a".repeat(ACTION_NAME_MAX + 1));
+        for body in [
+            "open = \"urgent\"\n",                        // 未知档位值
+            "open = \"Routine\"\n",                       // 大小写敏感
+            "open = routine\n",                           // 裸词（无引号）
+            "empty_trash = \"destructive\"\n",            // snake_case 键
+            "Open = \"routine\"\n",                       // 大写开头
+            "1open = \"routine\"\n",                      // 数字开头
+            "-open = \"routine\"\n",                      // 连字符开头
+            k25.as_str(),                                 // 键超长（25B）
+            "open = \"routine\"\nopen = \"sensitive\"\n", // 重复动作名
+        ] {
+            let s = with_actions(BASE, body);
+            assert_eq!(bad(&s).reason_str(), "bad agent-actions", "{body:?}");
+        }
+        // 越帽：AGENT_ACTIONS_MAX + 1 条（push 帽满拒）
+        let over = (0..=AGENT_ACTIONS_MAX)
+            .map(|i| format!("act{i:02} = \"routine\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(bad(&with_actions(BASE, &over)).reason_str(), "bad agent-actions");
+        // 恰满边界正例：16 条全收（exact_fit_boundaries 同族防线）
+        let full = (0..AGENT_ACTIONS_MAX)
+            .map(|i| format!("act{i:02} = \"routine\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(ok(&with_actions(BASE, &full)).agent_actions.len(), AGENT_ACTIONS_MAX);
+    }
+
+    // 32f. 缺席/空节：空集 = 缺席同义（add-only 执法锚——v0 旧包零漂移）；
+    // 空节文本解析合法（空 [runtime]/[ui] 先例同款，文本形态由 mkapp 规范
+    // 形门禁拒）；节名拼错仍走 unknown section（白名单只收一字不差一形）。
+    #[test]
+    fn agent_actions_absent_empty() {
+        let m = ok(BASE);
+        assert!(m.agent_actions.is_empty());
+        assert_eq!(m.agent_actions.len(), 0);
+        // 空节合法（= 空集）
+        let s = BASE.replace("\n[capabilities]", "\n[agent-actions]\n[capabilities]");
+        let m = ok(&s);
+        assert!(m.agent_actions.is_empty());
+        // 未知节仍拒：下划线/单数/连写变体全不收
+        for sec in ["[agent_actions]", "[agent-action]", "[agentactions]"] {
+            let s = BASE.replace("[runtime]", sec);
+            assert_eq!(bad(&s).reason_str(), "unknown section", "{sec}");
+        }
+        // 重复节
+        let s = format!(
+            "{}[agent-actions]\nsave = \"sensitive\"\n",
+            with_actions(BASE, "open = \"routine\"\n")
+        );
+        assert_eq!(bad(&s).reason_str(), "dup section");
+    }
+
+    // 32g. RiskTier 词表往返 + 判别值钉板（Intent 两钉同款：大小写敏感、
+    // 野词 None；1/2/3 = Veda Risk 枚举序——v2/v3 消费点 as u8 即得编码）。
+    #[test]
+    fn risk_tier_words_and_discriminants() {
+        let pairs = [
+            ("routine", RiskTier::Routine),
+            ("sensitive", RiskTier::Sensitive),
+            ("destructive", RiskTier::Destructive),
+        ];
+        for (w, v) in pairs {
+            assert_eq!(RiskTier::from_word(w), Some(v));
+            assert_eq!(v.word(), w);
+        }
+        assert_eq!(RiskTier::from_word("urgent"), None);
+        assert_eq!(RiskTier::from_word("Routine"), None);
+        assert_eq!(RiskTier::Routine as u8, 0x01);
+        assert_eq!(RiskTier::Sensitive as u8, 0x02);
+        assert_eq!(RiskTier::Destructive as u8, 0x03);
+    }
+
     // 33. 规范形七形态 F0-F6（§3.2 字节模板，测试内字面常量）：parse Ok +
     // 字段逐项——「mkapp 发射的字节 berry-manifest 必收」双向钉板
     // （mkfat ↔ berry-fatfs fixture 共识同型；mkapp 侧同款样本在 selftest）。
@@ -1573,5 +1844,18 @@ stack_pages = 16
         );
         let f7b = format!("{f0}\n[ui]\nicon = \"icons/icon.byi\"\n");
         assert_eq!(ok(&f7b).ui.unwrap().icon, Some("icons/icon.byi"));
+
+        // F8 +[agent-actions]（同意面先落件二，尾部追加——规范形定序居
+        // [ui] 之后，mkapp canonical 发射形逐字节互钉；键 = kebab-case
+        // 动作名、值 = 三档词，文档序保序）。
+        let f8 = format!(
+            "{f7}\n[agent-actions]\nopen = \"routine\"\nsave = \"sensitive\"\n\
+             empty-trash = \"destructive\"\n"
+        );
+        let m = ok(&f8);
+        let aa = &m.agent_actions;
+        assert_eq!(aa.len(), 3);
+        assert_eq!(aa.get("open"), Some(RiskTier::Routine));
+        assert_eq!(aa.get("empty-trash"), Some(RiskTier::Destructive));
     }
 }

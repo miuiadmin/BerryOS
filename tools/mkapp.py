@@ -40,7 +40,9 @@ GUI-7 图标/视图管道（裁决 B——staging 源是 PNG，产物是 BYI1）
      00303015 对应物——「不能面向未来 SDK 编译」在打包期炸响）+
      GUI-7 [ui] 三键独立可选值域（icon = `icons/` 前缀 `.byi` 后缀产品名、
      views = `views/` 前缀路径、label = 1..=LABEL_MAX——帽/前缀镜像
-     berry-manifest，`.byi` 后缀是 mkapp 产面收紧项）；
+     berry-manifest，`.byi` 后缀是 mkapp 产面收紧项）+ 同意面先落件二
+     [agent-actions]（键 = kebab-case 动作名、值 = 三档词
+     routine|sensitive|destructive——镜像 berry-manifest RiskTier）；
   2. **规范形重序列化逐字节相等**——berry-manifest 只收 TOML 子集，
      tomllib 收全集（hex/下划线整数、单引号、内联表、多行串、注释、
      CRLF…），本道是把「tomllib 收下」收紧到「子集收下」的唯一执法点；
@@ -51,13 +53,15 @@ GUI-7 图标/视图管道（裁决 B——staging 源是 PNG，产物是 BYI1）
 常规文件，icons/ 恰 `.png` 常规文件（扁平），views/ 恰非空常规文件；
 manifest ≤ MANIFEST_MAX、归档 ≤ BAP_MAX。
 
-规范形（第 2 道的比较基准，SDK-1a §3 冻结 + GUI-7 尾增）：`[app]` 五行
-定序 id/version/entry/type/intent + `[compat]?`（min/target/compile，int
-三元组重发射）+ `[capabilities]` console,fs?,net?（fs/net 数组无空格形）+
-`[runtime]?` stack_pages + `[security]?`（profile/key_lineage）+ `[ui]?`
-（GUI-7 居末——icon/label/views 键定序、三键独立可选；居末 = F0–F6
-字节零漂移，add-only 执法锚不破）；节间恰一空行。旧形（五平面全缺省）
-输出与 v0 canonical() 逐字节相同。空 `[runtime]` / 空 `[ui]` 解析器合法
+规范形（第 2 道的比较基准，SDK-1a §3 冻结 + GUI-7 尾增 + 同意面先落件二
+尾增）：`[app]` 五行定序 id/version/entry/type/intent + `[compat]?`
+（min/target/compile，int 三元组重发射）+ `[capabilities]`
+console,fs?,net?（fs/net 数组无空格形）+ `[runtime]?` stack_pages +
+`[security]?`（profile/key_lineage）+ `[ui]?`（GUI-7——icon/label/views
+键定序、三键独立可选）+ `[agent-actions]?`（同意面先落件二新居末——
+kebab-case 键按文档序保序重发射；居末 = F0–F7 字节零漂移，add-only
+执法锚不破）；节间恰一空行。旧形（五平面全缺省）输出与 v0 canonical()
+逐字节相同。空 `[runtime]` / 空 `[ui]` / 空 `[agent-actions]` 解析器合法
 但非规范形 → 门禁拒（byte 不等）——省略或显式，二选一。
 
 编码器纪律（§4 单编码器）：cpio 编码 `from mkcpio import build_archive`
@@ -129,6 +133,14 @@ VIEWS_FILES_MAX = 4     # views/ 条目帽（同上）
 ICON_DIM_MAX = 1024     # 单边帽（decode 面无单边帽，产面收紧）
 ICON_PIXELS_MAX = 65536  # w*h 帽（= berry-gfx decode 同值；RLE count 是 u16——超 65535 的 run 编码期拆分）
 
+# ---- 同意面先落件二常量（docs/AI同意面设计-v1.0.md §5；对账锚点：
+# ACTION_NAME_MAX/AGENT_ACTIONS_MAX/RISK_TIERS 镜像 berry-manifest
+# RiskTier 词表与帽——双侧同步义务同上）----
+ACTION_NAME_MAX = 24    # 动作名帽（kebab-case：首字符小写字母、[a-z0-9-]）
+AGENT_ACTIONS_MAX = 16  # 条目数帽（berry-manifest 零分配定长槽的镜像）
+RISK_TIERS = ("routine", "sensitive", "destructive")
+ACTION_KEY_RE = re.compile(r"[a-z][a-z0-9-]{0,23}")
+
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 APP_KEYS = ("id", "version", "entry", "type", "intent")
 
@@ -149,7 +161,7 @@ def _ver(v: tuple) -> str:
 class M:
     """过检后的 manifest 视图（规范形重序列化的数据源）。"""
 
-    def __init__(self, app, caps, runtime, compat, sec, ui):
+    def __init__(self, app, caps, runtime, compat, sec, ui, aa):
         self.id = app["id"]
         self.version = app["version"]
         self.entry = app["entry"]
@@ -169,11 +181,15 @@ class M:
         # GUI-7：ui = None | (icon, label, views)——三槽各自 None | str
         # （独立可选；空 [ui] 节在门禁 2 规范形比较处拒，到不了这里非空）。
         self.ui = ui
+        # 同意面先落件二：aa = None | [(动作名, 档词), …]（文档序——tomllib
+        # dict 保序；空 [agent-actions] 节同理在门禁 2 处拒）。
+        self.agent_actions = aa
 
     def canonical(self) -> str:
-        # SDK-1a §3.1 定序 + GUI-7 尾增：[app] → [compat]? → [capabilities]
-        # → [runtime]? → [security]? → [ui]?；节间恰一空行；旧形（全缺省）
-        # 输出与 v0 逐字节同（[ui] 居末 = F0–F6 字节零漂移）。
+        # SDK-1a §3.1 定序 + GUI-7/同意面先落件二尾增：[app] → [compat]?
+        # → [capabilities] → [runtime]? → [security]? → [ui]? →
+        # [agent-actions]?；节间恰一空行；旧形（全缺省）输出与 v0 逐字节
+        # 同（尾增居末 = 既有形态字节零漂移）。
         out = (
             "[app]\n"
             f'id = "{self.id}"\n'
@@ -204,6 +220,10 @@ class M:
                 out += f'label = "{label}"\n'
             if views:
                 out += f'views = "{views}"\n'
+        # 同意面先落件二居末（F0–F7 字节零漂移）；键按文档序保序重发射。
+        if self.agent_actions:
+            out += "\n[agent-actions]\n"
+            out += "".join(f'{k} = "{v}"\n' for k, v in self.agent_actions)
         return out
 
 
@@ -231,7 +251,9 @@ def check_manifest_text(text: str) -> M:
     except tomllib.TOMLDecodeError as e:
         raise Reject(f"manifest: TOML 解析失败： {e}")
 
-    unknown = set(doc) - {"app", "capabilities", "runtime", "compat", "security", "ui"}
+    unknown = set(doc) - {
+        "app", "capabilities", "runtime", "compat", "security", "ui", "agent-actions",
+    }
     if unknown:
         raise Reject(f"manifest: 未知节 {sorted(unknown)}")
     for need in ("app", "capabilities"):
@@ -339,7 +361,30 @@ def check_manifest_text(text: str) -> M:
         if icon_v or label_v or views_v:
             ui_t = (icon_v, label_v, views_v)
 
-    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, sec_t, ui_t)
+    # 同意面先落件二（docs/AI同意面设计-v1.0.md §5）：[agent-actions] 动作
+    # 风险档声明——键 = kebab-case 动作名（首字符小写字母、[a-z0-9-]、
+    # ≤ACTION_NAME_MAX），值 = 三档词闭集（镜像 berry-manifest RiskTier
+    # 词表）；v1 收格式不消费。空节 = canonical 不发射空节 → 门禁 2 byte
+    # 不等拒（空 [ui] 同款「省略或显式」二选一）。
+    aa_t = None
+    aa = doc.get("agent-actions")
+    if aa is not None:
+        if not isinstance(aa, dict):
+            raise Reject("manifest: [agent-actions] 应为节（键值表）")
+        if len(aa) > AGENT_ACTIONS_MAX:
+            raise Reject(f"manifest: [agent-actions] 条目越帽 {AGENT_ACTIONS_MAX}")
+        for k, v in aa.items():
+            if not ACTION_KEY_RE.fullmatch(k):
+                raise Reject(
+                    "manifest: [agent-actions] 键应为 kebab-case 动作名"
+                    f"（首字符小写字母、[a-z0-9-]、≤{ACTION_NAME_MAX}B）"
+                )
+            if v not in RISK_TIERS:
+                raise Reject(f"manifest: [agent-actions] 值应为三档之一 {RISK_TIERS}")
+        # 文档序保序（tomllib dict 保序）——canonical 同序重发射
+        aa_t = list(aa.items())
+
+    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, sec_t, ui_t, aa_t)
     if text != m.canonical():
         raise Reject(
             "manifest: 非规范形（hex/下划线整数、单引号、内联表、"
@@ -686,6 +731,8 @@ def build(out_path: str, app_dir: str) -> None:
         line += f" net={m.net}"
     if m.ui:
         line += f" icons={len(icon_items)} views={len(view_items)}"
+    if m.agent_actions:
+        line += f" actions={len(m.agent_actions)}"
     print(line)
 
 
@@ -1033,6 +1080,14 @@ def selftest() -> int:
         'views = "views/main.bui"\n'
     )
     f7b = f0 + '\n[ui]\nicon = "icons/icon.byi"\n'
+    # 同意面先落件二 F8：[agent-actions] 尾增（居 [ui] 后 = F0–F7 字节
+    # 零漂移）；键 kebab-case 文档序、值三档词。
+    f8 = f7 + (
+        "\n[agent-actions]\n"
+        'open = "routine"\n'
+        'save = "sensitive"\n'
+        'empty-trash = "destructive"\n'
+    )
     neg = [
         ("dotted-key", BASE.replace('id = "APPDEMO"', "id.x = \"APPDEMO\"")),
         ("hex-int", BASE + "\n[runtime]\nstack_pages = 0x8\n"),
@@ -1086,6 +1141,20 @@ def selftest() -> int:
             f0 + '\n[ui]\nicon = "icons/icon.byi"\n'
             '\n[security]\nprofile = "p"\nkey_lineage = "k"\n',
         ),
+        # ---- 同意面先落件二拒面（[agent-actions] 档值域/键字符集/越帽/
+        # 空节；值变异在规范位（f0 尾 = canonical [agent-actions] 位）——
+        # 门删则 canonical 重发射与输入恒等 → 样本被放行 → selftest
+        # FAIL，同 SDK-1a/GUI-7 样本手法钉得住门）----
+        ("aa-unknown-tier", f0 + '\n[agent-actions]\nopen = "urgent"\n'),
+        ("aa-upper-tier", f0 + '\n[agent-actions]\nopen = "Routine"\n'),
+        ("aa-underscore-key", f0 + '\n[agent-actions]\nempty_trash = "destructive"\n'),
+        ("aa-digit-key", f0 + '\n[agent-actions]\n1open = "routine"\n'),
+        (
+            "aa-over-cap",
+            f0 + "\n[agent-actions]\n"
+            + "".join(f'act{i:02} = "routine"\n' for i in range(AGENT_ACTIONS_MAX + 1)),
+        ),
+        ("aa-empty-section", f0 + "\n[agent-actions]\n"),
     ]
     bad = 0
     for label, text in neg:
@@ -1106,6 +1175,7 @@ def selftest() -> int:
         ("f6-kitchen-sink", f6),
         ("f7-ui-kitchen-sink", f7),
         ("f7b-ui-icon-only", f7b),
+        ("f8-agent-actions", f8),
     ]
     for label, text in pos:
         try:
