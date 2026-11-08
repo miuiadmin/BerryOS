@@ -691,6 +691,25 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。
     dpg::init();
 
+    // ---- 方案 B（调点调度-v1.3 §9 留刀 / 调度器设计-v1.1 §测量基础设施）：
+    // rwake 真 sleep/wake 唤醒基准——HDR 第二个真实消费者（首个 = ktest
+    // test_hdr_wake 方案 A 忙等；本任务是它的真睡相：`block_current(0,0,
+    // deadline)` 纯睡 + on_irq_tick 超时扫描唤醒，**IRQ 唤醒而非忙等** =
+    // cyclictest 真口径）。门控同 rt_probe 形（R-1 判例：boot 相 bench 开销
+    // 秒级，「不进 smoke 需要机制不是自律」）：fw_cfg 具名键 `opt/berry/rwake`
+    // 在位才 spawn——缺席 = run/smoke/boot 相逐行零扰动（EFI 路无 fw_cfg 具名
+    // 文件 = 天然缺席）；也不进 markers.sh（gated 非 smoke 面，RT ok 同族）。
+    // 位置约束：ktest 后、首个用户态 spawn 前（任务书口径）；sched::init 后
+    // + boot DAIF 屏蔽窗内（enable_irq 前——全体 spawn 先例共同约束）。----
+    if berry_hal_aarch64::fwcfg::find_file(RWAKE_PROBE_NAME).is_some() {
+        // prio 8（rt_probe/soakmon 同档裁决）：全体常驻（矩阵/console/
+        // watchdog/EL0 用户全 0）之上——醒后即时出选续行（被测的唤醒延迟
+        // 不掺轮转排队）；瞬态 boot bench 对（fa/ai 16/32）之下——结构性
+        // 让位 = 不 preempt 它们的 RT 测量窗（rt_probe 首跑 prio 24 一次醒
+        // 来就把 AIDEMO rt2 顶到 rt1×4 撞容差判例）。
+        berry_sched::spawn_with(task_bench_rwake, 0, b"rwake", 8);
+    }
+
     // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡。good 打 'u'
     // （syscall 往返在 EL0 生效的活证）；rogue_ptr 野指针自作死 → 只死自己
     // （user_fault_exit）；abuser 坏 handle 滥用 → **-EBADF 存活**（3-1 撤
@@ -3955,6 +3974,103 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
         berry_hal_aarch64::uart_put_dec((deltas.len() * RT_SAMPLES) as u64);
         berry_hal_aarch64::uart_puts(b"\n");
     });
+    berry_sched::exit_current()
+}
+
+// ---- 方案 B：rwake 真 sleep/wake 唤醒基准（HDR 第二个真实消费者；boot 门控
+// spawn 块见上方 dpg::init 后；设计 = docs/调点调度-v1.3.md §9 留刀 +
+// docs/调度器设计-v1.1.md §测量基础设施「boot 序列真 sleep/wake」）----
+
+/// rwake 的 fw_cfg 具名项名（门控键——手跑/bench 专递
+/// `-fw_cfg name=opt/berry/rwake,string=1`；RT_PROBE_NAME 同款「两侧对读
+/// 维护」纪律）。独立键、不与 rt 同 boot 混发：两基准同 prio 8 并跑互相
+/// 加噪（bench 单通道纪律——bench.py --rt 通道拒绝混跑同因）。
+const RWAKE_PROBE_NAME: &str = "opt/berry/rwake";
+
+/// rwake 样本轮数（任务书定值 64；间隔 = CNTFRQ/100 ≈ 10ms）。`BENCHRWAKE
+/// n=` 收割面与此镜像（n = record_wake_lat 实收非零样本数 ≤ 64——lat==0
+/// 被写点静默拒，实测结构上不可达：唤醒路径 IRQ+切换 ≥ 数百周期）。
+const RWAKE_ROUNDS: u64 = 64;
+
+/// rwake 任务（方案 B）：64 轮「block_current 纯睡到 deadline → IRQ tick
+/// 超时唤醒」的唤醒延迟采样 → `record_wake_lat` 灌 HDR → merged_percentile
+/// 出分位。与方案 A（ktest test_hdr_wake 忙等）的差别即本基准的存在理由：
+/// 方案 A 量的是「轮询粒度」（醒来是自查 deadline），本任务真睡 SLEEPQ、由
+/// on_irq_tick 的 expire_timeouts 摘队唤醒——量到的才是 v1 真实唤醒路径
+/// （tick 粒度 + 出选调度）的延迟，HDR wake_lat 路自此有真消费者。
+///
+/// - **睡点 = `block_current(0, 0, deadline)`**：obj=0/signals=0 = 纯 sleep
+///   （wake_matching 对 obj==0 直返 0——纯睡者只能超时自醒，无 signal 面；
+///   task_sleeper 路径 1 同款先例）。deadline 直接传 CNTVCT 周期，不走 ns
+///   换算（公约 5：换算舍入污染被测量；rt_probe 同纪律）。
+/// - 包络（task_sleeper/rt_probe 同款，S-2 E0）：klock_enter → block →
+///   **锁窗内先读 wake_vct** → klock_exit（F33/F42 顺序例外：block 返回前
+///   舞蹈已重取锁，读点落在重取后且与醒点之间零 tick/切换噪声混入）。
+/// - **漏整周期再锚（cyclictest overrun 形——rt_probe 首跑实踩判例）**：
+///   间隔 10ms < v1 唤醒粒度（超时扫描只在 tick 跑 = 恒 1 slice = 100ms）
+///   ⇒ 每轮 oversleep 几乎必 ≥ δ，纯 `deadline += interval` 绝对递推只会
+///   量出漂移阶梯（对调度器的错误指控）——再锚 `醒时刻 + δ` 后每样本恢复
+///   「δ 未来请求的唤醒延迟」语义。短档量出的正是定时器粒度本身（p50 ≈
+///   1 slice 量级是 v1 的诚实答案；arm-to-deadline 落地后该值应塌缩，本
+///   基准即其验收面）。
+/// - 断言面 = L0 形状执法（接线执法非数值门禁，test_hdr_wake 同政策）：
+///   醒因恒 Timeout / 负延迟 panic（再睡循环破损）/ HDR n ≥ 实录样本数
+///   （写点与合并读面不失联）/ p99 ≥ p50（分位单调）。统计数值只出数
+///   不设门（公约 2——数值归收割面同表比较）。
+extern "C" fn task_bench_rwake(_arg: usize) -> ! {
+    use berry_sched::{LatKind, WakeReason};
+    // ~10ms（CNTFRQ/100）；不换算 ns——被测量保 CNTVCT 原周期口径。
+    let interval = berry_hal_aarch64::timer::cntfrq() / 100;
+    let mut deadline = berry_hal_aarch64::timer::cntvct() + interval; // 档首锚
+    let mut recorded = 0u64; // 实录非零样本数（HDR n 面的对账基数）
+    for _ in 0..RWAKE_ROUNDS {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = berry_sched::block_current(0, 0, deadline);
+        // 顺序例外（rt_probe 行同款）：醒后锁窗内先读 wake_vct、后 klock_exit。
+        let wake_vct = berry_hal_aarch64::timer::cntvct();
+        berry_hal_aarch64::kern_lock::klock_exit();
+        // obj=0 纯睡无 signal 面——非 Timeout = 纯睡语义被破（wake 面破损）。
+        assert!(r == WakeReason::Timeout,
+                "rwake: 醒因非 Timeout（obj=0 纯睡只能超时自醒——wake 面破损）");
+        // oversleep = wake_vct − deadline；负值 = 提前醒 = 再睡循环破损（L0）。
+        let lat = match wake_vct.checked_sub(deadline) {
+            Some(l) => l,
+            None => panic!("rwake: 负唤醒延迟（wake={} < deadline={}）= 再睡循环破损",
+                           wake_vct, deadline),
+        };
+        // record 面值域 1 起（0 静默拒）——显式门 + 本地对账计数。
+        if lat > 0 {
+            berry_sched::record_wake_lat(lat); // 热路径真 API（本核槽化）
+            recorded += 1;
+        }
+        // 漏整周期再锚（cyclictest overrun 形，取舍实录见任务 doc 注）。
+        deadline = if lat >= interval { wake_vct + interval } else { deadline + interval };
+    }
+    // 分位/总数走 HDR 合并读面（跨核桶位直和；本任务恒 CPU0——place() 内核
+    // 任务家核定值，record 已落 CPU0 槽，merged_* 两核和不受损）。
+    let n = berry_sched::merged_total(LatKind::Wake);
+    let p50 = berry_sched::merged_percentile(LatKind::Wake, 500);
+    let p99 = berry_sched::merged_percentile(LatKind::Wake, 990);
+    // L0 形状断言：n ≥ 实录（写点→per-CPU 槽→合并读面不失联；ktest 方案 A
+    // 收口已清零、boot 期无其他 wake_lat 写者，等值是常态——取 ≥ 容后续
+    // 新写者共灌）；p99 ≥ p50（rank 单调 ⇒ 桶上界单调，破坏 = 桶映射 bug）。
+    assert!(n >= recorded && n > 0,
+            "rwake: HDR 接线断（n={n} < recorded={recorded}——写点与合并读面失联）");
+    assert!(p99 >= p50, "rwake: p99={p99} < p50={p50}（分位非单调 = 桶映射 bug）");
+    // 单行标记（BENCHRT/BENCHWAKE 族形）：with_print_lock 整行拼完（G43——
+    // smp_bringup 后裸打撕行面判例；纯 ASCII + uart 直写，内核任务非 console
+    // 通道无分片面）。数值口径 = CNTVCT 周期（换算留收割面）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"BENCHRWAKE p50=");
+        berry_hal_aarch64::uart_put_dec(p50);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(p99);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(n);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    // 跑完即退（REAPQ 单条流量，rt_probe 同款——非常驻）；标记在 exit 前
+    //（其后是死码，Plan B v0.5 gotcha 同族）。
     berry_sched::exit_current()
 }
 
