@@ -154,7 +154,11 @@ X6_POLL_S = 0.2
 # 不拍阈值）：② 落地首跑读 [X-6(0)] hexyl 实测率 R → 本常量写 R×0.7
 # （TCG 方差带）；收刀验收另口一次性判 R ≥ 基线(~6 页/s)×3（§5；kill
 # criteria <2× 撤刀）。
-X6_HEXYL_PGS_FLOOR: float | None = None
+X6_HEXYL_PGS_FLOOR: float | None = 7.98
+# 定标回执：2026-11-08 首净窗（HEAD=89703cb 硬化核，场净核验——E 臂守卫
+# 通过即 boot 时零在场 QEMU）R=11.4pg/s（102 页/8.92s，sw+77；receipt
+# dpg-20261108-130150-49261）×0.7。终判另裁口径：R/基线 6pg/s ≈1.9×——
+# 低于 kill 线 2× 与 ② 门 ×3（18），落设计稿诚实带宽 p≈0.5 带（1.4-2×）。
 # B-2 通道帽：与 vanilla BOOT_TIMEOUT=120 同口径、不放大。实测依据（M 系
 # mac，QEMU 11.0.3，2026-10-27 首跑探针）：boot 到 BENCHWAKE 全程 ≈2s——
 # sleep=off 下虚拟时钟纯指令驱动，「-icount 慢 2-4x」预期被实测反驳
