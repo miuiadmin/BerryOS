@@ -1096,3 +1096,33 @@ pub fn ipc_fast_misses() -> u64 {
 pub fn ipc_direct_total() -> u64 {
     IPC_DIRECT.load(Ordering::Relaxed)
 }
+
+// ---- consent 审批事件词汇预留（`AI同意面设计-v1.0.md` §2 审计层事件词汇
+// + §5 先落件一；trace `consent` 类别 = 可观测性 §2 类别表 add-only 扩一，
+// 现有七类不动）。**v1 词汇预留无消费者**——纯 u8 常量先行定型（ABI 形状
+// day-one 纪律），环与消费面按可观测性 §7 阶段走；事件面 v2 随
+// berry-launcher 审批 UI（钩子一 SET_POLICY 委托面）落地，同意面计数组
+//（P1-a 四计数同形）届时同刀，不随本次词汇先行。设计事件名小写蛇形
+//（request/approve/decline/expire/ran_anyway），按仓内常量惯例（大写蛇形
+// + 域前缀，对齐 [`REASON_SIGNALED`]/[`WAKE_SRC_*`]）适配为
+// `CONSENT_EV_*`，逐常量 doc 注释映射回设计名；0 留哨兵（0 不进环，同
+// [`REASON_SIGNALED`] 起值惯例）。----
+
+/// 审批请求（设计名 `request`，§2 钩子二拦截步）：越档动作进 Pending
+///（绝不先跑），审批单达 UI。
+#[allow(dead_code)] // v1 词汇预留无消费者——v2 随 berry-launcher 审批 UI 落地
+pub const CONSENT_EV_REQUEST: u8 = 1;
+/// 审批通过（设计名 `approve`，§2 执行段）：批准后以原参数重放执行。
+#[allow(dead_code)] // 同上——v1 词汇预留无消费者
+pub const CONSENT_EV_APPROVE: u8 = 2;
+/// 审批拒绝（设计名 `decline`，§2 执行段）：不执行 + notice 补达。
+#[allow(dead_code)] // 同上——v1 词汇预留无消费者
+pub const CONSENT_EV_DECLINE: u8 = 3;
+/// 审批过期（设计名 `expire`，§2 审批异步段）：Pending TTL 失效（Veda
+/// 180s 只借「有时效」语义，定值随实施裁定）。
+#[allow(dead_code)] // 同上——v1 词汇预留无消费者
+pub const CONSENT_EV_EXPIRE: u8 = 4;
+/// 事后告知（设计名 `ran_anyway`，§2 执行段）：已启动动作被打断后跑完
+/// 不假装没发生（RanAnyway 语义）。
+#[allow(dead_code)] // 同上——v1 词汇预留无消费者
+pub const CONSENT_EV_RAN_ANYWAY: u8 = 5;
