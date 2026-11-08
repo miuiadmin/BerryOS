@@ -4625,6 +4625,159 @@ fn test_freeze() {
         ht.drain();
     }
 
+    // —— F7/F8：app-1 段 a-1 双残影定谳钉板（并行 lane 调和审计 D3② 遗留
+    // 配方：FREEZE 系补双断言——「睡在 syscall 内带残影位任务 precheck 通过、
+    // RQ 在席带位仍拒」）。钉现行谓词语义（sched.rs freeze_precheck_by_pinned
+    // /by_thread）：SLEEPQ 在席者只查 pi_inherited + wait_signals 派生位
+    // （READABLE/WRITABLE——by_pinned 面），svc_mask/held 结构位是 SVC 窗
+    // 记账残影（随睡者入队不清、醒后重取复用）——不拒；RQ 在席（真在飞/
+    // 窗内可抢占形）svc_mask + held 结构位均拒（仅排除 FROZEN/THROTTLE
+    // 非结构位）。真队列面直调谓词：ktest 先于 sched::init（main.rs :614/
+    // :668）无在飞任务，SLEEPQ/双 RQ 静态基座 const 初值可用（FRZCYC/
+    // PWRDEG 同款先例）。
+    {
+        use crate::handle::{HandleTable, KernelObj, ObjType, RIGHT_MANAGE};
+        use crate::process::{Process, Thread};
+        use crate::vmar::Vmar;
+        use berry_sched::task::{HELD_SQ, HELD_TABLE};
+
+        // 真 Process/Thread ObjRef 锚（F6 同款手搭）：F8 清场走
+        // kill_all_tasks_by_pinned → task_exit_hook 裸解引用 pinned/
+        // thread_key（syscall::install 已在 ktest 前注册——main.rs :559），
+        // 伪键必炸——须真对象 + 运行钉住 retain（与 process_start 的
+        // retain/pinned 成对语义同款）。
+        let mut ht = HandleTable::new();
+        let vm = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid())
+            .expect("FREEZE：F7 建 root Vmar（可信语境）");
+        let (pa, asid) = (vm.ttbr0_pa(), vm.asid());
+        let hv = ht
+            .insert(KernelObj::Vmar(vm), RIGHT_MANAGE)
+            .expect("FREEZE：F7 登记 Vmar（可信语境）");
+        let (vref, _) = ht
+            .get_raw(hv, ObjType::Vmar, 0)
+            .expect("FREEZE：F7 取 Vmar 引用");
+        let hp = ht
+            .insert(
+                KernelObj::Process(unsafe { Process::new(vref, pa, asid) }),
+                RIGHT_MANAGE,
+            )
+            .expect("FREEZE：F7 登记 Process（可信语境）");
+        let (pref, _) = ht
+            .get_raw(hp, ObjType::Process, RIGHT_MANAGE)
+            .expect("FREEZE：F7 取 Process 引用");
+        let hth = ht
+            .insert(
+                KernelObj::Thread(unsafe { Thread::new(pref) }),
+                RIGHT_MANAGE,
+            )
+            .expect("FREEZE：F7 登记 Thread（可信语境）");
+        let (tref, _) = ht
+            .get_raw(hth, ObjType::Thread, RIGHT_MANAGE)
+            .expect("FREEZE：F7 取 Thread 引用");
+        unsafe {
+            let p_key = pref.as_ptr() as usize;
+            let t_key = tref.as_ptr() as usize;
+            // 运行钉住（表引 1 + 钉 1）+ 末线程簿记位（钩子 live_threads-=1
+            // → 0 走 Process 收口）。
+            (*pref.as_ptr()).retain();
+            (*tref.as_ptr()).retain();
+            (*pref.as_ptr()).obj.as_process_mut().unwrap().live_threads = 1;
+
+            // —— F7（断言①）：睡在 syscall 内带残影位 → precheck 通过。
+            // 睡者（真 SLEEPQ 在席）带非零 svc_mask + held 结构位（双残影）
+            // 仍过——位是记账残影、物理锁已放（block 舞蹈），冻结只暂停
+            // 执行不动锁。空洞对照（防恒绿）：PI 捐赠边/donor 派生位仍拒。
+            // by_thread 的 sleep_ok 查 held（语义分立），故其断言只落在
+            // svc 残影单带段（held 位前置 0）。
+            let s1 = mk_freeze_task(b"fzSlp".as_slice(), p_key);
+            s1.thread_key = t_key;
+            s1.svc_mask = 0x0F; // SVC 窗出口清零（sched.rs :486）——睡者携残影
+            berry_sched::sleepq_insert(s1);
+            assert!(
+                berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F7 睡者 svc_mask 残影须过 precheck（a-1 定谳：mask 不查睡者）"
+            );
+            assert!(
+                berry_sched::freeze_precheck_by_thread(t_key),
+                "FREEZE：F7 睡者 svc_mask 残影须过 precheck——by_thread 同判"
+            );
+            s1.held_locks = HELD_SQ | HELD_TABLE; // 持锁残影齐带（物理锁已放、位不清）
+            assert!(
+                berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F7 睡者双残影（svc_mask+held 结构位）须过 precheck"
+            );
+            // 空洞对照：证谓词真在读睡者任务（非恒真）。
+            s1.pi_inherited = 1;
+            assert!(
+                !berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F7 PI 捐赠边睡者仍须拒（a-1 保留检查）"
+            );
+            assert!(
+                !berry_sched::freeze_precheck_by_thread(t_key),
+                "FREEZE：F7 PI 捐赠边睡者仍须拒——by_thread 同判"
+            );
+            s1.pi_inherited = 0;
+            s1.wait_signals = crate::abi_gen::SIGNAL_READABLE;
+            assert!(
+                !berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F7 donor 派生位（READABLE）睡者仍须拒"
+            );
+            s1.wait_signals = 0;
+            berry_sched::sleepq_unlink(s1); // SLEEPQ 清理纪律（勿扰后续测试队列面）
+
+            // —— F8（断言②）：RQ 在席带残影位 → 拒。真 RQ 面：
+            // try_spawn_user（process_start 同路径）把任务入真实 PER_CPU_RQ
+            // ——ktest 期唯一真 RQ 在席任务。entry/sp 伪 VA 不派发（装配
+            // 只存帧不校验；断言后即杀）。
+            let s2 = berry_sched::try_spawn_user(
+                0x1000, 0, 0x2000, b"fzRQ".as_slice(), 0, 0, 0, p_key, t_key, false,
+            )
+            .expect("FREEZE：F8 造 RQ 在席任务（可信语境）");
+            let s2 = &mut *(s2 as *mut berry_sched::Task);
+            s2.svc_mask = 0x0F; // SVC 窗内可抢占形（真在飞）
+            assert!(
+                !berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F8 RQ 在席 svc_mask≠0 须拒（真在飞防御面）"
+            );
+            assert!(
+                !berry_sched::freeze_precheck_by_thread(t_key),
+                "FREEZE：F8 RQ 在席 svc_mask≠0 须拒——by_thread 同判"
+            );
+            s2.svc_mask = 0;
+            assert!(
+                berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F8 对照——清残影后同任务须过（拒源锁定 svc_mask）"
+            );
+            assert!(
+                berry_sched::freeze_precheck_by_thread(t_key),
+                "FREEZE：F8 对照——清残影后同任务须过——by_thread 同判"
+            );
+            s2.held_locks = HELD_SQ; // 结构锁位（bit1..=5 面）
+            assert!(
+                !berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F8 RQ 在席 held 结构位须拒（双残影定谳：结构位对 RQ 拒）"
+            );
+            s2.held_locks = HELD_FROZEN | berry_sched::HELD_THROTTLE;
+            assert!(
+                berry_sched::freeze_precheck_by_pinned(p_key),
+                "FREEZE：F8 RQ 在席 FROZEN/THROTTLE 非结构位不拒（F5 盖面真谓词版）"
+            );
+            s2.held_locks = 0;
+
+            // 清场：kill 全链摘真 RQ——退出钩子走真 ObjRef 簿记（Thread
+            // exited + release 钉、Process 末线程收口 + release 钉），任务
+            // 压 REAPQ（v1 不回收政策同 sched spawn，idle 期 reap_drain 收）。
+            // 返 (名, 数) = 恰一枚（RQ 面不残留）。
+            let killed = berry_sched::kill_all_tasks_by_pinned(p_key, 0);
+            assert_eq!(
+                killed,
+                Some((b"fzRQ".as_slice(), 1)),
+                "FREEZE：F8 清场 kill 须恰收 fzRQ 一枚（RQ 面不残留）"
+            );
+        }
+        ht.drain();
+    }
+
     berry_hal_aarch64::uart_puts(b"FREEZE-K ok\n");
 }
 
