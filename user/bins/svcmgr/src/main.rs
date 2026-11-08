@@ -4889,16 +4889,21 @@ fn push_dec(line: &mut [u8], len: usize, mut v: u64) -> usize {
     len + t
 }
 
-/// X-6 刀0 观测行发射：单行原子 `X6 pg=<供给页数> sw=<扫圈数>`（stall_kick
+/// X-6 刀0 观测行发射：单行原子 `\nX6 pg=<供给页数> sw=<扫圈数>`（stall_kick
 /// 行组装同形——[0u8;72] 帽 + copy_from_slice 定宽前缀 + push_dec 多位十
 /// 进制 + 显式换行单发）。恰三点（hello/hexyl/boot 尾各一——bench 冻结
 /// 词形契约；stdhello/U1 在首行前 = 黑暗基线不发）；x5_foot/dpg 相位不经
 /// boot 验证环，发射点天然零发射；行不带钟——页/s 的钟 = 宿主侧 marker
-/// 到达时戳（设计 §5）。
+/// 到达时戳（设计 §5）。行首垫 \n：共享串口并发写者的字节会贴本行头
+/// （smoke 实录 boot 尾 `pX6 pg=…`，bench `^X6` 行首锚失配 → 恰三点计数
+/// 变 2 假 FAIL；垫 \n 恒使 X6 行起于行首，夹字节自成垃圾行，冻结正则
+/// 一字不动）。垫在单发内不拆两写——夹字节只发生在写与写之间（实录
+/// 行内容自身完好），拆开反把缝开在自家 \n 与 X6 之间。
 fn x6_mark(console: Handle) {
     let mut line = [0u8; 72];
-    line[..6].copy_from_slice(b"X6 pg=");
-    let mut len = 6usize;
+    line[0] = b'\n';
+    line[1..7].copy_from_slice(b"X6 pg=");
+    let mut len = 7usize;
     len = push_dec(&mut line, len, PAGER_SUPPLIED.load(Ordering::Relaxed));
     line[len..len + 4].copy_from_slice(b" sw=");
     len += 4;
