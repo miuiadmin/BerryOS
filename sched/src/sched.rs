@@ -968,8 +968,8 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
         // 「syscall 尚未走完出口」的记账残影——真正在飞（可被抢占于 SVC
         // 窗内）的形态 = RQ 在席。故 svc_mask 只对 RQ 任务拒。
 
-        // app-1 段 a-1 双残影定谳（2026-11-08 实证 16 试全拒：pc:sl×15 =
-        // 睡眠者 held_locks 位非零）：svc_mask 与 held_locks 位都是 SVC 窗
+        // app-1 段 a-1 双残影定谳（2026-11-08 实证 16 试全拒，其中睡眠者
+        // 持锁残影样本 ×15）：svc_mask 与 held_locks 位都是 SVC 窗
         // 记账，随「睡在 syscall 内」的任务带进 SLEEPQ（block 舞蹈放的是
         // 物理锁，位不清——醒后重取复用）。睡眠者位是残影、锁已放：冻结
         // 只暂停执行、不动锁，无停摆面（防停摆的是 pi_inherited 检查，保留

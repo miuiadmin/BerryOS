@@ -279,7 +279,8 @@ pub fn lifecycle_h() -> u32 {
 
 /// env 块 extras[1]（gift[5] 位）的同槽访问器（app-1 段 b：墓碑 state VMO
 /// ——appd 预建 64KiB 定尺寸（结构性帽）+ commit 后 dup 授子；relaunch 时
-/// duplicate(READ) 收紧授子，复活者只读。与 [`fs_h`] 同槽不同名）。
+/// duplicate(READ|WRITE)（复活者再入 pause 循环写权——草案 v1.2 §4，
+/// 不收紧只读）。与 [`fs_h`] 同槽不同名）。
 pub fn state_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[1] }
