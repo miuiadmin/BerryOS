@@ -274,7 +274,7 @@ expr = "-14"
 c_note = "EFAULT：用户指针界检失败（3-2 起 copy_from/to_user 执法）"
 desc = "EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用户区）——3-2 copy 路径。"
 
-# ---- §4 编号表（全 49 行：v1 32 + v2 12 + v3 5；title 含 **粗体** 原样）----
+# ---- §4 编号表（全 57 行：v1 37 + 1.1 4 + v2 11 + v3 5；title 含 **粗体** 原样）----
 # implemented = false ⇒ 在册未实现（内核回落 -ENOTSUP；berry-sys 侧常量照发、
 # 无 wrapper——生成器对无消费者常量豁免 dead_code，wrapper 随 §8.3 原型层 v2 挂账）。
 

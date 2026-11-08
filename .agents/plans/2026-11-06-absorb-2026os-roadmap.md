@@ -42,3 +42,4 @@ Updated: 2026-11-08
 - P2 期权全部转记归宿：presence/三动词 → AI 同意面设计 §3；云真机门禁 → 真机 proposal 台阶一；「为什么不是 BKL/async」→ ADR #69/#70 已落；编译期执法 → ADR #70 长期议题；EEVDF 增量化 → 兄弟 S2b+ 账本刀已覆盖。
 - 方法资产：六波 workflow 编排经验沉淀为技能 .agents/skills/workflow-implement/SKILL.md。
 - 证据链：research/12–23 号 13 份 ↔ 提交链 ↔ 笔记 ×4 ↔ ktest 标记（POLS-R/YIELD-K）全可追溯。
+- 步骤 9 笔记承诺收窄说明：机械实施项（P0×2/P1-a/b/d/e 等）不另立笔记（.agents/notes/AGENTS.md「只写决策级内容」），决策级四篇（yield×2/品牌/ktest 否决）+ 18 号裁决已覆盖。
