@@ -49,7 +49,7 @@ const TYPES = {
 
 /** 现行态集（取代链终点判据用）：该类型的 Status 落在集合内才算「现行依据」，取代链必须终结在这里。`spec` 的 `done` 仍是权威（规范「状态与退役」）；`plan`/`proposal` 的 `done` 是历史；`research` 三类的 `historical` 是时效过去。 */
 const CURRENT = {
-  proposal: ['active'], spec: ['draft', 'active', 'done'], plan: ['draft', 'active'],
+  proposal: ['draft', 'active'], spec: ['draft', 'active', 'done'], plan: ['draft', 'active'],
   survey: ['current'], evidence: ['current'], postmortem: ['current'], reference: ['current'], runbook: ['current'],
   standard: ['current'],
 };
@@ -284,13 +284,19 @@ function resolveTargetPath(dir, target) {
   try { const q = resolve(dir, decodeURIComponent(target)); return existsSync(q) ? q : null; } catch { return null; }
 }
 
-/** 沿取代链走到终点，返回终点文件名；链断、成环或解析不到时返回 null（报错归 checkSupersededChain，这里只回答「现行版本是谁」）。 */
+/** 沿取代链走到终点，返回终点文件名；链断、成环、解析不到，或终点不是类型化/现行态/未归档的文档时返回 null（报错归 checkSupersededChain，这里只回答「现行版本是谁」）。 */
 function resolveChainTerminal(abs) {
   let curAbs = resolve(abs); const seen = new Set([curAbs]);
   for (let hop = 0; hop < 16; hop++) {
     const doc = readTypedHeader(curAbs);
     if (!doc) return null;
-    if (doc.status !== 'superseded') return basename(curAbs);
+    if (doc.status !== 'superseded') {
+      // 只有类型化、现行态、未归档的终点才算「现行版本」；否则让调用方说「链未解析到现行版本」
+      if (!doc.type || !TYPES[doc.type]) return null;
+      if (locate(curAbs).inArchive || doc.archived) return null;
+      const allowed = CURRENT[doc.type] || [];
+      return allowed.includes(doc.status) ? basename(curAbs) : null;
+    }
     if (!doc.sup) return null;
     const target = supersededTarget(doc.sup);
     const next = target ? resolveTargetPath(dirname(curAbs), target) : null;
