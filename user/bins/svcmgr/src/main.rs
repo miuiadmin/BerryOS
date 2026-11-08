@@ -788,6 +788,29 @@ static mut APP_VIEWS_WIN: [UiEntry; UI_ENTRIES] = [UI_ENTRY_ZERO; UI_ENTRIES];
 const APP_ICON_DIM_MAX: u16 = 1024;
 const APP_ICON_PIXELS_MAX: u32 = 65536;
 
+// ---- app-1 段 b-1：墓碑表（v1.2 §4——RAM 8 槽 {id, svmo, epoch}，三字段
+// 对账立法原文：id↔app_id、svmo↔blob、epoch↔时间戳〔全局自增记入序——无
+// 墙钟实现，仅 LRU 比大小，不兼作 boot 世代〕。跨 boot 复活挂 v2（表驻
+// RAM = reboot 全墓碑——范围盒子）。id 定长 24B 零垫全比（v0 id 恒
+// "APPTOMB" 7B）。SAFETY: boot 单线程独占（tomb_selftest 唯一写者），
+// 顺序读写——APP_SLOTS_TBL 同款口径。----
+
+/// 墓碑槽（§4：svmo = state VMO 本体 handle——spawn 迁走的是 dup，reap
+/// 后本体入表；0 = 空槽）。
+struct TombSlot {
+    id: [u8; 24],
+    svmo: Handle,
+    epoch: u64,
+}
+
+const TOMB_SLOT_ZERO: TombSlot = TombSlot { id: [0; 24], svmo: 0, epoch: 0 };
+
+/// 表帽（§7：v0 定值 8；真策略配额 v2）。
+static mut TOMB_TBL: [TombSlot; 8] = [TOMB_SLOT_ZERO; 8];
+
+/// 全局记入序号（LRU 比大小唯一用途）。
+static mut TOMB_EPOCH: u64 = 0;
+
 /// rootfs 全链（G-eco-d d-1c 起流式）：get_size（裸跑 -EBADF 静默跳过）→
 /// `cpio_step` 步进遍历（头+名进窗、数据按偏移算术跳过——**归档永不整档
 /// 驻留**，旧 16KiB 整档帽随 std 镜像 ~283KB 一并退役）→ 命中 `bin/hello`
@@ -1867,21 +1890,13 @@ fn run_rootfs_child(console: Handle) {
     // collect_eof+reap，任一时刻至多一个 app 存活发 fs RPC）。
     if app_n > 0 {
         let mut ok = 0usize;
-        // app-1 段 a-1（对抗审查 M4）：自验 app 族白名单——boot 批跳过
-        // （拉起权归 tomb_selftest）；分母同步排除（ok==app_n-skipped）。
-        // 漏 skip 且 console 形批内阻塞 reap = boot 批永挂（M4 死锁警示）。
-        let mut skipped = 0usize;
         // GUI-7：ui 面独立谓词（与拉起成败解耦——失败隔离两方向：ui 元数据
         // 坏不拦拉起、拉起坏不抹 ui 验证；Absent 不计入 decl）。
         let mut ui_decl = 0usize;
         let mut ui_ok = 0usize;
         for i in 0..app_n {
-            // app-1：APPTOMB = tomb_selftest 专属（不进 boot 批——APP ok 语义
-            // 零漂移的前提）。
-            if apps[i].id[..apps[i].id_len] == *b"APPTOMB" {
-                skipped += 1;
-                continue;
-            }
+            // app-1 D1：APPTOMB 改 selftest/ 前缀打包后不入走查收集——
+            // 批面零特判（v1.0 白名单 skip 立法已退役）。
             let (launched, uface, tail) = app_launch(
                 console,
                 fs_a_h,
@@ -1911,7 +1926,7 @@ fn run_rootfs_child(console: Handle) {
                 UiFace::Absent => {}
             }
         }
-        if app_n > skipped && ok == app_n - skipped {
+        if ok == app_n {
             // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 单
             // 位数字——抬 APP_SLOTS ≥ 10 前先扩带参宽度（b'0'+ok 会溢出
             // ASCII 数字域；TCPS_PATTERN 定值钉板同款编译期拦）。
@@ -1934,9 +1949,10 @@ fn run_rootfs_child(console: Handle) {
             send_retry(console, line.as_ptr(), line.len());
         }
     }
-    // ---- app-1 段 a-1：freeze-first 自验（tomb_selftest——APPTOMB 从批
-    // 跳过后由此拉起：suspend → 8s 静默窗零收 → 解冻 → resumed，全过打
-    // `FROZEN ok n=1`；判据载体 = lifecycle 通道〔审修 H1〕）----
+    // ---- app-1 段 a-1：freeze-first 自验（tomb_selftest——APPTOMB 走
+    // selftest/ 前缀 cpio 直查后由此拉起：suspend → 8s 静默窗零收 → 解冻
+    // → RESUME/RESUMED 握手，全过打 `FROZEN ok n=1`；判据载体 = lifecycle
+    // 通道〔审修 H1〕）----
     tomb_selftest(console, step, mf, icons, views);
 
     // ---- A-2：bsh 拉起（SDK-1a §1.2 延后段——原主走查 arm 体逐字迁居，
@@ -5579,46 +5595,143 @@ fn app_launch(
     (false, uface, None)
 }
 
-/// SPAWN 收口尾载荷（M-C γ-分）：`app_launch` spawn Ok 后的异步收口包——
-/// boot 批同步消费、SPAWN RPC 形入 `APP_CHILDREN` 子表由稳态探活兑现。
-/// app-1 段 a-1：freeze-first 自验（`docs/app-1实施设计草案-v1.0.md` §3——
-/// 对抗审查 H1/M1/M2 修后口径）。序列（确定性状态谓词，非竞速）：
-/// spawn（extras[4]=lifecycle 端 B、stdin_feed 直传零长——M1）→ 通道收 UP
-/// → drain 在途 beat → `berry_process_suspend(hp,0)` → 8s 窗通道零收
-/// （冻结进程不跑 = 无 BEAT；drain 后开窗，冻结前在途一拍不误报）→
-/// `handle_close(token)` 解冻 → 通道收 RESUMED → terminate+reap 收口 →
-/// `FROZEN ok n=1`。任一步降级 = eco 行 + 同款收口 + 标记缺席（smoke FAIL）。
-fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [UiEntry], views: &mut [UiEntry]) {
-    // lifecycle 消息（与 apptomb 同套常量）：8B 定长 tag+pad+counter LE。
-    const MSG: usize = 8;
-    const TAG_UP: u8 = 1;
-    // （TAG_BEAT=2：drain 臂不区分 tag 抽干一切在途，窗判只看可读性——
-    // 常量面归 apptomb 侧，此处不重复声明免死码。）
-    const TAG_RESUMED: u8 = 3;
-    const UP_CAP_NS: u64 = 10 * 1_000_000_000;
-    const WIN_NS: u64 = 8 * 1_000_000_000; // TCG 放宽（≥3 心跳周期）
-    const RESUME_CAP_NS: u64 = 10 * 1_000_000_000;
-
-    // ① 白名单表查 APPTOMB 槽（批已跳过它——apps 走查表为源）。
-    let account = unsafe { core::ptr::addr_of!(APP_ACCOUNT_N).read() };
-    let tbl: &[AppSlot] = unsafe {
-        core::slice::from_raw_parts(core::ptr::addr_of!(APP_SLOTS_TBL) as *const AppSlot, APP_SLOTS)
+/// 墓碑表记入（§4：upsert——同 id 覆写旧槽并 close 旧 svmo，二次墓碑不
+/// 双槽；满 8 淘汰 epoch 最小槽〔LRU〕并 close 其 svmo 真回收）。epoch =
+/// 全局自增记入序。记入条件由调用方执法（reap 真码 0 ∧ blob BTMB 验）。
+/// SAFETY: tomb_selftest 单线程 boot 路独占——本 fn 唯一调用方。
+fn tomb_put(id: &[u8], svmo: Handle) {
+    // id 零垫 24B（帽内截断——v0 id 恒 7B）。
+    let mut key = [0u8; 24];
+    let n = id.len().min(24);
+    key[..n].copy_from_slice(&id[..n]);
+    // SAFETY: 单线程独占（同 TOMB_TBL 头注）。
+    let tbl: &mut [TombSlot] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(TOMB_TBL) as *mut TombSlot,
+            8,
+        )
     };
-    let mut off = 0u64;
-    let mut len = 0u64;
-    let mut found = false;
-    for i in 0..account {
-        if tbl[i].id[..tbl[i].id_len] == *b"APPTOMB" {
-            off = tbl[i].bap_off;
-            len = tbl[i].bap_len;
-            found = true;
-            break;
+    // 单遍扫：同 id 查重 / 首空槽 / epoch 最小（LRU victim）。
+    let mut same: Option<usize> = None;
+    let mut free: Option<usize> = None;
+    let mut min_epoch = u64::MAX;
+    let mut lru = 0usize;
+    for i in 0..8 {
+        if tbl[i].svmo == 0 {
+            if free.is_none() {
+                free = Some(i);
+            }
+            continue;
+        }
+        if tbl[i].id == key {
+            same = Some(i);
+            break; // upsert 保证同 id 必唯一——早退
+        }
+        if tbl[i].epoch < min_epoch {
+            min_epoch = tbl[i].epoch;
+            lru = i;
         }
     }
-    if !found {
-        eco_note(console, b"tomb absent");
-        return; // 裸相/无 APPTOMB 拓扑：静默降级（标记缺席面归 smoke 门）
+    let (slot, old) = match same {
+        Some(i) => (i, tbl[i].svmo),
+        None => match free {
+            Some(i) => (i, 0),
+            None => (lru, tbl[lru].svmo),
+        },
+    };
+    if old != 0 && old != svmo && berry_handle_close(old) != 0 {
+        trap(); // 覆写/淘汰回收面破缺 = 表账异常，loud
     }
+    // SAFETY: 同上单线程。
+    unsafe { TOMB_EPOCH += 1 };
+    let epoch = unsafe { core::ptr::addr_of!(TOMB_EPOCH).read() };
+    tbl[slot] = TombSlot { id: key, svmo, epoch };
+}
+
+/// 墓碑表取档出表（§4 钉序「取档即出表」）：清槽 + close svmo（blob 随
+/// 复活者末柄回收——弃档面同 op）。返 false = 槽不在（自陷级账错——put
+/// 后必在）。SAFETY: 同上单线程独占。
+fn tomb_take(id: &[u8]) -> bool {
+    let mut key = [0u8; 24];
+    let n = id.len().min(24);
+    key[..n].copy_from_slice(&id[..n]);
+    // SAFETY: 单线程独占（同 TOMB_TBL 头注）。
+    let tbl: &mut [TombSlot] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(TOMB_TBL) as *mut TombSlot,
+            8,
+        )
+    };
+    for i in 0..8 {
+        if tbl[i].svmo != 0 && tbl[i].id == key {
+            let h = tbl[i].svmo;
+            tbl[i] = TOMB_SLOT_ZERO;
+            return berry_handle_close(h) == 0;
+        }
+    }
+    false
+}
+
+/// SPAWN 收口尾载荷（M-C γ-分）：`app_launch` spawn Ok 后的异步收口包——
+/// boot 批同步消费、SPAWN RPC 形入 `APP_CHILDREN` 子表由稳态探活兑现。
+/// app-1 段 b-1：墓碑协议 v0 自验（`docs/app-1实施设计草案-v1.2.md` §4
+/// ——b-1/b-2 唯一基准；段 a freeze-first 序列续接 pause(save)→记表→
+/// relaunch 读档复活）。序列（确定性状态谓词，非竞速）：cpio 直查
+/// selftest/ 位（D1：APPTOMB 不入 app/ 收集 = 零漂移；miss 静默 return）
+/// → 预建 state VMO（64KiB 定尺寸 = blob 帽结构性执法）→ spawn（双
+/// gift：extras[4]=lifecycle 端 B、extras[5]=state VMO dup〔R|W——v1.2 §4
+/// 放弃只读收紧〕、stdin_feed 直传零长——M1）→ 通道收 UP → drain 在途
+/// beat → `berry_process_suspend(hp,0)`（仅 -EBUSY 退避重试——D4）→ 8s
+/// 窗通道零收（冻结进程不跑 = 无 BEAT；drain 后开窗，冻结前在途一拍不
+/// 误报）→ `handle_close(token)` 解冻 → 发 TAG_RESUME 帧收 TAG_RESUMED
+/// （D2 消息化，帽 5s liveness 口径）→ `FROZEN ok n=1` → PAUSESV1
+/// （thaw-then-pause 前置不变式：此刻目标 freeze_depth=0）→ 10s deadline
+/// 帽收 SAVED → reap 真码 0 + blob BTMB 验 → 墓碑表记入 → relaunch（新
+/// lc 对 + 槽 svmo dup(R|W) 授子，复用首轮 bap_scan/manifest 果）→ 收
+/// TAG_RESTORED（counter 续接 = saved+1）→ reap 真码 0 → 出表（取档即
+/// 出表）→ `TOMB ok n=1`。两标记独立判（app-0 先例互不连坐——本流程串行
+/// 共用一次生命周期，§3 取前者）。任一步降级 = eco 行 + 同款收口（含
+/// state VMO/槽回收）+ 标记缺席（smoke FAIL）。
+fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [UiEntry], views: &mut [UiEntry]) {
+    // lifecycle 消息（与 apptomb 同套常量——TAG 族编码同源镜像，apptomb
+    // const 块为对端权威）：8B 定长 tag+pad+counter LE。
+    const MSG: usize = 8;
+    const TAG_UP: u8 = 1;
+    // TAG_BEAT 在位声明（b-1 起 wait_frame 收帧臂需按 tag 跳过心跳噪声
+    // ——不再只是「抽干不区分」；常量面与 apptomb 同源镜像）。
+    const TAG_BEAT: u8 = 2;
+    const TAG_RESUMED: u8 = 3;
+    const TAG_RESUME: u8 = 4;
+    // 段 b 面（v1.2 §4）：复活上报 / pause(save) 下行 / 保存回执。
+    const TAG_RESTORED: u8 = 5;
+    const TAG_PAUSESV1: u8 = 6;
+    const TAG_SAVED: u8 = 7;
+    const UP_CAP_NS: u64 = 10 * 1_000_000_000;
+    const WIN_NS: u64 = 8 * 1_000_000_000; // TCG 放宽（≥3 心跳周期）
+    // D2：RESUME 帽 5s 对齐 liveness 口径（app 拍周期 2s + 投递余量；仅
+    // 活性兜底，非测量判据）。
+    const RESUME_CAP_NS: u64 = 5 * 1_000_000_000;
+    // §4 pause deadline：10s、起算 = appd 发出时刻（点对点 clock，含通道
+    // 投递等待；app 侧预算 poll 型 ≥1 轮询周期 = 2s 心跳自留 ≥2s 余量）。
+    // 值同规范 §4.1-1；v2 真策略按 intent 分档复核。
+    const PAUSE_CAP_NS: u64 = 10 * 1_000_000_000;
+    // relaunch 收 restored 帽（§6 谓词链；SAVED 同款量级——复活链 worst
+    // = spawn + 启动判读 + RESTORED 即发 ≪ 10s）。
+    const RESTORE_CAP_NS: u64 = 10 * 1_000_000_000;
+    // state blob 头（§4/§7）：12B 定长 {magic u32 LE, ver u8=0, hlen u8=12,
+    // rsv u16=0, counter u32 LE}——与 apptomb const 块同源镜像（对端权威）。
+    const BTMB_MAGIC: u32 = u32::from_le_bytes(*b"BTMB");
+    // state VMO 定尺寸（§7 帽 = blob 帽：结构性执法——越写物理不可，比
+    // 「appd 执法」更强）。
+    const STATE_VMO_SZ: u64 = 64 * 1024;
+
+    // ① cpio 直查 selftest/ 专用位（D1：APPTOMB 不入 app/ 前缀 = 不进走查
+    // 收集 = APP_SLOTS/APP_LIST/boot 批全零漂移；复用主走查同款流式解析
+    // 重扫 H_ROOTFS——berry-exec STEP_WIN 独立于本 fn 的 step 窗）。miss =
+    // 裸相/无 selftest 位拓扑：静默 return 零扰动（标记缺席面归 smoke 门）。
+    let Some((off, len)) = cpio_find(H_ROOTFS, b"selftest/APPTOMB.bap") else {
+        return;
+    };
 
     // ② lifecycle 对 + bap 解析 + 双守卫（app_launch 同款）。
     let (lc_a, lc_b) = channel_pair();
@@ -5651,10 +5764,45 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         return;
     }
 
-    // ③ spawn（gift[4] = lifecycle 端 B fresh 迁入；stdin_feed=Some(&[])
-    // 直传——M1：extras 在位断言要求 stdin 槽；console 诊断 = spawn stdout
-    // 面，不进判据〔H1〕）。
-    let gifts = [lc_b];
+    // ②' state VMO 预建（§4：appd 建本体、spawn 迁 dup、reap 后本体入表）
+    // 。options=0 立法：权利非 create 入参——options 只认 VMO_OPT_DEMAND
+    // 且 RIGHT_READ(bit0) 恰撞 DEMAND 位，照抄「READ|WRITE 入参」会静默
+    // 建成 demand VMO（v1.2 §4 坑注）；创建者自动持 R|W|MAP|DUP。commit
+    // 全幅（M2 修：零页建账，未 commit 首写/首读返 -EBADSTATE——thr/dpg
+    // 自验 create+commit 同款序）。
+    let mut svmo: Handle = 0;
+    if berry_vmo_create(STATE_VMO_SZ, 0, &mut svmo) != 0
+        || svmo == 0
+        || berry_vmo_commit(svmo, 0, STATE_VMO_SZ) != 0
+    {
+        eco_note(console, b"tomb svmo");
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(lc_b) != 0 {
+            trap();
+        }
+        return;
+    }
+    // 授子 dup（最小面 R|W：启动判读要 READ、pause(save) 要 WRITE；MAP/DUP
+    // 不授。relaunch 轮同面——v1.2 §4 放弃只读收紧：复活者再入 pause(save)
+    // 循环需写权，循环天然闭合）。
+    let mut st_dup: Handle = 0;
+    if berry_handle_duplicate(svmo, RIGHT_READ | RIGHT_WRITE, &mut st_dup) != 0 || st_dup == 0 {
+        eco_note(console, b"tomb svmo");
+        if berry_handle_close(lc_a) != 0
+            || berry_handle_close(lc_b) != 0
+            || berry_handle_close(svmo) != 0
+        {
+            trap();
+        }
+        return;
+    }
+
+    // ③ spawn（双 gift——v1.2 §4 装配面立法：**仅 tomb_selftest 显式
+    // spawn 通道装配**，boot 批 app_launch 与 SPAWN RPC 恒不装（fs_gifts
+    // 固占槽位、带 fs 词 app 结构性冲突）；gift[4] = lifecycle 端 B fresh
+    // 迁入、gift[5] = state VMO dup 迁入；stdin_feed=Some(&[]) 直传——M1：
+    // extras 在位断言要求 stdin 槽；console 诊断 = spawn stdout 面，不进
+    // 判据〔H1〕）。
+    let gifts = [lc_b, st_dup];
     let child = match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -5676,14 +5824,21 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         Ok(c) => c,
         Err(()) => {
             eco_note(console, b"tomb spawn");
-            // Err 早退面 extra_gifts 未迁移——两端都关。
-            if berry_handle_close(lc_a) != 0 || berry_handle_close(lc_b) != 0 {
+            // Err 早退面 extra_gifts 未迁移——两端 + state dup 都关（svmo
+            // 本体同收——尚未入表，无槽账联动）。
+            if berry_handle_close(lc_a) != 0
+                || berry_handle_close(lc_b) != 0
+                || berry_handle_close(st_dup) != 0
+                || berry_handle_close(svmo) != 0
+            {
                 trap();
             }
             return;
         }
     };
-    // spawn Ok：lc_b 已随 env 块迁入子进程——只持 lc_a。
+    // spawn Ok：lc_b + st_dup 已随 env 块迁入子进程——本侧持 lc_a + svmo
+    // 本体（dup 与本体同 VMO 两柄：子写 = 本体可见，R2 首验点——vblk
+    // 数据面同构先例）。
 
     // ④ 收 UP（通道判据起点；超时 = app 未活或通道面破）。嵌套 fn（非闭包
     // ——闭包捕 msg 借用会与 ⑤ drain 循环冲突）。
@@ -5701,6 +5856,27 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         }
         Some(buf[0])
     }
+    // 段 b 收帧（带 counter 对账）：等 want tag（deadline 连续不重臂），在途
+    // BEAT 心跳噪声跳过续等——D2 两拍循环后 app 醒拍先 BEAT 后处理下行帧，
+    // SAVED/RESTORED 前必有残余 BEAT 在队，等首帧会假红；他 tag（协议破缺/
+    // 降级面，如坏档弃档后全新启动的 UP）与超时返 None。
+    fn wait_frame(lc: Handle, buf: &mut [u8; MSG], cap_ns: u64, want: u8) -> Option<u32> {
+        let deadline = now() + cap_ns;
+        loop {
+            let now_ns = now();
+            if now_ns >= deadline {
+                return None;
+            }
+            match recv_tag(lc, buf, deadline - now_ns) {
+                Some(t) if t == want => {
+                    return Some(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]));
+                }
+                Some(TAG_BEAT) => continue,
+                Some(_) => return None,
+                None => return None,
+            }
+        }
+    }
     let mut msg = [0u8; MSG];
     match recv_tag(lc_a, &mut msg, UP_CAP_NS) {
         Some(TAG_UP) => {}
@@ -5708,24 +5884,31 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
             eco_note(console, b"tomb up");
             let _ = berry_process_terminate(child.hp, 9);
             let _ = child.reap();
-            if berry_handle_close(lc_a) != 0 {
+            if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
                 trap();
             }
             return;
         }
     }
 
-    // ⑤ 冻结（options=0 进程全冻；hp 全权——对抗审查 L2 预证 R1）。有界退避
-    // 重试：三重正交谓词在目标醒窗在飞（BEAT 发送/clock 读）时返瞬态错——
-    // 2s 心跳睡窗占比 >99.9%，50ms 退避 16 试必落窗（醒窗亚 ms）；连败才降级。
+    // ⑤ 冻结（options=0 进程全冻；hp 全权——对抗审查 L2 预证 R1）。退避
+    // （D4 钉死）：仅 -EBUSY 可重试——瞬态源 = console 背压/副核 Running
+    // 窗/醒窗在飞（2s 睡窗占比 >99.9%，100ms 退避 40 试帽 4s 必落窗）；
+    // 其余 errno（-EACCES/-EINVAL/-EBADSTATE）各对应一个明确拒绝点 = 非
+    // 瞬态，立即出失败行 loud（致命错不被重试延迟）。
     let mut token: Handle = 0;
-    let mut susp_fail: berry_sys::Status = 0;
-    for _ in 0..16 {
+    let mut susp_fail: berry_sys::Status;
+    let mut tries = 0u32;
+    loop {
         susp_fail = berry_process_suspend(child.hp, 0, &mut token);
         if susp_fail == 0 && token != 0 {
             break;
         }
-        berry_thread_sleep(now() + 50_000_000);
+        if susp_fail != BERRY_ERR_BUSY || tries >= 40 {
+            break;
+        }
+        tries += 1;
+        berry_thread_sleep(now() + 100_000_000);
     }
     if susp_fail != 0 || token == 0 {
         // 取证行带 errno（thr exit 十进制同款）：-EBUSY/-EACCES/-EINVAL/
@@ -5760,7 +5943,7 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         send_retry(console, line.as_ptr(), i + 1);
         let _ = berry_process_terminate(child.hp, 9);
         let _ = child.reap();
-        if berry_handle_close(lc_a) != 0 {
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
             trap();
         }
         return;
@@ -5786,37 +5969,220 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         let _ = berry_handle_close(token); // 解冻收口（无论窗判成败）
         let _ = berry_process_terminate(child.hp, 9);
         let _ = child.reap();
-        if berry_handle_close(lc_a) != 0 {
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
             trap();
         }
         return;
     }
 
-    // ⑦ 解冻（thaw = close(token)，1.1-S3 语义）→ 收 RESUMED（app 醒后
-    // 差值判先发 RESUMED 再发当拍 BEAT）。
+    // ⑦ 解冻（thaw = close(token)，1.1-S3 语义）→ 发 TAG_RESUME 帧 → 收
+    // TAG_RESUMED（D2 消息化：解冻由显式消息告知，app 侧差值启发式已废）
+    // 。醒窗竞态封口：app 若在本侧 send 落队前已被调度，其拍一 recv 得
+    // -EAGAIN 后先走真实 sleep，不先发帧——但 2s 拍界前后仍有在途 BEAT
+    // 可能，故收帧循环抽干至 RESUMED（等的是 RESUMED 帧、不赌首帧；帽 =
+    // 总口径 5s）。
     if berry_handle_close(token) != 0 {
         trap();
     }
-    match recv_tag(lc_a, &mut msg, RESUME_CAP_NS) {
-        Some(TAG_RESUMED) => {}
-        _ => {
-            eco_note(console, b"tomb res");
+    let mut rm = [0u8; MSG];
+    rm[0] = TAG_RESUME;
+    if berry_channel_send(lc_a, rm.as_ptr(), MSG, core::ptr::null(), 0) != 0 {
+        eco_note(console, b"tomb resume");
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+            trap();
+        }
+        return;
+    }
+    let deadline = now() + RESUME_CAP_NS;
+    let mut resumed_ok = false;
+    loop {
+        let now_ns = now();
+        if now_ns >= deadline {
+            break;
+        }
+        match recv_tag(lc_a, &mut msg, deadline - now_ns) {
+            Some(TAG_RESUMED) => {
+                resumed_ok = true;
+                break;
+            }
+            Some(_) => {} // 在途 BEAT/迟帧抽干续等
+            None => break, // 超时/收帧败 → 降级
+        }
+    }
+    if !resumed_ok {
+        eco_note(console, b"tomb res");
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+            trap();
+        }
+        return;
+    }
+
+    // ⑧ 段 a 标记（独立判——app-0 先例互不连坐，两行各自谓词；段 b-1 起
+    // 不 terminate：§2「共用一次生命周期」，pause 收束续走）。
+    send_retry(console, b"FROZEN ok n=1\n".as_ptr(), 14);
+
+    // ⑨ pause(save)（§4）。thaw-then-pause 前置不变式已在 ⑦ 兑现（close
+    // (token) 解冻 + RESUMED 回帧 = 目标 freeze_depth=0 且活转）——PAUSESV1
+    // 仅可发往未冻结进程；跳过解冻直发 = 消息入队无人消费 → deadline 必超
+    // → 监督杀 = 状态静默丢失。deadline 起算 = 本侧发出时刻（§4 立法；
+    // wait_frame 帽紧随 send 返回，亚 ms 偏差）。
+    let mut pm = [0u8; MSG];
+    pm[0] = TAG_PAUSESV1;
+    // counter 位恒 0：暂停令无参（app 回 SAVED 带己方 counter）。
+    if berry_channel_send(lc_a, pm.as_ptr(), MSG, core::ptr::null(), 0) != 0 {
+        // 发送面破缺（满队不可达——队深 8、此刻至多 2 帧在途）= pause 失败
+        // 同 face：监督杀 + 不入表 + VMO 回收。
+        eco_note(console, b"tomb ptmo");
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+            trap();
+        }
+        return;
+    }
+    let saved_c = match wait_frame(lc_a, &mut msg, PAUSE_CAP_NS, TAG_SAVED) {
+        Some(c) => c,
+        None => {
+            // 超时未退 = 监督杀（§4：策略性墓碑超时 ≠ 崩溃监督——**不重启**
+            // ，代号 +1 重启仅适用崩溃语义，v0 对规范 §4.1-1 显式偏差随 b-2
+            // 回写）+ 不入墓碑表 + state VMO 直接 close 回收 64KiB。
+            eco_note(console, b"tomb ptmo");
             let _ = berry_process_terminate(child.hp, 9);
             let _ = child.reap();
-            if berry_handle_close(lc_a) != 0 {
+            if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+                trap();
+            }
+            return;
+        }
+    };
+    // reap0：SAVED → app exit(0)（EOF 先行）→ wait 瞬回（30s 绝对帽兜底）。
+    // reap Err/非零 = 句柄留存有界泄漏面（berry-exec 契约），标记缺席执法。
+    match child.reap() {
+        Ok(0) => {}
+        _ => {
+            eco_note(console, b"tomb rcode");
+            if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
                 trap();
             }
             return;
         }
     }
-
-    // ⑧ 收口（u1 先例同序：terminate → reap；lc_a 终关）+ 标记。
-    let _ = berry_process_terminate(child.hp, 9);
-    let _ = child.reap();
+    // 记入条件（§4）：reap 真码 0 ∧ blob 首 4B = BTMB（仍零态 = 拒绝保存
+    // 语义 → 不入表直接回收 64KiB；v0 自验件恒有态，此臂 = 守卫面）。
+    let mut head = [0u8; 4];
+    if berry_vmo_read(svmo, head.as_mut_ptr(), 0, 4) != 0
+        || u32::from_le_bytes(head) != BTMB_MAGIC
+    {
+        eco_note(console, b"tomb nosave");
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+            trap();
+        }
+        return;
+    }
+    // 首轮 lifecycle 面毕：close lc_a（残余帧随端点消亡）→ 记表占槽（§4
+    // 钉序：reap0 → 记表 → relaunch——槽自此接管 svmo 所有权）。
     if berry_handle_close(lc_a) != 0 {
         trap();
     }
-    send_retry(console, b"FROZEN ok n=1\n".as_ptr(), 14);
+    tomb_put(b"APPTOMB", svmo);
+
+    // ⑩ relaunch（§4）：同 .bap 二次 spawn——复用首轮 bap_scan/manifest 解
+    // 析果（走查表只供几何、不含 elf_off/stack_pages，表查单独不可成
+    // spawn）；新 lifecycle 对作 gift[4]，gift[5] = 槽内 svmo 的 dup(R|W)
+    // （v1.2「放弃只读收紧」——复活者再入 pause(save) 循环需写权）。
+    let mut st_dup2: Handle = 0;
+    if berry_handle_duplicate(svmo, RIGHT_READ | RIGHT_WRITE, &mut st_dup2) != 0 || st_dup2 == 0 {
+        eco_note(console, b"tomb respawn");
+        return; // §4 负⑤族：条目保留待重试——svmo 留槽
+    }
+    let (lc_a2, lc_b2) = channel_pair();
+    let gifts2 = [lc_b2, st_dup2];
+    let child2 = match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: man.entry.as_bytes(),
+            data_off: off + sc.elf_off,
+            data_len: sc.elf_len,
+            stdout: console,
+            stack_pages: man.stack_pages as u64,
+            stdin_feed: Some(&[]),
+            stdin_handle: None,
+            args: &[],
+            extra_gifts: &gifts2,
+            mmio_vmo: None,
+            mmio_va: 0,
+            intent: 0,
+            force_eager: false,
+        },
+    ) {
+        Ok(c) => c,
+        Err(()) => {
+            // 二次 spawn 失败 = 条目保留待重试（§4 负⑤）——槽不动；未迁移
+            // 双端 + dup 显式回收。
+            eco_note(console, b"tomb respawn");
+            if berry_handle_close(lc_a2) != 0
+                || berry_handle_close(lc_b2) != 0
+                || berry_handle_close(st_dup2) != 0
+            {
+                trap();
+            }
+            return;
+        }
+    };
+    // spawn Ok：lc_b2 + st_dup2 已迁入复活者——本侧持 lc_a2（svmo 所有权
+    // 在槽，本地值只作 dup 源已毕）。
+
+    // ⑪ 收 RESTORED（§6 谓词链「restored c=N+1」——counter 续接 = 跨生死
+    // 读档的确定性对账，非仅 tag 命中）→ reap1（restored → ≥1 心跳 → 自退
+    // 0）→ 出表 → TOMB ok。
+    match wait_frame(lc_a2, &mut msg, RESTORE_CAP_NS, TAG_RESTORED) {
+        Some(c) if c == saved_c.wrapping_add(1) => {}
+        Some(_) => {
+            // counter 断链：读档未续接（blob 陈旧/写半档）——restore-fail 面。
+            eco_note(console, b"tomb rctr");
+            let _ = berry_process_terminate(child2.hp, 9);
+            let _ = child2.reap();
+            if berry_handle_close(lc_a2) != 0 || !tomb_take(b"APPTOMB") {
+                trap();
+            }
+            return;
+        }
+        None => {
+            // 超时/破缺（含坏档弃档按零态启动 = 收 UP 而非 RESTORED 的
+            // badfmt 面）——§4 负④：close 槽 svmo 弃档 + 杀 + 不打标。
+            eco_note(console, b"tomb rfail");
+            let _ = berry_process_terminate(child2.hp, 9);
+            let _ = child2.reap();
+            if berry_handle_close(lc_a2) != 0 || !tomb_take(b"APPTOMB") {
+                trap();
+            }
+            return;
+        }
+    }
+    match child2.reap() {
+        Ok(0) => {}
+        _ => {
+            // 复活即崩（二轮 reap 非零）——§4 负④同 face；reap Err 面 =
+            // 句柄留存有界泄漏（reap 后不再 terminate，防半收链句柄复用）。
+            eco_note(console, b"tomb rfail");
+            if berry_handle_close(lc_a2) != 0 || !tomb_take(b"APPTOMB") {
+                trap();
+            }
+            return;
+        }
+    }
+    // 出表（取档即出表——清槽 + close svmo，blob 随复活者末柄回收；put
+    // 后必在，take 失败 = 表账自陷面）+ 终关 lc_a2。
+    if !tomb_take(b"APPTOMB") || berry_handle_close(lc_a2) != 0 {
+        trap();
+    }
+    // 段 b 标记（行宽先数后写——雷册 15/14 off-by-one 教训）：
+    // `TOMB ok n=1\n` = 11 字面 + LF = 12B。
+    send_retry(console, b"TOMB ok n=1\n".as_ptr(), 12);
 }
 
 struct AppSpawnTail {
@@ -6098,10 +6464,7 @@ fn app_serve_list(console: Handle, svc: Handle) {
     let mut sent = 0u32;
     for i in 0..account {
         let id = &tbl[i].id[..tbl[i].id_len];
-        // app-1（L3）：自验 app 族不进 launcher 列表（拉起权归 tomb_selftest）。
-        if *id == *b"APPTOMB" {
-            continue;
-        }
+        // app-1 D1：APPTOMB 不入走查表（selftest/ 前缀）——列表面零过滤。
         let mut entry_name = [0u8; ENTRY_MAX];
         let sc = match bap_scan(
             step,

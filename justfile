@@ -297,10 +297,12 @@ build-user:
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出。app-0 起加
     # app/<ID>.bap 整包条目（'a' < 'b' 排序在 bin/ 前；a-1 阶段 svcmgr
     # 主走查对未知名算术跳过 = 零消费、零行为变化——appd 消费随 a-2）。
+    # app-1 D1（调和书）：APPTOMB 打包出 app/ 前缀改 selftest/ 专用位
+    # ——不入 bap_scan 收集 = 不占 APP_SLOTS（9/9 恰满，入册必挤 SETTINGS
+    # = APP ok 静默漂 8），tomb_selftest 走 cpio 直查，白名单立法退役。
     python3 ../tools/mkcpio.py ../rootfs.cpio \
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
-        app/APPTOMB.bap=userbins/app/APPTOMB.bap \
         app/BROWSER.bap=userbins/app/BROWSER.bap \
         app/CAMERA.bap=userbins/app/CAMERA.bap \
         app/CONTACTS.bap=userbins/app/CONTACTS.bap \
@@ -356,6 +358,7 @@ build-user:
         bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe \
         bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc \
         bin/which=cargo-target/aarch64-unknown-linux-musl/release/which \
+        selftest/APPTOMB.bap=userbins/app/APPTOMB.bap \
         --split 32
     # A1-3b（余量刀）：mkcpio --split 32 = 主路恒走多卷产链——≈28MiB
     # rootfs = 1 卷 rootfs0.cpio（单卷 ≤32MiB 与内核 fwcfg 单卷帽同口径，

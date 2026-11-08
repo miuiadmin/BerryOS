@@ -6,7 +6,7 @@ type = "app"
 intent = "background"
 
 [capabilities]
-console = false
+console = true
 
 [runtime]
 stack_pages = 4

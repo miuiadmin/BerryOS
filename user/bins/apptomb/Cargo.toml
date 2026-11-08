@@ -2,13 +2,15 @@
 name = "apptomb"
 version = "0.1.0"
 edition = "2021"
-# app-1 段 a-1：freeze-first 长活自验 app（`.agents/plans/am/design.md` L2 /
-# `docs/app-1实施设计草案-v1.0.md` §3）。hello 模型（no_std ELF 本体，入
-# APPTOMB.bap 经 mkapp——非 elf2flat 平像）。判据载体 = env 块 extras[4]
-# lifecycle 通道（对抗审查 H1 修：console 行只是诊断辅证）；心跳 2s、醒后
-# clock 差值判 resumed（审修 L1——计数骤停不可判）。由 svcmgr tomb_selftest
-# 显式拉起，**不进 boot 批**（自验 app 族白名单）。
-description = "BerryOS app-1 freeze-first selftest app (spawned by svcmgr tomb_selftest)"
+# app-1 段 b-1：墓碑协议 v0 自验 app（`.agents/plans/am/design.md` L3 /
+# `docs/app-1实施设计草案-v1.2.md` §4/§5——b-1/b-2 唯一基准）。hello 模型
+# （no_std ELF 本体，入 APPTOMB.bap 经 mkapp——非 elf2flat 平像）。判据载体
+# = env 块双 gift：extras[4] lifecycle 通道（up/beat/resumed/saved/restored
+# 上报 + RESUME/PAUSESV1 下行——D2 消息化）+ extras[5] state VMO（12B 头
+# 直写读档）。由 svcmgr tomb_selftest 显式拉起，**打包 selftest/ 专用位**
+# （v1.2 §6/D1——不入 app/ 收集 = APP 族标记零漂移）。manifest console=true
+# （K4/D11：自验件恒 true，误经 app_launch 路径防私有对替换）。
+description = "BerryOS app-1 tombstone protocol selftest app (spawned by svcmgr tomb_selftest)"
 license = "Apache-2.0"
 
 [dependencies]
