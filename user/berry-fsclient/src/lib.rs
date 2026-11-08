@@ -894,7 +894,7 @@ pub const EAGAIN: i32 = 11;
 pub const EINVAL: i32 = 22;
 pub const EPIPE: i32 = 32;
 pub const ENODEV: i32 = 19;
-pub const EADDRINUSE: i32 = 112;
+pub const EADDRINUSE: i32 = 98;
 pub const ETIMEDOUT: i32 = 110;
 
 pub fn sock_rpc_errno(op: SockOp, st: u8) -> i32 {
@@ -1797,12 +1797,11 @@ mod errno_probe {
     /// const assert 与 berry-libc 单源钉死、两侧同步），Linux 通用值域
     /// = 98——kernel uapi asm-generic/errno.h 实文 EADDRINUSE=98、
     /// EHOSTDOWN=112，musl arch/generic/bits/errno.h（aarch64 用）同。
-    /// 2026-11-08 裁注「98 是 x86 值域混入、asm-generic/musl aarch64 =
-    /// 112」与两源相悖——112 实为 **newlib** 值域（swift-os 坑二里
-    /// newlib 头的 112，坑二被反向吸收）。berry-libc 侧同款报差
-    /// （lib.rs `errno_probe`）。裁定后两侧同步改。
+    /// 三审翻案（2026-11-08，wave7 全量钉板三源核实）：asm-generic 与
+    /// musl aarch64 的 EADDRINUSE = 98（112 是 EHOSTDOWN/newlib 值域）——
+    /// 立值已随 berry-libc 决策链翻回 98，镜像锚转为活断言（决策链全文
+    /// 见 berry-libc EADDRINUSE 裁注）。
     #[test]
-    #[ignore = "断差待裁：立值 112 vs asm-generic/musl 98（112=EHOSTDOWN/newlib 值）"]
     fn eaddrinuse_mirror_matches_linux_generic() {
         assert_eq!(EADDRINUSE, 98);
     }

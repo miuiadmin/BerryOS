@@ -137,9 +137,13 @@ pub const EAFNOSUPPORT: c_int = 97;
 /// `sock_rpc_errno` 单源映射，const assert 对拍）。
 pub const ENODEV: c_int = 19;
 /// A3-2：listen 端口已被占用（ST_FULL/Dup——EADDRINUSE 近似档）。
-/// 2026-11-08 仓主裁：98 → 112，对齐 Linux 通用值域（asm-generic，musl
-/// aarch64 同）——x86 值域混入修正，调研 13 号坑二回归锚。
-pub const EADDRINUSE: c_int = 112;
+/// 决策链（三审，2026-11-08）：一审探针报「98 是 x86 混入、asm-generic=112」
+/// → 二审仓主裁 98→112；三审（wave7 全量钉板）三源核实（kernel uapi
+/// asm-generic / musl arch/generic/bits/errno.h / libc crate）**翻案**：
+/// asm-generic 与 musl aarch64 的 EADDRINUSE 就是 98（112 是 EHOSTDOWN；
+/// 112 属 newlib 值域）——一审论断反了，二裁建其上故错。终值 = 98
+///（musl 同值口径 + musl 工具链），翻回即修正错误非意见翻转。
+pub const EADDRINUSE: c_int = 98;
 /// A3-2：connect 目标非网关 10.0.2.2——v1 协议无地址域（OP_TCP_OPEN 只
 /// 携 port、vnet 段构造 dst=GW_IP 钉死），非网关地址 = 本栈结构性不可
 /// 达，诚实拒（不静默连到别处）。
@@ -147,8 +151,10 @@ pub const ENETUNREACH: c_int = 101;
 
 // EAI_*（getaddrinfo 直接返回，非 errno）
 pub const EAI_NONAME: c_int = -2;
-/// A3-1：hints family 非 {AF_INET, 0}（musl 同值）。
-pub const EAI_FAMILY: c_int = -5;
+/// A3-1：hints family 非 {AF_INET, 0}。2026-11-08 三审翻案：原 -5 是 glibc
+/// 编号，musl netdb.h 按 RFC 2553 序 = -6（FAIL -4/NODATA -5/FAMILY -6），
+/// musl 同值口径取 -6。
+pub const EAI_FAMILY: c_int = -6;
 /// A3-1：service 非数字端口 / socktype 不支持（musl 对不支持 socktype
 /// 用此码，musl 同值）。
 pub const EAI_SERVICE: c_int = -8;
@@ -244,7 +250,7 @@ mod errno_probe {
     }
 
     /// 扩展段 35..133（asm-generic errno；musl aarch64 同）——立值面
-    /// 全量钉板，9 项（EADDRINUSE 断差另测，见下）。
+    /// 全量钉板，9 项（EADDRINUSE 已裁翻案对齐（见决策链注））。
     #[test]
     fn errno_extended_35_133_matches_linux_generic() {
         assert_eq!(ENAMETOOLONG, 36);
@@ -267,13 +273,12 @@ mod errno_probe {
     /// （swift-os 坑二里 newlib 头的 112——坑二被反向吸收）。裁定后：
     /// 改立值或改本断言二择一，berry-fsclient 镜像侧同步。
     #[test]
-    #[ignore = "断差待裁：立值 112 vs asm-generic/musl 98（112=EHOSTDOWN/newlib 值）"]
     fn eaddrinuse_matches_linux_generic() {
         assert_eq!(EADDRINUSE, 98);
     }
 
     /// EAI_*（getaddrinfo 直接返回码，非 errno；musl include/netdb.h
-    /// 同值）——立值面钉板 4 项（EAI_FAMILY 断差另测，见下）。
+    /// 同值）——立值面钉板 4 项（EAI_FAMILY 已裁翻案对齐（见决策链注））。
     #[test]
     fn eai_values_match_musl() {
         assert_eq!(EAI_NONAME, -2);
@@ -282,13 +287,12 @@ mod errno_probe {
         assert_eq!(EAI_MEMORY, -10);
     }
 
-    /// 断差报差（w7c，不改语义待裁）：立值 -5，musl netdb.h EAI_FAMILY
+    /// 已裁（三审翻案 2026-11-08）：立值改 -6 对齐 musl；原报差记录——立值 -5 时 musl netdb.h EAI_FAMILY
     /// = **-6**（musl 按 RFC 2553 序负值化：-4 EAI_FAIL / -5 EAI_NODATA /
     /// -6 EAI_FAMILY / -7 EAI_SOCKTYPE）；-5 是 **glibc** 编号（glibc
     /// EAI_FAMILY=-5、EAI_SOCKTYPE=-6）。A3-1 注「musl 同值」实为 glibc
     /// 值。裁定后：改立值或改本断言二择一。
     #[test]
-    #[ignore = "断差待裁：立值 -5 vs musl -6（-5 是 glibc 值；musl -5=EAI_NODATA）"]
     fn eai_family_matches_musl() {
         assert_eq!(EAI_FAMILY, -6);
     }
