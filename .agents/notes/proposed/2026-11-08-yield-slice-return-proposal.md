@@ -1,6 +1,6 @@
 # Agent Note: yield 缺片归还语义——sys_thread_yield 最 eligible 场景可能空操作
 
-Status: proposed
+Status: implemented
 
 ## Problem
 
@@ -24,6 +24,8 @@ Status: proposed
 - 实施窗：**等 sched-1.3 SMP 线收官**（SMP-3 刚落写者锁，sched 面活跃）——本提案不抢刀。
 - 若落地：sys_thread_yield 从"可能空操作"变为"真让出"；自旋场景公平性改善；moss 互证（其 `yield_slice` 在生产内核验证过同语义）。
 - 不改 tick/抢占路径——零热路径开销（yield 是冷路径）。
+- 调和注记（2026-11-08 落地时）：与并发 S2b+ Σvruntime 增量账本刀同函数交叠——调和 = `yield_slice_return` 抬均经 `rq.vruntime_add()` 账点 + ktest 直改后 `resync_vruntime_sum()` 洗账；合并树 QEMU 全绿（YIELD-K ok / ktest done / 52 标记 / ring_check 安静）。语义边界诚实记录：双任务环数学上抬均零操作区（handoff ⟺ 让出者 vruntime > avg，与抬均互斥）——修复有效面 = 3+ 任务环真 handoff；双任务 yield 一刀真让出需后续提案（抬到 max(ring) 形态）。
+- 落地（2026-11-08）：`Fair::yield_slice_return`（class.rs，enqueue 抬均同款、最小暴露面 pub 方法）接入 `yield_now_impl` prev Ready 化处（RQ 窗内）；回归面 = kernel ktest `test_policy_yield_return`（标记 `YIELD-K ok`）。
 
 ## Related
 
