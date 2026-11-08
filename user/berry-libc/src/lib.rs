@@ -193,11 +193,17 @@ pub fn park() -> ! {
 
 // —— errno 值域探针（host 单元测试；P1-d）——
 //
-// 对照 Linux 通用 errno 值域（musl 同）——swift-os 坑二回归锚，调研 13 号
+// 对照 Linux 通用 errno 值域（asm-generic errno-base 1..34 + errno
+// 35..133；musl aarch64 同）——swift-os 坑二回归锚，调研 13 号
 // （research/13-2026新OS四家轨迹与踩坑.md §2 坑二：内核返回 EADDRINUSE=98
 // 而目标 newlib 头定义 112，nginx -t 拒掉合法配置）。abi-check 只对拍
 // syscall 号位、不对拍 errno 值域——本探针补该盲区，值域单源即上方
 // 「errno（Linux 数值面；musl 同值）」区。
+//
+// 全量钉板（w7c）：立值面 errno 33 项 + EAI_* 5 项逐项断言（对照源 =
+// kernel uapi asm-generic/errno.h + musl arch/generic/bits/errno.h +
+// musl include/netdb.h，双源核实）。断差不改语义——#[ignore] + 注释
+// 报差（EADDRINUSE / EAI_FAMILY，见各测试），summary 列出待裁。
 //
 // 实况勘定：本 crate 结构性不可 `cargo test`——①crt0 `global_asm!` 为
 // ELF 目标写法（darwin 汇编器拒 ADRP 非 GOT 形式）；②libc 同名符号对
@@ -208,36 +214,82 @@ pub fn park() -> ! {
 mod errno_probe {
     use super::*;
 
-    /// 核心档：Linux 通用值域（asm-generic；musl 同）。
+    /// 基础段 1..34（asm-generic errno-base；musl aarch64 同）——立值面
+    /// 全量钉板，23 项。
     #[test]
-    fn errno_core_matches_linux_generic() {
+    fn errno_base_1_34_matches_linux_generic() {
         assert_eq!(EPERM, 1);
         assert_eq!(ENOENT, 2);
+        assert_eq!(ESRCH, 3);
+        assert_eq!(EINTR, 4);
+        assert_eq!(EIO, 5);
+        assert_eq!(EBADF, 9);
+        assert_eq!(ECHILD, 10);
         assert_eq!(EAGAIN, 11);
+        assert_eq!(ENOMEM, 12);
+        assert_eq!(EACCES, 13);
+        assert_eq!(EFAULT, 14);
+        assert_eq!(EBUSY, 16);
+        assert_eq!(EEXIST, 17);
+        assert_eq!(ENODEV, 19);
+        assert_eq!(ENOTDIR, 20);
+        assert_eq!(EISDIR, 21);
         assert_eq!(EINVAL, 22);
-        // ENOTSUP == EOPNOTSUPP == 95（asm-generic 与 x86 两值域同值，无分岔）。
-        assert_eq!(ENOTSUP, 95);
+        assert_eq!(EMFILE, 24);
+        assert_eq!(ENOTTY, 25);
+        assert_eq!(ENOSPC, 28);
+        assert_eq!(ESPIPE, 29);
+        assert_eq!(EPIPE, 32);
+        assert_eq!(ERANGE, 34);
     }
 
-    /// 网络/杂项族：Linux 通用值域（asm-generic；musl 同）。
+    /// 扩展段 35..133（asm-generic errno；musl aarch64 同）——立值面
+    /// 全量钉板，9 项（EADDRINUSE 断差另测，见下）。
     #[test]
-    fn errno_net_family_matches_linux_generic() {
-        assert_eq!(ENODEV, 19);
-        assert_eq!(EPIPE, 32);
+    fn errno_extended_35_133_matches_linux_generic() {
+        assert_eq!(ENAMETOOLONG, 36);
         assert_eq!(ENOSYS, 38);
+        assert_eq!(ENOTEMPTY, 39);
         assert_eq!(EPROTONOSUPPORT, 93);
         assert_eq!(ESOCKTNOSUPPORT, 94);
+        // ENOTSUP == EOPNOTSUPP == 95（asm-generic 与 x86 两值域同值，无分岔）。
+        assert_eq!(ENOTSUP, 95);
         assert_eq!(EAFNOSUPPORT, 97);
         assert_eq!(ENETUNREACH, 101);
         assert_eq!(ETIMEDOUT, 110);
     }
 
-    /// 已修注记：EADDRINUSE 原值 98 是 Linux x86/i386 值域混入；2026-11-08
-    /// 仓主裁对齐 Linux 通用值域（asm-generic，musl aarch64 同）= 112
-    /// ——swift-os 坑二同款混搭（98 vs 112）的回归锚，裁决落地后执法
-    /// （berry-fsclient 镜像锚同步）。
+    /// 断差报差（w7c，不改语义待裁）：立值 112，Linux 通用值域 = 98
+    /// ——kernel uapi asm-generic/errno.h 实文 EADDRINUSE=98、EHOSTDOWN=
+    /// 112，musl arch/generic/bits/errno.h（aarch64 用）同。2026-11-08
+    /// 裁注「98 是 x86 值域混入、asm-generic/musl aarch64 = 112」与两源
+    /// 相悖——x86 与 asm-generic 在 98 同值；112 实为 **newlib** 值域
+    /// （swift-os 坑二里 newlib 头的 112——坑二被反向吸收）。裁定后：
+    /// 改立值或改本断言二择一，berry-fsclient 镜像侧同步。
     #[test]
+    #[ignore = "断差待裁：立值 112 vs asm-generic/musl 98（112=EHOSTDOWN/newlib 值）"]
     fn eaddrinuse_matches_linux_generic() {
-        assert_eq!(EADDRINUSE, 112);
+        assert_eq!(EADDRINUSE, 98);
+    }
+
+    /// EAI_*（getaddrinfo 直接返回码，非 errno；musl include/netdb.h
+    /// 同值）——立值面钉板 4 项（EAI_FAMILY 断差另测，见下）。
+    #[test]
+    fn eai_values_match_musl() {
+        assert_eq!(EAI_NONAME, -2);
+        assert_eq!(EAI_AGAIN, -3);
+        assert_eq!(EAI_SERVICE, -8);
+        assert_eq!(EAI_MEMORY, -10);
+    }
+
+    /// 断差报差（w7c，不改语义待裁）：立值 -5，musl netdb.h EAI_FAMILY
+    /// = **-6**（musl 按 RFC 2553 序负值化：-4 EAI_FAIL / -5 EAI_NODATA /
+    /// -6 EAI_FAMILY / -7 EAI_SOCKTYPE）；-5 是 **glibc** 编号（glibc
+    /// EAI_FAMILY=-5、EAI_SOCKTYPE=-6）。A3-1 注「musl 同值」实为 glibc
+    /// 值。裁定后：改立值或改本断言二择一。
+    #[test]
+    #[ignore = "断差待裁：立值 -5 vs musl -6（-5 是 glibc 值；musl -5=EAI_NODATA）"]
+    fn eai_family_matches_musl() {
+        assert_eq!(EAI_FAMILY, -6);
     }
 }

@@ -1775,6 +1775,9 @@ mod tests {
 // 等超对拍面值的正牌探针在 berry-libc lib.rs `errno_probe`（该 crate
 // 结构性不可 host test——crt0 ELF-only asm + libc 同名符号插入——仅
 // `cargo check --tests` 编译验证）。
+//
+// 镜像面钉板（w7c）：镜像多少钉多少——errno 7 项全钉（EADDRINUSE 断差
+// #[ignore] 报差另测）+ EAI 2 项；不扩镜像面（超集值归 berry-libc 探针）。
 #[cfg(test)]
 mod errno_probe {
     use super::*;
@@ -1790,12 +1793,26 @@ mod errno_probe {
         assert_eq!(ETIMEDOUT, 110);
     }
 
-    /// 已修注记：EADDRINUSE 原值 98 是 Linux x86/i386 值域混入；2026-11-08
-    /// 仓主裁对齐 Linux 通用值域（asm-generic，musl aarch64 同）= 112
-    /// ——swift-os 坑二同款（98 vs 112 混搭）的回归锚。本 crate 立值经
-    /// berry-libc net.rs const 对拍与单源钉死，两侧已同步落刀。
+    /// 断差报差（w7c，不改语义待裁）：本 crate 镜像立值 112（经 net.rs
+    /// const assert 与 berry-libc 单源钉死、两侧同步），Linux 通用值域
+    /// = 98——kernel uapi asm-generic/errno.h 实文 EADDRINUSE=98、
+    /// EHOSTDOWN=112，musl arch/generic/bits/errno.h（aarch64 用）同。
+    /// 2026-11-08 裁注「98 是 x86 值域混入、asm-generic/musl aarch64 =
+    /// 112」与两源相悖——112 实为 **newlib** 值域（swift-os 坑二里
+    /// newlib 头的 112，坑二被反向吸收）。berry-libc 侧同款报差
+    /// （lib.rs `errno_probe`）。裁定后两侧同步改。
     #[test]
+    #[ignore = "断差待裁：立值 112 vs asm-generic/musl 98（112=EHOSTDOWN/newlib 值）"]
     fn eaddrinuse_mirror_matches_linux_generic() {
-        assert_eq!(EADDRINUSE, 112);
+        assert_eq!(EADDRINUSE, 98);
+    }
+
+    /// EAI 镜像两档（getaddrinfo 直接返回码，非 errno；musl netdb.h
+    /// 同值）——本 crate 镜像面即两项（EAI_FAMILY 等 libc 侧断差归
+    /// berry-libc 探针），镜像多少钉多少。
+    #[test]
+    fn eai_mirror_matches_musl() {
+        assert_eq!(EAI_NONAME, -2);
+        assert_eq!(EAI_AGAIN, -3);
     }
 }
