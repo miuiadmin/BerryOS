@@ -8,7 +8,7 @@ BerryUI 已有保留树、布局、damage、hit、帧循环与离屏测试，但
 
 ## Decision
 
-按 [GUI框架地基路线-v1.2.md](../../../docs/GUI框架地基路线-v1.2.md) 完成 F2，不重写引擎。新增 `berry-ui/src/diagnostic.rs`：`Ui::layout_dump` 输出前序树、父子链、相对几何、视觉绝对界、内在尺寸与 layout/paint dirty 位；`Ui::hit_test_dump` 逐点输出 topmost 节点、种类与命中界。二者容量不足均 `UiError::NodeFull`，绝不静默截断。新增 `berry-ui/src/sdk.rs` 冻结 F4/F5 最小 facade。S7 `set_text` 改从 `TextProps.style.scale` 单源捕获字号档位。
+按 [GUI框架地基路线-v1.3.md](../../../docs/GUI框架地基路线-v1.3.md) 完成 F2，不重写引擎。新增 `berry-ui/src/diagnostic.rs`：`Ui::layout_dump` 输出前序树、父子链、相对几何、视觉绝对界、内在尺寸与 layout/paint dirty 位；`Ui::hit_test_dump` 逐点输出 topmost 节点、种类与命中界。二者容量不足均 `UiError::NodeFull`，绝不静默截断。新增 `berry-ui/src/sdk.rs` 冻结 F4/F5 最小 facade。S7 `set_text` 改从 `TextProps.style.scale` 单源捕获字号档位。
 
 ## Alternatives considered
 
@@ -24,4 +24,4 @@ F2 的布局/命中证据可与离屏 golden 同场景对拍；SDK 消费面由 
 ## Related
 
 - [BerryUI-F2核心盘点-v1.0.md](../../../docs/BerryUI-F2核心盘点-v1.0.md)
-- [GUI框架地基路线-v1.2.md](../../../docs/GUI框架地基路线-v1.2.md)
+- [GUI框架地基路线-v1.3.md](../../../docs/GUI框架地基路线-v1.3.md)

@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.2**｜2026-11-08
+> 版本：**1.3**｜2026-11-08
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -34,7 +34,7 @@ Browser / Settings / Files / Photos / Contacts 各自维护 WM client
 目标依赖方向固定为自上而下依赖、自下而上建设：
 
 ```text
-App：业务状态、数据读取、页面语义
+普通 App：业务状态、数据读取、页面语义
  ↓
 berry-ui：描述式 UI / 状态失效 / 布局 / 主题 / 组件
  ↓
@@ -43,6 +43,18 @@ berry-room：Berry Room 应用运行室（WM、窗口、frame、输入、生命�
 berry-gfx：纯光栅与字形绘制
  ↓
 gui-wmd / guifbd / gui-inputd：窗口、呈现、输入服务
+
+专业 App shell：BerryUI 面板/命令/属性/主题
+ ↓
+CanvasSurface / app document renderer
+ ↓
+berry-room surface / berry-gfx
+
+游戏或实时 App：自有 engine renderer 与游戏内 UI
+ ↓
+Berry Room immersive surface
+ ↓
+Berry Session composition
 ```
 
 禁止反向依赖：
@@ -66,6 +78,18 @@ App 不直接操作 channel、VMO、stride 或像素
 
 `berry-nshfont` 是五个迁移前 Native Shell 的临时客户端/基元集合。字形 VMO 映射已归 `berry-room`；F9 时绘制基元归 `berry-gfx`、文本与控件消费归 `berry-ui`，该 crate 删除，不得成为第三套 UI 框架。
 
+### 多形态 UI 契约
+
+BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合法路径：
+
+```text
+普通应用：BerryUI 组件集
+专业应用：BerryUI 外壳 + CanvasSurface + 应用文档渲染器
+游戏/实时应用：immersive surface + 应用/引擎自有 renderer
+```
+
+所有路径都必须经过 Berry Room 获得 surface/input 能力，并遵守 Berry Session 的窗口、焦点、输入、IME、无障碍、帧率、DPI/安全区、系统层序与进程清理契约。游戏和专业 canvas 可以绕过 BerryUI 控件，但不能直写屏、绕过焦点或私自持有系统资源。
+
 ## §2 地基优先里程碑
 
 每个里程碑有出口门；上一门未过，不得开下一门。唯一例外是修复当前镜像的阻断性缺陷，且修复不得新增 app 私有 UI 框架。
@@ -78,6 +102,7 @@ App 不直接操作 channel、VMO、stride 或像素
 | **F3 主题与基元** | 主题 token、排版、间距、圆角、阴影、颜色、按压/禁用/选中态；`berry-gfx` 基件单源化 | 同一描述在 800×600 与 1080×1920 得到正确布局；禁止 app 硬编码视觉常量 |
 | **F4 组件第一版** | Scaffold、AppBar、Card、Column、Row、Text、Icon、Button、ListItem、Switch、Divider、Scroll、EmptyState | 每组件有布局、状态、hit-test 与离屏视觉测试 |
 | **F5 UI 系统验收 app** | `uitest` 覆盖组件、主题、滚动、状态与返回栈 | 新 GUI 冒烟关卡同时验证标记、帧、截图像素、布局 dump 与输入命中 |
+| **P0 UI 形态与 Surface Mode 协议** | Surface role/mode、safe area、scale factor、input class、IME composition、a11y sidecar、canvas/immersive escape hatch 的协议词表与 host 编解码测试 | 一个系统契约承载普通/专业/游戏三路径；BerryUI 无特权；自绘路径仍不能直写屏或绕过焦点/输入/无障碍/帧率契约；P0 未过不得开 F6 |
 | **F6 Settings 迁移** | Settings 改为 `berry-room + berry-ui` | 源码不再出现 WM RPC、VMO 映射或像素绘制；真实状态切换与重绘行为不回退 |
 | **F7 Files/Contacts 迁移** | 列表/详情/收藏/文件读取迁到 UI SDK | READDIR/STAT/GET 真链保留；UI 与数据边界清晰 |
 | **F8 Photos/Browser 迁移** | 图像网格、查看页、URL pill、诚实状态页迁移 | 5000B 图像与 owner-local 输入真链保留 |
@@ -89,7 +114,7 @@ BUI 不进入 F4/F5 出口门：组件与 UI 系统验收 app 先使用 Rust typ
 
 ## §3 App 层边界
 
-F6 之后，新 GUI app 的合法形态只有：
+F6 之后，新的普通 BerryUI app 合法形态只有：
 
 ```text
 声明页面结构
@@ -97,6 +122,10 @@ F6 之后，新 GUI app 的合法形态只有：
 处理消息并更新状态
 调用获得授权的数据/系统能力
 ```
+
+专业应用与游戏必须走 P0 冻结的 CanvasSurface / immersive surface 词表：
+外壳或引擎可以自绘内容，但只能通过 Berry Room SDK 获得 surface/input/IME/
+无障碍/帧率能力，不能直接接触 syscall、WM RPC、frame stride 或全局屏写。
 
 App 源码禁止直接出现：
 
