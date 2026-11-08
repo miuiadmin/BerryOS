@@ -131,7 +131,7 @@ bash tools/smoke-image.sh out/berryos.img <AAVMF_CODE> <AAVMF_VARS>
 ## §5 边界
 
 - F2 不引入 Berry Design token；颜色/字号/圆角/间距的收敛面见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。
-- F2 不新增 Button/Card/Switch 组件；归 F4。
+- F2 不新增 Button/Card/Switch 组件；组件面见 [BerryUI-F4组件第一版-v1.0.md](BerryUI-F4组件第一版-v1.0.md)。
 - F2 不把 UITEST 扩成组件 showcase；归 F5。
 - F2 不迁移 Settings/Files/Contacts/Photos/Browser；归 F6..F8。
 - F2 不把 `berry-nshfont` 删除；该件仍只服务五个迁移前 Native Shell，F9 拆归 gfx/ui 后退役。

@@ -15,7 +15,7 @@
 use berry_ui::desc::{
     AstError, CircleProps, ColProps, DescBuilder, PadProps, Props, RectProps, RowProps, TextProps,
     TextStyle,
-    ViewKind, ViewSpec, KIND_COL, KIND_RECT, KIND_ROOT, KIND_TEXT,
+    ViewKind, ViewSpec, KIND_COL, KIND_PANEL, KIND_RECT, KIND_ROOT, KIND_TEXT,
 };
 use berry_ui::damage::RectI;
 use berry_ui::Ui;
@@ -222,9 +222,9 @@ fn rebuilt_tree_semantically_equivalent() {
 #[test]
 fn apply_reject_unknown_kind_and_flags() {
     let mut ui = Ui::<32>::new(100, 100);
-    // 未知 kind 字节（值域 0..=9：8=Grid、9=Circle——圆点指示器刀）
+    // 未知 kind 字节（F4 起 10=Panel；未知负例顺延 11）
     assert_eq!(ui.apply_desc(&[0x99, 0]), Err(AstError::UnknownKind { got: 0x99 }));
-    assert_eq!(ui.apply_desc(&[10, 0]), Err(AstError::UnknownKind { got: 10 }));
+    assert_eq!(ui.apply_desc(&[11, 0]), Err(AstError::UnknownKind { got: 11 }));
     // flags 未知位绊线（GUI-6 D5 改钉）：bit1/2/3 = SIZE/A11Y/ALIGN 合法化
     // 后，未知位域起点 = bit4（0x10 拒；0x80 拒保）；bit1 本体转
     // HAS_SIZE×Root 拒（§8.2 合法域表——UnknownProp 载 kind×块失配）。
@@ -234,6 +234,19 @@ fn apply_reject_unknown_kind_and_flags() {
         ui.apply_desc(&[KIND_ROOT, 0x02]),
         Err(AstError::UnknownProp { kind: ViewKind::Root, got: 0x02 }),
         "bit1 合法化后 0x02 不再落 UnknownFlags——HAS_SIZE×Root 由合法域表拒"
+    );
+    let mut panel_with_size = vec![KIND_PANEL, 0x02, 1, 2, 3];
+    panel_with_size.extend_from_slice(&u32::MAX.to_le_bytes());
+    panel_with_size.extend_from_slice(&u32::MAX.to_le_bytes());
+    panel_with_size.extend_from_slice(&4u32.to_le_bytes());
+    panel_with_size.extend_from_slice(&0u32.to_le_bytes());
+    panel_with_size.extend_from_slice(&0u32.to_le_bytes());
+    panel_with_size.extend_from_slice(&8u32.to_le_bytes());
+    panel_with_size.extend_from_slice(&8u32.to_le_bytes());
+    assert_eq!(
+        ui.apply_desc(&panel_with_size),
+        Err(AstError::UnknownProp { kind: ViewKind::Panel, got: 0x02 }),
+        "Panel 定尺寸已在 props 域，HAS_SIZE 双源歧义必须拒绝"
     );
 }
 

@@ -12,8 +12,9 @@
 //!         | align 块 1B?（flags.bit3）| child_count u8
 //! flags  := bit0 = has_key / bit1 = has_size / bit2 = has_a11y /
 //!           bit3 = has_align（bit4+ 未知 → UnknownFlags 拒）
-//! props  := kind 定长：Root 0B / Rect 11B / Text 变长(6..=9+len) /
-//!           Col·Row·Pad 4B / Image 10B / Icon 13B / Grid 7B（GUI-6 §8.1）
+//! props  := kind 定长：Root 0B / Rect·Circle 11B / Text 变长(6..=9+len) /
+//!           Col·Row·Pad 4B / Image 10B / Icon 13B / Grid 7B / Panel 23B
+//!           （GUI-6 §8.1 + F4 Panel）
 //! ```
 //!
 //! - `child_count` 是**树形走查域**（不属于节点本体）：[`parse_node`] 只
@@ -23,14 +24,15 @@
 //! - Col/Row/Pad 4B = gap/all u32 LE；Grid 7B = cols u8 + rows u8 +
 //!   gap u32 LE + cross u8（cross 在 props 块内——Grid 无 ALIGN 块，
 //!   §8.1 定长铁则）；Image 10B = res u16 LE + w/h 各 4B 哨兵对；
-//!   Icon 13B = id u16 LE + fg 3B + w/h 各 4B 哨兵对。
+//!   Icon 13B = id u16 LE + fg 3B + w/h 各 4B 哨兵对；Panel 23B =
+//!   bg 3B + w/h 哨兵对 + padding/gap/radius。
 //! - 扩展块序恒 SIZE→A11Y→ALIGN（§8 D5——解析/发射/builder 三面同序）；
 //!   size 块 8B = w/h 各 4B（`SIZE_NONE` 哨兵）；a11y 块 = role u8 +
 //!   len u8 + label ≤64B；align 块 1B = cross u8。**块在 ⟺ 有义**
 //!   （size 双 None / align 载 Stretch 缺省 = 非规范形拒——块存在性可
 //!   从 arena 状态推导，byte-exact roundtrip 的前提）。
 //! - 块×kind 合法域（§8.2 表）：SIZE 容器通则 Col/Row/Grid 合法（Text/
-//!   Image/Icon 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
+//!   Image/Icon/Panel 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
 //!   ALIGN 仅 Col/Row；A11Y 全 kind 合法（落点 = Ui 侧 a11y 表，D12）。
 //! - 旧流（v1 六 kind、flags ∈ {0,1}）逐字节不变——bit1/2/3 立法对
 //!   不立块的流零扰动（GOLDEN_V1 守卫）。
@@ -70,6 +72,7 @@ pub enum ViewKind {
     Icon,
     Grid,
     Circle,
+    Panel,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
@@ -145,6 +148,18 @@ pub struct GridProps {
     pub h: Option<u32>,
 }
 
+/// F4 可绘背景容器：纵向聚合子内容，四向 padding + 子间 gap，并可定宽高。
+/// 它是 Card/Button/ListItem/Scaffold 等组件的组合基元；bg 为不透明纯色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelProps {
+    pub bg: Color,
+    pub w: Option<u32>,
+    pub h: Option<u32>,
+    pub padding: u32,
+    pub gap: u32,
+    pub radius: u32,
+}
+
 /// 位图叶子属性（res = 资源 id——内容供给走 D28 icon/image 资源缝；
 /// w/h 哨兵对在 props 定长域内，**不吃 HAS_SIZE 块**——双源歧义拒）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +192,7 @@ pub enum Props {
     Icon(IconProps),
     Grid(GridProps),
     Circle(CircleProps),
+    Panel(PanelProps),
 }
 
 /// builder 入口（入口①）的单节点描述：`key != 0` = 调和键（v1 仅随
@@ -349,6 +365,7 @@ pub const KIND_IMAGE: u8 = 6;
 pub const KIND_ICON: u8 = 7;
 pub const KIND_GRID: u8 = 8;
 pub const KIND_CIRCLE: u8 = 9;
+pub const KIND_PANEL: u8 = 10;
 
 /// flags bit0 = has_key（v1）。
 pub const FLAG_HAS_KEY: u8 = 1;
@@ -392,6 +409,7 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::Icon => KIND_ICON,
         ViewKind::Grid => KIND_GRID,
         ViewKind::Circle => KIND_CIRCLE,
+        ViewKind::Panel => KIND_PANEL,
     }
 }
 
@@ -407,6 +425,7 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_ICON => Some(ViewKind::Icon),
         KIND_GRID => Some(ViewKind::Grid),
         KIND_CIRCLE => Some(ViewKind::Circle),
+        KIND_PANEL => Some(ViewKind::Panel),
         _ => None,
     }
 }
@@ -551,6 +570,18 @@ pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstEr
             c += put_u32le(&mut out[c..], p.w.unwrap_or(SIZE_NONE))?;
             c += put_u32le(&mut out[c..], p.h.unwrap_or(SIZE_NONE))?;
         }
+        // Panel 23B：bg3 + w/h 哨兵对 + padding/gap/radius。定尺寸在
+        // props 域，不吃 HAS_SIZE 块（与 Image/Icon 同一单源原则）。
+        Props::Panel(p) => {
+            c += put_u8(&mut out[c..], p.bg.r)?;
+            c += put_u8(&mut out[c..], p.bg.g)?;
+            c += put_u8(&mut out[c..], p.bg.b)?;
+            c += put_u32le(&mut out[c..], p.w.unwrap_or(SIZE_NONE))?;
+            c += put_u32le(&mut out[c..], p.h.unwrap_or(SIZE_NONE))?;
+            c += put_u32le(&mut out[c..], p.padding)?;
+            c += put_u32le(&mut out[c..], p.gap)?;
+            c += put_u32le(&mut out[c..], p.radius)?;
+        }
         // Grid 7B：cols/rows/gap/cross（cross 在 props 块内——Grid 无
         // ALIGN 块；w/h 由 emit 侧 HAS_SIZE 块另载，不在此域）
         Props::Grid(p) => {
@@ -689,6 +720,22 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
                 13,
             ))
         }
+        ViewKind::Panel => {
+            need(23)?;
+            let w = u32at(3);
+            let h = u32at(7);
+            Ok((
+                Props::Panel(PanelProps {
+                    bg: Color { r: src[0], g: src[1], b: src[2] },
+                    w: if w == SIZE_NONE { None } else { Some(w) },
+                    h: if h == SIZE_NONE { None } else { Some(h) },
+                    padding: u32at(11),
+                    gap: u32at(15),
+                    radius: u32at(19),
+                }),
+                23,
+            ))
+        }
         // Grid 7B：零维拒（GridZeroDims——定长域读完再语义检，截断优先）
         ViewKind::Grid => {
             need(7)?;
@@ -777,7 +824,7 @@ pub(crate) fn parse_node(
 /// Pad/Root 拒。Col/Row/Grid 块值落扩展字段；**Rect 为容读折入面**——
 /// 尺寸本在 props 定长域，块值折入 RectProps（块胜），再编码归一为
 /// 无块形式（builder 面拒 Rect+size，保双入口收敛——见 DescBuilder::size）。
-/// Image/Icon 拒 = 双源歧义；Text 拒 = TextProps 满载 Node 冻结无落位；
+/// Image/Icon/Panel 拒 = 双源歧义；Text 拒 = TextProps 满载 Node 冻结无落位；
 /// Pad/Root = 无定尺寸语义。合法域检在长检前（`[Root, 0x02]` 两字节即
 /// 拒 UnknownProp——拒因可钉）。块 = w/h 各 u32 LE 哨兵对；**双 None =
 /// 空载块拒**（规范形：块在 ⟺ 任一 Some——块存在性可从 arena 推导，
@@ -1301,6 +1348,11 @@ impl DescBuilder {
         self.begin(ViewKind::Icon, key, &Props::Icon(*props))
     }
 
+    /// Panel 开层捷径（F4 组件 / AST 双入口共核）。
+    pub fn begin_panel(&mut self, key: u64, props: &PanelProps) -> Result<(), AstError> {
+        self.begin(ViewKind::Panel, key, &Props::Panel(*props))
+    }
+
     /// 块落前置检（当前层可落块 = 已 begin 且未开首子——占位字节即流尾；
     /// 阶段序由位值序执法：块位值 1/2/4 = SIZE/A11Y/ALIGN 递增，已有
     /// **同级或更后**块再落即拒——dup 与乱序（如 A11Y 后补 SIZE）同面）。
@@ -1335,7 +1387,7 @@ impl DescBuilder {
     /// size 块（w/h 各 u32 LE 哨兵对）。合法域 = Col/Row/Grid（§8.2 表
     /// 生产面：Rect 容读折入面在 builder **拒**——builder 产规范流，
     /// Rect+size 块再编码不可逐字节复原，破双入口收敛；Text/Image/Icon/
-    /// Pad/Root 拒 = 解析面同表）。双 None 空载块拒（规范形）。
+    /// Panel/Pad/Root 拒 = 解析面同表）。双 None 空载块拒（规范形）。
     pub fn size(&mut self, w: Option<u32>, h: Option<u32>) -> Result<(), AstError> {
         let (kind, at) = self.block_pre(BLK_SIZE)?;
         match kind {

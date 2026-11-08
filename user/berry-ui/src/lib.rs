@@ -45,6 +45,7 @@ pub mod resample;
 pub mod sdk;
 pub mod swipe;
 pub mod telemetry;
+pub mod widgets;
 pub mod theme;
 pub mod utf8;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
@@ -300,6 +301,9 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
                 && x.cross == y.cross
                 && x.w == y.w
                 && x.h == y.h
+        }
+        (Props::Panel(x), Props::Panel(y)) => {
+            x.padding == y.padding && x.gap == y.gap && x.w == y.w && x.h == y.h
         }
         (Props::Image(x), Props::Image(y)) => x.res == y.res && x.w == y.w && x.h == y.h,
         (Props::Icon(x), Props::Icon(y)) => x.id == y.id && x.w == y.w && x.h == y.h,
@@ -597,7 +601,7 @@ impl<const N: usize> Ui<N> {
         let pidx = self.slot_of(parent)?;
         match self.nodes[pidx].as_ref().map(|n| n.kind) {
             Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad)
-            | Some(ViewKind::Grid) => {} // 容器白名单（Grid 入列——D24）
+            | Some(ViewKind::Grid) | Some(ViewKind::Panel) => {} // 容器白名单（Grid 入列——D24）
             // 叶四件显式列名（Rect/Text 原有 + Image/Icon 新叶）：容器位
             // 传叶子 → BadParent。Grid 格满/零维先验在 Root-子检后（段C
             // 已落——AST/builder/add/set_props 三面同律齐）。
@@ -818,6 +822,8 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Image, Props::Image(_)))
                 | Some((ViewKind::Icon, Props::Icon(_)))
                 | Some((ViewKind::Grid, Props::Grid(_)))
+                | Some((ViewKind::Circle, Props::Circle(_)))
+                | Some((ViewKind::Panel, Props::Panel(_)))
         );
         if !kind_ok {
             return Err(UiError::NodeBad);

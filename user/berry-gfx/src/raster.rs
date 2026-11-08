@@ -33,6 +33,10 @@ pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect
             let color = (paint.color.r, paint.color.g, paint.color.b);
             fill_circle(target, desc, rect, color, clip);
         }
+        Cmd::FillRoundRect { rect, radius, paint } => {
+            let color = (paint.color.r, paint.color.g, paint.color.b);
+            fill_round_rect(target, desc, rect, *radius, color, clip);
+        }
         Cmd::DrawLine { x0, y0, x1, y1, paint } => {
             let px = desc.format().pack(paint.color.r, paint.color.g, paint.color.b);
             line(target, desc, *x0, *y0, *x1, *y1, px, clip);
@@ -148,6 +152,38 @@ fn fill_circle(
         let mut x = vis.x;
         while x < x_end {
             let a = crate::surface::circle_coverage(cx, cy, radius, x, y);
+            if a != 0 {
+                blend_px(target, desc, clip, x, y, color.0, color.1, color.2, a);
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+/// 圆角矩形填充：3×3 coverage 单源，写点仍经 raster clip。
+fn fill_round_rect(
+    target: &mut [u8], desc: &TextureDesc, rect: &Rect, radius: u32,
+    color: (u8, u8, u8), clip: &Rect,
+) {
+    // AA 边带可落在名义 rect 外 1px；直接表面路径同口径写 halo。
+    let halo = Rect::new(
+        rect.x.saturating_sub(1),
+        rect.y.saturating_sub(1),
+        rect.w.saturating_add(2),
+        rect.h.saturating_add(2),
+    );
+    let Some(vis) = halo.intersect(clip) else { return };
+    let radius_i64 = i64::from(radius).min(i64::from(rect.w) / 2).min(i64::from(rect.h) / 2);
+    let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
+    let mut y = vis.y;
+    while y < y_end {
+        let mut x = vis.x;
+        while x < x_end {
+            let a = crate::surface::round_rect_coverage(
+                i64::from(rect.x), i64::from(rect.y), i64::from(rect.w), i64::from(rect.h),
+                radius_i64, x, y,
+            );
             if a != 0 {
                 blend_px(target, desc, clip, x, y, color.0, color.1, color.2, a);
             }

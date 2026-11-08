@@ -237,6 +237,12 @@ pub enum Cmd<'a> {
         rect: Rect,
         paint: PaintDesc,
     },
+    /// 抗锯齿圆角矩形填充；radius 由回放期夹到宽高半值。
+    FillRoundRect {
+        rect: Rect,
+        radius: u32,
+        paint: PaintDesc,
+    },
     /// 整数 Bresenham 线（无浮点；端点任意 i32，出界裁剪）。巨跨度
     /// 带窗有界——迭代上界 = 帧带宽 + 2（`raster::line` 模块注；i32
     /// 域极值端点与本帧短段同阶完成）。
@@ -358,6 +364,13 @@ impl<'a> CommandEncoder<'a> {
         self.record(Cmd::FillCircle { rect, paint: PaintDesc { color } })
     }
 
+    /// 抗锯齿圆角矩形填充。
+    pub fn fill_round_rect(
+        &mut self, rect: Rect, radius: u32, color: Color,
+    ) -> Result<(), CmdError> {
+        self.record(Cmd::FillRoundRect { rect, radius, paint: PaintDesc { color } })
+    }
+
     /// 整数线。
     pub fn draw_line(
         &mut self,
@@ -413,7 +426,9 @@ impl Default for CommandEncoder<'_> {
 /// 命令携带矩形的提取（BadRect 先验的执法点；无矩形命令返 None）。
 fn rect_of<'a>(cmd: &'a Cmd<'_>) -> Option<&'a Rect> {
     match cmd {
-        Cmd::FillRect { rect, .. } | Cmd::FillCircle { rect, .. } => Some(rect),
+        Cmd::FillRect { rect, .. }
+        | Cmd::FillCircle { rect, .. }
+        | Cmd::FillRoundRect { rect, .. } => Some(rect),
         Cmd::Blit { src, .. } => Some(src),
         Cmd::Present { rect } => Some(rect),
         Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } | Cmd::DrawImage { .. } => None,

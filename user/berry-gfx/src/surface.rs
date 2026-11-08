@@ -68,6 +68,25 @@ pub(crate) fn circle_coverage(cx: i64, cy: i64, radius: i64, x: i32, y: i32) -> 
     ((hits * 255) / 9) as u8
 }
 
+/// 单像素 3×3 超采样覆盖率（raster 命令路径与直接 XRGB 路径共用）。
+pub(crate) fn round_rect_coverage(
+    x: i64, y: i64, w: i64, h: i64, r: i64, px: i32, py: i32,
+) -> u8 {
+    let radius = r.min(w / 2).min(h / 2);
+    let (gx, gy, gw, gh, gr) = (x, y, w, h, radius);
+    let mut hits = 0usize;
+    for sy in 0..3i64 {
+        for sx in 0..3i64 {
+            let sample_x = i64::from(px).saturating_mul(3).saturating_add(sx * 2 + 1);
+            let sample_y = i64::from(py).saturating_mul(3).saturating_add(sy * 2 + 1);
+            if rounded_inside(gx * 3, gy * 3, gw * 3, gh * 3, gr * 3, sample_x, sample_y) {
+                hits += 1;
+            }
+        }
+    }
+    ((hits * 255) / 9) as u8
+}
+
 fn rounded_inside(
     x: i64, y: i64, w: i64, h: i64, r: i64, px: i64, py: i64,
 ) -> bool {
@@ -101,49 +120,15 @@ pub fn fill_round_rect_xrgb(
     let radius = radius.min(w / 2).min(h / 2);
     let x1 = x.saturating_add(w);
     let y1 = y.saturating_add(h);
-    let to_i64 = |v: usize| i64::try_from(v).ok();
-    let (Some(gx), Some(gy), Some(gw), Some(gh), Some(gr)) =
-        (to_i64(x), to_i64(y), to_i64(w), to_i64(h), to_i64(radius)) else {
-            return;
-    };
-    let (Some(gx3), Some(gy3), Some(gw3), Some(gh3), Some(gr3)) = (
-        gx.checked_mul(3), gy.checked_mul(3), gw.checked_mul(3),
-        gh.checked_mul(3), gr.checked_mul(3),
-    ) else {
-        return;
-    };
-    let inner_x0 = x.saturating_add(radius);
-    let inner_x1 = x1.saturating_sub(radius);
-    let inner_y0 = y.saturating_add(radius);
-    let inner_y1 = y1.saturating_sub(radius);
     for py in y.saturating_sub(1)..y1.saturating_add(1) {
-        'px: for px in x.saturating_sub(1)..x1.saturating_add(1) {
-            if px >= inner_x0 && px < inner_x1 && py >= inner_y0 && py < inner_y1
-            {
-                blend_xrgb(fb, stride, px, py, color, 255);
-                continue;
+        for px in x.saturating_sub(1)..x1.saturating_add(1) {
+            let a = round_rect_coverage(
+                x as i64, y as i64, w as i64, h as i64, radius as i64,
+                px as i32, py as i32,
+            );
+            if a != 0 {
+                blend_xrgb(fb, stride, px, py, color, a);
             }
-            let mut hits = 0usize;
-            for sy in 0..3i64 {
-                for sx in 0..3i64 {
-                    let Some(base_x) = i64::try_from(px).ok().and_then(|v| v.checked_mul(3)) else {
-                        continue;
-                    };
-                    let Some(base_y) = i64::try_from(py).ok().and_then(|v| v.checked_mul(3)) else {
-                        continue;
-                    };
-                    let sample_x = base_x.saturating_add(sx * 2 + 1);
-                    let sample_y = base_y.saturating_add(sy * 2 + 1);
-                    if rounded_inside(gx3, gy3, gw3, gh3, gr3, sample_x, sample_y) {
-                        hits += 1;
-                    }
-                }
-            }
-            if hits == 0 {
-                continue 'px;
-            }
-            let a = ((hits * 255) / 9) as u8;
-            blend_xrgb(fb, stride, px, py, color, a);
         }
     }
 }

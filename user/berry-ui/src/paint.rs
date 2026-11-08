@@ -233,7 +233,8 @@ fn cull_walk(
     // 子格各自发射）；Image/Icon = 可见叶（§4.3——Text 同列走查，
     // 恒不计遮挡源）。
     match n.kind {
-        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle => {}
+        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle
+        | ViewKind::Panel => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -246,7 +247,12 @@ fn cull_walk(
         *culled += 1; // §3.5：可见区空 → skip（culled++）
         return;
     }
-    if n.kind == ViewKind::Rect {
+    let opaque_panel = match (&n.kind, &n.props) {
+        (ViewKind::Rect, _) => true,
+        (ViewKind::Panel, Props::Panel(p)) => p.radius == 0,
+        _ => false,
+    };
+    if opaque_panel {
         covered.add(vis); // 实心不透明才计遮挡源（Text 蜂格有洞不计；Image/Icon 恒不计遮挡源——§4.3）
     }
     if *n_order < ORDER_CAP {
@@ -290,7 +296,8 @@ fn emit_walk_all<'a>(
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
     match n.kind {
-        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle => {
+        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle
+        | ViewKind::Panel => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
@@ -355,6 +362,17 @@ fn emit_node<'a>(
                 )
                 .is_ok()
             {
+                rep.cmds += 1;
+            }
+        }
+        Props::Panel(p) => {
+            let rect = GfxRect::new(b.x, b.y, b.w, b.h);
+            let ok = if p.radius == 0 {
+                enc.fill_rect(rect, p.bg).is_ok()
+            } else {
+                enc.fill_round_rect(rect, p.radius, p.bg).is_ok()
+            };
+            if ok {
                 rep.cmds += 1;
             }
         }

@@ -90,6 +90,12 @@ pub enum RadiusToken {
     Large,
 }
 
+/// 线宽 token。Thin 以 half-vp 存储时在 @2x/@3x 分别折 1px/2px。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrokeToken {
+    Thin,
+}
+
 /// 排版 token。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypographyToken {
@@ -164,6 +170,10 @@ impl Theme {
         ThemeMetrics::new(density).typography(token)
     }
 
+    pub const fn stroke(&self, density: Density, token: StrokeToken) -> u32 {
+        ThemeMetrics::new(density).stroke(token)
+    }
+
     pub const fn metrics_for_viewport(&self, w: u32, h: u32) -> ThemeMetrics {
         let density = Density::for_viewport(w, h);
         ThemeMetrics { density }
@@ -199,6 +209,12 @@ impl ThemeMetrics {
             RadiusToken::Large => 64,
         };
         (quarter * self.density.px() + 2) / 4
+    }
+
+    pub const fn stroke(self, token: StrokeToken) -> u32 {
+        match token {
+            StrokeToken::Thin => self.density.px().div_ceil(2),
+        }
     }
 
     pub const fn typography(self, token: TypographyToken) -> FontSize {
@@ -242,6 +258,7 @@ mod tests {
         );
         assert_eq!(compact.typography(TypographyToken::Body), FontSize::S16x32);
         assert_eq!(product.typography(TypographyToken::Body), FontSize::S32x48);
+        assert_eq!((compact.stroke(StrokeToken::Thin), product.stroke(StrokeToken::Thin)), (1, 2));
     }
 
     #[test]

@@ -19,7 +19,7 @@
 //!
 //! # v1 操作集边界（规划钦定最小面，防过度设计）
 //!
-//! fill_rect / line / blit（纹理内区域拷贝）/ glyph-run / draw_image
+//! fill_rect / fill_circle / fill_round_rect / line / blit（纹理内区域拷贝）/ glyph-run / draw_image
 //! （段②：单色位图图像/图标——与字形同一位法）/ present——fbcon 六
 //! 原语超集 + 文本/图像位；AA/宽色域/compute/3D 可后补。像素语义
 //! 与 berry-fbcon `render.rs` 共识契约逐位同（u32 小端 `to_le_bytes`

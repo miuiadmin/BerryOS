@@ -1,7 +1,8 @@
 //! berry-ui 布局引擎（GUI-3——`docs/GUI-3实施设计草案.md` §3.3）。
 //!
 //! - **单遍自顶向下**：容器分配子界——Col/Row 累进游标 + gap；Pad 四
-//!   向内缩；Root = viewport 持有者。叶子尺寸 = 定值（`Option<u32>`，
+//!   向内缩；Panel = 可绘背景 + padding/gap 的纵向内容容器；Root =
+//!   viewport 持有者。叶子尺寸 = 定值（`Option<u32>`，
 //!   None = 随父——主轴 None 的 Rect 折内在 0，十字轴 None = 吃满容
 //!   器分配）或内在（Text = `len × cell`——`FontSize::cell_w/cell_h`
 //!   单源，ch u8 字节推进）。
@@ -313,6 +314,15 @@ fn intrinsic(
             let h = p.h.map(|v| v as u64).unwrap_or(h);
             (u64_to_u32_sat(w), u64_to_u32_sat(h))
         }
+        Props::Panel(p) => {
+            let (mut w, mut h, k) = child_agg(nodes, n.first_child, true);
+            w = w.saturating_add(2u64 * p.padding as u64);
+            h = h.saturating_add(2u64 * p.padding as u64)
+                .saturating_add(p.gap as u64 * k.saturating_sub(1).max(0) as u64);
+            let w = p.w.map(|v| v as u64).unwrap_or(w);
+            let h = p.h.map(|v| v as u64).unwrap_or(h);
+            (u64_to_u32_sat(w), u64_to_u32_sat(h))
+        }
         Props::Image(p) => icon_dims(icons, p.res, p.w, p.h),
         Props::Icon(p) => icon_dims(icons, p.id, p.w, p.h),
     }
@@ -404,7 +414,8 @@ fn snapshot(
 
 /// 节点终值尺寸（给定容器分配 avail）：十字轴随父、主轴内在——
 /// Rect None 随父、Text 内在、Col/Row 主轴内在十字轴吃满、Pad/Root
-/// 整体吃满分配。段C（§4.1/§4.3）：Col/Row/Grid 的 HAS_SIZE 定尺寸
+/// 整体吃满分配；Panel 宽随父、高随内容，定值覆盖 avail。段C
+/// （§4.1/§4.3）：Col/Row/Grid 的 HAS_SIZE 定尺寸
 /// 优先于 avail（定尺寸覆盖一切）；Grid = 随父型子（Col 同形——十字
 /// 吃 avail、纵轴内在）；Image/Icon = 内在型叶恒内在（Some 定值 /
 /// None = dims 折入 meas），**不吃 avail**（§4.1 豁免行——十字轴拉
@@ -431,6 +442,10 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         ),
         Props::Pad(_) => (avail_w, avail_h),
         Props::Grid(p) => (
+            p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
+            p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
+        ),
+        Props::Panel(p) => (
             p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
             p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
         ),
@@ -600,6 +615,26 @@ fn place_children(
                     recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cursor += cw as i64 + gap;
+                cur = next;
+            }
+        }
+        Props::Panel(p) => {
+            let inset = u32_to_i32_sat(p.padding);
+            let cw = (w as i64 - 2 * inset as i64).max(0);
+            let mut cursor = inset as i64;
+            let mut cur = first;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                let next = c.next_sib;
+                let child_h = u32_to_i32_sat(c.meas_h);
+                place(
+                    nodes, cur, ncx, ncy, inset, i64_to_i32_sat(cursor),
+                    i64_to_i32_sat(cw), child_h, force_kids, recomputed, old_abs, vp,
+                    damage, placed, hops + 1,
+                );
+                cursor += child_h as i64 + p.gap as i64;
                 cur = next;
             }
         }
