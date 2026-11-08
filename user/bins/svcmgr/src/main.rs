@@ -176,11 +176,22 @@ const PAGER_REQ_INIT: PagerReq = PagerReq {
 /// = reg false → berry-exec 逐窗回退 eager，不阻塞不等待）。
 static PAGER_REQS: [PagerReq; PAGER_SLOTS] = [PAGER_REQ_INIT; PAGER_SLOTS];
 
-/// pager_main 扫供圈数（X-5 停摆分拣仪）：踢门时前后各快照一次。定谳
-/// （repro4，2026-11-08）：**冻结** = pager 用户态楔死（S2——本轮实测未现）；
-/// **爬升** = pager 活着——停摆根因 = 0x23 全局取臂与 walk 问窗错位的
-/// 失配消耗舞（kick rc=-22 三发全一），非楔死。Relaxed 纯取证计数，无同步语义。
+/// pager_main 扫供圈数（X-5 停摆分拣仪）：踢门时前后各快照一次。X-6 锚窗
+/// 泊车起判读基线重标：锚序圈 + 池空时 0x23 常驻泊键（醒 = 有臂落地）→
+/// sw 爬率大降，词义不变——**爬升仍 = pager 活着、冻结仍 = 用户态楔死**
+/// （S2 实测未现；停摆根因词面见 stall_kick 分拣仪注）。停摆签名新形态
+/// （post-72e5789 语义，非 X-6 引入）：stall_kick 自身 0x23 在池空时亦泊
+/// 键——kick 瞬间池空 + 子死 + 无新 arm 时 kick 任务冻在内核，签名从
+/// 「no EOF」变「全标记冻结」（loud fail 可接受，防未来误诊）。Relaxed
+/// 纯取证计数，无同步语义。
 static PAGER_SWEEPS: AtomicU64 = AtomicU64::new(0);
+
+/// X-6 刀0 吞吐仪器：0x23 供给成功（rc==0）累计页数；boot 验证成功点恰
+/// 三处（hello/hexyl/boot 尾——bench 冻结词形，见 x6_mark）观测行
+/// `X6 pg=N sw=M` 的 pg 取值处（sw = 上邻 PAGER_SWEEPS；行不带钟——页/s
+/// 的钟 = 宿主侧 marker 到达时戳）。Relaxed 纯取证计数，无同步语义
+/// （pager 任务写 / 主任务观测行读）。
+static PAGER_SUPPLIED: AtomicU64 = AtomicU64::new(0);
 
 /// berry-exec 注册钩子（X-5 逐窗）：找空槽 Relaxed 填三值 → `active`
 /// Release 发布；返 false = 槽满（调用方回滚已注窗走 eager）。
@@ -217,10 +228,16 @@ fn pager_unregister(dv: Handle) {
 /// ——kernel/src/main.rs X-3c-1 同值双改）。恒扫供给环：每活槽一供
 /// 0x23(dv, sv, delta)——file 窗 = rootfs 恒等供给、零窗 = sv 0 内核零页
 /// 臂（X-5 逐窗化；X-3c 的 dvf/dvz 双供对拆成两槽单供）。
-/// 返值忽略：EINVAL = 本窗无武装臂（X-5 过滤取刀 72e5789 起 `el0_take_for`
+/// X-6 锚窗扫圈：锚 = 最近供给命中槽（fn 内局部，boot 首供前无锚）——每圈
+/// 锚槽最先、其余按锚+1 环绕原方向续扫；纯排序启发式，槽注销/复用无不变量
+/// 要求，走查自愈；泊车全由内核池空 0x23 阻塞承担（本刀零新增用户态睡/
+/// 唤醒——与被否决 NoneForVd-睡变体的本质区别：池空 = 无任何等供者，睡
+/// 无饿他风险）。
+/// 返值入账：rc==0 = 供上 1 页（PAGER_SUPPLIED 计数 + 锚更新本槽）；非 0
+/// 忽略推进——EINVAL = 本窗无武装臂（X-5 过滤取刀 72e5789 起 `el0_take_for`
 /// 只取属本 dv 的臂——他窗臂在池不烧不扰，-22 = NoneForVd 快跳推进；
 /// 刀前旧语义「全局取货错配烧臂」= repro4 定谳的失配消耗舞，已灭）或
-/// 陈旧槽（close 后句柄 EBADF），推进即自愈；无请求时 0x23 阻塞收货
+/// 陈旧槽（close 后句柄 EBADF），走查即自愈；无请求时 0x23 阻塞收货
 /// （内核 EL0 pager 键，u64::MAX 帽 = 空闲 pager 零 CPU），全槽空才小睡。
 /// **函数名 ≠ 段名**（dpgi_start/dpgi_entry 同款纪律）：dotless link_section
 /// 与 no_mangle 符号同名 = rustc fat-LTO 双定义撞车（首版实踩：changed
@@ -229,6 +246,9 @@ fn pager_unregister(dv: Handle) {
 #[link_section = "pager_entry"]
 #[no_mangle]
 pub extern "C" fn pager_main() -> ! {
+    // X-6 锚窗：最近供给命中槽（PAGER_REQS 索引）。Option 因 boot 首供前
+    // 无锚；槽注销/复用不要求锚有效（miss 即走查自愈，下一 rc==0 归位）。
+    let mut anchor: Option<usize> = None;
     loop {
         PAGER_SWEEPS.fetch_add(1, Ordering::Relaxed);
         // 让位闸（X-3c-3）：dpg 自供族在跑 = 本 pager 静默（零供给调用，
@@ -241,7 +261,13 @@ pub extern "C" fn pager_main() -> ! {
             continue;
         }
         let mut any = false;
-        for slot in PAGER_REQS.iter() {
+        // 锚序扫圈（X-6）：圈首快照锚——圈中命中再锚只作下一圈起点（迭代
+        // 内活读锚 = 新锚跳位与 i 递增双跳叠加，会跳槽/重复探测）。锚槽
+        // 最先，其余按锚+1 环绕原方向续扫；无锚 = start 0，恰今日 0..N 序。
+        let start = anchor.unwrap_or(0);
+        for i in 0..PAGER_SLOTS {
+            let idx = (start + i) % PAGER_SLOTS;
+            let slot = &PAGER_REQS[idx];
             if !slot.active.load(Ordering::Acquire) {
                 continue;
             }
@@ -249,7 +275,12 @@ pub extern "C" fn pager_main() -> ! {
             let dv = slot.dv.load(Ordering::Relaxed) as Handle;
             let sv = slot.sv.load(Ordering::Relaxed) as Handle;
             let delta = slot.delta.load(Ordering::Relaxed);
-            let _ = berry_pager_supply_mapped(dv, sv, delta);
+            // X-6 rc 入账：0 = 供上 1 页（吞吐计数 + 锚更新）；非 0 同今日
+            // 语义忽略推进（-22 = NoneForVd 快跳 / -9 EBADF = 陈旧槽，自愈）。
+            if berry_pager_supply_mapped(dv, sv, delta) == 0 {
+                PAGER_SUPPLIED.fetch_add(1, Ordering::Relaxed);
+                anchor = Some(idx);
+            }
         }
         if !any {
             let mut t = 0u64;
@@ -1522,7 +1553,9 @@ fn run_rootfs_child(console: Handle) {
                         // hello 常驻（10s 周期睡眠不回收）——入账。
                         Ok(_) => {
                             ps_reg(b"hello", psp::STATE_ALIVE, 0);
-                            send_retry(console, ECO_OK.as_ptr(), ECO_OK.len())
+                            send_retry(console, ECO_OK.as_ptr(), ECO_OK.len());
+                            // X-6 观测行（hello = 最小 demand bin）。
+                            x6_mark(console)
                         }
                         Err(()) => {
                             ps_reg(b"hello", psp::STATE_SPAWNFAIL, 0);
@@ -1969,6 +2002,11 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
+    // X-6 观测行（boot 尾点）：走查 + app 批毕——尾窗（simbattery/vprobe/
+    // app 批拉页）至此收口。恰 {hello, hexyl, 尾} 三点对齐 bench 冻结词形
+    // 契约（stdhello/U1 在首行前 = 黑暗基线不发）；walk 早退降级路径不经
+    // 此（该 boot 本已 FAIL，行数即证据）。
+    x6_mark(console);
 }
 
 // ---- C-3 段①：ps 查询 RPC——拉起账本（表驱动真值源）+ ps_selftest ----
@@ -4429,6 +4467,9 @@ fn verify_hexyl(h: Handle, console: Handle) {
     }
     if got == HEXYL_PLAIN.len() && cap[..got] == HEXYL_PLAIN[..got] {
         send_retry(console, b"HEXYL ok\n".as_ptr(), 9);
+        // X-6 观测行（hexyl = demand 面主消费者——clap/fmt 链 ~150-250 页，
+        // 装载期末 pg/sw 快照即吞吐判读锚）。
+        x6_mark(console);
     } else {
         // 首差诊断行（hex4 两数：got/want 长度；逐字节定位交给离线复盘）
         let mut line = *b"hexyl mismatch got=0000 want=0000\n";
@@ -4846,6 +4887,25 @@ fn push_dec(line: &mut [u8], len: usize, mut v: u64) -> usize {
         line[len + i] = tmp[t - 1 - i];
     }
     len + t
+}
+
+/// X-6 刀0 观测行发射：单行原子 `X6 pg=<供给页数> sw=<扫圈数>`（stall_kick
+/// 行组装同形——[0u8;72] 帽 + copy_from_slice 定宽前缀 + push_dec 多位十
+/// 进制 + 显式换行单发）。恰三点（hello/hexyl/boot 尾各一——bench 冻结
+/// 词形契约；stdhello/U1 在首行前 = 黑暗基线不发）；x5_foot/dpg 相位不经
+/// boot 验证环，发射点天然零发射；行不带钟——页/s 的钟 = 宿主侧 marker
+/// 到达时戳（设计 §5）。
+fn x6_mark(console: Handle) {
+    let mut line = [0u8; 72];
+    line[..6].copy_from_slice(b"X6 pg=");
+    let mut len = 6usize;
+    len = push_dec(&mut line, len, PAGER_SUPPLIED.load(Ordering::Relaxed));
+    line[len..len + 4].copy_from_slice(b" sw=");
+    len += 4;
+    len = push_dec(&mut line, len, PAGER_SWEEPS.load(Ordering::Relaxed));
+    line[len] = b'\n';
+    len += 1;
+    send_retry(console, line.as_ptr(), len);
 }
 
 fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<(i32, usize)> {
