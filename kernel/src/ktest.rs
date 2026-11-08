@@ -70,6 +70,9 @@ pub fn run() {
     test_em();
     // v1.3 §6/§7 EAS：per-CPU util EWMA（调度器→PM 频率信号；同款末位新号）。
     test_util();
+    // v1.3 §9 真机框架：HDR 直方图（对数线性桶 + 分位 + per-CPU/合并读面；
+    // 同款末位新号——sched::init 前跑，纯原子静态无 CURRENT 面，ktest 窗合法）。
+    test_hdr();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -5940,6 +5943,130 @@ fn test_util() {
     }
 
     berry_hal_aarch64::uart_puts(b"UTIL ok\n");
+}
+
+/// v1.3 §9 真机框架：HDR 直方图（`sched/src/hdr.rs` 最小版）——①桶形状
+/// 端点锚 + 值→桶映射全域钉板（保守上界 + 桶宽误差界）；②record/极值/
+/// 分位累计秩（1..=100 各一记：rank k ⇔ 样本 k，<64 精确/≥64 保守上界）；
+/// ③钳位口径（超值域样本桶面入顶桶、极值面记原值 = 失真信号）；④per-CPU
+/// 槽隔离 + 跨核合并读面（ktest 单核窗：CPU0 走热路径助手，CPU1 槽直索引
+/// ——写方限本核是生产纪律，测试直索引不破形状断言）。
+fn test_hdr() {
+    use berry_sched::hdr::{
+        bucket_of, bucket_upper, cpu_hdr, cpu_reset, merged_max, merged_min, merged_percentile,
+        merged_total, record_switch_lat, Hdr, LatKind, HDR_BUCKETS, HDR_MAX_VALUE,
+        HDR_NR_CPU, HDR_OVERFLOW, HDR_SUB,
+    };
+
+    // —— HDR-0：形状常量 + 桶上界端点锚（尺寸/对齐钉板在 hdr.rs 编译期）。
+    assert_eq!(HDR_BUCKETS, 897, "HDR：桶数须 28×32+1 = 897");
+    assert_eq!(HDR_OVERFLOW, 896, "HDR：溢出桶下标锚");
+    assert_eq!(HDR_MAX_VALUE, (1u64 << 28) - 1, "HDR：值域上界 2^28−1");
+    assert_eq!(HDR_SUB, 32, "HDR：每八度子桶数锚");
+    assert_eq!(bucket_of(0), 0, "HDR：v=0 防御归桶 0（record 早退不至此）");
+    assert_eq!(bucket_upper(0), 1, "HDR：桶 0 上界 = 1（值 1 精确）");
+    assert_eq!(bucket_upper(HDR_BUCKETS - 2), HDR_MAX_VALUE, "HDR：顶桶上界 = 值域顶");
+    assert_eq!(bucket_upper(HDR_OVERFLOW), u64::MAX, "HDR：溢出桶上界哨兵");
+
+    // —— HDR-B：值→桶映射全域钉板。低值 1..=2^16 逐值 + 每八度边界 ±1/
+    //   中部/子桶边界（2^28 全域 2.7 亿次 TCG 不可行——八度内映射是线性
+    //   平移，端点钉住即全域钉住）。断言三条：idx 不落溢出位；上界保守
+    //   （≥ v）；上界差 < 桶宽（相对精度 1/32 的逐值兑现）。
+    fn check(v: u64) {
+        let idx = bucket_of(v);
+        assert!(idx < HDR_OVERFLOW, "HDR-B：v={v} 桶 {idx} 须 < 溢出位");
+        let b = bucket_upper(idx);
+        assert!(b >= v, "HDR-B：v={v} 上界 {b} 须保守 ≥ v");
+        let oct = 63 - v.leading_zeros();
+        let width = if oct >= 5 { 1u64 << (oct - 5) } else { 1 };
+        assert!(b - v < width, "HDR-B：v={v} 上界差 {} 须 < 桶宽 {width}", b - v);
+    }
+    for v in 1..=(1u64 << 16) {
+        check(v);
+    }
+    for oct in 0..28u32 {
+        let base = 1u64 << oct;
+        check(base); // 八度底
+        if base > 1 {
+            check(base - 1); // 前八度顶
+        }
+        check((base << 1) - 1); // 本八度顶（oct=27 → 值域顶）
+        check(base + (base >> 5)); // 八度中部样本
+        check(base + (1u64 << (oct.max(5) - 5)) - 1); // 子桶 0 上界 −1
+    }
+
+    // —— HDR-1：record/total/min/max + 分位累计秩（本地静态实例——3.6KB
+    //   不吃栈；static 非 mut 纯原子，零 unsafe 不入 writable_globals 册）。
+    static H: Hdr = Hdr::new();
+    assert_eq!(H.total(), 0, "HDR-1：出生态零样本");
+    assert_eq!(H.percentile(500), 0, "HDR-1：零样本分位须 0（非 panic）");
+    assert_eq!(H.min_value(), u64::MAX, "HDR-1：零样本 min 哨兵");
+    assert_eq!(H.max_value(), 0, "HDR-1：零样本 max 0");
+    H.record(0); // 值域外静默拒
+    assert_eq!(H.total(), 0, "HDR-1：v=0 须静默拒");
+    for v in 1..=100u64 {
+        H.record(v);
+    }
+    assert_eq!(H.total(), 100, "HDR-1：total");
+    assert_eq!(H.min_value(), 1, "HDR-1：min");
+    assert_eq!(H.max_value(), 100, "HDR-1：max");
+    // 1..=100 各一记：rank k ⇔ 样本 k；v < 64 桶宽 1 → 分位精确；
+    // v = 100 落桶宽 2 桶 [100,102) → 保守上界 101。
+    assert_eq!(H.percentile(0), 1, "HDR-1：pm=0 → 首样本（精确）");
+    assert_eq!(H.percentile(500), 51, "HDR-1：p50 → 第 51 小 = 51（精确）");
+    assert_eq!(H.percentile(990), 101, "HDR-1：p99 → 第 100 小 = 100，保守上界 101（桶宽 2）");
+    assert_eq!(H.percentile(1000), 101, "HDR-1：p100 同 p99（rank 帽 N）");
+    assert_eq!(H.percentile_rank(1), 1, "HDR-1：rank 直取首样本");
+    assert_eq!(H.percentile_rank(0), 1, "HDR-1：rank=0 帽到 1");
+    assert_eq!(H.percentile_rank(u64::MAX), 101, "HDR-1：rank 越界帽到 N");
+    assert_eq!(H.bucket(bucket_of(100)), 1, "HDR-1：单桶读（值 100 桶恰一记）");
+    assert_eq!(H.bucket(HDR_BUCKETS), 0, "HDR-1：越界桶读 0");
+
+    // —— HDR-2：钳位口径（超值域样本：桶面钳位入顶桶 895、极值面记原值
+    //   ——max 超 HDR_MAX_VALUE 即「长尾被 4.3s 封顶吃掉」的失真信号）。
+    H.record(u64::MAX);
+    assert_eq!(H.total(), 101, "HDR-2：钳位样本照常计数");
+    assert_eq!(H.max_value(), u64::MAX, "HDR-2：max 记原值（失真信号）");
+    assert_eq!(bucket_of(u64::MAX), HDR_BUCKETS - 2, "HDR-2：钳位落顶桶 895（不落溢出位）");
+    assert_eq!(H.percentile(1000), HDR_MAX_VALUE, "HDR-2：p100 落顶桶 → 值域顶上界");
+    H.reset();
+    assert_eq!(H.total(), 0, "HDR-2：reset 回出生态");
+    assert_eq!(H.percentile(999), 0, "HDR-2：reset 后零样本分位 0");
+    assert_eq!(H.min_value(), u64::MAX, "HDR-2：reset 后 min 回哨兵");
+
+    // —— HDR-3：per-CPU 槽隔离 + 跨核合并（§9「p99 跨核怎么并」最小答案
+    //   = 桶位直和）。清场先行——ktest 前无写者，理论零态，reset 双保险。
+    cpu_reset(0);
+    cpu_reset(1);
+    for v in 1..=10u64 {
+        record_switch_lat(v); // cpu_id()=0（ktest 单核窗）→ CPU0 槽
+    }
+    let c1 = cpu_hdr(1).expect("HDR-3：CPU1 槽须在");
+    for v in 11..=20u64 {
+        c1.switch_lat.record(v); // 测试面直索引 CPU1 槽
+    }
+    let c0 = cpu_hdr(0).expect("HDR-3：CPU0 槽须在");
+    assert_eq!(c0.switch_lat.total(), 10, "HDR-3：CPU0 槽隔离（1..=10）");
+    assert_eq!(c1.switch_lat.total(), 10, "HDR-3：CPU1 槽隔离（11..=20）");
+    assert_eq!(c0.switch_lat.min_value(), 1, "HDR-3：CPU0 min");
+    assert_eq!(c1.switch_lat.max_value(), 20, "HDR-3：CPU1 max");
+    assert_eq!(c0.wake_lat.total(), 0, "HDR-3：同槽双路隔离（wake 未触）");
+    assert!(cpu_hdr(HDR_NR_CPU).is_none(), "HDR-3：越界槽须 None");
+    assert_eq!(merged_total(LatKind::Switch), 20, "HDR-3：合并 total = Σ各核");
+    // 合并 1..=20 各一记：rank k ⇔ 样本 k（v < 32 全精确）。
+    assert_eq!(merged_percentile(LatKind::Switch, 500), 11, "HDR-3：合并 p50 → 第 11 小 = 11");
+    assert_eq!(merged_percentile(LatKind::Switch, 999), 20, "HDR-3：合并 p99.9 → 第 20 小 = 20");
+    assert_eq!(merged_min(LatKind::Switch), 1, "HDR-3：合并 min（跳空核哨兵）");
+    assert_eq!(merged_max(LatKind::Switch), 20, "HDR-3：合并 max");
+    assert_eq!(merged_percentile(LatKind::Wake, 990), 0, "HDR-3：空路合并分位 0");
+    assert_eq!(merged_min(LatKind::Wake), u64::MAX, "HDR-3：全空合并 min 哨兵");
+    // 收口：双槽清零回 boot 等价态（ktest 瞬态不外泄——util 收口同款；
+    // boot 后三路基准/遥测钩子接管写面）。
+    cpu_reset(0);
+    cpu_reset(1);
+    assert_eq!(merged_total(LatKind::Switch), 0, "HDR-3：收口回零");
+
+    berry_hal_aarch64::uart_puts(b"HDR ok\n");
 }
 
 /// 4-4：fastpath 检查链的 SLEEPQ 侧纯函数面（`find_single_waiter`）+ send 尾部

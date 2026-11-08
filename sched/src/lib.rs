@@ -20,6 +20,7 @@ extern crate alloc;
 pub mod band;
 pub mod class;
 pub mod em;
+pub mod hdr;
 pub mod intent;
 pub mod policy;
 pub mod runqueue;
@@ -36,6 +37,11 @@ pub use class::{Fair, RoundRobin, SchedClass, PRIO_DEADLINE};
 pub use em::{
     em_domain, em_max_capacity, em_min_power, em_register, em_register_qemu_virt, em_valid,
     EmDomain, EmPoint, EM_DOMAINS_MAX, EM_POINTS_MAX,
+};
+pub use hdr::{
+    bucket_of, bucket_upper, cpu_hdr, cpu_reset, merged_max, merged_min, merged_percentile,
+    merged_total, record_switch_lat, record_wake_lat, CpuHdr, Hdr, LatKind, HDR_BUCKETS,
+    HDR_MAX_VALUE, HDR_NR_CPU, HDR_OCTAVES, HDR_OVERFLOW, HDR_SUB, HDR_SUB_BITS,
 };
 pub use intent::{
     intent_valid, settle, snapshot, MsgIntent, SettleOut, SnapOut, INTENT_BACKGROUND,
