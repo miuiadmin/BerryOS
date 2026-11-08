@@ -1,4 +1,4 @@
-//! BerryUI SDK 冻结面（F2 core + F4 组件）。
+//! BerryUI SDK 冻结面（F2 core + F4 组件 + F5 guest 供给槽）。
 //!
 //! F4 组件与 F5 uitest 只从本 facade 引用 core API；新增类型可以先留在
 //! 具体模块，但进入本 `sdk` re-export 前必须满足三件事：Plain Data 或
@@ -13,7 +13,9 @@ pub use crate::desc::{
 };
 pub use crate::diagnostic::{HitDumpEntry, LayoutDumpEntry};
 pub use crate::layout::{CrossAlign, LayoutStat};
-pub use crate::metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, TextMetrics};
+pub use crate::metrics::{
+    EmptyIconSource, FontSource, IconSource, MonospaceTextMetrics, TextMetrics,
+};
 pub use crate::theme::{
     Density, InteractionState, RadiusToken, SpacingToken, StateColors, StrokeToken, Theme,
     ThemeColors, ThemeMetrics, TypographyToken,

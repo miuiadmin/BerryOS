@@ -10,4 +10,4 @@ console = true
 wm = true
 
 [runtime]
-stack_pages = 16
+stack_pages = 48

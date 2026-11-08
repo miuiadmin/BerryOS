@@ -12,7 +12,7 @@
 - **语义旁车不可降级**：专业 canvas 与游戏 immersive 可以绕过 BerryUI 控件，但不能绕过 Berry Room 的 input class、IME composition、a11y sidecar、safe area/scale factor、帧率意图、焦点与进程死亡清理。
 - **视觉常量单源**：颜色、字号、间距、圆角、阴影、按压/禁用/选中态进主题 token；BerryUI 组件样式进 `berry-ui`。专业/游戏引擎内部艺术风格可自有资产，但宿主外壳不得散装复制系统 token。
 - **BUI 可选且单 AST**：BUI 只是 BerryUI 的可选声明式入口；F4/F5 先用 Rust `ViewSpec`/`DescBuilder` 与 AST TLV。`.bui` 现行仅是包资源占位，不解析、不执行、不构成 GUI app 必需文件；未来 BUI 不得承载业务流程、WM/VMO/syscall、像素绘制或命令式副作用。
-- **系统字体单源**：app 不得自带字体表。v1 映射恒 UserRw，字形 VMO 由系统按 app 私有供给，防跨 app 写穿；未来引入只读映射或字体服务时先改 GUI 地基路线。
+- **系统字体单源**：app 不得自带字体表。v1 映射恒 UserRw，字形 VMO 由系统按 app 私有供给，防跨 app 写穿；普通 BerryUI guest 启用 `guest-font-vmo` 并注入 FontSource，DisplayList 光栅化归 Berry Room。未来引入只读映射或字体服务时先改 GUI 地基路线。
 - **真链不降级**：任何 UI SDK、Surface Mode 或视觉改动不得削弱 APP_SPAWN、WM 所有权、owner-local 输入、composition、frame lifecycle、进程死亡清理与真实数据链。
 - **测试门齐全**：F4/F5 走 Host、离屏、Guest、迁移回归四层证据；P0 另须覆盖 Surface role/mode、input class、IME、a11y、metrics 的编解码、round-trip、拒面与不变量。
 - **预算先于美观**：每里程碑检查 rootfs 与 `.bap` 尺寸；超帽即停。不得降低壁纸或图标质量换空间，不得让每个 app 复制字体、图标解码或大图缓存。
@@ -39,6 +39,7 @@
 - [../GUI-3实施设计草案-v1.1.md](../GUI-3实施设计草案-v1.1.md) —— `berry-ui` 保留树、脏区、帧循环与 impl 契约。
 - [../BerryUI-F2核心盘点-v1.0.md](../BerryUI-F2核心盘点-v1.0.md) —— berry-ui core 现状、布局/命中诊断与 SDK 最小冻结面。
 - [../BerryDesign-F3主题与基元-v1.0.md](../BerryDesign-F3主题与基元-v1.0.md) —— Berry Design token、密度换算、交互状态与 BerryGFX 表面基元单源。
-- [../BerryUI-F4组件第一版-v1.0.md](../BerryUI-F4组件第一版-v1.0.md) —— F4 组件 API、Panel 基元、状态/输入语义、离屏 golden 与预算。
+- [../BerryUI-F4组件第一版-v1.1.md](../BerryUI-F4组件第一版-v1.1.md) —— F4 组件 API、Panel 基元、状态/输入语义、离屏 golden 与预算。
+- [../BerryUI-F5系统验收-v1.0.md](../BerryUI-F5系统验收-v1.0.md) —— F5 真实 guest 消费者、系统 FontSource、Room DisplayList 光栅化、GUI8 真链验收与预算边界。
 - [../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md) —— 专业软件、工业框架、游戏 UI 与 OS 分层证据；P0 Surface Mode 的裁决依据。
 - [../GUI渲染调研-2026-10-v1.0.md](../GUI渲染调研-2026-10-v1.0.md) —— 渲染路线与自研光栅决策依据。

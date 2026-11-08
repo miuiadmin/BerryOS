@@ -249,6 +249,9 @@ pub struct Ui<const N: usize> {
     telem: telemetry::Telemetry,
     tm: &'static dyn metrics::TextMetrics, // D28 供给槽（默认 Monospace）
     icons: &'static dyn metrics::IconSource, // D28 供给槽（默认 Empty）
+    /// 运行期字形供件槽。默认 host 面用静态图集；guest-font-vmo 档由
+    /// Berry Room 注入系统 A8 VMO，避免 app 复制 CJK/HD 字表。
+    fonts: Option<&'static dyn metrics::FontSource>,
     a11y: [Option<A11yEntry>; A11Y_MAX], // a11y 侧表（D12——apply 落/encode 读）
     press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
     press_map_n: usize,
@@ -351,6 +354,7 @@ impl<const N: usize> Ui<N> {
             telem: telemetry::Telemetry::new(),
             tm: &DEFAULT_TEXT_METRICS,
             icons: &DEFAULT_ICON_SOURCE,
+            fonts: None,
             a11y: [None; A11Y_MAX],
             press_map: [PressEntry {
                 trigger: NodeId(0),
@@ -1180,6 +1184,12 @@ impl<const N: usize> Ui<N> {
         self.icons = src;
     }
 
+    /// 运行期字形供件换装。guest-font-vmo 档必须注入；布局测量仍由
+    /// TextMetrics 单源负责。
+    pub fn set_font_source(&mut self, source: &'static dyn metrics::FontSource) {
+        self.fonts = Some(source);
+    }
+
     pub fn bounds(&self, node: NodeId) -> Result<damage::RectI, UiError> {
         // 绝对界（含 ox/oy）。
         let idx = self.slot_of(node)? as usize;
@@ -1253,6 +1263,7 @@ impl<const N: usize> Ui<N> {
             scratch,
             enc,
             self.icons, // D28 槽取传（门面签名不变）
+            self.fonts,
         )
     }
 
@@ -1457,6 +1468,7 @@ impl<const N: usize> Ui<N> {
                 scratch,
                 enc,
                 self.icons, // D28 槽取传
+                self.fonts, // F5：guest 档可由系统字形 VMO 供给
             )
         } else {
             paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 }

@@ -1,15 +1,75 @@
-//! UITEST —— GUI F1 的 AppRoom 真链探针。
+//! UITEST —— GUI F5 的 BerryUI + Berry Room 系统验收 app。
 //!
-//! 本 app 故意不写像素、不包含 GUI wire 编解码、不映射 VMO。它只驱动
-//! `berry-room` 完成 env → WM session → 窗口 → 零页 frame → 输入 →
-//! destroy → exit，作为后续 UI SDK 迁移的宿主契约样本。
+//! F1 零像素契约升级为真实 UI 消费者：本 app 只组合 BerryUI SDK 组件，
+//! 不解析 WM RPC、不映射 VMO、不计算 stride、不写像素循环。Berry Room
+//! 负责窗口/frame/输入/销毁与 DisplayList 光栅化；系统 HD A8 字形经
+//! per-app VMO 图集供给，避免 app 复制静态字表。
 
 #![no_std]
 #![no_main]
 
-use berry_room::{AppRoom, RoomConfig};
+use berry_gfx::cmd::{CommandEncoder, GlyphPos};
+use berry_gfx::font::FontSize;
+use berry_room::{
+    AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PHASE_UP, PointerEvent, RoomConfig, Sample,
+    SYSTEM_FONT_ATLAS,
+};
+use berry_ui::sdk::{
+    Button, Card, EmptyState, FontSource, InteractionState, ListItem, Msg, RectI, Scaffold,
+    ScrollView, Switch, TextVariant, Theme, Ui, WidgetContext, column, divider, icon, row,
+    text,
+};
+use berry_ui::hit::PtrEvent;
 
-fn append_decimal(out: &mut [u8], mut value: u32) -> usize {
+type Ui128 = Ui<128>;
+
+/// F5 组件页句柄。业务状态仍由 `AppModel` 持有，这里只保存 NodeId。
+struct Page {
+    scaffold: Scaffold,
+    scroll: ScrollView,
+    button: Button,
+    switch: Option<Switch>,
+    index: u8,
+}
+
+struct AppModel {
+    ui: Ui128,
+    ctx: WidgetContext,
+    page: Page,
+    page_index: u8,
+    switch_on: bool,
+    frame_seq: u32,
+}
+
+struct Source;
+static SOURCE: Source = Source;
+
+/// guest-font-vmo 档：S32 用 Berry Room 系统 A8 VMO；本页不发射其他
+/// 字号档，静态 HD/CJK 表不进 app。
+struct RoomFontSource;
+static ROOM_FONT_SOURCE: RoomFontSource = RoomFontSource;
+impl FontSource for RoomFontSource {
+    fn atlas(&self, scale: FontSize) -> Option<&'static dyn berry_gfx::font::GlyphAtlas> {
+        match scale {
+            FontSize::S32x48 => Some(&SYSTEM_FONT_ATLAS),
+            _ => None,
+        }
+    }
+}
+static ICON_PX: [u32; 4] =
+    [0xFF_FF_00_00, 0xFF_00_FF_00, 0xFF_00_00_FF, 0xFF_FF_FF_00];
+
+impl berry_ui::sdk::IconSource for Source {
+    fn dims(&self, id: u16) -> Option<(u32, u32)> {
+        (id == 7).then_some((2, 2))
+    }
+
+    fn pixels(&self, id: u16) -> Option<&[u32]> {
+        (id == 7).then_some(&ICON_PX)
+    }
+}
+
+fn append_u32(out: &mut [u8], mut value: u32) -> usize {
     let mut digits = [0u8; 10];
     let mut count = 0usize;
     if value == 0 {
@@ -30,42 +90,349 @@ fn append_decimal(out: &mut [u8], mut value: u32) -> usize {
     written
 }
 
-fn geometry_line(width: usize, height: usize) -> ([u8; 40], usize) {
-    let mut line = [0u8; 40];
-    let head = b"UITESTWIN ok w=";
-    line[..head.len()].copy_from_slice(head);
-    let mut n = head.len();
-    n += append_decimal(&mut line[n..], width as u32);
-    let sep = b" h=";
-    line[n..n + sep.len()].copy_from_slice(sep);
-    n += sep.len();
-    n += append_decimal(&mut line[n..], height as u32);
-    line[n] = b'\n';
-    (line, n + 1)
+fn append_i32(out: &mut [u8], value: i32) -> usize {
+    if value < 0 {
+        if out.is_empty() {
+            return 0;
+        }
+        out[0] = b'-';
+        let unsigned = if value == i32::MIN {
+            2_147_483_648u32
+        } else {
+            (-value) as u32
+        };
+        1 + append_u32(&mut out[1..], unsigned)
+    } else {
+        append_u32(out, value as u32)
+    }
 }
 
-fn input_line(x: u32, y: u32) -> ([u8; 48], usize) {
-    let mut line = [0u8; 48];
-    let head = b"UITESTINPUT ok x=";
-    line[..head.len()].copy_from_slice(head);
-    let mut n = head.len();
-    n += append_decimal(&mut line[n..], x);
-    let sep = b" y=";
-    line[n..n + sep.len()].copy_from_slice(sep);
-    n += sep.len();
-    n += append_decimal(&mut line[n..], y);
-    line[n] = b'\n';
-    (line, n + 1)
+struct Line {
+    bytes: [u8; 256],
+    len: usize,
+}
+
+impl Line {
+    fn new(head: &[u8]) -> Self {
+        let mut bytes = [0u8; 256];
+        let n = head.len().min(bytes.len());
+        bytes[..n].copy_from_slice(&head[..n]);
+        Self { bytes, len: n }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + n].copy_from_slice(&bytes[..n]);
+        self.len += n;
+    }
+
+    fn push_u32(&mut self, value: u32) {
+        let mut buf = [0u8; 10];
+        let n = append_u32(&mut buf, value);
+        self.push(&buf[..n]);
+    }
+
+    fn push_i32(&mut self, value: i32) {
+        let mut buf = [0u8; 11];
+        let n = append_i32(&mut buf, value);
+        self.push(&buf[..n]);
+    }
+
+    fn rect(&mut self, r: RectI) {
+        self.push_i32(r.x);
+        self.push(b",");
+        self.push_i32(r.y);
+        self.push(b",");
+        self.push_i32(r.w);
+        self.push(b",");
+        self.push_i32(r.h);
+    }
+
+    fn print(&self, room: &AppRoom) {
+        room.print(&self.bytes[..self.len]);
+    }
+}
+
+fn geometry_line(width: usize, height: usize) -> Line {
+    let mut line = Line::new(b"UITESTWIN ok w=");
+    line.push_u32(width as u32);
+    line.push(b" h=");
+    line.push_u32(height as u32);
+    line.push(b"\n");
+    line
+}
+
+fn input_line(x: u32, y: u32) -> Line {
+    let mut line = Line::new(b"UITESTINPUT ok x=");
+    line.push_u32(x);
+    line.push(b" y=");
+    line.push_u32(y);
+    line.push(b"\n");
+    line
 }
 
 fn fail(room: &AppRoom, what: &str) -> ! {
-    let mut line = [0u8; 64];
+    let mut line = [0u8; 96];
     let head = b"uitest: ";
     line[..head.len()].copy_from_slice(head);
     let n = head.len() + what.len().min(line.len() - head.len());
     line[head.len()..n].copy_from_slice(&what.as_bytes()[..n - head.len()]);
     room.print(&line[..n]);
     room.exit(134)
+}
+
+fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -> Page {
+    let root = ui.root();
+    let scaffold = Scaffold::new(ui, root, ctx, if index == 0 {
+        b"Components"
+    } else {
+        b"Details"
+    })
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let (_, viewport_h) = ui.viewport();
+    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
+    let bar_h = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
+    let view_h = viewport_h.saturating_sub(bar_h);
+    let scroll = ScrollView::new(ui, scaffold.body, ctx, view_h)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+
+    if index == 0 {
+        text(ui, stack, ctx, TextVariant::Title, b"BerryUI system test")
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let button = Button::new(ui, stack, ctx, b"Details", InteractionState::Normal)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        divider(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let switch = Switch::new(ui, stack, ctx, switch_on, false)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        ListItem::new(ui, stack, ctx, b"Owner-local input", Some(b"WM routed"), false)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+
+        // 真实滚动样本：单行 ListItem 恰比小 viewport 高 24px，Product 与
+        // Compact 都得到 offset 24；内容仍留在整页 viewport 内，不伪称 clip。
+        let body_h = ctx
+            .metrics
+            .typography(berry_ui::sdk::TypographyToken::Body)
+            .cell_h() as u32;
+        let list_pad = ctx.metrics.spacing(berry_ui::sdk::SpacingToken::M);
+        let sample_h = body_h
+            .saturating_add(list_pad.saturating_mul(2))
+            .saturating_sub(24)
+            .max(1);
+        let scroll = ScrollView::new(ui, stack, ctx, sample_h)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        ListItem::new(ui, scroll.content, ctx, b"Scroll sample", None, false)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let controls = row(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+        icon(ui, controls, ctx, 7).unwrap_or_else(|_| berry_room::panic_exit(134));
+        EmptyState::new(
+            ui, stack, ctx, 7, b"F5 ready", b"Frame, layout, hit and state",
+        )
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        Page { scaffold, scroll, button, switch: Some(switch), index }
+    } else {
+        text(ui, stack, ctx, TextVariant::Title, b"Return stack page")
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        ListItem::new(ui, stack, ctx, b"Page 1", Some(b"Pushed by Details"), true)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let button = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        EmptyState::new(
+            ui, stack, ctx, 7, b"Back ready", b"Click Back to pop page",
+        )
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        Page { scaffold, scroll, button, switch: None, index }
+    }
+}
+
+impl AppModel {
+    fn render(&mut self, room: &mut AppRoom) -> u32 {
+        let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 192];
+        let mut encoder = CommandEncoder::new();
+        self.ui.wake(0);
+        let outcome = self.ui.render_frame(0, &mut scratch, &mut encoder);
+        if !outcome.drew {
+            fail(room, "no damage");
+        }
+        let dl = encoder.finish();
+        let cmds = match room.render_display_list(&dl) {
+            Ok(cmds) => cmds,
+            Err(e) => fail(room, e.as_str()),
+        };
+        self.frame_seq = self.frame_seq.saturating_add(1);
+        if let Err(e) = room.submit(self.frame_seq) {
+            fail(room, e.as_str());
+        }
+        let mut line = Line::new(b"UITESTRENDER ok seq=");
+        line.push_u32(self.frame_seq);
+        line.push(b" cmds=");
+        line.push_u32(cmds as u32);
+        line.push(b"\n");
+        line.print(room);
+        self.frame_seq
+    }
+
+    fn replace_page(&mut self, room: &mut AppRoom, index: u8) {
+        if self.ui.remove(self.page.scaffold.root).is_err() {
+            fail(room, "page remove");
+        }
+        self.page = build_page(&mut self.ui, &self.ctx, index, self.switch_on);
+        self.page_index = index;
+        self.page.scroll.sync_bounds(&mut self.ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+        self.render(room);
+    }
+
+    fn print_layout(&self, room: &AppRoom) {
+        let bar = self.ui.bounds(self.page.scaffold.app_bar.panel).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let body = self.ui.bounds(self.page.scaffold.body).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let button = self.ui.bounds(self.page.button.panel).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let mut line = Line::new(b"UITESTLAYOUT ok page=");
+        line.push_u32(self.page.index as u32);
+        line.push(b" appbar=");
+        line.rect(bar);
+        line.push(b" body=");
+        line.rect(body);
+        line.push(b" button=");
+        line.rect(button);
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn print_hit(&self, room: &AppRoom) {
+        let button = self.ui.bounds(self.page.button.panel).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let x = button.x.saturating_add(button.w / 2).max(0) as u32;
+        let y = button.y.saturating_add(button.h / 2).max(0) as u32;
+        let node = self.ui.node_at(x, y);
+        let valid = node == Some(self.page.button.panel) || node == Some(self.page.button.label);
+        let mut line = Line::new(b"UITESTHIT ok node=");
+        line.push(if valid { b"button" } else { b"other" });
+        line.push(b" x=");
+        line.push_u32(x);
+        line.push(b" y=");
+        line.push_u32(y);
+        line.push(b"\n");
+        if !valid {
+            berry_room::panic_exit(134);
+        }
+        line.print(room);
+    }
+
+    fn print_data(&mut self, room: &AppRoom) {
+        let mut ast = [0u8; 4096];
+        let len = match self.ui.encode_desc(&mut ast) {
+            Ok(len) => len,
+            Err(_) => fail(room, "ast"),
+        };
+        let a11y = self.ui.a11y_iter().count();
+        let mut line = Line::new(b"UITESTAST ok bytes=");
+        line.push_u32(len as u32);
+        line.push(b" a11y=");
+        line.push_u32(a11y as u32);
+        line.push(b"\n");
+        line.print(room);
+    }
+}
+
+fn ui_event(event: &PointerEvent) -> PtrEvent {
+    PtrEvent::from_wire(
+        event.phase,
+        event.pointer_id,
+        event.x,
+        event.y,
+        event.timestamp_ns,
+        event.buttons,
+        event.pressure,
+    )
+}
+
+fn handle_messages(app: &mut AppModel, room: &mut AppRoom, messages: &berry_ui::sdk::MsgBuf) -> u8 {
+    let mut target = app.page_index;
+    let mut copied = [None; berry_ui::MSG_MAX];
+    for (i, message) in messages.iter().enumerate() {
+        if i < copied.len() {
+            copied[i] = Some(*message);
+        }
+    }
+    for slot in copied.iter().take(messages.len()) {
+        let Some(message) = *slot else { continue };
+        let clicked = app
+            .page
+            .button
+            .on_msg(&mut app.ui, &app.ctx, &message)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        if clicked {
+            target = if app.page_index == 0 { 1 } else { 0 };
+        }
+        if let Some(switch) = app.page.switch.as_mut() {
+            if switch
+                .on_msg(&mut app.ui, &app.ctx, &message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134))
+            {
+                app.switch_on = switch.is_checked();
+            }
+        }
+        app.page
+            .scroll
+            .on_msg(&mut app.ui, &message)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
+    if target != app.page_index {
+        app.replace_page(room, target);
+    }
+    target
+}
+
+fn wait_two_clicks(app: &mut AppModel, room: &mut AppRoom) -> (u32, u32) {
+    let mut events = [PointerEvent {
+        phase: 0,
+        device_id: 0,
+        buttons: 0,
+        flags: 0,
+        pointer_id: 0,
+        timestamp_ns: 0,
+        x: 0,
+        y: 0,
+        pressure: 0,
+        contact_major: 0,
+        contact_minor: 0,
+        history: [Sample {
+            timestamp_ns: 0,
+            x: 0,
+            y: 0,
+        }; INPUT_SAMPLES_MAX - 1],
+        history_len: 0,
+    }; INPUT_EVENTS_MAX];
+    let mut clicks = 0usize;
+    let mut last = (0u32, 0u32);
+    while clicks < 2 {
+        let count = match room.poll_input(&mut events) {
+            Ok(count) => count,
+            Err(e) => fail(room, e.as_str()),
+        };
+        for event in events.iter_mut().take(count) {
+            last = (event.x, event.y);
+            if app.ui.push_pointer(ui_event(event)).is_err() {
+                fail(room, "input buffer");
+            }
+            let messages = app.ui.pump_input(0);
+            handle_messages(app, room, &messages);
+            if event.phase == PHASE_UP {
+                clicks += 1;
+                if clicks == 1 {
+                    app.print_layout(room);
+                    app.print_hit(room);
+                    let mut line = Line::new(b"UITESTSTATE ok page=");
+                    line.push_u32(app.page_index as u32);
+                    line.push(b" switch=");
+                    line.push_u32(app.switch_on as u32);
+                    line.push(b"\n");
+                    line.print(room);
+                }
+            }
+        }
+    }
+    last
 }
 
 #[link_section = ".text.entry"]
@@ -77,10 +444,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     };
     let mut room = match AppRoom::connect(env_ch, config) {
         Ok(room) => room,
-        Err(_) => {
-            // env 失败时没有可靠 console；非 0 退出让标记缺失兜底。
-            berry_room::panic_exit(134)
-        }
+        Err(_) => berry_room::panic_exit(134),
     };
     room.print(b"UITEST up\n");
     let (width, height) = match room.open_window() {
@@ -88,23 +452,83 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         Err(e) => fail(&room, e.as_str()),
     };
     room.print(b"UITESTROOM ok\n");
-    let (line, line_len) = geometry_line(width, height);
-    room.print(&line[..line_len]);
+    geometry_line(width, height).print(&room);
 
-    if room.submit(1).is_err() {
-        fail(&room, "submit");
+    let theme = Theme::light();
+    let ctx = WidgetContext::for_viewport(theme, width as u32, height as u32);
+    let mut ui = Ui128::new(width as u32, height as u32);
+    ui.set_icon_source(&SOURCE);
+    ui.set_font_source(&ROOM_FONT_SOURCE);
+    let mut page = build_page(&mut ui, &ctx, 0, false);
+    let stat = ui.layout();
+    if stat.placed == 0 {
+        fail(&room, "initial layout");
     }
+    page.scroll.sync_bounds(&mut ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let mut app = AppModel {
+        ui,
+        ctx,
+        page,
+        page_index: 0,
+        switch_on: false,
+        frame_seq: 0,
+    };
+
+    app.print_layout(&room);
+    app.print_hit(&room);
+    app.print_data(&mut room);
+    app.render(&mut room);
     room.print(b"UITESTFRAME ok\n");
 
     if room.boot_probe() {
+        // 组件/状态/滚动/返回栈的 headless 全链：真实树、真实 damage、
+        // 真实 DisplayList、真实 Berry Room frame submit。
+        if let Some(switch) = app.page.switch.as_mut() {
+            switch.set_checked(&mut app.ui, &app.ctx, true).unwrap_or_else(|_| berry_room::panic_exit(134));
+            app.switch_on = true;
+        }
+        app.page.scroll.scroll_by(&mut app.ui, 24).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let scroll_offset = app.page.scroll.offset();
+        if scroll_offset != 24 {
+            fail(&mut room, "scroll offset");
+        }
+        app.render(&mut room);
+        let mut scrolled = Line::new(b"UITESTSCROLL ok offset=");
+        scrolled.push_i32(scroll_offset);
+        scrolled.push(b" switch=1\n");
+        scrolled.print(&room);
+        app.page.button
+            .on_msg(
+                &mut app.ui,
+                &app.ctx,
+                &Msg::Click { node: app.page.button.label },
+            )
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        app.replace_page(&mut room, 1);
+        let state = Line::new(b"UITESTSTATE ok page=1 switch=1\n");
+        state.print(&room);
+        app.page.button
+            .on_msg(
+                &mut app.ui,
+                &app.ctx,
+                &Msg::Click { node: app.page.button.label },
+            )
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        app.replace_page(&mut room, 0);
+        room.print(b"UITESTBACK ok page=0 switch=1\n");
+        // Runtime 启动态重置为 page0/switch false，供 GUI 冒烟注入输入。
+        app.switch_on = false;
+        app.replace_page(&mut room, 0);
         room.print(b"UITESTPROBE ok\n");
     } else {
-        let event = match room.wait_pointer_up() {
-            Ok(event) => event,
-            Err(e) => fail(&room, e.as_str()),
-        };
-        let (input, len) = input_line(event.x, event.y);
-        room.print(&input[..len]);
+        let (x, y) = wait_two_clicks(&mut app, &mut room);
+        input_line(x, y).print(&room);
+        let mut back = Line::new(b"UITESTBACK ok page=");
+        back.push_u32(app.page_index as u32);
+        back.push(b" switch=");
+        back.push_u32(app.switch_on as u32);
+        back.push(b"\n");
+        back.print(&room);
     }
 
     if room.destroy().is_err() {
@@ -117,6 +541,5 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    // no_std release panic=abort 家族约定：退出码 134。
     berry_room::panic_exit(134)
 }

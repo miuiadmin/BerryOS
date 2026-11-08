@@ -17,7 +17,7 @@
 | `paint.rs` | damage 驱动、遮挡剔除、DisplayList、overdraw 预算、Present 尾命令 | 离屏 golden 继续作为渲染真值 |
 | `hit.rs` | topmost 命中、press/click/drag/cancel referee、速度环与锁轴 | 命中 dump 必须委托同一 `hit::node_at` |
 | `metrics.rs` | TextMetrics 与 IconSource 供给槽、Monospace/Empty 默认件 | F2 冻结供给缝，不引入主题系统 |
-| `frame.rs` | RUN/SETTLE/IDLE、vsync 协商倒数、credits 与提交/呈现簿记 | 保留；F5 再接 Berry Room 宿主 |
+| `frame.rs` | RUN/SETTLE/IDLE、vsync 协商倒数、credits 与提交/呈现簿记 | 保留；F5 已由 Berry Room `render_display_list` 接宿主 |
 | `diagnostic.rs` | **F2 新增**：前序布局 dump 与逐点命中 dump | 补齐布局/命中反 mock 证据面 |
 | `sdk.rs` | **F2 新增**：最小 SDK facade | 冻结 F4/F5 消费入口 |
 
@@ -81,6 +81,7 @@ TextBuf / Msg / MsgBuf / Axis
 CrossAlign / LayoutStat / RectI
 TextMetrics / MonospaceTextMetrics
 IconSource / EmptyIconSource
+FontSource（F5 guest 字形 VMO 档）
 LayoutDumpEntry / HitDumpEntry
 ```
 
@@ -131,7 +132,7 @@ bash tools/smoke-image.sh out/berryos.img <AAVMF_CODE> <AAVMF_VARS>
 ## §5 边界
 
 - F2 不引入 Berry Design token；颜色/字号/圆角/间距的收敛面见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。
-- F2 不新增 Button/Card/Switch 组件；组件面见 [BerryUI-F4组件第一版-v1.0.md](BerryUI-F4组件第一版-v1.0.md)。
+- F2 不新增 Button/Card/Switch 组件；组件面见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)。
 - F2 不把 UITEST 扩成组件 showcase；归 F5。
 - F2 不迁移 Settings/Files/Contacts/Photos/Browser；归 F6..F8。
 - F2 不把 `berry-nshfont` 删除；该件仍只服务五个迁移前 Native Shell，F9 拆归 gfx/ui 后退役。

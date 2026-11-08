@@ -1,8 +1,8 @@
 # BerryUI F4 组件第一版
 
-> 版本：**1.0**｜2026-11-08
+> 版本：**1.1**｜2026-11-08
 >
-> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 归 P0 后续协议。
+> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。1.1 为 F5 预算收口：EmptyState 说明文本改用 Body，Caption 仍是 Text API 并由 host 测试覆盖。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 归 P0 后续协议。
 
 ## §1 组合基元
 
@@ -100,7 +100,7 @@ BUI 解析
 | Switch | pill-radius Panel + Row + spacer + Circle + a11y toggle | checked/disabled；Checked 用 Selected token；Click 可翻转视觉态；Disabled 忽略输入 | Compact 52×28、travel 28、a11y on/off、选中色 |
 | Divider | Rect(outline) + Thin stroke | 无独立状态 | Compact 1px / Product 2px |
 | Scroll | Panel + content Col + offset | DragStart/DragMove/DragEnd；offset clamp 到 content−viewport | 150−80 内容 clamp 20→70、bounds 随 offset |
-| EmptyState | Panel + centered Col + Icon/Title/Caption | 无独立状态 | 图标、标题、说明均非零并参与离屏 |
+| EmptyState | Panel + centered Col + Icon/Title/Body | 无独立状态 | 图标、标题、说明均非零并参与离屏 |
 
 ## §4 状态与输入边界
 
@@ -173,7 +173,7 @@ PHOTOS.bap   = 27,448B
 CONTACTS.bap = 31,308B
 ```
 
-F5 uitest 首次真实消费组件后再输出新的包体与内存账；若超帽，先裁组件特性或泄漏面，不得降低视觉资产质量。
+F5 `uitest` 已首次真实消费组件；包体、系统字形供给与内存/预算账见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)。若后续超帽，先裁组件特性或泄漏面，不得降低视觉资产质量。
 
 ## §7 边界
 

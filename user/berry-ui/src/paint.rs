@@ -26,6 +26,7 @@ use crate::desc::{Props, ViewKind};
 use crate::metrics::IconSource;
 use crate::Node;
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, ImageSrc, Rect as GfxRect};
+use berry_gfx::font::GlyphAtlas;
 
 /// 槽索引空哨兵（§6 Node 注：NONE = u32::MAX——hit.rs 同值，本模块自
 /// 带防跨模块未定名依赖）。
@@ -65,6 +66,7 @@ pub(crate) fn paint<'a>(
     scratch: &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     icons: &'a dyn IconSource,
+    _fonts: Option<&'static dyn crate::metrics::FontSource>,
 ) -> PaintReport {
     let mut rep =
         PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 };
@@ -120,11 +122,15 @@ pub(crate) fn paint<'a>(
             // （N ≤ MAX_NODES=512 < ORDER_CAP/2）结构性不达此面——防御
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
-            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, &mut rest, enc, &mut rep, 0);
+            emit_walk_all(
+                nodes, root, 0, 0, d, &vp_rect, icons, _fonts, &mut rest, enc, &mut rep, 0,
+            );
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）
             for k in (0..n_order).rev() {
-                emit_node(nodes, order[k], &bnds[k], &vp_rect, icons, &mut rest, enc, &mut rep);
+                emit_node(
+                    nodes, order[k], &bnds[k], &vp_rect, icons, _fonts, &mut rest, enc, &mut rep,
+                );
             }
         }
     }
@@ -278,6 +284,7 @@ fn emit_walk_all<'a>(
     d: &RectI,
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
+    _fonts: Option<&'static dyn crate::metrics::FontSource>,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -302,7 +309,7 @@ fn emit_walk_all<'a>(
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
             } else {
-                emit_node(nodes, slot, &b, vp_rect, icons, rest, enc, rep);
+                emit_node(nodes, slot, &b, vp_rect, icons, _fonts, rest, enc, rep);
             }
         }
         ViewKind::Root
@@ -322,7 +329,9 @@ fn emit_walk_all<'a>(
         }
         match nodes.get(c as usize) {
             Some(Some(ch)) if ch.alive => {
-                emit_walk_all(nodes, c, bx, by, d, vp_rect, icons, rest, enc, rep, hops + 1);
+                emit_walk_all(
+                    nodes, c, bx, by, d, vp_rect, icons, _fonts, rest, enc, rep, hops + 1
+                );
                 c = ch.next_sib;
             }
             _ => return, // 链上死槽 = 树结构异常，防御放弃余段
@@ -343,6 +352,7 @@ fn emit_node<'a>(
     b: &RectI,
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
+    _fonts: Option<&'static dyn crate::metrics::FontSource>,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -406,8 +416,17 @@ fn emit_node<'a>(
                         gi += 1;
                     }
                     let glyphs: &'a [GlyphPos] = &piece[..gi]; // 冻结为共享——run 引用钉调用方缓冲
+                    #[cfg(not(feature = "guest-font-vmo"))]
+                    let atlas: &dyn GlyphAtlas = p.style.scale.atlas();
+                    #[cfg(feature = "guest-font-vmo")]
+                    let atlas: &dyn GlyphAtlas = match _fonts
+                        .and_then(|source| source.atlas(p.style.scale))
+                    {
+                        Some(atlas) => atlas,
+                        None => return,
+                    };
                     let run = GlyphRun {
-                        atlas: p.style.scale.atlas(),
+                        atlas,
                         glyphs,
                         fg: p.style.fg,
                         bg: p.style.bg,

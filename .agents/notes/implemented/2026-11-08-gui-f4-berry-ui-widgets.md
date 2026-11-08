@@ -24,6 +24,6 @@ F2/F3 后 BerryUI 已有可测 core 与主题 token，但 F6 迁移普通 app �
 
 ## Related
 
-- [BerryUI-F4组件第一版-v1.0.md](../../../docs/BerryUI-F4组件第一版-v1.0.md)
+- [BerryUI-F4组件第一版-v1.1.md](../../../docs/BerryUI-F4组件第一版-v1.1.md)
 - [BerryUI-F2核心盘点-v1.0.md](../../../docs/BerryUI-F2核心盘点-v1.0.md)
 - [BerryDesign-F3主题与基元-v1.0.md](../../../docs/BerryDesign-F3主题与基元-v1.0.md)

@@ -43,6 +43,13 @@ pub trait TextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32);
 }
 
+/// 运行期字形供件。默认 host 面不走本 trait，直接使用 berry-gfx 静态
+/// 图集；`guest-font-vmo` feature 下 BerryUI 编译掉静态 HD fallback，
+/// 客机必须按字号档供给图集（S32 来自 Berry Room 系统 A8 VMO）。
+pub trait FontSource {
+    fn atlas(&self, scale: FontSize) -> Option<&'static dyn berry_gfx::font::GlyphAtlas>;
+}
+
 /// v1 等宽供件：`FontSize` 单源——宽 = `UTF-8 码点数 × cell_w`
 /// （u64 累计饱和 u32）、高 = `cell_h`。ASCII 与旧字节长度语义零漂；
 /// CJK UTF-8 三字节折一个全宽码点。

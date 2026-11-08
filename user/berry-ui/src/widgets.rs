@@ -76,6 +76,7 @@ fn add<const N: usize>(
 /// Scaffold： AppBar + 可滚动/可放置内容的页面骨架。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scaffold {
+    pub root: NodeId,
     pub app_bar: AppBar,
     pub body: NodeId,
 }
@@ -118,7 +119,7 @@ impl Scaffold {
                 }),
             },
         )?;
-        Ok(Self { app_bar, body })
+        Ok(Self { root, app_bar, body })
     }
 }
 
@@ -720,7 +721,7 @@ impl EmptyState {
         )?;
         let icon_id_node = icon(ui, stack, ctx, icon_id)?;
         let title_id = text(ui, stack, ctx, TextVariant::Title, title)?;
-        let message_id = text(ui, stack, ctx, TextVariant::Caption, message)?;
+        let message_id = text(ui, stack, ctx, TextVariant::Body, message)?;
         Ok(Self { panel, icon: icon_id_node, title: title_id, message: message_id })
     }
 }

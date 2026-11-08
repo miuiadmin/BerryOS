@@ -1193,19 +1193,60 @@ def assert_pixel_close(
         raise SmokeError(f"像素锚 {what}: {got} != {want}±8", log_path)
 
 
+UITEST_LAYOUT_BUTTON_RE = re.compile(
+    r"UITESTLAYOUT ok page=(\d+) appbar=(-?\d+,-?\d+,-?\d+,-?\d+) "
+    r"body=(-?\d+,-?\d+,-?\d+,-?\d+) button=(-?\d+),(-?\d+),(\d+),(\d+)"
+)
+
+
+def latest_uitest_button(
+    text: str, page: int, start: int = 0,
+) -> tuple[int, int, int, int]:
+    matches = []
+    for m in UITEST_LAYOUT_BUTTON_RE.finditer(text):
+        if m.start() >= start and int(m.group(1)) == page:
+            matches.append(m)
+    if not matches:
+        raise SmokeError(f"UITEST layout page={page} 缺失", None)
+    m = matches[-1]
+    return tuple(int(m.group(i)) for i in range(4, 8))  # type: ignore[return-value]
+
+
 def verify_uitest_normal(
     text: str, snapshot_pos: int, before: int, log_path: Path | None = None,
 ) -> None:
-    """GUI F1：Berry Room host probe 的零像素生命周期验收。"""
+    """GUI F5：BerryUI + Berry Room 系统验收 app 的真链生命周期。"""
     _require_exact_count(text, MARK_UITEST_UP, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_ROOM, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_WIN, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_FRAME, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_PROBE, before, "normal UITEST boot-probe", log_path)
+    _require_exact_count(text, "UITESTLAYOUT ok page=0", 2, "normal UITEST page0 layout", log_path)
+    _require_exact_count(text, "UITESTLAYOUT ok page=1", 1, "normal UITEST page1 layout", log_path)
+    _require_exact_count(text, "UITESTHIT ok node=button", 3, "normal UITEST hit dump", log_path)
+    _require_exact_count(text, "UITESTAST ok bytes=", 2, "normal UITEST AST", log_path)
+    _require_exact_count(text, "UITESTRENDER ok seq=", 8, "normal UITEST render", log_path)
+    _require_exact_count(text, "UITESTSTATE ok page=1", 2, "normal UITEST push", log_path)
+    _require_exact_count(text, "UITESTBACK ok page=0", 2, "normal UITEST pop", log_path)
     if not re.search(r"UITESTWIN ok w=1080 h=1920", text):
         raise SmokeError("normal UITEST: runtime 窗口几何缺失/错误", log_path)
-    if not re.search(r"UITESTINPUT ok x=539 y=799", text):
-        raise SmokeError("normal UITEST: owner-local PhaseUP 坐标错误", log_path)
+    if not re.search(r"UITESTSCROLL ok offset=24 switch=1", text):
+        raise SmokeError("normal UITEST: boot-probe 状态/滚动链缺失", log_path)
+    input_match = None
+    for m in re.finditer(r"UITESTINPUT ok x=(\d+) y=(\d+)", text):
+        input_match = m
+    if input_match is None:
+        raise SmokeError("normal UITEST: owner-local PhaseUP 缺失", log_path)
+    button = latest_uitest_button(text, 1, snapshot_pos)
+    want = (
+        button[0] + button[2] // 2 - 1,
+        button[1] + button[3] // 2 - 1,
+    )
+    got = (int(input_match.group(1)), int(input_match.group(2)))
+    if got != want:
+        raise SmokeError(
+            f"normal UITEST: owner-local PhaseUP 坐标错误 got={got} want={want}", log_path
+        )
     _require_exact_count(text, MARK_UITEST_INPUT, 1, "normal UITEST input", log_path)
     _require_exact_count(text, MARK_UITEST_DESTROY, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_EXIT, before + 1, "normal UITEST", log_path)
@@ -2371,7 +2412,7 @@ def run_normal_boot(args) -> int:
                 args.click_timeout, boot.log_path,
             ) from None
 
-        # —— UITEST Room probe：Berry Room 全链，不写任何像素。 ——
+        # —— UITEST F5：BerryUI 组件 + Berry Room 真实帧/输入/返回栈。 ——
         time.sleep(1.0)
         log("normal-uitest: QMP 点击 UITEST 第三格（真实 APP_SPAWN）")
         boot.qmp.click(668, 282, w, h)
@@ -2379,46 +2420,80 @@ def run_normal_boot(args) -> int:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_UITEST_UP) > uitest_before
-                and t.count(MARK_UITEST_FRAME) > uitest_before,
-                f"runtime {MARK_UITEST_UP} + {MARK_UITEST_FRAME}",
+                and t.count(MARK_UITEST_FRAME) > uitest_before
+                and "UITESTHIT ok node=button" in t,
+                f"runtime {MARK_UITEST_UP} + {MARK_UITEST_FRAME} + layout/hit",
                 args.click_timeout,
                 "normal UITEST launch",
             )
         except MissingMarkers:
             raise MissingMarkers(
                 "normal UITEST launch",
-                f"新增 {MARK_UITEST_UP} + {MARK_UITEST_FRAME}",
+                f"新增 {MARK_UITEST_UP} + {MARK_UITEST_FRAME} + dump",
                 args.click_timeout,
                 boot.log_path,
             ) from None
         if not re.search(r"UITESTWIN ok w=1080 h=1920", boot.log.text):
             raise SmokeError("normal UITEST: 窗口几何 != 1080x1920", boot.log_path)
-        uitest_shot = run_dir / "uitest-zero.ppm"
+        button0 = latest_uitest_button(boot.log.text, 0, snapshot_pos)
+        click0 = (
+            button0[0] + button0[2] // 2,
+            button0[1] + button0[3] // 2,
+        )
+        uitest_shot = run_dir / "uitest-page0.ppm"
         boot.qmp.screendump(uitest_shot)
-        for xy in ((540, 60), (540, 800), (100, 1800), (900, 1700)):
-            assert_pixel_close(
-                ppm_pixel(uitest_shot, *xy), (0, 0, 0),
-                f"UITEST 零页帧 {xy}", boot.log_path,
-            )
-        log("normal-uitest: QEMU 截图零页锚 ok（宿主帧 VMO 未被 app 写像素）")
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 20), (0, 116, 224), "UITEST AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 60), (255, 255, 255), "UITEST surface", boot.log_path)
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 100), (27, 37, 64), "UITEST title text", boot.log_path)
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 600), (245, 247, 250), "UITEST empty background", boot.log_path)
+        log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState）")
 
-        log("normal-uitest: QMP 点击窗口中心（owner-local PhaseUP）")
-        boot.qmp.click(540, 800, w, h)
+        log(f"normal-uitest: QMP 点击 Details ({click0[0]},{click0[1]})")
+        boot.qmp.click(click0[0], click0[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
-                lambda t: re.search(r"UITESTINPUT ok x=539 y=799", t) is not None
-                and t.count(MARK_UITEST_EXIT) > uitest_before,
-                "UITESTINPUT x=539 y=799 + 新 EXIT",
+                lambda t: "UITESTLAYOUT ok page=1" in t
+                and "UITESTSTATE ok page=1" in t,
+                "page1 layout + push state",
                 args.click_timeout,
-                "normal UITEST input/exit",
+                "normal UITEST push",
             )
         except MissingMarkers:
             raise MissingMarkers(
-                "normal UITEST input/exit",
-                "UITESTINPUT x=539 y=799 + 新 EXIT",
+                "normal UITEST push", "page1 layout/state", args.click_timeout, boot.log_path
+            ) from None
+        button1 = latest_uitest_button(boot.log.text, 1, snapshot_pos)
+        click1 = (
+            button1[0] + button1[2] // 2,
+            button1[1] + button1[3] // 2,
+        )
+        page1_shot = run_dir / "uitest-page1.ppm"
+        boot.qmp.screendump(page1_shot)
+        assert_pixel_close(ppm_pixel(page1_shot, 540, 20), (0, 116, 224), "UITEST page1 AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(page1_shot, 540, 100), (27, 37, 64), "UITEST page1 title", boot.log_path)
+        log("normal-uitest: page1 布局/状态/像素锚 ok")
+
+        log(f"normal-uitest: QMP 点击 Back ({click1[0]},{click1[1]})")
+        boot.qmp.click(click1[0], click1[1], w, h)
+        want_input = (
+            click1[0] - 1,
+            click1[1] - 1,
+        )
+        input_re = rf"UITESTINPUT ok x={want_input[0]} y={want_input[1]}"
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: re.search(input_re, t) is not None
+                and "UITESTBACK ok page=0 switch=0" in t
+                and t.count(MARK_UITEST_EXIT) > uitest_before,
+                f"{input_re} + BACK + EXIT",
                 args.click_timeout,
-                boot.log_path,
+                "normal UITEST pop/exit",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST pop/exit", "input + back + exit", args.click_timeout, boot.log_path
             ) from None
 
         watcher = boot.log
@@ -2436,13 +2511,13 @@ def run_normal_boot(args) -> int:
         log(
             "normal-native: Browser/Settings/Files/Photos/Contacts 五独立进程、"
             "真实 WM 窗口/帧、状态/fs/图像/联系人记录全链全过；"
-            "UITEST Room probe 以零像素走 Berry Room 全链；"
+            "UITEST 以 BerryUI 组件/主题/滚动/状态/返回栈走 Berry Room 全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：五 Native Shell + UITEST/Berry Room 真链 + "
+            "PASS（--normal-boot）：五 Native Shell + F5 BerryUI/Berry Room 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -3087,14 +3162,40 @@ def self_test(args) -> int:
 
         uitest_boot = (
             f"{MARK_UITEST_UP}\n{MARK_UITEST_ROOM}\n"
-            f"{MARK_UITEST_WIN}1080 h=1920\n{MARK_UITEST_FRAME}\n"
+            f"{MARK_UITEST_WIN}1080 h=1920\n"
+            "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
+            "button=12,126,1056,60\n"
+            "UITESTHIT ok node=button x=540 y=156\n"
+            "UITESTAST ok bytes=690 a11y=8\n"
+            "UITESTRENDER ok seq=1 cmds=18\n"
+            f"{MARK_UITEST_FRAME}\n"
+            "UITESTRENDER ok seq=2 cmds=19\n"
+            "UITESTSCROLL ok offset=24 switch=1\n"
+            "UITESTRENDER ok seq=3 cmds=14\n"
+            "UITESTSTATE ok page=1 switch=1\n"
+            "UITESTRENDER ok seq=4 cmds=19\n"
+            "UITESTBACK ok page=0 switch=1\n"
+            "UITESTRENDER ok seq=5 cmds=18\n"
             f"{MARK_UITEST_PROBE}\n{MARK_UITEST_DESTROY}\n"
             f"{MARK_UITEST_EXIT}\n"
         )
         uitest_runtime = (
             f"{MARK_UITEST_UP}\n{MARK_UITEST_ROOM}\n"
-            f"{MARK_UITEST_WIN}1080 h=1920\n{MARK_UITEST_FRAME}\n"
-            "UITESTINPUT ok x=539 y=799\n"
+            f"{MARK_UITEST_WIN}1080 h=1920\n"
+            "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
+            "button=12,126,1056,60\n"
+            "UITESTHIT ok node=button x=540 y=156\n"
+            "UITESTAST ok bytes=690 a11y=8\n"
+            "UITESTRENDER ok seq=1 cmds=18\n"
+            f"{MARK_UITEST_FRAME}\n"
+            "UITESTLAYOUT ok page=1 appbar=0,0,1080,60 body=0,60,1080,1860 "
+            "button=12,255,1056,60\n"
+            "UITESTHIT ok node=button x=540 y=285\n"
+            "UITESTSTATE ok page=1 switch=0\n"
+            "UITESTRENDER ok seq=2 cmds=18\n"
+            "UITESTINPUT ok x=539 y=284\n"
+            "UITESTRENDER ok seq=3 cmds=18\n"
+            "UITESTBACK ok page=0 switch=0\n"
             f"{MARK_UITEST_DESTROY}\n{MARK_UITEST_EXIT}\n"
         )
         fake_u = uitest_boot + uitest_runtime
@@ -3103,14 +3204,28 @@ def self_test(args) -> int:
         expect_error(
             "UITEST 缺 owner-local 输入",
             lambda: verify_uitest_normal(
-                fake_u.replace("UITESTINPUT ok x=539 y=799\n", ""),
+                fake_u.replace("UITESTINPUT ok x=539 y=284\n", ""),
                 snap_u, 1,
             ),
         )
         expect_error(
-            "UITEST 缺零页帧",
+            "UITEST 缺真实帧",
             lambda: verify_uitest_normal(
                 fake_u.replace(f"{MARK_UITEST_FRAME}\n", "", 2),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺真实滚动 marker",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTSCROLL ok offset=24 switch=1\n", ""),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺 hit dump",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTHIT ok node=button x=540 y=285\n", ""),
                 snap_u, 1,
             ),
         )
@@ -3119,12 +3234,12 @@ def self_test(args) -> int:
             lambda: verify_uitest_normal(
                 uitest_boot.replace(
                     f"{MARK_UITEST_PROBE}\n",
-                    f"{MARK_UITEST_PROBE}\nUITESTINPUT ok x=539 y=799\n",
+                    f"{MARK_UITEST_PROBE}\nUITESTINPUT ok x=539 y=284\n",
                 ) + uitest_runtime,
                 snap_u, 1,
             ),
         )
-        log("self-test: UITEST Room probe 常态断言 ok（零像素/几何/输入/销毁）")
+        log("self-test: F5 UITEST 常态断言 ok（像素帧/布局/命中/状态/返回栈）")
 
         # 4) QMP 协议 + no-device 广播 + 三批单击
         sock = tmp / "qmp.sock"

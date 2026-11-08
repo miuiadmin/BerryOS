@@ -166,6 +166,7 @@ fn row_icon_empty_state_and_hit_truth() {
     let line = row(&mut ui, stack, &context).unwrap();
     let icon_a = icon(&mut ui, line, &context, 7).unwrap();
     let icon_b = icon(&mut ui, line, &context, 8).unwrap();
+    let caption = text(&mut ui, stack, &context, TextVariant::Caption, b"Caption").unwrap();
     let empty = EmptyState::new(
         &mut ui, stack, &context, 7, b"No items", b"Create something first",
     )
@@ -174,6 +175,7 @@ fn row_icon_empty_state_and_hit_truth() {
     assert_eq!(ui.bounds(icon_a).unwrap().w, 16, "Compact L token = 16px");
     assert_eq!(ui.bounds(icon_b).unwrap().x - ui.bounds(icon_a).unwrap().x, 20, "gap 4 + icon 16");
     assert!(ui.bounds(empty.panel).unwrap().h > 0);
+    assert_eq!(ui.bounds(caption).unwrap().h, 16, "Compact Caption = S8x16");
     assert!(ui.bounds(empty.title).unwrap().h > 0);
     assert!(ui.bounds(empty.message).unwrap().h > 0);
     let hit = ui.node_at(8, 8).unwrap();

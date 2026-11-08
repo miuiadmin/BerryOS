@@ -2,11 +2,17 @@
 //!
 //! Berry Room 的分层边界：本 crate 只持有系统会话与生命周期（APP env、WM
 //! session、per-app 字形 VMO、全屏窗口、frame VMO、present callback、
-//! INPUT_POLL、WM_DESTROY）。它不布局、不画像素、不定义控件样式，也不
-//! 知道业务页面。app 通过 [`AppRoom`] 消费这些能力。
+//! INPUT_POLL、WM_DESTROY）。它不布局、不定义控件样式，也不知道业务
+//! 页面；F5 起仅把上层已产出的 DisplayList 光栅化到本 Room 的 frame
+//! VMO。app 通过 [`AppRoom`] 消费这些能力。
 
 #![cfg_attr(not(test), no_std)]
 
+use berry_gfx::cmd::DisplayList;
+use berry_gfx::color::{TextureDesc, TextureFormat};
+use berry_gfx::font::{GlyphA8, GlyphAtlas, GlyphBits};
+use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
+use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
@@ -24,6 +30,56 @@ pub const FONT_VA: usize = 0x5300_0000;
 pub const FONT_VMO_LEN: usize = 0x24000;
 /// RPC 总帽：与 GUI 服务 256B 帧协议一致。
 const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
+
+/// wmd per-app 32×48 ASCII A8 字形图集。`AppRoom::connect` 成功映射
+/// FONT_VA 后才可消费；F5 BerryUI 客机用它替代静态 HD 字表，避免每个
+/// app 包复制一份 145KB A8 数据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemFontAtlas;
+
+/// 全局唯一 HD 图集对象；映射真值由 AppRoom 生命周期持有。
+pub static SYSTEM_FONT_ATLAS: SystemFontAtlas = SystemFontAtlas;
+
+const SYSTEM_GLYPH_W: usize = 32;
+const SYSTEM_GLYPH_H: usize = 48;
+const SYSTEM_GLYPH_BYTES: usize = SYSTEM_GLYPH_W * SYSTEM_GLYPH_H;
+
+impl GlyphAtlas for SystemFontAtlas {
+    fn cell_w(&self) -> usize {
+        SYSTEM_GLYPH_W
+    }
+
+    fn cell_h(&self) -> usize {
+        SYSTEM_GLYPH_H
+    }
+
+    fn glyph(&self, _ch: u8) -> Option<GlyphBits<'_>> {
+        // 系统 VMO 只供给 A8 覆盖率；raster 的 coverage_cp 优先路径不
+        // 需要 1-bit 位图。
+        None
+    }
+
+    fn coverage(&self, ch: u8) -> Option<GlyphA8<'_>> {
+        let index = usize::from(ch).checked_sub(32)?;
+        if ch > b'~' {
+            return None;
+        }
+        // SAFETY：AppRoom::connect 已把 wmd 私有字形 VMO 固定映射到
+        // FONT_VA..+FONT_VMO_LEN；index < 95，且 95*1536=145,920 <
+        // FONT_VMO_LEN=147,456（页对齐余量不读）。
+        let coverage = unsafe {
+            core::slice::from_raw_parts(
+                (FONT_VA + index * SYSTEM_GLYPH_BYTES) as *const u8,
+                SYSTEM_GLYPH_BYTES,
+            )
+        };
+        Some(GlyphA8 {
+            w: SYSTEM_GLYPH_W,
+            h: SYSTEM_GLYPH_H,
+            coverage,
+        })
+    }
+}
 
 /// 宿主启动配置。`uses_fs` 决定 env gift 中 broker 的位置：
 /// 无 fs = hs[4]；`fs=["rootfs"]` 时 fs 双 gift 插前，broker = hs[6]。
@@ -54,6 +110,9 @@ pub enum RoomError {
     Recv(i32),
     Encode,
     Decode,
+    SubmitAck,
+    FrameDone,
+    ReleaseReply,
     Handle,
     FontMap,
     Geometry,
@@ -83,6 +142,9 @@ impl RoomError {
             Self::Recv(_) => "recv",
             Self::Encode => "encode",
             Self::Decode => "decode",
+            Self::SubmitAck => "submit ack",
+            Self::FrameDone => "frame done",
+            Self::ReleaseReply => "release reply",
             Self::Handle => "handle",
             Self::FontMap => "font map",
             Self::Geometry => "geometry",
@@ -97,7 +159,9 @@ impl RoomError {
 }
 
 /// 公开输入事件类型，避免 app 直接依赖/解析 GUI wire 协议。
-pub use berry_guiproto::PointerEvent;
+pub use berry_guiproto::{
+    INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PHASE_UP, PointerEvent, Sample,
+};
 
 fn now_ns() -> u64 {
     let mut t = 0u64;
@@ -409,6 +473,28 @@ impl AppRoom {
         Ok((self.width, self.height))
     }
 
+    /// 将 BerryUI/BerryGFX DisplayList 光栅化到本 Room 的 frame VMO。
+    /// app 不接触 stride、frame 指针或像素循环；这是 Berry Room 的渲染
+    /// 宿主面。返回 DisplayList 命令数。
+    pub fn render_display_list(&mut self, dl: &DisplayList<'_>) -> RoomResult<usize> {
+        if !self.opened {
+            return Err(RoomError::Window);
+        }
+        let desc = TextureDesc::new(
+            self.width,
+            self.height,
+            self.stride,
+            TextureFormat::Rgbx,
+        )
+        .map_err(|_| RoomError::Geometry)?;
+        let frame = self.frame_mut()?;
+        let pass = PassDescriptor::new(LoadOp::Load, StoreOp::Store, None);
+        Queue::new()
+            .submit(dl, frame, &desc, &pass)
+            .map_err(|_| RoomError::Geometry)?;
+        Ok(dl.len())
+    }
+
     /// 借出窗口局部 XRGB buffer。宿主不写它；业务渲染归上层 UI/光栅。
     pub fn frame_mut(&mut self) -> RoomResult<&mut [u8]> {
         if !self.opened {
@@ -444,7 +530,7 @@ impl AppRoom {
         };
         let n = gp::encode_present_req(&mut request, &submit).ok_or(RoomError::Encode)?;
         let (n, _) = rpc(self.wm, &request[..n], &[alias], &mut reply, &mut rhs)?;
-        let token = gp::parse_submit_ack(&reply[..n]).ok_or(RoomError::Decode)?;
+        let token = gp::parse_submit_ack(&reply[..n]).ok_or(RoomError::SubmitAck)?;
         let n = gp::encode_present_req(
             &mut request,
             &gp::PresentReq::FrameCallback { frame_token: token },
@@ -453,7 +539,7 @@ impl AppRoom {
         let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
         match gp::parse_frame_done_rep(&reply[..n]) {
             Some(done) if done.status == gp::FRAME_PRESENTED => {}
-            _ => return Err(RoomError::Decode),
+            _ => return Err(RoomError::FrameDone),
         }
         let n = gp::encode_present_req(
             &mut request,
@@ -461,9 +547,9 @@ impl AppRoom {
         )
         .ok_or(RoomError::Encode)?;
         let (n, nhandles) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
-        let release = gp::parse_release_rep(&reply[..n]).ok_or(RoomError::Decode)?;
+        let release = gp::parse_release_rep(&reply[..n]).ok_or(RoomError::ReleaseReply)?;
         if release.count != 1 || nhandles != 1 || rhs[0] == 0 {
-            return Err(RoomError::Decode);
+            return Err(RoomError::ReleaseReply);
         }
         if berry_handle_close(rhs[0]) != 0 {
             return Err(RoomError::Handle);

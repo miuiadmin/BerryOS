@@ -849,11 +849,11 @@ gui8-smoke:
     fi
     exec python3 tools/gui8-smoke.py "$@"
 
-# GUI-8 常态隔离（可选验收）：同一镜像/tablet/数据盘拓扑但**不造
-# GUI8.SMK**；boot 一次、点击 APPDEMO，断言 spawn 仍发生（新增
-# `app APPDEMO up`×1）而 CLICK/LAYOUTW/LAYOUT/click ready 全零——证明
-# 标记只在哨兵支路出现、常态点击行为不变。GUI8_KEEP=1 同上。
-# gui8-smoke-normal：哨兵缺席的常态点击隔离。
+# GUI-8 常态隔离 + F5 系统验收（可选）：同一镜像/tablet/数据盘拓扑但
+# **不造 GUI8.SMK**；五 Native Shell 真链全跑，UITEST 以 BerryUI 组件/
+# 主题/滚动/状态/返回栈走 Berry Room，断言真实帧像素、layout/hit dump
+# 与两次 owner-local 点击；CLICK/LAYOUTW/LAYOUT/click ready 仍全零。
+# gui8-smoke-normal：哨兵缺席的 Native Shell + BerryUI F5 常态验收。
 gui8-smoke-normal:
     #!/bin/sh
     set -eu
