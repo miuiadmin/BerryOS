@@ -15,6 +15,10 @@
 # A-2：berry-exec（rootfs 程序拉起链——spawn_rootfs_elf/cpio_find 自 svcmgr
 # 抽取，svcmgr（none target，本工作区成员）与 bsh（musl target，独立小工作
 # 区经 path 依赖）双消费，「不长第二套」）。
+# X-5 補：berry-winplan（demand 装载窗规划纯函数 crate——plan_wins 自
+# berry-exec 外迁、cap 参数化解锁 host 测试；「纯面外迁」纪律同 berry-tls/
+# mmap/signal 先例。消费 = berry-exec 经 path 依赖单源引回；host 测试经
+# justfile test-host 显式行跑）。
 # A-3：berry-virtio（virtio split-ring 纯函数 crate，host 测试）——
 # 2026-10-24 随驱动一族迁入 drivers/ 工作区（真消费者 vprobe/vblk/vnet
 # 同住 drivers/bins/；host 测试经 justfile test-host 显式行跑）。
@@ -100,7 +104,7 @@
 # 快照/ACK/流式再同步解码，host 测试；PM-16 §4.1 契约 + docs/sim设备通道
 # 与契约设计-v1.0.md §5 冻结。双消费 = bins/simbattery 服务（首消费）+
 # 未来真机电池/热/modem 驱动 + L3 SDK 只读面——绿传递律单源落点）。
-members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
     "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo", "bins/apptomb"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"

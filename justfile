@@ -556,6 +556,10 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 test-host:
     cargo test -p berry-mm --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
+    # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
+    # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各
+    # 拒面 + musl 族多 k 布局过门 + 合成 ELF 全链，host 16 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-winplan --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-fsproto --target {{host}}
     # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数面——v1 单段语义
     # 零漂移 + v2 五 op 面，host 17 测）。

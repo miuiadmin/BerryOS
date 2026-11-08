@@ -11,4 +11,6 @@ license = "Apache-2.0"
 [dependencies]
 berry-sys = { path = "../berry-sys" }
 berry-loader = { path = "../berry-loader" }
+# X-5：窗规划纯面在 berry-winplan（host 可测），本 crate 经 FFI 桥单源消费。
+berry-winplan = { path = "../berry-winplan" }
 # （release profile 沿用工作区根定义——成员内 profile 不生效。）

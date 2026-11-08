@@ -34,6 +34,7 @@ version = "0.1.0"
 dependencies = [
  "berry-loader",
  "berry-sys",
+ "berry-winplan",
 ]
 
 [[package]]
@@ -148,6 +149,13 @@ version = "0.1.0"
 dependencies = [
  "berry-gfx",
  "berry-guiproto",
+]
+
+[[package]]
+name = "berry-winplan"
+version = "0.1.0"
+dependencies = [
+ "berry-loader",
 ]
 
 [[package]]
