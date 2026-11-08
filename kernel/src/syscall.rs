@@ -6,7 +6,7 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 36 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**35 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形 + G4-4 X-3b 0x23 恒等选源）**——
+//! v1 37 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**36 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形 + G4-4 X-3b 0x23 恒等选源 + X-6 刀① 0x24 批供表批）**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
 //! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
@@ -67,7 +67,7 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 36 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// ---- v1 37 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
 // 常量本体在 `crate::abi_gen`（`tools/abi.toml` 生成文件）；此处 re-export
 // 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
 // abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
@@ -78,8 +78,8 @@ use core::ptr::NonNull;
 pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
-    NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_MAPPED, NR_PAGER_SUPPLY_PAGES,
-    NR_PROCESS_CREATE,
+    NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_MAPPED, NR_PAGER_SUPPLY_MAPPED_TABLE,
+    NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
     NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_THREAD_YIELD,
     NR_PROCESS_TERMINATE,
@@ -811,6 +811,195 @@ extern "C" fn sys_pager_supply_mapped(tf: &mut TrapFrame) -> i64 {
         return ERR_INVALID_ARG as i64;
     }
     pager_supply_common(tf, vh, sh, SrcOff::Delta(delta))
+}
+
+/// 0x24 表批窗（X-6 刀① 冻结面——`X6批供提速设计-v1.0.md` §2.1：结构体
+/// 布局一次定全即冻，§7 主裁③）：`dv` = 目标 demand VMO 句柄（门控
+/// Vmo+RIGHT_SET_POLICY，同 0x23）；`sv` = 源 VMO 句柄（0 = 零页臂）；
+/// `delta` = 恒等选源常数（页对齐 i64 可负——同 0x23）。repr(C) 16B：
+/// u32+u32+i64 自然布局 i64 恰落 offset 8 无填充、对齐 8。内核侧从用户
+/// 字节逐项小端拼装（`policy_tbl_parse`/`wait_many` 先例——不把用户字节
+/// 直 cast 成结构体指针）；`user/berry-sys` 手写双镜像（§8.3 原型层）。
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PagerWindow {
+    pub dv: u32,
+    pub sv: u32,
+    pub delta: i64,
+}
+const _: () = assert!(core::mem::size_of::<PagerWindow>() == 16);
+const _: () = assert!(core::mem::align_of::<PagerWindow>() == 8);
+
+/// 0x24 表帽（X-6 冻结 N=32——三源镜像：本帽 / `dpg::EREQ_SLOTS` /
+/// svcmgr `PAGER_SLOTS`；抬帽走 len 兼容（调用方传 n），不破冻）。
+const PAGER_TABLE_MAX: usize = 32;
+
+/// `pager_supply_mapped_table(tbl, n)`（0x24，X-6 刀① 批供表批，冻结裁决
+/// 2026-11-08）：0x23 的多窗一次收货形——`tbl` = 调用方 PagerWindow 数组、
+/// `n` ∈ [1,32]，整表拷入（栈 512B staging——`policy_tbl_parse` 2KB 栈先例；
+/// ADR #9 零分配「内核静态/栈」两路皆合，取栈路免新 static）。rc =
+/// **count-wins**：>0 = 供给成功页数（部分成功部分计、不回滚；失败槽
+/// faulter 恒唤重臂自愈——与 0x23 同义）；**0 供才报 errno**（-EINVAL =
+/// n 越界 / delta 非页对齐 / 聚合 NoneForVd；供给执行体错误（voe/vme 面）
+/// 0 供时以其本码报；-EBADF = 门败）。
+///
+/// 语义裁定（实施刀冻结，X-6 设计 §2.1/§2.2 原文口径）：
+/// - **整批门控先行**：全 n 窗双门（dv Vmo+SET_POLICY / sv Vmo+READ，同
+///   0x23 门面）+ 全 retain（2N ObjRefs 单一出口统一释放）后才进收货环
+///   ——懒门控会造半供给 + 晚 -EBADF 与 count-wins 打架；boot 探测
+///   0x24(dv:0,n:1) 依赖「门败早返 -EBADF」区分新核（在册）与旧核
+///   （未注册 -ENOTSUP）。混合失败局由此消解：门败恒在收货前整批拒。
+/// - **逐 dv continue-take**：`el0_take_for` 签式不动（E3d/e/f 零耦合，
+///   deliberate de-risk）——每窗内环抽干：Supplied → `pager_supply_one`
+///   原样复用 + 恒唤本槽 faulter + 计数，续取；NoneForVd → 跳次窗（零
+///   消费零唤醒）；同 dv 多窗各段独立（前窗已抽干，后窗即刻空跳）。
+/// - **阻塞二分**：池空且已供>0 → 即返计数不阻塞（调用方有进展）；池空
+///   且 0 供 → 泊 EL0 pager 键（同 0x23 阻塞收货——`block_current` 承担
+///   SVC 入口类持锁的放/取舞蹈），醒后**重扫整表**（虚醒由重扫吸收）。
+/// - KL 窗策略：整批 ≤32 页一窗（v1 单核简形；SMP 前强制复审——喘息点
+///   设计在案不启用，挂 G4 §8 邻位账本）。SUPPLY_BUF 逐页（KL 持有语义
+///   同 `dpg.rs`——单 handler 调用内顺序借还零重叠）。
+extern "C" fn sys_pager_supply_mapped_table(tf: &mut TrapFrame) -> i64 {
+    let (tbl_p, n) = (tf.regs[1], tf.regs[2] as usize);
+    if n == 0 || n > PAGER_TABLE_MAX {
+        // n 越界（全宽读——x2 高 32 位脏值同拒，不做 u32 截断受纳）。
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    let mut raw = [0u8; PAGER_TABLE_MAX * core::mem::size_of::<PagerWindow>()];
+    if let Err(e) = copy_from_user(el1, tbl_p, &mut raw[..n * 16]) {
+        return e as i64; // -EFAULT 透传（policy_tbl_parse 同口径）
+    }
+    let mut wins = [PagerWindow { dv: 0, sv: 0, delta: 0 }; PAGER_TABLE_MAX];
+    for i in 0..n {
+        let o = i * 16;
+        let w = PagerWindow {
+            dv: u32::from_le_bytes(raw[o..o + 4].try_into().unwrap()),
+            sv: u32::from_le_bytes(raw[o + 4..o + 8].try_into().unwrap()),
+            delta: i64::from_le_bytes(raw[o + 8..o + 16].try_into().unwrap()),
+        };
+        // delta 页对齐预检（0x23 fail-fast 先例——先于门控，参数面整批拒）。
+        if w.delta % PAGE_SIZE as i64 != 0 {
+            return ERR_INVALID_ARG as i64;
+        }
+        wins[i] = w;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 整批门控先行——错柄 fail fast 不入睡（0x23 门控纪律的整批版；
+    // get_raw 不 retain，此段零回滚面）。
+    let mut vds: [Option<NonNull<ObjRef>>; PAGER_TABLE_MAX] = [None; PAGER_TABLE_MAX];
+    let mut svs: [Option<NonNull<ObjRef>>; PAGER_TABLE_MAX] = [None; PAGER_TABLE_MAX];
+    for i in 0..n {
+        match t.get_raw(wins[i].dv, ObjType::Vmo, RIGHT_SET_POLICY) {
+            Ok((o, _)) => vds[i] = Some(o),
+            // 门败（坏句柄 -EBADF / 权利缺 -EACCES）——boot 探测判据形。
+            Err(e) => return e as i64,
+        }
+        if wins[i].sv != 0 {
+            match t.get_raw(wins[i].sv, ObjType::Vmo, RIGHT_READ) {
+                Ok((o, _)) => svs[i] = Some(o),
+                Err(e) => return e as i64,
+            }
+        }
+    }
+    // 跨睡眠钉活（0x23 单对 retain 纪律推广到 2N——睡眠期本表可变，retain
+    // 钉对象活性）；表内重复 handle 合法（各项独立 retain/release 守恒，
+    // `wait_many` 同款）。
+    for i in 0..n {
+        // SAFETY: get_raw 门控后对象在表；release 与此成对（唯一出口）。
+        unsafe { (*vds[i].unwrap().as_ptr()).retain() };
+        if let Some(s) = svs[i] {
+            unsafe { (*s.as_ptr()).retain() };
+        }
+    }
+    // dv 本体指针整批预解析一次（retain 钉活 → 跨 block 睡眠有效；供给体
+    // 身份验同源口径——get_raw 已门控 ObjType::Vmo，None 臂防御复检）。
+    let mut dv_ptrs = [core::ptr::null_mut::<Vmo>(); PAGER_TABLE_MAX];
+    for i in 0..n {
+        // SAFETY: get_raw 门控后取本体（只取地址；retain 钉活跨睡眠）。
+        dv_ptrs[i] = match unsafe { (*vds[i].unwrap().as_ptr()).obj.as_vmo_mut() } {
+            Some(v) => v as *mut Vmo,
+            None => {
+                // SAFETY: 与 retain 段成对（防御臂收尾，同唯一出口）。
+                unsafe { release_wins(&vds, &svs) };
+                return ERR_BAD_HANDLE as i64;
+            }
+        };
+    }
+    // 收货主环：逐 dv 内环 continue-take 抽干；全表扫毕无池空 → 聚合出环。
+    let mut count: usize = 0;
+    let mut last_err: Option<i64> = None; // 供给执行体错误（0 供时 errno 候选）
+    loop {
+        let mut park = false;
+        'wins: for i in 0..n {
+            loop {
+                match crate::dpg::el0_take_for(dv_ptrs[i]) {
+                    crate::dpg::El0Take::Supplied { far, asid, slot } => {
+                        let sel = SrcOff::Delta(wins[i].delta);
+                        let r = pager_supply_one(vds[i].unwrap(), svs[i], &sel, far, asid);
+                        // 恒唤**本槽** faulter（0x23 同义：成功 = eret 命中
+                        // 新叶；失败 = 重试再 fault 再认领自愈）；count-wins
+                        // 只计成功供给（失败不计数不回滚）。
+                        crate::dpg::el0_wake_faulter(slot);
+                        if r == 0 {
+                            count += 1;
+                        } else {
+                            last_err = Some(r);
+                        }
+                        continue; // continue-take：本 dv 抽干续取
+                    }
+                    // 本窗无武装臂——跳次窗（零消费零唤醒，让位面同 0x23）。
+                    crate::dpg::El0Take::NoneForVd => break,
+                    crate::dpg::El0Take::PoolEmpty => {
+                        if count > 0 {
+                            break 'wins; // 已供>0：即返计数不阻塞（调用方有进展）
+                        }
+                        park = true;
+                        break 'wins; // 0 供池空——出环泊键
+                    }
+                }
+            }
+        }
+        if !park {
+            break; // 全表扫毕（各窗皆 NoneForVd 出内环）——聚合出环
+        }
+        // 池空且 0 供：睡 EL0 pager 键（同 0x23 阻塞收货——SVC 入口类持锁
+        // 的放/取舞蹈由 block_current 承担；KL 全谱锁窗内查位+入队 = 无丢
+        // 唤醒）；醒后重扫整表（虚醒由重扫吸收）。
+        let _ = berry_sched::block_current(
+            crate::dpg::el0_pager_key(),
+            crate::dpg::DPG_WAKE_BIT,
+            u64::MAX,
+        );
+    }
+    let ret = if count > 0 {
+        count as i64
+    } else {
+        // 0 供才报 errno：聚合 NoneForVd → -EINVAL；供给执行体错误 → 本码
+        //（0x23 单发同码面的批形收口）。
+        last_err.unwrap_or(ERR_INVALID_ARG as i64)
+    };
+    // SAFETY: 与 retain 段成对（唯一出口）。
+    unsafe { release_wins(&vds, &svs) };
+    ret
+}
+
+/// 0x24 表批 2N ObjRefs 统一释放（单一出口，与整批 retain 成对）。
+///
+/// # SAFETY
+/// 各 Some 指针须均经 `get_raw` 门控 + `retain`（与调用方成对，恰释放一次）。
+unsafe fn release_wins(
+    vds: &[Option<NonNull<ObjRef>>; PAGER_TABLE_MAX],
+    svs: &[Option<NonNull<ObjRef>>; PAGER_TABLE_MAX],
+) {
+    for v in vds.iter().flatten() {
+        // SAFETY: 与整批 retain 成对（恰释放一次）。
+        unsafe { ObjRef::release(*v) };
+    }
+    for s in svs.iter().flatten() {
+        // SAFETY: 与整批 retain 成对（恰释放一次）。
+        unsafe { ObjRef::release(*s) };
+    }
 }
 
 /// 0x21/0x23 源偏选择：Fixed = 调用方钉死单偏（0x21）；Delta = 目标页偏 +
@@ -3443,9 +3632,11 @@ pub fn install() {
     // —— SQ+RQ+TABLE（0x2E）：0x21 pager_supply_pages（G4-2）——阻塞收货
     //（block_current SQ 面）+ 唤 faulter（wake→enqueue RQ 面）+ 双对象
     // 表门控；供给窗 = vmar 族同构 KL 面（pt_lock 嵌 KL 正序）。锁类对齐
-    // wait_one（同为「表 + 可睡」handler）。
+    // wait_one（同为「表 + 可睡」handler）。0x23（X-3b）同形挂同类；0x24
+    //（X-6 刀① 表批）多窗一次收货——表门控 ×N、供给/唤醒链同构，同类。
     reg(NR_PAGER_SUPPLY_PAGES, sys_pager_supply_pages, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_PAGER_SUPPLY_MAPPED, sys_pager_supply_mapped, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_PAGER_SUPPLY_MAPPED_TABLE, sys_pager_supply_mapped_table, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_PROCESS_CREATE, sys_process_create, SVC_CLASS_ALL);
     // —— RQ+TABLE（0x2C）：start 双号（enqueue 双核升序 + 表）——
     reg(NR_PROCESS_START, sys_process_start, SVC_CLASS_RQ_TABLE);

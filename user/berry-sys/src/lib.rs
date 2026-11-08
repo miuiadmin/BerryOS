@@ -322,6 +322,33 @@ pub extern "C" fn berry_pager_supply_mapped(vmo: Handle, src: Handle, delta: i64
     unsafe { sys(nr::PAGER_SUPPLY_MAPPED, vmo as usize, src as usize, delta as usize, 0, 0, 0) }
 }
 
+/// `PagerWindow`（0x24 表批窗，X-6 刀① 冻结面——`X6批供提速设计-v1.0.md`
+/// §2.1：布局一次定全即冻）：`dv` = 目标 demand VMO 句柄（门控
+/// Vmo+SET_POLICY，同 0x23）；`sv` = 源 VMO 句柄（0 = 零页臂）；`delta` =
+/// 恒等选源常数（页对齐 i64 可负——同 0x23）。repr(C) 16B/项，内核侧逐项
+/// 小端拼装（`kernel/src/syscall.rs` 手写双镜像——§8.3 原型层纪律）。
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PagerWindow {
+    pub dv: Handle,
+    pub sv: Handle,
+    pub delta: i64,
+}
+const _: () = assert!(core::mem::size_of::<PagerWindow>() == 16);
+const _: () = assert!(core::mem::align_of::<PagerWindow>() == 8);
+
+/// `pager_supply_mapped_table(tbl, n)`（0x24，X-6 刀① 批供表批）：0x23 的
+/// 多窗一次收货形——`tbl` = PagerWindow 数组、`n` ∈ [1,32]。rc =
+/// **count-wins**：>0 = 供给成功页数（部分成功部分计、不回滚；失败槽
+/// faulter 恒唤自愈）；**0 供才报 errno**（-EINVAL = n 越界 / delta 非页
+/// 对齐 / 聚合 NoneForVd；-EBADF = 门败）。阻塞二分同 0x23：池空且已
+/// 供>0 → 即返计数；池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测形
+/// `tbl=[{dv:0,sv:0,delta:0}], n=1` → 新核 -EBADF / 旧核 -ENOTSUP。
+#[no_mangle]
+pub extern "C" fn berry_pager_supply_mapped_table(tbl: *const PagerWindow, n: u32) -> Status {
+    unsafe { sys(nr::PAGER_SUPPLY_MAPPED_TABLE, tbl as usize, n as usize, 0, 0, 0, 0) }
+}
+
 // —— 进程 / 线程 ——
 
 /// 双出参（`*process, *vmar`——Zircon 同形：父须拿子地址空间根才能装代码）。

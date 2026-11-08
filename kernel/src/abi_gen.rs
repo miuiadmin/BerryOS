@@ -3,13 +3,13 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=36（v1 在册）/
-//! nr_defined=40（v1+1.1 常量层）/ nr_registered=39（已挂派发）/
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=37（v1 在册）/
+//! nr_defined=41（v1+1.1 常量层）/ nr_registered=40（已挂派发）/
 //! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 36 号在册、35 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 37 号在册、36 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -45,6 +45,14 @@ pub const NR_PAGER_SUPPLY_PAGES: usize = 0x21;
 /// 唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
 /// VMO 页须 pre-commit（§2.2 防线 4）。
 pub const NR_PAGER_SUPPLY_MAPPED: usize = 0x23;
+/// X-6 刀①（批供提速）表批形，冻结裁决 2026-11-08（设计稿
+/// `X6批供提速设计-v1.0.md` §7 主裁③「全套照提案冻」）：号 0x24 / N=32
+/// 三源镜像（EREQ_SLOTS / PAGER_SLOTS / 表帽）/ count-in-x0 / PagerWindow
+/// 布局一次定全即冻。每窗门控/供给/唤醒链与 0x23 同构（阻塞收货 +
+/// poll-first 睡 pager 裸键）；整批 ≤32 页一 KL 窗；池空且已供>0 → 即返
+/// 计数不阻塞，池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测回退：
+/// 0x24(dv:0,n:1) 新核 -EBADF / 旧核 -ENOTSUP。
+pub const NR_PAGER_SUPPLY_MAPPED_TABLE: usize = 0x24;
 pub const NR_PROCESS_CREATE: usize = 0x31;
 pub const NR_PROCESS_START: usize = 0x32;
 /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。

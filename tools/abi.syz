@@ -59,7 +59,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 36 号、已实现 35；
+# ---- syscall 入口（§4 编号表全量在册；v1 37 号、已实现 36；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -124,6 +124,15 @@ pager_op_range(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 #   唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
 #   VMO 页须 pre-commit（§2.2 防线 4）。
 pager_supply_mapped(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x24 pager_supply_mapped_table（v1）——用户态 pager 批供：入参 tbl（PagerWindow{dv:u32, sv:u32, delta:i64} 16B/项 repr(C) 数组）+ n（∈[1,32]）——多窗一次收货，rc = count-wins：>0 = 供给成功页数（部分成功部分计、不回滚），0 供才报 errno
+#   note: X-6 刀①（批供提速）表批形，冻结裁决 2026-11-08（设计稿
+#   `X6批供提速设计-v1.0.md` §7 主裁③「全套照提案冻」）：号 0x24 / N=32
+#   三源镜像（EREQ_SLOTS / PAGER_SLOTS / 表帽）/ count-in-x0 / PagerWindow
+#   布局一次定全即冻。每窗门控/供给/唤醒链与 0x23 同构（阻塞收货 +
+#   poll-first 睡 pager 裸键）；整批 ≤32 页一 KL 窗；池空且已供>0 → 即返
+#   计数不阻塞，池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测回退：
+#   0x24(dv:0,n:1) 新核 -EBADF / 旧核 -ENOTSUP。
+pager_supply_mapped_table(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **进程 / 线程**
 # 0x31 process_create（v1）——建进程 + 出 root Vmar（双出参；job v1 恒 0）
