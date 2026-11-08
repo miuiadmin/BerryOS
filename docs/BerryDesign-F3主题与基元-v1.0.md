@@ -148,7 +148,7 @@ F3 golden 钉板：
 F3 后 rootfs 与五个迁移前 Native Shell 包体：
 
 ```text
-rootfs       33,501,392B / 33,554,432B，余 53,040B
+rootfs 33,501,392B；单卷 cap 33,554,432B，单卷余 53,040B；总量 cap 134,217,728B
 BROWSER.bap   31,868B
 SETTINGS.bap  27,744B
 FILES.bap     28,120B

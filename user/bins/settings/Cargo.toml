@@ -2,17 +2,17 @@
 name = "settings"
 version = "0.1.0"
 edition = "2021"
-# Settings Native Shell：独立 no_std GUI 进程。真实 WM session/窗口/
-# 局部 VMO/owner 输入；WLAN 与 Bluetooth 是本进程内存态的真实切换控件
-# （v1 不接驱动/持久化，不声称系统级设置已生效）。
+# GUI F6 迁移 Settings：Berry Room 负责 WM/窗口/frame/输入/销毁，
+# BerryUI/Berry Design 负责组件、主题与状态视觉；WLAN/Bluetooth 是本进程
+# 内存态真实切换（v1 不接驱动/持久化）。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-guiproto = { path = "../../berry-guiproto" }
-berry-nshfont = { path = "../../berry-nshfont" }
-berry-sys = { path = "../../berry-sys" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-room = { path = "../../berry-room" }
+berry-ui = { path = "../../berry-ui", features = ["guest-font-vmo"] }
 
 [profile.release]
 opt-level = "z"

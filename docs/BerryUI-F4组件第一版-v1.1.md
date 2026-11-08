@@ -2,7 +2,7 @@
 
 > 版本：**1.1**｜2026-11-08
 >
-> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。1.1 为 F5 预算收口：EmptyState 说明文本改用 Body，Caption 仍是 Text API 并由 host 测试覆盖。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 的协议已由 P0 冻结，buffer 分配与生产接线归后续消费刀。
+> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。1.1 为 F5/F6 系统字形收口：EmptyState 说明与 ListItem detail 改用 Body，Caption 仍是 Text API 并由 host 测试覆盖。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 的协议已由 P0 冻结，buffer 分配与生产接线归后续消费刀。
 
 ## §1 组合基元
 
@@ -96,7 +96,7 @@ BUI 解析
 | Text | Text + TextVariant | Title/Body/Caption | 排版档、a11y、标题像素锚 |
 | Icon | Icon + primary + Spacing::L | 像素经 IconSource | 16px Compact 尺寸、四角 SmoothArgb 像素锚 |
 | Button | Panel + Radius::Small + Text + a11y button | Normal/Pressed/Disabled/Selected；Disabled 忽略 Press/Click；Click 返回 true，业务动作仍归 app | a11y、Disabled 拒绝、Click、离屏状态色 |
-| ListItem | Panel + title + detail + a11y list item | Normal/Selected | 标题/说明布局、选中态、离屏像素 |
+| ListItem | Panel + title + Body detail + a11y list item | Normal/Selected | 标题/说明布局、选中态、离屏像素 |
 | Switch | pill-radius Panel + Row + spacer + Circle + a11y toggle | checked/disabled；Checked 用 Selected token；Click 可翻转视觉态；Disabled 忽略输入 | Compact 52×28、travel 28、a11y on/off、选中色 |
 | Divider | Rect(outline) + Thin stroke | 无独立状态 | Compact 1px / Product 2px |
 | Scroll | Panel + content Col + offset | DragStart/DragMove/DragEnd；offset clamp 到 content−viewport | 150−80 内容 clamp 20→70、bounds 随 offset |
@@ -123,7 +123,7 @@ ScrollView v1 使用 `Ui::set_offset` 移动内容，并按 `content.h − viewp
 |---|---|
 | Panel core + AST | `tests/widgets.rs::panel_is_drawn_container_and_roundtrips_ast` |
 | RoundRect 命令 | `berry-gfx/tests/round_rect.rs`：命令回放与 direct surface 逐字节一致；dirty clip 外零写 |
-| Scaffold/核心组件/状态/a11y | `tests/widgets.rs::scaffold_core_widgets_layout_state_and_a11y` |
+| Scaffold/核心组件/状态/a11y / ListItem detail=Body | `tests/widgets.rs::scaffold_core_widgets_layout_state_and_a11y` |
 | Row/Icon/EmptyState/hit | `tests/widgets.rs::row_icon_empty_state_and_hit_truth` |
 | Scroll clamp/drag | `tests/widgets.rs::scrollview_clamps_drag_and_updates_bounds` |
 | 文本容量拒面 | `tests/widgets.rs::widget_text_over_cap_is_loud` |
@@ -158,9 +158,10 @@ BerryUI 默认面、S7 面、no_std 构建均通过。
 F4 收口时 guest app 尚未消费 Widget 模块，LTO 裁剪生效：
 
 ```text
-rootfs = 33,502,608B
-cap    = 33,554,432B
-余量   = 51,824B
+rootfs        = 33,502,608B
+单卷 cap      = 33,554,432B
+单卷余量      = 51,824B
+总量 cap      = 134,217,728B
 ```
 
 五个迁移前 Native Shell 包体：

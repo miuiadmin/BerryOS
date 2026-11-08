@@ -368,9 +368,10 @@ WM 授予帧保留 off7 前向兼容锚与非 OK 1B 错误形
 P0 是 host 协议刀，未用协议面经 LTO 裁剪，rootfs 与 F5 相同：
 
 ```text
-rootfs = 33,553,480B
-cap    = 33,554,432B
-余量   = 952B
+rootfs   = 33,553,480B
+单卷 cap = 33,554,432B
+单卷余量 = 952B
+总量 cap = 134,217,728B
 UITEST.bap = 64,416B
 ```
 

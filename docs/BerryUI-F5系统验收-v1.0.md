@@ -214,9 +214,10 @@ writable_globals
 F5 预算：
 
 ```text
-rootfs = 33,553,480B
-cap    = 33,554,432B
-余量   = 952B
+rootfs   = 33,553,480B
+单卷 cap = 33,554,432B
+单卷余量 = 952B
+总量 cap = 134,217,728B
 UITEST.bap = 64,416B
 stack_pages = 48
 ```

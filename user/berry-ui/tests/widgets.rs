@@ -148,6 +148,12 @@ fn scaffold_core_widgets_layout_state_and_a11y() {
         .on_msg(&mut ui, &context, &Msg::Click { node: button.label })
         .unwrap();
     assert!(clicked);
+    let detail = item.detail.expect("ListItem detail");
+    assert_eq!(
+        ui.bounds(detail).unwrap().h,
+        32,
+        "ListItem detail = Body S16x32（guest S32 档同源）"
+    );
     let click_layout = ui.layout();
     assert_eq!(click_layout.measured, 0, "Button 纯状态换色零重测");
     let mut disabled =

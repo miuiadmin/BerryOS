@@ -1090,6 +1090,17 @@ def verify_normal_boot(
     # runtime 初帧 + WLAN 重绘 + Bluetooth 重绘。
     _require_exact_count(text, MARK_SETTINGS_FRAME, settings_before + 3, "normal Settings", log_path)
     _require_exact_count(text, MARK_SETTINGS_GEOM, settings_before + 1, "normal Settings", log_path)
+    _require_exact_count(text, "SETTINGSLAYOUT ok", settings_before + 1, "normal Settings layout", log_path)
+    _require_exact_count(text, "SETTINGSRENDER ok seq=", settings_before + 3, "normal Settings render", log_path)
+    _require_exact_count(
+        text, "SETTINGSSTATE ok n=1 wlan=1 bluetooth=0", 1,
+        "normal Settings WLAN state", log_path,
+    )
+    _require_exact_count(
+        text, "SETTINGSSTATE ok n=2 wlan=1 bluetooth=1", 1,
+        "normal Settings Bluetooth state", log_path,
+    )
+    _require_exact_count(text, "SETTINGSHIT ok node=back", 1, "normal Settings back hit", log_path)
     _require_exact_count(text, MARK_SETTINGS_TOGGLE1, 1, "normal Settings toggle", log_path)
     _require_exact_count(text, MARK_SETTINGS_TOGGLE2, 1, "normal Settings toggle", log_path)
     _require_exact_count(text, MARK_SETTINGS_BACK, 1, "normal Settings back", log_path)
@@ -1210,6 +1221,30 @@ def latest_uitest_button(
         raise SmokeError(f"UITEST layout page={page} 缺失", None)
     m = matches[-1]
     return tuple(int(m.group(i)) for i in range(4, 8))  # type: ignore[return-value]
+
+
+SETTINGS_LAYOUT_RE = re.compile(
+    r"SETTINGSLAYOUT ok back=(-?\d+),(-?\d+),(\d+),(\d+) "
+    r"wlan=(-?\d+),(-?\d+),(\d+),(\d+) "
+    r"bluetooth=(-?\d+),(-?\d+),(\d+),(\d+)"
+)
+
+
+def latest_settings_rect(
+    text: str, name: str, start: int = 0,
+) -> tuple[int, int, int, int]:
+    groups = {"back": (1, 2, 3, 4), "wlan": (5, 6, 7, 8), "bluetooth": (9, 10, 11, 12)}
+    matches = [
+        match for match in SETTINGS_LAYOUT_RE.finditer(text) if match.start() >= start
+    ]
+    if not matches:
+        raise SmokeError(f"Settings layout {name} 缺失", None)
+    match = matches[-1]
+    return tuple(int(match.group(i)) for i in groups[name])  # type: ignore[return-value]
+
+
+def rect_center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
+    return rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
 
 
 def verify_uitest_normal(
@@ -2021,7 +2056,7 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
-        # —— Settings Native Shell：dock 点击 → 两项状态切换 → back。 ——
+        # —— Settings BerryUI app：dock 点击 → 两项状态切换 → back。 ——
         time.sleep(1.0)
         log("normal-settings: QMP 点击 SmartDock SETTINGS（真实 APP_SPAWN）")
         boot.qmp.click(626, 1668, w, h)
@@ -2042,8 +2077,10 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
-        log("normal-settings: QMP 点击 WLAN 行（owner-local 状态切换 + 重绘）")
-        boot.qmp.click(400, 274, w, h)
+        wlan_rect = latest_settings_rect(boot.log.text, "wlan", snapshot_pos)
+        wlan_click = rect_center(wlan_rect)
+        log(f"normal-settings: QMP 点击 WLAN Switch ({wlan_click[0]},{wlan_click[1]})")
+        boot.qmp.click(wlan_click[0], wlan_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2061,8 +2098,13 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
-        log("normal-settings: QMP 点击 Bluetooth 行（第二状态 + 重绘）")
-        boot.qmp.click(400, 454, w, h)
+        bluetooth_rect = latest_settings_rect(boot.log.text, "bluetooth", snapshot_pos)
+        bluetooth_click = rect_center(bluetooth_rect)
+        log(
+            f"normal-settings: QMP 点击 Bluetooth Switch "
+            f"({bluetooth_click[0]},{bluetooth_click[1]})"
+        )
+        boot.qmp.click(bluetooth_click[0], bluetooth_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2080,20 +2122,32 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
-        # 像素反 mock：两个开关都必须真实变绿，顶栏/行底同步对锚。
+        # 像素反 mock：两个开关必须变 Berry Theme Selected 蓝，主题面同步对锚。
         shot = run_dir / "settings-native.ppm"
         boot.qmp.screendump(shot)
-        assert_pixel_close(ppm_pixel(shot, 540, 60), (13, 110, 143), "Settings 顶栏", boot.log_path)
-        assert_pixel_close(ppm_pixel(shot, 540, 285), (255, 255, 255), "WLAN 行底", boot.log_path)
-        assert_pixel_close(ppm_pixel(shot, 900, 270), (0, 139, 111), "WLAN 开关", boot.log_path)
-        assert_pixel_close(ppm_pixel(shot, 900, 450), (0, 139, 111), "Bluetooth 开关", boot.log_path)
-        assert_color_count(
-            shot, (30, 220, 320, 300), 128, "Settings HD A8 文本", boot.log_path,
+        assert_pixel_close(ppm_pixel(shot, 540, 20), (0, 116, 224), "Settings AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(shot, 540, 600), (255, 255, 255), "Settings surface", boot.log_path)
+        assert_pixel_close(
+            ppm_pixel(shot, wlan_click[0], wlan_click[1]),
+            (214, 228, 255),
+            "Settings WLAN Selected",
+            boot.log_path,
         )
-        log("normal-settings: QEMU 截图像素/色数锚 ok（双开关/顶栏/行底/HD A8）")
+        assert_pixel_close(
+            ppm_pixel(shot, bluetooth_click[0], bluetooth_click[1]),
+            (214, 228, 255),
+            "Settings Bluetooth Selected",
+            boot.log_path,
+        )
+        assert_color_count(
+            shot, (20, 90, 700, 330), 128, "Settings 系统 A8 文本", boot.log_path,
+        )
+        log("normal-settings: BerryUI 像素/色数锚 ok（AppBar/surface/双Switch/A8）")
 
-        log("normal-settings: QMP 点击 Settings 返回键（销毁窗口）")
-        boot.qmp.click(80, 80, w, h)
+        back_rect = latest_settings_rect(boot.log.text, "back", snapshot_pos)
+        back_click = rect_center(back_rect)
+        log(f"normal-settings: QMP 点击 Back Button ({back_click[0]},{back_click[1]})")
+        boot.qmp.click(back_click[0], back_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2509,15 +2563,15 @@ def run_normal_boot(args) -> int:
         verify_uitest_normal(watcher.text, snapshot_pos, uitest_before, log_path)
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-native: Browser/Settings/Files/Photos/Contacts 五独立进程、"
-            "真实 WM 窗口/帧、状态/fs/图像/联系人记录全链全过；"
-            "UITEST 以 BerryUI 组件/主题/滚动/状态/返回栈走 Berry Room 全链；"
+            "normal-native: Browser/Files/Photos/Contacts 四个迁移前基线、"
+            "Settings/UITEST 两个 BerryUI app 均以独立进程完成真实 WM 窗口/帧、"
+            "状态/fs/图像/联系人记录与销毁全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：五 Native Shell + F5 BerryUI/Berry Room 真链 + "
+            "PASS（--normal-boot）：四 Native Shell + Settings/UITEST BerryUI 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -2966,18 +3020,32 @@ def self_test(args) -> int:
         )
         settings_boot = (
             f"{MARK_SETTINGS_UP}\n{MARK_SETTINGS_WIN}\n"
-            f"{MARK_SETTINGS_FRAME}\n{MARK_SETTINGS_GEOM}\n"
+            "SETTINGSLAYOUT ok back=12,72,1056,60 wlan=146,141,78,42 "
+            "bluetooth=306,203,78,42\n"
+            f"{MARK_SETTINGS_GEOM}\n"
+            "SETTINGSRENDER ok seq=1 cmds=22\n"
+            f"{MARK_SETTINGS_FRAME}\n"
             f"{MARK_SETTINGS_PROBE}\n{MARK_SETTINGS_DESTROY}\n"
             f"{MARK_SETTINGS_EXIT}\n"
         )
         settings_runtime = (
             f"{MARK_SETTINGS_UP}\n{MARK_SETTINGS_WIN}\n"
-            f"{MARK_SETTINGS_FRAME}\n{MARK_SETTINGS_GEOM}\n"
+            "SETTINGSLAYOUT ok back=12,72,1056,60 wlan=146,141,78,42 "
+            "bluetooth=306,203,78,42\n"
+            f"{MARK_SETTINGS_GEOM}\n"
+            "SETTINGSRENDER ok seq=1 cmds=22\n"
+            f"{MARK_SETTINGS_FRAME}\n"
+            "SETTINGSSTATE ok n=1 wlan=1 bluetooth=0\n"
             f"{MARK_SETTINGS_TOGGLE1}\n{MARK_SETTINGS_FRAME}\n"
+            "SETTINGSRENDER ok seq=2 cmds=22\n"
+            "SETTINGSSTATE ok n=2 wlan=1 bluetooth=1\n"
             f"{MARK_SETTINGS_TOGGLE2}\n{MARK_SETTINGS_FRAME}\n"
+            "SETTINGSRENDER ok seq=3 cmds=22\n"
+            "SETTINGSHIT ok node=back x=539 y=101\n"
             f"{MARK_SETTINGS_BACK}\n{MARK_SETTINGS_DESTROY}\n"
             f"{MARK_SETTINGS_EXIT}\n"
         )
+
         files_boot = (
             f"{MARK_FILES_UP}\n{MARK_FILES_WIN}\n{MARK_FILES_LIST}\n"
             f"{MARK_FILES_SEL}1\n{MARK_FILES_FRAME}\n{MARK_FILES_PROBE}\n"
@@ -3156,8 +3224,8 @@ def self_test(args) -> int:
             ),
         )
         log(
-            "self-test: 五 Native Shell 常态断言 ok（五独立进程、状态/文件/"
-            "图像/联系人记录、重绘与销毁；冒烟标记全零）"
+            "self-test: 常态 GUI app 断言 ok（五独立进程、Settings BerryUI 状态/"
+            "四基线真实数据链、重绘与销毁；冒烟标记全零）"
         )
 
         uitest_boot = (

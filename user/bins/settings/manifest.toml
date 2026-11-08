@@ -10,7 +10,7 @@ console = true
 wm = true
 
 [runtime]
-stack_pages = 16
+stack_pages = 48
 
 [ui]
 icon = "icons/icon.byi"

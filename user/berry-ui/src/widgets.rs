@@ -391,10 +391,13 @@ impl ListItem {
             text_spec(title, state.content, ctx.metrics.typography(TypographyToken::Body))?,
         )?;
         let detail_id = match detail {
+            // F6 起客机系统 VMO 只有 32×48 A8 档；detail 用 Body 避免
+            // Caption 拉入 S24 静态表或在 guest 档空绘。Caption 仍是公开
+            // TextVariant，由 host widget 测试单独钉板。
             Some(bytes) => Some(add(
                 ui,
                 panel,
-                text_spec(bytes, ctx.theme.colors.text_secondary, ctx.metrics.typography(TypographyToken::Caption))?,
+                text_spec(bytes, ctx.theme.colors.text_secondary, ctx.metrics.typography(TypographyToken::Body))?,
             )?),
             None => None,
         };

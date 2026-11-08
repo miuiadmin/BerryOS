@@ -1,469 +1,437 @@
-//! Settings Native Shell —— 独立 GUI 进程与真实 owner 输入状态机。
+//! SETTINGS —— GUI F6 的第一个迁移普通应用。
 //!
-//! 链路与 Browser Native Shell 同族：`wm=true` → WMD broker → 自建
-//! WM/input session → 全屏窗口 → 局部 VMO → wmd composition。区别在
-//! runtime 不是单返回键：WLAN/Bluetooth 两行接收 window-local UP，切换
-//! 进程内状态并重绘新帧；v1 不声称驱动或持久化已接入。
+//! 本 app 只持有设置业务状态并组合 BerryUI 组件；WM session、窗口、frame
+//! VMO、系统字形、owner-local 输入与销毁清理归 Berry Room。DisplayList 由
+//! BerryUI 发射、Berry Room 光栅化；app 不解析 WM RPC、不映射 VMO、不计算
+//! stride、不写像素循环，也不复制系统字表。
 
 #![no_std]
 #![no_main]
 
-use berry_guiproto as gp;
-use berry_nshfont::{circle, map as map_font, round_rect, shadow, text};
-use berry_sys::{
-    berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
-    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_exit,
-    berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN,
-    BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_WRITABLE,
+use berry_gfx::cmd::{CommandEncoder, GlyphPos};
+use berry_gfx::font::FontSize;
+use berry_room::{
+    AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PointerEvent, RoomConfig, Sample,
+    SYSTEM_FONT_ATLAS,
+};
+use berry_ui::hit::PtrEvent;
+use berry_ui::sdk::{
+    Button, Card, FontSource, InteractionState, ListItem, Msg, RectI, Scaffold, ScrollView,
+    Switch, TextVariant, Theme, Ui, WidgetContext, column, divider, row, text,
 };
 
-const FRAME_VA: usize = 0x5200_0000;
-const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
-const ROWS: [&[u8]; 6] = [
-    b"WLAN", b"Bluetooth", b"Display", b"Sounds", b"Battery", b"About phone",
-];
+type Ui64 = Ui<64>;
 
-struct Env {
-    boot_probe: bool,
-    console: Handle,
-    process: Handle,
-    vmar: Handle,
-    broker: Handle,
-}
-
-#[derive(Clone, Copy)]
-struct Layout {
-    bar: usize,
-    row_h: usize,
-    top: usize,
-}
-
-#[derive(Clone, Copy)]
-struct State {
+struct App {
+    ui: Ui64,
+    ctx: WidgetContext,
+    page: Page,
     wlan: bool,
     bluetooth: bool,
+    frame_seq: u32,
+    toggles: u32,
 }
 
-fn now() -> u64 {
-    let mut t = 0u64;
-    if berry_clock_read(CLOCK_MONOTONIC, &mut t) != 0 {
-        berry_process_exit(134);
-    }
-    t
+struct Page {
+    scroll: ScrollView,
+    back: Button,
+    wlan: Switch,
+    bluetooth: Switch,
 }
 
-fn send(console: Handle, bytes: &[u8]) {
-    let deadline = now() + RPC_CAP_NS;
-    loop {
-        let s = berry_channel_send(console, bytes.as_ptr(), bytes.len(), core::ptr::null(), 0);
-        if s == 0 {
-            return;
-        }
-        if s != BERRY_ERR_BUSY {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(console, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            berry_process_exit(134);
-        }
+struct RoomFontSource;
+static ROOM_FONT_SOURCE: RoomFontSource = RoomFontSource;
+
+impl FontSource for RoomFontSource {
+    fn atlas(&self, scale: FontSize) -> Option<&'static dyn berry_gfx::font::GlyphAtlas> {
+        (scale == FontSize::S32x48).then_some(&SYSTEM_FONT_ATLAS)
     }
 }
 
-fn fail(console: Handle, what: &str) -> ! {
+fn append_u32(out: &mut [u8], mut value: u32) -> usize {
+    let mut digits = [0u8; 10];
+    let mut n = 0usize;
+    if value == 0 {
+        digits[0] = b'0';
+        n = 1;
+    }
+    while value != 0 && n < digits.len() {
+        digits[n] = b'0' + (value % 10) as u8;
+        value /= 10;
+        n += 1;
+    }
+    let mut written = 0usize;
+    while n > 0 && written < out.len() {
+        n -= 1;
+        out[written] = digits[n];
+        written += 1;
+    }
+    written
+}
+
+struct Line {
+    bytes: [u8; 192],
+    len: usize,
+}
+
+impl Line {
+    fn new(head: &[u8]) -> Self {
+        let mut bytes = [0u8; 192];
+        let n = head.len().min(bytes.len());
+        bytes[..n].copy_from_slice(&head[..n]);
+        Self { bytes, len: n }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + n].copy_from_slice(&bytes[..n]);
+        self.len += n;
+    }
+
+    fn push_u32(&mut self, value: u32) {
+        let mut buf = [0u8; 10];
+        let n = append_u32(&mut buf, value);
+        self.push(&buf[..n]);
+    }
+
+    fn point(&mut self, x: i32, y: i32) {
+        let mut buf = [0u8; 12];
+        let mut n = 0usize;
+        if x < 0 {
+            buf[0] = b'-';
+            n = 1;
+        }
+        let ux = if x == i32::MIN { 2_147_483_648u32 } else { x.unsigned_abs() };
+        n += append_u32(&mut buf[n..], ux);
+        self.push(&buf[..n]);
+        self.push(b",");
+        let mut buf = [0u8; 12];
+        let mut n = 0usize;
+        if y < 0 {
+            buf[0] = b'-';
+            n = 1;
+        }
+        let uy = if y == i32::MIN { 2_147_483_648u32 } else { y.unsigned_abs() };
+        n += append_u32(&mut buf[n..], uy);
+        self.push(&buf[..n]);
+    }
+
+    fn rect(&mut self, rect: RectI) {
+        self.point(rect.x, rect.y);
+        self.push(b",");
+        self.point(rect.w, rect.h);
+    }
+
+    fn print(&self, room: &AppRoom) {
+        room.print(&self.bytes[..self.len]);
+    }
+}
+
+fn fail(room: &AppRoom, what: &str) -> ! {
     let mut line = [0u8; 96];
     let head = b"settings: ";
     line[..head.len()].copy_from_slice(head);
-    let n = what.len().min(line.len() - head.len());
-    line[head.len()..head.len() + n].copy_from_slice(&what.as_bytes()[..n]);
-    send(console, &line[..head.len() + n]);
-    berry_process_exit(134)
+    let n = head.len() + what.len().min(line.len() - head.len());
+    line[head.len()..n].copy_from_slice(&what.as_bytes()[..n - head.len()]);
+    room.print(&line[..n]);
+    room.exit(134)
 }
 
-fn read_env(env_ch: Handle) -> Env {
-    let mut blob = [0u8; 192];
-    let mut hs = [0 as Handle; 8];
-    let mut nb = blob.len();
-    let mut nh = hs.len();
-    if berry_channel_recv(env_ch, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0
-        || nh < 5
-        || nb <= b"bin/settings".len()
-        || &blob[..b"bin/settings".len()] != b"bin/settings"
-        || hs[2] == 0
-        || hs[3] == 0
-        || hs[4] == 0
-    {
-        berry_process_exit(134);
+fn build_page(ui: &mut Ui64, ctx: &WidgetContext) -> Page {
+    let root = ui.root();
+    let scaffold = match Scaffold::new(ui, root, ctx, b"Settings") {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let (_, viewport_h) = ui.viewport();
+    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
+    let bar_h = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
+    let body_h = viewport_h.saturating_sub(bar_h);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let card = match Card::new(ui, scroll.content, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let stack = match column(ui, card.panel, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+
+    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let wlan_row = match row(ui, stack, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    match text(ui, wlan_row, ctx, TextVariant::Body, b"WLAN") {
+        Ok(_) => {}
+        Err(_) => berry_room::panic_exit(134),
     }
-    let boot_probe = blob[..nb]
-        .windows(b"\0boot-probe".len())
-        .any(|w| w == b"\0boot-probe");
-    Env {
-        boot_probe,
-        console: hs[0],
-        process: hs[2],
-        vmar: hs[3],
-        broker: hs[4],
+    let wlan = match Switch::new(ui, wlan_row, ctx, false, false) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    match divider(ui, stack, ctx) {
+        Ok(_) => {}
+        Err(_) => berry_room::panic_exit(134),
     }
+    let bluetooth_row = match row(ui, stack, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    match text(ui, bluetooth_row, ctx, TextVariant::Body, b"Bluetooth") {
+        Ok(_) => {}
+        Err(_) => berry_room::panic_exit(134),
+    }
+    let bluetooth = match Switch::new(ui, bluetooth_row, ctx, false, false) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+
+    let rows: &[(&[u8], Option<&[u8]>)] = &[
+        (b"Display", Some(&b"Brightness and timeout"[..])),
+        (b"Sounds", Some(&b"Volume and haptics"[..])),
+        (b"Battery", Some(&b"Usage and saver"[..])),
+        (b"About phone", None),
+    ];
+    for (title, detail) in rows {
+        match ListItem::new(ui, stack, ctx, title, *detail, false) {
+            Ok(_) => {}
+            Err(_) => berry_room::panic_exit(134),
+        }
+    }
+
+    Page { scroll, back, wlan, bluetooth }
 }
 
-fn rpc(
-    ch: Handle,
-    req: &[u8],
-    attach: &[Handle],
-    rep: &mut [u8; 256],
-    rhs: &mut [Handle; 8],
-) -> (usize, usize) {
-    let deadline = now() + RPC_CAP_NS;
-    loop {
-        let (hp, hn) = if attach.is_empty() {
-            (core::ptr::null(), 0)
-        } else {
-            (attach.as_ptr(), attach.len())
+impl App {
+    fn render(&mut self, room: &mut AppRoom) -> u32 {
+        let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 128];
+        let mut encoder = CommandEncoder::new();
+        self.ui.wake(0);
+        let outcome = self.ui.render_frame(0, &mut scratch, &mut encoder);
+        if !outcome.drew {
+            fail(room, "no damage");
+        }
+        let list = encoder.finish();
+        let commands = match room.render_display_list(&list) {
+            Ok(commands) => commands,
+            Err(error) => fail(room, error.as_str()),
         };
-        let s = berry_channel_send(ch, req.as_ptr(), req.len(), hp, hn);
-        if s == 0 {
-            break;
+        self.frame_seq = self.frame_seq.saturating_add(1);
+        if let Err(error) = room.submit(self.frame_seq) {
+            fail(room, error.as_str());
         }
-        if s != BERRY_ERR_BUSY {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(ch, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            berry_process_exit(134);
+        let mut line = Line::new(b"SETTINGSRENDER ok seq=");
+        line.push_u32(self.frame_seq);
+        line.push(b" cmds=");
+        line.push_u32(commands as u32);
+        line.push(b"\n");
+        line.print(room);
+        self.frame_seq
+    }
+
+    fn print_layout(&self, room: &AppRoom) {
+        let back = self.ui.bounds(self.page.back.panel).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let wlan = self.ui.bounds(self.page.wlan.panel).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let bluetooth = self.ui.bounds(self.page.bluetooth.panel).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let mut line = Line::new(b"SETTINGSLAYOUT ok back=");
+        line.rect(back);
+        line.push(b" wlan=");
+        line.rect(wlan);
+        line.push(b" bluetooth=");
+        line.rect(bluetooth);
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn print_hit(&self, room: &AppRoom, x: u32, y: u32, what: &[u8]) {
+        let mut line = Line::new(b"SETTINGSHIT ok node=");
+        line.push(what);
+        line.push(b" x=");
+        line.push_u32(x);
+        line.push(b" y=");
+        line.push_u32(y);
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn print_state(&self, room: &AppRoom, count: u32) {
+        let mut line = Line::new(b"SETTINGSSTATE ok n=");
+        line.push_u32(count);
+        line.push(b" wlan=");
+        line.push_u32(u32::from(self.wlan));
+        line.push(b" bluetooth=");
+        line.push_u32(u32::from(self.bluetooth));
+        line.push(b"\n");
+        line.print(room);
+    }
+}
+
+fn pointer_event(event: &PointerEvent) -> PtrEvent {
+    PtrEvent::from_wire(
+        event.phase,
+        event.pointer_id,
+        event.x,
+        event.y,
+        event.timestamp_ns,
+        event.buttons,
+        event.pressure,
+    )
+}
+
+fn empty_event() -> PointerEvent {
+    PointerEvent {
+        phase: 0,
+        device_id: 0,
+        buttons: 0,
+        flags: 0,
+        pointer_id: 0,
+        timestamp_ns: 0,
+        x: 0,
+        y: 0,
+        pressure: 0,
+        contact_major: 0,
+        contact_minor: 0,
+        history: [Sample { timestamp_ns: 0, x: 0, y: 0 }; INPUT_SAMPLES_MAX - 1],
+        history_len: 0,
+    }
+}
+
+/// 消费 BerryUI Msg。返回 true 表示点击了 Back；开关状态则写回 app state。
+fn handle_messages(app: &mut App, room: &mut AppRoom, messages: &berry_ui::sdk::MsgBuf) -> bool {
+    let mut copied = [None; berry_ui::MSG_MAX];
+    for (index, message) in messages.iter().enumerate() {
+        if index < copied.len() {
+            copied[index] = Some(*message);
         }
     }
+    let mut back = false;
+    let mut changed = false;
+    for slot in copied.iter().take(messages.len()) {
+        let Some(message) = *slot else { continue };
+        if app
+            .page
+            .back
+            .on_msg(&mut app.ui, &app.ctx, &message)
+            .unwrap_or_else(|_| berry_room::panic_exit(134))
+            && matches!(message, Msg::Click { .. })
+        {
+            back = true;
+        }
+        let wlan_hit = app
+            .page
+            .wlan
+            .on_msg(&mut app.ui, &app.ctx, &message)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        if wlan_hit && matches!(message, Msg::Click { .. }) {
+            app.wlan = app.page.wlan.is_checked();
+            changed = true;
+        }
+        let bluetooth_hit = app
+            .page
+            .bluetooth
+            .on_msg(&mut app.ui, &app.ctx, &message)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        if bluetooth_hit && matches!(message, Msg::Click { .. }) {
+            app.bluetooth = app.page.bluetooth.is_checked();
+            changed = true;
+        }
+    }
+    if changed {
+        app.toggles = app.toggles.saturating_add(1);
+        app.render(room);
+        app.print_state(room, app.toggles);
+        let mut marker = Line::new(b"SETTINGSTOGGLE ok n=");
+        marker.push_u32(app.toggles);
+        marker.push(b"\n");
+        marker.print(room);
+        room.print(b"SETTINGSFRAME ok\n");
+    }
+    back
+}
+
+fn run_interactive(app: &mut App, room: &mut AppRoom) {
+    let mut events = [empty_event(); INPUT_EVENTS_MAX];
     loop {
-        let mut nb = rep.len();
-        let mut nh = rhs.len();
-        let s = berry_channel_recv(ch, rep.as_mut_ptr(), &mut nb, rhs.as_mut_ptr(), &mut nh);
-        if s == 0 {
-            return (nb, nh);
-        }
-        if s != BERRY_ERR_AGAIN {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(ch, SIGNAL_READABLE, now() + RPC_CAP_NS, &mut obs) != 0 {
-            berry_process_exit(134);
-        }
-    }
-}
-
-fn pair(console: Handle) -> (Handle, Handle) {
-    let mut a: Handle = 0;
-    let mut b: Handle = 0;
-    if berry_channel_create(0, &mut a, &mut b) != 0 || a == 0 || b == 0 {
-        fail(console, "channel");
-    }
-    (a, b)
-}
-
-fn wm_connect(
-    console: Handle, broker: Handle, process: Handle, vmar: Handle,
-) -> (Handle, Handle, Handle) {
-    let (wm, wm_peer) = pair(console);
-    let (input, input_peer) = pair(console);
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let n = match gp::encode_wm_connect_req(&mut req, gp::WM_CLIENT_APP) {
-        Some(n) => n,
-        None => fail(console, "connect encode"),
-    };
-    let attach = [wm_peer, input_peer, process];
-    let (n, nh) = rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
-    if gp::parse_wm_connect_rep(&rep[..n]).is_none() || nh != 1 || rhs[0] == 0 {
-        fail(console, "connect rep");
-    }
-    let font_vmo = rhs[0];
-    if !map_font(vmar, font_vmo) {
-        fail(console, "font map");
-    }
-    if berry_handle_close(broker) != 0 {
-        fail(console, "broker close");
-    }
-    (wm, input, font_vmo)
-}
-
-fn put_px(fb: &mut [u8], stride: usize, x: usize, y: usize, c: [u8; 4]) {
-    let off = y * stride + x * 4;
-    let bytes = [c[2], c[1], c[0], 0];
-    fb[off..off + 4].copy_from_slice(&bytes);
-}
-
-fn fill(fb: &mut [u8], stride: usize, x0: usize, y0: usize, w: usize, h: usize, c: [u8; 4]) {
-    for y in y0..y0.saturating_add(h) {
-        for x in x0..x0.saturating_add(w) {
-            put_px(fb, stride, x, y, c);
-        }
-    }
-}
-
-fn layout(_w: usize, h: usize) -> Layout {
-    let bar = (h / 12).max(64).min(160);
-    let natural = (bar * 3 / 2).max(88).min(180);
-    let avail = h.saturating_sub(bar + 48);
-    let row_h = natural.min(avail / ROWS.len()).max(48);
-    Layout { bar, row_h, top: bar + 24 }
-}
-
-fn render(fb: &mut [u8], stride: usize, w: usize, h: usize, lay: Layout, st: State) {
-    fill(fb, stride, 0, 0, w, h, [0xF5, 0xF7, 0xFA, 0]);
-    fill(fb, stride, 0, 0, w, lay.bar, [0x0D, 0x6E, 0x8F, 0]);
-    text(fb, stride, b"Settings", lay.bar + 18, (lay.bar - 48) / 2, [0xFF, 0xFF, 0xFF, 0]);
-
-    // 返回键。
-    let cx = lay.bar / 2;
-    let r = lay.bar.saturating_sub(18) / 2;
-    circle(fb, stride, cx, cx, r, [0xE6, 0xF5, 0xFA]);
-    for y in 0..(r / 2) {
-        let half = y as i32 - r as i32 / 4;
-        for dx in 0..(r / 2) {
-            let x = cx - r / 4 + dx as usize;
-            let yy = cx as i32 + half;
-            if yy >= 0 && yy < lay.bar as i32 && x < lay.bar {
-                put_px(fb, stride, x, yy as usize, [0x07, 0x4B, 0x63, 0]);
+        let count = match room.poll_input(&mut events) {
+            Ok(count) => count,
+            Err(error) => fail(room, error.as_str()),
+        };
+        for event in events.iter_mut().take(count) {
+            let (x, y) = (event.x, event.y);
+            if app.ui.push_pointer(pointer_event(event)).is_err() {
+                fail(room, "input buffer");
             }
-        }
-    }
-
-    // OH 设置分组卡：一张大圆角卡 + 行间细分隔线，替代零散白条。
-    let list_h = ROWS.len() * lay.row_h + 12;
-    shadow(fb, stride, 24, lay.top - 2, w - 44, list_h, 52);
-    round_rect(fb, stride, 18, lay.top - 8, w - 36, list_h, 48, [0xFF, 0xFF, 0xFF]);
-    for (i, label) in ROWS.iter().enumerate() {
-        let y = lay.top + i * lay.row_h;
-        if i > 0 {
-            fill(fb, stride, 72, y + 2, w - 144, 2, [0xE9, 0xED, 0xF3, 0]);
-        }
-        let ty = y + (lay.row_h - 48) / 2;
-        text(fb, stride, label, 40, ty, [0x21, 0x2B, 0x36, 0]);
-        if i < 2 {
-            let on = if i == 0 { st.wlan } else { st.bluetooth };
-            let pill_w = lay.bar * 3 / 2;
-            let pill_h = lay.bar / 2;
-            let px = w.saturating_sub(pill_w + 40);
-            let py = y + (lay.row_h - pill_h) / 2;
-            let bg = if on { [0x00, 0x8B, 0x6F, 0] } else { [0xC7, 0xD0, 0xDB, 0] };
-            round_rect(fb, stride, px, py, pill_w, pill_h, pill_h / 2, [bg[0], bg[1], bg[2]]);
-            let knob = pill_h - 8;
-            let kx = if on { px + pill_w - knob - 4 } else { px + 4 };
-            fill(fb, stride, kx, py + 4, knob, knob, [0xFF, 0xFF, 0xFF, 0]);
-            let word: &[u8] = if on { b"On" } else { b"Off" };
-            text(fb, stride, word, px - 80, ty, [0x55, 0x62, 0x72, 0]);
-        } else {
-            text(fb, stride, b">", w - 80, ty, [0x8A, 0x96, 0xA5, 0]);
-        }
-    }
-}
-
-fn frame(console: Handle, wm: Handle, vmo: Handle, surface: u32, buffer_id: u32) -> u32 {
-    let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
-        fail(console, "frame dup");
-    }
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let submit = gp::PresentReq::Submit {
-        surface_id: surface,
-        buffer_id,
-        flags: gp::SUBMIT_F_DAMAGE_FULL,
-        rate_hint: 0,
-        target_present_ns: 0,
-        rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
-        rect_count: 0,
-    };
-    let n = match gp::encode_present_req(&mut req, &submit) {
-        Some(n) => n,
-        None => fail(console, "submit encode"),
-    };
-    let (n, _) = rpc(wm, &req[..n], &[alias], &mut rep, &mut rhs);
-    let token = match gp::parse_submit_ack(&rep[..n]) {
-        Some(t) => t,
-        None => fail(console, "submit rep"),
-    };
-    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::FrameCallback { frame_token: token }) {
-        Some(n) => n,
-        None => fail(console, "frame encode"),
-    };
-    let (n, _) = rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    match gp::parse_frame_done_rep(&rep[..n]) {
-        Some(done) if done.status == gp::FRAME_PRESENTED => {}
-        _ => fail(console, "frame rep"),
-    }
-    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait) {
-        Some(n) => n,
-        None => fail(console, "release encode"),
-    };
-    let (n, nh) = rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    let rel = match gp::parse_release_rep(&rep[..n]) {
-        Some(r) => r,
-        None => fail(console, "release rep"),
-    };
-    if rel.count != 1 || nh != 1 {
-        fail(console, "release count");
-    }
-    if berry_handle_close(rhs[0]) != 0 {
-        fail(console, "release close");
-    }
-    token
-}
-
-#[derive(Clone, Copy)]
-enum Action {
-    Toggle(usize),
-    Back,
-}
-
-fn wait_action(console: Handle, input: Handle, w: usize, lay: Layout) -> Action {
-    let mut req = [0u8; 4];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let n = gp::encode_input_poll_req(&mut req, gp::INPUT_EVENTS_MAX as u8);
-    loop {
-        let (n, _) = rpc(input, &req[..n], &[], &mut rep, &mut rhs);
-        match gp::parse_input_events_rep(&rep[..n]) {
-            Some(Ok(view)) => {
-                for i in 0..view.count() {
-                    let Some(ev) = view.event(i) else { continue };
-                    if ev.phase != gp::PHASE_UP {
-                        continue;
-                    }
-                    if ev.x < lay.bar as u32 && ev.y < lay.bar as u32 {
-                        return Action::Back;
-                    }
-                    for row in 0..2 {
-                        let y0 = (lay.top + row * lay.row_h) as u32;
-                        let y1 = y0 + lay.row_h as u32;
-                        if ev.y >= y0 && ev.y < y1 && ev.x < w as u32 {
-                            return Action::Toggle(row);
-                        }
-                    }
-                }
+            let messages = app.ui.pump_input(0);
+            if handle_messages(app, room, &messages) {
+                app.print_hit(room, x, y, b"back");
+                room.print(b"SETTINGSBACK ok\n");
+                return;
             }
-            Some(Err(_)) => {}
-            None => fail(console, "poll rep"),
         }
     }
 }
 
 #[link_section = ".text.entry"]
 #[no_mangle]
-pub extern "C" fn _start(env_ch: Handle) -> ! {
-    let env = read_env(env_ch);
-    let c = env.console;
-    send(c, b"SETTINGS up\n");
-    let (wm, input, font_vmo) =
-        wm_connect(c, env.broker, env.process, env.vmar);
+pub extern "C" fn _start(env_ch: u32) -> ! {
+    let config = RoomConfig {
+        argv0: b"bin/settings",
+        uses_fs: false,
+    };
+    let mut room = match AppRoom::connect(env_ch, config) {
+        Ok(room) => room,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    room.print(b"SETTINGS up\n");
+    let (width, height) = match room.open_window() {
+        Ok(size) => size,
+        Err(error) => fail(&room, error.as_str()),
+    };
+    room.print(b"SETTINGSWIN ok\n");
 
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let n = gp::encode_wm_getinfo_req(&mut req);
-    let (n, _) = rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    let info = match gp::parse_wm_getinfo_rep(&rep[..n]) {
-        Some(i) => i,
-        None => fail(c, "getinfo rep"),
+    let theme = Theme::light();
+    let ctx = WidgetContext::for_viewport(theme, width as u32, height as u32);
+    let mut ui = Ui64::new(width as u32, height as u32);
+    ui.set_font_source(&ROOM_FONT_SOURCE);
+    let mut page = build_page(&mut ui, &ctx);
+    ui.layout();
+    page.scroll.sync_bounds(&mut ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let mut app = App {
+        ui,
+        ctx,
+        page,
+        wlan: false,
+        bluetooth: false,
+        frame_seq: 0,
+        toggles: 0,
     };
-    let (w, h) = (info.disp_w as usize, info.disp_h as usize);
-    let create = gp::WmCreateReq {
-        layer: gp::WM_LAYER_APP, flags: 0, parent: 0, group: 0,
-        x: 0, y: 0, w: info.disp_w, h: info.disp_h,
-    };
-    let n = match gp::encode_wm_create_req(&mut req, &create) {
-        Some(n) => n,
-        None => fail(c, "create encode"),
-    };
-    let (n, _) = rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    let win = match gp::parse_wm_create_ack(&rep[..n]) {
-        Some(id) if id != 0 => id,
-        _ => fail(c, "create rep"),
-    };
-    send(c, b"SETTINGSWIN ok\n");
+    app.print_layout(&room);
+    room.print(b"SETTINGSGEOM ok\n");
+    app.render(&mut room);
+    room.print(b"SETTINGSFRAME ok\n");
 
-    let stride = w.checked_mul(4).unwrap_or_else(|| fail(c, "stride"));
-    let frame_bytes = stride.checked_mul(h).unwrap_or_else(|| fail(c, "frame size"));
-    let len = (frame_bytes + 0xFFF) & !0xFFF;
-    let mut vmo: Handle = 0;
-    if berry_vmo_create(len as u64, 0, &mut vmo) != 0
-        || vmo == 0
-        || berry_vmo_commit(vmo, 0, len as u64) != 0
-    {
-        fail(c, "vmo");
-    }
-    let mut va = FRAME_VA;
-    if berry_vmar_map(env.vmar, 0, vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
-        || va != FRAME_VA
-    {
-        fail(c, "map");
-    }
-    let fb: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(FRAME_VA as *mut u8, frame_bytes) };
-    let lay = layout(w, h);
-    let mut state = State { wlan: false, bluetooth: false };
-    render(fb, stride, w, h, lay, state);
-    let _ = frame(c, wm, vmo, u32::from(win), 1);
-    send(c, b"SETTINGSFRAME ok\n");
-    send(
-        c,
-        b"SETTINGSGEOM ok\n",
-    );
-
-    let mut buffer_id = 2u32;
-    let mut toggles = 0usize;
-    if !env.boot_probe {
-        loop {
-            match wait_action(c, input, w, lay) {
-                Action::Back => {
-                    send(c, b"SETTINGSBACK ok\n");
-                    break;
-                }
-                Action::Toggle(row) => {
-                    if row == 0 {
-                        state.wlan = !state.wlan;
-                    } else {
-                        state.bluetooth = !state.bluetooth;
-                    }
-                    render(fb, stride, w, h, lay, state);
-                    let _ = frame(c, wm, vmo, u32::from(win), buffer_id);
-                    buffer_id += 1;
-                    toggles += 1;
-                    if toggles == 1 {
-                        send(c, b"SETTINGSTOGGLE ok n=1\n");
-                    } else if toggles == 2 {
-                        send(c, b"SETTINGSTOGGLE ok n=2\n");
-                    }
-                    send(c, b"SETTINGSFRAME ok\n");
-                }
-            }
-        }
+    if room.boot_probe() {
+        room.print(b"SETTINGSPROBE ok\n");
     } else {
-        send(c, b"SETTINGSPROBE ok\n");
+        run_interactive(&mut app, &mut room);
     }
 
-    let n = gp::encode_wm_destroy_req(&mut req, win);
-    let (n, _) = rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    match gp::parse_status_rep(&rep[..n]) {
-        Some(gp::ST_OK) => {}
-        _ => fail(c, "destroy rep"),
+    if let Err(error) = room.destroy() {
+        fail(&room, error.as_str());
     }
-    let n = gp::encode_wm_table_get_req(&mut req);
-    let (n, _) = rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    match gp::parse_wm_snapshot_rep(&rep[..n]) {
-        Some(Ok(s)) if s.count == 0 => {}
-        _ => fail(c, "table rep"),
-    }
-    send(c, b"SETTINGSDESTROY ok\n");
-    let _ = berry_handle_close(input);
-    let _ = berry_handle_close(wm);
-    let _ = berry_handle_close(vmo);
-    let _ = berry_handle_close(font_vmo);
-    send(c, b"SETTINGSEXIT ok\n");
-    berry_process_exit(0)
+    room.print(b"SETTINGSDESTROY ok\n");
+    room.print(b"SETTINGSEXIT ok\n");
+    room.exit(0)
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    berry_process_exit(134)
+    berry_room::panic_exit(134)
 }
