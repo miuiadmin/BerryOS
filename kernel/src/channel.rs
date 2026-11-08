@@ -101,6 +101,17 @@ pub struct ChannelEnd {
     /// `channel_create` options bit0——置位端 recv **不结算 intent**（固定优先级
     /// server 逃生门）。对称建对 API 下「通道级」语义 = 两端同置、双向皆不传播。
     no_intent: bool,
+    /// AM-1.5 wake-pending 冻结属主标：持有本端（接收侧）handle 的进程被
+    /// `process_suspend` 全冻时指向该 Process ObjRef（**retain 配平**——freeze
+    /// 枚举打标时 +1，thaw 清标/端点 Drop 防御面 -1）。设计意图（AM 设计
+    /// 「IPC × 冻结」Q1 裁决）：send 热路径免**反查属主**——非冻结态恒 None，
+    /// send 只加一次本位测试分支（非冻结零额外成本）；置位后 send 照常入队
+    /// （消息不丢弃），另触发 wake-pending 通知（`sys_channel_send` 尾）。
+    /// 冻进程任务全冻 ⇒ 表不可变 ⇒ 冻端点不可能先于 thaw 销毁（Drop 防御面
+    /// 仅为 retain 配平纪律）。共享端点（dup/迁移跨表）归**首冻结主**——
+    /// v1 单主形，多冻结主共享端点的次主通知面是已知保守缺口（消息仍排队，
+    /// 只是次主 token 持有者不被这一跳唤醒）。
+    frozen_owner: Option<NonNull<ObjRef>>,
 }
 
 impl ChannelEnd {
@@ -113,7 +124,41 @@ impl ChannelEnd {
     pub fn try_unpaired(no_intent: bool) -> Option<Self> {
         let mut queue = Vec::new();
         queue.try_reserve_exact(CHAN_DEPTH).ok()?;
-        Some(Self { peer: None, queue, no_intent })
+        Some(Self { peer: None, queue, no_intent, frozen_owner: None })
+    }
+
+    /// AM-1.5 冻结属主标（send 热路径唯一新增分支的测试位；`None` = 未冻结）。
+    pub fn frozen_owner(&self) -> Option<NonNull<ObjRef>> {
+        self.frozen_owner
+    }
+
+    /// AM-1.5：打冻结属主标。**幂等**——已标（他主或同主）返 `false` 不重复
+    /// retain（同表 duplicate 别名 / 跨进程共享端点归首冻结主，见字段注）。
+    /// retain 配平点：[`Self::clear_frozen`]（thaw 清标）与本类型 Drop 防御面。
+    pub fn mark_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
+        if self.frozen_owner.is_some() {
+            return false;
+        }
+        self.frozen_owner = Some(owner);
+        // SAFETY: owner = 调用方（freeze 枚举）持有的在表 Process ObjRef，
+        // 对象活；单核 IRQ 屏蔽串行。retain 本身是安全方法。
+        unsafe { (*owner.as_ptr()).retain() };
+        true
+    }
+
+    /// AM-1.5：清由 `owner` 打的冻标（属主不符/未标返 `false` 不动——跨主
+    /// 安全）。真清时 release 配平 mark 的 retain。**调用方契约**：枚举清标
+    /// 场景（thaw 走查全表）须保证 `owner` 在整轮枚举期间存活（token Drop /
+    /// suspend 回滚序此刻必持 ≥1 引用——release 只退 mark 份额，归零销毁
+    /// 不落在枚举中途）。
+    pub fn clear_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
+        if self.frozen_owner != Some(owner) {
+            return false;
+        }
+        self.frozen_owner = None;
+        // SAFETY: 配平 mark_frozen 的 retain；此后本端点不再触 owner。
+        unsafe { ObjRef::release(owner) };
+        true
     }
 
     /// opt-out 标志（recv 结算侧查询）。
@@ -183,6 +228,12 @@ impl Drop for ChannelEnd {
         // SAFETY: pair 时 retain 过；单核顺序（对象仅在 IRQ 屏蔽路径销毁）。
         if let Some(peer) = self.peer {
             unsafe { ObjRef::release(peer) };
+        }
+        // AM-1.5 冻结属主标配平：正常序 thaw 清标先于端点销毁（冻进程任务
+        // 全冻 ⇒ 表不可变 ⇒ 此分支不可达）；万一到达（防御面）也保 retain
+        // 配平不泄漏。SAFETY: freeze 枚举打标时 retain 过；单核顺序同上。
+        if let Some(owner) = self.frozen_owner {
+            unsafe { ObjRef::release(owner) };
         }
     }
 }

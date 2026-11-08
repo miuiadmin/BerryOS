@@ -1917,6 +1917,19 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
             }
             return ERR_BAD_STATE as i64;
         }
+        // AM-1.5 wake-pending：首枚 token 冻结生效 → 枚举目标表给全部
+        // Channel 端点打冻结属主标（嵌套层不重复——标已在席）；send 命中
+        // 冻端点即触发通知（send 尾分支）。冻进程任务全冻 ⇒ 目标表此后
+        // 不可变 ⇒ 标集稳定到 thaw。
+        if first_process_token {
+            // SAFETY: obj 已 get_raw 类型门控（Process）+ 上文 retain；SVC
+            // 屏蔽串行。
+            unsafe {
+                if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() {
+                    p.ht.freeze_channel_ends(obj);
+                }
+            }
+        }
         let tok = crate::suspend::SuspendTok {
             target: crate::suspend::SuspendTarget::Process(obj),
             key: pinned,
@@ -1928,6 +1941,15 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
             // token 需撤冻面（嵌套失败时既有 token 仍持有冻结义务）。
             if first_process_token {
                 berry_sched::thaw_by_pinned(pinned);
+                // AM-1.5：撤端点冻标（配平上文的 freeze_channel_ends——
+                // 本函数早前的 retain 此刻仍在身 ⇒ 枚举中属主恒活）。此窗
+                // 单核屏蔽无他任务可跑 ⇒ wake_pending 必未置位，无需清。
+                // SAFETY: 同上（obj 门控过 + retain 在身）。
+                unsafe {
+                    if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() {
+                        p.ht.thaw_channel_ends(obj);
+                    }
+                }
             }
             unsafe {
                 let r = &mut *obj.as_ptr();
@@ -2860,7 +2882,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // SAFETY: get_raw 已门控；对端由互钉保活（本端活 ⇒ 对端对象必在堆）；
     // 单核禁切无插队（g3-1c-2 段守卫；双核结构锁窗）。
     let _span = PreemptSpan::new();
-    let (peer_ptr, peer_empty) = unsafe {
+    let (peer_ptr, peer_empty, peer_frozen) = unsafe {
         let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
@@ -2873,7 +2895,10 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         if peer_end.queue_full() {
             return ERR_BUSY as i64; // 非阻塞：满即返（阻塞等空位 = wait_one WRITABLE，4-2）
         }
-        (peer, !peer_end.has_message())
+        // AM-1.5：冻结属主标快照（freeze 时枚举属主表预打——send 热路径免
+        // 反查属主；非冻结态恒 None ⇒ 本快照即热路径唯一新增成本，一次
+        // Option 判空）。
+        (peer, !peer_end.has_message(), peer_end.frozen_owner())
     };
     // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。拷贝窗
     // （g3-1c-2）：走查 + 拷入同窗解蔽，段计数保 §A113。
@@ -3015,6 +3040,30 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             // `berry_sched::wake_matching` 文档），容量槽公平归放置/偷取面。
             crate::telemetry::ipc_fast_miss();
             berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
+        }
+    }
+    // AM-1.5 wake-pending（IPC × 冻结，Q1 裁决「唤醒即解冻」机制面）：send
+    // 命中冻结端点 → 消息已照常入队（上 push——排队不丢弃），此处补通知
+    // 闭环：属主首命中置 wake_pending（**一次语义**——同进程多端点/后续
+    // send 见位不再重复通知，防风暴；S5.12 token 在册上限 64 已是 DoS 帽）
+    // + 以进程钉键广播唤醒等其 SuspendToken 的持有者（wait_one 的 token
+    // 分支同键挂队——同进程全部在册 token 一跳全收）；策略在用户态——
+    // 持有者收通知后自行 close token 解冻。仅成功路径：-EBUSY 满拒未入
+    // 队、无消息可言，不通知（调用方 wait WRITABLE 后重试即再触发）。
+    if let Some(owner) = peer_frozen {
+        // SAFETY: 冻标由 freeze 路径 retain 属主（配平在 thaw 清面）；SVC
+        // 屏蔽串行语境无并发写竞；owner 必为 KernelObj::Process（打标侧
+        // 类型门控过），as_process_mut 恒 Some（else = 不可达防御面）。
+        unsafe {
+            if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() {
+                if !p.wake_pending {
+                    p.wake_pending = true;
+                    berry_sched::wake_matching(
+                        owner.as_ptr() as usize,
+                        crate::suspend::SIGNAL_WAKE_PENDING,
+                    );
+                }
+            }
         }
     }
     // 段出口检查点（g3-1c-2，f4 裁决 = wake 链尾非 push 直后）：拷贝窗内被
@@ -3223,10 +3272,13 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
 /// - Event → 用户位掩码原样；
 /// - Channel → 内核派生：`READABLE`（**本端**队列非空）| `WRITABLE`（**对端**
 ///   队列未满；未配对端点对端恒「满」——运行期不可达，create 即配对）；
-/// - 其余类型 → `None`（wait 面只收 Event|Channel|Process|Thread）。
+/// - SuspendToken → 内核派生：`WAKE_PENDING`（目标进程冻结期间有 send 命中
+///   其端点——AM-1.5；零 per-token 状态，读目标 `Process.wake_pending` 派生）；
+/// - 其余类型 → `None`（wait 面只收 Event|Channel|Process|Thread|SuspendToken）。
 ///
 /// # Safety
-/// `obj` 须为在表/钉住的活对象；Channel 分支解引用互钉对端（互钉保活）。
+/// `obj` 须为在表/钉住的活对象；Channel 分支解引用互钉对端（互钉保活）、
+/// SuspendToken 分支解引用 token retain 的目标（Drop 链保活）。
 /// 只读；调用点均在 IRQ 屏蔽串行语境。
 unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
     unsafe {
@@ -3254,6 +3306,19 @@ unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
             KernelObj::Thread(th) => {
                 Some(if th.exited { SIGNAL_TERMINATED } else { 0 })
             }
+            // AM-1.5：SuspendToken 信号面 = 目标进程 wake_pending 派生（同刻
+            // 全部在册 token 同视；置位点 = send 命中冻端点、清位点 = 全解冻，
+            // 均不在本函数）。Thread 目标不参与——端点冻标只在进程全冻时打
+            //（单线程冻不在本面），且进程冻 × 线程冻互斥 ⇒ 线程 token 恒观 0。
+            // 等非 WAKE_PENDING 位 = 永不命中（不设门，同上两口径）。
+            KernelObj::SuspendToken(tok) => Some(match tok.target {
+                crate::suspend::SuspendTarget::Process(p) => {
+                    // SAFETY: token retain 过目标（Drop 链保活）；只读一位。
+                    let wp = (*p.as_ptr()).obj.as_process().map_or(false, |pr| pr.wake_pending);
+                    if wp { crate::suspend::SIGNAL_WAKE_PENDING } else { 0 }
+                }
+                crate::suspend::SuspendTarget::Thread(_) => 0,
+            }),
             _ => None,
         }
     }
@@ -3294,9 +3359,9 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
 }
 
 /// wait 面取对象（wait_one/wait_many 共用，Plan B 起三类型链、T-1 起
-/// 四类型链）：Event → Channel → Process → Thread（wait 不需权利位，
-/// need=0）。全拒回**首个**（Event 的）错误——与 4-2 的两类型链语义逐字
-/// 一致（-EBADF/-EACCES 原样透传）。
+/// 四类型链、AM-1.5 起五类型链）：Event → Channel → Process → Thread →
+/// SuspendToken（wait 不需权利位，need=0）。全拒回**首个**（Event 的）
+/// 错误——与 4-2 的两类型链语义逐字一致（-EBADF/-EACCES 原样透传）。
 fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>, i32> {
     match t.get_raw(h, ObjType::Event, 0) {
         Ok((o, _)) => Ok(o),
@@ -3306,7 +3371,12 @@ fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>
                 Ok((o, _)) => Ok(o),
                 Err(_) => match t.get_raw(h, ObjType::Thread, 0) {
                     Ok((o, _)) => Ok(o),
-                    Err(_) => Err(e),
+                    // AM-1.5：token 持有者（am）经既有 wait_face 收
+                    // wake-pending 通知——零新 syscall。
+                    Err(_) => match t.get_raw(h, ObjType::SuspendToken, 0) {
+                        Ok((o, _)) => Ok(o),
+                        Err(_) => Err(e),
+                    },
                 },
             },
         },
@@ -3319,14 +3389,17 @@ fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>
 /// `deadline≠0`（MONOTONIC 绝对时刻）未命中 → 挂 [`berry_sched::block_current`]
 /// 睡到点。
 ///
-/// **wait 面对象 = Event | Channel | Process | Thread**（4-2 / Plan B / T-1）：
-/// Event 状态 = 用户位掩码；Channel 状态 = 内核派生 READABLE/WRITABLE；
-/// Process 状态 = 内核派生 TERMINATED（Exited 单调置位——父进程 wait 后
-/// unmap/close 回收，[`berry_exec`] 的 reap 链）；Thread 状态 = 内核派生
-/// TERMINATED（T-1 join 面——`thread_start` 后 `object_wait_one(th,
-/// TERMINATED, …)` 即内核侧 join，裁决二）。查询点 [`signal_state`]；等不出
-/// 的位（Channel 用户位 / Process|Thread 非 TERMINATED 位）永不命中，同
-/// Zircon 不设门。
+/// **wait 面对象 = Event | Channel | Process | Thread | SuspendToken**
+///（4-2 / Plan B / T-1 / AM-1.5）：Event 状态 = 用户位掩码；Channel 状态 =
+/// 内核派生 READABLE/WRITABLE；Process 状态 = 内核派生 TERMINATED（Exited
+/// 单调置位——父进程 wait 后 unmap/close 回收，[`berry_exec`] 的 reap 链）；
+/// Thread 状态 = 内核派生 TERMINATED（T-1 join 面——`thread_start` 后
+/// `object_wait_one(th, TERMINATED, …)` 即内核侧 join，裁决二）；SuspendToken
+/// 状态 = 内核派生 WAKE_PENDING（AM-1.5：冻结期间有 send 命中目标进程
+/// 端点——持有者收通知后自行 close token 解冻，策略在用户态）。查询点
+/// [`signal_state`]；等不出的位（Channel 用户位 / Process|Thread 非
+/// TERMINATED 位 / SuspendToken 非 WAKE_PENDING 位）永不命中，同 Zircon
+/// 不设门。
 ///
 /// **poll-first**：信号已到即返不睡（无丢信号）。醒来**重验条件**（醒因 ≠
 /// 结果：Timeout 时位可能刚被置、Signaled 时位可能又被清——清位竞态下重验
@@ -3367,6 +3440,20 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
     // SAFETY: 活对象（表内 handle 钉着）；睡眠期间全表 handle 被关光也不销毁
     //（3-3 钉住纪律的跨睡眠版）。
     unsafe { (*obj.as_ptr()).retain() };
+    // AM-1.5：SuspendToken 等待者挂队键 = 目标钉键（`SuspendTok.key`——
+    // Process 目标 = 进程 ObjRef 地址 = pinned；Thread 目标 = 线程键）而非
+    // token 自身 ObjRef 地址：send 侧 wake-pending 广播以进程钉键唤该进程
+    // **全部**在册 token 的等待者（嵌套多 token 一跳全收，无需逐 token 寻址）。
+    // 键与 Process 本体等待者（TERMINATED）共用，但请求位集不相交
+    //（WAKE_PENDING vs TERMINATED）⇒ 零互扰；偶发跨键虚假唤醒由醒来重验
+    // 兜底（同 WAIT_ANY 哨兵口径）。PI 面安全：`pi::donor_edge` 只对等
+    // READABLE|WRITABLE 派生位的睡眠者解引用 wait_obj（§A40 不变量），
+    // WAKE_PENDING 等待者恒不入捐赠图。
+    // SAFETY: 活对象（上方 retain 在身）；只读类型分支与 key 字段。
+    let wait_key = match unsafe { &(*obj.as_ptr()).obj } {
+        KernelObj::SuspendToken(tok) => tok.key,
+        _ => obj.as_ptr() as usize,
+    };
     // G3-4b SGI 路进入点钩子（位签名 + armed 双过滤——默认面恒短路，仅
     // 付一次寄存器比较；钉住后调用 = 落笔的 ObjRef 活性由本 wait 钉着）。
     // 前提〔f4 F8〕：「wait 入口位已清」是 EL0 payload 纪律而非内核执法——
@@ -3396,11 +3483,11 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         if deadline_vct <= berry_hal_aarch64::timer::cntvct() {
             break ERR_TIMEDOUT as i64; // 到点未命中（含传入即已过——不睡）
         }
-        // 匹配键 = ObjRef 地址；请求位 = signals（signal 侧以新置位集匹配）。
+        // 匹配键 = ObjRef 地址（SuspendToken 例外 = 目标钉键，见上方
+        // wait_key 注）；请求位 = signals（signal 侧以新置位集匹配）。
         // 醒因丢弃：Signaled/Timeout 都只信重验——Timeout 时位可能刚被置、
         // Signaled 时位可能又被清；未命中且未到点则再睡，循环兜底。
-        let _reason =
-            berry_sched::block_current(obj.as_ptr() as usize, signals, deadline_vct);
+        let _reason = berry_sched::block_current(wait_key, signals, deadline_vct);
         // G3-4b SGI 路醒来侧钩子（run 侧读点本体——醒后首段内核执行取戳；
         // Signaled 才采样，重验循环/返程尾钩执法其余路径）。
         if signals == crate::LAT_SGI_BIT

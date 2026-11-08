@@ -1020,7 +1020,11 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
 
 /// 1.1/S3-a：按钉住键冻结该进程全部任务（SLEEPQ + 双 RQ 扫描）。
 /// 仅置 `frozen` 位——不改队列结构（任务留队，`Fair::eligible` 过滤）。
-/// 返回冻结数（0 = 无匹配任务）。调用侧：SVC 路径（KL 已持——单核无并发）。
+/// 返回**匹配**任务数（0 = 无匹配任务——嵌套第二 token 不要求找到新的
+/// 未冻任务，`sys_process_suspend` 注释契约；置位幂等 = `freeze_by_thread`
+/// 同款形——AM-1.5 前实现已冻跳过不计数，嵌套进程冻恒折 -EBADSTATE，
+/// 与 depth 帽 8 的嵌套设计自相矛盾，本刀对齐）。调用侧：SVC 路径
+///（KL 已持——单核无并发）。
 pub fn freeze_by_pinned(pinned: usize) -> usize {
     if pinned == 0 {
         return 0;
@@ -1033,8 +1037,8 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
-            if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
-                (*t).held_locks |= crate::task::HELD_FROZEN;
+            if (*t).pinned == pinned {
+                (*t).held_locks |= crate::task::HELD_FROZEN; // 幂等置位
                 count += 1;
             }
         }
@@ -1045,8 +1049,8 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head。
-                if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
-                    (*t).held_locks |= crate::task::HELD_FROZEN;
+                if (*t).pinned == pinned {
+                    (*t).held_locks |= crate::task::HELD_FROZEN; // 幂等置位
                     count += 1;
                 }
                 cur = (*t).rq_next.get();

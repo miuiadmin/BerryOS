@@ -470,6 +470,48 @@ impl HandleTable {
         })
     }
 
+    /// AM-1.5 wake-pending 冻结面：枚举本表全部 Channel 端点打「属主冻结」
+    /// 标（`ChannelEnd.frozen_owner` = `owner` + retain——配平在
+    /// [`Self::thaw_channel_ends`] / 端点 Drop 防御面）。**幂等**：已标端点
+    /// 不动——同表 duplicate 别名（多槽共对象）不重复 retain。调用点 =
+    /// `process_suspend` 首枚 token 冻结生效后（首层才标，嵌套层不重复）；
+    /// 冻进程任务全冻 ⇒ 本表此后不可变 ⇒ 标集到 thaw 恒稳定。send 命中
+    /// 冻端点 → 属主 wake-pending + token 持有者通知（`sys_channel_send` 尾）。
+    pub fn freeze_channel_ends(&mut self, owner: NonNull<ObjRef>) {
+        for slot in self.slots.iter_mut() {
+            if let SlotState::Used { obj, .. } = *slot {
+                // SAFETY: Used 槽持引用（对象活）；单核 SVC 串行（调用点
+                // IRQ 屏蔽）；mark 幂等（同对象多槽别名不重复 retain）。
+                unsafe {
+                    if let Some(end) = (*obj.as_ptr()).obj.as_channel_mut() {
+                        end.mark_frozen(owner);
+                    }
+                }
+            }
+        }
+    }
+
+    /// AM-1.5 wake-pending 清面（thaw 侧）：清全部由 `owner` 打的端点冻标
+    ///（release 与 [`Self::freeze_channel_ends`] 的 retain 配平——mark 幂等 ⇒
+    /// 同表 duplicate 别名只有首槽见 Some，恰一次配对）。调用点 =
+    /// `SuspendTok::drop` **全解冻**（freeze_depth 归零）+ `process_suspend`
+    /// 插表失败回滚（首层撤冻同点）。枚举期间属主 ObjRef 恒活：调用方
+    ///（token Drop / 回滚序）此刻仍持 ≥1 引用——本面内的 release 只是退还
+    /// mark 时的份额，归零销毁不可能发生在枚举中途。
+    pub fn thaw_channel_ends(&mut self, owner: NonNull<ObjRef>) {
+        for slot in self.slots.iter_mut() {
+            if let SlotState::Used { obj, .. } = *slot {
+                // SAFETY: 同 freeze_channel_ends（在表活对象 + 单核串行）；
+                // clear 的 release 配平与属主存活论证见函数注释。
+                unsafe {
+                    if let Some(end) = (*obj.as_ptr()).obj.as_channel_mut() {
+                        end.clear_frozen(owner);
+                    }
+                }
+            }
+        }
+    }
+
     /// 在用（Used 态）槽计数（B-0 churn 金丝雀：全关光后必须归零——确定性
     /// 严格断言的判据，非热路径）。
     pub fn used_count(&self) -> usize {

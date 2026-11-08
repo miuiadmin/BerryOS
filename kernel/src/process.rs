@@ -104,6 +104,14 @@ pub struct Process {
     /// plain u8——单核 IRQ 屏蔽路径专用（同 freeze_depth）。
     #[allow(dead_code)] // S6-e band 执法刀消费（spawn 映射点 + sched::band）
     pub band_id: u8,
+    /// AM-1.5 wake-pending：冻结期间有 send 命中本进程端点（Q1 裁决「唤醒
+    /// 即解冻」的内核机制面）。**一次语义**——首命中置位 + 通知 SuspendTok
+    /// 持有者，后续 send 见位不再重复通知（防风暴；S5.12 token 上限 64 已
+    /// 是 DoS 帽）；**全解冻**（freeze_depth 归零的最后一枚 token close）才
+    /// 清零——嵌套中间层不解冻不清。消费 = `SuspendTok` wait 面派生信号位
+    /// `SIGNAL_WAKE_PENDING`（syscall.rs `signal_state`）。plain bool——单核
+    /// IRQ 屏蔽路径专用（同 freeze_depth）。
+    pub wake_pending: bool,
 }
 
 impl Process {
@@ -130,6 +138,7 @@ impl Process {
             freeze_depth: 0,
             thread_freezes: 0,
             band_id: 0,
+            wake_pending: false,
         }
     }
 

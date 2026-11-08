@@ -57,6 +57,9 @@ pub fn run() {
     test_cmp();
     test_suspend_negative();
     test_freeze_cycles();
+    // AM-1.5（「IPC × 冻结」Q1 裁决）：wake-pending 全链（FREEZE 族续——
+    // FRZCYC 后紧邻，同 SLEEPQ/表基座纪律）。
+    test_wake_pending();
     test_billing_overflow();
     test_sched_attr_negative();
     test_sched_perf();
@@ -5025,6 +5028,273 @@ fn test_freeze_cycles() {
     ht.close(hp).unwrap();
     ht.close(hv).unwrap();
     berry_hal_aarch64::uart_puts(b"FRZCYC ok r=2\n");
+}
+
+/// AM-1.5（`.agents/plans/am/design.md`「IPC × 冻结」Q1 裁决「唤醒即解冻」
+/// 机制面）：wake-pending 全链断言——
+/// ①冻结进程后向其冻结端点 send → 消息照常入队（不丢弃）+ 属主
+///   wake_pending 置位 + SuspendTok 信号位到位（`object_wait_one` poll 面 =
+///   用户态真实 ABI，`SIGNAL_WAKE_PENDING`）+ 睡在 token 键上的等待者被以
+///   **进程钉键**广播唤醒（wait_one token 分支的挂队键契约）；
+/// ②未冻结 send 无信号（冻结本身也不置位——位只由冻结窗内的 send 触发）；
+/// ③thaw 清面（wake_pending + 端点冻标）后 send 不再触发；
+/// ④一次语义（幂等置位）+ 嵌套 depth>1 只在全解冻（最后一枚 close）才清。
+/// 真 svc 全链（FRZCYC 同通道）+ 手搭任务/通道/对象（F6/F7/F8 先例）；
+/// ktest 在 sched::init 前跑（SLEEPQ/双 RQ 静态基座可用，CURRENT=null）。
+#[allow(clippy::unwrap_used)]
+fn test_wake_pending() {
+    use crate::channel::ChannelEnd;
+    use crate::handle::{
+        ERR_AGAIN, KernelObj, ObjType, RIGHT_MANAGE, RIGHT_RECV, RIGHT_SEND,
+    };
+    use crate::process::{Process, Thread};
+    use crate::suspend::SIGNAL_WAKE_PENDING;
+    use crate::syscall::{NR_CHANNEL_SEND, NR_OBJECT_WAIT_ONE, NR_PROCESS_SUSPEND};
+    use crate::vmar::Vmar;
+    use berry_sched::HELD_FROZEN;
+    use core::ptr::NonNull;
+
+    // 出参/载荷槽（EL1 静态直映——copy 家族高半直映区，TOK/HBUF 先例）。
+    static mut TOK: u32 = 0;
+    static mut TOK2: u32 = 0;
+    static mut OBS: u64 = 0;
+    static mut WBUF: [u8; 4] = *b"wake";
+
+    // 只读断言谓词（真对象直调）。
+    let wp_of = |pref: NonNull<crate::handle::ObjRef>| -> bool {
+        unsafe { (*pref.as_ptr()).obj.as_process().unwrap().wake_pending }
+    };
+    let end_frozen =
+        |aref: NonNull<crate::handle::ObjRef>| -> bool {
+            unsafe { (*aref.as_ptr()).obj.as_channel().unwrap().frozen_owner().is_some() }
+        };
+    let end_has_msg =
+        |aref: NonNull<crate::handle::ObjRef>| -> bool {
+            unsafe { (*aref.as_ptr()).obj.as_channel().unwrap().has_message() }
+        };
+
+    // —— 受害进程 P（F6/FRZCYC 手搭形）+ SLEEPQ 两受害任务（freeze 扫描面）。
+    let ht = crate::syscall::bootstrap_table();
+    let vm = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()).unwrap();
+    let (pa, asid) = (vm.ttbr0_pa(), vm.asid());
+    let hv = ht.insert(KernelObj::Vmar(vm), RIGHT_MANAGE).unwrap();
+    let (vref, _) = ht.get_raw(hv, ObjType::Vmar, 0).unwrap();
+    let hp = ht
+        .insert(KernelObj::Process(unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE)
+        .unwrap();
+    let (pref, _) = ht.get_raw(hp, ObjType::Process, RIGHT_MANAGE).unwrap();
+    let pinned = pref.as_ptr() as usize;
+    let t1 = mk_freeze_task(b"wpT1".as_slice(), pinned);
+    let t2 = mk_freeze_task(b"wpT2".as_slice(), pinned);
+    berry_sched::sleepq_insert(t1);
+    berry_sched::sleepq_insert(t2);
+
+    // —— 通道对（sys_channel_create 手搭形）：A = 受害接收端（落 P.ht），
+    // B = 发送端（落调用方表）——send(B) 压 A 队列、热路径观 A 冻标。
+    let (ea, eb) = (
+        ChannelEnd::try_unpaired(false).unwrap(),
+        ChannelEnd::try_unpaired(false).unwrap(),
+    );
+    let ha = unsafe {
+        (*pref.as_ptr())
+            .obj
+            .as_process_mut()
+            .unwrap()
+            .ht
+            .insert(KernelObj::Channel(ea), RIGHT_RECV)
+            .unwrap()
+    };
+    let hb = ht
+        .insert(KernelObj::Channel(eb), RIGHT_SEND | RIGHT_RECV)
+        .unwrap();
+    let (aref, _) = unsafe {
+        (*pref.as_ptr())
+            .obj
+            .as_process_mut()
+            .unwrap()
+            .ht
+            .get_raw(ha, ObjType::Channel, 0)
+            .unwrap()
+    };
+    let (bref, _) = ht.get_raw(hb, ObjType::Channel, 0).unwrap();
+    // SAFETY: 两指针刚 get_raw 过（在表、类型 Channel）——create 同款配对。
+    unsafe { ChannelEnd::pair(aref, bref) };
+
+    // —— 等待者属主 P2/T2（F7 形真对象：清场 kill 的退出钩子裸解引用
+    // pinned/thread_key，伪键必炸）。
+    let vm2 = Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()).unwrap();
+    let (pa2, asid2) = (vm2.ttbr0_pa(), vm2.asid());
+    let hv2 = ht.insert(KernelObj::Vmar(vm2), RIGHT_MANAGE).unwrap();
+    let (vref2, _) = ht.get_raw(hv2, ObjType::Vmar, 0).unwrap();
+    let hp2 = ht
+        .insert(KernelObj::Process(unsafe { Process::new(vref2, pa2, asid2) }), RIGHT_MANAGE)
+        .unwrap();
+    let (pref2, _) = ht.get_raw(hp2, ObjType::Process, RIGHT_MANAGE).unwrap();
+    let hth2 = ht
+        .insert(KernelObj::Thread(unsafe { Thread::new(pref2) }), RIGHT_MANAGE)
+        .unwrap();
+    let (tref2, _) = ht.get_raw(hth2, ObjType::Thread, RIGHT_MANAGE).unwrap();
+    let wp2 = pref2.as_ptr() as usize;
+    let wt2 = tref2.as_ptr() as usize;
+    unsafe {
+        // 运行钉住（表引 + 钉）+ 末线程簿记位（钩子 live_threads-=1 → 0 走
+        // Process 收口）——F8 同款。
+        (*pref2.as_ptr()).retain();
+        (*tref2.as_ptr()).retain();
+        (*pref2.as_ptr()).obj.as_process_mut().unwrap().live_threads = 1;
+    }
+    // 等待者任务 = 手搭「am 阻塞在 object_wait_one(token)」形态：挂队键 =
+    // 目标进程钉键（wait_one token 分支的派生键——AM-1.5 契约）、请求位 =
+    // SIGNAL_WAKE_PENDING（纯内核派生位——pi::donor_edge 只对 READABLE|
+    // WRITABLE 等待者解引用 wait_obj〔§A40〕，本等待者恒不入捐赠图）。
+    let waiter = mk_freeze_task(b"wpWait".as_slice(), wp2);
+    waiter.thread_key = wt2;
+    waiter.wait_obj = pinned;
+    waiter.wait_signals = SIGNAL_WAKE_PENDING;
+    berry_sched::sleepq_insert(waiter);
+
+    // —— ② 未冻结 send：成功但零信号（send 在冻结窗外——消息照常入队，
+    // wake_pending 不动）。
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hb as u64, &raw const WBUF as u64, 4, 0, 0, 0),
+        0,
+        "WAKEP：②未冻结 send 须成功"
+    );
+    assert!(!wp_of(pref), "WAKEP：②未冻结 send 不得置 wake_pending");
+
+    // —— 冻结（真 svc 全链）：首枚 token → freeze 枚举打端点冻标 + 任务真冻。
+    assert_eq!(
+        svc4(NR_PROCESS_SUSPEND as u64, hp as u64, 0, &raw mut TOK as u64),
+        0,
+        "WAKEP：suspend 须成功"
+    );
+    let tok = unsafe { *core::ptr::addr_of!(TOK) };
+    assert_ne!(tok, 0, "WAKEP：token 出参非零");
+    assert!(end_frozen(aref), "WAKEP：冻结须枚举打端点冻标");
+    assert!(
+        t1.held_locks & HELD_FROZEN != 0 && t2.held_locks & HELD_FROZEN != 0,
+        "WAKEP：受害双任务须真冻"
+    );
+    // ② 后半臂：冻结本身不置位（位只由冻结窗内的 send 触发）。
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, tok as u64, SIGNAL_WAKE_PENDING, 0,
+             &raw mut OBS as u64),
+        ERR_AGAIN as i64,
+        "WAKEP：②冻结后未 send，poll 须 -EAGAIN"
+    );
+    assert_eq!(unsafe { *core::ptr::addr_of!(OBS) }, 0, "WAKEP：②未命中 observed 须 0");
+
+    // 等待者武装确认（真 SLEEPQ 面直查）。
+    assert!(
+        berry_sched::find_single_waiter(pinned, SIGNAL_WAKE_PENDING).is_some(),
+        "WAKEP：等待者须在队（键 = 进程钉键）"
+    );
+
+    // —— ① 冻结窗内 send：消息照常入队 + wake_pending 置位 + 等待者被
+    //    进程钉键广播唤醒 + token 信号位到位（poll 面）。
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hb as u64, &raw const WBUF as u64, 4, 0, 0, 0),
+        0,
+        "WAKEP：①冻结窗 send 须照常成功"
+    );
+    assert!(end_has_msg(aref), "WAKEP：①消息须照常入队（不丢弃）");
+    assert!(wp_of(pref), "WAKEP：①wake_pending 须置位");
+    assert!(
+        berry_sched::find_single_waiter(pinned, SIGNAL_WAKE_PENDING).is_none(),
+        "WAKEP：①等待者须已被进程钉键广播唤醒（离队）"
+    );
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, tok as u64, SIGNAL_WAKE_PENDING, 0,
+             &raw mut OBS as u64),
+        0,
+        "WAKEP：①poll 须命中"
+    );
+    assert_eq!(
+        unsafe { *core::ptr::addr_of!(OBS) },
+        SIGNAL_WAKE_PENDING,
+        "WAKEP：①observed 须恰为 SIGNAL_WAKE_PENDING"
+    );
+
+    // —— ④ 一次语义：后续 send 位幂等（不重复通知——置位点单次）。
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hb as u64, &raw const WBUF as u64, 4, 0, 0, 0),
+        0,
+        "WAKEP：④第二跳 send 须成功"
+    );
+    assert!(wp_of(pref), "WAKEP：④位保持置位（幂等）");
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, tok as u64, SIGNAL_WAKE_PENDING, 0,
+             &raw mut OBS as u64),
+        0,
+        "WAKEP：④poll 仍命中"
+    );
+
+    // —— ③ thaw 清面：close(token) → Drop → 全解冻 → wake_pending 清 +
+    //    冻标清；此后 send 不再触发。
+    ht.close(tok).unwrap();
+    assert!(!wp_of(pref), "WAKEP：③thaw 须清 wake_pending");
+    assert!(!end_frozen(aref), "WAKEP：③thaw 须清端点冻标");
+    assert!(t1.held_locks & HELD_FROZEN == 0, "WAKEP：③任务须解冻");
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hb as u64, &raw const WBUF as u64, 4, 0, 0, 0),
+        0,
+        "WAKEP：③thaw 后 send 须成功"
+    );
+    assert!(!wp_of(pref), "WAKEP：③thaw 后 send 不得再触发（冻标已清）");
+    assert!(end_has_msg(aref), "WAKEP：③消息仍照常入队");
+
+    // —— ④ 嵌套臂：depth 2 两枚 token——中间层 close 不清，最后一枚才清。
+    assert_eq!(
+        svc4(NR_PROCESS_SUSPEND as u64, hp as u64, 0, &raw mut TOK as u64),
+        0,
+        "WAKEP：嵌套第一枚 suspend"
+    );
+    let tok1 = unsafe { *core::ptr::addr_of!(TOK) };
+    assert!(end_frozen(aref), "WAKEP：再冻须重打端点冻标");
+    assert_eq!(
+        svc4(NR_PROCESS_SUSPEND as u64, hp as u64, 0, &raw mut TOK2 as u64),
+        0,
+        "WAKEP：嵌套第二枚 suspend（freeze_by_pinned 计匹配含已冻）"
+    );
+    let tok2 = unsafe { *core::ptr::addr_of!(TOK2) };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hb as u64, &raw const WBUF as u64, 4, 0, 0, 0),
+        0,
+        "WAKEP：嵌套冻结窗 send"
+    );
+    assert!(wp_of(pref), "WAKEP：嵌套窗 wake_pending 置位");
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, tok2 as u64, SIGNAL_WAKE_PENDING, 0,
+             &raw mut OBS as u64),
+        0,
+        "WAKEP：嵌套 token 同位可观（信号面 = 目标派生）"
+    );
+    ht.close(tok1).unwrap(); // 中间层：depth 2→1，不清
+    assert!(wp_of(pref), "WAKEP：④中间层 close 不清 wake_pending");
+    assert!(end_frozen(aref), "WAKEP：④中间层 close 不清端点冻标");
+    assert!(t1.held_locks & HELD_FROZEN != 0, "WAKEP：④中间层不解冻");
+    ht.close(tok2).unwrap(); // 最后一枚：全解冻 + 清面
+    assert!(!wp_of(pref), "WAKEP：④最后一枚 close 清 wake_pending");
+    assert!(!end_frozen(aref), "WAKEP：④最后一枚 close 清端点冻标");
+    assert!(t1.held_locks & HELD_FROZEN == 0, "WAKEP：④最后一枚全解冻");
+
+    // 清场：受害任务摘队；唤醒后推 RQ 的等待者走 kill 全链摘队（F8 形）；
+    // 受害表先 drain（真退出序）+ bootstrap 表 drain 收口（通道对互钉成环
+    // = 两端安全泄漏，channel.rs 模块注政策）。
+    berry_sched::sleepq_unlink(t1);
+    berry_sched::sleepq_unlink(t2);
+    // SAFETY: F8 同款（真 ObjRef 簿记 + 单核屏蔽窗）。
+    let killed = unsafe { berry_sched::kill_all_tasks_by_pinned(wp2, 0) };
+    assert_eq!(
+        killed,
+        Some((b"wpWait".as_slice(), 1)),
+        "WAKEP：清场 kill 须恰收 wpWait 一枚（RQ 面不残留）"
+    );
+    unsafe {
+        (*pref.as_ptr()).obj.as_process_mut().unwrap().ht.drain();
+    }
+    ht.drain();
+    berry_hal_aarch64::uart_puts(b"WAKEP-K ok\n");
 }
 
 /// sim-S3（PM-16 §4.4 步3）：深睡降级断言（run() 末位新号——ktest done 前；
