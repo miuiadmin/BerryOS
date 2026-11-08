@@ -13,6 +13,7 @@ use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_guiproto::Rect as WireRect;
 use berry_ui::damage::RectI;
+use berry_ui::diagnostic::{HitDumpEntry, LayoutDumpEntry};
 use berry_ui::desc::{
     ColProps, GridProps, IconProps, ImageProps, RectProps, RowProps, TextProps, TextStyle,
 };
@@ -124,12 +125,38 @@ fn build_col_scene() -> (UiMain, berry_ui::NodeId, berry_ui::NodeId, berry_ui::N
 
 #[test]
 fn golden_cmd_stream_col_scene() {
-    let (ui, r1, text, r2) = build_col_scene();
+    let (mut ui, r1, text, r2) = build_col_scene();
 
     // 布局值级锚：Col 竖排三段 (0,0/16/32)
     assert_eq!(ui.bounds(r1).unwrap(), RectI::new(0, 0, 64, 16));
     assert_eq!(ui.bounds(text).unwrap(), RectI::new(0, 16, 16, 16));
     assert_eq!(ui.bounds(r2).unwrap(), RectI::new(0, 32, 64, 16));
+
+    // F2 布局/命中 dump 与离屏 golden 场景同源：树形、绝对界、topmost
+    // 均由同一保留树供给，禁止测试侧另造第二份几何。
+    let root = ui.root();
+    let blank = LayoutDumpEntry {
+        id: root, parent: None, first_child: None, next_sibling: None,
+        kind: ViewKind::Root, key: 0, depth: 0, x: 0, y: 0, w: 0, h: 0,
+        bounds: RectI::new(0, 0, 0, 0), measured_w: 0, measured_h: 0,
+        layout_dirty: false, paint_dirty: false,
+    };
+    let mut dump = [blank; 5];
+    assert_eq!(ui.layout_dump(&mut dump).unwrap(), 5);
+    assert_eq!(
+        dump.map(|entry| entry.id),
+        [root, dump[0].first_child.unwrap(), r1, text, r2],
+        "dump 前序树形"
+    );
+    assert_eq!(dump[2].bounds, RectI::new(0, 0, 64, 16));
+    assert_eq!(dump[3].bounds, RectI::new(0, 16, 16, 16));
+    assert_eq!(dump[4].bounds, RectI::new(0, 32, 64, 16));
+    let points = [(8, 20), (32, 4), (32, 24)];
+    let mut hits = [HitDumpEntry { x: 0, y: 0, node: None, kind: None, bounds: None }; 3];
+    assert_eq!(ui.hit_test_dump(&points, &mut hits).unwrap(), 3);
+    assert_eq!(hits[0].node, Some(text));
+    assert_eq!(hits[1].node, Some(r1));
+    assert_eq!(hits[2].node, Some(dump[1].id), "Text 透明区落到 Col 容器而非 Root");
 
     let mut ui = ui;
     ui.wake(0); // FULL → 全树发射

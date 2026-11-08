@@ -32,6 +32,7 @@
 pub mod anim;
 pub mod damage;
 pub mod dep;
+pub mod diagnostic;
 pub mod desc;
 pub mod frame;
 pub mod hit;
@@ -41,6 +42,7 @@ pub mod mask;
 pub mod metrics;
 pub mod paint;
 pub mod resample;
+pub mod sdk;
 pub mod swipe;
 pub mod telemetry;
 pub mod utf8;
@@ -900,12 +902,13 @@ impl<const N: usize> Ui<N> {
         // （无旧值比较——同文全量 relayout 浪费保留，§10 诚实基线）。
         #[cfg(feature = "s7")]
         {
-            let old = match self.nodes[idx].as_ref().map(|n| &n.props) {
-                Some(Props::Text(tp)) => tp.text,
+            let (old, scale) = match self.nodes[idx].as_ref().map(|n| &n.props) {
+                Some(Props::Text(tp)) => (tp.text, tp.style.scale),
                 _ => return Err(UiError::NodeBad), // unreachable（is_text 已验）——loud 防御
             };
-            let old_size = self.tm.measure(old.as_bytes(), desc::scale_to_u8(old.style.scale));
-            let new_size = self.tm.measure(buf.as_bytes(), desc::scale_to_u8(old.style.scale));
+            let scale_id = desc::scale_to_u8(scale);
+            let old_size = self.tm.measure(old.as_bytes(), scale_id);
+            let new_size = self.tm.measure(buf.as_bytes(), scale_id);
             let m = if old.as_bytes() == buf.as_bytes() {
                 mask::ChangeMask::NONE // 同文：零操作（D2）
             } else if old.len == buf.len && old_size == new_size {
@@ -1182,6 +1185,21 @@ impl<const N: usize> Ui<N> {
             Some(n) => Ok(n.kind),
             None => Err(UiError::NodeBad),
         }
+    }
+
+    /// F2 布局诊断 dump：前序保留树 + 相对摆位 + 视觉绝对界 + dirty 位。
+    /// `out` 过小 → `NodeFull`，绝不静默截断。
+    pub fn layout_dump(
+        &self, out: &mut [diagnostic::LayoutDumpEntry],
+    ) -> Result<usize, UiError> {
+        diagnostic::layout(&self.nodes, self.root_slot, out)
+    }
+
+    /// F2 命中诊断 dump：逐点输出 topmost 节点与命中界。
+    pub fn hit_test_dump(
+        &self, points: &[(u32, u32)], out: &mut [diagnostic::HitDumpEntry],
+    ) -> Result<usize, UiError> {
+        diagnostic::hit_test(&self.nodes, self.root_slot, points, out)
     }
 
     // —— 布局 / 脏区 ——
