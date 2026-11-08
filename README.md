@@ -80,6 +80,7 @@ Design documents are written in Chinese and live in [`docs/`](docs/). Start from
 - Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计-v1.0.md`](docs/系统调用ABI设计-v1.0.md)
 - App development guide — writing `.bap` apps, manifest v1, build toolchain: [`docs/应用开发指南.md`](docs/应用开发指南.md)
 - Documentation workspace (plans / decision notes / skills, Curia): [`.agents/README.md`](.agents/README.md)
+- Naming & prefix standard (the `berry` family): [`docs/命名与前缀规范-v1.0.md`](docs/命名与前缀规范-v1.0.md)
 
 ## License
 
