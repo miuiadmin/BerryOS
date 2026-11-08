@@ -10,7 +10,7 @@ Version: 0.3.0
 ## 背景
 
 - 证据基座 = [`research/AM-01-墓碑模式开源对标-v1.0.md`](../../../research/AM-01-墓碑模式开源对标-v1.0.md)：开源谱系四层 + 最先进八判据——主路径 freeze+压缩换出（Android 官方 −30% 冷启动），最先进形态 = Fuchsia「墓碑是 VMO + 用户态 pager + 持久存储的自然推论」，与 BerryOS 架构同构。
-- 内核机制面已在，am 是组合者不是发明者：token freeze（`调点调度-v1.1` W3：0x3E `process_suspend` + `SuspendToken` ObjType 12 + `FREEZE_READY` 自证 + 三重正交谓词，已落地含 S5.11 遥测）；VMO 5 类后备与可换出 + 用户态 pager（`内存管理设计-v1.0` §2/§4，X-6 供给链在途）；同步 channel + Event 通知；telemetry 环（ADR #45 不建第二数据库）。
+- 内核机制面已在，am 是组合者不是发明者：token freeze（`调点调度-v1.1` W3：0x3E `process_suspend` + `SuspendToken` ObjType 12 + `FREEZE_READY` 自证 + 三重正交谓词，已落地含 S5.11 遥测）；VMO 5 类后备与可换出 + 用户态 pager（`内存管理设计-v1.1` §2/§4，X-6 供给链在途）；同步 channel + Event 通知；telemetry 环（ADR #45 不建第二数据库）。
 - 契约层已立法：PM-00 裁决「默认冻结非杀」day-one、manifest 能力位、长时任务 reason u8 + 系统校验；ADR #68 纪律——SDK 面零新 syscall、纯协议 crate（berry-pwproto 先例）。
 - **执行承载 = appd（立法锚）**：`应用模型设计-v1.0` §4.1 已立生命周期分级 active → freeze → tombstone → not running（pause(save)/64KiB 帽/LRU/relaunch 读档）——AM-01 调研结论与该立法原文**独立同构、互证**；am 是该域的模块设计（梯度契约 + 策略层），不新建守护进程，消费链落 appd（监督域 `规则/05`）。首刀实施 = `app-1实施设计草案-v1.0`（段 a freeze-first / 段 b 墓碑协议 v0）。
 - 排除 8 问：本设计纯机制借鉴（Android/Fuchsia/OH 文档级），无代码引入，许可边界干净。
@@ -72,7 +72,7 @@ AM-0 本设计 → **AM-1/AM-3-v0 由 app-1 草案执行**（段 a = L2 freeze-f
 
 - v1 单核：冻结谓词三重正交防停摆已足够；跨核一致性 v2。
 - 冻前 GC 钩子只留接口——v1 应用生态无 GC runtime；未来 runtime 接入时由 runtime 消费。
-- 本设计不动 `调点调度-v1.1` 与 `内存管理设计-v1.0` 条文——discardable（Q2）若裁入 5 类枚举/标志位，先升 `内存管理设计` v1.1 再动代码。
+- 本设计不动 `调点调度-v1.1` 条文；`内存管理设计` 已升 v1.1 补 DISCARDABLE 回收策略位（§2，Q2 裁决的前置立法已兑现）——AM-4 动码前仅剩 pager 压缩仓成形一依赖。
 - 与 PM-00 分工：PM-00 管契约形状（豁免位/白名单/能力位），am 管机制执行——冲突以 PM-00 为准。
 - 挂账：应用模型 §4.1「freeze 挂 v2」旧口径已被内核现役推翻（0x3E 真实现役，app-1 实测锚点）——应用模型 v1.1 回写归 app-1 段 b-2 文书收官清单，本设计不代写。
 
@@ -84,4 +84,4 @@ AM-0 本设计 → **AM-1/AM-3-v0 由 app-1 草案执行**（段 a = L2 freeze-f
 
 ## Related
 
-[AM-01 调研](../../../research/AM-01-墓碑模式开源对标-v1.0.md) · [调点调度 v1.1](../../../docs/调点调度-v1.1.md) · [内存管理设计 v1.0](../../../docs/内存管理设计-v1.0.md) · [PM-00 省电综合裁决](../../../research/PM-00-全系统省电架构综合裁决-v1.1.md) · [SCHED-01](../../../research/SCHED-01-调度之王业界深研与综合裁决-v1.0.md) · [规则/05 服务监督](../../../docs/规则/05-服务监督.md) · [应用模型设计 §4.1（立法原文）](../../../docs/应用模型设计-v1.0.md) · [app-1 实施设计草案（首刀）](../../../docs/app-1实施设计草案-v1.0.md)
+[AM-01 调研](../../../research/AM-01-墓碑模式开源对标-v1.0.md) · [调点调度 v1.1](../../../docs/调点调度-v1.1.md) · [内存管理设计 v1.0](../../../docs/内存管理设计-v1.1.md) · [PM-00 省电综合裁决](../../../research/PM-00-全系统省电架构综合裁决-v1.1.md) · [SCHED-01](../../../research/SCHED-01-调度之王业界深研与综合裁决-v1.0.md) · [规则/05 服务监督](../../../docs/规则/05-服务监督.md) · [应用模型设计 §4.1（立法原文）](../../../docs/应用模型设计-v1.0.md) · [app-1 实施设计草案（首刀）](../../../docs/app-1实施设计草案-v1.0.md)
