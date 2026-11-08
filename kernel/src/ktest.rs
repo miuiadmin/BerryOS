@@ -73,6 +73,9 @@ pub fn run() {
     // v1.3 §9 真机框架：HDR 直方图（对数线性桶 + 分位 + per-CPU/合并读面；
     // 同款末位新号——sched::init 前跑，纯原子静态无 CURRENT 面，ktest 窗合法）。
     test_hdr();
+    // v1.3 §9 三路基准之路 2 首刀：定时器唤醒延迟基准（cyclictest 口径的
+    // 忙等简化）——HDR 首个真实消费者，record_wake_lat → 合并分位全链验证。
+    test_hdr_wake();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -6067,6 +6070,106 @@ fn test_hdr() {
     assert_eq!(merged_total(LatKind::Switch), 0, "HDR-3：收口回零");
 
     berry_hal_aarch64::uart_puts(b"HDR ok\n");
+}
+
+/// v1.3 §9 三路基准之路 2 首刀：**定时器唤醒延迟基准**（cyclictest 口径）的
+/// ktest 面——HDR 直方图的首个真实消费者（[`test_hdr`] 钉形状，本刀走热路径
+/// API `record_wake_lat` → per-CPU 槽 → 合并分位/极值/总数**全链**）。
+///
+/// ktest 窗（sched::init 前、boot DAIF 屏蔽、无定时器中断）测不了真睡真醒
+/// ——方案 A 简化：轮询 CNTVCT 到 deadline 模拟「被定时器唤醒」，记录
+/// 「轮询发现超时」的延迟 = 轮询粒度（读表 + 分支 + spin hint 一圈）。
+/// 真 IRQ 唤醒口径的数字面（sleep → on_irq_tick 唤醒）留方案 B boot 序列
+/// 基准刀（BENCHWAKE 粗直方图已有——本测试是它分位面细化的接线验证）。
+///
+/// 口径纪律：
+/// - **绝对 deadline 锚定**：`deadline += interval` 每轮——上轮超调不进
+///   下轮起点（相对锚 `deadline = now + interval` 会吃进超调、漂移累积）。
+/// - lat = now − deadline（saturating——时钟单调下不可负，防御口径）。
+/// - 出环条件 `<=`（**严格越过** deadline 才出）⇒ lat ≥ 1 恒立——绕开
+///   record 值域 1 起的静默拒 0，`merged_total == N` 才确定性可断。
+/// - 间隔 = CNTFRQ/1000（~1ms，随探测频率换算不硬编码；TCG 下 CNTV 推进
+///   ≈ 半速 → 墙钟 ~2ms/轮，tick 口径不变——§A8 纪律）。
+/// - lat 上限**不断言**：宿主停顿会把真实迟到吃进 lat（绝对锚下迟到的
+///   下一轮 deadline 更近——这正是 cyclictest 要测的量，非测试 bug）。
+/// - 数值只出数不设门禁（公约 2——统计量归宿主收割）；执法对象 = 接线
+///   形状（total 精确 == N / 槽隔离 / 双路隔离 / 分位序）。
+fn test_hdr_wake() {
+    use berry_sched::hdr::{
+        cpu_hdr, cpu_reset, merged_max, merged_min, merged_percentile, merged_total,
+        record_wake_lat, LatKind, HDR_MAX_VALUE, HDR_NR_CPU,
+    };
+    use berry_hal_aarch64::timer::{cntfrq, cntvct};
+
+    /// 轮数：p99 rank = ⌊128×0.99⌋+1 = 127 < N（非退化——不满轮帽顶；
+    /// N ≤ 100 时 p99 恒 = max，长尾判别力归零）。
+    const N: u64 = 128;
+
+    // —— HDRWAKE-0：清场 + 出生态（test_hdr 收口已零，重复跑双保险）。
+    for c in 0..HDR_NR_CPU {
+        cpu_reset(c);
+    }
+    assert_eq!(merged_total(LatKind::Wake), 0, "HDRWAKE：清场后须零样本");
+
+    // —— HDRWAKE-1：基准主循环（cyclictest 口径的忙等简化）。~1ms × 128
+    //      轮 ≈ 128ms tick（TCG 墙钟 ~2×）；IRQ 屏蔽窗单线程——零调度
+    //      噪声，lat 纯 = 轮询粒度。record_wake_lat 单参（cpu 内部自取
+    //      ——写方限本核纪律，非草图的两参形态）。
+    let interval = cntfrq() / 1000; // ~1ms（62.5MHz → 62500 ticks）
+    assert!(interval > 0, "HDRWAKE：间隔须非零");
+    let mut deadline = cntvct() + interval; // 首轮锚
+    for _ in 0..N {
+        // 「睡」到 deadline：轮询模拟定时器唤醒（真 sleep 需 sched::init +
+        // IRQ——方案 B 的 boot 序列刀）。
+        while cntvct() <= deadline {
+            core::hint::spin_loop();
+        }
+        // 「唤醒后」读表 + 记账：出环即严格越过 + CNTVCT 单调 ⇒ lat ≥ 1。
+        let now = cntvct();
+        let lat = now.saturating_sub(deadline);
+        assert!(lat >= 1, "HDRWAKE：lat={lat} 须 ≥1（record 拒 0 → total 漂移）");
+        record_wake_lat(lat); // 热路径真 API：cpu_id()=0（ktest 单核窗）→ CPU0 槽
+        deadline += interval; // 绝对锚：不累积漂移
+    }
+
+    // —— HDRWAKE-2：读面对账（record → per-CPU 槽 → 合并读面全链）。
+    let n = merged_total(LatKind::Wake);
+    assert_eq!(n, N, "HDRWAKE：合并 total={n} 须 == 轮数 {N}（record→total 断链即现形）");
+    let c0 = cpu_hdr(0).expect("HDRWAKE：CPU0 槽须在");
+    let c1 = cpu_hdr(1).expect("HDRWAKE：CPU1 槽须在");
+    assert_eq!(c0.wake_lat.total(), N, "HDRWAKE：CPU0 槽须收全（record_wake_lat 槽化接线）");
+    assert_eq!(
+        c1.wake_lat.total(),
+        0,
+        "HDRWAKE：CPU1 槽须零（ktest 单核窗——泄漏即 cpu_id() 槽化错）"
+    );
+    assert_eq!(c0.switch_lat.total(), 0, "HDRWAKE：switch 路须零（双路隔离——本测试只写 wake）");
+    // 分位/极值序：累计秩扫描 + bucket_upper 随下标单调 ⇒ min ≤ p50 ≤ p99
+    // 恒立（p99 ≤ max **不**断言：末两样本同桶时保守上界可越 max——桶面口径）。
+    let p50 = merged_percentile(LatKind::Wake, 500);
+    let p99 = merged_percentile(LatKind::Wake, 990);
+    let mn = merged_min(LatKind::Wake);
+    let mx = merged_max(LatKind::Wake);
+    assert!(mn >= 1, "HDRWAKE：min={mn} 须 ≥1（值域口径）");
+    assert!(p50 >= mn && p99 >= p50, "HDRWAKE：分位序破（min={mn} p50={p50} p99={p99}）");
+    assert!(mx < HDR_MAX_VALUE, "HDRWAKE：max={mx} 超值域——长尾被 4.3s 封顶钳位（失真信号）");
+
+    // —— 打印：机器可读单行（p50/p99 = 命中桶保守上界口径；统计量只出数，
+    //      宿主侧 bench.py 同表收割——BENCH 行同纪律）。
+    berry_hal_aarch64::uart_puts(b"HDRWAKE ok p50=");
+    berry_hal_aarch64::uart_put_dec(p50);
+    berry_hal_aarch64::uart_puts(b" p99=");
+    berry_hal_aarch64::uart_put_dec(p99);
+    berry_hal_aarch64::uart_puts(b" n=");
+    berry_hal_aarch64::uart_put_dec(n);
+    berry_hal_aarch64::uart_puts(b"\n");
+
+    // —— 收口：全槽清零回 boot 等价态（ktest 瞬态不外泄——test_hdr 同款；
+    //      boot 后三路基准/遥测钩子接管写面）。
+    for c in 0..HDR_NR_CPU {
+        cpu_reset(c);
+    }
+    assert_eq!(merged_total(LatKind::Wake), 0, "HDRWAKE：收口回零");
 }
 
 /// 4-4：fastpath 检查链的 SLEEPQ 侧纯函数面（`find_single_waiter`）+ send 尾部
