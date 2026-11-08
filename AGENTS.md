@@ -16,7 +16,7 @@
 
 ## 冻结常量（全表 → `docs/架构决策.md`）
 
-- 内核/权限：Zircon 务实派 + 纯能力（内核态 handle）+ VMO/用户态 pager/每进程 AS；syscall ~30–45（v1 35 在册，C-ABI）。
+- 内核/权限：Zircon 务实派 + 纯能力（内核态 handle）+ VMO/用户态 pager/每进程 AS；syscall ~30–45（v1 37 在册，C-ABI）。
 - IPC/FS/驱动：同步 channel + 异步通知 + 共享内存 + 路径命名空间；FS/网络/驱动用户态，启动关键暂留内核；FS MVP = FAT，实时 = 软实时。
 - 调度：机制在内核、策略可插拔 + tickless；省电/多核双线；intent（u8）第一类输入（#42 两段式，#58 六档词汇表；公平默认、只叠加）。
 - AI 原生调度：机制预留（带内接口，给用户态策略）+ 实验轨道 + kill criteria。

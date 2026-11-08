@@ -18,7 +18,7 @@ Status: implemented
 
 ## Consequences
 
-- 27 个 `berry-` crate 与冻结 ABI **零迁移即合规**——立法成本低（成文即生效）。
+- 全仓 38 个 `berry-` 前缀 crate 与冻结 ABI **零迁移即合规**——立法成本低（成文即生效）。
 - 白名单（`bsh`/freestanding mem 族/上游 crate 内部）永不清算；新面由评审拦。
 - SDK 五件套（ADR #75–#80 预留）落册时引用本标准；`BERRY_` 宏面从此有了唯一合法形态。
 

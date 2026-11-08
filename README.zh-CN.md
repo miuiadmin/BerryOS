@@ -44,7 +44,7 @@ just test-host    # host 侧 315 单元测试（无需 QEMU）
 
 ## 文档
 
-设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（67 条 ADR）→ [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
+设计文档（中文）全部在 [`docs/`](docs/)，唯一详表 = [`docs/索引.md`](docs/索引.md)。先读：[`docs/架构决策.md`](docs/架构决策.md)（70 条 ADR）→ [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md) → [`docs/架构综合纲领.md`](docs/架构综合纲领.md)。
 
 过程与制度文档（计划/决策笔记/技能）在 [`.agents/`](.agents/)（Curia 工作区，规范 = [`.agents/README.md`](.agents/README.md)）；新写文档的归属裁决表 = [`docs/README.md`](docs/README.md)；命名与前缀规范（berry 家族）= [`docs/命名与前缀规范-v1.0.md`](docs/命名与前缀规范-v1.0.md)。
 
