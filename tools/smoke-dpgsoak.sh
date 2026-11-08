@@ -24,7 +24,8 @@
 #      醒-放槽-重扫再印）已迁 ktest 确定性单测（X-5 同刀），本脸不再
 #      承担其覆盖；env DPGF_OVFL_CAP 覆盖〔默认 40〕仅 K < N 路消费。
 #   ④ dpg 五行行序 DPGP < DPGS < DPGN < DPGF < DPGF2 严格递增
-#   ⑤ `eco: dpgf` 降级行零计（波内坏面 = fail loud 早断）
+#   ⑤ `eco: dpgf` 降级行零计（波内坏面 = fail loud 早断）；60d3bb9 起
+#      `eco: dpgf t-37` 容差行（拆台撞已退子幂等面 -37，合法吸收）不计降级
 #
 # kernel 面无关（default / lockdep ELF 皆可跑）：LOCKDEP banner 在席时
 # VIOLATION=0 机器执法（⑥，concur-1）；行序延伸 = C-3 刀另挂。宿主对端
@@ -223,10 +224,11 @@ QPID=$!
 P2_PIDS="$QPID $P2_PIDS"
 
 # 终态轮询：`DPGF2 ok n=3`（C-4 二轮末标记——它到 = 波 1 + 槽回收全毕）；
-# fail-fast = eco dpgf 降级 / panic 族早断真断链，帽只兜挂死。
+# fail-fast = eco dpgf 真降级 / panic 族早断真断链（t-37 容差行排除——
+# 60d3bb9 起拆台 -37 合法吸收，不掐轮询），帽只兜挂死。
 deadline=$((SECONDS + DL_S))
 while :; do
-  grep -qE 'eco: dpgf|panicked|PANIC' "$LOG" 2>/dev/null && break
+  { grep -E 'eco: dpgf|panicked|PANIC' "$LOG" 2>/dev/null || true; } | grep -vF 't-37' | grep -q . && break
   grep -q 'DPGF2 ok n=3' "$LOG" 2>/dev/null && break
   kill -0 "$QPID" 2>/dev/null || break
   [ $SECONDS -ge $deadline ] && break
@@ -280,8 +282,9 @@ if [ -z "$l_p" ] || [ -z "$l_s" ] || [ -z "$l_n" ] || [ -z "$l_f" ] || [ -z "$l_
   echo "smoke-dpgsoak: FAIL——dpg 五行行序断言（DPGP=$l_p < DPGS=$l_s < DPGN=$l_n < DPGF=$l_f < DPGF2=$l_f2 须全非空严格递增）" >&2
   rc=1
 fi
-# ⑤ eco dpgf 降级零计 + panic 族零计。
-ECO=$(grep -c 'eco: dpgf' "$LOG" 2>/dev/null || true)
+# ⑤ eco dpgf 真降级零计（t-37 容差行分账不计）+ panic 族零计。
+ECO=$(grep 'eco: dpgf' "$LOG" 2>/dev/null | grep -vF 't-37' | wc -l | tr -d ' ')
+T37=$(grep -cF 'eco: dpgf t-37' "$LOG" 2>/dev/null || true)
 if [ "$ECO" -ne 0 ]; then
   echo "smoke-dpgsoak: FAIL——eco dpgf 降级行 $ECO 条（波内坏面早断——tail 看相位）" >&2
   rc=1
@@ -303,7 +306,7 @@ if grep -q 'LOCKDEP selftest ok' "$LOG" 2>/dev/null; then
 fi
 
 if [ "$rc" -eq 0 ]; then
-  echo "smoke-dpgsoak: PASS（DPGF n=15 满配 + DPGF2 n=3 槽回收 + ovfl $OV ∈ [1,$OVFL_CAP] + 五行行序 + 降级/panic 零）" | tee -a "$LOG"
+  echo "smoke-dpgsoak: PASS（DPGF n=15 满配 + DPGF2 n=3 槽回收 + ovfl $OV ∈ [1,$OVFL_CAP] + 五行行序 + 降级/panic 零 + t-37 容差 $T37）" | tee -a "$LOG"
   keep_log drop
 else
   echo "smoke-dpgsoak: FAIL（判词见上/stderr；串口 + 三 client 档随 keep 留存）" >> "$LOG"
