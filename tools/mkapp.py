@@ -6,6 +6,8 @@ SDK-1a 增量 `docs/SDK-1a实施设计草案.md` §4；GUI-7 增量见本头注
 
 用法：mkapp.py <out.bap> <app-dir>        # 打包（app-dir = {manifest.toml, bin/, icons/?, views/?}）
       mkapp.py --check <path.bap>         # 复验既有包，只验不写（SDK-1a §4.4）
+      mkapp.py --json <out.bap> <app-dir> # 同打包·机读单行 JSON 信封（SDK-2 §二；
+                                          #   亦作 --check/--new 前缀旗标，拒因 exit 1）
       mkapp.py --new <dir> --id <ID>      # 应用脚手架四件（SDK-1a §4.5）
       mkapp.py --selftest                 # 门禁自检（零依赖；挂 just test-host，
                                           #          mkfat --check-fixture 同位）
@@ -53,6 +55,16 @@ GUI-7 图标/视图管道（裁决 B——staging 源是 PNG，产物是 BYI1）
 常规文件，icons/ 恰 `.png` 常规文件（扁平），views/ 恰非空常规文件；
 manifest ≤ MANIFEST_MAX、归档 ≤ BAP_MAX。
 
+--json 信封（SDK-2 §二 拒因三元组双读，2026-11-08 刀7；不带旗标时人读
+输出/退出码逐字节同现状）：恒 argv[1] 前缀（`--json <out.bap> <app-dir>` |
+`--json --check <path.bap>` | `--json --new <dir> --id <ID>`；--selftest 不收
+--json）。成功 {"tool":"mkapp","op":"build|check|new","ok":true,"result":
+{…摘要行镜像…}}；拒因 ok=false + error 舱 {code,where,line,expected,got,
+fix,message}——code=域.键.因 点分小写（负样例八类见 selftest --json 腿）；
+where=节.键路径，line 仅语法层透传 tomllib 位点、其余域用自带位点（cpio
+偏移/文件名）；--json 模式 OSError 兜底 code="io"；用法错双模式同形
+（stderr __doc__ + exit 2）。
+
 规范形（第 2 道的比较基准，SDK-1a §3 冻结 + GUI-7 尾增 + 同意面先落件二
 尾增）：`[app]` 五行定序 id/version/entry/type/intent + `[compat]?`
 （min/target/compile，int 三元组重发射）+ `[capabilities]`
@@ -82,6 +94,7 @@ LABEL_MAX/ICON_PREFIX/VIEWS_PREFIX/ICON_FILES_MAX/VIEWS_FILES_MAX
 `docs/应用开发指南.md`。
 """
 import hashlib
+import json
 import os
 import re
 import struct
@@ -149,7 +162,23 @@ SUMS_LINE_RE = re.compile(rb"^([0-9a-f]{64})  (.+)$")
 
 
 class Reject(Exception):
-    """门禁拒绝（一行理由，非零退出）。"""
+    """门禁拒绝（一行理由，非零退出）。
+
+    --json 模式附结构化拒因（SDK-2 §二 三元组扩展面，人读文案零改）：
+    code=域.键.因 点分小写稳定名；where=节.键路径；line 仅语法层透传
+    tomllib 位点（其余域 None——非 manifest 域用自带位点进 where/got）；
+    expected/got/fix 供消费端（含 agent）按舱分支渲染。全部缺省 None：
+    旧调用点零 kwargs 兼容。"""
+
+    def __init__(self, message: str, *, code=None, where=None, line=None,
+                 expected=None, got=None, fix=None):
+        super().__init__(message)
+        self.code = code
+        self.where = where
+        self.line = line
+        self.expected = expected
+        self.got = got
+        self.fix = fix
 
 
 def _ver(v: tuple) -> str:
@@ -227,15 +256,27 @@ class M:
         return out
 
 
-def _check_str(v, what: str, maxlen: int) -> None:
-    # parse_string 镜像：可打印 ASCII 0x20..=0x7E、无反斜杠、无内嵌引号
+def _check_str(v, what: str, maxlen: int, key: str = "") -> None:
+    # parse_string 镜像：可打印 ASCII 0x20..=0x7E、无反斜杠、无内嵌引号；
+    # key = --json 拒因尾段（code=manifest.<key>.type/.length/.charset、
+    # where=<key>）；缺省空串 = 旧点兼容（现役调用点全传）。
     if not isinstance(v, str):
-        raise Reject(f"manifest: {what} 应为字符串")
+        raise Reject(f"manifest: {what} 应为字符串",
+                     code=f"manifest.{key}.type", where=key)
     if not 1 <= len(v) <= maxlen:
-        raise Reject(f"manifest: {what} 空/超长（1..={maxlen}）")
+        raise Reject(f"manifest: {what} 空/超长（1..={maxlen}）",
+                     code=f"manifest.{key}.length", where=key,
+                     expected=f"1..={maxlen}", got=len(v))
     for ch in v:
         if not (0x20 <= ord(ch) <= 0x7E) or ch in ('\\', '"'):
-            raise Reject(f"manifest: {what} 非法字符 {ch!r}")
+            raise Reject(f"manifest: {what} 非法字符 {ch!r}",
+                         code=f"manifest.{key}.charset", where=key)
+
+
+def _toml_line(e: Exception):
+    # tomllib 报错文案含「at line N」——透传给 --json error.line（仅语法层）
+    mo = re.search(r"at line (\d+)", str(e))
+    return int(mo.group(1)) if mo else None
 
 
 def check_manifest_text(text: str) -> M:
@@ -243,37 +284,59 @@ def check_manifest_text(text: str) -> M:
     # 字节面前置（berry-manifest 同款：LF only、拒 tab——tomllib 对两者
     # 都比我们宽容，先拒免得把锅甩给规范形比较）
     if "\r" in text:
-        raise Reject("manifest: CR（CRLF）拒收——LF only")
+        raise Reject("manifest: CR（CRLF）拒收——LF only",
+                     code="manifest.syntax.crlf", where="manifest.toml",
+                     fix="编辑器行尾改存 LF")
     if "\t" in text:
-        raise Reject("manifest: tab 拒收")
+        raise Reject("manifest: tab 拒收",
+                     code="manifest.syntax.tab", where="manifest.toml",
+                     fix="tab 改空格/删除")
     try:
         doc = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
-        raise Reject(f"manifest: TOML 解析失败： {e}")
+        raise Reject(f"manifest: TOML 解析失败： {e}",
+                     code="manifest.syntax.toml", where="manifest.toml",
+                     line=_toml_line(e))
 
     unknown = set(doc) - {
         "app", "capabilities", "runtime", "compat", "security", "ui", "agent-actions",
     }
     if unknown:
-        raise Reject(f"manifest: 未知节 {sorted(unknown)}")
+        raise Reject(f"manifest: 未知节 {sorted(unknown)}",
+                     code="manifest.section.unknown", where="manifest.toml",
+                     expected=["app", "capabilities", "runtime", "compat",
+                               "security", "ui", "agent-actions"],
+                     got=sorted(unknown))
     for need in ("app", "capabilities"):
         if not isinstance(doc.get(need), dict):
-            raise Reject(f"manifest: 缺 [{need}]")
+            raise Reject(f"manifest: 缺 [{need}]",
+                         code="manifest.section.missing", where=need,
+                         expected=f"[{need}] 节")
 
     app = doc["app"]
     if set(app) != set(APP_KEYS):
-        raise Reject(f"manifest: [app] 键集应为五键 {sorted(APP_KEYS)}")
-    _check_str(app["id"], "id", ID_MAX)
+        raise Reject(f"manifest: [app] 键集应为五键 {sorted(APP_KEYS)}",
+                     code="manifest.app.keys", where="app",
+                     expected=sorted(APP_KEYS), got=sorted(app))
+    _check_str(app["id"], "id", ID_MAX, key="app.id")
     if not ID_RE.fullmatch(app["id"]):
-        raise Reject("manifest: id 字符集 [A-Za-z0-9._-]、首字符字母数字")
-    _check_str(app["version"], "version", VERSION_MAX)
-    _check_str(app["entry"], "entry", ENTRY_MAX)
+        raise Reject("manifest: id 字符集 [A-Za-z0-9._-]、首字符字母数字",
+                     code="manifest.id.charset", where="app.id",
+                     expected="[A-Za-z0-9._-]、首字符字母数字")
+    _check_str(app["version"], "version", VERSION_MAX, key="app.version")
+    _check_str(app["entry"], "entry", ENTRY_MAX, key="app.entry")
     if not app["entry"].startswith("bin/") or len(app["entry"]) <= len("bin/"):
-        raise Reject("manifest: entry 应为 bin/ 前缀完整路径")
+        raise Reject("manifest: entry 应为 bin/ 前缀完整路径",
+                     code="manifest.entry.prefix", where="app.entry",
+                     expected="bin/<name>")
     if app["type"] != "app":
-        raise Reject('manifest: type 仅 "app"')
+        raise Reject('manifest: type 仅 "app"',
+                     code="manifest.type.value", where="app.type",
+                     expected="app", got=app["type"])
     if app["intent"] not in INTENTS:
-        raise Reject(f"manifest: intent 应为六词之一 {INTENTS}")
+        raise Reject(f"manifest: intent 应为六词之一 {INTENTS}",
+                     code="manifest.intent.vocab", where="app.intent",
+                     expected=list(INTENTS), got=app["intent"])
 
     # SDK-1a：[compat] 三值域 + 链执法（§4.2）。isinstance 门 = 节级形态
     # 硬ening（tomllib 把 `compat = 5` 解成 int，set(int) 会 TypeError——
@@ -282,41 +345,64 @@ def check_manifest_text(text: str) -> M:
     compat = doc.get("compat")
     if compat is not None:
         if not isinstance(compat, dict) or set(compat) != {"min", "target", "compile"}:
-            raise Reject("manifest: [compat] 应为 min/target/compile 三键齐备")
+            raise Reject("manifest: [compat] 应为 min/target/compile 三键齐备",
+                         code="manifest.compat.keys", where="compat",
+                         expected=["min", "target", "compile"])
         vs = []
         for k in ("min", "target", "compile"):
             v = compat[k]
             if not isinstance(v, str) or not VER_RE.fullmatch(v):
-                raise Reject("manifest: compat 值应为 x.y.z（每段 1-3 位十进制、无前导零）")
+                raise Reject("manifest: compat 值应为 x.y.z（每段 1-3 位十进制、无前导零）",
+                             code="manifest.compat.value", where=f"compat.{k}",
+                             expected="x.y.z")
             vs.append(tuple(int(g) for g in VER_RE.fullmatch(v).groups()))
         if not vs[0] <= vs[1] <= vs[2]:
-            raise Reject("manifest: compat 序不合（需 min ≤ target ≤ compile）")  # hvigor 00303015 对应物
+            raise Reject("manifest: compat 序不合（需 min ≤ target ≤ compile）",  # hvigor 00303015 对应物
+                         code="manifest.compat.order", where="compat",
+                         expected="min ≤ target ≤ compile",
+                         got=f"min={_ver(vs[0])} target={_ver(vs[1])} "
+                             f"compile={_ver(vs[2])}")
         if vs[2] > SDK_CURRENT:
-            raise Reject(f"manifest: compile {_ver(vs[2])} 超工具链当前级 {SDK_CURRENT_STR}")
+            raise Reject(f"manifest: compile {_ver(vs[2])} 超工具链当前级 {SDK_CURRENT_STR}",
+                         code="manifest.compat.ceiling", where="compat.compile",
+                         expected=f"≤{SDK_CURRENT_STR}", got=_ver(vs[2]))
 
     caps = doc["capabilities"]
     if not {"console"} <= set(caps) or set(caps) - {"console", "fs", "net"}:
-        raise Reject("manifest: [capabilities] 键集应为 console(+fs/net)")
+        raise Reject("manifest: [capabilities] 键集应为 console(+fs/net)",
+                     code="manifest.capabilities.keys", where="capabilities",
+                     expected="console（+fs/net）")
     if type(caps["console"]) is not bool:
-        raise Reject("manifest: console 应为 bool")
+        raise Reject("manifest: console 应为 bool",
+                     code="manifest.capabilities.console",
+                     where="capabilities.console", expected="bool")
     for key, vocab in (("fs", FS_SCOPES), ("net", NET_SCOPES)):
         if key in caps:
             v = caps[key]
             if not (isinstance(v, list) and len(v) == 1 and isinstance(v[0], str)
                     and v[0] in vocab):
-                raise Reject(f"manifest: {key} 应为单元素数组，词表 {vocab}")
+                raise Reject(f"manifest: {key} 应为单元素数组，词表 {vocab}",
+                             code=f"manifest.{key}.vocab",
+                             where=f"capabilities.{key}",
+                             expected=list(vocab))
 
     runtime = doc.get("runtime")
     if runtime is not None:
         if not isinstance(runtime, dict) or set(runtime) != {"stack_pages"}:
-            raise Reject("manifest: [runtime] 仅 stack_pages 一键")
+            raise Reject("manifest: [runtime] 仅 stack_pages 一键",
+                         code="manifest.runtime.keys", where="runtime",
+                         expected=["stack_pages"])
         sp = runtime["stack_pages"]
         if type(sp) is not int:  # bool 是 int 子类，type() 才拦得住
-            raise Reject("manifest: stack_pages 应为整数")
+            raise Reject("manifest: stack_pages 应为整数",
+                         code="manifest.runtime.type",
+                         where="runtime.stack_pages", expected="int")
         if not STACK_PAGES_MIN <= sp <= STACK_PAGES_MAX:
             raise Reject(
                 f"manifest: stack_pages 越界"
-                f" [{STACK_PAGES_MIN},{STACK_PAGES_MAX}]"
+                f" [{STACK_PAGES_MIN},{STACK_PAGES_MAX}]",
+                code="manifest.runtime.range", where="runtime.stack_pages",
+                expected=f"[{STACK_PAGES_MIN},{STACK_PAGES_MAX}]", got=sp,
             )
 
     # SDK-1a：[security] 预留节形态执法（值域 1..=16B [a-z0-9-]，齐备或齐缺）
@@ -324,10 +410,14 @@ def check_manifest_text(text: str) -> M:
     sec = doc.get("security")
     if sec is not None:
         if not isinstance(sec, dict) or set(sec) != {"profile", "key_lineage"}:
-            raise Reject("manifest: [security] 应为 profile/key_lineage 两键齐备")
+            raise Reject("manifest: [security] 应为 profile/key_lineage 两键齐备",
+                         code="manifest.security.keys", where="security",
+                         expected=["profile", "key_lineage"])
         for k in ("profile", "key_lineage"):
             if not isinstance(sec[k], str) or not SEC_RE.fullmatch(sec[k]):
-                raise Reject("manifest: security 值应为 1..16B 的 [a-z0-9-]")
+                raise Reject("manifest: security 值应为 1..16B 的 [a-z0-9-]",
+                             code="manifest.security.vocab",
+                             where=f"security.{k}", expected="1..16B [a-z0-9-]")
         sec_t = (sec["profile"], sec["key_lineage"])
 
     # GUI-7：[ui] 三键独立可选（无齐备约束——空节解析合法，但 canonical
@@ -338,26 +428,32 @@ def check_manifest_text(text: str) -> M:
     ui = doc.get("ui")
     if ui is not None:
         if not isinstance(ui, dict) or set(ui) - {"icon", "label", "views"}:
-            raise Reject("manifest: [ui] 键集应为 icon/label/views（独立可选）")
+            raise Reject("manifest: [ui] 键集应为 icon/label/views（独立可选）",
+                         code="manifest.ui.keys", where="ui",
+                         expected=["icon", "label", "views"])
         icon_v = ui.get("icon")
         if icon_v is not None:
-            _check_str(icon_v, "ui.icon", UI_PATH_MAX)
+            _check_str(icon_v, "ui.icon", UI_PATH_MAX, key="ui.icon")
             if (
                 not icon_v.startswith(ICON_PREFIX)
                 or len(icon_v) <= len(ICON_PREFIX)
                 or not icon_v.endswith(".byi")
             ):
                 raise Reject(
-                    f"manifest: ui.icon 应为 {ICON_PREFIX}前缀 + `.byi` 后缀产品名"
+                    f"manifest: ui.icon 应为 {ICON_PREFIX}前缀 + `.byi` 后缀产品名",
+                    code="manifest.ui.icon", where="ui.icon",
+                    expected=f"{ICON_PREFIX}<名>.byi",
                 )
         label_v = ui.get("label")
         if label_v is not None:
-            _check_str(label_v, "ui.label", LABEL_MAX)
+            _check_str(label_v, "ui.label", LABEL_MAX, key="ui.label")
         views_v = ui.get("views")
         if views_v is not None:
-            _check_str(views_v, "ui.views", UI_PATH_MAX)
+            _check_str(views_v, "ui.views", UI_PATH_MAX, key="ui.views")
             if not views_v.startswith(VIEWS_PREFIX) or len(views_v) <= len(VIEWS_PREFIX):
-                raise Reject(f"manifest: ui.views 应为 {VIEWS_PREFIX}前缀路径")
+                raise Reject(f"manifest: ui.views 应为 {VIEWS_PREFIX}前缀路径",
+                             code="manifest.ui.views", where="ui.views",
+                             expected=f"{VIEWS_PREFIX}<名>")
         if icon_v or label_v or views_v:
             ui_t = (icon_v, label_v, views_v)
 
@@ -370,17 +466,26 @@ def check_manifest_text(text: str) -> M:
     aa = doc.get("agent-actions")
     if aa is not None:
         if not isinstance(aa, dict):
-            raise Reject("manifest: [agent-actions] 应为节（键值表）")
+            raise Reject("manifest: [agent-actions] 应为节（键值表）",
+                         code="manifest.agent-actions.type", where="agent-actions",
+                         expected="节（键值表）")
         if len(aa) > AGENT_ACTIONS_MAX:
-            raise Reject(f"manifest: [agent-actions] 条目越帽 {AGENT_ACTIONS_MAX}")
+            raise Reject(f"manifest: [agent-actions] 条目越帽 {AGENT_ACTIONS_MAX}",
+                         code="manifest.agent-actions.cap", where="agent-actions",
+                         expected=f"≤{AGENT_ACTIONS_MAX}", got=len(aa))
         for k, v in aa.items():
             if not ACTION_KEY_RE.fullmatch(k):
                 raise Reject(
                     "manifest: [agent-actions] 键应为 kebab-case 动作名"
-                    f"（首字符小写字母、[a-z0-9-]、≤{ACTION_NAME_MAX}B）"
+                    f"（首字符小写字母、[a-z0-9-]、≤{ACTION_NAME_MAX}B）",
+                    code="manifest.agent-actions.key", where="agent-actions",
+                    expected="kebab-case（首字符小写字母、[a-z0-9-]）", got=k,
                 )
             if v not in RISK_TIERS:
-                raise Reject(f"manifest: [agent-actions] 值应为三档之一 {RISK_TIERS}")
+                raise Reject(f"manifest: [agent-actions] 值应为三档之一 {RISK_TIERS}",
+                             code="manifest.agent-actions.tier",
+                             where=f"agent-actions.{k}",
+                             expected=list(RISK_TIERS), got=v)
         # 文档序保序（tomllib dict 保序）——canonical 同序重发射
         aa_t = list(aa.items())
 
@@ -388,7 +493,9 @@ def check_manifest_text(text: str) -> M:
     if text != m.canonical():
         raise Reject(
             "manifest: 非规范形（hex/下划线整数、单引号、内联表、"
-            "多行串、注释、多余空白等 tomllib 收而门禁不收）"
+            "多行串、注释、多余空白等 tomllib 收而门禁不收）",
+            code="manifest.canonical", where="manifest.toml",
+            fix="以门禁规范形重发射（canonical 键序/定序/双引号基础串/LF/无注释）",
         )
     return m
 
@@ -401,31 +508,39 @@ def check_manifest_text(text: str) -> M:
 # = [65535, 1] 两段）；产面另加单边 ≤ ICON_DIM_MAX（decode 面无此帽）。
 
 
-def _png_chunks(png: bytes) -> list[tuple[bytes, bytes]]:
+def _png_chunks(png: bytes, name: str = "icon") -> list[tuple[bytes, bytes]]:
     """PNG 走查：签名 + 逐 chunk CRC 复验（敌意/损坏文件 loud）。"""
     if png[:8] != b"\x89PNG\r\n\x1a\n":
-        raise Reject("icon: 非 PNG（签名不符）")
+        raise Reject("icon: 非 PNG（签名不符）",
+                     code="icon.png.signature", where=name, expected="PNG 签名")
     out = []
     off = 8
     while off < len(png):
         if off + 8 > len(png):
-            raise Reject("icon: PNG chunk 头越界")
+            raise Reject("icon: PNG chunk 头越界",
+                         code="icon.png.chunk", where=name, got=f"@{off}")
         (length,) = struct.unpack(">I", png[off : off + 4])
         tag = png[off + 4 : off + 8]
         if off + 12 + length > len(png):
-            raise Reject(f"icon: PNG chunk {tag!r} 越界")
+            raise Reject(f"icon: PNG chunk {tag!r} 越界",
+                         code="icon.png.chunk", where=name,
+                         got=f"{tag.decode('ascii', 'replace')}@{off}")
         body = png[off + 8 : off + 8 + length]
         (crc,) = struct.unpack(">I", png[off + 8 + length : off + 12 + length])
         if zlib.crc32(tag + body) & 0xFFFFFFFF != crc:
-            raise Reject(f"icon: PNG chunk {tag!r} CRC 不符")
+            raise Reject(f"icon: PNG chunk {tag!r} CRC 不符",
+                         code="icon.png.crc", where=name,
+                         got=f"{tag.decode('ascii', 'replace')}@{off}")
         out.append((tag, body))
         off += 12 + length
         if tag == b"IEND":
             break
     if off != len(png):
-        raise Reject("icon: PNG IEND 后拖尾字节")
+        raise Reject("icon: PNG IEND 后拖尾字节",
+                     code="icon.png.trailing", where=name)
     if not out or out[0][0] != b"IHDR":
-        raise Reject("icon: PNG 首 chunk 非 IHDR")
+        raise Reject("icon: PNG 首 chunk 非 IHDR",
+                     code="icon.png.ihdr", where=name)
     return out
 
 
@@ -448,22 +563,38 @@ def png_to_byi(png: bytes, src_name: str) -> bytes:
     （staging 放的是开发者可控源，产面从严 = 包内产物恒过 decode；tRNS
     是透明色键语义——静默丢弃 = 半透明像素丢成不透明，故 loud 拒）。
     """
-    chunks = _png_chunks(png)
+    chunks = _png_chunks(png, src_name)
     ihdr, idat = chunks[0][1], b""
     if len(ihdr) != 13:
-        raise Reject(f"icon: {src_name} IHDR 长 {len(ihdr)} ≠ 13")
+        raise Reject(f"icon: {src_name} IHDR 长 {len(ihdr)} ≠ 13",
+                     code="icon.encode.ihdr", where=src_name,
+                     expected=13, got=len(ihdr))
     w, h, depth, color, comp, filt, interlace = struct.unpack(">IIBBBBB", ihdr)
+    # 应用规范 §3.3 图标源规格【v1 立法】：桌面图标源建议 108×108、有效
+    # 内容居中、四周 ≥18px 裁切裕量（launcher 162px 目标几何采样 + 系统蒙
+    # 版前提）。忠告面不拒（现役 32×32 demo 资产先于规格）——过小源在目标
+    # 几何放大即糊，loud 提示开发者换源。
+    if w < 108 or h < 108:
+        print(f"mkapp: warn icon {src_name} {w}x{h} < 108 源规格"
+              "（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）")
     if depth != 8 or color not in (2, 6):
         raise Reject(
             f"icon: {src_name} 应为 8-bit RGB/RGBA（得 depth={depth} color={color}；"
-            "调色板/灰度/16-bit 请重导出）"
+            "调色板/灰度/16-bit 请重导出）",
+            code="icon.encode.color", where=src_name,
+            expected="8-bit RGB/RGBA", got=f"depth={depth} color={color}",
         )
     if comp != 0 or filt != 0 or interlace != 0:
-        raise Reject(f"icon: {src_name} 非基本压缩/过滤/隔行形态（interlace={interlace}）")
+        raise Reject(f"icon: {src_name} 非基本压缩/过滤/隔行形态（interlace={interlace}）",
+                     code="icon.encode.form", where=src_name,
+                     got=f"interlace={interlace}")
     if not (1 <= w <= ICON_DIM_MAX and 1 <= h <= ICON_DIM_MAX and w * h <= ICON_PIXELS_MAX):
         raise Reject(
             f"icon: {src_name} 尺寸 {w}x{h} 越产面帽"
-            f"（单边≤{ICON_DIM_MAX} 且 w*h≤{ICON_PIXELS_MAX}）"
+            f"（单边≤{ICON_DIM_MAX} 且 w*h≤{ICON_PIXELS_MAX}）",
+            code="icon.encode.dim", where=src_name,
+            expected=f"单边≤{ICON_DIM_MAX} 且 w*h≤{ICON_PIXELS_MAX}",
+            got=f"{w}x{h}",
         )
     for tag, body in chunks[1:]:
         if tag == b"IDAT":
@@ -471,17 +602,24 @@ def png_to_byi(png: bytes, src_name: str) -> bytes:
         elif tag == b"IEND":
             break
         elif tag == b"tRNS":
-            raise Reject(f"icon: {src_name} 带 tRNS（透明色键）——请导出 RGBA")
+            raise Reject(f"icon: {src_name} 带 tRNS（透明色键）——请导出 RGBA",
+                         code="icon.encode.trns", where=src_name,
+                         fix="导出 RGBA（弃透明色键）")
         elif tag[:1].isupper():  # 大写首字母 = 关键 chunk——不认识就是拒
-            raise Reject(f"icon: {src_name} 未知关键 chunk {tag!r}")
+            raise Reject(f"icon: {src_name} 未知关键 chunk {tag!r}",
+                         code="icon.encode.chunk", where=src_name,
+                         got=tag.decode("ascii", "replace"))
         # 其余小写首字母 ancillary chunk（tEXt/gAMA…）跳过——不改像素语义
     bpp = 3 if color == 2 else 4
     try:
         raw = zlib.decompress(idat)
     except zlib.error as e:
-        raise Reject(f"icon: {src_name} IDAT 解压失败： {e}")
+        raise Reject(f"icon: {src_name} IDAT 解压失败： {e}",
+                     code="icon.encode.idat", where=src_name, got=str(e))
     if len(raw) != h * (1 + w * bpp):
-        raise Reject(f"icon: {src_name} 解压长 {len(raw)} ≠ 期望 {h * (1 + w * bpp)}")
+        raise Reject(f"icon: {src_name} 解压长 {len(raw)} ≠ 期望 {h * (1 + w * bpp)}",
+                     code="icon.encode.idat.len", where=src_name,
+                     expected=h * (1 + w * bpp), got=len(raw))
     # 逐行 unfilter（filters 0-4；首行 b/c 退化为 0）
     stride = w * bpp
     rows: list[bytearray] = []
@@ -491,7 +629,8 @@ def png_to_byi(png: bytes, src_name: str) -> bytes:
         f = raw[pos]
         pos += 1
         if f > 4:
-            raise Reject(f"icon: {src_name} 未知 filter 类型 {f}")
+            raise Reject(f"icon: {src_name} 未知 filter 类型 {f}",
+                         code="icon.encode.filter", where=src_name, got=f)
         line = bytearray(raw[pos : pos + stride])
         pos += stride
         for i in range(stride):
@@ -535,46 +674,70 @@ def _byi_validate(data: bytes, name: bytes) -> None:
     w*h + 字节恰耗尽；约束面对齐 berry-gfx decode + 产面帽）。"""
     label = name.decode("ascii", "replace")
     if len(data) < 10 or data[:4] != b"BYI1":
-        raise Reject(f"bap: {label} 非 BYI1（魔数不符）")
+        raise Reject(f"bap: {label} 非 BYI1（魔数不符）",
+                     code="bap.byi.magic", where=label, expected="BYI1")
     if data[4] != 1 or data[5] != 0:
-        raise Reject(f"bap: {label} version/flags 非 1/0")
+        raise Reject(f"bap: {label} version/flags 非 1/0",
+                     code="bap.byi.version", where=label, expected="1/0")
     w, h = struct.unpack("<HH", data[6:10])
     if not (1 <= w <= ICON_DIM_MAX and 1 <= h <= ICON_DIM_MAX and w * h <= ICON_PIXELS_MAX):
-        raise Reject(f"bap: {label} 尺寸 {w}x{h} 越产面帽")
+        raise Reject(f"bap: {label} 尺寸 {w}x{h} 越产面帽",
+                     code="bap.byi.dim", where=label,
+                     expected=f"单边≤{ICON_DIM_MAX} 且 w*h≤{ICON_PIXELS_MAX}",
+                     got=f"{w}x{h}")
     off, total = 10, 0
     while off < len(data):
         if off + 6 > len(data):
-            raise Reject(f"bap: {label} RLE 段截断")
+            raise Reject(f"bap: {label} RLE 段截断",
+                         code="bap.byi.trunc", where=label, got=f"@{off}")
         count, _px = struct.unpack("<HI", data[off : off + 6])
         off += 6
         if count < 1:
-            raise Reject(f"bap: {label} RLE 零长段")
+            raise Reject(f"bap: {label} RLE 零长段",
+                         code="bap.byi.zero", where=label, got=f"@{off - 6}")
         total += count
         if total > w * h:
-            raise Reject(f"bap: {label} RLE 像素溢出")
+            raise Reject(f"bap: {label} RLE 像素溢出",
+                         code="bap.byi.overflow", where=label, got=f"{total} > {w * h}")
     if total != w * h:
-        raise Reject(f"bap: {label} RLE Σcount {total} != w*h {w * h}")
+        raise Reject(f"bap: {label} RLE Σcount {total} != w*h {w * h}",
+                     code="bap.byi.sum", where=label,
+                     expected=w * h, got=total)
 
 
 def _ui_cross_check(m: M, icon_names: list[bytes], view_names: list[bytes]) -> None:
     """GUI-7 交叉门（build 与 --check 双跑，单源）：manifest 声明 ↔ 包内
     icons//views/ 条目互指。未声明 ⇒ 零条目；声明 ⇒ 在场；条目总数 ≤ 帽。"""
     if len(icon_names) > ICON_FILES_MAX:
-        raise Reject(f"bap: icons/ 条目 {len(icon_names)} 越帽 {ICON_FILES_MAX}")
+        raise Reject(f"bap: icons/ 条目 {len(icon_names)} 越帽 {ICON_FILES_MAX}",
+                     code="bap.ui.cross", where="icons/",
+                     expected=f"≤{ICON_FILES_MAX}", got=len(icon_names))
     if len(view_names) > VIEWS_FILES_MAX:
-        raise Reject(f"bap: views/ 条目 {len(view_names)} 越帽 {VIEWS_FILES_MAX}")
+        raise Reject(f"bap: views/ 条目 {len(view_names)} 越帽 {VIEWS_FILES_MAX}",
+                     code="bap.ui.cross", where="views/",
+                     expected=f"≤{VIEWS_FILES_MAX}", got=len(view_names))
     want_icon = m.ui[0].encode("ascii") if m.ui and m.ui[0] else None
     if want_icon is None:
         if icon_names:
-            raise Reject(f"bap: 未声明 ui.icon 而包含 icons/ 条目 {sorted(icon_names)}")
+            raise Reject(f"bap: 未声明 ui.icon 而包含 icons/ 条目 {sorted(icon_names)}",
+                         code="bap.ui.cross", where="ui.icon",
+                         fix="补 [ui] icon 声明或移除 icons/ 源")
     elif want_icon not in icon_names:
-        raise Reject(f"bap: manifest ui.icon 不在包内（{want_icon.decode('ascii')}）")
+        raise Reject(f"bap: manifest ui.icon 不在包内（{want_icon.decode('ascii')}）",
+                     code="bap.ui.cross", where="ui.icon",
+                     got=want_icon.decode("ascii"),
+                     fix="staging 放置同名 .png 源或删该声明")
     want_views = m.ui[2].encode("ascii") if m.ui and m.ui[2] else None
     if want_views is None:
         if view_names:
-            raise Reject(f"bap: 未声明 ui.views 而包含 views/ 条目 {sorted(view_names)}")
+            raise Reject(f"bap: 未声明 ui.views 而包含 views/ 条目 {sorted(view_names)}",
+                         code="bap.ui.cross", where="ui.views",
+                         fix="补 [ui] views 声明或移除 views/ 文件")
     elif want_views not in view_names:
-        raise Reject(f"bap: manifest ui.views 不在包内（{want_views.decode('ascii')}）")
+        raise Reject(f"bap: manifest ui.views 不在包内（{want_views.decode('ascii')}）",
+                     code="bap.ui.cross", where="ui.views",
+                     got=want_views.decode("ascii"),
+                     fix="staging 放置同名文件或删该声明")
 
 
 def _mk_png(w: int, h: int, color: int = 6, depth: int = 8, interlace: int = 0,
@@ -604,21 +767,28 @@ def _mk_png(w: int, h: int, color: int = 6, depth: int = 8, interlace: int = 0,
     )
 
 
-def build(out_path: str, app_dir: str) -> None:
+def build(out_path: str, app_dir: str, *, emit: bool = True) -> dict:
+    """打包（门禁 1-5 全过才落盘）；emit=False 供 --json 模式静默取
+    result 摘要（人读行逐字节同现状——selftest 钉板执法）。"""
     mf_path = os.path.join(app_dir, "manifest.toml")
     bin_dir = os.path.join(app_dir, "bin")
     if not os.path.isfile(mf_path) or not os.path.isdir(bin_dir):
-        raise Reject(f"{app_dir}: 应含 manifest.toml 与 bin/")
+        raise Reject(f"{app_dir}: 应含 manifest.toml 与 bin/",
+                     code="stage.shape", where=app_dir,
+                     expected="{manifest.toml, bin/}")
     extra = set(os.listdir(app_dir)) - {"manifest.toml", "bin", "icons", "views"}
     if extra:
-        raise Reject(f"{app_dir}: 未知内容 {sorted(extra)}")
+        raise Reject(f"{app_dir}: 未知内容 {sorted(extra)}",
+                     code="stage.unknown", where=app_dir, got=sorted(extra))
     bins = os.listdir(bin_dir)
     if len(bins) != 1:
-        raise Reject(f"{bin_dir}: 应恰一个文件， 得 {len(bins)}")
+        raise Reject(f"{bin_dir}: 应恰一个文件， 得 {len(bins)}",
+                     code="stage.bin.count", where="bin/", expected=1, got=len(bins))
     bin_name = bins[0]
     bin_path = os.path.join(bin_dir, bin_name)
     if not os.path.isfile(bin_path):
-        raise Reject(f"{bin_path}: 应为常规文件")
+        raise Reject(f"{bin_path}: 应为常规文件",
+                     code="stage.bin.file", where=f"bin/{bin_name}")
 
     # GUI-7：staging icons/ 恰 .png 源（扁平常规文件，编码为 .byi 入包）；
     # views/ 恰非空常规文件（原样入包，DSL 定形 SDK-2，v1 opaque）。
@@ -629,25 +799,34 @@ def build(out_path: str, app_dir: str) -> None:
         (view_dir, VIEWS_FILES_MAX, "views/"),
     ):
         if os.path.isdir(d) and len(os.listdir(d)) > cap:
-            raise Reject(f"{d}: 条目越帽 {cap}")
+            raise Reject(f"{d}: 条目越帽 {cap}",
+                         code="stage.cap", where=kind,
+                         expected=f"≤{cap}", got=len(os.listdir(d)))
     icon_items: list[tuple[bytes, bytes]] = []
     if os.path.isdir(icon_dir):
         for name in sorted(os.listdir(icon_dir)):
             p = os.path.join(icon_dir, name)
             if not os.path.isfile(p):
-                raise Reject(f"{icon_dir}: 应为扁平常规文件（得 {name}）")
+                raise Reject(f"{icon_dir}: 应为扁平常规文件（得 {name}）",
+                             code="stage.icons.file", where=f"icons/{name}")
             if not name.endswith(".png"):
-                raise Reject(f"{icon_dir}: 恰收 .png 源（得 {name}）")
+                raise Reject(f"{icon_dir}: 恰收 .png 源（得 {name}）",
+                             code="stage.icons.png", where=f"icons/{name}",
+                             expected=".png 源")
             stem = name[: -len(".png")]
             entry = f"{ICON_PREFIX}{stem}.byi"
             if not stem:
-                raise Reject(f"{icon_dir}: 空 stem（得 {name}）")
+                raise Reject(f"{icon_dir}: 空 stem（得 {name}）",
+                             code="stage.icons.stem", where=f"icons/{name}")
             try:
                 entry_b = entry.encode("ascii")
             except UnicodeEncodeError:
-                raise Reject(f"{icon_dir}: 条目名 {entry} 须 ASCII")
+                raise Reject(f"{icon_dir}: 条目名 {entry} 须 ASCII",
+                             code="stage.icons.name", where=f"icons/{name}")
             if len(entry_b) > UI_PATH_MAX:
-                raise Reject(f"{icon_dir}: 产物名 {entry} 超长（{len(entry_b)}B > {UI_PATH_MAX}）")
+                raise Reject(f"{icon_dir}: 产物名 {entry} 超长（{len(entry_b)}B > {UI_PATH_MAX}）",
+                             code="stage.icons.len", where=f"icons/{name}",
+                             expected=f"≤{UI_PATH_MAX}B", got=len(entry_b))
             with open(p, "rb") as f:
                 byi = png_to_byi(f.read(), name)
             _byi_validate(byi, entry_b)  # 编码后再按解码面全量自验（产面子集）
@@ -657,43 +836,59 @@ def build(out_path: str, app_dir: str) -> None:
         for name in sorted(os.listdir(view_dir)):
             p = os.path.join(view_dir, name)
             if not os.path.isfile(p):
-                raise Reject(f"{view_dir}: 应为扁平常规文件（得 {name}）")
+                raise Reject(f"{view_dir}: 应为扁平常规文件（得 {name}）",
+                             code="stage.views.file", where=f"views/{name}")
             entry = f"{VIEWS_PREFIX}{name}"
             try:
                 entry_b = entry.encode("ascii")
             except UnicodeEncodeError:
-                raise Reject(f"{view_dir}: 条目名 {entry} 须 ASCII")
+                raise Reject(f"{view_dir}: 条目名 {entry} 须 ASCII",
+                             code="stage.views.name", where=f"views/{name}")
             if len(entry_b) > UI_PATH_MAX or len(entry_b) <= len(VIEWS_PREFIX):
-                raise Reject(f"{view_dir}: 条目名 {entry} 空/超长（≤{UI_PATH_MAX}）")
+                raise Reject(f"{view_dir}: 条目名 {entry} 空/超长（≤{UI_PATH_MAX}）",
+                             code="stage.views.len", where=f"views/{name}",
+                             expected=f"≤{UI_PATH_MAX}B", got=len(entry_b))
             with open(p, "rb") as f:
                 data = f.read()
             if not data:
-                raise Reject(f"{p}: 空文件（views/ 须非空——占位至少一行注释）")
+                raise Reject(f"{p}: 空文件（views/ 须非空——占位至少一行注释）",
+                             code="stage.views.empty", where=f"views/{name}",
+                             fix="占位至少一行注释")
             view_items.append((entry_b, data))
 
     with open(mf_path, "rb") as f:
         raw = f.read()
     if len(raw) > MANIFEST_MAX:
-        raise Reject(f"manifest.toml 超 MANIFEST_MAX {MANIFEST_MAX}B")
+        raise Reject(f"manifest.toml 超 MANIFEST_MAX {MANIFEST_MAX}B",
+                     code="manifest.size", where="manifest.toml",
+                     expected=f"≤{MANIFEST_MAX}B", got=len(raw))
     try:
         text = raw.decode("ascii")
     except UnicodeDecodeError:
-        raise Reject("manifest.toml 非 ASCII")
+        raise Reject("manifest.toml 非 ASCII",
+                     code="manifest.encoding", where="manifest.toml",
+                     expected="ASCII")
     m = check_manifest_text(text)
 
     # 门禁 3：entry == bin/ 唯一文件的完整包内路径
     if m.entry != f"bin/{bin_name}":
-        raise Reject(f"manifest entry {m.entry!r} != bin/{bin_name!r}")
+        raise Reject(f"manifest entry {m.entry!r} != bin/{bin_name!r}",
+                     code="entry.mismatch", where="app.entry",
+                     expected=f"bin/{bin_name}", got=m.entry)
     # GUI-7 交叉门（--check 同源复跑）
     _ui_cross_check(m, [n for n, _ in icon_items], [n for n, _ in view_items])
     # 门禁 4：输出名 == <id>.bap
     if os.path.basename(out_path) != f"{m.id}.bap":
-        raise Reject(f"输出名应为 {m.id}.bap")
+        raise Reject(f"输出名应为 {m.id}.bap",
+                     code="output.name", where=os.path.basename(out_path),
+                     expected=f"{m.id}.bap")
     # 门禁 5：ELF 魔数
     with open(bin_path, "rb") as f:
         elf = f.read()
     if elf[:4] != b"\x7fELF":
-        raise Reject(f"{bin_path}: 非 ELF（头 4 字节 {elf[:4]!r}）")
+        raise Reject(f"{bin_path}: 非 ELF（头 4 字节 {elf[:4]!r}）",
+                     code="bin.elf", where=f"bin/{bin_name}",
+                     expected="7f454c46", got=elf[:4].hex())
 
     payload_items = sorted(
         [
@@ -714,7 +909,8 @@ def build(out_path: str, app_dir: str) -> None:
     items = sorted(payload_items + [(b"SHA256SUMS", sums)])
     blob = build_archive(items)
     if len(blob) > BAP_MAX:
-        raise Reject(f"包体 {len(blob)}B 超 BAP_MAX {BAP_MAX}")
+        raise Reject(f"包体 {len(blob)}B 超 BAP_MAX {BAP_MAX}",
+                     code="bap.size", expected=f"≤{BAP_MAX}B", got=len(blob))
     with open(out_path, "wb") as f:
         f.write(blob)
     # 产包摘要行（宿主侧可见性，无消费面）；SDK-1a 尾随增量在场才打
@@ -723,17 +919,30 @@ def build(out_path: str, app_dir: str) -> None:
         f"console={'true' if m.console else 'false'} "
         f"stack={m.stack_pages} intent={m.intent}"
     )
+    result = {
+        "out": out_path, "bytes": len(blob), "id": m.id, "version": m.version,
+        "console": bool(m.console), "stack_pages": m.stack_pages,
+        "intent": m.intent,
+    }
     if m.compat is not None:
         line += f" compat={_ver(m.compat[0])}..{_ver(m.compat[2])}"
+        result["compat"] = f"{_ver(m.compat[0])}..{_ver(m.compat[2])}"
     if m.fs:
         line += f" fs={m.fs}"
+        result["fs"] = m.fs
     if m.net:
         line += f" net={m.net}"
+        result["net"] = m.net
     if m.ui:
         line += f" icons={len(icon_items)} views={len(view_items)}"
+        result["icons"] = len(icon_items)
+        result["views"] = len(view_items)
     if m.agent_actions:
         line += f" actions={len(m.agent_actions)}"
-    print(line)
+        result["actions"] = len(m.agent_actions)
+    if emit:
+        print(line)
+    return result
 
 
 # ---- SDK-1a §4.4：--check（既有 .bap 复验，只验不写）----
@@ -750,26 +959,33 @@ def _cpio_entries(blob: bytes) -> list[tuple[bytes, bytes]]:
     off = 0
     while True:
         if off + 110 > len(blob):
-            raise Reject(f"bap: cpio 头越界 @ {off}")
+            raise Reject(f"bap: cpio 头越界 @ {off}",
+                         code="bap.cpio.header", where=f"cpio@{off}")
         if blob[off : off + 6] != b"070701":
-            raise Reject(f"bap: cpio 坏魔数 @ {off}")
+            raise Reject(f"bap: cpio 坏魔数 @ {off}",
+                         code="bap.cpio.header", where=f"cpio@{off}",
+                         expected="070701")
         try:
             fields = [
                 int(blob[off + 6 + i * 8 : off + 6 + (i + 1) * 8], 16)
                 for i in range(13)
             ]
         except ValueError:
-            raise Reject(f"bap: cpio 坏字段 @ {off}")
+            raise Reject(f"bap: cpio 坏字段 @ {off}",
+                         code="bap.cpio.header", where=f"cpio@{off}")
         filesize, namesize = fields[6], fields[11]
         if namesize < 1:
-            raise Reject(f"bap: cpio 名长非法 @ {off}")
+            raise Reject(f"bap: cpio 名长非法 @ {off}",
+                         code="bap.cpio.header", where=f"cpio@{off}")
         name_off = off + 110
         if name_off + namesize > len(blob):
-            raise Reject(f"bap: cpio 名越界 @ {off}")
+            raise Reject(f"bap: cpio 名越界 @ {off}",
+                         code="bap.cpio.range", where=f"cpio@{off}")
         name = blob[name_off : name_off + namesize - 1]  # 剥尾 NUL
         data_off = (name_off + namesize + 4095) & ~4095  # 头+名垫页（X-3c）
         if data_off + filesize > len(blob):
-            raise Reject(f"bap: cpio 数据越界 @ {off}")
+            raise Reject(f"bap: cpio 数据越界 @ {off}",
+                         code="bap.cpio.range", where=f"cpio@{off}")
         if name == b"TRAILER!!!":
             break
         out.append((name, blob[data_off : data_off + filesize]))
@@ -781,32 +997,44 @@ def _verify_sums(sums: bytes, payload: list[tuple[bytes, bytes]]) -> None:
     """SHA256SUMS 复验（§4.4 步 4）：LF 收尾、行数 = 条目数、双空格行形、
     行序 = 条目名字节序、逐文件重算比对；任一不符 = 拒。"""
     if not sums.endswith(b"\n"):
-        raise Reject("bap: SHA256SUMS 应 LF 收尾")
+        raise Reject("bap: SHA256SUMS 应 LF 收尾",
+                     code="bap.sums", where="SHA256SUMS", expected="LF 收尾")
     lines = sums[:-1].split(b"\n")
     expect = sorted(payload)
     if len(lines) != len(expect):
-        raise Reject(f"bap: SHA256SUMS 行数 {len(lines)} != 条目数 {len(expect)}")
+        raise Reject(f"bap: SHA256SUMS 行数 {len(lines)} != 条目数 {len(expect)}",
+                     code="bap.sums", where="SHA256SUMS",
+                     expected=len(expect), got=len(lines))
     for line, (name, data) in zip(lines, expect):
         mo = SUMS_LINE_RE.fullmatch(line)
         if not mo or mo.group(2) != name:
-            raise Reject(f"bap: SHA256SUMS 行形/行序不符 {line!r}")
+            raise Reject(f"bap: SHA256SUMS 行形/行序不符 {line!r}",
+                         code="bap.sums", where="SHA256SUMS",
+                         got=line.decode("ascii", "replace"))
         if mo.group(1).decode("ascii") != hashlib.sha256(data).hexdigest():
-            raise Reject(f"bap: SHA256SUMS 摘要不符 {name!r}")
+            raise Reject(f"bap: SHA256SUMS 摘要不符 {name!r}",
+                         code="bap.sums", where=name.decode("ascii", "replace"))
 
 
-def check_bap(path: str) -> None:
+def check_bap(path: str, *, emit: bool = True) -> dict:
     """--check 五步（§4.4）：形状 → manifest 全量门禁 → entry 对表 →
-    SHA256SUMS 复验（在场）→ ELF 魔数；通过打一行 OK。"""
+    SHA256SUMS 复验（在场）→ ELF 魔数；通过打一行 OK（emit=False 供
+    --json 静默取 result）。"""
     with open(path, "rb") as f:
         blob = f.read()
     if len(blob) > BAP_MAX:
-        raise Reject(f"bap: 包体 {len(blob)}B 超 BAP_MAX {BAP_MAX}")
+        raise Reject(f"bap: 包体 {len(blob)}B 超 BAP_MAX {BAP_MAX}",
+                     code="bap.size", expected=f"≤{BAP_MAX}B", got=len(blob))
     entries = _cpio_entries(blob)
     names = [n for n, _ in entries]
     if len(names) != len(set(names)):
-        raise Reject(f"bap: 条目重名 {sorted(set(names))}")
+        raise Reject(f"bap: 条目重名 {sorted(set(names))}",
+                     code="bap.cpio.dup",
+                     got=[n.decode("ascii", "replace") for n in sorted(set(names))
+                          if names.count(n) > 1])
     if b"manifest.toml" not in names:
-        raise Reject("bap: 缺 manifest.toml 条目")
+        raise Reject("bap: 缺 manifest.toml 条目",
+                     code="bap.cpio.entries", where="manifest.toml", expected="在场")
     bin_entries = [n for n in names if n.startswith(b"bin/")]
     icon_entries = [n for n in names if n.startswith(b"icons/")]
     view_entries = [n for n in names if n.startswith(b"views/")]
@@ -828,37 +1056,56 @@ def check_bap(path: str) -> None:
         raise Reject(
             "bap: 条目形不符（manifest.toml + 唯一 bin/ + SHA256SUMS? + "
             f"icons/*.byi ≤{ICON_FILES_MAX} + views/* ≤{VIEWS_FILES_MAX}），"
-            f"得 {sorted(names)}"
+            f"得 {sorted(names)}",
+            code="bap.cpio.shape",
+            got=[n.decode("ascii", "replace") for n in sorted(names)],
         )
     for n in icon_entries:
         tail = n[len(b"icons/") :]
         if not tail.endswith(b".byi") or b"/" in tail or len(n) > UI_PATH_MAX:
-            raise Reject(f"bap: icons/ 条目名形不符 {n!r}（扁平 .byi、≤{UI_PATH_MAX}B）")
+            raise Reject(f"bap: icons/ 条目名形不符 {n!r}（扁平 .byi、≤{UI_PATH_MAX}B）",
+                         code="bap.icons.name",
+                         where=n.decode("ascii", "replace"),
+                         expected=f"扁平 .byi、≤{UI_PATH_MAX}B")
         _byi_validate(dict(entries)[n], n)
     for n in view_entries:
         tail = n[len(b"views/") :]
         if not tail or b"/" in tail or len(n) > UI_PATH_MAX:
-            raise Reject(f"bap: views/ 条目名形不符 {n!r}（扁平、≤{UI_PATH_MAX}B）")
+            raise Reject(f"bap: views/ 条目名形不符 {n!r}（扁平、≤{UI_PATH_MAX}B）",
+                         code="bap.views.name",
+                         where=n.decode("ascii", "replace"),
+                         expected=f"扁平、≤{UI_PATH_MAX}B")
         if not dict(entries)[n]:
-            raise Reject(f"bap: views/ 条目 {n!r} 为空")
+            raise Reject(f"bap: views/ 条目 {n!r} 为空",
+                         code="bap.views.empty",
+                         where=n.decode("ascii", "replace"))
     ent = dict(entries)
 
     raw = ent[b"manifest.toml"]
     if len(raw) > MANIFEST_MAX:
-        raise Reject(f"manifest.toml 超 MANIFEST_MAX {MANIFEST_MAX}B")
+        raise Reject(f"manifest.toml 超 MANIFEST_MAX {MANIFEST_MAX}B",
+                     code="manifest.size", where="manifest.toml",
+                     expected=f"≤{MANIFEST_MAX}B", got=len(raw))
     try:
         text = raw.decode("ascii")
     except UnicodeDecodeError:
-        raise Reject("manifest.toml 非 ASCII")
+        raise Reject("manifest.toml 非 ASCII",
+                     code="manifest.encoding", where="manifest.toml",
+                     expected="ASCII")
     m = check_manifest_text(text)  # 全量门禁复跑（含三值链/词表/规范形）
     if m.entry.encode("ascii") != bin_entries[0]:
         raise Reject(
-            f"manifest entry {m.entry!r} != 包内条目 {bin_entries[0].decode('ascii', 'replace')!r}"
+            f"manifest entry {m.entry!r} != 包内条目 {bin_entries[0].decode('ascii', 'replace')!r}",
+            code="entry.mismatch", where="app.entry",
+            expected=bin_entries[0].decode("ascii", "replace"), got=m.entry,
         )
 
     elf = ent[bin_entries[0]]
     if elf[:4] != b"\x7fELF":
-        raise Reject(f"bap: 非 ELF（头 4 字节 {elf[:4]!r}）")
+        raise Reject(f"bap: 非 ELF（头 4 字节 {elf[:4]!r}）",
+                     code="bap.elf",
+                     where=bin_entries[0].decode("ascii", "replace"),
+                     expected="7f454c46", got=elf[:4].hex())
     # GUI-7 交叉门（build 同源复跑——manifest 声明 ↔ 包内条目互指）
     _ui_cross_check(m, icon_entries, view_entries)
 
@@ -869,7 +1116,10 @@ def check_bap(path: str) -> None:
             [(n, d) for n, d in entries if n != b"SHA256SUMS"],
         )
         digests = "ok"
-    print(f"mkapp: {path} OK {len(blob)}B entries={len(entries)} digests={digests}")
+    if emit:
+        print(f"mkapp: {path} OK {len(blob)}B entries={len(entries)} digests={digests}")
+    return {"path": path, "bytes": len(blob), "entries": len(entries),
+            "digests": digests}
 
 
 # ---- SDK-1a §4.5：--new（应用脚手架四件——不含 bin/ 内容的两步流）----
@@ -978,7 +1228,7 @@ max-page）。产物：`user/cargo-target/aarch64-unknown-linux-musl/release/{sl
 """
 
 
-def do_new(app_dir: str, app_id: str) -> None:
+def do_new(app_dir: str, app_id: str, *, emit: bool = True) -> dict:
     """--new：脚手架四件（§4.5）。basename(dir) == ID.lower()（id 大写
     惯例对齐 demo 双 app）；目录已存在且非空 = 拒（防覆写）。**不含
     bin/ 内容**——产物是「不可打包的源码工程」，构建 ELF 放入 bin/ 后
@@ -986,22 +1236,31 @@ def do_new(app_dir: str, app_id: str) -> None:
     slug = os.path.basename(os.path.normpath(app_dir))
     if slug != app_id.lower():
         raise Reject(
-            f"--new: basename({app_dir!r}) = {slug!r} != --id {app_id!r} 的小写形"
+            f"--new: basename({app_dir!r}) = {slug!r} != --id {app_id!r} 的小写形",
+            code="new.basename", where=app_dir,
+            expected=app_id.lower(), got=slug,
         )
-    _check_str(app_id, "id", ID_MAX)
+    _check_str(app_id, "id", ID_MAX, key="new.id")
     if not ID_RE.fullmatch(app_id):
-        raise Reject("manifest: id 字符集 [A-Za-z0-9._-]、首字符字母数字")
+        raise Reject("manifest: id 字符集 [A-Za-z0-9._-]、首字符字母数字",
+                     code="new.id", where="id",
+                     expected="[A-Za-z0-9._-]、首字符字母数字")
     # slug 直接成为 Cargo.toml 包名——cargo 包名词法拒 '.'（ID_RE 的宽松面
     # 是 schema 既有承诺，打包主路径不拦；--new 产出必须可构建，故此收紧）。
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", slug):
         raise Reject(
             f"--new: slug {slug!r} 不是合法 cargo 包名（含点号等 cargo 拒收字符；"
-            "id 勿含 '.'，请改用 '-' 或 '_'）"
+            "id 勿含 '.'，请改用 '-' 或 '_'）",
+            code="new.slug.cargo", where=slug,
+            fix="id 勿含 '.'，改用 '-' 或 '_'",
         )
     if os.path.isfile(app_dir):
-        raise Reject(f"--new: {app_dir} 是文件")
+        raise Reject(f"--new: {app_dir} 是文件",
+                     code="new.isfile", where=app_dir)
     if os.path.isdir(app_dir) and os.listdir(app_dir):
-        raise Reject(f"--new: {app_dir} 已存在且非空（防覆写）")
+        raise Reject(f"--new: {app_dir} 已存在且非空（防覆写）",
+                     code="new.exists", where=app_dir,
+                     fix="换新目录或先清空")
     os.makedirs(os.path.join(app_dir, "src"), exist_ok=True)
     files = {
         "manifest.toml": SCAFFOLD_MANIFEST.format(app_id=app_id, slug=slug),
@@ -1014,7 +1273,9 @@ def do_new(app_dir: str, app_id: str) -> None:
             f.write(text)
     # 自产自证：脚手架 manifest 必须过全量门禁（防模板漂移——§4.5 尾约）
     check_manifest_text(files["manifest.toml"])
-    print(f"mkapp: {app_dir} 脚手架四件就绪（{app_id}；构建步骤见 {app_dir}/README.md）")
+    if emit:
+        print(f"mkapp: {app_dir} 脚手架四件就绪（{app_id}；构建步骤见 {app_dir}/README.md）")
+    return {"dir": app_dir, "id": app_id, "files": sorted(files)}
 
 
 BASE = (
@@ -1028,12 +1289,113 @@ BASE = (
 )
 
 
+# 人读面钉板（刀7 --json 起）：selftest 主体 stdout 归一化（tempdir →
+# <TD>）后与此逐字节比对；人读输出任何漂移（文案/顺序/增删行）即 FAIL。
+# 基线 = 刀7 前实测捕获（85 行含尾 verdict；此处 84 行主体，verdict 另打），
+# 生成法与再生法见 research 工作区 /tmp/k3-review/sdk-api/刀7落库/。
+SELFTEST_BASELINE = """\
+  selftest 拒（预期） : dotted-key
+  selftest 拒（预期） : hex-int
+  selftest 拒（预期） : underscore-int
+  selftest 拒（预期） : crlf
+  selftest 拒（预期） : escape-in-string
+  selftest 拒（预期） : inline-table
+  selftest 拒（预期） : multiline-string
+  selftest 拒（预期） : single-quotes
+  selftest 拒（预期） : trailing-comment
+  selftest 拒（预期） : compat-missing-key
+  selftest 拒（预期） : compat-order
+  selftest 拒（预期） : compile-above-sdk
+  selftest 拒（预期） : ver-leading-zero
+  selftest 拒（预期） : ver-two-segs
+  selftest 拒（预期） : ver-four-segs
+  selftest 拒（预期） : fs-vocab-tmpfs
+  selftest 拒（预期） : fs-vocab-appdata
+  selftest 拒（预期） : fs-not-array
+  selftest 拒（预期） : net-vocab-server
+  selftest 拒（预期） : sec-missing-key
+  selftest 拒（预期） : sec-value-space
+  selftest 拒（预期） : sec-value-17b
+  selftest 拒（预期） : ui-no-prefix
+  selftest 拒（预期） : ui-wrong-prefix
+  selftest 拒（预期） : ui-bare-prefix
+  selftest 拒（预期） : ui-not-byi
+  selftest 拒（预期） : ui-path-33b
+  selftest 拒（预期） : ui-views-no-prefix
+  selftest 拒（预期） : ui-views-bare
+  selftest 拒（预期） : ui-unknown-key
+  selftest 拒（预期） : ui-label-empty
+  selftest 拒（预期） : ui-label-33b
+  selftest 拒（预期） : ui-empty-section
+  selftest 拒（预期） : ui-before-security
+  selftest 拒（预期） : aa-unknown-tier
+  selftest 拒（预期） : aa-upper-tier
+  selftest 拒（预期） : aa-underscore-key
+  selftest 拒（预期） : aa-digit-key
+  selftest 拒（预期） : aa-over-cap
+  selftest 拒（预期） : aa-empty-section
+  selftest 拒（预期） : apptomb-id-25b
+  selftest 过（预期） : canonical id=APPDEMO
+  selftest 过（预期） : canonical-runtime id=APPDEMO
+  selftest 过（预期） : f1-compat id=X
+  selftest 过（预期） : f2-fs id=X
+  selftest 过（预期） : f3-net id=X
+  selftest 过（预期） : f4-security id=X
+  selftest 过（预期） : f6-kitchen-sink id=KITCHEN
+  selftest 过（预期） : f7-ui-kitchen-sink id=KITCHEN
+  selftest 过（预期） : f7b-ui-icon-only id=X
+  selftest 过（预期） : f8-agent-actions id=KITCHEN
+  selftest 过（预期） : apptomb id=APPTOMB
+  selftest 过（预期） : enc-golden-2x2
+  selftest 过（预期） : enc-rgb-alpha-255
+  selftest 过（预期） : enc-run-split-65535
+  selftest 拒（预期） : enc-not-png
+  selftest 拒（预期） : enc-truncated
+  selftest 拒（预期） : enc-bad-crc
+  selftest 拒（预期） : enc-palette
+  selftest 拒（预期） : enc-gray
+  selftest 拒（预期） : enc-16bit
+  selftest 拒（预期） : enc-interlaced
+  selftest 拒（预期） : enc-dim-1025
+  selftest 拒（预期） : enc-pixels-over
+  selftest 拒（预期） : enc-raw-len
+  selftest 拒（预期） : enc-filter-5
+  selftest 拒（预期） : enc-trns
+mkapp: <TD>/myapp 脚手架四件就绪（MYAPP；构建步骤见 <TD>/myapp/README.md）
+mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true stack=8 intent=utility compat=0.1.0..0.1.0
+mkapp: <TD>/MYAPP.bap OK 28672B entries=3 digests=ok
+  selftest 过（预期） : new-build-check-roundtrip id=MYAPP
+mkapp: <TD>/LEGACY.bap OK 20480B entries=2 digests=n/a
+  selftest 过（预期） : legacy-2entry-check digests=n/a
+mkapp: <TD>/APPUI.bap 45056B APPUI v0.1.0 console=true stack=8 intent=utility icons=1 views=1
+mkapp: <TD>/APPUI.bap OK 45056B entries=5 digests=ok
+  selftest 过（预期） : ui-build-check-roundtrip icons+views 在包
+  selftest 拒（预期） : ui-stage-no-icons
+  selftest 拒（预期） : ui-stage-undeclared-icons
+  selftest 拒（预期） : ui-stage-undeclared-views
+  selftest 拒（预期） : ui-stage-not-png
+  selftest 拒（预期） : ui-stage-view-empty
+  selftest 拒（预期） : ui-stage-icons-over-cap
+  selftest 拒（预期） : ui-stage-non-ascii-icon
+  selftest 拒（预期） : ui-stage-icon-name-too-long
+"""
+
+
 def selftest() -> int:
     """门禁自检（§2 + SDK-1a §4.6）：负样本 = tomllib 收下而门禁必须拒
     的形态——证明第 2 道规范形比较真的在收紧 tomllib 的超集（SDK-1a 起
     负面另含三值链/词表/security 的第 1 道拒面）；正对照 = 规范形必须过
     （防空转：check 恒拒也满足「负样本全拒」）——BASE 字节零漂移 =
-    add-only 执法样本，F 形 = §3.2 字节模板七形态中五款 + roundtrip。"""
+    add-only 执法样本，F 形 = §3.2 字节模板七形态中五款 + roundtrip。
+    刀7 起两腿增量：①主体输出归一化（td → <TD>）与 SELFTEST_BASELINE
+    逐字节钉板（人读面 add-only 执法）后原样 replay；②--json 信封腿
+    （_json_selftest——八类 canonical 拒因 code + 成功信封 + CLI 面）。"""
+    import io
+
+    real_stdout = sys.stdout
+    buf = io.StringIO()
+    tds: list[str] = []  # tempdir 收集——钉板比对前归一为 <TD>
+    sys.stdout = buf
     f0 = (
         "[app]\n"
         'id = "X"\n'
@@ -1288,6 +1650,7 @@ def selftest() -> int:
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
+        tds.append(td)
         try:
             app_dir = os.path.join(td, "myapp")
             do_new(app_dir, "MYAPP")
