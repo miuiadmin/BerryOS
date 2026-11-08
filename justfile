@@ -647,6 +647,11 @@ test-host:
     # 表名注册，host 8 测；独立 workspace 与 berryboot 主引导链解耦，
     # 唯一依赖 berry-efi 纯数据 crate）。
     cargo test --manifest-path bootloader/berrydump/Cargo.toml --target {{host}}
+    # Q1（a-3 U4 纪律收口）：elf2flat 门禁自检——build-user 产链 6 处消费的
+    # 平像转换器（echo/talker/thrchild/dpgp/abuser/svcmgr），此前只在产物链
+    # 上被动覆盖，门禁自身坏 = 平像静默劣化。合成双段 ELF（gap 零填 + bss
+    # 尾零 + 页取整 + 确定性）+ 8 拒面（elf2pe --selftest 同位纪律）。
+    python3 tools/elf2flat.py --selftest
     python3 tools/elf2pe.py --selftest
     python3 tools/mkfat.py --selftest
     # A1-3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
