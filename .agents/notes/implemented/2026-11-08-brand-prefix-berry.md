@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-**berry 单一家族（四形：`berry-` crate / `berry_` ABI / `BERRY_` 宏与常量 / `Berry` 专名），否决 `Be`**。规则正文 → `docs/命名与前缀规范-v1.0.md`（Type: standard v1.0，本笔记只载决策因果）。
+**berry 单一家族（四形：`berry-` crate / `berry_` ABI / `BERRY_` 宏与常量 / `Berry` 专名），否决 `Be`**。规则正文 → `docs/命名与前缀规范-v1.1.md`（Type: standard v1.0，本笔记只载决策因果）。
 
 ## Alternatives considered
 
@@ -24,4 +24,4 @@ Status: implemented
 
 ## Related
 
-- [命名与前缀规范-v1.0](../../../docs/命名与前缀规范-v1.0.md)（规则正文，Type: standard）
+- [命名与前缀规范-v1.1](../../../docs/命名与前缀规范-v1.1.md)（规则正文，Type: standard）
