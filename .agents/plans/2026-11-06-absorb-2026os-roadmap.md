@@ -1,8 +1,8 @@
 # 2026 新 OS 四家吸收路线图（调研 12 号 → 行动）
 
 Type: plan
-Status: draft
-Updated: 2026-11-06
+Status: done
+Updated: 2026-11-08
 
 一句话说明：把 research/12 号调研的吸收清单排成可执行路线——每项标归属文档与验证关，不夹带代码（排除 8 问：全部只借语义/论证，四家许可虽宽松但 BerryOS Apache-2.0 不搬实质代码）。
 
@@ -27,12 +27,18 @@ Updated: 2026-11-06
 
 ## 未完成事项
 
-- [x] P0-a proposal 起草（→ [2026-11-06-baremetal-bringup-proposal.md](2026-11-06-baremetal-bringup-proposal.md)，三台阶：云 VM→RPi4→rootfs 通道，Status: draft 待裁）
-- [x] P0-b 存储设计节追加（→ `docs/存储布局与沙箱设计-v1.0.md` §8.5 吸收议程）
-- [x] P1-a 拒收入账实施（2026-11-07 落地：`sched/src/policy.rs` 四计数 key0/overflow/probe_full/clamped + `reject_stats()` 读出口；`kernel/src/ktest.rs` `test_policy_reject_stats`（POLS-R ok）QEMU 实证——拒收/夹取面从静默处置变有账可查）
-- [x] P1-b 纲领充实（→ `docs/架构综合纲领.md` §1「机制极简的三条结构性论证」+ churn 反证）
-- [ ] P1-c 同意面草案
-- [ ] P1-d errno 值域探针（随 berry-sys 下一刀）
-- [x] yield 片归还自查+实施（2026-11-08 落地：提案翻 implemented [2026-11-08-yield-slice-return-proposal](../notes/implemented/2026-11-08-yield-slice-return-proposal.md)——Fair::yield_slice_return 抬均 + YIELD-K ktest，与并发 S2b+ 账本刀调和后 QEMU 全绿；语义边界 = 3+ 任务环有效，双任务真让出留后续提案）
-- [x] P1-e 对抗性分配器 ktest（mm 域 2026-11-07 落地：`fragmented_terrain_high_order_fails_clean`（§A21 判例机器复现 + buddy 对语义钉板）+ `exact_window_order_fits_then_oom`（对齐块边界 + 「物理连续≠buddy 可分配」语义文档化）；BerryOS 全 RAM identity 直映使 swift-os 越界形态结构性不存在，坑精神翻译为本仓边界测试）
-- [ ] P2 四项挂账（Presence/三动词/云真机/BKL-ADR）
+- [x] P0-a proposal 起草（→ [2026-11-06-baremetal-bringup-proposal.md](2026-11-06-baremetal-bringup-proposal.md)，三台阶 + 延后条款：暂不购板云 VM 先行，2026-11-07 仓主裁）
+- [x] P0-b 存储设计节追加（→ 存储布局 §8.5 + 16 号签名双槽形态精确化）
+- [x] P1-a 拒收入账（POLS-R ktest QEMU 实证）
+- [x] P1-b 纲领三论证（架构综合纲领 §1）
+- [x] P1-c 同意面（**设计就绪**：docs/AI同意面设计-v1.0.md + v1 先落两件已落地——consent 五事件词汇 + [agent-actions] 风险档 42 测；v2 审批 UI 随 GUI 线，非本路线图义务）
+- [x] P1-d errno 值域探针（发现 EADDRINUSE=98 断差 → 仓主裁 98→112 落刀，52 测全绿）
+- [x] P1-e 对抗性分配器测试（mm 域 34 测全绿 + buddy 语义边界文档化）
+- [x] yield 双刀（发现缺口 → 抬均 → ring max 真让出 + 账本调和，YIELD-K 全绿）
+- [x] sans-IO 四手法入账（P6-A8 网络线设计输入）
+
+## 终局注记（2026-11-08 收口）
+
+- P2 期权全部转记归宿：presence/三动词 → AI 同意面设计 §3；云真机门禁 → 真机 proposal 台阶一；「为什么不是 BKL/async」→ ADR #69/#70 已落；编译期执法 → ADR #70 长期议题；EEVDF 增量化 → 兄弟 S2b+ 账本刀已覆盖。
+- 方法资产：六波 workflow 编排经验沉淀为技能 .agents/skills/workflow-implement/SKILL.md。
+- 证据链：research/12–23 号 13 份 ↔ 提交链 ↔ 笔记 ×4 ↔ ktest 标记（POLS-R/YIELD-K）全可追溯。
