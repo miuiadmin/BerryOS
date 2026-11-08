@@ -724,6 +724,178 @@ fn test_syscall() {
         drop(unsafe { alloc::boxed::Box::from_raw(vmo_f as *mut Vmo) });
     }
 
+    // E3g. 0x24 pager_supply_mapped_table 表批面（X-6 刀① count-wins 多窗
+    //      一次收货——0x23 的批形）。全路径经 svc6 真派发（EL1 表 =
+    //      bootstrap 表）。参数面（n 越界 / dv:0 门败探测形 / delta 非
+    //      页对齐）零池触；正例须臂集在池——ktest 前置窗 sched 未起，
+    //      「池空且 0 供 → 泊键」臂不可达（每调用至留一臂未属主匹配即止，
+    //      设计约束同 E3d–f 注）；供给身份验要求表内 dv 本体 == 登记区间
+    //      rvmo——VMO 经 bootstrap 表插取（SET_POLICY 门）、root map 用
+    //      同一本体指针。断言静默融入 E 族（X-6 零新增串口标记）。
+    {
+        use crate::dpg::{ktest_arm_el0, El0Take};
+        use crate::handle::RIGHT_SET_POLICY;
+        use crate::syscall::{PagerWindow, NR_PAGER_SUPPLY_MAPPED_TABLE};
+
+        // 表批缓冲（EL1 高半直映——EBUF 同款纪律；repr(C) 16B/项字节序
+        // 与内核小端拼装面同构）。
+        static mut TBL: [PagerWindow; 2] = [PagerWindow { dv: 0, sv: 0, delta: 0 }; 2];
+
+        // ① n 越界（0 / 33 同拒 -EINVAL；x2 全宽读——高 32 位脏值同面）。
+        // SAFETY: svc 同步异常；TBL 为本块私有静态。
+        unsafe { TBL = [PagerWindow { dv: 0, sv: 0, delta: 0 }; 2] };
+        assert_eq!(
+            svc6(NR_PAGER_SUPPLY_MAPPED_TABLE as u64, &raw const TBL as u64, 0, 0, 0, 0, 0),
+            -22,
+            "SYSCALL：E3g n=0 须 -EINVAL"
+        );
+        assert_eq!(
+            svc6(NR_PAGER_SUPPLY_MAPPED_TABLE as u64, &raw const TBL as u64, 33, 0, 0, 0, 0),
+            -22,
+            "SYSCALL：E3g n=33 须 -EINVAL（表帽 32）"
+        );
+        // ② boot 探测判据形（svcmgr 0x24(dv:0,n:1)）：delta=0 页对齐过
+        //    预检 → 门控 dv=0 坏句柄 → -EBADF（新核判据值）。
+        assert_eq!(
+            svc6(NR_PAGER_SUPPLY_MAPPED_TABLE as u64, &raw const TBL as u64, 1, 0, 0, 0, 0),
+            -9,
+            "SYSCALL：E3g 探测形 dv:0 须 -EBADF"
+        );
+        // ③ delta 非页对齐 → -EINVAL（预检先于门控——参数面整批拒）。
+        // SAFETY: 同上。
+        unsafe { TBL[0].delta = 8 };
+        assert_eq!(
+            svc6(NR_PAGER_SUPPLY_MAPPED_TABLE as u64, &raw const TBL as u64, 1, 0, 0, 0, 0),
+            -22,
+            "SYSCALL：E3g delta 非页对齐须 -EINVAL"
+        );
+
+        // ④ 正例：双 demand VMO（bootstrap 表 + SET_POLICY）各配 root Vmar
+        //    登记；g 一臂 / h 两臂（continue-take 抽干面）；表 [g, h] n=2
+        //    一次收货——rc=3 = **供页数**（设计 §2.1 冻结词面：g 窗 1 页 +
+        //    h 窗内环抽干 2 页；「窗数」读法 2 可区分）。
+        let vmo_g = Vmo::create_demand(PAGE_SIZE).expect("SYSCALL：E3g 建 demand VMO g（可信语境）");
+        // h 容量两页（map_demand 的 mech-M-1 bounds：0+2 页区间须 ≤ VMO
+        // size——1 页 VMO 会在登记即 OutOfBounds panic；第二页供给走
+        // vmo.commit(page_off=PAGE_SIZE) 落 pages[1]，两页容量是硬前置）。
+        let vmo_h = Vmo::create_demand(2 * PAGE_SIZE).expect("SYSCALL：E3g 建 demand VMO h（可信语境）");
+        let hg = ht
+            .insert(KernelObj::Vmo(vmo_g), RIGHT_SET_POLICY)
+            .expect("SYSCALL：E3g insert g");
+        let hh = ht
+            .insert(KernelObj::Vmo(vmo_h), RIGHT_SET_POLICY)
+            .expect("SYSCALL：E3g insert h");
+        // 本体指针（表内真对象——供给身份验要求 rvmo == 表内 dv 本体）。
+        let (og, _) = ht
+            .get_raw(hg, ObjType::Vmo, RIGHT_SET_POLICY)
+            .expect("SYSCALL：E3g get_raw g");
+        let (oh, _) = ht
+            .get_raw(hh, ObjType::Vmo, RIGHT_SET_POLICY)
+            .expect("SYSCALL：E3g get_raw h");
+        // SAFETY: get_raw 门控后取本体地址（只取地址，不给别名）。
+        let ptr_g = unsafe { (*og.as_ptr()).obj.as_vmo_mut().unwrap() as *mut Vmo };
+        let ptr_h = unsafe { (*oh.as_ptr()).obj.as_vmo_mut().unwrap() as *mut Vmo };
+        let asid_g = crate::aspace::alloc_asid();
+        let asid_h = crate::aspace::alloc_asid();
+        let root_g = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid_g)
+                .expect("SYSCALL：E3g 建 root Vmar g（可信语境）"),
+        ));
+        let root_h = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmar::new_root(crate::mm::frames(), asid_h)
+                .expect("SYSCALL：E3g 建 root Vmar h（可信语境）"),
+        ));
+        const VA_G: usize = 0x5400_0000;
+        const VA_H: usize = 0x5500_0000;
+        // SAFETY: 本体指针取自表内对象；map 只录区间（不动池）。
+        unsafe {
+            root_g
+                .map_demand(&mut *ptr_g, VA_G, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
+                .expect("SYSCALL：E3g map_demand g");
+        }
+        // h 两页区间（continue-take 抽干 = 两**不同**页真供给，非同页幂等）。
+        unsafe {
+            root_h
+                .map_demand(&mut *ptr_h, VA_H, 0, 2 * PAGE_SIZE, crate::vmar::Perm::UserRw)
+                .expect("SYSCALL：E3g map_demand h");
+        }
+        crate::vmar::register_demand_root(asid_g, root_g as *mut Vmar)
+            .expect("SYSCALL：E3g 登记 root g");
+        crate::vmar::register_demand_root(asid_h, root_h as *mut Vmar)
+            .expect("SYSCALL：E3g 登记 root h");
+        let _slot_g = ktest_arm_el0(VA_G, asid_g);
+        let _slot_h0 = ktest_arm_el0(VA_H, asid_h);
+        let _slot_h1 = ktest_arm_el0(VA_H + PAGE_SIZE, asid_h);
+        // SAFETY: svc 同步异常；TBL 为本块私有静态。
+        unsafe {
+            TBL = [
+                PagerWindow { dv: hg, sv: 0, delta: 0 },
+                PagerWindow { dv: hh, sv: 0, delta: 0 },
+            ];
+        }
+        assert_eq!(
+            svc6(NR_PAGER_SUPPLY_MAPPED_TABLE as u64, &raw const TBL as u64, 2, 0, 0, 0, 0),
+            3,
+            "SYSCALL：E3g 双窗三臂批收须 rc=3（供页数计数）"
+        );
+
+        // ⑤ 部分计数 + NoneForVd 跳次窗零消费：仅 g 臂在池；表 [h, g]
+        //    （无臂窗 h 在前）——h 窗 NoneForVd 跳过（池非空不匹配）→
+        //    g 窗收讫 count=1 → 续取池空且已供>0 → 即返计数不阻塞 = rc=1
+        //    （h 零供给部分计；「池空即返」臂零 block 面）。
+        let _ = ktest_arm_el0(VA_G, asid_g);
+        // SAFETY: 同上。
+        unsafe {
+            TBL = [
+                PagerWindow { dv: hh, sv: 0, delta: 0 },
+                PagerWindow { dv: hg, sv: 0, delta: 0 },
+            ];
+        }
+        assert_eq!(
+            svc6(NR_PAGER_SUPPLY_MAPPED_TABLE as u64, &raw const TBL as u64, 2, 0, 0, 0, 0),
+            1,
+            "SYSCALL：E3g 部分计数须 rc=1（h 窗跳过、g 窗收讫）"
+        );
+
+        // ⑥ 聚合 NoneForVd → -EINVAL：仅 h 臂在池；表 [g] n=1——g 窗
+        //    唯一臂不属主 → NoneForVd 出环 0 供 → -EINVAL（0x23 单发同码
+        //    面的批形收口）；h 臂零消费原位存活（直收取证——活证收尾）。
+        let _ = ktest_arm_el0(VA_H, asid_h);
+        // SAFETY: 同上。
+        unsafe { TBL[0] = PagerWindow { dv: hg, sv: 0, delta: 0 } };
+        assert_eq!(
+            svc6(NR_PAGER_SUPPLY_MAPPED_TABLE as u64, &raw const TBL as u64, 1, 0, 0, 0, 0),
+            -22,
+            "SYSCALL：E3g 聚合 NoneForVd 须 -EINVAL"
+        );
+        assert!(
+            matches!(
+                crate::dpg::el0_take_for(ptr_h),
+                El0Take::Supplied { .. }
+            ),
+            "SYSCALL：E3g h 臂须原位存活（NoneForVd 零消费）"
+        );
+
+        // 收尾：先逐区间 unmap（清叶 + untrack_map → mapcnt 归零）→ Vmar
+        // 放（Drop 注销登记 + 放 demand 钉）→ 表内 VMO close。unmap 前置
+        // 是硬需：④/⑤ 真供给过页而 Vmar::Drop 刻意不动 mapcnt（残留 PTE
+        // 政策的正交不对称），销毁性 close 的 any_mapped 拒面必 -EBUSY
+        //（E3d–f 无此坑 = 它们从不真供给）——先解除映射放映射钉，close
+        // 才走真销毁面过断言。
+        root_g
+            .unmap(VA_G, PAGE_SIZE)
+            .expect("SYSCALL：E3g unmap g");
+        root_h
+            .unmap(VA_H, 2 * PAGE_SIZE)
+            .expect("SYSCALL：E3g unmap h");
+        // SAFETY: 指针全自 Box::leak 未动；from_raw → drop_in_place 原址
+        //（登记/Region 指针地址耦合面）。
+        drop(unsafe { alloc::boxed::Box::from_raw(root_g as *mut Vmar) });
+        drop(unsafe { alloc::boxed::Box::from_raw(root_h as *mut Vmar) });
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hg as u64, 0, 0), 0, "SYSCALL：E3g close g");
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hh as u64, 0, 0), 0, "SYSCALL：E3g close h");
+    }
+
     // E5. vmo_get_size（0x1A，G-eco 入机侧：svcmgr 消费 rootfs 需要 cpio 总长；
     //     add-only 顺延）。盖四路：往返 + 页对齐语义（create 即取整，非 blob
     //     实长——消费端 cpio 遍历以 newc 头自描述长度为准）/ 坏 handle /

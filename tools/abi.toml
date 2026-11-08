@@ -20,13 +20,15 @@
 
 [meta]
 stage = "v1"
-nr_total = 36        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+nr_total = 37        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号；含 0x23
-                     # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号）
-implemented = 35     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+                     # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号；含 0x24
+                     # pager_supply_mapped_table——X-6 刀① 批供表批加号）
+implemented = 36     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
                      # G4-2 0x21 pager_supply_pages v2 号激活 + G4-4 X-3b
-                     # 0x23 pager_supply_mapped 挂派发翻真；
+                     # 0x23 pager_supply_mapped 挂派发翻真 + X-6 刀①
+                     # 0x24 pager_supply_mapped_table 挂派发；
                      # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
                      # ABI §8.0 永不 panic 执法）
 nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端）。生成器执法
@@ -405,6 +407,18 @@ note = '''X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_of
 2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
 唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
 VMO 页须 pre-commit（§2.2 防线 4）。'''
+[[group.syscall]]
+num = 0x24
+name = "pager_supply_mapped_table"
+desc = '用户态 pager 批供：入参 tbl（PagerWindow{dv:u32, sv:u32, delta:i64} 16B/项 repr(C) 数组）+ n（∈[1,32]）——多窗一次收货，rc = count-wins：>0 = 供给成功页数（部分成功部分计、不回滚），0 供才报 errno'
+stage = "v1"
+note = '''X-6 刀①（批供提速）表批形，冻结裁决 2026-11-08（设计稿
+`X6批供提速设计-v1.0.md` §7 主裁③「全套照提案冻」）：号 0x24 / N=32
+三源镜像（EREQ_SLOTS / PAGER_SLOTS / 表帽）/ count-in-x0 / PagerWindow
+布局一次定全即冻。每窗门控/供给/唤醒链与 0x23 同构（阻塞收货 +
+poll-first 睡 pager 裸键）；整批 ≤32 页一 KL 窗；池空且已供>0 → 即返
+计数不阻塞，池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测回退：
+0x24(dv:0,n:1) 新核 -EBADF / 旧核 -ENOTSUP。'''
 
 [[group]]
 title = "**进程 / 线程**"

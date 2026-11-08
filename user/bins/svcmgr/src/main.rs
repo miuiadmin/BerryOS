@@ -26,13 +26,13 @@
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
-    berry_pager_supply_mapped, berry_pager_supply_pages, berry_process_create,
-    berry_process_get_exit_code, berry_process_start, berry_process_terminate,
-    berry_thread_create, berry_thread_sleep, berry_thread_start, berry_vmar_map,
-    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
-    berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED, BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE,
-    BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, BERRY_ERR_INVALID_ARG,
-    BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
+    berry_pager_supply_mapped, berry_pager_supply_mapped_table, berry_pager_supply_pages,
+    berry_process_create, berry_process_get_exit_code, berry_process_start,
+    berry_process_terminate, berry_thread_create, berry_thread_sleep, berry_thread_start,
+    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
+    berry_vmo_read, berry_vmo_write, Handle, PagerWindow, BERRY_ERR_ACCESS_DENIED,
+    BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY,
+    BERRY_ERR_INVALID_ARG, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
     SIGNAL_WRITABLE, VMO_OPT_DEMAND,
 };
@@ -186,7 +186,8 @@ static PAGER_REQS: [PagerReq; PAGER_SLOTS] = [PAGER_REQ_INIT; PAGER_SLOTS];
 /// 纯取证计数，无同步语义。
 static PAGER_SWEEPS: AtomicU64 = AtomicU64::new(0);
 
-/// X-6 刀0 吞吐仪器：0x23 供给成功（rc==0）累计页数；boot 验证成功点恰
+/// X-6 刀0 吞吐仪器：供给成功累计页数（回退臂 = 0x23 rc==0 逐窗 +1；
+/// X-6 刀① 表形主路 = 0x24 rc>0 求和——**供页数口径不变**）；boot 验证成功点恰
 /// 三处（hello/hexyl/boot 尾——bench 冻结词形，见 x6_mark）观测行
 /// `X6 pg=N sw=M` 的 pg 取值处（sw = 上邻 PAGER_SWEEPS；行不带钟——页/s
 /// 的钟 = 宿主侧 marker 到达时戳）。Relaxed 纯取证计数，无同步语义
@@ -249,6 +250,12 @@ pub extern "C" fn pager_main() -> ! {
     // X-6 锚窗：最近供给命中槽（PAGER_REQS 索引）。Option 因 boot 首供前
     // 无锚；槽注销/复用不要求锚有效（miss 即走查自愈，下一 rc==0 归位）。
     let mut anchor: Option<usize> = None;
+    // X-6 刀① boot 探测（一次性，圈外静序）：0x24(dv:0, n:1)——新核在册
+    // 门败 -EBADF / 旧核未注册 -ENOTSUP。唯 -EBADF 立表形主路；其余任何
+    // 返值（-95 / 异码）保守回退现行 0x23 单窗环（回退臂整保留——
+    // stall_kick 钉死 0x23 同依据：kick 任务不得进 0x24 池空泊键面）。
+    let probe = PagerWindow { dv: 0, sv: 0, delta: 0 };
+    let table_mode = berry_pager_supply_mapped_table(&probe, 1) == BERRY_ERR_BAD_HANDLE;
     loop {
         PAGER_SWEEPS.fetch_add(1, Ordering::Relaxed);
         // 让位闸（X-3c-3）：dpg 自供族在跑 = 本 pager 静默（零供给调用，
@@ -265,21 +272,61 @@ pub extern "C" fn pager_main() -> ! {
         // 内活读锚 = 新锚跳位与 i 递增双跳叠加，会跳槽/重复探测）。锚槽
         // 最先，其余按锚+1 环绕原方向续扫；无锚 = start 0，恰今日 0..N 序。
         let start = anchor.unwrap_or(0);
-        for i in 0..PAGER_SLOTS {
-            let idx = (start + i) % PAGER_SLOTS;
-            let slot = &PAGER_REQS[idx];
-            if !slot.active.load(Ordering::Acquire) {
-                continue;
+        if table_mode {
+            // X-6 刀① 表形主路：圈首快照活槽按锚序纯旋转填表（512B 栈数组
+            // ——设计 §2.3 落点），单发 0x24 多窗一次收货。rc 只报供页计数
+            // 不报槽位 → 命中集不可知，锚不可精更新（None+rc>0 以圈首活槽
+            // 近似「最近供给序」起点，rc==0 圈照旧）；rc<0 忽略推进（-22
+            // 快跳 / -9 陈旧槽毒整批——unregister 先于 close 把毒界压到一
+            // 圈，下一圈快照自愈；恒扫环口径与回退臂同义）。
+            let mut tbl = [PagerWindow { dv: 0, sv: 0, delta: 0 }; PAGER_SLOTS];
+            let mut k = 0usize;
+            let mut first_active: Option<usize> = None;
+            for i in 0..PAGER_SLOTS {
+                let idx = (start + i) % PAGER_SLOTS;
+                let slot = &PAGER_REQS[idx];
+                if !slot.active.load(Ordering::Acquire) {
+                    continue;
+                }
+                if first_active.is_none() {
+                    first_active = Some(idx);
+                }
+                any = true;
+                tbl[k] = PagerWindow {
+                    dv: slot.dv.load(Ordering::Relaxed) as Handle,
+                    sv: slot.sv.load(Ordering::Relaxed) as Handle,
+                    delta: slot.delta.load(Ordering::Relaxed),
+                };
+                k += 1;
             }
-            any = true;
-            let dv = slot.dv.load(Ordering::Relaxed) as Handle;
-            let sv = slot.sv.load(Ordering::Relaxed) as Handle;
-            let delta = slot.delta.load(Ordering::Relaxed);
-            // X-6 rc 入账：0 = 供上 1 页（吞吐计数 + 锚更新）；非 0 同今日
-            // 语义忽略推进（-22 = NoneForVd 快跳 / -9 EBADF = 陈旧槽，自愈）。
-            if berry_pager_supply_mapped(dv, sv, delta) == 0 {
-                PAGER_SUPPLIED.fetch_add(1, Ordering::Relaxed);
-                anchor = Some(idx);
+            if k > 0 {
+                let rc = berry_pager_supply_mapped_table(tbl.as_ptr(), k as u32);
+                if rc > 0 {
+                    // 供页数口径不变（X-6 刀0 仪器）：表批后按 rc 累加。
+                    PAGER_SUPPLIED.fetch_add(rc as u64, Ordering::Relaxed);
+                    if anchor.is_none() {
+                        anchor = first_active;
+                    }
+                }
+            }
+        } else {
+            // X-6 刀① 回退臂（现行 0x23 单窗环，整保留——旧核/探测未立形）：
+            for i in 0..PAGER_SLOTS {
+                let idx = (start + i) % PAGER_SLOTS;
+                let slot = &PAGER_REQS[idx];
+                if !slot.active.load(Ordering::Acquire) {
+                    continue;
+                }
+                any = true;
+                let dv = slot.dv.load(Ordering::Relaxed) as Handle;
+                let sv = slot.sv.load(Ordering::Relaxed) as Handle;
+                let delta = slot.delta.load(Ordering::Relaxed);
+                // X-6 rc 入账：0 = 供上 1 页（吞吐计数 + 锚更新）；非 0 同今日
+                // 语义忽略推进（-22 = NoneForVd 快跳 / -9 EBADF = 陈旧槽，自愈）。
+                if berry_pager_supply_mapped(dv, sv, delta) == 0 {
+                    PAGER_SUPPLIED.fetch_add(1, Ordering::Relaxed);
+                    anchor = Some(idx);
+                }
             }
         }
         if !any {
