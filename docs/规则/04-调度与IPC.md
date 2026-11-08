@@ -16,7 +16,7 @@
 - **双线并行**：省电（tickless/idle/PM）与多核性能同为 v1 一等公民，路线见 M1a/M1b。
 - **intent 两段式（ADR #42）**：**公平是机制默认，intent 是策略输入，叠加永不替代**。v1/v2 intent = u8 查表键，`berry_intent` 编码冻结 0x00 UNSPECIFIED–0x05 MAINTENANCE(冻结不启用)；M4 起 class_fair ×4 带实例 + 预算包络 + deadline-server 兜底，**凭 v1 遥测入场券**；band/intent **不入 AI 动作空间**。
 
-细节 → `docs/调度器设计-v1.0.md`。
+细节 → `docs/调度器设计-v1.1.md`。
 
 ### 现役用户信号位登记表
 
@@ -72,10 +72,11 @@
 - **环形 Runqueue 的外部扫描必须「先访当前节点、后判回到 head」**：环尾 `rq_next == head`、单元素环自指——若在处理节点前检测 `next == head` 就 break，尾节点（单元素环则是唯一节点）被跳过；freeze/thaw 这类按键扫描会表现成 `started` 目标「找不到」或匹配计数少一。SLEEPQ 是尾置 `None` 的单向链，不能把它的 while-None 惯例原样搬到 RQ。先问：这个遍历的终止判据是在处理完当前节点之后吗？ → 雷册 §A136
 
 - **定时器截止只在「更早」方向移动（S-6 楔死定谳，2026-11-07）**：切换/派发点重编程定时器一律单调夹取——已编程的更早截止不得被无条件 `now+SLICE` 前推（块驱动快速切换 = deadline 跑步机：CVAL 永不到期 ⇒ 本核零 tick ⇒ 无抢占 ⇒ home 核常驻任务饿死级联，楔死 9/10）。tick handler rearm 走「已过期 = 全新武装」支，语义零漂移。先问：这个重编程会把已编程的更早截止推迟吗？ → 雷册 §A137
+- **冻结谓词对睡眠者只查真停摆面（PI + channel 派生位等待），SVC 窗记账位只对 RQ 在席者拒（app-1 a-1 双残影）**：svc_mask/held_locks 结构位是 SVC 窗记账、只在 SVC 出口清零——「睡在 syscall 内」任务（block 舞蹈放锁不清位）带残影挂 SLEEPQ，freeze_precheck 对睡眠者也查 = 任何睡着进程结构性不可冻（16×50ms 采样全拒实证 pc:sl×15），与「到期 sleep 摘 RQ 挂起」设计自相矛盾。修法（freeze_precheck_by_pinned/by_thread 双级同修）：睡眠者只查 pi_inherited + wait_signals(READABLE|WRITABLE)；svc_mask+held 位只对 RQ 在席（真在飞/窗内可抢占）任务拒——防停摆本质 = PI 检查（捐赠链断才是停摆面），不是记账位。先问：对睡眠者拒的这个位，是 PI/在飞 IPC 真停摆面，还是 SVC 窗记账残影？ → 雷册 §A144
 
 ## 深读
 
-- docs/调度器设计-v1.0.md —— 机制 + M 里程碑权威：runqueue/抢占点/tickless/intent 两段式与省电双线的完整设计。
+- docs/调度器设计-v1.1.md —— 机制 + M 里程碑权威：runqueue/抢占点/tickless/intent 两段式与省电双线的完整设计。
 - docs/调点调度-v1.1.md —— 调点调度 1.1：单比较器/EEVDF、token freeze（进程+可选线程）、饥饿界、记账/预算准入、0x3C–0x3F（D1–D12 已裁）。
 - docs/IPC设计-v1.0.md —— channel/Event/信号位与 object_wait/wait_many 协议的第一手语义。
 - docs/AI调度设计-v1.0.md —— AI 干涉面现行口径：限带内、机制预留 + 实验轨道 + kill criteria（ADR #21 修订版）。
