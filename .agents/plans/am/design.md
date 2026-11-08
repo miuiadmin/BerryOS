@@ -1,11 +1,11 @@
 # am（应用后台处置 App Manager）总体设计
 
 Type: spec
-Status: draft
+Status: active
 Updated: 2026-11-08
-Version: 0.1.0
+Version: 0.2.0
 
-一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。
+一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。**v0.2.0：Q1–Q3 三裁决落定（见「裁决记录」节），AM-1 可开工。**
 
 ## 背景
 
@@ -25,9 +25,9 @@ Version: 0.1.0
 
 | 级 | 触发 | 动作 | 状态归宿 | 恢复成本 |
 |---|---|---|---|---|
-| L0 discardable 收割 | 内存低水位 | app 声明的可弃 VMO 由内核择机弃页（Fuchsia lock/unlock 形态） | 页丢失、对象在 | app 自重建（重新 lock 填充） |
+| L0 discardable 收割 | 内存低水位 | app 声明 `DISCARDABLE` 的匿名 VMO 由内核择机弃页（Q2 裁决：`vmo_create` 选项位 + 锁语义挂 commit/decommit 动词扩展，零新 syscall） | 页丢失、对象在 | app 自重建（重新 lock 填充） |
 | L1 pager 压缩换出 | 冻结后 + 水位 | am 请 pager 收该进程匿名页进压缩仓（zram 等价），日预算护闪存（OH 借鉴：初值日 50MB 量级，遥测可调） | 压缩仓/盘 | 缺页级惰性重取 |
-| L2 冻结 | 进后台 debounce（初值 10s，AM-01 [A5] 量级） | am 持 SuspendToken 调 0x3E；冻前发 onBackground（限时）；豁免面（长时任务 reason/绑定关系/持锁） | 进程内存原地 | 解冻（近零） |
+| L2 冻结 | 进后台 debounce（Q3 裁决：自适应——基线 10s【推】；压力 WARNING→0；intent/返回概率调制钩子 AM-5 接） | am 持 SuspendToken 调 0x3E；冻前发 onBackground（限时）；豁免面 = 长时任务 reason 白名单（PM-00 已立法；Q1-c 使绑定豁免消失） | 进程内存原地 | 解冻（近零） |
 | L3 杀 + 墓碑 | 压力信号超阈（L0–L2 不足） | 按优先级表选列 kill；task-bound KB 级状态已托管；合成器快照先行；退出原因可查 | am 状态目录 + 快照 | 冷启动 + 状态重放 + 快照遮盖 |
 | L4 归档 | 数月未用（v2） | 权限/缓存/包体联动回收（PM-00 契约层已定豁免位） | 存储 | 解档重装 |
 
@@ -41,9 +41,15 @@ Version: 0.1.0
 
 berry-amproto 纯协议 crate + berry-sys 包装，全走服务 IPC：生命周期回调（onBackground 限时落盘窗口 / OnResume；超时不阻塞冻结）；SavedState（KB 级、task-bound、am 托管——划掉/force-stop 即丢，AM-01 [A7] 语义）；豁免位（manifest 长时任务 reason u8，PM-00）；冻结态通知（FrozenStateChange 等价，供系统服务暂停对冻结进程的回调投递、解冻后批量补投——A16 形态）。
 
-### IPC 暗面（开放问题 Q1，交拍板）
+### IPC × 冻结（Q1 已裁：唤醒即解冻，v1 直上）
 
-同步 channel call 打到冻结进程 = 调用方阻塞（BerryOS 版「sync binder × frozen」）。候选：b) channel 层对冻结目标返回 -EAGAIN，调用方重试；c) 唤醒即解冻 + 排队投递（A14 广播排队正向形态，需 am 与内核唤醒通知联动）。**倾向 v1 取 b（语义干净、无联动依赖），M4+ 升级 c**。三重正交谓词已防内核侧停摆，本问题只剩应用语义面。
+BerryOS channel 本就是**非阻塞有界队列**（send 满拒 -EBUSY、阻塞等待走 `wait_one`），冻结进程的端点收消息**天然排队**——A14 广播排队的形态免费获得。补一层唤醒闭环即成完整语义：
+
+- **机制面（AM-1 前置内核小刀）**：send 命中冻结进程的端点 → 内核对该进程冻结态打 **wake-pending** 标记 + Event 通知 token 持有者（am）；消息已入队不丢弃。零新 syscall（Event 通知走现有机制）。
+- **策略面（am）**：收到唤醒通知默认**立即 close token 解冻**（等效 A14「生命周期事件立即解冻」）——调用方的 `wait_one` 自然解除，零生态负担；是否解冻的裁决权留在 am（策略不进内核快路径）。
+- **安全论证**：1.1 安全门已有「token 持有者死亡 → auto-thaw」——am 崩溃 = 全体解冻 = 系统退化到无冻结而非死锁；三重正交谓词已封内核侧停摆。
+- **防风暴**：wake-flood 遥测（解冻频次进 HDR 分位）；反复被唤醒者 am 可升级处置（转长时任务豁免或杀），决策可查。
+- **b 形态（-EAGAIN/TRY）不设新口**：调用方需要带超时的探活，用既有 `wait_one` 超时即得——不为罕见场景加 ABI 面。
 
 ### 快照与优先级表
 
@@ -59,7 +65,7 @@ berry-amproto 纯协议 crate + berry-sys 包装，全走服务 IPC：生命周�
 
 ## 落地刀序（依赖在途 lane）
 
-AM-0 本设计 → AM-1 am 骨架 + 优先级表 + L2 冻结决策（freeze 已落，可即开）→ AM-2 压力信号（telemetry 增量）→ AM-3 杀+墓碑+快照（依赖 X-6 收官 + 合成器截屏接口）→ AM-4 L1 换出预算 + L0 discardable（依赖 pager 压缩仓成形 + Q2 裁决）→ AM-5 归档 + AI 返回概率调梯度（KC 先立，PM-00 KC-P 同款立法）。
+AM-0 本设计（含 Q1–Q3 裁决）→ AM-1 前置内核小刀（wake-pending 标记 + Event 通知 token 持有者）+ am 骨架 + 优先级表 + L2 冻结决策（freeze 已落，可即开）→ AM-2 压力信号（telemetry 增量）→ AM-3 杀+墓碑+快照（依赖 X-6 收官 + 合成器截屏接口）→ AM-4 L1 换出预算 + L0 discardable（依赖 pager 压缩仓成形 + `内存管理设计` v1.1 补 DISCARDABLE 条目）→ AM-5 归档 + AI 返回概率调梯度（KC 先立，PM-00 KC-P 同款立法）。
 
 ## 适用边界
 
@@ -68,11 +74,11 @@ AM-0 本设计 → AM-1 am 骨架 + 优先级表 + L2 冻结决策（freeze 已�
 - 本设计不动 `调点调度-v1.1` 与 `内存管理设计-v1.0` 条文——discardable（Q2）若裁入 5 类枚举/标志位，先升 `内存管理设计` v1.1 再动代码。
 - 与 PM-00 分工：PM-00 管契约形状（豁免位/白名单/能力位），am 管机制执行——冲突以 PM-00 为准。
 
-## 开放问题（交主会话拍板）
+## 裁决记录（2026-11-08 仓主授权拍板，因果详[笔记](../../notes/implemented/2026-11-08-am-q1q2q3-rulings.md)）
 
-- **Q1** 同步 IPC × 冻结语义：b（-EAGAIN）先行 vs c（唤醒即解冻+排队）直上。
-- **Q2** discardable 落点：VMO 第 6 类后备 vs 匿名类加标志位（动 `内存管理设计` 的前置）。
-- **Q3** debounce 与豁免面初值：10s 量级【推】；本仓「文件锁等价物」（持锁不冻）映射到哪类内核对象。
+- **Q1 同步 IPC × 冻结 → 唤醒即解冻（c），v1 直上**：非阻塞有界队列天然排队 + wake-pending 通知 am + 默认立即解冻；token 持有者死亡 auto-thaw 封死 am 崩溃面；-EAGAIN 不设新口（`wait_one` 超时即得）。弃 b 的理由：全员重试 = 生态负担，违「默认值即生态」。
+- **Q2 discardable → 匿名类 `DISCARDABLE` 选项位，非第 6 类后备**：回收策略与后备来源正交（Fuchsia 同款——ZX_VMO_DISCARDABLE 是标志不是类型）；锁语义挂 commit/decommit 动词扩展，零号预算；动代码前先升 `内存管理设计` v1.1 补条目。
+- **Q3 debounce/豁免 → 自适应三元 + 豁免面缩到白名单**：基线 10s【推，HDR 实测定标】/ 压力 WARNING→0 / intent·返回概率调制（AM-5 接钩子）；豁免面 = 长时任务 reason 白名单（PM-00 已立法）——Q1-c 使绑定豁免消失（call 即唤醒），豁免面保持小而可审计（bfcache 教训）。
 
 ## Related
 
