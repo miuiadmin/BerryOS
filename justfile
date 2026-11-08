@@ -652,6 +652,12 @@ test-host:
     # 上被动覆盖，门禁自身坏 = 平像静默劣化。合成双段 ELF（gap 零填 + bss
     # 尾零 + 页取整 + 确定性）+ 8 拒面（elf2pe --selftest 同位纪律）。
     python3 tools/elf2flat.py --selftest
+    # Q1 续挖（a-3 U4 纪律同款）：pwrcls 门禁自检——smoke B4 掉电相三 boot
+    # 的采样断言（A/B 档分类 + Boot C 后必 clean）与毒环注入都吃本件，
+    # 此前只在 smoke 产物链上被动覆盖，门禁自身坏 = 掉电相静默劣化。
+    # 合成平盘 mkfat import 单编码器同形 + classify 七态钉板 + 双 FAT
+    # 注入对账 + 5 拒面（elf2flat --selftest 同位纪律）。
+    python3 tools/pwrcls.py --selftest
     python3 tools/elf2pe.py --selftest
     python3 tools/mkfat.py --selftest
     # A1-3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
