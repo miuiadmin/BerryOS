@@ -3932,15 +3932,19 @@ fn test_policy_reject_stats() {
 /// - Y1（yield 真让出）：A 跑一段时间攒下 vruntime 领先（消耗多于 B）后
 ///   让出——真实路径形态：A Running、pick 经 `my_cur=A` 参选（yield_now_impl
 ///   RQ 窗第一步）→ 出选者须非 A（是 B）。随后 prev Ready 化 + 片归还走
-///   **真实修复代码** [`berry_sched::Fair::yield_slice_return`]：A ≥ 环均 →
-///   抬均零操作（「未攒虚拟优势时零操作」口径）。
+///   **真实修复代码** [`berry_sched::Fair::yield_slice_return`]：A(1200)
+///   已是环 max → 抬 max 零操作（让出者已在垫底位）。
 /// - Y2（片归还落地）：提案 Problem 形态——让出者 vruntime 相对最低（最
 ///   eligible——无修复时 yield 立即再选让出者的空操作源，test_freeze F3
-///   同款数值）→ 片归还须把让出者抬到环均（抹平未耗虚拟优势），且只动
-///   让出者、不动他人；冻结（HELD_FROZEN）与 deadline 路径不受影响（只动
-///   vruntime，S5 手动 vdeadline 不碰）。
+///   同款数值）→ 片归还须把让出者抬到**环 max**（垫底；双任务真让出补刀
+///   2026-11-08——原抬均 500 在双任务环 avg<max 恒有「抬后仍最 eligible」
+///   零操作区，抬 max 封死），且只动让出者、不动他人与其 vdeadline；冻结
+///   （HELD_FROZEN）与 deadline 路径不受影响（S5 手动 vdeadline 不碰）。
 /// - Y3（反向合法面）：环上仅 A 时让出 → A 回场（单元素环出选恒自——无
-///   他者可让，回场合法）；单元素环环均 = 自身 → 抬均零操作。
+///   他者可让，回场合法）；单元素环环 max = 自身 → 抬 max 零操作。
+/// - Y4（三任务环·抬 max 形态）：0/600/1000 → 让出者抬到 1000（环 max
+///   垫底）、中间者 600 与 max 者不动——抬均(533)挡不住让出者抬后仍最
+///   eligible，抬 max 才真让出（锁退避场景形态：退避者让路）。
 /// 非 smoke 注册标记（同 POLS-R 模式：断言炸 = panic = 后续标记缺失兜底）。
 fn test_policy_yield_return() {
     use berry_sched::{Fair, Runqueue, SchedClass, Task, TaskState, Topo};
@@ -3951,7 +3955,7 @@ fn test_policy_yield_return() {
 
     fn mk(tag: usize, name: &'static [u8]) -> &'static mut Task {
         let mut t = Task::new_kernel_with_as(yd_dummy, tag, name, 0, 0);
-        t.proc_tag = tag; // 双任务同带：tag 7/8（策略表 key 口径；表未绑零消费）
+        t.proc_tag = tag; // 同带：tag 7/8/9（策略表 key 口径；表未绑零消费）
         alloc::boxed::Box::leak(t)
     }
 
@@ -3976,22 +3980,42 @@ fn test_policy_yield_return() {
         .expect("YIELD：双任务环必有出选");
     assert_eq!(p1.name, b"yB".as_slice(), "Y1：让出后出选须是 B 不是 A（真让出）");
     // RQ 窗后半（同 yield_now_impl 序）：prev Ready 化 + 片归还（真实修复
-    // 代码）——A(1200) ≥ 环均(750) → 零操作。
+    // 代码）——A(1200) = 环 max → 零操作（让出者已在垫底位）。
     ta.state = TaskState::Ready;
     rr.yield_slice_return(&mut *ta, &rq);
-    assert_eq!(ta.vruntime, 1200, "Y1：让出者 ≥ 环均 → 抬均零操作");
+    assert_eq!(ta.vruntime, 1200, "Y1：让出者已是环 max → 抬 max 零操作");
 
     // Y2：提案 Problem 形态——让出者 vruntime 相对最低（0 vs 1000）。片归还
-    // 须抹平：抬到环均 500；只动让出者。直改 vruntime 后先洗账（S2b+ 增量
-    // 账本调和——avg 读账本直除，不洗则陈旧账 0 → 断言 0≠500 假红）。
+    // 须垫底：抬到环 max 1000（双任务真让出补刀 2026-11-08——原抬均 500
+    // 挡不住「抬后仍最 eligible」的空操作区）；只动让出者、不动他人与其
+    // vdeadline。直改 vruntime 后先洗账（S2b+ 增量账本调和——账本守恒
+    // 纪律：ring_check 对账金丝雀）。
     ta.vruntime = 0;
     ta.vdeadline = 0;
     tb.vruntime = 1000;
     tb.vdeadline = 2000;
     rq.resync_vruntime_sum();
     rr.yield_slice_return(&mut *ta, &rq);
-    assert_eq!(ta.vruntime, 500, "Y2：让出者 vruntime 须抬到环均（片归还落地）");
-    assert_eq!(tb.vruntime, 1000, "Y2：抬均只动让出者，不动他人");
+    assert_eq!(ta.vruntime, 1000, "Y2：让出者 vruntime 须抬到环 max（片归还垫底）");
+    assert_eq!(ta.vdeadline, 0, "Y2：只动 vruntime，不碰 vdeadline（S5 语义不动）");
+    assert_eq!(tb.vruntime, 1000, "Y2：抬 max 只动让出者，不动他人");
+
+    // Y4（三任务环·抬 max 形态）：让出者 0 / 中间者 600 / 环 max 1000——
+    // 抬 max 须让出者垫底到 1000（抬均 533 挡不住「抬后仍最 eligible」）、
+    // 中间者与已是 max 者均不动。锁退避场景形态：退避者让路。
+    let tc = mk(9, b"yC".as_slice());
+    rr.enqueue(&mut *tc, &mut rq);
+    ta.vruntime = 0;
+    ta.vdeadline = 0;
+    tb.vruntime = 600;
+    tb.vdeadline = 600;
+    tc.vruntime = 1000;
+    tc.vdeadline = 1500;
+    rq.resync_vruntime_sum();
+    rr.yield_slice_return(&mut *ta, &rq);
+    assert_eq!(ta.vruntime, 1000, "Y4：三任务环让出者须抬到环 max 1000（垫底）");
+    assert_eq!(tb.vruntime, 600, "Y4：中间者不动（抬 max 只动让出者）");
+    assert_eq!(tc.vruntime, 1000, "Y4：已是 max 者不动");
 
     // Y3（反向合法面）：环上仅 A → 让出后回场（单元素环出选恒自）。
     let ts = mk(7, b"yS".as_slice());
@@ -4004,7 +4028,7 @@ fn test_policy_yield_return() {
     assert_eq!(p3.name, b"yS".as_slice(), "Y3：环上仅 A 时让出 → A 回场（合法）");
     let v0 = ts.vruntime;
     rr.yield_slice_return(&mut *ts, &mut rq2);
-    assert_eq!(ts.vruntime, v0, "Y3：单元素环环均 = 自身 → 抬均零操作");
+    assert_eq!(ts.vruntime, v0, "Y3：单元素环环 max = 自身 → 抬 max 零操作");
 
     berry_hal_aarch64::uart_puts(b"YIELD-K ok\n");
 }

@@ -26,6 +26,7 @@ Status: implemented
 - 不改 tick/抢占路径——零热路径开销（yield 是冷路径）。
 - 调和注记（2026-11-08 落地时）：与并发 S2b+ Σvruntime 增量账本刀同函数交叠——调和 = `yield_slice_return` 抬均经 `rq.vruntime_add()` 账点 + ktest 直改后 `resync_vruntime_sum()` 洗账；合并树 QEMU 全绿（YIELD-K ok / ktest done / 52 标记 / ring_check 安静）。语义边界诚实记录：双任务环数学上抬均零操作区（handoff ⟺ 让出者 vruntime > avg，与抬均互斥）——修复有效面 = 3+ 任务环真 handoff；双任务 yield 一刀真让出需后续提案（抬到 max(ring) 形态）。
 - 落地（2026-11-08）：`Fair::yield_slice_return`（class.rs，enqueue 抬均同款、最小暴露面 pub 方法）接入 `yield_now_impl` prev Ready 化处（RQ 窗内）；回归面 = kernel ktest `test_policy_yield_return`（标记 `YIELD-K ok`）。
+- 双任务真让出补刀（2026-11-08）：抬 ring max 形态落地，Y4 三任务覆盖——`yield_slice_return` 从「抬到 avg」强化为「抬到环上 vruntime **max**」（协作让出 = EEVDF 形态排队尾；POSIX `sched_yield` 语义对齐——让出者本轮垫底），抬均的双任务环零操作区（avg < max ⟹ 让出者抬后仍最 eligible）由 max 形态封死。三任务环公平性：让出者抬到 max 后仍在环（tick 继续累加它），防饥饿兜底已有；锁退避场景方向正确（退避者让路）。实现 = 扫环取 max（`avg_vruntime` 旧全环扫描同款走查，RQ 锁/屏蔽窗内安全，O(n) 可接受——yield 冷路径）、只动 vruntime 不碰 vdeadline（S5 语义不动）、抬值经 `rq.vruntime_add()` 账点（前刀调和纪律延续）。ktest：Y2 断言改（0/1000 双任务 → 抬到 1000 非 500，并加 vdeadline 不动钉）、Y4 新增（0/600/1000 三任务环 → 让出者垫底 1000、中间者不动）、Y1（已是 max → 零操作）/Y3（单元素）语义保持；直改后 `resync_vruntime_sum()` 洗账纪律照旧。
 
 ## Related
 

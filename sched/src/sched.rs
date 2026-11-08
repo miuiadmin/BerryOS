@@ -1158,9 +1158,11 @@ fn yield_now_impl(enable_irq_at_end: bool) {
             if next_ptr != prev {
                 (*prev).state = TaskState::Ready;
                 // yield 片归还（moss yield_slice 语义的 BerryOS 形态）——让出者
-                // 不得带未耗虚拟优势回场，提案 2026-11-08，SMP 前单核窗内安全。
-                // 与 enqueue 抬均同款（class.rs）；冻结（HELD_FROZEN）与 deadline
-                // 任务路径不受影响——只动 vruntime，S5 手动 vdeadline 不碰。
+                // 不得带未耗虚拟优势回场，提案 2026-11-08，SMP 前单核窗内安全；
+                // 双任务真让出补刀（同日）：抬到环上 vruntime max（原抬均——
+                // 双任务环 avg<max 恒有零操作区），让出者本轮垫底（POSIX
+                // sched_yield 对齐）。冻结（HELD_FROZEN）与 deadline 任务路径
+                // 不受影响——只动 vruntime，S5 手动 vdeadline 不碰。
                 RR.yield_slice_return(&mut *prev, rq());
                 (*next_ptr).state = TaskState::Running;
             }
@@ -2440,6 +2442,16 @@ fn integrity_check() {
             rq_acquire(cpu);
             let steps = rq_of(cpu).ring_check();
             let want = rq_of(cpu).len();
+            // S5-c 计数门对账（计数 vs 真扫）：本环真扫 DL 数不得高于全局
+            // 账本——**单边**断言（多计合法：ktest 本地环 / on-ring 降带只
+            // 增不减；漏计是危险向 = 门会跳过需要的解冻扫描，须响亮失败）。
+            // 真扫与账本读**同锁窗**：本环成员的 link/unlink+记账在本队列
+            // RQ 锁下整体落定（锁全序），窗外读会被随后摘环的 fetch_sub
+            // 打穿（走查见 1 → 摘线减账 → 读到 0 = 假火）；跨核在途迁移
+            // （对核已 unlink、本核未 link）不在本环走查集也不在账本——
+            // 单边断言对在途态免疫。
+            let dl_walk = rq_of(cpu).dl_on_ring_walk();
+            let dl_ledger = crate::runqueue::dl_on_ring();
             rq_release(cpu);
             assert!(
                 steps == want,
@@ -2447,6 +2459,14 @@ fn integrity_check() {
                 cpu,
                 steps,
                 want
+            );
+            assert!(
+                dl_walk as u32 <= dl_ledger,
+                "integrity: cpu{} ring has {} deadline tasks but DL_ON_RING ledger {} \
+                 (under-count: unthrottle gate would skip needed scans)",
+                cpu,
+                dl_walk,
+                dl_ledger
             );
         }
         sq_acquire();

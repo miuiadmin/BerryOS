@@ -76,9 +76,10 @@ const SCALE: u64 = 1024;
 /// `enqueue`/`tick` 对 deadline 任务**不覆盖 vdeadline**（保留手动设的绝对值）。
 pub const PRIO_DEADLINE: i32 = 1000;
 
-/// 判定：是否 deadline 任务（带序 ≥ PRIO_DEADLINE）。
+/// 判定：是否 deadline 任务（带序 ≥ PRIO_DEADLINE）。S5-c 计数门起
+/// `runqueue` 原语层（`DL_ON_RING` 账点）同判据消费——单一事实源。
 #[inline]
-fn is_deadline(t: &Task) -> bool {
+pub(crate) fn is_deadline(t: &Task) -> bool {
     t.prio_effective >= PRIO_DEADLINE
 }
 
@@ -115,9 +116,20 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
 /// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义：
 /// 每期至多 budget CPU 时长；超了等下期。
 ///
+/// S5-c 计数门：头部先查 [`crate::runqueue::dl_on_ring`]（全域在环
+/// deadline 任务账本）——0 时整圈扫描跳过（一次 Relaxed 原子读替代
+/// O(n) 环走查）。v1 常态全员 fair，门常闭。门语义**单边安全**：账本
+/// 只可能偏多不可能偏少（多计来源与执法面见 `DL_ON_RING` 字段注——
+/// `integrity_check` 金丝雀单边对账），0 ⟹ 全域环上无 link 时即 DL 的
+/// 任务 ⟹ 扫描必然空手——跳过零语义差。
+///
 /// # Safety
 /// rq 环节点有效；调用侧屏蔽窗（pick_next 语境）。
 unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) {
+    // 快路径：全域环上无 deadline 任务（含本环）——零扫描。
+    if crate::runqueue::dl_on_ring() == 0 {
+        return;
+    }
     let now = hal::timer::cntvct();
     let head = rq.head();
     let mut cur = head;
@@ -171,7 +183,8 @@ impl SchedClass for Fair {
         // S5-c lazy unthrottle：周期到的冻结 deadline 任务——解冻 + 重臂
         // vdeadline（+= period，存 duration_hint_ns）+ 授新预算 slice。
         // 零额外定时器：pick_next 高频调用的顺带扫（is_deadline 一比较快
-        // 路过；冻结位零任务直接跳过）。
+        // 路过；冻结位零任务直接跳过）。S5-c 计数门起环上无 deadline 任务
+        // （全域账本 0）时函数头即返——整圈扫描跳过。
         unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, core::ptr::null_mut())?;
         // SAFETY: scan_filtered 契约（环上节点在环、调用侧屏蔽窗）。
@@ -270,20 +283,47 @@ pub(crate) fn eligible(my_cur: *mut Task, t: *const Task) -> bool {
 
 impl Fair {
     /// yield 片归还（moss `yield_slice` 语义的 BerryOS 形态）——让出者不得带
-    /// 未耗虚拟优势回场，提案 2026-11-08，SMP 前单核窗内安全。
+    /// 未耗虚拟优势回场，提案 2026-11-08，SMP 前单核窗内安全；双任务真让出
+    /// 补刀（同日）：从「抬到 avg」强化为「抬到**环上 vruntime max**」。
     ///
-    /// 与 [`SchedClass::enqueue`] 抬均同款（防 lag 攒积面）：让出者
-    /// `vruntime < avg_vruntime(rq)` 则抬到 avg——未攒虚拟优势时零操作、
-    /// 攒了则抹平。**只动 vruntime**：冻结（HELD_FROZEN）与 deadline 任务
-    /// 路径不受影响（S5 手动 vdeadline 不碰）。调用契约同 pick——RQ 窗/
-    /// 屏蔽窗内（让出者仍在本环上，环均含其自身）。
+    /// 语义 = 协作让出者本轮垫底（POSIX `sched_yield` 对齐——EEVDF 形态的
+    /// 排队尾）。抬均形态在双任务环有数学零操作区：让出者 vruntime < max
+    /// 但 ≥ avg 时抬均后仍最 eligible（avg < max 恒留该区）——yield 空操作；
+    /// 抬 max 封死之。让出者抬后仍在环（tick 继续累加其 vruntime——防饥饿
+    /// 兜底已有）；锁退避场景方向正确（退避者让路）。
+    ///
+    /// **只动 vruntime**：冻结（HELD_FROZEN）与 deadline 任务路径不受影响
+    /// （S5 手动 vdeadline 不碰）。调用契约同 pick——RQ 锁/屏蔽窗内（让出
+    /// 者仍在本环上，环 max 含其自身——已是 max 时零操作）。
     pub fn yield_slice_return(&self, t: &mut Task, rq: &Runqueue) {
-        let avg = avg_vruntime(rq).unwrap_or(0);
-        if t.vruntime < avg {
-            // Σvruntime 账本同步（S2b+ 增量账本调和，2026-11-08）：抬均改值
-            // 必须经账点，否则 ring_check 百切换对账金丝雀漂移 panic。
-            rq.vruntime_add(avg - t.vruntime);
-            t.vruntime = avg;
+        // 扫环取 vruntime max（avg_vruntime 旧全环扫描同款形态；O(n) 可接受
+        // ——yield 冷路径）。空环零操作（防御面：调用契约下让出者在环，
+        // 不可达）。
+        let Some(h) = rq.head() else { return };
+        // SAFETY: 环上任务均调度器拥有且在环；调用侧 RQ 锁/屏蔽窗内
+        // （yield_now_impl 语境）——扫描期间无并发出/入环（E0 BKL 执法面）。
+        // 走查同款不变式（§A136 形状：先访当前节点、后判回 head）。
+        let max = unsafe {
+            let mut m = 0u64;
+            let mut cur = h;
+            loop {
+                let p = cur.as_ptr();
+                if (*p).vruntime > m {
+                    m = (*p).vruntime;
+                }
+                cur = (*p).rq_next.get().expect("环上节点必有 next");
+                if cur == h {
+                    break;
+                }
+            }
+            m
+        };
+        if t.vruntime < max {
+            // Σvruntime 账本同步（S2b+ 增量账本调和，2026-11-08）：抬值改
+            // vruntime 必须经账点，否则 ring_check 百切换对账金丝雀漂移
+            // panic。
+            rq.vruntime_add(max - t.vruntime);
+            t.vruntime = max;
         }
     }
 
