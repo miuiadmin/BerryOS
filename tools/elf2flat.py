@@ -73,11 +73,13 @@ def build_flat(data: bytes, base: int, page: int, max_: int):
     return img, lo, hi_file - lo, hi_mem - lo, total
 
 
-def synth_elf(segs=[], e_type=2, e_machine=EM_AARCH64,
+def synth_elf(segs=None, e_type=2, e_machine=EM_AARCH64,
               ident=b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8) -> bytes:
     """合成最小 ELF64（elf2pe synth_elf 同款纪律）：ehdr + 逐段 PT_LOAD
     phdr + 段文件字节顺次 appended（字节模式 (k*31 + 7 + 段号) % 256——
     自检侧同式重导做逐字节对拍，勿手抄常量）。"""
+    if segs is None:
+        segs = []
     phoff = 64
     data_off = phoff + 56 * len(segs)
     ehdr = bytearray(64)

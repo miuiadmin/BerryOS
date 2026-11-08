@@ -277,8 +277,8 @@ def selftest() -> int:
     noent_disk[ent_off] = 0xE5                                # 抹 RW.TXT 项
     expect_reject(lambda: poison_rw(noent_disk, Geom(bytes(noent_disk))), "注入遇 noent")
     empty_disk = bytearray(noent_disk)
-    empty_disk[ent_off] = 0x20                                # 复活项但 first=0
-    empty_disk[ent_off + 1:ent_off + 11] = RW_NAME[1:]
+    empty_disk[ent_off:ent_off + 11] = RW_NAME              # 复活完整 11B 名字
+    empty_disk[ent_off + 26:ent_off + 28] = (0).to_bytes(2, "little")  # first=0 → empty
     expect_reject(lambda: poison_rw(empty_disk, Geom(bytes(empty_disk))), "注入遇 empty")
     print("pwrcls: selftest ok (七态钉板 + 双 FAT 注入对账 + 5 拒面)")
     return 0
