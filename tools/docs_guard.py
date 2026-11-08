@@ -26,6 +26,11 @@
   G7  CLAUDE.md 字符预算 ≤600（指针文件，防有人把正文抄回指针）。
   G8  迁出目标文件在位：docs/命令速览.md / docs/规则/README.md（AGENTS 外链
       不能指向空气；G3 只查探针串，不查文件本体）。
+  G10 索引三不变量（docs/索引.md 单次读入一遍扫，2026-11-08 审计漂移机器根治）：
+      ① 各区标题「…（N）」标注 == 区内 `| [..](..)` 表格行实数（有行无标注同报）；
+      ② 头部「主索引：N 份文档」== Σ各区标注；③ 表行登记 .md 集 ==
+      docs/ 根实存 .md 集（除索引自身；规则/ 枢纽行链指 规则/README.md 不计缺登）。
+      未登 / 死链 / 标实不符 / 重复登记各报清单。G9 留空（并行刀占号风险）。
 """
 import re
 import sys
@@ -37,6 +42,10 @@ CLAUDE = ROOT / "CLAUDE.md"
 RULES = ROOT / "docs" / "规则"
 LEI = ROOT / "docs" / "雷册-判例库.md"
 MOVED_DOCS = [ROOT / "docs" / "命令速览.md", RULES / "README.md"]
+INDEX = ROOT / "docs" / "索引.md"
+DOCS_DIR = ROOT / "docs"
+# 规则/ 目录枢纽行：链接指子目录 README，非 docs 根文档，③不计缺登。
+INDEX_HUB_EXEMPT = "规则/README.md"
 
 AGENTS_MAX_LINES = 200
 AGENTS_MAX_CHARS = 3400
@@ -72,6 +81,12 @@ PROBES = {
 }
 
 ANCHOR_RE = re.compile(r"→\s*雷册\s*(§?[AB]\d[\d/+§AB-]*)\s*$")
+
+# G10 索引解析：只认「一、二、…」编号区（维护待办「（2026-…）」不误判为计数）。
+INDEX_HEAD_RE = re.compile(r"主索引：(\d+)\s*份文档")
+INDEX_SEC_RE = re.compile(r"^##\s+([一二三四五六七八九十百]+、.*)$")
+INDEX_CNT_RE = re.compile(r"（(\d+)(?:[，,][^）]*)?）\s*$")
+INDEX_ROW_RE = re.compile(r"^\|\s*\[([^\]]*)\]\(([^)]+)\)")
 
 fails: list[str] = []
 warns: list[str] = []
@@ -193,6 +208,64 @@ def gate_g8_moved_docs() -> None:
         ok(f"G8 ok  迁出目标 {len(MOVED_DOCS)} 件在位")
 
 
+def gate_g10_index_invariants() -> None:
+    """G10 索引三不变量：区标注==行实数、头部==Σ区标注、登记集==docs 根实存集。
+
+    单次读文件一遍扫：逐行分派到「当前编号区」计行数 + 收登记目标，③豁免枢纽行。
+    """
+    before = len(fails)
+    if not INDEX.exists():
+        fail("G10 docs/索引.md 缺失——主索引是文档详表单一事实源")
+        return
+    lines = INDEX.read_text(encoding="utf-8").splitlines()
+    sections: list[list] = []  # [区标题, 标注数 or None, 表格行实数]
+    targets: list[str] = []  # 表行登记目标（枢纽行③再豁免）
+    cur: list | None = None
+    for line in lines:
+        sm = INDEX_SEC_RE.match(line)
+        if sm:
+            if cur is not None:
+                sections.append(cur)
+            cm = INDEX_CNT_RE.search(sm.group(1))
+            cur = [sm.group(1), int(cm.group(1)) if cm else None, 0]
+            continue
+        rm = INDEX_ROW_RE.match(line)
+        if rm is not None and cur is not None:
+            cur[2] += 1
+            targets.append(rm.group(2))
+    if cur is not None:
+        sections.append(cur)
+    # ① 各区标注 == 行实数（有行无标注 = 缺计数漂移，同报红）
+    for title, ann, rows in sections:
+        if ann is None:
+            if rows:
+                fail(f"G10 索引区「{title}」有 {rows} 行表格但标题缺（N）计数标注")
+        elif ann != rows:
+            fail(f"G10 索引区「{title}」标注 {ann} ≠ 实际表格行 {rows}")
+    # ② 头部 N == Σ各区标注
+    total = sum(ann for _, ann, _ in sections if ann is not None)
+    hm = INDEX_HEAD_RE.search("\n".join(lines[:12]))
+    if hm is None:
+        fail("G10 头部「主索引：N 份文档」计数行缺失（前 12 行内未觅得）")
+    elif int(hm.group(1)) != total:
+        fail(f"G10 头部主索引 {hm.group(1)} 份 ≠ Σ区标注 {total}")
+    # ③ 登记集 == docs 根实存 .md 集（除索引自身；规则/ 枢纽行不计缺登）
+    reg = [t for t in targets if t != INDEX_HUB_EXEMPT and t.endswith(".md")]
+    dup = sorted({t for t in reg if reg.count(t) > 1})
+    if dup:
+        fail(f"G10 索引重复登记: {', '.join(dup)}")
+    actual = {p.name for p in DOCS_DIR.glob("*.md")} - {"索引.md"}
+    dead = sorted(t for t in set(reg) if not (DOCS_DIR / t).exists())
+    if dead:
+        fail(f"G10 索引死链（登记但 docs/ 下无此文件）: {', '.join(dead)}")
+    unreg = sorted(actual - set(reg))
+    if unreg:
+        fail(f"G10 未登文档（docs/ 根实存但索引未登记）: {', '.join(unreg)}")
+    if len(fails) == before:
+        ok(f"G10 ok  索引 {len(sections)} 区 {total} 行 = 头部 {hm.group(1)}，"
+           f"docs 根 {len(actual)} 份 .md 全登（枢纽行豁免）")
+
+
 def gate_g5_claude_import() -> None:
     if not CLAUDE.exists():
         fail("G5 CLAUDE.md 缺失——指针文件是 @import 链的绑定对")
@@ -215,6 +288,7 @@ def main() -> int:
     gate_g6_agents_chars()
     gate_g7_claude_chars()
     gate_g8_moved_docs()
+    gate_g10_index_invariants()
     for w in warns:
         print(f"WARN: {w}", file=sys.stderr)
     for f in fails:
