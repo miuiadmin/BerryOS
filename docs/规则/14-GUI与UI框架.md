@@ -41,5 +41,6 @@
 - [../BerryDesign-F3主题与基元-v1.0.md](../BerryDesign-F3主题与基元-v1.0.md) —— Berry Design token、密度换算、交互状态与 BerryGFX 表面基元单源。
 - [../BerryUI-F4组件第一版-v1.1.md](../BerryUI-F4组件第一版-v1.1.md) —— F4 组件 API、Panel 基元、状态/输入语义、离屏 golden 与预算。
 - [../BerryUI-F5系统验收-v1.0.md](../BerryUI-F5系统验收-v1.0.md) —— F5 真实 guest 消费者、系统 FontSource、Room DisplayList 光栅化、GUI8 真链验收与预算边界。
+[../BerrySession-P0SurfaceMode协议-v1.0.md](../BerrySession-P0SurfaceMode协议-v1.0.md) —— P0 Surface role/mode、input class、IME composition、a11y sidecar、safe area/scale、WM 0x67 codec 与三路径不变量。
 - [../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md) —— 专业软件、工业框架、游戏 UI 与 OS 分层证据；P0 Surface Mode 的裁决依据。
 - [../GUI渲染调研-2026-10-v1.0.md](../GUI渲染调研-2026-10-v1.0.md) —— 渲染路线与自研光栅决策依据。

@@ -90,12 +90,14 @@ pub const TREE_DEPTH_MAX: u32 = 96;
 pub const A11Y_MAX: usize = 32;
 
 /// a11y 角色常量域（wire u8；§6 冻结——枚举外的开放值域，host 可扩）。
-pub const ROLE_NONE: u8 = 0;
-pub const ROLE_BUTTON: u8 = 1;
-pub const ROLE_TEXT: u8 = 2;
-pub const ROLE_IMAGE: u8 = 3;
-pub const ROLE_TOGGLE: u8 = 4;
-pub const ROLE_LIST_ITEM: u8 = 5;
+/// P0 起值域单源转发 BerrySession semantic sidecar：BerryUI 可扩展导出，
+/// 但 0..=5 的既有语义不得另抄第二份。
+pub const ROLE_NONE: u8 = berry_guiproto::surface::A11Y_ROLE_NONE;
+pub const ROLE_BUTTON: u8 = berry_guiproto::surface::A11Y_ROLE_BUTTON;
+pub const ROLE_TEXT: u8 = berry_guiproto::surface::A11Y_ROLE_TEXT;
+pub const ROLE_IMAGE: u8 = berry_guiproto::surface::A11Y_ROLE_IMAGE;
+pub const ROLE_TOGGLE: u8 = berry_guiproto::surface::A11Y_ROLE_TOGGLE;
+pub const ROLE_LIST_ITEM: u8 = berry_guiproto::surface::A11Y_ROLE_LIST_ITEM;
 
 /// a11y 条目（D12：Node 冻结 19 字段无 a11y 位——侧表存 NodeId + 角色
 /// + 内联标签）。`node` 的 gen 位与 arena 三重对拍（发射面防悬空残项）。

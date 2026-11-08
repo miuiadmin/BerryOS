@@ -17,13 +17,14 @@
 //!   阻塞）——**段①唯一接线面**；
 //! - **hdi 域**（op 0x40..0x43）：REG_VBLANK / VBLANK_WAIT / PREPARE /
 //!   COMMIT——GUI-2 / virtio-gpu S1 挂账（§9-⑨），段①仅编解码 + 测试；
-//! - **wm 域**（op 0x60..=0x7F 互斥带，v1 六 op 0x60..0x65，GUI-5 第四域）：
+//! - **wm 域**（op 0x60..=0x7F 互斥带，v1 八 op 0x60..0x67，GUI-5 第四域）：
 //!   gui-wmd 持权威窗口表（两层窗/Z 序/避让/parent·group/焦点）；**两对
 //!   channel 共享同一 op 空间**——wm 服务对（GETINFO/CREATE/DESTROY/SET/
 //!   TABLE_GET）+ wmd↔inputd 推送对（inputd 发 TABLE_WAIT，wmd park 至表
 //!   版本新于 last_seen 应答全表快照 ≤[`WM_REP_MAX`]）。TABLE_WAIT 携
 //!   last_seen = **库内首个带参阻塞请求**（vblank_wait 无参阻塞先例的带参
-//!   扩展——唤醒判据进 wire，立法注记）。
+//!   扩展——唤醒判据进 wire，立法注记）；P0 增 Surface Mode 协商 op
+//!   0x67（形态/语义旁车/safe area/scale，见 [`surface`]）。
 //!
 //! 每域独立**严格串行 RPC**（一请求一应答、队列深 1 用量，netdproto 同款
 //! 纪律）；服务端→客户端「推送」一律建模为**阻塞应答**（frame_callback /
@@ -57,6 +58,9 @@
 //!    面先例：netdproto Req/Reply 同款）。
 
 #![cfg_attr(not(test), no_std)]
+
+/// Berry Session Surface Mode / IME composition / a11y sidecar 协议（P0）。
+pub mod surface;
 
 // ---------- op 表（三域）----------
 
@@ -105,6 +109,10 @@ pub const OP_WM_TABLE_WAIT: u8 = 0x65;
 /// broker 通道上携带两枚 handle：[0] 客户端自建 session 通道对端，
 /// [1] self Process handle（死亡观察 / owner 清理）；应答携 session_id。
 pub const OP_WM_CONNECT: u8 = 0x66;
+/// wm 域：Surface Mode 协商（P0/ADR #67）。请求按 surface id 声明期望
+/// 形态与语义旁车；成功应答 = host 授予的安全区/scale/合约位，错误沿用
+/// 1B 状态。
+pub const OP_WM_SURFACE_MODE: u8 = 0x67;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 

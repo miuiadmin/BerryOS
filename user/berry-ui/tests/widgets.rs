@@ -10,6 +10,16 @@ use berry_ui::sdk::{
     Ui, UiError, ViewKind, ViewSpec, WidgetContext,
 };
 
+#[test]
+fn a11y_roles_forward_berry_session_vocabulary() {
+    assert_eq!(berry_ui::ROLE_NONE, berry_guiproto::surface::A11Y_ROLE_NONE);
+    assert_eq!(berry_ui::ROLE_BUTTON, berry_guiproto::surface::A11Y_ROLE_BUTTON);
+    assert_eq!(berry_ui::ROLE_TEXT, berry_guiproto::surface::A11Y_ROLE_TEXT);
+    assert_eq!(berry_ui::ROLE_IMAGE, berry_guiproto::surface::A11Y_ROLE_IMAGE);
+    assert_eq!(berry_ui::ROLE_TOGGLE, berry_guiproto::surface::A11Y_ROLE_TOGGLE);
+    assert_eq!(berry_ui::ROLE_LIST_ITEM, berry_guiproto::surface::A11Y_ROLE_LIST_ITEM);
+}
+
 fn ctx(w: u32, h: u32) -> WidgetContext {
     WidgetContext::for_viewport(Theme::light(), w, h)
 }

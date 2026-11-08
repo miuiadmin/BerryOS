@@ -2,7 +2,7 @@
 
 > 版本：**1.1**｜2026-11-08
 >
-> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。1.1 为 F5 预算收口：EmptyState 说明文本改用 Body，Caption 仍是 Text API 并由 host 测试覆盖。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 归 P0 后续协议。
+> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。1.1 为 F5 预算收口：EmptyState 说明文本改用 Body，Caption 仍是 Text API 并由 host 测试覆盖。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 的协议已由 P0 冻结，buffer 分配与生产接线归后续消费刀。
 
 ## §1 组合基元
 
@@ -115,7 +115,7 @@ Disabled → 直接 false
 
 业务状态由 app 持有；组件方法只把状态映射到 Berry Design token 与保留树。这样保留树、damage、hit test 与 a11y 仍由 core 单源执法。
 
-ScrollView v1 使用 `Ui::set_offset` 移动内容，并按 `content.h − viewport.h` clamp。当前 core 无 clipping：溢出内容在 Panel 外仍可见。F5 验收滚动必须在视口内布局；跨视口裁剪与嵌套 scroll 语义归 P0 Surface Mode 后续协议，不在组件内私造 clip。
+ScrollView v1 使用 `Ui::set_offset` 移动内容，并按 `content.h − viewport.h` clamp。当前 core 无 clipping：溢出内容在 Panel 外仍可见。F5 验收滚动必须在视口内布局；P0 已冻结 Surface Mode 合约；跨视口裁剪执行与嵌套 scroll 语义归后续 BerryUI 刀，不在组件内私造 clip。
 
 ## §5 测试证据
 
@@ -155,7 +155,7 @@ BerryUI 默认面、S7 面、no_std 构建均通过。
 
 ## §6 预算
 
-F4 后 guest app 尚未消费 Widget 模块，LTO 裁剪生效：
+F4 收口时 guest app 尚未消费 Widget 模块，LTO 裁剪生效：
 
 ```text
 rootfs = 33,502,608B
@@ -178,8 +178,8 @@ F5 `uitest` 已首次真实消费组件；包体、系统字形供给与内存/�
 ## §7 边界
 
 - F4 不实现桌面 Dock、树表、虚拟化列表或命令面板；归后续桌面专业件刀。
-- F4 不实现 CanvasSurface / immersive surface；归 P0。
+- F4 不实现 CanvasSurface / immersive surface；协议归 P0，buffer 接线归后续消费刀。
 - F4 不解析 `.bui`；Rust typed API 是唯一入口。
 - F4 不迁移 Settings / Files / Contacts / Photos / Browser；归 F6..F8。
 - F4 不新增 guest app；F5 uitest 承接首个真实消费者。
-- ScrollView 不私造 clip；裁剪语义归 P0 Surface Mode。
+- ScrollView 不私造 clip；P0 冻结合约，裁剪执行归后续 BerryUI 刀。

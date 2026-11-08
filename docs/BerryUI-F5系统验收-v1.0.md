@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F5 的真实消费者验收记录与现行边界。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；组件与主题契约见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md) 与 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只描述已落地的 `uitest` 验收面；Surface Mode、IME、a11y sidecar 与安全区归 P0。
+> 定位：GUI F5 的真实消费者验收记录与现行边界。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；组件与主题契约见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md) 与 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只描述已落地的 `uitest` 验收面；Surface Mode、IME、a11y sidecar 与安全区的协议词表已由 P0 冻结。
 
 ## §1 验收目标
 
@@ -231,9 +231,9 @@ F4 rootfs 为 33,502,608B；F5 增量 50,872B。系统字形 VMO 档使 `UITEST.
 
 ## §7 未完成边界
 
-- ScrollView 仍无 clipping；溢出裁剪、嵌套滚动和视口协议归 P0 Surface Mode。
+- ScrollView 仍无嵌套视口 clipping；P0 冻结 Surface Mode 合约与 safe area/scale 词表，但 BerryUI 裁剪执行与嵌套滚动实现未宣称完成。
 - 返回栈是 `uitest` 的 app-local 两页状态，不是 OS 导航服务或 Berry Home 任务栈。
-- a11y 已进入 BerryUI 保留树与 AST 语义表，但系统级 a11y sidecar 归 P0。
-- safe area、scale factor、input class、IME composition、CanvasSurface 与 immersive surface 均未立法，归 P0。
+- a11y 已进入 BerryUI 保留树与 AST 语义表；P0 冻结 semantic sidecar 记录 codec，系统级 sidecar 服务与批量传输仍未接线。
+- safe area、scale factor、input class、IME composition 与 Surface role/mode 已由 P0 立法；CanvasSurface / immersive buffer 分配和生产服务接线仍未开放。
 - `.bui` 仍不解析；F5 继续使用 Rust typed `berry_ui::sdk`。
 - Browser/Settings/Files/Photos/Contacts 仍是迁移前基线，归 F6..F8。
