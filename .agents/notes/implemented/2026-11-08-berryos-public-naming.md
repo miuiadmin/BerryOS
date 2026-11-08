@@ -15,7 +15,7 @@ Meihe Kernel / Berry Space / Berry Session / Berry Home /
 Berry Room / BerryUI / BUI / Berry SDK
 ```
 
-`docs/BerryOS命名体系-v1.0.md` 是层级、中文名、工程落点、叙事与禁用名单的单一事实源；ADR #65 记录裁决。图形会话叫 **Berry Session**，per-app runtime 叫 **Berry Room**。F1 工程 crate 由 `berry-shell` 改名 `berry-room`，公开类型改为 `AppRoom`，UITEST 标记改为 `UITESTROOM ok`。
+`docs/BerryOS命名体系-v1.1.md` 是层级、中文名、工程落点、叙事与禁用名单的单一事实源；ADR #65 记录裁决。图形会话叫 **Berry Session**，per-app runtime 叫 **Berry Room**。F1 工程 crate 由 `berry-shell` 改名 `berry-room`，公开类型改为 `AppRoom`，UITEST 标记改为 `UITESTROOM ok`。
 
 ## Alternatives considered
 
@@ -31,6 +31,6 @@ Berry Room / BerryUI / BUI / Berry SDK
 
 ## Related
 
-- [BerryOS命名体系-v1.0.md](../../../docs/BerryOS命名体系-v1.0.md)
-- [GUI框架地基路线-v1.1.md](../../../docs/GUI框架地基路线-v1.1.md)
+- [BerryOS命名体系-v1.1.md](../../../docs/BerryOS命名体系-v1.1.md)
+- [GUI框架地基路线-v1.2.md](../../../docs/GUI框架地基路线-v1.2.md)
 - [14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)
