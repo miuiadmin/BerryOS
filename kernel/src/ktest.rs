@@ -43,6 +43,7 @@ pub fn run() {
     test_policy_shadow();
     test_policy_divergence();
     test_policy_reject_stats();
+    test_policy_yield_return();
     test_placement_hint();
     test_rq_ring2();
     test_rq_ring3();
@@ -3337,14 +3338,17 @@ fn test_policy_perf() {
     }
 
     /// 相位复位：上一态循环推高的 VD/vruntime 清零（prio_effective/epp 不动
-    /// ——apply 幂等自基线重算），三态同一起跑相位。
-    fn rephase(ptrs: &[*mut Task]) {
+    /// ——apply 幂等自基线重算），三态同一起跑相位。在环直改 vruntime 须
+    /// 洗账（S2b+ Σvruntime 增量账本——直改不经账点，resync 重走查对齐，
+    /// 否则 ring_check 对账/avg 口径漂移）。
+    fn rephase(ptrs: &[*mut Task], rq: &Runqueue) {
         for p in ptrs {
             unsafe {
                 (**p).vruntime = 0;
                 (**p).vdeadline = 0;
             }
         }
+        rq.resync_vruntime_sum();
     }
 
     /// 单态差测：N 次 pick，每次推 VD 防连选，返 avg cycles（CNTVCT 差 / N）。
@@ -3365,7 +3369,7 @@ fn test_policy_perf() {
 
     // PP-1 基线（未绑——apply 走哨兵 EMPTY_SNAP 快路径）。
     let base = {
-        rephase(&ptrs);
+        rephase(&ptrs, &rq);
         measure(&rq, &rr, &topo)
     };
 
@@ -3374,7 +3378,7 @@ fn test_policy_perf() {
     policy::bind(&EMPTY_TBL);
     assert!(policy::bound(), "PP-2：空表 bind 后须在位（表空 ≠ 未绑）");
     let empty = {
-        rephase(&ptrs);
+        rephase(&ptrs, &rq);
         measure(&rq, &rr, &topo)
     };
     policy::unbind(); // 三态间 unbind + re-bind。
@@ -3408,14 +3412,14 @@ fn test_policy_perf() {
     // 命中活证（测量前置信——4 命中键真在表内，缺席则差测测了个寂寞）：
     // 出选者（必为 tag 1..4 之一）EPP 须翻 Perf；prio_effective 须守 0
     // （不离基线带——三态同序列的前提，兼证 apply 写路径真执行）。
-    rephase(&ptrs);
+    rephase(&ptrs, &rq);
     {
         let p = rr.pick_next(&rq, &topo).expect("PP：非空环必有出选");
         assert_eq!(p.epp, EppHint::Perf, "PP-3：命中键 EPP 须翻 Perf（活证）");
         assert_eq!(p.prio_effective, 0, "PP-3：weight=0 须守基线带（连选防护前提）");
     }
     let full = {
-        rephase(&ptrs);
+        rephase(&ptrs, &rq);
         measure(&rq, &rr, &topo)
     };
 
@@ -3733,6 +3737,91 @@ fn test_policy_reject_stats() {
     // 收尾：解绑回接口缺席态（同其他 policy ktest 清理纪律）。
     policy::unbind();
     berry_hal_aarch64::uart_puts(b"POLS-R ok\n");
+}
+
+/// yield 片归还（提案 2026-11-08：`sys_thread_yield` 最 eligible 场景可能
+/// 空操作）的回归面。观测面同 `test_policy_divergence`/`test_freeze`：本地
+/// `Runqueue` + 双任务（proc_tag = 7/8——同 policy ktest setup 形态）直接调
+/// `Fair::pick_next_filtered` 断言选中者（不真跑任务体、不真切上下文；策略
+/// 表保持 reject_stats 收尾的未绑态——`policy::apply` 零写入）：
+/// - Y1（yield 真让出）：A 跑一段时间攒下 vruntime 领先（消耗多于 B）后
+///   让出——真实路径形态：A Running、pick 经 `my_cur=A` 参选（yield_now_impl
+///   RQ 窗第一步）→ 出选者须非 A（是 B）。随后 prev Ready 化 + 片归还走
+///   **真实修复代码** [`berry_sched::Fair::yield_slice_return`]：A ≥ 环均 →
+///   抬均零操作（「未攒虚拟优势时零操作」口径）。
+/// - Y2（片归还落地）：提案 Problem 形态——让出者 vruntime 相对最低（最
+///   eligible——无修复时 yield 立即再选让出者的空操作源，test_freeze F3
+///   同款数值）→ 片归还须把让出者抬到环均（抹平未耗虚拟优势），且只动
+///   让出者、不动他人；冻结（HELD_FROZEN）与 deadline 路径不受影响（只动
+///   vruntime，S5 手动 vdeadline 不碰）。
+/// - Y3（反向合法面）：环上仅 A 时让出 → A 回场（单元素环出选恒自——无
+///   他者可让，回场合法）；单元素环环均 = 自身 → 抬均零操作。
+/// 非 smoke 注册标记（同 POLS-R 模式：断言炸 = panic = 后续标记缺失兜底）。
+fn test_policy_yield_return() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, TaskState, Topo};
+
+    extern "C" fn yd_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(tag: usize, name: &'static [u8]) -> &'static mut Task {
+        let mut t = Task::new_kernel_with_as(yd_dummy, tag, name, 0, 0);
+        t.proc_tag = tag; // 双任务同带：tag 7/8（策略表 key 口径；表未绑零消费）
+        alloc::boxed::Box::leak(t)
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+    let ta = mk(7, b"yA".as_slice());
+    let tb = mk(8, b"yB".as_slice());
+    rr.enqueue(&mut *ta, &mut rq);
+    rr.enqueue(&mut *tb, &mut rq);
+
+    // Y1：A 跑一段时间攒下 vruntime 领先（1200 vs 300——消耗多于 B）后
+    // 让出。真实 yield 路径第一步形态：A Running、pick 经 my_cur=A 参选。
+    ta.vruntime = 1200;
+    ta.vdeadline = 1500;
+    tb.vruntime = 300;
+    tb.vdeadline = 800;
+    rq.resync_vruntime_sum(); // 直改后洗账（S2b+ 增量账本——avg 读账本直除）
+    ta.state = TaskState::Running;
+    let p1 = rr
+        .pick_next_filtered(&rq, &topo, ta as *mut Task)
+        .expect("YIELD：双任务环必有出选");
+    assert_eq!(p1.name, b"yB".as_slice(), "Y1：让出后出选须是 B 不是 A（真让出）");
+    // RQ 窗后半（同 yield_now_impl 序）：prev Ready 化 + 片归还（真实修复
+    // 代码）——A(1200) ≥ 环均(750) → 零操作。
+    ta.state = TaskState::Ready;
+    rr.yield_slice_return(&mut *ta, &rq);
+    assert_eq!(ta.vruntime, 1200, "Y1：让出者 ≥ 环均 → 抬均零操作");
+
+    // Y2：提案 Problem 形态——让出者 vruntime 相对最低（0 vs 1000）。片归还
+    // 须抹平：抬到环均 500；只动让出者。直改 vruntime 后先洗账（S2b+ 增量
+    // 账本调和——avg 读账本直除，不洗则陈旧账 0 → 断言 0≠500 假红）。
+    ta.vruntime = 0;
+    ta.vdeadline = 0;
+    tb.vruntime = 1000;
+    tb.vdeadline = 2000;
+    rq.resync_vruntime_sum();
+    rr.yield_slice_return(&mut *ta, &rq);
+    assert_eq!(ta.vruntime, 500, "Y2：让出者 vruntime 须抬到环均（片归还落地）");
+    assert_eq!(tb.vruntime, 1000, "Y2：抬均只动让出者，不动他人");
+
+    // Y3（反向合法面）：环上仅 A → 让出后回场（单元素环出选恒自）。
+    let ts = mk(7, b"yS".as_slice());
+    let mut rq2 = Runqueue::new();
+    rr.enqueue(&mut *ts, &mut rq2);
+    ts.state = TaskState::Running;
+    let p3 = rr
+        .pick_next_filtered(&rq2, &topo, ts as *mut Task)
+        .expect("YIELD：单元素环必有出选");
+    assert_eq!(p3.name, b"yS".as_slice(), "Y3：环上仅 A 时让出 → A 回场（合法）");
+    let v0 = ts.vruntime;
+    rr.yield_slice_return(&mut *ts, &mut rq2);
+    assert_eq!(ts.vruntime, v0, "Y3：单元素环环均 = 自身 → 抬均零操作");
+
+    berry_hal_aarch64::uart_puts(b"YIELD-K ok\n");
 }
 
 /// PL 系：placement_hint 读出口五分支收口（v1.3 EAS-1 首刀——
@@ -4197,6 +4286,7 @@ fn test_freeze() {
     ta.vdeadline = 0;
     tb.vruntime = 1000; // B 已跑过多轮——vruntime 更高，A 更 eligible
     tb.vdeadline = 2000;
+    rq.resync_vruntime_sum(); // 直改后洗账（avg=500 → A eligible / B not）
     let p5 = rr.pick_next(&rq, &topo).unwrap();
     assert_eq!(p5.name, b"fzA".as_slice(), "FREEZE：F3 解冻后 A 须可出选");
 
@@ -4252,6 +4342,7 @@ fn test_freeze() {
     tc.vdeadline = 0;
     td.vruntime = 1000;
     td.vdeadline = 2000;
+    rq2.resync_vruntime_sum(); // 直改后洗账（同 F3 口径）
     let p8 = rr.pick_next(&rq2, &topo).unwrap();
     assert_eq!(p8.name, b"fzC".as_slice(), "FREEZE：F5 最终解冻后 C 须可出选");
 
@@ -4884,13 +4975,16 @@ fn test_cmp() {
     for t in ts.iter_mut() {
         rr.enqueue(&mut **t, &mut rq);
     }
-    // 入环后设 VD/Vr（enqueue 的覆写不影响此处）。
+    // 入环后设 VD/Vr（enqueue 的覆写不影响此处）。直改 vruntime 后洗账
+    //（S2b+ Σvruntime 增量账本——avg 口径须与真环一致，此处即旧全环
+    // 扫描同款对齐：真和 = 250 → avg = 50）。
     let vds = [300u64, 100, 500, 200, 400];
     let vrs = [50u64, 10, 90, 30, 70];
     for (i, t) in ts.iter_mut().enumerate() {
         (*t).vdeadline = vds[i];
         (*t).vruntime = vrs[i];
     }
+    rq.resync_vruntime_sum();
 
     // CMP-2：首 pick == 全集 VD 最小（c1=100）。
     let p1 = rr.pick_next(&rq, &topo).expect("CMP：非空环须有出选");
@@ -4902,6 +4996,7 @@ fn test_cmp() {
     for t in ts.iter_mut() {
         (*t).vruntime = 0; // 全部 eligible
     }
+    rq.resync_vruntime_sum(); // 直改后洗账（avg=0 → 全 eligible 口径同旧扫描）
     for _ in 0..5 {
         if let Some(p) = rr.pick_next(&rq, &topo) {
             assert!(p.vdeadline >= last_vd,
@@ -4919,6 +5014,7 @@ fn test_cmp() {
         (*t).vruntime = 0;
         (*t).prio_effective = 0;
     }
+    rq.resync_vruntime_sum(); // 直改后洗账（同键全 eligible，首见者出选）
     let pa = rr.pick_next(&rq, &topo).unwrap();
     let va = pa.vdeadline;
     pa.vdeadline = 300; // 改一个防重 pick
@@ -5092,6 +5188,7 @@ fn test_deadline() {
     td2.prio_effective = 0;
     td1.vruntime = 0; td1.vdeadline = 0;
     td2.vruntime = 0; td2.vdeadline = 0;
+    rq.resync_vruntime_sum(); // 直改后洗账（D3 出选不验具体者，账本仍须守恒）
     // D3：deadline 带空 → 所有任务退回 fair——任一出选即通过（不验具体是谁，
     // 因为 advance_past 游标位置决定首见者——三任务均合法）。
     let _p3 = rr.pick_next(&rq, &topo).expect("DL：D3 非空环须有出选");
@@ -5114,9 +5211,9 @@ fn test_deadline() {
     // tick 到 slice 耗尽 → 应 throttle（HELD_FROZEN 置位）。
     // tick 读 timer 内部算 delta——直接置 slice_left=0 后 tick 模拟到期。
     tb.slice_left = 0;
-    let rq_mut = &mut rq2;
     let cur2 = tb as *mut berry_sched::Task;
-    let _ = rq_mut; // tick 签名需 rq 但 Fair::tick 未用——传 ref
+    // tick 的 rq 参数 S2b+ 起真消费（Σvruntime 账本入账——tb 在 rq2 环上，
+    // 在环门控过 → 入账；账本口径与旧全环扫描一致）。
     rr.tick(unsafe { &mut *cur2 }, unsafe { &mut *core::ptr::addr_of_mut!(rq2) });
     assert!(tb.held_locks & HELD_THROTTLE != 0,
             "DL：B1 slice 耗尽须置 HELD_THROTTLE（预算限流）");

@@ -4,7 +4,7 @@ use crate::spin::SpinLock;
 use crate::task::Task;
 use core::cell::Cell;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// 单 CPU 的运行队列。G0 单核：全局一个。
 ///
@@ -29,6 +29,24 @@ pub struct Runqueue {
     /// 撕裂），两端 Relaxed；K=2 放置启发式与金丝雀对账容忍近似值。
     /// codegen 与 Cell 等形（ldr/str）——icount 零漂。
     len: AtomicUsize,
+    /// Σvruntime 增量账本（1.1/S2b+：EEVDF `avg_vruntime` 的 O(1) 化——
+    /// 消费面 = `crate::class::avg_vruntime`，pick_next 热路径少一圈 O(n)
+    /// 全环扫描）。账点三处闭环：`link_back` 加 / `unlink` 减（**结构原语
+    /// 层**——steal 路径直调 `unlink` 不经 `Fair::dequeue`，挂原语层才无
+    /// 漏账）/ `Fair::tick` 随 vdelta 加（在环门控：`IDLE_TASK` 永不在环，
+    /// idle tick 不入账——与旧全环扫描从不含 idle 口径一致）。生产代码
+    /// vruntime 写点仅此三处 ⇒ 账本与全环扫描逐位一致。
+    ///
+    /// 写侧同 `len` 单写者纪律（本队列 RQ 锁窗内 load+store，两端 Relaxed，
+    /// 全序由锁提供）；读侧（pick/enqueue 的 avg）恒在锁窗内，原子性仅
+    /// 防御未来免锁读者。**一致性执法** = [`Self::ring_check`] 走查对账
+    /// （每 100 切换金丝雀）：真和 ≠ 账本即 panic——测试在环上直改
+    /// `Task::vruntime` 后须 [`Self::resync_vruntime_sum`] 洗账。
+    ///
+    /// 溢出界：vruntime 增速 ≤ CNTVCT（weight ≥ SCALE=1024 ⇒ vdelta ≤
+    /// delta），账本 u64 饱和需 ~9e3 年 @62.5MHz——工程不可达；入账两侧
+    /// 同 saturating（真和与账本一致性在饱和域内同向退化）。
+    sum_vruntime: AtomicU64,
     /// per-queue 自旋锁（S-3c c-2a 落形 → **c-2b 取放启用**；持有位 =
     /// `HELD_RQ0`/`HELD_RQ1`，记账在 `sched::rq_lock_of` 统一承担）。crate 内
     /// 自持 [`SpinLock`]（零 arch 依赖——b-1 时「A4 侦察形 lock 字段被依赖
@@ -56,6 +74,7 @@ impl Runqueue {
         Runqueue {
             head: Cell::new(None),
             len: AtomicUsize::new(0),
+            sum_vruntime: AtomicU64::new(0),
             lock: SpinLock::new(),
         }
     }
@@ -82,13 +101,69 @@ impl Runqueue {
         self.len.load(Ordering::Relaxed)
     }
 
+    /// Σvruntime 账本读（S2b+；消费面 = `crate::class::avg_vruntime`——
+    /// pick_next/enqueue 的 avg 直除）。Relaxed 免锁读同 [`Self::len`]
+    /// 口径：读者恒在锁窗内值稳定，原子性防未来免锁读者撕裂。
+    pub(crate) fn vruntime_sum(&self) -> u64 {
+        self.sum_vruntime.load(Ordering::Relaxed)
+    }
+
+    /// Σvruntime 账本增量入账（S2b+；唯一生产调用点 = `Fair::tick`——
+    /// 在环任务 vruntime 前进 vdelta 时同额入账）。同 len 单写者纪律。
+    pub(crate) fn vruntime_add(&self, v: u64) {
+        self.sum_vruntime.store(
+            self.sum_vruntime.load(Ordering::Relaxed).saturating_add(v),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// 全环重算 Σvruntime 并回写账本（S2b+ 洗账面——**仅测试/诊断用**）：
+    /// 在环上直改 `Task::vruntime` 的手搓场景（ktest 的 EEVDF 钉板）改后
+    /// 调用，否则账本与真和漂移（`ring_check` 对账将 panic）。生产路径的
+    /// vruntime 变更全经 link/unlink/tick 入账，无需 resync。返回重算和；
+    /// 空环清零账本。调用契约同 [`Self::ring_check`]（环变更屏蔽窗内或
+    /// 其串行等价）。
+    pub fn resync_vruntime_sum(&self) -> u64 {
+        let Some(h) = self.head.get() else {
+            self.sum_vruntime.store(0, Ordering::Relaxed);
+            return 0;
+        };
+        // SAFETY: 环走查同款不变式（§A136 形状：先访当前节点、后判回
+        // head）；调用方契约保证走查期间无并发出/入环。
+        unsafe {
+            let mut cur = h;
+            let mut sum: u128 = 0;
+            loop {
+                sum += (*cur.as_ptr()).vruntime as u128;
+                cur = (*cur.as_ptr())
+                    .rq_next
+                    .get()
+                    .expect("resync: on-ring node must have next");
+                if cur == h {
+                    break;
+                }
+            }
+            let s = sum.min(u64::MAX as u128) as u64;
+            self.sum_vruntime.store(s, Ordering::Relaxed);
+            s
+        }
+    }
+
     /// 环完整性走查（复盘雷 2 残留诊断）：从 head 沿 `rq_next` 走一圈须回到
     /// head 且步数 ≤ `RING_WALK_CAP`。**只读、零分配**；返回步数——调用方
     ///（ktest / `on_irq_tick` 金丝雀分支）对账「步数 == [`len`](Self::len)」：
     /// 步数 < len = 有成员不在头可达圈上（孤儿段）；步数到帽 = 断链。
-    /// 调用契约：环变更屏蔽窗内或其串行等价（IRQ 上下文 / ktest 本地环）。
+    /// 走查同时累加环上真 Σvruntime，与 [`Self::sum_vruntime`] 账本对账
+    /// （S2b+ 执法面：增量账本漂移 = 当场响亮失败——走查本 O(n)，顺带
+    /// 累加零复杂度增量）。调用契约：环变更屏蔽窗内或其串行等价（IRQ
+    /// 上下文 / ktest 本地环）。
     pub fn ring_check(&self) -> usize {
         let Some(h) = self.head.get() else {
+            assert_eq!(
+                self.sum_vruntime.load(Ordering::Relaxed),
+                0,
+                "ring_check: empty ring but vruntime ledger non-zero"
+            );
             return 0;
         };
         // SAFETY: 环上任务均调度器拥有（pick_next 扫描同款不变式）；调用方
@@ -96,18 +171,28 @@ impl Runqueue {
         unsafe {
             let mut cur = h;
             let mut steps = 0;
+            let mut vsum: u128 = 0;
             loop {
                 steps += 1;
                 assert!(
                     steps <= RING_WALK_CAP,
                     "ring_check: ring walk exceeds cap (broken links?)"
                 );
+                vsum += (*cur.as_ptr()).vruntime as u128;
                 let next = (*cur.as_ptr())
                     .rq_next
                     .get()
                     .expect("ring_check: on-ring node must have next");
                 cur = next;
                 if cur == h {
+                    let ledger = self.sum_vruntime.load(Ordering::Relaxed) as u128;
+                    assert!(
+                        vsum == ledger,
+                        "ring_check: vruntime ledger {} != walk sum {} (stale ledger? \
+                         resync after direct Task::vruntime writes)",
+                        ledger,
+                        vsum
+                    );
                     return steps;
                 }
             }
@@ -156,6 +241,15 @@ impl Runqueue {
         // 单写者（本队列 RQ 锁窗内）——load+store 免 fetch_add（ldadd 会破
         // 与 Cell 形的指令等价；全序由锁提供，原子性只为读不撕裂）。
         self.len.store(self.len.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+        // Σvruntime 入账（S2b+）：账入环时刻的终值——Fair::enqueue 的 avg
+        // clamp 在 link 前完成，此处入账的即 clamp 后值（先 clamp 后入账）。
+        // 同 len 单写者纪律；saturating 见字段溢出界注。
+        self.sum_vruntime.store(
+            self.sum_vruntime
+                .load(Ordering::Relaxed)
+                .saturating_add((*t).vruntime),
+            Ordering::Relaxed,
+        );
     }
 
     /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
@@ -185,8 +279,19 @@ impl Runqueue {
         }
         (*t).rq_prev.set(None);
         (*t).rq_next.set(None);
-        // 同 link_back：单写者 load+store（RQ 锁窗内）。
+        // 同 link_back：单写者 load+store（RQ 锁窗内）。Σvruntime 出账 =
+        // 摘线时刻该任务的 vruntime（与入账/后续 tick 入账同额反向）；
+        // 幂等早退分支（不在环）不触此处——无重复出账。saturating_sub：
+        // 账本域内减数恒 ≤ 被减数（入账同额闭包），饱和仅防漂移域下溢
+        // 扩散（真漂移由 ring_check 对账显形）。
         self.len.store(self.len.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+        let vr = (*t).vruntime;
+        self.sum_vruntime.store(
+            self.sum_vruntime
+                .load(Ordering::Relaxed)
+                .saturating_sub(vr),
+            Ordering::Relaxed,
+        );
     }
 
     /// 环游标（4-3a：`RoundRobin::pick_next` 环形扫描的起点）。crate 内策略

@@ -1157,6 +1157,11 @@ fn yield_now_impl(enable_irq_at_end: bool) {
         if let Some(next_ptr) = picked {
             if next_ptr != prev {
                 (*prev).state = TaskState::Ready;
+                // yield 片归还（moss yield_slice 语义的 BerryOS 形态）——让出者
+                // 不得带未耗虚拟优势回场，提案 2026-11-08，SMP 前单核窗内安全。
+                // 与 enqueue 抬均同款（class.rs）；冻结（HELD_FROZEN）与 deadline
+                // 任务路径不受影响——只动 vruntime，S5 手动 vdeadline 不碰。
+                RR.yield_slice_return(&mut *prev, rq());
                 (*next_ptr).state = TaskState::Running;
             }
         }

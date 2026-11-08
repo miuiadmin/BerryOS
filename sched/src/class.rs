@@ -95,24 +95,19 @@ fn slice_virtual(t: &Task) -> u64 {
     (s as u64).max(1)
 }
 
-/// 环上平均虚拟时间（EEVDF 的 V 的工程近似；O(n)、零分配）。
+/// 环上平均虚拟时间（EEVDF 的 V 的工程近似；**O(1)**——S2b+ 从全环扫描改
+/// `Runqueue` 增量账本直除：`sum_vruntime / len`，pick_next 热路径少一圈
+/// O(n)。账点 = link_back/unlink（结构原语层，steal 直调 unlink 也入账）+
+/// 本类 `tick` 随 vdelta 入账（在环门控）；一致性执法 = `ring_check` 走查
+/// 对账。空环 None 语义与旧扫描 `head()?` 同义（len==0 ⟺ head==None）；
+/// 商与旧 u128 累加路径逐位一致（账本不溢出前提——界析见
+/// `Runqueue::sum_vruntime` 字段注）。
 fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
-    let h = rq.head()?;
-    // SAFETY: 环上任务均调度器拥有；调用方在 IRQ 屏蔽/调度窗内（同 pick）。
-    unsafe {
-        let mut cur = h;
-        let mut sum: u128 = 0;
-        let mut n: u64 = 0;
-        loop {
-            sum += (*cur.as_ptr()).vruntime as u128;
-            n += 1;
-            cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-            if cur == h {
-                break;
-            }
-        }
-        Some((sum / n as u128) as u64)
+    let n = rq.len();
+    if n == 0 {
+        return None;
     }
+    Some(rq.vruntime_sum() / n as u64)
 }
 
 /// S5-c lazy unthrottle：扫环上被冻结的 deadline 任务——`cntvct() ≥ vdeadline`
@@ -189,7 +184,7 @@ impl SchedClass for Fair {
         Some(t)
     }
 
-    fn tick(&self, t: &mut Task, _rq: &mut Runqueue) {
+    fn tick(&self, t: &mut Task, rq: &mut Runqueue) {
         // 周期数记账（2b-4）：按 CNTVCT 增量递减时间片；同时按权重累加
         // 虚拟运行时间（EEVDF 记账）。片耗尽时重算虚拟截止期。
         let now = hal::timer::cntvct();
@@ -211,6 +206,14 @@ impl SchedClass for Fair {
         t.slice_left = t.slice_left.saturating_sub(delta);
         let vdelta = (delta as u128 * SCALE as u128 / weight_of(t) as u128) as u64;
         t.vruntime = t.vruntime.saturating_add(vdelta);
+        // Σvruntime 账本随迁（S2b+ 增量维护，rq 参数自此真消费）：在环
+        // 任务（cur 常驻环——pick 只推游标不摘）的 vruntime 前进 = 账本
+        // 同额前进；离环者不入账——IDLE_TASK 永不在环（idle tick 不入账）
+        // 与 ktest 手搓离环任务（UTIL-9）都不污染账本，与旧全环扫描口径
+        // （从不含环外任务）一致。
+        if t.rq_prev.get().is_some() {
+            rq.vruntime_add(vdelta);
+        }
         // v1.3 §7（频率归 PM + util 信号）：本核运行 cycles 进 per-CPU
         // utilization EWMA（`util.rs`——调度器给 PM 的频率 hint，schedutil
         // 同构 f ≈ util×fmax/capacity，频率选择权全归 PM）。**非 idle 门**：
@@ -266,6 +269,24 @@ pub(crate) fn eligible(my_cur: *mut Task, t: *const Task) -> bool {
 }
 
 impl Fair {
+    /// yield 片归还（moss `yield_slice` 语义的 BerryOS 形态）——让出者不得带
+    /// 未耗虚拟优势回场，提案 2026-11-08，SMP 前单核窗内安全。
+    ///
+    /// 与 [`SchedClass::enqueue`] 抬均同款（防 lag 攒积面）：让出者
+    /// `vruntime < avg_vruntime(rq)` 则抬到 avg——未攒虚拟优势时零操作、
+    /// 攒了则抹平。**只动 vruntime**：冻结（HELD_FROZEN）与 deadline 任务
+    /// 路径不受影响（S5 手动 vdeadline 不碰）。调用契约同 pick——RQ 窗/
+    /// 屏蔽窗内（让出者仍在本环上，环均含其自身）。
+    pub fn yield_slice_return(&self, t: &mut Task, rq: &Runqueue) {
+        let avg = avg_vruntime(rq).unwrap_or(0);
+        if t.vruntime < avg {
+            // Σvruntime 账本同步（S2b+ 增量账本调和，2026-11-08）：抬均改值
+            // 必须经账点，否则 ring_check 百切换对账金丝雀漂移 panic。
+            rq.vruntime_add(avg - t.vruntime);
+            t.vruntime = avg;
+        }
+    }
+
     /// 过滤版出选（S-2b inherent 方法——trait 冻结不动）：
     /// 先取环上最高 `prio_effective` 带，再在带内按 EEVDF 选。
     ///

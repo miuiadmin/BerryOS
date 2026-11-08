@@ -33,6 +33,6 @@ Updated: 2026-11-06
 - [x] P1-b 纲领充实（→ `docs/架构综合纲领.md` §1「机制极简的三条结构性论证」+ churn 反证）
 - [ ] P1-c 同意面草案
 - [ ] P1-d errno 值域探针（随 berry-sys 下一刀）
-- [x] yield 片归还自查（2026-11-08 完成 → **发现真缺口**：yield 无归还语义，最 eligible 场景 0x3F 空操作——提案 [2026-11-08-yield-slice-return-proposal](../notes/proposed/2026-11-08-yield-slice-return-proposal.md)，等 sched-1.3 SMP 线收官后实施）
+- [x] yield 片归还自查+实施（2026-11-08 落地：提案翻 implemented [2026-11-08-yield-slice-return-proposal](../notes/implemented/2026-11-08-yield-slice-return-proposal.md)——Fair::yield_slice_return 抬均 + YIELD-K ktest，与并发 S2b+ 账本刀调和后 QEMU 全绿；语义边界 = 3+ 任务环有效，双任务真让出留后续提案）
 - [x] P1-e 对抗性分配器 ktest（mm 域 2026-11-07 落地：`fragmented_terrain_high_order_fails_clean`（§A21 判例机器复现 + buddy 对语义钉板）+ `exact_window_order_fits_then_oom`（对齐块边界 + 「物理连续≠buddy 可分配」语义文档化）；BerryOS 全 RAM identity 直映使 swift-os 越界形态结构性不存在，坑精神翻译为本仓边界测试）
 - [ ] P2 四项挂账（Presence/三动词/云真机/BKL-ADR）
