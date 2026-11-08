@@ -278,6 +278,16 @@ static mut IDLE_TASK: Task = Task {
     wake_vct: core::cell::Cell::new(0),
 };
 
+/// IDLE 判定（v1.3 §7 util 记账门）：`t` 是否 CPU0 idle 上下文
+/// （`IDLE_TASK`）。消费面 = [`crate::class::Fair::tick`]——idle 上跑的
+/// tick 不计入 utilization EWMA（idle 时间是低 util 信号本身，不是运行
+/// 时间；否则 CPU0 空转等睡眠者时 util 恒虚高满格）。副核 park 态
+/// cur==null 早退，不经此门。
+pub(crate) fn is_idle(t: *const Task) -> bool {
+    // 取裸地址不出引用（edition 2024 下 addr_of_mut! 于 static mut 为安全形）。
+    addr_of_mut!(IDLE_TASK) as usize == t as usize
+}
+
 /// 取**本核** runqueue 的 `&mut`（静态单例；KERN_LOCK 窗内跨核互斥、单核
 /// 顺序访问，借用不重叠）。
 #[inline]

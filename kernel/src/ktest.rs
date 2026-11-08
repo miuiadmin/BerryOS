@@ -68,6 +68,8 @@ pub fn run() {
     test_deep_sleep_degrade();
     // v1.3 §7 EAS：EM 表形状（同款末位新号纪律——BAND 后族序不动）。
     test_em();
+    // v1.3 §6/§7 EAS：per-CPU util EWMA（调度器→PM 频率信号；同款末位新号）。
+    test_util();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -5822,6 +5824,122 @@ fn test_em() {
     assert_eq!(em_domain(0), Some(d0), "EM：收口后域 0 = 默认表");
 
     berry_hal_aarch64::uart_puts(b"EM ok\n");
+}
+
+/// v1.3 §6「簇 util 通路」最小件 + §7 预研建议④「频率归 PM」（
+/// `调点调度-v1.3.md`）：per-CPU utilization EWMA 验证——**记账→折叠→
+/// 读出** 纯函数链（合成 `now` 驱动，精确到 >>3 逐位）+ **Fair::tick 接线
+/// 面**（真路径 delta 进账——class.rs 的 util_accumulate/tick_window 消费
+/// 证活）。PM 消费面（f = util×fmax/capacity 的裁决环）按 §7/§11 裁决归
+/// berry-power（M2/真机），不在此测。ktest 纪律：sched::init 前跑、IRQ
+/// 屏蔽——test_deadline 的单次 rr.tick 已开窗零折叠，UTIL-0 重置回 boot
+/// 等价态起测；收口全槽清零（ktest 瞬态不外泄——EM 收口同款）。
+fn test_util() {
+    use berry_sched::{
+        cpu_util, util_accumulate, util_reset, util_tick_window, util_window_vct, Fair,
+        EWMA_ALPHA_SHIFT, UTIL_NR_CPU,
+    };
+    use berry_sched::{Runqueue, SchedClass, Task};
+
+    /// 占位入口（tick 只记账不切换——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn util_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    // —— UTIL-0：清场 + 未启态（ewma 恒 0；越界读 0）+ 窗长单源。
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "UTIL：未启态 ewma 须 0（CPU{c}）");
+    }
+    assert_eq!(cpu_util(UTIL_NR_CPU), 0, "UTIL：越界 CPU 读须 0");
+    // 窗长 = CNTFRQ/100（频率不硬编码——62.5MHz → 625_000 ≈ 10ms）。
+    let w = util_window_vct();
+    assert_eq!(w, berry_hal_aarch64::timer::cntfrq() / 100, "UTIL：窗长须 = CNTFRQ/100");
+    assert!(w > 0, "UTIL：窗长须非零");
+
+    // —— UTIL-1：首调只开窗不折叠；窗未到期不折叠。
+    util_tick_window(0, 1_000);
+    assert_eq!(cpu_util(0), 0, "UTIL：首调只开窗");
+    util_accumulate(0, w / 2);
+    util_tick_window(0, 1_000 + w / 2);
+    assert_eq!(cpu_util(0), 0, "UTIL：窗未到期不折叠");
+
+    // —— UTIL-2：满载窗（accum = elapsed）——util_raw = 1024 → ewma =
+    //            0 + 1024>>3 = 128（α = 1/8 移位零除法首折）。
+    util_accumulate(0, w / 2); // 半窗 + 半窗 = 整窗
+    util_tick_window(0, 1_000 + w);
+    assert_eq!(cpu_util(0), 128, "UTIL：满载首折 ewma = 1024/8 = 128");
+
+    // —— UTIL-3：连续满载收敛——ewma_{n+1} = ewma_n + (1024-ewma_n)>>3
+    //            逐窗精确对拍（8 窗 ≈ 70% 满格，单调升恒 <1024）。
+    let mut expect: u32 = 128;
+    for i in 1..=8u64 {
+        util_accumulate(0, w);
+        util_tick_window(0, 1_000 + w * (1 + i));
+        expect += (1024 - expect) >> EWMA_ALPHA_SHIFT;
+        assert_eq!(cpu_util(0), expect, "UTIL：满载第 {i} 窗折叠须精确");
+    }
+    assert!(expect > 700 && expect < 1024, "UTIL：8 窗须逼近但不满格（{expect}）");
+
+    // —— UTIL-4：半载窗——util_raw = 512（1024 尺度占空比）→ 512>>3 = 64。
+    util_reset(0);
+    util_tick_window(0, 5_000);
+    util_accumulate(0, w / 2);
+    util_tick_window(0, 5_000 + w);
+    assert_eq!(cpu_util(0), 64, "UTIL：半载首折 ewma = 512/8 = 64");
+
+    // —— UTIL-5：idle 稀释——零累计 + 整窗 elapsed → util_raw = 0，
+    //            ewma 严格下降（64 - 64>>3 = 56；负差分支减法同式）。
+    util_tick_window(0, 5_000 + 2 * w); // 无 accumulate 的空窗
+    assert_eq!(cpu_util(0), 56, "UTIL：idle 折叠须 = 64 - 64>>3 = 56");
+
+    // —— UTIL-6：饱和钳位——巨量累计不溢出不破 1024 上界（钳后同满载首折）。
+    util_reset(0);
+    util_tick_window(0, 7_000);
+    util_accumulate(0, w.saturating_mul(1 << 40)); // >> 窗时长的超载账
+    util_tick_window(0, 7_000 + w);
+    assert_eq!(cpu_util(0), 128, "UTIL：超载首折须钳 1024（同满载）");
+
+    // —— UTIL-7：per-CPU 独立——CPU1 自行开窗记账，CPU0 读数不受牵连。
+    assert_eq!(cpu_util(1), 0, "UTIL：CPU1 未记账须 0");
+    util_tick_window(1, 9_000);
+    util_accumulate(1, w);
+    util_tick_window(1, 9_000 + w);
+    assert_eq!(cpu_util(1), 128, "UTIL：CPU1 独立记账首折 128");
+    assert_eq!(cpu_util(0), 128, "UTIL：CPU0 读数须独立于 CPU1 翻窗");
+
+    // —— UTIL-8：越界 CPU 静默拒（不 panic、零写入）。
+    util_accumulate(UTIL_NR_CPU, w);
+    util_tick_window(UTIL_NR_CPU, 11_000);
+    util_reset(UTIL_NR_CPU);
+
+    // —— UTIL-9（接线面）：Fair::tick 真路径记账证活——class.rs 消费链
+    //      （util_accumulate + util_tick_window）在真 tick 下运转，读出口
+    //      非零即全链接通。tick#1 开窗（首调丢账路径）；自旋对表 CNTVCT
+    //      燃 ~1/8 窗真实时长（确定性，非忙等估算）；tick#2 的 delta =
+    //      该时长经非 idle 门进 accum；手动推一窗到期翻窗——elapsed < 2w
+    //      下 util_raw ≥ 1024/16 → ewma ≥ 8 > 0。
+    util_reset(0);
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let mut task = Task::new_kernel(util_dummy, 0, b"util");
+    rr.tick(&mut *task, &mut rq); // 开窗（LAST_VCT 回落位更新 + 首窗开）
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    while berry_hal_aarch64::timer::cntvct() - t0 < w / 8 {}
+    rr.tick(&mut *task, &mut rq); // delta = w/8 进 accum（非 idle 门真消费）
+    util_tick_window(0, berry_hal_aarch64::timer::cntvct() + w); // 强制到期
+    let u = cpu_util(0);
+    assert!(u >= 1 && u <= 128, "UTIL：Fair.tick 接线后须非零读数（got {u}）");
+
+    // —— 收口：全槽清零回 boot 等价态（真 tick 稳态由 boot 后 Fair::tick
+    //           重新开窗——ktest 瞬态不外泄）。util_dummy 任务体 16KiB 栈
+    //           泄漏不回收（ktest 语境同 spawn 政策——v1 无 reap）。
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "UTIL：收口须回未启态（CPU{c}）");
+    }
+
+    berry_hal_aarch64::uart_puts(b"UTIL ok\n");
 }
 
 /// 4-4：fastpath 检查链的 SLEEPQ 侧纯函数面（`find_single_waiter`）+ send 尾部

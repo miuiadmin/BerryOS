@@ -26,6 +26,7 @@ pub mod runqueue;
 pub mod sched;
 pub mod spin;
 pub mod task;
+pub mod util;
 
 pub use band::{
     band_on, configure, consume, period_check, state, throttle_all, unthrottle_all, BandBudget,
@@ -42,6 +43,10 @@ pub use intent::{
     INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED, INTENT_UTILITY,
 };
 pub use runqueue::{linkable, Runqueue, Topo};
+pub use util::{
+    cpu_util, util_accumulate, util_reset, util_tick_window, util_window_vct, EWMA_ALPHA_SHIFT,
+    UTIL_NR_CPU, UTIL_WINDOW_HZ, UTIL_WINDOW_VCT_REF,
+};
 pub use sched::{
     block_current, current_pinned, current_tag, exit_current,
     exit_current_with, fast_wake_locked,

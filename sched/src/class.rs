@@ -211,6 +211,18 @@ impl SchedClass for Fair {
         t.slice_left = t.slice_left.saturating_sub(delta);
         let vdelta = (delta as u128 * SCALE as u128 / weight_of(t) as u128) as u64;
         t.vruntime = t.vruntime.saturating_add(vdelta);
+        // v1.3 §7（频率归 PM + util 信号）：本核运行 cycles 进 per-CPU
+        // utilization EWMA（`util.rs`——调度器给 PM 的频率 hint，schedutil
+        // 同构 f ≈ util×fmax/capacity，频率选择权全归 PM）。**非 idle 门**：
+        // IDLE_TASK 上的 tick 不累计（idle 时间是低 util 信号本身，非运行
+        // 时间）；窗口翻转两态都查（idle tick 翻窗 → 空窗折叠低 util，
+        // EWMA 随空闲衰减）。Relaxed 原子零锁——统计信号无序角色，IRQ 热
+        // 路径零额外屏障。
+        let cpu = hal::smp::cpu_id();
+        if !crate::sched::is_idle(t) {
+            crate::util::util_accumulate(cpu, delta);
+        }
+        crate::util::util_tick_window(cpu, now);
         if t.slice_left == 0 && !is_deadline(t) {
             t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
         }
