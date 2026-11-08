@@ -911,6 +911,37 @@ static FREEZE_BUSY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU6
 static AUTO_THAW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static DEGRADE_FREEZE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+// ---- am/AM-2 等页停顿遥测（plans/am/design.md §压力信号；进现有环——
+// 不建第二数据库 #45。口径 = CNTVCT 原始周期数，同 bench.rs 纪律：TCG 下
+// CNTV tick ≈ SLICE_HZ/2 频偏——只作相对/单调判据，绝对阈值定标挂 HDR
+// 实测（design AM-2【推】，lmkd 70/700ms 量级仅参考不落码）。记哪三处：
+// probe(EL1) FAULT_KEY 睡眠段 / probe_el0 EFAULT_KEYS[slot] 睡眠段 /
+// probe_el0 池满 EOVERFLOW_KEY convoy 等待段——AM-01「等页时间 = PSI 等
+// 价」判据的 BerryOS 落点，v1 消费者 = 查询面（ktest/faulter 自证）；阈值
+// 事件带内出口挂 AM-2b（am/appd 消费链成形时）。----
+
+/// AM-2：等页停顿记账（睡前提快照、醒后差值——调用点在 dpg 两臂探针）。
+/// max 饱和更新竞态下可能瞬时低估——遥测面可接受（非断言面）。
+pub fn dpg_stall_note(cyc: u64) {
+    DPG_STALL_CYC.fetch_add(cyc, Ordering::Relaxed);
+    DPG_STALL_N.fetch_add(1, Ordering::Relaxed);
+    let mut cur = DPG_STALL_MAX.load(Ordering::Relaxed);
+    while cyc > cur {
+        match DPG_STALL_MAX.compare_exchange_weak(cur, cyc, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(c) => cur = c,
+        }
+    }
+}
+
+pub fn dpg_stall_cyc_total() -> u64 { DPG_STALL_CYC.load(Ordering::Relaxed) }
+pub fn dpg_stall_n_total() -> u64 { DPG_STALL_N.load(Ordering::Relaxed) }
+pub fn dpg_stall_max() -> u64 { DPG_STALL_MAX.load(Ordering::Relaxed) }
+
+static DPG_STALL_CYC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static DPG_STALL_N: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static DPG_STALL_MAX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 static BILLING_CROSS_DOMAIN: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 

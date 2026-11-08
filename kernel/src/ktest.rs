@@ -731,6 +731,20 @@ fn test_syscall() {
         drop(unsafe { alloc::boxed::Box::from_raw(vmo_f as *mut Vmo) });
     }
 
+    // E3g. AM-2 等页停顿台账零态不变量（plans/am/design.md §压力信号）：
+    //      ktest::run 先于 sched::init/dpg::init（main.rs :614 < :668/:692），
+    //      真实缺页未发——三账必零。非空即两解其一：顺序被挪（ktest 挪到
+    //      sched 后——本断言 fail loud 逼重审 E3d-f 的「无 sched 在飞」前提）
+    //      或台账静态量被污染（boot 期异常路径记账）。真实路径的正向证明 =
+    //      dpg_faulter 醒后自证（真实端到端、零 ktest 污染，见 dpg.rs）；
+    //      EL0 臂随 svcmgr 供给链 smoke 面覆盖。
+    assert_eq!(crate::telemetry::dpg_stall_n_total(), 0,
+        "SYSCALL：E3g ktest 期停顿笔数必零（ktest 先于 sched::init——非零即顺序被挪或台账污染）");
+    assert_eq!(crate::telemetry::dpg_stall_cyc_total(), 0,
+        "SYSCALL：E3g ktest 期停顿周期累计必零（同上）");
+    assert_eq!(crate::telemetry::dpg_stall_max(), 0,
+        "SYSCALL：E3g ktest 期停顿峰值必零（同上）");
+
     // E5. vmo_get_size（0x1A，G-eco 入机侧：svcmgr 消费 rootfs 需要 cpio 总长；
     //     add-only 顺延）。盖四路：往返 + 页对齐语义（create 即取整，非 blob
     //     实长——消费端 cpio 遍历以 newc 头自描述长度为准）/ 坏 handle /

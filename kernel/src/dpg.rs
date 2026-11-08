@@ -167,11 +167,15 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // 出深再睡（shape (a)：睡眠不计——并发在飞 faulter 不灌计数）；舞蹈放
     // KL 入队、醒后重取。
     depth_exit();
+    // AM-2 等页停顿记时点①（睡前沿快照；醒后差值入 telemetry——cntvct 纯读
+    // 无锁无分配，KL 窗内安全）。
+    let stall_t0 = hal::timer::cntvct();
     let r = berry_sched::block_current(
         &FAULT_KEY as *const u8 as usize,
         DPG_WAKE_BIT,
         u64::MAX,
     );
+    crate::telemetry::dpg_stall_note(hal::timer::cntvct().wrapping_sub(stall_t0));
     // 醒 = 活跃窗重开（收尾段计深度——此窗内嵌套异常同样响雷）。
     depth_enter();
     hal::kern_lock::klock_exit();
@@ -274,11 +278,14 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
                 });
                 // 出深再睡（shape (a)：睡眠不计）。
                 depth_exit();
+                // AM-2 等页停顿记时点③（池满 convoy 等待段——同入停顿台账）。
+                let stall_t0 = hal::timer::cntvct();
                 let _ = berry_sched::block_current(
                     &EOVERFLOW_KEY as *const u8 as usize,
                     DPG_WAKE_BIT,
                     u64::MAX,
                 );
+                crate::telemetry::dpg_stall_note(hal::timer::cntvct().wrapping_sub(stall_t0));
                 depth_enter();
             }
         }
@@ -288,11 +295,14 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     berry_sched::wake_matching(&EPAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
     // 出深再睡（shape (a)：睡眠不计）。
     depth_exit();
+    // AM-2 等页停顿记时点②（EL0 槽键睡眠段——svcmgr 供给链的等页面）。
+    let stall_t0 = hal::timer::cntvct();
     let r = berry_sched::block_current(
         &EFAULT_KEYS[slot] as *const u8 as usize,
         DPG_WAKE_BIT,
         u64::MAX,
     );
+    crate::telemetry::dpg_stall_note(hal::timer::cntvct().wrapping_sub(stall_t0));
     // 醒 = 活跃窗重开（收尾段计深度）。
     depth_enter();
     hal::kern_lock::klock_exit();
@@ -486,6 +496,15 @@ extern "C" fn dpg_faulter(_arg: usize) -> ! {
     assert_eq!(
         v, DPG_MAGIC,
         "dpg_faulter: demand 页内容非 pager 供给值（供给链破损）"
+    );
+    // AM-2 台账端到端自证（真实路径零污染）：本读经 probe 睡醒一轮，台账
+    // 必已记一笔（n≥1 且 cyc>0——pager 供给往返 ≥数千指令，cntvct 增量
+    // 非零确定性成立）——零值即插桩/记账路径破损，fail loud 不假绿。
+    // EL0 臂（记时点②③）无内核侧独立断言：随 svcmgr 供给链 smoke 面覆盖。
+    assert!(
+        crate::telemetry::dpg_stall_n_total() >= 1
+            && crate::telemetry::dpg_stall_cyc_total() > 0,
+        "dpg_faulter: 等页停顿台账零值（AM-2 插桩破损——probe 睡醒未记账）"
     );
     hal::kern_lock::with_print_lock(|| {
         hal::uart_puts(b"DPG ok\n");
