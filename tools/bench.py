@@ -138,6 +138,22 @@ DPG_BOOT_TIMEOUT_D = 600
 # + spawn/poll 余量 ≈ 42min guest 钟（TCG guest 钟 = 墙钟，§A8；宿主争用面
 # §A128 只多不少）——3600s ≈ 1.4x 余量；超帽 loud 上报不硬凑绿。
 DPG_BOOT_TIMEOUT_E = 3600
+# X-6 页/s 直测面（仪器刀 0——X6批供提速设计-v1.0 §5）：guest 观测行
+# `X6 pg=N sw=M`（pg = PAGER_SUPPLIED 累计供页〔rc==0 增〕、sw = PAGER_SWEEPS
+# 同源累计圈数；十进制单行、行不带钟）——svcmgr boot 验证环各 demand bin
+# （stdhello/hexyl/grep）验证成功后各单发，恰 3 行；x5/dpg 相位零发射
+# （kick 行与 dpgsoak 面不动）。**观测线非门标记**：不进 markers.sh /
+# rootfs 51（kick 行同例——bench 侧消费）；词形契约 = X6 设计稿 §5 冻结。
+# 钟 = 宿主侧轮询新字节到达时戳（分辨率 ±X6_POLL_S；X6 §5「页/s 的钟 =
+# 宿主侧 marker 到达时戳」——34 背书钉进验收节）。
+X6_RE = re.compile(r"^X6 pg=(\d+) sw=(\d+)\s*$", re.M)
+X6_POLL_S = 0.2
+# hexyl 窗（首窗 = stdhello→hexyl 差分，主装载窗）页/s 常驻回归门。None =
+# 观测不动判——X-6 刀未落内核照跑照绿（零漂移）。定标法（首净窗实测、
+# 不拍阈值）：② 落地首跑读 [X-6(0)] hexyl 实测率 R → 本常量写 R×0.7
+# （TCG 方差带）；收刀验收另口一次性判 R ≥ 基线(~6 页/s)×3（§5；kill
+# criteria <2× 撤刀）。
+X6_HEXYL_PGS_FLOOR: float | None = None
 # B-2 通道帽：与 vanilla BOOT_TIMEOUT=120 同口径、不放大。实测依据（M 系
 # mac，QEMU 11.0.3，2026-10-27 首跑探针）：boot 到 BENCHWAKE 全程 ≈2s——
 # sleep=off 下虚拟时钟纯指令驱动，「-icount 慢 2-4x」预期被实测反驳
@@ -700,7 +716,8 @@ def dpg_variant(*gates: str) -> list[Path]:
 
 
 def dpg_boot(kernel: str, volumes: list[Path], soak: bool, done_pat: str,
-             cap: int, log_kind: str) -> str:
+             cap: int, log_kind: str,
+             x6_out: "list[tuple[float, int, int]] | None" = None) -> str:
     """D/E 共形 boot：**满配设备面**（dpgsoak 同款——vblk 预拉扫 MMIO 无盘
     即 loud 自陷 → G1.5 杀数 2>1 panic；TCPS 相先于 dpg 位 ⇒ echod 对端
     在席；evs/skt 非本终态依赖〔f4 C-full concur-2〕）+ -smp 2（家族对照
@@ -780,13 +797,23 @@ def dpg_boot(kernel: str, volumes: list[Path], soak: bool, done_pat: str,
     )
     try:
         deadline = time.time() + cap
+        prev_len = 0
+        x6_end = 0
         while time.time() < deadline:
             if proc.poll() is not None:
                 break  # QEMU 提前退出（崩溃）——带现有日志走收割失败路径
             text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            if x6_out is not None:
+                now = time.time()
+                # 回看 64B 覆盖上轮半行（X6 行 <30B）；end 单调防重采。
+                for m in X6_RE.finditer(text, max(0, prev_len - 64)):
+                    if m.end() > x6_end:
+                        x6_out.append((now, int(m.group(1)), int(m.group(2))))
+                        x6_end = m.end()
+                prev_len = len(text)
             if done_pat in text:
                 break
-            time.sleep(1)
+            time.sleep(X6_POLL_S if x6_out is not None else 1)
     finally:
         # run_rt 同款：halt 后不退出，收完即杀（kill 后补 wait 收尸）；
         # SIGTERM 后 3s 串口落定（dpgsoak A-6 实证同款）再读终态。
@@ -798,6 +825,13 @@ def dpg_boot(kernel: str, volumes: list[Path], soak: bool, done_pat: str,
             proc.wait()
         time.sleep(3)
         text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+        if x6_out is not None:
+            # 终读补采：done 后至 SIGTERM 落定窗内新到观测行（3s 落定窗）。
+            for m in X6_RE.finditer(text, max(0, prev_len - 64)):
+                if m.end() > x6_end:
+                    x6_out.append((time.time(), int(m.group(1)),
+                                   int(m.group(2))))
+                    x6_end = m.end()
         echod.terminate()
         echod.wait(timeout=5)
     if done_pat in text:
@@ -856,9 +890,10 @@ def run_dpg(kernel: str) -> None:
     # C-DE2：D 臂收割即先落一档——E 臂独立盘/独立 boot，E 败时 D 证据不陪葬。
     write_receipt("dpg-d", text_d,
                   f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}")
-    # E 臂。
+    # E 臂。x6_events = X-6(0) 观测行宿主时戳采集（D 臂不采——E 族 = 验收面）。
+    x6_events: list[tuple[float, int, int]] = []
     text_e = dpg_boot(kernel, dpg_variant("dpge", "dpgx", "x5"), True, "X5 E",
-                      DPG_BOOT_TIMEOUT_E, "e")
+                      DPG_BOOT_TIMEOUT_E, "e", x6_out=x6_events)
     beats = [(b.start(), int(b.group(1))) for b in SOAK_PAGES_RE.finditer(text_e)]
     if not beats:
         raise SystemExit(
@@ -965,12 +1000,51 @@ def run_dpg(kernel: str) -> None:
     print(f"[X-5(X5)] pA''={x5a} pB''={x5b} pC''={x5c} | "
           f"d''(demand双胎停泊)={dx5} e''(eager双胎全幅)={ex5} | "
           f"d''<e'' ok（差 {ex5 - dx5} 页）")
-    write_receipt(
-        "dpg", text_d + "\n===== E 臂 =====\n" + text_e,
+    # X-6(0) 页/s 直测面：观测行恰 3（stdhello/hexyl/grep 后各一）——相邻差
+    # 分 = 各窗页数，宿主到达时戳差分 = 窗钟。无行 = 刀未落，观测面静默
+    # （pre-X6 内核照跑照绿 = 零漂移构造性保证）；有行而非 3 = 词形契约破
+    # loud 拒。
+    x6_summary = ""
+    if x6_events:
+        if len(x6_events) != 3:
+            raise SystemExit(
+                f"bench.py: X6 观测行 {len(x6_events)} ≠ 3（词形契约破——"
+                "boot 验证环三 bin 各一；查 svcmgr 发射点/行形）")
+        win_names = ("hexyl", "grep")  # 窗 i = 事件 i→i+1；首窗 = hexyl 装载
+        wins = []
+        for i, ((t0, p0, s0), (t1, p1, s1)) in enumerate(
+                zip(x6_events, x6_events[1:])):
+            dt = t1 - t0
+            dp, ds = p1 - p0, s1 - s0
+            if dp < 0 or ds < 0:
+                raise SystemExit(
+                    f"bench.py: X6 计数非单调（事件 {i}→{i+1}：pg {p0}→{p1} "
+                    f"sw {s0}→{s1}）——收割面坏，勿读率")
+            # 钟粒度下限垫分母（窗短于轮询粒度时低估率 = 下限门安全侧）。
+            rate = dp / max(dt, X6_POLL_S)
+            name = win_names[i] if i < len(win_names) else f"win{i}"
+            wins.append((name, dp, dt, rate, ds))
+            print(f"[X-6(0)] {name}: {dp} 页/{dt:.2f}s = {rate:.1f}pg/s"
+                  f"（sw+{ds}）")
+        hexyl_rate = wins[0][3]
+        if X6_HEXYL_PGS_FLOOR is None:
+            print(f"[X-6(0)] hexyl 回归门未定标（首净窗实测 {hexyl_rate:.1f}"
+                  "pg/s ×0.7 → 写 X6_HEXYL_PGS_FLOOR 常量）")
+        elif hexyl_rate < X6_HEXYL_PGS_FLOOR:
+            raise SystemExit(
+                f"bench.py: X-6 页/s 回归门败：hexyl {hexyl_rate:.1f}pg/s < "
+                f"下限 {X6_HEXYL_PGS_FLOOR}（首净窗定标 ×0.7——供给链回归？"
+                "查 pager 扫圈/svcmgr 供给路径）")
+        x6_summary = "\n".join(
+            f"X6[{n}]: pages={dp} dt={dt:.2f}s rate={r:.1f}pg/s sw+{ds}"
+            for n, dp, dt, r, ds in wins)
+    summary = (
         f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}\n"
         f"E: pA={pa} pB={pb} pC={pc} d={d} e={e} (d<e)\n"
         f"X: pA'={xa} pB'={xb} pC'={xc} d'={dx} e'={ex} (d'<e')\n"
-        f"X5: pA''={x5a} pB''={x5b} pC''={x5c} d''={dx5} e''={ex5} (d''<e'')")
+        f"X5: pA''={x5a} pB''={x5b} pC''={x5c} d''={dx5} e''={ex5} (d''<e'')"
+        + (f"\n{x6_summary}" if x6_summary else ""))
+    write_receipt("dpg", text_d + "\n===== E 臂 =====\n" + text_e, summary)
 
 
 def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], dict[str, int], str]:
