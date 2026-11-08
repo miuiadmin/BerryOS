@@ -843,9 +843,14 @@ def dpg_boot(kernel: str, volumes: list[Path], soak: bool, done_pat: str,
         Path(log_path).unlink(missing_ok=True)
         return text
     # 失败保留串口全文（诊断面：S-C2 同族——烧帽档须可复核）。
+    # 实耗/预算帽双报（2026-11-09 判例：外杀/崩溃提前收卷时消息只报 cap
+    # 令验尸误读「跑满 3600s」——mtime 才是地面真值，消息面同步补齐）。
+    elapsed = int(time.time() - (deadline - cap))
     raise SystemExit(
-        f"bench.py: `{done_pat}` {cap}s 未出现（boot 失败 / svcmgr dpg 链"
-        f"降级（eco 行）/ 门控卷未递 / 内核陈旧〔改 bin 未重建〕？）"
+        f"bench.py: `{done_pat}` 未出现（实耗 {elapsed}s / 预算帽 {cap}s——提前"
+        f"收卷先查 QEMU 死因：外杀/panic/崩溃；跑满帽才是真超时）"
+        f"（boot 失败 / svcmgr dpg 链降级（eco 行）/ 门控卷未递 / 内核陈旧"
+        f"〔改 bin 未重建〕？）"
         f"——串口全文保留：{log_path}"
         f"（尾部：{' | '.join(text.splitlines()[-5:])}）")
 
