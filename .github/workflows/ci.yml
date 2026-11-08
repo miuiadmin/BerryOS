@@ -53,12 +53,19 @@ jobs:
 
       - name: 安装 QEMU
         run: |
+          # qemu-system-arm ≥10 必须：virt 机型非安全第二 PL011（0x09040000）
+          # 是 QEMU 10.0 新增（8.2 的 -serial 只建 chardev 不建设备）——RX 相
+          # simdev 门开后 uart1_init 写 ICR 即 external abort（2026-11-08 全
+          # 红 CI 根因，docker 8.2.2 dumpdtb 实证 0x0904 节点缺席）。noble apt
+          # 钉 8.2.2 → brew bottle（qemu 11）唯一可行升级路；AAVMF 固件对仍走
+          # apt（brew 无 qemu-efi-aarch64 等价包）。
           sudo apt-get update
-          # qemu-efi-aarch64 = AAVMF 固件对。注意布局：Ubuntu/Debian 包落
-          # /usr/share/AAVMF/AAVMF_CODE.fd + AAVF_VARS.fd（2024.02 起；
-          # 真实 deb 解包钉死——/usr/share/qemu/edk2-*.fd 是 brew/Fedora 布局，
-          # CI 写错路径 = 关卡结构性必红）。
-          sudo apt-get install -y qemu-system-arm qemu-system-x86 qemu-efi-aarch64
+          sudo apt-get install -y qemu-efi-aarch64
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install qemu
+          qemu-system-aarch64 --version | head -1
 
       # 装 just 复用 justfile 单一入口（build/smoke 全走与本地同一配方——防 CI
       # 自带第二套 cargo 命令与 justfile 分叉；P7-x4 挂账清偿）。
