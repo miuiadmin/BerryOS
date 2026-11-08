@@ -137,7 +137,9 @@ pub const EAFNOSUPPORT: c_int = 97;
 /// `sock_rpc_errno` 单源映射，const assert 对拍）。
 pub const ENODEV: c_int = 19;
 /// A3-2：listen 端口已被占用（ST_FULL/Dup——EADDRINUSE 近似档）。
-pub const EADDRINUSE: c_int = 98;
+/// 2026-11-08 仓主裁：98 → 112，对齐 Linux 通用值域（asm-generic，musl
+/// aarch64 同）——x86 值域混入修正，调研 13 号坑二回归锚。
+pub const EADDRINUSE: c_int = 112;
 /// A3-2：connect 目标非网关 10.0.2.2——v1 协议无地址域（OP_TCP_OPEN 只
 /// 携 port、vnet 段构造 dst=GW_IP 钉死），非网关地址 = 本栈结构性不可
 /// 达，诚实拒（不静默连到别处）。
@@ -230,15 +232,11 @@ mod errno_probe {
         assert_eq!(ETIMEDOUT, 110);
     }
 
-    /// 断差事实（不改语义——值域选择是 ABI 决策归仓主裁）：现值
-    /// EADDRINUSE=98 是 Linux x86/i386 值域的值；Linux 通用值域
-    /// （asm-generic，musl aarch64 同）= **112**。同文件网络族
-    /// （EAFNOSUPPORT=97 / ENETUNREACH=101 / ETIMEDOUT=110 等）均按
-    /// asm-generic，唯 EADDRINUSE 按 x86 值——与 swift-os 坑二同款
-    /// 混搭（98 vs 112）。对齐决策落定后去 `#[ignore]` 让本探针执法
+    /// 已修注记：EADDRINUSE 原值 98 是 Linux x86/i386 值域混入；2026-11-08
+    /// 仓主裁对齐 Linux 通用值域（asm-generic，musl aarch64 同）= 112
+    /// ——swift-os 坑二同款混搭（98 vs 112）的回归锚，裁决落地后执法
     /// （berry-fsclient 镜像锚同步）。
     #[test]
-    #[ignore = "断差：EADDRINUSE=98 为 x86 值域；Linux 通用值域/musl aarch64=112——ABI 决策归仓主裁"]
     fn eaddrinuse_matches_linux_generic() {
         assert_eq!(EADDRINUSE, 112);
     }

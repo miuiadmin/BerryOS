@@ -887,12 +887,14 @@ pub enum SockOp {
 
 // errno 数值面（Linux/musl 同值、ABI 冻结；libc lib.rs 同名常量的
 // 对拍锚点——见 libc net.rs const assert）。
+// EADDRINUSE：2026-11-08 仓主裁 98 → 112（对齐 Linux 通用值域
+// asm-generic/musl aarch64——调研 13 号坑二回归锚），与 berry-libc 单源同步。
 pub const EIO: i32 = 5;
 pub const EAGAIN: i32 = 11;
 pub const EINVAL: i32 = 22;
 pub const EPIPE: i32 = 32;
 pub const ENODEV: i32 = 19;
-pub const EADDRINUSE: i32 = 98;
+pub const EADDRINUSE: i32 = 112;
 pub const ETIMEDOUT: i32 = 110;
 
 pub fn sock_rpc_errno(op: SockOp, st: u8) -> i32 {
@@ -1788,13 +1790,11 @@ mod errno_probe {
         assert_eq!(ETIMEDOUT, 110);
     }
 
-    /// 断差事实（不改语义——值域选择是 ABI 决策归仓主裁）：EADDRINUSE
-    /// 现值 98 是 Linux x86/i386 值域；Linux 通用值域（asm-generic，musl
-    /// aarch64 同）= **112**——swift-os 坑二同款（98 vs 112 混搭）。本
-    /// crate 立值经 berry-libc net.rs const 对拍与单源钉死，裁决时两侧
-    /// 须同步；对齐决策落定后去 `#[ignore]`（berry-libc 探针同步）。
+    /// 已修注记：EADDRINUSE 原值 98 是 Linux x86/i386 值域混入；2026-11-08
+    /// 仓主裁对齐 Linux 通用值域（asm-generic，musl aarch64 同）= 112
+    /// ——swift-os 坑二同款（98 vs 112 混搭）的回归锚。本 crate 立值经
+    /// berry-libc net.rs const 对拍与单源钉死，两侧已同步落刀。
     #[test]
-    #[ignore = "断差：EADDRINUSE=98 为 x86 值域；Linux 通用值域/musl aarch64=112——ABI 决策归仓主裁"]
     fn eaddrinuse_mirror_matches_linux_generic() {
         assert_eq!(EADDRINUSE, 112);
     }
