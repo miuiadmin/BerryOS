@@ -1176,6 +1176,22 @@ def selftest() -> int:
         ("f7-ui-kitchen-sink", f7),
         ("f7b-ui-icon-only", f7b),
         ("f8-agent-actions", f8),
+        # app-1 段 b-2：APPTOMB 金件——真实包 user/bins/apptomb/
+        # manifest.toml 逐字节镜像（intent="background" 首个正样本 =
+        # 墓碑自验件定档；stack_pages=4 自验小栈）；形漂移（intent 词表/
+        # 定序/节间空行）即炸此锚。add-only：居 f8 后零扰动既有锚。
+        ("apptomb", (
+            "[app]\n"
+            'id = "APPTOMB"\n'
+            'version = "0.1.0"\n'
+            'entry = "bin/apptomb"\n'
+            'type = "app"\n'
+            'intent = "background"\n'
+            "\n[capabilities]\n"
+            "console = true\n"
+            "\n[runtime]\n"
+            "stack_pages = 4\n"
+        )),
     ]
     for label, text in pos:
         try:
