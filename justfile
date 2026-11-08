@@ -622,6 +622,12 @@ test-host:
     # v1 冻结）/blob 收支/END 对账三执法 + 帧帽 256 编译期断言 + 黄金
     # 字节钉板 + recv 复用缓冲脏尾回归钉，host 22 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-appproto --target {{host}}
+    # SEC-02 刀 A2：berry-ksproto（keystored 密钥服务 RPC 协议纯函数面——
+    # KeyMint 借号段 tag 编号表 add-only 冻结钉板 + AuthorizationList 软硬
+    # 双域/SecurityLevel 三档 wire + KEY_GENERATE/KEY_ATTEST/COUNTER 三 op
+    # 编解码黄金字节 + 严格串行会话机，host 20 测；独立小工作区绕开
+    # user/Cargo.toml——manifest-path 直指 crate，同 stdhello/bsh 先例）。
+    cargo test --manifest-path user/berry-ksproto/Cargo.toml --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
@@ -633,6 +639,11 @@ test-host:
     # V-0a 刀 3：berryboot app 单源共识——内嵌 HELLO.TXT 基准 ↔ 仓库 fixture
     # hello.txt 逐字节对拍（mkfat fixture 共识基准同族，改一侧忘同步即炸）。
     cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berryboot --target {{host}}
+    # V-5a-0：berrydump（Fusion/AAVMF 设备面事实 dump 纯取证工具——解析
+    # 纯函数面 host 钉板：RSDP/XSDT/MADT/SPCR/DBG2/FDT 六表面合成向量 +
+    # 表名注册，host 8 测；独立 workspace 与 berryboot 主引导链解耦，
+    # 唯一依赖 berry-efi 纯数据 crate）。
+    cargo test --manifest-path bootloader/berrydump/Cargo.toml --target {{host}}
     python3 tools/elf2pe.py --selftest
     python3 tools/mkfat.py --selftest
     # A1-3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
