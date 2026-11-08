@@ -5,7 +5,7 @@
 > **依据**：`应用模型设计-v1.0.md` §4/§4.1（生命周期消息协议 + 墓碑模式，立法原文）+ `应用规范-v1.0.md` §4.1/§4.1-5（应用侧契约与 lifecycle API 承载）+ ADR #64（调点 1.1 S3 freeze 已落内核侧）+ `research/SDK-API历史教训/wf-result-full.json`「app-1 待做」行。现状四层账 = 2026-11-08 会话实测（§1 锚点）。
 > **时点**：GUI-8 段④ 在途收官窗后、SDK-2 开刀前——appd 域纯用户态一刀，与 GUI 线文件面互斥成立（svcmgr 共享面错峰纪律照旧）。
 > **形态先例**：`app-0实施设计草案-v1.0.md`（草案 → 对抗审查 → 拆步实施，每步独立提交）+ T-1 `thr_selftest` 拉起 thrchild 的自验 app 形态（smoke.sh:743）。
-> **执行结果**：（占位——随段落地追记；对抗审查随开工，先审查后动码。）
+> **执行结果**：**对抗审查已毕（2026-11-08，先审查后动码工序）**——总裁决「修后可开工」，H1/M1–M4/L1 已随审回写本稿（各节注「审修」）；L2 证实面：R1 hp 全权（syscall.rs:1121 出 MANAGE|DUPLICATE + berry-exec 只 dup 不 take）、vmo_write/read 权利门（:592/:553）与 dup 授子、duplicate 只紧不松（handle.rs:271-284）、extras 前缀紧致、LIVE_MAX 仅 RPC 面、svcmgr now() 计时（main.rs:4561）、canon 全表机查零新碰撞（FRZ ok ⊄ FROZEN ok、TOMB 零占）、五件套连动面实在、零内核改动确认（thaw=handle_close→SuspendToken Drop；AM-2a 台账在 dpg 供给链零交互）。段落落地随追记。
 
 ## §0 目标与范围盒子
 
@@ -49,21 +49,21 @@ FROZEN ok n=1                app 读档 restored c=N → 正常退
 
 ## §3 段 a：freeze-first（`FROZEN ok`）
 
-- **apptomb（新自验 bin）**：headless 长活应用——启动打 `app apptomb up` → 周期（2s clock_sleep）打心跳行 `apptomb beat c=N`（**非标记**，诊断行）→ 稳态循环。**不进 boot 批**（由 svcmgr `tomb_selftest` 拉起——`thr_selftest`/thrchild 同型先例）→ `APP ok n=` 语义零漂移；不 `ps_reg`（瞬态自验件惯例）。
+- **apptomb（新自验 bin）**：headless 长活应用——**判据载体 = extras[4] 回报通道（审修 H1/M3：console=true 的 stdout 走 console 通道 SEND 别名、svcmgr 只发不读，串口行 appd 侧不可观测——照原稿 FROZEN ok 即自打自证假绿；段 a-1 起即挂 [4]，段 b 复用同枚作 PAUSESV1 面）**：启动发 `up` → 周期（2s clock_sleep）发 `beat c=N` 消息（串口同步打诊断行）→ 稳态循环。**不进 boot 批**（由 svcmgr `tomb_selftest` 拉起——`thr_selftest`/thrchild 同型先例）→ `APP ok n=` 语义零漂移；不 `ps_reg`（瞬态自验件惯例）。
 - **svcmgr freeze 自验序列**（确定性谓词，串口行有无判据）：
-  1. tomb_selftest spawn apptomb → 等 `app apptomb up`（强制状态行，不 sleep 回退）；
+  1. tomb_selftest spawn apptomb（extras[4] = 回报通道端 B；**stdin_feed 直传 Some(&[])**——审修 M1：extras 在位断言要求 stdin_feed/stdin_handle，缺席 panic 连灭拉起面；hello/vprobe 先例 main.rs:2115/2384）→ 等回报通道 `up` 消息（不 sleep 回退）；
   2. `berry_process_suspend(hp, 0, &token)`——hp 来自 ChildHandles（**首验点 R1**：确认 spawn 链留存柄带 RIGHT_MANAGE——3-3 出权口径应含，实测钉板）；
-  3. **静默窗**：等 ≥3 个心跳周期（TCG 放宽至 8s 窗）窗内串口**零** `apptomb beat` 行——冻结的进程不再跑 = 零心跳（确定性：串口行有无，不赌精确时序）；
-  4. `handle_close(token)` 解冻 → 等 `apptomb resumed c=K` 行（apptomb 主循环 poll 一个解冻哨兵：v0 = 心跳计数骤停恢复自打 resumed；见 §5）；
+  3. **静默窗**：等 ≥3 个心跳周期（TCG 放宽至 8s 窗）窗内回报通道**零收** `beat` 消息（审修 H1：appd 可观测面；串口 beat 行降为诊断辅证）——冻结的进程不再跑 = 零心跳（确定性：通道收没收到，不赌精确时序）；smoke 侧补负断言：boot log 窗口内 `apptomb beat` 行计数上界（双保险）；
+  4. `handle_close(token)` 解冻 → 等回报通道 `resumed c=K` 消息（**审修 L1：resumed 判据写死「醒后 clock 差值 > 心跳周期」**——冻结中到期 sleep 者摘入 RQ 挂起至 thaw 即续〔sched.rs:2323-2341/class.rs:267〕，「计数骤停恢复」不可判，弃）；
   5. 打 `FROZEN ok n=1` → 令 apptomb 自退（发 pause 走段 b，或 v0 段 a 直接 process_terminate + reap——**取前者**：段 a 段 b 共用一次生命周期，smoke 一次跑全）。
-- **判据诚实注**：静默窗 = 否定判据（零行）——若 TCG 下 8s 窗抖动误报（心跳行迟到），kill 线降级为「psproto/遥测 frozen 位」判据（§9 K1）。
+- **判据诚实注**：静默窗 = 否定判据（通道零收）——若 TCG 下 8s 窗抖动误报（beat 消息迟到），kill 线降级为「psproto/遥测 frozen 位」判据（§9 K1）。`FROZEN ok` 的证据链 = appd 通道观测（up 收讫 → 冻 → 零收 → 解冻 → resumed 收讫），非自打自证。
 
 ## §4 段 b：墓碑协议 v0（`TOMB ok`）
 
-- **双 gift（extras 槽位）**：spawn apptomb 时 env extras 装两枚——`[4]` = lifecycle channel 端 B（appd `channel_pair` 持端 A）+ `[5]` = **state VMO**（appd 预建 `vmo_create(64KiB, READ|WRITE)`，dup 授子）。apptomb 面 6/8（base4+extras2），前缀紧致律天然满足（console=true 有 stdin）。
+- **双 gift（extras 槽位）**：spawn apptomb 时 env extras 装两枚——`[4]` = lifecycle channel 端 B（appd `channel_pair` 持端 A；段 a-1 已挂、段 b 复用）+ `[5]` = **state VMO**（appd 预建 `vmo_create(64KiB, READ|WRITE)` + **`vmo_commit(0, 64KiB)`（审修 M2：零页建账，不先 commit 首写 -EBADSTATE——thr_selftest 先例 main.rs:2638）**，dup 授子）。apptomb 面 6/8（base4+extras2），前缀紧致律成立的前提 = **tomb_selftest 直传 stdin_feed:Some(&[])（审修 M1：console=true 只分岔 stdout、不含 stdin——原稿「console=true 有 stdin」证伪）+ apptomb manifest 禁 fs 词（fs_gifts 固占 [4][5] 与双 gift 撞槽，main.rs:5443/5459）**。
 - **blob 帽 = VMO 尺寸即帽（结构性执法）**：64KiB 定尺寸 VMO，越写物理不可——无需 appd 二次执法（应用模型 §4.1「appd 执法」的更强形态）。
 - **pause(save) 消息**：appd 端 A 发 8B `PAUSESV1\0`；**deadline 10s 由 appd 侧计时**（clock 读点对点）——超时未退 = 监督杀（fault 槽 + `eco: tomb <id> pause timeout` loud 行）+ **不入墓碑表**（失败态不复活）。
-- **apptomb 契约**（收到 pause 后）：序列化 `BTMB`（u32 魔数）+ ver(u8) + counter(u32) 写 state VMO（`berry_vmo_write` 直写——**零映射，零 mapcnt 纠缠**）→ console 打 `apptomb saved c=N` → libc `exit(0)`（EOF 先行）。v0 无 CRC（协议纯度低如实注；v1 加 CRC32 随 app-2）。
+- **apptomb 契约**（收到 pause 后）：序列化 `BTMB`（u32 魔数）+ ver(u8) + counter(u32) 写 state VMO（`berry_vmo_write` 直写——**零映射，零 mapcnt 纠缠**）→ 回报通道发 `saved c=N`（串口同步打诊断行）→ libc `exit(0)`（EOF 先行）。v0 无 CRC（协议纯度低如实注；v1 加 CRC32 随 app-2）。
 - **墓碑表**：svcmgr static 8 槽 `{id[24], svmo: Handle, epoch: u64}`——reap 成功（真码 0）后记入；LRU = 满时最旧槽 `handle_close(svmo)`（blob 真回收）。表驻 RAM，reboot = 全墓碑（语义安全：等价「没跑过」）。
 - **relaunch**：appd 二次 spawn 同 `.bap`（bap_scan 记账表现查，零重扫），extras `[5]` = 同枚 VMO 的 `duplicate(READ)` 收紧授子（复活者只读）；`[4]` 新 lifecycle 端（通道不可复用）。apptomb 启动 `vmo_read` 首 4B：`BTMB` → counter+1 恢复 → 打 `app apptomb restored c=N` → 稳态短跑（≥1 心跳）后自退 0（v0 复活即证，不常驻）。
 - **appd 判据**：按序收 `up → saved → restored c=N+1`（N = 首轮 counter 对拍）+ 两轮 reap 真码 0 + 墓碑表槽回收 → 打 `TOMB ok n=1`。与 `FROZEN ok` **独立判**（app-0 `APP ok`/`APPUI ok` 先例：互不连坐）。
@@ -73,7 +73,7 @@ FROZEN ok n=1                app 读档 restored c=N → 正常退
 
 - **berry-libc 新增访问器两枚**（同 `fs_h()`/`wm_cli_h()` 惯例——从 env 块固定位读，零新机制）：`berry_lifecycle_h()`（extras[4]）+ `berry_state_h()`（extras[5]）。**规范 §4.1-5 的回调三口不在 v0**——apptomb 手写 poll 主循环（recv -EAGAIN 非阻塞 + 2s 心跳），作为协议活证；回调封装随 app-2。
 - **apptomb 契约三条**（规范 §4.1 应用侧）：argv0 = entry 断言 / EOF 先行退出 / 退出码 0 语义不变。
-- apptomb 打包进 `app/APPTOMB.bap`（mkapp 门禁全过）+ build-user 条目表 +1（**APP ok n= 零漂移成立的前提 = 它不在 boot 批**——bap_scan 记账在册但不随 boot 全量拉起，拉起权归 tomb_selftest；boot 批「全量」语义的例外需在 svcmgr 注释立法：自验 app 族 = 显式拉起白名单）。
+- apptomb 打包进 `app/APPTOMB.bap`（mkapp 门禁全过）+ build-user 条目表 +1（**APP ok n= 零漂移成立的前提 = 它不在 boot 批**——bap_scan 记账在册但不随 boot 全量拉起，拉起权归 tomb_selftest；boot 批「全量」语义的例外**不是注释立法而是真改两处（审修 M4）**：批循环 skip 自验 app 族（bap_scan 记账在册、boot 批跳过）+ `ok==app_n` 计数排除——漏 skip 且 apptomb console=true 批内**阻塞 reap**（main.rs:1816-1819）= svcmgr boot 永挂（死锁）；白名单立法另须覆盖 **APP_LIST 面（审修 L3：launcher 以 bap 表为源会把 APPTOMB 列为可拉起，main.rs:5760-5794）**）。
 
 ## §6 验收面与 smoke 相拓扑
 
@@ -83,7 +83,8 @@ FROZEN ok n=1                app 读档 restored c=N → 正常退
 | `TOMB ok n=1` | 同上 | up → PAUSESV1 → saved c=N → reap0 → relaunch → restored c=N+1 → reap0 |
 
 - **canon 两两互非子串**：`FROZEN ok`/`TOMB ok` 对现役全表复核（含 `FRZ ok n=2`——T-1 线程冻结核面标记；**「FROZEN ok」不含「FRZ ok」为子串**（F-R-O-Z-E-N 插入了元音），`/usr/bin/grep -F` 落码期复核义务）；`TOMB` 前缀族现役零占。
-- 连动：ROOTFS_MARKERS +2 → RX 合相 / smoke-smp 数组 / smoke-image ECO canon / 规则/07 相构成表 / 沿革五件套（GUI-8 §1.2 惯例全量）。
+- 连动：ROOTFS_MARKERS +2 → RX 合相 / smoke-smp 数组 / smoke-image ECO canon（硬拷须连改，smoke-image.sh:256）/ 规则/07 相构成表 / 沿革五件套（GUI-8 §1.2 惯例全量）/ **smoke.sh:948「boot 32+rootfs 51=83」计数注释随 +2 同步（审修 L2）**。
+- 预算注（审修 L3）：tomb_selftest 串行 8s 静默窗 + 10s deadline 顺延后续标记，rootfs 相 420s 帽内留量（X-6 相已占大头——落码时实测复核）。
 - **零漂移面**：`APP ok n=`/`APPUI ok n=`/boot 批语义不动；`THR ok`/`FRZ ok n=2`（T-1 核面）不动。
 
 ## §7 记账与帽（全族对账）
@@ -100,7 +101,7 @@ FROZEN ok n=1                app 读档 restored c=N → 正常退
 
 ## §8 实施刀程（三段，各段独立可验可提交）
 
-- **段 a-1**：apptomb bin（心跳/契约三条）+ berry-libc 访问器两枚 + svcmgr freeze 自验序列 + `FROZEN ok`。验收：rootfs 相 +1 + host 测零漂 + R1 钉板（hp MANAGE 实测）。
+- **段 a-1**：apptomb bin（回报通道 up/beat/resumed + 契约三条）+ berry-libc 访问器两枚 + svcmgr freeze 自验序列（extras[4] 回报 gift + stdin_feed 直传）+ `FROZEN ok`。验收：rootfs 相 +1 + host 测零漂 + R1 落码复证（**对抗审查已预证：process_create 出 MANAGE|DUPLICATE〔syscall.rs:1121〕、berry-exec 只 dup 不 take hp〔lib.rs:904/968〕**）。
 - **段 b-1**：双 gift + PAUSESV1 + 序列化/读档 + 墓碑表 + relaunch + `TOMB ok`。验收：rootfs 相再 +1 + 负路径三件人工面记录。
 - **段 b-2（文书收官）**：smoke 三脚本 + 规则/07 相构成表 + ADR 注记（#42 intent 消费位预留 / #64 1.1 消费首证追记）+ 索引 + 沿革五件套 + mkapp 自检样本（APPTOMB.bap 金件）。
 
@@ -109,7 +110,7 @@ FROZEN ok n=1                app 读档 restored c=N → 正常退
 1. **K1**：TCG 静默窗判据抖动（心跳行迟到误报冻结）→ 降级「psproto 加 frozen 位」判据（psproto 抬版本联动）；再不稳 → 段 a 判据改「suspend 返 0 + close 后 resumed 行」两步谓词（放弃否定判据）。
 2. **K2**：suspend 与 appd wait_many 多路交互出畸（frozen 进程在等待集行为异常）→ apptomb 移出常驻等待集、selftest 专用串行 wait。
 3. **K3**：state VMO 跨 spawn 复用出 mapcnt/所有权畸 → 降级「blob 经 channel 消息迁移 VMO handle」（方案 B，3-4b 迁移原语现役）。
-4. **K4**：extras 前缀紧致律与 console=false 形态冲突（stdin 缺席拒 extras）→ apptomb 恒 console=true（v0 自验件无此需求）。
+4. **K4**（审修 M1 改写）：原「console=true 有 stdin」证伪——console 只分岔 stdout，extras 在位断言 = stdin_feed 必传（tomb_selftest 直传 Some(&[]) 消解；若断言面再有意外 → 降级裸 base[0..4] 无 extras 形态，判据全走 reap 真码 + 静默窗凭遥测 frozen 位）。
 
 ## §10 风险与首验点（段内首验，验不过即回草案改）
 
