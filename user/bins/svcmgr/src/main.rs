@@ -1950,9 +1950,11 @@ fn run_rootfs_child(console: Handle) {
         }
     }
     // ---- app-1 段 a-1：freeze-first 自验（tomb_selftest——APPTOMB 走
-    // selftest/ 前缀 cpio 直查后由此拉起：suspend → 8s 静默窗零收 → 解冻
-    // → RESUME/RESUMED 握手，全过打 `FROZEN ok n=1`；判据载体 = lifecycle
-    // 通道〔审修 H1〕）----
+    // selftest/ 前缀 cpio 直查后由此拉起：suspend → 8s 静默窗零收 → WAKE
+    // 臂（AM-1.5 冻结窗 send PROBE → token 收 WAKE_PENDING 通知 → 解冻）
+    // → RESUME/RESUMED+PROBED 握手，全过打 `FROZEN ok n=1` + `WAKE ok
+    // n=1`（+ 段 b 尾 `TOMB ok n=1`）；判据载体 = lifecycle 通道〔审修
+    // H1〕）----
     tomb_selftest(console, step, mf, icons, views);
 
     // ---- A-2：bsh 拉起（SDK-1a §1.2 延后段——原主走查 arm 体逐字迁居，
@@ -5683,14 +5685,18 @@ fn tomb_take(id: &[u8]) -> bool {
 /// 放弃只读收紧〕、stdin_feed 直传零长——M1）→ 通道收 UP → drain 在途
 /// beat → `berry_process_suspend(hp,0)`（仅 -EBUSY 退避重试——D4）→ 8s
 /// 窗通道零收（冻结进程不跑 = 无 BEAT；drain 后开窗，冻结前在途一拍不
-/// 误报）→ `handle_close(token)` 解冻 → 发 TAG_RESUME 帧收 TAG_RESUMED
-/// （D2 消息化，帽 5s liveness 口径）→ `FROZEN ok n=1` → PAUSESV1
+/// 误报）→ WAKE 臂（AM-1.5：冻结窗 send PROBE 探针 → `object_wait_one
+/// (token, SIGNAL_WAKE_PENDING)` 收通知 → close(token) 解冻〔Q1「唤醒即
+/// 解冻」默认策略演示〕）→ 发 TAG_RESUME 帧收 TAG_RESUMED ∧ TAG_PROBED
+/// 双旗（D2 消息化，帽 5s liveness 口径）→ `FROZEN ok n=1` →
+/// `WAKE ok n=1` → PAUSESV1
 /// （thaw-then-pause 前置不变式：此刻目标 freeze_depth=0）→ 10s deadline
 /// 帽收 SAVED → reap 真码 0 + blob BTMB 验 → 墓碑表记入 → relaunch（新
 /// lc 对 + 槽 svmo dup(R|W) 授子，复用首轮 bap_scan/manifest 果）→ 收
 /// TAG_RESTORED（counter 续接 = saved+1）→ reap 真码 0 → 出表（取档即
-/// 出表）→ `TOMB ok n=1`。两标记独立判（app-0 先例互不连坐——本流程串行
-/// 共用一次生命周期，§3 取前者）。任一步降级 = eco 行 + 同款收口（含
+/// 出表）→ `TOMB ok n=1`。三标记独立判（app-0 先例互不连坐——本流程串行
+/// 共用一次生命周期，§3 取前者；WAKE 判据不含 RESUMED、FROZEN 判据不含
+/// PROBED，任一缺不连坐他标）。任一步降级 = eco 行 + 同款收口（含
 /// state VMO/槽回收）+ 标记缺席（smoke FAIL）。
 fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [UiEntry], views: &mut [UiEntry]) {
     // lifecycle 消息（与 apptomb 同套常量——TAG 族编码同源镜像，apptomb
@@ -5706,6 +5712,11 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     const TAG_RESTORED: u8 = 5;
     const TAG_PAUSESV1: u8 = 6;
     const TAG_SAVED: u8 = 7;
+    // AM-1.5 WAKE 臂（Q1「唤醒即解冻」消费闭环）：冻结窗探针下行 tag 8 /
+    // 回环回执 tag 9（tag 族 1-7 已占；apptomb const 块为对端权威，此处
+    // 同源镜像）。
+    const TAG_PROBE: u8 = 8;
+    const TAG_PROBED: u8 = 9;
     const UP_CAP_NS: u64 = 10 * 1_000_000_000;
     const WIN_NS: u64 = 8 * 1_000_000_000; // TCG 放宽（≥3 心跳周期）
     // D2：RESUME 帽 5s 对齐 liveness 口径（app 拍周期 2s + 投递余量；仅
@@ -5718,6 +5729,17 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     // relaunch 收 restored 帽（§6 谓词链；SAVED 同款量级——复活链 worst
     // = spawn + 启动判读 + RESTORED 即发 ≪ 10s）。
     const RESTORE_CAP_NS: u64 = 10 * 1_000_000_000;
+    // AM-1.5 wake-pending 通知位（内核 `kernel/src/suspend.rs` 单源镜像：
+    // 内核派生低 32 位域第 4 位，与 READABLE(1<<0)/WRITABLE(1<<1)/
+    // TERMINATED(1<<2) 同域不重叠。abi.toml/berry-sys 归库挂 A 头注同名
+    // 义务（消费臂收口刀再生——经 abi-gen 会再生产 kernel/ 产物，非本刀
+    // 域），此处镜像 const 消费：值漂移由内核 WAKEP-K ktest + 本 WAKE 臂
+    // 双兜底）。
+    const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
+    // WAKE 通知帽：send 收敛点在 berry_channel_send 返回前同步置位 +
+    // 广播（内核 syscall.rs AM-1.5 注），wait 命中即回——2s 纯活性兜底
+    // 非测量判据（RESUME_CAP 同口径）。
+    const WAKE_CAP_NS: u64 = 2 * 1_000_000_000;
     // state blob 头（§4/§7）：12B 定长 {magic u32 LE, ver u8=0, hlen u8=12,
     // rsv u16=0, counter u32 LE}——与 apptomb const 块同源镜像（对端权威）。
     const BTMB_MAGIC: u32 = u32::from_le_bytes(*b"BTMB");
@@ -5975,11 +5997,48 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         return;
     }
 
-    // ⑦ 解冻（thaw = close(token)，1.1-S3 语义）→ 发 TAG_RESUME 帧 → 收
-    // TAG_RESUMED（D2 消息化：解冻由显式消息告知，app 侧差值启发式已废）
-    // 。醒窗竞态封口：app 若在本侧 send 落队前已被调度，其拍一 recv 得
-    // -EAGAIN 后先走真实 sleep，不先发帧——但 2s 拍界前后仍有在途 BEAT
-    // 可能，故收帧循环抽干至 RESUMED（等的是 RESUMED 帧、不赌首帧；帽 =
+    // ⑥' AM-1.5 WAKE 臂上半（冻结窗净判过、解冻前的最小插入——Q1「唤醒
+    // 即解冻」消费闭环）：冻结窗内 send PROBE 探针（非阻塞有界队列天然
+    // 排队——消息不丢弃，recv 解冻后照收）→ 内核 send 收敛点置
+    // wake_pending + 以进程钉键广播 token 等待者 → wait_one(token,
+    // WAKE_PENDING) 收通知（observed 须恰等位值——SuspendToken 信号面
+    // 唯一可命中位，阻塞形即 am 推荐消费形）。任一败 = 通知面破缺：eco
+    // 行 + 同款收口（token 解冻护送）+ WAKE/FROZEN/TOMB 全缺（smoke
+    // FAIL 兜底）。
+    let mut wm = [0u8; MSG];
+    wm[0] = TAG_PROBE;
+    if berry_channel_send(lc_a, wm.as_ptr(), MSG, core::ptr::null(), 0) != 0 {
+        eco_note(console, b"tomb probe");
+        let _ = berry_handle_close(token); // 解冻收口（无论本臂成败）
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+            trap();
+        }
+        return;
+    }
+    let mut wobs = 0u64;
+    if berry_object_wait_one(token, SIGNAL_WAKE_PENDING, now() + WAKE_CAP_NS, &mut wobs) != 0
+        || wobs != SIGNAL_WAKE_PENDING
+    {
+        eco_note(console, b"tomb wake");
+        let _ = berry_handle_close(token); // 解冻收口（无论本臂成败）
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+            trap();
+        }
+        return;
+    }
+
+    // ⑦ 解冻（thaw = close(token)，1.1-S3 语义；此刻兼 Q1「唤醒即解冻」
+    // 默认策略演示——am 形：token 持有者收 WAKE 通知即 close 解冻，裁决
+    // 权留持有者）→ 发 TAG_RESUME 帧 → 收 TAG_RESUMED（D2 消息化：解冻由
+    // 显式消息告知，app 侧差值启发式已废）。醒窗竞态封口：app 若在本侧
+    // send 落队前已被调度，其拍一 recv 得 -EAGAIN 后先走真实 sleep，不先
+    // 发帧——但 2s 拍界前后仍有在途 BEAT 可能，故收帧循环抽干至 RESUMED
+    // ∧ PROBED 双旗（等的是两帧、不赌首帧与到达序；PROBE 先 RESUME 入队
+    // ⇒ app 拍序抽干回帧 PROBED 恒先 RESUMED——双旗收集对此零依赖；帽 =
     // 总口径 5s）。
     if berry_handle_close(token) != 0 {
         trap();
@@ -5997,6 +6056,7 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     }
     let deadline = now() + RESUME_CAP_NS;
     let mut resumed_ok = false;
+    let mut probed_ok = false;
     loop {
         let now_ns = now();
         if now_ns >= deadline {
@@ -6005,7 +6065,16 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         match recv_tag(lc_a, &mut msg, deadline - now_ns) {
             Some(TAG_RESUMED) => {
                 resumed_ok = true;
-                break;
+                if probed_ok {
+                    break;
+                }
+            }
+            Some(TAG_PROBED) => {
+                // WAKE 臂下半：PROBED 回环帧到（判据下半——见 ⑧'）。
+                probed_ok = true;
+                if resumed_ok {
+                    break;
+                }
             }
             Some(_) => {} // 在途 BEAT/迟帧抽干续等
             None => break, // 超时/收帧败 → 降级
@@ -6024,6 +6093,24 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     // ⑧ 段 a 标记（独立判——app-0 先例互不连坐，两行各自谓词；段 b-1 起
     // 不 terminate：§2「共用一次生命周期」，pause 收束续走）。
     send_retry(console, b"FROZEN ok n=1\n".as_ptr(), 14);
+
+    // ⑧' AM-1.5 标记（独立判——与 FROZEN/TOMB 互不连坐）：WAKE 判据 =
+    // ①冻结窗 send 后 token 通知到位（⑥' wait 命中且 observed 恰等）
+    // ∧ ②解冻后 PROBED 回环（⑦ 窗内收）——「冻结进程收消息 → 令牌持有
+    // 者收通知 → 解冻 → 进程收到该消息」全闭环实证（Q1 裁决消费面）。
+    // PROBED 缺 = 通知面破缺：eco 行 + 收口 + WAKE/TOMB 缺（FROZEN 判据
+    // 链不含 PROBED，不连坐——本行在 FROZEN 之后即此语义）。
+    if !probed_ok {
+        eco_note(console, b"tomb wake");
+        let _ = berry_process_terminate(child.hp, 9);
+        let _ = child.reap();
+        if berry_handle_close(lc_a) != 0 || berry_handle_close(svmo) != 0 {
+            trap();
+        }
+        return;
+    }
+    // `WAKE ok n=1\n` = 11 字面 + LF = 12B（行宽先数后写——雷册 §A145）。
+    send_retry(console, b"WAKE ok n=1\n".as_ptr(), 12);
 
     // ⑨ pause(save)（§4）。thaw-then-pause 前置不变式已在 ⑦ 兑现（close
     // (token) 解冻 + RESUMED 回帧 = 目标 freeze_depth=0 且活转）——PAUSESV1

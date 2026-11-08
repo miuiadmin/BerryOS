@@ -53,6 +53,11 @@ const TAG_RESUME: u8 = 4;
 const TAG_RESTORED: u8 = 5;
 const TAG_PAUSESV1: u8 = 6;
 const TAG_SAVED: u8 = 7;
+/// AM-1.5 WAKE 臂（svcmgr tomb_selftest 冻结窗探针）：冻结期消息照常
+/// 入队不丢弃（非阻塞有界队列天然排队），解冻后稳态拍照收——回
+/// PROBED 回环帧（帧本身即判据，counter 带当拍值）。
+const TAG_PROBE: u8 = 8;
+const TAG_PROBED: u8 = 9;
 
 /// state blob 头（v1.2 §4/§7 立法）：12B 定长 {magic u32 LE, ver u8,
 /// hlen u8, rsv u16=0, counter u32 LE}——ver = blob 格式版本（协议侧）非
@@ -248,6 +253,12 @@ pub extern "C" fn _start(env: Handle) -> ! {
                 }
                 TAG_PAUSESV1 => {
                     save_and_exit(con, lc, st, c);
+                }
+                TAG_PROBE => {
+                    // AM-1.5：探针回环（与 RESUMED 同款——判据 = 帧本身，
+                    // counter 带当拍值仅诊断辅证）。
+                    send_msg(lc, TAG_PROBED, c);
+                    print_line(con, b"apptomb probed c=", c);
                 }
                 // 未知 tag：v0 封闭协议（对端恒 svcmgr）——忽略续跑，前向
                 // 兼容面归 app-2 回调三口。
