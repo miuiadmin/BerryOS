@@ -141,7 +141,8 @@ DPG_BOOT_TIMEOUT_E = 3600
 # X-6 页/s 直测面（仪器刀 0——X6批供提速设计-v1.0 §5）：guest 观测行
 # `X6 pg=N sw=M`（pg = PAGER_SUPPLIED 累计供页〔rc==0 增〕、sw = PAGER_SWEEPS
 # 同源累计圈数；十进制单行、行不带钟）——svcmgr boot 验证环各 demand bin
-# （stdhello/hexyl/grep）验证成功后各单发，恰 3 行；x5/dpg 相位零发射
+# （hello/hexyl/boot 尾——83 lane 侦察校准三点形；grep 不在 boot 环，仅
+# x5_foot 语境）验证成功后各单发，恰 3 行；x5/dpg 相位零发射
 # （kick 行与 dpgsoak 面不动）。**观测线非门标记**：不进 markers.sh /
 # rootfs 51（kick 行同例——bench 侧消费）；词形契约 = X6 设计稿 §5 冻结。
 # 钟 = 宿主侧轮询新字节到达时戳（分辨率 ±X6_POLL_S；X6 §5「页/s 的钟 =
@@ -1000,7 +1001,8 @@ def run_dpg(kernel: str) -> None:
     print(f"[X-5(X5)] pA''={x5a} pB''={x5b} pC''={x5c} | "
           f"d''(demand双胎停泊)={dx5} e''(eager双胎全幅)={ex5} | "
           f"d''<e'' ok（差 {ex5 - dx5} 页）")
-    # X-6(0) 页/s 直测面：观测行恰 3（stdhello/hexyl/grep 后各一）——相邻差
+    # X-6(0) 页/s 直测面：观测行恰 3（hello/hexyl/boot 尾各一——83 lane 发射
+    # 点校准形）——相邻差
     # 分 = 各窗页数，宿主到达时戳差分 = 窗钟。无行 = 刀未落，观测面静默
     # （pre-X6 内核照跑照绿 = 零漂移构造性保证）；有行而非 3 = 词形契约破
     # loud 拒。
@@ -1009,8 +1011,11 @@ def run_dpg(kernel: str) -> None:
         if len(x6_events) != 3:
             raise SystemExit(
                 f"bench.py: X6 观测行 {len(x6_events)} ≠ 3（词形契约破——"
-                "boot 验证环三 bin 各一；查 svcmgr 发射点/行形）")
-        win_names = ("hexyl", "grep")  # 窗 i = 事件 i→i+1；首窗 = hexyl 装载
+                "boot 环三点各一（hello/hexyl/尾）；查 svcmgr 发射点/行形）")
+        # 窗 i = 事件 i→i+1。win0 = hello→hexyl = 纯 hexyl 装载窗（两 arm 环内
+        # 相邻零插花；u1 十二胎 + stdhello 均在首行前 = 黑暗基线不入窗）；
+        # win1 = hexyl→尾行 = 尾窗（simbattery/vprobe/app 批拉页）。
+        win_names = ("hexyl", "tail")
         wins = []
         for i, ((t0, p0, s0), (t1, p1, s1)) in enumerate(
                 zip(x6_events, x6_events[1:])):
