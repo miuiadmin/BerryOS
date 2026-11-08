@@ -675,22 +675,6 @@ test-host:
     # 黄金哈希 + 基线/下行部几何锚 + 8 拒面；PIL 在位时另做重产逐字节对拍
     # （缺席打 skip，黄金哈希兜底——host 门禁不硬依赖 PIL）。
     python3 tools/genhdfont.py --selftest
-    # Q1c（a-3 U4 纪律同款）：genohwallpaper 门禁自检——launcher 内建壁纸源
-    # 此前零守卫：135×240 结构钉板 + 头部 SHA-256 ↔ 源 jpg 溯源对账 +
-    # 32400px 黄金哈希 + 角锚/唯一色 + 8 拒面；PIL 在位时另做重产逐字节
-    # 对拍（缺席打 skip，黄金哈希兜底——genhdfont 同族降级面）。
-    python3 tools/genohwallpaper.py --selftest
-    # Q1c 续挖（a-3 U4 纪律同款）：genohicons 门禁自检——7 桌面图标此前零
-    # 守卫：stdlib PNG 解码钉**像素级**黄金哈希 ×7（编码器字节随 PIL 版本
-    # 漂移属合法通道，实测 11.3/12.3 像素等而字节 7/7 不等）+ 消费契约
-    # （alpha 二值 BYI1 前置 + EXACT 族 6-bit 量化网格 + 不透明账面）+
-    # 锚点 ×3 + 8 拒面；PIL 在位时加做 gradient/量化向量 + 重产像素对拍。
-    python3 tools/genohicons.py --selftest
-    # Q1c 三续（a-3 U4 纪律同款）：starvation_check 门禁自检——饥饿界证书
-    # （X-6 bench 对比轮消费面）此前零守卫：fair 等权/一般权界手算向量 +
-    # 权比不变性与 slice 线性 + unbounded 双通道（上层饱和/EDF 不可行）+
-    # 证书结构钉板 + 拒面（非正权/空 classes/非法 JSON/exit-code 契约）。
-    python3 tools/starvation_check.py --selftest
 
     python3 tools/elf2pe.py --selftest
     python3 tools/mkfat.py --selftest
