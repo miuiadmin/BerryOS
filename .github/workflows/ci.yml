@@ -30,12 +30,12 @@ jobs:
       # 应用规范 §15.2/SDK-2-资源 §一.2「禁全类别原语」grep 守卫：公开
       # Rust 面（*.rs）出现 all-files/all-media/all-devices 式聚合入口即
       # FAIL——词表闭集外新词必须过评审，防 scoped-storage 十年返工课重演。
-      # 只扫码面（docs/research 立法原文合法存在这些词）。
+      # git grep 只扫跟踪文件（cargo-target 构建产物里 uucore 帮助文本
+      # ls-help-all-files 假阳首跑实抓）——docs/research 立法原文合法存在
+      # 这些词，故只 *.rs。
       - name: 全类别原语 grep 守卫（禁 all-files/all-media/all-devices）
         run: |
-          if grep -rnE 'all[-_]files|all[-_]media|all[-_]devices' \
-              kernel/ sched/ mm/ ipc/ arch/ user/ drivers/ fs/ net/ \
-              --include='*.rs'; then
+          if git grep -nE 'all[-_]files|all[-_]media|all[-_]devices' -- '*.rs'; then
             echo "FAIL: 发现全类别原语（应用规范 §2.3/SDK-2-资源 §一）——树级/句柄粒度是唯一单位，聚合语法必须过评审立法"
             exit 1
           fi
