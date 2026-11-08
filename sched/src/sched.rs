@@ -960,8 +960,14 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
     }
     // SAFETY: SVC 路径 KL 已持；只读扫描。
     unsafe {
-        let check = |t: *mut Task| -> bool {
-            let t = &*t;
+        // app-1 段 a-1（2026-11-08 实证）：svc_mask 只在 SVC 窗口出口清零
+        //（:486），**睡在 syscall 内的任务（block_current 舞蹈放锁入队）带着
+        // 非零 mask 挂 SLEEPQ**——若对睡眠者也查 svc_mask，任何睡着的进程
+        // 结构性不可冻（16×50ms 采样全拒实证），与「到期 sleep 摘 RQ 挂起」
+        // 的冻结设计矛盾。睡眠者已放全部结构锁（舞蹈语义），mask 只是
+        // 「syscall 尚未走完出口」的记账残影——真正在飞（可被抢占于 SVC
+        // 窗内）的形态 = RQ 在席。故 svc_mask 只对 RQ 任务拒。
+        let sleep_ok = |t: &Task| -> bool {
             t.pi_inherited == 0
                 && t.wait_signals & (SIG_READABLE | SIG_WRITABLE) == 0
                 // 排除 HELD_FROZEN（bit6，嵌套冻结）+ HELD_THROTTLE（bit7，
@@ -970,14 +976,14 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
                 && t.held_locks
                     & !(crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE)
                     == 0
-                && t.svc_mask == 0
         };
+        let rq_ok = |t: &Task| -> bool { sleep_ok(t) && t.svc_mask == 0 };
         // SLEEPQ
         let mut cur = sleepq().head.get();
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
-            if (*t).pinned == pinned && !check(t) {
+            if (*t).pinned == pinned && !sleep_ok(&*t) {
                 return false;
             }
         }
@@ -988,7 +994,7 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head——先 break 会漏尾/单元素。
-                if (*t).pinned == pinned && !check(t) {
+                if (*t).pinned == pinned && !rq_ok(&*t) {
                     return false;
                 }
                 cur = (*t).rq_next.get();
@@ -2641,17 +2647,19 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
     // 扫双 RQ + SLEEPQ 找匹配 thread_key 的任务，检查 PI/派生位/持锁。
     // SAFETY: SVC 路径 KL 已持；只读扫描。
     unsafe {
-        let check = |t: *mut Task| -> bool {
-            let t = &*t;
-            t.pi_inherited == 0 && t.held_locks == 0 && t.svc_mask == 0
-        };
+        // app-1 段 a-1 同款修正（见 freeze_precheck_by_pinned 注）：svc_mask
+        // 是 SVC 出口清零的窗内记账——睡在 syscall 内的任务带非零 mask 挂
+        // SLEEPQ，睡眠者不查（已放全部结构锁）；RQ 在席（真在飞/窗内可抢
+        // 占）才拒。
+        let sleep_ok = |t: &Task| -> bool { t.pi_inherited == 0 && t.held_locks == 0 };
+        let rq_ok = |t: &Task| -> bool { sleep_ok(t) && t.svc_mask == 0 };
         for cpu in 0..2 {
             let head = rq_of(cpu).head();
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head。
-                if (*t).thread_key == thread_key && !check(t) { return false; }
+                if (*t).thread_key == thread_key && !rq_ok(&*t) { return false; }
                 cur = (*t).rq_next.get();
                 if cur == head { break; } // 环终止
 
@@ -2661,7 +2669,7 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
-            if (*t).thread_key == thread_key && !check(t) { return false; }
+            if (*t).thread_key == thread_key && !sleep_ok(&*t) { return false; }
         }
     }
     true

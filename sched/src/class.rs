@@ -39,10 +39,11 @@ static mut LAST_VCT: u64 = 0;
 /// `OsSchedTimeConvertFreq` 式）。
 ///
 /// **4-3a 起 pick 按 `prio_effective` 出选**（`调度器设计.md` §3.6「调度决策
-/// 一律看 effective」的 v1 兑现——PI 捐赠与 AI 权重微调的共同消费点）：两圈
-/// 扫描（一圈记最高、一圈从 head 起取第一个 == 最高者），选中后游标前移到
-/// 其后继——**同 effective 层内轮转、跨层严格优先**。全员同 effective
-/// （v1 常态：prio 全 0）时与纯 rotate 逐轮等价，既有矩阵零扰动。
+/// 一律看 effective」的 v1 兑现——PI 捐赠与 AI 权重微调的共同消费点）：单圈
+/// 扫描同时追踪最高带与带内最优（S2 合并形——旧两圈：一圈记最高、一圈取
+/// 第一个 == 最高者），选中后游标前移到其后继——**同 effective 层内轮转、
+/// 跨层严格优先**。全员同 effective（v1 常态：prio 全 0）时与纯 rotate
+/// 逐轮等价，既有矩阵零扰动。
 ///
 /// pick 扫描、**不摘除**任务（runnable 任务常驻环；当前任务也在环里）——故
 /// 协作 `yield_now` / 抢占 `tick` 只需调一次 `pick_next`，无需每次 enqueue/dequeue
@@ -328,7 +329,7 @@ impl Fair {
     }
 
     /// 过滤版出选（S-2b inherent 方法——trait 冻结不动）：
-    /// 先取环上最高 `prio_effective` 带，再在带内按 EEVDF 选。
+    /// 单圈扫描同时定最高 `prio_effective` 带与带内 EEVDF 最优（scan_filtered）。
     ///
     /// 带内：优先 `vruntime <= avg`（eligible）者，键 `(vdeadline, vruntime)`；
     /// 同键保持 head 侧先见（`advance_past` 推进游标 = 等权 FIFO 轮转）。
@@ -347,71 +348,74 @@ impl Fair {
         Some(t)
     }
 
-    /// 单圈两段扫描：先定最高带，再带内 EEVDF（零分配）。
+    /// 单圈合并扫描：同时追踪最高带与带内 EEVDF 最优（零分配）。
+    ///
+    /// 合并前形态 = 两圈（段 1 全环定最高 `prio_effective` 带、段 2 带内
+    /// EEVDF）；现单圈三分支等价合并——任一扫描前缀上不变式：`best_eff` =
+    /// 前缀 eligible 的最高带，`best` = 该带内 EEVDF 最优（同键首见保序）。
+    /// 逐元素三分支：
+    /// - 更高带（`e > best_eff`）→ 重置 best（旧段 1 max_eff 更新 + 段 2
+    ///   最优清空的合并点）；
+    /// - 同带（`e == best_eff`）→ 旧段 2 原样 EEVDF 比较（eligible 优先、
+    ///   键 `(vdeadline, vruntime)`、严格 `<` 保首见）；
+    /// - 低带 → 跳过（无出选资格）。
+    ///
+    /// 初值 `best_eff = i32::MIN` + `best = None`：首个 eligible 必落「更高
+    /// 带重置」（e > i32::MIN）或退化 i32::MIN 带「同带首见」（best=None
+    /// 兜底选中）；环上无 eligible 时 best 保持 None 返 None（旧段 1
+    /// `max_eff == i32::MIN` 早退同义）。
+    ///
+    /// S2b PURE 开关：`!PURE_EEVDF &&` 门使带比较恒假 → 所有任务同带，
+    /// 只剩 EEVDF 分支（旧 `in_band` 恒 true 同义；const 折叠零运行时开销）。
     fn scan_filtered(&self, rq: &Runqueue, my_cur: *mut Task) -> Option<NonNull<Task>> {
         let h = rq.head()?;
         let avg = avg_vruntime(rq).unwrap_or(0);
         // SAFETY: 环上任务均调度器拥有且在环；调用侧全在 KERN_LOCK 窗内
         // （SVC/tick/klock 包络）——扫描期间无并发出/入环（E0 BKL 执法面）。
         unsafe {
-            // S2b 实验开关：true = 跳过段 1（无带序），段 2 对所有任务开放。
-            // false（S2a 默认）= 段 1 先选最高带，段 2 带内 EEVDF。
-            let max_eff = if PURE_EEVDF {
-                i32::MIN // 哨兵：段 2 的 `prio_effective == max_eff` 判恒假
-                        // → 改用 `!= i32::MIN`（即无条件通过）。
-                } else {
-                // 段 1：最高 prio_effective 带（严格带序——PI 仍即时生效）。
-                let mut me = i32::MIN;
-                let mut cur = h;
-                loop {
-                    if eligible(my_cur, cur.as_ptr()) {
-                        let e = (*cur.as_ptr()).prio_effective;
-                        if e > me {
-                            me = e;
-                        }
-                    }
-                    cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-                    if cur == h {
-                        break;
-                    }
-                }
-                me
-            };
-            if !PURE_EEVDF && max_eff == i32::MIN {
-                return None;
-            }
-            // 段 2：EEVDF（eligible 优先；同键首见保序）。S2a 带内 / S2b 全环。
-            let in_band = |e: i32| -> bool {
-                if PURE_EEVDF { true } else { e == max_eff }
-            };
             let mut best: Option<NonNull<Task>> = None;
+            let mut best_eff = i32::MIN;
             let mut best_elig = false;
             let mut best_key = (u64::MAX, u64::MAX);
             let mut cur = h;
             loop {
-                if eligible(my_cur, cur.as_ptr())
-                    && in_band((*cur.as_ptr()).prio_effective)
-                {
-                    let t = &*cur.as_ptr();
-                    let elig = t.vruntime <= avg;
-                    let key = (t.vdeadline, t.vruntime);
-                    let better = match best {
-                        None => true,
-                        Some(_) => {
-                            if elig != best_elig {
-                                elig
-                            } else {
-                                key < best_key
-                            }
-                        }
-                    };
-                    if better {
+                let p = cur.as_ptr();
+                // eligible 过滤（Running-elsewhere/FROZEN/THROTTLE）在带比较
+                // 前——被过滤者不参与 best_eff 竞争（旧两段同口径）。
+                if eligible(my_cur, p) {
+                    let e = (*p).prio_effective;
+                    if !PURE_EEVDF && e > best_eff {
+                        // 更高带 → 重置带内最优。
+                        let t = &*p;
+                        best_eff = e;
                         best = Some(cur);
-                        best_elig = elig;
-                        best_key = key;
+                        best_elig = t.vruntime <= avg;
+                        best_key = (t.vdeadline, t.vruntime);
+                    } else if PURE_EEVDF || e == best_eff {
+                        // 同带 → EEVDF（eligible 优先；同键首见保序——
+                        // `key < best_key` 严格小于，首见不替换）。
+                        let t = &*p;
+                        let elig = t.vruntime <= avg;
+                        let key = (t.vdeadline, t.vruntime);
+                        let better = match best {
+                            None => true,
+                            Some(_) => {
+                                if elig != best_elig {
+                                    elig
+                                } else {
+                                    key < best_key
+                                }
+                            }
+                        };
+                        if better {
+                            best = Some(cur);
+                            best_elig = elig;
+                            best_key = key;
+                        }
                     }
+                    // e < best_eff → 低带无资格，跳过。
                 }
-                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+                cur = (*p).rq_next.get().expect("环上节点必有 next");
                 if cur == h {
                     break;
                 }
