@@ -235,6 +235,14 @@ pub const FMT_ARGB8888: u32 = 1 << 1;
 /// 像素格式位（位域）：RGB565。
 pub const FMT_RGB565: u32 = 1 << 2;
 
+/// PREPARE flags 位（hdi 域 buffer 对象能力位）：预留——可被服务端
+/// （合成器）直接采样（Veda 启示八，调研 23 号；与 per-surface 帧率意图位
+/// 同批的伙伴位，GUI-2 消费侧已实施）；v1 无消费者，wire 位 add-only 冻结
+/// 语义=0 不可采样——置位帧 encode assert 炸响 / parse None（既有「flags
+/// v1 恒 0」双侧执法即其冻结面，位认领零 wire 行为变更）；未来激活 = 编码
+/// assert 与解析值域同步收宽（`scene_known` 收宽先例，add-only）。
+pub const PREPARE_F_SERVER_SAMPLABLE: u8 = 1 << 0;
+
 /// 投递模式：攒批（SYN 批聚合）。
 pub const DELIVERY_BATCHED: u8 = 0;
 /// 投递模式：即到即派逃生门（v0 服务端允许降级 BATCHED——合法不违协议）。
@@ -1287,7 +1295,9 @@ pub fn parse_vblank_rep(buf: &[u8]) -> Option<VblankRep> {
 /// 任意 u32 合法帧——编码/解析不拦，§3.5-6）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrepareReq {
-    /// v1 恒 0（双侧执法）。
+    /// v1 恒 0（双侧执法）——含预留位 [`PREPARE_F_SERVER_SAMPLABLE`]（bit0
+    /// 已认领、语义冻结 0 不可采样，见其 doc；bit1..=7 未认领仍属「恒 0」
+    /// 整体执法面）。
     pub flags: u8,
     pub width: u32,
     pub height: u32,
@@ -1296,7 +1306,8 @@ pub struct PrepareReq {
 }
 
 /// 编码 PREPARE 请求（恰 20B `[op][flags][r16][w u32][h u32][stride u32]
-/// [format u32]`；flags ≠ 0 / buf 不足 = 调用方错，assert）。
+/// [format u32]`；flags ≠ 0（含预留位 SERVER_SAMPLABLE——v1 冻结 0 不可
+/// 采样）/ buf 不足 = 调用方错，assert）。
 pub fn encode_prepare_req(out: &mut [u8], req: &PrepareReq) -> usize {
     assert!(req.flags == 0, "guiproto: prepare flags v1 恒 0");
     assert!(out.len() >= PREPARE_REQ_LEN, "guiproto: prepare req buf 不足");
@@ -1311,7 +1322,8 @@ pub fn encode_prepare_req(out: &mut [u8], req: &PrepareReq) -> usize {
     PREPARE_REQ_LEN
 }
 
-/// 解析 PREPARE 请求：恰 20B + flags == 0（v1）；format 任意 u32 合法。
+/// 解析 PREPARE 请求：恰 20B + flags == 0（v1——含预留位
+/// [`PREPARE_F_SERVER_SAMPLABLE`] 冻结 0，置位帧拒）；format 任意 u32 合法。
 pub fn parse_prepare_req(buf: &[u8]) -> Option<PrepareReq> {
     if buf.len() != PREPARE_REQ_LEN || buf[0] != OP_PREPARE {
         return None;
@@ -2752,11 +2764,17 @@ mod tests {
         odd.format = 0xFFFF_FFFF;
         let n = encode_prepare_req(&mut buf, &odd);
         assert_eq!(parse_prepare_req(&buf[..n]), Some(odd));
-        // flags ≠ 0 拒（v1 恒 0，双侧执法）。
+        // flags ≠ 0 拒（v1 恒 0，双侧执法）——预留位 SERVER_SAMPLABLE
+        // （bit0）同面：冻结语义=0 不可采样，置位帧解析 None（编码 assert
+        // 面见 should_panic 测试；Veda 启示八预留，激活 = 值域收宽）。
         let mut b2 = [0u8; PREPARE_REQ_LEN];
         encode_prepare_req(&mut b2, &req);
-        b2[1] = 1;
+        b2[1] = PREPARE_F_SERVER_SAMPLABLE;
         assert_eq!(parse_prepare_req(&b2), None);
+        // 预留位钉板：认领 bit0；flags=0 默认形上面已往返 = 新位默认 0
+        // 不可采样（与帧率意图位同批的伙伴位，GUI-2 消费侧已实施）。
+        assert_eq!(PREPARE_F_SERVER_SAMPLABLE, 1 << 0);
+        assert_eq!(req.flags & PREPARE_F_SERVER_SAMPLABLE, 0);
         // 截断每切点 / 尾随 / 错 op。
         encode_prepare_req(&mut buf, &req);
         for cut in 0..PREPARE_REQ_LEN {
@@ -2766,6 +2784,22 @@ mod tests {
         tail[..20].copy_from_slice(&buf);
         assert_eq!(parse_prepare_req(&tail), None);
         assert_eq!(parse_prepare_req(&[OP_COMMIT, 0, 0, 0]), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "guiproto")]
+    fn prepare_encode_rejects_server_samplable_frozen_zero() {
+        // 预留位 v1 冻结 0：置位编码 = 调用方程序员错，assert 炸响——
+        // 双侧执法的编码侧一半（解析侧 None 面在 roundtrip 测试钉板）。
+        let req = PrepareReq {
+            flags: PREPARE_F_SERVER_SAMPLABLE,
+            width: 800,
+            height: 600,
+            stride: 3200,
+            format: FMT_XRGB8888,
+        };
+        let mut buf = [0u8; PREPARE_REQ_LEN];
+        encode_prepare_req(&mut buf, &req);
     }
 
     #[test]
