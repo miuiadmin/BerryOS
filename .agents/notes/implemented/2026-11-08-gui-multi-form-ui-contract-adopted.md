@@ -19,10 +19,10 @@ GUI-12 深研显示，简单移动应用、Photoshop 级工作台、AAA 游戏�
 
 ## Consequences
 
-F4/F5 出口门不变。P0 必须冻结 Surface role/mode、input class、IME composition、a11y sidecar、safe area/scale factor 与 canvas/immersive escape hatch，并通过 host 编解码与拒面测试后才能开 F6。自绘应用不能直写屏或绕过 Berry Room 能力；BerryUI 未来桌面专业件共享 retained core，但焦点/键盘、文本编辑/IME、虚拟化与 canvas surface 缝必须在 P0 和后续桌面件刀中显式设计。
+F4/F5 出口门不变。P0 必须冻结 Surface role/mode、input class、IME composition、a11y sidecar、safe area/scale factor 与 canvas/immersive escape hatch，并通过 host 编解码与拒面测试后才能开 F6。2026-11-08 规则补漏将现行路线升至 v1.4：P0 编号限定为 GUI Surface Mode 插入门；普通 BerryUI app 与专业/游戏 renderer 的像素边界、语义旁车和静态守卫例外分别立法。自绘应用不能直写屏或绕过 Berry Room 能力；BerryUI 未来桌面专业件共享 retained core，但焦点/键盘、文本编辑/IME、虚拟化与 canvas surface 缝必须在 P0 和后续桌面件刀中显式设计。
 
 ## Related
 
 - [GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md)
-- [GUI框架地基路线-v1.3.md](../../../docs/GUI框架地基路线-v1.3.md)
+- [GUI框架地基路线-v1.4.md](../../../docs/GUI框架地基路线-v1.4.md)
 - [14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)
