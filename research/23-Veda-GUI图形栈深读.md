@@ -2,7 +2,9 @@
 
 > 调研日期 2026-11-08 · 方法:精读 /tmp/os-src/Veda/documentation/ARCHITECTURE.md 的 The window system / Displays and GPUs / The shell / Graphics and the toolkit / OpenGL ES and the GPU / Video / Applications 七节(全文 1227 行中的 599–1070 行),辅以 implementation/ 下 services/compositor、shell/、libraries/{proto,ui,gfx,gl}、guests/linux/{kms,renderer} 的目录结构与关键文件头注抽查(读 lib.rs/main.rs/协议文件头部注释,未逐行读实现);对照面只读 docs/GUI里程碑规划-2026-10-v1.0.md 与 docs/事件循环A7设计草案-v1.0.md 头部。
 >
-> 本文为 23 号专题（原 20 号与既有 Apple-iOS 对标报告撞号，2026-11-08 收口改号）;结论均注出处(文件:行号或节名),不自造事实。兄弟篇:12 号(Veda 全景四家深读,含同意机制三件)、13 号(轨迹与踩坑)。**编号注记**:research/ 目录已有 20-Apple-iOS应用规范对标.md,本文件按任务指定名落库,编号撞号如实记录,归档时再统一调号。
+> 本文为 23 号专题（原 20 号与既有 Apple-iOS 对标报告撞号，2026-11-08 收口改号）;结论均注出处(文件:行号或节名),不自造事实。
+> 兄弟篇:12 号(Veda 全景四家深读,含同意机制三件)、13 号(轨迹与踩坑)。
+> **编号注记**:research/ 目录已有 应用规范-Apple-iOS对标-2026-11.md（原占 20 号位，后去号更名）,本文件按任务指定名落库,编号撞号如实记录,归档时再统一调号。
 >
 > 禁 git 操作、禁改代码,本报告为纯调研产物。
 

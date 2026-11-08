@@ -3576,8 +3576,9 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// = 30 号**；**T-1 加 thread_start(0x35) = 31 号；A7-4 加
 /// signal_send(0x86)/signal_take(0x87) = 33 号；G4-2 加
 /// pager_supply_pages(0x21，v2 号激活) = 34 号；G4-4 X-3b 加
-/// pager_supply_mapped(0x23，门 C 裁 A add-only——恒等选源挂派发) = 35 号
-/// ——v1 在册 36 号（唯 0x85 `berry_attest` 预留）真语义全部实现**；
+/// pager_supply_mapped(0x23，门 C 裁 A add-only——恒等选源挂派发) = 35 号；
+/// X-6 刀① 加 pager_supply_mapped_table(0x24) = 36 号已实现；v1 在册 37 号
+/// （唯 0x85 `berry_attest` 预留未实现）**；
 /// **S6-b 加 policy_bind(0x83，v3 号提前实现最小 COMMIT 面——v1 号面之外
 /// 首个真注册的 v3 号，ABI §4 在册同名单源）**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
