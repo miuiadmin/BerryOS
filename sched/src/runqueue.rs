@@ -4,7 +4,7 @@ use crate::spin::SpinLock;
 use crate::task::Task;
 use core::cell::Cell;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// 单 CPU 的运行队列。G0 单核：全局一个。
 ///
@@ -67,6 +67,39 @@ pub const RING_WALK_CAP: usize = 128;
 /// panic = halt，ktest 只能测判据不能测炸）。
 pub fn linkable(t: &Task) -> bool {
     t.rq_prev.get().is_none() && t.rq_next.get().is_none()
+}
+
+/// **S5-c 计数门账本**：全域「在环 deadline 任务数」（消费面 = `class.rs::
+/// lazy_unthrottle_deadlines` 头部门——0 时跳过整圈环扫描；v1 常态全员
+/// fair，门常闭 = 每次 pick 零扫描）。
+///
+/// **账点挂结构原语层**（`link_back`/`unlink`——同 `len`/`sum_vruntime`
+/// 先例）：出环生产路径不止 `Fair::dequeue` 一条——block 直调 `unlink`
+/// （`RR.dequeue` 会置 Exited，语义不符）、steal 摘对核环也直调——挂
+/// `Fair::enqueue`/`dequeue` 必漏账。原语层全覆盖：出/入环结构手术
+/// 只此两函数。
+///
+/// **全局而非 per-RQ**（设计取舍）：SMP 下本核 pick 读到的可能是对核
+/// 环的份额——保守方向（多扫不漏扫），不会漏。多计来源恒合法：ktest
+/// 本地环（只增不减）与 on-ring 降带（ktest D3 直改 prio——计数只反映
+/// link 时刻带位）。**漏计（危险向：门跳过需要的解冻扫描）生产不存在**：
+/// 生产升 DL 唯一点 = `apply_sched_attr_to_task`，恒在 enqueue 前
+/// （`try_prepare_user` → 属性 → `enqueue_prepared_user`）；PI 捐赠只写
+/// SLEEPQ 在队者（离环），唤醒入环时按已升值计数；`policy::apply` 权重
+/// 夹紧 ±64 与 spawn 基线（≤64）够不到 1000 带。执法 = `integrity_check`
+/// 单边对账（真扫 ≤ 账本，见 `dl_on_ring_walk`）。
+///
+/// **真 RMW 而非 len 的 load+store**：`len`/`sum_vruntime` 是 per-queue
+/// 单写者（本队列 RQ 锁窗内免 RMW）；本账本全局双 RQ 锁窗多写者，
+/// 须 `fetch_add`/`fetch_sub`。Relaxed 够——纯计数门无序角色（门读偏旧
+/// = 保守），账点与结构手术同锁窗（锁全序保证读者可见性，同 `len` 论证）。
+static DL_ON_RING: AtomicU32 = AtomicU32::new(0);
+
+/// 计数门读（S5-c）：全域在环 deadline 任务数。0 = 环上（全域）无
+/// link 时带位 ≥ PRIO_DEADLINE 的任务——lazy 解冻扫描可整圈跳过。
+#[inline]
+pub(crate) fn dl_on_ring() -> u32 {
+    DL_ON_RING.load(Ordering::Relaxed)
 }
 
 impl Runqueue {
@@ -204,6 +237,45 @@ impl Runqueue {
         self.head.get().is_none()
     }
 
+    /// 真扫本环数 deadline 任务（S5-c 计数门对账面——消费点 =
+    /// `sched::integrity_check` 金丝雀：本环真扫值不得高于 [`dl_on_ring`]
+    /// 全局账本，**单边断言**）。单边的理由：多计恒合法（ktest 本地环 /
+    /// on-ring 降带只增不减）；漏计是危险向（门跳过需要的解冻扫描）——
+    /// 只有它须响亮失败。走查判据带位读**当下**值（同 `lazy_unthrottle_
+    /// deadlines` 扫描面口径——对账的正是「门看到的账」vs「扫描看到的真」）。
+    ///
+    /// 调用契约同 [`Self::ring_check`]（本环 RQ 锁窗内或其串行等价——
+    /// 走查期间无并发出/入环；账本读须同窗，见消费点注）。
+    pub(crate) fn dl_on_ring_walk(&self) -> usize {
+        let Some(h) = self.head.get() else {
+            return 0;
+        };
+        // SAFETY: 环走查同款不变式（§A136：先访当前节点、后判回 head）；
+        // 环上任务均调度器拥有（ring_check 扫描同款）。
+        unsafe {
+            let mut cur = h;
+            let mut steps = 0;
+            let mut n = 0;
+            loop {
+                steps += 1;
+                assert!(
+                    steps <= RING_WALK_CAP,
+                    "dl_on_ring_walk: ring walk exceeds cap (broken links?)"
+                );
+                if crate::class::is_deadline(&*cur.as_ptr()) {
+                    n += 1;
+                }
+                cur = (*cur.as_ptr())
+                    .rq_next
+                    .get()
+                    .expect("dl_on_ring_walk: on-ring node must have next");
+                if cur == h {
+                    return n;
+                }
+            }
+        }
+    }
+
     /// 把 `task` 插到环尾（head 的前驱）——新任务排到最后被 pick。
     ///
     /// # Safety
@@ -250,6 +322,13 @@ impl Runqueue {
                 .saturating_add((*t).vruntime),
             Ordering::Relaxed,
         );
+        // S5-c 计数门入账：link 时刻带位是 DL 则全局账本 +1。账点挂结构
+        // 原语层的理由见 `DL_ON_RING` 字段注——block/steal 出环不经
+        // `Fair::dequeue`，挂类层必漏账。真 RMW（全局账本双 RQ 锁窗
+        // 多写者），与结构接线同锁窗（读者可见性同 `len` 的锁全序论证）。
+        if crate::class::is_deadline(&*t) {
+            DL_ON_RING.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
@@ -292,6 +371,16 @@ impl Runqueue {
                 .saturating_sub(vr),
             Ordering::Relaxed,
         );
+        // S5-c 计数门出账：判据读**摘线时刻**带位（与入账的 link 时刻带位
+        // 在生产恒同——带位在环上不变，见 `DL_ON_RING` 字段注）。漂移两向
+        // 均落安全侧：ktest 降带后摘线 → 漏减 = 账本偏高 = 多扫；理论上
+        // （生产不存在）升带后摘线 → 无配对减 = u32 回绕到巨值 = 门常开。
+        // 幂等早退分支（不在环——函数头 `else { return; }`）不触此处，无
+        // 重复出账；steal 的「对核 unlink + 本核 link_back」两腿同额反向，
+        // 全局账本净零。
+        if crate::class::is_deadline(&*t) {
+            DL_ON_RING.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     /// 环游标（4-3a：`RoundRobin::pick_next` 环形扫描的起点）。crate 内策略
