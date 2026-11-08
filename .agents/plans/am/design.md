@@ -3,15 +3,16 @@
 Type: spec
 Status: active
 Updated: 2026-11-08
-Version: 0.2.0
+Version: 0.3.0
 
-一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。**v0.2.0：Q1–Q3 三裁决落定（见「裁决记录」节），AM-1 可开工。**
+一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。**v0.3.0：Q1–Q3 裁决落定 + 重锚 appd（应用模型 §4.1 立法承载，am 不新建守护进程）+ 与 app-1 实施草案梯度互证对齐。**
 
 ## 背景
 
 - 证据基座 = [`research/AM-01-墓碑模式开源对标-v1.0.md`](../../../research/AM-01-墓碑模式开源对标-v1.0.md)：开源谱系四层 + 最先进八判据——主路径 freeze+压缩换出（Android 官方 −30% 冷启动），最先进形态 = Fuchsia「墓碑是 VMO + 用户态 pager + 持久存储的自然推论」，与 BerryOS 架构同构。
 - 内核机制面已在，am 是组合者不是发明者：token freeze（`调点调度-v1.1` W3：0x3E `process_suspend` + `SuspendToken` ObjType 12 + `FREEZE_READY` 自证 + 三重正交谓词，已落地含 S5.11 遥测）；VMO 5 类后备与可换出 + 用户态 pager（`内存管理设计-v1.0` §2/§4，X-6 供给链在途）；同步 channel + Event 通知；telemetry 环（ADR #45 不建第二数据库）。
 - 契约层已立法：PM-00 裁决「默认冻结非杀」day-one、manifest 能力位、长时任务 reason u8 + 系统校验；ADR #68 纪律——SDK 面零新 syscall、纯协议 crate（berry-pwproto 先例）。
+- **执行承载 = appd（立法锚）**：`应用模型设计-v1.0` §4.1 已立生命周期分级 active → freeze → tombstone → not running（pause(save)/64KiB 帽/LRU/relaunch 读档）——AM-01 调研结论与该立法原文**独立同构、互证**；am 是该域的模块设计（梯度契约 + 策略层），不新建守护进程，消费链落 appd（监督域 `规则/05`）。首刀实施 = `app-1实施设计草案-v1.0`（段 a freeze-first / 段 b 墓碑协议 v0）。
 - 排除 8 问：本设计纯机制借鉴（Android/Fuchsia/OH 文档级），无代码引入，许可边界干净。
 
 ## 范围
@@ -28,7 +29,7 @@ Version: 0.2.0
 | L0 discardable 收割 | 内存低水位 | app 声明 `DISCARDABLE` 的匿名 VMO 由内核择机弃页（Q2 裁决：`vmo_create` 选项位 + 锁语义挂 commit/decommit 动词扩展，零新 syscall） | 页丢失、对象在 | app 自重建（重新 lock 填充） |
 | L1 pager 压缩换出 | 冻结后 + 水位 | am 请 pager 收该进程匿名页进压缩仓（zram 等价），日预算护闪存（OH 借鉴：初值日 50MB 量级，遥测可调） | 压缩仓/盘 | 缺页级惰性重取 |
 | L2 冻结 | 进后台 debounce（Q3 裁决：自适应——基线 10s【推】；压力 WARNING→0；intent/返回概率调制钩子 AM-5 接） | am 持 SuspendToken 调 0x3E；冻前发 onBackground（限时）；豁免面 = 长时任务 reason 白名单（PM-00 已立法；Q1-c 使绑定豁免消失） | 进程内存原地 | 解冻（近零） |
-| L3 杀 + 墓碑 | 压力信号超阈（L0–L2 不足） | 按优先级表选列 kill；task-bound KB 级状态已托管；合成器快照先行；退出原因可查 | am 状态目录 + 快照 | 冷启动 + 状态重放 + 快照遮盖 |
+| L3 杀 + 墓碑 | 压力信号超阈（L0–L2 不足）；v0 = 显式自验触发（真触发挂 GUI 线/v2，app-1 范围盒子同裁） | PAUSESV1（appd 计时 deadline 10s，超时监督杀且**不入墓碑表**——失败态不复活）→ state VMO **64KiB 定尺寸结构性执法**（越写物理不可，比「appd 执法」更强）→ 墓碑表 RAM 8 槽 LRU → relaunch `dup(READ)` 读档 | appd 墓碑表 + state VMO | 冷启动 + 状态重放 + 快照遮盖（v2） |
 | L4 归档 | 数月未用（v2） | 权限/缓存/包体联动回收（PM-00 契约层已定豁免位） | 存储 | 解档重装 |
 
 **决策归属**：梯度选择与阈值全在 am（用户态策略），内核只提供机制（freeze/VMO/遥测）——SCHED-01 教训「策略不进快路径」。intent（ADR #42/#58）与返回概率（AI 实验轨道）作 am 的策略输入，调 debounce 与换出深度。
@@ -65,7 +66,7 @@ BerryOS channel 本就是**非阻塞有界队列**（send 满拒 -EBUSY、阻塞
 
 ## 落地刀序（依赖在途 lane）
 
-AM-0 本设计（含 Q1–Q3 裁决）→ AM-1 前置内核小刀（wake-pending 标记 + Event 通知 token 持有者）+ am 骨架 + 优先级表 + L2 冻结决策（freeze 已落，可即开）→ AM-2 压力信号（telemetry 增量）→ AM-3 杀+墓碑+快照（依赖 X-6 收官 + 合成器截屏接口）→ AM-4 L1 换出预算 + L0 discardable（依赖 pager 压缩仓成形 + `内存管理设计` v1.1 补 DISCARDABLE 条目）→ AM-5 归档 + AI 返回概率调梯度（KC 先立，PM-00 KC-P 同款立法）。
+AM-0 本设计 → **AM-1/AM-3-v0 由 app-1 草案执行**（段 a = L2 freeze-first「FROZEN ok」、段 b = L3 v0 墓碑协议「TOMB ok」，零内核前置）→ AM-1.5 内核小刀（wake-pending + Event 通知 token 持有者——挂 app-1 v0 收官后，真触发落地前）→ AM-2 压力信号（telemetry 增量）→ AM-3 全态（快照先行 + 退出原因可查，依赖 X-6 收官 + 合成器截屏接口）→ AM-4 L1 换出预算 + L0 discardable（依赖 pager 压缩仓成形 + `内存管理设计` v1.1 补 DISCARDABLE 条目）→ AM-5 归档 + AI 返回概率调梯度（KC 先立，PM-00 KC-P 同款立法）。冻结 DoS 既有执法面 = S5.12 每 caller 活跃 token 上限 64（超限 -EBUSY），wake-flood 防护叠加遥测不需新帽。
 
 ## 适用边界
 
@@ -73,13 +74,14 @@ AM-0 本设计（含 Q1–Q3 裁决）→ AM-1 前置内核小刀（wake-pending
 - 冻前 GC 钩子只留接口——v1 应用生态无 GC runtime；未来 runtime 接入时由 runtime 消费。
 - 本设计不动 `调点调度-v1.1` 与 `内存管理设计-v1.0` 条文——discardable（Q2）若裁入 5 类枚举/标志位，先升 `内存管理设计` v1.1 再动代码。
 - 与 PM-00 分工：PM-00 管契约形状（豁免位/白名单/能力位），am 管机制执行——冲突以 PM-00 为准。
+- 挂账：应用模型 §4.1「freeze 挂 v2」旧口径已被内核现役推翻（0x3E 真实现役，app-1 实测锚点）——应用模型 v1.1 回写归 app-1 段 b-2 文书收官清单，本设计不代写。
 
 ## 裁决记录（2026-11-08 仓主授权拍板，因果详[笔记](../../notes/implemented/2026-11-08-am-q1q2q3-rulings.md)）
 
 - **Q1 同步 IPC × 冻结 → 唤醒即解冻（c），v1 直上**：非阻塞有界队列天然排队 + wake-pending 通知 am + 默认立即解冻；token 持有者死亡 auto-thaw 封死 am 崩溃面；-EAGAIN 不设新口（`wait_one` 超时即得）。弃 b 的理由：全员重试 = 生态负担，违「默认值即生态」。
 - **Q2 discardable → 匿名类 `DISCARDABLE` 选项位，非第 6 类后备**：回收策略与后备来源正交（Fuchsia 同款——ZX_VMO_DISCARDABLE 是标志不是类型）；锁语义挂 commit/decommit 动词扩展，零号预算；动代码前先升 `内存管理设计` v1.1 补条目。
-- **Q3 debounce/豁免 → 自适应三元 + 豁免面缩到白名单**：基线 10s【推，HDR 实测定标】/ 压力 WARNING→0 / intent·返回概率调制（AM-5 接钩子）；豁免面 = 长时任务 reason 白名单（PM-00 已立法）——Q1-c 使绑定豁免消失（call 即唤醒），豁免面保持小而可审计（bfcache 教训）。
+- **Q3 debounce/豁免 → 自适应三元 + 豁免面缩到白名单**：基线 10s 与规范 §4.1-1 立法值同值互证（app-1 §7 对账表）【HDR 实测定标仍留】/ 压力 WARNING→0 / intent·返回概率调制（AM-5 接钩子）；豁免面 = 长时任务 reason 白名单（PM-00 已立法）——Q1-c 使绑定豁免消失（call 即唤醒），豁免面保持小而可审计（bfcache 教训）。
 
 ## Related
 
-[AM-01 调研](../../../research/AM-01-墓碑模式开源对标-v1.0.md) · [调点调度 v1.1](../../../docs/调点调度-v1.1.md) · [内存管理设计 v1.0](../../../docs/内存管理设计-v1.0.md) · [PM-00 省电综合裁决](../../../research/PM-00-全系统省电架构综合裁决-v1.1.md) · [SCHED-01](../../../research/SCHED-01-调度之王业界深研与综合裁决-v1.0.md) · [规则/05 服务监督](../../../docs/规则/05-服务监督.md)
+[AM-01 调研](../../../research/AM-01-墓碑模式开源对标-v1.0.md) · [调点调度 v1.1](../../../docs/调点调度-v1.1.md) · [内存管理设计 v1.0](../../../docs/内存管理设计-v1.0.md) · [PM-00 省电综合裁决](../../../research/PM-00-全系统省电架构综合裁决-v1.1.md) · [SCHED-01](../../../research/SCHED-01-调度之王业界深研与综合裁决-v1.0.md) · [规则/05 服务监督](../../../docs/规则/05-服务监督.md) · [应用模型设计 §4.1（立法原文）](../../../docs/应用模型设计-v1.0.md) · [app-1 实施设计草案（首刀）](../../../docs/app-1实施设计草案-v1.0.md)
