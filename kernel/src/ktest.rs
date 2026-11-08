@@ -3840,7 +3840,6 @@ fn test_policy_shadow() {
 /// 节；只经 pub 接口 `bind_gen`/`bind_gen_shadow`/`promote`/`demote`/
 /// `divergence_count`/`shadow_eval_count`/`divergence_reset` 驱动，对账挂
 /// `apply` 头部、由 `pick_next` 间接跑——决策路径真消费，不直接调）：
-/// - **DV-1 无 shadow 意见 → divergence 不增长**：`shadow_gen()==0` 的谱系
 ///   空跳过面（`shadow_reconcile` 一次 gen 读即返、不进分母）全局仅存在于
 ///   首次 `bind_gen_shadow` 之前——已被 SHD-K 消费（其 SH-5 物理前置同判；
 ///   收尾遗留 gen=0x1_0000_0004 无清空接口），本测试后置其后者不可复入。
@@ -3848,23 +3847,18 @@ fn test_policy_shadow() {
 ///   意见」）→ 12 轮 pick divergence 恒 0——「无 shadow 意见 → 不增长」
 ///   判据在谱系在席的可行形态下成立；`shadow_eval_count == 12` 活证走的是
 ///   对账路径而非跳过路径（判别面在分母、不在分子）；
-/// - **DV-2 双表同决策 → divergence == 0**：active p7+32（gen 0x…11）+
 ///   shadow p7+32（gen 0x…12——**同表不同 gen**，谱系各记各的）→ p7 +32
 ///   独占 12 轮（active 表真在用，SH-2 同观测口径）而零分歧：任一 key 的
 ///   消费点决策（夹紧权重 + EPP 位）双表逐位相同；
-/// - **DV-3 双表异键 → 分歧全捕获**：shadow 换 p8+32 表（active p7+32
 ///   不动——gen 不扰）→ p7 出选时 active 给 32、shadow 给 0（p7 不在
 ///   shadow 表）；p8 出选时反向（0 vs 32）——任一出选组合必差异，
 ///   divergence == 12 == eval（分歧率 100%，非「>0 即过」弱判）；
-/// - **DV-4 轨道切换 → 对账清零**：DV-3 遗留分子 12 为前提，`promote()`
 ///   后双计数器即刻归零（reset 内联于轨道切换，非测试侧显式清）；转正后
 ///   active = shadow 表（p8+32）双表同源——新对账期 12 轮仍零分歧且转正
 ///   表真在用（首轮 head p7 零写入、次轮起 p8 独占 eff=32）；`demote()`
 ///   对偶同清零，此后 active 空 vs shadow 有表（`policy.rs` 注记的双轨
 ///   观测主场景）：p8 命中即分歧、p7 恒同意 → 分子开区间 (0, 12)——
 ///   分歧按 key 判别，非全量分歧；
-/// - **DV-5 STATUS（op=2）p3 打包位布局**：`crate::syscall::
-///   policy_divergence_packed`（算式下放——SH-6 直测同口径）以 DV-4 尾
 ///   遗留计数直测：分子开区间 (0, 12) 且分母 == 12 → 两半非对称（对调
 ///   必炸——对调后率倒置，A/B 判据全反）；随后串口打
 ///   `PERF policy divergence=<N> eval=<N>` 遥测行——宿主侧
@@ -3872,13 +3866,11 @@ fn test_policy_shadow() {
 ///
 /// 形态同 `test_policy_shadow`：本地 `Runqueue` + 双任务（proc_tag = 7/8）
 /// ROUNDS=12 轮 pick（setup2/probe 模式沿用）；对账期间隔离用显式
-/// `divergence_reset`（轨道切换的**自动**清零由 DV-4 专测——两机制不混证）。
 /// **后置于 SHD-K**（run() 序，前置断言钉死其收尾谱系）：其 SH-5/SH-1 依赖
 /// 「shadow 从未绑定」的全局前置，本测试只消费其遗留谱系而不破坏之（SHD-K
 /// 「唯一消费者」注记自此由本测试接力）。QEMU ktest 是唯一家（同 SHD-K——
 /// 进程调度 crate 无 host 测试面）；非 smoke 注册标记（TAGTAB 模式：断言炸
 /// = panic = 后续标记缺失兜底，同 PV3-K/PBS-K/PP-K/SHD-K）。
-#[allow(clippy::unwrap_used)]
 /// P1-a 拒收入账（吸收调研 13 号 astrid「审计链含 deny」精神）：bind 一张
 /// 混合处置表——key0 哨兵丢弃 ×2 / 越包络 weight 夹取 ±各一 / TBL_MAX 截
 /// 尾 ×3——四计数逐一以增量验证（probe_full 是散列聚簇概率面，不在此强
@@ -3945,7 +3937,7 @@ fn test_policy_reject_stats() {
 /// - Y4（三任务环·抬 max 形态）：0/600/1000 → 让出者抬到 1000（环 max
 ///   垫底）、中间者 600 与 max 者不动——抬均(533)挡不住让出者抬后仍最
 ///   eligible，抬 max 才真让出（锁退避场景形态：退避者让路）。
-/// 非 smoke 注册标记（同 POLS-R 模式：断言炸 = panic = 后续标记缺失兜底）。
+/// 非 smoke 注册标记（同 POLS-R 模式：断言炸 = panic = 后续标记缺失兜底；POLS-R 的 -R 后缀为历史特例（命名豁免，其余非注册标记循 -K 惯例））。
 fn test_policy_yield_return() {
     use berry_sched::{Fair, Runqueue, SchedClass, Task, TaskState, Topo};
 
@@ -4078,6 +4070,14 @@ fn test_placement_hint() {
     berry_hal_aarch64::uart_puts(b"PLACEMENT ok\n");
 }
 
+/// - **DV-1 无 shadow 意见 → divergence 不增长**：`shadow_gen()==0` 的谱系
+/// - **DV-2 双表同决策 → divergence == 0**：active p7+32（gen 0x…11）+
+/// - **DV-3 双表异键 → 分歧全捕获**：shadow 换 p8+32 表（active p7+32
+/// - **DV-4 轨道切换 → 对账清零**：DV-3 遗留分子 12 为前提，`promote()`
+/// - **DV-5 STATUS（op=2）p3 打包位布局**：`crate::syscall::
+///   policy_divergence_packed`（算式下放——SH-6 直测同口径）以 DV-4 尾
+/// `divergence_reset`（轨道切换的**自动**清零由 DV-4 专测——两机制不混证）。
+#[allow(clippy::unwrap_used)]
 fn test_policy_divergence() {
     use berry_sched::policy::{self, Directive, Entry};
     use berry_sched::{Fair, RoundRobin, Runqueue, SchedClass, Task, Topo};

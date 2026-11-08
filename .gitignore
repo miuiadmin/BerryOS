@@ -96,3 +96,7 @@ __pycache__/
 /berry-shot-*.png
 .cargo-target-local/
 .tmp_report.md
+
+# 合并 worktree 残骸与本地构建缓存（审计 2026-11-08）
+smoke-wt-*/
+.target-local/
