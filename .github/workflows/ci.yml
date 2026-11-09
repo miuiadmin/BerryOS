@@ -27,7 +27,7 @@ jobs:
     # 齐）/ QEMU 11（brew，含 edk2 固件）/ just / cargo-deny 0.20.2 /
     # bash 5.1。安装步全跳过；缺件红灯按 docs/命令速览.md 补装。
     runs-on: [self-hosted, linux-x64, brew]
-    timeout-minutes: 150
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -235,7 +235,11 @@ jobs:
         # 不可参数化。解：userns+netns（unshare -Urn）全 smoke 隔离——loopback
         # 独立、18080-83 独占，文件系统/cargo 缓存不隔离（产物链共享）。
         # runner 用户实测可起 netns 且 18080 可绑。
-        run: unshare -Urn sh -c 'ip link set lo up && exec just smoke'
+        # 分层 CI（2026-11-09 定案）：慢 runner 只跑 boot 相轻面（SMOKE_PHASES=boot
+        # ——boot 32 标记绿即收，实测 ~2min）；四相全链留快机（本地 Mac 190s /
+        # 后续 KVM 机）。全相门禁不降级：boot 相含 KVA/ROOTFS 交付/ASPACE/VMO/
+        # HANDLE/调度器全家/异常注入自检等 32 标记，回归主网在此拦截。
+        run: unshare -Urn sh -c 'ip link set lo up && exec env SMOKE_PHASES=boot just smoke'
 
       # ---------- P7-x4 五原语收官 gate：x86_64 最小集挂 CI ----------
       # x86 独立小工作区（不入根 workspace），cargo 直调（与 justfile build-x86
