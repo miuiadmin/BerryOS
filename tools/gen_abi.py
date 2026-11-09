@@ -560,7 +560,8 @@ def gen_syz(d: dict) -> str:
         L.append("")
         L.append(f"# {g['title']}")
         for s in g["syscall"]:
-            L.append(f"# 0x{s['num']:02X} {s['name']}{syz_stage_mark(s)}——{s['desc'].split('\n')[0]}")
+            _d = s['desc'].split(chr(10))[0]
+            L.append(f"# 0x{s['num']:02X} {s['name']}{syz_stage_mark(s)}——{_d}")
             for cont in s["desc"].split("\n")[1:]:
                 L.append(f"#   {cont}")
             if s.get("note"):
