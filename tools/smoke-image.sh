@@ -371,6 +371,18 @@ while :; do
 done
 echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 39)"
 
+# —— 分相门控（CI 分层用）：SMOKE_PHASES=boot 时 EFI+内核相绿即收——
+# 与 smoke.sh 同款分层契约：自托管慢 runner（TCG ~10x）跑不完生态 39 的
+# 服务链 wall-clock；boot 面（EFI 十段 + 接续 + 裸相 32 = 84-39=45 标记，
+# 实测快机 ~115s 全链的前段）在慢机可达，CI 只验这个轻面；生态 39 + RX
+# 注入 + 恰一次 + sim 面留快机全链。未设或非 boot = 原行为（84 全链）。
+if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
+  echo "smoke-image: SMOKE_PHASES=boot 止于标记到齐相（分层 CI 轻面，84 面 EFI+内核段已验）"
+  cleanup 2>/dev/null || true
+  exit 0
+fi
+
+
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
   assert_once "$m"
