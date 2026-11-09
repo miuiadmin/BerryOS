@@ -325,8 +325,35 @@ cleanup() {
     # GUI-4 段②：QMP 临时目录（-rf = 目录连 sock 一起收）。
     [ -n "$QMP_DIR" ] && rm -rf "$QMP_DIR"
   fi
+  # 端口互斥锁释放（本会话持有才清——防误删他人锁）。
+  if [ -n "${SMOKE_LOCK:-}" ] && [ "$(cat "$SMOKE_LOCK/pid" 2>/dev/null)" = "$$" ]; then
+    rm -rf "$SMOKE_LOCK"
+  fi
 }
 trap cleanup EXIT
+
+# 自托管互斥：echod/hostfwd 端口 18080-83 与本地开发、其他 smoke 会话
+# （runner CI 与并行验证同机）结构性冲突——EADDRINUSE 假红。mkdir 原子锁
+# 序列化全库 smoke（trap 已收；锁目录以 PID 冠名防陈尸，等待上限 40min
+# 对齐最长相帽）。
+SMOKE_LOCK=/tmp/berryos-smoke.lock
+if mkdir "$SMOKE_LOCK" 2>/dev/null; then
+  echo "$$" > "$SMOKE_LOCK/pid"
+else
+  held_by=$(cat "$SMOKE_LOCK/pid" 2>/dev/null || echo '?')
+  if ! kill -0 "$held_by" 2>/dev/null; then
+    echo "smoke: 陈锁清障（holder pid=$held_by 已死）"
+    rm -rf "$SMOKE_LOCK" && mkdir "$SMOKE_LOCK" && echo "$$" > "$SMOKE_LOCK/pid"
+  else
+    echo "smoke: 端口锁被 pid=$held_by 持有（另一 smoke 在跑），等待…"
+    waited=0
+    while ! mkdir "$SMOKE_LOCK" 2>/dev/null; do
+      sleep 10; waited=$((waited+10))
+      [ $waited -ge 2400 ] && { echo "smoke: FAIL: 端口锁等待超时（40min）——另一 smoke 会话长跑未释放" >&2; exit 1; }
+      kill -0 "$held_by" 2>/dev/null || { rm -rf "$SMOKE_LOCK"; mkdir "$SMOKE_LOCK" && echo "$$" > "$SMOKE_LOCK/pid"; break; }
+    done
+  fi
+fi
 
 fail() {
   echo "smoke: FAIL: $1" >&2
