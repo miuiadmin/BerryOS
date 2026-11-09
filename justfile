@@ -711,6 +711,11 @@ test-host:
     # 命名三形/非正卷宽拒——门禁自身坏 = A1-3b 内核 VMO 拼装核心不变量
     # 静默劣化，mkfat --selftest 同位纪律）。
     python3 tools/mkcpio.py --selftest-split
+    # Q1 续（a-3 U4 纪律同款）：genfbfont 门禁自检——三档字体表单源生成器
+    # （fbcon 1x + gfx s2/s3），此前只有 --check 漂移守卫（两侧同源时生成器
+    # 逻辑改坏仍绿），selftest 另钉生成器语义：结构契约+拒面 5、NN 放大
+    # 数学性质、'!'/'=' 手算字节 ×3 档、表头契约、在册产物对偶。
+    python3 tools/genfbfont.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
