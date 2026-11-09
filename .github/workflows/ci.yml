@@ -66,6 +66,11 @@ jobs:
           rustc --version
           rustup target list --installed | grep -cE 'aarch64-unknown-none|aarch64-unknown-linux-musl|x86_64-unknown-none'
           qemu-system-aarch64 --version | head -1
+          # x86_64 模拟器：PATH 缺则查 brew 前缀（冒烟步同链——env.PATH 不含
+          # brew bin，aarch64 靠 /usr/local/bin 链接过检而 x86_64 无链接）。
+          command -v qemu-system-x86_64 >/dev/null 2>&1 \
+            || [ -x /home/linuxbrew/.linuxbrew/bin/qemu-system-x86_64 ] \
+            || { echo "FAIL: qemu-system-x86_64 缺席（PATH 与 brew 前缀均无——按 docs/命令速览.md 补装）"; exit 1; }
           just --version
 
       # QEMU ≥10 必须（非安全第二 PL011 0x09040000 是 QEMU 10.0 新增；8.2
@@ -250,7 +255,21 @@ jobs:
           CARGO_TARGET_DIR=cargo-target cargo build --release --locked --target x86_64-unknown-none
 
       - name: x86_64 最小集冒烟（五原语收官 gate）
-        run: unshare -Urn sh -c 'ip link set lo up && exec bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"'
+        # QEMU x86_64 解析回退链：PATH → Linuxbrew 前缀。工作流 env.PATH 为
+        # rustc 修正收窄（32b381e）不含 brew bin；aarch64 侧靠 /usr/local/bin
+        # 符号链接过就位检查，x86_64 无链接（#40 CI 红实证：runner berry-linux-x64-1
+        # brew qemu 11.0.3 全家桶含 qemu-system-x86_64，仅前缀未入 PATH）。
+        # brew 前缀有即经 QEMU 环境变量注入（smoke-x86.sh:40 原生面）；无则
+        # 不注入，由脚本 43 行缺件 loud 红——门禁不降级。
+        run: |
+          BREW_BIN=/home/linuxbrew/.linuxbrew/bin
+          if [ -x "$BREW_BIN/qemu-system-x86_64" ]; then
+            echo "smoke-x86: 用 brew qemu（$BREW_BIN/qemu-system-x86_64）"
+            export QEMU="$BREW_BIN/qemu-system-x86_64"
+          else
+            echo "smoke-x86: brew 前缀无 qemu-system-x86_64，交 PATH 解析（缺件将 loud 红）"
+          fi
+          unshare -Urn sh -c 'ip link set lo up && exec bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"'
 
       # ---------- V-4 M-G1 gate：img-boot 独立冒烟（AAVMF 挂盘自举） ----------
       # just 单一入口（recipe 依赖 image = build + build-boot + mkimage 全链）；
