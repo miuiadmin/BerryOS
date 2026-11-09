@@ -154,11 +154,11 @@ fail() {
   echo "selftest ok=$(grep -ac 'LOCKDEP selftest ok' "$LOG" 2>/dev/null || true) selftest FAIL=$(grep -ac 'LOCKDEP selftest FAIL' "$LOG" 2>/dev/null || true) VIOLATION=$(grep -ac 'LOCKDEP VIOLATION' "$LOG" 2>/dev/null || true)" >&2
   echo "---- BENCHLAT 收割（全部）----" >&2
   grep -aoE 'BENCHLAT,lane=(ipc|sgi),n=32,min=[0-9]+,p50=[0-9]+,p90=[0-9]+,p99=[0-9]+,max=[0-9]+' "$LOG" >&2 || true
-  echo "---- 串口日志尾部（全文保留：$LOG）----" >&2
+  echo "---- 串口日志尾部（全文保留：${LOG}）----" >&2
   tail -40 "$LOG" >&2
   for f in "$ECHO_LOG" "$EVS_LOG" "$SKT_LOG"; do
     if [ -n "$f" ] && [ -s "$f" ]; then
-      echo "---- $(basename "$f") 尾部（$f）----" >&2
+      echo "---- $(basename "$f") 尾部（${f}）----" >&2
       tail -10 "$f" >&2
     fi
   done
@@ -221,8 +221,8 @@ lat_face() {
   local n_ipc n_sgi
   n_ipc=$(printf '%s\n' "$lines_ipc" | command grep -c . || true)
   n_sgi=$(printf '%s\n' "$lines_sgi" | command grep -c . || true)
-  [ "${n_ipc:-0}" -eq "$want" ] || { echo "lat 面：lane=ipc BENCHLAT 行数 ${n_ipc:-0} ≠ $want（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
-  [ "${n_sgi:-0}" -eq "$want" ] || { echo "lat 面：lane=sgi BENCHLAT 行数 ${n_sgi:-0} ≠ $want（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
+  [ "${n_ipc:-0}" -eq "$want" ] || { echo "lat 面：lane=ipc BENCHLAT 行数 ${n_ipc:-0} ≠ ${want}（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
+  [ "${n_sgi:-0}" -eq "$want" ] || { echo "lat 面：lane=sgi BENCHLAT 行数 ${n_sgi:-0} ≠ ${want}（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
   # 全周期行取 max（单帽覆盖 boot + 稳态全周期）。
   local m_ipc m_sgi p99_ipc p99_sgi
   m_ipc=$(printf '%s\n' "$lines_ipc" | awk -F'max=' '{print $2}' | command grep -oE '^[0-9]+' | sort -n | tail -1 || echo "")
@@ -327,7 +327,7 @@ while :; do
   done
   [ -z "$missing" ] && break
   [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] \
-    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：$missing（门控键漂移/载荷 master 未跑 = 断言必假绿，勿空心跑）"
+    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：${missing}（门控键漂移/载荷 master 未跑 = 断言必假绿，勿空心跑）"
   sleep 2
 done
 BOOT_WALL=$(( $(date +%s) - t0 ))
@@ -452,5 +452,5 @@ if [ "$MINUTES" -ge 7 ]; then
 else
   echo "soak-g3: PASS ${MINUTES}/${MINUTES} 拍七断言全绿 + pages 稳态窗未及执法（≥7 拍才真比较，n=${MINUTES} 平凡非绿）+ lockdep 三计数绿 + lat ${LAT_OBS}"
 fi
-echo "soak-g3: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s，下界 40）/$summary（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 / pages 稳态帽 +64 首拍豁免 / churn 严格递增）"
+echo "soak-g3: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s，下界 40）/${summary}（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 / pages 稳态帽 +64 首拍豁免 / churn 严格递增）"
 echo "soak-g3: 全程 ${elapsed}s（总帽 ${TOTAL_CAP}s）"

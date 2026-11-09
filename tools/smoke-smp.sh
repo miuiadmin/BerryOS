@@ -155,13 +155,13 @@ fail() {
     cp "$lg" "$keep" 2>/dev/null && echo "smoke-smp: 失败全尸已存：$keep" >&2
     i=$((i+1))
   done
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -40 "$LOG" >&2
   # 客户端死因随失败即打印不留文件（smoke.sh 同款纪律）。
   for p in "echod:$ECHO_LOG" "evsclient:$EVS_LOG" "sktclient:$SKT_LOG"; do
     local lg="${p#*:}"
     if [ -n "$lg" ] && [ -s "$lg" ]; then
-      echo "---- ${p%%:*} 日志尾部（$lg）----" >&2
+      echo "---- ${p%%:*} 日志尾部（${lg}）----" >&2
       tail -10 "$lg" >&2
     fi
   done
@@ -194,15 +194,15 @@ source "$SCRIPT_DIR/markers.sh"
 smp_assertions() {
   local label="$1" n
   n=$(grep -cF "SMP ok ncores=2" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "$label SMP 标记非恰一次（n=$n）：SMP ok ncores=2"
+  [ "$n" -eq 1 ] || fail "$label SMP 标记非恰一次（n=${n}）：SMP ok ncores=2"
   grep -q "SMP: sec up" "$LOG" || fail "$label 缺副核报告行 SMP: sec up"
   # S-3a probe ②：SGI 收讫标记恰一次（超时面已由 `SMP: FAIL` 反向快败覆盖）。
   n=$(grep -cF "SGI ok n=" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "$label SGI ok 非恰一次（n=$n）——S-3a SGI_RESCHEDULE 收讫链断（发/投/收讫计数三面查）"
+  [ "$n" -eq 1 ] || fail "$label SGI ok 非恰一次（n=${n}）——S-3a SGI_RESCHEDULE 收讫链断（发/投/收讫计数三面查）"
   # S-4 4-1 probe ④：TLB shootdown 回执标记恰一次（超时面同由 `SMP: FAIL`
   # 反向快败覆盖——`SMP: FAIL sgi2 timeout` 同前缀）。
   n=$(grep -cF "SGI2 ok n=" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "$label SGI2 ok 非恰一次（n=$n）——S-4 4-1 SGI #2 回执链断（banked 使能/发送/投递/收端全量失效/回执计数四面查）"
+  [ "$n" -eq 1 ] || fail "$label SGI2 ok 非恰一次（n=${n}）——S-4 4-1 SGI #2 回执链断（banked 使能/发送/投递/收端全量失效/回执计数四面查）"
 }
 
 # 标记轮询公共体：QEMU 活着 + SMP: FAIL/skip 反向快败 + （可选）SMP ok
@@ -214,9 +214,9 @@ poll_markers() {
   t0=$(date +%s)
   while :; do
     kill -0 "$QEMU_PID" 2>/dev/null \
-      || fail "QEMU 提前退出（$label）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
-    grep -q "SMP: FAIL" "$LOG" && fail "SMP 握手自报 FAIL（$label）：$(grep 'SMP: FAIL' "$LOG" | tail -1)"
-    grep -q "SMP: skip" "$LOG" && fail "SMP 被跳过（$label——错机型/错旗？）：$(grep 'SMP: skip' "$LOG" | tail -1)"
+      || fail "QEMU 提前退出（${label}）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+    grep -q "SMP: FAIL" "$LOG" && fail "SMP 握手自报 FAIL（${label}）：$(grep 'SMP: FAIL' "$LOG" | tail -1)"
+    grep -q "SMP: skip" "$LOG" && fail "SMP 被跳过（${label}——错机型/错旗？）：$(grep 'SMP: skip' "$LOG" | tail -1)"
     missing=""
     if [ "$with_smp" = "1" ]; then
       grep -qF "SMP ok ncores=2" "$LOG" || missing="SMP ok ncores=2"
@@ -243,7 +243,7 @@ canary_check() {
       v_first=$(grep -o 'switches=[0-9]*' "$LOG" | head -1 | cut -d= -f2)
     fi
     [ "${n:-0}" -ge 3 ] && break
-    kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在金丝雀阶段退出（$label）"
+    kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在金丝雀阶段退出（${label}）"
     [ $(( $(date +%s) - tc )) -gt "$dl" ] \
       && fail "$label 金丝雀 ${dl}s 内不足 3 条（现有 ${n:-0}）"
     sleep 2
@@ -255,7 +255,7 @@ canary_check() {
   v_last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
   if [ -n "$t_first" ] && [ "$v_last" -gt "$v_first" ]; then
     CAN_PERIOD_S=$(( ( $(date +%s) - t_first ) / (v_last - v_first) ))
-    echo "smoke-smp: $label 金丝雀行周期 ≈ ${CAN_PERIOD_S}s/行（值 $v_first→$v_last）"
+    echo "smoke-smp: $label 金丝雀行周期 ≈ ${CAN_PERIOD_S}s/行（值 ${v_first}→${v_last}）"
   fi
 }
 
@@ -270,7 +270,7 @@ evs_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'EVS client ok n=2' "$EVS_LOG" 2>/dev/null; do
     kill -0 "$EVS_PID" 2>/dev/null \
-      || fail "evsclient 提前退出（$label）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
+      || fail "evsclient 提前退出（${label}）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt "$CLIENT_CMP_CAP" ] \
       && fail "$label EVS client ${CLIENT_CMP_CAP}s 未对拍完成（guest EVS ok 已到——查 EVS_LOG 重试诊断）"
     sleep 1
@@ -296,7 +296,7 @@ skt_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'SKT client ok n=2' "$SKT_LOG" 2>/dev/null; do
     kill -0 "$SKT_PID" 2>/dev/null \
-      || fail "sktclient 提前退出（$label）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
+      || fail "sktclient 提前退出（${label}）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt "$CLIENT_CMP_CAP" ] \
       && fail "$label SKT client ${CLIENT_CMP_CAP}s 未对拍完成（guest SKT ok 已到——查 SKT_LOG 重试诊断）"
     sleep 1
@@ -333,7 +333,7 @@ echod_stop() {
 # ============ 相 1：裸相（32 标记 + SMP 握手 + 金丝雀） ============
 
 field_wait
-echo "smoke-smp: QEMU 启动（$KERNEL，-smp 2，相 1 裸相）"
+echo "smoke-smp: QEMU 启动（${KERNEL}，-smp 2，相 1 裸相）"
 t_boot0=$(date +%s)
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   < /dev/null > "$LOG" 2>&1 &
@@ -440,7 +440,7 @@ else
   d1=$(grep 'PAR absent' "$LOG" | tail -1 | grep -o ' d1=[0-9]*' | cut -d= -f2)
   [ -n "$d1" ] && [ "$d1" -gt 0 ] \
     || fail "PAR absent 行 d1=${d1:-缺}（副核 park 派发零活证——d1=0 = 副核从未摘入任务，S-2b 参与面破损）"
-  echo "smoke-smp: PAR absent d1=$d1（副核参与活证 ≥1 派发；真并行 witness 归 S-3）"
+  echo "smoke-smp: PAR absent d1=${d1}（副核参与活证 ≥1 派发；真并行 witness 归 S-3）"
 fi
 
 canary_check "相 2" "$DEADLINE_CANARY"

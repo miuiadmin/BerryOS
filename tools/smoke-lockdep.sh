@@ -125,15 +125,15 @@ VIO=$(grep -c 'LOCKDEP VIOLATION' "$LOG" 2>/dev/null || true)
 
 rc=0
 if [ "$OK" -ne 1 ]; then
-  echo "smoke-lockdep: FAIL——selftest ok 计数 $OK（期望恰 1；0 = 未达 boot 窗或超时）" >&2
+  echo "smoke-lockdep: FAIL——selftest ok 计数 ${OK}（期望恰 1；0 = 未达 boot 窗或超时）" >&2
   rc=1
 fi
 if [ "$FAIL" -ne 0 ]; then
-  echo "smoke-lockdep: FAIL——selftest FAIL 计数 $FAIL（六阳性三负对照有臂翻车）" >&2
+  echo "smoke-lockdep: FAIL——selftest FAIL 计数 ${FAIL}（六阳性三负对照有臂翻车）" >&2
   rc=1
 fi
 if [ "$VIO" -ne 0 ]; then
-  echo "smoke-lockdep: FAIL——VIOLATION 计数 $VIO（真锁序违约——检测器命中）" >&2
+  echo "smoke-lockdep: FAIL——VIOLATION 计数 ${VIO}（真锁序违约——检测器命中）" >&2
   rc=1
 fi
 # ④（C-3）：DPG ok ≥1 且行号晚于 selftest ok 行（执法窗盖到 dpg 闭环）。
@@ -141,7 +141,7 @@ DPG=$(grep -c 'DPG ok' "$LOG" 2>/dev/null || true)
 SF_LINE=$(grep -n 'LOCKDEP selftest ok' "$LOG" 2>/dev/null | head -1 | cut -d: -f1)
 DPG_LINE=$(grep -n 'DPG ok' "$LOG" 2>/dev/null | head -1 | cut -d: -f1)
 if [ "$DPG" -lt 1 ]; then
-  echo "smoke-lockdep: FAIL——DPG ok 计数 $DPG（C-3：断言窗已延至 dpg 闭环后，0 = dpg 链未毕/超时）" >&2
+  echo "smoke-lockdep: FAIL——DPG ok 计数 ${DPG}（C-3：断言窗已延至 dpg 闭环后，0 = dpg 链未毕/超时）" >&2
   rc=1
 elif [ -z "$SF_LINE" ] || [ -z "$DPG_LINE" ] || [ "$DPG_LINE" -le "$SF_LINE" ]; then
   echo "smoke-lockdep: FAIL——DPG ok 行号($DPG_LINE) 不晚于 selftest ok 行号($SF_LINE)（C-3 行序断言）" >&2
@@ -175,7 +175,7 @@ done
 # 盘名专属 disk.lockdep.img + LBA0 印章（smoke-smp 同款：防覆写兄弟线活盘）。
 DISK="$ROOT/disk.lockdep.img"
 python3 "$SCRIPT_DIR/mkfat.py" "$DISK" || {
-  echo "smoke-lockdep: FAIL——mkfat 造盘失败（$DISK）" >&2
+  echo "smoke-lockdep: FAIL——mkfat 造盘失败（${DISK}）" >&2
   keep_log keep
   exit 1
 }
@@ -271,7 +271,7 @@ OK2=$(grep -c 'LOCKDEP selftest ok' "$LOG2" 2>/dev/null || true)
 FL2=$(grep -c 'LOCKDEP selftest FAIL' "$LOG2" 2>/dev/null || true)
 VI2=$(grep -c 'LOCKDEP VIOLATION' "$LOG2" 2>/dev/null || true)
 if [ "$OK2" -ne 1 ]; then
-  echo "smoke-lockdep: FAIL——相 2 selftest ok 计数 $OK2（0 = boot 未达/QEMU 早退/超时）" >&2
+  echo "smoke-lockdep: FAIL——相 2 selftest ok 计数 ${OK2}（0 = boot 未达/QEMU 早退/超时）" >&2
   rc2=1
 fi
 if [ "$FL2" -ne 0 ]; then
@@ -279,7 +279,7 @@ if [ "$FL2" -ne 0 ]; then
   rc2=1
 fi
 if [ "$VI2" -ne 0 ]; then
-  echo "smoke-lockdep: FAIL——相 2 VIOLATION 计数 $VI2（生态载荷下真锁序违约）" >&2
+  echo "smoke-lockdep: FAIL——相 2 VIOLATION 计数 ${VI2}（生态载荷下真锁序违约）" >&2
   rc2=1
 fi
 # dpg 四行行序（B 刀执法面：selftest → DPGP → DPGS → DPGN 严格递增行号；
@@ -296,7 +296,7 @@ fi
 # ovfl 溢出观测面零计（N=4<K=8：池永不满——ovfl 行在 = 槽释放链断/键化泄漏旁证）。
 OV=$(grep -c 'DPG ovfl' "$LOG2" 2>/dev/null || true)
 if [ "$OV" -ne 0 ]; then
-  echo "smoke-lockdep: FAIL——DPG ovfl 计数 $OV（N=4<K=8 拓扑池满不该发生——槽释放链查）" >&2
+  echo "smoke-lockdep: FAIL——DPG ovfl 计数 ${OV}（N=4<K=8 拓扑池满不该发生——槽释放链查）" >&2
   rc2=1
 fi
 
@@ -304,14 +304,14 @@ if [ "$rc2" -eq 0 ]; then
   echo "smoke-lockdep: PASS（双相：相 1 裸相 selftest/DPG ok 行序 + 相 2 rootfs 满拓扑 DPGN 终态 + dpg 四行行序 + ovfl 零计 + FAIL/VIOLATION 0×2 boot）"
   keep_log drop
 else
-  echo "---- 相 2 串口日志尾部（$LOG2）----" >&2
+  echo "---- 相 2 串口日志尾部（${LOG2}）----" >&2
   tail -40 "$LOG2" >&2
   # 客户端死因随失败即打印不留文件（smoke-smp 同款纪律——§A122 第一手
   # 死因就在三件套日志里）。
   for p in "echod:${ECHO_LOG:-}" "evsclient:${EVS_LOG:-}" "sktclient:${SKT_LOG:-}"; do
     lg="${p#*:}"
     if [ -n "$lg" ] && [ -s "$lg" ]; then
-      echo "---- ${p%%:*} 日志尾部（$lg）----" >&2
+      echo "---- ${p%%:*} 日志尾部（${lg}）----" >&2
       tail -10 "$lg" >&2
     fi
   done

@@ -282,7 +282,7 @@ trap cleanup EXIT
 
 fail() {
   echo "smoke-image: FAIL: $1" >&2
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -40 "$LOG" >&2
   echo "--------------------------------" >&2
   exit 1
@@ -339,7 +339,7 @@ mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 ( sleep 1200 ) > "$RX_FIFO" &
 RX_HOLDER=$!
 
-echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）"
+echo "smoke-image: QEMU 启动（AAVMF + ${IMAGE}——零 -kernel / 零 fw_cfg）"
 # 与 justfile run-efi 同参（不挂 virtio——EFI 路无 virtio 面；ramfb 供 GOP）。
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
   -pflash "$AAVMF_CODE" -pflash "$RUN_DIR/vars.fd" \
@@ -437,7 +437,7 @@ while :; do
   [ "${cur:-0}" -gt "$LAST_CANARY" ] && break
   kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在注入后复验阶段退出"
   [ $(( $(date +%s) - t3 )) -gt "$DEADLINE_CANARY" ] \
-    && fail "注入后 ${DEADLINE_CANARY}s 无新金丝雀线（> $LAST_CANARY）——RX 注入后冻结（冻而不死面）"
+    && fail "注入后 ${DEADLINE_CANARY}s 无新金丝雀线（> ${LAST_CANARY}）——RX 注入后冻结（冻而不死面）"
   sleep 2
 done
 

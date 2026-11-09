@@ -162,7 +162,7 @@ trap p2_cleanup EXIT
 # 盘名专属 disk.dpgf.img + LBA0 印章（smoke-lockdep 同款：防覆写兄弟线活盘）。
 DISK="$ROOT/disk.dpgf.img"
 python3 "$SCRIPT_DIR/mkfat.py" "$DISK" || {
-  echo "smoke-dpgsoak: FAIL——mkfat 造盘失败（$DISK）" >&2
+  echo "smoke-dpgsoak: FAIL——mkfat 造盘失败（${DISK}）" >&2
   keep_log keep
   exit 1
 }
@@ -246,13 +246,13 @@ rc=0
 # ① DPGF 恰 1。
 N1=$(grep -c 'DPGF ok n=15' "$LOG" 2>/dev/null || true)
 if [ "$N1" -ne 1 ]; then
-  echo "smoke-dpgsoak: FAIL——DPGF ok n=15 计数 $N1（期望恰 1；0 = 波 1 未毕/超时/降级）" >&2
+  echo "smoke-dpgsoak: FAIL——DPGF ok n=15 计数 ${N1}（期望恰 1；0 = 波 1 未毕/超时/降级）" >&2
   rc=1
 fi
 # ② DPGF2 恰 1。
 N2=$(grep -c 'DPGF2 ok n=3' "$LOG" 2>/dev/null || true)
 if [ "$N2" -ne 1 ]; then
-  echo "smoke-dpgsoak: FAIL——DPGF2 ok n=3 计数 $N2（期望恰 1；0 = C-4 二轮未毕——槽回收面查）" >&2
+  echo "smoke-dpgsoak: FAIL——DPGF2 ok n=3 计数 ${N2}（期望恰 1；0 = C-4 二轮未毕——槽回收面查）" >&2
   rc=1
 fi
 # ③ ovfl 极性随 K 派生：K ≥ N=15 → 期望恰 0（容量余量——15 并发臂全
@@ -261,14 +261,14 @@ fi
 OV=$(grep -c 'DPG ovfl' "$LOG" 2>/dev/null || true)
 if [ "$DPGF_K" -ge 15 ]; then
   if [ "$OV" -ne 0 ]; then
-    echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV（K=$DPGF_K ≥ 15 容量余量面期望 0——非零 = 池容量/过滤取回归，查 EREQ_SLOTS）" >&2
+    echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 ${OV}（K=$DPGF_K ≥ 15 容量余量面期望 0——非零 = 池容量/过滤取回归，查 EREQ_SLOTS）" >&2
     rc=1
   fi
 elif [ "$OV" -lt 1 ]; then
-  echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV（15>K=$DPGF_K 池满必触达——零计 = 溢出观测面断）" >&2
+  echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 ${OV}（15>K=$DPGF_K 池满必触达——零计 = 溢出观测面断）" >&2
   rc=1
 elif [ "$OV" -gt "$OVFL_CAP" ]; then
-  echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV 超帽 $OVFL_CAP（convoy 重印失稳？env DPGF_OVFL_CAP 校准）" >&2
+  echo "smoke-dpgsoak: FAIL——DPG ovfl 计数 $OV 超帽 ${OVFL_CAP}（convoy 重印失稳？env DPGF_OVFL_CAP 校准）" >&2
   rc=1
 fi
 # ④ 五行行序（boot 生态序：DPGP → DPGS → DPGN → DPGF → DPGF2 严格递增）。
@@ -306,11 +306,11 @@ if grep -q 'LOCKDEP selftest ok' "$LOG" 2>/dev/null; then
 fi
 
 if [ "$rc" -eq 0 ]; then
-  echo "smoke-dpgsoak: PASS（DPGF n=15 满配 + DPGF2 n=3 槽回收 + ovfl $OV ∈ [1,$OVFL_CAP] + 五行行序 + 降级/panic 零 + t-37 容差 $T37）" | tee -a "$LOG"
+  echo "smoke-dpgsoak: PASS（DPGF n=15 满配 + DPGF2 n=3 槽回收 + ovfl $OV ∈ [1,$OVFL_CAP] + 五行行序 + 降级/panic 零 + t-37 容差 ${T37}）" | tee -a "$LOG"
   keep_log drop
 else
   echo "smoke-dpgsoak: FAIL（判词见上/stderr；串口 + 三 client 档随 keep 留存）" >> "$LOG"
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -40 "$LOG" >&2
   # ovfl 观测行全量随失败打印（首跑标定面：重印分布 = 帽值依据）。
   echo "---- DPG ovfl 行分布 ----" >&2
@@ -319,7 +319,7 @@ else
   for p in "echod:$ECHO_LOG" "evsclient:$EVS_LOG" "sktclient:$SKT_LOG"; do
     lg="${p#*:}"
     if [ -s "$lg" ]; then
-      echo "---- ${p%%:*} 日志尾部（$lg）----" >&2
+      echo "---- ${p%%:*} 日志尾部（${lg}）----" >&2
       tail -10 "$lg" >&2
     fi
   done

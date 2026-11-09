@@ -358,22 +358,22 @@ fi
 fail() {
   echo "smoke: FAIL: $1" >&2
   # 失败必带现场：串口日志尾部直接进 stderr（CI 里即是诊断依据）。
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -40 "$LOG" >&2
   # T-c 对抗审查补：echod 宿主侧死因（无异常处理，traceback 只落 ECHO_LOG）——
   # 无 SMOKE_KEEP_LOG 的 CI 失败 run 也要看见，随失败即打印不留文件。
   if [ -n "$ECHO_LOG" ] && [ -s "$ECHO_LOG" ]; then
-    echo "---- echod 日志尾部（$ECHO_LOG）----" >&2
+    echo "---- echod 日志尾部（${ECHO_LOG}）----" >&2
     tail -10 "$ECHO_LOG" >&2
   fi
   # A2-3 同款：evsclient 死因（重试诊断只落 EVS_LOG）。
   if [ -n "$EVS_LOG" ] && [ -s "$EVS_LOG" ]; then
-    echo "---- evsclient 日志尾部（$EVS_LOG）----" >&2
+    echo "---- evsclient 日志尾部（${EVS_LOG}）----" >&2
     tail -10 "$EVS_LOG" >&2
   fi
   # A3-3 同款：sktclient 死因。
   if [ -n "$SKT_LOG" ] && [ -s "$SKT_LOG" ]; then
-    echo "---- sktclient 日志尾部（$SKT_LOG）----" >&2
+    echo "---- sktclient 日志尾部（${SKT_LOG}）----" >&2
     tail -10 "$SKT_LOG" >&2
   fi
   echo "--------------------------------" >&2
@@ -394,7 +394,7 @@ evs_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'EVS client ok n=2' "$EVS_LOG" 2>/dev/null; do
     kill -0 "$EVS_PID" 2>/dev/null \
-      || fail "evsclient 提前退出（$tag）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
+      || fail "evsclient 提前退出（${tag}）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt 30 ] \
       && fail "$tag EVS client 30s 未对拍完成（guest EVS ok 已到——查 EVS_LOG 重试诊断）"
     sleep 1
@@ -429,7 +429,7 @@ skt_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'SKT client ok n=2' "$SKT_LOG" 2>/dev/null; do
     kill -0 "$SKT_PID" 2>/dev/null \
-      || fail "sktclient 提前退出（$tag）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
+      || fail "sktclient 提前退出（${tag}）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt 30 ] \
       && fail "$tag SKT client 30s 未对拍完成（guest SKT ok 已到——查 SKT_LOG 重试诊断）"
     sleep 1
@@ -463,7 +463,7 @@ assert_marker() {
   fi
 }
 
-echo "smoke: QEMU 启动（$KERNEL）"
+echo "smoke: QEMU 启动（${KERNEL}）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
@@ -970,7 +970,7 @@ done
 # 标记清单由单源数组生成（f4 复验 minor：手写 47 元素清单 = 数组外第三处
 # 复制物；元素不含 `)`/引号约束即为此处安全内插——markers.sh 头注）。
 rootfs_list=$(printf '%s + ' "${ROOTFS_MARKERS[@]}"); rootfs_list=${rootfs_list% + }
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（$rootfs_list）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（${rootfs_list}）"
 
 # app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
 # 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
@@ -1214,7 +1214,7 @@ echo "smoke: PWRKEY 无主 IRQ 正向对照过（n=${pm_max}，系统存活，�
 # markers.sh RX_MARKERS 数组在此消费（防死单源：数组行 = 段门必查面——
 # 后续追加 RX 注入行只改 markers.sh 即自动入执法；boot 双数组不受染）。
 for m in "${RX_MARKERS[@]}"; do
-  grep -aqF "$m" "$LOG" || fail "RX 注入段标记缺席：$m（markers.sh RX_MARKERS 对拍）"
+  grep -aqF "$m" "$LOG" || fail "RX 注入段标记缺席：${m}（markers.sh RX_MARKERS 对拍）"
 done
 echo "smoke: SIMBAT 双正例到齐（BAD/STALE 静默 + ACK 四流对拍过）"
 # a. token 行：RX ok（A-1 console token 面；`rx` 行入历史但不转发）。
@@ -1635,13 +1635,13 @@ if grep -qF 'FATW ok n=3000' "$LOG"; then
   # 快机已进 DF 覆写面（FATW ok 已见于终局日志）——按 Boot B 口径放行。
   case "$PWR_A" in
     "PWR cls=clean "*|"PWR cls=poison "*) ;;
-    *) fail "掉电 Boot A 采样越界：$PWR_A（FATW 已毕、覆写窗口径 {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
+    *) fail "掉电 Boot A 采样越界：${PWR_A}（FATW 已毕、覆写窗口径 {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
   esac
 else
   # fatw 未毕——新文件窗口径（④ 空转无毒环面；粗检 canary，见块注）。
   case "$PWR_A" in
     "PWR cls=noent "*|"PWR cls=clean "*) ;;
-    *) fail "掉电 Boot A 采样越界：$PWR_A（新文件路径应 ∈ {noent, clean}——出现毒环 = ④ 旧链释放被无端执行）" ;;
+    *) fail "掉电 Boot A 采样越界：${PWR_A}（新文件路径应 ∈ {noent, clean}——出现毒环 = ④ 旧链释放被无端执行）" ;;
   esac
 fi
 
@@ -1661,7 +1661,7 @@ while :; do
     || fail "QEMU 提前退出（掉电 Boot B）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   grep -qF 'FATW ok n=3000' "$LOG" && break
   [ $(( $(date +%s) - t7b )) -gt "$DEADLINE_BOOTB" ] \
-    && fail "掉电 Boot B ${DEADLINE_BOOTB}s FATW ok 未到（fatw 链断？Boot A 留盘 $PWR_A）"
+    && fail "掉电 Boot B ${DEADLINE_BOOTB}s FATW ok 未到（fatw 链断？Boot A 留盘 ${PWR_A}）"
   sleep 1
 done
 grep -q 'ROOTFS vmo=none' "$LOG" \
@@ -1676,7 +1676,7 @@ PWR_B=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
 echo "smoke: 掉电采样 B（DF resize 窗）: $PWR_B"
 case "$PWR_B" in
   "PWR cls=clean "*|"PWR cls=poison "*) ;;
-  *) fail "掉电 Boot B 采样越界：$PWR_B（整扇区 FAT 写下应 ∈ {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
+  *) fail "掉电 Boot B 采样越界：${PWR_B}（整扇区 FAT 写下应 ∈ {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
 esac
 python3 tools/pwrcls.py --poison disk.pwr.img \
   || fail "毒环注入失败（pwrcls --poison 自检未过）"
@@ -1684,9 +1684,9 @@ PWR_P=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
   || fail "注入后分类失败（pwrcls 退出非 0）"
 case "$PWR_P" in
   "PWR cls=poison "*) ;;
-  *) fail "注入后非毒环态：$PWR_P（--poison 自检与分类分歧——工具面 bug）" ;;
+  *) fail "注入后非毒环态：${PWR_P}（--poison 自检与分类分歧——工具面 bug）" ;;
 esac
-echo "smoke: 毒环注入就位（$PWR_P）"
+echo "smoke: 毒环注入就位（${PWR_P}）"
 
 # Boot C：毒环盘恢复终验——guest 标记（fsmgr/bsh fat 族 + DF/DIR/CD）+ 盘面双面。
 rotate_log
@@ -1748,9 +1748,9 @@ PWR_C=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
   || fail "掉电终验分类失败（pwrcls 退出非 0）"
 case "$PWR_C" in
   "PWR cls=clean "*) ;;
-  *) fail "掉电终验非 clean：$PWR_C（guest 标记全绿而盘面未恢复——恢复 commit 假绿或 ④ 守卫失效）" ;;
+  *) fail "掉电终验非 clean：${PWR_C}（guest 标记全绿而盘面未恢复——恢复 commit 假绿或 ④ 守卫失效）" ;;
 esac
-echo "smoke: B4 掉电相到齐（采样 A/B + 毒环注入 + 恢复终验 $PWR_C）"
+echo "smoke: B4 掉电相到齐（采样 A/B + 毒环注入 + 恢复终验 ${PWR_C}）"
 
 exec 3>&-
 echo "smoke: PASS（金丝雀 ${n:-0} 条诊断 + rootfs 相全链 + RX 交互相（A4② PM 微相 PWRKEY 无主对照 + SIMBAT 双正例 + ACK 四流 + RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + A8 电源类别毒环 + Boot C 恢复终验盘面 clean））"

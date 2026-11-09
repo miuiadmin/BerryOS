@@ -554,6 +554,11 @@ host := `{ command -v "${HOME}/.cargo/bin/rustc" >/dev/null 2>&1 && "${HOME}/.ca
 # fixture 守卫在 berry-fatfs 测试前置：mkfat --check-fixture 重产比对——
 # 改 mkfat 忘重产 --fixture 时共识测试对陈旧基准假绿（A-5 对抗审查实抓）。
 test-host:
+    # W1-Q6 前置：bash 3.2 吞名守卫——`$NAME` 后紧邻多字节字符在 macOS
+    # 系统 bash 3.2 下吞进变量名（set -u 直炸/否则静默吃值），CI bash 5
+    # 免疫故挂账潜伏。tools/*.sh 77 处已改花括号包裹（字节级同义），
+    # 本门禁防回归（smoke 本地复现的宿主断点收口）。
+    python3 tools/shvarcheck.py --check
     cargo test -p berry-mm --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁

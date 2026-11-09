@@ -61,12 +61,12 @@ trap cleanup EXIT
 
 fail() {
   echo "smoke-x86: FAIL: $1" >&2
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -30 "$LOG" >&2
   exit 1
 }
 
-echo "smoke-x86: QEMU 启动（$KERNEL）"
+echo "smoke-x86: QEMU 启动（${KERNEL}）"
 "$QEMU" -m 128M -nographic -no-reboot -kernel "$KERNEL" \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
@@ -90,7 +90,7 @@ done
 # 标记恰一次（重复 = 引导脚本重入，PVH 不该有第二跳）
 for m in "${MARKERS[@]}"; do
   n=$(grep -cF "$m" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "标记非恰一次（n=$n）：$m"
+  [ "$n" -eq 1 ] || fail "标记非恰一次（n=${n}）：$m"
 done
 
 kill "$QEMU_PID" 2>/dev/null
