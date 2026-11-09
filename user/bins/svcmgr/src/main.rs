@@ -851,7 +851,89 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
-    // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——紧随 wmd arm ----
+    // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet/keyboard 输入服务）。
+    // P3 起提前到 gfxdemo 之前：gfxdemo 双窗 click-to-focus 验收需要真实
+    // inputd→wmd 推送链已在席。门控两道：H_MMIO 在席 + cpio_find
+    // (H_ROOTFS, b"bin/gui-inputd")。
+    //
+    // intent 注记（台账 6，v1 可达面）：input 域 channel 由本表 channel_pair()
+    // 创建、**options=0**——不设 CHAN_OPT_NO_INTENT，消息借入链（4-3c：收端按
+    // 每消息重导 eff = min(declared, msg_intent)）有意保持激活 = GUI 规划 GUI-4
+    // 行「intent INTERACTIVE」的 v1 唯一可达形态。UNSPECIFIED(0x00) 顶档语义下
+    // 借入恒不抑制（4-3c 数值序）；svcmgr/bsh 自身 declared 不变——内核侧
+    // berry_intent 自申报 = 另刀。ADR #42 / 段① §9-6。
+    //
+    // 常驻不 reap（A74：reap 首步 wait 30s 帽必超时）；stdin 哑喂 Some(&[])；
+    // recv 容量按「协议定值 1 op + 富余」判面（段① serve() 已落，本刀零改）。
+    // GUI-5：extras 追加 wmd 推送客户端端（WMD_PUSH_B——wmd arm Ok 路存
+    // 值；0 = wmd 未起 → extras 仍单枚，inputd 现行为逐字节保留）。失败面
+    // = close(in_b) + close(in_a)（+ push_b 在席时第三枚）+ eco_skip——bsh
+    // inputpoll 面静默降级（input_h()==0 → "input: absent"）。
+    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+        eco_skip(b"mmio absent");
+    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gui-inputd") {
+        let (in_a, in_b) = channel_pair();
+        // GUI-5 推送端追加（fsmgr fgifts 条件切片同款）：WMD_PUSH_B 非 0 =
+        // wmd 已起，extras 次位随行 push_b（inputd 侧 libc `wm_push_h()`）。
+        let push_b = WMD_PUSH_B.load(Ordering::Relaxed);
+        let mut igifts = [in_b, 0 as Handle];
+        let igifts: &[Handle] = if push_b != 0 {
+            igifts[1] = push_b;
+            &igifts
+        } else {
+            &igifts[..1]
+        };
+        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
+        // dummy（空 feeder + 立即 EOF；inputd 服务永不读 stdin，vnet 同款）。
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/gui-inputd",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                args: &[],
+                extra_gifts: igifts,
+                mmio_vmo: Some(H_MMIO),
+                mmio_va: VIRTIO_MMIO_VA,
+                intent: 0,
+            },
+        ) {
+            Ok(_child) => {
+                ps_reg(b"inputd", psp::STATE_ALIVE, 0); // 拉起即常驻（boot 自验门成败都活——serve 常驻）
+                // 常驻不 reap。`INPUT ok` 标记由 boot 期 input_selftest 打
+                // （SUBSCRIBE RPC 走本端 in_a——net_a 转 client 同款）；
+                // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
+                // inputd 自打。
+                INPUT_A.store(in_a, Ordering::Relaxed);
+                // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
+                // （fsmgr blk_cli 同款；已迁值不可 close）。
+                WMD_PUSH_B.store(0, Ordering::Relaxed);
+            }
+            Err(()) => {
+                ps_reg(b"inputd", psp::STATE_SPAWNFAIL, 0);
+                // Err 全在 env send 前——in_b/push_b 未被 take，新鲜端显式
+                // 回收防表槽泄漏（vnet 同款；push_b = wmd push 服务端端的
+                // 对端，close = 服务端端成孤儿——但 spawn 已败，wmd 推送链
+                // 已断，留表无保活意义）。
+                if berry_handle_close(in_b) != 0 {
+                    trap();
+                }
+                if berry_handle_close(in_a) != 0 {
+                    trap();
+                }
+                if push_b != 0 && berry_handle_close(push_b) != 0 {
+                    trap();
+                }
+                WMD_PUSH_B.store(0, Ordering::Relaxed);
+                eco_skip(b"inputd spawn");
+            }
+        }
+    }
+    // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——wmd/inputd 后。
     // 门 = wmd spawn Ok（wm_cli != 0——客户端端仅 Ok 路落值，兼作标志）
     // ∧ cpio_find(H_ROOTFS, b"bin/gfxdemo")。rootfs 相 guifbd 门已跳
     //（`fb absent`）→ 标志 0 → **静默跳过零新行**（inputd INPUT_A==0
@@ -1060,87 +1142,6 @@ fn run_rootfs_child(console: Handle) {
                     trap();
                 }
                 eco_skip(b"net spawn");
-            }
-        }
-    }
-    // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet 输入服务）。门控同 vnet
-    // 两道：H_MMIO 在席（EFI/裸拓扑缺席 → eco_skip(b"mmio absent") 静默
-    // 零扰动）+ cpio_find(H_ROOTFS, b"bin/gui-inputd")。
-    //
-    // intent 注记（台账 6，v1 可达面）：input 域 channel 由本表 channel_pair()
-    // 创建、**options=0**——不设 CHAN_OPT_NO_INTENT，消息借入链（4-3c：收端按
-    // 每消息重导 eff = min(declared, msg_intent)）有意保持激活 = GUI 规划 GUI-4
-    // 行「intent INTERACTIVE」的 v1 唯一可达形态。UNSPECIFIED(0x00) 顶档语义下
-    // 借入恒不抑制（4-3c 数值序）；svcmgr/bsh 自身 declared 不变——内核侧
-    // berry_intent 自申报 = 另刀。ADR #42 / 段① §9-6。
-    //
-    // 常驻不 reap（A74：reap 首步 wait 30s 帽必超时）；stdin 哑喂 Some(&[])；
-    // recv 容量按「协议定值 1 op + 富余」判面（段① serve() 已落，本刀零改）。
-    // GUI-5：extras 追加 wmd 推送客户端端（WMD_PUSH_B——wmd arm Ok 路存
-    // 值；0 = wmd 未起 → extras 仍单枚，inputd 现行为逐字节保留）。失败面
-    // = close(in_b) + close(in_a)（+ push_b 在席时第三枚）+ eco_skip——bsh
-    // inputpoll 面静默降级（input_h()==0 → "input: absent"）。
-    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
-        eco_skip(b"mmio absent");
-    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gui-inputd") {
-        let (in_a, in_b) = channel_pair();
-        // GUI-5 推送端追加（fsmgr fgifts 条件切片同款）：WMD_PUSH_B 非 0 =
-        // wmd 已起，extras 次位随行 push_b（inputd 侧 libc `wm_push_h()`）。
-        let push_b = WMD_PUSH_B.load(Ordering::Relaxed);
-        let mut igifts = [in_b, 0 as Handle];
-        let igifts: &[Handle] = if push_b != 0 {
-            igifts[1] = push_b;
-            &igifts
-        } else {
-            &igifts[..1]
-        };
-        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
-        // dummy（空 feeder + 立即 EOF；inputd 服务永不读 stdin，vnet 同款）。
-        match spawn_rootfs_elf(
-            H_ROOTFS,
-            &SpawnSpec {
-                name: b"bin/gui-inputd",
-                data_off,
-                data_len,
-                stdout: console,
-                stack_pages: 8,
-                stdin_feed: Some(&[]),
-                stdin_handle: None,
-                args: &[],
-                extra_gifts: igifts,
-                mmio_vmo: Some(H_MMIO),
-                mmio_va: VIRTIO_MMIO_VA,
-                intent: 0,
-            },
-        ) {
-            Ok(_child) => {
-                ps_reg(b"inputd", psp::STATE_ALIVE, 0); // 拉起即常驻（boot 自验门成败都活——serve 常驻）
-                // 常驻不 reap。`INPUT ok` 标记由 boot 期 input_selftest 打
-                // （SUBSCRIBE RPC 走本端 in_a——net_a 转 client 同款）；
-                // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
-                // inputd 自打。
-                INPUT_A.store(in_a, Ordering::Relaxed);
-                // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
-                // （fsmgr blk_cli 同款；已迁值不可 close）。
-                WMD_PUSH_B.store(0, Ordering::Relaxed);
-            }
-            Err(()) => {
-                ps_reg(b"inputd", psp::STATE_SPAWNFAIL, 0);
-                // Err 全在 env send 前——in_b/push_b 未被 take，新鲜端显式
-                // 回收防表槽泄漏（vnet 同款；push_b = wmd push 服务端端的
-                // 对端，close = 服务端端成孤儿——但 spawn 已败，wmd 推送链
-                // 已断，留表无保活意义）。
-                if berry_handle_close(in_b) != 0 {
-                    trap();
-                }
-                if berry_handle_close(in_a) != 0 {
-                    trap();
-                }
-                if push_b != 0 && berry_handle_close(push_b) != 0 {
-                    trap();
-                }
-                WMD_PUSH_B.store(0, Ordering::Relaxed);
-                eco_skip(b"inputd spawn");
             }
         }
     }

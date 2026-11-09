@@ -107,6 +107,12 @@ MARK_WM_DENIED = "WMDENY ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
 MARK_WM_ORPHAN = "WMORPHAN ok id="
 MARK_WM_2FRAME = "WM2FRAME ok n=2"
+MARK_WM_FOCUS_READY = "WMFOCUSREADY ok"
+MARK_WM_KEY_FOCUS = "WMKEYFOCUS ok"
+MARK_WM_FOCUS_KEY = "WMFOCUSKEY ok"
+MARK_WM_FOCUS_NOOP = "WMFOCUSNOOP ok"
+MARK_WM_FOCUS_SKIP = "WMFOCUSSKIP ok"
+MARK_WM_FOCUS = "WMFOCUS ok"
 MARK_WM_DEAD1 = "WMDEAD ok id=1 wins=0"
 MARK_WM_DEAD2 = "WMDEAD ok id=2 wins=1"
 MARK_WM_ROUTE_DESKTOP = "WMROUTE ok sid=3 window=0"
@@ -996,6 +1002,25 @@ def verify_boot_a_click(
     _require_exact_count(text, MARK_WM_ROUTE_DESKTOP, 2, "boot A click", log_path)
     _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "boot A click", log_path)
     _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "boot A click", log_path)
+    _require_exact_count(text, MARK_WM_FOCUS_READY, 1, "boot A focus ready", log_path)
+    _require_exact_count(text, MARK_WM_FOCUS_SKIP, 0, "boot A focus skip", log_path)
+    _require_exact_count(text, MARK_WM_KEY_FOCUS, 2, "boot A keyboard focus", log_path)
+    _require_exact_count(text, MARK_WM_FOCUS_KEY, 1, "boot A focus proof", log_path)
+    _require_exact_count(
+        text, MARK_WM_FOCUS_NOOP, 1, "boot A focus no-op", log_path
+    )
+    _require_exact_count(text, "WMKEYROUTE ok ", 4, "boot A focus keys", log_path)
+    _require_exact_count(text, "WMKEYDROP bad ", 0, "boot A focus keys", log_path)
+    _require_exact_count(
+        text, "WMSNAPFOCUS ok ", 1, "boot A focus snapshot", log_path
+    )
+    _require_exact_count(
+        text, "WMKEYFOCUS ok side=left ", 1, "boot A left focus", log_path
+    )
+    _require_exact_count(
+        text, "WMKEYFOCUS ok side=right ", 1, "boot A right focus", log_path
+    )
+    _require_exact_count(text, MARK_WM_FOCUS, 2, "boot A click focus", log_path)
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
@@ -1062,6 +1087,9 @@ def verify_boot_a_real_swipe(
 
 def verify_boot_b(text: str, log_path: Path | None = None) -> None:
     """Boot B 精确验收：LAYOUT==1、LAYOUTW==0、CLICK==0。"""
+    _require_exact_count(text, MARK_WM_FOCUS_SKIP, 1, "boot B focus skip", log_path)
+    _require_exact_count(text, MARK_WM_FOCUS + " ", 0, "boot B focus change", log_path)
+    _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "boot B keyboard focus", log_path)
     n_layout = len(re.findall(RE_LAYOUT_N2, text))
     if n_layout != 1:
         raise SmokeError(
@@ -1074,6 +1102,9 @@ def verify_boot_b(text: str, log_path: Path | None = None) -> None:
 
 def verify_layout_selfheal_boot(text: str, log_path: Path | None = None) -> None:
     """损坏 LAYOUT 自愈 boot：解析失败 → 默认布局 → LAYOUTW 恰一次。"""
+    _require_exact_count(text, MARK_WM_FOCUS_SKIP, 1, "boot C focus skip", log_path)
+    _require_exact_count(text, MARK_WM_FOCUS + " ", 0, "boot C focus change", log_path)
+    _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "boot C keyboard focus", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 1, "layout self-heal", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "layout self-heal", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "layout self-heal", log_path)
@@ -1097,6 +1128,9 @@ def verify_normal_boot(
     READDIR/STAT/GET；Photos 要求 5000B 图像数据；Contacts 要求 4 条真实
     记录、详情/收藏/返回三次重绘；Browser/Photos 要求 layout-driven 点击。
     """
+    _require_exact_count(text, MARK_WM_FOCUS_SKIP, 1, "normal focus skip", log_path)
+    _require_exact_count(text, MARK_WM_FOCUS + " ", 0, "normal focus change", log_path)
+    _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "normal keyboard focus", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
@@ -1715,6 +1749,10 @@ class Boot:
         return self.log.count_re(pattern)
 
     def qmp_connect(self) -> None:
+        # QMP 单客户端：P3 早期 gfxdemo 焦点相已连接时复用同一连接，
+        # 不得叠开第二条 socket。
+        if self.qmp is not None:
+            return
         self.qmp = QmpClient(self.sock_path)
 
     def stop(self) -> None:
@@ -1906,6 +1944,64 @@ def run_dual_boot(args) -> int:
         # ---------------- Boot A ----------------
         boot_a = Boot("A", args, run_dir, disk, "a")
         boot_a.start()
+
+        # —— P3 click-to-focus：gfxdemo 双半屏窗口先声明 Retained+Keyboard，
+        #    GUI8 用真实 QMP 点击左窗+KEY_A、右窗+KEY_A。guest 只在收到
+        #    对应 pointer DOWN 与同侧 key pair 后打印证明。
+        boot_a.wait_markers([MARK_WM_FOCUS_READY], args.click_ready_timeout)
+        focus_ready = re.search(
+            r"WMFOCUSREADY ok left=([0-9]+) right=([0-9]+) "
+            r"left_rect=0,0,([0-9]+),([0-9]+) "
+            r"right_rect=([0-9]+),0,([0-9]+),([0-9]+)",
+            boot_a.log.text,
+        )
+        if focus_ready is None:
+            raise SmokeError("boot A focus-ready geometry absent", boot_a.log_path)
+        focus_left_id, focus_right_id = map(int, focus_ready.group(1, 2))
+        focus_lw, focus_h, focus_rx, focus_rw = map(
+            int, focus_ready.group(3, 4, 5, 6)
+        )
+        boot_a.qmp_connect()
+        log(
+            "boot A: QMP 点击左窗 + KEY_A（click-to-focus 左侧）"
+        )
+        focus_dw = focus_lw + focus_rw
+        boot_a.qmp.click(focus_lw // 2, focus_h // 2, focus_dw, focus_h)
+        left_focus_re = rf"WMFOCUS ok sid=1 window={focus_left_id} v=([0-9]+)"
+        boot_a.wait_regex(left_focus_re, args.click_timeout)
+        boot_a.log.poll()
+        left_focus = re.search(left_focus_re, boot_a.log.text)
+        if left_focus is None:
+            raise SmokeError("boot A left focus version absent", boot_a.log_path)
+        boot_a.qmp.tap_key(30)
+        boot_a.wait_markers(
+            ["WMKEYFOCUS ok side=left "], args.click_timeout
+        )
+        log(
+            "boot A: QMP 点击右窗 + KEY_A（click-to-focus 右侧）"
+        )
+        boot_a.qmp.click(
+            focus_rx + focus_rw // 2, focus_h // 2, focus_dw, focus_h
+        )
+        right_focus_re = rf"WMFOCUS ok sid=2 window={focus_right_id} v=([0-9]+)"
+        boot_a.wait_regex(right_focus_re, args.click_timeout)
+        boot_a.log.poll()
+        right_focus = re.search(right_focus_re, boot_a.log.text)
+        if right_focus is None:
+            raise SmokeError("boot A right focus version absent", boot_a.log_path)
+        if int(right_focus.group(1)) <= int(left_focus.group(1)):
+            raise SmokeError("boot A focus snapshot version 未递增", boot_a.log_path)
+        boot_a.qmp.tap_key(30)
+        boot_a.wait_markers(
+            ["WMKEYFOCUS ok side=right ", MARK_WM_FOCUS_KEY],
+            args.click_timeout,
+        )
+        log("boot A: QMP 重复点击右窗（已聚焦 no-op）")
+        boot_a.qmp.click(
+            focus_rx + focus_rw // 2, focus_h // 2, focus_dw, focus_h
+        )
+        boot_a.wait_markers(["WMFOCUSNOOP ok "], args.click_timeout)
+
         _wait_boot_batch(boot_a, args.boot_a_timeout)
         _warn_input_armed(boot_a)
 
@@ -2278,11 +2374,29 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        # P2 双输入设备下 TCG 呈现链偶发晚于 FRAME_CALLBACK；像素锚以
-        # 稳定 screendump 为准，不用仍可能停留在桌面的首拍。
-        time.sleep(3.0)
+        # TCG 下 screendump 偶发早于呈现链完成：按 AppBar+surface 双锚
+        # 重拍到稳定帧，不做固定 sleep 假设。
         browser_shot = run_dir / "browser.ppm"
-        boot.qmp.screendump(browser_shot)
+        stable_deadline = time.monotonic() + 15.0
+        while True:
+            boot.qmp.screendump(browser_shot)
+            appbar = ppm_pixel(browser_shot, 540, 20)
+            surface = ppm_pixel(browser_shot, 540, 600)
+            stable = all(
+                abs(a - b) <= 8
+                for a, b in zip(appbar, (0, 116, 224))
+            ) and all(
+                abs(a - b) <= 8
+                for a, b in zip(surface, (255, 255, 255))
+            )
+            if stable:
+                break
+            if time.monotonic() >= stable_deadline:
+                raise SmokeError(
+                    f"Browser 稳定截图超时 AppBar={appbar} surface={surface}",
+                    boot.log_path,
+                )
+            time.sleep(0.5)
         assert_pixel_close(
             ppm_pixel(browser_shot, 540, 20), (0, 116, 224),
             "Browser AppBar", boot.log_path,
@@ -3246,7 +3360,7 @@ def self_test(args) -> int:
         heal_cells = read_layout_canonical(heal)
         if len(heal_cells) != len(LAYOUT_CELLS_EXPECTED):
             raise SmokeError("FAT 原簇覆写后 canonical cell 数漂移")
-        verify_layout_selfheal_boot(f"{MARK_LAYOUTW}\n")
+        verify_layout_selfheal_boot(f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\n{MARK_LAYOUTW}\n")
         log(
             "self-test: LAYOUT canonical ok（109B 双 cell / 原簇损坏覆写 / "
             "错 id、错 page、多字节均 FAIL）"
@@ -3285,6 +3399,19 @@ def self_test(args) -> int:
             raise SmokeError("CLICK 正则误吞 n=10")
 
         fake_a = (
+            "WMFOCUSREADY ok left=5 right=6 left_rect=0,0,400,600 "
+            "right_rect=400,0,400,600\n"
+            "WMFOCUS ok sid=1 window=5 v=8\n"
+            "WMKEYROUTE ok sid=1 window=5 code=30 action=1\n"
+            "WMKEYROUTE ok sid=1 window=5 code=30 action=0\n"
+            "WMKEYFOCUS ok side=left window=5 pointer=1 keys=2\n"
+            "WMFOCUS ok sid=2 window=6 v=9\n"
+            "WMKEYROUTE ok sid=2 window=6 code=30 action=1\n"
+            "WMKEYROUTE ok sid=2 window=6 code=30 action=0\n"
+            "WMKEYFOCUS ok side=right window=6 pointer=1 keys=2\n"
+            f"{MARK_WM_FOCUS_KEY}\n"
+            "WMSNAPFOCUS ok v=9 right=1\n"
+            f"{MARK_WM_FOCUS_NOOP} window=6 v=9\n"
             f"{MARK_APP_DEMO_UP}\n"
             f"{MARK_LAYOUTW}\n"
             f"{MARK_INPUT_DROPS_OK}\n"
@@ -3297,6 +3424,41 @@ def self_test(args) -> int:
         )
         pos_a = fake_a.index(MARK_CLICK_READY)
         verify_boot_a_click(fake_a, pos_a, 1, 0)
+        expect_error(
+            "Boot A 缺焦点 ready",
+            lambda: verify_boot_a_click(
+                fake_a.replace("WMFOCUSREADY ok", "WMFOCUSX ok", 1),
+                pos_a, 1, 0,
+            ),
+        )
+        expect_error(
+            "Boot A 缺焦点快照",
+            lambda: verify_boot_a_click(
+                fake_a.replace("WMSNAPFOCUS ok ", "WMSNAPFOCUSX ok ", 1),
+                pos_a, 1, 0,
+            ),
+        )
+        expect_error(
+            "Boot A 键盘路由数漂移",
+            lambda: verify_boot_a_click(
+                fake_a + "WMKEYROUTE ok sid=2 window=6 code=30 action=1\n",
+                pos_a, 1, 0,
+            ),
+        )
+        expect_error(
+            "Boot A 缺已聚焦 no-op 证明",
+            lambda: verify_boot_a_click(
+                fake_a.replace(f"{MARK_WM_FOCUS_NOOP} window=6 v=9\n", "", 1),
+                pos_a, 1, 0,
+            ),
+        )
+        expect_error(
+            "Boot A 焦点证明缺一侧",
+            lambda: verify_boot_a_click(
+                fake_a.replace("WMKEYFOCUS ok side=left ", "", 1),
+                pos_a, 1, 0,
+            ),
+        )
         expect_error(
             "Boot A 重复 CLICK",
             lambda: verify_boot_a_click(
@@ -3382,7 +3544,7 @@ def self_test(args) -> int:
             "重复/错序/缺 ready/APPQUIET 均 FAIL）"
         )
 
-        fake_b = "LAUNCH ok\nLAYOUT ok n=2\n"
+        fake_b = f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\nLAUNCH ok\nLAYOUT ok n=2\n"
         verify_boot_b(fake_b)
         expect_error(
             "Boot B 重复 LAYOUT",
@@ -3533,6 +3695,7 @@ def self_test(args) -> int:
         )
 
         fake_n = (
+            f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\n"
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
             f"{photos_boot}{contacts_boot}"
         )

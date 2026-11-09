@@ -264,6 +264,208 @@ fn wm_connect_forged_surface_denied(broker: Handle, process: Handle) {
     let _ = berry_handle_close(input_local);
 }
 
+/// P3：两个半屏窗都声明 Retained + Keyboard。Keyboard 不需要 P1 escape
+/// seed；焦点由 wmd pointer DOWN 权威更新。
+fn configure_retained_keyboard(ch: Handle, window: u16) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let request = gp::surface::SurfaceModeReq {
+        surface_id: window,
+        role: gp::surface::SURFACE_ROLE_APP,
+        mode: gp::surface::SURFACE_MODE_RETAINED,
+        input_classes: gp::surface::INPUT_CLASS_TOUCH | gp::surface::INPUT_CLASS_KEYBOARD,
+        ime_mode: gp::surface::IME_MODE_DISABLED,
+        a11y_mode: gp::surface::A11Y_MODE_TREE,
+    };
+    let m = enc_req(gp::surface::encode_wm_surface_mode_req(&mut req, &request));
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    let info = match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+        Some(Ok(info)) => info,
+        other => fail(&format!("retained keyboard grant got {other:?}")),
+    };
+    if info.mode != gp::surface::SURFACE_MODE_RETAINED
+        || info.input_classes & gp::surface::INPUT_CLASS_KEYBOARD == 0
+        || info.contract_flags & gp::surface::SURFACE_F_ESCAPE != 0
+    {
+        fail("retained keyboard grant mismatch");
+    }
+}
+
+/// 非阻塞 pointer INPUT_POLL；空批返回 0。
+fn poll_pointer(ch: Handle, out: &mut [gp::PointerEvent; gp::INPUT_EVENTS_MAX]) -> usize {
+    let mut req = [0u8; 4];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_input_poll_req(&mut req, gp::INPUT_EVENTS_MAX as u8);
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_input_events_rep(&rep[..n]) {
+        Some(Ok(events)) => {
+            let count = events.count();
+            for i in 0..count {
+                out[i] = match events.event(i) {
+                    Some(ev) => ev,
+                    None => fail("pointer poll event"),
+                };
+            }
+            count
+        }
+        Some(Err(_)) => 0,
+        None => fail("pointer poll rep"),
+    }
+}
+
+/// 非阻塞 keyboard INPUT_KEY_POLL；空批返回 0。
+fn poll_keys(ch: Handle, out: &mut [gp::KeyEvent; gp::INPUT_KEY_EVENTS_MAX]) -> usize {
+    let mut req = [0u8; 4];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_input_key_poll_req(&mut req, gp::INPUT_KEY_EVENTS_MAX as u8);
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_input_key_events_rep(&rep[..n]) {
+        Some(Ok(events)) => {
+            let count = events.count();
+            for i in 0..count {
+                out[i] = match events.event(i) {
+                    Some(ev) => ev,
+                    None => fail("key poll event"),
+                };
+            }
+            count
+        }
+        Some(Err(_)) => 0,
+        None => fail("key poll rep"),
+    }
+}
+
+/// 等待目标通道出现 pointer DOWN；对侧若出现 DOWN 则 fail。
+fn wait_pointer_down(target: Handle, other: Handle, side: &str) -> bool {
+    let deadline = now() + 30_000_000_000;
+    let mut pe = [gp::PointerEvent {
+        phase: 0, device_id: 0, buttons: 0, flags: 0, pointer_id: 0,
+        timestamp_ns: 0, x: 0, y: 0, pressure: 0, contact_major: 0,
+        contact_minor: 0, history: [gp::Sample { timestamp_ns: 0, x: 0, y: 0 };
+            gp::INPUT_SAMPLES_MAX - 1], history_len: 0,
+    }; gp::INPUT_EVENTS_MAX];
+    loop {
+        let n = poll_pointer(other, &mut pe);
+        for ev in pe.iter().take(n) {
+            if ev.phase == gp::PHASE_DOWN {
+                fail(&format!("focus pointer wrong side={side}"));
+            }
+        }
+        let n = poll_pointer(target, &mut pe);
+        for ev in pe.iter().take(n) {
+            if ev.phase == gp::PHASE_DOWN {
+                return true;
+            }
+        }
+        if now() >= deadline {
+            // Boot B/C 无 QMP 交互：不伪造焦点证明，显式 skip 后继续
+            // 既有 gfxdemo 流；Boot A 由 GUI8 在 ready 后立即注入。
+            return false;
+        }
+        if berry_thread_sleep(now() + 1_000_000) != 0 {
+            fail("focus pointer sleep");
+        }
+    }
+}
+
+/// 等待目标通道 KEY_A down/up；对侧出现任意 key 则 fail。
+fn wait_key_pair(target: Handle, other: Handle, side: &str) {
+    let deadline = now() + 30_000_000_000;
+    let mut ke = [gp::KeyEvent {
+        timestamp_ns: 0, code: 0, action: 0, modifiers: 0, device_id: 0,
+    }; gp::INPUT_KEY_EVENTS_MAX];
+    let mut downs = 0u32;
+    let mut ups = 0u32;
+    loop {
+        let n = poll_keys(other, &mut ke);
+        if n != 0 {
+            fail(&format!("focus key wrong side={side}"));
+        }
+        let n = poll_keys(target, &mut ke);
+        for ev in ke.iter().take(n) {
+            if ev.code != 30 {
+                fail(&format!("focus key code={}", ev.code));
+            }
+            match ev.action {
+                gp::KEY_ACTION_DOWN => downs += 1,
+                gp::KEY_ACTION_UP => ups += 1,
+                _ => {}
+            }
+        }
+        if downs >= 1 && ups >= 1 {
+            return;
+        }
+        if now() >= deadline {
+            fail(&format!("focus key timeout side={side}"));
+        }
+        if berry_thread_sleep(now() + 1_000_000) != 0 {
+            fail("focus key sleep");
+        }
+    }
+}
+
+/// TABLE_GET 焦点快照：返回版本与右窗 focused 位。
+fn table_focus_snapshot(ch: Handle, right: u16) -> (u32, bool) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_wm_table_get_req(&mut req);
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    let snap = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+        Some(Ok(s)) => s,
+        other => fail(&format!("focus table snap got {other:?}")),
+    };
+    let entry = snap
+        .entries
+        .iter()
+        .take(snap.count)
+        .find(|e| e.id == right)
+        .unwrap_or_else(|| fail("focus table missing right"));
+    let focused = entry.flags & gp::WM_WIN_F_FOCUSED != 0;
+    (snap.version, focused)
+}
+
+/// P3 双窗焦点证明：QMP 先点左窗+KEY_A，再点右窗+KEY_A。本函数只在
+/// 每侧收到 pointer DOWN 和同侧 key pair 后打印 payload marker。
+fn focus_keyboard_proof(
+    hw: Handle, rogue: Handle, input1: Handle, input2: Handle,
+    left: u16, right: u16, left_w: u16, right_x: u16, right_w: u16, h: u16,
+) {
+    configure_retained_keyboard(hw, left);
+    configure_retained_keyboard(rogue, right);
+    println!(
+        "WMFOCUSREADY ok left={left} right={right} left_rect=0,0,{left_w},{h} right_rect={right_x},0,{right_w},{h}"
+    );
+    if !wait_pointer_down(input1, input2, "left") {
+        println!("WMFOCUSSKIP ok reason=no-pointer");
+        return;
+    }
+    wait_key_pair(input1, input2, "left");
+    println!("WMKEYFOCUS ok side=left window={left} pointer=1 keys=2");
+    wait_pointer_down(input2, input1, "right");
+    wait_key_pair(input2, input1, "right");
+    println!("WMKEYFOCUS ok side=right window={right} pointer=1 keys=2");
+    println!("WMFOCUSKEY ok left={left} right={right} proofs=2");
+    // 同窗重复点击：wmd 不得再次 bump / 打 WMFOCUS。这里等待真实第二次
+    // pointer DOWN，并用 TABLE_GET 前后版本与 focused bit 钉板 no-op。
+    let (before, focused_before) = table_focus_snapshot(hw, right);
+    if !focused_before {
+        fail("focus snapshot right not focused");
+    }
+    if !wait_pointer_down(input2, input1, "right-noop") {
+        fail("focus no-op pointer absent");
+    }
+    let (after, focused_after) = table_focus_snapshot(hw, right);
+    if before != after || !focused_after {
+        fail(&format!("focus no-op snapshot {before}->{after} focused={focused_after}"));
+    }
+    println!("WMSNAPFOCUS ok v={after} right=1");
+    println!("WMFOCUSNOOP ok window={right} v={before}");
+}
+
 /// 页取整帧 VMO（窗口局部 buffer；Phase 2 不再要求 app 分配全屏）。
 fn frame_vmo(w: usize, h: usize) -> (Handle, usize, usize) {
     let stride = w.checked_mul(4).unwrap_or_else(|| fail("tile stride overflow"));
@@ -408,8 +610,8 @@ fn main() {
     {
         fail("wm self process dup");
     }
-    let (hw, _input1) = wm_connect_process(broker, process);
-    let (rogue, _input2) = wm_connect_process(broker, process2);
+    let (hw, input1) = wm_connect_process(broker, process);
+    let (rogue, input2) = wm_connect_process(broker, process2);
     // P1：公开常量自铸 seed channel 必须在 broker 退役前被拒绝。
     wm_connect_forged_surface_denied(broker, process3);
     // 两个 session 建立后 broker 才退役；后续业务全部走 owner 通道。
@@ -585,6 +787,14 @@ fn main() {
         _ => fail(&format!("wm create2 ack bad st={}", rep[0])),
     };
     println!("WMORPHAN ok id={wid2}");
+
+    // P3：在 TABLE/Present 流之前完成 click-to-focus + Keyboard 真链。
+    // GUI8 看到 WMFOCUSREADY 后注入左右点击与 KEY_A；本进程阻塞等待，
+    // 证明完成才继续既有 gfxdemo 流。
+    focus_keyboard_proof(
+        hw, rogue, input1, input2, wid, wid2,
+        creq.w, creq2.x, creq2.w, creq2.h,
+    );
 
     // ④ TABLE_GET：全表快照对拍——count≥1 ∧ window_id 回显 ∧ 有效几何
     // == 申请几何（v1 无系统层重叠 = 恒等；GUI-8 裁决四-e 定谳：状态栏/

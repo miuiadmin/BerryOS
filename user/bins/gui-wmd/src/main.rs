@@ -353,7 +353,17 @@ impl WmSessions {
         let (sid, window, origin) = match out.phase {
             gp::PHASE_DOWN => {
                 let target = match table.hit_route(out.x, out.y) {
-                    Some((owner, win, x, y)) => (owner, win, Some((x, y))),
+                    Some((owner, win, x, y)) => {
+                        if table.focus_from_pointer(win) {
+                            println!(
+                                "WMFOCUS ok sid={} window={} v={}",
+                                owner,
+                                win,
+                                table.version()
+                            );
+                        }
+                        (owner, win, Some((x, y)))
+                    }
                     None => match self.system_slot() {
                         Some(i) => (self.slots[i].as_ref().unwrap().id, 0, None),
                         None => return,

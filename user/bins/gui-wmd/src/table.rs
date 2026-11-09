@@ -224,12 +224,32 @@ impl WmTable {
         (0..self.count).find(|&i| self.wins[i].id == id)
     }
 
-    /// P2 键盘焦点真值：当前 focus 窗的 (owner, window)。焦点仍是
-    /// create/show/destroy 策略焦点，click-to-focus 归后续窗口策略刀。
+    /// 当前表版本（focus bump 的快照证据面）。
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// P2 键盘焦点真值：当前 focus 窗的 (owner, window)。
     pub fn focused(&self) -> Option<(u16, u16)> {
         let id = self.focus?;
         let i = self.find(id)?;
         Some((self.wins[i].owner, id))
+    }
+
+    /// P3 click-to-focus：pointer DOWN 命中真实可见窗时接焦。桌面 miss
+    /// 不清焦（v1 无桌面窗对象，避免造 window=0 第二语义）；隐藏窗不参
+    /// hit-test。变更后 bump，让 WM_TABLE_WAIT 消费者看到 focused flag。
+    pub fn focus_from_pointer(&mut self, id: u16) -> bool {
+        let Some(i) = self.find(id) else { return false };
+        if !self.wins[i].vis
+            || self.wins[i].layer != gp::WM_LAYER_APP
+            || self.focus == Some(id)
+        {
+            return false;
+        }
+        self.focus = Some(id);
+        self.bump();
+        true
     }
 
     /// Phase 3 权威输入命中：返回 (owner, window_id, 有效几何原点)。

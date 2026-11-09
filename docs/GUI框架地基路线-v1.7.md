@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.6**｜2026-11-08
+> 版本：**1.7**｜2026-11-08
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -113,6 +113,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **C1 嵌套视口裁剪（已落地）** | BerryGFX `PushClip/PopClip` + BerryUI 结构性 `Clip` kind，ScrollView/Swipe 迁移 | 嵌套/兄弟溢出像素零泄漏；滚出视口子树不可命中；AST add-only 且旧流零漂；damage 只保持安全超集或收紧到 Clip 链；普通 app 不得直录 gfx Clip 命令 |
 | **P1 Surface Mode 生产接线（已落地）** | manifest escape capability + svcmgr per-boot seed + Berry Room 0x67/buffer 借用 + gui-wmd 服务分发 | Canvas/Immersive 只能经 per-boot seed 授权与 Berry Room 获得；普通 APP escape 恒拒；P1 时点 Keyboard/Gamepad/IME Host 恒拒（P2 起 Keyboard 真链开放）；buffer/stride/VMO 不出 Room；六 BerryUI 真链零回退 |
 | **P2 Keyboard Input 生产接线（已落地）** | virtio-keyboard + inputd KeyPump/0x23 路由 + gui-wmd focus/input_classes KeyQueue + Berry Room poll_keys | Keyboard 是真实生产链；默认无 Keyboard 合约 fail closed；Gamepad/IME Host 仍诚实拒绝；pointer/touch 与六 BerryUI 真链零回退 |
+| **P3 Click-to-Focus（已落地）** | gui-wmd pointer DOWN 命中 APP 窗即更新权威 focus 并 bump 快照 + gfxdemo 双窗 Retained Keyboard 真链 | 左右半屏点击后 Keyboard 队列跟随新焦点；desktop miss 不清焦；已聚焦窗点击 no-op；无第二焦点权威；pointer/touch 与六 BerryUI 真链零回退 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

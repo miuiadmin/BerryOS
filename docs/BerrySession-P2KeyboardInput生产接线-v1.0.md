@@ -7,7 +7,7 @@
 > `QEMU virtio-keyboard → gui-inputd KeyEvent → gui-wmd focus/input_classes →
 > Berry Room poll_keys` 的生产链；Gamepad 与 IME Host 仍无生产者或服务，
 > 继续诚实 `ST_UNSUPPORTED`。执行序权威 =
-> [GUI框架地基路线-v1.6.md](GUI框架地基路线-v1.6.md)。
+> [GUI框架地基路线-v1.7.md](GUI框架地基路线-v1.7.md)。
 
 ## §1 结论
 
@@ -258,15 +258,14 @@ OP_INPUT_KEY_POLL
 
 ### focus 语义
 
-P2 使用现行 WM 策略焦点：
+P2 时点使用现行 WM 策略焦点：
 
 ```text
 CREATE / SHOW / DESTROY / HIDE 产生的 table.focus
 ```
 
-不是 click-to-focus。点击其它窗口不会即时转移键盘焦点；该交互策略归后续
-窗口管理刀。P2 先把键盘路由建立在单一权威 focus 真值上，不在 inputd 或
-app 复制第二套焦点。
+P3 已追加 pointer DOWN click-to-focus；点击其它窗口会即时转移键盘焦点。
+焦点权威仍在 wmd table，不在 inputd 或 app 复制第二套焦点。
 
 ### 生命周期
 
@@ -505,7 +504,7 @@ SHA-256 = 734335063cd77a1ba5c7420edbe1da54da42153c3c429c13771d540c063497cd
 - Gamepad 仍无真实设备/事件生产者，`ST_UNSUPPORTED`。
 - gui-wmd 仍无本机 host 测试 harness；P2 依靠 guiproto/inputd host 纯函数与 GUI8 四段真链覆盖，KeyQueue 环回/溢出矩阵归后续服务测试刀。
 - IME Host 仍无 composition 服务与推送通道，`ST_UNSUPPORTED`。
-- 键盘焦点仍是 WM create/show/destroy 策略焦点，非 click-to-focus。
+- P2 时点键盘焦点非 click-to-focus；P3 已落地 pointer DOWN 权威接焦。
 - 键盘 LED / statusq 未消费。
 - Key repeat 由设备透传，系统层尚无自动 repeat 策略。
 - a11y Keyboard 语义旁车仍只有 P0 region/tree 词表，无批量传输。

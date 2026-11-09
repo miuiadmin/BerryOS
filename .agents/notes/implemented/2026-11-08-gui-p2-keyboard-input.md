@@ -27,7 +27,7 @@ P0 把 Keyboard 定义为 Surface input class，P1 又因无生产者诚实返�
 
 - Keyboard 从 P1 的诚实 unsupported 升级为真实生产链，可用于 Retained、Canvas、Immersive，只要对应窗口 0x67 合约声明该 input class。
 - 默认未声明 Keyboard 的窗口按键 fail closed，不会误投。
-- P2 焦点仍是 create/show/destroy 策略焦点，不是 click-to-focus；后续窗口策略刀再演进。
+- P2 时点焦点仍是 create/show/destroy 策略焦点；P3 已落地 pointer DOWN 权威接焦。
 - Gamepad、IME Host、键盘布局/热插拔、a11y 批量旁车仍未开放。
 
 ## Related

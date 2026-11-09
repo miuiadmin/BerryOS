@@ -24,5 +24,5 @@ BerryOS 的长期形态同时包含简单移动应用、PC 专业工作台、游
 ## Related
 
 - [GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md)
-- [GUI框架地基路线-v1.6.md](../../../docs/GUI框架地基路线-v1.6.md)
+- [GUI框架地基路线-v1.7.md](../../../docs/GUI框架地基路线-v1.7.md)
 - [BerryOS命名体系-v1.1.md](../../../docs/BerryOS命名体系-v1.1.md)

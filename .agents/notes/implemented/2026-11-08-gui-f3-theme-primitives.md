@@ -8,7 +8,7 @@ F2 后 BerryUI core 可测，但视觉常量仍散在调用方；五个迁移前
 
 ## Decision
 
-按 [GUI框架地基路线-v1.6.md](../../../docs/GUI框架地基路线-v1.6.md) 完成 F3。新增 `berry-ui/src/theme.rs`：`Theme::light()` 提供语义色，`InteractionState` 提供 Normal/Pressed/Disabled/Selected 三件状态色，`ThemeMetrics` 以 quarter-vp token 统一 @2x/@3x 间距、圆角与排版换算，并导出到 `berry-ui::sdk`。新增 `berry-gfx/src/surface.rs`：XRGB little-endian straight-alpha 混合、3×3 超采样圆角矩形/圆和双层轻阴影；DisplayList 圆命令与直接表面路径共用 `circle_coverage` 单源。`berry-nshfont` 保留迁移期签名，但 HD A8 文本混合与形状基元全部转发 BerryGFX。
+按 [GUI框架地基路线-v1.7.md](../../../docs/GUI框架地基路线-v1.7.md) 完成 F3。新增 `berry-ui/src/theme.rs`：`Theme::light()` 提供语义色，`InteractionState` 提供 Normal/Pressed/Disabled/Selected 三件状态色，`ThemeMetrics` 以 quarter-vp token 统一 @2x/@3x 间距、圆角与排版换算，并导出到 `berry-ui::sdk`。新增 `berry-gfx/src/surface.rs`：XRGB little-endian straight-alpha 混合、3×3 超采样圆角矩形/圆和双层轻阴影；DisplayList 圆命令与直接表面路径共用 `circle_coverage` 单源。`berry-nshfont` 保留迁移期签名，但 HD A8 文本混合与形状基元全部转发 BerryGFX。
 
 ## Alternatives considered
 
