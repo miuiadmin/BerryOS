@@ -262,9 +262,17 @@ jobs:
       # 包布局 = /usr/share/AAVMF/，对抗审查 F1 实证）。EFI 引导 ~115s（TCG）
       # + 注入段，帽内余量 ~3x。
       - name: img-boot 冒烟（M-G1 gate）
-        run: just smoke-image
+        run: |
+          # brew QEMU（Linux bottle）沙箱化启动：固件路径须在沙箱可访问
+          # 范围（/usr/share/AAVMF 不在默认 bind 列表 → Permission denied，
+          # 2026-11-09 CI 首达此步实录）。拷固件进 workspace（CI cwd 在沙箱
+          # bind 面内）绕行；VARS 侧 smoke-image 自产 blank 不读共享模板。
+          # 注：pflash CODE 打开本为只读（macOS 444 文件实测可开）——EACCES
+          # 全由沙箱路径过滤致，非属主/写权。
+          mkdir -p fw && cp -L /usr/share/AAVMF/AAVMF_CODE.fd fw/
+          just smoke-image
         env:
-          AAVMF_CODE: /usr/share/AAVMF/AAVMF_CODE.fd
+          AAVMF_CODE: ${{ github.workspace }}/fw/AAVMF_CODE.fd
           AAVMF_VARS: /usr/share/AAVMF/AAVMF_VARS.fd
 
       # ---------- SEC-01 §4.5 件 22 + 件 23 尾面（CI/台账） ----------
