@@ -268,4 +268,4 @@ SHA-256 = c85bd31db67a262abcc098617906464946a093fec2cc31cf2d4da99841e4ff58
 - Contacts 仍只读；无拨号、短信、编辑或系统联系人服务。
 - BerryUI 嵌套视口 clipping 仍归后续刀；两 app 当前页面 fitting，不私造 clip。
 - CanvasSurface / immersive buffer 未开放；两 app 走 P0 Retained 路径。
-- `berry-nshfont` 仍被 Browser/Photos 引用，F9 删除。
+- `berry-nshfont` 在 F7 时点仍被 Browser/Photos 引用；F8 后无 GUI app 消费者，F9 已删除。

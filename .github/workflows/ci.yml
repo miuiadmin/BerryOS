@@ -27,6 +27,14 @@ jobs:
       - name: writable-globals（可写全局清单门禁）
         run: python3 tools/writable_globals.py --check
 
+      # GUI F9：普通 BerryUI app 边界静态守卫（零依赖、先于工具链安装）。
+      # 六个 wm=true app 不得直接回到 syscall/WM RPC/VMO/stride/像素路径，
+      # berry-nshfont 迁移期临时件不得回潮。
+      - name: gui-boundary-guard（GUI F9 普通 app 禁令）
+        run: |
+          python3 tools/gui_guard.py --self-test
+          python3 tools/gui_guard.py
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防

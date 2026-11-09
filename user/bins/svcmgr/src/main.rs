@@ -4557,9 +4557,9 @@ fn app_launch(
             return (false, uface, None);
         }
     }
-    // Browser Native Shell：manifest `wm=true` 时 fresh dup WMD broker
-    // 客户端端。app 自建 WM/input session 两通道并在 WM_CONNECT 请求里
-    // 迁回 wmd；本端只是 broker 入场券，不含 present/hdi 服务端能力。
+    // GUI app：manifest `wm=true` 时 fresh dup WMD broker 客户端端。
+    // Berry Room 代 app 建立 WM/input session 并在 WM_CONNECT 请求里迁回
+    // wmd；本端只是 broker 入场券，不含 present/hdi 服务端能力。
     let wants_wm = man.wm;
     let mut wm_dup: Handle = 0;
     if wants_wm {

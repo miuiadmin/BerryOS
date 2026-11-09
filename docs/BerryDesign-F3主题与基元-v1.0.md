@@ -23,7 +23,7 @@ berry-nshfont（迁移期）
 └── text/blend/round_rect/circle/shadow 的像素混合复用 BerryGFX
 ```
 
-BerryUI 只定义视觉语义，不写像素；BerryGFX 只做几何与混合，不认识主题；五个迁移前 Native Shell 仍可经 `berry-nshfont` 兼容 API 运行。
+BerryUI 只定义视觉语义，不写像素；BerryGFX 只做几何与混合，不认识主题。F3 时点五个迁移前 Native Shell 仍经 `berry-nshfont` 兼容 API 运行；F8 后该临时件已无消费者，F9 删除。
 
 ## §2 密度与 token
 

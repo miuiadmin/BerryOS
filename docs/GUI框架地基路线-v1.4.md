@@ -79,7 +79,7 @@ CanvasSurface / immersive surface。
 | 普通 App | 状态、业务数据、页面描述、消息处理 | 不手写像素、不手写 WM RPC、不复制主题常量 |
 | 专业/游戏 renderer | 文档画布、世界渲染、引擎内 UI | 只写 Berry Room 授权 surface；不私接 WM/VMO/stride/全局屏写，不绕过输入、IME、a11y、帧率契约 |
 
-`berry-nshfont` 是五个迁移前 Native Shell 的临时客户端/基元集合。字形 VMO 映射已归 `berry-room`；F9 时绘制基元归 `berry-gfx`、文本与控件消费归 `berry-ui`，该 crate 删除，不得成为第三套 UI 框架。
+`berry-nshfont` 曾是五个迁移前 Native Shell 的临时客户端/基元集合。字形 VMO 映射已归 `berry-room`；绘制基元归 `berry-gfx`、文本与控件消费归 `berry-ui`。F9 已删除该 crate，并以 `tools/gui_guard.py` 禁止回潮，不得形成第三套 UI 框架。
 
 ### 多形态 UI 契约
 
@@ -109,7 +109,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **F6 Settings 迁移** | Settings 改为 `berry-room + berry-ui` | 源码不再出现 WM RPC、VMO 映射或像素绘制；真实状态切换与重绘行为不回退 |
 | **F7 Files/Contacts 迁移** | 列表/详情/收藏/文件读取迁到 UI SDK | READDIR/STAT/GET 真链保留；UI 与数据边界清晰 |
 | **F8 Photos/Browser 迁移** | 图像网格、查看页、URL pill、诚实状态页迁移 | 5000B 图像与 owner-local 输入真链保留 |
-| **F9 收口与守卫** | 删除迁移期重复客户端，静态守卫入 CI | 已迁移普通 Native Shell app 无直接 syscall/WM/VMO/stride/像素绘制；专业或游戏 renderer 的像素算法只能出现在 P0 授权 CanvasSurface/immersive surface 之后；rootfs 在帽内；文档与 SDK 示例同步 |
+| **F9 收口与守卫（已落地）** | 删除迁移期重复客户端，静态守卫入 CI | 已迁移普通 Native Shell app 无直接 syscall/WM/VMO/stride/像素绘制；专业或游戏 renderer 的像素算法只能出现在 P0 授权 CanvasSurface/immersive surface 之后；rootfs 在帽内；文档与 SDK 示例同步 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

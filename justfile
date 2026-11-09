@@ -392,14 +392,14 @@ build-user:
     # 双份同源义务，见 tools/tlsscan.py 头注。
     python3 ../tools/tlsscan.py --check ../rootfs.cpio
 
-build: docs-guard abi-check build-user
+build: docs-guard gui-boundary-guard abi-check build-user
     cargo build
 
 # K-2 release 链接守卫：release 优化（fat LTO + O3）才生成的引用形态（.text.boot
 # ADRP 引 .rodata.cst16 越 ±4GB）可断链而 debug 全绿——只构建不跑 QEMU，挂 CI。
 # K-3：构建后尾挂 size.py --assert-flip——release 面 .text.boot 全部 ADRP 目标
 # 必低半（bit63=0）断言（debug 面经 smoke.sh 既有调用零改动生效）。
-build-release: docs-guard abi-check build-user
+build-release: docs-guard gui-boundary-guard abi-check build-user
     cargo build --release
     python3 tools/size.py --assert-flip {{KERNEL_RELEASE}}
 
@@ -411,7 +411,13 @@ docs-guard:
 writable-globals:
     python3 tools/writable_globals.py --check
 
-check: docs-guard writable-globals abi-check build-user
+# GUI F9 普通 app 边界静态守卫：manifest wm=true 的 BerryUI app 不得直连
+# syscall/WM RPC/VMO/stride/像素基元；berry-nshfont 迁移期临时件不得回潮。
+gui-boundary-guard:
+    python3 tools/gui_guard.py --self-test
+    python3 tools/gui_guard.py
+
+check: docs-guard writable-globals gui-boundary-guard abi-check build-user
     cargo check
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot

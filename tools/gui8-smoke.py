@@ -34,10 +34,11 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
   - 精确计数：`LAYOUT ok n=2` == 1、`LAYOUTW ok` == 0、
     `CLICK ok n=` == 0（写路径一次性状态门）；
   - 宿主侧 sha256 前后相等 = 数据盘零重写；LAYOUT.JSN 仍为 canonical。
-- `--normal-boot`（常态隔离 + Native Shell，可选）：同一镜像/tablet/
+- `--normal-boot`（常态隔离 + BerryUI app，可选）：同一镜像/tablet/
   数据盘拓扑但 **不造 `GUI8.SMK`**，display 1080×1920。BROWSER 首格 +
-  SETTINGS dock 真实 APP_SPAWN：Browser 完成窗口/帧/返回销毁；Settings
-  完成 WLAN/Bluetooth 两态切换重绘、截图像素检查与返回销毁。
+  六个 BerryUI app 真实 APP_SPAWN：Browser/Settings/Files/Photos/Contacts/
+  UITEST 分别完成窗口/帧、状态或数据链、layout-driven 点击、截图像素检查与
+  返回销毁。
   `CLICK`/`LAYOUTW`/`LAYOUT`/`launcher: click ready` 仍零打印——证明
   GUI8 冒烟标记只在哨兵支路出现。
 
@@ -1068,12 +1069,12 @@ def verify_normal_boot(
     demo_before: int,
     log_path: Path | None = None,
 ) -> None:
-    """常态隔离 + 五 Native Shell 验收。
+    """常态隔离 + 六个 BerryUI app 验收。
 
-    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；五个 shell 都
+    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；六个 app 都
     必须完成第二个真实进程生命周期。Settings 要求两次状态重绘；Files 要求
     READDIR/STAT/GET；Photos 要求 5000B 图像数据；Contacts 要求 4 条真实
-    记录、详情/收藏/返回三次重绘。
+    记录、详情/收藏/返回三次重绘；Browser/Photos 要求 layout-driven 点击。
     """
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
@@ -1119,8 +1120,8 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_SETTINGS_BACK, 1, "normal Settings back", log_path)
     _require_exact_count(text, MARK_SETTINGS_DESTROY, settings_before + 1, "normal Settings", log_path)
     _require_exact_count(text, MARK_SETTINGS_EXIT, settings_before + 1, "normal Settings", log_path)
-    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal Native Shell", log_path)
-    _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "normal Native Shell", log_path)
+    _require_exact_count(text, MARK_WM_INPUT_DROP, 0, "normal GUI app", log_path)
+    _require_exact_count(text, MARK_INPUT_ROUTE_BAD, 0, "normal GUI app", log_path)
 
     _require_exact_count(text, MARK_FILES_UP, files_before + 1, "normal Files", log_path)
     _require_exact_count(text, MARK_FILES_WIN, files_before + 1, "normal Files", log_path)
@@ -1192,10 +1193,10 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_CONTACTS_DESTROY, contacts_before + 1, "normal Contacts", log_path)
     _require_exact_count(text, MARK_CONTACTS_EXIT, contacts_before + 1, "normal Contacts", log_path)
 
-    # 常态布局把 APPDEMO 放 page1；Native Shell 点击不得误 spawn。
+    # 常态布局把 APPDEMO 放 page1；GUI app 点击不得误 spawn。
     if text.count(MARK_APP_DEMO_UP) != demo_before:
         raise SmokeError(
-            "normal Native Shell: APPDEMO 计数漂移（误命中/误 spawn）",
+            "normal GUI app: APPDEMO 计数漂移（误命中/误 spawn）",
             log_path,
         )
     if text.find(MARK_BROWSER_BACK) < snapshot_pos:
@@ -1218,7 +1219,7 @@ def verify_normal_boot(
         raise SmokeError("normal Contacts: EXIT 不在快照后", log_path)
 
 def ppm_pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
-    """读 QEMU P6 PPM 指定像素（Native Shell 反 mock 像素锚）。"""
+    """读 QEMU P6 PPM 指定像素（GUI app 反 mock 像素锚）。"""
     data = path.read_bytes()
     fields: list[bytes] = []
     pos = 0
@@ -2107,7 +2108,7 @@ def run_normal_boot(args) -> int:
         w, h, src = geometry_from_log(boot.log)
         if (w, h) != (1080, 1920):
             raise SmokeError(
-                f"normal Native Shell 须 product portrait 1080x1920，got {w}x{h}（{src}）",
+                f"normal GUI app 须 product portrait 1080x1920，got {w}x{h}（{src}）",
                 boot.log_path,
             )
         log(
@@ -2139,7 +2140,7 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
         time.sleep(1.0)
-        browser_shot = run_dir / "browser-native.ppm"
+        browser_shot = run_dir / "browser.ppm"
         boot.qmp.screendump(browser_shot)
         assert_pixel_close(
             ppm_pixel(browser_shot, 540, 20), (0, 116, 224),
@@ -2242,7 +2243,7 @@ def run_normal_boot(args) -> int:
             ) from None
 
         # 像素反 mock：两个开关必须变 Berry Theme Selected 蓝，主题面同步对锚。
-        shot = run_dir / "settings-native.ppm"
+        shot = run_dir / "settings.ppm"
         boot.qmp.screendump(shot)
         assert_pixel_close(ppm_pixel(shot, 540, 20), (0, 116, 224), "Settings AppBar", boot.log_path)
         assert_pixel_close(ppm_pixel(shot, 540, 600), (255, 255, 255), "Settings surface", boot.log_path)
@@ -2339,7 +2340,7 @@ def run_normal_boot(args) -> int:
         if not re.search(r"FILESREAD ok n=28(?![0-9])", boot.log.text):
             raise SmokeError("normal Files: HELLO.TXT GET != 28B", boot.log_path)
 
-        files_shot = run_dir / "files-native.ppm"
+        files_shot = run_dir / "files.ppm"
         boot.qmp.screendump(files_shot)
         assert_pixel_close(ppm_pixel(files_shot, 540, 20), (0, 116, 224), "Files AppBar", boot.log_path)
         assert_pixel_close(ppm_pixel(files_shot, 540, 600), (255, 255, 255), "Files surface", boot.log_path)
@@ -2394,6 +2395,9 @@ def run_normal_boot(args) -> int:
         # —— Photos BerryUI app：SmartDock 第二格 → 5000B 真图 → 查看。 ——
         time.sleep(1.0)
         log("normal-photos: QMP 点击 SmartDock PHOTOS（真实 APP_SPAWN）")
+        # Photos runtime 先完整走 READDIR/STAT/GET 5000B FAT 链再首帧；
+        # TCG 慢链可超过普通点击帽。240s 仍有界 fail closed，不降数据链。
+        photos_launch_timeout = max(args.click_timeout, 240.0)
         boot.qmp.click(415, 1668, w, h)
         try:
             boot.log.wait_until(
@@ -2402,20 +2406,20 @@ def run_normal_boot(args) -> int:
                 and t.count(MARK_PHOTOS_FRAME) > photos_before
                 and "PHOTOSLAYOUT ok mode=0" in t,
                 f"runtime {MARK_PHOTOS_UP} + {MARK_PHOTOS_FRAME} + layout",
-                args.click_timeout,
+                photos_launch_timeout,
                 "normal Photos launch",
             )
         except MissingMarkers:
             raise MissingMarkers(
                 "normal Photos launch",
                 f"新增 {MARK_PHOTOS_UP} + {MARK_PHOTOS_FRAME}",
-                args.click_timeout,
+                photos_launch_timeout,
                 boot.log_path,
             ) from None
         if boot.log.count(MARK_PHOTOS_DATA) <= photos_before:
             raise MissingMarkers(
                 "normal Photos remote image",
-                MARK_PHOTOS_DATA, args.click_timeout, boot.log_path,
+                MARK_PHOTOS_DATA, photos_launch_timeout, boot.log_path,
             )
 
         photos_open = latest_photos_rect(
@@ -2441,7 +2445,7 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        photos_shot = run_dir / "photos-native.ppm"
+        photos_shot = run_dir / "photos.ppm"
         boot.qmp.screendump(photos_shot)
         assert_pixel_close(
             ppm_pixel(photos_shot, 540, 20), (0, 116, 224),
@@ -2574,7 +2578,7 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        contacts_shot = run_dir / "contacts-native.ppm"
+        contacts_shot = run_dir / "contacts.ppm"
         boot.qmp.screendump(contacts_shot)
         assert_pixel_close(
             ppm_pixel(contacts_shot, 540, 20), (0, 116, 224),
@@ -2731,7 +2735,7 @@ def run_normal_boot(args) -> int:
         verify_uitest_normal(watcher.text, snapshot_pos, uitest_before, log_path)
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-native: Settings/Files/Contacts/Browser/Photos/UITEST 六个"
+            "normal-gui: Settings/Files/Contacts/Browser/Photos/UITEST 六个"
             " BerryUI app 均以独立进程完成真实 WM 窗口/帧、状态/fs/图像/联系人记录"
             "与销毁全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
@@ -3456,7 +3460,7 @@ def self_test(args) -> int:
             ),
         )
         expect_error(
-            "常态 Native Shell 误 spawn APPDEMO",
+            "常态 GUI app 误 spawn APPDEMO",
             lambda: verify_normal_boot(
                 fake_n + MARK_APP_DEMO_UP + "\n",
                 snap_n, 1, 1, 1, 1, 1, 1,
