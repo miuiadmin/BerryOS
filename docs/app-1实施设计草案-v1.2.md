@@ -145,6 +145,8 @@ RESUMED 回帧 → FROZEN ok n=1      appd reap + 记表（id 查重/epoch 序�
 
 ### §11.1 ADR 追记挂账（架构决策.md 并行在途 M——窗开后执行，配方已备）
 
+> **2026-11-08 已执行（W2 docs 刀）**：并行窗开（c0e0d84 落库后零 open PR），AM-1.5 前置已满足（79efddf/90c7f25 在基线）——两条追记已逐字落入 `架构决策.md` #42/#64 行内（含头部沿革行登记）。以下配方原文留档备查。
+
 - **#42 追记**：intent 单轴消费表 freeze 级首个消费位已落（tomb_selftest freeze-first，`FROZEN ok n=1`，刀 ba11596/aaef81d）；真触发器挂 GUI 线、排 AM-1.5（wake-pending）后；GUI 触发时回引 §4 thaw-then-pause 不变式。debounce 基线 10s【推】（am design Q3 × Android 同值互证）——与 §3 的 8s 判据窗、§4.1-1 的 10s pause deadline 三名分写勿混。
 - **#64 追记**：调点 1.1 S3 freeze 首个用户态生命周期消费链已成（映像 VMO 柄留 svcmgr 表 → 子表 pager_load=0 → 不触 D6；FROZEN/TOMB ok 实证）。双残影修复记载（sched.rs freeze_precheck，判例 §A144/刀 d563485）。冻结期入站 IPC v0 语义：无冻结检查、消息静默入队不丢、满 8 即 -EBUSY、无致死无自动解冻（auto-thaw 仅 token 持有者死亡安全门）；唤醒闭环 = AM-1.5。晋升规则 K5：v2 冻结态晋墓碑默认不唤醒（禁「压力期 thaw→save→kill」默认路径）——直接 kill+reap 取冻前已存状态，未存者「relaunch 全新启动」不入表；PAUSESV1 仅服务未冻结路径。v2 分流占位：对标 binder-freezer FROZEN_CALLEE_POLICY 三档；sys_channel_send 冻端检查缺口记调点 1.2。
 

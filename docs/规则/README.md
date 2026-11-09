@@ -24,7 +24,7 @@
 | kernel/ mm/ sched/ ipc/ arch/ 内核态代码 | `规则/01-内核编码.md` | 纪律 |
 | 内存/页表/VMO/地址空间 | `规则/02-内存与页表.md` · `docs/内存管理设计-v1.1.md` | 地形 |
 | syscall 号/ABI/berry-sys | `规则/03-系统调用.md` · `docs/系统调用ABI设计-v1.0.md` | 契约 |
-| 调度器/睡眠队列/IPC/信号位 | `规则/04-调度与IPC.md` · `docs/调度器设计-v1.0.md` | 时序 |
+| 调度器/睡眠队列/IPC/信号位 | `规则/04-调度与IPC.md` · `docs/调度器设计-v1.1.md` | 时序 |
 | SMP/锁/per-CPU（S-3 线） | `规则/04-调度与IPC.md` · `docs/SMP-S3实施设计草案-v1.0.md` | 并发 |
 | 常驻服务/svcmgr/libc 桩/收集方 | `规则/05-服务监督.md` | 活性 |
 | FS/盘面/FAT 写路径 | `规则/05-服务监督.md` · `docs/文件系统设计-v1.0.md` | 写序 |
@@ -62,7 +62,7 @@
 唯一详表 = `docs/索引.md`（分类/状态标签/维护待办）；动子系统前先读对应设计文档：
 
 - **总纲与路线**：`docs/架构决策.md` · `docs/架构综合纲领.md`（排除 8 问）· `docs/路线图-v1.0.md`（现行刀序）· `docs/优化议程-v1.0.md`。
-- **内核核心**：`docs/能力模型设计-v1.0.md` · `docs/IPC设计-v1.0.md` · `docs/内存管理设计-v1.1.md` · `docs/系统调用ABI设计-v1.0.md`（abi.toml 单源）· `docs/调度器设计-v1.0.md` · `docs/AI调度设计-v1.0.md` · `docs/可观测性设计-v1.0.md` · `docs/安全与硬件隔离设计-v1.0.md`（挂 v2）。
+- **内核核心**：`docs/能力模型设计-v1.0.md` · `docs/IPC设计-v1.0.md` · `docs/内存管理设计-v1.1.md` · `docs/系统调用ABI设计-v1.0.md`（abi.toml 单源）· `docs/调度器设计-v1.1.md` · `docs/AI调度设计-v1.0.md` · `docs/可观测性设计-v1.0.md` · `docs/安全与硬件隔离设计-v1.0.md`（挂 v2）。
 - **服务与生态**：`docs/文件系统设计-v1.0.md` · `docs/驱动模型设计-v1.0.md` · `docs/shell设计-v1.0.md` · `docs/应用模型设计-v1.0.md` · `docs/GUI里程碑规划-2026-10-v1.0.md` · 挂 v2 四份：`docs/存储布局与沙箱设计-v1.0.md` / `docs/兼容子系统设计-v1.0.md` / `docs/更新与OTA设计-v1.0.md` / `docs/AI工程面设计-v1.0.md`。
 - **验证与流程**：`docs/测试策略-v1.0.md` · `docs/开发体验.md`。
 - **在途拆解**（现势 → `docs/路线图-v1.0.md`）：`docs/VM里程碑设计草案-v1.0.md` · `docs/SMP设计草案-v1.0.md` · `SMP-S2实施设计草案-v1.0.md` · `SMP-S3实施设计草案-v1.0.md` · M-ECO A 系草案 ×7（`容量工程前置-A1设计草案-v1.0.md`+`事件循环A2..A7设计草案.md`）· `事件循环A7-{2,3}实施设计草案.md` · `事件循环A7-4信号面实施设计草案-v1.0.md`。
