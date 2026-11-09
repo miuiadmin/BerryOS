@@ -679,6 +679,12 @@ test-host:
     # 线契约钉板（per-dev 冻结帧长 {1:50,2:98,3:19} 与 berry-pwproto 同源）
     # + 双 profile 向量审计（帧↔ACK 恒等 + a8 恰一 NO_ACK + 拒帧零腐蚀账面）。
     python3 tools/siminj.py --selftest
+    # Q1c 续挖（a-3 U4 纪律同款）：genohicons 门禁自检——7 桌面图标此前零
+    # 守卫：stdlib PNG 解码钉**像素级**黄金哈希 ×7（编码器字节随 PIL 版本
+    # 漂移属合法通道，实测 11.3/12.3 像素等而字节 7/7 不等）+ 消费契约
+    # （alpha 二值 BYI1 前置 + EXACT 族 6-bit 量化网格 + 不透明账面）+
+    # 锚点 ×3 + 8 拒面；PIL 在位时加做 gradient/量化向量 + 重产像素对拍。
+    python3 tools/genohicons.py --selftest
     # Q1c（a-3 U4 纪律同款）：genohwallpaper 门禁自检——launcher 内建壁纸源
     # 此前零守卫：135×240 结构钉板 + 头部 SHA-256 ↔ 源 jpg 溯源对账 +
     # 32400px 黄金哈希 + 角锚/唯一色 + 8 拒面；PIL 在位时另做重产逐字节
