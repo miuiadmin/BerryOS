@@ -918,13 +918,17 @@ static DEGRADE_FREEZE: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomi
 // probe(EL1) FAULT_KEY 睡眠段 / probe_el0 EFAULT_KEYS[slot] 睡眠段 /
 // probe_el0 池满 EOVERFLOW_KEY convoy 等待段——AM-01「等页时间 = PSI 等
 // 价」判据的 BerryOS 落点，v1 消费者 = 查询面（ktest/faulter 自证）；阈值
-// 事件带内出口挂 AM-2b（am/appd 消费链成形时）。----
+// 事件带内出口 = AM-2b 压力 Event 用户位（2026-11-08 提案候选①拍板——
+// 见下窗口聚合块）。----
 
 /// AM-2：等页停顿记账（睡前提快照、醒后差值——调用点在 dpg 两臂探针）。
 /// max 饱和更新竞态下可能瞬时低估——遥测面可接受（非断言面）。
+/// AM-2b 裁决④：+1 窗口累计原子（同窗 fetch_add——判阈/翻卷在 note 点
+/// fold 惰性付费，见下窗口聚合块；非压力态零翻卷成本）。
 pub fn dpg_stall_note(cyc: u64) {
     DPG_STALL_CYC.fetch_add(cyc, Ordering::Relaxed);
     DPG_STALL_N.fetch_add(1, Ordering::Relaxed);
+    DPG_WIN_CYC.fetch_add(cyc, Ordering::Relaxed);
     let mut cur = DPG_STALL_MAX.load(Ordering::Relaxed);
     while cyc > cur {
         match DPG_STALL_MAX.compare_exchange_weak(cur, cyc, Ordering::Relaxed, Ordering::Relaxed) {
@@ -941,6 +945,99 @@ pub fn dpg_stall_max() -> u64 { DPG_STALL_MAX.load(Ordering::Relaxed) }
 static DPG_STALL_CYC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static DPG_STALL_N: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static DPG_STALL_MAX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+// ---- AM-2b 压力窗口聚合（2026-11-08 提案 §二·候选①主会话裁决）：
+// partial 占比判据 Σcyc/W ≥ θ_p（PSI some 等价；θ_p 初值 10%【推，实测
+// 定标】），跨阈经 boot 注册的出口回调置系统压力 Event 用户位 1<<40
+//（main.rs `pressure_partial_cross`——rx_irq_notify 形写位+SQ 窗唤醒，
+// 裁决⑤）；complete（700ms）位登记预留不置位（waiter 深度跟踪后置，
+// 裁决②）。翻卷 = note 点惰性（dpg 三计值点已有 cntvct，跨窗才付费）；
+// 写者保持内核任务语境（dpg 探针路径），免 event.rs 非 SVC 写者修约
+//（裁决④）。窗口长 boot 期按 CNTFRQ 换算周期数（TCG 频偏——禁编译期
+// 常量，裁决②）。----
+
+/// 当前窗口长（周期数；0 = boot 接线前——dpg 计值点全在 init 后，fold 快退）。
+static DPG_WIN_LEN: AtomicU64 = AtomicU64::new(0);
+/// 当前窗口起点（CNTVCT；翻卷时 CAS 推进——胜者折卷）。
+static DPG_WIN_START: AtomicU64 = AtomicU64::new(0);
+/// 当前窗口 Σcyc（`dpg_stall_note` 同窗 fetch_add——共享单累计、双观察窗
+/// 双阈值的省原子形，提案 §二；complete 窗启用后同源续判）。
+static DPG_WIN_CYC: AtomicU64 = AtomicU64::new(0);
+/// 跨阈出口回调（boot 单线程注册后不变——RX_EV_REF 同款纪律；None 承载
+/// 「未接线」态而非伪装 fn）。
+static mut PRESSURE_OUTLET: Option<fn()> = None;
+
+/// θ_p 初值 = 10%（裁决②【推，实测定标】；判据式 Σcyc×100 ≥ W×θ_p——
+/// 乘法实现免除法，翻卷点才付）。
+const DPG_WIN_THETA_P_PERCENT: u64 = 10;
+
+/// AM-2b：boot 接线——窗口长按 CNTFRQ 换算 + 起点钉当前 + 出口注册
+///（main 单线程调，先于 ktest::run 与一切 dpg 计值点）。
+pub(crate) fn dpg_win_init(win_ms: u64, freq: u64, now: u64, outlet: fn()) {
+    DPG_WIN_LEN.store(freq.saturating_mul(win_ms) / 1000, Ordering::Relaxed);
+    DPG_WIN_START.store(now, Ordering::Relaxed);
+    // SAFETY: boot 单线程写、先于一切读者（RX_EV_H 口径）。
+    unsafe { *core::ptr::addr_of_mut!(PRESSURE_OUTLET) = Some(outlet); }
+}
+
+/// 读当前窗口长（ktest 测毕还原 boot 换算值用——换算公式单源在本模块）。
+#[inline]
+pub(crate) fn dpg_win_len() -> u64 {
+    DPG_WIN_LEN.load(Ordering::Relaxed)
+}
+
+/// AM-2b：note 点惰性翻卷（dpg 三计值点 note 后调，`now` = 该点 cntvct）。
+/// 未跨窗快退（非压力态零翻卷成本）；跨窗以起点 CAS 收敛并发折卷（败者
+/// 即返——Σ 由胜者 swap 清零、判阈由胜者独占）。边界诚实近似：翻卷前夜
+/// note 进本的 cyc 记旧窗账（telemetry 级可接受，同 DPG_STALL 族 Relaxed
+/// 口径）；静默窗推迟到下一 note 才折卷 = 只在压力持续（note 不断流）时
+/// 通知及时（提案 §二迟滞论证）。
+pub(crate) fn dpg_stall_fold(now: u64) {
+    let len = DPG_WIN_LEN.load(Ordering::Relaxed);
+    if len == 0 {
+        return; // boot 接线前（不可达——计值点全在 init 后，防御快退）
+    }
+    let start = DPG_WIN_START.load(Ordering::Relaxed);
+    if now.wrapping_sub(start) < len {
+        return; // 未跨窗——非压力态快退
+    }
+    if DPG_WIN_START
+        .compare_exchange(start, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return; // 并发折卷败者（单核抢占点下面——胜者已清 Σ/判阈）
+    }
+    let sum = DPG_WIN_CYC.swap(0, Ordering::Relaxed);
+    // θ_p 占比判据（×100 免除法；saturating_mul 防多 waiter Σ>W 病态面
+    //——提案 §二「全局 Σ 分不清并发 waiter 数」同源）。
+    if sum.saturating_mul(100) >= len.saturating_mul(DPG_WIN_THETA_P_PERCENT) {
+        // SAFETY: boot 注册后不变（只读）；未注册 = 未接线（不可达——
+        // ktest 与 dpg 计值点均在 boot 接线后，防御跳过）。
+        if let Some(f) = unsafe { *core::ptr::addr_of!(PRESSURE_OUTLET) } {
+            f();
+        }
+    }
+}
+
+// ---- AM-2b ktest 注入口（#[cfg] 不适用——ktest 与本体同 crate 直调；
+// pub(crate) + 调用点仅 ktest = 非测试面零成本。注入走 DPG_WIN_CYC 专用
+// 累计、不经 `dpg_stall_note`——E3g 台账零态不变量不污染）----
+
+/// 合成窗口：钉窗长/起点并清 Σ（测毕以 boot 换算值还原——`dpg_win_len`
+/// 存底）。
+#[inline]
+pub(crate) fn dpg_win_ktest_setup(len: u64, start: u64) {
+    DPG_WIN_LEN.store(len, Ordering::Relaxed);
+    DPG_WIN_START.store(start, Ordering::Relaxed);
+    DPG_WIN_CYC.store(0, Ordering::Relaxed);
+}
+
+/// 注入窗口累计（合成序列——真路径由 `dpg_stall_note` 的 fetch_add 走
+/// 同一槽位）。
+#[inline]
+pub(crate) fn dpg_win_ktest_inject(cyc: u64) {
+    DPG_WIN_CYC.fetch_add(cyc, Ordering::Relaxed);
+}
 
 static BILLING_CROSS_DOMAIN: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);

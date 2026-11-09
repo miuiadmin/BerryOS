@@ -203,6 +203,22 @@ desc = '''用户信号位掩码（Event `object_signal` 只收高 32 位用户�
 内核派生信号 READABLE/WRITABLE/TERMINATED/WAKE_PENDING——位面冲突由内核
 执法拒绝）。'''
 
+# ---- AM-2b 内核占用用户位注记（2026-11-08 提案候选①·主会话六裁决③；
+# 纯注记：不产任何常量、不改上表位值/既有行（gen_abi.py 不读注释）。登记
+# 面 = 高 32 位用户位中「内核长期写者」的防撞单源——挑新位前与本注记 +
+# kernel/src/main.rs `USER_SIGNAL_BITS`（在册位清单）一并核对。位空间按
+# 对象隔离：同位异对象无清位/唤醒纠缠，登记语义 = 内核写者在席公示、
+# 非全局排他。----
+# 1<<40（系统压力 Event·AM-2b partial 跨阈）：dpg 等页停顿窗口
+#  （70ms，boot 按 CNTFRQ 换算周期数）Σcyc/W ≥ θ_p（初值 10%【推，实测
+#   定标】）时内核任务语境置位 + SQ 窗唤醒（rx_irq_notify 形）；handle
+#   经 svcmgr 表第 8 插（0x0001_0008）随 gift 链交 am。消费 = 边沿协议：
+#   am 持 SIGNAL 右 object_signal 自清位，以窗口长为 deadline 再等——
+#   超时无再置位即恢复（内核不报恢复沿）。
+# 1<<41（系统压力 Event·AM-2b complete 跨阈）：**预留位——登记不置位**
+#   （PSI full 等价判据需 waiter 深度跟踪，实测定标后启；700ms 窗同式
+#   boot 换算）。本刀无任何置位点。
+
 # ---- 错误码（posix-ish 负数；c_note = 文档 §8.2 C 行注）----
 # rust = false ⇒ 只产文档 C 行、不产 Rust 常量（保留位/未实现面）。
 # TIMEDOUT 的 C 行名自 TIMED_OUT 修正（单源化收口的既有漂移，2026-10）。

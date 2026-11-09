@@ -175,7 +175,10 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
         DPG_WAKE_BIT,
         u64::MAX,
     );
-    crate::telemetry::dpg_stall_note(hal::timer::cntvct().wrapping_sub(stall_t0));
+    let stall_now = hal::timer::cntvct();
+    crate::telemetry::dpg_stall_note(stall_now.wrapping_sub(stall_t0));
+    // AM-2b：note 点惰性翻卷（裁决④——跨窗才付费；语境 = 内核任务探针路径）。
+    crate::telemetry::dpg_stall_fold(stall_now);
     // 醒 = 活跃窗重开（收尾段计深度——此窗内嵌套异常同样响雷）。
     depth_enter();
     hal::kern_lock::klock_exit();
@@ -285,7 +288,10 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
                     DPG_WAKE_BIT,
                     u64::MAX,
                 );
-                crate::telemetry::dpg_stall_note(hal::timer::cntvct().wrapping_sub(stall_t0));
+                let stall_now = hal::timer::cntvct();
+                crate::telemetry::dpg_stall_note(stall_now.wrapping_sub(stall_t0));
+                // AM-2b：note 点惰性翻卷（裁决④——同上①，语境 = 内核任务）。
+                crate::telemetry::dpg_stall_fold(stall_now);
                 depth_enter();
             }
         }
@@ -302,7 +308,10 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         DPG_WAKE_BIT,
         u64::MAX,
     );
-    crate::telemetry::dpg_stall_note(hal::timer::cntvct().wrapping_sub(stall_t0));
+    let stall_now = hal::timer::cntvct();
+    crate::telemetry::dpg_stall_note(stall_now.wrapping_sub(stall_t0));
+    // AM-2b：note 点惰性翻卷（裁决④——同上①，语境 = 内核任务）。
+    crate::telemetry::dpg_stall_fold(stall_now);
     // 醒 = 活跃窗重开（收尾段计深度）。
     depth_enter();
     hal::kern_lock::klock_exit();

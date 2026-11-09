@@ -611,6 +611,41 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         print_unlock: berry_hal_aarch64::kern_lock::print_unlock,
     });
 
+    // ---- AM-2b（候选①·裁决①）：系统压力 Event + 窗口聚合接线。先于
+    // ktest::run（AM2B-K 直调 fold 与真 SVC 清位）与 dpg 计值点
+    //（sched::init/dpg::init 均在后）。Event 落内核 bootstrap 表（EL1
+    // tag=0 面——ktest svc6 真派发经此表解析）；ObjRef retain ×2：一枚 =
+    // 内核静态钉住（fold 出口写位，RX_EV 同款 :845-846 锚——永不
+    // release），一枚 = 待移交 svcmgr 表的 dup 令牌（boot fb 段 insert_ref
+    // 接管，handle.rs「调用方移交的引用令牌」契约）。窗口长 70ms 按
+    // CNTFRQ 换算周期数（裁决②——TCG 频偏，禁编译期常量）。----
+    let h_am2b = syscall::bootstrap_table()
+        .insert(
+            handle::KernelObj::Event(crate::event::Event::new()),
+            handle::RIGHT_SIGNAL,
+        )
+        .expect("main: AM-2b 压力 Event 进 bootstrap 表");
+    let p_am2b = syscall::bootstrap_table()
+        .get_raw(h_am2b, handle::ObjType::Event, 0)
+        .expect("main: 取 AM-2b 压力 Event ObjRef")
+        .0;
+    // SAFETY: boot 单线程；刚 insert + get_raw 过（在表、类型 Event）——
+    // retain ×2（静态钉住 + svcmgr dup 令牌）；静态槽写先于一切读者
+    //（RX_EV_H 口径）。handle 本体不留静态槽：ktest 期 WAKEP 清场会 drain
+    // bootstrap 表作废槽位（实踩），SVC 清位面改 ktest 现插现关
+    //（`am2b_pressure_ktest_handle`）。
+    unsafe {
+        (*p_am2b.as_ptr()).retain();
+        (*p_am2b.as_ptr()).retain();
+        *core::ptr::addr_of_mut!(PRESSURE_EV_REF) = Some(p_am2b);
+    }
+    crate::telemetry::dpg_win_init(
+        AM2B_WIN_MS,
+        berry_hal_aarch64::timer::cntfrq(),
+        berry_hal_aarch64::timer::cntvct(),
+        pressure_partial_cross,
+    );
+
     ktest::run();
 
     // B-0（基准与压力测试设计 §4）：内核微基准 + churn 泄漏金丝雀——ktest 后、
@@ -1429,6 +1464,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     unsafe {
                         *core::ptr::addr_of_mut!(FB_PIPE_H) = h_end_kfb;
                     }
+                    // AM-2b 裁决①：压力 Event dup 进 svcmgr 表**第 8 插定值
+                    // 0x0001_0008**（console 1/rootfs 2/endB2 3/virtio 4/
+                    // fb VMO 5/fbinfo 6/endB_fb 7 之后——GOP 相位内表序确定，
+                    // boot assert 拦漂移；裸相/rootfs-无-fb 相缺席 = svcmgr
+                    // 查表 -EBADF，同 fb/virtio 惯例——am 未成形，env 块
+                    // extras 迁交随消费链段）。授 SIGNAL|DUPLICATE
+                    //（`event_create` 出生授同口径，abi.toml 0x54 note——
+                    // am 持 SIGNAL 右 `object_signal` 自清位 + svcmgr 需
+                    // DUPLICATE 再迁）。令牌 = boot 接线段第二枚 retain
+                    //（insert_ref 接管既有令牌、不 +1——handle.rs 契约）。
+                    let h_am2b_svc = ht_svcmgr
+                        .insert_ref(p_am2b, handle::RIGHT_SIGNAL | handle::RIGHT_DUPLICATE)
+                        .expect("main: AM-2b 压力 Event dup 进 svcmgr 表");
+                    assert_eq!(
+                        h_am2b_svc, 0x0001_0008,
+                        "main: svcmgr 表 AM-2b 压力 Event 须第 8 插 0x0001_0008（编译侧硬编码）"
+                    );
                 }
                 Err(_) => {
                     // 界检已过仍拒 = fb_pa 非页对齐（RamfbDxe AllocatePages
@@ -2684,6 +2736,80 @@ unsafe fn rx_ev_clear() {
             ev.signal(RX_EV_BIT, 0);
         }
     }
+}
+
+// ---- AM-2b（2026-11-08 提案候选①·主会话六裁决）：系统压力 Event 出口。
+// 阈值判据/惰性翻卷在 telemetry 窗口聚合块（提案 §二）；本块 = 位定义 +
+// ObjRef 静态槽 + 跨阈置位回调。写者语境 = dpg 探针 note 点的**内核任务
+// 语境**（KL 窗内 SQ 嵌套 = dpg.rs `wake_matching` 同构）——免 event.rs
+// 非 SVC 写者修约（裁决④）。complete 位（1<<41）登记预留不置位（裁决②，
+// 登记面 = tools/abi.toml [[signal]] 注记区）。----
+
+/// 压力 Event 的 partial 跨阈位（1<<40，裁决③；complete 预留 1<<41 不落
+/// 常量——本刀只登记不置位）。内核占用用户位登记面 = abi.toml [[signal]]
+/// 注记区（防撞单源）。位空间按对象隔离：与 UART1_EV_BIT（1<<40·另一
+/// Event 对象）/ `USER_SIGNAL_BITS` 在册哑位（1<<40 起各自对象）无清位/
+/// 唤醒纠缠——登记语义 = 内核写者在席公示，非全局排他。
+const AM2B_PARTIAL_BIT: u64 = 1 << 40;
+
+/// partial 窗口长初值 70ms（裁决②【推，实测定标】——boot 期按 CNTFRQ
+/// 换算周期数，TCG 频偏禁编译期常量；complete 700ms 同式随 waiter 深度
+/// 跟踪后置）。
+const AM2B_WIN_MS: u64 = 70;
+
+/// 压力 Event 的 ObjRef（`pressure_partial_cross` 置位用；boot 写入后
+/// 不变 + retain 钉住永不 release——RX_EV_REF 同款双保险）。
+static mut PRESSURE_EV_REF: Option<core::ptr::NonNull<handle::ObjRef>> = None;
+
+/// AM-2b：partial 跨阈出口（telemetry `dpg_stall_fold` 的跨阈回调）。
+/// `rx_irq_notify` 形先例（:2653-2658）：写位 + 扫描同 SQ 窗（义务③「写
+/// 位+扫描同窗」）；非 IRQ 到达**不记** WAKE_SRC 台账；n=0（am 未成形无
+/// 等待者）静默——位已置，消费者 poll-first 必命中。complete 位不置。
+fn pressure_partial_cross() {
+    // SAFETY: 只读；boot 写点先于一切 dpg 计值点（boot 顺序）。
+    let p = unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) }
+        .expect("am2b: PRESSURE_EV_REF 未初始化（boot 接线缺失）");
+    let sq_phys = berry_sched::sq_lock();
+    // SAFETY: retain 钉住 + boot 后不变（RX_EV_REF 口径）。
+    unsafe {
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(0, AM2B_PARTIAL_BIT);
+        }
+        let _n = berry_sched::wake_matching_locked(p.as_ptr() as usize, AM2B_PARTIAL_BIT);
+    }
+    berry_sched::sq_unlock(sq_phys);
+}
+
+/// 读压力 Event 当前位掩码（ktest 直读面——`object_wait_one` 的 poll-first
+/// 同源读；ktest 在 sched::init 前跑不能睡，走直读〔任务书步骤⑤〕）。
+pub(crate) fn am2b_pressure_bits() -> u64 {
+    // SAFETY: 只读；boot 写点先于 ktest::run。
+    let p = unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) }
+        .expect("am2b_pressure_bits: PRESSURE_EV_REF 未初始化");
+    // SAFETY: 同上（retain 钉住 + 类型恒 Event）。
+    unsafe { (*p.as_ptr()).obj.as_event_mut().map(|e| e.load()).unwrap_or(0) }
+}
+
+/// ktest 期压力 Event 的 SVC 面 handle（bootstrap 表插取——E3h「VMO 经
+/// bootstrap 表插取」同款惯例。**boot 期不预插**：ktest 前序测试（WAKEP
+/// 清场）会 drain bootstrap 表作废槽位（实踩）；retain 一枚随 insert_ref
+/// 移交（handle.rs「接管既有令牌」契约），测毕 close 归还）。
+pub(crate) fn am2b_pressure_ktest_handle() -> u32 {
+    // SAFETY: 只读；boot 写点先于 ktest::run。
+    let p = unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) }
+        .expect("am2b: PRESSURE_EV_REF 未初始化（boot 接线缺失）");
+    // SAFETY: retain 后随 insert_ref 移交（在表、类型 Event、retain 钉住）。
+    unsafe {
+        (*p.as_ptr()).retain();
+        crate::syscall::bootstrap_table()
+            .insert_ref(p, handle::RIGHT_SIGNAL)
+            .expect("am2b: 压力 Event ktest 插取进 bootstrap 表")
+    }
+}
+
+/// 读 partial 位常量（ktest 断言位值 = 裁决③的 1<<40）。
+pub(crate) fn am2b_partial_bit() -> u64 {
+    AM2B_PARTIAL_BIT
 }
 
 // ---- P5 v0.5：console mini-readline（历史环 + 召回 + Ctrl-U）——**C-4 已

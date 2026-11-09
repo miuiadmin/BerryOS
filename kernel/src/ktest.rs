@@ -87,6 +87,10 @@ pub fn run() {
     // 场景串起 freeze × policy × band × deadline × billing × EAS，验
     // 「两两同席不打架」（单面钉板验「各自对」，本测验组合面）。
     test_scheduler_integration();
+    // AM-2b（2026-11-08 提案候选①·主会话六裁决）：压力窗口聚合 + 系统压力
+    // Event 用户位出口（末位新号纪律——ktest done 前；sched::init 前跑，
+    // SLEEPQ 空扫 = 出口唤醒面恒 n=0，合法）。
+    test_am2b_pressure();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -5302,6 +5306,105 @@ fn test_wake_pending() {
     }
     ht.drain();
     berry_hal_aarch64::uart_puts(b"WAKEP-K ok\n");
+}
+
+/// AM-2b（2026-11-08 提案候选①·六裁决）：压力窗口聚合 + Event 用户位出口
+/// 直调断言（WAKEP-K 形态——真对象直调）。合成窗口 10^6 周期（真实 70ms
+/// 窗 boot 已按 CNTFRQ 换算周期数——裁决② TCG 频偏禁编译期常量；ktest
+/// 缩短窗长免等真实窗时，测毕还原）；θ_p = 10% 占比判据（裁决②【推，实测
+/// 定标】——提案 §二 partial ≈ PSI some）。注入走 `dpg_win_ktest_inject`
+///（DPG_WIN_CYC 专用累计，不经 `dpg_stall_note`——E3g 台账零态不变量
+/// 不污染）；清位走真 SVC `object_signal`（am 自清位同路径——bootstrap
+/// 表解析 + SIGNAL 右门控 + 高 32 位用户位面全链，提案候选①）。
+fn test_am2b_pressure() {
+    use crate::telemetry;
+    const LEN: u64 = 1_000_000; // 合成窗口（θ_p = 10% ⇒ 跨阈 Σ = LEN/10）
+    let partial = crate::am2b_partial_bit();
+    assert_eq!(partial, 1 << 40, "AM2B：partial 位须 1<<40（裁决③）");
+    // boot 接线自证：窗口长已按 CNTFRQ 换算非零（裁决②——接线缺失 fail loud）。
+    let real_len = telemetry::dpg_win_len();
+    assert!(real_len > 0, "AM2B：boot 窗口长须已换算非零（dpg_win_init 接线缺失）");
+    assert_eq!(crate::am2b_pressure_bits(), 0, "AM2B：boot 后压力位面须零（Event 出生零 + 无跨阈）");
+
+    let base = berry_hal_aarch64::timer::cntvct();
+
+    // ① 跨阈：Σ = θ_p·W（≥ 判据含等号）→ fold → 1<<40 置位（出口 =
+    //    rx_irq_notify 形内核语境写位 + SQ 窗唤醒，裁决⑤）。
+    telemetry::dpg_win_ktest_setup(LEN, base);
+    telemetry::dpg_win_ktest_inject(LEN / 10);
+    telemetry::dpg_stall_fold(base.wrapping_add(LEN));
+    assert!(
+        crate::am2b_pressure_bits() & partial != 0,
+        "AM2B：①Σ=θ_p·W 跨阈翻卷须置 1<<40（telemetry fold → 压力 Event 出口）"
+    );
+
+    // am 自清位同路径（真 SVC 派发——提案候选①消费形）。handle = ktest 期
+    // bootstrap 表现插取（boot 不预插：WAKEP 清场 drain 会作废 boot 槽位）。
+    let hclr = crate::am2b_pressure_ktest_handle();
+    assert_eq!(
+        svc6(
+            crate::abi_gen::NR_OBJECT_SIGNAL as u64,
+            hclr as u64,
+            partial,
+            0,
+            0,
+            0,
+            0
+        ),
+        0,
+        "AM2B：object_signal 清 1<<40 须成功（am 消费置位后自清——SIGNAL 右 + 高 32 位面）"
+    );
+    assert_eq!(crate::am2b_pressure_bits(), 0, "AM2B：清位后位面须归零");
+
+    // ② 未跨阈：Σ = θ_p·W/2 → 翻卷不置位（占比判据 Σcyc/W ≥ θ_p）。
+    telemetry::dpg_win_ktest_setup(LEN, base.wrapping_add(LEN));
+    telemetry::dpg_win_ktest_inject(LEN / 20);
+    telemetry::dpg_stall_fold(base.wrapping_add(2 * LEN));
+    assert_eq!(
+        crate::am2b_pressure_bits() & partial,
+        0,
+        "AM2B：②Σ=θ_p·W/2 未跨阈须不置位（10% 判据不满足）"
+    );
+
+    // ③ 翻卷后窗口清零重启累计：② 的 5% 已随翻卷清零，再注 5% 仍独立新窗
+    //    ——若未清零，累计 10% 将跨阈置位（不置位即「清零重启」判别性证明）。
+    telemetry::dpg_win_ktest_inject(LEN / 20);
+    telemetry::dpg_stall_fold(base.wrapping_add(3 * LEN));
+    assert_eq!(
+        crate::am2b_pressure_bits() & partial,
+        0,
+        "AM2B：③翻卷后 Σ 须清零重启（累计未清则 5%+5%=θ_p·W 将误置位）"
+    );
+
+    // ④ 重启后累计照常判阈（正证）：新窗注满 θ_p·W → 再置位。
+    telemetry::dpg_win_ktest_inject(LEN / 10);
+    telemetry::dpg_stall_fold(base.wrapping_add(4 * LEN));
+    assert!(
+        crate::am2b_pressure_bits() & partial != 0,
+        "AM2B：④重启后新窗 Σ=θ_p·W 须再置位（累计/判阈随翻卷重启不失效）"
+    );
+
+    // 收尾：清位 + close 插取 handle（retain 令牌归还）+ 还原真实窗口
+    //（70ms boot 换算值 + 当前时刻起点——后续 dpg 真路径无感；位面残留属
+    // ktest 瞬态位，sched::init 前跑不登记）。
+    assert_eq!(
+        svc6(
+            crate::abi_gen::NR_OBJECT_SIGNAL as u64,
+            hclr as u64,
+            partial,
+            0,
+            0,
+            0,
+            0
+        ),
+        0,
+        "AM2B：收尾清位须成功"
+    );
+    crate::syscall::bootstrap_table()
+        .close(hclr)
+        .expect("AM2B：ktest 插取 handle 收尾 close");
+    telemetry::dpg_win_ktest_setup(real_len, berry_hal_aarch64::timer::cntvct());
+    berry_hal_aarch64::uart_puts(b"AM2B-K ok\n");
 }
 
 /// sim-S3（PM-16 §4.4 步3）：深睡降级断言（run() 末位新号——ktest done 前；
