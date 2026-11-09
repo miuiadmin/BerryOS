@@ -115,7 +115,7 @@ Disabled → 直接 false
 
 业务状态由 app 持有；组件方法只把状态映射到 Berry Design token 与保留树。这样保留树、damage、hit test 与 a11y 仍由 core 单源执法。
 
-ScrollView v1 使用 `Ui::set_offset` 移动内容，并按 `content.h − viewport.h` clamp。当前 core 无 clipping：溢出内容在 Panel 外仍可见。F5 验收滚动必须在视口内布局；P0 已冻结 Surface Mode 合约；跨视口裁剪执行与嵌套 scroll 语义归后续 BerryUI 刀，不在组件内私造 clip。
+ScrollView v1 使用 `Ui::set_offset` 移动内容，并按 `content.h − viewport.h` clamp。C1 起组件在 Panel 与内容间插入结构性 `Clip` port：paint/hit 均被裁到 viewport，溢出内容不再可见、不可命中；组件不私造光栅 clip。
 
 ## §5 测试证据
 
@@ -183,4 +183,4 @@ F5 `uitest` 已首次真实消费组件；包体、系统字形供给与内存/�
 - F4 不解析 `.bui`；Rust typed API 是唯一入口。
 - F4 不迁移 Settings / Files / Contacts / Photos / Browser；归 F6..F8。
 - F4 不新增 guest app；F5 uitest 承接首个真实消费者。
-- ScrollView 不私造 clip；P0 冻结合约，裁剪执行归后续 BerryUI 刀。
+- ScrollView 经 BerryUI 结构性 Clip 裁剪；不直接调用 berry-gfx Push/PopClip 或私造像素路径。

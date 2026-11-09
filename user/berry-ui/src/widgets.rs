@@ -6,7 +6,7 @@
 //! Msg 识别辅助，不承载业务回调。
 
 use crate::desc::{
-    CircleProps, ColProps, IconProps, Msg, NodeId, PanelProps, Props, RectProps, RowProps,
+    CircleProps, ClipProps, ColProps, IconProps, Msg, NodeId, PanelProps, Props, RectProps, RowProps,
     TextBuf, TextProps, TextStyle, ViewKind, ViewSpec,
 };
 use crate::layout::CrossAlign;
@@ -601,11 +601,12 @@ impl Switch {
     }
 }
 
-/// ScrollView：纵向偏移容器。v1 引擎无 clip，溢出内容仍可见；调用方应
-/// 保证内容合理或等待 P0 Surface Mode 后的 clipping 语义。
+/// ScrollView：纵向偏移容器。Panel 背景与 Clip port 分层：内容可溢出
+/// 布局界，但 paint/hit 都被 Clip 到 viewport 内。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollView {
     pub panel: NodeId,
+    pub port: NodeId,
     pub content: NodeId,
     offset: i32,
     max_offset: i32,
@@ -621,9 +622,18 @@ impl ScrollView {
             parent,
             panel_spec(ctx.theme.colors.surface, None, Some(viewport_h), 0, 0, 0),
         )?;
-        let content = add(
+        let port = add(
             ui,
             panel,
+            ViewSpec {
+                kind: ViewKind::Clip,
+                key: 0,
+                props: Props::Clip(ClipProps { w: None, h: Some(viewport_h) }),
+            },
+        )?;
+        let content = add(
+            ui,
+            port,
             ViewSpec {
                 kind: ViewKind::Col,
                 key: 0,
@@ -635,7 +645,7 @@ impl ScrollView {
                 }),
             },
         )?;
-        Ok(Self { panel, content, offset: 0, max_offset: 0, last_y: None })
+        Ok(Self { panel, port, content, offset: 0, max_offset: 0, last_y: None })
     }
 
     pub fn sync_bounds<const N: usize>(&mut self, ui: &mut Ui<N>) -> Result<(), UiError> {
@@ -669,7 +679,7 @@ impl ScrollView {
                 (*node, crate::hit::u32_to_i32_sat(*y))
             }
             Msg::DragEnd { node, .. } => {
-                if *node == self.panel || *node == self.content {
+                if *node == self.panel || *node == self.port || *node == self.content {
                     self.last_y = None;
                     return Ok(true);
                 }
@@ -677,7 +687,7 @@ impl ScrollView {
             }
             _ => return Ok(false),
         };
-        if node != self.panel && node != self.content {
+        if node != self.panel && node != self.port && node != self.content {
             return Ok(false);
         }
         match self.last_y {

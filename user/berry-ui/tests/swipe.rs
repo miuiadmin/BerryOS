@@ -262,19 +262,19 @@ fn dot_highlight_follows_page_immediately() {
 
 #[test]
 fn pager_node_budget_exact_and_launcher_margin() {
-    // 节点精确账：8 页 pager 自建 = 18 节点（track + 8 页 + 圆点行 +
-    // 8 点；root 先占 1）——Ui<19> 恰纳，再一叶 NodeFull；Ui<18> 建树
-    // 中途即满 loud。
-    let mut ui = Ui::<19>::new(100, 100);
+    // 节点精确账（C1 +Clip port）：8 页 pager 自建 = 19 节点
+    // （clip + track + 8 页 + 圆点行 + 8 点；root 先占 1）——Ui<20> 恰纳，
+    // 再一叶 NodeFull；Ui<19> 建树中途即满 loud。
+    let mut ui = Ui::<20>::new(100, 100);
     let root = ui.root();
     let mut p8 = SwipePager::new(8);
     assert!(p8.attach(&mut ui, root).is_ok());
     assert_eq!(ui.add(root, rect_spec(1, 1)), Err(UiError::NodeFull), "余量恰 0");
 
-    let mut ui18 = Ui::<18>::new(100, 100);
-    let root18 = ui18.root();
+    let mut ui19 = Ui::<19>::new(100, 100);
+    let root19 = ui19.root();
     let mut p8b = SwipePager::new(8);
-    assert_eq!(p8b.attach(&mut ui18, root18), Err(UiError::NodeFull), "第 19 节点建树中途满");
+    assert_eq!(p8b.attach(&mut ui19, root19), Err(UiError::NodeFull), "第 20 节点建树中途满");
 
     // launcher 尺度（§9 预算面）：Ui<512> = MAX_NODES 档——8 页 pager +
     // 每页 3 内容叶（launcher 24 格样例）后填满，总容量恰 512（侧表/
@@ -289,9 +289,9 @@ fn pager_node_budget_exact_and_launcher_margin() {
             big.add(page, rect_spec(10, 10)).unwrap();
         }
     }
-    let mut used = 1 + 1 + 8 + 1 + 8 + 24; // root + track + 页 + 点行 + 点 + 内容
+    let mut used = 1 + 1 + 1 + 8 + 1 + 8 + 24; // root + clip + track + 页 + 点行 + 点 + 内容
     while big.add(groot, rect_spec(1, 1)).is_ok() {
         used += 1;
     }
-    assert_eq!(used, 512, "pager(8 页)+24 内容叶 = 43 节点，余 469 格宿主树预算");
+    assert_eq!(used, 512, "pager(8 页)+Clip+24 内容叶 = 44 节点，余 468 格宿主树预算");
 }

@@ -43,6 +43,9 @@ pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect
         }
         Cmd::Blit { src, dst_x, dst_y } => blit(target, desc, src, *dst_x, *dst_y, clip),
         Cmd::DrawGlyphRun { run } => glyph_run(target, desc, run, clip),
+        // 栈命令由 Queue 消费（当前 clip 已在调用侧求交）；直接调用
+        // raster::exec 的测试/诊断面按 no-op 处理，不重复弹栈。
+        Cmd::PushClip { .. } | Cmd::PopClip => {}
         Cmd::DrawImage { src, x, y, fg, bg } => {
             draw_image(target, desc, src, *x, *y, *fg, *bg, clip)
         }

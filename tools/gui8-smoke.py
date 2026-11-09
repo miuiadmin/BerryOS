@@ -169,6 +169,7 @@ MARK_UITEST_UP = "UITEST up"
 MARK_UITEST_ROOM = "UITESTROOM ok"
 MARK_UITEST_WIN = "UITESTWIN ok w="
 MARK_UITEST_FRAME = "UITESTFRAME ok"
+MARK_UITEST_CLIP = "UITESTCLIP ok"
 MARK_UITEST_PROBE = "UITESTPROBE ok"
 MARK_UITEST_INPUT = "UITESTINPUT ok x="
 MARK_UITEST_DESTROY = "UITESTDESTROY ok"
@@ -1377,17 +1378,66 @@ def verify_uitest_normal(
     _require_exact_count(text, MARK_UITEST_WIN, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_FRAME, before + 1, "normal UITEST", log_path)
     _require_exact_count(text, MARK_UITEST_PROBE, before, "normal UITEST boot-probe", log_path)
-    _require_exact_count(text, "UITESTLAYOUT ok page=0", 2, "normal UITEST page0 layout", log_path)
-    _require_exact_count(text, "UITESTLAYOUT ok page=1", 1, "normal UITEST page1 layout", log_path)
+    _require_exact_count(
+        text,
+        "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
+        "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24",
+        2,
+        "normal UITEST page0 layout",
+        log_path,
+    )
+    _require_exact_count(
+        text,
+        "UITESTLAYOUT ok page=1 appbar=0,0,1080,60 body=0,60,1080,1860 "
+        "button=12,255,1056,60 scroll=0,60,1080,1860 clip=0,60,1080,1860",
+        1,
+        "normal UITEST page1 layout",
+        log_path,
+    )
     _require_exact_count(text, "UITESTHIT ok node=button", 3, "normal UITEST hit dump", log_path)
-    _require_exact_count(text, "UITESTAST ok bytes=", 2, "normal UITEST AST", log_path)
-    _require_exact_count(text, "UITESTRENDER ok seq=", 8, "normal UITEST render", log_path)
+    _require_exact_count(
+        text, "UITESTAST ok bytes=712 a11y=8", 2, "normal UITEST AST", log_path
+    )
+    _require_exact_count(text, "UITESTRENDER ok seq=", 10, "normal UITEST render", log_path)
+    _require_exact_count(text, MARK_UITEST_CLIP, 2, "normal UITEST clip", log_path)
     _require_exact_count(text, "UITESTSTATE ok page=1", 2, "normal UITEST push", log_path)
     _require_exact_count(text, "UITESTBACK ok page=0", 2, "normal UITEST pop", log_path)
     if not re.search(r"UITESTWIN ok w=1080 h=1920", text):
         raise SmokeError("normal UITEST: runtime 窗口几何缺失/错误", log_path)
-    if not re.search(r"UITESTSCROLL ok offset=24 switch=1", text):
+    if not re.search(r"UITESTSCROLL ok offset=24(?![0-9]) switch=1", text):
         raise SmokeError("normal UITEST: boot-probe 状态/滚动链缺失", log_path)
+    clip_matches = list(
+        re.finditer(
+            r"UITESTCLIP ok port=(-?\d+),(-?\d+),(\d+),(\d+) "
+            r"item=(-?\d+),(-?\d+),(\d+),(\d+) "
+            r"probe=(\d+),(\d+) seq=(\d+)",
+            text,
+        )
+    )
+    if len(clip_matches) != 2:
+        raise SmokeError("normal UITEST: Clip guest 几何缺失/重复", log_path)
+    parsed_clips = []
+    for match in clip_matches:
+        port = tuple(int(match.group(i)) for i in range(1, 5))
+        item = tuple(int(match.group(i)) for i in range(5, 9))
+        probe = (int(match.group(9)), int(match.group(10)))
+        if (
+            port[3] >= item[3]
+            or item[1] >= port[1] + port[3]
+            or item[1] + item[3] <= port[1] + port[3]
+            or probe != (540, port[1] + port[3] + 8)
+        ):
+            raise SmokeError(
+                f"normal UITEST: Clip 几何不诚实 port={port} item={item} probe={probe}",
+                log_path,
+            )
+        parsed_clips.append((port, item, probe))
+    scrolled, reset = parsed_clips
+    if scrolled[1][1] >= scrolled[0][1] or reset[1][1] != reset[0][1]:
+        raise SmokeError(
+            f"normal UITEST: Clip 两个形态缺失 scrolled={scrolled} reset={reset}",
+            log_path,
+        )
     input_match = None
     for m in re.finditer(r"UITESTINPUT ok x=(\d+) y=(\d+)", text):
         input_match = m
@@ -3475,18 +3525,24 @@ def self_test(args) -> int:
             f"{MARK_UITEST_UP}\n{MARK_UITEST_ROOM}\n"
             f"{MARK_UITEST_WIN}1080 h=1920\n"
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
-            "button=12,126,1056,60\n"
+            "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=690 a11y=8\n"
-            "UITESTRENDER ok seq=1 cmds=18\n"
+            "UITESTAST ok bytes=712 a11y=8\n"
+            "UITESTRENDER ok seq=1 cmds=25\n"
             f"{MARK_UITEST_FRAME}\n"
-            "UITESTRENDER ok seq=2 cmds=19\n"
+            "UITESTRENDER ok seq=2 cmds=49\n"
             "UITESTSCROLL ok offset=24 switch=1\n"
-            "UITESTRENDER ok seq=3 cmds=14\n"
+            "UITESTRENDER ok seq=3 cmds=26\n"
+            "UITESTCLIP ok port=12,377,1056,24 item=12,353,1056,72 "
+            "probe=540,409 seq=3\n"
             "UITESTSTATE ok page=1 switch=1\n"
-            "UITESTRENDER ok seq=4 cmds=19\n"
+            "UITESTRENDER ok seq=4 cmds=17\n"
             "UITESTBACK ok page=0 switch=1\n"
-            "UITESTRENDER ok seq=5 cmds=18\n"
+            "UITESTRENDER ok seq=5 cmds=26\n"
+            "UITESTRENDER ok seq=6 cmds=25\n"
+            "UITESTRENDER ok seq=7 cmds=25\n"
+            "UITESTCLIP ok port=12,377,1056,24 item=12,377,1056,72 "
+            "probe=540,409 seq=7\n"
             f"{MARK_UITEST_PROBE}\n{MARK_UITEST_DESTROY}\n"
             f"{MARK_UITEST_EXIT}\n"
         )
@@ -3494,13 +3550,13 @@ def self_test(args) -> int:
             f"{MARK_UITEST_UP}\n{MARK_UITEST_ROOM}\n"
             f"{MARK_UITEST_WIN}1080 h=1920\n"
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
-            "button=12,126,1056,60\n"
+            "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=690 a11y=8\n"
-            "UITESTRENDER ok seq=1 cmds=18\n"
+            "UITESTAST ok bytes=712 a11y=8\n"
+            "UITESTRENDER ok seq=1 cmds=25\n"
             f"{MARK_UITEST_FRAME}\n"
             "UITESTLAYOUT ok page=1 appbar=0,0,1080,60 body=0,60,1080,1860 "
-            "button=12,255,1056,60\n"
+            "button=12,255,1056,60 scroll=0,60,1080,1860 clip=0,60,1080,1860\n"
             "UITESTHIT ok node=button x=540 y=285\n"
             "UITESTSTATE ok page=1 switch=0\n"
             "UITESTRENDER ok seq=2 cmds=18\n"
@@ -3512,6 +3568,18 @@ def self_test(args) -> int:
         fake_u = uitest_boot + uitest_runtime
         snap_u = len(uitest_boot)
         verify_uitest_normal(fake_u, snap_u, 1)
+        expect_error(
+            "UITEST 缺 reset Clip proof",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTCLIP ok port=12,377,1056,24 item=12,377,1056,72 "
+                    "probe=540,409 seq=7\n",
+                    "",
+                    1,
+                ),
+                snap_u, 1,
+            ),
+        )
         expect_error(
             "UITEST 缺 owner-local 输入",
             lambda: verify_uitest_normal(

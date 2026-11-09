@@ -3,7 +3,7 @@
 //!
 //! - **建树**（`attach`）：parent 下两件——页行 `Row`（w=viewport 定值、
 //!   h 随父）+ 页容器 `Col`×page_count（w=viewport 定值——页框 =
-//!   viewport 全宽，v1 无 clip 挂账）+ 圆点行 `Row`（h=DOT_SIZE 定值）+
+//!   C1 起 track 外再套结构性 Clip port，越界页内容不外溢）+ 圆点行
 //!   圆点 `Rect`×page_count（w=DOT_SIZE、h 随行）。app 经 `page_node`
 //!   向页容器填内容（GUI-8 launcher 接线面）。
 //! - **跟手**：DragMove 期 `Ui::set_offset(track)` 直写 ox（D31 Transform
@@ -19,7 +19,9 @@
 //! - 零 panic / 零分配 / 无浮点：offset 全 i32、判据阈值 i32 整数算术。
 
 use crate::anim::{self, Easing};
-use crate::desc::{Axis, ColProps, Msg, NodeId, Props, RectProps, RowProps, ViewKind, ViewSpec};
+use crate::desc::{
+    Axis, ClipProps, ColProps, Msg, NodeId, Props, RectProps, RowProps, ViewKind, ViewSpec,
+};
 use crate::layout::CrossAlign;
 use crate::{Ui, UiError};
 
@@ -110,14 +112,22 @@ impl SwipePager {
     ) -> Result<NodeId, UiError> {
         let (vp_w, _vp_h) = ui.viewport();
         self.vp_w = vp_w;
-        let track = ui.add(
+        let port = ui.add(
             parent,
+            ViewSpec {
+                kind: ViewKind::Clip,
+                key: 0,
+                props: Props::Clip(ClipProps { w: Some(vp_w), h: None }),
+            },
+        )?;
+        let track = ui.add(
+            port,
             ViewSpec {
                 kind: ViewKind::Row,
                 key: 0,
                 props: Props::Row(RowProps {
                     gap: 0,
-                    w: Some(vp_w), // 页框 = viewport 全宽（v1 免 clip——§3 挂账）
+                    w: Some(vp_w), // 页框 = viewport 全宽；外层 Clip 负责横向 port
                     h: None,
                     cross: CrossAlign::Stretch,
                 }),

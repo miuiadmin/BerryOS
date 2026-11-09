@@ -30,6 +30,10 @@ pub enum SubmitError {
     /// Blit 源区越纹理界（`index` = 命令序号）。源区必须**整区**在界内
     /// ——半出界裁剪源 = 静默改语义，禁；零尺寸源恒放行（空操作）。
     BlitSrcOutOfBounds { index: usize },
+    /// PushClip/PopClip 栈失衡（多余 Pop 或结束时未归零）。
+    UnbalancedClip { index: usize },
+    /// PushClip 嵌套深超过 [`CLIP_STACK_MAX`]。
+    ClipStackFull { index: usize },
     /// DrawImage 位图畸形（`index` = 命令序号）。两族恰长铁律：
     /// `ImageSrc::Bits` 字面构造绕过 `GlyphBits::new` 的，`rows.len() !=
     /// h * 行字节`（短行 = 越界位静默错位、长行 = 尾字节静默丢弃）；
@@ -38,6 +42,9 @@ pub enum SubmitError {
     /// `bit()`/`get()` 防御采样兜）。
     ImagePixelMismatch { index: usize },
 }
+
+/// 嵌套裁剪栈帽（retained UI 的 ScrollView/SwipePager 嵌套层数余量）。
+pub const CLIP_STACK_MAX: usize = 16;
 
 /// 命令队列（soft 后端：submit = 同步整列表回放，无内态）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +73,29 @@ impl Queue {
             if !d.is_valid() {
                 return Err(SubmitError::BadDirtyRect);
             }
+        }
+        // Push/Pop 栈先验：半执行的 DisplayList 不动笔；多余 Pop、未归零
+        // 或超深都在写入前 loud 拒。
+        let mut clip_depth = 0usize;
+        for (i, cmd) in dl.iter().enumerate() {
+            match cmd {
+                Cmd::PushClip { .. } => {
+                    if clip_depth >= CLIP_STACK_MAX {
+                        return Err(SubmitError::ClipStackFull { index: i });
+                    }
+                    clip_depth += 1;
+                }
+                Cmd::PopClip => {
+                    if clip_depth == 0 {
+                        return Err(SubmitError::UnbalancedClip { index: i });
+                    }
+                    clip_depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        if clip_depth != 0 {
+            return Err(SubmitError::UnbalancedClip { index: dl.len() });
         }
         for (i, cmd) in dl.iter().enumerate() {
             match cmd {
@@ -145,9 +175,25 @@ impl Queue {
             raster::fill_rect(target, desc, &clip, px, &clip);
         }
 
-        // 逐命令回放（raster 内部逐像素裁到 clip）。
+        // 逐命令回放（raster 内部逐像素裁到 当前 dirty∩嵌套 clip 栈）。
+        let mut clip_stack = [Rect::new(0, 0, 0, 0); CLIP_STACK_MAX];
+        let mut clip_depth = 0usize;
+        let mut current_clip = clip;
         for cmd in dl.iter() {
-            raster::exec(target, desc, cmd, &clip);
+            match cmd {
+                Cmd::PushClip { rect } => {
+                    clip_stack[clip_depth] = current_clip;
+                    clip_depth += 1;
+                    current_clip = current_clip
+                        .intersect(rect)
+                        .unwrap_or(Rect::new(0, 0, 0, 0));
+                }
+                Cmd::PopClip => {
+                    clip_depth -= 1;
+                    current_clip = clip_stack[clip_depth];
+                }
+                _ => raster::exec(target, desc, cmd, &current_clip),
+            }
         }
 
         // StoreOp：soft 路径 Store/Discard 都是 no-op（内容已在调用方

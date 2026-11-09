@@ -318,6 +318,6 @@ SHA-256 = 40c87b4bdd232e1ea1f27570cda91b2e58ae107bc365624e70064c763b3e9fb3
 - Browser 仍无网络、HTML、JavaScript、多标签、历史或书签。
 - Photos 仍无相机、编辑、相册管理、云图或持久收藏。
 - Files/Contacts 仍保持 F7 的只读边界。
-- BerryUI 嵌套视口 clipping 仍归后续刀。
+- F8 时点嵌套 clipping 归后续刀；C1 已落地结构性 Clip。
 - CanvasSurface / immersive buffer 未开放；两 app 走 P0 Retained 路径。
 - `berry-nshfont` 已无 GUI app 消费者；F9 已删除并落地 `gui-boundary-guard`。

@@ -7,7 +7,7 @@
 
 pub use crate::damage::RectI;
 pub use crate::desc::{
-    Axis, CircleProps, ColProps, GridProps, IconProps, ImageProps, Msg, MsgBuf, NodeId,
+    Axis, CircleProps, ClipProps, ColProps, GridProps, IconProps, ImageProps, Msg, MsgBuf, NodeId,
     PadProps, PanelProps, Props, RectProps, RowProps, TextBuf, TextProps, TextStyle, ViewKind,
     ViewSpec,
 };

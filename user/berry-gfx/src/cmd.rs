@@ -272,6 +272,12 @@ pub enum Cmd<'a> {
         fg: Color,
         bg: Option<Color>,
     },
+    /// 压入嵌套裁剪窗。与当前 pass dirty/外层 clip 求交，直到对应
+    /// [`Cmd::PopClip`]；栈深由 Queue 定容执法。用于 BerryUI ScrollView /
+    /// SwipePager 等 retained 子树裁剪，不改变命令自身几何。
+    PushClip { rect: Rect },
+    /// 弹出一层 [`Cmd::PushClip`]。DisplayList 结束时栈必须归零。
+    PopClip,
     /// 呈现（**flip 留位**）：soft 后端 = no-op——命令直接写进目标
     /// 缓冲，整帧已直写，无可「翻」；真后端（双缓冲/virtio-gpu）在此
     /// 承接页翻转/提交，`rect` = 损伤区提示。
@@ -406,9 +412,24 @@ impl<'a> CommandEncoder<'a> {
         self.record(Cmd::DrawImage { src, x, y, fg, bg })
     }
 
+    /// 压入嵌套裁剪窗（与回放期当前 clip 求交）。
+    pub fn push_clip(&mut self, rect: Rect) -> Result<(), CmdError> {
+        self.record(Cmd::PushClip { rect })
+    }
+
+    /// 弹出一层嵌套裁剪窗。
+    pub fn pop_clip(&mut self) -> Result<(), CmdError> {
+        self.record(Cmd::PopClip)
+    }
+
     /// 呈现（soft no-op / flip 留位）。
     pub fn present(&mut self, rect: Rect) -> Result<(), CmdError> {
         self.record(Cmd::Present { rect })
+    }
+
+    /// 当前已录命令数（producer 预留 Clip Pop / Present 尾槽用）。
+    pub fn len(&self) -> usize {
+        self.list.len()
     }
 
     /// 终结为不可变显示列表（记录/回放分离的形态面：记录期结束）。
@@ -430,8 +451,12 @@ fn rect_of<'a>(cmd: &'a Cmd<'_>) -> Option<&'a Rect> {
         | Cmd::FillCircle { rect, .. }
         | Cmd::FillRoundRect { rect, .. } => Some(rect),
         Cmd::Blit { src, .. } => Some(src),
+        Cmd::PushClip { rect } => Some(rect),
         Cmd::Present { rect } => Some(rect),
-        Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } | Cmd::DrawImage { .. } => None,
+        Cmd::PopClip
+        | Cmd::DrawLine { .. }
+        | Cmd::DrawGlyphRun { .. }
+        | Cmd::DrawImage { .. } => None,
     }
 }
 

@@ -52,6 +52,7 @@ FORBIDDEN_SOURCE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("像素基元 circle", r"\b(?:circle|fill_circle)\s*\("),
     ("像素基元 shadow", r"\b(?:shadow|draw_shadow)\s*\("),
     ("直接光栅 surface 面", r"berry_gfx::surface\b"),
+    ("直接 DisplayList Clip 命令", r"\.(?:push_clip|pop_clip)\s*\("),
     ("unsafe", r"\bunsafe\b"),
     ("动态分配", r"\balloc::"),
 )
@@ -356,6 +357,7 @@ def self_test() -> int:
         "stride": "fn x(stride: usize) { let _ = stride; }",
         "像素基元": "fn x() { put_px(core::ptr::null_mut(), 0, 0, 0, [0; 4]); }",
         "unsafe": "fn x() { unsafe { core::ptr::read_volatile(&0); } }",
+        "直接 Clip 命令": "fn x(enc: &mut core::fmt::Formatter) { let _ = enc.push_clip(Default::default()); }",
         "raw string # 绕行": 'const S: &str = r#"a "// b"#; fn x() { let _ = berry_vmo_create(1, 0, 0, core::ptr::null_mut()); }',
         "raw string ## 绕行": 'const S: &str = r##"x "# y // z"##; fn x() { let _ = berry_clock_read(0, core::ptr::null_mut()); }',
     }
@@ -460,7 +462,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("gui-guard self-test: 正样本 + 17 类负样本 fail closed 全绿")
+    print("gui-guard self-test: 正样本 + 18 类负样本 fail closed 全绿")
     return 0
 
 

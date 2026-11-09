@@ -242,6 +242,14 @@ fn intrinsic(
     };
     match &n.props {
         Props::Root => (vp_w, vp_h),
+        // Clip 内在尺寸随子内容（作为 Col/Row 子时的主轴请求）；终值
+        // 仍吃父 avail，port = 自身布局 bounds。
+        Props::Clip(p) => {
+            let (cw, ch, _) = child_agg(nodes, n.first_child, true);
+            let w = p.w.map(|v| v as u64).unwrap_or(cw);
+            let h = p.h.map(|v| v as u64).unwrap_or(ch);
+            (u64_to_u32_sat(w), u64_to_u32_sat(h))
+        }
         Props::Rect(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
         Props::Circle(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
         Props::Text(p) => {
@@ -423,6 +431,10 @@ fn snapshot(
 fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
     match &n.props {
         Props::Root => (avail_w, avail_h),
+        Props::Clip(p) => (
+            p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
+            p.h.map(u32_to_i32_sat).unwrap_or(avail_h),
+        ),
         Props::Rect(p) => (
             p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
             p.h.map(u32_to_i32_sat).unwrap_or(avail_h),
@@ -701,9 +713,9 @@ fn place_children(
                 cur = next;
             }
         }
-        // Root（及其余不可达——Rect/Text/Image/Icon 已在叶卫拦下）：viewport
-        // 整给——子各自 (0,0) 起满幅
-        _ => {
+        // Root / Clip：viewport/裁剪 port 整给——子各自 (0,0) 起满幅。
+        // 其余 props 已在上文 exhaustive 分派；防御空臂仅保编译全匹配。
+        Props::Clip(_) | Props::Root => {
             let mut cur = first;
             let mut guard = 0usize;
             while cur != u32::MAX && guard <= nodes.len() {
@@ -717,5 +729,6 @@ fn place_children(
                 cur = next;
             }
         }
+        _ => {}
     }
 }

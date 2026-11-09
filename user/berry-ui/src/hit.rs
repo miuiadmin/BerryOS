@@ -4,8 +4,8 @@
 //!
 //! - [`node_at`]：topmost 优先（z 序逆走 = 兄弟链尾侧先探——画家算法
 //!   后画者在顶），命中含 paint 偏移 ox/oy（Transform 动画后命中随视觉
-//!   走，§3.7 分型的消费面）；v1 无 clip 视图（挂账——子命中不受父界
-//!   裁剪，保守正确）。
+//!   走，§3.7 分型的消费面）；C1 结构性 Clip 视图把子命中裁到有效
+//!   port（paint/hit 同一裁剪链，不可见子树不可 Press）。
 //! - 手势 referee（每 pointer_id 独立状态 {down_node, down_xy,
 //!   dragging}）：DOWN→hit→`Press`；MOVE 距按下点 > [`crate::DRAG_SLOP_PX`]
 //!   → `DragStart` 此后 `DragMove`；UP→在拖 `DragEnd` / 不在
@@ -248,7 +248,12 @@ pub(crate) fn node_at(nodes: &[Option<Node>], root: u32, x: i32, y: i32) -> Opti
         Some(Some(n)) if n.alive => {}
         _ => return None,
     }
-    hit_walk(nodes, root, 0, 0, x as i64, y as i64, 0)
+    let (vw, vh) = match nodes.get(root as usize).and_then(|option| option.as_ref()) {
+        Some(root_node) => (root_node.w.max(0), root_node.h.max(0)),
+        None => (0, 0),
+    };
+    let clip = crate::damage::RectI::new(0, 0, vw, vh);
+    hit_walk(nodes, root, 0, 0, clip, x as i64, y as i64, 0)
 }
 
 /// 自 `slot` 子树的深度优先命中（兄弟逆序 = 后画者优先 = topmost）。
@@ -260,6 +265,7 @@ fn hit_walk(
     slot: u32,
     ex: i64,
     ey: i64,
+    clip: crate::damage::RectI,
     x: i64,
     y: i64,
     depth: u32,
@@ -279,8 +285,27 @@ fn hit_walk(
     // 命中侧同语义不另造规则）
     let inside =
         x >= bx && y >= by && x < bx + (n.w as i64).max(0) && y < by + (n.h as i64).max(0);
+    let effective_clip = if n.kind == crate::desc::ViewKind::Clip {
+        let bounds = crate::damage::RectI::new(
+            crate::damage::i64_to_i32_sat(bx),
+            crate::damage::i64_to_i32_sat(by),
+            n.w,
+            n.h,
+        );
+        clip.intersect(&bounds)
+    } else {
+        clip
+    };
+    if effective_clip.is_empty()
+        || x < effective_clip.x as i64
+        || y < effective_clip.y as i64
+        || x >= effective_clip.right() as i64
+        || y >= effective_clip.bottom() as i64
+    {
+        return None;
+    }
 
-    // 子优先（v1 无 clip：子命中不受本节点界裁剪）；兄弟链尾 = 顶面。
+    // 子优先（C1：子命中受结构性 Clip port 裁剪）；兄弟链尾 = 顶面。
     // 先沿 next_sib 走到链尾，再沿 prev_sib 回走（无堆栈的逆序遍历）。
     let mut tail = n.first_child;
     let mut guard = 0usize;
@@ -306,7 +331,7 @@ fn hit_walk(
         if back > nodes.len() {
             return None; // prev_sib 环防御
         }
-        if let Some(id) = hit_walk(nodes, sib, bx, by, x, y, depth + 1) {
+        if let Some(id) = hit_walk(nodes, sib, bx, by, effective_clip, x, y, depth + 1) {
             return Some(id);
         }
         match nodes.get(sib as usize) {

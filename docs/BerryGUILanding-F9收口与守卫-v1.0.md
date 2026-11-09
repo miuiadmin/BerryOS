@@ -213,6 +213,7 @@ manifest 中出现 `surface_mode != "retained"` 时，F9 守卫同样 fail close
     块注释绕行
     r# / r## raw string 绕行
     build 依赖冒充运行时 berry-room
+    普通 app 直调 DisplayList Push/PopClip
 ```
 
 任一负样本未失败即 self-test FAIL。正样本同时覆盖嵌套块注释、字符串中的 `//` 与 char 引号，证明注释/字面量状态机不误报。
@@ -220,7 +221,7 @@ manifest 中出现 `surface_mode != "retained"` 时，F9 守卫同样 fail close
 当前结果：
 
 ```text
-正样本 + 17 类负样本 fail closed 全绿
+C1 起正样本 + 18 类负样本 fail closed 全绿
 ```
 
 ## §4 P0 授权 renderer 边界
@@ -319,7 +320,7 @@ A1 口径：
 已通过：
 
 ```text
-gui-boundary-guard --self-test（17 类负样本）
+gui-boundary-guard --self-test（F9 时点 17 类；C1 起 18 类）
 gui-boundary-guard
 just build
 just check
@@ -353,7 +354,7 @@ SHA-256 = 40c87b4bdd232e1ea1f27570cda91b2e58ae107bc365624e70064c763b3e9fb3
 ## §9 未完成边界
 
 - CanvasSurface / immersive buffer 仍未开放。
-- BerryUI 嵌套视口 clipping 仍归后续刀。
+- F9 时点嵌套 clipping 仍归后续刀；C1 已落地并见 [BerryUIClipping-C1嵌套视口-v1.0.md](BerryUIClipping-C1嵌套视口-v1.0.md)。
 - Browser 仍无网络 / HTML / JavaScript。
 - Photos 仍无相机 / 编辑 / 云图。
 - Files / Contacts 仍为只读。

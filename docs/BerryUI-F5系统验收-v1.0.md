@@ -56,7 +56,7 @@ Button Back
 EmptyState
 ```
 
-页面 0 内含一个真实滚动样本：单行 ListItem 比小 viewport 高 24px，Product 与 Compact 密度下 `sync_bounds` 后 `scroll_by(24)` 的实际 offset 均为 24；app 断言该值后才打印 scroll marker。内容仍留在整页 viewport 内，不伪称 clipping。
+页面 0 内含一个真实滚动样本：单行 ListItem 比小 viewport 高 24px，Product 与 Compact 密度下 `sync_bounds` 后 `scroll_by(24)` 的实际 offset 均为 24；app 断言该值后才打印 scroll marker。C1 起该样本升级为真实结构性 Clip 溢出/命中/几何验收，不再以“内容刚好放得下”替代 clipping。
 
 业务状态归 app：
 
@@ -232,7 +232,7 @@ F4 rootfs 为 33,502,608B；F5 增量 50,872B。系统字形 VMO 档使 `UITEST.
 
 ## §7 未完成边界
 
-- ScrollView 仍无嵌套视口 clipping；P0 冻结 Surface Mode 合约与 safe area/scale 词表，但 BerryUI 裁剪执行与嵌套滚动实现未宣称完成。
+- C1 起ScrollView/嵌套 Clip 已有结构性裁剪；复杂嵌套滚动交互与动画裁剪优化仍随后续 BerryUI 刀演进。
 - 返回栈是 `uitest` 的 app-local 两页状态，不是 OS 导航服务或 Berry Home 任务栈。
 - a11y 已进入 BerryUI 保留树与 AST 语义表；P0 冻结 semantic sidecar 记录 codec，系统级 sidecar 服务与批量传输仍未接线。
 - safe area、scale factor、input class、IME composition 与 Surface role/mode 已由 P0 立法；CanvasSurface / immersive buffer 分配和生产服务接线仍未开放。

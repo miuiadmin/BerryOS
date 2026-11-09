@@ -12,8 +12,9 @@
 //!         | align 块 1B?（flags.bit3）| child_count u8
 //! flags  := bit0 = has_key / bit1 = has_size / bit2 = has_a11y /
 //!           bit3 = has_align（bit4+ 未知 → UnknownFlags 拒）
-//! props  := kind 定长：Root 0B / Rect·Circle 11B / Text 变长(6..=9+len) /
-//!           Col·Row·Pad 4B / Image 10B / Icon 13B / Grid 7B / Panel 23B
+//! props  := kind 定长：Root·Clip 0B / Rect·Circle 11B / Text 变长
+//!           (6..=9+len) / Col·Row·Pad 4B / Image 10B / Icon 13B /
+//!           Grid 7B / Panel 23B
 //!           （GUI-6 §8.1 + F4 Panel）
 //! ```
 //!
@@ -73,6 +74,16 @@ pub enum ViewKind {
     Grid,
     Circle,
     Panel,
+    /// C1 结构性裁剪容器：自身 bounds 即子树有效 port；基 props 无视觉字段。
+    Clip,
+}
+
+/// C1 结构性裁剪 port 尺寸：None = 吃父可用域；Some = 固定该轴。
+/// 只经 HAS_SIZE 扩展块入 AST，避免与既有 props 定长域双源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClipProps {
+    pub w: Option<u32>,
+    pub h: Option<u32>,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
@@ -183,6 +194,8 @@ pub struct IconProps {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Props {
     Root,
+    /// Clip 容器可选 port 尺寸（基域 0B；w/h 经 HAS_SIZE 块加载）。
+    Clip(ClipProps),
     Rect(RectProps),
     Text(TextProps),
     Col(ColProps),
@@ -366,6 +379,8 @@ pub const KIND_ICON: u8 = 7;
 pub const KIND_GRID: u8 = 8;
 pub const KIND_CIRCLE: u8 = 9;
 pub const KIND_PANEL: u8 = 10;
+/// C1 嵌套裁剪容器（props 基域 0B；尺寸走 HAS_SIZE；旧读端 kind=11 拒）。
+pub const KIND_CLIP: u8 = 11;
 
 /// flags bit0 = has_key（v1）。
 pub const FLAG_HAS_KEY: u8 = 1;
@@ -410,6 +425,7 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::Grid => KIND_GRID,
         ViewKind::Circle => KIND_CIRCLE,
         ViewKind::Panel => KIND_PANEL,
+        ViewKind::Clip => KIND_CLIP,
     }
 }
 
@@ -426,6 +442,7 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_GRID => Some(ViewKind::Grid),
         KIND_CIRCLE => Some(ViewKind::Circle),
         KIND_PANEL => Some(ViewKind::Panel),
+        KIND_CLIP => Some(ViewKind::Clip),
         _ => None,
     }
 }
@@ -511,7 +528,7 @@ fn put_u64le(out: &mut [u8], v: u64) -> Result<usize, AstError> {
 pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstError> {
     let mut c = 0usize;
     match props {
-        Props::Root => {}
+        Props::Root | Props::Clip(_) => {}
         Props::Rect(p) => {
             c += put_u8(&mut out[c..], p.bg.r)?;
             c += put_u8(&mut out[c..], p.bg.g)?;
@@ -609,6 +626,7 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
     };
     match kind {
         ViewKind::Root => Ok((Props::Root, 0)),
+        ViewKind::Clip => Ok((Props::Clip(ClipProps { w: None, h: None }), 0)),
         ViewKind::Rect => {
             need(11)?;
             let w = u32at(3);
@@ -820,8 +838,8 @@ pub(crate) fn parse_node(
     Ok((ViewSpec { kind, key, props }, pos, a11y))
 }
 
-/// size 块落值（§8.2 合法域表）：Col/Row/Grid/Rect 合法、Image/Icon/
-/// Pad/Root 拒。Col/Row/Grid 块值落扩展字段；**Rect 为容读折入面**——
+/// size 块落值（§8.2 合法域表）：Col/Row/Grid/Rect/Clip 合法、Image/
+/// Icon/Pad/Root 拒。Col/Row/Grid/Clip 块值落扩展字段；Rect 为容读折入面——
 /// 尺寸本在 props 定长域，块值折入 RectProps（块胜），再编码归一为
 /// 无块形式（builder 面拒 Rect+size，保双入口收敛——见 DescBuilder::size）。
 /// Image/Icon/Panel 拒 = 双源歧义；Text 拒 = TextProps 满载 Node 冻结无落位；
@@ -837,7 +855,7 @@ fn apply_size_block(
 ) -> Result<Props, AstError> {
     match kind {
         ViewKind::Col | ViewKind::Row | ViewKind::Grid | ViewKind::Rect
-        | ViewKind::Circle => {}
+        | ViewKind::Circle | ViewKind::Clip => {}
         _ => return Err(AstError::UnknownProp { kind, got: FLAG_HAS_SIZE }),
     }
     if src.len() < 8 {
@@ -864,6 +882,10 @@ fn apply_size_block(
             p.h = h;
         }
         Props::Circle(p) => {
+            p.w = w;
+            p.h = h;
+        }
+        Props::Clip(p) => {
             p.w = w;
             p.h = h;
         }
@@ -979,6 +1001,7 @@ fn emit_node(
         Props::Col(p) => p.w.is_some() || p.h.is_some(),
         Props::Row(p) => p.w.is_some() || p.h.is_some(),
         Props::Grid(p) => p.w.is_some() || p.h.is_some(),
+        Props::Clip(p) => p.w.is_some() || p.h.is_some(),
         _ => false,
     };
     let has_align = match &n.props {
@@ -1016,7 +1039,8 @@ fn emit_node(
             Props::Col(p) => (p.w, p.h),
             Props::Row(p) => (p.w, p.h),
             Props::Grid(p) => (p.w, p.h),
-            // has_size 仅 Col/Row/Grid 真——防御（Rect 折入面不产块）
+            Props::Clip(p) => (p.w, p.h),
+            // has_size 仅定尺寸容器真——防御（Rect 折入面不产块）
             _ => (None, None),
         };
         w += put_u32le(&mut seg[w..], bw.unwrap_or(SIZE_NONE))?;
@@ -1353,6 +1377,11 @@ impl DescBuilder {
         self.begin(ViewKind::Panel, key, &Props::Panel(*props))
     }
 
+    /// C1 裁剪容器开层捷径（基 props 空；固定 port 用后续 `.size()`）。
+    pub fn begin_clip(&mut self, key: u64) -> Result<(), AstError> {
+        self.begin(ViewKind::Clip, key, &Props::Clip(ClipProps { w: None, h: None }))
+    }
+
     /// 块落前置检（当前层可落块 = 已 begin 且未开首子——占位字节即流尾；
     /// 阶段序由位值序执法：块位值 1/2/4 = SIZE/A11Y/ALIGN 递增，已有
     /// **同级或更后**块再落即拒——dup 与乱序（如 A11Y 后补 SIZE）同面）。
@@ -1391,7 +1420,7 @@ impl DescBuilder {
     pub fn size(&mut self, w: Option<u32>, h: Option<u32>) -> Result<(), AstError> {
         let (kind, at) = self.block_pre(BLK_SIZE)?;
         match kind {
-            ViewKind::Col | ViewKind::Row | ViewKind::Grid => {}
+            ViewKind::Col | ViewKind::Row | ViewKind::Grid | ViewKind::Clip => {}
             _ => return Err(AstError::UnknownProp { kind, got: FLAG_HAS_SIZE }),
         }
         if w.is_none() && h.is_none() {

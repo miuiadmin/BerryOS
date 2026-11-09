@@ -31,6 +31,9 @@ use berry_gfx::font::GlyphAtlas;
 /// 槽索引空哨兵（§6 Node 注：NONE = u32::MAX——hit.rs 同值，本模块自
 /// 带防跨模块未定名依赖）。
 const NONE: u32 = u32::MAX;
+/// order[] 逆序发射哨兵：Push/PopClip 括号（slot 域 <=512，不与真实槽冲突）。
+const CLIP_PUSH: u32 = NONE - 1;
+const CLIP_POP: u32 = NONE - 2;
 
 /// 遮挡覆盖集容量（damage 矩形 ≤ 8 的两倍余量；溢出保守少记覆盖 →
 /// 多画不少画，见 RectSet 类型注）。
@@ -105,14 +108,18 @@ pub(crate) fn paint<'a>(
 
     for d in dmgs[..n_dmgs].iter() {
         let mut covered: RectSet<COVERED_CAP> = RectSet::new();
+        // C1：初始有效裁剪 = viewport（逆序发射时按 Push/Pop 恢复）。
+        let mut clip_stack = [vp_rect; berry_gfx::queue::CLIP_STACK_MAX];
+        let mut clip_depth = 0usize;
+        let mut current_clip = vp_rect;
         let mut order = [NONE; ORDER_CAP];
         let mut bnds = [RectI::new(0, 0, 0, 0); ORDER_CAP];
         let mut n_order = 0usize;
         let mut overflow = false;
         let culled_before = rep.culled;
         cull_walk(
-            nodes, root, 0, 0, d, &mut covered, &mut order, &mut bnds, &mut n_order,
-            &mut rep.culled, &mut overflow, 0,
+            nodes, root, 0, 0, d, vp_rect, &mut covered, &mut order, &mut bnds, &mut n_order,
+            &mut rep.culled, &mut overflow, 0, 0,
         );
         if overflow {
             // 病态巨树回退（>ORDER_CAP 可见叶子）：本 damage 矩形整段重走
@@ -123,14 +130,73 @@ pub(crate) fn paint<'a>(
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
             emit_walk_all(
-                nodes, root, 0, 0, d, &vp_rect, icons, _fonts, &mut rest, enc, &mut rep, 0,
+                nodes, root, 0, 0, d, &vp_rect, vp_rect, icons, _fonts, &mut rest, enc, &mut rep, 0, 0, 0,
             );
         } else {
-            // 发射 = 收集序之逆（前序 = 画家算法背到前）
+            // 发射 = 收集序之逆（前序 = 画家算法背到前）。Clip 哨兵在
+            // 逆序边界压/弹栈；当前有效 port 同步传给 drawn_px 统计。
+            // 命令预算与 Clip 栈配平：每个已打开 Clip 都必须为 Pop 预留
+            // 一槽。若 Push 无法预留，则压入 suppress 栈跳过其整个子树；
+            // 叶子满帽只截尾，绝不产出 dangling Push。
+            let mut suppress_depth = 0usize;
             for k in (0..n_order).rev() {
-                emit_node(
-                    nodes, order[k], &bnds[k], &vp_rect, icons, _fonts, &mut rest, enc, &mut rep,
-                );
+                match order[k] {
+                    CLIP_PUSH => {
+                        if suppress_depth > 0 {
+                            suppress_depth += 1;
+                            continue;
+                        }
+                        if enc.len() + clip_depth + 2 <= berry_gfx::cmd::MAX_CMDS {
+                            let rect = bnds[k];
+                            clip_stack[clip_depth] = current_clip;
+                            clip_depth += 1;
+                            current_clip = rect;
+                            if enc
+                                .push_clip(GfxRect::new(rect.x, rect.y, rect.w, rect.h))
+                                .is_ok()
+                            {
+                                rep.cmds += 1;
+                            }
+                        } else {
+                            suppress_depth += 1;
+                            rep.culled += 1;
+                        }
+                    }
+                    CLIP_POP => {
+                        if suppress_depth > 0 {
+                            suppress_depth -= 1;
+                            continue;
+                        }
+                        // 防御面：cull 走查遇环时可能留下无配对 Push 的
+                        // Pop 哨兵；clip_depth=0 时跳过，绝不发孤儿 Pop。
+                        if clip_depth == 0 {
+                            continue;
+                        }
+                        clip_depth -= 1;
+                        current_clip = clip_stack[clip_depth];
+                        if enc.pop_clip().is_ok() {
+                            rep.cmds += 1;
+                        }
+                    }
+                    slot => {
+                        if suppress_depth > 0 {
+                            rep.culled += 1;
+                            continue;
+                        }
+                        if enc.len() + clip_depth >= berry_gfx::cmd::MAX_CMDS {
+                            // 命令帽截尾：绘制足迹仍按可见几何记账（与
+                            // emit_node 录入失败不减 drawn_px 的旧契约一致）。
+                            let visible = bnds[k].intersect(&vp_rect).intersect(&current_clip);
+                            rep.drawn_px = rep.drawn_px.saturating_add(visible.area());
+                            rep.culled += 1;
+                            continue;
+                        }
+                        emit_node(
+                            nodes, slot, &bnds[k], &vp_rect, &current_clip, icons, _fonts,
+                            &mut rest, enc, &mut rep,
+                        );
+                    }
+                }
             }
         }
     }
@@ -185,12 +251,14 @@ fn cull_walk(
     ex: i64,
     ey: i64,
     d: &RectI,
+    clip: RectI,
     covered: &mut RectSet<COVERED_CAP>,
     order: &mut [u32; ORDER_CAP],
     bnds: &mut [RectI; ORDER_CAP],
     n_order: &mut usize,
     culled: &mut u32,
     overflow: &mut bool,
+    clip_depth: usize,
     hops: u32,
 ) {
     if hops as usize > nodes.len() {
@@ -202,6 +270,28 @@ fn cull_walk(
     }
     let bx = ex + n.x as i64 + n.ox as i64;
     let by = ey + n.y as i64 + n.oy as i64;
+    let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
+    let (effective_clip, is_clip) = if n.kind == ViewKind::Clip {
+        let effective = clip.intersect(&b);
+        if effective.is_empty() || clip_depth >= berry_gfx::queue::CLIP_STACK_MAX {
+            *culled += 1;
+            return;
+        }
+        (effective, true)
+    } else {
+        (clip, false)
+    };
+    if is_clip {
+        // 收集序逆序发射：先占 Pop、子树收集、末录 Push → 正序得到
+        // PushClip → subtree → PopClip。
+        if *n_order < ORDER_CAP {
+            order[*n_order] = CLIP_POP;
+            bnds[*n_order] = RectI::new(0, 0, 0, 0);
+            *n_order += 1;
+        } else {
+            *overflow = true;
+        }
+    }
 
     // 子先：沿 next_sib 走到链尾再 prev_sib 回走（尾兄先 = 后画者先看）
     let mut tail = n.first_child;
@@ -228,7 +318,7 @@ fn cull_walk(
         if back > nodes.len() {
             return; // prev_sib 环防御
         }
-        cull_walk(nodes, sib, bx, by, d, covered, order, bnds, n_order, culled, overflow, hops + 1);
+        cull_walk(nodes, sib, bx, by, d, effective_clip, covered, order, bnds, n_order, culled, overflow, clip_depth + usize::from(is_clip), hops + 1);
         match nodes.get(sib as usize) {
             Some(Some(c)) if c.alive => sib = c.prev_sib,
             _ => return,
@@ -241,14 +331,23 @@ fn cull_walk(
     match n.kind {
         ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle
         | ViewKind::Panel => {}
+        ViewKind::Clip => {
+            if *n_order < ORDER_CAP {
+                order[*n_order] = CLIP_PUSH;
+                bnds[*n_order] = effective_clip;
+                *n_order += 1;
+            } else {
+                *overflow = true;
+            }
+            return;
+        }
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
         | ViewKind::Pad
         | ViewKind::Grid => return,
     }
-    let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
-    let vis = b.intersect(d);
+    let vis = b.intersect(d).intersect(&effective_clip);
     if vis.is_empty() || covered.is_covered(&vis) {
         *culled += 1; // §3.5：可见区空 → skip（culled++）
         return;
@@ -283,11 +382,14 @@ fn emit_walk_all<'a>(
     ey: i64,
     d: &RectI,
     vp_rect: &RectI,
+    clip: RectI,
     icons: &'a dyn IconSource,
     _fonts: Option<&'static dyn crate::metrics::FontSource>,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
+    clip_depth: usize,
+    open_clips: usize,
     hops: u32,
 ) {
     if hops as usize > nodes.len() {
@@ -299,24 +401,54 @@ fn emit_walk_all<'a>(
     }
     let bx = ex + n.x as i64 + n.ox as i64;
     let by = ey + n.y as i64 + n.oy as i64;
+    let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
+    let (effective_clip, is_clip) = if n.kind == ViewKind::Clip {
+        let effective = clip.intersect(&b);
+        if effective.is_empty() || clip_depth >= berry_gfx::queue::CLIP_STACK_MAX {
+            rep.culled += 1;
+            return;
+        }
+        (effective, true)
+    } else {
+        (clip, false)
+    };
+    if is_clip {
+        if enc.len() + open_clips + 2 <= berry_gfx::cmd::MAX_CMDS {
+            if enc
+                .push_clip(GfxRect::new(
+                    effective_clip.x, effective_clip.y, effective_clip.w, effective_clip.h,
+                ))
+                .is_ok()
+            {
+                rep.cmds += 1;
+            }
+        } else {
+            rep.culled += 1;
+            return;
+        }
+    }
 
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
     match n.kind {
         ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon | ViewKind::Circle
         | ViewKind::Panel => {
-            let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
-            if b.intersect(d).is_empty() {
-                rep.culled += 1; // damage 外叶子
+            if b.intersect(d).intersect(&effective_clip).is_empty() {
+                rep.culled += 1; // damage/clip 外叶子
+            } else if enc.len() + open_clips >= berry_gfx::cmd::MAX_CMDS {
+                let visible = b.intersect(vp_rect).intersect(&effective_clip);
+                rep.drawn_px = rep.drawn_px.saturating_add(visible.area());
+                rep.culled += 1;
             } else {
-                emit_node(nodes, slot, &b, vp_rect, icons, _fonts, rest, enc, rep);
+                emit_node(nodes, slot, &b, vp_rect, &effective_clip, icons, _fonts, rest, enc, rep);
             }
         }
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
         | ViewKind::Pad
-        | ViewKind::Grid => {}
+        | ViewKind::Grid
+        | ViewKind::Clip => {}
     }
 
     // 子：头兄起流序（painter 序：后画者后访问 = 覆盖在前画者上）。
@@ -325,17 +457,31 @@ fn emit_walk_all<'a>(
     while c != NONE {
         guard += 1;
         if guard > nodes.len() {
+            if is_clip && enc.pop_clip().is_ok() {
+                rep.cmds += 1;
+            }
             return; // 子链环防御
         }
         match nodes.get(c as usize) {
             Some(Some(ch)) if ch.alive => {
                 emit_walk_all(
-                    nodes, c, bx, by, d, vp_rect, icons, _fonts, rest, enc, rep, hops + 1
+                    nodes, c, bx, by, d, vp_rect, effective_clip, icons, _fonts, rest, enc, rep,
+                    clip_depth + usize::from(is_clip),
+                    open_clips + usize::from(is_clip),
+                    hops + 1,
                 );
                 c = ch.next_sib;
             }
-            _ => return, // 链上死槽 = 树结构异常，防御放弃余段
+            _ => {
+                if is_clip && enc.pop_clip().is_ok() {
+                    rep.cmds += 1;
+                }
+                return; // 链上死槽 = 树结构异常，防御放弃余段
+            }
         }
+    }
+    if is_clip && enc.pop_clip().is_ok() {
+        rep.cmds += 1;
     }
 }
 
@@ -351,6 +497,7 @@ fn emit_node<'a>(
     slot: u32,
     b: &RectI,
     vp_rect: &RectI,
+    clip: &RectI,
     icons: &'a dyn IconSource,
     _fonts: Option<&'static dyn crate::metrics::FontSource>,
     rest: &mut &'a mut [GlyphPos],
@@ -440,7 +587,9 @@ fn emit_node<'a>(
         // Root/Col/Row/Pad/Grid：无视觉内容（子树各自发射）
         _ => {}
     }
-    rep.drawn_px = rep.drawn_px.saturating_add(b.intersect(vp_rect).area());
+    rep.drawn_px = rep
+        .drawn_px
+        .saturating_add(b.intersect(vp_rect).intersect(clip).area());
 }
 
 /// Image/Icon 叶发射共核（§4.3）：`pixels(id)` 借用 → Argb/ScaledArgb

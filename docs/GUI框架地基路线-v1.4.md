@@ -110,6 +110,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **F7 Files/Contacts 迁移** | 列表/详情/收藏/文件读取迁到 UI SDK | READDIR/STAT/GET 真链保留；UI 与数据边界清晰 |
 | **F8 Photos/Browser 迁移** | 图像网格、查看页、URL pill、诚实状态页迁移 | 5000B 图像与 owner-local 输入真链保留 |
 | **F9 收口与守卫（已落地）** | 删除迁移期重复客户端，静态守卫入 CI | 已迁移普通 Native Shell app 无直接 syscall/WM/VMO/stride/像素绘制；专业或游戏 renderer 的像素算法只能出现在 P0 授权 CanvasSurface/immersive surface 之后；rootfs 在帽内；文档与 SDK 示例同步 |
+| **C1 嵌套视口裁剪（已落地）** | BerryGFX `PushClip/PopClip` + BerryUI 结构性 `Clip` kind，ScrollView/Swipe 迁移 | 嵌套/兄弟溢出像素零泄漏；滚出视口子树不可命中；AST add-only 且旧流零漂；damage 只保持安全超集或收紧到 Clip 链；普通 app 不得直录 gfx Clip 命令 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

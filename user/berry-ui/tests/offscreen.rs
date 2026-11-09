@@ -483,8 +483,16 @@ fn order_cap_overflow_falls_back_no_lost_leaves() {
     let rep = ui.paint(&mut scr, &mut enc);
     let dl = enc.finish();
 
-    assert_eq!(rep.culled, 0, "回退重计：全叶 damage 内（溢出误计已回卷）");
-    assert_eq!(rep.drawn_px, (OVERFLOW_NODES * 8) as u64, "发射足迹全量——cmds 帽不减足迹");
+    assert_eq!(
+        rep.culled,
+        (OVERFLOW_NODES - berry_gfx::cmd::MAX_CMDS) as u32,
+        "回退重计 damage 外为 0；命令满帽后的 769 叶按截尾计 culled"
+    );
+    assert_eq!(
+        rep.drawn_px,
+        (OVERFLOW_NODES * 8) as u64,
+        "发射足迹全量——cmds 帽不减 drawn_px"
+    );
     assert_eq!(rep.cmds, 256, "cmds 帽 = berry-gfx MAX_CMDS（Present 尾被帽弃）");
     assert_eq!(dl.len(), 256);
     assert_eq!(rep.overdraw_x256, 256, "1025×8 足迹恰满 1025×8 视口");

@@ -27,6 +27,7 @@ type Ui128 = Ui<128>;
 struct Page {
     scaffold: Scaffold,
     scroll: ScrollView,
+    clip_item: Option<ListItem>,
     button: Button,
     switch: Option<Switch>,
     index: u8,
@@ -209,8 +210,8 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
         ListItem::new(ui, stack, ctx, b"Owner-local input", Some(b"WM routed"), false)
             .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-        // 真实滚动样本：单行 ListItem 恰比小 viewport 高 24px，Product 与
-        // Compact 都得到 offset 24；内容仍留在整页 viewport 内，不伪称 clip。
+        // 真实滚动/裁剪样本：单行 ListItem 比 viewport 高 48px，
+        // offset 24 后仍有 24px 溢出 port，由 C1 Clip 真实裁剪。
         let body_h = ctx
             .metrics
             .typography(berry_ui::sdk::TypographyToken::Body)
@@ -218,11 +219,11 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
         let list_pad = ctx.metrics.spacing(berry_ui::sdk::SpacingToken::M);
         let sample_h = body_h
             .saturating_add(list_pad.saturating_mul(2))
-            .saturating_sub(24)
+            .saturating_sub(48)
             .max(1);
         let scroll = ScrollView::new(ui, stack, ctx, sample_h)
             .unwrap_or_else(|_| berry_room::panic_exit(134));
-        ListItem::new(ui, scroll.content, ctx, b"Scroll sample", None, false)
+        let clip_item = ListItem::new(ui, scroll.content, ctx, b"Scroll sample", None, false)
             .unwrap_or_else(|_| berry_room::panic_exit(134));
         let controls = row(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
         icon(ui, controls, ctx, 7).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -230,7 +231,14 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             ui, stack, ctx, 7, b"F5 ready", b"Frame, layout, hit and state",
         )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-        Page { scaffold, scroll, button, switch: Some(switch), index }
+        Page {
+            scaffold,
+            scroll,
+            clip_item: Some(clip_item),
+            button,
+            switch: Some(switch),
+            index,
+        }
     } else {
         text(ui, stack, ctx, TextVariant::Title, b"Return stack page")
             .unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -242,7 +250,7 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             ui, stack, ctx, 7, b"Back ready", b"Click Back to pop page",
         )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-        Page { scaffold, scroll, button, switch: None, index }
+        Page { scaffold, scroll, clip_item: None, button, switch: None, index }
     }
 }
 
@@ -273,6 +281,47 @@ impl AppModel {
         self.frame_seq
     }
 
+    /// C1 guest 自证：ScrollView port 与 Clip 链一致，滚出 item 不可命中，
+    /// 并真实重绘一帧。打印 port/item/probe 几何供宿主反 mock 使用。
+    fn assert_clip(&mut self, room: &mut AppRoom) {
+        let Some(item) = self.page.clip_item else {
+            fail(room, "clip item");
+        };
+        let port = self
+            .ui
+            .bounds(self.page.scroll.panel)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let effective = self
+            .ui
+            .clip_of(item.panel)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        if effective != port {
+            fail(room, "clip bounds");
+        }
+        let item_bounds = self
+            .ui
+            .bounds(item.panel)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let x = item_bounds.x.saturating_add(item_bounds.w / 2).max(0) as u32;
+        let y = port.y.saturating_add(port.h).saturating_add(8).max(0) as u32;
+        if self.ui.node_at(x, y) == Some(item.panel) {
+            fail(room, "clip hit");
+        }
+        let seq = self.render(room);
+        let mut line = Line::new(b"UITESTCLIP ok port=");
+        line.rect(port);
+        line.push(b" item=");
+        line.rect(item_bounds);
+        line.push(b" probe=");
+        line.push_u32(x);
+        line.push(b",");
+        line.push_u32(y);
+        line.push(b" seq=");
+        line.push_u32(seq);
+        line.push(b"\n");
+        line.print(room);
+    }
+
     fn replace_page(&mut self, room: &mut AppRoom, index: u8) {
         if self.ui.remove(self.page.scaffold.root).is_err() {
             fail(room, "page remove");
@@ -295,6 +344,14 @@ impl AppModel {
         line.rect(body);
         line.push(b" button=");
         line.rect(button);
+        let scroll_rect = self
+            .ui
+            .bounds(self.page.scroll.panel)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        line.push(b" scroll=");
+        line.rect(scroll_rect);
+        line.push(b" clip=");
+        line.rect(self.ui.clip_of(self.page.scroll.content).unwrap_or_else(|_| berry_room::panic_exit(134)));
         line.push(b"\n");
         line.print(room);
     }
@@ -465,6 +522,9 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         fail(&room, "initial layout");
     }
     page.scroll.sync_bounds(&mut ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+    // Runtime 首帧即保留 24px 溢出样本：GUI8 截图与 boot-probe 使用同一
+    // Clip 几何，不靠“刚好放得下”的样本假绿。
+    page.scroll.scroll_by(&mut ui, 24).unwrap_or_else(|_| berry_room::panic_exit(134));
     let mut app = AppModel {
         ui,
         ctx,
@@ -487,7 +547,6 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
             switch.set_checked(&mut app.ui, &app.ctx, true).unwrap_or_else(|_| berry_room::panic_exit(134));
             app.switch_on = true;
         }
-        app.page.scroll.scroll_by(&mut app.ui, 24).unwrap_or_else(|_| berry_room::panic_exit(134));
         let scroll_offset = app.page.scroll.offset();
         if scroll_offset != 24 {
             fail(&mut room, "scroll offset");
@@ -497,6 +556,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         scrolled.push_i32(scroll_offset);
         scrolled.push(b" switch=1\n");
         scrolled.print(&room);
+        app.assert_clip(&mut room);
         app.page.button
             .on_msg(
                 &mut app.ui,
@@ -519,6 +579,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         // Runtime 启动态重置为 page0/switch false，供 GUI 冒烟注入输入。
         app.switch_on = false;
         app.replace_page(&mut room, 0);
+        app.assert_clip(&mut room);
         room.print(b"UITESTPROBE ok\n");
     } else {
         let (x, y) = wait_two_clicks(&mut app, &mut room);

@@ -288,6 +288,7 @@ fn clamp_u32(v: i64) -> u32 {
 fn props_geom_equal(a: &Props, b: &Props) -> bool {
     match (a, b) {
         (Props::Root, Props::Root) => true,
+        (Props::Clip(a), Props::Clip(b)) => a.w == b.w && a.h == b.h,
         (Props::Rect(x), Props::Rect(y)) => x.w == y.w && x.h == y.h,
         (Props::Text(x), Props::Text(y)) => {
             x.style.scale == y.style.scale && x.text.as_bytes() == y.text.as_bytes()
@@ -607,7 +608,8 @@ impl<const N: usize> Ui<N> {
         let pidx = self.slot_of(parent)?;
         match self.nodes[pidx].as_ref().map(|n| n.kind) {
             Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad)
-            | Some(ViewKind::Grid) | Some(ViewKind::Panel) => {} // 容器白名单（Grid 入列——D24）
+            | Some(ViewKind::Grid) | Some(ViewKind::Panel) | Some(ViewKind::Clip) => {}
+            // 容器白名单（Grid 入列——D24；Clip 入列——C1 结构性 port）
             // 叶四件显式列名（Rect/Text 原有 + Image/Icon 新叶）：容器位
             // 传叶子 → BadParent。Grid 格满/零维先验在 Root-子检后（段C
             // 已落——AST/builder/add/set_props 三面同律齐）。
@@ -820,6 +822,7 @@ impl<const N: usize> Ui<N> {
                 .as_ref()
                 .map(|n| (&n.kind, &props)),
             Some((ViewKind::Root, Props::Root))
+                | Some((ViewKind::Clip, Props::Clip(_)))
                 | Some((ViewKind::Rect, Props::Rect(_)))
                 | Some((ViewKind::Text, Props::Text(_)))
                 | Some((ViewKind::Col, Props::Col(_)))
@@ -968,7 +971,7 @@ impl<const N: usize> Ui<N> {
         // 视图级重绘（old+new 界进 damage——bounds 含 ox/oy，当前界即两者锚）。
         let idx = self.slot_of(node)? as usize;
         let r = self.abs_rect_of(idx);
-        self.damage_rect(r);
+        self.damage_node_rect(idx, r);
         if let Some(n) = self.nodes[idx].as_mut() {
             n.paint_dirty = true;
         }
@@ -981,13 +984,19 @@ impl<const N: usize> Ui<N> {
     pub fn set_offset(&mut self, node: NodeId, ox: i32, oy: i32) -> Result<(), UiError> {
         let idx = self.slot_of(node)? as usize;
         let before = anim::subtree_abs_rect(&self.nodes, idx, 0);
+        let old_clip = self.clip_chain(idx);
         if let Some(n) = self.nodes[idx].as_mut() {
             n.ox = ox;
             n.oy = oy;
             n.paint_dirty = true;
         }
         let after = anim::subtree_abs_rect(&self.nodes, idx, 0);
-        self.damage_rect(before.envelope(&after));
+        let new_clip = self.clip_chain(idx);
+        let envelope = before.envelope(&after);
+        // 结构性 Clip 内平移只需 port 内旧新包络；若被裁剪节点自身移动
+        // 改变 port，则旧/新可见域分别入账（两矩形可能合并）。
+        self.damage_rect(envelope.intersect(&old_clip));
+        self.damage_rect(envelope.intersect(&new_clip));
         Ok(())
     }
 
@@ -1196,6 +1205,47 @@ impl<const N: usize> Ui<N> {
         // 绝对界（含 ox/oy）。
         let idx = self.slot_of(node)? as usize;
         Ok(self.abs_rect_of(idx))
+    }
+
+    /// 节点有效结构性 Clip 链（含祖先与自身 Clip，再交 viewport）。
+    /// `bounds` 仍返回未裁剪视觉界；本口仅供诊断/精确 damage 消费。
+    pub fn clip_of(&self, node: NodeId) -> Result<damage::RectI, UiError> {
+        let idx = self.slot_of(node)? as usize;
+        Ok(self.clip_chain(idx))
+    }
+
+    fn clip_chain(&self, idx: usize) -> damage::RectI {
+        let mut clip = damage::RectI::new(
+            0,
+            0,
+            damage::u32_to_i32_sat(self.vp_w),
+            damage::u32_to_i32_sat(self.vp_h),
+        );
+        let mut cur = idx as u32;
+        let mut hops = 0usize;
+        while hops <= N {
+            let Some(n) = self.nodes.get(cur as usize).and_then(|option| option.as_ref()) else {
+                break;
+            };
+            if n.kind == desc::ViewKind::Clip {
+                let bounds = self.abs_rect_of(cur as usize);
+                clip = clip.intersect(&bounds);
+                if clip.is_empty() {
+                    return clip;
+                }
+            }
+            if n.parent == NONE {
+                break;
+            }
+            cur = n.parent;
+            hops += 1;
+        }
+        clip
+    }
+
+    fn damage_node_rect(&mut self, idx: usize, rect: damage::RectI) {
+        let clip = self.clip_chain(idx);
+        self.damage_rect(rect.intersect(&clip));
     }
 
     pub fn kind_of(&self, node: NodeId) -> Result<desc::ViewKind, UiError> {

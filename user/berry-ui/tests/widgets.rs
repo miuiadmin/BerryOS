@@ -4,6 +4,9 @@
 //! 几何断言来自 layout dump/bounds，所有交互断言来自 Msg/NodeId。
 
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
+use berry_gfx::color::{TextureDesc, TextureFormat};
+use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
+use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
     column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListItem,
     Msg, PanelProps, Props, RectProps, RectI, Scaffold, ScrollView, Switch, TextVariant, Theme,
@@ -223,6 +226,54 @@ fn scrollview_clamps_drag_and_updates_bounds() {
     assert!(scroll
         .on_msg(&mut ui, &Msg::DragEnd { node: scroll.content, vx: 0, vy: 0 })
         .unwrap());
+}
+
+#[test]
+fn scrollview_clips_overflow_paint_and_hit() {
+    let mut ui = Ui::<32>::new(200, 100);
+    let context = ctx(200, 100);
+    let root = ui.root();
+    let mut scroll = ScrollView::new(&mut ui, root, &context, 80).unwrap();
+    let content = ui
+        .add(scroll.content, rect(Color { r: 20, g: 40, b: 220 }, Some(180), Some(150)))
+        .unwrap();
+    scroll.sync_bounds(&mut ui).unwrap();
+    scroll.scroll_by(&mut ui, 30).unwrap();
+    assert_eq!(ui.bounds(content).unwrap(), RectI::new(0, -30, 180, 150));
+
+    // 命中链：Clip 内命中内容；port 下方虽仍在内容未裁剪 bounds 内，
+    // 但不可见，不得命中滚出项。
+    assert_eq!(ui.node_at(50, 70), Some(content));
+    assert_eq!(ui.node_at(50, 90), None);
+
+    // 像素链：port 内蓝、port 外哨兵，证明 Push/Pop 裁剪真实执行。
+    ui.wake(0);
+    let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+    let mut enc = CommandEncoder::new();
+    let report = ui.paint(&mut scratch, &mut enc);
+    let dl = enc.finish();
+    assert_eq!(
+        report.drawn_px,
+        200 * 80 + 180 * 80,
+        "Panel 背景 + 内容有效 clip 足迹"
+    );
+    let desc = TextureDesc::new(200, 100, 800, TextureFormat::Rgbx).unwrap();
+    let mut fb = vec![0xEEu8; desc.need_bytes()];
+    Queue::new()
+        .submit(
+            &dl,
+            &mut fb,
+            &desc,
+            &PassDescriptor::new(LoadOp::Load, StoreOp::Store, None),
+        )
+        .unwrap();
+    let blue = TextureFormat::Rgbx.pack(20, 40, 220);
+    let at = |x: usize, y: usize| -> u32 {
+        let off = y * 800 + x * 4;
+        u32::from_le_bytes([fb[off], fb[off + 1], fb[off + 2], fb[off + 3]])
+    };
+    assert_eq!(at(50, 75), blue, "port 内内容可见");
+    assert_eq!(at(50, 85), 0xEEEE_EEEE, "滚出 port 的内容不得泄漏");
 }
 
 #[test]

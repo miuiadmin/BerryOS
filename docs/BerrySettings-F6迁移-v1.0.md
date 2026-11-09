@@ -214,7 +214,7 @@ RX 注入后活性复验
 ## §7 未完成边界
 
 - Settings 仍无系统驱动/持久化；WLAN/Bluetooth 只改变进程内状态。
-- BerryUI 嵌套视口 clipping 仍归后续 BerryUI 刀；Settings 当前内容 fitting，不私造 clip。
+- F6 时点嵌套 clipping 归后续 BerryUI 刀；C1 已落地结构性 Clip，Settings 继续经 ScrollView 自动获得裁剪。
 - CanvasSurface / immersive buffer 仍未开放；Settings 走 P0 Retained 路径。
 - F6 时点 Browser/Files/Photos/Contacts 仍是基线；F7 已迁移 Files/Contacts，当前仅 Browser/Photos 待 F8。
 - `berry-nshfont` 在 F6 时点仍被迁移前基线引用；F8 后无 GUI app 消费者，F9 已删除。

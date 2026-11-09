@@ -98,6 +98,16 @@ impl ChangeMask {
 pub fn props_diff(old: &Props, new: &Props) -> ChangeMask {
     match (old, new) {
         (Props::Root, Props::Root) => ChangeMask::NONE, // 根无字段面
+        (Props::Clip(a), Props::Clip(b)) => {
+            let mut m = ChangeMask::NONE;
+            if a.w != b.w {
+                m = m.union(ChangeMask::W);
+            }
+            if a.h != b.h {
+                m = m.union(ChangeMask::H);
+            }
+            m
+        }
         (Props::Rect(a), Props::Rect(b)) => {
             let mut m = ChangeMask::NONE;
             if a.w != b.w {
