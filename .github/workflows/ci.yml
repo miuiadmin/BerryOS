@@ -9,13 +9,23 @@ on:
 # false）——bot 流水线 20min 节拍下 worker 连续推 PR 曾令 CI 永远跑不完，
 # 合并决策长期无 CI 信号（reviewer 本地四项验证是实际门禁）。配 REVIEW.md
 # CI 门（绿才合）后，合并时 CI 已收尾，删分支不再杀活 run。
+# 自托管 macOS：brew bin 前置（just/cargo-deny/bash5；smoke 交互相由
+# bash5 跑——bash3.2 的 $NAME 多字节邻接吞名雷已由 PR #13 收口，仍首选 5）。
+env:
+  PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    # 2026-11-09 迁自托管：Actions 对 self-hosted 免费（私有仓 GitHub-hosted
+    # 单日 952min 击穿配额 job 拒跑）。runner = owner Mac（labels
+    # self-hosted,mac-arm64），预装 rust 1.97（targets 齐）/ QEMU 11.0.3
+    # （brew 含 edk2 固件）/ just / cargo-deny 0.20.2 / node / python3 /
+    # bash5。安装步全跳过；缺件红灯按 docs/命令速览.md 补装。
+    runs-on: [self-hosted, mac-arm64]
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -48,39 +58,20 @@ jobs:
             exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防
-          # rustup 1.28+ 默认不自动装（action 装 stable、cargo 按钉版文件找
-          # 1.97.0 缺席 = 结构性红灯）。抬级 = 钉版文件 + 本行两同步。
-          toolchain: 1.97.0
-          # aarch64-unknown-none：内核 + no_std 用户程序；aarch64-unknown-linux-musl：
-          # G-eco-d std 面（stdhello/hexyl/bsh/fail/fsmgr/vprobe/vblk/vnet——berry-libc
-          # shim + berry-ld 链）；x86_64-unknown-none：P7 x86_64 最小集（ADR #41）。
-          targets: aarch64-unknown-none, aarch64-unknown-linux-musl, x86_64-unknown-none
-
-      - name: 安装 QEMU
+      # 自托管：rustup 系统级预装（1.97.0 + 三 targets 与仓根钉版同值），
+      # 不装 action；就位检查 fail-fast，缺件 = runner 机补装。
+      - name: 工具链就位检查（runner 机预装面）
         run: |
-          # qemu-system-arm ≥10 必须：virt 机型非安全第二 PL011（0x09040000）
-          # 是 QEMU 10.0 新增（8.2 的 -serial 只建 chardev 不建设备）——RX 相
-          # simdev 门开后 uart1_init 写 ICR 即 external abort（2026-11-08 全
-          # 红 CI 根因，docker 8.2.2 dumpdtb 实证 0x0904 节点缺席）。noble apt
-          # 钉 8.2.2 → brew bottle（qemu 11）唯一可行升级路；AAVMF 固件对仍走
-          # apt（brew 无 qemu-efi-aarch64 等价包）。
-          sudo apt-get update
-          sudo apt-get install -y qemu-efi-aarch64
-          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install qemu
+          rustc --version
+          rustup target list --installed | grep -cE 'aarch64-unknown-none|aarch64-unknown-linux-musl|x86_64-unknown-none'
           qemu-system-aarch64 --version | head -1
+          just --version
 
-      # 装 just 复用 justfile 单一入口（build/smoke 全走与本地同一配方——防 CI
-      # 自带第二套 cargo 命令与 justfile 分叉；P7-x4 挂账清偿）。
-      - name: 安装 just
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/.local/bin
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # QEMU ≥10 必须（非安全第二 PL011 0x09040000 是 QEMU 10.0 新增；8.2
+      # 下第二个 -serial 只建 chardev 不建设备 → RX 相 uart1_init external
+      # abort）。runner 机 brew 预装 11.0.3，安装步退役。
+
+      # just 复用 justfile 单一入口（与本地同配方）——runner 机预装，安装步退役。
 
       # ---------- SEC-01 §4.5 件 23：供应链防线进 CI（fail-fast 位） ----------
       # cargo-deny：licenses（GPL 拒收 = 仓纪律执法，allowlist 见根 deny.toml——
@@ -96,11 +87,6 @@ jobs:
       # 双旗（本地 27 manifest 全绿实录）——「缺 license 字段/无表达式」面恢复
       # FAIL 执法，第三方依赖缺字段不再整类静默放行（详见 deny.toml 头注）。
       # 版本钉 0.20.2（与本地验证同版）。
-      - name: 安装 cargo-deny
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny@0.20.2
-
       - name: cargo-deny（licenses + advisories，全 workspace）
         run: |
           set -eu
@@ -124,20 +110,20 @@ jobs:
       # 发现跨 workspace 边界仍命中——Gotcha；host 测试须点名 host 三元组）；
       # 零依赖零网络，ubuntu runner host 目标预装。
       - name: berry-ksproto host 测试（SEC-02 A2 协议 crate 门禁）
-        run: cargo test --manifest-path user/berry-ksproto/Cargo.toml --target x86_64-unknown-linux-gnu
+        run: cargo test --manifest-path user/berry-ksproto/Cargo.toml --target aarch64-apple-darwin
 
       # A7-1：berry-mmap host 测试门禁（ksproto 同款纪律——纯函数 crate 家族
       # 的测试面必须挂 CI 执法，防「host 测零自动执法、静默腐烂」；user/
       # workspace 成员经 --manifest-path 点名 + 显式 host 三元组覆盖根
       # config 的 build.target 锁；零依赖零网络）。
       - name: berry-mmap host 测试（A7-1 纯函数 crate 门禁）
-        run: cargo test --manifest-path user/berry-mmap/Cargo.toml --target x86_64-unknown-linux-gnu
+        run: cargo test --manifest-path user/berry-mmap/Cargo.toml --target aarch64-apple-darwin
 
       # A7-4：berry-signal host 测试门禁（ksproto/mmap 同款纪律——纯函数
       # crate 家族的测试面必须挂 CI 执法；justfile test-host 已接线，CI
       # fail-fast 位同面补上——零依赖零网络）。
       - name: berry-signal host 测试（A7-4 纯函数 crate 门禁）
-        run: cargo test --manifest-path user/berry-signal/Cargo.toml --target x86_64-unknown-linux-gnu
+        run: cargo test --manifest-path user/berry-signal/Cargo.toml --target aarch64-apple-darwin
 
       # ---------- SDK-1b：发布族八 crate publish 守卫（fail-fast 位） ----------
       # 三档执法，档位由 2026-10-30 双轮实测定死（基线 B2/B3/B4/B6 + 沙箱
@@ -262,18 +248,10 @@ jobs:
       # 包布局 = /usr/share/AAVMF/，对抗审查 F1 实证）。EFI 引导 ~115s（TCG）
       # + 注入段，帽内余量 ~3x。
       - name: img-boot 冒烟（M-G1 gate）
-        run: |
-          # brew QEMU（Linux bottle）沙箱化启动：固件路径须在沙箱可访问
-          # 范围（/usr/share/AAVMF 不在默认 bind 列表 → Permission denied，
-          # 2026-11-09 CI 首达此步实录）。拷固件进 workspace（CI cwd 在沙箱
-          # bind 面内）绕行；VARS 侧 smoke-image 自产 blank 不读共享模板。
-          # 注：pflash CODE 打开本为只读（macOS 444 文件实测可开）——EACCES
-          # 全由沙箱路径过滤致，非属主/写权。
-          mkdir -p fw && cp -L /usr/share/AAVMF/AAVMF_CODE.fd fw/
-          just smoke-image
-        env:
-          AAVMF_CODE: ${{ github.workspace }}/fw/AAVMF_CODE.fd
-          AAVMF_VARS: /usr/share/AAVMF/AAVMF_VARS.fd
+        run: just smoke-image
+        # 自托管 macOS：AAVMF = brew 布局（/opt/homebrew/share/qemu/
+        # edk2-aarch64-code.fd）恰为 justfile 默认路径——GitHub-hosted 时代
+        # 的沙箱拷贝绕行（cp + env 覆盖）整体退役。
 
       # ---------- SEC-01 §4.5 件 22 + 件 23 尾面（CI/台账） ----------
       # 镜像哈希清单：smoke-image 依赖链（just image → mkimage）已产
