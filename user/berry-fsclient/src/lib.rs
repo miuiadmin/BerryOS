@@ -888,7 +888,7 @@ pub enum SockOp {
 // errno 数值面（Linux/musl 同值、ABI 冻结；libc lib.rs 同名常量的
 // 对拍锚点——见 libc net.rs const assert）。
 // EADDRINUSE：2026-11-08 仓主裁 98 → 112（对齐 Linux 通用值域
-// asm-generic/musl aarch64——调研 13 号坑二回归锚），与 berry-libc 单源同步。
+// asm-generic/musl aarch64——调研 25 号坑二回归锚），与 berry-libc 单源同步。
 pub const EIO: i32 = 5;
 pub const EAGAIN: i32 = 11;
 pub const EINVAL: i32 = 22;
