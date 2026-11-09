@@ -733,6 +733,11 @@ test-host:
     # 载体行族/键别名/噪声免疫 + --delta 首尾差 + exit-code 契约 + 确定性
     # （shadow 评估前提）——25 面。
     python3 tools/policy_ab_eval.py --selftest
+    # W1-Q4 续（a-3 U4 纪律同款）：advisor 门禁自检——首个真实策略生成器
+    # （遥测进、PolicyEntry 出）此前只有 --demo 一次性展示：五规则手算 +
+    # 严格边界（wake 恰等 100 不加成）+ RT/哨兵屏蔽 + headroom 贪心序
+    # 手算向量 + 字段序镜像 PolicyEntry + exit-code 契约 + 确定性——36 面。
+    python3 tools/advisor.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

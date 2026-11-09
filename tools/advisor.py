@@ -178,11 +178,221 @@ DEMO_INPUT = (
 )
 
 
+def selftest():
+    """门禁自检（a-3 U4 纪律同款）——启发式策略生成器纯函数面钉板。
+
+    本工具是首个真实策略生成器（遥测进、PolicyEntry 出），此前只有
+    --demo 一次性展示，门禁自身坏（规则常量漂移/严格边界松成闭区间/
+    键别名漏认/headroom 贪心序错/输出序漂移）= 下发策略静默劣化
+    （该加成的没加成、该屏蔽的 RT 漏进表）。覆盖：
+    - _to_int 十进制优先 + 0x 兜底；_norm 键别名（wake/wake_count/
+      wakes）与缺省补 0
+    - parse_serial：只认 tele: + key= 行、摘要行/噪声免疫、同 key 取
+      最后一条（最近读数）、0x 前缀 k=v
+    - parse_records：JSON 数组/单对象自动识别、坏记录计数、串口回退、
+      --json 强制（坏 JSON exit 1）
+    - advise 五规则手算向量和严格边界（wake 恰等 100 不加成、
+      intent=2+高唤醒叠加 +24、policy=3 RT 屏蔽绝不出现、key=0 哨兵跳过、
+      零命中空表）+ PolicyEntry 字段名/序镜像 + key 升序输出
+    - headroom 贪心：Σ|weight| 严格 < 64（恰达 64 弃收）+ |weight| 降序
+      key 升序 tie-break 手算向量
+    - exit-code 契约（0 = 有产出含空表 / 1 = 无记录）与 stdout 单行 JSON
+    - 端到端子进程真跑（stdin pipe / --json / --demo）+ byte 级确定性
+      （shadow 评估前提）
+    """
+    import subprocess
+
+    failures = []
+
+    def check(name, cond, detail=""):
+        if cond:
+            print(f"  ok {name}")
+        else:
+            failures.append(f"{name}: {detail}")
+            print(f"  FAIL {name}: {detail}")
+
+    # --- 1. _to_int：十进制优先，0x 前缀走十六进制，int 直收 ---
+    check("_to_int forms", [_to_int(v) for v in ("10", "0x10", "240", -8, 7)]
+          == [10, 16, 240, -8, 7])
+    check("_to_int hex case", _to_int("0X1F") == 31)
+
+    # --- 2. _norm：键别名归一 + 缺省补 0 ---
+    r = _norm({"key": 7, "wake_count": 240})
+    check("_norm wake alias", r == {"key": 7, "intent": 0, "wake": 240,
+                                    "policy": 0}, f"{r}")
+    r = _norm({"key": 9, "wakes": 101, "intent": 2})
+    check("_norm wakes alias + defaults", r["wake"] == 101 and r["policy"] == 0,
+          f"{r}")
+    r = _norm({"key": 4})
+    check("_norm all defaults", r == {"key": 4, "intent": 0, "wake": 0,
+                                      "policy": 0}, f"{r}")
+
+    # --- 3. parse_serial：tele: + key= 行才收；同 key 取最后；噪声免疫 ---
+    text = ("random boot noise line\n"
+            "tele: sw=1234 wake=56 kl=0\n"            # 摘要行无 key= → 忽略
+            "tele: task key=7 intent=1 wake=50 policy=0\n"
+            "tele: task key=7 intent=3 wake=99 policy=0\n"   # 最近读数覆盖
+            "tele: task key=12 intent=5 wake=8 policy=0\n")
+    recs = parse_serial(text)
+    check("serial last-one-wins", recs[7]["intent"] == 3
+          and recs[7]["wake"] == 99, f"{recs.get(7)}")
+    check("serial keys collected", sorted(recs) == [7, 12], f"{sorted(recs)}")
+    recs = parse_serial("tele: task key=0x10 wake=0x78 intent=2 policy=0\n")
+    check("serial hex k=v", recs[16]["wake"] == 120 and recs[16]["intent"] == 2,
+          f"{recs}")
+    check("serial noise immune", parse_serial("no tele prefix key=7\n") == {})
+
+    # --- 4. parse_records：JSON 数组 / 单对象 / 坏记录 / 串口回退 ---
+    recs, bad = parse_records('[{"key": 7, "intent": 1, "wake": 50},'
+                              ' {"key": 7, "intent": 4},'
+                              ' {"intent": 2}, "junk",'
+                              ' {"key": 8, "wake": "abc"}]', False)
+    check("json dup key last wins", recs[7]["intent"] == 4, f"{recs}")
+    check("json bad records counted", bad == 3, f"bad={bad}")
+    recs, bad = parse_records('{"key": 3, "policy": 3}', False)
+    check("json single object autodetect", recs == {3: {"key": 3, "intent": 0,
+          "wake": 0, "policy": 3}} and bad == 0, f"{recs}")
+    recs, bad = parse_records("tele: task key=12 intent=5\n", False)
+    check("serial fallback", recs[12]["intent"] == 5 and bad == 0, f"{recs}")
+
+    # --- 5. advise 五规则手算向量 ---
+    def one(**kv):
+        base = {"key": 1, "intent": 0, "wake": 0, "policy": 0}
+        base.update(kv)
+        e, _ = advise({base["key"]: base})
+        return e[0]["weight"] if e else 0
+
+    check("rule1 intent=1 boost", one(intent=1) == 16)
+    check("rule1 intent=2 boost", one(intent=2) == 16)
+    check("rule1 intent=3 no boost", one(intent=3) == 0)
+    check("rule2 batch penalty", one(intent=5) == -8)
+    check("rule3 strict >100", one(wake=100) == 0 and one(wake=101) == 8)
+    check("rule stacking +24", one(intent=2, wake=240) == 24)
+
+    e, notes = advise({3: {"key": 3, "intent": 1, "wake": 999, "policy": 3}})
+    check("rule4 RT shield", e == [] and any("deadline" in n for n in notes),
+          f"{e} {notes}")
+    e, notes = advise({0: {"key": 0, "intent": 1, "wake": 500, "policy": 0}})
+    check("rule5 sentinel skip", e == [] and any("哨兵" in n for n in notes),
+          f"{e} {notes}")
+    e, notes = advise({6: {"key": 6, "intent": 3, "wake": 2, "policy": 0}})
+    check("no-hit empty table", e == [] and notes, f"{e} {notes}")
+
+    # --- 6. 输出契约：字段名/序镜像 PolicyEntry + key 升序 ---
+    e, _ = advise({21: {"key": 21, "intent": 1, "wake": 0, "policy": 0},
+                   5: {"key": 5, "intent": 5, "wake": 0, "policy": 0},
+                   12: {"key": 12, "intent": 2, "wake": 9, "policy": 0}})
+    check("key ascending order", [x["key"] for x in e] == [5, 12, 21], f"{e}")
+    check("field layout mirror", all(list(x.keys()) == ["key", "weight",
+          "placement", "epp_flags", "_rsv"] for x in e), f"{e}")
+    check("static fields zero", all(x["placement"] == 0 and x["epp_flags"] == 0
+          and x["_rsv"] == 0 for x in e), f"{e}")
+
+    # --- 7. headroom 贪心：严格 <64 + |w| 降序 key 升序 tie-break ---
+    recs = {k: {"key": k, "intent": 1, "wake": 0, "policy": 0}
+            for k in (1, 2, 3, 4)}                      # 4×16：前三 48，第四弃
+    e, notes = advise(recs)
+    check("headroom strict <64", [x["key"] for x in e] == [1, 2, 3]
+          and any("headroom" in n and "key=4" in n for n in notes),
+          f"{e} {notes}")
+    recs = {20: {"key": 20, "intent": 1, "wake": 0, "policy": 0},    # +16
+            5: {"key": 5, "intent": 1, "wake": 0, "policy": 0},      # +16
+            30: {"key": 30, "intent": 2, "wake": 240, "policy": 0},  # +24
+            9: {"key": 9, "intent": 5, "wake": 0, "policy": 0},      # -8
+            40: {"key": 40, "intent": 1, "wake": 101, "policy": 0}}  # +24
+    e, notes = advise(recs)
+    # 贪心序 30(+24)→40(+24)→5(+16)→20(+16)→9(-8)：48 帽下 5/20 弃、9 收
+    check("headroom tie-break vector",
+          e == [{"key": 9, "weight": -8, "placement": 0, "epp_flags": 0,
+                 "_rsv": 0},
+                {"key": 30, "weight": 24, "placement": 0, "epp_flags": 0,
+                 "_rsv": 0},
+                {"key": 40, "weight": 24, "placement": 0, "epp_flags": 0,
+                 "_rsv": 0}], f"{e}")
+
+    # --- 8. 子进程端到端：stdin pipe → 单行 JSON + exit 0 ---
+    p = subprocess.run([sys.executable, __file__],
+                       input="tele: task key=7 intent=1 wake=50 policy=0\n",
+                       capture_output=True, text=True)
+    try:
+        obj = json.loads(p.stdout.strip().splitlines()[-1])
+        ok = p.returncode == 0 and obj == [{"key": 7, "weight": 16,
+                                            "placement": 0, "epp_flags": 0,
+                                            "_rsv": 0}]
+    except (ValueError, IndexError):
+        ok = False
+    check("e2e serial stdin", ok, f"rc={p.returncode} out={p.stdout!r}")
+
+    p = subprocess.run([sys.executable, __file__],
+                       input='[{"key": 7, "intent": 1, "wake": 50}]',
+                       capture_output=True, text=True)
+    ok = p.returncode == 0 and json.loads(p.stdout) == [{"key": 7,
+          "weight": 16, "placement": 0, "epp_flags": 0, "_rsv": 0}]
+    check("e2e json autodetect", ok, f"rc={p.returncode} out={p.stdout!r}")
+
+    p = subprocess.run([sys.executable, __file__, "--json"],
+                       input='[{"key": 9, "intent": 2, "wake": 240}]',
+                       capture_output=True, text=True)
+    ok = p.returncode == 0 and json.loads(p.stdout)[0]["weight"] == 24
+    check("e2e --json forced", ok, f"rc={p.returncode} out={p.stdout!r}")
+
+    p = subprocess.run([sys.executable, __file__, "--json"],
+                       input="not json at all", capture_output=True, text=True)
+    check("e2e bad json exit 1", p.returncode == 1
+          and "bad JSON" in p.stderr, f"rc={p.returncode}")
+
+    # 空表契约：有记录但零命中 → exit 0 + []（接口在位、表空）。
+    p = subprocess.run([sys.executable, __file__],
+                       input="tele: task key=6 intent=3 wake=2 policy=0\n",
+                       capture_output=True, text=True)
+    check("e2e empty table exit 0", p.returncode == 0
+          and p.stdout.strip() == "[]", f"rc={p.returncode} out={p.stdout!r}")
+
+    # RT-only 输入：有记录、全屏蔽 → 仍 exit 0 空表 + stderr 有 skip note。
+    p = subprocess.run([sys.executable, __file__],
+                       input='[{"key": 3, "intent": 1, "policy": 3}]',
+                       capture_output=True, text=True)
+    check("e2e RT-only empty", p.returncode == 0
+          and p.stdout.strip() == "[]" and "deadline" in p.stderr,
+          f"rc={p.returncode} err={p.stderr!r}")
+
+    p = subprocess.run([sys.executable, __file__],
+                       input="nothing recognizable\n",
+                       capture_output=True, text=True)
+    check("no-records exit 1", p.returncode == 1
+          and "no tele: task" in p.stderr, f"rc={p.returncode}")
+
+    # --- 9. --demo 固定样本：[{7:+16},{9:+24},{12:-8}]，Σ=48 ---
+    p = subprocess.run([sys.executable, __file__, "--demo"],
+                       capture_output=True, text=True)
+    want = [{"key": 7, "weight": 16, "placement": 0, "epp_flags": 0,
+             "_rsv": 0},
+            {"key": 9, "weight": 24, "placement": 0, "epp_flags": 0,
+             "_rsv": 0},
+            {"key": 12, "weight": -8, "placement": 0, "epp_flags": 0,
+             "_rsv": 0}]
+    ok = p.returncode == 0 and json.loads(p.stdout) == want \
+        and "Σ|weight| = 48" in p.stderr and p.stderr.startswith("tele:")
+    check("--demo fixed table", ok, f"rc={p.returncode} out={p.stdout!r}")
+
+    # --- 10. 确定性：同输入两次 byte 级一致（shadow 评估前提） ---
+    p1 = subprocess.run([sys.executable, __file__, "--demo"],
+                        capture_output=True, text=True)
+    check("deterministic byte-equal", p1.stdout == p.stdout
+          and p1.stderr == p.stderr, "stdout/stderr drifted")
+
+    print(f"\nadvisor selftest: {'PASS' if not failures else 'FAIL'}"
+          f" ({len(failures)} failures)")
+    return 0 if not failures else 1
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "-h" in args or "--help" in args:
         print(__doc__)
         return 0
+    if "--selftest" in args:
+        sys.exit(selftest())
     demo = "--demo" in args
     force_json = "--json" in args
     path = next((a for a in args if not a.startswith("-")), None)
