@@ -15,7 +15,12 @@ env:
   PATH: /home/runner/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # 全局串行（2026-11-09 定案）：同机双 runner 并行 run 分抢 8 核 → TCG 互拖
+  # → boot 120-360s 时序帽假红（实测 run 42653606304 与 w2 run 同跑即红）。
+  # 全局单组 = 整仓同一时刻只跑一个 run，假红类根除；boot 轻面 6-8min/run
+  # 串行吞吐 ~7 run/h，3 lane 推量（峰值 4-6/h）吃得下。per-ref 组弃用
+  # （cancel-in-progress: false 语义并入——串行天然不取消，排队等）。
+  group: ci-serial
   cancel-in-progress: false
 
 jobs:
