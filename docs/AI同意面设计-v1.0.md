@@ -165,5 +165,5 @@ empty-trash = "destructive"
 - `docs/应用模型设计-v1.0.md`：§3 manifest / §8 Agent 面（Agent = 普通应用、不设特权 API）。
 - `docs/可观测性设计-v1.0.md`：§2 tracepoint 类别 / §3 环基座 / §7 阶段。
 - `sched/src/policy.rs`（670–701 行）：P1-a 拒收入账四计数——同意面计数组的模式来源。
-- `research/12-2026新OS全景与四家深读.md` §2.2、`research/17-sansIO协议核与openfang内核形态.md`：
+- `research/24-2026新OS全景与四家深读.md` §2.2、`research/17-sansIO协议核与openfang内核形态.md`：
   consent by identity / 锁屏抑制 / presence 三条与 P1-c 定位来源。

@@ -1,8 +1,8 @@
 # Veda consent 机制深读：分类学 · 执行链 · 声明面 · 最小权限 · BerryOS 映射
 
-> 调研日期 2026-11-08 · 方法：Veda 本地全量 clone（/tmp/os-hist/Veda，HEAD `fbf1763`，2026-11-04）逐文件实读——documentation/AGENT.md 全文（333 行）+ ARCHITECTURE.md §The voice agent（1072–1104 行）为纲，下探 agent 服务全部 25 个源文件中的 8 个关键件（approvals/policy/worker/server/admin/files/store/registrar）+ init 注册身份 + filesystem 访问控制 + Settings/Terminal 应用侧声明；对照基准 = research/12 号 §2.2 三条记录 + `docs/能力模型设计-v1.0.md`（§1–§8）+ `docs/AI调度设计-v1.0.md`（§3 权限节）。
+> 调研日期 2026-11-08 · 方法：Veda 本地全量 clone（/tmp/os-hist/Veda，HEAD `fbf1763`，2026-11-04）逐文件实读——documentation/AGENT.md 全文（333 行）+ ARCHITECTURE.md §The voice agent（1072–1104 行）为纲，下探 agent 服务全部 25 个源文件中的 8 个关键件（approvals/policy/worker/server/admin/files/store/registrar）+ init 注册身份 + filesystem 访问控制 + Settings/Terminal 应用侧声明；对照基准 = research/24 号（原 12）§2.2 三条记录 + `docs/能力模型设计-v1.0.md`（§1–§8）+ `docs/AI调度设计-v1.0.md`（§3 权限节）。
 >
-> 本文为 21 号专题，是 12 号 §2.2 三条（consent by identity / 锁屏抑制 / presence 语义）的下探补全；结论均注出处（Veda 路径相对仓根，`文件:行号`），不自造事实。
+> 本文为 21 号专题，是 24 号 §2.2 三条（consent by identity / 锁屏抑制 / presence 语义）的下探补全；结论均注出处（Veda 路径相对仓根，`文件:行号`），不自造事实。
 >
 > **许可纪律（先于一切结论）**：Veda 为 **GPL-3.0-only**（15 号专题经 SPDX 头实证，`bkl.rs`/本系列文件头同标）。本文全部内容为**机制语义参照**，BerryOS（Apache-2.0）对其执行 GPL 纪律：**语义可借、代码一字不进**（规则 13 同口径），§5 吸收清单均以此口径给出。
 
@@ -10,7 +10,7 @@
 
 **三档，判据轴是「可撤销性 × 影响范围」，不是概率风险。** `Risk` 枚举三值且有序（`Routine = 1 / Sensitive = 2 / Destructive = 3`，`implementation/libraries/proto/source/agent.rs:33-46`），文档注释直接给出判据：Routine = 读或易于撤销的常规动作（open/play/scroll/create）不问；Sensitive = 改动或发送要紧之物（覆写文件/加入网络/跑命令）要问、除非用户勾了 always allow；Destructive = 删数据/弃工作/影响全系统（删文件/杀任务/关机）每次都问（AGENT.md:113-117 同义表格）。
 
-**可撤销性是主判据，且粒度到操作语义而非文件语义。** 系统函数的集中风险表（`implementation/services/agent/source/tools.rs:308-329`）：`files.delete` 归 Sensitive 的理由写在代码注释里——删掉的东西可从 Trash 恢复，直到清空；`empty_trash` 才是 Destructive；`write` 只在目标路径**已存在**（替换）时 Sensitive，写新文件 Routine；copy/move/rename 因「文件系统拒收已存在的目的地」而永不替换、move 回去即撤销，全 Routine；`wifi disconnect/off` Sensitive（断网可能断掉 agent 自己）；`memory.forget` 忘一条 Routine、一次忘多条 Destructive（tools.rs:323-324）；`system restart/shutdown`、`tasks end` Destructive。**这与 12 号 §2.2 的粗记录一致，但「单条遗忘不需同意」是个初看反直觉的细节**：依据是 memory 只记用户明说的话、遗忘也只遗忘用户点名的条目（"forget that" forgets nothing，AGENT.md:197），单条遗忘被视作用户显式意图的执行而非代理决策。
+**可撤销性是主判据，且粒度到操作语义而非文件语义。** 系统函数的集中风险表（`implementation/services/agent/source/tools.rs:308-329`）：`files.delete` 归 Sensitive 的理由写在代码注释里——删掉的东西可从 Trash 恢复，直到清空；`empty_trash` 才是 Destructive；`write` 只在目标路径**已存在**（替换）时 Sensitive，写新文件 Routine；copy/move/rename 因「文件系统拒收已存在的目的地」而永不替换、move 回去即撤销，全 Routine；`wifi disconnect/off` Sensitive（断网可能断掉 agent 自己）；`memory.forget` 忘一条 Routine、一次忘多条 Destructive（tools.rs:323-324）；`system restart/shutdown`、`tasks end` Destructive。**这与 24 号 §2.2 的粗记录一致，但「单条遗忘不需同意」是个初看反直觉的细节**：依据是 memory 只记用户明说的话、遗忘也只遗忘用户点名的条目（"forget that" forgets nothing，AGENT.md:197），单条遗忘被视作用户显式意图的执行而非代理决策。
 
 **「批准的即执行的」（made definite before classified）是分类学的前置纪律。** 调用在判档前先被钉死成确定形态：`memory.forget` 先由 `Memory::pin_forget` 把「要忘的东西」解析成 id 清单（worker/mod.rs:352-357，审批单上逐条列出）；move/copy/rename 的目的地由 `destination()` 按「实际执行时的规则」预演出来（裸名 rename 留在本目录、目的地是目录则收到自己名下，`implementation/services/agent/source/files.rs:54-75`）——用户在审批单上看到的目标就是之后真正执行的目标（AGENT.md:119-121）。
 
@@ -48,7 +48,7 @@
 
 ## 4. 私有存储与放弃访问：最小权限模型全貌（问题④）
 
-12 号只记了半句「worker 先放弃私有访问再逐路径检查」，全貌是**通道无能 + 调用点校验的双层结构**：
+24 号只记了半句「worker 先放弃私有访问再逐路径检查」，全貌是**通道无能 + 调用点校验的双层结构**：
 
 **底座：per-service 私有目录 + 按注册身份执法。** `/home/.private/<service>` 归同名系统服务：只有属主服务能进自己的目录、只有服务能进 `/home/.private` 本身、目录列表对客户端隐藏他人私有项——全部由文件系统服务按 registry 身份（`Client{service, name}`）在 `may_reach/may_change/sees` 三查里强制（`implementation/services/filesystem/source/access.rs:44-83`）。`/home`、用户主目录、`/tmp`、`/home/.private`、`/home/packages` 是不可移动的固定位置（防「把私有目录搬出守卫辖区」），`/home/packages` 只有 package-manager 能改（access.rs:17-24、64-89）。
 
@@ -87,13 +87,13 @@
 8. **持久审计账本（补 Veda 的缺口）**：Veda 无 append-only 审批日志（§2 诚实记录）；BerryOS 委托链审计已有「谁给谁能力」的账，P1-c 应把「何时批准了什么档的动作」并进同一账本，而非复制 Veda 的分散记录。
 9. **逐路径校验含不可信恢复目标**：Trash 记录任意程序可写 → 恢复目标当不可信输入校验（files.rs:76-90）——BerryOS 文件 agent 面同款威胁，语义直接适用。
 
-Veda 其余件已有归属：agentapp describe/state/invoke 三动词 → berryui typed action 协议（12 号已列 P2）；锁屏抑制 + presence 语义 → 移动档交互（12 号已列 P2）；`display::user_active` 仅 agent 可调的独占授权（ARCHITECTURE.md:696-700）→ 等价于 BerryOS 专属 handle 单发，无需新增量。
+Veda 其余件已有归属：agentapp describe/state/invoke 三动词 → berryui typed action 协议（24 号已列 P2）；锁屏抑制 + presence 语义 → 移动档交互（24 号已列 P2）；`display::user_active` 仅 agent 可调的独占授权（ARCHITECTURE.md:696-700）→ 等价于 BerryOS 专属 handle 单发，无需新增量。
 
 ## 6. 与预期不符处与信任边界（诚实记录）
 
 - **无持久审计日志**：预期「同意机制最深」应带账本，实际审计分散于 println/Notice/permissions.json 三处（§2）——P1-c 勿照抄。
 - **应用风险档是自报的**：`sanitize` 只消毒文本与数量边界，不改报的 `risk`（tools.rs:508-541 无 risk 改写分支）；恶意应用可把破坏性动作低报为 Routine 跳过同意。缓解是结构性的：动作在应用自己进程的主线程上以其自身访问执行（AGENT.md:293；worker/apps.rs:235-244 只转发 invoke），agent 不是提权通道——低报只让「问用户」这一环失效，不让应用获得新权限。BerryOS 吸收时应用动作的风险档应**对照静态 manifest 声明**而非纯运行时自报（应用模型「持证身份」可承载）。
-- **12 号 §2.2 三条与源码全部相符**，无出入：consent by identity（server.rs:79-82 + init/main.rs:191-205）、锁屏抑制（AGENT.md:156-164；lock.rs 独立文件在册）、presence 语义（AGENT.md:165-178，谁在场四条白名单：用户点的/说进来的/agent 答话中的算，听名阶段的、提醒触发的对话不算）。
+- **24 号 §2.2 三条与源码全部相符**，无出入：consent by identity（server.rs:79-82 + init/main.rs:191-205）、锁屏抑制（AGENT.md:156-164；lock.rs 独立文件在册）、presence 语义（AGENT.md:165-178，谁在场四条白名单：用户点的/说进来的/agent 答话中的算，听名阶段的、提醒触发的对话不算）。
 - **Terminal 语义比文档表格更保守**：AGENT.md:116 把「不丢东西的终端命令」归 Sensitive 已算全命令要问；源码实证 `run_command` 自报 Sensitive 且**自拒**删/替换/移动类命令、只有 `run_risky_command`（Destructive）能跑（terminal/agent.rs:10-14、60-66）——「应用自我设限 + 档位声明」双管齐下，这是 §5.2 第 5 条的实证依据。
 - **agent 改自身配置的同意走的是 Settings 应用注册**，不是特权旁路：Settings 以普通 agent-compatible 应用身份注册 `set_agent_model`/`rename_agent`（Sensitive，settings/control.rs:53-59），admin.rs:195-198 注释明说 "Settings offers the agent its own actions like any application"——同意机制对 agent 自改闭环，此点文档未直说、源码可证。
 
@@ -102,4 +102,4 @@ Veda 其余件已有归属：agentapp describe/state/invoke 三动词 → berryu
 - Veda 本地 clone：/tmp/os-hist/Veda @ `fbf1763`（2026-11-04）；主文档 documentation/AGENT.md（333 行全文）+ documentation/ARCHITECTURE.md §The voice agent（1072-1104 行）。
 - Veda 源码（路径相对仓根）：implementation/services/agent/source/{approvals,policy,shared,tools,files,store,server,admin,registrar,notice,prompt,main}.rs、source/worker/{mod,apps}.rs、implementation/services/init/source/main.rs、implementation/services/filesystem/source/access.rs、implementation/libraries/proto/source/agent.rs、implementation/applications/{settings/source/control.rs, terminal/source/agent.rs}、implementation/shell/components/desktop/source/agent.rs。
 - BerryOS：docs/能力模型设计-v1.0.md（§1–§8）、docs/AI调度设计-v1.0.md（§3、§4、§5）。
-- 姊妹篇：research/12-2026新OS全景与四家深读.md §2.2 与吸收表、research/15-三家源码深读-moss-urthr-veda.md（GPL-3.0-only 实证）、research/17（三层收敛判据）。
+- 姊妹篇：research/24-2026新OS全景与四家深读.md §2.2 与吸收表、research/15-三家源码深读-moss-urthr-veda.md（GPL-3.0-only 实证）、research/17（三层收敛判据）。

@@ -26,7 +26,7 @@
 
 `crates/openfang-kernel`（模块实读）：agent 生命周期/内存/权限/调度/agent 间通信——具体模块 = approval（审批）/auth/**capabilities**/cron/heartbeat/**metering**（计量）/**supervisor**（监督）/triggers/event_bus/workflow/**whatsapp_gateway**。14 crates 总形态 = **聊天 agent 应用服务器**（含桌面/CLI/extensions/migrate），非操作系统内核。
 
-**对 BerryOS 的生态位结论（12 号判断的源码级确认）**：
+**对 BerryOS 的生态位结论（24 号（原 12）判断的源码级确认）**：
 
 - 2026 Agent OS 头部的真实内核 = **进程监督 + 审批 + 计量 + 触发器**的用户态模拟——它们在通用 OS 上用应用层重建「操作系统本该提供的服务」。
 - 对照映射：openfang 的 scheduler/cron/heartbeat ↔ BerryOS **intent 表达 + 调度带内接口**；metering ↔ BerryOS **遥测环 + per-process stats 账**；approval/capabilities ↔ BerryOS **SET_POLICY 能力委托 + 同意面（P1-c）**——BerryOS 是这些需求的内核级原生供给者，openfang 们是它的（未来的）用户态客户形态。
@@ -44,4 +44,4 @@
 
 - swift-os: `kernel/net/{stack,tcp,socket}.swift`（Apache-2.0）
 - openfang: `crates/openfang-kernel/src/*`（MIT/Apache 双许可）——模块清单实读
-- BerryOS 对照：`P6-A8网络服务化设计草案-v1.0.md`、AI 调度设计 §3/§4、调研 12 号 §1
+- BerryOS 对照：`P6-A8网络服务化设计草案-v1.0.md`、AI 调度设计 §3/§4、调研 24 号 §1

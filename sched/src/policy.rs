@@ -667,7 +667,7 @@ static DIVERGENCE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// divergence 率的分母。
 static SHADOW_EVAL_COUNT: AtomicU64 = AtomicU64::new(0);
 
-// —— 拒收入账（P1-a，吸收调研 13 号 astrid「审计链含 deny」精神）——
+// —— 拒收入账（P1-a，吸收调研 24 号（原 12）astrid「审计链含 deny」精神）——
 // 注入受理面的四类静默处置从此有账：拒收/截尾/窗满/夹取各一计。写点在
 // bind/unbind（boot/ktest 期 SVC 屏蔽、单写者），Relaxed 纯统计同
 // divergence 对账形态——决策路径（apply/weight_of）零新增写面。

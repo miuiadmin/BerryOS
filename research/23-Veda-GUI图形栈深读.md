@@ -3,7 +3,7 @@
 > 调研日期 2026-11-08 · 方法:精读 /tmp/os-src/Veda/documentation/ARCHITECTURE.md 的 The window system / Displays and GPUs / The shell / Graphics and the toolkit / OpenGL ES and the GPU / Video / Applications 七节(全文 1227 行中的 599–1070 行),辅以 implementation/ 下 services/compositor、shell/、libraries/{proto,ui,gfx,gl}、guests/linux/{kms,renderer} 的目录结构与关键文件头注抽查(读 lib.rs/main.rs/协议文件头部注释,未逐行读实现);对照面只读 docs/GUI里程碑规划-2026-10-v1.0.md 与 docs/事件循环A7设计草案-v1.0.md 头部。
 >
 > 本文为 23 号专题（原 20 号与既有 Apple-iOS 对标报告撞号，2026-11-08 收口改号）;结论均注出处(文件:行号或节名),不自造事实。
-> 兄弟篇:12 号(Veda 全景四家深读,含同意机制三件)、13 号(轨迹与踩坑)。
+> 兄弟篇:24 号(原 12,Veda 全景四家深读,含同意机制三件)、25 号(原 13,轨迹与踩坑)。
 > **编号注记**:research/ 目录已有 应用规范-Apple-iOS对标-2026-11.md（原占 20 号位，后去号更名）,本文件按任务指定名落库,编号撞号如实记录,归档时再统一调号。
 >
 > 禁 git 操作、禁改代码,本报告为纯调研产物。
@@ -76,9 +76,9 @@ ARCHITECTURE.md:821–830 表:`raster`(路径/二次三次曲线/圆弧、变换
 
 shell(implementation/shell/components/desktop)是**普通进程**,合成器按系统服务 shell 的身份信任它——ARCHITECTURE.md:744–745。它的全部 surface(桌面/taskbar/开始菜单与日历/通知)是 ui::Host,从一个共享模型画、经主循环执行的 action 改模型;窗口清单来自 compositor(list_windows + WindowsChanged 刷新),已装应用来自 launcher(包增删时重取)——ARCHITECTURE.md:746–751。源文件印证分工:desktop/taskbar/start/calendar/notify/chrome/approval/firewall/power/volume/wifi/tooltip(startup 源文件清单)。shell 协议让应用换壁纸与发通知(展示应用自己的 tile 与名字,每进程 10 秒至多 5 条);通知还报应用崩溃(launcher::watch)与承载防火墙问题(其按钮出现 1 秒后才可点,防误点);Restart/Shutdown 逐窗请求关闭如同点关闭键,全部关闭后才断电;**超时纪律:调任何服务至多等 10 秒(关机前写盘等 2 分钟),挂死的服务冻结不了桌面**——ARCHITECTURE.md:753–765。
 
-### 4.2 锁屏(窗口管理细节,补 12 号已记的 agent 抑制联动)
+### 4.2 锁屏(窗口管理细节,补 24 号已记的 agent 抑制联动)
 
-12 号报告已记「锁屏抑制 agent 监听 + presence 语义」(research/12-2026新OS全景与四家深读.md:29),本节补窗口管理面。**compositor::lock 的窗口层规则**(ARCHITECTURE.md:672–681):锁屏期间合成器只画 lock 服务的窗口(WindowKind::Lock,压在所有其他层之上),罩在自己的 backdrop 上直到锁屏画出了自己(锁屏没画好前不露出任何锁屏要遮的内容);只有锁屏窗口拿焦点与指针;窗口键全部失效;display::lock 或 Super+L 即锁,同时终止进行中的移动/切换器/弹窗;解锁只认 lock 服务(display::unlock),焦点回到锁前窗口;**装了锁屏的系统 init 起来就是锁着的(崩溃重启后也是)**;系统服务经 display::watch_lock 订阅锁状态(先报现状再报每次变化)。
+24 号报告已记「锁屏抑制 agent 监听 + presence 语义」(research/24-2026新OS全景与四家深读.md:29),本节补窗口管理面。**compositor::lock 的窗口层规则**(ARCHITECTURE.md:672–681):锁屏期间合成器只画 lock 服务的窗口(WindowKind::Lock,压在所有其他层之上),罩在自己的 backdrop 上直到锁屏画出了自己(锁屏没画好前不露出任何锁屏要遮的内容);只有锁屏窗口拿焦点与指针;窗口键全部失效;display::lock 或 Super+L 即锁,同时终止进行中的移动/切换器/弹窗;解锁只认 lock 服务(display::unlock),焦点回到锁前窗口;**装了锁屏的系统 init 起来就是锁着的(崩溃重启后也是)**;系统服务经 display::watch_lock 订阅锁状态(先报现状再报每次变化)。
 
 **idle 锁的配速语义**(ARCHITECTURE.md:682–700,compositor/source/idle.rs):超时由 lock 服务设(display::set_idle_timeout,0 = 永不,未设即永不);计时起点是最后输入/最后解锁/屏幕停止被保活的时刻(电影演完也给用户全程时间);重复设置不重置计时(防重启的 lock 服务把锁一直吊着);keep_awake 语义三条件——客户端显式请求(Videos 播视频/Photos 放幻灯/Interceptor 游戏中)+ 窗口可见(未最小化、未被上层整窗遮住)+ **全屏不算**(暂停并留在全屏的电影、一张图片,不让无人值守的电脑保持解锁)——对齐 Android FLAG_KEEP_SCREEN_ON 与 Wayland idle inhibit 的「应用说何时有东西在播」原则;user_active 唯独 agent 可发、锁屏时为 no-op、只在与用户的对话中发(免提对话不会因锁屏中断)、**旁听内容永不触发**。
 
@@ -118,7 +118,7 @@ BerryOS 口径基线(docs/GUI里程碑规划-2026-10-v1.0.md 头部与 §3/§4):
 
 **不适用二:GPU 全栈自研的规模门槛,Veda 是单人多年全职深潜的产物,BerryOS 无此预算。** Veda 自研了 GLSL ES 编译器(SSA + 双后端)、ES 3.0 完整 API 面、软渲染器(tile binning + MSAA + 全格式)、virgl 协议后端、egl C 层——Repository layout 节 libraries/{glsl,gl,egl} 一行装下(ARCHITECTURE.md:1204),但那是数万行级的专深工程;BerryOS 的取舍(pass 形态 API + soft 永久 CI 基线 + 后端兑现序列 soft→virtio-gpu→Vulkan,规划 §7/:163)是规模正确的选择,Veda 的价值在提供各环节的语义参照而非实现路径。BerryOS 已拍板自研光栅核(sparse strips 思想子集)与 Veda raster/gfx 的覆盖面差距大但方向同源,Veda 的「像素循环保持标量因为 TCG 模拟 SSE 慢」(:843–845)是 BerryOS QEMU 主验环境下同款约束的直接预警——berry-gfx 快速路径先做标量版,向量化为后端兑现序的一环。
 
-**不适用三:driver VM 路线 BerryOS v1 无对应物。** Veda 的 GPU/显示/KMS 全经 driver VM 里的 Linux(§2.1),前提是它自带完整 hypervisor + 驱动 VM(12 号报告已记其 virtualization 模块);BerryOS v1 驱动用户态直跑、显示走 HDI 三口(ramfb = RegVBlank(软)/Prepare/Commit,规划 §4 GUI-1),guifbd 对 ramfb 的软 vblank 与 Veda displaydev 的硬 flip 在「完成带 vblank 时刻」语义上可以对齐,但实现机制完全不同,不构成移植面。
+**不适用三:driver VM 路线 BerryOS v1 无对应物。** Veda 的 GPU/显示/KMS 全经 driver VM 里的 Linux(§2.1),前提是它自带完整 hypervisor + 驱动 VM(24 号报告已记其 virtualization 模块);BerryOS v1 驱动用户态直跑、显示走 HDI 三口(ramfb = RegVBlank(软)/Prepare/Commit,规划 §4 GUI-1),guifbd 对 ramfb 的软 vblank 与 Veda displaydev 的硬 flip 在「完成带 vblank 时刻」语义上可以对齐,但实现机制完全不同,不构成移植面。
 
 **不适用四:PC 桌面 shell 的窗口管理细节不进 BerryOS M-GUI 闭包。** taskbar/开始菜单/Alt+Tab 切换器/贴边(arrange_window 的 snapping)/窗口装饰是 PC 形态资产;BerryOS 验收形态是图标网格 + 滑动桌面 + 状态栏(规划 §1),窗口管理只剩单应用全屏栈。可带走的是超时纪律(等服务至多 10s,:763–765)与通知限速(每进程 10 秒 5 条,:754–755)这类系统卫生参数,不是窗口管理本身。
 
@@ -126,7 +126,7 @@ BerryOS 口径基线(docs/GUI里程碑规划-2026-10-v1.0.md 头部与 §3/§4):
 
 ## 7. 与预期不符处(诚实记录)
 
-一、**GUI 栈完成度远超 12 号报告「102★ 且处早期」的印象**。12 号(research/12:9)记 Veda「仅 102★ 且处早期」,本次深读发现其图形栈已到「自研 GLSL 编译器带 SSA 优化与验证、virgl 后端带九条 host workaround、子表面 GPU 零拷贝 in-place 采样、锁屏 Argon2id + 落盘节流 + 三重 fail-safe」的完成度——星数与成熟度在此项目上严重脱钩,它更像单人多年的全职作品;12 号的「早期」判断对 GUI 线不成立,应以此稿为准。二、**GPU 合成不是主路而是优化路径**:读前预期 GPU 合成为默认,实际 CPU 合成是基线与回退(GPU 首帧 read-back 检查、2s 超时、3 次重试的整套防御就是为随时放弃 GPU),架构叙述顺序也是 CPU 在先(ARCHITECTURE.md:632–640、gpu.rs:28–31)。三、**无多屏与热插拔协议**:任务问句预设了多屏/热插拔的可能,实际是单屏 + 驱动级 attach/detach 降级路径,无显示器枚举/拓扑/输出热插拔事件(§5);记录此不符以免后来者再找。四、**display 协议比预期「窗口协议」宽得多**:31 个动词里近三分之一是锁/idle/保活/在场判定/启动协作(desktop_ready/ Appearing),窗口系统实际上兼任了电源与在场的裁决点——这本身是本稿最重要的启示来源(启示二、五)。
+一、**GUI 栈完成度远超 24 号报告「102★ 且处早期」的印象**。24 号(research/24:9)记 Veda「仅 102★ 且处早期」,本次深读发现其图形栈已到「自研 GLSL 编译器带 SSA 优化与验证、virgl 后端带九条 host workaround、子表面 GPU 零拷贝 in-place 采样、锁屏 Argon2id + 落盘节流 + 三重 fail-safe」的完成度——星数与成熟度在此项目上严重脱钩,它更像单人多年的全职作品;24 号的「早期」判断对 GUI 线不成立,应以此稿为准。二、**GPU 合成不是主路而是优化路径**:读前预期 GPU 合成为默认,实际 CPU 合成是基线与回退(GPU 首帧 read-back 检查、2s 超时、3 次重试的整套防御就是为随时放弃 GPU),架构叙述顺序也是 CPU 在先(ARCHITECTURE.md:632–640、gpu.rs:28–31)。三、**无多屏与热插拔协议**:任务问句预设了多屏/热插拔的可能,实际是单屏 + 驱动级 attach/detach 降级路径,无显示器枚举/拓扑/输出热插拔事件(§5);记录此不符以免后来者再找。四、**display 协议比预期「窗口协议」宽得多**:31 个动词里近三分之一是锁/idle/保活/在场判定/启动协作(desktop_ready/ Appearing),窗口系统实际上兼任了电源与在场的裁决点——这本身是本稿最重要的启示来源(启示二、五)。
 
 ## 8. 出处索引
 
@@ -135,4 +135,4 @@ BerryOS 口径基线(docs/GUI里程碑规划-2026-10-v1.0.md 头部与 §3/§4):
 - /tmp/os-src/Veda/implementation/libraries/proto/source/display.rs(5–56 头注、153–176 常量、233–238 ScreenInfo、281–345 事件、359–476 协议动词)与 displaydev.rs(5–60 头注)。
 - /tmp/os-src/Veda/implementation/libraries/ui/source/lib.rs(5–31)与 app.rs(5–19)。
 - /tmp/os-src/Veda/implementation/guests/linux/kms/source/drm.rs(5–9)与 main.rs(5–13);renderer 目录结构(decoder/ C 半 + source/ Rust 半)。
-- 对照面:/Users/murongcheng/Documents/code/berryos/docs/GUI里程碑规划-2026-10-v1.0.md(头部 + §1 + §2 表 + §3-C/G/I + §4 GUI-1/2/3 + §7);docs/事件循环A7设计草案-v1.0.md(头部);research/12-2026新OS全景与四家深读.md(:9、:29)。
+- 对照面:/Users/murongcheng/Documents/code/berryos/docs/GUI里程碑规划-2026-10-v1.0.md(头部 + §1 + §2 表 + §3-C/G/I + §4 GUI-1/2/3 + §7);docs/事件循环A7设计草案-v1.0.md(头部);research/24-2026新OS全景与四家深读.md(:9、:29)。

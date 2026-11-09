@@ -200,8 +200,8 @@ pub fn park() -> ! {
 // —— errno 值域探针（host 单元测试；P1-d）——
 //
 // 对照 Linux 通用 errno 值域（asm-generic errno-base 1..34 + errno
-// 35..133；musl aarch64 同）——swift-os 坑二回归锚，调研 13 号
-// （research/13-2026新OS四家轨迹与踩坑.md §2 坑二：内核返回 EADDRINUSE=98
+// 35..133；musl aarch64 同）——swift-os 坑二回归锚，调研 25 号（原 13）
+// （research/25-2026新OS四家轨迹与踩坑.md §2 坑二：内核返回 EADDRINUSE=98
 // 而目标 newlib 头定义 112，nginx -t 拒掉合法配置）。abi-check 只对拍
 // syscall 号位、不对拍 errno 值域——本探针补该盲区，值域单源即上方
 // 「errno（Linux 数值面；musl 同值）」区。

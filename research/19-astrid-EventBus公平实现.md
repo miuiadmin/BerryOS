@@ -2,7 +2,7 @@
 
 > 调研日期 2026-11-08 · 方法:git clone --depth 50(HEAD f519aaa,2026-11-07)实读 astrid-events 源码——bus.rs(889 行)、bus/dispatch.rs、route.rs 及 route/{entry,receiver,matcher,gate,state}.rs、ordered_delivery.rs,辅证 astrid-types/src/ipc.rs 与 entry_tests.rs 测试名;对照基准 = 本仓 `docs/IPC设计-v1.0.md` 背压与调度器口径(只读)
 >
-> 本文为 19 号专题;结论均注出处(astrid-events/ 相对路径:行号,均指 /tmp/os-src/astrid 快照),不自造事实。上游口径 = 12 号 §2.1「tokio broadcast + 发布侧 per-principal 路由表 + per-principal FIFO 子队列 + deficit round-robin 公平」(经 book 转引),本篇为源码下探验证。
+> 本文为 19 号专题;结论均注出处(astrid-events/ 相对路径:行号,均指 /tmp/os-src/astrid 快照),不自造事实。上游口径 = 24 号（原 12）§2.1「tokio broadcast + 发布侧 per-principal 路由表 + per-principal FIFO 子队列 + deficit round-robin 公平」(经 book 转引),本篇为源码下探验证。
 
 ## 1. 实现结构:四个问题的源码答案
 
@@ -31,10 +31,10 @@
 - seq 赋值在 publish_order 临界区内,与 broadcast 投递、同步观察构成同一全序——后发的 disconnect 不可能越过先发的 connect(bus.rs:295-304)。这个锁也保证 RoutedEventReceiver 看到的跨 principal 交织序确定。
 - 与公平性的关系是分层而非耦合:seq 只标发布序,DRR/轮转不看 seq——公平单位是 principal 身份,字节配额重排跨 principal 顺序,所以 routed 消费者看到的跨 principal 序必然偏离全局发布序;seq 保证的是每个 principal 子队列内部 FIFO 即发布序(入队即发布序)以及 ordered lane 的全序。消费者可拿 seq 检测丢失/乱序,路由层自身不用它做任何公平决策(entry.rs 全文无 seq;盖号仅在 bus.rs:306-312)。
 
-## 2. 与规范书口径(12 号 §2.1)的差异
+## 2. 与规范书口径(24 号 §2.1)的差异
 
-- 四要素全部源码证实,无翻案;需要细化的四点:①「per-principal 路由表」实为两级——表键是 (capsule, topic_pattern, subscription_rep),per-principal 队列是条目内部的第二级 fan-out,「per-principal」不在表键上(bus.rs:105;entry.rs:70-80;114)。②公平参数具体化:1 MiB 字节预算 + 4 KiB 量子地板 + 16_384 条目兜底 + max(量子, budget/N) 自适应,12 号未记。③双路径排序: routed fan-out 刻意排在 `broadcast::send` 之后,慢路由不拖累广播消费者(bus.rs:380-385)。④「EventBus = tokio broadcast」只覆盖广播面;routed 面是 `RwLock<HashMap>` + `Notify` + `parking_lot::Mutex`,与 tokio broadcast 无关(bus.rs:105;receiver.rs:23-30)。
-- 12 号自注「经 book 转引」,本篇为直读源码;astrid book 未逐章核对,若 book 有更细承诺以源码为准。
+- 四要素全部源码证实,无翻案;需要细化的四点:①「per-principal 路由表」实为两级——表键是 (capsule, topic_pattern, subscription_rep),per-principal 队列是条目内部的第二级 fan-out,「per-principal」不在表键上(bus.rs:105;entry.rs:70-80;114)。②公平参数具体化:1 MiB 字节预算 + 4 KiB 量子地板 + 16_384 条目兜底 + max(量子, budget/N) 自适应,24 号未记。③双路径排序: routed fan-out 刻意排在 `broadcast::send` 之后,慢路由不拖累广播消费者(bus.rs:380-385)。④「EventBus = tokio broadcast」只覆盖广播面;routed 面是 `RwLock<HashMap>` + `Notify` + `parking_lot::Mutex`,与 tokio broadcast 无关(bus.rs:105;receiver.rs:23-30)。
+- 24 号自注「经 book 转引」,本篇为直读源码;astrid book 未逐章核对,若 book 有更细承诺以源码为准。
 
 ## 3. 对 BerryOS IPC/遥测环的启示
 

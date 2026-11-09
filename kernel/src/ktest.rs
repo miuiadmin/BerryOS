@@ -3885,7 +3885,7 @@ fn test_policy_shadow() {
 /// 「唯一消费者」注记自此由本测试接力）。QEMU ktest 是唯一家（同 SHD-K——
 /// 进程调度 crate 无 host 测试面）；非 smoke 注册标记（TAGTAB 模式：断言炸
 /// = panic = 后续标记缺失兜底，同 PV3-K/PBS-K/PP-K/SHD-K）。
-/// P1-a 拒收入账（吸收调研 13 号 astrid「审计链含 deny」精神）：bind 一张
+/// P1-a 拒收入账（吸收调研 24 号（原 12）astrid「审计链含 deny」精神）：bind 一张
 /// 混合处置表——key0 哨兵丢弃 ×2 / 越包络 weight 夹取 ±各一 / TBL_MAX 截
 /// 尾 ×3——四计数逐一以增量验证（probe_full 是散列聚簇概率面，不在此强
 /// 造，留 v3 环接后观测）。POLS-R ok。
