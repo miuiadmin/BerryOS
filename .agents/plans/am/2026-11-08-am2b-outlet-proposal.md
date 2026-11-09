@@ -1,6 +1,6 @@
 # AM-2b 压力事件带内出口提案
 Type: proposal
-Status: draft
+Status: active
 Updated: 2026-11-08
 
 ## 问题与约束
@@ -55,3 +55,5 @@ ABI 面：零新号；新增内核派生位一个。
 - 「不建第二数据库」纪律：kernel/src/telemetry.rs:879,915 与 docs/调点调度-v1.1.md:183,417 均引「#45」，但 docs/架构决策.md:54 的 #45 = 存储布局与应用沙箱；原则正身 = 调点调度 v1.1 §5.11（经 ADR #64 追认收口，docs/架构决策.md:3 增补行）。既有引用为滞后前指错锚，本提案不沿用。
 - 号预算冻结常量双源一致：AGENTS.md「syscall ~30–45（v1 37 在册）」= tools/abi.toml:23,34。
 - AM-1.5 设计原文写「Event 通知 token 持有者」（design.md:49），落地形 = 派生位 + 按进程钉键广播（syscall.rs:3054-3072），未建 Event 对象——候选①/②对照时以落地形为准。
+
+2026-11-08 拍板实施：候选①，六裁决见 [am design v0.4.0](design.md)。

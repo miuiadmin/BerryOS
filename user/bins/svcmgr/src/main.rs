@@ -25,7 +25,8 @@
 
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
-    berry_handle_close, berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
+    berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
+    berry_object_wait_one,
     berry_pager_supply_mapped, berry_pager_supply_mapped_table, berry_pager_supply_pages,
     berry_process_create, berry_process_get_exit_code, berry_process_start,
     berry_process_suspend,
@@ -621,6 +622,17 @@ const H_FBINFO: Handle = 0x0001_0006;
 /// 转发（满丢弃计数，见内核 console 任务体）。
 const H_FBPIPE: Handle = 0x0001_0007;
 
+/// AM-2b 系统压力 Event = boot 第 8 插定值（endB_fb 7 之后；内核在 GOP
+/// 相位内 dup 进本表——非 GOP 相槽缺席 -EBADF，fb/virtio 惯例）。rights
+/// SIGNAL|DUPLICATE（`event_create` 出生授同口径；SIGNAL = 迁交后 am
+/// `object_signal` 自清位面，DUPLICATE = 迁交侧再 dup 面）。**本刀只接线
+/// 不消费**：1<<40 partial 跨阈置位（内核 70ms 窗 θ_p 10% 占比判据）本
+/// 服务不读不清、恒持原值不 close（留表即留命，H_FB 同款 v1 政策）；
+/// 未来 am 成形经 env 块 extras take 迁交（契约 =
+/// `.agents/plans/am/design.md` v0.4.0「压力信号」节：边沿协议自清位
+/// + 窗口长 deadline 再等）。
+const H_PRESSURE: Handle = 0x0001_0008;
+
 /// sim-S1 M2-b：boot 手搭 sim 礼物对之**帧通道 RECV 端**第 5 插定值
 /// （`-kernel`+rootfs+fw_cfg `opt/berry/simdev` 门开相——task_simcon 转发
 /// 的 UART1 字节流对端）。**与 [`H_FB`] 同值异相**：fw_cfg 具名键在 EFI 路
@@ -1036,6 +1048,17 @@ fn run_rootfs_child(console: Handle) {
                 eco_skip(b"guifbd spawn");
             }
         }
+    }
+    // ---- AM-2b：压力 Event 装载断言（机制面 v1 收官接线——不消费不等待）----
+    // 门 = H_FB 在席（GOP 相——内核侧第 8 插与 fb VMO 5/fbinfo 6/endB_fb 7
+    // 同分支插入，同相必在表）。探针 = `object_signal(H_PRESSURE, 0, 0)`
+    // 零位面（get_raw 三门控在表/Event/SIGNAL 右；clear|set=0 → 位值不动
+    // + wake 掩码 0 无命中——纯装载验证，非消费非等待）。非 GOP 相 H_FB
+    // 先跳 = 静默零扰动（fb/virtio 惯例）；在席相探针非 0 = 接线漂移（槽
+    // 缺席/缺 SIGNAL 右/类型错）→ trap 自陷（「任何链断 → 自陷被杀」同
+    // 口径，标记缺失 = smoke FAIL 兜底）。
+    if berry_vmo_get_size(H_FB, &mut msz) == 0 && berry_object_signal(H_PRESSURE, 0, 0) != 0 {
+        trap();
     }
     // ---- GUI-5：gui-wmd（窗口管理守护）预拉——紧随 guifbd arm、gfxdemo
     // arm 之前（ADR #61 呈现/策略分离：权威窗口表 + present/hdi 双域透传

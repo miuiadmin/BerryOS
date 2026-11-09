@@ -3,9 +3,9 @@
 Type: spec
 Status: active
 Updated: 2026-11-08
-Version: 0.3.0
+Version: 0.4.0
 
-一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。**v0.3.0：Q1–Q3 裁决落定 + 重锚 appd（应用模型 §4.1 立法承载，am 不新建守护进程）+ 与 app-1 实施草案梯度互证对齐。**
+一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。**v0.3.0：Q1–Q3 裁决落定 + 重锚 appd（应用模型 §4.1 立法承载，am 不新建守护进程）+ 与 app-1 实施草案梯度互证对齐。** **v0.4.0：AM-2b 压力出口机制面收官——候选①六裁决（系统压力 Event + boot 定值槽迁交）落地，「压力信号」节由提案改写为现役机制。**
 
 ## 背景
 
@@ -36,7 +36,11 @@ Version: 0.3.0
 
 ### 压力信号（PSI 等价）
 
-内核记「等页时间」（缺页等待 + pager 供给停顿）进 telemetry 环；阈值事件带内发给 am。初值借 lmkd 量级【推，需实测定标】：partial 70ms / complete 700ms 窗口（AM-01 [A2]）；不设固定 minfree 水位（内核态 LMK 反面教训）。
+内核记「等页时间」（缺页等待 + pager 供给停顿）进 telemetry 环；阈值事件带内发给 am；不设固定 minfree 水位（内核态 LMK 反面教训）。初值借 lmkd 量级【推，需实测定标】（AM-01 [A2]）。
+
+**AM-2b 机制面已落（[提案](2026-11-08-am2b-outlet-proposal.md)候选①，六裁决）**：系统压力 Event 由内核 boot 建立 + 静态 retain（RX_EV 同款纪律），handle 经 svcmgr 表**定值第 8 插 0x0001_0008** 迁交（rights SIGNAL|DUPLICATE，`event_create` 出生授同口径；svcmgr 侧装载断言钉槽，零新 syscall、0x84 telemetry_open 不动）；翻卷 = dpg 三计值点**惰性折卷**（未跨窗零翻卷成本，窗长 70ms boot 期按 CNTFRQ 换算、禁编译期常量），跨阈判据 = 窗口等页停顿占比 Σcyc/W ≥ **θ_p 10%【推】**；跨阈内核任务语境置位用户位 **1<<40**（partial），**1<<41**（complete）**预留——登记不置位**（full 判据需 waiter 深度跟踪，挂实测定标后再裁）；两位于 abi.toml [[signal]] 注记区登记防撞。ktest AM2B-K 四断言（跨阈置位/未跨阈不置位/翻卷清零重启/重启后再置位）钉翻卷语义。恢复 = 边沿协议：am 持 SIGNAL 右 `object_signal` 自清位、以窗口长为 deadline 再等，超时无再置位即恢复（内核不报恢复沿）。
+
+消费面**随 am 拉起刀**：am 成形经 env 块 extras 自 svcmgr 迁交第 8 插（本节即迁交契约）；complete 700ms 窗与 full 判据同刀定标。
 
 ### SDK 契约（零新 syscall，照 #68 六面先例）
 
