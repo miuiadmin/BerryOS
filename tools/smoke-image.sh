@@ -352,13 +352,24 @@ QEMU_PID=$!
 # —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 32 + 生态 39 = 84）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
-ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
+# —— 分相断言集（CI 分层用）：SMOKE_PHASES=boot 时只验引导面——
+# EFI 十段 + 接续 3 + 裸相 32 = 45 标记（引导链完整验收面，慢 runner
+# TCG 可达——run 42624077761 实证到齐）；生态 39 服务链 wall-clock 慢机
+# 跑不完（同 run 实证 360s 帽缺 HE XYL/BSH/APP 族），只进全链相。
+# 未设或非 boot = 原 84 全面行为不变。
+if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
+  P1_MARKERS=("${EFI_FIXED[@]}" "${CONT_MARKERS[@]}" "${KERNEL_MARKERS[@]}")
+  ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} ))
+else
+  P1_MARKERS=("${EFI_FIXED[@]}" "${CONT_MARKERS[@]}" "${KERNEL_MARKERS[@]}" "${ECO_MARKERS[@]}")
+  ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
+fi
 t0=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
     || fail "QEMU 提前退出（固件/引导崩溃？）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   missing=""
-  for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}" "${KERNEL_MARKERS[@]}" "${ECO_MARKERS[@]}"; do
+  for m in "${P1_MARKERS[@]}"; do
     assert_marker "$m" || missing="${missing:+$missing }$m"
   done
   for e in "${EFI_ERE[@]}"; do
@@ -369,19 +380,12 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 39)"
-
-# —— 分相门控（CI 分层用）：SMOKE_PHASES=boot 时 EFI+内核相绿即收——
-# 与 smoke.sh 同款分层契约：自托管慢 runner（TCG ~10x）跑不完生态 39 的
-# 服务链 wall-clock；boot 面（EFI 十段 + 接续 + 裸相 32 = 84-39=45 标记，
-# 实测快机 ~115s 全链的前段）在慢机可达，CI 只验这个轻面；生态 39 + RX
-# 注入 + 恰一次 + sim 面留快机全链。未设或非 boot = 原行为（84 全链）。
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
-  echo "smoke-image: SMOKE_PHASES=boot 止于标记到齐相（分层 CI 轻面，84 面 EFI+内核段已验）"
+  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32；SMOKE_PHASES=boot 分层 CI 轻面，生态 39 + RX + sim 面留快机全链）"
   cleanup 2>/dev/null || true
   exit 0
 fi
-
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 39)"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
