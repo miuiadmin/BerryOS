@@ -171,7 +171,9 @@ python3 "$(dirname "$0")/size.py" --assert-flip "$KERNEL" \
 python3 "$(dirname "$0")/gen_abi.py" --check \
   || { echo "smoke: FAIL: ABI 单源守卫失败（改了 abi.toml 跑 just abi-gen）" >&2; exit 1; }
 
-DEADLINE_BOOT=120    # 秒：boot 全部标记到齐（裸相）
+# 秒：boot 全部标记到齐（裸相）。帽只兜结构性挂死不赌快；env 可调——
+# 自托管同机多 run 并行分抢核时 TCG 拖慢（技能坑表），CI 里放宽到 360。
+DEADLINE_BOOT="${SMOKE_DEADLINE_BOOT:-120}"
 DEADLINE_ROOTFS=600  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
                      # 自验含整链 commit（fsmgr 侧 ~13 次串行扇区 RPC，TCG
                      # 下每次 ~0.8s）+ GET 读回 ≈ +30-40s，120s 结构性不够；
