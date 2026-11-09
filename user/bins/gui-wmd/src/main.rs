@@ -113,7 +113,15 @@ struct WmSession {
     input: Handle,
     process: Handle,
     queue: InputQueue,
+    /// P1：WM_CONNECT 附带的 svcmgr 一次性 escape token 是否已消费验证。
+    escape: bool,
+    /// P1：逐窗口 Surface Mode；None = 未显式协商的 Retained。
+    surface_modes: [Option<gp::surface::SurfaceModeInfo>; gp::WM_WINDOWS_MAX],
 }
+
+/// P1 surface 状态使 session 增大；wmd 主栈 8 页。16KiB 结构帽先炸编译，
+/// 防未来逐窗状态扩容静默逼近栈底。
+const _: () = assert!(core::mem::size_of::<WmSessions>() <= 16 * 1024);
 
 /// 接触粘滞锁：pointer_id → (session, window_id)；window_id=0 表示桌面。
 #[derive(Clone, Copy)]
@@ -128,6 +136,9 @@ struct InputLock {
 /// launcher 异步 INPUT_POLL 与 present RPC 在同一 channel 上响应错配。
 struct WmSessions {
     slots: [Option<WmSession>; 7],
+    /// P1 per-boot escape seed：svcmgr 预共享后才有值；不进公开常量。
+    escape_seed: [u8; 8],
+    escape_seed_set: bool,
     next_id: u16,
     input_lock: Option<InputLock>,
 }
@@ -155,9 +166,22 @@ impl WmSessions {
     fn new() -> Self {
         Self {
             slots: [None, None, None, None, None, None, None],
+            escape_seed: [0; 8],
+            escape_seed_set: false,
             next_id: 0,
             input_lock: None,
         }
+    }
+
+    /// P1 seed 只接受一次，且必须在任何 WM_CONNECT 前（svcmgr 在 app
+    /// broker 端被 dup/赠出前完成预共享并阻塞等 ack）。
+    fn set_escape_seed(&mut self, seed: [u8; 8]) -> bool {
+        if self.escape_seed_set || self.slots.iter().any(|s| s.is_some()) {
+            return false;
+        }
+        self.escape_seed = seed;
+        self.escape_seed_set = true;
+        true
     }
 
     /// broker 面 WM_CONNECT：请求恰携 [WM endpoint, input endpoint,
@@ -167,13 +191,47 @@ impl WmSessions {
             close_all(hs);
             st_rep(broker, gp::ST_BAD);
         };
-        if hs.len() != 3 || hs.iter().any(|&h| h == 0) {
+        if (hs.len() != 3 && hs.len() != 4) || hs.iter().any(|&h| h == 0) {
             bad(hs);
             return;
         }
         let Some(client_type) = gp::parse_wm_connect_req(msg) else {
             bad(hs);
             return;
+        };
+        // P1：第 4 handle = svcmgr 预载的 per-boot escape seed。消息必须
+        // 恰 8B、无随行 handle，且等于启动期预共享 seed；公开常量/自铸
+        // channel 无法通过。
+        let expected_seed = self.escape_seed;
+        let seed_ready = self.escape_seed_set;
+        let escape = if hs.len() == 4 {
+            let mut token = [0u8; 8];
+            let mut nbytes = token.len();
+            let mut nhandles = 0usize;
+            let status = berry_channel_recv(
+                hs[3],
+                token.as_mut_ptr(),
+                &mut nbytes,
+                core::ptr::null_mut(),
+                &mut nhandles,
+            );
+            if status != 0
+                || nbytes != token.len()
+                || nhandles != 0
+                || !seed_ready
+                || token != expected_seed
+            {
+                // 伪造/错 seed 是能力拒绝，不是帧畸形；精确 ST_DENIED。
+                close_all(hs);
+                st_rep(broker, gp::ST_DENIED);
+                return;
+            }
+            if berry_handle_close(hs[3]) != 0 {
+                trap();
+            }
+            true
+        } else {
+            false
         };
         let Some(slot) = (0..self.slots.len()).find(|&i| self.slots[i].is_none()) else {
             close_all(hs);
@@ -189,6 +247,8 @@ impl WmSessions {
             input: hs[1],
             process: hs[2],
             queue: InputQueue::new(),
+            escape,
+            surface_modes: [None; gp::WM_WINDOWS_MAX],
         });
         let mut out = [0u8; 8];
         let n = match gp::encode_wm_connect_rep(&mut out, id) {
@@ -463,8 +523,63 @@ pub(crate) fn trap() -> ! {
     }
 }
 
+impl WmSession {
+    /// 0x67：校验窗口 owner/可见性后调用纯策略并记录逐窗合约。
+    fn configure_surface(
+        &mut self,
+        table: &table::WmTable,
+        req: gp::surface::SurfaceModeReq,
+    ) -> Result<gp::surface::SurfaceModeInfo, u8> {
+        if table.surface_rect(self.id, req.surface_id).is_none() {
+            return Err(gp::ST_NOENT);
+        }
+        let old = self
+            .surface_modes
+            .iter()
+            .find(|e| e.map(|i| i.surface_id) == Some(req.surface_id))
+            .copied()
+            .flatten();
+        let (w, h) = table.display_size();
+        let info = gp::surface::surface_mode_production_policy(
+            req, self.escape, old, w, h,
+        )?;
+        if let Some(slot) = self
+            .surface_modes
+            .iter_mut()
+            .find(|e| e.map(|i| i.surface_id) == Some(req.surface_id))
+        {
+            *slot = Some(info);
+        } else if let Some(slot) = self.surface_modes.iter_mut().find(|e| e.is_none()) {
+            *slot = Some(info);
+        } else {
+            return Err(gp::ST_FULL);
+        }
+        Ok(info)
+    }
+
+    fn clear_surface_mode(&mut self, surface_id: u16) {
+        for entry in self.surface_modes.iter_mut() {
+            if entry.map(|i| i.surface_id) == Some(surface_id) {
+                *entry = None;
+            }
+        }
+    }
+}
+
 /// broker 面只收 WM_CONNECT；present/hdi/wm 业务必须走 per-session 通道。
 fn on_broker(sessions: &mut WmSessions, ch: Handle, msg: &[u8], hs: &[Handle]) {
+    if msg.first() == Some(&gp::OP_WM_SURFACE_ESCAPE_SEED) {
+        if !hs.is_empty() {
+            close_all(hs);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        match gp::surface::parse_wm_surface_escape_seed_req(msg) {
+            Some(seed) if sessions.set_escape_seed(seed) => st_rep(ch, gp::ST_OK),
+            _ => st_rep(ch, gp::ST_DENIED),
+        }
+        return;
+    }
     if msg.first() == Some(&gp::OP_WM_CONNECT) {
         sessions.connect(ch, msg, hs);
         return;
@@ -497,7 +612,34 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
         Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_COMMIT).contains(&op) => {
             relay::relay(ch, hdi_cli, msg, hs);
         }
+        Some(&gp::OP_WM_SURFACE_MODE) => {
+            if !hs.is_empty() {
+                close_all(hs);
+                st_rep(ch, gp::ST_BAD);
+                return;
+            }
+            match gp::surface::parse_wm_surface_mode_req(msg) {
+                Some(req) => match sess.configure_surface(table, req) {
+                    Ok(info) => {
+                        let mut out = [0u8; gp::surface::SURFACE_MODE_REP_LEN];
+                        match gp::surface::encode_wm_surface_mode_rep(&mut out, &info) {
+                            Some(n) => send_rep(ch, &out[..n]),
+                            None => trap(),
+                        }
+                    }
+                    Err(st) => st_rep(ch, st),
+                },
+                None => st_rep(ch, gp::ST_BAD),
+            }
+        }
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {
+            if msg.first() == Some(&gp::OP_WM_DESTROY) {
+                if let Some(id) = gp::parse_wm_destroy_req(msg) {
+                    table.handle_wm(ch, sess.id, msg, hs);
+                    sess.clear_surface_mode(id);
+                    return;
+                }
+            }
             table.handle_wm(ch, sess.id, msg, hs);
         }
         _ => {

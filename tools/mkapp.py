@@ -101,6 +101,8 @@ VERSION_MAX = 16
 ENTRY_MAX = 32
 STACK_PAGES_MIN = 1
 STACK_PAGES_MAX = 64
+AUTHORIZED_SURFACE_ESCAPE = {"UITEST"}
+
 INTENTS = (
     "unspecified",
     "latency_critical",
@@ -155,6 +157,7 @@ class M:
         self.entry = app["entry"]
         self.console = caps["console"]
         self.wm = caps.get("wm", False)
+        self.surface_escape = caps.get("surface_escape", False)
         self.has_runtime = runtime is not None
         self.stack_pages = runtime["stack_pages"] if runtime else 8
         self.intent = app["intent"]
@@ -193,6 +196,8 @@ class M:
             out += f'net = ["{self.net}"]\n'
         if self.wm:
             out += "wm = true\n"
+        if self.surface_escape:
+            out += "surface_escape = true\n"
         if self.has_runtime:
             out += f"\n[runtime]\nstack_pages = {self.stack_pages}\n"
         if self.sec:
@@ -276,12 +281,22 @@ def check_manifest_text(text: str) -> M:
             raise Reject(f"manifest: compile {_ver(vs[2])} 超工具链当前级 {SDK_CURRENT_STR}")
 
     caps = doc["capabilities"]
-    if not {"console"} <= set(caps) or set(caps) - {"console", "wm", "fs", "net"}:
-        raise Reject("manifest: [capabilities] 键集应为 console(+wm/fs/net)")
+    if not {"console"} <= set(caps) or set(caps) - {
+        "console", "wm", "surface_escape", "fs", "net",
+    }:
+        raise Reject("manifest: [capabilities] 键集应为 console(+wm/surface_escape/fs/net)")
     if type(caps["console"]) is not bool:
         raise Reject("manifest: console 应为 bool")
     if type(caps.get("wm", False)) is not bool:
         raise Reject("manifest: wm 应为 bool")
+    if type(caps.get("surface_escape", False)) is not bool:
+        raise Reject("manifest: surface_escape 应为 bool")
+    if caps.get("surface_escape", False) and not caps.get("wm", False):
+        raise Reject("manifest: surface_escape 需要 wm=true")
+    if caps.get("surface_escape", False) and app["id"] not in AUTHORIZED_SURFACE_ESCAPE:
+        raise Reject(
+            f"manifest: surface_escape 未授权 app {app['id']}（allowlist={sorted(AUTHORIZED_SURFACE_ESCAPE)}）"
+        )
     for key, vocab in (("fs", FS_SCOPES), ("net", NET_SCOPES)):
         if key in caps:
             v = caps[key]
@@ -1037,6 +1052,11 @@ def selftest() -> int:
         'views = "views/main.bui"\n'
     )
     f7b = f0 + '\n[ui]\nicon = "icons/icon.byi"\n'
+    f5 = BASE.replace(
+        'id = "APPDEMO"', 'id = "UITEST"'
+    ).replace(
+        "console = true\n", "console = true\nwm = true\nsurface_escape = true\n"
+    )
     neg = [
         ("dotted-key", BASE.replace('id = "APPDEMO"', "id.x = \"APPDEMO\"")),
         ("hex-int", BASE + "\n[runtime]\nstack_pages = 0x8\n"),
@@ -1074,6 +1094,8 @@ def selftest() -> int:
         # ---- GUI-7 新增拒面（[ui] 值域/产面 .byi 后缀/空节/定序；值变异
         # 在规范位上——门删则 canonical 重发射与输入恒等 → 样本被放行 →
         # selftest FAIL，同 SDK-1a 词表样本手法钉得住门）----
+        ("surface-escape-unauthorized", f5.replace('id = "UITEST"', 'id = "X"')),
+        ("surface-escape-without-wm", f5.replace("wm = true\n", "")),
         ("ui-no-prefix", f7b.replace("icons/icon.byi", "icon.byi")),
         ("ui-wrong-prefix", f7b.replace("icons/icon.byi", "bin/icon.byi")),
         ("ui-bare-prefix", f7b.replace("icons/icon.byi", "icons/")),
@@ -1107,6 +1129,7 @@ def selftest() -> int:
         ("f2-fs", f2),
         ("f3-net", f3),
         ("f4-security", f4),
+        ("f5-surface-escape", f5),
         ("f6-kitchen-sink", f6),
         ("f7-ui-kitchen-sink", f7),
         ("f7b-ui-icon-only", f7b),

@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F6 的第一个 Native Shell 迁移规格。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，真链宿主见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，Surface 词表见 [BerrySession-P0SurfaceMode协议-v1.0.md](BerrySession-P0SurfaceMode协议-v1.0.md)。容量口径同时遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
+> 定位：GUI F6 的第一个 Native Shell 迁移规格。执行序权威 = [GUI框架地基路线-v1.5.md](GUI框架地基路线-v1.5.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，真链宿主见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，Surface 词表见 [BerrySession-P0SurfaceMode协议-v1.0.md](BerrySession-P0SurfaceMode协议-v1.0.md)。容量口径同时遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
 
 ## §1 迁移结果
 
@@ -215,6 +215,6 @@ RX 注入后活性复验
 
 - Settings 仍无系统驱动/持久化；WLAN/Bluetooth 只改变进程内状态。
 - F6 时点嵌套 clipping 归后续 BerryUI 刀；C1 已落地结构性 Clip，Settings 继续经 ScrollView 自动获得裁剪。
-- CanvasSurface / immersive buffer 仍未开放；Settings 走 P0 Retained 路径。
+- F6 时点 CanvasSurface / immersive buffer 未开放；P1 已按授权 token 接线，Settings 仍走 Retained 路径。
 - F6 时点 Browser/Files/Photos/Contacts 仍是基线；F7 已迁移 Files/Contacts，当前仅 Browser/Photos 待 F8。
 - `berry-nshfont` 在 F6 时点仍被迁移前基线引用；F8 后无 GUI app 消费者，F9 已删除。

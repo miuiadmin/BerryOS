@@ -2,7 +2,9 @@
 //! 不变量与 IME composition 拒面。
 
 use berry_guiproto::surface::*;
-use berry_guiproto::{OP_WM_SURFACE_MODE, ST_BAD, ST_DENIED, ST_UNSUPPORTED};
+use berry_guiproto::{
+    OP_WM_SURFACE_ESCAPE_SEED, OP_WM_SURFACE_MODE, ST_BAD, ST_DENIED, ST_UNSUPPORTED,
+};
 
 fn req(mode: u8, input: u8, ime: u8, a11y: u8) -> SurfaceModeReq {
     SurfaceModeReq {
@@ -35,6 +37,105 @@ fn info(mode: u8, input: u8, ime: u8, a11y: u8, scale: u16) -> SurfaceModeInfo {
         safe_right: 0,
         safe_bottom: 16,
     }
+}
+
+#[test]
+fn surface_escape_seed_control_frame_is_strict() {
+    let seed = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+    let mut buf = [0u8; SURFACE_ESCAPE_SEED_REQ_LEN];
+    assert_eq!(
+        encode_wm_surface_escape_seed_req(&mut buf, &seed),
+        Some(SURFACE_ESCAPE_SEED_REQ_LEN)
+    );
+    assert_eq!(buf[0], OP_WM_SURFACE_ESCAPE_SEED);
+    assert_eq!(&buf[1..9], &seed);
+    assert_eq!(parse_wm_surface_escape_seed_req(&buf), Some(seed));
+    assert_eq!(parse_wm_surface_escape_seed_req(&buf[..8]), None);
+    assert_eq!(parse_wm_surface_escape_seed_req(&{
+        let mut b = buf.to_vec();
+        b.push(0);
+        b
+    }), None);
+    let mut bad_op = buf;
+    bad_op[0] = OP_WM_SURFACE_MODE;
+    assert_eq!(parse_wm_surface_escape_seed_req(&bad_op), None);
+}
+
+#[test]
+fn production_policy_denies_escape_and_unsupported_capabilities() {
+    let canvas = req(
+        SURFACE_MODE_CANVAS,
+        INPUT_CLASS_TOUCH | INPUT_CLASS_MOUSE,
+        IME_MODE_DISABLED,
+        A11Y_MODE_HYBRID,
+    );
+    assert_eq!(
+        surface_mode_production_policy(canvas, false, None, 1080, 1920),
+        Err(ST_DENIED)
+    );
+    let granted = surface_mode_production_policy(canvas, true, None, 1080, 1920)
+        .expect("authorized canvas grant");
+    assert_eq!(
+        granted.contract_flags,
+        SURFACE_F_FOCUS
+            | SURFACE_F_RATE
+            | SURFACE_F_CLEANUP
+            | SURFACE_F_A11Y
+            | SURFACE_F_ESCAPE
+    );
+    assert_eq!(granted.scale_permille, 1000);
+    assert_eq!((granted.safe_left, granted.safe_top, granted.safe_right, granted.safe_bottom), (0, 0, 0, 0));
+
+    let mut keyboard = canvas;
+    keyboard.input_classes |= INPUT_CLASS_KEYBOARD;
+    assert_eq!(
+        surface_mode_production_policy(keyboard, true, None, 1080, 1920),
+        Err(ST_UNSUPPORTED)
+    );
+    let mut ime = canvas;
+    ime.ime_mode = IME_MODE_HOST;
+    assert_eq!(
+        surface_mode_production_policy(ime, true, None, 1080, 1920),
+        Err(ST_UNSUPPORTED)
+    );
+    let mut system = canvas;
+    system.role = SURFACE_ROLE_SYSTEM;
+    assert_eq!(
+        surface_mode_production_policy(system, true, None, 1080, 1920),
+        Err(ST_DENIED)
+    );
+    assert_eq!(
+        surface_mode_production_policy(canvas, true, None, 0, 1920),
+        Err(ST_BAD)
+    );
+}
+
+#[test]
+fn production_policy_allows_escape_renegotiation_but_not_downgrade() {
+    let canvas = req(
+        SURFACE_MODE_CANVAS,
+        INPUT_CLASS_TOUCH | INPUT_CLASS_MOUSE,
+        IME_MODE_DISABLED,
+        A11Y_MODE_HYBRID,
+    );
+    let first = surface_mode_production_policy(canvas, true, None, 1080, 1920).unwrap();
+    let immersive = req(
+        SURFACE_MODE_IMMERSIVE,
+        INPUT_CLASS_TOUCH,
+        IME_MODE_DISABLED,
+        A11Y_MODE_REGIONS,
+    );
+    assert!(surface_mode_production_policy(immersive, true, Some(first), 1080, 1920).is_ok());
+    let retained = req(
+        SURFACE_MODE_RETAINED,
+        INPUT_CLASS_TOUCH,
+        IME_MODE_DISABLED,
+        A11Y_MODE_TREE,
+    );
+    assert_eq!(
+        surface_mode_production_policy(retained, true, Some(first), 1080, 1920),
+        Err(ST_DENIED)
+    );
 }
 
 #[test]

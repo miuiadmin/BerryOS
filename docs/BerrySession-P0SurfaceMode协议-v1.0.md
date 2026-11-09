@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI P0 的 UI 形态与 Surface Mode 协议规格。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；多形态裁决 = ADR #67 与 [GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md)。本文冻结 `berry-guiproto::surface` 的词表、wire 布局、不变量与 host 测试；CanvasSurface / immersive surface 的实际 buffer 分配与生产服务接线归后续消费刀。
+> 定位：GUI P0 的 UI 形态与 Surface Mode 协议规格。执行序权威 = [GUI框架地基路线-v1.5.md](GUI框架地基路线-v1.5.md)；多形态裁决 = ADR #67 与 [GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md)。本文冻结 `berry-guiproto::surface` 的词表、wire 布局、不变量与 host 测试；P1 已按本协议完成 escape 授权与生产接线，见 [BerrySession-P1SurfaceMode生产接线-v1.0.md](BerrySession-P1SurfaceMode生产接线-v1.0.md)。
 
 ## §1 一个契约，三条路径
 
@@ -357,7 +357,7 @@ WM 授予帧保留 off7 前向兼容锚与非 OK 1B 错误形
 ## §8 实施边界
 
 - P0 冻结协议与 host 策略，不分配 Canvas/Immersive buffer。
-- 生产 gui-wmd 尚未处理 `0x67`；后续 Canvas/游戏消费刀必须先接线并保持 `VER_WM=1` 的 optional add-only 兼容策略。
+- 该边界为 P0 时点状态；P1 已处理 `0x67` 并保持 `VER_WM=1` / `0x60..=0x66` 帧型零漂。IME、a11y 批量传输与键盘/手柄生产者仍随后续刀。
 - a11y sidecar 的批量传输、订阅与树更新策略归后续 a11y 服务刀；P0 冻结单记录 codec、role/action/state 值域与形态不可缺席。
 - IME 服务与软键盘 UI 归后续输入/IME 刀；P0 只冻结 composition 帧。
 - F5 `uitest` 不需要发送 `0x67`：Retained 默认合约由 Berry Room 现有 WM/frame/input 链承载。

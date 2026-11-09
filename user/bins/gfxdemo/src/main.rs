@@ -219,6 +219,51 @@ fn wm_connect_process(broker: Handle, process: Handle) -> (Handle, Handle) {
     (local, input_local)
 }
 
+/// P1 反伪造负例：普通 app 自己 channel_pair、预载历史公开常量
+/// "BSESCAPE"，再把它作为 WM_CONNECT 第 4 handle 附上。per-boot seed 接线
+/// 后必须得到精确 1B ST_DENIED；若 wmd 接受，说明授权退化为自报。
+fn wm_connect_forged_surface_denied(broker: Handle, process: Handle) {
+    let mut local: Handle = 0;
+    let mut remote: Handle = 0;
+    let mut input_local: Handle = 0;
+    let mut input_remote: Handle = 0;
+    let mut token_sender: Handle = 0;
+    let mut token_receiver: Handle = 0;
+    let mut forge_process: Handle = 0;
+    if process == 0
+        || berry_channel_create(0, &mut local, &mut remote) != 0
+        || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
+        || berry_channel_create(0, &mut token_sender, &mut token_receiver) != 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut forge_process) != 0
+    {
+        fail("forged surface channels");
+    }
+    let public = [0x42, 0x53, 0x45, 0x53, 0x43, 0x41, 0x50, 0x45];
+    if berry_channel_send(
+        token_sender,
+        public.as_ptr(),
+        public.len(),
+        core::ptr::null(),
+        0,
+    ) != 0
+        || berry_handle_close(token_sender) != 0
+    {
+        fail("forged surface preload");
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let attach = [remote, input_remote, forge_process, token_receiver];
+    let m = enc_req(gp::encode_wm_connect_req(&mut req, gp::WM_CLIENT_APP));
+    let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(gp::ST_DENIED) => {}
+        other => fail(&format!("forged surface got {other:?}")),
+    }
+    let _ = berry_handle_close(local);
+    let _ = berry_handle_close(input_local);
+}
+
 /// 页取整帧 VMO（窗口局部 buffer；Phase 2 不再要求 app 分配全屏）。
 fn frame_vmo(w: usize, h: usize) -> (Handle, usize, usize) {
     let stride = w.checked_mul(4).unwrap_or_else(|| fail("tile stride overflow"));
@@ -352,11 +397,21 @@ fn main() {
         fail("wm self process");
     }
     let mut process2: Handle = 0;
-    if berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process2) != 0 || process2 == 0 {
+    let mut process3: Handle = 0;
+    let mut process4: Handle = 0;
+    if berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process2) != 0
+        || process2 == 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process3) != 0
+        || process3 == 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process4) != 0
+        || process4 == 0
+    {
         fail("wm self process dup");
     }
     let (hw, _input1) = wm_connect_process(broker, process);
     let (rogue, _input2) = wm_connect_process(broker, process2);
+    // P1：公开常量自铸 seed channel 必须在 broker 退役前被拒绝。
+    wm_connect_forged_surface_denied(broker, process3);
     // 两个 session 建立后 broker 才退役；后续业务全部走 owner 通道。
     close_h(broker);
 
@@ -424,6 +479,82 @@ fn main() {
     };
     let m = enc_req(gp::encode_wm_set_req(&mut req, &sreq));
     expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm set");
+
+    // P1 Surface escape 负例：普通 APP session 未携带 per-boot seed，
+    // 即使点名自己拥有的可见窗口，Canvas 也不得被授予；必须精确 1B
+    // ST_DENIED，绝不静默降级 Retained 或返回 20B 授予帧。
+    {
+        let surface_req = gp::surface::SurfaceModeReq {
+            surface_id: wid,
+            role: gp::surface::SURFACE_ROLE_APP,
+            mode: gp::surface::SURFACE_MODE_CANVAS,
+            input_classes: gp::surface::INPUT_CLASS_TOUCH | gp::surface::INPUT_CLASS_MOUSE,
+            ime_mode: gp::surface::IME_MODE_DISABLED,
+            a11y_mode: gp::surface::A11Y_MODE_HYBRID,
+        };
+        let m = enc_req(gp::surface::encode_wm_surface_mode_req(
+            &mut req, &surface_req,
+        ));
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+            Some(Err(gp::ST_DENIED)) => {}
+            other => fail(&format!("wm surface deny got {other:?} st={}", rep[0])),
+        }
+    }
+
+    // P1 服务侧拒面补充：foreign session 命名他人窗口必须 ST_NOENT；
+    // owner 隐藏后 0x67 也必须 ST_NOENT；0x67 附带 handle 是帧面错误。
+    {
+        let surface_req = gp::surface::SurfaceModeReq {
+            surface_id: wid,
+            role: gp::surface::SURFACE_ROLE_APP,
+            mode: gp::surface::SURFACE_MODE_CANVAS,
+            input_classes: gp::surface::INPUT_CLASS_TOUCH | gp::surface::INPUT_CLASS_MOUSE,
+            ime_mode: gp::surface::IME_MODE_DISABLED,
+            a11y_mode: gp::surface::A11Y_MODE_HYBRID,
+        };
+        let m = enc_req(gp::surface::encode_wm_surface_mode_req(
+            &mut req, &surface_req,
+        ));
+        let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+            Some(Err(gp::ST_NOENT)) => {}
+            other => fail(&format!("wm surface foreign got {other:?}")),
+        }
+
+        let hide = gp::WmSetReq {
+            mask: gp::WM_SET_F_VIS,
+            window_id: wid,
+            x: creq.x,
+            y: creq.y,
+            w: creq.w,
+            h: creq.h,
+            vis: gp::WM_VIS_HIDE,
+            z: 0,
+        };
+        let m = enc_req(gp::encode_wm_set_req(&mut req, &hide));
+        expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm hide");
+        let m = enc_req(gp::surface::encode_wm_surface_mode_req(
+            &mut req, &surface_req,
+        ));
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+            Some(Err(gp::ST_NOENT)) => {}
+            other => fail(&format!("wm surface hidden got {other:?}")),
+        }
+        let show = gp::WmSetReq { vis: gp::WM_VIS_SHOW, ..hide };
+        let m = enc_req(gp::encode_wm_set_req(&mut req, &show));
+        expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm show");
+
+        let m = enc_req(gp::surface::encode_wm_surface_mode_req(
+            &mut req, &surface_req,
+        ));
+        let (n, _) = rpc(hw, &req[..m], &[process4], &mut rep, &mut rhs);
+        match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+            Some(Err(gp::ST_BAD)) => {}
+            other => fail(&format!("wm surface handle got {other:?}")),
+        }
+    }
 
     // Phase 1 反 owner 负例：第二个 session 不得修改第一个 session 的窗。
     // 静默成功 / ST_BAD 都不合格，必须精确 ST_DENIED。

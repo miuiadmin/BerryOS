@@ -12,6 +12,8 @@ use berry_gfx::cmd::{CommandEncoder, GlyphPos};
 use berry_gfx::font::FontSize;
 use berry_room::{
     AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PHASE_UP, PointerEvent, RoomConfig, Sample,
+    SURFACE_A11Y_HYBRID, SURFACE_A11Y_REGIONS, SURFACE_IME_DISABLED,
+    SURFACE_INPUT_MOUSE, SURFACE_INPUT_TOUCH, SurfaceModeKind, SurfaceRequest,
     SYSTEM_FONT_ATLAS,
 };
 use berry_ui::sdk::{
@@ -322,6 +324,88 @@ impl AppModel {
         line.print(room);
     }
 
+    /// P1 Surface 真链：manifest 授权 → per-boot seed channel → Berry Room
+    /// 0x67 → wmd 授予 → buffer 借写 → SUBMIT。Canvas→Immersive 只在
+    /// 授权 session 内重协商，不降回 Retained。
+    fn assert_surface(&mut self, room: &mut AppRoom) {
+        // P1 授权前不得借出像素 buffer。
+        if !matches!(
+            room.surface_frame_mut(),
+            Err(berry_room::RoomError::SurfaceDenied)
+        ) {
+            fail(room, "surface buffer before grant");
+        }
+
+        // P1 fail-closed 负例：Keyboard 输入类在本刀无生产者，即使 session
+        // 已持 per-boot seed 也不得授予。
+        let unsupported = room.configure_surface(SurfaceRequest {
+            mode: SurfaceModeKind::Canvas,
+            input_classes: SURFACE_INPUT_TOUCH | (1 << 3),
+            ime_mode: SURFACE_IME_DISABLED,
+            a11y_mode: SURFACE_A11Y_HYBRID,
+        });
+        if !matches!(
+            unsupported,
+            Err(berry_room::RoomError::SurfaceUnsupported)
+        ) {
+            fail(room, "surface unsupported input");
+        }
+
+        let canvas = room
+            .configure_surface(SurfaceRequest {
+                mode: SurfaceModeKind::Canvas,
+                input_classes: SURFACE_INPUT_TOUCH | SURFACE_INPUT_MOUSE,
+                ime_mode: SURFACE_IME_DISABLED,
+                a11y_mode: SURFACE_A11Y_HYBRID,
+            })
+            .unwrap_or_else(|e| fail(room, e.as_str()));
+        if canvas.mode != SurfaceModeKind::Canvas
+            || canvas.contract_flags != 31
+            || canvas.scale_permille != 1000
+            || canvas.safe_left != 0
+            || canvas.safe_top != 0
+        {
+            fail(room, "canvas grant");
+        }
+        let canvas_seq = self.render_surface_fill(room, 0x30);
+
+        let immersive = room
+            .configure_surface(SurfaceRequest {
+                mode: SurfaceModeKind::Immersive,
+                input_classes: SURFACE_INPUT_TOUCH,
+                ime_mode: SURFACE_IME_DISABLED,
+                a11y_mode: SURFACE_A11Y_REGIONS,
+            })
+            .unwrap_or_else(|e| fail(room, e.as_str()));
+        if immersive.mode != SurfaceModeKind::Immersive
+            || immersive.contract_flags != 31
+            || immersive.scale_permille != 1000
+            || immersive.safe_right != 0
+            || immersive.safe_bottom != 0
+        {
+            fail(room, "immersive grant");
+        }
+        let immersive_seq = self.render_surface_fill(room, 0x60);
+        let mut line = Line::new(b"UITESTSURFACE ok modes=1,2 frames=");
+        line.push_u32(canvas_seq);
+        line.push(b",");
+        line.push_u32(immersive_seq);
+        line.push(b" flags=31 scale=1000 safe=0,0,0,0\n");
+        line.print(room);
+    }
+
+    fn render_surface_fill(&mut self, room: &mut AppRoom, byte: u8) -> u32 {
+        match room.surface_frame_mut() {
+            Ok(frame) => frame.fill(byte),
+            Err(e) => fail(room, e.as_str()),
+        }
+        self.frame_seq = self.frame_seq.saturating_add(1);
+        if let Err(e) = room.submit(self.frame_seq) {
+            fail(room, e.as_str());
+        }
+        self.frame_seq
+    }
+
     fn replace_page(&mut self, room: &mut AppRoom, index: u8) {
         if self.ui.remove(self.page.scaffold.root).is_err() {
             fail(room, "page remove");
@@ -498,6 +582,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let config = RoomConfig {
         argv0: b"bin/uitest",
         uses_fs: false,
+        surface_escape: true,
     };
     let mut room = match AppRoom::connect(env_ch, config) {
         Ok(room) => room,
@@ -580,6 +665,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         app.switch_on = false;
         app.replace_page(&mut room, 0);
         app.assert_clip(&mut room);
+        app.assert_surface(&mut room);
         room.print(b"UITESTPROBE ok\n");
     } else {
         let (x, y) = wait_two_clicks(&mut app, &mut room);
@@ -594,6 +680,12 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
 
     if room.destroy().is_err() {
         fail(&room, "destroy");
+    }
+    if !matches!(
+        room.surface_frame_mut(),
+        Err(berry_room::RoomError::SurfaceDenied)
+    ) {
+        fail(&room, "surface buffer after destroy");
     }
     room.print(b"UITESTDESTROY ok\n");
     room.print(b"UITESTEXIT ok\n");

@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F7 的 Files 与 Contacts 迁移规格。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，宿主范式见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，Settings 先例见 [BerrySettings-F6迁移-v1.0.md](BerrySettings-F6迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
+> 定位：GUI F7 的 Files 与 Contacts 迁移规格。执行序权威 = [GUI框架地基路线-v1.5.md](GUI框架地基路线-v1.5.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，宿主范式见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，Settings 先例见 [BerrySettings-F6迁移-v1.0.md](BerrySettings-F6迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
 
 ## §1 迁移结果
 
@@ -267,5 +267,5 @@ SHA-256 = c85bd31db67a262abcc098617906464946a093fec2cc31cf2d4da99841e4ff58
 - Files 仍只读；无写、删、搜索、权限管理或持久化。
 - Contacts 仍只读；无拨号、短信、编辑或系统联系人服务。
 - F7 时点嵌套 clipping 归后续刀；C1 已落地结构性 Clip，两 app 继续经 ScrollView 自动获得裁剪。
-- CanvasSurface / immersive buffer 未开放；两 app 走 P0 Retained 路径。
+- F7 时点 CanvasSurface / immersive buffer 未开放；P1 已接线，但两 app 仍走 Retained 路径。
 - `berry-nshfont` 在 F7 时点仍被 Browser/Photos 引用；F8 后无 GUI app 消费者，F9 已删除。

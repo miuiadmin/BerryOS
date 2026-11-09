@@ -113,6 +113,10 @@ pub const OP_WM_CONNECT: u8 = 0x66;
 /// 形态与语义旁车；成功应答 = host 授予的安全区/scale/合约位，错误沿用
 /// 1B 状态。
 pub const OP_WM_SURFACE_MODE: u8 = 0x67;
+/// P1 内部 bootstrap op：svcmgr 在任何 app broker 端被 dup/赠出前，把
+/// per-boot Surface escape seed 预共享给 gui-wmd（9B，无随行 handle）。
+/// wmd 只接受一次；重复/迟到的 seed op 按普通 broker 非法帧 fail closed。
+pub const OP_WM_SURFACE_ESCAPE_SEED: u8 = 0x68;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 

@@ -16,7 +16,8 @@
 //! 继续走 present VOTE，不在本模块复制。
 
 use super::{
-    le16, st_known, OP_WM_SURFACE_MODE, ST_OK,
+    le16, st_known, OP_WM_SURFACE_ESCAPE_SEED, OP_WM_SURFACE_MODE, ST_BAD, ST_DENIED,
+    ST_OK, ST_UNSUPPORTED,
 };
 
 /// Surface 角色：普通 app surface。三条 P0 路径都在该角色下。
@@ -81,6 +82,9 @@ pub const SURFACE_FLAG_KNOWN: u8 = SURFACE_F_FOCUS
 pub const SCALE_PERMILLE_MIN: u16 = 500;
 /// scale 上界（4.0×）。
 pub const SCALE_PERMILLE_MAX: u16 = 4_000;
+
+/// P1 seed 控制帧长（op + 8B per-boot seed）。
+pub const SURFACE_ESCAPE_SEED_REQ_LEN: usize = 9;
 
 /// WM Surface Mode 请求帧长。
 pub const SURFACE_MODE_REQ_LEN: usize = 8;
@@ -265,8 +269,88 @@ pub fn surface_mode_info_fits(info: &SurfaceModeInfo, width: u32, height: u32) -
     left.saturating_add(right) < width && top.saturating_add(bottom) < height
 }
 
+/// P1 production 授予策略（host 可测；gui-wmd 直接消费）：
+/// - 无 escape 授权的 Canvas/Immersive → ST_DENIED；
+/// - Keyboard/Gamepad/IME Host 无生产者或服务 → ST_UNSUPPORTED；
+/// - escape→escape 可重协商，降回 Retained → ST_DENIED；
+/// - safe=0、scale=1000，合约位按 P0 精确生成。
+pub fn surface_mode_production_policy(
+    req: SurfaceModeReq,
+    escape: bool,
+    old: Option<SurfaceModeInfo>,
+    display_w: u32,
+    display_h: u32,
+) -> Result<SurfaceModeInfo, u8> {
+    if !surface_mode_req_app_valid(&req) {
+        return Err(ST_DENIED);
+    }
+    let wants_escape = req.mode == SURFACE_MODE_CANVAS || req.mode == SURFACE_MODE_IMMERSIVE;
+    if wants_escape && !escape {
+        return Err(ST_DENIED);
+    }
+    if req.input_classes & (INPUT_CLASS_KEYBOARD | INPUT_CLASS_GAMEPAD) != 0
+        || req.ime_mode == IME_MODE_HOST
+    {
+        return Err(ST_UNSUPPORTED);
+    }
+    if let Some(old) = old {
+        let old_escape = old.mode == SURFACE_MODE_CANVAS || old.mode == SURFACE_MODE_IMMERSIVE;
+        if old_escape && !wants_escape {
+            return Err(ST_DENIED);
+        }
+    }
+    let mandatory = SURFACE_F_FOCUS | SURFACE_F_RATE | SURFACE_F_CLEANUP | SURFACE_F_A11Y;
+    let info = SurfaceModeInfo {
+        surface_id: req.surface_id,
+        role: req.role,
+        mode: req.mode,
+        input_classes: req.input_classes,
+        ime_mode: req.ime_mode,
+        a11y_mode: req.a11y_mode,
+        contract_flags: if wants_escape {
+            mandatory | SURFACE_F_ESCAPE
+        } else {
+            mandatory
+        },
+        scale_permille: 1000,
+        safe_left: 0,
+        safe_top: 0,
+        safe_right: 0,
+        safe_bottom: 0,
+    };
+    if !surface_mode_grant_matches(&req, &info)
+        || !surface_mode_info_fits(&info, display_w, display_h)
+    {
+        return Err(ST_BAD);
+    }
+    Ok(info)
+}
+
 fn put16(out: &mut [u8], off: usize, v: u16) {
     out[off..off + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// 编码 P1 per-boot escape seed 控制帧。seed 不进入任何公开常量；由
+/// svcmgr 启动期生成并只在预共享时走此帧。
+pub fn encode_wm_surface_escape_seed_req(
+    out: &mut [u8], seed: &[u8; 8],
+) -> Option<usize> {
+    let m = out.get_mut(..SURFACE_ESCAPE_SEED_REQ_LEN)?;
+    m[0] = OP_WM_SURFACE_ESCAPE_SEED;
+    m[1..9].copy_from_slice(seed);
+    Some(SURFACE_ESCAPE_SEED_REQ_LEN)
+}
+
+/// 解析 P1 escape seed 控制帧；长度/op/保留面全部严格。
+pub fn parse_wm_surface_escape_seed_req(buf: &[u8]) -> Option<[u8; 8]> {
+    if buf.len() != SURFACE_ESCAPE_SEED_REQ_LEN
+        || buf[0] != OP_WM_SURFACE_ESCAPE_SEED
+    {
+        return None;
+    }
+    let mut seed = [0u8; 8];
+    seed.copy_from_slice(&buf[1..9]);
+    Some(seed)
 }
 
 /// 编码 WM Surface Mode 请求（恰 8B：
@@ -602,6 +686,7 @@ pub fn parse_a11y_region(buf: &[u8]) -> Option<A11yRegion> {
 }
 
 const _: () = assert!(SURFACE_MODE_REQ_LEN == 8);
+const _: () = assert!(SURFACE_ESCAPE_SEED_REQ_LEN == 9);
 const _: () = assert!(SURFACE_MODE_REP_LEN == 20);
 const _: () = assert!(IME_TEXT_MAX == 64);
 const _: () = assert!(IME_COMPOSITION_LEN == 12 + IME_TEXT_MAX);

@@ -87,7 +87,55 @@ impl GlyphAtlas for SystemFontAtlas {
 pub struct RoomConfig {
     pub argv0: &'static [u8],
     pub uses_fs: bool,
+    /// manifest `surface_escape=true` 时为 true；connect 会把 svcmgr 铸
+    /// 的 per-boot seed 随 WM_CONNECT 迁给 wmd。
+    pub surface_escape: bool,
 }
+
+/// App 可声明的 Surface 形态（Berry Room 安全子集，不暴露 wire codec）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceModeKind {
+    Retained,
+    Canvas,
+    Immersive,
+}
+
+/// Surface 请求语义。授权 token 由 Room 在 connect 期迁移；app 只见枚举。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceRequest {
+    pub mode: SurfaceModeKind,
+    pub input_classes: u8,
+    pub ime_mode: u8,
+    pub a11y_mode: u8,
+}
+
+/// Host 授予结果（safe area/scale 只读）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceGrant {
+    pub mode: SurfaceModeKind,
+    pub input_classes: u8,
+    pub ime_mode: u8,
+    pub a11y_mode: u8,
+    pub contract_flags: u8,
+    pub scale_permille: u16,
+    pub safe_left: u16,
+    pub safe_top: u16,
+    pub safe_right: u16,
+    pub safe_bottom: u16,
+}
+
+/// Touch 输入类位。
+pub const SURFACE_INPUT_TOUCH: u8 = 1 << 0;
+/// Stylus 输入类位。
+pub const SURFACE_INPUT_STYLUS: u8 = 1 << 1;
+/// Mouse 输入类位。
+pub const SURFACE_INPUT_MOUSE: u8 = 1 << 2;
+/// IME Disabled。
+pub const SURFACE_IME_DISABLED: u8 = 0;
+/// a11y Hybrid（BerryUI 外壳 + canvas 区域）。
+pub const SURFACE_A11Y_HYBRID: u8 = 2;
+/// a11y Regions。
+pub const SURFACE_A11Y_REGIONS: u8 = 1;
 
 /// 从 APP env 块解析出的基础能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +146,7 @@ pub struct RoomEnv {
     pub vmar: Handle,
     pub broker: Handle,
     pub fs: Handle,
+    pub surface_token: Handle,
 }
 
 /// 宿主错误。调用方应打印诊断并以非 0 退出；本 crate 不 panic。
@@ -122,6 +171,9 @@ pub enum RoomError {
     Window,
     Destroy,
     Table,
+    SurfaceDenied,
+    SurfaceUnsupported,
+    SurfaceBad,
 }
 
 pub type RoomResult<T> = Result<T, RoomError>;
@@ -154,6 +206,9 @@ impl RoomError {
             Self::Window => "window",
             Self::Destroy => "destroy",
             Self::Table => "table",
+            Self::SurfaceDenied => "surface denied",
+            Self::SurfaceUnsupported => "surface unsupported",
+            Self::SurfaceBad => "surface bad",
         }
     }
 }
@@ -262,6 +317,15 @@ impl RoomEnv {
         }
         let minimum = if config.uses_fs { 7 } else { 5 };
         let broker_index = if config.uses_fs { 6 } else { 4 };
+        let surface_token = if config.surface_escape {
+            let token_index = broker_index + 1;
+            if nhandles <= token_index || handles[token_index] == 0 {
+                return Err(RoomError::Env);
+            }
+            handles[token_index]
+        } else {
+            0
+        };
         if nhandles < minimum
             || nbytes <= config.argv0.len()
             || &blob[..config.argv0.len()] != config.argv0
@@ -283,6 +347,7 @@ impl RoomEnv {
             vmar: handles[3],
             broker: handles[broker_index],
             fs: if config.uses_fs { handles[5] } else { 0 },
+            surface_token,
         })
     }
 }
@@ -301,7 +366,27 @@ pub struct AppRoom {
     stride: usize,
     frame_bytes: usize,
     frame_map_len: usize,
+    surface: Option<gp::surface::SurfaceModeInfo>,
     opened: bool,
+}
+
+fn surface_grant_from_info(info: &gp::surface::SurfaceModeInfo) -> SurfaceGrant {
+    SurfaceGrant {
+        mode: match info.mode {
+            gp::surface::SURFACE_MODE_CANVAS => SurfaceModeKind::Canvas,
+            gp::surface::SURFACE_MODE_IMMERSIVE => SurfaceModeKind::Immersive,
+            _ => SurfaceModeKind::Retained,
+        },
+        input_classes: info.input_classes,
+        ime_mode: info.ime_mode,
+        a11y_mode: info.a11y_mode,
+        contract_flags: info.contract_flags,
+        scale_permille: info.scale_permille,
+        safe_left: info.safe_left,
+        safe_top: info.safe_top,
+        safe_right: info.safe_right,
+        safe_bottom: info.safe_bottom,
+    }
 }
 
 impl AppRoom {
@@ -315,8 +400,19 @@ impl AppRoom {
         let mut rhs = [0 as Handle; 8];
         let n = gp::encode_wm_connect_req(&mut request, gp::WM_CLIENT_APP)
             .ok_or(RoomError::Encode)?;
-        let attach = [wm_peer, input_peer, env.process];
-        let (n, nhandles) = rpc(env.broker, &request[..n], &attach, &mut reply, &mut rhs)?;
+        let attach = if config.surface_escape {
+            [wm_peer, input_peer, env.process, env.surface_token]
+        } else {
+            [wm_peer, input_peer, env.process, 0]
+        };
+        let attach_count = if config.surface_escape { 4 } else { 3 };
+        let (n, nhandles) = rpc(
+            env.broker,
+            &request[..n],
+            &attach[..attach_count],
+            &mut reply,
+            &mut rhs,
+        )?;
         if gp::parse_wm_connect_rep(&reply[..n]).is_none()
             || nhandles != 1
             || rhs[0] == 0
@@ -354,6 +450,7 @@ impl AppRoom {
             stride: 0,
             frame_bytes: 0,
             frame_map_len: 0,
+            surface: None,
             opened: false,
         })
     }
@@ -397,6 +494,64 @@ impl AppRoom {
                 berry_process_exit(134);
             }
         }
+    }
+
+    /// P1：对当前窗口显式协商 Surface Mode。普通 Room 未携带 escape
+    /// token 时，wmd 对 Canvas/Immersive 返回 1B 拒绝；本 Room 不自报
+    /// System role，不携带 safe area/scale。
+    pub fn configure_surface(&mut self, request: SurfaceRequest) -> RoomResult<SurfaceGrant> {
+        if !self.opened || self.window == 0 {
+            return Err(RoomError::Window);
+        }
+        let mode = match request.mode {
+            SurfaceModeKind::Retained => gp::surface::SURFACE_MODE_RETAINED,
+            SurfaceModeKind::Canvas => gp::surface::SURFACE_MODE_CANVAS,
+            SurfaceModeKind::Immersive => gp::surface::SURFACE_MODE_IMMERSIVE,
+        };
+        let wire = gp::surface::SurfaceModeReq {
+            surface_id: self.window,
+            role: gp::surface::SURFACE_ROLE_APP,
+            mode,
+            input_classes: request.input_classes,
+            ime_mode: request.ime_mode,
+            a11y_mode: request.a11y_mode,
+        };
+        let mut buf = [0u8; gp::surface::SURFACE_MODE_REQ_LEN];
+        let n = gp::surface::encode_wm_surface_mode_req(&mut buf, &wire)
+            .ok_or(RoomError::Encode)?;
+        let mut reply = [0u8; 256];
+        let mut handles = [0 as Handle; 8];
+        let (n, nhandles) = rpc(self.wm, &buf[..n], &[], &mut reply, &mut handles)?;
+        if nhandles != 0 {
+            return Err(RoomError::Decode);
+        }
+        let info = match gp::surface::parse_wm_surface_mode_rep(&reply[..n]) {
+            Some(Ok(info)) => info,
+            Some(Err(gp::ST_UNSUPPORTED)) => return Err(RoomError::SurfaceUnsupported),
+            Some(_) => return Err(RoomError::SurfaceDenied),
+            None => return Err(RoomError::SurfaceBad),
+        };
+        if !gp::surface::surface_mode_grant_matches(&wire, &info)
+            || !gp::surface::surface_mode_info_fits(
+                &info,
+                self.width as u32,
+                self.height as u32,
+            )
+        {
+            return Err(RoomError::SurfaceBad);
+        }
+        self.surface = Some(info);
+        Ok(surface_grant_from_info(&info))
+    }
+
+    /// 当前窗口物理像素尺寸（safe area 未扣除）。
+    pub fn window_size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// 最近一次显式 Surface 授予；None = 默认 Retained。
+    pub fn surface_grant(&self) -> Option<SurfaceGrant> {
+        self.surface.map(|i| surface_grant_from_info(&i))
     }
 
     /// 创建全屏窗口并映射局部 frame VMO。返回 `(width, height)`。
@@ -495,8 +650,10 @@ impl AppRoom {
         Ok(dl.len())
     }
 
-    /// 借出窗口局部 XRGB buffer。宿主不写它；业务渲染归上层 UI/光栅。
-    pub fn frame_mut(&mut self) -> RoomResult<&mut [u8]> {
+    /// 借出窗口局部 XRGB buffer。P1 起私有：Retained 只能经
+    /// `render_display_list` 写入；业务像素写入必须先取得 Canvas/Immersive
+    /// 授权，再走 `surface_frame_mut`。
+    fn frame_mut(&mut self) -> RoomResult<&mut [u8]> {
         if !self.opened {
             return Err(RoomError::Window);
         }
@@ -505,6 +662,16 @@ impl AppRoom {
         Ok(unsafe {
             core::slice::from_raw_parts_mut(FRAME_VA as *mut u8, self.frame_bytes)
         })
+    }
+
+    /// P1：授权 Canvas/Immersive 的像素借用。返回 XRGB 窗口 buffer，
+    /// stride/映射/VMO handle 均留在 Room；Retained app 调用恒拒绝。
+    pub fn surface_frame_mut(&mut self) -> RoomResult<&mut [u8]> {
+        match self.surface.map(|i| i.mode) {
+            Some(gp::surface::SURFACE_MODE_CANVAS)
+            | Some(gp::surface::SURFACE_MODE_IMMERSIVE) => self.frame_mut(),
+            _ => Err(RoomError::SurfaceDenied),
+        }
     }
 
     /// SUBMIT → FRAME_CALLBACK → RELEASE_WAIT。返回 frame token。
@@ -657,6 +824,7 @@ impl AppRoom {
             return Err(RoomError::Destroy);
         }
         self.opened = false;
+        self.surface = None;
         self.input = 0;
         self.wm = 0;
         self.frame_vmo = 0;

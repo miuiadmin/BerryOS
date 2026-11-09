@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.4**｜2026-11-08
+> 版本：**1.5**｜2026-11-08
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -111,6 +111,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **F8 Photos/Browser 迁移** | 图像网格、查看页、URL pill、诚实状态页迁移 | 5000B 图像与 owner-local 输入真链保留 |
 | **F9 收口与守卫（已落地）** | 删除迁移期重复客户端，静态守卫入 CI | 已迁移普通 Native Shell app 无直接 syscall/WM/VMO/stride/像素绘制；专业或游戏 renderer 的像素算法只能出现在 P0 授权 CanvasSurface/immersive surface 之后；rootfs 在帽内；文档与 SDK 示例同步 |
 | **C1 嵌套视口裁剪（已落地）** | BerryGFX `PushClip/PopClip` + BerryUI 结构性 `Clip` kind，ScrollView/Swipe 迁移 | 嵌套/兄弟溢出像素零泄漏；滚出视口子树不可命中；AST add-only 且旧流零漂；damage 只保持安全超集或收紧到 Clip 链；普通 app 不得直录 gfx Clip 命令 |
+| **P1 Surface Mode 生产接线（已落地）** | manifest escape capability + svcmgr per-boot seed + Berry Room 0x67/buffer 借用 + gui-wmd 服务分发 | Canvas/Immersive 只能经 per-boot seed 授权与 Berry Room 获得；普通 APP escape 恒拒；无生产者的 Keyboard/Gamepad/IME Host 恒拒；buffer/stride/VMO 不出 Room；六 BerryUI 真链零回退 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

@@ -61,7 +61,7 @@ use berry_guiproto as gp;
 // 编解码——段① 落库，本刀接 serve 消费侧）。
 use berry_appproto as appp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -395,6 +395,10 @@ static WMD_PUSH_B: AtomicU32 = AtomicU32::new(0);
 /// 续走 = 双读者应答互截违 D3——关门即装配门永闭，正确降级）。0 = wmd
 /// 未起，launcher 装配静默跳过（rootfs 形恒 0）。
 static WMD_CLI_DUP: AtomicU32 = AtomicU32::new(0);
+/// P1 Surface escape per-boot seed。0 = wmd 未起/未预共享；不进任何公开
+/// 常量或 app 包。svcmgr 在 WMD broker 端被 dup 给任何 app 前，用原始
+/// w_cli 完成 0x68 预共享并等待 wmd ack。
+static SURFACE_ESCAPE_SEED: AtomicU64 = AtomicU64::new(0);
 
 // ---- GUI-8 段②：app 域常驻 serve + launcher 监督（裁决二/四-d）----
 
@@ -427,6 +431,10 @@ static mut LAUNCHER_CHILD: Option<ChildHandles> = None;
 /// 帽后再生崩溃 = eco 行 loud 终报不再试（循环重启风暴比不重启更伤稳态
 /// ——kill criteria 5 的对面）。
 static LAUNCHER_RESTARTED: AtomicU32 = AtomicU32::new(0);
+
+/// P1 Surface escape 特权 allowlist（与 tools/mkapp.py / gui_guard.py 双侧
+/// 同步）：manifest 声明不足以授权，未列 app 运行期不铸 token。
+const SURFACE_ESCAPE_APPS: &[&[u8]] = &[b"UITEST"];
 
 /// SPAWN RPC 活子表帽（M-C）：GUI app 分钟级活期 × 4 槽 = 同时活 app 上
 /// 限；满表拒新不拒旧（洪泛面：launcher 端重复点击防抖归 launcher，本帽
@@ -776,6 +784,13 @@ fn run_rootfs_child(console: Handle) {
                     // 标志——present_cli 0 值跳过同款）；push_cli 交 inputd
                     // arm（WMD_PUSH_B 留表即留命——EFI 相 inputd 未拉起则
                     // 恒滞 static 保活）。
+                    // P1：先在原始 broker 端预共享 per-boot seed 并等 ack，
+                    // 然后才建立可 dup 给 app 的 WMD_CLI_DUP。wmd 因此只接受
+                    // 一次 seed，app 无法用公开常量自铸。
+                    SURFACE_ESCAPE_SEED.store(
+                        share_surface_escape_seed(w_cli),
+                        Ordering::Relaxed,
+                    );
                     wm_cli = w_cli;
                     WMD_PUSH_B.store(push_cli, Ordering::Relaxed);
                     // GUI-8 段②：dup 一枚 wm 客户端端落 WMD_CLI_DUP 留表
@@ -3773,6 +3788,48 @@ fn roundtrip(h: Handle, buf: &mut [u8; 8], req: &[u8; 8]) {
     }
 }
 
+/// 生成并发送 per-boot Surface escape seed，阻塞等 wmd 1B OK 后返回。
+/// 种子混合 wmd 启动时序与本地 handle 值；无公开常量可抄。
+fn share_surface_escape_seed(w_cli: Handle) -> u64 {
+    let mut seed = now() ^ u64::from(w_cli).rotate_left(32);
+    seed ^= seed.rotate_left(17).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    if seed == 0 {
+        seed = 0x6D2B_79F5_24D5_C58D;
+    }
+    let mut req = [0u8; gp::surface::SURFACE_ESCAPE_SEED_REQ_LEN];
+    let n = match gp::surface::encode_wm_surface_escape_seed_req(
+        &mut req,
+        &seed.to_le_bytes(),
+    ) {
+        Some(n) => n,
+        None => trap(),
+    };
+    send_retry(w_cli, req.as_ptr(), n);
+    let mut rep = [0u8; 1];
+    let mut nb = 1usize;
+    let mut nh = 0usize;
+    loop {
+        let status = berry_channel_recv(
+            w_cli,
+            rep.as_mut_ptr(),
+            &mut nb,
+            core::ptr::null_mut(),
+            &mut nh,
+        );
+        if status == 0 {
+            break;
+        }
+        if status != BERRY_ERR_AGAIN {
+            trap();
+        }
+        wait(w_cli, SIGNAL_READABLE);
+    }
+    if nb != 1 || nh != 0 || rep[0] != gp::ST_OK {
+        trap();
+    }
+    seed
+}
+
 /// 发送（满 -EBUSY → wait WRITABLE 腾位重试；其余自陷）。
 fn send_retry(h: Handle, buf: *const u8, len: usize) {
     loop {
@@ -4597,9 +4654,87 @@ fn app_launch(
             return (false, uface, None);
         }
     }
+    // P1 Surface escape 运行期 allowlist：未列 app 即使 manifest 声明也不铸
+    // token（防绕过宿主静态守卫的第三方 .bap 直接获取特权）。
+    if man.surface_escape && !SURFACE_ESCAPE_APPS.iter().any(|x| *x == id) {
+        if wants_fs
+            && (berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0)
+        {
+            trap();
+        }
+        if wants_wm && berry_handle_close(wm_dup) != 0 {
+            trap();
+        }
+        if out_s != 0
+            && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+        {
+            trap();
+        }
+        eco_app(console, id, b"surface denied");
+        return (false, uface, None);
+    }
+
+    let surface_seed_value = SURFACE_ESCAPE_SEED.load(Ordering::Relaxed);
+    if man.surface_escape && surface_seed_value == 0 {
+        if wants_fs
+            && (berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0)
+        {
+            trap();
+        }
+        if wants_wm && berry_handle_close(wm_dup) != 0 {
+            trap();
+        }
+        if out_s != 0
+            && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+        {
+            trap();
+        }
+        eco_app(console, id, b"surface seed");
+        return (false, uface, None);
+    }
+
+    // P1 Surface escape：svcmgr 按 manifest 铸一次性预载 token。sender 在
+    // 消息入队后即关；receiver 是 app 唯一可迁授权，Berry Room 在
+    // WM_CONNECT 随行交给 wmd 消费。普通 app 无 token，0x67 escape 恒拒。
+    let mut escape_token: Handle = 0;
+    if wants_wm && man.surface_escape {
+        let (token_sender, token_receiver) = channel_pair();
+        if berry_channel_send(
+            token_sender,
+            surface_seed_value.to_le_bytes().as_ptr(),
+            core::mem::size_of::<u64>(),
+            core::ptr::null(),
+            0,
+        ) != 0
+        {
+            let _ = berry_handle_close(token_sender);
+            let _ = berry_handle_close(token_receiver);
+            if wants_fs
+                && (berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0)
+            {
+                trap();
+            }
+            if berry_handle_close(wm_dup) != 0 {
+                trap();
+            }
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+            eco_app(console, id, b"surface token");
+            return (false, uface, None);
+        }
+        if berry_handle_close(token_sender) != 0 {
+            trap();
+        }
+        escape_token = token_receiver;
+    }
+
     // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）。
-    // 前缀纪律：fs 双件 [rootfs,fs]、wm 单件随后；空前缀不引用 0 洞。
-    let mut extra_gifts = [0 as Handle; 3];
+    // 前缀纪律：fs 双件 [rootfs,fs]、wm 与 escape token 随后；空前缀不引
+    // 用 0 洞。base 4 + fs2 + wm1 + token1 = 8，恰 CHAN_HND_MAX 总帽。
+    let mut extra_gifts = [0 as Handle; 4];
     let mut extra_n = 0usize;
     if wants_fs {
         extra_gifts[extra_n] = rootfs_dup;
@@ -4608,6 +4743,10 @@ fn app_launch(
     }
     if wants_wm {
         extra_gifts[extra_n] = wm_dup;
+        extra_n += 1;
+    }
+    if escape_token != 0 {
+        extra_gifts[extra_n] = escape_token;
         extra_n += 1;
     }
     let extra_gifts = &extra_gifts[..extra_n];
@@ -4645,6 +4784,9 @@ fn app_launch(
                 }
             }
             if wants_wm && berry_handle_close(wm_dup) != 0 {
+                trap();
+            }
+            if escape_token != 0 && berry_handle_close(escape_token) != 0 {
                 trap();
             }
             if ledger {

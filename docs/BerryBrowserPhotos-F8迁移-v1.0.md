@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F8 的 Browser 与 Photos 迁移规格。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，宿主范式见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，F7 先例见 [BerryFilesContacts-F7迁移-v1.0.md](BerryFilesContacts-F7迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
+> 定位：GUI F8 的 Browser 与 Photos 迁移规格。执行序权威 = [GUI框架地基路线-v1.5.md](GUI框架地基路线-v1.5.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，宿主范式见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，F7 先例见 [BerryFilesContacts-F7迁移-v1.0.md](BerryFilesContacts-F7迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
 
 ## §1 迁移结果
 
@@ -319,5 +319,5 @@ SHA-256 = 40c87b4bdd232e1ea1f27570cda91b2e58ae107bc365624e70064c763b3e9fb3
 - Photos 仍无相机、编辑、相册管理、云图或持久收藏。
 - Files/Contacts 仍保持 F7 的只读边界。
 - F8 时点嵌套 clipping 归后续刀；C1 已落地结构性 Clip。
-- CanvasSurface / immersive buffer 未开放；两 app 走 P0 Retained 路径。
+- F8 时点 CanvasSurface / immersive buffer 未开放；P1 已接线，但两 app 仍走 Retained 路径。
 - `berry-nshfont` 已无 GUI app 消费者；F9 已删除并落地 `gui-boundary-guard`。

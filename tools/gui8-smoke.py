@@ -170,6 +170,7 @@ MARK_UITEST_ROOM = "UITESTROOM ok"
 MARK_UITEST_WIN = "UITESTWIN ok w="
 MARK_UITEST_FRAME = "UITESTFRAME ok"
 MARK_UITEST_CLIP = "UITESTCLIP ok"
+MARK_UITEST_SURFACE = "UITESTSURFACE ok"
 MARK_UITEST_PROBE = "UITESTPROBE ok"
 MARK_UITEST_INPUT = "UITESTINPUT ok x="
 MARK_UITEST_DESTROY = "UITESTDESTROY ok"
@@ -1400,6 +1401,13 @@ def verify_uitest_normal(
     )
     _require_exact_count(text, "UITESTRENDER ok seq=", 10, "normal UITEST render", log_path)
     _require_exact_count(text, MARK_UITEST_CLIP, 2, "normal UITEST clip", log_path)
+    _require_exact_count(
+        text,
+        "UITESTSURFACE ok modes=1,2 frames=8,9 flags=31 scale=1000 safe=0,0,0,0",
+        1,
+        "normal UITEST surface",
+        log_path,
+    )
     _require_exact_count(text, "UITESTSTATE ok page=1", 2, "normal UITEST push", log_path)
     _require_exact_count(text, "UITESTBACK ok page=0", 2, "normal UITEST pop", log_path)
     if not re.search(r"UITESTWIN ok w=1080 h=1920", text):
@@ -3543,6 +3551,8 @@ def self_test(args) -> int:
             "UITESTRENDER ok seq=7 cmds=25\n"
             "UITESTCLIP ok port=12,377,1056,24 item=12,377,1056,72 "
             "probe=540,409 seq=7\n"
+            "UITESTSURFACE ok modes=1,2 frames=8,9 flags=31 scale=1000 "
+            "safe=0,0,0,0\n"
             f"{MARK_UITEST_PROBE}\n{MARK_UITEST_DESTROY}\n"
             f"{MARK_UITEST_EXIT}\n"
         )
@@ -3568,6 +3578,35 @@ def self_test(args) -> int:
         fake_u = uitest_boot + uitest_runtime
         snap_u = len(uitest_boot)
         verify_uitest_normal(fake_u, snap_u, 1)
+        expect_error(
+            "UITEST Surface 合约位造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("flags=31 scale=1000", "flags=30 scale=1000", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST Surface marker 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTSURFACE ok modes=1,2 frames=8,9 flags=31 scale=1000 "
+                    "safe=0,0,0,0\n",
+                    "UITESTSURFACE ok modes=1,2 frames=8,9 flags=31 scale=1000 "
+                    "safe=0,0,0,0\n"
+                    "UITESTSURFACE ok modes=1,2 frames=8,9 flags=31 scale=1000 "
+                    "safe=0,0,0,0\n",
+                    1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺 Surface 真链",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTSURFACE ok modes=1,2 frames=8,9", "", 1),
+                snap_u, 1,
+            ),
+        )
         expect_error(
             "UITEST 缺 reset Clip proof",
             lambda: verify_uitest_normal(

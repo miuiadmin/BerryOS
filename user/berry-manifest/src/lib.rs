@@ -305,6 +305,9 @@ pub struct Manifest<'a> {
     /// GUI Browser Native Shell 面：wm broker 端点授能（缺省 false——旧包
     /// 零漂移；appd 在位时才把 WMD client 端 fresh dup 给 app）。
     pub wm: bool,
+    /// P1 Surface escape 面：svcmgr 预载 per-boot seed 随 WM_CONNECT 附带。
+    /// 缺省 false；为 true 时必须同时 `wm=true`。
+    pub surface_escape: bool,
     pub stack_pages: u32,
     pub intent: Intent,
     // ---- SDK-1a 增量（add-only：缺省全 None = v0 旧包路径零漂移）----
@@ -384,6 +387,7 @@ struct Fields<'a> {
     intent: Option<Intent>,
     console: Option<bool>,
     wm: Option<bool>,
+    surface_escape: Option<bool>,
     stack_pages: Option<u32>,
     // SDK-1a 增量槽（齐备或齐缺的裁断在收尾）
     c_min: Option<SdkVer>,
@@ -593,6 +597,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         intent: None,
         console: None,
         wm: None,
+        surface_escape: None,
         stack_pages: None,
         c_min: None,
         c_target: None,
@@ -701,6 +706,12 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
                 }
                 f.wm = Some(parse_bool(val).ok_or_else(|| err("bad value"))?);
             }
+            (Sec::Caps, b"surface_escape") => {
+                if f.surface_escape.is_some() {
+                    return Err(err("dup key"));
+                }
+                f.surface_escape = Some(parse_bool(val).ok_or_else(|| err("bad value"))?);
+            }
             (Sec::Caps, b"fs") => set_scope(&mut f.fs, val, FS_SCOPES)?,
             (Sec::Caps, b"net") => set_scope(&mut f.net, val, NET_SCOPES)?,
             (Sec::Run, b"stack_pages") => {
@@ -765,6 +776,10 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
     let intent = f.intent.ok_or_else(|| err("missing intent"))?;
     let console = f.console.ok_or_else(|| err("missing console"))?;
     let wm = f.wm.unwrap_or(false);
+    let surface_escape = f.surface_escape.unwrap_or(false);
+    if surface_escape && !wm {
+        return Err(err("surface wm"));
+    }
 
     // ---- SDK-1a 收尾：三值/两键「齐备或齐缺」+ 缺省 None（add-only）----
     let compat = match (f.c_min, f.c_target, f.c_compile) {
@@ -801,6 +816,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         entry: from_utf8(entry).unwrap_or(""),
         console,
         wm,
+        surface_escape,
         stack_pages: f.stack_pages.unwrap_or(STACK_PAGES_DEFAULT),
         intent,
         compat,
@@ -839,6 +855,41 @@ stack_pages = 16
 
     fn bad(s: &str) -> ManifestErr {
         parse(s.as_bytes()).expect_err("parse err")
+    }
+
+    #[test]
+    fn surface_escape_requires_wm_and_defaults_false() {
+        let plain = ok(BASE);
+        assert!(!plain.wm);
+        assert!(!plain.surface_escape);
+
+        let escaped_source = BASE.replace(
+            "[capabilities]\nconsole = true",
+            "[capabilities]\nconsole = true\nwm = true\nsurface_escape = true",
+        );
+        let escaped = ok(&escaped_source);
+        assert!(escaped.wm);
+        assert!(escaped.surface_escape);
+
+        let orphan = BASE.replace(
+            "[capabilities]\nconsole = true",
+            "[capabilities]\nconsole = true\nsurface_escape = true",
+        );
+        assert_eq!(bad(&orphan).reason_str(), "surface wm");
+
+        let duplicated = BASE.replace(
+            "[capabilities]\nconsole = true",
+            concat!(
+                "[capabilities]\nconsole = true\nwm = true\nsurface_escape = true\n",
+                "surface_escape = false",
+            ),
+        );
+        assert_eq!(bad(&duplicated).reason_str(), "dup key");
+        let wrong_type = BASE.replace(
+            "[capabilities]\nconsole = true",
+            "[capabilities]\nconsole = true\nwm = true\nsurface_escape = 1",
+        );
+        assert_eq!(bad(&wrong_type).reason_str(), "bad value");
     }
 
     // 1. 完整钉板：§2 样例逐字段断言。

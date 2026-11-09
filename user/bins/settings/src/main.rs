@@ -384,7 +384,8 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let config = RoomConfig {
         argv0: b"bin/settings",
         uses_fs: false,
-    };
+        surface_escape: false,
+};
     let mut room = match AppRoom::connect(env_ch, config) {
         Ok(room) => room,
         Err(_) => berry_room::panic_exit(134),

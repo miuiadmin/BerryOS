@@ -53,6 +53,7 @@ FORBIDDEN_SOURCE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("像素基元 shadow", r"\b(?:shadow|draw_shadow)\s*\("),
     ("直接光栅 surface 面", r"berry_gfx::surface\b"),
     ("直接 DisplayList Clip 命令", r"\.(?:push_clip|pop_clip)\s*\("),
+    ("未授权 frame buffer", r"\.(?:frame_mut)\s*\("),
     ("unsafe", r"\bunsafe\b"),
     ("动态分配", r"\balloc::"),
 )
@@ -175,17 +176,25 @@ def read_toml(path: Path) -> dict:
         return tomllib.load(file)
 
 
+AUTHORIZED_SURFACE_ESCAPE = {"UITEST"}
+
+
 def gui_manifest_surface(manifest: dict) -> str | None:
     """返回 GUI app surface 形态；None = 非 GUI app。
 
-    P0 CanvasSurface / immersive 授权面尚未开放。非 retained 一律由
-    scan_root fail closed，直到本工具显式引入 renderer allowlist。
+    P1 起 manifest `[capabilities] surface_escape=true` 是授权真值源；
+    只有显式 allowlist 内的 app 可以获得 Canvas/Immersive token。其他
+    app 一律 fail closed，仍按 Retained 普通 BerryUI 面执法。
     """
     app = manifest.get("app", {})
     capabilities = manifest.get("capabilities", {})
-    if app.get("type") != "app" or capabilities.get("wm") is not True:
+    if app.get("type") != "app":
         return None
-    return str(app.get("surface_mode", "retained"))
+    if capabilities.get("surface_escape") is True:
+        return "surface-escape"
+    if capabilities.get("wm") is not True:
+        return None
+    return "retained"
 
 
 def check_app(app_dir: Path) -> list[str]:
@@ -259,6 +268,7 @@ def check_app(app_dir: Path) -> list[str]:
 def scan_root(root: Path) -> tuple[list[str], list[str]]:
     apps: list[Path] = []
     errors: list[str] = []
+    seen_app_ids: set[str] = set()
     for manifest_path in sorted((root / "user" / "bins").glob("*/manifest.toml")):
         try:
             manifest = read_toml(manifest_path)
@@ -266,14 +276,26 @@ def scan_root(root: Path) -> tuple[list[str], list[str]]:
             errors.append(f"{manifest_path}: manifest 解析失败：{error}")
             continue
         surface = gui_manifest_surface(manifest)
+        app_id = str(manifest.get("app", {}).get("id", manifest_path.parent.name.upper()))
+        if app_id in seen_app_ids:
+            errors.append(f"{manifest_path}: app id 重复/冒用 {app_id}")
+            continue
+        seen_app_ids.add(app_id)
+        capabilities = manifest.get("capabilities", {})
+        if capabilities.get("surface_escape") is True and capabilities.get("wm") is not True:
+            errors.append(f"{manifest_path}: surface_escape=true 需要 wm=true")
+            continue
         if surface == "retained":
             apps.append(manifest_path.parent)
+        elif surface == "surface-escape":
+            if app_id not in AUTHORIZED_SURFACE_ESCAPE:
+                errors.append(
+                    f"{manifest_path}: surface_escape 无 P1 授权 allowlist"
+                )
+            else:
+                apps.append(manifest_path.parent)
         elif surface is not None:
-            # P0 授权 renderer 未开放：不得因新 surface 词静默退出普通面。
-            errors.append(
-                f"{manifest_path}: surface_mode={surface} 无 F9 授权 renderer "
-                "allowlist（CanvasSurface/immersive 接线前 fail closed）"
-            )
+            errors.append(f"{manifest_path}: 未知 surface 形态 {surface}")
 
     app_ids = {
         read_toml(app / "manifest.toml").get("app", {}).get("id", app.name.upper())
@@ -303,7 +325,8 @@ def make_fixture(root: Path, *, valid: bool = True) -> None:
         (app / "src").mkdir(parents=True)
         (app / "manifest.toml").write_text(
             f'[app]\nid = "{app_id}"\ntype = "app"\n\n'
-            "[capabilities]\nconsole = true\nwm = true\n",
+            "[capabilities]\nconsole = true\nwm = true\n"
+            + ("surface_escape = true\n" if app_id == "UITEST" else ""),
             encoding="utf-8",
         )
         deps = [
@@ -358,6 +381,7 @@ def self_test() -> int:
         "像素基元": "fn x() { put_px(core::ptr::null_mut(), 0, 0, 0, [0; 4]); }",
         "unsafe": "fn x() { unsafe { core::ptr::read_volatile(&0); } }",
         "直接 Clip 命令": "fn x(enc: &mut core::fmt::Formatter) { let _ = enc.push_clip(Default::default()); }",
+        "未授权 frame buffer": "fn x(r: &mut berry_room::AppRoom) { let _ = r.frame_mut(); }",
         "raw string # 绕行": 'const S: &str = r#"a "// b"#; fn x() { let _ = berry_vmo_create(1, 0, 0, core::ptr::null_mut()); }',
         "raw string ## 绕行": 'const S: &str = r##"x "# y // z"##; fn x() { let _ = berry_clock_read(0, core::ptr::null_mut()); }',
     }
@@ -412,12 +436,39 @@ def self_test() -> int:
         renderer = root / "user" / "bins" / "renderer"
         renderer.mkdir(parents=True)
         (renderer / "manifest.toml").write_text(
-            '[app]\nid = "RENDERER"\ntype = "app"\nsurface_mode = "immersive"\n\n'
-            "[capabilities]\nwm = true\n",
+            '[app]\nid = "RENDERER"\ntype = "app"\n\n'
+            "[capabilities]\nwm = true\nsurface_escape = true\n",
             encoding="utf-8",
         )
         _, errors = scan_root(root)
         expect_error("未授权 immersive renderer", errors)
+
+    with tempfile.TemporaryDirectory(prefix="berry-gui-guard-surface-id.") as name:
+        root = Path(name)
+        make_fixture(root, valid=True)
+        spoof = root / "user/bins/spoof"
+        spoof.mkdir()
+        (spoof / "manifest.toml").write_text(
+            '[app]\nid = "UITEST"\ntype = "app"\n\n'
+            "[capabilities]\nwm = true\nsurface_escape = true\n",
+            encoding="utf-8",
+        )
+        _, errors = scan_root(root)
+        expect_error("重复 app id 冒用 UITEST", errors)
+
+    with tempfile.TemporaryDirectory(prefix="berry-gui-guard-surface-wm.") as name:
+        root = Path(name)
+        make_fixture(root, valid=True)
+        manifest = root / "user/bins/settings/manifest.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "console = true\nwm = true",
+                "console = true\nsurface_escape = true",
+            ),
+            encoding="utf-8",
+        )
+        _, errors = scan_root(root)
+        expect_error("surface_escape 缺 wm", errors)
 
     with tempfile.TemporaryDirectory(prefix="berry-gui-guard-font.") as name:
         root = Path(name)
@@ -462,7 +513,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("gui-guard self-test: 正样本 + 18 类负样本 fail closed 全绿")
+    print("gui-guard self-test: 正样本 + 21 类负样本 fail closed 全绿")
     return 0
 
 

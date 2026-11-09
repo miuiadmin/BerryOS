@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：F9 后的首个 BerryUI 地基补刀。目标不是给某个 app 私造滚动效果，而是把“结构性视口裁剪”下沉为 BerryUI retained tree / BerryGFX DisplayList 的通用能力。执行序背景见 [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；组件 API 见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，guest 验收见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，F9 边界守卫见 [BerryGUILanding-F9收口与守卫-v1.0.md](BerryGUILanding-F9收口与守卫-v1.0.md)。
+> 定位：F9 后的首个 BerryUI 地基补刀。目标不是给某个 app 私造滚动效果，而是把“结构性视口裁剪”下沉为 BerryUI retained tree / BerryGFX DisplayList 的通用能力。执行序背景见 [GUI框架地基路线-v1.5.md](GUI框架地基路线-v1.5.md)；组件 API 见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，guest 验收见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，F9 边界守卫见 [BerryGUILanding-F9收口与守卫-v1.0.md](BerryGUILanding-F9收口与守卫-v1.0.md)。
 
 ## §1 问题与裁决
 
@@ -382,7 +382,7 @@ BerryUI 默认面全量测试
 BerryUI --features s7
 BerryUI no_std
 BerryUI guest-font-vmo no_std
-gui-boundary-guard --self-test（18 类负样本）
+gui-boundary-guard --self-test（C1 时点 18 类负样本；P1 起 21 类）
 gui-boundary-guard
 UITEST no_std
 just check
@@ -405,5 +405,5 @@ SHA-256 = ade8806045aafa051beb2c9108d0fd5a8ab8fa5c55a897d043c058273fee4f48
 - 复杂嵌套滚动交互（双轴滚动、滚动条、nested scroll linking）未扩张。
 - Transform 动画 damage 仍以安全超集为主；只有 `set_offset` 公共口收紧到 Clip 链。
 - Clip 只有矩形 port；轴向裁剪、圆角 clip、stencil/alpha mask 未开放。
-- CanvasSurface / immersive buffer 仍未接线；P0 renderer 仍需授权 allowlist。
+- C1 时点 CanvasSurface / immersive buffer 未接线；P1 已落地授权 allowlist 与 Berry Room buffer 借用。
 - BerryUI clip 栈深为 16；超深结构性 Clip 在 paint/hit 中按空可见域 fail closed。

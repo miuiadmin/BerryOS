@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F9 的迁移收口、静态守卫与 SDK 边界规格。执行序权威 = [GUI框架地基路线-v1.4.md](GUI框架地基路线-v1.4.md)；F8 全量迁移结果见 [BerryBrowserPhotos-F8迁移-v1.0.md](BerryBrowserPhotos-F8迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)。
+> 定位：GUI F9 的迁移收口、静态守卫与 SDK 边界规格。执行序权威 = [GUI框架地基路线-v1.5.md](GUI框架地基路线-v1.5.md)；F8 全量迁移结果见 [BerryBrowserPhotos-F8迁移-v1.0.md](BerryBrowserPhotos-F8迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)。
 
 ## §1 收口结果
 
@@ -221,12 +221,12 @@ manifest 中出现 `surface_mode != "retained"` 时，F9 守卫同样 fail close
 当前结果：
 
 ```text
-C1 起正样本 + 18 类负样本 fail closed 全绿
+C1 起正样本 + 18 类负样本 fail closed 全绿；P1 起 21 类
 ```
 
 ## §4 P0 授权 renderer 边界
 
-P0 已冻结 Surface Mode 协议，但 CanvasSurface / immersive buffer 尚未开放。
+P0 已冻结 Surface Mode 协议；F9 时点 CanvasSurface / immersive buffer 尚未开放，P1 已按 allowlist 接线。
 
 因此 F9 守卫当前没有授权 renderer allowlist。未来落地专业 Canvas 或游戏 immersive app 时，必须同时提供：
 
@@ -320,7 +320,7 @@ A1 口径：
 已通过：
 
 ```text
-gui-boundary-guard --self-test（F9 时点 17 类；C1 起 18 类）
+gui-boundary-guard --self-test（F9 时点 17 类；C1 起 18 类；P1 起 21 类）
 gui-boundary-guard
 just build
 just check
@@ -353,7 +353,7 @@ SHA-256 = 40c87b4bdd232e1ea1f27570cda91b2e58ae107bc365624e70064c763b3e9fb3
 
 ## §9 未完成边界
 
-- CanvasSurface / immersive buffer 仍未开放。
+- F9 时点 CanvasSurface / immersive buffer 未开放；P1 已完成授权接线，但 F9 历史守卫边界不变。
 - F9 时点嵌套 clipping 仍归后续刀；C1 已落地并见 [BerryUIClipping-C1嵌套视口-v1.0.md](BerryUIClipping-C1嵌套视口-v1.0.md)。
 - Browser 仍无网络 / HTML / JavaScript。
 - Photos 仍无相机 / 编辑 / 云图。

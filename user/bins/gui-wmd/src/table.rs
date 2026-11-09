@@ -253,6 +253,11 @@ impl WmTable {
 
     /// Phase 2 surface 绑定：surface_id 必须是本 owner 的可见窗，返回有效
     ///几何 `(x,y,w,h)`（合成落位与裁剪域）。
+    /// P1 0x67 授予几何真值：display_size 只来自启动③ present GETINFO。
+    pub fn display_size(&self) -> (u32, u32) {
+        (u32::from(self.disp_w), u32::from(self.disp_h))
+    }
+
     pub fn surface_rect(&self, owner: u16, id: u16) -> Option<(u16, u16, u16, u16)> {
         let i = (0..self.count).find(|&i| {
             self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
