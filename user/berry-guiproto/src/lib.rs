@@ -84,6 +84,11 @@ pub const OP_INPUT_POLL: u8 = 0x21;
 /// 同形，但它是请求而非应答；wmd 以权威 WM 表做 owner hit-test 后入
 /// per-session 输入队列。
 pub const OP_INPUT_ROUTE: u8 = 0x22;
+/// P2 input 域内部键盘路由帧（inputd → wmd）：PointerEvent 路由之外的
+/// add-only 独立批次，避免在既有 PointerEvent 帧内塞判别位。
+pub const OP_INPUT_KEY_ROUTE: u8 = 0x23;
+/// P2 app → wmd 键盘事件拉取（与 pointer INPUT_POLL 分 op 分队列）。
+pub const OP_INPUT_KEY_POLL: u8 = 0x24;
 /// hdi 域：注册 vblank 通知源（随行 1 个 Event handle）。
 pub const OP_REG_VBLANK: u8 = 0x40;
 /// hdi 域：等下一次 vblank（阻塞应答）。
@@ -183,6 +188,25 @@ pub const PHASE_HOVER_ENTER: u8 = 5;
 pub const PHASE_HOVER_MOVE: u8 = 6;
 /// hover 离开（同上留位）。
 pub const PHASE_HOVER_EXIT: u8 = 7;
+
+/// 键盘动作：抬起。
+pub const KEY_ACTION_UP: u8 = 0;
+/// 键盘动作：按下。
+pub const KEY_ACTION_DOWN: u8 = 1;
+/// 键盘动作：设备自动重复。
+pub const KEY_ACTION_REPEAT: u8 = 2;
+
+/// 键盘修饰位：Shift。
+pub const KEY_MOD_SHIFT: u8 = 1 << 0;
+/// 键盘修饰位：Ctrl。
+pub const KEY_MOD_CTRL: u8 = 1 << 1;
+/// 键盘修饰位：Alt。
+pub const KEY_MOD_ALT: u8 = 1 << 2;
+/// 键盘修饰位：Super。
+pub const KEY_MOD_SUPER: u8 = 1 << 3;
+/// v1 已定义键盘修饰位全集。
+pub const KEY_MOD_KNOWN: u8 =
+    KEY_MOD_SHIFT | KEY_MOD_CTRL | KEY_MOD_ALT | KEY_MOD_SUPER;
 
 /// PointerEvent flags：本事件含重采样点（消费侧标注回写面）。
 pub const PE_FL_RESAMPLED: u8 = 1 << 0;
@@ -286,6 +310,8 @@ pub const CREDITS_MAX: u8 = 2;
 pub const INPUT_SAMPLES_MAX: usize = 4;
 /// 单次 INPUT_POLL 应答事件数上限。
 pub const INPUT_EVENTS_MAX: usize = 3;
+/// 单次键盘路由 / 应答事件数上限（16B 事件 × 15 + 4B 头 = 244B 恰帽）。
+pub const INPUT_KEY_EVENTS_MAX: usize = 15;
 /// PREPARE/COMMIT slot 数上限。
 pub const HDI_SLOTS_MAX: u8 = 2;
 
@@ -299,6 +325,10 @@ pub const INPUT_EVT_MAX_LEN: usize = 80;
 pub const INPUT_REP_MAX: usize = 244;
 /// INPUT_ROUTE 请求帧帽（与 INPUT_POLL 应答同算术）。
 pub const INPUT_ROUTE_MAX: usize = 244;
+/// P2 KeyEvent 定长（ts u64 + code u16 + action/mod u8×2 + device u16 + r16）。
+pub const INPUT_KEY_EVENT_LEN: usize = 16;
+/// P2 键盘路由帧帽 = 4B 头 + 15×16B。
+pub const INPUT_KEY_ROUTE_MAX: usize = 244;
 /// hdi 域请求帧帽（PREPARE 请求 20B）。
 pub const HDI_REQ_MAX: usize = 20;
 /// hdi 域应答帧帽（VBLANK_WAIT 应答 16B）。
@@ -529,6 +559,24 @@ pub struct PointerEvent {
     pub history_len: usize,
 }
 
+/// P2 键盘事件。code 是 Linux evdev KEY_* 冻结值；action/modifiers 由
+/// gui-inputd 从 EV_KEY 流单源生成，app 不解析 virtio wire。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub timestamp_ns: u64,
+    pub code: u16,
+    pub action: u8,
+    pub modifiers: u8,
+    pub device_id: u16,
+}
+
+fn key_event_valid(ev: &KeyEvent) -> bool {
+    ev.code != 0
+        && ev.action <= KEY_ACTION_REPEAT
+        && ev.modifiers & !KEY_MOD_KNOWN == 0
+        && ev.device_id != 0
+}
+
 /// PointerEvent 帧长：`history_len` ∈ 0..=INPUT_SAMPLES_MAX-1 →
 /// `32 + history_len×16`；越帽 None（「编不出就拒绝」）。
 pub fn pointer_event_len(history_len: usize) -> Option<usize> {
@@ -636,6 +684,177 @@ pub fn parse_pointer_event(buf: &[u8]) -> Option<PointerEvent> {
         history,
         history_len,
     })
+}
+
+fn key_batch_head(buf: &[u8], op: u8) -> Option<usize> {
+    if buf.len() <= INPUT_REP_HEAD || buf[0] != op || buf[2..4].iter().any(|&v| v != 0) {
+        return None;
+    }
+    let count = buf[1] as usize;
+    (count > 0 && count <= INPUT_KEY_EVENTS_MAX).then_some(count)
+}
+
+/// 编码 KeyEvent（恰 16B，LE；保留 u16 恒 0）。
+pub fn encode_key_event(out: &mut [u8], ev: &KeyEvent) -> Option<usize> {
+    if !key_event_valid(ev) || out.len() < INPUT_KEY_EVENT_LEN {
+        return None;
+    }
+    out[..8].copy_from_slice(&ev.timestamp_ns.to_le_bytes());
+    out[8..10].copy_from_slice(&ev.code.to_le_bytes());
+    out[10] = ev.action;
+    out[11] = ev.modifiers;
+    out[12..14].copy_from_slice(&ev.device_id.to_le_bytes());
+    out[14..16].fill(0);
+    Some(INPUT_KEY_EVENT_LEN)
+}
+
+/// 解析 KeyEvent：恰 16B、保留域 0、action/modifier/device 值域全执法。
+pub fn parse_key_event(buf: &[u8]) -> Option<KeyEvent> {
+    if buf.len() != INPUT_KEY_EVENT_LEN || buf[14..16].iter().any(|&v| v != 0) {
+        return None;
+    }
+    let mut ts = [0u8; 8];
+    ts.copy_from_slice(&buf[..8]);
+    let ev = KeyEvent {
+        timestamp_ns: u64::from_le_bytes(ts),
+        code: le16(buf, 8)?,
+        action: buf[10],
+        modifiers: buf[11],
+        device_id: le16(buf, 12)?,
+    };
+    key_event_valid(&ev).then_some(ev)
+}
+
+/// 编码 inputd → wmd 键盘路由请求：`[op][count u8][r16][count×KeyEvent]`。
+pub fn encode_input_key_route_req(
+    out: &mut [u8], events: &[KeyEvent],
+) -> Option<usize> {
+    if events.is_empty() || events.len() > INPUT_KEY_EVENTS_MAX {
+        return None;
+    }
+    let total = INPUT_REP_HEAD + events.len() * INPUT_KEY_EVENT_LEN;
+    if total > INPUT_KEY_ROUTE_MAX || out.len() < total {
+        return None;
+    }
+    out[0] = OP_INPUT_KEY_ROUTE;
+    out[1] = events.len() as u8;
+    out[2..4].fill(0);
+    let mut off = INPUT_REP_HEAD;
+    for ev in events {
+        let n = encode_key_event(&mut out[off..], ev)?;
+        off += n;
+    }
+    Some(off)
+}
+
+/// 键盘路由请求借用视图（逐事件惰性解析，wmd 零分配）。
+pub struct InputKeyRouteReq<'a> {
+    buf: &'a [u8],
+    count: usize,
+}
+
+impl InputKeyRouteReq<'_> {
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    pub fn event(&self, i: usize) -> Option<KeyEvent> {
+        if i >= self.count {
+            return None;
+        }
+        let off = INPUT_REP_HEAD + i * INPUT_KEY_EVENT_LEN;
+        parse_key_event(&self.buf[off..off + INPUT_KEY_EVENT_LEN])
+    }
+}
+
+/// 解析键盘路由请求：空批/越帽/保留位非零/单事件畸形全拒。
+pub fn parse_input_key_route_req(buf: &[u8]) -> Option<InputKeyRouteReq<'_>> {
+    let count = key_batch_head(buf, OP_INPUT_KEY_ROUTE)?;
+    let total = INPUT_REP_HEAD + count * INPUT_KEY_EVENT_LEN;
+    if buf.len() != total {
+        return None;
+    }
+    let req = InputKeyRouteReq { buf, count };
+    // 逐事件预验：任一 KeyEvent 畸形则整帧拒绝，不让 wmd 静默跳过。
+    for i in 0..count {
+        req.event(i)?;
+    }
+    Some(req)
+}
+
+/// 编码键盘拉取请求（恰 4B；max_events ∈ 1..=INPUT_KEY_EVENTS_MAX）。
+pub fn encode_input_key_poll_req(out: &mut [u8], max_events: u8) -> usize {
+    out[0] = OP_INPUT_KEY_POLL;
+    out[1] = max_events;
+    out[2..4].fill(0);
+    4
+}
+
+/// 解析键盘拉取请求；值域同 pointer INPUT_POLL。
+pub fn parse_input_key_poll_req(buf: &[u8]) -> Option<u8> {
+    if buf.len() != 4 || buf[0] != OP_INPUT_KEY_POLL {
+        return None;
+    }
+    let max = buf[1];
+    (max >= 1 && max <= INPUT_KEY_EVENTS_MAX as u8 && buf[2..4].iter().all(|&v| v == 0))
+        .then_some(max)
+}
+
+/// 编码键盘事件批应答（头与 pointer 相同，事件换 KeyEvent）。
+pub fn encode_input_key_events_rep(
+    out: &mut [u8], events: &[KeyEvent],
+) -> Option<usize> {
+    if events.is_empty() || events.len() > INPUT_KEY_EVENTS_MAX {
+        return None;
+    }
+    let total = INPUT_REP_HEAD + events.len() * INPUT_KEY_EVENT_LEN;
+    if out.len() < total {
+        return None;
+    }
+    out[0] = ST_OK;
+    out[1] = events.len() as u8;
+    out[2..4].fill(0);
+    let mut off = INPUT_REP_HEAD;
+    for ev in events {
+        off += encode_key_event(&mut out[off..], ev)?;
+    }
+    Some(off)
+}
+
+/// 键盘事件批应答借用视图。
+pub struct InputKeyEventsRep<'a> {
+    buf: &'a [u8],
+    count: usize,
+}
+
+impl InputKeyEventsRep<'_> {
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    pub fn event(&self, i: usize) -> Option<KeyEvent> {
+        if i >= self.count {
+            return None;
+        }
+        let off = INPUT_REP_HEAD + i * INPUT_KEY_EVENT_LEN;
+        parse_key_event(&self.buf[off..off + INPUT_KEY_EVENT_LEN])
+    }
+}
+
+/// 解析键盘事件批应答；空批仍按 1B ST_EAGAIN 烘焙线。
+pub fn parse_input_key_events_rep(
+    buf: &[u8],
+) -> Option<Result<InputKeyEventsRep<'_>, u8>> {
+    if buf.len() == 1 {
+        let st = buf[0];
+        return (st_known(st) && st != ST_OK).then_some(Err(st));
+    }
+    let count = key_batch_head(buf, ST_OK)?;
+    let total = INPUT_REP_HEAD + count * INPUT_KEY_EVENT_LEN;
+    if buf.len() != total {
+        return None;
+    }
+    Some(Ok(InputKeyEventsRep { buf, count }))
 }
 
 /// 事件流游标步进（私有）：读 `buf[off..]` 处 PointerEvent 的帧长
@@ -2019,6 +2238,7 @@ const _: () = assert!(PRESENT_REQ_MAX == 24 + 16 * DAMAGE_MAX);
 const _: () = assert!(PRESENT_REP_MAX == 24);
 const _: () = assert!(INPUT_EVT_MAX_LEN == 32 + 16 * (INPUT_SAMPLES_MAX - 1));
 const _: () = assert!(INPUT_REP_MAX == 4 + INPUT_EVENTS_MAX * INPUT_EVT_MAX_LEN);
+const _: () = assert!(INPUT_KEY_ROUTE_MAX == 4 + INPUT_KEY_EVENTS_MAX * INPUT_KEY_EVENT_LEN);
 const _: () = assert!(HDI_REQ_MAX == 20);
 const _: () = assert!(HDI_REP_MAX == 16);
 // 一切帧帽 ≤ CHAN_MSG_MAX = 256（kernel/src/channel.rs 单一事实源）。
@@ -2538,6 +2758,96 @@ mod tests {
         assert_eq!(pointer_event_len(INPUT_SAMPLES_MAX - 1), Some(INPUT_EVT_MAX_LEN));
         assert_eq!(pointer_event_len(INPUT_SAMPLES_MAX), None);
         assert_eq!(pointer_event_len(9), None);
+    }
+
+    #[test]
+    fn key_event_roundtrip_wire_and_rejects() {
+        let ev = KeyEvent {
+            timestamp_ns: 0x0807_0605_0403_0201,
+            code: 30, // Linux KEY_A
+            action: KEY_ACTION_DOWN,
+            modifiers: KEY_MOD_SHIFT | KEY_MOD_CTRL,
+            device_id: 2,
+        };
+        let mut buf = [0u8; INPUT_KEY_EVENT_LEN];
+        assert_eq!(encode_key_event(&mut buf, &ev), Some(16));
+        let want: [u8; 16] = [
+            1, 2, 3, 4, 5, 6, 7, 8, //
+            30, 0, KEY_ACTION_DOWN, KEY_MOD_SHIFT | KEY_MOD_CTRL, //
+            2, 0, 0, 0,
+        ];
+        assert_eq!(buf, want);
+        assert_eq!(parse_key_event(&buf), Some(ev));
+
+        for mut bad in [
+            KeyEvent { code: 0, ..ev },
+            KeyEvent { action: KEY_ACTION_REPEAT + 1, ..ev },
+            KeyEvent { modifiers: KEY_MOD_KNOWN + 1, ..ev },
+            KeyEvent { device_id: 0, ..ev },
+        ] {
+            bad.timestamp_ns = 1;
+            assert_eq!(encode_key_event(&mut buf, &bad), None);
+        }
+        let mut reserved = want;
+        reserved[15] = 1;
+        assert_eq!(parse_key_event(&reserved), None);
+        assert_eq!(parse_key_event(&reserved[..15]), None);
+    }
+
+    #[test]
+    fn key_route_poll_roundtrip_and_caps() {
+        let ev = |code: u16, action: u8| KeyEvent {
+            timestamp_ns: u64::from(code) * 100 + u64::from(action),
+            code,
+            action,
+            modifiers: 0,
+            device_id: 2,
+        };
+        let events = [ev(30, KEY_ACTION_DOWN), ev(30, KEY_ACTION_UP)];
+        let mut buf = [0u8; INPUT_KEY_ROUTE_MAX];
+        let n = encode_input_key_route_req(&mut buf, &events).unwrap();
+        assert_eq!(n, INPUT_REP_HEAD + 2 * INPUT_KEY_EVENT_LEN);
+        let route = parse_input_key_route_req(&buf[..n]).unwrap();
+        assert_eq!(route.count(), 2);
+        assert_eq!(route.event(0), Some(events[0]));
+        assert_eq!(route.event(1), Some(events[1]));
+        assert_eq!(route.event(2), None);
+        assert!(parse_input_key_route_req(&buf[..n - 1]).is_none());
+        let mut corrupt = buf;
+        corrupt[INPUT_REP_HEAD + 15] = 1; // 事件保留位非 0
+        assert!(parse_input_key_route_req(&corrupt[..n]).is_none());
+        assert_eq!(encode_input_key_route_req(&mut buf, &[]), None);
+        let fifteen = [ev(1, KEY_ACTION_DOWN); INPUT_KEY_EVENTS_MAX];
+        assert!(encode_input_key_route_req(&mut buf, &fifteen).is_some());
+        let sixteen = [ev(1, KEY_ACTION_DOWN); INPUT_KEY_EVENTS_MAX + 1];
+        assert_eq!(encode_input_key_route_req(&mut buf, &sixteen), None);
+
+        let mut poll = [0u8; 4];
+        assert_eq!(encode_input_key_poll_req(&mut poll, 15), 4);
+        assert_eq!(parse_input_key_poll_req(&poll), Some(15));
+        poll[1] = 16;
+        assert_eq!(parse_input_key_poll_req(&poll), None);
+        poll[1] = 15;
+        assert_eq!(parse_input_key_poll_req(&poll), Some(15));
+        assert_eq!(parse_input_key_poll_req(&poll[..3]), None);
+        assert_eq!(parse_input_key_poll_req(&{
+            let mut b = poll.to_vec();
+            b.push(0);
+            b
+        }), None);
+        poll[0] = OP_INPUT_POLL;
+        assert_eq!(parse_input_key_poll_req(&poll), None);
+
+        let n = encode_input_key_events_rep(&mut buf, &events).unwrap();
+        let rep = parse_input_key_events_rep(&buf[..n]).unwrap().unwrap();
+        assert_eq!(rep.count(), 2);
+        assert_eq!(rep.event(1), Some(events[1]));
+        assert!(parse_input_key_events_rep(&buf[..n - 1]).is_none());
+        let eagain = [ST_EAGAIN];
+        assert!(matches!(
+            parse_input_key_events_rep(&eagain),
+            Some(Err(ST_EAGAIN))
+        ));
     }
 
     #[test]

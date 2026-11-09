@@ -487,7 +487,8 @@ run-smp: build
 # echod 由本 recipe 起（QEMU 前）/收（trap EXIT）；smoke.sh 同款自足。
 # GUI-4 段②：+virtio-tablet（id=tab0——QEMU virtio-mmio 总线**倒序建**、
 # 首 -device 落最高槽，tablet 追加在 blk/net 之后取更低槽 = 既有设备槽位
-# 零漂移；gui-inputd 按设备类扫 input 槽恰一认领）。**手跑无 QMP**：
+# 零漂移）。P2 再追加 virtio-keyboard：tablet 槽位仍先建不漂移，gui-inputd
+# 按 config 能力位区分 tablet/keyboard。**手跑无 QMP**：
 # INPUT ok 照打（boot 自验不依赖注入）；INPUTP 只属 smoke RX 注入相。
 run-rootfs: build
     #!/bin/sh
@@ -528,7 +529,8 @@ run-rootfs: build
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
         -device virtio-blk-device,drive=drv0 \
         -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082 -device virtio-net-device,netdev=n0 \
-        -device virtio-tablet-device,id=tab0
+        -device virtio-tablet-device,id=tab0 \
+        -device virtio-keyboard-device,id=kbd0
 
 run-release: docs-guard abi-check build-user
     cargo build --release

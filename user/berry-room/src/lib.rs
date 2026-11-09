@@ -130,10 +130,14 @@ pub const SURFACE_INPUT_TOUCH: u8 = 1 << 0;
 pub const SURFACE_INPUT_STYLUS: u8 = 1 << 1;
 /// Mouse 输入类位。
 pub const SURFACE_INPUT_MOUSE: u8 = 1 << 2;
+/// Keyboard 输入类位（P2 gui-inputd → wmd 真生产链）。
+pub const SURFACE_INPUT_KEYBOARD: u8 = 1 << 3;
 /// IME Disabled。
 pub const SURFACE_IME_DISABLED: u8 = 0;
 /// a11y Hybrid（BerryUI 外壳 + canvas 区域）。
 pub const SURFACE_A11Y_HYBRID: u8 = 2;
+/// a11y Tree（Retained）。
+pub const SURFACE_A11Y_TREE: u8 = 0;
 /// a11y Regions。
 pub const SURFACE_A11Y_REGIONS: u8 = 1;
 
@@ -215,7 +219,8 @@ impl RoomError {
 
 /// 公开输入事件类型，避免 app 直接依赖/解析 GUI wire 协议。
 pub use berry_guiproto::{
-    INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PHASE_UP, PointerEvent, Sample,
+    INPUT_EVENTS_MAX, INPUT_KEY_EVENTS_MAX, INPUT_SAMPLES_MAX, KeyEvent, KEY_ACTION_DOWN,
+    KEY_ACTION_UP, PHASE_UP, PointerEvent, Sample,
 };
 
 fn now_ns() -> u64 {
@@ -782,6 +787,34 @@ impl AppRoom {
                     return Ok(*event);
                 }
             }
+        }
+    }
+
+    /// P2 非阻塞键盘事件拉取。空批返回 `Ok(0)`；事件按 wmd focus +
+    /// Surface input_classes 授权后入队。
+    pub fn poll_keys(&mut self, out: &mut [KeyEvent]) -> RoomResult<usize> {
+        if out.is_empty() {
+            return Err(RoomError::Input);
+        }
+        let max = out.len().min(gp::INPUT_KEY_EVENTS_MAX) as u8;
+        let mut request = [0u8; 4];
+        let n = gp::encode_input_key_poll_req(&mut request, max);
+        let mut reply = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let (n, _) = rpc(self.input, &request[..n], &[], &mut reply, &mut rhs)?;
+        match gp::parse_input_key_events_rep(&reply[..n]) {
+            Some(Ok(events)) => {
+                let count = events.count();
+                if count > out.len() {
+                    return Err(RoomError::Input);
+                }
+                for i in 0..count {
+                    out[i] = events.event(i).ok_or(RoomError::Decode)?;
+                }
+                Ok(count)
+            }
+            Some(Err(_)) => Ok(0),
+            None => Err(RoomError::Decode),
         }
     }
 

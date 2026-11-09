@@ -768,7 +768,10 @@ fn run_rootfs_child(console: Handle) {
                     data_off,
                     data_len,
                     stdout: console,
-                    stack_pages: 8,
+                    // P2 KeyQueue 后 WmSessions 约 15KiB；加 serve 帧局
+                    // 部，8 页主栈无余量。16 页 = 64KiB，保持常驻服务
+                    // 失败隔离与后续 surface 状态余量。
+                    stack_pages: 16,
                     stdin_feed: Some(&[]),
                     stdin_handle: None,
                     args: &[],
@@ -3789,8 +3792,11 @@ fn roundtrip(h: Handle, buf: &mut [u8; 8], req: &[u8; 8]) {
 }
 
 /// 生成并发送 per-boot Surface escape seed，阻塞等 wmd 1B OK 后返回。
+/// TCG 冷启动下 wmd 初始化可超过通用 10s 等待帽；seed 是 GUI 服务装配
+/// 硬前置，采用 RPC 同级 120s。
 /// 种子混合 wmd 启动时序与本地 handle 值；无公开常量可抄。
 fn share_surface_escape_seed(w_cli: Handle) -> u64 {
+    const CAP_NS: u64 = 120 * 1_000_000_000;
     let mut seed = now() ^ u64::from(w_cli).rotate_left(32);
     seed ^= seed.rotate_left(17).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     if seed == 0 {
@@ -3822,7 +3828,16 @@ fn share_surface_escape_seed(w_cli: Handle) -> u64 {
         if status != BERRY_ERR_AGAIN {
             trap();
         }
-        wait(w_cli, SIGNAL_READABLE);
+        let mut observed = 0u64;
+        if berry_object_wait_one(
+            w_cli,
+            SIGNAL_READABLE,
+            now() + CAP_NS,
+            &mut observed,
+        ) != 0
+        {
+            trap();
+        }
     }
     if nb != 1 || nh != 0 || rep[0] != gp::ST_OK {
         trap();

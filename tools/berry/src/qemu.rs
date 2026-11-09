@@ -240,7 +240,9 @@ pub fn spawn_image(
             .arg("-device").arg("virtio-blk-device,drive=dd");
     }
     if tablet {
+        // P2：keyboard 追加在后，保持 tablet 的倒序 virtio-mmio 槽位不变。
         cmd.arg("-device").arg("virtio-tablet-device");
+        cmd.arg("-device").arg("virtio-keyboard-device");
     }
     cmd.arg("-device").arg("ramfb");
     if let Some(mode) = display_mode {

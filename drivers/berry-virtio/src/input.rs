@@ -88,6 +88,12 @@ pub const ABS_X: u16 = 0x00;
 /// EV_ABS code：Y 轴（向下为正）。
 pub const ABS_Y: u16 = 0x01;
 
+/// EV_KEY code：主键盘字母 A（P2 键盘设备识别与 QMP 真链锚）。
+pub const KEY_A: u16 = 0x1e;
+
+/// EV_KEY/BTN_* 分界：BTN_MISC（0x100）起是按钮空间，不是 KEY_* 键盘。
+pub const BTN_MISC: u16 = 0x100;
+
 /// EV_KEY code：左键（鼠标形态的接触判据——与 BTN_TOUCH 等价对待）。
 pub const BTN_LEFT: u16 = 0x110;
 /// EV_KEY code：右键（PointerEvent BUTTON_R 位）。
@@ -456,6 +462,8 @@ mod input_tests {
         assert_eq!((EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_MSC), (0, 1, 2, 3, 4));
         assert_eq!((SYN_REPORT, SYN_MT_REPORT, SYN_DROPPED), (0, 2, 3));
         assert_eq!((ABS_X, ABS_Y), (0, 1));
+        assert_eq!(KEY_A, 30);
+        assert_eq!(BTN_MISC, 0x100);
         assert_eq!((BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_TOUCH), (0x110, 0x111, 0x112, 0x14a));
         assert_eq!(
             (ABS_MT_SLOT, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID, REL_WHEEL),

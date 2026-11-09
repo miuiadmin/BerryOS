@@ -34,11 +34,13 @@ use berry_guiproto::Sample;
 use berry_virtio::input::VirtioInputEvent;
 
 use berry_guiproto::{
-    encode_pointer_event, PointerEvent, BUTTON_L, BUTTON_M, BUTTON_R, INPUT_SAMPLES_MAX,
-    PE_FL_SYNTHESIZED, PHASE_CANCEL, PHASE_DOWN, PHASE_MOVE, PHASE_UP, PRESSURE_UNAVAILABLE,
+    encode_pointer_event, KeyEvent, KEY_ACTION_DOWN, KEY_ACTION_REPEAT, KEY_ACTION_UP,
+    KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_SHIFT, KEY_MOD_SUPER, PointerEvent, BUTTON_L, BUTTON_M,
+    BUTTON_R, INPUT_SAMPLES_MAX, PE_FL_SYNTHESIZED, PHASE_CANCEL, PHASE_DOWN, PHASE_MOVE,
+    PHASE_UP, PRESSURE_UNAVAILABLE,
 };
 use berry_virtio::input::{
-    ABS_X, ABS_Y, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_TOUCH, EV_ABS, EV_KEY, EV_SYN,
+    ABS_X, ABS_Y, BTN_LEFT, BTN_MISC, BTN_MIDDLE, BTN_RIGHT, BTN_TOUCH, EV_ABS, EV_KEY, EV_SYN, KEY_A,
     SYN_DROPPED, SYN_REPORT,
 };
 
@@ -48,6 +50,22 @@ const BATCH_CAP: usize = 32;
 /// 完整事件队列帽：drain 消费节奏下的弹性容量；满则丢新 + 计数
 /// （常驻输入源恒有消费方——POLL 阻塞语义兜底，帽只是防御面）。
 const QUEUE_CAP: usize = 128;
+/// Linux evdev 左 Ctrl。
+pub const KEY_LEFTCTRL: u16 = 29;
+/// Linux evdev 左 Shift。
+pub const KEY_LEFTSHIFT: u16 = 42;
+/// Linux evdev 左 Alt。
+pub const KEY_LEFTALT: u16 = 56;
+/// Linux evdev 左 Super。
+pub const KEY_LEFTMETA: u16 = 125;
+/// Linux evdev 右 Shift。
+pub const KEY_RIGHTSHIFT: u16 = 54;
+/// Linux evdev 右 Ctrl。
+pub const KEY_RIGHTCTRL: u16 = 97;
+/// Linux evdev 右 Alt。
+pub const KEY_RIGHTALT: u16 = 100;
+/// Linux evdev 右 Super。
+pub const KEY_RIGHTMETA: u16 = 126;
 
 /// 驱动侧原始事件（wire 解码后、归一化前）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +135,141 @@ impl RawSource for FakeSource {
         self.head = (self.head + 1) % FAKE_CAP;
         self.len -= 1;
         Some(ev)
+    }
+}
+
+/// virtio-input 子类识别（P2：did=18 只说明输入类，不区分 tablet/keyboard）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputDeviceKind {
+    Pointer,
+    Keyboard,
+    Unknown,
+}
+
+/// 按 config EV_BITS 能力位识别设备：ABS_X/Y = pointer；无 ABS 但
+/// KEY_A 在场 = keyboard；只带 BTN_* 的鼠标形态在 v1 显式 Unknown，
+/// 不冒充键盘。
+pub fn classify_input_device(abs_bits: &[u8], key_bits: &[u8]) -> InputDeviceKind {
+    if berry_virtio::input::bitmap_test(abs_bits, ABS_X)
+        && berry_virtio::input::bitmap_test(abs_bits, ABS_Y)
+    {
+        return InputDeviceKind::Pointer;
+    }
+    if !berry_virtio::input::bitmap_test(abs_bits, ABS_X)
+        && !berry_virtio::input::bitmap_test(abs_bits, ABS_Y)
+        && berry_virtio::input::bitmap_test(key_bits, KEY_A)
+    {
+        return InputDeviceKind::Keyboard;
+    }
+    InputDeviceKind::Unknown
+}
+
+/// P2 键盘泵：EV_KEY(1..=255) → BerryOS KeyEvent。修饰键状态由泵单源
+/// 维护；BTN_*（>=0x100）仍归 pointer 泵，本泵忽略计数。
+#[derive(Debug, Clone, Copy)]
+pub struct KeyPump {
+    device_id: u16,
+    queue: [KeyEvent; KEY_QUEUE_CAP],
+    head: usize,
+    tail: usize,
+    len: usize,
+    dropped: u64,
+    ignored: u64,
+    modifiers: u8,
+}
+
+const KEY_QUEUE_CAP: usize = 64;
+
+impl KeyPump {
+    pub fn new(device_id: u16) -> Self {
+        assert!(device_id != 0, "key device id 必须非 0");
+        Self {
+            device_id,
+            queue: [KeyEvent {
+                timestamp_ns: 0,
+                code: 0,
+                action: KEY_ACTION_UP,
+                modifiers: 0,
+                device_id,
+            }; KEY_QUEUE_CAP],
+            head: 0,
+            tail: 0,
+            len: 0,
+            dropped: 0,
+            ignored: 0,
+            modifiers: 0,
+        }
+    }
+
+    pub fn feed(&mut self, ev: RawInputEvent) {
+        if ev.ev_type != EV_KEY || ev.code == 0 || ev.code >= BTN_MISC {
+            self.ignored += 1;
+            return;
+        }
+        let action = match ev.value {
+            0 => KEY_ACTION_UP,
+            1 => KEY_ACTION_DOWN,
+            2 => KEY_ACTION_REPEAT,
+            _ => {
+                self.ignored += 1;
+                return;
+            }
+        };
+        self.update_modifiers(ev.code, action);
+        let out = KeyEvent {
+            timestamp_ns: ev.ts_ns,
+            code: ev.code,
+            action,
+            modifiers: self.modifiers,
+            device_id: self.device_id,
+        };
+        if self.len == self.queue.len() {
+            self.dropped += 1;
+            return;
+        }
+        self.queue[self.tail] = out;
+        self.tail = (self.tail + 1) % self.queue.len();
+        self.len += 1;
+    }
+
+    fn update_modifiers(&mut self, code: u16, action: u8) {
+        let bit = match code {
+            KEY_LEFTSHIFT | KEY_RIGHTSHIFT => Some(KEY_MOD_SHIFT),
+            KEY_LEFTCTRL | KEY_RIGHTCTRL => Some(KEY_MOD_CTRL),
+            KEY_LEFTALT | KEY_RIGHTALT => Some(KEY_MOD_ALT),
+            KEY_LEFTMETA | KEY_RIGHTMETA => Some(KEY_MOD_SUPER),
+            _ => None,
+        };
+        if let Some(bit) = bit {
+            if action == KEY_ACTION_DOWN || action == KEY_ACTION_REPEAT {
+                self.modifiers |= bit;
+            } else {
+                self.modifiers &= !bit;
+            }
+        }
+    }
+
+    pub fn pending(&self) -> usize {
+        self.len
+    }
+
+    pub fn drain(&mut self, out: &mut [KeyEvent]) -> usize {
+        let mut n = 0usize;
+        while n < out.len() && self.len > 0 {
+            out[n] = self.queue[self.head];
+            self.head = (self.head + 1) % self.queue.len();
+            self.len -= 1;
+            n += 1;
+        }
+        n
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    pub fn ignored(&self) -> u64 {
+        self.ignored
     }
 }
 
@@ -1148,6 +1301,134 @@ mod tests {
             p.feed(syn(t + 1));
         }
         assert!(p.dropped_events() > 0, "输出环满必须计数，不得静默假装全收");
+    }
+
+    #[test]
+    fn key_pump_all_modifier_pairs_map_to_bits() {
+        let pairs = [
+            (KEY_LEFTSHIFT, KEY_RIGHTSHIFT, KEY_MOD_SHIFT),
+            (KEY_LEFTCTRL, KEY_RIGHTCTRL, KEY_MOD_CTRL),
+            (KEY_LEFTALT, KEY_RIGHTALT, KEY_MOD_ALT),
+            (KEY_LEFTMETA, KEY_RIGHTMETA, KEY_MOD_SUPER),
+        ];
+        for (left, right, bit) in pairs {
+            let mut p = KeyPump::new(3);
+            p.feed(ev(1, EV_KEY, left, 1));
+            let mut out = [KeyEvent {
+                timestamp_ns: 0,
+                code: 0,
+                action: 0,
+                modifiers: 0,
+                device_id: 0,
+            }; 1];
+            assert_eq!(p.drain(&mut out), 1);
+            assert_eq!(out[0].modifiers, bit);
+            p.feed(ev(2, EV_KEY, right, 1));
+            assert_eq!(p.drain(&mut out), 1);
+            assert_eq!(out[0].modifiers, bit);
+            p.feed(ev(3, EV_KEY, right, 0));
+            assert_eq!(p.drain(&mut out), 1);
+            assert_eq!(out[0].modifiers, 0);
+        }
+    }
+
+    #[test]
+    fn key_pump_down_repeat_up_and_modifiers() {
+        let mut p = KeyPump::new(2);
+        p.feed(ev(1, EV_KEY, KEY_LEFTSHIFT, 1));
+        p.feed(ev(2, EV_KEY, KEY_A, 1));
+        p.feed(ev(3, EV_KEY, KEY_A, 2));
+        p.feed(ev(4, EV_KEY, KEY_A, 0));
+        p.feed(ev(5, EV_KEY, KEY_LEFTSHIFT, 0));
+        assert_eq!(p.pending(), 5);
+
+        let mut out = [KeyEvent {
+            timestamp_ns: 0,
+            code: 0,
+            action: KEY_ACTION_UP,
+            modifiers: 0,
+            device_id: 0,
+        }; 8];
+        assert_eq!(p.drain(&mut out), 5);
+        assert_eq!(out[0].code, KEY_LEFTSHIFT);
+        assert_eq!(out[0].modifiers, KEY_MOD_SHIFT);
+        assert_eq!(out[1].code, KEY_A);
+        assert_eq!(out[1].action, KEY_ACTION_DOWN);
+        assert_eq!(out[1].modifiers, KEY_MOD_SHIFT);
+        assert_eq!(out[2].action, KEY_ACTION_REPEAT);
+        assert_eq!(out[2].modifiers, KEY_MOD_SHIFT);
+        assert_eq!(out[3].action, KEY_ACTION_UP);
+        assert_eq!(out[3].modifiers, KEY_MOD_SHIFT);
+        assert_eq!(out[4].code, KEY_LEFTSHIFT);
+        assert_eq!(out[4].modifiers, 0);
+        assert_eq!(p.pending(), 0);
+    }
+
+    #[test]
+    fn key_pump_ignores_buttons_and_bad_values() {
+        let mut p = KeyPump::new(1);
+        p.feed(ev(1, EV_KEY, BTN_LEFT, 1));
+        p.feed(ev(2, EV_KEY, 0, 1));
+        p.feed(ev(3, EV_KEY, KEY_A, 7));
+        p.feed(ev(4, EV_KEY, BTN_MISC, 1)); // 0x100 按钮/数字杂项分界
+        p.feed(syn(5));
+        assert_eq!(p.pending(), 0);
+        assert_eq!(p.ignored(), 5);
+        assert_eq!(p.dropped(), 0);
+    }
+
+    #[test]
+    fn key_pump_capacity_and_drop_counter_are_pinned() {
+        assert_eq!(KEY_QUEUE_CAP, 64);
+        let mut p = KeyPump::new(9);
+        for i in 0..(KEY_QUEUE_CAP + 2) as u16 {
+            p.feed(ev(u64::from(i), EV_KEY, KEY_A, if i % 2 == 0 { 1 } else { 0 }));
+        }
+        assert_eq!(p.pending(), KEY_QUEUE_CAP);
+        assert_eq!(p.dropped(), 2);
+        let mut out = [KeyEvent {
+            timestamp_ns: 0,
+            code: 0,
+            action: KEY_ACTION_UP,
+            modifiers: 0,
+            device_id: 0,
+        }; KEY_QUEUE_CAP];
+        assert_eq!(p.drain(&mut out), KEY_QUEUE_CAP);
+        assert_eq!(out[0].device_id, 9);
+        assert_eq!(p.pending(), 0);
+    }
+
+    #[test]
+    fn classify_input_device_by_capability_bits() {
+        let mut abs = [0u8; 8];
+        abs[0] = 0x03; // ABS_X + ABS_Y
+        let mut keys = [0u8; 8];
+        keys[3] = 1 << 6; // code 30 = byte3 bit6
+        assert_eq!(classify_input_device(&abs, &keys), InputDeviceKind::Pointer);
+
+        let no_abs = [0u8; 8];
+        assert_eq!(
+            classify_input_device(&no_abs, &keys),
+            InputDeviceKind::Keyboard
+        );
+
+        let mut partial_abs = [0u8; 8];
+        partial_abs[0] = 0x01; // 只有 ABS_X，无完整 pointer 能力
+        assert_eq!(
+            classify_input_device(&partial_abs, &keys),
+            InputDeviceKind::Unknown
+        );
+
+        let mut buttons = [0u8; 48];
+        buttons[34] = 1; // BTN_LEFT = 272，无 KEY_A
+        assert_eq!(
+            classify_input_device(&no_abs, &buttons),
+            InputDeviceKind::Unknown
+        );
+        assert_eq!(
+            classify_input_device(&[0u8; 8], &[0u8; 8]),
+            InputDeviceKind::Unknown
+        );
     }
 
     #[test]

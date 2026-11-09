@@ -1,10 +1,10 @@
 # 14-GUI 与 UI 框架
 
-> 一句话定位：动 berry-gfx / berry-ui / berry-room / gui-wmd / guifbd / gui-inputd / berry-launcher、普通 GUI app、专业 CanvasSurface 客户端或游戏 immersive 客户端前先读本文。执行序单一事实源 = [../GUI框架地基路线-v1.5.md](../GUI框架地基路线-v1.5.md)。
+> 一句话定位：动 berry-gfx / berry-ui / berry-room / gui-wmd / guifbd / gui-inputd / berry-launcher、普通 GUI app、专业 CanvasSurface 客户端或游戏 immersive 客户端前先读本文。执行序单一事实源 = [../GUI框架地基路线-v1.6.md](../GUI框架地基路线-v1.6.md)。
 
 ## 域铁律
 
-- **地基优先**：按 F0..F5、P0 Surface Mode、F6..F9、C1 嵌套裁剪、P1 Surface 生产接线顺序建设；上一出口门未过，不得为视觉效果或新 app 绕开下一层。Camera、MMS 等新 GUI app 必须直接走 BerryUI；普通 Retained 页面不得回到自建 WM/VMO/像素路径。
+- **地基优先**：按 F0..F5、P0 Surface Mode、F6..F9、C1 嵌套裁剪、P1 Surface 生产接线、P2 Keyboard Input 顺序建设；上一出口门未过，不得为视觉效果或新 app 绕开下一层。Camera、MMS 等新 GUI app 必须直接走 BerryUI；普通 Retained 页面不得回到自建 WM/VMO/像素路径。
 - **P0 编号局部化**：GUI P0 只指 F5 与 F6 之间的 Surface Mode 协议门，不改变路线图、调点调度或 Berry 设备壳的同名阶段号。
 - **分层不越界**：`berry-gfx` 只做光栅；`berry-ui` 只做树、布局、状态、主题与组件；`berry-room` 只做应用运行室；Berry Session 服务只做窗口、呈现、输入、焦点、层序与帧率仲裁；app 只做业务语义或自有文档/引擎渲染。
 - **一个系统契约，多个 UI 形态**：BerryUI 是默认声明式工具包，不是特权或强制渲染器。普通应用走 BerryUI；专业应用走 BerryUI 外壳 + CanvasSurface + 应用文档渲染器；游戏/实时应用走 immersive surface 与自有 renderer。
@@ -24,17 +24,17 @@
 - [ ] 当前改动落在 F0..F5、P0 Surface Mode 或 F6..F9 哪一门？上一门出口是否已过？
 - [ ] 普通 BerryUI app 是否只声明结构、状态、消息与授权数据能力？
 - [ ] 专业 canvas / 游戏 immersive 是否使用 P0 冻结的 Surface role/mode 与 P1 授权链，而非自造窗口或全局屏写？
-- [ ] 自绘路径是否保留 input class、IME composition、a11y sidecar、safe area/scale factor、帧率意图、焦点与死亡清理？无生产者能力是否 fail closed？
+- [ ] 自绘路径是否保留 input class、IME composition、a11y sidecar、safe area/scale factor、帧率意图、焦点与死亡清理？无生产者能力是否 fail closed？Keyboard 是否经 wmd focus + Surface input_classes 授权？
 - [ ] 是否让 app 直接接触 syscall、WM RPC、VMO、stride、全局 framebuffer 或 display MMIO？
 - [ ] 视觉变化是否进入主题 token / BerryUI 组件 / `berry-gfx` 基元，而不是普通 app 私有代码？
 - [ ] 是否把 `.bui` 当成 GUI app 必需入口、第二事实源或副作用脚本？
 - [ ] 是否有 Host 单测、离屏 golden、Guest 真链、P0 协议拒面与迁移回归证据？
 - [ ] rootfs、`.bap` 尺寸与既有 GUI8/smoke-image 门是否全部复跑？
-- [ ] 分层、顺序或边界变化是否先更新 [../GUI框架地基路线-v1.5.md](../GUI框架地基路线-v1.5.md)？
+- [ ] 分层、顺序或边界变化是否先更新 [../GUI框架地基路线-v1.6.md](../GUI框架地基路线-v1.6.md)？
 
 ## 深读
 
-- [../GUI框架地基路线-v1.5.md](../GUI框架地基路线-v1.5.md) —— F0..F5、P0 Surface Mode、F6..F9 执行序、分层契约、App 禁止清单、测试门与预算纪律。
+- [../GUI框架地基路线-v1.6.md](../GUI框架地基路线-v1.6.md) —— F0..F5、P0 Surface Mode、F6..F9 执行序、分层契约、App 禁止清单、测试门与预算纪律。
 - [../BerryOS命名体系-v1.1.md](../BerryOS命名体系-v1.1.md) —— 公共架构名与 BUI 可选入口/同一 AST 边界。
 - [../GUI里程碑规划-2026-10-v1.0.md](../GUI里程碑规划-2026-10-v1.0.md) —— M-GUI 目标形态、GUI-0..9 长期架构与既有 ADR 依据。
 - [../GUI-3实施设计草案-v1.1.md](../GUI-3实施设计草案-v1.1.md) —— `berry-ui` 保留树、脏区、帧循环与 impl 契约。
@@ -44,6 +44,7 @@
 - [../BerryUI-F5系统验收-v1.0.md](../BerryUI-F5系统验收-v1.0.md) —— F5 真实 guest 消费者、系统 FontSource、Room DisplayList 光栅化、GUI8 真链验收与预算边界。
 - [../BerrySession-P0SurfaceMode协议-v1.0.md](../BerrySession-P0SurfaceMode协议-v1.0.md) —— P0 Surface role/mode、input class、IME composition、a11y sidecar、safe area/scale、WM 0x67 codec 与三路径不变量。
 - [../BerrySession-P1SurfaceMode生产接线-v1.0.md](../BerrySession-P1SurfaceMode生产接线-v1.0.md) —— P1 manifest escape、svcmgr token、Berry Room surface buffer、gui-wmd 0x67 fail-closed 策略与 Canvas/Immersive 真链。
+- [../BerrySession-P2KeyboardInput生产接线-v1.0.md](../BerrySession-P2KeyboardInput生产接线-v1.0.md) —— P2 virtio-keyboard、KeyEvent/KeyPump、wmd focus/input_classes 路由、Berry Room poll_keys 与 GUI8 QMP 真链。
 - [../BerrySettings-F6迁移-v1.0.md](../BerrySettings-F6迁移-v1.0.md) —— F6 首个 Native Shell 迁移：Berry Room + BerryUI、真实 WLAN/Bluetooth 状态重绘、GUI8 layout-driven 验收与两帽预算。
 - [../BerryFilesContacts-F7迁移-v1.0.md](../BerryFilesContacts-F7迁移-v1.0.md) —— F7 Files/Contacts 迁移、真实数据链、动态 layout 验收与并发 per-window destroy 语义。
 - [../BerryBrowserPhotos-F8迁移-v1.0.md](../BerryBrowserPhotos-F8迁移-v1.0.md) —— F8 Browser/Photos 迁移、图像 IconSource 链、诚实 Browser 壳、ReleaseWait RETURN-ALL 清账与回收帽修正。

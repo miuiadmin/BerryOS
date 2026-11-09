@@ -271,7 +271,7 @@ pub fn surface_mode_info_fits(info: &SurfaceModeInfo, width: u32, height: u32) -
 
 /// P1 production 授予策略（host 可测；gui-wmd 直接消费）：
 /// - 无 escape 授权的 Canvas/Immersive → ST_DENIED；
-/// - Keyboard/Gamepad/IME Host 无生产者或服务 → ST_UNSUPPORTED；
+/// - Gamepad/IME Host 无生产者或服务 → ST_UNSUPPORTED；Keyboard 由 P2 生产链承载；
 /// - escape→escape 可重协商，降回 Retained → ST_DENIED；
 /// - safe=0、scale=1000，合约位按 P0 精确生成。
 pub fn surface_mode_production_policy(
@@ -288,7 +288,7 @@ pub fn surface_mode_production_policy(
     if wants_escape && !escape {
         return Err(ST_DENIED);
     }
-    if req.input_classes & (INPUT_CLASS_KEYBOARD | INPUT_CLASS_GAMEPAD) != 0
+    if req.input_classes & INPUT_CLASS_GAMEPAD != 0
         || req.ime_mode == IME_MODE_HOST
     {
         return Err(ST_UNSUPPORTED);

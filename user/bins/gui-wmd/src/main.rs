@@ -70,6 +70,59 @@ struct InputQueue {
     dropped: u64,
 }
 
+const fn zero_key_event() -> gp::KeyEvent {
+    gp::KeyEvent {
+        timestamp_ns: 0,
+        code: 0,
+        action: gp::KEY_ACTION_UP,
+        modifiers: 0,
+        device_id: 0,
+    }
+}
+
+/// P2 per-session 键盘环（16 深；与 pointer 环分域，互不挤占）。
+struct KeyQueue {
+    events: [gp::KeyEvent; 16],
+    head: usize,
+    tail: usize,
+    len: usize,
+    dropped: u64,
+}
+
+impl KeyQueue {
+    fn new() -> Self {
+        Self {
+            events: [zero_key_event(); 16],
+            head: 0,
+            tail: 0,
+            len: 0,
+            dropped: 0,
+        }
+    }
+
+    fn push(&mut self, ev: gp::KeyEvent) -> bool {
+        if self.len == self.events.len() {
+            self.dropped += 1;
+            return false;
+        }
+        self.events[self.tail] = ev;
+        self.tail = (self.tail + 1) % self.events.len();
+        self.len += 1;
+        true
+    }
+
+    fn pop_into(&mut self, out: &mut [gp::KeyEvent]) -> usize {
+        let mut n = 0usize;
+        while n < out.len() && self.len > 0 {
+            out[n] = self.events[self.head];
+            self.head = (self.head + 1) % self.events.len();
+            self.len -= 1;
+            n += 1;
+        }
+        n
+    }
+}
+
 impl InputQueue {
     fn new() -> Self {
         Self {
@@ -113,6 +166,7 @@ struct WmSession {
     input: Handle,
     process: Handle,
     queue: InputQueue,
+    keys: KeyQueue,
     /// P1：WM_CONNECT 附带的 svcmgr 一次性 escape token 是否已消费验证。
     escape: bool,
     /// P1：逐窗口 Surface Mode；None = 未显式协商的 Retained。
@@ -247,6 +301,7 @@ impl WmSessions {
             input: hs[1],
             process: hs[2],
             queue: InputQueue::new(),
+            keys: KeyQueue::new(),
             escape,
             surface_modes: [None; gp::WM_WINDOWS_MAX],
         });
@@ -352,6 +407,73 @@ impl WmSessions {
         if clear_lock {
             self.input_lock = None;
         }
+    }
+
+    /// P2：键盘事件按权威 focus 窗路由；只有该窗的 0x67 合约声明
+    /// INPUT_CLASS_KEYBOARD 才入队。默认 Retained 无显式合约 = fail closed。
+    fn route_key(&mut self, table: &table::WmTable, ev: &gp::KeyEvent) {
+        let Some((sid, window)) = table.focused() else {
+            println!("WMKEYDROP bad sid=0 window=0 reason=focus code={}", ev.code);
+            return;
+        };
+        let Some(i) = self.slot_index(sid) else {
+            println!("WMKEYDROP bad sid={} window={} reason=session code={}", sid, window, ev.code);
+            return;
+        };
+        let allowed = self.slots[i]
+            .as_ref()
+            .map(|s| {
+                s.surface_modes
+                    .iter()
+                    .flatten()
+                    .any(|info| info.surface_id == window
+                        && info.input_classes & gp::surface::INPUT_CLASS_KEYBOARD != 0)
+            })
+            .unwrap_or(false);
+        if !allowed {
+            println!(
+                "WMKEYDROP bad sid={} window={} reason=class code={}",
+                sid, window, ev.code
+            );
+            return;
+        }
+        let sess = self.slots[i].as_mut().unwrap();
+        if !sess.keys.push(*ev) {
+            println!(
+                "WMKEYDROP bad sid={} window={} dropped={} code={}",
+                sid, window, sess.keys.dropped, ev.code
+            );
+            return;
+        }
+        println!(
+            "WMKEYROUTE ok sid={} window={} code={} action={}",
+            sid, window, ev.code, ev.action
+        );
+    }
+
+    /// 键盘输入通道 INPUT_KEY_POLL：非阻塞批答；空批 1B ST_EAGAIN。
+    fn poll_keys(&mut self, ch: Handle, max: u8) {
+        let Some(i) = self.slots.iter().position(|s| {
+            s.as_ref().map(|s| s.input == ch).unwrap_or(false)
+        }) else {
+            st_rep(ch, gp::ST_BAD);
+            return;
+        };
+        let sess = self.slots[i].as_mut().unwrap();
+        let mut events = [zero_key_event(); gp::INPUT_KEY_EVENTS_MAX];
+        let n = sess.keys.pop_into(&mut events[..max as usize]);
+        if n == 0 {
+            let mut rep = [0u8; 1];
+            let m = gp::encode_status_rep(&mut rep, gp::ST_EAGAIN);
+            send_rep(ch, &rep[..m]);
+            return;
+        }
+        let mut rep = [0u8; gp::INPUT_KEY_ROUTE_MAX];
+        let m = match gp::encode_input_key_events_rep(&mut rep, &events[..n]) {
+            Some(m) => m,
+            None => trap(),
+        };
+        send_rep(ch, &rep[..m]);
     }
 
     /// 输入专通道 INPUT_POLL：非阻塞批答。空批 ST_EAGAIN 由客户端重臂。
@@ -676,6 +798,24 @@ fn on_push(
         }
         return;
     }
+    if msg.first() == Some(&gp::OP_INPUT_KEY_ROUTE) {
+        if !hs.is_empty() {
+            close_all(hs);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        match gp::parse_input_key_route_req(msg) {
+            Some(route) => {
+                for i in 0..route.count() {
+                    if let Some(ev) = route.event(i) {
+                        sessions.route_key(table, &ev);
+                    }
+                }
+            }
+            None => st_rep(ch, gp::ST_BAD),
+        }
+        return;
+    }
     if !hs.is_empty() {
         close_all(hs);
         st_rep(ch, gp::ST_BAD);
@@ -753,9 +893,16 @@ fn main() {
             let Some(sess) = sessions.slots[i].as_ref() else { continue };
             let (session_ch, input_ch) = (sess.ch, sess.input);
             if let Some((msg, _hs)) = poll(input_ch) {
-                match gp::parse_input_poll_req(&msg.0[..msg.1]) {
-                    Some(max) => sessions.poll_input(input_ch, max),
-                    None => st_rep(input_ch, gp::ST_BAD),
+                if msg.0.first() == Some(&gp::OP_INPUT_KEY_POLL) {
+                    match gp::parse_input_key_poll_req(&msg.0[..msg.1]) {
+                        Some(max) => sessions.poll_keys(input_ch, max),
+                        None => st_rep(input_ch, gp::ST_BAD),
+                    }
+                } else {
+                    match gp::parse_input_poll_req(&msg.0[..msg.1]) {
+                        Some(max) => sessions.poll_input(input_ch, max),
+                        None => st_rep(input_ch, gp::ST_BAD),
+                    }
                 }
                 handled = true;
                 break;
@@ -764,6 +911,11 @@ fn main() {
                 if msg.0.first() == Some(&gp::OP_INPUT_POLL) {
                     match gp::parse_input_poll_req(&msg.0[..msg.1]) {
                         Some(max) => sessions.poll_input(input_ch, max),
+                        None => st_rep(input_ch, gp::ST_BAD),
+                    }
+                } else if msg.0.first() == Some(&gp::OP_INPUT_KEY_POLL) {
+                    match gp::parse_input_key_poll_req(&msg.0[..msg.1]) {
+                        Some(max) => sessions.poll_keys(input_ch, max),
                         None => st_rep(input_ch, gp::ST_BAD),
                     }
                 } else {

@@ -6,7 +6,7 @@
 > 与 a11y region 的 wire 词表；P1 只把 Canvas / Immersive 的授权、协商、
 > buffer 借用与呈现生命周期接入 `svcmgr → berry-room → gui-wmd`，不扩
 > `VER_WM`，不改 `0x60..=0x66` 帧型，也不宣称 IME / a11y 批量服务已落地。
-> 执行序权威 = [GUI框架地基路线-v1.5.md](GUI框架地基路线-v1.5.md)。
+> 执行序权威 = [GUI框架地基路线-v1.6.md](GUI框架地基路线-v1.6.md)。
 
 ## §1 结论
 
@@ -162,7 +162,7 @@ OP_WM_SURFACE_MODE = 0x67
 P1 的 fail-closed 能力策略：
 
 ```text
-Keyboard 位    → ST_UNSUPPORTED
+Keyboard 位    → P1 时点 ST_UNSUPPORTED；P2 起真实生产链开放
 Gamepad 位     → ST_UNSUPPORTED
 IME Host       → ST_UNSUPPORTED
 ```
@@ -272,7 +272,7 @@ P1 记录并授予 input class / IME mode / a11y mode，但不伪造服务：
 IME Host           拒绝，直到 IME 服务与推送通道落地
 a11y Tree/Hybrid   只作为合约状态记录，批量传输未开放
 a11y Regions       只作为合约状态记录，区域表提交 API 未开放
-Keyboard/Gamepad   拒绝，直到 inputd 有真实生产者
+P1 时点 Keyboard/Gamepad 拒绝；P2 起Keyboard 由真实生产链承载，Gamepad 继续拒绝
 ```
 
 因此 P1 的 Canvas 验收请求为：
@@ -318,8 +318,8 @@ surface_escape=true
 boot-probe 在 C1 Clip 自证后执行：
 
 ```text
-1. Canvas + Keyboard 负例
-   → RoomError::SurfaceUnsupported（wmd ST_UNSUPPORTED）
+1. P1 时点 Canvas + Keyboard 负例 → SurfaceUnsupported；
+   P2 起该负例改为 Gamepad，Keyboard 走真实生产链
 
 2. Canvas + Touch|Mouse + IME Disabled + Hybrid
    → 20B 授予，flags=31，scale=1000，safe=0,0,0,0
@@ -446,7 +446,7 @@ SHA-256 = ecd7af0007bb8e87e0fefd37f69d6f274170cc9b8727807932d785ea1235f3bd
 
 ## §10 未完成边界
 
-- Keyboard / Gamepad 输入事件帧与 gui-inputd 生产者未落地。
+- P1 时点 Keyboard/Gamepad 输入事件帧未落地；P2 已开放 Keyboard，Gamepad 仍未落地。
 - IME composition 服务、软键盘与推送通道未落地；`IME_HOST` 恒拒绝。
 - a11y Regions / Hybrid 的批量提交、订阅与更新协议未落地。
 - safe area 仍为全 0；wmd SYSTEM layer 窗口尚未成为真实来源。

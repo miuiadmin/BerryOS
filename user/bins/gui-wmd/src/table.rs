@@ -224,6 +224,14 @@ impl WmTable {
         (0..self.count).find(|&i| self.wins[i].id == id)
     }
 
+    /// P2 键盘焦点真值：当前 focus 窗的 (owner, window)。焦点仍是
+    /// create/show/destroy 策略焦点，click-to-focus 归后续窗口策略刀。
+    pub fn focused(&self) -> Option<(u16, u16)> {
+        let id = self.focus?;
+        let i = self.find(id)?;
+        Some((self.wins[i].owner, id))
+    }
+
     /// Phase 3 权威输入命中：返回 (owner, window_id, 有效几何原点)。
     pub fn hit_route(&self, x: u32, y: u32) -> Option<(u16, u16, u16, u16)> {
         let mut entries = [gp::WmEntry {

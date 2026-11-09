@@ -56,7 +56,10 @@ mod guest {
         BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
     };
     use berry_virtio as vio;
-    use gui_inputd::{raw_from_wire, AbsCal, PointerPump, PumpConfig, PumpEvent, ScreenGeom};
+    use gui_inputd::{
+        classify_input_device, raw_from_wire, AbsCal, InputDeviceKind, KeyPump, PointerPump,
+        PumpConfig, PumpEvent, ScreenGeom,
+    };
 
     // 链接种子（vprobe/vnet 同款）：无引用则 berry-libc 的 crt0 不进链接。
     #[used]
@@ -128,6 +131,20 @@ mod guest {
         history: [ZERO_SAMPLE; gp::INPUT_SAMPLES_MAX - 1],
         history_len: 0,
     };
+    const ZERO_KEY: gp::KeyEvent = gp::KeyEvent {
+        timestamp_ns: 0,
+        code: 0,
+        action: 0,
+        modifiers: 0,
+        device_id: 0,
+    };
+
+    /// P2 键盘设备面（没有键盘 = None；tablet 恒必须）。
+    struct Keyboard {
+        regs: *mut u32,
+        d: Dma,
+        pump: KeyPump,
+    }
 
     /// ring 暂存页（初始建制专用——单线程独占窗；refill 走字节粒度
     /// vmo_write 不经此页，vnet RXSTAGE 同款）。
@@ -135,7 +152,8 @@ mod guest {
 
     /// 已认领设备的寄存器基（trap 整洁面用——单线程进程、认领后恒定；
     /// null = 未认领：find 面自陷时设备尚未到手，无队列可撤）。
-    static mut CLAIMED_REGS: *mut u32 = core::ptr::null_mut();
+    static mut CLAIMED_TABLET_REGS: *mut u32 = core::ptr::null_mut();
+    static mut CLAIMED_KEYBOARD_REGS: *mut u32 = core::ptr::null_mut();
 
     /// DMA 面（vnet Dma 同款纯 VMO 机制——从不进任何地址空间）。
     struct Dma {
@@ -150,15 +168,17 @@ mod guest {
     }
 
     pub(super) fn run() {
-        let slot = match find_input_device() {
-            Some(s) => s,
+        let (tab_slot, kbd_slot) = match find_input_devices() {
+            Some(x) => x,
             None => berry_libc::park(), // 诊断行已在 find 内打——优雅退出
         };
-        let regs = mmio(slot);
+        let regs = mmio(tab_slot);
         // SAFETY: 单线程进程；认领后恒定（trap() 的整洁面读它）。
-        unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CLAIMED_REGS), regs) };
+        unsafe {
+            core::ptr::write_volatile(core::ptr::addr_of_mut!(CLAIMED_TABLET_REGS), regs)
+        };
         if !negotiate(regs) {
-            println!("gui-inputd: 协商拒绝（无 VERSION_1/复位超时）；park");
+            println!("gui-inputd: tablet 协商拒绝（无 VERSION_1/复位超时）；park");
             berry_libc::park();
         }
         let (ax, ay) = match (
@@ -182,62 +202,106 @@ mod guest {
             delivery: gp::DELIVERY_BATCHED,
         });
         let mut d = setup_dma();
-        // eventq = q0（规范 §5.8.6；statusq q1 v1 不建）。DRIVER_OK 前先挂
-        // 缓冲——设备从此有缓冲可写。
         setup_queue(regs, 0, d.ring_pa, &d.lay);
         post_events(&mut d);
+        driver_ok(regs);
+
+        let mut keyboard = match kbd_slot {
+            Some(slot) => {
+                let kregs = mmio(slot);
+                // SAFETY: 同 tablet，认领后恒定。
+                unsafe {
+                    core::ptr::write_volatile(
+                        core::ptr::addr_of_mut!(CLAIMED_KEYBOARD_REGS),
+                        kregs,
+                    );
+                }
+                if !negotiate(kregs) {
+                    println!("gui-inputd: keyboard 协商拒绝；park");
+                    berry_libc::park();
+                }
+                let mut kd = setup_dma();
+                setup_queue(kregs, 0, kd.ring_pa, &kd.lay);
+                post_events(&mut kd);
+                driver_ok(kregs);
+                Some(Keyboard {
+                    regs: kregs,
+                    d: kd,
+                    pump: KeyPump::new(u16::try_from(slot + 1).unwrap_or(1)),
+                })
+            }
+            None => None,
+        };
+
+        let kdesc = match kbd_slot {
+            Some(slot) => slot,
+            None => usize::MAX,
+        };
+        println!(
+            "INPUTDEV ok tab={} kb={} q={}x{}B cal=x[{},{}) y[{},{})",
+            tab_slot, kdesc, QSIZE, EVT_BUF_SZ, ax.min, ax.max, ay.min, ay.max
+        );
+        serve(&mut d, regs, &mut pump, keyboard.as_mut());
+    }
+
+    fn driver_ok(regs: *mut u32) {
         wr(
             regs,
             vio::mmio::STATUS,
             vio::ST_ACKNOWLEDGE | vio::ST_DRIVER | vio::ST_FEATURES_OK | vio::ST_DRIVER_OK,
         );
-        // 初始填充后的 kick（规范整洁面；dmb 先行——整页写在门铃前排序）。
         // SAFETY: 纯屏障指令，无内存操作数。
         unsafe { core::arch::asm!("dmb ish") };
         wr(regs, vio::mmio::Q_NOTIFY, 0);
-        println!(
-            "gui-inputd: up slot={} q={}x{}B cal=x[{},{}) y[{},{})",
-            slot, QSIZE, EVT_BUF_SZ, ax.min, ax.max, ay.min, ay.max
-        );
-        serve(&mut d, regs, &mut pump);
     }
 
-    /// 扫 32 槽按设备类认领恰一个 input 设备（vnet find_device 对称面；
-    /// did=18 按类计数——net/block 槽合法同席不算）。**None = 优雅退出**
-    /// （设备缺席/多设备歧义/legacy 传输层——诊断行 + park，§5.2-5）；
-    /// 坏 magic = 窗口破坏（系统级）→ trap loud（vnet 同口径）。
-    fn find_input_device() -> Option<usize> {
-        // SAFETY: 窗口经 spawn 映射（Device-nGnRnE）；逐字 volatile；只读
-        // ID 头（写面在协商序内）。
+    /// 扫 32 槽识别 P2 拓扑：恰一个 tablet（EV_ABS X/Y 在场）+ 0..=1 个
+    /// keyboard。其它 input 设备按 Unknown fail closed，不猜测。
+    fn find_input_devices() -> Option<(usize, Option<usize>)> {
         let base = VIRTIO_MMIO_VA as *const u32;
-        let mut hit: Option<usize> = None;
-        let mut n = 0usize;
+        let mut tab: Option<usize> = None;
+        let mut tab_n = 0usize;
+        let mut kbd: Option<usize> = None;
+        let mut kbd_n = 0usize;
+        let mut other = 0usize;
         for slot in 0..VIRTIO_MMIO_SLOTS {
-            let regs = unsafe { base.add(slot * (VIRTIO_MMIO_STRIDE / 4)) };
+            let regs = unsafe { base.add(slot * (VIRTIO_MMIO_STRIDE / 4)) } as *mut u32;
             if unsafe { core::ptr::read_volatile(regs) } != vio::mmio::MAGIC_VAL {
                 println!("gui-inputd: slot {} bad magic", slot);
                 trap();
             }
             let did = unsafe { core::ptr::read_volatile(regs.add(vio::mmio::DEVICE_ID / 4)) };
-            if did == vio::mmio::DEVICE_ID_INPUT {
-                n += 1;
-                hit = Some(slot);
+            if did != vio::mmio::DEVICE_ID_INPUT {
+                continue;
             }
-        }
-        let slot = match (n, hit) {
-            (1, Some(s)) => s,
-            _ => {
-                println!("gui-inputd: input slots = {}（须恰 1）；park", n);
+            let ver = unsafe { core::ptr::read_volatile(regs.add(vio::mmio::VERSION / 4)) };
+            if ver != vio::mmio::VERSION_MODERN {
+                println!("gui-inputd: slot {} ver={}（legacy 不支）；park", slot, ver);
                 return None;
             }
-        };
-        let regs = mmio(slot);
-        let ver = unsafe { core::ptr::read_volatile(regs.add(vio::mmio::VERSION / 4)) };
-        if ver != vio::mmio::VERSION_MODERN {
-            println!("gui-inputd: slot {} ver={}（legacy 不支）；park", slot, ver);
+            match input_device_kind(regs) {
+                InputDeviceKind::Pointer => {
+                    tab_n += 1;
+                    tab = Some(slot);
+                }
+                InputDeviceKind::Keyboard => {
+                    kbd_n += 1;
+                    kbd = Some(slot);
+                }
+                InputDeviceKind::Unknown => {
+                    other += 1;
+                    println!("gui-inputd: slot {} 未识别 input 设备；park", slot);
+                }
+            }
+        }
+        if tab_n != 1 || kbd_n > 1 || other != 0 {
+            println!(
+                "gui-inputd: input slots tab={} kb={} other={}（须 tab=1 kb=0..=1）；park",
+                tab_n, kbd_n, other
+            );
             return None;
         }
-        Some(slot)
+        Some((tab.unwrap(), if kbd_n == 1 { kbd } else { None }))
     }
 
     /// 占用槽的寄存器基（u32 字指针——偏移一律 `/4` 进字单位）。
@@ -245,6 +309,38 @@ mod guest {
         (VIRTIO_MMIO_VA + (slot * VIRTIO_MMIO_STRIDE) as u64) as *mut u32
     }
 
+    fn read_config_bytes(regs: *mut u32, select: u8, subsel: u8, out: &mut [u8]) -> Option<usize> {
+        cfg_wr8(regs, vio::mmio::CONFIG, select);
+        cfg_wr8(regs, vio::mmio::CONFIG + 1, subsel);
+        let size = cfg_rd8(regs, vio::mmio::CONFIG + 2) as usize;
+        if size > out.len() {
+            return None;
+        }
+        for (off, byte) in out.iter_mut().enumerate().take(size) {
+            *byte = cfg_rd8(regs, vio::mmio::CONFIG + 8 + off);
+        }
+        Some(size)
+    }
+
+    fn input_device_kind(regs: *mut u32) -> InputDeviceKind {
+        let mut abs = [0u8; 128];
+        let mut key = [0u8; 128];
+        let abs_n = read_config_bytes(
+            regs,
+            vio::input::INPUT_CFG_SEL_EV_BITS,
+            vio::input::EV_ABS as u8,
+            &mut abs,
+        )
+        .unwrap_or(0);
+        let key_n = read_config_bytes(
+            regs,
+            vio::input::INPUT_CFG_SEL_EV_BITS,
+            vio::input::EV_KEY as u8,
+            &mut key,
+        )
+        .unwrap_or(0);
+        classify_input_device(&abs[..abs_n], &key[..key_n])
+    }
     fn rd(regs: *mut u32, off: usize) -> u32 {
         // SAFETY: 窗口已映射；对齐 u32 volatile 读。
         unsafe { core::ptr::read_volatile((regs as *const u32).add(off / 4)) }
@@ -276,14 +372,19 @@ mod guest {
     #[cold]
     fn trap() -> ! {
         // SAFETY: 单线程进程；CLAIMED_REGS 认领后恒定。
-        let regs = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(CLAIMED_REGS)) };
-        if !regs.is_null() {
-            wr(regs, vio::mmio::STATUS, 0);
-            for _ in 0..1_000_000 {
-                if rd(regs, vio::mmio::STATUS) == 0 {
-                    break;
+        let regs = [
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(CLAIMED_TABLET_REGS)) },
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(CLAIMED_KEYBOARD_REGS)) },
+        ];
+        for regs in regs {
+            if !regs.is_null() {
+                wr(regs, vio::mmio::STATUS, 0);
+                for _ in 0..1_000_000 {
+                    if rd(regs, vio::mmio::STATUS) == 0 {
+                        break;
+                    }
+                    core::hint::spin_loop();
                 }
-                core::hint::spin_loop();
             }
         }
         // SAFETY: 故意触发的未映射读（0x4000_0000 与用户布局无交集——家族
@@ -522,6 +623,61 @@ mod guest {
         }
     }
 
+    /// P2：收割 virtio-keyboard eventq → KeyPump。DMA/used 契约与 tablet
+    /// 同源；事件解释（KEY_* / BTN_* / repeat / modifiers）归 KeyPump。
+    fn harvest_keys(k: &mut Keyboard) {
+        loop {
+            let mut u2 = [0u8; 2];
+            if berry_vmo_read(
+                k.d.vmo,
+                u2.as_mut_ptr(),
+                RING_PAGE + k.d.lay.used_off as u64 + 2,
+                2,
+            ) != 0
+            {
+                trap();
+            }
+            let idx = u16::from_le_bytes([u2[0], u2[1]]);
+            if idx == k.d.harvested {
+                return;
+            }
+            let i = (k.d.harvested % QSIZE) as usize;
+            let mut u8b = [0u8; 8];
+            if berry_vmo_read(
+                k.d.vmo,
+                u8b.as_mut_ptr(),
+                RING_PAGE + k.d.lay.used_off as u64 + 4 + (i as u64) * 8,
+                8,
+            ) != 0
+            {
+                trap();
+            }
+            let id = vio::get_u32(&u8b, 0).unwrap_or(u32::MAX);
+            let len = vio::get_u32(&u8b, 4).unwrap_or(u32::MAX);
+            if id >= QSIZE as u32 || len != EVT_BUF_SZ as u32 {
+                println!("gui-inputd: kb 坏完成项 id={} len={}", id, len);
+                trap();
+            }
+            let mut eb = [0u8; 8];
+            if berry_vmo_read(
+                k.d.vmo,
+                eb.as_mut_ptr(),
+                BUF_PAGE + id as u64 * EVT_BUF_SZ as u64,
+                8,
+            ) != 0
+            {
+                trap();
+            }
+            let wire_ev = match vio::input::get_input_event(&eb, 0) {
+                Some(e) => e,
+                None => trap(),
+            };
+            k.pump.feed(raw_from_wire(now(), wire_ev));
+            k.d.harvested = k.d.harvested.wrapping_add(1);
+            refill_event(&mut k.d, k.regs, id as u16);
+        }
+    }
+
     /// 应答发送（受激面——服务端永不主动 send）：EBUSY → wait WRITABLE
     /// 10s 重臂重发（阻塞形态，自旋形态的公平分槽面——G-eco-b 铁律）；
     /// 其它错 = 链断 loud。
@@ -596,6 +752,37 @@ mod guest {
             let mut obs = 0u64;
             if berry_object_wait_one(push, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
                 eprintln!("INPUTROUTE bad send-busy");
+                return;
+            }
+        }
+    }
+
+    /// P2：KeyPump drain → 0x23 KEY_ROUTE → wmd。wmd 按 focus + Surface
+    /// input_classes 裁决；inputd 不做第二套路由策略。
+    fn route_keys_wmd(k: &mut Keyboard, push: Handle) {
+        let mut evs = [ZERO_KEY; gp::INPUT_KEY_EVENTS_MAX];
+        let n = k.pump.drain(&mut evs);
+        if n == 0 {
+            return;
+        }
+        let mut frame = [0u8; gp::INPUT_KEY_ROUTE_MAX];
+        let len = match gp::encode_input_key_route_req(&mut frame, &evs[..n]) {
+            Some(len) => len,
+            None => trap(),
+        };
+        let deadline = now() + SEND_REARM_NS;
+        loop {
+            let st = berry_channel_send(push, frame.as_ptr(), len, core::ptr::null(), 0);
+            if st == 0 {
+                return;
+            }
+            if st != BERRY_ERR_BUSY {
+                println!("gui-inputd: key route send 失败 {}", st);
+                trap();
+            }
+            let mut obs = 0u64;
+            if berry_object_wait_one(push, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
+                eprintln!("KEYROUTE bad send-busy");
                 return;
             }
         }
@@ -840,6 +1027,7 @@ mod guest {
         d: &mut Dma,
         regs: *mut u32,
         pump: &mut PointerPump,
+        mut keyboard: Option<&mut Keyboard>,
         h: Handle,
         push: Handle,
         max_events: u8,
@@ -849,6 +1037,9 @@ mod guest {
         let mut evs = [ZERO_PE; gp::INPUT_EVENTS_MAX];
         loop {
             harvest(d, regs, pump);
+            if let Some(k) = keyboard.as_deref_mut() {
+                harvest_keys(k);
+            }
             let k = pump.drain(&mut evs[..max_events as usize]);
             if k > 0 {
                 let mut wes = [ZERO_WPE; gp::INPUT_EVENTS_MAX];
@@ -897,7 +1088,12 @@ mod guest {
     /// n=1 不进内核等待集）+ 心跳 tick 重臂（tick = 心跳非死线——超时
     /// 回环顶重查 used 环后重臂续等；v1 设备无可等待内核对象，「设备项
     /// 条件化入列」由 tick 兜底执行）。
-    fn serve(d: &mut Dma, regs: *mut u32, pump: &mut PointerPump) -> ! {
+    fn serve(
+        d: &mut Dma,
+        regs: *mut u32,
+        pump: &mut PointerPump,
+        mut keyboard: Option<&mut Keyboard>,
+    ) -> ! {
         let h = gift2_h();
         if h == 0 {
             println!("gui-inputd: gift 端点缺席（input 域通道未授）；park");
@@ -922,12 +1118,30 @@ mod guest {
         let mut sub_delivery: Option<u8> = None;
         let mut drop_reported = false;
         let mut drop_seen = 0u64;
+        let mut key_drop_reported = false;
+        let mut key_drop_seen = 0u64;
         loop {
             harvest(d, regs, pump); // 空闲期收割（tick 心跳的消费点）
+            if let Some(k) = keyboard.as_deref_mut() {
+                harvest_keys(k);
+            }
             // 丢事件证据：启动打一次零基线；后续只在计数变化时打 bad 行。
             // GUI8 burst 相据此既可断言基线，也可抓 eventq/pump 溢出。
             if push != 0 {
                 route_wmd(d, regs, pump, push);
+                if let Some(k) = keyboard.as_deref_mut() {
+                    route_keys_wmd(k, push);
+                }
+            }
+            if let Some(k) = keyboard.as_deref() {
+                let drops = k.pump.dropped();
+                if drops != key_drop_seen {
+                    eprintln!("INPUTKEYDROPS bad n={drops}");
+                    key_drop_seen = drops;
+                } else if !key_drop_reported {
+                    println!("INPUTKEYDROPS ok n={drops}");
+                    key_drop_reported = true;
+                }
             }
             let drops = pump.dropped_events();
             if drops != drop_seen {
@@ -975,7 +1189,16 @@ mod guest {
                         }
                     },
                     gp::OP_INPUT_POLL => match gp::parse_input_poll_req(&msg[..nb]) {
-                        Some(max) => serve_poll(d, regs, pump, h, push, max, &mut rep),
+                        Some(max) => serve_poll(
+                            d,
+                            regs,
+                            pump,
+                            keyboard.as_deref_mut(),
+                            h,
+                            push,
+                            max,
+                            &mut rep,
+                        ),
                         None => {
                             let n = gp::encode_status_rep(&mut rep, gp::ST_BAD);
                             send_rep(h, &rep[..n]);

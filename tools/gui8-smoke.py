@@ -171,6 +171,8 @@ MARK_UITEST_WIN = "UITESTWIN ok w="
 MARK_UITEST_FRAME = "UITESTFRAME ok"
 MARK_UITEST_CLIP = "UITESTCLIP ok"
 MARK_UITEST_SURFACE = "UITESTSURFACE ok"
+MARK_UITEST_KEY_WAIT = "UITESTKEYWAIT ok"
+MARK_UITEST_KEY = "UITESTKEY ok"
 MARK_UITEST_PROBE = "UITESTPROBE ok"
 MARK_UITEST_INPUT = "UITESTINPUT ok x="
 MARK_UITEST_DESTROY = "UITESTDESTROY ok"
@@ -479,6 +481,23 @@ class QmpClient:
         # qemu_console_lookup_by_device_name（console 查找），在 -display none
         # 的 qemu-fixed-text-console 上触发 QEMU 11.0.3 的 QOM 崩溃——勿用。
         return self.execute("input-send-event", {"events": events})
+
+    def key(self, code: int, down: bool) -> None:
+        """注入 Linux evdev keycode（QMP number 形态，仍省 device 键）。"""
+        return self.input_send([
+            {
+                "type": "key",
+                "data": {
+                    "down": down,
+                    "key": {"type": "number", "data": code},
+                },
+            }
+        ])
+
+    def tap_key(self, code: int) -> None:
+        """同码 down/up；QEMU 会各产 EV_KEY+SYN_REPORT 批。"""
+        self.key(code, True)
+        self.key(code, False)
 
     def click(self, x: float, y: float, w: int, h: int) -> None:
         """三批单击：①abs 定位 ②btn down（带坐标）③btn up。"""
@@ -1408,6 +1427,40 @@ def verify_uitest_normal(
         "normal UITEST surface",
         log_path,
     )
+    _require_exact_count(
+        text, "INPUTDEV ok tab=", 1, "normal input devices", log_path
+    )
+    _require_exact_count(text, MARK_UITEST_KEY_WAIT, 1, "normal UITEST keyboard wait", log_path)
+    _require_exact_count(
+        text, "INPUTKEYDROPS ok n=0", 1, "normal keyboard drops baseline", log_path
+    )
+    _require_exact_count(
+        text, "INPUTKEYDROPS bad", 0, "normal keyboard drops nonzero", log_path
+    )
+    _require_exact_count(
+        text, "WMKEYDROP bad ", 6, "normal unauthorized keyboard drops", log_path
+    )
+    _require_exact_count(
+        text,
+        "WMKEYROUTE ok sid=15 window=14 code=30 action=1",
+        1,
+        "normal keyboard down route",
+        log_path,
+    )
+    _require_exact_count(
+        text,
+        "WMKEYROUTE ok sid=15 window=14 code=30 action=0",
+        1,
+        "normal keyboard up route",
+        log_path,
+    )
+    _require_exact_count(
+        text,
+        "UITESTKEY ok code=30 downs=1 ups=1",
+        1,
+        "normal UITEST keyboard",
+        log_path,
+    )
     _require_exact_count(text, "UITESTSTATE ok page=1", 2, "normal UITEST push", log_path)
     _require_exact_count(text, "UITESTBACK ok page=0", 2, "normal UITEST pop", log_path)
     if not re.search(r"UITESTWIN ok w=1080 h=1920", text):
@@ -1562,6 +1615,10 @@ def qemu_command(
         "virtio-blk-device,drive=drv0",
         "-device",
         "virtio-tablet-device,id=tab0",
+        # P2：keyboard 追加在 tablet 后——virtio-mmio 倒序建槽，tablet 槽位
+        # 零漂移；QMP key 事件必须省 device 键广播注入。
+        "-device",
+        "virtio-keyboard-device,id=kbd0",
         "-device",
         "ramfb",
         "-fw_cfg",
@@ -1578,6 +1635,8 @@ def qemu_command(
             "enable=input_event_abs",
             "-trace",
             "enable=input_event_btn",
+            "-trace",
+            "enable=input_event_key",
             "-trace",
             "enable=input_event_sync",
             "-trace",
@@ -2177,6 +2236,28 @@ def run_normal_boot(args) -> int:
 
         boot.qmp_connect()
 
+        # —— P2 键盘 fail-closed：启动态无 Keyboard 合约，KEY_A 必须被
+        # wmd 拒收，且 down/up 各留下带 code 的证据行。
+        log("normal-keyboard: QMP 注入未授权 KEY_A down/up")
+        boot.qmp.tap_key(30)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: len(re.findall(
+                    r"WMKEYDROP bad [^\n]*code=30", t
+                )) >= 2 and "WMKEYROUTE ok" not in t,
+                "未授权 KEY_A down/up 各一次 WMKEYDROP",
+                args.click_timeout,
+                "normal keyboard unauthorized",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal keyboard unauthorized",
+                "WMKEYDROP bad code=30 ×2 / zero WMKEYROUTE",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
         # —— Browser BerryUI app：首格真实 APP_SPAWN → 窗口/帧 → back。 ——
         log("normal-browser: QMP 点击 BROWSER 首格（真实 APP_SPAWN）")
         boot.qmp.click(156, 282, w, h)
@@ -2197,7 +2278,9 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        time.sleep(1.0)
+        # P2 双输入设备下 TCG 呈现链偶发晚于 FRAME_CALLBACK；像素锚以
+        # 稳定 screendump 为准，不用仍可能停留在桌面的首拍。
+        time.sleep(3.0)
         browser_shot = run_dir / "browser.ppm"
         boot.qmp.screendump(browser_shot)
         assert_pixel_close(
@@ -2213,6 +2296,29 @@ def run_normal_boot(args) -> int:
             "Browser 系统 A8 文本", boot.log_path,
         )
         log("normal-browser: BerryUI 像素/色数锚 ok（AppBar/surface/A8）")
+
+        # Browser 已是真实 focused window，但其 Retained surface 未声明
+        # Keyboard：同样 KEY_A 必须走 reason=class 拒收。
+        log("normal-keyboard: QMP 向 focused Browser 注入无 Keyboard 合约 KEY_A")
+        boot.qmp.tap_key(30)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: len(re.findall(
+                    r"WMKEYDROP bad [^\n]*reason=class code=30", t
+                )) >= 2 and "WMKEYROUTE ok" not in t,
+                "focused Browser class drop ×2",
+                args.click_timeout,
+                "normal keyboard Browser class",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal keyboard Browser class",
+                "WMKEYDROP reason=class code=30 ×2",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
         browser_back = latest_browser_back(boot.log.text, snapshot_pos)
         browser_click = rect_center(browser_back)
         log(f"normal-browser: QMP 点击 Back Button ({browser_click[0]},{browser_click[1]})")
@@ -2764,20 +2870,64 @@ def run_normal_boot(args) -> int:
             click1[0] - 1,
             click1[1] - 1,
         )
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: MARK_UITEST_KEY_WAIT in t,
+                MARK_UITEST_KEY_WAIT,
+                args.click_timeout,
+                "normal UITEST keyboard wait",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST keyboard wait", MARK_UITEST_KEY_WAIT,
+                args.click_timeout, boot.log_path,
+            ) from None
+        log("normal-uitest: QMP 注入 KEY_A down/up（真实 virtio-keyboard）")
+        boot.qmp.tap_key(30)
         input_re = rf"UITESTINPUT ok x={want_input[0]} y={want_input[1]}"
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: re.search(input_re, t) is not None
                 and "UITESTBACK ok page=0 switch=0" in t
+                and "UITESTKEY ok code=30 downs=1 ups=1" in t
                 and t.count(MARK_UITEST_EXIT) > uitest_before,
-                f"{input_re} + BACK + EXIT",
+                f"{input_re} + BACK + KEY + EXIT",
                 args.click_timeout,
-                "normal UITEST pop/exit",
+                "normal UITEST pop/keyboard/exit",
             )
         except MissingMarkers:
             raise MissingMarkers(
-                "normal UITEST pop/exit", "input + back + exit", args.click_timeout, boot.log_path
+                "normal UITEST pop/keyboard/exit",
+                "input + back + key + exit",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        # UITEST 已真实 WM_DESTROY / WMDEAD：再注入 KEY_A，必须新增两次
+        # 拒收且不再出现键盘路由，证明 surface 授权与队列不残留。
+        key_route_before = boot.log.text.count("WMKEYROUTE ok")
+        key_drop_before = len(re.findall(r"WMKEYDROP bad [^\n]*code=30", boot.log.text))
+        log("normal-keyboard: UITEST 销毁后注入 KEY_A down/up")
+        boot.qmp.tap_key(30)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: len(re.findall(
+                    r"WMKEYDROP bad [^\n]*code=30", t
+                )) >= key_drop_before + 2
+                and t.count("WMKEYROUTE ok") == key_route_before,
+                "销毁后 KEY_A drop ×2 / 零新增路由",
+                args.click_timeout,
+                "normal keyboard after destroy",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal keyboard after destroy",
+                "post-destroy WMKEYDROP ×2 / no new WMKEYROUTE",
+                args.click_timeout,
+                boot.log_path,
             ) from None
 
         watcher = boot.log
@@ -3388,6 +3538,13 @@ def self_test(args) -> int:
         )
         snap_n = len(fake_n)
         fake_n += (
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "WMKEYDROP bad sid=4 window=1 reason=class code=30\n"
+            "WMKEYDROP bad sid=4 window=1 reason=class code=30\n"
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "INPUTKEYDROPS ok n=0\n"
             f"{browser_runtime}{MARK_WM_ROUTE_DESKTOP}\n"
             f"{settings_runtime}{files_runtime}{photos_runtime}"
             f"{contacts_runtime}"
@@ -3530,6 +3687,14 @@ def self_test(args) -> int:
         )
 
         uitest_boot = (
+            "INPUTDEV ok tab=3 kb=2 q=64x8B cal=x[0,32768) y[0,32768)\n"
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "WMKEYDROP bad sid=4 window=1 reason=class code=30\n"
+            "WMKEYDROP bad sid=4 window=1 reason=class code=30\n"
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "WMKEYDROP bad sid=0 window=0 reason=focus code=30\n"
+            "INPUTKEYDROPS ok n=0\n"
             f"{MARK_UITEST_UP}\n{MARK_UITEST_ROOM}\n"
             f"{MARK_UITEST_WIN}1080 h=1920\n"
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
@@ -3573,6 +3738,10 @@ def self_test(args) -> int:
             "UITESTINPUT ok x=539 y=284\n"
             "UITESTRENDER ok seq=3 cmds=18\n"
             "UITESTBACK ok page=0 switch=0\n"
+            "WMKEYROUTE ok sid=15 window=14 code=30 action=1\n"
+            "WMKEYROUTE ok sid=15 window=14 code=30 action=0\n"
+            "UITESTKEYWAIT ok input=9\n"
+            "UITESTKEY ok code=30 downs=1 ups=1\n"
             f"{MARK_UITEST_DESTROY}\n{MARK_UITEST_EXIT}\n"
         )
         fake_u = uitest_boot + uitest_runtime
@@ -3582,6 +3751,53 @@ def self_test(args) -> int:
             "UITEST Surface 合约位造假",
             lambda: verify_uitest_normal(
                 fake_u.replace("flags=31 scale=1000", "flags=30 scale=1000", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺键盘等待",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTKEYWAIT ok input=9\n", "", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺输入设备标记",
+            lambda: verify_uitest_normal(
+                fake_u.replace("INPUTDEV ok tab=3 kb=2", "", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺键盘零丢基线",
+            lambda: verify_uitest_normal(
+                fake_u.replace("INPUTKEYDROPS ok n=0\n", "", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 键盘拒收数不足",
+            lambda: verify_uitest_normal(
+                fake_u.replace("WMKEYDROP bad ", "WMKEYDROPX bad ", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 键码造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTKEY ok code=30", "UITESTKEY ok code=31", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 键盘 marker 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTKEY ok code=30 downs=1 ups=1\n",
+                    "UITESTKEY ok code=30 downs=1 ups=1\n"
+                    "UITESTKEY ok code=30 downs=1 ups=1\n",
+                    1,
+                ),
                 snap_u, 1,
             ),
         )

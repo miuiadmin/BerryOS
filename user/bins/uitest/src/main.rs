@@ -12,9 +12,10 @@ use berry_gfx::cmd::{CommandEncoder, GlyphPos};
 use berry_gfx::font::FontSize;
 use berry_room::{
     AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PHASE_UP, PointerEvent, RoomConfig, Sample,
-    SURFACE_A11Y_HYBRID, SURFACE_A11Y_REGIONS, SURFACE_IME_DISABLED,
-    SURFACE_INPUT_MOUSE, SURFACE_INPUT_TOUCH, SurfaceModeKind, SurfaceRequest,
-    SYSTEM_FONT_ATLAS,
+    SURFACE_A11Y_HYBRID, SURFACE_A11Y_REGIONS,
+    SURFACE_IME_DISABLED, SURFACE_INPUT_KEYBOARD, SURFACE_INPUT_MOUSE, SURFACE_INPUT_TOUCH,
+    INPUT_KEY_EVENTS_MAX, KEY_ACTION_DOWN, KEY_ACTION_UP, KeyEvent, SurfaceModeKind,
+    SurfaceRequest, SYSTEM_FONT_ATLAS,
 };
 use berry_ui::sdk::{
     Button, Card, EmptyState, FontSource, InteractionState, ListItem, Msg, RectI, Scaffold,
@@ -336,11 +337,11 @@ impl AppModel {
             fail(room, "surface buffer before grant");
         }
 
-        // P1 fail-closed 负例：Keyboard 输入类在本刀无生产者，即使 session
-        // 已持 per-boot seed 也不得授予。
+        // P2 fail-closed 负例：Gamepad 仍无生产者；Keyboard 已由真实
+        // virtio-keyboard → inputd → wmd 链承载。
         let unsupported = room.configure_surface(SurfaceRequest {
             mode: SurfaceModeKind::Canvas,
-            input_classes: SURFACE_INPUT_TOUCH | (1 << 3),
+            input_classes: SURFACE_INPUT_TOUCH | (1 << 4),
             ime_mode: SURFACE_IME_DISABLED,
             a11y_mode: SURFACE_A11Y_HYBRID,
         });
@@ -354,7 +355,9 @@ impl AppModel {
         let canvas = room
             .configure_surface(SurfaceRequest {
                 mode: SurfaceModeKind::Canvas,
-                input_classes: SURFACE_INPUT_TOUCH | SURFACE_INPUT_MOUSE,
+                input_classes: SURFACE_INPUT_TOUCH
+                    | SURFACE_INPUT_MOUSE
+                    | SURFACE_INPUT_KEYBOARD,
                 ime_mode: SURFACE_IME_DISABLED,
                 a11y_mode: SURFACE_A11Y_HYBRID,
             })
@@ -372,7 +375,7 @@ impl AppModel {
         let immersive = room
             .configure_surface(SurfaceRequest {
                 mode: SurfaceModeKind::Immersive,
-                input_classes: SURFACE_INPUT_TOUCH,
+                input_classes: SURFACE_INPUT_TOUCH | SURFACE_INPUT_KEYBOARD,
                 ime_mode: SURFACE_IME_DISABLED,
                 a11y_mode: SURFACE_A11Y_REGIONS,
             })
@@ -576,6 +579,57 @@ fn wait_two_clicks(app: &mut AppModel, room: &mut AppRoom) -> (u32, u32) {
     last
 }
 
+/// P2 runtime 真键盘链：Back 返回 page0 后，把当前 surface 协商为
+/// Canvas + Touch|Keyboard，等待 QMP 注入 KEY_A 的 down/up 同码配对。
+fn wait_real_keyboard(room: &mut AppRoom) {
+    let grant = room
+        .configure_surface(SurfaceRequest {
+            mode: SurfaceModeKind::Canvas,
+            input_classes: SURFACE_INPUT_TOUCH | SURFACE_INPUT_KEYBOARD,
+            ime_mode: SURFACE_IME_DISABLED,
+            a11y_mode: SURFACE_A11Y_HYBRID,
+        })
+        .unwrap_or_else(|e| fail(room, e.as_str()));
+    if grant.input_classes & SURFACE_INPUT_KEYBOARD == 0
+        || grant.contract_flags != 31
+    {
+        fail(room, "keyboard grant");
+    }
+    let ready = Line::new(b"UITESTKEYWAIT ok input=9\n");
+    ready.print(room);
+
+    let mut events = [KeyEvent {
+        timestamp_ns: 0,
+        code: 0,
+        action: 0,
+        modifiers: 0,
+        device_id: 0,
+    }; INPUT_KEY_EVENTS_MAX];
+    let mut downs = 0u32;
+    let mut ups = 0u32;
+    loop {
+        let count = match room.poll_keys(&mut events) {
+            Ok(count) => count,
+            Err(e) => fail(room, e.as_str()),
+        };
+        for event in events.iter().take(count) {
+            if event.code != 30 {
+                fail(room, "keyboard code");
+            }
+            match event.action {
+                KEY_ACTION_DOWN => downs += 1,
+                KEY_ACTION_UP => ups += 1,
+                _ => {}
+            }
+        }
+        if downs >= 1 && ups >= 1 {
+            break;
+        }
+    }
+    let line = Line::new(b"UITESTKEY ok code=30 downs=1 ups=1\n");
+    line.print(room);
+}
+
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(env_ch: u32) -> ! {
@@ -669,6 +723,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         room.print(b"UITESTPROBE ok\n");
     } else {
         let (x, y) = wait_two_clicks(&mut app, &mut room);
+        wait_real_keyboard(&mut room);
         input_line(x, y).print(&room);
         let mut back = Line::new(b"UITESTBACK ok page=");
         back.push_u32(app.page_index as u32);

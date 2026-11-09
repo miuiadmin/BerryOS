@@ -88,8 +88,35 @@ fn production_policy_denies_escape_and_unsupported_capabilities() {
 
     let mut keyboard = canvas;
     keyboard.input_classes |= INPUT_CLASS_KEYBOARD;
+    let keyboard_grant = surface_mode_production_policy(
+        keyboard, true, None, 1080, 1920,
+    )
+    .expect("P2 keyboard producer is wired");
+    assert!(keyboard_grant.input_classes & INPUT_CLASS_KEYBOARD != 0);
+
+    // Keyboard 是 input class，不是 Canvas escape：Retained 无 seed 也授予；
+    // Canvas 无 seed 仍按 escape 拒绝。
+    let retained_keyboard = req(
+        SURFACE_MODE_RETAINED,
+        INPUT_CLASS_TOUCH | INPUT_CLASS_KEYBOARD,
+        IME_MODE_DISABLED,
+        A11Y_MODE_TREE,
+    );
+    let retained_grant = surface_mode_production_policy(
+        retained_keyboard, false, None, 1080, 1920,
+    )
+    .expect("retained keyboard does not need escape seed");
+    assert!(retained_grant.input_classes & INPUT_CLASS_KEYBOARD != 0);
+    assert_eq!(retained_grant.contract_flags & SURFACE_F_ESCAPE, 0);
     assert_eq!(
-        surface_mode_production_policy(keyboard, true, None, 1080, 1920),
+        surface_mode_production_policy(keyboard, false, None, 1080, 1920),
+        Err(ST_DENIED)
+    );
+
+    let mut gamepad = canvas;
+    gamepad.input_classes |= INPUT_CLASS_GAMEPAD;
+    assert_eq!(
+        surface_mode_production_policy(gamepad, true, None, 1080, 1920),
         Err(ST_UNSUPPORTED)
     );
     let mut ime = canvas;
