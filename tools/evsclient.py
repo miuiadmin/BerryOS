@@ -29,7 +29,7 @@ PORT = 18082
 # 帽 env 化（S-2b §5.1）：默认值 = 主 smoke 单核线现行定值不变；smoke-smp
 # 线经 env 覆盖（TOTAL 960 / ATTEMPT 90——MTTCG 双核 0.61x 一切帽 ×2 铁律；
 # 「client 帽 ≥ 相帽 + 60s」与「内帽 < 尝试帽」两道帽序见 SMP-S2 草案 §5.1）。
-TOTAL_CAP_S = int(os.environ.get("BERRY_EVS_TOTAL_CAP_S", "480"))  # 总帽：guest boot→bsh EVS 实测 ~60s-5min（TCG 慢夜）+ 对拍余量
+TOTAL_CAP_S = int(os.environ.get("BERRY_EVS_TOTAL_CAP_S", "660"))  # 总帽：guest boot→bsh EVS 实测 ~60s-5min（TCG 慢夜）；X-5 帽序勘正（2026-11-09）：相帽 DEADLINE_ROOTFS=600 后 480 已倒挂（client 先于 QEMU 起、帽序不能倒），升 660 = 600+60 序恢复——smoke-smp 同款 env 覆盖（960）不受影响
 ATTEMPT_CAP_S = int(os.environ.get("BERRY_EVS_ATTEMPT_CAP_S", "45"))  # 单尝试帽：connect/write/read 全程；失败尝试留 guest CloseWait
                     # 尸槽（bsh 侧释槽 30s 帽 + 重入 accept）——45s 覆盖回收窗
 RETRY_SLEEP_S = 2
