@@ -268,7 +268,7 @@ build-user:
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
     python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
     # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。
-    # Browser Native Shell：独立 ELF + appstub 官方图标/views 组包。
+    # Browser BerryUI app：独立 ELF + appstub 官方图标/views 组包。
     mkdir -p userbins/app-stage/BROWSER/bin
     cp bins/browser/manifest.toml userbins/app-stage/BROWSER/
     cp cargo-target/aarch64-unknown-none/release/browser userbins/app-stage/BROWSER/bin/browser
@@ -289,7 +289,7 @@ build-user:
     cp -R bins/appstub/apps/FILES/icons userbins/app-stage/FILES/
     cp -R bins/appstub/apps/FILES/views userbins/app-stage/FILES/
     python3 ../tools/mkapp.py userbins/app/FILES.bap userbins/app-stage/FILES
-    # Photos Native Shell：独立 ELF + 官方图标/views 组包。
+    # Photos BerryUI app：独立 ELF + 官方图标/views 组包。
     mkdir -p userbins/app-stage/PHOTOS/bin
     cp bins/photos/manifest.toml userbins/app-stage/PHOTOS/
     cp cargo-target/aarch64-unknown-none/release/photos userbins/app-stage/PHOTOS/bin/photos
@@ -849,9 +849,9 @@ gui8-smoke:
     fi
     exec python3 tools/gui8-smoke.py "$@"
 
-# GUI-8 常态隔离 + F5..F7 应用迁移验收（可选）：同一镜像/tablet/数据盘拓扑但
-# **不造 GUI8.SMK**；Browser/Photos 迁移前基线与 Settings/Files/
-# Contacts/UITEST BerryUI 真链全跑；UITEST 以 BerryUI 组件/主题/滚动/
+# GUI-8 常态隔离 + F5..F8 应用迁移验收（可选）：同一镜像/tablet/数据盘拓扑但
+# **不造 GUI8.SMK**；Settings/Files/Contacts/Browser/Photos/UITEST 六个
+# BerryUI app 真链全跑；UITEST 以 BerryUI 组件/主题/滚动/
 # 状态/返回栈走 Berry Room，断言真实帧像素、layout/hit dump
 # 与两次 owner-local 点击；CLICK/LAYOUTW/LAYOUT/click ready 仍全零。
 # gui8-smoke-normal：哨兵缺席的迁移基线 + BerryUI app 常态验收。

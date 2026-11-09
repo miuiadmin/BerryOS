@@ -844,7 +844,7 @@ fn run_rootfs_child(console: Handle) {
     // 客户端端已随 wmd arm 换手迁移（本 arm 不再触碰）；stdout=console
     //（`GFX ok` 全链断言过自打）；stdin Some(&[]) 占位（extras 非空须
     // stdin 槽在位——berry-exec assert）。**阻塞 reap 收退出码**
-    //（stdhello 预拉同形；berry-exec REAP_TIMEOUT 30s 在册）：零码零新行
+    //（stdhello 预拉同形；berry-exec REAP_TIMEOUT 240s 在册）：零码零新行
     //（GFX ok 归 gfxdemo 自打）；非零/Err 面 eco 行续走（失败隔离——标记
     // 缺失 = smoke FAIL 兜底）。**不 ps_reg**（thr 先例注记——瞬态验收件
     // 不入账，PS ok n= 零漂移）。

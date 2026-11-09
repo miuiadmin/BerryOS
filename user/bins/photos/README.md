@@ -1,8 +1,8 @@
-# Photos Native Shell
+# Photos
 
-- 独立 no_std GUI 进程，manifest `wm=true` + `fs=["rootfs"]`。
-- 真实 READDIR 根目录、STAT/GET `PATTERN.BIN`（5000B，逐字节公式验证）。
-- 将文件字节渲染为灰度照片：网格缩略图 → 查看大图 → 返回网格 → 退出。
-- WM/input session、全屏窗口、局部 VMO、wmd composition、owner-local 输入全真链。
+GUI F8 迁移后的只读照片样本浏览 app：WM/窗口/frame/输入/销毁与系统字形由
+Berry Room 提供，页面与图像视觉由 BerryUI/Berry Design 提供。PATTERN.BIN
+的 READDIR/STAT/GET 与 5000B 逐字节校验继续经 berry-fsclient，图像经
+IconSource SmoothArgb 进入 DisplayList。
 
-**诚实边界：v1 是只读样本照片浏览器，不支持相机、编辑、相册管理或云图。**
+**诚实边界：v1 不支持相机、编辑、相册管理或云图。**

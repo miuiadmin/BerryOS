@@ -11,7 +11,7 @@ fs = ["rootfs"]
 wm = true
 
 [runtime]
-stack_pages = 16
+stack_pages = 64
 
 [ui]
 icon = "icons/icon.byi"

@@ -49,9 +49,10 @@ static mut STEP_WIN: [u8; 512] = [0; 512];
 /// 面），按解析侧同款契约 Err 降级；真实 std 镜像 ~283KB，余量充足。
 const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
 
-/// `ChildHandles::reap` 的等待帽（绝对）：EOF 先行约定下子进程退出在
-/// EOF 后微秒量级，30s 帽只兜挂死面（未退出 = Err 交调用方定死法）。
-const REAP_TIMEOUT_NS: u64 = 30 * 1_000_000_000;
+/// `ChildHandles::reap` 的等待帽（绝对）：console/std 子进程通常在 EOF 后
+/// 微秒量级退出；GUI boot probe 会先走 fs FAT 链、BerryUI 布局/光栅化与
+/// frame present，TCG 下可超过 30s。240s 只兜挂死面，不改变退出真码语义，并保留 GUI8 Boot B 300s 外层帽的 loud 失败窗口。
+const REAP_TIMEOUT_NS: u64 = 240 * 1_000_000_000;
 
 /// MMIO 窗口映射 VA（P6 A-2）：[`SpawnSpec::mmio_vmo`] 的落位——远离映像
 /// /栈区（0x1000 起的低带）的高带定值，驱动探测/编程面读它。与内核
@@ -102,8 +103,8 @@ pub struct ChildHandles {
 
 impl ChildHandles {
     /// 回收已退出的子进程（Plan B v0.5；P5 起**返退出码**——`&&`/`$?` 的
-    /// 真值源）：wait `SIGNAL_TERMINATED`（30s 绝对帽——EOF 先行约定下常态
-    /// 瞬回）→ **read exit code（0x3A，wait 后 close 前读——close hp 即销毁
+    /// 真值源）：wait `SIGNAL_TERMINATED`（240s 绝对帽——TCG 下 GUI boot probe
+    /// 会先完成真实 fs/光栅/present；普通子进程常态瞬回）→ **read exit code（0x3A，wait 后 close 前读——close hp 即销毁
     /// Process 对象，读完码才许放）** → unmap 映像/栈/MMIO 窗口（mapcnt 归零；
     /// 窗口幅 0 = 无第三刀）→ close
     /// 栈/映像 VMO（destroy-close 不再拒，Drop 还帧）→ close thread/vmar/

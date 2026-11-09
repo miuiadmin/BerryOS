@@ -116,6 +116,7 @@ MARK_BROWSER_FRAME = "BROWSERFRAME ok"
 MARK_BROWSER_BACK = "BROWSERBACK ok"
 MARK_BROWSER_PROBE = "BROWSERPROBE ok"
 MARK_BROWSER_DESTROY = "BROWSERDESTROY ok"
+MARK_BROWSER_RENDER = "BROWSERRENDER ok seq="
 MARK_BROWSER_EXIT = "BROWSEREXIT ok"
 MARK_SETTINGS_UP = "SETTINGS up"
 MARK_SETTINGS_WIN = "SETTINGSWIN ok"
@@ -146,6 +147,8 @@ MARK_PHOTOS_DATA = "PHOTOSDATA ok n=5000"
 MARK_PHOTOS_FRAME = "PHOTOSFRAME ok"
 MARK_PHOTOS_OPEN = "PHOTOSOPEN ok"
 MARK_PHOTOS_VIEW = "PHOTOSVIEW ok"
+MARK_PHOTOS_BACK = "PHOTOSBACK ok"
+MARK_PHOTOS_RENDER = "PHOTOSRENDER ok seq="
 MARK_PHOTOS_PROBE = "PHOTOSPROBE ok"
 MARK_PHOTOS_DESTROY = "PHOTOSDESTROY ok"
 MARK_PHOTOS_EXIT = "PHOTSEXIT ok"
@@ -1082,6 +1085,15 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_BROWSER_UP, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_WIN, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_FRAME, browser_before + 1, "normal Browser", log_path)
+    _require_exact_count(
+        text, "BROWSERLAYOUT ok back=", browser_before + 1,
+        "normal Browser layout", log_path,
+    )
+    _require_exact_count(
+        text, MARK_BROWSER_RENDER, browser_before + 1,
+        "normal Browser render", log_path,
+    )
+    _require_exact_count(text, "BROWSERHIT ok node=back", 1, "normal Browser back hit", log_path)
     _require_exact_count(text, MARK_BROWSER_BACK, 1, "normal Browser back", log_path)
     _require_exact_count(text, MARK_BROWSER_DESTROY, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_EXIT, browser_before + 1, "normal Browser", log_path)
@@ -1137,6 +1149,17 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_PHOTOS_WIN, photos_before + 1, "normal Photos", log_path)
     _require_exact_count(text, MARK_PHOTOS_LIST, photos_before + 2, "normal Photos", log_path)
     _require_exact_count(text, MARK_PHOTOS_DATA, photos_before + 1, "normal Photos", log_path)
+    _require_exact_count(
+        text, "PHOTOSLAYOUT ok mode=0", photos_before + 2,
+        "normal Photos grid layout", log_path,
+    )
+    _require_exact_count(text, "PHOTOSLAYOUT ok mode=1", 1, "normal Photos view layout", log_path)
+    _require_exact_count(
+        text, MARK_PHOTOS_RENDER, photos_before + 3,
+        "normal Photos render", log_path,
+    )
+    _require_exact_count(text, "PHOTOSHIT ok node=back", 1, "normal Photos back hit", log_path)
+    _require_exact_count(text, MARK_PHOTOS_BACK, 1, "normal Photos back", log_path)
     # runtime 缩略图初帧 + 查看大图 + 返回网格。
     _require_exact_count(text, MARK_PHOTOS_FRAME, photos_before + 3, "normal Photos", log_path)
     _require_exact_count(text, MARK_PHOTOS_OPEN, 1, "normal Photos view", log_path)
@@ -1300,6 +1323,48 @@ CONTACTS_LAYOUT_RE = re.compile(
     r"CONTACTSLAYOUT ok mode=(\d+) back=(-?\d+),(-?\d+),(\d+),(\d+)"
     r"(?: (?:row|favorite)=(-?\d+),(-?\d+),(\d+),(\d+))?"
 )
+BROWSER_LAYOUT_RE = re.compile(
+    r"BROWSERLAYOUT ok back=(-?\d+),(-?\d+),(\d+),(\d+)"
+)
+PHOTOS_LAYOUT_RE = re.compile(
+    r"PHOTOSLAYOUT ok mode=(\d+) back=(-?\d+),(-?\d+),(\d+),(\d+) "
+    r"image=(-?\d+),(-?\d+),(\d+),(\d+)"
+    r"(?: open=(-?\d+),(-?\d+),(\d+),(\d+))?"
+)
+
+
+def latest_browser_back(text: str, start: int = 0) -> tuple[int, int, int, int]:
+    matches = [
+        match for match in BROWSER_LAYOUT_RE.finditer(text)
+        if match.start() >= start
+    ]
+    if not matches:
+        raise SmokeError("Browser layout back 缺失", None)
+    match = matches[-1]
+    return tuple(int(match.group(i)) for i in range(1, 5))  # type: ignore[return-value]
+
+
+def latest_photos_rect(
+    text: str, mode: int, name: str, start: int = 0,
+) -> tuple[int, int, int, int]:
+    groups = {
+        "back": (2, 3, 4, 5),
+        "image": (6, 7, 8, 9),
+        "open": (10, 11, 12, 13),
+    }
+    matches = [
+        match for match in PHOTOS_LAYOUT_RE.finditer(text)
+        if match.start() >= start and int(match.group(1)) == mode
+    ]
+    if not matches:
+        raise SmokeError(f"Photos layout mode={mode} {name} 缺失", None)
+    match = matches[-1]
+    raw = [match.group(i) for i in groups[name]]
+    if any(value is None for value in raw):
+        raise SmokeError(f"Photos layout mode={mode} {name} rect 缺失", None)
+    return tuple(int(value) for value in raw)  # type: ignore[return-value]
+
+
 
 
 def verify_uitest_normal(
@@ -2048,20 +2113,21 @@ def run_normal_boot(args) -> int:
         log(
             "normal-boot: display 1080x1920 product portrait；"
             "BROWSER/FILES/UITEST 首行 (156/412/668,282)，"
-            "CONTACTS/PHOTOS/SETTINGS dock (125/376/626,1668)"
+            "CONTACTS/PHOTOS/SETTINGS dock (164/415/665,1668)"
         )
 
         boot.qmp_connect()
 
-        # —— Browser Native Shell：首格真实 APP_SPAWN → 窗口/帧 → back。 ——
+        # —— Browser BerryUI app：首格真实 APP_SPAWN → 窗口/帧 → back。 ——
         log("normal-browser: QMP 点击 BROWSER 首格（真实 APP_SPAWN）")
         boot.qmp.click(156, 282, w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_BROWSER_UP) > browser_before
-                and t.count(MARK_BROWSER_FRAME) > browser_before,
-                f"runtime {MARK_BROWSER_UP} + {MARK_BROWSER_FRAME}",
+                and t.count(MARK_BROWSER_FRAME) > browser_before
+                and "BROWSERLAYOUT ok back=" in t,
+                f"runtime {MARK_BROWSER_UP} + {MARK_BROWSER_FRAME} + layout",
                 args.click_timeout,
                 "normal Browser launch",
             )
@@ -2076,24 +2142,22 @@ def run_normal_boot(args) -> int:
         browser_shot = run_dir / "browser-native.ppm"
         boot.qmp.screendump(browser_shot)
         assert_pixel_close(
-            ppm_pixel(browser_shot, 540, 60), (16, 116, 229),
-            "Browser 顶栏", boot.log_path,
+            ppm_pixel(browser_shot, 540, 20), (0, 116, 224),
+            "Browser AppBar", boot.log_path,
         )
         assert_pixel_close(
-            ppm_pixel(browser_shot, 540, 250), (255, 255, 255),
-            "Browser URL pill", boot.log_path,
-        )
-        assert_pixel_close(
-            ppm_pixel(browser_shot, 540, 800), (255, 255, 255),
-            "Browser 内容卡", boot.log_path,
+            ppm_pixel(browser_shot, 540, 600), (255, 255, 255),
+            "Browser surface", boot.log_path,
         )
         assert_color_count(
-            browser_shot, (60, 370, 900, 560), 128,
-            "Browser HD A8 文本", boot.log_path,
+            browser_shot, (20, 70, 900, 250), 128,
+            "Browser 系统 A8 文本", boot.log_path,
         )
-        log("normal-browser: QEMU 截图像素/色数锚 ok（顶栏/URL/内容卡/HD A8）")
-        log("normal-browser: QMP 点击 Browser 返回键（wmd owner-local 输入）")
-        boot.qmp.click(80, 80, w, h)
+        log("normal-browser: BerryUI 像素/色数锚 ok（AppBar/surface/A8）")
+        browser_back = latest_browser_back(boot.log.text, snapshot_pos)
+        browser_click = rect_center(browser_back)
+        log(f"normal-browser: QMP 点击 Back Button ({browser_click[0]},{browser_click[1]})")
+        boot.qmp.click(browser_click[0], browser_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2114,7 +2178,7 @@ def run_normal_boot(args) -> int:
         # —— Settings BerryUI app：dock 点击 → 两项状态切换 → back。 ——
         time.sleep(1.0)
         log("normal-settings: QMP 点击 SmartDock SETTINGS（真实 APP_SPAWN）")
-        boot.qmp.click(626, 1668, w, h)
+        boot.qmp.click(665, 1668, w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2327,16 +2391,17 @@ def run_normal_boot(args) -> int:
                 args.click_timeout, boot.log_path,
             ) from None
 
-        # —— Photos Native Shell：SmartDock 第二格 → 5000B 真图 → 查看。 ——
+        # —— Photos BerryUI app：SmartDock 第二格 → 5000B 真图 → 查看。 ——
         time.sleep(1.0)
         log("normal-photos: QMP 点击 SmartDock PHOTOS（真实 APP_SPAWN）")
-        boot.qmp.click(376, 1668, w, h)
+        boot.qmp.click(415, 1668, w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_PHOTOS_UP) > photos_before
-                and t.count(MARK_PHOTOS_FRAME) > photos_before,
-                f"runtime {MARK_PHOTOS_UP} + {MARK_PHOTOS_FRAME}",
+                and t.count(MARK_PHOTOS_FRAME) > photos_before
+                and "PHOTOSLAYOUT ok mode=0" in t,
+                f"runtime {MARK_PHOTOS_UP} + {MARK_PHOTOS_FRAME} + layout",
                 args.click_timeout,
                 "normal Photos launch",
             )
@@ -2353,14 +2418,19 @@ def run_normal_boot(args) -> int:
                 MARK_PHOTOS_DATA, args.click_timeout, boot.log_path,
             )
 
-        # 1080×1920 下缩略图：tile 360×360 @ (360,453)。
-        boot.qmp.click(540, 633, w, h)
+        photos_open = latest_photos_rect(
+            boot.log.text, 0, "open", snapshot_pos
+        )
+        photos_click = rect_center(photos_open)
+        log(f"normal-photos: QMP 点击 View Button ({photos_click[0]},{photos_click[1]})")
+        boot.qmp.click(photos_click[0], photos_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_PHOTOS_VIEW) >= 1
-                and t.count(MARK_PHOTOS_FRAME) > photos_before + 1,
-                f"{MARK_PHOTOS_VIEW} + 查看大图帧",
+                and t.count(MARK_PHOTOS_FRAME) > photos_before + 1
+                and "PHOTOSLAYOUT ok mode=1" in t,
+                f"{MARK_PHOTOS_VIEW} + 查看大图帧 + layout",
                 args.click_timeout,
                 "normal Photos view",
             )
@@ -2374,24 +2444,33 @@ def run_normal_boot(args) -> int:
         photos_shot = run_dir / "photos-native.ppm"
         boot.qmp.screendump(photos_shot)
         assert_pixel_close(
-            ppm_pixel(photos_shot, 540, 60), (94, 53, 177),
-            "Photos 顶栏", boot.log_path,
+            ppm_pixel(photos_shot, 540, 20), (0, 116, 224),
+            "Photos AppBar", boot.log_path,
         )
-        # 源图 (17,11) 由 PATTERN 公式得 148；该像素证明真实文件字节上屏。
+        # PATTERN.BIN 5000B 公式字节经 IconSource SmoothArgb 上屏。
         assert_pixel_close(
-            ppm_pixel(photos_shot, 405, 354), (148, 148, 148),
+            ppm_pixel(photos_shot, 540, 800), (148, 148, 148),
             "Photos PATTERN 像素", boot.log_path,
         )
-        log("normal-photos: QEMU 截图像素锚 ok（顶栏 + PATTERN 真字节）")
+        assert_color_count(
+            photos_shot, (20, 180, 900, 1300), 128,
+            "Photos PATTERN 灰度层", boot.log_path,
+        )
+        log("normal-photos: BerryUI 像素/色数锚 ok（AppBar/PATTERN 真字节）")
 
-        log("normal-photos: 返回网格（第二真实重绘）")
-        boot.qmp.click(80, 80, w, h)
+        photos_detail_back = latest_photos_rect(
+            boot.log.text, 1, "back", snapshot_pos
+        )
+        photos_back_click = rect_center(photos_detail_back)
+        log(f"normal-photos: QMP 点击查看页 Back ({photos_back_click[0]},{photos_back_click[1]})")
+        boot.qmp.click(photos_back_click[0], photos_back_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_PHOTOS_LIST) > photos_before + 1
-                and t.count(MARK_PHOTOS_FRAME) > photos_before + 2,
-                f"返回网格 {MARK_PHOTOS_LIST} + 第三帧",
+                and t.count(MARK_PHOTOS_FRAME) > photos_before + 2
+                and t.count("PHOTOSLAYOUT ok mode=0") >= 2,
+                f"返回网格 {MARK_PHOTOS_LIST} + 第三帧 + layout",
                 args.click_timeout,
                 "normal Photos back-to-grid",
             )
@@ -2402,8 +2481,12 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        log("normal-photos: 返回退出（销毁窗口）")
-        boot.qmp.click(80, 80, w, h)
+        photos_grid_back = latest_photos_rect(
+            boot.log.text, 0, "back", snapshot_pos
+        )
+        photos_exit_click = rect_center(photos_grid_back)
+        log(f"normal-photos: QMP 点击网格 Back ({photos_exit_click[0]},{photos_exit_click[1]})")
+        boot.qmp.click(photos_exit_click[0], photos_exit_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2421,7 +2504,7 @@ def run_normal_boot(args) -> int:
         # —— Contacts BerryUI app：dock 首格 → 4 条真实记录 → 收藏。 ——
         time.sleep(1.0)
         log("normal-contacts: QMP 点击 SmartDock CONTACTS（真实 APP_SPAWN）")
-        boot.qmp.click(125, 1668, w, h)
+        boot.qmp.click(164, 1668, w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2648,15 +2731,15 @@ def run_normal_boot(args) -> int:
         verify_uitest_normal(watcher.text, snapshot_pos, uitest_before, log_path)
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-native: Browser/Photos 两个迁移前基线、"
-            "Settings/Files/Contacts/UITEST 四个 BerryUI app 均以独立进程完成真实"
-            " WM 窗口/帧、状态/fs/图像/联系人记录与销毁全链；"
+            "normal-native: Settings/Files/Contacts/Browser/Photos/UITEST 六个"
+            " BerryUI app 均以独立进程完成真实 WM 窗口/帧、状态/fs/图像/联系人记录"
+            "与销毁全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：两 Native Shell + 四 BerryUI app 真链 + "
+            "PASS（--normal-boot）：六个 BerryUI app 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -2867,6 +2950,17 @@ def self_test(args) -> int:
             return
         raise SmokeError(f"自检负样本未失败：{label}")
 
+    expect_error(
+        "Browser layout 截断 fail closed",
+        lambda: latest_browser_back("BROWSERLAYOUT ok back=1,2,3\n"),
+    )
+    expect_error(
+        "Photos layout 缺 open fail closed",
+        lambda: latest_photos_rect(
+            "PHOTOSLAYOUT ok mode=0 back=1,2,3,4 image=5,6,7,8\n",
+            0, "open",
+        ),
+    )
     try:
         # 1) FAT12 + 印章 + 精确 GUI8.SMK payload
         disk = tmp / "layout.img"
@@ -3100,9 +3194,21 @@ def self_test(args) -> int:
 
         browser_boot = (
             f"{MARK_BROWSER_UP}\n{MARK_BROWSER_WIN}\n"
+            "BROWSERLAYOUT ok back=12,72,1056,60\n"
+            "BROWSERRENDER ok seq=1 cmds=10\n"
             f"{MARK_BROWSER_FRAME}\n{MARK_BROWSER_PROBE}\n"
             f"{MARK_BROWSER_DESTROY}\n{MARK_BROWSER_EXIT}\n"
         )
+        browser_runtime = (
+            f"{MARK_BROWSER_UP}\n{MARK_BROWSER_WIN}\n"
+            "BROWSERLAYOUT ok back=12,72,1056,60\n"
+            "BROWSERRENDER ok seq=1 cmds=10\n"
+            f"{MARK_BROWSER_FRAME}\n"
+            "BROWSERHIT ok node=back x=539 y=101\n"
+            f"{MARK_BROWSER_BACK}\n{MARK_BROWSER_DESTROY}\n"
+            f"{MARK_BROWSER_EXIT}\n"
+        )
+
         settings_boot = (
             f"{MARK_SETTINGS_UP}\n{MARK_SETTINGS_WIN}\n"
             "SETTINGSLAYOUT ok back=12,72,1056,60 wlan=146,141,78,42 "
@@ -3157,17 +3263,33 @@ def self_test(args) -> int:
         )
 
         photos_boot = (
-            f"{MARK_PHOTOS_UP}\n{MARK_PHOTOS_WIN}\n{MARK_PHOTOS_LIST}\n"
-            f"{MARK_PHOTOS_DATA}\n{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_PROBE}\n"
+            f"{MARK_PHOTOS_UP}\n{MARK_PHOTOS_WIN}\n{MARK_PHOTOS_LIST}1\n"
+            f"{MARK_PHOTOS_DATA}\n"
+            "PHOTOSLAYOUT ok mode=0 back=12,72,1056,60 "
+            "image=12,192,360,720 open=12,918,1056,60\n"
+            "PHOTOSRENDER ok seq=1 cmds=11\n"
+            f"{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_PROBE}\n"
             f"{MARK_PHOTOS_DESTROY}\n{MARK_PHOTOS_EXIT}\n"
         )
         photos_runtime = (
-            f"{MARK_PHOTOS_UP}\n{MARK_PHOTOS_WIN}\n{MARK_PHOTOS_LIST}\n"
-            f"{MARK_PHOTOS_DATA}\n{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_OPEN}\n"
-            f"{MARK_PHOTOS_VIEW}\n{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_LIST}\n"
-            f"{MARK_PHOTOS_FRAME}\nPHOTOSBACK ok\n{MARK_PHOTOS_DESTROY}\n"
+            f"{MARK_PHOTOS_UP}\n{MARK_PHOTOS_WIN}\n{MARK_PHOTOS_LIST}1\n"
+            f"{MARK_PHOTOS_DATA}\n"
+            "PHOTOSLAYOUT ok mode=0 back=12,72,1056,60 "
+            "image=12,192,360,720 open=12,918,1056,60\n"
+            "PHOTOSRENDER ok seq=1 cmds=11\n"
+            f"{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_OPEN}\n"
+            "PHOTOSLAYOUT ok mode=1 back=12,72,1056,60 image=12,192,540,1080\n"
+            "PHOTOSRENDER ok seq=2 cmds=8\n"
+            f"{MARK_PHOTOS_VIEW}\n{MARK_PHOTOS_FRAME}\n"
+            "PHOTOSLAYOUT ok mode=0 back=12,72,1056,60 "
+            "image=12,192,360,720 open=12,918,1056,60\n"
+            "PHOTOSRENDER ok seq=3 cmds=11\n"
+            f"{MARK_PHOTOS_LIST}1\n{MARK_PHOTOS_FRAME}\n"
+            "PHOTOSHIT ok node=back x=539 y=101\n"
+            f"{MARK_PHOTOS_BACK}\n{MARK_PHOTOS_DESTROY}\n"
             f"{MARK_PHOTOS_EXIT}\n"
         )
+
         contacts_boot = (
             f"{MARK_CONTACTS_UP}\n{MARK_CONTACTS_WIN}\n{MARK_CONTACTS_LIST}\n"
             f"{MARK_CONTACTS_READ}\n"
@@ -3204,7 +3326,7 @@ def self_test(args) -> int:
         )
         snap_n = len(fake_n)
         fake_n += (
-            f"{browser_boot}{MARK_BROWSER_BACK}\n{MARK_WM_ROUTE_DESKTOP}\n"
+            f"{browser_runtime}{MARK_WM_ROUTE_DESKTOP}\n"
             f"{settings_runtime}{files_runtime}{photos_runtime}"
             f"{contacts_runtime}"
         )
@@ -3341,8 +3463,8 @@ def self_test(args) -> int:
             ),
         )
         log(
-            "self-test: 常态 GUI app 断言 ok（六独立进程、Settings/Files/Contacts"
-            " BerryUI 状态与数据链、Browser/Photos 基线、重绘与销毁；冒烟标记全零）"
+            "self-test: 常态 GUI app 断言 ok（六 BerryUI app 状态与数据链、"
+            "layout/render/hit、重绘与销毁；冒烟标记全零）"
         )
 
         uitest_boot = (
@@ -3501,7 +3623,7 @@ def parse_args(argv=None):
         help="临时目录（默认 /tmp；QMP sock 路径帽）",
     )
     ap.add_argument("--boot-a-timeout", type=float, default=420.0)
-    ap.add_argument("--boot-b-timeout", type=float, default=300.0)
+    ap.add_argument("--boot-b-timeout", type=float, default=420.0)
     ap.add_argument("--click-timeout", type=float, default=120.0)
     ap.add_argument(
         "--click-ready-timeout",

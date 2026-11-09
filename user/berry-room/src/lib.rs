@@ -548,11 +548,17 @@ impl AppRoom {
         .ok_or(RoomError::Encode)?;
         let (n, nhandles) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
         let release = gp::parse_release_rep(&reply[..n]).ok_or(RoomError::ReleaseReply)?;
-        if release.count != 1 || nhandles != 1 || rhs[0] == 0 {
+        // RELEASE_WAIT 是 RETURN-ALL：guifbd 会排空聚合 held 表。0..=2
+        // 都是合法形态——其它 present session 可先清账（0）或先提交（2）。
+        // 契约面只校验 count 与随行 handle 恰等；全部随行别名都关闭。
+        let count = release.count as usize;
+        if count != nhandles || count > rhs.len() {
             return Err(RoomError::ReleaseReply);
         }
-        if berry_handle_close(rhs[0]) != 0 {
-            return Err(RoomError::Handle);
+        for handle in rhs.iter().take(count) {
+            if *handle == 0 || berry_handle_close(*handle) != 0 {
+                return Err(RoomError::Handle);
+            }
         }
         Ok(token)
     }

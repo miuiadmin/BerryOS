@@ -22,7 +22,7 @@ use berry_ui::sdk::{
     Theme, Ui, WidgetContext, column, text,
 };
 
-type Ui96 = Ui<96>;
+type Ui32 = Ui<32>;
 const MAX_CONTACTS: usize = 4;
 const DATA_MAX: usize = 256;
 
@@ -65,7 +65,7 @@ struct DetailPage {
 }
 
 struct App {
-    ui: Ui96,
+    ui: Ui32,
     ctx: WidgetContext,
     contacts: [Contact; MAX_CONTACTS],
     detail: usize,
@@ -270,7 +270,7 @@ fn load_contacts(room: &AppRoom, out: &mut [Contact; MAX_CONTACTS]) -> (usize, u
     (parse_contacts(room, &data[..off], out), root_count, true)
 }
 
-fn build_list(ui: &mut Ui96, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS]) -> ListPage {
+fn build_list(ui: &mut Ui32, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS]) -> ListPage {
     let root = ui.root();
     let scaffold = match Scaffold::new(ui, root, ctx, b"Contacts") {
         Ok(value) => value,
@@ -314,7 +314,7 @@ fn build_list(ui: &mut Ui96, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTA
 }
 
 fn build_detail(
-    ui: &mut Ui96, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS], detail: usize,
+    ui: &mut Ui32, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS], detail: usize,
 ) -> DetailPage {
     let root = ui.root();
     let scaffold = match Scaffold::new(ui, root, ctx, b"Contacts") {
@@ -593,7 +593,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
 
     let theme = Theme::light();
     let ctx = WidgetContext::for_viewport(theme, width as u32, height as u32);
-    let mut ui = Ui96::new(width as u32, height as u32);
+    let mut ui = Ui32::new(width as u32, height as u32);
     ui.set_font_source(&ROOM_FONT_SOURCE);
     let list = build_list(&mut ui, &ctx, &contacts);
     let mut scroll = list.scroll;

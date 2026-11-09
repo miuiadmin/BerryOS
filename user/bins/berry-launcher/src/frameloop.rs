@@ -528,17 +528,16 @@ pub fn run(
             );
 
             // RELEASE（归还别名即关——在途 ≤1 结构性背压，见头注）。
-            // RETURN-ALL 语义（对抗审查 R2 修）：应答 = held 全量排空——
-            // 稳态恒 count==1（单 present 客户端 + 在途≤1），但可含前代
-            // 孤儿别名（boot 清账同刀兜底）；count≥1 时随行 handle 全量
-            // close 归还。
+            // RETURN-ALL 语义：应答 = held 聚合表全量排空。并发 GUI app
+            // 提交/清账交错时 count 可为 0..=2；0 表示本帧别名已被其它
+            // session 清走。只要求 count 与随行 handle 恰等并全量关闭。
             let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
             let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
             let rel = match gp::parse_release_rep(&rep[..n]) {
                 Some(r) => r,
                 None => fail(&format!("release rep bad st={}", rep[0])),
             };
-            if rel.count < 1 || nh != rel.count {
+            if nh != rel.count {
                 fail(&format!("release count={} nh={}", rel.count, nh));
             }
             for h in &rhs[..nh] {

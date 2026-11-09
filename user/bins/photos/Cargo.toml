@@ -2,18 +2,17 @@
 name = "photos"
 version = "0.1.0"
 edition = "2021"
-# Photos Native Shell：独立 no_std GUI 进程。真实 READDIR/STAT/GET 走
-# fsmgr RPC，把 PATTERN.BIN 5000B 确定性字节阵渲染成灰度照片；v1 只读。
+# GUI F8 迁移 Photos：真实 PATTERN.BIN READDIR/STAT/GET 与 5000B 校验
+# 继续走 berry-fsclient；WM/页面状态视觉归 Berry Room + BerryUI。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
 berry-fsclient = { path = "../../berry-fsclient" }
-berry-fsproto = { path = "../../berry-fsproto" }
-berry-guiproto = { path = "../../berry-guiproto" }
-berry-nshfont = { path = "../../berry-nshfont" }
-berry-sys = { path = "../../berry-sys" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-room = { path = "../../berry-room" }
+berry-ui = { path = "../../berry-ui", features = ["guest-font-vmo"] }
 
 [profile.release]
 opt-level = "z"

@@ -263,7 +263,7 @@ SHA-256 = c85bd31db67a262abcc098617906464946a093fec2cc31cf2d4da99841e4ff58
 
 ## §9 未完成边界
 
-- Browser 与 Photos 仍是迁移前基线，归 F8。
+- F7 时点 Browser/Photos 仍是基线；F8 已迁移并见 [BerryBrowserPhotos-F8迁移-v1.0.md](BerryBrowserPhotos-F8迁移-v1.0.md)。
 - Files 仍只读；无写、删、搜索、权限管理或持久化。
 - Contacts 仍只读；无拨号、短信、编辑或系统联系人服务。
 - BerryUI 嵌套视口 clipping 仍归后续刀；两 app 当前页面 fitting，不私造 clip。

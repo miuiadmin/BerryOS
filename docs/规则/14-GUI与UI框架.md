@@ -4,7 +4,7 @@
 
 ## 域铁律
 
-- **地基优先**：按 F0..F5、P0 Surface Mode、F6..F9 顺序建设；上一出口门未过，不得为视觉效果或新 app 绕开下一层。Camera、MMS 等新 Native Shell 在 Browser/Photos 迁移收口前不得继续扩张。
+- **地基优先**：按 F0..F5、P0 Surface Mode、F6..F9 顺序建设；上一出口门未过，不得为视觉效果或新 app 绕开下一层。Camera、MMS 等新 Native Shell 必须直接走 BerryUI；普通 Retained 页面不得回到自建 WM/VMO/像素路径。
 - **P0 编号局部化**：GUI P0 只指 F5 与 F6 之间的 Surface Mode 协议门，不改变路线图、调点调度或 Berry 设备壳的同名阶段号。
 - **分层不越界**：`berry-gfx` 只做光栅；`berry-ui` 只做树、布局、状态、主题与组件；`berry-room` 只做应用运行室；Berry Session 服务只做窗口、呈现、输入、焦点、层序与帧率仲裁；app 只做业务语义或自有文档/引擎渲染。
 - **一个系统契约，多个 UI 形态**：BerryUI 是默认声明式工具包，不是特权或强制渲染器。普通应用走 BerryUI；专业应用走 BerryUI 外壳 + CanvasSurface + 应用文档渲染器；游戏/实时应用走 immersive surface 与自有 renderer。
@@ -44,5 +44,6 @@
 [../BerrySession-P0SurfaceMode协议-v1.0.md](../BerrySession-P0SurfaceMode协议-v1.0.md) —— P0 Surface role/mode、input class、IME composition、a11y sidecar、safe area/scale、WM 0x67 codec 与三路径不变量。
 [../BerrySettings-F6迁移-v1.0.md](../BerrySettings-F6迁移-v1.0.md) —— F6 首个 Native Shell 迁移：Berry Room + BerryUI、真实 WLAN/Bluetooth 状态重绘、GUI8 layout-driven 验收与两帽预算。
 [../BerryFilesContacts-F7迁移-v1.0.md](../BerryFilesContacts-F7迁移-v1.0.md) —— F7 Files/Contacts 迁移、真实数据链、动态 layout 验收与并发 per-window destroy 语义。
+[../BerryBrowserPhotos-F8迁移-v1.0.md](../BerryBrowserPhotos-F8迁移-v1.0.md) —— F8 Browser/Photos 迁移、图像 IconSource 链、诚实 Browser 壳、ReleaseWait 空账与回收帽修正。
 - [../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md) —— 专业软件、工业框架、游戏 UI 与 OS 分层证据；P0 Surface Mode 的裁决依据。
 - [../GUI渲染调研-2026-10-v1.0.md](../GUI渲染调研-2026-10-v1.0.md) —— 渲染路线与自研光栅决策依据。

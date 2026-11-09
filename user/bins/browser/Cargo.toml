@@ -2,17 +2,16 @@
 name = "browser"
 version = "0.1.0"
 edition = "2021"
-# Browser Native Shell（真实系统化 Browser 阶段）：独立 no_std 进程，
-# 经 manifest `wm=true` 获 WMD broker 端点，自建 WM/input session 并呈现
-# 真实窗口。v1 是诚实本地壳：无网络、无 HTML 引擎、不声称 web。
+# GUI F8 迁移 Browser：WM/窗口/frame/输入/销毁归 Berry Room，页面与
+# 诚实状态视觉归 BerryUI/Berry Design。v1 无网络、无 HTML 引擎。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-guiproto = { path = "../../berry-guiproto" }
-berry-nshfont = { path = "../../berry-nshfont" }
-berry-sys = { path = "../../berry-sys" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-room = { path = "../../berry-room" }
+berry-ui = { path = "../../berry-ui", features = ["guest-font-vmo"] }
 
 [profile.release]
 opt-level = "z"
