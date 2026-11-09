@@ -484,6 +484,16 @@ while :; do
 done
 echo "smoke: boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} 到齐"
 
+# —— 分相门控（CI 分层用）：SMOKE_PHASES=boot 时 boot 相绿即收——
+# 自托管慢 runner（无 KVM x86_64 TCG）跑不完四相全链 wall-clock，CI 分层：
+# 服务器跑 boot 相（轻），四相全链在快机（Mac 本地/后续 KVM 机）跑。
+# 未设或非 boot = 原行为不变（四相全链）。
+if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
+  echo "smoke: SMOKE_PHASES=boot 止于 boot 相（分层 CI 轻面）"
+  cleanup 2>/dev/null || true
+  exit 0
+fi
+
 # —— 阶段 2：switches 金丝雀（诊断轴，非永久硬门）——
 # 2026-11-06 定谳：TCG 环境/负载形态下 timer IRQ 打 UART 会与 rootfs I/O
 # 时序互斥，内核侧七轮阈值尝试无法同时满足“boot 金丝雀足量”与“后续
