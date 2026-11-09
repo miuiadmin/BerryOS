@@ -26,7 +26,7 @@ jobs:
     # runner 同构——B4/evsclient 帽标定直接适用），预装 rust 1.97（targets
     # 齐）/ QEMU 11（brew，含 edk2 固件）/ just / cargo-deny 0.20.2 /
     # bash 5.1。安装步全跳过；缺件红灯按 docs/命令速览.md 补装。
-    runs-on: [self-hosted, linux-x64]
+    runs-on: [self-hosted, linux-x64, brew]
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -255,9 +255,14 @@ jobs:
       # + 注入段，帽内余量 ~3x。
       - name: img-boot 冒烟（M-G1 gate）
         run: unshare -Urn sh -c 'ip link set lo up && exec just smoke-image'
-        # 自托管 macOS：AAVMF = brew 布局（/opt/homebrew/share/qemu/
-        # edk2-aarch64-code.fd）恰为 justfile 默认路径——GitHub-hosted 时代
-        # 的沙箱拷贝绕行（cp + env 覆盖）整体退役。
+        env:
+          # 自托管 Linux：非 root 下 Linuxbrew QEMU 沙箱拒读 prefix 外路径
+          # （/usr/share/AAVMF 实测 Permission denied；prefix 内 brew edk2
+          # 实测 UEFI 正常自举 2026-11-09）。VARS 占位（smoke-image 自产
+          # blank，不读它）。berry-linux-x64-1 runner 栈（brew）实测值；
+          # srv1（源码 QEMU）如缺此路径按 docs/命令速览.md 补链。
+          AAVMF_CODE: /home/linuxbrew/.linuxbrew/share/qemu/edk2-aarch64-code.fd
+          AAVMF_VARS: /home/linuxbrew/.linuxbrew/share/qemu/edk2-aarch64-code.fd
 
       # ---------- SEC-01 §4.5 件 22 + 件 23 尾面（CI/台账） ----------
       # 镜像哈希清单：smoke-image 依赖链（just image → mkimage）已产
