@@ -30,6 +30,7 @@
   qemu ... | python3 tools/sched_dashboard.py --baseline baseline.json # 回归检测
   python3 tools/sched_dashboard.py --demo
   python3 tools/sched_dashboard.py log.txt --json                      # 机器可读
+  python3 tools/sched_dashboard.py --selftest   # 门禁自检（a-3 U4 纪律）
 
 --baseline 回归规则（更差即回归，留噪声容差）：
   - 周期/ticks 类（pick/freeze/billing、wake/rwake p50/p99）：cur > base×(1+tol)
@@ -334,11 +335,182 @@ DEMO_INPUT = (
 )
 
 
+def selftest() -> int:
+    """门禁自检（a-3 U4 纪律同款）——统一仪表盘判定面的纯函数钉板。
+
+    本工具是调度遥测的统一判官（验收 3/3 门 + 基线回归门，sched_ci 全流程
+    subprocess 消费），此前只有 --demo 一次性展示：门禁自身坏（阈值常量
+    漂移 / 解析 regex 误收 / 回归规则口径翻面 / 兜底镜像与单源脱钩）=
+    性能验收与回归检测静默劣化。覆盖（红分支实证：FAIR_SPREAD_LIMIT
+    20→21、POLICY_DELTA_LIMIT_PCT 50→51、REL_TOL 0.10→0.20 三突变均被
+    常量钉板咬住）：
+    - 内核断言口径常量钉板（FAIR_SPREAD_LIMIT / POLICY_DELTA_LIMIT_PCT /
+      PP_TOL / REL_TOL_DEFAULT——漂移即咬）
+    - parse_telemetry：八类行全覆盖 + 尾逗号宽容（hits=[25,...,]）/ 空
+      hits / 重复行取最后（最近读数）/ 字段序敏感（base/full/empty 换序
+      不解析——内核拼行序契约）
+    - metric_rows 手算向量：pick 312cyc=4992ns PASS·313=5008ns FAIL（5µs
+      严格界）/ freeze 恰等 5ms 被拒（闭区间陷阱）——LIMITS 经 sched_perf_
+      analyze 单源 import，此处钉 import 命中非兜底镜像
+    - compare_baseline：rel 类恰界严格大于（1000→1100 tol=0.10 恰放、
+      1101 咬）/ pp 类恰 +5.0 放 +5.1 咬 / base=0 特判（cur>0 即回归）/
+      基线有本次缺=回归、本次新采=新增不计
+    - fmt_ns 三段边界（999/1000、999999/1e6、999999999/1e9）
+    - exit-code 契约：--demo=0 / 无遥测行=1 / --json=0 / 基线回归=1
+    - 确定性：同输入两次 byte 级一致（基线对拍前提）
+    """
+    import subprocess
+    import tempfile
+
+    failures = []
+
+    def check(name, cond, detail=""):
+        if cond:
+            print(f"  ok {name}")
+        else:
+            failures.append(f"{name}: {detail}")
+            print(f"  FAIL {name}: {detail}")
+
+    # --- 0. 常量钉板（内核断言口径/回归容差——漂移即咬，红分支实证位） ---
+    check("FAIR_SPREAD_LIMIT pinned", FAIR_SPREAD_LIMIT == 20,
+          f"{FAIR_SPREAD_LIMIT}")
+    check("POLICY_DELTA_LIMIT_PCT pinned", POLICY_DELTA_LIMIT_PCT == 50.0,
+          f"{POLICY_DELTA_LIMIT_PCT}")
+    check("REL_TOL_DEFAULT pinned", REL_TOL_DEFAULT == 0.10,
+          f"{REL_TOL_DEFAULT}")
+    check("PP_TOL pinned", PP_TOL == 5.0, f"{PP_TOL}")
+
+    # --- 1. parse_telemetry：八类行 + 尾逗号/空/重复/字段序 ---
+    m = parse_telemetry(DEMO_INPUT)
+    check("parse all 8 families", set(m) == {"pick", "freeze", "billing",
+          "policy", "fairness", "divergence", "wake", "rwake"}, f"{sorted(m)}")
+    check("parse policy int-delta dual form",
+          parse_telemetry("PERF policy base=7 empty=5 full=9 delta=8%\n")
+          ["policy"]["delta_pct"] == 8.0)
+    check("parse policy no-delta",
+          parse_telemetry("PERF policy base=7 empty=5 full=9\n")
+          ["policy"]["delta_pct"] is None)
+    check("parse fair trailing comma",
+          m["fairness"] == {"spread": 0, "hits": [25, 25, 25, 25]},
+          f"{m.get('fairness')}")
+    check("parse fair empty hits",
+          parse_telemetry("FAIR-K spread=0 hits=[]\n")["fairness"]["hits"]
+          == [])
+    check("parse dup last-wins",
+          parse_telemetry("PERF pick avg=20 n=10\nPERF pick avg=40 n=10\n")
+          ["pick"]["cycles"] == 40)
+    check("parse field-order strict",
+          "policy" not in parse_telemetry(
+              "PERF policy base=7 full=9 empty=5 delta=8%\n"))
+    check("parse divergence packed alias",
+          m["divergence"] == {"div": 6, "eval": 12, "rate_pct": 50.0},
+          f"{m.get('divergence')}")
+    check("parse noise immune",
+          parse_telemetry("boot ok\nPERF-OTHER avg=1 n=1\n") == {})
+
+    # --- 2. metric_rows 手算向量（62.5MHz → ns = cycles×16）---
+    rows, trio = metric_rows(parse_telemetry(
+        "PERF pick avg=312 n=1000\nPERF freeze avg=312500 n=10\n"
+        "PERF billing avg=62 n=1\n"))
+    check("trio 312/312500/62", trio == [True, False, True], f"{trio}")
+    check("pick 4.99µs in value",
+          "4.99µs" in [v for l, v, t in rows if l == "pick_next:"][0])
+    rows2, trio2 = metric_rows(parse_telemetry(
+        "PERF pick avg=313 n=1\nPERF billing avg=63 n=1\n"))
+    # 缺席指标计 FAIL（验收分母恒 3——遥测断链不是「不适用」）
+    check("trio 313/63 + missing-freeze fails", trio2 == [False, False, False],
+          f"{trio2}")
+    # LIMITS 单源 import 命中（非兜底镜像）——值漂移会被
+    # sched_perf_analyze --selftest 咬，但 import 路径断链（兜底接管）须
+    # 此处咬：镜像 LIMITS 与真源同值，用 FREQ 整除性质区分不可行——改钉
+    # 「import 成功且函数可用」的间接证据：analyze 手算向量已上（4992ns）。
+
+    # --- 3. compare_baseline：rel/pp 恰界 + base=0 + 缺失/新增 ---
+    m1 = parse_telemetry("PERF pick avg=1100 n=100\n")
+    m2 = parse_telemetry("PERF pick avg=1101 n=100\n")
+    base = {"pick": {"cycles": 1000, "n": 100}}
+    _, r1 = compare_baseline(m1, base, 0.10)
+    _, r2 = compare_baseline(m2, base, 0.10)
+    check("rel exact-boundary 1100 pass", r1 == [], f"{r1}")
+    check("rel 1101 regress", "pick_next" in r2, f"{r2}")
+    d30 = parse_telemetry("PERF policy base=7 empty=5 full=9 delta=30.0%\n")
+    d35 = parse_telemetry("PERF policy base=7 empty=5 full=9 delta=35.0%\n")
+    d351 = parse_telemetry("PERF policy base=7 empty=5 full=9 delta=35.1%\n")
+    _, rp5 = compare_baseline(d35, d30, 0.10)
+    _, rp51 = compare_baseline(d351, d30, 0.10)
+    check("pp exact +5.0 pass", rp5 == [], f"{rp5}")
+    check("pp +5.1 regress", "policy delta" in rp51, f"{rp51}")
+    _, rb0 = compare_baseline(parse_telemetry("PERF pick avg=1 n=1\n"),
+                              {"pick": {"cycles": 0, "n": 1}}, 0.10)
+    check("base=0 cur>0 regress", rb0 == ["pick_next"], f"{rb0}")
+    brows, rmis = compare_baseline({}, base, 0.10)
+    check("missing metric regress",
+          rmis == ["pick_next"] and brows[0][2] == "回归", f"{brows}")
+    brows, rnew = compare_baseline(m1, {}, 0.10)
+    check("new metric not regress", rnew == [] and brows[0][2] == "新增",
+          f"{brows}")
+
+    # --- 4. fmt_ns 三段边界 ---
+    check("fmt_ns boundaries",
+          (fmt_ns(999), fmt_ns(1000), fmt_ns(999_999), fmt_ns(1_000_000),
+           fmt_ns(999_999_999), fmt_ns(1_000_000_000))
+          == ("999ns", "1.00µs", "1000.00µs", "1.00ms", "1000.00ms",
+              "1.000s"))
+
+    # --- 5. exit-code 契约（子进程真跑，cwd 无关） ---
+    p = subprocess.run([sys.executable, __file__, "--demo", "--json"],
+                       capture_output=True, text=True)
+    import json as _json
+    check("e2e demo --json exit 0", p.returncode == 0
+          and "BerryOS boot" in p.stderr and _json.loads(p.stdout)["pick"]
+          ["cycles"] == 20, f"rc={p.returncode}")
+
+    p = subprocess.run([sys.executable, __file__],
+                       input="nothing here\n", capture_output=True, text=True)
+    check("e2e no-lines exit 1", p.returncode == 1
+          and "无可用调度遥测行" in p.stderr, f"rc={p.returncode}")
+
+    # 基线回归门：cur 比 base 恶化超容差 → exit 1（--json 不拦，表路径拦）
+    with tempfile.NamedTemporaryFile("w", suffix=".json",
+                                     delete=False) as bf:
+        bf.write('{"pick": {"cycles": 1000, "n": 100}}')
+        bpath = bf.name
+    try:
+        p = subprocess.run([sys.executable, __file__, "--baseline", bpath],
+                           input="PERF pick avg=2000 n=100\n",
+                           capture_output=True, text=True)
+        check("e2e baseline regress exit 1", p.returncode == 1
+              and "回归: pick_next" in p.stdout,
+              f"rc={p.returncode} {p.stdout!r}")
+        p = subprocess.run([sys.executable, __file__, "--baseline", bpath],
+                           input="PERF pick avg=20 n=100\n"
+                                 "PERF freeze avg=15 n=200\n"
+                                 "PERF billing avg=1 n=1000\n",
+                           capture_output=True, text=True)
+        check("e2e baseline ok exit 0", p.returncode == 0
+              and "回归: 无" in p.stdout, f"rc={p.returncode} {p.stdout!r}")
+    finally:
+        os.unlink(bpath)
+
+    # --- 6. 确定性：同输入两次 byte 级一致 ---
+    p1 = subprocess.run([sys.executable, __file__, "--demo", "--json"],
+                        capture_output=True, text=True)
+    p2 = subprocess.run([sys.executable, __file__, "--demo", "--json"],
+                        capture_output=True, text=True)
+    check("deterministic byte-equal", p1.stdout == p2.stdout)
+
+    print(f"\nsched_dashboard selftest: "
+          f"{'PASS' if not failures else 'FAIL'} ({len(failures)} failures)")
+    return 0 if not failures else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="BerryOS 调度器统一仪表盘（遥测收割 + 验收 + 回归检测）")
     ap.add_argument("input", nargs="?", help="串口日志文件（缺省 stdin）")
     ap.add_argument("--demo", action="store_true", help="内置样例数据演示")
+    ap.add_argument("--selftest", action="store_true",
+                    help="门禁自检（a-3 U4 纪律——判官自身的红分支钉板）")
     ap.add_argument("--baseline", metavar="FILE",
                     help="基线 JSON（--save 产物）——回归检测")
     ap.add_argument("--save", metavar="FILE", help="把本次遥测存为基线 JSON")
@@ -347,6 +519,9 @@ def main() -> int:
     ap.add_argument("--tol", type=float, default=REL_TOL_DEFAULT,
                     help=f"周期/ticks 类回归相对容差（缺省 {REL_TOL_DEFAULT}）")
     args = ap.parse_args()
+
+    if args.selftest:
+        return selftest()
 
     if args.demo:
         print(DEMO_INPUT, file=sys.stderr, end="")

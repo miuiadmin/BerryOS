@@ -745,6 +745,14 @@ test-host:
     # billing 62/63 跨界）+ 噪声免疫/保序 + no-limit 三值逻辑不连坐 +
     # exit-code 契约 + byte 级确定性——18 面。
     python3 tools/sched_perf_analyze.py --selftest
+    # W1-Q4 四续（a-3 U4 纪律同款）：sched_dashboard 门禁自检——调度统一
+    # 仪表盘（验收 3/3 + 基线回归双门判官，sched_ci 全流程 subprocess 消费）
+    # 此前只有 --demo 一次性展示：内核断言口径常量钉板（FAIR spread 20/
+    # policy delta 50%/tol 0.10/PP 5.0 四突变红分支实证均咬）+ parse 八类
+    # 行（尾逗号/空 hits/重复取最后/字段序敏感/噪声免疫）+ compare 恰界
+    # 双向（rel 1100 恰放 1101 咬、pp +5.0 恰放 +5.1 咬）+ base=0 特判 +
+    # 缺席计 FAIL 分母恒 3 + exit-code 契约 + 确定性——29 面。
+    python3 tools/sched_dashboard.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
