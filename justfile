@@ -674,6 +674,11 @@ test-host:
     # 线契约钉板（per-dev 冻结帧长 {1:50,2:98,3:19} 与 berry-pwproto 同源）
     # + 双 profile 向量审计（帧↔ACK 恒等 + a8 恰一 NO_ACK + 拒帧零腐蚀账面）。
     python3 tools/siminj.py --selftest
+    # Q1c（a-3 U4 纪律同款）：genohwallpaper 门禁自检——launcher 内建壁纸源
+    # 此前零守卫：135×240 结构钉板 + 头部 SHA-256 ↔ 源 jpg 溯源对账 +
+    # 32400px 黄金哈希 + 角锚/唯一色 + 8 拒面；PIL 在位时另做重产逐字节
+    # 对拍（缺席打 skip，黄金哈希兜底——genhdfont 同族降级面）。
+    python3 tools/genohwallpaper.py --selftest
     # Q1b（a-3 U4 纪律同款）：genhdfont 门禁自检——HD 32×48 档点阵此前零
     # 守卫（genfbfont 三档有 --check，HD 档无）：95 形结构钉板 + 95×192B
     # 黄金哈希 + 基线/下行部几何锚 + 8 拒面；PIL 在位时另做重产逐字节对拍
