@@ -33,6 +33,15 @@ description: 用 workflow 工具编排多 agent 研究或实施波次时使用�
 - **可行时执行纪律**：以物理顺序（≈落笔时序）为基准连续重编；每被改号节标题加「（原撞 X 改号，日期）」考古注记；改号走全断言锚 python 脚本（行级操作 + 往返校验 + 差异行集 == 目标行清单，防夹带）；改号后全仓扫描 §N 形态外部引用并同步（钉的是当代号——物理重排即失锚）。
 - **门禁固化**：编号漂移类问题修平后立即沉淀机器不变量（先例 docs_guard G10：区标注 == 区内行实数 == 头部Σ——2026-11-08 索引漂移机器根治）——平账不是终点，门禁才是；下轮漂移让工具先红，不靠人眼。
 
+## 跨会话 rebase/stash 事故处置（wave15 实战沉淀）
+
+1. **发现即报**——agent 发现 rebase in progress / stash 非空 / detached HEAD 时立即报 risks，不自行 git 操作；
+2. **主会话处置链**——解冲突（取正确侧）→ `GIT_EDITOR=true git rebase --continue` →
+   若 amend 态无 pick 剩余则 `git commit --amend --no-edit` + `git rebase --continue` →
+   仍卡则 `git rebase --abort` + `git merge <重放提交>` 归位；
+3. **stash pop 恢复**——rebase 归位后 `git stash pop` 还原 agent 编辑；pop 前**不重放同样改动**（会冲突）；
+4. **pop 后三执法复跑**——check-docs --strict / docs_guard / 域测试确认零丢失。
+
 ## 边界
 
 - 提交权只在主会话；agent 全部禁 git 写。
