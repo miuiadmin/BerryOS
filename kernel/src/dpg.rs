@@ -533,6 +533,352 @@ extern "C" fn dpg_faulter(_arg: usize) -> ! {
     unreachable!("dpg_faulter: 停泊键被唤醒（唤醒面越界）")
 }
 
+// ---- AM-2b 真链路自验臂（载形乙：boot 后任务——AM2B-K 合成臂的姊妹刀）----
+//
+// AM2B-K（ktest `test_am2b_pressure`）以 `dpg_win_ktest_inject` 直灌窗口累计
+// 验机制面（判阈/清零重启/出口置位/真 SVC 清位），但 Σcyc 非真路径产出。
+// 本臂补**真链**：`dpg_press`（dpg 自验族第三成员，dpg_faulter 同款
+// spawn_as 自带 AS + 多页 demand 区间）首触 = 真缺页 → `probe` 睡 FAULT_KEY
+// 等 dpg_pager 真供给（真停顿）→ `dpg_stall_note` 真计值 → note 点惰性翻卷
+// 真折卷 → 跨阈经 boot 注册的 PRESSURE_OUTLET 真置压力 Event 用户位
+// 1<<40——全链无一处直灌。消费面同真：`object_wait_one` 收位 /
+// `object_signal` 清位 / close 全走真 SVC 派发（waker2/pi_server 的 EL1 真
+// SVC 先例；handle = boot 期经 `am2b_pressure_ktest_handle` 插取 bootstrap
+// 表——ktest 收场 drain 后的 boot 稳定窗，此后无 drain 作废面）。
+//
+// 为何 boot 任务而非 ktest 用例（载形甲/乙论证）：真停顿 = `block_current`
+// 等 pager 供给，需调度器在飞——ktest 先于 sched::init 跑（main.rs 序），
+// 造不了真等待；载形甲（ktest 内手动模拟探针等待路径）= 换一种直灌，弃。
+// dpg_faulter 同族 spawn 形（sched::init 后真跑）是现成载体——本臂即其
+// 多页扩形。
+//
+// 时序标定（判据量：θ_p·W = win/10 ≈ 437K 周期 @62.5MHz/70ms 窗；单页供给
+// 停顿邻 BENCHWAKE p50≈2K 周期量级——距阈 >20× 裕量，实测随负载漂移故臂
+// 内一切判据取台账实测值非编译期拍脑袋）：
+// - **净场**：入场静默门（dpg 计值流 n 一窗稳定 = boot 期 EL0 平像装载风暴
+//   退坡）→ 真 SVC 清位 → 窗冲洗（残段累计翻卷再置位则再清，至一次折卷后
+//   位面归零——dpg_faulter 首缺页早窗 RQ 等待可逹数 slice ≥ θ_p·W，其真
+//   置位属真压力语义，冲洗消费掉而非否定）。
+// - **前向臂（达压）**：连续缺页真供给等待，累计段目标 Δ台账 ≥ 2×θ_p·W
+//   （余量对「折卷吃掉前段累计」的时序形态）→ 睡 ≥ 窗长（deadline 与窗龄
+//   同为 CNTVCT 域绝对值，醒只迟不早 → 窗必过期）→ 再缺一页：其 note 必
+//   折卷，判 [尾段累计] ≥ θ_p·W → 位必置。停顿占空比 ∈ [θ_p, 2θ_p) 时
+//   累计段内自然折卷先置位（每页复查位面早出）；占空比 < θ_p = 真缺页
+//   结构性不可达压 → 页预算耗尽 panic loud（θ_p/供给速度标定漂移，重校
+//   需求不假绿）。
+// - **反向臂（不误报）**：净场少量单页缺页（3+1 页，停顿 Σ 远低于阈）→
+//   位不置。前提断言面 = 自证缺页墙钟 Σw（stall ≤ wall，外来混不进）：
+//   Σw ≥ θ_p·W = 少量缺页即达压——θ_p 误报判据前提破 panic loud；位置而
+//   Σw < 阈 = 外来真停顿混入（位语义正确非误报）——清位静默重试，耗尽则
+//   观测行 x=N 记软轮不 panic（忙相 attribution 结构性不可得，杀之即错杀）。
+//   裸相静默场恒 x=0 全严格形态（实跑锚点：n≈244-251、c≈880-887K、
+//   r≈26-65K << θ_p·W=437.5K）。
+
+/// 压力自验 demand 区间基 VA（本任务私有 AS——与 dpg_faulter 的 DEMAND_VA
+/// 同址异 AS，互不可见）。
+const PRESS_VA: usize = 0x1000;
+
+/// 压力自验页数 = 帧预算 4MB（128M 机型 3%）。单页停顿 1K~200K 周期宽谱
+/// 下前向臂一轮累计段（2×θ_p·W = 875K）至多 ~875 缺页；耗尽即 panic
+/// loud——重校本常量或 θ_p（非静默截断）。
+const PRESS_PAGES: usize = 1024;
+
+/// 前向臂累计段目标倍率：Δ台账 ≥ `PRESS_TGT_MULT`×θ_p·W 才进触发段
+/// （判阈 θ_p 的双倍余量——折卷吃掉前段累计的形态下被判窗仍 ≥ 阈）。
+const PRESS_TGT_MULT: u64 = 2;
+
+/// 静默门轮帽 / 窗冲洗轮帽 / 反向臂污染重试帽（各轮内不收敛的 loud 或
+/// 记账出口，见各处注释）。
+const PRESS_QUIET_CAP: u32 = 8;
+const PRESS_FLUSH_ROUNDS: u32 = 4;
+const PRESS_REV_RETRIES: u32 = 3;
+
+/// 前向臂软重试帽（位被外来 EL0 真压力搬运出的轮次——清位重冲再自证；
+/// 耗尽记账 x 不 panic：忙相 attribution 结构性不可得，位语义本身正确）。
+const PRESS_FWD_TRIES: u32 = 3;
+
+/// 反向臂缺页数（少量单页——远低于阈的自证停顿样本；另 +1 触发页）。
+const PRESS_REV_FAULTS: u32 = 3;
+
+/// dpg_press 停泊键（自证毕 park——dpg_faulter 的 DONE_KEY 同形）。
+static PRESS_DONE_KEY: u8 = 0;
+
+/// 纯超时真睡眠（sleeper 路径 1 'T' 形：obj=0/signals=0 无信号匹配面，
+/// 醒因恒 Timeout；`cyc` = CNTVCT 周期数，绝对 deadline——醒只迟不早）。
+fn press_sleep(cyc: u64) {
+    let deadline = hal::timer::cntvct().wrapping_add(cyc);
+    hal::kern_lock::klock_enter();
+    let r = berry_sched::block_current(0, 0, deadline);
+    hal::kern_lock::klock_exit();
+    assert!(
+        matches!(r, berry_sched::WakeReason::Timeout),
+        "dpg_press: 睡眠醒因非 Timeout（obj=0/位 0 无匹配面——唤醒面越界）"
+    );
+}
+
+/// 触一页真缺页：读未供给页 → D-abort → `probe` 睡 FAULT_KEY 等 pager 供给
+/// → eret 重试读到 magic（dpg_faulter 首触同链；供给竞窗自愈 = eret 重试
+/// 再 fault 再武装，读返回即已闭环）。错值非安全问题是正确性问题。
+/// 返回**本页缺页往返墙钟**（t1−t0，CNTVCT 周期）——stall ≤ wall 的自有
+/// 可测上界：外来停顿混不进来（判「自证停顿量级」的判据基座，忙相防
+/// 错杀——台账 Δ 含外来 EL0 停顿，忙相不可作断言面）。
+fn press_touch(idx: usize) -> u64 {
+    let va = PRESS_VA + idx * PAGE_SIZE;
+    let t0 = hal::timer::cntvct();
+    // SAFETY: 读自身 AS 的 demand 页（未供给 = 翻译缺页 → probe 闭环）。
+    let v = unsafe { core::ptr::read_volatile(va as *const u64) };
+    let t1 = hal::timer::cntvct();
+    assert_eq!(
+        v, DPG_MAGIC,
+        "dpg_press: 第 {} 页非 pager 供给值（供给链破损）",
+        idx
+    );
+    t1.wrapping_sub(t0)
+}
+
+/// 真 SVC 清压力位（am 消费置位后自清位同路径——AM2B-K 先例：SIGNAL 右
+/// 门控 + 高 32 位用户位面 + 真 EL1 派发全链）。
+fn press_svc_clear(h: u32, partial: u64, what: &str) {
+    use crate::syscall::NR_OBJECT_SIGNAL;
+    assert_eq!(
+        crate::ktest::svc6(
+            NR_OBJECT_SIGNAL as u64,
+            h as u64,
+            partial,
+            0,
+            0,
+            0,
+            0
+        ),
+        0,
+        "dpg_press: object_signal 清位须成功（{}——SIGNAL 右 + 高 32 位用户位面）",
+        what
+    );
+}
+
+/// 静默门：dpg 计值流 n 一窗（win 周期）零增 = 供给面静默（boot 期 EL0
+/// 平像装载风暴退坡判据）。帽 `cap` 轮不静默也放行——静默只被反向臂的
+/// 「被判窗只含自证停顿」需要；前向臂对并发停顿不敏感（外来 Σ 只助跨阈）。
+fn press_quiesce(win: u64, cap: u32) {
+    let mut n0 = crate::telemetry::dpg_stall_n_total();
+    for _ in 0..cap {
+        press_sleep(win);
+        let n1 = crate::telemetry::dpg_stall_n_total();
+        if n1 == n0 {
+            return;
+        }
+        n0 = n1;
+    }
+}
+
+/// 窗冲洗至净场：重复 [睡 ≥ 窗长 → 缺一页（其 note 必折卷，判当前窗残段
+/// 累计）] 至一次折卷后位面归零——此刻窗起点钉在该页 note、Σ=0，此后被判
+/// 窗只含其后停顿（前向臂开场净场 + 反向臂前置净场共用）。再置位则清位
+/// 重冲；轮帽耗尽返 false（**不 panic**：rootfs 等忙相外来 EL0 停顿可真
+/// 跨阈——位语义正确，净场不可得由调用方软路径记账，非标定破损）。
+fn press_flush(win: u64, partial: u64, h: u32, page: &mut usize) -> bool {
+    for _ in 0..PRESS_FLUSH_ROUNDS {
+        assert!(*page < PRESS_PAGES, "dpg_press: 冲洗页预算耗尽");
+        press_sleep(win + win / 4);
+        press_touch(*page);
+        *page += 1;
+        if crate::am2b_pressure_bits() & partial == 0 {
+            return true;
+        }
+        press_svc_clear(h, partial, "冲洗轮");
+    }
+    false
+}
+
+/// AM-2b 真链路自验任务（spawn 形参照 dpg_faulter；arg = 压力 Event 的
+/// bootstrap 表 handle——boot 插取，任务侧真 SVC 全链消费）。恒跑（同
+/// dpg_faulter 形——dpg::init 无条件 spawn）；全过打**非标记观测行**
+/// `DPGPRESS ok n= c= r= x=`（`DPG dm=` 族证据行——不进 markers.sh，
+/// smoke canon 零漂移；n=前向臂缺页数 c=前向臂台账停顿周期 r=反向臂台账
+/// 停顿周期 x=外来混入软轮数——裸相静默场恒 x=0 全严格形态）。
+extern "C" fn dpg_press(arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_OBJECT_WAIT_ONE};
+    use crate::telemetry;
+    let h = arg as u32;
+    let partial = crate::am2b_partial_bit();
+    assert_eq!(
+        partial,
+        1 << 40,
+        "dpg_press: partial 位须 1<<40（裁决③——AM2B-K 同断言）"
+    );
+    let win = telemetry::dpg_win_len();
+    assert!(win > 0, "dpg_press: boot 窗口长未换算（dpg_win_init 接线缺失）");
+    let theta_w = win / 10; // θ_p·W（判据 Σcyc×100 ≥ W×θ_p 的等价单边）
+
+    // ① 净场：静默门 → 真 SVC 清位（清掉 boot 期任何真置位）→ 窗冲洗
+    //    （残段累计消费干净，前向臂被判窗不含 boot 残段）。
+    press_quiesce(win, PRESS_QUIET_CAP);
+    press_svc_clear(h, partial, "入场");
+    assert_eq!(crate::am2b_pressure_bits(), 0, "dpg_press: 入场清位后位面须零");
+    let mut page = 0usize;
+    press_flush(win, partial, h, &mut page);
+
+    // ②+③ 前向臂（达压）+ 真 wait 收位：多页连续供给等待 → 真计值 → 真折卷
+    //    → 真置位 → am 消费形全链收位（poll-first 命中在席位即归，observed
+    //    出满足集——真 SVC 等待面，非直读）。外来混入分类（忙相防错杀）：
+    //    位置位时自证缺页墙钟 Σw ≥ θ_p·W = **严格过**（净场下被判窗以自证
+    //    停顿为主——裸相恒此形态）；Σw < θ_p·W = 外来 EL0 真压力搬运
+    //    （位语义正确）——清位重冲软重试，耗尽记账 x 不 panic（忙相
+    //    attribution 结构性不可得，杀之即错杀真压力）。硬 panic 仅一处：
+    //    页预算耗尽而位从未置 = 真缺页结构性不可达压（占空比 < θ_p——
+    //    供给停顿/θ_p 标定漂移，重校不假绿）。
+    let (mut fwd_n, mut fwd_cyc) = (0u64, 0u64);
+    let mut soft = 0u32;
+    'fwd: for _ in 0..PRESS_FWD_TRIES {
+        let attempt_base = telemetry::dpg_stall_cyc_total();
+        let attempt_page0 = page;
+        let mut wall = 0u64;
+        // 累计段×触发段循环：累计段连续缺页至 Δ台账 ≥ PRESS_TGT_MULT×θ_p·W
+        //（每页复查位面——段内自然折卷跨阈即出，占空比 ∈ [θ_p, 2θ_p) 形态）；
+        // 触发段睡 ≥ 窗长（CNTVCT 同域绝对 deadline，醒只迟不早 → 窗必过期）
+        // 后缺一页，其 note 必折卷判 [尾段累计 ≥ 2×θ_p·W] ≥ 阈 → 置位。
+        let mut set = false;
+        while !set {
+            let seg_base = telemetry::dpg_stall_cyc_total();
+            while telemetry::dpg_stall_cyc_total().wrapping_sub(seg_base)
+                < PRESS_TGT_MULT * theta_w
+            {
+                assert!(
+                    page < PRESS_PAGES,
+                    "dpg_press: 前向臂页预算耗尽而位从未置（真停顿占空比 < θ_p——供给停顿标定漂移，重校 PRESS_PAGES/θ_p）"
+                );
+                wall = wall.wrapping_add(press_touch(page));
+                page += 1;
+                if crate::am2b_pressure_bits() & partial != 0 {
+                    set = true;
+                    break;
+                }
+            }
+            if set {
+                break;
+            }
+            assert!(page < PRESS_PAGES, "dpg_press: 前向臂触发页预算耗尽");
+            press_sleep(win + win / 4);
+            wall = wall.wrapping_add(press_touch(page));
+            page += 1;
+            if crate::am2b_pressure_bits() & partial != 0 {
+                set = true;
+            }
+        }
+        fwd_n = (page - attempt_page0) as u64;
+        fwd_cyc = telemetry::dpg_stall_cyc_total().wrapping_sub(attempt_base);
+        // ③ 真 wait 收位（趁位在席——每轮尝试的置位出口立即消费）。
+        let mut now = 0u64;
+        assert_eq!(
+            crate::ktest::svc6(
+                NR_CLOCK_READ as u64,
+                0,
+                core::ptr::addr_of_mut!(now) as u64,
+                0,
+                0,
+                0,
+                0
+            ),
+            0,
+            "dpg_press: clock_read"
+        );
+        let mut observed = 0u64;
+        assert_eq!(
+            crate::ktest::svc6(
+                NR_OBJECT_WAIT_ONE as u64,
+                h as u64,
+                partial,
+                now + 5_000_000_000,
+                core::ptr::addr_of_mut!(observed) as u64,
+                0,
+                0
+            ),
+            0,
+            "dpg_press: object_wait_one 收位须成功（位在席 poll-first 即归——真 SVC 等待面）"
+        );
+        assert!(
+            observed & partial != 0,
+            "dpg_press: wait observed={:#x} 缺 1<<40（出口位面失联）",
+            observed
+        );
+        press_svc_clear(h, partial, "前向臂毕");
+        if wall >= theta_w {
+            break 'fwd; // 严格过：自证缺页墙钟独跨阈（stall ≤ wall 的必要面）
+        }
+        // 软路径：位系外来搬运——清位重冲（下轮尝试）。
+        soft += 1;
+        press_flush(win, partial, h, &mut page);
+    }
+
+    // ④ 反向净场：前向臂尾段残留若 ≥ 阈，后续 note 折卷会再置位——冲洗至
+    //    一次折卷后归零，反向臂被判窗起点即此（冲洗不敛不 panic：外来真
+    //    压力下净场不可得，由反向臂软路径记账）。
+    press_flush(win, partial, h, &mut page);
+
+    // ⑤ 反向臂：净场少量单页缺页（远低于阈）→ 位不置。前提断言面 = 自证
+    //    缺页墙钟 Σw（stall ≤ wall，外来混不进）：位置而 Σw ≥ θ_p·W =
+    //    少量缺页即达压——θ_p 误报判据前提破，panic loud；位置而 Σw < 阈
+    //    = 外来真压力混入（位语义正确非误报）——清位静默重试，耗尽记账
+    //    x 不 panic。
+    let mut rev_cyc = 0u64;
+    for _ in 0..PRESS_REV_RETRIES {
+        press_quiesce(win, 4); // 净场复检（外来停顿退坡）
+        let base = telemetry::dpg_stall_cyc_total();
+        let mut wall = 0u64;
+        for _ in 0..PRESS_REV_FAULTS {
+            assert!(page < PRESS_PAGES, "dpg_press: 反向臂页预算耗尽");
+            wall = wall.wrapping_add(press_touch(page));
+            page += 1;
+        }
+        press_sleep(win + win / 4);
+        assert!(page < PRESS_PAGES, "dpg_press: 反向臂触发页预算耗尽");
+        wall = wall.wrapping_add(press_touch(page)); // note → 折卷判 [少量停顿] 窗
+        page += 1;
+        rev_cyc = telemetry::dpg_stall_cyc_total().wrapping_sub(base);
+        if crate::am2b_pressure_bits() & partial == 0 {
+            break; // 位不置 = θ_p 不误报自证过
+        }
+        assert!(
+            wall < theta_w,
+            "dpg_press: 反向臂自证缺页墙钟 Σ={} ≥ θ_p·W={}（少量缺页即达压——单页供给停顿标定漂移，θ_p 误报判据前提破）",
+            wall,
+            theta_w
+        );
+        soft += 1; // 外来真停顿混入——清位重试
+        press_svc_clear(h, partial, "反向臂外来轮");
+    }
+    if crate::am2b_pressure_bits() & partial != 0 {
+        press_svc_clear(h, partial, "反向臂收尾（末轮外来混入）");
+    }
+
+    // ⑥ 收尾：close 插取 handle（retain 令牌归还）+ 非标记观测行。
+    assert_eq!(
+        crate::ktest::svc6(NR_HANDLE_CLOSE as u64, h as u64, 0, 0, 0, 0, 0),
+        0,
+        "dpg_press: close 插取 handle"
+    );
+    hal::kern_lock::with_print_lock(|| {
+        hal::uart_puts(b"DPGPRESS ok n=");
+        hal::uart_put_dec(fwd_n);
+        hal::uart_puts(b" c=");
+        hal::uart_put_dec(fwd_cyc);
+        hal::uart_puts(b" r=");
+        hal::uart_put_dec(rev_cyc);
+        hal::uart_puts(b" x=");
+        hal::uart_put_dec(soft as u64);
+        hal::uart_puts(b"\n");
+    });
+
+    // 自证毕停泊（dpg_faulter 同形——v1 任务不退出，无人唤醒键）。
+    hal::kern_lock::klock_enter();
+    let _ = berry_sched::block_current(
+        &PRESS_DONE_KEY as *const u8 as usize,
+        DPG_WAKE_BIT,
+        u64::MAX,
+    );
+    unreachable!("dpg_press: 停泊键被唤醒（唤醒面越界）")
+}
+
 /// boot 装配（main.rs 于 task_a/task_b spawn 后、用户进程 spawn 前调用——
 /// 探针注册须先于任何可能触 demand 访问的任务）。
 pub fn init() {
@@ -560,4 +906,31 @@ pub fn init() {
     // pager 先入队（faulter 首触时 pager 在席；双序竞速由 poll-first 兜底）。
     berry_sched::spawn(dpg_pager, 0, b"dpg_pager");
     berry_sched::spawn_as(dpg_faulter, 0, b"dpg_flt", vmar.ttbr0_pa(), vmar.asid());
+    // AM-2b 真链路自验（载形乙）：压力自验任务的自有 AS + 多页 demand 区间
+    //（连续供给等待载体——复用同一 dpg_pager 供给链）+ 压力 Event 消费
+    // handle（`am2b_pressure_ktest_handle` 插取 bootstrap 表——ktest 收场
+    // drain 后的 boot 稳定窗，此后无 drain 作废面；任务侧真 SVC 全链消费）。
+    // 对象先泄漏后映射（Region.vmo 指针存对象地址——上方同款正序）。
+    let vmo_p: &'static mut Vmo =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmo::create_demand(PRESS_PAGES * PAGE_SIZE).expect("dpg: 建压力自验 demand VMO"),
+        ));
+    let asid_p = crate::aspace::alloc_asid();
+    let vmar_p: &'static mut Vmar =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            Vmar::new_root(fa, asid_p).expect("dpg: 建压力自验 root Vmar"),
+        ));
+    vmar_p
+        .map_demand(vmo_p, PRESS_VA, 0, PRESS_PAGES * PAGE_SIZE, Perm::Rw)
+        .expect("dpg: 压力自验 map_demand");
+    vmar::register_demand_root(asid_p, core::ptr::from_mut(vmar_p))
+        .expect("dpg: 登记压力自验 demand root（满表即响雷）");
+    let h_press = crate::am2b_pressure_ktest_handle();
+    berry_sched::spawn_as(
+        dpg_press,
+        h_press as usize,
+        b"dpg_press",
+        vmar_p.ttbr0_pa(),
+        vmar_p.asid(),
+    );
 }
