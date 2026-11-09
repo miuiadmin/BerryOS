@@ -727,6 +727,12 @@ test-host:
     # 逻辑改坏仍绿），selftest 另钉生成器语义：结构契约+拒面 5、NN 放大
     # 数学性质、'!'/'=' 手算字节 ×3 档、表头契约、在册产物对偶。
     python3 tools/genfbfont.py --selftest
+    # W1-Q4（a-3 U4 纪律同款）：policy_ab_eval 门禁自检——S6 策略服务 A/B
+    # 升级判定器（PROMOTE/DEMOTE/HOLD）此前只在升级工作流里被一次性消费：
+    # judge 三区间手算 + 阈值严格边界（恰等 = HOLD）+ packed u64 位布局 +
+    # 载体行族/键别名/噪声免疫 + --delta 首尾差 + exit-code 契约 + 确定性
+    # （shadow 评估前提）——25 面。
+    python3 tools/policy_ab_eval.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
