@@ -8,6 +8,12 @@ export PATH := env_var("HOME") + "/.cargo/bin:" + env_var("PATH")
 # ~/.cargo-target），故动态解析不硬编码；PATH 修补也在脚本内自足——
 # `export PATH :=` 只进 recipe 环境、不进属性背引号（实测 just 此行为）。
 KERNEL := `bash tools/paths.sh kernel`
+
+# bash5 优先（/opt/homebrew/bin/bash、/usr/local/bin/bash）：smoke 系脚本含
+# CJK 全角字符贴 $var 的字符串——bash 3.2 词法把多字节邻接吞进变量名（set -u
+# 下 unbound variable 直炸）；bash5 无此雷。无 bash5 的环境回退 /bin/bash
+# （Linux 发行版 / CI Linux runner 自带 ≥4，不受影响）。
+BASH := `for b in /opt/homebrew/bin/bash /usr/local/bin/bash /bin/bash; do [ -x "$b" ] && { echo "$b"; break; }; done`
 KERNEL_RELEASE := `bash tools/paths.sh kernel-release`
 
 # 不用 `-bios none`：QEMU ≥11.x 把 "none" 当文件名，报
@@ -743,7 +749,7 @@ bench-icount: build
 # finding 9：裸 `{{minutes}}` 插值使 `just soak '60 && …'` 在组壳层注入
 # 执行——quote 后载荷作为单 argv 落进脚本的 *[!0-9]* 数字拒面）。
 soak minutes="60": build
-    bash tools/soak.sh {{quote(minutes)}}
+    {{BASH}} tools/soak.sh {{quote(minutes)}}
 
 # S-5d 双核满载 soak 单口（docs/SMP-S5实施设计草案.md §2 D1/D2/D4）：soak.sh
 # 全量形态 + `-smp 2` + 双 fw_cfg 门控（opt/berry/soak 心跳 v2.1 九字段 +
@@ -762,7 +768,7 @@ soak minutes="60": build
 # ——S-5 草案 §3 明文）。短验 `just soak-smp 2`；SOAK_KEEP_LOG=1 留日志。
 # 参数经 quote 包裹（soak finding 9 同款注入面）。
 soak-smp minutes="30": build
-    bash tools/soak-smp.sh {{quote(minutes)}}
+    {{BASH}} tools/soak-smp.sh {{quote(minutes)}}
 
 size-release: docs-guard abi-check build-user
     cargo build --release
@@ -784,7 +790,7 @@ abi-check:
 # 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
 smoke: build
-    bash tools/smoke.sh
+    {{BASH}} tools/smoke.sh
 
 # ---------- P7 x86_64 最小集（ADR #41：范围盒子 = 串口/定时器/异常向量/
 # 上下文切换/SVC 入口；SMP/APIC/ACPI/PCIe 不在盒内）----------
@@ -821,7 +827,7 @@ run-x86: build-x86
 # 改名/挪 bin 时只改 justfile 一侧会让冒烟继续跑旧 ELF 假绿，G-eco-b
 # 「陈旧产物静默上线」同族）。
 smoke-x86: build-x86
-    bash tools/smoke-x86.sh "{{X86_KERNEL}}"
+    {{BASH}} tools/smoke-x86.sh "{{X86_KERNEL}}"
 
 # S-2b 副核参与冒烟——八相（`SMP-S2实施设计草案.md` §5.1 起源双相，现
 # 八相——计数陈账 sim-S3 顺手矫正）：相 1 裸相（32 标记 + SMP 握手）+
@@ -834,7 +840,7 @@ smoke-x86: build-x86
 # 消费 rootfs*.cpio——新环境/worktree 缺产物时 loud 快败不烧 840s 帽。
 # **-smp 只进本线**（与 run-smp 同注：主 smoke 族一律单核）。
 smoke-smp: build build-user
-    bash tools/smoke-smp.sh "{{KERNEL}}"
+    {{BASH}} tools/smoke-smp.sh "{{KERNEL}}"
 
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
@@ -843,7 +849,7 @@ smoke-smp: build build-user
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image
-    bash tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
+    {{BASH}} tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
 
 # GUI-8 段④ EFI GUI 交互相双 boot 冒烟（独立关卡；**不并入 smoke-image**，
 # 冻结十段/生态 36 断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立

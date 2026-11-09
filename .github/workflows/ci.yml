@@ -24,7 +24,9 @@ jobs:
     # 单日 952min 击穿配额 job 拒跑）。runner = owner Mac（labels
     # self-hosted,mac-arm64），预装 rust 1.97（targets 齐）/ QEMU 11.0.3
     # （brew 含 edk2 固件）/ just / cargo-deny 0.20.2 / node / python3 /
-    # bash5。安装步全跳过；缺件红灯按 docs/命令速览.md 补装。
+    # bash5（brew bash 5.3——smoke 系脚本经 justfile BASH 变量显式调它，
+    # 系统 bash3.2 的 $NAME 多字节邻接吞名雷免疫）。安装步全跳过；缺件
+    # 红灯按 docs/命令速览.md 补装。
     runs-on: [self-hosted, mac-arm64]
     timeout-minutes: 150
     steps:
