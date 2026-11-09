@@ -738,6 +738,13 @@ test-host:
     # 严格边界（wake 恰等 100 不加成）+ RT/哨兵屏蔽 + headroom 贪心序
     # 手算向量 + 字段序镜像 PolicyEntry + exit-code 契约 + 确定性——36 面。
     python3 tools/advisor.py --selftest
+    # W1-Q4 再续（a-3 U4 纪律同款）：sched_perf_analyze 门禁自检——调度 1.1
+    # 验收判官（pick<5µs/freeze<5ms/billing<1µs 对照）此前只有 --demo 一次
+    # 性展示：规格常量钉板（LIMITS/FREQ 漂移即咬）+ 手算向量（62.5MHz 下
+    # ns=cycles×16：pick 312/313 跨 5µs 界、freeze 312500cyc 恰等拒、
+    # billing 62/63 跨界）+ 噪声免疫/保序 + no-limit 三值逻辑不连坐 +
+    # exit-code 契约 + byte 级确定性——18 面。
+    python3 tools/sched_perf_analyze.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
