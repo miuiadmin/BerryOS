@@ -218,7 +218,7 @@ DEADLINE_ROOTFS=600  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # HEXYL_EOF_CAP）+ 全链余量见底，依「压力显性再升」
                      # 政策升 600。
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
-DEADLINE_BOOTC=420   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史：初值 300
+DEADLINE_BOOTC=600   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史：初值 300
                      # 沿 rootfs 相旧帽（Boot C = 同源 bsh 全链重跑），但
                      # B-1/C-5/A2-3/A3-3 历次加链只升了 DEADLINE_ROOTFS
                      #（300→420），Boot C 未跟——帽债实锤于 S-3c c-1 归因
@@ -229,13 +229,18 @@ DEADLINE_BOOTC=420   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史�
                      # c-1；420 对齐 DEADLINE_ROOTFS（同源负载同帽口径，
                      # A2-3 升帽先例同型：帽只兜结构性挂死，常态 CD ok
                      # ~285-305s + TCG 波动 ±5s）。
-DEADLINE_BOOTA=300   # 秒：B4 掉电 Boot A FAT ok 到齐（FAT 5000 前缀段）。
+DEADLINE_BOOTA=600   # 秒：B4 掉电 Boot A FAT ok 到齐（FAT 5000 前缀段）。
                      # 帽史：初值 240（内联），同族帽债随 Boot B 一并勘正
                      #（2026-11-01）：归因复现实测 FAT ok 落点 ~200-206s（基线/
                      # c-1 双跑），c-1 源致 +2% + TCG 波动 ±5s 下 240 余量仅
                      # ~10-15%——链再加即重蹈；300 = 阶梯对齐链深（A 守 FAT
                      # 前缀 < B 守 FATW < C 守全链 CD），帽只兜结构性挂死。
-DEADLINE_BOOTB=360   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3000）。
+                     # 300→600（2026-11-09，CI 首跑 B4）：ubuntu-latest TCG 实测
+                     # 同源 86 标记链 boot→到齐 ~6m30s（rootfs/RX/FAT 子目录/
+                     # 持久化四相一致），300s 结构性必红；对齐 DEADLINE_ROOTFS
+                     # 同帽口径（A/B/C 同步抬，B4 相 CI 首验实录 Boot A @300s
+                     # 仅至 SIG ok——bsh 自验族尚余 PS/BC/M3DEMO/FAT 5000）。
+DEADLINE_BOOTB=600   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3000）。
                      # 帽史：初值 240（内联），2026-11-01 S-3c c-1 复验八跑实炸：
                      # FATW ok 未到（fail dump switches 钟 @2000 仍在爬 = 慢而非
                      # 断；对照同 c-1 首跑过线态 FAT @sw1600→FATW @sw1900，本跑
