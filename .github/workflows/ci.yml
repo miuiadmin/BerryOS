@@ -9,10 +9,10 @@ on:
 # false）——bot 流水线 20min 节拍下 worker 连续推 PR 曾令 CI 永远跑不完，
 # 合并决策长期无 CI 信号（reviewer 本地四项验证是实际门禁）。配 REVIEW.md
 # CI 门（绿才合）后，合并时 CI 已收尾，删分支不再杀活 run。
-# 自托管 macOS：brew bin 前置（just/cargo-deny/bash5；smoke 交互相由
-# bash5 跑——bash3.2 的 $NAME 多字节邻接吞名雷已由 PR #13 收口，仍首选 5）。
+# 自托管 Linux：brew bin 前置（qemu/just/cargo-deny；smoke 交互相由
+# bash5 跑——bash3.2 多字节吞名雷免疫；Debian 11 自带 bash 5.1）。
 env:
-  PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  PATH: /home/runner/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -21,13 +21,12 @@ concurrency:
 jobs:
   smoke:
     # 2026-11-09 迁自托管：Actions 对 self-hosted 免费（私有仓 GitHub-hosted
-    # 单日 952min 击穿配额 job 拒跑）。runner = owner Mac（labels
-    # self-hosted,mac-arm64），预装 rust 1.97（targets 齐）/ QEMU 11.0.3
-    # （brew 含 edk2 固件）/ just / cargo-deny 0.20.2 / node / python3 /
-    # bash5（brew bash 5.3——smoke 系脚本经 justfile BASH 变量显式调它，
-    # 系统 bash3.2 的 $NAME 多字节邻接吞名雷免疫）。安装步全跳过；缺件
-    # 红灯按 docs/命令速览.md 补装。
-    runs-on: [self-hosted, mac-arm64]
+    # 单日 952min 击穿配额 job 拒跑）。runner = Debian 11 x86_64 服务器
+    # （labels self-hosted,linux-x64；无 KVM → 全 TCG，与 GitHub Ubuntu
+    # runner 同构——B4/evsclient 帽标定直接适用），预装 rust 1.97（targets
+    # 齐）/ QEMU 11（brew，含 edk2 固件）/ just / cargo-deny 0.20.2 /
+    # bash 5.1。安装步全跳过；缺件红灯按 docs/命令速览.md 补装。
+    runs-on: [self-hosted, linux-x64]
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -112,20 +111,20 @@ jobs:
       # 发现跨 workspace 边界仍命中——Gotcha；host 测试须点名 host 三元组）；
       # 零依赖零网络，ubuntu runner host 目标预装。
       - name: berry-ksproto host 测试（SEC-02 A2 协议 crate 门禁）
-        run: cargo test --manifest-path user/berry-ksproto/Cargo.toml --target aarch64-apple-darwin
+        run: cargo test --manifest-path user/berry-ksproto/Cargo.toml --target x86_64-unknown-linux-gnu
 
       # A7-1：berry-mmap host 测试门禁（ksproto 同款纪律——纯函数 crate 家族
       # 的测试面必须挂 CI 执法，防「host 测零自动执法、静默腐烂」；user/
       # workspace 成员经 --manifest-path 点名 + 显式 host 三元组覆盖根
       # config 的 build.target 锁；零依赖零网络）。
       - name: berry-mmap host 测试（A7-1 纯函数 crate 门禁）
-        run: cargo test --manifest-path user/berry-mmap/Cargo.toml --target aarch64-apple-darwin
+        run: cargo test --manifest-path user/berry-mmap/Cargo.toml --target x86_64-unknown-linux-gnu
 
       # A7-4：berry-signal host 测试门禁（ksproto/mmap 同款纪律——纯函数
       # crate 家族的测试面必须挂 CI 执法；justfile test-host 已接线，CI
       # fail-fast 位同面补上——零依赖零网络）。
       - name: berry-signal host 测试（A7-4 纯函数 crate 门禁）
-        run: cargo test --manifest-path user/berry-signal/Cargo.toml --target aarch64-apple-darwin
+        run: cargo test --manifest-path user/berry-signal/Cargo.toml --target x86_64-unknown-linux-gnu
 
       # ---------- SDK-1b：发布族八 crate publish 守卫（fail-fast 位） ----------
       # 三档执法，档位由 2026-10-30 双轮实测定死（基线 B2/B3/B4/B6 + 沙箱
