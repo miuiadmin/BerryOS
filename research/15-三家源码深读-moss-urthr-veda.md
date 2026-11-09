@@ -3,6 +3,7 @@
 > 调研日期 2026-11-07 · 方法：三家完整 clone（moss-kernel 12M / urthr 8.2M / Veda 44M，depth 50），源码逐文件实读；对照基准 = BerryOS 当日 HEAD（`sched/src/class.rs` S2a 带内 EEVDF、`arch/aarch64/src/gic.rs`）· 姊妹篇：12/13/14 号
 >
 > 本文为 15 号专题。**许可修正（重要）**：Veda 经源码 SPDX 头实证为 **GPL-3.0-only**（`bkl.rs` 头部）——此前按 README 判断为宽松系是误判；BerryOS（Apache-2.0）对 Veda 执行 GPL 纪律：**机制语义可参照、代码一字不进**（规则 13 同口径）。
+> 编号互注（2026-11-09）：本件与 research/调研报告/15-微内核谱系进化史.md 同号不同系（主目录专题 vs 子目录进化史）——引用带全路径消歧。
 
 ## 1. moss EEVDF vs BerryOS S2a——两种实现的逐点对照
 

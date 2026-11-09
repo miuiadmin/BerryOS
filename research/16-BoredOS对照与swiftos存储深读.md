@@ -3,6 +3,7 @@
 > 调研日期 2026-11-08 · 方法：BoredOS（GPL-3.0，**只对照理解不搬码**）与 swift-os（Apache-2.0，可借语义）完整 clone 源码实读；对照基准 = BerryOS G4 demand paging / VMO-pager 路线与 P0-b 存储吸收议程 · 姊妹篇：12–15 号
 >
 > 本文为 16 号专题。**过程事故记录（方法节自警）**：并行 clone 的 shell 优先级事故——`cd dir && clone A & clone B &` 中 B 在原 cwd 执行，swift-os 曾误落 berryos 仓根（未跟踪态即发现，验证后移出，`git status` 复核零残留）；教训 = 后台并行 clone 一律 `(cd dir && clone) &` 子壳形态或显式目标路径。
+> 编号互注（2026-11-09）：本件与 research/调研报告/16-新生代OS设计初衷.md 同号不同系（主目录专题 vs 子目录进化史）——引用带全路径消歧。
 
 ## 1. BoredOS——C 系现代 Unix 的内存面量级与形态（对照理解）
 
