@@ -612,7 +612,7 @@ impl AppRoom {
         }
     }
 
-    /// 显式销毁窗口、回读空表、解除映射并关闭宿主资源。
+    /// 显式销毁窗口、回读确认本窗口表项消失、解除映射并关闭宿主资源。
     pub fn destroy(&mut self) -> RoomResult<()> {
         if !self.opened {
             return Err(RoomError::Destroy);
@@ -628,8 +628,16 @@ impl AppRoom {
         }
         let n = gp::encode_wm_table_get_req(&mut request);
         let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
+        // 并发 GUI app 生命周期下，全局空表是过强断言：其它 boot probe 或
+        // 常驻窗口可以合法存在。本 Room 的清理真值 = 自己的 window_id 已
+        // 从权威表消失；表快照畸形/无法解析仍 loud 拒。
         match gp::parse_wm_snapshot_rep(&reply[..n]) {
-            Some(Ok(snapshot)) if snapshot.count == 0 => {}
+            Some(Ok(snapshot)) => {
+                let mine = u16::from(self.window);
+                if snapshot.entries.iter().take(snapshot.count).any(|e| e.id == mine) {
+                    return Err(RoomError::Table);
+                }
+            }
             _ => return Err(RoomError::Table),
         }
         // 映射先解除，再关句柄；失败不掩盖 WM 已销毁的真相，统一 Destroy。

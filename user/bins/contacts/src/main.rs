@@ -1,217 +1,31 @@
-//! Contacts Native Shell —— 真实 fsmgr 联系人数据 + 独立 GUI 进程。
+//! CONTACTS —— GUI F7 迁移后的联系人 app。
 //!
-//! 链路：`wm=true` + `fs=["rootfs"]` → APP_SPAWN 交付 [rootfs VMO, fs
-//! client, WMD broker]。READDIR 根目录后 STAT/GET CONTACTS.TXT，解析
-//! 4 条 name,number 记录；列表/详情/收藏状态均真实重绘。v1 只读。
+//! WM/窗口/frame/输入/销毁与系统字形归 Berry Room；列表/详情/收藏视觉归
+//! BerryUI/Berry Design。CONTACTS.TXT 的 READDIR/STAT/GET 继续走
+//! berry-fsclient；无数据盘拓扑下保留编译内同构样本 fallback。
 
 #![no_std]
 #![no_main]
 
-use berry_fsclient::dirent_next;
-use berry_guiproto as gp;
-use berry_sys::{
-    berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
-    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_exit,
-    berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN,
-    BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_WRITABLE,
+use berry_fsclient::{
+    dirent_next, get_chunk, readdir, stat as fs_stat, FsErr, RPC_BUF, TYPE_FILE,
 };
-use berry_fsproto as fp;
-use berry_nshfont::{circle, map as map_font, round_rect, shadow, text};
+use berry_gfx::cmd::{CommandEncoder, GlyphPos};
+use berry_gfx::font::FontSize;
+use berry_room::{
+    AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PointerEvent, RoomConfig, Sample,
+    SYSTEM_FONT_ATLAS,
+};
+use berry_ui::hit::PtrEvent;
+use berry_ui::sdk::{
+    Button, Card, FontSource, InteractionState, Msg, RectI, Scaffold, ScrollView, TextVariant,
+    Theme, Ui, WidgetContext, column, text,
+};
 
-const FRAME_VA: usize = 0x5200_0000;
-const RPC_CAP_NS: u64 = 120 * 1_000_000_000;
-struct Env {
-    boot_probe: bool,
-    console: Handle,
-    process: Handle,
-    vmar: Handle,
-    broker: Handle,
-    fs: Handle,
-}
-
-fn now() -> u64 {
-    let mut t = 0u64;
-    if berry_clock_read(CLOCK_MONOTONIC, &mut t) != 0 {
-        berry_process_exit(134);
-    }
-    t
-}
-
-fn send(console: Handle, bytes: &[u8]) {
-    let deadline = now() + RPC_CAP_NS;
-    loop {
-        let s = berry_channel_send(console, bytes.as_ptr(), bytes.len(), core::ptr::null(), 0);
-        if s == 0 {
-            return;
-        }
-        if s != BERRY_ERR_BUSY {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(console, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            berry_process_exit(134);
-        }
-    }
-}
-
-fn fail(console: Handle, what: &str) -> ! {
-    let mut line = [0u8; 96];
-    let head = b"contacts: ";
-    line[..head.len()].copy_from_slice(head);
-    let n = what.len().min(line.len() - head.len());
-    line[head.len()..head.len() + n].copy_from_slice(&what.as_bytes()[..n]);
-    send(console, &line[..head.len() + n]);
-    berry_process_exit(134)
-}
-
-fn read_env(env_ch: Handle) -> Env {
-    let mut blob = [0u8; 192];
-    let mut hs = [0 as Handle; 8];
-    let mut nb = blob.len();
-    let mut nh = hs.len();
-    if berry_channel_recv(env_ch, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) != 0
-        || nh < 7
-        || nb <= b"bin/contacts".len()
-        || &blob[..b"bin/contacts".len()] != b"bin/contacts"
-        || hs[2] == 0
-        || hs[3] == 0
-        || hs[5] == 0
-        || hs[6] == 0
-    {
-        berry_process_exit(134);
-    }
-    let boot_probe = blob[..nb]
-        .windows(b"\0boot-probe".len())
-        .any(|w| w == b"\0boot-probe");
-    Env {
-        boot_probe,
-        console: hs[0],
-        process: hs[2],
-        vmar: hs[3],
-        fs: hs[5],
-        broker: hs[6],
-    }
-}
-
-fn channel_roundtrip(
-    ch: Handle,
-    req: &[u8],
-    rep: &mut [u8; 256],
-) -> usize {
-    let deadline = now() + RPC_CAP_NS;
-    loop {
-        let s = berry_channel_send(ch, req.as_ptr(), req.len(), core::ptr::null(), 0);
-        if s == 0 {
-            break;
-        }
-        if s != BERRY_ERR_BUSY {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(ch, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            berry_process_exit(134);
-        }
-    }
-    loop {
-        let mut nb = rep.len();
-        let s = berry_channel_recv(ch, rep.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut 0);
-        if s == 0 {
-            return nb;
-        }
-        if s != BERRY_ERR_AGAIN {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(ch, SIGNAL_READABLE, now() + RPC_CAP_NS, &mut obs) != 0 {
-            berry_process_exit(134);
-        }
-    }
-}
-
-fn wm_rpc(
-    ch: Handle,
-    req: &[u8],
-    attach: &[Handle],
-    rep: &mut [u8; 256],
-    rhs: &mut [Handle; 8],
-) -> (usize, usize) {
-    let deadline = now() + RPC_CAP_NS;
-    loop {
-        let (hp, hn) = if attach.is_empty() {
-            (core::ptr::null(), 0)
-        } else {
-            (attach.as_ptr(), attach.len())
-        };
-        let s = berry_channel_send(ch, req.as_ptr(), req.len(), hp, hn);
-        if s == 0 {
-            break;
-        }
-        if s != BERRY_ERR_BUSY {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(ch, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            berry_process_exit(134);
-        }
-    }
-    loop {
-        let mut nb = rep.len();
-        let mut nh = rhs.len();
-        let s = berry_channel_recv(ch, rep.as_mut_ptr(), &mut nb, rhs.as_mut_ptr(), &mut nh);
-        if s == 0 {
-            return (nb, nh);
-        }
-        if s != BERRY_ERR_AGAIN {
-            berry_process_exit(134);
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(ch, SIGNAL_READABLE, now() + RPC_CAP_NS, &mut obs) != 0 {
-            berry_process_exit(134);
-        }
-    }
-}
-
-fn pair(console: Handle) -> (Handle, Handle) {
-    let mut a: Handle = 0;
-    let mut b: Handle = 0;
-    if berry_channel_create(0, &mut a, &mut b) != 0 || a == 0 || b == 0 {
-        fail(console, "channel");
-    }
-    (a, b)
-}
-
-fn wm_connect(
-    console: Handle, broker: Handle, process: Handle, vmar: Handle,
-) -> (Handle, Handle, Handle) {
-    let (wm, wm_peer) = pair(console);
-    let (input, input_peer) = pair(console);
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let n = match gp::encode_wm_connect_req(&mut req, gp::WM_CLIENT_APP) {
-        Some(n) => n,
-        None => fail(console, "connect encode"),
-    };
-    let attach = [wm_peer, input_peer, process];
-    let (n, nh) = wm_rpc(broker, &req[..n], &attach, &mut rep, &mut rhs);
-    if gp::parse_wm_connect_rep(&rep[..n]).is_none() || nh != 1 || rhs[0] == 0 {
-        fail(console, "connect rep");
-    }
-    let font_vmo = rhs[0];
-    if !map_font(vmar, font_vmo) {
-        fail(console, "font map");
-    }
-    if berry_handle_close(broker) != 0 {
-        fail(console, "broker close");
-    }
-    (wm, input, font_vmo)
-}
-
+type Ui96 = Ui<96>;
 const MAX_CONTACTS: usize = 4;
 const DATA_MAX: usize = 256;
 
-#[derive(Clone, Copy)]
 struct Contact {
     name: [u8; 24],
     name_len: usize,
@@ -222,40 +36,137 @@ struct Contact {
 
 impl Contact {
     const EMPTY: Contact = Contact {
-        name: [0u8; 24], name_len: 0,
-        number: [0u8; 16], number_len: 0,
+        name: [0u8; 24],
+        name_len: 0,
+        number: [0u8; 16],
+        number_len: 0,
         favorite: false,
     };
+
+    fn name(&self) -> &[u8] {
+        &self.name[..self.name_len]
+    }
+
+    fn number(&self) -> &[u8] {
+        &self.number[..self.number_len]
+    }
 }
 
-#[derive(Clone, Copy)]
-struct ContactLayout {
-    bar: usize,
-    row_h: usize,
-    top: usize,
-    fav_x0: usize,
-    fav_y0: usize,
-    fav_w: usize,
-    fav_h: usize,
+struct ListPage {
+    scroll: ScrollView,
+    back: Button,
+    rows: [Option<Button>; MAX_CONTACTS],
 }
 
-#[derive(Clone, Copy)]
-enum Mode {
-    List,
-    Detail,
+struct DetailPage {
+    scroll: ScrollView,
+    back: Button,
+    favorite: Button,
 }
 
-#[derive(Clone, Copy)]
-enum Action {
-    Open(usize),
-    Favorite,
-    Back,
+struct App {
+    ui: Ui96,
+    ctx: WidgetContext,
+    contacts: [Contact; MAX_CONTACTS],
+    detail: usize,
+    mode: bool,
+    page: Page,
+    frame_seq: u32,
 }
 
-static mut CONTACT_DATA: [u8; DATA_MAX] = [0u8; DATA_MAX];
+enum Page {
+    List(ListPage),
+    Detail(DetailPage),
+}
 
-fn fs_call(fs: Handle, req: &[u8], rep: &mut [u8; 256]) -> usize {
-    channel_roundtrip(fs, req, rep)
+struct RoomFontSource;
+static ROOM_FONT_SOURCE: RoomFontSource = RoomFontSource;
+
+impl FontSource for RoomFontSource {
+    fn atlas(&self, scale: FontSize) -> Option<&'static dyn berry_gfx::font::GlyphAtlas> {
+        (scale == FontSize::S32x48).then_some(&SYSTEM_FONT_ATLAS)
+    }
+}
+
+fn append_u32(out: &mut [u8], mut value: u32) -> usize {
+    let mut digits = [0u8; 10];
+    let mut n = 0usize;
+    if value == 0 {
+        digits[0] = b'0';
+        n = 1;
+    }
+    while value != 0 && n < digits.len() {
+        digits[n] = b'0' + (value % 10) as u8;
+        value /= 10;
+        n += 1;
+    }
+    let mut written = 0usize;
+    while n > 0 && written < out.len() {
+        n -= 1;
+        out[written] = digits[n];
+        written += 1;
+    }
+    written
+}
+
+struct Line {
+    bytes: [u8; 224],
+    len: usize,
+}
+
+impl Line {
+    fn new(head: &[u8]) -> Self {
+        let mut bytes = [0u8; 224];
+        let n = head.len().min(bytes.len());
+        bytes[..n].copy_from_slice(&head[..n]);
+        Self { bytes, len: n }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + n].copy_from_slice(&bytes[..n]);
+        self.len += n;
+    }
+
+    fn push_u32(&mut self, value: u32) {
+        let mut buf = [0u8; 10];
+        let n = append_u32(&mut buf, value);
+        self.push(&buf[..n]);
+    }
+
+    fn point(&mut self, x: i32, y: i32) {
+        let mut buf = [0u8; 12];
+        let mut n = if x < 0 { buf[0] = b'-'; 1 } else { 0 };
+        let ux = if x == i32::MIN { 2_147_483_648u32 } else { x.unsigned_abs() };
+        n += append_u32(&mut buf[n..], ux);
+        self.push(&buf[..n]);
+        self.push(b",");
+        let mut buf = [0u8; 12];
+        let mut n = if y < 0 { buf[0] = b'-'; 1 } else { 0 };
+        let uy = if y == i32::MIN { 2_147_483_648u32 } else { y.unsigned_abs() };
+        n += append_u32(&mut buf[n..], uy);
+        self.push(&buf[..n]);
+    }
+
+    fn rect(&mut self, rect: RectI) {
+        self.point(rect.x, rect.y);
+        self.push(b",");
+        self.point(rect.w, rect.h);
+    }
+
+    fn print(&self, room: &AppRoom) {
+        room.print(&self.bytes[..self.len]);
+    }
+}
+
+fn fail(room: &AppRoom, what: &str) -> ! {
+    let mut line = [0u8; 96];
+    let head = b"contacts: ";
+    line[..head.len()].copy_from_slice(head);
+    let n = head.len() + what.len().min(line.len() - head.len());
+    line[head.len()..n].copy_from_slice(&what.as_bytes()[..n - head.len()]);
+    room.print(&line[..n]);
+    room.exit(134)
 }
 
 fn fallback_contacts(out: &mut [Contact; MAX_CONTACTS]) {
@@ -274,46 +185,7 @@ fn fallback_contacts(out: &mut [Contact; MAX_CONTACTS]) {
     }
 }
 
-fn readdir_count(console: Handle, fs: Handle) -> usize {
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let n = match fp::encode_readdir(&mut req, b"") {
-        Some(n) => n,
-        None => fail(console, "readdir encode"),
-    };
-    let n = fs_call(fs, &req[..n], &mut rep);
-    let names = match fp::parse_reply_list(&rep[..n]) {
-        Some(Ok(names)) => names,
-        _ => fail(console, "readdir rep"),
-    };
-    let mut pos = 0usize;
-    let mut count = 0usize;
-    while dirent_next(names, &mut pos).is_some() {
-        count += 1;
-    }
-    count
-}
-
-fn stat_contacts(console: Handle, fs: Handle) -> Option<u32> {
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let n = match fp::encode_stat(&mut req, b"CONTACTS.TXT") {
-        Some(n) => n,
-        None => fail(console, "stat encode"),
-    };
-    let n = fs_call(fs, &req[..n], &mut rep);
-    match fp::parse_reply_stat(&rep[..n]) {
-        Some(Ok((ty, size))) if ty == fp::TYPE_FILE => Some(size),
-        // frozen smoke-image 无数据盘：CONTACTS.TXT 缺席是拓扑真值，
-        // boot-probe 用编译内 4 条同构样本；其它错误仍 fail loud。
-        Some(Err(fp::ST_NOENT)) => None,
-        _ => fail(console, "stat rep"),
-    }
-}
-
-fn parse_contacts(
-    console: Handle, data: &[u8], out: &mut [Contact; MAX_CONTACTS],
-) -> usize {
+fn parse_contacts(room: &AppRoom, data: &[u8], out: &mut [Contact; MAX_CONTACTS]) -> usize {
     for slot in out.iter_mut() {
         *slot = Contact::EMPTY;
     }
@@ -324,15 +196,12 @@ fn parse_contacts(
             Some(i) => start + i,
             None => data.len(),
         };
-        if end == start {
-            fail(console, "contact empty");
-        }
-        if count >= MAX_CONTACTS {
-            fail(console, "contact shape");
+        if end == start || count >= MAX_CONTACTS {
+            fail(room, "contact shape");
         }
         let line = &data[start..end];
         let Some(comma) = line.iter().position(|&c| c == b',') else {
-            fail(console, "contact comma");
+            fail(room, "contact comma");
         };
         let (name, number) = (&line[..comma], &line[comma + 1..]);
         if name.is_empty()
@@ -340,7 +209,7 @@ fn parse_contacts(
             || number.len() != 11
             || !number.iter().all(u8::is_ascii_digit)
         {
-            fail(console, "contact fields");
+            fail(room, "contact fields");
         }
         out[count].name[..name.len()].copy_from_slice(name);
         out[count].name_len = name.len();
@@ -350,392 +219,414 @@ fn parse_contacts(
         start = if end < data.len() { end + 1 } else { end };
     }
     if count != MAX_CONTACTS {
-        fail(console, "contact count");
+        fail(room, "contact count");
     }
     count
 }
 
-fn read_contacts(
-    console: Handle, fs: Handle, out: &mut [Contact; MAX_CONTACTS],
-) -> (usize, bool) {
-    let Some(size) = stat_contacts(console, fs) else {
-        fallback_contacts(out);
-        return (MAX_CONTACTS, false);
+fn load_contacts(room: &AppRoom, out: &mut [Contact; MAX_CONTACTS]) -> (usize, usize, bool) {
+    let handle = room.fs_handle();
+    let mut wire = [0u8; RPC_BUF];
+    let root_len = match readdir(handle, b"", &mut wire) {
+        Ok(len) => len,
+        Err(_) => fail(room, "readdir"),
     };
-    if size as usize > DATA_MAX {
-        fail(console, "contacts size");
+    let mut pos = 0usize;
+    let mut root_count = 0usize;
+    while dirent_next(&wire[..root_len], &mut pos).is_some() {
+        root_count += 1;
     }
-    let data: &mut [u8; DATA_MAX] =
-        unsafe { &mut *core::ptr::addr_of_mut!(CONTACT_DATA) };
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
+
+    let (kind, size) = match fs_stat(handle, b"CONTACTS.TXT") {
+        Ok(value) => value,
+        Err(FsErr::Noent) => {
+            fallback_contacts(out);
+            return (MAX_CONTACTS, root_count, false);
+        }
+        Err(_) => fail(room, "stat"),
+    };
+    if kind != TYPE_FILE || size as usize > DATA_MAX {
+        fail(room, "contacts size");
+    }
+    let mut data = [0u8; DATA_MAX];
     let mut off = 0usize;
     loop {
-        let n = match fp::encode_get(&mut req, b"CONTACTS.TXT", off as u32) {
-            Some(n) => n,
-            None => fail(console, "get encode"),
+        let (take, more) = match get_chunk(handle, b"CONTACTS.TXT", off as u32, &mut wire) {
+            Ok(value) => value,
+            Err(_) => fail(room, "get"),
         };
-        let n = fs_call(fs, &req[..n], &mut rep);
-        let got = match fp::parse_reply_get(&rep[..n]) {
-            Some(Ok(g)) => g,
-            _ => fail(console, "get rep"),
-        };
-        let take = got.data.len();
-        if off + take > DATA_MAX {
-            fail(console, "contacts long");
+        if off + take > data.len() {
+            fail(room, "contacts long");
         }
-        data[off..off + take].copy_from_slice(got.data);
+        data[off..off + take].copy_from_slice(&wire[..take]);
         off += take;
-        if !got.more {
+        if !more {
             break;
         }
     }
     if off != size as usize {
-        fail(console, "contacts short");
+        fail(room, "contacts short");
     }
-    (parse_contacts(console, &data[..off], out), true)
+    (parse_contacts(room, &data[..off], out), root_count, true)
 }
 
-fn contact_layout(w: usize, h: usize) -> ContactLayout {
-    let bar = (h / 12).max(64).min(160);
-    let natural = (bar * 3 / 2).max(72).min(180);
-    let avail = h.saturating_sub(bar + 48);
-    let row_h = natural.min(avail / MAX_CONTACTS).max(48);
-    let fav_w = if w >= 1000 { 180 } else { 120 };
-    ContactLayout {
-        bar, row_h, top: bar + 24,
-        fav_x0: w.saturating_sub(fav_w + 48),
-        fav_y0: bar + 36,
-        fav_w,
-        fav_h: if w >= 1000 { 84 } else { 64 },
-    }
-}
-
-fn avatar_color(i: usize) -> [u8; 4] {
-    match i % 4 {
-        0 => [0x1E, 0x88, 0xE5, 0],
-        1 => [0x43, 0xA0,0x47, 0],
-        2 => [0xFB, 0x8C, 0x00, 0],
-        _ => [0x8E, 0x24, 0xAA, 0],
-    }
-}
-
-fn render_list(
-    fb: &mut [u8], stride: usize, w: usize, h: usize,
-    lay: ContactLayout, contacts: &[Contact; MAX_CONTACTS], count: usize,
-) {
-    fill(fb, stride, 0, 0, w, h, [0xF6, 0xF8, 0xFA, 0]);
-    fill(fb, stride, 0, 0, w, lay.bar, [0x00, 0x79, 0x6B, 0]);
-    text(fb, stride, b"Contacts", lay.bar + 18, (lay.bar - 48) / 2, [0xFF, 0xFF, 0xFF, 0]);
-    let cx = lay.bar / 2;
-    let r = lay.bar.saturating_sub(18) / 2;
-    for y in 0..lay.bar {
-        for x in 0..lay.bar {
-            let dx = x as i32 - cx as i32;
-            let dy = y as i32 - cx as i32;
-            if dx * dx + dy * dy <= r as i32 * r as i32 {
-                put_px(fb, stride, x, y, [0xD8, 0xF3, 0xEF, 0]);
-            }
+fn build_list(ui: &mut Ui96, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS]) -> ListPage {
+    let root = ui.root();
+    let scaffold = match Scaffold::new(ui, root, ctx, b"Contacts") {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let (_, viewport_h) = ui.viewport();
+    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
+    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let card = match Card::new(ui, scroll.content, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let stack = match column(ui, card.panel, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let mut rows = [None; MAX_CONTACTS];
+    for (slot, contact) in rows.iter_mut().zip(contacts.iter()) {
+        let mut label = [0u8; 27];
+        label[..contact.name_len].copy_from_slice(contact.name());
+        let mut len = contact.name_len;
+        if contact.favorite {
+            label[len] = b' ';
+            label[len + 1] = b'*';
+            len += 2;
         }
+        *slot = Some(match Button::new(ui, stack, ctx, &label[..len], InteractionState::Normal) {
+            Ok(value) => value,
+            Err(_) => berry_room::panic_exit(134),
+        });
     }
-    for i in 0..count {
-        let y = lay.top + i * lay.row_h;
-        round_rect(fb, stride, 18, y + 8, w - 36, lay.row_h - 16, 36, [0xFF, 0xFF, 0xFF]);
-        let avatar = (lay.row_h - 44).max(32);
-        let ax = 42;
-        let ay = y + (lay.row_h - avatar) / 2;
-        let color = avatar_color(i);
-        circle(fb, stride, ax + avatar / 2, ay + avatar / 2, avatar / 2, [color[0], color[1], color[2]]);
-        let ty = y + (lay.row_h - 48) / 2;
-        text(fb, stride, &contacts[i].name[..contacts[i].name_len], ax + avatar + 26, ty, [0x20, 0x2B, 0x38, 0]);
-        if contacts[i].favorite {
-            text(fb, stride, b"*", w - 80, ty + 8, [0xFB, 0x8C, 0x00, 0]);
+    ListPage { scroll, back, rows }
+}
+
+fn build_detail(
+    ui: &mut Ui96, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS], detail: usize,
+) -> DetailPage {
+    let root = ui.root();
+    let scaffold = match Scaffold::new(ui, root, ctx, b"Contacts") {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let (_, viewport_h) = ui.viewport();
+    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
+    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let card = match Card::new(ui, scroll.content, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let stack = match column(ui, card.panel, ctx) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    match text(ui, stack, ctx, TextVariant::Title, contacts[detail].name()) {
+        Ok(_) => {}
+        Err(_) => berry_room::panic_exit(134),
+    }
+    match text(ui, stack, ctx, TextVariant::Body, contacts[detail].number()) {
+        Ok(_) => {}
+        Err(_) => berry_room::panic_exit(134),
+    }
+    let favorite_state = if contacts[detail].favorite {
+        InteractionState::Selected
+    } else {
+        InteractionState::Normal
+    };
+    let favorite = match Button::new(ui, stack, ctx, b"Favorite", favorite_state) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
+        Ok(value) => value,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    DetailPage { scroll, back, favorite }
+}
+
+impl App {
+    fn render(&mut self, room: &mut AppRoom) {
+        let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 160];
+        let mut encoder = CommandEncoder::new();
+        self.ui.wake(0);
+        let outcome = self.ui.render_frame(0, &mut scratch, &mut encoder);
+        if !outcome.drew {
+            fail(room, "no damage");
         }
-    }
-}
-
-fn render_detail(
-    fb: &mut [u8], stride: usize, w: usize, h: usize,
-    lay: ContactLayout, contacts: &[Contact; MAX_CONTACTS], index: usize,
-) {
-    render_list(fb, stride, w, h, lay, contacts, MAX_CONTACTS);
-    fill(fb, stride, 0, lay.bar, w, h.saturating_sub(lay.bar), [0xF6, 0xF8, 0xFA, 0]);
-    let detail_y = lay.bar + 20;
-    let detail_h = h.saturating_sub(detail_y + 28);
-    shadow(fb, stride, 36, detail_y + 4, w - 68, detail_h, 56);
-    round_rect(fb, stride, 28, detail_y, w - 56, detail_h, 56, [0xFF, 0xFF, 0xFF]);
-    let c = &contacts[index];
-    let avatar = if w >= 1000 { 180 } else { 120 };
-    let ax = (w.saturating_sub(avatar)) / 2;
-    let ay = lay.bar + 36;
-    let color = avatar_color(index);
-    circle(fb, stride, ax + avatar / 2, ay + avatar / 2, avatar / 2, [color[0], color[1], color[2]]);
-    let name_y = ay + avatar + 20;
-    let name_x = (w.saturating_sub(c.name_len * 32)) / 2;
-    text(fb, stride, &c.name[..c.name_len], name_x, name_y, [0x1B, 0x25, 0x40, 0]);
-    let num_x = (w.saturating_sub(c.number_len * 32)) / 2;
-    text(fb, stride, &c.number[..c.number_len], num_x, name_y + 72, [0x4F, 0x5D, 0x75, 0]);
-    round_rect(fb, stride, lay.fav_x0, lay.fav_y0, lay.fav_w, lay.fav_h, lay.fav_h / 2, [0xE2, 0xE8, 0xF0]);
-    let label: &[u8] = if c.favorite { b"Favorite" } else { b"Favorite" };
-    let lx = lay.fav_x0 + (lay.fav_w.saturating_sub(label.len() * 32)) / 2;
-    let ly = lay.fav_y0 + (lay.fav_h.saturating_sub(48)) / 2;
-    text(fb, stride, label, lx, ly, [0x2B, 0x38, 0x4A, 0]);
-    if c.favorite {
-        fill(fb, stride, lay.fav_x0, lay.fav_y0 + lay.fav_h - 8, lay.fav_w, 8, [0xFB, 0x8C, 0x00, 0]);
-    }
-}
-fn put_px(fb: &mut [u8], stride: usize, x: usize, y: usize, c: [u8; 4]) {
-    let off = y * stride + x * 4;
-    let bytes = [c[2], c[1], c[0], 0];
-    fb[off..off + 4].copy_from_slice(&bytes);
-}
-
-fn fill(fb: &mut [u8], stride: usize, x0: usize, y0: usize, w: usize, h: usize, c: [u8; 4]) {
-    for y in y0..y0.saturating_add(h) {
-        for x in x0..x0.saturating_add(w) {
-            put_px(fb, stride, x, y, c);
+        let list = encoder.finish();
+        let commands = match room.render_display_list(&list) {
+            Ok(commands) => commands,
+            Err(error) => fail(room, error.as_str()),
+        };
+        self.frame_seq = self.frame_seq.saturating_add(1);
+        if let Err(error) = room.submit(self.frame_seq) {
+            fail(room, error.as_str());
         }
+        let mut line = Line::new(b"CONTACTSRENDER ok seq=");
+        line.push_u32(self.frame_seq);
+        line.push(b" cmds=");
+        line.push_u32(commands as u32);
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn print_layout(&self, room: &AppRoom) {
+        let mut line = Line::new(b"CONTACTSLAYOUT ok mode=");
+        line.push_u32(u32::from(self.mode));
+        let (back, extra) = match &self.page {
+            Page::List(page) => (page.back.panel, page.rows[1].map(|b| b.panel)),
+            Page::Detail(page) => (page.back.panel, Some(page.favorite.panel)),
+        };
+        let rect = self.ui.bounds(back).unwrap_or_else(|_| berry_room::panic_exit(134));
+        line.push(b" back=");
+        line.rect(rect);
+        if let Some(extra) = extra {
+            let rect = self.ui.bounds(extra).unwrap_or_else(|_| berry_room::panic_exit(134));
+            let name: &[u8] = if self.mode { b" favorite=" } else { b" row=" };
+            line.push(name);
+            line.rect(rect);
+        }
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn replace_list(&mut self) {
+        let root = self.ui.root();
+        if self.ui.remove(root).is_err() {
+            berry_room::panic_exit(134);
+        }
+        self.page = Page::List(build_list(&mut self.ui, &self.ctx, &self.contacts));
+        self.mode = false;
+    }
+
+    fn replace_detail(&mut self, detail: usize) {
+        let root = self.ui.root();
+        if self.ui.remove(root).is_err() {
+            berry_room::panic_exit(134);
+        }
+        self.detail = detail;
+        self.page = Page::Detail(build_detail(&mut self.ui, &self.ctx, &self.contacts, detail));
+        self.mode = true;
+    }
+
+    fn sync_scroll(&mut self) {
+        let mut scroll = match &self.page {
+            Page::List(page) => page.scroll,
+            Page::Detail(page) => page.scroll,
+        };
+        scroll.sync_bounds(&mut self.ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
+
+    fn rebuild_and_render(&mut self, room: &mut AppRoom) {
+        self.sync_scroll();
+        self.ui.layout();
+        self.print_layout(room);
+        self.render(room);
+        room.print(b"CONTACTSFRAME ok\n");
     }
 }
 
-fn frame(console: Handle, wm: Handle, vmo: Handle, surface: u32, buffer_id: u32) -> u32 {
-    let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
-        fail(console, "frame dup");
-    }
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let submit = gp::PresentReq::Submit {
-        surface_id: surface,
-        buffer_id,
-        flags: gp::SUBMIT_F_DAMAGE_FULL,
-        rate_hint: 0,
-        target_present_ns: 0,
-        rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
-        rect_count: 0,
-    };
-    let n = match gp::encode_present_req(&mut req, &submit) {
-        Some(n) => n,
-        None => fail(console, "submit encode"),
-    };
-    let (n, _) = wm_rpc(wm, &req[..n], &[alias], &mut rep, &mut rhs);
-    let token = match gp::parse_submit_ack(&rep[..n]) {
-        Some(t) => t,
-        None => fail(console, "submit rep"),
-    };
-    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::FrameCallback { frame_token: token }) {
-        Some(n) => n,
-        None => fail(console, "frame encode"),
-    };
-    let (n, _) = wm_rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    match gp::parse_frame_done_rep(&rep[..n]) {
-        Some(done) if done.status == gp::FRAME_PRESENTED => {}
-        _ => fail(console, "frame rep"),
-    }
-    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait) {
-        Some(n) => n,
-        None => fail(console, "release encode"),
-    };
-    let (n, nh) = wm_rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    let rel = match gp::parse_release_rep(&rep[..n]) {
-        Some(r) => r,
-        None => fail(console, "release rep"),
-    };
-    if rel.count != 1 || nh != 1 {
-        fail(console, "release count");
-    }
-    if berry_handle_close(rhs[0]) != 0 {
-        fail(console, "release close");
-    }
-    token
+fn pointer_event(event: &PointerEvent) -> PtrEvent {
+    PtrEvent::from_wire(
+        event.phase,
+        event.pointer_id,
+        event.x,
+        event.y,
+        event.timestamp_ns,
+        event.buttons,
+        event.pressure,
+    )
 }
 
+fn empty_event() -> PointerEvent {
+    PointerEvent {
+        phase: 0,
+        device_id: 0,
+        buttons: 0,
+        flags: 0,
+        pointer_id: 0,
+        timestamp_ns: 0,
+        x: 0,
+        y: 0,
+        pressure: 0,
+        contact_major: 0,
+        contact_minor: 0,
+        history: [Sample { timestamp_ns: 0, x: 0, y: 0 }; INPUT_SAMPLES_MAX - 1],
+        history_len: 0,
+    }
+}
 
-fn wait_action(
-    console: Handle, input: Handle, w: usize, lay: ContactLayout,
-    mode: Mode, count: usize,
-) -> Action {
-    let mut req = [0u8; 4];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let n = gp::encode_input_poll_req(&mut req, gp::INPUT_EVENTS_MAX as u8);
+fn run_interactive(app: &mut App, room: &mut AppRoom) {
+    let mut events = [empty_event(); INPUT_EVENTS_MAX];
     loop {
-        let (n, _) = wm_rpc(input, &req[..n], &[], &mut rep, &mut rhs);
-        match gp::parse_input_events_rep(&rep[..n]) {
-            Some(Ok(view)) => {
-                for i in 0..view.count() {
-                    let Some(ev) = view.event(i) else { continue };
-                    if ev.phase != gp::PHASE_UP {
-                        continue;
-                    }
-                    let (x, y) = (ev.x as usize, ev.y as usize);
-                    if x < lay.bar && y < lay.bar {
-                        return Action::Back;
-                    }
-                    if let Mode::Detail = mode {
-                        if x >= lay.fav_x0
-                            && x < lay.fav_x0 + lay.fav_w
-                            && y >= lay.fav_y0
-                            && y < lay.fav_y0 + lay.fav_h
+        let count = match room.poll_input(&mut events) {
+            Ok(count) => count,
+            Err(error) => fail(room, error.as_str()),
+        };
+        for event in events.iter_mut().take(count) {
+            let (x, y) = (event.x, event.y);
+            if app.ui.push_pointer(pointer_event(event)).is_err() {
+                fail(room, "input buffer");
+            }
+            let messages = app.ui.pump_input(0);
+            let mut copied = [None; berry_ui::MSG_MAX];
+            for (index, message) in messages.iter().enumerate() {
+                if index < copied.len() {
+                    copied[index] = Some(*message);
+                }
+            }
+            for slot in copied.iter().take(messages.len()) {
+                let Some(message) = *slot else { continue };
+                if !matches!(message, Msg::Click { .. }) {
+                    continue;
+                }
+                match &mut app.page {
+                    Page::List(page) => {
+                        if page
+                            .back
+                            .on_msg(&mut app.ui, &app.ctx, &message)
+                            .unwrap_or_else(|_| berry_room::panic_exit(134))
                         {
-                            return Action::Favorite;
+                            let mut line = Line::new(b"CONTACTSHIT ok node=back x=");
+                            line.push_u32(x);
+                            line.push(b" y=");
+                            line.push_u32(y);
+                            line.push(b"\n");
+                            line.print(room);
+                            room.print(b"CONTACTSBACK ok\n");
+                            return;
                         }
-                    } else {
-                        for row in 0..count.min(MAX_CONTACTS) {
-                            let y0 = lay.top + row * lay.row_h;
-                            if y >= y0 && y < y0 + lay.row_h && x < w {
-                                return Action::Open(row);
+                        for (index, slot) in page.rows.iter_mut().enumerate() {
+                            let Some(button) = slot else { continue };
+                            if button
+                                .on_msg(&mut app.ui, &app.ctx, &message)
+                                .unwrap_or_else(|_| berry_room::panic_exit(134))
+                            {
+                                app.replace_detail(index);
+                                app.rebuild_and_render(room);
+                                let mut line = Line::new(b"CONTACTSDETAIL ok i=");
+                                line.push_u32(index as u32);
+                                line.push(b"\n");
+                                line.print(room);
+                                break;
                             }
+                        }
+                    }
+                    Page::Detail(page) => {
+                        if page
+                            .favorite
+                            .on_msg(&mut app.ui, &app.ctx, &message)
+                            .unwrap_or_else(|_| berry_room::panic_exit(134))
+                        {
+                            let index = app.detail;
+                            app.contacts[index].favorite = !app.contacts[index].favorite;
+                            app.replace_detail(index);
+                            app.rebuild_and_render(room);
+                            room.print(b"CONTACTSFAV ok n=1\n");
+                        } else if page
+                            .back
+                            .on_msg(&mut app.ui, &app.ctx, &message)
+                            .unwrap_or_else(|_| berry_room::panic_exit(134))
+                        {
+                            app.replace_list();
+                            app.rebuild_and_render(room);
+                            let mut line = Line::new(b"CONTACTSLIST ok n=");
+                            line.push_u32(MAX_CONTACTS as u32);
+                            line.push(b"\n");
+                            line.print(room);
                         }
                     }
                 }
             }
-            Some(Err(_)) => {}
-            None => fail(console, "poll rep"),
         }
     }
 }
 
 #[link_section = ".text.entry"]
 #[no_mangle]
-pub extern "C" fn _start(env_ch: Handle) -> ! {
-    let env = read_env(env_ch);
-    let c = env.console;
-    send(c, b"CONTACTS up\n");
-    let (wm, input, font_vmo) =
-        wm_connect(c, env.broker, env.process, env.vmar);
+pub extern "C" fn _start(env_ch: u32) -> ! {
+    let config = RoomConfig {
+        argv0: b"bin/contacts",
+        uses_fs: true,
+    };
+    let mut room = match AppRoom::connect(env_ch, config) {
+        Ok(room) => room,
+        Err(_) => berry_room::panic_exit(134),
+    };
+    room.print(b"CONTACTS up\n");
+    let (width, height) = match room.open_window() {
+        Ok(size) => size,
+        Err(error) => fail(&room, error.as_str()),
+    };
+    room.print(b"CONTACTSWIN ok\n");
 
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let n = gp::encode_wm_getinfo_req(&mut req);
-    let (n, _) = wm_rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    let info = match gp::parse_wm_getinfo_rep(&rep[..n]) {
-        Some(i) => i,
-        None => fail(c, "getinfo rep"),
-    };
-    let (w, h) = (info.disp_w as usize, info.disp_h as usize);
-    let create = gp::WmCreateReq {
-        layer: gp::WM_LAYER_APP, flags: 0, parent: 0, group: 0,
-        x: 0, y: 0, w: info.disp_w, h: info.disp_h,
-    };
-    let n = match gp::encode_wm_create_req(&mut req, &create) {
-        Some(n) => n,
-        None => fail(c, "create encode"),
-    };
-    let (n, _) = wm_rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    let win = match gp::parse_wm_create_ack(&rep[..n]) {
-        Some(id) if id != 0 => id,
-        _ => fail(c, "create rep"),
-    };
-    send(c, b"CONTACTSWIN ok\n");
-
-    let stride = w.checked_mul(4).unwrap_or_else(|| fail(c, "stride"));
-    let frame_bytes = stride.checked_mul(h).unwrap_or_else(|| fail(c, "frame size"));
-    let len = (frame_bytes + 0xFFF) & !0xFFF;
-    let mut vmo: Handle = 0;
-    if berry_vmo_create(len as u64, 0, &mut vmo) != 0
-        || vmo == 0
-        || berry_vmo_commit(vmo, 0, len as u64) != 0
-    {
-        fail(c, "vmo");
-    }
-    let mut va = FRAME_VA;
-    if berry_vmar_map(env.vmar, 0, vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
-        || va != FRAME_VA
-    {
-        fail(c, "map");
-    }
-    let fb: &mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(FRAME_VA as *mut u8, frame_bytes)
-    };
-
-    let root_count = readdir_count(c, env.fs);
     let mut contacts = [Contact::EMPTY; MAX_CONTACTS];
-    let (count, remote) = read_contacts(c, env.fs, &mut contacts);
+    let (count, root_count, remote) = load_contacts(&room, &mut contacts);
     if count != MAX_CONTACTS || root_count < 1 {
-        fail(c, "contacts final");
+        fail(&room, "contacts final");
     }
-    send(c, b"CONTACTSLIST ok n=\n");
+    let mut list_line = Line::new(b"CONTACTSLIST ok n=");
+    list_line.push_u32(count as u32);
+    list_line.push(b"\n");
+    list_line.print(&room);
     if remote {
-        send(c, b"CONTACTSREAD ok n=4\n");
+        room.print(b"CONTACTSREAD ok n=4\n");
     } else {
-        send(c, b"CONTACTSLOCAL ok n=4\n");
+        room.print(b"CONTACTSLOCAL ok n=4\n");
     }
 
-    let lay = contact_layout(w, h);
-    let mut mode = Mode::List;
-    let mut detail = 0usize;
-    render_list(fb, stride, w, h, lay, &contacts, count);
-    let _ = frame(c, wm, vmo, u32::from(win), 1);
-    send(c, b"CONTACTSFRAME ok\n");
-    if env.boot_probe {
-        send(c, b"CONTACTSPROBE ok\n");
+    let theme = Theme::light();
+    let ctx = WidgetContext::for_viewport(theme, width as u32, height as u32);
+    let mut ui = Ui96::new(width as u32, height as u32);
+    ui.set_font_source(&ROOM_FONT_SOURCE);
+    let list = build_list(&mut ui, &ctx, &contacts);
+    let mut scroll = list.scroll;
+    let mut app = App {
+        ui,
+        ctx,
+        contacts,
+        detail: 0,
+        mode: false,
+        page: Page::List(list),
+        frame_seq: 0,
+    };
+    scroll.sync_bounds(&mut app.ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+    app.ui.layout();
+    app.print_layout(&room);
+    app.render(&mut room);
+    room.print(b"CONTACTSFRAME ok\n");
+
+    if room.boot_probe() {
+        room.print(b"CONTACTSPROBE ok\n");
+    } else {
+        run_interactive(&mut app, &mut room);
     }
 
-    let mut buffer_id = 2u32;
-    if !env.boot_probe {
-        loop {
-            match wait_action(c, input, w, lay, mode, count) {
-                Action::Open(row) => {
-                    detail = row;
-                    mode = Mode::Detail;
-                    render_detail(fb, stride, w, h, lay, &contacts, detail);
-                    let _ = frame(c, wm, vmo, u32::from(win), buffer_id);
-                    buffer_id += 1;
-                    let mut line = *b"CONTACTSDETAIL ok i=0\n";
-                    line[20] = b'0' + row as u8;
-                    send(c, &line);
-                    send(c, b"CONTACTSFRAME ok\n");
-                }
-                Action::Favorite => {
-                    contacts[detail].favorite = !contacts[detail].favorite;
-                    render_detail(fb, stride, w, h, lay, &contacts, detail);
-                    let _ = frame(c, wm, vmo, u32::from(win), buffer_id);
-                    buffer_id += 1;
-                    send(c, b"CONTACTSFAV ok n=1\n");
-                    send(c, b"CONTACTSFRAME ok\n");
-                }
-                Action::Back => {
-                    if let Mode::Detail = mode {
-                        mode = Mode::List;
-                        render_list(fb, stride, w, h, lay, &contacts, count);
-                        let _ = frame(c, wm, vmo, u32::from(win), buffer_id);
-                        buffer_id += 1;
-                        send(c, b"CONTACTSLIST ok n=\n");
-                        send(c, b"CONTACTSFRAME ok\n");
-                    } else {
-                        send(c, b"CONTACTSBACK ok\n");
-                        break;
-                    }
-                }
-            }
-        }
+    if let Err(error) = room.destroy() {
+        fail(&room, error.as_str());
     }
-
-    let n = gp::encode_wm_destroy_req(&mut req, win);
-    let (n, _) = wm_rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    match gp::parse_status_rep(&rep[..n]) {
-        Some(gp::ST_OK) => {}
-        _ => fail(c, "destroy rep"),
-    }
-    let n = gp::encode_wm_table_get_req(&mut req);
-    let (n, _) = wm_rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
-    match gp::parse_wm_snapshot_rep(&rep[..n]) {
-        Some(Ok(s)) if s.count == 0 => {}
-        _ => fail(c, "table rep"),
-    }
-    send(c, b"CONTACTSDESTROY ok\n");
-    let _ = berry_handle_close(input);
-    let _ = berry_handle_close(wm);
-    let _ = berry_handle_close(vmo);
-    let _ = berry_handle_close(font_vmo);
-    send(c, b"CONTACTSEXIT ok\n");
-    berry_process_exit(0)
+    room.print(b"CONTACTSDESTROY ok\n");
+    room.print(b"CONTACTSEXIT ok\n");
+    room.exit(0)
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    berry_process_exit(134)
+    berry_room::panic_exit(134)
 }

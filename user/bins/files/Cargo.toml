@@ -2,18 +2,17 @@
 name = "files"
 version = "0.1.0"
 edition = "2021"
-# Files Native Shell：独立 no_std GUI 进程。真实 READDIR/STAT/GET 走
-# fsmgr RPC；v1 只读文件浏览，不提供写/删/搜索。
+# GUI F7 迁移 Files：真实 READDIR/STAT/GET 继续走 berry-fsclient；
+# WM/窗口/frame/输入/销毁归 Berry Room，页面与状态视觉归 BerryUI。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
 berry-fsclient = { path = "../../berry-fsclient" }
-berry-fsproto = { path = "../../berry-fsproto" }
-berry-guiproto = { path = "../../berry-guiproto" }
-berry-nshfont = { path = "../../berry-nshfont" }
-berry-sys = { path = "../../berry-sys" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-room = { path = "../../berry-room" }
+berry-ui = { path = "../../berry-ui", features = ["guest-font-vmo"] }
 
 [profile.release]
 opt-level = "z"

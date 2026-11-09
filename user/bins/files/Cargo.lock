@@ -50,10 +50,11 @@ name = "berry-netdproto"
 version = "0.1.0"
 
 [[package]]
-name = "berry-nshfont"
+name = "berry-room"
 version = "0.1.0"
 dependencies = [
  "berry-gfx",
+ "berry-guiproto",
  "berry-sys",
 ]
 
@@ -62,14 +63,21 @@ name = "berry-sys"
 version = "0.1.0"
 
 [[package]]
+name = "berry-ui"
+version = "0.1.0"
+dependencies = [
+ "berry-gfx",
+ "berry-guiproto",
+]
+
+[[package]]
 name = "files"
 version = "0.1.0"
 dependencies = [
  "berry-fsclient",
- "berry-fsproto",
- "berry-guiproto",
- "berry-nshfont",
- "berry-sys",
+ "berry-gfx",
+ "berry-room",
+ "berry-ui",
 ]
 
 [[package]]

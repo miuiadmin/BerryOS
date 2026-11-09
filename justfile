@@ -275,14 +275,14 @@ build-user:
     cp -R bins/appstub/apps/BROWSER/icons userbins/app-stage/BROWSER/
     cp -R bins/appstub/apps/BROWSER/views userbins/app-stage/BROWSER/
     python3 ../tools/mkapp.py userbins/app/BROWSER.bap userbins/app-stage/BROWSER
-    # Settings Native Shell：独立 ELF + 官方图标/views 组包。
+    # Settings BerryUI app：独立 ELF + 官方图标/views 组包。
     mkdir -p userbins/app-stage/SETTINGS/bin
     cp bins/settings/manifest.toml userbins/app-stage/SETTINGS/
     cp cargo-target/aarch64-unknown-none/release/settings userbins/app-stage/SETTINGS/bin/settings
     cp -R bins/appstub/apps/SETTINGS/icons userbins/app-stage/SETTINGS/
     cp -R bins/appstub/apps/SETTINGS/views userbins/app-stage/SETTINGS/
     python3 ../tools/mkapp.py userbins/app/SETTINGS.bap userbins/app-stage/SETTINGS
-    # Files Native Shell：独立 ELF + 官方图标/views 组包。
+    # Files BerryUI app：独立 ELF + 官方图标/views 组包。
     mkdir -p userbins/app-stage/FILES/bin
     cp bins/files/manifest.toml userbins/app-stage/FILES/
     cp cargo-target/aarch64-unknown-none/release/files userbins/app-stage/FILES/bin/files
@@ -296,7 +296,7 @@ build-user:
     cp -R bins/appstub/apps/PHOTOS/icons userbins/app-stage/PHOTOS/
     cp -R bins/appstub/apps/PHOTOS/views userbins/app-stage/PHOTOS/
     python3 ../tools/mkapp.py userbins/app/PHOTOS.bap userbins/app-stage/PHOTOS
-    # Contacts Native Shell：独立 ELF + 官方图标/views 组包。
+    # Contacts BerryUI app：独立 ELF + 官方图标/views 组包。
     mkdir -p userbins/app-stage/CONTACTS/bin
     cp bins/contacts/manifest.toml userbins/app-stage/CONTACTS/
     cp cargo-target/aarch64-unknown-none/release/contacts userbins/app-stage/CONTACTS/bin/contacts
@@ -849,11 +849,12 @@ gui8-smoke:
     fi
     exec python3 tools/gui8-smoke.py "$@"
 
-# GUI-8 常态隔离 + F5 系统验收（可选）：同一镜像/tablet/数据盘拓扑但
-# **不造 GUI8.SMK**；四个迁移前 Native Shell、Settings/UITEST BerryUI 真链全跑；UITEST 以 BerryUI 组件/
-# 主题/滚动/状态/返回栈走 Berry Room，断言真实帧像素、layout/hit dump
+# GUI-8 常态隔离 + F5..F7 应用迁移验收（可选）：同一镜像/tablet/数据盘拓扑但
+# **不造 GUI8.SMK**；Browser/Photos 迁移前基线与 Settings/Files/
+# Contacts/UITEST BerryUI 真链全跑；UITEST 以 BerryUI 组件/主题/滚动/
+# 状态/返回栈走 Berry Room，断言真实帧像素、layout/hit dump
 # 与两次 owner-local 点击；CLICK/LAYOUTW/LAYOUT/click ready 仍全零。
-# gui8-smoke-normal：哨兵缺席的 Native Shell + BerryUI F5 常态验收。
+# gui8-smoke-normal：哨兵缺席的迁移基线 + BerryUI app 常态验收。
 gui8-smoke-normal:
     #!/bin/sh
     set -eu

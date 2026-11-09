@@ -623,8 +623,10 @@ pub extern "C" fn _start(env_ch: Handle) -> ! {
     }
     let n = gp::encode_wm_table_get_req(&mut req);
     let (n, _) = wm_rpc(wm, &req[..n], &[], &mut rep, &mut rhs);
+    // F7 起boot probe并发运行：其它 app 窗口可合法存在；只要求本窗口
+    // 已从权威表消失（与 Berry Room destroy 同律，不改 Photos UI）。
     match gp::parse_wm_snapshot_rep(&rep[..n]) {
-        Some(Ok(s)) if s.count == 0 => {}
+        Some(Ok(s)) if !s.entries.iter().take(s.count).any(|e| e.id == win) => {}
         _ => fail(c, "table rep"),
     }
     send(c, b"PHOTOSDESTROY ok\n");

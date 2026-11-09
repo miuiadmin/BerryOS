@@ -191,7 +191,7 @@ CONTACTS.bap = 31,308B
 a03b1f6559cd3ef5247253ba36793843df6d64cad61d12df124b8ce7b107723f
 ```
 
-迁移增加的是首个真实应用级 BerryUI 静态消费者代码；系统 A8 字表未复制进 app。后续 F7/F8 迁移必须继续逐 app 记账，不能把单卷帽误当总量帽，也不能以降低视觉资产质量换空间。
+迁移增加的是首个真实应用级 BerryUI 静态消费者代码；系统 A8 字表未复制进 app。后续应用迁移必须继续逐 app 记账，不能把单卷帽误当总量帽，也不能以降低视觉资产质量换空间。
 
 ## §6 回归证据
 
@@ -216,5 +216,5 @@ RX 注入后活性复验
 - Settings 仍无系统驱动/持久化；WLAN/Bluetooth 只改变进程内状态。
 - BerryUI 嵌套视口 clipping 仍归后续 BerryUI 刀；Settings 当前内容 fitting，不私造 clip。
 - CanvasSurface / immersive buffer 仍未开放；Settings 走 P0 Retained 路径。
-- Browser / Files / Photos / Contacts 仍是迁移前基线，归 F7/F8。
-- `berry-nshfont` 仍被四个未迁移 Native Shell 引用，F9 删除。
+- F6 时点 Browser/Files/Photos/Contacts 仍是基线；F7 已迁移 Files/Contacts，当前仅 Browser/Photos 待 F8。
+- `berry-nshfont` 当前仍被 Browser/Photos 引用，F9 删除。

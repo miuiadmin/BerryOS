@@ -157,6 +157,7 @@ MARK_CONTACTS_LOCAL = "CONTACTSLOCAL ok n=4"
 MARK_CONTACTS_FRAME = "CONTACTSFRAME ok"
 MARK_CONTACTS_DETAIL = "CONTACTSDETAIL ok i=1"
 MARK_CONTACTS_FAV = "CONTACTSFAV ok n=1"
+MARK_CONTACTS_BACK = "CONTACTSBACK ok"
 MARK_CONTACTS_PROBE = "CONTACTSPROBE ok"
 MARK_CONTACTS_DESTROY = "CONTACTSDESTROY ok"
 MARK_CONTACTS_EXIT = "CONTACTSEXIT ok"
@@ -1112,6 +1113,17 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_FILES_UP, files_before + 1, "normal Files", log_path)
     _require_exact_count(text, MARK_FILES_WIN, files_before + 1, "normal Files", log_path)
     _require_exact_count(text, MARK_FILES_SEL, files_before + 1, "normal Files", log_path)
+    _require_exact_count(
+        text, "FILESLAYOUT ok mode=0", files_before + 2,
+        "normal Files list layout", log_path,
+    )
+    _require_exact_count(text, "FILESLAYOUT ok mode=1", 1, "normal Files detail layout", log_path)
+    _require_exact_count(
+        text, "FILESRENDER ok seq=", files_before + 3,
+        "normal Files render", log_path,
+    )
+    _require_exact_count(text, "FILESHIT ok node=back", 1, "normal Files back hit", log_path)
+    _require_exact_count(text, MARK_FILES_BACK, 1, "normal Files back", log_path)
     # runtime 初帧 + 详情帧 + 返回列表帧。
     _require_exact_count(text, MARK_FILES_FRAME, files_before + 3, "normal Files", log_path)
     _require_exact_count(text, MARK_FILES_LIST, files_before + 2, "normal Files", log_path)
@@ -1136,9 +1148,23 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_CONTACTS_WIN, contacts_before + 1, "normal Contacts", log_path)
     _require_exact_count(text, MARK_CONTACTS_LIST, contacts_before + 2, "normal Contacts", log_path)
     _require_exact_count(text, MARK_CONTACTS_READ, contacts_before + 1, "normal Contacts", log_path)
+    _require_exact_count(
+        text, "CONTACTSLAYOUT ok mode=0", contacts_before + 2,
+        "normal Contacts list layout", log_path,
+    )
+    _require_exact_count(
+        text, "CONTACTSLAYOUT ok mode=1", 2,
+        "normal Contacts detail layout", log_path,
+    )
+    _require_exact_count(
+        text, "CONTACTSRENDER ok seq=", contacts_before + 4,
+        "normal Contacts render", log_path,
+    )
+    _require_exact_count(text, "CONTACTSHIT ok node=back", 1, "normal Contacts back hit", log_path)
+    _require_exact_count(text, MARK_CONTACTS_BACK, 1, "normal Contacts back", log_path)
     # runtime 初帧 + 详情 + 收藏 + 返回列表。
     _require_exact_count(text, MARK_CONTACTS_FRAME, contacts_before + 4, "normal Contacts", log_path)
-    _require_exact_count(text, MARK_CONTACTS_DETAIL, 1, "normal Contacts detail", log_path)
+    _require_exact_count(text, "CONTACTSDETAIL ok i=1", 1, "normal Contacts detail", log_path)
     _require_exact_count(text, MARK_CONTACTS_FAV, 1, "normal Contacts favorite", log_path)
     _require_exact_count(text, MARK_CONTACTS_DESTROY, contacts_before + 1, "normal Contacts", log_path)
     _require_exact_count(text, MARK_CONTACTS_EXIT, contacts_before + 1, "normal Contacts", log_path)
@@ -1245,6 +1271,35 @@ def latest_settings_rect(
 
 def rect_center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
     return rect[0] + rect[2] // 2, rect[1] + rect[3] // 2
+
+
+def latest_named_rect(
+    pattern: re.Pattern[str], mode: int, name: str, text: str, start: int = 0,
+) -> tuple[int, int, int, int]:
+    groups = {"back": (2, 3, 4, 5), "extra": (6, 7, 8, 9)}
+    matches = [
+        match for match in pattern.finditer(text)
+        if match.start() >= start and int(match.group(1)) == mode
+    ]
+    if not matches:
+        raise SmokeError(f"layout mode={mode} {name} 缺失", None)
+    match = matches[-1]
+    indexes = groups["back"] if name == "back" else groups["extra"]
+    raw = [match.group(i) for i in indexes]
+    if any(value is None for value in raw):
+        raise SmokeError(f"layout mode={mode} {name} rect 缺失", None)
+    values = [int(value) for value in raw]
+    return values[0], values[1], values[2], values[3]
+
+
+FILES_LAYOUT_RE = re.compile(
+    r"FILESLAYOUT ok mode=(\d+) back=(-?\d+),(-?\d+),(\d+),(\d+)"
+    r"(?: open=(-?\d+),(-?\d+),(\d+),(\d+))?"
+)
+CONTACTS_LAYOUT_RE = re.compile(
+    r"CONTACTSLAYOUT ok mode=(\d+) back=(-?\d+),(-?\d+),(\d+),(\d+)"
+    r"(?: (?:row|favorite)=(-?\d+),(-?\d+),(\d+),(\d+))?"
+)
 
 
 def verify_uitest_normal(
@@ -2165,7 +2220,7 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
-        # —— Files Native Shell：首行第二格点击 → 真实 READDIR/STAT/GET。 ——
+        # —— Files BerryUI app：列表点击 → 真实 READDIR/STAT/GET。 ——
         time.sleep(1.0)
         log("normal-files: QMP 点击 FILES 首行第二格（真实 APP_SPAWN）")
         boot.qmp.click(412, 282, w, h)
@@ -2173,8 +2228,9 @@ def run_normal_boot(args) -> int:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_FILES_UP) > files_before
-                and t.count(MARK_FILES_FRAME) > files_before,
-                f"runtime {MARK_FILES_UP} + {MARK_FILES_FRAME}",
+                and t.count(MARK_FILES_FRAME) > files_before
+                and "FILESLAYOUT ok mode=0" in t,
+                f"runtime {MARK_FILES_UP} + {MARK_FILES_FRAME} + layout",
                 args.click_timeout,
                 "normal Files launch",
             )
@@ -2191,14 +2247,19 @@ def run_normal_boot(args) -> int:
             raise SmokeError("normal Files: 缺 FILESSEL 索引", boot.log_path)
         file_row = int(sel_matches[-1])
         log(f"normal-files: HELLO.TXT 列表行 index={file_row}")
-        y_file = 184 + file_row * 180 + 90
-        boot.qmp.click(400, y_file, w, h)
+        file_open = latest_named_rect(
+            FILES_LAYOUT_RE, 0, "extra", boot.log.text, snapshot_pos
+        )
+        file_click = rect_center(file_open)
+        log(f"normal-files: QMP 点击 HELLO.TXT Button ({file_click[0]},{file_click[1]})")
+        boot.qmp.click(file_click[0], file_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_FILES_READ) >= 1
-                and t.count(MARK_FILES_FRAME) > files_before + 1,
-                f"{MARK_FILES_READ} + 详情重绘帧",
+                and t.count(MARK_FILES_FRAME) > files_before + 1
+                and "FILESLAYOUT ok mode=1" in t,
+                f"{MARK_FILES_READ} + 详情重绘帧 + layout",
                 args.click_timeout,
                 "normal Files detail",
             )
@@ -2209,29 +2270,33 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        if not re.search(r"FILESSTAT ok size=28", boot.log.text):
+        if not re.search(r"FILESSTAT ok size=28(?![0-9])", boot.log.text):
             raise SmokeError("normal Files: HELLO.TXT size != 28", boot.log_path)
-        if not re.search(r"FILESREAD ok n=28", boot.log.text):
+        if not re.search(r"FILESREAD ok n=28(?![0-9])", boot.log.text):
             raise SmokeError("normal Files: HELLO.TXT GET != 28B", boot.log_path)
 
         files_shot = run_dir / "files-native.ppm"
         boot.qmp.screendump(files_shot)
-        assert_pixel_close(ppm_pixel(files_shot, 540, 60), (63, 81, 181), "Files 顶栏", boot.log_path)
-        assert_pixel_close(ppm_pixel(files_shot, 540, 250), (255, 255, 255), "Files 详情底", boot.log_path)
-        assert_pixel_close(ppm_pixel(files_shot, 48, 230), (27, 37, 64), "Files 文件名文本", boot.log_path)
+        assert_pixel_close(ppm_pixel(files_shot, 540, 20), (0, 116, 224), "Files AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(files_shot, 540, 600), (255, 255, 255), "Files surface", boot.log_path)
         assert_color_count(
-            files_shot, (30, 180, 500, 280), 128, "Files HD A8 文本", boot.log_path,
+            files_shot, (20, 90, 900, 420), 128, "Files 系统 A8 文本", boot.log_path,
         )
-        log("normal-files: QEMU 截图像素/色数锚 ok（顶栏/详情底/文件名/HD A8）")
+        log("normal-files: BerryUI 像素/色数锚 ok（AppBar/surface/A8）")
 
-        log("normal-files: 返回列表（第二真实重绘）")
-        boot.qmp.click(80, 80, w, h)
+        files_detail_back = latest_named_rect(
+            FILES_LAYOUT_RE, 1, "back", boot.log.text, snapshot_pos
+        )
+        files_back_click = rect_center(files_detail_back)
+        log(f"normal-files: QMP 点击详情 Back ({files_back_click[0]},{files_back_click[1]})")
+        boot.qmp.click(files_back_click[0], files_back_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_FILES_LIST) > files_before + 1
-                and t.count(MARK_FILES_FRAME) > files_before + 2,
-                f"返回列表 {MARK_FILES_LIST} + 第三帧",
+                and t.count(MARK_FILES_FRAME) > files_before + 2
+                and t.count("FILESLAYOUT ok mode=0") >= 2,
+                f"返回列表 {MARK_FILES_LIST} + 第三帧 + layout",
                 args.click_timeout,
                 "normal Files back-to-list",
             )
@@ -2242,8 +2307,12 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        log("normal-files: 返回退出（销毁窗口）")
-        boot.qmp.click(80, 80, w, h)
+        files_list_back = latest_named_rect(
+            FILES_LAYOUT_RE, 0, "back", boot.log.text, snapshot_pos
+        )
+        files_exit_click = rect_center(files_list_back)
+        log(f"normal-files: QMP 点击列表 Back ({files_exit_click[0]},{files_exit_click[1]})")
+        boot.qmp.click(files_exit_click[0], files_exit_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2349,7 +2418,7 @@ def run_normal_boot(args) -> int:
                 args.click_timeout, boot.log_path,
             ) from None
 
-        # —— Contacts Native Shell：dock 首格 → 4 条真实记录 → 收藏。 ——
+        # —— Contacts BerryUI app：dock 首格 → 4 条真实记录 → 收藏。 ——
         time.sleep(1.0)
         log("normal-contacts: QMP 点击 SmartDock CONTACTS（真实 APP_SPAWN）")
         boot.qmp.click(125, 1668, w, h)
@@ -2357,8 +2426,9 @@ def run_normal_boot(args) -> int:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_CONTACTS_UP) > contacts_before
-                and t.count(MARK_CONTACTS_FRAME) > contacts_before,
-                f"runtime {MARK_CONTACTS_UP} + {MARK_CONTACTS_FRAME}",
+                and t.count(MARK_CONTACTS_FRAME) > contacts_before
+                and "CONTACTSLAYOUT ok mode=0" in t,
+                f"runtime {MARK_CONTACTS_UP} + {MARK_CONTACTS_FRAME} + layout",
                 args.click_timeout,
                 "normal Contacts launch",
             )
@@ -2375,14 +2445,19 @@ def run_normal_boot(args) -> int:
                 MARK_CONTACTS_READ, args.click_timeout, boot.log_path,
             )
 
-        # Berry Wang = row 1（bar=160,row=180,top=184）。
-        boot.qmp.click(400, 454, w, h)
+        contact_row = latest_named_rect(
+            CONTACTS_LAYOUT_RE, 0, "extra", boot.log.text, snapshot_pos
+        )
+        contact_click = rect_center(contact_row)
+        log(f"normal-contacts: QMP 点击 Berry Wang Button ({contact_click[0]},{contact_click[1]})")
+        boot.qmp.click(contact_click[0], contact_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_CONTACTS_DETAIL) >= 1
-                and t.count(MARK_CONTACTS_FRAME) > contacts_before + 1,
-                f"{MARK_CONTACTS_DETAIL} + 详情帧",
+                and t.count(MARK_CONTACTS_FRAME) > contacts_before + 1
+                and "CONTACTSLAYOUT ok mode=1" in t,
+                f"{MARK_CONTACTS_DETAIL} + 详情帧 + layout",
                 args.click_timeout,
                 "normal Contacts detail",
             )
@@ -2394,8 +2469,12 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
-        # Favorite pill：x0=852,y0=196,w=180,h=84。
-        boot.qmp.click(942, 238, w, h)
+        favorite_rect = latest_named_rect(
+            CONTACTS_LAYOUT_RE, 1, "extra", boot.log.text, snapshot_pos
+        )
+        favorite_click = rect_center(favorite_rect)
+        log(f"normal-contacts: QMP 点击 Favorite Button ({favorite_click[0]},{favorite_click[1]})")
+        boot.qmp.click(favorite_click[0], favorite_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2415,31 +2494,33 @@ def run_normal_boot(args) -> int:
         contacts_shot = run_dir / "contacts-native.ppm"
         boot.qmp.screendump(contacts_shot)
         assert_pixel_close(
-            ppm_pixel(contacts_shot, 540, 60), (0, 121, 107),
-            "Contacts 顶栏", boot.log_path,
+            ppm_pixel(contacts_shot, 540, 20), (0, 116, 224),
+            "Contacts AppBar", boot.log_path,
         )
         assert_pixel_close(
-            ppm_pixel(contacts_shot, 540, 360), (67, 160, 71),
-            "Contacts Berry 头像", boot.log_path,
-        )
-        assert_pixel_close(
-            ppm_pixel(contacts_shot, 900, 272), (251, 140, 0),
-            "Contacts 收藏底条", boot.log_path,
+            ppm_pixel(contacts_shot, favorite_click[0], favorite_click[1]),
+            (214, 228, 255),
+            "Contacts Favorite Selected", boot.log_path,
         )
         assert_color_count(
-            contacts_shot, (360, 380, 720, 460), 128,
-            "Contacts HD A8 文本", boot.log_path,
+            contacts_shot, (20, 90, 900, 420), 128,
+            "Contacts 系统 A8 文本", boot.log_path,
         )
-        log("normal-contacts: QEMU 截图像素/色数锚 ok（顶栏/头像/收藏/HD A8）")
+        log("normal-contacts: BerryUI 像素/色数锚 ok（AppBar/Favorite/A8）")
 
-        log("normal-contacts: 返回列表（第三真实重绘）")
-        boot.qmp.click(80, 80, w, h)
+        contacts_detail_back = latest_named_rect(
+            CONTACTS_LAYOUT_RE, 1, "back", boot.log.text, snapshot_pos
+        )
+        contacts_back_click = rect_center(contacts_detail_back)
+        log(f"normal-contacts: QMP 点击详情 Back ({contacts_back_click[0]},{contacts_back_click[1]})")
+        boot.qmp.click(contacts_back_click[0], contacts_back_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: t.count(MARK_CONTACTS_LIST) > contacts_before + 1
-                and t.count(MARK_CONTACTS_FRAME) > contacts_before + 3,
-                f"返回列表 {MARK_CONTACTS_LIST} + 第四帧",
+                and t.count(MARK_CONTACTS_FRAME) > contacts_before + 3
+                and t.count("CONTACTSLAYOUT ok mode=0") >= 2,
+                f"返回列表 {MARK_CONTACTS_LIST} + 第四帧 + layout",
                 args.click_timeout,
                 "normal Contacts back-to-list",
             )
@@ -2450,8 +2531,12 @@ def run_normal_boot(args) -> int:
                 args.click_timeout,
                 boot.log_path,
             ) from None
-        log("normal-contacts: 返回退出（销毁窗口）")
-        boot.qmp.click(80, 80, w, h)
+        contacts_list_back = latest_named_rect(
+            CONTACTS_LAYOUT_RE, 0, "back", boot.log.text, snapshot_pos
+        )
+        contacts_exit_click = rect_center(contacts_list_back)
+        log(f"normal-contacts: QMP 点击列表 Back ({contacts_exit_click[0]},{contacts_exit_click[1]})")
+        boot.qmp.click(contacts_exit_click[0], contacts_exit_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
@@ -2563,15 +2648,15 @@ def run_normal_boot(args) -> int:
         verify_uitest_normal(watcher.text, snapshot_pos, uitest_before, log_path)
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-native: Browser/Files/Photos/Contacts 四个迁移前基线、"
-            "Settings/UITEST 两个 BerryUI app 均以独立进程完成真实 WM 窗口/帧、"
-            "状态/fs/图像/联系人记录与销毁全链；"
+            "normal-native: Browser/Photos 两个迁移前基线、"
+            "Settings/Files/Contacts/UITEST 四个 BerryUI app 均以独立进程完成真实"
+            " WM 窗口/帧、状态/fs/图像/联系人记录与销毁全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
         )
 
         success = True
         log(
-            "PASS（--normal-boot）：四 Native Shell + Settings/UITEST BerryUI 真链 + "
+            "PASS（--normal-boot）：两 Native Shell + 四 BerryUI app 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -3048,16 +3133,29 @@ def self_test(args) -> int:
 
         files_boot = (
             f"{MARK_FILES_UP}\n{MARK_FILES_WIN}\n{MARK_FILES_LIST}\n"
-            f"{MARK_FILES_SEL}1\n{MARK_FILES_FRAME}\n{MARK_FILES_PROBE}\n"
+            f"{MARK_FILES_SEL}1\n"
+            "FILESLAYOUT ok mode=0 back=12,72,1056,60 open=12,204,1056,60\n"
+            "FILESRENDER ok seq=1 cmds=20\n"
+            f"{MARK_FILES_FRAME}\n{MARK_FILES_PROBE}\n"
             f"{MARK_FILES_DESTROY}\n{MARK_FILES_EXIT}\n"
         )
         files_runtime = (
             f"{MARK_FILES_UP}\n{MARK_FILES_WIN}\n{MARK_FILES_LIST}\n"
-            f"{MARK_FILES_SEL}1\n{MARK_FILES_FRAME}\n{MARK_FILES_OPEN}\n"
-            f"{MARK_FILES_STAT}28\n{MARK_FILES_READ}28\n{MARK_FILES_FRAME}\n"
-            f"{MARK_FILES_LIST}\n{MARK_FILES_FRAME}\n{MARK_FILES_BACK}\n"
-            f"{MARK_FILES_DESTROY}\n{MARK_FILES_EXIT}\n"
+            f"{MARK_FILES_SEL}1\n"
+            "FILESLAYOUT ok mode=0 back=12,72,1056,60 open=12,204,1056,60\n"
+            "FILESRENDER ok seq=1 cmds=20\n"
+            f"{MARK_FILES_FRAME}\n{MARK_FILES_OPEN}\n"
+            f"{MARK_FILES_STAT}28\n{MARK_FILES_READ}28\n"
+            "FILESLAYOUT ok mode=1 back=12,234,1056,60\n"
+            "FILESRENDER ok seq=2 cmds=18\n"
+            f"{MARK_FILES_FRAME}\n"
+            "FILESLAYOUT ok mode=0 back=12,72,1056,60 open=12,204,1056,60\n"
+            "FILESRENDER ok seq=3 cmds=20\n"
+            f"{MARK_FILES_LIST}\n{MARK_FILES_FRAME}\n"
+            "FILESHIT ok node=back x=539 y=101\n"
+            f"{MARK_FILES_BACK}\n{MARK_FILES_DESTROY}\n{MARK_FILES_EXIT}\n"
         )
+
         photos_boot = (
             f"{MARK_PHOTOS_UP}\n{MARK_PHOTOS_WIN}\n{MARK_PHOTOS_LIST}\n"
             f"{MARK_PHOTOS_DATA}\n{MARK_PHOTOS_FRAME}\n{MARK_PHOTOS_PROBE}\n"
@@ -3072,19 +3170,34 @@ def self_test(args) -> int:
         )
         contacts_boot = (
             f"{MARK_CONTACTS_UP}\n{MARK_CONTACTS_WIN}\n{MARK_CONTACTS_LIST}\n"
-            f"{MARK_CONTACTS_READ}\n{MARK_CONTACTS_FRAME}\n"
+            f"{MARK_CONTACTS_READ}\n"
+            "CONTACTSLAYOUT ok mode=0 back=12,72,1056,60 row=12,204,1056,60\n"
+            "CONTACTSRENDER ok seq=1 cmds=15\n"
+            f"{MARK_CONTACTS_FRAME}\n"
             f"{MARK_CONTACTS_PROBE}\n{MARK_CONTACTS_DESTROY}\n"
             f"{MARK_CONTACTS_EXIT}\n"
         )
         contacts_runtime = (
             f"{MARK_CONTACTS_UP}\n{MARK_CONTACTS_WIN}\n{MARK_CONTACTS_LIST}\n"
-            f"{MARK_CONTACTS_READ}\n{MARK_CONTACTS_FRAME}\n"
-            f"{MARK_CONTACTS_DETAIL}\n{MARK_CONTACTS_FRAME}\n"
+            f"{MARK_CONTACTS_READ}\n"
+            "CONTACTSLAYOUT ok mode=0 back=12,72,1056,60 row=12,204,1056,60\n"
+            "CONTACTSRENDER ok seq=1 cmds=15\n"
+            f"{MARK_CONTACTS_FRAME}\n"
+            "CONTACTSLAYOUT ok mode=1 back=12,246,1056,60 favorite=12,180,1056,60\n"
+            "CONTACTSRENDER ok seq=2 cmds=18\n"
+            "CONTACTSDETAIL ok i=1\n"
+            f"{MARK_CONTACTS_FRAME}\n"
+            "CONTACTSLAYOUT ok mode=1 back=12,246,1056,60 favorite=12,180,1056,60\n"
+            "CONTACTSRENDER ok seq=3 cmds=18\n"
             f"{MARK_CONTACTS_FAV}\n{MARK_CONTACTS_FRAME}\n"
+            "CONTACTSLAYOUT ok mode=0 back=12,72,1056,60 row=12,204,1056,60\n"
+            "CONTACTSRENDER ok seq=4 cmds=15\n"
             f"{MARK_CONTACTS_LIST}\n{MARK_CONTACTS_FRAME}\n"
-            f"CONTACTSBACK ok\n{MARK_CONTACTS_DESTROY}\n"
-            f"{MARK_CONTACTS_EXIT}\n"
+            "CONTACTSHIT ok node=back x=539 y=101\n"
+            "CONTACTSBACK ok\n"
+            f"{MARK_CONTACTS_DESTROY}\n{MARK_CONTACTS_EXIT}\n"
         )
+
         fake_n = (
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
             f"{photos_boot}{contacts_boot}"
@@ -3156,8 +3269,12 @@ def self_test(args) -> int:
             "常态 Files 缺详情重绘",
             lambda: verify_normal_boot(
                 fake_n.replace(
-                    f"{MARK_FILES_READ}28\n{MARK_FILES_FRAME}\n",
-                    f"{MARK_FILES_READ}28\n", 1,
+                    "FILESLAYOUT ok mode=1 back=12,234,1056,60\n"
+                    "FILESRENDER ok seq=2 cmds=18\n"
+                    f"{MARK_FILES_FRAME}\n",
+                    "FILESLAYOUT ok mode=1 back=12,234,1056,60\n"
+                    "FILESRENDER ok seq=2 cmds=18\n",
+                    1,
                 ),
                 snap_n, 1, 1, 1, 1, 1, 1,
             ),
@@ -3224,8 +3341,8 @@ def self_test(args) -> int:
             ),
         )
         log(
-            "self-test: 常态 GUI app 断言 ok（五独立进程、Settings BerryUI 状态/"
-            "四基线真实数据链、重绘与销毁；冒烟标记全零）"
+            "self-test: 常态 GUI app 断言 ok（六独立进程、Settings/Files/Contacts"
+            " BerryUI 状态与数据链、Browser/Photos 基线、重绘与销毁；冒烟标记全零）"
         )
 
         uitest_boot = (

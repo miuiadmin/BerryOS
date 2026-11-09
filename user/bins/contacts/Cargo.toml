@@ -2,18 +2,17 @@
 name = "contacts"
 version = "0.1.0"
 edition = "2021"
-# Contacts Native Shell：独立 no_std GUI 进程。真实 READDIR/STAT/GET 走
-# fsmgr RPC；v1 是只读联系人样本 + 进程内收藏状态，不做拨号/短信。
+# GUI F7 迁移 Contacts：真实 CONTACTS.TXT 数据链继续走 berry-fsclient；
+# WM/窗口/frame/输入/销毁归 Berry Room，页面/详情/收藏视觉归 BerryUI。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
 berry-fsclient = { path = "../../berry-fsclient" }
-berry-nshfont = { path = "../../berry-nshfont" }
-berry-fsproto = { path = "../../berry-fsproto" }
-berry-guiproto = { path = "../../berry-guiproto" }
-berry-sys = { path = "../../berry-sys" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-room = { path = "../../berry-room" }
+berry-ui = { path = "../../berry-ui", features = ["guest-font-vmo"] }
 
 [profile.release]
 opt-level = "z"
