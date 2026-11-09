@@ -286,8 +286,11 @@ jobs:
           # 实测 UEFI 正常自举 2026-11-09）。VARS 占位（smoke-image 自产
           # blank，不读它）。berry-linux-x64-1 runner 栈（brew）实测值；
           # srv1（源码 QEMU）如缺此路径按 docs/命令速览.md 补链。
-          AAVMF_CODE: /home/linuxbrew/.linuxbrew/share/qemu/edk2-aarch64-code.fd
-          AAVMF_VARS: /home/linuxbrew/.linuxbrew/share/qemu/edk2-aarch64-code.fd
+          # 固件放共享位置（root 属主 644，/usr/local/share/AAVMF/）——brew 树
+          # 是 berry-ci 属主，srv1 的 runner 用户读会 Permission denied（双 runner
+          # 池随机接单必炸）；共享位双用户可读（2026-11-09 实测）。
+          AAVMF_CODE: /usr/local/share/AAVMF/edk2-aarch64-code.fd
+          AAVMF_VARS: /usr/local/share/AAVMF/edk2-arm-vars.fd
         run: unshare -Urn sh -c 'ip link set lo up && exec just smoke-image'
 
       # ---------- SEC-01 §4.5 件 22 + 件 23 尾面（CI/台账） ----------
