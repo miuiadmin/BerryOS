@@ -237,8 +237,9 @@ jobs:
       # 注意：不缓存 root .cargo/registry（已 symlink 共享位）——只共享编译产物。
       - name: 共享 target 缓存挂载
         run: |
+          # 目录 root 预建（runner:berry-ci 2775——runner 用户属主 + berry-ci 组写），
+          # mkdir -p 幂等不报错；不再 chmod（非属主 chmod 会红）。
           mkdir -p /usr/local/share/cargo-target-cache
-          chmod 777 /usr/local/share/cargo-target-cache
           rmdir target 2>/dev/null || rm -rf target
           ln -sfn /usr/local/share/cargo-target-cache target
 
