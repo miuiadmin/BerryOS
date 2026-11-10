@@ -1,7 +1,7 @@
 # 调度器 API 参考
 
-> 版本：v1.0 ｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**146 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 版本：v1.1（2026-11-11 升版：W3-Q6/Q12 外迁族随迁——`intent_settle_current_ext` 补条 + HELD 双位单源迁 `berry_ringface` 注记 + 计数 146→147）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**147 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对；初估 132 为低估）
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 b2bc40a）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
@@ -117,7 +117,10 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 > sched | 4-3c：send 侧 intent 快照（syscall 层调用；语义在 `crate::intent`）。
 
 ### `intent_settle_current(m: MsgIntent, opt_out: bool, now_ns: u64) -> Option<SettleOut>`
-> sched | 4-3c：recv 侧 intent 结算（slowpath；语义在 `crate::intent`）。
+> sched | 4-3c：recv 侧 intent 结算（旧面——W3-Q6 前 9 个调用点零改动；实现在 `intent_settle_current_ext`）。
+
+### `intent_settle_current_ext(m: MsgIntent, opt_out: bool, now_ns: u64) -> Option<(SettleOut, u8, u8)>`
+> sched | 4-3c：recv 侧 intent 结算 slowpath 本体（语义在 `crate::intent`）；CURRENT 无效 → `None`（消息照常投递，不结算不记遥测）；W3-Q6 起结算后附 `(declared, effective)` 双档读出——`intent_settle_note` 的档位直方/通胀计数源（单源 `berry_itally`）。
 
 ### `yield_now()`
 > sched | 协作让出：切到 `pick_next` 选出的下一个任务（若有且非自己）。
@@ -477,8 +480,8 @@ HDR 直方图（897 桶对数尺）+ per-CPU 切换/唤醒延迟双路 + 跨核�
 |------|-----|------|
 | `STACK_SIZE` | `16 * 1024` | 内核栈 16KiB |
 | `HELD_SQ` / `HELD_RQ0` / `HELD_RQ1` / `HELD_REAPQ` / `HELD_TABLE` | `1<<1` / `1<<2` / `1<<3` / `1<<4` / `1<<5` | 结构锁五位（SQ/双 RQ/REAPQ/表锁） |
-| `HELD_FROZEN` | `1<<6` | freeze 冻结位 |
-| `HELD_THROTTLE` | `1<<7` | band 限流位 |
+| `HELD_FROZEN` | `1<<6` | freeze 冻结位（W3-Q12 起位值单源 `berry_ringface::HELD_FROZEN`，task.rs re-export 维持 `berry_sched::` 引用路径零改动） |
+| `HELD_THROTTLE` | `1<<7` | band 限流位（W3-Q12 起位值单源 `berry_ringface::HELD_THROTTLE`，同上 re-export 面） |
 | `PRIO_DEADLINE`（class.rs） | `1000` | deadline 类优先级（EDF 准入门） |
 
 ---
@@ -565,7 +568,7 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 
 | 文件 | pub fn | 归组 |
 |------|--------|------|
-| sched.rs | 70 | 一、调度核心 |
+| sched.rs | 71 | 一、调度核心 |
 | policy.rs | 15 | 二、策略服务 |
 | band.rs | 7 | 三、层级预算 |
 | em.rs + util.rs | 6 + 7 | 四、EAS 能效 |
@@ -576,4 +579,4 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 | spin.rs | 4 | 附 |
 | class.rs | 2（+trait 5 法） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **146** | ｜ 含 `unsafe` 8、`const` 5、`extern "C"` 4 |
+| **合计** | **147** | ｜ 含 `unsafe` 8、`const` 6、`extern "C"` 4（v1.1 勘误：v1.0 合计行 const 计 5 系笔误——逐条 `const` 标注实为 6 条，机提复核一致；W3-Q6 起含 `intent_settle_current_ext`） |
