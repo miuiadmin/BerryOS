@@ -43,7 +43,7 @@
 //! alloc 失败折半重试）→ 每段 AllocatePages(EfiLoaderData) 页钉——
 //! **先于终段 GetMemoryMap**（页进图成非 Conventional，内核 V-1b pass2
 //! reserve 自动保）→ 段描述符数组透传 load_kernel 填 handoff v1
-//! （init_segs_* @112/@120 + @128 同页数组，A1-3b 起消费）+ 终段
+//! （init_segs_* @112/@120 + 同页数组（V10 头扩后基址 @176），A1-3b 起消费）+ 终段
 //! dcache 刷集逐段入刷（CPU 拷贝脏线防线）。盘上缺席打
 //! `init: absent` 续行——内核降级 ROOTFS absent，非致命。
 //!
@@ -93,7 +93,7 @@ fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
     }
 }
 
-// ==================== BerryHandoff v1（V-0b 刀 3 冻结 v0；A1-3b 扩 v1） ====================
+// ==================== BerryHandoff v2（V-0b 刀 3 冻结 v0；A1-3b 扩 v1；V10 尾追加扩 v2——ADR #82 附录一） ====================
 //
 // **双镜像纪律**（同 kernel/src/handoff.rs——两侧逐字段同步 + 同一张 const
 // assert 偏移表，任一侧漂移 = 编译期炸响；abi_gen.rs 双面镜像同精神）。
@@ -102,8 +102,10 @@ fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
 
 /// 魔数：LE u32 读出 = ASCII "BRYH"。
 pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
-/// 协议版本：v1 = 1（A1-3b init 分段递送；v0 = 0 冻结于 V-0b 刀 3）。
-pub const HANDOFF_VERSION: u32 = 1;
+/// 协议版本：v2 = 2（V10 尾追加度量/签名槽留位——ADR #82 附录一，全零 =
+/// 未度量/未占用，v1 行为零变）；v1 = 1（A1-3b init 分段递送）；v0 = 0
+/// 冻结于 V-0b 刀 3（扩字段 = bump version，内核认 ≤ 当前版）。
+pub const HANDOFF_VERSION: u32 = 2;
 
 /// 分段描述符数上限（与内核侧同值——handoff 单页自含的执法点）。
 pub const INIT_SEGS_MAX: usize = 32;
@@ -115,7 +117,7 @@ pub const INIT_SEG_TARGET: usize = 8 * 1024 * 1024;
 /// INITRD.BIN 总量帽：与内核 `ROOTFS_TOTAL_MAX` 同口径（A1-2 帽分家）。
 pub const INIT_TOTAL_MAX: usize = 128 * 1024 * 1024;
 
-/// init 分段描述符（v1 描述符数组元素，随 handoff 同页 @128）。
+/// init 分段描述符（v1 描述符数组元素，随 handoff 同页：v2 @176 / v1 @128）。
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct InitSeg {
@@ -123,7 +125,7 @@ pub struct InitSeg {
     pub len: u64,
 }
 
-/// 交接结构（v1 = 128B 头，全 8B 字段 8 对齐；无指针——PA 直递）。
+/// 交接结构（v2 = 176B 头，全 8B 字段 8 对齐；无指针——PA 直递）。
 #[repr(C)]
 pub struct BerryHandoff {
     pub magic: u32,               // @0
@@ -145,14 +147,17 @@ pub struct BerryHandoff {
     pub init_blob_len: u64,       // @88 v0 事实源（v1 置零不读）
     pub cmdline_pa: u64,          // @96 留位零（裁决 B）
     pub cmdline_len: u64,         // @104 留位零（裁决 B）
-    pub init_segs_pa: u64,        // @112 描述符数组 PA（= handoff 页 @128；0=无）
+    pub init_segs_pa: u64,        // @112 描述符数组 PA（自相对基址按 version：v2 @176/v1 @128；0=无）
     pub init_segs_count: u32,     // @120 段数（0=无 INITRD）
     pub _r1: u32,                 // @124 保留零
+    pub meas_root: [u8; 32],      // @128 度量根留位（V10 预埋，ADR #82 附录一；全零 = 未度量）
+    pub sig_slot_off: u64,        // @160 签名槽偏移留位（V10 预埋，同上；零 = 未占用，off/len 同判）
+    pub sig_slot_len: u64,        // @168 签名槽长度留位（V10 预埋，同上；零 = 未占用）
 }
 
 /// 布局执法表（与 kernel/src/handoff.rs 逐行相同——两侧同表执法）。
 const _: () = {
-    assert!(size_of::<BerryHandoff>() == 128);
+    assert!(size_of::<BerryHandoff>() == 176);
     assert!(size_of::<InitSeg>() == 16);
     assert!(offset_of!(InitSeg, pa) == 0);
     assert!(offset_of!(InitSeg, len) == 8);
@@ -178,6 +183,9 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, init_segs_pa) == 112);
     assert!(offset_of!(BerryHandoff, init_segs_count) == 120);
     assert!(offset_of!(BerryHandoff, _r1) == 124);
+    assert!(offset_of!(BerryHandoff, meas_root) == 128);
+    assert!(offset_of!(BerryHandoff, sig_slot_off) == 160);
+    assert!(offset_of!(BerryHandoff, sig_slot_len) == 168);
 };
 
 /// 刀 1 骨架行：ASCII + CRLF（EFI ConOut 惯例——部分终端只认 CRLF）。
@@ -324,13 +332,19 @@ fn load_kernel(
             init_blob_len: 0,
             cmdline_pa: 0,
             cmdline_len: 0,
-            init_segs_pa: if isegs.is_empty() { 0 } else { hpa + 128 },
+            init_segs_pa: if isegs.is_empty() { 0 } else { hpa + 176 },
             init_segs_count: isegs.len() as u32,
             _r1: 0,
+            // V10 预埋留位（ADR #82 附录一）：恒全零 = 未度量/未占用——
+            // 预留位不启用，消费面随 #82/#83 承接件启用（届时语义立法）。
+            meas_root: [0; 32],
+            sig_slot_off: 0,
+            sig_slot_len: 0,
         });
-        // 描述符数组随 handoff 同页 @128（§3.2.1 单页自含：32×16B+128B
-        // = 640B < 4KiB——内核 init_segs 按「恰为 hpa+128」自相对契约校验）。
-        let dst = (hpa + 128) as *mut InitSeg;
+        // 描述符数组随 handoff 同页 @176（V10 头 128B→176B；§3.2.1 单页
+        // 自含：32×16B+176B = 688B < 4KiB——内核 init_segs 按「恰为
+        // hpa+176」自相对契约校验，v1 旧装载器 @128 由版本分派认）。
+        let dst = (hpa + 176) as *mut InitSeg;
         for (i, s) in isegs.iter().enumerate() {
             dst.add(i).write(InitSeg { pa: s.pa, len: s.len });
         }
@@ -945,9 +959,10 @@ pub extern "C" fn efi_main(
                                         // ——**必须发生在终段 GetMemoryMap
                                         // 之前**（页进图成非 Conventional，
                                         // 内核 V-1b pass2 reserve 自动保）。
-                                        // 段描述符数组随 handoff v1 递送
-                                        // （init_segs_* @112/@120 + @128
-                                        // 数组，load_kernel 写）。缺席（旧盘
+                                        // 段描述符数组随 handoff 递送
+                                        // （init_segs_* @112/@120 + 同页
+                                        // 数组（v2 基址 @176），load_kernel
+                                        // 写）。缺席（旧盘
                                         // 不带 INITRD.BIN）打 `init: absent`
                                         // 续行——内核降级 ROOTFS absent，
                                         // 非致命（零段同义）。总量帽 128MiB

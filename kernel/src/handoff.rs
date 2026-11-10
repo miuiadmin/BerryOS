@@ -23,10 +23,17 @@
 //! 描述符数组随 handoff **同页 @128**（32×16B+128B=640B < 4KiB 单页自含，
 //! 无第二块分配）。版本语义：version=1 时 `init_blob_*`（@80/@88）置零
 //! 不读——分段数组是唯一 init 事实源；version=0 恒旧 112B 形。**双向兼容**：
-//! 内核认 version≤1（v0 走 `init_blob_*` 原路——旧装载器照跑）；旧内核见
-//! v1 → probe 拒 → ROOTFS absent 降级非炸（fail-safe 由版本门控天然保证）。
+//! 内核认 version≤当前版（v0 走 `init_blob_*` 原路——旧装载器照跑）；旧内核见
+//! 高版 → probe 拒 → ROOTFS absent 降级非炸（fail-safe 由版本门控天然保证）。
+//! v2 扩面（V10 预埋，ADR #82 附录一——闸 E 结构冻结/真机烧录前留缝）：
+//! 结构尾追加度量/签名槽三字段（`meas_root[32]` @128 + `sig_slot_off/len`
+//! @160/@168），128B→176B 头；**预留位不启用**——BerryBoot 恒写全零
+//! （meas 全零 = 未度量；sig off/len 双零 = 未占用，零值缺席语义同
+//! `gop_*`/`cmdline_*`），v1 无消费者。init 分段数组基址随头迁移
+//! @128→@176（32×16B+176B=688B < 4KiB 单页自含）；v1 旧装载器照跑——
+//! [`init_segs`] 自相对契约按 version 分派（v1 数组仍认 @128）。
 //! boot 协议是仓内版本化面，非 abi.toml 冻结面（不触保留门 C）。
-#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；V-6a 消费 gop_*；A1-3b 消费 init_segs_*；cmdline_* 留位零值待 V-1d+
+#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；V-6a 消费 gop_*；A1-3b 消费 init_segs_*；meas_root/sig_slot_* = V10 预埋留位零消费（ADR #82 附录一）；cmdline_* 留位零值待 V-1d+
 
 use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
 use berry_mm::va::phys_to_virt;
@@ -35,16 +42,18 @@ use core::mem::{offset_of, size_of};
 /// 魔数：LE u32 读出 = ASCII "BRYH"（BerryOS Handoff）。
 pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
 
-/// 协议版本：v1 = 1（A1-3b 起 init 分段递送；v0 = 0 冻结于 V-0b 刀 3，
-/// 扩字段 = bump version）。BerryBoot 写当前版；内核 [`probe`] 认 ≤ 当前版
-/// （v0/v1 双向兼容——旧装载器 v0 照跑，内核消费按 version 分派）。
-pub const HANDOFF_VERSION: u32 = 1;
+/// 协议版本：v2 = 2（V10 尾追加度量/签名槽留位——ADR #82 附录一，全零 =
+/// 未度量/未占用，v1 行为零变）；v1 = 1（A1-3b 起 init 分段递送）；v0 = 0
+/// 冻结于 V-0b 刀 3，扩字段 = bump version）。BerryBoot 写当前版；内核
+/// [`probe`] 认 ≤ 当前版（v0/v1/v2 双向兼容——旧装载器照跑，内核消费按
+/// version 分派）。
+pub const HANDOFF_VERSION: u32 = 2;
 
-/// 分段描述符数上限（A1-3b §3.2.1）：32×16B + 128B 头 = 640B < 4KiB——
-/// handoff 单页自含的执法点；越顶 = 递送面违约。
+/// 分段描述符数上限（A1-3b §3.2.1）：32×16B + 176B 头（V10 尾追加后）
+/// = 688B < 4KiB——handoff 单页自含的执法点；越顶 = 递送面违约。
 pub const INIT_SEGS_MAX: usize = 32;
 
-/// init 分段描述符（v1 描述符数组元素，随 handoff 同页 @128）。
+/// init 分段描述符（v1 描述符数组元素，随 handoff 同页：v2 @176 / v1 @128）。
 /// pa = AllocatePages 出品（4KiB 对齐）；len = 段内实读字节数（≤ 段页容量，
 /// 末段可页内截断）。
 #[repr(C)]
@@ -54,9 +63,10 @@ pub struct InitSeg {
     pub len: u64,
 }
 
-/// 交接结构（v1 = 128B 头，全 8B 字段 8 对齐；无指针——PA 直递，装载器/
+/// 交接结构（v2 = 176B 头，全 8B 字段 8 对齐；无指针——PA 直递，装载器/
 /// 内核各自解址，杜绝跨边界引用生命周期假设——本仓 ABI 通行纪律）。
-/// v0 读者按 version 分派只读前 112B；描述符数组 @128 起仅 v1 读者消费。
+/// v0 读者按 version 分派只读前 112B；描述符数组 v1 在 @128 / v2 在 @176
+/// （随头迁移，按 version 分派），仅 version≥1 读者消费。
 #[repr(C)]
 pub struct BerryHandoff {
     pub magic: u32,               // @0   "BRYH"
@@ -78,14 +88,17 @@ pub struct BerryHandoff {
     pub init_blob_len: u64,       // @88  init blob 字节长（v0 事实源；v1 置零不读）
     pub cmdline_pa: u64,          // @96  命令行 PA（留位零——裁决 B）
     pub cmdline_len: u64,         // @104 命令行字节长（留位零——裁决 B）
-    pub init_segs_pa: u64,        // @112 描述符数组 PA（v1；= handoff 页内 @128 自相对；0=无）
+    pub init_segs_pa: u64,        // @112 描述符数组 PA（自相对基址按 version：v2 @176/v1 @128；0=无）
     pub init_segs_count: u32,     // @120 段数（v1；0=无 INITRD；1..=32 合法）
     pub _r1: u32,                 // @124 保留零（对齐）
+    pub meas_root: [u8; 32],      // @128 度量根留位（V10 预埋，ADR #82 附录一；全零 = 未度量）
+    pub sig_slot_off: u64,        // @160 签名槽偏移留位（V10 预埋，同上；零 = 未占用，off/len 同判）
+    pub sig_slot_len: u64,        // @168 签名槽长度留位（V10 预埋，同上；零 = 未占用）
 }
 
 /// 布局执法表（与 berryboot 侧逐行相同——两侧同表，任一侧漂移编译期炸响）。
 const _: () = {
-    assert!(size_of::<BerryHandoff>() == 128);
+    assert!(size_of::<BerryHandoff>() == 176);
     assert!(size_of::<InitSeg>() == 16);
     assert!(offset_of!(InitSeg, pa) == 0);
     assert!(offset_of!(InitSeg, len) == 8);
@@ -111,14 +124,18 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, init_segs_pa) == 112);
     assert!(offset_of!(BerryHandoff, init_segs_count) == 120);
     assert!(offset_of!(BerryHandoff, _r1) == 124);
+    assert!(offset_of!(BerryHandoff, meas_root) == 128);
+    assert!(offset_of!(BerryHandoff, sig_slot_off) == 160);
+    assert!(offset_of!(BerryHandoff, sig_slot_len) == 168);
 };
 
 /// V-1a：入口 x0 分流判别——EFI 路首参 = handoff PA（BerryBoot `br entry`），
 /// QEMU `-kernel` 路首参 = DTB PA/0。界检 [RAM_BASE, RAM_TOP) + 高半直映读
 /// magic/version；未中 → `None`（DTB/fw_cfg 原路零扰动）。DTB 魔数
 /// 0xD00D_FEED（BE）与 HANDOFF_MAGIC 互不碰撞——按 BRYH 认领不会误吞 DTB；
-/// 版本不识别（>v1）同样 `None`：handoff 不消费、fail-safe 降级既有路
-/// （A1-3b 起 v1 在册；更旧内核见 v1 同样不认领——双向兼容的版本门控）。
+/// 版本不识别（>v2）同样 `None`：handoff 不消费、fail-safe 降级既有路
+/// （V10 起 v2 在册，A1-3b 起 v1 在册；更旧内核见 v2 同样不认领——双向
+/// 兼容的版本门控）。
 ///
 /// 返回引用按 boot 期静态处理：handoff 页由 BerryBoot AllocatePages 认领
 /// （EFI 图内非 Conventional——V-1b reserve 后内核不再分配它），boot 后只读。
@@ -145,7 +162,8 @@ pub fn probe(x0: usize) -> Option<&'static BerryHandoff> {
 
 /// v1 init 分段视图（A1-3b）：结构校验后返回描述符数组切片。校验件：
 /// - `hpa` = handoff 页基（调用方入口 x0）——`init_segs_pa` 必须恰为
-///   `hpa + 128`（描述符数组随 handoff 同页的自相对契约，§3.2.1）；
+///   `hpa + 176`（v2 头；v1 装载器 = `hpa + 128`——按 version 分派，
+///   描述符数组随 handoff 同页的自相对契约，§3.2.1）；
 /// - count 0..=[`INIT_SEGS_MAX`]（0 = 无 INITRD，返回空切片——调用方按
 ///   源缺席回落；越顶 = 递送面违约）；
 /// - 每段：pa 4KiB 对齐（AllocatePages 出品）+ len>0 + 段区落
@@ -166,8 +184,11 @@ pub fn init_segs<'a>(h: &'a BerryHandoff, hpa: usize) -> Option<&'a [InitSeg]> {
             None
         };
     }
-    // 同页自相对契约：数组恰在 handoff 页 @128（640B < 4KiB 单页自含）。
-    if h.init_segs_pa != (hpa as u64).checked_add(128)? {
+    // 同页自相对契约：数组基址随头按 version 分派（v2 头 176B → @176，
+    // 688B < 4KiB 单页自含；v1 头 128B → @128——旧装载器照跑，双向兼容
+    // 的版本门控）。
+    let base_off: u64 = if h.version >= 2 { 176 } else { 128 };
+    if h.init_segs_pa != (hpa as u64).checked_add(base_off)? {
         return None;
     }
     let base = phys_to_virt(h.init_segs_pa as usize) as *const InitSeg;

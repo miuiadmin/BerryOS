@@ -9,7 +9,7 @@
 
 | 级 | 面 | 承诺 | 演进方式 |
 |---|---|---|---|
-| L0 | 35 syscall C-ABI（abi.toml 单源） | **永久冻结**，永不破坏 | 只加号不回收（ADR #55 两冻结面之一） |
+| L0 | 37 syscall C-ABI（abi.toml 单源；2026-11-10 勘误：原「35」为成文快照口径漂移，单源以 tools/abi.toml 为准——ADR #82 联动勘误） | **永久冻结**，永不破坏 | 只加号不回收（ADR #55 两冻结面之一） |
 | L1 | 服务 wire 协议 | add-only + per-interface version | 字段只加不改义；msg_type 只加新号（ADR #54/#59） |
 | L2 | 公开库 API（crates.io 发布族） | semver + **保 N 版废弃窗口**（N=3 起步，见 §三） | 废弃须走 §三全流程 |
 | L3 | 系统内部 API（crate 私有/跨 crate pub(crate)） | **明写不保证**，零承诺 | 自由 |
