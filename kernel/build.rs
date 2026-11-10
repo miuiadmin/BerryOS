@@ -6,6 +6,18 @@ fn main() {
         .join("linker-aarch64.ld");
     println!("cargo:rustc-link-arg=-T{}", ld.display());
     println!("cargo:rerun-if-changed={}", ld.display());
+    // VER 硬化（沿革一八五实弹）：ident 新鲜度——.git/HEAD（检出态变化）
+    // + HEAD 指向的分支 ref 文件（新提交变化）双触发。否则只有链接脚本的
+    // rerun-if-changed 在册 = BERRY_GIT_IDENT 冻结首跑缓存，增量机新提交
+    // 后 ident 陈旧 → svcmgr 三元组对拍 VER mix 假红（哨兵二次咬真异常
+    // 实证形态）。无 git 环境（源码快照）两路径不存在 = 静默无触发，与
+    // nogit 降级链自洽。路径相对 kernel/（build.rs CWD = manifest 目录）。
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    if let Ok(head) = std::fs::read_to_string("../.git/HEAD") {
+        if let Some(r) = head.trim().strip_prefix("ref: ") {
+            println!("cargo:rerun-if-changed=../.git/{}", r);
+        }
+    }
     println!("cargo:rustc-env=BERRY_GIT_IDENT={}", git_ident());
     let rustc_ver = std::process::Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into()))
         .arg("--version")
