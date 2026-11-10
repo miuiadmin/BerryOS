@@ -16,6 +16,7 @@ version = "0.1.0"
 dependencies = [
  "berry-argv",
  "berry-loader",
+ "berry-spawngeo",
  "berry-sys",
  "berry-winplan",
 ]
@@ -80,6 +81,13 @@ version = "0.1.0"
 [[package]]
 name = "berry-signal"
 version = "0.1.0"
+
+[[package]]
+name = "berry-spawngeo"
+version = "0.1.0"
+dependencies = [
+ "berry-loader",
+]
 
 [[package]]
 name = "berry-sys"

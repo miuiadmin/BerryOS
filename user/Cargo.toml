@@ -21,6 +21,8 @@
 # justfile test-host 显式行跑）。
 # argv blob 组装律纯面外迁 berry-argv（同 winplan 纪律——argv_blob 自
 # berry-exec env 块组装段外迁，host 测试挂 test-host 显式行）。
+# spawn 几何前置门外迁 berry-spawngeo（同款纪律——映幅帽/栈顶/MMIO 重叠
+# 三段自 berry-exec process_create 前置段外迁，host 测试挂显式行）。
 # A-3：berry-virtio（virtio split-ring 纯函数 crate，host 测试）——
 # 2026-10-24 随驱动一族迁入 drivers/ 工作区（真消费者 vprobe/vblk/vnet
 # 同住 drivers/bins/；host 测试经 justfile test-host 显式行跑）。
@@ -114,7 +116,7 @@
 # berry-libc 间接消费——三口现役首消费者。berry-tls/signal 同款「纯面
 # 外迁」：host 测试零 libc 符号面（just test-host 显式行跑）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "berry-lifecycle", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "berry-lifecycle", "berry-spawngeo", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 resolver = "2"
 

@@ -50,12 +50,6 @@ static mut PUMP_WIN: [u8; 4096] = [0; 4096];
 /// cpio 步进窗（cpio_find 用）：头 110B + 名（mkcpio 名 ≤ 56B 绰绰）。
 static mut STEP_WIN: [u8; 512] = [0; 512];
 
-/// ELF 映幅帽 = 内核 `VMO_MAX_SIZE`（16MiB）同值（复盘雷 8 残留面）：
-/// `elf_head` 只挡 >2^39 野值，(16MiB, 2^39) 区间的合法巨段会走到
-/// vmo_create 才 -ENOMEM → 自陷——span 属 rootfs **输入面**（非内核契约
-/// 面），按解析侧同款契约 Err 降级；真实 std 镜像 ~283KB，余量充足。
-const ELF_MAP_MAX: u64 = 16 * 1024 * 1024;
-
 // —— X-3c/X-5 demand 装载钩子面 ——
 //
 // 注入式可选路径：svcmgr boot 期（`set_demand_hooks`）把 pager 寄存表
@@ -438,45 +432,29 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     };
     let base = berry_loader::page_floor(h.image_min);
     let len = berry_loader::page_ceil(h.image_span);
-    if len > ELF_MAP_MAX {
-        return Err(()); // 段幅前置（雷 8）：巨段在几何层即降级
-    }
-    // 栈顶前置（对抗审查补，ELF_MAP_MAX 同族输入面）：映像顶 + 保护页 +
-    // 栈幅越 USER_TOP 的 ELF（`elf_head` 只严格拒 vend > USER_TOP——贴顶
-    // 映像本身合法可映）此前会走到 vmar_map 栈页才被 OutOfBounds 拒 →
-    // 自陷杀调用方（svcmgr 死 = watchdog 错杀 panic 连坐 halt）。映像+
-    // 栈几何同属 rootfs 输入面，前置 Err 降级；`stack_pages` 是消费方参数
-    // （bsh 32/svcmgr 8），故检在 berry-exec 而非 loader。checked 链防
-    // 调用方巨值溢出绕检；stack_pages==0 只过上限不过下限——原值会走到
-    // vmo_create(0) -EINVAL → trap() 杀调用方（a-2 面由 manifest 域检
-    // 1..=64 挡住，此检护全族其它调用方——app-0 a-3 U3）。
-    let stack_end = stack_pages
-        .checked_mul(berry_loader::PAGE_SIZE)
-        .and_then(|s| (base + len + berry_loader::PAGE_SIZE).checked_add(s));
-    if stack_pages == 0 || stack_end.map_or(true, |e| e > berry_loader::USER_TOP) {
+    // —— spawn 几何前置门（映幅帽/栈顶/MMIO 重叠三段）：纯面单源在
+    //    berry-spawngeo（host 可测——原处内嵌 FFI 令此面零测试，winplan/
+    //    argv 同款外迁纪律），此处 FFI 桥。门序保真（原处三段序）：帽/栈
+    //    两段先裁（rootfs 输入面降级先于 boot 契约面 trap——巨段 + 契约破
+    //    的组合面不因外迁改判 trap）；窗口幅经 vmo_get_size 取得（boot
+    //    授能契约：查不到/零幅仍 trap 非输入面）后全门终裁。
+    if berry_spawngeo::spawn_geometry(base, len, stack_pages, None).is_err() {
         return Err(());
     }
-    // —— MMIO 固定 VA 前置（对抗审查补，栈顶前置同族第三块几何约束）：
-    //    [base, stack_end) 与 [VIRTIO_MMIO_VA, +窗口幅) 相交的 ELF（rootfs
-    //    输入面可达：PT_LOAD vaddr 落 0x7000_0000 完全合法过 loader/exec
-    //    既有界检）此前会走到 vmar_map 才 Overlap 拒 → 自陷杀调用方
-    //    （svcmgr 死 = watchdog 错杀 panic 连坐 halt）。前置 Err 降级走
-    //    eco_skip 面；窗口幅 get_size 失败仍 trap（boot 授能契约，非输入面）。
     let mut mmio_len = 0u64;
-    if let Some(mh) = *mmio_vmo {
+    let mmio_geo = if let Some(mh) = *mmio_vmo {
         if mmio_va == 0 {
             trap(); // Some 窗口零 VA = 调用面配置错（boot 授能契约）
         }
         if berry_vmo_get_size(mh, &mut mmio_len) != 0 || mmio_len == 0 {
             trap(); // 窗口几何是 boot 授能契约——查不到即链断
         }
-        let hit = match mmio_va.checked_add(mmio_len) {
-            Some(me) => base < me && mmio_va < stack_end.unwrap_or(u64::MAX),
-            None => true, // 窗口幅越界溢出：同族保守降级
-        };
-        if hit {
-            return Err(());
-        }
+        Some((mmio_va, mmio_len))
+    } else {
+        None
+    };
+    if berry_spawngeo::spawn_geometry(base, len, stack_pages, mmio_geo).is_err() {
+        return Err(()); // 三段同走降级（原因枚举在纯面侧，消费端不分流）
     }
     let mut hp = 0 as Handle;
     let mut hv = 0 as Handle;

@@ -557,6 +557,11 @@ test-host:
     # 纪律）：argv0 截 191 律 + 整参或零参单调截断 + 恰满边界 + wire
     # 钉板，host 5 测。
     cargo test --manifest-path user/Cargo.toml -p berry-argv --target {{host}}
+    # spawn 几何前置门纯面（自 berry-exec process_create 前置段外迁，winplan
+    # 同款纪律）：映幅帽 ELF_MAP_MAX 恰帽边界 + 栈顶 USER_TOP 恰顶/+1 页 +
+    # checked 链两溢 + MMIO 三带重叠/相邻/端点进位 + 现役 std/平像/bsh 三
+    # 形态，host 10 测。
+    cargo test --manifest-path user/Cargo.toml -p berry-spawngeo --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-fsproto --target {{host}}
     # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数面——v1 单段语义
     # 零漂移 + v2 五 op 面，host 17 测）。

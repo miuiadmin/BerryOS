@@ -15,4 +15,7 @@ berry-loader = { path = "../berry-loader" }
 berry-winplan = { path = "../berry-winplan" }
 # argv blob 组装律纯面在 berry-argv（host 可测，同 winplan 纪律），此处单源引回。
 berry-argv = { path = "../berry-argv" }
+# spawn 几何前置门纯面在 berry-spawngeo（映幅帽/栈顶/MMIO 重叠三段，host
+# 可测，同 winplan 纪律），此处单源引回（FFI 桥：窗口幅 vmo_get_size）。
+berry-spawngeo = { path = "../berry-spawngeo" }
 # （release profile 沿用工作区根定义——成员内 profile 不生效。）
