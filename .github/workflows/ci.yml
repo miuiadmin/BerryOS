@@ -3,7 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    # 路径分流双道（2026-11-10）：纯轻面（docs/.agents/md/tools/deny.toml）
+    # 交 ci-light.yml（~2min 并行组），不进本串行重道。paths-ignore 与
+    # ci-light 的 paths 对称——PR 面任一文件落在轻面外即走重道全套。
+    paths-ignore: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
   pull_request:
+    paths-ignore: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
 
 # 2026-11-09：运行中的 run 不被同分支新 push 取消（cancel-in-progress:
 # false）——bot 流水线 20min 节拍下 worker 连续推 PR 曾令 CI 永远跑不完，
