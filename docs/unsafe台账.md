@@ -44,12 +44,12 @@
 |------|-----------|--------|--------------|------|
 | kernel/ | 24 | 26839 | 1932 | 7.20% |
 | mm/ | 6 | 1739 | 4 | 0.23% |
-| sched/ | 12 | 6667 | 1540 | 23.10% |
+| sched/ | 12 | 6681 | 1540 | 23.05% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 6806 | 960 | 14.11% |
-| **合计** | 64 | 42051 | 4436 | **10.55%** |
+| **合计** | 64 | 42065 | 4436 | **10.55%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33692，unsafe 非空行 3788，密度 11.24%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33706，unsafe 非空行 3788，密度 11.24%（生产面口径）
 - 分类计数：页表 52 | 上下文切换 32 | MMIO 151 | 分配器 13 | 硬件原子 0 | 其它 700
 - 类型计数：block 813 | fn 131 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -868,8 +868,8 @@
 | sched/src/policy.rs | 571 | block | 其它 | unsafe { (*shadow_snap()).gen } } /// 绑 shadow 表（COMMIT + SHADOW |
 | sched/src/policy.rs | 597 | block | 其它 | unsafe { core::ptr::write(&raw mut SHD[next as usize], snap); } |
 | sched/src/policy.rs | 628 | block | 其它 | unsafe { if (*src).gen == 0 { policy_unlock(); // 错误路径同解锁（false |
-| sched/src/policy.rs | 711 | block | 其它 | unsafe { &*shadow_snap() }; if shd.gen == 0 { return; // shadow |
-| sched/src/policy.rs | 716 | block | 其它 | unsafe { &*active_snap() }; // key 0（内核任务）：lookup_o1 早退返 None → |
+| sched/src/policy.rs | 721 | block | 其它 | unsafe { &*shadow_snap() }; if shd.gen == 0 { return; // shadow |
+| sched/src/policy.rs | 726 | block | 其它 | unsafe { &*active_snap() }; // key 0（内核任务）：lookup_o1 早退返 None → |
 | sched/src/runqueue.rs | 122 | fn | 其它 | unsafe fn lock_acquire(&self) { self.lock.acquire(); } /// 放本队列自 |
 | sched/src/runqueue.rs | 166 | block | 其它 | unsafe { let mut cur = h; let mut sum: u128 = 0; loop { sum += ( |
 | sched/src/runqueue.rs | 204 | block | 其它 | unsafe { let mut cur = h; let mut steps = 0; let mut vsum: u128 |
