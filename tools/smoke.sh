@@ -485,12 +485,15 @@ while :; do
   sleep 1
 done
 # G-ver-2（版本管理标准 §3）：boot banner 形态断言——首匹配行须为
-# `BerryOS boot <semver> (<ident>)`（版本编译期同源 env!("CARGO_PKG_VERSION")；
-# ident = <short-hash>[-dirty]|nogit，build.rs git_ident 注入）。上方轮询的
+# `BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])`（版本编译期同源
+# env!("CARGO_PKG_VERSION")；ident = describe 形 vN.N.N-N-g<hash>[-dirty]/
+# 短哈希/nogit（build.rs git_ident 注入，a4a6286 起尾追工具链+profile
+# 元数据——rustc 版本未知时为 rustc?）。ident 无兼容语义不参与比较（标准
+# §2 表），门只锚 semver 段 + 括号结构。上方轮询的
 # "BerryOS boot" 子串断言（markers.sh MARKERS[0]）原样保留——本行只加形态
 # 边不松子串边；置轮询到齐后 = banner 行必已在席，断言零竞态。
-grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9-]+\)' \
-  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>)'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
 echo "smoke: boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} 到齐"
 
 # —— 分相门控（CI 分层用）：SMOKE_PHASES=boot 时 boot 相绿即收——
