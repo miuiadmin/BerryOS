@@ -11,6 +11,12 @@ use crate::{Handle, Rights, Status, Time};
 /// 无效 handle（表槽 0 恒空；`berry_handle_t` = 0）。
 pub const INVALID_HANDLE: Handle = 0;
 
+// ---- 平台 API level（abi.toml [platform]；与内核侧同源同值）----
+/// 单调整数 level 轨道（VER-01 提案第 4 条：只增不减、不兼容 ABI 变更
+/// +1、兼容新增不 +1——Android API level 形而更简）；svcmgr 装载期与
+/// .bap `[compat] min_level` 比较的平台级基线。
+pub const BERRY_PLATFORM_LEVEL: u32 = 1;
+
 // ---- rights 位（12 位；权限在 handle 不在对象）----
 pub const RIGHT_READ: Rights = 1 << 0;
 pub const RIGHT_WRITE: Rights = 1 << 1;

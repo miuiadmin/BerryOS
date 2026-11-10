@@ -930,6 +930,12 @@ abi-gen:
 abi-check:
     python3 tools/gen_abi.py --check
 
+# 版本一致性验收（版本管理标准 §3 G-ver-3/4）：v* tag ↔ 指向提交的
+# workspace version 对拍 + 构建标识（git_ident/dirty 位）机制在席。
+# 发版前手跑——v1 不挂 CI 常态、不进 build 依赖链（标准 §3「新门挂载」）。
+ver-check:
+    {{BASH}} tools/ver-check.sh
+
 # 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
 smoke: build

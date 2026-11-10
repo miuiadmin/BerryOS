@@ -9,6 +9,7 @@ intent = "utility"
 min = "0.1.0"
 target = "0.1.0"
 compile = "0.1.0"
+min_level = 1
 
 [capabilities]
 console = true

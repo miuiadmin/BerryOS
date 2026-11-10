@@ -18,6 +18,8 @@ type berry_status int32
 type berry_time uint64
 
 # ---- 常量注释（abi.toml 单源字面量；非 syz const 引用）----
+# 平台 API level（[platform]；单调整数轨道——只增不减、不兼容 ABI 变更 +1）:
+#   BERRY_PLATFORM_LEVEL = 1
 # clock id:
 #   CLOCK_MONOTONIC = 0
 # options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:

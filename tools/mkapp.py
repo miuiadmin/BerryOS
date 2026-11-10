@@ -67,7 +67,8 @@ where=节.键路径，line 仅语法层透传 tomllib 位点、其余域用自�
 
 规范形（第 2 道的比较基准，SDK-1a §3 冻结 + GUI-7 尾增 + 同意面先落件二
 尾增）：`[app]` 五行定序 id/version/entry/type/intent + `[compat]?`
-（min/target/compile，int 三元组重发射）+ `[capabilities]`
+（min/target/compile，int 三元组重发射；VER-01 提案第 4 条起可选尾增
+`min_level` u32 整数行——未声明不发射）+ `[capabilities]`
 console,fs?,net?（fs/net 数组无空格形）+ `[runtime]?` stack_pages +
 `[security]?`（profile/key_lineage）+ `[ui]?`（GUI-7——icon/label/views
 键定序、三键独立可选）+ `[agent-actions]?`（同意面先落件二新居末——
@@ -190,7 +191,7 @@ def _ver(v: tuple) -> str:
 class M:
     """过检后的 manifest 视图（规范形重序列化的数据源）。"""
 
-    def __init__(self, app, caps, runtime, compat, sec, ui, aa):
+    def __init__(self, app, caps, runtime, compat, min_level, sec, ui, aa):
         self.id = app["id"]
         self.version = app["version"]
         self.entry = app["entry"]
@@ -202,6 +203,9 @@ class M:
         # 的三元组；fs/net = None | str（词表门已保证单元素数组——此处取
         # 元素，canonical 按 `["str"]` 无空格形重发射）；sec = None | (p, k)。
         self.compat = compat
+        # VER-01 提案第 4 条：min_level = None | u32（[compat] 独立可选、
+        # 缺省 0——None = 未声明不发射；appd 装载期与 BERRY_PLATFORM_LEVEL 比）。
+        self.min_level = min_level
         fs_val = caps.get("fs")
         self.fs = fs_val[0] if fs_val else None
         net_val = caps.get("net")
@@ -230,6 +234,9 @@ class M:
         if self.compat:
             mn, tg, cp = self.compat
             out += "\n[compat]\n" f'min = "{_ver(mn)}"\ntarget = "{_ver(tg)}"\ncompile = "{_ver(cp)}"\n'
+            # VER-01 提案第 4 条：min_level 尾增（未声明不发射——旧形字节零漂移）
+            if self.min_level is not None:
+                out += f"min_level = {self.min_level}\n"
         out += f"\n[capabilities]\nconsole = {'true' if self.console else 'false'}\n"
         if self.fs:
             out += f'fs = ["{self.fs}"]\n'
@@ -338,16 +345,21 @@ def check_manifest_text(text: str) -> M:
                      code="manifest.intent.vocab", where="app.intent",
                      expected=list(INTENTS), got=app["intent"])
 
-    # SDK-1a：[compat] 三值域 + 链执法（§4.2）。isinstance 门 = 节级形态
-    # 硬ening（tomllib 把 `compat = 5` 解成 int，set(int) 会 TypeError——
-    # 崩栈不是门禁，与 [app]/[capabilities] 的 isinstance 门同口径）。
+    # SDK-1a：[compat] 三值域 + 链执法（§4.2）+ VER-01 提案第 4 条可选
+    # min_level（u32 整数、独立可选、缺省 0——不参三值齐备约束）。
+    # isinstance 门 = 节级形态硬ening（tomllib 把 `compat = 5` 解成 int，
+    # set(int) 会 TypeError——崩栈不是门禁，与 [app]/[capabilities] 的
+    # isinstance 门同口径）。
     vs = None
     compat = doc.get("compat")
+    ml = None
     if compat is not None:
-        if not isinstance(compat, dict) or set(compat) != {"min", "target", "compile"}:
-            raise Reject("manifest: [compat] 应为 min/target/compile 三键齐备",
+        if (not isinstance(compat, dict)
+                or not {"min", "target", "compile"} <= set(compat)
+                or set(compat) - {"min", "target", "compile", "min_level"}):
+            raise Reject("manifest: [compat] 应为 min/target/compile 三键齐备（+可选 min_level）",
                          code="manifest.compat.keys", where="compat",
-                         expected=["min", "target", "compile"])
+                         expected=["min", "target", "compile", "min_level?"])
         vs = []
         for k in ("min", "target", "compile"):
             v = compat[k]
@@ -366,6 +378,19 @@ def check_manifest_text(text: str) -> M:
             raise Reject(f"manifest: compile {_ver(vs[2])} 超工具链当前级 {SDK_CURRENT_STR}",
                          code="manifest.compat.ceiling", where="compat.compile",
                          expected=f"≤{SDK_CURRENT_STR}", got=_ver(vs[2]))
+        # VER-01 提案第 4 条：min_level（u32 整数；装载期检查在 appd 与
+        # BERRY_PLATFORM_LEVEL 比——打包期不做「未来级」闸，只钉形状）。
+        ml = compat.get("min_level")
+        if ml is not None:
+            if type(ml) is not int:  # bool 是 int 子类，type() 才拦得住
+                raise Reject("manifest: min_level 应为整数",
+                             code="manifest.compat.min_level.type",
+                             where="compat.min_level", expected="int")
+            if not 0 <= ml <= 0xFFFFFFFF:
+                raise Reject("manifest: min_level 越界 [0,4294967295]",
+                             code="manifest.compat.min_level.range",
+                             where="compat.min_level",
+                             expected="[0,4294967295]", got=ml)
 
     caps = doc["capabilities"]
     if not {"console"} <= set(caps) or set(caps) - {"console", "fs", "net"}:
@@ -489,7 +514,7 @@ def check_manifest_text(text: str) -> M:
         # 文档序保序（tomllib dict 保序）——canonical 同序重发射
         aa_t = list(aa.items())
 
-    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, sec_t, ui_t, aa_t)
+    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, ml, sec_t, ui_t, aa_t)
     if text != m.canonical():
         raise Reject(
             "manifest: 非规范形（hex/下划线整数、单引号、内联表、"
@@ -927,6 +952,11 @@ def build(out_path: str, app_dir: str, *, emit: bool = True) -> dict:
     if m.compat is not None:
         line += f" compat={_ver(m.compat[0])}..{_ver(m.compat[2])}"
         result["compat"] = f"{_ver(m.compat[0])}..{_ver(m.compat[2])}"
+        # VER-01 提案第 4 条：level 位（有 min_level 才打——不破坏现有行
+        # grep 面；记录位升消费，装载期检查在 appd）。
+        if m.min_level is not None:
+            line += f" min_level={m.min_level}"
+            result["min_level"] = m.min_level
     if m.fs:
         line += f" fs={m.fs}"
         result["fs"] = m.fs

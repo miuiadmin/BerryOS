@@ -4,7 +4,7 @@
 产物：
   1. kernel/src/abi_gen.rs              —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR（syscall.rs/handle.rs 转发）
   2. user/berry-sys/src/abi_gen.rs  —— 同面镜像（+ INVALID_HANDLE + 私有 mod nr）
-  3. docs/系统调用ABI设计-v1.0.md    —— §4 编号表体 + §8.2 两段 C 定义列（marker 块替换）
+  3. docs/系统调用ABI设计-v1.0.md    —— §4 编号表体 + §8.2 三段 C 定义列（marker 块替换）
   4. tools/abi.syz                      —— syzkaller syscall 描述骨架（SEC-01 §4.5 件 25；未过
                                           syz-sysgen 编译验证——头注如实声明，详见 gen_syz）
   5. arch/aarch64/src/wake_gen.rs   —— 唤醒源枚举常量 WAKE_SRC_*（刀 1：trap 臂源映射/
@@ -15,7 +15,10 @@
   python3 tools/gen_abi.py           # 生成（写盘；文档块外的内容一字不动）
   python3 tools/gen_abi.py --check   # 逐字节比对盘上四产物 vs 期望——
                                       # 挂 just abi-check（build/smoke 前置）：
-                                      # 改了 abi.toml 忘再生成 / 手改产物 → FAIL。
+                                      # 改了 abi.toml 忘再生成 / 手改产物 → FAIL；
+                                      # + G-ver-1（版本管理标准 §3）：[platform]
+                                      # level 现值 < git HEAD 值 → FAIL（无 git /
+                                      # HEAD 无该段 = 豁免注记不红）。
   python3 tools/gen_abi.py --selftest  # 门禁自检（挂 just test-host 前置）：
                                       # 求值器/C 映射/号段/四元组/行筛选/
                                       # syz 投影/marker 替换/装载校验钉板 +
@@ -120,7 +123,7 @@ def load() -> dict:
 
 def validate(d: dict) -> dict:
     """单源校验（--selftest 钉板位；load = 读盘 + 本函数）。"""
-    for key in ("meta", "types"):
+    for key in ("meta", "platform", "types"):
         if key not in d:
             raise Fail(f"abi.toml: 缺 [{key}] 段")
     for key in ("clock", "option", "right", "signal", "errno", "group", "wakesrc"):
@@ -145,6 +148,14 @@ def validate(d: dict) -> dict:
     for key in ("nr_total", "implemented", "nr_ceiling"):
         if key not in meta:
             raise Fail(f"abi.toml: [meta] 缺 {key}（四元组执法面）")
+    # [platform] level：单调整数 API level 轨道（VER-01 提案第 4 条）——
+    # ≥1 整数（bool 是 int 子类，显式拒——TOML `level = true` 不是 1）；
+    # 「只增不减、不兼容变更 +1、兼容新增不 +1」是流程纪律（改值 = 不兼容
+    # ABI 变更，评审执法），单源只钉形状。
+    lvl = d["platform"].get("level")
+    if not isinstance(lvl, int) or isinstance(lvl, bool) or lvl < 1:
+        raise Fail("abi.toml: [platform] level 应为 ≥1 的整数（单调整数轨道："
+                   "只增不减、不兼容 ABI 变更 +1、兼容新增不 +1）")
     _, nr_defined, nr_registered, _ = four_tuple(d)
     if nr_defined > meta["nr_ceiling"]:
         raise Fail(f"abi.toml: nr_defined={nr_defined} > nr_ceiling={meta['nr_ceiling']}"
@@ -245,6 +256,16 @@ def gen_kernel_rs(d: dict) -> str:
     L.append("")
     L.append("use crate::handle::Rights;")
     L.append("")
+    # [platform] level（VER-01 提案第 4 条）：两端同源同值；内核侧暂无消费者
+    # （装载期门在用户态 svcmgr），照在册未实现号先例豁免 dead_code。
+    L.append("// ---- 平台 API level（abi.toml [platform]；VER-01 提案第 4 条：单调整数")
+    L.append("// level 轨道——只增不减、不兼容 ABI 变更 +1、兼容新增不 +1。内核侧")
+    L.append("// 在册无消费者（装载期门在 svcmgr），照在册未实现号先例豁免 dead_code）----")
+    L.append("/// svcmgr 装载期与 .bap `[compat] min_level` 比较的平台级基线")
+    L.append("///（用户侧同名常量同源同值，两端在册防漂移）。")
+    L.append("#[allow(dead_code)]")
+    L.append(f"pub const BERRY_PLATFORM_LEVEL: u32 = {d['platform']['level']};")
+    L.append("")
     L.append("// ---- syscall 号（ABI §4 编号表；"
              f"v1 {meta['nr_total']} 号在册、{meta['implemented']} 已实现）----")
     if unimpl:
@@ -309,6 +330,13 @@ def gen_user_rs(d: dict) -> str:
     L.append("")
     L.append("/// 无效 handle（表槽 0 恒空；`berry_handle_t` = 0）。")
     L.append(f"pub const INVALID_HANDLE: Handle = {d['types']['invalid_handle']};")
+    L.append("")
+    # [platform] level（VER-01 提案第 4 条）：svcmgr 装载期消费（min_level 门）。
+    L.append("// ---- 平台 API level（abi.toml [platform]；与内核侧同源同值）----")
+    L.append("/// 单调整数 level 轨道（VER-01 提案第 4 条：只增不减、不兼容 ABI 变更")
+    L.append("/// +1、兼容新增不 +1——Android API level 形而更简）；svcmgr 装载期与")
+    L.append("/// .bap `[compat] min_level` 比较的平台级基线。")
+    L.append(f"pub const BERRY_PLATFORM_LEVEL: u32 = {d['platform']['level']};")
     L.append("")
     L.append("// ---- rights 位（12 位；权限在 handle 不在对象）----")
     for r in d["right"]:
@@ -430,6 +458,19 @@ def doc_rights_c(d: dict) -> str:
     return c_defines(entries)
 
 
+def meta_platform_level(d: dict) -> int:
+    """[platform] level 单值读口（syz 注释/文档 C 列共用；validate 已钉形状）。"""
+    return d["platform"]["level"]
+
+
+def doc_platform_c(d: dict) -> str:
+    """§8.2 平台 API level C 行（VER-01 提案第 4 条——单调整数轨道单源出口）。"""
+    return c_defines([
+        ("BERRY_PLATFORM_LEVEL", str(meta_platform_level(d)),
+         "平台 API level（单调整数轨道：只增不减；不兼容 ABI 变更 +1；兼容新增不 +1）"),
+    ])
+
+
 def doc_errno_c(d: dict) -> str:
     entries = []
     for e in d["errno"]:
@@ -441,6 +482,7 @@ def doc_errno_c(d: dict) -> str:
 
 DOC_BLOCKS = {
     "syscalls": doc_syscall_table,
+    "platform-c": doc_platform_c,
     "rights-c": doc_rights_c,
     "errno-c": doc_errno_c,
 }
@@ -544,6 +586,8 @@ def gen_syz(d: dict) -> str:
     L.append(f"type berry_time {syz_int(t['time'], False)}")
     L.append("")
     L.append("# ---- 常量注释（abi.toml 单源字面量；非 syz const 引用）----")
+    L.append("# 平台 API level（[platform]；单调整数轨道——只增不减、不兼容 ABI 变更 +1）:")
+    L.append(f"#   BERRY_PLATFORM_LEVEL = {meta_platform_level(d)}")
     L.append("# clock id:")
     for c in d["clock"]:
         L.append(f"#   CLOCK_{c['name']} = {syz_val(c['expr'])}")
@@ -649,6 +693,8 @@ stage = "v1"
 nr_total = 1
 implemented = 1
 nr_ceiling = 45
+[platform]
+level = 1
 [types]
 handle = 4
 rights = 8
@@ -699,6 +745,13 @@ stage = "v1"
 
     expect_fail("validate 拒缺 [meta]", lambda: validate(
         {k: v for k, v in base.items() if k != "meta"}), "缺 [meta]")
+    # [platform] level（VER-01 提案第 4 条）：缺段/非正整数/bool 全拒
+    expect_fail("validate 拒缺 [platform]", lambda: validate(
+        {k: v for k, v in base.items() if k != "platform"}), "缺 [platform]")
+    expect_fail("validate 拒 level=0", lambda: validate(
+        mut(platform={"level": 0})), "≥1 的整数")
+    expect_fail("validate 拒 level=bool（int 子类显式拒）", lambda: validate(
+        mut(platform={"level": True})), "≥1 的整数")
     expect_fail("validate 拒空 [[clock]]", lambda: validate(
         mut(clock=[])), "段为空")
     expect_fail("validate 拒 num 重复", lambda: validate(mut(group=[{
@@ -777,14 +830,16 @@ stage = "v1"
     check("markers -c fence 语境", markers("rights-c") == (
         "/* @gen:rights-c begin */", "/* @gen:rights-c end */"))
     doc_ok = ("# T\n\n<!-- @gen:syscalls begin -->\nOLD\n<!-- @gen:syscalls end -->\n\n"
+              "```c\n/* @gen:platform-c begin */\nP\n/* @gen:platform-c end */\n```\n\n"
               "```c\n/* @gen:rights-c begin */\nX\n/* @gen:rights-c end */\n```\n\n"
               "```c\n/* @gen:errno-c begin */\nY\n/* @gen:errno-c end */\n```\n\n"
               "v1 计数 = 1\n")
     patched = patch_doc(doc_ok, base)
-    check("patch_doc 三块全替换", "OLD" not in patched and "\nX\n" not in patched
-          and "\nY\n" not in patched and "v1 计数 = 1" in patched)
+    check("patch_doc 四块全替换", "OLD" not in patched and "\nP\n" not in patched
+          and "\nX\n" not in patched and "\nY\n" not in patched and "v1 计数 = 1" in patched)
     check("patch_doc 表头契约在席", DOC_TABLE_HEADER[0] in patched
           and DOC_TABLE_HEADER[1] in patched)
+    check("patch_doc platform C 行在席", "#define BERRY_PLATFORM_LEVEL" in patched)
     expect_fail("patch_doc 拒重复 marker 对", lambda: patch_doc(
         doc_ok.replace("<!-- @gen:syscalls begin -->",
                        "<!-- @gen:syscalls begin -->\n<!-- @gen:syscalls begin -->"),
@@ -801,6 +856,20 @@ stage = "v1"
     check("c_defines 名列对齐（A 补到 13 宽 = 12 空格）",
           lines[0].startswith("#define A" + " " * 12 + "1")
           and lines[1] == "#define LONGER_NAME  22")
+
+    # --- 9.5 G-ver-1（版本管理标准 §3）：level 单调裁决钉板（降号红负向钉） ---
+    check("G-ver-1 升号过（1→2）", level_verdict(2, 1) is None)
+    check("G-ver-1 平号过（1→1）", level_verdict(1, 1) is None)
+    check("G-ver-1 豁免不红（old=None）", level_verdict(1, None) is None)
+    down = level_verdict(1, 2)
+    check("G-ver-1 降号红（2→1；消息含两值与标准 §3 引用）",
+          down is not None and "现值 1" in down and "HEAD 值 2" in down
+          and "§3" in down)
+    head_lvl, head_note = head_platform_level()
+    check("G-ver-1 HEAD 基线口径（豁免注记 或 ≥1 整值同形注记）",
+          (head_lvl is None and "豁免" in head_note)
+          or (isinstance(head_lvl, int) and not isinstance(head_lvl, bool)
+              and head_lvl >= 1 and head_note == f"HEAD level={head_lvl}"))
 
     # --- 10. exit-code 契约（子进程真跑；不测 --selftest 自身——自引用
     #      会无限递归；extra-arg 守卫 = exact-arg 契约） ---
@@ -839,6 +908,50 @@ stage = "v1"
     return 1 if failures else 0
 
 
+# ---------------------------------------------------- G-ver-1（版本管理标准 §3）
+# level 单调执法（挂 --check = just abi-check，build/smoke 前置顺带）：
+# 现值 < git HEAD 值即 FAIL。豁免（注记不红，与 build.rs 的 nogit 标识同
+# 哲学——缺证据不冒充通过）：无 git / HEAD abi.toml 无 [platform] level
+# （level 轨道首入轨前的历史提交）。基线取 HEAD 而非「工作树某旧值」：
+# abi-check 的执法时点 = 提交前，HEAD 即「上一个已入库的对外承诺」。
+
+def head_platform_level() -> tuple:
+    """git HEAD `tools/abi.toml` 的 [platform] level（G-ver-1 比较基线）。
+
+    返回 (level, note)：level=None = 豁免、note 为豁免原因；否则
+    (≥1 整数, "HEAD level=<n>")。HEAD 文件缺段/不可解析一律豁免——
+    本门只裁「能确证旧值的提交」上的回退，不在证据缺席时冒充执法。"""
+    import subprocess as sp
+    try:
+        p = sp.run(["git", "-C", str(ROOT), "show", "HEAD:tools/abi.toml"],
+                   capture_output=True, text=True, encoding="utf-8",
+                   errors="replace")
+    except OSError:
+        return None, "豁免（无 git 可用）"
+    if p.returncode != 0:
+        return None, "豁免（非 git 仓或无 HEAD 提交）"
+    try:
+        old = tomllib.loads(p.stdout)
+    except tomllib.TOMLDecodeError:
+        return None, "豁免（HEAD abi.toml 不可解析）"
+    lvl = old.get("platform", {}).get("level")
+    if not isinstance(lvl, int) or isinstance(lvl, bool):
+        return None, "豁免（HEAD abi.toml 无 [platform] level）"
+    return lvl, f"HEAD level={lvl}"
+
+
+def level_verdict(cur: int, old) -> str | None:
+    """G-ver-1 单调裁决（--selftest 钉板位）：old=None 豁免 → None；
+    cur < old → FAIL 消息（含两值与标准 §3 引用）；cur ≥ old → None。"""
+    if old is None:
+        return None
+    if cur < old:
+        return (f"G-ver-1（版本管理标准 §3）level 单调性破坏：现值 {cur} <"
+                f" HEAD 值 {old}——level 只增不减（回退请 revert tools/abi.toml"
+                " 或走不兼容变更评审 +1 纪律）")
+    return None
+
+
 # ---------------------------------------------------------------- 主流程
 
 def build_all(d: dict) -> tuple:
@@ -857,7 +970,8 @@ def main() -> int:
         return selftest()
     ap = argparse.ArgumentParser(description="BerryOS ABI 单源生成/守卫")
     ap.add_argument("--check", action="store_true",
-                    help="不写盘：逐字节比对盘上四产物 vs 期望，漂移即 FAIL")
+                    help="不写盘：逐字节比对盘上产物 vs 期望（漂移即 FAIL）"
+                         " + G-ver-1 level 单调（现值 < git HEAD 即 FAIL）")
     ap.add_argument("--selftest", action="store_true",
                     help="门禁自检：纯函数钉板 + 在册五产物逐字节 oracle（exit 0=PASS）")
     args = ap.parse_args()
@@ -878,7 +992,16 @@ def main() -> int:
                     print(f"abi-check: FAIL——{p.relative_to(ROOT)} 与 abi.toml 期望不符"
                           f"（改了 abi.toml 跑 `just abi-gen`；手改了产物请改回）")
                 return 1
+            # G-ver-1（版本管理标准 §3）：[platform] level 单调——现值 <
+            # git HEAD 值即 FAIL；无 git / HEAD 无该段 = 豁免注记不红。
+            cur_lvl = d["platform"]["level"]
+            old_lvl, lvl_note = head_platform_level()
+            verdict = level_verdict(cur_lvl, old_lvl)
+            if verdict is not None:
+                print(f"abi-check: FAIL——{verdict}")
+                return 1
             n = len(v1_rows(d))
+            print(f"abi-check: G-ver-1 level 单调 {lvl_note}，现 level={cur_lvl}")
             print(f"abi-check: PASS（NR v1 {n} 号在册——内核 ↔ berry-sys ↔ 文档 ↔ syz ↔"
                   " arch-wake 五面单源一致）")
             return 0
@@ -888,7 +1011,7 @@ def main() -> int:
         SYZ.write_text(syz, "utf-8")
         ARCH_RS.write_text(arch, "utf-8")
         print(f"abi-gen: 写 {KERNEL_RS.relative_to(ROOT)} / {USER_RS.relative_to(ROOT)}"
-              f" / 文档三 marker 块 / {SYZ.relative_to(ROOT)} /"
+              f" / 文档四 marker 块 / {SYZ.relative_to(ROOT)} /"
               f" {ARCH_RS.relative_to(ROOT)}——提交时产物 diff 一并入册")
         return 0
     except Fail as e:

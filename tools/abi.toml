@@ -18,6 +18,16 @@
 # 与 .h）仍手写双镜像——v2 挂账（见 ABI 文档 §8 引言）。
 # =====================================================================
 
+# ---- 平台 API level（VER-01 提案第 4 条·「1.0 前 SDK 冻结窗」刀：SDK
+# CURRENT 布尔门槛 → 单调整数 level 轨道，Android API level 形而更简——
+# 无多 level 并存）。调律：只增不减；每次不兼容 ABI 变更 +1；兼容新增
+# 不 +1（Android API level 语义）。消费面：两端 abi_gen 的
+# BERRY_PLATFORM_LEVEL（svcmgr 装载期与 .bap [compat] min_level 比较的
+# 基线）。与 [compat] 三值域（semver 形，ADR #55）正交并行——互不替代、
+# 各自版本化。----
+[platform]
+level = 1             # 初值 1 = 首个冻结面起点（v1 37 号在册面）
+
 [meta]
 stage = "v1"
 nr_total = 37        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85

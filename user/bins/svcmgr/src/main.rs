@@ -36,6 +36,7 @@ use berry_sys::{
     BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY,
     BERRY_ERR_INVALID_ARG, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
     SIGNAL_WAKE_PENDING,
+    BERRY_PLATFORM_LEVEL,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
     SIGNAL_WRITABLE, VMO_OPT_DEMAND,
 };
@@ -5516,6 +5517,16 @@ fn app_launch(
     if let Some(c) = man.compat {
         if c.min > SDK_CURRENT {
             eco_app(console, id, b"compat min"); // 10B ≤ 24B
+            return (false, UiFace::Absent, None);
+        }
+        // VER-01 提案第 4 条（平台 API level 单调化）：min_level 轨道的
+        // 装载期检查——包声明的最低平台级高于本系统级 = loud 降级行拒拉
+        //（"compat min" 同形短行）。基线 BERRY_PLATFORM_LEVEL 自 berry-sys
+        // abi_gen（单源 tools/abi.toml [platform]——SDK 门槛位换轨单调整数
+        // level，Android API level 形而更简）；与上方三值域检查正交并行、
+        // 各自比较。同样零清理直退。
+        if c.min_level > BERRY_PLATFORM_LEVEL {
+            eco_app(console, id, b"lvl min"); // 7B ≤ 24B
             return (false, UiFace::Absent, None);
         }
     }

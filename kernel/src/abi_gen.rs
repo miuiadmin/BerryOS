@@ -9,6 +9,14 @@
 
 use crate::handle::Rights;
 
+// ---- 平台 API level（abi.toml [platform]；VER-01 提案第 4 条：单调整数
+// level 轨道——只增不减、不兼容 ABI 变更 +1、兼容新增不 +1。内核侧
+// 在册无消费者（装载期门在 svcmgr），照在册未实现号先例豁免 dead_code）----
+/// svcmgr 装载期与 .bap `[compat] min_level` 比较的平台级基线
+///（用户侧同名常量同源同值，两端在册防漂移）。
+#[allow(dead_code)]
+pub const BERRY_PLATFORM_LEVEL: u32 = 1;
+
 // ---- syscall 号（ABI §4 编号表；v1 37 号在册、36 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;

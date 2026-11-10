@@ -198,6 +198,11 @@ typedef uint64_t berry_time_t;     /* 纳秒；单调钟 / 壁钟由 clock_id �
 
 #define BERRY_HANDLE_INVALID  ((berry_handle_t)0)
 
+/* 平台 API level（VER-01 提案第 4 条：单调整数轨道——abi.toml [platform] 单源） */
+/* @gen:platform-c begin */
+#define BERRY_PLATFORM_LEVEL  1  /* 平台 API level（单调整数轨道：只增不减；不兼容 ABI 变更 +1；兼容新增不 +1） */
+/* @gen:platform-c end */
+
 /* 对象类型（handle 高位可选编码用；也供 get_info/object_signal 分派） */
 enum berry_obj_type {
     BERRY_OBJ_PROCESS = 1, BERRY_OBJ_THREAD, BERRY_OBJ_VMO, BERRY_OBJ_VMAR,

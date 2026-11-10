@@ -4,19 +4,19 @@ version = 4
 
 [[package]]
 name = "berry-hal-aarch64"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-hdlface"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-iprofile"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-hal-aarch64",
  "berry-hdlface",
@@ -29,18 +29,18 @@ dependencies = [
 
 [[package]]
 name = "berry-mm"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-piface"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-wqmatch",
 ]
 
 [[package]]
 name = "berry-sched"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-hal-aarch64",
  "berry-iprofile",
@@ -49,8 +49,8 @@ dependencies = [
 
 [[package]]
 name = "berry-vmoledger"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-wqmatch"
-version = "0.1.0"
+version = "0.2.0"

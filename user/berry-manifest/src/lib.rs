@@ -23,6 +23,14 @@
 //!   支）。**本解析器不做链比较**——min ≤ target ≤ compile ≤
 //!   SDK_CURRENT 是 mkapp 编译期执法（分层执法，parser 不知「当前级」
 //!   语义）；appd 运行期只查 `min > SDK_CURRENT`。
+//! - `[compat]` 增可选 `min_level`（u32 纯十进制整数，**缺省 0**——VER-01
+//!   提案第 4 条「平台 API level 单调化」的包侧记录位）：**独立可选**，
+//!   不参三值「齐备或齐缺」裁断（与三值域正交并行、互不替代——三值域
+//!   语义一字不动）；但 `[compat]` 在场时三值仍须齐备（仅 `min_level`
+//!   孤立在场 = `bad compat`，声明的约束不被静默吞弃）。appd 装载期查
+//!   `min_level > BERRY_PLATFORM_LEVEL`（level 常量源 = berry-sys
+//!   `abi_gen`，单源 `tools/abi.toml` `[platform]`）；本解析器照旧不做
+//!   「当前级」比较（分层执法不变）。
 //! - `[capabilities]` 增 `fs`/`net` 两键：作用域字符串数组（恰一元素，
 //!   值域整体 trim 容忍与 bool 同口径——规范形门禁拒的两级执法）。
 //!   v1 词表闭集 `fs ∈ {"rootfs"}`、`net ∈ {"client"}`——词表外/非数组/
@@ -331,6 +339,10 @@ pub struct Compat {
     pub min: SdkVer,
     pub target: SdkVer,
     pub compile: SdkVer,
+    /// 平台 API level 轨道包侧位（VER-01 提案第 4 条；u32，缺省 0）——
+    /// appd 装载期与 `BERRY_PLATFORM_LEVEL` 比较的最低平台级。与三值域
+    /// 正交：独立可选、add-only 零义务（旧包缺省 0 = 不设限）。
+    pub min_level: u32,
 }
 
 /// `[security]` 预留节（SDK-1a §2.3）——v2 密钥别名/谱系标识形制占位
@@ -496,6 +508,8 @@ struct Fields<'a> {
     c_min: Option<SdkVer>,
     c_target: Option<SdkVer>,
     c_compile: Option<SdkVer>,
+    // VER-01 提案第 4 条：平台 API level 包侧位（独立可选——不参齐缺裁断）
+    c_min_level: Option<u32>,
     fs: Option<&'a [u8]>,
     net: Option<&'a [u8]>,
     sec_profile: Option<&'a [u8]>,
@@ -620,6 +634,17 @@ fn set_sdkver(slot: &mut Option<SdkVer>, val: &[u8]) -> Result<(), ManifestErr> 
     Ok(())
 }
 
+/// [compat] `min_level` 槽（VER-01 提案第 4 条·平台 API level 单调化的
+/// 包侧位）：u32 纯十进制——节内任何文法错/重复键统一 `bad compat`
+///（set_sdkver 理由单一化同款）。独立可选，不参三值齐缺裁断。
+fn set_compat_level(slot: &mut Option<u32>, val: &[u8]) -> Result<(), ManifestErr> {
+    if slot.is_some() {
+        return Err(err("bad compat"));
+    }
+    *slot = Some(parse_u32(val).ok_or_else(|| err("bad compat"))?);
+    Ok(())
+}
+
 /// fs/net 作用域槽：`[` 双引号串 `]` 恰一元素 + 词表闭集。值域整体
 /// trim 容忍与 bool 同口径（`[ "rootfs" ]` 解析收、规范形门禁拒——
 /// 两级执法与 `console =  true` 双空格现状一致）；数组文法/词表外/
@@ -739,6 +764,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         c_min: None,
         c_target: None,
         c_compile: None,
+        c_min_level: None,
         fs: None,
         net: None,
         sec_profile: None,
@@ -858,6 +884,9 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
             (Sec::Compat, b"min") => set_sdkver(&mut f.c_min, val)?,
             (Sec::Compat, b"target") => set_sdkver(&mut f.c_target, val)?,
             (Sec::Compat, b"compile") => set_sdkver(&mut f.c_compile, val)?,
+            // VER-01 提案第 4 条：平台 API level 包侧位（独立可选缺省 0——
+            // 文法执法在 set_compat_level，不参三值齐缺裁断）
+            (Sec::Compat, b"min_level") => set_compat_level(&mut f.c_min_level, val)?,
             // SDK-1a：预留节（值域执法在 set_sec；齐缺裁断在收尾）
             (Sec::Secu, b"profile") => set_sec(&mut f.sec_profile, val)?,
             (Sec::Secu, b"key_lineage") => set_sec(&mut f.sec_lineage, val)?,
@@ -911,9 +940,18 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
     let console = f.console.ok_or_else(|| err("missing console"))?;
 
     // ---- SDK-1a 收尾：三值/两键「齐备或齐缺」+ 缺省 None（add-only）----
+    // min_level 独立可选（VER-01 提案第 4 条）：缺省 0、不参三值齐缺裁断；
+    // 但**不被静默吞弃**——[compat] 在场而三值齐缺（哪怕 min_level 在场）
+    // = bad compat（空 [compat] 节先例只对真空节；声明了最低平台级却丢约
+    // 束 = 静默错值类，loud 拒）。
     let compat = match (f.c_min, f.c_target, f.c_compile) {
-        (None, None, None) => None,
-        (Some(min), Some(target), Some(compile)) => Some(Compat { min, target, compile }),
+        (None, None, None) if f.c_min_level.is_none() => None,
+        (Some(min), Some(target), Some(compile)) => Some(Compat {
+            min,
+            target,
+            compile,
+            min_level: f.c_min_level.unwrap_or(0),
+        }),
         _ => return Err(err("bad compat")),
     };
     let fs = f.fs.map(|s| from_utf8(s).unwrap_or(""));
@@ -1288,6 +1326,9 @@ stack_pages = 16
             (c.min, c.target, c.compile),
             (SDK_CURRENT, SDK_CURRENT, SDK_CURRENT)
         );
+        // VER-01 提案第 4 条：appdemo = min_level 首个正样本（装载期
+        // lvl min 检查的活证）；appquiet/apptomb 缺席 = 零义务负样本。
+        assert_eq!(c.min_level, 1);
         assert_eq!(m.fs, Some("rootfs"));
         assert_eq!(m.net, None);
         assert_eq!(m.security, None);
@@ -1456,6 +1497,37 @@ stack_pages = 16
         // 序不合（min > target）parser 照收——链比较在 mkapp（分层执法显式钉住）
         let s = with_compat(BASE, "min = \"0.2.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"");
         assert!(parse(s.as_bytes()).is_ok());
+    }
+
+    // 27b. [compat] min_level（VER-01 提案第 4 条·平台 API level 单调化的
+    //      包侧位）：在场解析 / 缺省 0（add-only 零义务——旧包零漂移）/
+    //      坏值族统一 bad compat（理由单一化同款）。
+    #[test]
+    fn compat_min_level() {
+        let full = "min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nmin_level = 1";
+        let c = ok(&with_compat(BASE, full)).compat.expect("compat");
+        assert_eq!(
+            (c.min, c.target, c.compile),
+            (SDK_CURRENT, SDK_CURRENT, SDK_CURRENT)
+        );
+        assert_eq!(c.min_level, 1);
+        // 缺省 0：三值齐备而 min_level 缺席 = 零义务默认（appquiet/apptomb 负样本面）
+        let plain = "min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"";
+        assert_eq!(ok(&with_compat(BASE, plain)).compat.unwrap().min_level, 0);
+        // 坏值族：引号串/符号/hex 前缀/u32 溢出/重复键 → bad compat
+        for v in ["\"1\"", "-1", "+1", "0x1", "1_0", "4294967296", "1.0"] {
+            let body = format!("min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nmin_level = {v}");
+            assert_eq!(
+                bad(&with_compat(BASE, &body)).reason_str(),
+                "bad compat",
+                "min_level = {v:?}"
+            );
+        }
+        let dup = "min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nmin_level = 1\nmin_level = 1";
+        assert_eq!(bad(&with_compat(BASE, dup)).reason_str(), "bad compat");
+        // 独立可选不救三值齐缺：仅 min_level 而无三值 → bad compat
+        let lone = "min_level = 1";
+        assert_eq!(bad(&with_compat(BASE, lone)).reason_str(), "bad compat");
     }
 
     // 28. fs 作用域：词表内过；词表外/空元素/多元素/非数组一律 bad scope。
