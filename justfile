@@ -926,7 +926,7 @@ ver-check:
 smoke: build
     {{BASH}} tools/smoke.sh
 
-# ---------- 预 ADR #84：BCTS v0 回放（冻结标记集清单对账）----------
+# ---------- ADR #84 已立法：BCTS v0 回放（冻结标记集清单对账）----------
 # 宿主钉死现役配方树（#82 附录二 Q4 裁定）：复用 build + smoke.sh 全相，
 # 零未开工件依赖；berry-assemble（V13）成型后迁组装门禁。
 # 缺省 = 活树自检态（清单取 markers.sh 单源）；BCTS_FROZEN=<bcts@*.toml>

@@ -44,7 +44,12 @@ GUI-7 图标/视图管道（裁决 B——staging 源是 PNG，产物是 BYI1）
      views = `views/` 前缀路径、label = 1..=LABEL_MAX——帽/前缀镜像
      berry-manifest，`.byi` 后缀是 mkapp 产面收紧项）+ 同意面先落件二
      [agent-actions]（键 = kebab-case 动作名、值 = 三档词
-     routine|sensitive|destructive——镜像 berry-manifest RiskTier）；
+     routine|sensitive|destructive——镜像 berry-manifest RiskTier）+
+     ADR #82 V3 [security] 三键齐备（profile/key_lineage/integrator——
+     值域 SEC_RE 同域，「两键齐备或齐缺」不变量三键化重立法）+
+     V6 [blob] 载体节声明校验（在场则五字段 license/origin/sha256/
+     size/usage 必全——缺一 loud 拒，镜像 berry-manifest；值只校验
+     形态，内容对拍随 berry-assemble/V13）；
   2. **规范形重序列化逐字节相等**——berry-manifest 只收 TOML 子集，
      tomllib 收全集（hex/下划线整数、单引号、内联表、多行串、注释、
      CRLF…），本道是把「tomllib 收下」收紧到「子集收下」的唯一执法点；
@@ -70,12 +75,14 @@ where=节.键路径，line 仅语法层透传 tomllib 位点、其余域用自�
 （min/target/compile，int 三元组重发射；VER-01 提案第 4 条起可选尾增
 `min_level` u32 整数行——未声明不发射）+ `[capabilities]`
 console,fs?,net?（fs/net 数组无空格形）+ `[runtime]?` stack_pages +
-`[security]?`（profile/key_lineage）+ `[ui]?`（GUI-7——icon/label/views
-键定序、三键独立可选）+ `[agent-actions]?`（同意面先落件二新居末——
-kebab-case 键按文档序保序重发射；居末 = F0–F7 字节零漂移，add-only
-执法锚不破）；节间恰一空行。旧形（五平面全缺省）输出与 v0 canonical()
-逐字节相同。空 `[runtime]` / 空 `[ui]` / 空 `[agent-actions]` 解析器合法
-但非规范形 → 门禁拒（byte 不等）——省略或显式，二选一。
+`[security]?`（profile/key_lineage/integrator——ADR #82 V3 三键）+
+`[ui]?`（GUI-7——icon/label/views 键定序、三键独立可选）+
+`[agent-actions]?`（同意面先落件二——kebab-case 键按文档序保序重发射）+
+`[blob]?`（ADR #82 V6 前置——五字段键定序 license/origin/sha256/size/
+usage，居末）；节间恰一空行。旧形（五平面全缺省）输出与 v0 canonical()
+逐字节相同。空 `[runtime]` / 空 `[ui]` / 空 `[agent-actions]` / 空
+`[blob]` 解析器合法但非规范形 → 门禁拒（byte 不等）——省略或显式，
+二选一。
 
 编码器纪律（§4 单编码器）：cpio 编码 `from mkcpio import build_archive`
 复用——禁止第二份 newc/trailer 逻辑（双编码器 = 漂移面）；条目按
@@ -155,6 +162,13 @@ AGENT_ACTIONS_MAX = 16  # 条目数帽（berry-manifest 零分配定长槽的镜
 RISK_TIERS = ("routine", "sensitive", "destructive")
 ACTION_KEY_RE = re.compile(r"[a-z][a-z0-9-]{0,23}")
 
+# ---- ADR #82 厂商定制预埋常量（V3/V6；对账锚点：SEC_KEYS 三键集与
+# BLOB_FIELD_MAX/BLOB_KEYS 五字段集镜像 berry-manifest——双侧同步义务
+# 同上）----
+SEC_KEYS = ("profile", "key_lineage", "integrator")  # V3：三键齐备或齐缺
+BLOB_FIELD_MAX = 64     # [blob] 单字段帽（V6——形态校验 only，值执法随 berry-assemble/V13）
+BLOB_KEYS = ("license", "origin", "sha256", "size", "usage")  # V6：最低披露五字段（09 号 §4 族）
+
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 APP_KEYS = ("id", "version", "entry", "type", "intent")
 
@@ -191,7 +205,7 @@ def _ver(v: tuple) -> str:
 class M:
     """过检后的 manifest 视图（规范形重序列化的数据源）。"""
 
-    def __init__(self, app, caps, runtime, compat, min_level, sec, ui, aa):
+    def __init__(self, app, caps, runtime, compat, min_level, sec, ui, aa, blob):
         self.id = app["id"]
         self.version = app["version"]
         self.entry = app["entry"]
@@ -201,7 +215,8 @@ class M:
         self.intent = app["intent"]
         # SDK-1a（§4.1）：compat = None | (min, target, compile) int 三元组
         # 的三元组；fs/net = None | str（词表门已保证单元素数组——此处取
-        # 元素，canonical 按 `["str"]` 无空格形重发射）；sec = None | (p, k)。
+        # 元素，canonical 按 `["str"]` 无空格形重发射）；sec = None |
+        # (p, k, i)（ADR #82 V3 起三键）。
         self.compat = compat
         # VER-01 提案第 4 条：min_level = None | u32（[compat] 独立可选、
         # 缺省 0——None = 未声明不发射；appd 装载期与 BERRY_PLATFORM_LEVEL 比）。
@@ -217,6 +232,9 @@ class M:
         # 同意面先落件二：aa = None | [(动作名, 档词), …]（文档序——tomllib
         # dict 保序；空 [agent-actions] 节同理在门禁 2 处拒）。
         self.agent_actions = aa
+        # ADR #82 V6 前置：blob = None | (license, origin, sha256, size,
+        # usage) 五元组（BLOB_KEYS 定序；空节同理在门禁 2 处拒）。
+        self.blob = blob
 
     def canonical(self) -> str:
         # SDK-1a §3.1 定序 + GUI-7/同意面先落件二尾增：[app] → [compat]?
@@ -245,8 +263,8 @@ class M:
         if self.has_runtime:
             out += f"\n[runtime]\nstack_pages = {self.stack_pages}\n"
         if self.sec:
-            p, k = self.sec
-            out += f'\n[security]\nprofile = "{p}"\nkey_lineage = "{k}"\n'
+            p, k, g = self.sec
+            out += f'\n[security]\nprofile = "{p}"\nkey_lineage = "{k}"\nintegrator = "{g}"\n'
         if self.ui:
             icon, label, views = self.ui
             out += "\n[ui]\n"
@@ -260,6 +278,14 @@ class M:
         if self.agent_actions:
             out += "\n[agent-actions]\n"
             out += "".join(f'{k} = "{v}"\n' for k, v in self.agent_actions)
+        # ADR #82 V6：[blob] 尾增居末（F0–F8 字节零漂移）；五字段键定序
+        # license/origin/sha256/size/usage（BLOB_KEYS 单源）。
+        if self.blob:
+            lic, org, sha, sz, usg = self.blob
+            out += (
+                f'\n[blob]\nlicense = "{lic}"\norigin = "{org}"\n'
+                f'sha256 = "{sha}"\nsize = "{sz}"\nusage = "{usg}"\n'
+            )
         return out
 
 
@@ -306,13 +332,13 @@ def check_manifest_text(text: str) -> M:
                      line=_toml_line(e))
 
     unknown = set(doc) - {
-        "app", "capabilities", "runtime", "compat", "security", "ui", "agent-actions",
+        "app", "capabilities", "runtime", "compat", "security", "ui", "agent-actions", "blob",
     }
     if unknown:
         raise Reject(f"manifest: 未知节 {sorted(unknown)}",
                      code="manifest.section.unknown", where="manifest.toml",
                      expected=["app", "capabilities", "runtime", "compat",
-                               "security", "ui", "agent-actions"],
+                               "security", "ui", "agent-actions", "blob"],
                      got=sorted(unknown))
     for need in ("app", "capabilities"):
         if not isinstance(doc.get(need), dict):
@@ -337,6 +363,10 @@ def check_manifest_text(text: str) -> M:
                      code="manifest.entry.prefix", where="app.entry",
                      expected="bin/<name>")
     if app["type"] != "app":
+        # ADR #82 V1：**产面不同步**——berry-manifest 词表已收 "driver"
+        # （收格式不消费，svcmgr 收集槽 type!=app 过滤），但 [hw] 节立法
+        # （驱动模型 v2 刀 B）前无合法 driver 产出路径，本门维持仅产
+        # "app"（11 号 §2-V1/W4）。
         raise Reject('manifest: type 仅 "app"',
                      code="manifest.type.value", where="app.type",
                      expected="app", got=app["type"])
@@ -430,20 +460,22 @@ def check_manifest_text(text: str) -> M:
                 expected=f"[{STACK_PAGES_MIN},{STACK_PAGES_MAX}]", got=sp,
             )
 
-    # SDK-1a：[security] 预留节形态执法（值域 1..=16B [a-z0-9-]，齐备或齐缺）
+    # SDK-1a：[security] 预留节形态执法（值域 1..=16B [a-z0-9-]）；ADR #82
+    # V3 起三键齐备或齐缺（integrator = 系统集成者身份 lineage，消费随
+    # #77——SEC_RE 同域，berry-manifest set_sec 同臂镜像）。
     sec_t = None
     sec = doc.get("security")
     if sec is not None:
-        if not isinstance(sec, dict) or set(sec) != {"profile", "key_lineage"}:
-            raise Reject("manifest: [security] 应为 profile/key_lineage 两键齐备",
+        if not isinstance(sec, dict) or set(sec) != set(SEC_KEYS):
+            raise Reject("manifest: [security] 应为 profile/key_lineage/integrator 三键齐备",
                          code="manifest.security.keys", where="security",
-                         expected=["profile", "key_lineage"])
-        for k in ("profile", "key_lineage"):
+                         expected=list(SEC_KEYS))
+        for k in SEC_KEYS:
             if not isinstance(sec[k], str) or not SEC_RE.fullmatch(sec[k]):
                 raise Reject("manifest: security 值应为 1..16B 的 [a-z0-9-]",
                              code="manifest.security.vocab",
                              where=f"security.{k}", expected="1..16B [a-z0-9-]")
-        sec_t = (sec["profile"], sec["key_lineage"])
+        sec_t = (sec["profile"], sec["key_lineage"], sec["integrator"])
 
     # GUI-7：[ui] 三键独立可选（无齐备约束——空节解析合法，但 canonical
     # 不发射空节 → 门禁 2 byte 不等拒；「省略或显式」同 [runtime] 先例）。
@@ -514,7 +546,30 @@ def check_manifest_text(text: str) -> M:
         # 文档序保序（tomllib dict 保序）——canonical 同序重发射
         aa_t = list(aa.items())
 
-    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, ml, sec_t, ui_t, aa_t)
+    # ADR #82 V6 前置（声明校验半）：[blob] 载体节在场则五字段必全（缺一
+    # loud 拒——声明完整性）；值只校验形态（1..=BLOB_FIELD_MAX 可打印
+    # ASCII 串，_check_str 镜像 parse_string），内容对拍随 berry-assemble
+    # （V13）——provenance 只在组装层存在（11 号 §2-V6）。空节 = canonical
+    # 不发射空节 → 门禁 2 byte 不等拒（空 [ui] 同款「省略或显式」二选一）。
+    blob_t = None
+    bl = doc.get("blob")
+    if bl is not None:
+        if not isinstance(bl, dict):
+            raise Reject("manifest: [blob] 应为节（键值表）",
+                         code="manifest.blob.type", where="blob",
+                         expected="节（键值表）")
+        if set(bl) != set(BLOB_KEYS):
+            raise Reject(f"manifest: [blob] 应为五字段齐备 {list(BLOB_KEYS)}"
+                         "（缺一拒——声明完整性）",
+                         code="manifest.blob.keys", where="blob",
+                         expected=list(BLOB_KEYS),
+                         got=(sorted(set(bl) - set(BLOB_KEYS))
+                              or sorted(set(BLOB_KEYS) - set(bl))))
+        for k in BLOB_KEYS:
+            _check_str(bl[k], f"blob.{k}", BLOB_FIELD_MAX, key=f"blob.{k}")
+        blob_t = tuple(bl[k] for k in BLOB_KEYS)
+
+    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, ml, sec_t, ui_t, aa_t, blob_t)
     if text != m.canonical():
         raise Reject(
             "manifest: 非规范形（hex/下划线整数、单引号、内联表、"
@@ -1344,6 +1399,7 @@ SELFTEST_BASELINE = """\
   selftest 拒（预期） : fs-not-array
   selftest 拒（预期） : net-vocab-server
   selftest 拒（预期） : sec-missing-key
+  selftest 拒（预期） : sec-missing-integrator
   selftest 拒（预期） : sec-value-space
   selftest 拒（预期） : sec-value-17b
   selftest 拒（预期） : ui-no-prefix
@@ -1364,6 +1420,10 @@ SELFTEST_BASELINE = """\
   selftest 拒（预期） : aa-digit-key
   selftest 拒（预期） : aa-over-cap
   selftest 拒（预期） : aa-empty-section
+  selftest 拒（预期） : blob-missing-field
+  selftest 拒（预期） : blob-unknown-key
+  selftest 拒（预期） : blob-value-65b
+  selftest 拒（预期） : blob-empty-section
   selftest 拒（预期） : apptomb-id-25b
   selftest 过（预期） : canonical id=APPDEMO
   selftest 过（预期） : canonical-runtime id=APPDEMO
@@ -1375,6 +1435,8 @@ SELFTEST_BASELINE = """\
   selftest 过（预期） : f7-ui-kitchen-sink id=KITCHEN
   selftest 过（预期） : f7b-ui-icon-only id=X
   selftest 过（预期） : f8-agent-actions id=KITCHEN
+  selftest 过（预期） : f9-blob-kitchen-sink id=KITCHEN
+  selftest 过（预期） : f9b-blob-only id=X
   selftest 过（预期） : apptomb id=APPTOMB
   selftest 过（预期） : enc-golden-2x2
   selftest 过（预期） : enc-rgb-alpha-255
@@ -1441,7 +1503,7 @@ def selftest() -> int:
     )
     f2 = f0.replace("console = true\n", 'console = true\nfs = ["rootfs"]\n')
     f3 = f0.replace("console = true\n", 'console = true\nnet = ["client"]\n')
-    f4 = f0 + '\n[security]\nprofile = "ed25519-main"\nkey_lineage = "root-2026"\n'
+    f4 = f0 + '\n[security]\nprofile = "ed25519-main"\nkey_lineage = "root-2026"\nintegrator = "oem-main"\n'
     f6 = (
         "[app]\n"
         'id = "KITCHEN"\n'
@@ -1462,6 +1524,7 @@ def selftest() -> int:
         "\n[security]\n"
         'profile = "ed25519-main"\n'
         'key_lineage = "root-2026"\n'
+        'integrator = "oem-main"\n'
     )
     # GUI-7 F7：[ui] 尾增（居末 = F0–F6 字节零漂移）；三键独立故
     # f7b icon-only 同为规范形。
@@ -1479,6 +1542,21 @@ def selftest() -> int:
         'open = "routine"\n'
         'save = "sensitive"\n'
         'empty-trash = "destructive"\n'
+    )
+    # ADR #82 V6 前置 F9：[blob] 尾增（居 [agent-actions] 后 = F0–F8 字节
+    # 零漂移）；五字段键定序 license/origin/sha256/size/usage，值只校验
+    # 形态。f9b 最小形（仅 [blob]）同为规范形。
+    f9 = f8 + (
+        "\n[blob]\n"
+        'license = "Apache-2.0"\n'
+        'origin = "soc-vendor-a"\n'
+        'sha256 = "0123abcd"\n'
+        'size = "65536"\n'
+        'usage = "gpu-microcode"\n'
+    )
+    f9b = (
+        f0
+        + '\n[blob]\nlicense = "MIT"\norigin = "o"\nsha256 = "s"\nsize = "1"\nusage = "u"\n'
     )
     neg = [
         ("dotted-key", BASE.replace('id = "APPDEMO"', "id.x = \"APPDEMO\"")),
@@ -1511,9 +1589,14 @@ def selftest() -> int:
         ("fs-vocab-appdata", f2.replace('["rootfs"]', '["$appdata"]')),
         ("fs-not-array", f0.replace("console = true\n", 'console = true\nfs = "rootfs"\n')),
         ("net-vocab-server", f3.replace('["client"]', '["server"]')),
+        # ---- ADR #82 V3 新增拒面（[security] 三键化：值变异在规范位上
+        # ——门删则 canonical 重发射与输入恒等 → 样本被放行 → selftest
+        # FAIL，同 SDK-1a 词表样本手法钉得住门；sec-missing-integrator =
+        # V3 前旧两键形，三键化不变量的正身样本）----
         ("sec-missing-key", f4.replace('\nkey_lineage = "root-2026"\n', "\n")),
-        ("sec-value-space", f0 + '\n[security]\nprofile = "a b"\nkey_lineage = "x"\n'),
-        ("sec-value-17b", f0 + '\n[security]\nprofile = "' + "a" * 17 + '"\nkey_lineage = "x"\n'),
+        ("sec-missing-integrator", f4.replace('\nintegrator = "oem-main"\n', "\n")),
+        ("sec-value-space", f0 + '\n[security]\nprofile = "a b"\nkey_lineage = "x"\nintegrator = "i"\n'),
+        ("sec-value-17b", f0 + '\n[security]\nprofile = "' + "a" * 17 + '"\nkey_lineage = "x"\nintegrator = "i"\n'),
         # ---- GUI-7 新增拒面（[ui] 值域/产面 .byi 后缀/空节/定序；值变异
         # 在规范位上——门删则 canonical 重发射与输入恒等 → 样本被放行 →
         # selftest FAIL，同 SDK-1a 词表样本手法钉得住门）----
@@ -1531,7 +1614,7 @@ def selftest() -> int:
         (
             "ui-before-security",
             f0 + '\n[ui]\nicon = "icons/icon.byi"\n'
-            '\n[security]\nprofile = "p"\nkey_lineage = "k"\n',
+            '\n[security]\nprofile = "p"\nkey_lineage = "k"\nintegrator = "i"\n',
         ),
         # ---- 同意面先落件二拒面（[agent-actions] 档值域/键字符集/越帽/
         # 空节；值变异在规范位（f0 尾 = canonical [agent-actions] 位）——
@@ -1547,6 +1630,19 @@ def selftest() -> int:
             + "".join(f'act{i:02} = "routine"\n' for i in range(AGENT_ACTIONS_MAX + 1)),
         ),
         ("aa-empty-section", f0 + "\n[agent-actions]\n"),
+        # ---- ADR #82 V6 前置拒面（[blob] 声明校验：缺一/多键/越帽/空节；
+        # 值变异在规范位（f0 尾 = canonical [blob] 位）——门删则 canonical
+        # 重发射与输入恒等 → 样本被放行 → selftest FAIL，同上手法钉得住门）----
+        ("blob-missing-field", f0 + '\n[blob]\nlicense = "MIT"\norigin = "o"\nsha256 = "s"\nsize = "1"\n'),
+        (
+            "blob-unknown-key",
+            f9b + 'note = "x"\n',
+        ),
+        (
+            "blob-value-65b",
+            f0 + '\n[blob]\nlicense = "' + "a" * 65 + '"\norigin = "o"\nsha256 = "s"\nsize = "1"\nusage = "u"\n',
+        ),
+        ("blob-empty-section", f0 + "\n[blob]\n"),
         # app-1 段 b-2 补件（调和审计 mkapp 路余量）：APPTOMB id 25B 越界——
         # 钉 [app].id 长度门（ID_MAX=24 与墓碑表 id[24] 定长槽镜像同值，
         # app-1 草案 v1.2 §4/§7）；值变异唯一违规则 = 长度（"A"*25 过字符集，
@@ -1584,6 +1680,10 @@ def selftest() -> int:
         ("f7-ui-kitchen-sink", f7),
         ("f7b-ui-icon-only", f7b),
         ("f8-agent-actions", f8),
+        # ADR #82 V6 前置正形：F9 全组合尾增 + F9b 最小形（[blob] 五字段
+        # 齐备 = canonical 位恰合——规范形定序互钉）。
+        ("f9-blob-kitchen-sink", f9),
+        ("f9b-blob-only", f9b),
         # app-1 段 b-2：APPTOMB 金件——真实包 user/bins/apptomb/
         # manifest.toml 逐字节镜像（intent="background" 首个正样本 =
         # 墓碑自验件定档；stack_pages=4 自验小栈）；形漂移（intent 词表/

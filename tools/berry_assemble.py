@@ -6,7 +6,7 @@ r"""berry_assemble——产品配置层组装器 v0（V13 实施刀，ADR #82「
 用法：
   berry_assemble.py --check <product.toml>   # 只校验不产（gen_abi --check 先例）：
                                              #   schema/未知键硬拒/类型/值域/路径存在/
-                                             #   基座对账——过则一行 OK
+                                             #   白名单对账/基座对账——过则一行 OK
   berry_assemble.py --dry-run <product.toml> [--platform-revision N]
                                             # 校验 + 组装计划（rootfs 条目清单 +
                                             #   mkcpio/mkimage 参数集），不产件；
@@ -22,6 +22,16 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     platform 键 v0 只做存在性 + 枚举轻校验（深合同执法随 #83 落册后的工具升版）。
     `[platform.boot.params]` 词表执法（Q2：键 ⊆ 启动参数词表、未知键硬拒——
     词表 v1 最小集 = sched_slice_hz/intent_default，§1.6）。
+  - 步② 白名单校验·V15 半（收编注记：曾于实施轮二实装、rebase 事故冲掉后
+    重放，源 = 21 号 §5 结构记录）：`[product.apps.priv_grants]`
+    {app_id → [能力键]} 全量执法——app_id 对账 preset 预装集（白名单只授
+    预装件，`app/<id>.bap` 未列即拒）+ issued_by 签发者 lineage（节在则
+    必填，1..=16B [a-z0-9-]；保留子键不得撞保留名）。能力键值域 ⊆ 现役
+    [caps] 闭集 CAPS_KEYS（berry-manifest Sec::Caps × mkapp [capabilities]
+    键集两源对齐）。如实注：设计稿 §1.4 写「值 ⊆ G2/G3 词表（应用规范
+    §11.2）」，而 §11.2 是立法文本、仓内无机器可读分级键表——v0 键级闭集
+    校验先行，分级校验留开放问题（21 号 P1-5 在册；分级表机器可读化归
+    V13 后续刀）。
   - 步④ rootfs 条目解析：基座条目（tools/rootfs-manifest.toml——V13 数据化
     接口，经 `from mkcpio import load_manifest` 复用，禁第二份加载器）⊕ preset
     条目（app/ 前缀 ⊆ 基座 app 条目——v0 无 OEM 三包输入，新增/替换交换
@@ -34,7 +44,8 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     .bap min_level 装载门同构）。声明位现 = CLI 旗（product.toml [platform]
     键位归 #83 落册后的工具升版——schema 权威在设计文档，本刀不动 docs）；
     kernel 锚只验形（步⑧ 逐字节度量对账归全产线）。
-  - 不做（如实记）：步②白名单校验（V13+V6+V8 归后续刀）、步⑤conformance 门
+  - 不做（如实记）：步②余量（V6 组装半——非构建产物无 [blob] 声明=拒；V8
+    fallback 回退引用必填——归后续刀）、步⑤conformance 门
     （P5 随 #84）、步⑥⑧⑨⑩产件与对账（镜像全产线）、just 配方 assemble
     （归主会话收口）。
 
@@ -45,7 +56,9 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
 
 常量对账锚（mkapp ↔ berry-manifest 镜像同款义务——改上游常量须同步此处）：
   APP_SLOTS=9 / 六档 intent 词表 / ID_MAX=24 同规（product.name）/ lineage
-  1..=16B [a-z0-9-]（SDK-2 §二，mkapp SEC_RE 同款）；数值域两源 = 设计文档
+  1..=16B [a-z0-9-]（SDK-2 §二，mkapp SEC_RE 同款）/ caps 闭集 console/fs/net
+  （CAPS_KEYS——V15 白名单值域，两源 = berry-manifest Sec::Caps × mkapp
+  [capabilities] 键集）；数值域两源 = 设计文档
   §1.3 逐键表 × 现役 justfile/mkimage 参数（image_size_mib [48,1024]——下界
   48 = mkimage 史注最小；rootfs_split_mib [8,64]——现役 32）。
 
@@ -96,6 +109,11 @@ BOOT_PARAMS_SPEC = {
     "intent_default": ("intent", None),     # free 档（六档词表；缺省 utility）
 }
 
+# V15 特权白名单能力键闭集（priv_grants 值域——步②）。对账锚两源同集：
+# user/berry-manifest `Sec::Caps` 三键臂（console/fs/net）× tools/mkapp.py
+# [capabilities] 键集（console 必填 + fs/net 可选）——改上游任一键集须同步此处。
+CAPS_KEYS = ("console", "fs", "net")
+
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")     # 首字符字母数字（§1.4）
 VENDOR_RE = re.compile(r"[a-z0-9-]{1,16}")               # lineage（SDK SEC_RE 同款）
 ANCHOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*@sha256:[0-9a-fA-F]{64}$")
@@ -104,8 +122,8 @@ ANCHOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*@sha256:[0-9a-fA-F]{64}$")
 TOP_KEYS = {"schema", "product", "platform"}
 PRODUCT_KEYS = {"name", "vendor", "board", "apps", "branding", "defaults"}
 PRODUCT_DEFERRED = {"services"}                          # [product.services.replace]
-APPS_KEYS = {"preset"}
-APPS_DEFERRED = {"priv_grants"}                          # V8/步② 归后续刀
+APPS_KEYS = {"preset", "priv_grants"}                     # V15：步② 白名单节收编
+APPS_DEFERRED = set()                                     # （priv_grants 原在此，已移入 KEYS）
 BRANDING_KEYS = {"wallpaper", "icon_mask"}
 BRANDING_DEFERRED = {"tokens"}                           # §1.4 token 闭集
 DEFAULTS_KEYS = {"launcher"}
@@ -138,6 +156,8 @@ class Product:
         self.rootfs_split_mib = 0
         self.min_power_atomicity = "p0"
         self.preset = []            # rootfs app/ 条目名列表（保清单序）
+        self.priv_grants = {}       # app_id → 能力键元组（V15 步② 白名单过检视图）
+        self.grants_issued_by = ""  # 白名单签发者 lineage（V8 子字段，节在则必填）
         self.branding = {}          # 键 → 相对 product.toml 所在目录的路径
         self.launcher = ""
         self.src_dir = ""           # product.toml 所在目录（branding 相对基准）
@@ -170,6 +190,66 @@ def _need_u32(sect: str, key: str, v, lo: int, hi: int) -> int:
     if not lo <= v <= hi:
         raise Reject(f"{sect}.{key}: 越域 [{lo},{hi}]（got {v}）")
     return v
+
+
+def _check_priv_grants(prod: Product, grants) -> None:
+    """步②·V15：[product.apps.priv_grants] 特权白名单构建期对账（设计 §1.4/
+    §4.1-②；应用规范 §11.2「未列而申请=拒授」——构建期先咬）。
+
+    节可选缺省；节在则 issued_by 必填（V8 签发者 lineage——白名单「谁预置
+    谁负责」的机器对应物，与 product.vendor/manifest integrator 同正则——
+    三键同域口径）。九型拒面（一型一咬，selftest 逐腿）：节非表/缺
+    issued_by/issued_by 值域外/issued_by 作 app_id（值数组臂=保留子键不得
+    撞保留名，设计 §1.4）/app_id 不在 preset（白名单只授预装件）/值非数组/
+    元素非串/未知能力键/能力键重复；重复 app_id 由 tomllib 键唯一性天然
+    执法（selftest 有腿钉）。能力键 ⊆ CAPS_KEYS 现役 [caps] 闭集——分级
+    （G2/G3）校验留开放问题（头注如实注）。
+    """
+    if grants is None:
+        return
+    if not isinstance(grants, dict):
+        raise Reject("product.apps.priv_grants: 应为节（键值表——"
+                     "{app_id → [能力键]} + issued_by；schema §1.4）")
+    issued = grants.get("issued_by")
+    if isinstance(issued, list):  # 值数组臂 = 撞保留名（设计 §1.4 落体）
+        raise Reject("product.apps.priv_grants.issued_by: 保留子键不得撞保留名"
+                     f"（issued_by = V8 签发者 lineage 子字段，不得作 app_id；"
+                     f"got 数组 {issued!r}——设计 §1.4）")
+    if not isinstance(issued, str):
+        raise Reject("product.apps.priv_grants.issued_by: 必填缺失（节存在时必填"
+                     "——白名单「谁预置谁负责」的机器对应物，应用规范 §11.4）")
+    if not VENDOR_RE.fullmatch(issued):
+        raise Reject(f"product.apps.priv_grants.issued_by: 应为签发者 lineage 串"
+                     f"（1..=16B [a-z0-9-]——product.vendor/manifest integrator "
+                     f"同域；got {issued!r}）")
+    prod.grants_issued_by = issued
+    preset_ids = {e[len("app/"):-len(".bap")]: e for e in prod.preset}
+    for app_id, caps in grants.items():
+        if app_id == "issued_by":
+            continue  # 保留子键已在上文单裁（TOML 键唯一，无重复臂）
+        if app_id not in preset_ids:
+            raise Reject(f"product.apps.priv_grants.{app_id}: 不在 preset 预装集"
+                         f"（'app/{app_id}.bap' 未列——白名单只授预装件；"
+                         f"应用规范 §11.2 未列而申请=拒授，构建期先咬）")
+        if not isinstance(caps, list):
+            raise Reject(f"product.apps.priv_grants.{app_id}: 应为能力键数组"
+                         f"（got {type(caps).__name__}）")
+        for c in caps:
+            if not isinstance(c, str):
+                raise Reject(f"product.apps.priv_grants.{app_id}: 能力键应为字符串"
+                             f"（got {type(c).__name__}）")
+            if c not in CAPS_KEYS:
+                raise Reject(f"product.apps.priv_grants.{app_id}: 未知能力键 {c!r}"
+                             f"（值域 ⊆ 现役 [caps] 闭集 {list(CAPS_KEYS)}——"
+                             f"berry-manifest Sec::Caps × mkapp [capabilities] "
+                             f"键集两源对齐；G2/G3 分级词表（应用规范 §11.2）"
+                             f"为立法文本、仓内无机器可读分级表——v0 键级闭集"
+                             f"先行，分级校验留开放问题）")
+        dups = sorted({c for c in caps if caps.count(c) > 1})
+        if dups:
+            raise Reject(f"product.apps.priv_grants.{app_id}: 能力键重复 {dups}"
+                         f"（查重——白名单授权面单键单义）")
+        prod.priv_grants[app_id] = tuple(caps)
 
 
 def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
@@ -216,6 +296,9 @@ def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
         raise Reject(f"product.apps.preset: {len(preset)} 项越 APP_SLOTS 帽 "
                      f"{APP_SLOTS}（berry-manifest 常量——schema §1.4）")
     prod.preset = list(preset)
+
+    # [product.apps].priv_grants——特权白名单（V15 步②；可选节，节在则执法）
+    _check_priv_grants(prod, apps.get("priv_grants"))
 
     # [product.branding]——品牌资源路径（可选；包内存在校验）
     branding = sect.get("branding", {})
@@ -521,6 +604,10 @@ preset = [
   "app/APPQUIET.bap",
 ]
 
+[product.apps.priv_grants]        # —— 特权白名单（V15 步②：只授 preset 预装件）——
+issued_by = "berryos"             # 签发者 lineage（1..=16B [a-z0-9-]，节在则必填）
+SETTINGS = ["console"]            # 能力键 ⊆ [caps] 闭集（console/fs/net）
+
 [product.branding]                # —— 品牌资源路径（相对本文件目录）——
 wallpaper = "assets/wallpaper.byi"
 icon_mask = "assets/mask.byi"
@@ -568,6 +655,10 @@ min_power_atomicity = "p0"
 
 [product.apps]
 preset = ["app/A.bap"]
+
+[product.apps.priv_grants]         # V15 步②正例：A 在 preset、键在闭集
+issued_by = "oem-main"
+A = ["console"]
 
 [product.branding]
 wallpaper = "assets/wallpaper.byi"
@@ -651,6 +742,9 @@ def selftest() -> int:
                 "load 字段（kernel 锚拆分 + params 缺省空）")
             leg(prod.image_size_mib == 96 and prod.rootfs_split_mib == 32
                 and prod.min_power_atomicity == "p0", "load 字段（storage 三键）")
+            leg(prod.priv_grants == {"A": ("console",)}
+                and prod.grants_issued_by == "oem-main",
+                "load 字段（priv_grants 白名单 + issued_by——V15）")
         except Reject as e:
             leg(False, f"正例被拒（模板漂移）：{e}")
 
@@ -713,6 +807,10 @@ def selftest() -> int:
         KERNEL_LINE = ('kernel = "KERNEL.ELF@sha256:e3b0c44298fc1c149afbf4c8996'
                        "fb92427ae41e4649b934ca495991b7852b855\"")
         PARAMS_BLOCK = "\n\n[platform.boot.params]\n"
+        GRANTS_BLOCK = ('[product.apps.priv_grants]         # V15 步②正例：A 在 '
+                        'preset、键在闭集\n'
+                        'issued_by = "oem-main"\n'
+                        'A = ["console"]')
         legs = [
             ("坏 TOML", 'vendor  = "berryos"', 'vendor  = "berryos',
              "TOML 解析失败"),
@@ -781,6 +879,25 @@ def selftest() -> int:
              'wallpaper = "assets/missing.byi"', "包内不存在"),
             ("launcher 前缀外", 'launcher = "bin/berry-launcher"',
              'launcher = "sbin/init"', "app/ 或 bin/ 前缀"),
+            # ---- V15 步②：priv_grants 九型拒面（一型一咬）----
+            ("priv_grants 节非表", GRANTS_BLOCK, 'priv_grants = "x"', "应为节"),
+            ("priv_grants 缺 issued_by", GRANTS_BLOCK,
+             GRANTS_BLOCK.replace('issued_by = "oem-main"\n', ""),
+             "issued_by: 必填缺失"),
+            ("issued_by 值域外（lineage）", 'issued_by = "oem-main"',
+             'issued_by = "Berry OS!"', "1..=16B"),
+            ("issued_by 作 app_id（撞保留名）", 'issued_by = "oem-main"',
+             'issued_by = ["net"]', "不得撞保留名"),
+            ("priv_grants 非 preset app", 'A = ["console"]', 'C = ["console"]',
+             "不在 preset 预装集"),
+            ("priv_grants 值非数组", 'A = ["console"]', 'A = "console"',
+             "应为能力键数组"),
+            ("priv_grants 元素非串", 'A = ["console"]', "A = [1]",
+             "能力键应为字符串"),
+            ("priv_grants 未知能力键", 'A = ["console"]', 'A = ["push:send"]',
+             "未知能力键"),
+            ("priv_grants 能力键重复", 'A = ["console"]',
+             'A = ["console", "console"]', "能力键重复"),
         ]
         for k, (label, old, new, want) in enumerate(legs):
             assert old in SELFTEST_PRODUCT, f"腿锚串缺席：{label}"
@@ -795,11 +912,19 @@ def selftest() -> int:
         leg_reject("defaults 在册未收录（locale）", "未收录",
                    lambda: load_product(write_prod(locale_text, "locale.toml")))
 
+        # V15：重复 app_id 无专臂——tomllib 键唯一性天然执法（解析面先咬）
+        dup_grants = SELFTEST_PRODUCT.replace(
+            'A = ["console"]', 'A = ["console"]\nA = ["net"]', 1)
+        leg_reject("priv_grants app_id 重复（tomllib 键唯一）", "TOML 解析失败",
+                   lambda: load_product(write_prod(dup_grants, "dup.toml")))
+
         # ---- 拒面：解析面（基座对账/构建树存在/launcher 终表对账）----
+        # （白名单键随腿同步换 C——模板含 V15 正例节 A，防 load 面先咬）
         leg_reject("preset 不在基座表", "不在基座表",
                    lambda: resolve_entries(
                        load_product(write_prod(SELFTEST_PRODUCT.replace(
-                           'preset = ["app/A.bap"]', 'preset = ["app/C.bap"]'),
+                           'preset = ["app/A.bap"]', 'preset = ["app/C.bap"]').replace(
+                           'A = ["console"]', 'C = ["console"]'),
                            "c.toml")), base_path, user))
         gone = os.path.join(user, "userbins", "app", "A.bap")
         os.rename(gone, gone + ".bak")
@@ -821,8 +946,10 @@ def selftest() -> int:
         try:
             s = load_product(sample_path)
             leg(s.name == "berry-qemu-rich" and len(s.preset) == APP_SLOTS
-                and s.launcher == "bin/berry-launcher",
-                "内置样例过检（v0 键集全谱 + preset 恰 APP_SLOTS）")
+                and s.launcher == "bin/berry-launcher"
+                and s.priv_grants == {"SETTINGS": ("console",)}
+                and s.grants_issued_by == "berryos",
+                "内置样例过检（v0 键集全谱 + preset 恰 APP_SLOTS + 白名单节）")
         except Reject as e:
             leg(False, f"内置样例被拒（模板漂移）：{e}")
 

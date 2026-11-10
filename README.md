@@ -75,7 +75,7 @@ docs/         design documents (Chinese)
 Design documents are written in Chinese and live in [`docs/`](docs/). Start from the index: [`docs/索引.md`](docs/索引.md). Key entries:
 
 - Architecture decisions — 73 ADRs, the single source of truth: [`docs/架构决策.md`](docs/架构决策.md)
-- Roadmap: [`docs/路线图-v1.0.md`](docs/路线图-v1.0.md)
+- Roadmap: [`docs/路线图-v1.1.md`](docs/路线图-v1.1.md)
 - Scheduler design (mechanism/policy separation, capacity model, intent): [`docs/调度器设计-v1.1.md`](docs/调度器设计-v1.1.md)
 - Syscall ABI (frozen v1, single-source generated): [`docs/系统调用ABI设计-v1.0.md`](docs/系统调用ABI设计-v1.0.md)
 - App development guide — writing `.bap` apps, manifest v1, build toolchain: [`docs/应用开发指南.md`](docs/应用开发指南.md)

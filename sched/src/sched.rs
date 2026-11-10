@@ -17,7 +17,7 @@ use crate::task::{
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
 use core::ptr::{addr_of_mut, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
 /// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
@@ -1876,6 +1876,95 @@ unsafe fn sleepq() -> &'static mut SleepQueue {
     &mut *addr_of_mut!(SLEEPQ)
 }
 
+// ---- per-key 等待计数门控（P1：wake_matching 无等待者 O(1) 快路径）----
+//
+// 架构研究 P1 瓶颈：每次 channel_send/signal/wake 调 `wake_matching` 都
+// 全扫 SLEEPQ 链表——N 任务并发睡眠时每次唤醒成本线性涨。本表按等待键
+// 粗分桶计数睡眠者，`wake_matching` 入口查桶：**计数 == 0 ⇒ 队上必无该键
+// 等待者，O(1) 跳过全扫**（常见「无等待者」场景——send 打空 channel、
+// signal 无监听者——彻底免扫）。
+//
+// 计数维护收口在 [`SleepQueue::insert_sorted`]/[`SleepQueue::unlink`] 两
+// 函数——SLEEPQ 成员变更的**仅有**机械面（block/sleepq_insert 入、
+// wake_one_inner/expire_timeouts/kill/sleepq_unlink 出，全走这两函数），
+// 加减天然成对，无第三写点可漏。
+//
+// **粗计数语义**（只许假阳性、不许漏醒）：桶按哈希分键，冲突桶非零但无
+// 匹配者 = 假阳性 → 照走慢路径，正确性不受影响；反向（桶零但队上有匹配
+// 者）由计数收口点封死——add 先于接线、sub 后于摘线（见两函数注释）。
+
+/// 桶数（64 static 桶——零分配；`align(64)` 逐桶缓存行对齐防伪共享）。
+const WAIT_BUCKETS: usize = 64;
+
+/// 单桶：桶内等待任务总数（粗计数——键哈希进本桶的睡眠者个数）。
+#[repr(C, align(64))]
+struct WaitBucket {
+    count: AtomicU32,
+}
+
+/// 桶零初值（const 具名件——数组重复表达式免 Copy 的稳定形）。
+const ZERO_WAIT_BUCKET: WaitBucket = WaitBucket {
+    count: AtomicU32::new(0),
+};
+
+/// per-key 等待计数表（64 桶 static）。写点全在 SQ 锁窗内（SLEEPQ 两机械
+/// 函数收口），读点 = [`wake_matching_locked`] 门控（同窗）——A12 纪律：
+/// 原子 static（非 static mut），与 IRQ_TICKS/LB_TICKS 同款，免入册
+/// writable_globals（该门禁只执法 static mut / UnsafeCell 直写形态）。
+static WAIT_HASH: [WaitBucket; WAIT_BUCKETS] = [ZERO_WAIT_BUCKET; WAIT_BUCKETS];
+
+/// [`WAIT_ANY`] 哨兵等待者（wait_many 收割者）总数。哨兵匹配**任何** obj
+/// 的唤醒（`matches_wake` 键门 Any 分支恒真），单键桶罩不住——独立计数，
+/// 门控并查（非零 = 任何键都可能命中哨兵，一律慢路径）。
+static WAIT_ANY_WAITERS: AtomicU32 = AtomicU32::new(0);
+
+/// 桶号：乘法散列（Fibonacci hashing）取高 6 位——`>> 58` 已落 [0,64)，
+/// `% WAIT_BUCKETS` 保险钉域（改桶数时防越界）。
+#[inline]
+fn wait_bucket(key: usize) -> usize {
+    (key.wrapping_mul(0x9E3779B97F4A7C15) >> 58) as usize % WAIT_BUCKETS
+}
+
+/// 睡眠者入队计数（+1）——[`SleepQueue::insert_sorted`] 入口调。
+/// 三形分账：纯睡（obj=0）永不匹配任何唤醒（wake_matching 入口拒 +
+/// 谓词 PureSleep 键门恒 false）——不计数，减一处假阳性源。
+#[inline]
+fn wait_count_add(obj: usize) {
+    if obj == 0 {
+        return; // 纯睡者不在任何唤醒集内
+    }
+    if obj == WAIT_ANY {
+        WAIT_ANY_WAITERS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        WAIT_HASH[wait_bucket(obj)].count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// 睡眠者离队计数（-1）——[`SleepQueue::unlink`] 尾调。与 [`wait_count_add`]
+/// 同判据分账（同一 `wait_obj` 值——字段在两调用点之间无写者，加减恒对称；
+/// 睡眠多轮换键者每轮 block_current 先重写 wait_obj 再入队，逐轮配对）。
+#[inline]
+fn wait_count_sub(obj: usize) {
+    if obj == 0 {
+        return;
+    }
+    if obj == WAIT_ANY {
+        WAIT_ANY_WAITERS.fetch_sub(1, Ordering::Relaxed);
+    } else {
+        WAIT_HASH[wait_bucket(obj)].count.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// 门控判据：键桶 + 哨兵计数**双零** → SLEEPQ 上必无「obj 键相等或 WAIT_ANY
+/// 哨兵」的等待者（谓词键门仅此两形可命中），可跳过全扫。单核 IRQ 屏蔽窗
+/// 内读（计数写点同窗——无竞态）；SMP 实验态读点在 SQ 锁窗内、写点同窗，
+/// 锁交接即计数可见性边界——无跨核 staleness 漏醒面。
+#[inline]
+fn wait_gate_clear(obj: usize) -> bool {
+    WAIT_ANY_WAITERS.load(Ordering::Relaxed) == 0
+        && WAIT_HASH[wait_bucket(obj)].count.load(Ordering::Relaxed) == 0
+}
+
 /// SLEEPQ 互斥锁（S-3c c-2a：锁族落形 + SQ 窗先行——§3 七层冻结锁序最顶层）。
 ///
 /// **过渡态（c-2a/b）语义**：SVC 入口 KL 全量不动 ⇒ 本锁一切取放点都在 KL
@@ -1938,6 +2027,9 @@ impl SleepQueue {
             || (*t).sleep_next.get().is_some()
             || self.head.get() == Some(task);
         assert!(!in_q, "sleepq insert: task already in queue");
+        // P1 等待计数：入队 +1——**先于接线**（见 wait_count_add 注释；与
+        // unlink 尾部 -1 对称成窗：窗口期桶只多不少 → 门控只假阳性不漏醒）。
+        wait_count_add((*t).wait_obj);
         // 从头找第一个 `deadline > 新者` 的节点，插它前面；到尾则插尾。
         let mut cur = self.head.get();
         let before = loop {
@@ -1998,6 +2090,9 @@ impl SleepQueue {
         (*t).sleep_prev.set(None);
         (*t).sleep_next.set(None);
         self.len.set(self.len.get() - 1);
+        // P1 等待计数：离队 -1——**后于摘线**（wait_obj 此刻仍是入睡时键——
+        // 链接字段清空不影响它；与 insert_sorted 入口 +1 对称）。
+        wait_count_sub((*t).wait_obj);
     }
 }
 
@@ -2167,6 +2262,10 @@ unsafe fn wake_one_inner(t: NonNull<Task>) {
 /// `enqueue_with_kick` 的 RQ 手术 = 终态 SQ>队列序正确嵌套）。**c-2b
 /// slice 4 起**：本体 = 取放锁薄壳 + 持窗版 [`wake_matching_locked`]（自锁
 /// 面：IRQ 生产者「写位+扫描同窗」复用；#[inline] 内联回原指令流）。
+///
+/// **P1 门控**（per-key 等待计数）：入口先查 [`wait_gate_clear`]——该键
+/// 桶 + 哨兵计数双零 ⇒ 队上必无匹配者，O(1) 返回免全扫（无等待者的
+/// send/signal 常见场景）；非零（含哈希冲突假阳性）走原有全扫，语义不变。
 pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
     if obj == 0 {
         return 0;
@@ -2184,10 +2283,21 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
 /// IRQ 面）——Event 位写与本扫描同一 SQ 窗内原子，防分段后「位已置而队上
 /// 无等待者」窗口丢唤醒。`#[inline]` 使自持窗版壳内联回原指令流（icount
 /// 等形——slice 1-3 先例同纪律）。
+///
+/// P1 门控在本版入口（SQ 锁窗内——计数读写点同窗）：[`wait_gate_clear`]
+/// 双零即 O(1) 返回 0，免全扫与 PI 钩子发射（队未动）。
 #[inline]
 pub fn wake_matching_locked(obj: usize, set_signals: u64) -> usize {
     if obj == 0 {
         return 0;
+    }
+    // P1 门控：该键桶 + 哨兵计数双零 → 队上必无匹配者（谓词键门两形：
+    // obj 相等 / WAIT_ANY——计数同两形罩全），O(1) 返回免全扫。判位在
+    // SQ 锁窗内（自持窗版壳先取锁后进本体系；持窗直调者同窗）——计数
+    // 一读写点同窗，单核屏蔽窗无竞态、SMP 实验态锁交接即发布。假阳性
+    // （冲突桶非零）照走下方慢路径，唤醒语义逐字不变。
+    if wait_gate_clear(obj) {
+        return 0; // 无等待者——队未动，PI 钩子（note_sleepq_changed）免发
     }
     let mut n = 0;
     // SAFETY: 调用方持窗（屏蔽窗等价）；SLEEPQ 单核顺序访问；遍历中摘除的
