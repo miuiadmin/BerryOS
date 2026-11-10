@@ -753,6 +753,13 @@ test-host:
     # 双向（rel 1100 恰放 1101 咬、pp +5.0 恰放 +5.1 咬）+ base=0 特判 +
     # 缺席计 FAIL 分母恒 3 + exit-code 契约 + 确定性——29 面。
     python3 tools/sched_dashboard.py --selftest
+    # W1-Q4 五续（a-3 U4 纪律同款）：shim_audit 门禁自检——G-eco-d libc
+    # shim 路线裁决器（d-3c hexyl 终验「全可 shim」证据的数据源）此前只有
+    # 一次性人工跑：GLOBALS_DEF 分类口径钉板 + nm 行形四态（成员头/三段/
+    # 两段/空行）+ U/w 覆盖序（后行 U 升强、setdefault 保强不降级）+ 本地
+    # 小写 t/N 调试段不计定义 + 定义覆盖净面 + elf 两段形收/三段不收 +
+    # 全链合成归档向量手算对拍 + exit-code 契约——19 面。
+    python3 tools/shim_audit.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
