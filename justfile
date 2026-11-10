@@ -777,6 +777,14 @@ test-host:
     # --save+--baseline 自比恒稳 rc=0 静默漏放 vs 挪位对拍真回归被咬，
     # 子进程真跑 dashboard）+ exit-code 契约——24 面。
     python3 tools/sched_ci.py --selftest
+    # W1-Q4 八续（a-3 U4 纪律同款）：unsafe_audit 门禁自检——unsafe 台账
+    # 审计器（CI 双 workflow --check 执法、945 条在册登记的漂移守卫）
+    # 此前零自检：词法掩码（注释/raw/C 串/字符字面量）+ 跨度配平 +
+    # 四类出现点分型 + 签名位只计不登记 + classify 四层优先级链 +
+    # ※ 内容锚继承（行漂移不丢人工判读）+ splice marker + live 树
+    # 结构不变量（行号单调/越界/kind·分类域）+ 确定性——40 面，三突变
+    # 红分支实证（掩码退化/分类翻转/锚继承丢失均被咬）。
+    python3 tools/unsafe_audit.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

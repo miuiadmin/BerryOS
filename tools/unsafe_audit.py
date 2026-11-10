@@ -33,6 +33,7 @@ gen_abi.py 同纪律：marker 夹表体会塌 GFM 表渲染）。
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -562,8 +563,216 @@ def splice(text: str, marks: tuple[str, str], content: str) -> str:
     return pat.sub(lambda _: repl, text, count=1) if pat.search(text) else text
 
 
+# ------------------------------------------------- selftest：门禁自身钉板
+
+def selftest() -> int:
+    """门禁自检（a-3 U4 纪律同款）——unsafe 台账审计器自身的钉板。
+
+    本工具是「全 Rust 安全叙事」CI 执法面（ci.yml/ci-light.yml --check 双
+    workflow 在跑，945 条在册登记的漂移守卫），此前零自检：扫描器坏 =
+    台账静默漂移或 --check 静默劣化。覆盖（红分支实证：掩码剥注释退化 /
+    分类规则翻转 / ※ 锚继承丢失三突变均被咬）：
+    - mask_rust：行注释/块注释（嵌套）/raw 字符串 r#"…"#（r## 深度形，
+      内容经普通串路径掩而 r#/r## 前缀与井号尾留形）/C 字符串 c"…"/
+      转义引号普通串/字符字面量掩而生命周期标注保留（'a 不匹配两字符
+      形态）/换行保位（行号不漂）
+    - find_span：block 首个 ( 或 {、asm! 括号在字符串里被掩后正确配平、
+      fn 跳签名区（参数括号组）找体 {、闭括号缺失退文件尾（loud 不崩）
+    - scan_file：合成 .rs 四类出现点（block/fn/extern 块）+ 签名位提及
+      只计不登记 + 注释里的 unsafe 不计 + 跨度行集 = 非空行号集合
+    - classify：TEST_FILES 强制其它（内容规则不越权）→ FILE_DEFAULTS
+      （同质文件整文件定性）→ CONTENT_RULES（msr asm→MMIO、mmu::→页表）
+      → 兜底其它——四层优先级链
+    - split_row：五列收/四列拒（None）/分隔行形收（parse 侧过滤）/
+      转义管道保持单列；parse_ledger × build_rows 锚继承：行漂移 +
+      ※ 人工备注场景下 cat 从旧表继承、※ 后备注不丢；锚不匹配时走
+      classify 重判（旧判读不复活）
+    - splice：marker 块原位替换、块外文本不动、缺 marker 原样返回
+    - 真实树对拍：collect() 全量跑，marker 非空 + 出现点行号 ≥1 单调
+      （每文件内递增）+ 行号 ≤ 文件行数 + 四类 kind 全在册
+    - exit-code 契约：--selftest 独占守卫（组合旗标 rc=2 立拒——
+      自引用递归坑的防线，sched_ci/shim_audit 同坑）+ 哨兵双防线
+    - 确定性：collect() 两次 rows 逐字节一致（--check 对拍前提）
+    """
+    import tempfile
+
+    failures: list[str] = []
+
+    def check(name: str, cond, detail: str = "") -> None:
+        print(f"  {'ok' if cond else 'FAIL'} {name}"
+              + (f": {detail}" if not cond else ""))
+        if not cond:
+            failures.append(name)
+
+    # --- 1. mask_rust：词法面 ---
+    raw = ('// unsafe in line comment\n'
+           'let a; /* unsafe /* nested */ still */ let b;\n'
+           'let s = r#"unsafe (fn {"#;\n'
+           'let s2 = r##"x"# ##;\n'
+           'let cs = c"unsafe {";\n'
+           'let es = "esc \\" unaf";\n'
+           "let ch = 'x'; let lt: &'a str = s;\n")
+    m = mask_rust(raw)
+    check("mask: 行注释 unsafe 不可见", "unsafe in line comment" not in m)
+    check("mask: 块注释嵌套全掩", "still" not in m.split("\n")[1] and "nested" not in m)
+    # r#"…"# 实测形态：引号与内容经普通串路径掩为空格，r# 前缀与尾 # 留形
+    # （掩码保长不保界符——find_span 只在掩码上配平括号，此形态安全）。
+    l2 = m.split("\n")[2]
+    check("mask: raw 串内容掩、r# 前缀留形",
+          "unsafe" not in l2 and "r#" in l2 and "(fn" not in l2, repr(l2))
+    check("mask: r## 深度界符留形", 'r##' in m.split("\n")[3])
+    check("mask: C 串内容掩", "unsafe" not in m.split("\n")[4])
+    check("mask: 转义引号不提前闭串", "unaf" not in m.split("\n")[5])
+    check("mask: 字符字面量掩、生命周期保留",
+          "'x'" not in m.split("\n")[6] and "'a" in m.split("\n")[6])
+    check("mask: 换行保位（行号不漂）",
+          m.count("\n") == raw.count("\n") and len(m) == len(raw))
+
+    # --- 2. find_span：跨度面 ---
+    ms = mask_rust('unsafe { asm!("msr x1, (x2)"); let t = (1, 2); }')
+    r1 = find_span(ms, ms.index("unsafe") + 6, "block")
+    assert r1 is not None
+    s, e = r1
+    check("span: block 首个 { 起", ms[s] == "{")
+    check("span: 字符串内括号掩后配平闭到真 }", ms[e] == "}")
+    ms2 = mask_rust('unsafe fn foo(a: (u8, u8)) -> usize { (a, a.0) }')
+    r2 = find_span(ms2, ms2.index("unsafe") + 6, "fn")
+    assert r2 is not None
+    s2, e2 = r2
+    check("span: fn 跳签名括号组找体 {", ms2[s2] == "{" and ms2[e2] == "}")
+    ms3 = mask_rust("unsafe { ( }")  # 内层 ( 未闭
+    r3 = find_span(ms3, ms3.index("unsafe") + 6, "block")
+    assert r3 is not None
+    s3, e3 = r3
+    check("span: 闭括号缺失退文件尾（loud 不崩）", e3 == len(ms3) - 1)
+
+    # --- 3. scan_file：四类出现点 + 签名位只计 ---
+    src = ('// unsafe hidden in comment\n'          # 1
+           'fn main() {\n'                            # 2
+           '    unsafe { let p = &raw const X; }\n'   # 3
+           '    unsafe fn helper(x: usize) -> usize { x + 1 }\n'  # 4
+           '    let f: Option<unsafe extern "C" fn(u8)> = None;\n'  # 5
+           '    unsafe extern "C" { fn q(x: u32); }\n'  # 6
+           '}\n')                                     # 7
+    with tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False,
+                                     encoding="utf-8") as tf:
+        tf.write(src)
+        probe = Path(tf.name)
+    try:
+        occ, sig, nlines, lset = scan_file(probe, "kernel/src/_probe.rs")
+        kinds = [(o["kind"], o["line"]) for o in occ]
+        check("scan: 四类出现点 block/fn/extern 齐",
+              kinds == [("block", 3), ("fn", 4), ("extern", 6)],
+              f"{kinds}")
+        check("scan: 签名位提及只计不登记", sig == 1 and len(occ) == 3)
+        check("scan: 注释里的 unsafe 不计", all(o["line"] != 1 for o in occ))
+        check("scan: 跨度行集 = 非空行号", sorted(lset) == [3, 4, 6],
+              f"{sorted(lset)}")
+        check("scan: 行数 = split 行数（尾 \\n 不多计）", nlines == 8,
+              f"{nlines}")
+    finally:
+        probe.unlink(missing_ok=True)
+
+    # --- 4. classify：四层优先级链 ---
+    check("cls: TEST_FILES 强制其它（内容规则不越权）",
+          classify("kernel/src/ktest.rs", 'unsafe { mmu::flush() }') == "其它")
+    check("cls: FILE_DEFAULTS 整文件定性",
+          classify("arch/aarch64/src/mmu.rs", "whatever head") == "页表")
+    check("cls: CONTENT_RULES msr asm→MMIO",
+          classify("kernel/src/x.rs", 'unsafe { asm!("msr") }') == "MMIO")
+    check("cls: CONTENT_RULES mmu::→页表",
+          classify("kernel/src/x.rs", "unsafe { mmu::f() }") == "页表")
+    check("cls: 无命中兜底其它",
+          classify("kernel/src/x.rs", "unsafe { zzz }") == "其它")
+
+    # --- 5. split_row / parse_ledger / build_rows：锚继承 ---
+    check("row: 五列收", split_row("| a/b.rs | 10 | block | 页表 | n |")
+          == ["a/b.rs", "10", "block", "页表", "n"])
+    check("row: 四列拒 None", split_row("| a | 1 | fn | x |") is None)
+    check("row: 分隔行形收（parse 侧再滤）", split_row("|--|--|--|--|--|") is not None)
+    check("row: 转义管道不裂列",
+          len(split_row("| a | 1 | fn | MMIO | x \\| y |")) == 5)
+
+    old_text = (MARK_REG[0] + "\n| 文件 | 行 | 类型 | 分类 | 说明 |\n"
+                "|--|--|--|--|--|\n"
+                "| kernel/src/_probe.rs | 3 | block | MMIO |"
+                " unsafe { let p = &raw const X; } ※ 人工备注 |\n"
+                + MARK_REG[1])
+    old_rows = parse_ledger(old_text)
+    check("parse: ※ 人工备注完整保留",
+          len(old_rows) == 1 and old_rows[("kernel/src/_probe.rs", 3, "block")]
+          ["note"].endswith("※ 人工备注"))
+    # 行漂 3→9、head 不变（锚 = head[:64] alnum 精确匹配）→ 判读继承、
+    # ※ 人工备注不丢；head 变（锚不匹配）→ classify 重判，旧判读不复活
+    occ2 = [{"path": "kernel/src/_probe.rs", "line": 9, "kind": "block",
+             "head": "unsafe { let p = &raw const X; }"}]
+    rows2 = build_rows(occ2, old_rows)
+    check("anchor: 行漂移判读继承（※ 前锚命中）",
+          rows2[0]["cat"] == "MMIO", f'{rows2[0]["cat"]}')
+    check("anchor: 人工备注整条继承",
+          rows2[0]["note"].endswith("※ 人工备注"), repr(rows2[0]["note"]))
+    occ3 = [{"path": "kernel/src/_probe.rs", "line": 9, "kind": "block",
+             "head": "unsafe { totally different }"}]
+    rows3 = build_rows(occ3, old_rows)
+    check("anchor: 锚不匹配走 classify 重判",
+          rows3[0]["cat"] == "其它", f'{rows3[0]["cat"]}')
+
+    # --- 6. splice：marker 原位替换 ---
+    t = "HEAD\n" + MARK_SUM[0] + "\nOLD BODY\n" + MARK_SUM[1] + "\nTAIL"
+    sp = splice(t, MARK_SUM, "NEW")
+    check("splice: 块内替换块外不动",
+          sp.startswith("HEAD\n") and sp.endswith("\nTAIL")
+          and "NEW BODY" not in sp and "NEW\n" in sp and "OLD" not in sp)
+    check("splice: 缺 marker 原样返回",
+          splice("no markers here", MARK_REG, "X") == "no markers here")
+
+    # --- 7. 真实树对拍：collect() 结构不变量 ---
+    occ_all, sig_total, files_lines, dir_stats, all_pairs, prod_pairs = collect()
+    check("live: 出现点非空（945±量级）", len(occ_all) > 500, f"{len(occ_all)}")
+    # ipc/ 是布局占位（仅 .gitkeep，无代码）——核心四目录必须有 .rs 产出
+    core = {d: dir_stats[d][0] for d in SCAN_DIRS if d != "ipc"}
+    check("live: 核心四目录（kernel/mm/sched/arch）全有 .rs",
+          all(v > 0 for v in core.values()), str(core))
+    by_file: dict[str, list[int]] = {}
+    for o in occ_all:
+        by_file.setdefault(o["path"], []).append(o["line"])
+    mono = all(lns == sorted(lns) for lns in by_file.values())
+    check("live: 每文件行号单调（排序契约）", mono)
+    in_range = all(max(lns) <= files_lines[p] for p, lns in by_file.items())
+    check("live: 行号 ≤ 文件总行数", in_range)
+    check("live: kind 全在四类",
+          {o["kind"] for o in occ_all} <= {"block", "fn", "impl", "extern"},
+          str({o["kind"] for o in occ_all}))
+    check("live: 分类全在六类",
+          {r["cat"] for r in build_rows(occ_all, {})} <= set(CATEGORIES))
+    check("live: 生产面分子 ≤ 全量分子",
+          len(prod_pairs) <= len(all_pairs))
+
+    # --- 8. 确定性：两次 collect 逐字节一致 ---
+    (occ_b, sig_b, fl_b, ds_b, ap_b, pp_b) = collect()
+    check("determ: 两次 collect 出现点全等",
+          [o["head"] for o in occ_all] == [o["head"] for o in occ_b]
+          and [(o["path"], o["line"], o["kind"]) for o in occ_all]
+          == [(o["path"], o["line"], o["kind"]) for o in occ_b])
+
+    print(f"\nunsafe_audit selftest: {'PASS' if not failures else 'FAIL'}"
+          f"（{len(failures)} 面红）"
+          + ("" if failures else "—— 词法/跨度/扫描/分类/锚继承/splice/"
+                                "live 树/确定性 全钉"))
+    return 0 if not failures else 1
+
+
 def main() -> int:
     args = sys.argv[1:]
+    # --selftest 独占守卫（sched_ci/shim_audit 同坑同防）：组合旗标若走
+    # selftest() 则子进程嵌套无限递归；哨兵环境变量防内部再触发。
+    if "--selftest" in args:
+        if os.environ.get("UNSAFE_AUDIT_SELFTEST") == "1" or len(args) != 1:
+            print("unsafe_audit: --selftest 须独占使用（无组合旗标）",
+                  file=sys.stderr)
+            return 2
+        os.environ["UNSAFE_AUDIT_SELFTEST"] = "1"
+        return selftest()
     check, as_json = "--check" in args, "--json" in args
     doc_text = LEDGER.read_text() if LEDGER.exists() else None
     parts, info = regenerate(doc_text)
