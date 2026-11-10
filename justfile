@@ -572,6 +572,10 @@ test-host:
     # WAIT_ANY 哨兵/fastpath 单等待者资格三律钉板 + 两路语义对齐穷举，
     # host 9 测；谓词单源，sched wake_matching/find_single_waiter 消费）。
     cargo test -p berry-wqmatch --target {{host}}
+    # W3-Q3：berry-vmoledger（VMO 页面生命周期簿记纯函数面——提交/归还
+    # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
+    # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。
+    cargo test -p berry-vmoledger --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各

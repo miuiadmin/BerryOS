@@ -13,6 +13,7 @@ dependencies = [
  "berry-hal-aarch64",
  "berry-mm",
  "berry-sched",
+ "berry-vmoledger",
 ]
 
 [[package]]
@@ -26,6 +27,10 @@ dependencies = [
  "berry-hal-aarch64",
  "berry-wqmatch",
 ]
+
+[[package]]
+name = "berry-vmoledger"
+version = "0.1.0"
 
 [[package]]
 name = "berry-wqmatch"

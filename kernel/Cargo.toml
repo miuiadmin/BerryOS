@@ -12,6 +12,7 @@ path = "src/main.rs"
 berry-hal-aarch64 = { path = "../arch/aarch64" }
 berry-mm = { path = "../mm" }
 berry-sched = { path = "../sched" }
+berry-vmoledger = { path = "../vmoledger" }
 
 [features]
 # G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面
