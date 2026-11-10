@@ -53,8 +53,10 @@ use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, 
 use berry_netdproto as ndp;
 // app-0 a-2：.bap manifest v0 解析面（纯函数 crate，host 23 测同源）。
 // GUI-7：+[ui] 面（ICON_PREFIX/VIEWS_PREFIX/UI_PATH_MAX——路径执法镜像）。
+// ADR #82 V1：+AppType（type 词表 {app,driver}——driver 收格式不消费，
+// 收集槽过滤执法面见 app_launch）。
 use berry_manifest::{
-    APP_SLOTS, BAP_MAX, ENTRY_MAX, ICON_PREFIX, ID_MAX, MANIFEST_MAX, SDK_CURRENT,
+    AppType, APP_SLOTS, BAP_MAX, ENTRY_MAX, ICON_PREFIX, ID_MAX, MANIFEST_MAX, SDK_CURRENT,
     UI_PATH_MAX, VIEWS_PREFIX,
 };
 // C-3 段①：ps 查询 RPC 协议面（ps_selftest 服务端：请求解析 + 账本编码）。
@@ -675,6 +677,15 @@ const PRESSURE_P1: u64 = 1 << 40;
 /// 源，静默跳过。
 static PRESSURE_ARMED: AtomicU32 = AtomicU32::new(0);
 
+/// VER 版本身份 VMO = boot 第 9 插定值（第 8 插 H_PRESSURE 之后；内核 fb
+/// GOP 相位内 sysver VMO 进本表——非 GOP 相槽缺席 -EBADF，fb/virtio 惯例）。
+/// rights 仅 READ（版本面禁写——vmo_write 放宽面拒；权限在 handle 不在
+/// 对象，内核侧 boot 即写即交不留柄）。恒持原值不 close（H_FB 同款 v1
+/// 常驻政策）。ver-hard 起对拍消费：[`ver_check`]（fb 相门内，kernel
+/// sysver VMO × rootfs .berryver 烙印三元组对拍——eco: VER ok/mix
+/// 观测行，非标记族）。
+const H_VER: Handle = 0x0001_0009;
+
 /// sim-S1 M2-b：boot 手搭 sim 礼物对之**帧通道 RECV 端**第 5 插定值
 /// （`-kernel`+rootfs+fw_cfg `opt/berry/simdev` 门开相——task_simcon 转发
 /// 的 UART1 字节流对端）。**与 [`H_FB`] 同值异相**：fw_cfg 具名键在 EFI 路
@@ -1106,6 +1117,24 @@ fn run_rootfs_child(console: Handle) {
             trap();
         }
         PRESSURE_ARMED.store(1, Ordering::Relaxed);
+    }
+    // ---- VER（ver-hard 乙侧）：版本身份对拍装载块 ----
+    // 门 = H_FB 在席（GOP 相——内核侧第 9 插 sysver VMO 与第 8 插
+    // H_PRESSURE **同分支**插入，同相必在表；fb 分支嵌 rootfs_present →
+    // 相内 H_ROOTFS 必在，cpio 直查无裸相拓扑）。探针 = `berry_vmo_read
+    // (H_VER, …, 0, 128)` 前 128B（sysver.rs 有效长全覆盖——字符串段帽
+    // 128B 合同）；解析照 kernel/src/sysver.rs `parse` 同源口径（magic
+    // 0x4256_4552/hdr=1/rsv 零/level/semver/两段 NUL）+ cpio 直查
+    // .berryver（tomb D1 流式重扫先例——berry-exec STEP_WIN 独立窗）解
+    // "<ident>|level <N>|v<semver>" 三元组对拍：全等 → `eco: VER ok
+    // <ident> lvl <N>`（非标记观测族——smoke 门不 gate，QEMU 实证归主
+    // 会话收口）；任一不等 → `eco: VER mix` loud 行含双值片段（混合构建
+    // 〔kernel 与 rootfs 异窗〕即此脸）。非 GOP 相 H_FB 先跳 = 静默零
+    // 扰动（上一块同款门形）；结构链断（读败/任一侧解析败/烙印缺席）
+    // = trap（「任何链断 → 自陷被杀」口径——vmo_read 拒即第 9 插接线
+    // 漂移，H_PRESSURE 探针同形）。
+    if berry_vmo_get_size(H_FB, &mut msz) == 0 {
+        ver_check(console);
     }
     // ---- GUI-5：gui-wmd（窗口管理守护）预拉——紧随 guifbd arm、gfxdemo
     // arm 之前（ADR #61 呈现/策略分离：权威窗口表 + present/hdi 双域透传
@@ -2159,6 +2188,216 @@ fn run_rootfs_child(console: Handle) {
     // 契约（stdhello/U1 在首行前 = 黑暗基线不发）；walk 早退降级路径不经
     // 此（该 boot 本已 FAIL，行数即证据）。
     x6_mark(console);
+}
+
+// ---- VER（ver-hard 乙侧）：版本身份对拍——kernel sysver VMO（第 9 插
+// H_VER，fb GOP 相）× mkcpio .berryver 烙印（rootfs 生成式条目），三元组
+// （ident/level/semver）双源对拍 → `eco: VER ok/mix` 观测行（非标记族）----
+
+/// VER 探针窗长（= sysver.rs 字符串段帽 STRS_CAP=128：头 20B + 字符串段
+/// 合同全覆盖；读 128B 是对拍面惯读宽度）。
+const VER_WIN_LEN: usize = 128;
+/// VER 探针窗（H_VER 前 128B——单页栈纪律：窗口走 static，STEP_WIN 同款）。
+static mut VER_WIN: [u8; VER_WIN_LEN] = [0; VER_WIN_LEN];
+/// .berryver 内容窗（"<ident>|level <N>|v<semver>"——ident 帽同 VMO 面
+/// 字符串段 + 尾两段约 35B 绰余；盖不住 = 解析拒〔诚实拒，cpio 步进窗
+/// 同口径〕）。
+const VER_BVER_LEN: usize = 160;
+static mut VER_BVER_WIN: [u8; VER_BVER_LEN] = [0; VER_BVER_LEN];
+/// VER eco 行窗（mix 形最坏 = 双 ident + 双 lvl/semver 片段；256B 内现实
+/// ident（describe ~25B）全宽容纳，理论极长 ident 截断——宁截断不炸机，
+/// eco_note 同款）。
+const VER_LINE_LEN: usize = 256;
+static mut VER_LINE_WIN: [u8; VER_LINE_LEN] = [0; VER_LINE_LEN];
+
+/// VMO 面 128B 解析——kernel/src/sysver.rs `parse` 同源口径逐字段镜像：
+/// magic u32@0 = 0x4256_4552 / hdr u16@4 = 1 / rsv@6 零 / level u32@8 /
+/// semver u16×3@12 / @20 起 ident、rustc 两段 NUL 连续（ident 段 UTF-8
+/// 校验同镜像；rustc 段只验在席——对拍三元组不含它）。任一不符 → None。
+/// 与 sysver::parse 的窗缘差异：那边缓冲恒页宽（r_off 必在窗内），这边
+/// 窗 = 帽本身 → rustc 段 NUL 出窗显式拒（STRS_LEN ≤ 128 合同下不可达，
+/// 窗缘防御——§A145 族「字面/边界即雷」面）。
+fn ver_parse_vmo(buf: &[u8]) -> Option<(&[u8], u32, (u16, u16, u16))> {
+    const HDR: usize = 20;
+    if buf.len() < HDR {
+        return None;
+    }
+    if u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) != 0x4256_4552 {
+        return None;
+    }
+    if u16::from_le_bytes([buf[4], buf[5]]) != 1 {
+        return None;
+    }
+    if buf[6] != 0 || buf[7] != 0 {
+        return None; // rsv 须零
+    }
+    let level = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+    let semver = (
+        u16::from_le_bytes([buf[12], buf[13]]),
+        u16::from_le_bytes([buf[14], buf[15]]),
+        u16::from_le_bytes([buf[16], buf[17]]),
+    );
+    let ident_end = HDR + buf[HDR..].iter().position(|&b| b == 0)?;
+    let ident = core::str::from_utf8(&buf[HDR..ident_end]).ok()?;
+    let r_off = ident_end + 1;
+    if r_off >= buf.len() {
+        return None; // rustc 段 NUL 出窗（128B 帽截断）
+    }
+    let r_end = r_off + buf[r_off..].iter().position(|&b| b == 0)?;
+    if core::str::from_utf8(&buf[r_off..r_end]).is_err() {
+        return None;
+    }
+    Some((ident.as_bytes(), level, semver))
+}
+
+/// 无符号十进制（u32 帽；空串/非数字/溢出 = None——.berryver 段面严格
+/// 口径）。
+fn ver_dec_u32(s: &[u8]) -> Option<u32> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for &b in s {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        v = v.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    Some(v)
+}
+
+/// .berryver 内容解析："<git-describe>|level <N>|v<maj>.<min>.<patch>"
+/// 单行（mkcpio 烙印合同无尾随换行；尾随 \n 容忍 = 防御面，对冻结产链
+/// 零观感差）→ (ident, level, semver)。ident 空串/段缺席/数字溢出/
+/// semver 分量超 u16 = None。
+fn ver_parse_berryver(buf: &[u8]) -> Option<(&[u8], u32, (u16, u16, u16))> {
+    let mut s = buf;
+    while s.last() == Some(&b'\n') {
+        s = &s[..s.len() - 1];
+    }
+    let p1 = s.iter().position(|&b| b == b'|')?;
+    let ident = &s[..p1];
+    if ident.is_empty() {
+        return None;
+    }
+    let s = s[p1 + 1..].strip_prefix(b"level ")?;
+    let p2 = s.iter().position(|&b| b == b'|')?;
+    let level = ver_dec_u32(&s[..p2])?;
+    let s = s[p2 + 1..].strip_prefix(b"v")?;
+    let d1 = s.iter().position(|&b| b == b'.')?;
+    let maj = ver_dec_u32(&s[..d1])?;
+    let s = &s[d1 + 1..];
+    let d2 = s.iter().position(|&b| b == b'.')?;
+    let min = ver_dec_u32(&s[..d2])?;
+    let pat = ver_dec_u32(&s[d2 + 1..])?;
+    if maj > u16::MAX as u32 || min > u16::MAX as u32 || pat > u16::MAX as u32 {
+        return None;
+    }
+    Some((ident, level, (maj as u16, min as u16, pat as u16)))
+}
+
+/// 行内追加片段（容量执法：窗恒留 1B \n 槽，超宽截断——「宁截断不炸
+/// 机」eco_note 同款）。§A145：cursor 派生长度、字面经 `b"…"` 整体入参
+/// ——零手数定长界。
+fn ver_push(line: &mut [u8], i: &mut usize, frag: &[u8]) {
+    let n = frag.len().min(line.len() - 1 - *i);
+    line[*i..*i + n].copy_from_slice(&frag[..n]);
+    *i += n;
+}
+
+/// 行内追加无符号十进制（手排数字节——thr exit/tomb susp 同款；u32
+/// ≤ 10 位，逐字节 ver_push 无独立界）。
+fn ver_push_dec(line: &mut [u8], i: &mut usize, v: u32) {
+    let mut dig = [0u8; 10];
+    let mut dn = 0usize;
+    let mut x = v;
+    loop {
+        dig[dn] = b'0' + (x % 10) as u8;
+        dn += 1;
+        x /= 10;
+        if x == 0 {
+            break;
+        }
+    }
+    while dn > 0 {
+        dn -= 1;
+        ver_push(line, i, &dig[dn..dn + 1]);
+    }
+}
+
+/// VER 对拍主体（fb GOP 相门内调用——run_rootfs_child 装载块；门形 =
+/// H_PRESSURE 块同款）。结构链断全 trap：vmo_read 拒 = 第 9 插接线漂移
+/// （H_PRESSURE 探针同形）；VMO 解析败 = 内核侧合同违约（ktest 同源
+/// parse 面已拦）；.berryver 缺席/读败/解析败 = mkcpio 烙印合同违约
+/// （生成式条目无条件在档）。零本段自有句柄/映射——H_VER/H_ROOTFS 皆
+/// boot 插入原值恒持不关（H_FB 同款 v1 政策），错误清理 = 链断 trap
+/// 口径即全部。
+fn ver_check(console: Handle) {
+    // SAFETY: boot 后本进程独占三窗；顺序读写，单线程（STEP_WIN 同口径）。
+    let vwin: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(VER_WIN) as *mut u8, VER_WIN_LEN)
+    };
+    if berry_vmo_read(H_VER, vwin.as_mut_ptr(), 0, VER_WIN_LEN) != 0 {
+        trap();
+    }
+    let Some((vident, vlevel, vsem)) = ver_parse_vmo(vwin) else {
+        trap();
+    };
+    let Some((off, len)) = cpio_find(H_ROOTFS, b".berryver") else {
+        trap();
+    };
+    let bwin: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(VER_BVER_WIN) as *mut u8,
+            VER_BVER_LEN,
+        )
+    };
+    let want = (len as usize).min(VER_BVER_LEN);
+    if want == 0 || berry_vmo_read(H_ROOTFS, bwin.as_mut_ptr(), off, want) != 0 {
+        trap();
+    }
+    let Some((bident, blevel, bsem)) = ver_parse_berryver(&bwin[..want]) else {
+        trap();
+    };
+    let line: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(VER_LINE_WIN) as *mut u8,
+            VER_LINE_LEN,
+        )
+    };
+    let mut i = 0usize;
+    if vident == bident && vlevel == blevel && vsem == bsem {
+        // 全等：`eco: VER ok <ident> lvl <N>`（手排行——数字节末段）。
+        ver_push(line, &mut i, b"eco: VER ok ");
+        ver_push(line, &mut i, vident);
+        ver_push(line, &mut i, b" lvl ");
+        ver_push_dec(line, &mut i, vlevel);
+    } else {
+        // 任一不等：`eco: VER mix` loud 行含双值片段（vmo=/cpio= 两全宽
+        // 三元组——肉眼可判哪段漂）。
+        ver_push(line, &mut i, b"eco: VER mix vmo=");
+        ver_push(line, &mut i, vident);
+        ver_push(line, &mut i, b" lvl ");
+        ver_push_dec(line, &mut i, vlevel);
+        ver_push(line, &mut i, b" v");
+        ver_push_dec(line, &mut i, vsem.0 as u32);
+        ver_push(line, &mut i, b".");
+        ver_push_dec(line, &mut i, vsem.1 as u32);
+        ver_push(line, &mut i, b".");
+        ver_push_dec(line, &mut i, vsem.2 as u32);
+        ver_push(line, &mut i, b" cpio=");
+        ver_push(line, &mut i, bident);
+        ver_push(line, &mut i, b" lvl ");
+        ver_push_dec(line, &mut i, blevel);
+        ver_push(line, &mut i, b" v");
+        ver_push_dec(line, &mut i, bsem.0 as u32);
+        ver_push(line, &mut i, b".");
+        ver_push_dec(line, &mut i, bsem.1 as u32);
+        ver_push(line, &mut i, b".");
+        ver_push_dec(line, &mut i, bsem.2 as u32);
+    }
+    line[i] = b'\n';
+    send_retry(console, line.as_ptr(), i + 1);
 }
 
 // ---- C-3 段①：ps 查询 RPC——拉起账本（表驱动真值源）+ ps_selftest ----
@@ -5496,6 +5735,17 @@ fn app_launch(
             return (false, UiFace::Absent, None);
         }
     };
+    // ADR #82 V1：type 位收集槽过滤——berry-manifest 词表已收 "driver"
+    // （收格式不消费），但 appd（雏形）只服务 app：driver 包的拉起语义
+    // 随驱动模型 v2/devmgr（[hw] 节未立法，mkapp 产面不同步 = 现无合法
+    // 产出，本滤 = 防拼装盘上的 driver 包开机被当应用拉起的消费侧闸——
+    // parser 放行后 type 的唯一运行期闸门，11 号证伪修正）。boot 批与
+    // APP_SPAWN RPC 同走本守卫（裁决二「守卫单源」——app_serve_spawn
+    // 注）。loud 降级行（net unserved 同式：「词表 = 镜子」的诚实形态）。
+    if man.ty != AppType::App {
+        eco_app(console, id, b"driver unserved"); // 15B ≤ 24B
+        return (false, UiFace::Absent, None);
+    }
     // 双守卫：manifest.id ↔ .bap 文件名（走查名 = 真理源）、manifest.entry
     // ↔ 包内条目名（mkapp 门禁 3 的消费侧镜像——rootfs 可被拼装）。
     if man.id.as_bytes() != id {
