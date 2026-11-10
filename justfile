@@ -769,6 +769,14 @@ test-host:
     # +重复对拒/计数锚交叉断言/c_defines 对齐数学/exit-code 契约 + 在册
     # 五产物逐字节 oracle + 全链确定性——53 面。
     python3 tools/gen_abi.py --selftest
+    # W1-Q4 七续（a-3 U4 纪律同款）：sched_ci 门禁自检——调度 CI 编排面
+    # （build→boot→dashboard 判定串联的全流程判官）此前零守卫：build_env
+    # 三律（~/.cargo/bin 前置判定/CARGO_TARGET_DIR 恒钉/不变异）+ boot_cmd
+    # 钉板（MACH 同款无 -smp）+ ktest_seen 子串口径 + analyze 四态
+    # （mode/gate_label/argv 一一对应）+ **挪位陷阱全链实证**（同路径
+    # --save+--baseline 自比恒稳 rc=0 静默漏放 vs 挪位对拍真回归被咬，
+    # 子进程真跑 dashboard）+ exit-code 契约——24 面。
+    python3 tools/sched_ci.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
