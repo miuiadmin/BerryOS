@@ -1,10 +1,14 @@
-# BCTS 兼容性测试套件设计 v1.0
+# BCTS 兼容性测试套件设计 v1.1
 
 > **性质**：BCTS（BerryOS Compatibility Test Suite）——独立于 G0–G5 的兼容性认证套件：
 > 定位分级、冻结件回放制、Tier 政策、v0 实施规格与认证元数据的机制设计（立法档）。
 > **溯源**：ADR #82 附录二 Q4/Q10 裁定（`docs/架构决策.md:275/:281`）＋ 12 号 §2.4/§2.10
 > 拍板语句全文 ＋ 07 号 §6 建议清单/§8.1 空集自警 ＋ 04 号 §4；升格自 `research/厂商定制化深研/`。
-> **状态**：设计定稿 · 已立法 · ADR #84（2026-11-10 落册） · 立法待窗口（#84 号位已随 #82 头注单源注册，`docs/架构决策.md:3`）。
+> **状态**：设计定稿 · 已立法 · ADR #84（2026-11-10 落册，节录 `docs/架构决策.md:81/:314`）·
+> v0 载体已落（2026-11-11：runner `tools/bcts-run.sh` ＋ 首冻件 `tools/bcts/frozen/bcts@0.toml`
+> 88 标记件 ＋ just 配方与命令速览登记）。
+> **升版**：v1.1（2026-11-11）＝26 号终裁收口刀——示例口径统一 u32 整数形（21 号 P2-7 ＋
+> 26 号 §6-④ 遗留清账）；Tier 1 冻结态全量回放补证（26 号 §6-③）记入修订记录。
 > **基座**：API治理章程 §一（L0–L2 承诺面唯一口径）· 规则/07 测试纪律（markers.sh 单源）·
 > SDK-2 双轨 §四 abi 冻结快照 · #83 槽位合同（前置依赖）· V13 berry-assemble（暂名，门禁迁移宿主）。
 > **边界**：不裁商业模式条款、申诉流程与认证运营面（07 号 §8-5 自认缺）；发布节奏本文只给设计值。
@@ -185,7 +189,7 @@ Tier 1 = 本稿开工；Tier 2 = 随 #83（配置簇）；Tier 3 = 随 V13。认
 # BCTS 冻结测试件清单（发布后只读；作废走台账 add-only）
 schema = 1                        # add-only；未知键硬拒（berry-manifest 同族纪律）
 suite = "bcts"
-platform_revision = "1.0"         # 与镜像 manifest.txt V9 列同源词表
+platform_revision = 0             # u32 域 [0,4294967295]（V9 同源词表、mkimage 同款；PR≡平台 level，示例取首冻件实值 0）
 frozen_at = "<上游发版 commit sha>"
 abi_snapshot = "abi@<short-sha>.toml"   # hash 钉同一快照点（§2.1）
 abi_snapshot_hash = "sha256:…"
@@ -204,8 +208,11 @@ cmd = "just abi-check"
 tier = 1
 ```
 
-字段纪律：`schema` add-only ＋ 未知键硬拒；`tier1_floor` 进工件本身（守卫不依赖外部
-常量——单源自证）；marker 条目 = 冻结件的最小单元，删除 = 破冻（须走作废重发）。
+字段纪律：`schema` add-only ＋ 未知键硬拒；`platform_revision` = **u32 整数**（域
+[0, 4294967295]，V9 同源词表、PR≡平台 level——`tools/mkimage.py:152-173/:212-217` 与
+runner parse_frozen `tools/bcts-run.sh:120-122` 双侧同口径执法；v1.0 示例曾以带点字符串
+示意，即 21 号 P2-7 点名的口径差，本版统一整数形）；`tier1_floor` 进工件本身（守卫不依赖
+外部常量——单源自证）；marker 条目 = 冻结件的最小单元，删除 = 破冻（须走作废重发）。
 
 ### 4.2 runner 与宿主
 
@@ -222,7 +229,7 @@ tier = 1
 5. **产结果包**：结果 ＋ per-boot 日志（`SMOKE_KEEP_LOG=1` 轮转产物）＋ 清单/镜像 hash
    ——hlkx 式 submission package 雏形（07 号 §6-7，:322），§5.2 认证提交件的本体。
 
-### 4.3 新配方 `just bcts`（文本；落库归主会话收口）
+### 4.3 新配方 `just bcts`（已落库，2026-11-11）
 
 ```just
 # ---------- 已立法 · ADR #84（2026-11-10 落册）：BCTS v0 回放（冻结标记集清单对账）----------
@@ -235,8 +242,10 @@ bcts: build
     {{BASH}} tools/bcts-run.sh
 ```
 
-本节只给配方文本——**配方落库（justfile）与 `docs/命令速览.md` 同步登记归主会话
-收口**（AGENTS.md 维护合同：64；本稿不触并行 lane 正占用文件）。
+本节配方文本已兑现落库（2026-11-11 主会话收口刀）：justfile `bcts: build`
+（justfile:898-905）＋ `docs/命令速览.md` bcts 登记行——原「归主会话收口」移交清
+（26 号 §4 恢复表在案）；`docs/索引.md` 行随本稿 v1.1 升版待收口同步（并行 lane
+共享文件，本稿不触）。
 
 ### 4.4 空集守卫与覆盖率报表
 
@@ -264,8 +273,8 @@ v0（现役 just 配方树）→ v1（V13 berry-assemble 组装管线门禁，08
 schema = 1
 device = "…"                        # 机型标识（OEM 自报 + 裁决核）
 oem_lineage = "…"                   # Q1 星状分配；信任账本键（#77 承接）
-platform_revision = "1.0"           # 声称兼容版本 = 回放冻结件版本（对账 V9 列）
-bcts_artifact = "bcts@1.0.toml"
+platform_revision = 0               # 声称兼容版本 = 回放冻结件版本（u32 整数，V9 同源词表——对账 V9 列）
+bcts_artifact = "bcts@0.toml"
 bcts_hash = "sha256:…"
 tiers_passed = [1]                  # 签发时已开通且全绿的 Tier 集
 [caps_baseline]                     # 能力基线核（§6.2 十条逐条）
@@ -376,6 +385,23 @@ Q4 补裁原文（12 号:74）：谁跑 = OEM 自测 ＋ 平台裁决；第三�
 7. **跟版 N 值**：首个 minor 发版节奏确立后、首份 OEM 合同签署前必裁（Q12 已裁公式，
    数值归治理文档）。
 
+## 修订记录
+
+- v1.1（2026-11-11）：① 示例口径统一 u32 整数形——§4.1 冻结件示例 `platform_revision`
+  "1.0"→0、§5.1 认证元数据示例同改 ＋ `bcts_artifact` 对齐 `bcts@0.toml`、§4.1 字段纪律
+  补口径句（V9 同源词表：PR≡平台 level、u32 域 [0,4294967295]——`tools/mkimage.py`
+  与 `tools/bcts-run.sh` parse_frozen 双侧同口径；21 号 P2-7 点名、26 号 §6-④ 遗留清账）；
+  ② 状态行/§4.3 尾注/文末边界随 v0 载体已落翻实（25 号 P2 级滞后项清）＋ 来源索引
+  SDK-2 引用随彼稿升版翻 v1.1；③ 头注关联 26 号终裁收口；④ Tier 1 冻结态全量回放补证
+  （26 号 §6-③）：**本机未终证（如实记）**——`BCTS_FROZEN=tools/bcts/frozen/bcts@0.toml
+  CARGO_TARGET_DIR=/tmp/target-bcts bash tools/bcts-run.sh` 于 2026-11-11 02:24:56 起跑
+  （前置 `just build` 绿），host 门禁 abi-check 先行 PASS、八跑全相复跑进行中至 1800s
+  任务上限到点截停（02:55，TCG wall-clock 限——26 号 §6-③「本机 TCG wall-clock 限未终证」
+  同判），快机/CI 补证在案。文件名/抬头同步
+  升版；`docs/索引.md` 行待收口同步（并行 lane 共享文件，归主会话），旧名引用
+  （`docs/架构决策.md:3/:81/:314`、`bcts@0.toml:2` 头注）同批收口。
+- v1.0（2026-11-10）：首版（ADR #84 落册窗立法稿）。
+
 ## 来源索引
 
 ### 仓库内（相对路径 + 行号，2026-11-10 采集时点）
@@ -394,7 +420,8 @@ Q4 补裁原文（12 号:74）：谁跑 = OEM 自测 ＋ 平台裁决；第三�
 - `research/厂商定制化深研/08-…槽位合同与组装工具链机制设计.md`——四件套 §1；
   conformance 进 BCTS L1（§1 表④；:35/:62/:100）。
 - `docs/API治理章程-v1.0.md`——§一 L0–L4 分级 :10-16。
-- `docs/SDK-2-双轨与演化纪律设计-v1.0.md`——§四 abi 冻结快照 :47-56（经 07 号来源索引采集）。
+- `docs/SDK-2-双轨与演化纪律设计-v1.1.md`——§四 abi 冻结快照（采集时点行号 :47-56，
+  v1.1 现锚 §四 :54；经 07 号来源索引采集）。
 - `docs/规则/07-测试与冒烟.md`——标记单源 :11；相构成表 :20-24；独立关卡 :27。
 - `docs/应用规范-v1.0.md`——装载谓词现役定义 :382。
 - `tools/markers.sh`——MARKERS 32 / ROOTFS_MARKERS 54 / RX_MARKERS 2（2026-11-10
@@ -414,5 +441,7 @@ Q4 补裁原文（12 号:74）：谁跑 = OEM 自测 ＋ 平台裁决；第三�
 - HLK Step 8 submission package（hlkx/EV 签——留痕同构）：https://learn.microsoft.com/en-us/windows-hardware/test/hlk/getstarted/step-8-create-a-submission-package
 
 > **本稿边界**：只设计 BCTS 机制面；§2.5/§3.3-3/§4.1 分发形态为设计值（标注在文），
-> 终裁随 ADR #84 立法窗口；`just bcts` 配方与 `tools/bcts-run.sh` 落库、`docs/索引.md`
-> 与 `docs/命令速览.md` 登记均归主会话收口，本稿不动并行 lane 占用文件。
+> 数值终裁随治理窗口（ADR #84 机制面已立法）。v0 载体已落（2026-11-11：runner ＋
+> 首冻件 ＋ just 配方，命令速览登记同窗）。`docs/索引.md` 行与旧名引用
+> （`docs/架构决策.md:3/:81/:314`；`tools/bcts/frozen/bcts@0.toml:2` 头注——发布后
+> 只读件，随下次签发更替）归主会话收口同步，本稿不动并行 lane 占用文件。

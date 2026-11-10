@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BCTS v0 runner——兼容性测试套件回放器（BCTS 兼容性测试套件设计-v1.0 §4.2
+# BCTS v0 runner——兼容性测试套件回放器（BCTS 兼容性测试套件设计-v1.1 §4.2
 # 五步算法；预 ADR #84）。宿主钉死现役配方树（#82 附录二 Q4 裁定）：复跑
 # 全相走 tools/smoke.sh 同入口（八跑），零未开工件依赖；berry-assemble（V13）
 # 成型后迁组装门禁。

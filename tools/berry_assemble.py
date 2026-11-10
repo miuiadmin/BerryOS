@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""berry_assemble——产品配置层组装器 v0（V13 实施刀，ADR #82「组装不 fork」；
-设计权威 = `docs/产品配置层与槽位合同设计-v1.0.md` §1（product schema 全量）
+设计权威 = `docs/产品配置层与槽位合同设计-v1.1.md` §1（product schema 全量）
 与 §4（九步管线）；底稿 `research/厂商定制化深研/08 号` §3）。
 
 用法：
@@ -572,7 +572,7 @@ def do_dry_run(path: str, pr: int, base_manifest: str, user_dir: str) -> None:
 # ---- 内置样例（设计文档 §1.2 顶层形状裁剪至 v0 键集；--sample 产出）----
 # 锚值为空串 SHA-256 占位（真值随平台发版工件计算——步⑧）。
 SAMPLE_PRODUCT = """\
-# product.toml —— berry-assemble v0 内置样例（产品配置层与槽位合同设计-v1.0.md §1.2 裁剪）
+# product.toml —— berry-assemble v0 内置样例（产品配置层与槽位合同设计-v1.1.md §1.2 裁剪）
 schema = 1
 
 [product]                         # —— 自由面：产品定义 ——
