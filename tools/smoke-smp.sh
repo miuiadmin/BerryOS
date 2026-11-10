@@ -34,6 +34,9 @@
 #      无 IPI + park 派发限频下真并行 witness 归 S-3——验收面 = PAR absent
 #      行 `d1=`（副核 park 派发计数）非零；PAR ok 提前命中 = 超预期收益，
 #      放行不拒）。
+#   5. G-ver-2（版本管理标准 §3/§6）相 1 裸相 banner 门（审计洞③补面：
+#      本线原无 banner 断言）：形态正则 + ident 非 nogit 拒——smoke.sh
+#      主路同正则同形逐字复制。
 #
 # 时限：双核 MTTCG 吞吐 ≈ 单核 0.61x（S-0 B 相）——一切帽 ×2 起步铁律
 # （boot 120→240s / 金丝雀 180→400s / rootfs 420→840s）。**R3 首跑定标
@@ -340,6 +343,21 @@ t_boot0=$(date +%s)
 QEMU_PID=$!
 
 poll_markers "$DEADLINE_BOOT" "裸相" 1 "${MARKERS[@]}"
+# G-ver-2（版本管理标准 §3）：boot banner 形态断言——smoke.sh 主路同正则
+# 同形逐字复制（审计洞③：SMP 线裸相原无 banner 门）：首匹配行须为
+# `BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])`。上方 poll_markers
+# 的 MARKERS[0] "BerryOS boot" 子串断言原样保留——本行只加形态边不松子串
+# 边；置轮询到齐后 = banner 行必已在席，断言零竞态。挂相 1 一处即足：八
+# 相同一 $KERNEL 同一 banner，逐相重断言零增量鉴别力。
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+# 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
+# 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
+# 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可
+# 含该串的段 = ident——semver/rustc/profile 段均数字与固定词）；与
+# smoke.sh 主路同形同正则。
+grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
+  && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 SMP_BOOT_WALL=$(( $(date +%s) - t_boot0 ))
 smp_assertions "相 1"
 echo "smoke-smp: 相 1 SMP 握手 + boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} 到齐（墙钟 ${SMP_BOOT_WALL}s）"
@@ -746,4 +764,4 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
-echo "smoke-smp: PASS（八相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）；相 6 专项门 = ALLOC gate on + n=320（S-5b 双核 EL0 分配器 churn——水位恒等 + 双核 sw 参与证）；相 7 专项门 = HT gate on + n=320（S-5b 双核 handle 表风暴——静默点双走查 Ok(0)）；相 8 专项门 = PP gate on + a=320/b=320（S-5c 双核 channel ping-pong——单进程双线程对打 + 序号零丢失对账）——恰一次/金丝雀执法不跨相 3-8 boot）"
+echo "smoke-smp: PASS（八相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ banner 形态 + ident 非 nogit（G-ver-2 §3/§6，相 1——smoke.sh 同正则）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）；相 6 专项门 = ALLOC gate on + n=320（S-5b 双核 EL0 分配器 churn——水位恒等 + 双核 sw 参与证）；相 7 专项门 = HT gate on + n=320（S-5b 双核 handle 表风暴——静默点双走查 Ok(0)）；相 8 专项门 = PP gate on + a=320/b=320（S-5c 双核 channel ping-pong——单进程双线程对打 + 序号零丢失对账）——恰一次/金丝雀执法不跨相 3-8 boot）"

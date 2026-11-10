@@ -62,8 +62,12 @@
 #      主路 smoke.sh RX 相段 g 独占（有盘路 bsh 全功能），EFI 路杀链核心
 #      由 boot 期 INT ok 覆盖（真机 spawn+terminate+reap 四步）。
 #   7. boot banner 形态（G-ver-2 镜像路同面，版本管理标准 §3）：首匹配行
-#      须为 `BerryOS boot <semver> (`——semver 编译期取 CARGO_PKG_VERSION
-#      同源；形态缺即红。
+#      须为 `BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])`——正则
+#      与 smoke.sh 主路逐字同款（原前锚弱形升全形，三脚本同正则复制）；
+#      ident=nogit 即红（标准 §6——nogit 标识产物不得进发布链）。
+#   8. VER 哨兵执法（标准 §1 构建标识轨道，审计洞①闭环）：`eco: VER ok`
+#      在席 + `eco: VER mix` 缺席——EFI 相（GOP 相门）是 VER 行唯一实现
+#      场，混合构建 loud 行命中即红。
 #
 # UTM 手动点验四条（同镜像、UI 无法 CI——清单正文见 docs/开发体验.md §L3）：
 #   ① 插盘：UTM 新建 ARM64 虚机（UEFI）驱动器挂 berryos.img；
@@ -384,19 +388,44 @@ while :; do
   sleep 1
 done
 # G-ver-2（版本管理标准 §3）镜像路同面：boot banner 形态断言——首匹配行
-# 须为 `BerryOS boot <semver> (<ident>…`（EFI 路与 -kernel 主路同一内核
-# banner；smoke.sh 主路断言同款正则前锚——semver 三数字段 + 括号结构）。
+# 须为 `BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])`（EFI 路与
+# -kernel 主路同一内核 banner；正则与 smoke.sh 主路**逐字同款**——原前锚
+# 弱形升全形，ident 段形态同步受锚，三脚本同正则复制非各写各的）。
 # 上方轮询的 KERNEL_MARKERS "BerryOS boot" 子串断言原样保留——本行只加
 # 形态边不松子串边；置轮询到齐后 = banner 行必已在席，断言零竞态；先行
 # 于 SMOKE_PHASES=boot 早退 = 分层 CI 轻面同受 G-ver-2 护。
-grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \(' \
-  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>…'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+# 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
+# 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
+# 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可
+# 含该串的段 = ident——semver/rustc/profile 段均数字与固定词）；与
+# smoke.sh 主路同形同正则。
+grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
+  && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
-  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态；SMOKE_PHASES=boot 分层 CI 轻面，生态 39 + RX + sim 面留快机全链）"
+  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态 + ident 非 nogit；SMOKE_PHASES=boot 分层 CI 轻面，生态 39 + VER 哨兵 + RX + sim 面留快机全链）"
   cleanup 2>/dev/null || true
   exit 0
 fi
 echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 39)"
+
+# —— VER 哨兵执法（版本管理标准 §1 构建标识轨道；审计洞①「哨兵哑火」闭环）——
+# EFI 相是 `eco: VER` 行唯一实现场：svcmgr ver_check 门 = H_FB 在席（fb
+# GOP 相 ∧ rootfs 在机）——-kernel 主路无 GOP 恒静默跳过，故 VER 执法只
+# 挂本脚本。kernel sysver VMO × rootfs .berryver 烙印三元组全等打
+# `eco: VER ok`、任一不等打 `eco: VER mix`（混合构建——kernel 与 rootfs
+# 异窗的 loud 行）。原状两行均无断言：印了 mix 照 PASS = 哨兵哑火。本块
+# 双门：ok 在席（缺 = 哨兵未跑或非 GOP 相异常——结构链断会 trap 杀
+# svcmgr，eco 标记门已先行兜底）+ mix 缺席（命中即红——混合构建不得过
+# 冒烟门）。grep 取无前缀子串（eco 行行首无 \n 可与上帧残字拼 `veco: …`
+# ——launcher died 同款防御）；置全标记到齐后 = ver_check（boot 装载块）
+# 必已执行，断言零竞态；不进 SMOKE_PHASES=boot 早退面（生态链未跑，VER
+# 行结构性缺席）。
+grep -qF 'eco: VER ok' "$LOG" \
+  || fail "eco: VER ok 缺席——混合构建哨兵哑火或非 GOP 相异常（版本管理标准 §1 构建标识轨道：kernel × rootfs 三元组对拍行应在席）"
+grep -qF 'eco: VER mix' "$LOG" \
+  && fail "eco: VER mix 在席——混合构建（kernel 与 rootfs 异窗）哨兵命中不得过门：$(grep -m1 'eco: VER mix' "$LOG")"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -480,4 +509,4 @@ n_bat=$(grep -acF 'SIMBAT' "$LOG" || true)
 [ "$n_bat" -eq 0 ] \
   || fail "EFI 路 SIMBAT ${n_bat} 行（应 0——门闭相注入面泄漏/静默跳过漂移？）"
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + 生态 39 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + ident 非 nogit + 生态 39 + VER 哨兵 ok 在席/mix 零席 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"

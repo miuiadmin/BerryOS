@@ -494,6 +494,14 @@ done
 # 边不松子串边；置轮询到齐后 = banner 行必已在席，断言零竞态。
 grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
   || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+# 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
+# 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
+# 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可
+# 含该串的段 = ident——semver/rustc/profile 段均数字与固定词）；置形态
+# 断言后 = banner 行必已在席零竞态，与 smoke-image/smoke-smp 两路同形同
+# 正则（三脚本复制非各写各的）。
+grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
+  && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 echo "smoke: boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} 到齐"
 
 # —— 分相门控（CI 分层用）：SMOKE_PHASES=boot 时 boot 相绿即收——
