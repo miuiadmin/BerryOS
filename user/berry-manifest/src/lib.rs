@@ -11,8 +11,8 @@
 //!
 //! `[app]` 五键必填：id / version / entry / type / intent；
 //! `[capabilities]` 一键必填：console（v0 唯一能力词汇）；`[runtime]`
-//! 整节可省：stack_pages（缺省 8，1..=64）。type 恒 `"app"`
-//! （`"driver"` 随 devmgr v2 add-only）。
+//! 整节可省：stack_pages（缺省 8，1..=64）。type 词表 {app,driver}
+//! （driver = ADR #82 V1 预埋位，收格式不消费——`AppType`）。
 //!
 //! ## schema v1 增量（SDK-1a，`docs/SDK-1a实施设计草案.md` §2——
 //! add-only：v0 冻结面一字不动，未知键放行永不发生）
@@ -153,6 +153,38 @@ const REASON_MAX: usize = 24;
 /// 判别值 day-one 定型：v2 消费点 `as u8` 即得正确编码（TPIDR 偏移 /
 /// vblk SECTOR_SZ const assert 同款「形状钉子」——无钉子则声明顺序一改
 /// = 六档全错、静默错优先级带）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AppType {
+    App = 0x01,
+    Driver = 0x02,
+}
+
+// 编译期钉（首/尾；两变体全量断言在 host 测试 app_type_words_and_discriminants）。
+const _: () = assert!(AppType::App as u8 == 0x01);
+const _: () = assert!(AppType::Driver as u8 == 0x02);
+
+impl AppType {
+    /// manifest 小写词 → 枚举（大小写敏感；野词 None）。词表 {app,driver}
+    /// = ADR #82 预埋登记表 V1 冻结面：driver 收格式不消费（[hw] 立法前
+    /// 无合法产出路径——svcmgr app_launch 消费侧闸镜像）。
+    pub fn from_word(w: &[u8]) -> Option<Self> {
+        Some(match w {
+            b"app" => AppType::App,
+            b"driver" => AppType::Driver,
+            _ => return None,
+        })
+    }
+
+    /// 枚举 → manifest 小写词（canonical 重序列化 / 诊断行用）。
+    pub fn word(self) -> &'static str {
+        match self {
+            AppType::App => "app",
+            AppType::Driver => "driver",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Intent {
@@ -419,6 +451,9 @@ pub struct Manifest<'a> {
     pub version: &'a str,
     /// 完整包内路径，含 `bin/` 前缀（如 `bin/appdemo`）。
     pub entry: &'a str,
+    /// 包型词表位（ADR #82 V1：{app,driver}——driver 收格式不消费，
+    /// svcmgr app_launch 闸同源）。
+    pub ty: AppType,
     pub console: bool,
     pub stack_pages: u32,
     pub intent: Intent,
@@ -933,9 +968,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         return Err(err("bad entry"));
     }
     let ty = f.ty.ok_or_else(|| err("missing type"))?;
-    if ty != b"app" {
-        return Err(err("bad type"));
-    }
+    let ty = AppType::from_word(ty).ok_or_else(|| err("bad type"))?;
     let intent = f.intent.ok_or_else(|| err("missing intent"))?;
     let console = f.console.ok_or_else(|| err("missing console"))?;
 
@@ -981,6 +1014,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         id: from_utf8(id).unwrap_or(""),
         version: from_utf8(version).unwrap_or(""),
         entry: from_utf8(entry).unwrap_or(""),
+        ty,
         console,
         stack_pages: f.stack_pages.unwrap_or(STACK_PAGES_DEFAULT),
         intent,
@@ -1220,13 +1254,40 @@ stack_pages = 16
         );
     }
 
-    // 13. type / intent 词面。
+    // 13. type / intent 词面。ADR #82 V1 后 driver 收格式（→ AppType::Driver），
+    // 野词（词表外）才拒。
     #[test]
     fn reject_bad_type_and_intent() {
-        assert_eq!(bad(&BASE.replace("\"app\"", "\"driver\"")).reason_str(), "bad type");
+        assert_eq!(bad(&BASE.replace("\"app\"", "\"service\"")).reason_str(), "bad type");
+        assert_eq!(bad(&BASE.replace("\"app\"", "app")).reason_str(), "bad value");
         assert_eq!(bad(&BASE.replace("\"utility\"", "\"urgent\"")).reason_str(), "bad intent");
         // 裸词（无引号）
         assert_eq!(bad(&BASE.replace("\"utility\"", "utility")).reason_str(), "bad value");
+    }
+
+    // 13b. ADR #82 V1：type 词表 {app,driver}——driver 正例收格式不消费
+    // + 判别值钉板 + 词面往返（首/尾 const assert 的全量侧证）。
+    #[test]
+    fn app_type_words_and_discriminants() {
+        let drv = BASE.replace("\"app\"", "\"driver\"");
+        let m = ok(&drv);
+        assert_eq!(m.ty, AppType::Driver);
+        assert_eq!(ok(BASE).ty, AppType::App);
+        // 判别值形状钉子（0x01/0x02——v2 消费点 as u8 即得编码）。
+        assert_eq!(AppType::App as u8, 0x01);
+        assert_eq!(AppType::Driver as u8, 0x02);
+        // 词面往返闭包：from_word ∘ word = id。
+        for t in [AppType::App, AppType::Driver] {
+            assert_eq!(AppType::from_word(t.word().as_bytes()), Some(t));
+        }
+        // 野词/大小写敏感。
+        assert_eq!(AppType::from_word(b"App"), None);
+        assert_eq!(AppType::from_word(b"apps"), None);
+        assert_eq!(AppType::from_word(b""), None);
+        // 坏词单测（含 v0 冻结注记里的已废位 "service"）。
+        for w in ["\"service\"", "\"Service\"", "\"\"", "\" app\""] {
+            assert_eq!(bad(&BASE.replace("\"app\"", w)).reason_str(), "bad type", "{w}");
+        }
     }
 
     // 14. 布尔严格面。

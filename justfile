@@ -615,9 +615,9 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-guiproto --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p gui-inputd --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
-    # 第 8 例，host 38 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
+    # 第 8 例，host 44 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板 + ID_MAX 绝对钉（berry-layout
-    # 跨面镜像对偶侧））。
+    # 跨面镜像对偶侧）+ ADR #82 V1 AppType 词表 {app,driver} 钉板）。
     cargo test --manifest-path user/Cargo.toml -p berry-manifest --target {{host}}
     # GUI-8：berry-layout（桌面布局 JSON v1 纯函数解析/发射——「解析器即
     # 产品」第 9 例，host 61 测：schema/canonical 钉板 + 帽双侧执法 +
