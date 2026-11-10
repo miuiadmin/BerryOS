@@ -24,4 +24,9 @@ name = "berry-sched"
 version = "0.1.0"
 dependencies = [
  "berry-hal-aarch64",
+ "berry-wqmatch",
 ]
+
+[[package]]
+name = "berry-wqmatch"
+version = "0.1.0"

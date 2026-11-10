@@ -44,12 +44,12 @@
 |------|-----------|--------|--------------|------|
 | kernel/ | 23 | 26633 | 1931 | 7.25% |
 | mm/ | 6 | 1739 | 4 | 0.23% |
-| sched/ | 12 | 6565 | 1554 | 23.67% |
+| sched/ | 12 | 6583 | 1562 | 23.73% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 6806 | 960 | 14.11% |
-| **合计** | 63 | 41743 | 4449 | **10.66%** |
+| **合计** | 63 | 41761 | 4457 | **10.67%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33434，unsafe 非空行 3801，密度 11.37%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33452，unsafe 非空行 3809，密度 11.39%（生产面口径）
 - 分类计数：页表 52 | 上下文切换 32 | MMIO 151 | 分配器 13 | 硬件原子 0 | 其它 697
 - 类型计数：block 810 | fn 131 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -947,59 +947,59 @@
 | sched/src/sched.rs | 1777 | fn | 其它 | unsafe fn note_sleepq_changed() { let hook = unsafe { SLEEPQ_HOO |
 | sched/src/sched.rs | 1778 | block | 其它 | unsafe { SLEEPQ_HOOK }; if let Some(h) = hook { h(); } } // ---- |
 | sched/src/sched.rs | 1798 | block | 其它 | unsafe { LB_MATCH = f }; } /// per-CPU LB 子任务 tick 采样计数（义务③ per- |
-| sched/src/sched.rs | 1856 | fn | 其它 | unsafe fn sleepq() -> &'static mut SleepQueue { &mut *addr_of_mu |
-| sched/src/sched.rs | 1885 | block | 其它 | unsafe { held_test(HELD_SQ) } { return false; // 位已置——外层逻辑持有，物理退 |
-| sched/src/sched.rs | 1890 | block | 其它 | unsafe { held_mark(HELD_SQ, true) }; true } /// 放 SLEEPQ 锁（先清位后放 |
-| sched/src/sched.rs | 1901 | block | 其它 | unsafe { held_mark(HELD_SQ, false) }; sq_release(); } impl Sleep |
-| sched/src/sched.rs | 1911 | fn | 其它 | unsafe fn insert_sorted(&self, task: NonNull<Task>) { let t = ta |
-| sched/src/sched.rs | 1967 | fn | 其它 | unsafe fn unlink(&self, task: NonNull<Task>) { let t = task.as_p |
-| sched/src/sched.rs | 2003 | block | 其它 | unsafe { assert_preempt_balanced("block_current"); let cur = cur |
-| sched/src/sched.rs | 2114 | fn | 其它 | unsafe fn wake_one_inner(t: NonNull<Task>) { // SAFETY: 契约如上；SLE |
-| sched/src/sched.rs | 2116 | block | 其它 | unsafe { let p = t.as_ptr(); sleepq().unlink(t); (*p).wakeup.set |
-| sched/src/sched.rs | 2176 | block | 其它 | unsafe { let mut cur = sleepq().head.get(); while let Some(c) = |
-| sched/src/sched.rs | 2191 | block | 其它 | unsafe { note_sleepq_changed() }; n } // ---- fastpath/slowpath |
-| sched/src/sched.rs | 2228 | block | 其它 | unsafe { let mut cur = sleepq().head.get(); while let Some(c) = |
-| sched/src/sched.rs | 2256 | fn | 其它 | unsafe fn fast_wake_locked(t: NonNull<Task>) { // SAFETY: 契约如上。 |
-| sched/src/sched.rs | 2258 | block | 其它 | unsafe { wake_one_inner(t); note_sleepq_changed(); } } /// 4-4 直 |
-| sched/src/sched.rs | 2286 | block | 其它 | unsafe { assert_preempt_balanced("try_preempt"); let cur = curre |
-| sched/src/sched.rs | 2347 | fn | MMIO | unsafe fn expire_timeouts() { let now = hal::timer::cntvct(); le |
-| sched/src/sched.rs | 2363 | block | 其它 | unsafe { note_sleepq_changed() }; sq_unlock(phys); // SQ 窗闭 } // |
-| sched/src/sched.rs | 2377 | block | 其它 | unsafe { let mut cur = sleepq().head.get(); while let Some(n) = |
-| sched/src/sched.rs | 2402 | block | 其它 | unsafe { sleepq().head.get() == Some(core::ptr::NonNull::from(t) |
-| sched/src/sched.rs | 2412 | block | 其它 | unsafe { sleepq().insert_sorted(NonNull::from(t)) }; } /// 把 `t` |
-| sched/src/sched.rs | 2419 | block | 其它 | unsafe { sleepq().unlink(NonNull::from(t)) }; } /// 用户任务致死计数只读访问 |
-| sched/src/sched.rs | 2437 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len) } } /// 环/SLEEPQ 完整 |
-| sched/src/sched.rs | 2459 | block | 其它 | unsafe { // S-3b：双队列各自走查对账（per-CPU 分诊后账面 = 每核独立环 + 全局 // SLEEPQ |
-| sched/src/sched.rs | 2551 | block | 其它 | unsafe { let phys = rq_lock(); let picked = RR .pick_next_filter |
-| sched/src/sched.rs | 2562 | block | 其它 | unsafe { try_steal_one() }) }; match picked { Some(next_ptr) => |
-| sched/src/sched.rs | 2571 | block | 其它 | unsafe { dispatch_from_idle(next_ptr) }; } None => { // 深浅 park（ |
-| sched/src/sched.rs | 2582 | block | MMIO | unsafe { hal::timer::arm_at(d) }, // SAFETY: CNTV IMASK=1（深 park |
-| sched/src/sched.rs | 2584 | block | MMIO | unsafe { hal::timer::mask() }, } // masked-wfi 三步闭环（丢唤醒窗收口，secon |
-| sched/src/sched.rs | 2602 | block | 其它 | unsafe { rq().is_empty() && sleepq().len.get() == 0 }; if empty |
-| sched/src/sched.rs | 2606 | block | MMIO | unsafe { hal::timer::mask() }; hal::smp::note_park_cpu(); // S-5 |
-| sched/src/sched.rs | 2615 | block | MMIO | unsafe { hal::timer::arm_slice() }; hal::enable_irq(); yield_now |
-| sched/src/sched.rs | 2641 | block | 其它 | unsafe { current_task() }; if cur.is_null() { 0 } else { unsafe |
-| sched/src/sched.rs | 2642 | block | 其它 | unsafe { (*cur).thread_key } } } /// 1.1/v1.2：当前任务的运行时 deadline |
-| sched/src/sched.rs | 2649 | block | 其它 | unsafe { current_task() }; if cur.is_null() { return (0, 0); } u |
-| sched/src/sched.rs | 2653 | block | 其它 | unsafe { if (*cur).prio_effective < crate::class::PRIO_DEADLINE |
-| sched/src/sched.rs | 2665 | block | 其它 | unsafe { // app-1 段 a-1 同款修正（见 freeze_precheck_by_pinned 注）：svc_ |
-| sched/src/sched.rs | 2697 | block | 其它 | unsafe { for cpu in 0..2 { let head = rq_of(cpu).head(); let mut |
-| sched/src/sched.rs | 2729 | block | 其它 | unsafe { for cpu in 0..2 { let head = rq_of(cpu).head(); let mut |
-| sched/src/sched.rs | 2755 | fn | 其它 | unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) |
-| sched/src/sched.rs | 2789 | block | 其它 | unsafe { LB_MATCH } { if !cur.is_null() && f((*cur).thread_key) |
-| sched/src/sched.rs | 2860 | block | 其它 | unsafe { core::slice::from_raw_parts(hits[i].0 as *const u8, hit |
-| sched/src/sched.rs | 2890 | block | 其它 | unsafe { (rq_of(me).len(), rq_of(1 - me).len()) }; // 定时拉取只做“近空闲 |
-| sched/src/sched.rs | 2900 | block | 其它 | unsafe { try_steal_one() } { let st = PULL_CNT.fetch_add(1, Orde |
-| sched/src/sched.rs | 2993 | fn | 其它 | unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFra |
-| sched/src/sched.rs | 3076 | fn | 其它 | unsafe fn park_recheck() { if !hal::smp::par_enabled() { return; |
-| sched/src/sched.rs | 3168 | fn | 其它 | unsafe fn try_steal_one() -> Option<*mut Task> { if !hal::smp::p |
-| sched/src/sched.rs | 3247 | fn | MMIO | unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) { (*next_p |
-| sched/src/sched.rs | 3251 | block | MMIO | unsafe { hal::timer::arm_slice() }; set_current(next_ptr); bump_ |
-| sched/src/sched.rs | 3262 | block | 上下文切换 | unsafe { hal::task::context_switch( hal::smp::sec_park_ctx(), &r |
-| sched/src/sched.rs | 3281 | fn | 其它 | unsafe fn dispatch_from_idle(next_ptr: *mut Task) { // G3-1a 断言补 |
-| sched/src/sched.rs | 3290 | block | MMIO | unsafe { hal::timer::arm_slice() }; set_current(next_ptr); bump_ |
-| sched/src/sched.rs | 3298 | block | 上下文切换 | unsafe { hal::task::context_switch(&raw mut (*idle).ctx, &raw co |
-| sched/src/sched.rs | 3318 | block | 其它 | unsafe { sleepq().head.get().map(\|h\| (*h.as_ptr()).wait_deadline |
+| sched/src/sched.rs | 1860 | fn | 其它 | unsafe fn sleepq() -> &'static mut SleepQueue { &mut *addr_of_mu |
+| sched/src/sched.rs | 1889 | block | 其它 | unsafe { held_test(HELD_SQ) } { return false; // 位已置——外层逻辑持有，物理退 |
+| sched/src/sched.rs | 1894 | block | 其它 | unsafe { held_mark(HELD_SQ, true) }; true } /// 放 SLEEPQ 锁（先清位后放 |
+| sched/src/sched.rs | 1905 | block | 其它 | unsafe { held_mark(HELD_SQ, false) }; sq_release(); } impl Sleep |
+| sched/src/sched.rs | 1915 | fn | 其它 | unsafe fn insert_sorted(&self, task: NonNull<Task>) { let t = ta |
+| sched/src/sched.rs | 1971 | fn | 其它 | unsafe fn unlink(&self, task: NonNull<Task>) { let t = task.as_p |
+| sched/src/sched.rs | 2007 | block | 其它 | unsafe { assert_preempt_balanced("block_current"); let cur = cur |
+| sched/src/sched.rs | 2118 | fn | 其它 | unsafe fn wake_one_inner(t: NonNull<Task>) { // SAFETY: 契约如上；SLE |
+| sched/src/sched.rs | 2120 | block | 其它 | unsafe { let p = t.as_ptr(); sleepq().unlink(t); (*p).wakeup.set |
+| sched/src/sched.rs | 2180 | block | 其它 | unsafe { let mut cur = sleepq().head.get(); while let Some(c) = |
+| sched/src/sched.rs | 2199 | block | 其它 | unsafe { note_sleepq_changed() }; n } // ---- fastpath/slowpath |
+| sched/src/sched.rs | 2236 | block | 其它 | unsafe { let mut cur = sleepq().head.get(); while let Some(c) = |
+| sched/src/sched.rs | 2274 | fn | 其它 | unsafe fn fast_wake_locked(t: NonNull<Task>) { // SAFETY: 契约如上。 |
+| sched/src/sched.rs | 2276 | block | 其它 | unsafe { wake_one_inner(t); note_sleepq_changed(); } } /// 4-4 直 |
+| sched/src/sched.rs | 2304 | block | 其它 | unsafe { assert_preempt_balanced("try_preempt"); let cur = curre |
+| sched/src/sched.rs | 2365 | fn | MMIO | unsafe fn expire_timeouts() { let now = hal::timer::cntvct(); le |
+| sched/src/sched.rs | 2381 | block | 其它 | unsafe { note_sleepq_changed() }; sq_unlock(phys); // SQ 窗闭 } // |
+| sched/src/sched.rs | 2395 | block | 其它 | unsafe { let mut cur = sleepq().head.get(); while let Some(n) = |
+| sched/src/sched.rs | 2420 | block | 其它 | unsafe { sleepq().head.get() == Some(core::ptr::NonNull::from(t) |
+| sched/src/sched.rs | 2430 | block | 其它 | unsafe { sleepq().insert_sorted(NonNull::from(t)) }; } /// 把 `t` |
+| sched/src/sched.rs | 2437 | block | 其它 | unsafe { sleepq().unlink(NonNull::from(t)) }; } /// 用户任务致死计数只读访问 |
+| sched/src/sched.rs | 2455 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len) } } /// 环/SLEEPQ 完整 |
+| sched/src/sched.rs | 2477 | block | 其它 | unsafe { // S-3b：双队列各自走查对账（per-CPU 分诊后账面 = 每核独立环 + 全局 // SLEEPQ |
+| sched/src/sched.rs | 2569 | block | 其它 | unsafe { let phys = rq_lock(); let picked = RR .pick_next_filter |
+| sched/src/sched.rs | 2580 | block | 其它 | unsafe { try_steal_one() }) }; match picked { Some(next_ptr) => |
+| sched/src/sched.rs | 2589 | block | 其它 | unsafe { dispatch_from_idle(next_ptr) }; } None => { // 深浅 park（ |
+| sched/src/sched.rs | 2600 | block | MMIO | unsafe { hal::timer::arm_at(d) }, // SAFETY: CNTV IMASK=1（深 park |
+| sched/src/sched.rs | 2602 | block | MMIO | unsafe { hal::timer::mask() }, } // masked-wfi 三步闭环（丢唤醒窗收口，secon |
+| sched/src/sched.rs | 2620 | block | 其它 | unsafe { rq().is_empty() && sleepq().len.get() == 0 }; if empty |
+| sched/src/sched.rs | 2624 | block | MMIO | unsafe { hal::timer::mask() }; hal::smp::note_park_cpu(); // S-5 |
+| sched/src/sched.rs | 2633 | block | MMIO | unsafe { hal::timer::arm_slice() }; hal::enable_irq(); yield_now |
+| sched/src/sched.rs | 2659 | block | 其它 | unsafe { current_task() }; if cur.is_null() { 0 } else { unsafe |
+| sched/src/sched.rs | 2660 | block | 其它 | unsafe { (*cur).thread_key } } } /// 1.1/v1.2：当前任务的运行时 deadline |
+| sched/src/sched.rs | 2667 | block | 其它 | unsafe { current_task() }; if cur.is_null() { return (0, 0); } u |
+| sched/src/sched.rs | 2671 | block | 其它 | unsafe { if (*cur).prio_effective < crate::class::PRIO_DEADLINE |
+| sched/src/sched.rs | 2683 | block | 其它 | unsafe { // app-1 段 a-1 同款修正（见 freeze_precheck_by_pinned 注）：svc_ |
+| sched/src/sched.rs | 2715 | block | 其它 | unsafe { for cpu in 0..2 { let head = rq_of(cpu).head(); let mut |
+| sched/src/sched.rs | 2747 | block | 其它 | unsafe { for cpu in 0..2 { let head = rq_of(cpu).head(); let mut |
+| sched/src/sched.rs | 2773 | fn | 其它 | unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) |
+| sched/src/sched.rs | 2807 | block | 其它 | unsafe { LB_MATCH } { if !cur.is_null() && f((*cur).thread_key) |
+| sched/src/sched.rs | 2878 | block | 其它 | unsafe { core::slice::from_raw_parts(hits[i].0 as *const u8, hit |
+| sched/src/sched.rs | 2908 | block | 其它 | unsafe { (rq_of(me).len(), rq_of(1 - me).len()) }; // 定时拉取只做“近空闲 |
+| sched/src/sched.rs | 2918 | block | 其它 | unsafe { try_steal_one() } { let st = PULL_CNT.fetch_add(1, Orde |
+| sched/src/sched.rs | 3011 | fn | 其它 | unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFra |
+| sched/src/sched.rs | 3094 | fn | 其它 | unsafe fn park_recheck() { if !hal::smp::par_enabled() { return; |
+| sched/src/sched.rs | 3186 | fn | 其它 | unsafe fn try_steal_one() -> Option<*mut Task> { if !hal::smp::p |
+| sched/src/sched.rs | 3265 | fn | MMIO | unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) { (*next_p |
+| sched/src/sched.rs | 3269 | block | MMIO | unsafe { hal::timer::arm_slice() }; set_current(next_ptr); bump_ |
+| sched/src/sched.rs | 3280 | block | 上下文切换 | unsafe { hal::task::context_switch( hal::smp::sec_park_ctx(), &r |
+| sched/src/sched.rs | 3299 | fn | 其它 | unsafe fn dispatch_from_idle(next_ptr: *mut Task) { // G3-1a 断言补 |
+| sched/src/sched.rs | 3308 | block | MMIO | unsafe { hal::timer::arm_slice() }; set_current(next_ptr); bump_ |
+| sched/src/sched.rs | 3316 | block | 上下文切换 | unsafe { hal::task::context_switch(&raw mut (*idle).ctx, &raw co |
+| sched/src/sched.rs | 3336 | block | 其它 | unsafe { sleepq().head.get().map(\|h\| (*h.as_ptr()).wait_deadline |
 | sched/src/spin.rs | 24 | block | 其它 | unsafe { SPIN_BARK = Some(f) }; } /// TTAS 自旋锁。`locked == false` |
 | sched/src/spin.rs | 56 | block | 其它 | unsafe { SPIN_BARK } { bark(self as *const SpinLock as usize); } |
 | sched/src/task.rs | 15 | block | 分配器 | unsafe { alloc::alloc::alloc(layout) } as *mut T; if ptr.is_null |

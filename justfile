@@ -560,6 +560,10 @@ test-host:
     # 本门禁防回归（smoke 本地复现的宿主断点收口）。
     python3 tools/shvarcheck.py --check
     cargo test -p berry-mm --target {{host}}
+    # W3-Q2：berry-wqmatch（等待队列唤醒匹配纯函数面——b-1 广播不变量/
+    # WAIT_ANY 哨兵/fastpath 单等待者资格三律钉板 + 两路语义对齐穷举，
+    # host 9 测；谓词单源，sched wake_matching/find_single_waiter 消费）。
+    cargo test -p berry-wqmatch --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各

@@ -10,8 +10,11 @@ path = "src/lib.rs"
 
 # 依赖 HAL（TaskContext/switch）+ alloc。仅 aarch64-unknown-none 构建（HAL 有 ARM
 # global_asm，不在 host 测）；调度逻辑正确性靠 QEMU demo（Step 3/6）+ ktest 验证。
+# W3-Q2：等待匹配谓词单源在 berry-wqmatch（host 可测纯面——本 crate 只
+# aarch64 可编，谓词语义回归面此前 host 不可达）；此处消费即唯一事实源。
 [dependencies]
 berry-hal-aarch64 = { path = "../arch/aarch64" }
+berry-wqmatch = { path = "../wqmatch" }
 
 [features]
 # G3-3 lockdep：透传 HAL feature（检测器/链栈在 HAL 侧 SmpCpu per-CPU 区）。

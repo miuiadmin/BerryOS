@@ -1824,7 +1824,11 @@ pub fn lb_stats() -> (u64, u64, u64) {
 /// `wait_many` 的等待键哨兵（4-2b）：Task 只有单一 `wait_obj` 匹配键，多对象
 /// 等待者挂本哨兵——`wake_matching` 对其「任何对象、任何新置位」都命中，醒来
 /// 由调用方重验循环定夺（虚假唤醒无害；v1 等待者个位数，全队列误醒开销可忽略）。
-pub const WAIT_ANY: usize = usize::MAX;
+///
+/// W3-Q2 起单源在 `berry_wqmatch::WAIT_ANY`（host 可测纯面 crate）；此处
+/// re-export 维持既有引用路径零改动（`berry_sched::WAIT_ANY` 面——kernel
+/// pi.rs 等消费方不动）。值不变（usize::MAX）。
+pub use berry_wqmatch::WAIT_ANY;
 
 /// 全局睡眠队列（SLEEPQ）：侵入式双向 + 按 `wait_deadline` 升序（最近到期在头
 /// ——超时扫描头未到期即早停）。
@@ -2178,9 +2182,13 @@ pub fn wake_matching_locked(obj: usize, set_signals: u64) -> usize {
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
-            let key_match =
-                (*t).wait_obj == obj || (*t).wait_obj == WAIT_ANY; // 4-2b 哨兵
-            if key_match && ((*t).wait_signals & set_signals) != 0 {
+            // W3-Q2：谓词单源 berry_wqmatch::matches_wake（键门+位门；
+            // b-1 广播不变量 host 钉板面）。手写内联逻辑与此逐字等价。
+            let d = berry_wqmatch::WaiterDesc {
+                key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
+                wait_signals: (*t).wait_signals,
+            };
+            if berry_wqmatch::matches_wake(&d, obj, set_signals) {
                 wake_one_inner(c);
                 n += 1;
             }
@@ -2230,10 +2238,20 @@ pub fn find_single_waiter_locked(obj: usize, signals: u64) -> Option<NonNull<Tas
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
-            if (*t).wait_obj == WAIT_ANY && ((*t).wait_signals & signals) != 0 {
+            // W3-Q2：资格判单源 berry_wqmatch（哨兵位相交挡门 + 多匹配者
+            // 挡门 + b-2 LB 修正「位不相交哨兵不挡」——host 钉板面）。
+            // 与 berry_wqmatch::single_waiter 的循环逐字同构（那边返回
+            // 下标、这边持有指针）。
+            let d = berry_wqmatch::WaiterDesc {
+                key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
+                wait_signals: (*t).wait_signals,
+            };
+            if d.key == berry_wqmatch::WaitKey::Any
+                && (d.wait_signals & signals) != 0
+            {
                 return None; // 位相交哨兵在唤醒集内：唤醒集不可约 → slowpath
             }
-            if (*t).wait_obj == obj && ((*t).wait_signals & signals) != 0 {
+            if berry_wqmatch::matches_wake(&d, obj, signals) {
                 if found.is_some() {
                     return None; // 多匹配者 → slowpath（wake_matching 全摘）
                 }
