@@ -120,7 +120,7 @@ berry play script.json --run "$RUN"
 - GUI-8 桌面图标仍 dash（launcher app registry/app channel；归 GUI-8 app 服务）。
 - Windows 实机/打包（C1g）；host 自动重启已落。
 - P3：virtio-gpu / damage / 120Hz / 视频录屏 / 时间轴回放。
-- 顶层 `berry tap/key` 别名、`input text`、`display rotate`、`display set WxH` 未落。
+- 顶层 `berry tap/key/swipe/text` 别名、`input text`、`display set WxH` 已落 2026-11-05（12fab4a/e783303/f289d44）；实测注见 §3，剩余缺口表 ✅ 行互证。唯 `display rotate` 未落（`display set <profile|WxH>` 已可设，旋转归剩余缺口表「需客机/呈现面旋转」项）。
 
 ## 10. 最小 AI/CI 闭环
 
