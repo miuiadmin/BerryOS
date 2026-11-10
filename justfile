@@ -819,6 +819,10 @@ test-host:
     # RT/LAT wire 镜像 + 回执 sha256 + 六通道组合拒绝 exit-code 契约——
     # 57 面，三突变红分支实证（wire 冻结/单段保留/iter 漂移均被咬）。
     python3 tools/bench.py --selftest
+    # SDK-2 P0-1：berry-crypto（.sig 信封 v1 TLV + 信任账本 TOML + 水位比较器
+    # + RFC 8032 向量门空转框架——对选型零敏感件先行，26 号 §3-2；原语本体 =
+    # P0-2 另刀，向量门不过不合入；P0 合入 = 闸 B，24 号 §4.2 终核三条）。
+    cargo test --manifest-path user/Cargo.toml -p berry-crypto --target {{host}}
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。

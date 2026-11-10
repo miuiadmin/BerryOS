@@ -290,9 +290,40 @@ pub struct Utsname {
 
 static UNAME_SYSNAME: [c_char; 8] = *b"BerryOS\0";
 static UNAME_NODENAME: [c_char; 6] = *b"berry\0";
-static UNAME_RELEASE: [c_char; 4] = *b"0.1\0";
 static UNAME_VERSION: [c_char; 18] = *b"berry-libc-shim-1\0";
 static UNAME_MACHINE: [c_char; 8] = *b"aarch64\0";
+
+// 26 号 §1-3 uname 旧债修复（ADR #83 v1.1 §查询面，2026-11-11）：release
+// 原硬编码 "0.1"（值源漂移一个版本——根 workspace 已 v0.2.0，22 号 A2
+// 现行犯）。修法 = 构建期烙印（cargo env → const，静态值零运行时面）：
+// 值源同 rootfs `.berryver` 烙印 semver 段——单源 = 根 Cargo.toml
+// `[workspace.package].version`（tools/mkcpio.py `_berryver_sources` :326
+// 同文件现取）。本 crate 住 user/ 独立 workspace，无根版本常量可继承
+// （自身 CARGO_PKG_VERSION = crate 版本 0.1.0，非系统版本，不可用），经
+// BERRY_UNAME_RELEASE 烙印注入；未注入时回退根 workspace 现值。**手工
+// 镜像义务**：根 workspace 升版时回退值随 .berryver 同笔更新（VER 哨兵
+// 三元组 = VMO × .berryver，不含 uname 面，无机器执法——缺口登记
+// ADR #83 v1.1 §6.3）。
+const UNAME_RELEASE_STR: &str = match option_env!("BERRY_UNAME_RELEASE") {
+    Some(v) => v,
+    // = 根 Cargo.toml [workspace.package].version 现值（2026-11-11 两源
+    // 核：文件 :7 + git tag v0.2.0）。
+    None => "0.2.0",
+};
+static UNAME_RELEASE: [c_char; UNAME_RELEASE_STR.len() + 1] = cstr_nul(UNAME_RELEASE_STR);
+
+/// &str → 带 NUL 终止的定长 c 数组（余位补 0；N 短于内容时编译期索引
+/// panic——loud）。与上四常量「尺寸 = 内容 + 1」同形。
+const fn cstr_nul<const N: usize>(s: &str) -> [c_char; N] {
+    let b = s.as_bytes();
+    let mut a = [0; N];
+    let mut i = 0;
+    while i < b.len() {
+        a[i] = b[i];
+        i += 1;
+    }
+    a
+}
 
 #[no_mangle]
 pub extern "C" fn uname(u: *mut Utsname) -> c_int {

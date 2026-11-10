@@ -1,0 +1,19 @@
+# berry-crypto —— SDK-2 分发签名链 crate（P0-1 首刀：对选型零敏感件）。
+# 设计 = docs/SDK-2-分发与签名链设计-v1.2.md §二/§三 + research/厂商定制化
+# 深研/24 号 §3；选型终裁 = 26 号 §3（自研 ed25519 优先——保 user/ workspace
+# 零外部依赖纪律，31 crate 先例）。「解析器即产品」家族形态：零分配/零
+# unsafe/零依赖/输入只借用；cfg_attr(not(test), no_std)。
+# **P0-1/P0-2 边界**（26 号 §3-2 解耦裁决）：本刀只落信封 v1 TLV 解析/
+# 序列化 + 信任账本 TOML 读写 + 向量门**空转**框架；ed25519/SHA-512 原语
+# 本体 = P0-2 独立刀（RFC 8032 + Wycheproof 向量门不过不合入；两周未过
+# mixed-order 门触发 fallback 重议）。
+# **P0 合入 = 闸 B 触发 = Q6 账本 schema 重议窗关闭**（24 号 §4.2 终核
+# 三条随 26 号 §3-4 开工令强制引用）。信封格式 Q3 未冻结（P3 前最后重议）。
+[package]
+name = "berry-crypto"
+version = "0.1.0"
+edition = "2021"
+description = "BerryOS SDK-2 signing chain (P0-1): .sig envelope TLV v1 + trust ledger TOML + RFC 8032 vector gate framework"
+license = "Apache-2.0"
+
+[dependencies]

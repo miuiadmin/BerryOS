@@ -115,8 +115,12 @@
 # lifecycle.rs（syscall 胶水面）；apptomb（musl 形，刀2 迁 libc 路）经
 # berry-libc 间接消费——三口现役首消费者。berry-tls/signal 同款「纯面
 # 外迁」：host 测试零 libc 符号面（just test-host 显式行跑）。
+# SDK-2 P0-1：berry-crypto（.sig 信封 v1 TLV 解析/序列化 + 信任账本 TOML
+# 读写 + 水位比较器 + RFC 8032 向量门空转框架——对选型零敏感件先行合入，
+# 26 号 §3-2；ed25519 原语本体 = P0-2 独立刀，向量门不过不合入；P0 合入
+# = 闸 B = Q6 账本 schema 重议窗关闭——24 号 §4.2。暂名定名随 #77）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "berry-lifecycle", "berry-spawngeo", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 resolver = "2"
 
