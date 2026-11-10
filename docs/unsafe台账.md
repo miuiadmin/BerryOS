@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 23 | 26511 | 1932 | 7.29% |
+| kernel/ | 23 | 26492 | 1932 | 7.29% |
 | mm/ | 6 | 1739 | 4 | 0.23% |
 | sched/ | 12 | 6578 | 1562 | 23.75% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 6806 | 960 | 14.11% |
-| **合计** | 63 | 41634 | 4458 | **10.71%** |
+| **合计** | 63 | 41615 | 4458 | **10.71%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33325，unsafe 非空行 3810，密度 11.43%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33306，unsafe 非空行 3810，密度 11.44%（生产面口径）
 - 分类计数：页表 52 | 上下文切换 32 | MMIO 151 | 分配器 13 | 硬件原子 0 | 其它 698
 - 类型计数：block 811 | fn 131 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -332,7 +332,7 @@
 | kernel/src/handle.rs | 487 | block | 其它 | unsafe { if let Some(end) = (*obj.as_ptr()).obj.as_channel_mut() |
 | kernel/src/handle.rs | 544 | block | 其它 | unsafe { (*obj.as_ptr()).refs } == 0 { return Err("HT integrity: |
 | kernel/src/handle.rs | 567 | block | 其它 | unsafe { &*obj.as_ptr() }; if r.obj.obj_type() != ty { return Er |
-| kernel/src/handle.rs | 605 | block | 其它 | unsafe { (*obj.as_ptr()).obj.obj_type() == ty } { n += 1; } } } |
+| kernel/src/handle.rs | 606 | block | 其它 | unsafe { (*obj.as_ptr()).obj.obj_type() == ty } { n += 1; } } } |
 | kernel/src/handoff.rs | 138 | block | 其它 | unsafe { &*(phys_to_virt(x0) as *const BerryHandoff) }; if h.mag |
 | kernel/src/handoff.rs | 174 | block | 其它 | unsafe { core::slice::from_raw_parts(base, count) }; for s in se |
 | kernel/src/heap.rs | 47 | impl | 分配器 | unsafe impl Sync for SlabHeap {} unsafe impl GlobalAlloc for Sla |

@@ -535,7 +535,7 @@ impl HandleTable {
                     }
                 }
                 SlotState::Used { gen, obj, .. } => {
-                    if *gen == 0 || *gen > GEN_MASK {
+                    if !gen_in_issue_domain(*gen) {
                         return Err("HT integrity: Used gen out of range");
                     }
                     // SAFETY: 槽在表且 gen 在发行域内 → 按表不变量指针有效；
@@ -577,7 +577,8 @@ impl HandleTable {
     /// 查表（gen 校验）：槽空 / 越界 / 代号不符 / **预留位非零** →
     /// [`ERR_BAD_HANDLE`]。
     fn lookup(&self, h: Handle) -> Result<(NonNull<ObjRef>, Rights), i32> {
-        if h & RESERVED_MASK != 0 {            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
+        if has_reserved_bits(h) {
+            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
         }
         let slot = decode_slot(h) as usize;
         match self.slots.get(slot) {
@@ -615,7 +616,7 @@ impl HandleTable {
         &self,
         h: Handle,
     ) -> Result<(usize, u32, NonNull<ObjRef>, Rights), i32> {
-        if h & RESERVED_MASK != 0 {
+        if has_reserved_bits(h) {
             return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
         }
         let slot = decode_slot(h) as usize;
@@ -644,7 +645,7 @@ impl HandleTable {
         {
             return Ok(off + 1);
         }
-        if self.slots.len() > SLOT_MASK as usize {
+        if !slot_index_valid(self.slots.len()) {
             return Err(ERR_NO_MEMORY); // 表满（65536 槽）
         }
         // 尾插前预留（3b3 H2 try 化：push 增长的 OOM 曾是 abort 点）。
@@ -660,7 +661,7 @@ impl HandleTable {
         match self.slots[slot] {
             SlotState::Free { next_gen } => {
                 debug_assert!(next_gen >= 1);
-                if next_gen > GEN_MASK {
+                if !gen_in_issue_domain(next_gen) {
                     return Err(ERR_NO_MEMORY);
                 }
                 Ok(next_gen)
