@@ -23,6 +23,11 @@ targets = ["aarch64-unknown-none", "aarch64-unknown-linux-musl"]
 
 [dependencies]
 berry-sys = { path = "../berry-sys", version = "0.1.0" }
+# mem/str 族语义单源（自本 crate strmem.rs 外迁——本 crate 结构性不可
+# cargo test〔crt0 global_asm darwin 拒编〕，strmem 面零测试；外迁后
+# 本 crate 仅留 #[no_mangle] C-ABI 薄壳，符号面零漂移；host 测试经
+# justfile test-host 显式行跑）。berry-tls/mmap/signal 先例族第 7 例。
+berry-strmem = { path = "../berry-strmem", version = "0.1.0" }
 # C-1 刀 2：fd 3+ 文件面（fs.rs）——会话机 + 纯函数面（fd 表/cwd/seek/
 # stat/dirent/ST→FsErr）自刀 1 crate 消费，「不长第二套」。
 berry-fsclient = { path = "../berry-fsclient", version = "0.1.0" }

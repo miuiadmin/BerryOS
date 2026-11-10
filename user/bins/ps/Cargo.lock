@@ -24,6 +24,7 @@ dependencies = [
  "berry-mmap",
  "berry-netdproto",
  "berry-signal",
+ "berry-strmem",
  "berry-sys",
  "berry-tls",
 ]
@@ -46,6 +47,10 @@ version = "0.1.0"
 
 [[package]]
 name = "berry-signal"
+version = "0.1.0"
+
+[[package]]
+name = "berry-strmem"
 version = "0.1.0"
 
 [[package]]

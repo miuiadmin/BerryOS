@@ -562,6 +562,12 @@ test-host:
     # checked 链两溢 + MMIO 三带重叠/相邻/端点进位 + 现役 std/平像/bsh 三
     # 形态，host 10 测。
     cargo test --manifest-path user/Cargo.toml -p berry-spawngeo --target {{host}}
+    # mem/str 族字节序语义纯面（自 berry-libc strmem.rs 外迁——本 crate
+    # 结构性不可 host test〔crt0 global_asm〕，该面此前零测试；先例族第
+    # 7 例）：volatile 拷/填对齐双形态 + memmove 重叠三态 + memcmp 无符
+    # 号差 + strncpy pad-to-n + atoi 双饱和（顺修无符号面 debug 回绕炸）
+    # + strchr/strrchr c=0 NUL 位共识，host 15 测。
+    cargo test --manifest-path user/Cargo.toml -p berry-strmem --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-fsproto --target {{host}}
     # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数面——v1 单段语义
     # 零漂移 + v2 五 op 面，host 17 测）。

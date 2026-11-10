@@ -115,7 +115,7 @@
 # lifecycle.rs（syscall 胶水面）；apptomb（musl 形，刀2 迁 libc 路）经
 # berry-libc 间接消费——三口现役首消费者。berry-tls/signal 同款「纯面
 # 外迁」：host 测试零 libc 符号面（just test-host 显式行跑）。
-members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
     "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "berry-lifecycle", "berry-spawngeo", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 resolver = "2"
