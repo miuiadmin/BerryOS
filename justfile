@@ -807,6 +807,14 @@ test-host:
     # 结构不变量（行号单调/越界/kind·分类域）+ 确定性——40 面，三突变
     # 红分支实证（掩码退化/分类翻转/锚继承丢失均被咬）。
     python3 tools/unsafe_audit.py --selftest
+    # W1-Q4 九续（a-3 U4 纪律同款）：writable_globals 门禁自检——可写全局
+    # 清单执法面（just check / CI 前置，76 条在册）此前零自检：auto_group
+    # 七组分类链 + 声明点正则（static mut 可见性前缀/UnsafeCell 收编/
+    # &'static mut 局部不误算/注释 raw 串掩后不登记）+ manifest 契约
+    # （四坏行 SystemExit）+ 三态 main 子进程真跑红绿分支（MISSING/STALE
+    # 红 rc=1→update 收敛→check 转绿）+ live 对拍 + 确定性——59 面，
+    # 四突变红分支实证（分类翻转/正则放宽/漏报/守卫拆除均被咬）。
+    python3 tools/writable_globals.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
