@@ -399,6 +399,9 @@ static WMD_CLI_DUP: AtomicU32 = AtomicU32::new(0);
 /// 常量或 app 包。svcmgr 在 WMD broker 端被 dup 给任何 app 前，用原始
 /// w_cli 完成 0x68 预共享并等待 wmd ack。
 static SURFACE_ESCAPE_SEED: AtomicU64 = AtomicU64::new(0);
+/// R1 per-boot SYSTEM client seed：仅传给 berry-launcher argv，wmd 侧在
+/// broker 面 0x69 预共享；APP 自报 WM_CLIENT_SYSTEM 无法通过。
+static SYSTEM_UI_SEED: AtomicU64 = AtomicU64::new(0);
 
 // ---- GUI-8 段②：app 域常驻 serve + launcher 监督（裁决二/四-d）----
 
@@ -792,6 +795,10 @@ fn run_rootfs_child(console: Handle) {
                     // 一次 seed，app 无法用公开常量自铸。
                     SURFACE_ESCAPE_SEED.store(
                         share_surface_escape_seed(w_cli),
+                        Ordering::Relaxed,
+                    );
+                    SYSTEM_UI_SEED.store(
+                        share_system_ui_seed(w_cli),
                         Ordering::Relaxed,
                     );
                     wm_cli = w_cli;
@@ -3792,14 +3799,27 @@ fn roundtrip(h: Handle, buf: &mut [u8; 8], req: &[u8; 8]) {
     }
 }
 
+/// per-boot seed 终混：splitmix64 形 finalizer + 显式 label，避免两类
+/// seed 只差同源输入的线性混合。仍是 v1 过渡熵源，真熵刀前不宣称 CSPRNG。
+fn finalize_boot_seed(mut x: u64, label: u64) -> u64 {
+    x ^= label;
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
 /// 生成并发送 per-boot Surface escape seed，阻塞等 wmd 1B OK 后返回。
 /// TCG 冷启动下 wmd 初始化可超过通用 10s 等待帽；seed 是 GUI 服务装配
 /// 硬前置，采用 RPC 同级 120s。
 /// 种子混合 wmd 启动时序与本地 handle 值；无公开常量可抄。
 fn share_surface_escape_seed(w_cli: Handle) -> u64 {
     const CAP_NS: u64 = 120 * 1_000_000_000;
-    let mut seed = now() ^ u64::from(w_cli).rotate_left(32);
-    seed ^= seed.rotate_left(17).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let t0 = now();
+    let mut seed = finalize_boot_seed(
+        t0 ^ u64::from(w_cli).rotate_left(32),
+        0x4553_4341_5045_5347,
+    );
     if seed == 0 {
         seed = 0x6D2B_79F5_24D5_C58D;
     }
@@ -3845,6 +3865,74 @@ fn share_surface_escape_seed(w_cli: Handle) -> u64 {
     }
     seed
 }
+/// R1：生成并发送 per-boot SYSTEM client seed。与 escape seed 独立，避免
+/// APP escape token 被复用为 SYSTEM 身份；同样阻塞等 wmd 1B OK。
+fn share_system_ui_seed(w_cli: Handle) -> u64 {
+    const CAP_NS: u64 = 120 * 1_000_000_000;
+    // 独立时间样本 + 已铸 escape seed + 不同 label：escape token 持有者
+    // 不能由同一路线性式推出 SYSTEM seed。
+    let t1 = now();
+    let escape = SURFACE_ESCAPE_SEED.load(Ordering::Relaxed);
+    let mut seed = finalize_boot_seed(
+        t1 ^ escape.rotate_left(19) ^ u64::from(w_cli).rotate_left(41),
+        0x5359_5354_454D_5345,
+    );
+    if seed == 0 {
+        seed = 0x8B72_1E5A_3C9D_4017;
+    }
+    let mut req = [0u8; gp::surface::WM_SYSTEM_SEED_REQ_LEN];
+    let n = match gp::surface::encode_wm_system_seed_req(
+        &mut req,
+        &seed.to_le_bytes(),
+    ) {
+        Some(n) => n,
+        None => trap(),
+    };
+    send_retry(w_cli, req.as_ptr(), n);
+    let mut rep = [0u8; 1];
+    let mut nb = 1usize;
+    let mut nh = 0usize;
+    loop {
+        let status = berry_channel_recv(
+            w_cli,
+            rep.as_mut_ptr(),
+            &mut nb,
+            core::ptr::null_mut(),
+            &mut nh,
+        );
+        if status == 0 {
+            break;
+        }
+        if status != BERRY_ERR_AGAIN {
+            trap();
+        }
+        let mut observed = 0u64;
+        if berry_object_wait_one(
+            w_cli,
+            SIGNAL_READABLE,
+            now() + CAP_NS,
+            &mut observed,
+        ) != 0
+        {
+            trap();
+        }
+    }
+    if nb != 1 || nh != 0 || rep[0] != gp::ST_OK {
+        trap();
+    }
+    seed
+}
+
+/// u64 → 16 字符小写 hex argv（seed 内含 NUL，不能裸传）。
+fn seed_hex_arg(seed: u64) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    for i in 0..16 {
+        let nibble = ((seed >> (4 * (15 - i))) & 0xf) as usize;
+        out[i] = b"0123456789abcdef"[nibble];
+    }
+    out
+}
+
 
 /// 发送（满 -EBUSY → wait WRITABLE 腾位重试；其余自陷）。
 fn send_retry(h: Handle, buf: *const u8, len: usize) {
@@ -4974,6 +5062,13 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             &lgifts[..3]
         }
     };
+    let system_seed_value = SYSTEM_UI_SEED.load(Ordering::Relaxed);
+    if system_seed_value == 0 {
+        // wmd 已起则 seed 预共享必然完成；缺席是装配协议破缺，不允许
+        // launcher 以无特权形态降级。
+        trap();
+    }
+    let system_seed_arg = seed_hex_arg(system_seed_value);
     match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -4991,7 +5086,7 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             // 空须 stdin 槽在位——fsmgr/vnet 同款）。
             stdin_feed: Some(&[]),
             stdin_handle: None,
-            args: &[],
+            args: &[system_seed_arg.as_slice()],
             extra_gifts: lgifts,
             mmio_vmo: None,
             mmio_va: 0,

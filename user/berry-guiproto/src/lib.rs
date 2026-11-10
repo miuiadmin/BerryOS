@@ -60,6 +60,7 @@
 #![cfg_attr(not(test), no_std)]
 
 /// Berry Session Surface Mode / IME composition / a11y sidecar 协议（P0）。
+pub mod authority;
 pub mod surface;
 
 // ---------- op 表（三域）----------
@@ -122,6 +123,8 @@ pub const OP_WM_SURFACE_MODE: u8 = 0x67;
 /// per-boot Surface escape seed 预共享给 gui-wmd（9B，无随行 handle）。
 /// wmd 只接受一次；重复/迟到的 seed op 按普通 broker 非法帧 fail closed。
 pub const OP_WM_SURFACE_ESCAPE_SEED: u8 = 0x68;
+/// R1：svcmgr→wmd per-boot SYSTEM client seed 控制帧（add-only）。
+pub const OP_WM_SYSTEM_SEED: u8 = 0x69;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
@@ -129,6 +132,10 @@ pub const OP_WM_SURFACE_ESCAPE_SEED: u8 = 0x68;
 pub const WM_CLIENT_APP: u8 = 0;
 /// WM_CONNECT client_type：桌面/系统壳 session（权限位 v1 仅记账）。
 pub const WM_CLIENT_SYSTEM: u8 = 1;
+/// WM_CONNECT client_type 值域（R1 权威策略消费）。
+pub const fn wm_client_known(v: u8) -> bool {
+    v <= WM_CLIENT_SYSTEM
+}
 /// 窗口层：应用层（桌面/普通窗）。
 pub const WM_LAYER_APP: u8 = 0;
 /// 窗口层：系统层（状态栏等——压应用层任意 Z）。

@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F9 的迁移收口、静态守卫与 SDK 边界规格。执行序权威 = [GUI框架地基路线-v1.8.md](GUI框架地基路线-v1.8.md)；F8 全量迁移结果见 [BerryBrowserPhotos-F8迁移-v1.0.md](BerryBrowserPhotos-F8迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)。
+> 定位：GUI F9 的迁移收口、静态守卫与 SDK 边界规格。执行序权威 = [GUI框架地基路线-v1.9.md](GUI框架地基路线-v1.9.md)；F8 全量迁移结果见 [BerryBrowserPhotos-F8迁移-v1.0.md](BerryBrowserPhotos-F8迁移-v1.0.md)。容量口径遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)。
 
 ## §1 收口结果
 

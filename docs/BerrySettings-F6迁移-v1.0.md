@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F6 的第一个 Native Shell 迁移规格。执行序权威 = [GUI框架地基路线-v1.8.md](GUI框架地基路线-v1.8.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，真链宿主见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，Surface 词表见 [BerrySession-P0SurfaceMode协议-v1.0.md](BerrySession-P0SurfaceMode协议-v1.0.md)。容量口径同时遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
+> 定位：GUI F6 的第一个 Native Shell 迁移规格。执行序权威 = [GUI框架地基路线-v1.9.md](GUI框架地基路线-v1.9.md)；组件与主题见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，真链宿主见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，Surface 词表见 [BerrySession-P0SurfaceMode协议-v1.0.md](BerrySession-P0SurfaceMode协议-v1.0.md)。容量口径同时遵循 [容量工程前置-A1设计草案-v1.0.md](容量工程前置-A1设计草案-v1.0.md)：单卷 ≤32MiB、多卷总量 ≤128MiB。
 
 ## §1 迁移结果
 

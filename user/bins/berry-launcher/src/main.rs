@@ -207,6 +207,7 @@ fn wm_connect_client(
     broker: Handle,
     process: Handle,
     client_type: u8,
+    system_seed: Option<u64>,
 ) -> (Handle, Handle) {
     let mut local: Handle = 0;
     let mut remote: Handle = 0;
@@ -225,11 +226,65 @@ fn wm_connect_client(
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
-    let attach = [remote, input_remote, process];
+    let mut token_sender: Handle = 0;
+    let mut token_receiver: Handle = 0;
+    let attach: [Handle; 4] = if client_type == gp::WM_CLIENT_SYSTEM {
+        let Some(seed) = system_seed else {
+            fail("wm system seed absent");
+        };
+        if berry_channel_create(0, &mut token_sender, &mut token_receiver) != 0
+            || token_sender == 0
+            || token_receiver == 0
+        {
+            fail("wm system seed channel");
+        }
+        if berry_channel_send(
+            token_sender,
+            seed.to_le_bytes().as_ptr(),
+            core::mem::size_of::<u64>(),
+            core::ptr::null(),
+            0,
+        ) != 0
+        {
+            fail("wm system seed send");
+        }
+        [remote, input_remote, process, token_receiver]
+    } else {
+        [remote, input_remote, process, 0]
+    };
+    let attach_count = if client_type == gp::WM_CLIENT_SYSTEM { 4 } else { 3 };
     let m = enc_req(gp::encode_wm_connect_req(&mut req, client_type));
-    let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
+    let (n, _) = rpc(
+        broker,
+        &req[..m],
+        &attach[..attach_count],
+        &mut rep,
+        &mut rhs,
+    );
     let _ = gp::parse_wm_connect_rep(&rep[..n]).unwrap_or_else(|| fail("wm connect rep bad"));
+    if token_sender != 0 && berry_handle_close(token_sender) != 0 {
+        fail("wm system seed close");
+    }
     (local, input_local)
+}
+
+/// argv[1] 是 svcmgr 传入的 16 字符 hex SYSTEM seed。
+fn system_seed_from_argv() -> Option<u64> {
+    let arg = std::env::args().nth(1)?;
+    let bytes = arg.as_bytes();
+    if bytes.len() != 16 {
+        return None;
+    }
+    let mut value = 0u64;
+    for &b in bytes {
+        let nibble = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            _ => return None,
+        };
+        value = (value << 4) | u64::from(nibble);
+    }
+    Some(value)
 }
 
 fn main() {
@@ -252,8 +307,16 @@ fn main() {
     {
         fail("wm app process dup");
     }
-    let (hw, session_input) =
-        wm_connect_client(broker, process, gp::WM_CLIENT_SYSTEM);
+    let system_seed = system_seed_from_argv();
+    if system_seed.is_none() {
+        fail("wm system seed argv");
+    }
+    let (hw, session_input) = wm_connect_client(
+        broker,
+        process,
+        gp::WM_CLIENT_SYSTEM,
+        system_seed,
+    );
 
     // —— WM_GETINFO 一次握手（4B 无参请求 / 12B 应答——wmd 权威能力面，
     // disp 域 = wmd 启动期 present GETINFO 缓存同源）。原值宁报勿猜——
@@ -302,7 +365,7 @@ fn main() {
     let mut app_input: Handle = 0;
     if smoke {
         let (app_hw, input) =
-            wm_connect_client(broker, app_process, gp::WM_CLIENT_APP);
+            wm_connect_client(broker, app_process, gp::WM_CLIENT_APP, None);
         app_input = input;
         let aw = (info.disp_w / 8).max(64);
         let ah = (info.disp_h / 10).max(64);

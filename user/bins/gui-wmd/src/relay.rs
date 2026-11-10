@@ -266,6 +266,7 @@ pub fn submit_composite(
     ch: Handle,
     cli: Handle,
     owner: u16,
+    client_type: u8,
     surface_rect: impl Fn(u16, u16) -> Option<(u16, u16, u16, u16)>,
     comp: &mut Compositor,
     msg: &[u8],
@@ -285,8 +286,14 @@ pub fn submit_composite(
         return;
     };
 
-    // surface_id=0 = 全局桌面 surface；非 0 = 必须绑定当前 owner 的可见窗。
+    // surface_id=0 = 全局桌面 surface，仅 SYSTEM client 可提交；APP
+    // 提交全局面即越权涂刷。非 0 = 必须绑定当前 owner 的可见窗。
     let (dst_xy, src_w, src_h): ((u32,u32),u16,u16) = if surface_id == 0 {
+        if client_type != gp::WM_CLIENT_SYSTEM {
+            let _ = berry_handle_close(src);
+            st_rep(ch, gp::ST_DENIED);
+            return;
+        }
         ((0, 0), comp.w as u16, comp.h as u16)
     } else {
         let id = u16::try_from(surface_id).unwrap_or(0);
@@ -320,7 +327,11 @@ pub fn submit_composite(
     } else {
         let mut ok = true;
         for i in 0..rect_count {
-            let r = rects[i];
+            let Some(r) =
+                gp::authority::clip_damage_to_surface(rects[i], src_w as u32, src_h as u32)
+            else {
+                continue;
+            };
             ok = ok && comp.copy_rect(src, src_stride, dst_xy, r);
             if !ok {
                 break;
@@ -336,7 +347,7 @@ pub fn submit_composite(
         ok
     };
     let _ = berry_handle_close(src);
-    if !ok {
+    if !ok || (!full && out_n == 0) {
         st_rep(ch, gp::ST_BAD);
         return;
     }

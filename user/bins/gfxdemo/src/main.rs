@@ -264,6 +264,94 @@ fn wm_connect_forged_surface_denied(broker: Handle, process: Handle) {
     let _ = berry_handle_close(input_local);
 }
 
+/// R1：APP session 不得在 0x67 自报 System role。
+fn wm_app_system_role_denied(ch: Handle, window: u16) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let request = gp::surface::SurfaceModeReq {
+        surface_id: window,
+        role: gp::surface::SURFACE_ROLE_SYSTEM,
+        mode: gp::surface::SURFACE_MODE_RETAINED,
+        input_classes: gp::surface::INPUT_CLASS_TOUCH,
+        ime_mode: gp::surface::IME_MODE_DISABLED,
+        a11y_mode: gp::surface::A11Y_MODE_TREE,
+    };
+    let m = enc_req(gp::surface::encode_wm_surface_mode_req(&mut req, &request));
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+        Some(Err(gp::ST_DENIED)) => {}
+        other => fail(&format!("wm role masquerade got {other:?}")),
+    }
+    println!("WMROLEMASQDENY ok");
+}
+
+/// R1：SYSTEM connect 带“存在但错误”的第 4 seed channel，也必须拒绝。
+fn wm_connect_wrong_system_seed_denied(broker: Handle, process: Handle) {
+    let mut local: Handle = 0;
+    let mut remote: Handle = 0;
+    let mut input_local: Handle = 0;
+    let mut input_remote: Handle = 0;
+    let mut token_sender: Handle = 0;
+    let mut token_receiver: Handle = 0;
+    let mut spoof_process: Handle = 0;
+    if berry_channel_create(0, &mut local, &mut remote) != 0
+        || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
+        || berry_channel_create(0, &mut token_sender, &mut token_receiver) != 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut spoof_process) != 0
+    {
+        fail("wm system seed spoof channels");
+    }
+    let wrong = [0xA5u8; 8];
+    if berry_channel_send(
+        token_sender,
+        wrong.as_ptr(),
+        wrong.len(),
+        core::ptr::null(),
+        0,
+    ) != 0
+        || berry_handle_close(token_sender) != 0
+    {
+        fail("wm system seed spoof preload");
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = enc_req(gp::encode_wm_connect_req(
+        &mut req,
+        gp::WM_CLIENT_SYSTEM,
+    ));
+    let attach = [remote, input_remote, spoof_process, token_receiver];
+    let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(gp::ST_DENIED) => {}
+        other => fail(&format!("wm system seed spoof got {other:?}")),
+    }
+    let _ = berry_handle_close(local);
+    let _ = berry_handle_close(input_local);
+    println!("WMSYSSEEDDENY ok");
+}
+
+/// R1：0x69 控制帧只属于 svcmgr 启动期；client 晚到/重复发送必须拒绝。
+fn wm_system_seed_control_denied(broker: Handle) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let n = match gp::surface::encode_wm_system_seed_req(
+        &mut req,
+        &[0x5Au8; 8],
+    ) {
+        Some(n) => n,
+        None => fail("wm system control encode"),
+    };
+    let (n, _) = rpc(broker, &req[..n], &[], &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(gp::ST_DENIED) => {}
+        other => fail(&format!("wm system control got {other:?}")),
+    }
+    println!("WMSYSCTRLDENY ok");
+}
+
 /// P3：两个半屏窗都声明 Retained + Keyboard。Keyboard 不需要 P1 escape
 /// seed；焦点由 wmd pointer DOWN 权威更新。
 fn configure_retained_keyboard(ch: Handle, window: u16) {
@@ -889,10 +977,42 @@ fn main() {
     {
         fail("wm self process dup");
     }
+    // R1 SYSTEM 自报负例：APP 测试进程只持 broker endpoint，不持 svcmgr
+    // per-boot SYSTEM seed channel；WM_CLIENT_SYSTEM 必须 ST_DENIED。
+    {
+        let mut local: Handle = 0;
+        let mut remote: Handle = 0;
+        let mut input_local: Handle = 0;
+        let mut input_remote: Handle = 0;
+        let mut spoof_process: Handle = 0;
+        if berry_channel_create(0, &mut local, &mut remote) != 0
+            || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
+            || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut spoof_process) != 0
+            || spoof_process == 0
+        {
+            fail("wm system spoof channel");
+        }
+        let mut req = [0u8; 256];
+        let mut rep = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let m = enc_req(gp::encode_wm_connect_req(
+            &mut req,
+            gp::WM_CLIENT_SYSTEM,
+        ));
+        let attach = [remote, input_remote, spoof_process];
+        let (n, _) = rpc(broker, &req[..m], &attach, &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_DENIED) => {}
+            other => fail(&format!("wm system spoof got {other:?}")),
+        }
+        println!("WMSYSCLIENTDENY ok");
+    }
+    wm_connect_wrong_system_seed_denied(broker, process);
     let (hw, input1) = wm_connect_process(broker, process);
     let (rogue, input2) = wm_connect_process(broker, process2);
     // P1：公开常量自铸 seed channel 必须在 broker 退役前被拒绝。
     wm_connect_forged_surface_denied(broker, process3);
+    wm_system_seed_control_denied(broker);
     // 两个 session 建立后 broker 才退役；后续业务全部走 owner 通道。
     close_h(broker);
 
@@ -1047,6 +1167,45 @@ fn main() {
     }
     println!("WMDENY ok");
 
+    // R1 层权限负例：APP session 不得自报 SYSTEM layer。精确 ST_DENIED，
+    // 不得回 ack/window id 或降级成 APP 层。
+    let sysreq = gp::WmCreateReq {
+        layer: gp::WM_LAYER_SYSTEM,
+        flags: 0,
+        parent: 0,
+        group: 0,
+        x: 0,
+        y: 0,
+        w: tile_w,
+        h: 24,
+    };
+    let m = enc_req(gp::encode_wm_create_req(&mut req, &sysreq));
+    let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(gp::ST_DENIED) => {}
+        other => fail(&format!("wm system layer got {other:?}")),
+    }
+    println!("WMLAYERDENY ok");
+
+    // R1 parent 权限负例：rogue 不得把窗口挂到 hw session 的窗口下。
+    let childreq = gp::WmCreateReq {
+        layer: gp::WM_LAYER_APP,
+        flags: 0,
+        parent: wid,
+        group: 0,
+        x: 0,
+        y: 0,
+        w: 32,
+        h: 32,
+    };
+    let m = enc_req(gp::encode_wm_create_req(&mut req, &childreq));
+    let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(gp::ST_DENIED) => {}
+        other => fail(&format!("wm cross-owner parent got {other:?}")),
+    }
+    println!("WMPARENTDENY ok");
+
     // Phase 2 第二真实窗口：rogue session 拥有右半屏，不 destroy，
     // 退出时由 wmd Process-terminated 清理（unclean death 正例）。
     let creq2 = gp::WmCreateReq {
@@ -1118,6 +1277,7 @@ fn main() {
         None => fail(&format!("wm table no win id={wid}")),
     }
     println!("WM ok");
+    wm_app_system_role_denied(hw, wid);
 
     // —— GETINFO：能力/版本/格式协商断言（ver=1 ∧ XRGB8888 位在册 ∧
     // credits=2——Bgrx 与 ramfb 同源的格式面在位证明）。
@@ -1168,6 +1328,63 @@ fn main() {
             other => fail(&format!("wm surface deny got {other:?}")),
         }
         println!("WMSDENY ok");
+    }
+
+    // R1 全局面负例：APP session 的 surface_id=0 是未授权全屏涂刷，
+    // 必须在拷贝前 ST_DENIED。
+    {
+        let mut alias: Handle = 0;
+        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+            fail("wm global deny dup");
+        }
+        let sreq = gp::PresentReq::Submit {
+            surface_id: 0,
+            buffer_id: 0xD2,
+            flags: gp::SUBMIT_F_DAMAGE_FULL,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+            rect_count: 0,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &sreq));
+        let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_DENIED) => {}
+            other => fail(&format!("wm global surface got {other:?}")),
+        }
+        println!("WMGLOBALDENY ok");
+    }
+
+    // R1 damage 越窗负例：owner 自己也只能提交与本窗相交的 damage。
+    // 完全越界批不得被全屏 clamp 成涂刷，必须 ST_BAD。
+    {
+        let mut alias: Handle = 0;
+        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+            fail("wm damage deny dup");
+        }
+        let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+        rects[0] = gp::Rect {
+            x: w as u32 + 16,
+            y: h as u32 + 16,
+            w: 32,
+            h: 32,
+        };
+        let sreq = gp::PresentReq::Submit {
+            surface_id: u32::from(wid),
+            buffer_id: 0xD3,
+            flags: 0,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects,
+            rect_count: 1,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &sreq));
+        let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_BAD) => {}
+            other => fail(&format!("wm damage clip got {other:?}")),
+        }
+        println!("WMDAMAGEBAD ok");
     }
     let token1 = submit_tile(hw, vmo, w, h, u32::from(wid), 1);
 

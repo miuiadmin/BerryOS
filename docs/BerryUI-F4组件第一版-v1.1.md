@@ -2,7 +2,7 @@
 
 > 版本：**1.1**｜2026-11-08
 >
-> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。1.1 为 F5/F6 系统字形收口：EmptyState 说明与 ListItem detail 改用 Body，Caption 仍是 Text API 并由 host 测试覆盖。执行序权威 = [GUI框架地基路线-v1.8.md](GUI框架地基路线-v1.8.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 的协议已由 P0 冻结；F4 时点生产接线归后续，现由 P1 授权链承载。
+> 定位：GUI F4 的组件 API、组合基元、状态语义与测试证据。1.1 为 F5/F6 系统字形收口：EmptyState 说明与 ListItem detail 改用 Body，Caption 仍是 Text API 并由 host 测试覆盖。执行序权威 = [GUI框架地基路线-v1.9.md](GUI框架地基路线-v1.9.md)；core/诊断与 SDK 最小面见 [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)，主题与像素 token 见 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只定义普通 BerryUI 应用路径；CanvasSurface / immersive surface 的协议已由 P0 冻结；F4 时点生产接线归后续，现由 P1 授权链承载。
 
 ## §1 组合基元
 

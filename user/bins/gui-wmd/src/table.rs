@@ -307,7 +307,10 @@ impl WmTable {
     /// 焦点归还：被摘窗若持焦点 → 表序（= 建序）最末可见窗接焦；无可见
     /// 窗 → 无焦点。
     fn refocus_after_removal(&mut self) {
-        self.focus = (0..self.count).rev().find(|&i| self.wins[i].vis).map(|i| self.wins[i].id);
+        self.focus = (0..self.count)
+            .rev()
+            .find(|&i| self.wins[i].vis && gp::authority::wm_policy_focus_allowed(self.wins[i].layer))
+            .map(|i| self.wins[i].id);
     }
 
     /// WM_GETINFO：能力/版本面（disp 自启动③ present GETINFO 缓存）。
@@ -326,9 +329,30 @@ impl WmTable {
     /// WM_CREATE：parent≠0 须在册（ST_NOENT）；表满 ST_FULL；新窗默认
     /// 可见 + 接焦（CREATE 无 vis 域——显隐走 SET_F_VIS）；AVOID_SYS 旗
     /// 驱动有效几何避让。应答 8B ack(window_id)。
-    fn create(&mut self, ch: Handle, owner: u16, req: gp::WmCreateReq) {
-        if req.parent != 0 && self.find(req.parent).is_none() {
-            st_rep(ch, gp::ST_NOENT);
+    fn create(&mut self, ch: Handle, owner: u16, client_type: u8,
+              req: gp::WmCreateReq) {
+        if !gp::authority::wm_create_layer_allowed(client_type, req.layer)
+            || !gp::authority::wm_create_flags_allowed(client_type, req.flags)
+        {
+            st_rep(ch, gp::ST_DENIED);
+            return;
+        }
+        // find() 保持权威：parent id 不连续时不得用下标冒充。
+        let parent_owner = if req.parent == 0 {
+            None
+        } else {
+            match self.find(req.parent) {
+                Some(i) => Some(self.wins[i].owner),
+                None => {
+                    st_rep(ch, gp::ST_NOENT);
+                    return;
+                }
+            }
+        };
+        // 拒绝路径不得消耗 alloc_id：父窗权限先以 prospective id=0 裁定
+        //（非零 parent 不可能等于尚未分配的新 id），表满也先于 id 分配。
+        if !gp::authority::wm_parent_allowed(req.parent, parent_owner, owner, 0) {
+            st_rep(ch, gp::ST_DENIED);
             return;
         }
         if self.count >= gp::WM_WINDOWS_MAX {
@@ -350,7 +374,9 @@ impl WmTable {
             avoid_sys: req.flags & gp::WM_CREATE_F_AVOID_SYS != 0,
         };
         self.count += 1;
-        self.focus = Some(id);
+        if gp::authority::wm_policy_focus_allowed(req.layer) {
+            self.focus = Some(id);
+        }
         self.recompute();
         self.bump();
         let mut out = [0u8; 8]; // = WM_CREATE_ACK_LEN（guiproto 私有——本地定容）
@@ -398,7 +424,9 @@ impl WmTable {
         }
         if req.mask & gp::WM_SET_F_VIS != 0 {
             self.wins[i].vis = req.vis == gp::WM_VIS_SHOW;
-            if self.wins[i].vis {
+            if self.wins[i].vis
+                && gp::authority::wm_policy_focus_allowed(self.wins[i].layer)
+            {
                 self.focus = Some(self.wins[i].id);
             } else if self.focus == Some(self.wins[i].id) {
                 self.refocus_after_removal();
@@ -433,7 +461,14 @@ impl WmTable {
 
     /// wm 域分发（session 面）：GETINFO/TABLE 只读无 owner 门；
     /// CREATE 绑定当前 session；SET/DESTROY 必须 owner。
-    pub fn handle_wm(&mut self, ch: Handle, owner: u16, msg: &[u8], hs: &[Handle]) {
+    pub fn handle_wm(
+        &mut self,
+        ch: Handle,
+        owner: u16,
+        client_type: u8,
+        msg: &[u8],
+        hs: &[Handle],
+    ) {
         if !hs.is_empty() {
             close_all(hs);
             st_rep(ch, gp::ST_BAD);
@@ -442,7 +477,7 @@ impl WmTable {
         match msg.first() {
             Some(&gp::OP_WM_GETINFO) if gp::parse_wm_getinfo_req(msg).is_some() => self.getinfo(ch),
             Some(&gp::OP_WM_CREATE) => match gp::parse_wm_create_req(msg) {
-                Some(req) => self.create(ch, owner, req),
+                Some(req) => self.create(ch, owner, client_type, req),
                 None => st_rep(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_DESTROY) => match gp::parse_wm_destroy_req(msg) {

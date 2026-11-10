@@ -16,7 +16,8 @@
 //! 继续走 present VOTE，不在本模块复制。
 
 use super::{
-    le16, st_known, OP_WM_SURFACE_ESCAPE_SEED, OP_WM_SURFACE_MODE, ST_BAD, ST_DENIED,
+    le16, st_known, wm_client_known, WM_CLIENT_APP, WM_CLIENT_SYSTEM,
+    OP_WM_SURFACE_ESCAPE_SEED, OP_WM_SYSTEM_SEED, OP_WM_SURFACE_MODE, ST_BAD, ST_DENIED,
     ST_OK, ST_UNSUPPORTED,
 };
 
@@ -85,6 +86,8 @@ pub const SCALE_PERMILLE_MAX: u16 = 4_000;
 
 /// P1 seed 控制帧长（op + 8B per-boot seed）。
 pub const SURFACE_ESCAPE_SEED_REQ_LEN: usize = 9;
+/// R1 SYSTEM client seed 控制帧长。
+pub const WM_SYSTEM_SEED_REQ_LEN: usize = 9;
 
 /// WM Surface Mode 请求帧长。
 pub const SURFACE_MODE_REQ_LEN: usize = 8;
@@ -281,7 +284,36 @@ pub fn surface_mode_production_policy(
     display_w: u32,
     display_h: u32,
 ) -> Result<SurfaceModeInfo, u8> {
-    if !surface_mode_req_app_valid(&req) {
+    surface_mode_session_policy(
+        WM_CLIENT_APP,
+        req,
+        escape,
+        old,
+        display_w,
+        display_h,
+    )
+}
+
+/// R1 session-aware production policy：APP 不得自报 System role；SYSTEM
+/// 不得自报 App role，且 v1 只授予 Retained、无 escape。两类 client 的
+/// Gamepad/IME Host 与 escape 降级拒面保持一致。
+pub fn surface_mode_session_policy(
+    client_type: u8,
+    req: SurfaceModeReq,
+    escape: bool,
+    old: Option<SurfaceModeInfo>,
+    display_w: u32,
+    display_h: u32,
+) -> Result<SurfaceModeInfo, u8> {
+    if !wm_client_known(client_type) || !surface_mode_req_valid(&req) {
+        return Err(ST_DENIED);
+    }
+    let role_ok = match client_type {
+        WM_CLIENT_APP => req.role == SURFACE_ROLE_APP,
+        WM_CLIENT_SYSTEM => req.role == SURFACE_ROLE_SYSTEM,
+        _ => false,
+    };
+    if !role_ok {
         return Err(ST_DENIED);
     }
     let wants_escape = req.mode == SURFACE_MODE_CANVAS || req.mode == SURFACE_MODE_IMMERSIVE;
@@ -346,6 +378,25 @@ pub fn parse_wm_surface_escape_seed_req(buf: &[u8]) -> Option<[u8; 8]> {
     if buf.len() != SURFACE_ESCAPE_SEED_REQ_LEN
         || buf[0] != OP_WM_SURFACE_ESCAPE_SEED
     {
+        return None;
+    }
+    let mut seed = [0u8; 8];
+    seed.copy_from_slice(&buf[1..9]);
+    Some(seed)
+}
+
+/// 编码 R1 per-boot SYSTEM client seed 控制帧。与 escape seed 同形但
+/// op 独立，禁止复用 0x68 造成两类特权互换。
+pub fn encode_wm_system_seed_req(out: &mut [u8], seed: &[u8; 8]) -> Option<usize> {
+    let m = out.get_mut(..WM_SYSTEM_SEED_REQ_LEN)?;
+    m[0] = OP_WM_SYSTEM_SEED;
+    m[1..9].copy_from_slice(seed);
+    Some(WM_SYSTEM_SEED_REQ_LEN)
+}
+
+/// 解析 R1 SYSTEM seed 控制帧；截断/尾随/错 op 拒绝。
+pub fn parse_wm_system_seed_req(buf: &[u8]) -> Option<[u8; 8]> {
+    if buf.len() != WM_SYSTEM_SEED_REQ_LEN || buf[0] != OP_WM_SYSTEM_SEED {
         return None;
     }
     let mut seed = [0u8; 8];

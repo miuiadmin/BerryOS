@@ -104,6 +104,15 @@ MARK_WM_CONN8 = "WMCONN ok id=8"
 MARK_WM_CONN9 = "WMCONN ok id=9"
 MARK_WM_ROUTE_WINDOW_UP = "WMRTWIN ok id="
 MARK_WM_DENIED = "WMDENY ok"
+MARK_WM_SYSTEM_AUTH = "WMSYSAUTH ok"
+MARK_WM_SYSTEM_CLIENT_DENIED = "WMSYSCLIENTDENY ok"
+MARK_WM_SYSTEM_SEED_DENIED = "WMSYSSEEDDENY ok"
+MARK_WM_SYSTEM_CONTROL_DENIED = "WMSYSCTRLDENY ok"
+MARK_WM_ROLE_MASQUERADE_DENIED = "WMROLEMASQDENY ok"
+MARK_WM_LAYER_DENIED = "WMLAYERDENY ok"
+MARK_WM_PARENT_DENIED = "WMPARENTDENY ok"
+MARK_WM_GLOBAL_DENIED = "WMGLOBALDENY ok"
+MARK_WM_DAMAGE_BAD = "WMDAMAGEBAD ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
 MARK_WM_ORPHAN = "WMORPHAN ok id="
 MARK_WM_2FRAME = "WM2FRAME ok n=2"
@@ -1209,6 +1218,7 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_WM_FOCUS + " ", 0, "normal focus change", log_path)
     _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "normal keyboard focus", log_path)
     _require_p4_absent(text, "normal", log_path)
+    _verify_r1_authority(text, "normal", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
@@ -1971,6 +1981,23 @@ def _wait_boot_batch(boot: Boot, timeout: float) -> None:
             timeout, boot.log_path,
         )
     boot.wait_markers([MARK_APP_DEMO_UP], timeout)
+    _verify_r1_authority(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
+
+def _verify_r1_authority(text: str, phase: str, log_path: Path | None = None) -> None:
+    """R1 Window/Surface Authority：正反例均恰一次。"""
+    checks = {
+        MARK_WM_SYSTEM_AUTH: 1,
+        MARK_WM_SYSTEM_CLIENT_DENIED: 1,
+        MARK_WM_SYSTEM_SEED_DENIED: 1,
+        MARK_WM_SYSTEM_CONTROL_DENIED: 1,
+        MARK_WM_ROLE_MASQUERADE_DENIED: 1,
+        MARK_WM_LAYER_DENIED: 1,
+        MARK_WM_PARENT_DENIED: 1,
+        MARK_WM_GLOBAL_DENIED: 1,
+        MARK_WM_DAMAGE_BAD: 1,
+    }
+    for marker, expected in checks.items():
+        _require_exact_count(text, marker, expected, f"{phase} R1 authority", log_path)
 
 
 def _warn_input_armed(boot: Boot) -> None:
@@ -3875,6 +3902,15 @@ def self_test(args) -> int:
         )
 
         fake_n = (
+            f"{MARK_WM_SYSTEM_AUTH} id=3\n"
+            f"{MARK_WM_SYSTEM_CLIENT_DENIED}\n"
+            f"{MARK_WM_SYSTEM_SEED_DENIED}\n"
+            f"{MARK_WM_SYSTEM_CONTROL_DENIED}\n"
+            f"{MARK_WM_ROLE_MASQUERADE_DENIED}\n"
+            f"{MARK_WM_LAYER_DENIED}\n"
+            f"{MARK_WM_PARENT_DENIED}\n"
+            f"{MARK_WM_GLOBAL_DENIED}\n"
+            f"{MARK_WM_DAMAGE_BAD}\n"
             f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\n"
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
             f"{photos_boot}{contacts_boot}"
@@ -3891,6 +3927,35 @@ def self_test(args) -> int:
             f"{browser_runtime}{MARK_WM_ROUTE_DESKTOP}\n"
             f"{settings_runtime}{files_runtime}{photos_runtime}"
             f"{contacts_runtime}"
+        )
+        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1)
+        expect_error(
+            "常态缺 R1 SYSTEM 身份正例",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_WM_SYSTEM_AUTH} id=3\n", "", 1),
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态缺 R1 错 seed 拒绝",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_WM_SYSTEM_SEED_DENIED}\n", "", 1),
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态缺 R1 role 伪装拒绝",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_WM_ROLE_MASQUERADE_DENIED}\n", "", 1),
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
+        )
+        expect_error(
+            "常态缺 R1 全局 surface 拒绝",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_WM_GLOBAL_DENIED}\n", "", 1),
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
         )
         verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1)
         for needle, label in (

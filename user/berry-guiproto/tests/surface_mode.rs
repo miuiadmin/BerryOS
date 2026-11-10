@@ -3,7 +3,9 @@
 
 use berry_guiproto::surface::*;
 use berry_guiproto::{
-    OP_WM_SURFACE_ESCAPE_SEED, OP_WM_SURFACE_MODE, ST_BAD, ST_DENIED, ST_UNSUPPORTED,
+    OP_WM_SURFACE_ESCAPE_SEED, OP_WM_SYSTEM_SEED, OP_WM_SURFACE_MODE,
+    WM_CLIENT_APP, WM_CLIENT_SYSTEM, WM_CREATE_F_AVOID_SYS, WM_LAYER_APP,
+    WM_LAYER_SYSTEM, ST_BAD, ST_DENIED, ST_UNSUPPORTED,
 };
 
 fn req(mode: u8, input: u8, ime: u8, a11y: u8) -> SurfaceModeReq {
@@ -915,4 +917,141 @@ fn p0_safe_height_and_ime_phases_roundtrip() {
         let n = encode_ime_composition(&mut buf, &ev).unwrap();
         assert_eq!(parse_ime_composition(&buf[..n]), Some(ev));
     }
+}
+
+#[test]
+fn r1_system_seed_control_frame_is_strict() {
+    let seed = [0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12];
+    let mut buf = [0u8; WM_SYSTEM_SEED_REQ_LEN];
+    assert_eq!(
+        encode_wm_system_seed_req(&mut buf, &seed),
+        Some(WM_SYSTEM_SEED_REQ_LEN)
+    );
+    assert_eq!(buf[0], OP_WM_SYSTEM_SEED);
+    assert_eq!(&buf[1..9], &seed);
+    assert_eq!(parse_wm_system_seed_req(&buf), Some(seed));
+    assert_eq!(parse_wm_system_seed_req(&buf[..8]), None);
+    let mut trailing = buf.to_vec();
+    trailing.push(0);
+    assert_eq!(parse_wm_system_seed_req(&trailing), None);
+    let mut escape_confusion = buf;
+    escape_confusion[0] = OP_WM_SURFACE_ESCAPE_SEED;
+    assert_eq!(parse_wm_system_seed_req(&escape_confusion), None);
+}
+
+#[test]
+fn r1_surface_policy_is_client_type_aware() {
+    let mut app = req(
+        SURFACE_MODE_RETAINED,
+        INPUT_CLASS_TOUCH,
+        IME_MODE_DISABLED,
+        A11Y_MODE_TREE,
+    );
+    app.role = SURFACE_ROLE_SYSTEM;
+    assert_eq!(
+        surface_mode_session_policy(
+            WM_CLIENT_APP,
+            app,
+            false,
+            None,
+            1080,
+            1920
+        ),
+        Err(ST_DENIED)
+    );
+
+    let mut system = app;
+    system.role = SURFACE_ROLE_SYSTEM;
+    let granted = surface_mode_session_policy(
+        WM_CLIENT_SYSTEM,
+        system,
+        false,
+        None,
+        1080,
+        1920,
+    )
+    .expect("system retained grant");
+    assert_eq!(granted.role, SURFACE_ROLE_SYSTEM);
+    assert_eq!(granted.mode, SURFACE_MODE_RETAINED);
+    assert_eq!(granted.contract_flags & SURFACE_F_ESCAPE, 0);
+
+    let mut app_role = system;
+    app_role.role = SURFACE_ROLE_APP;
+    assert_eq!(
+        surface_mode_session_policy(
+            WM_CLIENT_SYSTEM,
+            app_role,
+            false,
+            None,
+            1080,
+            1920
+        ),
+        Err(ST_DENIED)
+    );
+
+    let mut canvas = system;
+    canvas.mode = SURFACE_MODE_CANVAS;
+    canvas.a11y_mode = A11Y_MODE_HYBRID;
+    assert_eq!(
+        surface_mode_session_policy(
+            WM_CLIENT_SYSTEM,
+            canvas,
+            true,
+            None,
+            1080,
+            1920
+        ),
+        Err(ST_DENIED)
+    );
+}
+
+#[test]
+fn r1_wm_authority_policy_matrix() {
+    use berry_guiproto::authority;
+
+    assert!(authority::wm_create_layer_allowed(WM_CLIENT_APP, WM_LAYER_APP));
+    assert!(!authority::wm_create_layer_allowed(WM_CLIENT_APP, WM_LAYER_SYSTEM));
+    assert!(authority::wm_create_layer_allowed(WM_CLIENT_SYSTEM, WM_LAYER_SYSTEM));
+    assert!(!authority::wm_create_layer_allowed(WM_CLIENT_SYSTEM, WM_LAYER_APP));
+    assert!(!authority::wm_create_layer_allowed(9, WM_LAYER_APP));
+
+    assert!(authority::wm_parent_allowed(0, None, 1, 2));
+    assert!(authority::wm_parent_allowed(7, Some(1), 1, 2));
+    assert!(!authority::wm_parent_allowed(7, Some(2), 1, 2));
+    assert!(!authority::wm_parent_allowed(2, Some(1), 1, 2));
+
+    assert!(authority::wm_create_flags_allowed(WM_CLIENT_APP, 0));
+    assert!(authority::wm_create_flags_allowed(WM_CLIENT_APP, WM_CREATE_F_AVOID_SYS));
+    assert!(!authority::wm_create_flags_allowed(WM_CLIENT_SYSTEM, WM_CREATE_F_AVOID_SYS));
+    assert!(!authority::wm_create_flags_allowed(9, 0));
+    assert!(!authority::wm_create_flags_allowed(WM_CLIENT_APP, WM_CREATE_F_AVOID_SYS | 0x02));
+    assert!(!authority::wm_parent_allowed(7, None, 1, 2));
+
+    assert!(authority::wm_policy_focus_allowed(WM_LAYER_APP));
+    assert!(!authority::wm_policy_focus_allowed(WM_LAYER_SYSTEM));
+}
+
+#[test]
+fn r1_damage_is_clipped_to_surface_local_bounds() {
+    use berry_guiproto::authority::clip_damage_to_surface;
+    use berry_guiproto::Rect;
+
+    let r = Rect { x: 10, y: 10, w: 20, h: 20 };
+    assert_eq!(
+        clip_damage_to_surface(r, 100, 80),
+        Some(Rect { x: 10, y: 10, w: 20, h: 20 })
+    );
+    assert_eq!(
+        clip_damage_to_surface(r, 20, 20),
+        Some(Rect { x: 10, y: 10, w: 10, h: 10 })
+    );
+    assert_eq!(clip_damage_to_surface(r, 10, 80), None);
+    assert_eq!(
+        clip_damage_to_surface(
+            Rect { x: 90, y: 70, w: 50, h: 50 },
+            100,
+            80
+        ),
+        Some(Rect { x: 90, y: 70, w: 10, h: 10 })
+    );
 }

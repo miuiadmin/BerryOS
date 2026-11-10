@@ -193,6 +193,10 @@ struct WmSessions {
     /// P1 per-boot escape seed：svcmgr 预共享后才有值；不进公开常量。
     escape_seed: [u8; 8],
     escape_seed_set: bool,
+    /// R1 per-boot SYSTEM client seed：仅 svcmgr 启动期预共享，SYSTEM
+    /// WM_CONNECT 必须随行同 seed channel。
+    system_seed: [u8; 8],
+    system_seed_set: bool,
     next_id: u16,
     input_lock: Option<InputLock>,
 }
@@ -222,6 +226,8 @@ impl WmSessions {
             slots: [None, None, None, None, None, None, None],
             escape_seed: [0; 8],
             escape_seed_set: false,
+            system_seed: [0; 8],
+            system_seed_set: false,
             next_id: 0,
             input_lock: None,
         }
@@ -236,6 +242,34 @@ impl WmSessions {
         self.escape_seed = seed;
         self.escape_seed_set = true;
         true
+    }
+
+    /// R1 SYSTEM seed 同样只接受一次，且必须在任何 WM_CONNECT 前。
+    fn set_system_seed(&mut self, seed: [u8; 8]) -> bool {
+        if self.system_seed_set || self.slots.iter().any(|s| s.is_some()) {
+            return false;
+        }
+        self.system_seed = seed;
+        self.system_seed_set = true;
+        true
+    }
+
+    /// 读取第 4 handle 上的 8B seed。channel 消息必须恰 8B、零随行。
+    fn read_seed_channel(h: Handle) -> Option<[u8; 8]> {
+        let mut token = [0u8; 8];
+        let mut nbytes = token.len();
+        let mut nhandles = 0usize;
+        if berry_channel_recv(
+            h,
+            token.as_mut_ptr(),
+            &mut nbytes,
+            core::ptr::null_mut(),
+            &mut nhandles,
+        ) != 0 || nbytes != token.len() || nhandles != 0
+        {
+            return None;
+        }
+        Some(token)
     }
 
     /// broker 面 WM_CONNECT：请求恰携 [WM endpoint, input endpoint,
@@ -253,40 +287,63 @@ impl WmSessions {
             bad(hs);
             return;
         };
-        // P1：第 4 handle = svcmgr 预载的 per-boot escape seed。消息必须
-        // 恰 8B、无随行 handle，且等于启动期预共享 seed；公开常量/自铸
-        // channel 无法通过。
-        let expected_seed = self.escape_seed;
-        let seed_ready = self.escape_seed_set;
-        let escape = if hs.len() == 4 {
-            let mut token = [0u8; 8];
-            let mut nbytes = token.len();
-            let mut nhandles = 0usize;
-            let status = berry_channel_recv(
-                hs[3],
-                token.as_mut_ptr(),
-                &mut nbytes,
-                core::ptr::null_mut(),
-                &mut nhandles,
-            );
-            if status != 0
-                || nbytes != token.len()
-                || nhandles != 0
-                || !seed_ready
-                || token != expected_seed
-            {
-                // 伪造/错 seed 是能力拒绝，不是帧畸形；精确 ST_DENIED。
+        // R1：第 4 handle 是 per-boot capability channel，语义按 client_type
+        // 分流——APP 只能携带 escape seed，SYSTEM 只能携带 system seed。
+        // 公开常量/自铸 channel 无法通过。
+        let escape = match client_type {
+            gp::WM_CLIENT_APP => {
+                if hs.len() == 4 {
+                    let token = Self::read_seed_channel(hs[3]);
+                    if !self.escape_seed_set
+                        || token.as_ref().map(|x| x.as_slice()) != Some(self.escape_seed.as_slice())
+                    {
+                        close_all(hs);
+                        st_rep(broker, gp::ST_DENIED);
+                        return;
+                    }
+                    if berry_handle_close(hs[3]) != 0 {
+                        trap();
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            gp::WM_CLIENT_SYSTEM => {
+                if hs.len() != 4 {
+                    close_all(hs);
+                    st_rep(broker, gp::ST_DENIED);
+                    return;
+                }
+                let token = Self::read_seed_channel(hs[3]);
+                if !self.system_seed_set
+                    || token.as_ref().map(|x| x.as_slice()) != Some(self.system_seed.as_slice())
+                {
+                    close_all(hs);
+                    st_rep(broker, gp::ST_DENIED);
+                    return;
+                }
+                if berry_handle_close(hs[3]) != 0 {
+                    trap();
+                }
+                false
+            }
+            _ => {
                 close_all(hs);
-                st_rep(broker, gp::ST_DENIED);
+                st_rep(broker, gp::ST_BAD);
                 return;
             }
-            if berry_handle_close(hs[3]) != 0 {
-                trap();
-            }
-            true
-        } else {
-            false
         };
+        // seed channel 成功读取后已关闭；后续失败路径只回收前三柄，防止
+        // ST_FULL 等路径对已关 handle 二次 close。
+        let hs = &hs[..3];
+        if client_type == gp::WM_CLIENT_SYSTEM
+            && self.system_slot().is_some()
+        {
+            close_all(hs);
+            st_rep(broker, gp::ST_FULL);
+            return;
+        }
         let Some(slot) = (0..self.slots.len()).find(|&i| self.slots[i].is_none()) else {
             close_all(hs);
             st_rep(broker, gp::ST_FULL);
@@ -321,6 +378,11 @@ impl WmSessions {
             send_rep(broker, &out[..n]);
         }
         println!("WMCONN ok id={id}");
+        if client_type == gp::WM_CLIENT_SYSTEM {
+            // R1 正例：SYSTEM session 只有在 per-boot seed channel 验证
+            // 通过后才会到达这里；自报 client_type 的路径已在前置分支拒绝。
+            println!("WMSYSAUTH ok id={id}");
+        }
     }
 
     fn slot_index(&self, id: u16) -> Option<usize> {
@@ -672,8 +734,8 @@ impl WmSession {
             .copied()
             .flatten();
         let (w, h) = table.display_size();
-        let info = gp::surface::surface_mode_production_policy(
-            req, self.escape, old, w, h,
+        let info = gp::surface::surface_mode_session_policy(
+            self.client_type, req, self.escape, old, w, h,
         )?;
         if let Some(slot) = self
             .surface_modes
@@ -712,6 +774,18 @@ fn on_broker(sessions: &mut WmSessions, ch: Handle, msg: &[u8], hs: &[Handle]) {
         }
         return;
     }
+    if msg.first() == Some(&gp::OP_WM_SYSTEM_SEED) {
+        if !hs.is_empty() {
+            close_all(hs);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        match gp::surface::parse_wm_system_seed_req(msg) {
+            Some(seed) if sessions.set_system_seed(seed) => st_rep(ch, gp::ST_OK),
+            _ => st_rep(ch, gp::ST_DENIED),
+        }
+        return;
+    }
     if msg.first() == Some(&gp::OP_WM_CONNECT) {
         sessions.connect(ch, msg, hs);
         return;
@@ -728,10 +802,12 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
     match msg.first() {
         Some(&gp::OP_SUBMIT) => {
             let owner = sess.id;
+            let client_type = sess.client_type;
             relay::submit_composite(
                 ch,
                 present_cli,
                 owner,
+                client_type,
                 |owner, id| table.surface_rect(owner, id),
                 comp,
                 msg,
@@ -767,12 +843,12 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {
             if msg.first() == Some(&gp::OP_WM_DESTROY) {
                 if let Some(id) = gp::parse_wm_destroy_req(msg) {
-                    table.handle_wm(ch, sess.id, msg, hs);
+                    table.handle_wm(ch, sess.id, sess.client_type, msg, hs);
                     sess.clear_surface_mode(id);
                     return;
                 }
             }
-            table.handle_wm(ch, sess.id, msg, hs);
+            table.handle_wm(ch, sess.id, sess.client_type, msg, hs);
         }
         _ => {
             close_all(hs);
