@@ -4,7 +4,7 @@ SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）�
 
 用法：mkimage.py <out.img> --efi <BERRYBOOT.EFI> --hello <hello.txt>
               --kernel <kernel.elf> --initrd <rootfs.cpio> [--size-mib N]
-              [--key-hash <64hex>]
+              [--key-hash <64hex>] [--platform-revision N]
       mkimage.py --selftest
 
 盘布局 = [LBA0 MBR][LBA2048.. FAT16 主分区（四件套）][尾部 16MiB 密钥
@@ -21,9 +21,12 @@ SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）�
 SEC-02 A1 三件（day-one 留缝——纯宿主侧、零运行时影响；今天只冻结
 格式与槽位，不接任何验签/度量消费端，v2 真机窗口才兑现语义）：
   - 件 3【SEC-1】产 <out.img> 同目录 manifest.txt（侧产物，不进盘）：
-    每件 SHA-256 + 尺寸 + rollback_index 恒 0 = 未来 vbmeta 数据源，
-    格式 v0 冻结于 2026-10-30（定宽列/路径字节序/无时刻输入——逐字节
-    规约见 build_manifest 头注；改格式 = 破冻，须升 v1 并另立对拍基准）。
+    每件 SHA-256 + 尺寸 + rollback_index 恒 0 + platform_revision（V9，
+    ADR #82 预埋）= 未来 vbmeta 数据源。格式 v0 冻结于 2026-10-30，
+    V9 加列破冻升 **v1** 冻结于 2026-11-10（版本动词依本文件冻结纪律
+    「改格式 = 破冻，须升 v1 并另立对拍基准」——红队 11 号 §2-V9a 裁
+    「v0→v0.1」动词错；定宽列/路径字节序/无时刻输入——逐字节规约见
+    build_manifest 头注；再改格式 = 再破冻，须升 v2）。
   - 件 4【SEC-7】MBR 表项 1 = 密钥材料分区预留槽（16MiB 全零、type
     0xDA Non-FS data——Android /metadata 16MiB 独立分区同型：密钥/
     防回卷计数等安全元数据住盘上独立分区，不与系统卷混放，v1 只占槽
@@ -69,13 +72,17 @@ DEFAULT_SIZE_MIB = 96  # FAT 段默认容量（A1-3b：rootfs 40MB+ 验收形态
 META_SECTORS = 16 * 1024 * 1024 // SECTOR  # 32768 扇区 = 16MiB
 PART_TYPE_KEYMETA = 0xDA
 
-# 件 3【SEC-1】：manifest v0 格式冻结常量（列宽是契约的一部分——改即破冻）。
+# 件 3【SEC-1】：manifest v1 格式冻结常量（列宽是契约的一部分——改即破冻）。
+# v0 冻结 2026-10-30（SHA-256/size/rollback_index 三列）；V9（ADR #82 预埋，
+# 2026-11-10）加 platform_revision 列破冻升 v1。
 MANIFEST_NAME = "manifest.txt"
-MANIFEST_FROZEN = "2026-10-30"
+MANIFEST_FROZEN = "2026-11-10"  # v1 冻结日（V9 加列）；v0 史 = 2026-10-30
 MANIFEST_PATH_W = 24   # path 列宽（最长 /EFI/BOOT/BOOTAA64.EFI = 22 + 余量）
 MANIFEST_SIZE_W = 12   # size 零垫宽（4TB 域——盘件量级恒有余）
 MANIFEST_RB_W = 20     # rollback_index 零垫宽（u64 全域——AVB 同宽，真值
                        # 启用不破列宽）
+MANIFEST_PR_W = 10     # platform_revision 零垫宽（u32 全域 = 4294967295 恰
+                       # 10 位——rollback_index 同「列宽盖满值域」逻辑；V9）
 
 
 def volume_sectors(size_mib: int) -> int:
@@ -138,37 +145,53 @@ def parse_key_hash(s: str) -> str:
     return v
 
 
-def build_manifest(puts: list, key_hash=None) -> bytes:
-    """件 3：manifest 字节（v0 格式冻结于 2026-10-30——未来 vbmeta 数据源；
-    改任何列宽/行序/字段 = 破冻，须升 v1 并另立黄金字节对拍基准）。
+def build_manifest(puts: list, key_hash=None, platform_revision: int = 0) -> bytes:
+    """件 3：manifest 字节（v1 格式冻结于 2026-11-10——未来 vbmeta 数据源；
+    改任何列宽/行序/字段 = 破冻，须升 v2 并另立黄金字节对拍基准。v0 史
+    冻结 2026-10-30，V9（ADR #82 预埋）加 platform_revision 列升 v1）。
 
     格式规约（逐字节冻结——列宽/行序/填充全是契约）：
-      行 1   头：`berryos-manifest v0 format_frozen=2026-10-30 entries=NN`
+      行 1   头：`berryos-manifest v1 format_frozen=2026-11-10 entries=NN`
              （NN = 条目数两位零垫——头部计数即廉价完整性哨兵）。
       条目行：`item path=<24 左对齐右补空> sha256=<64 小写 hex>
-             size=<12 零垫十进制> rollback_index=<20 零垫十进制，v1 恒 0>`
+             size=<12 零垫十进制> rollback_index=<20 零垫十进制，
+             BerryOS v1 恒 0> platform_revision=<10 零垫十进制>`
              —— rollback_index 列宽取 u64 全域（AVB 同宽）：冻结后真值
              启用不破格式。防回卷语义（件 14/#56 三值版本域）v2 才接。
+             platform_revision（V9）＝条目产出平台版本的事实值：粒度
+             **逐条目**（与 rollback_index 同粒度），非头字段——今日四件
+             套同盘同版看似冗余，OEM 三包编队（ADR #82「组装不 fork」）
+             时代条目可来自不同 platform_revision，逐条目列才是终形
+             （红队 11 号 §2-V9b 论证照录——勿「优化」成头字段再破一次
+             冻）。与 V2 `platform_compat=[min,max]`（SDK-2 文档，承诺
+             区间）分轨：本列是**事实值**，对账面 = 未来 OTA/vbmeta 数
+             据源。缺省值 0 语义 = 与镜像同版（CLI --platform-revision
+             注入，默认 0 = 平台基线版）。
       尾行   ：`key_hash=none`（默认——QEMU 路不烧）或 `key_hash=<64hex>`
              （件 5 --key-hash 注入；恒在行——显式缺席优于隐式缺席）。
     行序 = FAT 路径字节序（与传参次序无关——数据自定序，「同输入同字节」
     的必要条件）；ASCII、LF 行尾、末行有换行；无时刻输入。
 
-    路径超 MANIFEST_PATH_W 即 loud 拒（对抗审查实抓：f-string 定宽对超长
-    输入只是不加垫、静默加宽列仍产「合法」manifest——冻结格式的执法面不能
-    只剩固定输入的黄金字节；今日四件套最长 /EFI/BOOT/BOOTAA64.EFI = 22，
-    守卫面当前不可达但换名即达）。"""
-    lines = [f"berryos-manifest v0 format_frozen={MANIFEST_FROZEN} "
+    路径超 MANIFEST_PATH_W / platform_revision 超 u32 域（2^32-1）即
+    loud 拒（对抗审查实抓：f-string 定宽对超长输入只是不加垫、静默加宽
+    列仍产「合法」manifest——冻结格式的执法面不能只剩固定输入的黄金
+    字节；rollback_index 恒 0 无此面）。"""
+    if not 0 <= platform_revision <= 2**32 - 1:
+        raise SystemExit(f"mkimage: FAIL: platform_revision 须 u32 域 "
+                         f"[0, 4294967295]（列宽 {MANIFEST_PR_W} 契约）,"
+                         f"got {platform_revision}")
+    lines = [f"berryos-manifest v1 format_frozen={MANIFEST_FROZEN} "
              f"entries={len(puts):02d}"]
     for path, data in sorted(puts, key=lambda p: p[0]):
         if len(path) > MANIFEST_PATH_W:
             raise SystemExit(f"mkimage: FAIL: manifest path 超冻结列宽 "
                              f"{MANIFEST_PATH_W}（{path!r} = {len(path)} 字符）"
-                             f"——破 v0 格式冻结；缩短路径或升 manifest v1")
+                             f"——破 v1 格式冻结；缩短路径或升 manifest v2")
         lines.append(f"item path={path:<{MANIFEST_PATH_W}} "
                      f"sha256={sha256_hex(data)} "
                      f"size={len(data):0{MANIFEST_SIZE_W}d} "
-                     f"rollback_index={0:0{MANIFEST_RB_W}d}")
+                     f"rollback_index={0:0{MANIFEST_RB_W}d} "
+                     f"platform_revision={platform_revision:0{MANIFEST_PR_W}d}")
     lines.append(f"key_hash={key_hash if key_hash else 'none'}")
     return ("\n".join(lines) + "\n").encode("ascii")
 
@@ -193,8 +216,8 @@ def build_image(puts: list, size_mib: int) -> tuple:
 
 def selftest() -> int:
     """MBR 薄面自检（不写盘）：CHS 编码向量 + 两分区表项钉板（黄金字节）+
-    manifest v0 黄金字节 + 整盘装配确定性。卷编码面归 mkfat --selftest
-    （单编码器纪律——不在此长第二套）。"""
+    manifest v1 黄金字节 + V9 回读/注入/拒面 + 整盘装配确定性。卷编码面
+    归 mkfat --selftest（单编码器纪律——不在此长第二套）。"""
     assert lba_to_chs(0) == bytes([0, 1, 0]), "LBA0 → CHS(0,0,1)"
     assert lba_to_chs(2048) == bytes([32, 33, 0]), "LBA2048 → CHS(0,32,33)"
     assert lba_to_chs(49151) == bytes([15, 12, 3]), "LBA49151 → CHS(3,15,12)"
@@ -222,30 +245,65 @@ def selftest() -> int:
         "表项 1 黄金字节（96MiB 派生定值）"
     assert m[478:510] == b"\x00" * 32, "表项 2-3 全零"
 
-    # 件 3：manifest v0 黄金字节（格式冻结的执法点——改列宽/行序/填充/
+    # 件 3：manifest v1 黄金字节（格式冻结的执法点——改列宽/行序/填充/
     # 哈希算法 = 此处 FAIL）。内容为确定性生成式（mkfat selftest 同族）。
+    # V9 破冻升 v1：头行 v1/新冻结日 + 条目行尾追加 platform_revision 列
+    # （sha256/size/rollback_index 三列与 v0 黄金逐字节同——同载荷零漂移）。
     puts = [("/EFI/BOOT/BOOTAA64.EFI", bytes((i * 7 + 3) % 256 for i in range(3000))),
             ("/HELLO.TXT", b"berryboot efi hello\n"),
             ("/KERNEL.ELF", bytes((i * 31 + 7) % 256 for i in range(5000))),
             ("/INITRD.BIN", b"berryos initrd stub\n")]
-    golden = (b"berryos-manifest v0 format_frozen=2026-10-30 entries=04\n"
+    golden = (b"berryos-manifest v1 format_frozen=2026-11-10 entries=04\n"
               b"item path=/EFI/BOOT/BOOTAA64.EFI   "
               b"sha256=f541874101876255b4baf3a739778d04cb9cba25ffa38b30bc1fb8b0701f2a45 "
-              b"size=000000003000 rollback_index=00000000000000000000\n"
+              b"size=000000003000 rollback_index=00000000000000000000 "
+              b"platform_revision=0000000000\n"
               b"item path=/HELLO.TXT               "
               b"sha256=785594f64f783cfaac356d9f75ba42d369e414e316ad1e8649b41090e6787526 "
-              b"size=000000000020 rollback_index=00000000000000000000\n"
+              b"size=000000000020 rollback_index=00000000000000000000 "
+              b"platform_revision=0000000000\n"
               b"item path=/INITRD.BIN              "
               b"sha256=6c150fd292a1c404285bddf840b1a77cd9d479555b4e50c3dd98030779de29ba "
-              b"size=000000000020 rollback_index=00000000000000000000\n"
+              b"size=000000000020 rollback_index=00000000000000000000 "
+              b"platform_revision=0000000000\n"
               b"item path=/KERNEL.ELF              "
               b"sha256=1e92fd98f113aba0a78e0830ca06e2775912370feab112dfc57bf3258b810595 "
-              b"size=000000005000 rollback_index=00000000000000000000\n"
+              b"size=000000005000 rollback_index=00000000000000000000 "
+              b"platform_revision=0000000000\n"
               b"key_hash=none\n")
     got = build_manifest(puts)
-    assert got == golden, "manifest v0 黄金字节漂移（破冻——格式改动须升 v1）"
+    assert got == golden, "manifest v1 黄金字节漂移（破冻——格式改动须升 v2）"
     # 行序冻结面：传参次序无关（数据自定序 = 路径字节序）。
     assert build_manifest(list(reversed(puts))) == golden, "manifest 行序随传参漂移"
+    # V9 回读面：消费端式逐列解析（未来 OTA/vbmeta 数据源的对拍姿势）——
+    # 每条目行五列齐、platform_revision 恰 10 位零垫、头行 v1。
+    lines = got.decode("ascii").splitlines()
+    assert lines[0] == f"berryos-manifest v1 format_frozen={MANIFEST_FROZEN} entries=04"
+    for ln in lines[1:-1]:
+        toks = [t for t in ln.split(" ") if t]  # path 列右垫空格 → 滤空 token
+        fields = dict(tok.split("=", 1) for tok in toks[1:])
+        assert set(fields) == {"path", "sha256", "size", "rollback_index",
+                               "platform_revision"}, f"列集漂移：{ln!r}"
+        assert len(fields["platform_revision"]) == MANIFEST_PR_W, "PR 列宽漂"
+        assert fields["platform_revision"] == "0" * MANIFEST_PR_W, "PR 缺省非 0"
+    assert lines[-1] == "key_hash=none"
+    # V9 注入面：非缺省 platform_revision → 差集 = 恰四行条目的 PR 列变值
+    # （其余列/头行/尾行零扰动——「与镜像同版」缺省外的唯一注入通道）。
+    got7 = build_manifest(puts, platform_revision=7)
+    l7 = got7.decode().splitlines()
+    assert l7[0] == lines[0], "PR 注入扰头行"
+    assert l7[-1] == lines[-1], "PR 注入扰尾行"
+    for a, b in zip(l7[1:-1], lines[1:-1]):
+        assert a == b.replace(f"platform_revision={'0' * (MANIFEST_PR_W - 1)}0",
+                              f"platform_revision={'0' * (MANIFEST_PR_W - 1)}7"), \
+            "PR 注入差集非恰列值"
+    # V9 拒面：u32 域外（含负）一律 loud 拒——f-string 静默加宽列 = 破冻。
+    for bad in (-1, 2**32, 2**40):
+        try:
+            build_manifest([(p, b"x") for p, _ in puts], platform_revision=bad)
+        except SystemExit:
+            continue
+        assert False, f"坏 platform_revision 未被拒绝：{bad}"
     # path 列宽 loud 守卫（对抗审查补）：超宽路径曾静默加宽列仍报 ok——恰 24
     # 字符边界正例（无垫片、单空格分隔）不误拒，25+ 一律 SystemExit。
     p24 = "/EFI/BOOT/BOOTAA64.EFI" + "XX"  # 22 + 2 = 恰列宽上界
@@ -296,6 +354,9 @@ def main() -> int:
                     help=f"FAT 段容量 MiB（默认 {DEFAULT_SIZE_MIB}；总盘另加 16MiB 密钥材料预留区）")
     ap.add_argument("--key-hash", help="OEM 公钥 SHA-256（64 位 hex——件 5：只落 manifest "
                                        "key_hash 字段不动盘字节；缺省 none = QEMU 路不烧）")
+    ap.add_argument("--platform-revision", type=int, default=0,
+                    help="平台修订号（V9/ADR #82：只落 manifest 每条目 platform_revision "
+                         "列不动盘字节；缺省 0 = 与镜像同版（平台基线）；u32 域外 loud 拒）")
     ap.add_argument("--selftest", action="store_true", help="MBR/manifest 薄面自检（不写盘）")
     args = ap.parse_args()
 
@@ -305,6 +366,10 @@ def main() -> int:
         ap.error("造盘需 out + --efi/--hello/--kernel/--initrd 四件套（缺一即 loud）")
 
     key_hash = parse_key_hash(args.key_hash) if args.key_hash else None
+    # V9：--platform-revision 域守卫在 build_manifest（u32 域外 loud 拒——
+    # 值域是列宽契约的一部分）；与 key_hash 同数据流纪律：只进 manifest，
+    # 不进 build_image（盘字节零漂移）。
+    pr = args.platform_revision
 
     puts = []
     nbytes = 0
@@ -323,7 +388,7 @@ def main() -> int:
     Path(args.out).write_bytes(img)
     # 件 3：manifest = <out.img> 同目录侧产物（不进盘——vbmeta 签名产物
     # 未来另刀，manifest 只是其数据源）。
-    manifest = build_manifest(puts, key_hash)
+    manifest = build_manifest(puts, key_hash, pr)
     manifest_path = Path(args.out).with_name(MANIFEST_NAME)
     manifest_path.write_bytes(manifest)
     vol_sectors = volume_sectors(args.size_mib)
@@ -334,7 +399,8 @@ def main() -> int:
           f"used={geo['next_clus'] - 2} fat={geo['fat_sz']}x{mkfat.NUM_FATS} "
           f"spc={geo['spc']} files=4 bytes={nbytes}")
     print(f"mkimage: manifest {manifest_path} {len(manifest)}B "
-          f"entries={len(puts)} key_hash={key_hash if key_hash else 'none'}")
+          f"entries={len(puts)} key_hash={key_hash if key_hash else 'none'} "
+          f"platform_revision={pr}")
     # 件 5：产链尾整盘哈希行——供 CI/审计对拍（黄金格式 img: sha256=<64hex>）。
     print(f"img: sha256={sha256_hex(img)}")
     return 0

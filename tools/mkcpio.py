@@ -5,10 +5,20 @@
 宿主侧对读 = mkapp `_cpio_entries` 单源）。
 
 用法：mkcpio.py <out.cpio> name=path [name=path ...] [--split <MiB>]
+              [--manifest <rootfs-manifest.toml>]
   - name 归档内路径（如 bin/hello），path 本地文件（ELF 本体，非平像）；
   - 条目按整条 `name=path` 字符串排序（确定性输出：同输入同字节——AI
     测试友好化。app-0 §4 钉板：这是 CLI main() 的行为；`build_archive`
     纯编码器**不排序**——排序归调用方，勿混）；
+  - `--manifest <toml>`（V13 预埋刀，ADR #82「组装不 fork」）：条目映射
+    改读数据文件（tools/rootfs-manifest.toml——justfile build-user 58 条
+    硬编外化，13 号 §5.3-③ 现场重数）。与位置参数 name=path 可混用
+    （合并后照常整条排序——同输入同字节不破）；双源撞名 loud 拒。
+    schema：`version = 1` + `[entries]` 表（见 load_manifest 头注）；
+    未知顶层键/坏条目一律拒（berry-manifest 未知键硬拒同纪律）。
+    **缺席 = 现行为零漂移**（位置参数路不 imports tomllib——Python ≥3.11
+    依赖只落 --manifest 路，gen_abi 同先例）；未知条目（不在表内）行为
+    不变：本工具不持白名单，条目合法性只看 name/path 形。
   - 字段全定值（mtime=0/uid=gid=0/mode 0755/nlink 1/ino 递增）：归档字节
     只随内容变，不随打包时刻变；
   - TRAILER!!! 自终止 + 尾垫页（消费端 walk 到 trailer 即停）；
@@ -17,7 +27,8 @@
     编号卷（每卷 ≤MiB、末卷可小；**只切字节流不做条目对齐**，TRAILER!!!
     自然只在末卷；消费端 = 内核 VMO 逐页拼装重组单一视图，用户态零改动）。
   - `--selftest-split`：切分器纯函数面守卫（mkfat --check-fixture 同位
-    纪律；A1-3b 挂 just test-host 前置，本刀可独立跑）。
+    纪律；A1-3b 挂 just test-host 前置，本刀可独立跑）+ V13 manifest
+    加载面守卫（selftest_manifest 同刀串跑——test-host 既有行零改）。
 """
 import os
 import sys
@@ -114,11 +125,150 @@ def clean_stale_volumes(out_path: str, keep: int) -> int:
     return removed
 
 
+# ─── V13（ADR #82 预埋刀）：条目映射数据文件加载面 ─────────────────────
+#
+# justfile build-user 的 58 条 mkcpio 硬编映射外化为 tools/rootfs-manifest.toml
+# （13 号 §5.1-V13 载体 / 08 号 §3.2 改造清单行 1 的过渡形态）。加载器只做
+# 「数据 → 条目」翻译，不持白名单、不做条目存在性检查（path 打开失败在
+# main() 既有 loud 路爆炸——未知条目行为不变）。
+
+
+def load_manifest(path: str) -> dict:
+    """rootfs-manifest.toml → {name: path} 条目表（V13）。
+
+    schema（文件头注同源）：
+      version = 1          # u32，add-only（V12 schema=1 同先例）；非 1 拒
+      [entries]            # 必有非空表；键 = 归档内名、值 = 本地路径
+      "app/APPDEMO.bap" = "userbins/app/APPDEMO.bap"
+
+    拒面（一律 SystemExit loud——berry-manifest 未知键硬拒同纪律）：
+    未知顶层键 / version ≠ 1 / 缺 [entries] / 空表 / 坏条目名（空、
+    绝对路径、含 `=`——与 CLI `name=path` 可达名集同口径）/ 坏路径
+    （非字符串、空）/ 坏 TOML / 读失败。TOML 表键天然去重（tomllib
+    重复键即解析错）——撞名只剩 manifest↔CLI 双源面，归 merge_items。
+    """
+    try:
+        import tomllib  # Python ≥3.11（gen_abi 同依赖先例；仅本函数导入）
+    except ImportError:
+        raise SystemExit("mkcpio: FAIL: --manifest 需 Python ≥3.11（tomllib,"
+                         "gen_abi 同依赖先例）")
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except OSError as e:
+        raise SystemExit(f"mkcpio: FAIL: 读 {path}：{e}")
+    except tomllib.TOMLDecodeError as e:
+        raise SystemExit(f"mkcpio: FAIL: 坏 TOML {path}：{e}")
+    unknown = sorted(set(data) - {"version", "entries"})
+    if unknown:
+        raise SystemExit(f"mkcpio: FAIL: {path} 未知顶层键 {unknown}"
+                         f"（收 version/entries——berry-manifest 未知键硬拒同纪律）")
+    if data.get("version") != 1:
+        raise SystemExit(f"mkcpio: FAIL: {path} version 须 = 1"
+                         f"（got {data.get('version')!r}）")
+    entries = data.get("entries")
+    if not isinstance(entries, dict) or not entries:
+        raise SystemExit(f"mkcpio: FAIL: {path} 缺非空 [entries] 条目表")
+    for name, src in entries.items():
+        if not isinstance(name, str) or not name or name.startswith("/") or "=" in name:
+            raise SystemExit(f"mkcpio: FAIL: {path} 坏条目名 {name!r}"
+                             f"（空/绝对路径/含 = 拒——CLI name=path 同口径）")
+        if not isinstance(src, str) or not src:
+            raise SystemExit(f"mkcpio: FAIL: {path} 条目 {name!r} 坏路径"
+                             f" {src!r}（须非空字符串）")
+    return dict(entries)
+
+
+def merge_items(positional: list, manifest: dict) -> list:
+    """--manifest 条目表与位置参数 name=path 合并（V13）。返回未排序合并
+    列表（排序仍归 main() 既有 `sorted(items)`——CLI 确定性语义单点）。
+    双源撞名 loud 拒：归档内同名双条目 = 消费端 cpio_find 命中首个的
+    静默错字节面（berry-loader/svcmgr 名序敏感，justfile :45 在册），宁
+    在注入口炸。纯位置参数路**不经本函数**（旧路径行为逐字节不动）。"""
+    items = list(positional) + [f"{n}={p}" for n, p in manifest.items()]
+    names = [i.partition("=")[0] for i in items]
+    dups = sorted({n for n in names if names.count(n) > 1})
+    if dups:
+        raise SystemExit(f"mkcpio: FAIL: 条目撞名 {dups}"
+                         f"（--manifest 与 CLI 双源同名——归档内名须唯一）")
+    return items
+
+
+def selftest_manifest() -> int:
+    """V13 manifest 加载面守卫（selftest_split 同刀串跑——test-host 既有
+    `--selftest-split` 行零改即覆盖）。合成 TOML 经**真实加载器**
+    load_manifest 产条目表（手造字典不算数）；拒面逐型独立钉。"""
+    import tempfile
+    from pathlib import Path
+
+    good_toml = 'version = 1\n[entries]\n"bin/aa" = "x/aa"\n"bb" = "y/bb"\n'
+    with tempfile.TemporaryDirectory() as td:
+        def write(text, name):
+            p = Path(td) / name
+            p.write_text(text, encoding="utf-8")
+            return str(p)
+
+        good = write(good_toml, "good.toml")
+        assert load_manifest(good) == {"bin/aa": "x/aa", "bb": "y/bb"}, "正例加载"
+        # 拒面九型：坏 TOML/未知顶层键/version 块/缺 entries/空表/坏名三型
+        # /坏路径两型——每型独立文件 + 独立断言（一型一咬，拒面不是计数
+        # 游戏；不复写正例文件——写同名曾把 good 覆写成末例坏档）。
+        for k, (bad, why) in enumerate([
+            ("[entries\n", "坏 TOML 语法"),
+            ('extra = 1\nversion = 1\n[entries]\n"a" = "b"\n', "未知顶层键"),
+            ("version = 2\n[entries]\n\"a\" = \"b\"\n", "version ≠ 1"),
+            ('version = "1"\n[entries]\n"a" = "b"\n', "version 非整数"),
+            ("[entries]\n", "缺 version"),
+            ("version = 1\n", "缺 entries"),
+            ("version = 1\n[entries]\n", "空 entries"),
+            ('version = 1\n[entries]\n"" = "b"\n', "空条目名"),
+            ('version = 1\n[entries]\n"/abs" = "b"\n', "绝对路径名"),
+            ('version = 1\n[entries]\n"a=b" = "c"\n', "名含 ="),
+            ('version = 1\n[entries]\n"a" = ""\n', "空路径"),
+            ('version = 1\n[entries]\n"a" = 3\n', "路径非字符串"),
+        ]):
+            try:
+                load_manifest(write(bad, f"bad{k}.toml"))
+            except SystemExit:
+                continue
+            assert False, f"拒面未咬：{why}"
+        try:
+            load_manifest(str(Path(td) / "absent.toml"))
+            assert False, "缺文件未拒"
+        except SystemExit:
+            pass
+        # 合并面：无撞名 = 位置 + manifest 全量保序并入（排序归 main）；
+        # 撞名 = SystemExit loud。
+        m = load_manifest(good)
+        assert merge_items(["bin/cc=z/cc"], m) == ["bin/cc=z/cc", "bin/aa=x/aa", "bb=y/bb"], \
+            "合并保序"
+        try:
+            merge_items(["bin/aa=other/aa"], m)
+            assert False, "撞名未拒"
+        except SystemExit:
+            pass
+        # 真件格式腐烂守卫：tools/rootfs-manifest.toml（在席时）必过加载器
+        # + 核心常驻件锚（bin/bsh——svcmgr 走查名序依赖在册，justfile :45
+        # 「mkcpio 名序 bsh 首位」两源）；不钉总数（活文件，13 号 §5.3-③
+        # 保质期教训——数漂移是本表职责非守卫职责）。
+        real = Path(__file__).resolve().with_name("rootfs-manifest.toml")
+        if real.exists():
+            r = load_manifest(str(real))
+            assert "bin/bsh" in r, "真件缺核心常驻 bin/bsh"
+        else:
+            raise SystemExit("mkcpio: FAIL: tools/rootfs-manifest.toml 缺席"
+                             "（V13 数据源——本刀同笔落库）")
+    print("mkcpio: selftest-manifest ok")
+    return 0
+
+
 def selftest_split() -> int:
     """`--selftest-split`：切分面纯函数守卫（mkfat --check-fixture 同位纪律
-    ——改本文件必跑；A1-3b 挂 just test-host 前置）。合成基准经**真实编码器**
-    `build_archive` 产 blob（多条目、含非 4 对齐长度让数据垫生效——合成
-    基准复刻真实产链形态，勿手造字节；elf2pe .reloc 教训的工具版）。
+    ——改本文件必跑；A1-3b 挂 just test-host 前置）+ V13 manifest 加载面
+    （selftest_manifest 串跑——test-host 既有行零改双覆盖）。合成基准经
+    **真实编码器** `build_archive` 产 blob（多条目、含非 4 对齐长度让数据垫
+    生效——合成基准复刻真实产链形态，勿手造字节；elf2pe .reloc 教训的
+    工具版）。
     """
     items = [
         (b"bin/aa", b"\x01" * 37),
@@ -191,6 +341,9 @@ def selftest_split() -> int:
         assert clean_stale_volumes(root, 0) == 2, "selftest: 全清恰余量"
         assert not (os.path.exists(vol0) or os.path.exists(vol1)), "selftest: 全清"
         assert clean_stale_volumes(root, 0) == 0, "selftest: 空集幂等返 0"
+    # V13：manifest 加载面守卫串跑（本入口是 test-host 既有门——justfile
+    # 零改即覆盖；将来单列配方无必要，双面一门是收敛面）。
+    selftest_manifest()
     print("mkcpio: selftest-split ok")
     return 0
 
@@ -198,11 +351,21 @@ def selftest_split() -> int:
 def main() -> int:
     args = sys.argv[1:]
     split_mib: int | None = None
+    manifest_path: str | None = None
     pos: list[str] = []
     i = 0
     while i < len(args):
         if args[i] == "--selftest-split":
             return selftest_split()
+        if args[i] == "--manifest":
+            # V13：条目映射数据文件（tools/rootfs-manifest.toml——加载/
+            # 拒面见 load_manifest 头注；与位置参数可混用，撞名拒）。
+            if i + 1 >= len(args):
+                sys.stderr.write("mkcpio: --manifest 需要 <toml> 参数\n")
+                return 2
+            manifest_path = args[i + 1]
+            i += 2
+            continue
         if args[i] == "--split":
             if i + 1 >= len(args):
                 sys.stderr.write("mkcpio: --split 需要 <MiB> 参数\n")
@@ -219,10 +382,18 @@ def main() -> int:
             continue
         pos.append(args[i])
         i += 1
-    if len(pos) < 2:
+    # V13：--manifest 在席时允许零位置条目（out + 纯表驱动——justfile 换装
+    # 后的形态）；缺席路径维持「out + ≥1 位置条目」旧检查不动。
+    if len(pos) < 2 and manifest_path is None:
         sys.stderr.write(__doc__)
         return 2
-    out_path, items = pos[0], pos[1:]
+    out_path = pos[0] if pos else None
+    if out_path is None:
+        sys.stderr.write("mkcpio: --manifest 路径仍需 <out.cpio> 位置参数\n")
+        return 2
+    items = pos[1:]
+    if manifest_path is not None:
+        items = merge_items(items, load_manifest(manifest_path))
     parsed = []
     for item in sorted(items):
         name, _, path = item.partition("=")

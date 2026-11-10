@@ -314,65 +314,11 @@ build-user:
     # app-1 D1（调和书）：APPTOMB 打包出 app/ 前缀改 selftest/ 专用位
     # ——不入 bap_scan 收集 = 不占 APP_SLOTS（9/9 恰满，入册必挤 SETTINGS
     # = APP ok 静默漂 8），tomb_selftest 走 cpio 直查，白名单立法退役。
+    # V13（ADR #82 预埋刀）：58 条 name=rootfs 硬编映射外化
+    # tools/rootfs-manifest.toml（平台基座自描述——加 bin 只改该表；
+    # mkcpio --manifest 加载/拒面见其头注）。--split 32 与出档路径留配方。
     python3 ../tools/mkcpio.py ../rootfs.cpio \
-        app/APPDEMO.bap=userbins/app/APPDEMO.bap \
-        app/APPQUIET.bap=userbins/app/APPQUIET.bap \
-        app/BROWSER.bap=userbins/app/BROWSER.bap \
-        app/CAMERA.bap=userbins/app/CAMERA.bap \
-        app/CONTACTS.bap=userbins/app/CONTACTS.bap \
-        app/MMS.bap=userbins/app/MMS.bap \
-        app/FILES.bap=userbins/app/FILES.bap \
-        app/PHOTOS.bap=userbins/app/PHOTOS.bap \
-        app/SETTINGS.bap=userbins/app/SETTINGS.bap \
-        bin/bench1=cargo-target/aarch64-unknown-linux-musl/release/bench1 \
-        bin/berry-launcher=cargo-target/aarch64-unknown-linux-musl/release/berry-launcher \
-        bin/berryctl=cargo-target/aarch64-unknown-linux-musl/release/berryctl \
-        bin/bsh=cargo-target/aarch64-unknown-linux-musl/release/bsh \
-        bin/cat=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat \
-        bin/cp=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp \
-        bin/cut=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cut \
-        bin/date=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/date \
-        bin/df=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/df \
-        bin/du=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/du \
-        bin/dpgx=cargo-target/aarch64-unknown-linux-musl/release/dpgx \
-        bin/echo=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/echo \
-        bin/env=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/env \
-        bin/fail=cargo-target/aarch64-unknown-linux-musl/release/fail \
-        bin/false=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/false \
-        bin/find=cargo-target/aarch64-unknown-linux-musl/release/find \
-        bin/fsmgr=cargo-target/aarch64-unknown-linux-musl/release/fsmgr \
-        bin/gfxdemo=cargo-target/aarch64-unknown-linux-musl/release/gfxdemo \
-        bin/grep=cargo-target/aarch64-unknown-linux-musl/release/grep \
-        bin/gui-inputd=../drivers/cargo-target/aarch64-unknown-linux-musl/release/gui-inputd \
-        bin/gui-wmd=cargo-target/aarch64-unknown-linux-musl/release/gui-wmd \
-        bin/guifbd=cargo-target/aarch64-unknown-linux-musl/release/guifbd \
-        bin/hello=cargo-target/aarch64-unknown-none/release/hello \
-        bin/head=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/head \
-        bin/hexyl=cargo-target/aarch64-unknown-linux-musl/release/hexyl \
-        bin/ls=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/ls \
-        bin/mkdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mkdir \
-        bin/mv=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mv \
-        bin/netprobe=cargo-target/aarch64-unknown-linux-musl/release/netprobe \
-        bin/policydemo=cargo-target/aarch64-unknown-none/release/policydemo \
-        bin/ps=cargo-target/aarch64-unknown-linux-musl/release/ps \
-        bin/pwd=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd \
-        bin/rm=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm \
-        bin/rmdir=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir \
-        bin/sigchild=cargo-target/aarch64-unknown-linux-musl/release/sigchild \
-        bin/simbattery=cargo-target/aarch64-unknown-linux-musl/release/simbattery \
-        bin/sort=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/sort \
-        bin/stdhello=cargo-target/aarch64-unknown-linux-musl/release/stdhello \
-        bin/tail=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tail \
-        bin/touch=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/touch \
-        bin/tr=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tr \
-        bin/true=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/true \
-        bin/uniq=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/uniq \
-        bin/vblk=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vblk \
-        bin/vnet=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet \
-        bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe \
-        bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc \
-        bin/which=cargo-target/aarch64-unknown-linux-musl/release/which \
-        selftest/APPTOMB.bap=userbins/app/APPTOMB.bap \
+        --manifest ../tools/rootfs-manifest.toml \
         --split 32
     # A1-3b（余量刀）：mkcpio --split 32 = 主路恒走多卷产链——≈28MiB
     # rootfs = 1 卷 rootfs0.cpio（单卷 ≤32MiB 与内核 fwcfg 单卷帽同口径，

@@ -1,0 +1,87 @@
+# rootfs-manifest.toml —— BerryOS rootfs 条目映射（平台基座自描述）
+#
+# V13 预埋刀（ADR #82「组装不 fork」；13 号 §5.1-V13 载体、08 号 §3.2
+# 改造清单行 1 的过渡形态）：justfile build-user 里 mkcpio 的 58 条硬编
+# name=path 映射外化为数据文件——justfile 是活文件、映射数有保质期
+# （08 号采集 47 条 → 13 号实测 58 条，§5.3-③），单源化后加 bin 只改本表。
+#
+# 语义契约：
+#   - 条目行 = mkcpio 调用参数 `name=path` 原样（name 归档内路径、path
+#     本地 ELF/包文件——mkcpio 头注）；**path 相对 user/ 目录**（与
+#     justfile build-user 现役调用同口径——本表在 user/ CWD 下被消费，
+#     挪用方自行解析相对基准）。
+#   - 排序/确定性归 mkcpio CLI（整条 name=path 排序——同输入同字节）；
+#     本表文件序仅为对读 justfile 旧块的 diff 友好，无语义。
+#   - `--split 32`（A1-3b 在册单卷帽）与出档路径 rootfs.cpio 留在配方
+#     ——本表只管条目映射（任务书最小侵入面）。
+#   - schema：version = 1（u32，add-only——V12 schema=1 同先例）；未知
+#     顶层键/坏条目名/坏路径 mkcpio --manifest 一律 loud 拒（berry-manifest
+#     未知键硬拒同纪律）。
+#   - 与 berry-assemble（V13）的分轨：本表 = 平台基座条目（上游资产自
+#     描述）；产品 preset/替换交换（product.services.replace）随 #83
+#     清单键定形另立——本表不预坐键位。
+#
+# 消费面：`python3 tools/mkcpio.py <out.cpio> --manifest tools/rootfs-manifest.toml
+#         [--split N]`（justfile build-user mkcpio 步换读本表，其余配方零动）。
+
+version = 1
+
+[entries]
+"app/APPDEMO.bap" = "userbins/app/APPDEMO.bap"
+"app/APPQUIET.bap" = "userbins/app/APPQUIET.bap"
+"app/BROWSER.bap" = "userbins/app/BROWSER.bap"
+"app/CAMERA.bap" = "userbins/app/CAMERA.bap"
+"app/CONTACTS.bap" = "userbins/app/CONTACTS.bap"
+"app/MMS.bap" = "userbins/app/MMS.bap"
+"app/FILES.bap" = "userbins/app/FILES.bap"
+"app/PHOTOS.bap" = "userbins/app/PHOTOS.bap"
+"app/SETTINGS.bap" = "userbins/app/SETTINGS.bap"
+"bin/bench1" = "cargo-target/aarch64-unknown-linux-musl/release/bench1"
+"bin/berry-launcher" = "cargo-target/aarch64-unknown-linux-musl/release/berry-launcher"
+"bin/berryctl" = "cargo-target/aarch64-unknown-linux-musl/release/berryctl"
+"bin/bsh" = "cargo-target/aarch64-unknown-linux-musl/release/bsh"
+"bin/cat" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat"
+"bin/cp" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp"
+"bin/cut" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cut"
+"bin/date" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/date"
+"bin/df" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/df"
+"bin/du" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/du"
+"bin/dpgx" = "cargo-target/aarch64-unknown-linux-musl/release/dpgx"
+"bin/echo" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/echo"
+"bin/env" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/env"
+"bin/fail" = "cargo-target/aarch64-unknown-linux-musl/release/fail"
+"bin/false" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/false"
+"bin/find" = "cargo-target/aarch64-unknown-linux-musl/release/find"
+"bin/fsmgr" = "cargo-target/aarch64-unknown-linux-musl/release/fsmgr"
+"bin/gfxdemo" = "cargo-target/aarch64-unknown-linux-musl/release/gfxdemo"
+"bin/grep" = "cargo-target/aarch64-unknown-linux-musl/release/grep"
+"bin/gui-inputd" = "../drivers/cargo-target/aarch64-unknown-linux-musl/release/gui-inputd"
+"bin/gui-wmd" = "cargo-target/aarch64-unknown-linux-musl/release/gui-wmd"
+"bin/guifbd" = "cargo-target/aarch64-unknown-linux-musl/release/guifbd"
+"bin/hello" = "cargo-target/aarch64-unknown-none/release/hello"
+"bin/head" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/head"
+"bin/hexyl" = "cargo-target/aarch64-unknown-linux-musl/release/hexyl"
+"bin/ls" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/ls"
+"bin/mkdir" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mkdir"
+"bin/mv" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/mv"
+"bin/netprobe" = "cargo-target/aarch64-unknown-linux-musl/release/netprobe"
+"bin/policydemo" = "cargo-target/aarch64-unknown-none/release/policydemo"
+"bin/ps" = "cargo-target/aarch64-unknown-linux-musl/release/ps"
+"bin/pwd" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/pwd"
+"bin/rm" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rm"
+"bin/rmdir" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/rmdir"
+"bin/sigchild" = "cargo-target/aarch64-unknown-linux-musl/release/sigchild"
+"bin/simbattery" = "cargo-target/aarch64-unknown-linux-musl/release/simbattery"
+"bin/sort" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/sort"
+"bin/stdhello" = "cargo-target/aarch64-unknown-linux-musl/release/stdhello"
+"bin/tail" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tail"
+"bin/touch" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/touch"
+"bin/tr" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/tr"
+"bin/true" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/true"
+"bin/uniq" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/uniq"
+"bin/vblk" = "../drivers/cargo-target/aarch64-unknown-linux-musl/release/vblk"
+"bin/vnet" = "../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet"
+"bin/vprobe" = "../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe"
+"bin/wc" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc"
+"bin/which" = "cargo-target/aarch64-unknown-linux-musl/release/which"
+"selftest/APPTOMB.bap" = "userbins/app/APPTOMB.bap"
