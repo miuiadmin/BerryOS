@@ -76,7 +76,7 @@
 | 文件持久化 | ✅ `fs=["rootfs"]` 全卷（过渡态） | $appdata 私有树（v2） |
 | GUI 应用 | ✅ 最小面：berry-ui+berry-gfx+wm/present RPC（launcher 样例） | DSL 热重载/多窗（SDK-2/#61） |
 | 网络 | ⛔ 词表收、appd loud 拒（诚实） | net 服务面（网络设计刀） |
-| 后台常驻/墓碑 | ✅ 机制已落——app-1 段 b-1 实证 `FROZEN ok n=1`/`TOMB ok n=1`（freeze-first + 墓碑 v0；契约位 = app-1 草案 v1.2/应用模型 §4.1） | 真触发策略（失焦/压力）挂 GUI 线/v2；libc lifecycle 三口随 app-2 |
+| 后台常驻/墓碑 | ✅ 机制+libc 三口已落——app-1 段 b-1 实证 `FROZEN ok n=1`/`TOMB ok n=1`（freeze-first + 墓碑 v0）；app-2 落 berry-libc lifecycle 面（register/save/restore 三口 + poll/beat 机械件、32B 头+CRC32 容器 v1，apptomb 经 libc 路首证；契约位 = app-1 草案 v1.2 + app-2 草案 §2/§3） | 真触发策略（失焦/压力）挂 GUI 线/v2；GUI 泵点位契约/主循环模板 + C ABI 冻结随 SDK-2 |
 | 定时唤醒/推送 | ⛔ | PM 六面（#68） |
 | 权限弹窗申请 | ⛔ v1 能力 = 安装期 manifest 声明即得 | G1 运行时弹窗 |
 

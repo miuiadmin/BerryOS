@@ -79,6 +79,7 @@ RESUMED 回帧 → FROZEN ok n=1      appd reap + 记表（id 查重/epoch 序�
 - **relaunch 与生命周期钉序**：`reap0（真码 0）→ 记表占槽 → relaunch（dup 源 = 槽内 svmo；**复用 tomb_selftest 帧内留存的首轮 bap_scan/manifest 解析结果**——走查表只供几何不含 elf_off/stack_pages，表查单独不可成 spawn）→ 收 restored → reap1 → 表空（清槽 + 本侧 close——取档即出表，blob 随复活者末柄回收）`。apptomb 启动 `vmo_read` 首部判读：非 BTMB 且零态 → 全新启动；**ver>0 或 hlen≠12 → 弃档按零态启动 + `eco: tomb <id> badfmt` loud**；BTMB 同 ver → counter+1 恢复打 `app apptomb restored c=N` → ≥1 心跳后自退 0。
 - **负路径**（CI 不可达人工面，四件 + 附录）：①pause 超时杀（慢变体注入）→ eco 行 + 不入表；②越写结构性拒（VMO 定尺寸）；③LRU 淘汰（8 槽灌满变体）；④**restore-fail/复活即崩**（坏档或二轮 reap 非零）→ close 槽 svmo 弃档 + 冷启路径 + `eco: tomb <id> restore-fail`；⑤二次 spawn 失败 = 条目保留待重试 + `eco: tomb respawn`。附：relaunch 查无 .bap = 弃条目 + 拒复活（v1 静态 rootfs 不可达；归宿引规范 §7.3 卸载=墓碑清）。**复活失败/退出原因证据账本与墓碑表分家**：失败计数归 AM-3 全态与 SDK-2 v2 回滚链（tries 减一事件），app-1 只留 eco 痕迹不建账本。
 - **策略位（机制/策略接缝）**：svcmgr 落单函数 `lc_policy(ev: LcEvent) -> LcAction`——`LcEvent = {Selftest, FocusLost, FocusBack, MemPressure}`（触发源词表）、`LcAction = {None, Freeze, Thaw, Tombstone, Relaunch}`；v0 仅 Selftest 命中（硬编码序列）；suspend/PAUSESV1/记表/relaunch 四动作执行体收独立 fn 由 policy 分发——**v2 演进 = 换 policy 函数体与词表，协议面零改**（intent 单轴同构）。
+- **头布局注退役追记（2026-11-10·app-2）**：本节 apptomb 契约条末的「v0 的头布局为自验件试验格式、非平台 ABI」注**随 app-2 退役**——v1 起头布局升**平台 ABI**：hlen=32（32B 头 = 12B 前缀字段布局同位〔magic/ver/hlen/rsv/counter 段不动，ver@4/hlen@5 按版本变值〕+ 追加 payload_len/CRC32/rsv2），读者按 hlen 分派（12=v0 路径/32=v1 路径）、写侧恒写 v1 头——布局与读写兼容规则 = app-2 草案 §3.1/§3.2（§5 头部保留区律的兑现点）。
 
 ## §5 应用侧最小面（apptomb + libc 访问器）
 
@@ -87,6 +88,7 @@ RESUMED 回帧 → FROZEN ok n=1      appd reap + 记表（id 查重/epoch 序�
 - **freeze 载荷条件（立法）**：生命周期等待只许「非阻塞 recv(-EAGAIN) + sleep」两拍，**禁 object_wait_one(lifecycle, READABLE/WRITABLE, …) 阻塞等**——阻塞等通道的任务使 process_suspend 恒返 -EBUSY（freeze_precheck 检查项，sched.rs:966）；此约束随 app-2 回调封装原样继承，**阻塞化不是无害 API 演进**（先解 precheck 或立法 pause 前置握手）。
 - **apptomb 稳态循环（两拍）**：①recv(lc) 非阻塞——得 RESUME → 打 resumed + 回 RESUMED；得 PAUSESV1 → 走 §4 契约；-EAGAIN → ②sleep 至下一心跳拍发 BEAT。四面走 berry-sys 绑定（vmo_write/vmo_read/berry_channel_recv/berry_thread_sleep）。
 - **容器头部归属（app-2 前置立法）**：state blob 头部（magic/ver/CRC32/元数据）为 berry-libc lifecycle 三口**代持保留区**，应用 payload 自固定偏移 32B 起——v1 加 CRC 时由库盖头、应用侧零返工；`state_h()` 裸透句柄仅 v0 自验过渡形态。
+- **D8 铅笔兑现追记（2026-11-10·app-2）**：本节「libc 双 crate 形（nanosleep/exit/EOF 面）随 app-2 回调三口」铅笔（调和书 D8）**已兑现**——app-2 刀1+刀2 apptomb 换链独立小工作区 musl + berry-ld、单依赖 berry-libc，sleep（libc `nanosleep` 同底 `berry_thread_sleep`）/exit（EOF 先行）/协议帧收发全经 libc 面（承载 = `berry-lifecycle` 纯 crate + berry-libc `lifecycle.rs` 三口）；迁移前后形态对照与执行结果 = app-2 草案 §4/抬头执行结果节。
 
 ## §6 验收面与 smoke 相拓扑
 
@@ -105,7 +107,7 @@ RESUMED 回帧 → FROZEN ok n=1      appd reap + 记表（id 查重/epoch 序�
 | 帽 | 值 | 状态 |
 |---|---|---|
 | state VMO（blob 帽） | 64KiB 定尺寸（结构性执法） | 业界水位：Android saved state 无显式帽（1MB 进程级 binder 软约束）、WP7 State ≈2MB、UWP 低端 16MB——64KiB 为 v0 值，v2 GUI 冻结解禁按 intent 档复核（AM-01 §③） |
-| blob 头 | **12B 定长**（ver=0/hlen=12/rsv=0） | 本草案立法；v1 CRC 经 hlen 扩展 |
+| blob 头 | **12B 定长**（ver=0/hlen=12/rsv=0） | 本草案立法；v1 CRC 经 hlen 扩展；**追记（2026-11-10·app-2）**：v1 起升 32B（ver=1/hlen=32，前缀 12B 字段布局同位——app-2 草案 §3.1） |
 | pause deadline | 10s（appd 自**发出**起算，含投递等待） | 值同规范 §4.1-1、起算以本表为准；业界校准 iOS/UWP 5s——v2 按 intent 分档 |
 | 墓碑表 | RAM 8 槽；id 查重 upsert；epoch=全局记入序（↔立法「时间戳」） | v0 定值；真策略配额 v2 |
 | app 收集槽 APP_SLOTS | **9（现役恰满 9/9）**——APPTOMB 不入 `app/` 前缀零改 | 抬帽路线（连动双 const-assert/gui8-smoke n=9 锚）明确不取 |
