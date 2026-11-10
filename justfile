@@ -886,7 +886,7 @@ abi-check:
 
 # 版本一致性验收（版本管理标准 §3 G-ver-3/4）：v* tag ↔ 指向提交的
 # workspace version 对拍 + 构建标识（git_ident/dirty 位）机制在席。
-# 发版前手跑——v1 不挂 CI 常态、不进 build 依赖链（标准 §3「新门挂载」）。
+# 发版前手跑——脚本门已轻挂 CI、不进 build 依赖链（标准 §3「新门挂载」）。
 ver-check:
     {{BASH}} tools/ver-check.sh
 
@@ -894,6 +894,15 @@ ver-check:
 # 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
 smoke: build
     {{BASH}} tools/smoke.sh
+
+# ---------- 预 ADR #84：BCTS v0 回放（冻结标记集清单对账）----------
+# 宿主钉死现役配方树（#82 附录二 Q4 裁定）：复用 build + smoke.sh 全相，
+# 零未开工件依赖；berry-assemble（V13）成型后迁组装门禁。
+# 缺省 = 活树自检态（清单取 markers.sh 单源）；BCTS_FROZEN=<bcts@*.toml>
+# 进回放态（冻结件对账）。清单条目数 < tier1_floor = 空集守卫 loud 拒。
+# 独立关卡不并入主 smoke（规则/07 独立关卡纪律同族）。
+bcts: build
+    {{BASH}} tools/bcts-run.sh
 
 # ---------- P7 x86_64 最小集（ADR #41：范围盒子 = 串口/定时器/异常向量/
 # 上下文切换/SVC 入口；SMP/APIC/ACPI/PCIe 不在盒内）----------

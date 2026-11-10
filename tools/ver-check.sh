@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ver-check —— 版本一致性验收（版本管理标准 §3 G-ver-3/4；入口 `just
-#   ver-check`，发版前手跑——v1 不挂 CI 常态、不进 build 依赖链，标准 §3
+#   ver-check`，发版前手跑——脚本门已轻挂 CI fail-fast 位（QEMU 类门不挂）、不进 build 依赖链，标准 §3
 #   「新门挂载」节）。
 #
 # G-ver-3（tag 一致）：每个 `v*` tag 指向提交的 Cargo workspace version
