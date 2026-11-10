@@ -4,7 +4,7 @@ SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）�
 
 用法：mkimage.py <out.img> --efi <BERRYBOOT.EFI> --hello <hello.txt>
               --kernel <kernel.elf> --initrd <rootfs.cpio> [--size-mib N]
-              [--key-hash <64hex>] [--platform-revision N]
+              [--key-hash <64hex>]
       mkimage.py --selftest
 
 盘布局 = [LBA0 MBR][LBA2048.. FAT16 主分区（四件套）][尾部 16MiB 密钥
@@ -22,7 +22,9 @@ SEC-02 A1 三件（day-one 留缝——纯宿主侧、零运行时影响；今�
 格式与槽位，不接任何验签/度量消费端，v2 真机窗口才兑现语义）：
   - 件 3【SEC-1】产 <out.img> 同目录 manifest.txt（侧产物，不进盘）：
     每件 SHA-256 + 尺寸 + rollback_index 恒 0 + platform_revision（V9，
-    ADR #82 预埋）= 未来 vbmeta 数据源。格式 v0 冻结于 2026-10-30，
+    ADR #82；裁决 PR ≡ 平台 API level——取值单源 = tools/abi.toml
+    [platform].level，本刀接通，无 CLI 覆盖位）= 未来 vbmeta 数据源。
+    格式 v0 冻结于 2026-10-30，
     V9 加列破冻升 **v1** 冻结于 2026-11-10（版本动词依本文件冻结纪律
     「改格式 = 破冻，须升 v1 并另立对拍基准」——红队 11 号 §2-V9a 裁
     「v0→v0.1」动词错；定宽列/路径字节序/无时刻输入——逐字节规约见
@@ -145,7 +147,34 @@ def parse_key_hash(s: str) -> str:
     return v
 
 
-def build_manifest(puts: list, key_hash=None, platform_revision: int = 0) -> bytes:
+def platform_level() -> int:
+    """平台 API level 单源现值：tools/abi.toml `[platform].level`（版本管理
+    标准 §1 平台 level 轨）。V9 裁决 platform_revision ≡ level——本函数是
+    manifest PR 列的唯一取值源（mkcpio `_berryver_sources` 同源同法——
+    数据单源在 abi.toml，各工具自携小读器，gen_abi/mkcpio 既有先例）。
+    tomllib 函数内导入（mkcpio 同纪律——模块导入面零 tomllib 依赖）；
+    坏源一律 SystemExit loud（取值口炸好过静默烙错值；bool 拒——与
+    mkcpio level 读取同口径）。"""
+    try:
+        import tomllib
+    except ImportError:
+        raise SystemExit("mkimage: FAIL: platform_revision 取值需 Python"
+                         " ≥3.11（tomllib，gen_abi/mkcpio 同依赖先例）")
+    path = Path(__file__).resolve().parent / "abi.toml"
+    try:
+        with open(path, "rb") as f:
+            level = tomllib.load(f).get("platform", {}).get("level")
+    except OSError as e:
+        raise SystemExit(f"mkimage: FAIL: 读 {path}：{e}")
+    except tomllib.TOMLDecodeError as e:
+        raise SystemExit(f"mkimage: FAIL: 坏 TOML {path}：{e}")
+    if not isinstance(level, int) or isinstance(level, bool):
+        raise SystemExit(f"mkimage: FAIL: tools/abi.toml [platform].level"
+                         f" 非整数：{level!r}（platform_revision 单源）")
+    return level
+
+
+def build_manifest(puts: list, key_hash=None, platform_revision=None) -> bytes:
     """件 3：manifest 字节（v1 格式冻结于 2026-11-10——未来 vbmeta 数据源；
     改任何列宽/行序/字段 = 破冻，须升 v2 并另立黄金字节对拍基准。v0 史
     冻结 2026-10-30，V9（ADR #82 预埋）加 platform_revision 列升 v1）。
@@ -165,8 +194,12 @@ def build_manifest(puts: list, key_hash=None, platform_revision: int = 0) -> byt
              （红队 11 号 §2-V9b 论证照录——勿「优化」成头字段再破一次
              冻）。与 V2 `platform_compat=[min,max]`（SDK-2 文档，承诺
              区间）分轨：本列是**事实值**，对账面 = 未来 OTA/vbmeta 数
-             据源。缺省值 0 语义 = 与镜像同版（CLI --platform-revision
-             注入，默认 0 = 平台基线版）。
+             据源。取值 = platform_level() 单源（V9 裁决 PR ≡ 平台 API level——
+              三方联动第一方：manifest PR == version VMO level == rootfs
+              .berryver level，后两方 svcmgr `eco: VER` 对拍；任何
+              PR != level 的 manifest 都是联动断裂，故无 CLI 覆盖位保
+              单源——platform_revision 参数仅供自检机制面〔注入/拒面
+              测试〕，产物面唯一取值链 = abi.toml）。
       尾行   ：`key_hash=none`（默认——QEMU 路不烧）或 `key_hash=<64hex>`
              （件 5 --key-hash 注入；恒在行——显式缺席优于隐式缺席）。
     行序 = FAT 路径字节序（与传参次序无关——数据自定序，「同输入同字节」
@@ -176,6 +209,8 @@ def build_manifest(puts: list, key_hash=None, platform_revision: int = 0) -> byt
     loud 拒（对抗审查实抓：f-string 定宽对超长输入只是不加垫、静默加宽
     列仍产「合法」manifest——冻结格式的执法面不能只剩固定输入的黄金
     字节；rollback_index 恒 0 无此面）。"""
+    if platform_revision is None:
+        platform_revision = platform_level()
     if not 0 <= platform_revision <= 2**32 - 1:
         raise SystemExit(f"mkimage: FAIL: platform_revision 须 u32 域 "
                          f"[0, 4294967295]（列宽 {MANIFEST_PR_W} 契约）,"
@@ -249,6 +284,7 @@ def selftest() -> int:
     # 哈希算法 = 此处 FAIL）。内容为确定性生成式（mkfat selftest 同族）。
     # V9 破冻升 v1：头行 v1/新冻结日 + 条目行尾追加 platform_revision 列
     # （sha256/size/rollback_index 三列与 v0 黄金逐字节同——同载荷零漂移）。
+    # PR 列自 PR≡level 刀取单源值（level=1 → 0000000001）。
     puts = [("/EFI/BOOT/BOOTAA64.EFI", bytes((i * 7 + 3) % 256 for i in range(3000))),
             ("/HELLO.TXT", b"berryboot efi hello\n"),
             ("/KERNEL.ELF", bytes((i * 31 + 7) % 256 for i in range(5000))),
@@ -257,20 +293,29 @@ def selftest() -> int:
               b"item path=/EFI/BOOT/BOOTAA64.EFI   "
               b"sha256=f541874101876255b4baf3a739778d04cb9cba25ffa38b30bc1fb8b0701f2a45 "
               b"size=000000003000 rollback_index=00000000000000000000 "
-              b"platform_revision=0000000000\n"
+              b"platform_revision=0000000001\n"
               b"item path=/HELLO.TXT               "
               b"sha256=785594f64f783cfaac356d9f75ba42d369e414e316ad1e8649b41090e6787526 "
               b"size=000000000020 rollback_index=00000000000000000000 "
-              b"platform_revision=0000000000\n"
+              b"platform_revision=0000000001\n"
               b"item path=/INITRD.BIN              "
               b"sha256=6c150fd292a1c404285bddf840b1a77cd9d479555b4e50c3dd98030779de29ba "
               b"size=000000000020 rollback_index=00000000000000000000 "
-              b"platform_revision=0000000000\n"
+              b"platform_revision=0000000001\n"
               b"item path=/KERNEL.ELF              "
               b"sha256=1e92fd98f113aba0a78e0830ca06e2775912370feab112dfc57bf3258b810595 "
               b"size=000000005000 rollback_index=00000000000000000000 "
-              b"platform_revision=0000000000\n"
+              b"platform_revision=0000000001\n"
               b"key_hash=none\n")
+    # PR 单源连动绊线：黄金字节 PR 列与 abi.toml level 同笔冻结（本刀
+    # level=1）。level 只增不减——升 level 须同笔连动更新下方黄金 PR 列
+    # （×4）与本绊线期望值，黄金字节变更如实记档（禁静默改基准；sha256
+    # 前后值入刀记：PR 0→1 = 62acf0…780a92 → 01ee1b…f04df2）。
+    pr_now = f"{platform_level():0{MANIFEST_PR_W}d}"
+    assert pr_now == "0000000001", (
+        f"abi.toml [platform].level = {platform_level()} 与黄金 PR 列"
+        f"（0000000001）脱钩——升 level 须同笔连动黄金 PR 列与绊线期望"
+        f"（V9 裁决 PR ≡ level——三方联动第一方，勿静默改基准）")
     got = build_manifest(puts)
     assert got == golden, "manifest v1 黄金字节漂移（破冻——格式改动须升 v2）"
     # 行序冻结面：传参次序无关（数据自定序 = 路径字节序）。
@@ -285,17 +330,19 @@ def selftest() -> int:
         assert set(fields) == {"path", "sha256", "size", "rollback_index",
                                "platform_revision"}, f"列集漂移：{ln!r}"
         assert len(fields["platform_revision"]) == MANIFEST_PR_W, "PR 列宽漂"
-        assert fields["platform_revision"] == "0" * MANIFEST_PR_W, "PR 缺省非 0"
+        assert fields["platform_revision"] == pr_now, \
+            f"PR 缺省非 abi.toml level 单源值（want {pr_now}）"
     assert lines[-1] == "key_hash=none"
-    # V9 注入面：非缺省 platform_revision → 差集 = 恰四行条目的 PR 列变值
-    # （其余列/头行/尾行零扰动——「与镜像同版」缺省外的唯一注入通道）。
+    # V9 注入面（机制测试——CLI 覆盖位已去保单源，参数面仅供本自检与
+    # 拒面测试）：显式 platform_revision → 差集 = 恰四行条目的 PR 列变值
+    # （其余列/头行/尾行零扰动）。
     got7 = build_manifest(puts, platform_revision=7)
     l7 = got7.decode().splitlines()
     assert l7[0] == lines[0], "PR 注入扰头行"
     assert l7[-1] == lines[-1], "PR 注入扰尾行"
     for a, b in zip(l7[1:-1], lines[1:-1]):
-        assert a == b.replace(f"platform_revision={'0' * (MANIFEST_PR_W - 1)}0",
-                              f"platform_revision={'0' * (MANIFEST_PR_W - 1)}7"), \
+        assert a == b.replace(f"platform_revision={pr_now}",
+                              f"platform_revision={7:0{MANIFEST_PR_W}d}"), \
             "PR 注入差集非恰列值"
     # V9 拒面：u32 域外（含负）一律 loud 拒——f-string 静默加宽列 = 破冻。
     for bad in (-1, 2**32, 2**40):
@@ -354,9 +401,6 @@ def main() -> int:
                     help=f"FAT 段容量 MiB（默认 {DEFAULT_SIZE_MIB}；总盘另加 16MiB 密钥材料预留区）")
     ap.add_argument("--key-hash", help="OEM 公钥 SHA-256（64 位 hex——件 5：只落 manifest "
                                        "key_hash 字段不动盘字节；缺省 none = QEMU 路不烧）")
-    ap.add_argument("--platform-revision", type=int, default=0,
-                    help="平台修订号（V9/ADR #82：只落 manifest 每条目 platform_revision "
-                         "列不动盘字节；缺省 0 = 与镜像同版（平台基线）；u32 域外 loud 拒）")
     ap.add_argument("--selftest", action="store_true", help="MBR/manifest 薄面自检（不写盘）")
     args = ap.parse_args()
 
@@ -366,10 +410,13 @@ def main() -> int:
         ap.error("造盘需 out + --efi/--hello/--kernel/--initrd 四件套（缺一即 loud）")
 
     key_hash = parse_key_hash(args.key_hash) if args.key_hash else None
-    # V9：--platform-revision 域守卫在 build_manifest（u32 域外 loud 拒——
-    # 值域是列宽契约的一部分）；与 key_hash 同数据流纪律：只进 manifest，
-    # 不进 build_image（盘字节零漂移）。
-    pr = args.platform_revision
+    # V9（PR ≡ level 刀）：platform_revision 无 CLI 覆盖位——单源读
+    # tools/abi.toml [platform].level（三方联动第一方：manifest PR ==
+    # version VMO level == rootfs .berryver level；任何 PR != level 的
+    # manifest 都是联动断裂，覆盖位即断裂注入口，去位保单源）。u32 域守卫
+    # 在 build_manifest（值域是列宽契约的一部分）；与 key_hash 同数据流
+    # 纪律：只进 manifest，不进 build_image（盘字节零漂移）。
+    pr = platform_level()
 
     puts = []
     nbytes = 0

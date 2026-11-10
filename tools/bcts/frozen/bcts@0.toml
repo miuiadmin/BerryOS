@@ -4,7 +4,7 @@
 # （blob 5f4a00f0ae8c），裸相 32（MARKERS）＋ rootfs 相 54（ROOTFS_MARKERS）
 # ＋ RX 注入专属 2（RX_MARKERS）＝ 88 ＝ tier1_floor（设计稿 §3.2 宽口径：
 # just smoke 八跑是回放执行单元，冻结件按执行单元整体冻结）。
-# platform_revision ＝ 0：V9 缺省语义（u32、BerryOS v1 恒 0——tools/mkimage.py
+# platform_revision：V9 预埋 → 一八四起取平台 level（PR≡level 三方联动——tools/mkimage.py
 # build_manifest 缺省 0）；文件名与字段冗余自证（设计稿 §2.4-1）。
 # abi_snapshot：v0 锚定现役单源 tools/abi.toml（hash 钉同一冻结点）；快照
 # 文件制 abi@<short-sha>.toml 随 SDK-2 双轨 §四落地后切换，语义不变。

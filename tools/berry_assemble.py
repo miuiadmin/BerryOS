@@ -9,7 +9,10 @@ r"""berry_assemble——产品配置层组装器 v0（V13 实施刀，ADR #82「
                                              #   基座对账——过则一行 OK
   berry_assemble.py --dry-run <product.toml> [--platform-revision N]
                                             # 校验 + 组装计划（rootfs 条目清单 +
-                                            #   mkcpio/mkimage 参数集），不产件
+                                            #   mkcpio/mkimage 参数集），不产件；
+                                            #   N = 产品声明的平台代次——装配
+                                            #   反回滚门：N > 平台 level（读
+                                            #   tools/abi.toml 单源）即拒
   berry_assemble.py --sample                 # 打印内置样例 product.toml（体验起点）
   berry_assemble.py --selftest               # 自检：合成基准全谱（正例 + 拒面逐型；
                                              #   零构建依赖、零仓外写入）
@@ -23,9 +26,14 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     接口，经 `from mkcpio import load_manifest` 复用，禁第二份加载器）⊕ preset
     条目（app/ 前缀 ⊆ 基座 app 条目——v0 无 OEM 三包输入，新增/替换交换
     归 V13 后续刀）；排序 = 整条 name=path（mkcpio CLI 现役语义）。
-  - 步⑦ mkimage 参数集：--size-mib 按清单 + --platform-revision 透传（V9：
-    manifest v1 逐条目列，0 = 平台基线）；kernel 锚只验形（步⑧ 逐字节度量
-    对账归全产线）。
+  - 步⑦ mkimage 参数集：--size-mib 按清单（platform_revision **不透传**——
+    mkimage 自 PR≡level 刀单源读 tools/abi.toml [platform].level，无 CLI
+    注入位）；装配反回滚门（版本管理标准 §1 五轨道配对律首件落地、§5 v2
+    OEM 配对矩阵前身）= --platform-revision 声明值 ≤ 平台 level：OEM 产品
+    代次不得超前平台代次（旧产品装新平台合法、新产品装旧平台拒——G-ver-5
+    .bap min_level 装载门同构）。声明位现 = CLI 旗（product.toml [platform]
+    键位归 #83 落册后的工具升版——schema 权威在设计文档，本刀不动 docs）；
+    kernel 锚只验形（步⑧ 逐字节度量对账归全产线）。
   - 不做（如实记）：步②白名单校验（V13+V6+V8 归后续刀）、步⑤conformance 门
     （P5 随 #84）、步⑥⑧⑨⑩产件与对账（镜像全产线）、just 配方 assemble
     （归主会话收口）。
@@ -336,12 +344,48 @@ def load_product(path: str) -> Product:
     return prod
 
 
+def _platform_level() -> int:
+    """平台 API level 单源现值（tools/abi.toml `[platform].level`——版本
+    管理标准 §1 平台 level 轨；mkcpio `_berryver_sources`/mkimage
+    `platform_level` 同源同法——数据单源在 abi.toml，各工具自携小读器）。
+    装配反回滚门的比对基准；坏源一律 Reject loud（基准注入口炸好过
+    静默放行）。"""
+    path = os.path.join(ROOT, "abi.toml")
+    try:
+        with open(path, "rb") as f:
+            doc = tomllib.load(f)
+    except OSError as e:
+        raise Reject(f"读 {path} 失败：{e}")
+    except tomllib.TOMLDecodeError as e:
+        raise Reject(f"{path}: TOML 解析失败：{e}")
+    level = doc.get("platform", {}).get("level")
+    if type(level) is not int:  # bool 是 int 子类，type() 才拦得住
+        raise Reject(f"abi.toml [platform].level: 非整数（got {level!r}"
+                     f"——装配反回滚门比对基准单源）")
+    return level
+
+
 def validate_platform_revision(pr: int) -> int:
-    """--platform-revision 域守卫（V9 透传面）——u32 全域 [0,4294967295]，与
-    mkimage build_manifest 拒面同口径（列宽 10 是 manifest v1 冻结契约的一部分）。"""
+    """--platform-revision 装配门（域界 + 反回滚两臂——V9 透传面升装配
+    语义面，PR ≡ 平台 API level 刀）。
+
+    臂① 域界：u32 全域 [0,4294967295]，与 mkimage build_manifest 拒面同
+    口径（列宽 10 是 manifest v1 冻结契约的一部分）。
+    臂② 反回滚（版本管理标准 §1 配对律首件落地）：声明 PR 须 ≤ 平台
+    level（tools/abi.toml [platform].level 单源）——OEM 产品代次不得超前
+    平台代次。旧产品装新平台合法（level 单调轨、高位兼容低位——G-ver-5
+    .bap min_level 装载门同构）；新产品装旧平台拒（平台代次被回滚）。
+    manifest 侧 PR 值不取本参数（mkimage 单源读 level）——本门只裁「装
+    配组合合法性」，两轨各守一面。"""
     if type(pr) is not int or not 0 <= pr <= 2**32 - 1:
         raise Reject(f"--platform-revision: 须 u32 域 [0,4294967295]（V9 列宽契约"
                      f"——mkimage 同口径拒；got {pr!r}）")
+    level = _platform_level()
+    if pr > level:
+        raise Reject(f"--platform-revision: 声明 PR {pr} 超前平台 level {level}"
+                     f"（tools/abi.toml [platform].level 单源——装配反回滚："
+                     f"OEM 产品代次不得超前平台代次，旧产品装新平台合法/新产品装"
+                     f"旧平台拒；版本管理标准 §1 配对律）")
     return pr
 
 
@@ -379,9 +423,11 @@ def resolve_entries(prod: Product, base_manifest: str, user_dir: str):
     return sorted(f"{n}={p}" for n, p in final.items()), n_base
 
 
-def build_plan(prod: Product, items: list, n_base: int, pr: int,
+def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
                user_disp: str) -> list:
-    """dry-run 组装计划行（步④⑥⑦参数集 + 步⑧锚回显；无时刻输入——确定性）。"""
+    """dry-run 组装计划行（步④⑥⑦参数集 + 步⑧锚回显；无时刻输入——确定性）。
+    pr = 过装配门的产品声明代次；level = tools/abi.toml 平台 level（门基准
+    回显——mkimage 侧 PR 即此值，单源无注入位）。"""
     lines = [
         f"berry-assemble: 产品 {prod.name}（vendor={prod.vendor} board={prod.board}"
         f" arch={prod.arch} feature_level={prod.feature_level}"
@@ -400,10 +446,13 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int,
         f"berry-assemble: mkimage 参数集（步⑦）: python3 tools/mkimage.py"
         f" out/{prod.name}.img --efi <配方注入位> --hello <配方注入位>"
         f" --kernel <配方注入位> --initrd <配方注入位>"
-        f" --size-mib {prod.image_size_mib} --platform-revision {pr}")
+        f" --size-mib {prod.image_size_mib}")
     lines.append(
-        f"berry-assemble:   --platform-revision {pr}（V9 透传：manifest v1 逐条目"
-        f"列，0=平台基线）；--key-hash 缺省 none（QEMU 路不烧，件 5）")
+        f"berry-assemble:   platform_revision 无注入位（mkimage 单源读"
+        f" tools/abi.toml [platform].level={level}——V9 裁决 PR ≡ level，"
+        f"三方联动 manifest PR == version VMO level == rootfs .berryver"
+        f" level）；装配反回滚门：声明 PR {pr} ≤ 平台 level {level} 过"
+        f"（产品代次不超前平台代次）；--key-hash 缺省 none（QEMU 路不烧，件 5）")
     lines.append(
         f"berry-assemble: kernel 锚（步⑧）: {prod.kernel_name}@sha256:"
         f"{prod.kernel_sha}——v0 只验锚形，逐字节度量对账归全产线")
@@ -429,10 +478,11 @@ def do_check(path: str, base_manifest: str, user_dir: str) -> None:
 
 
 def do_dry_run(path: str, pr: int, base_manifest: str, user_dir: str) -> None:
-    validate_platform_revision(pr)
+    pr = validate_platform_revision(pr)   # 域界 + 装配反回滚两臂（loud 拒）
+    level = _platform_level()
     prod, items, n_base = _validate_all(path, base_manifest, user_dir)
     user_disp = os.path.relpath(user_dir)
-    for line in build_plan(prod, items, n_base, pr, user_disp):
+    for line in build_plan(prod, items, n_base, pr, level, user_disp):
         print(line)
 
 
@@ -628,20 +678,35 @@ def selftest() -> int:
         except Reject as e:
             leg(False, f"app/ 形 launcher 正例被拒：{e}")
 
-        # ---- 正例：计划面（mkcpio/mkimage 参数集含 V9 透传）----
-        plan = build_plan(prod, items, n_base, 7, "user")
+        # ---- 正例：计划面（mkcpio 参数集 + mkimage 单源形 + 装配门行）----
+        level = _platform_level()
+        plan = build_plan(prod, items, n_base, level, level, "user")
         leg(any("--split 32" in ln and "mkcpio 参数集" in ln for ln in plan),
             "plan mkcpio 参数集（--split 按清单）")
-        leg(any("--size-mib 96" in ln and "--platform-revision 7" in ln
-               and "mkimage 参数集" in ln for ln in plan), "plan mkimage 参数集（V9 透传）")
+        leg(any("--size-mib 96" in ln and "mkimage 参数集" in ln for ln in plan),
+            "plan mkimage 参数集（--size-mib 按清单）")
+        leg(not any("--platform-revision" in ln for ln in plan),
+            "plan 无 --platform-revision 注入位（mkimage 单源读 level）")
+        leg(any(f"声明 PR {level} ≤ 平台 level {level}" in ln for ln in plan),
+            "plan 装配反回滚门行（声明 PR ≤ level 过）")
         leg(any("KERNEL.ELF@sha256:" in ln for ln in plan), "plan kernel 锚回显")
 
-        # V9 域守卫：u32 全域过、域外拒（mkimage 同口径）
-        leg(validate_platform_revision(2**32 - 1) == 2**32 - 1
-            and validate_platform_revision(0) == 0, "platform-revision 域界值")
+        # V9 装配门·域界臂：u32 域外拒（mkimage 同口径）+ 域内基线 0 过
+        # （level 单调初值 1 ⇒ 0 恒 ≤ level——「旧产品装新平台合法」族下界）。
+        leg(validate_platform_revision(0) == 0, "platform-revision 域内基线 0")
         for bad_pr in (-1, 2**32):
             leg_reject(f"platform-revision 域外 {bad_pr}", "u32 域",
                        lambda bp=bad_pr: validate_platform_revision(bp))
+        # V9 装配门·反回滚臂正负两钉（PR ≡ level 刀）：同代/旧代过（旧
+        # 产品装新平台合法）、超前拒（新产品装旧平台拒——产品代次不得
+        # 超前平台代次，版本管理标准 §1 配对律首件落地）。
+        leg(validate_platform_revision(level) == level,
+            "platform-revision 同代过（PR == level）")
+        leg(validate_platform_revision(level - 1) == level - 1,
+            "platform-revision 旧代过（PR < level——旧产品装新平台合法）")
+        leg_reject(f"platform-revision 超前（{level + 1} > level {level}）",
+                   "超前平台 level",
+                   lambda: validate_platform_revision(level + 1))
 
         # ---- 拒面：清单/schema 逐型（label, 旧锚串, 新串, 期望文案——每腿独立
         # 文件独立断言，一型一咬；文案期望钉「带键名」纪律）----

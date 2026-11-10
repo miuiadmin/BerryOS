@@ -105,6 +105,51 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke-image: FAIL: 找不到 $QEMU
 KERNEL_BYTES=$(wc -c < "$KERNEL" | tr -d ' ')
 INITRD_BYTES=$(wc -c < "rootfs.cpio" | tr -d ' ')
 
+# —— 构建产物断言（版本管理标准 §1 五轨道配对律·三方联动第一方；置
+#    pre-flight 位 = 断链不烧 115s TCG 先红 + SMOKE_PHASES=boot 分层面同
+#    受护）——manifest.txt = mkimage 侧产物（与镜像同目录、不进盘），其
+#    platform_revision 列自 PR≡level 刀单源取 tools/abi.toml [platform]
+#    .level。三方联动终态：manifest PR == version VMO level == rootfs
+#    .berryver level——后两方由下方 VER 哨兵段在机内对拍（eco: VER），
+#    本门闭第一方（宿主侧文件对拍）。不等即红 = mkimage 取值链断裂或
+#    镜像与 manifest 异窗。
+MANIFEST=$(dirname "$IMAGE")/manifest.txt
+python3 - "$MANIFEST" "tools/abi.toml" <<'PYEOF' || exit 1
+import re, sys
+
+def die(msg):
+    print(f"smoke-image: FAIL: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    die("manifest PR 对拍需 Python ≥3.11（tomllib——berry_assemble/mkcpio"
+        " 同依赖门）")
+manifest, abi = sys.argv[1], sys.argv[2]
+
+try:
+    with open(abi, "rb") as f:
+        level = tomllib.load(f)["platform"]["level"]
+except Exception as e:
+    die(f"读 {abi} [platform].level 失败：{e}")
+try:
+    with open(manifest, encoding="ascii") as f:
+        text = f.read()
+except Exception as e:
+    die(f"读 {manifest} 失败（mkimage 侧产物应与镜像同目录）：{e}")
+prs = re.findall(r"(?m)^item .* platform_revision=(\d{10})$", text)
+if not prs:
+    die(f"{manifest} 无 platform_revision 条目行（manifest v1 产物面断裂）")
+bad = sorted({int(p) for p in prs if int(p) != level})
+if bad:
+    die(f"manifest platform_revision={bad} != tools/abi.toml level={level}"
+        "——三方联动第一方断裂（manifest PR == version VMO level =="
+        " rootfs .berryver level；后两方由 eco: VER 哨兵对拍）")
+print(f"smoke-image: manifest platform_revision={level} == abi.toml level"
+      "（三方联动第一方 ok）")
+PYEOF
+
 # 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG），360s ≈ 3x 余量（帽只兜
 # 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
 # B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
