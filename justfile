@@ -717,6 +717,13 @@ test-host:
     # 32400px 黄金哈希 + 角锚/唯一色 + 8 拒面；PIL 在位时另做重产逐字节
     # 对拍（缺席打 skip，黄金哈希兜底——genhdfont 同族降级面）。
     python3 tools/genohwallpaper.py --selftest
+    # W1-Q4 十续（a-3 U4 纪律同款）：genohstatus 门禁自检——状态栏三图标 +
+    # dock 四段内建面（status_icons.rs，launcher 视觉面）此前 import 即
+    # 执行、零守卫：7 组 W/H 结构钉板 + PX 黄金哈希 ×3 + alpha 二值域 +
+    # BYI wire 走查 ×4（magic/ver/尺寸/Σcount/帧尾——对读 berry-gfx decode
+    # 契约）+ 黄金 sha256 ×4 + 五输入源溯源对账 + 8 拒面；PIL 在位时另做
+    # 重产逐字节对拍（缺席打 skip，黄金哈希兜底）。
+    python3 tools/genohstatus.py --selftest
     # Q1b（a-3 U4 纪律同款）：genhdfont 门禁自检——HD 32×48 档点阵此前零
     # 守卫（genfbfont 三档有 --check，HD 档无）：95 形结构钉板 + 95×192B
     # 黄金哈希 + 基线/下行部几何锚 + 8 拒面；PIL 在位时另做重产逐字节对拍
