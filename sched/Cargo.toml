@@ -15,6 +15,9 @@ path = "src/lib.rs"
 [dependencies]
 berry-hal-aarch64 = { path = "../arch/aarch64" }
 berry-wqmatch = { path = "../wqmatch" }
+# W3-Q1：IntentProfile 六档映射表（纯数据/纯函数，host 可测面）。EppHint
+# 单源在 iprofile（本 crate re-export；内核镜像经此依赖编入）。
+berry-iprofile = { path = "../iprofile" }
 
 [features]
 # G3-3 lockdep：透传 HAL feature（检测器/链栈在 HAL 侧 SmpCpu per-CPU 区）。

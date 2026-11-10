@@ -576,6 +576,11 @@ test-host:
     # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
     # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。
     cargo test -p berry-vmoledger --target {{host}}
+    # W3-Q1：berry-iprofile（intent 六档 IntentProfile 映射表纯函数面——
+    # ADR #42 第一段「查表键先于消费者落地」的宿主可测面：两表整表执法/
+    # 档位序单调性/LC 铁律三件/maintenance 门控/回退保守性/夹紧包络/
+    # sanitize 保守门，host 14 测；EppHint 单源 crate）。
+    cargo test -p berry-iprofile --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各

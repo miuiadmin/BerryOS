@@ -27,15 +27,10 @@ fn try_box<T>(val: T) -> Option<Box<T>> {
 /// 够用；v1 16KiB 无守卫页定谳（原孤儿 TODO 升格→ 规则/01 瘦行 + 雷册 §A144；v2 = 水位探针或 guard page）。
 pub const STACK_SIZE: usize = 16 * 1024;
 
-/// 能效倾向 hint（EPP，`调度器设计.md` §6）：指引大小核放置与改频。字段先落地
-/// （2b-4），消费语义随放置路径（M1b）/PM 服务（M3）兑现。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EppHint {
-    /// 效率优先（默认——省电是身份支柱）。
-    Efficiency,
-    /// 性能优先。
-    Perf,
-}
+// EppHint 单源已迁 `berry-iprofile`（W3-Q1：intent 六档 IntentProfile 映射
+// 表与 EPP 同 crate——查表键先于消费者落地）；本模块 re-export，既有引用
+// 路径（`berry_sched::task::EppHint` / `crate::task::EppHint`）零改动。
+pub use berry_iprofile::EppHint;
 
 /// 持有集位图常量（S-3c 义务⑥，F-L9）：`Task::held_locks` 的位定义。
 /// bit0 已退役（原 klock_window 单 bool 语义位，c-2c slice 1 起随 bit5 定名
