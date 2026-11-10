@@ -232,7 +232,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::uart_puts(env!("CARGO_PKG_VERSION").as_bytes());
     berry_hal_aarch64::uart_puts(b" (");
     berry_hal_aarch64::uart_puts(env!("BERRY_GIT_IDENT").as_bytes());
-    berry_hal_aarch64::uart_puts(b")\n");
+    // 构建元数据（VER §1）：工具链 + profile——行为异常时排除工具链变量。
+    berry_hal_aarch64::uart_puts(b" rustc");
+    berry_hal_aarch64::uart_puts(option_env!("BERRY_RUSTC_VER").unwrap_or("?").as_bytes());
+    if cfg!(debug_assertions) {
+        berry_hal_aarch64::uart_puts(b" dbg)\n");
+    } else {
+        berry_hal_aarch64::uart_puts(b" rel)\n");
+    }
 
     // 2b-0：TTBR1 高半表自校验（RAM 魔数 + GIC PIDR2 双别名，见 HAL `mmu`）。
     // 不过 = 高半翻译未生效，2b-1 重链前必须在此暴露——panic 停机优于带病前进。

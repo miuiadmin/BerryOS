@@ -7,6 +7,18 @@ fn main() {
     println!("cargo:rustc-link-arg=-T{}", ld.display());
     println!("cargo:rerun-if-changed={}", ld.display());
     println!("cargo:rustc-env=BERRY_GIT_IDENT={}", git_ident());
+    let rustc_ver = std::process::Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into()))
+        .arg("--version")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    // 取形如 "rustc 1.9x.y (hash date)" 的版本号段（剥前缀词与尾缀）。
+    let short = rustc_ver
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("?")
+        .to_string();
+    println!("cargo:rustc-env=BERRY_RUSTC_VER={}", short);
 }
 
 /// VER-01 第一档：构建标识注入——git short-hash + dirty 位经 cargo:rustc-env
@@ -14,8 +26,12 @@ fn main() {
 /// git 状态（每次构建重查成本低、且 dirty 位变化本就该重编 banner——挂
 /// CARGO_MANIFEST_DIR 已覆盖大多数触发，hash 漂移由 clean build 兜底）。
 fn git_ident() -> String {
-    let short = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
+    // 构建版本（VER 标准 §1 构建标识轨）：`git describe --tags` 形态
+    // `v0.2.0-5-ga8f22bc` = 版本 tag 后第 N 提交 + 哈希——单调可排序
+    // （N）+ 锚定版本 + 唯一身份，纯 git 派生零中央计数器（多会话共笔
+    // 仓里 build number 数据库必漂——沿革 174/177 撞号实录为证）。
+    let describe = std::process::Command::new("git")
+        .args(["describe", "--tags", "--long"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
@@ -24,13 +40,22 @@ fn git_ident() -> String {
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
-    if short.is_empty() {
-        // 无 git 环境（例如源码快照构建）：标识退化为 nogit——诚实降级不编造。
+    // describe 失败（无 tag 或无 git）回退短哈希；全失败 nogit 诚实降级。
+    let base = if describe.is_empty() {
+        std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    } else {
+        describe
+    };
+    if base.is_empty() {
         return "nogit".to_string();
     }
     if dirty {
-        format!("{}-dirty", short)
+        format!("{}-dirty", base)
     } else {
-        short
+        base
     }
 }
