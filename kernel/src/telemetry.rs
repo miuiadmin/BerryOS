@@ -36,6 +36,7 @@ use berry_hal_aarch64::wake_gen::{
     WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
 };
 use berry_sched::{SwitchKind, Task, WakeReason};
+use berry_telface::HIST_BUCKETS;
 use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 /// 环容量（静态预储——2KB 级常驻 .bss，boot 后永不增长；per-CPU 后总量
@@ -64,15 +65,10 @@ pub struct SwitchRec {
     pub idle_next: bool,
 }
 
-/// 名字 → 稳定短 id（FNV-1a-32；展示端反查靠名字表，环内只存定宽 id）。
-fn name_id(name: &[u8]) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for &b in name {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h
-}
+/// 名字 → 稳定短 id：**单源 = berry-telface（W3-Q10 迁出）**——FNV-1a-32
+/// 稳定哈希（offset basis/prime 是日志对照面的契约常量）；本文件 re-export
+/// 保 crate 内路径稳定，host 钉板在 telface（已知向量/序判别/稳定性）。
+pub use berry_telface::name_id;
 
 /// `kind` 的 u8 编码（与 `SwitchKind` 一一对应；解码归消费方）。
 fn kind_code(kind: SwitchKind) -> u8 {
@@ -438,7 +434,9 @@ fn on_wake(task: &Task, reason: WakeReason) {
             panic!("WAKE: 负延迟（vct={} < since={}）= 睡眠戳/写点 bug", rec.vct, rec.since_vct)
         }
     };
-    let idx = if lat == 0 { 0 } else { 63 - lat.leading_zeros() as usize };
+    // 桶律单源 = berry-telface::latency_bucket（W3-Q10——host 钉板全域
+    // 边界；此处消费同函数，零第二实现）。
+    let idx = berry_telface::latency_bucket(lat);
     // S-3c B13：直方图原子化（单核直写退役）——写序纪律 = 桶/极值/分计在
     // 前，N 的 Release 递增**最后**（读者 N 的 Acquire 读最先，见 wake_hist）。
     WAKE_HIST[idx].fetch_add(1, Ordering::Relaxed);
@@ -798,7 +796,9 @@ pub fn wake_check() -> bool {
 
 /// log2 延迟桶数：桶 i 计延迟 ∈ [2^i, 2^(i+1)) 的唤醒次数；延迟 0（同刻醒）
 /// 归桶 0，延迟 ≥ 2^63 归桶 63（打印端上界给 u64::MAX——2^64 溢出防）。
-pub const WAKE_HIST_BUCKETS: usize = 64;
+/// **桶数与桶律单源 = berry-telface（W3-Q10）**——本常量 re-export（静态
+/// 数组长度承重），桶函数 `latency_bucket` 在 telface。
+pub const WAKE_HIST_BUCKETS: usize = HIST_BUCKETS;
 
 /// 直方图快照（打印端一次取走；[u64;64] ≈ 512B 栈副本，boot 尾一次，非热路径）。
 pub struct WakeHist {

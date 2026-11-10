@@ -41,6 +41,7 @@ dependencies = [
  "berry-mm",
  "berry-piface",
  "berry-sched",
+ "berry-telface",
  "berry-vmoledger",
  "berry-wqmatch",
 ]
@@ -69,6 +70,10 @@ dependencies = [
  "berry-ringface",
  "berry-wqmatch",
 ]
+
+[[package]]
+name = "berry-telface"
+version = "0.2.0"
 
 [[package]]
 name = "berry-vmoledger"

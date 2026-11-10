@@ -1801,22 +1801,15 @@ impl UserProcess {
     }
 }
 
-/// R-0 私助：分位**桶界保守上界**——目标序数 = ceil(num/den · n)，桶累计
-/// 首达目标的桶 idx → 上界 2^(idx+1)（桶 i 覆盖 [2^i, 2^(i+1)) 周期数；
-/// idx=63 → u64::MAX，防 2^64 移位溢出）。指数粒度只够看形状，精确分位归
-/// R-1 采样集全排序。扫描必达：wake_hist 读序纪律保证 sum(桶) ≥ n ≥ 目标。
+/// R-0 私助：分位**桶界保守上界**——**单源 = berry-telface::
+/// hist_percentile（W3-Q10 迁出）**：本壳透传 WakeHist 拆参（num/den
+/// 有理数形避免浮点；最近秩 ceil(num/den · n) 的 log2 桶保守上界——
+/// 桶 i 覆盖 [2^i, 2^(i+1)) 周期数，顶桶 u64::MAX 防溢出）。指数粒度只够
+/// 看形状，精确分位归 R-1 采样集全排序。扫描必达：wake_hist 读序纪律保证
+/// sum(桶) ≥ n ≥ 目标。host 钉板在 telface（最近秩舍入/顶桶饱和/分位
+/// 单调/全排序对照）。
 fn benchwake_percentile(h: &crate::telemetry::WakeHist, num: u64, den: u64) -> u64 {
-    let prod = h.n.saturating_mul(num);
-    let target = prod / den + u64::from(prod % den != 0);
-    let mut acc: u64 = 0;
-    for idx in 0..crate::telemetry::WAKE_HIST_BUCKETS {
-        acc += h.buckets[idx];
-        if acc >= target {
-            return if idx >= 63 { u64::MAX } else { 1 << (idx + 1) };
-        }
-    }
-    // 不可达（sum ≥ n ≥ target）；保守回 u64::MAX——打印路径非执法点，不 panic。
-    u64::MAX
+    berry_telface::hist_percentile(&h.buckets, h.n, num, den)
 }
 
 /// 刀1 G1.5 私助：KERNEL_BOOT 冻结 round-over-round 检查。`*prev ==
