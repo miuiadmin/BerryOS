@@ -157,7 +157,7 @@ v1.0 立稿 = 会话直读代码实测；**v1.1 = workflow 对抗审查（64 age
 
 ## §13 对照注记（业界连线，证据 = 底稿路径）
 
-1. **冻结豁免 × 长时任务**：鸿蒙 DATA_TRANSFER 长时任务仅升优先级、进程仍会被挂起，传输走系统 request 代理托管（`应用规范-HarmonyOS对标-2026-11-补集2-三号.md` §3）——连线 BerryOS 资源证据模型（规范 §4.2）与 freeze 豁免白名单（am design Q3；真触发挂账）。
+1. **冻结豁免 × 长时任务**：鸿蒙 DATA_TRANSFER 长时任务仅升优先级、进程仍会被挂起，传输走系统 request 代理托管（`research/应用规范-HarmonyOS对标-2026-11-补集2-三号.md` §3）——连线 BerryOS 资源证据模型（规范 §4.2）与 freeze 豁免白名单（am design Q3；真触发挂账）。
 2. **快照语义 × 划掉即丢**：鸿蒙 mission 快照系统代持 + removeMissionAfterTerminate 销毁即移除（一轮底稿「任务管理」节）——对照「SavedState 划掉/force-stop 即丢」（am design §SDK 契约）：v0 relaunch 仅复活读档，「划掉即丢」边界随 app-2/GUI 线。
 3. **blob 边界**：代理提醒「应用死了提醒仍在」= 系统服务持 timer handle——timer/通知不进 64KiB blob（规范 §4.2 已立法），blob 只载 SavedState。
 4. 引鸿蒙「应用分组冻结（cgroup 式）」时必标【待证·未核实】（对标主稿明注华为商用未公开）。
