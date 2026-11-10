@@ -4,7 +4,7 @@
 > **修订记录**：2026-11-08 对抗审查 17 路核实收编（MAJOR 3：在场判据槽位多产面/帧发送纪律/console 写面冻结审计；MINOR 11；QA 3——同区多条合并改，MAJOR 全收编）；唯一不入 = DOC-1 的「wait_frame 对账 SAVED+RESTORED 双向」替换短语经代码核伪（SAVED 臂仅采集 saved_c 不校验、唯一断言在 relaunch RESTORED 臂 c=saved_c+1），按核真口径统一落 §0/§7。
 
 > **依据**：`应用规范-v1.0.md` §4.1-5（:188 立法原文——注册 pause 回调/写 state blob ≤64KiB/relaunch 读 state handle 三口，对标 UWP Suspending(deadline+deferral)/iOS scene「框架代收、应用只写业务」，未注册 = 默认可杀可墓碑零义务起步；§4.1-1 :184 pause 10s 契约）+ `app-1实施设计草案-v1.2.md` §5（app-2 前置立法：blob 头部 = berry-libc 三口代持保留区、payload 自 32B 起、`state_h()` 裸透句柄仅 v0 过渡形态；§4 v1 CRC32 经 hlen 扩展追加于头后）+ 调和书 `research/app-1调和审计-2026-11.md`（H 系①判据载体 = lifecycle 通道 / D8「libc 双 crate 形随 app-2」铅笔）+ 业界底稿 `research/应用规范-Windows-MSIX对标-2026-11.md` §3.1（SuspendingOperation.Deadline 因设备而异 + GetDeferral 仅延迟不追加时间）+ `research/应用规范-Apple-iOS对标-2026-11.md`（:39 Scene 生命周期词表——`sceneDidEnterBackground` 族框架回调形态；本文「框架代序列化」为规范 §4.1-5「框架代收、应用只写业务」的同义概括，非底稿原词——诚实边界注）。
-> **时点**：app-1 全链落地后（a-1/b-1/b-2 三段 + 判例刀 `d563485`，沿革一六五/一六六；`FROZEN ok n=1`/`TOMB ok n=1` 在册）——SDK-2 开刀前的 libc 面一刀。v1.2 §8 挂账三件（smoke-smp 实跑钉板/应用模型 resume 复用注/DEADLINE 核账）由本刀刀3 顺路收口。
+> **时点**：app-1 全链落地后（a-1/b-1/b-2 三段 + 判例刀 `d563485`，沿革一六五/一六六；`FROZEN ok n=1`/`TOMB ok n=1` 在册）——SDK-2 开刀前的 libc 面一刀。v1.2 §8 挂账三件中 resume 复用注/DEADLINE 核账已随沿革一六九（3eb481e，2026-11-09 B 路补遗）先行收口，余 smoke-smp 实跑钉板由本刀刀3 顺路收口（2026-11-10 对账回写）。
 > **形态先例**：app-1 草案 v1.2（密度/帽/eco 形）+ A7-4 协同投递循环（signal.rs——「登记不执行」与协同式投递点的边界教义源）+ berry-tls/berry-signal 纯面外迁 host 测 idiom（justfile test-host :550 面）+ stdhello/appdemo/bsh/sigchild 独立小工作区 musl 链（`[workspace]` 自声明先例）。
 > **执行结果**：占位（随刀追记）。
 > **输入口径**：本稿立稿输入 = 两路侦察结论（A：libc/框架面 dispatch 形态对比——本文 §2 裁决基座；B：协议/验收面事实书——本文 §1/§3/§6 基座）+ 本会话直读代码补核（下文全部行号锚点经工具核实；行号随刀漂移以函数名为锚，app-1 惯例）。
@@ -193,7 +193,7 @@ lifecycle_beat() -> u32                                                // counte
 - **fs 词面验证锚（结构性测不到的诚实注）**：fs 词 musl 型 app = 在场判据 UB 面（§2.3 首条）——现役 APPDEMO 即现成载体（manifest `fs=["rootfs"]`、boot 批拉起），smoke 零漂形态测不到该面（不调即不红）；真探针须显式调 `lifecycle_register` 断言返 Absent 而非 Ok（假在场）+ `state_save` 不触发 dead-park——依赖 v2 absence 判据重构（§2.3 挂账），v1 以「SDK-2 主循环模板只随 lifecycle/tomb spawn 面分发」文档化收窄 + APPDEMO boot 批 smoke 零漂为弱锚。
 - **canon 纪律**：本刀**零新标记**立法（三口是封装迁移不是新谓词）——markers.sh/smoke-image/规则/07 三消费方零触碰；若刀2 证据面迫使加标记，过 103 字面 grep -F 全表互查 + `APPTOMB ok n=1` 含 `TOMB ok n=1` 子串不可用（v1.2 §6 纪律原样）。
 - **负路径人工面（挂账，CI 结构性不可达）**：①v1 头喂 v0 读者 → badfmt 红（TOMB FAIL loud 安全降级）——同刀升级后线上不可达，负样本变体验证；②cb 内不调 `state_save` 的零写路径 → appd ptmo 族降级 + 不入表；③`state_save` 越帽 payload → TooLarge 前置拒 + VMO 定尺寸结构性执法双层；随 v1.2 负路径五件人工面同册记录。
-- **SMP 面义务**：刀2 收官跑 rootfs 相全表对拍足证迁移；`just smoke-smp` 实跑钉板归刀3 文书收官（markers 单源自动继承——v1.2 §8 挂账件一并收口，§8.1 刀3）。
+- **SMP 面义务**：刀2 收官跑 rootfs 相全表对拍足证迁移；`just smoke-smp` 实跑钉板归刀3 文书收官（markers 单源自动继承——v1.2 §8 挂账件收口，余件仅本项〔resume 注/DEADLINE 核账已随沿革一六九先行闭合〕，§8.1 刀3）。
 
 ## §7 记账与帽（全族对账）
 
@@ -218,7 +218,7 @@ lifecycle_beat() -> u32                                                // counte
 
 - **刀1（三口纯面 + 库接线）**：`berry-lifecycle` 纯 crate（头编解码/CRC32/分派/三分型 + 8B 帧编解码 + counter 代持转移 + host 测）+ berry-libc `lifecycle.rs` 三口/机械件 + absent no-op 面（`lifecycle_h()==0` 全降级——清单 = §2.3 五件：register/poll/save/restore/beat）+ justfile test-host 追行。验收：host 测全绿 + QEMU smoke 全表零漂（零新面承诺）。回滚粒度 = 单 crate + 单模块，无消费者。
 - **刀2（apptomb 迁 libc 路）**：§4 三步（换链/换 API/资源复检）+ appquiet absent 探针一步（§6 承诺⑧）+ TAG 双源镜像消亡（svcmgr 常量升唯一权威）+ §8.3 R5 注释修（两处）+ mkapp 金件连动。验收：`FROZEN ok`/`TOMB ok`/APP 族全表零漂 + 首跑墙钟记录 + svcmgr 侧 grep『对端权威』零残留 + 负路径人工面挂账清单落册。
-- **刀3（文书收官 + v1.2 挂账顺路收口）**：规范 §4.1-5 状态注（「随 app-1 落地」→「app-2 已落地」+ 三口签名速查）+ 应用API全景-v1.0 §7 速查行翻绿 + 草案 v1.2 §5 铅笔兑现追记 + v1.2 §4 头布局注退役追记（「v0 头布局为自验件试验格式、非平台 ABI」→ 平台 ABI 随本文 §3.1；12B → hlen=32）+ v1.2 §7 帽表行「blob 头 12B 定长」追记（v1 起升 32B——app-2 §3.1）+ SDK-2 前置输入挂账行落册（§8.4，与规范状态注同批）+ ADR 追记（#64：三口首个消费者 + F2 约束继承注；#42：freeze 级消费位补 libc 形）+ 索引/沿革 + `just smoke-smp` 实跑钉板 + 应用模型 §4 resume 复用注 + smoke DEADLINE 600s 余量核账（v1.2 §8 挂账三件）+ 规则/06 瘦行（若判例成）。
+- **刀3（文书收官 + v1.2 挂账顺路收口）**：规范 §4.1-5 状态注（「随 app-1 落地」→「app-2 已落地」+ 三口签名速查）+ 应用API全景-v1.0 §7 速查行翻绿 + 草案 v1.2 §5 铅笔兑现追记 + v1.2 §4 头布局注退役追记（「v0 头布局为自验件试验格式、非平台 ABI」→ 平台 ABI 随本文 §3.1；12B → hlen=32）+ v1.2 §7 帽表行「blob 头 12B 定长」追记（v1 起升 32B——app-2 §3.1）+ SDK-2 前置输入挂账行落册（§8.4，与规范状态注同批）+ ADR 追记（#64：三口首个消费者 + F2 约束继承注；#42：freeze 级消费位补 libc 形）+ 索引/沿革 + `just smoke-smp` 实跑钉板（v1.2 §8 挂账余件——resume 复用注/DEADLINE 核账已随沿革一六九〔3eb481e〕先行闭合，2026-11-10 对账）+ 规则/06 瘦行（若判例成）。
 
 ### §8.2 kill criteria
 
