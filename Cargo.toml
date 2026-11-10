@@ -4,7 +4,7 @@ members = ["arch/aarch64","hdlface","iprofile","kernel","mm","piface","sched","v
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.2.0"
 
 # panic=abort 消除对 eh_personality 语言项的依赖（no_std 内核不需要 unwind）。
 [profile.dev]

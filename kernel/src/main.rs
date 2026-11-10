@@ -225,7 +225,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 2b-1：注入 direct map 基址——必须先于任何 phys_to_virt 消费者（mm/heap）。
     berry_mm::va::set_kernel_va_base(berry_hal_aarch64::KERNEL_VA_BASE);
     berry_hal_aarch64::init();
-    berry_hal_aarch64::uart_puts(b"BerryOS boot\n");
+    // VER-01 第一档：构建标识——版本（Cargo workspace version）+ git 短哈希
+    // + dirty 位（build.rs 注入）。marker "BerryOS boot" 子串保持冻结（追加
+    // 后缀不前置——smoke -qF 零漂移）。
+    berry_hal_aarch64::uart_puts(b"BerryOS boot ");
+    berry_hal_aarch64::uart_puts(env!("CARGO_PKG_VERSION").as_bytes());
+    berry_hal_aarch64::uart_puts(b" (");
+    berry_hal_aarch64::uart_puts(env!("BERRY_GIT_IDENT").as_bytes());
+    berry_hal_aarch64::uart_puts(b")\n");
 
     // 2b-0：TTBR1 高半表自校验（RAM 魔数 + GIC PIDR2 双别名，见 HAL `mmu`）。
     // 不过 = 高半翻译未生效，2b-1 重链前必须在此暴露——panic 停机优于带病前进。
