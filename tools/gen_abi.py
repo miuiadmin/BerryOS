@@ -16,6 +16,11 @@
   python3 tools/gen_abi.py --check   # 逐字节比对盘上四产物 vs 期望——
                                       # 挂 just abi-check（build/smoke 前置）：
                                       # 改了 abi.toml 忘再生成 / 手改产物 → FAIL。
+  python3 tools/gen_abi.py --selftest  # 门禁自检（挂 just test-host 前置）：
+                                      # 求值器/C 映射/号段/四元组/行筛选/
+                                      # syz 投影/marker 替换/装载校验钉板 +
+                                      # 在册五产物逐字节 oracle（a-3 U4 纪律
+                                      # 同款；--check 只拦漂移不拦逻辑改坏）。
 
 保真策略：产物 checked-in（盘上文件即真相，diff 可审、blame 可查）——同
 elf2flat/mkcpio/size.py --assert-flip 的房子风格；不用 build.rs 运行时生成
@@ -110,6 +115,11 @@ def load() -> dict:
         raise Fail(f"abi.toml 语法错：{e}")
     except OSError as e:
         raise Fail(f"读单源文件失败：{IDL}（{e}）")
+    return validate(d)
+
+
+def validate(d: dict) -> dict:
+    """单源校验（--selftest 钉板位；load = 读盘 + 本函数）。"""
     for key in ("meta", "types"):
         if key not in d:
             raise Fail(f"abi.toml: 缺 [{key}] 段")
@@ -574,6 +584,261 @@ def gen_syz(d: dict) -> str:
     return "\n".join(L)
 
 
+# ---------------------------------------------------------------- selftest
+
+def selftest() -> int:
+    """门禁自检（挂 just test-host 前置；mkfat/genfbfont --selftest 同位纪律）。
+
+    --check 只拦「盘上产物 vs 再生期望」漂移——生成器逻辑本身改坏（如
+    eval_expr 吞了负号、c_value 透传裸 1<<40、four_tuple 口径换了）且两侧
+    同步再生成时照样绿。selftest 用合成向量钉住纯函数语义 + 在册单源跑
+    全链（validate → 五产物）对真实盘上文件做逐字节 oracle——逻辑改坏
+    即咬，无需再生成。
+    """
+    failures = []
+    passed = 0
+
+    def check(name, cond, detail=""):
+        nonlocal passed
+        if cond:
+            passed += 1
+        else:
+            failures.append((name, detail))
+
+    def expect_fail(name, fn, want_sub):
+        try:
+            fn()
+        except Fail as e:
+            check(name, want_sub in str(e), f"msg={str(e)!r} 不含 {want_sub!r}")
+        else:
+            check(name, False, "未抛 Fail")
+
+    # --- 1. 求值器 eval_expr：四语法族 + 拒面 ---
+    check("eval u64::MAX", eval_expr("u64::MAX") == (1 << 64) - 1)
+    check("eval 1 << N（带空格归一）", eval_expr("1 << 40") == 1 << 40)
+    check("eval 0x/十进制/_ 分隔", eval_expr("0xFFFF_FFFF_0000_0000") == 0xFFFF_FFFF_0000_0000
+          and eval_expr("-110") == -110 and eval_expr(" -110 ") == -110)
+    expect_fail("eval 拒不可求值", lambda: eval_expr("1 <<< 4"), "不可求值")
+    expect_fail("eval 拒表达式注入", lambda: eval_expr("__import__('os')"), "不可求值")
+
+    # --- 2. C 宏映射 c_value：u64::MAX/-1LL、1<<N/1ULL、裸整直通、
+    #     非规范拼写拒（裸进 C 是 int 移位 UB——对抗审查修的口径） ---
+    check("c_value u64::MAX → (-1LL)", c_value("u64::MAX") == "(-1LL)")
+    check("c_value 1 << 40 → (1ULL << 40)", c_value("1 << 40") == "(1ULL << 40)")
+    check("c_value 裸整直通", c_value("12") == "12" and c_value("0x10") == "0x10")
+    expect_fail("c_value 拒负数（rights 位全正值域）", lambda: c_value("-9"), "C 宏映射")
+    check("c_value 归一后收 1<<40（非规范拼写不透传——产 ULL 形）",
+          c_value("1<<40") == "(1ULL << 40)")
+    check("c_value 归一后收 u64 :: MAX", c_value("u64 :: MAX") == "(-1LL)")
+    expect_fail("c_value 拒 2 << 3（只收 1<<N）", lambda: c_value("2 << 3"), "C 宏映射")
+
+    # --- 3. 唤醒源号段 next_free_wakesrc：0x01–0x7E 最小未占；
+    #     NONE/UNKNOWN 锚不入空闲集（占用以在册为准） ---
+    w_full = {f"W{i}": v for i, v in enumerate(range(0x00, 0x7F))}
+    check("next_free 号段占满 → None", next_free_wakesrc(
+        {**w_full, "UNKNOWN": 0x7F}) is None)
+    w_gap = {"NONE": 0x00, "KERNEL_BOOT": 0x01, "TIMER": 0x02, "UNKNOWN": 0x7F}
+    check("next_free 跳锚取最小未占 0x03", next_free_wakesrc(w_gap) == 0x03)
+    w_mid = {"NONE": 0x00, "A": 0x01, "C": 0x03, "UNKNOWN": 0x7F}
+    check("next_free 中段空洞 0x02", next_free_wakesrc(w_mid) == 0x02)
+
+    # --- 4. 装载校验 validate：合成最小 toml 逐拒面咬 ---
+    base_toml = """
+[meta]
+stage = "v1"
+nr_total = 1
+implemented = 1
+nr_ceiling = 45
+[types]
+handle = 4
+rights = 8
+status = 4
+time = 8
+invalid_handle = 0
+[[wakesrc]]
+name = "NONE"
+expr = "0x00"
+[[wakesrc]]
+name = "UNKNOWN"
+expr = "0x7F"
+[[clock]]
+name = "MONOTONIC"
+expr = "0"
+[[option]]
+name = "OPT_A"
+scope = "channel_create"
+expr = "1 << 0"
+[[right]]
+name = "READ"
+expr = "1 << 0"
+[[signal]]
+name = "READABLE"
+expr = "1 << 0"
+[[errno]]
+name = "OK"
+expr = "0"
+[[group]]
+title = "**t**"
+[[group.syscall]]
+num = 0x01
+name = "handle_close"
+desc = "d"
+stage = "v1"
+"""
+    import tomllib as _tl
+    base = _tl.loads(base_toml)
+
+    d = validate(_tl.loads(base_toml))
+    check("validate 最小合成单源过", d["meta"]["nr_total"] == 1)
+
+    def mut(**kw):
+        obj = _tl.loads(base_toml)
+        for k, v in kw.items():
+            obj[k] = v
+        return obj
+
+    expect_fail("validate 拒缺 [meta]", lambda: validate(
+        {k: v for k, v in base.items() if k != "meta"}), "缺 [meta]")
+    expect_fail("validate 拒空 [[clock]]", lambda: validate(
+        mut(clock=[])), "段为空")
+    expect_fail("validate 拒 num 重复", lambda: validate(mut(group=[{
+        "title": "t", "syscall": [
+            {"num": 0x01, "name": "a", "desc": "d", "stage": "v1"},
+            {"num": 0x01, "name": "b", "desc": "d", "stage": "v1"}]}] + base["group"][1:])),
+        "num 重复")
+    expect_fail("validate 拒 nr_total 账错", lambda: validate(
+        mut(meta={**base["meta"], "nr_total": 2})), "nr_total=2")
+    expect_fail("validate 拒 implemented 账错", lambda: validate(
+        mut(meta={**base["meta"], "implemented": 0})), "implemented=0")
+    expect_fail("validate 拒超号面帽", lambda: validate(
+        mut(meta={**base["meta"], "nr_ceiling": 0})), "nr_ceiling=0")
+    expect_fail("validate 拒 right 值重复", lambda: validate(mut(right=[
+        {"name": "READ", "expr": "1 << 0"}, {"name": "WRITE", "expr": "1 << 0"}])),
+        "right]] expr 值重复")
+    # option 同 scope 同值咬、异 scope 同值放行（per-syscall 位图口径）
+    expect_fail("validate 拒同 scope option 同值", lambda: validate(mut(option=[
+        {"name": "OPT_A", "scope": "channel_create", "expr": "1 << 0"},
+        {"name": "OPT_B", "scope": "channel_create", "expr": "1 << 0"}])),
+        "同 scope 下 expr 值重复")
+    check("validate 放异 scope option 同值", (lambda: (
+        validate(mut(option=[
+            {"name": "OPT_A", "scope": "channel_create", "expr": "1 << 0"},
+            {"name": "OPT_B", "scope": "vmo_create", "expr": "1 << 0"}])), True)[1])())
+    expect_fail("validate 拒 wakesrc 出值域", lambda: validate(mut(wakesrc=[
+        {"name": "NONE", "expr": "0x00"}, {"name": "X", "expr": "0x80"},
+        {"name": "UNKNOWN", "expr": "0x7F"}])), "出值域")
+    expect_fail("validate 拒 UNKNOWN 锚变值", lambda: validate(mut(wakesrc=[
+        {"name": "NONE", "expr": "0x00"}, {"name": "UNKNOWN", "expr": "0x7E"}])),
+        "语义锚 UNKNOWN")
+    expect_fail("validate 拒 name 重复", lambda: validate(mut(right=[
+        {"name": "READ", "expr": "1 << 0"}, {"name": "READ", "expr": "1 << 1"}])),
+        "name 重复")
+
+    # --- 5. 行筛选三分口径：v1_rows/const_rows/all_rows（v1+1.1 常量层 /
+    #     全量表 / v1 在册） ---
+    synth = {"group": [{"title": "g", "syscall": [
+        {"num": 0x01, "name": "a", "desc": "d", "stage": "v1"},
+        {"num": 0x02, "name": "b", "desc": "d", "stage": "1.1"},
+        {"num": 0x03, "name": "c", "desc": "d", "stage": "v2"},
+    ]}]}
+    check("v1_rows 只收 v1", [s["name"] for s in v1_rows(synth)] == ["a"])
+    check("const_rows 收 v1+1.1", [s["name"] for s in const_rows(synth)] == ["a", "b"])
+    check("all_rows 收全量", [s["name"] for s in all_rows(synth)] == ["a", "b", "c"])
+
+    # --- 6. 四元组 four_tuple：在册/常量层/已挂派发/帽 四口径（PM-17 §4） ---
+    ft = {"meta": {"nr_total": 1, "nr_ceiling": 45}, "group": [{"syscall": [
+        {"num": 0x01, "name": "a", "stage": "v1"},
+        {"num": 0x02, "name": "b", "stage": "1.1"},
+        {"num": 0x03, "name": "c", "stage": "1.1", "implemented": False},
+        {"num": 0x04, "name": "d", "stage": "v1", "implemented": False},
+    ]}]}
+    check("four_tuple 四口径", four_tuple(ft) == (1, 4, 2, 45),
+          f"got {four_tuple(ft)}")
+
+    # --- 7. syz 投影：syz_int 宽度映射 + 拒面、syz_val 同形不重复、
+    #     stage 标记四态 ---
+    check("syz_int 映射", syz_int(4, True) == "int32" and syz_int(8, False) == "uint64")
+    expect_fail("syz_int 拒 3 字节宽", lambda: syz_int(3, True), "无 syz 整型映射")
+    check("syz_val 同形直通", syz_val("0") == "0" and syz_val("-9") == "-9")
+    check("syz_val 异形附求值", syz_val("1 << 40") == "1 << 40  (0x10000000000)")
+    check("syz_val hex 异形附 hex", syz_val("0xFFFF_FFFF_0000_0000") ==
+          "0xFFFF_FFFF_0000_0000  (0xffffffff00000000)")
+    check("syz_stage_mark 四态", [
+        syz_stage_mark({"stage": "v1"}),
+        syz_stage_mark({"stage": "v1", "implemented": False}),
+        syz_stage_mark({"stage": "1.1"}),
+        syz_stage_mark({"stage": "1.1", "implemented": False}),
+    ] == ["（v1）", "（v1·在册未实现）", "（1.1·已实现）", "（1.1·未实现）"])
+
+    # --- 8. marker 分流 + patch_doc 唯一性执法：C fence 内 C 注释、
+    #     markdown HTML 注释；重复对/交叉序/缺计数锚拒 ---
+    check("markers markdown 语境", markers("syscalls") == (
+        "<!-- @gen:syscalls begin -->", "<!-- @gen:syscalls end -->"))
+    check("markers -c fence 语境", markers("rights-c") == (
+        "/* @gen:rights-c begin */", "/* @gen:rights-c end */"))
+    doc_ok = ("# T\n\n<!-- @gen:syscalls begin -->\nOLD\n<!-- @gen:syscalls end -->\n\n"
+              "```c\n/* @gen:rights-c begin */\nX\n/* @gen:rights-c end */\n```\n\n"
+              "```c\n/* @gen:errno-c begin */\nY\n/* @gen:errno-c end */\n```\n\n"
+              "v1 计数 = 1\n")
+    patched = patch_doc(doc_ok, base)
+    check("patch_doc 三块全替换", "OLD" not in patched and "\nX\n" not in patched
+          and "\nY\n" not in patched and "v1 计数 = 1" in patched)
+    check("patch_doc 表头契约在席", DOC_TABLE_HEADER[0] in patched
+          and DOC_TABLE_HEADER[1] in patched)
+    expect_fail("patch_doc 拒重复 marker 对", lambda: patch_doc(
+        doc_ok.replace("<!-- @gen:syscalls begin -->",
+                       "<!-- @gen:syscalls begin -->\n<!-- @gen:syscalls begin -->"),
+        base), "恰一对")
+    expect_fail("patch_doc 拒计数锚漂移", lambda: patch_doc(
+        doc_ok.replace("v1 计数 = 1", "v1 计数 = 2"), base), "nr_total")
+    expect_fail("patch_doc 拒缺计数锚", lambda: patch_doc(
+        doc_ok.replace("v1 计数 = 1", "无关行"), base), "计数断言锚点")
+
+    # --- 9. C 定义列 c_defines：对齐数学（名列宽 = 最长+2）+ 尾随空白纪律
+    #      （无注释行不补尾空白） ---
+    aligned = c_defines([("A", "1", "note"), ("LONGER_NAME", "22", "")])
+    lines = aligned.split("\n")
+    check("c_defines 名列对齐（A 补到 13 宽 = 12 空格）",
+          lines[0].startswith("#define A" + " " * 12 + "1")
+          and lines[1] == "#define LONGER_NAME  22")
+
+    # --- 10. exit-code 契约（子进程真跑；不测 --selftest 自身——自引用
+    #      会无限递归；extra-arg 守卫 = exact-arg 契约） ---
+    import subprocess as sp
+    p1 = sp.run([sys.executable, __file__, "--check"], capture_output=True, text=True)
+    check("--check rc=0 且 PASS 行", p1.returncode == 0 and "abi-check: PASS" in p1.stdout)
+    p2 = sp.run([sys.executable, __file__, "--bogus"], capture_output=True, text=True)
+    check("--bogus rc=2 usage（argparse 契约）", p2.returncode == 2 and "usage:" in p2.stderr)
+    p3 = sp.run([sys.executable, __file__, "--selftest", "extra"],
+                capture_output=True, text=True)
+    check("--selftest exact-arg guard（extra arg = usage 拒，不静默跑）",
+          p3.returncode != 0 and "usage:" in p3.stderr)
+
+    # --- 11. 在册单源全链 oracle：validate → 五产物 vs 盘上逐字节 ---
+    real = load()
+    k, u, doc, syz, arch = build_all(real)
+    targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz), (ARCH_RS, arch)]
+    bad = [str(p.relative_to(ROOT)) for p, want in targets
+           if not p.exists() or p.read_text("utf-8") != want]
+    check("在册五产物逐字节 oracle", not bad, f"漂移: {bad}")
+    nt, nd, nr, nc = four_tuple(real)
+    check("在册四元组口径", (nt, nd, nr, nc) == (37, 41, 40, 45),
+          f"got {(nt, nd, nr, nc)}")
+    check("在册 wakesrc 空闲段活算", next_free_wakesrc(
+        {w["name"]: eval_expr(w["expr"]) for w in real["wakesrc"]}) == 0x08)
+
+    # 确定性：全链再跑一遍逐字节同值（无隐状态/时间漂移）。
+    k2, u2, doc2, syz2, arch2 = build_all(load())
+    check("全链确定性（两跑逐字节同值）",
+          (k, u, doc, syz, arch) == (k2, u2, doc2, syz2, arch2))
+
+    print(f"\ngen_abi selftest: {'PASS' if not failures else 'FAIL'}"
+          f"（{passed} passed, {len(failures)} failed）")
+    for name, detail in failures:
+        print(f"  FAIL: {name}" + (f"——{detail}" if detail else ""))
+    return 1 if failures else 0
+
+
 # ---------------------------------------------------------------- 主流程
 
 def build_all(d: dict) -> tuple:
@@ -586,10 +851,18 @@ def build_all(d: dict) -> tuple:
 
 
 def main() -> int:
+    # --selftest 前置守卫（不经 argparse）：exact-arg 契约——extra arg 落
+    # argparse usage 拒（rc=2），不静默跑半套。
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest":
+        return selftest()
     ap = argparse.ArgumentParser(description="BerryOS ABI 单源生成/守卫")
     ap.add_argument("--check", action="store_true",
                     help="不写盘：逐字节比对盘上四产物 vs 期望，漂移即 FAIL")
+    ap.add_argument("--selftest", action="store_true",
+                    help="门禁自检：纯函数钉板 + 在册五产物逐字节 oracle（exit 0=PASS）")
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
     try:
         d = load()
         k, u, doc, syz, arch = build_all(d)

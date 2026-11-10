@@ -760,6 +760,15 @@ test-host:
     # 小写 t/N 调试段不计定义 + 定义覆盖净面 + elf 两段形收/三段不收 +
     # 全链合成归档向量手算对拍 + exit-code 契约——19 面。
     python3 tools/shim_audit.py --selftest
+    # W1-Q4 六续（a-3 U4 纪律同款）：gen_abi 门禁自检——ABI 单源生成器
+    # （abi.toml → 五面产物）此前只有 --check 漂移守卫（两侧同源时生成器
+    # 逻辑改坏仍绿）：求值器四语法族+注入拒面/C 宏映射（非规范拼写归一
+    # 不透传）/唤醒号段活算（占满/跳锚/中段空洞）/validate 合成单源 12
+    # 拒面（账四元组/同 scope 位图/语义锚）/行筛选三分口径/four_tuple
+    # 手算/syz 投影（宽度映射拒面+同形不重复+stage 四态）/marker 分流
+    # +重复对拒/计数锚交叉断言/c_defines 对齐数学/exit-code 契约 + 在册
+    # 五产物逐字节 oracle + 全链确定性——53 面。
+    python3 tools/gen_abi.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
