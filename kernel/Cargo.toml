@@ -19,6 +19,9 @@ berry-piface = { path = "../piface" }
 # W3-Q5：WaitKey 值域三形（pi.rs 投影用）——crate 依赖显式化（经 sched
 # re-export 的 transitive 面不可 use，Cargo 直依赖惯例）。
 berry-wqmatch = { path = "../wqmatch" }
+# W3-Q8：handle 位域编码单源（slot/gen 位域 + 别名拒判定律）——本
+# crate 消费，handle.rs re-export。
+berry-hdlface = { path = "../hdlface" }
 
 [features]
 # G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面

@@ -7,6 +7,10 @@ name = "berry-hal-aarch64"
 version = "0.1.0"
 
 [[package]]
+name = "berry-hdlface"
+version = "0.1.0"
+
+[[package]]
 name = "berry-iprofile"
 version = "0.1.0"
 
@@ -15,6 +19,7 @@ name = "berry-kernel"
 version = "0.1.0"
 dependencies = [
  "berry-hal-aarch64",
+ "berry-hdlface",
  "berry-mm",
  "berry-piface",
  "berry-sched",

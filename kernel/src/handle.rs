@@ -46,32 +46,12 @@ pub use crate::abi_gen::{
 };
 
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
-
-/// 槽位号位宽（低 16 位 = 每表最多 65536 槽）。
-const SLOT_BITS: u32 = 16;
-const SLOT_MASK: u32 = (1 << SLOT_BITS) - 1;
-/// 代号位宽（bits [16, 30)；bit31 预留类型编码，v1 不写）。
-const GEN_BITS: u32 = 14;
-const GEN_MASK: u32 = (1 << GEN_BITS) - 1;
-
-fn encode(slot: u32, gen: u32) -> Handle {
-    debug_assert!(slot <= SLOT_MASK && gen >= 1 && gen <= GEN_MASK);
-    (gen << SLOT_BITS) | slot
-}
-
-fn decode_slot(h: Handle) -> u32 {
-    h & SLOT_MASK
-}
-
-fn decode_gen(h: Handle) -> u32 {
-    (h >> SLOT_BITS) & GEN_MASK
-}
-
-/// bit30/31 = ABI §8.1 预留位（v1 内核从不发行非零值）。lookup 对非零一律拒
-/// （3b3 审查 M5）——否则 X 与 X|0x8000_0000 被解码成同一 handle，replace 的
-/// 裸值 `h == repl` 挡不住这种别名，「任一无效则表不动」的原子承诺即被打破
-/// （调用者收错误码却已永久丢失合法能力）。
-const RESERVED_MASK: Handle = 0xC000_0000;
+// 常量与 encode/decode 单源在 berry-hdlface（W3-Q8 host 钉板——位域编码
+// 律/别名拒/发行域门表驱动在册）；此处 re-export 维持 kernel 内路径。
+pub use berry_hdlface::{
+    decode_gen, decode_slot, encode, gen_in_issue_domain, has_reserved_bits,
+    slot_index_valid, GEN_BITS, GEN_MASK, RESERVED_MASK, SLOT_BITS, SLOT_MASK,
+};
 
 /// 对象类型（镜像 `berry_obj_type` 枚举值，ABI §8.2 冻结）。
 /// Process/Channel 等暂无构造点——3-3/3-4 增补对象时启用，全表先冻结在册。

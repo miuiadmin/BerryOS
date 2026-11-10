@@ -584,6 +584,10 @@ test-host:
     # W3-Q5：berry-piface（PI 捐赠图纯函数面——donor 五拒/配对律/传播三律
     # 钉板，host 18 测；donor_edge/PI_MAX_HOPS 单源，kernel pi.rs 消费）。
     cargo test -p berry-piface --target {{host}}
+    # W3-Q8：berry-hdlface（handle 槽位编码纯函数面——位域 roundtrip/
+    # 预留位别名拒/gen 发行域/表满门值域钉板，host 8 测；encode/decode
+    # 单源，kernel handle.rs re-export 消费）。
+    cargo test -p berry-hdlface --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各
