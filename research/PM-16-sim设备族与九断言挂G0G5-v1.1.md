@@ -87,7 +87,7 @@
 | 18 | 冻结原语 SuspendTarget/SuspendTok 已在途（sched-1.1）；NR_PROCESS_SUSPEND 已在册 | 高 | `kernel/src/suspend.rs:12-30` · `kernel/src/syscall.rs:84` |
 | 19 | QMP 注入通道现成：INPUTP 三批 input-send-event + unix sock + 回退省 device 键 | 高 | `tools/smoke.sh:982-1078` |
 | 20 | B4 掉电相 pwrcls 毒环注入先例（宿主改盘面 + guest 标记双面不变量） | 高 | `tools/pwrcls.py:1-26` · 规则 07:23 |
-| 21 | timer 原语带 slack+policy 三元组 = 设计位未落（A3 前置）；0x05 maintenance 编码冻结不启用（A5 前置） | 高 | `docs/调度器设计-v1.0.md:126,155` · ADR #42（`docs/架构决策.md`） |
+| 21 | timer 原语带 slack+policy 三元组 = 设计位未落（A3 前置）；0x05 maintenance 编码冻结不启用（A5 前置） | 高 | `docs/调度器设计-v1.1.md:126,155` · ADR #42（`docs/架构决策.md`） |
 | 22 | 交互功耗双断言（触摸风暴合并率 N 事件/150ms→恰 1 脉冲；INDIRECT 合成事件不续命）一期已立项 | 高 | `PM-00:198,285` · `PM-04:96,218` |
 | 23 | TCG CNTV tick 实测 ≈ SLICE_HZ/2；时序断言一律 `-icount` | 高 | 规则 08:27 · `docs/测试策略-v1.0.md:88` |
 
@@ -209,7 +209,7 @@
 **仓内对接**
 - `kernel/src/telemetry.rs:276-302`（WAKE_RING/WakeRec 32B/_pad）· `kernel/src/user.rs:1874-1882`（唤醒环 boot 断言）· `kernel/src/suspend.rs:12-30`（SuspendTok）· `kernel/src/syscall.rs:79-88`（NR_PROCESS_SUSPEND 在册）· `kernel/src/main.rs:1259-1288`（virtio-mmio 窗 VMO）· `arch/aarch64/src/lib.rs:141-164`（IRQ 回调槽）· `arch/aarch64/src/gic.rs:28-31`（IRQ 27/33）· `arch/aarch64/src/smp.rs:572-573,790`（conduit 分型/CPU_ON）· `arch/aarch64/src/fwcfg.rs`（fw_cfg 具名项单源）
 - `tools/markers.sh:12,18,20-25`（标记单源+防假绿兜底）· `tools/smoke.sh:45,982-1078`（八跑/QMP 注入）· `tools/pwrcls.py:1-26`（B4 毒环）· `justfile:18,840` · `.github/workflows/ci.yml:48,233`
-- `docs/规则/07-测试与冒烟.md:20-27,42,51-66`（相构成/bench-icount/判例族）· `docs/规则/08-QEMU与仿真.md:23,27`（conduit/2× 效应）· `docs/测试策略-v1.0.md:20-29,84-88`（G0–G5/代理指标/-icount 纪律）· `docs/调度器设计-v1.0.md:126,155`（timer slack 设计位）
+- `docs/规则/07-测试与冒烟.md:20-27,42,51-66`（相构成/bench-icount/判例族）· `docs/规则/08-QEMU与仿真.md:23,27`（conduit/2× 效应）· `docs/测试策略-v1.0.md:20-29,84-88`（G0–G5/代理指标/-icount 纪律）· `docs/调度器设计-v1.1.md:126,155`（timer slack 设计位）
 - `research/PM-10:§1.6,§4`（九断言/sim 草案/psci 定谳）· `research/PM-12:§3.3-6,§4-6/7`（刀 1 前置/开放问题）· `research/PM-07:§4-5/6/7`（sim-thermal/四件套）· `research/PM-05:157-167,198-203`（sim-modem/meter_query）· `research/PM-08:§6`（BatteryInfo 15 字段）· `research/PM-00:198,285`（交互双断言立项）· `research/PM-04:96,218`（INDIRECT 不续命）
 
 （v1.0 完；升级触发器：步 1-3 任一落刀 / KVM spike 出结果 / T1 fork 立项裁决，三者任一发生即升 v1.1。）
