@@ -91,6 +91,9 @@ pub fn run() {
     // Event 用户位出口（末位新号纪律——ktest done 前；sched::init 前跑，
     // SLEEPQ 空扫 = 出口唤醒面恒 n=0，合法）。
     test_am2b_pressure();
+    // VER（版本覆盖硬化·内核面）：version VMO 内容断言（末位新号纪律——
+    // ktest done 前；sched::init 前跑，瞬态 VMO 现读现验不留柄）。
+    test_sysver();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -5405,6 +5408,53 @@ fn test_am2b_pressure() {
         .expect("AM2B：ktest 插取 handle 收尾 close");
     telemetry::dpg_win_ktest_setup(real_len, berry_hal_aarch64::timer::cntvct());
     berry_hal_aarch64::uart_puts(b"AM2B-K ok\n");
+}
+
+/// VER（版本覆盖硬化·内核面）：version VMO 内容断言。形态 = **现读现验不留
+/// 柄**：boot 第 9 插交付 VMO 此刻尚未建（ktest 先于 svcmgr 表搭架与 fb
+/// GOP 相位——boot 槽位断言不在 ktest 面重复，WAKEP 清场作废前雷同理不在
+/// 任何表留柄），改走与 boot 同源的 `sysver::build_vmo()` 建瞬态 VMO →
+/// read 回读 → parse 断言 → drop（`Vmo::Drop` 还页，零残留）。magic/level/
+/// semver 三面：semver 对账用运行期 split 解析 CARGO_PKG_VERSION（独立于
+/// 编译期 `parse_semver`——破循环自证）。
+fn test_sysver() {
+    use crate::sysver;
+    let vmo = sysver::build_vmo().expect("SYSVER：装配 version VMO（可信语境）");
+    let mut buf = [0u8; 4096];
+    vmo.read(0, &mut buf).expect("SYSVER：read 回读");
+    drop(vmo);
+    assert_eq!(
+        u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        sysver::SYSVER_MAGIC,
+        "SYSVER：magic 须 BVER LE（0x4256_4552）"
+    );
+    let (ident, rustc, level, semver) =
+        sysver::parse(&buf).expect("SYSVER：parse 须过（hdr_ver/rsv/字符串段结构面）");
+    assert_eq!(ident, sysver::GIT_IDENT, "SYSVER：git ident 须同源（build.rs 注入）");
+    assert_eq!(rustc, sysver::RUSTC_VER, "SYSVER：rustc 短版须同源（build.rs 注入）");
+    assert_eq!(
+        level,
+        crate::abi_gen::BERRY_PLATFORM_LEVEL,
+        "SYSVER：level 须 == abi_gen BERRY_PLATFORM_LEVEL"
+    );
+    // semver 独立对账：运行期 split + parse（非 const parse_semver 路径）。
+    let mut it = env!("CARGO_PKG_VERSION").split('.');
+    let want = (
+        it.next().and_then(|s| s.parse::<u16>().ok()),
+        it.next().and_then(|s| s.parse::<u16>().ok()),
+        it.next().and_then(|s| s.parse::<u16>().ok()),
+    );
+    assert_eq!(
+        (Some(semver.0), Some(semver.1), Some(semver.2)),
+        want,
+        "SYSVER：semver 须与 CARGO_PKG_VERSION 一致（运行期独立解析）"
+    );
+    assert_eq!(
+        buf[18] & 1 != 0,
+        cfg!(debug_assertions),
+        "SYSVER：flags bit0 须 = debug_assertions"
+    );
+    berry_hal_aarch64::uart_puts(b"SYSVER ok\n");
 }
 
 /// sim-S3（PM-16 §4.4 步3）：深睡降级断言（run() 末位新号——ktest done 前；

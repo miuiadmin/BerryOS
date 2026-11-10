@@ -31,6 +31,7 @@ mod pi;
 mod process;
 mod suspend; // 1.1/S3-a：冻结令牌对象（process_suspend handler 配对）
 mod syscall;
+mod sysver; // VER：版本身份 VMO（运行时查询面——boot 编译期成像 + 第 9 插只读交付）
 mod telemetry;
 mod user;
 mod vmar;
@@ -1494,6 +1495,26 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     assert_eq!(
                         h_am2b_svc, 0x0001_0008,
                         "main: svcmgr 表 AM-2b 压力 Event 须第 8 插 0x0001_0008（编译侧硬编码）"
+                    );
+                    // VER 运行时查询面：boot 建只读 version VMO——1 页版本身份
+                    // 结构体（sysver 模块编译期 env! 成像，零运行时取数；fbinfo
+                    // VMO 同款 create+commit+write 三连）插 svcmgr 表**第 9 插
+                    // 定值 0x0001_0009**（与第 8 插同 fb GOP 相位同分支，表序
+                    // 确定——boot assert 拦漂移；裸相/rootfs-无-fb 相缺席 =
+                    // svcmgr 查表 -EBADF，同 fb/virtio 惯例）。rights 仅
+                    // READ——版本面禁写（vmo_write 放宽面拒；权限在 handle
+                    // 不在对象），内核侧不留柄（boot 即写即交，无 dup 消费面）。
+                    let h_sysver = ht_svcmgr
+                        .insert(
+                            handle::KernelObj::Vmo(
+                                sysver::build_vmo().expect("main: version Vmo 装配（create/commit/write）"),
+                            ),
+                            handle::RIGHT_READ,
+                        )
+                        .expect("main: version VMO 进 svcmgr 表");
+                    assert_eq!(
+                        h_sysver, 0x0001_0009,
+                        "main: svcmgr 表 version VMO 须第 9 插 0x0001_0009（编译侧硬编码）"
                     );
                 }
                 Err(_) => {
