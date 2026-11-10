@@ -2,10 +2,10 @@
 
 Type: spec
 Status: active
-Updated: 2026-11-08
-Version: 0.4.0
+Updated: 2026-11-11
+Version: 0.5.0
 
-一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。**v0.3.0：Q1–Q3 裁决落定 + 重锚 appd（应用模型 §4.1 立法承载，am 不新建守护进程）+ 与 app-1 实施草案梯度互证对齐。** **v0.4.0：AM-2b 压力出口机制面收官——候选①六裁决（系统压力 Event + boot 定值槽迁交）落地，「压力信号」节由提案改写为现役机制。**
+一句话说明：am 是用户态后台处置服务——把「收割 → 换出 → 冻结 → 杀+墓碑 → 归档」五级梯度做成策略可插拔的监督服务，内核机制面复用 1.1 token freeze 与 VMO/pager（零新增 syscall），墓碑采 Fuchsia 形态（无序列化、pager 惰性恢复）。**v0.3.0：Q1–Q3 裁决落定 + 重锚 appd（应用模型 §4.1 立法承载，am 不新建守护进程）+ 与 app-1 实施草案梯度互证对齐。** **v0.4.0：AM-2b 压力出口机制面收官——候选①六裁决（系统压力 Event + boot 定值槽迁交）落地，「压力信号」节由提案改写为现役机制。** **v0.5.0：v1 机制面收官——AM-1.5/AM-2a/AM-2b/AM-2e 全实证，各节末补落地注（设计正文零改）。**
 
 ## 背景
 
@@ -42,6 +42,8 @@ Version: 0.4.0
 
 消费面**随 am 拉起刀**：am 成形经 env 块 extras 自 svcmgr 迁交第 8 插（本节即迁交契约）；complete 700ms 窗与 full 判据同刀定标。
 
+**落地注（2026-11-11，机制面收官）**：AM-2a ✓ 等页停顿台账（沿革 §154）+ AM-2b ✓ 候选①全量——DPG_WIN_CYC 窗口累计 + 惰性折卷 + θ_p 10% 判据 + ktest AM2B-K 四断言 + boot 第 8 插 0x0001_0008 迁交（沿革 §171）+ AM-2e ✓ 端到端真注入——真缺页→真等供给→真计值→真折卷→真置位→真 SVC 自清全链无直灌，实测 `DPGPRESS ok n=248 c=880312`（≈250 页停顿跨阈，TCG 口径，沿革 §172）；观测桥已通——svcmgr 稳态 poll 命中 1<<40 打 `eco: pressure p1`（GOP 相 smoke-image 实测，沿革 §173）。真策略消费与 θ_p/窗长定标随 v2 真机。
+
 ### SDK 契约（零新 syscall，照 #68 六面先例）
 
 berry-amproto 纯协议 crate + berry-sys 包装，全走服务 IPC：生命周期回调（onBackground 限时落盘窗口 / OnResume；超时不阻塞冻结）；SavedState（KB 级、task-bound、am 托管——划掉/force-stop 即丢，AM-01 [A7] 语义）；豁免位（manifest 长时任务 reason u8，PM-00）；冻结态通知（FrozenStateChange 等价，供系统服务暂停对冻结进程的回调投递、解冻后批量补投——A16 形态）。
@@ -55,6 +57,8 @@ BerryOS channel 本就是**非阻塞有界队列**（send 满拒 -EBUSY、阻塞
 - **安全论证**：1.1 安全门已有「token 持有者死亡 → auto-thaw」——am 崩溃 = 全体解冻 = 系统退化到无冻结而非死锁；三重正交谓词已封内核侧停摆。
 - **防风暴**：wake-flood 遥测（解冻频次进 HDR 分位）；反复被唤醒者 am 可升级处置（转长时任务豁免或杀），决策可查。
 - **b 形态（-EAGAIN/TRY）不设新口**：调用方需要带超时的探活，用既有 `wait_one` 超时即得——不为罕见场景加 ABI 面。
+
+**落地注（2026-11-11，AM-1.5 已落）**：落地形 = SuspendToken 派生位 `SIGNAL_WAKE_PENDING`（1<<3，abi.toml [[signal]] 在册）+ 按进程钉键广播通知 token 持有者（未建 Event 对象——落地形为准）；用户态闭环实证 `WAKE ok`（冻结端点收讯 → close token 解冻 → 续跑）。commit 372f918 / eea3fca，沿革 §162。
 
 ### 快照与优先级表
 
@@ -71,6 +75,8 @@ BerryOS channel 本就是**非阻塞有界队列**（send 满拒 -EBUSY、阻塞
 ## 落地刀序（依赖在途 lane）
 
 AM-0 本设计 → **AM-1/AM-3-v0 由 app-1 草案执行**（段 a = L2 freeze-first「FROZEN ok」、段 b = L3 v0 墓碑协议「TOMB ok」，零内核前置）→ AM-1.5 内核小刀（wake-pending + Event 通知 token 持有者——挂 app-1 v0 收官后，真触发落地前）→ AM-2 压力信号（telemetry 增量）→ AM-3 全态（快照先行 + 退出原因可查，依赖 X-6 收官 + 合成器截屏接口）→ AM-4 L1 换出预算 + L0 discardable（依赖 pager 压缩仓成形 + `内存管理设计` v1.1 补 DISCARDABLE 条目）→ AM-5 归档 + AI 返回概率调梯度（KC 先立，PM-00 KC-P 同款立法）。冻结 DoS 既有执法面 = S5.12 每 caller 活跃 token 上限 64（超限 -EBUSY），wake-flood 防护叠加遥测不需新帽。
+
+**落地注（2026-11-11 状态板）**：AM-1/AM-3-v0 先落（app-1 段 a/b：FROZEN/TOMB ok）；本批机制面收官——AM-1.5 ✓（WAKE ok）/ AM-2a ✓（DPG 台账）/ AM-2b ✓（AM2B-K + 第 8 插迁交）/ AM-2e ✓（DPGPRESS 真注入 + `eco: pressure p1`），AM-2 全链贯通（等页感知→折卷→阈值→事件→用户态观测）。v2 项保持候态：AM-4 换出（依赖 pager 压缩仓成形）、AM-5 归档 + AI 调梯度（KC 先立）。
 
 ## 适用边界
 

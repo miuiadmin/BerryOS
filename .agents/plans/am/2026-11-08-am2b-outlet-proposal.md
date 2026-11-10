@@ -1,7 +1,7 @@
 # AM-2b 压力事件带内出口提案
 Type: proposal
-Status: active
-Updated: 2026-11-08
+Status: done
+Updated: 2026-11-11
 
 ## 问题与约束
 
@@ -57,3 +57,4 @@ ABI 面：零新号；新增内核派生位一个。
 - AM-1.5 设计原文写「Event 通知 token 持有者」（design.md:49），落地形 = 派生位 + 按进程钉键广播（syscall.rs:3054-3072），未建 Event 对象——候选①/②对照时以落地形为准。
 
 2026-11-08 拍板实施：候选①，六裁决见 [am design v0.4.0](design.md)。
+2026-11-11 落地收官：候选①全量已落（窗口折卷/θ_p 10%/AM2B-K/boot 第 8 插 0x0001_0008，沿革 §171），AM-2e 真注入 `DPGPRESS ok n=248` + 观测桥 `eco: pressure p1` 续证（沿革 §172/§173）——本提案内容已全落，翻 done；机制现役态以 [am design v0.5.0](design.md)「压力信号」节为权威。
