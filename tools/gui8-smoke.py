@@ -113,6 +113,12 @@ MARK_WM_FOCUS_KEY = "WMFOCUSKEY ok"
 MARK_WM_FOCUS_NOOP = "WMFOCUSNOOP ok"
 MARK_WM_FOCUS_SKIP = "WMFOCUSSKIP ok"
 MARK_WM_FOCUS = "WMFOCUS ok"
+MARK_WM_HIDE_FOCUS = "WMHIDEFOCUS ok"
+MARK_WM_MISS_FOCUS = "WMMISSFOCUS ok"
+MARK_WM_SHOW_FOCUS = "WMSHOWFOCUS ok"
+MARK_WM_Z_FOCUS = "WMZFOCUS ok"
+MARK_WM_LOCK_DOWN = "WMLOCKDOWN ok"
+MARK_WM_CANCEL = "WMCANCEL ok"
 MARK_WM_DEAD1 = "WMDEAD ok id=1 wins=0"
 MARK_WM_DEAD2 = "WMDEAD ok id=2 wins=1"
 MARK_WM_ROUTE_DESKTOP = "WMROUTE ok sid=3 window=0"
@@ -504,6 +510,26 @@ class QmpClient:
         """同码 down/up；QEMU 会各产 EV_KEY+SYN_REPORT 批。"""
         self.key(code, True)
         self.key(code, False)
+
+    def pointer_down(self, x: float, y: float, w: int, h: int) -> None:
+        """raw DOWN（不自动 UP）：P4 stale input-lock 相专用。"""
+        ax = max(0, min(32767, int(round(x * 32768.0 / max(1, w)))))
+        ay = max(0, min(32767, int(round(y * 32768.0 / max(1, h)))))
+        self.input_send([
+            {"type": "abs", "data": {"axis": "x", "value": ax}},
+            {"type": "abs", "data": {"axis": "y", "value": ay}},
+        ])
+        time.sleep(0.1)
+        self.input_send([
+            {"type": "btn", "data": {"down": True, "button": "left"}},
+            {"type": "abs", "data": {"axis": "x", "value": ax}},
+            {"type": "abs", "data": {"axis": "y", "value": ay}},
+        ])
+        time.sleep(0.2)
+
+    def pointer_up(self) -> None:
+        """raw UP：须在 guest 已销毁锁定窗后注入。"""
+        self.input_send([{"type": "btn", "data": {"down": False, "button": "left"}}])
 
     def click(self, x: float, y: float, w: int, h: int) -> None:
         """三批单击：①abs 定位 ②btn down（带坐标）③btn up。"""
@@ -975,6 +1001,17 @@ def _require_pos_after(
         )
 
 
+def _require_p4_absent(
+    text: str, phase: str, log_path: Path | None = None
+) -> None:
+    """P4 矩阵只能出现在 P3 交互证明成功的 Boot A。"""
+    for marker in (
+        MARK_WM_HIDE_FOCUS, MARK_WM_MISS_FOCUS, MARK_WM_SHOW_FOCUS,
+        MARK_WM_Z_FOCUS, MARK_WM_LOCK_DOWN, MARK_WM_CANCEL,
+    ):
+        _require_exact_count(text, marker, 0, f"{phase} P4 isolation", log_path)
+
+
 def verify_boot_a_click(
     text: str,
     ready_pos: int,
@@ -1009,7 +1046,7 @@ def verify_boot_a_click(
     _require_exact_count(
         text, MARK_WM_FOCUS_NOOP, 1, "boot A focus no-op", log_path
     )
-    _require_exact_count(text, "WMKEYROUTE ok ", 4, "boot A focus keys", log_path)
+    _require_exact_count(text, "WMKEYROUTE ok ", 6, "boot A focus keys", log_path)
     _require_exact_count(text, "WMKEYDROP bad ", 0, "boot A focus keys", log_path)
     _require_exact_count(
         text, "WMSNAPFOCUS ok ", 1, "boot A focus snapshot", log_path
@@ -1020,7 +1057,45 @@ def verify_boot_a_click(
     _require_exact_count(
         text, "WMKEYFOCUS ok side=right ", 1, "boot A right focus", log_path
     )
-    _require_exact_count(text, MARK_WM_FOCUS, 2, "boot A click focus", log_path)
+    _require_exact_count(text, MARK_WM_FOCUS, 4, "boot A click focus", log_path)
+    _require_exact_count(text, MARK_WM_HIDE_FOCUS, 1, "boot A hide focus", log_path)
+    _require_exact_count(text, MARK_WM_MISS_FOCUS, 1, "boot A desktop miss", log_path)
+    _require_exact_count(text, MARK_WM_SHOW_FOCUS, 1, "boot A show focus", log_path)
+    _require_exact_count(text, MARK_WM_Z_FOCUS, 2, "boot A z focus", log_path)
+    _require_exact_count(text, MARK_WM_LOCK_DOWN, 1, "boot A lock down", log_path)
+    _require_exact_count(text, MARK_WM_CANCEL, 1, "boot A lock cancel", log_path)
+    _require_exact_count(text, "WMMISSREADY ok ", 1, "boot A miss ready", log_path)
+    _require_exact_count(text, "WMZREADY ok ", 1, "boot A z ready", log_path)
+    _require_exact_count(text, "WMLOCKREADY ok ", 1, "boot A lock ready", log_path)
+    cancel_matches = re.findall(
+        r"WMCANCEL ok window=[0-9]+ phase=4 flags=([0-9]+) v=[0-9]+", text
+    )
+    if len(cancel_matches) != 1 or int(cancel_matches[0]) & 2 == 0:
+        raise SmokeError("boot A lock cancel phase/synth 位/计数不符", log_path)
+    # P4 版本算术 backstop：guest 已 fail-loud；此处防 fake corpus 伪造
+    # 各段 marker 但版本链漂移。
+    hide_v = re.search(r"WMHIDEFOCUS ok [^\n]*v=([0-9]+)", text)
+    miss_v = re.search(r"WMMISSFOCUS ok [^\n]*v=([0-9]+)", text)
+    show_v = re.search(r"WMSHOWFOCUS ok [^\n]*v=([0-9]+)", text)
+    z_vs = [int(v) for v in re.findall(r"WMZFOCUS ok [^\n]*v=([0-9]+)", text)]
+    lock_v = re.search(r"WMLOCKREADY ok [^\n]*v=([0-9]+)", text)
+    cancel_v = re.search(r"WMCANCEL ok [^\n]*v=([0-9]+)", text)
+    focus_vs = [
+        int(v) for v in re.findall(r"WMFOCUS ok [^\n]*v=([0-9]+)", text)
+    ]
+    if hide_v is None or miss_v is None or show_v is None or lock_v is None or cancel_v is None or len(z_vs) != 2:
+        raise SmokeError("boot A P4 版本 marker 缺失", log_path)
+    if miss_v.group(1) != hide_v.group(1):
+        raise SmokeError("boot A desktop miss 未保持 table version", log_path)
+    if int(show_v.group(1)) <= int(miss_v.group(1)):
+        raise SmokeError("boot A SHOW 未推进 table version", log_path)
+    if z_vs[0] >= z_vs[1]:
+        raise SmokeError("boot A z-order 版本未递增", log_path)
+    if int(cancel_v.group(1)) <= int(lock_v.group(1)):
+        raise SmokeError("boot A lock destroy/cancel 版本未递增", log_path)
+    if any(b <= a for a, b in zip(focus_vs, focus_vs[1:])):
+        raise SmokeError("boot A WMFOCUS 版本序列非严格递增", log_path)
+
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
@@ -1090,6 +1165,7 @@ def verify_boot_b(text: str, log_path: Path | None = None) -> None:
     _require_exact_count(text, MARK_WM_FOCUS_SKIP, 1, "boot B focus skip", log_path)
     _require_exact_count(text, MARK_WM_FOCUS + " ", 0, "boot B focus change", log_path)
     _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "boot B keyboard focus", log_path)
+    _require_p4_absent(text, "boot B", log_path)
     n_layout = len(re.findall(RE_LAYOUT_N2, text))
     if n_layout != 1:
         raise SmokeError(
@@ -1105,6 +1181,7 @@ def verify_layout_selfheal_boot(text: str, log_path: Path | None = None) -> None
     _require_exact_count(text, MARK_WM_FOCUS_SKIP, 1, "boot C focus skip", log_path)
     _require_exact_count(text, MARK_WM_FOCUS + " ", 0, "boot C focus change", log_path)
     _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "boot C keyboard focus", log_path)
+    _require_p4_absent(text, "boot C", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 1, "layout self-heal", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "layout self-heal", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "layout self-heal", log_path)
@@ -1131,6 +1208,7 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_WM_FOCUS_SKIP, 1, "normal focus skip", log_path)
     _require_exact_count(text, MARK_WM_FOCUS + " ", 0, "normal focus change", log_path)
     _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "normal keyboard focus", log_path)
+    _require_p4_absent(text, "normal", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
@@ -2001,6 +2079,68 @@ def run_dual_boot(args) -> int:
             focus_rx + focus_rw // 2, focus_h // 2, focus_dw, focus_h
         )
         boot_a.wait_markers(["WMFOCUSNOOP ok "], args.click_timeout)
+
+        # —— P4 window policy matrix：HIDE 归还焦点 → desktop miss 不清焦
+        #    → SHOW 接焦 → z-order 两次命中 → 锁定窗销毁后 CANCEL。
+        boot_a.wait_markers([MARK_WM_HIDE_FOCUS], args.click_timeout)
+        boot_a.wait_regex(r"WMMISSREADY ok x=([0-9]+) y=([0-9]+)", args.click_timeout)
+        boot_a.log.poll()
+        miss_ready = re.search(
+            r"WMMISSREADY ok x=([0-9]+) y=([0-9]+)", boot_a.log.text
+        )
+        if miss_ready is None:
+            raise SmokeError("boot A desktop-miss geometry absent", boot_a.log_path)
+        miss_x, miss_y = map(int, miss_ready.groups())
+        log("boot A: QMP 点击已隐藏右窗区域 + KEY_A（desktop miss）")
+        boot_a.qmp.click(miss_x, miss_y, focus_dw, focus_h)
+        boot_a.qmp.tap_key(30)
+        boot_a.wait_markers(
+            [MARK_WM_MISS_FOCUS, MARK_WM_SHOW_FOCUS], args.click_timeout
+        )
+
+        boot_a.wait_regex(r"WMZREADY ok x=([0-9]+) y=([0-9]+)", args.click_timeout)
+        boot_a.log.poll()
+        z_ready = re.search(r"WMZREADY ok x=([0-9]+) y=([0-9]+)", boot_a.log.text)
+        if z_ready is None:
+            raise SmokeError("boot A z-order geometry absent", boot_a.log_path)
+        z_x, z_y = map(int, z_ready.groups())
+        log("boot A: QMP 点击重叠带（z 平局表序左窗胜）")
+        boot_a.qmp.click(z_x, z_y, focus_dw, focus_h)
+        boot_a.wait_markers(
+            [f"WMZFOCUS ok winner={focus_left_id} "], args.click_timeout
+        )
+        boot_a.wait_markers(["WMZRAISE ok "], args.click_timeout)
+        log("boot A: QMP 重复点击重叠带（右窗 z=1 胜）")
+        boot_a.qmp.click(z_x, z_y, focus_dw, focus_h)
+        boot_a.wait_markers(
+            [f"WMZFOCUS ok winner={focus_right_id} "], args.click_timeout
+        )
+
+        boot_a.wait_regex(
+            r"WMLOCKREADY ok window=([0-9]+) x=([0-9]+) y=([0-9]+) "
+            r"w=([0-9]+) h=([0-9]+)",
+            args.click_timeout,
+        )
+        boot_a.log.poll()
+        lock_ready = re.search(
+            r"WMLOCKREADY ok window=([0-9]+) x=([0-9]+) y=([0-9]+) "
+            r"w=([0-9]+) h=([0-9]+)",
+            boot_a.log.text,
+        )
+        if lock_ready is None:
+            raise SmokeError("boot A lock-window geometry absent", boot_a.log_path)
+        lock_id, lock_x, lock_y, lock_w, lock_h = map(int, lock_ready.groups())
+        log(f"boot A: QMP raw DOWN 锁定第三窗 id={lock_id}")
+        boot_a.qmp.pointer_down(
+            lock_x + lock_w // 2,
+            lock_y + lock_h // 2,
+            focus_dw,
+            focus_h,
+        )
+        boot_a.wait_markers([MARK_WM_LOCK_DOWN], args.click_timeout)
+        log("boot A: 锁定窗销毁后注入 raw UP（须合成 CANCEL）")
+        boot_a.qmp.pointer_up()
+        boot_a.wait_markers([MARK_WM_CANCEL], args.click_timeout)
 
         _wait_boot_batch(boot_a, args.boot_a_timeout)
         _warn_input_armed(boot_a)
@@ -3412,6 +3552,21 @@ def self_test(args) -> int:
             f"{MARK_WM_FOCUS_KEY}\n"
             "WMSNAPFOCUS ok v=9 right=1\n"
             f"{MARK_WM_FOCUS_NOOP} window=6 v=9\n"
+            "WMFOCUS ok sid=1 window=5 v=12\n"
+            "WMFOCUS ok sid=2 window=6 v=13\n"
+            "WMMISSREADY ok x=600 y=300\n"
+            f"{MARK_WM_HIDE_FOCUS} hidden=6 focused=5 v=10\n"
+            "WMKEYROUTE ok sid=1 window=5 code=30 action=1\n"
+            "WMKEYROUTE ok sid=1 window=5 code=30 action=0\n"
+            f"{MARK_WM_MISS_FOCUS} focused=5 keys=2 v=10\n"
+            f"{MARK_WM_SHOW_FOCUS} shown=6 v=11\n"
+            "WMZREADY ok x=300 y=300 z=0\n"
+            f"WMZFOCUS ok winner=5 z=0 v=12\n"
+            "WMZRAISE ok window=6 z=1\n"
+            f"WMZFOCUS ok winner=6 z=1 v=13\n"
+            "WMLOCKREADY ok window=7 x=24 y=96 w=160 h=96 v=14\n"
+            f"{MARK_WM_LOCK_DOWN} window=7 destroyed=1\n"
+            f"{MARK_WM_CANCEL} window=7 phase=4 flags=2 v=15\n"
             f"{MARK_APP_DEMO_UP}\n"
             f"{MARK_LAYOUTW}\n"
             f"{MARK_INPUT_DROPS_OK}\n"
@@ -3442,6 +3597,27 @@ def self_test(args) -> int:
             "Boot A 键盘路由数漂移",
             lambda: verify_boot_a_click(
                 fake_a + "WMKEYROUTE ok sid=2 window=6 code=30 action=1\n",
+                pos_a, 1, 0,
+            ),
+        )
+        expect_error(
+            "Boot A 缺锁定窗 CANCEL",
+            lambda: verify_boot_a_click(
+                fake_a.replace(f"{MARK_WM_CANCEL} window=7", "WMCANCELX window=7", 1),
+                pos_a, 1, 0,
+            ),
+        )
+        expect_error(
+            "Boot A P4 版本链漂移",
+            lambda: verify_boot_a_click(
+                fake_a.replace("WMSHOWFOCUS ok shown=6 v=11", "WMSHOWFOCUS ok shown=6 v=10", 1),
+                pos_a, 1, 0,
+            ),
+        )
+        expect_error(
+            "Boot A z 焦点证明缺一层",
+            lambda: verify_boot_a_click(
+                fake_a.replace("WMZFOCUS ok winner=6 ", "", 1),
                 pos_a, 1, 0,
             ),
         )
@@ -3546,6 +3722,10 @@ def self_test(args) -> int:
 
         fake_b = f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\nLAUNCH ok\nLAYOUT ok n=2\n"
         verify_boot_b(fake_b)
+        expect_error(
+            "Boot B 泄漏 P4 矩阵",
+            lambda: verify_boot_b(fake_b + "WMZFOCUS ok winner=6 z=1 v=13\n"),
+        )
         expect_error(
             "Boot B 重复 LAYOUT",
             lambda: verify_boot_b(fake_b + "LAYOUT ok n=2\n"),

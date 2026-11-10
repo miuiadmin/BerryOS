@@ -5,7 +5,7 @@
 > 定位：P2 Keyboard Input 后的窗口策略刀。P3 在 gui-wmd 权威 pointer
 > DOWN 命中路径更新窗口焦点，并让 Keyboard KeyQueue 跟随点击目标。
 > 不新增 wire op，不改 `VER_WM`，不引入 click-to-raise 或第二焦点权威。
-> 执行序权威 = [GUI框架地基路线-v1.7.md](GUI框架地基路线-v1.7.md)。
+> 执行序权威 = [GUI框架地基路线-v1.8.md](GUI框架地基路线-v1.8.md)。
 
 ## §1 语义
 
@@ -337,6 +337,7 @@ SHA-256 = 6484dd6032be8dddfe43f83c58e73a06dedcbc70dcbccb50c78ee17e931689c2
 - click-to-raise 未开放。
 - MRU / z-top focus 栈未开放；refocus 仍是表序最末可见窗。
 - SYSTEM 层窗口点击不抢焦；真实系统层窗口仍未落地。
+- P4 已补 desktop miss、HIDE/SHOW、z-order 与 stale lock CANCEL 验收矩阵。
 - gui-wmd 仍无本机 host 测试 harness；P3 通过 GUI8 双窗真链覆盖。
 - 多点触控 / 多显示器 focus 迁移未开放。
 - Window drag/resize 策略未开放。

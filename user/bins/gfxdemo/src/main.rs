@@ -407,8 +407,12 @@ fn wait_key_pair(target: Handle, other: Handle, side: &str) {
     }
 }
 
-/// TABLE_GET 焦点快照：返回版本与右窗 focused 位。
-fn table_focus_snapshot(ch: Handle, right: u16) -> (u32, bool) {
+/// TABLE_GET 焦点快照：返回版本与左右窗 focused 位。
+fn table_focus_snapshot(
+    ch: Handle,
+    left: u16,
+    right: u16,
+) -> (u32, bool, bool) {
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
@@ -424,8 +428,163 @@ fn table_focus_snapshot(ch: Handle, right: u16) -> (u32, bool) {
         .take(snap.count)
         .find(|e| e.id == right)
         .unwrap_or_else(|| fail("focus table missing right"));
-    let focused = entry.flags & gp::WM_WIN_F_FOCUSED != 0;
+    let left_focused = snap
+        .entries
+        .iter()
+        .take(snap.count)
+        .find(|e| e.id == left)
+        .map(|e| e.flags & gp::WM_WIN_F_FOCUSED != 0)
+        .unwrap_or(false);
+    let right_focused = entry.flags & gp::WM_WIN_F_FOCUSED != 0;
+    (snap.version, left_focused, right_focused)
+}
+
+/// TABLE_GET 单窗 focused 位：P4 第三锁定窗专用。
+fn table_focus_one(ch: Handle, window: u16) -> (u32, bool) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_wm_table_get_req(&mut req);
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    let snap = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+        Some(Ok(s)) => s,
+        other => fail(&format!("p4 one snapshot got {other:?}")),
+    };
+    let focused = snap
+        .entries
+        .iter()
+        .take(snap.count)
+        .find(|e| e.id == window)
+        .map(|e| e.flags & gp::WM_WIN_F_FOCUSED != 0)
+        .unwrap_or(false);
     (snap.version, focused)
+}
+
+/// 排空一个 input channel 的残留 pointer 批，避免旧 DOWN 让后续
+/// wait_pointer_down 立即假命中。
+fn pointer_silent(ch: Handle) {
+    let mut pe = [gp::PointerEvent {
+        phase: 0, device_id: 0, buttons: 0, flags: 0, pointer_id: 0,
+        timestamp_ns: 0, x: 0, y: 0, pressure: 0, contact_major: 0,
+        contact_minor: 0, history: [gp::Sample { timestamp_ns: 0, x: 0, y: 0 };
+            gp::INPUT_SAMPLES_MAX - 1], history_len: 0,
+    }; gp::INPUT_EVENTS_MAX];
+    if poll_pointer(ch, &mut pe) != 0 {
+        fail("p4 pointer silence broken");
+    }
+}
+
+fn drain_pointer(ch: Handle) {
+    let mut pe = [gp::PointerEvent {
+        phase: 0, device_id: 0, buttons: 0, flags: 0, pointer_id: 0,
+        timestamp_ns: 0, x: 0, y: 0, pressure: 0, contact_major: 0,
+        contact_minor: 0, history: [gp::Sample { timestamp_ns: 0, x: 0, y: 0 };
+            gp::INPUT_SAMPLES_MAX - 1], history_len: 0,
+    }; gp::INPUT_EVENTS_MAX];
+    for _ in 0..16 {
+        if poll_pointer(ch, &mut pe) == 0 {
+            return;
+        }
+    }
+    fail("focus pointer drain overflow");
+}
+
+/// 通用 WM_SET：P4 矩阵驱动 VIS/GEOM/Z 状态迁移。
+fn wm_set(ch: Handle, req: gp::WmSetReq) {
+    let mut wire = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = enc_req(gp::encode_wm_set_req(&mut wire, &req));
+    expect_ok(ch, &wire[..m], &[], &mut rep, &mut rhs, "p4 wm set");
+}
+
+fn set_visibility(ch: Handle, window: u16, show: bool, geom: (u16,u16,u16,u16)) {
+    wm_set(ch, gp::WmSetReq {
+        mask: gp::WM_SET_F_VIS,
+        window_id: window,
+        x: geom.0, y: geom.1, w: geom.2, h: geom.3,
+        vis: if show { gp::WM_VIS_SHOW } else { gp::WM_VIS_HIDE },
+        z: 0,
+    });
+}
+
+fn set_geometry_z(
+    ch: Handle, window: u16, geom: (u16,u16,u16,u16), z: u8,
+) {
+    wm_set(ch, gp::WmSetReq {
+        mask: gp::WM_SET_F_GEOM | gp::WM_SET_F_Z,
+        window_id: window,
+        x: geom.0, y: geom.1, w: geom.2, h: geom.3,
+        vis: gp::WM_VIS_SHOW,
+        z,
+    });
+}
+
+fn set_z(ch: Handle, window: u16, z: u8, geom: (u16,u16,u16,u16)) {
+    wm_set(ch, gp::WmSetReq {
+        mask: gp::WM_SET_F_Z,
+        window_id: window,
+        x: geom.0, y: geom.1, w: geom.2, h: geom.3,
+        vis: gp::WM_VIS_SHOW,
+        z,
+    });
+}
+
+fn destroy_window(ch: Handle, window: u16) {
+    let mut wire = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = enc_req(Some(gp::encode_wm_destroy_req(&mut wire, window)));
+    expect_ok(ch, &wire[..m], &[], &mut rep, &mut rhs, "p4 wm destroy");
+}
+
+fn create_lock_window(ch: Handle) -> (u16, u16, u16, u16, u16) {
+    let req = gp::WmCreateReq {
+        layer: gp::WM_LAYER_APP,
+        flags: 0,
+        parent: 0,
+        group: 0,
+        x: 24,
+        y: 96,
+        w: 160,
+        h: 96,
+    };
+    let mut wire = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = enc_req(gp::encode_wm_create_req(&mut wire, &req));
+    let (n, _) = rpc(ch, &wire[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_wm_create_ack(&rep[..n]) {
+        Some(id) if id != 0 => (id, req.x, req.y, req.w, req.h),
+        _ => fail(&format!("p4 lock create st={}", rep[0])),
+    }
+}
+
+/// 等待锁定窗被销毁后的 synthesized CANCEL。
+fn wait_pointer_cancel(ch: Handle) -> gp::PointerEvent {
+    let deadline = now() + 30_000_000_000;
+    let mut pe = [gp::PointerEvent {
+        phase: 0, device_id: 0, buttons: 0, flags: 0, pointer_id: 0,
+        timestamp_ns: 0, x: 0, y: 0, pressure: 0, contact_major: 0,
+        contact_minor: 0, history: [gp::Sample { timestamp_ns: 0, x: 0, y: 0 };
+            gp::INPUT_SAMPLES_MAX - 1], history_len: 0,
+    }; gp::INPUT_EVENTS_MAX];
+    loop {
+        let n = poll_pointer(ch, &mut pe);
+        for ev in pe.iter().take(n) {
+            if ev.phase == gp::PHASE_CANCEL
+                && ev.flags & gp::PE_FL_SYNTHESIZED != 0
+            {
+                return *ev;
+            }
+        }
+        if now() >= deadline {
+            fail("p4 synthesized cancel timeout");
+        }
+        if berry_thread_sleep(now() + 1_000_000) != 0 {
+            fail("p4 cancel sleep");
+        }
+    }
 }
 
 /// P3 双窗焦点证明：QMP 先点左窗+KEY_A，再点右窗+KEY_A。本函数只在
@@ -433,7 +592,7 @@ fn table_focus_snapshot(ch: Handle, right: u16) -> (u32, bool) {
 fn focus_keyboard_proof(
     hw: Handle, rogue: Handle, input1: Handle, input2: Handle,
     left: u16, right: u16, left_w: u16, right_x: u16, right_w: u16, h: u16,
-) {
+) -> bool {
     configure_retained_keyboard(hw, left);
     configure_retained_keyboard(rogue, right);
     println!(
@@ -441,7 +600,7 @@ fn focus_keyboard_proof(
     );
     if !wait_pointer_down(input1, input2, "left") {
         println!("WMFOCUSSKIP ok reason=no-pointer");
-        return;
+        return false;
     }
     wait_key_pair(input1, input2, "left");
     println!("WMKEYFOCUS ok side=left window={left} pointer=1 keys=2");
@@ -451,19 +610,139 @@ fn focus_keyboard_proof(
     println!("WMFOCUSKEY ok left={left} right={right} proofs=2");
     // 同窗重复点击：wmd 不得再次 bump / 打 WMFOCUS。这里等待真实第二次
     // pointer DOWN，并用 TABLE_GET 前后版本与 focused bit 钉板 no-op。
-    let (before, focused_before) = table_focus_snapshot(hw, right);
+    let (before, _, focused_before) = table_focus_snapshot(hw, left, right);
     if !focused_before {
         fail("focus snapshot right not focused");
     }
     if !wait_pointer_down(input2, input1, "right-noop") {
         fail("focus no-op pointer absent");
     }
-    let (after, focused_after) = table_focus_snapshot(hw, right);
+    let (after, _, focused_after) = table_focus_snapshot(hw, left, right);
     if before != after || !focused_after {
         fail(&format!("focus no-op snapshot {before}->{after} focused={focused_after}"));
     }
     println!("WMSNAPFOCUS ok v={after} right=1");
     println!("WMFOCUSNOOP ok window={right} v={before}");
+    true
+}
+
+/// P4 窗口策略矩阵：desktop miss 焦点保持、HIDE/SHOW refocus、
+/// z-order 命中焦点、锁定窗销毁后的 synthesized CANCEL。所有状态迁移仍
+/// 走 WM_SET/DESTROY 与 wmd 权威表，不在 guest 侧造第二真相。
+#[allow(clippy::too_many_arguments)]
+fn window_policy_proof(
+    hw: Handle,
+    rogue: Handle,
+    input1: Handle,
+    input2: Handle,
+    left: u16,
+    right: u16,
+    left_w: u16,
+    right_x: u16,
+    right_w: u16,
+    h: u16,
+) {
+    let right_geom = (right_x, 0, right_w, h);
+
+    // ① HIDE：焦点右窗隐藏后必须归还给唯一可见左窗。
+    let (before, _, right_before) = table_focus_snapshot(hw, left, right);
+    if !right_before {
+        fail("p4 hide precondition right not focused");
+    }
+    set_visibility(rogue, right, false, right_geom);
+    let (hidden, left_hidden, right_hidden) = table_focus_snapshot(hw, left, right);
+    if hidden <= before || !left_hidden || right_hidden {
+        fail(&format!("p4 hide snapshot v={hidden} l={left_hidden} r={right_hidden}"));
+    }
+    println!("WMHIDEFOCUS ok hidden={right} focused={left} v={hidden}");
+    let miss_x = right_x + right_w / 2;
+    let miss_y = h / 2;
+    drain_pointer(input1);
+    drain_pointer(input2);
+    println!("WMMISSREADY ok x={miss_x} y={miss_y}");
+
+    // ② desktop miss：右半屏已无窗，点击不 bump、不清焦；KEY_A 仍进左窗。
+    wait_key_pair(input1, input2, "miss");
+    pointer_silent(input1);
+    pointer_silent(input2);
+    let (miss, left_miss, right_miss) = table_focus_snapshot(hw, left, right);
+    if miss != hidden || !left_miss || right_miss {
+        fail(&format!("p4 miss snapshot v={miss} l={left_miss} r={right_miss}"));
+    }
+    println!("WMMISSFOCUS ok focused={left} pointer=0 keys=2 v={miss}");
+
+    // ③ SHOW：显窗接焦，恢复右窗 focus。
+    set_visibility(rogue, right, true, right_geom);
+    let (shown, left_shown, right_shown) = table_focus_snapshot(hw, left, right);
+    if shown <= miss || left_shown || !right_shown {
+        fail(&format!("p4 show snapshot v={shown} l={left_shown} r={right_shown}"));
+    }
+    println!("WMSHOWFOCUS ok shown={right} v={shown}");
+
+    // ④ z-order：右窗移入重叠带。z 平局按表序，左窗先建者胜；
+    //    右窗 z=1 后同点命中右窗。焦点必须跟随 hit-test winner。
+    let overlap_x = left_w / 2;
+    let overlap_geom = (overlap_x, 0, right_w, h);
+    let overlap_center = overlap_x + left_w / 4;
+    let overlap_y = h / 2;
+    set_geometry_z(rogue, right, overlap_geom, 0);
+    drain_pointer(input1);
+    drain_pointer(input2);
+    println!("WMZREADY ok x={overlap_center} y={overlap_y} z=0");
+    wait_pointer_down(input1, input2, "z-tie");
+    let (tie, left_tie, right_tie) = table_focus_snapshot(hw, left, right);
+    if !left_tie || right_tie {
+        fail(&format!("p4 z tie l={left_tie} r={right_tie}"));
+    }
+    println!("WMZFOCUS ok winner={left} z=0 v={tie}");
+    set_z(rogue, right, 1, overlap_geom);
+    drain_pointer(input1);
+    drain_pointer(input2);
+    println!("WMZRAISE ok window={right} z=1");
+    wait_pointer_down(input2, input1, "z-top");
+    let (top, left_top, right_top) = table_focus_snapshot(hw, left, right);
+    if left_top || !right_top {
+        fail(&format!("p4 z top l={left_top} r={right_top}"));
+    }
+    println!("WMZFOCUS ok winner={right} z=1 v={top}");
+    set_geometry_z(rogue, right, right_geom, 0);
+
+    // ⑤ stale input lock：真实 DOWN 锁定第三窗，guest 收到 DOWN 后销毁
+    //    该窗，再注入 UP；wmd 必须合成 CANCEL+SYNTHESIZED 并清锁。
+    let (lock, lock_x, lock_y, lock_w, lock_h) = create_lock_window(rogue);
+    // 锁定窗叠在左窗上；z=1 确保 DOWN 命中锁定窗而非表序更早的左窗。
+    set_z(
+        rogue,
+        lock,
+        1,
+        (lock_x, lock_y, lock_w, lock_h),
+    );
+    let (lock_created, lock_focused) = table_focus_one(hw, lock);
+    if !lock_focused {
+        fail("p4 lock window not focused");
+    }
+    drain_pointer(input1);
+    drain_pointer(input2);
+    println!(
+        "WMLOCKREADY ok window={lock} x={lock_x} y={lock_y} w={lock_w} h={lock_h} v={lock_created}"
+    );
+    wait_pointer_down(input2, input1, "lock");
+    destroy_window(rogue, lock);
+    println!("WMLOCKDOWN ok window={lock} destroyed=1");
+    let cancel = wait_pointer_cancel(input2);
+    if cancel.phase != gp::PHASE_CANCEL
+        || cancel.flags & gp::PE_FL_SYNTHESIZED == 0
+    {
+        fail(&format!("p4 cancel phase={} flags={}", cancel.phase, cancel.flags));
+    }
+    let (after_lock, left_after, right_after) = table_focus_snapshot(hw, left, right);
+    if !right_after || left_after {
+        fail(&format!("p4 post-lock l={left_after} r={right_after}"));
+    }
+    println!(
+        "WMCANCEL ok window={lock} phase={} flags={} v={after_lock}",
+        cancel.phase, cancel.flags
+    );
 }
 
 /// 页取整帧 VMO（窗口局部 buffer；Phase 2 不再要求 app 分配全屏）。
@@ -791,10 +1070,16 @@ fn main() {
     // P3：在 TABLE/Present 流之前完成 click-to-focus + Keyboard 真链。
     // GUI8 看到 WMFOCUSREADY 后注入左右点击与 KEY_A；本进程阻塞等待，
     // 证明完成才继续既有 gfxdemo 流。
-    focus_keyboard_proof(
+    let focus_interactive = focus_keyboard_proof(
         hw, rogue, input1, input2, wid, wid2,
         creq.w, creq2.x, creq2.w, creq2.h,
     );
+    if focus_interactive {
+        window_policy_proof(
+            hw, rogue, input1, input2, wid, wid2,
+            creq.w, creq2.x, creq2.w, creq2.h,
+        );
+    }
 
     // ④ TABLE_GET：全表快照对拍——count≥1 ∧ window_id 回显 ∧ 有效几何
     // == 申请几何（v1 无系统层重叠 = 恒等；GUI-8 裁决四-e 定谳：状态栏/
