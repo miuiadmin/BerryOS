@@ -24,7 +24,7 @@ fn try_box<T>(val: T) -> Option<Box<T>> {
 }
 
 /// 内核线程的默认栈大小（16KiB）。v1 切换在 IRQ-mask 中（无嵌套 IRQ）、无深递归，
-/// 够用；守卫页 TODO（plan R7）。
+/// 够用；v1 16KiB 无守卫页定谳（原孤儿 TODO 升格→ 规则/01 瘦行 + 雷册 §A144；v2 = 水位探针或 guard page）。
 pub const STACK_SIZE: usize = 16 * 1024;
 
 /// 能效倾向 hint（EPP，`调度器设计.md` §6）：指引大小核放置与改频。字段先落地

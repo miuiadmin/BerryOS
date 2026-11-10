@@ -17,6 +17,7 @@
 | 项 | 现状 | 根因/前置 | 验收证据 | 风险 |
 | --- | --- | --- | --- | --- |
 | GUI-8 图标 dash | 🟡 540/256 全桌面可起，但图标占位 | `launcher_assemble` 在 `fs_gift==0` 时只给 `[wm]`，`app_cli_h()==0`；`icons::init` 空 registry | 串口 `LAUNCH v=1` 且桌面出现 APPDEMO/APPQUIET 图标 | 中：需 fsmgr/vblk 或改冻结相 [wm] |
+| 状态栏时钟 | 🔴 bsh 12:00 硬编码占位（desktop.rs:102 TODO(W2) 分相号已闭卷） | berry_clock_read(0x28) 在册，frameloop 读时钟摆字即可 | 实施面小（~20 行） | 低 |
 | data disk 图标实验 | ⬜ 失败已回退 | `vblk` 找到 slot 31，但 `fs_gift` 未成立；FAT/mkfat 有效 | `MMAP/ROOTFS/LAUNCH ok` + app registry | 中：可能污染 boot |
 | 顶层 tap/key/swipe/text 别名 | ✅ 已落 | `input` 子命令 + 顶层 4 别名 | `berry tap 1 2` 等 | 低 |
 | `display rotate` | ⬜ 仅 `display set <profile|WxH>` | 需客机/呈现面旋转 | `display rotate 90` 后截图方向正确 | 中 |
