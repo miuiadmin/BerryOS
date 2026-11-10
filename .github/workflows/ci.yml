@@ -231,6 +231,17 @@ jobs:
       # --locked`：跳过 build-user 则 kernel/src/userbins/*.bin（gitignored 编译
       # 产物，内核 include_bytes! 直嵌）缺席 → 编译期炸响 exit 101——CI 连红 5
       # 天的根因（缺产物 loud not silent 是设计，CI 面须先走产物链）。
+      # 共享 target 缓存（2026-11-10）：双 runner 各自 workspace 的 target 零缓存
+      # = 每次 run 近全量重建（实测 322s vs 1185s 3.7 倍波动）。软链到共享
+      # 位（777，两 runner 用户等价读写），增量构建复用跨 run 编译产物。
+      # 注意：不缓存 root .cargo/registry（已 symlink 共享位）——只共享编译产物。
+      - name: 共享 target 缓存挂载
+        run: |
+          mkdir -p /usr/local/share/cargo-target-cache
+          chmod 777 /usr/local/share/cargo-target-cache
+          rmdir target 2>/dev/null || rm -rf target
+          ln -sfn /usr/local/share/cargo-target-cache target
+
       - name: 构建（内核 + 用户程序产物链）
         run: just build
 
