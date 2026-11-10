@@ -3823,6 +3823,21 @@ fn tele_dump() {
     berry_hal_aarch64::uart_puts(b"/thaw=");
     berry_hal_aarch64::uart_put_dec(crate::telemetry::auto_thaw_total());
     berry_hal_aarch64::uart_puts(b"\n");
+    // W3-Q6：intent 档位直方 + 通胀计数行（`berry_itally::tally_line` 单源
+    // 装配——纯 ASCII 定长缓冲一次写出；advisor.py 摘要行族面，全零表打
+    // `none` 省略形）。三帽计数 = 4-3c 既有计数器（borrows/hop/budget），
+    // 与档位直方同窗同源——advisor 无需第二数据面。
+    {
+        let mut line = [0u8; berry_itally::LINE_MAX];
+        let n = berry_itally::tally_line(
+            crate::telemetry::intent_tally(),
+            crate::telemetry::intent_borrows(),
+            crate::telemetry::intent_hop_capped_total(),
+            crate::telemetry::intent_budget_capped_total(),
+            &mut line,
+        );
+        berry_hal_aarch64::uart_puts(&line[..n]);
+    }
 }
 
 /// ai_demo 私助：clock_read → wait_one(h, bit, now+cap) → 断言命中 → 清用户

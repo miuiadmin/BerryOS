@@ -1125,15 +1125,30 @@ pub fn intent_snapshot_current(now_ns: u64) -> Option<(crate::intent::MsgIntent,
 
 /// 4-3c：recv 侧 intent 结算（slowpath；语义在 [`crate::intent`]）。CURRENT
 /// 无效 → `None`（消息照常投递，不结算不记遥测）。IRQ 屏蔽窗内单核访问。
-pub fn intent_settle_current(m: crate::intent::MsgIntent, opt_out: bool,
-                             now_ns: u64) -> Option<crate::intent::SettleOut> {
+/// W3-Q6：结算后附 `(declared, effective)` 双档读出（`intent_settle_note`
+/// 的档位直方/通胀计数源——`Task` 字段在锁窗内单核读安全）。
+pub fn intent_settle_current_ext(
+    m: crate::intent::MsgIntent,
+    opt_out: bool,
+    now_ns: u64,
+) -> Option<(crate::intent::SettleOut, u8, u8)> {
     // SAFETY: CURRENT 可写；syscall 主体 IRQ 屏蔽（免锁根基），单核顺序。
     let cur = unsafe { current_task() };
     if cur.is_null() {
         None
     } else {
-        Some(crate::intent::settle(unsafe { &mut *cur }, m, opt_out, now_ns))
+        // SAFETY: 同上。
+        let t = unsafe { &mut *cur };
+        let out = crate::intent::settle(t, m, opt_out, now_ns);
+        Some((out, t.intent_declared, t.intent_effective))
     }
+}
+
+/// 4-3c：recv 侧 intent 结算（旧面——W3-Q6 前 9 个调用点零改动；
+/// 实现在 [`intent_settle_current_ext`]）。
+pub fn intent_settle_current(m: crate::intent::MsgIntent, opt_out: bool,
+                             now_ns: u64) -> Option<crate::intent::SettleOut> {
+    intent_settle_current_ext(m, opt_out, now_ns).map(|(out, _, _)| out)
 }
 
 /// 2b-2：任务地址空间激活——`ttbr0`/`asid` **变化才**写 TTBR0+CONTEXTIDR+`tlbi`

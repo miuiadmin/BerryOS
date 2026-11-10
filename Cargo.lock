@@ -19,12 +19,20 @@ name = "berry-iprofile"
 version = "0.2.0"
 
 [[package]]
+name = "berry-itally"
+version = "0.2.0"
+dependencies = [
+ "berry-iprofile",
+]
+
+[[package]]
 name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
  "berry-evface",
  "berry-hal-aarch64",
  "berry-hdlface",
+ "berry-itally",
  "berry-mm",
  "berry-piface",
  "berry-sched",

@@ -538,6 +538,11 @@ test-host:
     # 预留位别名拒/gen 发行域/表满门值域钉板，host 8 测；encode/decode
     # 单源，kernel handle.rs re-export 消费）。
     cargo test -p berry-hdlface --target {{host}}
+    # W3-Q6：berry-itally（intent 档位计数/通胀计数遥测纯函数面——档位
+    # 直方六槽/保留域收敛/borrowed==Σ借入不变量/tele: 行格式（纯 ASCII、
+    # 非零档省略、u64 极值界）钉板，host 11 测；tally_key/inflate/tally_line
+    # 单源，kernel telemetry.rs 计数面 + main.rs tele_dump 行装配消费）。
+    cargo test -p berry-itally --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各

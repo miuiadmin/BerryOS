@@ -48,7 +48,7 @@ for tag in $tags; do
     || fail "G-ver-3：$tag 指向提交的 Cargo.toml 无 [workspace.package] version（无法对拍；版本管理标准 §3）"
   want=${tag#v}
   [ "$ver" = "$want" ] \
-    || fail "G-ver-3：$tag 指向提交的版本 $ver ≠ tag 名 ${want}（版本管理标准 §3：banner 版本必须等于 tag 名——同源 env!(\"CARGO_PKG_VERSION\")）"
+    || fail "G-ver-3：${tag} 指向提交的版本 ${ver} ≠ tag 名 ${want}（版本管理标准 §3：banner 版本必须等于 tag 名——同源 env!(\"CARGO_PKG_VERSION\")）"
   # G-ver-4 静态降级面：构建标识/dirty 位机制在席（事后树净性不可验，见头注）。
   git show "$tag:kernel/build.rs" 2>/dev/null | grep -q 'fn git_ident' \
     || fail "G-ver-4（静态降级面）：$tag 指向提交的 kernel/build.rs 无 git_ident 函数（dirty 位机制缺席——banner 无从携带 -dirty，树净性失去人眼可辨的运行时替代）"

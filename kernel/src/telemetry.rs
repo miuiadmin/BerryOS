@@ -1152,6 +1152,27 @@ pub fn intent_budget_capped_total() -> u64 {
     INTENT_BUDGET_CAPPED.load(Ordering::Relaxed)
 }
 
+// ---- W3-Q6：intent 档位计数/通胀计数（`berry-itally` 单源——档位直方 +
+// inflate 数学的语义面在 crate，此处只装静态表与写点；advisor.py F6 摘要
+// 行族的消费面 = main.rs tele_dump 的 `tele: intent_tally` 行）----
+
+/// 档位计数静态表（六槽值直索引；写点 recv 结算 slowpath 单写者，读点
+/// tele_dump 锁窗外安全——计数器族先例同款）。
+static INTENT_TALLY: berry_itally::IntentTally = berry_itally::IntentTally::default();
+
+/// 记一次 recv 结算（Own/Borrowed 皆记档位分布；借入另累通胀——写点在
+/// `syscall.rs` 结算 slowpath，`berry_itally::record` 纯投影后打原子）。
+pub fn intent_settle_note(declared: u8, effective: u8) {
+    INTENT_TALLY.note_settle(declared, effective);
+}
+
+/// 档位计数表只读引用（tele_dump 行装配用——`tally_line` 快照在锁窗内
+/// 一次取走，非热路径）。
+pub fn intent_tally() -> &'static berry_itally::IntentTally {
+    &INTENT_TALLY
+}
+
+
 // ---- 4-4 IPC fastpath/slowpath 计数器（`IPC设计.md` §7——快/慢路配比的
 // 可观测信号；IRQ 屏蔽路径静态计数，零分配）。S-2 I50 起原子化（同上：
 // 写点锁窗内单写者，读点锁窗外安全）----

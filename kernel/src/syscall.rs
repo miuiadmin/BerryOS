@@ -3218,7 +3218,12 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             crate::telemetry::BILLING_RECV_VCT[slot].store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
         }
     }
-    if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
+    // W3-Q6：档位直方/通胀计数（Own/Borrowed 皆记——effective 档分布 +
+    // 借入档差；三帽计数器族同窗同纪律）。
+    if let Some((out, declared, effective)) =
+        berry_sched::intent_settle_current_ext(msg.meta, opt_out, vct_ns())
+    {
+        crate::telemetry::intent_settle_note(declared, effective);
         match out {
             berry_sched::SettleOut::Borrowed => crate::telemetry::intent_borrowed(),
             berry_sched::SettleOut::CappedHop => {
