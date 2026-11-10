@@ -61,6 +61,9 @@
 #      结构性不可达（fat park 挡断，详见阶段 5 后注记）；交互杀五环面由
 #      主路 smoke.sh RX 相段 g 独占（有盘路 bsh 全功能），EFI 路杀链核心
 #      由 boot 期 INT ok 覆盖（真机 spawn+terminate+reap 四步）。
+#   7. boot banner 形态（G-ver-2 镜像路同面，版本管理标准 §3）：首匹配行
+#      须为 `BerryOS boot <semver> (`——semver 编译期取 CARGO_PKG_VERSION
+#      同源；形态缺即红。
 #
 # UTM 手动点验四条（同镜像、UI 无法 CI——清单正文见 docs/开发体验.md §L3）：
 #   ① 插盘：UTM 新建 ARM64 虚机（UEFI）驱动器挂 berryos.img；
@@ -380,8 +383,16 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
+# G-ver-2（版本管理标准 §3）镜像路同面：boot banner 形态断言——首匹配行
+# 须为 `BerryOS boot <semver> (<ident>…`（EFI 路与 -kernel 主路同一内核
+# banner；smoke.sh 主路断言同款正则前锚——semver 三数字段 + 括号结构）。
+# 上方轮询的 KERNEL_MARKERS "BerryOS boot" 子串断言原样保留——本行只加
+# 形态边不松子串边；置轮询到齐后 = banner 行必已在席，断言零竞态；先行
+# 于 SMOKE_PHASES=boot 早退 = 分层 CI 轻面同受 G-ver-2 护。
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \(' \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>…'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
-  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32；SMOKE_PHASES=boot 分层 CI 轻面，生态 39 + RX + sim 面留快机全链）"
+  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态；SMOKE_PHASES=boot 分层 CI 轻面，生态 39 + RX + sim 面留快机全链）"
   cleanup 2>/dev/null || true
   exit 0
 fi
@@ -469,4 +480,4 @@ n_bat=$(grep -acF 'SIMBAT' "$LOG" || true)
 [ "$n_bat" -eq 0 ] \
   || fail "EFI 路 SIMBAT ${n_bat} 行（应 0——门闭相注入面泄漏/静默跳过漂移？）"
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + 生态 39 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + 生态 39 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"
