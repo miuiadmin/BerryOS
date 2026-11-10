@@ -61,6 +61,7 @@ pub use sched::{
     freeze_by_thread, freeze_precheck_by_pinned, freeze_precheck_by_thread,
     current_thread_key, current_deadline_state, idle_loop, init,
     intent_settle_current,
+    intent_settle_current_ext,
     intent_snapshot_current, kill_all_tasks_by_pinned, last_killed,
     lb_stats,
     on_irq_tick, on_sgi_resched, park_recheck, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,

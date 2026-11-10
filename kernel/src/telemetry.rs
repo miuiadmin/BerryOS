@@ -1158,7 +1158,7 @@ pub fn intent_budget_capped_total() -> u64 {
 
 /// 档位计数静态表（六槽值直索引；写点 recv 结算 slowpath 单写者，读点
 /// tele_dump 锁窗外安全——计数器族先例同款）。
-static INTENT_TALLY: berry_itally::IntentTally = berry_itally::IntentTally::default();
+static INTENT_TALLY: berry_itally::IntentTally = berry_itally::IntentTally::NEW;
 
 /// 记一次 recv 结算（Own/Borrowed 皆记档位分布；借入另累通胀——写点在
 /// `syscall.rs` 结算 slowpath，`berry_itally::record` 纯投影后打原子）。

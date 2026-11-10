@@ -55,8 +55,18 @@ pub struct IntentSlot {
     pub borrows: AtomicU64,
 }
 
+impl IntentSlot {
+    /// 全零 const 构造（[`IntentTally::NEW`] 槽件）。
+    pub const NEW: Self = Self {
+        settles: AtomicU64::new(0),
+        borrows: AtomicU64::new(0),
+    };
+}
+
 /// 静态计数表（kernel 侧 `static` 装载；host 测自建实例驱动——计数语义
-/// 在 [`record`] 纯投影，槽表只是定容容器）。
+/// 在 [`record`] 纯投影，槽表只是定容容器）。`NEW` = const 构造器
+/// （`Default` 非 const 进不了 static——同 crate `AtomicU64` 全零
+/// const new 先例）。
 #[derive(Debug, Default)]
 #[repr(C)]
 pub struct IntentTally {
@@ -64,6 +74,17 @@ pub struct IntentTally {
     /// 通胀累计（Σ 每次借入的档位差——「值通胀」的量化面：高档客户端把
     /// 低档 server 抬升的总档数）。
     inflate_total: AtomicU64,
+}
+
+impl IntentTally {
+    /// 全零 const 构造（kernel `static` 装载位）。
+    pub const NEW: Self = Self {
+        slots: [
+            IntentSlot::NEW, IntentSlot::NEW, IntentSlot::NEW,
+            IntentSlot::NEW, IntentSlot::NEW, IntentSlot::NEW,
+        ],
+        inflate_total: AtomicU64::new(0),
+    };
 }
 
 /// intent u8 → 档位槽键（保留域 0x06+ 收敛 0 号 UNSPECIFIED 行——计数面
