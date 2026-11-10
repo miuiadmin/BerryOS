@@ -42,16 +42,16 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 24 | 26818 | 1932 | 7.20% |
+| kernel/ | 24 | 26839 | 1932 | 7.20% |
 | mm/ | 6 | 1739 | 4 | 0.23% |
-| sched/ | 12 | 6578 | 1562 | 23.75% |
+| sched/ | 12 | 6667 | 1540 | 23.10% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 6806 | 960 | 14.11% |
-| **合计** | 64 | 41941 | 4458 | **10.63%** |
+| **合计** | 64 | 42051 | 4436 | **10.55%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33582，unsafe 非空行 3810，密度 11.35%（生产面口径）
-- 分类计数：页表 52 | 上下文切换 32 | MMIO 151 | 分配器 13 | 硬件原子 0 | 其它 698
-- 类型计数：block 811 | fn 131 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33692，unsafe 非空行 3788，密度 11.24%（生产面口径）
+- 分类计数：页表 52 | 上下文切换 32 | MMIO 151 | 分配器 13 | 硬件原子 0 | 其它 700
+- 类型计数：block 813 | fn 131 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -333,8 +333,8 @@
 | kernel/src/handle.rs | 544 | block | 其它 | unsafe { (*obj.as_ptr()).refs } == 0 { return Err("HT integrity: |
 | kernel/src/handle.rs | 567 | block | 其它 | unsafe { &*obj.as_ptr() }; if r.obj.obj_type() != ty { return Er |
 | kernel/src/handle.rs | 606 | block | 其它 | unsafe { (*obj.as_ptr()).obj.obj_type() == ty } { n += 1; } } } |
-| kernel/src/handoff.rs | 138 | block | 其它 | unsafe { &*(phys_to_virt(x0) as *const BerryHandoff) }; if h.mag |
-| kernel/src/handoff.rs | 174 | block | 其它 | unsafe { core::slice::from_raw_parts(base, count) }; for s in se |
+| kernel/src/handoff.rs | 155 | block | 其它 | unsafe { &*(phys_to_virt(x0) as *const BerryHandoff) }; if h.mag |
+| kernel/src/handoff.rs | 195 | block | 其它 | unsafe { core::slice::from_raw_parts(base, count) }; for s in se |
 | kernel/src/heap.rs | 47 | impl | 分配器 | unsafe impl Sync for SlabHeap {} unsafe impl GlobalAlloc for Sla |
 | kernel/src/heap.rs | 49 | impl | 分配器 | unsafe impl GlobalAlloc for SlabHeap { unsafe fn alloc(&self, la |
 | kernel/src/heap.rs | 50 | fn | 分配器 | unsafe fn alloc(&self, layout: Layout) -> *mut u8 { let eff = co |
@@ -832,16 +832,18 @@
 | kernel/src/vmo.rs | 244 | block | 其它 | unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, |
 | mm/src/memmap.rs | 117 | fn | 其它 | unsafe fn desc_at(pa: u64, desc_size: u32, i: usize) -> &'static |
 | mm/src/memmap.rs | 120 | block | 其它 | unsafe { &*(crate::va::phys_to_virt(p) as *const EfiMemdesc) } } |
-| sched/src/band.rs | 76 | block | 其它 | unsafe { &raw mut BANDS[band as usize] }) } /// 带成员判定：intent 即带键 |
-| sched/src/band.rs | 85 | block | 其它 | unsafe { (*t).intent_effective == band && (*t).prio_effective < |
-| sched/src/band.rs | 97 | block | 其它 | unsafe { *s = BandBudget::OFF }; return false; } // SAFETY: 同上。 |
-| sched/src/band.rs | 101 | block | 其它 | unsafe { *s = BandBudget { quota, period, consumed: 0, deadline: |
-| sched/src/band.rs | 117 | block | 其它 | unsafe { (*s).quota != 0 && (*s).period != 0 } } /// 槽快照拷出（ktest |
-| sched/src/band.rs | 124 | block | 其它 | unsafe { *s }) } /// 微记账：把 `cycles` 周期数记到 `band` 本期账上（tick 记账点按 |
-| sched/src/band.rs | 134 | block | 其它 | unsafe { if (*s).quota == 0 \|\| (*s).period == 0 { return false; |
-| sched/src/band.rs | 156 | block | 其它 | unsafe { if (*s).quota == 0 \|\| (*s).period == 0 \|\| now < (*s).de |
-| sched/src/band.rs | 192 | block | 其它 | unsafe { // §A136：先访当前节点，再推进并判回 head。 if band_member(t, band) && |
-| sched/src/band.rs | 221 | block | 其它 | unsafe { // §A136：先访当前节点，再推进并判回 head。 if band_member(t, band) && |
+| sched/src/band.rs | 111 | block | 其它 | unsafe { &raw mut BANDS[band as usize] }) } /// 带成员判定：intent 即带键 |
+| sched/src/band.rs | 120 | block | 其它 | unsafe { (*t).intent_effective == band && (*t).prio_effective < |
+| sched/src/band.rs | 135 | block | 其它 | unsafe { *s = BandBudget::OFF }; CONSUMED[i].store(0, Ordering:: |
+| sched/src/band.rs | 142 | block | 其它 | unsafe { *s = BandBudget { quota, period, consumed: 0, deadline: |
+| sched/src/band.rs | 160 | block | 其它 | unsafe { (*s).quota != 0 && (*s).period != 0 } } /// 槽快照拷出（ktest |
+| sched/src/band.rs | 173 | block | 其它 | unsafe { *s }; snap.deadline = DEADLINES[i].load(Ordering::Acqui |
+| sched/src/band.rs | 193 | block | 其它 | unsafe { ((*s).quota, (*s).period) }; if quota == 0 \|\| period == |
+| sched/src/band.rs | 203 | block | 其它 | unsafe { (*s).throttled = true }; } crossed } /// 事件驱动周期翻转：`now |
+| sched/src/band.rs | 227 | block | 其它 | unsafe { ((*s).quota, (*s).period) }; if quota == 0 \|\| period == |
+| sched/src/band.rs | 252 | block | 其它 | unsafe { (*s).throttled = false }; // CAS 防双翻：只有把 deadline 从 cur |
+| sched/src/band.rs | 281 | block | 其它 | unsafe { // §A136：先访当前节点，再推进并判回 head。 if band_member(t, band) && |
+| sched/src/band.rs | 310 | block | 其它 | unsafe { // §A136：先访当前节点，再推进并判回 head。 if band_member(t, band) && |
 | sched/src/class.rs | 129 | fn | 其它 | unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) { // 快路径：全域环上 |
 | sched/src/class.rs | 172 | block | 其它 | unsafe { rq.link_back(NonNull::from(&mut *t)) }; // S-3a 义务①（子案 |
 | sched/src/class.rs | 179 | block | 其它 | unsafe { rq.unlink(NonNull::from(&mut *t)) }; t.state = TaskStat |

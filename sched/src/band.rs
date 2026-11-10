@@ -14,11 +14,24 @@
 //! 遥测实证 + loadgen + 尾延迟断言〕未过前 band 执法不并线；本刀 = 机制
 //! 先行，执法开关在启动配置 [`configure`]，trait 签名零改动）。
 //!
+//! **SMP 安全账面**（v1.3 §5 预研建议③ / `调度器SMP部署设计-v1.0.md` §3
+//! 「SMP band 计账」）：热路径两热字——consumed/deadline——自 S6-k 单核
+//! 形态升**全局原子账**（[`CONSUMED`]/[`DEADLINES`] 两 `[AtomicU64]` 数组
+//! ，BANDS 槽内同名字段退化为 [`state`] 快照镜像）：消费 [`consume`]
+//! fetch_add（Relaxed——纯计数不通信），首越线判定用返回值（单赢家——
+//! 多核同挤也恰一次 true）；翻期 [`period_check`] deadline CAS 防双翻（
+//! 只有翻中旧值的核兑现清账）。单核 fetch_add/CAS 首试即成 = 行为逐位
+//! 零变化；BANDS 冷配置（quota/period/throttled 镜像）仍 `static mut`
+//! 屏蔽窗纪律（表已入册 `tools/writable_globals.txt`，同款例外先例 =
+//! policy.rs 三件套①：SHD_WHERE 原子化不拆 SNAPS 的 static mut 面）。
+//!
 //! **与 S5-c 逐任务预算分立**：deadline 任务（`prio_effective ≥
 //! PRIO_DEADLINE`）被 RT/deadline 屏蔽不变量豁免（§10）——本模块环扫均
 //! 跳过之；其 [`HELD_THROTTLE`] 位只归 S5-c 逐任务执法（`class.rs::tick`
 //! 置 / `lazy_unthrottle_deadlines` 清），带级执法永不触碰。fair 任务的
 //! THROTTLE 位同理只归本模块（双位分立纪律的位内版本：一消费者一位）。
+
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::class::PRIO_DEADLINE;
 use crate::runqueue::Runqueue;
@@ -37,9 +50,11 @@ pub struct BandBudget {
     pub quota: u64,
     /// 周期长度（CNTVCT 周期数；0 = 该带不设包络）。
     pub period: u64,
-    /// 本期已耗（整数微记账）。
+    /// 本期已耗（整数微记账；快照镜像——真账在 [`CONSUMED`] 原子数组，
+    /// [`state`] 合并点回填）。
     pub consumed: u64,
-    /// 本期截止时刻（CNTVCT 周期数；事件驱动——无周期 tick）。
+    /// 本期截止时刻（CNTVCT 周期数；事件驱动——无周期 tick。快照镜像——
+    /// 真账在 [`DEADLINES`] 原子数组，翻期 CAS 面）。
     pub deadline: u64,
     /// 本期预算是否已耗尽（[`consume`] 首越线置位；[`period_check`] 翻期清）。
     pub throttled: bool,
@@ -56,11 +71,31 @@ impl BandBudget {
     };
 }
 
-/// band 静态表（8 槽）。G0 单核静态例外——与 `class.rs::LAST_VCT` /
-/// `policy.rs::SNAPS` 同款纪律：`static mut` 写面只经 `&raw mut` 取裸指针
-/// （不立引用），全部调用点在 IRQ 屏蔽/调度窗内（tick / pick_next 语境）
-/// 单核顺序访问；表已入册 `tools/writable_globals.txt`（scheduler 组）。
+/// band 静态表（8 槽）——冷配置 + 观测镜像。G0 单核静态例外——与
+/// `class.rs::LAST_VCT` / `policy.rs::SNAPS` 同款纪律：`static mut` 写面只
+/// 经 `&raw mut` 取裸指针（不立引用），全部调用点在 IRQ 屏蔽/调度窗内
+/// （tick / pick_next 语境）单核顺序访问；表已入册
+/// `tools/writable_globals.txt`（scheduler 组）。热路径两热字
+/// consumed/deadline 已升全局原子账（[`CONSUMED`]/[`DEADLINES`]）——槽内
+/// 同名字段只是 [`configure`] 写入的初始镜像，[`state`] 合并点以原子账
+/// 为准覆盖读；槽内仍具语义的字段 = quota/period（冷配置，configure 启动
+/// 面单点写）+ throttled（观测镜像位，首越线赢家置 / 翻期赢家清——SMP
+/// lazy-pick 执法刀（SMP §3）再升 AtomicBool）。
 static mut BANDS: [BandBudget; BAND_SLOTS] = [const { BandBudget::OFF }; BAND_SLOTS];
+
+/// band 全局原子账·consumed（SMP §3「SMP band 计账」/ v1.3 §5 预研建议③
+/// ）：跨核一份原子计数——消费点 fetch_add 累计（Relaxed——纯计数不
+/// 通信），首越线判定用返回值（单赢家：`prev < quota ≤ prev+cycles` 的
+/// 那次 fetch_add 全局恰一次）。翻期清账 = [`period_check`] CAS 赢家单点
+/// store(0)。真账在本数组；[`BandBudget::consumed`] 只是快照镜像。
+static CONSUMED: [AtomicU64; BAND_SLOTS] = [const { AtomicU64::new(0) }; BAND_SLOTS];
+
+/// band 全局原子账·deadline（同上刀）：事件驱动翻期的 CAS 面——只有把
+/// deadline 从旧值翻到新值的核才兑现清账（防双翻）。真账在本数组；
+/// [`BandBudget::deadline`] 只是快照镜像。非 `static mut`——原子内部可
+/// 变性免入 `tools/writable_globals.txt`（同 policy.rs `ACTIVE`/`HAZARD`
+/// 先例）。
+static DEADLINES: [AtomicU64; BAND_SLOTS] = [const { AtomicU64::new(0) }; BAND_SLOTS];
 
 /// 取带槽裸指针（band 越界 → None）。
 ///
@@ -90,23 +125,31 @@ fn band_member(t: *const Task, band: u8) -> bool {
 ///
 /// 返回是否已武装。重配即清账翻期（本期已耗归零）——mid-flight 翻配置的
 /// 收口义务：**先 `unthrottle_all` 清环上残留限流位，再 configure(0)**。
+/// 原子账（[`CONSUMED`]/[`DEADLINES`]）与槽镜像同批重臂/归零——[`state`]
+/// 合并读的逐位等价义务（关态 = `BandBudget::OFF` 逐字段成立）。
 pub fn configure(band: u8, quota: u64, period: u64, now: u64) -> bool {
     let Some(s) = slot(band) else { return false };
+    let i = band as usize;
     if quota == 0 || period == 0 {
         // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
         unsafe { *s = BandBudget::OFF };
+        CONSUMED[i].store(0, Ordering::Relaxed);
+        DEADLINES[i].store(0, Ordering::Relaxed);
         return false;
     }
+    let deadline = now.saturating_add(period);
     // SAFETY: 同上。
     unsafe {
         *s = BandBudget {
             quota,
             period,
             consumed: 0,
-            deadline: now.saturating_add(period),
+            deadline,
             throttled: false,
         }
     }
+    CONSUMED[i].store(0, Ordering::Relaxed);
+    DEADLINES[i].store(deadline, Ordering::Relaxed);
     true
 }
 
@@ -117,31 +160,49 @@ pub fn band_on(band: u8) -> bool {
     unsafe { (*s).quota != 0 && (*s).period != 0 }
 }
 
-/// 槽快照拷出（ktest / telemetry 观测面；越界 → None）。
+/// 槽快照拷出（ktest / telemetry 观测面；越界 → None）。**真账合并读**：
+/// consumed/deadline 取自全局原子账（槽内同名字段已退化为镜像）。读序 =
+/// deadline Acquire 先行、consumed Relaxed 后随——与 [`period_check`] 翻
+/// 期「清账先行 + deadline CAS(Release)」配对：见新期 deadline 必见新账
+/// （SMP §3）。
 pub fn state(band: u8) -> Option<BandBudget> {
     let s = slot(band)?;
-    // SAFETY: 只读拷贝；屏蔽窗内无并发写（slot 契约）。
-    Some(unsafe { *s })
+    let i = band as usize;
+    // SAFETY: 只读拷贝（quota/period/throttled 镜像）；屏蔽窗内无并发写
+    // （slot 契约）。
+    let mut snap = unsafe { *s };
+    snap.deadline = DEADLINES[i].load(Ordering::Acquire);
+    snap.consumed = CONSUMED[i].load(Ordering::Relaxed);
+    Some(snap)
 }
 
 /// 微记账：把 `cycles` 周期数记到 `band` 本期账上（tick 记账点按 CNTVCT
 /// 增量调——同 `Fair::tick` 的 delta 口径）。返回 true = 本期预算**首**越
 /// 线（调用方随后 [`throttle_all`]——记账与环执法分两步，热路径可合并）。
 /// 包络关 / 带越界 → false 不记账。
+///
+/// SMP 安全（SMP §3 / v1.3 §5 预研建议③）：全局原子账 [`CONSUMED`]
+/// fetch_add（Relaxed——纯计数不通信，同 HDR 桶计数口径）累计；首越线
+/// 判定用返回值——`prev < quota ≤ prev + cycles` 的那次 fetch_add 全局恰
+/// 一次（**单赢家**：多核同挤越线也只有一个 true，无环扫无标志位竞争）
+/// 。u64 环绕（旧 saturating 语义的极端差）= 单期累计 2^64 CNTVCT 周期
+/// （@1GHz ≈ 584 年）——不可达，不设防。
 pub fn consume(band: u8, cycles: u64) -> bool {
     let Some(s) = slot(band) else { return false };
-    // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
-    unsafe {
-        if (*s).quota == 0 || (*s).period == 0 {
-            return false;
-        }
-        (*s).consumed = (*s).consumed.saturating_add(cycles);
-        if (*s).consumed >= (*s).quota && !(*s).throttled {
-            (*s).throttled = true;
-            return true;
-        }
-        false
+    // SAFETY: quota/period 冷配置只读（configure 启动面写，slot 契约）。
+    let (quota, period) = unsafe { ((*s).quota, (*s).period) };
+    if quota == 0 || period == 0 {
+        return false;
     }
+    let prev = CONSUMED[band as usize].fetch_add(cycles, Ordering::Relaxed);
+    let now = prev.saturating_add(cycles);
+    let crossed = now >= quota && prev < quota;
+    if crossed {
+        // SAFETY: throttled = 观测镜像位，首越线赢家单点置位（period_check
+        // 翻期赢家单点清——两写点均在屏蔽窗契约内，slot 契约同上）。
+        unsafe { (*s).throttled = true };
+    }
+    crossed
 }
 
 /// 事件驱动周期翻转：`now ≥ deadline` 即翻期（tick / pick_next 顺带调——
@@ -150,24 +211,52 @@ pub fn consume(band: u8, cycles: u64) -> bool {
 ///
 /// 返回 true = 已翻期（调用方随后 [`unthrottle_all`]）。包络关 / 未到期 /
 /// 带越界 → false。
+///
+/// SMP 防双翻（SMP §3 / v1.3 §5 预研建议③）：翻期 = [`DEADLINES`]
+/// deadline CAS **单点**——只有把 deadline 从旧值 `cur` 翻到新值 `next`
+/// 的那个核才兑现翻期（多核同到期也恰一个 true；输家 CAS 失败重读，
+/// 多半已见他核翻过的未来期 → false）。清账（consumed 归零 + throttled
+/// 镜像清）先行、CAS(Release) 发布——Acquire 侧（翻期判定点 / [`state`]
+/// 快照）见新期 deadline 必见新账。清账-翻序间他核 fetch_add 的落账归属
+/// = 翻期边界的固有竞态（与消费-翻期同窗，上界每核一份 delta——超卖窗
+/// 断言归 BAND-S 相，本刀不执法）。
 pub fn period_check(band: u8, now: u64) -> bool {
     let Some(s) = slot(band) else { return false };
-    // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
-    unsafe {
-        if (*s).quota == 0 || (*s).period == 0 || now < (*s).deadline {
-            return false;
+    let i = band as usize;
+    // SAFETY: quota/period 冷配置只读（configure 启动面写，slot 契约）。
+    let (quota, period) = unsafe { ((*s).quota, (*s).period) };
+    if quota == 0 || period == 0 {
+        return false;
+    }
+    // 翻期判定点 Acquire：与翻期 CAS(Release) 配对（SMP §3）。
+    let mut cur = DEADLINES[i].load(Ordering::Acquire);
+    loop {
+        if now < cur {
+            return false; // 未到期（含他核刚翻过的未来期）
         }
-        (*s).consumed = 0;
-        (*s).throttled = false;
         // 追赶环：饱和步进（deadline 钉 u64::MAX 即出——防死循环）。
-        while (*s).deadline <= now {
-            let next = (*s).deadline.saturating_add((*s).period);
-            if next == (*s).deadline {
+        let mut next = cur;
+        while next <= now {
+            let step = next.saturating_add(period);
+            if step == next {
                 break;
             }
-            (*s).deadline = next;
+            next = step;
         }
-        true
+        // 翻期赢家义务先行（清账 + 清限流镜像）——下述 CAS(Release) 发布。
+        // 输家同走这段无碍：CAS 失败即真赢家存在且同在清账（同窗幂等归零
+        // ，账面终态一致）。
+        CONSUMED[i].store(0, Ordering::Relaxed);
+        // SAFETY: throttled 观测镜像位，翻期赢家清（首越线赢家置——两写
+        // 点均在屏蔽窗契约内，slot 契约同上）。
+        unsafe { (*s).throttled = false };
+        // CAS 防双翻：只有把 deadline 从 cur 翻到 next 的核才算赢家。
+        // 成功 Release = 发布先行清账；失败 Acquire = 他核已翻——同步纳入
+        // 其发布序，重读再判。
+        match DEADLINES[i].compare_exchange(cur, next, Ordering::Release, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(actual) => cur = actual,
+        }
     }
 }
 
