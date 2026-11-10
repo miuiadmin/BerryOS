@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 23 | 26582 | 1932 | 7.27% |
+| kernel/ | 24 | 26818 | 1932 | 7.20% |
 | mm/ | 6 | 1739 | 4 | 0.23% |
 | sched/ | 12 | 6578 | 1562 | 23.75% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 6806 | 960 | 14.11% |
-| **合计** | 63 | 41705 | 4458 | **10.69%** |
+| **合计** | 64 | 41941 | 4458 | **10.63%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33396，unsafe 非空行 3810，密度 11.41%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33582，unsafe 非空行 3810，密度 11.35%（生产面口径）
 - 分类计数：页表 52 | 上下文切换 32 | MMIO 151 | 分配器 13 | 硬件原子 0 | 其它 698
 - 类型计数：block 811 | fn 131 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -344,325 +344,325 @@
 | kernel/src/heap.rs | 122 | block | 分配器 | unsafe { Box::from_raw(ptr) }) } // ---- freelist（侵入式：槽首存 next 指 |
 | kernel/src/heap.rs | 127 | fn | 分配器 | unsafe fn pop(fl: &mut [*mut u8; SLAB_CLASSES.len()], ci: usize) |
 | kernel/src/heap.rs | 136 | fn | 分配器 | unsafe fn push(fl: &mut [*mut u8; SLAB_CLASSES.len()], ci: usize |
-| kernel/src/ktest.rs | 159 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_CLOCK_READ as u64, 0, &r |
-| kernel/src/ktest.rs | 165 | block | 其它 | unsafe { OUT }; assert!(t1 > 0, "SYSCALL：clock_read 应得正纳秒"); ass |
-| kernel/src/ktest.rs | 173 | block | 其它 | unsafe { OUT } >= t1, "SYSCALL：单调钟不单调"); // D. handle 门控全链路（EL1 |
-| kernel/src/ktest.rs | 190 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
-| kernel/src/ktest.rs | 196 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hd, 0, "SYSCALL：duplicate 须回填新 |
-| kernel/src/ktest.rs | 237 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc6(NR_VMO_CREATE as u64, PAGE_ |
-| kernel/src/ktest.rs | 243 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hdm, 0, "SYSCALL：DEMAND VMO 须回 |
-| kernel/src/ktest.rs | 250 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_S |
-| kernel/src/ktest.rs | 253 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hv, 0, "SYSCALL：vmo_create 须回填 |
-| kernel/src/ktest.rs | 258 | block | 其它 | unsafe { EBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) }; as |
-| kernel/src/ktest.rs | 265 | block | 其它 | unsafe { EBUF = [0; 16] }; assert_eq!( svc6(NR_VMO_READ as u64, |
-| kernel/src/ktest.rs | 272 | block | 其它 | unsafe { u64::from_le_bytes(EBUF[..8].try_into().unwrap()) }, PA |
-| kernel/src/ktest.rs | 279 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_S |
-| kernel/src/ktest.rs | 281 | block | 其它 | unsafe { OUT as u32 } }; assert_eq!( svc6(NR_VMO_READ as u64, hv |
-| kernel/src/ktest.rs | 291 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
-| kernel/src/ktest.rs | 297 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc6(NR_VMO_WRITE as u64, hro |
-| kernel/src/ktest.rs | 319 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; // 请求 VA = 0x100 |
-| kernel/src/ktest.rs | 326 | block | 其它 | unsafe { OUT } as usize, crate::aspace::USER_VA, "SYSCALL：vmar_m |
-| kernel/src/ktest.rs | 362 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc6(NR_VMO_CREATE as u64, PAGE_ |
-| kernel/src/ktest.rs | 368 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上（请求 VA 复用 0x1000——E3 已 unmap |
-| kernel/src/ktest.rs | 370 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; assert_eq!( svc6 |
-| kernel/src/ktest.rs | 391 | block | 其它 | unsafe { OUT = 0x20_0000 }; // 请求子区间基 0x20_0000 static mut CHILD |
-| kernel/src/ktest.rs | 394 | block | 其它 | unsafe { CHILD_OUT = 0 }; assert_eq!( svc6(NR_VMAR_ALLOCATE as u |
-| kernel/src/ktest.rs | 401 | block | 其它 | unsafe { CHILD_OUT } as u32; assert_ne!(hchild, 0, "SYSCALL：allo |
-| kernel/src/ktest.rs | 435 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p) }); assert!(crate::vmar: |
-| kernel/src/ktest.rs | 463 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p2) }); assert_eq!(crate::v |
-| kernel/src/ktest.rs | 467 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p1) }); assert!(crate::vmar |
-| kernel/src/ktest.rs | 484 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p) }); break; // 帽到（该 v 未登记 |
-| kernel/src/ktest.rs | 503 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p_chk) }); // SAFETY: live |
-| kernel/src/ktest.rs | 507 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p) }); } let asid18 = crate |
-| kernel/src/ktest.rs | 519 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p18) }); // E3d. EL0 槽池属主过滤 |
-| kernel/src/ktest.rs | 610 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_a as *mut Vmar) }); dr |
-| kernel/src/ktest.rs | 611 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_b as *mut Vmar) }); dr |
-| kernel/src/ktest.rs | 612 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_a as *mut Vmo) }); drop |
-| kernel/src/ktest.rs | 613 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_b as *mut Vmo) }); drop |
-| kernel/src/ktest.rs | 614 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_c as *mut Vmo) }); } // |
-| kernel/src/ktest.rs | 672 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_e as *mut Vmar) }); dr |
-| kernel/src/ktest.rs | 673 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_e as *mut Vmo) }); } // |
-| kernel/src/ktest.rs | 741 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_f as *mut Vmar) }); dr |
-| kernel/src/ktest.rs | 742 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_f as *mut Vmo) }); } // |
-| kernel/src/ktest.rs | 777 | block | 其它 | unsafe { TBL = [PagerWindow { dv: 0, sv: 0, delta: 0 }; 2] }; as |
-| kernel/src/ktest.rs | 797 | block | 其它 | unsafe { TBL[0].delta = 8 }; assert_eq!( svc6(NR_PAGER_SUPPLY_MA |
-| kernel/src/ktest.rs | 827 | block | 其它 | unsafe { (*og.as_ptr()).obj.as_vmo_mut().unwrap() as *mut Vmo }; |
-| kernel/src/ktest.rs | 828 | block | 其它 | unsafe { (*oh.as_ptr()).obj.as_vmo_mut().unwrap() as *mut Vmo }; |
-| kernel/src/ktest.rs | 842 | block | 其它 | unsafe { root_g .map_demand(&mut *ptr_g, VA_G, 0, PAGE_SIZE, cra |
-| kernel/src/ktest.rs | 848 | block | 其它 | unsafe { root_h .map_demand(&mut *ptr_h, VA_H, 0, 2 * PAGE_SIZE, |
-| kernel/src/ktest.rs | 861 | block | 其它 | unsafe { TBL = [ PagerWindow { dv: hg, sv: 0, delta: 0 }, PagerW |
-| kernel/src/ktest.rs | 879 | block | 其它 | unsafe { TBL = [ PagerWindow { dv: hh, sv: 0, delta: 0 }, PagerW |
-| kernel/src/ktest.rs | 896 | block | 其它 | unsafe { TBL[0] = PagerWindow { dv: hg, sv: 0, delta: 0 } }; ass |
-| kernel/src/ktest.rs | 924 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_g as *mut Vmar) }); dr |
-| kernel/src/ktest.rs | 925 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_h as *mut Vmar) }); as |
-| kernel/src/ktest.rs | 936 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_SIZE as u64, 0xDE |
-| kernel/src/ktest.rs | 946 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, 0x1800 |
-| kernel/src/ktest.rs | 949 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上（预置哨兵值，验回写真发生）。 unsafe { OUT |
-| kernel/src/ktest.rs | 951 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_SIZE as u6 |
-| kernel/src/ktest.rs | 954 | block | 其它 | unsafe { OUT }, PAGE_SIZE as u64 * 2, "SYSCALL：get_size 须回页对齐容量（ |
-| kernel/src/ktest.rs | 958 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
-| kernel/src/ktest.rs | 965 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = u64::MAX }; |
-| kernel/src/ktest.rs | 967 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_SIZE as u6 |
-| kernel/src/ktest.rs | 970 | block | 其它 | unsafe { OUT }, PAGE_SIZE as u64 * 2, "SYSCALL：零 READ 别名 size 同值 |
-| kernel/src/ktest.rs | 1056 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc6(NR_VMO_GET_SIZE as u64, hmm |
-| kernel/src/ktest.rs | 1063 | block | 其它 | unsafe { OUT }, berry_hal_aarch64::VIRTIO_MMIO_LEN as u64, "MMIO |
-| kernel/src/ktest.rs | 1083 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
-| kernel/src/ktest.rs | 1089 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = crate::aspa |
-| kernel/src/ktest.rs | 1091 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; assert_eq!( svc6 |
-| kernel/src/ktest.rs | 1101 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; assert_eq!( svc6 |
-| kernel/src/ktest.rs | 1108 | block | 其它 | unsafe { OUT }, crate::aspace::USER_VA as u64, "MMIO：map 回写基址不变" |
-| kernel/src/ktest.rs | 1130 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_PHYS as u64, 0xDE |
-| kernel/src/ktest.rs | 1141 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_S |
-| kernel/src/ktest.rs | 1144 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = u64::MAX }; |
-| kernel/src/ktest.rs | 1146 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_PHYS as u6 |
-| kernel/src/ktest.rs | 1154 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_PHYS as u6 |
-| kernel/src/ktest.rs | 1157 | block | 其它 | unsafe { OUT }; assert!((0x4000_0000..berry_hal_aarch64::RAM_TOP |
-| kernel/src/ktest.rs | 1162 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp |
-| kernel/src/ktest.rs | 1165 | block | 其它 | unsafe { OUT }, pa0 + 0x123, "SYSCALL：get_phys 字节语义（页基 + 页内偏移）") |
-| kernel/src/ktest.rs | 1173 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
-| kernel/src/ktest.rs | 1180 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = 0 }; assert |
-| kernel/src/ktest.rs | 1182 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgo |
-| kernel/src/ktest.rs | 1185 | block | 其它 | unsafe { OUT }, pa0 + 0x123, "SYSCALL：零 READ 别名 phys 同值"); asser |
-| kernel/src/ktest.rs | 1195 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc5(NR_PROCESS_C |
-| kernel/src/ktest.rs | 1201 | block | 其它 | unsafe { OUT } as u32; let hv2 = unsafe { CHILD_OUT } as u32; as |
-| kernel/src/ktest.rs | 1202 | block | 其它 | unsafe { CHILD_OUT } as u32; assert_ne!(hp, 0, "SYSCALL：process_ |
-| kernel/src/ktest.rs | 1223 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc5(NR_THREAD_CREATE as u64, hp |
-| kernel/src/ktest.rs | 1229 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hth, 0, "SYSCALL：thread_create |
-| kernel/src/ktest.rs | 1291 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4( NR_HANDLE_DUPLICATE as u64 |
-| kernel/src/ktest.rs | 1302 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hthr, 0, "SYSCALL：dup 别名须回填"); |
-| kernel/src/ktest.rs | 1319 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc5(NR_PROCESS_C |
-| kernel/src/ktest.rs | 1325 | block | 其它 | unsafe { OUT } as u32; let hv3 = unsafe { CHILD_OUT } as u32; as |
-| kernel/src/ktest.rs | 1326 | block | 其它 | unsafe { CHILD_OUT } as u32; assert_ne!(hp2, 0, "SYSCALL：第二个进程 h |
-| kernel/src/ktest.rs | 1340 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(crate::syscall::NR_OBJECT |
-| kernel/src/ktest.rs | 1346 | block | 其它 | unsafe { I_OBS }, 0, "SYSCALL：未命中 observed 须保持 0"); // F4c. proc |
-| kernel/src/ktest.rs | 1355 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(crate::syscall::NR_PROCESS_ |
-| kernel/src/ktest.rs | 1371 | block | 其它 | unsafe { OUT }, 0, "SYSCALL：未退 code 出参须保持 0"); // F4d. process_t |
-| kernel/src/ktest.rs | 1394 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4( NR_HANDLE_DUPLICATE as u64 |
-| kernel/src/ktest.rs | 1405 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hp2r, 0, "SYSCALL：dup 别名须回填"); |
-| kernel/src/ktest.rs | 1421 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5( crate::syscall::NR_OBJEC |
-| kernel/src/ktest.rs | 1434 | block | 其它 | unsafe { I_OBS }, crate::handle::SIGNAL_TERMINATED, "SYSCALL：obs |
-| kernel/src/ktest.rs | 1440 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(crate::syscall::NR_PROCESS_ |
-| kernel/src/ktest.rs | 1446 | block | 其它 | unsafe { OUT } as u32, 42, "SYSCALL：terminate code=42 须落退出码"); a |
-| kernel/src/ktest.rs | 1501 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc5(NR_PROCESS_C |
-| kernel/src/ktest.rs | 1507 | block | 其它 | unsafe { OUT } as u32; let hv4 = unsafe { CHILD_OUT } as u32; le |
-| kernel/src/ktest.rs | 1508 | block | 其它 | unsafe { CHILD_OUT } as u32; let (pobj, _) = ht.get(hp3, ObjType |
-| kernel/src/ktest.rs | 1532 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc4(NR_CHANNEL_C |
-| kernel/src/ktest.rs | 1538 | block | 其它 | unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32); assert_ne!( |
-| kernel/src/ktest.rs | 1538 | block | 其它 | unsafe { CHILD_OUT } as u32); assert_ne!(hc0, 0, "SYSCALL：channe |
-| kernel/src/ktest.rs | 1549 | block | 其它 | unsafe { H_NB = 8; H_NH = 4 }; assert_eq!( svc6(NR_CHANNEL_RECV |
-| kernel/src/ktest.rs | 1560 | block | 其它 | unsafe { HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) }; as |
-| kernel/src/ktest.rs | 1567 | block | 其它 | unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] }; |
-| kernel/src/ktest.rs | 1575 | block | 其它 | unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) }, PA |
-| kernel/src/ktest.rs | 1577 | block | 其它 | unsafe { H_NB }, 8, "SYSCALL：recv 须回写实际字节数"); assert_eq!(unsafe |
-| kernel/src/ktest.rs | 1578 | block | 其它 | unsafe { H_NH }, 0, "SYSCALL：recv 须回写实际 handle 数"); // SAFETY: 同 |
-| kernel/src/ktest.rs | 1580 | block | 其它 | unsafe { H_NB = 8; H_NH = 0 }; assert_eq!( svc6(NR_CHANNEL_RECV |
-| kernel/src/ktest.rs | 1608 | block | 其它 | unsafe { H_NB = 4; H_NH = 0 }; assert_eq!( svc6(NR_CHANNEL_RECV |
-| kernel/src/ktest.rs | 1616 | block | 其它 | unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 0 }; assert_eq!( svc6 |
-| kernel/src/ktest.rs | 1624 | block | 其它 | unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) }, PA |
-| kernel/src/ktest.rs | 1629 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc4(NR_CHANNEL_C |
-| kernel/src/ktest.rs | 1635 | block | 其它 | unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32); for _ in 0. |
-| kernel/src/ktest.rs | 1635 | block | 其它 | unsafe { CHILD_OUT } as u32); for _ in 0..8 { assert_eq!( svc6(N |
-| kernel/src/ktest.rs | 1654 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
-| kernel/src/ktest.rs | 1660 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc6(NR_CHANNEL_SEND as u64, |
-| kernel/src/ktest.rs | 1675 | block | 其它 | unsafe { H_HND = [hsrc, 0, 0, 0, 0, 0, 0, 0]; HBUF[..8].copy_fro |
-| kernel/src/ktest.rs | 1688 | block | 其它 | unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] }; |
-| kernel/src/ktest.rs | 1695 | block | 其它 | unsafe { H_HND[0] }; assert_eq!(unsafe { H_NH }, 1, "SYSCALL：rec |
-| kernel/src/ktest.rs | 1696 | block | 其它 | unsafe { H_NH }, 1, "SYSCALL：recv 须回写 1 个随行 handle"); assert_ne! |
-| kernel/src/ktest.rs | 1715 | block | 其它 | unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0, 0, 0, 0, 0] }; assert_ |
-| kernel/src/ktest.rs | 1727 | block | 其它 | unsafe { H_HND = [hgd, hgd, 0, 0, 0, 0, 0, 0] }; assert_eq!( svc |
-| kernel/src/ktest.rs | 1763 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_EVENT_CREATE as u64, 0, |
-| kernel/src/ktest.rs | 1769 | block | 其它 | unsafe { OUT } as u32; assert_ne!(he, 0, "SYSCALL：event_create 须 |
-| kernel/src/ktest.rs | 1779 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1798 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1804 | block | 其它 | unsafe { I_OBS }, U1 \| U2, "SYSCALL：observed 须回写全满足集"); // I3. 请 |
-| kernel/src/ktest.rs | 1809 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1821 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1837 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
-| kernel/src/ktest.rs | 1843 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc4(NR_OBJECT_SIGNAL as u64, |
-| kernel/src/ktest.rs | 1850 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1897 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1918 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc4(NR_CHANNEL_C |
-| kernel/src/ktest.rs | 1924 | block | 其它 | unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32); // SAFETY: |
-| kernel/src/ktest.rs | 1924 | block | 其它 | unsafe { CHILD_OUT } as u32); // SAFETY: 同上。 unsafe { I_OBS = 0 |
-| kernel/src/ktest.rs | 1926 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1937 | block | 其它 | unsafe { I_OBS }, SIGNAL_WRITABLE, "SYSCALL：WRITABLE 全满足集"); ass |
-| kernel/src/ktest.rs | 1944 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1952 | block | 其它 | unsafe { I_OBS }, SIGNAL_READABLE \| SIGNAL_WRITABLE, "SYSCALL：RE |
-| kernel/src/ktest.rs | 1964 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1971 | block | 其它 | unsafe { H_NB = 8; H_NH = 0 }; assert_eq!( svc6(NR_CHANNEL_RECV |
-| kernel/src/ktest.rs | 1979 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1988 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
-| kernel/src/ktest.rs | 1996 | block | 其它 | unsafe { I_OBS }, SIGNAL_READABLE \| SIGNAL_WRITABLE, "SYSCALL：全满 |
-| kernel/src/ktest.rs | 2010 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_EVENT_CREATE as u64, 0, |
-| kernel/src/ktest.rs | 2016 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc4(NR_OBJECT_SIGNAL as u64, |
-| kernel/src/ktest.rs | 2022 | block | 其它 | unsafe { WM_IDX = 0 }; assert_eq!( svc6(NR_OBJECT_WAIT_MANY as u |
-| kernel/src/ktest.rs | 2036 | block | 其它 | unsafe { WM_H = [3, hw_ev]; WM_S = [U1, U1] }; assert_eq!( svc6( |
-| kernel/src/ktest.rs | 2045 | block | 其它 | unsafe { WM_H = [hw_ev, hw_ev]; WM_S = [U2, U2]; WM_IDX = 0 }; a |
-| kernel/src/ktest.rs | 2052 | block | 其它 | unsafe { WM_IDX }, u64::MAX, "SYSCALL：未命中 idx 须留哨兵 MAX"); // SAF |
-| kernel/src/ktest.rs | 2054 | block | 其它 | unsafe { WM_IDX = 0 }; assert_eq!( svc6(NR_OBJECT_WAIT_MANY as u |
-| kernel/src/ktest.rs | 2064 | block | 其它 | unsafe { WM_H = [hw_ev, hw_ev]; WM_S = [U2, U1]; WM_IDX = 0; I_O |
-| kernel/src/ktest.rs | 2071 | block | 其它 | unsafe { WM_IDX }, 1, "SYSCALL：idx 须指次项"); assert_eq!(unsafe { I |
-| kernel/src/ktest.rs | 2072 | block | 其它 | unsafe { I_OBS }, U1, "SYSCALL：observed 须该对象全满足集"); // SAFETY: 同 |
-| kernel/src/ktest.rs | 2074 | block | 其它 | unsafe { WM_S = [U1, U2]; WM_IDX = 0; I_OBS = 0 }; assert_eq!( s |
-| kernel/src/ktest.rs | 2081 | block | 其它 | unsafe { WM_IDX }, 0, "SYSCALL：idx 须指首项（入参序最前）"); // 清场。 assert_ |
-| kernel/src/ktest.rs | 2094 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
-| kernel/src/ktest.rs | 2112 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
-| kernel/src/ktest.rs | 2131 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
-| kernel/src/ktest.rs | 2160 | block | 其它 | unsafe { core::arch::asm!("brk #0x42", options(nostack, preserve |
-| kernel/src/ktest.rs | 2171 | block | 其它 | unsafe { v1.write_volatile(0xDEAD_BEEF_CAFE_F00D); assert_eq!( v |
-| kernel/src/ktest.rs | 2220 | block | 其它 | unsafe { for w in 0..512usize { va.add(w).write_volatile(0); } f |
-| kernel/src/ktest.rs | 2244 | block | 其它 | unsafe { desc_at(pa as u64, 40, 1) }; assert_eq!(d1.kind, 4); as |
-| kernel/src/ktest.rs | 2256 | block | 其它 | unsafe { desc_at(pa as u64, 40, i) }; assert_eq!( desc_range(d, |
-| kernel/src/ktest.rs | 2364 | block | 其它 | unsafe { berry_hal_aarch64::uart_puts(b"PING "); berry_hal_aarch |
-| kernel/src/ktest.rs | 2379 | block | 其它 | unsafe { let stack_top = (&raw const SWITCH_OTHER_STACK) as *con |
-| kernel/src/ktest.rs | 2455 | fn | 其它 | unsafe fn fp_canary_load(pats: *const u128) { unsafe { core::arc |
-| kernel/src/ktest.rs | 2456 | block | 其它 | unsafe { core::arch::asm!( ".arch armv8-a+fp+simd", // 局部重开 FP/S |
-| kernel/src/ktest.rs | 2479 | fn | 其它 | unsafe fn fp_canary_store(out: *mut u128) { unsafe { core::arch: |
-| kernel/src/ktest.rs | 2480 | block | 其它 | unsafe { core::arch::asm!( ".arch armv8-a+fp+simd", // 局部重开 FP/S |
-| kernel/src/ktest.rs | 2502 | fn | 其它 | unsafe fn fpcr_read() -> u64 { let v: u64; unsafe { core::arch:: |
-| kernel/src/ktest.rs | 2504 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpcr |
-| kernel/src/ktest.rs | 2508 | fn | 其它 | unsafe fn fpcr_write(v: u64) { unsafe { core::arch::asm!(".arch |
-| kernel/src/ktest.rs | 2509 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpcr, {} |
-| kernel/src/ktest.rs | 2512 | fn | 其它 | unsafe fn fpsr_read() -> u64 { let v: u64; unsafe { core::arch:: |
-| kernel/src/ktest.rs | 2514 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpsr |
-| kernel/src/ktest.rs | 2518 | fn | 其它 | unsafe fn fpsr_write(v: u64) { unsafe { core::arch::asm!(".arch |
-| kernel/src/ktest.rs | 2519 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpsr, {} |
-| kernel/src/ktest.rs | 2523 | extern | 其它 | unsafe extern "C" { fn memset(s: *mut u8, c: u8, n: usize) -> *m |
-| kernel/src/ktest.rs | 2534 | block | 其它 | unsafe { &*(&raw const FP_SNAP) }; snap == pats } /// FP 乒乓对端：装 |
-| kernel/src/ktest.rs | 2545 | block | 其它 | unsafe { fpcr_write(FP_FPCR_OTHER); fpsr_write(FP_FPSR_OTHER); f |
-| kernel/src/ktest.rs | 2574 | block | 其它 | unsafe { let stack_top = (&raw const FP_OTHER_STACK) as *const u |
-| kernel/src/ktest.rs | 2715 | block | 其它 | unsafe { core::ptr::read_volatile(berry_hal_aarch64::RAM_BASE as |
-| kernel/src/ktest.rs | 2768 | block | 其它 | unsafe { core::ptr::read_volatile(USER_VA as *const u64) }; asse |
-| kernel/src/ktest.rs | 2771 | block | 其它 | unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC2) |
-| kernel/src/ktest.rs | 2779 | block | 其它 | unsafe { core::ptr::read_volatile(USER_VA as *const u64) }; asse |
-| kernel/src/ktest.rs | 2786 | block | 其它 | unsafe { core::ptr::read_volatile(USER_VA as *const u64) }; asse |
-| kernel/src/ktest.rs | 2790 | block | 其它 | unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC) } |
-| kernel/src/ktest.rs | 2794 | block | 其它 | unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC) } |
-| kernel/src/ktest.rs | 2812 | block | 其它 | unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) }; as |
-| kernel/src/ktest.rs | 3533 | block | 其它 | unsafe { rr.enqueue(&mut **p, &mut rq) }; } /// 相位复位：上一态循环推高的 VD |
-| kernel/src/ktest.rs | 3542 | block | 其它 | unsafe { (**p).vruntime = 0; (**p).vdeadline = 0; } } rq.resync_ |
-| kernel/src/ktest.rs | 4591 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE, ) .unwra |
-| kernel/src/ktest.rs | 4597 | block | 其它 | unsafe { Thread::new(pref) }), RIGHT_MANAGE) .unwrap(); let (tre |
-| kernel/src/ktest.rs | 4601 | block | 其它 | unsafe { let pr = &mut *pref.as_ptr(); let p = pr.obj.as_process |
-| kernel/src/ktest.rs | 4675 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE, ) .expec |
-| kernel/src/ktest.rs | 4684 | block | 其它 | unsafe { Thread::new(pref) }), RIGHT_MANAGE, ) .expect("FREEZE：F |
-| kernel/src/ktest.rs | 4691 | block | 其它 | unsafe { let p_key = pref.as_ptr() as usize; let t_key = tref.as |
-| kernel/src/ktest.rs | 4901 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE) .unwrap( |
-| kernel/src/ktest.rs | 4919 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
-| kernel/src/ktest.rs | 4935 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
-| kernel/src/ktest.rs | 4964 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
-| kernel/src/ktest.rs | 5001 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK) }; assert_ne!(tok, 0, "FRZCYC |
-| kernel/src/ktest.rs | 5004 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
-| kernel/src/ktest.rs | 5076 | block | 其它 | unsafe { (*pref.as_ptr()).obj.as_process().unwrap().wake_pending |
-| kernel/src/ktest.rs | 5080 | block | 其它 | unsafe { (*aref.as_ptr()).obj.as_channel().unwrap().frozen_owner |
-| kernel/src/ktest.rs | 5084 | block | 其它 | unsafe { (*aref.as_ptr()).obj.as_channel().unwrap().has_message( |
-| kernel/src/ktest.rs | 5094 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE) .unwrap( |
-| kernel/src/ktest.rs | 5109 | block | 其它 | unsafe { (*pref.as_ptr()) .obj .as_process_mut() .unwrap() .ht . |
-| kernel/src/ktest.rs | 5121 | block | 其它 | unsafe { (*pref.as_ptr()) .obj .as_process_mut() .unwrap() .ht . |
-| kernel/src/ktest.rs | 5132 | block | 其它 | unsafe { ChannelEnd::pair(aref, bref) }; // —— 等待者属主 P2/T2（F7 形真 |
-| kernel/src/ktest.rs | 5141 | block | 其它 | unsafe { Process::new(vref2, pa2, asid2) }), RIGHT_MANAGE) .unwr |
-| kernel/src/ktest.rs | 5145 | block | 其它 | unsafe { Thread::new(pref2) }), RIGHT_MANAGE) .unwrap(); let (tr |
-| kernel/src/ktest.rs | 5150 | block | 其它 | unsafe { // 运行钉住（表引 + 钉）+ 末线程簿记位（钩子 live_threads-=1 → 0 走 // Pro |
-| kernel/src/ktest.rs | 5182 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK) }; assert_ne!(tok, 0, "WAKEP： |
-| kernel/src/ktest.rs | 5196 | block | 其它 | unsafe { *core::ptr::addr_of!(OBS) }, 0, "WAKEP：②未命中 observed 须 |
-| kernel/src/ktest.rs | 5224 | block | 其它 | unsafe { *core::ptr::addr_of!(OBS) }, SIGNAL_WAKE_PENDING, "WAKE |
-| kernel/src/ktest.rs | 5263 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK) }; assert!(end_frozen(aref), |
-| kernel/src/ktest.rs | 5270 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK2) }; assert_eq!( svc6(NR_CHANN |
-| kernel/src/ktest.rs | 5298 | block | 其它 | unsafe { berry_sched::kill_all_tasks_by_pinned(wp2, 0) }; assert |
-| kernel/src/ktest.rs | 5304 | block | 其它 | unsafe { (*pref.as_ptr()).obj.as_process_mut().unwrap().ht.drain |
-| kernel/src/ktest.rs | 5524 | block | 其它 | unsafe { ATTR_BUF[0..4].copy_from_slice(&56u32.to_le_bytes()); A |
-| kernel/src/ktest.rs | 5590 | block | 其它 | unsafe { rr.enqueue(&mut **r, &mut rq) }; } let t0 = berry_hal_a |
-| kernel/src/ktest.rs | 5655 | block | 其它 | unsafe { rr.enqueue(&mut **p, &mut rq) }; } // 100 轮 pick + 计数（指 |
-| kernel/src/ktest.rs | 5670 | block | 其它 | unsafe { (*pp).vdeadline = 100 + i }; } } let spread = hits.iter |
-| kernel/src/ktest.rs | 5959 | block | 其它 | unsafe { &mut *cur2 }, unsafe { &mut *core::ptr::addr_of_mut!(rq |
-| kernel/src/ktest.rs | 5959 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(rq2) }); assert!(tb.held_ |
-| kernel/src/ktest.rs | 6024 | block | 其它 | unsafe { &mut *(ht as *mut HandleTable) }; let h = ht .insert( K |
-| kernel/src/ktest.rs | 6039 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; } /// 一个 Event 进内核侧表（非 channe |
-| kernel/src/ktest.rs | 6359 | block | 其它 | unsafe { (*ni.as_ptr()).obj.as_channel().unwrap().no_intent() }, |
-| kernel/src/ktest.rs | 6557 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE) .unwrap( |
-| kernel/src/ktest.rs | 6561 | block | 其它 | unsafe { (*pref.as_ptr()).obj.as_process_mut().unwrap() }; asser |
-| kernel/src/ktest.rs | 7187 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; } // L0. 非法参 + 空队 → None（send |
-| kernel/src/main.rs | 346 | block | 其它 | unsafe { mm::init(handoff) }; // GUI P2：超出 GOP 缓冲的模式（如 540×1200） |
-| kernel/src/main.rs | 440 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len) }; Some((b"handoff" |
-| kernel/src/main.rs | 474 | block | 其它 | unsafe { core::slice::from_raw_parts( phys_to_virt(s.pa as usize |
-| kernel/src/main.rs | 516 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len as usize) }; Some((b |
-| kernel/src/main.rs | 529 | block | 其它 | unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) }; (b |
-| kernel/src/main.rs | 561 | block | 其它 | unsafe { *(&raw mut ROOTFS) = Some(buf) }; berry_hal_aarch64::ua |
-| kernel/src/main.rs | 651 | block | 其它 | unsafe { (*p_am2b.as_ptr()).retain(); (*p_am2b.as_ptr()).retain( |
-| kernel/src/main.rs | 672 | block | MMIO | unsafe { berry_hal_aarch64::timer::init() }; // 2b-2：两忙循环任务各挂一个私 |
-| kernel/src/main.rs | 828 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk, pu) }; // 先于用户矩阵入队 |
-| kernel/src/main.rs | 888 | block | 其它 | unsafe { (*p_rx.as_ptr()).retain() }; // 静态槽传递（spawn arg 已满：hi32 |
-| kernel/src/main.rs | 893 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(RX_EV_H) = h_rx_ev; *core::ptr |
-| kernel/src/main.rs | 917 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(BSH_IN_H) = h_end_k2; } // 3-2 |
-| kernel/src/main.rs | 1028 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // 4-2b：哑 Event 进 ponger 表— |
-| kernel/src/main.rs | 1077 | block | 其它 | unsafe { ChannelEnd::pair(pc, ps) }; let h_ev_pi = syscall::boot |
-| kernel/src/main.rs | 1116 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_d1, h_m1 |
-| kernel/src/main.rs | 1137 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_channel_mut().unwrap().push(m) }; |
-| kernel/src/main.rs | 1156 | block | 其它 | unsafe { for (i, &h) in slots.iter().enumerate() { *core::ptr::a |
-| kernel/src/main.rs | 1200 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_fa, h_fb |
-| kernel/src/main.rs | 1230 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // arg 打包双 handle：低 32 = 自己 |
-| kernel/src/main.rs | 1276 | block | 其它 | unsafe { (*(&raw mut ROOTFS)).take() }.map(\|buf\| { let vmo = mat |
-| kernel/src/main.rs | 1336 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk2, pu2) }; // ---- P |
-| kernel/src/main.rs | 1476 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pkf, puf) }; // SAFETY |
-| kernel/src/main.rs | 1478 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(FB_PIPE_H) = h_end_kfb; } // A |
-| kernel/src/main.rs | 1558 | block | 其它 | unsafe { ChannelEnd::pair(pab_a, pab_b) }; // E_done（bench 完成事件） |
-| kernel/src/main.rs | 1760 | block | MMIO | unsafe { berry_hal_aarch64::uart::rx_init() }; // sim-S1（`docs/s |
-| kernel/src/main.rs | 1866 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(p_tx, p_b_rx); // 帧通道 |
-| kernel/src/main.rs | 1873 | block | 其它 | unsafe { (*p_ev.as_ptr()).retain(); *core::ptr::addr_of_mut!(UAR |
-| kernel/src/main.rs | 1892 | block | MMIO | unsafe { berry_hal_aarch64::uart::uart1_init() }; // sim-S2 A4②： |
-| kernel/src/main.rs | 1901 | block | MMIO | unsafe { berry_hal_aarch64::pl061::pl061_init() }; berry_hal_aar |
-| kernel/src/main.rs | 2121 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; berry_hal_aarc |
-| kernel/src/main.rs | 2141 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
-| kernel/src/main.rs | 2160 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
-| kernel/src/main.rs | 2267 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
-| kernel/src/main.rs | 2330 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
-| kernel/src/main.rs | 2515 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_H) } } /// bsh stdin 发端（endK |
-| kernel/src/main.rs | 2525 | block | 其它 | unsafe { *core::ptr::addr_of!(BSH_IN_H) } } /// fb 上屏管道 console |
-| kernel/src/main.rs | 2537 | block | 其它 | unsafe { *core::ptr::addr_of!(FB_PIPE_H) } } // ---- sim-S1：UART |
-| kernel/src/main.rs | 2569 | block | 其它 | unsafe { *core::ptr::addr_of!(UART1_EV_H) } } /// sim 帧通道 simcon |
-| kernel/src/main.rs | 2580 | block | 其它 | unsafe { *core::ptr::addr_of!(SIM_TX_H) } } /// 读 SIM_ACK_H 静态槽（ |
-| kernel/src/main.rs | 2586 | block | MMIO | unsafe { *core::ptr::addr_of!(SIM_ACK_H) } } /// 「UART1 RX 到数据」通 |
-| kernel/src/main.rs | 2594 | fn | 其它 | unsafe extern "C" fn uart1_notify() -> bool { // SAFETY: IRQ 上下文 |
-| kernel/src/main.rs | 2596 | block | 其它 | unsafe { *core::ptr::addr_of!(UART1_EV_REF) } .expect("uart1_not |
-| kernel/src/main.rs | 2603 | block | 其它 | unsafe { // 写位+扫描同窗（c-2b slice 4 自锁面；KL 外层包络剥除后的纯 SQ 单锁窗）。 let s |
-| kernel/src/main.rs | 2632 | fn | 其它 | unsafe extern "C" fn pl061_notify() -> bool { crate::telemetry:: |
-| kernel/src/main.rs | 2659 | fn | 其它 | unsafe fn uart1_ev_clear() { // SAFETY: 调用方保证屏蔽包络 + 引用不变。 let p |
-| kernel/src/main.rs | 2661 | block | 其它 | unsafe { *core::ptr::addr_of!(UART1_EV_REF) } .expect("uart1_ev_ |
-| kernel/src/main.rs | 2663 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
-| kernel/src/main.rs | 2675 | fn | 其它 | unsafe extern "C" fn irq_tick_acct(tf: &mut berry_hal_aarch64::t |
-| kernel/src/main.rs | 2681 | block | MMIO | unsafe { berry_sched::on_irq_tick(tf) } } /// 「RX 到数据」通知（HAL `ex |
-| kernel/src/main.rs | 2702 | fn | 其它 | unsafe extern "C" fn rx_irq_notify() -> bool { // SAFETY: IRQ 上下 |
-| kernel/src/main.rs | 2704 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_irq_notif |
-| kernel/src/main.rs | 2712 | block | 其它 | unsafe { // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描 // 同窗* |
-| kernel/src/main.rs | 2744 | fn | 其它 | unsafe fn rx_ev_clear() { // SAFETY: 调用方保证屏蔽包络 + 引用不变。 let p = u |
-| kernel/src/main.rs | 2746 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_ev_clear: |
-| kernel/src/main.rs | 2748 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
-| kernel/src/main.rs | 2784 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) } .expect("am2b: |
-| kernel/src/main.rs | 2788 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
-| kernel/src/main.rs | 2801 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) } .expect("am2b_p |
-| kernel/src/main.rs | 2804 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_event_mut().map(\|e\| e.load()).unwr |
-| kernel/src/main.rs | 2813 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) } .expect("am2b: |
-| kernel/src/main.rs | 2816 | block | 其它 | unsafe { (*p.as_ptr()).retain(); crate::syscall::bootstrap_table |
-| kernel/src/main.rs | 2954 | block | 其它 | unsafe { rx_ev_clear() }; berry_hal_aarch64::enable_irq(); for i |
-| kernel/src/main.rs | 3160 | block | 其它 | unsafe { uart1_ev_clear() }; berry_hal_aarch64::enable_irq(); // |
-| kernel/src/main.rs | 3241 | block | 其它 | unsafe { *core::ptr::addr_of!(INTENT_H).cast::<u32>().add(i) } } |
-| kernel/src/main.rs | 3855 | block | MMIO | unsafe { &*(arg as *const AiDemoCtx) }; let freq = berry_hal_aar |
-| kernel/src/main.rs | 4396 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
-| kernel/src/main.rs | 4414 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
-| kernel/src/main.rs | 4588 | block | 其它 | unsafe { (*objp) .obj .as_event_mut() .expect("latsgi_wak: ObjRe |
-| kernel/src/main.rs | 4654 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
-| kernel/src/main.rs | 4670 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
-| kernel/src/main.rs | 4802 | block | 其它 | unsafe { (*(t as *mut crate::handle::ObjRef)) .obj .as_event_mut |
-| kernel/src/main.rs | 4847 | fn | 其它 | unsafe extern "C" fn secondary_main() -> ! { // S-2b 修复：换离低半早期栈（ |
-| kernel/src/main.rs | 4857 | block | 其它 | unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(no |
-| kernel/src/main.rs | 4862 | block | 上下文切换 | unsafe { core::arch::asm!("msr daifset, #0xf", options(nostack, |
-| kernel/src/main.rs | 4882 | block | 其它 | unsafe { berry_sched::park_recheck() }; // PAR 清钉（tickless 伴生洞收口 |
-| kernel/src/main.rs | 4892 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_at(d) }, // SAFETY: CNTV |
-| kernel/src/main.rs | 4896 | block | MMIO | unsafe { berry_hal_aarch64::timer::mask() }, } } else { // SAFET |
-| kernel/src/main.rs | 4901 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; } // masked-wf |
-| kernel/src/main.rs | 5162 | block | 其它 | unsafe { &mut *(arg as *mut crate::handle::HandleTable) }; // Δ |
-| kernel/src/main.rs | 6128 | block | 其它 | unsafe { &mut *(berry_sched::current_tag() as *mut crate::handle |
-| kernel/src/main.rs | 6135 | block | 其它 | unsafe { oref.as_ref() }; objref.obj.as_process().expect("ht: 类型 |
+| kernel/src/ktest.rs | 162 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_CLOCK_READ as u64, 0, &r |
+| kernel/src/ktest.rs | 168 | block | 其它 | unsafe { OUT }; assert!(t1 > 0, "SYSCALL：clock_read 应得正纳秒"); ass |
+| kernel/src/ktest.rs | 176 | block | 其它 | unsafe { OUT } >= t1, "SYSCALL：单调钟不单调"); // D. handle 门控全链路（EL1 |
+| kernel/src/ktest.rs | 193 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
+| kernel/src/ktest.rs | 199 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hd, 0, "SYSCALL：duplicate 须回填新 |
+| kernel/src/ktest.rs | 240 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc6(NR_VMO_CREATE as u64, PAGE_ |
+| kernel/src/ktest.rs | 246 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hdm, 0, "SYSCALL：DEMAND VMO 须回 |
+| kernel/src/ktest.rs | 253 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_S |
+| kernel/src/ktest.rs | 256 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hv, 0, "SYSCALL：vmo_create 须回填 |
+| kernel/src/ktest.rs | 261 | block | 其它 | unsafe { EBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) }; as |
+| kernel/src/ktest.rs | 268 | block | 其它 | unsafe { EBUF = [0; 16] }; assert_eq!( svc6(NR_VMO_READ as u64, |
+| kernel/src/ktest.rs | 275 | block | 其它 | unsafe { u64::from_le_bytes(EBUF[..8].try_into().unwrap()) }, PA |
+| kernel/src/ktest.rs | 282 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_S |
+| kernel/src/ktest.rs | 284 | block | 其它 | unsafe { OUT as u32 } }; assert_eq!( svc6(NR_VMO_READ as u64, hv |
+| kernel/src/ktest.rs | 294 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
+| kernel/src/ktest.rs | 300 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc6(NR_VMO_WRITE as u64, hro |
+| kernel/src/ktest.rs | 322 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; // 请求 VA = 0x100 |
+| kernel/src/ktest.rs | 329 | block | 其它 | unsafe { OUT } as usize, crate::aspace::USER_VA, "SYSCALL：vmar_m |
+| kernel/src/ktest.rs | 365 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc6(NR_VMO_CREATE as u64, PAGE_ |
+| kernel/src/ktest.rs | 371 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上（请求 VA 复用 0x1000——E3 已 unmap |
+| kernel/src/ktest.rs | 373 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; assert_eq!( svc6 |
+| kernel/src/ktest.rs | 394 | block | 其它 | unsafe { OUT = 0x20_0000 }; // 请求子区间基 0x20_0000 static mut CHILD |
+| kernel/src/ktest.rs | 397 | block | 其它 | unsafe { CHILD_OUT = 0 }; assert_eq!( svc6(NR_VMAR_ALLOCATE as u |
+| kernel/src/ktest.rs | 404 | block | 其它 | unsafe { CHILD_OUT } as u32; assert_ne!(hchild, 0, "SYSCALL：allo |
+| kernel/src/ktest.rs | 438 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p) }); assert!(crate::vmar: |
+| kernel/src/ktest.rs | 466 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p2) }); assert_eq!(crate::v |
+| kernel/src/ktest.rs | 470 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p1) }); assert!(crate::vmar |
+| kernel/src/ktest.rs | 487 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p) }); break; // 帽到（该 v 未登记 |
+| kernel/src/ktest.rs | 506 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p_chk) }); // SAFETY: live |
+| kernel/src/ktest.rs | 510 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p) }); } let asid18 = crate |
+| kernel/src/ktest.rs | 522 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(p18) }); // E3d. EL0 槽池属主过滤 |
+| kernel/src/ktest.rs | 613 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_a as *mut Vmar) }); dr |
+| kernel/src/ktest.rs | 614 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_b as *mut Vmar) }); dr |
+| kernel/src/ktest.rs | 615 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_a as *mut Vmo) }); drop |
+| kernel/src/ktest.rs | 616 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_b as *mut Vmo) }); drop |
+| kernel/src/ktest.rs | 617 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_c as *mut Vmo) }); } // |
+| kernel/src/ktest.rs | 675 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_e as *mut Vmar) }); dr |
+| kernel/src/ktest.rs | 676 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_e as *mut Vmo) }); } // |
+| kernel/src/ktest.rs | 744 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_f as *mut Vmar) }); dr |
+| kernel/src/ktest.rs | 745 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(vmo_f as *mut Vmo) }); } // |
+| kernel/src/ktest.rs | 780 | block | 其它 | unsafe { TBL = [PagerWindow { dv: 0, sv: 0, delta: 0 }; 2] }; as |
+| kernel/src/ktest.rs | 800 | block | 其它 | unsafe { TBL[0].delta = 8 }; assert_eq!( svc6(NR_PAGER_SUPPLY_MA |
+| kernel/src/ktest.rs | 830 | block | 其它 | unsafe { (*og.as_ptr()).obj.as_vmo_mut().unwrap() as *mut Vmo }; |
+| kernel/src/ktest.rs | 831 | block | 其它 | unsafe { (*oh.as_ptr()).obj.as_vmo_mut().unwrap() as *mut Vmo }; |
+| kernel/src/ktest.rs | 845 | block | 其它 | unsafe { root_g .map_demand(&mut *ptr_g, VA_G, 0, PAGE_SIZE, cra |
+| kernel/src/ktest.rs | 851 | block | 其它 | unsafe { root_h .map_demand(&mut *ptr_h, VA_H, 0, 2 * PAGE_SIZE, |
+| kernel/src/ktest.rs | 864 | block | 其它 | unsafe { TBL = [ PagerWindow { dv: hg, sv: 0, delta: 0 }, PagerW |
+| kernel/src/ktest.rs | 882 | block | 其它 | unsafe { TBL = [ PagerWindow { dv: hh, sv: 0, delta: 0 }, PagerW |
+| kernel/src/ktest.rs | 899 | block | 其它 | unsafe { TBL[0] = PagerWindow { dv: hg, sv: 0, delta: 0 } }; ass |
+| kernel/src/ktest.rs | 927 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_g as *mut Vmar) }); dr |
+| kernel/src/ktest.rs | 928 | block | 其它 | unsafe { alloc::boxed::Box::from_raw(root_h as *mut Vmar) }); as |
+| kernel/src/ktest.rs | 939 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_SIZE as u64, 0xDE |
+| kernel/src/ktest.rs | 949 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, 0x1800 |
+| kernel/src/ktest.rs | 952 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上（预置哨兵值，验回写真发生）。 unsafe { OUT |
+| kernel/src/ktest.rs | 954 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_SIZE as u6 |
+| kernel/src/ktest.rs | 957 | block | 其它 | unsafe { OUT }, PAGE_SIZE as u64 * 2, "SYSCALL：get_size 须回页对齐容量（ |
+| kernel/src/ktest.rs | 961 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
+| kernel/src/ktest.rs | 968 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = u64::MAX }; |
+| kernel/src/ktest.rs | 970 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_SIZE as u6 |
+| kernel/src/ktest.rs | 973 | block | 其它 | unsafe { OUT }, PAGE_SIZE as u64 * 2, "SYSCALL：零 READ 别名 size 同值 |
+| kernel/src/ktest.rs | 1059 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc6(NR_VMO_GET_SIZE as u64, hmm |
+| kernel/src/ktest.rs | 1066 | block | 其它 | unsafe { OUT }, berry_hal_aarch64::VIRTIO_MMIO_LEN as u64, "MMIO |
+| kernel/src/ktest.rs | 1086 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
+| kernel/src/ktest.rs | 1092 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = crate::aspa |
+| kernel/src/ktest.rs | 1094 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; assert_eq!( svc6 |
+| kernel/src/ktest.rs | 1104 | block | 其它 | unsafe { OUT = crate::aspace::USER_VA as u64 }; assert_eq!( svc6 |
+| kernel/src/ktest.rs | 1111 | block | 其它 | unsafe { OUT }, crate::aspace::USER_VA as u64, "MMIO：map 回写基址不变" |
+| kernel/src/ktest.rs | 1133 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_PHYS as u64, 0xDE |
+| kernel/src/ktest.rs | 1144 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_S |
+| kernel/src/ktest.rs | 1147 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = u64::MAX }; |
+| kernel/src/ktest.rs | 1149 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_PHYS as u6 |
+| kernel/src/ktest.rs | 1157 | block | 其它 | unsafe { OUT = u64::MAX }; assert_eq!(svc6(NR_VMO_GET_PHYS as u6 |
+| kernel/src/ktest.rs | 1160 | block | 其它 | unsafe { OUT }; assert!((0x4000_0000..berry_hal_aarch64::RAM_TOP |
+| kernel/src/ktest.rs | 1165 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp |
+| kernel/src/ktest.rs | 1168 | block | 其它 | unsafe { OUT }, pa0 + 0x123, "SYSCALL：get_phys 字节语义（页基 + 页内偏移）") |
+| kernel/src/ktest.rs | 1176 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
+| kernel/src/ktest.rs | 1183 | block | 其它 | unsafe { OUT } as u32; // SAFETY: 同上。 unsafe { OUT = 0 }; assert |
+| kernel/src/ktest.rs | 1185 | block | 其它 | unsafe { OUT = 0 }; assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgo |
+| kernel/src/ktest.rs | 1188 | block | 其它 | unsafe { OUT }, pa0 + 0x123, "SYSCALL：零 READ 别名 phys 同值"); asser |
+| kernel/src/ktest.rs | 1198 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc5(NR_PROCESS_C |
+| kernel/src/ktest.rs | 1204 | block | 其它 | unsafe { OUT } as u32; let hv2 = unsafe { CHILD_OUT } as u32; as |
+| kernel/src/ktest.rs | 1205 | block | 其它 | unsafe { CHILD_OUT } as u32; assert_ne!(hp, 0, "SYSCALL：process_ |
+| kernel/src/ktest.rs | 1226 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc5(NR_THREAD_CREATE as u64, hp |
+| kernel/src/ktest.rs | 1232 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hth, 0, "SYSCALL：thread_create |
+| kernel/src/ktest.rs | 1294 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4( NR_HANDLE_DUPLICATE as u64 |
+| kernel/src/ktest.rs | 1305 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hthr, 0, "SYSCALL：dup 别名须回填"); |
+| kernel/src/ktest.rs | 1322 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc5(NR_PROCESS_C |
+| kernel/src/ktest.rs | 1328 | block | 其它 | unsafe { OUT } as u32; let hv3 = unsafe { CHILD_OUT } as u32; as |
+| kernel/src/ktest.rs | 1329 | block | 其它 | unsafe { CHILD_OUT } as u32; assert_ne!(hp2, 0, "SYSCALL：第二个进程 h |
+| kernel/src/ktest.rs | 1343 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(crate::syscall::NR_OBJECT |
+| kernel/src/ktest.rs | 1349 | block | 其它 | unsafe { I_OBS }, 0, "SYSCALL：未命中 observed 须保持 0"); // F4c. proc |
+| kernel/src/ktest.rs | 1358 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(crate::syscall::NR_PROCESS_ |
+| kernel/src/ktest.rs | 1374 | block | 其它 | unsafe { OUT }, 0, "SYSCALL：未退 code 出参须保持 0"); // F4d. process_t |
+| kernel/src/ktest.rs | 1397 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4( NR_HANDLE_DUPLICATE as u64 |
+| kernel/src/ktest.rs | 1408 | block | 其它 | unsafe { OUT } as u32; assert_ne!(hp2r, 0, "SYSCALL：dup 别名须回填"); |
+| kernel/src/ktest.rs | 1424 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5( crate::syscall::NR_OBJEC |
+| kernel/src/ktest.rs | 1437 | block | 其它 | unsafe { I_OBS }, crate::handle::SIGNAL_TERMINATED, "SYSCALL：obs |
+| kernel/src/ktest.rs | 1443 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(crate::syscall::NR_PROCESS_ |
+| kernel/src/ktest.rs | 1449 | block | 其它 | unsafe { OUT } as u32, 42, "SYSCALL：terminate code=42 须落退出码"); a |
+| kernel/src/ktest.rs | 1504 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc5(NR_PROCESS_C |
+| kernel/src/ktest.rs | 1510 | block | 其它 | unsafe { OUT } as u32; let hv4 = unsafe { CHILD_OUT } as u32; le |
+| kernel/src/ktest.rs | 1511 | block | 其它 | unsafe { CHILD_OUT } as u32; let (pobj, _) = ht.get(hp3, ObjType |
+| kernel/src/ktest.rs | 1535 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc4(NR_CHANNEL_C |
+| kernel/src/ktest.rs | 1541 | block | 其它 | unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32); assert_ne!( |
+| kernel/src/ktest.rs | 1541 | block | 其它 | unsafe { CHILD_OUT } as u32); assert_ne!(hc0, 0, "SYSCALL：channe |
+| kernel/src/ktest.rs | 1552 | block | 其它 | unsafe { H_NB = 8; H_NH = 4 }; assert_eq!( svc6(NR_CHANNEL_RECV |
+| kernel/src/ktest.rs | 1563 | block | 其它 | unsafe { HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) }; as |
+| kernel/src/ktest.rs | 1570 | block | 其它 | unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] }; |
+| kernel/src/ktest.rs | 1578 | block | 其它 | unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) }, PA |
+| kernel/src/ktest.rs | 1580 | block | 其它 | unsafe { H_NB }, 8, "SYSCALL：recv 须回写实际字节数"); assert_eq!(unsafe |
+| kernel/src/ktest.rs | 1581 | block | 其它 | unsafe { H_NH }, 0, "SYSCALL：recv 须回写实际 handle 数"); // SAFETY: 同 |
+| kernel/src/ktest.rs | 1583 | block | 其它 | unsafe { H_NB = 8; H_NH = 0 }; assert_eq!( svc6(NR_CHANNEL_RECV |
+| kernel/src/ktest.rs | 1611 | block | 其它 | unsafe { H_NB = 4; H_NH = 0 }; assert_eq!( svc6(NR_CHANNEL_RECV |
+| kernel/src/ktest.rs | 1619 | block | 其它 | unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 0 }; assert_eq!( svc6 |
+| kernel/src/ktest.rs | 1627 | block | 其它 | unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) }, PA |
+| kernel/src/ktest.rs | 1632 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc4(NR_CHANNEL_C |
+| kernel/src/ktest.rs | 1638 | block | 其它 | unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32); for _ in 0. |
+| kernel/src/ktest.rs | 1638 | block | 其它 | unsafe { CHILD_OUT } as u32); for _ in 0..8 { assert_eq!( svc6(N |
+| kernel/src/ktest.rs | 1657 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
+| kernel/src/ktest.rs | 1663 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc6(NR_CHANNEL_SEND as u64, |
+| kernel/src/ktest.rs | 1678 | block | 其它 | unsafe { H_HND = [hsrc, 0, 0, 0, 0, 0, 0, 0]; HBUF[..8].copy_fro |
+| kernel/src/ktest.rs | 1691 | block | 其它 | unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] }; |
+| kernel/src/ktest.rs | 1698 | block | 其它 | unsafe { H_HND[0] }; assert_eq!(unsafe { H_NH }, 1, "SYSCALL：rec |
+| kernel/src/ktest.rs | 1699 | block | 其它 | unsafe { H_NH }, 1, "SYSCALL：recv 须回写 1 个随行 handle"); assert_ne! |
+| kernel/src/ktest.rs | 1718 | block | 其它 | unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0, 0, 0, 0, 0] }; assert_ |
+| kernel/src/ktest.rs | 1730 | block | 其它 | unsafe { H_HND = [hgd, hgd, 0, 0, 0, 0, 0, 0] }; assert_eq!( svc |
+| kernel/src/ktest.rs | 1766 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_EVENT_CREATE as u64, 0, |
+| kernel/src/ktest.rs | 1772 | block | 其它 | unsafe { OUT } as u32; assert_ne!(he, 0, "SYSCALL：event_create 须 |
+| kernel/src/ktest.rs | 1782 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1801 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1807 | block | 其它 | unsafe { I_OBS }, U1 \| U2, "SYSCALL：observed 须回写全满足集"); // I3. 请 |
+| kernel/src/ktest.rs | 1812 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1824 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1840 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_HANDLE_DUPLICATE as u64, |
+| kernel/src/ktest.rs | 1846 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc4(NR_OBJECT_SIGNAL as u64, |
+| kernel/src/ktest.rs | 1853 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1900 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1921 | block | 其它 | unsafe { OUT = 0; CHILD_OUT = 0 }; assert_eq!( svc4(NR_CHANNEL_C |
+| kernel/src/ktest.rs | 1927 | block | 其它 | unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32); // SAFETY: |
+| kernel/src/ktest.rs | 1927 | block | 其它 | unsafe { CHILD_OUT } as u32); // SAFETY: 同上。 unsafe { I_OBS = 0 |
+| kernel/src/ktest.rs | 1929 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1940 | block | 其它 | unsafe { I_OBS }, SIGNAL_WRITABLE, "SYSCALL：WRITABLE 全满足集"); ass |
+| kernel/src/ktest.rs | 1947 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1955 | block | 其它 | unsafe { I_OBS }, SIGNAL_READABLE \| SIGNAL_WRITABLE, "SYSCALL：RE |
+| kernel/src/ktest.rs | 1967 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1974 | block | 其它 | unsafe { H_NB = 8; H_NH = 0 }; assert_eq!( svc6(NR_CHANNEL_RECV |
+| kernel/src/ktest.rs | 1982 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1991 | block | 其它 | unsafe { I_OBS = 0 }; assert_eq!( svc5(NR_OBJECT_WAIT_ONE as u64 |
+| kernel/src/ktest.rs | 1999 | block | 其它 | unsafe { I_OBS }, SIGNAL_READABLE \| SIGNAL_WRITABLE, "SYSCALL：全满 |
+| kernel/src/ktest.rs | 2013 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_EVENT_CREATE as u64, 0, |
+| kernel/src/ktest.rs | 2019 | block | 其它 | unsafe { OUT } as u32; assert_eq!( svc4(NR_OBJECT_SIGNAL as u64, |
+| kernel/src/ktest.rs | 2025 | block | 其它 | unsafe { WM_IDX = 0 }; assert_eq!( svc6(NR_OBJECT_WAIT_MANY as u |
+| kernel/src/ktest.rs | 2039 | block | 其它 | unsafe { WM_H = [3, hw_ev]; WM_S = [U1, U1] }; assert_eq!( svc6( |
+| kernel/src/ktest.rs | 2048 | block | 其它 | unsafe { WM_H = [hw_ev, hw_ev]; WM_S = [U2, U2]; WM_IDX = 0 }; a |
+| kernel/src/ktest.rs | 2055 | block | 其它 | unsafe { WM_IDX }, u64::MAX, "SYSCALL：未命中 idx 须留哨兵 MAX"); // SAF |
+| kernel/src/ktest.rs | 2057 | block | 其它 | unsafe { WM_IDX = 0 }; assert_eq!( svc6(NR_OBJECT_WAIT_MANY as u |
+| kernel/src/ktest.rs | 2067 | block | 其它 | unsafe { WM_H = [hw_ev, hw_ev]; WM_S = [U2, U1]; WM_IDX = 0; I_O |
+| kernel/src/ktest.rs | 2074 | block | 其它 | unsafe { WM_IDX }, 1, "SYSCALL：idx 须指次项"); assert_eq!(unsafe { I |
+| kernel/src/ktest.rs | 2075 | block | 其它 | unsafe { I_OBS }, U1, "SYSCALL：observed 须该对象全满足集"); // SAFETY: 同 |
+| kernel/src/ktest.rs | 2077 | block | 其它 | unsafe { WM_S = [U1, U2]; WM_IDX = 0; I_OBS = 0 }; assert_eq!( s |
+| kernel/src/ktest.rs | 2084 | block | 其它 | unsafe { WM_IDX }, 0, "SYSCALL：idx 须指首项（入参序最前）"); // 清场。 assert_ |
+| kernel/src/ktest.rs | 2097 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
+| kernel/src/ktest.rs | 2115 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
+| kernel/src/ktest.rs | 2134 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
+| kernel/src/ktest.rs | 2163 | block | 其它 | unsafe { core::arch::asm!("brk #0x42", options(nostack, preserve |
+| kernel/src/ktest.rs | 2174 | block | 其它 | unsafe { v1.write_volatile(0xDEAD_BEEF_CAFE_F00D); assert_eq!( v |
+| kernel/src/ktest.rs | 2223 | block | 其它 | unsafe { for w in 0..512usize { va.add(w).write_volatile(0); } f |
+| kernel/src/ktest.rs | 2247 | block | 其它 | unsafe { desc_at(pa as u64, 40, 1) }; assert_eq!(d1.kind, 4); as |
+| kernel/src/ktest.rs | 2259 | block | 其它 | unsafe { desc_at(pa as u64, 40, i) }; assert_eq!( desc_range(d, |
+| kernel/src/ktest.rs | 2367 | block | 其它 | unsafe { berry_hal_aarch64::uart_puts(b"PING "); berry_hal_aarch |
+| kernel/src/ktest.rs | 2382 | block | 其它 | unsafe { let stack_top = (&raw const SWITCH_OTHER_STACK) as *con |
+| kernel/src/ktest.rs | 2458 | fn | 其它 | unsafe fn fp_canary_load(pats: *const u128) { unsafe { core::arc |
+| kernel/src/ktest.rs | 2459 | block | 其它 | unsafe { core::arch::asm!( ".arch armv8-a+fp+simd", // 局部重开 FP/S |
+| kernel/src/ktest.rs | 2482 | fn | 其它 | unsafe fn fp_canary_store(out: *mut u128) { unsafe { core::arch: |
+| kernel/src/ktest.rs | 2483 | block | 其它 | unsafe { core::arch::asm!( ".arch armv8-a+fp+simd", // 局部重开 FP/S |
+| kernel/src/ktest.rs | 2505 | fn | 其它 | unsafe fn fpcr_read() -> u64 { let v: u64; unsafe { core::arch:: |
+| kernel/src/ktest.rs | 2507 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpcr |
+| kernel/src/ktest.rs | 2511 | fn | 其它 | unsafe fn fpcr_write(v: u64) { unsafe { core::arch::asm!(".arch |
+| kernel/src/ktest.rs | 2512 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpcr, {} |
+| kernel/src/ktest.rs | 2515 | fn | 其它 | unsafe fn fpsr_read() -> u64 { let v: u64; unsafe { core::arch:: |
+| kernel/src/ktest.rs | 2517 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "mrs {}, fpsr |
+| kernel/src/ktest.rs | 2521 | fn | 其它 | unsafe fn fpsr_write(v: u64) { unsafe { core::arch::asm!(".arch |
+| kernel/src/ktest.rs | 2522 | block | 其它 | unsafe { core::arch::asm!(".arch armv8-a+fp+simd", "msr fpsr, {} |
+| kernel/src/ktest.rs | 2526 | extern | 其它 | unsafe extern "C" { fn memset(s: *mut u8, c: u8, n: usize) -> *m |
+| kernel/src/ktest.rs | 2537 | block | 其它 | unsafe { &*(&raw const FP_SNAP) }; snap == pats } /// FP 乒乓对端：装 |
+| kernel/src/ktest.rs | 2548 | block | 其它 | unsafe { fpcr_write(FP_FPCR_OTHER); fpsr_write(FP_FPSR_OTHER); f |
+| kernel/src/ktest.rs | 2577 | block | 其它 | unsafe { let stack_top = (&raw const FP_OTHER_STACK) as *const u |
+| kernel/src/ktest.rs | 2718 | block | 其它 | unsafe { core::ptr::read_volatile(berry_hal_aarch64::RAM_BASE as |
+| kernel/src/ktest.rs | 2771 | block | 其它 | unsafe { core::ptr::read_volatile(USER_VA as *const u64) }; asse |
+| kernel/src/ktest.rs | 2774 | block | 其它 | unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC2) |
+| kernel/src/ktest.rs | 2782 | block | 其它 | unsafe { core::ptr::read_volatile(USER_VA as *const u64) }; asse |
+| kernel/src/ktest.rs | 2789 | block | 其它 | unsafe { core::ptr::read_volatile(USER_VA as *const u64) }; asse |
+| kernel/src/ktest.rs | 2793 | block | 其它 | unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC) } |
+| kernel/src/ktest.rs | 2797 | block | 其它 | unsafe { core::ptr::write_volatile(USER_VA as *mut u64, MAGIC) } |
+| kernel/src/ktest.rs | 2815 | block | 其它 | unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) }; as |
+| kernel/src/ktest.rs | 3536 | block | 其它 | unsafe { rr.enqueue(&mut **p, &mut rq) }; } /// 相位复位：上一态循环推高的 VD |
+| kernel/src/ktest.rs | 3545 | block | 其它 | unsafe { (**p).vruntime = 0; (**p).vdeadline = 0; } } rq.resync_ |
+| kernel/src/ktest.rs | 4594 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE, ) .unwra |
+| kernel/src/ktest.rs | 4600 | block | 其它 | unsafe { Thread::new(pref) }), RIGHT_MANAGE) .unwrap(); let (tre |
+| kernel/src/ktest.rs | 4604 | block | 其它 | unsafe { let pr = &mut *pref.as_ptr(); let p = pr.obj.as_process |
+| kernel/src/ktest.rs | 4678 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE, ) .expec |
+| kernel/src/ktest.rs | 4687 | block | 其它 | unsafe { Thread::new(pref) }), RIGHT_MANAGE, ) .expect("FREEZE：F |
+| kernel/src/ktest.rs | 4694 | block | 其它 | unsafe { let p_key = pref.as_ptr() as usize; let t_key = tref.as |
+| kernel/src/ktest.rs | 4904 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE) .unwrap( |
+| kernel/src/ktest.rs | 4922 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
+| kernel/src/ktest.rs | 4938 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
+| kernel/src/ktest.rs | 4967 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
+| kernel/src/ktest.rs | 5004 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK) }; assert_ne!(tok, 0, "FRZCYC |
+| kernel/src/ktest.rs | 5007 | block | 其它 | unsafe { let p = (*pref.as_ptr()).obj.as_process_mut().unwrap(); |
+| kernel/src/ktest.rs | 5079 | block | 其它 | unsafe { (*pref.as_ptr()).obj.as_process().unwrap().wake_pending |
+| kernel/src/ktest.rs | 5083 | block | 其它 | unsafe { (*aref.as_ptr()).obj.as_channel().unwrap().frozen_owner |
+| kernel/src/ktest.rs | 5087 | block | 其它 | unsafe { (*aref.as_ptr()).obj.as_channel().unwrap().has_message( |
+| kernel/src/ktest.rs | 5097 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE) .unwrap( |
+| kernel/src/ktest.rs | 5112 | block | 其它 | unsafe { (*pref.as_ptr()) .obj .as_process_mut() .unwrap() .ht . |
+| kernel/src/ktest.rs | 5124 | block | 其它 | unsafe { (*pref.as_ptr()) .obj .as_process_mut() .unwrap() .ht . |
+| kernel/src/ktest.rs | 5135 | block | 其它 | unsafe { ChannelEnd::pair(aref, bref) }; // —— 等待者属主 P2/T2（F7 形真 |
+| kernel/src/ktest.rs | 5144 | block | 其它 | unsafe { Process::new(vref2, pa2, asid2) }), RIGHT_MANAGE) .unwr |
+| kernel/src/ktest.rs | 5148 | block | 其它 | unsafe { Thread::new(pref2) }), RIGHT_MANAGE) .unwrap(); let (tr |
+| kernel/src/ktest.rs | 5153 | block | 其它 | unsafe { // 运行钉住（表引 + 钉）+ 末线程簿记位（钩子 live_threads-=1 → 0 走 // Pro |
+| kernel/src/ktest.rs | 5185 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK) }; assert_ne!(tok, 0, "WAKEP： |
+| kernel/src/ktest.rs | 5199 | block | 其它 | unsafe { *core::ptr::addr_of!(OBS) }, 0, "WAKEP：②未命中 observed 须 |
+| kernel/src/ktest.rs | 5227 | block | 其它 | unsafe { *core::ptr::addr_of!(OBS) }, SIGNAL_WAKE_PENDING, "WAKE |
+| kernel/src/ktest.rs | 5266 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK) }; assert!(end_frozen(aref), |
+| kernel/src/ktest.rs | 5273 | block | 其它 | unsafe { *core::ptr::addr_of!(TOK2) }; assert_eq!( svc6(NR_CHANN |
+| kernel/src/ktest.rs | 5301 | block | 其它 | unsafe { berry_sched::kill_all_tasks_by_pinned(wp2, 0) }; assert |
+| kernel/src/ktest.rs | 5307 | block | 其它 | unsafe { (*pref.as_ptr()).obj.as_process_mut().unwrap().ht.drain |
+| kernel/src/ktest.rs | 5574 | block | 其它 | unsafe { ATTR_BUF[0..4].copy_from_slice(&56u32.to_le_bytes()); A |
+| kernel/src/ktest.rs | 5640 | block | 其它 | unsafe { rr.enqueue(&mut **r, &mut rq) }; } let t0 = berry_hal_a |
+| kernel/src/ktest.rs | 5705 | block | 其它 | unsafe { rr.enqueue(&mut **p, &mut rq) }; } // 100 轮 pick + 计数（指 |
+| kernel/src/ktest.rs | 5720 | block | 其它 | unsafe { (*pp).vdeadline = 100 + i }; } } let spread = hits.iter |
+| kernel/src/ktest.rs | 6009 | block | 其它 | unsafe { &mut *cur2 }, unsafe { &mut *core::ptr::addr_of_mut!(rq |
+| kernel/src/ktest.rs | 6009 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(rq2) }); assert!(tb.held_ |
+| kernel/src/ktest.rs | 6074 | block | 其它 | unsafe { &mut *(ht as *mut HandleTable) }; let h = ht .insert( K |
+| kernel/src/ktest.rs | 6089 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; } /// 一个 Event 进内核侧表（非 channe |
+| kernel/src/ktest.rs | 6409 | block | 其它 | unsafe { (*ni.as_ptr()).obj.as_channel().unwrap().no_intent() }, |
+| kernel/src/ktest.rs | 6607 | block | 其它 | unsafe { Process::new(vref, pa, asid) }), RIGHT_MANAGE) .unwrap( |
+| kernel/src/ktest.rs | 6611 | block | 其它 | unsafe { (*pref.as_ptr()).obj.as_process_mut().unwrap() }; asser |
+| kernel/src/ktest.rs | 7237 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; } // L0. 非法参 + 空队 → None（send |
+| kernel/src/main.rs | 347 | block | 其它 | unsafe { mm::init(handoff) }; // GUI P2：超出 GOP 缓冲的模式（如 540×1200） |
+| kernel/src/main.rs | 441 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len) }; Some((b"handoff" |
+| kernel/src/main.rs | 475 | block | 其它 | unsafe { core::slice::from_raw_parts( phys_to_virt(s.pa as usize |
+| kernel/src/main.rs | 517 | block | 其它 | unsafe { core::slice::from_raw_parts(p, len as usize) }; Some((b |
+| kernel/src/main.rs | 530 | block | 其它 | unsafe { core::slice::from_raw_parts(pa, (e - s) as usize) }; (b |
+| kernel/src/main.rs | 562 | block | 其它 | unsafe { *(&raw mut ROOTFS) = Some(buf) }; berry_hal_aarch64::ua |
+| kernel/src/main.rs | 652 | block | 其它 | unsafe { (*p_am2b.as_ptr()).retain(); (*p_am2b.as_ptr()).retain( |
+| kernel/src/main.rs | 673 | block | MMIO | unsafe { berry_hal_aarch64::timer::init() }; // 2b-2：两忙循环任务各挂一个私 |
+| kernel/src/main.rs | 829 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk, pu) }; // 先于用户矩阵入队 |
+| kernel/src/main.rs | 889 | block | 其它 | unsafe { (*p_rx.as_ptr()).retain() }; // 静态槽传递（spawn arg 已满：hi32 |
+| kernel/src/main.rs | 894 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(RX_EV_H) = h_rx_ev; *core::ptr |
+| kernel/src/main.rs | 918 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(BSH_IN_H) = h_end_k2; } // 3-2 |
+| kernel/src/main.rs | 1029 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // 4-2b：哑 Event 进 ponger 表— |
+| kernel/src/main.rs | 1078 | block | 其它 | unsafe { ChannelEnd::pair(pc, ps) }; let h_ev_pi = syscall::boot |
+| kernel/src/main.rs | 1117 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_d1, h_m1 |
+| kernel/src/main.rs | 1138 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_channel_mut().unwrap().push(m) }; |
+| kernel/src/main.rs | 1157 | block | 其它 | unsafe { for (i, &h) in slots.iter().enumerate() { *core::ptr::a |
+| kernel/src/main.rs | 1201 | block | 其它 | unsafe { ChannelEnd::pair(ps, pr) }; (hs, hr) }; let (h_fa, h_fb |
+| kernel/src/main.rs | 1231 | block | 其它 | unsafe { ChannelEnd::pair(pa, pb) }; // arg 打包双 handle：低 32 = 自己 |
+| kernel/src/main.rs | 1277 | block | 其它 | unsafe { (*(&raw mut ROOTFS)).take() }.map(\|buf\| { let vmo = mat |
+| kernel/src/main.rs | 1337 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pk2, pu2) }; // ---- P |
+| kernel/src/main.rs | 1477 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(pkf, puf) }; // SAFETY |
+| kernel/src/main.rs | 1479 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(FB_PIPE_H) = h_end_kfb; } // A |
+| kernel/src/main.rs | 1579 | block | 其它 | unsafe { ChannelEnd::pair(pab_a, pab_b) }; // E_done（bench 完成事件） |
+| kernel/src/main.rs | 1781 | block | MMIO | unsafe { berry_hal_aarch64::uart::rx_init() }; // sim-S1（`docs/s |
+| kernel/src/main.rs | 1887 | block | 其它 | unsafe { crate::channel::ChannelEnd::pair(p_tx, p_b_rx); // 帧通道 |
+| kernel/src/main.rs | 1894 | block | 其它 | unsafe { (*p_ev.as_ptr()).retain(); *core::ptr::addr_of_mut!(UAR |
+| kernel/src/main.rs | 1913 | block | MMIO | unsafe { berry_hal_aarch64::uart::uart1_init() }; // sim-S2 A4②： |
+| kernel/src/main.rs | 1922 | block | MMIO | unsafe { berry_hal_aarch64::pl061::pl061_init() }; berry_hal_aar |
+| kernel/src/main.rs | 2142 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; berry_hal_aarc |
+| kernel/src/main.rs | 2162 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
+| kernel/src/main.rs | 2181 | block | 其它 | unsafe { core::ptr::read_volatile(aspace::USER_VA as *const u64) |
+| kernel/src/main.rs | 2288 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
+| kernel/src/main.rs | 2351 | block | 其它 | unsafe { core::arch::asm!( "svc #0", inout("x0") nr => ret, in(" |
+| kernel/src/main.rs | 2536 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_H) } } /// bsh stdin 发端（endK |
+| kernel/src/main.rs | 2546 | block | 其它 | unsafe { *core::ptr::addr_of!(BSH_IN_H) } } /// fb 上屏管道 console |
+| kernel/src/main.rs | 2558 | block | 其它 | unsafe { *core::ptr::addr_of!(FB_PIPE_H) } } // ---- sim-S1：UART |
+| kernel/src/main.rs | 2590 | block | 其它 | unsafe { *core::ptr::addr_of!(UART1_EV_H) } } /// sim 帧通道 simcon |
+| kernel/src/main.rs | 2601 | block | 其它 | unsafe { *core::ptr::addr_of!(SIM_TX_H) } } /// 读 SIM_ACK_H 静态槽（ |
+| kernel/src/main.rs | 2607 | block | MMIO | unsafe { *core::ptr::addr_of!(SIM_ACK_H) } } /// 「UART1 RX 到数据」通 |
+| kernel/src/main.rs | 2615 | fn | 其它 | unsafe extern "C" fn uart1_notify() -> bool { // SAFETY: IRQ 上下文 |
+| kernel/src/main.rs | 2617 | block | 其它 | unsafe { *core::ptr::addr_of!(UART1_EV_REF) } .expect("uart1_not |
+| kernel/src/main.rs | 2624 | block | 其它 | unsafe { // 写位+扫描同窗（c-2b slice 4 自锁面；KL 外层包络剥除后的纯 SQ 单锁窗）。 let s |
+| kernel/src/main.rs | 2653 | fn | 其它 | unsafe extern "C" fn pl061_notify() -> bool { crate::telemetry:: |
+| kernel/src/main.rs | 2680 | fn | 其它 | unsafe fn uart1_ev_clear() { // SAFETY: 调用方保证屏蔽包络 + 引用不变。 let p |
+| kernel/src/main.rs | 2682 | block | 其它 | unsafe { *core::ptr::addr_of!(UART1_EV_REF) } .expect("uart1_ev_ |
+| kernel/src/main.rs | 2684 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
+| kernel/src/main.rs | 2696 | fn | 其它 | unsafe extern "C" fn irq_tick_acct(tf: &mut berry_hal_aarch64::t |
+| kernel/src/main.rs | 2702 | block | MMIO | unsafe { berry_sched::on_irq_tick(tf) } } /// 「RX 到数据」通知（HAL `ex |
+| kernel/src/main.rs | 2723 | fn | 其它 | unsafe extern "C" fn rx_irq_notify() -> bool { // SAFETY: IRQ 上下 |
+| kernel/src/main.rs | 2725 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_irq_notif |
+| kernel/src/main.rs | 2733 | block | 其它 | unsafe { // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描 // 同窗* |
+| kernel/src/main.rs | 2765 | fn | 其它 | unsafe fn rx_ev_clear() { // SAFETY: 调用方保证屏蔽包络 + 引用不变。 let p = u |
+| kernel/src/main.rs | 2767 | block | 其它 | unsafe { *core::ptr::addr_of!(RX_EV_REF) } .expect("rx_ev_clear: |
+| kernel/src/main.rs | 2769 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
+| kernel/src/main.rs | 2805 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) } .expect("am2b: |
+| kernel/src/main.rs | 2809 | block | 其它 | unsafe { if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() { ev |
+| kernel/src/main.rs | 2822 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) } .expect("am2b_p |
+| kernel/src/main.rs | 2825 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_event_mut().map(\|e\| e.load()).unwr |
+| kernel/src/main.rs | 2834 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) } .expect("am2b: |
+| kernel/src/main.rs | 2837 | block | 其它 | unsafe { (*p.as_ptr()).retain(); crate::syscall::bootstrap_table |
+| kernel/src/main.rs | 2975 | block | 其它 | unsafe { rx_ev_clear() }; berry_hal_aarch64::enable_irq(); for i |
+| kernel/src/main.rs | 3181 | block | 其它 | unsafe { uart1_ev_clear() }; berry_hal_aarch64::enable_irq(); // |
+| kernel/src/main.rs | 3262 | block | 其它 | unsafe { *core::ptr::addr_of!(INTENT_H).cast::<u32>().add(i) } } |
+| kernel/src/main.rs | 3876 | block | MMIO | unsafe { &*(arg as *const AiDemoCtx) }; let freq = berry_hal_aar |
+| kernel/src/main.rs | 4417 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
+| kernel/src/main.rs | 4435 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
+| kernel/src/main.rs | 4609 | block | 其它 | unsafe { (*objp) .obj .as_event_mut() .expect("latsgi_wak: ObjRe |
+| kernel/src/main.rs | 4675 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
+| kernel/src/main.rs | 4691 | block | 其它 | unsafe { (*(trig as *mut crate::handle::ObjRef)) .obj .as_event_ |
+| kernel/src/main.rs | 4823 | block | 其它 | unsafe { (*(t as *mut crate::handle::ObjRef)) .obj .as_event_mut |
+| kernel/src/main.rs | 4868 | fn | 其它 | unsafe extern "C" fn secondary_main() -> ! { // S-2b 修复：换离低半早期栈（ |
+| kernel/src/main.rs | 4878 | block | 其它 | unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(no |
+| kernel/src/main.rs | 4883 | block | 上下文切换 | unsafe { core::arch::asm!("msr daifset, #0xf", options(nostack, |
+| kernel/src/main.rs | 4903 | block | 其它 | unsafe { berry_sched::park_recheck() }; // PAR 清钉（tickless 伴生洞收口 |
+| kernel/src/main.rs | 4913 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_at(d) }, // SAFETY: CNTV |
+| kernel/src/main.rs | 4917 | block | MMIO | unsafe { berry_hal_aarch64::timer::mask() }, } } else { // SAFET |
+| kernel/src/main.rs | 4922 | block | MMIO | unsafe { berry_hal_aarch64::timer::arm_slice() }; } // masked-wf |
+| kernel/src/main.rs | 5183 | block | 其它 | unsafe { &mut *(arg as *mut crate::handle::HandleTable) }; // Δ |
+| kernel/src/main.rs | 6149 | block | 其它 | unsafe { &mut *(berry_sched::current_tag() as *mut crate::handle |
+| kernel/src/main.rs | 6156 | block | 其它 | unsafe { oref.as_ref() }; objref.obj.as_process().expect("ht: 类型 |
 | kernel/src/mem.rs | 36 | block | 其它 | unsafe { while rem >= 8 { (p as *mut u64).write_unaligned(word); |
 | kernel/src/mem.rs | 58 | block | 其它 | unsafe { while rem >= 8 { (d as *mut u64).write_unaligned((s as |
 | kernel/src/mem.rs | 80 | block | 其它 | unsafe { if (dst as usize) < (src as usize) { memcpy(dst, src, n |
