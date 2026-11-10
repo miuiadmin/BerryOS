@@ -6030,12 +6030,13 @@ fn tomb_take(id: &[u8]) -> bool {
 /// PROBED，任一缺不连坐他标）。任一步降级 = eco 行 + 同款收口（含
 /// state VMO/槽回收）+ 标记缺席（smoke FAIL）。
 fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [UiEntry], views: &mut [UiEntry]) {
-    // lifecycle 消息（与 apptomb 同套常量——TAG 族编码同源镜像，apptomb
-    // const 块为对端权威）：8B 定长 tag+pad+counter LE。
+    // lifecycle 消息（TAG 族编码——app-2 刀2 双源镜像消亡：svcmgr 常量块
+    // 升唯一权威在册，apptomb 侧 const 块退役、经 berry-libc 消费同值）：
+    // 8B 定长 tag+pad+counter LE。
     const MSG: usize = 8;
     const TAG_UP: u8 = 1;
     // TAG_BEAT 在位声明（b-1 起 wait_frame 收帧臂需按 tag 跳过心跳噪声
-    // ——不再只是「抽干不区分」；常量面与 apptomb 同源镜像）。
+    // ——不再只是「抽干不区分」；常量面同 TAG 族注：唯一权威在册）。
     const TAG_BEAT: u8 = 2;
     const TAG_RESUMED: u8 = 3;
     const TAG_RESUME: u8 = 4;
@@ -6044,8 +6045,8 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     const TAG_PAUSESV1: u8 = 6;
     const TAG_SAVED: u8 = 7;
     // AM-1.5 WAKE 臂（Q1「唤醒即解冻」消费闭环）：冻结窗探针下行 tag 8 /
-    // 回环回执 tag 9（tag 族 1-7 已占；apptomb const 块为对端权威，此处
-    // 同源镜像）。
+    // 回环回执 tag 9（tag 族 1-7 已占；同 TAG 族注口径——svcmgr 常量块
+    // 唯一权威在册，apptomb 侧镜像已消亡）。
     const TAG_PROBE: u8 = 8;
     const TAG_PROBED: u8 = 9;
     const UP_CAP_NS: u64 = 10 * 1_000_000_000;
@@ -6071,7 +6072,9 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     // 非测量判据（RESUME_CAP 同口径）。
     const WAKE_CAP_NS: u64 = 2 * 1_000_000_000;
     // state blob 头（§4/§7）：12B 定长 {magic u32 LE, ver u8=0, hlen u8=12,
-    // rsv u16=0, counter u32 LE}——与 apptomb const 块同源镜像（对端权威）。
+    // rsv u16=0, counter u32 LE}——svcmgr 常量块唯一权威在册（app-2 刀2
+    // 双源镜像消亡，apptomb 侧手排退役）；12B/ver=0/hlen=12 为 v0 档，
+    // v1 hlen=32 读者按 hlen 分派——app-2 §3.2。
     const BTMB_MAGIC: u32 = u32::from_le_bytes(*b"BTMB");
     // state VMO 定尺寸（§7 帽 = blob 帽：结构性执法——越写物理不可，比
     // 「appd 执法」更强）。
