@@ -13,6 +13,12 @@ berry-hal-aarch64 = { path = "../arch/aarch64" }
 berry-mm = { path = "../mm" }
 berry-sched = { path = "../sched" }
 berry-vmoledger = { path = "../vmoledger" }
+# W3-Q5：PI 纯函数面单源（donor_edge 资格判 + PI_MAX_HOPS 轮帽）——本
+# crate 消费，pi.rs 保留锁窗/反查机械。
+berry-piface = { path = "../piface" }
+# W3-Q5：WaitKey 值域三形（pi.rs 投影用）——crate 依赖显式化（经 sched
+# re-export 的 transitive 面不可 use，Cargo 直依赖惯例）。
+berry-wqmatch = { path = "../wqmatch" }
 
 [features]
 # G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面

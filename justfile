@@ -581,6 +581,9 @@ test-host:
     # 档位序单调性/LC 铁律三件/maintenance 门控/回退保守性/夹紧包络/
     # sanitize 保守门，host 14 测；EppHint 单源 crate）。
     cargo test -p berry-iprofile --target {{host}}
+    # W3-Q5：berry-piface（PI 捐赠图纯函数面——donor 五拒/配对律/传播三律
+    # 钉板，host 18 测；donor_edge/PI_MAX_HOPS 单源，kernel pi.rs 消费）。
+    cargo test -p berry-piface --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各

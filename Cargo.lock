@@ -16,13 +16,22 @@ version = "0.1.0"
 dependencies = [
  "berry-hal-aarch64",
  "berry-mm",
+ "berry-piface",
  "berry-sched",
  "berry-vmoledger",
+ "berry-wqmatch",
 ]
 
 [[package]]
 name = "berry-mm"
 version = "0.1.0"
+
+[[package]]
+name = "berry-piface"
+version = "0.1.0"
+dependencies = [
+ "berry-wqmatch",
+]
 
 [[package]]
 name = "berry-sched"

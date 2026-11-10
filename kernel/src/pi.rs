@@ -36,15 +36,18 @@
 //! 只读指针、写字段，无任何分配（3-4c try 化批堵住的 OOM-panic 面不得从这里
 //! 重开）。
 
-use crate::handle::{HandleTable, KernelObj, ObjRef, Rights, RIGHT_RECV, RIGHT_SEND,
-                    SIGNAL_READABLE, SIGNAL_WRITABLE};
+use crate::handle::{HandleTable, KernelObj, ObjRef, Rights};
 use berry_sched::{Task, WAIT_ANY};
+use berry_wqmatch::WaitKey;
 use core::cell::Cell;
 use core::ptr::NonNull;
 
-/// 阻塞链深上限（§2.1「链式传播有界，如 8 层」）：不动点迭代轮帽——每轮沿
-/// 捐赠边传播一跳，轮数即跳数；到帽按已达 boost 处理。
-const PI_MAX_HOPS: usize = 8;
+// ---- W3-Q5 单源外迁（berry-piface 纯函数面）----
+// donor 资格判（五拒 + 配对律）与轮帽常量的唯一事实源在
+// `berry_piface`（host 可测钉板，18 测）；本模块保留锁窗/SLEEPQ 反查/
+// retain 钉住的机械面，资格判定逐字消费 crate 函数——零第二实现。
+pub use berry_piface::PI_MAX_HOPS;
+use berry_piface::ObjKind;
 
 /// 注册 PI 重推钩子（boot 期、首个切换发生前调用——`telemetry::init` 同位）。
 /// 此后每次 SLEEPQ 变更（block 睡下后 / wake 摘队后）自动全图重推。
@@ -120,35 +123,41 @@ fn recompute_locked() {
     berry_sched::for_each_sleeper(berry_sched::refresh_effective);
 }
 
-/// donor 的捐赠边：等 channel 派生位的单一对象等待者 → (peer 端点, 解锁
-/// 需的 right 集)。不是 channel donor（纯 sleep / WAIT_ANY / Event / 只等
-/// 用户位）→ `None`。
+/// donor 的捐赠边（机械壳——资格判定单源 `berry_piface::donor_edge`）：
+/// 等 channel 派生位的单一对象等待者 → (peer 端点, 解锁需的 right 集)。
+/// 不是 channel donor（纯 sleep / WAIT_ANY / Event / 只等用户位）→ `None`。
+///
+/// W3-Q5：五拒 + 配对律（等 WRITABLE → RECV peer、等 READABLE →
+/// SEND peer、双位并集）全部在 crate 钉板；本壳只做 raw 指针 → 值域的
+/// 投影（wait_obj 解引用判 KernelObj 形 + peer 反查），语义零复制。
 fn donor_edge(t: &Task) -> Option<(NonNull<ObjRef>, Rights)> {
-    if t.wait_obj == 0 || t.wait_obj == WAIT_ANY {
-        return None; // 纯 sleep 只能超时自醒；WAIT_ANY 无单一键（v2 收口）
-    }
-    let derived = t.wait_signals & (SIGNAL_READABLE | SIGNAL_WRITABLE);
-    if derived == 0 {
-        return None; // 只等用户位——channel 上永不置（4-2a），无解锁语义
-    }
-    // SAFETY: 睡眠者全程 retain 钉住其等待对象（4-1 钉住纪律）——在队期间
-    // wait_obj 指针有效；本函数只在屏蔽窗内的重推里调用，无并发销毁。
-    let obj: &ObjRef = unsafe { &*(t.wait_obj as *const ObjRef) };
-    let KernelObj::Channel(end) = &obj.obj else {
-        return None; // Event 等：无 peer 结构，v1 不构成捐赠边
+    let (obj_kind, peer) = match t.wait_obj {
+        0 | WAIT_ANY => (ObjKind::Other, None), // 纯睡/哨兵：crate 侧键门拒
+        raw => {
+            // SAFETY: 睡眠者全程 retain 钉住其等待对象（4-1 钉住纪律）——
+            // 在队期间 wait_obj 指针有效；本函数只在屏蔽窗内的重推里调用，
+            // 无并发销毁。
+            let obj: &ObjRef = unsafe { &*(raw as *const ObjRef) };
+            match &obj.obj {
+                KernelObj::Channel(end) => {
+                    (ObjKind::Channel, end.peer().map(|p| p.as_ptr() as usize))
+                }
+                _ => (ObjKind::Other, None), // Event 等：无 peer 结构
+            }
+        }
     };
-    let peer = end.peer()?;
-    // 解锁 right：等 WRITABLE（对端满）→ recv peer 腾位；等 READABLE（本端
-    // 空）→ send peer 灌入。两位都等 → 任一动作可解锁（holder_has 的「含
-    // 任一位」语义）。
-    let mut need: Rights = 0;
-    if derived & SIGNAL_WRITABLE != 0 {
-        need |= RIGHT_RECV;
-    }
-    if derived & SIGNAL_READABLE != 0 {
-        need |= RIGHT_SEND;
-    }
-    Some((peer, need))
+    let edge = berry_piface::donor_edge(
+        WaitKey::from_raw(t.wait_obj),
+        t.wait_signals,
+        obj_kind,
+        peer,
+    )?;
+    // SAFETY: peer 值源自 `ChannelEnd::peer()` 返回的 NonNull（端点存活
+    // 期间常驻——睡眠者 retain 钉住等待对象、channel 双端互钉）；本函数
+    // 只在屏蔽窗内的重推里调用，无并发销毁。重建 NonNull 不解引用、
+    // 仅作 holder_has 的指针相等键。
+    let peer = unsafe { NonNull::new_unchecked(edge.0 as *mut ObjRef) };
+    Some((peer, edge.1))
 }
 
 /// 任务 `t` 的 handle 表（受捐判定的持有面）。`proc_tag != 0`（EL0 所属进程表
