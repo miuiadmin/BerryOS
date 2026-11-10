@@ -662,10 +662,20 @@ pub fn demote() {
 // 不混账；divergence_count / shadow_eval_count = 当前对账期的 divergence 率。
 
 /// 对账期内 shadow/active 决策不一致次数（weight 或 EPP 差异）。
-static DIVERGENCE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// **per-CPU 分账（SMPD-4）**：写方限本核（cpu_id 索引）零跨核争用；读时
+/// 合并（各核只增不减直和无损）。64B 对齐防伪共享（HDR CpuHdr 同款纪律）。
+const RECON_CPUS: usize = 2;
+
+#[repr(C, align(64))]
+struct CountSlot(AtomicU64);
+const _: () = assert!(core::mem::align_of::<CountSlot>() == 64);
+const _: () = assert!(core::mem::size_of::<CountSlot>() == 64);
+static DIVERGENCE_PER_CPU: [CountSlot; RECON_CPUS] =
+    [const { CountSlot(AtomicU64::new(0)) }; RECON_CPUS];
 /// 对账期内 shadow 决策评估次数（shadow 谱系非空时的 apply 调用数）——
 /// divergence 率的分母。
-static SHADOW_EVAL_COUNT: AtomicU64 = AtomicU64::new(0);
+static EVAL_PER_CPU: [CountSlot; RECON_CPUS] =
+    [const { CountSlot(AtomicU64::new(0)) }; RECON_CPUS];
 
 // —— 拒收入账（P1-a，吸收调研 24 号（原 12）astrid「审计链含 deny」精神）——
 // 注入受理面的四类静默处置从此有账：拒收/截尾/窗满/夹取各一计。写点在
@@ -727,28 +737,32 @@ fn shadow_reconcile(task: &Task) {
     // None↔Some、Efficiency↔Perf 的差异都落在字节差异上。
     let ae = a.map_or(0, |sl| sl.epp_flags);
     let se = s.map_or(0, |sl| sl.epp_flags);
+    let cpu = hal::smp::cpu_id().min(RECON_CPUS - 1) as usize;
     if aw != sw || ae != se {
-        // Relaxed：纯统计计数，非通信值（同 GEN_NEXT 纪律）。
-        DIVERGENCE_COUNT.fetch_add(1, Ordering::Relaxed);
+        DIVERGENCE_PER_CPU[cpu].0.fetch_add(1, Ordering::Relaxed);
     }
-    SHADOW_EVAL_COUNT.fetch_add(1, Ordering::Relaxed);
+    EVAL_PER_CPU[cpu].0.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 对账期内决策不一致次数（shadow 会做的 ≠ active 做了的：weight 或 EPP
 /// 差异）。遥测口径：`divergence_count() / shadow_eval_count()` = 当前
 /// 对账期的 divergence 率。
 pub fn divergence_count() -> u64 {
-    DIVERGENCE_COUNT.load(Ordering::Relaxed)
+    DIVERGENCE_PER_CPU[0].0.load(Ordering::Relaxed)
+        + DIVERGENCE_PER_CPU[1].0.load(Ordering::Relaxed)
 }
 
 /// 对账期内 shadow 决策评估次数（divergence 率的分母）。
 pub fn shadow_eval_count() -> u64 {
-    SHADOW_EVAL_COUNT.load(Ordering::Relaxed)
+    EVAL_PER_CPU[0].0.load(Ordering::Relaxed)
+        + EVAL_PER_CPU[1].0.load(Ordering::Relaxed)
 }
 
 /// 清零对账计数（两个计数器同清——新对账期从零起算）。[`promote`]/
 /// [`demote`] 轨道切换时自动调用；测试观察亦可用。
 pub fn divergence_reset() {
-    DIVERGENCE_COUNT.store(0, Ordering::Relaxed);
-    SHADOW_EVAL_COUNT.store(0, Ordering::Relaxed);
+    for i in 0..RECON_CPUS {
+        DIVERGENCE_PER_CPU[i].0.store(0, Ordering::Relaxed);
+        EVAL_PER_CPU[i].0.store(0, Ordering::Relaxed);
+    }
 }
