@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["arch/aarch64","hdlface","iprofile","kernel","mm","piface","sched","vmoledger","wqmatch"]
+members = ["arch/aarch64","evface","hdlface","iprofile","kernel","mm","piface","sched","vmoledger","wqmatch"]
 
 [workspace.package]
 edition = "2021"

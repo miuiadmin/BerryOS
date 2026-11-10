@@ -34,11 +34,13 @@ impl Event {
     /// 语义，CAS 环实现；无锁窗下并发置/清不丢位）。返回新值。
     pub fn signal(&self, clear_mask: u64, set_mask: u64) -> u64 {
         // Relaxed：序由锁窗承担（模块注「原子化纪律」）；RMW 原子性本身
-        // 由 fetch_update 的 compare_exchange 环保证。
+        // 由 fetch_update 的 compare_exchange 环保证。位律单源
+        // berry-evface::apply_signal（W3-Q7——(cur & !clear) | set 纯投影，
+        // host 钉板）。
         match self.signals.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
-            |cur| Some((cur & !clear_mask) | set_mask),
+            |cur| Some(berry_evface::apply_signal(cur, clear_mask, set_mask)),
         ) {
             Ok(new) => new,
             // 闭包恒 Some → CAS 只因值竞争重试后成功，Err 分支不可达；

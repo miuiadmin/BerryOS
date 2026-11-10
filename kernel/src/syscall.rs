@@ -57,7 +57,7 @@ use crate::handle::{
     ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
     RIGHT_TRANSFER, RIGHT_INSPECT,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_TERMINATED, SIGNAL_USER_MASK, SIGNAL_WRITABLE,
+    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 use crate::process::ProcState;
 use crate::vmar::{Perm, Vmar, VmarError};
@@ -3343,8 +3343,9 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 SIGNAL 位 -EACCES
     };
-    if (clear | set) & !SIGNAL_USER_MASK != 0 {
-        return ERR_INVALID_ARG as i64; // 低 32 位内核派生保留（4-2 位空间）
+    if !berry_evface::signal_masks_legal(clear, set) {
+        return ERR_INVALID_ARG as i64; // 低 32 位内核派生保留（4-2 位空间；
+        // 判定律单源 berry-evface，host 钉板——W3-Q7）
     }
     // SAFETY: get_raw 已三门控（在表、类型 Event、权利足）；单核 IRQ 屏蔽。
     unsafe {
@@ -3470,7 +3471,9 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         let Some(current) = (unsafe { signal_state(obj) }) else {
             break ERR_BAD_HANDLE as i64; // 不可达防御面
         };
-        if current & signals != 0 {
+        // W3-Q7：命中判单源 berry-evface::wait_hit（current & signals != 0
+        // 纯投影，host 钉板）。
+        if berry_evface::wait_hit(current, signals) {
             break match copy_out_u64(el1, observed, current) {
                 Ok(()) => 0,
                 Err(e) => e as i64,
@@ -3610,7 +3613,9 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
                 hit = Some(Err(ERR_BAD_HANDLE as i64)); // 不可达防御面
                 break;
             };
-            if current & sbuf[i] != 0 {
+            // W3-Q7：命中判单源 berry-evface::wait_hit（wait_one 同款——
+            // 入参序最前命中循环留在调用方）。
+            if berry_evface::wait_hit(current, sbuf[i]) {
                 hit = Some(Ok((i, current)));
                 break;
             }

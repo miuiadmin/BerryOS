@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-evface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-hal-aarch64"
 version = "0.2.0"
 
@@ -18,6 +22,7 @@ version = "0.2.0"
 name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
+ "berry-evface",
  "berry-hal-aarch64",
  "berry-hdlface",
  "berry-mm",

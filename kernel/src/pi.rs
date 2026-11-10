@@ -131,6 +131,15 @@ fn recompute_locked() {
 /// SEND peer、双位并集）全部在 crate 钉板；本壳只做 raw 指针 → 值域的
 /// 投影（wait_obj 解引用判 KernelObj 形 + peer 反查），语义零复制。
 fn donor_edge(t: &Task) -> Option<(NonNull<ObjRef>, Rights)> {
+    // 派生位门前置（§A40 判序还原）：只等用户位的睡眠者不解引用 wait_obj
+    // ——它的 wait_obj 可以是任意裸键（dpg.rs FAULT_KEY/PAGER_KEY 零大小
+    // 静态地址、ktest 手搭睡眠者的非对象值——4-2a「用户位永不来自 channel」
+    // 下无解锁语义，dereference 前必须拒。#77 外迁时此门从壳挪进 crate
+    // 参数门，但壳仍需解引用才能填 ObjKind → 裸键漏进 deref，QEMU smoke
+    // RX 相 panic（pi.rs:140 misaligned）。还原判序：信号门在解引用前）。
+    if t.wait_signals & (berry_evface::SIGNAL_READABLE | berry_evface::SIGNAL_WRITABLE) == 0 {
+        return None;
+    }
     let (obj_kind, peer) = match t.wait_obj {
         0 | WAIT_ANY => (ObjKind::Other, None), // 纯睡/哨兵：crate 侧键门拒
         raw => {

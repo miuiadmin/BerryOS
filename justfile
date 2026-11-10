@@ -584,6 +584,10 @@ test-host:
     # W3-Q5：berry-piface（PI 捐赠图纯函数面——donor 五拒/配对律/传播三律
     # 钉板，host 18 测；donor_edge/PI_MAX_HOPS 单源，kernel pi.rs 消费）。
     cargo test -p berry-piface --target {{host}}
+    # W3-Q7：berry-evface（Event 信号位空间纯函数面——用户位门/置清位律/
+    # wait 命中/唤醒资格钉板，host 14 测；判定律单源，kernel event.rs/
+    # syscall.rs 消费；位值冻结面仍在 abi_gen）。
+    cargo test -p berry-evface --target {{host}}
     # W3-Q8：berry-hdlface（handle 槽位编码纯函数面——位域 roundtrip/
     # 预留位别名拒/gen 发行域/表满门值域钉板，host 8 测；encode/decode
     # 单源，kernel handle.rs re-export 消费）。
