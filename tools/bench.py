@@ -1441,8 +1441,277 @@ def _l2_bad(tag: str, metrics: dict[str, int], base: dict[str, int]) -> list[str
     return bad
 
 
+def selftest() -> int:
+    """门禁自检（a-3 U4 纪律同款）——bench 对拍器自身的钉板（纯 host 零 QEMU）。
+
+    本工具是 just bench / bench-rt / bench-icount 六通道 QEMU 门禁的宿主
+    收割与对拍面，此前零自检：收割正则坏 = 基准行静默漏收（假超时红）或
+    误收（空心绿）；基线读写两侧不同形 = 「双绿」对陈旧基线自证（P6 A-5
+    基准漂移雷）。覆盖：
+    - 收割正则族：B-0 行锚定 vs B-1/RT/LAT/WAKE 全文子串（矩阵巨行中段
+      教训族）；DONE_RE MULTILINE 中位命中；BENCHWAKE 撕裂半行结构性
+      不命中（轮询/收割三处共用全形状——2026-10-27 三镜审查补修面）
+    - 双段基线 roundtrip：B-0 裸 CSV / B-1 BENCH1 前缀 / --update 单段
+      刷新另一段保留 / 文件缺席双空 dict（首跑自立合法）
+    - icount 双文件：on/off 头契约（ICOUNT_TOL / TRACE_CAP 镜像行）+
+      回读等 + off 写不触 on（两文件数据源不同臂不能互写）
+    - _l2_bad L2 带：等值过 / 0→0 恰等过 / 0→非零无界红 / 双侧漂移红 /
+      项消失红 / 新项跳过 / tol 参数化双侧带语义
+    - 三镜迭代定值 live 对读：bench.rs 六项字面 ↔ _iter_table；bench1
+      四 const ↔ _iter_table_el0；bsh bench1_selftest WANT ↔ 同表
+      （「改值三处同步」纪律的宿主执法面）
+    - RT/LAT wire 镜像：RT_SAMPLES/LAT_SAMPLES ↔ RT_N/LAT_N、deltas
+      档数 ↔ RT_TIERS、RT_TIERS×RT_N=96（`RT ok n=96` 字面账）
+    - write_receipt 回执：落盘 + serial_sha256 内容指纹（K-DE2）
+    - 组合拒绝 exit-code 契约：六通道互斥族子进程真跑（rc!=0 + 逐组
+      说因消息在 stderr）；--selftest 独占守卫（组合旗标 rc=2）
+    """
+    import shutil
+
+    failures: list[str] = []
+    _SELFTEST_TOTAL = [0]
+
+    def check(name: str, cond, detail: str = "") -> None:
+        _SELFTEST_TOTAL[0] += 1
+        print(f"  {'ok' if cond else 'FAIL'} {name}"
+              + (f": {detail}" if not cond else ""))
+        if not cond:
+            failures.append(name)
+
+    here = Path(__file__).resolve()
+
+    # --- 1. B-0 收割正则：行锚定（内核 bench 段行位干净的裸行语义） ---
+    m = BENCH_RE.match("BENCH,frame_alloc4k,1024,1234")
+    check("re b0: 全形行命中（name/iters/cyc 三组）",
+          m is not None and m.group(1) == "frame_alloc4k"
+          and m.group(2) == "1024" and m.group(3) == "1234")
+    check("re b0: 矩阵巨行中段不命中（行锚定语义——B-1 面由子串正则收）",
+          BENCH_RE.match("ssssBENCH,frame_alloc4k,1024,1234PPP") is None)
+    check("re b0: 多余字段拒", BENCH_RE.match("BENCH,x,1,2,3") is None)
+    check("re b0: 大写名拒（字符域 [a-z0-9_]）",
+          BENCH_RE.match("BENCH,X,1,2") is None)
+
+    # --- 2. DONE_RE：MULTILINE 中位命中 + 撕裂半行不命中 ---
+    d = DONE_RE.search("matrix line\nBENCH ok n=6\nmore output")
+    check("re done: 多行文本中位命中（MULTILINE——无它 ^ 只匹配串首）",
+          d is not None and d.group(1) == "6")
+    check("re done: 撕裂半行不命中", DONE_RE.search("BENCH ok n=") is None)
+
+    # --- 3. B-1：全文子串收割（bsh relay 行嵌稳态矩阵巨行中段教训） ---
+    giant = "s" * 40 + "BENCH1,sys_null,4096,77" + "P" * 40
+    hits = list(BENCH1_RE.finditer(giant))
+    check("re b1: 巨行中段子串收割（不 ^ 锚定）",
+          len(hits) == 1 and hits[0].group(1) == "sys_null"
+          and hits[0].group(3) == "77")
+    check("re b1: done 标记子串命中（B1 ok 同嵌巨行）",
+          DONE1_RE.search("ssB1 ok n=4BB") is not None)
+
+    # --- 4. R-1：BENCHRT 全形状 + n=32 字面 wire 冻结 ---
+    mrt = BENCHRT_RE.search("xxBENCHRT,delta=200,n=32,p50=1,p99=2,max=3yy")
+    check("re rt: 全形状命中（嵌流子串）",
+          mrt is not None and mrt.group(1) == "200" and mrt.group(2) == "1")
+    check("re rt: n=31 拒（RT_SAMPLES 镜像字面冻结）",
+          BENCHRT_RE.search("BENCHRT,delta=200,n=31,p50=1,p99=2,max=3") is None)
+    drt = DONE_RT_RE.search("RT ok n=96")
+    check("re rt: done 标记命中", drt is not None and drt.group(1) == "96")
+
+    # --- 5. G3-4 lat：lane 双路 + 标记表一致性 ---
+    mlat = BENCHLAT_RE.search(
+        "xxBENCHLAT,lane=sgi,n=32,min=1,p50=2,p90=3,p99=4,max=5yy")
+    check("re lat: 全形状命中（lane 分组）",
+          mlat is not None and mlat.group(1) == "sgi" and mlat.group(2) == "32")
+    check("re lat: 未在册 lane 拒（ipc|sgi 白名单）",
+          BENCHLAT_RE.search(
+              "BENCHLAT,lane=xyz,n=32,min=1,p50=2,p90=3,p99=4,max=5") is None)
+    check("re lat: LAT_DONE_MARKERS 键 ⊇ LAT_LANES（新增路只扩两表）",
+          set(LAT_DONE_MARKERS) >= set(LAT_LANES))
+    dlat1 = DONE_LAT_RE.search("LATIPC ok n=32")
+    dlat2 = DONE_LAT_RE.search("LATSGI ok n=32")
+    check("re lat: 双路完成标记各命中",
+          dlat1 is not None and dlat2 is not None)
+
+    # --- 6. BENCHWAKE：全八字段形状——撕裂半行结构性不命中 ---
+    wake = ("BENCHWAKE n=210 min=1497 p50=4096 p90=32768 p99=33554432 "
+            "max=46253511 sig=0 tmo=0")
+    check("re wake: 八字段全形状命中",
+          BENCHWAKE_RE.search(wake) is not None)
+    check("re wake: 撕裂半行不命中（三处共用全形状——宽前缀假早退雷）",
+          BENCHWAKE_RE.search("BENCHWAKE n=21") is None)
+    check("re wake: 缺字段拒",
+          BENCHWAKE_RE.search("BENCHWAKE n=210 min=1497 p50=4096") is None)
+
+    # --- 7/8/9. 基线 roundtrip + icount 双文件 + _l2_bad 带（tmp 隔离） ---
+    global BASELINE, BASELINE_ICOUNT, BASELINE_ICOUNT_OFF, RECEIPT_DIR, ICOUNT_TOL
+    with tempfile.TemporaryDirectory(prefix="berryos-bench-selftest.") as td:
+        tdp = Path(td)
+        saved = (BASELINE, BASELINE_ICOUNT, BASELINE_ICOUNT_OFF,
+                 RECEIPT_DIR, ICOUNT_TOL)
+        # 回执目录必须在 REPO 下（write_receipt 打印 relative_to(REPO)）；
+        # out/ 已 gitignore，测后整目录删除。
+        RECEIPT_DIR = REPO / "out" / "bench-receipts-selftest"
+        BASELINE = tdp / "bench_baseline.txt"
+        BASELINE_ICOUNT = tdp / "bench_baseline_icount.txt"
+        BASELINE_ICOUNT_OFF = tdp / "bench_baseline_icount_traceoff.txt"
+        try:
+            b0a, b1a = load_baseline()
+            check("base: 文件缺席 → 双空 dict（首跑自立合法）",
+                  not b0a and not b1a)
+            save_baseline(False, {"cntvct_pair": 0, "frame_alloc4k": 1234})
+            txt = BASELINE.read_text(encoding="utf-8")
+            check("base: B-0 段裸 CSV 行带 iter 表（读写同形）",
+                  "cntvct_pair,4096,0" in txt
+                  and "frame_alloc4k,1024,1234" in txt)
+            save_baseline(True, {"sys_null": 456})
+            txt = BASELINE.read_text(encoding="utf-8")
+            check("base: B-1 段 BENCH1 前缀", "BENCH1,sys_null,4096,456" in txt)
+            b0b, b1b = load_baseline()
+            check("base: 双段 roundtrip 回读等",
+                  b0b == {"cntvct_pair": 0, "frame_alloc4k": 1234}
+                  and b1b == {"sys_null": 456})
+            save_baseline(False, {"frame_alloc4k": 999})
+            b0c, b1c = load_baseline()
+            check("base: --update 单段刷新另一段保留（不 wipe 数值历史）",
+                  b0c == {"frame_alloc4k": 999} and b1c == {"sys_null": 456})
+
+            save_baseline_icount({"cntvct_pair": 0, "handle_evt": 166})
+            ictxt = BASELINE_ICOUNT.read_text(encoding="utf-8")
+            check("icount: 头含 ICOUNT_TOL 单源镜像行（防双源漂移）",
+                  "ICOUNT_TOL" in ictxt)
+            check("icount: 回读等",
+                  load_baseline_icount()
+                  == {"cntvct_pair": 0, "handle_evt": 166})
+            save_baseline_icount_off({"handle_evt": 166})
+            offtxt = BASELINE_ICOUNT_OFF.read_text(encoding="utf-8")
+            check("icount-off: 头含 TRACE_CAP 镜像行", "TRACE_CAP" in offtxt)
+            check("icount-off: off 写不触 on（两文件不同臂）",
+                  load_baseline_icount()
+                  == {"cntvct_pair": 0, "handle_evt": 166})
+
+            rp = write_receipt("selftest", "serial-text", "summary-line")
+            rtxt = rp.read_text(encoding="utf-8")
+            want_sha = hashlib.sha256(
+                "serial-text".encode("utf-8")).hexdigest()
+            check("receipt: 落盘 + serial_sha256 内容指纹（K-DE2）",
+                  rp.exists() and f"serial_sha256={want_sha}" in rtxt
+                  and "kind=selftest" in rtxt and "serial-text" in rtxt)
+
+            # --- _l2_bad L2 带（tol=0 精确相等 / 参数化双侧） ---
+            base_l2 = {"a": 100, "z": 0}
+            check("l2: 等值过", _l2_bad("t", {"a": 100, "z": 0}, base_l2) == [])
+            check("l2: 新基准项跳过（基线缺席不过门禁）",
+                  _l2_bad("t", {"a": 100, "z": 0, "n": 5}, base_l2) == [])
+            check("l2: +1 漂移红（ICOUNT_TOL=0 精确相等形态）",
+                  len(_l2_bad("t", {"a": 101, "z": 0}, base_l2)) == 1)
+            check("l2: 0→非零 = 无界漂移红",
+                  any("无界" in b
+                      for b in _l2_bad("t", {"a": 100, "z": 1}, base_l2)))
+            check("l2: 基准项消失红",
+                  any("消失" in b for b in _l2_bad("t", {"a": 100}, base_l2)))
+            ICOUNT_TOL = 0.05
+            check("l2: tol=0.05 带内过（+4%）",
+                  _l2_bad("t", {"a": 104, "z": 0}, base_l2) == [])
+            check("l2: tol=0.05 带外红（+6%）",
+                  len(_l2_bad("t", {"a": 106, "z": 0}, base_l2)) == 1)
+            check("l2: tol=0.05 下侧带外红（−6%，双向漂移都是指令流变化）",
+                  len(_l2_bad("t", {"a": 94, "z": 0}, base_l2)) == 1)
+        finally:
+            (BASELINE, BASELINE_ICOUNT, BASELINE_ICOUNT_OFF, RECEIPT_DIR,
+             ICOUNT_TOL) = saved
+            shutil.rmtree(RECEIPT_DIR, ignore_errors=True)
+
+    # --- 10. 三镜迭代定值 live 对读（「改值三处同步」的宿主执法面） ---
+    bench_rs = REPO / "kernel" / "src" / "bench.rs"
+    bench1_rs = REPO / "user" / "bins" / "bench1" / "src" / "main.rs"
+    bsh_rs = REPO / "user" / "bins" / "bsh" / "src" / "main.rs"
+    main_rs = REPO / "kernel" / "src" / "main.rs"
+    mirrors = [bench_rs, bench1_rs, bsh_rs, main_rs]
+    for p in mirrors:
+        check(f"mirror: {p.relative_to(REPO)} 在席", p.exists())
+    if all(p.exists() for p in mirrors):
+        got: dict[str, int] = {}
+        for nm, it in re.findall(r'bench\(b"([a-z0-9_]+)", (\d+),',
+                                 bench_rs.read_text(encoding="utf-8")):
+            got[nm] = int(it)
+        check("mirror: bench.rs 六项字面 ↔ _iter_table（B-0 镜）",
+              got == _iter_table(),
+              f"rs={sorted(got.items())} py={sorted(_iter_table().items())}")
+        got1: dict[str, int] = {}
+        # bench1 的 const 名去 ITERS 尾后小写 ≠ 表键（VMO_RW4K→vmo_rw4k 而
+        # 键 = sys_vmo_rw4k——bench1 里 sys_ 前缀被 const 名吞进 SYS_ 段位），
+        # 故映射显式逐项（四项闭集，加项时三镜同步纪律自会咬）。
+        for cn, it in re.findall(r'const ([A-Z0-9_]+)_ITERS: u64 = (\d+);',
+                                 bench1_rs.read_text(encoding="utf-8")):
+            key = {
+                "SYS_NULL": "sys_null",
+                "VMO_RW4K": "sys_vmo_rw4k",
+                "IPC_ENQUEUE8": "ipc_enqueue8",
+                "EVT_SIGNAL": "evt_signal",
+            }.get(cn, cn.lower())
+            got1[key] = int(it)
+        check("mirror: bench1 四 const ↔ _iter_table_el0（B-1 镜）",
+              got1 == _iter_table_el0(),
+              f"rs={sorted(got1.items())} py={sorted(_iter_table_el0().items())}")
+        bsh_text = bsh_rs.read_text(encoding="utf-8")
+        seg = bsh_text.split("const WANT: [(&str, &str); 4]", 1)
+        want: dict[str, int] = {}
+        if len(seg) == 2:
+            for nm, it in re.findall(r'\("([a-z0-9_]+)", "(\d+)"\)',
+                                     seg[1].split("];", 1)[0]):
+                want[nm] = int(it)
+        check("mirror: bsh bench1_selftest WANT ↔ _iter_table_el0（第三镜）",
+              want == _iter_table_el0(),
+              f"bsh={sorted(want.items())} py={sorted(_iter_table_el0().items())}")
+        main_text = main_rs.read_text(encoding="utf-8")
+        rt_m = re.search(r'const RT_SAMPLES: usize = (\d+);', main_text)
+        lat_m = re.search(r'const LAT_SAMPLES: usize = (\d+);', main_text)
+        dl_m = re.search(r'let deltas = \[([^\]]*)\];', main_text)
+        check("mirror: RT_SAMPLES ↔ RT_N",
+              rt_m is not None and int(rt_m.group(1)) == RT_N)
+        check("mirror: deltas 档数 ↔ RT_TIERS",
+              dl_m is not None
+              and len([e for e in dl_m.group(1).split(",") if e.strip()])
+              == RT_TIERS)
+        check("mirror: RT ok n=96 字面账（RT_TIERS×RT_N）",
+              RT_TIERS * RT_N == 96)
+        check("mirror: LAT_SAMPLES ↔ LAT_N",
+              lat_m is not None and int(lat_m.group(1)) == LAT_N)
+
+    # --- 11. 组合拒绝 exit-code 契约（子进程真跑；参数验证先于 kernel_elf
+    #     解析 = 零 QEMU 零构建，纯参数面红绿） ---
+    combos = [
+        (["--rt", "--el0"], "--rt 独立通道"),
+        (["--rt", "--update"], "--rt 独立通道"),
+        (["--lat", "--factor", "3"], "--lat 独立通道"),
+        (["--icount", "--el0"], "--icount 不与 --el0 组合"),
+        (["--icount", "--factor", "3"], "--icount 不与 --factor 组合"),
+        (["--prove"], "--prove 只对 --icount"),
+        (["--icount", "--prove", "--update"], "观测 only"),
+        (["--trace-dual", "--icount"], "--trace-dual 不与"),
+        (["--dpg", "--rt"], "--dpg 独立通道"),
+    ]
+    for argv, needle in combos:
+        r = subprocess.run([sys.executable, str(here), *argv],
+                           capture_output=True, text=True, timeout=60)
+        check(f"reject: {' '.join(argv)} → rc!=0 且说因在 stderr",
+              r.returncode != 0 and needle in r.stderr,
+              f"rc={r.returncode} stderr={r.stderr.strip()[:100]}")
+    r = subprocess.run([sys.executable, str(here), "--selftest", "--rt"],
+                       capture_output=True, text=True, timeout=60)
+    check("guard: --selftest 独占（组合旗标 rc=2）", r.returncode == 2,
+          f"rc={r.returncode}")
+
+    total = _SELFTEST_TOTAL[0]
+    if failures:
+        print(f"\nbench.py selftest: FAIL（{len(failures)} 面红 / 共 {total} 面）")
+    else:
+        print(f"\nbench.py selftest: PASS（0 面红 / 共 {total} 面）")
+    return 1 if failures else 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--selftest", action="store_true",
+                    help="门禁自检（a-3 U4 纪律，独占旗标——纯 host 零 QEMU）")
     ap.add_argument("--update", action="store_true", help="刷新基线文件（本模式对应段）")
     ap.add_argument("--factor", type=float, default=None,
                     help="劣化因子门禁（默认 3.0——拦数量级劣化不拦噪声）")
@@ -1471,6 +1740,17 @@ def main() -> None:
                          "（d<e 结构断言；R-1 同族只出表无基线，回执落盘）")
     ap.add_argument("--kernel", default=None, help="内核 ELF 路径（默认 paths.sh 解析）")
     args = ap.parse_args()
+
+    # --selftest 独占守卫（writable_globals/unsafe_audit 同款）：组合任何
+    # 通道旗标 = 语义未定义（自检不跑 QEMU，通道参数无处消费），rc=2 区分
+    # 于运行失败（rc=1）。
+    channel_flags = [args.update, args.el0, args.rt, args.lat, args.icount,
+                     args.prove, args.dpg, args.trace_dual,
+                     args.factor is not None, args.kernel is not None]
+    if args.selftest:
+        if any(channel_flags):
+            ap.error("--selftest 独占——不与任何通道/基线旗标组合（rc=2）")
+        raise SystemExit(selftest())
 
     if args.rt and (args.update or args.el0 or args.factor is not None
                     or args.icount or args.prove or args.lat or args.trace_dual):

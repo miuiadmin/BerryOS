@@ -788,6 +788,16 @@ test-host:
     # 红 rc=1→update 收敛→check 转绿）+ live 对拍 + 确定性——59 面，
     # 四突变红分支实证（分类翻转/正则放宽/漏报/守卫拆除均被咬）。
     python3 tools/writable_globals.py --selftest
+    # W1-Q4 十一续（a-3 U4 纪律同款）：bench 门禁自检——B-0/B-1/R-1/lat/
+    # icount/trace-dual/dpg 六通道 QEMU 门禁的宿主收割对拍面此前零自检：
+    # 收割正则族（B-0 行锚定 vs B-1/RT/LAT/WAKE 全文子串——矩阵巨行中段
+    # 教训族；WAKE 撕裂半行结构性不命中）+ 双段基线 roundtrip（--update
+    # 单段刷新另一段保留）+ icount on/off 双文件头契约 + _l2_bad L2 带
+    # （0→非零无界/双侧漂移/项消失）+ 三镜迭代定值 live 对读（bench.rs/
+    # bench1/bsh WANT ↔ 两 iter 表——「改值三处同步」的宿主执法面）+
+    # RT/LAT wire 镜像 + 回执 sha256 + 六通道组合拒绝 exit-code 契约——
+    # 57 面，三突变红分支实证（wire 冻结/单段保留/iter 漂移均被咬）。
+    python3 tools/bench.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
