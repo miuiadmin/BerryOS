@@ -52,6 +52,12 @@
 7. **配对矩阵**：OEM 三包四层（#82）按五元组配对（VINTF 同构）——内核轨/平台轨/安全位/构建 id/包 SemVer 各取一值，BCTS 只测承诺面不变量扩版本配对断言。
 8. **LTS 轨道裁决**：届时按生态压力定（Linux 模式 vs 单轨滚动——v1 无 fork、单仓单链，默认单轨）。
 
+### 执行记录
+
+- **第一档已落**（2026-11-10，commit a8f22bc）：boot banner 构建标识（版本 + git 哈希 + dirty 位，marker 冻结追加不前置）+ `v0.2.0` tag + manifest 打包行现役核（mkapp eco 行打印 `version`，摆设字段转记录位）。
+- **第二档本刀落**（2026-11-10）：level 单调化实现链（`abi.toml` `[platform]` `level` 单源，SDK_CURRENT 布尔门槛 → 单调整数）+ ABI 轨道命名（`docs/规则/03-系统调用.md`「ABI 轨道」注记）+ SPL 雏形位（ADR #82 裁决行追加 `security_level` 字段位句）。
+- **标准成文**（2026-11-10）：docs/版本管理标准v1.0.md（Type: standard 首用，五轨道/走速表/执法五门/1.0 三同步门）；ADR #84 立法（#83 头注预留归厂商配置簇——撞号让先落者，版本总纲顺延取 #84）。
+
 ## 适用边界
 
 - Android VINTF 细节/Fuchsia in-tree API level/Apple 一手为缺口三点——提案若进入 ADR 立法，先补抓（尤其 Fuchsia：与师承同门，其「API level 随提交递增 + compatibility testing」形态对 BerryOS 单仓节奏可能是最合身参照）。
