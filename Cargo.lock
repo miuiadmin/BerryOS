@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-chanface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-evface"
 version = "0.2.0"
 
@@ -29,6 +33,7 @@ dependencies = [
 name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
+ "berry-chanface",
  "berry-evface",
  "berry-hal-aarch64",
  "berry-hdlface",
@@ -52,11 +57,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-ringface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-sched"
 version = "0.2.0"
 dependencies = [
  "berry-hal-aarch64",
  "berry-iprofile",
+ "berry-ringface",
  "berry-wqmatch",
 ]
 

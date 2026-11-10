@@ -52,11 +52,15 @@ pub const HELD_RQ1: u8 = 1 << 3;
 /// REAPQ 持有位（c-2b slice 2 起随 `reapq_push`/`reap_drain` 置/清）。
 pub const HELD_REAPQ: u8 = 1 << 4;
 /// 1.1/S3：冻结位（held_locks bit5——process_suspend 置 / SuspendToken close 清）。
-pub const HELD_FROZEN: u8 = 1 << 6;
+/// W3-Q12 起位值单源在 `berry_ringface::HELD_FROZEN`（host 可测纯面
+/// crate——过滤判定律同面单源）；此处 re-export 维持既有引用路径零改动
+/// （ktest 的 `berry_sched::HELD_FROZEN` 面）。
+pub use berry_ringface::HELD_FROZEN;
 /// 1.1/S5-c：预算限流位（budget 耗尽 → 置位；周期到 lazy_unthrottle → 清位）。
 /// 与 [`HELD_FROZEN`]（进程/线程冻结）**分立**——共用一位会导致预算周期到期
 /// 误清进程冻结位（进程冻结须由 SuspendToken close 独占解除）。
-pub const HELD_THROTTLE: u8 = 1 << 7;
+/// W3-Q12 起位值单源在 `berry_ringface::HELD_THROTTLE`（同上 re-export 面）。
+pub use berry_ringface::HELD_THROTTLE;
 
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

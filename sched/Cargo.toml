@@ -15,6 +15,11 @@ path = "src/lib.rs"
 [dependencies]
 berry-hal-aarch64 = { path = "../arch/aarch64" }
 berry-wqmatch = { path = "../wqmatch" }
+# W3-Q12：环游标与扫描序不变量纯函数面（出选过滤/带内 EEVDF 比较/游标
+# 前移律/走查步数帽——host 可测钉板，纯值域投影）。HELD_FROZEN/
+# HELD_THROTTLE 位常量与 eligible/pick_better/walk_step_cap 判定律
+# 单源在此，本 crate 消费即唯一事实源。
+berry-ringface = { path = "../ringface" }
 # W3-Q1：IntentProfile 六档映射表（纯数据/纯函数，host 可测面）。EppHint
 # 单源在 iprofile（本 crate re-export；内核镜像经此依赖编入）。
 berry-iprofile = { path = "../iprofile" }

@@ -207,8 +207,10 @@ impl Runqueue {
             let mut vsum: u128 = 0;
             loop {
                 steps += 1;
+                // W3-Q12：步数帽执法判单源 berry_ringface::walk_step_cap
+                // （host 钉板恰帽/超帽/退化帽面）。
                 assert!(
-                    steps <= RING_WALK_CAP,
+                    berry_ringface::walk_step_cap(steps, RING_WALK_CAP),
                     "ring_check: ring walk exceeds cap (broken links?)"
                 );
                 vsum += (*cur.as_ptr()).vruntime as u128;
@@ -258,8 +260,9 @@ impl Runqueue {
             let mut n = 0;
             loop {
                 steps += 1;
+                // W3-Q12：同上单源（walk_step_cap）。
                 assert!(
-                    steps <= RING_WALK_CAP,
+                    berry_ringface::walk_step_cap(steps, RING_WALK_CAP),
                     "dl_on_ring_walk: ring walk exceeds cap (broken links?)"
                 );
                 if crate::class::is_deadline(&*cur.as_ptr()) {
@@ -399,8 +402,11 @@ impl Runqueue {
     /// # Safety
     /// `node` 须当前在本环上（环上节点必有 next）。
     pub(crate) unsafe fn advance_past(&self, node: NonNull<Task>) {
-        // SAFETY: 调用方契约（在环节点）；环非空必有 next。
+        // SAFETY: 调用方契约（在环节点）；环非空必有 next。W3-Q12 起游标
+        // 前移律单源 berry_ringface::advance_past（host 钉板：常形前移/
+        // 单元素环自指/断链 None 三面）——NonNull 直传（泛型 T），零投影。
         let next = (*node.as_ptr()).rq_next.get().expect("环上节点必有 next");
+        let next = berry_ringface::advance_past(node, Some(next)).expect("环上节点必有 next");
         self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
 

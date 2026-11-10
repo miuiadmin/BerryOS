@@ -273,12 +273,24 @@ impl SchedClass for Fair {
 
 /// 出选资格（S-3b 单臂形 + 1.1/S3 冻结位）：非 Running（或 Running 但正是
 /// `my_cur`），且未被冻结。冻结任务留在环上但永不出选——thaw 后恢复。
+/// W3-Q12 起判定律单源 `berry_ringface::eligible`（host 钉板——逐位/双臂
+/// 独立 AND/自豁免面全测）；此处纯投影 + 转发，零第二实现。
 #[inline]
 pub(crate) fn eligible(my_cur: *mut Task, t: *const Task) -> bool {
-    unsafe {
-        !((*t).state == TaskState::Running && (t as *mut Task) != my_cur)
-            // FROZEN（进程/线程冻结）+ THROTTLE（预算限流）双位过滤。
-            && (*t).held_locks & (crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE) == 0
+    berry_ringface::eligible(&ring_desc(unsafe { &*t }), t as *mut Task == my_cur)
+}
+
+/// W3-Q12：`&Task` → `berry_ringface::TaskDesc` 纯值域投影（环序语义消费
+/// 的唯一投影点——state as u8 序与 ringface 常量同钉，见
+/// ringface tests::state_projection_pinned）。
+#[inline]
+fn ring_desc(t: &Task) -> berry_ringface::TaskDesc {
+    berry_ringface::TaskDesc {
+        state: t.state as u8,
+        held_locks: t.held_locks,
+        prio_effective: t.prio_effective,
+        vruntime: t.vruntime,
+        vdeadline: t.vdeadline,
     }
 }
 
@@ -394,23 +406,29 @@ impl Fair {
                     } else if PURE_EEVDF || e == best_eff {
                         // 同带 → EEVDF（eligible 优先；同键首见保序——
                         // `key < best_key` 严格小于，首见不替换）。
+                        // W3-Q12 起比较律单源 berry_ringface::pick_better
+                        // （host 钉板：eligible 优先档/键序/首见保序/
+                        // None 兜底）。
                         let t = &*p;
                         let elig = t.vruntime <= avg;
-                        let key = (t.vdeadline, t.vruntime);
-                        let better = match best {
-                            None => true,
-                            Some(_) => {
-                                if elig != best_elig {
-                                    elig
-                                } else {
-                                    key < best_key
-                                }
-                            }
-                        };
+                        let better = berry_ringface::pick_better(
+                            &ring_desc(t),
+                            elig,
+                            // SAFETY: best 指环上节点（同圈扫描前缀内的
+                            // 已见者）——外层 unsafe 块同窗覆盖，裸解引用
+                            // 合法（unsafe 台账：scan_filtered 既有 unsafe
+                            // 块内，零新增出现点）。
+                            best.as_ref().map(|b| {
+                                let bt = &*b.as_ptr();
+                                (ring_desc(bt), best_elig)
+                            }),
+                            best_key,
+                            avg,
+                        );
                         if better {
                             best = Some(cur);
                             best_elig = elig;
-                            best_key = key;
+                            best_key = (t.vdeadline, t.vruntime);
                         }
                     }
                     // e < best_eff → 低带无资格，跳过。
