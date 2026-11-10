@@ -66,6 +66,7 @@ pub mod crt0;
 pub mod fs;
 pub mod futex;
 pub mod io;
+pub mod lifecycle;
 pub mod mmap;
 pub mod net;
 pub mod pthread;

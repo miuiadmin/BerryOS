@@ -281,12 +281,20 @@ build-user:
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
     python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
     python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
-    # app-1 段 a-1：APPTOMB（freeze-first 自验件——none target 随全量 build 行
-    # 产出；staging 同 appstub 形。不进 boot 批〔svcmgr 白名单 skip〕，拉起权
-    # 归 tomb_selftest——`FROZEN ok n=1` rootfs 相标记）。
+    # app-2 刀2：APPTOMB 迁 libc 路（docs/app-2实施设计草案-v1.0.md §4
+    # 换链——musl target + berry-libc shim + berry-ld 剥 musl crt 同
+    # stdhello 链；none target 全量 build 行不再产出〔user/ members 已摘
+    # 除〕，改本段显式构建。不进 boot 批〔svcmgr 白名单 skip〕，拉起权归
+    # tomb_selftest——`FROZEN ok n=1`/`WAKE ok n=1`/`TOMB ok n=1` rootfs
+    # 相标记；协议帧码/counter 对账面对 svcmgr 零改 = 迁移不改协议字节。
+    # 装配径不变：cp ELF 本体直进 staging → mkapp（门禁第 5 道要求
+    # `\x7fELF` 魔数——K2 互斥注：不经 elf2flat）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/apptomb/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     mkdir -p userbins/app-stage/APPTOMB/bin
     cp bins/apptomb/manifest.toml userbins/app-stage/APPTOMB/
-    cp cargo-target/aarch64-unknown-none/release/apptomb userbins/app-stage/APPTOMB/bin/
+    cp cargo-target/aarch64-unknown-linux-musl/release/apptomb userbins/app-stage/APPTOMB/bin/
     python3 ../tools/mkapp.py userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
     # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。
     for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser; do
@@ -590,6 +598,12 @@ test-host:
     # berry-libc 的 libc 同名符号在 host 测试二进制里符号插入，纯面外迁
     # 后 host 测试零 libc 面。
     cargo test --manifest-path user/Cargo.toml -p berry-signal --target {{host}}
+    # app-2 刀1：berry-lifecycle host 测（生命周期三口纯函数底座——32B
+    # 容器头 v1 编解码 roundtrip/hlen 分派（v0 12B 兼容 + 坏档四型
+    # BadFmt）/CRC32（png.rs 镜像·"123456789"→0xCBF43926 + 金件 blob
+    # 逐字节快照 + counter 翻转域外钉板）/前缀 12B 布局同位两条/读侧
+    # buf 两臂/8B 帧 roundtrip/counter 代持全序，host 17 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-lifecycle --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
     python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin

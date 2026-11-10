@@ -104,9 +104,16 @@
 # 快照/ACK/流式再同步解码，host 测试；PM-16 §4.1 契约 + docs/sim设备通道
 # 与契约设计-v1.0.md §5 冻结。双消费 = bins/simbattery 服务（首消费）+
 # 未来真机电池/热/modem 驱动 + L3 SDK 只读面——绿传递律单源落点）。
+# app-2 刀1：berry-lifecycle（生命周期三口纯函数底座——32B blob 容器头
+# v1 编解码/hlen 分派（v0 12B 兼容 + 坏档四型 BadFmt）/CRC32 bitwise
+# （png.rs 镜像·向量钉板）/8B 帧编解码/counter 代持状态机，
+# docs/app-2实施设计草案-v1.0.md §2.2/§3。单消费 = berry-libc
+# lifecycle.rs（syscall 胶水面）；apptomb（musl 形，刀2 迁 libc 路）经
+# berry-libc 间接消费——三口现役首消费者。berry-tls/signal 同款「纯面
+# 外迁」：host 测试零 libc 符号面（just test-host 显式行跑）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo", "bins/apptomb"]
-exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "berry-lifecycle", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 resolver = "2"
 
 # 用户程序平像：体积优先（单页墙由 tools/elf2flat.py --max 执法）。

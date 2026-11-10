@@ -43,3 +43,9 @@ berry-mmap = { path = "../berry-mmap", version = "0.1.0" }
 # docs/事件循环A7-4信号面实施设计草案.md §3.2）。signal.rs 消费；
 # 段③b 投递循环（take|held 归并）与 kill/raise 真身同接此 crate。
 berry-signal = { path = "../berry-signal", version = "0.1.0" }
+# app-2 刀1：生命周期三口纯函数底座（32B blob 容器头 v1 编解码/hlen
+# 分派/CRC32 bitwise/8B 帧编解码/counter 代持状态机——
+# docs/app-2实施设计草案-v1.0.md §2.2/§3）。lifecycle.rs 消费（三口
+# + 机械件 + 非阻塞诊断口）；apptomb（刀2 迁 libc 路）经本 crate 间接
+# 消费——三口现役首消费者。berry-tls/signal 同款独立纯 crate 形态。
+berry-lifecycle = { path = "../berry-lifecycle", version = "0.1.0" }

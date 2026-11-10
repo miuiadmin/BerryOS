@@ -191,6 +191,14 @@ pub fn stdin_h() -> u32 {
     unsafe { STDIN_H }
 }
 
+/// env 块 handles[0] 的 console 发端别名（app-2：lifecycle 非阻塞诊断口
+/// 消费——64-cap try-spin 面，与 [`console_write`] 的 EBUSY 阻塞重试形态
+/// 分立〔草案 §2.2 诊断口纪律/§8.3 R3〕）；0 = env 块未解出（纯丢行）。
+pub fn console_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { CONSOLE_H }
+}
+
 /// env 块 extras[0]（gift[4] 位）的 rootfs VMO handle（A-2：0 = 未交付——
 /// svcmgr 系老程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
 pub fn rootfs_h() -> u32 {
