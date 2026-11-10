@@ -46,7 +46,7 @@
 
 ## 架构决策全表
 
-70 条 ADR 单一事实源 = `docs/架构决策.md`，改相关代码前先对齐：
+71 条 ADR 单一事实源 = `docs/架构决策.md`，改相关代码前先对齐：
 
 - **内核形态**：Zircon 务实派；纯能力（Zircon 内核态 handle）；VMO + 用户态 pager + 每进程独立 AS；IPC：同步 channel + 异步通知 + 共享内存 + 路径式命名空间。
 - **并发 / syscall**：细粒度锁 + 全可抢占（实施分阶段）；~30–45（v1 37 在册，C-ABI——`tools/abi.toml` `nr_total` 单源，+1.1 四号另计）；FS/网络走 IPC。
