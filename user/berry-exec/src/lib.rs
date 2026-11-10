@@ -783,17 +783,10 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     // 256 内、argv0 + 数参的 cp/mv 形态留足余量；截断按「整参或零参」——
     // 装不下就不装（调用面 v1 参数都是短 CLI 词，实测最长的 uu_ls 长参面
     // 也在 192 内），绝不截半参。
+    // 组装律单源在 berry-argv（纯面外迁，berry-winplan 同款纪律），host
+    // 全盖；此处原值引回。
     let mut blob = [0u8; 192];
-    let n = name.len().min(191);
-    blob[..n].copy_from_slice(&name[..n]);
-    let mut plen = n + 1;
-    for arg in args.iter() {
-        if plen + arg.len() + 1 > blob.len() {
-            break;
-        }
-        blob[plen..plen + arg.len()].copy_from_slice(arg);
-        plen += arg.len() + 1;
-    }
+    let plen = berry_argv::argv_blob(&mut blob, name, args);
     if berry_channel_send(env_s, blob.as_ptr(), plen, gift.as_ptr(), nhandles) != 0 {
         trap();
     }

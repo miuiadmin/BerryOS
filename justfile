@@ -597,6 +597,10 @@ test-host:
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各
     # 拒面 + musl 族多 k 布局过门 + 合成 ELF 全链，host 16 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-winplan --target {{host}}
+    # argv blob 组装律纯面（自 berry-exec env 块组装段外迁，winplan 同款
+    # 纪律）：argv0 截 191 律 + 整参或零参单调截断 + 恰满边界 + wire
+    # 钉板，host 5 测。
+    cargo test --manifest-path user/Cargo.toml -p berry-argv --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-fsproto --target {{host}}
     # C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数面——v1 单段语义
     # 零漂移 + v2 五 op 面，host 17 测）。

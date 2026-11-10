@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-argv"
+version = "0.1.0"
+
+[[package]]
 name = "berry-blkproto"
 version = "0.1.0"
 
@@ -10,6 +14,7 @@ version = "0.1.0"
 name = "berry-exec"
 version = "0.1.0"
 dependencies = [
+ "berry-argv",
  "berry-loader",
  "berry-sys",
  "berry-winplan",
