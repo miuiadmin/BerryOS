@@ -93,7 +93,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **命名空间**（路径式） ||||
 | 0x81 | `namespace_open` | `open("/svc/fs")` → handle | v3 |
 | 0x82 | `namespace_mount` | 服务把 channel 挂到路径 | v3 |
-| **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`） ||||
+| **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`） ||||
 | 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 |
 | 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 |
 | **安全 / 远程证明**（预留） ||||
