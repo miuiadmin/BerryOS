@@ -53,4 +53,5 @@
 - [../BerryGUILanding-F9收口与守卫-v1.0.md](../BerryGUILanding-F9收口与守卫-v1.0.md) —— F9 nshfont 删除、普通 GUI app 静态守卫、SDK/文档收口与全量回归。
 - [../BerryUIClipping-C1嵌套视口-v1.0.md](../BerryUIClipping-C1嵌套视口-v1.0.md) —— C1 BerryGFX Push/PopClip、BerryUI 结构性 Clip、ScrollView/Swipe 裁剪、hit/damage 与 GUI8 真链验收。
 - [../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md) —— 专业软件、工业框架、游戏 UI 与 OS 分层证据；P0 Surface Mode 的裁决依据。
+- [../../research/GUI-13-多形态设备UI深研-2026-11.md](../../research/GUI-13-多形态设备UI深研-2026-11.md) —— 手机/平板/全面屏/手表/PC/TV/汽车形态矩阵、window size class、SafeArea/viewInsets、FormMetrics、focus/IME/windowing 缺口与 P5+ 路线建议。
 - [../GUI渲染调研-2026-10-v1.0.md](../GUI渲染调研-2026-10-v1.0.md) —— 渲染路线与自研光栅决策依据。
