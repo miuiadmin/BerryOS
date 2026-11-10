@@ -34,7 +34,7 @@
 # ——非主观子集）：
 #   1. EFI 十段恰一次：skeleton / fw / gop（成功形态 WxH，locate fail 不算）/
 #      fs HELLO.TXT / kfile / init / elf / load / mmap / BERRYBOOT ok；
-#   2. 内核接续恰一次：HANDOFF ok ver=1 / MMAP ok segs= / ROOTFS ok
+#   2. 内核接续恰一次：HANDOFF ok ver= / MMAP ok segs= / ROOTFS ok
 #      **src=handoff**（handoff 源专属形态——fw_cfg/DTB 路不通于此）；
 #   3. 裸相 32 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
@@ -173,7 +173,11 @@ EFI_ERE=(
 )
 # 内核接续恰一次面（src=handoff 是 handoff 路专属——fw_cfg 路打 src=fw_cfg
 # 串，混源即 FAIL）。
-CONT_MARKERS=("HANDOFF ok ver=1" "MMAP ok segs=" "ROOTFS ok src=handoff")
+# ver= 前缀式（同 MMAP segs=/ROOTFS src= 带参形态）：协议升版（v2 = 54fc9b6
+# V10 度量槽留位，bootloader/内核双侧同写）不应炸标定——内核 probe 认
+# ≤ 当前版，「接续恰一次」才是断言面。钉死 ver=1 曾致 54fc9b6 后 EFI 冒烟
+# 全线红（run 42864829668 实证：唯缺此标记，MMAP/ROOTFS 同伴均到齐）。
+CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # 裸相 32（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
 # 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行；
 # G4-1 起 +DPG ok demand 闭环行——P2-3 补同步；刀1 起 +WAKESRC acct=
