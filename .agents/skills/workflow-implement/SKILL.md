@@ -42,6 +42,18 @@ description: 用 workflow 工具编排多 agent 研究或实施波次时使用�
 3. **stash pop 恢复**——rebase 归位后 `git stash pop` 还原 agent 编辑；pop 前**不重放同样改动**（会冲突）；
 4. **pop 后三执法复跑**——check-docs --strict / docs_guard / 域测试确认零丢失。
 
+## 共享树被持——隔离 worktree 构造推送（零扰动收口）
+
+1. **触发条件**——push 被拒（远端有新提交）且共享树被活跃会话 M 态文件大面积持有（十余文件在途）、stash 会伤人时；
+2. **处置链五步**——`git fetch` →
+   `git worktree add /tmp/pushwt origin/<分支>`（隔离域，基线即远端新头，天然免 rebase）→
+   逐刀 `git cherry-pick <sha>`（冲突在 worktree 内并集解 → `git add -u` → `git cherry-pick --continue`）→
+   `git push origin HEAD:<分支>` →
+   `git worktree remove --force /tmp/pushwt`；
+3. **三纪律**——共享树零触碰（连 `git add` 都不做，兄弟 M 态原封不动）；worktree 是丢弃域（冲突解错即 remove 重来，成本为零）；cherry-pick 顺序 = 本地提交序；
+4. **对照注**——stash 拉锯四害（卷走在途/吞并归属/残留 UU/标记逃逸——本仓实录）vs 本技艺零害（沿革一八二实证：4 刀上远端、并行 19 个在途文件原封不动）；
+5. **限度**——本地分支 ref 不随动（checked-out 保护，push 的是 worktree HEAD）——下次 `git pull` 自然对齐。
+
 ## 边界
 
 - 提交权只在主会话；agent 全部禁 git 写。
