@@ -35,7 +35,7 @@ pub extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: size_t) -> *mu
 
 #[no_mangle]
 pub extern "C" fn memmove(dst: *mut c_void, src: *const c_void, n: size_t) -> *mut c_void {
-    unsafe { memmove_sem(dst as *mut u8, src as *const u8, n) };
+    memmove_sem(dst as *mut u8, src as *const u8, n);
     dst
 }
 
@@ -47,7 +47,7 @@ pub extern "C" fn memset(dst: *mut c_void, val: c_int, n: size_t) -> *mut c_void
 
 #[no_mangle]
 pub extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: size_t) -> c_int {
-    unsafe { memcmp_sem(a as *const u8, b as *const u8, n) }
+    memcmp_sem(a as *const u8, b as *const u8, n)
 }
 
 /// musl 的 bcmp 返回值语义 = memcmp 同形（非零 = 不等，符号无承诺）。
@@ -89,21 +89,19 @@ pub extern "C" fn strrchr(s: *const c_char, c: c_int) -> *const c_char {
 
 #[no_mangle]
 pub extern "C" fn strncpy(dst: *mut c_char, src: *const c_char, n: size_t) -> *mut c_char {
-    unsafe { berry_strmem::strncpy_sem(dst as *mut u8, src as *const u8, n) };
+    berry_strmem::strncpy_sem(dst as *mut u8, src as *const u8, n);
     dst
 }
 
 #[no_mangle]
 pub extern "C" fn strdup(s: *const c_char) -> *mut c_char {
-    unsafe {
-        let n = strlen_sem(s as *const u8);
-        let p = crate::alloc::malloc(n + 1);
-        if p.is_null() {
-            return core::ptr::null_mut();
-        }
-        memcpy_sem(p as *mut u8, s as *const u8, n + 1);
-        p as *mut c_char
+    let n = strlen_sem(s as *const u8);
+    let p = crate::alloc::malloc(n + 1);
+    if p.is_null() {
+        return core::ptr::null_mut();
     }
+    memcpy_sem(p as *mut u8, s as *const u8, n + 1);
+    p as *mut c_char
 }
 
 #[no_mangle]

@@ -949,7 +949,9 @@ pub fn current_pinned() -> usize {
 /// 1.1/S3-a：冻结前置谓词——按钉住键扫描，任一任务命中即返 false。
 /// 检查项：① `pi_inherited != 0`（PI 捐赠边）；② `wait_signals` 含内核
 /// 派生位（READABLE/WRITABLE——donor 面）；③ `held_locks != 0` 或
-/// `svc_mask != 0`（SMP Running 者防御面——单核 Ready/Blocked 结构性 0）。
+/// `svc_mask != 0`——**仅对 RQ 在席者拒**（SVC 窗记账位；睡眠者带残影
+/// 进 SLEEPQ，app-1 段 a-1 实证豁免——详函数体注；RQ 侧 held 剥
+/// HELD_FROZEN/HELD_THROTTLE 位）。
 pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
     // ABI 冻结值镜像已随 W3-Q27 单源外迁 berry-frzface::SIG_READABLE/
     // SIG_WRITABLE（host 钉板 test_abi_mirror_frozen_values 执法同值）。
