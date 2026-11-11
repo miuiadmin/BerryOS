@@ -1,7 +1,7 @@
 # 调度器 API 参考
 
-> 版本：v1.3（2026-11-11 升版：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**134 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 cf9e253/d1b25ca）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 版本：v1.4（2026-11-11 升版：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**136 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e/HEAD）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
@@ -166,6 +166,12 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 
 ### `lb_stats() -> (u64, u64, u64)`
 > sched | LB 统计快照（`(c0, c1, st1)`）——lb_master 在 klock 包络内调。
+
+### `pi_recompute_needed() -> bool`
+> sched | PI 全图重推门控：双零（`PI_DERIVED_WAITERS`/`PI_BOOSTED_SLEEPERS` 均 0）⇒ 队上既无 donor 可能也无待清 boost，重推整体跳过（daa5ef7e，常态零捐赠 O(n²)→2 原子读；消费者 = `kernel/src/pi.rs::recompute_locked`）。
+
+### `pi_boost_recount(n: u32)`
+> sched | 重推尾部重数回写（`PI_BOOSTED_SLEEPERS` 第三收口点）：全图重推写完在队者 `pi_inherited` 后重数非零个数回写；仅 SQ 窗内调用（daa5ef7e）。
 
 ### `sq_lock() -> bool`
 > sched | 取 SLEEPQ 锁（含持有位记账）；pub 供 kernel 侧 fastpath 义务④跨窗。
@@ -568,7 +574,7 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 
 | 文件 | pub fn | 归组 |
 |------|--------|------|
-| sched.rs | 71 | 一、调度核心 |
+| sched.rs | 73 | 一、调度核心 |
 | policy.rs | 15 | 二、策略服务 |
 | band.rs | 7 | 三、层级预算 |
 | em.rs + util.rs | 6 + 7 | 四、EAS 能效 |
@@ -579,4 +585,4 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 | spin.rs | 4 | 附 |
 | class.rs | 2（+trait 5 法） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **134** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
+| **合计** | **136** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
