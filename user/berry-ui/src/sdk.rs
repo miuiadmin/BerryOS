@@ -20,9 +20,13 @@ pub use crate::theme::{
     Density, InteractionState, RadiusToken, SpacingToken, StateColors, StrokeToken, Theme,
     ThemeColors, ThemeMetrics, TypographyToken,
 };
+pub use crate::text_input::{
+    ime_overlap_px, text_key_intent, TextInputEdit, TextInputKeyOp, TextInputKind,
+    TextInputOutcome, TextInputState, TextSelection, TEXT_INPUT_MAX,
+};
 pub use crate::widgets::{
     AppBar, Button, Card, EmptyState, ListDetail, ListDetailSpec, ListItem, Scaffold, ScrollView,
-    Switch, TextVariant,
+    Switch, TextVariant, TextField, TextFieldSpec,
     WidgetContext, column, divider, icon, row, text,
 };
 pub use crate::{FlexEntry, FocusEntry, Ui, UiError, UiMain};
@@ -70,5 +74,39 @@ pub fn focus_key_intent(code: u8, action: u8, modifiers: u8) -> Option<FocusOp> 
             Some(FocusOp::Activate)
         }
         _ => None,
+    }
+}
+
+/// C1 + GUI-T1 的总键路由。`text_focused` 由调用方以 C1 component focus
+/// 是否落在 TextField 语义锚判定；窗口焦点仍在 wmd。
+///
+/// 裁决：焦点在 TextField 时，Enter/Space 先进入文本状态机（Submit /
+/// 字面空格），不再合成组件 Activate；Tab/Shift+Tab 永远交还 C1 导航。
+/// 非文本焦点保持既有 C1 keymap 零漂移。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRoute {
+    Text(TextInputKeyOp),
+    Focus(FocusOp),
+    None,
+}
+
+pub fn key_route(
+    code: u8,
+    action: u8,
+    modifiers: u8,
+    kind: TextInputKind,
+    text_focused: bool,
+) -> KeyRoute {
+    if !text_focused {
+        return match focus_key_intent(code, action, modifiers) {
+            Some(op) => KeyRoute::Focus(op),
+            None => KeyRoute::None,
+        };
+    }
+    match text_key_intent(code, action, modifiers, kind) {
+        Some(TextInputKeyOp::FocusNext) => KeyRoute::Focus(FocusOp::Next),
+        Some(TextInputKeyOp::FocusPrev) => KeyRoute::Focus(FocusOp::Prev),
+        Some(op) => KeyRoute::Text(op),
+        None => KeyRoute::None,
     }
 }

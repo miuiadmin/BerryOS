@@ -542,6 +542,19 @@ class QmpClient:
         self.key(code, True)
         self.key(code, False)
 
+    def key_qcode(self, name: str, down: bool) -> None:
+        """QKeyCode 名义注入（方向键等 number 形态在 virtio-keyboard 映射为 0）。"""
+        return self.input_send([
+            {
+                "type": "key",
+                "data": {"down": down, "key": {"type": "qcode", "data": name}},
+            },
+        ])
+
+    def tap_qcode(self, name: str) -> None:
+        self.key_qcode(name, True)
+        self.key_qcode(name, False)
+
     def pointer_down(self, x: float, y: float, w: int, h: int) -> None:
         """raw DOWN（不自动 UP）：P4 stale input-lock 相专用。"""
         ax = max(0, min(32767, int(round(x * 32768.0 / max(1, w)))))
@@ -1617,7 +1630,7 @@ def verify_uitest_normal(
     )
     _require_exact_count(text, "UITESTHIT ok node=button", 3, "normal UITEST hit dump", log_path)
     _require_exact_count(
-        text, "UITESTAST ok bytes=779 a11y=8", 2, "normal UITEST AST", log_path
+        text, "UITESTAST ok bytes=860 a11y=9", 2, "normal UITEST AST", log_path
     )
     _require_exact_count(
         text,
@@ -1639,7 +1652,7 @@ def verify_uitest_normal(
         "normal UITEST ListDetail",
         log_path,
     )
-    _require_exact_count(text, "UITESTRENDER ok seq=", 11, "normal UITEST render", log_path)
+    _require_exact_count(text, "UITESTRENDER ok seq=", 12, "normal UITEST render", log_path)
     _require_exact_count(
         text,
         "UITESTFOCUSMOVE ok step=1 from=255 to=0 state=3",
@@ -1654,6 +1667,30 @@ def verify_uitest_normal(
         text,
         "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0",
         1, "normal UITEST focus activate", log_path,
+    )
+    _require_exact_count(
+        text, "UITESTTEXTFOCUS ok node=4", 1,
+        "normal GUI-T1 text focus", log_path,
+    )
+    _require_exact_count(
+        text, "UITESTTEXTEDIT ok edits=6 bytes=2 caret=2", 1,
+        "normal GUI-T1 text edit", log_path,
+    )
+    _require_exact_count(
+        text, "UITESTTEXTSELECT ok anchor=2 caret=2", 1,
+        "normal GUI-T1 text selection", log_path,
+    )
+    _require_exact_count(
+        text, "UITESTTEXTSUBMIT ok len=2 toggles=0", 1,
+        "normal GUI-T1 text submit", log_path,
+    )
+    _require_exact_count(
+        text, "UITESTIMEINSET ok ", 1,
+        "normal GUI-T1 IME inset data face", log_path,
+    )
+    _require_exact_count(
+        text, "UITESTKEY2 ok codes=14,15,28,30,57,105,106", 1,
+        "normal GUI-T1 keyboard summary", log_path,
     )
     _require_exact_count(text, MARK_UITEST_CLIP, 2, "normal UITEST clip", log_path)
     _require_exact_count(
@@ -1682,15 +1719,20 @@ def verify_uitest_normal(
     route_up = re.findall(
         r"WMKEYROUTE ok sid=([0-9]+) window=([0-9]+) code=([0-9]+) action=0", text
     )
+    expected_route_codes = ["14", "15", "15", "15", "15", "15", "28", "28", "28", "30", "30", "57", "105", "106"]
     if (
-        len(route_down) != 4
-        or len(route_up) != 4
+        len(route_down) != 14
+        or len(route_up) != 14
         or route_down != route_up
-        or sorted(entry[2] for entry in route_down) != ["15", "15", "28", "28"]
+        or sorted((entry[2] for entry in route_down), key=int) != expected_route_codes
         or any(entry[0] == "0" or entry[1] == "0" for entry in route_down)
     ):
         raise SmokeError(
-            f"normal keyboard route: down={route_down} up={route_up}",
+            f"normal keyboard route: equal={route_down == route_up} "
+            f"codes_equal={sorted((entry[2] for entry in route_down), key=int) == expected_route_codes} "
+            f"sorted={sorted((entry[2] for entry in route_down), key=int)!r} "
+            f"expected={expected_route_codes!r} "
+            f"down={route_down} up={route_up}",
             log_path,
         )
     _require_exact_count(
@@ -3465,6 +3507,77 @@ def run_normal_boot(args) -> int:
         log("normal-uitest: QMP 注入 Enter×2（激活 Switch 两次，状态回 false）")
         boot.qmp.tap_key(28)
         boot.qmp.tap_key(28)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0" in t
+                and "UITESTKEY ok code=28 tab=2 downs=2 ups=2" in t,
+                "C1 focus activation complete",
+                args.click_timeout,
+                "normal UITEST C1 phase",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST C1 phase", "FOCUSACT + KEY", args.click_timeout, boot.log_path
+            ) from None
+        log("normal-uitest: QMP 注入 GUI-T1 文本键盘链（Tab×3/A/Space/A/BS/Left/Right/Enter）")
+        route_before_text = boot.log.text.count("WMKEYROUTE ok ")
+        boot.qmp.tap_key(15)
+        boot.qmp.tap_key(15)
+        boot.qmp.tap_key(15)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: "UITESTTEXTFOCUS ok node=4" in t,
+                "GUI-T1 TextField focus",
+                args.click_timeout,
+                "normal UITEST text focus",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST text focus", "UITESTTEXTFOCUS ok node=4",
+                args.click_timeout, boot.log_path,
+            ) from None
+        route_before_edits = boot.log.text.count("WMKEYROUTE ok ")
+        boot.qmp.tap_key(30)
+        boot.qmp.tap_key(57)
+        boot.qmp.tap_key(30)
+        boot.qmp.tap_key(14)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count("WMKEYROUTE ok ") >= route_before_edits + 8,
+                "GUI-T1 first edit batch routed",
+                args.click_timeout,
+                "normal UITEST text edit batch 1",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST text edit batch 1", "WMKEYROUTE +8",
+                args.click_timeout, boot.log_path,
+            ) from None
+        boot.qmp.tap_qcode("left")
+        boot.qmp.tap_qcode("right")
+        boot.qmp.tap_key(28)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: "UITESTTEXTFOCUS ok node=4" in t
+                and "UITESTTEXTEDIT ok edits=6 bytes=2 caret=2" in t
+                and "UITESTTEXTSELECT ok anchor=2 caret=2" in t
+                and "UITESTTEXTSUBMIT ok len=2 toggles=0" in t
+                and "UITESTKEY2 ok codes=14,15,28,30,57,105,106" in t,
+                "GUI-T1 text focus/edit/select/submit",
+                args.click_timeout,
+                "normal UITEST text keyboard",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal UITEST text keyboard",
+                "UITESTTEXT* + UITESTKEY2",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
         input_re = rf"UITESTINPUT ok x={want_input[0]} y={want_input[1]}"
         try:
             boot.log.wait_until(
@@ -4502,7 +4615,7 @@ def self_test(args) -> int:
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=779 a11y=8\n"
+            "UITESTAST ok bytes=860 a11y=9\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
             "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
@@ -4534,7 +4647,7 @@ def self_test(args) -> int:
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=779 a11y=8\n"
+            "UITESTAST ok bytes=860 a11y=9\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
             "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
@@ -4560,9 +4673,36 @@ def self_test(args) -> int:
             "UITESTKEYWAIT ok input=9\n"
             "UITESTFOCUSMOVE ok step=1 from=255 to=0 state=3\n"
             "UITESTFOCUSMOVE ok step=2 from=0 to=1 state=3\n"
-            "UITESTRENDER ok seq=4 cmds=51\n"
+            "UITESTRENDER ok seq=4 cmds=57\n"
             "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n"
             "UITESTKEY ok code=28 tab=2 downs=2 ups=2\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=0\n"
+            "UITESTTEXTFOCUS ok node=4\n"
+            "WMKEYROUTE ok sid=15 window=15 code=30 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=30 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=57 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=57 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=30 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=30 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=14 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=14 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=105 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=105 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=106 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=106 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=28 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=28 action=0\n"
+            "UITESTTEXTEDIT ok edits=6 bytes=2 caret=2\n"
+            "UITESTTEXTSELECT ok anchor=2 caret=2\n"
+            "UITESTTEXTSUBMIT ok len=2 toggles=0\n"
+            "UITESTIMEINSET ok bottom=743 overlap=0\n"
+            "UITESTKEY2 ok codes=14,15,28,30,57,105,106\n"
+            "UITESTRENDER ok seq=5 cmds=57\n"
             f"{MARK_UITEST_DESTROY}\n{MARK_UITEST_EXIT}\n"
         )
         fake_u = uitest_boot + uitest_runtime
@@ -4634,6 +4774,40 @@ def self_test(args) -> int:
                     "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n",
                     "UITESTFOCUSACT ok node=1 toggles=2 states=0,0,0 final=0\n", 1,
                 ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺 GUI-T1 焦点",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTTEXTFOCUS ok node=4\n", "", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST GUI-T1 编辑结果造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTTEXTEDIT ok edits=6 bytes=2 caret=2\n",
+                    "UITESTTEXTEDIT ok edits=5 bytes=2 caret=2\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST GUI-T1 submit 触发组件激活",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTTEXTSUBMIT ok len=2 toggles=0\n",
+                    "UITESTTEXTSUBMIT ok len=2 toggles=1\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺 GUI-T1 键摘要",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTKEY2 ok codes=14,15,28,30,57,105,106\n", "", 1),
                 snap_u, 1,
             ),
         )
@@ -4733,7 +4907,7 @@ def self_test(args) -> int:
         expect_error(
             "UITEST adaptive AST 尺寸造假",
             lambda: verify_uitest_normal(
-                fake_u.replace("UITESTAST ok bytes=779 a11y=8", "UITESTAST ok bytes=712 a11y=8", 1),
+                fake_u.replace("UITESTAST ok bytes=860 a11y=9", "UITESTAST ok bytes=712 a11y=8", 1),
                 snap_u, 1,
             ),
         )
@@ -4750,7 +4924,7 @@ def self_test(args) -> int:
         expect_error(
             "UITEST focus render 计数不足",
             lambda: verify_uitest_normal(
-                fake_u.replace("UITESTRENDER ok seq=4 cmds=51\n", "", 1),
+                fake_u.replace("UITESTRENDER ok seq=4 cmds=57\n", "", 1),
                 snap_u, 1,
             ),
         )

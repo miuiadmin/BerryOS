@@ -18,10 +18,12 @@ use berry_room::{
     SurfaceRequest, SYSTEM_FONT_ATLAS,
 };
 use berry_ui::sdk::{
-    focus_key_intent, slot_variant, FocusDir, FocusOp, SlotVariant, Button,
-    Card, EmptyState, FontSource, InteractionState, ListDetail, ListDetailSpec,
-    ListItem, Msg, RectI, Scaffold, ScrollView, Switch, TextVariant, Theme, Ui,
-    WidgetContext, column, divider, icon, row, text,
+    focus_key_intent, ime_overlap_px, key_route, slot_variant, FocusDir, FocusOp, KeyRoute,
+    SlotVariant, Button, Card, EmptyState, FontSource, InteractionState, ListDetail,
+    ListDetailSpec, ListItem, Msg, RectI, Scaffold, ScrollView, Switch, TextInputKind,
+    TextInputKeyOp, TextInputState, TextVariant, TextField, TextFieldSpec, Theme, Ui,
+    WidgetContext, column,
+    divider, icon, row, text,
 };
 use berry_ui::hit::PtrEvent;
 
@@ -35,6 +37,7 @@ struct Page {
     button: Button,
     switch: Option<Switch>,
     adaptive: Option<ListDetail>,
+    input: Option<TextField>,
     index: u8,
 }
 
@@ -44,6 +47,7 @@ struct AppModel {
     page: Page,
     page_index: u8,
     switch_on: bool,
+    text_state: TextInputState,
     frame_seq: u32,
 }
 
@@ -187,7 +191,12 @@ fn fail(room: &AppRoom, what: &str) -> ! {
     room.exit(134)
 }
 
-fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -> Page {
+fn build_page(
+    ui: &mut Ui128,
+    ctx: &WidgetContext,
+    index: u8,
+    switch_on: bool,
+) -> Page {
     let root = ui.root();
     let scaffold = Scaffold::new(ui, root, ctx, if index == 0 {
         b"Components"
@@ -251,6 +260,15 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             },
         )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+        // GUI-T1：追加在 page0 最后，既有 Button/Switch C1 两 Tab 序与
+        // ListDetail 像素锚不漂移；TextField 是树前序第 5 个 focusable。
+        let input = TextField::new(
+            ui,
+            stack,
+            ctx,
+            TextFieldSpec { kind: TextInputKind::Text, width: 512 },
+        )
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
         Page {
             scaffold,
             scroll,
@@ -258,6 +276,7 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             button,
             switch: Some(switch),
             adaptive: Some(adaptive),
+            input: Some(input),
             index,
         }
     } else {
@@ -278,6 +297,7 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             button,
             switch: None,
             adaptive: None,
+            input: None,
             index,
         }
     }
@@ -442,6 +462,11 @@ impl AppModel {
         self.page = build_page(&mut self.ui, &self.ctx, index, self.switch_on);
         self.page_index = index;
         self.page.scroll.sync_bounds(&mut self.ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+        if let Some(input) = self.page.input.as_mut() {
+            input
+                .sync(&mut self.ui, &self.ctx, &self.text_state)
+                .unwrap_or_else(|_| berry_room::panic_exit(134));
+        }
         self.render(room);
     }
 
@@ -589,6 +614,11 @@ fn handle_message_one(app: &mut AppModel, room: &mut AppRoom, message: &Msg) -> 
     }
     if let Some(item) = app.page.clip_item.as_mut() {
         item.on_msg(&mut app.ui, &app.ctx, message)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
+    if let Some(input) = app.page.input.as_mut() {
+        input
+            .on_msg(&mut app.ui, &app.ctx, message)
             .unwrap_or_else(|_| berry_room::panic_exit(134));
     }
     app.page.scroll.on_msg(&mut app.ui, message)
@@ -761,6 +791,187 @@ fn wait_real_keyboard(app: &mut AppModel, room: &mut AppRoom) {
     line.push_u32(enter_ups);
     line.push(b"\n");
     line.print(room);
+    run_text_keyboard_phase(app, room);
+}
+
+/// GUI-T1 真键链：在既有 Button -> Switch C1 证明后，继续 Tab 到
+/// TextField（树前序第 5 个 focusable），再用硬件键编辑并提交。IME 恒
+/// Disabled；Enter/Space 由文本状态机消费，不合成组件 Click。
+fn run_text_keyboard_phase(app: &mut AppModel, room: &mut AppRoom) {
+    const CODES: [u16; 7] = [14, 15, 28, 30, 57, 105, 106];
+    const PAIRS: [u32; 7] = [1, 3, 1, 2, 1, 1, 1];
+    const SORTED_CODES: [u16; 7] = [14, 15, 28, 30, 57, 105, 106];
+    let mut events = [KeyEvent {
+        timestamp_ns: 0,
+        code: 0,
+        action: 0,
+        modifiers: 0,
+        device_id: 0,
+    }; INPUT_KEY_EVENTS_MAX];
+    let mut down_counts = [0u32; 128];
+    let mut up_counts = [0u32; 128];
+    let mut edits = 0u32;
+    let mut submits = 0u32;
+    let mut focus_marker = false;
+    let toggles_before = app.switch_on;
+
+    fn complete(codes: &[u16; 7], pairs: &[u32; 7], down: &[u32; 128], up: &[u32; 128]) -> bool {
+        codes.iter().enumerate().all(|(i, code)| {
+            let index = *code as usize;
+            down[index] >= pairs[i] && up[index] >= pairs[i]
+        })
+    }
+    fn count_pair(code: u16, action: u8, down: &mut [u32; 128], up: &mut [u32; 128]) {
+        let index = code as usize;
+        if index >= 128 {
+            return;
+        }
+        if action == KEY_ACTION_DOWN {
+            down[index] += 1;
+        } else if action == KEY_ACTION_UP {
+            up[index] += 1;
+        }
+    }
+
+    while !complete(&CODES, &PAIRS, &down_counts, &up_counts) {
+        let count = match room.poll_keys(&mut events) {
+            Ok(count) => count,
+            Err(e) => fail(room, e.as_str()),
+        };
+        for event in events.iter().take(count) {
+            if !CODES.contains(&event.code) {
+                fail(room, "text keyboard code");
+            }
+            count_pair(event.code, event.action, &mut down_counts, &mut up_counts);
+            let code = u8::try_from(event.code).unwrap_or(0xFF);
+            let field_focused = app
+                .page
+                .input
+                .as_ref()
+                .map(|field| app.ui.focus_node() == Some(field.panel))
+                .unwrap_or(false);
+            let route = key_route(
+                code,
+                event.action,
+                event.modifiers,
+                TextInputKind::Text,
+                field_focused,
+            );
+            match route {
+                KeyRoute::None => {}
+                KeyRoute::Focus(FocusOp::Next) => {
+                    let messages = app.ui.focus_move(FocusDir::Next);
+                    handle_messages(app, room, &messages);
+                }
+                KeyRoute::Focus(FocusOp::Prev) => fail(room, "text focus prev"),
+                KeyRoute::Focus(FocusOp::Activate) => {
+                    fail(room, "text activate must not synthesize click")
+                }
+                KeyRoute::Text(TextInputKeyOp::FocusNext | TextInputKeyOp::FocusPrev) => {
+                    fail(room, "text route focus mismatch")
+                }
+                KeyRoute::Text(TextInputKeyOp::Submit) => {
+                    let outcome = app.text_state.submit();
+                    if !outcome.submitted {
+                        fail(room, "text submit");
+                    }
+                    submits += 1;
+                }
+                KeyRoute::Text(TextInputKeyOp::Edit(edit)) => {
+                    let outcome = app.text_state.apply_edit(edit);
+                    if outcome.rejected {
+                        fail(room, "text edit rejected");
+                    }
+                    if let Some(input) = app.page.input.as_mut() {
+                        input
+                            .sync(&mut app.ui, &app.ctx, &app.text_state)
+                            .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    }
+                    edits += 1;
+                }
+            }
+
+            let field_focused = app
+                .page
+                .input
+                .as_ref()
+                .map(|field| app.ui.focus_node() == Some(field.panel))
+                .unwrap_or(false);
+            if field_focused && !focus_marker {
+                let index = focus_index(app);
+                if index != 4 {
+                    fail(room, "text focus index");
+                }
+                let mut line = Line::new(b"UITESTTEXTFOCUS ok node=");
+                line.push_u32(index);
+                line.push(b"\n");
+                line.print(room);
+                focus_marker = true;
+            }
+        }
+    }
+
+    if !focus_marker || submits != 1 || edits != 6 {
+        fail(room, "text phase counters");
+    }
+    if app.text_state.value().as_bytes() != b"a " || app.text_state.caret_cp() != 2 {
+        fail(room, "text state");
+    }
+    let selection = app.text_state.selection();
+    if selection.anchor_cp != 2 || selection.caret_cp != 2 {
+        fail(room, "text selection");
+    }
+    if app.switch_on != toggles_before {
+        fail(room, "text enter toggled switch");
+    }
+
+    let (bottom, overlap) = {
+        let Some(field) = app.page.input.as_ref() else {
+            fail(room, "text field absent");
+        };
+        let bounds = app
+            .ui
+            .bounds(field.panel)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let viewport_h = app.ui.viewport().1 as i32;
+        let inset = room.occlusion().view_insets[3] as i32;
+        (bounds.y.saturating_add(bounds.h), ime_overlap_px(bounds.y.saturating_add(bounds.h), viewport_h, inset))
+    };
+
+    let mut line = Line::new(b"UITESTTEXTEDIT ok edits=");
+    line.push_u32(edits);
+    line.push(b" bytes=");
+    line.push_u32(app.text_state.value().len as u32);
+    line.push(b" caret=");
+    line.push_u32(app.text_state.caret_cp() as u32);
+    line.push(b"\n");
+    line.print(room);
+    let mut line = Line::new(b"UITESTTEXTSELECT ok anchor=");
+    line.push_u32(selection.anchor_cp as u32);
+    line.push(b" caret=");
+    line.push_u32(selection.caret_cp as u32);
+    line.push(b"\n");
+    line.print(room);
+    let mut line = Line::new(b"UITESTTEXTSUBMIT ok len=");
+    line.push_u32(app.text_state.value().len as u32);
+    line.push(b" toggles=0\n");
+    line.print(room);
+    let mut line = Line::new(b"UITESTIMEINSET ok bottom=");
+    line.push_i32(bottom);
+    line.push(b" overlap=");
+    line.push_u32(overlap);
+    line.push(b"\n");
+    line.print(room);
+    let mut line = Line::new(b"UITESTKEY2 ok codes=");
+    for (i, code) in SORTED_CODES.iter().enumerate() {
+        if i != 0 {
+            line.push(b",");
+        }
+        line.push_u32(*code as u32);
+    }
+    line.push(b"\n");
+    line.print(room);
+    app.render(room);
 }
 
 /// 树前序 focus index（0 起；无焦点 = 0 语义仅用于标记，不影响状态）。
@@ -801,6 +1012,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let mut ui = Ui128::new(width as u32, height as u32);
     ui.set_icon_source(&SOURCE);
     ui.set_font_source(&ROOM_FONT_SOURCE);
+    let text_state = TextInputState::new(b"").unwrap_or_else(|_| berry_room::panic_exit(134));
     let mut page = build_page(&mut ui, &ctx, 0, false);
     let stat = ui.layout();
     if stat.placed == 0 {
@@ -810,12 +1022,17 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     // Runtime 首帧即保留 24px 溢出样本：GUI8 截图与 boot-probe 使用同一
     // Clip 几何，不靠“刚好放得下”的样本假绿。
     page.scroll.scroll_by(&mut ui, 24).unwrap_or_else(|_| berry_room::panic_exit(134));
+    if let Some(input) = page.input.as_mut() {
+        input.sync(&mut ui, &ctx, &text_state)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
     let mut app = AppModel {
         ui,
         ctx,
         page,
         page_index: 0,
         switch_on: false,
+        text_state,
         frame_seq: 0,
     };
 

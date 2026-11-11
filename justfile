@@ -407,6 +407,10 @@ build-release: docs-guard gui-boundary-guard abi-check build-user
 docs-guard:
     python3 tools/docs_guard.py
 
+# SDK-S0：BerryUI facade 与 API 账本/生成矩阵双向 100% 对拍
+sdk-ledger-check:
+    python3 tools/sdk_ledger.py --check
+
 # 可写全局清单门禁（Ginux writable-globals 借法）：新增 static mut 必须入册
 writable-globals:
     python3 tools/writable_globals.py --check
@@ -417,7 +421,7 @@ gui-boundary-guard:
     python3 tools/gui_guard.py --self-test
     python3 tools/gui_guard.py
 
-check: docs-guard writable-globals gui-boundary-guard abi-check build-user
+check: docs-guard writable-globals gui-boundary-guard abi-check sdk-ledger-check build-user
     cargo check
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot

@@ -45,6 +45,7 @@ pub mod resample;
 pub mod sdk;
 pub mod swipe;
 pub mod telemetry;
+pub mod text_input;
 pub mod widgets;
 pub mod theme;
 pub mod utf8;

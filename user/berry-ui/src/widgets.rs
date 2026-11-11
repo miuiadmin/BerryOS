@@ -10,6 +10,7 @@ use crate::desc::{
     TextBuf, TextProps, TextStyle, ViewKind, ViewSpec,
 };
 use crate::layout::CrossAlign;
+use crate::text_input::{TextInputKind, TextInputState};
 use crate::theme::{
     InteractionState, RadiusToken, SpacingToken, StrokeToken, Theme, ThemeMetrics,
     TypographyToken,
@@ -236,6 +237,264 @@ pub fn text<const N: usize>(
     let id = add(ui, parent, text_spec(bytes, fg, scale)?)?;
     ui.set_a11y(id, ROLE_TEXT, bytes)?;
     Ok(id)
+}
+
+fn text_caret_width(ctx: &WidgetContext) -> u32 {
+    ctx.metrics.stroke(StrokeToken::Thin).max(1)
+}
+
+/// GUI-T1 TextField 构造规格。v1 只有单行；`kind` 同时定义输入过滤与
+/// P0 IME purpose 的 add-only 映射。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextFieldSpec {
+    pub kind: TextInputKind,
+    pub width: u32,
+}
+
+/// TextField：Panel + Clip + selection/Text/caret 组合控件。
+///
+/// 业务值与 selection 归 app 的 `TextInputState`；本控件只把状态应用到
+/// 既有 ViewSpec/Props。Enter/Space 的编辑优先级由 `sdk::key_route` 单源
+/// 裁决，控件本身不合成 Click、不请求软键盘、不接触 IME Host。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextField {
+    pub panel: NodeId,
+    pub port: NodeId,
+    pub selection: NodeId,
+    pub value_text: NodeId,
+    pub caret: NodeId,
+    kind: TextInputKind,
+    focused: bool,
+    scroll_x: i32,
+}
+
+impl TextField {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>,
+        parent: NodeId,
+        ctx: &WidgetContext,
+        spec: TextFieldSpec,
+    ) -> Result<Self, UiError> {
+        if spec.width == 0 {
+            return Err(UiError::NodeBad);
+        }
+        let pad = ctx.spacing(SpacingToken::Xs);
+        let line_h = ctx.metrics.typography(TypographyToken::Body).cell_h() as u32;
+        let height = line_h.saturating_add(pad.saturating_mul(2));
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(
+                ctx.theme.colors.surface_variant,
+                Some(spec.width),
+                Some(height),
+                pad,
+                0,
+                ctx.metrics.radius(RadiusToken::Small),
+            ),
+        )?;
+        let port = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Clip,
+                key: 0,
+                props: Props::Clip(ClipProps { w: None, h: Some(line_h) }),
+            },
+        )?;
+        let selection = add(
+            ui,
+            port,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps {
+                    bg: ctx.theme.state(InteractionState::Selected).background,
+                    w: Some(0),
+                    h: Some(line_h),
+                }),
+            },
+        )?;
+        let value_text = add(
+            ui,
+            port,
+            text_spec(b"", ctx.theme.colors.text_primary, ctx.metrics.typography(TypographyToken::Body))?,
+        )?;
+        let caret = add(
+            ui,
+            port,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps {
+                    bg: ctx.theme.colors.primary,
+                    w: Some(0),
+                    h: Some(line_h),
+                }),
+            },
+        )?;
+        ui.set_a11y(panel, ROLE_TEXT, b"input")?;
+        ui.set_focusable(panel, Some(panel), true)?;
+        Ok(Self {
+            panel,
+            port,
+            selection,
+            value_text,
+            caret,
+            kind: spec.kind,
+            focused: false,
+            scroll_x: 0,
+        })
+    }
+
+    pub fn kind(&self) -> TextInputKind {
+        self.kind
+    }
+
+    pub fn is_focused<const N: usize>(&self, ui: &Ui<N>) -> bool {
+        ui.focus_node() == Some(self.panel)
+    }
+
+    /// 显式请求组件焦点。返回 C1 FocusIn/FocusOut 消息，调用方必须继续
+    /// 分发；本方法只负责同步自身视觉，不吞事件。
+    pub fn request_focus<const N: usize>(
+        &mut self,
+        ui: &mut Ui<N>,
+        ctx: &WidgetContext,
+    ) -> Result<crate::desc::MsgBuf, UiError> {
+        let messages = ui.focus_set(self.panel)?;
+        self.set_focused(ui, ctx, true)?;
+        Ok(messages)
+    }
+
+    /// 把 app 持有的文本状态同步到组合树；selection 高亮与 caret 走既有
+    /// props/set_offset damage，不新增引擎路径。
+    pub fn sync<const N: usize>(
+        &mut self,
+        ui: &mut Ui<N>,
+        ctx: &WidgetContext,
+        state: &TextInputState,
+    ) -> Result<(), UiError> {
+        let scale = ctx.metrics.typography(TypographyToken::Body);
+        let cell_w = scale.cell_w() as i32;
+        let line_h = scale.cell_h() as u32;
+        let display = state.display_value(self.kind)?;
+        ui.set_text(self.value_text, display.as_bytes())?;
+
+        let (start_cp, end_cp) = state.selection().ordered();
+        let sel_w = (end_cp.saturating_sub(start_cp) as i32).saturating_mul(cell_w).max(0) as u32;
+        if let Some(props) = retained_props(ui, self.selection) {
+            if let Props::Rect(mut p) = props {
+                p.w = Some(sel_w);
+                p.h = Some(line_h);
+                ui.set_props(self.selection, Props::Rect(p))?;
+            }
+        }
+
+        let caret_col = state.caret_cp() as i32;
+        let caret_x = caret_col.saturating_mul(cell_w);
+        let caret_w = if self.focused {
+            text_caret_width(ctx)
+        } else {
+            0
+        };
+        if let Some(props) = retained_props(ui, self.caret) {
+            if let Props::Rect(mut p) = props {
+                p.w = Some(caret_w);
+                p.h = Some(line_h);
+                ui.set_props(self.caret, Props::Rect(p))?;
+            }
+        }
+
+        // 先收敛布局，再按 port 宽度做水平 caret-visible 滚动。
+        ui.layout();
+        let port = ui.bounds(self.port)?;
+        let port_w = port.w.max(0);
+        self.scroll_x = self.scroll_x.clamp(0, i32::MAX);
+        if caret_x < self.scroll_x {
+            self.scroll_x = caret_x;
+        }
+        let caret_end = caret_x.saturating_add(caret_w as i32);
+        if caret_end > self.scroll_x.saturating_add(port_w) {
+            self.scroll_x = (caret_end - port_w).max(0);
+        }
+        let sel_x = start_cp as i32 * cell_w;
+        ui.set_offset(self.value_text, -self.scroll_x, 0)?;
+        ui.set_offset(self.selection, sel_x - self.scroll_x, 0)?;
+        ui.set_offset(self.caret, caret_x - self.scroll_x, 0)?;
+
+        let visual = ctx.theme.state(if self.focused {
+            InteractionState::Focused
+        } else {
+            InteractionState::Normal
+        });
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_focused<const N: usize>(
+        &mut self,
+        ui: &mut Ui<N>,
+        ctx: &WidgetContext,
+        focused: bool,
+    ) -> Result<(), UiError> {
+        self.focused = focused;
+        let visual = ctx.theme.state(if focused {
+            InteractionState::Focused
+        } else {
+            InteractionState::Normal
+        });
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.caret) {
+            if let Props::Rect(mut p) = props {
+                p.w = if focused {
+                    Some(text_caret_width(ctx))
+                } else {
+                    Some(0)
+                };
+                ui.set_props(self.caret, Props::Rect(p))?;
+            }
+        }
+        ui.layout();
+        Ok(())
+    }
+
+    pub fn owns(&self, node: NodeId) -> bool {
+        node == self.panel
+            || node == self.port
+            || node == self.selection
+            || node == self.value_text
+            || node == self.caret
+    }
+
+    /// 只消费 FocusIn/Out 视觉；Click 请求焦点由 `request_focus` 显式完成。
+    pub fn on_msg<const N: usize>(
+        &mut self,
+        ui: &mut Ui<N>,
+        ctx: &WidgetContext,
+        msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let (node, focus_in) = match msg {
+            Msg::FocusIn { node } => (*node, true),
+            Msg::FocusOut { node } => (*node, false),
+            _ => return Ok(false),
+        };
+        if !self.owns(node) {
+            return Ok(false);
+        }
+        self.set_focused(ui, ctx, focus_in)?;
+        Ok(true)
+    }
 }
 
 /// Icon 组件：主题前景与密度尺寸；像素仍经 IconSource 单源供给。

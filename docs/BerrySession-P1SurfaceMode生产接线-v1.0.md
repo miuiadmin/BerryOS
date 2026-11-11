@@ -6,7 +6,7 @@
 > 与 a11y region 的 wire 词表；P1 只把 Canvas / Immersive 的授权、协商、
 > buffer 借用与呈现生命周期接入 `svcmgr → berry-room → gui-wmd`，不扩
 > `VER_WM`，不改 `0x60..=0x66` 帧型，也不宣称 IME / a11y 批量服务已落地。
-> 执行序权威 = [GUI框架地基路线-v1.15.md](GUI框架地基路线-v1.15.md)。
+> 执行序权威 = [GUI框架地基路线-v1.16.md](GUI框架地基路线-v1.16.md)。
 
 ## §1 结论
 
