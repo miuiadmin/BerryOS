@@ -442,16 +442,14 @@ fn ns_to_vct(ns: u64) -> Option<u64> {
     Some((ns / 1_000_000_000) * freq + ((ns % 1_000_000_000) * freq) / 1_000_000_000)
 }
 
-/// CNTVCT → MONOTONIC 纳秒（`sys_clock_read` 同式抽出；4-3c intent 两道时间帽
-/// 的计时源）。`freq==0` → 0（真机异常语境——帽永不触发，方向安全）。
+/// CNTVCT → MONOTONIC 纳秒（4-3c intent 两道时间帽 + S5-a 相对 deadline 的
+/// 计时源）。换算 = `timer::ticks_to_ns`：init 预计算倒数乘-移对（下一代
+/// 优化 #1——热路径 1 mul + 1 shift 消解 2×udiv；send/recv 3 处换算每往返
+/// 省 54-138 cycles）。慢路两除精确式与 `sys_clock_read` 同形；QEMU virt
+/// 62.5MHz（ns/tick=16 二进精准）两路逐位一致。`freq==0` → 0（真机异常
+/// 语境——帽永不触发，方向安全）。
 fn vct_ns() -> u64 {
-    // SAFETY: 只读 CNTVCT/CNTFRQ（timer::init 后恒有效）。
-    let freq = berry_hal_aarch64::timer::cntfrq();
-    if freq == 0 {
-        return 0;
-    }
-    let ticks = berry_hal_aarch64::timer::cntvct();
-    (ticks / freq) * 1_000_000_000 + ((ticks % freq) * 1_000_000_000) / freq
+    berry_hal_aarch64::timer::ticks_to_ns(berry_hal_aarch64::timer::cntvct())
 }
 
 /// `thread_sleep(deadline)`（0x37，4-0 首个阻塞 syscall）：睡到绝对时刻
@@ -2996,12 +2994,12 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             let now = berry_hal_aarch64::timer::cntvct();
             if now > since {
                 let cycles = now - since;
-                // CNTVCT→ns：频率走 CNTFRQ（QEMU virt 62.5MHz，真机可变）。
-                let freq = berry_hal_aarch64::timer::cntfrq();
-                if freq != 0 {
-                    let ns = cycles * 1_000_000_000 / freq;
-                    crate::telemetry::billing_charge(d, ns);
-                }
+                // CNTVCT→ns：timer::ticks_to_ns（init 预计算倒数乘-移对——
+                // 除法消解同 vct_ns，顺带消掉旧 `cycles*1e9` 在超长区间
+                //（>288s @62.5MHz）上的潜在 u64 溢出）。频率不可读 → 0ns →
+                // billing_charge 零时长拒收不建槽，与旧 freq!=0 守卫同效。
+                let ns = berry_hal_aarch64::timer::ticks_to_ns(cycles);
+                crate::telemetry::billing_charge(d, ns);
             }
             // 清起点（下一个 recv 重设）。
             crate::telemetry::BILLING_RECV_DOMAIN[slot].store(0, Ordering::Relaxed);
