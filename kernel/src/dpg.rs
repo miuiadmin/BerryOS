@@ -589,7 +589,9 @@ extern "C" fn dpg_faulter(_arg: usize) -> ! {
 //   Σw < 阈 = 外来真停顿混入（位语义正确非误报）——清位静默重试，耗尽则
 //   观测行 x=N 记软轮不 panic（忙相 attribution 结构性不可得，杀之即错杀）。
 //   裸相静默场恒 x=0 全严格形态（实跑锚点：n≈244-251、c≈880-887K、
-//   r≈26-65K << θ_p·W=437.5K）。
+//   r≈26-65K << θ_p·W=437.5K）。**SMP 形例外（AM-2e）**：绝对阈前提仅
+//   单核独占静默场成立——多消费者形态下 wall 结构性混入外来排队等待
+//   （KL/调度器共享管道），硬 panic 降软（详 ⑤ 块注）。
 
 /// 压力自验 demand 区间基 VA（本任务私有 AS——与 dpg_faulter 的 DEMAND_VA
 /// 同址异 AS，互不可见）。
@@ -637,8 +639,13 @@ fn press_sleep(cyc: u64) {
 /// → eret 重试读到 magic（dpg_faulter 首触同链；供给竞窗自愈 = eret 重试
 /// 再 fault 再武装，读返回即已闭环）。错值非安全问题是正确性问题。
 /// 返回**本页缺页往返墙钟**（t1−t0，CNTVCT 周期）——stall ≤ wall 的自有
-/// 可测上界：外来停顿混不进来（判「自证停顿量级」的判据基座，忙相防
-/// 错杀——台账 Δ 含外来 EL0 停顿，忙相不可作断言面）。
+/// 可测上界：外来**计值**停顿（他者 probe 的台账笔）混不进来（判「自证
+/// 停顿量级」的判据基座，忙相防错杀——台账 Δ 含外来 EL0 停顿，忙相不可
+/// 作断言面）。**例外（AM-2e SMP 形，详 ⑤ 块注）**：多消费者形态下排队
+/// 等待结构性计入 wall——probe 二段 KL 自旋（TTAS 无公平）+ pager 唤醒
+/// →上 CPU 迟延 + pager 供给窗 KL 争用 + 醒后重取 KL，全排在对核 0x21
+/// 供给窗（4K 拷贝整窗持 KL）与双核舰队之后——「wall ≈ 自证停顿量级」
+/// 仅单核独占静默场成立。
 fn press_touch(idx: usize) -> u64 {
     let va = PRESS_VA + idx * PAGE_SIZE;
     let t0 = hal::timer::cntvct();
@@ -712,7 +719,8 @@ fn press_flush(win: u64, partial: u64, h: u32, page: &mut usize) -> bool {
 /// dpg_faulter 形——dpg::init 无条件 spawn）；全过打**非标记观测行**
 /// `DPGPRESS ok n= c= r= x=`（`DPG dm=` 族证据行——不进 markers.sh，
 /// smoke canon 零漂移；n=前向臂缺页数 c=前向臂台账停顿周期 r=反向臂台账
-/// 停顿周期 x=外来混入软轮数——裸相静默场恒 x=0 全严格形态）。
+/// 停顿周期 x=外来混入软轮数——单核裸相静默场恒 x=0 全严格形态；SMP 形
+/// 共享管道排队延迟可合法计软轮 x>0，AM-2e，详 ⑤ 块注）。
 extern "C" fn dpg_press(arg: usize) -> ! {
     use crate::syscall::{NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_OBJECT_WAIT_ONE};
     use crate::telemetry;
@@ -833,10 +841,29 @@ extern "C" fn dpg_press(arg: usize) -> ! {
     press_flush(win, partial, h, &mut page);
 
     // ⑤ 反向臂：净场少量单页缺页（远低于阈）→ 位不置。前提断言面 = 自证
-    //    缺页墙钟 Σw（stall ≤ wall，外来混不进）：位置而 Σw ≥ θ_p·W =
-    //    少量缺页即达压——θ_p 误报判据前提破，panic loud；位置而 Σw < 阈
-    //    = 外来真压力混入（位语义正确非误报）——清位静默重试，耗尽记账
-    //    x 不 panic。
+    //    缺页墙钟 Σw（stall ≤ wall，外来计值停顿混不进）：位置而 Σw ≥
+    //    θ_p·W = 少量缺页即达压——θ_p 误报判据前提破，panic loud；位置而
+    //    Σw < 阈 = 外来真压力混入（位语义正确非误报）——清位静默重试，耗尽
+    //    记账 x 不 panic。
+    //
+    //    **SMP 多消费者形态降软（AM-2e，尸检 out/smoke-smp-fail.20261111-
+    //    044141/050405.p1.log：Σ=9.69M/10.72M ≥ θ_p·W=437.5K——22-25×，
+    //    2/5 复现、b0ac666 账本修后仍在）**：绝对阈前提「wall ≈ 自证停顿
+    //    量级」在此形态结构性不成立——press 每页往返 wall 含 probe 二段
+    //    KL 自旋（TTAS 无公平，kern_lock）+ dpg_pager 唤醒→上 CPU 迟延 +
+    //    供给窗 KL 争用 + 醒后重取 KL，全在对核 svcmgr 0x21 供给窗（4K
+    //    拷贝整窗持 KL；裸相 svcmgr 亦在飞——内嵌 userbins，尸检 panic
+    //    前 ~15 行即 DPGS/DPGN 供给风暴 ok 行）与双核 waker/sleeper 舰队
+    //    之后排队。这不是 dpg_pager 供给队列被他源挤占（EL0/EL1 面分槽
+    //    分键，boot 后 EL1 请求者仅 press 一人）——共享管道是 KL 全谱锁
+    //    与调度器：多消费者共享时自证/外来停顿不可分，attribution 结构性
+    //    不可得（:727 同哲理的第三形态——外来**排队延迟**计入 wall）。
+    //    尸检数字同带印证：同靴 BENCHWAKE p50=4096 而 max=13.1M/18.6M
+    //    周期（环境级离群本就 10⁶-10⁷），p2 尾部成片 spin! bark = KL 长
+    //    自旋活证；单核同舰队零发（锚点 r≈26-65K << 阈）= 前提仅单核
+    //    独占静默场成立。故硬 panic 只留给单核形（标定漂移检测面保持）；
+    //    SMP 形 wall 超阈与外来混入同走软路径（清位重冲 + x 记账），位
+    //    语义与机制面（telemetry/θ_p/折卷）零改动。
     let mut rev_cyc = 0u64;
     for _ in 0..PRESS_REV_RETRIES {
         press_quiesce(win, 4); // 净场复检（外来停顿退坡）
@@ -855,13 +882,15 @@ extern "C" fn dpg_press(arg: usize) -> ! {
         if crate::am2b_pressure_bits() & partial == 0 {
             break; // 位不置 = θ_p 不误报自证过
         }
+        // 硬 panic 仅单核独占形（SMP 多消费者形态 wall 前提破——降软，
+        // 详 ⑤ 块注；par_enabled = 副核上线面，与 smoke -smp 形态一致）。
         assert!(
-            wall < theta_w,
-            "dpg_press: 反向臂自证缺页墙钟 Σ={} ≥ θ_p·W={}（少量缺页即达压——单页供给停顿标定漂移，θ_p 误报判据前提破）",
+            wall < theta_w || hal::smp::par_enabled(),
+            "dpg_press: 反向臂自证缺页墙钟 Σ={} ≥ θ_p·W={}（单核独占形：少量缺页即达压——单页供给停顿标定漂移，θ_p 误报判据前提破）",
             wall,
             theta_w
         );
-        soft += 1; // 外来真停顿混入——清位重试
+        soft += 1; // 外来真停顿混入（SMP 形含共享管道排队延迟）——清位重试
         press_svc_clear(h, partial, "反向臂外来轮");
     }
     if crate::am2b_pressure_bits() & partial != 0 {
