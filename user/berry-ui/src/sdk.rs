@@ -24,7 +24,7 @@ pub use crate::widgets::{
     AppBar, Button, Card, EmptyState, ListItem, Scaffold, ScrollView, Switch, TextVariant,
     WidgetContext, column, divider, icon, row, text,
 };
-pub use crate::{FocusEntry, Ui, UiError, UiMain};
+pub use crate::{FlexEntry, FocusEntry, Ui, UiError, UiMain};
 
 /// L1 自适应槽位判定结果（显式本地基准宽，不读全局屏幕/设备档）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

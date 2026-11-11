@@ -20,7 +20,7 @@
 use crate::damage::{i64_to_i32_sat, u32_to_i32_sat, u64_to_u32_sat, DamageSet, RectI};
 use crate::desc::{Props, ViewKind};
 use crate::metrics::{IconSource, TextMetrics};
-use crate::Node;
+use crate::{FlexEntry, Node};
 
 /// 布局产出统计（§6 冻结字段）：`measured` = 重测内在尺寸的节点数
 /// （缓存有效性的断言面——0 = 全缓存命中）；`placed` = 重摆 x/y/w/h
@@ -85,6 +85,7 @@ pub(crate) fn relayout(
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
     cs: Constraints,
+    flex: &[Option<FlexEntry>],
 ) -> LayoutStat {
     let _ = freed;
     // 根 = 唯一 parent==NONE 的存活 Root
@@ -151,6 +152,7 @@ pub(crate) fn relayout(
         u32_to_i32_sat(root_w),
         u32_to_i32_sat(root_h),
         false,
+        flex,
         &mctx.recomputed,
         &old_abs,
         &vp_rect,
@@ -511,6 +513,73 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
     }
 }
 
+/// 活 flex 权重（slot/gen/alive/eligible 四重对拍；残项不参与）。
+fn flex_weight(
+    nodes: &[Option<Node>],
+    flex: &[Option<FlexEntry>],
+    slot: u32,
+) -> Option<u16> {
+    let n = nodes.get(slot as usize).and_then(|o| o.as_ref())?;
+    if !n.alive {
+        return None;
+    }
+    let id = crate::NodeId((((n.gen as u32) << 16) | (slot & 0xFFFF)) as u32);
+    let eligible = matches!(
+        (&n.kind, &n.props),
+        (ViewKind::Rect, Props::Rect(p)) if p.w.is_none() && p.h.is_none()
+    ) || matches!(
+        (&n.kind, &n.props),
+        (ViewKind::Circle, Props::Circle(p)) if p.w.is_none() && p.h.is_none()
+    );
+    flex.iter().flatten().find(|e| e.node == id).map(|e| e.weight).filter(|_| eligible)
+}
+
+/// 预扫 flex 主轴可用空间：固定主轴容器尺寸 − gap 总额 − 非 flex 子内
+/// 在主轴和。负余量折 0（flex 子全部塌缩，不挤压 inflexible 子）。
+/// 溢出界：flex_space ≤ 2^31，cumulative_weight ≤ FLEX_MAX(32) ×
+/// u16::MAX < 2^21，u64 乘积 < 2^52。扩 FLEX_MAX/weight 域前必须重算。
+/// 除法只在 total_weight ≥ 1 的 flex 子分支执行，结构上无除零。
+fn flex_context(
+    nodes: &[Option<Node>],
+    flex: &[Option<FlexEntry>],
+    first: u32,
+    vertical: bool,
+    container: i32,
+    gap: u32,
+) -> (u64, i64) {
+    if !flex.iter().flatten().next().is_some() {
+        return (0, 0); // 无登记树保持原单走查性能面。
+    }
+    let mut total = 0u64;
+    let mut fixed = 0i64;
+    let mut count = 0i64;
+    let mut cur = first;
+    let mut guard = 0usize;
+    while cur != u32::MAX && guard <= nodes.len() {
+        guard += 1;
+        let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+        if !c.alive {
+            break;
+        }
+        let next = c.next_sib;
+        match flex_weight(nodes, flex, cur) {
+            Some(weight) => total += weight as u64,
+            None => {
+                fixed = fixed.saturating_add(if vertical {
+                    c.meas_h as i64
+                } else {
+                    c.meas_w as i64
+                });
+            }
+        }
+        count += 1;
+        cur = next;
+    }
+    let gaps = gap as i64 * (count - 1).max(0);
+    let space = (container as i64).saturating_sub(gaps).saturating_sub(fixed).max(0);
+    (total, space)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn place(
     nodes: &mut [Option<Node>],
@@ -522,6 +591,7 @@ fn place(
     avail_w: i32,
     avail_h: i32,
     force: bool,
+    flex: &[Option<FlexEntry>],
     recomputed: &[bool; CAP],
     old_abs: &[Option<RectI>; CAP],
     vp: &RectI,
@@ -544,7 +614,7 @@ fn place(
         let Some(n0) = nodes.get(idx).and_then(|o| o.as_ref()) else { return };
         let ncx = cx + n0.x as i64 + n0.ox as i64;
         let ncy = cy + n0.y as i64 + n0.oy as i64;
-        place_children(nodes, slot, ncx, ncy, false, recomputed, old_abs, vp, damage, placed, hops);
+        place_children(nodes, slot, ncx, ncy, false, flex, recomputed, old_abs, vp, damage, placed, hops);
         return;
     }
     *placed += 1;
@@ -566,7 +636,7 @@ fn place(
     let nb = RectI::new(i64_to_i32_sat(ncx), i64_to_i32_sat(ncy), w, h);
     dmg_clip_add(damage, &nb, vp);
     // 子分配语境变 = 本节点几何变 ∨ 本节点重测（gap/all 等分配面属性）
-    place_children(nodes, slot, ncx, ncy, geom_changed || rec, recomputed, old_abs, vp, damage, placed, hops);
+    place_children(nodes, slot, ncx, ncy, geom_changed || rec, flex, recomputed, old_abs, vp, damage, placed, hops);
 }
 
 /// 子分配（kind 分派）：Root/Pad 内缩整给、Col/Row 游标累进 + §4.1 十
@@ -579,6 +649,7 @@ fn place_children(
     ncx: i64,
     ncy: i64,
     force_kids: bool,
+    flex: &[Option<FlexEntry>],
     recomputed: &[bool; CAP],
     old_abs: &[Option<RectI>; CAP],
     vp: &RectI,
@@ -606,13 +677,17 @@ fn place_children(
                 let next = c.next_sib;
                 place(
                     nodes, cur, ncx, ncy, inset, inset, i64_to_i32_sat(cw), i64_to_i32_sat(ch),
-                    force_kids, recomputed, old_abs, vp, damage, placed, hops + 1,
+                    force_kids, flex, recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cur = next;
             }
         }
         Props::Col(p) => {
             let gap = p.gap as i64;
+            let (flex_total, flex_space) =
+                flex_context(nodes, flex, first, true, h, p.gap);
+            let mut cumulative_weight = 0u64;
+            let mut allocated_flex = 0i64;
             let mut cursor: i64 = 0;
             let mut cur = first;
             let mut guard = 0usize;
@@ -620,7 +695,18 @@ fn place_children(
                 guard += 1;
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
-                let ch_h = u32_to_i32_sat(c.meas_h); // 主轴请求 = 子内在（None 折 0）
+                let ch_h = match flex_weight(nodes, flex, cur) {
+                    Some(weight) => {
+                        cumulative_weight += weight as u64;
+                        // 见 flex_context 溢出界：u64 乘积 < 2^52。
+                        let target = flex_space as u64 * cumulative_weight / flex_total;
+                        let target = i64::try_from(target).unwrap_or(i64::MAX);
+                        let share = target.saturating_sub(allocated_flex);
+                        allocated_flex = target;
+                        i64_to_i32_sat(share)
+                    }
+                    None => u32_to_i32_sat(c.meas_h), // 主轴请求 = 子内在（None 折 0）
+                };
                 // §4.1 十字档：Stretch = 现状拉满（零漂）；Start/Center =
                 // 子内在宽为 avail（随父型子消费——内在型叶 Text/Image/
                 // Icon 豁免不吃 avail），Center 摆位 (可用-内在)/2（可负
@@ -635,7 +721,7 @@ fn place_children(
                 };
                 place(
                     nodes, cur, ncx, ncy, x_off, i64_to_i32_sat(cursor), aw, ch_h, force_kids,
-                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                    flex, recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cursor += ch_h as i64 + gap;
                 cur = next;
@@ -643,6 +729,10 @@ fn place_children(
         }
         Props::Row(p) => {
             let gap = p.gap as i64;
+            let (flex_total, flex_space) =
+                flex_context(nodes, flex, first, false, w, p.gap);
+            let mut cumulative_weight = 0u64;
+            let mut allocated_flex = 0i64;
             let mut cursor: i64 = 0;
             let mut cur = first;
             let mut guard = 0usize;
@@ -650,7 +740,18 @@ fn place_children(
                 guard += 1;
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
-                let cw = u32_to_i32_sat(c.meas_w);
+                let cw = match flex_weight(nodes, flex, cur) {
+                    Some(weight) => {
+                        cumulative_weight += weight as u64;
+                        // 见 flex_context 溢出界：u64 乘积 < 2^52。
+                        let target = flex_space as u64 * cumulative_weight / flex_total;
+                        let target = i64::try_from(target).unwrap_or(i64::MAX);
+                        let share = target.saturating_sub(allocated_flex);
+                        allocated_flex = target;
+                        i64_to_i32_sat(share)
+                    }
+                    None => u32_to_i32_sat(c.meas_w),
+                };
                 // §4.1 十字档镜像（Row 十字 = 纵轴）：Start/Center 以子内
                 // 在高为 avail、Center 纵向居中
                 let m_h = u32_to_i32_sat(c.meas_h);
@@ -663,7 +764,7 @@ fn place_children(
                 };
                 place(
                     nodes, cur, ncx, ncy, i64_to_i32_sat(cursor), y_off, cw, ah, force_kids,
-                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                    flex, recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cursor += cw as i64 + gap;
                 cur = next;
@@ -682,7 +783,7 @@ fn place_children(
                 let child_h = u32_to_i32_sat(c.meas_h);
                 place(
                     nodes, cur, ncx, ncy, inset, i64_to_i32_sat(cursor),
-                    i64_to_i32_sat(cw), child_h, force_kids, recomputed, old_abs, vp,
+                    i64_to_i32_sat(cw), child_h, force_kids, flex, recomputed, old_abs, vp,
                     damage, placed, hops + 1,
                 );
                 cursor += child_h as i64 + p.gap as i64;
@@ -746,7 +847,7 @@ fn place_children(
                     i64_to_i32_sat(cell_x + dx),
                     i64_to_i32_sat(cell_y + dy),
                     aw, ah, force_kids,
-                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                    flex, recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 i += 1;
                 cur = next;
@@ -762,7 +863,7 @@ fn place_children(
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
                 place(
-                    nodes, cur, ncx, ncy, 0, 0, w, h, force_kids, recomputed, old_abs, vp, damage,
+                    nodes, cur, ncx, ncy, 0, 0, w, h, force_kids, flex, recomputed, old_abs, vp, damage,
                     placed, hops + 1,
                 );
                 cur = next;

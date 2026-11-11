@@ -124,6 +124,20 @@ pub struct FocusEntry {
     pub enabled: bool,
 }
 
+// ---------- flex ratio 侧表（GUI-14 L2） ----------
+
+/// flex weight 侧表容量；超表 → NodeFull loud（D30 容量族）。
+pub const FLEX_MAX: usize = 32;
+
+/// 主轴比例分配登记项。v1 只允许 Rect/Circle 且 w/h 双 None 的
+/// “可随分配拉伸”子。使用前提是父 Row/Col 主轴已有确定终值；未固定
+/// 时 flex 子安全塌缩为 0，不是登记拒面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlexEntry {
+    pub node: NodeId,
+    pub weight: u16,
+}
+
 // ---------- press_map 侧表（GUI-6 D18——段D） ----------
 
 /// press_map 容量（D18：声明式 pressed-state 映射帽；超 = NodeFull loud
@@ -272,6 +286,7 @@ pub struct Ui<const N: usize> {
     a11y: [Option<A11yEntry>; A11Y_MAX], // a11y 侧表（D12——apply 落/encode 读）
     focus: [Option<FocusEntry>; FOCUS_MAX], // component focusable 侧表
     focused: Option<NodeId>, // 当前 component focus（窗口焦点仍在 wmd）
+    flex: [Option<FlexEntry>; FLEX_MAX], // L2 主轴比例侧表
     press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
     press_map_n: usize,
 }
@@ -378,6 +393,7 @@ impl<const N: usize> Ui<N> {
             a11y: [None; A11Y_MAX],
             focus: [None; FOCUS_MAX],
             focused: None,
+            flex: [None; FLEX_MAX],
             press_map: [PressEntry {
                 trigger: NodeId(0),
                 visual: NodeId(0),
@@ -562,6 +578,7 @@ impl<const N: usize> Ui<N> {
         self.a11y = [None; A11Y_MAX]; // 同理整清（D12 侧表随树生命周期）
         self.focus = [None; FOCUS_MAX];
         self.focused = None;
+        self.flex = [None; FLEX_MAX];
         self.press_map_n = 0; // 同理整清（D18 表随树生命周期——悬空 id 无还原义）
         self.input_n = 0;
         self.hist_len = 0;
@@ -809,6 +826,19 @@ impl<const N: usize> Ui<N> {
                 self.focused = None;
             }
         }
+        // L2 flex 生命周期同理：子树登记随摘除清空；悬空残项在布局读侧
+        // 也有 gen 对拍双保险。
+        let mut k = 0usize;
+        while k < FLEX_MAX {
+            let hit = self.flex[k]
+                .as_ref()
+                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
+                .unwrap_or(false);
+            if hit {
+                self.flex[k] = None;
+            }
+            k += 1;
+        }
         Ok(())
     }
 
@@ -898,6 +928,29 @@ impl<const N: usize> Ui<N> {
             }
             if (g.cols as u32 * g.rows as u32) < cnt {
                 return Err(UiError::NodeBad);
+            }
+        }
+        // L2：flex 只允许双 None 的 Rect/Circle。props 离开 eligible
+        // 形态时连带摘除，防“固定尺寸却携 weight”的静默无效登记。本块
+        // 之后当前无再拒路径；若未来追加后验拒，需把摘除挪到最终写入
+        // 成功后，保持半落不污染。
+        let flex_eligible = matches!(
+            self.nodes[idx].as_ref().map(|n| (&n.kind, &props)),
+            Some((ViewKind::Rect, Props::Rect(p)))
+                if p.w.is_none() && p.h.is_none()
+        ) || matches!(
+            self.nodes[idx].as_ref().map(|n| (&n.kind, &props)),
+            Some((ViewKind::Circle, Props::Circle(p)))
+                if p.w.is_none() && p.h.is_none()
+        );
+        if !flex_eligible {
+            let node = pack_id(idx, self.nodes[idx].as_ref().map(|n| n.gen).unwrap_or(0));
+            let slot = self.flex.iter().position(|e| {
+                e.as_ref().is_some_and(|e| e.node == node)
+            });
+            if let Some(slot) = slot {
+                self.flex[slot] = None;
+                self.mark_flex_dirty(node);
             }
         }
         let Some(old) = self.nodes[idx].as_ref().map(|n| n.props) else { return Err(UiError::NodeBad) };
@@ -1078,6 +1131,77 @@ impl<const N: usize> Ui<N> {
             .iter()
             .filter_map(|e| e.as_ref())
             .filter(|e| self.slot_of(e.node).is_ok())
+    }
+
+    // —— flex ratio（GUI-14 L2：固定主轴 Row/Col 的剩余空间比例分配） ——
+
+    /// 登记/覆写 flex weight。v1 eligible 面 = Rect/Circle 且 w/h 双
+    /// None；weight 0 /错 kind /固定尺寸/悬空 id → NodeBad，表满 →
+    /// NodeFull。权重变化会 dirty 本节点与祖先链，保证兄弟重分配。
+    pub fn set_flex(&mut self, node: NodeId, weight: u16) -> Result<(), UiError> {
+        let idx = self.slot_of(node)? as usize;
+        let eligible = matches!(
+            self.nodes[idx].as_ref().map(|n| (&n.kind, &n.props)),
+            Some((ViewKind::Rect, Props::Rect(p)))
+                if p.w.is_none() && p.h.is_none()
+        ) || matches!(
+            self.nodes[idx].as_ref().map(|n| (&n.kind, &n.props)),
+            Some((ViewKind::Circle, Props::Circle(p)))
+                if p.w.is_none() && p.h.is_none()
+        );
+        let parent_kind = self.nodes[idx]
+            .as_ref()
+            .and_then(|n| self.nodes.get(n.parent as usize).and_then(|o| o.as_ref()))
+            .map(|p| p.kind);
+        let parent_ok = matches!(parent_kind, Some(ViewKind::Row) | Some(ViewKind::Col));
+        if weight == 0 || !eligible || !parent_ok {
+            return Err(UiError::NodeBad);
+        }
+        let entry = FlexEntry { node, weight };
+        if let Some(e) = self.flex.iter_mut().find(|e| {
+            e.as_ref().is_some_and(|e| e.node == node)
+        }) {
+            let changed = *e != Some(entry);
+            *e = Some(entry);
+            if changed {
+                self.mark_flex_dirty(node);
+            }
+            return Ok(());
+        }
+        let Some(slot) = self.flex.iter().position(|e| e.is_none()) else {
+            return Err(UiError::NodeFull);
+        };
+        self.flex[slot] = Some(entry);
+        self.mark_flex_dirty(node);
+        Ok(())
+    }
+
+    /// 摘除 flex weight；幂等。摘除后需 layout 才收敛新几何。
+    pub fn take_flex(&mut self, node: NodeId) -> bool {
+        let Some(slot) = self.flex.iter().position(|e| {
+            e.as_ref().is_some_and(|e| e.node == node)
+        }) else {
+            return false;
+        };
+        self.flex[slot] = None;
+        self.mark_flex_dirty(node);
+        true
+    }
+
+    /// 活 flex 登记迭代（gen/alive 经 slot_of 过滤）。
+    pub fn flex_iter(&self) -> impl Iterator<Item = &FlexEntry> {
+        self.flex.iter().flatten().filter(|e| self.slot_of(e.node).is_ok())
+    }
+
+    fn mark_flex_dirty(&mut self, node: NodeId) {
+        let Ok(idx) = self.slot_of(node) else { return };
+        let parent = self.nodes.get(idx).and_then(|o| o.as_ref()).map(|n| n.parent).unwrap_or(NONE);
+        if let Some(n) = self.nodes.get_mut(idx).and_then(|o| o.as_mut()) {
+            n.layout_dirty = true;
+        }
+        if parent != NONE {
+            self.mark_ancestors_dirty(parent);
+        }
     }
 
     // —— component focus（GUI-14 C1：树序一维导航；窗口焦点权威仍在 wmd） ——
@@ -1497,6 +1621,7 @@ impl<const N: usize> Ui<N> {
             self.tm,
             self.icons,
             cs,
+            &self.flex,
         )
     }
 
@@ -1720,6 +1845,7 @@ impl<const N: usize> Ui<N> {
             self.tm,
             self.icons,
             layout::Constraints::Viewport,
+            &self.flex,
         );
         let drew = !self.damage.is_empty(); // 无 damage 不提交（对齐条 6）
         let report = if drew && self.root_slot != NONE {

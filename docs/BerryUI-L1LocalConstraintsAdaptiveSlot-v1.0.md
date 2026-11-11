@@ -5,7 +5,7 @@
 > 定位：GUI-14 L1 第一刀。落地根播种 Tight/Loose/Infinite 约束与显式
 > 本地 AdaptiveSlot 判定。只解决“嵌套组件不读全局屏幕尺寸”的最小面；
 > 不做 FormMetrics、SafeArea、完整 flex/wrap、ListDetail 或 size-class
-> 阶梯。执行序权威 = [GUI框架地基路线-v1.13.md](GUI框架地基路线-v1.13.md)。
+> 阶梯。执行序权威 = [GUI框架地基路线-v1.14.md](GUI框架地基路线-v1.14.md)。
 
 ## §1 背景
 
@@ -291,6 +291,11 @@ UITESTADAPT ok v=1 basis=1056
             list=12,623,360,120
             detail=384,623,684,120
 ```
+
+> L2 起该生产样已升级为 flex 1:2：`v=2`、348/696。上面是 L1 时点的
+> 固定分栏历史形态；现行值以
+> [BerryUI-L2FlexRatioAllocation-v1.0.md](BerryUI-L2FlexRatioAllocation-v1.0.md)
+> 为准。
 
 boot-probe 纯判定：
 

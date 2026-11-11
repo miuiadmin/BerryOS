@@ -8,7 +8,7 @@ Status: implemented — berry-shell + UITEST host probe 已过 GUI8/smoke-image 
 
 ## Decision
 
-按 [GUI框架地基路线-v1.13.md](../../../docs/GUI框架地基路线-v1.13.md) F1 落地 `user/berry-shell`：宿主统一解析 env、建立 WM/input session、接收并映射 per-app 字形 VMO、创建全屏窗口与 frame VMO、执行 SUBMIT/FRAME_CALLBACK/RELEASE、暴露 pointer 事件并显式 WM_DESTROY/空表回读/解映射/关句柄。新增 `user/bins/uitest` 作为零像素 host probe：app 只依赖 `berry-shell`，frame VMO 保持零页，真实提交后以 owner-local PhaseUP 驱动销毁退出。CAMERA 静默占位包被 UITEST 替换，app 总数保持 9。
+按 [GUI框架地基路线-v1.14.md](../../../docs/GUI框架地基路线-v1.14.md) F1 落地 `user/berry-shell`：宿主统一解析 env、建立 WM/input session、接收并映射 per-app 字形 VMO、创建全屏窗口与 frame VMO、执行 SUBMIT/FRAME_CALLBACK/RELEASE、暴露 pointer 事件并显式 WM_DESTROY/空表回读/解映射/关句柄。新增 `user/bins/uitest` 作为零像素 host probe：app 只依赖 `berry-shell`，frame VMO 保持零页，真实提交后以 owner-local PhaseUP 驱动销毁退出。CAMERA 静默占位包被 UITEST 替换，app 总数保持 9。
 
 ## Alternatives considered
 
@@ -22,5 +22,5 @@ GUI8 normal 现在在五个 Native Shell 后追加 UITEST 真实运行时：第�
 
 ## Related
 
-- [GUI框架地基路线-v1.13.md](../../../docs/GUI框架地基路线-v1.13.md)
+- [GUI框架地基路线-v1.14.md](../../../docs/GUI框架地基路线-v1.14.md)
 - [14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)

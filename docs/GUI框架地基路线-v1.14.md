@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.13**｜2026-11-11
+> 版本：**1.14**｜2026-11-11
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -120,6 +120,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **R3 Config Event Architecture（已落地）** | 0x6A/0x6B add-only poll/ack；per-window pending full-state event；serial=WmTable version；last-one-wins；CREATED/GEOMETRY/VISIBILITY/OCCLUSION cause；未同步 config 禁 0x67/SUBMIT | Room CREATE→POLL→ACK 取初始 raw/visible；错/旧 serial 拒绝；SYSTEM HIDE+SHOW coalescing 只留最新状态；focus/no-op 不产事件；无新 handle/TABLE_WAIT 占用；GUI8 normal/full 真链全绿 |
 | **C1 Component Focus & Navigation（已落地）** | BerryUI focusable 侧表 + `FocusIn/FocusOut` Msg + 树前序 1D 环绕导航 + sdk Tab/Shift+Tab/Enter/Space keymap + Focused 主题态 | component focus 与 wmd window focus 分层；Button/Switch/ListItem 可焦，Disabled 跳过；Enter 合成既有 Click；焦点 ring 走 set_props/damage；UITEST 真实 Tab×2/Enter×2 证明 Button→Switch 与激活 |
 | **L1 Local Constraints & Adaptive Slot（已落地）** | 根播种 `Constraints::{Tight,Loose,Infinite}` 真实语义 + `Ui::layout_with(cs)` + SDK `slot_variant(basis,threshold)` | damage/paint 仍裁真实 viewport；hit 裁 Root 摆放界；Viewport 零漂移；AdaptiveSlot 只吃显式本地基准，不读全局屏幕/设备档；UITEST 1056 局部 basis + 600 阈值真链与像素锚 |
+| **L2 Flex Ratio Allocation（已落地）** | 运行期 `FlexEntry` 侧表 + Row/Col 固定主轴剩余空间 cumulative-prefix 比例分配 | measure/AST/wire 零漂；1:2、gap、固定子、零空间、余数与生命周期 host 钉板；UITEST 1056−12=1044 按 1:2 分成 348/696，marker+接缝像素真链 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

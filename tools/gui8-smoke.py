@@ -1489,7 +1489,7 @@ def latest_uitest_adapt_detail(text: str, start: int = 0) -> tuple[int, int, int
 
 
 UITEST_ADAPT_RE = re.compile(
-    r"UITESTADAPT ok v=1 basis=([0-9]+) "
+    r"UITESTADAPT ok v=2 basis=([0-9]+) "
     r"list=(-?[0-9]+),(-?[0-9]+),([0-9]+),([0-9]+) "
     r"detail=(-?[0-9]+),(-?[0-9]+),([0-9]+),([0-9]+)"
 )
@@ -1621,8 +1621,8 @@ def verify_uitest_normal(
     )
     _require_exact_count(
         text,
-        "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
-        "detail=384,623,684,120",
+        "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
+        "detail=372,623,696,120",
         2,
         "normal UITEST adaptive expanded",
         log_path,
@@ -3387,7 +3387,23 @@ def run_normal_boot(args) -> int:
             ppm_pixel(uitest_shot, detail_px[0], detail_px[1]),
             (255, 255, 255), "UITEST adaptive detail pane", boot.log_path,
         )
-        log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState/L1 adaptive）")
+        seam_variant = (
+            (adaptive_list[0] + adaptive_list[2] - 1) * w // 1080,
+            adaptive_list[1] * h // 1920 + (adaptive_list[3] * h // 1920 + 1) // 2,
+        )
+        seam_surface = (
+            (adaptive_list[0] + adaptive_list[2]) * w // 1080,
+            seam_variant[1],
+        )
+        assert_pixel_close(
+            ppm_pixel(uitest_shot, seam_variant[0], seam_variant[1]),
+            (233, 237, 243), "UITEST adaptive list seam", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(uitest_shot, seam_surface[0], seam_surface[1]),
+            (255, 255, 255), "UITEST adaptive gap seam", boot.log_path,
+        )
+        log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState/L1/L2 adaptive）")
 
         log(f"normal-uitest: QMP 点击 Details ({click0[0]},{click0[1]})")
         boot.qmp.click(click0[0], click0[1], w, h)
@@ -3876,8 +3892,8 @@ def self_test(args) -> int:
             f"{MARK_APP_DEMO_UP}\n"
             f"{MARK_LAYOUTW}\n"
             f"{MARK_INPUT_DROPS_OK}\n"
-            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
-            "detail=384,623,684,120\n"
+            "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
+            "detail=372,623,696,120\n"
             "UITESTADAPT2 ok v=0 basis=320\n"
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
@@ -4038,8 +4054,8 @@ def self_test(args) -> int:
 
         fake_b = (
             f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\nLAUNCH ok\nLAYOUT ok n=2\n"
-            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
-            "detail=384,623,684,120\n"
+            "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
+            "detail=372,623,696,120\n"
             "UITESTADAPT2 ok v=0 basis=320\n"
         )
         verify_boot_b(fake_b)
@@ -4047,8 +4063,8 @@ def self_test(args) -> int:
             "Boot B 缺 adaptive expanded",
             lambda: verify_boot_b(
                 fake_b.replace(
-                    "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
-                    "detail=384,623,684,120\n", "", 1,
+                    "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
+                    "detail=372,623,696,120\n", "", 1,
                 )
             ),
         )
@@ -4475,8 +4491,8 @@ def self_test(args) -> int:
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=755 a11y=8\n"
-            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
-            "detail=384,623,684,120\n"
+            "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
+            "detail=372,623,696,120\n"
             "UITESTADAPT2 ok v=0 basis=320\n"
             "UITESTRENDER ok seq=1 cmds=27\n"
             f"{MARK_UITEST_FRAME}\n"
@@ -4505,8 +4521,8 @@ def self_test(args) -> int:
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=755 a11y=8\n"
-            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
-            "detail=384,623,684,120\n"
+            "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
+            "detail=372,623,696,120\n"
             "UITESTRENDER ok seq=1 cmds=27\n"
             f"{MARK_UITEST_FRAME}\n"
             "UITESTLAYOUT ok page=1 appbar=0,0,1080,60 body=0,60,1080,1860 "
@@ -4628,7 +4644,19 @@ def self_test(args) -> int:
         expect_error(
             "UITEST adaptive 基准造假",
             lambda: verify_uitest_normal(
-                fake_u.replace("UITESTADAPT ok v=1 basis=1056", "UITESTADAPT ok v=1 basis=10560", 1),
+                fake_u.replace("UITESTADAPT ok v=2 basis=1056", "UITESTADAPT ok v=2 basis=10560", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST adaptive ratio 造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
+                    "detail=372,623,696,120",
+                    "UITESTADAPT ok v=2 basis=1056 list=12,623,360,120 "
+                    "detail=384,623,684,120", 1,
+                ),
                 snap_u, 1,
             ),
         )

@@ -263,8 +263,8 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
                     key: 0,
                     props: Props::Rect(RectProps {
                         bg: ctx.theme.colors.surface_variant,
-                        w: Some(360),
-                        h: Some(120),
+                        w: None,
+                        h: None,
                     }),
                 },
             )
@@ -277,11 +277,17 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
                     key: 0,
                     props: Props::Rect(RectProps {
                         bg: ctx.theme.colors.surface,
-                        w: Some(684),
-                        h: Some(120),
+                        w: None,
+                        h: None,
                     }),
                 },
             )
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        // L2：1056 − gap12 = 1044，1:2 精确分为 348/696；两子双
+        // None 由 flex 分配主轴、Row Stretch 分配十字轴。
+        ui.set_flex(adaptive_list, 1)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        ui.set_flex(adaptive_detail, 2)
             .unwrap_or_else(|_| berry_room::panic_exit(134));
         Page {
             scaffold,
@@ -528,15 +534,16 @@ impl AppModel {
         let basis = row_bounds.w.max(0) as u32;
         if slot_variant(basis, 600) != SlotVariant::Expanded
             || basis != 1056
-            || list_bounds.w != 360
-            || detail_bounds.w != 684
+            || list_bounds.w != 348
+            || detail_bounds.w != 696
+            || detail_bounds.w != list_bounds.w * 2
             || list_bounds.h != 120
             || detail_bounds.h != 120
             || detail_bounds.x != list_bounds.x + list_bounds.w + 12
         {
             fail(room, "adaptive slot");
         }
-        let mut line = Line::new(b"UITESTADAPT ok v=1 basis=");
+        let mut line = Line::new(b"UITESTADAPT ok v=2 basis=");
         line.push_u32(basis);
         line.push(b" list=");
         line.rect(list_bounds);
