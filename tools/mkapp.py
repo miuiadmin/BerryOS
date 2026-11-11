@@ -23,7 +23,7 @@ SDK-1a 增量 `docs/SDK-1a实施设计草案.md` §4；GUI-7 增量见本头注
                                           # check 后验既有 <path>.bap.sig
                                           #   （.sig 缺失 = 拒——防剥离护栏）
   berry-sign 二进制发现序：env BERRY_SIGN → 构建产物候选
-  （<repo>/target-cargo 与 /tmp/target-p1 下 aarch64-apple-darwin/
+  （<repo>/target-cargo 与 <repo>/user/cargo-target 下 aarch64-apple-darwin/
   {debug,release}/berry-sign）。验收线四件（正样例 + 篡改/断链/换钥
   三负样例）主归属 = `berry-sign selftest`（宿主最短路径，零依赖纪律
   不破——mkapp selftest 保持纯 Python 门禁）。
@@ -1356,13 +1356,13 @@ def check_bap(path: str, *, emit: bool = True) -> dict:
 
 def _find_berry_sign() -> str | None:
     """berry-sign 二进制发现：env BERRY_SIGN → 构建产物候选（repo
-    target-cargo 与 /tmp/target-p1 两个 CARGO_TARGET_DIR 惯用位 ×
+    target-cargo 与 user/cargo-target 两个 CARGO_TARGET_DIR 惯用位 ×
     debug/release）。不可得 = None（调用方 loud 拒——签名面不静默）。"""
     env = os.environ.get("BERRY_SIGN")
     if env and os.path.isfile(env) and os.access(env, os.X_OK):
         return env
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for tdir in (os.path.join(root, "target-cargo"), "/tmp/target-p1"):
+    for tdir in (os.path.join(root, "target-cargo"), os.path.join(root, "user", "cargo-target")):
         for profile in ("debug", "release"):
             cand = os.path.join(tdir, "aarch64-apple-darwin", profile, "berry-sign")
             if os.path.isfile(cand) and os.access(cand, os.X_OK):
@@ -1375,7 +1375,7 @@ def _run_berry_sign(argv: list[str]) -> subprocess.CompletedProcess:
     if bs is None:
         raise Reject(
             "sign: berry-sign 不可得（设 BERRY_SIGN 或先 "
-            "CARGO_TARGET_DIR=/tmp/target-p1 cargo build --manifest-path user/Cargo.toml "
+            "CARGO_TARGET_DIR=<隔离目录> cargo build --manifest-path user/Cargo.toml "
             "-p berry-crypto --bin berry-sign --target aarch64-apple-darwin）",
             code="sign.tool-missing",
             fix="构建 berry-sign 或设 BERRY_SIGN 指向既有二进制",

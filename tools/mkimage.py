@@ -5,6 +5,7 @@ SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）�
 用法：mkimage.py <out.img> --efi <BERRYBOOT.EFI> --hello <hello.txt>
               --kernel <kernel.elf> --initrd <rootfs.cpio> [--size-mib N]
               [--key-hash <64hex>] [--source-instance <dir>]
+              [--sign-key <sk> --trust-pk <pk>]
       mkimage.py --selftest
 
 盘布局 = [LBA0 MBR][LBA2048.. FAT16 主分区（四件套）][尾部 16MiB 密钥
@@ -63,6 +64,8 @@ SEC-02 A1 三件（day-one 留缝——纯宿主侧、零运行时影响；今�
 """
 import argparse
 import hashlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -104,6 +107,96 @@ SRCINST_INDEX_NAME = "source-index.tlv"
 SRCINST_KEYS_NAME = "source-keys.txt"
 SRCINST_FAT_INDEX = "/SOURCE/SRCINDEX.TLV"
 SRCINST_FAT_KEYS = "/SOURCE/SRCKEYS.TXT"
+
+# P3 boot 期验签挂接（--sign-key/--trust-pk 成对；设计 =
+# docs/设备侧验签与账本落盘设计-v1.0.md §1.2 boot 期四步的最小闭环
+# 产线半边——§1.2-2 签名数据格式随闸 C/Q3 立法，此处为**推断**最小案）：
+#   - /KERNEL.SIG = 64B ed25519 裸签（覆盖域 = KERNEL.ELF〔--kernel 所指
+#     件〕全字节——berry-sign sign-raw 独立合同，`<ID>.bap.sig` 伴生命名
+#     直映；mkapp `--sign-key` 产线先例同族）；
+#   - /TRUSTPK = 32B raw 公钥锚（`etc/trust-pk` 同款约定〔rootfs 32B
+#     raw 锚——轮十一装载期守卫约定〕的镜像侧形态（8.3 纯度去连字符），
+#     v1 测试场景件语义；
+#     真机烧录锚/信任根语义随闸 E/Q1）。
+# 两件随四件套同进 manifest v1 对账面（source-instance 先例：加条目 =
+# 数据非格式，头行计数自随）。缺省不挂——既有调用字节零漂移。
+SIGN_FAT_PATH = "/KERNEL.SIG"
+TRUSTPK_FAT_PATH = "/TRUSTPK"
+SIGN_LEN = 64   # ed25519 裸签尺寸（SIG_LEN 同值——berry-crypto envelope 常量）
+TRUSTPK_LEN = 32  # ed25519 公钥尺寸
+
+
+def read_trust_pk(path: str) -> bytes:
+    """--trust-pk 读取 + 几何校验：恰 32B raw（TRUST-PK 语义——BerryBoot
+    read_exact_fat_file 的 want=32 设备侧契约的产线对应物）。坏值 loud
+    拒：错长公钥锚进盘 = 设备侧签名件尺寸门静默降级的注入源。"""
+    try:
+        blob = Path(path).read_bytes()
+    except OSError as e:
+        raise SystemExit(f"mkimage: FAIL: 读 {path}：{e}")
+    if len(blob) != TRUSTPK_LEN:
+        raise SystemExit(f"mkimage: FAIL: --trust-pk 须恰 {TRUSTPK_LEN}B raw 公钥"
+                         f"（got {len(blob)}B：{path}）")
+    return blob
+
+
+def check_sig_blob(sig: bytes) -> bytes:
+    """签名件几何校验（sign_face_puts 内部面，独立成函数供 selftest）：
+    恰 64B（ed25519 裸签——sign-raw stdout 契约）。"""
+    if len(sig) != SIGN_LEN:
+        raise SystemExit(f"mkimage: FAIL: KERNEL.SIG 须恰 {SIGN_LEN}B 裸签"
+                         f"（got {len(sig)}B——berry-sign sign-raw stdout 契约）")
+    return sig
+
+
+def sign_face_puts(sig: bytes, pk: bytes) -> list:
+    """P3 验签两件组装（纯函数——selftest 零构建依赖可测）：几何校验 +
+    [(FAT 路径, 字节)×2]。行序 = 路径字节序由 build_manifest 自定序，此处
+    返回序不构成契约。"""
+    check_sig_blob(sig)
+    if len(pk) != TRUSTPK_LEN:
+        raise SystemExit(f"mkimage: FAIL: TRUSTPK 须恰 {TRUSTPK_LEN}B"
+                         f"（got {len(pk)}B）")
+    return [(SIGN_FAT_PATH, sig), (TRUSTPK_FAT_PATH, pk)]
+
+
+def _find_berry_sign() -> str | None:
+    """berry-sign 二进制发现（mkapp._find_berry_sign 同款语义——**同步
+    义务**：env BERRY_SIGN → 构建产物候选两 CARGO_TARGET_DIR 惯用位 ×
+    debug/release。跨工具复制非单源：mkapp 产线半边不 import 本工具，
+    两侧候选表漂移由产线 loud 拒兜底）。"""
+    env = os.environ.get("BERRY_SIGN")
+    if env and Path(env).is_file() and os.access(env, os.X_OK):
+        return env
+    root = Path(__file__).resolve().parent.parent
+    for tdir in (root / "user" / "cargo-target", root / "target-cargo"):
+        for profile in ("debug", "release"):
+            cand = tdir / "aarch64-apple-darwin" / profile / "berry-sign"
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return str(cand)
+    return None
+
+
+def sign_kernel_raw(sk: str, kernel_path: str) -> bytes:
+    """对镜像关键件签名（--sign-key 产线半边）：berry-sign sign-raw
+    <sk> <kernel>（stdout 64B 裸二进制——零临时文件）→ check_sig_blob
+    几何门。berry-sign 不可得 = loud 拒（签名面不静默——mkapp 同纪律）。"""
+    bs = _find_berry_sign()
+    if bs is None:
+        raise SystemExit(
+            "mkimage: FAIL: berry-sign 不可得（设 BERRY_SIGN 或先 "
+            "CARGO_TARGET_DIR=<隔离目录> cargo build --manifest-path "
+            "user/Cargo.toml -p berry-crypto --bin berry-sign "
+            "--target aarch64-apple-darwin）")
+    try:
+        r = subprocess.run([bs, "sign-raw", sk, kernel_path],
+                           capture_output=True)
+    except OSError as e:
+        raise SystemExit(f"mkimage: FAIL: 执行 {bs} 失败：{e}")
+    if r.returncode != 0:
+        raise SystemExit(f"mkimage: FAIL: sign-raw 拒："
+                         f"{(r.stderr or r.stdout).decode(errors='replace').strip()}")
+    return check_sig_blob(r.stdout)
 
 
 def load_source_instance(si_dir: str) -> list:
@@ -468,6 +561,57 @@ def selftest() -> int:
             assert False, "缺 source-keys.txt 未拒"
         except SystemExit:
             pass
+
+    # P3 boot 期验签面：① 组装纯函数（合成 64B/32B——零构建依赖）；
+    # ② manifest 六件形态（entries=06 + 两验签路径——加条目 = 数据非
+    # 格式，source-instance 先例同族）；③ 整盘确定性（验签两件入卷后
+    # 双跑恒等）；④ 尺寸拒面逐腿（sign-raw 64B / trust-pk 32B 契约的
+    # 注入口执法——错长静默放行 = 设备侧尺寸门静默降级的注入源）。
+    sig_stub = bytes((i * 13 + 7) % 256 for i in range(SIGN_LEN))
+    pk_stub = bytes((i * 5 + 1) % 256 for i in range(TRUSTPK_LEN))
+    sp = sign_face_puts(sig_stub, pk_stub)
+    assert [p for p, _ in sp] == [SIGN_FAT_PATH, TRUSTPK_FAT_PATH], "验签两件路径"
+    puts6s = puts + sp
+    m6s = build_manifest(puts6s).decode("ascii")
+    l6s = m6s.splitlines()
+    assert l6s[0].endswith("entries=06") and len(l6s) == 8, "验签 manifest 头计数/行数"
+    paths6s = [ln.split("path=")[1].split(" ")[0] for ln in l6s[1:-1]]
+    assert SIGN_FAT_PATH in paths6s and TRUSTPK_FAT_PATH in paths6s, \
+        "验签两件入列（行序 = 路径字节序）"
+    assert all(ln.endswith(f"platform_revision={pr_now}") for ln in l6s[1:-1]), \
+        "PR 列零扰动（验签条目同 PR）"
+    img6s, _ = build_image(puts6s, 9)
+    assert img6s == build_image(puts6s, 9)[0], "验签挂接后整盘装配不确定"
+    vol6s_direct, _ = mkfat.build_volume_puts(
+        puts6s, vol_sectors=volume_sectors(9), fat16=True, hidden=PART_LBA)
+    assert img6s[PART_LBA * SECTOR:meta_off] == bytes(vol6s_direct), \
+        "验签挂接后 FAT 段漂移（单编码器纪律）"
+    for bad_sig in (b"x" * 63, b"x" * 65, b""):
+        try:
+            sign_face_puts(bad_sig, pk_stub)
+        except SystemExit:
+            continue
+        assert False, f"坏签名尺寸未拒：{len(bad_sig)}B"
+    for bad_pk in (b"x" * 31, b"x" * 33, b""):
+        try:
+            sign_face_puts(sig_stub, bad_pk)
+        except SystemExit:
+            continue
+        assert False, f"坏公钥尺寸未拒：{len(bad_pk)}B"
+    import tempfile as _tmp
+    with _tmp.TemporaryDirectory() as td2:
+        p_bad = Path(td2) / "pk"
+        p_bad.write_bytes(b"x" * 31)
+        try:
+            read_trust_pk(str(p_bad))
+            assert False, "read_trust_pk 坏尺寸未拒"
+        except SystemExit:
+            pass
+        try:
+            read_trust_pk(str(Path(td2) / "absent"))
+            assert False, "read_trust_pk 缺席未拒"
+        except SystemExit:
+            pass
     print("mkimage: selftest ok")
     return 0
 
@@ -486,6 +630,13 @@ def main() -> int:
     ap.add_argument("--source-instance", metavar="DIR",
                     help="官方源静态实例目录（SDK-2 P2：两件套入 FAT "
                          "\\SOURCE\\——gensourceindex 产物；缺省不挂（向后兼容））")
+    ap.add_argument("--sign-key", metavar="SK",
+                    help="P3 boot 期验签：ed25519 私钥（32B raw）——对 "
+                         "--kernel 关键件 berry-sign sign-raw 产 64B 裸签入 "
+                         "FAT \\KERNEL.SIG；须与 --trust-pk 成对")
+    ap.add_argument("--trust-pk", metavar="PK",
+                    help="P3 boot 期验签：公钥锚（32B raw）入 FAT \\TRUSTPK"
+                         "（etc/trust-pk 同款约定镜像侧形态）；须与 --sign-key 成对")
     ap.add_argument("--selftest", action="store_true", help="MBR/manifest 薄面自检（不写盘）")
     args = ap.parse_args()
 
@@ -522,6 +673,18 @@ def main() -> int:
             puts.append((fat_path, data))
             nbytes += len(data)
 
+    # P3 挂接：boot 期验签两件（成对执法——半装签名镜像 = BerryBoot 验签
+    # 面静默半装态，注入口炸好过设备侧兜底行；缺省双缺席零漂移）。
+    if bool(args.sign_key) != bool(args.trust_pk):
+        ap.error("--sign-key 与 --trust-pk 须成对（半装签名镜像拒产——"
+                 "BerryBoot sig: half 降级的产线对应物）")
+    if args.sign_key:
+        sig_blob = sign_kernel_raw(args.sign_key, args.kernel)
+        pk_blob = read_trust_pk(args.trust_pk)
+        for fat_path, data in sign_face_puts(sig_blob, pk_blob):
+            puts.append((fat_path, data))
+            nbytes += len(data)
+
     img, geo = build_image(puts, args.size_mib)
     Path(args.out).write_bytes(img)
     # 件 3：manifest = <out.img> 同目录侧产物（不进盘——vbmeta 签名产物
@@ -540,7 +703,8 @@ def main() -> int:
              else "") + "")
     print(f"mkimage: manifest {manifest_path} {len(manifest)}B "
           f"entries={len(puts)} key_hash={key_hash if key_hash else 'none'} "
-          f"platform_revision={pr}")
+          f"platform_revision={pr} "
+          f"signed={'on' if args.sign_key else 'off'}")
     # 件 5：产链尾整盘哈希行——供 CI/审计对拍（黄金格式 img: sha256=<64hex>）。
     print(f"img: sha256={sha256_hex(img)}")
     return 0

@@ -13,3 +13,8 @@ berry-efi = { path = "../berry-efi" }
 # V-0b 刀 2：引导视图解析（p_paddr 口径）——纯函数 crate 跨user/引导
 # 两界复用，库本体 no_std 直接进 EFI staticlib 链。
 berry-loader = { path = "../../../user/berry-loader" }
+# P3 boot 期验签：ed25519 verify + SHA-512/256 度量（host/none 双面
+# crate——lib cfg_attr no_std，EFI app = host 环境语境可链；berry-loader
+# 跨界先例同款）。消费面 = 本 crate 验签块（KERNEL.ELF 全字节 verify +
+# digest256 填 V10 meas_root 槽）。
+berry-crypto = { path = "../../../user/berry-crypto" }

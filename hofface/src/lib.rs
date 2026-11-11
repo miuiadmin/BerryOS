@@ -23,6 +23,9 @@
 //!   boot 期无 panic 纪律）。
 //! - [`gop_gate`]:GOP 事实四非零门 + fmt≤2（3 = BltOnly 无线性帧缓冲，
 //!   装载器已按缺席递送，双保险）。
+//! - [`v10_gate`]:V10 验签槽占用门（P3）——meas_root 非全零 ∧ sig_slot
+//!   off/len 双非零同判 ∧ 槽区落窗（meas×slot 消费决策表
+//!   `docs/设备侧验签与账本落盘设计-v1.0.md` §4.1 的判定段投影）。
 //!
 //! 与冻结面的关系：boot 协议是**仓内版本化面**，非 abi.toml 冻结面
 //! （handoff.rs 头注——不触保留门 C）。`probe`/`init_segs` 的高半直映
@@ -173,6 +176,34 @@ pub fn init_segs_gate<S: SegRaw>(
 #[inline]
 pub fn gop_gate(fb_pa: u64, width: u32, height: u32, stride: u32, format: u32) -> bool {
     fb_pa != 0 && width != 0 && height != 0 && stride != 0 && format <= 2
+}
+
+/// V10 验签槽占用门（P3 boot 期验签消费面的判定段投影；设计 =
+/// `docs/设备侧验签与账本落盘设计-v1.0.md` §4.1 meas_root×sig_slot 消费
+/// 决策表）：
+/// - `meas_root` 全零 → false（**未度量**——决策表第一行 unverified/
+///   ORANGE：BerryBoot 未验或验败都不填槽，QEMU 默认无签镜像恒落此行，
+///   消费面零扰动）；
+/// - `sig_slot_off`/`sig_slot_len` 双非零同判（零值缺席语义家族——
+///   `gop_*`/`cmdline_*` 同律，禁只看 off：半装态 = 递送面违约）；
+/// - 槽区 `[off, off+len)` 落 `[ram_base, ram_top)`（checked 防回卷）。
+///
+/// 全过 → true（决策表第三行「非零×非零 = 四态全判定可用」）——kernel
+/// 侧最小消费 = 打点证明 BerryBoot→handoff→kernel 链通（深度消费
+/// keystored/盘加密绑定随 P8）。meas 与 off/len 的同判（单看 meas 非零
+/// 不构成「验过」）是 BerryBoot 填槽纪律的另一侧：两槽恒成对写。
+pub fn v10_gate(meas: &[u8; 32], off: u64, len: u64, ram_base: u64, ram_top: u64) -> bool {
+    if meas.iter().all(|&b| b == 0) {
+        return false;
+    }
+    if off == 0 || len == 0 {
+        return false;
+    }
+    let end = match off.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+    off >= ram_base && end <= ram_top
 }
 
 #[cfg(test)]
@@ -457,5 +488,59 @@ mod tests {
         for &(fb, w, h, s, f, want) in cases {
             assert_eq!(gop_gate(fb, w, h, s, f), want, "fb={:#x} f={}", fb, f);
         }
+    }
+
+    // ---- v10_gate：meas 全零/off-len 双非零同判/槽区落窗 表驱动（P3）----
+
+    #[test]
+    fn test_v10_gate_table() {
+        let meas = [0x5au8; 32]; // 已度量形（BerryBoot 验过填值）
+        let zero = [0u8; 32]; // 未度量形（现状/验败降级——决策表第一行）
+        // (meas, off, len, expect)——合法槽取窗内点。
+        let slot_pa: u64 = RB + 0x3000;
+        let cases: &[([u8; 32], u64, u64, bool)] = &[
+            // 决策表第三行：非零×双非零×窗内 → true（四态全判定可用）。
+            (meas, slot_pa, 64, true),
+            (meas, RB, 64, true),        // 基址恰 = ram_base（边界含）
+            (meas, RT - 64, 64, true),   // end 恰 = ram_top（半开含顶前）
+            // 决策表第一行：meas 全零 = 未度量 → 恒 false（off/len 无关
+            // ——单看槽占用不构成「验过」）。
+            (zero, slot_pa, 64, false),
+            (zero, 0, 0, false),
+            (zero, 0, 64, false),
+            (zero, slot_pa, 0, false),
+            // 半装态：meas 非零但 off/len 任一为零 → false（双非零同判
+            // ——BerryBoot 填槽纪律恒成对写，禁只看 off）。
+            (meas, 0, 0, false),
+            (meas, 0, 64, false),
+            (meas, slot_pa, 0, false),
+            // 窗界：off < ram_base 拒；end > ram_top 拒。
+            (meas, RB - 8, 64, false),
+            (meas, 0x1000, 64, false),
+            (meas, RT - 63, 64, false),
+            (meas, RT - 0x1000, 0x2000, false),
+            // len 极值回卷后越顶拒（checked_add）。
+            (meas, slot_pa, u64::MAX, false),
+            (meas, slot_pa, u64::MAX - slot_pa + 1, false),
+            // 64B 签名槽现役形（KERNEL.SIG 裸签尺寸——P3 最小闭环）。
+            (meas, slot_pa, 64, true),
+        ];
+        for &(m, off, len, want) in cases {
+            assert_eq!(v10_gate(&m, off, len, RB, RT), want, "off={:#x} len={:#x}", off, len);
+        }
+    }
+
+    #[test]
+    fn test_v10_gate_wraparound_reject() {
+        // 回卷拒：off 近 u64 顶 + len 溢出 → false（checked_add 同
+        // probe_bounds_ok/init_segs_gate 族语义——地址环绕不得误判窗内）。
+        let meas = [1u8; 32];
+        assert!(!v10_gate(&meas, u64::MAX, 1, RB, RT));
+        assert!(!v10_gate(&meas, u64::MAX - 32, 64, RB, RT));
+        // 对照：恰好不溢出的顶界形（全域窗）过。
+        assert!(v10_gate(&meas, u64::MAX - 64, 64, 0, u64::MAX));
+        // 全零 meas 在全域窗同样 false（meas 门先于窗界——决策表第一行
+        // 恒静默，与窗参数无关）。
+        assert!(!v10_gate(&[0u8; 32], u64::MAX - 64, 64, 0, u64::MAX));
     }
 }
