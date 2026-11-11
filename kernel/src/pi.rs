@@ -20,6 +20,10 @@
 //! 后，从零推导整张捐赠图——清零在队者受捐额 → 不动点迭代传播（每轮一跳）
 //! → 刷 effective。无解除遗漏、无 stale boost；代价是每次事件 O(睡眠者² ×
 //! 表槽) 的重算，v1 睡眠者个位数可忽略（SMP/规模扩大时换增量簿记）。
+//! **P2 门控**（常态免付）：重推要产生任何改动，必要条件 = 队上有 donor
+//! 可能（等派生位者，[`recompute_locked`] 入口门）或有待清 boost——双零
+//! 时整体跳过（计数维护/不变式见 `sched.rs` P2 块注释；真有捐赠边的场景
+//! 计数必非零，门恒放行）。
 //!
 //! **冻结语义**（「server 处理消息期间持有」的 v1 形态）：重推只清/算
 //! **在队者**；受捐方被唤醒离队时冻结当前 `pi_inherited` 随行——boost 带进
@@ -73,6 +77,15 @@ pub fn recompute() {
 /// 表读（`holder_table`）3-1b 起收 **KL 子窗**（SQ→表 正序嵌套 = 终态
 /// 七层冻结序——KL 归表锁本职、最内层；C20 后表读必经 KL 的常驻面之一）。
 fn recompute_locked() {
+    // P2 门控：等派生位睡眠者（donor 面必要条件）与 pi≠0 睡眠者（冻结
+    // boost 清零面）双零 ⇒ 清零趟 / 传播趟 / 尾刷全程空转——整体跳过
+    // （省 KL 取放 + 双趟全扫；常态 IPC 无捐赠边即此路）。计数由 sched
+    // 侧在 SLEEPQ 两机械面精确维护（不变式与安全性论证 → sched.rs P2
+    // 块注释）；本入口恒在 SQ 窗内发射（五发射点 + 自持窗手动面），读
+    // 写点同窗无竞态。门常开方向的劣化 = 性能损失非正确性损失。
+    if !berry_sched::pi_recompute_needed() {
+        return;
+    }
     // 第一趟：清零**在队者**的受捐额（冻结语义——已离队的 runnable 者不动，
     // boost 随行到下次入睡/退出）。纯 Task 字段写，不触表——窗内不包。
     berry_sched::for_each_sleeper(|t| t.pi_inherited = 0);
@@ -119,8 +132,16 @@ fn recompute_locked() {
 
     // 尾趟：刷在队者 effective（runnable 者保持冻结值）。公式与 pick 侧
     // policy::apply 同一：max(base + 策略权重, pi_inherited)。纯字段算术
-    // 不触表——窗内不包。
-    berry_sched::for_each_sleeper(berry_sched::refresh_effective);
+    // 不触表——窗内不包。顺带重数 pi≠0 在队者个数回写门控计数乙（P2 第
+    // 三收口点：重推是队上 pi_inherited 唯一写者，写尾即精确对账）。
+    let boosted = Cell::new(0u32);
+    berry_sched::for_each_sleeper(|t| {
+        berry_sched::refresh_effective(t);
+        if t.pi_inherited != 0 {
+            boosted.set(boosted.get() + 1);
+        }
+    });
+    berry_sched::pi_boost_recount(boosted.get());
 }
 
 /// donor 的捐赠边（机械壳——资格判定单源 `berry_piface::donor_edge`）：

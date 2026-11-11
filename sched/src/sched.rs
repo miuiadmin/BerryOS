@@ -1965,6 +1965,88 @@ fn wait_gate_clear(obj: usize) -> bool {
         && WAIT_HASH[wait_bucket(obj)].count.load(Ordering::Relaxed) == 0
 }
 
+// ---- P2 PI 重推门控计数（消费者 = kernel/src/pi.rs 全图重推入口）----
+//
+// 架构研究 P2 瓶颈：`recompute_locked` 挂在每次 block/wake 尾部（SLEEPQ
+// 钩子），常态（无捐赠边）仍付「O(n) 清零 + O(n²) 不动点扫描 + KL 取放」
+// 全量成本。本对计数把「重推可能改动任何字段」压成两个**精确**必要条件：
+//
+// - [`PI_DERIVED_WAITERS`]：等内核派生位（READABLE/WRITABLE）且挂单一
+//   真对象键（obj ∉ {0 纯睡, WAIT_ANY 哨兵}）的睡眠者数——捐赠边
+//   **donor 侧必要条件**（`pi::donor_edge` 首门 = 派生位请求 + 键门拒
+//   哨兵/纯睡；§A40 不变量「派生位等待 ⟹ wait_obj 必是真 channel
+//   ObjRef」）。零 ⇒ 队上无任何 donor ⇒ 不动点零传播——受捐面（持 peer
+//   端点者）再多也无边可走，故受捐侧无需独立计数。哨兵排除让 §A34
+//   常驻服务的 wait_many 稳态形态不钉死门控。
+// - [`PI_BOOSTED_SLEEPERS`]：`pi_inherited != 0` 的睡眠者数——冻结 boost
+//   的**清零面**（重推首趟清在队者受捐额；零 ⇒ 清零趟空转）。队上任务的
+//   `pi_inherited` 唯一写者 = 重推本体（清零 + 传播；唤醒冻结只带走值不
+//   改值），故「入队点查 / 出队点查 / 重推尾部重数回写」三收口点即可维持
+//   不变式「计数 == 队上 pi≠0 者个数」：重推把入队时非零者清零后，回写值
+//   不再含它——随后出队查 0 不减，配对经回写成立（ktest J6 冻结随行用例
+//   即此序的活体）。
+//
+// 计数维护收口在 [`SleepQueue::insert_sorted`]/[`SleepQueue::unlink`] 两
+// 函数（SLEEPQ 成员变更仅有两机械面——与 P1 wait 计数同点同纪律）。判据
+// 字段在入出两点间稳定：`wait_signals` 同 P1 论证；`pi_inherited` 的写者
+// 只有重推、其写尾即回写配对。**劣化方向安全**：任何漏减只令计数虚高 ⇒
+// 门常开 ⇒ 重推照跑（性能损失、非正确性损失）。读写点全在 SQ 锁窗内
+// （单核屏蔽窗无竞态；SMP 锁交接即可见性边界——WAIT_HASH 同论证）；A12
+// 纪律：原子 static（非 static mut）免入册 writable_globals。
+
+/// ① 等 kernel 派生位的睡眠者数（donor 面必要条件）。
+static PI_DERIVED_WAITERS: AtomicU32 = AtomicU32::new(0);
+
+/// ② `pi_inherited != 0` 的睡眠者数（冻结 boost 清零面；重推尾回写）。
+static PI_BOOSTED_SLEEPERS: AtomicU32 = AtomicU32::new(0);
+
+/// 派生位掩码（ABI 冻结值 SIGNAL_READABLE=1 / SIGNAL_WRITABLE=2——sched
+/// crate 不依赖 kernel handle 模块，本地镜像同值；freeze_precheck 同款）。
+const SIG_DERIVED: u64 = 1 | 2;
+
+/// 睡眠者入队 PI 计数（+1）——[`SleepQueue::insert_sorted`] 入口调（与
+/// [`wait_count_add`] 同点）。donor 面判据 = 派生位请求**且**单一真对象键
+/// （obj ∉ {0 纯睡, WAIT_ANY 哨兵}——哨兵多对象等待者被 crate 键门恒拒，
+/// §A34 常驻服务的 wait_many 稳态形态不钉死门控；两键排除与 wait_count
+/// 分支同源）。
+#[inline]
+fn pi_count_add(obj: usize, signals: u64, pi: i32) {
+    if obj != 0 && obj != WAIT_ANY && signals & SIG_DERIVED != 0 {
+        PI_DERIVED_WAITERS.fetch_add(1, Ordering::Relaxed);
+    }
+    if pi != 0 {
+        PI_BOOSTED_SLEEPERS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// 睡眠者离队 PI 计数（-1）——[`SleepQueue::unlink`] 尾调（与
+/// [`wait_count_sub`] 同点；字段稳定性见上块注释，判据与入队逐字对称）。
+#[inline]
+fn pi_count_sub(obj: usize, signals: u64, pi: i32) {
+    if obj != 0 && obj != WAIT_ANY && signals & SIG_DERIVED != 0 {
+        PI_DERIVED_WAITERS.fetch_sub(1, Ordering::Relaxed);
+    }
+    if pi != 0 {
+        PI_BOOSTED_SLEEPERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// PI 全图重推门控：双零 ⇒ 队上既无 donor 可能（①零 ⇒ 不动点零传播）
+/// 也无待清 boost（②零 ⇒ 清零趟空转）——重推可整体跳过（省 KL 取放 +
+/// 双趟全扫）。消费者 = `kernel/src/pi.rs::recompute_locked` 入口；读点
+/// 恒在 SQ 窗内（钩子五发射点 + 自持窗手动面），与计数写点同窗。
+pub fn pi_recompute_needed() -> bool {
+    PI_DERIVED_WAITERS.load(Ordering::Relaxed) != 0
+        || PI_BOOSTED_SLEEPERS.load(Ordering::Relaxed) != 0
+}
+
+/// 重推尾部重数回写（[`PI_BOOSTED_SLEEPERS`] 的第三收口点）：全图重推刚
+/// 写完在队者的 `pi_inherited`（唯一写者面），由它重数非零个数回写本计数。
+/// 仅 SQ 窗内调用（重推本体所在窗）。
+pub fn pi_boost_recount(n: u32) {
+    PI_BOOSTED_SLEEPERS.store(n, Ordering::Relaxed);
+}
+
 /// SLEEPQ 互斥锁（S-3c c-2a：锁族落形 + SQ 窗先行——§3 七层冻结锁序最顶层）。
 ///
 /// **过渡态（c-2a/b）语义**：SVC 入口 KL 全量不动 ⇒ 本锁一切取放点都在 KL
@@ -2030,6 +2112,9 @@ impl SleepQueue {
         // P1 等待计数：入队 +1——**先于接线**（见 wait_count_add 注释；与
         // unlink 尾部 -1 对称成窗：窗口期桶只多不少 → 门控只假阳性不漏醒）。
         wait_count_add((*t).wait_obj);
+        // P2 PI 门控计数：入队 +1（wait_signals 此刻已是入睡值——block_
+        // current 四写先于本函数；与 unlink 尾部 -1 对称）。
+        pi_count_add((*t).wait_obj, (*t).wait_signals, (*t).pi_inherited);
         // 从头找第一个 `deadline > 新者` 的节点，插它前面；到尾则插尾。
         let mut cur = self.head.get();
         let before = loop {
@@ -2093,6 +2178,9 @@ impl SleepQueue {
         // P1 等待计数：离队 -1——**后于摘线**（wait_obj 此刻仍是入睡时键——
         // 链接字段清空不影响它；与 insert_sorted 入口 +1 对称）。
         wait_count_sub((*t).wait_obj);
+        // P2 PI 门控计数：离队 -1（wait_obj/wait_signals/pi_inherited 均离
+        // 队时值——前两者同 P1 稳定论证，pi = 冻结随行值，配对经重推尾回写）。
+        pi_count_sub((*t).wait_obj, (*t).wait_signals, (*t).pi_inherited);
     }
 }
 
