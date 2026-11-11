@@ -901,6 +901,14 @@ test-host:
     # + RFC 8032 向量门空转框架——对选型零敏感件先行，26 号 §3-2；原语本体 =
     # P0-2 另刀，向量门不过不合入；P0 合入 = 闸 B，24 号 §4.2 终核三条）。
     cargo test --manifest-path user/Cargo.toml -p berry-crypto --target {{host}}
+    # W1 接线（echod/evsclient 未接线判例同族）：genwycheproof 门禁自检——
+    # Wycheproof 向量表生成器（fixture JSON → wycheproof_vectors.rs）随
+    # SDK-2 P0-2 落地，selftest 37 面自称绿但从未接线 test-host：有
+    # selftest 零自动执法 = 生成器逻辑改坏且重产时 --check 照样绿（自检
+    # 用合成 fixture 钉 validate 拒面/映射/黄金锚/确定性/产物对偶，逻辑
+    # 改坏即咬）。改 genwycheproof.py / wycheproof_ed25519_test.json /
+    # wycheproof_vectors.rs 联动面必跑。
+    python3 tools/genwycheproof.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
