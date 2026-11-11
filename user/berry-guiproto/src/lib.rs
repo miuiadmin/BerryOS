@@ -17,7 +17,7 @@
 //!   阻塞）——**段①唯一接线面**；
 //! - **hdi 域**（op 0x40..0x43）：REG_VBLANK / VBLANK_WAIT / PREPARE /
 //!   COMMIT——GUI-2 / virtio-gpu S1 挂账（§9-⑨），段①仅编解码 + 测试；
-//! - **wm 域**（op 0x60..=0x7F 互斥带，v1 八 op 0x60..0x67，GUI-5 第四域）：
+//! - **wm 域**（op 0x60..=0x7F 互斥带，v1 十二 op 0x60..=0x6B，GUI-5 第四域）：
 //!   gui-wmd 持权威窗口表（两层窗/Z 序/避让/parent·group/焦点）；**两对
 //!   channel 共享同一 op 空间**——wm 服务对（GETINFO/CREATE/DESTROY/SET/
 //!   TABLE_GET）+ wmd↔inputd 推送对（inputd 发 TABLE_WAIT，wmd park 至表
@@ -126,6 +126,10 @@ pub const OP_WM_SURFACE_MODE: u8 = 0x67;
 pub const OP_WM_SURFACE_ESCAPE_SEED: u8 = 0x68;
 /// R1：svcmgr→wmd per-boot SYSTEM client seed 控制帧（add-only）。
 pub const OP_WM_SYSTEM_SEED: u8 = 0x69;
+/// R3：app session 非阻塞拉一条 per-window config event（无随行 handle）。
+pub const OP_WM_CONFIG_POLL: u8 = 0x6A;
+/// R3：确认已消费的 config event serial（错/旧 serial 拒绝）。
+pub const OP_WM_CONFIG_ACK: u8 = 0x6B;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
@@ -157,6 +161,20 @@ pub const WM_VIS_SHOW: u8 = 1;
 pub const WM_WIN_F_VISIBLE: u8 = 1 << 0;
 /// WmEntry flags 位：持焦点（wmd 单焦点窗策略面）。
 pub const WM_WIN_F_FOCUSED: u8 = 1 << 1;
+
+/// R3 config cause：窗口创建后的初始 pull-once 配置。
+pub const WM_CONFIG_CAUSE_CREATED: u8 = 0;
+/// R3 config cause：本窗 WM_SET_F_GEOM 改变 raw bounds。
+pub const WM_CONFIG_CAUSE_GEOMETRY: u8 = 1;
+/// R3 config cause：本窗 WM_SET_F_VIS 改变可见状态。
+pub const WM_CONFIG_CAUSE_VISIBILITY: u8 = 2;
+/// R3 config cause：可见 SYSTEM 窗使 AVOID_SYS effective bounds 变化。
+pub const WM_CONFIG_CAUSE_OCCLUSION: u8 = 3;
+
+/// R3 config cause 值域。
+pub const fn wm_config_cause_known(v: u8) -> bool {
+    v <= WM_CONFIG_CAUSE_OCCLUSION
+}
 
 // ---------- 状态码 / 值域 ----------
 
@@ -423,6 +441,12 @@ const WM_CONNECT_REP_LEN: usize = 8;
 /// 窗口表快照定长头 / 表项单项宽。
 const WM_SNAP_HEAD: usize = 12;
 const WM_ENTRY_LEN: usize = 16;
+/// R3 WM_CONFIG_POLL 请求恰长 4B。
+const WM_CONFIG_POLL_REQ_LEN: usize = 4;
+/// R3 WM_CONFIG_ACK 请求恰长 12B。
+const WM_CONFIG_ACK_REQ_LEN: usize = 12;
+/// R3 WM_CONFIG_POLL 成功应答恰长 32B。
+const WM_CONFIG_REP_LEN: usize = 32;
 
 // ---------- 值域谓词（const fn——位域/域值双侧对称执法）----------
 
@@ -2003,6 +2027,154 @@ pub fn parse_wm_table_wait_req(buf: &[u8]) -> Option<u32> {
         return None;
     }
     le32(buf, 4)
+}
+
+/// R3 config event（解析产物）。raw/visible 均为屏幕坐标；safe insets 由
+/// 消费侧从两者差集现场派生，不进第二存储真值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmConfigEvent {
+    /// 表版本 serial；同一窗新事件覆盖未 ack 旧事件（last-one-wins）。
+    pub serial: u32,
+    pub window_id: u16,
+    /// [`WM_CONFIG_CAUSE_*`]。
+    pub cause: u8,
+    /// 窗口可见状态（0/1；隐藏窗仍可有历史几何槽）。
+    pub visible: bool,
+    pub raw_x: u16,
+    pub raw_y: u16,
+    pub raw_w: u16,
+    pub raw_h: u16,
+    pub visible_x: u16,
+    pub visible_y: u16,
+    pub visible_w: u16,
+    pub visible_h: u16,
+}
+
+/// R3 ACK 请求。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmConfigAckReq {
+    pub window_id: u16,
+    pub serial: u32,
+}
+
+fn wm_config_event_valid(ev: &WmConfigEvent) -> bool {
+    ev.serial != 0
+        && ev.window_id != 0
+        && wm_config_cause_known(ev.cause)
+}
+
+/// 编码 WM_CONFIG_POLL 请求（恰 4B 无参；buf 不足 = 调用方错，assert）。
+pub fn encode_wm_config_poll_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_CONFIG_POLL_REQ_LEN, "guiproto: wm config poll req buf 不足");
+    out[0] = OP_WM_CONFIG_POLL;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    WM_CONFIG_POLL_REQ_LEN
+}
+
+/// 解析 WM_CONFIG_POLL 请求：恰 4B + op。
+pub fn parse_wm_config_poll_req(buf: &[u8]) -> Option<()> {
+    (buf.len() == WM_CONFIG_POLL_REQ_LEN
+        && buf[0] == OP_WM_CONFIG_POLL
+        && buf[1..4].iter().all(|&b| b == 0))
+    .then_some(())
+}
+
+/// 编码 WM_CONFIG_ACK 请求（恰 12B `[op][r24][window u16][r16][serial u32]`）。
+pub fn encode_wm_config_ack_req(out: &mut [u8], req: &WmConfigAckReq) -> Option<usize> {
+    if req.window_id == 0 || req.serial == 0 {
+        return None;
+    }
+    let m = out.get_mut(..WM_CONFIG_ACK_REQ_LEN)?;
+    m[0] = OP_WM_CONFIG_ACK;
+    m[1] = 0;
+    m[2] = 0;
+    m[3] = 0;
+    m[4..6].copy_from_slice(&req.window_id.to_le_bytes());
+    m[6] = 0;
+    m[7] = 0;
+    m[8..12].copy_from_slice(&req.serial.to_le_bytes());
+    Some(WM_CONFIG_ACK_REQ_LEN)
+}
+
+/// 解析 WM_CONFIG_ACK 请求；window/serial 0 与截断/尾随/错 op 拒绝。
+pub fn parse_wm_config_ack_req(buf: &[u8]) -> Option<WmConfigAckReq> {
+    if buf.len() != WM_CONFIG_ACK_REQ_LEN
+        || buf[0] != OP_WM_CONFIG_ACK
+        || buf[1..4].iter().any(|&b| b != 0)
+        || buf[6..8].iter().any(|&b| b != 0)
+    {
+        return None;
+    }
+    let window_id = le16(buf, 4)?;
+    let serial = le32(buf, 8)?;
+    (window_id != 0 && serial != 0).then_some(WmConfigAckReq { window_id, serial })
+}
+
+/// 编码 WM_CONFIG_POLL 成功应答（32B；错误沿用 1B status）。
+pub fn encode_wm_config_event_rep(
+    out: &mut [u8],
+    ev: &WmConfigEvent,
+) -> Option<usize> {
+    if !wm_config_event_valid(ev) {
+        return None;
+    }
+    let m = out.get_mut(..WM_CONFIG_REP_LEN)?;
+    m.fill(0);
+    m[0] = ST_OK;
+    m[1] = ev.cause;
+    m[2] = u8::from(ev.visible);
+    m[4..8].copy_from_slice(&ev.serial.to_le_bytes());
+    m[8..10].copy_from_slice(&ev.window_id.to_le_bytes());
+    m[12..14].copy_from_slice(&ev.raw_x.to_le_bytes());
+    m[14..16].copy_from_slice(&ev.raw_y.to_le_bytes());
+    m[16..18].copy_from_slice(&ev.raw_w.to_le_bytes());
+    m[18..20].copy_from_slice(&ev.raw_h.to_le_bytes());
+    m[20..22].copy_from_slice(&ev.visible_x.to_le_bytes());
+    m[22..24].copy_from_slice(&ev.visible_y.to_le_bytes());
+    m[24..26].copy_from_slice(&ev.visible_w.to_le_bytes());
+    m[26..28].copy_from_slice(&ev.visible_h.to_le_bytes());
+    Some(WM_CONFIG_REP_LEN)
+}
+
+/// 解析 WM_CONFIG_POLL 应答。空事件/权限等错误是合法 1B 状态，返回
+/// `Err(st)`；成功帧保留位非零、cause/visible 野值、serial/window 0 拒。
+pub fn parse_wm_config_event_rep(
+    buf: &[u8],
+) -> Option<Result<WmConfigEvent, u8>> {
+    if buf.len() == 1 {
+        let st = buf[0];
+        return (st_known(st) && st != ST_OK).then_some(Err(st));
+    }
+    if buf.len() != WM_CONFIG_REP_LEN || buf[0] != ST_OK {
+        return None;
+    }
+    if buf[3] != 0 || buf[10] != 0 || buf[11] != 0
+        || buf[28..32].iter().any(|&b| b != 0)
+    {
+        return None;
+    }
+    let cause = buf[1];
+    let visible = buf[2];
+    if !wm_config_cause_known(cause) || visible > 1 {
+        return None;
+    }
+    let ev = WmConfigEvent {
+        serial: le32(buf, 4)?,
+        window_id: le16(buf, 8)?,
+        cause,
+        visible: visible == 1,
+        raw_x: le16(buf, 12)?,
+        raw_y: le16(buf, 14)?,
+        raw_w: le16(buf, 16)?,
+        raw_h: le16(buf, 18)?,
+        visible_x: le16(buf, 20)?,
+        visible_y: le16(buf, 22)?,
+        visible_w: le16(buf, 24)?,
+        visible_h: le16(buf, 26)?,
+    };
+    wm_config_event_valid(&ev).then_some(Ok(ev))
 }
 
 /// 编码 WM_CONNECT 请求（broker 面；两枚随行 handle 由调用方传入

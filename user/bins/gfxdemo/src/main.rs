@@ -626,6 +626,57 @@ fn destroy_window(ch: Handle, window: u16) {
     expect_ok(ch, &wire[..m], &[], &mut rep, &mut rhs, "p4 wm destroy");
 }
 
+/// R3：POLL 一条事件；None 仅代表 ST_EAGAIN。
+fn poll_config_event(ch: Handle) -> Option<gp::WmConfigEvent> {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_wm_config_poll_req(&mut req);
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_wm_config_event_rep(&rep[..n]) {
+        Some(Ok(ev)) => Some(ev),
+        Some(Err(gp::ST_EAGAIN)) => None,
+        other => fail(&format!("config poll got {other:?}")),
+    }
+}
+
+/// R3：ACK 原始状态面。
+fn ack_config_event(ch: Handle, ev: &gp::WmConfigEvent) -> u8 {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let ack = gp::WmConfigAckReq {
+        window_id: ev.window_id,
+        serial: ev.serial,
+    };
+    let m = match gp::encode_wm_config_ack_req(&mut req, &ack) {
+        Some(m) => m,
+        None => fail("config ack encode"),
+    };
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(st) => st,
+        None => fail(&format!("config ack rep bad st={}", rep[0])),
+    }
+}
+
+/// R3：排空并 ACK config events。gfxdemo 的 0x67/SUBMIT 均要求当前
+/// config 已同步；这也证明 raw 客户端不依赖 Room 才能走新合约。
+fn drain_config(ch: Handle) {
+    while let Some(ev) = poll_config_event(ch) {
+        if ack_config_event(ch, &ev) != gp::ST_OK {
+            fail("config drain ack");
+        }
+    }
+}
+
+/// R3：必须为空的负例（no-op SET / focus-only bump 不产事件）。
+fn assert_config_empty(ch: Handle, what: &str) {
+    if poll_config_event(ch).is_some() {
+        fail(&format!("config phantom event {what}"));
+    }
+}
+
 fn create_lock_window(ch: Handle) -> (u16, u16, u16, u16, u16) {
     let req = gp::WmCreateReq {
         layer: gp::WM_LAYER_APP,
@@ -642,10 +693,12 @@ fn create_lock_window(ch: Handle) -> (u16, u16, u16, u16, u16) {
     let mut rhs = [0 as Handle; 8];
     let m = enc_req(gp::encode_wm_create_req(&mut wire, &req));
     let (n, _) = rpc(ch, &wire[..m], &[], &mut rep, &mut rhs);
-    match gp::parse_wm_create_ack(&rep[..n]) {
-        Some(id) if id != 0 => (id, req.x, req.y, req.w, req.h),
+    let id = match gp::parse_wm_create_ack(&rep[..n]) {
+        Some(id) if id != 0 => id,
         _ => fail(&format!("p4 lock create st={}", rep[0])),
-    }
+    };
+    drain_config(ch);
+    (id, req.x, req.y, req.w, req.h)
 }
 
 /// 等待锁定窗被销毁后的 synthesized CANCEL。
@@ -1123,6 +1176,78 @@ fn main() {
         _ => fail(&format!("wm create ack bad st={}", rep[0])),
     };
 
+    // R3 teeth：CREATED config 未 poll/ack 前，surface 绑定必须拒绝；
+    // 房客不得带着未配置几何进入 0x67/SUBMIT。
+    {
+        let (deny_vmo, _, _) = frame_vmo(
+            usize::from(creq.w),
+            usize::from(creq.h),
+        );
+        let mut alias: Handle = 0;
+        if berry_handle_duplicate(deny_vmo, RIGHT_READ, &mut alias) != 0
+            || alias == 0
+        {
+            fail("unconfigured submit dup");
+        }
+        let submit = gp::PresentReq::Submit {
+            surface_id: u32::from(wid),
+            buffer_id: 0xD6,
+            flags: gp::SUBMIT_F_DAMAGE_FULL,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+            rect_count: 0,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &submit));
+        let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_DENIED) => {}
+            other => fail(&format!("unconfigured submit got {other:?}")),
+        }
+        if berry_handle_close(deny_vmo) != 0 {
+            fail("unconfigured submit close");
+        }
+        println!("WMCONFIGSUBMITDENY ok id={wid}");
+
+        // 同一状态的 0x67 负例：Retained + Touch 在老 wmd 会成功；在
+        // CREATED 未 ACK 前必须因 config gate 精确 ST_DENIED。
+        let unconfigured_surface = gp::surface::SurfaceModeReq {
+            surface_id: wid,
+            role: gp::surface::SURFACE_ROLE_APP,
+            mode: gp::surface::SURFACE_MODE_RETAINED,
+            input_classes: gp::surface::INPUT_CLASS_TOUCH,
+            ime_mode: gp::surface::IME_MODE_DISABLED,
+            a11y_mode: gp::surface::A11Y_MODE_TREE,
+        };
+        let m = enc_req(gp::surface::encode_wm_surface_mode_req(
+            &mut req, &unconfigured_surface,
+        ));
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+            Some(Err(gp::ST_DENIED)) => {}
+            other => fail(&format!("unconfigured surface got {other:?}")),
+        }
+        println!("WMCONFIGSURFACEDENY ok id={wid}");
+        let created = poll_config_event(hw)
+            .unwrap_or_else(|| fail("config created absent"));
+        if created.window_id != wid
+            || created.cause != gp::WM_CONFIG_CAUSE_CREATED
+            || !created.visible
+        {
+            fail(&format!(
+                "config created got id={} cause={} visible={}",
+                created.window_id, created.cause, created.visible
+            ));
+        }
+        if ack_config_event(rogue, &created) != gp::ST_DENIED {
+            fail("config foreign ack accepted");
+        }
+        println!("WMCONFIGFOREIGNACK ok id={wid}");
+        if ack_config_event(hw, &created) != gp::ST_OK {
+            fail("config owner ack failed");
+        }
+    }
+
     // ③ SET(GEOM)：同几何回写（20B 掩码式定长——masked-out 槽位 vis/z
     // 仍编码合法值：「编什么收什么」，Q17）；成功形 1B OK。
     let sreq = gp::WmSetReq {
@@ -1137,6 +1262,8 @@ fn main() {
     };
     let m = enc_req(gp::encode_wm_set_req(&mut req, &sreq));
     expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm set");
+    assert_config_empty(hw, "same-geometry set");
+    println!("WMCONFIGNOOPEMPTY ok id={wid}");
 
     // P1 Surface escape 负例：普通 APP session 未携带 per-boot seed，
     // 即使点名自己拥有的可见窗口，Canvas 也不得被授予；必须精确 1B
@@ -1192,6 +1319,21 @@ fn main() {
         };
         let m = enc_req(gp::encode_wm_set_req(&mut req, &hide));
         expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm hide");
+        let hidden_ev = poll_config_event(hw)
+            .unwrap_or_else(|| fail("config visibility hide absent"));
+        if hidden_ev.window_id != wid
+            || hidden_ev.cause != gp::WM_CONFIG_CAUSE_VISIBILITY
+            || hidden_ev.visible
+        {
+            fail(&format!(
+                "config hide got id={} cause={} visible={}",
+                hidden_ev.window_id, hidden_ev.cause, hidden_ev.visible
+            ));
+        }
+        if ack_config_event(hw, &hidden_ev) != gp::ST_OK {
+            fail("config hide ack failed");
+        }
+        println!("WMCONFIGHIDE ok id={wid}");
         let m = enc_req(gp::surface::encode_wm_surface_mode_req(
             &mut req, &surface_req,
         ));
@@ -1203,6 +1345,21 @@ fn main() {
         let show = gp::WmSetReq { vis: gp::WM_VIS_SHOW, ..hide };
         let m = enc_req(gp::encode_wm_set_req(&mut req, &show));
         expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "wm show");
+        let shown_ev = poll_config_event(hw)
+            .unwrap_or_else(|| fail("config visibility show absent"));
+        if shown_ev.window_id != wid
+            || shown_ev.cause != gp::WM_CONFIG_CAUSE_VISIBILITY
+            || !shown_ev.visible
+        {
+            fail(&format!(
+                "config show got id={} cause={} visible={}",
+                shown_ev.window_id, shown_ev.cause, shown_ev.visible
+            ));
+        }
+        if ack_config_event(hw, &shown_ev) != gp::ST_OK {
+            fail("config show ack failed");
+        }
+        println!("WMCONFIGSHOW ok id={wid}");
 
         let m = enc_req(gp::surface::encode_wm_surface_mode_req(
             &mut req, &surface_req,
@@ -1213,6 +1370,7 @@ fn main() {
             other => fail(&format!("wm surface handle got {other:?}")),
         }
     }
+    drain_config(hw);
 
     // Phase 1 反 owner 负例：第二个 session 不得修改第一个 session 的窗。
     // 静默成功 / ST_BAD 都不合格，必须精确 ST_DENIED。
@@ -1281,7 +1439,44 @@ fn main() {
         Some(id) if id != 0 => id,
         _ => fail(&format!("wm create2 ack bad st={}", rep[0])),
     };
+    drain_config(rogue);
     println!("WMORPHAN ok id={wid2}");
+
+    // R3 destroyed-window ACK：CREATE→POLL 取 serial 后销毁，旧 ACK 必须
+    // ST_NOENT（不是 DENIED/OK），防止已亡窗口再消费配置。
+    {
+        let tmp_req = gp::WmCreateReq {
+            layer: gp::WM_LAYER_APP,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: 8,
+            y: 8,
+            w: 48,
+            h: 48,
+        };
+        let m = enc_req(gp::encode_wm_create_req(&mut req, &tmp_req));
+        let (n, _) = rpc(rogue, &req[..m], &[], &mut rep, &mut rhs);
+        let tmp_win = match gp::parse_wm_create_ack(&rep[..n]) {
+            Some(id) if id != 0 => id,
+            _ => fail(&format!("config temp create st={}", rep[0])),
+        };
+        let tmp_ev = poll_config_event(rogue)
+            .unwrap_or_else(|| fail("config temp event absent"));
+        if tmp_ev.window_id != tmp_win
+            || tmp_ev.cause != gp::WM_CONFIG_CAUSE_CREATED
+        {
+            fail(&format!(
+                "config temp got id={} cause={}",
+                tmp_ev.window_id, tmp_ev.cause
+            ));
+        }
+        destroy_window(rogue, tmp_win);
+        if ack_config_event(rogue, &tmp_ev) != gp::ST_NOENT {
+            fail("config destroyed ack accepted");
+        }
+        println!("WMCONFIGDESTROYEDACK ok id={tmp_win}");
+    }
 
     // P3：在 TABLE/Present 流之前完成 click-to-focus + Keyboard 真链。
     // GUI8 看到 WMFOCUSREADY 后注入左右点击与 KEY_A；本进程阻塞等待，
@@ -1291,10 +1486,15 @@ fn main() {
         creq.w, creq2.x, creq2.w, creq2.h,
     );
     if focus_interactive {
+        assert_config_empty(hw, "focus move");
+        assert_config_empty(rogue, "focus move");
+        println!("WMCONFIGFOCUSEMPTY ok left={wid} right={wid2}");
         window_policy_proof(
             hw, rogue, input1, input2, wid, wid2,
             creq.w, creq2.x, creq2.w, creq2.h,
         );
+        drain_config(hw);
+        drain_config(rogue);
     }
 
     // ④ TABLE_GET：全表快照对拍——count≥1 ∧ window_id 回显 ∧ 有效几何

@@ -141,6 +141,27 @@ pub const SURFACE_A11Y_TREE: u8 = 0;
 /// a11y Regions。
 pub const SURFACE_A11Y_REGIONS: u8 = 1;
 
+/// R3 config 事件原因（Room 侧安全枚举，不暴露 wire codec）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigCause {
+    Created,
+    Geometry,
+    Visibility,
+    Occlusion,
+}
+
+/// R3 per-window 配置事件。raw/visible bounds 均为屏幕坐标；safe insets
+/// 由消费侧从差集现场派生。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowConfigEvent {
+    pub serial: u32,
+    pub window_id: u16,
+    pub cause: ConfigCause,
+    pub visible: bool,
+    pub raw: (u16, u16, u16, u16),
+    pub visible_bounds: (u16, u16, u16, u16),
+}
+
 /// 从 APP env 块解析出的基础能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoomEnv {
@@ -178,6 +199,8 @@ pub enum RoomError {
     SurfaceDenied,
     SurfaceUnsupported,
     SurfaceBad,
+    ConfigBad,
+    ConfigDenied,
 }
 
 pub type RoomResult<T> = Result<T, RoomError>;
@@ -213,6 +236,8 @@ impl RoomError {
             Self::SurfaceDenied => "surface denied",
             Self::SurfaceUnsupported => "surface unsupported",
             Self::SurfaceBad => "surface bad",
+            Self::ConfigBad => "config bad",
+            Self::ConfigDenied => "config denied",
         }
     }
 }
@@ -398,17 +423,22 @@ fn surface_grant_from_info(info: &gp::surface::SurfaceModeInfo) -> SurfaceGrant 
     }
 }
 
-/// Room raw 申请恒为 `(0,0,display_w,display_h)`；从 TABLE_GET 的
-/// effective 短形推导 create-time persistent occlusion。抽取为纯函数，
-/// host 测试钉住不与 AVOID_SYS 双重收缩。
-fn occlusion_from_entry(
-    display: (u16, u16),
-    entry: (u16, u16, u16, u16),
+/// raw/visible 双矩形 → persistent occlusion snapshot。right/bottom 用
+/// u32 差集，防 u16 原点+宽高越界回绕；派生值不落第二存储真值。
+fn occlusion_from_bounds(
+    raw: (u16, u16, u16, u16),
+    visible: (u16, u16, u16, u16),
 ) -> gp::insets::OcclusionSnapshot {
-    let right = display.0.saturating_sub(entry.0.saturating_add(entry.2));
-    let bottom = display.1.saturating_sub(entry.1.saturating_add(entry.3));
+    let left = visible.0.saturating_sub(raw.0);
+    let top = visible.1.saturating_sub(raw.1);
+    let raw_right = u32::from(raw.0) + u32::from(raw.2);
+    let visible_right = u32::from(visible.0) + u32::from(visible.2);
+    let raw_bottom = u32::from(raw.1) + u32::from(raw.3);
+    let visible_bottom = u32::from(visible.1) + u32::from(visible.3);
+    let right = raw_right.saturating_sub(visible_right);
+    let bottom = raw_bottom.saturating_sub(visible_bottom);
     gp::insets::OcclusionSnapshot::new(
-        [entry.0, entry.1, right, bottom],
+        [left, top, right as u16, bottom as u16],
         [0; 4],
     )
 }
@@ -590,6 +620,80 @@ impl AppRoom {
         self.occlusion
     }
 
+    /// R3 非阻塞拉一条本 session pending config event。空批返回 `None`；
+    /// 不新增 handle、不占用 TABLE_WAIT，适配 Room 严格串行 RPC。
+    pub fn poll_config(&mut self) -> RoomResult<Option<WindowConfigEvent>> {
+        let mut request = [0u8; 256];
+        let mut reply = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let n = gp::encode_wm_config_poll_req(&mut request);
+        let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
+        let event = match gp::parse_wm_config_event_rep(&reply[..n]) {
+            Some(Ok(ev)) => {
+                let cause = match ev.cause {
+                    gp::WM_CONFIG_CAUSE_CREATED => ConfigCause::Created,
+                    gp::WM_CONFIG_CAUSE_GEOMETRY => ConfigCause::Geometry,
+                    gp::WM_CONFIG_CAUSE_VISIBILITY => ConfigCause::Visibility,
+                    _ => ConfigCause::Occlusion,
+                };
+                Ok(Some(WindowConfigEvent {
+                    serial: ev.serial,
+                    window_id: ev.window_id,
+                    cause,
+                    visible: ev.visible,
+                    raw: (ev.raw_x, ev.raw_y, ev.raw_w, ev.raw_h),
+                    visible_bounds: (
+                        ev.visible_x, ev.visible_y, ev.visible_w, ev.visible_h,
+                    ),
+                }))
+            }
+            Some(Err(gp::ST_EAGAIN)) => Ok(None),
+            Some(Err(gp::ST_BAD)) => Err(RoomError::ConfigBad),
+            Some(Err(_)) => Err(RoomError::ConfigDenied),
+            None => Err(RoomError::Decode),
+        }?;
+        if let Some(event) = &event {
+            // Room v1 是单窗 + 固定 raw display VMO：动态 GEOMETRY 若改
+            // raw bounds，不能静默重解释既有 buffer；OCCLUSION/VISIBILITY
+            // 则刷新派生 snapshot。open_window 的 CREATED pull-once 在
+            // opened=false 阶段由调用方校验并 ACK。
+            if self.opened {
+                let current_raw = (
+                    0u16,
+                    0u16,
+                    self.width as u16,
+                    self.height as u16,
+                );
+                if event.window_id != self.window || event.raw != current_raw {
+                    return Err(RoomError::ConfigBad);
+                }
+                self.occlusion =
+                    occlusion_from_bounds(event.raw, event.visible_bounds);
+            }
+        }
+        Ok(event)
+    }
+
+    /// R3 ACK：只确认当前 pending 精确 serial；错/旧 serial 由 wmd 拒绝。
+    pub fn ack_config(&mut self, event: &WindowConfigEvent) -> RoomResult<()> {
+        let mut request = [0u8; 256];
+        let mut reply = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let wire = gp::WmConfigAckReq {
+            window_id: event.window_id,
+            serial: event.serial,
+        };
+        let n = gp::encode_wm_config_ack_req(&mut request, &wire)
+            .ok_or(RoomError::Encode)?;
+        let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
+        match gp::parse_status_rep(&reply[..n]) {
+            Some(gp::ST_OK) => Ok(()),
+            Some(gp::ST_BAD) => Err(RoomError::ConfigBad),
+            Some(_) => Err(RoomError::ConfigDenied),
+            None => Err(RoomError::Decode),
+        }
+    }
+
     /// 创建全屏窗口并映射局部 frame VMO。返回 `(width, height)`。
     pub fn open_window(&mut self) -> RoomResult<(usize, usize)> {
         if self.opened {
@@ -617,26 +721,19 @@ impl AppRoom {
             Some(id) if id != 0 => id,
             _ => return Err(RoomError::Decode),
         };
-        // R2 create-time occlusion bootstrap：Room 的 raw 申请恒为
-        // (0,0,disp_w,disp_h)，因此 TABLE_GET 的 effective 矩形足够推导
-        // raw-local persistent insets。这里是快照，不是动态事件；push 面
-        // 归 R3。
-        let n = gp::encode_wm_table_get_req(&mut request);
-        let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
-        let snapshot = match gp::parse_wm_snapshot_rep(&reply[..n]) {
-            Some(Ok(snapshot)) => snapshot,
-            _ => return Err(RoomError::Table),
-        };
-        let entry = snapshot
-            .entries
-            .iter()
-            .take(snapshot.count)
-            .find(|entry| entry.id == window)
-            .ok_or(RoomError::Table)?;
-        let occlusion = occlusion_from_entry(
-            (info.disp_w, info.disp_h),
-            (entry.x, entry.y, entry.w, entry.h),
-        );
+        // R3 initial config pull-once：CREATE 后必有一条 CREATED event。
+        // Room 不再用全表 TABLE_GET 推导初始 occlusion，避免把整表信息披露
+        // 给普通 app；事件 raw/visible 双矩形就是本窗单一几何真值。
+        let event = self.poll_config()?.ok_or(RoomError::Table)?;
+        if event.window_id != window
+            || event.cause != ConfigCause::Created
+            || !event.visible
+            || event.raw != (0, 0, info.disp_w, info.disp_h)
+        {
+            return Err(RoomError::ConfigBad);
+        }
+        let occlusion = occlusion_from_bounds(event.raw, event.visible_bounds);
+        self.ack_config(&event)?;
         let width = usize::from(info.disp_w);
         let height = usize::from(info.disp_h);
         let stride = width.checked_mul(4).ok_or(RoomError::Geometry)?;
@@ -735,6 +832,23 @@ impl AppRoom {
     pub fn submit(&mut self, buffer_id: u32) -> RoomResult<u32> {
         if !self.opened {
             return Err(RoomError::Window);
+        }
+        // R3 帧边界：SUBMIT 前排空并 ACK config，避免动态 OCCLUSION/
+        // VISIBILITY 永久阻塞 app。需要按 insets 重排的业务应在构建
+        // DisplayList 前调用 poll_config；这里至少保证 Room 不会带着
+        // pending config 进入下一帧。
+        loop {
+            let event = match self.poll_config()? {
+                Some(event) => event,
+                None => break,
+            };
+            match self.ack_config(&event) {
+                Ok(()) => continue,
+                // pending 在 POLL→ACK 间被并发表变更覆盖：重新 POLL 最新
+                // full-state，不做排序猜测。
+                Err(RoomError::ConfigDenied) => continue,
+                Err(e) => return Err(e),
+            }
         }
         let mut alias: Handle = 0;
         if berry_handle_duplicate(self.frame_vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
@@ -925,20 +1039,20 @@ impl AppRoom {
 
 #[cfg(test)]
 mod tests {
-    use super::occlusion_from_entry;
+    use super::occlusion_from_bounds;
 
     #[test]
     fn r2_occlusion_snapshot_matches_raw_bounds() {
-        let none = occlusion_from_entry((800, 600), (0, 0, 800, 600));
+        let none = occlusion_from_bounds((0, 0, 800, 600), (0, 0, 800, 600));
         assert_eq!(none.view_padding, [0, 0, 0, 0]);
         assert_eq!(none.view_insets, [0, 0, 0, 0]);
         assert_eq!(none.effective_padding(), [0, 0, 0, 0]);
 
-        let top = occlusion_from_entry((800, 600), (0, 32, 800, 568));
+        let top = occlusion_from_bounds((0, 0, 800, 600), (0, 32, 800, 568));
         assert_eq!(top.view_padding, [0, 32, 0, 0]);
         assert_eq!(top.effective_padding(), [0, 32, 0, 0]);
 
-        let left_bottom = occlusion_from_entry((800, 600), (24, 0, 776, 568));
+        let left_bottom = occlusion_from_bounds((0, 0, 800, 600), (24, 0, 776, 568));
         assert_eq!(left_bottom.view_padding, [24, 0, 0, 32]);
     }
 }

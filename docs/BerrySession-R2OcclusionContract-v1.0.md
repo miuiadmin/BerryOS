@@ -5,7 +5,7 @@
 > 定位：GUI-14 D5 / B6 的第一收口刀。R2 不做 FormMetrics、SafeArea 容器、
 > IME KeyboardAvoider 或 resize/config event；只钉死窗口 raw bounds、
 > persistent occlusion、buffer stride 与 damage 坐标空间的单一合约。
-> 执行序权威 = [GUI框架地基路线-v1.10.md](GUI框架地基路线-v1.10.md)。
+> 执行序权威 = [GUI框架地基路线-v1.11.md](GUI框架地基路线-v1.11.md)。
 
 ## §1 背景
 
@@ -251,6 +251,10 @@ TABLE_GET 是 v1 stopgap，不是动态事件
 SYSTEM 窗在其后出现时快照可陈旧
 push/config/serial/ack 归 R3
 ```
+
+R3 追记：`AppRoom::open_window` 的初始 TABLE_GET bootstrap 已被
+`CREATED config POLL/ACK` 替换；本节保留为 R2 时点的几何推导依据与迁移
+记录。
 
 ## §7 输入坐标
 

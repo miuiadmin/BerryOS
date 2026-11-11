@@ -288,6 +288,37 @@ fn system_seed_from_argv() -> Option<u64> {
     Some(value)
 }
 
+/// R3 非阻塞拉 config event；`None` 仅代表 ST_EAGAIN。
+fn wm_config_poll(ch: Handle) -> Option<gp::WmConfigEvent> {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_wm_config_poll_req(&mut req);
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_wm_config_event_rep(&rep[..n]) {
+        Some(Ok(ev)) => Some(ev),
+        Some(Err(gp::ST_EAGAIN)) => None,
+        other => fail(&format!("wm config poll got {other:?}")),
+    }
+}
+
+/// R3 ACK 原始状态面（错/旧 serial 必须可观察为 ST_DENIED）。
+fn wm_config_ack(ch: Handle, window_id: u16, serial: u32) -> u8 {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let wire = gp::WmConfigAckReq { window_id, serial };
+    let m = match gp::encode_wm_config_ack_req(&mut req, &wire) {
+        Some(m) => m,
+        None => fail("wm config ack encode"),
+    };
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_status_rep(&rep[..n]) {
+        Some(st) => st,
+        None => fail(&format!("wm config ack rep bad st={}", rep[0])),
+    }
+}
+
 fn main() {
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + park（v0 骨架
@@ -445,6 +476,46 @@ fn main() {
             entry.x, entry.y, entry.w, entry.h
         );
 
+        // R3 initial config pull-once：CREATE 后必须拿到 CREATED event，且
+        // raw/visible 双几何与权威表一致。错 serial ACK 先负例（ST_DENIED），再精确 ACK。
+        let created = wm_config_poll(app_hw)
+            .unwrap_or_else(|| fail("wm config created absent"));
+        if created.window_id != app_win
+            || created.cause != gp::WM_CONFIG_CAUSE_CREATED
+            || !created.visible
+            || (created.raw_x, created.raw_y, created.raw_w, created.raw_h)
+                != (ax, ay, aw, ah)
+            || (
+                created.visible_x, created.visible_y,
+                created.visible_w, created.visible_h,
+            ) != expected
+        {
+            fail(&format!(
+                "wm config created got id={} cause={} visible={} raw={},{},{},{} \
+                 visible={},{},{},{}",
+                created.window_id, created.cause, created.visible,
+                created.raw_x, created.raw_y, created.raw_w, created.raw_h,
+                created.visible_x, created.visible_y, created.visible_w,
+                created.visible_h,
+            ));
+        }
+        let wrong_serial = created.serial.rotate_left(1);
+        if wm_config_ack(app_hw, app_win, wrong_serial) != gp::ST_DENIED {
+            fail("wm config wrong serial accepted");
+        }
+        println!("WMCONFIGACKDENY ok serial={wrong_serial}");
+        if wm_config_ack(app_hw, app_win, created.serial) != gp::ST_OK {
+            fail("wm config created ack failed");
+        }
+        println!(
+            "WMCONFIGCREATED ok id={app_win} serial={}",
+            created.serial
+        );
+        if wm_config_poll(app_hw).is_some() {
+            fail("wm config queue not empty after ack");
+        }
+        println!("WMCONFIGEMPTY ok id={app_win}");
+
         // 隐藏遮挡窗必须立刻恢复 raw bounds；再显示必须回到同一 visible
         // band。raw buffer 全程不重排、不重分配。
         let hide = gp::WmSetReq {
@@ -516,6 +587,48 @@ fn main() {
             "WMAVOIDSHOW ok id={app_win} y={occluder_h} h={}",
             ah.saturating_sub(occluder_h)
         );
+
+        // R3 last-one-wins：HIDE 与 SHOW 两次表变之间不 POLL，最终只能取到
+        // SHOW 后的最新 OCCLUSION event；被覆盖的 HIDE serial 不进队列。
+        let coalesced = wm_config_poll(app_hw)
+            .unwrap_or_else(|| fail("wm config coalesced absent"));
+        if coalesced.window_id != app_win
+            || coalesced.cause != gp::WM_CONFIG_CAUSE_OCCLUSION
+            || !coalesced.visible
+            || coalesced.serial == created.serial
+            || (
+                coalesced.visible_x, coalesced.visible_y,
+                coalesced.visible_w, coalesced.visible_h,
+            ) != expected
+        {
+            fail(&format!(
+                "wm config coalesced got id={} cause={} visible={} serial={} \
+                 visible={},{},{},{}",
+                coalesced.window_id, coalesced.cause, coalesced.visible,
+                coalesced.serial, coalesced.visible_x, coalesced.visible_y,
+                coalesced.visible_w, coalesced.visible_h,
+            ));
+        }
+        if wm_config_ack(app_hw, app_win, coalesced.serial) != gp::ST_OK {
+            fail("wm config coalesced ack failed");
+        }
+        println!(
+            "WMCONFIGCOALESCE ok id={app_win} serial={} old={}",
+            coalesced.serial, created.serial
+        );
+        // 已 ACK serial 重发 = stale ACK，精确 ST_DENIED；客户端应重新 POLL。
+        if wm_config_ack(app_hw, app_win, coalesced.serial) != gp::ST_DENIED {
+            fail("wm config stale serial accepted");
+        }
+        println!("WMCONFIGSTALE ok serial={}", coalesced.serial);
+
+        // SYSTEM occluder 自身也保持 config 清洁，避免测试窗积累未 ACK
+        // pending；未来系统层窗口若开始提交，不会被旧 gate 卡住。
+        while let Some(ev) = wm_config_poll(hw) {
+            if wm_config_ack(hw, ev.window_id, ev.serial) != gp::ST_OK {
+                fail("wm system config ack");
+            }
+        }
 
         // 0x67 常态化 R2 persistent occlusion：safe_* 是 host 推导值，
         // 以 raw surface-local 为基准，不由 APP 自报。

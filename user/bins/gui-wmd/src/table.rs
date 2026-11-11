@@ -46,6 +46,13 @@ struct Win {
     z: u8,
     vis: bool,
     avoid_sys: bool,
+    /// R3 per-window pending config event。None = 已 ack 或无待消费事件；
+    /// 新事件直接覆盖旧事件（last-one-wins），serial 由 [`Self::bump`] 统一
+    /// 落为本次表版本。
+    config: Option<gp::WmConfigEvent>,
+    /// Wayland “未 configure 不得 commit” 的 Berry teeth：CREATE 后为
+    /// false，精确 ACK 当前事件后 true；极端 serial 终局只清 pending。
+    config_synced: bool,
 }
 
 /// 单矩形裁剪：C 减 S（半开矩形），保形取四条剩余带面积最大者（并列取
@@ -108,6 +115,8 @@ impl WmTable {
             z: 0,
             vis: false,
             avoid_sys: false,
+            config: None,
+            config_synced: false,
         };
         WmTable {
             wins: [blank; gp::WM_WINDOWS_MAX],
@@ -125,11 +134,59 @@ impl WmTable {
     /// 当前 parked 应答全表快照并清空。
     fn bump(&mut self) {
         let counter = (self.version & 0x00FF_FFFF) + 1;
-        let counter = if counter > 0x00FF_FFFF { 1 } else { counter };
-        self.version = (self.version & 0xFF00_0000) | counter;
+        let wrapped = counter > 0x00FF_FFFF;
+        let mut epoch = self.version >> 24;
+        let counter = if wrapped { 1 } else { counter };
+        if wrapped && epoch < 0xFF {
+            // counter 回绕时抬 epoch：serial 在同一 wmd 纪元内保持不重复，
+            // inputd 的 WAIT 采用“!=”判新，无需大小比较。256 次 counter
+            // 回绕（≈2^32 次表变）才触及下方终局防御。
+            epoch += 1;
+        }
+        self.version = (epoch << 24) | counter;
+        if wrapped && epoch == 0xFF {
+            // 极端终局：只清已成旧 advisory pending，防旧 ACK 在 serial
+            // 值域重复后误中；本 bump 新事件保留并可 ACK。
+            for win in self.wins.iter_mut().take(self.count) {
+                // serial=0 是本 bump 刚生成的新事件：终局防御只清已成旧
+                // pending，不吞掉本次 CREATE/SET 的可恢复状态。
+                if win.config.map(|ev| ev.serial != 0).unwrap_or(false) {
+                    win.config = None;
+                }
+            }
+            println!("WMCONFIGWRAP clear");
+        }
+        // 本次表变更新生成的事件先以 serial=0 占位，这里统一落成新表版本；
+        // 已存在的未 ack 旧事件不被无关 focus bump 改号。
+        for win in self.wins.iter_mut().take(self.count) {
+            if let Some(ev) = &mut win.config {
+                if ev.serial == 0 {
+                    ev.serial = self.version;
+                }
+            }
+        }
         if let Some((ch, _)) = self.parked.take() {
             self.send_snapshot(ch);
         }
+    }
+
+    /// 生成/覆盖某窗 pending config（serial 暂 0，待 bump 统一赋值）。
+    fn mark_config(&mut self, i: usize, cause: u8) {
+        let win = &self.wins[i];
+        self.wins[i].config = Some(gp::WmConfigEvent {
+            serial: 0,
+            window_id: win.id,
+            cause,
+            visible: win.vis,
+            raw_x: win.req.0,
+            raw_y: win.req.1,
+            raw_w: win.req.2,
+            raw_h: win.req.3,
+            visible_x: win.eff.0,
+            visible_y: win.eff.1,
+            visible_w: win.eff.2,
+            visible_h: win.eff.3,
+        });
     }
 
     /// 快照现值（有效几何 + 焦点/可见旗标面）。
@@ -190,6 +247,10 @@ impl WmTable {
     /// 全部**可见**系统层窗（表序确定性；自窗除外——SYSTEM 层携旗不
     /// 自避）。
     fn recompute(&mut self) {
+        let mut before = [(0u16, 0u16, 0u16, 0u16); gp::WM_WINDOWS_MAX];
+        for (dst, src) in before.iter_mut().zip(self.wins.iter()).take(self.count) {
+            *dst = src.eff;
+        }
         for i in 0..self.count {
             if !self.wins[i].avoid_sys {
                 self.wins[i].eff = self.wins[i].req;
@@ -207,9 +268,11 @@ impl WmTable {
                 if s.id == my_id || s.layer != gp::WM_LAYER_SYSTEM || !s.vis {
                     continue;
                 }
+                // SYSTEM 层禁止 AVOID_SYS，其 eff≡req；直接消费 req 防御
+                // 未来推导面漂移。
                 let (nx, ny, nw, nh) = clip_rect(
                     (ex, ey, ew, eh),
-                    (s.eff.0 as u32, s.eff.1 as u32, s.eff.2 as u32, s.eff.3 as u32),
+                    (s.req.0 as u32, s.req.1 as u32, s.req.2 as u32, s.req.3 as u32),
                 );
                 ex = nx;
                 ey = ny;
@@ -217,6 +280,9 @@ impl WmTable {
                 eh = nh;
             }
             self.wins[i].eff = (ex as u16, ey as u16, ew as u16, eh as u16);
+            if self.wins[i].avoid_sys && self.wins[i].eff != before[i] {
+                self.mark_config(i, gp::WM_CONFIG_CAUSE_OCCLUSION);
+            }
         }
     }
 
@@ -287,6 +353,15 @@ impl WmTable {
         (u32::from(self.disp_w), u32::from(self.disp_h))
     }
 
+    /// R3 config 同步门：Some(false) 表示窗口在册但未 ACK 当前配置。
+    /// Some(true) 不隐含可呈现（hidden/full-occluded 仍由双几何判定）。
+    pub fn config_ready(&self, owner: u16, id: u16) -> Option<bool> {
+        let i = (0..self.count).find(|&i| {
+            self.wins[i].id == id && self.wins[i].owner == owner
+        })?;
+        Some(self.wins[i].config_synced && self.wins[i].config.is_none())
+    }
+
     /// R2 SUBMIT 双几何：raw = 申请/buffer 基准；visible = 遮挡后可呈现
     /// /可命中域。全遮挡（visible w/h=0）不构造假几何，调用侧拒绝。
     pub fn surface_geometry(
@@ -298,6 +373,9 @@ impl WmTable {
             self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
         })?;
         let w = &self.wins[i];
+        if !w.config_synced || w.config.is_some() {
+            return None;
+        }
         gp::authority::SurfaceGeometry::new(w.req, w.eff)
     }
 
@@ -367,6 +445,7 @@ impl WmTable {
             return;
         }
         let id = self.alloc_id();
+        let new_index = self.count;
         let geom = (req.x, req.y, req.w, req.h);
         self.wins[self.count] = Win {
             id,
@@ -379,12 +458,18 @@ impl WmTable {
             z: 0,
             vis: true,
             avoid_sys: req.flags & gp::WM_CREATE_F_AVOID_SYS != 0,
+            config: None,
+            config_synced: false,
         };
         self.count += 1;
         if gp::authority::wm_policy_focus_allowed(req.layer) {
             self.focus = Some(id);
         }
         self.recompute();
+        // CREATE 后必有一条初始 config：Fuchsia “首次 Present 前可取
+        // LayoutInfo” 的 pull-once 对应面。若同表变更也触发了遮挡推导，
+        // CREATED 覆盖 OCCLUSION——初始状态本身已包含最终 visible bounds。
+        self.mark_config(new_index, gp::WM_CONFIG_CAUSE_CREATED);
         self.bump();
         let mut out = [0u8; 8]; // = WM_CREATE_ACK_LEN（guiproto 私有——本地定容）
         let n = gp::encode_wm_create_ack(&mut out, id);
@@ -426,6 +511,8 @@ impl WmTable {
             st_rep(ch, gp::ST_DENIED);
             return;
         }
+        let old_req = self.wins[i].req;
+        let old_vis = self.wins[i].vis;
         if req.mask & gp::WM_SET_F_GEOM != 0 {
             self.wins[i].req = (req.x, req.y, req.w, req.h);
         }
@@ -442,7 +529,17 @@ impl WmTable {
         if req.mask & gp::WM_SET_F_Z != 0 {
             self.wins[i].z = req.z;
         }
+        let own_cause = if self.wins[i].req != old_req {
+            Some(gp::WM_CONFIG_CAUSE_GEOMETRY)
+        } else if self.wins[i].vis != old_vis {
+            Some(gp::WM_CONFIG_CAUSE_VISIBILITY)
+        } else {
+            None
+        };
         self.recompute();
+        if let Some(cause) = own_cause {
+            self.mark_config(i, cause);
+        }
         self.bump();
         st_rep(ch, gp::ST_OK);
     }
@@ -464,6 +561,43 @@ impl WmTable {
             self.send_snapshot(old_ch);
         }
         self.parked = Some((ch, last_seen));
+    }
+
+    /// R3 WM_CONFIG_POLL：按表序返回该 owner 第一条 pending event；无事件
+    /// 返回 ST_EAGAIN。多窗 session 由 ACK 推进游标，避免排队状态机。
+    fn config_poll(&self, ch: Handle, owner: u16) {
+        let Some(ev) = self.wins.iter().take(self.count).find_map(|w| {
+            (w.owner == owner).then_some(w.config).flatten()
+        }) else {
+            st_rep(ch, gp::ST_EAGAIN);
+            return;
+        };
+        let mut out = [0u8; 32]; // = WM_CONFIG_REP_LEN
+        match gp::encode_wm_config_event_rep(&mut out, &ev) {
+            Some(n) => send_rep(ch, &out[..n]),
+            None => trap(), // 表内事件由 mark_config 构造——防御面
+        }
+    }
+
+    /// R3 WM_CONFIG_ACK：只接受当前 pending 精确 serial。事件被新配置覆盖
+    /// 后旧 ack 变 ST_DENIED；客户端必须重新 POLL 最新状态再 ACK。
+    fn config_ack(&mut self, ch: Handle, owner: u16, req: gp::WmConfigAckReq) {
+        let Some(i) = self.find(req.window_id) else {
+            st_rep(ch, gp::ST_NOENT);
+            return;
+        };
+        if self.wins[i].owner != owner {
+            st_rep(ch, gp::ST_DENIED);
+            return;
+        }
+        match &self.wins[i].config {
+            Some(ev) if ev.serial == req.serial => {
+                self.wins[i].config = None;
+                self.wins[i].config_synced = true;
+                st_rep(ch, gp::ST_OK);
+            }
+            _ => st_rep(ch, gp::ST_DENIED),
+        }
     }
 
     /// session 死亡清理：若其 RPC 通道恰好 parked 在 TABLE_WAIT，先丢弃
@@ -510,6 +644,13 @@ impl WmTable {
             }
             Some(&gp::OP_WM_TABLE_WAIT) => match gp::parse_wm_table_wait_req(msg) {
                 Some(last_seen) => self.wait(ch, last_seen),
+                None => st_rep(ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_CONFIG_POLL) if gp::parse_wm_config_poll_req(msg).is_some() => {
+                self.config_poll(ch, owner)
+            }
+            Some(&gp::OP_WM_CONFIG_ACK) => match gp::parse_wm_config_ack_req(msg) {
+                Some(req) => self.config_ack(ch, owner, req),
                 None => st_rep(ch, gp::ST_BAD),
             },
             _ => st_rep(ch, gp::ST_BAD),

@@ -122,6 +122,19 @@ MARK_WM_AVOID_FRAME = "WMAVOIDFRAME ok"
 MARK_WM_OCCLUDED_DAMAGE_BAD = "WMOCCDAMAGEBAD ok"
 MARK_WM_DAMAGE_CLIP = "WMDAMAGECLIP ok"
 MARK_WM_RAW_BUFFER_BAD = "WMRAWBUFBAD ok"
+MARK_WM_CONFIG_SUBMIT_DENY = "WMCONFIGSUBMITDENY ok"
+MARK_WM_CONFIG_SURFACE_DENY = "WMCONFIGSURFACEDENY ok"
+MARK_WM_CONFIG_FOREIGN_ACK = "WMCONFIGFOREIGNACK ok"
+MARK_WM_CONFIG_DESTROYED_ACK = "WMCONFIGDESTROYEDACK ok"
+MARK_WM_CONFIG_NOOP_EMPTY = "WMCONFIGNOOPEMPTY ok"
+MARK_WM_CONFIG_HIDE = "WMCONFIGHIDE ok"
+MARK_WM_CONFIG_SHOW = "WMCONFIGSHOW ok"
+MARK_WM_CONFIG_FOCUS_EMPTY = "WMCONFIGFOCUSEMPTY ok"
+MARK_WM_CONFIG_ACK_DENIED = "WMCONFIGACKDENY ok"
+MARK_WM_CONFIG_CREATED = "WMCONFIGCREATED ok"
+MARK_WM_CONFIG_EMPTY = "WMCONFIGEMPTY ok"
+MARK_WM_CONFIG_COALESCE = "WMCONFIGCOALESCE ok"
+MARK_WM_CONFIG_STALE = "WMCONFIGSTALE ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
 MARK_WM_ORPHAN = "WMORPHAN ok id="
 MARK_WM_2FRAME = "WM2FRAME ok n=2"
@@ -1236,6 +1249,28 @@ def verify_normal_boot(
         _require_exact_count(text, marker, 0, "normal R2 sentinel", log_path)
     _require_exact_count(text, MARK_WM_DAMAGE_CLIP, 1, "normal R2 damage clip", log_path)
     _require_exact_count(text, MARK_WM_RAW_BUFFER_BAD, 1, "normal R2 raw buffer gate", log_path)
+    _require_exact_count(
+        text, MARK_WM_CONFIG_SUBMIT_DENY, 1, "normal R3 unconfigured gate", log_path
+    )
+    _require_exact_count(
+        text, MARK_WM_CONFIG_SURFACE_DENY, 1,
+        "normal R3 unconfigured surface", log_path,
+    )
+    for marker in (
+        MARK_WM_CONFIG_FOREIGN_ACK, MARK_WM_CONFIG_DESTROYED_ACK,
+        MARK_WM_CONFIG_NOOP_EMPTY,
+        MARK_WM_CONFIG_HIDE, MARK_WM_CONFIG_SHOW,
+    ):
+        _require_exact_count(text, marker, 1, "normal R3 common config", log_path)
+    _require_exact_count(
+        text, MARK_WM_CONFIG_FOCUS_EMPTY, 0, "normal R3 focus-only", log_path
+    )
+    _require_exact_count(text, "WMCONFIGWRAP", 0, "normal R3 wrap", log_path)
+    for marker in (
+        MARK_WM_CONFIG_ACK_DENIED, MARK_WM_CONFIG_CREATED, MARK_WM_CONFIG_EMPTY,
+        MARK_WM_CONFIG_COALESCE, MARK_WM_CONFIG_STALE,
+    ):
+        _require_exact_count(text, marker, 0, "normal R3 config", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
@@ -1579,20 +1614,23 @@ def verify_uitest_normal(
     _require_exact_count(
         text, "WMKEYDROP bad ", 6, "normal unauthorized keyboard drops", log_path
     )
-    _require_exact_count(
-        text,
-        "WMKEYROUTE ok sid=15 window=14 code=30 action=1",
-        1,
-        "normal keyboard down route",
-        log_path,
+    route_down = re.findall(
+        r"WMKEYROUTE ok sid=([0-9]+) window=([0-9]+) code=30 action=1", text
     )
-    _require_exact_count(
-        text,
-        "WMKEYROUTE ok sid=15 window=14 code=30 action=0",
-        1,
-        "normal keyboard up route",
-        log_path,
+    route_up = re.findall(
+        r"WMKEYROUTE ok sid=([0-9]+) window=([0-9]+) code=30 action=0", text
     )
+    if (
+        len(route_down) != 1
+        or len(route_up) != 1
+        or route_down[0][0] == "0"
+        or route_down[0][1] == "0"
+        or route_down != route_up
+    ):
+        raise SmokeError(
+            f"normal keyboard route: down={route_down} up={route_up}",
+            log_path,
+        )
     _require_exact_count(
         text,
         "UITESTKEY ok code=30 downs=1 ups=1",
@@ -1961,6 +1999,9 @@ def _boot_base_markers() -> list[str]:
         MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N9,
         MARK_WM_CONN1, MARK_WM_CONN2, MARK_WM_DENIED, MARK_WM_SURFACE_DENIED, MARK_WM_ORPHAN, MARK_WM_2FRAME,
         MARK_WM_DAMAGE_CLIP, MARK_WM_RAW_BUFFER_BAD,
+        MARK_WM_CONFIG_SUBMIT_DENY, MARK_WM_CONFIG_SURFACE_DENY,
+        MARK_WM_CONFIG_FOREIGN_ACK, MARK_WM_CONFIG_NOOP_EMPTY,
+        MARK_WM_CONFIG_HIDE, MARK_WM_CONFIG_SHOW,
         MARK_WM_DEAD1, MARK_WM_DEAD2, MARK_WM_CLEAN, MARK_WM_CONN3,
         MARK_WM_CONN4, MARK_BROWSER_UP, MARK_BROWSER_WIN, MARK_BROWSER_FRAME,
         MARK_BROWSER_PROBE, MARK_BROWSER_DESTROY, MARK_BROWSER_EXIT,
@@ -2002,6 +2043,7 @@ def _wait_boot_batch(boot: Boot, timeout: float) -> None:
     _verify_r1_authority(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
     if boot.phase != "normal":
         _verify_r2_occlusion(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
+        _verify_r3_config(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
 
 def _verify_r2_occlusion(text: str, phase: str, log_path: Path | None = None) -> None:
     """R2 Occlusion Contract：真实 SYSTEM 遮挡 + raw/visible 双几何证据。"""
@@ -2034,6 +2076,27 @@ def _verify_r1_authority(text: str, phase: str, log_path: Path | None = None) ->
     }
     for marker, expected in checks.items():
         _require_exact_count(text, marker, expected, f"{phase} R1 authority", log_path)
+
+
+def _verify_r3_config(text: str, phase: str, log_path: Path | None = None) -> None:
+    """R3 Config Event：CREATED/ACK/coalescing/stale 全部恰一次。"""
+    checks = {
+        MARK_WM_CONFIG_SUBMIT_DENY: 1,
+        MARK_WM_CONFIG_SURFACE_DENY: 1,
+        MARK_WM_CONFIG_FOREIGN_ACK: 1,
+        MARK_WM_CONFIG_DESTROYED_ACK: 1,
+        MARK_WM_CONFIG_NOOP_EMPTY: 1,
+        MARK_WM_CONFIG_HIDE: 1,
+        MARK_WM_CONFIG_SHOW: 1,
+        MARK_WM_CONFIG_ACK_DENIED: 1,
+        MARK_WM_CONFIG_CREATED: 1,
+        MARK_WM_CONFIG_EMPTY: 1,
+        MARK_WM_CONFIG_COALESCE: 1,
+        MARK_WM_CONFIG_STALE: 1,
+        "WMCONFIGWRAP": 0,
+    }
+    for marker, expected in checks.items():
+        _require_exact_count(text, marker, expected, f"{phase} R3 config", log_path)
 
 
 def _warn_input_armed(boot: Boot) -> None:
@@ -2287,6 +2350,10 @@ def run_dual_boot(args) -> int:
             time.sleep(0.2)
 
         _wait_boot_batch(boot_a, args.boot_a_timeout)
+        _require_exact_count(
+            boot_a.log.text, MARK_WM_CONFIG_FOCUS_EMPTY, 1,
+            "boot A R3 focus-only", boot_a.log_path,
+        )
         _warn_input_armed(boot_a)
 
         # click ready = snap-to-0 已收敛的状态谓词，**强制在席恰一次**；
@@ -2456,6 +2523,7 @@ def run_dual_boot(args) -> int:
         boot_b.wait_regex(RE_LAYOUT_N2, args.boot_b_timeout)
         boot_b.log.poll()
         _verify_r2_occlusion(boot_b.log.text, "boot B", boot_b.log_path)
+        _verify_r3_config(boot_b.log.text, "boot B", boot_b.log_path)
 
         watcher_b = boot_b.log
         log_path_b = boot_b.log_path
@@ -2501,6 +2569,7 @@ def run_dual_boot(args) -> int:
             )
             boot_c.log.poll()
             _verify_r2_occlusion(boot_c.log.text, "boot C", boot_c.log_path)
+            _verify_r3_config(boot_c.log.text, "boot C", boot_c.log_path)
             watcher_c = boot_c.log
             log_path_c = boot_c.log_path
             boot_c.stop()
@@ -4042,6 +4111,13 @@ def self_test(args) -> int:
             f"{MARK_WM_DAMAGE_BAD}\n"
             f"{MARK_WM_DAMAGE_CLIP}\n"
             f"{MARK_WM_RAW_BUFFER_BAD}\n"
+            f"{MARK_WM_CONFIG_SUBMIT_DENY}\n"
+            f"{MARK_WM_CONFIG_SURFACE_DENY}\n"
+            f"{MARK_WM_CONFIG_FOREIGN_ACK}\n"
+            f"{MARK_WM_CONFIG_DESTROYED_ACK}\n"
+            f"{MARK_WM_CONFIG_NOOP_EMPTY}\n"
+            f"{MARK_WM_CONFIG_HIDE}\n"
+            f"{MARK_WM_CONFIG_SHOW}\n"
             f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\n"
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
             f"{photos_boot}{contacts_boot}"
@@ -4116,6 +4192,31 @@ def self_test(args) -> int:
         expect_error(
             "R2 damage clip 重复",
             lambda: _verify_r2_occlusion(r2_fake + MARK_WM_DAMAGE_CLIP + "\n", "self-test"),
+        )
+        r3_fake = "\n".join([
+            MARK_WM_CONFIG_SUBMIT_DENY,
+            MARK_WM_CONFIG_SURFACE_DENY,
+            MARK_WM_CONFIG_FOREIGN_ACK,
+            MARK_WM_CONFIG_DESTROYED_ACK,
+            MARK_WM_CONFIG_NOOP_EMPTY,
+            MARK_WM_CONFIG_HIDE,
+            MARK_WM_CONFIG_SHOW,
+            MARK_WM_CONFIG_ACK_DENIED,
+            MARK_WM_CONFIG_CREATED,
+            MARK_WM_CONFIG_EMPTY,
+            MARK_WM_CONFIG_COALESCE,
+            MARK_WM_CONFIG_STALE,
+        ]) + "\n"
+        _verify_r3_config(r3_fake, "self-test")
+        expect_error(
+            "R3 缺 config coalescing",
+            lambda: _verify_r3_config(
+                r3_fake.replace(f"{MARK_WM_CONFIG_COALESCE}\n", "", 1), "self-test"
+            ),
+        )
+        expect_error(
+            "R3 stale ack 重复",
+            lambda: _verify_r3_config(r3_fake + MARK_WM_CONFIG_STALE + "\n", "self-test"),
         )
         verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1)
         for needle, label in (

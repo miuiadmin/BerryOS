@@ -596,12 +596,14 @@ impl WmSessions {
                 trap();
             }
             let sess = self.slots[i].take().expect("checked slot");
+            // 先丢 parking 位，再 destroy_owned：后者会 bump 并可能向 parked
+            // 通道应答快照；避免对将关 handle 的时序依赖。
+            table.forget_parked(sess.ch);
             let wins = table.destroy_owned(sess.id);
             if self.input_lock.map(|l| l.session == sess.id).unwrap_or(false) {
                 self.input_lock = None;
             }
             println!("WMDEAD ok id={} wins={}", sess.id, wins);
-            table.forget_parked(sess.ch);
             if berry_handle_close(sess.ch) != 0
                 || berry_handle_close(sess.input) != 0
                 || berry_handle_close(sess.process) != 0
@@ -725,6 +727,11 @@ impl WmSession {
         table: &table::WmTable,
         req: gp::surface::SurfaceModeReq,
     ) -> Result<gp::surface::SurfaceModeInfo, u8> {
+        match table.config_ready(self.id, req.surface_id) {
+            None => return Err(gp::ST_NOENT),
+            Some(false) => return Err(gp::ST_DENIED),
+            Some(true) => {}
+        }
         let Some(geometry) = table.surface_geometry(self.id, req.surface_id) else {
             return Err(gp::ST_NOENT);
         };
