@@ -5,7 +5,7 @@
 > 定位：R2 raw/visible 双几何之后的事件面。R3 不做 resize 命令、display
 > metadata、FormMetrics 或 SafeArea 容器；只让客户端能在既有严格串行 WM
 > RPC 上取得一致的 per-window 配置快照，并用 serial ACK 收口消费。
-> 执行序权威 = [GUI框架地基路线-v1.16.md](GUI框架地基路线-v1.16.md)。
+> 执行序权威 = [GUI框架地基路线-v1.17.md](GUI框架地基路线-v1.17.md)。
 
 ## §1 背景
 

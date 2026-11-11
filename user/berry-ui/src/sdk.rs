@@ -29,7 +29,12 @@ pub use crate::widgets::{
     Switch, TextVariant, TextField, TextFieldSpec,
     WidgetContext, column, divider, icon, row, text,
 };
-pub use crate::{FlexEntry, FocusEntry, Ui, UiError, UiMain};
+pub use crate::{
+    a11y_region_roundtrip, FlexEntry, FocusEntry, SemEntry, Ui, UiError, UiMain, SEM_ACTION_ACTIVATE,
+    SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX,
+    SEM_STATE_CHECKED, SEM_STATE_DISABLED,
+};
+pub use berry_guiproto::surface::A11yRegion;
 
 /// L1 自适应槽位判定结果（显式本地基准宽，不读全局屏幕/设备档）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

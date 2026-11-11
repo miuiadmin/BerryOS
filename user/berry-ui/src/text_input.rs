@@ -466,7 +466,7 @@ pub fn ime_overlap_px(field_bottom: i32, viewport_h: i32, ime_bottom_inset: i32)
     (field_bottom - ime_top).max(0) as u32
 }
 
-fn is_valid_utf8(bytes: &[u8]) -> bool {
+pub(crate) fn is_valid_utf8(bytes: &[u8]) -> bool {
     let mut i = 0usize;
     while i < bytes.len() {
         let (cp, step) = match next(&bytes[i..]) {

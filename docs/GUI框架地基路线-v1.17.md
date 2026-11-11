@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.16**｜2026-11-11
+> 版本：**1.17**｜2026-11-12
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -124,6 +124,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **L3 Transposed Container Flex & ListDetail（已落地）** | orientation-aware flex pane 面 + 无状态 `ListDetail::{Spec,new}` 双 Panel pane 原语 | Row 中 Col/Grid/Panel 宽 None、Col 中 Row 高 None 吃 slot；同向/内在叶 loud 拒；AST/wire 零漂；UITEST ListDetail 348/696 + marker/接缝真链 |
 | **SDK-S0 Control Spec & API Governance Baseline（已落地）** | BerryUI 控件规格模板 + SDK API since/channel/capability 账本 + TextField 规格 | 每个 BerryUI 控件有 Background/Right control/State/Focus/Keyboard/Text/IME/A11y/Token/API Notes/Tests 骨架；SDK 公开项有 since、channel、capability、owner、stability、breaking history；账本与规格可机器检查 |
 | **GUI-T1 TextField Foundation Before IME（已落地）** | `TextInputState`、UTF-8 selection/caret、硬件编辑命令、change/submit/selection 事件、text focus 与最小文本视觉 | 焦点在 TextField 时 Enter/Space 先由文本状态机消费，Tab/Shift+Tab 走 C1 导航；input type 只 add-only 映射 P0 purpose，避让消费 R2 `insets::Ime`；host + UITEST/GUI8 真键链、AST/预算全绿；软键盘/IME Host/FormMetrics/Route/Back/富文本/clipboard/autofill 全拒 |
+| **SEM-A1 Semantic Tree Sidecar（已落地）** | runtime-only SemEntry overlay 与 P0 A11yRegion 投影：role/label/value/state/actions/text range/bounds/parent、clip 可见性过滤与 merge-descendants | 不改 ViewKind/Props/Msg/AST/wire；动作/状态/角色词表单源转发 P0 已知域，未知 loud 拒；TextField value/selection 与 Button/Switch/ListItem 语义由 widget 同步；host + UITEST/GUI8 快照真链全绿；screen reader 服务、语义事件外发、action dispatch、SEM-A2 全后置 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

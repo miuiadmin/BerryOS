@@ -977,3 +977,135 @@ owner = "berry-ui"
 stability = "experimental"
 spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
 breaking = []
+
+[[item]]
+id = "berry_ui::sdk::A11yRegion"
+kind = "type"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SemEntry"
+kind = "type"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_ACTIVATE"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_ADJUST"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_FOCUS"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_TEXT_EDIT"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_LABEL_MAX"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_MAX"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_STATE_CHECKED"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_STATE_DISABLED"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::a11y_region_roundtrip"
+kind = "fn"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []

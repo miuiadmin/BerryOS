@@ -21,11 +21,12 @@ use berry_ui::sdk::{
     focus_key_intent, ime_overlap_px, key_route, slot_variant, FocusDir, FocusOp, KeyRoute,
     SlotVariant, Button, Card, EmptyState, FontSource, InteractionState, ListDetail,
     ListDetailSpec, ListItem, Msg, RectI, Scaffold, ScrollView, Switch, TextInputKind,
-    TextInputKeyOp, TextInputState, TextVariant, TextField, TextFieldSpec, Theme, Ui,
-    WidgetContext, column,
+    a11y_region_roundtrip, A11yRegion, TextInputKeyOp, TextInputState, TextVariant,
+    TextField, TextFieldSpec, Theme, Ui, WidgetContext, SEM_ACTION_TEXT_EDIT, column,
     divider, icon, row, text,
 };
 use berry_ui::hit::PtrEvent;
+use berry_ui::ROLE_TOGGLE;
 
 type Ui128 = Ui<128>;
 
@@ -564,6 +565,163 @@ impl AppModel {
         line.push(b"\n");
         line.print(room);
     }
+
+    fn print_sem(&mut self, room: &AppRoom) {
+        let mut regions = [zero_region(); 32];
+        let count = match self.ui.sem_snapshot_into(&mut regions) {
+            Ok(count) => count,
+            Err(_) => fail(room, "sem snapshot"),
+        };
+        if count != 9 {
+            fail(room, "sem count");
+        }
+        let button = self.region_for(&regions, count, self.page.button.panel)
+            .unwrap_or_else(|| fail(room, "sem button"));
+        let switch_node = self.page.switch.map(|widget| widget.panel);
+        let switch = switch_node
+            .and_then(|node| self.region_for(&regions, count, node))
+            .unwrap_or_else(|| fail(room, "sem switch"));
+        let item_node = self.page.clip_item.map(|widget| widget.panel);
+        let item = item_node
+            .and_then(|node| self.region_for(&regions, count, node))
+            .unwrap_or_else(|| fail(room, "sem item"));
+        let input_node = self.page.input.map(|widget| widget.panel);
+        let input = input_node
+            .and_then(|node| self.region_for(&regions, count, node))
+            .unwrap_or_else(|| fail(room, "sem input"));
+        if button.role != 1 || button.actions != 3 || button.state != 1 {
+            fail(room, "sem button tuple");
+        }
+        if switch.role != 4 || switch.actions != 3 || switch.state != 1 {
+            fail(room, "sem switch tuple");
+        }
+        if item.role != 5 || item.actions != 3 || item.state != 1 {
+            fail(room, "sem item tuple");
+        }
+        if input.role != 2 || input.actions != 9 || input.state != 1 {
+            fail(room, "sem input tuple");
+        }
+        if regions.iter().take(count).any(|region| !a11y_region_roundtrip(region)) {
+            fail(room, "sem codec");
+        }
+        let line = Line::new(b"UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n");
+        line.print(room);
+    }
+
+    fn print_sem_state(&mut self, room: &AppRoom) {
+        let mut regions = [zero_region(); 32];
+        let count = match self.ui.sem_snapshot_into(&mut regions) {
+            Ok(count) => count,
+            Err(_) => fail(room, "sem state snapshot"),
+        };
+        if count != 9 {
+            fail(room, "sem state count");
+        }
+        let switch_node = self.page.switch.map(|widget| widget.panel);
+        let switch = switch_node
+            .and_then(|node| self.region_for(&regions, count, node))
+            .unwrap_or_else(|| fail(room, "sem state switch"));
+        let item_node = self.page.clip_item.map(|widget| widget.panel);
+        let clip = item_node
+            .and_then(|node| self.region_for(&regions, count, node))
+            .unwrap_or_else(|| fail(room, "sem state clip"));
+        if switch.role != 4 || switch.actions != 3 || switch.state != 9 {
+            fail(room, "sem checked tuple");
+        }
+        let switch_node_value = switch_node
+            .and_then(|node| self.ui.sem_of(node))
+            .map(|semantic| semantic.value);
+        if switch_node_value.as_ref().map(|value| value.as_bytes()) != Some(&b"on"[..]) {
+            fail(room, "sem checked value");
+        }
+        let mut line = Line::new(b"UITESTSEMSTATE ok n=9 sw=4.3.9.on clip=");
+        line.push_u32(clip.x as u32);
+        line.push(b",");
+        line.push_u32(clip.y as u32);
+        line.push(b",");
+        line.push_u32(clip.w as u32);
+        line.push(b",");
+        line.push_u32(clip.h as u32);
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn print_sem_page(&mut self, room: &AppRoom) {
+        let mut regions = [zero_region(); 32];
+        let count = match self.ui.sem_snapshot_into(&mut regions) {
+            Ok(count) => count,
+            Err(_) => fail(room, "sem page snapshot"),
+        };
+        if count != 6 {
+            fail(room, "sem page count");
+        }
+        let button = self.region_for(&regions, count, self.page.button.panel)
+            .unwrap_or_else(|| fail(room, "sem page button"));
+        if button.role != 1 || button.actions != 3 || button.state != 1 {
+            fail(room, "sem page button");
+        }
+        if regions.iter().take(count).any(|region| region.role == ROLE_TOGGLE) {
+            fail(room, "sem page stale switch");
+        }
+        if regions.iter().take(count).any(|region| region.actions & SEM_ACTION_TEXT_EDIT != 0) {
+            fail(room, "sem page stale input");
+        }
+        room.print(b"UITESTSEMPAGE ok n=6 btn=1.3.1 sw=0 tf=0\n");
+    }
+
+    fn print_sem_text(&mut self, room: &AppRoom) {
+        let Some(input) = self.page.input else {
+            fail(room, "sem text field");
+        };
+        let Some(semantic) = self.ui.sem_of(input.panel) else {
+            fail(room, "sem text entry");
+        };
+        let mut regions = [zero_region(); 32];
+        let count = match self.ui.sem_snapshot_into(&mut regions) {
+            Ok(count) => count,
+            Err(_) => fail(room, "sem text snapshot"),
+        };
+        let region = self
+            .region_for(&regions, count, input.panel)
+            .unwrap_or_else(|| fail(room, "sem text region"));
+        if semantic.actions != 8 || region.actions != 9 || region.role != 2 || region.state != 3 {
+            fail(room, "sem text tuple");
+        }
+        if semantic.value.len != 2 || semantic.text_range.anchor_cp != 2 || semantic.text_range.caret_cp != 2 {
+            fail(room, "sem text sync");
+        }
+        let mut line = Line::new(b"UITESTSEMTEXT ok tf=2.9.3 len=");
+        line.push_u32(semantic.value.len as u32);
+        line.push(b" anchor=");
+        line.push_u32(semantic.text_range.anchor_cp as u32);
+        line.push(b" caret=");
+        line.push_u32(semantic.text_range.caret_cp as u32);
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn region_for<'a>(
+        &self, regions: &'a [A11yRegion], count: usize, node: berry_ui::NodeId,
+    ) -> Option<&'a A11yRegion> {
+        let snapshot_id = self.ui.semantic_snapshot_id(node)?;
+        regions.iter().take(count).find(|region| region.node_id == snapshot_id)
+    }
+}
+
+fn zero_region() -> A11yRegion {
+    A11yRegion {
+        node_id: 0,
+        parent_id: 0,
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+        role: 0,
+        actions: 0,
+        state: 0,
+        label_len: 0,
+        label: [0; 32],
+    }
 }
 
 fn ui_event(event: &PointerEvent) -> PtrEvent {
@@ -952,6 +1110,7 @@ fn run_text_keyboard_phase(app: &mut AppModel, room: &mut AppRoom) {
     line.push_u32(selection.caret_cp as u32);
     line.push(b"\n");
     line.print(room);
+    app.print_sem_text(room);
     let mut line = Line::new(b"UITESTTEXTSUBMIT ok len=");
     line.push_u32(app.text_state.value().len as u32);
     line.push(b" toggles=0\n");
@@ -1039,6 +1198,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     app.print_layout(&room);
     app.print_hit(&room);
     app.print_data(&mut room);
+    app.print_sem(&mut room);
     app.print_adaptive(&room);
     app.render(&mut room);
     room.print(b"UITESTFRAME ok\n");
@@ -1059,6 +1219,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         scrolled.push_i32(scroll_offset);
         scrolled.push(b" switch=1\n");
         scrolled.print(&room);
+        app.print_sem_state(&mut room);
         app.assert_clip(&mut room);
         app.page.button
             .on_msg(
@@ -1068,6 +1229,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
             )
             .unwrap_or_else(|_| berry_room::panic_exit(134));
         app.replace_page(&mut room, 1);
+        app.print_sem_page(&mut room);
         let state = Line::new(b"UITESTSTATE ok page=1 switch=1\n");
         state.print(&room);
         app.page.button

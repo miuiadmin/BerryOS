@@ -5,7 +5,7 @@
 > 定位：在 L2 runtime-only flex ratio 上开放最小 transposed container
 > pane 面，并提供无状态 ListDetail 布局原语。不引入 Route/Back/选择
 > 状态栈/FormMetrics，不做完整 constraint-aware measure。
-> 执行序权威 = [GUI框架地基路线-v1.16.md](GUI框架地基路线-v1.16.md)。
+> 执行序权威 = [GUI框架地基路线-v1.17.md](GUI框架地基路线-v1.17.md)。
 
 ## §1 背景
 

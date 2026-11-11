@@ -5,7 +5,7 @@
 > 定位：GUI-14 L1 第一刀。落地根播种 Tight/Loose/Infinite 约束与显式
 > 本地 AdaptiveSlot 判定。只解决“嵌套组件不读全局屏幕尺寸”的最小面；
 > 不做 FormMetrics、SafeArea、完整 flex/wrap、ListDetail 或 size-class
-> 阶梯。执行序权威 = [GUI框架地基路线-v1.16.md](GUI框架地基路线-v1.16.md)。
+> 阶梯。执行序权威 = [GUI框架地基路线-v1.17.md](GUI框架地基路线-v1.17.md)。
 
 ## §1 背景
 

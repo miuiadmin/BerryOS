@@ -1634,6 +1634,24 @@ def verify_uitest_normal(
     )
     _require_exact_count(
         text,
+        "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1",
+        2,
+        "normal SEM-A1 page0 snapshot",
+        log_path,
+    )
+    _require_exact_count(
+        text,
+        "UITESTSEMSTATE ok n=9 sw=4.3.9.on clip=12,377,1056,24",
+        1,
+        "normal SEM-A1 checked/clipped snapshot",
+        log_path,
+    )
+    _require_exact_count(
+        text, "UITESTSEMPAGE ok n=6 btn=1.3.1 sw=0 tf=0", 1,
+        "normal SEM-A1 page1 snapshot", log_path,
+    )
+    _require_exact_count(
+        text,
         "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
         "detail=372,623,696,120",
         2,
@@ -1684,6 +1702,12 @@ def verify_uitest_normal(
         text, "UITESTTEXTSUBMIT ok len=2 toggles=0", 1,
         "normal GUI-T1 text submit", log_path,
     )
+    _require_exact_count(
+        text, "UITESTSEMTEXT ok tf=2.9.3 len=2 anchor=2 caret=2", 1,
+        "normal SEM-A1 text semantic sync", log_path,
+    )
+    if text.find("UITESTSEMTEXT ok ") < snapshot_pos:
+        raise SmokeError("normal SEM-A1: text semantic 早于快照", log_path)
     _require_exact_count(
         text, "UITESTIMEINSET ok ", 1,
         "normal GUI-T1 IME inset data face", log_path,
@@ -4616,6 +4640,7 @@ def self_test(args) -> int:
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=860 a11y=9\n"
+            "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
             "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
@@ -4625,9 +4650,11 @@ def self_test(args) -> int:
             f"{MARK_UITEST_FRAME}\n"
             "UITESTRENDER ok seq=2 cmds=28\n"
             "UITESTSCROLL ok offset=24 switch=1\n"
+            "UITESTSEMSTATE ok n=9 sw=4.3.9.on clip=12,377,1056,24\n"
             "UITESTRENDER ok seq=3 cmds=28\n"
             "UITESTCLIP ok port=12,377,1056,24 item=12,353,1056,72 "
             "probe=540,409 seq=3\n"
+            "UITESTSEMPAGE ok n=6 btn=1.3.1 sw=0 tf=0\n"
             "UITESTSTATE ok page=1 switch=1\n"
             "UITESTRENDER ok seq=4 cmds=17\n"
             "UITESTBACK ok page=0 switch=1\n"
@@ -4648,6 +4675,7 @@ def self_test(args) -> int:
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=860 a11y=9\n"
+            "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
             "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
@@ -4699,6 +4727,7 @@ def self_test(args) -> int:
             "WMKEYROUTE ok sid=15 window=15 code=28 action=0\n"
             "UITESTTEXTEDIT ok edits=6 bytes=2 caret=2\n"
             "UITESTTEXTSELECT ok anchor=2 caret=2\n"
+            "UITESTSEMTEXT ok tf=2.9.3 len=2 anchor=2 caret=2\n"
             "UITESTTEXTSUBMIT ok len=2 toggles=0\n"
             "UITESTIMEINSET ok bottom=743 overlap=0\n"
             "UITESTKEY2 ok codes=14,15,28,30,57,105,106\n"
@@ -4908,6 +4937,71 @@ def self_test(args) -> int:
             "UITEST adaptive AST 尺寸造假",
             lambda: verify_uitest_normal(
                 fake_u.replace("UITESTAST ok bytes=860 a11y=9", "UITESTAST ok bytes=712 a11y=8", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "SEM-A1 page0 快照缺失",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n",
+                    "", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "SEM-A1 Checked 丢失",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTSEMSTATE ok n=9 sw=4.3.9.on", "UITESTSEMSTATE ok n=9 sw=4.3.1.on", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "SEM-A1 clip 泄漏未裁剪几何",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTSEMSTATE ok n=9 sw=4.3.9.on clip=12,377,1056,24",
+                    "UITESTSEMSTATE ok n=9 sw=4.3.9.on clip=12,353,1056,72", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "SEM-A1 page swap 旧语义残留",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTSEMPAGE ok n=6", "UITESTSEMPAGE ok n=9", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "SEM-A1 TextField 焦点位丢失",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTSEMTEXT ok tf=2.9.3 len=2",
+                    "UITESTSEMTEXT ok tf=2.9.1 len=2", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "SEM-A1 TextField selection 失同步",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTSEMTEXT ok tf=2.9.3 len=2 anchor=2 caret=2",
+                    "UITESTSEMTEXT ok tf=2.9.3 len=2 anchor=1 caret=2", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "SEM-A1 TextField 语义 marker 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTSEMTEXT ok tf=2.9.3 len=2 anchor=2 caret=2\n",
+                    "UITESTSEMTEXT ok tf=2.9.3 len=2 anchor=2 caret=2\n"
+                    "UITESTSEMTEXT ok tf=2.9.3 len=2 anchor=2 caret=2\n", 1,
+                ),
                 snap_u, 1,
             ),
         )

@@ -34,7 +34,7 @@ class LedgerError(Exception):
 
 MODULES = {
     "desc", "diagnostic", "layout", "metrics", "theme", "text_input",
-    "widgets", "crate", "sdk",
+    "sem", "widgets", "crate", "sdk",
 }
 
 
@@ -62,6 +62,8 @@ def public_facade_names() -> list[str]:
         payload = statement.split("{", 1)[1].rsplit("}", 1)[0]
         for part in payload.split(","):
             names.append(exported_name(part))
+    for match in re.finditer(r"^\s*pub\s+use\s+(?!crate::)([^;]+);", text, re.M | re.S):
+        names.append(exported_name(match.group(1).strip()))
     for match in re.finditer(
         r"^\s*pub\s+(?:const\s+)?(?:fn|struct|enum|type|const|trait)\s+"
         r"([A-Za-z_][A-Za-z0-9_]*)",

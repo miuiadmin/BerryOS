@@ -43,6 +43,7 @@ pub mod metrics;
 pub mod paint;
 pub mod resample;
 pub mod sdk;
+pub mod sem;
 pub mod swipe;
 pub mod telemetry;
 pub mod text_input;
@@ -53,9 +54,11 @@ pub mod utf8;
 
 // 扁平面 re-export：门面签名里不限定模块路径的名字（§6 用法对齐）。
 pub use desc::{AstError, Axis, Msg, MsgBuf, NodeId, Props, TextBuf, ViewKind, ViewSpec};
+pub use sem::{a11y_region_roundtrip, SemEntry, SEM_ACTION_ACTIVATE, SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX, SEM_STATE_CHECKED, SEM_STATE_DISABLED};
 pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, TextMetrics};
 
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
+use berry_guiproto::surface::{encode_a11y_region, A11yRegion, A11Y_ACTION_FOCUS, A11Y_ROLE_GAME_REGION, A11Y_STATE_FOCUSED, A11Y_STATE_VISIBLE};
 use berry_guiproto::{FRAME_DISCARDED, FRAME_PRESENTED, PHASE_MOVE};
 use resample::Sample;
 
@@ -286,6 +289,7 @@ pub struct Ui<const N: usize> {
     /// Berry Room 注入系统 A8 VMO，避免 app 复制 CJK/HD 字表。
     fonts: Option<&'static dyn metrics::FontSource>,
     a11y: [Option<A11yEntry>; A11Y_MAX], // a11y 侧表（D12——apply 落/encode 读）
+    sem: [Option<SemEntry>; SEM_MAX], // SEM-A1 runtime-only 语义旁表（不进 AST/wire）
     focus: [Option<FocusEntry>; FOCUS_MAX], // component focusable 侧表
     focused: Option<NodeId>, // 当前 component focus（窗口焦点仍在 wmd）
     flex: [Option<FlexEntry>; FLEX_MAX], // L2 主轴比例侧表
@@ -302,6 +306,13 @@ static DEFAULT_ICON_SOURCE: EmptyIconSource = EmptyIconSource;
 
 fn pack_id(idx: usize, gen: u16) -> NodeId {
     NodeId(((gen as u32) << 16) | ((idx as u32) & 0xFFFF))
+}
+
+fn i32_to_u16_region(value: i32) -> Result<u16, UiError> {
+    if value < 0 || value > u16::MAX as i32 {
+        return Err(UiError::NodeBad);
+    }
+    Ok(value as u16)
 }
 
 fn clamp_u32(v: i64) -> u32 {
@@ -393,6 +404,7 @@ impl<const N: usize> Ui<N> {
             icons: &DEFAULT_ICON_SOURCE,
             fonts: None,
             a11y: [None; A11Y_MAX],
+            sem: [None; SEM_MAX],
             focus: [None; FOCUS_MAX],
             focused: None,
             flex: [None; FLEX_MAX],
@@ -578,6 +590,7 @@ impl<const N: usize> Ui<N> {
         }
         self.deps.clear(); // 旧树 NodeId 全悬空——边表整清（dep 表侧单源）
         self.a11y = [None; A11Y_MAX]; // 同理整清（D12 侧表随树生命周期）
+        self.sem = [None; SEM_MAX]; // SEM-A1 runtime-only 语义随整树重建清空
         self.focus = [None; FOCUS_MAX];
         self.focused = None;
         self.flex = [None; FLEX_MAX];
@@ -807,6 +820,18 @@ impl<const N: usize> Ui<N> {
                 .unwrap_or(false);
             if hit {
                 self.a11y[k] = None;
+            }
+            k += 1;
+        }
+        // SEM-A1 语义旁表同理：子树摘除/残项一并清，不悬挂。
+        let mut k = 0usize;
+        while k < SEM_MAX {
+            let hit = self.sem[k]
+                .as_ref()
+                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
+                .unwrap_or(false);
+            if hit {
+                self.sem[k] = None;
             }
             k += 1;
         }
@@ -1112,6 +1137,9 @@ impl<const N: usize> Ui<N> {
     pub fn take_a11y(&mut self, node: NodeId) -> bool {
         if let Some(e) = self.a11y.iter_mut().find(|e| e.as_ref().is_some_and(|e| e.node == node)) {
             *e = None;
+            // SEM overlay 依赖 a11y 薄面的 role/label；薄面摘除时连带清，
+            // 不留无单源的 resident 残项。
+            let _ = self.take_sem(node);
             true
         } else {
             false
@@ -1126,6 +1154,230 @@ impl<const N: usize> Ui<N> {
             .iter()
             .filter_map(|e| e.as_ref())
             .filter(|e| self.slot_of(e.node).is_ok())
+    }
+
+    // —— SEM-A1 runtime-only 语义旁表（导出面，不进 AST/wire） ——
+
+    /// 登记/覆写语义 overlay。节点必须已登记 legacy a11y（role/label
+    /// 单源）；未知词表、FOCUS 存储位、非法 UTF-8、value>64 或 range
+    /// 越界 loud 拒；表满 8 → NodeFull。
+    pub fn set_sem(&mut self, entry: SemEntry) -> Result<(), UiError> {
+        entry.validate()?;
+        self.slot_of(entry.node)?;
+        if !self.a11y_iter().any(|legacy| legacy.node == entry.node) {
+            return Err(UiError::NodeBad);
+        }
+        if let Some(slot) = self
+            .sem
+            .iter_mut()
+            .find(|e| e.as_ref().is_some_and(|e| e.node == entry.node))
+        {
+            *slot = Some(entry);
+            return Ok(());
+        }
+        let Some(slot) = self.sem.iter().position(|e| e.is_none()) else {
+            return Err(UiError::NodeFull);
+        };
+        self.sem[slot] = Some(entry);
+        Ok(())
+    }
+
+    /// 摘除语义条目；幂等。
+    pub fn take_sem(&mut self, node: NodeId) -> bool {
+        let Some(entry) = self.sem.iter_mut().find(|e| {
+            e.as_ref().is_some_and(|entry| entry.node == node)
+        }) else {
+            return false;
+        };
+        *entry = None;
+        true
+    }
+
+    /// 语义条目活性迭代（登记序；快照投影另按树前序）。
+    pub fn sem_iter(&self) -> impl Iterator<Item = &SemEntry> {
+        self.sem
+            .iter()
+            .filter_map(|e| e.as_ref())
+            .filter(|e| self.slot_of(e.node).is_ok())
+    }
+
+    /// 快照中的 P0 node_id（slot+1）。活性节点返回 id；悬空节点返回 None。
+    pub fn semantic_snapshot_id(&self, node: NodeId) -> Option<u32> {
+        let slot = self.slot_of(node).ok()? as u32;
+        Some(slot + 1)
+    }
+
+    /// 读取某节点 runtime 语义（P0 wire 无 value/range，本口是 host/app
+    /// 消费这些字段的唯一读面）。
+    pub fn sem_of(&self, node: NodeId) -> Option<SemEntry> {
+        self.sem_iter().find(|e| e.node == node).copied()
+    }
+
+    /// 当前活语义条目数。
+    pub fn semantic_count(&self) -> usize {
+        self.sem_iter().count()
+    }
+
+    /// 把 SEM + legacy a11y 并集投影为 P0 52B 记录。
+    ///
+    /// 规则：树前序；SEM wins；bounds = 绝对 bounds ∩ Clip 链，空界跳过；
+    /// FOCUS action / FOCUSED state 从 C1 表现场派生；parent = 最近已发射
+    /// 语义祖先；node_id = slot+1（raw NodeId 可为 0，不能直接进 P0）。
+    /// `merge_descendants` 只跳过后代语义，不改视觉/hit/focus。
+    pub fn sem_snapshot_into(
+        &self,
+        out: &mut [A11yRegion],
+    ) -> Result<usize, UiError> {
+        let mut slots = [NONE; N];
+        let mut slot_count = 0usize;
+        self.collect_sibs(self.root_slot, &mut slots, &mut slot_count);
+        let mut emitted = [false; N];
+        let mut count = 0usize;
+
+        for raw_slot in slots.iter().take(slot_count) {
+            let slot = *raw_slot as usize;
+            let Some(node) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
+                continue;
+            };
+            let node_id = pack_id(slot, node.gen);
+            let sem = self.sem_iter().find(|entry| entry.node == node_id);
+            let Some(legacy) = self.a11y_iter().find(|entry| entry.node == node_id) else {
+                continue;
+            };
+            if self.has_merge_semantic_ancestor(slot) {
+                continue;
+            }
+
+            let rect = self
+                .abs_rect_of(slot)
+                .intersect(&self.clip_chain(slot));
+            if rect.is_empty() {
+                continue;
+            }
+            let role = legacy.role;
+            let label = legacy.label.as_bytes();
+            if role > A11Y_ROLE_GAME_REGION || label.len() > sem::SEM_LABEL_MAX {
+                return Err(UiError::NodeBad);
+            }
+
+            let mut actions = sem.map(|e| e.actions).unwrap_or(0);
+            if self
+                .focus
+                .iter()
+                .flatten()
+                .any(|e| e.node == node_id && e.enabled)
+            {
+                actions |= A11Y_ACTION_FOCUS;
+            }
+            let mut state = sem.map(|e| e.state).unwrap_or(0) | A11Y_STATE_VISIBLE;
+            if self.focus_node() == Some(node_id) {
+                state |= A11Y_STATE_FOCUSED;
+            }
+
+            let parent_slot = self.nearest_emitted_semantic_slot(slot, &emitted);
+            let mut label_buf = [0u8; sem::SEM_LABEL_MAX];
+            label_buf[..label.len()].copy_from_slice(label);
+            let region = A11yRegion {
+                node_id: slot as u32 + 1,
+                parent_id: parent_slot.map(|parent| parent as u32 + 1).unwrap_or(0),
+                x: i32_to_u16_region(rect.x)?,
+                y: i32_to_u16_region(rect.y)?,
+                w: i32_to_u16_region(rect.w)?,
+                h: i32_to_u16_region(rect.h)?,
+                role,
+                actions,
+                state,
+                label_len: label.len() as u8,
+                label: label_buf,
+            };
+            let mut wire = [0u8; berry_guiproto::surface::A11Y_REGION_LEN];
+            if encode_a11y_region(&mut wire, &region).is_none() {
+                return Err(UiError::NodeBad);
+            }
+            if count >= out.len() {
+                return Err(UiError::NodeFull);
+            }
+            out[count] = region;
+            emitted[slot] = true;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// 视觉命中的语义目标：向上找最近 SEM/legacy a11y 锚。它不是第二命中
+    /// 权威，输入路由仍以 hit/wmd/C1 为准。
+    pub fn sem_at(&self, x: u32, y: u32) -> Option<NodeId> {
+        let mut node = self.node_at(x, y)?;
+        let mut hops = 0usize;
+        while hops <= N {
+            let slot = self.slot_of(node).ok()? as usize;
+            let Some(n) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
+                return None;
+            };
+            let has_semantic = self.sem_iter().any(|e| e.node == node)
+                || self.a11y_iter().any(|e| e.node == node);
+            if has_semantic {
+                return Some(node);
+            }
+            if n.parent == NONE {
+                return None;
+            }
+            let parent_node = self
+                .nodes
+                .get(n.parent as usize)
+                .and_then(|option| option.as_ref())?;
+            node = pack_id(n.parent as usize, parent_node.gen);
+            hops += 1;
+        }
+        None
+    }
+
+    fn has_merge_semantic_ancestor(&self, slot: usize) -> bool {
+        let Some(node) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
+            return false;
+        };
+        let mut parent = node.parent;
+        let mut hops = 0usize;
+        while parent != NONE && hops <= N {
+            let Some(parent_node) = self.nodes.get(parent as usize).and_then(|option| option.as_ref())
+            else {
+                return false;
+            };
+            let parent_id = pack_id(parent as usize, parent_node.gen);
+            if self
+                .sem_iter()
+                .any(|e| e.node == parent_id && e.merge_descendants)
+            {
+                return true;
+            }
+            parent = parent_node.parent;
+            hops += 1;
+        }
+        false
+    }
+
+    fn nearest_emitted_semantic_slot(&self, slot: usize, emitted: &[bool]) -> Option<usize> {
+        let Some(node) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
+            return None;
+        };
+        let mut parent = node.parent;
+        let mut hops = 0usize;
+        while parent != NONE && hops <= N {
+            let parent_slot = parent as usize;
+            let Some(parent_node) = self.nodes.get(parent_slot).and_then(|option| option.as_ref())
+            else {
+                return None;
+            };
+            let parent_id = pack_id(parent_slot, parent_node.gen);
+            let has_semantic = self.sem_iter().any(|e| e.node == parent_id)
+                || self.a11y_iter().any(|e| e.node == parent_id);
+            if has_semantic && emitted.get(parent_slot).copied().unwrap_or(false) {
+                return Some(parent_slot);
+            }
+            parent = parent_node.parent;
+            hops += 1;
+        }
+        None
     }
 
     // —— flex ratio（GUI-14 L2：固定主轴 Row/Col 的剩余空间比例分配） ——

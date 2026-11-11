@@ -15,7 +15,10 @@ use crate::theme::{
     InteractionState, RadiusToken, SpacingToken, StrokeToken, Theme, ThemeMetrics,
     TypographyToken,
 };
-use crate::{Ui, UiError, ROLE_BUTTON, ROLE_LIST_ITEM, ROLE_TEXT, ROLE_TOGGLE};
+use crate::{
+    SemEntry, Ui, UiError, SEM_ACTION_ACTIVATE, SEM_ACTION_TEXT_EDIT, SEM_STATE_CHECKED,
+    SEM_STATE_DISABLED, ROLE_BUTTON, ROLE_LIST_ITEM, ROLE_TEXT, ROLE_TOGGLE,
+};
 use berry_gfx::cmd::Color;
 
 /// 组件构造上下文：主题与当前视口密度一次快照。
@@ -335,6 +338,9 @@ impl TextField {
         )?;
         ui.set_a11y(panel, ROLE_TEXT, b"input")?;
         ui.set_focusable(panel, Some(panel), true)?;
+        ui.set_sem(SemEntry::new(
+            panel, SEM_ACTION_TEXT_EDIT, 0, b"", 0, 0, false,
+        )?)?;
         Ok(Self {
             panel,
             port,
@@ -380,6 +386,27 @@ impl TextField {
         let line_h = scale.cell_h() as u32;
         let display = state.display_value(self.kind)?;
         ui.set_text(self.value_text, display.as_bytes())?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            // Password 明文不进入长期语义树；Text/Number value/range 与
+            // GUI-T1 TextInputState 保持同步。
+            let semantic_value = if self.kind == TextInputKind::Password {
+                b""
+            } else {
+                state.value().as_bytes()
+            };
+            semantic.value = crate::desc::TextBuf::new(semantic_value)?;
+            if self.kind == TextInputKind::Password {
+                semantic.text_range.anchor_cp = 0;
+                semantic.text_range.caret_cp = 0;
+            } else {
+                // P0 语义 range 存无向区间；GUI-T1 反向 selection（anchor >
+                // caret）在投影边界排序，不改变文本状态方向。
+                let (start_cp, end_cp) = state.selection().ordered();
+                semantic.text_range.anchor_cp = start_cp;
+                semantic.text_range.caret_cp = end_cp;
+            }
+            ui.set_sem(semantic)?;
+        }
 
         let (start_cp, end_cp) = state.selection().ordered();
         let sel_w = (end_cp.saturating_sub(start_cp) as i32).saturating_mul(cell_w).max(0) as u32;
@@ -561,6 +588,15 @@ impl Button {
         )?;
         ui.set_a11y(panel, ROLE_BUTTON, label)?;
         ui.set_focusable(panel, Some(panel), base != InteractionState::Disabled)?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ACTIVATE,
+            if base == InteractionState::Disabled { SEM_STATE_DISABLED } else { 0 },
+            b"",
+            0,
+            0,
+            false,
+        )?)?;
         Ok(Self { panel, label: text_id, base, focused: false })
     }
 
@@ -601,6 +637,10 @@ impl Button {
             self.focused = false;
         }
         ui.set_focusable(self.panel, Some(self.panel), base != InteractionState::Disabled)?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.state = if base == InteractionState::Disabled { SEM_STATE_DISABLED } else { 0 };
+            ui.set_sem(semantic)?;
+        }
         self.apply(ui, ctx, self.visual_state())
     }
 
@@ -699,6 +739,15 @@ impl ListItem {
         };
         ui.set_a11y(panel, ROLE_LIST_ITEM, title)?;
         ui.set_focusable(panel, Some(panel), true)?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ACTIVATE,
+            if selected { SEM_STATE_CHECKED } else { 0 },
+            b"",
+            0,
+            0,
+            false,
+        )?)?;
         Ok(Self { panel, title: title_id, detail: detail_id, selected, focused: false })
     }
 
@@ -720,6 +769,10 @@ impl ListItem {
         &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, selected: bool,
     ) -> Result<(), UiError> {
         self.selected = selected;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.state = if selected { SEM_STATE_CHECKED } else { 0 };
+            ui.set_sem(semantic)?;
+        }
         let state = ctx.theme.state(self.visual_state());
         if let Some(props) = retained_props(ui, self.panel) {
             if let Props::Panel(mut p) = props {
@@ -856,6 +909,16 @@ impl Switch {
         let label: &[u8] = if checked { b"on" } else { b"off" };
         ui.set_a11y(panel, ROLE_TOGGLE, label)?;
         ui.set_focusable(panel, Some(panel), !disabled)?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ACTIVATE,
+            if checked { SEM_STATE_CHECKED } else { 0 } |
+                if disabled { SEM_STATE_DISABLED } else { 0 },
+            label,
+            0,
+            0,
+            false,
+        )?)?;
         Ok(Self {
             panel,
             track,
@@ -911,6 +974,12 @@ impl Switch {
         let state = self.visual_state();
         let label: &[u8] = if checked { b"on" } else { b"off" };
         ui.set_a11y(self.panel, ROLE_TOGGLE, label)?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.state = if checked { SEM_STATE_CHECKED } else { 0 } |
+                if self.disabled { SEM_STATE_DISABLED } else { 0 };
+            semantic.value = crate::desc::TextBuf::new(label)?;
+            ui.set_sem(semantic)?;
+        }
         let travel = Self::travel(ui, ctx);
         let width = if checked { travel } else { 0 };
         if let Some(props) = retained_props(ui, self.spacer) {
