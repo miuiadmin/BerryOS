@@ -21,7 +21,8 @@ pub use crate::theme::{
     ThemeColors, ThemeMetrics, TypographyToken,
 };
 pub use crate::widgets::{
-    AppBar, Button, Card, EmptyState, ListItem, Scaffold, ScrollView, Switch, TextVariant,
+    AppBar, Button, Card, EmptyState, ListDetail, ListDetailSpec, ListItem, Scaffold, ScrollView,
+    Switch, TextVariant,
     WidgetContext, column, divider, icon, row, text,
 };
 pub use crate::{FlexEntry, FocusEntry, Ui, UiError, UiMain};

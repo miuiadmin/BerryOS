@@ -1617,7 +1617,7 @@ def verify_uitest_normal(
     )
     _require_exact_count(text, "UITESTHIT ok node=button", 3, "normal UITEST hit dump", log_path)
     _require_exact_count(
-        text, "UITESTAST ok bytes=755 a11y=8", 2, "normal UITEST AST", log_path
+        text, "UITESTAST ok bytes=779 a11y=8", 2, "normal UITEST AST", log_path
     )
     _require_exact_count(
         text,
@@ -1630,6 +1630,14 @@ def verify_uitest_normal(
     _require_exact_count(
         text, "UITESTADAPT2 ok v=0 basis=320", 1,
         "normal UITEST adaptive compact", log_path,
+    )
+    _require_exact_count(
+        text,
+        "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+        "list=12,623,348,120 detail=372,623,696,120",
+        2,
+        "normal UITEST ListDetail",
+        log_path,
     )
     _require_exact_count(text, "UITESTRENDER ok seq=", 11, "normal UITEST render", log_path)
     _require_exact_count(
@@ -3403,7 +3411,7 @@ def run_normal_boot(args) -> int:
             ppm_pixel(uitest_shot, seam_surface[0], seam_surface[1]),
             (255, 255, 255), "UITEST adaptive gap seam", boot.log_path,
         )
-        log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState/L1/L2 adaptive）")
+        log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState/ListDetail adaptive）")
 
         log(f"normal-uitest: QMP 点击 Details ({click0[0]},{click0[1]})")
         boot.qmp.click(click0[0], click0[1], w, h)
@@ -3894,6 +3902,8 @@ def self_test(args) -> int:
             f"{MARK_INPUT_DROPS_OK}\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
+            "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+            "list=12,623,348,120 detail=372,623,696,120\n"
             "UITESTADAPT2 ok v=0 basis=320\n"
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
@@ -4056,6 +4066,8 @@ def self_test(args) -> int:
             f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\nLAUNCH ok\nLAYOUT ok n=2\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
+            "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+            "list=12,623,348,120 detail=372,623,696,120\n"
             "UITESTADAPT2 ok v=0 basis=320\n"
         )
         verify_boot_b(fake_b)
@@ -4490,9 +4502,11 @@ def self_test(args) -> int:
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=755 a11y=8\n"
+            "UITESTAST ok bytes=779 a11y=8\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
+            "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+            "list=12,623,348,120 detail=372,623,696,120\n"
             "UITESTADAPT2 ok v=0 basis=320\n"
             "UITESTRENDER ok seq=1 cmds=27\n"
             f"{MARK_UITEST_FRAME}\n"
@@ -4520,9 +4534,11 @@ def self_test(args) -> int:
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=755 a11y=8\n"
+            "UITESTAST ok bytes=779 a11y=8\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
+            "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+            "list=12,623,348,120 detail=372,623,696,120\n"
             "UITESTRENDER ok seq=1 cmds=27\n"
             f"{MARK_UITEST_FRAME}\n"
             "UITESTLAYOUT ok page=1 appbar=0,0,1080,60 body=0,60,1080,1860 "
@@ -4661,6 +4677,49 @@ def self_test(args) -> int:
             ),
         )
         expect_error(
+            "UITEST ListDetail marker 缺失",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+                    "list=12,623,348,120 detail=372,623,696,120\n", "", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST ListDetail 几何造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+                    "list=12,623,348,120 detail=372,623,696,120",
+                    "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+                    "list=12,623,360,120 detail=384,623,684,120", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST ListDetail 权重造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTLISTDETAIL ok weights=1,2", "UITESTLISTDETAIL ok weights=1,3", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST ListDetail marker 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+                    "list=12,623,348,120 detail=372,623,696,120\n",
+                    "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+                    "list=12,623,348,120 detail=372,623,696,120\n"
+                    "UITESTLISTDETAIL ok weights=1,2 row=12,623,1056,120 "
+                    "list=12,623,348,120 detail=372,623,696,120\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
             "UITEST adaptive compact 重复",
             lambda: verify_uitest_normal(
                 fake_u.replace(
@@ -4674,7 +4733,7 @@ def self_test(args) -> int:
         expect_error(
             "UITEST adaptive AST 尺寸造假",
             lambda: verify_uitest_normal(
-                fake_u.replace("UITESTAST ok bytes=755 a11y=8", "UITESTAST ok bytes=712 a11y=8", 1),
+                fake_u.replace("UITESTAST ok bytes=779 a11y=8", "UITESTAST ok bytes=712 a11y=8", 1),
                 snap_u, 1,
             ),
         )

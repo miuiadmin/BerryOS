@@ -826,6 +826,75 @@ impl ScrollView {
     }
 }
 
+/// L3 ListDetail 布局规格（Plain Data；无 Route/Back/选择状态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListDetailSpec {
+    pub width: u32,
+    pub height: u32,
+    pub gap: u32,
+    pub list_weight: u16,
+    pub detail_weight: u16,
+}
+
+/// ListDetail：最小双 pane 布局原语。只创建固定主轴 Row + 两个可
+/// flex 的 Panel pane，并登记运行期权重；业务列表/详情内容由 app 挂到
+/// `list`/`detail`，选择与返回栈不进 BerryUI。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListDetail {
+    pub row: NodeId,
+    pub list: NodeId,
+    pub detail: NodeId,
+}
+
+impl ListDetail {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>,
+        parent: NodeId,
+        ctx: &WidgetContext,
+        spec: ListDetailSpec,
+    ) -> Result<Self, UiError> {
+        if spec.list_weight == 0 || spec.detail_weight == 0 {
+            return Err(UiError::NodeBad);
+        }
+        let row = add(
+            ui,
+            parent,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: spec.gap,
+                    w: Some(spec.width),
+                    h: Some(spec.height),
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        let pad = ctx.spacing(SpacingToken::S);
+        let inner_gap = ctx.spacing(SpacingToken::S);
+        let list = add(
+            ui,
+            row,
+            panel_spec(
+                ctx.theme.colors.surface_variant,
+                None,
+                Some(spec.height),
+                pad,
+                inner_gap,
+                0,
+            ),
+        )?;
+        let detail = add(
+            ui,
+            row,
+            panel_spec(ctx.theme.colors.surface, None, Some(spec.height), pad, inner_gap, 0),
+        )?;
+        ui.set_flex(list, spec.list_weight)?;
+        ui.set_flex(detail, spec.detail_weight)?;
+        Ok(Self { row, list, detail })
+    }
+}
+
 /// EmptyState：图标 + 标题 + 说明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmptyState {

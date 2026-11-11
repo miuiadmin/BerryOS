@@ -129,9 +129,10 @@ pub struct FocusEntry {
 /// flex weight 侧表容量；超表 → NodeFull loud（D30 容量族）。
 pub const FLEX_MAX: usize = 32;
 
-/// 主轴比例分配登记项。v1 只允许 Rect/Circle 且 w/h 双 None 的
-/// “可随分配拉伸”子。使用前提是父 Row/Col 主轴已有确定终值；未固定
-/// 时 flex 子安全塌缩为 0，不是登记拒面。
+/// 主轴比例分配登记项。叶子面 = Rect/Circle 双 None；L3 transposed
+/// pane 面 = Row 中 Col/Grid/Panel 主轴宽 None、Col 中 Row 主轴高 None。
+/// 使用前提是父 Row/Col 主轴已有确定终值。未固定时：叶子内在为 0 则
+/// 塌缩；有内在的 pane 会按权重重分其内在总量（不 shrink），不是拒面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlexEntry {
     pub node: NodeId,
@@ -934,15 +935,8 @@ impl<const N: usize> Ui<N> {
         // 形态时连带摘除，防“固定尺寸却携 weight”的静默无效登记。本块
         // 之后当前无再拒路径；若未来追加后验拒，需把摘除挪到最终写入
         // 成功后，保持半落不污染。
-        let flex_eligible = matches!(
-            self.nodes[idx].as_ref().map(|n| (&n.kind, &props)),
-            Some((ViewKind::Rect, Props::Rect(p)))
-                if p.w.is_none() && p.h.is_none()
-        ) || matches!(
-            self.nodes[idx].as_ref().map(|n| (&n.kind, &props)),
-            Some((ViewKind::Circle, Props::Circle(p)))
-                if p.w.is_none() && p.h.is_none()
-        );
+        let flex_eligible =
+            layout::flex_eligible_props(&self.nodes, idx, &props);
         if !flex_eligible {
             let node = pack_id(idx, self.nodes[idx].as_ref().map(|n| n.gen).unwrap_or(0));
             let slot = self.flex.iter().position(|e| {
@@ -1135,20 +1129,18 @@ impl<const N: usize> Ui<N> {
 
     // —— flex ratio（GUI-14 L2：固定主轴 Row/Col 的剩余空间比例分配） ——
 
-    /// 登记/覆写 flex weight。v1 eligible 面 = Rect/Circle 且 w/h 双
-    /// None；weight 0 /错 kind /固定尺寸/悬空 id → NodeBad，表满 →
-    /// NodeFull。权重变化会 dirty 本节点与祖先链，保证兄弟重分配。
+    /// 登记/覆写 flex weight。L2 叶子面 = Rect/Circle 双 None；L3 增加
+    /// transposed pane：Row 中 Col/Grid/Panel 主轴宽 None、Col 中 Row
+    /// 主轴高 None。weight 0 /错 kind /固定主轴/同向容器/悬空 id →
+    /// NodeBad，表满 → NodeFull。权重变化 dirty 本节点与祖先链。
     pub fn set_flex(&mut self, node: NodeId, weight: u16) -> Result<(), UiError> {
         let idx = self.slot_of(node)? as usize;
-        let eligible = matches!(
-            self.nodes[idx].as_ref().map(|n| (&n.kind, &n.props)),
-            Some((ViewKind::Rect, Props::Rect(p)))
-                if p.w.is_none() && p.h.is_none()
-        ) || matches!(
-            self.nodes[idx].as_ref().map(|n| (&n.kind, &n.props)),
-            Some((ViewKind::Circle, Props::Circle(p)))
-                if p.w.is_none() && p.h.is_none()
-        );
+        let eligible = layout::flex_eligible_props(&self.nodes, idx, {
+            let Some(n) = self.nodes[idx].as_ref() else {
+                return Err(UiError::NodeBad);
+            };
+            &n.props
+        });
         let parent_kind = self.nodes[idx]
             .as_ref()
             .and_then(|n| self.nodes.get(n.parent as usize).and_then(|o| o.as_ref()))

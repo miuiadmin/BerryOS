@@ -17,15 +17,13 @@ use berry_room::{
     INPUT_KEY_EVENTS_MAX, KEY_ACTION_DOWN, KEY_ACTION_UP, KeyEvent, SurfaceModeKind,
     SurfaceRequest, SYSTEM_FONT_ATLAS,
 };
-use berry_ui::desc::{Props, RectProps, RowProps, ViewKind, ViewSpec};
 use berry_ui::sdk::{
-    focus_key_intent, slot_variant, FocusDir, FocusOp, SlotVariant,
-    Button, Card, EmptyState, FontSource, InteractionState, ListItem, Msg, RectI, Scaffold,
-    ScrollView, Switch, TextVariant, Theme, Ui, WidgetContext, column, divider, icon, row,
-    text,
+    focus_key_intent, slot_variant, FocusDir, FocusOp, SlotVariant, Button,
+    Card, EmptyState, FontSource, InteractionState, ListDetail, ListDetailSpec,
+    ListItem, Msg, RectI, Scaffold, ScrollView, Switch, TextVariant, Theme, Ui,
+    WidgetContext, column, divider, icon, row, text,
 };
 use berry_ui::hit::PtrEvent;
-use berry_ui::NodeId;
 
 type Ui128 = Ui<128>;
 
@@ -36,7 +34,7 @@ struct Page {
     clip_item: Option<ListItem>,
     button: Button,
     switch: Option<Switch>,
-    adaptive: Option<(NodeId, NodeId, NodeId)>,
+    adaptive: Option<ListDetail>,
     index: u8,
 }
 
@@ -238,64 +236,28 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             ui, stack, ctx, 7, b"F5 ready", b"Frame, layout, hit and state",
         )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-        // L1 AdaptiveSlot 最小生产样：basis 是 card 内容局部宽（1056），
-        // 不是窗口全局 1080；显式阈值 600 后只构建 Expanded 分支。
-        let adaptive_row = ui
-            .add(
-                stack,
-                ViewSpec {
-                    kind: ViewKind::Row,
-                    key: 0,
-                    props: Props::Row(RowProps {
-                        gap: 12,
-                        w: Some(1056),
-                        h: Some(120),
-                        cross: berry_ui::layout::CrossAlign::Stretch,
-                    }),
-                },
-            )
-            .unwrap_or_else(|_| berry_room::panic_exit(134));
-        let adaptive_list = ui
-            .add(
-                adaptive_row,
-                ViewSpec {
-                    kind: ViewKind::Rect,
-                    key: 0,
-                    props: Props::Rect(RectProps {
-                        bg: ctx.theme.colors.surface_variant,
-                        w: None,
-                        h: None,
-                    }),
-                },
-            )
-            .unwrap_or_else(|_| berry_room::panic_exit(134));
-        let adaptive_detail = ui
-            .add(
-                adaptive_row,
-                ViewSpec {
-                    kind: ViewKind::Rect,
-                    key: 0,
-                    props: Props::Rect(RectProps {
-                        bg: ctx.theme.colors.surface,
-                        w: None,
-                        h: None,
-                    }),
-                },
-            )
-            .unwrap_or_else(|_| berry_room::panic_exit(134));
-        // L2：1056 − gap12 = 1044，1:2 精确分为 348/696；两子双
-        // None 由 flex 分配主轴、Row Stretch 分配十字轴。
-        ui.set_flex(adaptive_list, 1)
-            .unwrap_or_else(|_| berry_room::panic_exit(134));
-        ui.set_flex(adaptive_detail, 2)
-            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        // L3 ListDetail 最小生产样：basis 仍是 card 内容局部宽 1056，
+        // 两个 Panel pane 以 runtime flex 1:2 分配 1044 主轴空间。
+        let adaptive = ListDetail::new(
+            ui,
+            stack,
+            ctx,
+            ListDetailSpec {
+                width: 1056,
+                height: 120,
+                gap: 12,
+                list_weight: 1,
+                detail_weight: 2,
+            },
+        )
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
         Page {
             scaffold,
             scroll,
             clip_item: Some(clip_item),
             button,
             switch: Some(switch),
-            adaptive: Some((adaptive_row, adaptive_list, adaptive_detail)),
+            adaptive: Some(adaptive),
             index,
         }
     } else {
@@ -527,7 +489,8 @@ impl AppModel {
     }
 
     fn print_adaptive(&self, room: &AppRoom) {
-        let Some((row, list, detail)) = self.page.adaptive else { return };
+        let Some(layout) = self.page.adaptive else { return };
+        let (row, list, detail) = (layout.row, layout.list, layout.detail);
         let row_bounds = self.ui.bounds(row).unwrap_or_else(|_| berry_room::panic_exit(134));
         let list_bounds = self.ui.bounds(list).unwrap_or_else(|_| berry_room::panic_exit(134));
         let detail_bounds = self.ui.bounds(detail).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -545,6 +508,15 @@ impl AppModel {
         }
         let mut line = Line::new(b"UITESTADAPT ok v=2 basis=");
         line.push_u32(basis);
+        line.push(b" list=");
+        line.rect(list_bounds);
+        line.push(b" detail=");
+        line.rect(detail_bounds);
+        line.push(b"\n");
+        line.print(room);
+
+        let mut line = Line::new(b"UITESTLISTDETAIL ok weights=1,2 row=");
+        line.rect(row_bounds);
         line.push(b" list=");
         line.rect(list_bounds);
         line.push(b" detail=");

@@ -5,7 +5,7 @@
 > 定位：GUI-14 二轮对抗深研后的第一实施刀。R1 不做 FormMetrics、safe inset
 > 或多窗，只先关 GUI 权威面的安全洞：SYSTEM 身份、SYSTEM layer、全局
 > surface、跨 owner parent 与 damage 越窗。执行序权威 =
-> [GUI框架地基路线-v1.14.md](GUI框架地基路线-v1.14.md)。
+> [GUI框架地基路线-v1.15.md](GUI框架地基路线-v1.15.md)。
 
 ## §1 背景
 

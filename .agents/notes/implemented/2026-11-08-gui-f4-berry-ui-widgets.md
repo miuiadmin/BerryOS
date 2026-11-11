@@ -8,7 +8,7 @@ F2/F3 后 BerryUI 已有可测 core 与主题 token，但 F6 迁移普通 app �
 
 ## Decision
 
-按 [GUI框架地基路线-v1.14.md](../../../docs/GUI框架地基路线-v1.14.md) 完成 F4 普通应用组件集：Scaffold、AppBar、Card、Column、Row、Text、Icon、Button、ListItem、Switch、Divider、Scroll、EmptyState。新增 add-only `ViewKind::Panel`（kind=10，23B props）作为可绘背景容器；组件模块只组合 ViewSpec/ThemeMetrics/a11y 与 Msg 辅助，不新增第二套布局/渲染/输入算法；FillRoundRect 与 F3 direct surface 共用 coverage 单源。所有组件经 `berry_ui::sdk` 导出；Button/Switch 不承载业务回调，Click 后由 app 更新状态；ScrollView 使用 offset clamp，明确无 clipping，裁剪归 P0。
+按 [GUI框架地基路线-v1.15.md](../../../docs/GUI框架地基路线-v1.15.md) 完成 F4 普通应用组件集：Scaffold、AppBar、Card、Column、Row、Text、Icon、Button、ListItem、Switch、Divider、Scroll、EmptyState。新增 add-only `ViewKind::Panel`（kind=10，23B props）作为可绘背景容器；组件模块只组合 ViewSpec/ThemeMetrics/a11y 与 Msg 辅助，不新增第二套布局/渲染/输入算法；FillRoundRect 与 F3 direct surface 共用 coverage 单源。所有组件经 `berry_ui::sdk` 导出；Button/Switch 不承载业务回调，Click 后由 app 更新状态；ScrollView 使用 offset clamp，明确无 clipping，裁剪归 P0。
 
 ## Alternatives considered
 

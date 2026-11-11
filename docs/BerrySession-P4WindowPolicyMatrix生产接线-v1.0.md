@@ -7,7 +7,7 @@
 > 临时锁定窗，把 desktop miss 焦点保持、HIDE/SHOW refocus、z-order 命中
 > 焦点、锁定窗销毁后的 synthesized CANCEL 逐项接入真实 QMP 链。
 > 执行序权威 =
-> [GUI框架地基路线-v1.14.md](GUI框架地基路线-v1.14.md)。
+> [GUI框架地基路线-v1.15.md](GUI框架地基路线-v1.15.md)。
 
 ## §1 结论
 

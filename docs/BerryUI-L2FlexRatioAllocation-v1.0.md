@@ -5,7 +5,7 @@
 > 定位：GUI-14 L1 后的第一片 flex 基础。只做固定主轴 Row/Col 的剩余
 > 空间比例分配；不重写 constraint-aware measure，不改 Node/AST/wire，
 > 不做 wrap、shrink、basis、min/max 或嵌套 flex 协商。
-> 执行序权威 = [GUI框架地基路线-v1.14.md](GUI框架地基路线-v1.14.md)。
+> 执行序权威 = [GUI框架地基路线-v1.15.md](GUI框架地基路线-v1.15.md)。
 
 ## §1 背景
 
@@ -164,6 +164,10 @@ Rect/Circle 双 None 的 final_size 恰好消费分配 avail
 ```
 
 这保证比例槽就是终值，不需要改 `final_size`。
+
+> L3 起eligible 面已扩展到 transposed container pane；本节是 L2 时点的
+> 叶子面历史快照。现行矩阵见
+> [BerryUI-L3TransposedContainerFlexListDetail-v1.0.md](BerryUI-L3TransposedContainerFlexListDetail-v1.0.md)。
 
 后置：
 

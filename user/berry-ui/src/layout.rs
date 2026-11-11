@@ -513,6 +513,39 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
     }
 }
 
+/// L3 orientation-aware eligible 面：父 Row 消费水平主轴、父 Col 消费
+/// 纵主轴。叶子维持 L2 双 None 契约；容器 pane 只开放“transposed主轴
+/// None”形态——Row 中 Col/Grid/Panel、Col 中 Row。同向嵌套的主轴是
+/// intrinsic，不入slot，写/读侧同源拒。
+pub(crate) fn flex_eligible_props(
+    nodes: &[Option<Node>],
+    idx: usize,
+    props: &Props,
+) -> bool {
+    let Some(child) = nodes.get(idx).and_then(|o| o.as_ref()) else {
+        return false;
+    };
+    let parent_kind = nodes.get(child.parent as usize)
+        .and_then(|o| o.as_ref())
+        .map(|p| p.kind);
+    let horizontal = matches!(parent_kind, Some(ViewKind::Row));
+    let vertical = matches!(parent_kind, Some(ViewKind::Col));
+    let parent_ok = horizontal || vertical;
+    // kind+props 成对匹配：防 builder 误配（Row kind + Rect props 等）
+    // 进入 flex 读侧。
+    match (child.kind, props) {
+        (ViewKind::Rect, Props::Rect(p))
+            if parent_ok && p.w.is_none() && p.h.is_none() => true,
+        (ViewKind::Circle, Props::Circle(p))
+            if parent_ok && p.w.is_none() && p.h.is_none() => true,
+        (ViewKind::Col, Props::Col(p)) if horizontal && p.w.is_none() => true,
+        (ViewKind::Grid, Props::Grid(p)) if horizontal && p.w.is_none() => true,
+        (ViewKind::Panel, Props::Panel(p)) if horizontal && p.w.is_none() => true,
+        (ViewKind::Row, Props::Row(p)) if vertical && p.h.is_none() => true,
+        _ => false,
+    }
+}
+
 /// 活 flex 权重（slot/gen/alive/eligible 四重对拍；残项不参与）。
 fn flex_weight(
     nodes: &[Option<Node>],
@@ -524,13 +557,7 @@ fn flex_weight(
         return None;
     }
     let id = crate::NodeId((((n.gen as u32) << 16) | (slot & 0xFFFF)) as u32);
-    let eligible = matches!(
-        (&n.kind, &n.props),
-        (ViewKind::Rect, Props::Rect(p)) if p.w.is_none() && p.h.is_none()
-    ) || matches!(
-        (&n.kind, &n.props),
-        (ViewKind::Circle, Props::Circle(p)) if p.w.is_none() && p.h.is_none()
-    );
+    let eligible = flex_eligible_props(nodes, slot as usize, &n.props);
     flex.iter().flatten().find(|e| e.node == id).map(|e| e.weight).filter(|_| eligible)
 }
 
