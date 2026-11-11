@@ -2516,6 +2516,23 @@ pub fn console_drained() -> u64 {
     CONSOLE_DRAINED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// console 批量写冲刷（P1）：单 PRINT_LOCK 锁窗把 stage 整段（一次 drain
+/// 突发多条消息的拼接）落串口——**n 条消息 = 1 次锁取放**（原逐条 n 次 =
+/// n 个争用点；3-1a 判例刀只做到单条原子，本面把粒度升到整突发）。TX 走
+/// `uart_write_txff`（写 DR 前查 FR.TXFF——QEMU 宽容、真机不可丢字节；
+/// `uart_putc` 本体不动）。CONSOLE_DRAINED 按整段一次累加（Relaxed 纯计数，
+/// 逐字节 fetch_add 的等价收敛——watchdog 金丝雀只看跨轮递增）。slen 归零。
+fn console_stage_flush(stage: &mut [u8], slen: &mut usize) {
+    if *slen == 0 {
+        return; // 空段不取锁（心跳轮空转零扰动）
+    }
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart::uart_write_txff(&stage[..*slen]);
+        CONSOLE_DRAINED.fetch_add(*slen as u64, core::sync::atomic::Ordering::Relaxed);
+    });
+    *slen = 0;
+}
+
 // ---- P5 A-1：console 输入面（内核 RX 中断的等待/消费侧）----
 
 /// RX Event 的用户位（占用登记见 [`USER_SIGNAL_BITS`]——1<<32..1<<38 已满，
@@ -2859,7 +2876,8 @@ pub(crate) fn am2b_partial_bit() -> u64 {
 
 /// 4-5a console 服务任务：**首个服务循环**——wait_many [endK:READABLE, 哑
 /// Event:1<<32]（任一命中；10s 心跳帽，空等超时非错误、回环重等）→ drain
-/// recv 排空本端队列 → 逐字节 UART + 计数。全真 SVC 链（EL1 入口与 EL0 同权，
+/// recv 排空本端队列 → P1 批量 UART（整突发单 PRINT_LOCK 锁窗 + TXFF 查，
+/// [`console_stage_flush`]) + 计数。全真 SVC 链（EL1 入口与 EL0 同权，
 /// 3-1）；消息纯字节、不携带 handle（recv cap 0）。opt-out 通道 = 固定优先级
 /// 系统服务（recv 不结算 intent 借入——4-3c 五件套之 4 的常驻消费面）。
 ///
@@ -2932,6 +2950,11 @@ extern "C" fn task_console(arg: usize) -> ! {
     let mut fb_drop: u64 = 0;
     let mut rx_total: u64 = 0;
     let mut rx_ok_done = false;
+    // P1 批量写：drain 突发汇流缓冲——一次 drain 突发 ≤ CHAN_DEPTH(8) ×
+    // CHAN_MSG_MAX(256) = 2048B，整突发单锁窗写完（SMP 下生产者边排边灌的
+    // 超界段 = 中途冲刷续排，见 drain 循环）。栈 16KB，局部总量 ~2.8KB 安全。
+    let mut stage = [0u8; 2048];
+    let mut slen = 0usize;
     let (mut n, mut nh): (u64, u64);
     loop {
         assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "console: clock_read");
@@ -3062,21 +3085,6 @@ extern "C" fn task_console(arg: usize) -> ! {
                 break; // 排空——回外层阻塞等
             }
             assert_eq!(r2, 0, "console: recv 异常");
-            // 3-1a 判例刀（smoke-smp 相 2 实抓「LSN oBk n=7」）：用户打印
-            // drain 改整条消息 PRINT_LOCK 包络——原逐字节裸 uart_putc 与
-            // ktest 矩阵任务单字符直写者**字节级并发**（无共同锁面），标记
-            // 行中段可被织入单字符 → smoke grep 假 FAIL（840s 假阴性）。包
-            // 络后矩阵字符只能落消息前后（整条原子），标记恒完整。
-            // with_print_lock 包络 = preempt 计数对（G43 改版 G3-1c-1——
-            // 任务态持锁期 IRQ 解蔽，tick/SGI 抢占支按计数闭门「入而不切」；
-            // 详 kern_lock 模块头/§A114 追记）；n ≤ 256B @ QEMU PL011 TX
-            // 恒 ready = 微秒级锁窗。
-            berry_hal_aarch64::kern_lock::with_print_lock(|| {
-                for i in 0..n as usize {
-                    berry_hal_aarch64::uart_putc(buf[i]);
-                    CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                }
-            });
             // GUI-1 段②：fb 上屏 fan-out——整段 best-effort 一发（n ≤ 256B
             // = channel 内联额度内；满 -EBUSY/-EAGAIN → 丢弃 + fb_drop 计数
             // 不重试不阻塞，保串口主路——guifbd 未起（boot 早期）/慢的输出
@@ -3102,7 +3110,21 @@ extern "C" fn task_console(arg: usize) -> ! {
                     fb_drop += 1;
                 }
             }
+            // P1 批量写：消息字节入 stage，整突发一窗落串口（3-1a 判例刀的
+            // 粒度升级——原逐条消息一个 PRINT_LOCK 窗 = 每条一个争用点 +
+            // ktest 矩阵单字符直写者的 n 次争用面；批量后整突发原子，矩阵
+            // 字符只能落突发前后，标记恒完整（判例刀语义只增不减）。消息
+            // 间字节序保持（stage 顺序拼接）。stage 满即中途冲刷（SMP 生产
+            // 者边排边灌的界；单核队列深 8 → 整突发恰一窗）。
+            if slen + n as usize > stage.len() {
+                console_stage_flush(&mut stage, &mut slen);
+            }
+            stage[slen..slen + n as usize].copy_from_slice(&buf[..n as usize]);
+            slen += n as usize;
         }
+        // 突发收口：整段 stage 单锁窗写完（recv 非阻塞 → 突发边界即冲刷点，
+        // 延迟上限 = 本突发字节数，无跨 wait 滞留）。
+        console_stage_flush(&mut stage, &mut slen);
     }
 }
 
