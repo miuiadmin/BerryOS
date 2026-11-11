@@ -26,6 +26,12 @@
 
 version = 1
 
+# P3 装载期数据面（案 a，2026-11-11）：`app/*.bap` 条目的伴生 `*.bap.sig`
+# **不在本表登记**——mkcpio `sig_companions` 按同名+.sig 直映射自动收编
+# （sign-user 产 .bap.sig 与 .bap 共置 userbins/；缺席零漂移=未签名默认
+# 构建逐字节同旧链；裁决记录全文 = tools/mkcpio.py 同名节注）。加 app
+# 仍只加一行 .bap——伴生随签名链自动跟车，无第二映射表。
+
 [entries]
 "app/APPDEMO.bap" = "userbins/app/APPDEMO.bap"
 "app/APPQUIET.bap" = "userbins/app/APPQUIET.bap"

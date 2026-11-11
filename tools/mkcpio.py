@@ -19,6 +19,10 @@
     **缺席 = 位置参数路零漂移**（位置参数路不 imports tomllib——Python ≥3.11
     依赖只落 --manifest 路，gen_abi 同先例）；未知条目（不在表内）行为
     不变：本工具不持白名单，条目合法性只看 name/path 形。
+  - `.bap` 条目的伴生 `.sig` 自动收编（P3 装载期数据面案 a——裁决记录与
+    规则见 `sig_companions` 头注）：构建树上 `<path>.sig` 在席即随档进
+    归档（`<name>.sig` 同名直映；显式条目胜出；缺席零漂移——未签名默认
+    构建逐字节同旧链）。
   - `.berryver` 根条目（ver-hard B 路·rootfs 身份烙印）：每次 CLI 归档
     进程内自取数附加——单行文本 `"<git-describe>|level <N>|v<semver>"`
     （ident 降级链与 kernel/build.rs `git_ident` 同构：describe --tags
@@ -202,6 +206,49 @@ def merge_items(positional: list, manifest: dict) -> list:
         raise SystemExit(f"mkcpio: FAIL: 条目撞名 {dups}"
                          f"（--manifest 与 CLI 双源同名——归档内名须唯一）")
     return items
+
+
+# ─── P3 装载期数据面（案 a）：.bap 伴生 .sig 收编 ──────────────────────
+#
+# 裁决记录（2026-11-11，五行为限——任务书 P3 侦察裁决；完整论证=报告）：
+# ① 案 a=.sig 伴生入 rootfs（mkcpio 同名+.sig 直映射）：零新 IO 面、消费端
+#   svcmgr 走查对 app/*.bap.sig 现=静默忽略（守卫几何收集=后续刀）——**选此**。
+# ② 案 b=镜像 /SOURCE/ 索引经 fsmgr FAT 读：装载守卫期 fsmgr/fs RPC 序约束
+#   + 索引 TLV 设备侧解析面俱未开张，侵入 ≫ a，弃；案 c=混合 ⊃ a，v1 弃。
+# ③ QEMU 可验性：案 a 随 rootfs 相天然可验（伴生在档/缺席双态 smoke 证）。
+# ④ 签名链配套已立法：sign-user 产 .bap.sig 与 .bap 共置 userbins/（命名
+#   直映）、gensourceindex load_app_entries 同口径——本函数只补 mkcpio 缝。
+# ⑤ 惰性面：伴生缺席 = 条目零新增 = 归档逐字节零漂移（selftest 钉板）。
+
+SIG_SUFFIX = ".sig"
+
+
+def sig_companions(items: list) -> list:
+    """.bap 条目的伴生 .sig 自动收编（P3 数据面案 a——裁决记录见上）。
+
+    规则：对每条 `name=path` 且 name 以 `.bap` 结尾的条目，若构建树上
+    `path + ".sig"` 在席且条目表中无显式 `name + ".sig"` 条目，则追加
+    `name + ".sig" = path + ".sig"`。三条硬性质：
+    - **同名+.sig 直映**：伴生名/路径由原条目机械派生，零第二映射表
+      （sign-user/gensourceindex 既有约定面，SDK-2 §三 分离件共置）；
+    - **显式胜出**：已显式列出的 .sig 条目不被自动收编重复（撞名 = 归档
+      内双条目静默错字节面——merge_items 撞名拒同纪律，此处让位不炸）；
+    - **缺席零漂移**：伴生文件不在席 = 条目集不变 = 归档逐字节同旧链
+      （未签名默认构建零扰动；确定性合同「同输入同字节」不破——构建树
+      文件在席性即输入）。"""
+    explicit = {it.partition("=")[0] for it in items}
+    out = []
+    for it in items:
+        name, sep, path = it.partition("=")
+        if not sep or not name.endswith(".bap"):
+            continue
+        cname = name + SIG_SUFFIX
+        if cname in explicit:
+            continue
+        cpath = path + SIG_SUFFIX
+        if os.path.exists(cpath):
+            out.append(f"{cname}={cpath}")
+    return out
 
 
 def selftest_manifest() -> int:
@@ -411,6 +458,68 @@ def selftest_berryver() -> int:
     return 0
 
 
+def selftest_sig_companion() -> int:
+    """P3 数据面案 a：伴生 .sig 收编面守卫（selftest_manifest 同纪律——
+    CLI 子进程真跑 + `mkapp._cpio_entries` 宿主侧对读；改本面必跑）。
+    四性质逐腿钉：直映收编 / 非 .bap 不收 / 显式胜出无重复 / 缺席零漂移。"""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from mkapp import _cpio_entries
+
+    me = os.path.abspath(__file__)
+    with tempfile.TemporaryDirectory() as td:
+        # 布景：a.bap+伴生（直映腿）、bin/zz+stray .sig（非 .bap 不收腿）、
+        # b.bap+显式列出的 b.bap.sig=别处件（显式胜出腿）。
+        bap = Path(td) / "a.bap"
+        bap.write_bytes(b"\x11" * 33)
+        sig = Path(td) / "a.bap.sig"
+        sig_payload = b"\x22" * 21
+        sig.write_bytes(sig_payload)
+        zz = Path(td) / "zz"
+        zz.write_bytes(b"\x33" * 5)
+        (Path(td) / "zz.sig").write_bytes(b"\x44" * 7)  # 非 .bap 的 stray
+        bap2 = Path(td) / "b.bap"
+        bap2.write_bytes(b"\x55" * 9)
+        explicit_sig = Path(td) / "explicit.sig"  # 显式条目指向别处件
+        explicit_sig.write_bytes(b"\x66" * 13)
+        out = Path(td) / "o.cpio"
+        r = subprocess.run(
+            [sys.executable, me, str(out),
+             f"app/a.bap={bap}", f"bin/zz={zz}",
+             f"app/b.bap={bap2}", f"app/b.bap.sig={explicit_sig}"],
+            capture_output=True, text=True)
+        assert r.returncode == 0, f"CLI 跑挂：{r.stderr}"
+        ent = dict(_cpio_entries(out.read_bytes()))
+        assert ent[b"app/a.bap.sig"] == sig_payload, "伴生直映收编（内容逐字节）"
+        assert b"bin/zz.sig" not in ent, "非 .bap 条目的 stray .sig 不得收编"
+        assert ent[b"app/b.bap.sig"] == b"\x66" * 13, "显式条目胜出（内容=显式件）"
+        assert sum(1 for n in ent if n == b"app/b.bap.sig") == 1, "显式+自动无双条目"
+        # 缺席零漂移：撤伴生后重建 == 从未有伴生的对照档（逐字节）。
+        sig.unlink()
+        out2 = Path(td) / "o2.cpio"
+        r2 = subprocess.run(
+            [sys.executable, me, str(out2),
+             f"app/a.bap={bap}", f"bin/zz={zz}",
+             f"app/b.bap={bap2}", f"app/b.bap.sig={explicit_sig}"],
+            capture_output=True, text=True)
+        assert r2.returncode == 0, f"对照 CLI 跑挂：{r2.stderr}"
+        ent2 = dict(_cpio_entries(out2.read_bytes()))
+        assert b"app/a.bap.sig" not in ent2, "伴生缺席不得残留条目"
+        ctrl = Path(td) / "ctrl.cpio"  # 纯手工对照组：同条目、无伴生历史
+        bap_alt = Path(td) / "a_alt.bap"
+        bap_alt.write_bytes(b"\x11" * 33)
+        r3 = subprocess.run(
+            [sys.executable, me, str(ctrl),
+             f"app/a.bap={bap_alt}", f"bin/zz={zz}",
+             f"app/b.bap={bap2}", f"app/b.bap.sig={explicit_sig}"],
+            capture_output=True, text=True)
+        assert r3.returncode == 0, f"对照 CLI 跑挂：{r3.stderr}"
+        assert out2.read_bytes() == ctrl.read_bytes(), "缺席零漂移（逐字节同对照）"
+    print("mkcpio: selftest-sig-companion ok")
+    return 0
+
+
 def selftest_split() -> int:
     """`--selftest-split`：切分面纯函数守卫（mkfat --check-fixture 同位纪律
     ——改本文件必跑；A1-3b 挂 just test-host 前置）+ V13 manifest 加载面
@@ -496,6 +605,8 @@ def selftest_split() -> int:
     selftest_manifest()
     # ver-hard B 路：.berryver 烙印面守卫串跑（同门收敛——三门一入口）。
     selftest_berryver()
+    # P3 数据面案 a：伴生 .sig 收编面守卫串跑（四门一入口，test-host 零改）。
+    selftest_sig_companion()
     print("mkcpio: selftest-split ok")
     return 0
 
@@ -546,6 +657,10 @@ def main() -> int:
     items = pos[1:]
     if manifest_path is not None:
         items = merge_items(items, load_manifest(manifest_path))
+    # P3 数据面案 a：.bap 伴生 .sig 收编（sign-user 产 .bap.sig 与 .bap
+    # 共置构建树——伴生在席即随档进 rootfs，缺席零漂移；规则/裁决见
+    # sig_companions 头注。位置参数路同收——伴生面 uniform，无表路特例）。
+    items += sig_companions(items)
     # ver-hard B 路：.berryver 是生成式烙印名（进程内自取数）——外部经
     # 位置参数/manifest 注入同名 = 归档内双条目静默错字节面（消费端
     # cpio_find 命中首个），宁在注入口炸（merge_items 撞名拒同纪律）。

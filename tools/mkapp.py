@@ -98,7 +98,10 @@ where=节.键路径，line 仅语法层透传 tomllib 位点、其余域用自�
 偏移/文件名）；--json 模式 OSError 兜底 code="io"；用法错双模式同形
 （stderr __doc__ + exit 2）。单行纪律：执行期间 _HUMAN 总闸关——warn
 忠告行不入 stdout（人读面缺省恒打，字节零改；信封拼装单源 =
-_json_envelope，CLI 分派与 selftest json 腿同走）。
+_json_envelope，CLI 分派与 selftest json 腿同走）。组合语义（2026-11-11
+落注）：--json 与 --sign-key/--verify-key 组合 = 未定义（现行为 = 用法错
+exit 2——混排落 _json_main 兜底）；首消费者出现时随 berryctl §七立法
+（A 轮 risks 原文落注，34 号 §2）。
 
 规范形（第 2 道的比较基准，SDK-1a §3 冻结 + GUI-7 尾增 + 同意面先落件二
 尾增）：`[app]` 五行定序 id/version/entry/type/intent + `[compat]?`

@@ -8,19 +8,26 @@
   gensourceindex.py --rootfs-manifest <toml> [--user-dir <dir>] --out-dir <dir>
                     --source-pk <pk-file> [--source-id <id>]
                     [--index-version N] [--prev <source-index.tlv>]
+                    [--sign-key <sk-file>]
                                       # rootfs app 条目表 → 两件套：
                                       #   <out>/source-index.tlv（条目八字段
                                       #   索引，TLV 单解释器）+
                                       #   <out>/source-keys.txt（源钥清单）
+                                      #   --sign-key 在席 = 索引真签（64B
+                                      #   ed25519 裸签名 → flags.signed=1）；
+                                      #   缺席 = unsigned 诚实降级（兼容）
   gensourceindex.py --verify <source-index.tlv> [--prev <source-index.tlv>]
-                                      # 结构/八字段/单调/签名状态验证
-                                      #   （同目录 source-keys.txt 在席则
-                                      #   两件套对拍）
+                                      # 结构/八字段/单调/签名验证（signed =
+                                      #   berry-sign verify-raw 真验签；同
+                                      #   目录 source-keys.txt 在席则两件套
+                                      #   对拍）
   gensourceindex.py --gen-keys <sk-out> <pk-out>
                                       # 透传 berry-sign keygen（dev 密钥对；
-                                      #   真签面随 #77——berry-sign main.rs
-                                      #   头注「dev/test 面纪律」）
-  gensourceindex.py --selftest       # 零构建依赖自检（合成基准全谱）
+                                      #   签发面纪律 = berry-sign main.rs
+                                      #   头注「dev/test 面纪律」——测试钥
+                                      #   永不真签）
+  gensourceindex.py --selftest       # 零构建依赖自检（合成基准全谱；
+                                      #   berry-sign 在席加跑真签名腿）
 
 条目八字段（v1.2 §五 :88–91——六→八字段，ADR #82 V5 预埋）：
   id（≤24B，berry-manifest ID_MAX 同源）· 三值版本（major/minor/patch
@@ -57,17 +64,21 @@ source-index.tlv v1 布局（**推断**——v1.2 §五只裁「复用 TLV 单�
   lineage_len u8 + lineage ‖ pk_len u8(0|32) + pk ‖ last_revision u32 BE ‖
   cert_len u8 + cert。
 
-  签名覆盖域（**推断**，随 #77/Q3 定形）= "BSRC-TOP" ‖ src_sig 前全字节
-  （BSIG-TOP 域分隔标签同精神，envelope.rs :75–76）。
-  **P2 签名位占位 + 如实注**（任务书「若 blocked/未产则签名位占位+如实
-  注，不硬依」）：berry-sign 现面（P1 产物 main.rs）= keygen/sign/verify
-  .bap 信封三面——`sign` 输出 BSIG 信封（cpio 载荷语义合同），与本索引
-  的 64B 裸签名槽是两份合同；索引字节签名（信封复用案 or sign-raw 子
-  命令）随 #77 落册定形。故 v1 生成器签名槽恒零占位（flags.signed=0）、
-  源钥清单 sig_state=unsigned、stdout 诚实声明——单点缝 = sign_index()
-  （落地只改此函数）。host 面真调用 berry-sign 的现存半边 = --gen-keys
-  （keygen 透传）与 .sig 见证提取后的 berry-sign verify 加固（二进制在
-  席则跑，不在席如实注——不硬依）。
+  签名覆盖域 = "BSRC-TOP" ‖ src_sig 前全字节（BSIG-TOP 域分隔标签同
+  精神，envelope.rs :75–76）。实装法（本轮 #77 索引签名刀）：先构签名
+  预置形（flags.signed=1 + 尾 64B 零槽——build_index(src_sig=64 零字节)）
+  → 对 SRC_LABEL ‖ 槽前全字节签名 → 零槽换真签名——终件「槽前全字节」
+  即被签字节，验证侧零改字节重组覆盖域（无「翻位再签」的重组歧义）。
+  **索引签名实装**（ADR #77 Q3 窗内·P3 前落地的兑现）：--sign-key 在席
+  → 单点缝 sign_index() 调 berry-sign `sign-raw`（64B ed25519 裸签名，
+  **独立合同**——berry-sign `sign` 的 BSIG 信封是 cpio 载荷语义合同，
+  与本槽 64B 裸签名是两份合同不互换；SDK-2 §五 :88「源钥签索引」原义）
+  → flags.signed=1 + 源钥清单 sig_state=signed；--verify 侧真验签
+  （verify_index_signature × berry-sign verify-raw，源钥 = 索引
+  source_pk 自述 + 两件套对拍）；无 --sign-key = 现状面零动（签名槽零
+  占位、flags.signed=0、sig_state=unsigned、stdout 诚实声明——向后
+  兼容，v1 dev 链 unsigned 索引可过 smoke；设备侧对 unsigned 索引的
+  语义 = 设计 §五-Q6 开放问题，随 P3 裁）。
 
 回降拒（v1.2 §九验收线 2「索引版本号回降拒」）：check_index_version =
 berry-crypto ledger.rs check_gen（:319–325「new < seen 拒；等值过〔幂等
@@ -270,8 +281,9 @@ def find_berry_sign() -> str | None:
 
 
 def run_berry_sign(argv: list):
-    """berry-sign 子进程调用（--gen-keys 与 .sig 加固验共用）；不可得 =
-    None（调用方如实注，不硬依）。"""
+    """berry-sign 子进程调用（--gen-keys/.sig 加固验/sign_index 真签/
+    verify_index_signature 真验共用）；不可得 = None（调用方如实注或
+    loud——显式签名面（--sign-key）不静默，加固面不硬依）。"""
     bs = find_berry_sign()
     if bs is None:
         return None
@@ -281,18 +293,66 @@ def run_berry_sign(argv: list):
         return None
 
 
-def sign_index() -> tuple:
-    """索引签名单点缝（P2 占位实装）。返回 (sig_64B|None, 如实注)。
-    覆盖域 = "BSRC-TOP" ‖ 索引体（头注推断）。v1 不签名：berry-sign 现面
-    sign = .bap 信封合同（cpio 载荷 + BSIG 信封输出），与本槽 64B 裸签名
-    是两份合同——真签名实装随 #77 定形（信封复用案 or sign-raw 子命令），
-    落地只改本函数。"""
-    if find_berry_sign() is None:
-        return None, ("berry-sign 未产/不可得（BERRY_SIGN 或 target-cargo/"
-                      "/tmp/target-p{1,2} 惯用位均缺——P1 产物先构建）")
-    return None, ("berry-sign 现面（keygen/sign/verify .bap 信封）不含索引"
-                  "字节签名——索引签名实装随 #77 定形（Q3 重议窗开到 P3 前，"
-                  "24 号 §4.2-2）")
+def sign_index(index_form: bytes, sk_path: str | None) -> tuple:
+    """索引签名单点缝（#77/Q3 窗内实装——P2 占位的兑现位，语义不变只翻
+    真签）。index_form = 签名预置形（flags.signed=1 + 尾 64B 零槽——
+    build_index(src_sig=b"\\x00"*SIG_LEN) 产物）；覆盖域 = SRC_LABEL ‖
+    槽前全字节（模块头注布局节）。返回 (sig_64B | None, 如实注)：
+    - sk_path 缺席 → (None, 如实注)——unsigned 诚实降级（向后兼容，
+      调用方不换槽、清单 sig_state=unsigned）；
+    - sk_path 在席 → berry-sign `sign-raw`（64B ed25519 裸签名——独立
+      于 .bap 信封合同，模块头注「索引签名实装」节）；berry-sign 不可得
+      /子进程拒 = loud die（显式签名面不静默降级——mkapp sign 同纪律）。
+    """
+    if sk_path is None:
+        return None, ("--sign-key 缺席——索引未签（签名槽零占位 + "
+                      "flags.signed=0 + 清单 sig_state=unsigned，向后兼容"
+                      "现状面；签名面 = sign_index() × berry-sign sign-raw）")
+    cover = SRC_LABEL + index_form[:-SIG_LEN]
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="gsi-sign-") as td:
+        cover_p = os.path.join(td, "cover.bin")
+        sig_p = os.path.join(td, "src.sig")
+        with open(cover_p, "wb") as f:
+            f.write(cover)
+        r = run_berry_sign(["sign-raw", sk_path, cover_p, "--out", sig_p])
+        if r is None:
+            die("berry-sign 不可得（设 BERRY_SIGN 或先 CARGO_TARGET_DIR="
+                "/tmp/target-p2 cargo build --manifest-path user/Cargo.toml "
+                "-p berry-crypto --bin berry-sign --target "
+                "aarch64-apple-darwin——do_gen_keys 同文案）——--sign-key "
+                "显式签名面不静默降级（mkapp sign.tool-missing 同纪律）")
+        if r.returncode != 0:
+            die(f"索引签名拒：{(r.stderr or r.stdout).strip()}")
+        with open(sig_p, "rb") as f:
+            sig = f.read()
+    if len(sig) != SIG_LEN:
+        die(f"sign-raw 产物非 {SIG_LEN}B（got {len(sig)}B——裸签名独立合同面）")
+    return sig, (f"berry-sign sign-raw 64B ed25519 裸签名（覆盖域 "
+                 f"{SRC_LABEL!r} ‖ 槽前 {len(cover) - len(SRC_LABEL)}B；"
+                 "独立于 .bap 信封合同）")
+
+
+def verify_index_signature(raw: bytes, source_pk: bytes, src_sig: bytes):
+    """索引签名真验（--verify 消费面；selftest 复用）。覆盖域重建 =
+    SRC_LABEL ‖ 槽前全字节 → berry-sign `verify-raw`（pk = 索引
+    source_pk 自述——两件套对拍另执法清单 pk 一致）。返回 True / False /
+    None：None = berry-sign 不可得（如实注跳过——零构建依赖纪律，结构面
+    已由 parse_index 全量执法；False = 篡改/换钥，调用方 loud 拒）。"""
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="gsi-verify-") as td:
+        pkf = os.path.join(td, "pk.bin")
+        cover_p = os.path.join(td, "cover.bin")
+        sig_p = os.path.join(td, "sig.bin")
+        for path, data in ((pkf, source_pk),
+                           (cover_p, SRC_LABEL + raw[:-SIG_LEN]),
+                           (sig_p, src_sig)):
+            with open(path, "wb") as f:
+                f.write(data)
+        r = run_berry_sign(["verify-raw", pkf, cover_p, sig_p])
+    if r is None:
+        return None
+    return r.returncode == 0
 
 
 # ---- 索引构造/解析（TLV 单解释器——本文件是唯一编码/解码点）----
@@ -489,7 +549,7 @@ def parse_index(data: bytes) -> Index:
         die("flags.signed=1 但签名槽全零（谎报位——拒）")
     if not signed and src_sig != b"\x00" * SIG_LEN:
         die("flags.signed=0 但签名槽非零（未签索引携带签名字节——单一"
-            "解释拒；签名随 #77 定形后翻位）")
+            "解释拒；真签名走 --sign-key → flags.signed=1 同步翻位）")
     keys = [e.key() for e in entries]
     if keys != sorted(keys) or len(set(keys)) != len(keys):
         die("条目非 id 升序或重复（canonical 单形——build 对拍前提）")
@@ -630,10 +690,20 @@ def do_generate(args) -> int:
                                     parse_index(f.read()).index_ver)
         except OSError as e:
             die(f"读 {args.prev}：{e}")
-    # 签名位占位 + 如实注（任务书纪律）：单点缝 sign_index()——v1 恒槽零。
-    index_bytes = build_index(entries, args.index_version, pk)
-    _sig, note = sign_index()
-    keys_bytes = build_keys_listing(args.source_id, pk, signed=False)
+    # 索引签名（#77 实装）：--sign-key 在席 = 单点缝 sign_index() 真签
+    #（签名预置形 flags.signed=1 + 64B 零槽 → 覆盖域签名 → 换真签名）；
+    # 缺席 = unsigned 诚实降级（现状面零动——向后兼容）。
+    if args.sign_key:
+        form = build_index(entries, args.index_version, pk,
+                           src_sig=b"\x00" * SIG_LEN)
+        sig, note = sign_index(form, args.sign_key)
+        index_bytes = form[:-SIG_LEN] + sig
+        signed = True
+    else:
+        index_bytes = build_index(entries, args.index_version, pk)
+        _, note = sign_index(None, None)
+        signed = False
+    keys_bytes = build_keys_listing(args.source_id, pk, signed=signed)
     os.makedirs(args.out_dir, exist_ok=True)
     ipath = os.path.join(args.out_dir, INDEX_NAME)
     kpath = os.path.join(args.out_dir, KEYS_NAME)
@@ -646,8 +716,11 @@ def do_generate(args) -> int:
           f" index_version={args.index_version} witnessed={n_wit}"
           f" last_revision={last_rev}")
     print(f"gensourceindex: {kpath} {len(keys_bytes)}B source_id="
-          f"{args.source_id} sig_state=unsigned")
-    print(f"gensourceindex: 注: 签名槽占位（如实注）：{note}")
+          f"{args.source_id} sig_state={'signed' if signed else 'unsigned'}")
+    if signed:
+        print(f"gensourceindex: 注: 签名槽在席（flags.signed=1）：{note}")
+    else:
+        print(f"gensourceindex: 注: 索引未签（如实注）：{note}")
     print("gensourceindex: ok（两件套——mkimage --source-instance 挂接）")
     return 0
 
@@ -655,9 +728,10 @@ def do_generate(args) -> int:
 def do_verify(args) -> int:
     try:
         with open(args.verify, "rb") as f:
-            idx = parse_index(f.read())
+            raw = f.read()
     except OSError as e:
         die(f"读 {args.verify}：{e}")
+    idx = parse_index(raw)
     # 八字段齐全性：parse 全量执法后逐条复核在场（验收线 2——id/三值版本/
     # size/哈希/key_lineage/公钥见证/last_revision/cert_status 八字段齐）。
     n8 = sum(1 for e in idx.entries
@@ -681,9 +755,24 @@ def do_verify(args) -> int:
         check_index_version(idx.index_ver, prev_ver)
         print(f"gensourceindex:   单调: prev={prev_ver} → "
               f"{idx.index_ver} 过（无回降——check_gen 同口径）")
-    if not idx.signed:
-        print("gensourceindex:   签名: 占位如实注——索引未签（P2 工具面；"
-              "验签面随 #77 定形，Q3 重议窗开到 P3 前）")
+    if idx.signed:
+        # 真验签（#77 实装）：覆盖域 = SRC_LABEL ‖ 槽前全字节，源钥 =
+        # 索引 source_pk 自述；berry-sign 不可得 = 如实注跳过（零构建依赖
+        # 纪律——结构面已全量执法），验拒 = loud die。
+        vr = verify_index_signature(raw, idx.source_pk, idx.src_sig)
+        if vr is True:
+            print("gensourceindex:   签名: 真验过（BSRC-TOP 覆盖域 × "
+                  "berry-sign verify-raw，源钥 ed25519）")
+        elif vr is False:
+            die(f"{args.verify}: 签名验拒——BSRC-TOP 覆盖域对不上（索引被"
+                "篡改或源钥不符；重签或回查 --sign-key/--source-pk 配对）")
+        else:
+            print("gensourceindex:   签名: 未验（如实注——berry-sign 不可得"
+                  "，结构面已全量执法；验签面 = verify_index_signature）")
+    else:
+        print("gensourceindex:   签名: 占位如实注——索引未签（无 --sign-key"
+              " 产物；向后兼容面——dev 链 unsigned 索引，设备侧语义随 P3 "
+              "裁〔设计 §五-Q6〕）")
     kpath = os.path.join(os.path.dirname(os.path.abspath(args.verify)),
                          KEYS_NAME)
     if os.path.isfile(kpath):
@@ -959,6 +1048,78 @@ def selftest() -> int:
         and ls.get("/KERNEL.ELF", (0, b""))[0] == 5000,
         "既有四件套不漂移（HELLO/KERNEL 回读）")
 
+    # ⑩ 签名索引合成腿（零构建依赖）：64B 合成槽 round-trip + 清单
+    #     signed 位 + unsigned 兼容（无 --sign-key 现状面钉板）。
+    synth = bytes(range(0xC0, 0xC0 + SIG_LEN))
+    sform = build_index([_mk_entry(), _mk_entry(eid="ZETA")], 9, SELFTEST_PK,
+                        src_sig=synth)
+    sidx = parse_index(sform)
+    leg(sidx.signed and sidx.src_sig == synth
+        and build_index(sidx.entries, sidx.index_ver, sidx.source_pk,
+                        sidx.src_sig) == sform,
+        "签名索引 round-trip（合成 64B 槽——flags.signed=1 + 字节恒等）")
+    leg(parse_keys_listing(build_keys_listing("berryos", SELFTEST_PK,
+                                              signed=True))[2] is True,
+        "清单 signed 位（两件套对拍面 sig_state=signed）")
+    uidx = parse_index(build_index([_mk_entry()], 2, SELFTEST_PK))
+    leg(not uidx.signed and uidx.src_sig == b"\x00" * SIG_LEN,
+        "unsigned 兼容（无 --sign-key 现状面：flags.signed=0 + 槽恒零）")
+
+    # ⑪ 真签名腿（berry-sign 在席则跑；不在席如实注跳过——零构建依赖
+    #     自检纪律）：单点缝全链 keygen → 预置形 → sign_index 真签 →
+    #     换槽 → parse → verify_index_signature 正/篡改拒/换钥拒 →
+    #     mkimage 挂接镜像内对拍（E2E 机制面前置；全链 CLI 实跑 = E2E）。
+    if find_berry_sign() is None:
+        print("  selftest 注: 真签名腿跳过（berry-sign 不可得——合成腿⑩"
+              "已钉布局面；设 BERRY_SIGN 或先构建 berry-sign 后复跑）")
+    else:
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="gsi-selftest-") as td:
+            sk_p = os.path.join(td, "t.sk")
+            pk_p = os.path.join(td, "t.pk")
+            r = run_berry_sign(["keygen", sk_p, pk_p])
+            leg(r is not None and r.returncode == 0,
+                "真签名 keygen（dev 钥——测试钥永不真签纪律）")
+            with open(pk_p, "rb") as f:
+                rpk = f.read()
+            form = build_index([_mk_entry(), _mk_entry(eid="ZETA")], 4, rpk,
+                               src_sig=b"\x00" * SIG_LEN)
+            sig, note = sign_index(form, sk_p)
+            signed_idx = form[:-SIG_LEN] + sig
+            leg(isinstance(sig, bytes) and len(sig) == SIG_LEN,
+                f"sign_index 真签（{note}）")
+            pidx = parse_index(signed_idx)
+            leg(pidx.signed and pidx.src_sig == sig and pidx.source_pk == rpk,
+                "签名索引 parse（flags.signed=1 + 槽在席 + 源钥自述）")
+            leg(build_index(pidx.entries, pidx.index_ver, pidx.source_pk,
+                            pidx.src_sig) == signed_idx,
+                "签名索引 round-trip 字节恒等（canonical 单形不破）")
+            leg(verify_index_signature(signed_idx, rpk, sig) is True,
+                "verify_index_signature 正样例过（berry-sign verify-raw）")
+            tam = bytearray(signed_idx)
+            tam[60] ^= 0x01  # 条目区一字节（头 46B 后 size 域——结构仍过检）
+            tam_idx = parse_index(bytes(tam))
+            leg(verify_index_signature(bytes(tam), tam_idx.source_pk,
+                                       tam_idx.src_sig) is False,
+                "验签拒篡改（条目区翻 1 字节——BSRC-TOP 覆盖槽前全字节）")
+            leg(verify_index_signature(signed_idx, SELFTEST_PK2, sig) is False,
+                "验签拒换钥（错源钥）")
+            keys_signed = build_keys_listing("berryos", rpk, signed=True)
+            puts_r = [("/EFI/BOOT/BOOTAA64.EFI", b"\x00\x31\x01\xaa" * 800),
+                      ("/HELLO.TXT", b"berryboot efi hello\n"),
+                      ("/KERNEL.ELF", bytes((i * 31 + 7) % 256
+                                            for i in range(5000))),
+                      ("/INITRD.BIN", b"berryos initrd stub\n"),
+                      (mkimage.SRCINST_FAT_INDEX, signed_idx),
+                      (mkimage.SRCINST_FAT_KEYS, keys_signed)]
+            img_r, _ = mkimage.build_image(puts_r, 9)
+            ls_r = fat16_ls(img_r)
+            leg(ls_r.get(mkimage.SRCINST_FAT_INDEX)
+                == (len(signed_idx), signed_idx)
+                and ls_r.get(mkimage.SRCINST_FAT_KEYS)
+                == (len(keys_signed), keys_signed),
+                "镜像内对拍（真签名两件套——尺寸+内容字节）")
+
     if bad:
         print(f"gensourceindex: selftest FAIL x{bad}")
         return 1
@@ -979,17 +1140,24 @@ def main() -> int:
     ap.add_argument("--out-dir", help="两件套输出目录")
     ap.add_argument("--source-pk", help="源钥 pk 文件（32B——berry-sign "
                                         "keygen 产物）")
+    ap.add_argument("--sign-key", metavar="SK",
+                    help="源钥 sk 文件（32B）——在席则索引真签（单点缝 "
+                         "sign_index() × berry-sign sign-raw → 64B 裸签名"
+                         " + flags.signed=1）；缺席则 unsigned 诚实降级"
+                         "（向后兼容）")
     ap.add_argument("--source-id", default="berryos",
                     help="官方源 id（默认 berryos；1..=16B [a-z0-9-]）")
     ap.add_argument("--index-version", type=int, default=1,
                     help="索引级单调版本号（默认 1；--prev 在席则回降拒）")
     ap.add_argument("--prev", help="前代 source-index.tlv（单调水位对账）")
     ap.add_argument("--verify", help="验证既有 source-index.tlv（结构/八字段"
-                                     "/单调/签名状态/两件套对拍）")
+                                     "/单调/签名验证（signed = 真验签）/"
+                                     "两件套对拍）")
     ap.add_argument("--gen-keys", nargs=2, metavar=("SK-OUT", "PK-OUT"),
                     help="透传 berry-sign keygen 产 dev 密钥对")
     ap.add_argument("--selftest", action="store_true",
-                    help="零构建依赖自检（合成基准全谱）")
+                    help="零构建依赖自检（合成基准全谱；berry-sign 在席"
+                         "加跑真签名腿）")
     args = ap.parse_args()
 
     if args.selftest:
@@ -997,9 +1165,12 @@ def main() -> int:
     if args.gen_keys:
         return do_gen_keys(args.gen_keys[0], args.gen_keys[1])
     if args.verify:
-        if args.out_dir or args.source_pk:
+        if args.out_dir or args.source_pk or args.sign_key:
             ap.error("--verify 独占（不与生成面混用）")
         return do_verify(args)
+    if args.sign_key and not args.source_pk:
+        ap.error("--sign-key 需与 --source-pk 同席（pk 进索引自述 + sk 签名"
+                 "——钥对同源）")
     if not (args.out_dir and args.source_pk):
         ap.error("生成需 --out-dir + --source-pk（或用 --verify/--gen-keys/"
                  "--selftest）")

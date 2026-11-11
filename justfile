@@ -378,7 +378,7 @@ sign-user: build-user
         n=$((n + 1))
     done
     # 官方源静态实例两件套 → user/userbins/source/（gitignored 产物）。
-    python3 tools/gensourceindex.py \
+    python3 tools/gensourceindex.py \ --sign-key tools/testkeys/dev/dev.sk
         --rootfs-manifest tools/rootfs-manifest.toml \
         --user-dir user \
         --out-dir user/userbins/source \

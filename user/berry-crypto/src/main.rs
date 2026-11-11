@@ -15,9 +15,22 @@
 //!   bap 全字节 SHA-512/256 摘要 ‖ manifest 关键域摘要）。
 //! - `berry-sign verify <pk> <bap> [<sig>]` —— 验签：exit 0 = 过，
 //!   exit 1 = 拒（stderr 一行拒因）。sig 缺省 = `<bap>.sig`。
+//! - `berry-sign sign-raw <sk> <in> [--out <sig-out>]` —— **64B ed25519
+//!   裸签名**（RFC 8032 §5.1.6 确定性 nonce；覆盖域 = 输入文件全字节，
+//!   **无域分隔标签**——标签归调用方消息构造，如 gensourceindex 的
+//!   `"BSRC-TOP"` 前缀）。`--out` 缺省 = stdout 原始二进制 64B（管道面
+//!   零附注字节）；`--out` = 落盘 64B + stdout 人读行。**独立合同**：
+//!   非 BSIG 信封——`sign` 输出信封（cpio 载荷语义合同，.bap 面），本
+//!   子命令只出裸签名，两份合同不互换（ADR #77：索引 64B 裸签名槽是
+//!   独立合同，Q3 窗内 SDK-2 §五「源钥签索引」的 host 半边；消费方 =
+//!   gensourceindex `sign_index()`/`--verify`）。
+//! - `berry-sign verify-raw <pk> <msg> <sig>` —— 裸签名验签（sign-raw
+//!   镜像面）：exit 0 = 过，exit 1 = 拒。sig 非 64B = loud 拒。
 //! - `berry-sign selftest` —— v1.2 §九验收线 1 四件自检（正样例 +
 //!   篡改/断链/换钥三负样例；宿主最短路径归属，见 selftest 头注）+
-//!   admit 腿（P3-0 三档/防剥离/TOFU/sideload/水位/诚实降级在制件）。
+//!   sign-raw 腿（RFC 8032 §7.1 TEST 1/2 官方向量抽查——64B 逐字节
+//!   钉板 + 篡改/换钥负）+ admit 腿（P3-0 三档/防剥离/TOFU/sideload/
+//!   水位/诚实降级在制件）。
 //! - `berry-sign admit <policy.toml> <ledger.toml> <dir> [--emit-ledger
 //!   <out>] [--sideload <id>]… [--no-increment]` —— P3-0 件二：目录内
 //!   `*.bap`+`*.bap.sig` 逐件装载裁决（决策行 stdout + 可选增量账本
@@ -106,8 +119,11 @@ mod cli {
                     ExitCode::from(2)
                 }
             },
+            ["sign-raw", sk, inp] => cmd_sign_raw_cli(sk, inp, None),
+            ["sign-raw", sk, inp, "--out", out] => cmd_sign_raw_cli(sk, inp, Some(out)),
             ["verify", pk, bap] => run(cmd_verify(pk, bap, &format!("{bap}.sig"))),
             ["verify", pk, bap, sig] => run(cmd_verify(pk, bap, sig)),
+            ["verify-raw", pk, msg, sig] => run(cmd_verify_raw(pk, msg, sig)),
             ["selftest"] => run(selftest()),
             ["admit", rest @ ..] => cmd_admit_main(rest),
             _ => {
@@ -115,7 +131,9 @@ mod cli {
                     "berry-sign: 参数不合规\n\
                      用法: berry-sign keygen <sk-out> <pk-out>\n\
                      \x20     berry-sign sign <sk> <bap> [--gen N]\n\
+                     \x20     berry-sign sign-raw <sk> <in> [--out <sig-out>]\n\
                      \x20     berry-sign verify <pk> <bap> [<sig>]\n\
+                     \x20     berry-sign verify-raw <pk> <msg> <sig>\n\
                      \x20     berry-sign selftest\n\
                      \x20     berry-sign admit <policy.toml> <ledger.toml> <dir>\n\
                      \x20                 [--emit-ledger <out>] [--sideload <id>]… [--no-increment]"
@@ -228,6 +246,71 @@ mod cli {
         env.top_sig = ed25519::sign(sk, &msg[..mn]);
         let n2 = env.encode(&mut buf).map_err(|e| format!("sign: 信封重发射拒 {e:?}"))?;
         Ok(buf[..n2].to_vec())
+    }
+
+    // ---- sign-raw / verify-raw：64B 裸签名（索引槽独立合同）----
+
+    /// sign-raw CLI 面：`--out` 缺省 = stdout 原始 64B（零附注——管道纯度，
+    /// 不走 `run()` 的 println）；`--out` = 落盘 + 人读行。
+    fn cmd_sign_raw_cli(sk: &str, input: &str, out: Option<&str>) -> ExitCode {
+        match cmd_sign_raw(sk, input, out) {
+            Ok(Some(line)) => {
+                println!("{line}");
+                ExitCode::SUCCESS
+            }
+            Ok(None) => ExitCode::SUCCESS, // 裸签名已写 stdout
+            Err(e) => {
+                eprintln!("berry-sign: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+
+    /// `sign-raw <sk> <in> [--out <sig>]`：输入文件全字节 → ed25519 裸签名
+    /// 64B（RFC 8032 §5.1.6 确定性 nonce；无域分隔标签——标签归调用方，
+    /// 模块头注「独立合同」段）。selftest 复用（CLI 同路直调）。
+    fn cmd_sign_raw(sk_path: &str, in_path: &str, out_path: Option<&str>) -> Result<Option<String>, String> {
+        let sk = read_exact32(sk_path, "sign-raw")?;
+        let msg = fs::read(in_path).map_err(|e| format!("sign-raw: 读 {in_path}: {e}"))?;
+        let sig = ed25519::sign(&sk, &msg);
+        match out_path {
+            Some(p) => {
+                fs::write(p, sig).map_err(|e| format!("sign-raw: 写 {p}: {e}"))?;
+                Ok(Some(format!(
+                    "sign-raw: {p} 64B（ed25519 裸签名，覆盖域 = {in_path} 全字节——独立于 .bap 信封合同）"
+                )))
+            }
+            None => {
+                use std::io::Write as _;
+                std::io::stdout()
+                    .write_all(&sig)
+                    .map_err(|e| format!("sign-raw: stdout 写失败：{e}"))?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// `verify-raw <pk> <msg> <sig>`：裸签名验签（exit 0/1——`run()` 面）。
+    /// sig 恰 64B 单一解释（非 64B loud 拒——裸签名无容器头可辨）。
+    fn cmd_verify_raw(pk_path: &str, msg_path: &str, sig_path: &str) -> Result<String, String> {
+        let pk = read_exact32(pk_path, "verify-raw")?;
+        let msg = fs::read(msg_path).map_err(|e| format!("verify-raw: 读 {msg_path}: {e}"))?;
+        let sig_v = fs::read(sig_path).map_err(|e| format!("verify-raw: 读 {sig_path}: {e}"))?;
+        if sig_v.len() != SIG_LEN {
+            return Err(format!(
+                "verify-raw: {sig_path} 非 {SIG_LEN}B 裸签名（got {}B）",
+                sig_v.len()
+            ));
+        }
+        let mut sig = [0u8; SIG_LEN];
+        sig.copy_from_slice(&sig_v);
+        if ed25519::verify(&pk, &sig, &msg) {
+            Ok(format!(
+                "verify-raw: {sig_path} OK（ed25519 裸签名——覆盖域 = {msg_path} 全字节）"
+            ))
+        } else {
+            Err("verify-raw: 验签拒（裸签名与消息/公钥不符——篡改或换钥）".to_string())
+        }
     }
 
     // ---- verify：可信 pk + .bap (+ .sig) → exit 0/1 ----
@@ -498,7 +581,11 @@ mod cli {
             println!("  selftest FAIL: sig-neg-wrong-pk 被放行");
             fails += 1;
         }
-        // ⑤ admit 腿（P3-0 件二在制件：三档表/防剥离/TOFU/sideload/
+        // ⑤ sign-raw/verify-raw 腿（#77 索引签名刀：RFC 8032 §7.1 官方向量
+        //    抽查 TEST 1〔空消息 0B 边界〕+ TEST 2〔1B 消息〕——CLI 同路
+        //    直调，产物对官方 sig 逐字节钉板 + 篡改/换钥负）。
+        fails += selftest_sign_raw(dir)?;
+        // ⑥ admit 腿（P3-0 件二在制件：三档表/防剥离/TOFU/sideload/
         //    水位回退/诚实降级/损坏账本保守拒——lib admit 单源的 CLI 面）。
         fails += selftest_admit(dir)?;
         Ok(fails)
@@ -510,6 +597,92 @@ mod cli {
         if !ok {
             *fails += 1;
         }
+    }
+
+    /// hex 串 → 定长字节数组（selftest 向量钉板用；长度不符 = loud）。
+    fn unhex<const N: usize>(s: &str) -> Result<[u8; N], String> {
+        if s.len() != N * 2 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("selftest: 坏 hex 向量（长 {}，应 {} hex）", s.len(), N * 2));
+        }
+        let mut out = [0u8; N];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+                .map_err(|e| format!("selftest: hex 解码拒：{e}"))?;
+        }
+        Ok(out)
+    }
+
+    /// sign-raw/verify-raw 自检腿（#77 索引签名刀）：RFC 8032 §7.1 官方
+    /// 向量抽查——TEST 1（空消息 0B 边界）+ TEST 2（1B 消息 0x72），sk/
+    /// msg 落盘走 CLI 同路（cmd_sign_raw/cmd_verify_raw 直调，不 spawn），
+    /// `--out` 产物对官方 sig 逐字节钉板（vectors.rs RFC8032_ED25519 表
+    /// 同源向量——host bin 面抽查，全量门在 lib vectors 模块）；负样例 =
+    /// 篡改消息拒 + 换钥拒。测试钥纪律：向量的 sk 是公开测试向量（RFC
+    /// 官方公开值），临时文件随目录清场。
+    fn selftest_sign_raw(dir: &std::path::Path) -> Result<usize, String> {
+        fn ps(p: &std::path::Path) -> &str {
+            p.to_str().unwrap_or("<非 UTF-8 路径>")
+        }
+        let mut fails = 0usize;
+        // (名, sk hex, pk hex, msg, sig hex)——RFC 8032 §7.1 TEST 1/2 官方值。
+        let cases: &[(&str, &str, &str, &[u8], &str)] = &[
+            (
+                "TEST 1",
+                "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                b"",
+                "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155\
+                 5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+            ),
+            (
+                "TEST 2",
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+                b"\x72",
+                "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69d\
+                 a085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+            ),
+        ];
+        for (name, sk_hex, pk_hex, msg, sig_hex) in cases {
+            let tag = name.replace(' ', "-");
+            let sk_p = dir.join(format!("sr-{tag}.sk"));
+            let pk_chk: [u8; 32] = unhex(pk_hex)?;
+            let want: [u8; 64] = unhex(sig_hex)?;
+            let sk: [u8; 32] = unhex(sk_hex)?;
+            write_secret(ps(&sk_p), &sk)?;
+            let msg_p = dir.join(format!("sr-{tag}.msg"));
+            fs::write(&msg_p, msg).map_err(|e| format!("selftest: msg 写失败：{e}"))?;
+            let out_p = dir.join(format!("sr-{tag}.sig"));
+            cmd_sign_raw(ps(&sk_p), ps(&msg_p), Some(ps(&out_p)))?;
+            let got = fs::read(&out_p).map_err(|e| format!("selftest: sig 读失败：{e}"))?;
+            leg(got == want, &format!("sign-raw-{tag} RFC 8032 {name} 钉板（64B 逐字节）"),
+                &mut fails);
+            // pk 派生对拍（sk → public_key == 官方 pk）+ verify-raw 正样例。
+            leg(ed25519::public_key(&sk) == pk_chk,
+                &format!("sign-raw-{tag} sk→pk 派生 == 官方向量 pk"), &mut fails);
+            let pk_p = dir.join(format!("sr-{tag}.vpk"));
+            fs::write(&pk_p, pk_chk).map_err(|e| format!("selftest: pk 写失败：{e}"))?;
+            leg(cmd_verify_raw(ps(&pk_p), ps(&msg_p), ps(&out_p)).is_ok(),
+                &format!("verify-raw-{tag} 正样例过"), &mut fails);
+            // 篡改负（msg 改一字节——空消息臂换 1B 新消息替代翻转）。
+            let msg2 = if msg.is_empty() { b"x".to_vec() } else {
+                let mut m = msg.to_vec();
+                m[0] ^= 0x01;
+                m
+            };
+            let msg2_p = dir.join(format!("sr-{tag}.msg2"));
+            fs::write(&msg2_p, &msg2).map_err(|e| format!("selftest: msg2 写失败：{e}"))?;
+            leg(cmd_verify_raw(ps(&pk_p), ps(&msg2_p), ps(&out_p)).is_err(),
+                &format!("verify-raw-{tag}-tamper 消息篡改拒"), &mut fails);
+            // 换钥负（错 pk）。
+            let bad_pk_p = dir.join(format!("sr-{tag}.badpk"));
+            let mut bad_pk = pk_chk;
+            bad_pk[0] ^= 0x01;
+            fs::write(&bad_pk_p, bad_pk).map_err(|e| format!("selftest: badpk 写失败：{e}"))?;
+            leg(cmd_verify_raw(ps(&bad_pk_p), ps(&msg_p), ps(&out_p)).is_err(),
+                &format!("verify-raw-{tag}-wrong-pk 错 pk 拒"), &mut fails);
+        }
+        Ok(fails)
     }
 
     /// 单条目 manifest.toml cpio(newc) 容器（cpio_manifest 的写侧对拍
