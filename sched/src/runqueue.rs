@@ -37,15 +37,26 @@ pub struct Runqueue {
     /// idle tick 不入账——与旧全环扫描从不含 idle 口径一致）。生产代码
     /// vruntime 写点仅此三处 ⇒ 账本与全环扫描逐位一致。
     ///
-    /// 写侧同 `len` 单写者纪律（本队列 RQ 锁窗内 load+store，两端 Relaxed，
-    /// 全序由锁提供）；读侧（pick/enqueue 的 avg）恒在锁窗内，原子性仅
-    /// 防御未来免锁读者。**一致性执法** = [`Self::ring_check`] 走查对账
-    /// （每 100 切换金丝雀）：真和 ≠ 账本即 panic——测试在环上直改
-    /// `Task::vruntime` 后须 [`Self::resync_vruntime_sum`] 洗账。
+    /// 写侧 = **多写者 RMW**（fetch_add/fetch_sub，两端 Relaxed）：SMP 下
+    /// 三账点不全在本队列 RQ 锁窗内——`Fair::tick`（IRQ 上下文免锁）与对
+    /// 核锁窗内 link/unlink 并发写同一账本，load+store 非原子序 = 丢更新
+    /// （账本偏低恰一个 vdelta 形态——ring_check 尸检 2026-11-11 定谳；
+    /// 同 `DL_ON_RING` 的 fetch_add/fetch_sub 先例与论证）。tick 侧**不可**
+    /// 收入锁窗：SVC 窗/SGI 回执忙等等路径持 RQ 锁跨核等待，tick 取锁 =
+    /// 双核互等 wedge（实测）。读侧（pick/enqueue 的 avg）恒在锁窗内，值
+    /// 稳定口径不变；原子性对免锁读者防撕裂。**已知残留**：走查侧（
+    /// `ring_check`/`dl_on_ring_walk` 持锁）与对核免锁 tick 的（vruntime,
+    /// 账本）二元组写仍可 ns 级撕裂（两写各自原子、二元组非原子）——
+    /// 理论假阳性窗 ≪ 丢更新窗三个量级（本相 bug 已闭），实测未见。
+    /// **一致性执法** =
+    /// [`Self::ring_check`] 走查对账（每 100 切换金丝雀）：真和 ≠ 账本即
+    /// panic——测试在环上直改 `Task::vruntime` 后须
+    /// [`Self::resync_vruntime_sum`] 洗账。
     ///
     /// 溢出界：vruntime 增速 ≤ CNTVCT（weight ≥ SCALE=1024 ⇒ vdelta ≤
-    /// delta），账本 u64 饱和需 ~9e3 年 @62.5MHz——工程不可达；入账两侧
-    /// 同 saturating（真和与账本一致性在饱和域内同向退化）。
+    /// delta），账本 u64 回绕需 ~9e3 年 @62.5MHz——工程不可达（原
+    /// saturating 语义在可达域内与 RMW 等价；漂移域回绕仍被 ring_check
+    /// 对账响亮捕获——等式比较对回绕值恒假）。
     sum_vruntime: AtomicU64,
     /// per-queue 自旋锁（S-3c c-2a 落形 → **c-2b 取放启用**；持有位 =
     /// `HELD_RQ0`/`HELD_RQ1`，记账在 `sched::rq_lock_of` 统一承担）。crate 内
@@ -142,12 +153,11 @@ impl Runqueue {
     }
 
     /// Σvruntime 账本增量入账（S2b+；唯一生产调用点 = `Fair::tick`——
-    /// 在环任务 vruntime 前进 vdelta 时同额入账）。同 len 单写者纪律。
+    /// 在环任务 vruntime 前进 vdelta 时同额入账）。RMW（多写者——tick
+    /// 免锁窗与对核锁窗 link/unlink 并发，见字段注；load+store 丢更新
+    /// 实证即本相 bug）。
     pub(crate) fn vruntime_add(&self, v: u64) {
-        self.sum_vruntime.store(
-            self.sum_vruntime.load(Ordering::Relaxed).saturating_add(v),
-            Ordering::Relaxed,
-        );
+        self.sum_vruntime.fetch_add(v, Ordering::Relaxed);
     }
 
     /// 全环重算 Σvruntime 并回写账本（S2b+ 洗账面——**仅测试/诊断用**）：
@@ -318,13 +328,9 @@ impl Runqueue {
         self.len.store(self.len.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
         // Σvruntime 入账（S2b+）：账入环时刻的终值——Fair::enqueue 的 avg
         // clamp 在 link 前完成，此处入账的即 clamp 后值（先 clamp 后入账）。
-        // 同 len 单写者纪律；saturating 见字段溢出界注。
-        self.sum_vruntime.store(
-            self.sum_vruntime
-                .load(Ordering::Relaxed)
-                .saturating_add((*t).vruntime),
-            Ordering::Relaxed,
-        );
+        // RMW（多写者——与免锁 tick 的 vruntime_add 并发；字段注），回绕
+        // 界见字段注（工程不可达）。
+        self.sum_vruntime.fetch_add((*t).vruntime, Ordering::Relaxed);
         // S5-c 计数门入账：link 时刻带位是 DL 则全局账本 +1。账点挂结构
         // 原语层的理由见 `DL_ON_RING` 字段注——block/steal 出环不经
         // `Fair::dequeue`，挂类层必漏账。真 RMW（全局账本双 RQ 锁窗
@@ -361,19 +367,15 @@ impl Runqueue {
         }
         (*t).rq_prev.set(None);
         (*t).rq_next.set(None);
-        // 同 link_back：单写者 load+store（RQ 锁窗内）。Σvruntime 出账 =
-        // 摘线时刻该任务的 vruntime（与入账/后续 tick 入账同额反向）；
-        // 幂等早退分支（不在环）不触此处——无重复出账。saturating_sub：
-        // 账本域内减数恒 ≤ 被减数（入账同额闭包），饱和仅防漂移域下溢
-        // 扩散（真漂移由 ring_check 对账显形）。
+        // 同 link_back：len 单写者 load+store（RQ 锁窗内——len 的写点全在
+        // 锁窗，单写者前提成立）。Σvruntime 出账 = 摘线时刻该任务的
+        // vruntime（与入账/后续 tick 入账同额反向）；RMW（多写者——与
+        // 免锁 tick 的 vruntime_add 并发；字段注）。幂等早退分支（不在环）
+        // 不触此处——无重复出账。漂移域下溢回绕仍被 ring_check 对账响亮
+        // 捕获（等式比较对回绕值恒假；回绕界见字段注）。
         self.len.store(self.len.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
         let vr = (*t).vruntime;
-        self.sum_vruntime.store(
-            self.sum_vruntime
-                .load(Ordering::Relaxed)
-                .saturating_sub(vr),
-            Ordering::Relaxed,
-        );
+        self.sum_vruntime.fetch_sub(vr, Ordering::Relaxed);
         // S5-c 计数门出账：判据读**摘线时刻**带位（与入账的 link 时刻带位
         // 在生产恒同——带位在环上不变，见 `DL_ON_RING` 字段注）。漂移两向
         // 均落安全侧：ktest 降带后摘线 → 漏减 = 账本偏高 = 多扫；理论上

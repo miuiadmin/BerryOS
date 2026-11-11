@@ -2900,9 +2900,10 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // 同冻 = CNTV/IRQ 链死）——含下方 gate 早退轮，两核都计。
     hal::smp::note_tick_entry();
     // S-2 E0（草案 3.1-3）→ 3-1b KL 剥除：expire（自持 SQ 窗）/RR.tick
-    // （私有片记账零锁）/pick（RQ 窗）/打印（PRINT_LOCK 自持）各自独立
-    // 结构窗串行——KL 包络退役，窗口纪律不变（副核调度原子性前提 = 各
-    // 结构锁窗，非全局 KL）。槽空直通（安装前窗/单核装饰窗）。
+    // （免锁——账本写侧 RMW 化，见下方调用点注）/pick（RQ 窗）/打印
+    //（PRINT_LOCK 自持）各自独立结构窗串行——KL 包络退役，窗口纪律不变
+    //（副核调度原子性前提 = 各结构锁窗，非全局 KL）。槽空直通（安装前窗/
+    // 单核装饰窗）。
     // S-2b 未参与副核早退（gate 检查与参与态两态合一——secondary_main 探测
     // 环被 tick 打醒但 gate 未开：只记账零共享触达，防夺走 CPU0 的锁窗）。
     if !hal::smp::par_enabled() && hal::smp::cpu_id() != 0 {
@@ -2943,7 +2944,15 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         // 替代占空比限频；复发盯面见 smp.rs park_due 注）。
         return;
     }
-    RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left（饱和到 0）
+    // Σvruntime 账本纪律（SMP 相真 bug 修，沿革一八五移交）：`Fair::tick` 是
+    // 三账点中唯一免锁到达的——S2b+ 把账本入账挂进 tick 后，账本即成**多
+    // 写者**（本核 tick 无锁窗 + 对核锁窗内 link/unlink），写侧原语随刀改
+    // fetch_add/fetch_sub RMW（`Runqueue::sum_vruntime` 字段注——同
+    // DL_ON_RING 先例）。此处**不得取 RQ 锁**收窗：SVC 窗（RQ 类位）与
+    // SGI 回执忙等等路径持 RQ 锁跨核等待，tick（IRQ 上下文）取锁 = 与
+    // 对核「持锁等本核」成环——实测双核对 spin（RQ0/RQ1 锁地址对
+    // 0x...a68/0x...ab0，7.7K 切换即 wedge）。
+    RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left + vruntime/账本（RMW）入账
     if (*cur).slice_left == 0 {
         // G3-1c-1（console 写域解蔽）：禁切窗内 slice 燃尽——本次 tick 不切。
         // 诉求分档承接（errata m2 勘正）：出窗检查点只兑现**严格更高 eff**
@@ -3060,8 +3069,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         // S-3b（F8）：peek/pick 双视图退役——per-CPU 队列游标私有，副核
         // 回卷饥饿前提（共享游标）不复在，两核同径消费版（FIFO 推进器）。
         // RQ 窗（c-2b）：出选 + 状态定形同窗——Running 置位 = 防对核偷取
-        // 屏障（放锁前落定）；RR.tick 不触环（纯片记账）留窗外，canary
-        // 打印/切换舞蹈在窗外（窗内禁切换）。
+        // 屏障（放锁前落定）；RR.tick 免锁在前（账本 RMW 化——见其调用点
+        // 注）不入本窗，canary 打印/切换舞蹈在窗外（窗内禁切换）。
         let phys = rq_lock();
         let picked = RR.pick_next_filtered(rq(), topo(), cur);
         let mut go: Option<*mut Task> = None;
