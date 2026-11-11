@@ -978,6 +978,49 @@ test-host:
     # 改坏即咬）。改 genwycheproof.py / wycheproof_ed25519_test.json /
     # wycheproof_vectors.rs 联动面必跑。
     python3 tools/genwycheproof.py --selftest
+    # W1 接线（genwycheproof 同族·程序化扫描清尾 1/2）：gensourceindex
+    # 门禁自检——源索引/源钥清单生成器（SDK-2 分发签名链 v1.2 §五镜像，
+    # .sig 信封两件套随镜像 FAT /SOURCE/ 挂入），selftest 38 面（TLV
+    # round-trip 字节恒等/八字段对账/单调门回降拒/结构拒面 16 型/黄金
+    # 字节/构造确定性/mkimage SRCINST_* 挂接合同对拍/FAT16 回读对拍）
+    # 自称绿但从未接线 test-host：有 selftest 零自动执法 = TLV 布局或
+    # berry-sign 合同面改坏无机器咬合（⑧ 跨工具常量对拍 = 同步义务唯一
+    # 执法点）。改 gensourceindex.py / mkimage.py SRCINST_* 段 / source-
+    # index.tlv 布局面必跑。全合成夹具零构建依赖（cwd 无关已验）。
+    python3 tools/gensourceindex.py --selftest
+    # W1 接线（同上扫描清尾 2/2）：fastlane_sim 门禁自检——快道重研题一
+    # 桌面推演模拟器（28 号 §2 状态机 × 不变量机器验证：整编队 M/X + 快道
+    # F 槽对翻指针，I-PR/I-SL-1..4 随随机双轴版本流全场景断言），selftest
+    # 45 面（不变量保持 + B1 反命题 P 证伪重现 + P′ 对抗搜索 + 语料
+    # digest 黄金锚 + 案 α 策略扫描）。零接线 = 状态机语义（回退门/地板
+    # 吸收/关窗触发）改动无机器咬合，黄金锚漂移无人咬。改 fastlane_sim.py
+    # 或 28 号语义面必跑。固定种子确定性（DEFAULT_SEED 20261111）。
+    python3 tools/fastlane_sim.py --selftest
+    # W1 接线（程序化扫描清尾补遗·连字符拼写漏网件）：gui8-smoke
+    # plumbing 自检——GUI-8 交互相验收脚本的纯函数面（哨兵/几何/标记
+    # 精确计数与顺序断言/canonical 109B/QMP mock），flag 拼写是
+    # --self-test（连字符），此前两轮扫描按 --selftest 口径漏网：
+    # 有 self-test 零自动执法 = 07.md 已列 plumbing 命令但断言逻辑
+    # 改坏无机器咬合（Boot A/B 精确计数负样本错序/重复/缺失均应
+    # FAIL——selftest 直接覆盖负样本）。零 QEMU 秒级。改
+    # gui8-smoke.py 断言/哨兵/几何/QMP 面必跑。
+    python3 tools/gui8-smoke.py --self-test
+    # W1 接线（*.sh 件清尾·ADR #84 立法门）：bcts-run 门禁自检——BCTS v0
+    # runner 的工件 schema/拒面/两态清单对拍 8 腿（零 QEMU）。此前两轮
+    # 扫描只扫 *.py，bcts-run.sh --selftest 自称 8/8 绿但从未接线：
+    # 有 selftest 零自动执法 = parse_frozen 校验逻辑改坏无机器咬合，
+    # 冻结件 ↔ markers.sh 单源漂移无人咬。注意两腿义务：活树计数
+    # 32/54/2 钉板 + 冻结快照全等腿——加标记的 PR 会红到此门，须随刀
+    # 更新 TIER1_FLOOR_LIVE/冻结件（ADR #84 兼容面演进显式化，非误红）。
+    # 改 bcts-run.sh / markers.sh 标记面 / bcts@*.toml 冻结件必跑。
+    {{BASH}} tools/bcts-run.sh --selftest
+    # W1 接线（同轮·shvarcheck 自检本体）：--check 面（tools/*.sh 花括号
+    # 守卫）已挂 test-host 首位，但 selftest 钉板（吞名 7 形 + 免疫 6 形
+    # + 修复口径）零接线——check 的检测逻辑自身改坏（吞名形漏检/免疫形
+    # 误报）无机器咬合。检测器自检（selftest 钉板）与检测器执法（--check
+    # 全仓扫描）分层——同 gen_abi --check/--selftest 双面纪律。改
+    # shvarcheck.py 检测逻辑必跑。
+    python3 tools/shvarcheck.py --selftest
 
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
