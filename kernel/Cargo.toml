@@ -43,6 +43,10 @@ berry-vslotface = { path = "../vslotface" }
 # 数学单源在 berry-polface（host 可测钉板）；本 crate process.rs re-export
 # 消费（SchedAttr/SA_FLAG_* 既有路径零改动）。
 berry-polface = { path = "../polface" }
+# W3-Q22：berry_sched_attr 结构解码+校验纯面单源（sa_check——size 门/尾零
+# 律/version 门/域门/交叉门/admission 判定）；本 crate syscall.rs sa_parse
+# 薄壳消费（copy_from_user 物理臂 + DL_TOTAL_UTIL_Q12 原子读留壳）。
+berry-safeck = { path = "../safeck" }
 
 [features]
 # G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面

@@ -2246,20 +2246,14 @@ fn insert_suspend_token(
 
 // ---- 1.1/S1：sched_setattr / sched_getattr（0x3C / 0x3D）----
 
-/// `berry_sched_attr` 内核已知布局长度（ABI §7.2；前向兼容读入上限 256B）。
-const SCHED_ATTR_SIZE: usize = 56;
-const SCHED_ATTR_MAX: usize = 256;
-const SA_F_WEIGHT: u16 = 1 << 0;
-const SA_F_INTENT: u16 = 1 << 1;
-const SA_F_POLICY: u16 = 1 << 2;
-const SA_F_FREEZE_CLOCK: u16 = 1 << 3;
-const SA_F_FREEZE_READY: u16 = 1 << 4;
-const SA_F_RESERVE: u16 = 1 << 5;
-const SA_F_DEADLINE: u16 = 1 << 6;
-const SA_F_BUDGET: u16 = 1 << 7;
-const SA_F_KNOWN: u16 = 0x00FF;
+// W3-Q22：常量族单源迁 `berry-safeck`（sa_check 纯判定面持有——SA_F_* 位
+// 名对齐 berry-polface SA_FLAG_* 词汇表）；此处 use 消费（getattr 回写臂
+// 用 SCHED_ATTR_SIZE/MAX、admission 记账面用 SA_F_BUDGET/FREEZE_READY，
+// 既有名零改动）。
+use berry_safeck::{SA_F_BUDGET, SA_F_FREEZE_READY, SCHED_ATTR_MAX, SCHED_ATTR_SIZE};
 
-/// 读入并校验一个 `berry_sched_attr`。返回 `(属性, 调用方声明 size)`——
+/// 读入并校验一个 `berry_sched_attr`（薄壳——W3-Q22 结构解码+校验纯面单源
+/// 在 `berry-safeck::sa_check`）。返回 `(属性, 调用方声明 size)`——
 /// `getattr` 需要原 size 决定回写尾部长度。
 pub(crate) fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i32> {
     let mut buf = [0u8; SCHED_ATTR_MAX];
@@ -2275,79 +2269,17 @@ pub(crate) fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr
         if let Err(e) = copy_from_user(el1, ptr + SCHED_ATTR_SIZE as u64, &mut buf[SCHED_ATTR_SIZE..size]) {
             return Err(e);
         }
-        if buf[SCHED_ATTR_SIZE..size].iter().any(|&b| b != 0) {
-            return Err(ERR_E2BIG);
-        }
     }
-    let version = u16::from_le_bytes([buf[4], buf[5]]);
-    if version != 1 {
-        return Err(ERR_NOT_SUPPORTED);
-    }
-    let a = crate::process::SchedAttr {
-        flags: u16::from_le_bytes([buf[6], buf[7]]),
-        weight: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
-        policy: buf[12],
-        intent: buf[13],
-        freeze_clock: buf[14],
-        min_ns: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
-        max_ns: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
-        deadline_ns: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
-        budget_ns: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
-        period_ns: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
-    };
-    // reserved0 与未知 flags：保留字段错 = EINVAL（不是 NOT_SUPPORTED——
-    // 调用方可通过清零修复；高 flags 位未在本 ABI 版本定义）。
-    if buf[15] != 0 || a.flags & !SA_F_KNOWN != 0 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_WEIGHT != 0 && (a.weight == 0 || a.weight > 10000) {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_INTENT != 0 && a.intent > 0x05 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_POLICY != 0 && !(1..=4).contains(&a.policy) {
-        return Err(ERR_INVALID_ARG);
-    }
-    // policy=3 是 admission-aware deadline 档：必须同时携带 budget/period
-    //（§7.2「policy=3 必须置 bit7」），否则 Task 无重臂周期可消费。
-    if a.flags & SA_F_POLICY != 0 && a.policy == 3 && a.flags & SA_F_BUDGET == 0 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_FREEZE_CLOCK != 0 && a.freeze_clock > 1 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_RESERVE != 0 {
-        if a.min_ns > a.max_ns || a.flags & SA_F_POLICY != 0 && a.policy == 3 {
-            return Err(ERR_INVALID_ARG);
-        }
-    }
-    if a.flags & SA_F_BUDGET != 0 {
-        if a.budget_ns == 0
-            || a.period_ns == 0
-            || a.budget_ns > a.period_ns
-            || a.flags & SA_F_POLICY == 0
-            || a.policy != 3
-        {
-            return Err(ERR_INVALID_ARG);
-        }
-        // S5 admission：Σ(C_i/T_i) + 新申请 ≤ 1 − reserve（5% 固定——
-        // 计划 §6.3 EDF 可行性）。超载 → -EBUSY（诚实拒——不静默丢帧）。
-        // 全局原子累计（sched_setattr 成功 +、覆盖旧值 −；单核 SVC 窗序）。
-        let new_u = a.budget_ns as u128 * 4096 / a.period_ns as u128; // Q12 定点
-        let cur_u = DL_TOTAL_UTIL_Q12.load(Ordering::Relaxed) as u128;
-        // 1.0 − 0.05 = 0.95 → Q12 = 3891
-        if cur_u + new_u > 3891 {
-            return Err(ERR_BUSY);
-        }
-        // 计数在 sys_sched_setattr 成功尾累加（此处仅校验——防错误路径泄漏）。
-    }
-    if a.flags & SA_F_DEADLINE != 0 {
-        if a.flags & SA_F_BUDGET == 0 || a.deadline_ns == 0 || a.deadline_ns > a.period_ns {
-            return Err(ERR_INVALID_ARG);
-        }
-    }
-    Ok((a, size))
+    // 纯判定面单源调用：cur_u = admission 全局原子快照（Q12）；SaError
+    // 映射回 ERR_* 常量。判定律（size 尾零/version/域门/交叉门/admission
+    // 3891 帽）全部钉板在 berry-safeck host 测试。
+    let cur_u = DL_TOTAL_UTIL_Q12.load(Ordering::Relaxed);
+    berry_safeck::sa_check(&buf[..size], cur_u).map_err(|e| match e {
+        berry_safeck::SaError::InvalidArg => ERR_INVALID_ARG,
+        berry_safeck::SaError::E2big => ERR_E2BIG,
+        berry_safeck::SaError::NotSupported => ERR_NOT_SUPPORTED,
+        berry_safeck::SaError::Busy => ERR_BUSY,
+    })
 }
 
 /// S5 admission：deadline 任务总利用率（Q12 定点——1.0 = 4096）。

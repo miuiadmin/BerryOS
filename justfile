@@ -580,6 +580,15 @@ test-host:
     # 饱和钉 MAX 防死循环/翻期资格门/带成员 deadline 豁免判钉板，
     # host 6 测；判定律单源，sched band.rs 机械壳 re-export 消费）。
     cargo test -p berry-bandface --target {{host}}
+    # W3-Q23：berry-utrace（util EWMA 窗口机盒纯面——per-CPU 三数组槽
+    # 机械的纯结构投影 UtilSlots{ewma,accum,window_start}：首调/回绕开
+    # 窗丢弃既往账/NotDue 零动作/Fold swap 语义折叠清账/边界恰到期·未
+    # 到期/饱和钳 1024/越界全操作静默/满载 12 折收敛 815/idle 空窗衰减
+    # 死区落底/reset 清场·哨兵复活/per-CPU 隔离/boot 零点哨兵碰撞钉板，
+    # host 16 测；判序 window_state + 折叠 ewma_fold 单源调 berry-emface
+    # （零第二实现），sched util.rs 原子壳保持现状——本件定位 host 钉板
+    # + 真账流文档化基准（接线取舍见 PR）。
+    cargo test -p berry-utrace --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/
@@ -587,6 +596,14 @@ test-host:
     # 特判+flags=0 回默认钉板，host 14 测；常量族与判定律单源，sched
     # policy.rs / kernel process.rs 机械壳 re-export 消费）。
     cargo test -p berry-polface --target {{host}}
+    # W3-Q22：berry-safeck（berry_sched_attr 结构解码+校验纯函数面——
+    # size 门/尾零前向兼容律/version 门/reserved0·未知 flags/weight·
+    # intent·policy·freeze_clock 域门/policy=3↔BUDGET 联动/RESERVE 与
+    # policy=3 互斥/BUDGET 五拒面/admission 3891 Q12 恰过恰拒/DEADLINE
+    # 依赖 BUDGET/布局偏移回读/判序 ABI 面钉板，host 19 测；sa_check
+    # 单源，kernel syscall.rs sa_parse 薄壳消费（copy_from_user 物理臂
+    # + admission 原子读留壳））。
+    cargo test -p berry-safeck --target {{host}}
     # W3-Q16：berry-hdrface（HDR 延迟直方图形状与分位数学纯函数面——
     # 桶映射全域往返/保守上界严格递增/分位秩单式/Hdr 记账·钳位·reset/
     # 合并读面桶位直和钉板，host 7 测；HDR_* 常量与 bucket_of/bucket_upper/
