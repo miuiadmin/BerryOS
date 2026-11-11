@@ -871,6 +871,15 @@ test-host:
     # RT/LAT wire 镜像 + 回执 sha256 + 六通道组合拒绝 exit-code 契约——
     # 57 面，三突变红分支实证（wire 冻结/单段保留/iter 漂移均被咬）。
     python3 tools/bench.py --selftest
+    # W1-Q4 十二续（a-3 U4 纪律同款）：echod/evsclient 宿主链自检——smoke
+    # T-c/A2-3/A3-3 相的宿主网络件（TCP 回显对端 + EVS/SKT 对拍 client）
+    # 此前零守卫：echod 环回四面（echo 语义/半关被动 close/并发连接/段化
+    # delivery——bind 临时口 0 不碰 18080-83 互斥口）+ evsclient 五面
+    # （载荷黄金哈希 vs bsh EVS_PAYLOAD 同源定值/try_conn 全链/短斤拒面/
+    # 帽序契约/main 整链输出全定）。产线 serve 路径零改动（拆
+    # serve_bind/_accept_loop 复用同一段，被测 = 产线本体非影子副本）。
+    python3 tools/echod.py --selftest
+    python3 tools/evsclient.py --selftest
     # SDK-2 P0-1：berry-crypto（.sig 信封 v1 TLV + 信任账本 TOML + 水位比较器
     # + RFC 8032 向量门空转框架——对选型零敏感件先行，26 号 §3-2；原语本体 =
     # P0-2 另刀，向量门不过不合入；P0 合入 = 闸 B，24 号 §4.2 终核三条）。
