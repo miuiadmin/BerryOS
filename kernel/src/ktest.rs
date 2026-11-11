@@ -1126,9 +1126,9 @@ fn test_syscall() {
     //     guest PA，驱动须能查自己 VMO 页后备）。盖六路：坏 handle / 类型门控
     //     （Event）/ 字节语义（off 越 size 拒、页内偏移直拼——mid-page 精确到
     //     字节）/ 未提交页 -EBADSTATE / commit 后 PA 落 RAM 界 + 页对齐 /
-    //     need=0 放行（同 get_size 几何惯例）。MMIO 窗口后备面（pa_base+off
-    //     恒可查）经裸对象 page_pa 已在 E6 盖，syscall 面同 page_pa 取值不再
-    //     重铺。
+    //     READ 权利门（arch-r2 #5：零权利观察者拒；get_size 仍 need=0 纯容量
+    //     面）。MMIO 窗口后备面（pa_base+off 恒可查）经裸对象 page_pa 已在
+    //     E6 盖，syscall 面同 page_pa 取值不再重铺。
     // SAFETY: svc 同步异常；OUT 为本函数私有静态。
     unsafe { OUT = 0 };
     assert_eq!(svc6(NR_VMO_GET_PHYS as u64, 0xDEAD_BEEF, 0, &raw mut OUT as u64, 0, 0, 0), -9,
@@ -1171,7 +1171,9 @@ fn test_syscall() {
     assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgp as u64, PAGE_SIZE as u64, &raw mut OUT as u64, 0, 0, 0),
         -34,
         "SYSCALL：get_phys offset==size 须 -EOVERANGE");
-    // need=0 面：dup 收紧到仅 DUPLICATE（无 READ）仍可查（get_size 同惯例）。
+    // 权利门（arch-r2 #5，26aa34b）：dup 收紧到仅 DUPLICATE（无 READ）须拒
+    // -EACCES——get_phys 披露物理后备（侧信道面），零权利观察者不可查；
+    // get_size 维持 need=0（纯容量无物理信息）。
     // SAFETY: 同上。
     unsafe { OUT = 0 };
     assert_eq!(
@@ -1183,9 +1185,8 @@ fn test_syscall() {
     let hgo = unsafe { OUT } as u32;
     // SAFETY: 同上。
     unsafe { OUT = 0 };
-    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgo as u64, 0x123, &raw mut OUT as u64, 0, 0, 0), 0,
-        "SYSCALL：无 READ handle 查 phys 须放行（need=0 不查权利位）");
-    assert_eq!(unsafe { OUT }, pa0 + 0x123, "SYSCALL：零 READ 别名 phys 同值");
+    assert_eq!(svc6(NR_VMO_GET_PHYS as u64, hgo as u64, 0x123, &raw mut OUT as u64, 0, 0, 0), -13,
+        "SYSCALL：无 READ handle 查 phys 须拒 -EACCES（arch-r2 #5 need 0→READ）");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgo as u64, 0, 0), 0, "SYSCALL：close 观察别名");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgp as u64, 0, 0), 0, "SYSCALL：close get_phys VMO");
 

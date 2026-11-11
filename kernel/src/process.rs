@@ -44,6 +44,32 @@ pub fn process_live() -> usize {
     PROCESS_LIVE.load(Ordering::Relaxed)
 }
 
+// ---- per-Process 对象配额帽（Medium 安全缺口收口：全局堆无配额）----
+// 威胁面：单 EL0 进程循环 create 即可耗尽**共享堆**（slab 后备 = 全局帧池，
+// 堆枯 = 全机枯）——`vmo_create(128MiB)` 每个仅记账就吃 ≈576KiB（pages +
+// mapcnt 两 Vec 预储，见 `PageLedger::new_anon`）、`channel_create` 每端预储
+// CHAN_DEPTH×Message ≈ 2.7KB、`thread_start` 每线 16KiB 内核栈 + TCB——其他
+// 进程随后一切分配恒 -ENOMEM 停摆。计数把无界封为有界（`PROCESS_MAX` /
+// `VMO_MAX_SIZE` 同哲学）；per-caller 分账随 v2 Job 收口。
+//
+// 记账面 = **调用方 handle 表在册数**（创建面 syscall 经 `count_type` 表扫描
+// 执法——S5.12 SuspendToken 帽同款），**非** Process sidecar 计数器：sidecar
+// 在 handle 跨表迁移（`channel_send` take / recv `insert_ref` / bootstrap
+// 迁移）下增减结构性失配——close 面拿不到记账主（表无属主回指）、对象可
+// 活过被记账的 Process（fetch_sub = UAF）；扫描派生随 close/take/drain/
+// 迁移天然配平（`HandleTable::pager_load` 同口径论证）。已启动线程帽 =
+// `live_threads`（增点三/减点唯一已精确维护，`thread_start` 执法）。
+// EL1 内核侧表（ktest/常驻服务）同帽——合法用量远低于帽（smoke 实测面）。
+//
+/// 单进程（单表）在册 VMO handle 上限（含 dup 别名——按槽计）。
+pub const MAX_VMO_PER_PROC: usize = 256;
+/// 单进程（单表）在册 channel **端点**上限（`channel_create` 一次入 2 = 一对）。
+pub const MAX_CHANNEL_PER_PROC: usize = 64;
+/// 单进程**已启动**线程上限（`live_threads` 口径——首线程 + thread_start 造的
+/// 非首线程；未启动 Thread 描述 ≈ 百字节级 box，被表满（65535 槽）结构性
+/// 封顶，不另设帽）。
+pub const MAX_THREADS_PER_PROC: usize = 16;
+
 /// 进程生命周期（Plan B v0.5）：Alive → Exited 单向；Exited 后 wait 面
 /// `SIGNAL_TERMINATED` 置位、句柄仍可 wait/close（对象钉住纪律保活）。
 #[derive(Clone, Copy, PartialEq, Eq)]

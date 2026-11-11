@@ -546,6 +546,16 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u32(el1, out, 0) {
         return e as i64;
     }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // per-Process VMO 配额帽（Medium 缺口收口，`process.rs` 帽常量注）：本表
+    // 在册 VMO handle 数 ≥ 帽先拒 -ENOMEM——fail-fast 先于 create 的页记账
+    // 分配（128MiB VMO 记账 Vec ≈ 576KiB/个，无帽单进程循环 create 可把共享
+    // 堆耗到全机 -ENOMEM）。记账 = `count_type` 表扫描（S5.12 token 帽同款；
+    // 随 close/take/drain/迁移天然配平，sidecar 计数器在跨表迁移下失配——
+    // `pager_load` 同口径）。admission 只查不写（沿革 #109 纪律）。
+    if t.count_type(ObjType::Vmo) >= crate::process::MAX_VMO_PER_PROC {
+        return ERR_NO_MEMORY as i64;
+    }
     // create try 化（3b3 H2）：NoMem → -ENOMEM（原 create 内嵌 vec! 双分配，
     // OOM abort 曾是 EL0 可触发 panic）。
     let vmo = match if demand { Vmo::create_demand(size) } else { Vmo::create(size) } {
@@ -560,22 +570,19 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     } else {
         RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_TRANSFER
     };
-    match caller_table(tf) {
-        Ok(t) => match t.insert(KernelObj::Vmo(vmo), rights) {
-            Ok(h) => match copy_out_u32(el1, out, h) {
-                Ok(()) => {
-                    // S-5e M1：soakload 载荷 churn 进度计数（svc 恒败/gen 顶格
-                    // → 心跳 churn 冻红；非 soakload boot 零成本分支直过）。
-                    if SOAKLOAD_ACTIVE.load(Ordering::Relaxed) {
-                        SOAK_CHURN_OK.fetch_add(1, Ordering::Relaxed);
-                    }
-                    0
+    match t.insert(KernelObj::Vmo(vmo), rights) {
+        Ok(h) => match copy_out_u32(el1, out, h) {
+            Ok(()) => {
+                // S-5e M1：soakload 载荷 churn 进度计数（svc 恒败/gen 顶格
+                // → 心跳 churn 冻红；非 soakload boot 零成本分支直过）。
+                if SOAKLOAD_ACTIVE.load(Ordering::Relaxed) {
+                    SOAK_CHURN_OK.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(e) => e as i64,
-            },
+                0
+            }
             Err(e) => e as i64,
         },
-        Err(e) => e,
+        Err(e) => e as i64,
     }
 }
 
@@ -1467,8 +1474,10 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
 /// retain（运行钉住，同首线程对）；Thread retain（线程钉住——退出钩子
 /// Thread 簿记/join 唤醒的键）。pinned/thread_key 字段值经 try_spawn_user
 /// 参数前移写入（F-E1，enqueue 前）。
-/// **无 per-process 线程帽**（16KiB 栈 + TCB 随 REAPQ 回收，无不回收泄漏；
-/// 堆尽由 try_spawn_user 折 -ENOMEM 优雅兜底）。sp 不做映射校验
+/// **per-Process 线程帽**（Medium 缺口收口）：`live_threads ≥
+/// MAX_THREADS_PER_PROC` → -ENOMEM（16KiB 栈 + TCB 随 REAPQ 回收，但运行期
+/// 占堆——无帽可循环铺线程耗尽共享堆；查先于一切不可逆变更）。
+/// sp 不做映射校验
 /// （process_start 同政策：错 sp = 首切 fault 杀兜底）；线程入口不得返回
 /// （返回 = fault 杀兜底）。
 /// 1.1/S5-a：把 effective `SchedAttr` 消费到刚 spawn 的 Task。
@@ -1548,6 +1557,15 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     }
     if proc.state != ProcState::Alive || !proc.started {
         return ERR_BAD_STATE as i64; // 首线程必须经 process_start
+    }
+    // per-Process 线程帽（Medium 缺口收口，`process.rs` 帽常量注）：目标进程
+    // 已启动线程数（`live_threads`——增点三/减点唯一 = 退出钩子，单核 IRQ
+    // 屏蔽串行）≥ 帽先拒 -ENOMEM——每线 16KiB 内核栈 + TCB 运行期占堆，无帽
+    // 单进程循环 thread_start 可耗尽共享堆。查在一切不可逆变更之前（admission
+    // 只查不写，沿革 #109 纪律）；首线程走 process_start（此刻 live_threads
+    // 恒 0，帽结构性不可达）。
+    if proc.live_threads >= crate::process::MAX_THREADS_PER_PROC {
+        return ERR_NO_MEMORY as i64;
     }
     let ht_ptr = &raw mut proc.ht as *mut HandleTable as usize;
     // 任务装配 try 化 + 前置于一切不可逆变更（process_start H2 纪律；本号无
@@ -2800,6 +2818,13 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // per-Process channel 配额帽（Medium 缺口收口，`process.rs` 帽常量注）：
+    // 本表在册 channel 端点数 ≥ 帽先拒 -ENOMEM——fail-fast 先于两端
+    // CHAN_DEPTH×Message ≈ 2.7KB/端的队列预储分配（计数单位 = 端点，
+    // `channel_create` 一次入 2；`count_type` 表扫描口径同 sys_vmo_create）。
+    if t.count_type(ObjType::Channel) >= crate::process::MAX_CHANNEL_PER_PROC {
+        return ERR_NO_MEMORY as i64;
+    }
     let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE | RIGHT_TRANSFER;
     // 端点装配 try 化（3b3 H2）：队列预储 CHAN_DEPTH × Message ≈ 2.7KB/端，
     // 失败先于一切入表——零回滚面，折 -ENOMEM。
