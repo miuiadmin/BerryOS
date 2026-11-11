@@ -372,3 +372,68 @@ jobs:
       # 密度趋势线 = 台账文档的 git 史。
       - name: unsafe 台账对拍（SEC-01 §4.5 件 22）
         run: python3 tools/unsafe_audit.py --check
+
+  # ---------- BCTS v0 全量回放挂 CI（ADR #84；BCTS 设计稿 v1.1 §4.2 五步） ----------
+  # 独立关卡不并入 smoke job（规则/07 独立关卡纪律）：smoke job = 分层 CI 轻面
+  # （SMOKE_PHASES=boot 32 标记）；本 job = 八跑全相 + 88 标记对账 + abi-check
+  # host 门禁（bcts-run.sh 步③④——bcts-run.sh:53 TIER1_FLOOR_LIVE=88 下限在册）。
+  # needs: smoke 而非并行——concurrency ci-serial 只序列化 run 间不序列化 run 内
+  # job，同机双 runner 并行 QEMU 分抢 8 核 = TCG 互拖假红根因（上方 concurrency
+  # 注同源），且 smoke 红不耗全相回放带宽。build 前置走 just bcts 配方自带
+  # （bcts: build，justfile 同 smoke 形——job 内另置构建步先暖，回放步的配方
+  # 依赖增量 no-op）。回放态（BCTS_FROZEN=bcts@*.toml）上线后本步加 env 切换。
+  bcts:
+    needs: smoke
+    runs-on: [self-hosted, linux-x64, brew]
+    # 自托管 TCG 八跑全相估 30-40min（本机 TCG 1800s 截停史外推 + build 暖面）
+    # ——帽 60min 只兜结构性挂死不赌快（帽哲学同 SMOKE_DEADLINE_BOOT 注）。
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # 共享 target 缓存挂载（smoke job 同款，ci 上方同名步）：增量构建复用
+      # 跨 run 编译产物。needs: smoke 序行 → 与 smoke job 无共享位并发写。
+      - name: 共享 target 缓存挂载
+        run: |
+          mkdir -p /usr/local/share/cargo-target-cache
+          rmdir target 2>/dev/null || rm -rf target
+          ln -sfn /usr/local/share/cargo-target-cache target
+
+      - name: 构建（内核 + 用户程序产物链）
+        run: just build
+
+      # netns 隔离与 smoke job 同因（ci 上方 ARM64 冒烟步注）：全相含 RX 相
+      # echod/hostfwd 18080-83，与宿主常驻容器结构性冲突。结果包落
+      # /tmp 随机目录（bcts-run.sh mktemp）；红面拷进工作区留 artifact，
+      # 绿面不留（verdict 恒 PASS 无对账价值）。
+      - name: BCTS 全量回放（八跑全相 + 88 标记对账 + abi-check host 门禁）
+        id: bcts
+        run: |
+          rc=0
+          unshare -Urn sh -c 'ip link set lo up && exec just bcts' > bcts-ci.log 2>&1 || rc=$?
+          cat bcts-ci.log
+          if [ "$rc" -ne 0 ]; then
+            rd=$(ls -dt "${TMPDIR:-/tmp}"/berryos-bcts-result.* 2>/dev/null | head -1)
+            if [ -n "${rd:-}" ] && [ -f "$rd/bcts-result.txt" ]; then
+              mkdir -p bcts-artifact
+              cp -R "$rd/." bcts-artifact/
+              echo "bcts: 结果包已留存 → bcts-artifact/（verdict FAIL 面）"
+              case "$rd" in
+                */berryos-bcts-result.*) rm -rf "$rd" ;;
+              esac
+            else
+              echo "bcts: 结果包缺席（步骤⑤未达——smoke 中途红面；只留 bcts-ci.log）"
+            fi
+          fi
+          exit "$rc"
+
+      # 失败留结果包（任务口径）：bcts-result.txt + per-boot 串口日志（logs/）
+      # + 全量回放 stdout。outcome 门防构建步红时的空 artifact 噪声。
+      - name: 失败留结果包 artifact（bcts 结果 + per-boot 串口日志）
+        if: failure() && steps.bcts.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bcts-result
+          path: |
+            bcts-ci.log
+            bcts-artifact
