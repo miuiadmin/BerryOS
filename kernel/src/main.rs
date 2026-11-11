@@ -288,6 +288,39 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
         berry_hal_aarch64::uart_put_dec(h.version as u64);
         berry_hal_aarch64::uart_puts(b"\n");
+        // P3/V10：boot 期验签槽最小消费（设计 = docs/设备侧验签与账本落盘
+        // 设计-v1.0.md §一 boot 期四步步 3 的内核侧打点——「槽已填+验签
+        // 结果」链通证明，init_segs 版本分派同族的最小消费面）。判定律
+        // 单源 = berry_hofface::v10_gate（W3-Q15 同纪律）：meas_root 非全零
+        // ∧ sig_slot off/len 双非零 ∧ 槽区落窗 = BerryBoot 验过填槽（§4.1
+        // 决策表第三行）→ 打 VBS 行；全零 = 未度量（第一行 unverified，
+        // QEMU 默认无签镜像恒落此行）→ 零行零扰动。深度消费（verified
+        // bootstate 四态汇成下游 keystored/盘加密绑定）随 P8。
+        if berry_hofface::v10_gate(
+            &h.meas_root,
+            h.sig_slot_off,
+            h.sig_slot_len,
+            berry_hal_aarch64::RAM_BASE as u64,
+            berry_hal_aarch64::RAM_TOP as u64,
+        ) {
+            // SAFETY: gate 已验槽区 [off, off+len) 落 [RAM_BASE, RAM_TOP)
+            // 且高半直映 L2 全覆盖 RAM 窗（probe 同论证）；boot 单线程、
+            // BerryBoot 写完才 br entry，此后只读。前 8B hex = 链通对拍
+            // 证据面（槽所指 KERNEL.SIG 首字节），全槽消费随 P8。
+            let slot_head = unsafe {
+                core::ptr::read_volatile(phys_to_virt(h.sig_slot_off as usize) as *const u64)
+            };
+            berry_hal_aarch64::uart_puts(b"VBS ok slot=");
+            berry_hal_aarch64::uart_put_hex64(h.sig_slot_off);
+            berry_hal_aarch64::uart_puts(b" len=");
+            berry_hal_aarch64::uart_put_dec(h.sig_slot_len);
+            berry_hal_aarch64::uart_puts(b" meas=");
+            let head = u64::from_le_bytes(h.meas_root[0..8].try_into().unwrap());
+            berry_hal_aarch64::uart_put_hex64(head);
+            berry_hal_aarch64::uart_puts(b" sig=");
+            berry_hal_aarch64::uart_put_hex64(slot_head);
+            berry_hal_aarch64::uart_puts(b"\n");
+        }
         // V-6a：GOP 携面消费（BerryBoot banner 期 QueryMode → handoff
         // @56..@76；fbcon 数据源先行到内核——打点即「事实到内核」证据，
         // MMIO 窗授能/fbcon 服务随后刀）。零值 = 无此物：QEMU `-kernel`
@@ -801,10 +834,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 有界）、服务侧 wait READABLE → drain 循环。
     let ct: &'static mut HandleTable =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    /// 建对即插两端：endK 落 console 私有表、endU 落内核侧表（取 ObjRef 后
-    /// `insert_ref` 分发各用户表）。两端均携 TRANSFER（Zircon 新 handle 默认
-    /// 携位模型——send 随行预检 4-4b 起执法；console 发端会经 dup 转赠下游
-    ///（spawner/svcmgr 模板），去位即断赠链）。
+    // 建对即插两端：endK 落 console 私有表、endU 落内核侧表（取 ObjRef 后
+    // `insert_ref` 分发各用户表）。两端均携 TRANSFER（Zircon 新 handle 默认
+    // 携位模型——send 随行预检 4-4b 起执法；console 发端会经 dup 转赠下游
+    //（spawner/svcmgr 模板），去位即断赠链）。
     let h_end_k = ct
         .insert(
             KernelObj::Channel(

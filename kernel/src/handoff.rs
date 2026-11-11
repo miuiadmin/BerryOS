@@ -34,13 +34,22 @@
 //! [`init_segs`] 自相对契约按 version 分派（v1 数组仍认 @128）。
 //! boot 协议是仓内版本化面，非 abi.toml 冻结面（不触保留门 C）。
 //!
+//! **P3 追记（boot 期验签启用——2026-11，不升版轻追记）**：V10 槽消费
+//! 面启用最小闭环（`docs/设备侧验签与账本落盘设计-v1.0.md` §1.2/§4.1）：
+//! BerryBoot 读镜像侧 `\TRUST-PK`+`\KERNEL.SIG` 验 KERNEL.ELF 签名——
+//! 验过填 `meas_root`（SHA-512/256(KERNEL.ELF)）+ `sig_slot_off/len`
+//! （指向 KERNEL.SIG 读入缓冲 PA/64B——off 语义 = PA 直递〔memmap_pa
+//! 家族纪律，§1.2-1 偏移基立法随闸 E〕）；两件缺席/验败 = 恒全零
+//! （QEMU 路降级 loud，真机拒跳语义随闸 E）。内核消费 = `main.rs`
+//! VBS 打点行（v10_gate 判定单源 berry-hofface）；四态汇成下游随 P8。
+//!
 //! **判定律单源（W3-Q15）**：probe 的对齐/窗界/version 门、init_segs 的
 //! 同页自相对/段几何门、gop_info 的四非零门已外迁 `berry-hofface`
 //! （host 可测钉板——probe_gate/init_segs_gate/gop_gate 表驱动）。
 //! 本文件保留：结构体与布局执法表（双镜像纪律）+ 高半直映 raw 解引用
 //! 机械（SAFETY 注与 `'static` 生命周期）——「几何怎么判」在 hofface，
 //! 「地址怎么解」在此。
-#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；V-6a 消费 gop_*；A1-3b 消费 init_segs_*；meas_root/sig_slot_* = V10 预埋留位零消费（ADR #82 附录一）；cmdline_* 留位零值待 V-1d+
+#![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；V-6a 消费 gop_*；A1-3b 消费 init_segs_*；P3 起 meas_root/sig_slot_* 最小消费（main.rs VBS 打点——BerryBoot 验过才填，全零 = 未度量零扰动）；cmdline_* 留位零值待 V-1d+
 
 use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
 use berry_hofface::SegRaw;
@@ -48,9 +57,9 @@ use berry_mm::va::phys_to_virt;
 use core::mem::{offset_of, size_of};
 
 // ---- 协议常量单源 re-export（berry-hofface——W3-Q15 迁移；字面值 host 钉板。
-// HANDOFF_MAGIC/HANDOFF_VERSION 供外部消费者与本 crate 文档面；本文件
+// HANDOFF_VERSION 供外部消费者与本 crate 文档面；本文件
 // 内经 berry_hofface:: 全路径消费）----
-pub use berry_hofface::{HANDOFF_MAGIC, HANDOFF_SIZE, INIT_SEGS_MAX};
+pub use berry_hofface::{HANDOFF_SIZE, INIT_SEGS_MAX};
 #[allow(unused_imports)]
 pub use berry_hofface::HANDOFF_VERSION;
 

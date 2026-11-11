@@ -50,7 +50,7 @@ pub use crate::abi_gen::{
 // 律/别名拒/发行域门表驱动在册）；此处 re-export 维持 kernel 内路径。
 pub use berry_hdlface::{
     decode_gen, decode_slot, encode, gen_in_issue_domain, has_reserved_bits,
-    slot_index_valid, GEN_BITS, GEN_MASK, RESERVED_MASK, SLOT_BITS, SLOT_MASK,
+    slot_index_valid, GEN_MASK,
 };
 
 /// 对象类型（镜像 `berry_obj_type` 枚举值，ABI §8.2 冻结）。

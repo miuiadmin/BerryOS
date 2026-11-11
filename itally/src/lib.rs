@@ -211,7 +211,7 @@ pub fn tally_line(
     bud_cap: u64,
     out: &mut [u8; LINE_MAX],
 ) -> usize {
-    let mut l = 0;
+    let mut l;
     let head = b"tele: intent_tally";
     let h = head.len().min(out.len());
     out[..h].copy_from_slice(&head[..h]);
