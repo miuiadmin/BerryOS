@@ -372,6 +372,10 @@ pub struct AppRoom {
     frame_bytes: usize,
     frame_map_len: usize,
     surface: Option<gp::surface::SurfaceModeInfo>,
+    /// R2 create-time persistent occlusion 快照。TABLE_GET 是 v1 stopgap：
+    /// 无 push config event，SYSTEM 窗在其后出现时此值可陈旧，直到下次
+    /// 0x67 或未来的 R3 config 事件。
+    occlusion: gp::insets::OcclusionSnapshot,
     opened: bool,
 }
 
@@ -392,6 +396,21 @@ fn surface_grant_from_info(info: &gp::surface::SurfaceModeInfo) -> SurfaceGrant 
         safe_right: info.safe_right,
         safe_bottom: info.safe_bottom,
     }
+}
+
+/// Room raw 申请恒为 `(0,0,display_w,display_h)`；从 TABLE_GET 的
+/// effective 短形推导 create-time persistent occlusion。抽取为纯函数，
+/// host 测试钉住不与 AVOID_SYS 双重收缩。
+fn occlusion_from_entry(
+    display: (u16, u16),
+    entry: (u16, u16, u16, u16),
+) -> gp::insets::OcclusionSnapshot {
+    let right = display.0.saturating_sub(entry.0.saturating_add(entry.2));
+    let bottom = display.1.saturating_sub(entry.1.saturating_add(entry.3));
+    gp::insets::OcclusionSnapshot::new(
+        [entry.0, entry.1, right, bottom],
+        [0; 4],
+    )
 }
 
 impl AppRoom {
@@ -456,6 +475,7 @@ impl AppRoom {
             frame_bytes: 0,
             frame_map_len: 0,
             surface: None,
+            occlusion: gp::insets::OcclusionSnapshot::new([0; 4], [0; 4]),
             opened: false,
         })
     }
@@ -546,6 +566,10 @@ impl AppRoom {
             return Err(RoomError::SurfaceBad);
         }
         self.surface = Some(info);
+        self.occlusion = gp::insets::OcclusionSnapshot::new(
+            [info.safe_left, info.safe_top, info.safe_right, info.safe_bottom],
+            [0; 4],
+        );
         Ok(surface_grant_from_info(&info))
     }
 
@@ -557,6 +581,13 @@ impl AppRoom {
     /// 最近一次显式 Surface 授予；None = 默认 Retained。
     pub fn surface_grant(&self) -> Option<SurfaceGrant> {
         self.surface.map(|i| surface_grant_from_info(&i))
+    }
+
+    /// R2 create-time persistent occlusion 快照（raw surface-local）。
+    /// `effective_padding()` 当前等于 view_padding；IME transient 域为 0，
+    /// 等 P6b IME Host 才有生产者。
+    pub fn occlusion(&self) -> gp::insets::OcclusionSnapshot {
+        self.occlusion
     }
 
     /// 创建全屏窗口并映射局部 frame VMO。返回 `(width, height)`。
@@ -572,7 +603,7 @@ impl AppRoom {
         let info = gp::parse_wm_getinfo_rep(&reply[..n]).ok_or(RoomError::Decode)?;
         let create = gp::WmCreateReq {
             layer: gp::WM_LAYER_APP,
-            flags: 0,
+            flags: gp::WM_CREATE_F_AVOID_SYS,
             parent: 0,
             group: 0,
             x: 0,
@@ -586,6 +617,26 @@ impl AppRoom {
             Some(id) if id != 0 => id,
             _ => return Err(RoomError::Decode),
         };
+        // R2 create-time occlusion bootstrap：Room 的 raw 申请恒为
+        // (0,0,disp_w,disp_h)，因此 TABLE_GET 的 effective 矩形足够推导
+        // raw-local persistent insets。这里是快照，不是动态事件；push 面
+        // 归 R3。
+        let n = gp::encode_wm_table_get_req(&mut request);
+        let (n, _) = rpc(self.wm, &request[..n], &[], &mut reply, &mut rhs)?;
+        let snapshot = match gp::parse_wm_snapshot_rep(&reply[..n]) {
+            Some(Ok(snapshot)) => snapshot,
+            _ => return Err(RoomError::Table),
+        };
+        let entry = snapshot
+            .entries
+            .iter()
+            .take(snapshot.count)
+            .find(|entry| entry.id == window)
+            .ok_or(RoomError::Table)?;
+        let occlusion = occlusion_from_entry(
+            (info.disp_w, info.disp_h),
+            (entry.x, entry.y, entry.w, entry.h),
+        );
         let width = usize::from(info.disp_w);
         let height = usize::from(info.disp_h);
         let stride = width.checked_mul(4).ok_or(RoomError::Geometry)?;
@@ -622,6 +673,7 @@ impl AppRoom {
         self.frame_bytes = frame_bytes;
         self.frame_map_len = map_len;
         self.frame_vmo = frame_vmo;
+        self.occlusion = occlusion;
         self.opened = true;
         Ok((width, height))
     }
@@ -868,5 +920,25 @@ impl AppRoom {
     /// 宿主侧统一退出。app 不直接调用 process syscall。
     pub fn exit(&self, code: i32) -> ! {
         berry_process_exit(code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::occlusion_from_entry;
+
+    #[test]
+    fn r2_occlusion_snapshot_matches_raw_bounds() {
+        let none = occlusion_from_entry((800, 600), (0, 0, 800, 600));
+        assert_eq!(none.view_padding, [0, 0, 0, 0]);
+        assert_eq!(none.view_insets, [0, 0, 0, 0]);
+        assert_eq!(none.effective_padding(), [0, 0, 0, 0]);
+
+        let top = occlusion_from_entry((800, 600), (0, 32, 800, 568));
+        assert_eq!(top.view_padding, [0, 32, 0, 0]);
+        assert_eq!(top.effective_padding(), [0, 32, 0, 0]);
+
+        let left_bottom = occlusion_from_entry((800, 600), (24, 0, 776, 568));
+        assert_eq!(left_bottom.view_padding, [24, 0, 0, 32]);
     }
 }

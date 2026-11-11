@@ -267,7 +267,7 @@ pub fn submit_composite(
     cli: Handle,
     owner: u16,
     client_type: u8,
-    surface_rect: impl Fn(u16, u16) -> Option<(u16, u16, u16, u16)>,
+    surface_geometry: impl Fn(u16, u16) -> Option<gp::authority::SurfaceGeometry>,
     comp: &mut Compositor,
     msg: &[u8],
     hs: &[Handle],
@@ -286,26 +286,34 @@ pub fn submit_composite(
         return;
     };
 
-    // surface_id=0 = 全局桌面 surface，仅 SYSTEM client 可提交；APP
-    // 提交全局面即越权涂刷。非 0 = 必须绑定当前 owner 的可见窗。
-    let (dst_xy, src_w, src_h): ((u32,u32),u16,u16) = if surface_id == 0 {
+    // R2 双几何合约：raw 是客户端 buffer/stride 基准；visible 是遮挡后
+    // 可呈现域。APP 窗口两者都来自 WmTable；全局桌面 surface 无遮挡，
+    // raw=visible=合成 VMO 全屏。
+    let geometry = if surface_id == 0 {
         if client_type != gp::WM_CLIENT_SYSTEM {
             let _ = berry_handle_close(src);
             st_rep(ch, gp::ST_DENIED);
             return;
         }
-        ((0, 0), comp.w as u16, comp.h as u16)
+        let dims = (comp.w as u16, comp.h as u16);
+        gp::authority::SurfaceGeometry::new(
+            (0, 0, dims.0, dims.1),
+            (0, 0, dims.0, dims.1),
+        )
     } else {
         let id = u16::try_from(surface_id).unwrap_or(0);
-        match surface_rect(owner, id) {
-            Some((x, y, w, h)) if w != 0 && h != 0 => ((u32::from(x), u32::from(y)), w, h),
-            _ => {
-                let _ = berry_handle_close(src);
-                st_rep(ch, gp::ST_DENIED);
-                return;
-            }
-        }
+        surface_geometry(owner, id)
     };
+    let Some(geometry) = geometry else {
+        let _ = berry_handle_close(src);
+        st_rep(ch, gp::ST_DENIED);
+        return;
+    };
+    let (raw_x, raw_y, raw_w, raw_h) = geometry.raw_bounds();
+    let dst_xy = (u32::from(raw_x), u32::from(raw_y));
+    let src_w = raw_w;
+    let src_h = raw_h;
+    let visible_local = geometry.visible_local();
     let src_stride = src_w as usize * 4;
     let mut size = 0u64;
     if berry_vmo_get_size(src, &mut size) != 0
@@ -321,15 +329,13 @@ pub fn submit_composite(
     let mut out_n = 0usize;
     let ok = if full {
         out_n = 0;
-        comp.copy_rect(src, src_stride, dst_xy, gp::Rect {
-            x: 0, y: 0, w: src_w as u32, h: src_h as u32,
-        })
+        // FULL 也是 raw buffer-local 的整窗语义；实际拷贝前先收缩到
+        // visible 本地矩形，避免读/写持久遮挡区。
+        comp.copy_rect(src, src_stride, dst_xy, visible_local)
     } else {
         let mut ok = true;
         for i in 0..rect_count {
-            let Some(r) =
-                gp::authority::clip_damage_to_surface(rects[i], src_w as u32, src_h as u32)
-            else {
+            let Some(r) = geometry.clip_damage_to_visible(rects[i]) else {
                 continue;
             };
             ok = ok && comp.copy_rect(src, src_stride, dst_xy, r);

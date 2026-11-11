@@ -252,7 +252,10 @@ impl WmTable {
         true
     }
 
-    /// Phase 3 权威输入命中：返回 (owner, window_id, 有效几何原点)。
+    /// Phase 3 权威输入命中：返回 (owner, window_id, raw 窗口原点)。
+    /// 命中判定用 visible 矩形；坐标本地化用 raw 原点——R2 合约下 app
+    /// buffer 仍是 raw 窗口坐标，visible 顶部的 pointer y 必须保留遮挡
+    /// 偏移，才能读到正确 raw row。
     pub fn hit_route(&self, x: u32, y: u32) -> Option<(u16, u16, u16, u16)> {
         let mut entries = [gp::WmEntry {
             id: 0, parent: 0, group: 0, x: 0, y: 0, w: 0, h: 0,
@@ -268,30 +271,34 @@ impl WmTable {
         }
         let id = gp::wm_hit_test(&entries[..self.count], x, y)?;
         let i = self.find(id)?;
-        Some((self.wins[i].owner, id, self.wins[i].eff.0, self.wins[i].eff.1))
+        Some((self.wins[i].owner, id, self.wins[i].req.0, self.wins[i].req.1))
     }
 
-    /// 输入锁定窗的现几何（owner 不匹配/窗失踪 = None）。
+    /// 输入锁定窗的 raw 几何原点（理由同 [`Self::hit_route`]）。
     pub fn route_geometry(&self, owner: u16, id: u16) -> Option<(u16, u16)> {
         let i = (0..self.count).find(|&i| {
             self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
         })?;
-        Some((self.wins[i].eff.0, self.wins[i].eff.1))
+        Some((self.wins[i].req.0, self.wins[i].req.1))
     }
 
-    /// Phase 2 surface 绑定：surface_id 必须是本 owner 的可见窗，返回有效
-    ///几何 `(x,y,w,h)`（合成落位与裁剪域）。
-    /// P1 0x67 授予几何真值：display_size 只来自启动③ present GETINFO。
+    /// present GETINFO 启动缓存尺寸；0x67 fit 检查的显示上限。
     pub fn display_size(&self) -> (u32, u32) {
         (u32::from(self.disp_w), u32::from(self.disp_h))
     }
 
-    pub fn surface_rect(&self, owner: u16, id: u16) -> Option<(u16, u16, u16, u16)> {
+    /// R2 SUBMIT 双几何：raw = 申请/buffer 基准；visible = 遮挡后可呈现
+    /// /可命中域。全遮挡（visible w/h=0）不构造假几何，调用侧拒绝。
+    pub fn surface_geometry(
+        &self,
+        owner: u16,
+        id: u16,
+    ) -> Option<gp::authority::SurfaceGeometry> {
         let i = (0..self.count).find(|&i| {
             self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
         })?;
         let w = &self.wins[i];
-        Some((w.eff.0, w.eff.1, w.eff.2, w.eff.3))
+        gp::authority::SurfaceGeometry::new(w.req, w.eff)
     }
 
     /// id 分配（u16 单调回绕；跳 0 哨兵与在册 id——N≤15 恒可解）。
@@ -457,6 +464,16 @@ impl WmTable {
             self.send_snapshot(old_ch);
         }
         self.parked = Some((ch, last_seen));
+    }
+
+    /// session 死亡清理：若其 RPC 通道恰好 parked 在 TABLE_WAIT，先丢弃
+    /// parking 位，避免后续 bump 对已关 handle send 导致 wmd trap。
+    pub fn forget_parked(&mut self, ch: Handle) {
+        if let Some((parked, _)) = self.parked {
+            if parked == ch {
+                self.parked = None;
+            }
+        }
     }
 
     /// wm 域分发（session 面）：GETINFO/TABLE 只读无 owner 门；

@@ -5,7 +5,7 @@
 > 定位：P2 Keyboard Input 后的窗口策略刀。P3 在 gui-wmd 权威 pointer
 > DOWN 命中路径更新窗口焦点，并让 Keyboard KeyQueue 跟随点击目标。
 > 不新增 wire op，不改 `VER_WM`，不引入 click-to-raise 或第二焦点权威。
-> 执行序权威 = [GUI框架地基路线-v1.9.md](GUI框架地基路线-v1.9.md)。
+> 执行序权威 = [GUI框架地基路线-v1.10.md](GUI框架地基路线-v1.10.md)。
 
 ## §1 语义
 

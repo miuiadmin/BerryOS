@@ -621,6 +621,9 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-ui --target {{host}}
     # GUI-4 段②：guiproto 协议面 + gui-inputd 泵/服务单测入 host 台账。
     cargo test --manifest-path user/Cargo.toml -p berry-guiproto --target {{host}}
+    # R2：berry-room create-time occlusion snapshot 纯推导（无遮挡/top/
+    # left+bottom）入 host 台账，防新增测试只靠手跑静默腐烂。
+    cargo test --manifest-path user/berry-room/Cargo.toml --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p gui-inputd --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 38 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真

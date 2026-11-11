@@ -5,7 +5,7 @@
 > 定位：GUI-14 二轮对抗深研后的第一实施刀。R1 不做 FormMetrics、safe inset
 > 或多窗，只先关 GUI 权威面的安全洞：SYSTEM 身份、SYSTEM layer、全局
 > surface、跨 owner parent 与 damage 越窗。执行序权威 =
-> [GUI框架地基路线-v1.9.md](GUI框架地基路线-v1.9.md)。
+> [GUI框架地基路线-v1.10.md](GUI框架地基路线-v1.10.md)。
 
 ## §1 背景
 
@@ -281,13 +281,14 @@ damage local clip
 - per-boot SYSTEM seed 仍非 CSPRNG，熵源与失败锁定归安全硬化后续刀；
   launcher argv 以 hex 保存 seed 至进程生命期，未来 argv/proc/crash dump
   面开放前必须改为一次性 handle gift。
-- SYSTEM layer 真实正例尚未创建系统 UI 窗口；本刀只验证身份与权限。
+- SYSTEM layer 生产 UI 正例尚未创建；R2 的 GUI8 哨兵相已加入真实
+  SYSTEM-layer 遮挡窗，但常态 launcher 状态栏迁移仍未发生。
 - configure/inset/resize 事件架构仍缺失，归 R3。
 - compositor z/occlusion 仍未实现，归 multi-window 设计刀。
 - gui-wmd 仍无完整 host harness；R1 用 guiproto authority 纯函数 + GUI8
   真链覆盖。
-- 部分越界 damage 的像素级 e2e（屏证邻窗不变）未测；当前真链只覆盖
-  完全越界整批 ST_BAD，归后续 R2/图形验收刀。
+- R2 已补部分越界 damage 的像素级 e2e：`WMDAMAGECLIP` 证明窗内 8px 落
+  品红、右邻 4px 保持原底色。
 
 最终回归已通过：
 

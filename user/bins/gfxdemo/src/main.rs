@@ -950,6 +950,63 @@ fn submit_tile(ch: Handle, vmo: Handle, _w: usize, _h: usize,
     token
 }
 
+/// R2 partial-damage 探针：提交一个横跨 raw 右边界的 16px 窄条。wmd 必须
+/// 只拷贝窗内 8px；oversized VMO 的窗外 8px 不得进入右邻窗。
+fn submit_partial_damage(
+    ch: Handle,
+    vmo: Handle,
+    surface_id: u32,
+    buffer_id: u32,
+    rect: gp::Rect,
+) -> u32 {
+    let mut alias: Handle = 0;
+    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        fail("partial damage dup");
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+    rects[0] = rect;
+    let sreq = gp::PresentReq::Submit {
+        surface_id,
+        buffer_id,
+        flags: 0,
+        rate_hint: 0,
+        target_present_ns: 0,
+        rects,
+        rect_count: 1,
+    };
+    let m = enc_req(gp::encode_present_req(&mut req, &sreq));
+    let (n, _) = rpc(ch, &req[..m], &[alias], &mut rep, &mut rhs);
+    let token = match gp::parse_submit_ack(&rep[..n]) {
+        Some(t) => t,
+        None => fail(&format!("partial damage ack bad st={}", rep[0])),
+    };
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::FrameCallback { frame_token: token },
+    ));
+    let (n, _) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_frame_done_rep(&rep[..n]) {
+        Some(done) if done.status == gp::FRAME_PRESENTED => {}
+        other => fail(&format!("partial damage frame got {other:?}")),
+    }
+    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
+    let (n, nh) = rpc(ch, &req[..m], &[], &mut rep, &mut rhs);
+    let release = match gp::parse_release_rep(&rep[..n]) {
+        Some(r) => r,
+        None => fail(&format!("partial damage release bad st={}", rep[0])),
+    };
+    if usize::from(release.count) != nh {
+        fail("partial damage release handles");
+    }
+    for handle in rhs.iter().take(nh) {
+        close_h(*handle);
+    }
+    token
+}
+
 fn main() {
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + exit(0)（netd
@@ -1041,8 +1098,8 @@ fn main() {
         ));
     }
 
-    // ② CREATE：全屏 APP 层窗 + AVOID_SYS 旗标（v1 无系统层窗 = 避让空
-    // 转，旗标面先接线）；id≠0 由 wmd 分配策略保证——建窗成功断言面。
+    // ② CREATE：全屏 APP 层窗 + AVOID_SYS 旗标（gfxdemo 生命周期早于
+    // GUI8 哨兵 SYSTEM occluder，因此 raw==visible；旗标面先接线）。
     // Phase 2：两个真实非重叠窗口（左右半屏），各自用窗口局部 buffer。
     let tile_w = wminfo.disp_w / 2;
     let tile_h = wminfo.disp_h;
@@ -1398,6 +1455,72 @@ fn main() {
         fail(&format!("wm2 tokens {token1}/{token2}"));
     }
     println!("WM2FRAME ok n=2");
+
+    // R2 partial-damage 像素面：左窗 raw 宽 w，故意交 (w+16) 宽 VMO 并
+    // 提交跨界 16px。窗内 8px 变品红；窗外 8px 若被拷贝会污染右邻窗。
+    {
+        let (probe_vmo, probe_stride, probe_len) = frame_vmo(w + 16, h);
+        const PROBE_VA: usize = 0x5300_0000;
+        map_frame(probe_vmo, probe_len, PROBE_VA);
+        let probe = unsafe {
+            core::slice::from_raw_parts_mut(PROBE_VA as *mut u8, probe_stride * h)
+        };
+        for row in probe.chunks_exact_mut(probe_stride) {
+            for px in row.chunks_exact_mut(4) {
+                // Rgbx 内存序 B,G,R,X；PPM 观察值为 (255,0,255)。
+                px.copy_from_slice(&[255, 0, 255, 255]);
+            }
+        }
+        let rect = gp::Rect {
+            x: (w - 8) as u32,
+            y: (h / 2) as u32,
+            w: 16,
+            h: 1,
+        };
+        let token = submit_partial_damage(
+            hw,
+            probe_vmo,
+            u32::from(wid),
+            0xD4,
+            rect,
+        );
+        if token == 0 {
+            fail("partial damage token");
+        }
+        println!(
+            "WMDAMAGECLIP ok x={} y={} w={} h=1",
+            rect.x, rect.y, rect.w
+        );
+
+        // R2 负例：旧 eff-size buffer（小于 raw_w*raw_h）不能再通过
+        // size gate；FULL 提交必须 ST_BAD，防行错位静默。
+        let (bad_vmo, _bad_stride, _bad_len) = frame_vmo(w - 8, h);
+        let mut bad_alias: Handle = 0;
+        if berry_handle_duplicate(bad_vmo, RIGHT_READ, &mut bad_alias) != 0
+            || bad_alias == 0
+        {
+            fail("raw buffer deny dup");
+        }
+        let bad_submit = gp::PresentReq::Submit {
+            surface_id: u32::from(wid),
+            buffer_id: 0xD5,
+            flags: gp::SUBMIT_F_DAMAGE_FULL,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+            rect_count: 0,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &bad_submit));
+        let (n, _) = rpc(hw, &req[..m], &[bad_alias], &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_BAD) => {}
+            other => fail(&format!("raw buffer deny got {other:?}")),
+        }
+        if berry_handle_close(bad_vmo) != 0 {
+            fail("raw buffer deny close");
+        }
+        println!("WMRAWBUFBAD ok w={}", w - 8);
+    }
     // 留 2s 呈现窗：QEMU/serial 观察者可在此窗口抓屏（机器标记之外
     // 的像素证据面）；不影响协议，只推迟本一次性测试客户端退出。
     if berry_thread_sleep(now() + 2_000_000_000) != 0 {

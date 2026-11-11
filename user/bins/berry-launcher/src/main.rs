@@ -56,12 +56,13 @@ mod layout_io;
 
 use berry_gfx::font::FontSize;
 use berry_guiproto as gp;
-use berry_libc::io::{app_cli_h, input_h, self_proc_h, wm_cli_h};
+use berry_libc::io::{app_cli_h, input_h, self_proc_h, self_vmar_h, wm_cli_h};
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
-    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE,
-    SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_thread_sleep,
+    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, Handle,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ,
+    RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_ui::UiMain;
 
@@ -368,12 +369,38 @@ fn main() {
             wm_connect_client(broker, app_process, gp::WM_CLIENT_APP, None);
         app_input = input;
         let aw = (info.disp_w / 8).max(64);
-        let ah = (info.disp_h / 10).max(64);
+        let ah = info.disp_h;
         let ax = info.disp_w.saturating_sub(aw);
-        let ay = info.disp_h.saturating_sub(ah);
+        let ay = 0;
+        let occluder_h = 32u16;
+
+        // R2 真链前置：SYSTEM session 造真实 SYSTEM-layer 遮挡窗。它只在
+        // GUI8 哨兵相存在，不迁移 GUI-8 裁决四-e 的常态 launcher 状态栏。
+        let sreq = gp::WmCreateReq {
+            layer: gp::WM_LAYER_SYSTEM,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: ax,
+            y: 0,
+            w: aw,
+            h: occluder_h,
+        };
+        let m = enc_req(gp::encode_wm_create_req(&mut req, &sreq));
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        let sys_win = match gp::parse_wm_create_ack(&rep[..n]) {
+            Some(id) if id != 0 => id,
+            _ => fail(&format!("wm system occluder ack bad st={}", rep[0])),
+        };
+        println!(
+            "WMSYSOCC ok id={sys_win} x={ax} y=0 w={aw} h={occluder_h}"
+        );
+
+        // APP route 窗改为整右带 + AVOID_SYS：raw bounds 保持 aw×disp_h，
+        // visible bounds 顶部让出 32px。后续 QMP 路由仍点 raw 中心。
         let areq = gp::WmCreateReq {
             layer: gp::WM_LAYER_APP,
-            flags: 0,
+            flags: gp::WM_CREATE_F_AVOID_SYS,
             parent: 0,
             group: 0,
             x: ax,
@@ -387,6 +414,274 @@ fn main() {
             Some(id) if id != 0 => id,
             _ => fail(&format!("wm route window ack bad st={}", rep[0])),
         };
+        let m = enc_req(Some(gp::encode_wm_table_get_req(&mut req)));
+        let (n, _) = rpc(app_hw, &req[..m], &[], &mut rep, &mut rhs);
+        let snapshot = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+            Some(Ok(s)) => s,
+            _ => fail(&format!("wm avoid table bad st={}", rep[0])),
+        };
+        let entry = snapshot
+            .entries
+            .iter()
+            .take(snapshot.count)
+            .find(|e| e.id == app_win)
+            .unwrap_or_else(|| fail("wm avoid table entry"));
+        let expected = (
+            ax,
+            occluder_h,
+            aw,
+            ah.saturating_sub(occluder_h),
+        );
+        if (entry.x, entry.y, entry.w, entry.h) != expected {
+            fail(&format!(
+                "wm avoid geometry got {}x{}+{}+{} want {}x{}+{}+{}",
+                entry.w, entry.h, entry.x, entry.y,
+                expected.2, expected.3, expected.0, expected.1,
+            ));
+        }
+        println!(
+            "WMAVOIDWIN ok id={app_win} raw={ax},{ay},{aw},{ah} \
+             visible={},{},{},{} safe=0,{occluder_h},0,0",
+            entry.x, entry.y, entry.w, entry.h
+        );
+
+        // 隐藏遮挡窗必须立刻恢复 raw bounds；再显示必须回到同一 visible
+        // band。raw buffer 全程不重排、不重分配。
+        let hide = gp::WmSetReq {
+            mask: gp::WM_SET_F_VIS,
+            window_id: sys_win,
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            vis: gp::WM_VIS_HIDE,
+            z: 0,
+        };
+        let m = enc_req(gp::encode_wm_set_req(&mut req, &hide));
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_OK) => {}
+            other => fail(&format!("wm avoid hide got {other:?}")),
+        }
+        let m = enc_req(Some(gp::encode_wm_table_get_req(&mut req)));
+        let (n, _) = rpc(app_hw, &req[..m], &[], &mut rep, &mut rhs);
+        let hidden = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+            Some(Ok(snapshot)) => {
+                let entry = snapshot
+                    .entries
+                    .iter()
+                    .take(snapshot.count)
+                    .find(|e| e.id == app_win)
+                    .unwrap_or_else(|| fail("wm avoid hidden entry"));
+                (entry.x, entry.y, entry.w, entry.h)
+            }
+            _ => fail("wm avoid hidden table"),
+        };
+        if hidden != (ax, ay, aw, ah) {
+            fail(&format!(
+                "wm avoid hidden geometry got {}x{}+{}+{}",
+                hidden.2, hidden.3, hidden.0, hidden.1
+            ));
+        }
+        println!("WMAVOIDHIDE ok id={app_win} w={aw} h={ah}");
+
+        let show = gp::WmSetReq { vis: gp::WM_VIS_SHOW, ..hide };
+        let m = enc_req(gp::encode_wm_set_req(&mut req, &show));
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_OK) => {}
+            other => fail(&format!("wm avoid show got {other:?}")),
+        }
+        let m = enc_req(Some(gp::encode_wm_table_get_req(&mut req)));
+        let (n, _) = rpc(app_hw, &req[..m], &[], &mut rep, &mut rhs);
+        let reshown = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+            Some(Ok(snapshot)) => {
+                let entry = snapshot
+                    .entries
+                    .iter()
+                    .take(snapshot.count)
+                    .find(|e| e.id == app_win)
+                    .unwrap_or_else(|| fail("wm avoid reshown entry"));
+                (entry.x, entry.y, entry.w, entry.h)
+            }
+            _ => fail("wm avoid reshown table"),
+        };
+        if reshown != expected {
+            fail(&format!(
+                "wm avoid reshown geometry got {}x{}+{}+{}",
+                reshown.2, reshown.3, reshown.0, reshown.1
+            ));
+        }
+        println!(
+            "WMAVOIDSHOW ok id={app_win} y={occluder_h} h={}",
+            ah.saturating_sub(occluder_h)
+        );
+
+        // 0x67 常态化 R2 persistent occlusion：safe_* 是 host 推导值，
+        // 以 raw surface-local 为基准，不由 APP 自报。
+        let surface_req = gp::surface::SurfaceModeReq {
+            surface_id: app_win,
+            role: gp::surface::SURFACE_ROLE_APP,
+            mode: gp::surface::SURFACE_MODE_RETAINED,
+            input_classes: gp::surface::INPUT_CLASS_TOUCH,
+            ime_mode: gp::surface::IME_MODE_DISABLED,
+            a11y_mode: gp::surface::A11Y_MODE_TREE,
+        };
+        let m = enc_req(gp::surface::encode_wm_surface_mode_req(
+            &mut req, &surface_req,
+        ));
+        let (n, _) = rpc(app_hw, &req[..m], &[], &mut rep, &mut rhs);
+        let grant = match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+            Some(Ok(info)) => info,
+            other => fail(&format!("wm avoid grant got {other:?}")),
+        };
+        if (grant.safe_left, grant.safe_top, grant.safe_right, grant.safe_bottom)
+            != (0, occluder_h, 0, 0)
+        {
+            fail(&format!(
+                "wm avoid insets got l={} t={} r={} b={}",
+                grant.safe_left, grant.safe_top, grant.safe_right, grant.safe_bottom
+            ));
+        }
+        println!(
+            "WMAVOIDGRANT ok id={app_win} l=0 t={occluder_h} r=0 b=0"
+        );
+
+        // R2 像素反 mock：raw buffer 每行 R=y、G=64、B=128。正确合约下
+        // 屏幕 y=40 读 raw row 40；旧 eff-stride 合约会从 row 8 读出 R=8。
+        let stride = usize::from(aw)
+            .checked_mul(4)
+            .unwrap_or_else(|| fail("wm avoid stride"));
+        let bytes = stride
+            .checked_mul(usize::from(ah))
+            .unwrap_or_else(|| fail("wm avoid frame"));
+        let map_len = (bytes + 0xFFF) & !0xFFF;
+        let mut frame_vmo: Handle = 0;
+        if berry_vmo_create(map_len as u64, 0, &mut frame_vmo) != 0
+            || frame_vmo == 0
+            || berry_vmo_commit(frame_vmo, 0, map_len as u64) != 0
+        {
+            fail("wm avoid vmo");
+        }
+        const AVOID_VA: usize = 0x5400_0000;
+        let mut va = AVOID_VA;
+        if berry_vmar_map(
+            self_vmar_h(),
+            0,
+            frame_vmo,
+            0,
+            &mut va,
+            map_len,
+            RIGHT_READ | RIGHT_WRITE,
+        ) != 0 || va != AVOID_VA
+        {
+            fail("wm avoid map");
+        }
+        let frame = unsafe {
+            core::slice::from_raw_parts_mut(AVOID_VA as *mut u8, bytes)
+        };
+        for y in 0..usize::from(ah) {
+            let px = ((y as u32 & 0xFF) << 16) | (64 << 8) | 128;
+            let row = &mut frame[y * stride..(y + 1) * stride];
+            for pixel in row.chunks_exact_mut(4) {
+                pixel.copy_from_slice(&px.to_le_bytes());
+            }
+        }
+        let mut alias: Handle = 0;
+        if berry_handle_duplicate(frame_vmo, RIGHT_READ, &mut alias) != 0
+            || alias == 0
+        {
+            fail("wm avoid dup");
+        }
+        let submit = gp::PresentReq::Submit {
+            surface_id: u32::from(app_win),
+            buffer_id: 0xA0CC,
+            flags: gp::SUBMIT_F_DAMAGE_FULL,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+            rect_count: 0,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &submit));
+        let (n, _) = rpc(app_hw, &req[..m], &[alias], &mut rep, &mut rhs);
+        let token = match gp::parse_submit_ack(&rep[..n]) {
+            Some(t) => t,
+            None => fail(&format!("wm avoid submit bad st={}", rep[0])),
+        };
+        let m = enc_req(gp::encode_present_req(
+            &mut req,
+            &gp::PresentReq::FrameCallback { frame_token: token },
+        ));
+        let (n, _) = rpc(app_hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_frame_done_rep(&rep[..n]) {
+            Some(done) if done.status == gp::FRAME_PRESENTED => {}
+            other => fail(&format!("wm avoid frame got {other:?}")),
+        }
+        let m = enc_req(gp::encode_present_req(
+            &mut req,
+            &gp::PresentReq::ReleaseWait,
+        ));
+        let (n, nh) = rpc(app_hw, &req[..m], &[], &mut rep, &mut rhs);
+        let release = match gp::parse_release_rep(&rep[..n]) {
+            Some(r) => r,
+            None => fail(&format!("wm avoid release bad st={}", rep[0])),
+        };
+        if usize::from(release.count) != nh {
+            fail("wm avoid release handles");
+        }
+        for handle in rhs.iter().take(nh) {
+            close_h(*handle);
+        }
+        println!(
+            "WMAVOIDFRAME ok id={app_win} x={ax} y={occluder_h} w={aw} h={}",
+            ah.saturating_sub(occluder_h)
+        );
+
+        // R2 负例：damage 完全落在持久遮挡带内时，整批有效 damage 为空，
+        // 必须显式 ST_BAD，不得变成零 damage 提交或偷写 overlay 区。
+        let mut occluded_alias: Handle = 0;
+        if berry_handle_duplicate(frame_vmo, RIGHT_READ, &mut occluded_alias) != 0
+            || occluded_alias == 0
+        {
+            fail("wm occluded damage dup");
+        }
+        let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+        rects[0] = gp::Rect {
+            x: 0,
+            y: 0,
+            w: u32::from(aw),
+            h: u32::from(occluder_h),
+        };
+        let bad_submit = gp::PresentReq::Submit {
+            surface_id: u32::from(app_win),
+            buffer_id: 0xA0CD,
+            flags: 0,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects,
+            rect_count: 1,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &bad_submit));
+        let (n, _) = rpc(
+            app_hw,
+            &req[..m],
+            &[occluded_alias],
+            &mut rep,
+            &mut rhs,
+        );
+        match gp::parse_status_rep(&rep[..n]) {
+            Some(gp::ST_BAD) => {}
+            other => fail(&format!("wm occluded damage got {other:?}")),
+        }
+        println!("WMOCCDAMAGEBAD ok h={occluder_h}");
+        if berry_thread_sleep(now() + 2_000_000_000) != 0 {
+            fail("wm avoid sleep");
+        }
+        if berry_vmar_unmap(self_vmar_h(), AVOID_VA, map_len) != 0
+            || berry_handle_close(frame_vmo) != 0
+        {
+            fail("wm avoid unmap");
+        }
         println!("WMRTWIN ok id={app_win} x={ax} y={ay} w={aw} h={ah}");
     } else {
         close_h(app_process);

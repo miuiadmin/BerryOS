@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.9**｜2026-11-11
+> 版本：**1.10**｜2026-11-11
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -116,6 +116,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **P3 Click-to-Focus（已落地）** | gui-wmd pointer DOWN 命中 APP 窗即更新权威 focus 并 bump 快照 + gfxdemo 双窗 Retained Keyboard 真链 | 左右半屏点击后 Keyboard 队列跟随新焦点；desktop miss 不清焦；已聚焦窗点击 no-op；无第二焦点权威；pointer/touch 与六 BerryUI 真链零回退 |
 | **P4 Window Policy Matrix（已落地）** | gfxdemo 既有双窗 + 临时锁定窗驱动 HIDE/SHOW、desktop miss、z-order、锁定窗销毁 CANCEL 的真实 QMP 验收矩阵 | desktop miss 不 bump 且 Keyboard 仍投旧焦窗；HIDE/SHOW refocus 可证；z 平局/高 z 命中者获焦；锁定窗销毁后 UP 合成 CANCEL+SYNTHESIZED；无 wire 漂移与第二焦点权威 |
 | **R1 Window/Surface Authority Hardening（已落地）** | per-boot SYSTEM seed、client-aware Surface policy、layer/parent/global-surface/damage 纯策略与 wmd 执法 | SYSTEM 身份不可自报；APP 不得造 SYSTEM layer / 全局涂刷 / 越窗绘制 / 跨 owner parent；SYSTEM overlay 不抢策略焦点；GUI8 正反例与 host authority 测试全绿 |
+| **R2 Occlusion Contract（已落地）** | raw bounds = buffer/stride/layout 基准；visible bounds = AVOID_SYS 可呈现/可命中域；0x67 safe_* = host 推导 persistent occlusion；TABLE_GET create-time Room 快照 | SYSTEM 遮挡下 raw row 不位移/不丢底行/不水平 shear；partial damage 不入邻窗或遮挡区；输入坐标与 raw buffer 同源；隐藏/显示遮挡动态恢复；GUI8 像素锚与 host occlusion 测试全绿 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

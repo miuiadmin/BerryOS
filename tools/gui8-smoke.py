@@ -113,6 +113,15 @@ MARK_WM_LAYER_DENIED = "WMLAYERDENY ok"
 MARK_WM_PARENT_DENIED = "WMPARENTDENY ok"
 MARK_WM_GLOBAL_DENIED = "WMGLOBALDENY ok"
 MARK_WM_DAMAGE_BAD = "WMDAMAGEBAD ok"
+MARK_WM_SYSTEM_OCCLUDER = "WMSYSOCC ok"
+MARK_WM_AVOID_WINDOW = "WMAVOIDWIN ok"
+MARK_WM_AVOID_HIDE = "WMAVOIDHIDE ok"
+MARK_WM_AVOID_SHOW = "WMAVOIDSHOW ok"
+MARK_WM_AVOID_GRANT = "WMAVOIDGRANT ok"
+MARK_WM_AVOID_FRAME = "WMAVOIDFRAME ok"
+MARK_WM_OCCLUDED_DAMAGE_BAD = "WMOCCDAMAGEBAD ok"
+MARK_WM_DAMAGE_CLIP = "WMDAMAGECLIP ok"
+MARK_WM_RAW_BUFFER_BAD = "WMRAWBUFBAD ok"
 MARK_WM_SURFACE_DENIED = "WMSDENY ok"
 MARK_WM_ORPHAN = "WMORPHAN ok id="
 MARK_WM_2FRAME = "WM2FRAME ok n=2"
@@ -1219,6 +1228,14 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_WM_KEY_FOCUS, 0, "normal keyboard focus", log_path)
     _require_p4_absent(text, "normal", log_path)
     _verify_r1_authority(text, "normal", log_path)
+    for marker in (
+        MARK_WM_SYSTEM_OCCLUDER, MARK_WM_AVOID_WINDOW, MARK_WM_AVOID_HIDE,
+        MARK_WM_AVOID_SHOW, MARK_WM_AVOID_GRANT, MARK_WM_AVOID_FRAME,
+        MARK_WM_OCCLUDED_DAMAGE_BAD,
+    ):
+        _require_exact_count(text, marker, 0, "normal R2 sentinel", log_path)
+    _require_exact_count(text, MARK_WM_DAMAGE_CLIP, 1, "normal R2 damage clip", log_path)
+    _require_exact_count(text, MARK_WM_RAW_BUFFER_BAD, 1, "normal R2 raw buffer gate", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
@@ -1943,6 +1960,7 @@ def _boot_base_markers() -> list[str]:
     return [
         MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N9,
         MARK_WM_CONN1, MARK_WM_CONN2, MARK_WM_DENIED, MARK_WM_SURFACE_DENIED, MARK_WM_ORPHAN, MARK_WM_2FRAME,
+        MARK_WM_DAMAGE_CLIP, MARK_WM_RAW_BUFFER_BAD,
         MARK_WM_DEAD1, MARK_WM_DEAD2, MARK_WM_CLEAN, MARK_WM_CONN3,
         MARK_WM_CONN4, MARK_BROWSER_UP, MARK_BROWSER_WIN, MARK_BROWSER_FRAME,
         MARK_BROWSER_PROBE, MARK_BROWSER_DESTROY, MARK_BROWSER_EXIT,
@@ -1982,6 +2000,24 @@ def _wait_boot_batch(boot: Boot, timeout: float) -> None:
         )
     boot.wait_markers([MARK_APP_DEMO_UP], timeout)
     _verify_r1_authority(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
+    if boot.phase != "normal":
+        _verify_r2_occlusion(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
+
+def _verify_r2_occlusion(text: str, phase: str, log_path: Path | None = None) -> None:
+    """R2 Occlusion Contract：真实 SYSTEM 遮挡 + raw/visible 双几何证据。"""
+    checks = {
+        MARK_WM_SYSTEM_OCCLUDER: 1,
+        MARK_WM_AVOID_WINDOW: 1,
+        MARK_WM_AVOID_HIDE: 1,
+        MARK_WM_AVOID_SHOW: 1,
+        MARK_WM_AVOID_GRANT: 1,
+        MARK_WM_AVOID_FRAME: 1,
+        MARK_WM_OCCLUDED_DAMAGE_BAD: 1,
+        MARK_WM_DAMAGE_CLIP: 1,
+        MARK_WM_RAW_BUFFER_BAD: 1,
+    }
+    for marker, expected in checks.items():
+        _require_exact_count(text, marker, expected, f"{phase} R2 occlusion", log_path)
 
 def _verify_r1_authority(text: str, phase: str, log_path: Path | None = None) -> None:
     """R1 Window/Surface Authority：正反例均恰一次。"""
@@ -2169,6 +2205,87 @@ def run_dual_boot(args) -> int:
         boot_a.qmp.pointer_up()
         boot_a.wait_markers([MARK_WM_CANCEL], args.click_timeout)
 
+        # —— R2 damage 像素反 mock：跨界 damage 只落窗内 8px，右邻 4px
+        #    保持原 tile 底色。此时 guest 在 marker 后留 2s 呈现窗。
+        boot_a.wait_markers([MARK_WM_DAMAGE_CLIP], args.click_timeout)
+        boot_a.log.poll()
+        damage_clip = re.search(
+            r"WMDAMAGECLIP ok x=([0-9]+) y=([0-9]+) w=([0-9]+) h=1",
+            boot_a.log.text,
+        )
+        if damage_clip is None:
+            raise SmokeError("boot A R2 damage clip geometry absent", boot_a.log_path)
+        dc_x, dc_y, dc_w = map(int, damage_clip.groups())
+        damage_shot = run_dir / "r2-damage-a.ppm"
+        damage_deadline = time.monotonic() + 5.0
+        while True:
+            boot_a.qmp.screendump(damage_shot)
+            inside = ppm_pixel(damage_shot, dc_x + 4, dc_y)
+            neighbor = ppm_pixel(damage_shot, dc_x + dc_w - 4, dc_y)
+            if all(abs(a - b) <= 8 for a, b in zip(inside, (255, 0, 255))) and all(
+                abs(a - b) <= 8 for a, b in zip(neighbor, (24, 16, 40))
+            ):
+                break
+            if time.monotonic() >= damage_deadline:
+                raise SmokeError(
+                    f"boot A R2 damage 像素：inside={inside} neighbor={neighbor}",
+                    boot_a.log_path,
+                )
+            time.sleep(0.2)
+
+        # —— R2 occlusion 像素反 mock：raw row y 必须落在屏幕 y。旧 eff
+        #    stride 合约会把 screen y=40 读成 raw row 8（R 通道差 32）。
+        boot_a.wait_markers([MARK_WM_AVOID_FRAME], args.boot_a_timeout)
+        boot_a.log.poll()
+        avoid = re.search(
+            r"WMAVOIDWIN ok id=[0-9]+ raw=([0-9]+),([0-9]+),([0-9]+),([0-9]+) "
+            r"visible=([0-9]+),([0-9]+),([0-9]+),([0-9]+) "
+            r"safe=([0-9]+),([0-9]+),([0-9]+),([0-9]+)",
+            boot_a.log.text,
+        )
+        avoid_frame = re.search(
+            r"WMAVOIDFRAME ok id=[0-9]+ x=([0-9]+) y=([0-9]+) w=([0-9]+) h=([0-9]+)",
+            boot_a.log.text,
+        )
+        if avoid is None or avoid_frame is None:
+            raise SmokeError("boot A R2 occlusion geometry absent", boot_a.log_path)
+        ar_x, ar_y, ar_w, ar_h, av_x, av_y, av_w, av_h, *av_safe = map(
+            int, avoid.groups()
+        )
+        af_x, af_y, af_w, af_h = map(int, avoid_frame.groups())
+        want_visible = (ar_x, ar_y + 32, ar_w, ar_h - 32)
+        if ar_y != 0 or (
+            av_x, av_y, av_w, av_h
+        ) != want_visible or (af_x, af_y, af_w, af_h) != want_visible or tuple(av_safe) != (0, 32, 0, 0):
+            raise SmokeError(
+                f"boot A R2 occlusion 几何 raw={ar_x},{ar_y},{ar_w},{ar_h} "
+                f"visible={av_x},{av_y},{av_w},{av_h} frame={af_x},{af_y},{af_w},{af_h} "
+                f"safe={av_safe}",
+                boot_a.log_path,
+            )
+        avoid_shot = run_dir / "r2-avoid-a.ppm"
+        probe_x = af_x + af_w // 2
+        probe_y1 = af_y + 8
+        probe_y2 = min(af_y + 100, af_y + af_h - 1)
+        avoid_deadline = time.monotonic() + 5.0
+        while True:
+            boot_a.qmp.screendump(avoid_shot)
+            got1 = ppm_pixel(avoid_shot, probe_x, probe_y1)
+            got2 = ppm_pixel(avoid_shot, probe_x, probe_y2)
+            want1 = (probe_y1 & 0xFF, 64, 128)
+            want2 = (probe_y2 & 0xFF, 64, 128)
+            if all(abs(a - b) <= 8 for a, b in zip(got1, want1)) and all(
+                abs(a - b) <= 8 for a, b in zip(got2, want2)
+            ):
+                break
+            if time.monotonic() >= avoid_deadline:
+                raise SmokeError(
+                    f"boot A R2 row mapping：({probe_x},{probe_y1})={got1}!={want1} "
+                    f"({probe_x},{probe_y2})={got2}!={want2}",
+                    boot_a.log_path,
+                )
+            time.sleep(0.2)
+
         _wait_boot_batch(boot_a, args.boot_a_timeout)
         _warn_input_armed(boot_a)
 
@@ -2280,6 +2397,14 @@ def run_dual_boot(args) -> int:
                 f"(window {rw}x{rh})",
                 boot_a.log_path,
             )
+        # R2：输入坐标必须与 raw buffer 坐标同源。AVOID_SYS 顶遮挡下，
+        # visible 顶部的点击 y 保留 32px raw 偏移，而不是从 0 重排。
+        if abs(lx - (rcx - rx)) > 2 or abs(ly - (rcy - ry)) > 2:
+            raise SmokeError(
+                f"boot A APP route raw 坐标偏差 local=({lx},{ly}) "
+                f"want=({rcx - rx},{rcy - ry})",
+                boot_a.log_path,
+            )
         owner_marker = f"WMROUTE ok sid=10 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
@@ -2329,6 +2454,8 @@ def run_dual_boot(args) -> int:
             [MARK_WM_CONN4, MARK_WM_ROUTE_WINDOW_UP], args.boot_b_timeout
         )
         boot_b.wait_regex(RE_LAYOUT_N2, args.boot_b_timeout)
+        boot_b.log.poll()
+        _verify_r2_occlusion(boot_b.log.text, "boot B", boot_b.log_path)
 
         watcher_b = boot_b.log
         log_path_b = boot_b.log_path
@@ -2372,6 +2499,8 @@ def run_dual_boot(args) -> int:
                 + [MARK_APP_DEMO_UP, MARK_WM_CONN4, MARK_WM_ROUTE_WINDOW_UP, MARK_LAYOUTW],
                 args.boot_b_timeout,
             )
+            boot_c.log.poll()
+            _verify_r2_occlusion(boot_c.log.text, "boot C", boot_c.log_path)
             watcher_c = boot_c.log
             log_path_c = boot_c.log_path
             boot_c.stop()
@@ -3911,6 +4040,8 @@ def self_test(args) -> int:
             f"{MARK_WM_PARENT_DENIED}\n"
             f"{MARK_WM_GLOBAL_DENIED}\n"
             f"{MARK_WM_DAMAGE_BAD}\n"
+            f"{MARK_WM_DAMAGE_CLIP}\n"
+            f"{MARK_WM_RAW_BUFFER_BAD}\n"
             f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\n"
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
             f"{photos_boot}{contacts_boot}"
@@ -3956,6 +4087,35 @@ def self_test(args) -> int:
                 fake_n.replace(f"{MARK_WM_GLOBAL_DENIED}\n", "", 1),
                 snap_n, 1, 1, 1, 1, 1, 1,
             ),
+        )
+        expect_error(
+            "常态缺 R2 damage clip",
+            lambda: verify_normal_boot(
+                fake_n.replace(f"{MARK_WM_DAMAGE_CLIP}\n", "", 1),
+                snap_n, 1, 1, 1, 1, 1, 1,
+            ),
+        )
+        r2_fake = "\n".join([
+            MARK_WM_SYSTEM_OCCLUDER,
+            MARK_WM_AVOID_WINDOW,
+            MARK_WM_AVOID_HIDE,
+            MARK_WM_AVOID_SHOW,
+            MARK_WM_AVOID_GRANT,
+            MARK_WM_AVOID_FRAME,
+            MARK_WM_OCCLUDED_DAMAGE_BAD,
+            MARK_WM_DAMAGE_CLIP,
+            MARK_WM_RAW_BUFFER_BAD,
+        ]) + "\n"
+        _verify_r2_occlusion(r2_fake, "self-test")
+        expect_error(
+            "R2 缺遮挡帧证据",
+            lambda: _verify_r2_occlusion(
+                r2_fake.replace(f"{MARK_WM_AVOID_FRAME}\n", "", 1), "self-test"
+            ),
+        )
+        expect_error(
+            "R2 damage clip 重复",
+            lambda: _verify_r2_occlusion(r2_fake + MARK_WM_DAMAGE_CLIP + "\n", "self-test"),
         )
         verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1)
         for needle, label in (

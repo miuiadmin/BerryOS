@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F3 的主题 token、密度换算、交互状态与 BerryGFX 表面基元契约。执行序权威 = [GUI框架地基路线-v1.9.md](GUI框架地基路线-v1.9.md)；BerryUI core 现状 = [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)。本文只定义 F3 地基，不提前实现 F4 组件。
+> 定位：GUI F3 的主题 token、密度换算、交互状态与 BerryGFX 表面基元契约。执行序权威 = [GUI框架地基路线-v1.10.md](GUI框架地基路线-v1.10.md)；BerryUI core 现状 = [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)。本文只定义 F3 地基，不提前实现 F4 组件。
 
 ## §1 分层
 

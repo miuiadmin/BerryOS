@@ -601,6 +601,7 @@ impl WmSessions {
                 self.input_lock = None;
             }
             println!("WMDEAD ok id={} wins={}", sess.id, wins);
+            table.forget_parked(sess.ch);
             if berry_handle_close(sess.ch) != 0
                 || berry_handle_close(sess.input) != 0
                 || berry_handle_close(sess.process) != 0
@@ -724,9 +725,9 @@ impl WmSession {
         table: &table::WmTable,
         req: gp::surface::SurfaceModeReq,
     ) -> Result<gp::surface::SurfaceModeInfo, u8> {
-        if table.surface_rect(self.id, req.surface_id).is_none() {
+        let Some(geometry) = table.surface_geometry(self.id, req.surface_id) else {
             return Err(gp::ST_NOENT);
-        }
+        };
         let old = self
             .surface_modes
             .iter()
@@ -734,9 +735,23 @@ impl WmSession {
             .copied()
             .flatten();
         let (w, h) = table.display_size();
-        let info = gp::surface::surface_mode_session_policy(
+        let mut info = gp::surface::surface_mode_session_policy(
             self.client_type, req, self.escape, old, w, h,
         )?;
+        if self.client_type == gp::WM_CLIENT_APP {
+            // R2：persistent occlusion 以 raw surface-local 为基准写入既有
+            // safe_* 字段。它是 host 授予值，不是 app 自报；IME/transient
+            // occlusion 不在此通道。
+            let (left, top, right, bottom) = geometry.occlusion_insets();
+            info.safe_left = left;
+            info.safe_top = top;
+            info.safe_right = right;
+            info.safe_bottom = bottom;
+        }
+        let (raw_w, raw_h) = geometry.raw_size();
+        if !gp::surface::surface_mode_info_fits(&info, raw_w, raw_h) {
+            return Err(gp::ST_BAD);
+        }
         if let Some(slot) = self
             .surface_modes
             .iter_mut()
@@ -808,7 +823,7 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
                 present_cli,
                 owner,
                 client_type,
-                |owner, id| table.surface_rect(owner, id),
+                |owner, id| table.surface_geometry(owner, id),
                 comp,
                 msg,
                 hs,

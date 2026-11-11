@@ -61,6 +61,7 @@
 
 /// Berry Session Surface Mode / IME composition / a11y sidecar 协议（P0）。
 pub mod authority;
+pub mod insets;
 pub mod surface;
 
 // ---------- op 表（三域）----------
