@@ -1427,13 +1427,21 @@ pub fn set_exit_hook(f: unsafe extern "C" fn(pinned: usize, thread_key: usize, c
     unsafe { EXIT_HOOK = Some(f) };
 }
 
-/// 待回收任务队列（cap 32 ≈ 一个 bsh 会话的并发退出上限量级）。溢出 = 泄漏
-/// + 首 4 个 loud 打印（`irq? id=` 同款防风暴）——回收是资源回收非正确性
-/// 关卡，泄漏可见可接受。
+/// 待回收任务队列。**cap 256（SMP 第三虫修复，沿革 189）**：单核旧值 32
+/// 的「泄漏可见可接受」前提 = idle 稳态必排水；SMP 参与态下该前提破缺——
+/// push 可来自两核退出链，而 drain 点只有 CPU0 `idle_loop`/`yield_now` 尾
+/// （tick 抢占/block 切换不排水、副核结构性不排水），rootfs 相 app/uutils
+/// churn 的退出突发在两核竞速下实测 33-60 个不排水堆积 → 32 槽溢出即丢
+/// Task Box + 16KiB 内核栈指针 → 下游 spawn/reap 重链随机丢标记
+/// （smoke-smp 竞态红：缺 `APP ok`/`U1 ok`）。256 = 实测峰值的 4-8× 余量
+/// （数组只存指针 8B/槽 = 2KiB BSS；栈本体随任务存活堆分配，与此无关）。
+/// 溢出面保留 = 泄漏 + 首 4 个 loud 打印（`irq? id=` 同款防风暴）——终端
+/// 兜底语义零漂（回收仍是资源回收非正确性关卡，只是 SMP 下容量须盖住
+/// 排水饥饿窗内的退出突发）。
 static mut REAPQ: [*mut Task; REAPQ_CAP] = [core::ptr::null_mut(); REAPQ_CAP];
 static mut REAPQ_LEN: usize = 0;
 static mut REAPQ_WARNED: usize = 0;
-const REAPQ_CAP: usize = 32;
+const REAPQ_CAP: usize = 256;
 /// REAPQ 互斥锁（S-3c c-2a 落形 → **c-2b slice 2 取放启用**；持有位 =
 /// `HELD_REAPQ`，记账在 `reapq_push`/`reap_drain` 本面）。七层冻结锁序第三
 /// 层；3-1b 起 KL 包络剥除——独立串行面（SLEEPQ_LOCK/RQ 锁同口径）。
@@ -2766,7 +2774,7 @@ pub fn idle_loop() -> ! {
             // 承接一切 wfi 醒（在-handler 派发先切走时切回点同径）。REAPQ 深
             // park 滞留面：跨核退出必经 wake_matching 路径的事件入队 SGI 醒
             // 本核（exit 钩子唤醒链），醒即 drain——静默退出者由下次任意醒
-            // 承接，cap 32 有界（义务⑥ 账面不变）。
+            // 承接，cap 256 有界（义务⑥ 账面不变；容量依据见 REAPQ 头注）。
             reap_drain();
             // SAFETY: IRQ 屏蔽窗内（3-1b 起无 KL 包络——drain 自持 REAPQ 窗）；
             // my_cur=null 出选
