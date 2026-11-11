@@ -1062,6 +1062,8 @@ def verify_boot_a_click(
             log_path,
         )
     _require_exact_count(text, MARK_CLICK_ANY, 1, "boot A click", log_path)
+    _require_exact_count(text, "UITESTADAPT ok ", 1, "boot A adaptive", log_path)
+    _require_exact_count(text, "UITESTADAPT2 ok ", 1, "boot A adaptive compact", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 1, "boot A click", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "boot A click", log_path)
     _require_exact_count(text, MARK_CLICK_READY, 1, "boot A click", log_path)
@@ -1205,6 +1207,8 @@ def verify_boot_b(text: str, log_path: Path | None = None) -> None:
     _require_exact_count(text, MARK_LAYOUT, 1, "boot B", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "boot B", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "boot B", log_path)
+    _require_exact_count(text, "UITESTADAPT ok ", 1, "boot B adaptive", log_path)
+    _require_exact_count(text, "UITESTADAPT2 ok ", 1, "boot B adaptive compact", log_path)
 
 
 def verify_layout_selfheal_boot(text: str, log_path: Path | None = None) -> None:
@@ -1468,6 +1472,29 @@ def latest_uitest_button(
     return tuple(int(m.group(i)) for i in range(4, 8))  # type: ignore[return-value]
 
 
+def latest_uitest_adapt(text: str, start: int = 0) -> tuple[int, int, int, int]:
+    matches = [m for m in UITEST_ADAPT_RE.finditer(text) if m.start() >= start]
+    if not matches:
+        raise SmokeError(f"UITEST adaptive layout 缺失（pos>={start}）", None)
+    m = matches[-1]
+    return tuple(int(m.group(i)) for i in (2, 3, 4, 5))  # type: ignore[return-value]
+
+
+def latest_uitest_adapt_detail(text: str, start: int = 0) -> tuple[int, int, int, int]:
+    matches = [m for m in UITEST_ADAPT_RE.finditer(text) if m.start() >= start]
+    if not matches:
+        raise SmokeError(f"UITEST adaptive detail 缺失（pos>={start}）", None)
+    m = matches[-1]
+    return tuple(int(m.group(i)) for i in (6, 7, 8, 9))  # type: ignore[return-value]
+
+
+UITEST_ADAPT_RE = re.compile(
+    r"UITESTADAPT ok v=1 basis=([0-9]+) "
+    r"list=(-?[0-9]+),(-?[0-9]+),([0-9]+),([0-9]+) "
+    r"detail=(-?[0-9]+),(-?[0-9]+),([0-9]+),([0-9]+)"
+)
+
+
 SETTINGS_LAYOUT_RE = re.compile(
     r"SETTINGSLAYOUT ok back=(-?\d+),(-?\d+),(\d+),(\d+) "
     r"wlan=(-?\d+),(-?\d+),(\d+),(\d+) "
@@ -1590,7 +1617,19 @@ def verify_uitest_normal(
     )
     _require_exact_count(text, "UITESTHIT ok node=button", 3, "normal UITEST hit dump", log_path)
     _require_exact_count(
-        text, "UITESTAST ok bytes=712 a11y=8", 2, "normal UITEST AST", log_path
+        text, "UITESTAST ok bytes=755 a11y=8", 2, "normal UITEST AST", log_path
+    )
+    _require_exact_count(
+        text,
+        "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
+        "detail=384,623,684,120",
+        2,
+        "normal UITEST adaptive expanded",
+        log_path,
+    )
+    _require_exact_count(
+        text, "UITESTADAPT2 ok v=0 basis=320", 1,
+        "normal UITEST adaptive compact", log_path,
     )
     _require_exact_count(text, "UITESTRENDER ok seq=", 11, "normal UITEST render", log_path)
     _require_exact_count(
@@ -3324,13 +3363,31 @@ def run_normal_boot(args) -> int:
             button0[0] + button0[2] // 2,
             button0[1] + button0[3] // 2,
         )
+        adaptive_list = latest_uitest_adapt(boot.log.text, snapshot_pos)
+        list_px = (
+            (adaptive_list[0] + adaptive_list[2] // 2) * w // 1080,
+            (adaptive_list[1] + adaptive_list[3] // 2) * h // 1920,
+        )
+        adaptive_detail = latest_uitest_adapt_detail(boot.log.text, snapshot_pos)
+        detail_px = (
+            (adaptive_detail[0] + adaptive_detail[2] // 2) * w // 1080,
+            (adaptive_detail[1] + adaptive_detail[3] // 2) * h // 1920,
+        )
         uitest_shot = run_dir / "uitest-page0.ppm"
         boot.qmp.screendump(uitest_shot)
         assert_pixel_close(ppm_pixel(uitest_shot, 540, 20), (0, 116, 224), "UITEST AppBar", boot.log_path)
         assert_pixel_close(ppm_pixel(uitest_shot, 540, 60), (255, 255, 255), "UITEST surface", boot.log_path)
         assert_pixel_close(ppm_pixel(uitest_shot, 540, 100), (27, 37, 64), "UITEST title text", boot.log_path)
         assert_pixel_close(ppm_pixel(uitest_shot, 540, 600), (245, 247, 250), "UITEST empty background", boot.log_path)
-        log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState）")
+        assert_pixel_close(
+            ppm_pixel(uitest_shot, list_px[0], list_px[1]),
+            (233, 237, 243), "UITEST adaptive list pane", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(uitest_shot, detail_px[0], detail_px[1]),
+            (255, 255, 255), "UITEST adaptive detail pane", boot.log_path,
+        )
+        log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState/L1 adaptive）")
 
         log(f"normal-uitest: QMP 点击 Details ({click0[0]},{click0[1]})")
         boot.qmp.click(click0[0], click0[1], w, h)
@@ -3819,6 +3876,9 @@ def self_test(args) -> int:
             f"{MARK_APP_DEMO_UP}\n"
             f"{MARK_LAYOUTW}\n"
             f"{MARK_INPUT_DROPS_OK}\n"
+            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
+            "detail=384,623,684,120\n"
+            "UITESTADAPT2 ok v=0 basis=320\n"
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
             f"{MARK_WM_ROUTE_DESKTOP}\n"
@@ -3828,6 +3888,13 @@ def self_test(args) -> int:
         )
         pos_a = fake_a.index(MARK_CLICK_READY)
         verify_boot_a_click(fake_a, pos_a, 1, 0)
+        expect_error(
+            "Boot A 缺 adaptive compact",
+            lambda: verify_boot_a_click(
+                fake_a.replace("UITESTADAPT2 ok v=0 basis=320\n", "", 1),
+                pos_a, 1, 0,
+            ),
+        )
         expect_error(
             "Boot A 缺焦点 ready",
             lambda: verify_boot_a_click(
@@ -3969,8 +4036,22 @@ def self_test(args) -> int:
             "重复/错序/缺 ready/APPQUIET 均 FAIL）"
         )
 
-        fake_b = f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\nLAUNCH ok\nLAYOUT ok n=2\n"
+        fake_b = (
+            f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\nLAUNCH ok\nLAYOUT ok n=2\n"
+            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
+            "detail=384,623,684,120\n"
+            "UITESTADAPT2 ok v=0 basis=320\n"
+        )
         verify_boot_b(fake_b)
+        expect_error(
+            "Boot B 缺 adaptive expanded",
+            lambda: verify_boot_b(
+                fake_b.replace(
+                    "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
+                    "detail=384,623,684,120\n", "", 1,
+                )
+            ),
+        )
         expect_error(
             "Boot B 泄漏 P4 矩阵",
             lambda: verify_boot_b(fake_b + "WMZFOCUS ok winner=6 z=1 v=13\n"),
@@ -4393,20 +4474,23 @@ def self_test(args) -> int:
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=712 a11y=8\n"
-            "UITESTRENDER ok seq=1 cmds=25\n"
+            "UITESTAST ok bytes=755 a11y=8\n"
+            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
+            "detail=384,623,684,120\n"
+            "UITESTADAPT2 ok v=0 basis=320\n"
+            "UITESTRENDER ok seq=1 cmds=27\n"
             f"{MARK_UITEST_FRAME}\n"
-            "UITESTRENDER ok seq=2 cmds=49\n"
+            "UITESTRENDER ok seq=2 cmds=28\n"
             "UITESTSCROLL ok offset=24 switch=1\n"
-            "UITESTRENDER ok seq=3 cmds=26\n"
+            "UITESTRENDER ok seq=3 cmds=28\n"
             "UITESTCLIP ok port=12,377,1056,24 item=12,353,1056,72 "
             "probe=540,409 seq=3\n"
             "UITESTSTATE ok page=1 switch=1\n"
             "UITESTRENDER ok seq=4 cmds=17\n"
             "UITESTBACK ok page=0 switch=1\n"
-            "UITESTRENDER ok seq=5 cmds=26\n"
-            "UITESTRENDER ok seq=6 cmds=25\n"
-            "UITESTRENDER ok seq=7 cmds=25\n"
+            "UITESTRENDER ok seq=5 cmds=28\n"
+            "UITESTRENDER ok seq=6 cmds=27\n"
+            "UITESTRENDER ok seq=7 cmds=27\n"
             "UITESTCLIP ok port=12,377,1056,24 item=12,377,1056,72 "
             "probe=540,409 seq=7\n"
             "UITESTSURFACE ok modes=1,2 frames=8,9 flags=31 scale=1000 "
@@ -4420,16 +4504,18 @@ def self_test(args) -> int:
             "UITESTLAYOUT ok page=0 appbar=0,0,1080,60 body=0,60,1080,1860 "
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
-            "UITESTAST ok bytes=712 a11y=8\n"
-            "UITESTRENDER ok seq=1 cmds=25\n"
+            "UITESTAST ok bytes=755 a11y=8\n"
+            "UITESTADAPT ok v=1 basis=1056 list=12,623,360,120 "
+            "detail=384,623,684,120\n"
+            "UITESTRENDER ok seq=1 cmds=27\n"
             f"{MARK_UITEST_FRAME}\n"
             "UITESTLAYOUT ok page=1 appbar=0,0,1080,60 body=0,60,1080,1860 "
             "button=12,255,1056,60 scroll=0,60,1080,1860 clip=0,60,1080,1860\n"
             "UITESTHIT ok node=button x=540 y=285\n"
             "UITESTSTATE ok page=1 switch=0\n"
-            "UITESTRENDER ok seq=2 cmds=18\n"
+            "UITESTRENDER ok seq=2 cmds=17\n"
             "UITESTINPUT ok x=539 y=284\n"
-            "UITESTRENDER ok seq=3 cmds=18\n"
+            "UITESTRENDER ok seq=3 cmds=27\n"
             "UITESTBACK ok page=0 switch=0\n"
             "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n"
             "WMKEYROUTE ok sid=15 window=15 code=15 action=0\n"
@@ -4442,7 +4528,7 @@ def self_test(args) -> int:
             "UITESTKEYWAIT ok input=9\n"
             "UITESTFOCUSMOVE ok step=1 from=255 to=0 state=3\n"
             "UITESTFOCUSMOVE ok step=2 from=0 to=1 state=3\n"
-            "UITESTRENDER ok seq=4 cmds=18\n"
+            "UITESTRENDER ok seq=4 cmds=51\n"
             "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n"
             "UITESTKEY ok code=28 tab=2 downs=2 ups=2\n"
             f"{MARK_UITEST_DESTROY}\n{MARK_UITEST_EXIT}\n"
@@ -4540,6 +4626,31 @@ def self_test(args) -> int:
             ),
         )
         expect_error(
+            "UITEST adaptive 基准造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTADAPT ok v=1 basis=1056", "UITESTADAPT ok v=1 basis=10560", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST adaptive compact 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTADAPT2 ok v=0 basis=320\n",
+                    "UITESTADAPT2 ok v=0 basis=320\n"
+                    "UITESTADAPT2 ok v=0 basis=320\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST adaptive AST 尺寸造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTAST ok bytes=755 a11y=8", "UITESTAST ok bytes=712 a11y=8", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
             "UITEST 键路由 down/up 错配",
             lambda: verify_uitest_normal(
                 fake_u.replace(
@@ -4552,7 +4663,7 @@ def self_test(args) -> int:
         expect_error(
             "UITEST focus render 计数不足",
             lambda: verify_uitest_normal(
-                fake_u.replace("UITESTRENDER ok seq=4 cmds=18\n", "", 1),
+                fake_u.replace("UITESTRENDER ok seq=4 cmds=51\n", "", 1),
                 snap_u, 1,
             ),
         )

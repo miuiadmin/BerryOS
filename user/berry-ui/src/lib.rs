@@ -1478,9 +1478,16 @@ impl<const N: usize> Ui<N> {
     // —— 布局 / 脏区 ——
 
     pub fn layout(&mut self) -> layout::LayoutStat {
+        self.layout_with(layout::Constraints::Viewport)
+    }
+
+    /// 根播种约束布局（GUI-14 L1）。Pull-based 一次性面：不存上次
+    /// 约束；净树调用 = 文档化 no-op `{0,0}`。切换约束需调用方先经
+    /// 几何变更/set_viewport 制造 dirty。render_frame 发起的 relayout 请求
+    /// 仍为 Viewport；净树不自动恢复上次 layout_with 约束。
+    pub fn layout_with(&mut self, cs: layout::Constraints) -> layout::LayoutStat {
         // 脏子树重排；新界进 damage（freed = 当前空闲槽清单——removal 面
-        // 的陈旧缓存跳过依据）。GUI-6 D28：tm/icons 从供给槽取传（门面
-        // 签名不变）；D9：v1 只接 Viewport 档。
+        // 的陈旧缓存跳过依据）。GUI-6 D28：tm/icons 从供给槽取传。
         layout::relayout(
             &mut self.nodes,
             self.vp_w,
@@ -1489,7 +1496,7 @@ impl<const N: usize> Ui<N> {
             &self.free_stack[..self.free_count],
             self.tm,
             self.icons,
-            layout::Constraints::Viewport,
+            cs,
         )
     }
 

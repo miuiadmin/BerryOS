@@ -12,7 +12,7 @@ pub use crate::desc::{
     TextStyle, ViewKind, ViewSpec,
 };
 pub use crate::diagnostic::{HitDumpEntry, LayoutDumpEntry};
-pub use crate::layout::{CrossAlign, LayoutStat};
+pub use crate::layout::{Constraints, CrossAlign, LayoutStat};
 pub use crate::metrics::{
     EmptyIconSource, FontSource, IconSource, MonospaceTextMetrics, TextMetrics,
 };
@@ -25,6 +25,24 @@ pub use crate::widgets::{
     WidgetContext, column, divider, icon, row, text,
 };
 pub use crate::{FocusEntry, Ui, UiError, UiMain};
+
+/// L1 自适应槽位判定结果（显式本地基准宽，不读全局屏幕/设备档）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotVariant {
+    Compact,
+    Expanded,
+}
+
+/// L1 自适应槽位判定：`basis_w >= threshold` → Expanded（半开区间同
+/// RectI 纪律）。basis 由调用方明示（raw 或 usable 均可，口径归调用
+/// 方）；签名无 Ui/Room 参数，编译期不可能隐式读全局屏幕。
+pub fn slot_variant(basis_w: u32, threshold: u32) -> SlotVariant {
+    if basis_w >= threshold {
+        SlotVariant::Expanded
+    } else {
+        SlotVariant::Compact
+    }
+}
 
 /// component focus 键意图（纯函数；引擎 FocusDir 与 keycode 分域）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

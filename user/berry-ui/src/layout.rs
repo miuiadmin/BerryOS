@@ -41,9 +41,10 @@ pub enum CrossAlign {
     Stretch,
 }
 
-/// 容器约束（GUI-6 D9 立缝）：v1 只接 `Viewport`（= 现状根调用形态）；
-/// 其余三档 debug_assert loud + 按 Viewport 处理（案 1 layout.rs v2
-/// 接实现——独立刀，本刀零预埋）。
+/// 根播种约束（GUI-14 L1 最小面）。v1 measure 仍约束盲；本约束只影响
+/// Root 的 intrinsic、Root place avail 与终值三处。`Viewport` = 现状；
+/// `Tight` = 精确盒；`Loose` = 子包络 × payload 上限；`Infinite` = 子
+/// 包络不设上限。damage clip 恒用真实 viewport，不用约束盒。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Constraints {
     Viewport,
@@ -73,8 +74,8 @@ pub(crate) fn dmg_clip_add(damage: &mut DamageSet, r: &RectI, vp: &RectI) {
 /// `None` 天然跳过，此处不消费（removal 面的旧界 damage 在 Ui::remove
 /// 侧先行入账）。`tm`/`icons` = D28 供给（Text 臂经 `tm.measure` 走缝
 /// ——Monospace 逐位复刻现状；icons 段C Image/Icon 叶 dims 消费，本段
-/// 占位）；`cs` = D9 约束档，v1 只接 Viewport（其余三档 debug_assert
-/// loud 后按 Viewport 处理——案 1 v2 接实现）。
+/// 占位）；`cs` = 根播种约束（L1 四档全实现——仅影响 Root intrinsic、
+/// Root avail 与终值；damage clip 恒真实 viewport）。
 pub(crate) fn relayout(
     nodes: &mut [Option<Node>],
     vp_w: u32,
@@ -86,11 +87,6 @@ pub(crate) fn relayout(
     cs: Constraints,
 ) -> LayoutStat {
     let _ = freed;
-    if !matches!(cs, Constraints::Viewport) {
-        // D9：v1 只接 Viewport——非 Viewport 档 = 调用面漂移（案 1 未
-        // 落），loud 后按 Viewport 保守处理（不静默吞）。
-        debug_assert!(false, "Constraints 非 Viewport 档未实现（案 1 v2）: {cs:?}");
-    }
     // 根 = 唯一 parent==NONE 的存活 Root
     let mut root = u32::MAX;
     for (i, o) in nodes.iter().enumerate() {
@@ -116,7 +112,7 @@ pub(crate) fn relayout(
         changed: [false; CAP],
         measured: 0,
     };
-    measure(nodes, root, vp_w, vp_h, tm, icons, &mut mctx, oversize, 0);
+    measure(nodes, root, vp_w, vp_h, cs, tm, icons, &mut mctx, oversize, 0);
     if oversize {
         // 病态巨 arena：位图覆盖不住的槽全部按「已重测」保守处理
         for b in mctx.recomputed.iter_mut() {
@@ -132,6 +128,18 @@ pub(crate) fn relayout(
 
     // ③ 摆放（前序）：force ∨ 自身重测 → 重摆 + 新旧界 damage
     let vp_rect = RectI::new(0, 0, u32_to_i32_sat(vp_w), u32_to_i32_sat(vp_h));
+    // Root 播种盒：Viewport/Tight 直接取约束；Loose 的 clamp 已在
+    // intrinsic Root 臂完成，Infinite 取子包络——两处同源，保 meas==placed。
+    let (root_w, root_h) = match cs {
+        Constraints::Viewport => (vp_w, vp_h),
+        Constraints::Tight { w, h } => (w, h),
+        Constraints::Loose { .. } | Constraints::Infinite => {
+            nodes[root as usize]
+                .as_ref()
+                .map(|n| (n.meas_w, n.meas_h))
+                .unwrap_or((0, 0))
+        }
+    };
     let mut placed = 0u32;
     place(
         nodes,
@@ -140,8 +148,8 @@ pub(crate) fn relayout(
         0,
         0,
         0,
-        u32_to_i32_sat(vp_w),
-        u32_to_i32_sat(vp_h),
+        u32_to_i32_sat(root_w),
+        u32_to_i32_sat(root_h),
         false,
         &mctx.recomputed,
         &old_abs,
@@ -169,6 +177,7 @@ fn measure(
     slot: u32,
     vp_w: u32,
     vp_h: u32,
+    cs: Constraints,
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
     mctx: &mut MeasCtx,
@@ -191,14 +200,14 @@ fn measure(
         guard += 1;
         let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
         let next = c.next_sib;
-        child_affected |= measure(nodes, cur, vp_w, vp_h, tm, icons, mctx, oversize, hops + 1);
+        child_affected |= measure(nodes, cur, vp_w, vp_h, cs, tm, icons, mctx, oversize, hops + 1);
         cur = next;
     }
     let dirty = nodes[idx].as_ref().map(|n| n.layout_dirty).unwrap_or(false);
     if !dirty && !child_affected && !oversize {
         return false; // 全缓存命中
     }
-    let (w, h) = intrinsic(nodes, idx, vp_w, vp_h, tm, icons);
+    let (w, h) = intrinsic(nodes, idx, vp_w, vp_h, cs, tm, icons);
     let n = nodes[idx].as_mut().unwrap();
     let changed = n.meas_w != w || n.meas_h != h;
     n.meas_w = w;
@@ -223,6 +232,27 @@ fn measure(
     }
 }
 
+/// Root 子包络（stack 语义：宽/高各取 max，非 Col 的 Σ 高）。Loose/
+/// Infinite 的 shrink-wrap 基准；Stretch 型子（None/None）内在为 0 是
+/// v1 约束盲 measure 的已文档 wart——调用方需 HAS_SIZE 或内在叶。
+fn child_extent(nodes: &[Option<Node>], first: u32) -> (u32, u32) {
+    let mut w = 0u32;
+    let mut h = 0u32;
+    let mut cur = first;
+    let mut guard = 0usize;
+    while cur != u32::MAX && guard <= nodes.len() {
+        guard += 1;
+        let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+        if !c.alive {
+            break;
+        }
+        w = w.max(c.meas_w);
+        h = h.max(c.meas_h);
+        cur = c.next_sib;
+    }
+    (w, h)
+}
+
 /// 内在尺寸（读子 meas——后序保证已新鲜）。Text 臂经 `tm.measure` 走
 /// 供给缝（D8：scale id 与 desc wire 域同序——Monospace 供件逐位复刻
 /// `len × cell_w` 现状，换件面 = GUI-2 增件⑧）；Image/Icon 叶经
@@ -233,6 +263,7 @@ fn intrinsic(
     idx: usize,
     vp_w: u32,
     vp_h: u32,
+    cs: Constraints,
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
 ) -> (u32, u32) {
@@ -241,7 +272,15 @@ fn intrinsic(
         None => return (0, 0),
     };
     match &n.props {
-        Props::Root => (vp_w, vp_h),
+        Props::Root => match cs {
+            Constraints::Viewport => (vp_w, vp_h),
+            Constraints::Tight { w, h } => (w, h),
+            Constraints::Loose { w, h } => {
+                let (ew, eh) = child_extent(nodes, n.first_child);
+                (w.min(ew), h.min(eh))
+            }
+            Constraints::Infinite => child_extent(nodes, n.first_child),
+        },
         // Clip 内在尺寸随子内容（作为 Col/Row 子时的主轴请求）；终值
         // 仍吃父 avail，port = 自身布局 bounds。
         Props::Clip(p) => {

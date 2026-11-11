@@ -17,13 +17,15 @@ use berry_room::{
     INPUT_KEY_EVENTS_MAX, KEY_ACTION_DOWN, KEY_ACTION_UP, KeyEvent, SurfaceModeKind,
     SurfaceRequest, SYSTEM_FONT_ATLAS,
 };
+use berry_ui::desc::{Props, RectProps, RowProps, ViewKind, ViewSpec};
 use berry_ui::sdk::{
-    focus_key_intent, FocusDir, FocusOp,
+    focus_key_intent, slot_variant, FocusDir, FocusOp, SlotVariant,
     Button, Card, EmptyState, FontSource, InteractionState, ListItem, Msg, RectI, Scaffold,
     ScrollView, Switch, TextVariant, Theme, Ui, WidgetContext, column, divider, icon, row,
     text,
 };
 use berry_ui::hit::PtrEvent;
+use berry_ui::NodeId;
 
 type Ui128 = Ui<128>;
 
@@ -34,6 +36,7 @@ struct Page {
     clip_item: Option<ListItem>,
     button: Button,
     switch: Option<Switch>,
+    adaptive: Option<(NodeId, NodeId, NodeId)>,
     index: u8,
 }
 
@@ -235,12 +238,58 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             ui, stack, ctx, 7, b"F5 ready", b"Frame, layout, hit and state",
         )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+        // L1 AdaptiveSlot 最小生产样：basis 是 card 内容局部宽（1056），
+        // 不是窗口全局 1080；显式阈值 600 后只构建 Expanded 分支。
+        let adaptive_row = ui
+            .add(
+                stack,
+                ViewSpec {
+                    kind: ViewKind::Row,
+                    key: 0,
+                    props: Props::Row(RowProps {
+                        gap: 12,
+                        w: Some(1056),
+                        h: Some(120),
+                        cross: berry_ui::layout::CrossAlign::Stretch,
+                    }),
+                },
+            )
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let adaptive_list = ui
+            .add(
+                adaptive_row,
+                ViewSpec {
+                    kind: ViewKind::Rect,
+                    key: 0,
+                    props: Props::Rect(RectProps {
+                        bg: ctx.theme.colors.surface_variant,
+                        w: Some(360),
+                        h: Some(120),
+                    }),
+                },
+            )
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+        let adaptive_detail = ui
+            .add(
+                adaptive_row,
+                ViewSpec {
+                    kind: ViewKind::Rect,
+                    key: 0,
+                    props: Props::Rect(RectProps {
+                        bg: ctx.theme.colors.surface,
+                        w: Some(684),
+                        h: Some(120),
+                    }),
+                },
+            )
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
         Page {
             scaffold,
             scroll,
             clip_item: Some(clip_item),
             button,
             switch: Some(switch),
+            adaptive: Some((adaptive_row, adaptive_list, adaptive_detail)),
             index,
         }
     } else {
@@ -254,7 +303,15 @@ fn build_page(ui: &mut Ui128, ctx: &WidgetContext, index: u8, switch_on: bool) -
             ui, stack, ctx, 7, b"Back ready", b"Click Back to pop page",
         )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-        Page { scaffold, scroll, clip_item: None, button, switch: None, index }
+        Page {
+            scaffold,
+            scroll,
+            clip_item: None,
+            button,
+            switch: None,
+            adaptive: None,
+            index,
+        }
     }
 }
 
@@ -460,6 +517,32 @@ impl AppModel {
         if !valid {
             berry_room::panic_exit(134);
         }
+        line.print(room);
+    }
+
+    fn print_adaptive(&self, room: &AppRoom) {
+        let Some((row, list, detail)) = self.page.adaptive else { return };
+        let row_bounds = self.ui.bounds(row).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let list_bounds = self.ui.bounds(list).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let detail_bounds = self.ui.bounds(detail).unwrap_or_else(|_| berry_room::panic_exit(134));
+        let basis = row_bounds.w.max(0) as u32;
+        if slot_variant(basis, 600) != SlotVariant::Expanded
+            || basis != 1056
+            || list_bounds.w != 360
+            || detail_bounds.w != 684
+            || list_bounds.h != 120
+            || detail_bounds.h != 120
+            || detail_bounds.x != list_bounds.x + list_bounds.w + 12
+        {
+            fail(room, "adaptive slot");
+        }
+        let mut line = Line::new(b"UITESTADAPT ok v=1 basis=");
+        line.push_u32(basis);
+        line.push(b" list=");
+        line.rect(list_bounds);
+        line.push(b" detail=");
+        line.rect(detail_bounds);
+        line.push(b"\n");
         line.print(room);
     }
 
@@ -760,6 +843,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     app.print_layout(&room);
     app.print_hit(&room);
     app.print_data(&mut room);
+    app.print_adaptive(&room);
     app.render(&mut room);
     room.print(b"UITESTFRAME ok\n");
 
@@ -804,6 +888,10 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         app.replace_page(&mut room, 0);
         app.assert_clip(&mut room);
         app.assert_surface(&mut room);
+        if slot_variant(320, 600) != SlotVariant::Compact {
+            berry_room::panic_exit(134);
+        }
+        room.print(b"UITESTADAPT2 ok v=0 basis=320\n");
         room.print(b"UITESTPROBE ok\n");
     } else {
         let (x, y) = wait_two_clicks(&mut app, &mut room);
