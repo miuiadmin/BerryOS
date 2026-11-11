@@ -26,10 +26,14 @@
 //!   29 号 §F1 修正）：valid 117 全过 / acceptable 29 全拒 / invalid 64
 //!   全拒。26 号 §3-3 fallback 时钟（mixed-order 门）随之清账——
 //!   不再触发外购重议。
-//! - **未完成面（如实）**：①SHA-512/256 截断变体（信封 alg_id=1 摘要
-//!   用）= P1 随 mkapp 集成刀；②设备侧常时性审计 = P3（当前声明：常数
+//! - **未完成面（如实）**：①~~SHA-512/256 截断变体~~ 已随 P1 mkapp
+//!   集成刀落（[`sha512`] `digest256`/`new_256`——信封 alg_id=1 摘要
+//!   面，两源向量门在册）；②设备侧常时性审计 = P3（当前声明：常数
 //!   时间风格、未审计、不用于在线敌手环境——[`ed25519`] 模块头；
-//!   sc_muladd 尾进位例外见 sc.rs F2 注记，29 号 §F2）。
+//!   sc_muladd 尾进位例外见 sc.rs F2 注记，29 号 §F2）。P1 增量：host
+//!   CLI `berry-sign`（bin target，keygen/sign/verify/selftest——mkapp
+//!   `--sign-key`/`--verify-key` 消费面；验签组合逻辑暂居 bin，P3 设备
+//!   侧常驻消费出现时上移 lib）。
 //! - 若 fallback 翻案外购：envelope/ledger/vectors 骨架不变、原语模块
 //!   换装（24 号 §3.1 预案）。
 //!

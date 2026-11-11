@@ -12,6 +12,22 @@ SDK-1a 增量 `docs/SDK-1a实施设计草案.md` §4；GUI-7 增量见本头注
       mkapp.py --selftest                 # 门禁自检（零依赖；挂 just test-host，
                                           #          mkfat --check-fixture 同位）
 
+签名面（P1 集成刀，SDK-2 分发签名链——24 号 §4.3 半刀②③；可选旗标，
+无旗标时行为与旧版逐字节同——向后兼容）：
+      mkapp.py --sign-key <sk> <out.bap> <app-dir>
+                                          # 打包后自动调 berry-sign sign 产
+                                          #   <out>.bap.sig（.sig 信封 v1；
+                                          #   manifest 须含 [security] 三键——
+                                          #   key_lineage 是信封回声源）
+      mkapp.py --verify-key <pk> --check <path.bap>
+                                          # check 后验既有 <path>.bap.sig
+                                          #   （.sig 缺失 = 拒——防剥离护栏）
+  berry-sign 二进制发现序：env BERRY_SIGN → 构建产物候选
+  （<repo>/target-cargo 与 /tmp/target-p1 下 aarch64-apple-darwin/
+  {debug,release}/berry-sign）。验收线四件（正样例 + 篡改/断链/换钥
+  三负样例）主归属 = `berry-sign selftest`（宿主最短路径，零依赖纪律
+  不破——mkapp selftest 保持纯 Python 门禁）。
+
 包格式（app-0 §1 冻结 + SDK-1a §2.4 增 + GUI-7 扩）：cpio newc 条目 =
 `manifest.toml` + 唯一 `bin/` 前缀条目（ELF 本体，条目名 = manifest entry）
 + `SHA256SUMS`（SDK-1a 起产包恒在；`--check` 对 2 条目历史包同样可验）
@@ -106,6 +122,7 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
 import zlib
 
@@ -1207,6 +1224,63 @@ def check_bap(path: str, *, emit: bool = True) -> dict:
             "digests": digests}
 
 
+# ---- P1 签名面（SDK-2 分发签名链集成刀；24 号 §4.3 半刀②③——签名产出
+# + 验签门禁。可选：无 --sign-key/--verify-key 时本节零参与，行为与旧版
+# 逐字节同。berry-sign = user/berry-crypto bin（信封 v1 TLV + ed25519 +
+# SHA-512/256 摘要——envelope.rs/ed25519.rs/sha512.rs 单源）；验收线四件
+# 归属 = `berry-sign selftest`（头注「签名面」段）。----
+
+
+def _find_berry_sign() -> str | None:
+    """berry-sign 二进制发现：env BERRY_SIGN → 构建产物候选（repo
+    target-cargo 与 /tmp/target-p1 两个 CARGO_TARGET_DIR 惯用位 ×
+    debug/release）。不可得 = None（调用方 loud 拒——签名面不静默）。"""
+    env = os.environ.get("BERRY_SIGN")
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for tdir in (os.path.join(root, "target-cargo"), "/tmp/target-p1"):
+        for profile in ("debug", "release"):
+            cand = os.path.join(tdir, "aarch64-apple-darwin", profile, "berry-sign")
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                return cand
+    return None
+
+
+def _run_berry_sign(argv: list[str]) -> subprocess.CompletedProcess:
+    bs = _find_berry_sign()
+    if bs is None:
+        raise Reject(
+            "sign: berry-sign 不可得（设 BERRY_SIGN 或先 "
+            "CARGO_TARGET_DIR=/tmp/target-p1 cargo build --manifest-path user/Cargo.toml "
+            "-p berry-crypto --bin berry-sign --target aarch64-apple-darwin）",
+            code="sign.tool-missing",
+            fix="构建 berry-sign 或设 BERRY_SIGN 指向既有二进制",
+        )
+    try:
+        return subprocess.run([bs, *argv], capture_output=True, text=True)
+    except OSError as e:
+        raise Reject(f"sign: 执行 {bs} 失败： {e}", code="sign.exec")
+
+
+def _sign_bap(sk: str, bap_path: str) -> str:
+    """打包尾部产 <bap>.sig（berry-sign sign；manifest 无 [security] 三键
+    由 berry-sign 拒——key_lineage 是信封回声源，mkapp 不重复执法）。"""
+    r = _run_berry_sign(["sign", sk, bap_path])
+    if r.returncode != 0:
+        raise Reject((r.stderr or r.stdout).strip(), code="sign.sign")
+    return (r.stdout or "").strip()
+
+
+def _verify_bap_sig(pk: str, bap_path: str) -> str:
+    """check 尾部验 <bap>.sig（berry-sign verify；.sig 缺失 = berry-sign
+    拒且文案含防剥离注——v1.2 §三 :63 护栏① host 对应物）。"""
+    r = _run_berry_sign(["verify", pk, bap_path])
+    if r.returncode != 0:
+        raise Reject((r.stderr or r.stdout).strip(), code="sign.verify")
+    return (r.stdout or "").strip()
+
+
 # ---- SDK-1a §4.5：--new（应用脚手架四件——不含 bin/ 内容的两步流）----
 
 SCAFFOLD_MANIFEST = (
@@ -1908,16 +1982,48 @@ def selftest() -> int:
 
 def main() -> int:
     args = sys.argv[1:]
+    # P1 签名面旗标提取（--sign-key/--verify-key 可前缀可夹带；无旗标时
+    # rest == 原 args，行为与旧版逐字节同——签名面可选，向后兼容）。
+    sign_key: str | None = None
+    verify_key: str | None = None
+    rest: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--sign-key", "--verify-key"):
+            if i + 1 >= len(args):
+                sys.stderr.write(f"mkapp: {a} 缺值\n")
+                return 2
+            if a == "--sign-key":
+                sign_key = args[i + 1]
+            else:
+                verify_key = args[i + 1]
+            i += 2
+            continue
+        rest.append(a)
+        i += 1
+    args = rest
     if args == ["--selftest"]:
+        if sign_key or verify_key:
+            sys.stderr.write("mkapp: --selftest 不收签名面旗标\n")
+            return 2
         return selftest()
     if len(args) == 2 and args[0] == "--check":
+        if sign_key:
+            sys.stderr.write("mkapp: --sign-key 只配打包形态（<out.bap> <app-dir>）\n")
+            return 2
         try:
             check_bap(args[1])
+            if verify_key:
+                print(_verify_bap_sig(verify_key, args[1]))
         except Reject as e:
             sys.stderr.write(f"mkapp: {e}\n")
             return 1
         return 0
     if len(args) == 4 and args[0] == "--new" and args[2] == "--id":
+        if sign_key or verify_key:
+            sys.stderr.write("mkapp: --new 不收签名面旗标\n")
+            return 2
         try:
             do_new(args[1], args[3])
         except Reject as e:
@@ -1925,8 +2031,13 @@ def main() -> int:
             return 1
         return 0
     if len(args) == 2 and not args[0].startswith("-"):
+        if verify_key:
+            sys.stderr.write("mkapp: --verify-key 只配 --check 形态\n")
+            return 2
         try:
             build(args[0], args[1])
+            if sign_key:
+                print(_sign_bap(sign_key, args[0]))
         except Reject as e:
             sys.stderr.write(f"mkapp: {e}\n")
             return 1

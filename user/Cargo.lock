@@ -28,6 +28,9 @@ version = "0.1.0"
 [[package]]
 name = "berry-crypto"
 version = "0.1.0"
+dependencies = [
+ "berry-manifest",
+]
 
 [[package]]
 name = "berry-exec"

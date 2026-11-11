@@ -2,8 +2,9 @@
 //!
 //! P0-2 原语三件之一（24 号 §3.2 模块清单；26 号 §3-1 自研终裁）。为
 //! ed25519（RFC 8032 §5.1：H = SHA-512）供哈希核；信封摘要用的
-//! SHA-512/256 截断变体 = P1 随 mkapp 集成刀另落（本刀不做——任务书
-//! P0-2 范围 = SHA-512 本体）。
+//! SHA-512/256 截断变体已随 P1 mkapp 集成刀落（[`IV_256`]/
+//! [`Sha512::new_256`]/[`digest256`]——信封 alg_id=1 的 bap_digest/
+//! manifest 关键域摘要 32B 用，v1.2 §三 :53）。
 //!
 //! 形态纪律（「解析器即产品」家族）：零分配（上下文 ~212B 栈上定长）、
 //! 零 unsafe、零依赖、输入只借用、永不 panic。
@@ -50,6 +51,15 @@ const K: [u64; 80] = [
 const IV: [u64; 8] = [
     0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
     0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
+];
+
+/// SHA-512/256 截断变体初始链值（FIPS 180-4 §6.4.2 Table 2——SHA-512
+/// 族第 81–96 素数立方根小数部前 64 bit，与 SHA-512 IV 分源：防两变体
+/// 间换用/长度延展混流）。P1 mkapp 集成刀落（本文件头注「P1 另落」
+/// 兑现）：信封 alg_id=1 摘要用（envelope.rs `DIGEST_LEN` 32B）。
+const IV_256: [u64; 8] = [
+    0x22312194fc2bf72c, 0x9f555fa3c84c64c2, 0x2393b86b6f53b151, 0x963877195940eabd,
+    0x96283ee2a88effe3, 0xbe5e1e2553863992, 0x2b0199fc2c85b8aa, 0x0eb72ddc81c52ca2,
 ];
 
 #[inline(always)]
@@ -151,6 +161,12 @@ impl Sha512 {
         Sha512 { h: IV, buf: [0u8; BLOCK_LEN], buf_len: 0, bits: 0 }
     }
 
+    /// 新上下文（SHA-512/256 截断变体——初始链值 = [`IV_256`]，P1 信封
+    /// 摘要消费面 = berry-sign/host；非 SHA-512 前 32B 截断）。
+    pub const fn new_256() -> Self {
+        Sha512 { h: IV_256, buf: [0u8; BLOCK_LEN], buf_len: 0, bits: 0 }
+    }
+
     /// 吸收消息字节流（可分片多次调用）。
     pub fn update(&mut self, mut data: &[u8]) {
         self.bits = self.bits + (data.len() as u128) * 8;
@@ -212,6 +228,19 @@ pub fn digest(data: &[u8]) -> [u8; DIGEST_LEN] {
     h.update(data);
     let mut out = [0u8; DIGEST_LEN];
     h.finalize(&mut out);
+    out
+}
+
+/// SHA-512/256 一次性摘要（截断变体，32B——信封 alg_id=1 的
+/// bap_digest/manifest 关键域摘要是第一消费面，envelope.rs `DIGEST_LEN`
+/// 同长单源；P1 落）。
+pub fn digest256(data: &[u8]) -> [u8; DIGEST_LEN / 2] {
+    let mut h = Sha512::new_256();
+    h.update(data);
+    let mut full = [0u8; DIGEST_LEN];
+    h.finalize(&mut full);
+    let mut out = [0u8; DIGEST_LEN / 2];
+    out.copy_from_slice(&full[..DIGEST_LEN / 2]);
     out
 }
 
@@ -324,5 +353,36 @@ mod tests {
         snap.update(b"xyz");
         snap.finalize(&mut b);
         assert_eq!(b[..], digest(b"abcxyz")[..]);
+    }
+
+    // SHA-512/256 向量门（P1 信封摘要面——alg_id=1 的 bap_digest/
+    // manifest 关键域摘要第一消费面）。两源核：源 1 = OpenSSL
+    // `openssl dgst -sha512-256`（2026-11-11 实测）；源 2 = Python
+    // hashlib('sha512_256') 对拍全同（空/abc/abcdef 三消息）。
+    #[test]
+    fn sha512_256_vectors() {
+        assert_eq!(
+            hex(&digest256(b"")),
+            "c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a"
+        );
+        assert_eq!(
+            hex(&digest256(b"abc")),
+            "53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23"
+        );
+        assert_eq!(
+            hex(&digest256(b"abcdef")),
+            "e4fdcb11d1ac14e698743acd8805174cea5ddc0d312e3e47f6372032571bad84"
+        );
+        // IV 分源执法面：SHA-512/256 ≠ SHA-512 摘要前 32B 截断（误把
+        // digest()[..32] 当截断变体的实现在此炸）。
+        let d = digest(b"abc");
+        assert_ne!(&d[..32], &digest256(b"abc")[..]);
+        // 流式一致性（new_256 上下文同 update/finalize 机制——钉分片路径）。
+        let mut h = Sha512::new_256();
+        h.update(b"ab");
+        h.update(b"cdef");
+        let mut full = [0u8; 64];
+        h.finalize(&mut full);
+        assert_eq!(&full[..32], &digest256(b"abcdef")[..]);
     }
 }
