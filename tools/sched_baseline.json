@@ -1,21 +1,21 @@
 {
   "pick": {
-    "cycles": 19,
+    "cycles": 22,
     "n": 1000
   },
   "freeze": {
-    "cycles": 6,
+    "cycles": 5,
     "n": 200
   },
   "billing": {
-    "cycles": 2,
+    "cycles": 1,
     "n": 1000
   },
   "policy": {
     "base": 7,
     "empty": 6,
-    "full": 8,
-    "delta_pct": 33.3
+    "full": 9,
+    "delta_pct": 50.0
   },
   "fairness": {
     "spread": 0,
@@ -32,8 +32,8 @@
     "rate_pct": 50.0
   },
   "wake": {
-    "p50": 62,
-    "p99": 62,
+    "p50": 63,
+    "p99": 251,
     "n": 128
   }
 }
