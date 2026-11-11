@@ -39,6 +39,7 @@ use crate::vmo::Vmo;
 use berry_hal_aarch64::timer::cntvct;
 use berry_hal_aarch64::{uart_put_dec, uart_puts};
 use berry_mm::{AllocError, MAX_ORDER};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 const PAGE: usize = 1 << 12;
 
@@ -86,6 +87,9 @@ pub fn run() {
     bench_vmo_commit1p();
     bench_vmo_rw4k();
     bench_handle_evt();
+    // AM 原子观测对（非标记行）：紧随六项官方基准后、churn 前——六行
+    // `BENCH,` + BENCHCHURN/BENCHXH/`BENCH ok n=6` 的既有 boot 形状零扰动。
+    bench_am_pair();
     churn_frame();
     churn_vmo();
     churn_handle();
@@ -186,6 +190,73 @@ fn bench_handle_evt() {
         ht.close(h).expect("bench: close");
     });
     assert_eq!(ht.used_count(), 0, "bench: handle_evt 后表须空");
+}
+
+/// **AM 原子观测对**（AM 热路径首测——`dpg_stall_note` 每停顿 3× fetch_add
+/// （telemetry.rs）+ runqueue `sum_vruntime` link/unlink 各 1× fetch_add/
+/// fetch_sub（SMP 多写者，2026-11-11 丢更新修复改形）+ `frozen_owner` send
+/// 热路径一次判空分支（AM-1.5）——设计承诺「非压力态零额外成本」的测量
+/// 底座）。非压力态 = 本模块窗口（单线程、IRQ 屏蔽、独占监视器空闲）——
+/// RMW 无重试无一致性流量，测的正是承诺所对应的态。
+///
+/// 口径 = **逐 op 三明治**：`t0=cntvct → body → t1=cntvct`，ΣΔ 再整除
+/// （原始差值累计后一次整除——CNTVCT 粒度噪声在 8192 样本上摊薄）。
+/// `fetch_add` 行 − `cntvct_only` 行 = 计时对自身成本之外的 RMW 净开销；
+/// frozen_owner 判空 = 单条本位分支（亚周期级），以差值地板覆盖不另设行。
+fn bench_am_pair() {
+    // 局部安全原子（非 static mut——零 unsafe 台账面；独占缓存行无从谈起
+    // 独占，但本窗口无第二写者 = 无假共享）。
+    static FA: AtomicU64 = AtomicU64::new(0);
+    bench_fa(b"cntvct_only", 8192, || {});
+    bench_fa(b"fetch_add", 8192, || {
+        FA.fetch_add(1, Ordering::Relaxed);
+    });
+    // 放大臂：单次 RMW < 1 cyc 时 1× 对被「Σacc/iters 整除」地板截断（首跑
+    // 实测两行同为 4/op）——64 连发夹一次计时对，宿主侧以第 5 字段原始 ΣΔ
+    // 全精度差分（fetch_add64.acc − 按计时对成本折算的基线）后 /(64×iters)
+    // = 亚周期分辨率的单次成本。
+    bench_fa(b"fetch_add64", 4096, || {
+        let mut i = 0;
+        while i < 64 {
+            FA.fetch_add(1, Ordering::Relaxed);
+            i += 1;
+        }
+    });
+    // RMW 真执行旁证（fetch_add 本不可消除——观察锚，防未来 codegen 变化）。
+    assert_eq!(
+        FA.load(Ordering::Relaxed),
+        8192 + 64 * 4096,
+        "bench: fetch_add 计数"
+    );
+}
+
+/// AM 观测行打印骨架：打 `BENCHFA,<name>,<iters>,<cyc_per_op>,<acc>`（第 5
+/// 字段 = 原始 ΣΔ 周期数——宿主侧全精度差分用，整除地板只在第 4 字段）。
+/// **非标记观测行**——`BENCHFA,` 前缀与 bench.py 收割面词根隔离（`BENCH_RE`
+/// 行锚定 `^BENCH,` 四字段、BENCH1/BENCHRT/BENCHLAT/BENCHWAKE 各自字面均
+/// 不命中）⇒ 六行对账与 `n=6` 契约零扰动；字面已对 canon 全表
+/// （tools/markers.sh 三数组 + tools/smoke-image.sh KERNEL_MARKERS）grep -F
+/// 互查——无任何在册标记串是本行子串。不进 N_METRICS/smoke 标记表 = 观测
+/// 面非门禁面（BENCHWAKE 观测行同位先例）；TCG 绝对值只作同机相对比较
+/// （模块头口径纪律）。
+fn bench_fa<F: FnMut()>(name: &[u8], iters: u32, mut f: F) {
+    let mut acc: u64 = 0;
+    for _ in 0..iters {
+        let t0 = cntvct();
+        f();
+        let t1 = cntvct();
+        acc = acc.wrapping_add(t1.wrapping_sub(t0));
+    }
+    let per = acc / iters as u64;
+    uart_puts(b"BENCHFA,");
+    uart_puts(name);
+    uart_puts(b",");
+    uart_put_dec(iters as u64);
+    uart_puts(b",");
+    uart_put_dec(per);
+    uart_puts(b",");
+    uart_put_dec(acc);
+    uart_puts(b"\n");
 }
 
 /// **churn 金丝雀①帧**：混合阶（0/2/4）交错分配释放 64 轮，水位必须精确
