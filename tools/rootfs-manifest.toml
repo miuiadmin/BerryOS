@@ -44,6 +44,9 @@ version = 1
 "app/SETTINGS.bap" = "userbins/app/SETTINGS.bap"
 "bin/bench1" = "cargo-target/aarch64-unknown-linux-musl/release/bench1"
 "bin/berry-launcher" = "cargo-target/aarch64-unknown-linux-musl/release/berry-launcher"
+# P3 案 c：装载期验签助手（none target rootfs ELF——hello 同链；svcmgr
+# p3_sig_guard spawn 消费；伴生 .sig 在档才起守卫，缺席零扰动）。
+"bin/berry-verify" = "cargo-target/aarch64-unknown-none/release/berry-verify"
 "bin/berryctl" = "cargo-target/aarch64-unknown-linux-musl/release/berryctl"
 "bin/bsh" = "cargo-target/aarch64-unknown-linux-musl/release/bsh"
 "bin/cat" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cat"

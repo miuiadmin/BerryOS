@@ -175,6 +175,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-verify"
+version = "0.1.0"
+dependencies = [
+ "berry-crypto",
+ "berry-loader",
+ "berry-manifest",
+ "berry-sys",
+]
+
+[[package]]
 name = "berry-winplan"
 version = "0.1.0"
 dependencies = [

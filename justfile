@@ -378,7 +378,7 @@ sign-user: build-user
         n=$((n + 1))
     done
     # 官方源静态实例两件套 → user/userbins/source/（gitignored 产物）。
-    python3 tools/gensourceindex.py \ --sign-key tools/testkeys/dev/dev.sk
+    python3 tools/gensourceindex.py --sign-key tools/testkeys/dev/dev.sk
         --rootfs-manifest tools/rootfs-manifest.toml \
         --user-dir user \
         --out-dir user/userbins/source \
@@ -979,6 +979,7 @@ test-host:
     # 永不真签。
     cargo run --manifest-path user/Cargo.toml -p berry-crypto --bin berry-sign --target {{host}} -- selftest
     python3 tools/p3sim.py --selftest
+    cargo test --manifest-path user/Cargo.toml -p berry-verify --target {{host}}
     # W1 接线（echod/evsclient 未接线判例同族）：genwycheproof 门禁自检——
     # Wycheproof 向量表生成器（fixture JSON → wycheproof_vectors.rs）随
     # SDK-2 P0-2 落地，selftest 37 面自称绿但从未接线 test-host：有

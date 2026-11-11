@@ -1,0 +1,22 @@
+[package]
+name = "berry-verify"
+version = "0.1.0"
+edition = "2021"
+# P3 案 c 最小形态（ADR #77；docs/设备侧验签与账本落盘设计-v1.0.md §1.3
+# 装载期/§1.3.3 验签序）：装载期验签**助手进程**——尺寸墙终裁（34 号
+# §98-2：svcmgr 余量恰 1 页 vs berry-crypto 链入 +1772B 结构性不可行），
+# 守卫段驻 svcmgr（spawn/wait 面）、验签本体独立进程各享 USER_CODE_MAX
+# 128KiB 帽。hello 同链 rootfs ELF（none target，cpio 内躺 ELF 本体，
+# spawn_rootfs_elf 消费）；验签序单源 = lib `admit::verify_signed`
+# （P3-0 上移件），本 bin 只做读面/派生/exit 码。
+description = "BerryOS P3 load-time signature verify helper (rootfs ELF, spawned by svcmgr guard)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }
+# 验签序/信封/摘要（P0-2 产物——no_std 纯面，host 单测同链可用）。
+berry-crypto = { path = "../../berry-crypto" }
+# manifest 语义单源（§A139/单解释器纪律——本 crate 不出现第二份 manifest 判断）。
+berry-manifest = { path = "../../berry-manifest" }
+# .bap 内层 cpio(newc) 步进单源（svcmgr bap_scan 同链——零第二套步进算术）。
+berry-loader = { path = "../../berry-loader" }
