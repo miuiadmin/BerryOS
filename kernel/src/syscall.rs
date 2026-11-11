@@ -1866,11 +1866,6 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
     let (h, code) = (tf.regs[1] as u32, tf.regs[2] as i32);
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // S5.12 防 freeze DoS：每 caller 活跃 SuspendToken 上限 64——超限 -EBUSY。
-    if t.count_type(ObjType::SuspendToken) >= 64 {
-        crate::telemetry::freeze_busy();
-        return ERR_BUSY as i64;
-    }
     let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
         Ok((o, _)) => o,
         Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
@@ -1958,6 +1953,14 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
 
     if !single {
         // ---- 进程全冻（S3-a；depth 支持嵌套 token）----
+        // S5.12 防 freeze DoS：每 caller 活跃 SuspendToken 上限 64——超限
+        // -EBUSY（安全审计 F1 修：原在 sys_process_terminate 错位——suspend
+        // 创建路径无帽致 am 持 ≥64 token 后 terminate 恒 -EBUSY 监督 kill 链
+        // 瘫痪；检查移到 token 生产者（本处+thread 臂）而非消费者）。
+        if t.count_type(ObjType::SuspendToken) >= 64 {
+            crate::telemetry::freeze_busy();
+            return ERR_BUSY as i64;
+        }
         let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
             Ok((o, _)) => o,
             // options=0 只收 Process：活 handle 但类型不符 → EINVAL（§5.4）。
@@ -3177,8 +3180,11 @@ unsafe fn recv_rollback(t: &mut HandleTable, endp: NonNull<ObjRef>, msg: Message
 /// -EINVAL 且消息保原样（v1 无「回写所需尺寸」面，ABI §8.3 注）。随行令牌
 /// `insert_ref` 落调用者表、**新值**写 `handles` 数组（值必变——表不同/槽不同）。
 ///
-/// 原子序：空队先检（空时零用户内存读 = 零 fault 面）→ pop 消费 → 容量/载荷/
-/// 令牌入表/回写各步任一失败 → [`recv_rollback`]（表 + 队列全复原）。
+/// 原子序：空队先检（空时零用户内存读 = 零 fault 面）→ pop 消费 → 容量 →
+/// **出参段全量 access_ok 预扫**（bytes/handles 数组/nbytes/nhandles 槽，
+/// write 走查——载荷拷出**前**收口全部 fault 面：否则载荷已落用户、后续
+/// 出参写才 fault → 回滚压回 = 同一消息可被无限次窥探的缺口）→ 载荷/
+/// 令牌入表/回写各步任一失败 → [`recv_rollback`]（表 + 队列全复原，最后防线）。
 extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     let (h, bytes, nbytesp, handles, nhandlesp) = (
         tf.regs[1] as u32,
@@ -3229,6 +3235,25 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return ERR_INVALID_ARG as i64;
+    }
+    // 安全修复（recv 窥探缺口）：载荷拷出**前**预扫全部出参段——access_ok
+    // write 走查 = copy_to_user 同一页走查逻辑。原序 = bytes 先拷、
+    // handles/nbytes/nhandles 后写：任一后写 fault 触发 recv_rollback 压回
+    // 队首，载荷已落用户 = 同一消息可被无限次「窥探」（发送方以为未送达）
+    // + 队列槽钉死（DoS）。预扫任一失败 → 载荷零拷出即 -EFAULT（消息压回
+    // = 未消费原样）。nbytes/nhandles 槽的 write 预扫不可省：上方
+    // copy_in_u64 只验过**读**（RO 页读得过、写不过——正是原缺口形状）。
+    // 预扫是 fail-fast 纯走查（同 sys_vmo_read 前置注，非安全边界）：预扫
+    // 过 → 调用者自身无并发（v1 单核 + 段禁切）下后续出参写不再 fault，
+    // recv_rollback 收口面只剩他核 TOCTOU / insert_ref 资源面（最后防线）。
+    if !access_ok(el1, bytes, msg.nbytes as u64, true)
+        || !access_ok(el1, handles, (msg.nhandles * 4) as u64, true)
+        || !access_ok(el1, nbytesp, 8, true)
+        || !access_ok(el1, nhandlesp, 8, true)
+    {
+        // SAFETY: 同上（无令牌入表；载荷未拷出——用户侧零可见副作用）。
+        unsafe { recv_rollback(t, self_ptr, msg, &[]) };
+        return ERR_FAULT as i64;
     }
     if let Err(e) = irq_window(|| copy_to_user(el1, bytes, &msg.bytes[..msg.nbytes])) {
         // SAFETY: 同上。
