@@ -333,6 +333,58 @@ build-user:
     # 双份同源义务，见 tools/tlsscan.py 头注。
     python3 ../tools/tlsscan.py --check ../rootfs.cpio
 
+# SDK-2 集成化（P3 前置刀）：现役签名链「在签」——rootfs-manifest 九 app
+# dev 签发一键化。流程 = berry-sign keygen（tools/testkeys/dev 缺则产——
+# dev 密钥纪律 = tools/testkeys/README.md，钥本体不入仓）→ 逐 app 条目
+# berry-sign sign 产 .bap.sig（真 .bap 从构建树 userbins/；manifest
+# [security] 三键 = 信封回声源，berry-sign 拒收缺席件）→ gensourceindex
+# 产官方源静态实例两件套（真签名索引：.sig 在席 → 公钥见证 witnessed；
+# selftest/* 夹具不计——load_app_entries 同口径）→ stdout 汇总。签名面
+# 显式可选：build-user 默认行为零动（不签名照常出 rootfs）。
+sign-user: build-user
+    #!/bin/sh
+    set -e
+    # berry-sign 发现序 = mkapp._find_berry_sign 同序镜像（BERRY_SIGN →
+    # target-cargo → /tmp/target-p{1,2} × debug/release）；全缺现场构建
+    #（host target，产物落 target-cargo 惯用位——下次发现序自然命中）。
+    BS=${BERRY_SIGN:-}
+    if [ -z "$BS" ] || [ ! -x "$BS" ]; then
+        for tdir in target-cargo /tmp/target-p1 /tmp/target-p2; do
+            for prof in debug release; do
+                if [ -x "$tdir/aarch64-apple-darwin/$prof/berry-sign" ]; then
+                    BS=$tdir/aarch64-apple-darwin/$prof/berry-sign
+                    break 2
+                fi
+            done
+        done
+    fi
+    if [ -z "$BS" ] || [ ! -x "$BS" ]; then
+        echo "sign-user: berry-sign 不可得——现场构建（target-cargo 惯用位）"
+        CARGO_TARGET_DIR=target-cargo cargo build --manifest-path user/Cargo.toml \
+            -p berry-crypto --bin berry-sign --target aarch64-apple-darwin
+        BS=target-cargo/aarch64-apple-darwin/debug/berry-sign
+    fi
+    # dev 密钥对：缺则产（sk 0600；永不真签——真签面随 #77/P3，纪律全文
+    # = tools/testkeys/README.md）。
+    if [ ! -f tools/testkeys/dev/dev.sk ] || [ ! -f tools/testkeys/dev/dev.pk ]; then
+        mkdir -p tools/testkeys/dev
+        "$BS" keygen tools/testkeys/dev/dev.sk tools/testkeys/dev/dev.pk
+    fi
+    # 逐 rootfs-manifest app 条目签发（路径相对 user/、条目名无空白——
+    # 表头注契约见 tools/rootfs-manifest.toml）。
+    n=0
+    for rel in $(python3 -c 'import tomllib; rows = sorted(tomllib.load(open("tools/rootfs-manifest.toml", "rb"))["entries"].items()); print(" ".join(p for k, p in rows if k.startswith("app/") and k.endswith(".bap")))'); do
+        "$BS" sign tools/testkeys/dev/dev.sk "user/$rel"
+        n=$((n + 1))
+    done
+    # 官方源静态实例两件套 → user/userbins/source/（gitignored 产物）。
+    python3 tools/gensourceindex.py \
+        --rootfs-manifest tools/rootfs-manifest.toml \
+        --user-dir user \
+        --out-dir user/userbins/source \
+        --source-pk tools/testkeys/dev/dev.pk
+    echo "sign-user: ok n=$n .sig + source-index/keys → user/userbins/source（mkimage --source-instance user/userbins/source 挂接）"
+
 build: docs-guard abi-check build-user
     cargo build
 

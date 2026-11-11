@@ -15,6 +15,11 @@ min_level = 1
 console = true
 fs = ["rootfs"]
 
+[security]
+profile = "ed25519-main"
+key_lineage = "berryos-dev"
+integrator = "berryos"
+
 [ui]
 icon = "icons/icon.byi"
 label = "APPDEMO"
