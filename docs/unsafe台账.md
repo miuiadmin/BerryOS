@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 24 | 26870 | 1932 | 7.19% |
+| kernel/ | 24 | 26887 | 1932 | 7.19% |
 | mm/ | 6 | 1739 | 4 | 0.23% |
 | sched/ | 12 | 6403 | 1524 | 23.80% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 6840 | 971 | 14.20% |
-| **合计** | 64 | 41852 | 4431 | **10.59%** |
+| **合计** | 64 | 41869 | 4431 | **10.58%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33493，unsafe 非空行 3783，密度 11.29%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 33510，unsafe 非空行 3783，密度 11.29%（生产面口径）
 - 分类计数：页表 52 | 上下文切换 32 | MMIO 152 | 分配器 13 | 硬件原子 0 | 其它 701
 - 类型计数：block 815 | fn 131 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -305,16 +305,16 @@
 | kernel/src/channel.rs | 235 | block | 其它 | unsafe { ObjRef::release(peer) }; } // AM-1.5 冻结属主标配平：正常序 thaw 清 |
 | kernel/src/channel.rs | 241 | block | 其它 | unsafe { ObjRef::release(owner) }; } } } |
 | kernel/src/dpg.rs | 131 | fn | 其它 | unsafe extern "C" fn probe(esr: usize, far: usize) -> bool { // |
-| kernel/src/dpg.rs | 153 | block | 其它 | unsafe { (*root).demand_region_at(far).is_none() } { hal::kern_l |
-| kernel/src/dpg.rs | 234 | fn | 其它 | unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool { |
-| kernel/src/dpg.rs | 252 | block | 其它 | unsafe { (*root).demand_region_at(far).is_none() } { hal::kern_l |
-| kernel/src/dpg.rs | 373 | block | 其它 | unsafe { (*root).demand_region_at(far) } { Some((rvmo, _, _)) => |
-| kernel/src/dpg.rs | 450 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(SUPPLY_BUF) } } /// 测试 pa |
-| kernel/src/dpg.rs | 480 | block | 其它 | unsafe { (*root).demand_region_at(far) } .expect("dpg_pager: 请求 |
-| kernel/src/dpg.rs | 483 | block | 其它 | unsafe { (*root).supply_page(mm::frames(), va) } .expect("dpg_pa |
-| kernel/src/dpg.rs | 491 | block | 其它 | unsafe { (*vmo).write(off, &DPG_MAGIC.to_le_bytes()) } .expect(" |
-| kernel/src/dpg.rs | 504 | block | 其它 | unsafe { core::ptr::read_volatile(DEMAND_VA as *const u64) }; as |
-| kernel/src/dpg.rs | 629 | block | MMIO | unsafe { core::ptr::read_volatile(va as *const u64) }; let t1 = |
+| kernel/src/dpg.rs | 155 | block | 其它 | unsafe { (*root).demand_region_at(far).is_none() } { hal::kern_l |
+| kernel/src/dpg.rs | 241 | fn | 其它 | unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool { |
+| kernel/src/dpg.rs | 261 | block | 其它 | unsafe { (*root).demand_region_at(far).is_none() } { hal::kern_l |
+| kernel/src/dpg.rs | 390 | block | 其它 | unsafe { (*root).demand_region_at(far) } { Some((rvmo, _, _)) => |
+| kernel/src/dpg.rs | 467 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(SUPPLY_BUF) } } /// 测试 pa |
+| kernel/src/dpg.rs | 497 | block | 其它 | unsafe { (*root).demand_region_at(far) } .expect("dpg_pager: 请求 |
+| kernel/src/dpg.rs | 500 | block | 其它 | unsafe { (*root).supply_page(mm::frames(), va) } .expect("dpg_pa |
+| kernel/src/dpg.rs | 508 | block | 其它 | unsafe { (*vmo).write(off, &DPG_MAGIC.to_le_bytes()) } .expect(" |
+| kernel/src/dpg.rs | 521 | block | 其它 | unsafe { core::ptr::read_volatile(DEMAND_VA as *const u64) }; as |
+| kernel/src/dpg.rs | 646 | block | MMIO | unsafe { core::ptr::read_volatile(va as *const u64) }; let t1 = |
 | kernel/src/dtb.rs | 43 | block | 其它 | unsafe { core::slice::from_raw_parts(phys_to_virt(dtb_pa) as *co |
 | kernel/src/dtb.rs | 48 | block | 其它 | unsafe { core::slice::from_raw_parts(phys_to_virt(dtb_pa) as *co |
 | kernel/src/handle.rs | 199 | fn | 其它 | unsafe fn release(ptr: NonNull<Self>) { // SAFETY: 调用方契约（retain |

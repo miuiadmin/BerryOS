@@ -130,7 +130,9 @@ static REQ_ARMED: AtomicBool = AtomicBool::new(false);
 /// 再进探针——pager 侧 fail loud 兜底）。
 unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // DFSC = ISS[5:0] = ESR[5:0]（ISS 占 ESR[24:0]——低 6 位直达，勿移位）。
-    if !matches!(esr & 0x3f, 4..=7) {
+    // W3-Q24：fsc 滤形单源 `berry-dpgface::fsc_is_translation`（位域
+    // 合法集 4..=7 host 钉板——probe/probe_el0 同源）。
+    if !berry_dpgface::fsc_is_translation(esr) {
         return false; // 非翻译缺页（权限/访问标志/…）——原杀链
     }
     // 第一段（KL 外零锁快拒）：asid 反查——**hint-only**（G4-2 修批 P0-1
@@ -199,9 +201,14 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
 /// 镜像对齐——X-5 每子 ~5 臂多窗并存时 8 槽高发错配/池满）。选型不变：
 /// N > K 才有溢出 convoy 面天然压过（免死码；K=8 时代 C-full soak N=15 实测
 /// ovfl=7 档，K=32 后现役拓扑 N≤15 < K → 零发，历史档存照）；池满 faulter 睡
-/// [`EOVERFLOW_KEY`]，take 侧消费即放槽唤醒、重扫续环（poll-first 同构，
-/// §5-⑤ 挂死帽语义不变）。
+/// [`EOVERFLOW_KEY`]，take 侧消费放槽即唤、重扫续环（poll-first 同构，
+/// §5-⑤ 挂死帽语义不变）。容量值与 `berry-dpgface::SLOTS` 三源镜像
+/// （W3-Q24 钉板锚点）。
 pub(crate) const EREQ_SLOTS: usize = 32;
+
+/// W3-Q24：池容量三源镜像执法（kernel `EREQ_SLOTS` = dpgface `SLOTS`——
+/// 不等即编译期炸，防单侧漂移）。
+const _: () = assert!(EREQ_SLOTS == berry_dpgface::SLOTS);
 
 /// EL0 武装请求槽（ADR #9 零分配：boot 静态池。互斥依托 **KL 全谱锁**
 /// 非单核〔G4-2 修批 C3 口径〕——探针写者与 0x21 读者被 KL 串行，扫描/
@@ -233,7 +240,9 @@ static EPAGER_KEY: u8 = 0; // EL0 pager 睡此（0x21 无请求时；探针武�
 /// 窗仍取（SMP 与 0x21 供给窗的互斥面同 [`probe`]，P2-2①）。
 unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     // DFSC = ESR[5:0]（同 [`probe`]——ISS 低 6 位直达，勿移位）。
-    if !matches!(esr & 0x3f, 4..=7) {
+    // W3-Q24：fsc 滤形单源 `berry-dpgface::fsc_is_translation`（位域
+    // 合法集 4..=7 host 钉板）。
+    if !berry_dpgface::fsc_is_translation(esr) {
         return false; // 非翻译缺页——原杀链
     }
     let asid = hal::current_asid();
@@ -260,6 +269,9 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     // take 侧消费放槽即唤、醒后重扫（block_current 放锁入队/醒后重取同
     // 舞蹈——重扫仍在 KL 窗，无丢唤窗）。
     let slot = loop {
+        // W3-Q24：空闲槽选择判定律单源 `berry-dpgface::claim_free_slot`
+        //（最低索引空闲槽扫描序 host 钉板）；Some 臂 = store + Release
+        // 收口的原子机械（留壳）。
         match (0..EREQ_SLOTS).find(|i| !EREQ[*i].armed.load(Ordering::Relaxed)) {
             Some(i) => {
                 EREQ[i].far.store(far as u64, Ordering::Relaxed);
@@ -344,6 +356,11 @@ pub(crate) enum El0Take {
 /// SVC 类 KL 在身；探针写点同在 KL 窗——改形保持同窗）。互斥依托 **KL 全谱
 /// 锁**非「单核」（G4-2 修批 C3 改口：SMP 下跨核探针写者与 0x21 读者被 KL
 /// 串行——smoke-smp 跨核供给已实发，「单核屏蔽」论证退役，防 G4-3 误放宽）。
+///
+/// **W3-Q24**：本函数的判定律（属主过滤取三态 + 孤儿槽 GC 臂 + any_armed
+/// 语义）单源钉板在 `berry-dpgface::take_for`（host 表驱动 20 测）；本
+/// 实现为其原子池投影（EREQ 直扫 + swap 消费——机械与判定同体故不整段
+/// 搬移，判定结构逐字对齐 dpgface 测试锚点）。
 ///
 /// 扫 `0..EREQ_SLOTS`：对每个武装槽解析属主（`vmar::demand_root(asid)` →
 /// `demand_region_at(far)` 得 rvmo，与 vd 指针比对——供给体身份验同口径：

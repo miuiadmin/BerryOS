@@ -11,6 +11,10 @@ name = "berry-chanface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-dpgface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-dtbface"
 version = "0.2.0"
 
@@ -58,6 +62,7 @@ name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
  "berry-chanface",
+ "berry-dpgface",
  "berry-dtbface",
  "berry-evface",
  "berry-hal-aarch64",

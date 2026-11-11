@@ -589,6 +589,13 @@ test-host:
     # （零第二实现），sched util.rs 原子壳保持现状——本件定位 host 钉板
     # + 真账流文档化基准（接线取舍见 PR）。
     cargo test -p berry-utrace --target {{host}}
+    # W3-Q24：berry-dpgface（dpg EL0 槽池认领制纯面——fsc 滤形 DFSC
+    # ∈ 4..=7 位域合法集/恰界 3·8 拒 + 空闲槽最低位选择/池满溢出
+    # convoy 键路由 + 属主过滤取三态（匹配最低位/错配让位零消费/
+    # 全池空）+ 孤儿槽 GC 臂（消费续扫不置 any_armed）+ 溢出有界性
+    # N-K 数学钉板，host 20 测；判定律单源，kernel dpg.rs 判定段
+    # 消费（原子槽/wake 机械留壳））。
+    cargo test -p berry-dpgface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/

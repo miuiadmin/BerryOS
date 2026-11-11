@@ -47,6 +47,10 @@ berry-polface = { path = "../polface" }
 # 律/version 门/域门/交叉门/admission 判定）；本 crate syscall.rs sa_parse
 # 薄壳消费（copy_from_user 物理臂 + DL_TOTAL_UTIL_Q12 原子读留壳）。
 berry-safeck = { path = "../safeck" }
+# W3-Q24：dpg EL0 槽池认领制判定律单源（fsc 滤形/空闲槽选择/属主过滤取
+# 三态/GC 臂/溢出键路由）——本 crate dpg.rs 判定段消费（原子槽机械与
+# wake 调用留壳）。
+berry-dpgface = { path = "../dpgface" }
 
 [features]
 # G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面
