@@ -1,0 +1,13 @@
+[package]
+name = "berry-dtbface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_dtbface"
+path = "src/lib.rs"
+
+# W3-Q18：FDT walker 纯函数面（界检读/迭代状态机/畸形全 None）——零依赖
+# 纯字节切片判定律，host 可测钉板；kernel dtb.rs 机械壳消费即唯一事实源
+# （boot_probe 物理臂留壳——from_raw_parts 直映切片属内核侧）。

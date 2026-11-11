@@ -33,25 +33,26 @@
 //! @128→@176（32×16B+176B=688B < 4KiB 单页自含）；v1 旧装载器照跑——
 //! [`init_segs`] 自相对契约按 version 分派（v1 数组仍认 @128）。
 //! boot 协议是仓内版本化面，非 abi.toml 冻结面（不触保留门 C）。
+//!
+//! **判定律单源（W3-Q15）**：probe 的对齐/窗界/version 门、init_segs 的
+//! 同页自相对/段几何门、gop_info 的四非零门已外迁 `berry-hofface`
+//! （host 可测钉板——probe_gate/init_segs_gate/gop_gate 表驱动）。
+//! 本文件保留：结构体与布局执法表（双镜像纪律）+ 高半直映 raw 解引用
+//! 机械（SAFETY 注与 `'static` 生命周期）——「几何怎么判」在 hofface，
+//! 「地址怎么解」在此。
 #![allow(dead_code)] // V-1a 消费 magic/version；V-1b 消费 memmap_*；V-1c 消费 init_blob_*；V-6a 消费 gop_*；A1-3b 消费 init_segs_*；meas_root/sig_slot_* = V10 预埋留位零消费（ADR #82 附录一）；cmdline_* 留位零值待 V-1d+
 
 use berry_hal_aarch64::{RAM_BASE, RAM_TOP};
+use berry_hofface::SegRaw;
 use berry_mm::va::phys_to_virt;
 use core::mem::{offset_of, size_of};
 
-/// 魔数：LE u32 读出 = ASCII "BRYH"（BerryOS Handoff）。
-pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
-
-/// 协议版本：v2 = 2（V10 尾追加度量/签名槽留位——ADR #82 附录一，全零 =
-/// 未度量/未占用，v1 行为零变）；v1 = 1（A1-3b 起 init 分段递送）；v0 = 0
-/// 冻结于 V-0b 刀 3，扩字段 = bump version）。BerryBoot 写当前版；内核
-/// [`probe`] 认 ≤ 当前版（v0/v1/v2 双向兼容——旧装载器照跑，内核消费按
-/// version 分派）。
-pub const HANDOFF_VERSION: u32 = 2;
-
-/// 分段描述符数上限（A1-3b §3.2.1）：32×16B + 176B 头（V10 尾追加后）
-/// = 688B < 4KiB——handoff 单页自含的执法点；越顶 = 递送面违约。
-pub const INIT_SEGS_MAX: usize = 32;
+// ---- 协议常量单源 re-export（berry-hofface——W3-Q15 迁移；字面值 host 钉板。
+// HANDOFF_MAGIC/HANDOFF_VERSION 供外部消费者与本 crate 文档面；本文件
+// 内经 berry_hofface:: 全路径消费）----
+pub use berry_hofface::{HANDOFF_MAGIC, HANDOFF_SIZE, INIT_SEGS_MAX};
+#[allow(unused_imports)]
+pub use berry_hofface::HANDOFF_VERSION;
 
 /// init 分段描述符（v1 描述符数组元素，随 handoff 同页：v2 @176 / v1 @128）。
 /// pa = AllocatePages 出品（4KiB 对齐）；len = 段内实读字节数（≤ 段页容量，
@@ -61,6 +62,15 @@ pub const INIT_SEGS_MAX: usize = 32;
 pub struct InitSeg {
     pub pa: u64,
     pub len: u64,
+}
+
+// W3-Q15：init_segs_gate 泛型面的 kernel 侧实现（trait 本 crate、类型
+// 本 crate——孤儿规则放行；零拷贝零转换消费）。
+impl SegRaw for InitSeg {
+    #[inline]
+    fn seg_pa_len(&self) -> (u64, u64) {
+        (self.pa, self.len)
+    }
 }
 
 /// 交接结构（v2 = 176B 头，全 8B 字段 8 对齐；无指针——PA 直递，装载器/
@@ -127,6 +137,9 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, meas_root) == 128);
     assert!(offset_of!(BerryHandoff, sig_slot_off) == 160);
     assert!(offset_of!(BerryHandoff, sig_slot_len) == 168);
+    // W3-Q15：布局与 hofface 协议常量互检（尺寸单源不漂移）。
+    assert!(HANDOFF_SIZE == 176);
+    assert!(INIT_SEGS_MAX == 32);
 };
 
 /// V-1a：入口 x0 分流判别——EFI 路首参 = handoff PA（BerryBoot `br entry`），
@@ -140,20 +153,24 @@ const _: () = {
 /// 返回引用按 boot 期静态处理：handoff 页由 BerryBoot AllocatePages 认领
 /// （EFI 图内非 Conventional——V-1b reserve 后内核不再分配它），boot 后只读。
 pub fn probe(x0: usize) -> Option<&'static BerryHandoff> {
-    // 对齐 + 界检：x0=0（QEMU -kernel 实测）与窗外 PA 直接判非；128B 全结构
-    // 须落窗内（checked 防加法回卷）。8 对齐 = 结构自身对齐要求（u64 字段）。
-    if x0 & 7 != 0 {
+    // 判定律单源 berry-hofface（W3-Q15——对齐 + 176B 界检 + magic/version
+    // 门 host 钉板）。判序 = 旧实现：界检前置（probe_bounds_ok）**先于**
+    // raw 解引用——窗外/未对齐 x0 不读未映射内存即返 None。
+    if !berry_hofface::probe_bounds_ok(x0 as u64, RAM_BASE as u64, RAM_TOP as u64) {
         return None;
     }
-    let end = x0.checked_add(size_of::<BerryHandoff>())?;
-    if x0 < RAM_BASE || end > RAM_TOP {
-        return None;
-    }
-    // SAFETY: 界检过 + set_kernel_va_base 已注入（rust_main 首行先于本函数）
-    // ——高半直映 L2 全覆盖 RAM 窗，128B 读必落已映射块；boot 单线程、此后
-    // 只读（BerryBoot 写完才 br entry，无并发写者）。
+    // SAFETY: 界检已过（bounds 门 checked 防回卷 + [RAM_BASE, RAM_TOP) 窗）
+    // + set_kernel_va_base 已注入（rust_main 首行先于本函数）——高半直映
+    // L2 全覆盖 RAM 窗，176B 读必落已映射块；boot 单线程、此后只读
+    // （BerryBoot 写完才 br entry，无并发写者）。
     let h = unsafe { &*(phys_to_virt(x0) as *const BerryHandoff) };
-    if h.magic == HANDOFF_MAGIC && h.version <= HANDOFF_VERSION {
+    if berry_hofface::probe_gate(
+        x0 as u64,
+        h.magic,
+        h.version,
+        RAM_BASE as u64,
+        RAM_TOP as u64,
+    ) {
         Some(h)
     } else {
         None
@@ -172,36 +189,46 @@ pub fn probe(x0: usize) -> Option<&'static BerryHandoff> {
 /// 纪律）。Σlen 总量帽不在本面（消费侧 [`crate::ROOTFS_TOTAL_MAX`] 口径）。
 /// boot 期只读面——与 `probe` 同一生命周期（BerryBoot 写完才 br entry）。
 pub fn init_segs<'a>(h: &'a BerryHandoff, hpa: usize) -> Option<&'a [InitSeg]> {
-    let count = h.init_segs_count as usize;
-    if count > INIT_SEGS_MAX {
-        return None;
-    }
+    // 判定律单源 berry-hofface::init_segs_gate（W3-Q15——count 帽/同页
+    // 自相对按 version 分派/段几何 host 钉板）；本壳只做切片解引用。
+    let count = h.init_segs_count;
     if count == 0 {
-        // 空段（无 INITRD）：pa 也须为零（零值缺席语义，禁只看 count）。
+        // 快路免解引用：空段缺席语义在 gate 内（pa 须为零），此处先判
+        // count 再走 gate——与旧实现判序一致（零 count 不读 init_segs_pa
+        // 所指内存）。
         return if h.init_segs_pa == 0 {
             Some(&[])
         } else {
             None
         };
     }
-    // 同页自相对契约：数组基址随头按 version 分派（v2 头 176B → @176，
-    // 688B < 4KiB 单页自含；v1 头 128B → @128——旧装载器照跑，双向兼容
-    // 的版本门控）。
-    let base_off: u64 = if h.version >= 2 { 176 } else { 128 };
-    if h.init_segs_pa != (hpa as u64).checked_add(base_off)? {
+    let n = count as usize;
+    if n > INIT_SEGS_MAX {
         return None;
     }
-    let base = phys_to_virt(h.init_segs_pa as usize) as *const InitSeg;
-    let segs = unsafe { core::slice::from_raw_parts(base, count) };
-    for s in segs {
-        if s.pa == 0 || s.len == 0 || s.pa & 0xfff != 0 {
-            return None;
-        }
-        let end = s.pa.checked_add(s.len)?;
-        if s.pa < RAM_BASE as u64 || end > RAM_TOP as u64 {
-            return None;
-        }
+    // 同页自相对基址（gate 内 expect 比对）：按 version 分派 v2 @176/v1
+    // @128——描述符数组随 handoff 同页（单页自含），基址即头后。
+    let base_off: u64 = if h.version >= 2 { 176 } else { 128 };
+    let base_pa = (hpa as u64).checked_add(base_off)?;
+    if h.init_segs_pa != base_pa {
+        return None;
     }
+    // SAFETY: 同页自相对已验（init_segs_pa = hpa + base_off 落 handoff
+    // 页内，probe 已界检该页在 [RAM_BASE, RAM_TOP)）——高半直映 L2 全
+    // 覆盖 RAM 窗，from_raw_parts 必落已映射块；boot 单线程、boot 后只读
+    // （与 probe 同一生命周期）。
+    let base = phys_to_virt(h.init_segs_pa as usize) as *const InitSeg;
+    let segs = unsafe { core::slice::from_raw_parts(base, n) };
+    // 段几何门（含切片长度一致自检）：违约 → None（整源降级存活）。
+    berry_hofface::init_segs_gate(
+        h.version,
+        hpa as u64,
+        h.init_segs_pa,
+        count,
+        segs,
+        RAM_BASE as u64,
+        RAM_TOP as u64,
+    )?;
     Some(segs)
 }
 
@@ -221,10 +248,15 @@ pub struct GopInfo {
 /// GOP 事实提取（含界检）。boot 期只读面——与 `probe` 同一生命周期
 /// （handoff 页 BerryBoot 写完才 `br entry`，无并发写者）。
 pub fn gop_info(h: &BerryHandoff) -> Option<GopInfo> {
-    if h.gop_fb_pa == 0 || h.gop_width == 0 || h.gop_height == 0 || h.gop_stride == 0 {
-        return None;
-    }
-    if h.gop_format > 2 {
+    // 判定律单源 berry-hofface::gop_gate（W3-Q15——四非零 + fmt≤2 门
+    // host 钉板）。
+    if !berry_hofface::gop_gate(
+        h.gop_fb_pa,
+        h.gop_width,
+        h.gop_height,
+        h.gop_stride,
+        h.gop_format,
+    ) {
         return None;
     }
     Some(GopInfo {

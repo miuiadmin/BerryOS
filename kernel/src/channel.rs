@@ -24,16 +24,21 @@ use crate::handle::{ObjRef, Rights};
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 
+// W3-Q9：界常量与队列资格判单源迁 berry-chanface（判据纯函数面，host
+// 可测钉板）；本文件 re-export 保持 crate 内路径稳定（hdlface 同款纪律）。
+pub use berry_chanface::{
+    queue_full_of, queue_readable, CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX,
+};
+
 /// 单条消息 inline 字节上限（IPC设计 §2：内联载荷 ≤256B；更大走共享 VMO）。
-pub const CHAN_MSG_MAX: usize = 256;
+/// **单源 = berry-chanface（W3-Q9 迁出）**——本文件 re-export（上方 pub use）
+/// 保 crate 内外路径稳定；沿革注记随源在 chanface。
 /// 单条消息随行 handle 上限（ABI §8.3 send/recv 数组界）。T-1：4→6——
 /// berry-exec env 块 gift 扩至 6 位；A2-3：6→8——bsh arm 三 extras
 /// （rootfs/fs/netd 端）+ base 2 + T-1 自描述对 2 = env 块 7 位（首跑实抓：
 /// nhandles=7 > 6 → send -EINVAL → spawn 链 trap 自陷 svcmgr）；libc
 /// `io.rs` 收窗与 ktest H3 超限样本同步 8/9 口径。
-pub const CHAN_HND_MAX: usize = 8;
 /// 每端收件队列深度（有界性 = send -EBUSY 的来源）。
-pub const CHAN_DEPTH: usize = 8;
 
 /// 一条消息：inline 字节 + 迁移中的 handle 令牌（`take` 出表、未入新表——
 /// 引用计数随令牌走，`insert_ref` 不动 refs）。**定长内联**（3b3 审查 H2 try
@@ -190,12 +195,12 @@ impl ChannelEnd {
 
     /// 队列是否已满（send 前置检查 → -EBUSY）。
     pub fn queue_full(&self) -> bool {
-        self.queue.len() >= CHAN_DEPTH
+        queue_full_of(self.queue.len())
     }
 
     /// 队列是否有消息（wait 面 READABLE 信号状态——4-2 内核派生位）。
     pub fn has_message(&self) -> bool {
-        !self.queue.is_empty()
+        queue_readable(self.queue.len())
     }
 
     /// 压一条消息进**本端**队列（send 侧实际调的是对端的这个方法）。

@@ -22,6 +22,9 @@ use alloc::vec::Vec;
 use berry_hal_aarch64 as hal;
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SIZE};
+// W3-Q17：槽位/区间判定律单源迁 berry-vslotface（host 钉板）——本文件
+// check_slot/find_exact/find_mapped/demand_index 壳化消费。
+use berry_vslotface::{aligned_nonzero, bounds_end, overlaps, SlotError, SlotKind, SlotRegion, SlotView};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 
 /// 用户 VA 上界：T0SZ=25 → TTBR0 区 = `[0, 2^39)`。
@@ -163,6 +166,38 @@ struct Region {
     vmo: *mut Vmo,
     /// `Mapped`：本区间对应 VMO 内偏移（unmap 回调映射计数用）。
     vmo_off: usize,
+}
+
+/// W3-Q17：Region 切片只读投影（判定律表抽象单点装配——newtype 过
+/// orphan rule，零拷贝纯转发）。
+struct RegionSlots<'a>(&'a [Region]);
+
+impl SlotView for RegionSlots<'_> {
+    fn slot_len(&self) -> usize {
+        self.0.len()
+    }
+    fn slot_get(&self, i: usize) -> SlotRegion {
+        let r = &self.0[i];
+        SlotRegion {
+            start: r.start,
+            len: r.len,
+            kind: match r.kind {
+                RegionKind::Mapped(_) => SlotKind::Mapped,
+                RegionKind::Demand(_) => SlotKind::Demand,
+                RegionKind::Reserved => SlotKind::Reserved,
+            },
+        }
+    }
+}
+
+/// W3-Q17：判定错误投影 → VmarError（四态一一对应）。
+fn slot_err(e: SlotError) -> VmarError {
+    match e {
+        SlotError::Unaligned => VmarError::Unaligned,
+        SlotError::OutOfBounds => VmarError::OutOfBounds,
+        SlotError::Overlap => VmarError::Overlap,
+        SlotError::NotMapped => VmarError::NotMapped,
+    }
 }
 
 /// `Mapped` 带权限是为 Phase 3 `query`（§3 操作之一）留数据；v1 无读取点。
@@ -446,11 +481,8 @@ impl Vmar {
 
     /// `va` 所在 demand 区间下标（只读查——fault 探针命中判定 + 供给定位）。
     fn demand_index(&self, va: usize) -> Option<usize> {
-        self.regions.iter().position(|r| {
-            va >= r.start
-                && va < r.start + r.len
-                && matches!(r.kind, RegionKind::Demand(_))
-        })
+        // W3-Q17：探针命中律单源（闭开域 + Demand-only）。
+        berry_vslotface::demand_hit_at(&RegionSlots(&self.regions), va)
     }
 
     /// fault 探针面（G4-1）：`far` 命中本 AS 的 demand 区间 → `(vmo 指针,
@@ -529,14 +561,20 @@ impl Vmar {
 
     /// 槽位三查：对齐、管辖界、与既有区间/预留不重叠。
     fn check_slot(&self, vaddr: usize, len: usize) -> Result<(), VmarError> {
-        if vaddr % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 || len == 0 {
+        // W3-Q17：三查判序单源 = berry-vslotface（Unaligned → OutOfBounds →
+        // Overlap 逐字旧序；重叠谓词半开交集同旧 any 扫描）。
+        if !aligned_nonzero(vaddr, len) {
             return Err(VmarError::Unaligned);
         }
-        let end = vaddr.checked_add(len).ok_or(VmarError::OutOfBounds)?;
-        if vaddr < self.base || end > self.base + self.len {
-            return Err(VmarError::OutOfBounds);
-        }
-        if self.regions.iter().any(|r| vaddr < r.start + r.len && r.start < end) {
+        let end = match bounds_end(vaddr, len, self.base, self.len) {
+            Some(e) => e,
+            None => return Err(VmarError::OutOfBounds),
+        };
+        if self
+            .regions
+            .iter()
+            .any(|r| overlaps(vaddr, end, r.start, r.len))
+        {
             return Err(VmarError::Overlap);
         }
         Ok(())
@@ -546,26 +584,17 @@ impl Vmar {
     /// 区间同收割），返回其下标。protect 仍走 [`Self::find_mapped`]
     /// （Mapped-only——demand 区间 protect v1 拒）。
     fn find_exact(&self, vaddr: usize, len: usize) -> Result<usize, VmarError> {
-        self.regions
-            .iter()
-            .position(|r| {
-                r.start == vaddr
-                    && r.len == len
-                    && matches!(r.kind, RegionKind::Mapped(_) | RegionKind::Demand(_))
-            })
-            .ok_or(VmarError::NotMapped)
+        // W3-Q17：精确匹配判定律单源 = berry-vslotface（kind 收 Mapped|Demand
+        // ——G4-1 起 unmap 对 demand 区间同收割；position 首中语义同旧）。
+        berry_vslotface::find_exact_at(&RegionSlots(&self.regions), vaddr, len)
+            .map_err(slot_err)
     }
 
     /// 找精确匹配的已映射区间，返回其下标。
     fn find_mapped(&self, vaddr: usize, len: usize) -> Result<usize, VmarError> {
-        self.regions
-            .iter()
-            .position(|r| {
-                r.start == vaddr
-                    && r.len == len
-                    && matches!(r.kind, RegionKind::Mapped(_))
-            })
-            .ok_or(VmarError::NotMapped)
+        // W3-Q17：Mapped-only 精确查找单源（demand 区间 protect v1 拒）。
+        berry_vslotface::find_mapped_at(&RegionSlots(&self.regions), vaddr, len)
+            .map_err(slot_err)
     }
 
     /// 表 PA → 经 direct map 的表基指针。

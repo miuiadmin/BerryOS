@@ -2957,7 +2957,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         tf.regs[4],
         tf.regs[5] as usize,
     );
-    if nbytes > CHAN_MSG_MAX || nhandles > CHAN_HND_MAX {
+    if !berry_chanface::send_args_legal(nbytes, nhandles) {
         return ERR_INVALID_ARG as i64;
     }
     let el1 = caller_is_el1(tf);
@@ -3007,11 +3007,10 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         if !t.alive(hvals[i]) {
             return ERR_BAD_HANDLE as i64;
         }
-        for j in 0..i {
-            if hvals[j] == hvals[i] {
-                return ERR_INVALID_ARG as i64; // 数组内重复值（见函数注释原子序论证）
-            }
-        }
+    }
+    // 数组内重复预检（W3-Q9 单源判据——循环体见函数注释原子序论证）。
+    if !berry_chanface::handles_distinct(&hvals[..nhandles]) {
+        return ERR_INVALID_ARG as i64;
     }
     let mut bbuf = [0u8; CHAN_MSG_MAX];
     if let Err(e) = irq_window(|| copy_from_user(el1, bytes, &mut bbuf[..nbytes])) {
@@ -3243,7 +3242,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             return e as i64;
         }
     };
-    if msg.nbytes > cap_bytes || msg.nhandles > cap_hnd {
+    if !berry_chanface::recv_capacity_legal(msg.nbytes, msg.nhandles, cap_bytes, cap_hnd) {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return ERR_INVALID_ARG as i64;

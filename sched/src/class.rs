@@ -68,14 +68,16 @@ pub const PURE_EEVDF: bool = false;
 /// 兼容别名：既有调用点仍以 `RoundRobin` 指类型（1.1/S2 语义已是 Fair）。
 pub type RoundRobin = Fair;
 
-/// 虚拟时间刻度（权重基准）。
-const SCALE: u64 = 1024;
-
-/// 1.1/S5：deadline 带优先级（≥ 此值 = deadline 任务）。
-/// 设 `prio_effective = PRIO_DEADLINE + n`（n 越小截止越紧）+ `vdeadline = 绝对
-/// 截止期`，Fair 的带序 + 带内 VD 排序即 **天然 EDF**（最早截止先出）。
-/// `enqueue`/`tick` 对 deadline 任务**不覆盖 vdeadline**（保留手动设的绝对值）。
-pub const PRIO_DEADLINE: i32 = 1000;
+// W3-Q11：权重/虚拟片/片预算数学单源在 berry-sliceface（host 可测纯面
+// ——本 crate 只 aarch64 可编，预算语义回归面此前 host 不可达）；此处
+// 消费即唯一事实源（wqmatch/iprofile 同款纪律）。
+use berry_sliceface::{
+    fair_rearm_vd, period_due, replenish as replenish_budget, slice_virtual as slice_virtual_of,
+    tick_account, throttle_admissible, DeadlineState,
+};
+// W3-Q11：deadline 带优先级常量单源 berry-sliceface——本模块 re-export
+// （lib.rs `pub use class::PRIO_DEADLINE` 消费链不变，band.rs 同）。
+pub use berry_sliceface::PRIO_DEADLINE;
 
 /// 判定：是否 deadline 任务（带序 ≥ PRIO_DEADLINE）。S5-c 计数门起
 /// `runqueue` 原语层（`DL_ON_RING` 账点）同判据消费——单一事实源。
@@ -85,16 +87,10 @@ pub(crate) fn is_deadline(t: &Task) -> bool {
 }
 
 #[inline]
-fn weight_of(t: &Task) -> u64 {
-    // 基线 1024；PI/策略 boost 每级 +64，封顶 1<<20（防 u64 溢出）。
-    let boost = t.prio_effective.max(0) as u64;
-    (SCALE + boost.saturating_mul(64)).min(1 << 20)
-}
-
-#[inline]
 fn slice_virtual(t: &Task) -> u64 {
-    let s = hal::timer::slice_cycles() as u128 * SCALE as u128 / weight_of(t) as u128;
-    (s as u64).max(1)
+    // W3-Q11：虚拟片换算单源 berry-sliceface（grant×SCALE/weight 下限 1，
+    // host 钉板 slice_virtual_law）。
+    slice_virtual_of(hal::timer::slice_cycles(), t.prio_effective)
 }
 
 /// 环上平均虚拟时间（EEVDF 的 V 的工程近似；**O(1)**——S2b+ 从全环扫描改
@@ -140,20 +136,38 @@ unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) {
         // 快路径：非 deadline 或未冻结 → 一比较跳过。
         if (*t).prio_effective >= PRIO_DEADLINE
             && (*t).held_locks & crate::task::HELD_THROTTLE != 0
-            && now >= (*t).vdeadline
             && (*t).duration_hint_ns > 0
+            && now >= (*t).vdeadline
         {
             // 慢路径：周期到 → 解限流（只清 THROTTLE 位——FROZEN 位是进程
             // 冻结独占语义，由 SuspendToken close 解除，不受预算周期影响）。
             (*t).held_locks &= !crate::task::HELD_THROTTLE;
-            (*t).vdeadline = (*t).vdeadline.saturating_add((*t).duration_hint_ns);
-            let b = (*t).preempt_threshold.max(0) as u64;
-            if b > 0 {
-                (*t).slice_left = b;
-            }
+            // W3-Q11：周期到判 + 重臂 + replenish 数学单源 berry-sliceface
+            // （period_due/replenish——host 钉板 deadline_period_cycle）。
+            dl_refill(&mut *t, now);
         }
         if cur == head { break; } // 环回起点 → 一圈完成
     }
+}
+
+/// W3-Q11：lazy_unthrottle 慢路径的「周期到 → 重臂 + replenish」步
+/// 单源 berry-sliceface（`period_due` + `replenish`——host 钉板
+/// deadline_period_cycle）；本函数只留环走查 + THROTTLE 位清的机械。
+/// 安全引用形——裸解引用留在 unsafe fn 调用语境（unsafe 台账零新增）。
+#[inline]
+fn dl_refill(t: &mut Task, now: u64) {
+    let st = DeadlineState {
+        vdeadline: t.vdeadline,
+        slice_left: t.slice_left,
+        period: t.duration_hint_ns,
+        budget: t.preempt_threshold,
+    };
+    if !period_due(now, &st) {
+        return;
+    }
+    let (vd, sl) = replenish_budget(now, &st);
+    t.vdeadline = vd;
+    t.slice_left = sl;
 }
 
 impl SchedClass for Fair {
@@ -217,9 +231,16 @@ impl SchedClass for Fair {
                 }
             }
         };
-        t.slice_left = t.slice_left.saturating_sub(delta);
-        let vdelta = (delta as u128 * SCALE as u128 / weight_of(t) as u128) as u64;
-        t.vruntime = t.vruntime.saturating_add(vdelta);
+        // W3-Q11：tick 记账一步单源 berry-sliceface（饱和递减 + vdelta
+        // 缩权累加，host 钉板 tick_account_law）。
+        let (slice, vrt, vdelta) = tick_account(
+            t.slice_left,
+            t.vruntime,
+            delta,
+            t.prio_effective,
+        );
+        t.slice_left = slice;
+        t.vruntime = vrt;
         // Σvruntime 账本随迁（S2b+ 增量维护，rq 参数自此真消费）：在环
         // 任务（cur 常驻环——pick 只推游标不摘）的 vruntime 前进 = 账本
         // 同额前进；离环者不入账——IDLE_TASK 永不在环（idle tick 不入账）
@@ -240,18 +261,22 @@ impl SchedClass for Fair {
             crate::util::util_accumulate(cpu, delta);
         }
         crate::util::util_tick_window(cpu, now);
-        if t.slice_left == 0 && !is_deadline(t) {
+        // W3-Q11：fair 片耗尽 VD 重臂资格单源（非 deadline 才重臂——
+        // deadline 手动绝对截止期不碰，1.1/S5）。
+        if t.slice_left == 0 && fair_rearm_vd(t.prio_effective, is_deadline(t)) {
             t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
         }
         // S5-c 预算执法：deadline 任务的 slice = 预算尺寸（spawn 时由
         // preempt_threshold 设定）。slice 耗尽 = 本期预算用完 → throttle
         //（HELD_FROZEN 置位 → eligible 过滤 → 不再出选）。周期到 →
         // lazy_unthrottle（pick_next 面扫）解冻 + 重臂 + 新预算。
-        if t.slice_left == 0
-            && is_deadline(t)
-            && t.preempt_threshold > 0
-            && t.held_locks & crate::task::HELD_THROTTLE == 0
-        {
+        // W3-Q11：准入三与门单源 berry-sliceface（host 钉板 throttle_gate）。
+        if throttle_admissible(
+            t.prio_effective,
+            t.preempt_threshold,
+            t.slice_left,
+            t.held_locks & crate::task::HELD_THROTTLE != 0,
+        ) {
             t.held_locks |= crate::task::HELD_THROTTLE;
         }
     }

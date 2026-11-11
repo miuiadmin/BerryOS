@@ -32,6 +32,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: bare-conflict-markers（裸冲突标记拦截——并集解族第五犯根治）
+        run: |
+          if git grep -nE '^(<{7}|>{7}|={7}$)' -- '.' ':!*.lock'; then
+            echo "FAIL: 树内残留裸冲突标记（<<<<<<< / ======= / >>>>>>>）——历史上 stash pop/merge 残留两次入库，污染扩散吃掉重放工"
+            exit 1
+          fi
+
       - name: docs-guard（AGENTS 注入预算 + 探针/锚点）
         run: python3 tools/docs_guard.py
 

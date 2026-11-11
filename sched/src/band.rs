@@ -30,46 +30,25 @@
 //! 跳过之；其 [`HELD_THROTTLE`] 位只归 S5-c 逐任务执法（`class.rs::tick`
 //! 置 / `lazy_unthrottle_deadlines` 清），带级执法永不触碰。fair 任务的
 //! THROTTLE 位同理只归本模块（双位分立纪律的位内版本：一消费者一位）。
+//!
+//! W3-Q19：预算数学判定律（首越线单赢家/翻期追赶环/CAS 防双翻入环门/
+//! 配置三态/带成员豁免判）单源已迁 `berry-bandface`（host 可测钉板）；
+//! 本模块保留 BANDS static mut 槽镜像 + CONSUMED/DEADLINES 原子账 +
+//! throttle/unthrottle 环扫裸并发机械，判定面消费 bandface 纯函数
+//! （零第二实现——`berry-emface` 同款纪律）。
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::class::PRIO_DEADLINE;
 use crate::runqueue::Runqueue;
 use crate::task::{Task, HELD_THROTTLE};
 
-/// band 静态表槽数。带词汇 0x00–0x05（intent 冻结编码，#58）+ 余量：
-/// v1.2 §7 现役 = 0x01–0x04 ×4 带实例（0x05 MAINTENANCE 冻结不启用），
-/// 0x00 = UNSPECIFIED 默认带（不设包络）。
-pub const BAND_SLOTS: usize = 8;
+// ---- 槽形与判定律（单源 = berry-bandface；此处 re-export 供
+// kernel/ktest 既有消费面零改动）----
 
-/// 每带预算槽（CBS 同形语义，同 S5-c：每期至多 quota CPU 时长，超了等
-/// 下期——整数周期数记账）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BandBudget {
-    /// 每期预算（CNTVCT 周期数；0 = 该带不设包络）。
-    pub quota: u64,
-    /// 周期长度（CNTVCT 周期数；0 = 该带不设包络）。
-    pub period: u64,
-    /// 本期已耗（整数微记账；快照镜像——真账在 [`CONSUMED`] 原子数组，
-    /// [`state`] 合并点回填）。
-    pub consumed: u64,
-    /// 本期截止时刻（CNTVCT 周期数；事件驱动——无周期 tick。快照镜像——
-    /// 真账在 [`DEADLINES`] 原子数组，翻期 CAS 面）。
-    pub deadline: u64,
-    /// 本期预算是否已耗尽（[`consume`] 首越线置位；[`period_check`] 翻期清）。
-    pub throttled: bool,
-}
-
-impl BandBudget {
-    /// 关闭态槽（quota/period 0 = 不设包络——表初值）。
-    pub const OFF: BandBudget = BandBudget {
-        quota: 0,
-        period: 0,
-        consumed: 0,
-        deadline: 0,
-        throttled: false,
-    };
-}
+pub use berry_bandface::{
+    armed, band_member, configure_slot, consumed_crossed, deadline_next, period_due, slot_ok,
+    BandBudget, BAND_SLOTS,
+};
 
 /// band 静态表（8 槽）——冷配置 + 观测镜像。G0 单核静态例外——与
 /// `class.rs::LAST_VCT` / `policy.rs::SNAPS` 同款纪律：`static mut` 写面只
@@ -97,13 +76,13 @@ static CONSUMED: [AtomicU64; BAND_SLOTS] = [const { AtomicU64::new(0) }; BAND_SL
 /// 先例）。
 static DEADLINES: [AtomicU64; BAND_SLOTS] = [const { AtomicU64::new(0) }; BAND_SLOTS];
 
-/// 取带槽裸指针（band 越界 → None）。
+/// 取带槽裸指针（band 越界 → None）。界门单源 `berry_bandface::slot_ok`。
 ///
 /// # Safety（解引用窗，各访问点挂）
 /// 调用点须在 IRQ 屏蔽/调度窗内（单核独占写，同 `LAST_VCT`）。
 #[inline]
 fn slot(band: u8) -> Option<*mut BandBudget> {
-    if band as usize >= BAND_SLOTS {
+    if !slot_ok(band) {
         return None;
     }
     // SAFETY: 声明点取裸指针不立引用（E0133 解除的就是这一层，同 policy.rs
@@ -111,13 +90,12 @@ fn slot(band: u8) -> Option<*mut BandBudget> {
     Some(unsafe { &raw mut BANDS[band as usize] })
 }
 
-/// 带成员判定：intent 即带键（§11），读 effective（§3.6 一律看 effective）
-/// ；deadline 任务豁免（RT/deadline 屏蔽不变量，§10——其 THROTTLE 位归
-/// S5-c 逐任务执法独占）。
+/// 带成员桥接：读 Task 的 intent/prio effective 后交纯面判（判定律单源
+/// `berry_bandface::band_member`——intent 即带键 §11 + deadline 豁免 §10）。
 #[inline]
-fn band_member(t: *const Task, band: u8) -> bool {
+fn task_member(t: *const Task, band: u8) -> bool {
     // SAFETY: 环上任务均调度器拥有；调用侧屏蔽窗内（同 pick）。
-    unsafe { (*t).intent_effective == band && (*t).prio_effective < PRIO_DEADLINE }
+    unsafe { band_member((*t).intent_effective, (*t).prio_effective, band) }
 }
 
 /// 配置某带包络（启动配置面——§7「数字进启动配置」；quota/period **均正**
@@ -126,43 +104,39 @@ fn band_member(t: *const Task, band: u8) -> bool {
 /// 返回是否已武装。重配即清账翻期（本期已耗归零）——mid-flight 翻配置的
 /// 收口义务：**先 `unthrottle_all` 清环上残留限流位，再 configure(0)**。
 /// 原子账（[`CONSUMED`]/[`DEADLINES`]）与槽镜像同批重臂/归零——[`state`]
-/// 合并读的逐位等价义务（关态 = `BandBudget::OFF` 逐字段成立）。
+/// 合并读的逐位等价义务（关态 = `BandBudget::OFF` 逐字段成立）。判序
+/// 单源 `berry_bandface::configure_slot`（三态）。
 pub fn configure(band: u8, quota: u64, period: u64, now: u64) -> bool {
-    let Some(s) = slot(band) else { return false };
+    let Some(out) = configure_slot(band, quota, period, now) else { return false };
+    let Some(s) = slot(band) else { return false }; // 不可达（configure_slot 已界检）
     let i = band as usize;
-    if quota == 0 || period == 0 {
-        // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
-        unsafe { *s = BandBudget::OFF };
-        CONSUMED[i].store(0, Ordering::Relaxed);
-        DEADLINES[i].store(0, Ordering::Relaxed);
-        return false;
-    }
-    let deadline = now.saturating_add(period);
-    // SAFETY: 同上。
+    let deadline = match out {
+        berry_bandface::ConfigOut::Armed { deadline } => deadline,
+        berry_bandface::ConfigOut::Off => 0,
+    };
+    // SAFETY: 屏蔽窗内单核独占写（slot 契约）。
     unsafe {
-        *s = BandBudget {
-            quota,
-            period,
-            consumed: 0,
-            deadline,
-            throttled: false,
+        *s = if let berry_bandface::ConfigOut::Armed { .. } = out {
+            BandBudget { quota, period, consumed: 0, deadline, throttled: false }
+        } else {
+            BandBudget::OFF
         }
     }
     CONSUMED[i].store(0, Ordering::Relaxed);
     DEADLINES[i].store(deadline, Ordering::Relaxed);
-    true
+    matches!(out, berry_bandface::ConfigOut::Armed { .. })
 }
 
-/// 该带包络是否在执法（quota/period 均正且带在表内）。
+/// 该带包络是否在执法（quota/period 均正且带在表内）。判据单源
+/// `berry_bandface::armed`。
 pub fn band_on(band: u8) -> bool {
     let Some(s) = slot(band) else { return false };
     // SAFETY: 只读；屏蔽窗内无并发写（slot 契约）。
-    unsafe { (*s).quota != 0 && (*s).period != 0 }
+    unsafe { armed(&*s) }
 }
 
 /// 槽快照拷出（ktest / telemetry 观测面；越界 → None）。**真账合并读**：
-/// consumed/deadline 取自全局原子账（槽内同名字段已退化为镜像）。读序 =
-/// deadline Acquire 先行、consumed Relaxed 后随——与 [`period_check`] 翻
+/// consumed/deadline 取自全局原子账（槽内同名字段已退化为镜像）。读序 = deadline Acquire 先行、consumed Relaxed 后随——与 [`period_check`] 翻
 /// 期「清账先行 + deadline CAS(Release)」配对：见新期 deadline 必见新账
 /// （SMP §3）。
 pub fn state(band: u8) -> Option<BandBudget> {
@@ -177,16 +151,17 @@ pub fn state(band: u8) -> Option<BandBudget> {
 }
 
 /// 微记账：把 `cycles` 周期数记到 `band` 本期账上（tick 记账点按 CNTVCT
-/// 增量调——同 `Fair::tick` 的 delta 口径）。返回 true = 本期预算**首**越
-/// 线（调用方随后 [`throttle_all`]——记账与环执法分两步，热路径可合并）。
+/// 增量调——同 `Fair::tick` 的 delta 口径）。返回 true = 本期预算**首**
+/// 越线（调用方随后 [`throttle_all`]——记账与环执法分两步，热路径可合并）。
 /// 包络关 / 带越界 → false 不记账。
 ///
 /// SMP 安全（SMP §3 / v1.3 §5 预研建议③）：全局原子账 [`CONSUMED`]
 /// fetch_add（Relaxed——纯计数不通信，同 HDR 桶计数口径）累计；首越线
 /// 判定用返回值——`prev < quota ≤ prev + cycles` 的那次 fetch_add 全局恰
 /// 一次（**单赢家**：多核同挤越线也只有一个 true，无环扫无标志位竞争）
-/// 。u64 环绕（旧 saturating 语义的极端差）= 单期累计 2^64 CNTVCT 周期
-/// （@1GHz ≈ 584 年）——不可达，不设防。
+/// 。判定律单源 `berry_bandface::consumed_crossed`。u64 环绕（旧
+/// saturating 语义的极端差）= 单期累计 2^64 CNTVCT 周期（@1GHz ≈ 584
+/// 年）——不可达，不设防。
 pub fn consume(band: u8, cycles: u64) -> bool {
     let Some(s) = slot(band) else { return false };
     // SAFETY: quota/period 冷配置只读（configure 启动面写，slot 契约）。
@@ -195,12 +170,13 @@ pub fn consume(band: u8, cycles: u64) -> bool {
         return false;
     }
     let prev = CONSUMED[band as usize].fetch_add(cycles, Ordering::Relaxed);
-    let now = prev.saturating_add(cycles);
-    let crossed = now >= quota && prev < quota;
+    let crossed = consumed_crossed(band, unsafe { &*s }, cycles, prev);
+    // 不可达 None：上面已界检 + 包络门（consumed_crossed 同判重入防御）。
+    let crossed = crossed.unwrap_or(false);
     if crossed {
         // SAFETY: throttled = 观测镜像位，首越线赢家单点置位（period_check
         // 翻期赢家单点清——两写点均在屏蔽窗契约内，slot 契约同上）。
-        unsafe { (*s).throttled = true };
+        unsafe { (*s).throttled = true }
     }
     crossed
 }
@@ -215,11 +191,12 @@ pub fn consume(band: u8, cycles: u64) -> bool {
 /// SMP 防双翻（SMP §3 / v1.3 §5 预研建议③）：翻期 = [`DEADLINES`]
 /// deadline CAS **单点**——只有把 deadline 从旧值 `cur` 翻到新值 `next`
 /// 的那个核才兑现翻期（多核同到期也恰一个 true；输家 CAS 失败重读，
-/// 多半已见他核翻过的未来期 → false）。清账（consumed 归零 + throttled
-/// 镜像清）先行、CAS(Release) 发布——Acquire 侧（翻期判定点 / [`state`]
-/// 快照）见新期 deadline 必见新账。清账-翻序间他核 fetch_add 的落账归属
-/// = 翻期边界的固有竞态（与消费-翻期同窗，上界每核一份 delta——超卖窗
-/// 断言归 BAND-S 相，本刀不执法）。
+/// 多半已见他核翻过的未来期 → false）。追赶环与入环门单源
+/// `berry_bandface::deadline_next`/`period_due`。清账（consumed 归零 +
+/// throttled 镜像清）先行、CAS(Release) 发布——Acquire 侧（翻期判定点 /
+/// [`state`] 快照）见新期 deadline 必见新账。清账-翻序间他核 fetch_add
+/// 的落账归属 = 翻期边界的固有竞态（与消费-翻期同窗，上界每核一份
+/// delta——超卖窗断言归 BAND-S 相，本刀不执法）。
 pub fn period_check(band: u8, now: u64) -> bool {
     let Some(s) = slot(band) else { return false };
     let i = band as usize;
@@ -231,25 +208,18 @@ pub fn period_check(band: u8, now: u64) -> bool {
     // 翻期判定点 Acquire：与翻期 CAS(Release) 配对（SMP §3）。
     let mut cur = DEADLINES[i].load(Ordering::Acquire);
     loop {
-        if now < cur {
-            return false; // 未到期（含他核刚翻过的未来期）
+        if !period_due(band, unsafe { &*s }, cur, now).unwrap_or(false) {
+            return false; // 未到期（含他核刚翻过的未来期）；不可达 None 同上
         }
         // 追赶环：饱和步进（deadline 钉 u64::MAX 即出——防死循环）。
-        let mut next = cur;
-        while next <= now {
-            let step = next.saturating_add(period);
-            if step == next {
-                break;
-            }
-            next = step;
-        }
+        let next = deadline_next(cur, period, now);
         // 翻期赢家义务先行（清账 + 清限流镜像）——下述 CAS(Release) 发布。
         // 输家同走这段无碍：CAS 失败即真赢家存在且同在清账（同窗幂等归零
         // ，账面终态一致）。
         CONSUMED[i].store(0, Ordering::Relaxed);
         // SAFETY: throttled 观测镜像位，翻期赢家清（首越线赢家置——两写
         // 点均在屏蔽窗契约内，slot 契约同上）。
-        unsafe { (*s).throttled = false };
+        unsafe { (*s).throttled = false }
         // CAS 防双翻：只有把 deadline 从 cur 翻到 next 的核才算赢家。
         // 成功 Release = 发布先行清账；失败 Acquire = 他核已翻——同步纳入
         // 其发布序，重读再判。
@@ -280,7 +250,7 @@ pub fn throttle_all(band: u8, rq: &Runqueue) -> usize {
         // SAFETY: 环上任务均调度器拥有且在环；调用侧屏蔽窗内（同 pick）。
         unsafe {
             // §A136：先访当前节点，再推进并判回 head。
-            if band_member(t, band) && (*t).held_locks & HELD_THROTTLE == 0 {
+            if task_member(t, band) && (*t).held_locks & HELD_THROTTLE == 0 {
                 (*t).held_locks |= HELD_THROTTLE;
                 count += 1;
             }
@@ -309,7 +279,7 @@ pub fn unthrottle_all(band: u8, rq: &Runqueue) -> usize {
         // SAFETY: 环上任务均调度器拥有且在环；调用侧屏蔽窗内（同 pick）。
         unsafe {
             // §A136：先访当前节点，再推进并判回 head。
-            if band_member(t, band) && (*t).held_locks & HELD_THROTTLE != 0 {
+            if task_member(t, band) && (*t).held_locks & HELD_THROTTLE != 0 {
                 (*t).held_locks &= !HELD_THROTTLE;
                 count += 1;
             }

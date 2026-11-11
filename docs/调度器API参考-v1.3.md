@@ -1,7 +1,7 @@
 # 调度器 API 参考
 
-> 版本：v1.1（2026-11-11 升版：W3-Q6/Q12 外迁族随迁——`intent_settle_current_ext` 补条 + HELD 双位单源迁 `berry_ringface` 注记 + 计数 146→147）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**147 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 b2bc40a）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 版本：v1.3（2026-11-11 升版：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**134 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 cf9e253/d1b25ca）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
@@ -371,45 +371,45 @@ EM 频点表（形状不落算法）+ per-CPU util EWMA + overutilized 回退判
 
 ---
 
-## 五、测量（hdr.rs）
+## 五、测量（hdr.rs + `berry_hdrface` re-export）
 
-HDR 直方图（897 桶对数尺）+ per-CPU 切换/唤醒延迟双路 + 跨核合并分位。
+HDR 直方图（897 桶对数尺）+ per-CPU 切换/唤醒延迟双路 + 跨核合并分位。W3-Q16（cf9e253）起形状常量/桶映射律/分位秩/`Hdr`·`CpuHdr` 原子直方图单源外迁 `berry-hdrface`（host 可测钉板），hdr.rs 留 8 条裸并发机械（per-CPU 存储/槽化/写入口/合并读面），其余 12 项 `pub use` re-export——`berry_sched::` 调用路径不变（re-export 族条目语义描述仍以 `berry_hdrface` 源 doc 为准）。
 
-### `bucket_of(value: u64) -> usize`
-> hdr | 值 → 桶下标（纯函数；`record` 的 O(1) 映射独立成函数供 ktest 全域钉板）。
+### `bucket_of(value: u64) -> usize`（re-export）
+> hdr | 值 → 桶下标（纯函数；`record` 的 O(1) 映射独立成函数供 ktest 全域钉板）。判定律单源 `berry_hdrface::bucket_of`（W3-Q16 外迁族，`intent_valid` 同款）。
 
-### `bucket_upper(idx: usize) -> u64` `const`
-> hdr | 桶下标 → 桶上界（含）。分位返回值 = 命中桶的保守上界。
+### `bucket_upper(idx: usize) -> u64` `const`（re-export）
+> hdr | 桶下标 → 桶上界（含）。分位返回值 = 命中桶的保守上界。单源 `berry_hdrface::bucket_upper`。
 
-### `Hdr::new() -> Self` `const`
-> hdr | const 构造（无 doc；零桶 + 哨兵 min/max + count 0）。
+### `Hdr::new() -> Self` `const`（re-export）
+> hdr | const 构造（无 doc；零桶 + 哨兵 min/max + count 0）。单源 `berry_hdrface::Hdr`。
 
-### `Hdr::record(&self, value: u64)`
+### `Hdr::record(&self, value: u64)`（re-export）
 > hdr | 记录一个值（热路径：一次 clz + 一次移位 + 四次本核原子 RMW——零分配零 panic）。
 
-### `Hdr::percentile(&self, pm: u64) -> u64`
+### `Hdr::percentile(&self, pm: u64) -> u64`（re-export）
 > hdr | 分位查询（千分比入参：p50 → 500、p99 → 990、p99.9 → 999；零样本 → 0）。
 
-### `Hdr::percentile_rank(&self, rank: u64) -> u64`
+### `Hdr::percentile_rank(&self, rank: u64) -> u64`（re-export）
 > hdr | 第 `rank` 小样本所在桶的保守上界（rank ∈ 1..=N，越界帽到界内；零样本 → 0）。
 
-### `Hdr::total(&self) -> u64`
+### `Hdr::total(&self) -> u64`（re-export）
 > hdr | 总样本数（读者 N 的 Acquire 读最先——模块头读序纪律）。
 
-### `Hdr::min_value(&self) -> u64`
+### `Hdr::min_value(&self) -> u64`（re-export）
 > hdr | 精确最小值（u64::MAX ⇔ 零样本——打印端 n>0 门控后必真值）。
 
-### `Hdr::max_value(&self) -> u64`
+### `Hdr::max_value(&self) -> u64`（re-export）
 > hdr | 精确最大值（0 ⇔ 零样本；原值口径——超 `HDR_MAX_VALUE` = 钳位失真信号）。
 
-### `Hdr::bucket(&self, idx: usize) -> u64`
+### `Hdr::bucket(&self, idx: usize) -> u64`（re-export）
 > hdr | 单桶计数读（dump/导出面原料；越界 → 0）。
 
-### `Hdr::reset(&self)`
+### `Hdr::reset(&self)`（re-export）
 > hdr | 清零回出生态（ktest 清场/基准多轮跑专用——单写者语境调用）。
 
-### `CpuHdr::new() -> Self` `const`
-> hdr | const 构造（无 doc；静态预储 .bss——boot 后永不增长）。
+### `CpuHdr::new() -> Self` `const`（re-export）
+> hdr | const 构造（无 doc；静态预储 .bss——boot 后永不增长）。单源 `berry_hdrface::CpuHdr`。
 
 ### `record_switch_lat(v: u64)`
 > hdr | 热路径写：记一笔本核切换延迟（cpu_id 内读 + 拓扑槽外防御收敛尾槽）。
@@ -523,7 +523,7 @@ HDR 直方图（897 桶对数尺）+ per-CPU 切换/唤醒延迟双路 + 跨核�
 intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧结算。
 
 ### `intent_valid(v: u8) -> bool`
-> intent | intent 值合法域（0x00–0x05；入口治理随声明入口 syscall 落地，判别先冻结）。
+> intent | intent 值合法域（0x00–0x05；入口治理随声明入口 syscall 落地，判别先冻结）。W3-Q13 起判定律单源 `berry_intface::intent_valid`，intent.rs 转为 `pub use` re-export（`berry_sched::intent_valid` 调用路径不变）——本地 pub fn 计数 3→2。
 
 ### `snapshot(t: &Task, now_ns: u64) -> (MsgIntent, SnapOut)`
 > intent | send 侧快照：发送者 `intent_effective` 打包进消息头（fastpath 增量 = 一次读 + 一次原子加）。
@@ -572,11 +572,11 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 | policy.rs | 15 | 二、策略服务 |
 | band.rs | 7 | 三、层级预算 |
 | em.rs + util.rs | 6 + 7 | 四、EAS 能效 |
-| hdr.rs | 20 | 五、测量 |
+| hdr.rs | 8（+`pub use` re-export 族：`bucket_of`/`bucket_upper`/`rank_of`/`Hdr`·`CpuHdr` 全方法单源 `berry_hdrface`） | 五、测量 |
 | task.rs | 5 | 六、任务 |
 | runqueue.rs | 7 | 七、环形队列 |
-| intent.rs | 3 | 八、intent |
+| intent.rs | 2（+`pub use` re-export 族：`intent_valid` 单源 `berry_intface`） | 八、intent |
 | spin.rs | 4 | 附 |
 | class.rs | 2（+trait 5 法） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **147** | ｜ 含 `unsafe` 8、`const` 6、`extern "C"` 4（v1.1 勘误：v1.0 合计行 const 计 5 系笔误——逐条 `const` 标注实为 6 条，机提复核一致；W3-Q6 起含 `intent_settle_current_ext`） |
+| **合计** | **134** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |

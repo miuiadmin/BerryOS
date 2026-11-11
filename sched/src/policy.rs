@@ -43,27 +43,17 @@ use crate::task::{EppHint, Task};
 use berry_hal_aarch64 as hal;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-/// 权重微调包络（±）：注入值由内核**夹紧**到本界内（动作空间③的 min/max
-/// 夹紧——包络是内核执法，不信任注入方自律）。
-pub const WEIGHT_MAX: i32 = 64;
+// ---- 判定面单源（W3-Q20）：常量族与查表/插槽/EPP 打包数学已迁
+// `berry-polface`（host 可测钉板——散列锚点/探测窗不变式/first-wins/
+// 窗满拒收/打包往返 13 测）；此处 re-export 后零第二实现，本文件只剩
+// 存储机械（SNAPS/SHD 三槽双槽区 + 原子发布/hazard-lite/写者锁）。----
+pub use berry_polface::{
+    bucket_of, epp_pack, epp_unpack, lookup_slot_idx, InsertOut, KEY_EMPTY,
+    BUCKETS, EPP_HAS, EPP_VAL, PROBE_MAX, Slot, TBL_MAX, WEIGHT_MAX,
+};
 
-/// 快照桶数（2^8——与 [`bucket_of`] 的移位量 56 绑定，改桶数须同步改散列）。
-const BUCKETS: usize = 256;
-/// 开放寻址线性探测步数上界（首桶 + 7 步；插入/查表同窗——插入必落在查表
-/// 窗内，查表遇空槽早退才可靠，见 [`lookup_o1`]）。
-const PROBE_MAX: usize = 8;
-/// 单次绑定收表上限（装载因子 ≤ 50%——线性探测聚簇概率的上界控制）。
-const TBL_MAX: usize = 128;
 /// [`ACTIVE`] 的哨兵值：三槽 0..=2 之外的 3 = OFF/回退态（指向 [`EMPTY_SNAP`]）。
 const SENTINEL_EMPTY: u32 = 3;
-
-/// [`SnapSlot::epp_flags`] 位定义：bit0 = 带 EPP 覆盖，bit1 = EPP 取值
-/// （0 = Efficiency / 1 = Perf）——`Option<EppHint>` 的两位打包。
-const EPP_HAS: u8 = 1 << 0;
-const EPP_VAL: u8 = 1 << 1;
-
-/// 桶数须为 2 的幂（探测用 `& (BUCKETS-1)` 回绕 + 散列取高 log2 位）。
-const _: () = assert!(BUCKETS.is_power_of_two());
 
 /// 单条策略指令（v1 词汇表：③权重 + ④EPP + ①放置记录）。
 #[derive(Debug, Clone, Copy)]
@@ -88,28 +78,11 @@ pub struct Entry {
 }
 
 // ---- 快照表示（#[repr(C)]：槽内 key 落偏移 0，可按位审计）----
+// 槽值形单源 = `berry_polface::Slot`（W3-Q20 外迁）；本文件以别名消费，
+// 既有代码路径零改动。
 
 /// 快照槽：一条指令的扁平表示（16 字节）。`key == 0` = 空槽。
-#[repr(C)]
-struct SnapSlot {
-    key: u64,
-    weight: i32,
-    placement: u8,
-    /// bit0 = has_epp，bit1 = epp_val（见 [`EPP_HAS`]/[`EPP_VAL`]）。
-    epp_flags: u8,
-    _rsv: u16,
-}
-
-impl SnapSlot {
-    /// 空槽（const 语境可用的全零字面量）。
-    const EMPTY: SnapSlot = SnapSlot {
-        key: 0,
-        weight: 0,
-        placement: 0,
-        epp_flags: 0,
-        _rsv: 0,
-    };
-}
+type SnapSlot = berry_polface::Slot;
 
 /// 策略表快照：发布后**内容不可变**（写者只写非活跃槽——RCU 式换表）。
 #[repr(C)]
@@ -199,12 +172,8 @@ fn policy_unlock() {
     POLICY_LOCK.store(false, Ordering::Release);
 }
 
-/// 黄金比例乘移散列（乘 2^64/φ 取高 8 位 = 桶号）：键位（指针/标签）分布
-/// 不均也摊平；`>> 56` 与 [`BUCKETS`] = 2^8 绑定。
-#[inline]
-fn bucket_of(key: u64) -> usize {
-    (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize
-}
+// bucket_of 单源 = `berry_polface::bucket_of`（上方 re-export 位）；散列
+// 锚点指纹钉板在 polface host 测（改乘数/移位量必红）。
 
 /// 发布新快照（写者协议，三件套②）：扫描选**非活跃且无 hazard** 的槽
 /// 写入 → fence(Release) → ACTIVE.store(Release) 翻转。
@@ -282,52 +251,34 @@ fn active_snap() -> *const Snap {
 /// 早退。**空槽早退可靠性**：插入与查表走同一探测序列、插入落**首个**空槽
 /// → 键在槽 i 当且仅当其探测序列 0..i 全被占——查表先遇空槽即可断缺席。
 fn lookup_o1(snap: &Snap, key: u64) -> Option<&SnapSlot> {
-    if key == 0 {
-        return None; // 哨兵键：不可注入（内核任务 tag 0）
-    }
-    let mut idx = bucket_of(key);
-    for _ in 0..PROBE_MAX {
-        let slot = &snap.slots[idx];
-        if slot.key == key {
-            return Some(slot);
-        }
-        if slot.key == 0 {
-            return None; // 探测序列遇空槽 → 键必不在表内（见上不变式）
-        }
-        idx = (idx + 1) & (BUCKETS - 1); // 2 的幂回绕（无除法）
-    }
-    None // 探测窗尽（表聚簇超窗）——缺席判定的保守侧
+    // 判定律单源 `berry_polface::lookup_slot_idx`（W3-Q20 外迁——探测环
+    // 唯一实现），此处零拷贝壳：切片借入、下标回投引用（生命周期挂
+    // snap，消费点 apply/weight_of 的 &SnapSlot 面不变）。
+    berry_polface::lookup_slot_idx(&snap.slots, key).map(|i| &snap.slots[i])
 }
 
-/// 快照插槽：探测窗内首个空槽写入；重复键 first-wins（旧线性扫 `find`
-/// 语义保持）；窗满拒收返 false。返回是否真插入。
+/// 快照插槽（壳——判定律单源 `berry_polface::insert_slot`，W3-Q20 外迁）：
+/// 探测窗内首个空槽写入；重复键 first-wins；窗满拒收。消费侧按
+/// [`InsertOut`] 三态入账（越包络夹取/窗满拒收的原子计数归本模块——纯面
+/// 无存储）。返回是否真插入。
 fn snap_insert(snap: &mut Snap, key: u64, d: &Directive) -> bool {
-    let mut idx = bucket_of(key);
-    for _ in 0..PROBE_MAX {
-        let slot = &mut snap.slots[idx];
-        if slot.key == key {
-            return false; // 重复键：先到先得
-        }
-        if slot.key == 0 {
-            slot.key = key;
-            // build 点夹紧（第一道；消费点 apply/weight_of 再夹——三点执法）。
-            let clamped = d.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX);
-            if clamped != d.weight {
+    // 判定与写入单源；计数按三态分支（与旧内联实现逐语义对齐）。
+    let out = berry_polface::insert_slot(
+        &mut snap.slots, key, d.weight, d.placement, d.epp,
+    );
+    match out {
+        InsertOut::Inserted { weight } => {
+            if weight != d.weight {
                 CLAMP_WEIGHT.fetch_add(1, Ordering::Relaxed); // 越包络被夹入账
             }
-            slot.weight = clamped;
-            slot.placement = d.placement;
-            slot.epp_flags = match d.epp {
-                None => 0,
-                Some(EppHint::Efficiency) => EPP_HAS,
-                Some(EppHint::Perf) => EPP_HAS | EPP_VAL,
-            };
-            return true;
+            true
         }
-        idx = (idx + 1) & (BUCKETS - 1);
+        InsertOut::Duplicate => false, // 重复键：先到先得（无计数面）
+        InsertOut::ProbeFull => {
+            REJECT_PROBE_FULL.fetch_add(1, Ordering::Relaxed); // 窗满拒收入账
+            false
+        }
     }
-    REJECT_PROBE_FULL.fetch_add(1, Ordering::Relaxed); // 窗满拒收入账
-    false // 探测窗满：拒收（O(1) 查表上界的代价面）
 }
 
 /// 从 `&[Entry]` 构建快照：TBL_MAX 截尾、0 键丢弃、重复/溢出拒收（计数只
@@ -338,7 +289,7 @@ fn build_snap(tbl: &[Entry], gen: u64) -> Snap {
     // 拒收入账：超载截尾（take 前先记——被截掉的每条都是注入方给多的）。
     REJECT_OVERFLOW.fetch_add(tbl.len().saturating_sub(TBL_MAX) as u64, Ordering::Relaxed);
     for e in tbl.iter().take(TBL_MAX) {
-        if e.task_key == 0 {
+        if e.task_key == KEY_EMPTY {
             REJECT_KEY0.fetch_add(1, Ordering::Relaxed); // 哨兵键丢弃入账
             continue; // 哨兵键保留
         }
@@ -448,12 +399,9 @@ pub fn apply(task: &mut Task) {
     let w = slot.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX);
     // 4-3b：策略权重与 PI 捐赠同合成（冻结的 boost 不被 apply 抹平）。
     task.prio_effective = (task.prio_base + w).max(task.pi_inherited);
-    if slot.epp_flags & EPP_HAS != 0 {
-        task.epp = if slot.epp_flags & EPP_VAL != 0 {
-            EppHint::Perf
-        } else {
-            EppHint::Efficiency
-        };
+    // EPP 解码单源 = `berry_polface::epp_unpack`（两位打包律 W3-Q20 外迁）。
+    if let Some(e) = epp_unpack(slot.epp_flags) {
+        task.epp = e;
     }
     // v1.3 EAS-1 首刀（`调点调度-v1.3` §6 placement 第一消费者·基础设施）：
     // ①放置偏置的 TCB 落点——**只存不路由**（唤醒选核的真路由面等

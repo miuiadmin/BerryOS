@@ -163,63 +163,17 @@ impl Drop for Process {
     }
 }
 
-/// 1.1/S1：调度属性声明（ABI `berry_sched_attr` 的内核侧浓缩——布局字段
-/// 见 `调点调度-v1.1.md` §7.2；`flags=0` = 清除覆盖/回继承）。
-///
-/// `Process` 持有的是该进程线程的默认值；`Thread` 持有的是覆盖值。S2/S5
-/// 消费侧（weight/intent/policy/deadline）从 **effective**（默认 ∪ 覆盖）
-/// 读取；S1 只存不执法。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SchedAttr {
-    /// 生效字段位（bit0 weight / bit1 intent / bit2 policy / bit3 freeze_clock /
-    /// bit4 FREEZE_READY / bit5 reserve / bit6 deadline / bit7 budget）。
-    pub flags: u16,
-    pub weight: u32,
-    pub policy: u8,
-    pub intent: u8,
-    pub freeze_clock: u8,
-    pub min_ns: u64,
-    pub max_ns: u64,
-    pub deadline_ns: u64,
-    pub budget_ns: u64,
-    pub period_ns: u64,
-}
-
-impl SchedAttr {
-    /// Process 默认 ∪ Thread 覆盖：位置位取覆盖值，未置位继承默认；
-    /// FREEZE_READY 只可能来自 Thread 覆盖（Process 声明该位非法）。
-    pub fn merge(base: Self, over: Self) -> Self {
-        let mut out = base;
-        out.flags |= over.flags;
-        if over.flags & SA_FLAG_WEIGHT != 0 { out.weight = over.weight; }
-        if over.flags & SA_FLAG_INTENT != 0 { out.intent = over.intent; }
-        if over.flags & SA_FLAG_POLICY != 0 { out.policy = over.policy; }
-        if over.flags & SA_FLAG_FREEZE_CLOCK != 0 { out.freeze_clock = over.freeze_clock; }
-        if over.flags & SA_FLAG_RESERVE != 0 {
-            out.min_ns = over.min_ns;
-            out.max_ns = over.max_ns;
-        }
-        if over.flags & SA_FLAG_DEADLINE != 0 { out.deadline_ns = over.deadline_ns; }
-        if over.flags & SA_FLAG_BUDGET != 0 {
-            out.budget_ns = over.budget_ns;
-            out.period_ns = over.period_ns;
-        }
-        if over.flags & SA_FLAG_FREEZE_READY == 0 {
-            out.flags &= !SA_FLAG_FREEZE_READY;
-        }
-        out
-    }
-}
-
-/// `SchedAttr.flags` 位（ABI §7.2；与 berry-sys 侧同名位语义一致）。
-pub const SA_FLAG_WEIGHT: u16 = 1 << 0;
-pub const SA_FLAG_INTENT: u16 = 1 << 1;
-pub const SA_FLAG_POLICY: u16 = 1 << 2;
-pub const SA_FLAG_FREEZE_CLOCK: u16 = 1 << 3;
-pub const SA_FLAG_FREEZE_READY: u16 = 1 << 4;
-pub const SA_FLAG_RESERVE: u16 = 1 << 5;
-pub const SA_FLAG_DEADLINE: u16 = 1 << 6;
-pub const SA_FLAG_BUDGET: u16 = 1 << 7;
+// ---- 1.1/S1 调度属性声明：位选律单源已迁 `berry-polface`（W3-Q20，
+// host 可测钉板——八位全表/flags=0 回默认/FREEZE_READY 特判/ktest 向量
+// 4 测）；此处 re-export 消费（`crate::process::SchedAttr` 既有引用路径
+// 零改动）。布局字段见 `调点调度-v1.1.md` §7.2；`flags=0` = 清除覆盖/
+// 回继承。`Process` 持默认值、`Thread` 持覆盖值，S2/S5 消费侧从
+// effective（默认 ∪ 覆盖）读取——S1 只存不执法。----
+pub use berry_polface::SchedAttr;
+// SA_FLAG_* 逐名 re-export（不全引 import——FREEZE_CLOCK/RESERVE 在本
+// crate 无消费点，全引成 unused import 告警）。
+pub use berry_polface::{SA_FLAG_WEIGHT, SA_FLAG_INTENT, SA_FLAG_POLICY,
+    SA_FLAG_FREEZE_READY, SA_FLAG_DEADLINE, SA_FLAG_BUDGET};
 
 /// 线程 = 挂在某 Process 下的执行流描述。`process_start` 前不进调度器。
 pub struct Thread {

@@ -518,15 +518,31 @@ test-host:
     # WAIT_ANY 哨兵/fastpath 单等待者资格三律钉板 + 两路语义对齐穷举，
     # host 9 测；谓词单源，sched wake_matching/find_single_waiter 消费）。
     cargo test -p berry-wqmatch --target {{host}}
+    # W3-Q18：berry-dtbface（FDT walker 纯函数面——rd32/cstr_at/prop_u64
+    # 界检读 + find_initrd 迭代 walk 状态机：token 推进律//chosen 深度判/
+    # 4 对齐步进/畸形九态全 None 零 panic，host 13 测；单源 crate，
+    # kernel dtb.rs 壳化消费（boot_probe 物理臂留内核侧））。
+    cargo test -p berry-dtbface --target {{host}}
     # W3-Q3：berry-vmoledger（VMO 页面生命周期簿记纯函数面——提交/归还
     # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
     # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。
     cargo test -p berry-vmoledger --target {{host}}
+    # W3-Q17：berry-vslotface（Vmar 槽位/区间判定律纯函数面——三查判序
+    # 对齐→界→重叠错误码优先级/半开重叠谓词/精确查找 kind 收 Mapped|Demand
+    # 与 Mapped-only 分流/探针命中闭开域钉板，host 12 测；check_slot/
+    # find_exact/find_mapped/demand_index 单源，kernel vmar.rs 壳化消费）。
+    cargo test -p berry-vslotface --target {{host}}
     # W3-Q1：berry-iprofile（intent 六档 IntentProfile 映射表纯函数面——
     # ADR #42 第一段「查表键先于消费者落地」的宿主可测面：两表整表执法/
     # 档位序单调性/LC 铁律三件/maintenance 门控/回退保守性/夹紧包络/
     # sanitize 保守门，host 14 测；EppHint 单源 crate）。
     cargo test -p berry-iprofile --target {{host}}
+    # W3-Q13：berry-intface（intent 随消息传播机制纯函数面——编码域/
+    # snapshot 三态/settle 判序 opt_out→链预算→跳数/每消息重导非单调/
+    # 帽拒不动记录三元组/转发链往返与跳数帽终止/伪 acc 链帽独立闸，
+    # host 18 测；INTENT_* 常量与 snapshot/settle 判定律单源，sched
+    # intent.rs 机械壳 re-export 消费）。
+    cargo test -p berry-intface --target {{host}}
     # W3-Q5：berry-piface（PI 捐赠图纯函数面——donor 五拒/配对律/传播三律
     # 钉板，host 18 测；donor_edge/PI_MAX_HOPS 单源，kernel pi.rs 消费）。
     cargo test -p berry-piface --target {{host}}
@@ -543,11 +559,44 @@ test-host:
     # 预留位别名拒/gen 发行域/表满门值域钉板，host 8 测；encode/decode
     # 单源，kernel handle.rs re-export 消费）。
     cargo test -p berry-hdlface --target {{host}}
+    # W3-Q9：berry-chanface（channel 队列资格判纯函数面——send 参数上限
+    # 律/数组内无重复/容量门/READABLE·WRITABLE 派生位键律钉板，host 8 测；
+    # 判据单源，kernel syscall.rs/channel.rs 消费）。
+    cargo test -p berry-chanface --target {{host}}
     # W3-Q6：berry-itally（intent 档位计数/通胀计数遥测纯函数面——档位
     # 直方六槽/保留域收敛/borrowed==Σ借入不变量/tele: 行格式（纯 ASCII、
     # 非零档省略、u64 极值界）钉板，host 11 测；tally_key/inflate/tally_line
     # 单源，kernel telemetry.rs 计数面 + main.rs tele_dump 行装配消费）。
     cargo test -p berry-itally --target {{host}}
+    cargo test -p berry-sliceface --target {{host}}
+    # W3-Q14：berry-emface（EM 表形状执法 + util EWMA 窗口数学纯函数面
+    # ——em_shape_ok 六拒面/em_domain_from 装配不变量/极值首尾投影/
+    # window_state 翻窗三态判序/ewma_fold 折叠·收敛·死区·钳位/
+    # overutil_judgment 80% 边界两侧 + EM 缺席保守回退钉板，host 6 测；
+    # 形状与判定律单源，sched em.rs/util.rs 机械壳 re-export 消费）。
+    cargo test -p berry-emface --target {{host}}
+    # W3-Q19：berry-bandface（band 预算数学纯函数面——配置三态/首期
+    # deadline 饱和加/首越线单赢家律全域抽查/翻期追赶环跨多期一步追/
+    # 饱和钉 MAX 防死循环/翻期资格门/带成员 deadline 豁免判钉板，
+    # host 6 测；判定律单源，sched band.rs 机械壳 re-export 消费）。
+    cargo test -p berry-bandface --target {{host}}
+    # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
+    # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
+    # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/
+    # build 点夹紧五点/EPP 两位打包往返+域外位/merge 八位全表+FREEZE_READY
+    # 特判+flags=0 回默认钉板，host 14 测；常量族与判定律单源，sched
+    # policy.rs / kernel process.rs 机械壳 re-export 消费）。
+    cargo test -p berry-polface --target {{host}}
+    # W3-Q16：berry-hdrface（HDR 延迟直方图形状与分位数学纯函数面——
+    # 桶映射全域往返/保守上界严格递增/分位秩单式/Hdr 记账·钳位·reset/
+    # 合并读面桶位直和钉板，host 7 测；HDR_* 常量与 bucket_of/bucket_upper/
+    # rank_of/Hdr/CpuHdr 单源，sched hdr.rs 机械壳 re-export 消费）。
+    cargo test -p berry-hdrface --target {{host}}
+    # W3-Q15：berry-hofface（handoff 交接几何纯函数面——probe 对齐/窗界/
+    # version 门 + init_segs 同页自相对按 version 分派/段几何回卷拒 +
+    # gop 四非零门/fmt≤2 钉板，host 12 测；判定律单源，kernel handoff.rs
+    # 判定段换消费，raw 解引用留壳）。
+    cargo test -p berry-hofface --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各

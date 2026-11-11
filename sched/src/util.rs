@@ -20,26 +20,19 @@
 //! 定长数组口径），本核 IRQ 上下文单写者 + 跨核读者（PM/遥测）——纯原子
 //! 静态（无 `static mut`，不入 `tools/writable_globals.txt` 册）；Relaxed
 //! 全序（统计信号无序角色，同 `sched.rs::IRQ_TICKS` 先例）。
+//!
+//! W3-Q14：EWMA 常量与窗口折叠/翻窗判序/overutil 阈值判定律单源已迁
+//! `berry-emface`（host 可测钉板）；本模块保留 per-CPU 原子槽机械，
+//! 判定面消费 emface 纯函数（零第二实现）。
 
 use berry_hal_aarch64 as hal;
+use berry_emface::{ewma_fold, overutil_judgment, window_state, WinState};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-/// EWMA 平滑系数 α = 1/8（`>>`[`EWMA_ALPHA_SHIFT`] 移位实现——no_std 零
-/// 浮点零除法；半衰期 ≈ 5.2 窗）。α 越大跟得越紧、噪声越大。
-pub const EWMA_ALPHA_SHIFT: u32 = 3;
+// ---- EWMA 常量（单源 = berry-emface；此处 re-export 供 kernel/ktest
+// 既有消费面零改动）----
 
-/// util 采样窗口频率（100Hz → ~10ms）。窗长 = 名义翻窗**下限**（防密集
-/// tick——SLEEPQ deadline 醒等早 tick——过折叠）；实际采样跨度见
-/// [`util_tick_window`] 的 elapsed 分母注。
-pub const UTIL_WINDOW_HZ: u64 = 100;
-
-/// 窗长参考锚（QEMU virt 62.5MHz × 10ms = 625_000 VCT cycles）——仅文档
-/// 值，频率**不硬编码**（`timer.rs` 头注纪律）：真窗长运行时按 CNTFRQ
-/// 换算（[`util_window_vct`]）。
-pub const UTIL_WINDOW_VCT_REF: u64 = 625_000;
-
-/// per-CPU 槽数（v1 = 2 核——同 `Topo::capacity` / `PER_CPU_RQ` 定长口径）。
-pub const UTIL_NR_CPU: usize = 2;
+pub use berry_emface::{EWMA_ALPHA_SHIFT, UTIL_NR_CPU, UTIL_WINDOW_HZ, UTIL_WINDOW_VCT_REF};
 
 /// 当前 EWMA 值（0..=1024，PM 读面）。
 static UTIL_EWMA: [AtomicU32; UTIL_NR_CPU] = [const { AtomicU32::new(0) }; UTIL_NR_CPU];
@@ -68,42 +61,34 @@ pub fn util_accumulate(cpu: usize, delta_cycles: u64) {
 /// 窗口到期检查（tick 内调用；设计上 idle 路径亦可调）：到期则折叠一窗
 /// EWMA 并翻窗，未到期零动作。
 ///
+/// 判序/折叠数学单源 `berry_emface`（[`window_state`] 三态 + [`ewma_fold`]）：
 /// `util_raw = min(accum × 1024 / elapsed, 1024)`——分母用**实际 elapsed**
-/// （自上次翻窗），非名义窗长：tick 间隔 > 窗长（SLICE 100ms > 窗 10ms）
-/// 时采样跨度 = 上次翻窗至今，占空比诚实；深睡长 gap 后首窗 elapsed 摊大
-/// → idle 自动稀释为低 util 样本。窗长常量只做最短翻窗间隔。
-///
-/// `ewma = ewma + (util_raw - ewma) >> 3`（α = 1/8 移位零除法；负差分支
-/// 减法同式）。差 < 8 时折叠 0（量化死区 ≤ 7/1024 ≈ 0.7%——对频率信号
-/// 无害，移位实现的代价）。
-///
-/// 首调（start==0）开新窗并**丢弃既往 accum**（半窗账无窗长可比——记进
-/// 首个整窗会虚高首样）；`now < start`（计数器回绕防御，正常不可达）同
-/// 路重开。
+/// （自上次翻窗）非名义窗长；`ewma ± diff>>3`（α = 1/8 移位零除法，
+/// 差 <8 量化死区）。首调（start==0）开新窗并**丢弃既往 accum**；
+/// `now < start`（计数器回绕防御，正常不可达）同路重开。
 pub fn util_tick_window(cpu: usize, now: u64) {
     if cpu >= UTIL_NR_CPU {
         return;
     }
     let start = UTIL_WINDOW_START[cpu].load(Ordering::Relaxed);
-    if start == 0 || now < start {
-        UTIL_ACCUM[cpu].store(0, Ordering::Relaxed);
-        UTIL_WINDOW_START[cpu].store(now, Ordering::Relaxed);
-        return;
+    // 判序（start/now/窗长三输入即够——accum 只进 Fold 载荷，sched 侧
+    // 真值以 swap(0) 原子取走为准，此处传 0 免热路径多一次原子读）。
+    match window_state(start, now, util_window_vct(), 0) {
+        WinState::NewWindow => {
+            UTIL_ACCUM[cpu].store(0, Ordering::Relaxed);
+            UTIL_WINDOW_START[cpu].store(now, Ordering::Relaxed);
+        }
+        WinState::NotDue => {}
+        WinState::Fold { elapsed, .. } => {
+            // swap(0) 原子取走本窗账并清零（与旧实现逐字同款——判序值
+            // 只定资格，真账以 swap 为准）；ewma 折叠数学单源 emface。
+            let accum = UTIL_ACCUM[cpu].swap(0, Ordering::Relaxed);
+            let ewma = UTIL_EWMA[cpu].load(Ordering::Relaxed);
+            let next = ewma_fold(accum, elapsed, ewma);
+            UTIL_EWMA[cpu].store(next, Ordering::Relaxed);
+            UTIL_WINDOW_START[cpu].store(now, Ordering::Relaxed);
+        }
     }
-    let elapsed = now - start;
-    if elapsed < util_window_vct() {
-        return; // 未到期
-    }
-    let accum = UTIL_ACCUM[cpu].swap(0, Ordering::Relaxed);
-    let util_raw = ((accum as u128 * 1024) / (elapsed as u128)).min(1024) as u32;
-    let ewma = UTIL_EWMA[cpu].load(Ordering::Relaxed);
-    let next = if util_raw >= ewma {
-        ewma + ((util_raw - ewma) >> EWMA_ALPHA_SHIFT)
-    } else {
-        ewma - ((ewma - util_raw) >> EWMA_ALPHA_SHIFT)
-    };
-    UTIL_EWMA[cpu].store(next, Ordering::Relaxed);
-    UTIL_WINDOW_START[cpu].store(now, Ordering::Relaxed);
 }
 
 /// PM 消费面：读当前 EWMA（0..=1024——与 `Topo::capacity` / EM capacity
@@ -123,23 +108,17 @@ pub fn cpu_util(cpu: usize) -> u32 {
 // 门控）。EAS 永远是机会主义——饱和系统里能量/放置比较失真（所有候选
 // 都「贵」），省电让位吞吐。
 
-/// overutilized 判定阈值（0..=1024 尺度——80%）：1024 × 0.8 = 819.2 →
-/// 819（整数截断；Linux `sched_capacity_margin` 的 80% 同款口径）。
-pub const OVERUTIL_THRESHOLD: u32 = 819;
+/// overutilized 判定阈值（0..=1024 尺度——80%）。单源 = berry-emface。
+pub use berry_emface::OVERUTIL_THRESHOLD;
 
 /// 指定核是否 overutilized（EAS 回退判据——任一核超阈值即整个调度域
 /// 回退）。判据 = `cpu_util > 域最高容量 × 80%`（严格大于——恰在阈值
-/// 上不算，滞回带留 §7 裁决后续接）。util 与 [`crate::em::
-/// em_max_capacity`] 同尺度（1024 = 满格）直接比较。
+/// 上不算，滞回带留 §7 裁决后续接）——比较律单源 `berry_emface::
+/// overutil_judgment`（EM 未注册钳 1 保守回退在彼处收口）。
 ///
-/// 退化面：EM 未注册（capacity 0 → 钳 1 → 阈值 0）时任何非零 util 即
-/// over——保守侧正确：无能量模型则 EAS 无据可依，本就该回退普通均衡。
 /// 越界 cpu → util 0 → 恒 false（同 [`cpu_util`] 口径）。
 pub fn overutilized(cpu: usize) -> bool {
-    let util = cpu_util(cpu);
-    let cap = crate::em::em_max_capacity(0).max(1); // 域 0 最高容量
-    // util 已是 0..=1024 与 cap 同尺度——直接比较
-    util > (cap * OVERUTIL_THRESHOLD) / 1024
+    overutil_judgment(cpu_util(cpu), crate::em::em_max_capacity(0))
 }
 
 /// 全域 overutilized（任一核超 → true——Linux EAS 全域回退口径：
