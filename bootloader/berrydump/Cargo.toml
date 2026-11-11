@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["app"]
+
+# berryboot 同形 release 形态（V-0a 产链纪律）：EFI 应用体积/链接行为
+# 复刻既有引导链——panic=abort（无 unwind 面）、z 级优化 + fat LTO。
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

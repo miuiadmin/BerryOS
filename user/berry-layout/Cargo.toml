@@ -1,0 +1,16 @@
+# berry-layout —— BerryOS 桌面布局 JSON v1 纯函数解析/发射 crate（GUI-8，
+# docs/GUI-8实施侦察-2026-11.md §3.4；数据模型照抄 OpenHarmony LNCH 逐格
+# 一行，介质换 FAT12 卷根 LAYOUT.JSN）。「解析器即产品」家族（第 9 例，
+# manifest 第 8 例之后）：零分配/零 unsafe/零依赖/输入只借用。双消费 =
+# GUI-8 launcher 读写 LAYOUT.JSN（独立小工作区编 musl target，同 stdhello
+# 不入 members）+ AI 生成面（canonical 镜像义务——check_canonical 门禁）。
+# cfg_attr(not(test), no_std)：lib 按 no_std 编（消费面 none/musl target 皆
+# 可挂），test 构建放开 std 跑默认 harness——家族既有形态。
+[package]
+name = "berry-layout"
+version = "0.1.0"
+edition = "2021"
+description = "BerryOS desktop layout JSON v1: pure parser/emitter with canonical byte form (GUI-8)"
+license = "Apache-2.0"
+
+[dependencies]

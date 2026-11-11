@@ -1,0 +1,24 @@
+[package]
+name = "berry-mmap"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
+# A7-1（docs/事件循环A7设计草案.md §3.1 + §7 落地追记）：mmap 匿名档
+# 簿记纯函数 crate——定容 region 表 + VA 窗 first-fit 底起分配（munmap
+# 空洞复用，F2 裁定）+ 页取整。
+# `berry-tls` 同款
+# `cfg_attr(not(test), no_std)`：库本体 no_std（berry-libc 在 none/musl
+# 双 target 下消费），test 构建放开 std 仅为默认测试挂具。
+#
+# 为什么独立 crate（berry-tls/berry-fsclient 先例）：berry-libc 定义
+# ~百枚 libc 同名符号，host 测试二进制里对 libSystem 的 write 发生符号
+# 插入（interpose）——纯面独立零依赖 crate 后 host 测试不链任何 libc
+# 符号面。
+description = "BerryOS anonymous-mmap bookkeeping pure functions (region table + VA-window first-fit allocator with hole reuse)"
+license = "Apache-2.0"
+repository = "https://github.com/miuiadmin/BerryOS"
+readme = "README.md"
+keywords = ["berryos", "mmap", "memory-mapping", "virtual-memory", "no-std"]
+categories = ["memory-management", "no-std"]
+
+[dependencies]

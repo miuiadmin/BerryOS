@@ -1,0 +1,14 @@
+[package]
+name = "berry-telface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_telface"
+path = "src/lib.rs"
+
+# 无外部依赖：telemetry 行编码与聚合纯函数面（host 单测走 `cfg(test)` 链
+# std，形态抄 berry-hdlface / berry-chanface）。kernel crate 消费
+# （name_id/桶律/分位秩/行拼器单源迁此，kernel telemetry.rs + user.rs
+# 消费——hdlface encode/decode 迁移同款纪律）。

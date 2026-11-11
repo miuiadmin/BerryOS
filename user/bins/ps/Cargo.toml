@@ -1,0 +1,26 @@
+[package]
+name = "ps"
+version = "0.1.0"
+edition = "2021"
+
+# C-3 段①（docs/VM里程碑设计草案.md §C-3）：进程表查询客户端——svcmgr
+# 拉起账本的渲染面。musl std 独立小工作区（grep/stdhello 同链），deps =
+# berry-libc（gift2_h 读 env 块 gift[2] = svcmgr 预建查询端 ps_b）+
+# berry-sys（channel/wait/clock 直调，bsh 同款）+ berry-psproto（协议）。
+# 单 op PS_LIST 严格串行 RPC；行面 `{name} alive|exited(code)|spawnfail`
+# 经私有 stdout 收集（svcmgr ps_selftest 断言家常驻名单打 `PS ok n=`）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-psproto = { path = "../../berry-psproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,14 @@
+[package]
+name = "berry-hofface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_hofface"
+path = "src/lib.rs"
+
+# 无外部依赖：handoff probe/init_segs 几何与界检纯函数面（host 单测走
+# `cfg(test)` 链 std，形态抄 berry-evface / berry-hdlface）。kernel crate
+# 消费（probe 界检判/init_segs 几何判/gop_info 边界判单源迁此，kernel
+# handoff.rs 保留 raw 解引用机械——hdlface 迁位域同款纪律）。

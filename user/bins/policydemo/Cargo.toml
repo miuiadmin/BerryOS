@@ -1,0 +1,14 @@
+[package]
+name = "policydemo"
+version = "0.1.0"
+edition = "2021"
+# S6 消费面 demo：berry_policy_bind(0x83) 首个用户态消费者——
+# STATUS(op=2) 对账自身策略键 → 真实键 1 条表（weight=32）提交 +
+# 世代协议验证（同 gen 重放必 -EAGAIN）。
+# hello 同链（rootfs ELF：x0 = env 通道端，console 经 env 块 gift 迁入，
+# 自旋重发 EBUSY）；标记 POLICYDEMO ok / POLICYDEMO FAIL，退出码 0/1。
+description = "BerryOS policy_bind (0x83) demo: self-key via STATUS + one-entry table + gen replay check"
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }

@@ -1,0 +1,5 @@
+# 显式钉本工作区目标（与根仓一致；根 .cargo/config.toml 锁 build.target
+# 且 config 发现跨 workspace 边界仍命中——P7-x0 实踩，这里自证不靠 inheritance）。
+# 产物路径：recipe 显式 CARGO_TARGET_DIR=cargo-target（本地隔离，见 .gitignore）。
+[build]
+target = "aarch64-unknown-none"

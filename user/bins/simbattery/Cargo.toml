@@ -1,0 +1,26 @@
+[package]
+name = "simbattery"
+version = "0.1.0"
+edition = "2021"
+
+# sim-S1 M2-b（docs/sim设备通道与契约设计-v1.1.md §6）：sim 电池快照注入
+# 服务——svcmgr 预拉（门 = svcmgr 表 0x0001_0005 在席 = boot 侧 fw_cfg
+# `opt/berry/simdev` 门开相），fd0 = 帧通道 RECV 端（task_simcon 转发的
+# UART1 字节流）、gift[0] = ACK 通道 SEND 端（9B 回程）、stdout = console
+# 别名。契约单源 = berry-pwproto（M1）；服务只持 seq 状态机与标记。
+# stdhello 同链独立小工作区（musl target + berry-libc shim + berry-ld）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-pwproto = { path = "../../berry-pwproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

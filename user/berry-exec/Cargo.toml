@@ -1,0 +1,21 @@
+[package]
+name = "berry-exec"
+version = "0.1.0"
+edition = "2021"
+
+# A-2：rootfs 程序拉起链（spawn_rootfs_elf + cpio_find）——svcmgr/bsh 共享
+# （「不长第二套」）。no_std：none target（svcmgr，主工作区成员）与 musl
+# target（bsh，独立小工作区经 path 依赖）双消费。
+license = "Apache-2.0"
+
+[dependencies]
+berry-sys = { path = "../berry-sys" }
+berry-loader = { path = "../berry-loader" }
+# X-5：窗规划纯面在 berry-winplan（host 可测），本 crate 经 FFI 桥单源消费。
+berry-winplan = { path = "../berry-winplan" }
+# argv blob 组装律纯面在 berry-argv（host 可测，同 winplan 纪律），此处单源引回。
+berry-argv = { path = "../berry-argv" }
+# spawn 几何前置门纯面在 berry-spawngeo（映幅帽/栈顶/MMIO 重叠三段，host
+# 可测，同 winplan 纪律），此处单源引回（FFI 桥：窗口幅 vmo_get_size）。
+berry-spawngeo = { path = "../berry-spawngeo" }
+# （release profile 沿用工作区根定义——成员内 profile 不生效。）

@@ -1,0 +1,15 @@
+[package]
+name = "berry-bandface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_bandface"
+path = "src/lib.rs"
+
+# W3-Q19：band 预算数学纯函数面（首越线单赢家/翻期追赶环/CAS 防双翻判序/
+# 配置三态/带成员豁免判）——零依赖纯值域判定律，host 可测钉板；sched
+# band.rs 机械壳消费即唯一事实源（BANDS static mut + CONSUMED/DEADLINES
+# 原子账 + throttle/unthrottle 环扫裸指针机械留 sched，形态抄
+# berry-emface / berry-dtbface）。

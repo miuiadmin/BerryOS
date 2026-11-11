@@ -1,0 +1,24 @@
+[package]
+name = "grep"
+version = "0.1.0"
+edition = "2021"
+
+# C-2c text 批自写三件之一（上游锁步不可行性记录见 Cargo.toml 尾注）：
+# 字面子串 grep——GNU grep `-F` 固定串语义为默认（BRE/ERE 不做，语义
+# 子集在 `--help` 与收官文档明示）；旗标面 -i/-v/-c/-n/-q/-l + 多文件
+# + stdin 回落（管道面主消费：`cat f | grep x`）。
+# 为什么自写：uu_grep 0.2.0（crates.io 线顶）硬依赖 onig/onig_sys——
+# Oniguruma C 正则库需 C 工具链，与 berry-ld 纯 Rust 链结构性不兼容
+# （2026-10-25 /tmp probe 实证：无 feature 门可关）。
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

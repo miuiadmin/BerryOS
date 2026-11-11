@@ -1,0 +1,17 @@
+[app]
+id = "CAMERA"
+version = "0.1.0"
+entry = "bin/camera"
+type = "app"
+intent = "utility"
+
+[capabilities]
+console = false
+
+[runtime]
+stack_pages = 8
+
+[ui]
+icon = "icons/icon.byi"
+label = "Camera"
+views = "views/main.bui"

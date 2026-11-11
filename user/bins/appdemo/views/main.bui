@@ -1,0 +1,3 @@
+# appdemo 主视图（GUI-7 声明式资源位占位件）
+# berryui DSL 定形于 SDK-2；v1 阶段本文件由 mkapp 原样打包、launcher 不解释。
+# manifest [ui] views = "views/main.bui" 指向本文件。

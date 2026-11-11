@@ -1,0 +1,28 @@
+[package]
+name = "berry-strmem"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
+
+# mem/str 族纯函数 crate：memcpy/memmove/memset（volatile 纪律——朴素
+# Rust 循环被 LLVM 惯用形识别升格回对 libc 同名符号的自递归调用，
+# 逐字节/逐 u64 read_volatile/write_volatile 不可识别）+ memcmp/bcmp/
+# strlen/strnlen/strcmp/strchr/strrchr/strncpy 的字节序语义 + atoi 溢出
+# 夹紧。自 berry-libc strmem.rs 外迁（berry-tls/mmap/signal/winplan/
+# argv/spawngeo「纯面外迁」先例族第 7 例）：
+# berry-libc 结构性不可 `cargo test`（crt0 global_asm ADRP 为 ELF 目标
+# 写法，darwin 汇编器拒非 GOT 形式——lib.rs errno_probe 头注实测在册），
+# strmem 面因此零测试；外迁后 berry-libc strmem.rs 仅留薄 #[no_mangle]
+# C-ABI 壳（对外符号面零漂移），语义单源在本 crate，host 测试经 justfile
+# test-host 显式行跑。
+# `berry-mmap` 同款 `cfg_attr(not(test), no_std)`：库本体 no_std（
+# berry-libc 在 none/musl 双 target 下消费），test 构建放开 std 仅为
+# 默认测试挂具。
+description = "BerryOS libc mem/str family semantics as pure functions (volatile-disciplined copy/fill + byte-order compare/scan + atoi clamp), host-testable single source"
+license = "Apache-2.0"
+repository = "https://github.com/miuiadmin/BerryOS"
+readme = "README.md"
+keywords = ["berryos", "libc", "memcpy", "no-std", "pure-functions"]
+categories = ["no-std", "memory-management"]
+
+[dependencies]

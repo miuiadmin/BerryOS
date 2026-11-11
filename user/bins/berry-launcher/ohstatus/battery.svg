@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="45" viewBox="0 0 64 45">
+  <!-- BerryOS 按 OpenHarmony batteryPic 官方几何复刻：body 18.5x11vp、
+       gap 1.2vp、head 1.5x5.75vp，按 3x 密度折算。满电量 = 白色实心。 -->
+  <rect x="0" y="6" width="56" height="33" rx="8" fill="white"/>
+  <rect x="60" y="14" width="4" height="17" rx="4" fill="white"/>
+</svg>

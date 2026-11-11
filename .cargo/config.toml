@@ -1,0 +1,24 @@
+[build]
+target = "aarch64-unknown-none"
+
+# `cargo run` 直跑 QEMU（justfile 另有完整命令；此处仅为便利）。
+[target.aarch64-unknown-none]
+# 不用 -bios none：QEMU ≥11.x 把 "none" 当文件名，报
+# `Could not find ROM image 'none'`。virt + -kernel ELF 直加载、默认起始 EL1。
+runner = "qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 128M -nographic -kernel"
+# 链接脚本经 `kernel/build.rs` 注入（见那里）；不在此用 rustflags。
+# 注：`aarch64-unknown-none` 默认即用捆绑 rust-lld（self-contained），无需显式 `-C link-self-contained`
+# ——该目标反而会因「不支持该选项」报错，故不设 rustflags。
+# GUI-0（2026-10-29）内核 SIMD-free 合同：禁 FP/NEON codegen（本仓 crate 全 GPR——
+# 块拷贝/比较不得落 q 寄存器，否则 EL0 任务的 FPSIMD 态在 syscall/IRQ 路径被踩。
+# Linux -mgeneral-regs-only 同法；asm! 显式 q 寄存器不受此旗影响（switch/ktest 金丝雀照用）。
+# 另两机制：kernel/src/mem.rs 整数版 mem*/bcmp 覆写（挤掉 compiler-builtins——
+# 「哪些件今天恰好是 NEON」不进合同，rustflags 对预编译 rlib 无效、仓无钉版，
+# 防线只能落链接期强符号）+ ktest FP canary 每次开机执法。
+# host 测试（--target host）不吃本节旗。
+# **旗作用域**：config 发现按 CWD 向上合并——本节名义「内核仓」、实际半径 = 仓内
+# 一切 aarch64-unknown-none 构建。豁免靠 env RUSTFLAGS 优先级顶掉：build-user/
+# build-boot `export RUSTFLAGS=""`（user 侧 none-target 家族保留 NEON——EL0 FP 态
+# 已全量保存兜底、GUI 光栅正要用；BerryBoot = EFI 应用非内核）；drivers/musl 面
+# 显式 linker RUSTFLAGS 天然免疫。**新加仓内 none-target 构建链时自查这层**。
+rustflags = ["-C", "target-feature=-fp-armv8,-neon"]

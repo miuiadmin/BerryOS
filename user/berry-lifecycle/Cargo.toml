@@ -1,0 +1,28 @@
+[package]
+name = "berry-lifecycle"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
+# app-2（docs/app-2实施设计草案-v1.0.md §2.2/§3）：生命周期三口纯函数
+# 底座——32B blob 容器头 v1 编解码（magic/ver/hlen/counter/payload_len/
+# crc32 布局立法 §3.1）/ hlen 分派读侧（v0=12B 旧档兼容 + v1=32B + 坏档
+# 四型 BadFmt §3.2）/ CRC32 bitwise 实现（poly 0xEDB88320——
+# tools/berry/src/png.rs Crc32 同算法镜像，单源问题以 host 测向量钉板：
+# "123456789" → 0xCBF43926 + 金件 blob 逐字节快照）/ 8B 帧编解码
+# （帧⇄(tag,counter)，tag u8 + pad 3B 恒 0 + counter u32 LE）/ counter
+# 代持状态机（Restored(N)→N+1 / beat→+1 / save→写头取当拍值 §2.2）。
+# 消费 = berry-libc lifecycle.rs（syscall 胶水面：句柄获取 + 收发 + 幕序
+# 编排）；apptomb（musl 形）经 berry-libc 间接消费——三口现役首消费者。
+# `berry-tls`/`berry-signal` 同款 `cfg_attr(not(test), no_std)`：库本体
+# no_std（berry-libc 在 none/musl 双 target 下消费），test 构建放开 std
+# 仅为默认测试挂具。独立纯 crate 形态 = host 测试零 libc 符号面
+# （berry-libc 的 libc 同名符号对 libSystem 符号插入——见 berry-tls
+# Cargo.toml 头注先例）。
+description = "BerryOS app lifecycle pure functions (32B state-blob container v1 codec + CRC32 + hlen dispatch + 8B frame codec + counter state machine)"
+license = "Apache-2.0"
+repository = "https://github.com/miuiadmin/BerryOS"
+readme = "README.md"
+keywords = ["berryos", "lifecycle", "tombstone", "crc32", "no-std"]
+categories = ["no-std", "os"]
+
+[dependencies]

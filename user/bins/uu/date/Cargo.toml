@@ -1,0 +1,14 @@
+[package]
+name = "date"
+version = "0.1.0"
+edition = "2021"
+
+# C-2c text 批：uu_date =0.12.0 锁步薄 harness（C-2a 家族同型）。ICU4X
+# 面重（musl release ≈1.9MiB——text 批容量腿 48MiB 盘的主增量），locale
+# 符号经 berry-libc nl_langinfo/setlocale 桩应答（C locale）。
+license = "Apache-2.0"
+
+[dependencies]
+rustix.workspace = true
+uu_date = "=0.12.0"
+berry-libc = { path = "../../../berry-libc" }

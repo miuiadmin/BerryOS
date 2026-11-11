@@ -1,0 +1,16 @@
+[package]
+name = "berry-fstree"
+version = "0.1.0"
+edition = "2021"
+# C-0 刀 2（docs/VM里程碑设计草案.md §C-0）：fsmgr RAM overlay 目录树纯函数
+# crate——v1 平面表 `Vec<(名, 内容)>` 升 NUL 分段路径树。`berry-fsproto`/
+# `berry-fatfs` 先例（「解析器即产品」第 9 例的存储结构面）：库本体 no_std
+# （用户态 workspace 成员在 aarch64-unknown-none 下构建，`cfg_attr(not(test),
+# no_std)`，test 构建放开 std 仅为默认测试挂具）。单消费 = fsmgr RAM 写通道
+# （独立小工作区编 musl target，同 stdhello/bsh 不入 workspace members）；
+# 帽常量与状态码全部从 berry-fsproto 单源引（「不长第二套」）。
+description = "BerryOS fsmgr RAM overlay directory tree: pure NUL-path put/trunc/get/mkdir/unlink/readdir/stat (C-0 knife 2)"
+license = "Apache-2.0"
+
+[dependencies]
+berry-fsproto = { path = "../berry-fsproto" }

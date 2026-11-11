@@ -1,0 +1,15 @@
+[package]
+name = "berrydump"
+version = "0.1.0"
+edition = "2021"
+
+# EFI 应用镜像形态（berryboot/app 同款）：staticlib 出静态库，链接/转
+# PE 由 build.sh 完成（产链纪律 = 链接器形态单一事实源在脚本）。
+license = "Apache-2.0"
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# 跨 workspace path dep（相对本 crate 目录解析；合法——berry-efi 是纯
+# 数据 crate 无构建副作用）；V-5a 增量面（配置表/PciIo/GUID）与本 app 同刀落。
+berry-efi = { path = "../../berryboot/berry-efi" }

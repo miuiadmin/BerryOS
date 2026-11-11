@@ -1,0 +1,37 @@
+[package]
+name = "berry-launcher"
+version = "0.1.0"
+edition = "2021"
+
+# GUI-8 段③（docs/GUI-8实施设计草案.md §4 段③）：桌面 launcher 主体——
+# guifbd 同形独立小工作区（空 [workspace] escape 根 workspace，不入
+# user/Cargo.toml members；musl target + berry-libc shim + berry-ld 链）。
+# 前置 wiring 刀（gui3）面 = wm 域门控 + GETINFO 握手 + 单行 LAUNCH 非
+# 标记日志后 park；段③ 起长成模块树：desktop（静态面建树：OH 官方壁纸/
+# 状态栏/SwipePager 四页 Grid 5×4/常驻 Dock/a11y 骨架）+ icons（app 注册表 +
+# IconSource 供件桥）+ layout_io（LAYOUT.JSN 读写三约束自愈）+
+# frameloop（长活帧循环——W2 填充，W1 静默 park）。依赖接线四件
+# （gfxdemo 先例证 no_std rlib 入 musl std 程序）：berry-ui（引擎——
+# retained 树/SwipePager/a11y 侧表/IconSource 缝）、berry-gfx（Color/
+# FontSize 渲染常量单源）、berry-layout（布局 JSON parse/emit 单源——
+# 裁决三 PAGE_MAX=4 权威）、berry-appproto（app 域 RPC wire——W1 只挂
+# 编译面，APP_LIST/APP_SPAWN 接线归 W2）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-layout = { path = "../../berry-layout" }
+berry-appproto = { path = "../../berry-appproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

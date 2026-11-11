@@ -1,0 +1,39 @@
+{
+  "pick": {
+    "cycles": 19,
+    "n": 1000
+  },
+  "freeze": {
+    "cycles": 6,
+    "n": 200
+  },
+  "billing": {
+    "cycles": 2,
+    "n": 1000
+  },
+  "policy": {
+    "base": 7,
+    "empty": 6,
+    "full": 8,
+    "delta_pct": 33.3
+  },
+  "fairness": {
+    "spread": 0,
+    "hits": [
+      25,
+      25,
+      25,
+      25
+    ]
+  },
+  "divergence": {
+    "div": 6,
+    "eval": 12,
+    "rate_pct": 50.0
+  },
+  "wake": {
+    "p50": 62,
+    "p99": 62,
+    "n": 128
+  }
+}

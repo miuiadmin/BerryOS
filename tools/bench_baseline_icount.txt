@@ -1,0 +1,19 @@
+# BerryOS -icount 确定性通道基线（B-2，`python3 tools/bench.py --icount`）。
+# 口径 = CNTVCT 周期数在 -icount shift=1 虚拟时钟下的**指令数代理**
+# （每指令 2ns，折算 CNTVCT ≈0.125 cyc/instr）——与 tools/bench_baseline.txt
+# （TCG 实时通道）**跨模式不可比**；跨机/跨 QEMU 版本绝对值亦不可比
+# （§2 铁律 1）——CI 与他人 clone 首跑 `python3 tools/bench.py --icount --update` 自立
+# （无基线 = 只出表，不算过门禁）。
+# 刷新：python3 tools/bench.py --icount --update（整文件单段）。
+# L2 门禁形态单一事实源 = tools/bench.py 的 ICOUNT_TOL 常量（本文件只做
+# 镜像引用——防双源漂移）。
+# cntvct_pair=0 是合法值非故障：4096 次循环骨架在 0.125 cyc/instr 量化
+# 粒度下 <1 cyc/op 整除落地 = 0（「净成本 = 其余项 − cntvct_pair」心算
+# 口径仍成立——0 地板）。
+# 史档/勘误记事 → tools/bench_baseline_icount.notes.md（--update 不触史，2026-11-04 m1 迁移）。
+cntvct_pair,4096,0
+frame_alloc4k,1024,82
+frame_alloc64k,256,37
+handle_evt,1024,165
+vmo_commit1p,256,1617
+vmo_rw4k,128,6937

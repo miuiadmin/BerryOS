@@ -1,0 +1,25 @@
+[package]
+name = "bench1"
+version = "0.1.0"
+edition = "2021"
+
+# B-1 EL0 用户态基准（docs/基准与压力测试设计.md §8）：stdhello 同款独立
+# 小工作区（嵌套 [workspace] 自动脱离 user/ 主工作区——bsh/fail 同例，
+# 不入 members 也不入 exclude）；musl target + berry-ld 链由 justfile
+# build-user 注入，无 build.rs / 无 elf2flat（std ELF 本体直进 cpio）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+# 链接种子（crt0 含 `_start`）——stdhello 同款 #[used] 面。
+berry-libc = { path = "../../berry-libc" }
+# 四项基准直调 syscall（clock_read/vmo/channel/event 全自造——零新管道）。
+berry-sys = { path = "../../berry-sys" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

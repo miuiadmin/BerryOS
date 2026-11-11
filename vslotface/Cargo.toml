@@ -1,0 +1,8 @@
+[package]
+name = "berry-vslotface"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+description = "Vmar 槽位/区间判定律纯面：三查判序/精确查找/探针命中（W3-Q17）"
+
+[dependencies]

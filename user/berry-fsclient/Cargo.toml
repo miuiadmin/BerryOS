@@ -1,0 +1,34 @@
+[package]
+name = "berry-fsclient"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
+# C-1 刀 1（docs/VM里程碑设计草案.md §C-1）：fs 服务客户端 crate，两层——
+# ① 会话机（`src/rpc.rs`，cfg(not(test))）：bsh 的 fs_rpc 会话核心迁居（毒化
+# 位 / 90s·10s 双帽 / EBUSY-阻塞重试形态，语义逐字保真）+ fd 面分片 op
+# （put_chunk/commit/get_chunk/lookup/mkdir/unlink/readdir/stat）——真消费
+# = berry-libc（刀 2 fd 3+ 文件面）；host 测试不链接 syscall 面（berry-sys
+# 符号在宿主不存在），none/musl target 编译由 workspace `cargo build`
+# （build-user pass2）覆盖。② 纯函数面（lib.rs）：fd 表状态机 / cwd 拼接 /
+# stat 整形 / dirent 解码 / ST→FsErr 映射，host 测试（`berry-fsproto` 纯
+# 函数 crate 先例）。帽常量与状态码自 berry-fsproto 单源引（「不长第二套」）；
+# 刀 1 无人消费（bsh 刀 4 才删自有面改经 libc）——smoke 零漂移即验收。
+description = "BerryOS filesystem client: RPC session core + pure fd-table/cwd/stat/dirent faces for the libc file layer"
+license = "Apache-2.0"
+repository = "https://github.com/miuiadmin/BerryOS"
+readme = "README.md"
+keywords = ["berryos", "filesystem", "rpc", "client", "no-std"]
+categories = ["api-bindings", "filesystem"]
+# docs.rs（双镜头审查 F2）：经传递依赖 berry-sys 带 aarch64 专属 asm，host
+# （x86_64）文档构建结构性不可行——targets 覆盖后 docs.rs 以首元素为默认
+# 目标、host 不再构建（docs.rs/about/metadata 语义，2026-10-30 核验）。
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none", "aarch64-unknown-linux-musl"]
+
+[dependencies]
+berry-sys = { path = "../berry-sys", version = "0.1.0" }
+berry-fsproto = { path = "../berry-fsproto", version = "0.1.0" }
+# A3-2：netd ST 码/会话容量/POLL 旗单源引（socket RPC 语义纯函数面
+# poll_revents/sock_rpc_errno 的 wire 侧事实源——「不长第二套」；帽常量
+# 自 berry-fsproto 单源引的同族纪律）。
+berry-netdproto = { path = "../berry-netdproto", version = "0.1.0" }

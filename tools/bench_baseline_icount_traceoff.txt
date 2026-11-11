@@ -1,0 +1,18 @@
+# BerryOS -icount 确定性通道 **trace 记录面关** 臂基线（G3-4b 双跑，
+# `python3 tools/bench.py --trace-dual`；fw_cfg opt/berry/trace=0）。
+# 口径 = CNTVCT 周期数在 -icount shift=1 虚拟时钟下的指令数代理
+# （每指令 2ns，折算 ≈0.125 cyc/instr）——与 tools/bench_baseline.txt
+# （实时）跨模式、与 bench_baseline_icount.txt（on 臂）**跨配置**、
+# 跨机三态皆不可比（§2 铁律 1）。
+# 结构性零足迹：bench 六窗前置调度器纪元，遥测钩子窗口内不发射——
+# off 臂值 = on 臂值的镜像（关-开差恒 0，TRACE_CAP=0.0 执法）；本文件
+# 存在的意义 = off 宇宙指令流的独立漂移绊线（门面回退/记录面让位
+# 过宽都会在此先红）。
+# 刷新：python3 tools/bench.py --trace-dual --update（on 家族文件随同刷）。
+# 史档/勘误记事 → tools/bench_baseline_icount.notes.md（on/off 家族共册）。
+cntvct_pair,4096,0
+frame_alloc4k,1024,82
+frame_alloc64k,256,37
+handle_evt,1024,165
+vmo_commit1p,256,1617
+vmo_rw4k,128,6937

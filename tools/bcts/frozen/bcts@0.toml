@@ -1,0 +1,559 @@
+# BCTS 冻结测试件清单（发布后只读；作废走台账 add-only）——schema 全文照搬
+# `docs/BCTS兼容性测试套件设计-v1.0.md` §4.1（预 ADR #84）。
+# v0 首冻件（Tier 1）＝现役 smoke 标记集机械提取：单源 tools/markers.sh
+# （blob 5f4a00f0ae8c），裸相 32（MARKERS）＋ rootfs 相 54（ROOTFS_MARKERS）
+# ＋ RX 注入专属 2（RX_MARKERS）＝ 88 ＝ tier1_floor（设计稿 §3.2 宽口径：
+# just smoke 八跑是回放执行单元，冻结件按执行单元整体冻结）。
+# platform_revision：V9 预埋 → 一八四起取平台 level（PR≡level 三方联动——tools/mkimage.py
+# build_manifest 缺省 0）；文件名与字段冗余自证（设计稿 §2.4-1）。
+# abi_snapshot：v0 锚定现役单源 tools/abi.toml（hash 钉同一冻结点）；快照
+# 文件制 abi@<short-sha>.toml 随 SDK-2 双轨 §四落地后切换，语义不变。
+# 首冻点口径 ＝ 首个带 platform_revision 的发版（设计稿 §2.5，d2c7354 V13
+# 组装件）；标记集提取树 ＝ frozen_at 所指 commit（markers.sh blob 同树）。
+schema = 1
+suite = "bcts"
+platform_revision = 0
+frozen_at = "02501ab42802cfb7b7a67c4b0cd53d18327e76a1"
+abi_snapshot = "tools/abi.toml"
+abi_snapshot_hash = "sha256:438e5d538e913b51d07ea223e0d6242efe2a0ec91c3b937a02266f14f1a85e57"
+tier1_floor = 88
+
+# —— 裸相 32（MARKERS；boot 全链）——
+[[marker]]
+id = "bare-01"
+expect = "BerryOS boot"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-02"
+expect = "KVA ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-03"
+expect = "GIC ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-04"
+expect = "FRAME ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-05"
+expect = "HEAP ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-06"
+expect = "SYSCALL ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-07"
+expect = "TASK ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-08"
+expect = "FP ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-09"
+expect = "ASPACE ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-10"
+expect = "VMO ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-11"
+expect = "HANDLE ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-12"
+expect = "POLICY ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-13"
+expect = "ktest done"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-14"
+expect = "BENCHXH ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-15"
+expect = "BENCH ok n=6"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-16"
+expect = "BENCHWAKE n="
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-17"
+expect = "G1.5 ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-18"
+expect = "WAKESRC acct="
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-19"
+expect = "BLOCK ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-20"
+expect = "WAIT ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-21"
+expect = "CHAIN ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-22"
+expect = "MANY ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-23"
+expect = "PI ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-24"
+expect = "INTENT ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-25"
+expect = "FAST ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-26"
+expect = "SVC ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-27"
+expect = "AIDEMO ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-28"
+expect = "DEMO ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-29"
+expect = "DPG ok"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-30"
+expect = "FRZCYC ok r=2"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-31"
+expect = "PSCI susp=0"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "bare-32"
+expect = "PWRDEG ok d=1"
+phase = "bare"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+
+# —— rootfs 相 54（ROOTFS_MARKERS；含 RX 相复跑同集）——
+[[marker]]
+id = "rootfs-01"
+expect = "ROOTFS ok src="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-02"
+expect = "ROOTFS vmo="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-03"
+expect = "rootfs hello"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-04"
+expect = "ECO ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-05"
+expect = "STD ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-06"
+expect = "STD err ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-07"
+expect = "FILE ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-08"
+expect = "HEXYL ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-09"
+expect = "BSH ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-10"
+expect = "EXIT ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-11"
+expect = "PIPE ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-12"
+expect = "FS ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-13"
+expect = "VIRTIO ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-14"
+expect = "VBLK ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-15"
+expect = "BLKD ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-16"
+expect = "FAT ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-17"
+expect = "FATW ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-18"
+expect = "NET ok ping="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-19"
+expect = "DNS ok addr="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-20"
+expect = "TCP ok echo="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-21"
+expect = "LSN ok n=7"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-22"
+expect = "TCPS ok echo="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-23"
+expect = "APP ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-24"
+expect = "APPUI ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-25"
+expect = "DIR ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-26"
+expect = "CD ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-27"
+expect = "U1 ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-28"
+expect = "U2 ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-29"
+expect = "U3 ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-30"
+expect = "B1 ok n=4"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-31"
+expect = "DF ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-32"
+expect = "U4 ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-33"
+expect = "TAB ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-34"
+expect = "INT ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-35"
+expect = "POLL ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-36"
+expect = "EVS ok n=2"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-37"
+expect = "SKT ok n=3"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-38"
+expect = "EPL ok n=8"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-39"
+expect = "NETS ok n=2"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-40"
+expect = "MMP ok n=9"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-41"
+expect = "CLK ok n=6"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-42"
+expect = "SIG ok n=6"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-43"
+expect = "PS ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-44"
+expect = "BC ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-45"
+expect = "M3DEMO ok n=5"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-46"
+expect = "THR ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-47"
+expect = "FRZ ok n=2"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-48"
+expect = "DPGP ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-49"
+expect = "INPUT ok"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-50"
+expect = "DPGS ok n=4"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-51"
+expect = "DPGN ok n=4"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-52"
+expect = "FROZEN ok n=1"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-53"
+expect = "WAKE ok n=1"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-54"
+expect = "TOMB ok n=1"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+
+# —— RX 注入专属 2（RX_MARKERS；仅 smoke RX 相 serial1/QMP 注入后出现）——
+[[marker]]
+id = "rx-01"
+expect = "SIMBAT ok seq="
+phase = "rx"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rx-02"
+expect = "PWRKEY unowned n="
+phase = "rx"
+tier = 1
+source = "tools/markers.sh@5f4a00f0ae8c"
+
+# —— host 面执法点（同点冻结；Tier 1 host 门禁，设计稿 §4.2-④ 前置同跑）——
+[[host_gate]]
+id = "abi-check"
+cmd = "just abi-check"
+tier = 1

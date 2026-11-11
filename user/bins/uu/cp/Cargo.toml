@@ -1,0 +1,14 @@
+[package]
+name = "cp"
+version = "0.1.0"
+edition = "2021"
+
+# 行为注记（C-2a 诚实边界）：cp 内容拷贝全真（read/write 循环）；「保留
+# 属性」半真——权限位保留走 fchmodat/fchmod（ENOSYS 桩，上游 .ok() 吞）、
+# 属主走 geteuid 桩（恒 root 0）。`cp -p` 的完整保留面 v1 不保证。
+license = "Apache-2.0"
+
+[dependencies]
+rustix.workspace = true
+uu_cp = "=0.12.0"
+berry-libc = { path = "../../../berry-libc" }

@@ -1,0 +1,28 @@
+[package]
+name = "apptomb"
+version = "0.1.0"
+edition = "2021"
+# app-2 刀2：apptomb 迁 libc 路（`docs/app-2实施设计草案-v1.0.md` §4——
+# 三口现役首消费者）。stdhello 同链独立小工作区（musl target + berry-libc
+# shim + berry-ld 剥 musl crt + `-zmax-page-size=4096`，编排见 justfile
+# build-user）：TAG 手排收发/12B 头手排/env 自解析/`#[panic_handler]` 全数
+# 退役，协议面改经 berry-libc `lifecycle`（显式 poll dispatch + 库代持
+# 32B 容器头 ver=1 含 CRC32 + 帧面库代发）——帧码/counter 对账对 svcmgr
+# tomb 面零改（迁移不改协议字节）。由 svcmgr tomb_selftest 显式拉起，
+# **打包 selftest/ 专用位**（D1 立法零改——不入 app/ 收集 = APP 族标记零
+# 漂移）。manifest console=true（K4/D11：自验件恒 true，误经 app_launch
+# 路径防私有对替换）。
+description = "BerryOS app lifecycle three-port selftest app (libc face, spawned by svcmgr tomb_selftest)"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

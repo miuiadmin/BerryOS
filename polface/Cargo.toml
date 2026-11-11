@@ -1,0 +1,19 @@
+[package]
+name = "berry-polface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "BerryOS policy O(1) snapshot table math + SchedAttr merge pure-function plane (host-testable)"
+
+[lib]
+name = "berry_polface"
+path = "src/lib.rs"
+
+# W3-Q20：policy O(1) 查表面 + SchedAttr 位选律纯函数面——黄金比例散列/
+# 探测窗查表缺席判/first-wins 插入窗满拒收/EPP 两位打包 + SchedAttr 默认∪
+# 覆盖位选律，零依赖（除 EppHint 单源 iprofile）纯值域判定律，host 可测
+# 钉板；sched policy.rs / kernel process.rs 机械壳消费即唯一事实源（形态抄
+# berry-bandface / berry-itally）。
+[dependencies]
+# EppHint 单源（W3-Q1 已迁 iprofile；本 crate 消费不二写枚举）。
+berry-iprofile = { path = "../iprofile" }

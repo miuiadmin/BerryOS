@@ -1,0 +1,133 @@
+[workspace]
+# G-eco 编译侧（docs/G-eco编译侧设计草案.md）：用户态 crate 独立工作区——
+# 不进内核 root workspace（members 显式列表）。目标沿用 builtin
+# aarch64-unknown-none（stable 预编译 core，免 nightly——custom target
+# 推迟到确需 target 级差异再上，草案 D1 修订）；各 bin 自带链接脚本
+# （build.rs 绝对路径注入），与根 config 的 build.target 同值无冲突。
+# G-eco-b 两遍构建：svcmgr include_bytes! 内嵌 echo/talker 平像（产物在
+# user/userbins/，gitignored）——直接整仓 `cargo build` 且无 staged 平像
+# 时 svcmgr 编译期炸响（loud not silent）；编排见 justfile build-user。
+# G-eco-c：berry-loader（rootfs 纯函数解析，host 测试）+ hello（首个
+# rootfs 拉起程序——ELF 本体进 cpio，不走 elf2flat/include_bytes）。
+# G-eco-d：berry-libc（musl std 的 libc shim——本工作区编 none target 只是
+# 编译检查，真消费者 stdhello 在自己的独立小工作区编 musl target，故
+# excluded；链接编排见 justfile build-user 的 std 面 pass）。
+# A-2：berry-exec（rootfs 程序拉起链——spawn_rootfs_elf/cpio_find 自 svcmgr
+# 抽取，svcmgr（none target，本工作区成员）与 bsh（musl target，独立小工作
+# 区经 path 依赖）双消费，「不长第二套」）。
+# X-5 補：berry-winplan（demand 装载窗规划纯函数 crate——plan_wins 自
+# berry-exec 外迁、cap 参数化解锁 host 测试；「纯面外迁」纪律同 berry-tls/
+# mmap/signal 先例。消费 = berry-exec 经 path 依赖单源引回；host 测试经
+# justfile test-host 显式行跑）。
+# argv blob 组装律纯面外迁 berry-argv（同 winplan 纪律——argv_blob 自
+# berry-exec env 块组装段外迁，host 测试挂 test-host 显式行）。
+# spawn 几何前置门外迁 berry-spawngeo（同款纪律——映幅帽/栈顶/MMIO 重叠
+# 三段自 berry-exec process_create 前置段外迁，host 测试挂显式行）。
+# A-3：berry-virtio（virtio split-ring 纯函数 crate，host 测试）——
+# 2026-10-24 随驱动一族迁入 drivers/ 工作区（真消费者 vprobe/vblk/vnet
+# 同住 drivers/bins/；host 测试经 justfile test-host 显式行跑）。
+# A-4：berry-blkproto（块设备服务 RPC 协议纯函数 crate，host 测试；双消费
+# = vblk 服务端（drivers/bins/vblk，drivers/ 工作区成员）+ svcmgr 消费自验方
+# （本工作区成员））。
+# A-5：berry-fatfs（FAT12 只读解析纯函数 crate，host 测试对 fixture 做跨
+# 实现共识；消费 = fsmgr FAT 只读层（独立小工作区编 musl target，同
+# stdhello/bsh 不入 members））。
+# A-7：berry-netproto（最小以太网/ARP/IPv4/ICMP-echo 编解码纯函数 crate，
+# host 测试；消费 = vnet（virtio-net 用户态驱动，drivers/bins/vnet 编
+# musl target，path 依赖跨工作区引本 crate））。
+# A-8：berry-netdproto（网络服务 RPC 协议纯函数 crate，host 测试；双消费
+# = vnet 服务端（drivers/bins/vnet，drivers/ 工作区成员）+ svcmgr 消费自验方
+# （本工作区成员））。
+# T-c：berry-tcp（最小 TCP 客户端状态机纯函数 crate，「解析器即产品」第 7 例；
+# 消费 = vnet tcp.rs 会话循环（drivers/bins/vnet 编 musl target，path 依赖
+# 跨工作区引本 crate）——host 测试经 justfile test-host 显式行跑）。
+# app-0：berry-manifest（.bap 应用清单 v0 纯函数解析 crate，「解析器即产品」
+# 第 8 例；双消费 = svcmgr appd arm（本工作区成员，none target）+
+# tools/mkapp.py build 期门卫（python 侧帽值对账锚）——host 测试经
+# justfile test-host 显式行跑；demo 双 app（appdemo/appquiet）编 musl
+# target，同 stdhello 不入 members 进 exclude）。
+# GUI-8：berry-layout（桌面布局 JSON v1 纯函数解析/发射 crate，「解析器即
+# 产品」第 9 例——manifest 第 8 例之后；schema/canonical/帽常量单源，
+# canonical 总长公式 22+36n+Σ|app| 见 lib.rs 容量诚实注。消费方 = GUI-8
+# launcher 读写 LAYOUT.JSN（独立小工作区编 musl target，同 stdhello 不入
+# members）+ AI 生成面（canonical 镜像义务——凡产布局字节必过
+# check_canonical）——host 测试经 justfile test-host 显式行跑）。
+# C-0 刀 2：berry-fstree（RAM overlay 目录树纯函数 crate，host 测试；单消费
+# = fsmgr 树层（独立小工作区编 musl target，同 stdhello/bsh 不入 members），
+# 帽常量/状态码自 berry-fsproto 单源引——「不长第二套」）。
+# C-1 刀 1：berry-fsclient（fs 服务客户端：rpc.rs 会话机自 bsh 迁居
+# cfg(not(test))——毒化位/90s·10s 双帽/阻塞重试形态逐字保真，host 测试不
+# 链接 syscall 面；lib.rs 纯函数面 fd 表/cwd/stat/dirent/ST 映射 host 测试）。
+# 单消费 = berry-libc（刀 2 fd 3+ 文件面）；bsh 刀 4 删自有面改经 libc。
+# C-3 段①：berry-psproto（ps 查询 RPC 协议纯函数 crate，host 测试；双消费
+# = svcmgr 服务端（拉起账本编码——本工作区成员，none target）+ ps bin
+# 客户端（user/bins/ps 独立小工作区编 musl target，同 stdhello/bsh 不入
+# members））。
+# C-4：berry-complete（bsh Tab 补全纯函数 crate——token 切分/前缀匹配/
+# 列示，host 测试；单消费 = bsh 编辑器（独立小工作区 path 依赖，musl
+# target，同 stdhello 不入 members——但本 crate 无 syscall 面故入 members
+# 挂 host 测试无碍 none 工作区纪律））。
+# T-1 §1：berry-tls（TLS 拷贝式放置纯函数 crate，host 测试；单消费 =
+# berry-libc crt0（主线程装配）+ 第二层 pthread trampoline（malloc 块
+# 复用同一算术）。「不长第二套」+ §6 回退形态——berry-libc 的 libc 同名
+# 符号在 host 测试二进制里对 libSystem write 符号插入劫自旋，纯面外迁
+# 独立 crate 后 host 测试零 libc 符号面）。
+# GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数 crate，V-6 刀 2
+# 前置段曾独立工作区、GUI-1 随首个消费面迁正 members；消费 = guifbd 显示
+# 服务（独立小工作区编 musl target，同 stdhello 不入 members）——host
+# 测试经 justfile test-host 显式行跑）。
+# GUI-2 段①：berry-gfx（pass 形态 API + soft 光栅核纯函数 crate——ADR #51
+# 六件套 day-one；像素共识对 berry-fbcon path 依赖单源字体，host 测试；
+# 真消费 guifbd/berryui = 段②另刀）。
+# GUI-4 段①：berry-guiproto（GUI wire 协议纯函数 crate——present/input/hdi
+# 三域 op 编解码，docs/GUI-4实施设计草案.md §3；host 测试；双消费 =
+# gui-inputd 服务端（drivers/bins/gui-inputd，input 域）+ 段② gui-wm 客户端
+# （GUI-5，present/hdi 域）——三域 = 三对独立 channel，能力即权限）。
+# A7-1：berry-mmap（mmap 匿名档簿记纯函数 crate——region 表 + VA 窗
+# first-fit 底起分配（munmap 空洞复用，F2 裁定），docs/事件循环A7设计
+# 草案.md §3.1+§7；单消费 = berry-libc mmap.rs syscall 桥。berry-tls
+# 同款回退形态：纯面外迁后 host 测试零 libc 符号面）。
+# A7-4：berry-signal（POSIX 信号面纯函数底座 crate——sigaction 表 +
+# 掩码状态机 + musl 128B sigset 位图层 + 默认动作表 + 归并式投递分诊
+# 计划，docs/事件循环A7-4信号面实施设计草案.md §3.2；单消费 =
+# berry-libc signal.rs（协同式用户态投递——内核两号 0x86/0x87 只管
+# 跨进程位置位）。berry-tls/berry-mmap 同款回退形态）。
+# GUI-3：berry-ui（保留树视图 crate——arena 代数 NodeId + 脏区引擎 +
+# 三态停帧，ADR #52 声明式 UI 内核；十一模组契约冻结在
+# docs/GUI-3实施设计草案.md §6；双依赖 = berry-gfx（paint 发射
+# DisplayList）+ berry-guiproto（Rect/常量单源不两套）；host 测试，
+# embedder = GUI-5 gui-wm 另刀）。
+# GUI-8 段①：berry-appproto（app 域 RPC 协议纯函数 crate——APP_LIST
+# 分片流/APP_SPAWN 编解码 + idx 单调 +1/blob 收支/END 对账三执法，
+# docs/GUI-8实施设计草案.md §3-裁决二 + §5；0c 钉分片序号 v1 冻结一次
+# 到位；APP_EVENT op 码留位零实施。双消费 = svcmgr app 域常驻 serve
+# （本工作区成员，none target，段② 接线）+ berry-launcher 客户端
+# （段③ 独立小工作区编 musl target，同 stdhello 不入 members）——host
+# 测试经 justfile test-host 显式行跑）。
+# sim-S1：berry-pwproto（sim 三设备快照协议纯函数 crate——帧头/定长全量
+# 快照/ACK/流式再同步解码，host 测试；PM-16 §4.1 契约 + docs/sim设备通道
+# 与契约设计-v1.0.md §5 冻结。双消费 = bins/simbattery 服务（首消费）+
+# 未来真机电池/热/modem 驱动 + L3 SDK 只读面——绿传递律单源落点）。
+# app-2 刀1：berry-lifecycle（生命周期三口纯函数底座——32B blob 容器头
+# v1 编解码/hlen 分派（v0 12B 兼容 + 坏档四型 BadFmt）/CRC32 bitwise
+# （png.rs 镜像·向量钉板）/8B 帧编解码/counter 代持状态机，
+# docs/app-2实施设计草案-v1.0.md §2.2/§3。单消费 = berry-libc
+# lifecycle.rs（syscall 胶水面）；apptomb（musl 形，刀2 迁 libc 路）经
+# berry-libc 间接消费——三口现役首消费者。berry-tls/signal 同款「纯面
+# 外迁」：host 测试零 libc 符号面（just test-host 显式行跑）。
+# SDK-2 P0-1：berry-crypto（.sig 信封 v1 TLV 解析/序列化 + 信任账本 TOML
+# 读写 + 水位比较器 + RFC 8032 向量门空转框架——对选型零敏感件先行合入，
+# 26 号 §3-2；ed25519 原语本体 = P0-2 独立刀，向量门不过不合入；P0 合入
+# = 闸 B = Q6 账本 schema 重议窗关闭——24 号 §4.2。暂名定名随 #77）。
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
+resolver = "2"
+
+# 用户程序平像：体积优先（单页墙由 tools/elf2flat.py --max 执法）。
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,16 @@
+[package]
+name = "berry-argv"
+version = "0.1.0"
+edition = "2021"
+
+# A-2/d-3a argv blob 组装律纯函数 crate：`argv_blob`（192B env 块 blob 的
+# argv0\0 + 各参\0 组装 + 「整参或零参」截断律）自 berry-exec 外迁——
+# 原处内嵌于 spawn_rootfs_elf（berry-sys 的 aarch64 svc #0 asm 令 berry-exec
+# 在 host 结构性不可编译，argv 组装面因此零测试）。
+# 外迁 = berry-winplan 同款「纯面外迁」纪律（berry-tls/mmap/signal 自
+# berry-libc 外迁的先例族）：零 FFI 零 unsafe 零分配，输出写调用方切片。
+# 消费：berry-exec（spawn_rootfs_elf env 块组装）经 path 依赖单源引回，
+# 「不长第二套」；host 测试经 justfile test-host 显式行跑。
+license = "Apache-2.0"
+
+[dependencies]

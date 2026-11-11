@@ -1,0 +1,14 @@
+[package]
+name = "berry-chanface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_chanface"
+path = "src/lib.rs"
+
+# 无外部依赖：channel 队列资格判与容量门纯函数面（host 单测走 `cfg(test)`
+# 链 std，形态抄 berry-hdlface / berry-evface）。kernel crate 消费
+# （CHAN_* 常量镜像 + send/recv 资格判/容量门单源迁此，syscall.rs 消费
+# ——W3-Q2/Q5/Q7/Q8 同款纪律）。

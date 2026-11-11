@@ -1,0 +1,13 @@
+[package]
+name = "df"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+rustix.workspace = true
+uu_df = "=0.12.0"
+# setup_localization 直调（uumain 前初始化 fluent en-US 嵌入束——表头
+# translate! 面，见 main.rs 头注；与 uu_df 的 uucore 同版本 feature 统一）。
+uucore = "=0.12.0"
+berry-libc = { path = "../../../berry-libc" }

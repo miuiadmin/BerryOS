@@ -1,0 +1,14 @@
+[package]
+name = "touch"
+version = "0.1.0"
+edition = "2021"
+
+# 行为注记：touch 语义两半 = 建/开（O_CREAT 真面）+ 设时（utimensat/
+# futimens = C-2a no-op 成功桩——v1 FS 无时间戳面、stat mtime 恒卷定值
+# （C-2a 诚实边界条款），「设时」在时间戳恒定的 FS 上语义恒真）。
+license = "Apache-2.0"
+
+[dependencies]
+rustix.workspace = true
+uu_touch = "=0.12.0"
+berry-libc = { path = "../../../berry-libc" }

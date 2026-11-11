@@ -1,0 +1,14 @@
+[package]
+name = "berry-hdrface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_hdrface"
+path = "src/lib.rs"
+
+# 无外部依赖：HDR 延迟直方图形状与分位数学纯函数面（host 单测走
+# `cfg(test)` 链 std，形态抄 berry-emface / berry-telface）。sched crate
+# 消费（HDR_* 形状常量与 bucket_of/bucket_upper/rank_of/Hdr/CpuHdr 单源
+# 迁此，sched/src/hdr.rs 机械壳化——W3-Q14/Q15 同款纪律）。

@@ -1,0 +1,14 @@
+[package]
+name = "berry-fbcon"
+version = "0.1.0"
+edition = "2021"
+# V-6 刀 2 前置段（docs/VM里程碑设计草案.md §4 V-6）：fbcon 纯函数 crate——
+# 自绘 8×16 点阵字形 + 蜂格渲染核，host 测试先行（berry-virtio/xHCI
+# 「纯函数 crate 化先 host 测」纪律）。GUI-1 起迁正 user/ members（首消费
+# = guifbd 显示服务——独立小工作区编 musl target，path 依赖跨工作区引本
+# crate；host 测试经 justfile test-host 显式行跑）。库本体 no_std（fbcon
+# 服务消费面），test 构建放开 std；`cfg_attr(not(test), no_std)` + 显式
+# `--target <host>` 测试（根 config 锁 aarch64-unknown-none 跨 workspace
+# 边界命中——berryboot 同款 gotcha）。
+description = "BerryOS framebuffer console: self-drawn 8x16 font + cell-grid renderer (pure functions, host-tested)"
+license = "Apache-2.0"

@@ -1,0 +1,24 @@
+[package]
+name = "berry-guiproto"
+version = "0.1.0"
+edition = "2021"
+# GUI-4 段①（docs/GUI-4实施设计草案.md §3）：GUI wire 协议纯函数 crate，
+# `berry-fsproto`/`berry-psproto`/`berry-netdproto` 先例（「解析器即产品」）
+# ——`cfg_attr(not(test), no_std)`：库本体 no_std（gui-inputd 在 musl target
+# 下消费），test 构建放开 std 仅为默认测试挂具。三域 op 编解码：present
+# 域（op 1..6，消费者 = 段② gui-wm/GUI-5）/ input 域（op 0x20..0x21，
+# 服务端 = gui-inputd（drivers/bins/gui-inputd），段①唯一接线面）/ hdi 域
+# （op 0x40..0x43，GUI-2 S1 挂账——段①仅编解码无消费者）。host 测试经
+# `--target <host>` 显式行跑（根 config 锁 aarch64-unknown-none 跨
+# workspace 边界命中——berry-gfx/berry-fbcon 同款 gotcha）。
+description = "BerryOS GUI wire protocol: present/input/hdi domain op encoder/parser (pure functions, host-tested)"
+license = "Apache-2.0"
+
+[dependencies]
+# intent 六档词表单源（GUI-8 §4 段①/ADR #58 收官）：VOTE scene 字节改携
+# berry_intent 六档值——判别值自 berry-manifest `Intent` 取（镜像链：
+# sched/src/intent.rs 单一事实源 → manifest 判别值钉板，本 crate 转发，
+# 禁第三份手抄）。不走 berry-sys：六档词表不在彼处（只有
+# CHAN_OPT_NO_INTENT），且其常量层 = abi.toml 生成面（syscall ABI），
+# 调度词表手写进彼 = 破其单源纪律。
+berry-manifest = { path = "../berry-manifest" }

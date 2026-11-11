@@ -1,0 +1,56 @@
+[package]
+name = "berry-sched"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_sched"
+path = "src/lib.rs"
+
+# 依赖 HAL（TaskContext/switch）+ alloc。仅 aarch64-unknown-none 构建（HAL 有 ARM
+# global_asm，不在 host 测）；调度逻辑正确性靠 QEMU demo（Step 3/6）+ ktest 验证。
+# W3-Q2：等待匹配谓词单源在 berry-wqmatch（host 可测纯面——本 crate 只
+# aarch64 可编，谓词语义回归面此前 host 不可达）；此处消费即唯一事实源。
+[dependencies]
+berry-hal-aarch64 = { path = "../arch/aarch64" }
+berry-wqmatch = { path = "../wqmatch" }
+# W3-Q12：环游标与扫描序不变量纯函数面（出选过滤/带内 EEVDF 比较/游标
+# 前移律/走查步数帽——host 可测钉板，纯值域投影）。HELD_FROZEN/
+# HELD_THROTTLE 位常量与 eligible/pick_better/walk_step_cap 判定律
+# 单源在此，本 crate 消费即唯一事实源。
+berry-ringface = { path = "../ringface" }
+# W3-Q11：时间片预算数学纯函数面（权重/虚拟片/tick 记账/耗尽判/
+# deadline 周期 replenish——host 可测钉板）。SCALE 与 PRIO_DEADLINE 单源
+# 迁此，本 crate 消费即唯一事实源。
+berry-sliceface = { path = "../sliceface" }
+# W3-Q1：IntentProfile 六档映射表（纯数据/纯函数，host 可测面）。EppHint
+# 单源在 iprofile（本 crate re-export；内核镜像经此依赖编入）。
+berry-iprofile = { path = "../iprofile" }
+# W3-Q13：intent 随消息传播机制纯函数面（编码冻结/三道帽判序/每消息重导
+# ——host 可测钉板）。INTENT_* 常量与 snapshot/settle 判定律单源在此，
+# 本 crate intent.rs 机械壳 re-export 消费。
+berry-intface = { path = "../intface" }
+# W3-Q14：EM 表形状执法 + util EWMA 窗口数学纯函数面（严格升序拒收/
+# 翻窗三态/折叠律/overutil 阈值律——host 可测钉板）。EmPoint/EmDomain
+# 形状与判定律单源在此，本 crate em.rs/util.rs 机械壳 re-export 消费。
+berry-emface = { path = "../emface" }
+# W3-Q19：band 预算数学纯函数面（首越线单赢家/翻期追赶环/CAS 防双翻
+# 入环门/配置三态/带成员豁免判——host 可测钉板）。BandBudget/BAND_SLOTS
+# 与判定律单源在此，本 crate band.rs 机械壳 re-export 消费。
+berry-bandface = { path = "../bandface" }
+# W3-Q20：policy O(1) 查表数学 + SchedAttr 位选律纯函数面（黄金比例散列/
+# 探测窗查表缺席判/first-wins 插入窗满拒收/EPP 两位打包——host 可测钉板）。
+# BUCKETS/PROBE_MAX/TBL_MAX/WEIGHT_MAX/EPP_* 常量与 bucket_of/lookup_o1/
+# snap_insert/epp_pack 判定律单源在此，本 crate policy.rs 机械壳 re-export
+# 消费。
+berry-polface = { path = "../polface" }
+# W3-Q16：HDR 延迟直方图形状与分位数学纯函数面（桶映射/保守上界/分位
+# 秩/Hdr 原子直方图——host 可测钉板）。HDR_* 常量与 bucket_of/
+# bucket_upper/rank_of/Hdr/CpuHdr 单源在此，本 crate hdr.rs 机械壳
+# re-export 消费。
+berry-hdrface = { path = "../hdrface" }
+
+[features]
+# G3-3 lockdep：透传 HAL feature（检测器/链栈在 HAL 侧 SmpCpu per-CPU 区）。
+lockdep = ["berry-hal-aarch64/lockdep"]

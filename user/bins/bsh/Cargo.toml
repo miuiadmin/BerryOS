@@ -1,0 +1,41 @@
+[package]
+name = "bsh"
+version = "0.1.0"
+edition = "2021"
+
+# A-2：交互 shell（stdhello 同构独立小工作区——musl target + berry-libc
+# shim 与 none 全家互不渗漏）。fd0 = endB2（boot 手搭 bsh-stdin 对端，
+# console 转发键盘完整行）、fd1/2 = console 别名（env 块 gift[0]）、
+# rootfs VMO = gift[2]（libc `rootfs_h()`，`run <name>` 流式取 ELF）。
+# 验收：自驱自验（内部 `run hexyl` 收齐 2156B）打 `BSH ok`——smoke
+# rootfs 相第 8 标记，不依赖交互输入（rootfs 相 stdin=/dev/null）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-exec = { path = "../../berry-exec" }
+berry-fsproto = { path = "../../berry-fsproto" }
+# C-4：Tab 补全纯函数面（token 切分/前缀匹配/列示——host 10 测）。
+berry-complete = { path = "../../berry-complete" }
+# A2-1：多路等待聚合器（wait_many n≤16 翻越——批切分 + poll-first 收割；
+# host 13 测盖算法面，bsh poll_selftest 盖 guest 绑定面 `POLL ok`）。
+# no_std + extern crate alloc 形态在 std 消费侧照常链接（alloc 由 std 提供）。
+berry-poll = { path = "../../berry-poll" }
+# A2-3：netd 会话化协议（LISTEN/ACCEPT/POLL/DRAIN/RT/CLOSE 编解码）——
+# EVS echo server 自验（`EVS ok n=2`）的 RPC 面。仅协议层纯函数，
+# 零 syscall/IO 依赖（berry-fsproto 同形态）。
+berry-netdproto = { path = "../../berry-netdproto" }
+# GUI-4 段②：GUI 输入协议面（INPUT_POLL 请求 / 事件批应答编解码）——
+# inputpoll 消费端（`INPUTP ok n=3` smoke RX 注入相标记）的 RPC 面。
+# 仅协议层纯函数，零 syscall/IO 依赖（berry-netdproto 同形态）。
+berry-guiproto = { path = "../../berry-guiproto" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

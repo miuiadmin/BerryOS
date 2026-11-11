@@ -1,0 +1,14 @@
+[package]
+name = "berry-ringface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_ringface"
+path = "src/lib.rs"
+
+# 无外部依赖：runqueue 环游标与扫描序不变量纯函数面（host 单测走
+# `cfg(test)` 链 std，形态抄 berry-sliceface / berry-chanface）。sched
+# crate 消费（advance_past 游标前移/eligible 出选过滤/pick_order 带内
+# 扫描序——W3-Q12）。

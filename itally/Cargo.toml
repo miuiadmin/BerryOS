@@ -1,0 +1,10 @@
+[package]
+name = "berry-itally"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+# 查表键单源：intent u8 → 档位行索引（`intent_index`，与 `intent_valid` 同
+# 口径）——本 crate 消费不二写编码（#58 纪律：词汇表镜像即违例）。
+berry-iprofile = { path = "../iprofile" }

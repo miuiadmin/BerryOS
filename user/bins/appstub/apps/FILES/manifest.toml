@@ -1,0 +1,17 @@
+[app]
+id = "FILES"
+version = "0.1.0"
+entry = "bin/files"
+type = "app"
+intent = "utility"
+
+[capabilities]
+console = false
+
+[runtime]
+stack_pages = 8
+
+[ui]
+icon = "icons/icon.byi"
+label = "Files"
+views = "views/main.bui"

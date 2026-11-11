@@ -1,0 +1,39 @@
+[package]
+name = "berry-ui"
+version = "0.1.0"
+edition = "2021"
+# GUI-3（docs/GUI-3实施设计草案.md §6 冻结契约 + ADR #52/#53）：自研
+# berry-ui 声明式框架的引擎内核——保留树 arena + 布局 + 脏区合并 +
+# 遮挡剔除渲染 + 输入手势 referee + 动画表 + 三态停帧帧循环（RUN/
+# SETTLE/IDLE）+ 双轨遥测，纯 host crate（内核零接触、smoke 零注册、
+# QEMU 零依赖）。双依赖：berry-gfx（GUI-2 段①②——CommandEncoder/
+# GlyphPos/Color/FontSize，渲染消费面）+ berry-guiproto（GUI-4 段①——
+# Rect(u32)/DAMAGE_MAX/RESAMPLE_* 常量与类型单源 + ADR #58 后的
+# berry_intent::Intent 六档票源（SCENE_* 已停发非删值、deprecated 保留），
+# 非收发；wire 编解码/channel/VMO 全在 embedder）。embedder = GUI-5 留位
+# （gui-wm/gfxdemo 接驳挂账不在本刀；host 侧 embedder = tests/ 离屏
+# 对拍）。库本体 no_std：cfg_attr(not(test), no_std) + 显式 --target
+# <host> 测试（根 config 锁 aarch64-unknown-none 跨 workspace 边界
+# 命中——berry-gfx/berry-fbcon 同款 gotcha）。
+description = "BerryOS declarative UI engine core: retained tree + damage + occlusion-cull paint + input referee + tri-state frame loop (pure functions, host-tested)"
+license = "Apache-2.0"
+
+[dependencies]
+# 渲染消费面（GUI-2 六件套）：paint 经调用方 CommandEncoder 录命令，
+# Text 走 FontSize 档位几何/静态图集单源；DisplayList 的 'a 钉在调用方
+# scratch 与 'static 图集上，不钉引擎（gfx 坑 1/2 对策）。
+berry-gfx = { path = "../berry-gfx" }
+# 常量/类型单源（非收发）：Rect(u32) damage 口径 + DAMAGE_MAX=8 +
+# RESAMPLE_* 四常量 + FRAME_*/CREDITS_MAX + Intent 六档票源（#58 折算
+# 后唯一词表；SCENE_* 停发非删值）——wire 收发归 embedder（拓扑对齐
+# 条 19：引擎不假设直摸 vblank/hdi 域）。
+berry-guiproto = { path = "../berry-guiproto" }
+
+[features]
+# GUI-6 段E S7 属性级生死门 A/B 双实现（草案 §10/D19 + ADR #60）：
+# 默认（A 面）= 三漏斗现状 dirty 语义逐字保持——含同文换文全量
+# relayout 的现状浪费（诚实基线）；开 `s7`（B 面）= ChangeMask 单源
+# 分派 apply_change + D1 anim staging + D4 截断。host-only 实验轨道
+# （不进 guest 产物/CI 主门）；kill criteria：B 面帧收益 < 20% → 面
+# 退场（feature 留册不留码路径）。
+s7 = []

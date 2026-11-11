@@ -1,0 +1,14 @@
+[package]
+name = "berry-hal-aarch64"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_hal_aarch64"
+path = "src/lib.rs"
+
+[features]
+# G3-3 lockdep：默认关——钩子全 #[cfg] 编译消除，release/CI 主面零成本；
+# 开 = `cargo build --features lockdep` 出检测镜像（模块常驻、检测器激活）。
+lockdep = []

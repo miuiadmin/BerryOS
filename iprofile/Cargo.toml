@@ -1,0 +1,17 @@
+[package]
+name = "berry-iprofile"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "BerryOS intent six-tier IntentProfile mapping: pure data + host-testable pure functions (ADR #42 stage 1 / #58)"
+
+[lib]
+name = "berry_iprofile"
+path = "src/lib.rs"
+
+# W3-Q1（ADR #42 第一段 + #58 单一词汇表）：intent 六档 → 软参数轴映射表
+# （IntentProfile）纯数据/纯函数 crate——「查表键先于消费者落地」的宿主可测面。
+# 形态抄 berry-mm：根 workspace 成员、零依赖（无 HAL/alloc）、
+# cfg_attr(not(test), no_std)，host 单测走 `cargo test --target <host>`
+# （justfile test-host 台账）；aarch64-unknown-none 侧由 berry-sched 依赖
+# 编进内核镜像。EppHint 单源迁此（sched::task re-export，既有路径零改动）。

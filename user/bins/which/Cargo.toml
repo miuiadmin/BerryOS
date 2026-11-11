@@ -1,0 +1,23 @@
+[package]
+name = "which"
+version = "0.1.0"
+edition = "2021"
+
+# C-2c text 批自写三件之三：which 定位器——NAME → PATH 逐目录 stat 存在
+# 即中（v1 偏差：fs STAT 面 mode 恒 0644 无 x 位，GNU which 的可执行位
+# 判据不可表达——存在性判据 + 注释明示，见 main.rs）。PATH 未设默认
+# /bin（v1 rootfs 全量 bin 目录）。crates.io 无 uu_which 线（uutils
+# which 在独立仓库，未发布）——自写即上游缺位。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

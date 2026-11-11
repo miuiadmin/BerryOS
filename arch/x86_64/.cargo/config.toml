@@ -1,0 +1,25 @@
+# P7-x0 x86_64 工作区自有配置（config 发现按 CWD 向上合并、就近键优先）：
+# 本文件出 rustflags；根 .cargo/config.toml 的 build.target=aarch64-unknown-none
+# 仍会合并进来——构建一律显式 --target x86_64-unknown-none（justfile build-x86）。
+#
+# relocation-model=static：x86_64-unknown-none 默认 PIC，`.long _start`（PVH
+# note）与 `mov $sym, %esp`（弹床）等 R_X86_64_32/32S 对 local symbol 直接
+# 拒链（"recompile with -fPIC"）——内核静态链接 @0x100000，钉死 static。
+#
+# red zone：**不需要也不可加 flag**（P7-x1 实证，三重证据）——builtin
+# x86_64-unknown-none 的 target spec 已 disable-redzone：①rustc 对
+# `-Ctarget-feature=-red-zone` 报 "'-red-zone' is not a recognized feature
+# for this target (ignoring feature)"（每构建 3 条告警噪声）；②强行 `+red-zone`
+# 透传后码型不变；③18 值 black_box 溢出探针（叶子函数寄存器不够用须 spill）
+# 全函数零 `-N(%rsp)` 负偏移写——帧一律 pushq/subq 显式分配。中断同栈 push
+# 不会砸被打断代码的下方 spill 区（IST=0 场景安全）。**若未来换 custom
+# target JSON 必须自查两件**（对抗审查 confirmed）：①disable-redzone=true
+# （或 ISR 改走 IST 独立栈）；②**保持 -sse/-mmx 软浮点**——ISR 桩只保存
+# 9 个 caller-saved GP，不保存 XMM（xmm0-15 亦 caller-saved）；builtin
+# target 禁 SSE（软浮点，二进制零 xmm 指令）使其结构性安全，若换 target
+# 重开 SSE（常见动机：memcpy/格式化加速），handler 一旦被编入 xmm 指令
+# 即静默腐化被打断上下文——届时须 ISR 面补 XMM 保存。
+[build]
+rustflags = [
+    "-C", "relocation-model=static",
+]
