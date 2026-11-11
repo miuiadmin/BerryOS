@@ -284,6 +284,7 @@ pub struct Button {
     pub panel: NodeId,
     pub label: NodeId,
     base: InteractionState,
+    focused: bool,
 }
 
 impl Button {
@@ -300,7 +301,18 @@ impl Button {
             text_spec(label, state.content, ctx.metrics.typography(TypographyToken::Body))?,
         )?;
         ui.set_a11y(panel, ROLE_BUTTON, label)?;
-        Ok(Self { panel, label: text_id, base })
+        ui.set_focusable(panel, Some(panel), base != InteractionState::Disabled)?;
+        Ok(Self { panel, label: text_id, base, focused: false })
+    }
+
+    fn visual_state(&self) -> InteractionState {
+        if self.base == InteractionState::Disabled {
+            InteractionState::Disabled
+        } else if self.focused {
+            InteractionState::Focused
+        } else {
+            self.base
+        }
     }
 
     fn apply<const N: usize>(
@@ -326,7 +338,19 @@ impl Button {
         &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, base: InteractionState,
     ) -> Result<(), UiError> {
         self.base = base;
-        self.apply(ui, ctx, base)
+        if base == InteractionState::Disabled {
+            self.focused = false;
+        }
+        ui.set_focusable(self.panel, Some(self.panel), base != InteractionState::Disabled)?;
+        self.apply(ui, ctx, self.visual_state())
+    }
+
+    /// Focus ring 视觉（Focused 状态色；Disabled 恒不显示）。
+    pub fn set_focused<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, focused: bool,
+    ) -> Result<(), UiError> {
+        self.focused = focused;
+        self.apply(ui, ctx, self.visual_state())
     }
 
     pub fn on_msg<const N: usize>(
@@ -339,7 +363,9 @@ impl Button {
             Msg::Press { node, .. }
             | Msg::Release { node, .. }
             | Msg::Cancel { node }
-            | Msg::Click { node } => *node,
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
             _ => return Ok(false),
         };
         if node != self.panel && node != self.label {
@@ -347,10 +373,20 @@ impl Button {
         }
         match msg {
             Msg::Press { .. } => self.apply(ui, ctx, InteractionState::Pressed)?,
-            Msg::Release { .. } | Msg::Cancel { .. } => self.apply(ui, ctx, self.base)?,
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.apply(ui, ctx, self.visual_state())?
+            }
             Msg::Click { .. } => {
-                self.apply(ui, ctx, self.base)?;
+                self.apply(ui, ctx, self.visual_state())?;
                 return Ok(true);
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = true;
+                self.apply(ui, ctx, InteractionState::Focused)?
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = false;
+                self.apply(ui, ctx, self.base)?
             }
             _ => {}
         }
@@ -375,6 +411,7 @@ pub struct ListItem {
     pub title: NodeId,
     pub detail: Option<NodeId>,
     selected: bool,
+    focused: bool,
 }
 
 impl ListItem {
@@ -402,7 +439,18 @@ impl ListItem {
             None => None,
         };
         ui.set_a11y(panel, ROLE_LIST_ITEM, title)?;
-        Ok(Self { panel, title: title_id, detail: detail_id, selected })
+        ui.set_focusable(panel, Some(panel), true)?;
+        Ok(Self { panel, title: title_id, detail: detail_id, selected, focused: false })
+    }
+
+    fn visual_state(&self) -> InteractionState {
+        if self.focused {
+            InteractionState::Focused
+        } else if self.selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        }
     }
 
     fn state(ctx: &WidgetContext, selected: bool) -> crate::theme::StateColors {
@@ -413,7 +461,7 @@ impl ListItem {
         &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, selected: bool,
     ) -> Result<(), UiError> {
         self.selected = selected;
-        let state = Self::state(ctx, selected);
+        let state = ctx.theme.state(self.visual_state());
         if let Some(props) = retained_props(ui, self.panel) {
             if let Props::Panel(mut p) = props {
                 p.bg = state.background;
@@ -432,6 +480,53 @@ impl ListItem {
     pub fn is_selected(&self) -> bool {
         self.selected
     }
+
+    /// ListItem 只消费焦点视觉；激活语义由 app 合成 Click 自理。
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let node = match msg {
+            Msg::FocusIn { node } | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        if node != self.panel && node != self.title {
+            return Ok(false);
+        }
+        match msg {
+            Msg::FocusIn { .. } => self.set_focused(ui, ctx, true)?,
+            Msg::FocusOut { .. } => self.set_focused(ui, ctx, false)?,
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    /// Focus ring 视觉（selected 与 focused 分域）。
+    pub fn set_focused<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, focused: bool,
+    ) -> Result<(), UiError> {
+        self.focused = focused;
+        let state = if focused {
+            InteractionState::Focused
+        } else if self.selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        };
+        let visual = ctx.theme.state(state);
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.title) {
+            if let Props::Text(mut p) = props {
+                p.style.fg = visual.content;
+                ui.set_props(self.title, Props::Text(p))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Switch：双态开关。状态由 app 持有；`on_msg` 可在 Click 时翻转视觉态。
@@ -443,6 +538,7 @@ pub struct Switch {
     pub thumb: NodeId,
     checked: bool,
     disabled: bool,
+    focused: bool,
 }
 
 impl Switch {
@@ -500,12 +596,23 @@ impl Switch {
         )?;
         let label: &[u8] = if checked { b"on" } else { b"off" };
         ui.set_a11y(panel, ROLE_TOGGLE, label)?;
-        Ok(Self { panel, track, spacer, thumb: thumb_id, checked, disabled })
+        ui.set_focusable(panel, Some(panel), !disabled)?;
+        Ok(Self {
+            panel,
+            track,
+            spacer,
+            thumb: thumb_id,
+            checked,
+            disabled,
+            focused: false,
+        })
     }
 
     fn visual_state(&self) -> InteractionState {
         if self.disabled {
             InteractionState::Disabled
+        } else if self.focused {
+            InteractionState::Focused
         } else if self.checked {
             InteractionState::Selected
         } else {
@@ -565,6 +672,13 @@ impl Switch {
         track_w.saturating_sub(thumb)
     }
 
+    pub fn set_focused<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, focused: bool,
+    ) -> Result<(), UiError> {
+        self.focused = focused;
+        self.apply(ui, ctx, self.visual_state())
+    }
+
     pub fn is_checked(&self) -> bool {
         self.checked
     }
@@ -579,7 +693,9 @@ impl Switch {
             Msg::Press { node, .. }
             | Msg::Release { node, .. }
             | Msg::Cancel { node }
-            | Msg::Click { node } => *node,
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
             _ => return Ok(false),
         };
         if node != self.panel && node != self.track && node != self.spacer && node != self.thumb {
@@ -594,6 +710,14 @@ impl Switch {
                 let checked = !self.checked;
                 self.set_checked(ui, ctx, checked)?;
                 return Ok(true);
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = true;
+                self.apply(ui, ctx, self.visual_state())?
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = false;
+                self.apply(ui, ctx, self.visual_state())?
             }
             _ => {}
         }

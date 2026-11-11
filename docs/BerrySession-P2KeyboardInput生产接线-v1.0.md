@@ -7,7 +7,7 @@
 > `QEMU virtio-keyboard → gui-inputd KeyEvent → gui-wmd focus/input_classes →
 > Berry Room poll_keys` 的生产链；Gamepad 与 IME Host 仍无生产者或服务，
 > 继续诚实 `ST_UNSUPPORTED`。执行序权威 =
-> [GUI框架地基路线-v1.11.md](GUI框架地基路线-v1.11.md)。
+> [GUI框架地基路线-v1.12.md](GUI框架地基路线-v1.12.md)。
 
 ## §1 结论
 

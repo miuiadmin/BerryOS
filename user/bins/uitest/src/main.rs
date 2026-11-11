@@ -18,6 +18,7 @@ use berry_room::{
     SurfaceRequest, SYSTEM_FONT_ATLAS,
 };
 use berry_ui::sdk::{
+    focus_key_intent, FocusDir, FocusOp,
     Button, Card, EmptyState, FontSource, InteractionState, ListItem, Msg, RectI, Scaffold,
     ScrollView, Switch, TextVariant, Theme, Ui, WidgetContext, column, divider, icon, row,
     text,
@@ -500,27 +501,36 @@ fn handle_messages(app: &mut AppModel, room: &mut AppRoom, messages: &berry_ui::
     }
     for slot in copied.iter().take(messages.len()) {
         let Some(message) = *slot else { continue };
-        let clicked = app
-            .page
-            .button
-            .on_msg(&mut app.ui, &app.ctx, &message)
-            .unwrap_or_else(|_| berry_room::panic_exit(134));
-        if clicked {
-            target = if app.page_index == 0 { 1 } else { 0 };
+        target = handle_message_one(app, room, &message);
+    }
+    target
+}
+
+/// 单 Msg 消费口（focus activation 合成 Click 时无需构造 MsgBuf）。
+fn handle_message_one(app: &mut AppModel, room: &mut AppRoom, message: &Msg) -> u8 {
+    let mut target = app.page_index;
+    let clicked = app
+        .page
+        .button
+        .on_msg(&mut app.ui, &app.ctx, message)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    if clicked {
+        target = if app.page_index == 0 { 1 } else { 0 };
+    }
+    if let Some(switch) = app.page.switch.as_mut() {
+        if switch
+            .on_msg(&mut app.ui, &app.ctx, message)
+            .unwrap_or_else(|_| berry_room::panic_exit(134))
+        {
+            app.switch_on = switch.is_checked();
         }
-        if let Some(switch) = app.page.switch.as_mut() {
-            if switch
-                .on_msg(&mut app.ui, &app.ctx, &message)
-                .unwrap_or_else(|_| berry_room::panic_exit(134))
-            {
-                app.switch_on = switch.is_checked();
-            }
-        }
-        app.page
-            .scroll
-            .on_msg(&mut app.ui, &message)
+    }
+    if let Some(item) = app.page.clip_item.as_mut() {
+        item.on_msg(&mut app.ui, &app.ctx, message)
             .unwrap_or_else(|_| berry_room::panic_exit(134));
     }
+    app.page.scroll.on_msg(&mut app.ui, message)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
     if target != app.page_index {
         app.replace_page(room, target);
     }
@@ -579,9 +589,11 @@ fn wait_two_clicks(app: &mut AppModel, room: &mut AppRoom) -> (u32, u32) {
     last
 }
 
-/// P2 runtime 真键盘链：Back 返回 page0 后，把当前 surface 协商为
-/// Canvas + Touch|Keyboard，等待 QMP 注入 KEY_A 的 down/up 同码配对。
-fn wait_real_keyboard(room: &mut AppRoom) {
+/// P2/C1 runtime 真键盘链：surface 协商 Keyboard 后，QMP 注入两对 Tab
+///（component focus 从 Button 前进到 Switch）与两对 Enter（激活 Switch
+/// 两次，最终状态回 false）。窗口焦点仍由 wmd 持有；本函数只消费本窗
+/// 已路由键并移动 BerryUI 树内焦点。
+fn wait_real_keyboard(app: &mut AppModel, room: &mut AppRoom) {
     let grant = room
         .configure_surface(SurfaceRequest {
             mode: SurfaceModeKind::Canvas,
@@ -590,13 +602,10 @@ fn wait_real_keyboard(room: &mut AppRoom) {
             a11y_mode: SURFACE_A11Y_HYBRID,
         })
         .unwrap_or_else(|e| fail(room, e.as_str()));
-    if grant.input_classes & SURFACE_INPUT_KEYBOARD == 0
-        || grant.contract_flags != 31
-    {
+    if grant.input_classes & SURFACE_INPUT_KEYBOARD == 0 || grant.contract_flags != 31 {
         fail(room, "keyboard grant");
     }
-    let ready = Line::new(b"UITESTKEYWAIT ok input=9\n");
-    ready.print(room);
+    room.print(b"UITESTKEYWAIT ok input=9\n");
 
     let mut events = [KeyEvent {
         timestamp_ns: 0,
@@ -605,30 +614,105 @@ fn wait_real_keyboard(room: &mut AppRoom) {
         modifiers: 0,
         device_id: 0,
     }; INPUT_KEY_EVENTS_MAX];
-    let mut downs = 0u32;
-    let mut ups = 0u32;
-    loop {
+    let mut tab_downs = 0u32;
+    let mut tab_ups = 0u32;
+    let mut enter_downs = 0u32;
+    let mut enter_ups = 0u32;
+    let mut moves = 0u32;
+    let initial_switch = app.switch_on;
+    let mut switch_states = [false; 4];
+    let mut activations = 0usize;
+    while tab_downs < 2 || tab_ups < 2 || enter_downs < 2 || enter_ups < 2 {
         let count = match room.poll_keys(&mut events) {
             Ok(count) => count,
             Err(e) => fail(room, e.as_str()),
         };
         for event in events.iter().take(count) {
-            if event.code != 30 {
+            if event.code != 15 && event.code != 28 {
                 fail(room, "keyboard code");
             }
-            match event.action {
-                KEY_ACTION_DOWN => downs += 1,
-                KEY_ACTION_UP => ups += 1,
-                _ => {}
+            let Some(op) = focus_key_intent(u8::try_from(event.code).unwrap_or(0xFF), event.action, event.modifiers) else {
+                if event.code == 15 && event.action == KEY_ACTION_UP {
+                    tab_ups += 1;
+                } else if event.code == 28 && event.action == KEY_ACTION_UP {
+                    enter_ups += 1;
+                }
+                continue;
+            };
+            match op {
+                FocusOp::Next => {
+                    let before = app.ui.focus_node().map(|_| focus_index(app)).unwrap_or(255);
+                    let messages = app.ui.focus_move(FocusDir::Next);
+                    handle_messages(app, room, &messages);
+                    let after = focus_index(app);
+                    moves += 1;
+                    let mut line = Line::new(b"UITESTFOCUSMOVE ok step=");
+                    line.push_u32(moves);
+                    line.push(b" from=");
+                    line.push_u32(before);
+                    line.push(b" to=");
+                    line.push_u32(after);
+                    line.push(b" state=");
+                    line.push_u32(app.ui.focus_node().and_then(|n| app.ui.a11y_state(n)).unwrap_or(1).into());
+                    line.push(b"\n");
+                    line.print(room);
+                    if event.action == KEY_ACTION_DOWN {
+                        tab_downs += 1;
+                    }
+                }
+                FocusOp::Prev => fail(room, "focus prev in runtime"),
+                FocusOp::Activate => {
+                    let Some(node) = app.ui.focus_node() else {
+                        fail(room, "focus activate absent");
+                    };
+                    let message = Msg::Click { node };
+                    handle_message_one(app, room, &message);
+                    if event.action == KEY_ACTION_DOWN {
+                        enter_downs += 1;
+                        if activations < switch_states.len() {
+                            switch_states[activations] = app.switch_on;
+                        }
+                        activations += 1;
+                    }
+                }
             }
         }
-        if downs >= 1 && ups >= 1 {
-            break;
-        }
     }
-    let line = Line::new(b"UITESTKEY ok code=30 downs=1 ups=1\n");
+    app.render(room);
+    let mut line = Line::new(b"UITESTFOCUSACT ok node=");
+    line.push_u32(focus_index(app));
+    line.push(b" toggles=");
+    line.push_u32(activations as u32);
+    line.push(b" states=");
+    line.push_u32(initial_switch as u32);
+    for state in switch_states.iter().take(activations.min(switch_states.len())) {
+        line.push(b",");
+        line.push_u32(*state as u32);
+    }
+    line.push(b" final=");
+    line.push_u32(app.switch_on as u32);
+    line.push(b"\n");
+    line.print(room);
+    let mut line = Line::new(b"UITESTKEY ok code=28 tab=2 downs=");
+    line.push_u32(enter_downs);
+    line.push(b" ups=");
+    line.push_u32(enter_ups);
+    line.push(b"\n");
     line.print(room);
 }
+
+/// 树前序 focus index（0 起；无焦点 = 0 语义仅用于标记，不影响状态）。
+fn focus_index(app: &AppModel) -> u32 {
+    let seed = app.page.button.panel;
+    let mut order = [seed; 128];
+    let n = app.ui.focus_order_into(&mut order);
+    let Some(node) = app.ui.focus_node() else { return 0 };
+    (0..n)
+        .find(|i| order[*i] == node)
+        .map(|i| i as u32)
+        .unwrap_or(0)
+}
+
 
 #[link_section = ".text.entry"]
 #[no_mangle]
@@ -723,7 +807,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         room.print(b"UITESTPROBE ok\n");
     } else {
         let (x, y) = wait_two_clicks(&mut app, &mut room);
-        wait_real_keyboard(&mut room);
+        wait_real_keyboard(&mut app, &mut room);
         input_line(x, y).print(&room);
         let mut back = Line::new(b"UITESTBACK ok page=");
         back.push_u32(app.page_index as u32);

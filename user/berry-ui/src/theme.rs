@@ -70,6 +70,7 @@ pub enum InteractionState {
     Pressed,
     Disabled,
     Selected,
+    Focused,
 }
 
 /// 间距 token。数值单位是 quarter-vp，非像素。
@@ -152,6 +153,11 @@ impl Theme {
                 background: Color { r: 0xD6, g: 0xE4, b: 0xFF },
                 content: Color { r: 0x10, g: 0x2A, b: 0x66 },
                 border: Color { r: 0x9D, g: 0xBB, b: 0xFF },
+            },
+            InteractionState::Focused => StateColors {
+                background: Color { r: 0xE9, g: 0xF2, b: 0xFF },
+                content: Color { r: 0x0B, g: 0x25, b: 0x54 },
+                border: Color { r: 0x00, g: 0x74, b: 0xE0 },
             },
         }
     }

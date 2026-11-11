@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：F9 后的首个 BerryUI 地基补刀。目标不是给某个 app 私造滚动效果，而是把“结构性视口裁剪”下沉为 BerryUI retained tree / BerryGFX DisplayList 的通用能力。执行序背景见 [GUI框架地基路线-v1.11.md](GUI框架地基路线-v1.11.md)；组件 API 见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，guest 验收见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，F9 边界守卫见 [BerryGUILanding-F9收口与守卫-v1.0.md](BerryGUILanding-F9收口与守卫-v1.0.md)。
+> 定位：F9 后的首个 BerryUI 地基补刀。目标不是给某个 app 私造滚动效果，而是把“结构性视口裁剪”下沉为 BerryUI retained tree / BerryGFX DisplayList 的通用能力。执行序背景见 [GUI框架地基路线-v1.12.md](GUI框架地基路线-v1.12.md)；组件 API 见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md)，guest 验收见 [BerryUI-F5系统验收-v1.0.md](BerryUI-F5系统验收-v1.0.md)，F9 边界守卫见 [BerryGUILanding-F9收口与守卫-v1.0.md](BerryGUILanding-F9收口与守卫-v1.0.md)。
 
 ## §1 问题与裁决
 

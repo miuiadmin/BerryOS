@@ -7,9 +7,9 @@
 
 pub use crate::damage::RectI;
 pub use crate::desc::{
-    Axis, CircleProps, ClipProps, ColProps, GridProps, IconProps, ImageProps, Msg, MsgBuf, NodeId,
-    PadProps, PanelProps, Props, RectProps, RowProps, TextBuf, TextProps, TextStyle, ViewKind,
-    ViewSpec,
+    Axis, CircleProps, ClipProps, ColProps, FocusDir, GridProps, IconProps, ImageProps, Msg,
+    MsgBuf, NodeId, PadProps, PanelProps, Props, RectProps, RowProps, TextBuf, TextProps,
+    TextStyle, ViewKind, ViewSpec,
 };
 pub use crate::diagnostic::{HitDumpEntry, LayoutDumpEntry};
 pub use crate::layout::{CrossAlign, LayoutStat};
@@ -24,4 +24,32 @@ pub use crate::widgets::{
     AppBar, Button, Card, EmptyState, ListItem, Scaffold, ScrollView, Switch, TextVariant,
     WidgetContext, column, divider, icon, row, text,
 };
-pub use crate::{Ui, UiError, UiMain};
+pub use crate::{FocusEntry, Ui, UiError, UiMain};
+
+/// component focus 键意图（纯函数；引擎 FocusDir 与 keycode 分域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusOp {
+    Next,
+    Prev,
+    Activate,
+}
+
+/// Linux keymap 最小面：Tab/Shift+Tab 一维导航，Enter/Space 激活。
+/// UP 恒 None；Tab 只认 DOWN（防 REPEAT 连发），Activate 允许 REPEAT。
+pub fn focus_key_intent(code: u8, action: u8, modifiers: u8) -> Option<FocusOp> {
+    use berry_guiproto::{KEY_ACTION_DOWN, KEY_ACTION_REPEAT, KEY_ACTION_UP, KEY_MOD_SHIFT};
+    if action == KEY_ACTION_UP {
+        return None;
+    }
+    match code {
+        15 if action == KEY_ACTION_DOWN => Some(if modifiers & KEY_MOD_SHIFT != 0 {
+            FocusOp::Prev
+        } else {
+            FocusOp::Next
+        }),
+        28 | 57 if action == KEY_ACTION_DOWN || action == KEY_ACTION_REPEAT => {
+            Some(FocusOp::Activate)
+        }
+        _ => None,
+    }
+}

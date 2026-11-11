@@ -1592,7 +1592,22 @@ def verify_uitest_normal(
     _require_exact_count(
         text, "UITESTAST ok bytes=712 a11y=8", 2, "normal UITEST AST", log_path
     )
-    _require_exact_count(text, "UITESTRENDER ok seq=", 10, "normal UITEST render", log_path)
+    _require_exact_count(text, "UITESTRENDER ok seq=", 11, "normal UITEST render", log_path)
+    _require_exact_count(
+        text,
+        "UITESTFOCUSMOVE ok step=1 from=255 to=0 state=3",
+        1, "normal UITEST first focus move", log_path,
+    )
+    _require_exact_count(
+        text,
+        "UITESTFOCUSMOVE ok step=2 from=0 to=1 state=3",
+        1, "normal UITEST second focus move", log_path,
+    )
+    _require_exact_count(
+        text,
+        "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0",
+        1, "normal UITEST focus activate", log_path,
+    )
     _require_exact_count(text, MARK_UITEST_CLIP, 2, "normal UITEST clip", log_path)
     _require_exact_count(
         text,
@@ -1615,17 +1630,17 @@ def verify_uitest_normal(
         text, "WMKEYDROP bad ", 6, "normal unauthorized keyboard drops", log_path
     )
     route_down = re.findall(
-        r"WMKEYROUTE ok sid=([0-9]+) window=([0-9]+) code=30 action=1", text
+        r"WMKEYROUTE ok sid=([0-9]+) window=([0-9]+) code=([0-9]+) action=1", text
     )
     route_up = re.findall(
-        r"WMKEYROUTE ok sid=([0-9]+) window=([0-9]+) code=30 action=0", text
+        r"WMKEYROUTE ok sid=([0-9]+) window=([0-9]+) code=([0-9]+) action=0", text
     )
     if (
-        len(route_down) != 1
-        or len(route_up) != 1
-        or route_down[0][0] == "0"
-        or route_down[0][1] == "0"
+        len(route_down) != 4
+        or len(route_up) != 4
         or route_down != route_up
+        or sorted(entry[2] for entry in route_down) != ["15", "15", "28", "28"]
+        or any(entry[0] == "0" or entry[1] == "0" for entry in route_down)
     ):
         raise SmokeError(
             f"normal keyboard route: down={route_down} up={route_up}",
@@ -1633,7 +1648,7 @@ def verify_uitest_normal(
         )
     _require_exact_count(
         text,
-        "UITESTKEY ok code=30 downs=1 ups=1",
+        "UITESTKEY ok code=28 tab=2 downs=2 ups=2",
         1,
         "normal UITEST keyboard",
         log_path,
@@ -3362,24 +3377,33 @@ def run_normal_boot(args) -> int:
                 "normal UITEST keyboard wait", MARK_UITEST_KEY_WAIT,
                 args.click_timeout, boot.log_path,
             ) from None
-        log("normal-uitest: QMP 注入 KEY_A down/up（真实 virtio-keyboard）")
-        boot.qmp.tap_key(30)
+        wm_focus_before_focus = boot.log.text.count("WMFOCUS ok ")
+        log("normal-uitest: QMP 注入 Tab×2（component focus 前进）")
+        boot.qmp.tap_key(15)
+        boot.qmp.tap_key(15)
+        log("normal-uitest: QMP 注入 Enter×2（激活 Switch 两次，状态回 false）")
+        boot.qmp.tap_key(28)
+        boot.qmp.tap_key(28)
         input_re = rf"UITESTINPUT ok x={want_input[0]} y={want_input[1]}"
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: re.search(input_re, t) is not None
                 and "UITESTBACK ok page=0 switch=0" in t
-                and "UITESTKEY ok code=30 downs=1 ups=1" in t
+                and "UITESTFOCUSMOVE ok step=1 from=255 to=0" in t
+                and "UITESTFOCUSMOVE ok step=2 from=0 to=1" in t
+                and "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0" in t
+                and "UITESTKEY ok code=28 tab=2 downs=2 ups=2" in t
+                and t.count("WMFOCUS ok ") == wm_focus_before_focus
                 and t.count(MARK_UITEST_EXIT) > uitest_before,
-                f"{input_re} + BACK + KEY + EXIT",
+                f"{input_re} + BACK + FOCUS + KEY + EXIT",
                 args.click_timeout,
                 "normal UITEST pop/keyboard/exit",
             )
         except MissingMarkers:
             raise MissingMarkers(
                 "normal UITEST pop/keyboard/exit",
-                "input + back + key + exit",
+                "input + back + focus + key + exit",
                 args.click_timeout,
                 boot.log_path,
             ) from None
@@ -4407,10 +4431,20 @@ def self_test(args) -> int:
             "UITESTINPUT ok x=539 y=284\n"
             "UITESTRENDER ok seq=3 cmds=18\n"
             "UITESTBACK ok page=0 switch=0\n"
-            "WMKEYROUTE ok sid=15 window=14 code=30 action=1\n"
-            "WMKEYROUTE ok sid=15 window=14 code=30 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=15 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=28 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=28 action=0\n"
+            "WMKEYROUTE ok sid=15 window=15 code=28 action=1\n"
+            "WMKEYROUTE ok sid=15 window=15 code=28 action=0\n"
             "UITESTKEYWAIT ok input=9\n"
-            "UITESTKEY ok code=30 downs=1 ups=1\n"
+            "UITESTFOCUSMOVE ok step=1 from=255 to=0 state=3\n"
+            "UITESTFOCUSMOVE ok step=2 from=0 to=1 state=3\n"
+            "UITESTRENDER ok seq=4 cmds=18\n"
+            "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n"
+            "UITESTKEY ok code=28 tab=2 downs=2 ups=2\n"
             f"{MARK_UITEST_DESTROY}\n{MARK_UITEST_EXIT}\n"
         )
         fake_u = uitest_boot + uitest_runtime
@@ -4454,7 +4488,83 @@ def self_test(args) -> int:
         expect_error(
             "UITEST 键码造假",
             lambda: verify_uitest_normal(
-                fake_u.replace("UITESTKEY ok code=30", "UITESTKEY ok code=31", 1),
+                fake_u.replace("UITESTKEY ok code=28", "UITESTKEY ok code=29", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 缺 component focus 前进",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTFOCUSMOVE ok step=2 from=0 to=1 state=3\n", "", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 焦点第一步 payload 造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTFOCUSMOVE ok step=1 from=255 to=0 state=3\n",
+                    "UITESTFOCUSMOVE ok step=1 from=254 to=0 state=3\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 焦点激活状态链造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n",
+                    "UITESTFOCUSACT ok node=1 toggles=2 states=0,0,0 final=0\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 键路由 sid 造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n",
+                    "WMKEYROUTE ok sid=0 window=15 code=15 action=1\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 键路由 code 集造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "WMKEYROUTE ok sid=15 window=15 code=28 action=1\n",
+                    "WMKEYROUTE ok sid=15 window=15 code=29 action=1\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST 键路由 down/up 错配",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "WMKEYROUTE ok sid=15 window=15 code=15 action=1\n",
+                    "WMKEYROUTE ok sid=15 window=15 code=15 action=0\n", 1,
+                ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST focus render 计数不足",
+            lambda: verify_uitest_normal(
+                fake_u.replace("UITESTRENDER ok seq=4 cmds=18\n", "", 1),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "UITEST component focus 激活重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n",
+                    "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n"
+                    "UITESTFOCUSACT ok node=1 toggles=2 states=0,1,0 final=0\n",
+                    1,
+                ),
                 snap_u, 1,
             ),
         )
@@ -4462,9 +4572,9 @@ def self_test(args) -> int:
             "UITEST 键盘 marker 重复",
             lambda: verify_uitest_normal(
                 fake_u.replace(
-                    "UITESTKEY ok code=30 downs=1 ups=1\n",
-                    "UITESTKEY ok code=30 downs=1 ups=1\n"
-                    "UITESTKEY ok code=30 downs=1 ups=1\n",
+                    "UITESTKEY ok code=28 tab=2 downs=2 ups=2\n",
+                    "UITESTKEY ok code=28 tab=2 downs=2 ups=2\n"
+                    "UITESTKEY ok code=28 tab=2 downs=2 ups=2\n",
                     1,
                 ),
                 snap_u, 1,

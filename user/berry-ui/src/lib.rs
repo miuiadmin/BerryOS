@@ -109,6 +109,21 @@ pub struct A11yEntry {
     pub label: TextBuf,
 }
 
+// ---------- component focus 侧表（GUI-14 C1） ----------
+
+/// component focusable 容量（与 a11y 侧表同帽；超表 → NodeFull loud）。
+pub const FOCUS_MAX: usize = 32;
+
+/// 可聚焦组件登记项：`node` 是语义焦点锚（Button/Switch panel），`visual`
+/// 是焦点变化时需要 invalidate 的视觉承载节点；禁用项保留在表中但不参与
+/// 导航，便于同一 widget 从 Disabled 恢复后无需重建顺序。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusEntry {
+    pub node: NodeId,
+    pub visual: Option<NodeId>,
+    pub enabled: bool,
+}
+
 // ---------- press_map 侧表（GUI-6 D18——段D） ----------
 
 /// press_map 容量（D18：声明式 pressed-state 映射帽；超 = NodeFull loud
@@ -255,6 +270,8 @@ pub struct Ui<const N: usize> {
     /// Berry Room 注入系统 A8 VMO，避免 app 复制 CJK/HD 字表。
     fonts: Option<&'static dyn metrics::FontSource>,
     a11y: [Option<A11yEntry>; A11Y_MAX], // a11y 侧表（D12——apply 落/encode 读）
+    focus: [Option<FocusEntry>; FOCUS_MAX], // component focusable 侧表
+    focused: Option<NodeId>, // 当前 component focus（窗口焦点仍在 wmd）
     press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
     press_map_n: usize,
 }
@@ -359,6 +376,8 @@ impl<const N: usize> Ui<N> {
             icons: &DEFAULT_ICON_SOURCE,
             fonts: None,
             a11y: [None; A11Y_MAX],
+            focus: [None; FOCUS_MAX],
+            focused: None,
             press_map: [PressEntry {
                 trigger: NodeId(0),
                 visual: NodeId(0),
@@ -541,6 +560,8 @@ impl<const N: usize> Ui<N> {
         }
         self.deps.clear(); // 旧树 NodeId 全悬空——边表整清（dep 表侧单源）
         self.a11y = [None; A11Y_MAX]; // 同理整清（D12 侧表随树生命周期）
+        self.focus = [None; FOCUS_MAX];
+        self.focused = None;
         self.press_map_n = 0; // 同理整清（D18 表随树生命周期——悬空 id 无还原义）
         self.input_n = 0;
         self.hist_len = 0;
@@ -769,6 +790,24 @@ impl<const N: usize> Ui<N> {
                 self.a11y[k] = None;
             }
             k += 1;
+        }
+        // C1 focus 生命周期同理：子树语义锚清除；当前焦点若在被摘子树，
+        // component focus 归空（窗口焦点是否保留由 wmd 单独裁决）。
+        let mut k = 0usize;
+        while k < FOCUS_MAX {
+            let hit = self.focus[k]
+                .as_ref()
+                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
+                .unwrap_or(false);
+            if hit {
+                self.focus[k] = None;
+            }
+            k += 1;
+        }
+        if let Some(node) = self.focused {
+            if list[..cnt].contains(&(node.0 & 0xFFFF)) {
+                self.focused = None;
+            }
         }
         Ok(())
     }
@@ -1041,6 +1080,171 @@ impl<const N: usize> Ui<N> {
             .filter(|e| self.slot_of(e.node).is_ok())
     }
 
+    // —— component focus（GUI-14 C1：树序一维导航；窗口焦点权威仍在 wmd） ——
+
+    /// 登记/覆写 focusable。`visual` 为 None 时焦点变化只 dirty 语义锚；
+    /// widget 通常传 panel 自身。Disabled 项可保留登记但不参与导航。
+    pub fn set_focusable(
+        &mut self, node: NodeId, visual: Option<NodeId>, enabled: bool,
+    ) -> Result<(), UiError> {
+        self.slot_of(node)?;
+        if let Some(v) = visual {
+            self.slot_of(v)?;
+        }
+        if self.focused == Some(node) && !enabled {
+            self.set_focus_internal(None);
+        }
+        if let Some(e) = self.focus.iter_mut().find(|e| {
+            e.as_ref().is_some_and(|e| e.node == node)
+        }) {
+            *e = Some(FocusEntry { node, visual, enabled });
+            return Ok(());
+        }
+        let Some(slot) = self.focus.iter().position(|e| e.is_none()) else {
+            return Err(UiError::NodeFull);
+        };
+        self.focus[slot] = Some(FocusEntry { node, visual, enabled });
+        Ok(())
+    }
+
+    /// 摘除 focusable；幂等。持焦时 component focus 归空并 dirty 视觉，
+    /// 但不合成 FocusOut——视觉属主必须在禁用/摘除路径同步还原 ring。
+    pub fn take_focusable(&mut self, node: NodeId) -> bool {
+        let Some(slot) = self.focus.iter().position(|e| {
+            e.as_ref().is_some_and(|e| e.node == node)
+        }) else {
+            return false;
+        };
+        self.focus[slot] = None;
+        if self.focused == Some(node) {
+            self.set_focus_internal(None);
+        }
+        true
+    }
+
+    /// focusable 活性迭代（按登记序，非导航序；导航序见
+    /// [`Self::focus_order_into`]）。
+    pub fn focus_iter(&self) -> impl Iterator<Item = &FocusEntry> {
+        self.focus.iter().flatten().filter(|e| self.slot_of(e.node).is_ok())
+    }
+
+    /// 当前 component focus 语义锚。
+    pub fn focus_node(&self) -> Option<NodeId> {
+        self.focused.filter(|n| self.slot_of(*n).is_ok())
+    }
+
+    /// 节点是否持 component focus（活性过滤）。
+    pub fn is_focused(&self, node: NodeId) -> bool {
+        self.focus_node() == Some(node)
+    }
+
+    /// a11y state 位：已登记 a11y 的节点返回 VISIBLE，焦点节点再 OR
+    /// FOCUSED。组件焦点不要求节点必然登记 a11y；未登记返 None。
+    pub fn a11y_state(&self, node: NodeId) -> Option<u8> {
+        if !self.a11y_iter().any(|e| e.node == node) {
+            return None;
+        }
+        let mut state = berry_guiproto::surface::A11Y_STATE_VISIBLE;
+        if self.is_focused(node) {
+            state |= berry_guiproto::surface::A11Y_STATE_FOCUSED;
+        }
+        Some(state)
+    }
+
+    /// 树前序 focusable 顺序写入 out，返回数量。禁用项不进序。
+    pub fn focus_order_into(&self, out: &mut [NodeId]) -> usize {
+        let mut slots = [NONE; N];
+        let mut n = 0usize;
+        self.collect_sibs(self.root_slot, &mut slots, &mut n);
+        let mut count = 0usize;
+        for slot in slots.iter().take(n) {
+            let Some(node) = self.nodes.get(*slot as usize).and_then(|o| o.as_ref()) else {
+                continue;
+            };
+            let id = pack_id(*slot as usize, node.gen);
+            if self.focus.iter().flatten().any(|e| e.node == id && e.enabled)
+                && count < out.len()
+            {
+                out[count] = id;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// 显式聚焦指定 focusable。活但未登记/禁用 → 空 MsgBuf；悬空 →
+    /// NodeBad。成功且状态变化时输出 FocusOut（旧值存在）+ FocusIn。
+    pub fn focus_set(&mut self, node: NodeId) -> Result<desc::MsgBuf, UiError> {
+        self.slot_of(node)?;
+        if !self.focus.iter().flatten().any(|e| e.node == node && e.enabled) {
+            return Ok(desc::MsgBuf::new());
+        }
+        let mut out = desc::MsgBuf::new();
+        let old = self.focus_node();
+        if old == Some(node) {
+            return Ok(out);
+        }
+        if let Some(old) = old {
+            out.push(Msg::FocusOut { node: old }).map_err(|_| UiError::MsgFull)?;
+        }
+        self.set_focus_internal(Some(node));
+        out.push(Msg::FocusIn { node }).map_err(|_| UiError::MsgFull)?;
+        Ok(out)
+    }
+
+    /// 清空 component focus；输出 FocusOut。窗口焦点不受影响。
+    pub fn focus_clear(&mut self) -> desc::MsgBuf {
+        let mut out = desc::MsgBuf::new();
+        let Some(old) = self.focus_node() else { return out };
+        self.set_focus_internal(None);
+        let _ = out.push(Msg::FocusOut { node: old });
+        out
+    }
+
+    /// 树前序一维焦点导航（v1 环绕，对齐 Compose 1D Tab 语义）。
+    /// 零可焦项或唯一项自指 → 空 MsgBuf，不产生 FocusOut/In 抖动。
+    pub fn focus_move(&mut self, dir: desc::FocusDir) -> desc::MsgBuf {
+        let mut out = desc::MsgBuf::new();
+        let mut order = [NodeId(0); N];
+        let n = self.focus_order_into(&mut order);
+        if n == 0 {
+            return out;
+        }
+        let current = self.focus_node();
+        let target = match current.and_then(|cur| order[..n].iter().position(|x| *x == cur)) {
+            Some(i) => match dir {
+                desc::FocusDir::Next => order[(i + 1) % n],
+                desc::FocusDir::Prev => order[(i + n - 1) % n],
+            },
+            None => order[0],
+        };
+        if current == Some(target) {
+            return out;
+        }
+        if let Some(old) = current {
+            let _ = out.push(Msg::FocusOut { node: old });
+        }
+        self.set_focus_internal(Some(target));
+        let _ = out.push(Msg::FocusIn { node: target });
+        out
+    }
+
+    /// 内部落焦：dirty 旧/新语义锚与登记视觉锚。不产生事件。
+    fn set_focus_internal(&mut self, new: Option<NodeId>) {
+        let old = self.focused;
+        self.focused = new;
+        for node in [old, new].into_iter().flatten() {
+            let visual = self
+                .focus
+                .iter()
+                .flatten()
+                .find(|e| e.node == node)
+                .and_then(|e| e.visual)
+                .unwrap_or(node);
+            let _ = self.invalidate(visual);
+        }
+    }
+
     // —— press_map 声明式 pressed 短路径（GUI-6 D18——§7.1） ——
 
     /// pressed 视觉映射登记（D18）：`entries` = `(trigger, visual)` 对；
@@ -1168,7 +1372,7 @@ impl<const N: usize> Ui<N> {
                 }
             }
             Msg::Click { .. } | Msg::DragStart { .. } | Msg::DragMove { .. }
-            | Msg::DragEnd { .. } => {}
+            | Msg::DragEnd { .. } | Msg::FocusIn { .. } | Msg::FocusOut { .. } => {}
         }
     }
 

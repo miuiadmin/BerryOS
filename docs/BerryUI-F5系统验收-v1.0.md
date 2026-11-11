@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F5 的真实消费者验收记录与现行边界。执行序权威 = [GUI框架地基路线-v1.11.md](GUI框架地基路线-v1.11.md)；组件与主题契约见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md) 与 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只描述已落地的 `uitest` 验收面；Surface Mode、IME、a11y sidecar 与安全区的协议词表已由 P0 冻结。
+> 定位：GUI F5 的真实消费者验收记录与现行边界。执行序权威 = [GUI框架地基路线-v1.12.md](GUI框架地基路线-v1.12.md)；组件与主题契约见 [BerryUI-F4组件第一版-v1.1.md](BerryUI-F4组件第一版-v1.1.md) 与 [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)。本文只描述已落地的 `uitest` 验收面；Surface Mode、IME、a11y sidecar 与安全区的协议词表已由 P0 冻结。
 
 ## §1 验收目标
 

@@ -274,6 +274,15 @@ pub enum Msg {
     /// 非拖收尾 = 0；i32 钳 ±32768）。
     DragEnd { node: NodeId, vx: i32, vy: i32 },
     Cancel { node: NodeId },
+    FocusIn { node: NodeId },
+    FocusOut { node: NodeId },
+}
+
+/// component focus 一维导航方向（与拖拽锁轴 [`Axis`] 分域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDir {
+    Next,
+    Prev,
 }
 
 /// 定容消息缓冲（MSG_MAX=8；满 → `UiError::MsgFull` loud——不自陷不静默丢）。

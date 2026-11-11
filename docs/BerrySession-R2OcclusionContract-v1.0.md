@@ -5,7 +5,7 @@
 > 定位：GUI-14 D5 / B6 的第一收口刀。R2 不做 FormMetrics、SafeArea 容器、
 > IME KeyboardAvoider 或 resize/config event；只钉死窗口 raw bounds、
 > persistent occlusion、buffer stride 与 damage 坐标空间的单一合约。
-> 执行序权威 = [GUI框架地基路线-v1.11.md](GUI框架地基路线-v1.11.md)。
+> 执行序权威 = [GUI框架地基路线-v1.12.md](GUI框架地基路线-v1.12.md)。
 
 ## §1 背景
 
