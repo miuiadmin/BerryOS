@@ -295,7 +295,7 @@ jobs:
           else
             echo "smoke-x86: brew 前缀无 qemu-system-x86_64，交 PATH 解析（缺件将 loud 红）"
           fi
-          unshare -Urn sh -c 'ip link set lo up && exec bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"'
+          bash tools/smoke-x86.sh "arch/x86_64/cargo-target/x86_64-unknown-none/release/berry-x86"
 
       # ---------- V-4 M-G1 gate：img-boot 独立冒烟（AAVMF 挂盘自举） ----------
       # just 单一入口（recipe 依赖 image = build + build-boot + mkimage 全链）；
@@ -309,7 +309,7 @@ jobs:
           SMOKE_PHASES: boot
           AAVMF_CODE: /home/linuxbrew/.linuxbrew/share/qemu/AAVMF-shared/edk2-aarch64-code.fd
           AAVMF_VARS: /home/linuxbrew/.linuxbrew/share/qemu/AAVMF-shared/edk2-arm-vars.fd
-        run: unshare -Urn sh -c 'ip link set lo up && exec just smoke-image'
+        run: just smoke-image
 
       # ---------- SEC-01 §4.5 件 22 + 件 23 尾面（CI/台账） ----------
       # 镜像哈希清单：smoke-image 依赖链（just image → mkimage）已产
