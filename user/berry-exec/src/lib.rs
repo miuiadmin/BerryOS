@@ -34,7 +34,7 @@ use berry_sys::{
     berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
     berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY, BERRY_ERR_NO_MEMORY,
     CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_SEND,
-    RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE, VMO_OPT_DEMAND,
+    RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE, VMO_OPT_DEMAND,
 };
 // X-5 窗规划纯面（`plan_wins`/`WinPlan`/`WinKind`）自本 crate 外迁
 // berry-winplan（host 可测——原处内嵌 FFI 是不可测根因），此处单源引回。
@@ -708,7 +708,9 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     // 8 槽（A2-3：[4] rootfs / [5] fs / [6] netd；GUI-4 段②：+ [7] input
     // ——svcmgr bsh arm 四 extras；bsh 内 uu_run 族仍 ≤2 消费同一面零漂移）。
     let mut gift = [0 as Handle; 8];
-    if berry_handle_duplicate(stdout, RIGHT_SEND, &mut gift[0]) != 0 {
+    // 三 dup 掩码均保 TRANSFER 位——gift 数组整体随 env 块 channel_send 迁
+    // 交子表（send 随行预检：去位即 -EACCES 自陷；dup 只紧不松须显式保位）。
+    if berry_handle_duplicate(stdout, RIGHT_SEND | RIGHT_TRANSFER, &mut gift[0]) != 0 {
         trap();
     }
     let stdin_pair = stdin_feed.map(|_| channel_pair());
@@ -745,10 +747,16 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     //    子内 `self_proc_h()==0`（无 stdin 面）→ pthread_create EAGAIN
     //    守门（旧桩语义零漂移）。
     if stdin_pair.is_some() || stdin_handle.is_some() {
-        if berry_handle_duplicate(hp, RIGHT_MANAGE | RIGHT_DUPLICATE, &mut gift[2]) != 0 {
+        if berry_handle_duplicate(hp, RIGHT_MANAGE | RIGHT_DUPLICATE | RIGHT_TRANSFER, &mut gift[2])
+            != 0
+        {
             trap();
         }
-        if berry_handle_duplicate(hv, RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE, &mut gift[3]) != 0
+        if berry_handle_duplicate(
+            hv,
+            RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE | RIGHT_TRANSFER,
+            &mut gift[3],
+        ) != 0
         {
             trap();
         }

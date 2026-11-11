@@ -73,7 +73,7 @@ use berry_libc::io::{app_cli_h, self_vmar_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_handle_duplicate, berry_object_wait_many,
     berry_object_wait_one, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_WRITE,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_ui::damage::DamageSet;
@@ -392,9 +392,12 @@ pub fn run(
                 fail(&format!("raster submit {e:?}"));
             }
 
-            // SUBMIT：fresh READ dup 别名随行（send 即 take——原 vmo 留表）。
+            // SUBMIT：fresh READ dup 别名随行（send 即 take——原 vmo 留表；
+            // TRANSFER 保位——随行预检执法，dup 只紧不松须显式保位）。
             let mut alias: Handle = 0;
-            if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+            if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
+                || alias == 0
+            {
                 fail("dup alias");
             }
             let (flags, rects, k) = if full {

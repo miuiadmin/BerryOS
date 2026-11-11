@@ -111,7 +111,7 @@ pub fn run() {
 /// 的 EL0 正向验收在 user_spawner/user_child）；T-1 thread_start 门控面（F3b 段）。
 #[allow(clippy::unwrap_used)]
 fn test_syscall() {
-    use crate::handle::{KernelObj, RIGHT_READ, RIGHT_WRITE};
+    use crate::handle::{KernelObj, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE};
     use crate::syscall::{
         bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_SIGNAL_SEND,
         NR_SIGNAL_TAKE, NR_VMO_CREATE,
@@ -1671,8 +1671,9 @@ fn test_syscall() {
     // H6. handle 随消息迁移：VMO 令牌随消息过通道——原值立即 -EBADF（take 出
     //     表）、对端 recv 落回**本表新值**（同表演示；跨表链在 EL0 spawner/
     //     child），新值三门控可查且对象可用（rights 随令牌走）。
+    //     hsrc 携 TRANSFER——send 随行预检 4-4b 起执法（缺位 -EACCES）。
     let hsrc = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER)
         .expect("SYSCALL：insert hsrc");
     // SAFETY: 同上。
     unsafe { H_HND = [hsrc, 0, 0, 0, 0, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
@@ -1711,8 +1712,9 @@ fn test_syscall() {
 
     // H7. 原子序：随行 [好 handle, 垃圾值] → -EBADF 且好 handle **原值仍活**
     //     （预检全量、take 零发生）；随行重复值 → -EINVAL（防首 take 作废次值）。
+    //     hgd 同携 TRANSFER（随行资格——原子序用例先过 TRANSFER 门再到 -EBADF 面）。
     let hgd = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER)
         .expect("SYSCALL：insert hgd");
     // SAFETY: 同上。
     unsafe { H_HND = [hgd, 0xDEAD_BEEF, 0, 0, 0, 0, 0, 0] };

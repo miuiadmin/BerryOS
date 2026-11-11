@@ -54,7 +54,7 @@ use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_vmar_map,
     berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use std::process::exit;
 
@@ -383,8 +383,10 @@ fn main() {
     // px() 抽样 7 点恒落并集内，§9 A5-b；flags=0 非 FULL =「K>0 或 FULL
     // 二取一」立法的 K 侧）。随行 = 本 VMO 的 READ dup 别名：send 即 take
     // （A6-b）——原 vmo handle 留表，PREPARE 时再 dup 新别名。
+    //（A6-b）；TRANSFER 保位——别名随 SUBMIT channel_send 迁出（send 随行
+    // 预检执法；dup 只紧不松须显式保位）。
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
         fail("dup alias");
     }
     let half = (h / 2) as u32;
@@ -481,7 +483,7 @@ fn main() {
     }
 
     let mut alias2: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias2) != 0 || alias2 == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias2) != 0 || alias2 == 0 {
         fail("dup alias2");
     }
     let preq = gp::PrepareReq {

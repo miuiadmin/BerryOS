@@ -95,7 +95,7 @@ use berry_sys::{
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
     berry_object_wait_one, berry_process_terminate, berry_signal_send, Handle, BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
-    SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 // A2-3：netd 会话化协议（EVS echo server 自验的 RPC 编解码面）。
 use berry_netdproto as ndp;
@@ -5322,8 +5322,11 @@ fn run_capture(name: &str, stdin: Option<&[u8]>, args: &[&str]) -> Option<(RunOu
 fn fs_gifts() -> Option<(Handle, Handle)> {
     let mut rootfs_dup = 0 as Handle;
     let mut fs_dup = 0 as Handle;
-    if berry_handle_duplicate(rootfs_h(), RIGHT_READ, &mut rootfs_dup) != 0
-        || berry_handle_duplicate(fs_h(), RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0
+    // TRANSFER 保位：两 dup 随 env 块 channel_send 迁交子进程（send 随行
+    // 预检执法；dup 只紧不松须显式保位）。
+    if berry_handle_duplicate(rootfs_h(), RIGHT_READ | RIGHT_TRANSFER, &mut rootfs_dup) != 0
+        || berry_handle_duplicate(fs_h(), RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut fs_dup)
+            != 0
     {
         // 半途失败：可能已成一枚——两枚都试关（未成的关返 -EBADF 无害）。
         let _ = berry_handle_close(rootfs_dup);
@@ -5349,7 +5352,8 @@ fn net_gifts() -> Option<(Handle, Handle, Handle)> {
     }
     let (rootfs_dup, fs_dup) = fs_gifts()?;
     let mut netd_dup = 0 as Handle;
-    if berry_handle_duplicate(netd_h(), RIGHT_SEND | RIGHT_RECV, &mut netd_dup) != 0 {
+    if berry_handle_duplicate(netd_h(), RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut netd_dup) != 0
+    {
         // 半途失败：前两枚已 dup 成功——三枚都试关（未成的 -EBADF 无害）。
         let _ = berry_handle_close(rootfs_dup);
         let _ = berry_handle_close(fs_dup);

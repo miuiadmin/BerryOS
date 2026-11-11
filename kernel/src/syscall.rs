@@ -522,7 +522,8 @@ pub fn soakload_churn_readout() -> u64 {
 }
 
 /// `vmo_create(size, options, *out)`：建匿名 VMO。默认授 READ|WRITE|MAP|
-/// DUPLICATE（全 Rights 面减 TRANSFER——transfer 随 3-4 channel 落地）。
+/// DUPLICATE|TRANSFER（Zircon 模型：新 handle 默认携 TRANSFER——send 随行
+/// 预检 4-4b 起执法，去位迁移须显式 dup 收紧）。
 /// options：bit0 = `VMO_OPT_DEMAND`（G4-2，§5-① 裁决）——按需后备 VMO
 /// （demand 对象属性，映射走 vmar_map 对象级分流 map_demand，首触缺页由
 /// EL0 pager 经 0x21 供给）+ **额外授 SET_POLICY**（0x21 门权——普通 dup
@@ -552,11 +553,12 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
         Err(e) => return voe(e) as i64,
     };
     // G4-2：demand 位附加 SET_POLICY（§5-① 裁决——demand VMO 首消费，
-    // 0x21 双验之一；默认面权利集逐位不变）。
+    // 0x21 双验之一；默认面权利集逐位不变）+ TRANSFER（Zircon 默认携位）。
     let rights = if demand {
         RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_SET_POLICY
+            | RIGHT_TRANSFER
     } else {
-        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE
+        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_TRANSFER
     };
     match caller_table(tf) {
         Ok(t) => match t.insert(KernelObj::Vmo(vmo), rights) {
@@ -1356,9 +1358,12 @@ extern "C" fn sys_vmar_allocate(tf: &mut TrapFrame) -> i64 {
 /// `process_create(job, options, *process, *vmar)`：建空进程。**双出参**
 /// （Zircon `zx_process_create` 同形——ABI §8.3 v1 修正）：父进程靠返回的
 /// root Vmar handle 才能向子地址空间映射代码/栈，只给 process handle 不够用。
-/// 出权：process = MANAGE|DUPLICATE，root Vmar = MAP|MANAGE|DUPLICATE（与
-/// boot root 同面）。v1 参数面：`job` 恒 0（Job 对象 v2——**创建权未设防的
-/// 已知豁口**，落地记录见能力模型）、`options` 恒 0。
+/// 出权：process = MANAGE|DUPLICATE|TRANSFER，root Vmar =
+/// MAP|MANAGE|DUPLICATE|TRANSFER（boot root 同面 + TRANSFER——Zircon 新
+/// handle 默认携位模型；berry-exec env 块把 self-proc/self-vmar dup 随
+/// channel_send 迁交子进程，去位即断赠链）。v1 参数面：`job` 恒 0（Job
+/// 对象 v2——**创建权未设防的已知豁口**，落地记录见能力模型）、`options`
+/// 恒 0。
 extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     let (job, options, p_out, v_out) = (tf.regs[1], tf.regs[2] as u32, tf.regs[3], tf.regs[4]);
     if job != 0 || options != 0 {
@@ -1386,7 +1391,7 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     let (ttbr0, asid) = (vmar.ttbr0_pa(), vmar.asid());
     let hv = match t.insert(
         KernelObj::Vmar(vmar),
-        RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE,
+        RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE | RIGHT_TRANSFER,
     ) {
         Ok(h) => h,
         Err(e) => return e as i64, // 表满/gen 尽：-ENOMEM，vmar 正常 drop（先占槽后装箱，无泄漏）
@@ -1398,7 +1403,7 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     };
     // SAFETY: vobj 在表（刚插入且类型 Vmar）；Process 构造即钉住 vmar。
     let proc = unsafe { crate::process::Process::new(vobj, ttbr0, asid) };
-    match t.insert(KernelObj::Process(proc), RIGHT_MANAGE | RIGHT_DUPLICATE) {
+    match t.insert(KernelObj::Process(proc), RIGHT_MANAGE | RIGHT_DUPLICATE | RIGHT_TRANSFER) {
         Ok(hp) => {
             let r1 = copy_out_u32(el1, p_out, hp);
             let r2 = copy_out_u32(el1, v_out, hv);
@@ -2770,8 +2775,9 @@ fn policy_tbl_parse(
 
 /// `channel_create(options, *out0, *out1)`（4-3c 起 options 首参，Zircon/
 /// `event_create` 同形）：一次建一对端点（`channel.rs` 两端互指互钉——一端
-/// 活则对端对象必活）。两端均授 **SEND|RECV|DUPLICATE**（对称权利；TRANSFER
-/// 位同 DUPLICATE 的 vocab 政策：已定义不执法）。options：bit0 =
+/// 活则对端对象必活）。两端均授 **SEND|RECV|DUPLICATE|TRANSFER**（对称
+/// 权利；TRANSFER 随 send 随行预检执法——Zircon 新 handle 默认携位模型）。
+/// options：bit0 =
 /// [`CHAN_OPT_NO_INTENT`]（intent opt-out，两端同置——通道级不传播）；其余位
 /// → -EINVAL（options 纪律）。
 extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
@@ -2788,7 +2794,7 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE;
+    let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE | RIGHT_TRANSFER;
     // 端点装配 try 化（3b3 H2）：队列预储 CHAN_DEPTH × Message ≈ 2.7KB/端，
     // 失败先于一切入表——零回滚面，折 -ENOMEM。
     let (Some(end0), Some(end1)) =
@@ -2875,8 +2881,9 @@ fn irq_window<R>(f: impl FnOnce() -> R) -> R {
 /// 落进**它的**表——能力随消息跨表迁移（能力模型 §4）。
 ///
 /// 原子序（任一步失败 = 调用者表零变化）：参数上限（no-panic 前置）→ 门控 →
-/// 对端满检 → 随行值全量预检（活值 + 数组内无重复——重复值先 take 会作废后值，
-/// 回滚也换值）→ 载荷拷入 → 全量 take → 压队列。take 失败仅剩不可达防御面
+/// 对端满检 → 随行值全量预检（活值 + RIGHT_TRANSFER 迁移资格 + 数组内无
+/// 重复——重复值先 take 会作废后值，回滚也换值）→ 载荷拷入 → 全量 take →
+/// 压队列。take 失败仅剩不可达防御面
 /// （预检后单核无插队），回滚重插（值或变、语义活）。
 ///
 /// **4-4 fastpath/slowpath 分层**（`IPC设计.md` §7 检查链）：共享前缀（上列
@@ -2947,9 +2954,38 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     for i in 0..nhandles {
         hvals[i] = u32::from_le_bytes([hbuf[i * 4], hbuf[i * 4 + 1], hbuf[i * 4 + 2], hbuf[i * 4 + 3]]);
     }
+    // 随行 handle 预检（每枚两查）：活值 + **RIGHT_TRANSFER 迁移资格**——
+    // 安全轮 2 Medium 缺口关闭（`docs/阶段沿革.md`「RIGHT_TRANSFER 零执法」）：
+    // 迁移即能力委托，授予方去 TRANSFER 位的 handle 不得随消息转发第三方
+    //（Zircon `zx_channel_write` 对随行 handle 的 ZX_RIGHT_TRANSFER 同款门）。
+    // 死值 -EBADF（探活语义不变）、活值缺位 -EACCES。rights 附着槽上随
+    // handle 走，但 HandleTable 无类型无关查询面（`alive` 只回 bool、
+    // `get_raw` 先验类型）——按在册类型逐一 `get_raw(need=0)` 探测，命中者
+    // 即出槽 rights 且探活内联（全类型未命中 = 死值）。类型表 = KernelObj
+    // 全变体镜像（新增对象类型须同步）；7 次定点查表 × nhandles ≤ 4，较
+    // `holder_has` 的 64 槽全扫更廉，热路径成本可忽略。
     for i in 0..nhandles {
-        if !t.alive(hvals[i]) {
-            return ERR_BAD_HANDLE as i64;
+        let mut hit: Option<Rights> = None;
+        for ty in [
+            ObjType::Process,
+            ObjType::Thread,
+            ObjType::Vmo,
+            ObjType::Vmar,
+            ObjType::Channel,
+            ObjType::Event,
+            ObjType::SuspendToken,
+        ] {
+            if let Ok((_, rights)) = t.get_raw(hvals[i], ty, 0) {
+                hit = Some(rights);
+                break;
+            }
+        }
+        match hit {
+            // 全类型未命中 = 死值（alive 语义内联于探测）
+            None => return ERR_BAD_HANDLE as i64,
+            // 活值缺 TRANSFER 位 = 无迁移资格（能力委托流转受控面）
+            Some(r) if r & RIGHT_TRANSFER == 0 => return ERR_ACCESS_DENIED as i64,
+            _ => {}
         }
     }
     // 数组内重复预检（W3-Q9 单源判据——循环体见函数注释原子序论证）。
@@ -3288,8 +3324,9 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
 // ---- event_create（3-4c；对象 = `event.rs` 纯用户位掩码）----
 
 /// `event_create(options, *out)`：建一个 Event（出生信号全零）。`options` v1
-/// 恒 0（非 0 → -EINVAL，ABI §8.3 注记）；授 **SIGNAL|DUPLICATE**——持有者可
-/// 置/清位、可复制授权给同伴（等的一方 dup 到只读即可，wait 不需权利位）。
+/// 恒 0（非 0 → -EINVAL，ABI §8.3 注记）；授 **SIGNAL|DUPLICATE|TRANSFER**
+/// ——持有者可置/清位、可复制授权给同伴（等的一方 dup 到只读即可，wait 不
+/// 需权利位）；TRANSFER = send 随行迁移资格（Zircon 默认携位模型）。
 extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
     let (options, out) = (tf.regs[1], tf.regs[2]);
     if options != 0 {
@@ -3300,7 +3337,7 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let h = match t.insert(KernelObj::Event(Event::new()), RIGHT_SIGNAL | RIGHT_DUPLICATE) {
+    let h = match t.insert(KernelObj::Event(Event::new()), RIGHT_SIGNAL | RIGHT_DUPLICATE | RIGHT_TRANSFER) {
         Ok(h) => h,
         Err(e) => return e as i64, // 表满/gen 尽/装箱 OOM——对象未入表，零回滚面
     };

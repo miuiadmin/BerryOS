@@ -794,18 +794,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // BOOTSTRAP_HT，PI 受捐判定只看自己的表）+ 稳态等待走 **wait_many
     // （WAIT_ANY）**——PI 双保险（私有表断错捐喷洒、哨兵断 donor 边，详见
     // spawn 处说明，勿改回 wait_one(endK)）。endU（发端 ObjRef）以 insert_ref
-    // 落各用户表（RIGHT_SEND）——**用户打印全部改走真 IPC**（HAL 调试槽
+    // 落各用户表（RIGHT_SEND|RIGHT_TRANSFER——TRANSFER 支持下游 dup 转赠）
+    // ——**用户打印全部改走真 IPC**（HAL 调试槽
     // 0xFE/0xFF 退役）。通道 opt-out（4-3c 五件套之 4）：固定优先级系统服务
     // 不借入调用方 intent。发送侧 -EBUSY/-EAGAIN 重试（用户模板，EL0 可抢占
     // 有界）、服务侧 wait READABLE → drain 循环。
     let ct: &'static mut HandleTable =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    /// 建对即插两端：endK 落 console 私有表、endU 落内核侧表（取 ObjRef 后
+    /// `insert_ref` 分发各用户表）。两端均携 TRANSFER（Zircon 新 handle 默认
+    /// 携位模型——send 随行预检 4-4b 起执法；console 发端会经 dup 转赠下游
+    ///（spawner/svcmgr 模板），去位即断赠链）。
     let h_end_k = ct
         .insert(
             KernelObj::Channel(
                 crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 console 收端"),
             ),
-            handle::RIGHT_RECV,
+            handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
         )
         .expect("main: console 收端进私有表");
     let h_end_u = syscall::bootstrap_table()
@@ -813,7 +818,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             KernelObj::Channel(
                 crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 console 发端"),
             ),
-            handle::RIGHT_SEND,
+            handle::RIGHT_SEND | handle::RIGHT_TRANSFER,
         )
         .expect("main: console 发端进内核侧表");
     let (pk, pu) = (
@@ -930,17 +935,17 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 4-5a：console 发端 append 进 good 表（vmar 后首插 = 槽 2/代号 1）——
     // good 模板硬编码依赖，boot 断言即防线（漂移 → boot 期炸响）。
     let h_cu_good = ht_good
-        .insert_ref(pu, handle::RIGHT_SEND)
+        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
         .expect("main: console 发端进 good 表");
     assert_eq!(h_cu_good, 0x0001_0002, "main: good 表 console 须槽 2/代号 1（模板硬编码）");
 
     // 4-5a：abuser/spawner 的 console 发端 = 各表**首插**（0x0001_0001）——入口
     // x0 改传之（原 0；两模板自带 handle 都在运行期创建，首插槽位无既有依赖）。
     let h_cu_abuser = ht_abuser
-        .insert_ref(pu, handle::RIGHT_SEND)
+        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
         .expect("main: console 发端进 abuser 表");
     let h_cu_spawner = ht_spawner
-        .insert_ref(pu, handle::RIGHT_SEND)
+        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
         .expect("main: console 发端进 spawner 表");
     berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
                           b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
@@ -981,7 +986,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         .expect("main: Event 进 waiter 表（同一 ObjRef）");
     // 4-5a：console 发端 append（Event 后首插 = 槽 2/代号 1）——waiter 模板硬编码。
     let h_cu_waiter = ht_waiter
-        .insert_ref(pu, handle::RIGHT_SEND)
+        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
         .expect("main: console 发端进 waiter 表");
     assert_eq!(h_cu_waiter, 0x0001_0002, "main: waiter 表 console 须槽 2/代号 1（模板硬编码）");
     berry_sched::spawn_user(user::USER_CODE_VA, h_ev_waiter as usize, user::USER_STACK_TOP,
@@ -1003,7 +1008,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     let ht_ponger: &'static mut HandleTable =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
     use crate::channel::ChannelEnd;
-    use handle::{RIGHT_RECV, RIGHT_SEND};
+    use handle::{RIGHT_RECV, RIGHT_SEND, RIGHT_TRANSFER};
     let h_end_a = ht_pinger
         .insert(
             KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA")),
@@ -1012,7 +1017,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         .expect("main: endA 进 pinger 表");
     // 4-5a：console 发端 append（endA 后首插 = 槽 2/代号 1）——pinger 模板硬编码。
     let h_cu_pinger = ht_pinger
-        .insert_ref(pu, RIGHT_SEND)
+        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
         .expect("main: console 发端进 pinger 表");
     assert_eq!(h_cu_pinger, 0x0001_0002, "main: pinger 表 console 须槽 2/代号 1（模板硬编码）");
     let h_end_b = ht_ponger
@@ -1040,7 +1045,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     );
     // 4-5a：console 发端 append（endB + 哑 Event 后 = 槽 3/代号 1）——ponger 模板硬编码。
     let h_cu_ponger = ht_ponger
-        .insert_ref(pu, RIGHT_SEND)
+        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
         .expect("main: console 发端进 ponger 表");
     assert_eq!(h_cu_ponger, 0x0001_0003, "main: ponger 表 console 须槽 3/代号 1（模板硬编码）");
     berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
@@ -1252,7 +1257,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // console 发端 = svcmgr 表**首插**（0x0001_0001）——入口 x0 传入（模板
     // 硬编码依赖，boot 断言拦表序漂移）。
     let h_cu_svcmgr = ht_svcmgr
-        .insert_ref(pu, RIGHT_SEND)
+        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
         .expect("main: console 发端进 svcmgr 表");
     assert_eq!(
         h_cu_svcmgr, 0x0001_0001,
@@ -1286,7 +1291,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             }
         };
         ht_svcmgr
-            .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ)
+            .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ | handle::RIGHT_TRANSFER)
             .expect("main: rootfs VMO 进 svcmgr 表")
     });
     // （A-2）rootfs 相位标记——endB2 插序断言用：rootfs 槽缺席 = 少一插。
@@ -1316,7 +1321,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             KernelObj::Channel(
                 crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 bsh-stdin svcmgr 端"),
             ),
-            handle::RIGHT_RECV,
+            handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
         )
         .expect("main: bsh-stdin 端进 svcmgr 表");
     assert_eq!(
@@ -1415,7 +1420,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         .expect("main: fbinfo Vmo commit");
                     ivmo.write(0, &info).expect("main: fbinfo Vmo write");
                     let h_info = ht_svcmgr
-                        .insert(handle::KernelObj::Vmo(ivmo), handle::RIGHT_READ)
+                        .insert(handle::KernelObj::Vmo(ivmo), handle::RIGHT_READ | handle::RIGHT_TRANSFER)
                         .expect("main: fbinfo VMO 进 svcmgr 表");
                     assert_eq!(
                         h_info, 0x0001_0006,
@@ -1455,7 +1460,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                 crate::channel::ChannelEnd::try_unpaired(true)
                                     .expect("main: 建 fb-上屏 guifbd 端"),
                             ),
-                            handle::RIGHT_RECV,
+                            handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
                         )
                         .expect("main: fb-上屏 guifbd 端进 svcmgr 表");
                     assert_eq!(
@@ -1490,7 +1495,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     // DUPLICATE 再迁）。令牌 = boot 接线段第二枚 retain
                     //（insert_ref 接管既有令牌、不 +1——handle.rs 契约）。
                     let h_am2b_svc = ht_svcmgr
-                        .insert_ref(p_am2b, handle::RIGHT_SIGNAL | handle::RIGHT_DUPLICATE)
+                        .insert_ref(p_am2b, handle::RIGHT_SIGNAL | handle::RIGHT_DUPLICATE | handle::RIGHT_TRANSFER)
                         .expect("main: AM-2b 压力 Event dup 进 svcmgr 表");
                     assert_eq!(
                         h_am2b_svc, 0x0001_0008,
@@ -1806,7 +1811,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     crate::channel::ChannelEnd::try_unpaired(true)
                         .expect("main: 建 sim 帧通道 simbattery 端"),
                 ),
-                handle::RIGHT_RECV,
+                handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
             )
             .expect("main: sim 帧 RECV 端进 svcmgr 表");
         assert_eq!(
@@ -1819,7 +1824,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     crate::channel::ChannelEnd::try_unpaired(true)
                         .expect("main: 建 sim 回执通道 simbattery 端"),
                 ),
-                handle::RIGHT_SEND,
+                handle::RIGHT_SEND | handle::RIGHT_TRANSFER,
             )
             .expect("main: sim 回执 SEND 端进 svcmgr 表");
         assert_eq!(

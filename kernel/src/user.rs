@@ -387,9 +387,11 @@ core::arch::global_asm!(
     "    str  x4, [x6]",
     "    movz x6, #0x2070",
     "    str  w20, [x6]",               // 随行 handle 数组（u32 LE）[0] = 礼物
-    "    movz x0, #0x02",               // handle_duplicate(console, SEND, *out=&数组[1])
+    "    movz x0, #0x02",               // handle_duplicate(console, SEND|TRANSFER, *out=&数组[1])
     "    mov  x1, x23",
-    "    movz x2, #0x100",              // RIGHT_SEND（1<<8）——别名随消息转赠，原件自留打印
+    // RIGHT_SEND(1<<8)|RIGHT_TRANSFER(1<<5)：别名随消息转赠须携 TRANSFER
+    //（send 随行预检），原件自留打印。
+    "    movz x2, #0x120",
     "    add  x3, x6, #4",              // *out = 0x2074：新 handle 直落数组 [1] 槽
     "    svc  #0",
     "    cbnz x0, 3f",

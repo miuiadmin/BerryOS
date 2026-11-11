@@ -37,8 +37,8 @@ use berry_sys::{
     BERRY_ERR_INVALID_ARG, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
     SIGNAL_WAKE_PENDING,
     BERRY_PLATFORM_LEVEL,
-    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
-    SIGNAL_WRITABLE, VMO_OPT_DEMAND,
+    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE,
+    SIGNAL_TERMINATED, SIGNAL_WRITABLE, VMO_OPT_DEMAND,
 };
 // A-2：拉起链换轨 berry-exec（「不长第二套」——spawn_rootfs_elf/channel_pair
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
@@ -380,7 +380,9 @@ pub extern "C" fn _start(console: Handle) -> ! {
     spawn_child(ECHO_BIN, e2);
     ps_reg(b"echo2", psp::STATE_ALIVE, 0); // 常驻（talker 链对端）
     let mut gift = [0 as Handle; 2];
-    if berry_handle_duplicate(console, RIGHT_SEND, &mut gift[0]) != 0 {
+    // TRANSFER：dup 结果随 channel_send 迁交（send 随行预检执法——Zircon
+    // 模型「新 handle 默认携位」，dup 只紧不松故掩码须显式保位）。
+    if berry_handle_duplicate(console, RIGHT_SEND | RIGHT_TRANSFER, &mut gift[0]) != 0 {
         trap(); // 先复制再送：send 会 take 走句柄，原值须留给稳态
     }
     gift[1] = t2; // echo2 对端随消息交付 talker
@@ -1194,7 +1196,7 @@ fn run_rootfs_child(console: Handle) {
                     // 可再生 wm 端（生命周期独立——gfxdemo 失败关原柄不伤
                     // dup）。失败 trap（fsmgr fs_dup 先例同形）。
                     let mut w_dup: Handle = 0;
-                    if berry_handle_duplicate(w_cli, RIGHT_SEND | RIGHT_RECV, &mut w_dup) != 0 {
+                    if berry_handle_duplicate(w_cli, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut w_dup) != 0 {
                         trap();
                     }
                     WMD_CLI_DUP.store(w_dup, Ordering::Relaxed);
@@ -1336,7 +1338,7 @@ fn run_rootfs_child(console: Handle) {
         // fs 客户端端双权利：SEND（发请求）+ RECV（收应答）——bsh 的
         // `>`/`cat`/`ls` 双向面。
         let mut fs_dup = 0 as Handle;
-        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut fs_dup) != 0 {
             trap();
         }
         // A-5 gift 数组：blk_cli==0（vblk 缺席/未过自验）= 三元（RAM-only）。
@@ -1623,11 +1625,11 @@ fn run_rootfs_child(console: Handle) {
             *b"berryos!berryos!berryos!berryos!berryos!berryos!berryos!berryos!";
         let stdin: &[u8] = &STDIN_DATA;
         let mut rootfs_dup = 0 as Handle;
-        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ | RIGHT_TRANSFER, &mut rootfs_dup) != 0 {
             trap();
         }
         let mut fs_std = 0 as Handle;
-        if fs_a_h != 0 && berry_handle_duplicate(fs_a_h, RIGHT_SEND | RIGHT_RECV, &mut fs_std) != 0
+        if fs_a_h != 0 && berry_handle_duplicate(fs_a_h, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut fs_std) != 0
         {
             trap();
         }
@@ -1997,6 +1999,15 @@ fn run_rootfs_child(console: Handle) {
         for i in 0..app_n {
             // app-1 D1：APPTOMB 改 selftest/ 前缀打包后不入走查收集——
             // 批面零特判（v1.0 白名单 skip 立法已退役）。
+            // P3 案 c：装载期验签守卫（调用侧插入——头注/app_launch 注记；
+            // 先于守卫链 = 验签子独立解析面，语义零漂）。
+            p3_sig_guard(
+                console,
+                &apps[i].id[..apps[i].id_len],
+                apps[i].bap_off,
+                apps[i].bap_len,
+                step,
+            );
             let (launched, uface, tail) = app_launch(
                 console,
                 fs_a_h,
@@ -2075,7 +2086,7 @@ fn run_rootfs_child(console: Handle) {
     // app 批已收口，bsh 恢复 fs_a 队列唯一读者（下方 Ok 面关 fs_a_h）。
     if let Some((off, len)) = bsh_geom {
         let mut rootfs_dup = 0 as Handle;
-        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ | RIGHT_TRANSFER, &mut rootfs_dup) != 0 {
             trap();
         }
         // A2-3 第五 extras：netd 服务端端。NET_A==0（vnet 未起 = EFI/裸
@@ -2088,7 +2099,7 @@ fn run_rootfs_child(console: Handle) {
         let mut netd_dup = 0 as Handle;
         let net = NET_A.load(Ordering::Relaxed);
         if fs_client != 0 && net != 0 {
-            if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV, &mut netd_dup) != 0 {
+            if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut netd_dup) != 0 {
                 trap();
             }
         }
@@ -2101,7 +2112,7 @@ fn run_rootfs_child(console: Handle) {
         let mut input_dup = 0 as Handle;
         let inp = INPUT_A.load(Ordering::Relaxed);
         if inp != 0 && netd_dup != 0 {
-            if berry_handle_duplicate(inp, RIGHT_SEND | RIGHT_RECV, &mut input_dup) != 0 {
+            if berry_handle_duplicate(inp, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut input_dup) != 0 {
                 trap();
             }
         }
@@ -5021,7 +5032,7 @@ fn blk_rpc(h: Handle, op: u8, sector: u64, vmo: Handle) -> Result<u8, ()> {
         None => return Err(()),
     };
     let mut dup = 0 as Handle;
-    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE, &mut dup) != 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut dup) != 0 {
         return Err(());
     }
     let hs = [dup];
@@ -5308,11 +5319,11 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
     let (data_off, data_len) = cpio_find(H_ROOTFS, name)?;
     let (out_s, out_c) = channel_pair();
     let mut rootfs_dup = 0 as Handle;
-    if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+    if berry_handle_duplicate(H_ROOTFS, RIGHT_READ | RIGHT_TRANSFER, &mut rootfs_dup) != 0 {
         trap();
     }
     let mut fs_dup = 0 as Handle;
-    if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+    if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut fs_dup) != 0 {
         trap();
     }
     let gifts = [rootfs_dup, fs_dup];
@@ -5689,6 +5700,108 @@ fn ui_face(
     }
 }
 
+// ---- P3 案 c：装载期验签守卫（dev 档 v1 最小形态——verifier 助手进程）----
+
+/// hex8 定宽发射（berry-verify `hex8` 解析的产侧镜像——双侧同改）。
+fn p3_hex8(out: &mut [u8; 8], v: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for i in 0..8 {
+        out[7 - i] = HEX[((v >> (i * 4)) & 0xf) as usize];
+    }
+}
+
+/// P3 案 c 装载期守卫（ADR #77 / `docs/设备侧验签与账本落盘设计-v1.0.md`
+/// §1.3）：伴生 `app/<ID>.bap.sig` 在档（mkcpio `sig_companions` 同名直映，
+/// 轮十数据面）才起守卫——
+/// - **缺席 = 现状直装零扰动**（守卫惰性：未签名默认构建串口逐字节零漂，
+///   smoke 零新行）；
+/// - 在档 → spawn `bin/berry-verify`（hello 同链 rootfs ELF，验签本体
+///   独立进程各享 USER_CODE_MAX 128KiB 帽——尺寸墙终裁案 c，34 号
+///   §98-2：**本 crate 不链 berry-crypto**）：数据面 = rootfs VMO READ
+///   dup（env gift[4]）+ argv 五 hex8 几何（bap_off/bap_len/sig_off/
+///   sig_len/pk_off——`etc/trust-pk` 32B raw 锚，测试场景件，正式形 =
+///   §1.4 bootseed 随策略刀）；阻塞 reap 收真码（0 = 验过 / 1 = 拒 /
+///   2 = 用法·IO 面——berry-verify 头注合同）；
+/// - **dev 档 v1 语义（§1.3.2 表 dev 行）：验签失败 = 降级 + eco loud
+///   不拒载**——守卫恒返 ()，全部出口只打 `eco: app <id> sig …` 行
+///   （`sig ok`/`sig bad`/`sig hang`/`sig nosvc`/`sig nopk`/`sig
+///   spawn`/`sig dup`，≤24B 帽内）；拒载执法（product-locked）随策略
+///   档刀另开。
+///
+/// **插入位 = 调用侧**（boot 批循环 / `app_serve_spawn`——设计 §1.3.1
+/// 语义插入位「app_launch 守卫链 manifest 解析后」的等价上移，理由与
+/// 论证见 app_launch 内注记）：守卫 spawn→reap 链不得嵌在 app_launch
+/// 帧内（boot 任务栈 1 页 + 1 页缓冲，嵌套即溢出踩 .bss 顶静态窗）。
+fn p3_sig_guard(console: Handle, id: &[u8], bap_off: u64, bap_len: u64, step: &mut [u8]) {
+    let n = 4 + id.len() + 8;
+    if id.is_empty() || id.len() > ID_MAX || n > step.len() {
+        return; // 收集面已执法（id ≤ ID_MAX）——防御直退不吵
+    }
+    step[..4].copy_from_slice(b"app/");
+    step[4..4 + id.len()].copy_from_slice(id);
+    step[4 + id.len()..n].copy_from_slice(b".bap.sig");
+    let Some((sig_off, sig_len)) = cpio_find(H_ROOTFS, &step[..n]) else {
+        return; // 无伴生 .sig：守卫惰性（现状直装，零扰动）
+    };
+    let Some((voff, vlen)) = cpio_find(H_ROOTFS, b"bin/berry-verify") else {
+        eco_app(console, id, b"sig nosvc"); // 助手件缺席（手工裁剪镜像面）
+        return;
+    };
+    let Some((pk_off, _pk_len)) = cpio_find(H_ROOTFS, b"etc/trust-pk") else {
+        eco_app(console, id, b"sig nopk"); // 锚件缺席（未布签名布景面）
+        return;
+    };
+    let mut args = [[0u8; 8]; 5];
+    p3_hex8(&mut args[0], bap_off);
+    p3_hex8(&mut args[1], bap_len);
+    p3_hex8(&mut args[2], sig_off);
+    p3_hex8(&mut args[3], sig_len);
+    p3_hex8(&mut args[4], pk_off);
+    let argv: [&[u8]; 5] = [&args[0], &args[1], &args[2], &args[3], &args[4]];
+    let mut rd = 0 as Handle;
+    if berry_handle_duplicate(H_ROOTFS, RIGHT_READ | RIGHT_TRANSFER, &mut rd) != 0 {
+        eco_app(console, id, b"sig dup");
+        return;
+    }
+    match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: b"bin/berry-verify",
+            data_off: voff,
+            data_len: vlen,
+            stdout: console,
+            stack_pages: 8,
+            // extras 前置槽位（vblk/fsmgr 同款哑喂——berry-exec assert）。
+            stdin_feed: Some(&[]),
+            stdin_handle: None,
+            args: &argv,
+            extra_gifts: &[rd],
+            mmio_vmo: None,
+            mmio_va: 0,
+            intent: 0,
+            // 短命测试族缺省 demand（X-5 家族常径；像 ~26KB 小窗走查）。
+            force_eager: false,
+        },
+    ) {
+        Err(()) => {
+            // Err 全在 env send 前（berry-exec 契约）——rd 未 take 显式
+            // 回收防表槽泄漏（vnet Err 路先例形态）。
+            if berry_handle_close(rd) != 0 {
+                trap();
+            }
+            eco_app(console, id, b"sig spawn");
+        }
+        Ok(child) => match child.reap() {
+            Ok(0) => eco_app(console, id, b"sig ok"),
+            // exit 1（验签拒）/2（用法·IO 面）同脸——词面细分随策略档刀。
+            Ok(_) => eco_app(console, id, b"sig bad"),
+            // 30s 帽挂死：berry-exec 不冒险回收，句柄留存 = 有界泄漏
+            // （v1 政策；标记族不 gate，eco 行 loud 兜底）。
+            Err(()) => eco_app(console, id, b"sig hang"),
+        },
+    }
+}
+
 /// 单 app 拉起（ADR #43 能力面 + §4.3 生命周期 v0：拉起 → 收口 → reap）。
 /// console=true → stdout 直打串口（子自证输出，无收集面）；false → 私有对
 /// 端作 fd1/2（hexyl 同形：`channel_pair` 的 spawn 侧交付、收集端留本表
@@ -5735,6 +5848,13 @@ fn app_launch(
             return (false, UiFace::Absent, None);
         }
     };
+    // P3 案 c 注记：装载期验签守卫的语义插入位 = 设计 §1.3.1「manifest
+    // 解析后 type 守卫前」——**实测不可达，已上移至调用侧**（boot 批循环 /
+    // app_serve_spawn，守卫单源两路不变）：boot 任务栈预算 = 1 页栈 + 1 页
+    // 缓冲（kernel/src/user.rs `UserProcess::build`，sp 0x22000），守卫
+    // spawn→reap 链嵌在 app_launch 帧内即溢出踩 .bss 顶静态窗（id
+    // mismatch ×9 双盘确定性复现）；调用侧形态帧深与既有 app spawn 链
+    // 等价，验签语义零漂（berry-verify 独立解析面，不消费本函数产物）。
     // ADR #82 V1：type 位收集槽过滤——berry-manifest 词表已收 "driver"
     // （收格式不消费），但 appd（雏形）只服务 app：driver 包的拉起语义
     // 随驱动模型 v2/devmgr（[hw] 节未立法，mkapp 产面不同步 = 现无合法
@@ -5829,7 +5949,7 @@ fn app_launch(
             }
             return (false, uface, None);
         }
-        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
+        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ | RIGHT_TRANSFER, &mut rootfs_dup) != 0 {
             eco_app(console, id, b"fs dup"); // 6B ≤ 24B
             if out_s != 0
                 && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
@@ -5838,7 +5958,7 @@ fn app_launch(
             }
             return (false, uface, None);
         }
-        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut fs_dup) != 0 {
             // 半途失败：rootfs_dup 已成，先试关再走 out 对清理。
             let _ = berry_handle_close(rootfs_dup);
             eco_app(console, id, b"fs dup");
@@ -6137,10 +6257,13 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
         return;
     }
     // 授子 dup（最小面 R|W：启动判读要 READ、pause(save) 要 WRITE；MAP/DUP
-    // 不授。relaunch 轮同面——v1.2 §4 放弃只读收紧：复活者再入 pause(save)
+    // 不授；TRANSFER 保位——dup 结果随 env gift[5] channel_send 迁交。
+    // relaunch 轮同面——v1.2 §4 放弃只读收紧：复活者再入 pause(save)
     // 循环需写权，循环天然闭合）。
     let mut st_dup: Handle = 0;
-    if berry_handle_duplicate(svmo, RIGHT_READ | RIGHT_WRITE, &mut st_dup) != 0 || st_dup == 0 {
+    if berry_handle_duplicate(svmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut st_dup) != 0
+        || st_dup == 0
+    {
         eco_note(console, b"tomb svmo");
         if berry_handle_close(lc_a) != 0
             || berry_handle_close(lc_b) != 0
@@ -6515,7 +6638,9 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
     // spawn）；新 lifecycle 对作 gift[4]，gift[5] = 槽内 svmo 的 dup(R|W)
     // （v1.2「放弃只读收紧」——复活者再入 pause(save) 循环需写权）。
     let mut st_dup2: Handle = 0;
-    if berry_handle_duplicate(svmo, RIGHT_READ | RIGHT_WRITE, &mut st_dup2) != 0 || st_dup2 == 0 {
+    if berry_handle_duplicate(svmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut st_dup2) != 0
+        || st_dup2 == 0
+    {
         eco_note(console, b"tomb respawn");
         return; // §4 负⑤族：条目保留待重试——svmo 留槽
     }
@@ -6693,7 +6818,7 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
     // wm fresh 别名（SEND|RECV——wmd arm w_dup 同口径）。失败 trap：dup 源
     // 在表却失败 = 内核资源面异常，此刻零清理面（fsmgr fs_dup 先例）。
     let mut wm_fresh: Handle = 0;
-    if berry_handle_duplicate(wmd_dup, RIGHT_SEND | RIGHT_RECV, &mut wm_fresh) != 0 {
+    if berry_handle_duplicate(wmd_dup, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut wm_fresh) != 0 {
         trap();
     }
     // app 域通道对（fs 在位才建——前缀 [wm] ⊂ [wm,fs,app] 截断纪律；对端
@@ -6711,7 +6836,7 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
     let mut in_dup: Handle = 0;
     let inp = INPUT_A.load(Ordering::Relaxed);
     if fs_gift != 0 && inp != 0 {
-        if berry_handle_duplicate(inp, RIGHT_SEND | RIGHT_RECV, &mut in_dup) != 0 {
+        if berry_handle_duplicate(inp, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut in_dup) != 0 {
             trap();
         }
     }
@@ -7048,6 +7173,9 @@ fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
                     512,
                 )
             };
+            // P3 案 c：装载期验签守卫（调用侧插入——boot 批同源单点，头注/
+            // app_launch 注记；先于 app_launch = 验签子独立解析面零漂）。
+            p3_sig_guard(console, id, off, len, step);
             let mf: &mut [u8] = unsafe {
                 core::slice::from_raw_parts_mut(
                     core::ptr::addr_of_mut!(APP_MF_WIN) as *mut u8,
@@ -7161,7 +7289,7 @@ fn launcher_supervise(console: Handle) {
         } else {
             0
         };
-        if fs_a != 0 && berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV, &mut fs_dup) != 0 {
+        if fs_a != 0 && berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut fs_dup) != 0 {
             eco_line(console, b"launcher fs");
             return;
         }

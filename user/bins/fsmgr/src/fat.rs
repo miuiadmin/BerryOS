@@ -64,8 +64,8 @@ use berry_fsproto::{
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_handle_duplicate, berry_object_wait_one, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_read, berry_vmo_write, Handle, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_WRITABLE, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
+    berry_vmo_read, berry_vmo_write, Handle, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
+    SIGNAL_READABLE, SIGNAL_WRITABLE, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
 };
 
 use crate::trap;
@@ -311,7 +311,9 @@ fn rpc_read(h: Handle, vmo: Handle, lba: u64, out: &mut [u8; SECTOR_SZ]) -> RpcR
         None => return RpcRes::Fail, // 扇区域恒合法——编码失败 = 调用方 bug 面
     };
     let mut dup = 0 as Handle;
-    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE, &mut dup) != 0 {
+    // TRANSFER 保位：别名随请求 channel_send 迁交 vblk（send 随行预检执法；
+    // dup 只紧不松须显式保位）。
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut dup) != 0 {
         return RpcRes::Fail;
     }
     let hs = [dup];
@@ -361,7 +363,9 @@ fn rpc_write(h: Handle, vmo: Handle, lba: u64, src: &[u8; SECTOR_SZ]) -> RpcRes 
         return RpcRes::Fail; // 数据未离表——干净失败，不毒化
     }
     let mut dup = 0 as Handle;
-    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE, &mut dup) != 0 {
+    // TRANSFER 保位：别名随请求 channel_send 迁交 vblk（send 随行预检执法；
+    // dup 只紧不松须显式保位）。
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut dup) != 0 {
         return RpcRes::Fail;
     }
     let hs = [dup];
