@@ -2870,8 +2870,10 @@ fn irq_window<R>(f: impl FnOnce() -> R) -> R {
 /// （预检后单核无插队），回滚重插（值或变、语义活）。
 ///
 /// **4-4 fastpath/slowpath 分层**（`IPC设计.md` §7 检查链）：共享前缀（上列
-/// 全部错误面）之后按检查链 fork——「无随行 handle（迁移面留 slowpath）+
-/// 对端队列空 + 恰一个非哨兵 READABLE 等待者且无哨兵在场」全过 → fastpath
+/// 全部错误面，含随行 handle 预检 + 全量 take + 内联进消息——迁移面全链
+/// 非阻塞：查表纯槽操作无锁、refs 不动、无 drop、take 路零分配，fork 之后
+/// 两路均不再触表）之后按检查链 fork——「对端队列空 + 恰一个非哨兵
+/// READABLE 等待者且无哨兵在场」全过 → fastpath
 /// 定点唤醒（`fast_wake_locked`，与 slowpath 共用同一内部唤醒序列）+ 直切判定
 ///（`try_preempt`：严格更高 eff 才切，seL4 direct switch 的 v1 形态）；
 /// 任一不满足 → slowpath（`wake_matching` 全匹配唤醒）。**两路语义逐条对齐，
@@ -3006,9 +3008,12 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         }
     }
     // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核禁切
-    // 无插队，g3-1c-2 段守卫在持）：无随行 handle + 队列空 + 恰一个非哨兵
-    // READABLE 等待者且无哨兵在场 → fastpath；否则 slowpath（检查链其余项
-    // v1 结构性成立，见函数注释）。
+    // 无插队，g3-1c-2 段守卫在持）：队列空 + 恰一个非哨兵 READABLE 等待者
+    // 且无哨兵在场 → fastpath；否则 slowpath（检查链其余项 v1 结构性成立，
+    // 见函数注释）。随行 handle 不再挡快路（P0 拓宽，原「迁移面留 slowpath」
+    // 为历史保守切分）：take 迁移面全链非阻塞——alive/take 纯槽操作（无锁、
+    // refs 不动、无 drop、take 路零分配），且已在共享前缀完成并内联进消息；
+    // fork 之后快慢两路均不再触调用者表 → 有 handle 消息同样直切。
     // S-3c c-2a 义务④窗：find→push→fast_wake 同一 SLEEPQ 锁窗（终态形
     // 「查位+写位+唤醒不可分割」；过渡态 KL 全量在场 ⇒ 零争用，窗形先行
     // ——SLEEPQ_LOCK 注释的逆序标注在此同样适用）。未命中即闭窗——
@@ -3016,7 +3021,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // c-2c slice 2a：退化形窗——phys 随锁返回（位已置 = 外层逻辑持有，
     // 物理闭窗跳过）；miss/防御面/hit 三闭窗位互斥。
     let mut sq_phys = false;
-    let waiter = if nhandles == 0 && peer_empty {
+    let waiter = if peer_empty {
         sq_phys = berry_sched::sq_lock();
         let w =
             berry_sched::find_single_waiter_locked(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
