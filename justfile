@@ -648,6 +648,15 @@ test-host:
     # N-K 数学钉板，host 20 测；判定律单源，kernel dpg.rs 判定段
     # 消费（原子槽/wake 机械留壳））。
     cargo test -p berry-dpgface --target {{host}}
+    # W3-Q27：berry-frzface（sched 冻结面纯函数钉板——by_pinned 族三谓词
+    # sleep_ok/rq_ok〔pi 边全拒 + wait_signals 内核派生位拒〔SLEEPQ 侧〕 +
+    # svc_mask/held 结构位只对 RQ 在席拒 + HELD_FROZEN/THROTTLE 剥离〕 +
+    # by_thread 族两张脸现状钉〔睡眠者查 held 残影照拒/不查派生位/
+    # RQ 不剥 bit6·7——与 §A144「双级同修」宣示相抵的差异面单列〕+
+    # §A136 环终止先访后判 ring_visit_order 投影〔三元/单元/二元环全访
+    # 含尾 + 防呆帽〕+ 区序两族〔pinned 族 SLEEPQ 先/thread 族 RQ 先〕+
+    # 幂等置位/清位律，host 12 测；判定律单源，sched.rs 六函数消费）。
+    cargo test -p berry-frzface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/

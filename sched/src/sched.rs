@@ -951,10 +951,8 @@ pub fn current_pinned() -> usize {
 /// 派生位（READABLE/WRITABLE——donor 面）；③ `held_locks != 0` 或
 /// `svc_mask != 0`（SMP Running 者防御面——单核 Ready/Blocked 结构性 0）。
 pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
-    // ABI 冻结值（abi_gen SIGNAL_READABLE=1 / SIGNAL_WRITABLE=2——sched crate
-    // 不依赖 kernel handle 模块，本地镜像同值）。
-    const SIG_READABLE: u64 = 1;
-    const SIG_WRITABLE: u64 = 2;
+    // ABI 冻结值镜像已随 W3-Q27 单源外迁 berry-frzface::SIG_READABLE/
+    // SIG_WRITABLE（host 钉板 test_abi_mirror_frozen_values 执法同值）。
     if pinned == 0 {
         return false;
     }
@@ -976,26 +974,25 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
         // ——PI 边上冻结 = 捐赠链断）。真在飞 = RQ 在席（窗内可抢占形），
         // svc_mask + held 结构位都对 RQ 任务拒。冻结可能延迟「睡眠者真持
         // 锁时的等待者」= 策略域代价（AM-01 Q1-c 唤醒即解冻配套），非谓词域。
-        let sleep_ok = |t: &Task| -> bool {
-            t.pi_inherited == 0
-                && t.wait_signals & (SIG_READABLE | SIG_WRITABLE) == 0
+        //
+        // W3-Q27：三谓词判定律单源外迁 berry-frzface（host 钉板 12 测；
+        // FreezeProbe 纯结构投影入参——dpgface SlotSnapshot 同款），此处
+        // 装包消费即唯一事实源，判序与本函数历史形态逐字等价。
+        let probe_of = |t: &Task| -> berry_frzface::FreezeProbe {
+            berry_frzface::FreezeProbe {
+                pi_inherited: t.pi_inherited,
+                wait_signals: t.wait_signals,
+                svc_mask: t.svc_mask,
+                held_locks: t.held_locks,
+            }
         };
-        let rq_ok = |t: &Task| -> bool {
-            sleep_ok(t)
-                && t.svc_mask == 0
-                // 排除 HELD_FROZEN（bit6，嵌套冻结）+ HELD_THROTTLE（bit7，
-                // S5-c 预算限流——调度态非持锁，限流中的 deadline 任务仍可
-                // 被进程冻结）。只有结构锁位 bit1–5 才拒。
-                && t.held_locks
-                    & !(crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE)
-                    == 0
-        };
+        use berry_frzface::{freeze_ok_for, Where};
         // SLEEPQ
         let mut cur = sleepq().head.get();
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
-            if (*t).pinned == pinned && !sleep_ok(&*t) {
+            if (*t).pinned == pinned && !freeze_ok_for(Where::SleepQ, &probe_of(&*t)) {
                 return false;
             }
         }
@@ -1006,7 +1003,7 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head——先 break 会漏尾/单元素。
-                if (*t).pinned == pinned && !rq_ok(&*t) {
+                if (*t).pinned == pinned && !freeze_ok_for(Where::Rq, &probe_of(&*t)) {
                     return false;
                 }
                 cur = (*t).rq_next.get();
@@ -1038,7 +1035,7 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
             if (*t).pinned == pinned {
-                (*t).held_locks |= crate::task::HELD_FROZEN; // 幂等置位
+                (*t).held_locks = berry_frzface::freeze_bit_set((*t).held_locks); // 幂等置位（W3-Q27 单源）
                 count += 1;
             }
         }
@@ -1050,7 +1047,7 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head。
                 if (*t).pinned == pinned {
-                    (*t).held_locks |= crate::task::HELD_FROZEN; // 幂等置位
+                    (*t).held_locks = berry_frzface::freeze_bit_set((*t).held_locks); // 幂等置位（W3-Q27 单源）
                     count += 1;
                 }
                 cur = (*t).rq_next.get();
@@ -1074,7 +1071,7 @@ pub fn thaw_by_pinned(pinned: usize) {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
             if (*t).pinned == pinned {
-                (*t).held_locks &= !crate::task::HELD_FROZEN;
+                (*t).held_locks = berry_frzface::freeze_bit_clear((*t).held_locks);
             }
         }
         for cpu in 0..2 {
@@ -1084,7 +1081,7 @@ pub fn thaw_by_pinned(pinned: usize) {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head。
                 if (*t).pinned == pinned {
-                    (*t).held_locks &= !crate::task::HELD_FROZEN;
+                    (*t).held_locks = berry_frzface::freeze_bit_clear((*t).held_locks);
                 }
                 cur = (*t).rq_next.get();
                 if cur == head { break; } // 环终止
@@ -2898,15 +2895,30 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
         // 是 SVC 出口清零的窗内记账——睡在 syscall 内的任务带非零 mask 挂
         // SLEEPQ，睡眠者不查（已放全部结构锁）；RQ 在席（真在飞/窗内可抢
         // 占）才拒。
-        let sleep_ok = |t: &Task| -> bool { t.pi_inherited == 0 && t.held_locks == 0 };
-        let rq_ok = |t: &Task| -> bool { sleep_ok(t) && t.svc_mask == 0 };
+        //
+        // W3-Q27：by_thread 族谓词（与 by_pinned 族两张脸——现状忠实镜像，
+        // host 钉板 test_thread_family_predicate_divergence 单列差异面）
+        // 单源在 berry-frzface::thread_*，此处装包消费即唯一事实源。
+        let probe_of = |t: &Task| -> berry_frzface::FreezeProbe {
+            berry_frzface::FreezeProbe {
+                pi_inherited: t.pi_inherited,
+                wait_signals: t.wait_signals,
+                svc_mask: t.svc_mask,
+                held_locks: t.held_locks,
+            }
+        };
+        use berry_frzface::{thread_freeze_ok_for, Where};
         for cpu in 0..2 {
             let head = rq_of(cpu).head();
             let mut cur = head;
             while let Some(c) = cur {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head。
-                if (*t).thread_key == thread_key && !rq_ok(&*t) { return false; }
+                if (*t).thread_key == thread_key
+                    && !thread_freeze_ok_for(Where::Rq, &probe_of(&*t))
+                {
+                    return false;
+                }
                 cur = (*t).rq_next.get();
                 if cur == head { break; } // 环终止
 
@@ -2916,7 +2928,11 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
         while let Some(c) = cur {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
-            if (*t).thread_key == thread_key && !sleep_ok(&*t) { return false; }
+            if (*t).thread_key == thread_key
+                && !thread_freeze_ok_for(Where::SleepQ, &probe_of(&*t))
+            {
+                return false;
+            }
         }
     }
     true
@@ -2933,7 +2949,7 @@ pub fn freeze_by_thread(thread_key: usize) -> usize {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head。
                 if (*t).thread_key == thread_key {
-                    (*t).held_locks |= crate::task::HELD_FROZEN;
+                    (*t).held_locks = berry_frzface::freeze_bit_set((*t).held_locks);
                     return 1;
                 }
                 cur = (*t).rq_next.get();
@@ -2946,7 +2962,7 @@ pub fn freeze_by_thread(thread_key: usize) -> usize {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
             if (*t).thread_key == thread_key {
-                (*t).held_locks |= crate::task::HELD_FROZEN;
+                (*t).held_locks = berry_frzface::freeze_bit_set((*t).held_locks);
                 return 1;
             }
         }
@@ -2965,7 +2981,7 @@ pub fn thaw_by_thread(thread_key: usize) {
                 let t = c.as_ptr();
                 // §A136：先访当前节点，再推进并判回 head。
                 if (*t).thread_key == thread_key {
-                    (*t).held_locks &= !crate::task::HELD_FROZEN;
+                    (*t).held_locks = berry_frzface::freeze_bit_clear((*t).held_locks);
                 }
                 cur = (*t).rq_next.get();
                 if cur == head { break; } // 环终止
@@ -2977,7 +2993,7 @@ pub fn thaw_by_thread(thread_key: usize) {
             let t = c.as_ptr();
             cur = (*t).sleep_next.get();
             if (*t).thread_key == thread_key {
-                (*t).held_locks &= !crate::task::HELD_FROZEN;
+                (*t).held_locks = berry_frzface::freeze_bit_clear((*t).held_locks);
             }
         }
     }

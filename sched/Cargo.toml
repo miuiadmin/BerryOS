@@ -20,6 +20,11 @@ berry-wqmatch = { path = "../wqmatch" }
 # HELD_THROTTLE 位常量与 eligible/pick_better/walk_step_cap 判定律
 # 单源在此，本 crate 消费即唯一事实源。
 berry-ringface = { path = "../ringface" }
+# W3-Q27：冻结面（freeze/thaw 资格判 + §A136 扫描序 + 幂等置位/清位律）
+# 纯函数面（host 可测钉板）。FreezeProbe 纯结构投影 + 两族谓词
+# （by_pinned/by_thread 两张脸现状钉）单源在此，本 crate sched.rs
+# 消费即唯一事实源。
+berry-frzface = { path = "../frzface" }
 # W3-Q11：时间片预算数学纯函数面（权重/虚拟片/tick 记账/耗尽判/
 # deadline 周期 replenish——host 可测钉板）。SCALE 与 PRIO_DEADLINE 单源
 # 迁此，本 crate 消费即唯一事实源。

@@ -27,6 +27,13 @@ name = "berry-evface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-frzface"
+version = "0.2.0"
+dependencies = [
+ "berry-ringface",
+]
+
+[[package]]
 name = "berry-hal-aarch64"
 version = "0.2.0"
 
@@ -115,6 +122,7 @@ version = "0.2.0"
 dependencies = [
  "berry-bandface",
  "berry-emface",
+ "berry-frzface",
  "berry-hal-aarch64",
  "berry-hdrface",
  "berry-intface",
