@@ -205,38 +205,118 @@ fn access_ok(caller_el1: bool, ptr: u64, len: u64, write: bool) -> bool {
     }
 }
 
-/// 从调用方缓冲拷进内核切片（`vmo_write` 源 / in 参数读）。
+/// 窗内同页缓存哨兵：用户 VA < 2^39、EL1 高半直映 ≥ KERNEL_VA_BASE，
+/// u64::MAX 两界之外——首块必走查。
+const SAME_PAGE_NONE: u64 = u64::MAX;
+
+/// **单一 PT 锁窗内**的逐页校验（P1 同页跳过）。`last_page` = 本窗局部
+/// 缓存：块覆盖的每个页若 == 缓存页，该页已在本窗走查过且写者（他核
+/// map/unmap/protect 须取同 AS PT 锁）被本窗挡在表外 ⇒ 表冻结 ⇒ 免重复
+/// 三级走查；新页按**本块在该页内的实际字节段**走 [`access_ok`]（边界
+/// 语义与整段调用逐位同源）。逐页咨询而非只比块首页：非页对齐缓冲的
+/// 256B 块可跨页界，只比首页会漏验跨界页（未映射页直拷 = 内核 fault）。
+/// 缓存生命周期**严格 = 锁窗**：跨窗/跨调用复用即绕过 §A113 walk+store
+/// 同窗铁律（他核 unmap 撤页 TOCTOU）——故只经调用方局部变量传递，
+/// **禁提升 static**。
+fn access_ok_window(
+    caller_el1: bool,
+    ptr: u64,
+    len: u64,
+    write: bool,
+    last_page: &mut u64,
+) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let mask = !(PAGE_SIZE as u64 - 1);
+    let last = (ptr + len - 1) & mask;
+    let mut va = ptr & mask;
+    while va <= last {
+        if va != *last_page {
+            // 本块在本页内的字节段 [max(va, ptr), min(页尾, 块尾))。
+            let start = va.max(ptr);
+            let end = (va + PAGE_SIZE as u64).min(ptr + len);
+            if !access_ok(caller_el1, start, end - start, write) {
+                return false;
+            }
+            *last_page = va;
+        }
+        va += PAGE_SIZE as u64;
+    }
+    true
+}
+
+/// 窗内校验 + 拷贝：调用方**已持**本 AS PT 锁（EL1 路免锁高半直映）。
+/// 分块块流（`sys_vmo_read/write` 的 256B 块）在外层单窗内传递同一
+/// `last_page` 复用本函数——同页块免重复走查（64KB = 256 块：原每块
+/// 一窗一走查 256 次 → 每页 1 次 = 16 次）。
+fn copy_from_user_locked(
+    caller_el1: bool,
+    src: u64,
+    dst: &mut [u8],
+    last_page: &mut u64,
+) -> Result<(), i32> {
+    if dst.is_empty() {
+        return Ok(());
+    }
+    if !access_ok_window(caller_el1, src, dst.len() as u64, false, last_page) {
+        return Err(ERR_FAULT);
+    }
+    // SAFETY: 整段界检过（EL1 = 高半直映；EL0 = 调用者表逐页 AP 验过且
+    // 同窗持锁，见 [`access_ok_window`]）；无本核任务切换切进校验-拷贝间
+    // ——g3-1c-2 起双面：全屏蔽窗号（多数——屏蔽即无切换）；管道拷贝段
+    // 局部解蔽窗（send/recv——段级 preempt_disable 保无切换 §A113，窗在
+    // 调用点非此处内置，见 `irq_window`——内置对 TABLE 类号（vmo 面）还是
+    // tick 面活体违约：SQ 位不在集 ⇒ tick 入窗 expire_timeouts 物理取 SQ
+    // 于 KL 下 = §A126 同款七类锁序逆序，不只是切换面）。
+    unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst.as_mut_ptr(), dst.len()) };
+    Ok(())
+}
+
+/// 从调用方缓冲拷进内核切片（`vmo_write` 源 / in 参数读）。单发整段拷贝
+/// （自带 PT 锁窗 + 全段走查）。**256B 分块块流勿逐块调本函数**——每块
+/// 重取锁 + 重走查（同页 16 块 = 16 次三级走查，P1 瓶颈）——改由外层持
+/// 单窗循环调 [`copy_from_user_locked`]（同页跳过）。
 fn copy_from_user(caller_el1: bool, src: u64, dst: &mut [u8]) -> Result<(), i32> {
     if !dst.is_empty() {
         // S-4 4-2（判例 §A113 walk+copy 同窗铁律）：EL0 路走查与 store 同一
         // per-AS PT 锁窗——封死他核 unmap/protect 在两步之间撤页的 TOCTOU
         // （原「单核无 TOCTOU」假设随 SMP 退役）。EL1 路高半直映不取。
         let _pt = if caller_el1 { None } else { Some(crate::vmar::pt_lock_current()) };
-        if !access_ok(caller_el1, src, dst.len() as u64, false) {
-            return Err(ERR_FAULT);
-        }
-        // SAFETY: 整段界检过（EL1 = 高半直映；EL0 = 调用者表逐页 AP 验过且
-        // 同窗持锁，见上）；无本核任务切换切进校验-拷贝间——g3-1c-2 起双面：
-        // 全屏蔽窗号（多数——屏蔽即无切换）；管道拷贝段局部解蔽窗（send/recv
-        // ——段级 preempt_disable 保无切换 §A113，窗在调用点非此处内置，
-        // 见 `irq_window`——内置对 TABLE 类号（vmo 面）还是 tick 面活体违约：
-        // SQ 位不在集 ⇒ tick 入窗 expire_timeouts 物理取 SQ 于 KL 下 =
-        // §A126 同款七类锁序逆序，不只是切换面）。
-        unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst.as_mut_ptr(), dst.len()) };
+        let mut last_page = SAME_PAGE_NONE;
+        copy_from_user_locked(caller_el1, src, dst, &mut last_page)?;
     }
     Ok(())
 }
 
-/// 从内核切片拷出到调用方缓冲（`vmo_read` 目的 / out 参数写）。
+/// 窗内校验 + 拷出（同 [`copy_from_user_locked`]——调用方已持锁，同页
+/// 块免重复走查）。
+fn copy_to_user_locked(
+    caller_el1: bool,
+    dst: u64,
+    src: &[u8],
+    last_page: &mut u64,
+) -> Result<(), i32> {
+    if src.is_empty() {
+        return Ok(());
+    }
+    if !access_ok_window(caller_el1, dst, src.len() as u64, true, last_page) {
+        return Err(ERR_FAULT);
+    }
+    // SAFETY: 同 copy_from_user_locked。
+    unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len()) };
+    Ok(())
+}
+
+/// 从内核切片拷出到调用方缓冲（`vmo_read` 目的 / out 参数写）。单发整段
+/// 拷贝；分块块流同 [`copy_from_user`] 注——外层单窗 +
+/// [`copy_to_user_locked`]。
 fn copy_to_user(caller_el1: bool, dst: u64, src: &[u8]) -> Result<(), i32> {
     if !src.is_empty() {
         // S-4 4-2：同 copy_from_user——EL0 路走查与 store 同一 PT 锁窗。
         let _pt = if caller_el1 { None } else { Some(crate::vmar::pt_lock_current()) };
-        if !access_ok(caller_el1, dst, src.len() as u64, true) {
-            return Err(ERR_FAULT);
-        }
-        // SAFETY: 同 copy_from_user。
-        unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len()) };
+        let mut last_page = SAME_PAGE_NONE;
+        copy_to_user_locked(caller_el1, dst, src, &mut last_page)?;
     }
     Ok(())
 }
@@ -541,8 +621,8 @@ extern "C" fn sys_vmo_decommit(tf: &mut TrapFrame) -> i64 {
 /// `vmo_read(vmo, buf, offset, len)`：内核中介读（非映射访问）。门控：READ。
 /// 整段缓冲校验前置（fail-fast，纯读无半截副作用）；256B 分块防吃内核栈。
 /// S-4 4-2：前置 access_ok 是纯走查 fail-fast（不 store），**不是**安全边界
-/// ——真正的 §A113 读者窗在下方 copy_to_user 分块（每块 PT 锁同窗 + 每块
-/// 重查，前置被跨核 TOCTOU 绕过仅导致分块时 -EFAULT）。
+/// ——真正的 §A113 读者窗在下方分块拷贝（单一 PT 锁窗包整段块流 + 每新页
+/// 重查，前置被跨核 TOCTOU 绕过仅导致分块时 -EFAULT；P1 同页跳过见窗注）。
 extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     let (h, buf, off, len) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3] as usize, tf.regs[4] as usize);
     let el1 = caller_is_el1(tf);
@@ -559,12 +639,20 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     };
     let mut chunk = [0u8; COPY_CHUNK];
     let mut pos = 0;
+    // P1 同页跳过：整段分块拷贝并成**单一 PT 锁窗**（§A113 不变量保持——
+    // 窗内每新页走查与 store 仍同窗；同页后续块免重复三级走查：64KB 载荷
+    // 256 块，原每块一窗一走查 = 256 次 → 每页 1 次 = 16 次）。窗含
+    // `vmo.read`：纯无锁 direct map 拷贝（界检 + 已提交检 + memcpy——不
+    // 取锁、不分配、不阻塞）⇒ 无锁序新边、持有有界；同 AS 写者自旋与本
+    // 窗串行——与既有单发整段 `copy_*_user`（一窗到底）同语义。
+    let _pt = if el1 { None } else { Some(crate::vmar::pt_lock_current()) };
+    let mut last_page = SAME_PAGE_NONE;
     while pos < len {
         let n = core::cmp::min(COPY_CHUNK, len - pos);
         if let Err(e) = vmo.read(off + pos, &mut chunk[..n]) {
             return voe(e) as i64;
         }
-        if let Err(e) = copy_to_user(el1, buf + pos as u64, &chunk[..n]) {
+        if let Err(e) = copy_to_user_locked(el1, buf + pos as u64, &chunk[..n], &mut last_page) {
             return e as i64;
         }
         pos += n;
@@ -581,7 +669,7 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
 }
 
 /// `vmo_write(vmo, buf, offset, len)`：内核中介写。门控：WRITE。分块同 read
-/// （前置 access_ok 同为 fail-fast 纯走查，§A113 窗在 copy_from_user 分块）。
+/// （前置 access_ok 同为 fail-fast 纯走查，§A113 窗在下方单一 PT 锁分块窗）。
 extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
     let (h, buf, off, len) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3] as usize, tf.regs[4] as usize);
     let el1 = caller_is_el1(tf);
@@ -598,9 +686,14 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
     };
     let mut chunk = [0u8; COPY_CHUNK];
     let mut pos = 0;
+    // P1 同页跳过：同 sys_vmo_read——单一 PT 锁窗包整段块流，`last_page`
+    // 窗内缓存，同页块免重复三级走查；窗含 `vmo.write`（纯无锁 direct map
+    // 拷贝——不取锁、不分配、不阻塞，无锁序新边）。
+    let _pt = if el1 { None } else { Some(crate::vmar::pt_lock_current()) };
+    let mut last_page = SAME_PAGE_NONE;
     while pos < len {
         let n = core::cmp::min(COPY_CHUNK, len - pos);
-        if let Err(e) = copy_from_user(el1, buf + pos as u64, &mut chunk[..n]) {
+        if let Err(e) = copy_from_user_locked(el1, buf + pos as u64, &mut chunk[..n], &mut last_page) {
             return e as i64;
         }
         if let Err(e) = vmo.write(off + pos, &chunk[..n]) {
