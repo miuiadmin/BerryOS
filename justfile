@@ -707,6 +707,12 @@ test-host:
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
+    # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
+    # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
+    # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
+    # 门禁自身坏静默劣化（ksproto 未接线判例同族）。改 berry_assemble.py /
+    # rootfs-manifest.toml / abi.toml 平台 level 联动面必跑。
+    python3 tools/berry_assemble.py --selftest
     # V-0a 刀 1：berry-efi（EFI 结构最小面——偏移/尺寸/签名/UTF-16 编码
     # host 钉板）+ elf2pe 自检（合成 ELF 全链转换钉板 + 未知重定位型负样本）
     # + mkfat --selftest（--put 引导盘构造面：链回读/嵌套目录/负样本——此前
@@ -768,9 +774,10 @@ test-host:
 
     python3 tools/elf2pe.py --selftest
     python3 tools/mkfat.py --selftest
-    # A1-3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
+    # A1-3a/3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
     # 拒面/陈卷清理）——rootfs 多卷产链（build-user --split 32）的编码
-    # 单源执法，改 mkcpio 必跑。
+    # 单源执法，改 mkcpio 必跑。2026-11-11 W1 去重：A1-3a/3b 两刀各接线
+    # 一次致同命令跑两遍（实抓），保留单次覆盖面零损失。
     python3 tools/mkcpio.py --selftest-split
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
@@ -783,10 +790,6 @@ test-host:
     # 后 .tbss∩文件字节无害只配审计；rootfs.cpio 缺席打跳过不 FAIL）。
     python3 tools/tlsscan.py --selftest
     python3 tools/tlsscan.py --audit
-    # A1-3a：mkcpio 切分器守卫（--split 卷产链：重装恒等/卷帽/无空尾卷/
-    # 命名三形/非正卷宽拒——门禁自身坏 = A1-3b 内核 VMO 拼装核心不变量
-    # 静默劣化，mkfat --selftest 同位纪律）。
-    python3 tools/mkcpio.py --selftest-split
     # Q1 续（a-3 U4 纪律同款）：genfbfont 门禁自检——三档字体表单源生成器
     # （fbcon 1x + gfx s2/s3），此前只有 --check 漂移守卫（两侧同源时生成器
     # 逻辑改坏仍绿），selftest 另钉生成器语义：结构契约+拒面 5、NN 放大
