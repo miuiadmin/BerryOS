@@ -3,7 +3,6 @@
 version = 4
 
 [[package]]
-<<<<<<< Updated upstream
 name = "berry-bandface"
 version = "0.2.0"
 
@@ -20,8 +19,6 @@ name = "berry-emface"
 version = "0.2.0"
 
 [[package]]
-=======
->>>>>>> Stashed changes
 name = "berry-evface"
 version = "0.2.0"
 
@@ -60,11 +57,8 @@ dependencies = [
 name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
-<<<<<<< Updated upstream
  "berry-chanface",
  "berry-dtbface",
-=======
->>>>>>> Stashed changes
  "berry-evface",
  "berry-hal-aarch64",
  "berry-hdlface",

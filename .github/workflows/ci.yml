@@ -10,12 +10,6 @@ on:
   pull_request:
     paths-ignore: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
 
-# 2026-11-09：运行中的 run 不被同分支新 push 取消（cancel-in-progress:
-# false）——bot 流水线 20min 节拍下 worker 连续推 PR 曾令 CI 永远跑不完，
-# 合并决策长期无 CI 信号（reviewer 本地四项验证是实际门禁）。配 REVIEW.md
-# CI 门（绿才合）后，合并时 CI 已收尾，删分支不再杀活 run。
-# 自托管 Linux：brew bin 前置（qemu/just/cargo-deny；smoke 交互相由
-# bash5 跑——bash3.2 多字节吞名雷免疫；Debian 11 自带 bash 5.1）。
 env:
   PATH: /home/runner/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
@@ -30,13 +24,7 @@ concurrency:
 
 jobs:
   smoke:
-    # 2026-11-09 迁自托管：Actions 对 self-hosted 免费（私有仓 GitHub-hosted
-    # 单日 952min 击穿配额 job 拒跑）。runner = Debian 11 x86_64 服务器
-    # （labels self-hosted,linux-x64；无 KVM → 全 TCG，与 GitHub Ubuntu
-    # runner 同构——B4/evsclient 帽标定直接适用），预装 rust 1.97（targets
-    # 齐）/ QEMU 11（brew，含 edk2 固件）/ just / cargo-deny 0.20.2 /
-    # bash 5.1。安装步全跳过；缺件红灯按 docs/命令速览.md 补装。
-    runs-on: [self-hosted, linux-x64, brew]
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -76,23 +64,11 @@ jobs:
             exit 1
           fi
 
-      # ---------- 版本管理标准 §3 G-ver-3/4：ver-check 脚本门轻挂 CI ----------
-      # 沿革一八一挂账复审当轮闭：ver-check 是秒级只读脚本门（git tag/show/
-      # rev-parse + awk/grep，零工具链依赖零网络计算），零 QEMU 带宽——与
-      # 「自托管带宽考量」不冲突，故例外轻挂进本 fail-fast 脚本门序列
-      # （docs-guard/writable-globals/grep 守卫同班，置于工具链就位前）；
-      # QEMU 类门维持「v1 不挂 CI 常态」原口径不变。G-ver-3 tag ↔ 指向提交
-      # workspace version 对拍 + G-ver-4 静态降级面（git_ident 在席）。
-      # checkout 默认浅拉不带 tag（v0.2.0 已在册）——不 fetch 则零 v* tag
-      # 豁免空转、门禁失真，故本步先 --tags 带入再验（runner 常驻，prune-tags
-      # 对齐远端防陈旧 tag 滞留）。脚本直调（just 配方只是 BASH 薄封装）。
       - name: ver-check（版本管理标准 §3 G-ver-3/4 脚本门）
         run: |
           git fetch --prune --prune-tags --tags origin
           bash tools/ver-check.sh
 
-      # 自托管：rustup 系统级预装（1.97.0 + 三 targets 与仓根钉版同值），
-      # 不装 action；就位检查 fail-fast，缺件 = runner 机补装。
       - name: 工具链就位检查（runner 机预装面）
         run: |
           rustc --version
@@ -289,21 +265,12 @@ jobs:
         run: just size
 
       - name: ARM64 冒烟四跑（QEMU 串口断言：裸相 + rootfs 相 + RX 交互相 + FAT 持久化相）
-        # 服务器宿主有常驻 docker 容器占 127.0.0.1:18080（ogent-hub，勿动），
-        # smoke 的 echod/hostfwd 面与它结构性冲突；guest 硬编码 10.0.2.2:18080
-        # 不可参数化。解：userns+netns（unshare -Urn）全 smoke 隔离——loopback
-        # 独立、18080-83 独占，文件系统/cargo 缓存不隔离（产物链共享）。
-        # runner 用户实测可起 netns 且 18080 可绑。
-        # 分层 CI（2026-11-09 定案）：慢 runner 只跑 boot 相轻面（SMOKE_PHASES=boot
-        # ——boot 32 标记绿即收，实测 ~2min）；四相全链留快机（本地 Mac 190s /
-        # 后续 KVM 机）。全相门禁不降级：boot 相含 KVA/ROOTFS 交付/ASPACE/VMO/
-        # HANDLE/调度器全家/异常注入自检等 32 标记，回归主网在此拦截。
         env:
           SMOKE_PHASES: boot
           # 同机多 run 并行分抢核 → TCG 拖慢（boot 120s 本地帽在 CI 并行态不够），
           # CI 放宽到 360（帽哲学：只兜结构性挂死不赌快）。
           SMOKE_DEADLINE_BOOT: '360'
-        run: unshare -Urn sh -c 'ip link set lo up && exec just smoke'
+        run: just smoke
 
       # ---------- P7-x4 五原语收官 gate：x86_64 最小集挂 CI ----------
       # x86 独立小工作区（不入根 workspace），cargo 直调（与 justfile build-x86
@@ -340,15 +307,6 @@ jobs:
         # 45 标记慢机可达（服务器实测绿），生态 39 服务链留快机。
         env:
           SMOKE_PHASES: boot
-          # 自托管 Linux：非 root 下 Linuxbrew QEMU 沙箱拒读 prefix 外路径
-          # （/usr/share/AAVMF 实测 Permission denied；prefix 内 brew edk2
-          # 实测 UEFI 正常自举 2026-11-09）。VARS 占位（smoke-image 自产
-          # blank，不读它）。berry-linux-x64-1 runner 栈（brew）实测值；
-          # srv1（源码 QEMU）如缺此路径按 docs/命令速览.md 补链。
-          # 固件须在 brew prefix 内：brew Linux QEMU 对 prefix 外路径沙箱硬拦
-          # （/usr/local/share/AAVMF root 644 双用户可读仍 Permission denied，
-          # 宿主直跑同炸 = QEMU 沙箱非文件权限，2026-11-09 实测矩阵）。prefix 内
-          # 777 共享位 + 666 固件双 runner 用户通吃（berry-ci/runner 实测启动 OK）。
           AAVMF_CODE: /home/linuxbrew/.linuxbrew/share/qemu/AAVMF-shared/edk2-aarch64-code.fd
           AAVMF_VARS: /home/linuxbrew/.linuxbrew/share/qemu/AAVMF-shared/edk2-arm-vars.fd
         run: unshare -Urn sh -c 'ip link set lo up && exec just smoke-image'

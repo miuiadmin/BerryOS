@@ -345,8 +345,10 @@ build-release: docs-guard abi-check build-user
     python3 tools/size.py --assert-flip {{KERNEL_RELEASE}}
 
 # 入口规则门禁（AGENTS 注入预算 + 探针/锚点/迁出目标）——build/check/CI 前置
+# 公开镜像形态：docs-guard 依赖 AGENTS.md（内部档不在镜像）——降级 no-op，
+# 构建/CI 前置门回到 cargo/just 本体（AGENTS 预算门是内部治理，不约束外部贡献者）
 docs-guard:
-    python3 tools/docs_guard.py
+    @echo "public mirror: docs-guard skipped (internal governance doc absent)" 
 
 # 可写全局清单门禁（Ginux writable-globals 借法）：新增 static mut 必须入册
 writable-globals:
