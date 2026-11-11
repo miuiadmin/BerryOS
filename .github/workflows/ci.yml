@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, wip/sched-1.1]
     # 路径分流双道（2026-11-10）：纯轻面（docs/.agents/md/tools/deny.toml）
     # 交 ci-light.yml（~2min 并行组），不进本串行重道。paths-ignore 与
     # ci-light 的 paths 对称——PR 面任一文件落在轻面外即走重道全套。
