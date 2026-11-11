@@ -960,6 +960,16 @@ test-host:
     # + RFC 8032 向量门空转框架——对选型零敏感件先行，26 号 §3-2；原语本体 =
     # P0-2 另刀，向量门不过不合入；P0 合入 = 闸 B，24 号 §4.2 终核三条）。
     cargo test --manifest-path user/Cargo.toml -p berry-crypto --target {{host}}
+    # P3-0 收官（DoD-10 裁定执行·33 号）：berry-sign selftest 复跑 + p3sim
+    # --selftest 接线——两件此前零 CI/测试挂载（selftest 是 CLI 子命令非
+    # #[test]，cargo test 对 main.rs 0 测实证不覆盖 bin 编排面 keygen 0600
+    # 落盘/cpio 走查/admit 目录循环；p3sim 自检只手跑）= 有 selftest 零
+    # 自动执法，ksproto/genwycheproof 未接线判例同族。cargo run 同
+    # CARGO_TARGET_DIR/host 轨自建 bin（cargo test 不产可执行件，deps/
+    # harness 副本实证）；测试钥纪律 = berry-sign 头注：/tmp 现产清场
+    # 永不真签。
+    cargo run --manifest-path user/Cargo.toml -p berry-crypto --bin berry-sign --target {{host}} -- selftest
+    python3 tools/p3sim.py --selftest
     # W1 接线（echod/evsclient 未接线判例同族）：genwycheproof 门禁自检——
     # Wycheproof 向量表生成器（fixture JSON → wycheproof_vectors.rs）随
     # SDK-2 P0-2 落地，selftest 37 面自称绿但从未接线 test-host：有

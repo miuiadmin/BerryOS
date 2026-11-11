@@ -96,7 +96,9 @@ manifest ≤ MANIFEST_MAX、归档 ≤ BAP_MAX。
 fix,message}——code=域.键.因 点分小写（负样例八类见 selftest --json 腿）；
 where=节.键路径，line 仅语法层透传 tomllib 位点、其余域用自带位点（cpio
 偏移/文件名）；--json 模式 OSError 兜底 code="io"；用法错双模式同形
-（stderr __doc__ + exit 2）。
+（stderr __doc__ + exit 2）。单行纪律：执行期间 _HUMAN 总闸关——warn
+忠告行不入 stdout（人读面缺省恒打，字节零改；信封拼装单源 =
+_json_envelope，CLI 分派与 selftest json 腿同走）。
 
 规范形（第 2 道的比较基准，SDK-1a §3 冻结 + GUI-7 尾增 + 同意面先落件二
 尾增）：`[app]` 五行定序 id/version/entry/type/intent + `[compat]?`
@@ -208,6 +210,11 @@ BLOB_KEYS = ("license", "origin", "sha256", "size", "usage")  # V6：最低披�
 
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 APP_KEYS = ("id", "version", "entry", "type", "intent")
+
+# 人读总闸（--json 信封纪律，头注 :91 段）：--json 执行期间关——stdout 只
+# 剩单行信封，png_to_byi 的 warn 忠告行随闸静默；缺省 True 恒打（人读面
+# 字节零改）。_json_envelope 单源翻转（CLI 与 selftest json 腿同走）。
+_HUMAN = True
 
 # SHA256SUMS 行形：64 位小写 hex + 恰两空格 + 条目名（GNU sha256sum 文本惯例）
 SUMS_LINE_RE = re.compile(rb"^([0-9a-f]{64})  (.+)$")
@@ -737,8 +744,12 @@ def png_to_byi(png: bytes, src_name: str) -> bytes:
     # 版前提）。忠告面不拒（现役 32×32 demo 资产先于规格）——过小源在目标
     # 几何放大即糊，loud 提示开发者换源。
     if w < 108 or h < 108:
-        print(f"mkapp: warn icon {src_name} {w}x{h} < 108 源规格"
-              "（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）")
+        # _HUMAN 总闸（--json 模式关）：忠告行是人读面——单行信封纪律下
+        # 不入 stdout（人读面缺省恒打，字节零改；selftest json 腿带图标案
+        # 钉住闸不泄）。
+        if _HUMAN:
+            print(f"mkapp: warn icon {src_name} {w}x{h} < 108 源规格"
+                  "（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）")
     if depth != 8 or color not in (2, 6):
         raise Reject(
             f"icon: {src_name} 应为 8-bit RGB/RGBA（得 depth={depth} color={color}；"
@@ -1546,6 +1557,37 @@ def do_new(app_dir: str, app_id: str, *, emit: bool = True) -> dict:
     return {"dir": app_dir, "id": app_id, "files": sorted(files)}
 
 
+# ---- --json 信封执行器（SDK-2 §二 拒因三元组双读；刀7 挂账清偿 = 本刀
+# 实装：_json_envelope/_json_main/_json_selftest 三件。CLI 分派与 selftest
+# json 腿单源同走——禁止第二份信封拼装（漂移面）。----
+
+
+def _json_envelope(op: str, fn):
+    """fn() → result dict（成功）| Reject（拒因舱）/ OSError（兜底）→
+    (单行 JSON 信封文本, 退出码 0|1)。执行期间 _HUMAN 关（忠告行破单行
+    信封）；拒因舱恒 7 键 {code,where,line,expected,got,fix,message}
+    （头注 :91 段——line 仅语法层 int、其余域 None）；OSError 兜底
+    code="io"。用法错不进本函数——双模式同形（stderr __doc__ + 2）。"""
+    global _HUMAN
+    saved, _HUMAN = _HUMAN, False
+    try:
+        result = fn()
+    except Reject as e:
+        err = {"code": e.code, "where": e.where, "line": e.line,
+               "expected": e.expected, "got": e.got, "fix": e.fix,
+               "message": str(e)}
+    except OSError as e:
+        err = {"code": "io", "where": None, "line": None, "expected": None,
+               "got": str(e), "fix": None, "message": f"io: {e}"}
+    else:
+        env = {"tool": "mkapp", "op": op, "ok": True, "result": result}
+        return json.dumps(env, ensure_ascii=False, separators=(",", ":")), 0
+    finally:
+        _HUMAN = saved
+    env = {"tool": "mkapp", "op": op, "ok": False, "error": err}
+    return json.dumps(env, ensure_ascii=False, separators=(",", ":")), 1
+
+
 BASE = (
     "[app]\n"
     'id = "APPDEMO"\n'
@@ -1572,6 +1614,10 @@ BASE = (
 #     正形 2：f1-abi-rev/stamp-lone-compat；打戳验证 2：
 #     stamp-in-package/stamp-explicit-override 及其 build/check 行）。
 #     包字节数不变（cpio 4096 垫吸收戳行——28672/45056/20480 同旧）。
+#   ③ json 腿挂账清偿刀（--json 信封实装：CLI 分派 + _json_selftest）：
+#     尾增 json-* verdict 15 行（负例八类 code schema + io 兜底 + 正例
+#     三 op 成功信封 + CLI 三 subprocess 真跑）；既有 115 行零漂移——
+#     本刀不动人读面，新增行全在 json 腿（主体输出 add-only）。
 # 再生成法：python3 tools/mkapp.py --selftest 主体输出（去尾 verdict/对拍
 # 行）按 tempdir → <TD> 归一即为本串；漂移红时先辨「预期功能增量（记
 # 理由重钉）」与「非预期漂移（修代码不修板）」。
@@ -1691,7 +1737,284 @@ mkapp: warn icon icon.png 2x2 < 108 源规格（规范 §3.3：建议 108×108 �
   selftest 拒（预期） : ui-stage-icons-over-cap
   selftest 拒（预期） : ui-stage-non-ascii-icon
   selftest 拒（预期） : ui-stage-icon-name-too-long
+  selftest 过（预期） : json-code-syntax-toml
+  selftest 过（预期） : json-code-id-length
+  selftest 过（预期） : json-code-intent-vocab
+  selftest 过（预期） : json-code-compat-ceiling
+  selftest 过（预期） : json-code-canonical
+  selftest 过（预期） : json-code-stage-bin-count
+  selftest 过（预期） : json-code-entry-mismatch
+  selftest 过（预期） : json-code-bin-elf
+  selftest 过（预期） : json-code-io-fallback
+  selftest 过（预期） : json-ok-build
+  selftest 过（预期） : json-ok-check
+  selftest 过（预期） : json-ok-new
+  selftest 过（预期） : json-cli-build-single-line
+  selftest 过（预期） : json-cli-reject-dualread
+  selftest 过（预期） : json-cli-usage-exit2
 """
+
+
+def _json_selftest(td: str) -> int:
+    """--json 信封腿（刀7 挂账清偿·本刀实装）：负例八类（坏 manifest/
+    staging → 拒因舱 schema 断言——恒 7 键、code 点分小写对号、line 仅
+    语法层 int、expected/got/fix 按类分型）+ OSError 兜底 io + 正例三 op
+    （result 舱 = 摘要行镜像逐字段）+ CLI 面 subprocess 真跑（argv 分派/
+    退出码/stdout 恒单行/_HUMAN 总闸不泄 + 拒因人读 stderr ↔ error.message
+    双读一致）。verdict 行进主体 stdout（钉板 add-only）；返回 fail 数。"""
+    bad = 0
+
+    def fail(label: str, why: str) -> None:
+        nonlocal bad
+        print(f"  selftest FAIL: {label}： {why}")
+        bad += 1
+
+    json_code_re = re.compile(r"[a-z0-9][a-z0-9.-]*")
+    err_keys = {"code", "where", "line", "expected", "got", "fix", "message"}
+
+    def reject_case(label: str, out_path: str, stage_dir: str, code: str, *,
+                    line=None, cond=None) -> None:
+        """拒因信封 schema 断言单源：exit 1 + 头形 + 舱恒 7 键 + code 对号
+        + line 语义（line kwarg = 预期位点；缺省 None = 非语法层恒 None）+
+        cond(err) → str|None（类特定分型断言，返理由 = FAIL）。"""
+        text, rc = _json_envelope(
+            "build", lambda: build(out_path, stage_dir, emit=False))
+        try:
+            env = json.loads(text)
+        except ValueError as e:
+            fail(label, f"信封非合法 JSON： {e}")
+            return
+        problems = []
+        if rc != 1:
+            problems.append(f"退出码 {rc} != 1")
+        if (env.get("tool") != "mkapp" or env.get("op") != "build"
+                or env.get("ok") is not False or "result" in env):
+            problems.append(f"信封头/ok 形不符： {text!r}")
+        err = env.get("error")
+        if not isinstance(err, dict) or set(err) != err_keys:
+            problems.append(f"error 舱非恒 7 键： {err!r}")
+        else:
+            if not (isinstance(err["code"], str)
+                    and json_code_re.fullmatch(err["code"])):
+                problems.append(f"code 非点分小写： {err['code']!r}")
+            if err["code"] != code:
+                problems.append(f"code {err['code']!r} != 预期 {code!r}")
+            if not (isinstance(err["message"], str) and err["message"]):
+                problems.append("message 空/非串")
+            if err["line"] != line:
+                problems.append(f"line {err['line']!r} != 预期 {line!r}")
+            if cond:
+                why = cond(err)
+                if why:
+                    problems.append(why)
+        if problems:
+            fail(label, "；".join(problems))
+        else:
+            print(f"  selftest 过（预期） : {label}")
+
+    def mkstage(name: str, mf_text: str, bin_name: str = "jtest",
+                bin_data: bytes = b"\x7fELF", extra_bins=(), icons=()) -> str:
+        d = os.path.join(td, name)
+        os.makedirs(os.path.join(d, "bin"))
+        with open(os.path.join(d, "bin", bin_name), "wb") as f:
+            f.write(bin_data)
+        for n, data in extra_bins:
+            with open(os.path.join(d, "bin", n), "wb") as f:
+                f.write(data)
+        for n, data in icons:
+            os.makedirs(os.path.join(d, "icons"), exist_ok=True)
+            with open(os.path.join(d, "icons", n), "wb") as f:
+                f.write(data)
+        with open(os.path.join(d, "manifest.toml"), "w") as f:
+            f.write(mf_text)
+        return d
+
+    jm = (
+        "[app]\n"
+        'id = "JTEST"\n'
+        'version = "0.1.0"\n'
+        'entry = "bin/jtest"\n'
+        'type = "app"\n'
+        'intent = "utility"\n'
+        "\n[capabilities]\nconsole = true\n"
+    )
+    jcompat = jm.replace(
+        "\n[capabilities]",
+        '\n[compat]\nmin = "0.1.0"\ntarget = "0.1.0"\ncompile = "0.1.0"\n\n[capabilities]',
+    )
+    out_j = os.path.join(td, "JTEST.bap")
+    # ---- 负例八类（头注 :96「负样例八类」——八类覆盖八种舱分型：line 透传/
+    # int 值域/词表 list/区间串/fix 修法/staging where/expected-got 对/hex）----
+    reject_case(  # ① 语法层：tomllib 位点透传（line 恒 int 的唯一类）
+        "json-code-syntax-toml", out_j,
+        mkstage("js1", jm.replace('version = "0.1.0"', "version == 0")),
+        "manifest.syntax.toml", line=3,
+    )
+    reject_case(  # ② _check_str 值域臂：expected 区间串 / got int
+        "json-code-id-length", out_j,
+        mkstage("js2", jm.replace('id = "JTEST"', 'id = ""')),
+        "manifest.app.id.length",
+        cond=lambda e: None if (e["expected"] == "1..=24" and e["got"] == 0)
+        else f"expected/got {e['expected']!r}/{e['got']!r} != '1..=24'/0",
+    )
+    reject_case(  # ③ 词表（封闭值域）：expected = list
+        "json-code-intent-vocab", out_j,
+        mkstage("js3", jm.replace('intent = "utility"', 'intent = "urgent"')),
+        "manifest.intent.vocab",
+        cond=lambda e: None if e["expected"] == list(INTENTS)
+        else f"expected {e['expected']!r} != 六词表",
+    )
+    reject_case(  # ④ 三值链帽：expected ≤ 串 / got str
+        "json-code-compat-ceiling", out_j,
+        mkstage("js4", jcompat.replace('target = "0.1.0"', 'target = "0.2.0"')
+                .replace('compile = "0.1.0"', 'compile = "0.2.0"')),
+        "manifest.compat.ceiling",
+        cond=lambda e: None if (e["expected"] == f"≤{SDK_CURRENT_STR}"
+                                and e["got"] == "0.2.0")
+        else "expected/got 形不符",
+    )
+    reject_case(  # ⑤ 规范形（门禁 2）：fix 修法舱在场
+        "json-code-canonical", out_j,
+        mkstage("js5", jm.replace('id = "JTEST"', "id = 'JTEST'")),
+        "manifest.canonical",
+        cond=lambda e: None if (isinstance(e["fix"], str)
+                                and e["where"] == "manifest.toml")
+        else "fix/where 形不符",
+    )
+    reject_case(  # ⑥ staging 域：where 目录 / expected·got int
+        "json-code-stage-bin-count", out_j,
+        mkstage("js6", jm, extra_bins=[("second", b"\x7fELF")]),
+        "stage.bin.count",
+        cond=lambda e: None if (e["expected"] == 1 and e["got"] == 2
+                                and e["where"] == "bin/")
+        else "expected/got/where 形不符",
+    )
+    reject_case(  # ⑦ 门禁 3：expected = bin/<名> / got = manifest entry
+        "json-code-entry-mismatch", out_j,
+        mkstage("js7", jm.replace('entry = "bin/jtest"', 'entry = "bin/other"')),
+        "entry.mismatch",
+        cond=lambda e: None if (e["expected"] == "bin/jtest"
+                                and e["got"] == "bin/other")
+        else "expected/got 形不符",
+    )
+    reject_case(  # ⑧ 门禁 5：got = hex 串
+        "json-code-bin-elf", out_j,
+        mkstage("js8", jm, bin_data=b"NOEL"),
+        "bin.elf",
+        cond=lambda e: None if (e["expected"] == "7f454c46"
+                                and e["got"] == "4e4f454c")
+        else "expected/got 形不符",
+    )
+    # OSError 兜底（头注 :98）：写盘失败 = 非门禁域 → code="io"、exit 1
+    text, rc = _json_envelope(
+        "build",
+        lambda: build(os.path.join(td, "no-such-dir", "JTEST.bap"),
+                      mkstage("js9", jcompat), emit=False))
+    env = json.loads(text)
+    if (rc == 1 and env["ok"] is False and set(env["error"]) == err_keys
+            and env["error"]["code"] == "io" and env["error"]["message"]):
+        print("  selftest 过（预期） : json-code-io-fallback")
+    else:
+        fail("json-code-io-fallback", f"rc={rc} env={text!r}")
+    # ---- 正例三 op：result 舱 = 摘要行镜像（逐字段断言）----
+    jfull = jcompat.replace("console = true\n", 'console = true\nfs = ["rootfs"]\n')
+    stage_ok = mkstage("js-ok", jfull)
+    text, rc = _json_envelope("build", lambda: build(out_j, stage_ok, emit=False))
+    env = json.loads(text)
+    r = env.get("result", {})
+    if (rc == 0 and env["tool"] == "mkapp" and env["op"] == "build"
+            and env["ok"] is True
+            and set(r) == {"out", "bytes", "id", "version", "console",
+                           "stack_pages", "intent", "compat", "abi_revision", "fs"}
+            and r["id"] == "JTEST" and r["version"] == "0.1.0"
+            and r["console"] is True and r["stack_pages"] == 8
+            and r["intent"] == "utility" and r["compat"] == "0.1.0..0.1.0"
+            and r["abi_revision"] == 1 and r["fs"] == "rootfs"
+            and r["out"] == out_j and isinstance(r["bytes"], int)
+            and r["bytes"] > 0 and "\n" not in text):
+        print("  selftest 过（预期） : json-ok-build")
+    else:
+        fail("json-ok-build", f"rc={rc} result={r!r}")
+    text, rc = _json_envelope("check", lambda: check_bap(out_j, emit=False))
+    env = json.loads(text)
+    r = env.get("result", {})
+    if (rc == 0 and env["op"] == "check" and env["ok"] is True
+            and set(r) == {"path", "bytes", "entries", "digests"}
+            and r["path"] == out_j and r["entries"] == 3
+            and r["digests"] == "ok"):
+        print("  selftest 过（预期） : json-ok-check")
+    else:
+        fail("json-ok-check", f"rc={rc} result={r!r}")
+    new_dir = os.path.join(td, "jsonn")  # basename 须 == id.lower()（new.basename 门）
+    text, rc = _json_envelope("new", lambda: do_new(new_dir, "JSONN", emit=False))
+    env = json.loads(text)
+    r = env.get("result", {})
+    if (rc == 0 and env["op"] == "new" and env["ok"] is True
+            and set(r) == {"dir", "id", "files"} and r["id"] == "JSONN"
+            and r["dir"] == new_dir
+            and set(r["files"]) == {"Cargo.toml", "README.md",
+                                    "manifest.toml", "src/main.rs"}):
+        print("  selftest 过（预期） : json-ok-new")
+    else:
+        fail("json-ok-new", f"rc={rc} result={r!r}")
+    # ---- CLI 面（subprocess 真跑）：argv 分派/退出码/单行纪律/双读一致 ----
+    me = os.path.abspath(__file__)
+    jui = (
+        "[app]\n"
+        'id = "JUI"\n'
+        'version = "0.1.0"\n'
+        'entry = "bin/jui"\n'
+        'type = "app"\n'
+        'intent = "utility"\n'
+        "\n[capabilities]\nconsole = true\n"
+        "\n[ui]\n"
+        'icon = "icons/icon.byi"\n'
+    )
+    cli_stage = mkstage("js-cli", jui, bin_name="jui",
+                        icons=[("icon.png", _mk_png(2, 2))])
+    rj = subprocess.run([sys.executable, me, "--json",
+                         os.path.join(td, "JUI.bap"), cli_stage],
+                        capture_output=True, text=True)
+    try:
+        res = json.loads(rj.stdout).get("result", {})
+    except ValueError:
+        res = {}
+    # 图标案 = _HUMAN 总闸钉：2x2 源必触 warn，json 流须恒单行且无 warn
+    if (rj.returncode == 0 and len(rj.stdout.splitlines()) == 1
+            and "warn" not in rj.stdout and res.get("id") == "JUI"
+            and res.get("icons") == 1):
+        print("  selftest 过（预期） : json-cli-build-single-line")
+    else:
+        fail("json-cli-build-single-line",
+             f"rc={rj.returncode} stdout={rj.stdout!r} stderr={rj.stderr!r}")
+    bad_stage = mkstage("js-cli-bad",
+                        jm.replace('intent = "utility"', 'intent = "urgent"'))
+    rj = subprocess.run([sys.executable, me, "--json", out_j, bad_stage],
+                        capture_output=True, text=True)
+    rh = subprocess.run([sys.executable, me, out_j, bad_stage],
+                        capture_output=True, text=True)
+    try:
+        msg = json.loads(rj.stdout)["error"]["message"]
+    except (ValueError, KeyError):
+        msg = None
+    # 双读一致：同一 Reject——机读舱 message ↔ 人读 stderr 一行（mkapp: 前缀）
+    if (rj.returncode == 1 and rh.returncode == 1 and rj.stderr == ""
+            and rh.stdout == "" and msg is not None
+            and rh.stderr == f"mkapp: {msg}\n"):
+        print("  selftest 过（预期） : json-cli-reject-dualread")
+    else:
+        fail("json-cli-reject-dualread",
+             f"rc={rj.returncode}/{rh.returncode} json_err={rj.stderr!r} "
+             f"human_out={rh.stdout!r} human_err={rh.stderr!r} msg={msg!r}")
+    ru = subprocess.run([sys.executable, me, "--json", "--selftest"],
+                        capture_output=True, text=True)
+    # --selftest 不收 --json（头注 :93）→ 用法错双模式同形：stderr __doc__ + 2
+    if ru.returncode == 2 and ru.stdout == "" and ru.stderr == __doc__:
+        print("  selftest 过（预期） : json-cli-usage-exit2")
+    else:
+        fail("json-cli-usage-exit2",
+             f"rc={ru.returncode} stdout={ru.stdout!r} stderr={ru.stderr[:60]!r}…")
+    return bad
 
 
 def selftest() -> int:
@@ -1704,7 +2027,9 @@ def selftest() -> int:
     SELFTEST_BASELINE 逐字节钉板（人读面 add-only 执法）——漂移即红；
     ②捕获 stdout 原样 replay 到真实 stdout——--selftest loud（有输出有
     退出码；P1 前 buf 无消费者、主体全吞 = 静默缺陷，已修）。--json 信封
-    腿（_json_selftest）仍未实装（刀7 自述欠账，另案挂账不在本腿）。"""
+    腿（_json_selftest，刀7 挂账清偿·json 腿实装刀）：负例八类 code schema
+    + OSError 兜底 io + 成功信封镜像 + CLI 三 subprocess 真跑（单行/
+    _HUMAN 总闸/双读一致）。"""
     import io
 
     real_stdout = sys.stdout
@@ -2163,6 +2488,9 @@ def selftest() -> int:
                 continue
             print(f"  selftest FAIL: {label} 被门禁放行")
             bad += 1
+        # ---- --json 信封腿（刀7 挂账清偿·本刀实装）：schema 断言 + CLI 真跑
+        # （verdict 行进 buf——钉板 add-only，尾增 json-* 15 行）。----
+        bad += _json_selftest(td)
     # ---- P1 回放腿（loud）：恢复真实 stdout → 原样 replay 捕获主体 →
     # 归一化（tempdir → <TD>）与 SELFTEST_BASELINE 钉板对拍。顺序恢复
     # 无 try/finally 是刻意的：异常路径 traceback 走 stderr（不受本重定向
@@ -2194,8 +2522,33 @@ def selftest() -> int:
     return 0
 
 
+def _json_main(args: list[str]) -> int:
+    """--json 前缀旗标分派（头注 :91 段；恒 argv[1]——夹在别处 = 用法错）：
+    三形 build/check/new；op 执行 emit=False（人读行不进 json 流——result
+    舱即摘要行镜像）；拒因 exit 1；用法错双模式同形（stderr __doc__ + 2，
+    含 --selftest 不收 --json 与签名面旗标混排）。"""
+    if len(args) == 2 and args[0] == "--check":
+        text, code = _json_envelope(
+            "check", lambda: check_bap(args[1], emit=False))
+    elif len(args) == 4 and args[0] == "--new" and args[2] == "--id":
+        text, code = _json_envelope(
+            "new", lambda: do_new(args[1], args[3], emit=False))
+    elif len(args) == 2 and not args[0].startswith("-"):
+        text, code = _json_envelope(
+            "build", lambda: build(args[0], args[1], emit=False))
+    else:
+        sys.stderr.write(__doc__)
+        return 2
+    print(text)
+    return code
+
+
 def main() -> int:
     args = sys.argv[1:]
+    # --json 恒 argv[1] 前缀（头注 :92）——先于签名面旗标提取判位：夹带的
+    # --json（非 argv[1]）自然落入用法错，与「--selftest 不收 --json」同执法。
+    if args[:1] == ["--json"]:
+        return _json_main(args[1:])
     # P1 签名面旗标提取（--sign-key/--verify-key 可前缀可夹带；无旗标时
     # rest == 原 args，行为与旧版逐字节同——签名面可选，向后兼容）。
     sign_key: str | None = None
