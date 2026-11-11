@@ -4,7 +4,7 @@ SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）�
 
 用法：mkimage.py <out.img> --efi <BERRYBOOT.EFI> --hello <hello.txt>
               --kernel <kernel.elf> --initrd <rootfs.cpio> [--size-mib N]
-              [--key-hash <64hex>]
+              [--key-hash <64hex>] [--source-instance <dir>]
       mkimage.py --selftest
 
 盘布局 = [LBA0 MBR][LBA2048.. FAT16 主分区（四件套）][尾部 16MiB 密钥
@@ -17,6 +17,15 @@ SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）�
     （BPB 与分区表自洽，V-3 起 build_volume_puts 参数化）。
   - 四件套：\\EFI\\BOOT\\BOOTAA64.EFI / \\HELLO.TXT / \\KERNEL.ELF /
     \\INITRD.BIN（8.3 全合法，LFN 零需求——V-2 §）。
+
+P2 挂接【SDK-2 §五】：--source-instance <dir>（缺省不挂——既有调用
+字节零漂移，向后兼容）：官方源静态实例两件套入 FAT——dir 内
+source-index.tlv → \\SOURCE\\SRCINDEX.TLV、source-keys.txt →
+\\SOURCE\\SRCKEYS.TXT（路径/卷名 v1.2 §五 无定则——**推断**：子目录
+SOURCE/ 与四件套隔离 + 8.3 短名〔mkfat LFN 零需求约束〕；两件套文件名
+单源 = tools/gensourceindex.py INDEX_NAME/KEYS_NAME——镜像常量同步
+义务，双侧 selftest 互检绊线）。两件随四件套同进件 3 manifest v1 对账
+面（全件 SHA-256——格式冻结不动：加条目 = 数据非格式，头行计数自随）。
 
 SEC-02 A1 三件（day-one 留缝——纯宿主侧、零运行时影响；今天只冻结
 格式与槽位，不接任何验签/度量消费端，v2 真机窗口才兑现语义）：
@@ -85,6 +94,37 @@ MANIFEST_RB_W = 20     # rollback_index 零垫宽（u64 全域——AVB 同宽�
                        # 启用不破列宽）
 MANIFEST_PR_W = 10     # platform_revision 零垫宽（u32 全域 = 4294967295 恰
                        # 10 位——rollback_index 同「列宽盖满值域」逻辑；V9）
+
+# P2【SDK-2 §五】官方源静态实例挂接合同（--source-instance）。两件套
+# 文件名单源 = tools/gensourceindex.py（INDEX_NAME/KEYS_NAME 常量——
+# **同步义务**：彼处改名须同笔改此两常量，双侧 selftest 互检绊线执法）；
+# FAT 路径 = 推断（v1.2 §五无路径/卷名定则：SOURCE/ 子目录 + 8.3 短名，
+# mkfat LFN 零需求约束下扩展 ≤3）。
+SRCINST_INDEX_NAME = "source-index.tlv"
+SRCINST_KEYS_NAME = "source-keys.txt"
+SRCINST_FAT_INDEX = "/SOURCE/SRCINDEX.TLV"
+SRCINST_FAT_KEYS = "/SOURCE/SRCKEYS.TXT"
+
+
+def load_source_instance(si_dir: str) -> list:
+    """--source-instance 两件套读取：dir 内 source-index.tlv +
+    source-keys.txt → [(FAT 路径, 字节)×2]。缺席/非文件 = loud 拒
+    （注入面炸好过镜像静默缺件）；深度校验（TLV 解析）归
+    gensourceindex --verify/berry_assemble——本工具只搬运不解释
+    （TLV 单解释器纪律：索引解释器只在 gensourceindex 一处）。"""
+    d = Path(si_dir)
+    if not d.is_dir():
+        raise SystemExit(f"mkimage: FAIL: --source-instance {si_dir} 非目录"
+                         "（两件套产出 = gensourceindex --out-dir）")
+    puts = []
+    for name, fat_path in ((SRCINST_INDEX_NAME, SRCINST_FAT_INDEX),
+                           (SRCINST_KEYS_NAME, SRCINST_FAT_KEYS)):
+        p = d / name
+        if not p.is_file():
+            raise SystemExit(f"mkimage: FAIL: --source-instance 缺 {name}"
+                             f"（两件套 = gensourceindex 产物；got {si_dir}）")
+        puts.append((fat_path, p.read_bytes()))
+    return puts
 
 
 def volume_sectors(size_mib: int) -> int:
@@ -386,6 +426,48 @@ def selftest() -> int:
     assert img[PART_LBA * SECTOR:meta_off] == bytes(vol_direct), "FAT 段漂移"
     assert img[meta_off:] == b"\x00" * (META_SECTORS * SECTOR), "预留区非全零"
     assert len(img) == 9 * 1024 * 1024 + META_SECTORS * SECTOR, "总盘 = 9MiB + 16MiB"
+
+    # P2【SDK-2 §五】源实例挂接面：① 合同绊线（gensourceindex 常量对拍
+    # ——跨工具同步义务的执法点）；② 6 件套 manifest 结构（entries=06 +
+    # 两 SOURCE 路径 + PR 列零扰动——格式 v1 冻结不动，加条目 = 数据）；
+    # ③ 整盘确定性 + FAT 段与 mkfat 直产零漂移（卷面不因挂接变写法）；
+    # ④ 缺件/非目录 loud 拒。
+    import gensourceindex as gsi
+    assert (SRCINST_INDEX_NAME, SRCINST_KEYS_NAME, SRCINST_FAT_INDEX,
+            SRCINST_FAT_KEYS) == (gsi.INDEX_NAME, gsi.KEYS_NAME,
+                                  "/SOURCE/SRCINDEX.TLV",
+                                  "/SOURCE/SRCKEYS.TXT"), "源实例合同漂移"
+    idx_blob = bytes((i * 11 + 5) % 256 for i in range(400))
+    keys_blob = b"berryos-source-keys v1 stub\n"
+    puts6 = puts + [(SRCINST_FAT_INDEX, idx_blob), (SRCINST_FAT_KEYS, keys_blob)]
+    m6 = build_manifest(puts6).decode("ascii")
+    l6 = m6.splitlines()
+    assert l6[0].endswith("entries=06") and len(l6) == 8, "manifest 头计数/行数"
+    paths6 = [ln.split("path=")[1].split(" ")[0] for ln in l6[1:-1]]
+    assert paths6 == sorted(paths6) and SRCINST_FAT_INDEX in paths6 \
+        and SRCINST_FAT_KEYS in paths6, "SOURCE 两件入列（行序 = 路径字节序）"
+    assert all(ln.endswith(f"platform_revision={pr_now}") for ln in l6[1:-1]), \
+        "PR 列零扰动（源实例条目同 PR——同盘同版）"
+    img6, _ = build_image(puts6, 9)
+    assert img6 == build_image(puts6, 9)[0], "挂接后整盘装配不确定"
+    vol6_direct, _ = mkfat.build_volume_puts(
+        puts6, vol_sectors=volume_sectors(9), fat16=True, hidden=PART_LBA)
+    assert img6[PART_LBA * SECTOR:meta_off] == bytes(vol6_direct), \
+        "挂接后 FAT 段漂移（单编码器纪律）"
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        for bad in ("not-a-dir", td):  # 非目录 / 空目录（缺两件）
+            try:
+                load_source_instance(bad)
+            except SystemExit:
+                continue
+            assert False, f"坏 --source-instance 未拒：{bad}"
+        (Path(td) / SRCINST_INDEX_NAME).write_bytes(idx_blob)
+        try:
+            load_source_instance(td)
+            assert False, "缺 source-keys.txt 未拒"
+        except SystemExit:
+            pass
     print("mkimage: selftest ok")
     return 0
 
@@ -401,6 +483,9 @@ def main() -> int:
                     help=f"FAT 段容量 MiB（默认 {DEFAULT_SIZE_MIB}；总盘另加 16MiB 密钥材料预留区）")
     ap.add_argument("--key-hash", help="OEM 公钥 SHA-256（64 位 hex——件 5：只落 manifest "
                                        "key_hash 字段不动盘字节；缺省 none = QEMU 路不烧）")
+    ap.add_argument("--source-instance", metavar="DIR",
+                    help="官方源静态实例目录（SDK-2 P2：两件套入 FAT "
+                         "\\SOURCE\\——gensourceindex 产物；缺省不挂（向后兼容））")
     ap.add_argument("--selftest", action="store_true", help="MBR/manifest 薄面自检（不写盘）")
     args = ap.parse_args()
 
@@ -431,6 +516,12 @@ def main() -> int:
         puts.append((fat_path, data))
         nbytes += len(data)
 
+    # P2 挂接：源实例两件（缺省缺席——四件套字节零漂移，向后兼容）。
+    if args.source_instance:
+        for fat_path, data in load_source_instance(args.source_instance):
+            puts.append((fat_path, data))
+            nbytes += len(data)
+
     img, geo = build_image(puts, args.size_mib)
     Path(args.out).write_bytes(img)
     # 件 3：manifest = <out.img> 同目录侧产物（不进盘——vbmeta 签名产物
@@ -444,7 +535,9 @@ def main() -> int:
           f"{args.size_mib}+16MiB) part=lba{PART_LBA}+{vol_sectors}s "
           f"meta=lba{meta_lba}+{META_SECTORS}s clusters={geo['clusters']} "
           f"used={geo['next_clus'] - 2} fat={geo['fat_sz']}x{mkfat.NUM_FATS} "
-          f"spc={geo['spc']} files=4 bytes={nbytes}")
+          f"spc={geo['spc']} files={len(puts)} bytes={nbytes}"
+          + (f" source_instance={args.source_instance}" if args.source_instance
+             else "") + "")
     print(f"mkimage: manifest {manifest_path} {len(manifest)}B "
           f"entries={len(puts)} key_hash={key_hash if key_hash else 'none'} "
           f"platform_revision={pr}")

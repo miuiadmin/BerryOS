@@ -44,6 +44,12 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     .bap min_level 装载门同构）。声明位现 = CLI 旗（product.toml [platform]
     键位归 #83 落册后的工具升版——schema 权威在设计文档，本刀不动 docs）；
     kernel 锚只验形（步⑧ 逐字节度量对账归全产线）。
+  - 步⑦½ 源实例透传（SDK-2 P2 半刀）：[product.source] 官方源节在席则
+    --source-instance 入 mkimage 参数集（两件套入 FAT /SOURCE/——v1.2
+    §五镜像内置静态实例）。schema 家归**推断**：设计文档 §1 双键 28 键
+    无此节（SDK-2 P2 刀新增，正式落册归 #77/设计文档升版；product 键
+    add-only 随组装工具版本化收录——§1.1）；深校验复用 gensourceindex
+    索引解析器（TLV 单解释器纪律——不在本工具长第二套）。
   - 不做（如实记）：步②余量（V6 组装半——非构建产物无 [blob] 声明=拒；V8
     fallback 回退引用必填——归后续刀）、步⑤conformance 门
     （P5 随 #84）、步⑥⑧⑨⑩产件与对账（镜像全产线）、just 配方 assemble
@@ -120,7 +126,8 @@ ANCHOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*@sha256:[0-9a-fA-F]{64}$")
 
 # 各节 v0 键集 + 在册未收录键（§1.2-1.5 全量减 v0 子集——拒面分档的数据源）
 TOP_KEYS = {"schema", "product", "platform"}
-PRODUCT_KEYS = {"name", "vendor", "board", "apps", "branding", "defaults"}
+PRODUCT_KEYS = {"name", "vendor", "board", "apps", "branding", "defaults",
+                "source"}
 PRODUCT_DEFERRED = {"services"}                          # [product.services.replace]
 APPS_KEYS = {"preset", "priv_grants"}                     # V15：步② 白名单节收编
 APPS_DEFERRED = set()                                     # （priv_grants 原在此，已移入 KEYS）
@@ -131,6 +138,9 @@ DEFAULTS_DEFERRED = {"scheduler", "locale"}              # §1.5 i18n 八键归�
 PLATFORM_KEYS = {"arch", "feature_level", "build_type", "sideload", "boot", "storage"}
 BOOT_KEYS = {"kernel", "params"}
 STORAGE_KEYS = {"image_size_mib", "rootfs_split_mib", "min_power_atomicity"}
+# SDK-2 P2：[product.source] 官方源节（步⑦½ 透传面；schema 家推断——
+# 头注「步⑦½」段）。单键 v1 = instance（两件套目录）。
+SOURCE_KEYS = {"instance"}
 
 
 class Reject(Exception):
@@ -160,6 +170,7 @@ class Product:
         self.grants_issued_by = ""  # 白名单签发者 lineage（V8 子字段，节在则必填）
         self.branding = {}          # 键 → 相对 product.toml 所在目录的路径
         self.launcher = ""
+        self.source_instance = ""   # [product.source].instance（SDK-2 P2 透传位）
         self.src_dir = ""           # product.toml 所在目录（branding 相对基准）
 
 
@@ -252,6 +263,38 @@ def _check_priv_grants(prod: Product, grants) -> None:
         prod.priv_grants[app_id] = tuple(caps)
 
 
+def _check_source_section(prod: Product, sect, src_dir: str) -> None:
+    """步⑦½：[product.source] 官方源节（SDK-2 P2 透传面——头注「步⑦½」
+    段；可选节，节在则执法）。instance = 两件套目录（相对 product.toml
+    所在目录）；存在性 + gensourceindex 索引解析深校验（TLV 单解释器
+    复用——单源不在本工具长第二套）。"""
+    if not isinstance(sect, dict):
+        raise Reject("product.source: 应为节（键值表——{instance = \"<dir>\"}；"
+                     "schema §推断，SDK-2 v1.2 §五）")
+    _reject_unknown("product.source", sect, SOURCE_KEYS, set())
+    inst = sect.get("instance")
+    if not isinstance(inst, str) or not inst:
+        raise Reject("product.source.instance: 应为非空字符串路径（必填——"
+                     "两件套目录，gensourceindex --out-dir 产物）")
+    d = os.path.join(src_dir, inst)
+    if not os.path.isdir(d):
+        raise Reject(f"product.source.instance: 目录不存在 {inst!r}"
+                     f"（相对 product.toml 所在目录解析——schema §1.4 路径"
+                     f"同口径）")
+    import gensourceindex as gsi  # 惰性导入（节缺席零耦合）
+    for name in (gsi.INDEX_NAME, gsi.KEYS_NAME):
+        if not os.path.isfile(os.path.join(d, name)):
+            raise Reject(f"product.source.instance: 缺 {name}（两件套 = "
+                         f"gensourceindex 产物——索引 + 源钥清单）")
+    try:
+        with open(os.path.join(d, gsi.INDEX_NAME), "rb") as f:
+            gsi.parse_index(f.read())
+    except SystemExit as e:
+        raise Reject(f"product.source.instance: 索引解析拒：{e}"
+                     f"（TLV 单解释器 = gensourceindex——深校验复用）")
+    prod.source_instance = inst
+
+
 def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
     """[product] 自由面 v0 子集（预装集/品牌资源路径/默认应用）。"""
     _reject_unknown("product", sect, PRODUCT_KEYS, PRODUCT_DEFERRED)
@@ -313,6 +356,10 @@ def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
             raise Reject(f"product.branding.{key}: 包内不存在 {rel!r}"
                          f"（相对 product.toml 所在目录解析——schema §1.4）")
         prod.branding[key] = rel
+
+    # [product.source]——官方源静态实例（SDK-2 P2 步⑦½；可选节，节在则执法）
+    if "source" in sect:
+        _check_source_section(prod, sect["source"], src_dir)
 
     # [product.defaults].launcher——默认应用（Q13 过渡：app/ 或 bin/ 前缀皆合法）
     defaults = _need_table(sect, "defaults", "product.defaults")
@@ -529,7 +576,14 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
         f"berry-assemble: mkimage 参数集（步⑦）: python3 tools/mkimage.py"
         f" out/{prod.name}.img --efi <配方注入位> --hello <配方注入位>"
         f" --kernel <配方注入位> --initrd <配方注入位>"
-        f" --size-mib {prod.image_size_mib}")
+        f" --size-mib {prod.image_size_mib}"
+        + (f" --source-instance {prod.source_instance}"
+           if prod.source_instance else ""))
+    if prod.source_instance:
+        lines.append(
+            f"berry-assemble: 源实例透传（SDK-2 P2 步⑦½）: [product.source]"
+            f".instance = {prod.source_instance}（两件套入 FAT /SOURCE/——"
+            f"v1.2 §五镜像内置官方源静态实例；深校验过 gensourceindex）")
     lines.append(
         f"berry-assemble:   platform_revision 无注入位（mkimage 单源读"
         f" tools/abi.toml [platform].level={level}——V9 裁决 PR ≡ level，"
@@ -557,7 +611,8 @@ def do_check(path: str, base_manifest: str, user_dir: str) -> None:
     prod, _, _ = _validate_all(path, base_manifest, user_dir)
     print(f"berry-assemble: {path} OK（product={prod.name} board={prod.board}"
           f" preset={len(prod.preset)}/{APP_SLOTS}"
-          f" size={prod.image_size_mib}MiB split={prod.rootfs_split_mib}MiB）")
+          f" size={prod.image_size_mib}MiB split={prod.rootfs_split_mib}MiB"
+          f" source={'on' if prod.source_instance else 'off'}）")
 
 
 def do_dry_run(path: str, pr: int, base_manifest: str, user_dir: str) -> None:
@@ -917,6 +972,68 @@ def selftest() -> int:
             'A = ["console"]', 'A = ["console"]\nA = ["net"]', 1)
         leg_reject("priv_grants app_id 重复（tomllib 键唯一）", "TOML 解析失败",
                    lambda: load_product(write_prod(dup_grants, "dup.toml")))
+
+        # ---- SDK-2 P2 步⑦½：[product.source] 官方源节（正例 + 拒面逐型）----
+        import gensourceindex as gsi
+        sid_dir = os.path.join(prod_dir, "sourceinst")
+        os.makedirs(sid_dir, exist_ok=True)
+        gsi_pk = bytes(range(0xA0, 0xC0))
+        gsi_entry = gsi.Entry("P2DEMO", (0, 1, 0), 4, bytes(32), "berryos",
+                              None, 1)
+        with open(os.path.join(sid_dir, gsi.INDEX_NAME), "wb") as f:
+            f.write(gsi.build_index([gsi_entry], 1, gsi_pk))
+        with open(os.path.join(sid_dir, gsi.KEYS_NAME), "wb") as f:
+            f.write(gsi.build_keys_listing("berryos", gsi_pk, False))
+        SRC_BLOCK = '\n\n[product.source]\ninstance = "sourceinst"'
+        try:
+            ps = load_product(write_prod(SELFTEST_PRODUCT + SRC_BLOCK,
+                                         "src.toml"))
+            leg(ps.source_instance == "sourceinst",
+                "load source.instance（透传位——[product.source] P2 新节）")
+            items_s, n_base_s = resolve_entries(ps, base_path, user)
+            plan_s = build_plan(ps, items_s, n_base_s, level, level, "user")
+            leg(any(f"--source-instance {ps.source_instance}" in ln
+                    and "mkimage 参数集" in ln for ln in plan_s),
+                "plan mkimage 参数集透传 --source-instance（步⑦½）")
+            leg(any("源实例透传" in ln and "FAT /SOURCE/" in ln
+                    for ln in plan_s), "plan 源实例透传导言行")
+        except Reject as e:
+            leg(False, f"source 正例被拒（模板漂移）：{e}")
+        # 无节零扰动（缺省 = 不透传——向后兼容面）
+        leg(load_product(good).source_instance == ""
+            and not any("--source-instance" in ln for ln in plan),
+            "无 source 节零透传（缺省向后兼容）")
+        empty_dir = os.path.join(prod_dir, "emptysrc")
+        os.makedirs(empty_dir, exist_ok=True)
+        bad_dir = os.path.join(prod_dir, "badsrc")
+        os.makedirs(bad_dir, exist_ok=True)
+        with open(os.path.join(bad_dir, gsi.INDEX_NAME), "wb") as f:
+            f.write(b"BSRX" + b"\x00" * 200)
+        with open(os.path.join(bad_dir, gsi.KEYS_NAME), "wb") as f:
+            f.write(b"berryos-source-keys v1 stub\n")
+        for label, old, new, want in [
+            ("source 未知键", SRC_BLOCK, SRC_BLOCK + '\nextra = 1',
+             "product.source: 未知键"),
+            ("source 缺两件套", 'instance = "sourceinst"',
+             'instance = "emptysrc"', "缺 source-index.tlv"),
+            ("source 目录不存在", 'instance = "sourceinst"',
+             'instance = "nope-dir"', "目录不存在"),
+            ("source instance 非串", 'instance = "sourceinst"',
+             "instance = 5", "应为非空字符串路径"),
+            ("source 非节", None,
+             'board   = "qemu-virt"\nsource = "sourceinst"', "应为节"),
+            ("source 坏索引深校验拒", 'instance = "sourceinst"',
+             'instance = "badsrc"', "索引解析拒"),
+        ]:
+            if old == SRC_BLOCK:
+                text = SELFTEST_PRODUCT + new
+            elif old is None:  # 非节腿：裸键入 [product] 节（不带 SRC_BLOCK
+                text = SELFTEST_PRODUCT.replace(new.split("\n")[0],
+                                                new, 1)  # ——防表/值撞名）
+            else:
+                text = (SELFTEST_PRODUCT + SRC_BLOCK).replace(old, new, 1)
+            leg_reject(label, want, lambda t=text: load_product(
+                write_prod(t, "badsrc.toml")))
 
         # ---- 拒面：解析面（基座对账/构建树存在/launcher 终表对账）----
         # （白名单键随腿同步换 C——模板含 V15 正例节 A，防 load 面先咬）
