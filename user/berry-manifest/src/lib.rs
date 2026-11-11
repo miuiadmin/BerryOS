@@ -31,6 +31,18 @@
 //!   `min_level > BERRY_PLATFORM_LEVEL`（level 常量源 = berry-sys
 //!   `abi_gen`，单源 `tools/abi.toml` `[platform]`）；本解析器照旧不做
 //!   「当前级」比较（分层执法不变）。
+//! - `[compat]` 增可选 `abi_revision`（u16 纯十进制，**v1 起始 = 1**——
+//!   SDK-2 双轨 v1.1 §二「target-ABI-revision」；mkapp P1 打戳位，24 号
+//!   §4.3 半刀②）：应用构建时锚定的平台 ABI/语义快照号——**构建工具
+//!   自动打戳的「事实」位**，与 `target`（SDK 语义档，开发者主动声明）
+//!   分工（事实/承诺二分）。manifest 不要求手写；显式给则须过值域
+//!   `1..=65535`（0 = 不存在的快照号，拒）。独立可选、不参三值齐缺
+//!   裁断；**仅 `abi_revision` 孤立在场 = 合法**（mkapp 对无 `[compat]`
+//!   旧形的打戳产物形——事实位无「声明被吞」风险，与 `min_level` 孤立
+//!   拒不同律）。值域外/重复键/非纯十进制统一 `bad compat`（节内理由
+//!   单一化同款）。v1 收格式不消费（遥测与分发门槛统计随 SDK-2 §五；
+//!   键位落码与打戳转正随 #77）。解析产物入 `Manifest::abi_revision`
+//!   （顶层位——[compat] 三值可齐缺而事实位可在，不入 `Compat`）。
 //! - `[capabilities]` 增 `fs`/`net` 两键：作用域字符串数组（恰一元素，
 //!   值域整体 trim 容忍与 bool 同口径——规范形门禁拒的两级执法）。
 //!   v1 词表闭集 `fs ∈ {"rootfs"}`、`net ∈ {"client"}`——词表外/非数组/
@@ -331,6 +343,13 @@ const _: () = assert!(SdkVer::parse(SDK_CURRENT_STR).is_some());
 /// 常量形态的 SDK_CURRENT（比较用）。
 pub const SDK_CURRENT: SdkVer = SdkVer { major: 0, minor: 1, patch: 0 };
 
+/// 平台 ABI/语义快照号当前值（SDK-2 双轨 v1.1 §二；24 号 §4.3 半刀②）：
+/// `[compat] abi_revision` 的 mkapp 自动打戳值——**v1 起始 = 1**（0 =
+/// 不存在的快照号，解析拒）。单一事实源 = 本 crate（SDK_CURRENT 同款
+/// 纪律），`tools/mkapp.py` `ABI_REVISION_V1` 镜像（双侧同步义务）；
+/// 消费随 #77（遥测与分发门槛统计，SDK-2 §五——v1 收格式不消费）。
+pub const ABI_REVISION_V1: u16 = 1;
+
 impl SdkVer {
     /// §2.1 文法解析；**不涉 SDK_CURRENT 比较**（分层执法：链比较是
     /// mkapp 编译期门禁，parser 不知「当前级」语义）。const fn 是形状
@@ -520,6 +539,12 @@ pub struct Manifest<'a> {
     // ---- SDK-1a 增量（add-only：缺省全 None = v0 旧包路径零漂移）----
     /// 三值齐备或齐缺（整节缺席 = None ≡ 按 SDK_CURRENT 处理）。
     pub compat: Option<Compat>,
+    /// P1 打戳位（24 号 §4.3 半刀②；双轨 v1.1 §二）：[compat] `abi_revision`
+    /// （u16，v1 起 = 1）——构建工具（mkapp）自动打戳的平台 ABI/语义快照
+    /// 号（「事实」位）。None = 未声明（旧包/未打戳形）；Some = 显式声明
+    /// 或 mkapp 打戳产物。顶层位而非 Compat 内位：[compat] 三值可齐缺而
+    /// 事实位可在（孤键形 = mkapp 对无三值旧形的打戳产物）。
+    pub abi_revision: Option<u16>,
     /// 作用域词（值域闭集 {"rootfs"}——词表即类型）。
     pub fs: Option<&'a str>,
     /// 值域闭集 {"client"}（parser 照收；appd 侧 loud 拒——档 (b)）。
@@ -610,6 +635,9 @@ struct Fields<'a> {
     c_compile: Option<SdkVer>,
     // VER-01 提案第 4 条：平台 API level 包侧位（独立可选——不参齐缺裁断）
     c_min_level: Option<u32>,
+    // P1（24 号 §4.3 半刀②）：[compat] abi_revision 槽（u16 事实位——
+    // 独立可选不参齐缺裁断，孤键形合法 = mkapp 打戳产物形）
+    c_abi_revision: Option<u16>,
     fs: Option<&'a [u8]>,
     net: Option<&'a [u8]>,
     sec_profile: Option<&'a [u8]>,
@@ -753,6 +781,25 @@ fn set_compat_level(slot: &mut Option<u32>, val: &[u8]) -> Result<(), ManifestEr
     Ok(())
 }
 
+/// [compat] `abi_revision` 槽（24 号 §4.3 半刀②；双轨 v1.1 §二）：u16 纯
+/// 十进制、v1 起 = 1（`ABI_REVISION_V1`——0 = 不存在的快照号，拒；值域
+/// 立法两源 = 本常量 + mkapp `ABI_REVISION_V1` 镜像）。节内任何文法错/
+/// 值域外/重复键统一 `bad compat`（set_compat_level 理由单一化同款）。
+/// 独立可选、不参三值齐缺裁断；**孤键在场合法**（mkapp 对无 [compat]
+/// 旧形的打戳产物形——事实位无「声明被静默吞弃」风险，与 min_level
+/// 孤立拒不同律）。
+fn set_compat_revision(slot: &mut Option<u16>, val: &[u8]) -> Result<(), ManifestErr> {
+    if slot.is_some() {
+        return Err(err("bad compat"));
+    }
+    let n = parse_u32(val).ok_or_else(|| err("bad compat"))?;
+    if !(ABI_REVISION_V1 as u32..=u16::MAX as u32).contains(&n) {
+        return Err(err("bad compat"));
+    }
+    *slot = Some(n as u16);
+    Ok(())
+}
+
 /// fs/net 作用域槽：`[` 双引号串 `]` 恰一元素 + 词表闭集。值域整体
 /// trim 容忍与 bool 同口径（`[ "rootfs" ]` 解析收、规范形门禁拒——
 /// 两级执法与 `console =  true` 双空格现状一致）；数组文法/词表外/
@@ -890,6 +937,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         c_target: None,
         c_compile: None,
         c_min_level: None,
+        c_abi_revision: None,
         fs: None,
         net: None,
         sec_profile: None,
@@ -1022,6 +1070,11 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
             // VER-01 提案第 4 条：平台 API level 包侧位（独立可选缺省 0——
             // 文法执法在 set_compat_level，不参三值齐缺裁断）
             (Sec::Compat, b"min_level") => set_compat_level(&mut f.c_min_level, val)?,
+            // P1（24 号 §4.3 半刀②）：平台 ABI 快照号事实位（文法/值域
+            // 执法在 set_compat_revision，不参三值齐缺裁断——孤键合法）
+            (Sec::Compat, b"abi_revision") => {
+                set_compat_revision(&mut f.c_abi_revision, val)?
+            }
             // SDK-1a：预留节（值域执法在 set_sec；齐缺裁断在收尾）
             (Sec::Secu, b"profile") => set_sec(&mut f.sec_profile, val)?,
             (Sec::Secu, b"key_lineage") => set_sec(&mut f.sec_lineage, val)?,
@@ -1089,7 +1142,9 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
     // min_level 独立可选（VER-01 提案第 4 条）：缺省 0、不参三值齐缺裁断；
     // 但**不被静默吞弃**——[compat] 在场而三值齐缺（哪怕 min_level 在场）
     // = bad compat（空 [compat] 节先例只对真空节；声明了最低平台级却丢约
-    // 束 = 静默错值类，loud 拒）。
+    // 束 = 静默错值类，loud 拒）。abi_revision 例外（P1，24 号 §4.3 半刀②）：
+    // 孤键在场合法——三值仍齐缺 → compat = None，事实位升 Manifest 顶层
+    // （打戳产物形；承诺位吞弃风险不适用于事实位）。
     let compat = match (f.c_min, f.c_target, f.c_compile) {
         (None, None, None) if f.c_min_level.is_none() => None,
         (Some(min), Some(target), Some(compile)) => Some(Compat {
@@ -1155,6 +1210,9 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest<'_>, ManifestErr> {
         stack_pages: f.stack_pages.unwrap_or(STACK_PAGES_DEFAULT),
         intent,
         compat,
+        // P1 打戳位（24 号 §4.3 半刀②）：u16 事实位——孤键形时 compat =
+        // None 而本位 Some（顶层位，非 Compat 内位）。
+        abi_revision: f.c_abi_revision,
         fs,
         net,
         security,
@@ -1536,7 +1594,18 @@ stack_pages = 16
         assert_eq!(c.min_level, 1);
         assert_eq!(m.fs, Some("rootfs"));
         assert_eq!(m.net, None);
-        assert_eq!(m.security, None);
+        // 重钉（P1 遗留账清偿刀随批）：ba288f7（签名链集成化·ADR #77）给
+        // 九 in-tree manifest 补 [security] 三键后本钉未随更——HEAD 上
+        // fixture_appdemo 已红（实测 744d084 工作树外复现）。按现 fixture
+        // 真值重钉（appdemo = 首个带三键的在册样本——V3 形的活证）。
+        assert_eq!(
+            m.security,
+            Some(Security {
+                profile: "ed25519-main",
+                key_lineage: "berryos-dev",
+                integrator: "berryos",
+            })
+        );
         // GUI-7：appdemo = 首个带 [ui] 的在册样本（icon/label/views 三键
         // 齐用——mkapp 编码链 + appd 枚举标记的消费面对象）。
         let u = m.ui.expect("appdemo ui");
@@ -1736,6 +1805,56 @@ stack_pages = 16
         // 独立可选不救三值齐缺：仅 min_level 而无三值 → bad compat
         let lone = "min_level = 1";
         assert_eq!(bad(&with_compat(BASE, lone)).reason_str(), "bad compat");
+    }
+
+    // 27c. [compat] abi_revision（P1 打戳位，24 号 §4.3 半刀②·双轨 v1.1
+    //      §二）：u16 事实位——三值尾键正形 / 孤键打戳形（compat 仍 None
+    // 而事实位 Some——与 min_level 孤立拒不同律）/ 缺省 None（旧包零漂移）
+    //      / 坏值族统一 bad compat（27b 同款）。
+    #[test]
+    fn compat_abi_revision() {
+        // 三值 + 尾键：compat 齐备、事实位在
+        let full = "min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nabi_revision = 2";
+        let s = with_compat(BASE, full);
+        let m = ok(&s);
+        let c = m.compat.expect("compat");
+        assert_eq!(c.min_level, 0);
+        assert_eq!(m.abi_revision, Some(2));
+        // 三值 + min_level + abi_revision 全组合（mkapp 打戳产物对全形 manifest 的输出形）
+        let all = "min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nmin_level = 1\nabi_revision = 1";
+        let s = with_compat(BASE, all);
+        let m = ok(&s);
+        assert_eq!(m.compat.unwrap().min_level, 1);
+        assert_eq!(m.abi_revision, Some(1));
+        // 孤键打戳形（mkapp 对无 [compat] 旧形的产物）：三值齐缺合法、
+        // compat = None、事实位升顶层。
+        let s = with_compat(BASE, "abi_revision = 1");
+        let lone = ok(&s);
+        assert_eq!(lone.compat, None);
+        assert_eq!(lone.abi_revision, Some(ABI_REVISION_V1));
+        // 缺省 None：旧包零漂移
+        assert_eq!(ok(BASE).abi_revision, None);
+        // 坏值族：0（v1 起 = 1——不存在的快照号）/65536（u16 溢出）/u32 远
+        // 溢出/引号串/负号/重复键 → bad compat
+        for v in ["0", "65536", "4294967296", "\"1\"", "-1"] {
+            let body = format!(
+                "min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nabi_revision = {v}"
+            );
+            assert_eq!(
+                bad(&with_compat(BASE, &body)).reason_str(),
+                "bad compat",
+                "abi_revision = {v:?}"
+            );
+        }
+        let dup = "min = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nabi_revision = 1\nabi_revision = 1";
+        assert_eq!(bad(&with_compat(BASE, dup)).reason_str(), "bad compat");
+        // min_level 孤立仍拒（27b 钉过的律不被事实位例外外溢——27c 回归钉）
+        let lone_ml = "min_level = 1";
+        assert_eq!(bad(&with_compat(BASE, lone_ml)).reason_str(), "bad compat");
+        // 空 [compat] 节 = 缺席同义 None（既有律不被孤键合法化扰动）
+        let empty = BASE.replace("\n[capabilities]", "\n[compat]\n[capabilities]");
+        let m = ok(&empty);
+        assert_eq!((m.compat, m.abi_revision), (None, None));
     }
 
     // 28. fs 作用域：词表内过；词表外/空元素/多元素/非数组一律 bad scope。

@@ -33,7 +33,10 @@
 //!   sc_muladd 尾进位例外见 sc.rs F2 注记，29 号 §F2）。P1 增量：host
 //!   CLI `berry-sign`（bin target，keygen/sign/verify/selftest——mkapp
 //!   `--sign-key`/`--verify-key` 消费面；验签组合逻辑暂居 bin，P3 设备
-//!   侧常驻消费出现时上移 lib）。
+//!   侧常驻消费出现时上移 lib）——**P3-0 已兑现上移**：[`admit`] 装载
+//!   决策模块（策略三档 + 验签序五步单源 [`admit::verify_signed`] +
+//!   防剥离/水位恒执法 + TOFU；`docs/设备侧验签与账本落盘设计-v1.0.md`
+//!   §二），berry-sign verify/admit 单源委托。
 //! - 若 fallback 翻案外购：envelope/ledger/vectors 骨架不变、原语模块
 //!   换装（24 号 §3.1 预案）。
 //!
@@ -68,6 +71,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod admit;
 pub mod ed25519;
 pub mod envelope;
 pub mod fe;

@@ -28,6 +28,18 @@ SDK-1a 增量 `docs/SDK-1a实施设计草案.md` §4；GUI-7 增量见本头注
   三负样例）主归属 = `berry-sign selftest`（宿主最短路径，零依赖纪律
   不破——mkapp selftest 保持纯 Python 门禁）。
 
+P1 abi_revision 打戳（24 号 §4.3 半刀②；SDK-2 双轨 v1.1 §二 :28–33——
+  「键位落码与 mkapp 打戳转正随 #77」的 mkapp 侧先行半；**恒打**，无旗标）：
+  打包时自动在包内 manifest `[compat]` 尾打 `abi_revision`（u16、v1 起始
+  = 1）——构建工具自动打戳的「**事实**」位（应用构建时锚定的 BerryOS
+  ABI/语义快照号，与 `[compat].target` 管「SDK 语义档」分工：双轨 v1.1
+  的事实/承诺二分）。manifest **不要求手写**：未声明 = 打 ABI_REVISION_V1；
+  显式给 = 校验值域 [1,65535] 后按显式值覆盖记录（已戳 manifest 重打包
+  值稳定）。staging 件不回写（戳只进包内 manifest.toml）；无 [compat]
+  旧形 = 新起 `[compat]` 孤键节（三值「齐备或齐缺」不破——berry-manifest
+  镜像同步收本键，孤键形合法）。打戳后全量门禁复跑自证 + MANIFEST_MAX
+  复检；build 摘要行尾恒打 ` abi_revision=N`。
+
 包格式（app-0 §1 冻结 + SDK-1a §2.4 增 + GUI-7 扩）：cpio newc 条目 =
 `manifest.toml` + 唯一 `bin/` 前缀条目（ELF 本体，条目名 = manifest entry）
 + `SHA256SUMS`（SDK-1a 起产包恒在；`--check` 对 2 条目历史包同样可验）
@@ -160,6 +172,14 @@ NET_SCOPES = ("client",)
 VER_RE = re.compile(r"^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$")
 SEC_RE = re.compile(r"^[a-z0-9-]{1,16}$")
 
+# ---- P1 abi_revision 打戳常量（24 号 §4.3 半刀②；SDK-2 双轨 v1.1 §二
+# :28–33「u16、构建工具自动打、v1 起 = 1」；对账锚点：berry-manifest
+# `ABI_REVISION_V1` 同款义务——SDK 级单一事实源 = berry-manifest，此处
+# 镜像。MAX = u16 帽（值域立法 1..=65535：v1 起 = 1 ⇒ 0 = 不存在的快照
+# 号，拒）。----
+ABI_REVISION_V1 = 1  # 双轨 v1.1 §二原文「distribution 域」——现态裁定落 [compat]（24 号 :69 双开 + manifest v2 未存在的现况）；v2 立法时裁定迁域（键语义/打戳机制不变，canonical 搬家）
+ABI_REVISION_MAX = 65535
+
 # ---- GUI-7 常量（对账锚点：UI_PATH_MAX/LABEL_MAX/两前缀/两条目帽镜像
 # berry-manifest；DIM/PIXELS 对齐 berry-gfx decode 面——产面子集执法）----
 UI_PATH_MAX = 32
@@ -222,7 +242,8 @@ def _ver(v: tuple) -> str:
 class M:
     """过检后的 manifest 视图（规范形重序列化的数据源）。"""
 
-    def __init__(self, app, caps, runtime, compat, min_level, sec, ui, aa, blob):
+    def __init__(self, app, caps, runtime, compat, min_level, sec, ui, aa, blob,
+                 abi_revision):
         self.id = app["id"]
         self.version = app["version"]
         self.entry = app["entry"]
@@ -238,6 +259,11 @@ class M:
         # VER-01 提案第 4 条：min_level = None | u32（[compat] 独立可选、
         # 缺省 0——None = 未声明不发射；appd 装载期与 BERRY_PLATFORM_LEVEL 比）。
         self.min_level = min_level
+        # P1 打戳位（24 号 §4.3 半刀②）：abi_revision = None | int（[compat]
+        # 独立可选、u16 值域 1..=65535——None = 未声明（build 时自动打
+        # ABI_REVISION_V1）；可与三值域任意组合，孤立在场 = mkapp 对无
+        # [compat] 旧形的打戳产物形）。
+        self.abi_revision = abi_revision
         fs_val = caps.get("fs")
         self.fs = fs_val[0] if fs_val else None
         net_val = caps.get("net")
@@ -266,12 +292,19 @@ class M:
             'type = "app"\n'
             f'intent = "{self.intent}"\n'
         )
-        if self.compat:
-            mn, tg, cp = self.compat
-            out += "\n[compat]\n" f'min = "{_ver(mn)}"\ntarget = "{_ver(tg)}"\ncompile = "{_ver(cp)}"\n'
-            # VER-01 提案第 4 条：min_level 尾增（未声明不发射——旧形字节零漂移）
-            if self.min_level is not None:
-                out += f"min_level = {self.min_level}\n"
+        if self.compat or self.abi_revision is not None:
+            out += "\n[compat]\n"
+            if self.compat:
+                mn, tg, cp = self.compat
+                out += f'min = "{_ver(mn)}"\ntarget = "{_ver(tg)}"\ncompile = "{_ver(cp)}"\n'
+                # VER-01 提案第 4 条：min_level 尾增（未声明不发射——旧形字节零漂移）
+                if self.min_level is not None:
+                    out += f"min_level = {self.min_level}\n"
+            # P1 打戳位（24 号 §4.3 半刀②）：abi_revision 居 [compat] 尾——
+            # 三值/min_level 全在场时为末键；孤立在场（mkapp 对无 [compat]
+            # 旧形的打戳产物）为节内唯一键（三值「齐备或齐缺」不破）。
+            if self.abi_revision is not None:
+                out += f"abi_revision = {self.abi_revision}\n"
         out += f"\n[capabilities]\nconsole = {'true' if self.console else 'false'}\n"
         if self.fs:
             out += f'fs = ["{self.fs}"]\n'
@@ -400,44 +433,76 @@ def check_manifest_text(text: str) -> M:
     vs = None
     compat = doc.get("compat")
     ml = None
+    # P1 打戳位（24 号 §4.3 半刀②）：[compat] 可选 abi_revision（事实位）
+    # ——显式值在此过检（int 非 bool、1..=65535）；三值仍「齐备或齐缺」
+    # （min_level 孤立仍拒），仅 abi_revision 孤立在场 = 合法（mkapp 对无
+    # [compat] 旧形的打戳产物形——事实位无「声明被静默吞弃」风险，与
+    # min_level 承诺位不同律）。
+    ar = None
     if compat is not None:
-        if (not isinstance(compat, dict)
-                or not {"min", "target", "compile"} <= set(compat)
-                or set(compat) - {"min", "target", "compile", "min_level"}):
-            raise Reject("manifest: [compat] 应为 min/target/compile 三键齐备（+可选 min_level）",
-                         code="manifest.compat.keys", where="compat",
-                         expected=["min", "target", "compile", "min_level?"])
-        vs = []
-        for k in ("min", "target", "compile"):
-            v = compat[k]
-            if not isinstance(v, str) or not VER_RE.fullmatch(v):
-                raise Reject("manifest: compat 值应为 x.y.z（每段 1-3 位十进制、无前导零）",
-                             code="manifest.compat.value", where=f"compat.{k}",
-                             expected="x.y.z")
-            vs.append(tuple(int(g) for g in VER_RE.fullmatch(v).groups()))
-        if not vs[0] <= vs[1] <= vs[2]:
-            raise Reject("manifest: compat 序不合（需 min ≤ target ≤ compile）",  # hvigor 00303015 对应物
-                         code="manifest.compat.order", where="compat",
-                         expected="min ≤ target ≤ compile",
-                         got=f"min={_ver(vs[0])} target={_ver(vs[1])} "
-                             f"compile={_ver(vs[2])}")
-        if vs[2] > SDK_CURRENT:
-            raise Reject(f"manifest: compile {_ver(vs[2])} 超工具链当前级 {SDK_CURRENT_STR}",
-                         code="manifest.compat.ceiling", where="compat.compile",
-                         expected=f"≤{SDK_CURRENT_STR}", got=_ver(vs[2]))
-        # VER-01 提案第 4 条：min_level（u32 整数；装载期检查在 appd 与
-        # BERRY_PLATFORM_LEVEL 比——打包期不做「未来级」闸，只钉形状）。
-        ml = compat.get("min_level")
-        if ml is not None:
-            if type(ml) is not int:  # bool 是 int 子类，type() 才拦得住
-                raise Reject("manifest: min_level 应为整数",
-                             code="manifest.compat.min_level.type",
-                             where="compat.min_level", expected="int")
-            if not 0 <= ml <= 0xFFFFFFFF:
-                raise Reject("manifest: min_level 越界 [0,4294967295]",
-                             code="manifest.compat.min_level.range",
-                             where="compat.min_level",
-                             expected="[0,4294967295]", got=ml)
+        ck = set(compat) if isinstance(compat, dict) else None
+        three = {"min", "target", "compile"}
+        if (ck is None
+                or ck - (three | {"min_level", "abi_revision"})
+                or (ck & three not in (set(), three))
+                or (ck & three == set() and ck != {"abi_revision"})):
+            raise Reject(
+                "manifest: [compat] 应为 min/target/compile 三键齐备"
+                "（+可选 min_level/abi_revision；仅 abi_revision 孤立在场 = "
+                "mkapp 打戳形）",
+                code="manifest.compat.keys", where="compat",
+                expected=["min", "target", "compile", "min_level?",
+                          "abi_revision?"],
+            )
+        if three <= ck:
+            vs = []
+            for k in ("min", "target", "compile"):
+                v = compat[k]
+                if not isinstance(v, str) or not VER_RE.fullmatch(v):
+                    raise Reject("manifest: compat 值应为 x.y.z（每段 1-3 位十进制、无前导零）",
+                                 code="manifest.compat.value", where=f"compat.{k}",
+                                 expected="x.y.z")
+                vs.append(tuple(int(g) for g in VER_RE.fullmatch(v).groups()))
+            if not vs[0] <= vs[1] <= vs[2]:
+                raise Reject("manifest: compat 序不合（需 min ≤ target ≤ compile）",  # hvigor 00303015 对应物
+                             code="manifest.compat.order", where="compat",
+                             expected="min ≤ target ≤ compile",
+                             got=f"min={_ver(vs[0])} target={_ver(vs[1])} "
+                                 f"compile={_ver(vs[2])}")
+            if vs[2] > SDK_CURRENT:
+                raise Reject(f"manifest: compile {_ver(vs[2])} 超工具链当前级 {SDK_CURRENT_STR}",
+                             code="manifest.compat.ceiling", where="compat.compile",
+                             expected=f"≤{SDK_CURRENT_STR}", got=_ver(vs[2]))
+            # VER-01 提案第 4 条：min_level（u32 整数；装载期检查在 appd 与
+            # BERRY_PLATFORM_LEVEL 比——打包期不做「未来级」闸，只钉形状）。
+            ml = compat.get("min_level")
+            if ml is not None:
+                if type(ml) is not int:  # bool 是 int 子类，type() 才拦得住
+                    raise Reject("manifest: min_level 应为整数",
+                                 code="manifest.compat.min_level.type",
+                                 where="compat.min_level", expected="int")
+                if not 0 <= ml <= 0xFFFFFFFF:
+                    raise Reject("manifest: min_level 越界 [0,4294967295]",
+                                 code="manifest.compat.min_level.range",
+                                 where="compat.min_level",
+                                 expected="[0,4294967295]", got=ml)
+        # P1（24 号 §4.3 半刀②；双轨 v1.1 §二）：abi_revision 值域执法——
+        # u16 且 v1 起 = 1（0 = 不存在的快照号，拒）；hex/下划线整数由门禁
+        # 2 规范形比较天然拒（tomllib 收 0x1，canonical 重发射十进制 ≠ 输入）。
+        ar = compat.get("abi_revision")
+        if ar is not None:
+            if type(ar) is not int:  # bool 是 int 子类，type() 才拦得住
+                raise Reject("manifest: abi_revision 应为整数",
+                             code="manifest.compat.abi_revision.type",
+                             where="compat.abi_revision", expected="int")
+            if not ABI_REVISION_V1 <= ar <= ABI_REVISION_MAX:
+                raise Reject(
+                    f"manifest: abi_revision 越界 "
+                    f"[{ABI_REVISION_V1},{ABI_REVISION_MAX}]（u16，v1 起始 = 1）",
+                    code="manifest.compat.abi_revision.range",
+                    where="compat.abi_revision",
+                    expected=f"[{ABI_REVISION_V1},{ABI_REVISION_MAX}]", got=ar,
+                )
 
     caps = doc["capabilities"]
     if not {"console"} <= set(caps) or set(caps) - {"console", "fs", "net"}:
@@ -586,7 +651,7 @@ def check_manifest_text(text: str) -> M:
             _check_str(bl[k], f"blob.{k}", BLOB_FIELD_MAX, key=f"blob.{k}")
         blob_t = tuple(bl[k] for k in BLOB_KEYS)
 
-    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, ml, sec_t, ui_t, aa_t, blob_t)
+    m = M(app, caps, runtime, tuple(vs) if vs is not None else None, ml, sec_t, ui_t, aa_t, blob_t, ar)
     if text != m.canonical():
         raise Reject(
             "manifest: 非规范形（hex/下划线整数、单引号、内联表、"
@@ -967,6 +1032,45 @@ def build(out_path: str, app_dir: str, *, emit: bool = True) -> dict:
                      expected="ASCII")
     m = check_manifest_text(text)
 
+    # ---- P1 abi_revision 打戳（24 号 §4.3 半刀②；SDK-2 双轨 v1.1 §二
+    # :28–33）：构建工具自动进包——「事实」位（锚定的平台 ABI/语义快照
+    # 号）。manifest 不要求手写：未声明 = 打 ABI_REVISION_V1（v1 起 = 1）；
+    # 显式给 = 值域已在 check_manifest_text 过检，按显式值覆盖记录（已戳
+    # manifest 重打包值稳定）。staging 件不回写——戳只进包内 manifest。----
+    rev = m.abi_revision if m.abi_revision is not None else ABI_REVISION_V1
+    if m.abi_revision is None:
+        # 注入位 = [compat] 节尾（有 [compat]）或新起节（无 [compat] 旧形
+        # ——节位 = 规范形 [app] 与 [capabilities] 之间）。text 已过门禁 2
+        # = 规范形：节间恰一空行 + 值域禁换行 ⇒ "\n\n[capabilities]\n"
+        # （[capabilities] 必在场且唯一）恰现一次。
+        marker = "\n\n[capabilities]\n"
+        if text.count(marker) != 1:
+            raise Reject("mkapp 内部错：abi_revision 注入标记不唯一（规范形不变量破）",
+                         code="manifest.stamp.internal", where="manifest.toml")
+        # 注入串首的 "\n" = 归还 marker 吞掉的上一行终结符（有 [compat] 分支）
+        # 或上一行终结符 + 节间空行（新起节分支）——少一个即拼行/缺空行，
+        # 由下方 m2 全量门禁复跑炸响（打戳产物自证）。
+        inject = (
+            f"\nabi_revision = {rev}\n\n[capabilities]\n"
+            if "\n[compat]\n" in text
+            else f"\n\n[compat]\nabi_revision = {rev}\n\n[capabilities]\n"
+        )
+        stamped_text = text.replace(marker, inject, 1)
+    else:
+        stamped_text = text
+    stamped = stamped_text.encode("ascii")
+    if len(stamped) > MANIFEST_MAX:
+        raise Reject(f"manifest.toml 打戳后 {len(stamped)}B 超 MANIFEST_MAX {MANIFEST_MAX}B",
+                     code="manifest.size.stamped", where="manifest.toml",
+                     expected=f"≤{MANIFEST_MAX}B", got=len(stamped))
+    # 打戳产物自证：全量门禁复跑（规范形回放——注入面若产出非规范形包在此
+    # 炸响，防「mkapp 产的包 mkapp --check 拒」的自相矛盾件）。
+    m2 = check_manifest_text(stamped_text)
+    if m2.abi_revision != rev:
+        raise Reject("mkapp 内部错：abi_revision 打戳回读不等（注入值漂移）",
+                     code="manifest.stamp.internal", where="compat.abi_revision",
+                     got=m2.abi_revision)
+
     # 门禁 3：entry == bin/ 唯一文件的完整包内路径
     if m.entry != f"bin/{bin_name}":
         raise Reject(f"manifest entry {m.entry!r} != bin/{bin_name!r}",
@@ -989,7 +1093,8 @@ def build(out_path: str, app_dir: str, *, emit: bool = True) -> dict:
 
     payload_items = sorted(
         [
-            (b"manifest.toml", raw),
+            # P1 打戳：入包 = 打戳后 manifest（staging 原件不回写不打包）
+            (b"manifest.toml", stamped),
             (m.entry.encode("ascii"), elf),
         ]
         + icon_items
@@ -1029,6 +1134,10 @@ def build(out_path: str, app_dir: str, *, emit: bool = True) -> dict:
         if m.min_level is not None:
             line += f" min_level={m.min_level}"
             result["min_level"] = m.min_level
+    # P1 打戳事实恒打（无 [compat] 旧形也戳——摘要行与包内 manifest 双
+    # 记录；值 = 显式值或 ABI_REVISION_V1）。
+    line += f" abi_revision={rev}"
+    result["abi_revision"] = rev
     if m.fs:
         line += f" fs={m.fs}"
         result["fs"] = m.fs
@@ -1448,10 +1557,24 @@ BASE = (
 )
 
 
-# 人读面钉板（刀7 --json 起）：selftest 主体 stdout 归一化（tempdir →
-# <TD>）后与此逐字节比对；人读输出任何漂移（文案/顺序/增删行）即 FAIL。
-# 基线 = 刀7 前实测捕获（85 行含尾 verdict；此处 84 行主体，verdict 另打），
-# 生成法与再生法见 research 工作区 /tmp/k3-review/sdk-api/刀7落库/。
+# 人读面钉板（刀7 起；P1 回放腿实装后首钉 2026-11-11）：selftest 主体
+# stdout 归一化（tempdir → <TD>）后与此逐字节比对；人读输出任何漂移
+# （文案/顺序/增删行）即 FAIL。verdict/钉板对拍行另打（不在板内）。
+# 重钉记录（P1 遗留账清偿刀，回放腿首跑如实重钉）：
+#   ① 历史欠账：旧板自钉定后对拍腿从未执行（buf 无消费者——静默缺陷），
+#     实测含 GUI-7 图标源规格 warn 行 14 条（mkapp: warn icon …——负样本
+#     解码前亦先忠告，cap/走查先拒者无 warn），旧板无此 = 历史漂移如实
+#     入板（非本刀引入）；
+#   ② 本刀预期增量（P1 abi_revision 打戳，24 号 §4.3 半刀②）：build
+#     摘要行尾增 abi_revision=N 段（MYAPP 两行——自动戳 1 与显式覆盖 2；
+#     APPUI 一行——无 [compat] 旧形新起节）+ 新样本行（拒面 4：
+#     compat-abi-rev-{zero,quoted,over} + compat-min-level-lone 回归钉；
+#     正形 2：f1-abi-rev/stamp-lone-compat；打戳验证 2：
+#     stamp-in-package/stamp-explicit-override 及其 build/check 行）。
+#     包字节数不变（cpio 4096 垫吸收戳行——28672/45056/20480 同旧）。
+# 再生成法：python3 tools/mkapp.py --selftest 主体输出（去尾 verdict/对拍
+# 行）按 tempdir → <TD> 归一即为本串；漂移红时先辨「预期功能增量（记
+# 理由重钉）」与「非预期漂移（修代码不修板）」。
 SELFTEST_BASELINE = """\
   selftest 拒（预期） : dotted-key
   selftest 拒（预期） : hex-int
@@ -1468,6 +1591,10 @@ SELFTEST_BASELINE = """\
   selftest 拒（预期） : ver-leading-zero
   selftest 拒（预期） : ver-two-segs
   selftest 拒（预期） : ver-four-segs
+  selftest 拒（预期） : compat-abi-rev-zero
+  selftest 拒（预期） : compat-abi-rev-quoted
+  selftest 拒（预期） : compat-abi-rev-over
+  selftest 拒（预期） : compat-min-level-lone
   selftest 拒（预期） : fs-vocab-tmpfs
   selftest 拒（预期） : fs-vocab-appdata
   selftest 拒（预期） : fs-not-array
@@ -1502,6 +1629,8 @@ SELFTEST_BASELINE = """\
   selftest 过（预期） : canonical id=APPDEMO
   selftest 过（预期） : canonical-runtime id=APPDEMO
   selftest 过（预期） : f1-compat id=X
+  selftest 过（预期） : f1-abi-rev id=X
+  selftest 过（预期） : stamp-lone-compat id=X
   selftest 过（预期） : f2-fs id=X
   selftest 过（预期） : f3-net id=X
   selftest 过（预期） : f4-security id=X
@@ -1512,34 +1641,52 @@ SELFTEST_BASELINE = """\
   selftest 过（预期） : f9-blob-kitchen-sink id=KITCHEN
   selftest 过（预期） : f9b-blob-only id=X
   selftest 过（预期） : apptomb id=APPTOMB
+mkapp: warn icon icon.png 2x2 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
+mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 过（预期） : enc-golden-2x2
   selftest 过（预期） : enc-rgb-alpha-255
   selftest 过（预期） : enc-run-split-65535
   selftest 拒（预期） : enc-not-png
   selftest 拒（预期） : enc-truncated
   selftest 拒（预期） : enc-bad-crc
+mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-palette
+mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-gray
+mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-16bit
+mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-interlaced
+mkapp: warn icon icon.png 1025x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-dim-1025
+mkapp: warn icon icon.png 1024x65 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-pixels-over
+mkapp: warn icon icon.png 2x2 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-raw-len
+mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-filter-5
+mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-trns
 mkapp: <TD>/myapp 脚手架四件就绪（MYAPP；构建步骤见 <TD>/myapp/README.md）
-mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true stack=8 intent=utility compat=0.1.0..0.1.0
+mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true stack=8 intent=utility compat=0.1.0..0.1.0 abi_revision=1
 mkapp: <TD>/MYAPP.bap OK 28672B entries=3 digests=ok
   selftest 过（预期） : new-build-check-roundtrip id=MYAPP
+  selftest 过（预期） : stamp-in-package abi_revision=1
+mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true stack=8 intent=utility compat=0.1.0..0.1.0 abi_revision=2
+mkapp: <TD>/MYAPP.bap OK 28672B entries=3 digests=ok
+  selftest 过（预期） : stamp-explicit-override abi_revision=2
 mkapp: <TD>/LEGACY.bap OK 20480B entries=2 digests=n/a
   selftest 过（预期） : legacy-2entry-check digests=n/a
-mkapp: <TD>/APPUI.bap 45056B APPUI v0.1.0 console=true stack=8 intent=utility icons=1 views=1
+mkapp: warn icon icon.png 2x2 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
+mkapp: <TD>/APPUI.bap 45056B APPUI v0.1.0 console=true stack=8 intent=utility abi_revision=1 icons=1 views=1
 mkapp: <TD>/APPUI.bap OK 45056B entries=5 digests=ok
   selftest 过（预期） : ui-build-check-roundtrip icons+views 在包
   selftest 拒（预期） : ui-stage-no-icons
+mkapp: warn icon icon.png 2x2 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : ui-stage-undeclared-icons
   selftest 拒（预期） : ui-stage-undeclared-views
   selftest 拒（预期） : ui-stage-not-png
+mkapp: warn icon icon.png 2x2 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : ui-stage-view-empty
   selftest 拒（预期） : ui-stage-icons-over-cap
   selftest 拒（预期） : ui-stage-non-ascii-icon
@@ -1553,9 +1700,11 @@ def selftest() -> int:
     负面另含三值链/词表/security 的第 1 道拒面）；正对照 = 规范形必须过
     （防空转：check 恒拒也满足「负样本全拒」）——BASE 字节零漂移 =
     add-only 执法样本，F 形 = §3.2 字节模板七形态中五款 + roundtrip。
-    刀7 起两腿增量：①主体输出归一化（td → <TD>）与 SELFTEST_BASELINE
-    逐字节钉板（人读面 add-only 执法）后原样 replay；②--json 信封腿
-    （_json_selftest——八类 canonical 拒因 code + 成功信封 + CLI 面）。"""
+    P1 回放腿实装（遗留账清偿轮）：①主体输出归一化（tempdir → <TD>）与
+    SELFTEST_BASELINE 逐字节钉板（人读面 add-only 执法）——漂移即红；
+    ②捕获 stdout 原样 replay 到真实 stdout——--selftest loud（有输出有
+    退出码；P1 前 buf 无消费者、主体全吞 = 静默缺陷，已修）。--json 信封
+    腿（_json_selftest）仍未实装（刀7 自述欠账，另案挂账不在本腿）。"""
     import io
 
     real_stdout = sys.stdout
@@ -1659,6 +1808,15 @@ def selftest() -> int:
         ("ver-leading-zero", f0 + '\n[compat]\nmin = "01.0.0"\ntarget = "0.1.0"\ncompile = "0.1.0"\n'),
         ("ver-two-segs", f0 + '\n[compat]\nmin = "1.2"\ntarget = "0.1.0"\ncompile = "0.1.0"\n'),
         ("ver-four-segs", f0 + '\n[compat]\nmin = "1.2.3.4"\ntarget = "0.1.0"\ncompile = "0.1.0"\n'),
+        # ---- P1 打戳拒面（24 号 §4.3 半刀②：[compat] abi_revision 值域——
+        # 值变异在规范位（f1 [compat] 尾）——门删则 canonical 重发射与输入
+        # 恒等 → 样本被放行 → selftest FAIL，同 SDK-1a 样本手法钉得住门；
+        # compat-min-level-lone = 新词表门的回归钉（min_level 孤立仍拒——
+        # 事实位孤键豁免不外溢到承诺位）----
+        ("compat-abi-rev-zero", f1.replace('compile = "0.1.0"\n', 'compile = "0.1.0"\nabi_revision = 0\n')),
+        ("compat-abi-rev-quoted", f1.replace('compile = "0.1.0"\n', 'compile = "0.1.0"\nabi_revision = "1"\n')),
+        ("compat-abi-rev-over", f1.replace('compile = "0.1.0"\n', 'compile = "0.1.0"\nabi_revision = 65536\n')),
+        ("compat-min-level-lone", f0 + "\n[compat]\nmin_level = 1\n"),
         ("fs-vocab-tmpfs", f2.replace('["rootfs"]', '["tmpfs"]')),
         ("fs-vocab-appdata", f2.replace('["rootfs"]', '["$appdata"]')),
         ("fs-not-array", f0.replace("console = true\n", 'console = true\nfs = "rootfs"\n')),
@@ -1747,6 +1905,11 @@ def selftest() -> int:
         ("canonical", BASE),  # v0 旧形字节零漂移锚（add-only 执法样本）
         ("canonical-runtime", BASE + "\n[runtime]\nstack_pages = 8\n"),
         ("f1-compat", f1),
+        # P1 打戳正形（24 号 §4.3 半刀②）：f1 尾增 abi_revision（canonical
+        # 位钉板——居 [compat] 三值/min_level 后末位）+ 孤键形（无 [compat]
+        # 旧形打戳产物 = [compat] 单键节，节位 = [app]/[capabilities] 之间）。
+        ("f1-abi-rev", f1.replace('compile = "0.1.0"\n', 'compile = "0.1.0"\nabi_revision = 1\n')),
+        ("stamp-lone-compat", f0.replace("\n[capabilities]", "\n[compat]\nabi_revision = 1\n\n[capabilities]")),
         ("f2-fs", f2),
         ("f3-net", f3),
         ("f4-security", f4),
@@ -1875,6 +2038,33 @@ def selftest() -> int:
         except (Reject, OSError) as e:
             print(f"  selftest FAIL: new-build-check-roundtrip： {e}")
             bad += 1
+        # P1 打戳验证（24 号 §4.3 半刀②；验收口径 = 打包后 manifest 内容
+        # 检查）：自动腿（staging 未声明 → 包内 abi_revision = 1）+ 显式
+        # 覆盖腿（staging 显式 2 → 包内值 2 稳定，不被改打 1）。
+        try:
+            with open(os.path.join(td, "MYAPP.bap"), "rb") as f:
+                mf_pkg = dict(_cpio_entries(f.read()))[b"manifest.toml"]
+            assert b"\nabi_revision = 1\n" in mf_pkg, mf_pkg
+            print("  selftest 过（预期） : stamp-in-package abi_revision=1")
+        except (Reject, OSError, AssertionError, KeyError) as e:
+            print(f"  selftest FAIL: stamp-in-package： {e}")
+            bad += 1
+        try:
+            stage2 = os.path.join(td, "myapp2")
+            os.makedirs(os.path.join(stage2, "bin"))
+            with open(os.path.join(stage2, "manifest.toml"), "w") as f:
+                f.write(mf_text.replace('compile = "0.1.0"\n', 'compile = "0.1.0"\nabi_revision = 2\n'))
+            with open(os.path.join(stage2, "bin", "myapp"), "wb") as f:
+                f.write(b"\x7fELF")
+            out2 = os.path.join(td, "MYAPP.bap")
+            build(out2, stage2)
+            check_bap(out2)
+            with open(out2, "rb") as f:
+                assert b"\nabi_revision = 2\n" in dict(_cpio_entries(f.read()))[b"manifest.toml"]
+            print("  selftest 过（预期） : stamp-explicit-override abi_revision=2")
+        except (Reject, OSError, AssertionError, KeyError) as e:
+            print(f"  selftest FAIL: stamp-explicit-override： {e}")
+            bad += 1
         try:
             legacy = build_archive(
                 sorted(
@@ -1973,9 +2163,33 @@ def selftest() -> int:
                 continue
             print(f"  selftest FAIL: {label} 被门禁放行")
             bad += 1
+    # ---- P1 回放腿（loud）：恢复真实 stdout → 原样 replay 捕获主体 →
+    # 归一化（tempdir → <TD>）与 SELFTEST_BASELINE 钉板对拍。顺序恢复
+    # 无 try/finally 是刻意的：异常路径 traceback 走 stderr（不受本重定向
+    # 影响），崩溃本身即 loud，无需兜底回放。----
+    sys.stdout = real_stdout
+    captured = buf.getvalue()
+    real_stdout.write(captured)
+    norm = captured
+    for td in tds:
+        norm = norm.replace(td, "<TD>")
     if bad:
-        print(f"mkapp selftest: FAIL x{bad}")
+        print(f"mkapp selftest: FAIL x{bad}（拒/误拒样本在上方主体；主体红时钉板对拍略）")
         return 1
+    if norm != SELFTEST_BASELINE:
+        nl, bl = norm.splitlines(), SELFTEST_BASELINE.splitlines()
+        i = 0
+        while i < min(len(nl), len(bl)) and nl[i] == bl[i]:
+            i += 1
+        a = nl[i] if i < len(nl) else "<EOF>"
+        b = bl[i] if i < len(bl) else "<EOF>"
+        print("mkapp selftest: FAIL 人读面漂移——归一化主体与 SELFTEST_BASELINE 对拍不等"
+              f"（行数 钉板 {len(bl)} vs 实测 {len(nl)}）")
+        print(f"mkapp selftest: 首差 @ 行 {i + 1}：钉板 {b!r} ≠ 实测 {a!r}")
+        print("mkapp selftest: 重钉须按当前真实输出并在基线头注记理由"
+              "（仅预期功能增量可重钉——其余是漂移，修代码不修基线）")
+        return 1
+    print(f"mkapp selftest: baseline 对拍 ok（{len(norm.splitlines())} 行逐字节相等）")
     print("mkapp selftest: ok")
     return 0
 

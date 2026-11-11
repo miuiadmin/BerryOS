@@ -1,8 +1,8 @@
 //! 信任账本 TOML 源形态解析/发射/校验 + 单调水位比较器。
 //!
 //! **Q6 面（P0 合入 = 闸 B = 重议窗关闭，见 crate 头注）**：schema 照
-//! `docs/SDK-2-分发与签名链设计-v1.2.md` §二 :38–45 + `research/厂商定制化
-//! 深研/09 号` §2.4 :153–171 落形（24 号 §3.5 逐字段照抄，**零新增字段**）：
+//! `docs/SDK-2-分发与签名链设计-v1.2.md` §二 :38–45 + `research/厂商
+//! 定制化深研/09 号` §2.4 :153–171 落形（24 号 §3.5 逐字段照抄，**零新增字段**）：
 //!
 //! ```toml
 //! # trust-ledger v1（host 源形态；分发/设备形态 = TLV，随 P2/P3 转译）
@@ -20,8 +20,9 @@
 //! cert_status = ""                       # V4 占位：事实源 = 签名索引（v1.2 §二 :43–44）
 //! last_revision = 0                      # V4 占位：v1 恒空（09 §3.1 :213）
 //!
-//! # P3-0 增面：per-app 记录（[[app]]——同库不同键；§1.4 TOFU 首见四字段
-//! # + id 键；**不在 Q6 冻结面内**，字段表冻结点 = P3 合入前（设计 §五-Q5））：
+//! # P3-0 增面：per-app 记录（[[app]]——同库不同键；docs/设备侧验签与账本
+//! # 落盘设计-v1.0.md §1.4 TOFU 首见四字段 + id 键；**不在 Q6 冻结面内**，
+//! # 字段表冻结点 = P3 合入前（同档 §五-Q5））：
 //!
 //! [[app]]
 //! id = "P3OFFIC"                         # 1..=24B（berry-manifest ID_MAX 同源）
@@ -50,8 +51,8 @@
 //! [LedgerErr::BadAnchors]）。
 //!
 //! 发射（[`TrustLedger::emit`]）= 数据面 canonical 形（无注释、小写 hex、
-//! 确定字段序）——parse∘emit 幂等钉板；拒因 BerryErr 化（[LedgerErr]
-//! 结构化枚举，add-only）。
+//! 确定字段序——lineage 节在前、app 节在后）；parse∘emit 幂等钉板；拒因
+//! BerryErr 化（[LedgerErr] 结构化枚举，add-only）。
 
 use crate::envelope::PK_LEN;
 
@@ -67,8 +68,13 @@ pub const ANCHORS_MAX: usize = 8;
 /// 账本 lineage 条目数帽（**推断**——同上）。
 pub const LINEAGES_MAX: usize = 8;
 /// 源文本帽（**推断**——防敌意巨值，berry-manifest `MANIFEST_MAX` 同思路；
-/// 8 lineage × 8 anchor × 例样行宽量级上取整）。
+/// 8 lineage × 8 anchor 例样行宽 + P3-0 起 16 [[app]] × 5 键行宽量级）。
 pub const LEDGER_SRC_MAX: usize = 4096;
+/// per-app 记录 id 帽 = berry-manifest `ID_MAX` 同源（同步义务——
+/// `LINEAGE_ID_MAX` 帽 SEC_VAL_MAX 的家族惯例）。
+pub const APP_ID_MAX: usize = 24;
+/// per-app 记录数帽（**推断**——Q5 冻结点前与 LINEAGES_MAX 同量级）。
+pub const APPS_MAX: usize = 16;
 
 /// 锚类型（add-only 枚举；`ca` = 终态案 C 前向兼容口，`oem-system` = ADR
 /// #82 V4 预埋 OEM 系统锚——闸 B 件，v1 值恒空位）。
@@ -144,6 +150,60 @@ impl LineageEntry {
     }
 }
 
+/// per-app 记录来源词（add-only 枚举——§五 :98「来源=sideload|builtin」；
+/// 未知词保守拒，两步发布纪律同 [`AnchorType`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppSource {
+    Builtin,
+    Sideload,
+}
+
+impl AppSource {
+    /// 词表（add-only 只加不改义）。
+    pub const WORDS: &'static [&'static str] = &["builtin", "sideload"];
+
+    fn parse(word: &[u8]) -> Option<Self> {
+        match word {
+            b"builtin" => Some(AppSource::Builtin),
+            b"sideload" => Some(AppSource::Sideload),
+            _ => None,
+        }
+    }
+
+    fn word(&self) -> &'static str {
+        match self {
+            AppSource::Builtin => "builtin",
+            AppSource::Sideload => "sideload",
+        }
+    }
+}
+
+/// per-app 记录（§1.4 TOFU 首见四字段——锚定公钥/来源/boot 计数/版本
+/// 水位；`id` 是对账键）。**防剥离护栏的消费面**：记录在案（= 已签 id
+/// 在案）再见无 .sig = 拒载（全档恒执法，v1.2 §三 :63 ①）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppRecord {
+    /// app id（berry-manifest `[app].id` 域——1..=24B）。
+    pub id: [u8; APP_ID_MAX],
+    /// id 在用长。
+    pub id_len: usize,
+    /// 锚定公钥（装载时信封 pk）。
+    pub pk: [u8; PK_LEN],
+    /// 来源（builtin | sideload）。
+    pub source: AppSource,
+    /// boot 计数（每次过门装载 +1）。
+    pub boots: u32,
+    /// 版本水位（freshness 防回滚——三值版本可比较 u32，SDK-2 §四 :74-75）。
+    pub ver_max: u32,
+}
+
+impl AppRecord {
+    /// id 切片（在用段）。
+    pub fn id(&self) -> &[u8] {
+        &self.id[..self.id_len]
+    }
+}
+
 /// 信任账本 v1（host 源形态解析产物）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrustLedger {
@@ -151,6 +211,10 @@ pub struct TrustLedger {
     pub lineages: [LineageEntry; LINEAGES_MAX],
     /// 条目在用数。
     pub lineages_len: usize,
+    /// per-app 记录定长槽 + 在用数（P3-0——同库不同键，§1.4）。
+    pub apps: [AppRecord; APPS_MAX],
+    /// per-app 记录在用数。
+    pub apps_len: usize,
 }
 
 impl TrustLedger {
@@ -159,9 +223,19 @@ impl TrustLedger {
         &self.lineages[..self.lineages_len]
     }
 
+    /// per-app 记录切片（在用段）。
+    pub fn apps(&self) -> &[AppRecord] {
+        &self.apps[..self.apps_len]
+    }
+
     /// 按 id 查条目（P1 门禁/P2 boot 对账消费面）。
     pub fn find_lineage(&self, id: &[u8]) -> Option<&LineageEntry> {
         self.lineages().iter().find(|e| e.id() == id)
+    }
+
+    /// 按 app id 查 per-app 记录（P3 装载面——防剥离/水位消费）。
+    pub fn find_app(&self, id: &[u8]) -> Option<&AppRecord> {
+        self.apps().iter().find(|r| r.id() == id)
     }
 
     /// 单一解释解析（永不 panic、零分配、输入只借用）。
@@ -181,12 +255,26 @@ impl TrustLedger {
             gen_max: 0,
             ver_max: 0,
         };
-        let mut ledger = TrustLedger { lineages: [empty; LINEAGES_MAX], lineages_len: 0 };
+        let empty_app = AppRecord {
+            id: [0; APP_ID_MAX],
+            id_len: 0,
+            pk: [0; PK_LEN],
+            source: AppSource::Builtin,
+            boots: 0,
+            ver_max: 0,
+        };
+        let mut ledger = TrustLedger {
+            lineages: [empty; LINEAGES_MAX],
+            lineages_len: 0,
+            apps: [empty_app; APPS_MAX],
+            apps_len: 0,
+        };
         let mut saw_schema = false;
-        // 当前裸键归属：顶层（false）或最近 [[lineage]]（true）——TOML 表
-        // 头后裸键归该表（berry-manifest 节追踪同款）。
-        let mut in_lineage = false;
+        // 当前裸键归属：顶层/最近 [[lineage]]/最近 [[app]]——TOML 表头后
+        // 裸键归该表（berry-manifest 节追踪同款）。
+        let mut section = Section::Top;
         let mut have = EntryFields::default();
+        let mut have_app = AppFields::default();
         let mut lines = LineFeeder { src, pos: 0 };
         while let Some((raw, ls, le)) = lines.peek() {
             let t = trim(strip_comment(raw));
@@ -199,22 +287,34 @@ impl TrustLedger {
                     return Err(LedgerErr::BadLine);
                 }
                 lines.advance(le);
-                if in_lineage {
-                    finish_entry(&mut ledger, &have)?;
-                }
+                finish_section(&mut ledger, section, &have, &have_app)?;
                 if ledger.lineages_len >= LINEAGES_MAX {
                     return Err(LedgerErr::TooManyLineages);
                 }
                 ledger.lineages_len += 1;
-                in_lineage = true;
+                section = Section::Lineage;
                 have = EntryFields::default();
+                continue;
+            }
+            if let Some(rest) = cut_prefix(t, b"[[app]]") {
+                if !rest.is_empty() {
+                    return Err(LedgerErr::BadLine);
+                }
+                lines.advance(le);
+                finish_section(&mut ledger, section, &have, &have_app)?;
+                if ledger.apps_len >= APPS_MAX {
+                    return Err(LedgerErr::TooManyApps);
+                }
+                ledger.apps_len += 1;
+                section = Section::App;
+                have_app = AppFields::default();
                 continue;
             }
             if t.starts_with(b"[[") || t.starts_with(b"[") {
                 return Err(LedgerErr::UnknownSection);
             }
             let (key, val) = split_kv(t)?;
-            if !in_lineage {
+            if section == Section::Top {
                 if key != b"schema" {
                     return Err(LedgerErr::UnknownKey);
                 }
@@ -222,6 +322,38 @@ impl TrustLedger {
                     return Err(LedgerErr::BadSchema);
                 }
                 saw_schema = true;
+                lines.advance(le);
+                continue;
+            }
+            if section == Section::App {
+                let slot = &mut ledger.apps[ledger.apps_len - 1];
+                match key {
+                    b"id" => {
+                        let v = parse_quoted(val)?;
+                        if v.is_empty() || v.len() > APP_ID_MAX || !valid_app_id(v) {
+                            return Err(LedgerErr::BadLineage);
+                        }
+                        slot.id_len = v.len();
+                        slot.id[..v.len()].copy_from_slice(v);
+                    }
+                    b"pk" => {
+                        let v = parse_quoted(val)?;
+                        if v.len() != PK_HEX_LEN {
+                            return Err(LedgerErr::BadPk);
+                        }
+                        let mut buf = [0u8; PK_LEN];
+                        hex_decode(v, &mut buf).ok_or(LedgerErr::BadPk)?;
+                        slot.pk = buf;
+                    }
+                    b"source" => {
+                        slot.source =
+                            AppSource::parse(parse_quoted(val)?).ok_or(LedgerErr::UnknownSource)?;
+                    }
+                    b"boots" => slot.boots = parse_u32(val)?,
+                    b"ver_max" => slot.ver_max = parse_u32(val)?,
+                    _ => return Err(LedgerErr::UnknownKey),
+                }
+                have_app.mark(key);
                 lines.advance(le);
                 continue;
             }
@@ -244,9 +376,10 @@ impl TrustLedger {
                         vend = ls2 + strip_comment(raw2).len();
                         lines.advance(le2);
                     }
-                    let n = parse_anchors(&src[vstart..vend], &mut ledger.lineages
-                        [ledger.lineages_len - 1]
-                        .anchors)?;
+                    let n = parse_anchors(
+                        &src[vstart..vend],
+                        &mut ledger.lineages[ledger.lineages_len - 1].anchors,
+                    )?;
                     ledger.lineages[ledger.lineages_len - 1].anchors_len = n;
                 }
                 _ => {
@@ -282,17 +415,16 @@ impl TrustLedger {
         if !saw_schema {
             return Err(LedgerErr::MissingKey);
         }
-        if in_lineage {
-            finish_entry(&mut ledger, &have)?;
-        }
+        finish_section(&mut ledger, section, &have, &have_app)?;
         if ledger.lineages_len == 0 {
             return Err(LedgerErr::NoLineage);
         }
         Ok(ledger)
     }
 
-    /// canonical 发射（数据面无注释形、小写 hex、确定字段序）。缓冲不足 =
-    /// [LedgerErr::BadOutLen]；parse∘emit 幂等钉板在 tests。
+    /// canonical 发射（数据面无注释形、小写 hex、确定字段序——lineage 节
+    /// 在前、app 节在后）。缓冲不足 = [LedgerErr::BadOutLen]；parse∘emit
+    /// 幂等钉板在 tests。
     pub fn emit(&self, out: &mut [u8]) -> Result<usize, LedgerErr> {
         let mut w = Writer { out, off: 0, overflow: false };
         w.put(b"schema = 1\n");
@@ -313,6 +445,19 @@ impl TrustLedger {
             w.put_dec(e.ver_max);
             w.put(b"\nkind = \"\"\nissued_by = \"\"\ncert_status = \"\"\nlast_revision = ");
             w.put_dec(0);
+            w.put(b"\n");
+        }
+        for a in self.apps() {
+            w.put(b"\n[[app]]\nid = \"");
+            w.put(a.id());
+            w.put(b"\"\npk = \"");
+            w.put_hex(&a.pk);
+            w.put(b"\"\nsource = \"");
+            w.put(a.source.word().as_bytes());
+            w.put(b"\"\nboots = ");
+            w.put_dec(a.boots);
+            w.put(b"\nver_max = ");
+            w.put_dec(a.ver_max);
             w.put(b"\n");
         }
         if w.overflow {
@@ -343,7 +488,50 @@ pub const fn bump_gen(gen_max: u32, gen: u32) -> u32 {
     }
 }
 
+/// ver 水位比较器（freshness 防回滚，SDK-2 §四 :74-75——[`check_gen`] 的
+/// per-app 姊妹面，单源不两套）。**回降拒**：app 版本 ver < 记录 ver_max =
+/// 回滚 → [LedgerErr::VerRollback]；ver ≥ ver_max 过（等值 = 同版本重装
+/// 幂等面）。
+pub fn check_ver(ver: u32, ver_max: u32) -> Result<(), LedgerErr> {
+    if ver < ver_max {
+        Err(LedgerErr::VerRollback)
+    } else {
+        Ok(())
+    }
+}
+
+/// ver 水位推进（per-app 记录更新面单源——[`bump_gen`] 同形）。
+pub const fn bump_ver(ver_max: u32, ver: u32) -> u32 {
+    if ver > ver_max {
+        ver
+    } else {
+        ver_max
+    }
+}
+
 // ---- 内部：行供给/剥离/解析（berry-manifest 逐行形态同族）----
+
+/// 当前节（[[lineage]]/[[app]] 双节形——P3-0 增面）。
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Section {
+    Top,
+    Lineage,
+    App,
+}
+
+/// 节收口分派：按当前节类型收口未决条目/记录。
+fn finish_section(
+    ledger: &mut TrustLedger,
+    section: Section,
+    have: &EntryFields,
+    have_app: &AppFields,
+) -> Result<(), LedgerErr> {
+    match section {
+        Section::Lineage => finish_entry(ledger, have),
+        Section::App => finish_app(ledger, have_app),
+        Section::Top => Ok(()),
+    }
+}
 
 /// 条目字段齐备性槽（24 号 §3.5 例样九键全必填——缺任一 = MissingKey）。
 #[derive(Default)]
@@ -385,6 +573,33 @@ impl EntryFields {
     }
 }
 
+/// per-app 记录字段齐备性槽（五键全必填——缺任一 = MissingKey）。
+#[derive(Default)]
+struct AppFields {
+    id: bool,
+    pk: bool,
+    source: bool,
+    boots: bool,
+    ver_max: bool,
+}
+
+impl AppFields {
+    fn mark(&mut self, key: &[u8]) {
+        match key {
+            b"id" => self.id = true,
+            b"pk" => self.pk = true,
+            b"source" => self.source = true,
+            b"boots" => self.boots = true,
+            b"ver_max" => self.ver_max = true,
+            _ => {}
+        }
+    }
+
+    fn all(&self) -> bool {
+        self.id && self.pk && self.source && self.boots && self.ver_max
+    }
+}
+
 /// 条目收口：九键齐备 + id/锚非空 + 条目 id 不与在册撞。
 fn finish_entry(ledger: &mut TrustLedger, have: &EntryFields) -> Result<(), LedgerErr> {
     if !have.all() {
@@ -404,6 +619,34 @@ fn finish_entry(ledger: &mut TrustLedger, have: &EntryFields) -> Result<(), Ledg
         }
     }
     Ok(())
+}
+
+/// [[app]] 记录收口：五键齐备 + id 非空 + 记录 id 不与在册撞。
+fn finish_app(ledger: &mut TrustLedger, have: &AppFields) -> Result<(), LedgerErr> {
+    if !have.all() {
+        return Err(LedgerErr::MissingKey);
+    }
+    let i = ledger.apps_len - 1;
+    if ledger.apps[i].id_len == 0 {
+        return Err(LedgerErr::BadLineage);
+    }
+    let id = ledger.apps[i].id();
+    for prior in &ledger.apps[..i] {
+        if prior.id() == id {
+            return Err(LedgerErr::DupApp);
+        }
+    }
+    Ok(())
+}
+
+/// per-app 记录 id 值域：1..=24B、首字符字母数字、`[A-Za-z0-9._-]`——
+/// berry-manifest `ID_RE` 域镜像（同步义务——LINEAGE_ID_MAX 帽家族同款）。
+fn valid_app_id(s: &[u8]) -> bool {
+    let Some((&first, rest)) = s.split_first() else { return false };
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    rest.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
 }
 
 /// 偏移式行供给（不消费式 peek + 显式 advance——anchors 值窗跨行延伸须
@@ -780,17 +1023,18 @@ pub enum LedgerErr {
     TooLarge,
     /// 行形坏（无 `=`/空键/裸 `#` 错位/CR/tab/引号错）。
     BadLine,
-    /// 未知节头（仅 `[[lineage]]` 在册）。
+    /// 未知节头（仅 `[[lineage]]`/`[[app]]` 在册）。
     UnknownSection,
-    /// 未知键（顶层仅 `schema`；条目九键闭集；内联表仅 pk/type）。
+    /// 未知键（顶层仅 `schema`；条目九键闭集；记录五键闭集；内联表仅
+    /// pk/type）。
     UnknownKey,
     /// 重复键。
     DupKey,
-    /// 必填键缺失（schema 或条目九键）。
+    /// 必填键缺失（schema / 条目九键 / 记录五键）。
     MissingKey,
     /// `schema` 非 1/重复出现。
     BadSchema,
-    /// id 值域外（空/越帽/字符集外）。
+    /// id 值域外（空/越帽/字符集外——lineage 条目与 [[app]] 记录共用）。
     BadLineage,
     /// 数字非纯十进制/前导零/溢出。
     BadNum,
@@ -814,6 +1058,46 @@ pub enum LedgerErr {
     BadOutLen,
     /// gen 水位回降（[`check_gen`] 执法面——防回放，v1.2 §三 :63 护栏②）。
     GenRollback,
+    /// per-app 版本水位回降（[`check_ver`] 执法面——freshness 防回滚，
+    /// SDK-2 §四 :74-75；P3-0 增，add-only）。
+    VerRollback,
+    /// [[app]] source 未知词（保守拒——两步发布纪律执法面；P3-0 增）。
+    UnknownSource,
+    /// [[app]] 记录 id 撞已在册记录（P3-0 增）。
+    DupApp,
+    /// per-app 记录数越 [`APPS_MAX`] 帽（P3-0 增）。
+    TooManyApps,
+}
+
+impl LedgerErr {
+    /// 拒因词表（kebab 单形——eco 行/CLI 决策行消费；add-only 与枚举同步）。
+    pub fn word(&self) -> &'static str {
+        match self {
+            LedgerErr::TooLarge => "too-large",
+            LedgerErr::BadLine => "bad-line",
+            LedgerErr::UnknownSection => "unknown-section",
+            LedgerErr::UnknownKey => "unknown-key",
+            LedgerErr::DupKey => "dup-key",
+            LedgerErr::MissingKey => "missing-key",
+            LedgerErr::BadSchema => "bad-schema",
+            LedgerErr::BadLineage => "bad-lineage",
+            LedgerErr::BadNum => "bad-num",
+            LedgerErr::BadAnchors => "bad-anchors",
+            LedgerErr::BadPk => "bad-pk",
+            LedgerErr::UnknownAnchorType => "unknown-anchor-type",
+            LedgerErr::V4NonEmpty => "v4-non-empty",
+            LedgerErr::DupLineage => "dup-lineage",
+            LedgerErr::DupAnchor => "dup-anchor",
+            LedgerErr::TooManyLineages => "too-many-lineages",
+            LedgerErr::NoLineage => "no-lineage",
+            LedgerErr::BadOutLen => "bad-out-len",
+            LedgerErr::GenRollback => "gen-rollback",
+            LedgerErr::VerRollback => "ver-rollback",
+            LedgerErr::UnknownSource => "unknown-source",
+            LedgerErr::DupApp => "dup-app",
+            LedgerErr::TooManyApps => "too-many-apps",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -933,7 +1217,7 @@ cert_status = \"\"
 last_revision = 0
 ";
         let l = ok(multi);
-        let e = &l.lineages()[0];
+        let e = &l.lineages[0];
         assert_eq!(e.anchors_len, 3);
         assert_eq!(e.anchors()[0].ty, AnchorType::Tofu);
         assert_eq!(e.anchors()[1].ty, AnchorType::Ca);
@@ -1056,5 +1340,99 @@ last_revision = 0
                 .join("\n")
         );
         assert_eq!(bad(&nine), LedgerErr::BadAnchors);
+    }
+
+    // 7. P3-0 [[app]] per-app 记录：解析字段钉板 + canonical round-trip +
+    //    零记录面 emit 不漂移（旧 emit 字节合同不受增面牵连）。
+    #[test]
+    fn app_records_roundtrip() {
+        // 在 EXEMPLAR（单 lineage）尾接两条 [[app]] 记录。
+        let app_toml = format!(
+            "{EXEMPLAR}[[app]]\nid = \"P3OFFIC\"\npk = \"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\"\nsource = \"builtin\"\nboots = 3\nver_max = 1001\n\
+             [[app]]\nid = \"DEVSIDE\"\npk = \"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\"\nsource = \"sideload\"\nboots = 1\nver_max = 0\n"
+        );
+        let l = ok(&app_toml);
+        assert_eq!(l.apps_len, 2);
+        let a = &l.apps[0];
+        assert_eq!(a.id(), b"P3OFFIC");
+        assert_eq!(a.pk[0], 0x0a);
+        assert_eq!(a.source, AppSource::Builtin);
+        assert_eq!(a.boots, 3);
+        assert_eq!(a.ver_max, 1001);
+        assert_eq!(l.apps[1].source, AppSource::Sideload);
+        assert_eq!(l.find_app(b"P3OFFIC"), Some(a));
+        assert_eq!(l.find_app(b"NOPE"), None);
+        // canonical 发射 = lineage 节在前、app 节在后（确定序）；再解析
+        // 结构恒等；emit 幂等。
+        let canonical = format!(
+            "{CANONICAL}\n[[app]]\nid = \"P3OFFIC\"\npk = \"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\"\nsource = \"builtin\"\nboots = 3\nver_max = 1001\n\
+             \n[[app]]\nid = \"DEVSIDE\"\npk = \"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\"\nsource = \"sideload\"\nboots = 1\nver_max = 0\n"
+        );
+        let mut out = [0u8; LEDGER_SRC_MAX];
+        let n = l.emit(&mut out).expect("emit ok");
+        assert_eq!(&out[..n], canonical.as_bytes());
+        let l2 = ok(core::str::from_utf8(&out[..n]).unwrap());
+        assert_eq!(l2, l);
+        let mut out2 = [0u8; LEDGER_SRC_MAX];
+        let n2 = l2.emit(&mut out2).expect("emit2 ok");
+        assert_eq!(&out2[..n2], &out[..n]);
+        // 零 [[app]] 面：emit 与既有 canonical 合同字节同（增面无回归）。
+        let l0 = ok(EXEMPLAR);
+        assert_eq!(l0.apps_len, 0);
+        let mut out0 = [0u8; LEDGER_SRC_MAX];
+        let n0 = l0.emit(&mut out0).expect("emit0 ok");
+        assert_eq!(&out0[..n0], CANONICAL.as_bytes());
+    }
+
+    // 8. [[app]] 拒面：未知 source 词（保守拒）/未知键/缺键/记录 id 撞/
+    //    pk 坏形/id 值域/boots 前导零/记录帽/节序两可。
+    #[test]
+    fn app_records_reject_faces() {
+        let app = "\n[[app]]\nid = \"A1\"\npk = \"0101010101010101010101010101010101010101010101010101010101010101\"\nsource = \"builtin\"\nboots = 1\nver_max = 0\n";
+        let base = |a: &str| format!("{EXEMPLAR}{a}");
+        // 未知 source 词（两步发布纪律）。
+        assert_eq!(bad(&base(&app.replace("builtin", "vendor"))), LedgerErr::UnknownSource);
+        // 未知键 / 缺键（去 boots）。
+        assert_eq!(bad(&base(&app.replace("boots = 1\n", "extra = 0\n"))), LedgerErr::UnknownKey);
+        assert_eq!(bad(&base(&app.replace("boots = 1\n", ""))), LedgerErr::MissingKey);
+        // 记录 id 撞（同 id 双记录）。
+        assert_eq!(bad(&base(&format!("{app}{app}"))), LedgerErr::DupApp);
+        // pk 坏形（短）与 id 值域（首字符 '-'/内嵌空格）。
+        assert_eq!(
+            bad(&base(&app.replace("0101010101010101010101010101010101010101010101010101010101010101", "0101"))),
+            LedgerErr::BadPk
+        );
+        assert_eq!(bad(&base(&app.replace("id = \"A1\"", "id = \"-x\""))), LedgerErr::BadLineage);
+        assert_eq!(bad(&base(&app.replace("id = \"A1\"", "id = \"a b\""))), LedgerErr::BadLineage);
+        // boots 前导零。
+        assert_eq!(bad(&base(&app.replace("boots = 1", "boots = 01"))), LedgerErr::BadNum);
+        // 记录帽 APPS_MAX=16：第 17 条 → TooManyApps。
+        let mut over = String::from(EXEMPLAR);
+        for i in 0..17 {
+            over.push_str(&format!(
+                "\n[[app]]\nid = \"A{i:02}\"\npk = \"0101010101010101010101010101010101010101010101010101010101010101\"\nsource = \"builtin\"\nboots = 1\nver_max = 0\n"
+            ));
+        }
+        assert_eq!(bad(&over), LedgerErr::TooManyApps);
+        // [[app]] 在 [[lineage]] 前（节序两可——TOML 表头归属性）。
+        let front = format!("schema = 1\n{app}\n[[lineage]]\nid = \"upstream\"\nanchors = [\n  {{ pk = \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", type = \"system\" }},\n]\ngen_max = 3\nver_max = 0\nkind = \"\"\nissued_by = \"\"\ncert_status = \"\"\nlast_revision = 0\n");
+        assert_eq!(ok(&front).apps_len, 1);
+    }
+
+    // 9. ver 水位比较器（check_gen 姊妹面，单源不两套）+ 推进单调 +
+    //    拒因词表钉板（eco 行消费面——add-only 与枚举同步）。
+    #[test]
+    fn ver_water_level_comparator() {
+        assert_eq!(check_ver(1001, 1001), Ok(())); // 等值 = 同版本幂等面
+        assert_eq!(check_ver(1002, 1001), Ok(()));
+        assert_eq!(check_ver(1000, 1001), Err(LedgerErr::VerRollback)); // 回滚
+        assert_eq!(check_ver(0, u32::MAX), Err(LedgerErr::VerRollback));
+        assert_eq!(check_ver(u32::MAX, 0), Ok(()));
+        assert_eq!(bump_ver(1001, 1003), 1003);
+        assert_eq!(bump_ver(1003, 1001), 1003);
+        assert_eq!(bump_ver(0, 0), 0);
+        assert_eq!(LedgerErr::GenRollback.word(), "gen-rollback");
+        assert_eq!(LedgerErr::VerRollback.word(), "ver-rollback");
+        assert_eq!(LedgerErr::UnknownSource.word(), "unknown-source");
     }
 }

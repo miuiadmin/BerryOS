@@ -16,7 +16,15 @@
 //! - `berry-sign verify <pk> <bap> [<sig>]` —— 验签：exit 0 = 过，
 //!   exit 1 = 拒（stderr 一行拒因）。sig 缺省 = `<bap>.sig`。
 //! - `berry-sign selftest` —— v1.2 §九验收线 1 四件自检（正样例 +
-//!   篡改/断链/换钥三负样例；宿主最短路径归属，见 selftest 头注）。
+//!   篡改/断链/换钥三负样例；宿主最短路径归属，见 selftest 头注）+
+//!   admit 腿（P3-0 三档/防剥离/TOFU/sideload/水位/诚实降级在制件）。
+//! - `berry-sign admit <policy.toml> <ledger.toml> <dir> [--emit-ledger
+//!   <out>] [--sideload <id>]… [--no-increment]` —— P3-0 件二：目录内
+//!   `*.bap`+`*.bap.sig` 逐件装载裁决（决策行 stdout + 可选增量账本
+//!   canonical emit；拒载不连坐——失败隔离；设计 = `docs/设备侧验签与
+//!   账本落盘设计-v1.0.md` §二；决策/验签语义单源 = lib `admit` 模块，
+//!   本 CLI 只编排）。exit：0 = 全放行；1 = 有拒载（决策已出全）；
+//!   2 = 用法/IO/账本损坏（保守拒）。
 //!
 //! ## 覆盖域合同（P0-2 验签合同①②③的消费实现）
 //!
@@ -74,9 +82,11 @@ mod cli {
 
     use berry_crypto::ed25519;
     use berry_crypto::envelope::{
-        rot_message, top_message, ChainNode, SigEnvelopeV1, ALG_ED25519_SHA512_256, CHAIN_NODES_MAX,
-        ENVELOPE_MAX, LINEAGE_MAX, ROT_MSG_MAX, SIG_LEN, TOP_MSG_MAX,
+        top_message, ChainNode, SigEnvelopeV1, ALG_ED25519_SHA512_256, CHAIN_NODES_MAX,
+        ENVELOPE_MAX, LINEAGE_MAX, SIG_LEN, TOP_MSG_MAX,
     };
+    use berry_crypto::admit::{self, AdmitCtx, LoadFace, Note, Verdict};
+    use berry_crypto::ledger::{AppSource, TrustLedger, LEDGER_SRC_MAX as EMIT_BUF};
     use berry_crypto::sha512::digest256;
 
     /// manifest 关键域域分隔标签（防跨上下文重放——BSIG-ROT/BSIG-TOP 同
@@ -99,13 +109,16 @@ mod cli {
             ["verify", pk, bap] => run(cmd_verify(pk, bap, &format!("{bap}.sig"))),
             ["verify", pk, bap, sig] => run(cmd_verify(pk, bap, sig)),
             ["selftest"] => run(selftest()),
+            ["admit", rest @ ..] => cmd_admit_main(rest),
             _ => {
                 eprintln!(
                     "berry-sign: 参数不合规\n\
                      用法: berry-sign keygen <sk-out> <pk-out>\n\
                      \x20     berry-sign sign <sk> <bap> [--gen N]\n\
                      \x20     berry-sign verify <pk> <bap> [<sig>]\n\
-                     \x20     berry-sign selftest"
+                     \x20     berry-sign selftest\n\
+                     \x20     berry-sign admit <policy.toml> <ledger.toml> <dir>\n\
+                     \x20                 [--emit-ledger <out>] [--sideload <id>]… [--no-increment]"
                 );
                 ExitCode::from(2)
             }
@@ -241,51 +254,50 @@ mod cli {
         ))
     }
 
-    /// 验签序（核心；selftest 复用）——覆盖域合同见模块头注。
+    /// 验签序（核心；selftest 复用）——**P3-0 起单源委托 lib
+    /// [`admit::verify_signed`]**（验签组合逻辑上移 lib，设计 §1.3.3；
+    /// 本函数 = CLI 适配层：单锚 [{pk}] + manifest 回声/摘要派生不变；
+    /// 重叠窗/链语义随 lib）。
     fn verify_envelope(pk: &[u8; 32], bap: &[u8], mf: &[u8], sig: &[u8]) -> Result<VerifyOk, String> {
-        let env = SigEnvelopeV1::parse(sig).map_err(|e| format!("信封拒 {e:?}"))?;
-        if env.pk != *pk {
-            return Err(format!("换钥拒: 信封 pk {} != 可信 pk {}", hex(&env.pk), hex(pk)));
-        }
         let m = berry_manifest::parse(mf)
             .map_err(|e| format!("manifest 拒：{}", e.reason_str()))?;
         let sec = m.security.ok_or("manifest 拒: 无 [security]（无 key_lineage 可回声对账）")?;
-        if env.lineage() != sec.key_lineage.as_bytes() {
-            return Err(format!(
-                "跨 lineage 拒: 信封 {} != manifest {}",
-                String::from_utf8_lossy(env.lineage()),
-                sec.key_lineage
-            ));
-        }
         let key_fields = key_fields_bytes(&m)?;
         let md = digest256(&key_fields);
         let bd = digest256(bap);
-        // 头重组：parse∘encode canonical 形封闭（envelope.rs encode 发射前
-        // 复检不变量）——重组头与签发头逐字节同。
-        let mut buf = [0u8; ENVELOPE_MAX];
-        let n = env.encode(&mut buf).map_err(|e| format!("信封重发射拒 {e:?}"))?;
-        let mut msg = [0u8; TOP_MSG_MAX];
-        let mn = top_message(&buf[..n - SIG_LEN], &bd, &md, &mut msg)
-            .map_err(|e| format!("覆盖域构建拒 {e:?}"))?;
-        if !ed25519::verify(pk, &env.top_sig, &msg[..mn]) {
-            return Err("顶签名拒: BSIG-TOP 验签不过（载荷/信封被篡改或钥不符）".to_string());
-        }
-        // 轮换链逐节点（P1 签发零链；链非空时 node 0 old_pk = 可信 pk）。
-        let mut old_pk = *pk;
-        for (i, node) in env.chain().iter().enumerate() {
-            let mut rm = [0u8; ROT_MSG_MAX];
-            let rn = rot_message(&old_pk, &node.new_pk, env.gen, env.lineage(), &mut rm)
-                .map_err(|e| format!("链覆盖域拒 node{i} {e:?}"))?;
-            if !ed25519::verify(&old_pk, &node.rot_sig, &rm[..rn]) {
-                return Err(format!("断链拒: node{i} BSIG-ROT 验签不过"));
-            }
-            old_pk = node.new_pk;
-        }
+        let anchors = [berry_crypto::ledger::Anchor {
+            pk: *pk,
+            ty: berry_crypto::ledger::AnchorType::System,
+        }];
+        let ok = admit::verify_signed(&anchors, sec.key_lineage.as_bytes(), &bd, &md, sig)
+            .map_err(|r| verify_err_text(r, pk))?;
         Ok(VerifyOk {
-            lineage: String::from_utf8_lossy(env.lineage()).into_owned(),
-            gen: env.gen,
-            chain_len: env.chain_len,
+            lineage: String::from_utf8_lossy(ok.lineage()).into_owned(),
+            gen: ok.gen,
+            chain_len: ok.chain_len,
         })
+    }
+
+    /// lib 结构化拒因 → CLI 文案（人读面；行为 = exit 1 不变；词面 =
+    /// 各枚举 `word()` 单源）。
+    fn verify_err_text(r: berry_crypto::admit::Reason, pk: &[u8; 32]) -> String {
+        use berry_crypto::admit::Reason;
+        use berry_crypto::envelope::SigErr;
+        match r {
+            Reason::Sig(SigErr::KeyMismatch) => {
+                format!("换钥拒: 信封当前钥无锚见证（可信 pk {}）", hex(pk))
+            }
+            Reason::Sig(SigErr::LineageEcho) => {
+                "跨 lineage 拒: 信封 lineage != manifest key_lineage".to_string()
+            }
+            Reason::Sig(SigErr::TopSigBad) => {
+                "顶签名拒: BSIG-TOP 验签不过（载荷/信封被篡改或钥不符）".to_string()
+            }
+            Reason::Sig(SigErr::RotSigBad) => {
+                "断链拒: 轮换链无锚可全程见证（BSIG-ROT）".to_string()
+            }
+            other => format!("验签拒[{other:?}]（{}）", other.word()),
+        }
     }
 
     // ---- manifest 关键域字节（24 号 §3.4-②，推断；berry-manifest 单源）----
@@ -486,7 +498,438 @@ mod cli {
             println!("  selftest FAIL: sig-neg-wrong-pk 被放行");
             fails += 1;
         }
+        // ⑤ admit 腿（P3-0 件二在制件：三档表/防剥离/TOFU/sideload/
+        //    水位回退/诚实降级/损坏账本保守拒——lib admit 单源的 CLI 面）。
+        fails += selftest_admit(dir)?;
         Ok(fails)
+    }
+
+    /// selftest 断言腿（gensourceindex selftest `leg` 同形）。
+    fn leg(ok: bool, label: &str, fails: &mut usize) {
+        println!("  selftest {} : {label}", if ok { "过（预期）" } else { "FAIL" });
+        if !ok {
+            *fails += 1;
+        }
+    }
+
+    /// 单条目 manifest.toml cpio(newc) 容器（cpio_manifest 的写侧对拍
+    /// ——自写自读回环；几何 = 头 110B + 名垫 4096 + 数据垫 4096）。
+    fn cpio_pack(payload: &[u8]) -> Vec<u8> {
+        let name = b"manifest.toml\0";
+        let mut out = Vec::new();
+        out.extend_from_slice(b"070701");
+        for i in 0..13 {
+            let v = if i == 6 { payload.len() } else if i == 11 { name.len() } else { 0 };
+            out.extend_from_slice(format!("{v:08x}").as_bytes());
+        }
+        out.extend_from_slice(name);
+        while out.len() % 4096 != 0 {
+            out.push(0);
+        }
+        out.extend_from_slice(payload);
+        while out.len() % 4096 != 0 {
+            out.push(0);
+        }
+        out
+    }
+
+    /// admit 自检腿（设计 §二 DoD 场景的 bin 内制件——E2E 全谱在
+    /// tools/p3sim.py，此处最短路径钉决策语义）。
+    fn selftest_admit(dir: &std::path::Path) -> Result<usize, String> {
+        fn ps(p: &std::path::Path) -> &str {
+            p.to_str().unwrap_or("<非 UTF-8 路径>")
+        }
+        let mut fails = 0usize;
+        // 密钥 + 信封（dev 纪律：临时目录，退出清场）。
+        let sk_p = dir.join("a.sk");
+        let pk_p = dir.join("a.pk");
+        cmd_keygen(ps(&sk_p), ps(&pk_p))?;
+        let sk = read_exact32(ps(&sk_p), "selftest-admit")?;
+        let pk = read_exact32(ps(&pk_p), "selftest-admit")?;
+        let mut pkhex = String::with_capacity(64);
+        for b in pk {
+            let _ = write!(pkhex, "{b:02x}");
+        }
+        // bap 基件（manifest 三键 lineage=p3-selftest，version 0.1.0）。
+        let mf = b"[app]\n\
+                    id = \"P3ADMIT\"\n\
+                    version = \"0.1.0\"\n\
+                    entry = \"bin/p3admit\"\n\
+                    type = \"app\"\n\
+                    intent = \"utility\"\n\
+                    \n[compat]\n\
+                    min = \"0.1.0\"\n\
+                    target = \"0.1.0\"\n\
+                    compile = \"0.1.0\"\n\
+                    \n[capabilities]\n\
+                    console = true\n\
+                    \n[security]\n\
+                    profile = \"ed25519-main\"\n\
+                    key_lineage = \"p3-selftest\"\n\
+                    integrator = \"berryos-dev\"\n";
+        let bap = cpio_pack(mf);
+        let sig = sign_envelope(&sk, &bap, mf, 3)?;
+        let sig_old = sign_envelope(&sk, &bap, mf, 1)?; // gen 回退件
+        // 布景文件集。
+        fn setup(dir: &std::path::Path, name: &str, files: &[(&str, Vec<u8>)]) -> String {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            for (f, data) in files {
+                std::fs::write(d.join(f), data).unwrap();
+            }
+            d.to_str().unwrap().to_string()
+        }
+        let pol = |tier: &str| -> String {
+            let p = dir.join(format!("policy-{tier}.toml"));
+            std::fs::write(&p, format!("# load-policy v1\nschema = 1\ntier = \"{tier}\"\n")).unwrap();
+            p.to_str().unwrap().to_string()
+        };
+        let pol_dev = pol("dev");
+        let pol_open = pol("product-open");
+        let pol_lock = pol("product-locked");
+        let led_base = format!(
+            "schema = 1\n\n[[lineage]]\nid = \"p3-selftest\"\nanchors = [\n  {{ pk = \"{pkhex}\", type = \"system\" }},\n]\ngen_max = 3\nver_max = 0\nkind = \"\"\nissued_by = \"\"\ncert_status = \"\"\nlast_revision = 0\n"
+        );
+        let led_p = dir.join("led.toml");
+        std::fs::write(&led_p, &led_base).unwrap();
+        let led = led_p.to_str().unwrap().to_string();
+        // DoD 1：正样例（locked 也过——验签面与档位无关）。
+        let d_pos = setup(dir, "apps-pos", &[("P3ADMIT.bap", bap.clone()), ("P3ADMIT.bap.sig", sig.clone())]);
+        let r = run_admit(&pol_lock, &led, &d_pos, &[], false)?;
+        leg(r.rejects == 0 && r.lines.iter().any(|l| l.contains("allow verified lineage=p3-selftest gen=3")),
+            "admit-pos locked 正样例过 + 水位不降（gen 等值）", &mut fails);
+        // DoD 2 三负（bin 面）：篡改/截断。
+        let mut bap_t = bap.clone();
+        bap_t[5000] ^= 0x01;
+        let d_tamper = setup(dir, "apps-tamper", &[("P3ADMIT.bap", bap_t), ("P3ADMIT.bap.sig", sig.clone())]);
+        let r = run_admit(&pol_lock, &led, &d_tamper, &[], false)?;
+        leg(r.allows == 0 && r.lines.iter().any(|l| l.contains("reject") && l.contains("top-sig-bad")),
+            "admit-neg-tamper 篡改载荷拒（top-sig-bad）", &mut fails);
+        let d_trunc = setup(dir, "apps-trunc", &[("P3ADMIT.bap", bap.clone()), ("P3ADMIT.bap.sig", sig[..sig.len() - 1].to_vec())]);
+        let r = run_admit(&pol_lock, &led, &d_trunc, &[], false)?;
+        leg(r.allows == 0 && r.lines.iter().any(|l| l.contains("bad-len")),
+            "admit-neg-trunc .sig 截断拒（bad-len——断链负样例信封层）", &mut fails);
+        // DoD 5：无 .sig 三档（dev/open 降级 loud、locked 拒）。
+        let d_uns = setup(dir, "apps-uns", &[("P3ADMIT.bap", bap.clone())]);
+        let r = run_admit(&pol_dev, &led, &d_uns, &[], false)?;
+        leg(r.allows == 1 && r.lines.iter().any(|l| l.contains("allow degrade eco: app P3ADMIT unsigned")),
+            "admit-tier-dev 无 .sig 降级 + loud（eco unsigned）", &mut fails);
+        let r = run_admit(&pol_open, &led, &d_uns, &[], false)?;
+        leg(r.allows == 1 && r.lines.iter().any(|l| l.contains("allow degrade")),
+            "admit-tier-open 无 .sig 降级 + loud", &mut fails);
+        let r = run_admit(&pol_lock, &led, &d_uns, &[], false)?;
+        leg(r.rejects == 1 && r.lines.iter().any(|l| l.contains("reject eco: app P3ADMIT nosig")),
+            "admit-tier-locked 无 .sig 拒载 + 显式错误（nosig）", &mut fails);
+        // DoD 4：防剥离（记录在案已签 id 无 .sig → 三档同拒）。
+        let led_strip_p = dir.join("led-strip.toml");
+        std::fs::write(&led_strip_p, format!("{led_base}[[app]]\nid = \"P3ADMIT\"\npk = \"{pkhex}\"\nsource = \"builtin\"\nboots = 1\nver_max = 0\n")).unwrap();
+        let led_strip = led_strip_p.to_str().unwrap().to_string();
+        for (name, p) in [("dev", &pol_dev), ("open", &pol_open), ("locked", &pol_lock)] {
+            let r = run_admit(p, &led_strip, &d_uns, &[], false)?;
+            leg(r.allows == 0 && r.lines.iter().any(|l| l.contains("stripped")),
+                &format!("admit-anti-strip-{name} 防剥离恒拒（stripped）"), &mut fails);
+        }
+        // DoD 6 前半：TOFU 首见（dev、未知 lineage p3-other）+ emit 落账。
+        let mf2 = b"[app]\n\
+                    id = \"P3OTHER\"\n\
+                    version = \"0.1.0\"\n\
+                    entry = \"bin/p3other\"\n\
+                    type = \"app\"\n\
+                    intent = \"utility\"\n\
+                    \n[compat]\n\
+                    min = \"0.1.0\"\n\
+                    target = \"0.1.0\"\n\
+                    compile = \"0.1.0\"\n\
+                    \n[capabilities]\n\
+                    console = true\n\
+                    \n[security]\n\
+                    profile = \"ed25519-main\"\n\
+                    key_lineage = \"p3-other\"\n\
+                    integrator = \"berryos-dev\"\n";
+        let bap2 = cpio_pack(mf2);
+        let sig2 = sign_envelope(&sk, &bap2, mf2, 1)?;
+        let d_tofu = setup(dir, "apps-tofu", &[("P3OTHER.bap", bap2.clone()), ("P3OTHER.bap.sig", sig2.clone())]);
+        let r = run_admit(&pol_dev, &led, &d_tofu, &[], false)?;
+        let tofu_ok = r.allows == 1 && r.lines.iter().any(|l| l.contains("allow tofu-first-seen lineage=p3-other"));
+        leg(tofu_ok, "admit-tofu dev 首见 tofu-first-seen", &mut fails);
+        // 增量账本落账（tofu 锚 + per-app 四字段）——折叠账本 emit →
+        // 文件（canonical），再按文件断言（emit 面同产线）。
+        let mut ebuf = [0u8; EMIT_BUF];
+        let en = r.ledger.emit(&mut ebuf).map_err(|e| format!("selftest: emit 拒 {e:?}"))?;
+        let out_p = dir.join("led-tofu.toml");
+        std::fs::write(&out_p, &ebuf[..en]).map_err(|e| format!("selftest: 写失败：{e}"))?;
+        let emitted = String::from_utf8_lossy(&ebuf[..en]).into_owned();
+        let tofu_ledger_ok = emitted.contains("id = \"p3-other\"") && emitted.contains("type = \"tofu\"")
+            && emitted.contains("[[app]]") && emitted.contains("id = \"P3OTHER\"")
+            && emitted.contains("source = \"builtin\"");
+        leg(tofu_ledger_ok, "admit-tofu 增量账本落盘（tofu 锚 + per-app 四字段）", &mut fails);
+        // 首见后二次装载：同件 now verified（非再 TOFU）。
+        let out_s = out_p.to_str().unwrap().to_string();
+        let r2 = run_admit(&pol_dev, &out_s, &d_tofu, &[], false)?;
+        leg(r2.allows == 1 && r2.lines.iter().any(|l| l.contains("allow verified lineage=p3-other")),
+            "admit-tofu 二次装载 verified（首见即锚后）", &mut fails);
+        // DoD 5 后半：未知 lineage 带签——open/locked unknown-src 拒。
+        for (name, p) in [("open", &pol_open), ("locked", &pol_lock)] {
+            let r = run_admit(p, &led, &d_tofu, &[], false)?;
+            leg(r.allows == 0 && r.lines.iter().any(|l| l.contains("unknown-src")),
+                &format!("admit-unknown-src-{name} 未知 lineage 拒（unknown-src）"), &mut fails);
+        }
+        // DoD 7：sideload 开关（locked 拒 + dev 装 + 记录来源）。
+        let d_side = setup(dir, "apps-side", &[("P3ADMIT.bap", bap.clone()), ("P3ADMIT.bap.sig", sig.clone())]);
+        let r = run_admit(&pol_lock, &led, &d_side, &["P3ADMIT"], false)?;
+        leg(r.allows == 0 && r.lines.iter().any(|l| l.contains("reject eco: app P3ADMIT sideload")),
+            "admit-sideload-off 关 = 拒装 + 显式错误", &mut fails);
+        let r = run_admit(&pol_dev, &led, &d_side, &["P3ADMIT"], false)?;
+        leg(r.allows == 1, "admit-sideload-on 开 = 装", &mut fails);
+        let side_rec = r.ledger.find_app(b"P3ADMIT");
+        leg(side_rec.is_some() && side_rec.unwrap().source == AppSource::Sideload,
+            "admit-sideload-on 账本记录来源 sideload（四字段）", &mut fails);
+        // DoD 3：gen 回退拒 + DoD 8：--no-increment 诚实降级（同件放行 +
+        // 可见行）。
+        let d_rb = setup(dir, "apps-rb", &[("P3ADMIT.bap", bap.clone()), ("P3ADMIT.bap.sig", sig_old.clone())]);
+        let r = run_admit(&pol_lock, &led, &d_rb, &[], false)?;
+        leg(r.allows == 0 && r.lines.iter().any(|l| l.contains("gen-rollback")),
+            "admit-gen-rollback gen 回降拒（check_gen 单源）", &mut fails);
+        let r = run_admit(&pol_lock, &led, &d_rb, &[], true)?;
+        leg(r.allows == 1 && r.lines.iter().any(|l| l.contains("回放防护未生效")),
+            "admit-no-increment 水位跳检 + 「回放防护未生效」可见行", &mut fails);
+        // DoD 9：损坏增量保守拒（截断/坏枚举）。
+        let led_bad_p = dir.join("led-bad.toml");
+        std::fs::write(&led_bad_p, led_base[..led_base.len() / 2].as_bytes()).unwrap();
+        let led_bad = led_bad_p.to_str().unwrap().to_string();
+        leg(run_admit(&pol_lock, &led_bad, &d_pos, &[], false).is_err(),
+            "admit-ledger-corrupt 截断账本保守拒（loud）", &mut fails);
+        let led_enum_p = dir.join("led-enum.toml");
+        std::fs::write(&led_enum_p, led_base.replace("type = \"system\"", "type = \"vendor\"")).unwrap();
+        let led_enum = led_enum_p.to_str().unwrap().to_string();
+        leg(run_admit(&pol_lock, &led_enum, &d_pos, &[], false).is_err(),
+            "admit-ledger-corrupt 坏枚举保守拒（UnknownAnchorType）", &mut fails);
+        // 回 bootseed 重导路径：换回 bootseed 跑同目录 = 过。
+        let r = run_admit(&pol_lock, &led, &d_pos, &[], false)?;
+        leg(r.rejects == 0, "admit-bootseed-reimport 回 bootseed 重导路径过", &mut fails);
+        Ok(fails)
+    }
+
+    // ---- admit：P3-0 件二——目录装载裁决（lib admit 单源消费）----
+
+    /// admit 一次跑的产物（决策行 + 计数 + 折叠后账本——selftest 腿断言面）。
+    struct AdmitRun {
+        lines: Vec<String>,
+        allows: usize,
+        rejects: usize,
+        ledger: TrustLedger,
+    }
+
+    fn cmd_admit_main(rest: &[&str]) -> ExitCode {
+        match cmd_admit(rest) {
+            Ok((footer, rejected)) => {
+                println!("{footer}");
+                if rejected {
+                    ExitCode::FAILURE // 1 = 有拒载（决策行已出全——拒载不连坐）
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(e) => {
+                eprintln!("berry-sign: {e}");
+                ExitCode::from(2) // 用法/IO/账本损坏（保守拒）
+            }
+        }
+    }
+
+    /// admit 参数面：`<policy.toml> <ledger.toml> <dir>` + 可选旗标
+    /// `--emit-ledger <out>`（折叠后账本 canonical emit）/
+    /// `--sideload <id>`（可重复——id 集 = sideload 来源，余 builtin）/
+    /// `--no-increment`（增量账本缺席申报——水位跳检 + 「回放防护未
+    /// 生效」诚实声明行，§1.3.2/§1.4）。
+    fn cmd_admit(rest: &[&str]) -> Result<(String, bool), String> {
+        let mut pos: Vec<&str> = Vec::new();
+        let mut emit: Option<&str> = None;
+        let mut sideload: Vec<&str> = Vec::new();
+        let mut no_increment = false;
+        let mut it = rest.iter();
+        while let Some(a) = it.next() {
+            match *a {
+                "--emit-ledger" => {
+                    emit = Some(*it.next().ok_or("admit: --emit-ledger 缺参数")?);
+                }
+                "--sideload" => {
+                    sideload.push(*it.next().ok_or("admit: --sideload 缺参数")?);
+                }
+                "--no-increment" => no_increment = true,
+                other if other.starts_with("--") => {
+                    return Err(format!("admit: 未知旗标 {other:?}"));
+                }
+                other => pos.push(other),
+            }
+        }
+        if pos.len() != 3 {
+            return Err(
+                "admit: 参数不合规（<policy.toml> <ledger.toml> <dir> + 可选 \
+                 --emit-ledger/--sideload/--no-increment）"
+                    .to_string(),
+            );
+        }
+        let run = run_admit(pos[0], pos[1], pos[2], &sideload, no_increment)?;
+        for l in &run.lines {
+            println!("{l}");
+        }
+        if let Some(out_path) = emit {
+            let mut buf = [0u8; EMIT_BUF];
+            let n = run
+                .ledger
+                .emit(&mut buf)
+                .map_err(|e| format!("admit: 账本 emit 拒 {e:?}"))?;
+            fs::write(out_path, &buf[..n])
+                .map_err(|e| format!("admit: 写 {out_path}: {e}"))?;
+            println!("admit: 增量账本 emit → {out_path}（canonical TOML）");
+        }
+        let footer = format!(
+            "admit: done apps={} allow={} reject={} policy={}",
+            run.allows + run.rejects,
+            run.allows,
+            run.rejects,
+            run_policy_word(pos[0])?,
+        );
+        Ok((footer, run.rejects > 0))
+    }
+
+    /// 策略档词回读（footer 面；解析已在 run_admit 单源过门，此处仅复检）。
+    fn run_policy_word(policy_path: &str) -> Result<&'static str, String> {
+        let src = fs::read(policy_path).map_err(|e| format!("admit: 读 {policy_path}: {e}"))?;
+        let p = admit::parse_policy(&src).map_err(|e| format!("admit: 策略件拒 {e:?}"))?;
+        Ok(p.word())
+    }
+
+    /// 装载裁决主循环：策略件/账本解析（损坏 = 保守拒 loud）→ 目录
+    /// `*.bap` 字节序逐件 admit → 折叠账本（单写者语义——设备面 appd
+    /// 同款）。
+    fn run_admit(
+        policy_path: &str,
+        ledger_path: &str,
+        dir_path: &str,
+        sideload: &[&str],
+        no_increment: bool,
+    ) -> Result<AdmitRun, String> {
+        let policy_src =
+            fs::read(policy_path).map_err(|e| format!("admit: 读 {policy_path}: {e}"))?;
+        let policy = admit::parse_policy(&policy_src)
+            .map_err(|e| format!("admit: 策略件拒 {e:?}（{policy_path}——保守拒）"))?;
+        let ledger_src =
+            fs::read(ledger_path).map_err(|e| format!("admit: 读 {ledger_path}: {e}"))?;
+        // 损坏增量 = 保守拒（DoD 9：不装不评 loud；回 bootseed 重导路径 =
+        // 调用方换 <ledger.toml>（bootseed）重跑）。
+        let ledger = TrustLedger::parse(&ledger_src)
+            .map_err(|e| format!("admit: 账本拒 {e:?}（{ledger_path}——保守拒）"))?;
+        let mut names: Vec<String> = fs::read_dir(dir_path)
+            .map_err(|e| format!("admit: 读目录 {dir_path}: {e}"))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".bap"))
+            .collect();
+        names.sort(); // 确定性：文件名字节序（固定种子面）
+        let ctx = AdmitCtx { policy, replay_guard: !no_increment };
+        let mut cur = ledger;
+        let mut lines = Vec::new();
+        if no_increment {
+            lines.push(
+                "admit: 注: 增量账本缺席——回放防护未生效（水位跳检；诚实降级，设计 §1.3.2/§1.4）"
+                    .to_string(),
+            );
+        }
+        let (mut allows, mut rejects) = (0usize, 0usize);
+        for name in &names {
+            let path = format!("{dir_path}/{name}");
+            let bap = fs::read(&path).map_err(|e| format!("admit: 读 {path}: {e}"))?;
+            let sig_path = format!("{path}.sig");
+            let sig = match fs::read(&sig_path) {
+                Ok(s) => Some(s),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("admit: 读 {sig_path}: {e}")),
+            };
+            let mf = cpio_manifest(&bap).map_err(|e| format!("admit: {name}: {e}"))?;
+            let m = berry_manifest::parse(mf)
+                .map_err(|e| format!("admit: {name}: manifest 拒：{}", e.reason_str()))?;
+            let lineage = m.security.map(|s| s.key_lineage).unwrap_or("");
+            let ver = ver_triple(m.version).map_err(|e| format!("admit: {name}: {e}"))?;
+            let bd = digest256(&bap);
+            // manifest 关键域摘要：仅签载路径需要（berry-manifest 单源派生）。
+            let md = if sig.is_some() {
+                digest256(&key_fields_bytes(&m).map_err(|e| format!("admit: {name}: {e}"))?)
+            } else {
+                [0; 32]
+            };
+            let source = if sideload.contains(&m.id) {
+                AppSource::Sideload
+            } else {
+                AppSource::Builtin
+            };
+            let face = LoadFace {
+                id: m.id.as_bytes(),
+                lineage: lineage.as_bytes(),
+                ver,
+                bap_digest: bd,
+                manifest_digest: md,
+                sig: sig.as_deref(),
+                source,
+            };
+            let id = m.id.to_string();
+            match admit::admit(&ctx, &cur, &face) {
+                Verdict::Allow(note) => {
+                    allows += 1;
+                    lines.push(render_allow(&id, lineage, &note));
+                }
+                Verdict::Mutate { note, ledger } => {
+                    allows += 1;
+                    cur = ledger; // 单写者折叠
+                    lines.push(render_allow(&id, lineage, &note));
+                }
+                Verdict::Reject(r) => {
+                    rejects += 1; // 拒载不连坐（失败隔离——继续下一件）
+                    lines.push(format!("admit: {id} reject eco: app {id} {}", r.word()));
+                }
+            }
+        }
+        Ok(AdmitRun { lines, allows, rejects, ledger: cur })
+    }
+
+    /// allow 决策行（loud 语义面——降级行 = eco 家族，§1.3.2）。
+    fn render_allow(id: &str, lineage: &str, note: &Note) -> String {
+        match note {
+            Note::Verified { gen } => {
+                format!("admit: {id} allow verified lineage={lineage} gen={gen}")
+            }
+            Note::TofuFirstSeen { gen } => {
+                format!("admit: {id} allow tofu-first-seen lineage={lineage} gen={gen}")
+            }
+            Note::DegradeUnsigned => {
+                format!("admit: {id} allow degrade eco: app {id} unsigned")
+            }
+        }
+    }
+
+    /// 三值版本 `x.y.z` → 可比较 u32（`(maj*1000+min)*1000+patch`，段域
+    /// 0..=999 无前导零——mkapp `VER_RE` 域同源；manifest 自由串在装载
+    /// 面收窄，gensourceindex `ver_triple` 的 Rust 对读）。
+    fn ver_triple(s: &str) -> Result<u32, String> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() != 3 {
+            return Err(format!("版本 {s:?} 非三值文法 x.y.z（水位比较前置）"));
+        }
+        let mut v = 0u32;
+        for p in parts {
+            if p.is_empty()
+                || p.len() > 3
+                || !p.bytes().all(|b| b.is_ascii_digit())
+                || (p.len() > 1 && p.starts_with('0'))
+            {
+                return Err(format!("版本段 {p:?} 越域（0..=999 无前导零）"));
+            }
+            let seg: u32 =
+                p.parse().map_err(|_| format!("版本段 {p:?} 解析拒"))?;
+            v = v * 1000 + seg;
+        }
+        Ok(v)
     }
 
     fn hex(b: &[u8]) -> String {

@@ -92,7 +92,8 @@ pub const fn envelope_len(lineage_len: usize, pending: bool, chain_len: usize) -
 }
 
 /// 拒因（结构化枚举，24 号 §3.3-2——人读文案渲染在后，不重蹈「一行中文
-/// 拒因」旧态）。add-only：P0-2 增 `TopSigBad`/`RotSigBad` 等验签变体。
+/// 拒因」旧态）。add-only：P3-0 增验签变体 `KeyMismatch`/`LineageEcho`/
+/// `TopSigBad`/`RotSigBad`（头注 :47-48 预告位的落体，只加不改义）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigErr {
     /// 输入短于 [`ENVELOPE_MIN`]。
@@ -117,6 +118,40 @@ pub enum SigErr {
     BadOutLen,
     /// 覆盖域构建器入参公钥长 ≠ 32B（[`rot_message`]）。
     BadPkLen,
+    /// 无锚见证信封当前钥（换钥拒面——零链时 = 信封 pk ∉ 锚集；P3-0
+    /// 验签变体，admit.rs 消费）。
+    KeyMismatch,
+    /// 信封 lineage ≠ manifest `[security].key_lineage`（跨 lineage 拒面
+    /// ——回声对账，装载验签序第 3 步）。
+    LineageEcho,
+    /// 顶签名 BSIG-TOP 验签不过（载荷/信封被篡改或钥不符）。
+    TopSigBad,
+    /// 轮换链无锚可全程见证（断链拒面——链在但任一锚起链均有节点
+    /// BSIG-ROT 验签不过，或链首不在锚集）。
+    RotSigBad,
+}
+
+impl SigErr {
+    /// 拒因词表（kebab 单形——eco 行/CLI 决策行消费；add-only 与枚举同步）。
+    pub fn word(&self) -> &'static str {
+        match self {
+            SigErr::TooShort => "too-short",
+            SigErr::BadMagic => "bad-magic",
+            SigErr::BadVer => "bad-ver",
+            SigErr::BadAlg => "bad-alg",
+            SigErr::BadFlags => "bad-flags",
+            SigErr::BadLineage => "bad-lineage",
+            SigErr::BadLen => "bad-len",
+            SigErr::BadChainLen => "bad-chain-len",
+            SigErr::ChainBroken => "chain-broken",
+            SigErr::BadOutLen => "bad-out-len",
+            SigErr::BadPkLen => "bad-pk-len",
+            SigErr::KeyMismatch => "key-mismatch",
+            SigErr::LineageEcho => "lineage-echo",
+            SigErr::TopSigBad => "top-sig-bad",
+            SigErr::RotSigBad => "rot-sig-bad",
+        }
+    }
 }
 
 /// 轮换链节点（P0-1 具体化二：new_pk 入存储，old_pk 由链序推出）。
