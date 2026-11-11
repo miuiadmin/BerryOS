@@ -19,6 +19,16 @@
 //! issued_by = ""                         # V4 占位：v1 恒空（09 §2.4 :161）
 //! cert_status = ""                       # V4 占位：事实源 = 签名索引（v1.2 §二 :43–44）
 //! last_revision = 0                      # V4 占位：v1 恒空（09 §3.1 :213）
+//!
+//! # P3-0 增面：per-app 记录（[[app]]——同库不同键；§1.4 TOFU 首见四字段
+//! # + id 键；**不在 Q6 冻结面内**，字段表冻结点 = P3 合入前（设计 §五-Q5））：
+//!
+//! [[app]]
+//! id = "P3OFFIC"                         # 1..=24B（berry-manifest ID_MAX 同源）
+//! pk = "<64 hex>"                        # 锚定公钥（装载时信封 pk）
+//! source = "builtin"                     # builtin | sideload（§五 :98 来源字段）
+//! boots = 3                              # boot 计数
+//! ver_max = 1002001                      # 版本水位（三值 x.y.z → u32 可比较）
 //! ```
 //!
 //! 解析纪律五条（24 号 §3.5）：①未知 `anchor_type` **保守拒绝**——09 号
