@@ -749,7 +749,10 @@ extern "C" fn sys_vmo_get_phys(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let vmo = match t.get(h, ObjType::Vmo, 0) {
+    // 安全修复（arch-r2 #5）：need 0→READ——零权利观察者不可查询物理地址
+    //（侧信道重建内存布局 / 跨进程共享帧检测）。P6 DMA 动机只需有 READ 的
+    // 合法持有者。get_size 维持 need=0（纯容量无物理信息）。
+    let vmo = match t.get(h, ObjType::Vmo, RIGHT_READ) {
         Ok((obj, _)) => match obj.as_vmo() {
             Some(v) => v,
             None => return ERR_BAD_HANDLE as i64, // 类型门控后不可达；防御面
