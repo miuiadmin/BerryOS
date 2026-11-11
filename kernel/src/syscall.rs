@@ -2578,14 +2578,26 @@ const PE_ZERO: berry_sched::policy::Entry = berry_sched::policy::Entry {
 ///
 /// 其他 op → -ENOTSUP。全 op 面 p4 保留 0（非 0 → -EINVAL，options 纪律）。
 ///
-/// 门控：v1 **无 handle 需求**（系统全局单通道；SET_POLICY 门控随 S6-c Job
-/// 对象落地——`auth` 预留不消费）。锁类 TABLE：copy 链页表走查（§A113 读者
-/// 面，同 clock_read）+ `SNAPS` 全局单写者跨核 KL 串行；SVC 主体 IRQ 屏蔽
-/// （单核）下无读者竞态窗。
+/// 门控（arch-r2 High 收口）：`auth` = Process handle，须过 `get_raw` 三门控
+/// （在表、类型 Process、权利 **MANAGE**——同 terminate/signal_send 权利面）。
+/// 策略注入是全局旁路（COMMIT/PROMOTE 可给任意 proc_tag 加权 ±64 自肥抢占、
+/// UNBIND 可拆其他服务设置的策略），按「机制在内核、策略注入须过能力门控」
+/// 纲领收口：只有持某 Process MANAGE 权的调用者（通常是 svcmgr/初始化服务）
+/// 可操作全局策略表；对象本身不消费（纯资格面——SET_POLICY 细粒度权随 S6-c
+/// Job 对象落地再迁）。拒收面：坏值/类型不符 → -EBADF、缺 MANAGE → -EACCES、
+/// 无表调用者 → -EBADF（caller_table 既有口径）。锁类 TABLE：copy 链页表走查
+/// （§A113 读者面，同 clock_read）+ `SNAPS` 全局单写者跨核 KL 串行；SVC 主体
+/// IRQ 屏蔽（单核）下无读者竞态窗。
 extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
     let (auth, op, p1, p2, p3, rsv) =
         (tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5], tf.regs[6]);
-    let _ = auth; // v1 全局单通道：预留（S6-c Job 对象 SET_POLICY 门控面）
+    // 能力门（arch-r2）：auth = Process handle，三门控（在表/类型/权利）任一
+    // 不过即拒——对象不消费（纯资格面）。EL0 裸调（auth=0 或无 MANAGE 权
+    // handle）在此全 op 面统一拒，不再能注入/转正/拆绑全局策略。
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    if let Err(e) = t.get_raw(auth as u32, ObjType::Process, RIGHT_MANAGE) {
+        return e as i64; // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
+    }
     if rsv != 0 {
         return ERR_INVALID_ARG as i64; // p4 保留 0（options 纪律，全 op 面）
     }
