@@ -85,6 +85,13 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     词表外出现即未知键拒）。schema 家归**推断**：设计文档 §1 双键 28 键
     无此二节（G1/G2 刀新增，轻追记 = 设计文档 §1.4-补二——[product.source]
     先例同款；正式落册归 #83/设计文档升版）。
+  - 步④-G5（boot.params 投放）：[platform.boot.params] 非空 → 计划面产
+    etc/boot-params.toml 条目（etc/locale.toml 投放先例同款「投放面最小」
+    ——条目名+内容定形进计划，生成件归全产线步⑥；格式 = schema=1 头 +
+    键值对，词表 v1 两键直映 BOOT_PARAMS_SPEC）。消费设计 = 设计文档
+    §1.6-补（内核启动序列早期 cpio 查找 → sched_slice_hz 换算
+    slice_cycles / intent_default 新任务缺省 intent；内核实施窗 = 调度
+    lane 收工后——sched/kernel 系并行 lane 占用件，本刀零内核改动）。
   - 不做（如实记）：步②余量（V6 组装半——非构建产物无 [blob] 声明=拒；V8
     fallback 回退引用必填——归后续刀）、步⑤conformance 门
     （P5 随 #84）、步⑥⑧⑨⑩产件与对账（镜像全产线）、just 配方 assemble
@@ -211,6 +218,15 @@ REGION_RE = re.compile(r"^[A-Z]{2}$")       # ISO 3166-1 alpha-2（两枚大写�
 TRUST_KEYS = {"pk_anchor"}
 TRUST_PK_LEN = 32           # ed25519 raw 公钥尺寸（mkimage TRUSTPK 同约定）
 TRUST_PK_ENTRY = "etc/trust-pk"   # 装载守卫锚归档名（svcmgr cpio_find 同串）
+# G5：boot.params 序列化投放归档名——[platform.boot.params] 非空 → 计划面
+# etc/boot-params.toml 条目（etc/locale.toml 投放先例同款「投放面最小」：
+# 条目名+内容定形进计划，生成件归全产线步⑥）。文件格式 v1 = schema=1 头
+# + 键值对（词表 v1 两键直映 BOOT_PARAMS_SPEC；键序 = 字典序——确定性
+# 纪律，同输入同计划行）；空 params = 不投放（缺省零扰动）。
+# 读者 = 内核启动序列早期 cpio 查找（消费设计 = 设计文档 §1.6-补；
+# sched_slice_hz 换算 slice_cycles / intent_default 新任务缺省 intent
+# ——内核实施窗 = 调度 lane 收工后，sched/kernel 系并行 lane 占用件）。
+BOOT_PARAMS_ENTRY = "etc/boot-params.toml"
 
 
 class Reject(Exception):
@@ -921,8 +937,15 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
             f"@sha256:{prod.kernel_sha}——包内件缺 = 只形校验过"
             f"（OEM 可先声明后放件；放件后 --check 即现算对账）")
     if prod.params:
-        lines.append(f"berry-assemble: boot.params 覆盖 {sorted(prod.params)}"
-                     f"（Q2 override 语义——缺省归上游；序列化进 INITRD 段归全产线）")
+        kv = " ".join(f"{k}={prod.params[k]!r}" for k in sorted(prod.params))
+        lines.append(
+            f"berry-assemble: boot-params 条目（步④·G5 投放面最小）: "
+            f"{BOOT_PARAMS_ENTRY} ← [platform.boot.params] {kv}（格式 = "
+            f"schema=1 头 + 键值对、键序 = 字典序；override 语义——缺省归"
+            f"上游〔§1.6〕；生成件归全产线；读者 = 内核启动序列早期 cpio"
+            f" 查找〔§1.6-补：sched_slice_hz 换算 slice_cycles / "
+            f"intent_default 新任务缺省 intent——内核实施窗 = 调度 lane"
+            f" 收工后〕）")
     if prod.locale:
         kv = " ".join(f"{k}={prod.locale[k]!r}" for k in sorted(prod.locale))
         lines.append(
@@ -1000,7 +1023,8 @@ sideload      = false
 kernel = "KERNEL.ELF@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 # [platform.boot.params]           # ADR #42 启动参数表落点（Q2；override 语义——缺省归上游）
 # sched_slice_hz = 64              # 词表 v1 最小集：sched_slice_hz u32 [16,1024]
-# intent_default = "utility"       # 六档词表（ADR #58）
+# intent_default = "utility"       # 六档词表（ADR #58）；节非空 → 计划面产
+#                                 #   etc/boot-params.toml 条目（G5——内核启动序列读）
 
 [platform.storage]
 image_size_mib      = 96          # 现役值（[48,1024]）
@@ -1563,6 +1587,31 @@ def selftest() -> int:
             assert old in LOCALIZED, f"腿锚串缺席：{label}"
             leg_reject(label, want, lambda t=LOCALIZED.replace(old, new, 1):
                        load_product(write_prod(t, f"badg6-{k}.toml")))
+
+        # ---- G5：[platform.boot.params] 序列化投放（正例 + 零扰动；词表
+        # 拒面三型已在 legs 表——词表外/域外/六档外，本块不重钉）----
+        PARAMS_OK = (SELFTEST_PRODUCT + "\n\n[platform.boot.params]\n"
+                     'sched_slice_hz = 64\n'
+                     'intent_default = "interactive"\n')
+        try:
+            ppar = load_product(write_prod(PARAMS_OK, "g5.toml"))
+            leg(ppar.params == {"sched_slice_hz": 64,
+                                "intent_default": "interactive"},
+                "load params 两键（词表 v1 全谱——G5 投放数据源）")
+            items_bp, n_base_bp = resolve_entries(ppar, base_path, user)
+            plan_bp = build_plan(ppar, items_bp, n_base_bp, level, level,
+                                 "user")
+            leg(any(BOOT_PARAMS_ENTRY in ln and "schema=1" in ln
+                    and "sched_slice_hz=64" in ln
+                    and "intent_default='interactive'" in ln
+                    for ln in plan_bp),
+                "plan etc/boot-params.toml 条目（投放面最小——读者=内核启动序列）")
+        except Reject as e:
+            leg(False, f"G5 正例被拒（模板漂移）：{e}")
+        # 空 params 零扰动（缺省 = 不投放——向后兼容面）
+        leg(prod.params == {} and not any(BOOT_PARAMS_ENTRY in ln
+                                          for ln in plan),
+            "空 params 零投放（缺省向后兼容）")
 
         # ---- G4：两段式（lite=结构面；文件在席对账归全量面）----
         lite_text = (SELFTEST_PRODUCT

@@ -48,6 +48,7 @@
 | 38 | `38-OEM演练实弹报告.md` | **OEM 模拟演练实弹**(终极验收):模拟 acme 走完全链——product.toml(preset 5/9+priv_grants issued_by=acme+branding+source)→berry_assemble 校验/组装→acme 钥 keygen→mkapp 重打包签名→acme 官方源索引(signed/witnessed 5/5)→host admit 双档→定制 rootfs(62 条目+.sig 伴生)→acme-rich.img 全参(PR/静态源/KERNEL.SIG/TRUSTPK)→**QEMU boot 绿 84/84+sig verified+VBS ok 逐位一致+5×装载守卫 sig ok**;**实测 515s 全链(admit 一次成型≈135s 出镜像)**;「组装不 fork」纯度实证(git 零 M);缺口清单 G1-G16(P0×3/P1×9/P2×4)+参照物 tools/drill/acme/product.toml | ✅ 2026-11-11 |
 | 39 | `39-实施轮十三复核.md` | 轮十三复核:八步证据链完整高密度可复现(6/8 步实弹复现字节级恒等;boot 终点腿重跑 PASS);wall-clock T 标记独证;G1-G16 锚核无虚报;T2 映射 9 例腿粒度判定与代码对拍成立(「7 腿缺口 1 harness 件 0 协议变更」最小性坐实);瑕疵 7 条全轻微 | ✅ 2026-11-11 |
 | 40 | `40-实施轮十四复核与产线复验.md` | 轮十四复核+**产线成线复验**:三刀全真(键位/参数化/分层收录——124 腿+selftest 25 腿);**/tmp/drill2 全量重跑演练用新键位——--check 一次过(38 号首检红对照)/计划面 56 条零改写直出(38 号 12 行手工脚本无对应物)/bcts-run --image acme-rich.img 真跑 verdict=PASS 32/32**——「零手工针脚+OEM 拿到 BCTS 判定单」双主张活体证明;wall-clock 322s vs 38 号 515s;残缺:P0×3 全闭+P1 顺带闭 3 余 6 | ✅ 2026-11-12 |
+| 41 | `41-实施轮十五复核.md` | 轮十五复核:G5 工具侧三态活体全证(非空投放/空零扰动/拒面三型——127 腿)+设计 §1.6-补 内核消费设计与调度 lane 让窗注记;G8/G10/G11/G12 四小件全闭(参数化/schema 自述/归属裁定双落点/环境绕道常驻档);**G 系终账:P0 清零,P1 剩 G5 内核半+G9,P2 剩 3.5**;F1 守卫晚于写盘/F2 bcts-run 钉死 manifest 名(归 #84 窗) | ✅ 2026-11-12 |
 
 ## 核心结论（供快速引用）
 

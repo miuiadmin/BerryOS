@@ -38,6 +38,11 @@
 //!   账本落盘设计-v1.0.md` §二；决策/验签语义单源 = lib `admit` 模块，
 //!   本 CLI 只编排）。exit：0 = 全放行；1 = 有拒载（决策已出全）；
 //!   2 = 用法/IO/账本损坏（保守拒）。
+//!   schema 自述面（G10，38 号 §4）= `berry-sign admit --help` banner：
+//!   合法 policy 形（`schema = 1` + `tier` 三档两键闭集）与 ledger 形
+//!   （`[[lineage]]` 节键闭集 + V4 四占位恒空 + 可选 `[[app]]` 五键）
+//!   各数行示例——lib `admit::parse_policy`/`ledger.rs` 头注例样单源的
+//!   摘要（改 schema 须同笔改 banner），不再靠试错或读 p3sim.py。
 //!
 //! ## 覆盖域合同（P0-2 验签合同①②③的消费实现）
 //!
@@ -136,7 +141,8 @@ mod cli {
                      \x20     berry-sign verify-raw <pk> <msg> <sig>\n\
                      \x20     berry-sign selftest\n\
                      \x20     berry-sign admit <policy.toml> <ledger.toml> <dir>\n\
-                     \x20                 [--emit-ledger <out>] [--sideload <id>]… [--no-increment]"
+                     \x20                 [--emit-ledger <out>] [--sideload <id>]… [--no-increment]\n\
+                     \x20（admit 两件 schema 示例: berry-sign admit --help）"
                 );
                 ExitCode::from(2)
             }
@@ -893,7 +899,35 @@ mod cli {
         ledger: TrustLedger,
     }
 
+    /// admit 用法/schema 自述 banner（G10，38 号 §4——policy/ledger 两件
+    /// schema 此前无 CLI 自述，OEM 侧三连试错 UnknownKey→NoLineage→
+    /// V4NonEmpty 耗 ~48s）：schema 真源 = lib `admit::parse_policy`
+    /// （两键闭集）+ `ledger.rs` 头注例样，本 banner 只是摘要——**同步
+    /// 义务**：lib 侧改 schema 须同笔改此处示例。
+    fn admit_help_text() -> &'static str {
+        "admit 用法: berry-sign admit <policy.toml> <ledger.toml> <dir>\n\
+         \x20           [--emit-ledger <out>] [--sideload <id>]… [--no-increment]\n\
+         合法 policy 形（load-policy v1——lib admit::parse_policy 单源，两键闭集）:\n\
+         \x20 # load-policy v1\n\
+         \x20 schema = 1        # ≠1 硬拒；未知键硬拒\n\
+         \x20 tier = \"dev\"      # 三档: dev | product-open | product-locked\n\
+         合法 ledger 形（trust-ledger v1——lib ledger.rs 头注例样的摘要，节键全必填）:\n\
+         \x20 schema = 1\n\
+         \x20 [[lineage]]       # 节键闭集: id/anchors/gen_max/ver_max/kind/issued_by/cert_status/last_revision\n\
+         \x20 id = \"upstream\"   # 1..=16B [a-z0-9-]\n\
+         \x20 anchors = [ { pk = \"<64 hex>\", type = \"system\" } ]   # type ∈ tofu|system|ca|oem-system\n\
+         \x20 gen_max = 3       # 单调水位（回降拒）；ver_max = 0\n\
+         \x20 kind = \"\"         # V4 四占位（kind/issued_by/cert_status/last_revision）v1 恒空——非空保守拒\n\
+         \x20 [[app]]           # 可选 per-app 记录五键: id/pk/source(builtin|sideload)/boots/ver_max\n\
+         拒面: 未知键/坏枚举/损坏件 = 保守拒 loud（exit 2）——schema 真源在 lib，本 banner 仅自述"
+    }
+
     fn cmd_admit_main(rest: &[&str]) -> ExitCode {
+        // G10：schema 自述面——--help/-h 首位即打 banner（零副作用零 IO）。
+        if matches!(rest.first(), Some(&"--help") | Some(&"-h")) {
+            println!("{}", admit_help_text());
+            return ExitCode::SUCCESS;
+        }
         match cmd_admit(rest) {
             Ok((footer, rejected)) => {
                 println!("{footer}");
@@ -931,7 +965,7 @@ mod cli {
                 }
                 "--no-increment" => no_increment = true,
                 other if other.starts_with("--") => {
-                    return Err(format!("admit: 未知旗标 {other:?}"));
+                    return Err(format!("admit: 未知旗标 {other:?}（schema 示例: berry-sign admit --help）"));
                 }
                 other => pos.push(other),
             }
@@ -939,7 +973,8 @@ mod cli {
         if pos.len() != 3 {
             return Err(
                 "admit: 参数不合规（<policy.toml> <ledger.toml> <dir> + 可选 \
-                 --emit-ledger/--sideload/--no-increment）"
+                 --emit-ledger/--sideload/--no-increment；两件 schema 示例: \
+                 berry-sign admit --help）"
                     .to_string(),
             );
         }

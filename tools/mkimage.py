@@ -5,7 +5,7 @@ SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）�
 用法：mkimage.py <out.img> --efi <BERRYBOOT.EFI> --hello <hello.txt>
               --kernel <kernel.elf> --initrd <rootfs.cpio> [--size-mib N]
               [--key-hash <64hex>] [--source-instance <dir>]
-              [--sign-key <sk> --trust-pk <pk>]
+              [--sign-key <sk> --trust-pk <pk>] [--manifest-name <name>]
       mkimage.py --selftest
 
 盘布局 = [LBA0 MBR][LBA2048.. FAT16 主分区（四件套）][尾部 16MiB 密钥
@@ -39,6 +39,9 @@ SEC-02 A1 三件（day-one 留缝——纯宿主侧、零运行时影响；今�
     「改格式 = 破冻，须升 v1 并另立对拍基准」——红队 11 号 §2-V9a 裁
     「v0→v0.1」动词错；定宽列/路径字节序/无时刻输入——逐字节规约见
     build_manifest 头注；再改格式 = 再破冻，须升 v2）。
+    名参数化（G8，38 号 §4）：--manifest-name <name>（缺省
+    manifest.txt 向后兼容）——同目录多镜像（standard/acme 同出）的
+    manifest 不互踩；守卫 = manifest_path_for 纯文件名门。
   - 件 4【SEC-7】MBR 表项 1 = 密钥材料分区预留槽（16MiB 全零、type
     0xDA Non-FS data——Android /metadata 16MiB 独立分区同型：密钥/
     防回卷计数等安全元数据住盘上独立分区，不与系统卷混放，v1 只占槽
@@ -118,6 +121,10 @@ SRCINST_FAT_KEYS = "/SOURCE/SRCKEYS.TXT"
 #     raw 锚——轮十一装载期守卫约定〕的镜像侧形态（8.3 纯度去连字符），
 #     v1 测试场景件语义；
 #     真机烧录锚/信任根语义随闸 E/Q1）。
+#   - G11 v1 裁定（38 号 §4，**推断**标注——正式随 #77 真签刀与闸 E/Q1
+#     立法）：内核签名归属 = **组镜方**（平台或 OEM 集成者）持钥签
+#     KERNEL.ELF 并自携 TRUSTPK；烧录锚（真机不可变）随闸 E/Q1 的
+#     0xDA 密钥材料分区（件 4 预留槽）立法。
 # 两件随四件套同进 manifest v1 对账面（source-instance 先例：加条目 =
 # 数据非格式，头行计数自随）。缺省不挂——既有调用字节零漂移。
 SIGN_FAT_PATH = "/KERNEL.SIG"
@@ -278,6 +285,19 @@ def parse_key_hash(s: str) -> str:
     if len(v) != 64 or any(c not in "0123456789abcdef" for c in v):
         raise SystemExit(f"mkimage: FAIL: --key-hash 须 64 位 hex（SHA-256），got {s!r}")
     return v
+
+
+def manifest_path_for(out: str, name: str | None) -> Path:
+    """G8：manifest 侧产物路径——<out.img> 同目录 + 名参数化
+    （--manifest-name，缺省 MANIFEST_NAME 向后兼容）。守卫 = 纯文件名
+    （非空、无路径分隔符、非 ./..）：同目录侧产物语义执法——
+    `--manifest-name a/b.txt` 跨目录改写 = 命名面注入口，坏值 loud 拒
+    （38 号 §4：同目录多镜像互踩的修面）。"""
+    n = MANIFEST_NAME if name is None else name  # None=缺席；显式空串归守卫拒
+    if not n or n in (".", "..") or "/" in n or "\\" in n:
+        raise SystemExit(f"mkimage: FAIL: --manifest-name 须纯文件名（非空、"
+                         f"无路径分隔符——同目录侧产物语义），got {name!r}")
+    return Path(out).with_name(n)
 
 
 def platform_level() -> int:
@@ -508,6 +528,22 @@ def selftest() -> int:
             continue
         assert False, f"坏 key-hash 未被拒绝：{bad!r}"
 
+    # G8：manifest 名参数化面（manifest_path_for——CLI 守卫函数）：缺省名
+    # = MANIFEST_NAME（向后兼容钉板）+ 显式名同目录换名（同目录多镜像
+    # standard/acme 同出不互踩）+ 坏名（空/路径分隔/./..）loud 拒。
+    assert manifest_path_for("/d/out/a.img", None) == \
+        Path("/d/out/manifest.txt"), "缺省名非 manifest.txt（破向后兼容）"
+    assert manifest_path_for("/d/out/acme.img", "acme.manifest.txt") == \
+        Path("/d/out/acme.manifest.txt"), "显式名未同目录换名"
+    assert manifest_path_for("/d/out/a.img", MANIFEST_NAME) == \
+        manifest_path_for("/d/out/a.img", None), "显式缺省名 != None 缺省"
+    for bad in ("", "a/b.txt", "..", ".", "a\\b.txt", "/x"):
+        try:
+            manifest_path_for("/d/out/a.img", bad)
+        except SystemExit:
+            continue
+        assert False, f"坏 --manifest-name 未被拒绝：{bad!r}"
+
     # 整盘装配确定性（9MiB FAT 段 = FAT16 最小量级卷：16384 扇区 → 4087 簇
     # 恰入域，mkfat selftest 同几何）：双跑逐字节恒等 + FAT 段与 mkfat 直产
     # 零漂移（件 4「卷面全不动」构造性钉板）+ 预留区恒全零。
@@ -637,6 +673,9 @@ def main() -> int:
     ap.add_argument("--trust-pk", metavar="PK",
                     help="P3 boot 期验签：公钥锚（32B raw）入 FAT \\TRUSTPK"
                          "（etc/trust-pk 同款约定镜像侧形态）；须与 --sign-key 成对")
+    ap.add_argument("--manifest-name", metavar="NAME", default=None,
+                    help=f"件 3 侧产物文件名（缺省 {MANIFEST_NAME} 向后兼容；须纯文件名——"
+                         f"同目录多镜像（standard/acme 同出）manifest 不互踩，38 号 §4 G8）")
     ap.add_argument("--selftest", action="store_true", help="MBR/manifest 薄面自检（不写盘）")
     args = ap.parse_args()
 
@@ -688,9 +727,10 @@ def main() -> int:
     img, geo = build_image(puts, args.size_mib)
     Path(args.out).write_bytes(img)
     # 件 3：manifest = <out.img> 同目录侧产物（不进盘——vbmeta 签名产物
-    # 未来另刀，manifest 只是其数据源）。
+    # 未来另刀，manifest 只是其数据源）；名参数化 G8——缺省
+    # MANIFEST_NAME 向后兼容，--manifest-name 同目录多镜像不互踩。
     manifest = build_manifest(puts, key_hash, pr)
-    manifest_path = Path(args.out).with_name(MANIFEST_NAME)
+    manifest_path = manifest_path_for(args.out, args.manifest_name)
     manifest_path.write_bytes(manifest)
     vol_sectors = volume_sectors(args.size_mib)
     meta_lba = PART_LBA + vol_sectors
