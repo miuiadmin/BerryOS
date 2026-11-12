@@ -855,8 +855,8 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-L2FlexRatioAllocation-v1.0.md"
-breaking = []
+spec = "docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md"
+breaking = [{ since = "LAYOUT-L6a", change = "Added shrink and basis fields; weight remains the L2-compatible grow field.", successor = "FlexSpec" }]
 
 [[item]]
 id = "berry_ui::sdk::FocusEntry"
@@ -1288,4 +1288,28 @@ capability = "none"
 owner = "berry-ui"
 stability = "experimental"
 spec = "docs/BerryUI-LAYOUTL5PerNodeBoxTextWrap-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FlexBasis"
+kind = "type"
+module = "crate"
+since = "LAYOUT-L6a"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FlexSpec"
+kind = "type"
+module = "crate"
+since = "LAYOUT-L6a"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md"
 breaking = []

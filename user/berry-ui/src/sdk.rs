@@ -32,7 +32,8 @@ pub use crate::widgets::{
     WidgetContext, column, divider, icon, row, text,
 };
 pub use crate::{
-    a11y_region_roundtrip, FlexEntry, FocusEntry, ReapplyStat, SemEntry, SETTLE_DERIVE_MAX,
+    a11y_region_roundtrip, FlexBasis, FlexEntry, FlexSpec, FocusEntry, ReapplyStat, SemEntry,
+    SETTLE_DERIVE_MAX,
     TextWrapEntry, TEXT_WRAP_MAX, Ui, KEYED_DEPTH_MAX, UiError, UiMain, SEM_ACTION_ACTIVATE,
     SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX,
     SEM_STATE_CHECKED, SEM_STATE_DISABLED,

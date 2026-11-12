@@ -727,40 +727,69 @@ pub(crate) fn flex_eligible_props(
     }
 }
 
-/// 活 flex 权重（slot/gen/alive/eligible 四重对拍；残项不参与）。
-fn flex_weight(
+/// 活 flex spec（slot/gen/alive/eligible 四重对拍；残项不参与）。
+fn flex_spec_of(
     nodes: &[Option<Node>],
     flex: &[Option<FlexEntry>],
     slot: u32,
-) -> Option<u16> {
+) -> Option<crate::FlexSpec> {
     let n = nodes.get(slot as usize).and_then(|o| o.as_ref())?;
     if !n.alive {
         return None;
     }
     let id = crate::NodeId((((n.gen as u32) << 16) | (slot & 0xFFFF)) as u32);
     let eligible = flex_eligible_props(nodes, slot as usize, &n.props);
-    flex.iter().flatten().find(|e| e.node == id).map(|e| e.weight).filter(|_| eligible)
+    flex
+        .iter()
+        .flatten()
+        .find(|e| e.node == id)
+        .map(|e| crate::FlexSpec {
+            grow: e.weight,
+            shrink: e.shrink,
+            basis: e.basis,
+        })
+        .filter(|_| eligible)
 }
 
-/// 预扫 flex 主轴可用空间：固定主轴容器尺寸 − gap 总额 − 非 flex 子内
-/// 在主轴和。负余量折 0（flex 子全部塌缩，不挤压 inflexible 子）。
-/// 溢出界：flex_space ≤ 2^31，cumulative_weight ≤ FLEX_MAX(32) ×
-/// u16::MAX < 2^21，u64 乘积 < 2^52。扩 FLEX_MAX/weight 域前必须重算。
-/// 除法只在 total_weight ≥ 1 的 flex 子分支执行，结构上无除零。
-fn flex_context(
+/// L6a place 期 flex 主轴分配。`slots[i]` 对应第一次兄弟走查中第 i 个
+/// 活 flex 子；第二次走查必须保持同一 sibling order。
+#[derive(Clone, Copy)]
+struct FlexSlots {
+    slots: [i32; crate::FLEX_MAX],
+}
+
+impl FlexSlots {
+    fn none() -> Self {
+        Self { slots: [0; crate::FLEX_MAX] }
+    }
+}
+
+/// basis/grow/shrink 单源分配：
+///
+/// - base = Px 或 Auto(子主轴 meas)；unregistered 子 base = meas。
+/// - 正余量按 grow cumulative-prefix floor 精确分完。
+/// - 负余量若 shrink pool 非零，按 shrink×base 比例收缩；单子超额即
+///   冻结并重分配，最多 FLEX_MAX 轮。
+/// - L2 sugar(basis=0, shrink=0) 数学退化为旧 flex_space 分配。
+fn flex_slots(
     nodes: &[Option<Node>],
     flex: &[Option<FlexEntry>],
     first: u32,
     vertical: bool,
     container: i32,
     gap: u32,
-) -> (u64, i64) {
+) -> FlexSlots {
     if !flex.iter().flatten().next().is_some() {
-        return (0, 0); // 无登记树保持原单走查性能面。
+        return FlexSlots::none(); // 无登记树保持原单走查性能面。
     }
-    let mut total = 0u64;
-    let mut fixed = 0i64;
-    let mut count = 0i64;
+
+    let mut bases = [0u64; crate::FLEX_MAX];
+    let mut grows = [0u16; crate::FLEX_MAX];
+    let mut shrinks = [0u16; crate::FLEX_MAX];
+    let mut active = [false; crate::FLEX_MAX];
+    let mut count = 0usize;
+    let mut sibling_count = 0i64;
+    let mut base_sum = 0i64;
     let mut cur = first;
     let mut guard = 0usize;
     while cur != u32::MAX && guard <= nodes.len() {
@@ -770,22 +799,129 @@ fn flex_context(
             break;
         }
         let next = c.next_sib;
-        match flex_weight(nodes, flex, cur) {
-            Some(weight) => total += weight as u64,
+        let meas = if vertical { c.meas_h } else { c.meas_w } as u64;
+        match flex_spec_of(nodes, flex, cur) {
+            Some(spec) if count < crate::FLEX_MAX => {
+                let base = match spec.basis {
+                    crate::FlexBasis::Px(value) => value as u64,
+                    crate::FlexBasis::Auto => meas,
+                };
+                bases[count] = base;
+                grows[count] = spec.grow;
+                shrinks[count] = spec.shrink;
+                active[count] = spec.shrink > 0;
+                base_sum = base_sum.saturating_add(base as i64);
+                count += 1;
+            }
+            Some(_) => {
+                // 结构性不可达（FLEX_MAX 写入帽）；防御时仍计入 sibling/gap。
+                debug_assert!(
+                    false,
+                    "flex entries exceeded FLEX_MAX without table expansion"
+                );
+            }
             None => {
-                fixed = fixed.saturating_add(if vertical {
-                    c.meas_h as i64
-                } else {
-                    c.meas_w as i64
-                });
+                base_sum = base_sum.saturating_add(meas as i64);
             }
         }
-        count += 1;
+        sibling_count += 1;
         cur = next;
     }
-    let gaps = gap as i64 * (count - 1).max(0);
-    let space = (container as i64).saturating_sub(gaps).saturating_sub(fixed).max(0);
-    (total, space)
+
+    let gaps = gap as i64 * (sibling_count - 1).max(0);
+    let free = (container as i64)
+        .saturating_sub(gaps)
+        .saturating_sub(base_sum);
+    let mut result = [0i32; crate::FLEX_MAX];
+
+    if free >= 0 {
+        let total_grow: u64 = grows[..count].iter().map(|v| u64::from(*v)).sum();
+        if total_grow > 0 {
+            let mut cumulative = 0u64;
+            let mut previous_target = 0u64;
+            for i in 0..count {
+                cumulative += u64::from(grows[i]);
+                let target = free as u64 * cumulative / total_grow;
+                let share = target.saturating_sub(previous_target);
+                previous_target = target;
+                // grow=0 的子在此轮 share=0，保留 base。
+                result[i] = i32::try_from(bases[i].saturating_add(share))
+                    .unwrap_or(i32::MAX);
+            }
+        } else {
+            for (slot, base) in result.iter_mut().zip(bases.iter()).take(count) {
+                *slot = i32::try_from(*base).unwrap_or(i32::MAX);
+            }
+        }
+        return FlexSlots { slots: result };
+    }
+
+    // free < 0：CSS 7.2 型 capped proportional shrink + freeze loop。
+    let deficit = u64::try_from(free.saturating_neg()).unwrap_or(u64::MAX);
+    let mut takes = [0u64; crate::FLEX_MAX];
+    let mut remaining = deficit;
+    let mut passes = 0usize;
+    while remaining > 0 && passes < crate::FLEX_MAX {
+        passes += 1;
+        let total_factor: u128 = (0..count)
+            .filter(|&i| active[i])
+            .map(|i| u128::from(shrinks[i]) * u128::from(bases[i]))
+            .sum::<u128>();
+        if total_factor == 0 {
+            break;
+        }
+        let mut cumulative = 0u128;
+        let mut previous_target = 0u128;
+        let mut proposed = takes;
+        let mut froze = false;
+        for i in 0..count {
+            if !active[i] {
+                continue;
+            }
+            cumulative += u128::from(shrinks[i]) * u128::from(bases[i]);
+            let target = u128::from(remaining) * cumulative / total_factor;
+            let increment = target.saturating_sub(previous_target);
+            previous_target = target;
+            let candidate = takes[i].saturating_add(u64::try_from(increment).unwrap_or(u64::MAX));
+            proposed[i] = candidate;
+            if candidate > bases[i] {
+                froze = true;
+            }
+        }
+        if froze {
+            // 本轮有子冻结时，未冻结子的“比例预分配”不能保留——它与冻结
+            // 子的 base 相加可能超过 deficit。回滚未冻结子到上一轮，再对
+            // 剩余 active 子重分配；冻结子保 base。
+            for i in 0..count {
+                if active[i] {
+                    proposed[i] = if proposed[i] > bases[i] {
+                        bases[i]
+                    } else {
+                        takes[i]
+                    };
+                }
+            }
+        }
+        takes = proposed;
+        if froze {
+            for i in 0..count {
+                if active[i] && takes[i] >= bases[i] {
+                    active[i] = false;
+                }
+            }
+        }
+        let taken: u64 = takes[..count].iter().copied().sum();
+        remaining = deficit.saturating_sub(taken);
+        if !froze {
+            break;
+        }
+    }
+
+    for i in 0..count {
+        let slot = bases[i].saturating_sub(takes[i]);
+        result[i] = i32::try_from(slot).unwrap_or(i32::MAX);
+    }
+    FlexSlots { slots: result }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -892,10 +1028,8 @@ fn place_children(
         }
         Props::Col(p) => {
             let gap = p.gap as i64;
-            let (flex_total, flex_space) =
-                flex_context(nodes, flex, first, true, h, p.gap);
-            let mut cumulative_weight = 0u64;
-            let mut allocated_flex = 0i64;
+            let allocation = flex_slots(nodes, flex, first, true, h, p.gap);
+            let mut flex_index = 0usize;
             let mut cursor: i64 = 0;
             let mut cur = first;
             let mut guard = 0usize;
@@ -903,15 +1037,14 @@ fn place_children(
                 guard += 1;
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
-                let ch_h = match flex_weight(nodes, flex, cur) {
-                    Some(weight) => {
-                        cumulative_weight += weight as u64;
-                        // 见 flex_context 溢出界：u64 乘积 < 2^52。
-                        let target = flex_space as u64 * cumulative_weight / flex_total;
-                        let target = i64::try_from(target).unwrap_or(i64::MAX);
-                        let share = target.saturating_sub(allocated_flex);
-                        allocated_flex = target;
-                        i64_to_i32_sat(share)
+                if !c.alive {
+                    break;
+                }
+                let ch_h = match flex_spec_of(nodes, flex, cur) {
+                    Some(_) => {
+                        let value = allocation.slots[flex_index];
+                        flex_index += 1;
+                        value
                     }
                     None => u32_to_i32_sat(c.meas_h), // 主轴请求 = 子内在（None 折 0）
                 };
@@ -937,10 +1070,8 @@ fn place_children(
         }
         Props::Row(p) => {
             let gap = p.gap as i64;
-            let (flex_total, flex_space) =
-                flex_context(nodes, flex, first, false, w, p.gap);
-            let mut cumulative_weight = 0u64;
-            let mut allocated_flex = 0i64;
+            let allocation = flex_slots(nodes, flex, first, false, w, p.gap);
+            let mut flex_index = 0usize;
             let mut cursor: i64 = 0;
             let mut cur = first;
             let mut guard = 0usize;
@@ -948,15 +1079,14 @@ fn place_children(
                 guard += 1;
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
-                let cw = match flex_weight(nodes, flex, cur) {
-                    Some(weight) => {
-                        cumulative_weight += weight as u64;
-                        // 见 flex_context 溢出界：u64 乘积 < 2^52。
-                        let target = flex_space as u64 * cumulative_weight / flex_total;
-                        let target = i64::try_from(target).unwrap_or(i64::MAX);
-                        let share = target.saturating_sub(allocated_flex);
-                        allocated_flex = target;
-                        i64_to_i32_sat(share)
+                if !c.alive {
+                    break;
+                }
+                let cw = match flex_spec_of(nodes, flex, cur) {
+                    Some(_) => {
+                        let value = allocation.slots[flex_index];
+                        flex_index += 1;
+                        value
                     }
                     None => u32_to_i32_sat(c.meas_w),
                 };

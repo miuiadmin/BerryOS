@@ -130,7 +130,9 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::Density` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::EmptyIconSource` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::EmptyState` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
-| `berry_ui::sdk::FlexEntry` | type | L2 | in-tree | stable | `docs/BerryUI-L2FlexRatioAllocation-v1.0.md` |
+| `berry_ui::sdk::FlexBasis` | type | LAYOUT-L6a | in-tree | experimental | `docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md` |
+| `berry_ui::sdk::FlexEntry` | type | L2 | in-tree | stable | `docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md` |
+| `berry_ui::sdk::FlexSpec` | type | LAYOUT-L6a | in-tree | experimental | `docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md` |
 | `berry_ui::sdk::FocusDir` | type | C1 | in-tree | stable | `docs/BerryUI-C1ComponentFocusNavigation-v1.0.md` |
 | `berry_ui::sdk::FocusEntry` | type | C1 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::FocusOp` | type | C1 | in-tree | stable | `docs/BerryUI-C1ComponentFocusNavigation-v1.0.md` |

@@ -141,7 +141,26 @@ pub const FLEX_MAX: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlexEntry {
     pub node: NodeId,
+    /// L2 兼容字段名；L6a 起等价于 `FlexSpec::grow`。
     pub weight: u16,
+    pub shrink: u16,
+    pub basis: FlexBasis,
+}
+
+/// L6a flex 基准：`Auto` 读子主轴内在，`Px` 是确定基准。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlexBasis {
+    Auto,
+    Px(u32),
+}
+
+/// L6a runtime-only flex 规格。`grow` 只消费正余量；`shrink` 只消费负
+/// 余量；两者可独立存在，但全零是死登记，写入面 loud 拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlexSpec {
+    pub grow: u16,
+    pub shrink: u16,
+    pub basis: FlexBasis,
 }
 
 // ---------- LAYOUT-L5 text wrap 侧表 ----------
@@ -1667,27 +1686,32 @@ impl<const N: usize> Ui<N> {
 
     // —— flex ratio（GUI-14 L2：固定主轴 Row/Col 的剩余空间比例分配） ——
 
-    /// 登记/覆写 flex weight。L2 叶子面 = Rect/Circle 双 None；L3 增加
-    /// transposed pane：Row 中 Col/Grid/Panel 主轴宽 None、Col 中 Row
-    /// 主轴高 None。weight 0 /错 kind /固定主轴/同向容器/悬空 id →
-    /// NodeBad，表满 → NodeFull。权重变化 dirty 本节点与祖先链。
-    pub fn set_flex(&mut self, node: NodeId, weight: u16) -> Result<(), UiError> {
+    /// L6a：登记/覆写完整 flex spec。L2/L3 eligibility 矩阵不变；全零
+    /// spec、悬空 id、不合规 kind/props/父位 → NodeBad，表满 → NodeFull。
+    pub fn set_flex_spec(
+        &mut self,
+        node: NodeId,
+        spec: FlexSpec,
+    ) -> Result<(), UiError> {
         let idx = self.slot_of(node)? as usize;
+        if spec.grow == 0 && spec.shrink == 0 {
+            return Err(UiError::NodeBad);
+        }
         let eligible = layout::flex_eligible_props(&self.nodes, idx, {
             let Some(n) = self.nodes[idx].as_ref() else {
                 return Err(UiError::NodeBad);
             };
             &n.props
         });
-        let parent_kind = self.nodes[idx]
-            .as_ref()
-            .and_then(|n| self.nodes.get(n.parent as usize).and_then(|o| o.as_ref()))
-            .map(|p| p.kind);
-        let parent_ok = matches!(parent_kind, Some(ViewKind::Row) | Some(ViewKind::Col));
-        if weight == 0 || !eligible || !parent_ok {
+        if !eligible {
             return Err(UiError::NodeBad);
         }
-        let entry = FlexEntry { node, weight };
+        let entry = FlexEntry {
+            node,
+            weight: spec.grow,
+            shrink: spec.shrink,
+            basis: spec.basis,
+        };
         if let Some(e) = self.flex.iter_mut().find(|e| {
             e.as_ref().is_some_and(|e| e.node == node)
         }) {
@@ -1704,6 +1728,27 @@ impl<const N: usize> Ui<N> {
         self.flex[slot] = Some(entry);
         self.mark_flex_dirty(node);
         Ok(())
+    }
+
+    /// 读取 runtime-only flex spec；无登记返回 None。
+    pub fn flex_spec(&self, node: NodeId) -> Option<FlexSpec> {
+        let entry = self
+            .flex_iter()
+            .find(|entry| entry.node == node)
+            .copied()?;
+        Some(FlexSpec {
+            grow: entry.weight,
+            shrink: entry.shrink,
+            basis: entry.basis,
+        })
+    }
+
+    /// L2 冻结语法糖：`weight` 表示 grow、basis=0、不 shrink。
+    pub fn set_flex(&mut self, node: NodeId, weight: u16) -> Result<(), UiError> {
+        self.set_flex_spec(
+            node,
+            FlexSpec { grow: weight, shrink: 0, basis: FlexBasis::Px(0) },
+        )
     }
 
     /// 摘除 flex weight；幂等。摘除后需 layout 才收敛新几何。

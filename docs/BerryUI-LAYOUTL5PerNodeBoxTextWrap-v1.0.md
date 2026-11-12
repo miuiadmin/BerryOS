@@ -62,9 +62,9 @@ Clip:
     fixed w/h 优先；否则 incoming
 ```
 
-flex slot 仍是 place 阶段分配，不伪装成 measure box；嵌套 flex 协商归 LAYOUT-L6。
+flex slot 仍是 place 阶段分配，不伪装成 measure box；嵌套 flex 协商归 LAYOUT-L6b。
 
-Row 的主轴宽恒 unbounded，直接放在 Row 下的 wrap Text 不会主动断行；flex slot / 嵌套协商中的 wrap 边界归 LAYOUT-L6。
+Row 的主轴宽恒 unbounded，直接放在 Row 下的 wrap Text 不会主动断行；flex slot / 嵌套协商中的 wrap 边界归 LAYOUT-L6b。
 
 ---
 

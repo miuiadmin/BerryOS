@@ -481,17 +481,30 @@ rootfs 预算记录
 
 ---
 
-### Phase C — LAYOUT-L6 Flex/Grid/Intrinsic Completion
+### Phase C1 — LAYOUT-L6a Flex Spec Algebra（已落地）
 
 交付：
 
 ```text
-flex basis/grow/shrink
+runtime-only FlexBasis / FlexSpec
+flex basis / grow / shrink
+capped proportional shrink freeze loop
+L2 set_flex 冻结糖
+64 轮确定性随机不变量
+```
+
+### Phase C2 — LAYOUT-L6b Flex/Grid/Intrinsic Completion（排队）
+
+交付：
+
+```text
 嵌套 flex measure negotiation
+wrap-to-flex-slot
 Grid fr/auto track
 MainAlign / SpaceBetween / alignSelf
 intrinsic width/height query
 persistent constraint cache
+UITESTL6 真实 guest 消费者
 ```
 
 协议边界：
@@ -833,7 +846,27 @@ Text wrap 是 FormMetrics、IME、scroll-into-view、TextArea 的共同前置
 仍可在 berry-ui 内部收敛
 ```
 
-### 第三刀：WM-R4
+### 第三刀：LAYOUT-L6a（已落地）
+
+理由：
+
+```text
+L4/L5 已提供约束与 wrap，但 flex 仍只有 basis0 grow
+表单/工具栏需要 Px/Auto basis 与可证明 shrink
+可先在 place 期 runtime-only 收敛代数，不引入第二遍 measure
+```
+
+### 第四刀：LAYOUT-L6b（排队）
+
+理由：
+
+```text
+在 grow/shrink/basis 代数钉板后处理嵌套协商
+让 wrap-to-flex-slot 与真实 guest 消费者复用同一分配单源
+Grid fr/auto、MainAlign 与 intrinsic query 仍后置
+```
+
+### 第五刀：WM-R4
 
 理由：
 
