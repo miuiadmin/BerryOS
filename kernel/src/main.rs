@@ -30,6 +30,7 @@ mod mem; // GUI-0：本仓 mem* 整数版覆写（内核 SIMD-free 合同 builti
 mod mm;
 mod pi;
 mod process;
+mod rtc; // 波一刀 B：壁钟注入面（fw_cfg opt/berry/rtc → CLOCK_REALTIME）
 mod suspend; // 1.1/S3-a：冻结令牌对象（process_suspend handler 配对）
 mod syscall;
 mod sysver; // VER：版本身份 VMO（运行时查询面——boot 编译期成像 + 第 9 插只读交付）
@@ -264,6 +265,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // -kernel 五跑不见此行）；未中 → None，既有 DTB/fw_cfg 路零扰动。
     // 插点在 KVA ok 之后：probe 经高半直映读 handoff 页，别名已自证。
     let handoff = handoff::probe(boot_x0);
+    // 波一刀 B（状态栏可信化）：宿主壁钟注入消费（fw_cfg `opt/berry/rtc`
+    // epoch 秒 → 双 Atomic 锚存 → sys_clock_read(CLOCK_REALTIME)）。
+    // EFI/-kernel 两路同点、ktest 之前——ktest 的 clock 负样本（id=2）
+    // 不依赖注入态；缺席（-kernel 冒烟拓扑）零行零扰动。
+    rtc::boot_init();
     // S-1：EFI 路标记（handoff 后续被 rootfs 装载消费 move 走，先钉存）——
     // smp_bringup 的 conduit 门之一（EFI 路 PSCI 归固件管，S-1 盒子跳过）。
     let efi_boot = handoff.is_some();
@@ -1005,11 +1011,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // 4-5a：abuser/spawner 的 console 发端 = 各表**首插**（0x0001_0001）——入口
     // x0 改传之（原 0；两模板自带 handle 都在运行期创建，首插槽位无既有依赖）。
+    // spawner 位补 DUPLICATE（P3-1 dup 执法：模板 dup(console, SEND|TRANSFER)
+    // 转赠子进程须源持 DUP；abuser 模板不 dup，保持最小授能不带位）。
     let h_cu_abuser = ht_abuser
         .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
         .expect("main: console 发端进 abuser 表");
     let h_cu_spawner = ht_spawner
-        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
+        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE)
         .expect("main: console 发端进 spawner 表");
     berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
                           b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
@@ -1319,9 +1327,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     let ht_svcmgr: &'static mut HandleTable =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
     // console 发端 = svcmgr 表**首插**（0x0001_0001）——入口 x0 传入（模板
-    // 硬编码依赖，boot 断言拦表序漂移）。
+    // 硬编码依赖，boot 断言拦表序漂移）。DUPLICATE 位（P3-1 dup 执法）：
+    // svcmgr 是 console 的常驻 dup 源（dup(console, SEND|TRANSFER) 铸 gift
+    // 转赠子进程——talker/spawn 面），缺位即 -EACCES 断赠链。
     let h_cu_svcmgr = ht_svcmgr
-        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
+        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER | RIGHT_DUPLICATE)
         .expect("main: console 发端进 svcmgr 表");
     assert_eq!(
         h_cu_svcmgr, 0x0001_0001,
@@ -1355,10 +1365,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             }
         };
         ht_svcmgr
-            .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ | handle::RIGHT_TRANSFER)
+            .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE)
             .expect("main: rootfs VMO 进 svcmgr 表")
     });
     // （A-2）rootfs 相位标记——endB2 插序断言用：rootfs 槽缺席 = 少一插。
+    // rootfs VMO 的 DUPLICATE 位（P3-1）：svcmgr dup(H_ROOTFS, READ|TRANSFER)
+    // 铸 gift 是 rootfs 相 spawn 链（hello/bsh/verify 族）的通用前缀，缺位
+    // 即 -EACCES 断整链。
     let rootfs_present = h_rootfs.is_some();
     match h_rootfs {
         Some(h) => {
@@ -1869,13 +1882,15 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     {
         // ① simbattery 礼物对（svcmgr 表，rootfs 相槽 5/6——simbattery 由
         // svcmgr spawn 时经 SpawnSpec stdin/extra_gifts 领走，M2 后段接线）。
+        // 双端 DUPLICATE 位（P3-1）：svcmgr sim 自验 dup(H_SIM_RX/ACK) 探针
+        // 铸别名，缺位即 -EACCES 探针降级。
         let h_simb_rx = ht_svcmgr
             .insert(
                 KernelObj::Channel(
                     crate::channel::ChannelEnd::try_unpaired(true)
                         .expect("main: 建 sim 帧通道 simbattery 端"),
                 ),
-                handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
+                handle::RIGHT_RECV | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE,
             )
             .expect("main: sim 帧 RECV 端进 svcmgr 表");
         assert_eq!(
@@ -1888,7 +1903,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     crate::channel::ChannelEnd::try_unpaired(true)
                         .expect("main: 建 sim 回执通道 simbattery 端"),
                 ),
-                handle::RIGHT_SEND | handle::RIGHT_TRANSFER,
+                handle::RIGHT_SEND | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE,
             )
             .expect("main: sim 回执 SEND 端进 svcmgr 表");
         assert_eq!(

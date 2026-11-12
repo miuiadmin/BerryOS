@@ -13,8 +13,10 @@
 //!   （引用计数 = 持有它的 handle 数，最后 close 释放）。
 //! - 权限只能收紧：`duplicate` 要求新 rights ⊆ 原（防提权，永不增权）。
 //!
-//! v1 裁剪：页表帧不回收（v1 政策）；`RIGHT_DUPLICATE` 位已定义但不门控
-//! `duplicate`（Zircon 同款：位留 vocab、暂不执法）。3-2 起 Vmo 销毁回收
+//! v1 裁剪：页表帧不回收（v1 政策）；`RIGHT_DUPLICATE` 位自 P3-1 起执法
+//! ——syscall 面（`sys_handle_duplicate` 经 [`HandleTable::rights_of`] 探针）
+//! 源 handle 缺位即 -EACCES，内核内部直调 [`HandleTable::duplicate`]（boot
+//! 插表/ktest 表 API 的授能语境）不设此门。3-2 起 Vmo 销毁回收
 //! 未映射物理页（`Vmo::Drop`），映射未解除的 VMO 拒 close（悬空 PTE 防线，
 //! 见 [`HandleTable::close`]）。
 
@@ -572,6 +574,17 @@ impl HandleTable {
             return Err(ERR_ACCESS_DENIED);
         }
         Ok((obj, rights))
+    }
+
+    /// **类型无关权利探针**（P3-1 `handle_duplicate` 执法面）：查表 + 代号
+    /// 校验后返回该 handle 的权利全集。不验类型、不验 need 位——
+    /// `handle_duplicate` 对一切对象类型开放，`get_raw` 的具体 `ObjType`
+    /// 门在此不适配；need 位判定归调用方（syscall 入口查
+    /// [`RIGHT_DUPLICATE`]）。执法边界 = syscall 面（不受信面）：内核内部
+    /// 直调 [`Self::duplicate`]（boot 插表 / ktest 表 API）是授能语境，
+    /// 不经此门。
+    pub fn rights_of(&self, h: Handle) -> Result<Rights, i32> {
+        Ok(self.lookup(h)?.1)
     }
 
     /// 查表（gen 校验）：槽空 / 越界 / 代号不符 / **预留位非零** →

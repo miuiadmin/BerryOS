@@ -28,7 +28,11 @@
     （ident 降级链与 kernel/build.rs `git_ident` 同构：describe --tags
     --long → rev-parse --short → nogit，porcelain 非空尾追 -dirty；level
     读 tools/abi.toml `[platform]`、semver 读根 Cargo.toml
-    `[workspace.package]`——双路合同详 `berryver_bytes` 头注）。**生成式
+    `[workspace.package]`——双路合同详 `berryver_bytes` 头注）。P2-5
+    （版本治理步骤 4）起烙印窗补 **uname 面对拍**：user/berry-libc
+    `UNAME_RELEASE_STR` 回退字面量须与 semver 单源同值（规则 14「四面
+    同值」——boot banner / sysver VMO / .berryver / uname），漂移即
+    FAIL loud 无镜像可产（详 `_uname_release_face` 头注）。**生成式
     条目不走 --manifest 表**（表 = 静态文件映射、.berryver = 构建期生成
     的身份烙印——语义分层）；名序点开头排前（cpio 惯例）；外部注入同名
     条目 loud 拒。mkapp 的 .bap 走 `build_archive` 纯编码器不经此面——
@@ -335,6 +339,15 @@ def selftest_manifest() -> int:
 # 文件映射、.berryver 管构建身份，两类条目不同源。消费端 = svcmgr fb 相
 # （H_VER = 0x0001_0009 第 9 插 sysver VMO 三元组 vs 本条目直查——混合
 # 构建〔kernel 与 rootfs 异窗〕即 `eco: VER mix` loud）。
+#
+# P2-5（版本治理步骤 4，规则 14 §「四面同值」）：VER 哨兵三元组 = VMO ×
+# .berryver 不含 uname 面——EL0 `uname(2).release` 值源 = berry-libc
+# `UNAME_RELEASE_STR` 回退字面量（根版本的手工镜像），原无机器执法（ADR
+# #83 v1.1 §6.3 缺口登记）。mkcpio 烙印窗补第四面对拍：归档现读 sys.rs
+# 回退值 ≠ semver 单源即 FAIL（`_uname_release_face`）。**.berryver 条目
+# 形态不变**（仍单行三段）——uname 面与 semver 段是「必须同值」的对拍
+# 关系而非并列数据，加段即冗余且破 svcmgr `ver_parse_berryver` 三段
+# 解析合同。
 
 BERRYVER_NAME = ".berryver"
 
@@ -406,12 +419,49 @@ def _berryver_sources() -> tuple[int, str]:
     return level, semver
 
 
+def _uname_release_face() -> str:
+    """uname 面现值（P2-5 版本治理步骤 4 / 规则 14 四面同值的第 4 面）：
+    EL0 `uname(2).release` 的值源 = berry-libc 构建期烙印
+    `UNAME_RELEASE_STR`（`option_env!("BERRY_UNAME_RELEASE")` 注入缺席时
+    的回退字面量）。构建链不设注入（全仓无设值点——注入槽留作覆盖口），
+    **回退值即现役 uname 值**；它是根 workspace 版本的手工镜像（libc 住
+    user/ 独立 workspace 无根版本常量可继承），原靠「升版同笔」人工纪律、
+    无机器执法（VER 哨兵三元组 = VMO × .berryver 不含 uname 面——ADR #83
+    v1.1 §6.3 缺口登记）。本函数解析 user/berry-libc/src/sys.rs 的
+    `None => "<semver>"` 回退臂：源文件缺席 / 常量块改形（锚点失配）一律
+    FAIL loud——对拍锚烂掉好过静默漏检（gen_abi --check「产物 == 源」同
+    纪律，锚点漂移即要求本守卫随迁）。"""
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "user", "berry-libc", "src", "sys.rs")
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        raise SystemExit(f"mkcpio: FAIL: .berryver uname 面读 {path}：{e}")
+    m = re.search(r'const\s+UNAME_RELEASE_STR[\s\S]*?None\s*=>\s*"([^"]+)"', src)
+    if not m:
+        raise SystemExit(f"mkcpio: FAIL: .berryver uname 面锚点失配：{path}"
+                         " 无 UNAME_RELEASE_STR 回退臂（sys.rs 改形——本守卫"
+                         "须随迁）")
+    return m.group(1)
+
+
 def berryver_bytes() -> bytes:
     """.berryver 条目内容：单行 `<ident>|level <N>|v<semver>`（UTF-8 无
     尾随换行——svcmgr 对拍按整段解析）。段值单源见模块节注；每次 CLI
     归档现取（构建期烙印——同窗内定值，跨窗随 git/单源文件漂移，这正是
-    混合构建检测要抓的偏差面）。"""
+    混合构建检测要抓的偏差面）。P2-5 起 uname 面同窗对拍：sys.rs 回退值
+    ≠ semver 单源即 FAIL——根 workspace 升版须同笔更新回退值（或经
+    BERRY_UNAME_RELEASE 注入），镜像义务由人工纪律升格为构建期执法。"""
     level, semver = _berryver_sources()
+    uname = _uname_release_face()
+    if uname != semver:
+        raise SystemExit(f"mkcpio: FAIL: .berryver uname 面漂移："
+                         f"sys.rs 回退 {uname!r} ≠ 根 Cargo.toml {semver!r}"
+                         "（规则 14 四面同值——升版须同笔更新"
+                         " user/berry-libc/src/sys.rs 回退值）")
     return f"{_git_ident()}|level {level}|v{semver}".encode()
 
 
@@ -428,7 +478,9 @@ def selftest_berryver() -> int:
 
     # 内容面：真实生成器产出 = 单行三段；level/semver 段与双单源文件
     # 现值逐段相等（gen_abi --check 的「产物 == 源」同构对拍）；ident 段
-    # 降级链三形（describe/短哈希/nogit）+ 可选 -dirty 尾都是合法字符集。
+    # 降级链三形（describe/短哈希/nogit）+ 可选 -dirty 尾都是合法字符集；
+    # uname 面（P2-5）= sys.rs 回退字面量与 semver 单源同值（生成器侧
+    # FAIL 门的自test镜像——漂移双保险）。
     s = berryver_bytes().decode()
     assert "\n" not in s, f"烙印须单行无换行：{s!r}"
     parts = s.split("|")
@@ -436,6 +488,8 @@ def selftest_berryver() -> int:
     level, semver = _berryver_sources()
     assert parts[1] == f"level {level}", "level 段漂（abi.toml 单源对拍）"
     assert parts[2] == f"v{semver}", "semver 段漂（Cargo.toml 单源对拍）"
+    assert _uname_release_face() == semver, \
+        "uname 面漂（sys.rs 回退 vs Cargo.toml semver 单源——P2-5 四面同值）"
     assert re.fullmatch(r"[0-9A-Za-z._-]+", parts[0]), f"ident 段形态：{parts[0]!r}"
     # 全链面：CLI 子进程真跑——烙印在档且点开头名序排首位（'.' < 首字节
     # 字母/斜杠）、计数 +1、内容与生成器一致、同名注入 loud 拒。

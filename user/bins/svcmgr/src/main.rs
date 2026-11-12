@@ -1194,9 +1194,11 @@ fn run_rootfs_child(console: Handle) {
                     // w_cli 随 gfxdemo arm extras 直递 take 后离表（其 Err/
                     // cpio 缺路关原柄不置 0），本 static 是 launcher 侧唯一
                     // 可再生 wm 端（生命周期独立——gfxdemo 失败关原柄不伤
-                    // dup）。失败 trap（fsmgr fs_dup 先例同形）。
+                    // dup）。失败 trap（fsmgr fs_dup 先例同形）。DUPLICATE 位
+                    //（P3-1 dup 执法）：常驻 dup 源的使命就是再 dup——掩码
+                    // 须显式保位（TRANSFER 保位同款纪律）。
                     let mut w_dup: Handle = 0;
-                    if berry_handle_duplicate(w_cli, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut w_dup) != 0 {
+                    if berry_handle_duplicate(w_cli, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut w_dup) != 0 {
                         trap();
                     }
                     WMD_CLI_DUP.store(w_dup, Ordering::Relaxed);
@@ -1336,9 +1338,11 @@ fn run_rootfs_child(console: Handle) {
     if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/fsmgr") {
         let (fs_a, fs_b) = channel_pair();
         // fs 客户端端双权利：SEND（发请求）+ RECV（收应答）——bsh 的
-        // `>`/`cat`/`ls` 双向面。
+        // `>`/`cat`/`ls` 双向面。DUPLICATE 位（P3-1）：本 dup 结果
+        // fs_client 流 bsh 成 fs_h()，bsh fs_gifts/net_gifts 会再 dup 铸
+        // 孙辈 gift——常驻 dup 源语义，掩码须显式保位。
         let mut fs_dup = 0 as Handle;
-        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut fs_dup) != 0 {
+        if berry_handle_duplicate(fs_a, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut fs_dup) != 0 {
             trap();
         }
         // A-5 gift 数组：blk_cli==0（vblk 缺席/未过自验）= 三元（RAM-only）。
@@ -2085,8 +2089,11 @@ fn run_rootfs_child(console: Handle) {
     // 2156B——rootfs 相第 8 标记）；prompt/交互为化妆面。此刻拉起 =
     // app 批已收口，bsh 恢复 fs_a 队列唯一读者（下方 Ok 面关 fs_a_h）。
     if let Some((off, len)) = bsh_geom {
+        // DUPLICATE 位（P3-1 dup 执法）：本 rootfs_dup 流 bsh 成
+        // rootfs_h()——bsh fs_gifts/net_gifts 再 dup 铸孙辈 gift（uu/fat/
+        // nets 族自验面），常驻 dup 源语义须掩码显式保位（TRANSFER 同款）。
         let mut rootfs_dup = 0 as Handle;
-        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ | RIGHT_TRANSFER, &mut rootfs_dup) != 0 {
+        if berry_handle_duplicate(H_ROOTFS, RIGHT_READ | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut rootfs_dup) != 0 {
             trap();
         }
         // A2-3 第五 extras：netd 服务端端。NET_A==0（vnet 未起 = EFI/裸
@@ -2099,7 +2106,9 @@ fn run_rootfs_child(console: Handle) {
         let mut netd_dup = 0 as Handle;
         let net = NET_A.load(Ordering::Relaxed);
         if fs_client != 0 && net != 0 {
-            if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut netd_dup) != 0 {
+            // DUPLICATE 位（P3-1）：netd_dup 流 bsh 成 netd_h()——
+            // net_gifts 第三元再 dup 面（rootfs_dup 注释同款）。
+            if berry_handle_duplicate(net, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut netd_dup) != 0 {
                 trap();
             }
         }

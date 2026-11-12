@@ -118,6 +118,7 @@ pub fn run() {
 #[allow(clippy::unwrap_used)]
 fn test_syscall() {
     use crate::handle::{KernelObj, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE};
+    // RIGHT_DUPLICATE：函数体后段（Event 段）已有 fn 级 use，整函数可见。
     use crate::syscall::{
         bootstrap_table, NR_CLOCK_READ, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_SIGNAL_SEND,
         NR_SIGNAL_TAKE, NR_VMO_CREATE,
@@ -164,6 +165,9 @@ fn test_syscall() {
     );
 
     // C. clock_read：MONOTONIC 两次读单调递增；非法 id -ENOTSUP。
+    //    （波一刀 B：id=1 已合法化 = CLOCK_REALTIME——负样本换 id=2，
+    //    注入态无关恒非法；REALTIME 正例随 berry 桌面 boot 的串口
+    //    `RTC ok epoch=` + launcher 时钟行验收，不入 ktest。）
     // SAFETY: svc 同步异常；OUT 为本函数私有静态。
     unsafe { OUT = 0 };
     assert_eq!(
@@ -174,7 +178,7 @@ fn test_syscall() {
     let t1 = unsafe { OUT };
     assert!(t1 > 0, "SYSCALL：clock_read 应得正纳秒");
     assert_eq!(
-        svc4(NR_CLOCK_READ as u64, 1, &raw mut OUT as u64, 0),
+        svc4(NR_CLOCK_READ as u64, 2, &raw mut OUT as u64, 0),
         -95,
         "SYSCALL：非法 clock_id 须 -ENOTSUP"
     );
@@ -187,14 +191,24 @@ fn test_syscall() {
     let h1 = ht
         .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
         .expect("SYSCALL：insert h1");
+    // P3-1 执法负例：h1 无 RIGHT_DUPLICATE 位 → dup 须 -EACCES（授予方
+    // 去位 = 禁复制——ktest 手插 fixture 即「去位授予」形态）。
+    // SAFETY: svc 同步异常；OUT 为本函数私有静态。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, h1 as u64, RIGHT_READ, &raw mut OUT as u64),
+        -13,
+        "SYSCALL：缺 DUPLICATE 位 dup 须 -EACCES（P3-1 执法）"
+    );
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h1 as u64, 0, 0), 0, "SYSCALL：close h1");
     assert_eq!(
         svc4(NR_HANDLE_CLOSE as u64, h1 as u64, 0, 0),
         -9,
         "SYSCALL：close 旧值须 -EBADF"
     );
+    // h2 带 DUP 位：dup 收紧正例（源持 DUP + 请求 ⊆ 原 → 0）。
     let h2 = ht
-        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)
         .expect("SYSCALL：insert h2");
     unsafe { OUT = 0 };
     assert_eq!(
@@ -1058,7 +1072,9 @@ fn test_syscall() {
     let hmm = ht
         .insert(
             KernelObj::Vmo(mv),
-            RIGHT_READ | RIGHT_WRITE | RIGHT_MAP, // boot 授能形态（vmar_map vmo 侧门 = MAP|R|W 恰集）
+            // boot 授能形态（vmar_map vmo 侧门 = MAP|R|W 恰集）+ DUP 位
+            //（P3-1：下方 dup 收紧到 R|W 的正例须源持 DUPLICATE）。
+            RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE,
         )
         .expect("MMIO：insert 窗口 VMO");
     // SAFETY: 同上。

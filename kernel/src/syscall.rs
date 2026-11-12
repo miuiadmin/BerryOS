@@ -83,12 +83,13 @@ pub use crate::abi_gen::{
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
     NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_THREAD_YIELD,
     NR_PROCESS_TERMINATE,
-    NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
+    NR_POWER_OFF, NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT,
+    NR_THREAD_SLEEP,
     NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
     NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
     NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
-use crate::abi_gen::{CLOCK_MONOTONIC, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
+use crate::abi_gen::{CLOCK_MONOTONIC, CLOCK_REALTIME, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
 /// `内存管理设计.md` §4；copy_out 的界检同源）。
@@ -375,6 +376,13 @@ extern "C" fn sys_handle_close(tf: &mut TrapFrame) -> i64 {
 }
 
 /// `handle_duplicate(h, rights, *out)`：复制（rights ⊆ 原、非空；SAME=全集）。
+/// P3-1 起源 handle 须持 `RIGHT_DUPLICATE`——缺位 -EACCES（授予方去位 =
+/// 禁复制，Zircon `zx_handle_duplicate` 同形；与「请求 ⊆ 原、非空」两既有
+/// 拒面叠乘）。执法边界 = 本 syscall 面（不受信面）：`duplicate` 对一切
+/// 对象类型开放，故经类型无关权利探针 [`HandleTable::rights_of`] 查位
+/// （`get_raw` 的具体 `ObjType` 门不适配此面；坏 handle 仍 -EBADF 走
+/// lookup 语义）；内核内部直调表 API（boot 插表/ktest）是授能语境不经
+/// 此门。
 extern "C" fn sys_handle_duplicate(tf: &mut TrapFrame) -> i64 {
     let (h, rights, out) = (tf.regs[1] as u32, tf.regs[2] as Rights, tf.regs[3]);
     // 先验 out 指针（界检不过不浪费槽位/引用）。
@@ -382,11 +390,17 @@ extern "C" fn sys_handle_duplicate(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     match caller_table(tf) {
-        Ok(t) => match t.duplicate(h, rights) {
-            Ok(nh) => match copy_out_u32(caller_is_el1(tf), out, nh) {
-                Ok(()) => 0,
+        Ok(t) => match t.rights_of(h) {
+            // P3-1：RIGHT_DUPLICATE 执法——get_raw 等效检查处的 need 位
+            //（类型无关面经 rights_of 探针，缺位 -EACCES）。
+            Ok(r) if r & RIGHT_DUPLICATE != 0 => match t.duplicate(h, rights) {
+                Ok(nh) => match copy_out_u32(caller_is_el1(tf), out, nh) {
+                    Ok(()) => 0,
+                    Err(e) => e as i64,
+                },
                 Err(e) => e as i64,
             },
+            Ok(_) => ERR_ACCESS_DENIED as i64, // 源 handle 无 DUP 位 = 授予方明令禁复制
             Err(e) => e as i64,
         },
         Err(e) => e,
@@ -413,9 +427,13 @@ extern "C" fn sys_handle_replace(tf: &mut TrapFrame) -> i64 {
 
 /// `clock_read(clock_id, *out)`：单调钟纳秒（CNTVCT/CNTFRQ 换算；先商后余防
 /// 中间溢出——ticks×1e9 在 ~5 分钟处溢 u64，拆两项后 ~584 年）。
+/// 波一刀 B：id=1 `CLOCK_REALTIME` = 宿主 fw_cfg epoch 注入面（`crate::rtc`
+/// ——原「壁钟留 v2」提前落地为既有 0x61 的 id 域扩展，零新号；id 0 行为
+/// 逐位不变）。注入缺席 → REALTIME 仍 -ENOTSUP（用户态降级静态占位）。
 extern "C" fn sys_clock_read(tf: &mut TrapFrame) -> i64 {
-    if tf.regs[1] != CLOCK_MONOTONIC {
-        return ERR_NOT_SUPPORTED as i64; // 壁钟等 id 留 v2
+    let id = tf.regs[1];
+    if id != CLOCK_MONOTONIC && id != CLOCK_REALTIME {
+        return ERR_NOT_SUPPORTED as i64; // 未知 id（ktest 负样本 = 2）
     }
     let out = tf.regs[2];
     let ticks = berry_hal_aarch64::timer::cntvct();
@@ -424,10 +442,33 @@ extern "C" fn sys_clock_read(tf: &mut TrapFrame) -> i64 {
         return ERR_NOT_SUPPORTED as i64; // 频率不可读（真机异常）
     }
     let ns = (ticks / freq) * 1_000_000_000 + ((ticks % freq) * 1_000_000_000) / freq;
+    let ns = if id == CLOCK_REALTIME {
+        match crate::rtc::realtime_ns() {
+            Some(v) => v,
+            None => return ERR_NOT_SUPPORTED as i64, // 无注入（-kernel 冒烟拓扑）
+        }
+    } else {
+        ns
+    };
     match copy_out_u64(caller_is_el1(tf), out, ns) {
         Ok(()) => 0,
         Err(e) => e as i64,
     }
+}
+
+/// `power_off()`（0x88，桌面UX刀D——guest 内关机最小闭环）：PSCI
+/// SYSTEM_OFF（0x84000008）经 HVC conduit。成功 = 整机下电**不归**（QEMU
+/// TCG/KVM 走 `qemu_system_shutdown_request`——PM-10 §1.6 实读）；返回 =
+/// 失败恒 -ENOTSUP（两成因同形：conduit 死——EFI handoff / 非 EL1 入口 /
+/// 无 PSCI（probe 缓存 `off_supported` 门，不盲发 HVC）；或固件拒收
+/// （SYSTEM_OFF 无 PSCI_FEATURES 面，SMCCC 返回任何值即失败）。零参数零
+/// 出参。v1 无门控（单用户仿真系统，消费面 launcher 关机键 + berryctl
+/// power；门控与优雅关机序随审计 02 号 I3 刀）。
+extern "C" fn sys_power_off(_tf: &mut TrapFrame) -> i64 {
+    // SMCCC：SYSTEM_OFF 成功不归；任何返回 = 失败（conduit 死 / 固件拒），
+    // 错误码面恒 -ENOTSUP（调用方诚实降级——launcher 提示行 / berryctl 退 1）。
+    let _ = berry_hal_aarch64::psci::system_off_hvc();
+    ERR_NOT_SUPPORTED as i64
 }
 
 /// MONOTONIC 纳秒 → CNTVCT 周期（先商后余防中间溢出，与 [`sys_clock_read`]
@@ -3929,6 +3970,11 @@ pub fn install() {
     // 出参 copy_out 链走查本进程页表（§A113 读者面，同 0x61）——升 TABLE。
     reg(NR_SIGNAL_SEND, sys_signal_send, SVC_CLASS_TABLE);
     reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_TABLE);
+    // —— TABLE：桌面UX刀D 关机最小闭环（0x88 power_off）。零参数零出参零
+    //    表触达；TABLE（仅 KL）= 保守档：UART 诊断行 + PSCI 缓存原子读在
+    //    SVC 屏蔽窗内自安全（「NONE 实装号归零」纪律——clock_read :3863
+    //    同款升档论证）；成功路不归（整机下电），失败路正常返还解锁。
+    reg(NR_POWER_OFF, sys_power_off, SVC_CLASS_TABLE);
     // —— TABLE：S6-b 策略注入最小 COMMIT 面。0x83 policy_bind 在 abi.toml §4
     // 在册但 stage=v3——abi_gen 常量层只产 v1/1.1 行（gen_abi.py defined 集），
     // NR_POLICY_BIND 不存在，故字面量挂派发（v3 常量层落地后换常量名）。
