@@ -1256,6 +1256,17 @@ fn pager_supply_one(
     if let Err(e) = unsafe { (*root).supply_page(crate::mm::frames(), va) } {
         return vme(e) as i64;
     }
+    // P1-3 ZFOD 学习点：零臂（sv=None——0x21/0x23/0x24 的 src=0）供给
+    // 成功 = pager 亲证「本 VMO 无内容后备」（零臂语义 = 供给页即清零
+    // 页）→ 置标志，此后本 VMO 的缺页走 `probe_el0` 内核直供快路径
+    // （供给页与零臂产物逐字节等价——`Vmo::zfod` 字段注「一 VMO 一种类」
+    // 契约）。有源臂（sv=Some）不置位——含源读失败形（DPGN ③
+    // -EBADSTATE：子恒唤收零页 exit 9，后续缺页仍走 pager 链零漂移）。
+    // SAFETY: dv_ptr 身份已验（Region 同体）；本函数 KL 契约窗内（与
+    // 探针读点同锁域串行）。
+    if sv.is_none() {
+        unsafe { &mut *dv_ptr }.mark_zfod();
+    }
     if let Some(s) = sv {
         // 源拷贝（防线 4：源页未提交 → read 报错拒——supply 链零缺页）。
         // SAFETY: get_raw 门控；KL 全谱锁窗串行（0x21 SVC 入口类 KL 在身

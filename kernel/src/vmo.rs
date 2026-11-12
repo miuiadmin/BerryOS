@@ -38,6 +38,35 @@ pub struct Vmo {
     /// 先形，ABI 位激活留 G4-2）。两值页态（`pages`）不动：demand 只是
     /// 「commit 的触发时机」从 map 前（eager）移到缺页时，提交语义复用。
     demand: bool,
+    /// **ZFOD 匿名零页标志**（P1-3）：`true` = 本 demand VMO 已被 pager 以
+    /// **零臂**（0x21/0x23/0x24 的 `src=0`——供给页 = 纯清零页，无内容
+    /// 后备）供给过 ≥1 页 ⇒ 后续缺页走内核直供快路径（dpg `probe_el0`：
+    /// KL 窗内 `supply_page` 出新零页填叶，零 pager 往返）。
+    ///
+    /// **为什么由供给面学习而非创建面声明**：v1 ABI（`vmo_create` options
+    /// 唯 bit0 `VMO_OPT_DEMAND`）不区分匿名/文件后备——berry-exec 的
+    /// file 窗与零窗**同形创建**（`vmo_create(len, VMO_OPT_DEMAND)`），
+    /// 种类区别只活在 svcmgr 用户态窗登记表（`PagerReq{dv,sv,delta}` 的
+    /// sv=0 vs sv=rootfs）。内核侧唯一能观察到「此 VMO 无内容后备」的
+    /// 权威时点 = pager 自己用零臂喂它的那一刻（`pager_supply_one` 的
+    /// `sv.is_none()` 供给成功臂）——零臂语义 = 「供给页即清零页」
+    /// （ABI §0x21 词面），与 ZFOD 直供的页内容**逐字节等价**。
+    ///
+    /// **设计契约（一 VMO 一种类）**：标志置位即终身（对象生存期），要求
+    /// pager 对单 VMO 的供给种类恒定。现役消费面结构成立：berry-exec
+    /// 一窗一 VMO（file/zero/hybrid 三色窗各自 `vmo_create`），svcmgr
+    /// 登记表一 dv 一 (sv,delta)，全树无「同 VMO 先零臂后有源臂」流
+    /// （dpgp/DPGS/DPGN/dpgf/bench/foot 族全部 sv=真源；零窗族恒 sv=0）。
+    /// 混种类 pager（假想）若先零臂后内容臂：后续缺页被 ZFOD 直供零页
+    /// 且不再武装——pager 见不到请求；此为该形态的语义收窄，非损坏
+    /// （v1 无此形态，挂账见笔记）。
+    ///
+    /// 有源臂（`sv.is_some()`）供给**不置位**——即使供给中途源读失败
+    /// （DPGN ③ `-EBADSTATE` 形：子被恒唤收零页 exit 9——该 VMO 后续
+    /// 缺页仍走 pager 链，语义零漂移）。EL1 面（`dpg_pager` 内核 pager）
+    /// 不经供给面（供给后写 magic）→ EL1 demand VMO 永不置位，
+    /// `probe`（EL1 探针）不加快路径。
+    zfod: bool,
 }
 
 impl Vmo {
@@ -48,6 +77,7 @@ impl Vmo {
             ledger: PageLedger::new_anon(size)?,
             demand_pins: DemandLedger::default(),
             demand: false,
+            zfod: false,
         })
     }
 
@@ -65,6 +95,19 @@ impl Vmo {
         self.demand
     }
 
+    /// ZFOD 匿名零页 VMO？（P1-3——`probe_el0` 快路径判定：真 = 缺页
+    /// 内核直供新零页，零 pager 往返。）置位语义见结构体 `zfod` 字段注。
+    pub fn is_zfod(&self) -> bool {
+        self.zfod
+    }
+
+    /// 置 ZFOD 标志（P1-3——供给面学习点：0x21/0x23/0x24 **零臂**
+    /// （`src=0`）供给成功时由 `pager_supply_one` 调用；KL 窗内串行，
+    /// 与探针读点同锁域互斥）。幂等（重复置位无操作）。
+    pub(crate) fn mark_zfod(&mut self) {
+        self.zfod = true;
+    }
+
     /// 建 MMIO 物理窗口 VMO（P6 A-2，**boot-only**——无 syscall 面：物理窗口
     /// 是 boot 授的能力，EL0 不可自造；Zircon `zx_vmo_create_physical` 收紧
     /// 版）。语义面（窗口恒空记账/内容四拒/双侧对齐执法）见
@@ -74,6 +117,7 @@ impl Vmo {
             ledger: PageLedger::new_mmio(pa_base, size)?,
             demand_pins: DemandLedger::default(),
             demand: false,
+            zfod: false,
         })
     }
 

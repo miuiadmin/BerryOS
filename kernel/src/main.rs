@@ -17,6 +17,7 @@ extern crate alloc;
 mod abi_gen;
 mod aspace;
 mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
+mod bootparams; // G5 内核半：etc/boot-params.toml 消费端（§1.6-补）
 mod channel;
 mod dtb;
 mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案.md）
@@ -70,6 +71,16 @@ impl RootfsBuf {
             RootfsBuf::Borrowed(b) => b.len(),
             RootfsBuf::Owned(v) => v.len(),
             RootfsBuf::Assembled(_, n) => *n,
+        }
+    }
+
+    /// G5：boot-params 查找源视图（`bootparams::scan` 消费——三形态归一：
+    /// 借片/堆整档字节直读，VMO 拼装件按逻辑长（非页对齐容量）只读 read）。
+    fn params_src(&self) -> bootparams::Src<'_> {
+        match self {
+            RootfsBuf::Borrowed(b) => bootparams::Src::Bytes(b),
+            RootfsBuf::Owned(v) => bootparams::Src::Bytes(v),
+            RootfsBuf::Assembled(v, n) => bootparams::Src::Vmo(v, *n),
         }
     }
 }
@@ -587,6 +598,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             }
             Some((b"fwcfg" as &[u8], RootfsBuf::Owned(buf)))
         });
+    // G5 内核半（§1.6-补）：boot-params 扫描在 rootfs 入静态槽**之前**
+    //（借本地 buf；通道裁决 + 消费契约 = bootparams.rs 头注）。件缺 =
+    // None 静默（空 params 不投放的工具侧合同——默认镜像零行）。
+    let boot_params = rootfs
+        .as_ref()
+        .and_then(|(_, buf)| bootparams::scan(&buf.params_src()));
     match rootfs {
         Some((src, buf)) => {
             let bytes = buf.len();
@@ -598,6 +615,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             berry_hal_aarch64::uart_puts(b" bytes=");
             berry_hal_aarch64::uart_put_dec(bytes as u64);
             berry_hal_aarch64::uart_puts(b"\n");
+            // G5：应用 + eco 行紧随 ROOTFS ok 行（注入点时序约束见
+            // bootparams::apply_and_report 头注——timer::init :737 与首
+            // spawn :789 均在本点之后，成立）。
+            if let Some(o) = &boot_params {
+                bootparams::apply_and_report(o);
+            }
         }
         None => berry_hal_aarch64::uart_puts(b"ROOTFS absent\n"),
     }

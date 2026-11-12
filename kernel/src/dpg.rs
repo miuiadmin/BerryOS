@@ -250,6 +250,11 @@ static EPAGER_KEY: u8 = 0; // EL0 pager 睡此（0x21 无请求时；探针武�
 ///（§5-⑤：pager 不再收货 = 永久阻塞，fail loud-on-hang）。EL0 异常
 /// taken-to-higher-EL **自动**屏蔽 PSTATE.I（与 same-EL 臂的差异）——KL
 /// 窗仍取（SMP 与 0x21 供给窗的互斥面同 [`probe`]，P2-2①）。
+///
+/// P1-3 ZFOD 快路径（arm 链**之前**）：命中区间属匿名零页 demand VMO
+///（零臂供给学习置位，`Vmo::zfod`）→ KL 窗内 `supply_page` 内核直供
+/// 新零页即返——不过 pager（省 2 调度片 + IPC 往返）；有内容后备区间
+///（零臂未证）原链零漂移。详臂内注。
 unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     // DFSC = ESR[5:0]（同 [`probe`]——ISS 低 6 位直达，勿移位）。
     // W3-Q24：fsc 滤形单源 `berry-dpgface::fsc_is_translation`（位域
@@ -270,9 +275,44 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         return false;
     };
     // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活）；regions 权威重验在本窗。
-    if unsafe { (*root).demand_region_at(far).is_none() } {
+    let Some((rvmo, _, _)) = (unsafe { (*root).demand_region_at(far) }) else {
         hal::kern_lock::klock_exit();
         return false;
+    };
+    // P1-3 ZFOD 快路径：命中区间属**匿名零页** demand VMO（零臂供给学习
+    // 置位——`Vmo::zfod` 字段注：0x21/0x23/0x24 `src=0` 供给成功 = pager
+    // 亲证本 VMO 无内容后备）→ KL 窗内直接 `supply_page`（出帧清零 +
+    // 填叶 + tlbi/broadcast——与 pager 零臂产物**逐字节等价**的任务书
+    // 「简化方案」形：非共享新零页，免全局零页 + COW 面）→ 探针返 true
+    // → eret 重试即命中。省原链整段往返：arm → 唤 pager → pager 上 CPU
+    // → 0x21/0x23/0x24 收货 → 唤 faulter → 再派发（最坏 2 调度片 + 多次
+    // IPC）折叠为单异常往返；heap/stack/bss 类匿名首触从此不过 pager。
+    //
+    // 锁面 = pager 供给窗同链（KL 窗内 pt_lock 嵌套正序、幂等门在
+    // `supply_page` 内）；供给毕**不**唤 pager 不 arm——本页已了，零
+    // 丢唤面。EL1 面（[`probe`]）刻意不加：内核 dpg_pager 供给后写
+    // magic（有内容语义），其 VMO 永不经供给面学习置位。
+    //
+    // SAFETY: rvmo = 本 KL 窗内经 Region 取得（demand 钉活 + 注销/释放
+    // 同窗互斥——`el0_take_for` 属主解析同口径）；只读判位零写。
+    if unsafe { (*rvmo).is_zfod() } {
+        // 入深同款 shape (a)（活跃窗计深度——窗内嵌套异常同样响雷）。
+        depth_enter();
+        let va = far & !(PAGE_SIZE - 1);
+        // SAFETY: root 窗内活；supply_page = pt_lock 嵌 KL 正序（pager
+        // 供给窗同链），幂等（叶已在 → Ok 零动作）。
+        let r = unsafe { (*root).supply_page(mm::frames(), va) };
+        match r {
+            Ok(()) => {
+                hal::kern_lock::klock_exit();
+                depth_exit();
+                return true; // eret 重试命中新零叶（ELR 不动——同醒后重试形）
+            }
+            // 直供失败（帧耗尽/建表失败）：KL 仍持，降级续走下方 pager
+            // 武装链（= 快路径从未发生的原语义；pager 侧供给失败 fail
+            // loud 兜底不变）。
+            Err(_) => depth_exit(),
+        }
     }
     // 命中 = 提交路径：入深（G4-3 深度帽，shape (a) 同 [`probe`]）。
     depth_enter();
