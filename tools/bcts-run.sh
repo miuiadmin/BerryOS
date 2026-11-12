@@ -11,6 +11,23 @@
 #                                   观测标记 ⊇ 冻结清单全集，一条不少；多打的
 #                                   活树新标记不算 fail，设计稿 §2.2）。
 #
+# 镜像腿（--image <img>；G3 刀，38 号 OEM 演练 P0 缺口兑现——定制镜像 BCTS
+# 判定入口，认证语义 =「定制镜像单」）：给定 FAT 整盘镜像 → 步④复跑改走
+# EFI 镜像流（AAVMF + img boot——QEMU 拓扑参照 tools/smoke-image.sh：-pflash
+# ×2〔vars 自产 blank 64MiB 0xFF，不拷共享模板〕+ qemu-xhci/usb-storage 挂盘
+# + ramfb，零 -kernel/零 fw_cfg）；缺省零扰动（无 --image = 标准流照旧）。
+# 判定式同 Tier1 语义（观测标记 ⊇ 清单），回放面收窄 = bare 相（EFI 路无
+# virtio/simdev——rootfs/RX 相标记结构性缺席，留标准流；镜像腿空集守卫 =
+# bare 相 ≥32）。结构面另断言 EFI 十段 + 接续 src=handoff（镜像自举证据，
+# smoke-image.sh 固定串/ERE 同款硬拷贝）+ boot banner 形态/ident 非 nogit
+#（发布链门——版本管理标准 §3/§6，镜像腿 = 认证面前移）。**版本声称位
+# 对账**（v0 头注兑现）：镜像同目录 manifest.txt platform_revision（V9
+# 逐条目列）↔ 回放清单 pr——frozen 态锚 = 冻结件 platform_revision（认证
+# 语义：OEM 声称版本必须与回放冻结件同版，不等 loud 拒）；live 态锚 =
+# tools/abi.toml [platform].level（mkimage platform_level() 取值同源）。
+# 字节对拍/VER 哨兵/金丝雀/RX 注入 = smoke-image.sh 标准镜像面（G15：钉
+# 仓库根工件，对定制镜像结构性不可复用），不在镜像腿断言面（#84 后续吸收）。
+#
 # Tier 轴（设计稿 §3.2）：
 #   --tier 1（缺省）  L0 syscall 面 + 装载谓词——marker 冻结件回放（上两态）；
 #   --tier 2          L1 wire 契约 conformance（槽位合同四件套之④用例集）——
@@ -44,10 +61,18 @@
 #   tools/bcts-run.sh --tier 2 [--dry]                     # Tier 2：槽位合同冻结用例集
 #                                                          # 回显 + 静态对账（零 QEMU）
 #   BCTS_FROZEN=tools/bcts/frozen/bcts-t2@0.toml just bcts # Tier 2（前缀自动识别）
+#   tools/bcts-run.sh --image out/berryos.img [--dry]      # 镜像腿（G3）：EFI 流
+#                                                          # boot 相回放；live 态 PR 锚
+#                                                          # = abi.toml level；--dry 零
+#                                                          # QEMU 零固件（对账+回显）
+#   BCTS_FROZEN=<bcts@*.toml> tools/bcts-run.sh \
+#     --image <定制镜像>                                   # 镜像腿回放态（OEM 提交形：
+#                                                          # manifest PR ↔ 冻结件 pr 对账）
 #
-# v0 边界（如实记）：镜像侧版本声称位对账（manifest.txt platform_revision
-# 列，V9）随组装镜像宿主（V13）启用——v0 回放对象 = QEMU virt -kernel ELF
-# 直载形态（AGENTS.md 主验位），工件版本记入结果包；真机回放随 P8（闸 D）。
+# v0 边界（如实记）：回放对象两形——缺省 QEMU virt -kernel ELF 直载
+#（AGENTS.md 主验位）；--image = FAT 整盘 EFI 流（G3）。镜像侧版本声称位
+# 对账（manifest.txt platform_revision 列，V9）已随镜像腿兑现；组装镜像
+# 宿主迁入随 V13；工件版本记入结果包；真机回放随 P8（闸 D）。
 #
 # 判定语义：exit 0 = 全绿（门禁 + 回放 + 对账）；非 0 = FAIL（含 loud 理由）。
 # 依赖：Python ≥3.11（stdlib tomllib——gen_abi/berry_assemble 同先例），零
@@ -64,16 +89,26 @@ FROZEN_HOME="$SCRIPT_DIR/bcts/frozen"
 # 活树自检态守卫下限（Tier 1 在册值 88 = 裸相 32 + rootfs 54 + RX 2，设计稿
 # §3.2；活树态无工件可携 floor，取在册常量——冻结态不用此值）。
 TIER1_FLOOR_LIVE=88
+# 镜像腿（--image，G3）bare 相守卫下限：现役在册 32 = markers.sh MARKERS
+# 裸相值（smoke-image.sh KERNEL_MARKERS 同面——EFI 路结构性可达全集）。
+# bare 相 = add-only 面（marker 删除即破冻，设计稿 §4.1），只增不减——
+# 冻结件/活树同用此值（镜像腿空集守卫：bare 相 < 32 = 拒跑防假绿）。
+TIER1_BARE_FLOOR=32
 
 # ---------- 参数 ----------
 DRY=0
 SELFTEST=0
 TIER=1
 TIER_EXPLICIT=0
+IMAGE_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry) DRY=1 ;;
     --selftest) SELFTEST=1 ;;
+    --image)
+      [ $# -ge 2 ] || { echo "bcts: --image 缺值（<FAT 整盘镜像路径>）" >&2; exit 2; }
+      IMAGE_FILE="$2"
+      shift ;;
     --tier)
       [ $# -ge 2 ] || { echo "bcts: --tier 缺值（1 | 2）" >&2; exit 2; }
       case "$2" in
@@ -81,7 +116,7 @@ while [ $# -gt 0 ]; do
         *) echo "bcts: --tier 须 1 或 2，实得 $2（v0 只开通 Tier 1/2）" >&2; exit 2 ;;
       esac
       shift ;;
-    *) echo "bcts: 未知参数：${1}（--dry | --selftest | --tier 1|2；冻结件经 BCTS_FROZEN=<file> 指定）" >&2; exit 2 ;;
+    *) echo "bcts: 未知参数：${1}（--dry | --selftest | --tier 1|2 | --image <img>；冻结件经 BCTS_FROZEN=<file> 指定）" >&2; exit 2 ;;
   esac
   shift
 done
@@ -112,6 +147,25 @@ if [ -n "${BCTS_FROZEN:-}" ]; then
       exit 2 ;;
   esac
 fi
+
+# --image 面约束（G3 镜像腿）：只开通 Tier 1 回放位（Tier 2 = 零 QEMU 槽位
+# 合同静态对账，无镜像回放对象）；与 --selftest 互斥（selftest = 零 QEMU
+# 合成腿）；镜像在席早响（与 BCTS_FROZEN 工件在席检查同位；置于 T2 缺省
+# 工件解析前——--image --tier 2 须报冲突而非 T2 工件缺席）。缺省（无
+# --image）零扰动——本块整体旁路。
+if [ -n "$IMAGE_FILE" ]; then
+  if [ "$TIER" = 2 ]; then
+    echo "bcts: FAIL: --image 只开通 Tier 1 镜像回放（Tier 2 = 零 QEMU 静态对账，无镜像位）" >&2
+    exit 2
+  fi
+  if [ "$SELFTEST" = 1 ]; then
+    echo "bcts: FAIL: --selftest 与 --image 互斥（selftest = 零 QEMU 合成腿，无回放对象；镜像腿拒面见 --selftest 内合成腿）" >&2
+    exit 2
+  fi
+  case "$IMAGE_FILE" in /*) ;; *) IMAGE_FILE="$REPO/$IMAGE_FILE" ;; esac
+  [ -f "$IMAGE_FILE" ] || { echo "bcts: FAIL: 镜像不存在：${IMAGE_FILE}（标准镜像先 just image；定制镜像走 mkimage 产链）" >&2; exit 1; }
+fi
+
 # Tier 2 缺省工件：无活树单源（slots.toml 未落）→ 取 frozen/ 最新 bcts-t2@*.toml。
 if [ "$TIER" = 2 ] && [ -z "$FROZEN_FILE" ]; then
   FROZEN_FILE=$(ls "$FROZEN_HOME"/bcts-t2@*.toml 2>/dev/null | sort -t@ -k2 -n | tail -1)
@@ -119,8 +173,23 @@ if [ "$TIER" = 2 ] && [ -z "$FROZEN_FILE" ]; then
   MODE="frozen"
 fi
 
+# 镜像腿（--image）QEMU 进程收尾（G3）：标记到齐/超时/异常退一律杀——
+# trap 先于 rm 走（QEMU 持镜像与固件 fd，杀后才清得净）。无镜像腿时
+# 两 PID 恒空 = no-op，标准流零扰动。
+IMG_QEMU=""
+IMG_HOLDER=""
+img_stop() {
+  if [ -n "$IMG_QEMU" ] && kill -0 "$IMG_QEMU" 2>/dev/null; then
+    kill "$IMG_QEMU" 2>/dev/null
+    wait "$IMG_QEMU" 2>/dev/null
+  fi
+  if [ -n "$IMG_HOLDER" ] && kill -0 "$IMG_HOLDER" 2>/dev/null; then
+    kill "$IMG_HOLDER" 2>/dev/null
+    wait "$IMG_HOLDER" 2>/dev/null
+  fi
+}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-work.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+trap 'img_stop; rm -rf "$WORK"' EXIT
 
 # ---------- 步①：解析清单 ----------
 # 冻结件：tomllib 解析 + schema 校验（未知键硬拒——berry-manifest 七拒同构：
@@ -598,6 +667,76 @@ t2_run() {  # 静态对账真跑；绿 = 0 / 缺口 = 1 / 拒 = 2
   return "$rc"
 }
 
+# ---------- --image 腿辅助（G3：定制镜像 BCTS 判定入口） ----------
+# EFI 镜像流结构面（smoke-image.sh 同款硬拷贝——四固定串 + 六 ERE + 接续 3；
+# BerryBoot 从盘自举的结构证据，非冻结清单成员〔清单只冻内核标记，引导链
+# 断言属镜像流结构面〕。改 smoke-image.sh 引导链断言面须连改此处——第三
+# 消费方，markers.sh 头注同款纪律）。v0 不断言 sig:/VBS 行（V10 签名镜像
+# 可选面——OEM 无签镜像合法过腿）。
+IMG_EFI_FIXED=("BerryBoot EFI skeleton" "fw: EDK II" "fs: HELLO.TXT 28B match" "BERRYBOOT ok")
+IMG_EFI_ERE=(
+  'gop: [0-9]+x[0-9]+'
+  'kfile: [0-9]+B ok'
+  'init: [0-9]+B ok'
+  'elf: segs=[0-9]+ entry=0x[0-9a-f]+ ok'
+  'load: segs=[0-9]+ pages=[0-9]+ ok'
+  'mmap: n=[0-9]+ ok'
+)
+# 接续 3 = handoff 源专属形态（fw_cfg/DTB 路不通于此——证明内核确经镜像
+# 盘内 BerryBoot 装载，非宿主 -kernel 直载）。ver= 前缀式（协议升版不炸
+# 标定——smoke-image.sh 同款论证）。
+IMG_CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
+
+# 活树态 PR 锚：tools/abi.toml [platform].level（mkimage platform_level()
+# 同源同法——live 态无冻结件可携 pr，取树现值；tomllib 函数内导入，坏源
+# loud——mkimage 同纪律）。
+abi_level() {
+  python3 - "$SCRIPT_DIR/abi.toml" <<'PYEOF4'
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        lv = tomllib.load(f).get("platform", {}).get("level")
+except Exception as e:
+    print(f"bcts: FAIL: 读 {sys.argv[1]} [platform].level 失败：{e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(lv, int) or isinstance(lv, bool):
+    print(f"bcts: FAIL: {sys.argv[1]} [platform].level 非整数：{lv!r}", file=sys.stderr)
+    sys.exit(1)
+print(lv)
+PYEOF4
+}
+
+# 版本声称位对账（v0 头注「镜像侧版本声称位对账」兑现，G3）：镜像侧
+# manifest.txt platform_revision（V9 逐条目列）对回放清单 pr。frozen 态锚 =
+# 冻结件 platform_revision（认证语义：OEM 声称版本必须与回放冻结件同版，
+# 不等 loud 拒——38 号 G3 任务书）；live 态锚 = abi.toml level（树现值）。
+# 解析面 = smoke-image.sh 预检同款（缺行/条目混杂/失配如实报）。
+img_pr_check() {  # $1=manifest 路径 $2=期望 pr $3=锚描述
+  python3 - "$1" "$2" "$3" <<'PYEOF5'
+import re, sys
+manifest, want, anchor = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+def die(msg):
+    print(f"bcts: FAIL: {msg}", file=sys.stderr)
+    sys.exit(1)
+try:
+    with open(manifest, encoding="ascii") as f:
+        text = f.read()
+except OSError as e:
+    die(f"读 {manifest} 失败（mkimage 侧产物应与镜像同目录）：{e}")
+prs = re.findall(r"(?m)^item .* platform_revision=(\d{10})$", text)
+if not prs:
+    die(f"{manifest} 无 platform_revision 条目行（manifest v1 产物面断裂——镜像非 mkimage 产链？）")
+vals = sorted({int(p) for p in prs})
+if len(vals) > 1:
+    die(f"{manifest} platform_revision 条目混杂 {vals}（同盘同版断裂——mkimage 逐条目同源取值）")
+got = vals[0]
+if got != want:
+    die(f"镜像 manifest platform_revision={got} != 回放清单 pr={want}（对账锚：{anchor}）"
+        "——版本声称位对账断裂，不等 loud 拒（认证语义：镜像声称版本必须与回放冻结件同版）")
+print(f"bcts: 版本声称位对账 ok：manifest platform_revision={got} == {anchor}")
+PYEOF5
+}
+
 # ---------- --selftest（零 QEMU；berry_assemble --selftest 同款合成腿风格）----------
 # Tier 2 拒面/咬合合成用变异器（只读真件，产物进临时目录）。
 t2_mut_drop_case() {  # $1=工件 $2=case id → 删该 [[contract.case]] 块
@@ -707,11 +846,47 @@ if [ "$SELFTEST" = 1 ]; then
   rm -rf "$BAD3"
   leg "T2 --dry 清单回显（含两合同 suite id）" 0 "t2_dry '$ART2' | grep -q 'bcts-l1-hdi-v1'"
 
+  # ---------- --image 腿（G3：参数面/拒面/版本声称位对账；零 QEMU——dry 不 boot） ----------
+  # 合成镜像腿工件：dummy 镜像（在席性即可——dry 零 QEMU 零固件）+ 合成
+  # manifest v1（PR 对账面专用，单条目；PR 列 10 零垫与真件同形——bcts 镜像
+  # 腿只消费 PR 列，sha/size 列填合法形占位）。frozen 态锚腿用合成
+  # bcts@1.toml（真件 pr=0 是 V9 预埋值，与现役镜像 PR=1 异版——首件 pr=1
+  # 冻结件随下次发版落，本腿以合成件钉死 frozen 锚代码路径）。
+  IMGBAD=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-img-selftest.XXXXXX")
+  img_manifest() {  # $1=PR $2=目录——合成 manifest v1 单条目（PR 对账面）
+    printf 'berryos-manifest v1 format_frozen=2026-11-10 entries=01\nitem path=/KERNEL.ELF sha256=%064d size=000000000001 rollback_index=00000000000000000000 platform_revision=%010d\n' 0 "$1" > "$2/manifest.txt"
+  }
+  LV=$(abi_level) || { echo "bcts: FAIL: abi_level 读失败（--image 腿前置）" >&2; exit 1; }
+  for d in ok-live ok-frozen miss-live miss-frozen nomanifest; do
+    mkdir -p "$IMGBAD/$d"
+    : > "$IMGBAD/$d/std.img"
+  done
+  img_manifest "$LV" "$IMGBAD/ok-live"
+  img_manifest 9 "$IMGBAD/miss-live"
+  sed 's/^platform_revision = 0$/platform_revision = 1/' "$ART" > "$IMGBAD/bcts@1.toml"
+  img_manifest 1 "$IMGBAD/ok-frozen"
+  img_manifest 2 "$IMGBAD/miss-frozen"
+
+  leg "--image 缺值拒（参数面）" 2 "\"$SCRIPT_DIR/bcts-run.sh\" --image"
+  leg "--image 镜像不存在拒" 1 "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/absent.img' --dry"
+  leg "--image × --tier 2 冲突拒（镜像腿只开通 Tier 1）" 2 "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-live/std.img' --tier 2 --dry"
+  leg "--image × --selftest 互斥拒" 2 "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-live/std.img' --selftest"
+  leg "--image 同目录 manifest 缺席拒（非 mkimage 产链镜像）" 1 "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/nomanifest/std.img' --dry"
+  leg "--image --dry 回显（live 态：EFI 镜像流行 + 对账锚行）" 0 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-live/std.img' --dry | grep -q '镜像腿 = EFI 镜像流'"
+  leg "版本声称位对账拒面（manifest PR=9 ≠ live 锚 loud 拒）" 1 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/miss-live/std.img' --dry"
+  leg "版本声称位对账 frozen 态过面（合成 bcts@1.toml：manifest PR=1 == 冻结件 pr）" 0 \
+    "BCTS_FROZEN='$IMGBAD/bcts@1.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-frozen/std.img' --dry | grep -q '版本声称位对账 ok'"
+  leg "版本声称位对账 frozen 态拒面（manifest PR=2 ≠ 冻结件 pr=1）" 1 \
+    "BCTS_FROZEN='$IMGBAD/bcts@1.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/miss-frozen/std.img' --dry"
+  rm -rf "$IMGBAD"
+
   if [ "$fail_legs" -gt 0 ]; then
     echo "bcts: FAIL: selftest ${fail_legs}/${legs} 腿红" >&2
     exit 1
   fi
-  echo "bcts: selftest ${legs}/${legs} 腿绿（T1 工件 schema 自校验 + 拒面合成 + 两态清单对拍 + T2 对账真跑/咬合；零 QEMU）"
+  echo "bcts: selftest ${legs}/${legs} 腿绿（T1 工件 schema 自校验 + 拒面合成 + 两态清单对拍 + T2 对账真跑/咬合 + --image 参数/拒面/版本声称位对账；零 QEMU）"
   exit 0
 fi
 
@@ -745,6 +920,30 @@ if [ "${N_MARKERS:-0}" -lt "$FLOOR" ]; then
   exit 1
 fi
 
+# ---------- --image 腿装载（G3）：bare 相空集守卫 + 版本声称位对账 ----------
+N_BARE=0
+IMG_PR=""
+IMG_PR_ANCHOR=""
+if [ -n "$IMAGE_FILE" ]; then
+  N_BARE=$(grep -c $'^MARK\tbare\t' "$WORK/entries.tsv" || true)
+  # 空集守卫（镜像腿口径）：步②守的是全清单，子面另守——bare 相 = 镜像腿
+  # 唯一回放面（rootfs/RX 相 EFI 路结构性缺席），清空即 0/0 假绿。
+  if [ "${N_BARE:-0}" -lt "$TIER1_BARE_FLOOR" ]; then
+    echo "bcts: FAIL: 镜像腿空集守卫——bare 相 ${N_BARE:-0} 件 < ${TIER1_BARE_FLOOR}（防假绿；rootfs/RX 相 EFI 路结构性缺席，bare 相是镜像腿唯一回放面）" >&2
+    exit 1
+  fi
+  IMG_MANIFEST="${IMAGE_FILE%/*}/manifest.txt"
+  [ -f "$IMG_MANIFEST" ] || { echo "bcts: FAIL: 镜像同目录无 manifest.txt：${IMG_MANIFEST}（mkimage 件 3 侧产物——缺席即非平台产链镜像）" >&2; exit 1; }
+  if [ "$MODE" = frozen ]; then
+    IMG_PR=$(head -1 "$WORK/entries.tsv" | cut -f2)
+    IMG_PR_ANCHOR="冻结件 platform_revision（${FROZEN_FILE}）"
+  else
+    IMG_PR=$(abi_level) || exit 1
+    IMG_PR_ANCHOR="tools/abi.toml [platform].level（活树现值，mkimage 取值同源）"
+  fi
+  img_pr_check "$IMG_MANIFEST" "$IMG_PR" "$IMG_PR_ANCHOR" || exit 1
+fi
+
 # ---------- --dry：清单回显（零 QEMU） ----------
 if [ "$DRY" = 1 ]; then
   echo "bcts: 模式 = ${MODE}；清单 = ${FROZEN_FILE:-tools/markers.sh（活树单源）}"
@@ -753,9 +952,16 @@ if [ "$DRY" = 1 ]; then
     head -1 "$WORK/entries.tsv" | awk -F'\t' \
       '{print "bcts: platform_revision = "$2"；frozen_at = "$6"；abi_snapshot = "$7"（"$8"）"}'
   fi
+  if [ -n "$IMAGE_FILE" ]; then
+    echo "bcts: 镜像腿 = EFI 镜像流（AAVMF + ${IMAGE_FILE}）；回放面 = bare 相 ${N_BARE} 件 + EFI 十段/接续结构面；版本对账锚 = ${IMG_PR_ANCHOR}（pr=${IMG_PR}，已对账 ok）"
+  fi
   awk -F'\t' '$1=="MARK"{printf "  marker %-9s %-10s %s\n",$2,$3,$4}
               $1=="GATE"{printf "  gate   %-10s %s\n",$2,$3}' "$WORK/entries.tsv"
-  echo "bcts: dry 完（判定式 = 观测标记 ⊇ 清单全集；多打不算 fail）"
+  if [ -n "$IMAGE_FILE" ]; then
+    echo "bcts: dry 完（镜像腿判定式 = 观测标记 ⊇ bare 相清单 + EFI 结构面在席；rootfs/RX 相留标准流——EFI 路无 virtio/simdev 面；去 --dry 跑 EFI boot 回放）"
+  else
+    echo "bcts: dry 完（判定式 = 观测标记 ⊇ 清单全集；多打不算 fail）"
+  fi
   exit 0
 fi
 
@@ -777,33 +983,11 @@ while IFS=$'\t' read -r tag gid cmd; do
 done < "$WORK/entries.tsv"
 [ "$GATE_FAIL" = 0 ] || exit 1
 
-# ---------- 步④：复跑全相（八跑；SMOKE_KEEP_LOG=1 留 per-boot 串口日志） ----------
-# SMOKE_PHASES 显式 all：防外层环境带 boot 分层截断回放面（八跑全相 = 冻结
-# 件的执行单元——设计稿 §3.2 宽口径）。端口锁/清理 trap/echod 对拍由
-# smoke.sh 自理（与 just smoke 完全同入口）。
-KERNEL=$(berryos_kernel debug) || { echo "bcts: FAIL: 内核路径解析失败（paths.sh）" >&2; exit 1; }
-echo "bcts: 复跑全相（SMOKE_KEEP_LOG=1 tools/smoke.sh，八跑——回放对象 ${KERNEL}）"
-SMOKE_OUT="$WORK/smoke.out"
-if ! SMOKE_KEEP_LOG=1 SMOKE_PHASES=all bash "$SCRIPT_DIR/smoke.sh" > "$SMOKE_OUT" 2>&1; then
-  echo "bcts: FAIL: smoke 全相复跑非零退（smoke.out 尾 40 行：）" >&2
-  tail -40 "$SMOKE_OUT" >&2
-  exit 1
-fi
-echo "bcts: smoke 八跑全相绿（回放日志采集中）"
-# 保留串口日志行形如「smoke: 串口日志保留：<path>」（per-boot 轮转产物）。
-# 串口日志路径单经列表文件流转（macOS /bin/bash=3.2 无 mapfile——不依赖）。
-SERIAL_LIST="$WORK/serial-logs.txt"
-sed -n 's/^smoke: 串口日志保留：//p' "$SMOKE_OUT" > "$SERIAL_LIST"
-N_LOGS=$(grep -c . "$SERIAL_LIST" || true)
-[ "${N_LOGS:-0}" -ge 1 ] || { echo "bcts: FAIL: 未取到保留串口日志（SMOKE_KEEP_LOG 未生效？）" >&2; exit 1; }
-CORPUS="$WORK/observed.log"
-: > "$CORPUS"
-while IFS= read -r lg; do cat "$lg" >> "$CORPUS"; done < "$SERIAL_LIST"
-
-# ---------- 步④（续）：对账（观测标记 ⊇ 清单全集） ----------
+# ---------- 步④：复跑全相 ----------
 # 标记对拍 = smoke.sh assert_marker 同款语义镜像（DEMO/TAB 前邻特判防子串
 # 假阳性——smoke.sh assert_marker 注；元素不含引号/右括号约束下 grep -qF
-# 安全内插）。观测语料 = 八跑串口日志并集（标记在任一 boot 出现即计入）。
+# 安全内插）。观测语料 = ${CORPUS}：标准流 = 八跑串口日志并集（标记在任一
+# boot 出现即计入）；镜像腿 = EFI 单 boot 串口日志（步④镜像支设）。
 assert_marker() {
   case "$1" in
     "DEMO ok") grep -qE '(^|[^I])DEMO ok' "$CORPUS" ;;
@@ -811,26 +995,141 @@ assert_marker() {
     *)         grep -qF "$1" "$CORPUS" ;;
   esac
 }
+if [ -n "$IMAGE_FILE" ]; then
+  # —— 镜像腿（G3）：EFI 镜像流复跑（AAVMF + img boot；零 -kernel/零
+  # fw_cfg——不解析宿主 KERNEL/rootfs，回放对象 = 盘内 BerryBoot→KERNEL.ELF
+  # 全链）。QEMU 拓扑逐参照 smoke-image.sh（-pflash×2 + qemu-xhci/
+  # usb-storage 挂盘 + ramfb；vars.fd 自产 blank 64MiB 0xFF 不拷共享模板
+  # ——BootOrder 陈旧项陷阱同防）。固件位 = AAVMF_CODE 环境变量，缺省
+  # brew 路径（justfile smoke-image 同源词表——CI 经环境变量注入，勿写
+  # 第二份硬编码）。
+  QEMU_BIN=${QEMU:-qemu-system-aarch64}
+  command -v "$QEMU_BIN" >/dev/null 2>&1 || { echo "bcts: FAIL: 找不到 $QEMU_BIN" >&2; exit 1; }
+  FW_CODE=${AAVMF_CODE:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}
+  [ -f "$FW_CODE" ] || { echo "bcts: FAIL: AAVMF CODE 固件不存在：${FW_CODE}（brew 缺省位；CI 经 AAVMF_CODE 环境变量注入——justfile smoke-image 同源）" >&2; exit 1; }
+  IMG_DEADLINE=${BCTS_IMG_DEADLINE:-360}
+  python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$WORK/img-vars.fd" \
+    || { echo "bcts: FAIL: vars.fd 生成失败" >&2; exit 1; }
+  IMG_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-bcts-img-fifo.XXXXXX")
+  rm -f "$IMG_FIFO"
+  mkfifo "$IMG_FIFO" || { echo "bcts: FAIL: mkfifo 失败" >&2; exit 1; }
+  # holder 持写端防 stdin EOF（smoke-image.sh 同款；帽 3×DEADLINE 盖全流程）。
+  ( sleep $((IMG_DEADLINE * 3)) ) > "$IMG_FIFO" &
+  IMG_HOLDER=$!
+  IMG_LOG="$WORK/img-serial.log"
+  img_fail() {
+    img_stop
+    echo "bcts: FAIL: $1" >&2
+    echo "---- 镜像腿串口日志尾部（${IMG_LOG}）----" >&2
+    tail -40 "$IMG_LOG" >&2
+    exit 1
+  }
+  echo "bcts: 镜像腿 QEMU 启动（AAVMF + ${IMAGE_FILE}——零 -kernel/零 fw_cfg；boot 相等待帽 ${IMG_DEADLINE}s〔TCG 实测全链 ~115s 起〕）"
+  "$QEMU_BIN" -machine virt -cpu cortex-a72 -m 128M -nographic \
+    -pflash "$FW_CODE" -pflash "$WORK/img-vars.fd" \
+    -drive if=none,file="$IMAGE_FILE",format=raw,id=bb \
+    -device qemu-xhci -device usb-storage,drive=bb \
+    -device ramfb \
+    < "$IMG_FIFO" > "$IMG_LOG" 2>&1 &
+  IMG_QEMU=$!
+  CORPUS="$IMG_LOG"
+  # 到齐 = 状态谓词：EFI 结构面（十段 + 接续）+ bare 相冻结/活树清单全集。
+  # 轮询内逐轮全查（88 行 TSV 遍历 @2s，成本可忽略）；QEMU 活性逐轮探。
+  t0=$(date +%s)
+  while :; do
+    kill -0 "$IMG_QEMU" 2>/dev/null \
+      || img_fail "QEMU 提前退出（固件/引导崩溃？）；日志尾部：$(tail -5 "$IMG_LOG" | tr '\n' ' ')"
+    missing=""
+    for m in "${IMG_EFI_FIXED[@]}" "${IMG_CONT_MARKERS[@]}"; do
+      grep -qF -- "$m" "$IMG_LOG" || missing="${missing:+$missing }$m"
+    done
+    for e in "${IMG_EFI_ERE[@]}"; do
+      grep -qE -- "$e" "$IMG_LOG" || missing="${missing:+$missing }ERE:$e"
+    done
+    while IFS=$'\t' read -r tag phase mid expect; do
+      [ "$tag" = MARK ] && [ "$phase" = bare ] || continue
+      assert_marker "$expect" || missing="${missing:+$missing }$mid"
+    done < "$WORK/entries.tsv"
+    [ -z "$missing" ] && break
+    [ $(( $(date +%s) - t0 )) -gt "$IMG_DEADLINE" ] \
+      && img_fail "镜像腿标记 ${IMG_DEADLINE}s 未到齐，缺：$missing"
+    sleep 2
+  done
+  # boot banner 形态 + ident 非 nogit（版本管理标准 §3 G-ver-2/§6——镜像腿
+  # = 认证面，发布链门前移；正则与 smoke-image.sh 逐字同款）。置到齐后 =
+  # banner 行必已在席，断言零竞态。
+  grep -m1 'BerryOS boot' "$IMG_LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
+    || img_fail "boot banner 形态缺（G-ver-2；正则 = smoke-image.sh 同款）：$(grep -m1 'BerryOS boot' "$IMG_LOG" || echo '（日志无 BerryOS boot 行）')"
+  grep -m1 'BerryOS boot' "$IMG_LOG" | grep -q 'nogit' \
+    && img_fail "boot banner ident 为 nogit——nogit 标识产物不得进发布链/过认证门（版本管理标准 §6）：$(grep -m1 'BerryOS boot' "$IMG_LOG")"
+  echo "bcts: 镜像腿 boot 相到齐（EFI 十段 + 接续 src=handoff + bare 相 ${N_BARE} + banner 形态/ident 非 nogit）"
+  img_stop
+  SERIAL_LIST=""
+else
+  # —— 标准流（缺省，零扰动）：八跑全相（SMOKE_KEEP_LOG=1 留 per-boot 串口日志）——
+  # SMOKE_PHASES 显式 all：防外层环境带 boot 分层截断回放面（八跑全相 = 冻结
+  # 件的执行单元——设计稿 §3.2 宽口径）。端口锁/清理 trap/echod 对拍由
+  # smoke.sh 自理（与 just smoke 完全同入口）。
+  KERNEL=$(berryos_kernel debug) || { echo "bcts: FAIL: 内核路径解析失败（paths.sh）" >&2; exit 1; }
+  echo "bcts: 复跑全相（SMOKE_KEEP_LOG=1 tools/smoke.sh，八跑——回放对象 ${KERNEL}）"
+  SMOKE_OUT="$WORK/smoke.out"
+  if ! SMOKE_KEEP_LOG=1 SMOKE_PHASES=all bash "$SCRIPT_DIR/smoke.sh" > "$SMOKE_OUT" 2>&1; then
+    echo "bcts: FAIL: smoke 全相复跑非零退（smoke.out 尾 40 行：）" >&2
+    tail -40 "$SMOKE_OUT" >&2
+    exit 1
+  fi
+  echo "bcts: smoke 八跑全相绿（回放日志采集中）"
+  # 保留串口日志行形如「smoke: 串口日志保留：<path>」（per-boot 轮转产物）。
+  # 串口日志路径单经列表文件流转（macOS /bin/bash=3.2 无 mapfile——不依赖）。
+  SERIAL_LIST="$WORK/serial-logs.txt"
+  sed -n 's/^smoke: 串口日志保留：//p' "$SMOKE_OUT" > "$SERIAL_LIST"
+  N_LOGS=$(grep -c . "$SERIAL_LIST" || true)
+  [ "${N_LOGS:-0}" -ge 1 ] || { echo "bcts: FAIL: 未取到保留串口日志（SMOKE_KEEP_LOG 未生效？）" >&2; exit 1; }
+  CORPUS="$WORK/observed.log"
+  : > "$CORPUS"
+  while IFS= read -r lg; do cat "$lg" >> "$CORPUS"; done < "$SERIAL_LIST"
+fi
+
+# ---------- 步④（续）：对账（观测标记 ⊇ 清单；镜像腿 = bare 相子面） ----------
 PASS_N=0
 MISSING=""
 while IFS=$'\t' read -r tag phase mid expect; do
   [ "$tag" = MARK ] || continue
+  # 镜像腿只回放 bare 相（rootfs/RX 相 = virtio/simdev 注入面，EFI 路结构
+  # 性缺席——留标准流；头注「镜像腿」节）。
+  if [ -n "$IMAGE_FILE" ] && [ "$phase" != bare ]; then
+    continue
+  fi
   if assert_marker "$expect"; then
     PASS_N=$((PASS_N+1))
   else
     MISSING="${MISSING:+$MISSING }$mid"
   fi
 done < "$WORK/entries.tsv"
+if [ -n "$IMAGE_FILE" ]; then
+  FACE_N=$N_BARE
+else
+  FACE_N=$N_MARKERS
+fi
 
 # ---------- 步⑤：产结果包（结果 + per-boot 日志 + 清单/镜像 hash） ----------
 RESULT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-result.XXXXXX")
 mkdir -p "$RESULT_DIR/logs"
-i=0
-while IFS= read -r lg; do
-  i=$((i+1))
-  cp "$lg" "$RESULT_DIR/logs/boot-$(printf '%02d' "$i").log"
-done < "$SERIAL_LIST"
-KERNEL_SHA=$(sha256_of "$KERNEL")
+if [ -n "$IMAGE_FILE" ]; then
+  # 镜像腿单 boot：串口日志原件在 ${WORK}（随 trap 清），结果包内留副本。
+  i=1
+  cp "$IMG_LOG" "$RESULT_DIR/logs/boot-01.log"
+else
+  i=0
+  while IFS= read -r lg; do
+    i=$((i+1))
+    cp "$lg" "$RESULT_DIR/logs/boot-$(printf '%02d' "$i").log"
+  done < "$SERIAL_LIST"
+fi
+KERNEL_SHA=""
+if [ -z "$IMAGE_FILE" ]; then
+  KERNEL_SHA=$(sha256_of "$KERNEL")
+fi
 ART_LINE="artifact            = live（tools/markers.sh 单源）"
 ART_SHA=""
 if [ "$MODE" = frozen ]; then
@@ -840,6 +1139,11 @@ artifact_sha256     = sha256:$ART_SHA"
 fi
 VERDICT=FAIL
 [ -z "$MISSING" ] && VERDICT=PASS
+if [ -n "$IMAGE_FILE" ]; then
+  VERDICT_LINE="${VERDICT}（判定式 = 观测标记 ⊇ bare 相清单〔镜像腿〕，一条不少；多打不算 fail）"
+else
+  VERDICT_LINE="${VERDICT}（判定式 = 观测标记 ⊇ 清单全集，一条不少；多打不算 fail）"
+fi
 {
   echo "# BCTS v0 结果包（hlkx 式 submission package 雏形——设计稿 §4.2-⑤/§5.2）"
   echo "mode                = $MODE"
@@ -849,22 +1153,38 @@ VERDICT=FAIL
       '{print "platform_revision   = "$2; print "frozen_at           = "$6;
               print "abi_snapshot        = "$7; print "abi_snapshot_hash   = "$8}'
   fi
-  echo "kernel_image        = $KERNEL"
-  echo "kernel_sha256       = sha256:${KERNEL_SHA}（v0 镜像 = QEMU -kernel ELF 直载形态；组装镜像 hash 随 V13 宿主迁入）"
+  if [ -n "$IMAGE_FILE" ]; then
+    echo "boot_image          = $IMAGE_FILE"
+    echo "boot_image_sha256   = sha256:$(sha256_of "$IMAGE_FILE")"
+    echo "manifest_platform_revision = ${IMG_PR}（== ${IMG_PR_ANCHOR}；版本声称位对账 ok——G3 镜像腿）"
+    echo "replay              = EFI 镜像流（AAVMF + img boot，零 -kernel/零 fw_cfg——smoke-image.sh 同款拓扑）"
+    echo "image_face          = boot 相（EFI 十段 + 接续 src=handoff + bare 相 ${N_BARE} 件 + banner 形态/ident 非 nogit）；rootfs/RX 相留标准流——EFI 路无 virtio/simdev 面"
+  else
+    echo "kernel_image        = $KERNEL"
+    echo "kernel_sha256       = sha256:${KERNEL_SHA}（v0 镜像 = QEMU -kernel ELF 直载形态；组装镜像 hash 随 V13 宿主迁入）"
+  fi
   echo "host_gates          = $GATE_SUMMARY"
-  echo "smoke               = PASS（八跑全相，退出码 0）"
-  echo "verdict             = ${VERDICT}（判定式 = 观测标记 ⊇ 清单全集，一条不少；多打不算 fail）"
-  echo "markers             = ${PASS_N}/${N_MARKERS} 过；missing = ${MISSING:-（无）}"
-  echo "serial_logs         = logs/boot-01.log … boot-$(printf '%02d' "$i").log（共 $i 份，八跑轮转）"
+  if [ -n "$IMAGE_FILE" ]; then
+    echo "image_boot          = PASS（EFI 镜像流 boot 相到齐 + banner/ident 门过）"
+  else
+    echo "smoke               = PASS（八跑全相，退出码 0）"
+  fi
+  echo "verdict             = ${VERDICT_LINE}"
+  echo "markers             = ${PASS_N}/${FACE_N} 过；missing = ${MISSING:-（无）}"
+  if [ -n "$IMAGE_FILE" ]; then
+    echo "serial_logs         = logs/boot-01.log（镜像腿单 boot）"
+  else
+    echo "serial_logs         = logs/boot-01.log … boot-$(printf '%02d' "$i").log（共 $i 份，八跑轮转）"
+  fi
 } > "$RESULT_DIR/bcts-result.txt"
 
 # 串口日志原件（smoke 的 mktemp 保留件）已并入结果包——清原件防 /tmp 残留
-# （BCTS_KEEP_LOG=1 时保留现场复验）。
-if [ -z "${BCTS_KEEP_LOG:-}" ]; then
+# （BCTS_KEEP_LOG=1 时保留现场复验；镜像腿日志随 $WORK 清，副本已在包）。
+if [ -z "$IMAGE_FILE" ] && [ -z "${BCTS_KEEP_LOG:-}" ]; then
   while IFS= read -r lg; do rm -f "$lg"; done < "$SERIAL_LIST"
 fi
 
-echo "bcts: verdict = ${VERDICT}（${PASS_N}/${N_MARKERS}；missing = ${MISSING:-无}）"
+echo "bcts: verdict = ${VERDICT}（${PASS_N}/${FACE_N}；missing = ${MISSING:-无}）"
 echo "bcts: 结果包：$RESULT_DIR/bcts-result.txt（per-boot 日志同目录 logs/）"
 [ "$VERDICT" = PASS ] || exit 1
 exit 0

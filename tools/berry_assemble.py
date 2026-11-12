@@ -4,9 +4,16 @@ r"""berry_assemble——产品配置层组装器 v0（V13 实施刀，ADR #82「
 与 §4（九步管线）；底稿 `research/厂商定制化深研/08 号` §3）。
 
 用法：
-  berry_assemble.py --check <product.toml>   # 只校验不产（gen_abi --check 先例）：
-                                             #   schema/未知键硬拒/类型/值域/路径存在/
-                                             #   白名单对账/基座对账——过则一行 OK
+  berry_assemble.py --check <product.toml>   # 全量校验不产（gen_abi --check 先例）=
+                                             #   两段式第二段：结构面（schema/未知键
+                                             #   硬拒/类型/值域）⊕ 产物面（branding
+                                             #   资产在席/source 两件套深校验/基座对
+                                             #   账/kernel 锚 SHA-256 现算对账）——过
+                                             #   则一行 OK
+  berry_assemble.py --check-lite <product.toml>
+                                             # 只结构面 = 两段式第一段：键集/类型/
+                                             #   值域——零文件对账（资产/源实例/基座
+                                             #   表/锚件缺席可跑；产品编写期快检）
   berry_assemble.py --dry-run <product.toml> [--platform-revision N]
                                             # 校验 + 组装计划（rootfs 条目清单 +
                                             #   mkcpio/mkimage 参数集），不产件；
@@ -16,6 +23,10 @@ r"""berry_assemble——产品配置层组装器 v0（V13 实施刀，ADR #82「
   berry_assemble.py --sample                 # 打印内置样例 product.toml（体验起点）
   berry_assemble.py --selftest               # 自检：合成基准全谱（正例 + 拒面逐型；
                                              #   零构建依赖、零仓外写入）
+
+两段式校验流程（G4）：--check-lite（结构面——只读清单本身，产品包自含）先行，
+  --check/--dry-run（结构 ⊕ 产物面对账，组装前门）收口；层界 = 是否触碰文件
+  在席对账（结构面纯键集/类型/值域执法）。
 
 v0 范围（最小可用，不做镜像全产线）——对照九步（设计文档 §4.1）：
   - 步① 清单校验：product 键子集（预装集/品牌资源路径/默认应用）全量执法；
@@ -32,10 +43,23 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     §11.2）」，而 §11.2 是立法文本、仓内无机器可读分级键表——v0 键级闭集
     校验先行，分级校验留开放问题（21 号 P1-5 在册；分级表机器可读化归
     V13 后续刀）。
+  - 步①-i18n（G6）：`[product.defaults.locale]` 八键收录（§1.5 定形组——
+    从 DEFAULTS_DEFERRED 摘除转正，非推断收录：键组/值域/缺省语义均 §1.5
+    在册）：languages BCP 47 well-formed 列表 1..=8 查重 / timezone IANA
+    tz ID 形（词表 = iana.org 时区集，不做仓内枚举）/ region·
+    regulatory_domain ISO 3166-1 alpha-2 / calendar·first_day_of_week·
+    hour_cycle·temperature_unit 枚举；全组键可选（缺省省略时消费方按
+    region 查默认表——§1.5 归属规则）。计划面产 etc/locale.toml 条目
+    （投放面最小——生成件归全产线；读者 = 设置应用 v2 转正刀，应用规范
+    §15.3；完整 i18n 运行时未立项，「键组是预埋不是功能承诺」注记随行）。
   - 步④ rootfs 条目解析：基座条目（tools/rootfs-manifest.toml——V13 数据化
     接口，经 `from mkcpio import load_manifest` 复用，禁第二份加载器）⊕ preset
-    条目（app/ 前缀 ⊆ 基座 app 条目——v0 无 OEM 三包输入，新增/替换交换
-    归 V13 后续刀）；排序 = 整条 name=path（mkcpio CLI 现役语义）。
+    条目（app/ 前缀 ⊆ 基座 app 条目——纯新增仍拒，归 #83 键位定形）⊕
+    override 替换（G1 键位：[product.apps.override] 终表路径取 OEM 自有件，
+    .sig 伴生随新路径同查找——mkcpio `sig_companions` 同名直映规则，本工具
+    零第二映射）⊕ trust 锚条目（G2 键位：[product.trust].pk_anchor →
+    etc/trust-pk，svcmgr `p3_sig_guard` 消费面同路径约定）；排序 = 整条
+    name=path（mkcpio CLI 现役语义）。
   - 步⑦ mkimage 参数集：--size-mib 按清单（platform_revision **不透传**——
     mkimage 自 PR≡level 刀单源读 tools/abi.toml [platform].level，无 CLI
     注入位）；装配反回滚门（版本管理标准 §1 五轨道配对律首件落地、§5 v2
@@ -43,13 +67,24 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     代次不得超前平台代次（旧产品装新平台合法、新产品装旧平台拒——G-ver-5
     .bap min_level 装载门同构）。声明位现 = CLI 旗（product.toml [platform]
     键位归 #83 落册后的工具升版——schema 权威在设计文档，本刀不动 docs）；
-    kernel 锚只验形（步⑧ 逐字节度量对账归全产线）。
+    kernel 锚形校验（结构面）⊕ 包内件在则 SHA-256 现算对账（G7 步⑧ 前置：
+    不等 loud 拒、件缺 = 只形 + 注记——OEM 可先声明后放件；算法随锚标签，
+    现役 sha256:64hex）；步⑧ 全产线产件对账另收。
   - 步⑦½ 源实例透传（SDK-2 P2 半刀）：[product.source] 官方源节在席则
     --source-instance 入 mkimage 参数集（两件套入 FAT /SOURCE/——v1.2
     §五镜像内置静态实例）。schema 家归**推断**：设计文档 §1 双键 28 键
     无此节（SDK-2 P2 刀新增，正式落册归 #77/设计文档升版；product 键
     add-only 随组装工具版本化收录——§1.1）；深校验复用 gensourceindex
     索引解析器（TLV 单解释器纪律——不在本工具长第二套）。
+  - 步④-G1/G2 键位（38 号演练 P0 主断点收口——G1 自有 .bap 路径手工替换
+    12 行脚本 / G2 etc/trust-pk 手工追加，两根产线缝针键位化）：
+    `[product.apps.override]` {app_id → 包内 .bap 路径}——限替换 preset
+    已声明 app（v1 不做纯新增——**推断标注**：白名单语义取最小，正式定形
+    随 #83 键位升版）；`[product.trust].pk_anchor` = 32B raw 公钥锚件路径
+    （装载守卫锚 etc/trust-pk 的计划面投放；bootseed 正式形随 P3 策略刀，
+    词表外出现即未知键拒）。schema 家归**推断**：设计文档 §1 双键 28 键
+    无此二节（G1/G2 刀新增，轻追记 = 设计文档 §1.4-补二——[product.source]
+    先例同款；正式落册归 #83/设计文档升版）。
   - 不做（如实记）：步②余量（V6 组装半——非构建产物无 [blob] 声明=拒；V8
     fallback 回退引用必填——归后续刀）、步⑤conformance 门
     （P5 随 #84）、步⑥⑧⑨⑩产件与对账（镜像全产线）、just 配方 assemble
@@ -72,6 +107,7 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
 依赖：Python ≥3.11（stdlib tomllib——gen_abi/mkcpio 同先例），零三方依赖。
 """
 
+import hashlib
 import os
 import re
 import sys
@@ -127,20 +163,54 @@ ANCHOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*@sha256:[0-9a-fA-F]{64}$")
 # 各节 v0 键集 + 在册未收录键（§1.2-1.5 全量减 v0 子集——拒面分档的数据源）
 TOP_KEYS = {"schema", "product", "platform"}
 PRODUCT_KEYS = {"name", "vendor", "board", "apps", "branding", "defaults",
-                "source"}
+                "source", "trust"}
 PRODUCT_DEFERRED = {"services"}                          # [product.services.replace]
-APPS_KEYS = {"preset", "priv_grants"}                     # V15：步② 白名单节收编
+APPS_KEYS = {"preset", "priv_grants", "override"}        # G1：override = OEM 三包输入
 APPS_DEFERRED = set()                                     # （priv_grants 原在此，已移入 KEYS）
 BRANDING_KEYS = {"wallpaper", "icon_mask"}
 BRANDING_DEFERRED = {"tokens"}                           # §1.4 token 闭集
-DEFAULTS_KEYS = {"launcher"}
-DEFAULTS_DEFERRED = {"scheduler", "locale"}              # §1.5 i18n 八键归升版
+DEFAULTS_KEYS = {"launcher", "locale"}                   # G6：locale 八键收录（§1.5）
+DEFAULTS_DEFERRED = {"scheduler"}                        # §1.5-i18n 已转正；scheduler 归升版
 PLATFORM_KEYS = {"arch", "feature_level", "build_type", "sideload", "boot", "storage"}
 BOOT_KEYS = {"kernel", "params"}
 STORAGE_KEYS = {"image_size_mib", "rootfs_split_mib", "min_power_atomicity"}
 # SDK-2 P2：[product.source] 官方源节（步⑦½ 透传面；schema 家推断——
 # 头注「步⑦½」段）。单键 v1 = instance（两件套目录）。
 SOURCE_KEYS = {"instance"}
+
+# G6：[product.defaults.locale] i18n/区域化八键（§1.5 定形组——18 号 G1 补空白
+# 收编的键位建议表落体；三源对照 = Fuchsia hwinfo/intl FIDL × OpenHarmony i18n）。
+# 全组 product 自由面、节内键可选（缺省省略时消费方按 region 查默认表）。
+LOCALE_KEYS = {"languages", "timezone", "region", "regulatory_domain",
+               "calendar", "first_day_of_week", "hour_cycle", "temperature_unit"}
+LANGUAGES_MAX = 8      # languages 列表帽（§1.5 推断帽：语言列表场景足够，防清单膨胀）
+CALENDARS = ("gregory",)                    # v0 唯一在册（词表 add-only——§1.5）
+WEEKDAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")   # CLDR UTS-35 week data
+HOUR_CYCLES = ("h11", "h12", "h23", "h24")  # BCP 47 hc 扩展（§1.5）
+TEMP_UNITS = ("celsius", "fahrenheit")      # Fuchsia intl.Profile 同款（§1.5）
+# BCP 47 well-formed 形（RFC 5646 简化 ABNF：langtag + extlang + script + region
+# + variant + 扩展 + 私有段；大小写不敏感；grandfathered 弃用族不收——新清单
+# 不应使用）。头注「步①-i18n」段。
+BCP47_RE = re.compile(
+    r"x(?:-[a-z0-9]{1,8})+"                              # privateuse 单独形（x-…）
+    r"|(?:[a-z]{2,3}(?:-[a-z]{3}){0,3}|[a-z]{4}|[a-z]{5,8})"   # language（+extlang）
+    r"(?:-[a-z]{4})?"                                    # script
+    r"(?:-(?:[a-z]{2}|[0-9]{3}))?"                        # region
+    r"(?:-(?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))*"           # variant
+    r"(?:-[0-9a-wyz](?:-[a-z0-9]{2,8})+)*"                # 扩展（singleton ≠ x）
+    r"(?:-x(?:-[a-z0-9]{1,8})+)?",                        # 私有段后缀
+    re.IGNORECASE)
+BCP47_LEN_MAX = 35     # RFC 5646 §2.2.9 长帽（tag ≤ 35 字符）
+# IANA tz ID 形（Area[/Sub]/Location：段 = [A-Za-z0-9_+-]{1,30}、1..=3 段；形校验
+# only——词表 = iana.org 时区集，不做仓内枚举，§1.5 裁定）。
+TZ_RE = re.compile(r"^[A-Za-z0-9_+\-]{1,30}(/[A-Za-z0-9_+\-]{1,30}){0,2}$")
+REGION_RE = re.compile(r"^[A-Z]{2}$")       # ISO 3166-1 alpha-2（两枚大写字母）
+# G2：[product.trust] 信任锚节（步④ 投放面；schema 家推断——头注
+# 「步④-G1/G2 键位」段）。最小 sub-key v1 = pk_anchor；bootseed 正式形
+# 随 P3 策略刀（38 号 G2 注记——词表 add-only，出现即未知键拒）。
+TRUST_KEYS = {"pk_anchor"}
+TRUST_PK_LEN = 32           # ed25519 raw 公钥尺寸（mkimage TRUSTPK 同约定）
+TRUST_PK_ENTRY = "etc/trust-pk"   # 装载守卫锚归档名（svcmgr cpio_find 同串）
 
 
 class Reject(Exception):
@@ -168,8 +238,13 @@ class Product:
         self.preset = []            # rootfs app/ 条目名列表（保清单序）
         self.priv_grants = {}       # app_id → 能力键元组（V15 步② 白名单过检视图）
         self.grants_issued_by = ""  # 白名单签发者 lineage（V8 子字段，节在则必填）
+        self.apps_override = {}     # app_id → 包内相对路径（G1：替换 preset 同名件）
+        self.trust_pk_anchor = ""   # [product.trust].pk_anchor 包内相对路径（G2）
         self.branding = {}          # 键 → 相对 product.toml 所在目录的路径
         self.launcher = ""
+        self.locale = {}           # [product.defaults.locale] 过检视图（G6 八键 → 值；
+                                   #   空表 = 节缺省——etc/locale.toml 条目随之不产）
+        self.kernel_measured = False   # G7：锚是否已对包内件现算对账（件缺 = False）
         self.source_instance = ""   # [product.source].instance（SDK-2 P2 透传位）
         self.src_dir = ""           # product.toml 所在目录（branding 相对基准）
 
@@ -263,11 +338,13 @@ def _check_priv_grants(prod: Product, grants) -> None:
         prod.priv_grants[app_id] = tuple(caps)
 
 
-def _check_source_section(prod: Product, sect, src_dir: str) -> None:
+def _check_source_section(prod: Product, sect, src_dir: str,
+                          lite: bool = False) -> None:
     """步⑦½：[product.source] 官方源节（SDK-2 P2 透传面——头注「步⑦½」
     段；可选节，节在则执法）。instance = 两件套目录（相对 product.toml
     所在目录）；存在性 + gensourceindex 索引解析深校验（TLV 单解释器
-    复用——单源不在本工具长第二套）。"""
+    复用——单源不在本工具长第二套）。lite=True 时只结构面（键集/类型——
+    目录在席/两件套/深校验归全量，G4 层界）。"""
     if not isinstance(sect, dict):
         raise Reject("product.source: 应为节（键值表——{instance = \"<dir>\"}；"
                      "schema §推断，SDK-2 v1.2 §五）")
@@ -276,6 +353,9 @@ def _check_source_section(prod: Product, sect, src_dir: str) -> None:
     if not isinstance(inst, str) or not inst:
         raise Reject("product.source.instance: 应为非空字符串路径（必填——"
                      "两件套目录，gensourceindex --out-dir 产物）")
+    prod.source_instance = inst
+    if lite:
+        return  # 产物面（目录/两件套/TLV 深校验）归 --check——G4 两段式第一段
     d = os.path.join(src_dir, inst)
     if not os.path.isdir(d):
         raise Reject(f"product.source.instance: 目录不存在 {inst!r}"
@@ -295,8 +375,166 @@ def _check_source_section(prod: Product, sect, src_dir: str) -> None:
     prod.source_instance = inst
 
 
-def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
-    """[product] 自由面 v0 子集（预装集/品牌资源路径/默认应用）。"""
+def _check_apps_override(prod: Product, sect, lite: bool = False) -> None:
+    """G1 键位：[product.apps.override] {app_id → 包内 .bap 路径}——OEM
+    自有 .bap 替换 preset 同名件（38 号 §4-G1 主断点收口：终表路径键位化，
+    产线去「12 行改写条目表脚本」手工缝针）。
+
+    语义定最小（**推断标注**——正式定形随 #83 键位升版）：override 限替换
+    preset 已声明 app（app_id ∈ preset 预装集；基座在册但未进 preset 的 app
+    亦拒——「∪ 新件白名单」纯新增臂不采，v1 只做替换），值 = 相对
+    product.toml 所在目录的路径（branding §1.4 同口径）+ 包内存在校验。
+    .sig 伴生不在此执法——mkcpio `sig_companions` 同名直映规则随新路径
+    自动查找（伴生在席即随档、缺席零漂移，`tools/mkcpio.py` 头注）。
+    拒面五型（一型一咬，selftest 逐腿）：节非表/非 preset id/值非串/
+    包内不存在；重复 app_id 由 tomllib 键唯一性天然执法。
+    """
+    if sect is None:
+        return
+    if not isinstance(sect, dict):
+        raise Reject("product.apps.override: 应为节（键值表——"
+                     "{app_id = \"<path>\"}；G1 键位，schema §1.4-补二推断）")
+    preset_ids = {e[len("app/"):-len(".bap")]: e for e in prod.preset}
+    for app_id, rel in sect.items():
+        if app_id not in preset_ids:
+            raise Reject(f"product.apps.override.{app_id}: 不在 preset 预装集"
+                         f"（'app/{app_id}.bap' 未列——v1 语义 = 限替换已声明"
+                         f" app、不做纯新增〔推断标注，正式定形随 #83〕；"
+                         f"基座在册未进 preset 者同拒）")
+        if not isinstance(rel, str) or not rel:
+            raise Reject(f"product.apps.override.{app_id}: 应为非空字符串路径"
+                         f"（OEM 自有 .bap——相对 product.toml 所在目录解析）")
+        local = os.path.join(prod.src_dir, rel)
+        if not lite and not os.path.isfile(local):
+            raise Reject(f"product.apps.override.{app_id}: 包内不存在 {rel!r}"
+                         f"（相对 product.toml 所在目录解析——schema §1.4 "
+                         f"路径同口径）")
+        prod.apps_override[app_id] = rel
+
+
+def _check_trust_section(prod: Product, sect, src_dir: str,
+                         lite: bool = False) -> None:
+    """G2 键位：[product.trust] 信任锚节（38 号 §4-G2 主断点收口：装载守卫
+    锚 etc/trust-pk 的计划面投放——svcmgr `p3_sig_guard` cpio_find 消费面
+    同路径约定，产线去「手工追加条目 + 读源码才知道 32B raw」缝针）。
+
+    最小 sub-key v1 = pk_anchor：32B raw 公钥锚件（ed25519——mkimage
+    /TRUSTPK 同约定；存在性 + 恰长校验，读文件实测不猜）。bootseed 正式形
+    仍随 P3 策略刀（38 号 G2 注记——svcmgr :5722「测试场景件，正式形 =
+    §1.4 bootseed 随策略刀」同源）：词表 add-only，出现即未知键拒。
+    拒面五型（selftest 逐腿）：非节/缺 pk_anchor/pk_anchor 非串/包内不
+    存在/长度非 32B。
+    """
+    if not isinstance(sect, dict):
+        raise Reject("product.trust: 应为节（键值表——{pk_anchor = \"<path>\"}；"
+                     "G2 键位，schema §1.4-补二推断）")
+    _reject_unknown("product.trust", sect, TRUST_KEYS, set())
+    rel = sect.get("pk_anchor")
+    if rel is None:
+        raise Reject("product.trust.pk_anchor: 必填缺失（节存在时必填——"
+                     "32B raw 公钥锚件路径，相对 product.toml 所在目录）")
+    if not isinstance(rel, str) or not rel:
+        raise Reject(f"product.trust.pk_anchor: 应为非空字符串路径"
+                     f"（got {type(rel).__name__}）")
+    prod.trust_pk_anchor = rel
+    if lite:
+        return  # 产物面（件在席 + 32B 恰长）归 --check——G4 两段式第一段
+    local = os.path.join(src_dir, rel)
+    if not os.path.isfile(local):
+        raise Reject(f"product.trust.pk_anchor: 包内不存在 {rel!r}"
+                     f"（相对 product.toml 所在目录解析——schema §1.4 "
+                     f"路径同口径）")
+    with open(local, "rb") as f:
+        blob = f.read()
+    if len(blob) != TRUST_PK_LEN:
+        raise Reject(f"product.trust.pk_anchor: 须恰 {TRUST_PK_LEN}B raw 公钥"
+                     f"（got {len(blob)}B——etc/trust-pk 装载守卫锚约定，"
+                     f"svcmgr p3_sig_guard/mkimage TRUSTPK 同口径）")
+
+
+def _check_locale_section(prod: Product, sect) -> None:
+    """G6：[product.defaults.locale] i18n/区域化八键执法（§1.5 定形组——18 号
+    G1 补空白收编；全组 product 自由面、节内键可选：缺省省略时消费方按
+    region 查默认表，§1.5 归属规则）。可选节，节在则逐键执法：
+
+    - languages：BCP 47 well-formed 串数组 1..=8 项（帽=推断：语言列表
+      场景足够）、首项=系统语言（序即语义，不另执法）、大小写不敏感查重
+      （BCP 47 标签大小写不敏感）；形校验 = RFC 5646 简化 ABNF（langtag/
+      privateuse——grandfathered 弃用族不收，新清单不应使用）。
+    - timezone：IANA tz ID 形（Area[/Sub]/Location 段形）——形校验 only，
+      词表 = iana.org 时区集、不做仓内枚举（§1.5 裁定；缺省 "UTC" 归消费方）。
+    - region / regulatory_domain：ISO 3166-1 alpha-2（两枚大写字母；
+      regulatory_domain 同码异义——合规面，v1 消费=登记+设置应用展示）。
+    - calendar / first_day_of_week / hour_cycle / temperature_unit：枚举
+      （词表 add-only——calendar v0 唯一 gregory 在册，chinese/islamic 等
+      随真需求进词表）。
+    """
+    if not isinstance(sect, dict):
+        raise Reject("product.defaults.locale: 应为节（键值表——i18n 八键，"
+                     "§1.5：languages/timezone/region/regulatory_domain/"
+                     "calendar/first_day_of_week/hour_cycle/temperature_unit）")
+    _reject_unknown("product.defaults.locale", sect, LOCALE_KEYS, set())
+    loc = {}
+    langs = sect.get("languages")
+    if langs is not None:
+        if not isinstance(langs, list):
+            raise Reject("product.defaults.locale.languages: 应为字符串数组"
+                         "（BCP 47 well-formed 列表，1..=8 项——§1.5）")
+        if not 1 <= len(langs) <= LANGUAGES_MAX:
+            raise Reject(f"product.defaults.locale.languages: {len(langs)} 项"
+                         f"越 [1,{LANGUAGES_MAX}] 帽（帽=推断：语言列表场景"
+                         f"足够，防清单膨胀——§1.5）")
+        for i, tag in enumerate(langs):
+            if not isinstance(tag, str):
+                raise Reject(f"product.defaults.locale.languages[{i}]: 应为"
+                             f"字符串（got {type(tag).__name__}）")
+            if (len(tag) > BCP47_LEN_MAX
+                    or not BCP47_RE.fullmatch(tag)):
+                raise Reject(f"product.defaults.locale.languages[{i}]: "
+                             f"BCP 47 well-formed 不符 {tag!r}"
+                             f"（RFC 5646 langtag/privateuse 形——语言[-文字]"
+                             f"[-地区][-变体…]；grandfathered 弃用族不收——§1.5）")
+        lowered = [t.lower() for t in langs]
+        dups = sorted({t for t in lowered if lowered.count(t) > 1})
+        if dups:
+            raise Reject(f"product.defaults.locale.languages: 条目重复 {dups}"
+                         f"（BCP 47 大小写不敏感查重——§1.5）")
+        loc["languages"] = list(langs)
+    for key in ("timezone", "region", "regulatory_domain"):
+        v = sect.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, str) or not v:
+            raise Reject(f"product.defaults.locale.{key}: 应为非空字符串"
+                         f"（got {type(v).__name__}）")
+        if key == "timezone":
+            if not TZ_RE.fullmatch(v):
+                raise Reject(f"product.defaults.locale.timezone: IANA tz ID "
+                             f"形不符 {v!r}（Area[/Sub]/Location 段形〔段内 "
+                             f"[A-Za-z0-9_+-]、1..=3 段〕——词表 = iana.org "
+                             f"时区集，不做仓内枚举；§1.5）")
+        elif not REGION_RE.fullmatch(v):
+            raise Reject(f"product.defaults.locale.{key}: 应为 ISO 3166-1 "
+                         f"alpha-2（两枚大写字母；got {v!r}——§1.5）")
+        loc[key] = v
+    for key, vocab in (("calendar", CALENDARS), ("first_day_of_week", WEEKDAYS),
+                       ("hour_cycle", HOUR_CYCLES),
+                       ("temperature_unit", TEMP_UNITS)):
+        v = sect.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, str) or v not in vocab:
+            raise Reject(f"product.defaults.locale.{key}: 枚举外值 {v!r}"
+                         f"（词表 {list(vocab)}——add-only，§1.5）")
+        loc[key] = v
+    prod.locale = loc
+
+
+def _check_product_section(prod: Product, sect: dict, src_dir: str,
+                           lite: bool = False) -> None:
+    """[product] 自由面 v0 子集（预装集/品牌资源路径/默认应用）。lite=True
+    时只结构面——文件在席对账（branding 资产/override 件/trust 件/source
+    两件套）全部归全量，G4 两段式层界。"""
     _reject_unknown("product", sect, PRODUCT_KEYS, PRODUCT_DEFERRED)
     for key, re_, maxlen in (("name", NAME_RE, NAME_MAX), ("vendor", VENDOR_RE, VENDOR_MAX)):
         v = sect.get(key)
@@ -340,6 +578,9 @@ def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
                      f"{APP_SLOTS}（berry-manifest 常量——schema §1.4）")
     prod.preset = list(preset)
 
+    # [product.apps].override——OEM 自有件替换（G1 键位；可选节，节在则执法）
+    _check_apps_override(prod, apps.get("override"), lite)
+
     # [product.apps].priv_grants——特权白名单（V15 步②；可选节，节在则执法）
     _check_priv_grants(prod, apps.get("priv_grants"))
 
@@ -351,15 +592,18 @@ def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
     for key, rel in branding.items():
         if not isinstance(rel, str) or not rel:
             raise Reject(f"product.branding.{key}: 应为非空字符串路径")
-        local = os.path.join(src_dir, rel)
-        if not os.path.isfile(local):
+        if not lite and not os.path.isfile(os.path.join(src_dir, rel)):
             raise Reject(f"product.branding.{key}: 包内不存在 {rel!r}"
                          f"（相对 product.toml 所在目录解析——schema §1.4）")
         prod.branding[key] = rel
 
     # [product.source]——官方源静态实例（SDK-2 P2 步⑦½；可选节，节在则执法）
     if "source" in sect:
-        _check_source_section(prod, sect["source"], src_dir)
+        _check_source_section(prod, sect["source"], src_dir, lite)
+
+    # [product.trust]——信任锚投放（G2 键位；可选节，节在则执法）
+    if "trust" in sect:
+        _check_trust_section(prod, sect["trust"], src_dir, lite)
 
     # [product.defaults].launcher——默认应用（Q13 过渡：app/ 或 bin/ 前缀皆合法）
     defaults = _need_table(sect, "defaults", "product.defaults")
@@ -371,6 +615,10 @@ def _check_product_section(prod: Product, sect: dict, src_dir: str) -> None:
         raise Reject(f"product.defaults.launcher: 应为 app/ 或 bin/ 前缀路径"
                      f"（Q13 过渡：v1 bin/ 合法、.bap 转正后收 app/——got {launcher!r}）")
     prod.launcher = launcher
+
+    # [product.defaults].locale——i18n 八键（G6 收录；§1.5 定形组；可选节）
+    if "locale" in defaults:
+        _check_locale_section(prod, defaults["locale"])
 
 
 def _check_platform_section(prod: Product, sect: dict) -> None:
@@ -448,8 +696,12 @@ def _check_platform_section(prod: Product, sect: dict) -> None:
     prod.min_power_atomicity = pa
 
 
-def load_product(path: str) -> Product:
-    """product.toml → 过检视图（步① 清单校验；TOML 解析 + 双键结构 + 逐节执法）。
+def load_product(path: str, lite: bool = False) -> Product:
+    """product.toml → 过检视图（步① 清单校验；TOML 解析 + 双键结构 + 逐节
+    执法）。lite=True = 两段式第一段（--check-lite，G4）：只结构面执法
+    （键集/类型/值域），文件在席对账（branding/override/trust/source 件）
+    全部让位全量面；产物面度量（kernel 锚对账）不在此函数——归
+    measure_kernel_anchor。
 
     拒面：坏 TOML/读失败/未知顶层键/schema ≠ 1/缺节/缺键/类型错/值域外/
     枚举外/params 词表外/越帽——一律 Reject 一行理由带键名（§1.4 通用行）。
@@ -469,9 +721,40 @@ def load_product(path: str) -> Product:
                      f"{doc['schema']!r}）")
     prod = Product()
     prod.src_dir = os.path.dirname(os.path.abspath(path))
-    _check_product_section(prod, _need_table(doc, "product", "product"), prod.src_dir)
+    _check_product_section(prod, _need_table(doc, "product", "product"),
+                           prod.src_dir, lite)
     _check_platform_section(prod, _need_table(doc, "platform", "platform"))
     return prod
+
+
+def measure_kernel_anchor(prod: Product) -> bool:
+    """G7 步⑧ 前置：kernel 锚对产品包内实存件 SHA-256 现算对账。
+
+    解析基准 = product.toml 所在目录、件名 = 锚 name 段（branding/
+    source.instance 相对路径同款纪律）。三态：
+    - 件在且等 → 过（prod.kernel_measured = True，计划面回显「现算对账过」）；
+    - 件在而不等 → loud 拒（锚是合同不是装饰——OEM 拿旧锚装新件当场咬）；
+    - 件缺 → 只形校验过 + 调用面注记（OEM 可先声明后放件：清单先行、
+      工件后置的合法时序；放件后 --check 即现算对账）。
+    算法随锚标签（ANCHOR_RE 现役 sha256:64hex）；全产线步⑧ 的产件级
+    度量对账另收。返回值 = 是否已度量（False = 件缺未度量）。
+    """
+    local = os.path.join(prod.src_dir, prod.kernel_name)
+    if not os.path.isfile(local):
+        prod.kernel_measured = False
+        return False
+    h = hashlib.sha256()
+    with open(local, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    got = h.hexdigest()
+    if got != prod.kernel_sha:
+        prod.kernel_measured = False
+        raise Reject(f"platform.boot.kernel: 锚对账不等——包内 {prod.kernel_name}"
+                     f" 现算 sha256:{got} ≠ 声明 sha256:{prod.kernel_sha}"
+                     f"（件与锚不符，步⑧ 前置门——G7；改件须同步改锚）")
+    prod.kernel_measured = True
+    return True
 
 
 def _platform_level() -> int:
@@ -520,13 +803,18 @@ def validate_platform_revision(pr: int) -> int:
 
 
 def resolve_entries(prod: Product, base_manifest: str, user_dir: str):
-    """步④ rootfs 条目解析：基座（V13 表）⊕ preset（app/ 条目筛选）。
+    """步④ rootfs 条目解析：基座（V13 表）⊕ preset（app/ 条目筛选）⊕
+    override 替换（G1）⊕ trust 锚条目（G2）。
 
-    返回 (排序条目列表, 基座非 app 条目数)。v0 边界：preset 条目必须在基座
-    表内（无 OEM 三包输入——新增/替换交换归后续刀）；基座 path 相对 user/
-    （表头注契约——挪用方自行解析相对基准，本函数即「挪用方」）；条目文件
-    构建树存在性逐条对账；launcher 须在终表。排序 = 整条 name=path 字符串
-    （mkcpio CLI 现役语义——确定性单点，勿改成按名排序再拼接）。
+    返回 (排序条目列表, 基座非 app 条目数)。边界：preset 条目必须在基座表
+    内（纯新增仍拒——归 #83 键位定形；已声明 app 的件替换走
+    [product.apps.override]，终表路径取包内解析的绝对路径）；trust 锚在席
+    即产 etc/trust-pk 条目（svcmgr 装载守卫消费面同名——现场重锚语义：
+    基座表已有同名条目则覆盖）。基座 path 相对 user/（表头注契约——挪用
+    方自行解析相对基准，本函数即「挪用方」）；override/trust 路径已在
+    load 面按包内基准验存在，此处对账绝对路径直查；条目文件存在性逐条
+    对账；launcher 须在终表。排序 = 整条 name=path 字符串（mkcpio CLI
+    现役语义——确定性单点，勿改成按名排序再拼接）。
     """
     try:
         base = load_manifest(base_manifest)
@@ -536,17 +824,26 @@ def resolve_entries(prod: Product, base_manifest: str, user_dir: str):
     missing = [e for e in prod.preset if e not in base_apps]
     if missing:
         raise Reject(f"product.apps.preset: 条目不在基座表 {missing}"
-                     f"（tools/rootfs-manifest.toml app/ 条目——v0 无 OEM 三包输入，"
-                     f"新增/替换归 V13 后续刀）")
+                     f"（tools/rootfs-manifest.toml app/ 条目——纯新增归 "
+                     f"#83 键位定形；替换已声明 app 走 [product.apps.override]）")
     final = {n: p for n, p in base.items() if not n.startswith("app/")}
     n_base = len(final)
     for entry in prod.preset:
-        final[entry] = base_apps[entry]
+        app_id = entry[len("app/"):-len(".bap")]
+        if app_id in prod.apps_override:  # G1：终表路径取 OEM 自有件（包内绝对）
+            final[entry] = os.path.join(prod.src_dir, prod.apps_override[app_id])
+        else:
+            final[entry] = base_apps[entry]
+    if prod.trust_pk_anchor:  # G2：装载守卫锚条目（现场重锚——基座同名即覆盖）
+        final[TRUST_PK_ENTRY] = os.path.join(prod.src_dir, prod.trust_pk_anchor)
     for name in sorted(final):
-        local = os.path.join(user_dir, final[name])
+        path = final[name]
+        local = path if os.path.isabs(path) else os.path.join(user_dir, path)
         if not os.path.isfile(local):
-            raise Reject(f"rootfs 条目 {name}: 构建树缺席 {local}"
-                         f"（基座表 path 相对 user/——先 just build-user）")
+            why = ("OEM 锚件（override/trust——load 面已验后缺席）"
+                   if os.path.isabs(path)
+                   else "基座表 path 相对 user/——先 just build-user")
+            raise Reject(f"rootfs 条目 {name}: 构建树缺席 {local}（{why}）")
     if prod.launcher not in final:
         raise Reject(f"product.defaults.launcher: {prod.launcher!r} 不在 rootfs 终表"
                      f"（须指向预装集 app/ 条目或基座 bin/ 条目——schema §1.4）")
@@ -558,16 +855,40 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
     """dry-run 组装计划行（步④⑥⑦参数集 + 步⑧锚回显；无时刻输入——确定性）。
     pr = 过装配门的产品声明代次；level = tools/abi.toml 平台 level（门基准
     回显——mkimage 侧 PR 即此值，单源无注入位）。"""
+    ovr_names = {f"app/{i}.bap": i for i in prod.apps_override}  # G1 替换集
+    n_ov = sum(1 for it in items if it.partition("=")[0] in ovr_names)
+    n_tr = sum(1 for it in items if it.startswith(TRUST_PK_ENTRY + "="))
+    seg = (f"berry-assemble: rootfs 条目 {len(items)} 条 = 基座 {n_base}"
+           f"（bin/*+selftest/*）⊕ preset {len(prod.preset)}（app/*）")
+    if n_ov:
+        seg += f"，其中 {n_ov} 件 override 替换（路径 = OEM 自有件——G1）"
+    if n_tr:
+        seg += f" ⊕ trust {n_tr}（etc/trust-pk——G2）"
     lines = [
         f"berry-assemble: 产品 {prod.name}（vendor={prod.vendor} board={prod.board}"
         f" arch={prod.arch} feature_level={prod.feature_level}"
         f" build_type={prod.build_type} sideload={prod.sideload}）",
-        f"berry-assemble: rootfs 条目 {len(items)} 条 = 基座 {n_base}"
-        f"（bin/*+selftest/*）⊕ preset {len(prod.preset)}（app/*）——"
-        f"排序 = 整条 name=path（mkcpio CLI 现役语义，步④）",
+        seg + "——排序 = 整条 name=path（mkcpio CLI 现役语义，步④）",
     ]
-    lines += [f"  {item.partition('=')[0]} = {user_disp}/{item.partition('=')[2]}"
-              for item in items]
+    for item in items:
+        name, _, path = item.partition("=")
+        if os.path.isabs(path):  # override/trust：包内已解析绝对路径（load 面验在）
+            tag = "override（OEM 自有件）" if name in ovr_names else "trust 锚"
+            lines.append(f"  {name} = {path}  ← {tag}")
+        else:
+            lines.append(f"  {name} = {user_disp}/{path}")
+    if prod.apps_override:
+        lines.append(
+            f"berry-assemble: apps.override {len(prod.apps_override)} 件"
+            f" {sorted(prod.apps_override)}（G1：限替换 preset 已声明 app——"
+            f"推断键位，正式定形随 #83；.sig 伴生随新路径同查找 = mkcpio "
+            f"sig_companions 同名直映规则，本工具零第二映射）")
+    if prod.trust_pk_anchor:
+        lines.append(
+            f"berry-assemble: trust.pk_anchor → {TRUST_PK_ENTRY} 条目"
+            f"（G2：{prod.trust_pk_anchor} 恰 {TRUST_PK_LEN}B raw——svcmgr "
+            f"p3_sig_guard 装载守卫锚消费面同路径约定；bootseed 正式形随 "
+            f"P3 策略刀，词表外出现即拒）")
     lines.append(
         f"berry-assemble: mkcpio 参数集（步⑥）: python3 tools/mkcpio.py <out.cpio>"
         f" <{len(items)} 条 name=path·见上清单> --split {prod.rootfs_split_mib}"
@@ -590,29 +911,63 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
         f"三方联动 manifest PR == version VMO level == rootfs .berryver"
         f" level）；装配反回滚门：声明 PR {pr} ≤ 平台 level {level} 过"
         f"（产品代次不超前平台代次）；--key-hash 缺省 none（QEMU 路不烧，件 5）")
-    lines.append(
-        f"berry-assemble: kernel 锚（步⑧）: {prod.kernel_name}@sha256:"
-        f"{prod.kernel_sha}——v0 只验锚形，逐字节度量对账归全产线")
+    if prod.kernel_measured:
+        lines.append(
+            f"berry-assemble: kernel 锚（步⑧ 前置·G7）: {prod.kernel_name}"
+            f"@sha256:{prod.kernel_sha}——包内件在，SHA-256 现算对账过")
+    else:
+        lines.append(
+            f"berry-assemble: kernel 锚（步⑧ 前置·G7）: {prod.kernel_name}"
+            f"@sha256:{prod.kernel_sha}——包内件缺 = 只形校验过"
+            f"（OEM 可先声明后放件；放件后 --check 即现算对账）")
     if prod.params:
         lines.append(f"berry-assemble: boot.params 覆盖 {sorted(prod.params)}"
                      f"（Q2 override 语义——缺省归上游；序列化进 INITRD 段归全产线）")
+    if prod.locale:
+        kv = " ".join(f"{k}={prod.locale[k]!r}" for k in sorted(prod.locale))
+        lines.append(
+            f"berry-assemble: locale 条目（步④·投放面最小）: etc/locale.toml"
+            f" ← [product.defaults.locale] {kv}（生成件归全产线；读者 = "
+            f"设置应用 v2 转正刀〔应用规范 §15.3〕——完整 i18n 运行时"
+            f"〔berry-intl〕未立项，键组是预埋不是功能承诺，§1.5）")
     lines.append("berry-assemble: dry-run 完——v0 不产件（镜像全产线与 just 配方 "
                  "assemble 归 V13 后续刀/主会话收口）")
     return lines
 
 
 def _validate_all(path: str, base_manifest: str, user_dir: str):
+    """全量面（两段式第二段，G4）：结构（load）⊕ 产物（基座对账 +
+    kernel 锚现算对账——件缺不拒、注记）。"""
     prod = load_product(path)
     items, n_base = resolve_entries(prod, base_manifest, user_dir)
+    measure_kernel_anchor(prod)   # G7：件缺 = False 不拒；件在不等 = loud 拒
     return prod, items, n_base
 
 
-def do_check(path: str, base_manifest: str, user_dir: str) -> None:
+def do_check(path: str, base_manifest: str, user_dir: str,
+             lite: bool = False) -> None:
+    """两段式收口（G4）：lite = 第一段（--check-lite，结构面——零文件对账，
+    产品编写期快检）；全量 = 第二段（结构 ⊕ 产物：基座对账 + kernel 锚
+    现算对账——G7）。"""
+    if lite:
+        prod = load_product(path, lite=True)
+        print(f"berry-assemble: {path} OK[lite·结构面]（product={prod.name} "
+              f"board={prod.board} preset={len(prod.preset)}/{APP_SLOTS}"
+              f" override={len(prod.apps_override)}"
+              f" locale={'on' if prod.locale else 'off'}"
+              f" trust={'on' if prod.trust_pk_anchor else 'off'}"
+              f"——产物面对账〔branding/override/trust/source 件、基座表、"
+              f"kernel 锚度量〕归 --check）")
+        return
     prod, _, _ = _validate_all(path, base_manifest, user_dir)
     print(f"berry-assemble: {path} OK（product={prod.name} board={prod.board}"
           f" preset={len(prod.preset)}/{APP_SLOTS}"
+          f" override={len(prod.apps_override)}"
           f" size={prod.image_size_mib}MiB split={prod.rootfs_split_mib}MiB"
-          f" source={'on' if prod.source_instance else 'off'}）")
+          f" source={'on' if prod.source_instance else 'off'}"
+          f" locale={'on' if prod.locale else 'off'}"
+          f" trust={'on' if prod.trust_pk_anchor else 'off'}"
+          f" kernel={'对账过' if prod.kernel_measured else '仅形（包内件缺）'}）")
 
 
 def do_dry_run(path: str, pr: int, base_manifest: str, user_dir: str) -> None:
@@ -663,12 +1018,31 @@ preset = [
 issued_by = "berryos"             # 签发者 lineage（1..=16B [a-z0-9-]，节在则必填）
 SETTINGS = ["console"]            # 能力键 ⊆ [caps] 闭集（console/fs/net）
 
+# [product.apps.override]         # —— G1：OEM 自有 .bap 替换 preset 同名件（可选）——
+# SETTINGS = "oem/SETTINGS.bap"   # {app_id → 包内路径}；限替换 preset 已声明 app
+#                                 #   （v1 不做纯新增——推断键位，#83 升版定形）；
+#                                 #   .sig 伴生随新路径同查找（mkcpio 自动收编）
+
+# [product.trust]                 # —— G2：信任锚投放（可选；bootseed 随 P3 策略刀）——
+# pk_anchor = "etc/trust-pk"      # 32B raw 公钥锚件 → rootfs etc/trust-pk 条目
+#                                 #   （svcmgr 装载守卫消费面同路径约定）
+
 [product.branding]                # —— 品牌资源路径（相对本文件目录）——
 wallpaper = "assets/wallpaper.byi"
 icon_mask = "assets/mask.byi"
 
 [product.defaults]
 launcher = "bin/berry-launcher"   # Q13 过渡值：v1 bin/ 路径合法
+
+[product.defaults.locale]         # —— i18n/区域化八键（G6 收录；§1.5；可选节）——
+languages         = ["zh-Hans-CN"]  # BCP 47 列表（1..=8 项；首项=系统语言）
+timezone          = "Asia/Shanghai" # IANA tz ID（形校验；缺省 UTC 归消费方）
+region            = "CN"            # ISO 3166-1 alpha-2（文化区域）
+regulatory_domain = "CN"            # 同码异义：监管域（合规面）
+calendar          = "gregory"       # v0 唯一在册（词表 add-only）
+first_day_of_week = "mon"           # {sun,mon,tue,wed,thu,fri,sat}
+hour_cycle        = "h23"           # {h11,h12,h23,h24}（BCP 47 hc）
+temperature_unit  = "celsius"       # {celsius,fahrenheit}
 """
 
 
@@ -923,6 +1297,8 @@ def selftest() -> int:
              'min_power_atomicity = "p1"', "v1 只 p0 可组"),
             ("apps 缺 preset", 'preset = ["app/A.bap"]', "",
              "product.apps.preset"),
+            ("apps 未知键（override 收编后仍硬拒）", 'preset = ["app/A.bap"]',
+             'preset = ["app/A.bap"]\ninject = "x"', "product.apps: 未知键"),
             ("preset 前缀外", 'preset = ["app/A.bap"]', 'preset = ["bin/bsh"]',
              "app/ 前缀"),
             ("preset 查重", 'preset = ["app/A.bap"]',
@@ -960,12 +1336,12 @@ def selftest() -> int:
             leg_reject(label, want, lambda t=text: load_product(
                 write_prod(t, f"bad{k}.toml")))
 
-        # 在册未收录第二型（locale 键组——§1.5；文案须点名键）
-        locale_text = SELFTEST_PRODUCT.replace(
-            "[product.defaults]", '[product.defaults.locale]\ntimezone = "UTC"'
+        # 在册未收录余型（scheduler——locale 已 G6 收录转正，拒面只剩此型）
+        sched_text = SELFTEST_PRODUCT.replace(
+            "[product.defaults]", '[product.defaults.scheduler]\nlatencynice = [0]'
             "\n\n[product.defaults]", 1)
-        leg_reject("defaults 在册未收录（locale）", "未收录",
-                   lambda: load_product(write_prod(locale_text, "locale.toml")))
+        leg_reject("defaults 在册未收录（scheduler）", "未收录",
+                   lambda: load_product(write_prod(sched_text, "sched.toml")))
 
         # V15：重复 app_id 无专臂——tomllib 键唯一性天然执法（解析面先咬）
         dup_grants = SELFTEST_PRODUCT.replace(
@@ -1035,6 +1411,225 @@ def selftest() -> int:
             leg_reject(label, want, lambda t=text: load_product(
                 write_prod(t, "badsrc.toml")))
 
+        # ---- G1/G2 键位：apps.override + trust.pk_anchor（正例 + 拒面逐型
+        # ——38 号 §4 P0 主断点收口：产线两根手工缝针的键位闭环）----
+        os.makedirs(os.path.join(prod_dir, "oem"), exist_ok=True)
+        with open(os.path.join(prod_dir, "oem", "A.bap"), "wb") as f:
+            f.write(b"OEM-A-bap-stub")
+        os.makedirs(os.path.join(prod_dir, "trust"), exist_ok=True)
+        with open(os.path.join(prod_dir, "trust", "anchor.pk"), "wb") as f:
+            f.write(bytes(range(32)))            # 恰 32B raw（ed25519 尺寸）
+        with open(os.path.join(prod_dir, "trust", "short.pk"), "wb") as f:
+            f.write(b"\x01" * 31)                # 非 32B 拒面腿件
+        OVR_BLOCK = '\n\n[product.apps.override]\nA = "oem/A.bap"'
+        TRUST_BLOCK = '\n\n[product.trust]\npk_anchor = "trust/anchor.pk"'
+        try:
+            pg = load_product(write_prod(
+                SELFTEST_PRODUCT + OVR_BLOCK + TRUST_BLOCK, "g1g2.toml"))
+            leg(pg.apps_override == {"A": "oem/A.bap"}
+                and pg.trust_pk_anchor == "trust/anchor.pk",
+                "load override/trust（G1/G2 键位提取——推断键位）")
+            items_g, n_base_g = resolve_entries(pg, base_path, user)
+            ov_abs = os.path.join(prod_dir, "oem", "A.bap")
+            tp_abs = os.path.join(prod_dir, "trust", "anchor.pk")
+            leg(f"app/A.bap={ov_abs}" in items_g
+                and f"{TRUST_PK_ENTRY}={tp_abs}" in items_g
+                and len(items_g) == 5,
+                "resolve 终表（override 路径替换 + etc/trust-pk 条目——G1/G2）")
+            leg(not any(i.startswith("app/A.bap=userbins/") for i in items_g),
+                "resolve 替换语义（基座同名路径不并存——真替换非叠加）")
+            plan_g = build_plan(pg, items_g, n_base_g, level, level, "user")
+            leg(any(ln.startswith("  app/A.bap = ") and "override" in ln
+                    for ln in plan_g),
+                "plan 条目行 override 标注（路径 = OEM 自有件绝对路径）")
+            leg(any("apps.override" in ln and "sig_companions" in ln
+                    for ln in plan_g),
+                "plan override 导言行（.sig 伴生随新路径同查找）")
+            leg(any(TRUST_PK_ENTRY in ln and "bootseed" in ln
+                    for ln in plan_g),
+                "plan trust 导言行（etc/trust-pk + bootseed 随策略刀注记）")
+            leg(any("⊕ trust 1" in ln for ln in plan_g),
+                "plan 计数行含 trust 分量")
+        except Reject as e:
+            leg(False, f"G1/G2 正例被拒（模板漂移）：{e}")
+        # 无节零扰动（缺省 = 不替换/不产锚条目——向后兼容面）
+        leg(prod.apps_override == {} and prod.trust_pk_anchor == ""
+            and not any(i.startswith(TRUST_PK_ENTRY + "=") for i in items),
+            "无 override/trust 零扰动（缺省向后兼容）")
+        for label, old, new, want in [
+            # G1 拒面：三主面（非 preset id〔含基座在册未进 preset 的更锐臂〕
+            # /路径缺/值非串）+ 节非表
+            ("override 非 preset id（B 在基座不在 preset）", 'A = "oem/A.bap"',
+             'B = "oem/B.bap"', "不在 preset 预装集"),
+            ("override 包内不存在", 'A = "oem/A.bap"',
+             'A = "oem/missing.bap"', "包内不存在"),
+            ("override 值非串", 'A = "oem/A.bap"', "A = 5",
+             "应为非空字符串路径"),
+            ("override 节非表", None, 'preset = ["app/A.bap"]\noverride = "x"',
+             "应为节"),
+            # G2 拒面：bootseed（策略刀前词表外）/路径缺/非 32B/缺必填/非串/非节
+            ("trust 未知键（bootseed 随策略刀）",
+             'pk_anchor = "trust/anchor.pk"',
+             'pk_anchor = "trust/anchor.pk"\nbootseed = "x"',
+             "product.trust: 未知键"),
+            ("trust pk_anchor 包内不存在", 'pk_anchor = "trust/anchor.pk"',
+             'pk_anchor = "trust/missing.pk"', "包内不存在"),
+            ("trust pk_anchor 非 32B", 'pk_anchor = "trust/anchor.pk"',
+             'pk_anchor = "trust/short.pk"', "须恰 32B"),
+            ("trust 缺 pk_anchor", 'pk_anchor = "trust/anchor.pk"', "",
+             "必填缺失"),
+            ("trust pk_anchor 非串", 'pk_anchor = "trust/anchor.pk"',
+             "pk_anchor = 5", "应为非空字符串路径"),
+            ("trust 非节", None, 'board   = "qemu-virt"\ntrust = "x"',
+             "应为节"),
+        ]:
+            if old is None:  # 非表/裸键腿：值落进 [product.apps]/[product] 节
+                text = SELFTEST_PRODUCT.replace(new.split("\n")[0], new, 1)
+            else:
+                text = (SELFTEST_PRODUCT + OVR_BLOCK + TRUST_BLOCK).replace(
+                    old, new, 1)
+            leg_reject(label, want, lambda t=text: load_product(
+                write_prod(t, "badg1g2.toml")))
+        # G1 重复 app_id 无专臂——tomllib 键唯一性天然执法（priv_grants 同钉）
+        dup_ovr = SELFTEST_PRODUCT + OVR_BLOCK + OVR_BLOCK
+        leg_reject("override app_id 重复（tomllib 键唯一）", "TOML 解析失败",
+                   lambda: load_product(write_prod(dup_ovr, "dupovr.toml")))
+
+        # ---- G6：[product.defaults.locale] 八键收录（正例 + 拒面逐型——
+        # 从 DEFAULTS_DEFERRED 摘除转正；§1.5 定形组）----
+        LOCALE_BLOCK = ('\n\n[product.defaults.locale]    # G6 正例：zh-Hans-CN 组\n'
+                        'languages = ["zh-Hans-CN", "en-US"]\n'
+                        'timezone = "Asia/Shanghai"\n'
+                        'region = "CN"\n'
+                        'regulatory_domain = "CN"\n'
+                        'calendar = "gregory"\n'
+                        'first_day_of_week = "mon"\n'
+                        'hour_cycle = "h23"\n'
+                        'temperature_unit = "celsius"\n')
+        LOCALIZED = SELFTEST_PRODUCT + LOCALE_BLOCK
+        try:
+            plo = load_product(write_prod(LOCALIZED, "g6.toml"))
+            leg(len(plo.locale) == 8
+                and plo.locale["languages"] == ["zh-Hans-CN", "en-US"]
+                and plo.locale["timezone"] == "Asia/Shanghai"
+                and plo.locale["first_day_of_week"] == "mon",
+                "load locale 八键（G6 收录——拒转收）")
+            items_lo, n_base_lo = resolve_entries(plo, base_path, user)
+            plan_lo = build_plan(plo, items_lo, n_base_lo, level, level, "user")
+            leg(any("etc/locale.toml" in ln and "设置应用" in ln
+                    and "预埋不是功能承诺" in ln for ln in plan_lo),
+                "plan etc/locale.toml 条目（投放面最小——读者=设置应用 v2）")
+        except Reject as e:
+            leg(False, f"G6 正例被拒（模板漂移）：{e}")
+        # 无节零扰动（缺省 = 不产 etc/locale.toml 条目——向后兼容面）
+        leg(prod.locale == {} and not any("etc/locale.toml" in ln
+                                          for ln in plan),
+            "无 locale 节零扰动（缺省向后兼容）")
+        for k, (label, old, new, want) in enumerate([
+            ("locale 节非表", LOCALE_BLOCK, '\n\nlocale = "zh-CN"', "应为节"),
+            ("locale 未知键", LOCALE_BLOCK, LOCALE_BLOCK + "extra = 1\n",
+             "product.defaults.locale: 未知键"),
+            ("languages 非数组", 'languages = ["zh-Hans-CN", "en-US"]',
+             'languages = "zh-Hans-CN"', "应为字符串数组"),
+            ("languages 空数组", 'languages = ["zh-Hans-CN", "en-US"]',
+             "languages = []", "越 [1,8]"),
+            ("languages 9 项越帽", 'languages = ["zh-Hans-CN", "en-US"]',
+             "languages = [" + ", ".join(
+                 f'"{t}"' for t in ("zh", "en", "fr", "de", "ja", "ko",
+                                    "ru", "es", "it")) + "]", "越 [1,8] 帽"),
+            ("languages 元素非串", '"zh-Hans-CN", "en-US"', '"zh-Hans-CN", 5',
+             "应为字符串"),
+            ("languages 坏 BCP 47", 'languages = ["zh-Hans-CN", "en-US"]',
+             'languages = ["zh_CN"]', "BCP 47"),
+            ("languages 查重（大小写不敏感）",
+             'languages = ["zh-Hans-CN", "en-US"]',
+             'languages = ["zh-Hans-CN", "zh-hans-cn"]', "条目重复"),
+            ("timezone 坏形", 'timezone = "Asia/Shanghai"',
+             'timezone = "Asia/Shanghai/"', "IANA tz ID 形不符"),
+            ("region 坏形（小写）", 'region = "CN"', 'region = "cn"',
+             "ISO 3166-1"),
+            ("regulatory_domain 坏形（3 字母）",
+             'regulatory_domain = "CN"', 'regulatory_domain = "CHN"',
+             "ISO 3166-1"),
+            ("calendar 枚举外", 'calendar = "gregory"', 'calendar = "chinese"',
+             "枚举外值"),
+            ("first_day_of_week 枚举外", 'first_day_of_week = "mon"',
+             'first_day_of_week = "monday"', "枚举外值"),
+            ("hour_cycle 枚举外", 'hour_cycle = "h23"', 'hour_cycle = "h25"',
+             "枚举外值"),
+            ("temperature_unit 枚举外", 'temperature_unit = "celsius"',
+             'temperature_unit = "kelvin"', "枚举外值"),
+        ]):
+            assert old in LOCALIZED, f"腿锚串缺席：{label}"
+            leg_reject(label, want, lambda t=LOCALIZED.replace(old, new, 1):
+                       load_product(write_prod(t, f"badg6-{k}.toml")))
+
+        # ---- G4：两段式（lite=结构面；文件在席对账归全量面）----
+        lite_text = (SELFTEST_PRODUCT
+                     .replace('wallpaper = "assets/wallpaper.byi"',
+                              'wallpaper = "assets/missing.byi"')
+                     + SRC_BLOCK.replace('instance = "sourceinst"',
+                                         'instance = "nope-dir"')
+                     + OVR_BLOCK.replace('A = "oem/A.bap"',
+                                         'A = "oem/missing.bap"')
+                     + TRUST_BLOCK.replace('pk_anchor = "trust/anchor.pk"',
+                                           'pk_anchor = "trust/missing.pk"')
+                     + LOCALE_BLOCK)
+        g4_path = write_prod(lite_text, "g4-lite.toml")
+        try:
+            plite = load_product(g4_path, lite=True)
+            leg(plite.locale.get("region") == "CN"
+                and plite.branding.get("wallpaper") == "assets/missing.byi"
+                and plite.source_instance == "nope-dir"
+                and plite.apps_override == {"A": "oem/missing.bap"}
+                and plite.trust_pk_anchor == "trust/missing.pk",
+                "check-lite 结构面过（branding/override/trust/source 件缺不触——G4 第一段）")
+        except Reject as e:
+            leg(False, f"lite 正例被拒：{e}")
+        leg_reject("同清单全量面拒（branding 件缺先咬）", "包内不存在",
+                   lambda: load_product(g4_path))
+
+        # ---- G7：kernel 锚度量对账（件在→SHA-256 现算；不等→loud 拒；
+        # 件缺→只形+注记）----
+        NOBRANDING = SELFTEST_PRODUCT.replace(
+            '[product.branding]\nwallpaper = "assets/wallpaper.byi"\n'
+            'icon_mask = "assets/mask.byi"\n\n', "")
+        assert NOBRANDING != SELFTEST_PRODUCT  # 腿锚串在席（模板漂移护栏）
+        g7_ok = os.path.join(td, "g7-ok")
+        os.makedirs(g7_ok)
+        # 模板锚 = sha256("")——空件现算同值（e3b0c442… 即空串摘要）
+        with open(os.path.join(g7_ok, "KERNEL.ELF"), "wb"):
+            pass
+        with open(os.path.join(g7_ok, "p.toml"), "w", encoding="utf-8") as f:
+            f.write(NOBRANDING)
+        try:
+            prod_k = load_product(os.path.join(g7_ok, "p.toml"))
+            leg(measure_kernel_anchor(prod_k) is True and prod_k.kernel_measured,
+                "G7 件在 → SHA-256 现算对账过")
+            plan_k = build_plan(prod_k, [], 0, level, level, "user")
+            leg(any("kernel 锚" in ln and "现算对账过" in ln for ln in plan_k),
+                "plan kernel 锚对账过行（G7）")
+        except Reject as e:
+            leg(False, f"G7 对账正例被拒（夹具漂移）：{e}")
+        g7_bad = os.path.join(td, "g7-bad")
+        os.makedirs(g7_bad)
+        with open(os.path.join(g7_bad, "KERNEL.ELF"), "wb") as f:
+            f.write(b"not-the-declared-kernel")
+        with open(os.path.join(g7_bad, "p.toml"), "w", encoding="utf-8") as f:
+            f.write(NOBRANDING)
+        g7_bad_p = os.path.join(g7_bad, "p.toml")
+        leg_reject("G7 锚对账不等（loud 拒）", "锚对账不等",
+                   lambda: measure_kernel_anchor(load_product(g7_bad_p)))
+        try:
+            load_product(g7_bad_p)  # load 不度量（层界钉——度量归全量面）
+            leg(True, "G7 度量归全量面（load 结构面放行件不符——层界钉）")
+        except Reject as e:
+            leg(False, f"G7 层界腿被 load 拒：{e}")
+        leg(measure_kernel_anchor(load_product(good)) is False,
+            "G7 件缺 → 只形校验过（OEM 可先声明后放件）")
+        leg(any("件缺" in ln and "先声明后放件" in ln for ln in plan),
+            "plan kernel 锚件缺注记行（G7）")
+
         # ---- 拒面：解析面（基座对账/构建树存在/launcher 终表对账）----
         # （白名单键随腿同步换 C——模板含 V15 正例节 A，防 load 面先咬）
         leg_reject("preset 不在基座表", "不在基座表",
@@ -1065,8 +1660,10 @@ def selftest() -> int:
             leg(s.name == "berry-qemu-rich" and len(s.preset) == APP_SLOTS
                 and s.launcher == "bin/berry-launcher"
                 and s.priv_grants == {"SETTINGS": ("console",)}
-                and s.grants_issued_by == "berryos",
-                "内置样例过检（v0 键集全谱 + preset 恰 APP_SLOTS + 白名单节）")
+                and s.grants_issued_by == "berryos"
+                and s.locale.get("languages") == ["zh-Hans-CN"],
+                "内置样例过检（v0 键集全谱 + preset 恰 APP_SLOTS + 白名单节"
+                " + locale 八键——G6）")
         except Reject as e:
             leg(False, f"内置样例被拒（模板漂移）：{e}")
 
@@ -1101,9 +1698,11 @@ def main() -> int:
                 return 2
             i += 2
             continue
-        if args[i] in ("--check", "--dry-run") and i + 1 < len(args):
+        if args[i] in ("--check", "--check-lite", "--dry-run") \
+                and i + 1 < len(args):
             if mode is not None:
-                sys.stderr.write("berry-assemble: --check/--dry-run 互斥（单模式）\n")
+                sys.stderr.write("berry-assemble: --check/--check-lite/"
+                                 "--dry-run 互斥（单模式）\n")
                 return 2
             mode, path = args[i], args[i + 1]
             i += 2
@@ -1113,6 +1712,13 @@ def main() -> int:
     if mode == "--check":
         try:
             do_check(path, DEFAULT_BASE, DEFAULT_USER_DIR)
+        except Reject as e:
+            sys.stderr.write(f"berry-assemble: {e}\n")
+            return 1
+        return 0
+    if mode == "--check-lite":   # G4 两段式第一段：只结构面
+        try:
+            do_check(path, DEFAULT_BASE, DEFAULT_USER_DIR, lite=True)
         except Reject as e:
             sys.stderr.write(f"berry-assemble: {e}\n")
             return 1

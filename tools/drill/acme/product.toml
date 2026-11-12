@@ -1,8 +1,12 @@
 # product.toml —— OEM「acme」演练参照物（38 号 OEM 演练实弹）
-# 头注：本文件 = 厂商定制化 38 号演练的入仓参照物副本；演练原件 = /tmp/drill/acme/product.toml
-# （逐字节同文）。相对路径基准（branding/ 与 [product.source].instance）按 product.toml
-# 所在目录解析——在仓内本位跑 berry_assemble 需同目录资产（assets/、sourceinst/ 演练时
-# 在 /tmp/drill/acme/ 下）。平台侧零源码改动（组装不 fork：只投放数据与自有件）。
+# 头注：本文件 = 厂商定制化 38 号演练的入仓参照物副本 + G1/G2 键位复验增补
+# （[product.apps.override] 5 件 + [product.trust].pk_anchor——38 号 §4 P0 缺口
+# G1/G2 的键位化收口，berry_assemble 已执法；38 号原件无此两节，增补后两根
+# 手工缝针〔12 行路径改写脚本 + etc/trust-pk 手工追加〕归零）。相对路径基准
+# （branding/ 与 [product.source].instance、override/trust 件）按 product.toml
+# 所在目录解析——在仓内本位跑 berry_assemble 需同目录资产（assets/、
+# sourceinst/、baps/、etc/ 演练时在 /tmp/drill/acme/ 下）。平台侧零源码改动
+# （组装不 fork：只投放数据与自有件）。
 
 schema = 1
 
@@ -43,12 +47,27 @@ issued_by = "acme"                # 签发者 lineage（白名单「谁预置谁
 SETTINGS = ["console", "fs"]      # 能力键 ⊆ [caps] 闭集 console/fs/net
 BROWSER  = ["net"]
 
-[product.branding]                # —— 品牌资源路径（相对本文件目录）——
-wallpaper = "assets/wallpaper.byi"
-icon_mask = "assets/mask.byi"
+# [演练资产节——仓内参照物默认注释化(39 号 F7):演练时取消注释并在本目录放 baps/*.bap]
+# [product.apps.override]           # —— G1：OEM 自有 .bap 替换 preset 同名件 ——
+#                                    #   （限替换已声明 app——推断键位，#83 升版定形；
+#                                    #    .sig 伴生随新路径同查找 = mkcpio 自动收编）
+# SETTINGS = "baps/SETTINGS.bap"
+# FILES    = "baps/FILES.bap"
+# PHOTOS   = "baps/PHOTOS.bap"
+# CAMERA   = "baps/CAMERA.bap"
+# BROWSER  = "baps/BROWSER.bap"
+
+# [演练资产节——仓内参照物默认注释化(演练时取消注释并按头注放资产):branding/wallpaper+icons、trust 锚、source 实例]
+# [product.branding]                # —— 品牌资源路径（相对本文件目录）——
+# wallpaper = "assets/wallpaper.byi"
+# icon_mask = "assets/mask.byi"
 
 [product.defaults]
 launcher = "bin/berry-launcher"   # Q13 过渡值：v1 bin/ 路径合法
 
-[product.source]                  # —— 官方源静态实例（SDK-2 P2 步⑦½）——
-instance = "sourceinst"           # gensourceindex 两件套（acme 官方源）
+# [product.source]                  # —— 官方源静态实例（SDK-2 P2 步⑦½）——
+# instance = "sourceinst"           # gensourceindex 两件套（acme 官方源）
+
+# [product.trust]                   # —— G2：信任锚投放（bootseed 随 P3 策略刀）——
+# pk_anchor = "etc/trust-pk"        # 32B raw 公钥锚 → rootfs etc/trust-pk 条目
+#                                    #   （svcmgr 装载守卫消费面同路径约定）
