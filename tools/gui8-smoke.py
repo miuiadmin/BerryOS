@@ -1430,6 +1430,45 @@ def verify_normal_boot(
     if text.rfind(MARK_CONTACTS_EXIT) < snapshot_pos:
         raise SmokeError("normal Contacts: EXIT 不在快照后", log_path)
 
+TOKEN_LINE = (
+    "UITESTTOKEN ok scheme=light n=12 "
+    "background=f5f7fa surface=ffffff surface_variant=e9edf3 "
+    "outline=dce1e8 primary=0074e0 on_primary=ffffff "
+    "text_primary=1b2540 text_secondary=4f5d75 success=008b6f "
+    "warning=fb8c00 danger=d02f3d selected=d6e4ff"
+)
+TOKEN_KEYS = (
+    "background", "surface", "surface_variant", "outline", "primary",
+    "on_primary", "text_primary", "text_secondary", "success", "warning",
+    "danger", "selected",
+)
+
+
+def theme_from_token_dump(text: str) -> dict[str, tuple[int, int, int]]:
+    """从 UITESTTOKEN 单源 dump 解析主题像素锚，拒绝第二份手抄调色板。"""
+    lines = [
+        line for line in text.splitlines()
+        if line.startswith("UITESTTOKEN ok ")
+    ]
+    if not lines:
+        raise SmokeError("DESIGN-D2 token dump missing", None)
+    fields = lines[-1].split()
+    expected_prefix = ["UITESTTOKEN", "ok", "scheme=light", "n=12"]
+    if fields[:4] != expected_prefix:
+        raise SmokeError(f"DESIGN-D2 token dump header bad: {fields[:4]!r}", None)
+    values = [field.split("=", 1) for field in fields[4:]]
+    if [name for name, _ in values] != list(TOKEN_KEYS):
+        raise SmokeError(f"DESIGN-D2 token keys bad: {[n for n, _ in values]!r}", None)
+    theme: dict[str, tuple[int, int, int]] = {}
+    for name, raw in values:
+        if len(raw) != 6 or any(char not in "0123456789abcdef" for char in raw):
+            raise SmokeError(f"DESIGN-D2 token {name} bad rgb: {raw!r}", None)
+        theme[name] = tuple(int(raw[index:index + 2], 16) for index in (0, 2, 4))
+    if len(theme) != 12:
+        raise SmokeError("DESIGN-D2 token dump duplicate/short", None)
+    return theme
+
+
 def ppm_pixel(path: Path, x: int, y: int) -> tuple[int, int, int]:
     """读 QEMU P6 PPM 指定像素（GUI app 反 mock 像素锚）。"""
     data = path.read_bytes()
@@ -1631,6 +1670,9 @@ def verify_uitest_normal(
     _require_exact_count(text, "UITESTHIT ok node=button", 3, "normal UITEST hit dump", log_path)
     _require_exact_count(
         text, "UITESTAST ok bytes=860 a11y=9", 2, "normal UITEST AST", log_path
+    )
+    _require_exact_count(
+        text, TOKEN_LINE, 2, "normal DESIGN-D2 token dump", log_path
     )
     _require_exact_count(
         text,
@@ -2847,6 +2889,9 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
 
+        theme = theme_from_token_dump(boot.log.text)
+        log("normal-theme: DESIGN-D2 UITESTTOKEN 单源调色板解析 ok")
+
         # —— Browser BerryUI app：首格真实 APP_SPAWN → 窗口/帧 → back。 ——
         log("normal-browser: QMP 点击 BROWSER 首格（真实 APP_SPAWN）")
         boot.qmp.click(156, 282, w, h)
@@ -2877,10 +2922,10 @@ def run_normal_boot(args) -> int:
             surface = ppm_pixel(browser_shot, 540, 600)
             stable = all(
                 abs(a - b) <= 8
-                for a, b in zip(appbar, (0, 116, 224))
+                for a, b in zip(appbar, theme["primary"])
             ) and all(
                 abs(a - b) <= 8
-                for a, b in zip(surface, (255, 255, 255))
+                for a, b in zip(surface, theme["surface"])
             )
             if stable:
                 break
@@ -2891,11 +2936,11 @@ def run_normal_boot(args) -> int:
                 )
             time.sleep(0.5)
         assert_pixel_close(
-            ppm_pixel(browser_shot, 540, 20), (0, 116, 224),
+            ppm_pixel(browser_shot, 540, 20), theme["primary"],
             "Browser AppBar", boot.log_path,
         )
         assert_pixel_close(
-            ppm_pixel(browser_shot, 540, 600), (255, 255, 255),
+            ppm_pixel(browser_shot, 540, 600), theme["surface"],
             "Browser surface", boot.log_path,
         )
         assert_color_count(
@@ -3016,17 +3061,17 @@ def run_normal_boot(args) -> int:
         # 像素反 mock：两个开关必须变 Berry Theme Selected 蓝，主题面同步对锚。
         shot = run_dir / "settings.ppm"
         boot.qmp.screendump(shot)
-        assert_pixel_close(ppm_pixel(shot, 540, 20), (0, 116, 224), "Settings AppBar", boot.log_path)
-        assert_pixel_close(ppm_pixel(shot, 540, 600), (255, 255, 255), "Settings surface", boot.log_path)
+        assert_pixel_close(ppm_pixel(shot, 540, 20), theme["primary"], "Settings AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(shot, 540, 600), theme["surface"], "Settings surface", boot.log_path)
         assert_pixel_close(
             ppm_pixel(shot, wlan_click[0], wlan_click[1]),
-            (214, 228, 255),
+            theme["selected"],
             "Settings WLAN Selected",
             boot.log_path,
         )
         assert_pixel_close(
             ppm_pixel(shot, bluetooth_click[0], bluetooth_click[1]),
-            (214, 228, 255),
+            theme["selected"],
             "Settings Bluetooth Selected",
             boot.log_path,
         )
@@ -3113,8 +3158,8 @@ def run_normal_boot(args) -> int:
 
         files_shot = run_dir / "files.ppm"
         boot.qmp.screendump(files_shot)
-        assert_pixel_close(ppm_pixel(files_shot, 540, 20), (0, 116, 224), "Files AppBar", boot.log_path)
-        assert_pixel_close(ppm_pixel(files_shot, 540, 600), (255, 255, 255), "Files surface", boot.log_path)
+        assert_pixel_close(ppm_pixel(files_shot, 540, 20), theme["primary"], "Files AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(files_shot, 540, 600), theme["surface"], "Files surface", boot.log_path)
         assert_color_count(
             files_shot, (20, 90, 900, 420), 128, "Files 系统 A8 文本", boot.log_path,
         )
@@ -3219,7 +3264,7 @@ def run_normal_boot(args) -> int:
         photos_shot = run_dir / "photos.ppm"
         boot.qmp.screendump(photos_shot)
         assert_pixel_close(
-            ppm_pixel(photos_shot, 540, 20), (0, 116, 224),
+            ppm_pixel(photos_shot, 540, 20), theme["primary"],
             "Photos AppBar", boot.log_path,
         )
         # PATTERN.BIN 5000B 公式字节经 IconSource SmoothArgb 上屏。
@@ -3352,12 +3397,12 @@ def run_normal_boot(args) -> int:
         contacts_shot = run_dir / "contacts.ppm"
         boot.qmp.screendump(contacts_shot)
         assert_pixel_close(
-            ppm_pixel(contacts_shot, 540, 20), (0, 116, 224),
+            ppm_pixel(contacts_shot, 540, 20), theme["primary"],
             "Contacts AppBar", boot.log_path,
         )
         assert_pixel_close(
             ppm_pixel(contacts_shot, favorite_click[0], favorite_click[1]),
-            (214, 228, 255),
+            theme["selected"],
             "Contacts Favorite Selected", boot.log_path,
         )
         assert_color_count(
@@ -3449,17 +3494,17 @@ def run_normal_boot(args) -> int:
         )
         uitest_shot = run_dir / "uitest-page0.ppm"
         boot.qmp.screendump(uitest_shot)
-        assert_pixel_close(ppm_pixel(uitest_shot, 540, 20), (0, 116, 224), "UITEST AppBar", boot.log_path)
-        assert_pixel_close(ppm_pixel(uitest_shot, 540, 60), (255, 255, 255), "UITEST surface", boot.log_path)
-        assert_pixel_close(ppm_pixel(uitest_shot, 540, 100), (27, 37, 64), "UITEST title text", boot.log_path)
-        assert_pixel_close(ppm_pixel(uitest_shot, 540, 600), (245, 247, 250), "UITEST empty background", boot.log_path)
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 20), theme["primary"], "UITEST AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 60), theme["surface"], "UITEST surface", boot.log_path)
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 100), theme["text_primary"], "UITEST title text", boot.log_path)
+        assert_pixel_close(ppm_pixel(uitest_shot, 540, 600), theme["background"], "UITEST empty background", boot.log_path)
         assert_pixel_close(
             ppm_pixel(uitest_shot, list_px[0], list_px[1]),
-            (233, 237, 243), "UITEST adaptive list pane", boot.log_path,
+            theme["surface_variant"], "UITEST adaptive list pane", boot.log_path,
         )
         assert_pixel_close(
             ppm_pixel(uitest_shot, detail_px[0], detail_px[1]),
-            (255, 255, 255), "UITEST adaptive detail pane", boot.log_path,
+            theme["surface"], "UITEST adaptive detail pane", boot.log_path,
         )
         seam_variant = (
             (adaptive_list[0] + adaptive_list[2] - 1) * w // 1080,
@@ -3471,11 +3516,11 @@ def run_normal_boot(args) -> int:
         )
         assert_pixel_close(
             ppm_pixel(uitest_shot, seam_variant[0], seam_variant[1]),
-            (233, 237, 243), "UITEST adaptive list seam", boot.log_path,
+            theme["surface_variant"], "UITEST adaptive list seam", boot.log_path,
         )
         assert_pixel_close(
             ppm_pixel(uitest_shot, seam_surface[0], seam_surface[1]),
-            (255, 255, 255), "UITEST adaptive gap seam", boot.log_path,
+            theme["surface"], "UITEST adaptive gap seam", boot.log_path,
         )
         log("normal-uitest: BerryUI 首帧像素锚 ok（AppBar/surface/text/EmptyState/ListDetail adaptive）")
 
@@ -3501,8 +3546,8 @@ def run_normal_boot(args) -> int:
         )
         page1_shot = run_dir / "uitest-page1.ppm"
         boot.qmp.screendump(page1_shot)
-        assert_pixel_close(ppm_pixel(page1_shot, 540, 20), (0, 116, 224), "UITEST page1 AppBar", boot.log_path)
-        assert_pixel_close(ppm_pixel(page1_shot, 540, 100), (27, 37, 64), "UITEST page1 title", boot.log_path)
+        assert_pixel_close(ppm_pixel(page1_shot, 540, 20), theme["primary"], "UITEST page1 AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(page1_shot, 540, 100), theme["text_primary"], "UITEST page1 title", boot.log_path)
         log("normal-uitest: page1 布局/状态/像素锚 ok")
 
         log(f"normal-uitest: QMP 点击 Back ({click1[0]},{click1[1]})")
@@ -3883,6 +3928,27 @@ def self_test(args) -> int:
             return
         raise SmokeError(f"自检负样本未失败：{label}")
 
+    expect_error(
+        "D2 token header fail closed",
+        lambda: theme_from_token_dump(TOKEN_LINE.replace("scheme=light", "scheme=dark")),
+    )
+    expect_error(
+        "D2 token key order fail closed",
+        lambda: theme_from_token_dump(
+            TOKEN_LINE.replace(
+                "background=f5f7fa surface=ffffff",
+                "surface=f5f7fa background=ffffff",
+            )
+        ),
+    )
+    expect_error(
+        "D2 token RGB fail closed",
+        lambda: theme_from_token_dump(TOKEN_LINE.replace("primary=0074e0", "primary=0074zz")),
+    )
+    expect_error(
+        "D2 token duplicate fail closed",
+        lambda: theme_from_token_dump(f"{TOKEN_LINE} primary=0074e0"),
+    )
     expect_error(
         "Browser layout 截断 fail closed",
         lambda: latest_browser_back("BROWSERLAYOUT ok back=1,2,3\n"),
@@ -4640,6 +4706,7 @@ def self_test(args) -> int:
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=860 a11y=9\n"
+            f"{TOKEN_LINE}\n"
             "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
@@ -4675,6 +4742,7 @@ def self_test(args) -> int:
             "button=12,126,1056,60 scroll=12,377,1056,24 clip=12,377,1056,24\n"
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=860 a11y=9\n"
+            f"{TOKEN_LINE}\n"
             "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
@@ -4930,6 +4998,25 @@ def self_test(args) -> int:
                     "UITESTADAPT2 ok v=0 basis=320\n"
                     "UITESTADAPT2 ok v=0 basis=320\n", 1,
                 ),
+                snap_u, 1,
+            ),
+        )
+        expect_error(
+            "DESIGN-D2 token dump 缺失",
+            lambda: verify_uitest_normal(
+                fake_u.replace(f"{TOKEN_LINE}\n", "", 1), snap_u, 1
+            ),
+        )
+        expect_error(
+            "DESIGN-D2 primary 色值造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("primary=0074e0", "primary=0074e1"), snap_u, 1
+            ),
+        )
+        expect_error(
+            "DESIGN-D2 token dump 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(f"{TOKEN_LINE}\n", f"{TOKEN_LINE}\n{TOKEN_LINE}\n", 1),
                 snap_u, 1,
             ),
         )

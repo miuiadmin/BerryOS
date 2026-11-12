@@ -31,7 +31,7 @@ SDK-S0 Control Spec & API Governance Baseline
 
 followed by semantic sidecar, paired design tokens, and constraint-aware layout.
 
-These are research labels, not route milestones. Before implementation, `GUI框架地基路线-v1.17.md` and `docs/规则/14-GUI与UI框架.md` must be amended first. The prefixed names avoid collisions with existing scheduler/capacity/compatibility labels.
+These are research labels, not route milestones. Before implementation, `GUI框架地基路线-v1.18.md` and `docs/规则/14-GUI与UI框架.md` must be amended first. The prefixed names avoid collisions with existing scheduler/capacity/compatibility labels.
 
 GUI-T1 must explicitly resolve its key-dispatch priority against BerryUI C1: focused text state consumes Enter/Space as editing semantics before component activation. Its IME and occlusion vocabulary must remain add-only mappings to the already frozen P0 composition purposes and R2 `insets::Ime`.
 

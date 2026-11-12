@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-11
 >
-> 定位：SDK-S0 的现行规格。执行序权威 = [GUI框架地基路线-v1.17.md](GUI框架地基路线-v1.17.md)。本文把 GUI-15 的官方源研究结论落成两件事：BerryUI 控件规格模板、BerryUI SDK API 账本与机器门禁。
+> 定位：SDK-S0 的现行规格。执行序权威 = [GUI框架地基路线-v1.18.md](GUI框架地基路线-v1.18.md)。本文把 GUI-15 的官方源研究结论落成两件事：BerryUI 控件规格模板、BerryUI SDK API 账本与机器门禁。
 >
 > 范围：`berry_ui::sdk` facade 与 BerryUI 控件规格流程。不修改 berry-ui 运行时行为，不新增 guest payload。
 
@@ -119,7 +119,12 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::CircleProps` | type | GUI-6 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::ClipProps` | type | C1-clipping | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::ColProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
+| `berry_ui::sdk::ColorPair` | type | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
+| `berry_ui::sdk::ColorPairToken` | type | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
+| `berry_ui::sdk::ColorScheme` | type | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
+| `berry_ui::sdk::ColorSchemePreference` | type | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::Constraints` | type | L1 | in-tree | stable | `docs/BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md` |
+| `berry_ui::sdk::ContrastLevel` | type | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::CrossAlign` | type | L1 | in-tree | stable | `docs/BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md` |
 | `berry_ui::sdk::Density` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::EmptyIconSource` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
@@ -179,10 +184,11 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::TextInputState` | type | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
 | `berry_ui::sdk::TextMetrics` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::TextProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
+| `berry_ui::sdk::TextScale` | type | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::TextSelection` | type | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
 | `berry_ui::sdk::TextStyle` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::TextVariant` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
-| `berry_ui::sdk::Theme` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
+| `berry_ui::sdk::Theme` | type | F3 | in-tree | stable | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::ThemeColors` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::ThemeMetrics` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::TypographyToken` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
@@ -194,11 +200,14 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::WidgetContext` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::a11y_region_roundtrip` | fn | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |
 | `berry_ui::sdk::column` | fn | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
+| `berry_ui::sdk::contrast_meets` | fn | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
+| `berry_ui::sdk::contrast_ratio_centi` | fn | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::divider` | fn | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::focus_key_intent` | fn | C1 | in-tree | stable | `docs/BerryUI-C1ComponentFocusNavigation-v1.0.md` |
 | `berry_ui::sdk::icon` | fn | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::ime_overlap_px` | fn | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
 | `berry_ui::sdk::key_route` | fn | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
+| `berry_ui::sdk::resolve_color_scheme` | fn | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::row` | fn | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::slot_variant` | fn | L1 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::text` | fn | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |

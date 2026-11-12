@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI F3 的主题 token、密度换算、交互状态与 BerryGFX 表面基元契约。执行序权威 = [GUI框架地基路线-v1.17.md](GUI框架地基路线-v1.17.md)；BerryUI core 现状 = [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)。本文只定义 F3 地基，不提前实现 F4 组件。
+> 定位：GUI F3 的主题 token、密度换算、交互状态与 BerryGFX 表面基元契约。执行序权威 = [GUI框架地基路线-v1.18.md](GUI框架地基路线-v1.18.md)；BerryUI core 现状 = [BerryUI-F2核心盘点-v1.0.md](BerryUI-F2核心盘点-v1.0.md)。本文只定义 F3 地基，不提前实现 F4 组件。
 
 ## §1 分层
 
@@ -87,6 +87,8 @@ BerryUI 只定义视觉语义，不写像素；BerryGFX 只做几何与混合，
 | Selected | `#D6E4FF` | `#102A66` | `#9DBBFF` |
 
 F4 组件不得复制这些色值；只能经 `Theme::light()`、`ThemeColors` 或 `Theme::state()` 消费。暗色主题后续以同级构造口加入，不改变组件形状。
+
+> DESIGN-D2 起补充成对 token、light/dark/high-contrast scheme 与 WCAG 对比度治理：见 [BerryDesign-D2TokenPairContract-v1.0.md](BerryDesign-D2TokenPairContract-v1.0.md)。本节 light 色值冻结。
 
 ## §4 BerryGFX 表面基元
 

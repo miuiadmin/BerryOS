@@ -18,7 +18,8 @@ use berry_room::{
     SurfaceRequest, SYSTEM_FONT_ATLAS,
 };
 use berry_ui::sdk::{
-    focus_key_intent, ime_overlap_px, key_route, slot_variant, FocusDir, FocusOp, KeyRoute,
+    ColorScheme, focus_key_intent, ime_overlap_px, key_route, slot_variant, FocusDir, FocusOp,
+    KeyRoute,
     SlotVariant, Button, Card, EmptyState, FontSource, InteractionState, ListDetail,
     ListDetailSpec, ListItem, Msg, RectI, Scaffold, ScrollView, Switch, TextInputKind,
     a11y_region_roundtrip, A11yRegion, TextInputKeyOp, TextInputState, TextVariant,
@@ -147,6 +148,18 @@ impl Line {
         let mut buf = [0u8; 11];
         let n = append_i32(&mut buf, value);
         self.push(&buf[..n]);
+    }
+
+    fn push_hex_byte(&mut self, value: u8) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let pair = [HEX[(value >> 4) as usize], HEX[(value & 0x0F) as usize]];
+        self.push(&pair);
+    }
+
+    fn color(&mut self, value: berry_gfx::cmd::Color) {
+        self.push_hex_byte(value.r);
+        self.push_hex_byte(value.g);
+        self.push_hex_byte(value.b);
     }
 
     fn rect(&mut self, r: RectI) {
@@ -562,6 +575,42 @@ impl AppModel {
         line.push_u32(len as u32);
         line.push(b" a11y=");
         line.push_u32(a11y as u32);
+        line.push(b"\n");
+        line.print(room);
+    }
+
+    fn print_token(&self, room: &AppRoom) {
+        let colors = self.ctx.theme.colors;
+        let mut line = Line::new(b"UITESTTOKEN ok scheme=");
+        match self.ctx.theme.scheme {
+            ColorScheme::Light => line.push(b"light"),
+            ColorScheme::Dark => line.push(b"dark"),
+            ColorScheme::HighContrastLight => line.push(b"high_contrast_light"),
+        }
+        line.push(b" n=12 background=");
+        line.color(colors.background);
+        line.push(b" surface=");
+        line.color(colors.surface);
+        line.push(b" surface_variant=");
+        line.color(colors.surface_variant);
+        line.push(b" outline=");
+        line.color(colors.outline);
+        line.push(b" primary=");
+        line.color(colors.primary);
+        line.push(b" on_primary=");
+        line.color(colors.on_primary);
+        line.push(b" text_primary=");
+        line.color(colors.text_primary);
+        line.push(b" text_secondary=");
+        line.color(colors.text_secondary);
+        line.push(b" success=");
+        line.color(colors.success);
+        line.push(b" warning=");
+        line.color(colors.warning);
+        line.push(b" danger=");
+        line.color(colors.danger);
+        line.push(b" selected=");
+        line.color(self.ctx.theme.state(InteractionState::Selected).background);
         line.push(b"\n");
         line.print(room);
     }
@@ -1198,6 +1247,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     app.print_layout(&room);
     app.print_hit(&room);
     app.print_data(&mut room);
+    app.print_token(&mut room);
     app.print_sem(&mut room);
     app.print_adaptive(&room);
     app.render(&mut room);

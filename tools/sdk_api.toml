@@ -471,8 +471,8 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
-breaking = []
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = [{ since = "DESIGN-D2", change = "Added scheme field for additive ColorScheme dispatch; light values are frozen.", successor = "Theme::light" }]
 
 [[item]]
 id = "berry_ui::sdk::ThemeColors"
@@ -1108,4 +1108,112 @@ capability = "none"
 owner = "berry-ui"
 stability = "experimental"
 spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorPair"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorPairToken"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorScheme"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorSchemePreference"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ContrastLevel"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextScale"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::contrast_meets"
+kind = "fn"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::contrast_ratio_centi"
+kind = "fn"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::resolve_color_scheme"
+kind = "fn"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
 breaking = []

@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-11
 >
-> 定位：GUI-T1 现行实施规格。执行序权威 = [GUI框架地基路线-v1.17.md](GUI框架地基路线-v1.17.md)，控件规格 = [BerryUIControl-TextField-v1.0.md](BerryUIControl-TextField-v1.0.md)，研究依据 = [../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md)。
+> 定位：GUI-T1 现行实施规格。执行序权威 = [GUI框架地基路线-v1.18.md](GUI框架地基路线-v1.18.md)，控件规格 = [BerryUIControl-TextField-v1.0.md](BerryUIControl-TextField-v1.0.md)，研究依据 = [../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md)。
 >
 > 核心裁决：**先落硬件文本编辑基础，不做软键盘与 IME Host**。焦点在 TextField 时，Enter/Space 先由文本状态机消费；Tab/Shift+Tab 永远交还 C1 导航。
 

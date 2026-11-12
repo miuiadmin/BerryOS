@@ -17,8 +17,10 @@ pub use crate::metrics::{
     EmptyIconSource, FontSource, IconSource, MonospaceTextMetrics, TextMetrics,
 };
 pub use crate::theme::{
-    Density, InteractionState, RadiusToken, SpacingToken, StateColors, StrokeToken, Theme,
-    ThemeColors, ThemeMetrics, TypographyToken,
+    contrast_meets, contrast_ratio_centi, resolve_color_scheme, ColorPair, ColorPairToken,
+    ColorScheme, ColorSchemePreference, ContrastLevel, Density, InteractionState, RadiusToken,
+    SpacingToken, StateColors, StrokeToken, TextScale, Theme, ThemeColors, ThemeMetrics,
+    TypographyToken,
 };
 pub use crate::text_input::{
     ime_overlap_px, text_key_intent, TextInputEdit, TextInputKeyOp, TextInputKind,

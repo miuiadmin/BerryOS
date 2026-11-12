@@ -35,6 +35,14 @@ jobs:
           python3 tools/gui_guard.py --self-test
           python3 tools/gui_guard.py
 
+      # SDK-S0 / DESIGN-D2：公开 API 与视觉 token 两本账本必须与源码/生成
+      # 矩阵双向 100% 对拍；GUI8 零 QEMU 自检同步防 marker 断言腐烂。
+      - name: sdk/design ledger + GUI8 self-test
+        run: |
+          python3 tools/sdk_ledger.py --check
+          python3 tools/design_ledger.py --check
+          python3 tools/gui8-smoke.py --self-test
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防
