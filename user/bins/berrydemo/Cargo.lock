@@ -54,7 +54,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "controls"
+name = "berrydemo"
 version = "0.1.0"
 dependencies = [
  "berry-gfx",

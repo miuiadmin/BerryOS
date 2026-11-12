@@ -4,7 +4,7 @@
 # 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
 # （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
 #
-# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 104 = Browser/Settings/Controls boot-probe 扩展 + 对抗审查保留日志
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 104 = Browser/Berry Demo/Settings boot-probe 扩展 + 对抗审查保留日志
 # 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
 # 面八步；C-4 起 +TAB ok——编辑器九步 + 真源两钉，零 fs 盘面 EFI 路可达；
 # T-1 起 +THR ok——进程内多线程消费面，thrchild 镜像内嵌 svcmgr 零
@@ -98,12 +98,10 @@ command -v "$QEMU" >/dev/null 2>&1 || { echo "smoke-image: FAIL: 找不到 $QEMU
 KERNEL_BYTES=$(wc -c < "$KERNEL" | tr -d ' ')
 INITRD_BYTES=$(wc -c < "rootfs.cpio" | tr -d ' ')
 
-# 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG），360s ≈ 3x 余量（帽只兜
-# 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
-# B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
-# C-3 起 +PS/BC（ps + berryctl 三拉起 = 两 musl spawn + 4 RPC ≈ +10-20s
-# TCG）——360s 帽不动。
-DEADLINE_BOOT=360
+# 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG）；Berry Demo 后 boot 批为
+# 10 个 .bap + 7 个 GUI app 探针，且开发主机可能并行跑其他 QEMU。600s 只兜
+# 结构性挂死，不赌快。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
+DEADLINE_BOOT=600
 DEADLINE_CANARY=120
 DEADLINE_RX=60
 
@@ -241,7 +239,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 防误配。裸 grep -qF 足够——"WM ok" 与现役标记互非子串（最近形
 # BENCHWAKE n=/MANY ok/WAIT ok 均不含）。GFX/GFXF 语义零漂移：present/hdi
 # 调用点仅换端经 wmd 中继（op 编码与断言零改动——guifbd 字节不动）。时
-# 序：wmd 一 spawn ≈+5-10s TCG，实测链 ~115s 余量足——DEADLINE_BOOT=360s
+# 序：wmd 一 spawn ≈+5-10s TCG，实测链 ~115s；并行 QEMU 主机负载下用 600s 帽——DEADLINE_BOOT=600s
 # 帽不动。LAUNCH 双（GUI-8 段③）：launcher 常驻进程自测——首帧呈现回执
 # 过链 LAUNCH ok + 合成 swipe 两轮翻页各落一帧 PAGE ok n=2（frameloop.rs
 # Selftest 状态机——**每进程**恰一次；svcmgr 一次重启帽重拉后两标记可在
@@ -250,7 +248,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无 \n 可与上帧 art 行尾残字拼成 `veco: …`——grep 用无前缀子串）不进
 # canon。裸 grep -qF 足够——"LAUNCH ok"/"PAGE ok n="
 # 与现役 34 枚互非子串（LAUNCH/PAGE 词头独有）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "CJKPROBE ok n=2" "BROWSER up" "BROWSERWIN ok" "BROWSERFRAME ok" "BROWSERPROBE ok" "BROWSERDESTROY ok" "BROWSEREXIT ok" "GFX ok" "GFXF ok n=" "WM ok" "WMCONN ok id=1" "WMCONN ok id=2" "WMDENY ok" "WMSDENY ok" "WMORPHAN ok id=" "WM2FRAME ok n=2" "WMDEAD ok id=1 wins=0" "WMDEAD ok id=2 wins=1" "WMDTY ok n=1" "WMCONN ok id=3" "BROWSER up" "WMCONN ok id=4" "CONTACTS up" "CONTACTSWIN ok" "CONTACTSLIST ok n=" "CONTACTSLOCAL ok n=4" "CONTACTSFRAME ok" "CONTACTSPROBE ok" "CONTACTSDESTROY ok" "CONTACTSEXIT ok" "WMCONN ok id=5" "CONTROLS up" "CONTROLSWIN ok" "CONTROLSFRAME ok" "CONTROLSPROBE ok" "CONTROLSDESTROY ok" "CONTROLSEXIT ok" "WMCONN ok id=6" "FILES up" "FILESWIN ok" "FILESLIST ok n=" "FILESSEL ok i=" "FILESFRAME ok" "FILESPROBE ok" "FILESDESTROY ok" "FILESEXIT ok" "WMCONN ok id=7" "PHOTOS up" "PHOTOSWIN ok" "PHOTOSLIST ok n=" "PHOTOSLOCAL ok n=5000" "PHOTOSFRAME ok" "PHOTOSPROBE ok" "PHOTOSDESTROY ok" "PHOTSEXIT ok" "WMCONN ok id=8" "SETTINGS up" "SETTINGSWIN ok" "SETTINGSFRAME ok" "SETTINGSGEOM ok" "SETTINGSPROBE ok" "SETTINGSDESTROY ok" "SETTINGSEXIT ok" "WMCONN ok id=9" "UITEST up" "UITESTROOM ok" "UITESTWIN ok w=" "UITESTFRAME ok" "UITESTPROBE ok" "UITESTDESTROY ok" "UITESTEXIT ok" "LAUNCH ok" "PAGE ok n=")
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "CJKPROBE ok n=2" "BROWSER up" "BROWSERWIN ok" "BROWSERFRAME ok" "BROWSERPROBE ok" "BROWSERDESTROY ok" "BROWSEREXIT ok" "GFX ok" "GFXF ok n=" "WM ok" "WMCONN ok id=1" "WMCONN ok id=2" "WMDENY ok" "WMSDENY ok" "WMORPHAN ok id=" "WM2FRAME ok n=2" "WMDEAD ok id=1 wins=0" "WMDEAD ok id=2 wins=1" "WMDTY ok n=1" "WMCONN ok id=3" "BERRYDEMO up" "WMCONN ok id=4" "BERRYDEMOWIN ok" "BERRYDEMOFRAME ok" "BERRYDEMOPROBE ok" "BERRYDEMODESTROY ok" "BERRYDEMOEXIT ok" "WMCONN ok id=5" "BROWSER up" "WMCONN ok id=6" "CONTACTS up" "CONTACTSWIN ok" "CONTACTSLIST ok n=" "CONTACTSLOCAL ok n=4" "CONTACTSFRAME ok" "CONTACTSPROBE ok" "CONTACTSDESTROY ok" "CONTACTSEXIT ok" "WMCONN ok id=7" "FILES up" "FILESWIN ok" "FILESLIST ok n=" "FILESSEL ok i=" "FILESFRAME ok" "FILESPROBE ok" "FILESDESTROY ok" "FILESEXIT ok" "WMCONN ok id=8" "PHOTOS up" "PHOTOSWIN ok" "PHOTOSLIST ok n=" "PHOTOSLOCAL ok n=5000" "PHOTOSFRAME ok" "PHOTOSPROBE ok" "PHOTOSDESTROY ok" "PHOTSEXIT ok" "WMCONN ok id=9" "SETTINGS up" "SETTINGSWIN ok" "SETTINGSFRAME ok" "SETTINGSGEOM ok" "SETTINGSPROBE ok" "SETTINGSDESTROY ok" "SETTINGSEXIT ok" "WMCONN ok id=10" "UITEST up" "UITESTROOM ok" "UITESTWIN ok w=" "UITESTFRAME ok" "UITESTPROBE ok" "UITESTDESTROY ok" "UITESTEXIT ok" "LAUNCH ok" "PAGE ok n=")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")

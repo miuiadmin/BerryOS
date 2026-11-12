@@ -1,9 +1,10 @@
-//! CONTROLS —— BerryUI Rich Controls Demo。
+//! BERRYDEMO —— Berry Demo。
 //!
-//! 这是一个真实运行在 BerryOS 桌面上的产品面 demo：Berry Room 负责
+//! 这是一个真实运行在 BerryOS 桌面上的系统级 demo：Berry Room 负责
 //! WM/窗口/frame/输入/销毁；BerryUI/Berry Design 负责控件、主题、状态
 //! 与页面组合。本 app 不解析 WM RPC、不映射 VMO、不计算 stride、不写
-//! 像素，也不用 surface escape。
+//! 像素，也不用 surface escape；manifest/.bap/Berry Room/BerryUI/IconSource
+//! 同页展示系统特性与应用开发标准。
 
 #![no_std]
 #![no_main]
@@ -24,10 +25,11 @@ use berry_ui::sdk::{
 type Ui192 = Ui<192>;
 
 const PAGE_HOME: u8 = 0;
-const PAGE_CONTROLS: u8 = 1;
+const PAGE_WIDGETS: u8 = 1;
 const PAGE_INPUT: u8 = 2;
 const PAGE_LIST: u8 = 3;
 const PAGE_THEME: u8 = 4;
+const PAGE_SYSTEM: u8 = 5;
 
 struct RoomFontSource;
 static ROOM_FONT_SOURCE: RoomFontSource = RoomFontSource;
@@ -192,7 +194,7 @@ impl Line {
 
 fn fail(room: &AppRoom, what: &str) -> ! {
     let mut line = [0u8; 112];
-    let head = b"controls: ";
+    let head = b"berrydemo: ";
     line[..head.len()].copy_from_slice(head);
     let n = head.len() + what.len().min(line.len() - head.len());
     line[head.len()..n].copy_from_slice(&what.as_bytes()[..n - head.len()]);
@@ -248,10 +250,10 @@ struct HomePage {
     scroll: ScrollView,
     back: Button,
     tour: Button,
-    nav: [Option<ListItem>; 4],
+    nav: [Option<ListItem>; 5],
 }
 
-struct ControlsPage {
+struct WidgetsPage {
     root: NodeId,
     scroll: ScrollView,
     back: Button,
@@ -285,42 +287,52 @@ struct ThemePage {
     cycle: Button,
 }
 
+struct SystemPage {
+    root: NodeId,
+    scroll: ScrollView,
+    back: Button,
+}
+
 enum Page {
     Home(HomePage),
-    Controls(ControlsPage),
+    Widgets(WidgetsPage),
     Input(InputPage),
     List(ListPage),
     Theme(ThemePage),
+    System(SystemPage),
 }
 
 impl Page {
     fn kind(&self) -> u8 {
         match self {
             Self::Home(_) => PAGE_HOME,
-            Self::Controls(_) => PAGE_CONTROLS,
+            Self::Widgets(_) => PAGE_WIDGETS,
             Self::Input(_) => PAGE_INPUT,
             Self::List(_) => PAGE_LIST,
             Self::Theme(_) => PAGE_THEME,
+            Self::System(_) => PAGE_SYSTEM,
         }
     }
 
     fn root(&self) -> NodeId {
         match self {
             Self::Home(page) => page.root,
-            Self::Controls(page) => page.root,
+            Self::Widgets(page) => page.root,
             Self::Input(page) => page.root,
             Self::List(page) => page.root,
             Self::Theme(page) => page.root,
+            Self::System(page) => page.root,
         }
     }
 
     fn scroll_mut(&mut self) -> &mut ScrollView {
         match self {
             Self::Home(page) => &mut page.scroll,
-            Self::Controls(page) => &mut page.scroll,
+            Self::Widgets(page) => &mut page.scroll,
             Self::Input(page) => &mut page.scroll,
             Self::List(page) => &mut page.scroll,
             Self::Theme(page) => &mut page.scroll,
+            Self::System(page) => &mut page.scroll,
         }
     }
 }
@@ -339,10 +351,11 @@ struct App {
 
 fn page_title(kind: u8) -> &'static [u8] {
     match kind {
-        PAGE_CONTROLS => b"Controls",
+        PAGE_WIDGETS => b"Widgets",
         PAGE_INPUT => b"Inputs",
         PAGE_LIST => b"Lists",
         PAGE_THEME => b"Theme",
+        PAGE_SYSTEM => b"System",
         _ => b"Berry Gallery",
     }
 }
@@ -367,9 +380,9 @@ fn build_home(ui: &mut Ui192, ctx: &WidgetContext) -> HomePage {
         ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S),
         ctx.metrics.radius(berry_ui::sdk::RadiusToken::Large),
     );
-    text(ui, hero, ctx, TextVariant::Title, b"Berry Controls Gallery")
+    text(ui, hero, ctx, TextVariant::Title, b"Berry Demo Gallery")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    text(ui, hero, ctx, TextVariant::Body, b"Real widgets, real window, real input")
+    text(ui, hero, ctx, TextVariant::Body, b"System features and app standards")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let chips = row(ui, hero, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     for color in [
@@ -383,19 +396,20 @@ fn build_home(ui: &mut Ui192, ctx: &WidgetContext) -> HomePage {
     }
 
     divider(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
-    text(ui, stack, ctx, TextVariant::Title, b"Control catalog")
+    text(ui, stack, ctx, TextVariant::Title, b"Demo catalog")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    let titles: [(&[u8], &[u8]); 4] = [
+    let titles: [(&[u8], &[u8]); 5] = [
         (b"Buttons & states", b"Press, focus, disable, count"),
         (b"Text inputs", b"Text, number, password"),
         (b"Lists & panes", b"Selection, detail, empty state"),
         (b"Theme & density", b"Colors, spacing, radius, schemes"),
+        (b"System & standards", b"Spawn, package, window, lifecycle"),
     ];
     let first = ListItem::new(ui, stack, ctx, titles[0].0, Some(titles[0].1), true)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let mut nav = [Some(first); 4];
-    for index in 1..4 {
+    let mut nav = [Some(first); 5];
+    for index in 1..5 {
         nav[index] = Some(
             ListItem::new(ui, stack, ctx, titles[index].0, Some(titles[index].1), false)
                 .unwrap_or_else(|_| berry_room::panic_exit(134)),
@@ -412,9 +426,9 @@ fn build_home(ui: &mut Ui192, ctx: &WidgetContext) -> HomePage {
     HomePage { root: scaffold.root, scroll, back, tour, nav }
 }
 
-fn build_controls(ui: &mut Ui192, ctx: &WidgetContext, clicks: u32, switch_on: bool) -> ControlsPage {
+fn build_widgets(ui: &mut Ui192, ctx: &WidgetContext, clicks: u32, switch_on: bool) -> WidgetsPage {
     let root = ui.root();
-    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_CONTROLS))
+    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_WIDGETS))
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
     let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
@@ -486,7 +500,7 @@ fn build_controls(ui: &mut Ui192, ctx: &WidgetContext, clicks: u32, switch_on: b
     let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    ControlsPage { root: scaffold.root, scroll, back, counter, switch, disabled, selected }
+    WidgetsPage { root: scaffold.root, scroll, back, counter, switch, disabled, selected }
 }
 
 fn build_input(ui: &mut Ui192, ctx: &WidgetContext) -> InputPage {
@@ -664,12 +678,73 @@ fn build_theme(ui: &mut Ui192, ctx: &WidgetContext) -> ThemePage {
     ThemePage { root: scaffold.root, scroll, back, cycle }
 }
 
-fn build_page(ui: &mut Ui192, ctx: &WidgetContext, kind: u8, clicks: u32, switch_on: bool, selected: u8, empty: bool) -> Page {
+fn build_system(ui: &mut Ui192, ctx: &WidgetContext, frame_seq: u32) -> SystemPage {
+    let root = ui.root();
+    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_SYSTEM))
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let (_, viewport_h) = ui.viewport();
+    let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+
+    text(ui, stack, ctx, TextVariant::Title, b"System chain")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let system_lines: [&[u8]; 6] = [
+        b"Desktop click issues real APP_SPAWN",
+        b"BERRYDEMO is a packaged .bap process",
+        b"Berry Room owns WM window and frame VMO",
+        b"DisplayList submit is the only render path",
+        b"Pointer events arrive owner-local",
+        b"Destroy and exit clean the WM session",
+    ];
+    for line in system_lines {
+        text(ui, stack, ctx, TextVariant::Body, line)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
+
+    divider(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+    text(ui, stack, ctx, TextVariant::Title, b"App standard")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let standard_lines: [&[u8]; 7] = [
+        b"manifest.toml declares id, entry, wm",
+        b"mkapp emits a checked .bap archive",
+        b"BerryUI widgets own layout and state",
+        b"IconSource supplies all demo pixels",
+        b"Guest font VMO supplies HD text",
+        b"No WM RPC, VMO mapping, or pixels",
+        b"No surface escape in a normal app",
+    ];
+    for line in standard_lines {
+        text(ui, stack, ctx, TextVariant::Body, line)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
+
+    let icons = row(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+    icon(ui, icons, ctx, 100).unwrap_or_else(|_| berry_room::panic_exit(134));
+    icon(ui, icons, ctx, 101).unwrap_or_else(|_| berry_room::panic_exit(134));
+    icon(ui, icons, ctx, 102).unwrap_or_else(|_| berry_room::panic_exit(134));
+
+    let mut frame_label = [b'0'; 48];
+    let head = b"Current frame sequence ";
+    frame_label[..head.len()].copy_from_slice(head);
+    let n = append_u32(&mut frame_label[head.len()..], frame_seq) + head.len();
+    text(ui, stack, ctx, TextVariant::Body, &frame_label[..n])
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+
+    let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+
+    SystemPage { root: scaffold.root, scroll, back }
+}
+
+fn build_page(ui: &mut Ui192, ctx: &WidgetContext, kind: u8, clicks: u32, switch_on: bool, selected: u8, empty: bool, frame_seq: u32) -> Page {
     match kind {
-        PAGE_CONTROLS => Page::Controls(build_controls(ui, ctx, clicks, switch_on)),
+        PAGE_WIDGETS => Page::Widgets(build_widgets(ui, ctx, clicks, switch_on)),
         PAGE_INPUT => Page::Input(build_input(ui, ctx)),
         PAGE_LIST => Page::List(build_list(ui, ctx, selected, empty)),
         PAGE_THEME => Page::Theme(build_theme(ui, ctx)),
+        PAGE_SYSTEM => Page::System(build_system(ui, ctx, frame_seq)),
         _ => Page::Home(build_home(ui, ctx)),
     }
 }
@@ -722,32 +797,42 @@ impl App {
         if let Err(error) = room.submit(self.frame_seq) {
             fail(room, error.as_str());
         }
-        let mut line = Line::new(b"CONTROLSRENDER ok seq=");
+        let mut line = Line::new(b"BERRYDEMORENDER ok seq=");
         line.push_u32(self.frame_seq);
         line.push(b" cmds=");
         line.push_u32(commands as u32);
         line.push(b"\n");
         line.print(room);
-        room.print(b"CONTROLSFRAME ok\n");
+        room.print(b"BERRYDEMOFRAME ok\n");
     }
 
     fn print_layout(&self, room: &AppRoom) {
-        let mut line = Line::new(b"CONTROLSLAYOUT ok page=");
+        let mut line = Line::new(b"BERRYDEMOLAYOUT ok page=");
         line.push_u32(self.page.kind() as u32);
-        let (back, extra) = match &self.page {
-            Page::Home(page) => (page.back.panel, page.nav[0].as_ref().map(|item| item.panel)),
-            Page::Controls(page) => (page.back.panel, Some(page.switch.panel)),
-            Page::Input(page) => (page.back.panel, Some(page.fields[0].panel)),
+        let (back, extra, system) = match &self.page {
+            Page::Home(page) => (
+                page.back.panel,
+                page.nav[0].as_ref().map(|item| item.panel),
+                Some(page.tour.panel),
+            ),
+            Page::Widgets(page) => (page.back.panel, Some(page.switch.panel), None),
+            Page::Input(page) => (page.back.panel, Some(page.fields[0].panel), None),
             Page::List(page) => (
                 page.back.panel,
                 page.detail.as_ref().map(|detail| detail.row),
+                None,
             ),
-            Page::Theme(page) => (page.back.panel, Some(page.cycle.panel)),
+            Page::Theme(page) => (page.back.panel, Some(page.cycle.panel), None),
+            Page::System(page) => (page.back.panel, None, None),
         };
         line.push(b" back=");
         line.rect(self.ui.bounds(back).unwrap_or_else(|_| berry_room::panic_exit(134)));
         if let Some(node) = extra {
             line.push(b" target=");
+            line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));
+        }
+        if let Some(node) = system {
+            line.push(b" system=");
             line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));
         }
         line.push(b"\n");
@@ -766,6 +851,7 @@ impl App {
             self.switch_on,
             self.selected_item,
             self.list_empty,
+            self.frame_seq,
         );
         self.page
             .scroll_mut()
@@ -773,7 +859,7 @@ impl App {
             .unwrap_or_else(|_| berry_room::panic_exit(134));
         self.render(room);
         self.print_layout(room);
-        let mut line = Line::new(b"CONTROLPAGE ok page=");
+        let mut line = Line::new(b"BERRYDEMOPAGE ok page=");
         line.push_u32(kind as u32);
         line.push(b"\n");
         line.print(room);
@@ -792,7 +878,7 @@ impl App {
                         .unwrap_or_else(|_| berry_room::panic_exit(134));
                 }
             }
-            Page::Controls(page) => {
+            Page::Widgets(page) => {
                 handled |= page.back.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.counter.on_msg(&mut self.ui, &self.ctx, message)
@@ -834,6 +920,10 @@ impl App {
                 handled |= page.cycle.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
+            Page::System(page) => {
+                handled |= page.back.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+            }
         }
         handled |= self
             .page
@@ -849,7 +939,7 @@ impl App {
         };
         let _ = self.deliver_widget(message);
 
-        let mut hit_line = Line::new(b"CONTROLSHIT ok node=");
+        let mut hit_line = Line::new(b"BERRYDEMOHIT ok node=");
         let mut action: u8 = 0;
         let mut focused_field: u32 = 0;
         let mut target_page = self.page.kind();
@@ -860,9 +950,9 @@ impl App {
                     hit_line.push(b"exit");
                     action = 1;
                 } else if page.tour.panel == node || page.tour.label == node {
-                    hit_line.push(b"tour");
-                    target_page = PAGE_CONTROLS;
-                    action = 2;
+                    hit_line.push(b"system-tour");
+                    target_page = PAGE_SYSTEM;
+                    action = 9;
                 } else if let Some(index) = page.nav.iter().flatten().position(|item| {
                     item.panel == node
                         || item.title == node
@@ -873,7 +963,7 @@ impl App {
                     action = 2;
                 }
             }
-            Page::Controls(page) => {
+            Page::Widgets(page) => {
                 if page.back.panel == node || page.back.label == node {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
@@ -954,6 +1044,13 @@ impl App {
                     action = 7;
                 }
             }
+            Page::System(page) => {
+                if page.back.panel == node || page.back.label == node {
+                    hit_line.push(b"back");
+                    target_page = PAGE_HOME;
+                    action = 2;
+                }
+            }
         }
 
         if action == 0 {
@@ -982,7 +1079,7 @@ impl App {
                 } else {
                     b" odd\n"
                 };
-                let mut line = Line::new(b"CONTROLSCOUNTER ok n=");
+                let mut line = Line::new(b"BERRYDEMOCOUNTER ok n=");
                 line.push_u32(self.clicks);
                 line.push(marker);
                 line.print(room);
@@ -990,7 +1087,7 @@ impl App {
                 false
             }
             4 => {
-                let mut line = Line::new(b"CONTROLSSWITCH ok checked=");
+                let mut line = Line::new(b"BERRYDEMOSWITCH ok checked=");
                 line.push_u32(self.switch_on as u32);
                 line.push(b"\n");
                 line.print(room);
@@ -998,7 +1095,7 @@ impl App {
                 false
             }
             5 => {
-                let mut line = Line::new(b"CONTROLSFOCUS ok field=");
+                let mut line = Line::new(b"BERRYDEMOFOCUS ok field=");
                 line.push_u32(focused_field);
                 line.push(b"\n");
                 line.print(room);
@@ -1006,7 +1103,7 @@ impl App {
                 false
             }
             6 => {
-                let mut line = Line::new(b"CONTROLSLIST ok selected=");
+                let mut line = Line::new(b"BERRYDEMOLIST ok selected=");
                 line.push_u32(self.selected_item as u32);
                 line.push(b"\n");
                 line.print(room);
@@ -1021,7 +1118,7 @@ impl App {
                     _ => Theme::high_contrast_light(),
                 };
                 self.ctx = WidgetContext::new(theme, self.ctx.metrics);
-                let mut line = Line::new(b"CONTROLSTHEME ok scheme=");
+                let mut line = Line::new(b"BERRYDEMOTHEME ok scheme=");
                 line.push_u32(self.theme_index as u32);
                 line.push(b"\n");
                 line.print(room);
@@ -1031,6 +1128,11 @@ impl App {
             8 => {
                 // EmptyState <-> list 是同页形态切换，必须强制重建。
                 self.replace_page(room, PAGE_LIST);
+                false
+            }
+            9 => {
+                room.print(b"BERRYDEMOSYSTEM ok\n");
+                self.replace_page(room, PAGE_SYSTEM);
                 false
             }
             _ => false,
@@ -1060,7 +1162,7 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
             for slot in copied.iter().take(messages.len()) {
                 let Some(message) = *slot else { continue };
                 if app.handle_message(room, &message, x, y) {
-                    room.print(b"CONTROLSBACK ok\n");
+                    room.print(b"BERRYDEMOBACK ok\n");
                     return;
                 }
             }
@@ -1072,7 +1174,7 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
 #[no_mangle]
 pub extern "C" fn _start(env_ch: u32) -> ! {
     let config = RoomConfig {
-        argv0: b"bin/controls",
+        argv0: b"bin/berrydemo",
         uses_fs: false,
         surface_escape: false,
     };
@@ -1080,18 +1182,18 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         Ok(room) => room,
         Err(_) => berry_room::panic_exit(134),
     };
-    room.print(b"CONTROLS up\n");
+    room.print(b"BERRYDEMO up\n");
     let (width, height) = match room.open_window() {
         Ok(size) => size,
         Err(error) => fail(&room, error.as_str()),
     };
-    room.print(b"CONTROLSWIN ok\n");
+    room.print(b"BERRYDEMOWIN ok\n");
 
     let mut ui = Ui192::new(width as u32, height as u32);
     let ctx = WidgetContext::for_ui(Theme::light(), &ui);
     ui.set_font_source(&ROOM_FONT_SOURCE);
     ui.set_icon_source(&DEMO_ICONS);
-    let page = build_page(&mut ui, &ctx, PAGE_HOME, 0, false, 0, false);
+    let page = build_page(&mut ui, &ctx, PAGE_HOME, 0, false, 0, false, 0);
     let mut app = App {
         ui,
         ctx,
@@ -1111,7 +1213,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     app.render(&mut room);
 
     if room.boot_probe() {
-        room.print(b"CONTROLSPROBE ok\n");
+        room.print(b"BERRYDEMOPROBE ok\n");
     } else {
         run_interactive(&mut app, &mut room);
     }
@@ -1119,8 +1221,8 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     if let Err(error) = room.destroy() {
         fail(&room, error.as_str());
     }
-    room.print(b"CONTROLSDESTROY ok\n");
-    room.print(b"CONTROLSEXIT ok\n");
+    room.print(b"BERRYDEMODESTROY ok\n");
+    room.print(b"BERRYDEMOEXIT ok\n");
     room.exit(0)
 }
 

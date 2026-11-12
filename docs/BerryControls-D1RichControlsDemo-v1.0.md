@@ -2,6 +2,9 @@
 
 > 版本：**1.0**｜2026-11-12
 >
+> 状态：**superseded**（2026-11-12 用户追裁改名并扩展范围）。
+> Superseded-by: [BerryDemo-D1-v1.0.md](BerryDemo-D1-v1.0.md)。
+>
 > 定位：BerryUI 真实产品面 demo 规格。执行序权威 = [GUI框架地基路线-v1.20.md](GUI框架地基路线-v1.20.md)；前置 = [BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md](BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md)。本刀响应产品方向修正：暂停继续向下扩协议，先把一个视觉丰富、可运行、可点击的 demo 放到 BerryOS 桌面上。
 >
 > 核心裁决：新增独立 `CONTROLS` app，不改造 UITEST。UITEST 是系统验收仪器；CONTROLS 是产品面控件橱窗。

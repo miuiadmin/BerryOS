@@ -846,9 +846,9 @@ Text wrap 是 FormMetrics、IME、scroll-into-view、TextArea 的共同前置
 仍可在 berry-ui 内部收敛
 ```
 
-### 方向修正插入刀：BerryControls D1（已落地）
+### 方向修正插入刀：Berry Demo D1（已落地）
 
-用户裁决：协议地基已可承载产品面，继续向下扩协议会变成空中楼阁。D1 新增独立 CONTROLS Rich Controls Demo，以真实桌面 app 放大控件与视觉缺口；后续 L6b / WM-R4 必须先说明对 CONTROLS 的可见收益。
+用户裁决：协议地基已可承载产品面，继续向下扩协议会变成空中楼阁。D1 先以控件橱窗工作名落地，用户追裁后统一命名为 Berry Demo / `BERRYDEMO`，并扩展为 UI + 系统特性 + 应用开发标准；后续 L6b / WM-R4 必须先说明对 Berry Demo 的可见收益。
 
 ### 第三刀：LAYOUT-L6a（已落地）
 

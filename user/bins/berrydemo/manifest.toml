@@ -1,7 +1,7 @@
 [app]
-id = "CONTROLS"
+id = "BERRYDEMO"
 version = "0.1.0"
-entry = "bin/controls"
+entry = "bin/berrydemo"
 type = "app"
 intent = "utility"
 
@@ -14,5 +14,5 @@ stack_pages = 48
 
 [ui]
 icon = "icons/icon.byi"
-label = "Controls"
+label = "Berry Demo"
 views = "views/main.bui"

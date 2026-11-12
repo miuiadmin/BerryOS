@@ -1,8 +1,8 @@
 [package]
-name = "controls"
+name = "berrydemo"
 version = "0.1.0"
 edition = "2021"
-# CONTROLS：真实 BerryUI Rich Controls Demo。Berry Room 负责
+# BERRYDEMO：Berry Demo 系统与应用开发标准展示。Berry Room 负责
 # WM/窗口/frame/输入/销毁；BerryUI/Berry Design 负责控件、主题与状态。
 license = "Apache-2.0"
 

@@ -72,7 +72,7 @@ use berry_ui::UiMain;
 static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
 /// RPC 收侧 READABLE 帽（gfxdemo 10s A6-a 形态；launcher 600s：首启要等
-/// svcmgr 跑完 boot 自验进稳态 app serve。CONTROLS 把真实 GUI app 数抬到
+/// svcmgr 跑完 boot 自验进稳态 app serve。BERRYDEMO 把真实 GUI app 数抬到
 /// 7 后，TCG 全 app boot 批可超过旧 300s 帽；真机仍远低于该值）。
 const RPC_CAP_NS: u64 = 600 * 1_000_000_000;
 

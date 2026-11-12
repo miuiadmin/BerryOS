@@ -1,6 +1,8 @@
 # Agent Note: BerryControls D1 Rich Controls Demo
 
-Status: implemented — 2026-11-12
+Status: implemented — 2026-11-12（命名/范围后续追裁，见 Superseded-by）
+
+- Superseded-by: [2026-11-12-berry-demo-rename.md](2026-11-12-berry-demo-rename.md)
 
 ## Problem
 
