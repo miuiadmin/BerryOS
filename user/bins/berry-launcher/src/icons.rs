@@ -44,7 +44,7 @@ mod status_icons;
 mod wallpaper;
 
 /// 内建状态/dock 图标 id（desktop 直建 Icon 节点；位于 app 图标稠密域
-/// 前缀，app id 从 7 起——launcher 是唯一消费者，契约不外泄）。
+/// 前缀，app id 从 11 起——launcher 是唯一消费者，契约不外泄）。
 pub const STATUS_SIGNAL: u16 = 0;
 pub const STATUS_WIFI: u16 = 1;
 pub const STATUS_BATTERY: u16 = 2;
@@ -57,6 +57,16 @@ pub const DOCK1: u16 = 4;
 pub const DOCK2: u16 = 5;
 pub const DOCK3: u16 = 6;
 pub const DOCK_FACE_IDS: [u16; 4] = [DOCK0, DOCK1, DOCK2, DOCK3];
+/// 三键导航面 id（波一刀 D，审计 02 号 §6.1 M2——back/home/power 自绘
+/// 最简形：程序化 Argb「深底圆角块 + 白符号」，命中区 = 键块整体 ≥44px
+/// 应用规范 §3.2；OH 官方仓无导航键现成 Apache-2.0 资产可续取，按
+/// ADR #63 同等口径自绘单色形——底块色 = CLEAR_BG 同族深蓝灰）。
+pub const NAV_BACK: u16 = 7;
+pub const NAV_HOME: u16 = 8;
+pub const NAV_POWER: u16 = 9;
+/// 关机确认态面（二击 3s 窗 armed：同形换暗红警示底——frameloop
+/// set_props 换 id，运行期零重建）。
+pub const NAV_POWER_ARMED: u16 = 10;
 pub const DOCK0_DIM: (u32, u32) = (status_icons::DOCK0_W, status_icons::DOCK0_H);
 pub const DOCK1_DIM: (u32, u32) = (status_icons::DOCK1_W, status_icons::DOCK1_H);
 pub const DOCK2_DIM: (u32, u32) = (status_icons::DOCK2_W, status_icons::DOCK2_H);
@@ -65,8 +75,10 @@ pub const DOCK_DIMS: [(u32, u32); 4] = [DOCK0_DIM, DOCK1_DIM, DOCK2_DIM, DOCK3_D
 pub const STATUS_SIGNAL_DIM: (u32, u32) = (status_icons::SIGNAL_W, status_icons::SIGNAL_H);
 pub const STATUS_WIFI_DIM: (u32, u32) = (status_icons::WIFI_W, status_icons::WIFI_H);
 pub const STATUS_BATTERY_DIM: (u32, u32) = (status_icons::BATTERY_W, status_icons::BATTERY_H);
-const BUILTIN_FACES: usize = 7;
-const _: () = assert!(BUILTIN_FACES == 7, "状态三 + dock 四内建面钉板");
+/// 导航面源边长（66px 源 → big 132 目标 2x ScaledArgb / 紧凑 44 缩采样）。
+pub const NAV_SRC_PX: u32 = 66;
+const BUILTIN_FACES: usize = 11;
+const _: () = assert!(BUILTIN_FACES == 11, "状态三 + dock 四 + 导航四面内建面钉板");
 
 /// 无图标哨兵（icon 域外值——desktop 不建 Icon 节点）。
 pub const NO_ICON: u16 = u16::MAX;
@@ -169,7 +181,7 @@ fn decoded_face(blob: &[u8]) -> IconFace {
     }
 }
 
-/// 状态栏三内建面 + dock 四分段面。
+/// 状态栏三内建面 + dock 四分段面 + 导航四面（刀 D）。
 fn status_faces() -> Vec<IconFace> {
     vec![
         IconFace {
@@ -191,7 +203,105 @@ fn status_faces() -> Vec<IconFace> {
         decoded_face(&status_icons::DOCK1_BYI),
         decoded_face(&status_icons::DOCK2_BYI),
         decoded_face(&status_icons::DOCK3_BYI),
+        nav_face(NavGlyph::Back, NAV_BASE_BG),
+        nav_face(NavGlyph::Home, NAV_BASE_BG),
+        nav_face(NavGlyph::Power, NAV_BASE_BG),
+        nav_face(NavGlyph::Power, NAV_ARMED_BG),
     ]
+}
+
+// —— 三键导航面（波一刀 D——程序化自绘，generic_face 同先例）——
+
+/// 导航键底块色（常态：深蓝灰，CLEAR_BG 同族）。
+const NAV_BASE_BG: u32 = 0xFF10_1828;
+/// 导航键底块色（关机确认态：暗红警示）。
+const NAV_ARMED_BG: u32 = 0xFF7A_1F1F;
+/// 符号白（TEXT_FG 同值系）。
+const NAV_GLYPH_FG: u32 = 0xFFF0_F0F4;
+
+/// 导航符号形（back = 左向实心三角；home = 圆环；power = 缺口圆环 +
+/// 顶部竖线——电源通用形）。
+#[derive(Clone, Copy)]
+enum NavGlyph {
+    Back,
+    Home,
+    Power,
+}
+
+/// 单符号像素判定（(x,y) → 符号白？）。
+fn nav_glyph_covers(g: NavGlyph, x: i32, y: i32) -> bool {
+    let c = NAV_SRC_PX as i32 / 2; // 33
+    match g {
+        // 左向实心三角：顶点 (12,c)，上 (52,10)，下 (52,56)——叉积同号
+        // 内测试（边长 40px，2x 放大后 80px 视觉面）。
+        NavGlyph::Back => {
+            let (ax, ay) = (12, c);
+            let (bx, by) = (52, 10);
+            let (cx, cy) = (52, 2 * c - 10);
+            let d1 = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+            let d2 = (cx - bx) * (y - by) - (cy - by) * (x - bx);
+            let d3 = (ax - cx) * (y - cy) - (ay - cy) * (x - cx);
+            let neg = d1 < 0 || d2 < 0 || d3 < 0;
+            let pos = d1 > 0 || d2 > 0 || d3 > 0;
+            !(neg && pos)
+        }
+        // 圆环：中心 (c, c+2)，外 r=21 内 r=12（带宽 9px）。
+        NavGlyph::Home => {
+            let dx = x - c;
+            let dy = y - (c + 2);
+            let d2 = dx * dx + dy * dy;
+            (144..=441).contains(&d2)
+        }
+        // 电源形：中心 (c, c+4) 圆环外 r=20 内 r=13，顶部 70° 开口
+        // （与竖向夹角 <35° 的环段不画）；竖线 x∈[c-4,c+4] y∈[c-25,c-7]。
+        NavGlyph::Power => {
+            let dx = x - c;
+            let dy = y - (c + 4);
+            let d2 = dx * dx + dy * dy;
+            if (169..=400).contains(&d2) {
+                // 顶部开口：与竖向（-y 向）夹角 <35° 即 |dx| < tan35°·|dy|
+                // 近似（dy<0 段 |dx|·10 < 7·|dy|·… 用整数近似 tan35°≈0.70）。
+                if dy < 0 && (dx.abs() as i64) * 10 < ((-dy) as i64) * 7 {
+                    return false;
+                }
+                return true;
+            }
+            (x >= c - 4) && (x <= c + 4) && (y >= c - 25) && (y <= c - 7)
+        }
+    }
+}
+
+/// 导航面生成（66×66 Argb：圆角块底 + 符号白——argb_blit 直写像素、
+/// IconProps.fg 不消费；圆角 r=18 外透明）。
+fn nav_face(glyph: NavGlyph, bg: u32) -> IconFace {
+    const S: usize = NAV_SRC_PX as usize;
+    const R: i32 = 18;
+    let mut px = vec![0u32; S * S];
+    let mut y = 0usize;
+    while y < S {
+        let mut x = 0usize;
+        while x < S {
+            // 圆角：四角 (R,R) 内距离场外 = 透明（generic_face 同形）。
+            let ex = x as i32;
+            let ey = y as i32;
+            let in_corner =
+                (ex < R || ex >= S as i32 - R) && (ey < R || ey >= S as i32 - R);
+            let corner_out = in_corner
+                && (if ex < R { R - ex } else { ex - (S as i32 - 1 - R) }).pow(2)
+                    + (if ey < R { R - ey } else { ey - (S as i32 - 1 - R) }).pow(2)
+                    > R * R;
+            if !corner_out {
+                px[y * S + x] = if nav_glyph_covers(glyph, x as i32, y as i32) {
+                    NAV_GLYPH_FG
+                } else {
+                    bg
+                };
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+    IconFace { w: S as u32, h: S as u32, px }
 }
 
 /// 流中待竣工条目（ENTRY 开工 → CHUNK 供料 → 满员转竣工解码）。

@@ -126,7 +126,10 @@ STATUS_H = 44
 # 小屏档无 Dock，只保留 SwipePager 16px 视觉点行（OH 96px 指示区仅 phone 档）。
 DOT_H = 16
 GRID_TOP = 8
-BOTTOM_PAD = 8
+# 底部保留 = 8px 底垫 + 导航条 44px（刀 D 三键导航——desktop.rs 紧凑档
+# grid_h 公式镜像；导航条本身不是点击断言面，只参与格高推导）。
+BOTTOM_PAD = 52
+NAV_KEY_PX = 44
 GRID_COLS = 4
 GRID_ROWS = 5
 GRID_GAP = 12
@@ -1642,9 +1645,10 @@ def self_test(args) -> int:
         )
 
         # 2) 几何
-        if cell0_center(800, 600) != (95, 99):
+        if cell0_center(800, 600) != (95, 95):
             raise SmokeError(f"cell0_center 异常：{cell0_center(800, 600)}")
-        if cell0_center(480, 1000) != (55, 139):
+        # 刀 D 后：grid_h = 1000-(44+8+16+44+8)=880；cell_h=(880-48)/5=166。
+        if cell0_center(480, 1000) != (55, 135):
             raise SmokeError(f"cell0_center 480x1000 异常：{cell0_center(480, 1000)}")
         log("self-test: geometry ok（800x600→(95,99)，480x1000→(55,139)）")
 

@@ -514,6 +514,54 @@ fn main() {
     let m = gp::encode_reg_vblank_req(&mut req, 0);
     expect_ok(hw, &req[..m], &[ev2], &mut rep, &mut rhs, "reg vblank off");
 
+    // —— 波一刀 B（残帧清屏）：自测图案是 boot 期唯一上屏帧
+    //     （blit-at-SUBMIT），退出后残留 fb 上直到 launcher 首帧——
+    //     「测试图案当桌面」误读窗（research/桌面UX审计/02 §2.1/
+    //     §3 修法 B1）。退出前提交一帧纯黑（FULL 形 K=0）：gfxdemo
+    //     退场屏幕归黑，launcher 首帧（FULL 壁纸）前的间隔显示黑而非
+    //     测试图案。credits 全周期与首帧同形（SUBMIT→FRAME_CALLBACK→
+    //     RELEASE，在途 ≤1 不变量保持）。
+    fb.fill(0);
+    let mut alias3: Handle = 0;
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias3) != 0 || alias3 == 0 {
+        fail("dup alias3");
+    }
+    let creq = gp::PresentReq::Submit {
+        surface_id: 0,
+        buffer_id: 2,
+        flags: gp::SUBMIT_F_DAMAGE_FULL,
+        rate_hint: 0,
+        target_present_ns: 0,
+        rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+        rect_count: 0,
+    };
+    let m = enc_req(gp::encode_present_req(&mut req, &creq));
+    let (n, _) = rpc(hw, &req[..m], &[alias3], &mut rep, &mut rhs);
+    let token = match gp::parse_submit_ack(&rep[..n]) {
+        Some(t) => t,
+        None => fail(&format!("clear submit ack bad st={}", rep[0])),
+    };
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::FrameCallback { frame_token: token },
+    ));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_frame_done_rep(&rep[..n]) {
+        Some(d) if d.status == gp::FRAME_PRESENTED => {}
+        Some(d) => fail(&format!("clear frame status={}", d.status)),
+        None => fail(&format!("clear frame done bad st={}", rep[0])),
+    }
+    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
+    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let rel = match gp::parse_release_rep(&rep[..n]) {
+        Some(r) => r,
+        None => fail(&format!("clear release rep bad st={}", rep[0])),
+    };
+    if rel.count != 1 || nh != 1 {
+        fail(&format!("clear release count={} nh={}", rel.count, nh));
+    }
+    close_h(rhs[0]);
+
     // 客户端全链断言过（服务端真值 GFXF ok n= 由 guifbd 首呈现时打出）
     // ——结构性恰一次：svcmgr 单次预拉 + 阻塞 reap + 单 println。
     println!("GFX ok");

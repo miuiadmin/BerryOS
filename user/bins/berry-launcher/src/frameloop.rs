@@ -71,17 +71,18 @@ use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, self_vmar_h};
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_handle_duplicate, berry_object_wait_many,
-    berry_object_wait_one, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
-    SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_duplicate,
+    berry_object_wait_many, berry_object_wait_one, berry_vmar_map, berry_vmo_commit,
+    berry_vmo_create, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT,
+    CLOCK_REALTIME, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_ui::damage::DamageSet;
+use berry_ui::desc::{IconProps, Props};
 use berry_ui::frame::VoteBallot;
 use berry_ui::hit::PtrEvent;
 use berry_ui::{Msg, NodeId, UiMain};
 
-use crate::desktop::{self, Desktop};
+use crate::desktop::{self, Desktop, POWER_ARM_WINDOW_NS};
 use crate::icons;
 use crate::{close_h, enc_req, expect_ok, fail, now, rpc};
 
@@ -277,9 +278,46 @@ pub fn run(
     let mut input_logged = false;
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
     let mut input_hs = [0 as Handle; 8];
+    // 波一刀 B：状态栏时钟续摆——上帧摆字（None = 尚未/永不摆：注入缺席
+    // 时 REALTIME 恒 -ENOTSUP，本面静默，桌面保持建树时的 12:00 占位）。
+    let mut last_clock: Option<[u8; 5]> = None;
+    // 波一刀 D：关机二击确认窗（Some(deadline) = armed 态——3s 内再击 =
+    // 真关机；过期回常态，deadline 已纳入稳态 wait 帽保证准时醒复位）。
+    let mut power_armed: Option<u64> = None;
 
     loop {
         let t_now = now();
+
+        // —— 波一刀 D：armed 窗过期复位（视觉回常态面 + 清窗——wait
+        //    deadline 已含本窗，3s 准时醒；复位 set_props 自标 damage
+        //    出帧，无需另 wake）。
+        if let Some(dl) = power_armed {
+            if t_now > dl {
+                set_power_face(ui, &desktop.nav, false);
+                power_armed = None;
+            }
+        }
+
+        // —— 波一刀 B：状态栏真时钟续摆——稳态每 10s（IDLE 帽）醒一回，
+        //    读 CLOCK_REALTIME；分钟字变才动笔（set_text 等长换文 = 纯
+        //    PAINT；a11y label 同步 in-place 覆写）+ wake（Idle→Run 保
+        //    产出帧——inject_swipe 同款正统路径）。分钟界最迟 10s 内
+        //    换字（分钟级摆字语境足够）。
+        let mut rt = 0u64;
+        if berry_clock_read(CLOCK_REALTIME, &mut rt) == 0 {
+            let hm = desktop::hhmm_utc(rt);
+            if last_clock != Some(hm) {
+                if let Err(e) = ui.set_text(desktop.clock, &hm) {
+                    fail(&format!("clock set_text err={e:?}"));
+                }
+                let mut label = *b"00:00 utc";
+                label[..5].copy_from_slice(&hm);
+                // a11y in-place 覆写（同节点不占新槽）；Err 非关键面容忍。
+                let _ = ui.set_a11y(desktop.clock, berry_ui::ROLE_TEXT, &label);
+                ui.wake(now());
+                last_clock = Some(hm);
+            }
+        }
 
         // —— 段④ 真实输入：先收上一轮 INPUT_POLL 应答，再挂下一轮 poll。
         //    非阻塞排空（-EAGAIN = 事件尚未到，poll 仍在服务端阻塞）；事件
@@ -355,7 +393,12 @@ pub fn run(
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
             match m {
-                Msg::Click { node } => on_click(*node, &desktop, &mut spawn_ok, smoke),
+                Msg::Click { node } => {
+                    // 刀 D：导航三键先判（命中 = 消费，不落槽 spawn 面）。
+                    if !on_nav_click(*node, ui, &mut desktop, &mut power_armed, t_now) {
+                        on_click(*node, &desktop, &mut spawn_ok, smoke);
+                    }
+                }
                 _ => {
                     // pager.on_msg true = 翻页目标变更 → a11y 重挂当前页
                     //（幂等；Err = 容量违例 fail 收口）。
@@ -569,7 +612,12 @@ pub fn run(
         //    期限到正常醒——渲染下一拍 / Idle 空转睡回。）
         let nw = now();
         let cap = nw + IDLE_CAP_NS;
-        let deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
+        let mut deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
+        // 刀 D：armed 窗纳入等待帽——3s 准时醒做过期复位（不醒 = 红键
+        // 滞留至 IDLE 帽 10s，确认语义受损）。
+        if let Some(dl) = power_armed {
+            deadline = deadline.min(dl);
+        }
         let mut hs = [hw, 0 as Handle];
         let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
         let mut n = 1usize;
@@ -684,6 +732,79 @@ fn inject_swipe(ui: &mut UiMain, base: u64) {
     // 置 FULL 保产出——与 boot 首轮起振同一正统路径；snap 收敛后引擎
     // 自然回 Idle，稳态不燃 CPU 不变）。
     ui.wake(base);
+}
+
+/// 关机键视觉态切换（刀 D：armed ↔ 常态——set_props 换 Icon id，同
+/// w/h 纯 PAINT 面；Err 非关键面 eprintln 容忍，关机链不受视觉件拖累）。
+fn set_power_face(ui: &mut UiMain, nav: &crate::desktop::NavNodes, armed: bool) {
+    let id = if armed { icons::NAV_POWER_ARMED } else { icons::NAV_POWER };
+    let props = Props::Icon(IconProps {
+        id,
+        fg: crate::desktop::ICON_FG,
+        w: Some(nav.key_px),
+        h: Some(nav.key_px),
+    });
+    if let Err(e) = ui.set_props(nav.power, props) {
+        eprintln!("launcher: power face set err={e:?}");
+    }
+}
+
+/// 导航三键命中 + 动作（刀 D，审计 02 号 §6.1 M2——走现役 `Msg::Click`
+/// 通道零新输入面）。返回 true = 已消费（不落槽 spawn）；false = 非导航
+/// 键（调用方续走 app 槽命中）。
+///
+/// - **返回**：v1 = 翻页语义——`page>0` 吸附上一页 + a11y 重挂；page 0
+///   无操作（已在首页）。应用内返回随 wmd 系统键语义刀（I2）——如实注。
+/// - **桌面**：`page!=0` 吸附 page 0；已在 = 无操作。
+/// - **关机**：二击 3s 窗确认——首击 armed（换警示面 + 窗起算）；窗内
+///   再击 = 内核 `power_off`（0x88 PSCI SYSTEM_OFF，**成功不归**——整机
+///   退出）；失败（conduit 死 / 固件拒）eprintln 诊断 + 回常态不 fail
+///   （桌面常驻义务优先）；窗过期复位（循环头）。
+fn on_nav_click(
+    node: NodeId,
+    ui: &mut UiMain,
+    desktop: &mut Desktop,
+    power_armed: &mut Option<u64>,
+    t_now: u64,
+) -> bool {
+    let nav = desktop.nav;
+    let snap_page = |ui: &mut UiMain, desktop: &mut Desktop, target: u8| {
+        desktop.pager.snap_to(ui, target);
+        if let Err(e) = desktop::rehang_a11y(ui, desktop, target) {
+            fail(&format!("nav rehang a11y err={e:?}"));
+        }
+    };
+    if node == nav.back {
+        let p = desktop.pager.page();
+        if p > 0 {
+            snap_page(ui, desktop, p - 1);
+        }
+        true
+    } else if node == nav.home {
+        let p = desktop.pager.page();
+        if p != 0 {
+            snap_page(ui, desktop, 0);
+        }
+        true
+    } else if node == nav.power {
+        match *power_armed {
+            Some(dl) if t_now <= dl => {
+                // 二击确认：真关机（PSCI SYSTEM_OFF——成功整机退出不归）。
+                let st = berry_sys::berry_power_off();
+                eprintln!("launcher: power off st={st} -- use host toolbar OFF");
+                set_power_face(ui, &desktop.nav, false);
+                *power_armed = None;
+            }
+            _ => {
+                // 首击：arm（3s 窗 + 警示面；窗起算点 = 本击时刻）。
+                set_power_face(ui, &desktop.nav, true);
+                *power_armed = Some(t_now + POWER_ARM_WINDOW_NS);
+            }
+        }
+        true
+    } else {
+        false
+    }
 }
 
 /// CLICK 面（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆归本

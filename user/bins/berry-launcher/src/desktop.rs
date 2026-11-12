@@ -10,29 +10,54 @@
 //!
 //! 裁决出处（草案 §3）：
 //!
-//! - **裁决六（壁纸形态）**：树内 Rect 带状壁纸，Root 直接子满幅叠放
-//!   （layout.rs `place_children` 尾臂：Root 子各自 (0,0) 起满幅 avail）。
-//!   插入序 = 自底向上 z 序（paint.rs 前序头先发 = 先插者在底）：石板
-//!   全幅底 → 深蓝灰盖上 2/3 → 状态栏黑带顶——三 Rect 零资产零缩放。
+//! - **裁决六（壁纸形态）**：OH 官方壁纸 Icon 全幅（`wallpaper.rs` 预采样
+//!   静态源，SmoothArgb 放大——2026-11-06 ccc80954 起替旧三 Rect 带状
+//!   形态）；Root 直接子插入序 = 自底向上 z 序（paint.rs 前序头先发 =
+//!   先插者在底）：壁纸 → 状态栏 scrim 衬底 → 内容列。
 //! - **裁决四-e（归属）**：状态栏/壁纸 = launcher 窗口内容层（非 wmd
 //!   系统窗）——D3 单 wm 客户端不变量保持，gfxdemo `WM ok` 零连带。
 //! - **裁决八（a11y OH phone 形 32/32）**：状态栏 4 件 ROLE_TEXT + 4 页
 //!   Grid 容器 ROLE_LIST + 当前页 20 格 ROLE_BUTTON + 4 个 Dock 位
 //!   ROLE_BUTTON = 32/32；翻页 take/set 重挂当前页（`rehang_a11y`）。
-//!   press_map v1 不做（视觉反馈归 W2 spawn 回执标记行）。
+//!   press_map v1 不做（视觉反馈归 W2 spawn 回执标记行）。波一刀 B 的
+//!   SIM/UTC 视觉角标**不占 a11y 槽**（32 帽满）——模拟态如实标注折进
+//!   signal/wifi/battery 三件既有 label（in-place 改写）。
+//!   **波一刀 D 修订**：页容器 ROLE_LIST 4 页全挂改**当前页单挂**
+//!   （`rehang_a11y` 同批 take/set）——腾 3 槽给三键导航 ROLE_BUTTON，
+//!   常态恰满 32（4 状态 + 1 页容器 + 20 格 + 4 dock + 3 键；非当前页
+//!   本就非可见页，不出 a11y 树是三系常规形态）。
 //! - **裁决 D（几何）**：屏幕几何全经 wm GETINFO 动态（`ui.viewport()`
 //!   ——Root/带高/Grid 高全派生），禁硬编 800×600；字号档/图标 px 等
 //!   字体面常量不属屏幕参数，不在此列。
 //!
-//! 树规模（最坏满图标）：1 Root + 壁纸 1 + 内容列 1 + 状态栏 10 +
-//! grid top 1 + pager 10 + 4×(Grid+20 Pad+20 内Col+20 Icon+20 Text)
-//! + filler 1 + Dock 5 = **354 节点** < MAX_NODES=512。
+//! 波一刀 B（状态栏可信化，`research/桌面UX审计/02` §6.1 M1）：①状态栏
+//! scrim 衬底（Rect 无 alpha——50% 黑预混壁纸顶色，§3.2 对比达标）；
+//! ②真时钟——`clock: Option<[u8;5]>` 建树参数（main 经
+//! `berry_clock_read(CLOCK_REALTIME)` 单次取值；None = 注入缺席回退
+//! 12:00 静态占位），frameloop 每分钟 set_text 续摆 + UTC 角标；③模拟
+//! 态标注——左组 SIM 小字（QEMU 无真值源：信号/电池恒满格为模拟值，
+//! 如实注）。
+//!
+//! 波一刀 D（三键导航，`research/桌面UX审计/02` §6.1 M2）：底部三键
+//! 返回/桌面/关机——返回 v1 = 翻页语义（上一页，page 0 无操作；应用内
+//! 返回随 wmd 系统键语义刀 I2）；桌面 = 回首页 page 0（已在 = 无操作）；
+//! 关机 = 二击 3s 窗确认（armed 态换暗红警示面，frameloop set_props
+//! 换 id）→ 内核 `power_off`（0x88，PSCI SYSTEM_OFF——失败 eprintln
+//! 诊断降级不 fail）。命中区 = 键 Icon 节点整体：big 132px（44vp×3）/
+//! 紧凑 44px（应用规范 §3.2 硬指标下限）；视觉边界对比 = 键深底对壁纸
+//! ≥3:1（底色 CLEAR_BG 同族）。三键只在桌面态有效（应用全屏独占时
+//! 随 launcher 内容层整层被盖——02 号 §2.3 边界，SYSTEM 窗随 I1）。
+//!
+//! 树规模（最坏满图标）：1 Root + 壁纸 1 + scrim 1 + 内容列 1 + 状态栏
+//! 13（+SIM/UTC 两文本）+ grid top 1 + pager 10 + 4×(Grid+20 Pad+20 内
+//! Col+20 Icon+20 Text) + filler 1 + Dock 5 + 导航条 4（Row + 3 键 Icon）
+//! = **361 节点** < MAX_NODES=512。
 
 use berry_gfx::cmd::Color;
 use berry_gfx::font::FontSize;
 use berry_layout::{CELL_MAX, PAGE_MAX};
 use berry_ui::desc::{
-    ColProps, GridProps, IconProps, PadProps, RowProps, TextProps, TextStyle,
+    ColProps, GridProps, IconProps, PadProps, RectProps, RowProps, TextProps, TextStyle,
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::swipe::SwipePager;
@@ -99,8 +124,33 @@ const DOCK_SLOTS: usize = 4;
 /// launcher 扩 LIST（页 Grid 容器）。
 const ROLE_LIST: u8 = 6;
 
-/// 状态栏右件（时钟占位——TODO(W2)：真时钟经 berry_clock_read 摆字）。
+/// 状态栏时钟占位（REALTIME 注入缺席时的静态回退——波一刀 B；在场 =
+/// `build` 参数 `clock` 首摆真值，frameloop 每分钟 set_text 续摆）。
 const STATUS_CLOCK: &[u8] = b"12:00";
+/// 状态栏 scrim 衬底色（波一刀 B）：Rect 无 alpha 通道（berry-ui v1 纯
+/// 不透明）——预混 = 50% 黑混壁纸顶部均色（genohwallpaper 源前 15 行
+/// 实算 #06BCC6 → #035E63）。白图标/白小字对它 6.6:1，同过非文本
+/// ≥3:1 与小字 ≥4.5:1（docs/应用规范-v1.0.md §3.2）。
+const STATUS_SCRIM: Color = Color { r: 0x03, g: 0x5E, b: 0x63 };
+/// 模拟态角标字（QEMU 无信号/电池真值源——恒满格为模拟值，如实注；
+/// 02 号 §5.2：模拟器静态满格+标注是两大生态通行做法）。
+const SIM_TAG: &[u8] = b"SIM";
+/// 时钟 UTC 角标（epoch 注入口径 = UTC；本地时区换算挂账波二）。
+const UTC_TAG: &[u8] = b"UTC";
+
+// —— 三键导航条（波一刀 D，审计 02 号 §6.1 M2）——
+/// 导航键命中区边长：big = 44vp×3px = 132；紧凑 = 44px（应用规范
+/// §3.2 触控目标硬指标下限——视觉 = 键块整体，命中区不缩）。
+const NAV_KEY_PX_BIG: u32 = 44 * OH_DENSITY;
+const NAV_KEY_PX: u32 = 44;
+/// 导航条高：big = OH_DOCK_BOTTOM×3 = 135（dock 底 sysUI 保留区恰容
+/// 132 键纵向居中）；紧凑 = 44。
+const NAV_BAR_H_BIG: u32 = OH_DOCK_BOTTOM * OH_DENSITY;
+/// 键间隔：big 64px（≈21vp，Android 三键同族间距）；紧凑 12px。
+const NAV_GAP_BIG: u32 = 64;
+const NAV_GAP: u32 = 12;
+/// 关机二击确认窗（防误触——两次点击 3s 内才生效；过期回常态）。
+pub const POWER_ARM_WINDOW_NS: u64 = 3 * 1_000_000_000;
 /// a11y 页容器 label。
 const PAGE_LABELS: [&[u8]; PAGES] = [b"page 0", b"page 1", b"page 2", b"page 3"];
 /// 空槽占位 label。
@@ -114,7 +164,9 @@ const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"PHOTOS", b"SETTINGS", b"MM
 /// 文本配色（白色 = systemui TintStateManager 默认 contentColor）。
 const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
-const ICON_FG: Color = Color { r: 230, g: 230, b: 235 };
+/// 图标 tint 色（Icon Argb 源不消费 fg——`paint.rs emit_image` 直写
+/// 像素；仅 mono/Bits 源着墨。刀 D：frameloop `set_power_face` 复用）。
+pub(crate) const ICON_FG: Color = Color { r: 230, g: 230, b: 235 };
 
 /// 一格桌面的建树产物（W2 帧循环消费面）。
 #[derive(Clone, Copy)]
@@ -139,8 +191,34 @@ pub struct Desktop {
     pub slots: [[Slot; SLOTS_PER_PAGE]; PAGES],
     /// 常驻 dock 槽（PhoneSmartDock max=4；点击与网格同映射）。
     pub dock: [Slot; DOCK_SLOTS],
+    /// 状态栏时钟文本节点（波一刀 B：REALTIME 摆字——frameloop 每分钟
+    /// set_text 等长换文 = 纯 PAINT；a11y label 同步 in-place 覆写）。
+    /// UTC 角标节点建树即定格（在场显字/缺席空文本），运行期无改笔——
+    /// 不入句柄。
+    pub clock: NodeId,
+    /// 三键导航（波一刀 D）：返回/桌面/关机 Icon 节点（frameloop
+    /// `Msg::Click` 命中面 + 关机 armed 态 set_props 换 id 的锚）。
+    pub nav: NavNodes,
+    /// 页容器节点（刀 D 修订裁决八：ROLE_LIST 单挂当前页——rehang 同批
+    /// take/set，32 帽腾 3 槽给导航键）。
+    page_nodes: [NodeId; PAGES],
     /// a11y 当前挂载页（`u8::MAX` 哨兵 = 未挂——build 尾经 rehang(0) 初挂）。
     a11y_page: u8,
+}
+
+/// 三键导航节点句柄（波一刀 D——frameloop 消费面）。
+#[derive(Clone, Copy)]
+pub struct NavNodes {
+    /// 返回键（v1 语义 = 翻页上一页，如实注：应用内返回随 wmd 系统键
+    /// 语义刀 I2）。
+    pub back: NodeId,
+    /// 桌面键（回首页 page 0；已在 = 无操作）。
+    pub home: NodeId,
+    /// 关机键（二击 3s 窗确认 → 内核 power_off 0x88 PSCI SYSTEM_OFF）。
+    pub power: NodeId,
+    /// 键命中区边长（px，建树档位定格——frameloop `set_power_face`
+    /// 换 id 时 set_props 须携同 w/h，防回落源内在尺寸）。
+    pub key_px: u32,
 }
 
 /// 建树单源槽计划（布局格主三态折算：注册表在册 App/幽灵 Ghost——
@@ -164,6 +242,22 @@ fn text_spec(text: &[u8], fg: Color, scale: FontSize) -> Result<ViewSpec, UiErro
             text: TextBuf::new(text)?,
         }),
     })
+}
+
+/// REALTIME 纳秒 → "HH:MM"（UTC 口径；恒 5B 等长——set_text 等长换文
+/// = 纯 PAINT 零重测，metrics R2-8 等宽契约吃得住）。main 建树首摆与
+/// frameloop 每分钟续摆共用单源（波一刀 B）。
+pub(crate) fn hhmm_utc(rt_ns: u64) -> [u8; 5] {
+    let s = rt_ns / 1_000_000_000;
+    let h = (s / 3600) % 24;
+    let m = (s / 60) % 60;
+    [
+        b'0' + (h / 10) as u8,
+        b'0' + (h % 10) as u8,
+        b':',
+        b'0' + (m / 10) as u8,
+        b'0' + (m % 10) as u8,
+    ]
 }
 
 /// 条目图标三态：`NO_ICON` → None（不建节点）；域内 id → Some。
@@ -202,7 +296,15 @@ fn status_icon_spec(id: u16) -> Result<ViewSpec, UiError> {
 /// 桌面建树（main 单次调用；几何全 `ui.viewport()` 动态——裁决 D）。
 /// Err = 容量/文本域违例（NodeFull/NodeBad/TextTooLong 族）——调用方
 /// `fail` 收口（eprintln + park；监督重启归 svcmgr 域，本进程不自救）。
-pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<Desktop, UiError> {
+/// `clock`（波一刀 B）= main 经 `berry_clock_read(CLOCK_REALTIME)` 单次
+/// 取值换算的 "HH:MM"——`None` = 注入缺席（冒烟拓扑/-kernel 相）回退
+/// `STATUS_CLOCK` 静态占位。
+pub fn build(
+    ui: &mut UiMain,
+    layout: &OwnedLayout,
+    reg: &[AppEntry],
+    clock: Option<[u8; 5]>,
+) -> Result<Desktop, UiError> {
     let (vp_w, vp_h) = ui.viewport();
     // OH phone 固定几何只给 1080×1920（360×640vp @3x）；横屏/调试档走
     // 紧凑分支，防 Dock/top 常量把 1280×720 挤出视口。
@@ -236,6 +338,24 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         },
     )?;
 
+    // 波一刀 B：状态栏 scrim 衬底——壁纸之上、内容列之下的整宽深色带。
+    // 插入序 = z 序（paint 前序先发 = 先插者底）：壁纸 → 本 Rect → 内容列
+    // ——**必须在 content 之前插入**（后插者盖上：尾插会把状态内容整条
+    // 压在 scrim 之下，boot 实证 2026-11-13）。预混色见 STATUS_SCRIM 注：
+    // 50% 黑混壁纸顶色，白件对比 6.6:1 达标。
+    ui.add(
+        root,
+        ViewSpec {
+            kind: ViewKind::Rect,
+            key: 0,
+            props: Props::Rect(RectProps {
+                bg: STATUS_SCRIM,
+                w: Some(vp_w),
+                h: Some(status_h),
+            }),
+        },
+    )?;
+
     // 内容列满屏：cross=Center 让固定宽 Grid/Dock 在页内水平居中。
     let content = ui.add(
         root,
@@ -265,15 +385,28 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             }),
         },
     )?;
-    // OH systemui phone：左右 24vp；左 = signal/wifi，右 = battery/clock
-    // （StatusbarConfig LayoutGroups 1/3；clock rightmost）。
+    // OH systemui phone：左右 24vp；左 = signal/wifi（+SIM 模拟态角标），
+    // 右 = battery/clock（+UTC 角标）（StatusbarConfig LayoutGroups 1/3；
+    // clock rightmost——波一刀 B 两角标随组）。
     let status_pad = if big { OH_STATUS_PAD * OH_DENSITY } else { 6 };
-    let time_w = STATUS_CLOCK.len() as u32 * status_size.cell_w() as u32;
+    // 波一刀 B：首摆时钟文本——真值（REALTIME 换算）或 12:00 占位回退。
+    let clock_text: &[u8] = match clock.as_ref() {
+        Some(hm) => hm.as_slice(),
+        None => STATUS_CLOCK,
+    };
+    let utc_text: &[u8] = if clock.is_some() { UTC_TAG } else { b"" };
+    let time_w = clock_text.len() as u32 * status_size.cell_w() as u32;
+    // 角标字号档：大档 S16x32（117px 带内 32px 小注）/紧凑档 S8x16。
+    let tag_size = if big { FontSize::S16x32 } else { FontSize::S8x16 };
+    let sim_w = SIM_TAG.len() as u32 * tag_size.cell_w() as u32;
+    let utc_w = utc_text.len() as u32 * tag_size.cell_w() as u32;
     let status_icon_gap = if big { 15 } else { 6 };
     let left_w = icons::STATUS_SIGNAL_DIM.0
         + status_icon_gap
-        + icons::STATUS_WIFI_DIM.0;
-    let right_w = icons::STATUS_BATTERY_DIM.0 + status_icon_gap + time_w;
+        + icons::STATUS_WIFI_DIM.0
+        + status_icon_gap
+        + sim_w;
+    let right_w = icons::STATUS_BATTERY_DIM.0 + status_icon_gap + time_w + status_icon_gap + utc_w;
     let status_flex = vp_w.saturating_sub(status_pad * 2 + left_w + right_w);
     let srow = ui.add(
         status,
@@ -318,9 +451,14 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         },
     )?;
     let sig = ui.add(left_group, status_icon_spec(icons::STATUS_SIGNAL)?)?;
-    ui.set_a11y(sig, ROLE_TEXT, b"signal full")?;
+    // a11y label「simulated」（波一刀 B）：QEMU 无真值源，满格 = 模拟值
+    // ——如实标注（02 号 §6.1 M1②）；视觉面 = SIM 角标字。
+    ui.set_a11y(sig, ROLE_TEXT, b"signal simulated full")?;
     let wifi = ui.add(left_group, status_icon_spec(icons::STATUS_WIFI)?)?;
-    ui.set_a11y(wifi, ROLE_TEXT, b"wifi full")?;
+    ui.set_a11y(wifi, ROLE_TEXT, b"wifi simulated full")?;
+    // SIM 角标不占 a11y 槽（32/32 帽满——头注裁决八注记；模拟态如实
+    // 标注由左组两 icon 的「simulated」label 承载）。
+    ui.add(left_group, text_spec(SIM_TAG, TEXT_FG, tag_size)?)?;
     add_status_spacer(ui, status_flex)?;
     let right_group = ui.add(
         srow,
@@ -336,9 +474,12 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         },
     )?;
     let battery = ui.add(right_group, status_icon_spec(icons::STATUS_BATTERY)?)?;
-    ui.set_a11y(battery, ROLE_TEXT, b"battery 100")?;
-    let time_node = ui.add(right_group, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
-    ui.set_a11y(time_node, ROLE_TEXT, STATUS_CLOCK)?;
+    ui.set_a11y(battery, ROLE_TEXT, b"battery simulated 100")?;
+    let time_node = ui.add(right_group, text_spec(clock_text, TEXT_FG, status_size)?)?;
+    ui.set_a11y(time_node, ROLE_TEXT, clock_text)?;
+    // UTC 角标：仅 REALTIME 在场显字（空文本零宽——占位钟态不误导）；
+    // 建树定格不入句柄（运行期无改笔——见 Desktop.clock 注）。
+    ui.add(right_group, text_spec(utc_text, TEXT_FG, tag_size)?)?;
     add_status_spacer(ui, status_pad)?;
 
     // OH calculateDesktop：首 item top 绝对 162px；扣除状态栏 132px。
@@ -404,8 +545,9 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         OH_ITEM_H * OH_DENSITY * GRID_ROWS as u32
             + OH_GRID_GAP * (GRID_ROWS as u32 - 1)
     } else {
-        // 小屏无 Dock：只让 16px 视觉点行，OH 96px 指示区预留仅 phone 档。
-        vp_h.saturating_sub(status_h + grid_top + DOT_ROW_H + 8)
+        // 小屏无 Dock：16px 视觉点行 + 8px 底垫 + 导航条 44px（刀 D——
+        // OH 96px 指示区预留仅 phone 档）。
+        vp_h.saturating_sub(status_h + grid_top + DOT_ROW_H + NAV_KEY_PX + 8)
     };
     let cell_h = if big {
         OH_ITEM_H * OH_DENSITY
@@ -413,8 +555,12 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         (grid_h.saturating_sub((GRID_ROWS as u32 - 1) * grid_gap)) / GRID_ROWS as u32
     };
     let mut slots: [[Option<Slot>; SLOTS_PER_PAGE]; PAGES] = [[None; SLOTS_PER_PAGE]; PAGES];
+    // 页容器收集（刀 D 修订裁决八：ROLE_LIST 单挂当前页——a11y 表尾由
+    // rehang_a11y 统一挂/摘，建树期不挂）。
+    let mut page_nodes: [Option<NodeId>; PAGES] = [None; PAGES];
     for p in 0..PAGES {
         let page = pager.page_node(p as u8).ok_or(UiError::NodeBad)?;
+        page_nodes[p] = Some(page);
         let grid = ui.add(
             page,
             ViewSpec {
@@ -430,7 +576,8 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                 }),
             },
         )?;
-        ui.set_a11y(grid, ROLE_LIST, PAGE_LABELS[p])?;
+        // 刀 D 修订裁决八：页容器 ROLE_LIST 改 rehang_a11y 单挂当前页
+        //（原 4 页全挂 = 32 帽满员，导航三键无槽——非当前页本就非可见页）。
         for s in 0..SLOTS_PER_PAGE {
             let pn = plan[p][s];
             // OH app item 内边距 3vp×3：240 = 9 + icon162 + gap12 +
@@ -486,6 +633,8 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         }
     }
     let slots = slots.map(|page| page.map(|s| s.expect("slot 填满不变量破缺")));
+    let page_nodes: [NodeId; PAGES] =
+        page_nodes.map(|n| n.expect("页容器收集不变量破缺"));
 
     // OH SmartDock：官方 1002×234 条切成四段内建 Icon——每段是一个命中
     // 面，拼回仍是整条 radius66 圆角 dock（无容器背景原语也不失真）。
@@ -560,22 +709,77 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     }
     let dock: [Slot; DOCK_SLOTS] = dock.try_into().ok().expect("dock 恰四槽");
 
-    let mut d = Desktop { pager, slots, dock, a11y_page: u8::MAX };
+    // —— 三键导航条（波一刀 D）：content 列尾行——big 档恰落 OH_DOCK_BOTTOM
+    //    保留区（dock 底缘 → 屏底 135px）；键 = Icon 节点整体（Argb 深底
+    //    圆角块 + 白符号，icons::nav_face——fg 不消费）即命中区 ≥44px。
+    let nav_key = if big { NAV_KEY_PX_BIG } else { NAV_KEY_PX };
+    let nav_gap = if big { NAV_GAP_BIG } else { NAV_GAP };
+    let nav_h = if big { NAV_BAR_H_BIG } else { NAV_KEY_PX };
+    let nav_bar_w = nav_key * 3 + nav_gap * 2;
+    let nav_bar = ui.add(
+        content,
+        ViewSpec {
+            kind: ViewKind::Row,
+            key: 0,
+            props: Props::Row(RowProps {
+                gap: nav_gap,
+                w: Some(nav_bar_w),
+                h: Some(nav_h),
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    let mut nav_icon = |id: u16, label: &[u8]| -> Result<NodeId, UiError> {
+        let n = ui.add(
+            nav_bar,
+            ViewSpec {
+                kind: ViewKind::Icon,
+                key: 0,
+                props: Props::Icon(IconProps {
+                    id,
+                    fg: ICON_FG,
+                    w: Some(nav_key),
+                    h: Some(nav_key),
+                }),
+            },
+        )?;
+        ui.set_a11y(n, ROLE_BUTTON, label)?;
+        Ok(n)
+    };
+    let back = nav_icon(icons::NAV_BACK, b"back")?;
+    let home = nav_icon(icons::NAV_HOME, b"home")?;
+    let power = nav_icon(icons::NAV_POWER, b"power off")?;
+    drop(nav_icon);
+
+    let mut d = Desktop {
+        pager,
+        slots,
+        dock,
+        clock: time_node,
+        nav: NavNodes { back, home, power, key_px: nav_key },
+        page_nodes,
+        a11y_page: u8::MAX,
+    };
     rehang_a11y(ui, &mut d, 0)?;
     Ok(d)
 }
 
 /// a11y 翻页重挂（裁决八：当前页 12 格 ROLE_BUTTON take/set 重挂）。
 /// W2 帧循环在 `pager.on_msg` 返 true 且页值变化时调用；幂等（同页直返）。
+/// 刀 D 修订：页容器 ROLE_LIST 同批 take/set（4 页全挂 → 当前页单挂——
+/// 32 帽腾 3 槽给三键导航，常态恰满：4 状态 + 1 页容器 + 20 格 +
+/// 4 dock + 3 键）。
 pub fn rehang_a11y(ui: &mut UiMain, d: &mut Desktop, page: u8) -> Result<(), UiError> {
     if page as usize >= PAGES || page == d.a11y_page {
         return Ok(());
     }
     if (d.a11y_page as usize) < PAGES {
+        ui.take_a11y(d.page_nodes[d.a11y_page as usize]);
         for s in &d.slots[d.a11y_page as usize] {
             ui.take_a11y(s.cell);
         }
     }
+    ui.set_a11y(d.page_nodes[page as usize], ROLE_LIST, PAGE_LABELS[page as usize])?;
     for s in &d.slots[page as usize] {
         ui.set_a11y(s.cell, ROLE_BUTTON, s.label_buf.as_bytes())?;
     }
