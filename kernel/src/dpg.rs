@@ -165,6 +165,18 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     REQ_ARMED.store(true, Ordering::Release);
     // 唤 pager（KL 窗内 SQ 嵌套 = SVC 同构；双序通吃：已睡 → 摘队，未睡 →
     // 位/槽锁存 + pager poll-first 追平——f4 F1 纪律同源）。
+    //
+    // P0-1 线1b 裁定：此处**不**加 try_preempt 直切（R2 路线图提案否决），
+    // 两独立理由：①零收益——紧随的 block_current 即全量派发
+    //（pick_next_filtered 直切最高 eff 就绪者），pager 若居首本就即刻上
+    // CPU；前置直切只会在「pager eff 严格更高」时把一次入睡派发拆成两次
+    // 切换（直切给 pager → pager 供毕自 block → 再派发回本者），纯负优化。
+    // ②丢唤醒死锁窗——FAULT_KEY 是裸键无位锁存（wake_matching 只摘队上
+    // 睡眠者）；若本点切走（舞蹈放 KL、REQ_ARMED 已可见），pager 供给毕
+    // wake_matching(FAULT_KEY) 时本者尚未入 SLEEPQ（被抢占置 Ready）→
+    // 唤醒丢失 → 续行 block_current 永睡。「arm+wake+block 同一 KL 窗连续
+    // 执行」正是丢唤窗闭锁，插切换点即破。直切收益在 pager 侧线1d 兑现
+    //（dpg_pager/pager_supply* 唤 faulter 点）。
     berry_sched::wake_matching(&PAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
     // 出深再睡（shape (a)：睡眠不计——并发在飞 faulter 不灌计数）；舞蹈放
     // KL 入队、醒后重取。
@@ -309,7 +321,9 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         }
     };
     // 唤 pager（KL 窗内 SQ 嵌套 = SVC 同构；双序通吃：已睡 → 摘队，未睡 →
-    // 位/槽锁存 + pager poll-first 追平——f4 F1 纪律同源）。
+    // 位/槽锁存 + pager poll-first 追平——f4 F1 纪律同源）。P0-1 线1b
+    // 裁定同 [`probe`] 唤 pager 点：不加 try_preempt（零收益 + 裸键丢唤
+    // 死锁窗，判词见彼注）；直切在 pager 供给侧线1d 兑现。
     berry_sched::wake_matching(&EPAGER_KEY as *const u8 as usize, DPG_WAKE_BIT);
     // 出深再睡（shape (a)：睡眠不计）。
     depth_exit();
@@ -509,6 +523,16 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
             .expect("dpg_pager: 写 magic 失败（供给页未提交？）");
         // 供给毕唤 faulter（KL 窗内 SQ 嵌套 = SVC 同构）。
         berry_sched::wake_matching(&FAULT_KEY as *const u8 as usize, DPG_WAKE_BIT);
+        // P0-1 线1d fastpath 直切：唤醒只入环不抢占——被唤 faulter eff
+        // 严格更高时立即直切（seL4 direct switch 的 dpg 形，IPC 4-4
+        // fastpath 同款参照）。KL 窗内可安全切走：klock_enter 即
+        // svc_enter_class(ALL) 记账 held 位，try_preempt 舞蹈
+        //（klock_release_switch）按位放锁/切回重取——与本函数睡 PAGER_KEY
+        // 的 block_current 同一舞蹈（KL 窗内切换的既有先例）；供给临界段
+        //（supply_page + magic 写）已在唤醒点前收口，直切不打断锁窗口。
+        // 同层 FIFO 不插队（严格更高才切，§A43）；sched::init 前 CURRENT
+        // null 早退（ktest 护栏内置）。
+        berry_sched::try_preempt();
         hal::kern_lock::klock_exit();
     }
 }

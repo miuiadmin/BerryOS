@@ -1044,6 +1044,16 @@ extern "C" fn sys_pager_supply_mapped_table(tf: &mut TrapFrame) -> i64 {
                         // 新叶；失败 = 重试再 fault 再认领自愈）；count-wins
                         // 只计成功供给（失败不计数不回滚）。
                         crate::dpg::el0_wake_faulter(slot);
+                        // P0-1 线1d fastpath 直切（同 pager_supply_common
+                        // 唤醒点，SVC 窗条件/舞蹈/同层 FIFO 论证同彼注）：
+                        // 批内每页供给毕即探峰、命中即切——批量吞吐与单页
+                        // 延迟兼得。跨切点池态可变由 continue-take 每
+                        // el0_take_for 全池重扫吸收（armed swap 消费幂等，
+                        // 「整批一窗」的原子性本就只依托 KL 串行跨核写者
+                        // ——切点放锁后与本核他者交错同 SMP 语义）；
+                        // SUPPLY_BUF 借用在 pager_supply_one 内已收口，无
+                        // 跨切点存活借用。
+                        berry_sched::try_preempt();
                         if r == 0 {
                             count += 1;
                         } else {
@@ -1161,6 +1171,16 @@ fn pager_supply_common(tf: &mut TrapFrame, vh: u32, sh: u32, sel: SrcOff) -> i64
                 // 成功 = eret 命中新叶；失败 = 重试再 fault 再认领，pager
                 // 重调 0x21/0x23 自愈；供给窗收口后出环）。
                 crate::dpg::el0_wake_faulter(slot);
+                // P0-1 线1d fastpath 直切（sys_channel_send fastpath 同款
+                // 参照）：唤醒只入环不抢占——被唤 faulter eff 严格更高时
+                // 立即直切，供给毕即回缺页者，免整调度片等待。SVC 窗调用
+                // 条件天然满足：IRQ 屏蔽 + 本号类位集含 SQ/RQ（§A126——
+                // try_preempt 的 rq_lock 退化形）；切走经舞蹈按 held 位放
+                // 锁、切回重取（位保持置位，svc_exit_class 出口断言恒
+                // 成立）；供给锁窗口不受扰——supply_page + 源拷贝已在上
+                // 行 pager_supply_one 内收口，直切点在临界段外；retain
+                // 钉活跨切换有效。同层 FIFO 不插队（严格更高才切，§A43）。
+                berry_sched::try_preempt();
                 break r;
             }
             crate::dpg::El0Take::NoneForVd => {
