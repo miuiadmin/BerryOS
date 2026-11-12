@@ -190,6 +190,7 @@ pub(crate) fn relayout(
     icons: &dyn IconSource,
     cs: BoxConstraints,
     flex: &[Option<FlexEntry>],
+    wrap: &mut [Option<crate::TextWrapEntry>],
 ) -> LayoutStat {
     let _ = freed;
     // 根 = 唯一 parent==NONE 的存活 Root
@@ -217,7 +218,7 @@ pub(crate) fn relayout(
         changed: [false; CAP],
         measured: 0,
     };
-    measure(nodes, root, vp_w, vp_h, cs, tm, icons, &mut mctx, oversize, 0);
+    measure(nodes, root, vp_w, vp_h, cs, wrap, tm, icons, &mut mctx, oversize, 0);
     if oversize {
         // 病态巨 arena：位图覆盖不住的槽全部按「已重测」保守处理
         for b in mctx.recomputed.iter_mut() {
@@ -278,6 +279,7 @@ fn measure(
     vp_w: u32,
     vp_h: u32,
     cs: BoxConstraints,
+    wrap: &mut [Option<crate::TextWrapEntry>],
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
     mctx: &mut MeasCtx,
@@ -288,26 +290,54 @@ fn measure(
         return false; // 父/子链环防御
     }
     let idx = slot as usize;
-    let Some(n) = nodes.get(idx).and_then(|o| o.as_ref()) else { return false };
-    if !n.alive {
+    let Some(node) = nodes.get(idx).and_then(|o| o.as_ref()) else { return false };
+    if !node.alive {
         return false;
     }
+    // Node/Props 均 Copy；先复制父投影所需值，结束 immutable arena borrow
+    // 后才能递归传 `&mut nodes`。
+    let n = *node;
     // 子先（后序）——链走查带环防御
     let mut child_affected = false;
+    let mut child_count = 0usize;
+    let mut count_cur = n.first_child;
+    while count_cur != u32::MAX && child_count <= nodes.len() {
+        let Some(c) = nodes.get(count_cur as usize).and_then(|o| o.as_ref()) else { break };
+        if !c.alive {
+            break;
+        }
+        child_count += 1;
+        count_cur = c.next_sib;
+    }
+    let mut child_index = 0usize;
     let mut cur = n.first_child;
     let mut guard = 0usize;
     while cur != u32::MAX && guard <= nodes.len() {
         guard += 1;
         let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
         let next = c.next_sib;
-        child_affected |= measure(nodes, cur, vp_w, vp_h, cs, tm, icons, mctx, oversize, hops + 1);
+        let child_box = child_measure_box(&n, cs, child_index, child_count);
+        child_index += 1;
+        child_affected |= measure(
+            nodes,
+            cur,
+            vp_w,
+            vp_h,
+            child_box,
+            wrap,
+            tm,
+            icons,
+            mctx,
+            oversize,
+            hops + 1,
+        );
         cur = next;
     }
     let dirty = nodes[idx].as_ref().map(|n| n.layout_dirty).unwrap_or(false);
     if !dirty && !child_affected && !oversize {
         return false; // 全缓存命中
     }
-    let (w, h) = intrinsic(nodes, idx, vp_w, vp_h, cs, tm, icons);
+    let (w, h) = intrinsic(nodes, idx, vp_w, vp_h, cs, wrap, tm, icons);
     let n = nodes[idx].as_mut().unwrap();
     let changed = n.meas_w != w || n.meas_h != h;
     n.meas_w = w;
@@ -358,12 +388,58 @@ fn child_extent(nodes: &[Option<Node>], first: u32) -> (u32, u32) {
 /// `len × cell_w` 现状，换件面 = GUI-2 增件⑧）；Image/Icon 叶经
 /// `icons.dims`（§4.3）。Col/Row/Grid 的 w/h Some 折入内在（§4.1 定尺寸
 /// 覆盖一切——父游标推进/聚合/Start·Center 自身_extent 单源用 meas）。
+/// LAYOUT-L5 constraints down：父容器把自身 incoming box 投影给子节点。
+/// 本刀只有 wrap Text 消费 `max_w`；无 wrap 树的测量结果与 L4 逐字节
+/// 等价。固定 w/h 遵循“定尺寸覆盖一切”，先覆盖再扣 padding/gap。
+pub(crate) fn child_measure_box(
+    parent: &Node,
+    incoming: BoxConstraints,
+    child_index: usize,
+    child_count: usize,
+) -> BoxConstraints {
+    match &parent.props {
+        Props::Root => BoxConstraints::loose(incoming.max_w, incoming.max_h),
+        Props::Pad(p) => incoming.deflate(
+            p.all.saturating_mul(2),
+            p.all.saturating_mul(2),
+        ),
+        Props::Panel(p) => {
+            let inset = p.padding.saturating_mul(2);
+            let max_w = p.w.map(|w| w.saturating_sub(inset)).unwrap_or(incoming.max_w.saturating_sub(inset));
+            let max_h = p.h.map(|h| h.saturating_sub(inset)).unwrap_or(incoming.max_h.saturating_sub(inset));
+            BoxConstraints::loose(max_w, max_h)
+        }
+        Props::Col(p) => BoxConstraints::loose(p.w.unwrap_or(incoming.max_w), u32::MAX),
+        Props::Row(p) => BoxConstraints::loose(u32::MAX, p.h.unwrap_or(incoming.max_h)),
+        Props::Grid(p) => {
+            // 子盒 = 单个 track，而非整格容器扣 gap。place 面行主序等分
+            // 轨道；measure 面必须同口径，否则 wrap Text 会跨格溢出。
+            let cols = u32::from(p.cols.max(1));
+            let rows_needed = ((child_count as u32).saturating_add(cols - 1)) / cols;
+            let rows = rows_needed.max(1);
+            let gw = p.gap.saturating_mul(cols - 1);
+            let gh = p.gap.saturating_mul(rows - 1);
+            let content_w = p.w.unwrap_or(incoming.max_w).saturating_sub(gw);
+            let content_h = p.h.unwrap_or(incoming.max_h).saturating_sub(gh);
+            let _ = child_index;
+            BoxConstraints::loose(content_w / cols, content_h / rows)
+        }
+        Props::Clip(p) => BoxConstraints::loose(
+            p.w.unwrap_or(incoming.max_w),
+            p.h.unwrap_or(incoming.max_h),
+        ),
+        // 叶子无子；保守回传 loose incoming。
+        _ => BoxConstraints::loose(incoming.max_w, incoming.max_h),
+    }
+}
+
 fn intrinsic(
     nodes: &[Option<Node>],
     idx: usize,
     vp_w: u32,
     vp_h: u32,
     cs: BoxConstraints,
+    wrap: &mut [Option<crate::TextWrapEntry>],
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
 ) -> (u32, u32) {
@@ -388,7 +464,18 @@ fn intrinsic(
         Props::Rect(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
         Props::Circle(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
         Props::Text(p) => {
-            tm.measure(p.text.as_bytes(), crate::desc::scale_to_u8(p.style.scale))
+            let id = crate::desc::NodeId(((n.gen as u32) << 16) | (idx as u32 & 0xFFFF));
+            let enabled = wrap.iter().flatten().any(|e| e.node == id && e.enabled);
+            let scale = crate::desc::scale_to_u8(p.style.scale);
+            if enabled {
+                let measured = tm.measure_with_box(p.text.as_bytes(), scale, cs.max_w);
+                if let Some(entry) = wrap.iter_mut().flatten().find(|e| e.node == id) {
+                    entry.last_max_w = cs.max_w;
+                }
+                measured
+            } else {
+                tm.measure(p.text.as_bytes(), scale)
+            }
         }
         Props::Col(p) => {
             let (w, mut h, k) = child_agg(nodes, n.first_child, true);

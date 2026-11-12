@@ -1265,3 +1265,27 @@ owner = "berry-ui"
 stability = "experimental"
 spec = "docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md"
 breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextWrapEntry"
+kind = "type"
+module = "crate"
+since = "LAYOUT-L5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL5PerNodeBoxTextWrap-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TEXT_WRAP_MAX"
+kind = "const"
+module = "crate"
+since = "LAYOUT-L5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL5PerNodeBoxTextWrap-v1.0.md"
+breaking = []

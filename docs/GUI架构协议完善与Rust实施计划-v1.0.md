@@ -422,7 +422,7 @@ full-rebuild fallback 保留
 
 ---
 
-### Phase B — LAYOUT-L5 Per-node Box & Text Wrap
+### Phase B — LAYOUT-L5 Per-node Box & Text Wrap（已落地）
 
 交付：
 
@@ -823,7 +823,7 @@ host-only，风险最低
 可先不碰 wire，避免在计划刚扩展时引入协议漂移
 ```
 
-### 第二刀：LAYOUT-L5
+### 第二刀：LAYOUT-L5（已落地）
 
 理由：
 

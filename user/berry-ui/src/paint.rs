@@ -23,7 +23,7 @@
 
 use crate::damage::{i64_to_i32_sat, DamageSet, RectI, RectSet};
 use crate::desc::{Props, ViewKind};
-use crate::metrics::IconSource;
+use crate::metrics::{IconSource, TextMetrics};
 use crate::Node;
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, ImageSrc, Rect as GfxRect};
 use berry_gfx::font::GlyphAtlas;
@@ -70,6 +70,8 @@ pub(crate) fn paint<'a>(
     enc: &mut CommandEncoder<'a>,
     icons: &'a dyn IconSource,
     _fonts: Option<&'static dyn crate::metrics::FontSource>,
+    tm: &'static dyn TextMetrics,
+    wrap: &[Option<crate::TextWrapEntry>],
 ) -> PaintReport {
     let mut rep =
         PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 };
@@ -130,7 +132,8 @@ pub(crate) fn paint<'a>(
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
             emit_walk_all(
-                nodes, root, 0, 0, d, &vp_rect, vp_rect, icons, _fonts, &mut rest, enc, &mut rep, 0, 0, 0,
+                nodes, root, 0, 0, d, &vp_rect, vp_rect, icons, _fonts, tm, wrap,
+                &mut rest, enc, &mut rep, 0, 0, 0,
             );
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）。Clip 哨兵在
@@ -193,7 +196,7 @@ pub(crate) fn paint<'a>(
                         }
                         emit_node(
                             nodes, slot, &bnds[k], &vp_rect, &current_clip, icons, _fonts,
-                            &mut rest, enc, &mut rep,
+                            tm, wrap, &mut rest, enc, &mut rep,
                         );
                     }
                 }
@@ -385,6 +388,8 @@ fn emit_walk_all<'a>(
     clip: RectI,
     icons: &'a dyn IconSource,
     _fonts: Option<&'static dyn crate::metrics::FontSource>,
+    tm: &'static dyn TextMetrics,
+    wrap: &[Option<crate::TextWrapEntry>],
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -440,7 +445,10 @@ fn emit_walk_all<'a>(
                 rep.drawn_px = rep.drawn_px.saturating_add(visible.area());
                 rep.culled += 1;
             } else {
-                emit_node(nodes, slot, &b, vp_rect, &effective_clip, icons, _fonts, rest, enc, rep);
+                emit_node(
+                    nodes, slot, &b, vp_rect, &effective_clip, icons, _fonts, tm, wrap,
+                    rest, enc, rep,
+                );
             }
         }
         ViewKind::Root
@@ -465,7 +473,8 @@ fn emit_walk_all<'a>(
         match nodes.get(c as usize) {
             Some(Some(ch)) if ch.alive => {
                 emit_walk_all(
-                    nodes, c, bx, by, d, vp_rect, effective_clip, icons, _fonts, rest, enc, rep,
+                    nodes, c, bx, by, d, vp_rect, effective_clip, icons, _fonts, tm, wrap,
+                    rest, enc, rep,
                     clip_depth + usize::from(is_clip),
                     open_clips + usize::from(is_clip),
                     hops + 1,
@@ -500,6 +509,8 @@ fn emit_node<'a>(
     clip: &RectI,
     icons: &'a dyn IconSource,
     _fonts: Option<&'static dyn crate::metrics::FontSource>,
+    tm: &'static dyn TextMetrics,
+    wrap: &[Option<crate::TextWrapEntry>],
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -550,17 +561,52 @@ fn emit_node<'a>(
             if take > 0 {
                 if let Some(piece) = take_scratch(rest, take) {
                     let cw = p.style.scale.cell_w() as i64;
+                    let ch = p.style.scale.cell_h() as i64;
+                    let node_id = crate::desc::NodeId(((n.gen as u32) << 16) | (slot & 0xFFFF));
+                    let wrapped = wrap.iter().flatten().find(|e| {
+                        e.node == node_id && e.enabled
+                    });
+                    let planned = wrapped.map(|entry| {
+                        crate::text_wrap::plan(
+                            bytes,
+                            crate::desc::scale_to_u8(p.style.scale),
+                            entry.last_max_w,
+                            tm,
+                        )
+                    });
                     let (mut bi, mut gi) = (0usize, 0usize);
+                    let mut line = 0usize;
+                    let mut col = 0i64;
+                    let mut line_end;
                     while bi < bytes.len() && gi < take {
+                        if let Some(plan) = planned.as_ref() {
+                            while line + 1 < plan.len() && bi >= plan.start(line + 1) {
+                                line += 1;
+                                col = 0;
+                            }
+                            line_end = plan.end(line);
+                        } else {
+                            line_end = bytes.len();
+                        }
+                        if bi >= line_end {
+                            if let Some(plan) = planned.as_ref() {
+                                if line + 1 < plan.len() {
+                                    bi = bi.max(plan.start(line + 1));
+                                    continue;
+                                }
+                            }
+                            break;
+                        }
                         let (cp, step) = crate::utf8::next(&bytes[bi..])
                             .unwrap_or((crate::utf8::REPLACEMENT, 1));
                         piece[gi] = GlyphPos {
                             ch: cp,
-                            x: i64_to_i32_sat(b.x as i64 + gi as i64 * cw),
-                            y: b.y,
+                            x: i64_to_i32_sat(b.x as i64 + col * cw),
+                            y: i64_to_i32_sat(b.y as i64 + line as i64 * ch),
                         };
                         bi = bi.saturating_add(step.max(1));
                         gi += 1;
+                        col += 1;
                     }
                     let glyphs: &'a [GlyphPos] = &piece[..gi]; // 冻结为共享——run 引用钉调用方缓冲
                     #[cfg(not(feature = "guest-font-vmo"))]

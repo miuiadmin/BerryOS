@@ -1441,6 +1441,9 @@ LAYOUT_L4_LINE = (
     "UITESTL4 ok tight=0,0,800,1200 loose=0,0,700,900 "
     "inf=0,0,1080,1920 single=41,41,41 noop=0,0"
 )
+LAYOUT_L5_LINE = (
+    "UITESTL5 ok bounds=18,132,192,192 max=264 measured=41,41"
+)
 TOKEN_KEYS = (
     "background", "surface", "surface_variant", "outline", "primary",
     "on_primary", "text_primary", "text_secondary", "success", "warning",
@@ -1680,6 +1683,9 @@ def verify_uitest_normal(
     )
     _require_exact_count(
         text, LAYOUT_L4_LINE, 2, "normal LAYOUT-L4 constrained boundary", log_path
+    )
+    _require_exact_count(
+        text, LAYOUT_L5_LINE, 2, "normal LAYOUT-L5 text wrap boundary", log_path
     )
     _require_exact_count(
         text,
@@ -4716,6 +4722,7 @@ def self_test(args) -> int:
             "UITESTAST ok bytes=860 a11y=9\n"
             f"{TOKEN_LINE}\n"
             f"{LAYOUT_L4_LINE}\n"
+            f"{LAYOUT_L5_LINE}\n"
             "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
@@ -4753,6 +4760,7 @@ def self_test(args) -> int:
             "UITESTAST ok bytes=860 a11y=9\n"
             f"{TOKEN_LINE}\n"
             f"{LAYOUT_L4_LINE}\n"
+            f"{LAYOUT_L5_LINE}\n"
             "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
@@ -5039,6 +5047,34 @@ def self_test(args) -> int:
             "LAYOUT-L4 noop 短路造假",
             lambda: verify_uitest_normal(
                 fake_u.replace("noop=0,0", "noop=1,1"), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L5 marker 缺失",
+            lambda: verify_uitest_normal(
+                fake_u.replace(f"{LAYOUT_L5_LINE}\n", "", 1), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L5 wrap 边界造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("bounds=18,132,192,192", "bounds=18,132,193,192"), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L5 measure 造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("measured=41,41", "measured=41,42"), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L5 marker 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    f"{LAYOUT_L5_LINE}\n",
+                    f"{LAYOUT_L5_LINE}\n{LAYOUT_L5_LINE}\n", 1,
+                ),
+                snap_u, 1,
             ),
         )
         expect_error(

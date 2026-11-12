@@ -41,6 +41,13 @@ fn tier(scale: u8) -> FontSize {
 /// 自定义供件（比例字体）同样不得只看字节长度。
 pub trait TextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32);
+
+    /// LAYOUT-L5 box-sensitive 测量：默认退化为无界 [`Self::measure`]，
+    /// 保持既有供件签名零级联。消费 wrap 的供件覆写本方法；`max_w`
+    /// 来自 measure walk 的 incoming BoxConstraints。
+    fn measure_with_box(&self, text: &[u8], scale: u8, _max_w: u32) -> (u32, u32) {
+        self.measure(text, scale)
+    }
 }
 
 /// 运行期字形供件。默认 host 面不走本 trait，直接使用 berry-gfx 静态
@@ -60,6 +67,18 @@ impl TextMetrics for MonospaceTextMetrics {
         let fs = tier(scale);
         let w = crate::utf8::count(text) as u64 * fs.cell_w() as u64;
         (crate::damage::u64_to_u32_sat(w), fs.cell_h() as u32)
+    }
+
+    fn measure_with_box(&self, text: &[u8], scale: u8, max_w: u32) -> (u32, u32) {
+        let planned = crate::text_wrap::plan(text, scale, max_w, self);
+        crate::text_wrap::measure(text, scale, &planned, self)
+    }
+}
+
+impl MonospaceTextMetrics {
+    /// 供 paint/诊断复用的换行计划（与测量共用 text_wrap 单源）。
+    pub fn wrap_plan(&self, text: &[u8], scale: u8, max_w: u32) -> crate::text_wrap::WrapPlan {
+        crate::text_wrap::plan(text, scale, max_w, self)
     }
 }
 

@@ -178,6 +178,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::StrokeToken` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::Switch` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::TEXT_INPUT_MAX` | const | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
+| `berry_ui::sdk::TEXT_WRAP_MAX` | const | LAYOUT-L5 | in-tree | experimental | `docs/BerryUI-LAYOUTL5PerNodeBoxTextWrap-v1.0.md` |
 | `berry_ui::sdk::TextBuf` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::TextField` | type | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
 | `berry_ui::sdk::TextFieldSpec` | type | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
@@ -192,6 +193,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::TextSelection` | type | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
 | `berry_ui::sdk::TextStyle` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::TextVariant` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
+| `berry_ui::sdk::TextWrapEntry` | type | LAYOUT-L5 | in-tree | experimental | `docs/BerryUI-LAYOUTL5PerNodeBoxTextWrap-v1.0.md` |
 | `berry_ui::sdk::Theme` | type | F3 | in-tree | stable | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::ThemeColors` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::ThemeMetrics` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |

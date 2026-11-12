@@ -47,6 +47,7 @@ pub mod sem;
 pub mod swipe;
 pub mod telemetry;
 pub mod text_input;
+pub mod text_wrap;
 pub mod widgets;
 pub mod theme;
 pub mod utf8;
@@ -141,6 +142,21 @@ pub const FLEX_MAX: usize = 32;
 pub struct FlexEntry {
     pub node: NodeId,
     pub weight: u16,
+}
+
+// ---------- LAYOUT-L5 text wrap 侧表 ----------
+
+/// text wrap 侧表容量；超表 → NodeFull loud（D30 容量族）。
+pub const TEXT_WRAP_MAX: usize = 32;
+
+/// runtime-only Text wrap 登记：不进 Node/Props/AST/wire。`last_max_w`
+/// 由最近一次 measure walk 写入，是 paint 复用同一 wrap plan 的缓存；
+/// 调用方只声明 `enabled`，宽上界来自 per-node incoming BoxConstraints。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextWrapEntry {
+    pub node: NodeId,
+    pub enabled: bool,
+    pub last_max_w: u32,
 }
 
 // ---------- press_map 侧表（GUI-6 D18——段D） ----------
@@ -293,6 +309,7 @@ pub struct Ui<const N: usize> {
     focus: [Option<FocusEntry>; FOCUS_MAX], // component focusable 侧表
     focused: Option<NodeId>, // 当前 component focus（窗口焦点仍在 wmd）
     flex: [Option<FlexEntry>; FLEX_MAX], // L2 主轴比例侧表
+    wrap: [Option<TextWrapEntry>; TEXT_WRAP_MAX], // L5 runtime-only wrap 侧表
     press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
     press_map_n: usize,
 }
@@ -640,6 +657,7 @@ impl<const N: usize> Ui<N> {
             focus: [None; FOCUS_MAX],
             focused: None,
             flex: [None; FLEX_MAX],
+            wrap: [None; TEXT_WRAP_MAX],
             press_map: [PressEntry {
                 trigger: NodeId(0),
                 visual: NodeId(0),
@@ -826,6 +844,7 @@ impl<const N: usize> Ui<N> {
         self.focus = [None; FOCUS_MAX];
         self.focused = None;
         self.flex = [None; FLEX_MAX];
+        self.wrap = [None; TEXT_WRAP_MAX];
         self.press_map_n = 0; // 同理整清（D18 表随树生命周期——悬空 id 无还原义）
         self.input_n = 0;
         self.hist_len = 0;
@@ -1114,6 +1133,18 @@ impl<const N: usize> Ui<N> {
             }
             k += 1;
         }
+        // L5 wrap 生命周期同理：子树登记随摘除清空；paint 只经活性过滤。
+        let mut k = 0usize;
+        while k < TEXT_WRAP_MAX {
+            let hit = self.wrap[k]
+                .as_ref()
+                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
+                .unwrap_or(false);
+            if hit {
+                self.wrap[k] = None;
+            }
+            k += 1;
+        }
         Ok(())
     }
 
@@ -1231,6 +1262,9 @@ impl<const N: usize> Ui<N> {
             if let Some(n) = self.nodes[idx].as_mut() {
                 n.props = props;
             }
+            if m.intersects(mask::ChangeMask::GEOM) {
+                self.mark_wrapped_descendants_dirty(idx as u32);
+            }
             self.apply_change(idx, m);
             Ok(())
         }
@@ -1241,6 +1275,9 @@ impl<const N: usize> Ui<N> {
             if let Some(n) = self.nodes[idx].as_mut() {
                 n.props = props;
                 n.paint_dirty = true;
+            }
+            if !geom_same {
+                self.mark_wrapped_descendants_dirty(idx as u32);
             }
             if geom_same {
                 self.damage_rect(old_r); // 纯着色：同界重绘
@@ -1686,6 +1723,97 @@ impl<const N: usize> Ui<N> {
         self.flex.iter().flatten().filter(|e| self.slot_of(e.node).is_ok())
     }
 
+    /// LAYOUT-L5：登记/覆写 Text wrap。宽上界不在此声明；measure walk 按
+    /// per-node incoming BoxConstraints 派生，并在测量时写入
+    /// `last_max_w` 供 paint 使用同一断行计划。非 Text / 悬空 id →
+    /// NodeBad；表满 → NodeFull；幂等同值 no-op。
+    pub fn set_text_wrap(&mut self, node: NodeId, enabled: bool) -> Result<(), UiError> {
+        let idx = self.slot_of(node)?;
+        if !matches!(
+            self.nodes.get(idx).and_then(|o| o.as_ref().map(|n| n.kind)),
+            Some(ViewKind::Text)
+        ) {
+            return Err(UiError::NodeBad);
+        }
+        let existing = self
+            .wrap
+            .iter()
+            .find(|e| e.as_ref().is_some_and(|e| e.node == node))
+            .and_then(|e| e.as_ref().copied());
+        if let Some(old) = existing {
+            if old.enabled == enabled {
+                return Ok(());
+            }
+            if let Some(e) = self.wrap.iter_mut().find(|e| {
+                e.as_ref().is_some_and(|e| e.node == node)
+            }) {
+                *e = Some(TextWrapEntry { node, enabled, last_max_w: old.last_max_w });
+            }
+            self.mark_flex_dirty(node);
+            return Ok(());
+        }
+        let Some(slot) = self.wrap.iter().position(|e| e.is_none()) else {
+            return Err(UiError::NodeFull);
+        };
+        self.wrap[slot] = Some(TextWrapEntry { node, enabled, last_max_w: u32::MAX });
+        self.mark_flex_dirty(node);
+        Ok(())
+    }
+
+    /// 摘除 Text wrap；幂等。
+    pub fn take_text_wrap(&mut self, node: NodeId) -> bool {
+        let Some(slot) = self.wrap.iter().position(|e| {
+            e.as_ref().is_some_and(|e| e.node == node)
+        }) else {
+            return false;
+        };
+        self.wrap[slot] = None;
+        self.mark_flex_dirty(node);
+        true
+    }
+
+    /// 活性 wrap 登记迭代（gen/alive 过滤）。
+    pub fn text_wrap_iter(&self) -> impl Iterator<Item = &TextWrapEntry> {
+        self.wrap
+            .iter()
+            .flatten()
+            .filter(|e| self.slot_of(e.node).is_ok())
+    }
+
+    /// LAYOUT-L5：祖先几何/容器盒变化时，重标子树内 wrap Text。父节点
+    /// 自身 dirty 只会触发布局递归，不会自动重测缓存命中的叶子；wrap 叶
+    /// 子的 intrinsic 依赖 incoming max_w，因此必须显式加入重测链。
+    fn mark_wrapped_descendants_dirty(&mut self, ancestor: u32) {
+        let mut entries = [None; TEXT_WRAP_MAX];
+        let mut count = 0usize;
+        for entry in self.wrap.iter().flatten() {
+            if count < entries.len() {
+                entries[count] = Some(entry.node);
+                count += 1;
+            }
+        }
+        for node in entries[..count].iter().flatten().copied() {
+            let Ok(slot) = self.slot_of(node) else { continue };
+            let mut cur = slot as u32;
+            let mut hops = 0usize;
+            let mut hit = false;
+            while cur != NONE && hops <= N {
+                hops += 1;
+                if cur == ancestor {
+                    hit = true;
+                    break;
+                }
+                let Some(node) = self.nodes.get(cur as usize).and_then(|o| o.as_ref()) else {
+                    break;
+                };
+                cur = node.parent;
+            }
+            if hit {
+                self.mark_flex_dirty(node);
+            }
+        }
+    }
+
     fn mark_flex_dirty(&mut self, node: NodeId) {
         let Ok(idx) = self.slot_of(node) else { return };
         let parent = self.nodes.get(idx).and_then(|o| o.as_ref()).map(|n| n.parent).unwrap_or(NONE);
@@ -2009,6 +2137,17 @@ impl<const N: usize> Ui<N> {
     /// 生效——set_viewport 触发全量重测）。
     pub fn set_text_metrics(&mut self, tm: &'static dyn TextMetrics) {
         self.tm = tm;
+        // 供件换装会改变 intrinsic 与 wrap plan。即便新旧尺寸相同，断行
+        // 也可能不同；全树 layout/paint dirty + FULL damage 是单源收口。
+        let mut i = 0usize;
+        while i < N {
+            if let Some(n) = self.nodes[i].as_mut() {
+                n.layout_dirty = true;
+                n.paint_dirty = true;
+            }
+            i += 1;
+        }
+        self.damage.add_full();
     }
 
     /// 图标/图片资源供件换装（默认 [`EmptyIconSource`]——dims 恒 None）。
@@ -2115,6 +2254,7 @@ impl<const N: usize> Ui<N> {
             self.icons,
             bc,
             &self.flex,
+            &mut self.wrap,
         )
     }
 
@@ -2137,6 +2277,7 @@ impl<const N: usize> Ui<N> {
             self.icons,
             bc,
             &self.flex,
+            &mut self.wrap,
         ))
     }
 
@@ -2167,6 +2308,8 @@ impl<const N: usize> Ui<N> {
             enc,
             self.icons, // D28 槽取传（门面签名不变）
             self.fonts,
+            self.tm,
+            &self.wrap,
         )
     }
 
@@ -2361,6 +2504,7 @@ impl<const N: usize> Ui<N> {
             self.icons,
             layout::Constraints::Viewport.to_box(self.vp_w, self.vp_h),
             &self.flex,
+            &mut self.wrap,
         );
         let drew = !self.damage.is_empty(); // 无 damage 不提交（对齐条 6）
         let report = if drew && self.root_slot != NONE {
@@ -2373,6 +2517,8 @@ impl<const N: usize> Ui<N> {
                 enc,
                 self.icons, // D28 槽取传
                 self.fonts, // F5：guest 档可由系统字形 VMO 供给
+                self.tm,
+                &self.wrap,
             )
         } else {
             paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 }

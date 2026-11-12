@@ -265,6 +265,30 @@ def check_app(app_dir: Path) -> list[str]:
     return errors
 
 
+def check_density_threshold(root: Path) -> list[str]:
+    """LAYOUT-L5：视口密度阈值字面量只能住在 berry-ui/src/theme.rs。
+
+    比较变量名不穷举（w/vp_w/display_w 等历史形态会漂移），直接禁
+    `600/1000` 宽阈值与 `1800` 高阈值同文件共现；theme.rs 是唯一白名单。
+    注释先经 strip_rust_comments 去除，历史说明不会误报。
+    """
+    errors: list[str] = []
+    for source in sorted((root / "user").rglob("*.rs")):
+        rel = source.relative_to(root)
+        if str(rel) == "user/berry-ui/src/theme.rs" or "/tests/" in str(rel):
+            continue
+        try:
+            code = strip_rust_comments(source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as error:
+            errors.append(f"{rel}: 源码读取/注释解析失败：{error}")
+            continue
+        has_width = re.search(r">=\s*(?:600|1000)\b", code) is not None
+        has_height = re.search(r">=\s*1800\b", code) is not None
+        if has_width and has_height:
+            errors.append(f"{rel}: 私有视口密度阈值必须走 Density::for_viewport")
+    return errors
+
+
 def scan_root(root: Path) -> tuple[list[str], list[str]]:
     apps: list[Path] = []
     errors: list[str] = []
@@ -312,6 +336,7 @@ def scan_root(root: Path) -> tuple[list[str], list[str]]:
 
     if (root / "user" / "berry-nshfont").exists():
         errors.append("user/berry-nshfont 仍存在：F9 后迁移期临时件必须删除")
+    errors.extend(check_density_threshold(root))
 
     return [str(app) for app in apps], errors
 
@@ -511,9 +536,18 @@ def self_test() -> int:
         _, errors = scan_root(root)
         expect_error("build 依赖冒充运行时 berry-room", errors)
 
+    with tempfile.TemporaryDirectory(prefix="berry-gui-guard-density.") as name:
+        root = Path(name)
+        make_fixture(root, valid=True)
+        theme = root / "user" / "bins" / "berry-launcher" / "src" / "desktop.rs"
+        theme.parent.mkdir(parents=True, exist_ok=True)
+        theme.write_text("fn x(w: u32, h: u32) { w >= 600 && h >= 1800 }", encoding="utf-8")
+        _, errors = scan_root(root)
+        expect_error("私有密度阈值", errors)
+
     if failures:
         return 1
-    print("gui-guard self-test: 正样本 + 21 类负样本 fail closed 全绿")
+    print("gui-guard self-test: 正样本 + 22 类负样本 fail closed 全绿")
     return 0
 
 

@@ -36,6 +36,7 @@ use berry_ui::desc::{
     ColProps, GridProps, IconProps, PadProps, RowProps, TextProps, TextStyle,
 };
 use berry_ui::layout::CrossAlign;
+use berry_ui::theme::Density;
 use berry_ui::swipe::SwipePager;
 use berry_ui::{
     NodeId, Props, TextBuf, UiError, UiMain, ViewKind, ViewSpec, ROLE_BUTTON, ROLE_TEXT,
@@ -231,7 +232,9 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     let (vp_w, vp_h) = ui.viewport();
     // OH phone 固定几何只给 1080×1920（360×640vp @3x）；横屏/调试档走
     // 紧凑分支，防 Dock/top 常量把 1280×720 挤出视口。
-    let big = vp_w >= 600 && vp_h >= 1800;
+    // LAYOUT-L5：密度档单源。旧私有 600×1800 阈值与 BerryUI Compact 档
+    // 在 600..1000 宽的竖屏区间分叉；现统一 fail-closed 到 Compact。
+    let big = Density::for_viewport(vp_w, vp_h) == Density::Product;
 
     // OpenHarmony phone 档：1080×1920 = 360×640vp @3x，直接消费 OH
     // launcher 源仓 phone 常量。800×600 调试档保留紧凑布局。

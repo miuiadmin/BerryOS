@@ -275,6 +275,7 @@ pub struct TextField {
     pub value_text: NodeId,
     pub caret: NodeId,
     kind: TextInputKind,
+    max_width: u32,
     focused: bool,
     scroll_x: i32,
 }
@@ -356,6 +357,7 @@ impl TextField {
             value_text,
             caret,
             kind: spec.kind,
+            max_width: spec.width,
             focused: false,
             scroll_x: 0,
         })
@@ -363,6 +365,36 @@ impl TextField {
 
     pub fn kind(&self) -> TextInputKind {
         self.kind
+    }
+
+    /// LAYOUT-L5 shrink-to-width 最小面：把 panel 宽收敛到 `avail`，但
+    /// 不低于“左右 Xs padding + 一个 Body 字宽 + caret 宽”的可输入下限，
+    /// 且永不超出构造规格宽度。返回实际应用宽；调用方可用返回值识别
+    /// floor 溢出。
+    pub fn shrink_to_width<const N: usize>(
+        &mut self,
+        ui: &mut Ui<N>,
+        ctx: &WidgetContext,
+        avail_w: u32,
+    ) -> Result<u32, UiError> {
+        let pad = ctx.spacing(SpacingToken::Xs);
+        let body = ctx.metrics.typography(TypographyToken::Body);
+        let floor = (body.cell_w() as u32)
+            .saturating_add(pad.saturating_mul(2))
+            .saturating_add(text_caret_width(ctx));
+        let target = self.max_width.min(avail_w.max(floor));
+        if target == 0 {
+            return Err(UiError::NodeBad);
+        }
+        let Some(props) = retained_props(ui, self.panel) else {
+            return Err(UiError::NodeBad);
+        };
+        let Some(Props::Panel(mut panel)) = Some(props) else {
+            return Err(UiError::NodeBad);
+        };
+        panel.w = Some(target);
+        ui.set_props(self.panel, Props::Panel(panel))?;
+        Ok(target)
     }
 
     pub fn is_focused<const N: usize>(&self, ui: &Ui<N>) -> bool {

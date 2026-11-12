@@ -677,6 +677,65 @@ impl AppModel {
         line.print(room);
     }
 
+    fn print_l5_wrap(&mut self, room: &AppRoom) {
+        let label = self.page.button.label;
+        // 临时把既有 Button label 换成长样本文本：同一 NodeId、同一 AST
+        // 节点数，探针结束后恢复 “Details”。这样 guest 不新增节点也真实
+        // 经过 greedy break 与多行 GlyphPos 路径。
+        if self.ui.set_text(label, b"FRAME LAYOUT HIT STATE").is_err() {
+            fail(room, "L5 sample text");
+        }
+        let _ = self.ui.set_text_wrap(label, true);
+        self.ui.set_viewport(1080, 1920);
+        let Some(stat) = self
+            .ui
+            .layout_box(BoxConstraints::tight(300, 1200))
+            .ok()
+        else {
+            fail(room, "L5 layout box");
+        };
+        let bounds = match self.ui.bounds(label) {
+            Ok(bounds) => bounds,
+            Err(_) => fail(room, "L5 label bounds"),
+        };
+        let max_w = self
+            .ui
+            .text_wrap_iter()
+            .find(|entry| entry.node == label)
+            .map(|entry| entry.last_max_w)
+            .unwrap_or(0);
+        if stat.measured == 0 || bounds.w < 0 || bounds.w as u32 > 300 || max_w == 0 {
+            fail(room, "L5 wrap boundary");
+        }
+
+        let line_h = self
+            .ctx
+            .metrics
+            .typography(berry_ui::sdk::TypographyToken::Body)
+            .cell_h() as u32;
+        if bounds.h <= line_h as i32 {
+            fail(room, "L5 multiline boundary");
+        }
+
+        let mut line = Line::new(b"UITESTL5 ok bounds=");
+        line.rect(bounds);
+        line.push(b" max=");
+        line.push_u32(max_w);
+        line.push(b" measured=");
+        line.push_u32(stat.measured);
+        line.push(b",");
+        line.push_u32(stat.placed);
+        line.push(b"\n");
+
+        let _ = self.ui.take_text_wrap(label);
+        if self.ui.set_text(label, b"Details").is_err() {
+            fail(room, "L5 restore text");
+        }
+        self.ui.set_viewport(1080, 1920);
+        let _ = self.ui.layout();
+        line.print(room);
+    }
+
     fn print_sem(&mut self, room: &AppRoom) {
         let mut regions = [zero_region(); 32];
         let count = match self.ui.sem_snapshot_into(&mut regions) {
@@ -1311,6 +1370,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     app.print_data(&mut room);
     app.print_token(&mut room);
     app.print_l4(&mut room);
+    app.print_l5_wrap(&mut room);
     app.print_sem(&mut room);
     app.print_adaptive(&room);
     app.render(&mut room);
