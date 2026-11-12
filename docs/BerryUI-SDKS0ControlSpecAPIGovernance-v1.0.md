@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-11
 >
-> 定位：SDK-S0 的现行规格。执行序权威 = [GUI框架地基路线-v1.19.md](GUI框架地基路线-v1.19.md)。本文把 GUI-15 的官方源研究结论落成两件事：BerryUI 控件规格模板、BerryUI SDK API 账本与机器门禁。
+> 定位：SDK-S0 的现行规格。执行序权威 = [GUI框架地基路线-v1.20.md](GUI框架地基路线-v1.20.md)。本文把 GUI-15 的官方源研究结论落成两件事：BerryUI 控件规格模板、BerryUI SDK API 账本与机器门禁。
 >
 > 范围：`berry_ui::sdk` facade 与 BerryUI 控件规格流程。不修改 berry-ui 运行时行为，不新增 guest payload。
 

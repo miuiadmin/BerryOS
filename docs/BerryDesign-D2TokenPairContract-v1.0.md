@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-12
 >
-> 定位：DESIGN-D2 现行实施规格。执行序权威 = [GUI框架地基路线-v1.19.md](GUI框架地基路线-v1.19.md)；F3 兼容基线 = [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)；研究依据 = [../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md) §6.5/§9/E5；API 治理 = [BerryUI-SDKS0ControlSpecAPIGovernance-v1.0.md](BerryUI-SDKS0ControlSpecAPIGovernance-v1.0.md)。
+> 定位：DESIGN-D2 现行实施规格。执行序权威 = [GUI框架地基路线-v1.20.md](GUI框架地基路线-v1.20.md)；F3 兼容基线 = [BerryDesign-F3主题与基元-v1.0.md](BerryDesign-F3主题与基元-v1.0.md)；研究依据 = [../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md) §6.5/§9/E5；API 治理 = [BerryUI-SDKS0ControlSpecAPIGovernance-v1.0.md](BerryUI-SDKS0ControlSpecAPIGovernance-v1.0.md)。
 >
 > 核心裁决：**视觉背景 token 必须成对携带前景，并进入机器对比度夹具**。F3 light 色值与 state 表字节冻结；D2 以 additive API 增加 scheme 与 pair 代数，不迁移五 app 暗色皮肤。
 

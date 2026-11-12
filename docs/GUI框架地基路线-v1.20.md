@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.19**｜2026-11-12
+> 版本：**1.20**｜2026-11-12
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -127,6 +127,18 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **SEM-A1 Semantic Tree Sidecar（已落地）** | runtime-only SemEntry overlay 与 P0 A11yRegion 投影：role/label/value/state/actions/text range/bounds/parent、clip 可见性过滤与 merge-descendants | 不改 ViewKind/Props/Msg/AST/wire；动作/状态/角色词表单源转发 P0 已知域，未知 loud 拒；TextField value/selection 与 Button/Switch/ListItem 语义由 widget 同步；host + UITEST/GUI8 快照真链全绿；screen reader 服务、语义事件外发、action dispatch、SEM-A2 全后置 |
 | **DESIGN-D2 Design Token Pair Contract（已落地）** | Berry Design token 代数升级：paired bg/fg、light/dark/high-contrast scheme matrix、WCAG 对比度机器夹具、非线性格式塔 text-scale ladder、effective-pixel/quarter-vp grid 策略与主题切换 damage 语义 | 不改 ViewKind/Props/Msg/AST/wire；不复制 Material HCT，只借对比度思想；新增视觉面禁止孤立 background；三 scheme active text pair ≥4.5:1，Disabled 显式 inactive 豁免；text scale 只走离散 FontSize 档不线性乘布局；dark/high-contrast 不要求本刀迁移五 app golden；R3 config event 零新增通道 |
 | **LAYOUT-L4 Box Constraints & Intrinsic Boundary（已落地）** | 四元组 `min_w/max_w/min_h/max_h` 布局约束代数、Root intrinsic clamp、约束交/收缩/fit 纯函数与 L1 四档兼容糖；把 L2 flex share 与 L3 pane slot 表达为 constraints 纯函数 | 不重写布局引擎、不把 constraints 下放到每个节点、不新增 ViewKind/Props/Msg/AST/wire；旧 L1 四档与 GUI8 布局字节零漂；净树约束调用仍 documented no-op；测量调用不得高于现有单遍缓存基线；damage 仍裁真实 viewport |
+| **PLAN-G0 GUI 架构协议完善与 Rust 实施计划（已落地）** | 后置项总账、协议/实现分类、Rust 分刀 ladder、预算策略、风险停止条件与 SDK 文档收口计划 | 计划本身不引入代码/opcode/AST/facade；rootfs0 已到 32MiB 单卷帽，后续大资产必须走 rootfs1/独立卷；每个后置项必须有 owning phase 或明确拒绝/延后，不得无主漂移 |
+| **RUN-K1 Keyed Re-Apply & Lifecycle Properties（下一刀）** | stable key re-apply、key 冲突 loud reject、settle cap、apply/reset/remove/focus 状态机性质测试、UIContext seam 与 gui-wmd host harness 第一版 | index-only key 禁用；removed subtree 清 focus/anim/sem/side table；无合成 FocusOut/Click 或双重激活；keyed 结果与 full-rebuild oracle 一致；AST/wire 零漂；交互帧重推导 p99 <= 3 |
+| **LAYOUT-L5 Per-node Box & Text Wrap（排队）** | per-node incoming BoxConstraints、box-sensitive Text measure、Text wrap、TextField shrink-to-width 与 density/threshold 单源 | 保持一后序 measure + 一前序 place；CountingMetrics 不得高于基线 +10%；constraint equality 短路；L1..L4 golden 语义不变；damage 恒真实 viewport |
+| **LAYOUT-L6 Flex/Grid/Intrinsic Completion（排队）** | flex basis/grow/shrink、嵌套协商、Grid fr/auto、MainAlign/alignSelf、intrinsic query 与 constraint cache | flex 权重默认 runtime-only；需 Props 表达时另走 add-only 协议；L2 1:2 与 L3 transposed 语义不变；cache stale 必须注测失败 |
+| **WM-R4 Capability Record & Frame Feedback（排队）** | WindowCapabilityRecord 纯数据、requested/latched/presented/dropped 反馈、frame credit 泄漏检测与 input liveness watchdog | P4 决策由纯函数重放；无第二焦点权威；berry-guiproto add-only 且旧 opcode 零漂；迟到帧不破坏 damage；输入超时走 CANCEL/SYNTHESIZED 既有语义 |
+| **DESIGN-D3 Theme Event & Production Schemes（排队）** | R3 add-only THEME cause、系统主题设置、per-window theme event、五 app dark/high-contrast golden 迁移与 legacy token 清理 | theme switch 走 set_props/damage；R3 serial/ACK 语义不变；contrast ledger 36/36；不引入 HCT/OEM/连续字号 |
+| **SEM-A2 Semantic Transport & Action Dispatch（排队）** | batch semantic frame、poll/ack subscription、stable id/incremental diff、value/range wire v2、action dispatch 与 a11y 词表扩展 | SEM 不成为第二 focus/hit 权威；action 只回流 app Msg；未知词 loud reject；SEM-A1 overlay 零回退 |
+| **IME-1 IME Host & Soft Keyboard（排队）** | IME Host、SYSTEM soft keyboard surface、insets::Ime producer、composition commit、KeyboardAvoider 与 FormMetrics 第一版 | text focus 仍先于 component activation；IME surface 不抢策略焦点；R2 occlusion/insets 不变量保持；真实软键盘链入 GUI8 |
+| **NAV-1 Route/Back/Form State（排队）** | Route/Back stack API、stateful ListDetail controller、scroll-into-view、FormMetrics 消费面与 lifecycle/freeze hook | 路由是 app-side library，不进 berry-ui 布局引擎；Back 走 wmd -> Room -> app Msg；既有页面 golden 零回退 |
+| **WM-R5 Multi-window & Display Geometry（排队）** | multi-window 容量/VA/buffer/popup/stride 设计、display metadata vocabulary、rotate 与多窗 API | 先设计后实现；容量/合成预算不过门不得开 API；display unknown/unsupported fail closed；R1/R2/R3 不变量重证 |
+| **GFX-F1 Font/GPU/Frame Intent（排队）** | common-CJK A8 字形资产、多档字形供给、virtio-gpu 2D backend、HDI 激活与 per-surface frame-rate intent | rootfs 超帽即停；不得降低壁纸/图标质量；soft backend 永久 CI baseline；steady-state zero-wake 不回退 |
+| **DOC-D3 Executable Docs & SDK Closure（排队）** | Tour/Guide/Reference 三层文档、可执行示例、sdk_api.toml 单源 reference/gallery 与文档构建入 check | 零手写 API 表；文档示例必须可编译/运行；channel/stability 治理与 SDK ledger 对拍 |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

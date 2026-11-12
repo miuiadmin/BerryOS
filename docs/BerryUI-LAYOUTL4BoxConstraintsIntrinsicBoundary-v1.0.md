@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-12
 >
-> 定位：LAYOUT-L4 现行实施规格。执行序权威 = [GUI框架地基路线-v1.19.md](GUI框架地基路线-v1.19.md)；L1 基线 = [BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md](BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md)；L2/L3 = [BerryUI-L2FlexRatioAllocation-v1.0.md](BerryUI-L2FlexRatioAllocation-v1.0.md) / [BerryUI-L3TransposedContainerFlexListDetail-v1.0.md](BerryUI-L3TransposedContainerFlexListDetail-v1.0.md)；研究依据 = [../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md) E6/§8.1/§8.3。
+> 定位：LAYOUT-L4 现行实施规格。执行序权威 = [GUI框架地基路线-v1.20.md](GUI框架地基路线-v1.20.md)；L1 基线 = [BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md](BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md)；L2/L3 = [BerryUI-L2FlexRatioAllocation-v1.0.md](BerryUI-L2FlexRatioAllocation-v1.0.md) / [BerryUI-L3TransposedContainerFlexListDetail-v1.0.md](BerryUI-L3TransposedContainerFlexListDetail-v1.0.md)；研究依据 = [../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md) E6/§8.1/§8.3。
 >
 > 核心裁决：**约束先成为可测代数，不在本刀重写布局内核**。四元组只播种 Root intrinsic boundary；既有单遍 measure/place 结构保持不变。
 
