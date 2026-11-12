@@ -593,8 +593,8 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     }
 
     let theme = Theme::light();
-    let ctx = WidgetContext::for_viewport(theme, width as u32, height as u32);
     let mut ui = Ui32::new(width as u32, height as u32);
+    let ctx = WidgetContext::for_ui(theme, &ui);
     ui.set_font_source(&ROOM_FONT_SOURCE);
     let list = build_list(&mut ui, &ctx, &contacts);
     let mut scroll = list.scroll;

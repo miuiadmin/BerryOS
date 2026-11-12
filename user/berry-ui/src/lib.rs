@@ -362,6 +362,238 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
     }
 }
 
+/// RUN-K1 重应用统计：一次 keyed 调和的值级证据面。`rederives` 是本
+/// 次调用内树身份/几何推导轮数；当前实现单轮完成，恒 1。未来若引入
+/// re-entrant derive，必须保持 <= [`SETTLE_DERIVE_MAX`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReapplyStat {
+    pub matched_clean: u32,
+    pub updated: u32,
+    pub moved: u32,
+    pub added: u32,
+    pub removed: u32,
+    pub rederives: u32,
+    pub fallback_full: bool,
+}
+
+/// RUN-K1 settle cap。GUI-15 E7 的上限不是给全树重建留余地，而是禁止
+/// 交互帧内无限 derive；当前单轮调和必须一次 settle。
+pub const SETTLE_DERIVE_MAX: u32 = 3;
+
+/// RUN-K1 只读调和计划。所有数组按 const N 定容，零分配；计划完成后
+/// 才允许修改 arena。
+struct KeyPlan<const N: usize> {
+    source_to_target: [u32; N],
+    source_add: [bool; N],
+    source_moved: [bool; N],
+    target_keep: [bool; N],
+    target_remove: [bool; N],
+    matched_clean: u32,
+    updated: u32,
+    moved: u32,
+    added: u32,
+    removed: u32,
+}
+
+/// RUN-K1 keyed 通道的实验期 source scratch 帽。`apply_desc` full oracle
+/// 仍支持 MAX_NODES=512；keyed 面先用固定 128 节点/24 层的小栈切片落地，
+/// 防止把 D29 32KB guest 栈预算扩大到 embedder 才发现溢出。
+const KEYED_SOURCE_MAX: usize = 128;
+pub const KEYED_DEPTH_MAX: u32 = 24;
+
+fn source_max_depth<const N: usize>(nodes: &[Option<Node>]) -> Result<u32, desc::AstError> {
+    let mut max_depth = 0u32;
+    for (_slot, option) in nodes.iter().enumerate() {
+        let Some(node) = option.as_ref() else { continue };
+        if !node.alive {
+            continue;
+        }
+        let mut depth = 1u32;
+        let mut parent = node.parent;
+        let mut hops = 0usize;
+        while parent != NONE && hops <= N {
+            hops += 1;
+            let Some(parent_node) = nodes.get(parent as usize).and_then(|o| o.as_ref()) else {
+                return Err(desc::AstError::Truncated);
+            };
+            depth += 1;
+            parent = parent_node.parent;
+        }
+        max_depth = max_depth.max(depth);
+    }
+    Ok(max_depth)
+}
+
+impl<const N: usize> KeyPlan<N> {
+    fn new() -> Self {
+        Self {
+            source_to_target: [NONE; N],
+            source_add: [false; N],
+            source_moved: [false; N],
+            target_keep: [false; N],
+            target_remove: [false; N],
+            matched_clean: 0,
+            updated: 0,
+            moved: 0,
+            added: 0,
+            removed: 0,
+        }
+    }
+}
+
+fn mark_source_add<const N: usize>(
+    nodes: &[Option<Node>],
+    slot: u32,
+    plan: &mut KeyPlan<N>,
+) -> u32 {
+    let Some(node) = nodes.get(slot as usize).and_then(|o| o.as_ref()) else {
+        return 0;
+    };
+    if plan.source_add[slot as usize] {
+        return 0;
+    }
+    plan.source_add[slot as usize] = true;
+    let mut count = 1u32;
+    let mut cur = node.first_child;
+    let mut hops = 0usize;
+    while cur != NONE && hops <= N {
+        hops += 1;
+        let next = nodes
+            .get(cur as usize)
+            .and_then(|o| o.as_ref())
+            .map(|n| n.next_sib)
+            .unwrap_or(NONE);
+        count += mark_source_add(nodes, cur, plan);
+        cur = next;
+    }
+    count
+}
+
+fn mark_target_remove<const N: usize>(
+    nodes: &[Option<Node>],
+    slot: u32,
+    plan: &mut KeyPlan<N>,
+) -> u32 {
+    let Some(node) = nodes.get(slot as usize).and_then(|o| o.as_ref()) else {
+        return 0;
+    };
+    if plan.target_remove[slot as usize] {
+        return 0;
+    }
+    plan.target_remove[slot as usize] = true;
+    let mut count = 1u32;
+    let mut cur = node.first_child;
+    let mut hops = 0usize;
+    while cur != NONE && hops <= N {
+        hops += 1;
+        let next = nodes
+            .get(cur as usize)
+            .and_then(|o| o.as_ref())
+            .map(|n| n.next_sib)
+            .unwrap_or(NONE);
+        count += mark_target_remove(nodes, cur, plan);
+        cur = next;
+    }
+    count
+}
+
+fn plan_keyed_node<const N: usize>(
+    source: &[Option<Node>],
+    source_slot: u32,
+    target: &[Option<Node>],
+    target_slot: u32,
+    plan: &mut KeyPlan<N>,
+) -> Result<(), desc::AstError> {
+    // 逐链扫描而不落 [u32; N] 子清单：D29 guest 栈预算按每层约 200B 设
+    // 计；若每层复制三个 N 长数组，N=512/depth=96 会放大到数百 KB。
+    // target_keep 即“本父下已匹配”标记，复用计划状态且消除死字段。
+    let source_head = source
+        .get(source_slot as usize)
+        .and_then(|o| o.as_ref())
+        .map(|n| n.first_child)
+        .unwrap_or(NONE);
+    let target_head = target
+        .get(target_slot as usize)
+        .and_then(|o| o.as_ref())
+        .map(|n| n.first_child)
+        .unwrap_or(NONE);
+
+    let mut source_cur = source_head;
+    let mut source_i = 0usize;
+    let mut source_hops = 0usize;
+    while source_cur != NONE && source_hops <= N {
+        source_hops += 1;
+        let Some(child) = source.get(source_cur as usize).and_then(|o| o.as_ref()) else {
+            return Err(desc::AstError::Truncated);
+        };
+        let next = child.next_sib;
+        let child_slot = source_cur;
+        let child_key = child.key;
+
+        let mut matched = false;
+        if child_key != 0 {
+            let mut target_cur = target_head;
+            let mut target_i = 0usize;
+            let mut target_hops = 0usize;
+            while target_cur != NONE && target_hops <= N {
+                target_hops += 1;
+                let Some(candidate) =
+                    target.get(target_cur as usize).and_then(|o| o.as_ref())
+                else {
+                    break;
+                };
+                let candidate_next = candidate.next_sib;
+                let candidate_slot = target_cur;
+                let already_matched =
+                    plan.target_keep.get(candidate_slot as usize).copied().unwrap_or(true);
+                if !already_matched && candidate.key == child_key {
+                    if candidate.kind != child.kind {
+                        return Err(desc::AstError::KeyKindMismatch { key: child_key });
+                    }
+                    plan.source_to_target[child_slot as usize] = candidate_slot;
+                    plan.target_keep[candidate_slot as usize] = true;
+                    let changed = candidate.props != child.props;
+                    if changed {
+                        plan.updated += 1;
+                    }
+                    if source_i != target_i {
+                        plan.source_moved[child_slot as usize] = true;
+                        plan.moved += 1;
+                    } else if !changed {
+                        plan.matched_clean += 1;
+                    }
+                    plan_keyed_node(source, child_slot, target, candidate_slot, plan)?;
+                    matched = true;
+                    break;
+                }
+                target_cur = candidate_next;
+                target_i += 1;
+            }
+        }
+        if !matched {
+            plan.added += mark_source_add(source, child_slot, plan);
+        }
+        source_cur = next;
+        source_i += 1;
+    }
+
+    let mut target_cur = target_head;
+    let mut target_hops = 0usize;
+    while target_cur != NONE && target_hops <= N {
+        target_hops += 1;
+        let Some(candidate) = target.get(target_cur as usize).and_then(|o| o.as_ref()) else {
+            break;
+        };
+        let next = candidate.next_sib;
+        let kept = plan.target_keep.get(target_cur as usize).copied().unwrap_or(false);
+        if !kept {
+            plan.removed += mark_target_remove(target, target_cur, plan);
+        }
+        target_cur = next;
+    }
+    Ok(())
+}
+
 impl<const N: usize> Ui<N> {
     pub fn new(viewport_w: u32, viewport_h: u32) -> Self {
         let mut free_stack = [0u32; N];
@@ -672,6 +904,22 @@ impl<const N: usize> Ui<N> {
         }
         if spec.kind == ViewKind::Root {
             return Err(UiError::BadParent); // Root 不能为子
+        }
+        // RUN-K1：同父非零 key 唯一。builder 可分次构造，冲突在最低公共
+        // 入口先行拒绝；AST 面由 desc::build_node 单源同律执法。
+        if spec.key != 0 {
+            let mut cur = self.nodes[pidx].as_ref().map(|n| n.first_child).unwrap_or(NONE);
+            let mut hops = 0usize;
+            while cur != NONE && hops <= N {
+                hops += 1;
+                let Some(n) = self.nodes.get(cur as usize).and_then(|o| o.as_ref()) else {
+                    break;
+                };
+                if n.key == spec.key {
+                    return Err(UiError::NodeBad);
+                }
+                cur = n.next_sib;
+            }
         }
         // Grid spec 先验（§4.2 拒面 add 侧；AST/builder 面在 desc.rs 双
         // 拒）：零维 spec 拒——UiError 族冻结（D21），NodeBad 兼任。
@@ -2307,6 +2555,304 @@ impl<const N: usize> Ui<N> {
                 Err(e)
             }
         }
+    }
+
+    /// RUN-K1 keyed re-apply：先在临时 arena 解析/计划，成功后才修改当前
+    /// 树。key 匹配节点保持 `(slot, generation)`，focus/sem/flex/anim/dep
+    /// 等运行期侧表随 NodeId 存活；声明式 a11y 在末尾按 source 重建。
+    pub fn apply_desc_keyed(&mut self, src: &[u8]) -> Result<ReapplyStat, desc::AstError> {
+        // Pass 0：源树完整解析。当前树在此阶段零修改，因此非法源保持旧树。
+        let mut source = [None; KEYED_SOURCE_MAX];
+        let mut source_gens = [0u16; KEYED_SOURCE_MAX];
+        let mut source_root = NONE;
+        let mut source_a11y: [Option<A11yEntry>; A11Y_MAX] = [None; A11Y_MAX];
+        desc::apply_tree(
+            src,
+            &mut source,
+            &mut source_gens,
+            &mut source_root,
+            &mut source_a11y,
+        )?;
+        let source_live = source.iter().flatten().count() as u32;
+        let source_depth = source_max_depth::<KEYED_SOURCE_MAX>(&source)?;
+        if source_depth > KEYED_DEPTH_MAX {
+            return Err(desc::AstError::TooSmall {
+                need: source_depth as usize,
+                got: KEYED_DEPTH_MAX as usize,
+            });
+        }
+        // source scratch 与目标 arena 的 N 分域：先验最终节点数，避免
+        // source 前序 slot >= N 时误写 KeyPlan::<N>。
+        if source_live > N as u32 {
+            return Err(desc::AstError::TooSmall {
+                need: source_live as usize,
+                got: N,
+            });
+        }
+
+        // 当前空树没有可保身份：直接走 full oracle（源树已验合法）。
+        if self.root_slot == NONE {
+            self.apply_desc(src)?;
+            return Ok(ReapplyStat {
+                matched_clean: 0,
+                updated: 0,
+                moved: 0,
+                added: source_live,
+                removed: 0,
+                rederives: 1,
+                fallback_full: true,
+            });
+        }
+
+        let mut plan = KeyPlan::<N>::new();
+        let target_root = self.root_slot;
+        plan.source_to_target[source_root as usize] = target_root;
+        plan.target_keep[target_root as usize] = true;
+        let (root_source, root_target) = (
+            source[source_root as usize].as_ref(),
+            self.nodes[target_root as usize].as_ref(),
+        );
+        match (root_source, root_target) {
+            (Some(source_root_node), Some(target_root_node)) => {
+                if source_root_node.props != target_root_node.props
+                    || source_root_node.key != target_root_node.key
+                {
+                    plan.updated += 1;
+                } else {
+                    plan.matched_clean += 1;
+                }
+            }
+            _ => return Err(desc::AstError::Truncated),
+        }
+        plan_keyed_node(&source, source_root, &self.nodes, target_root, &mut plan)?;
+
+        let target_live = self.nodes.iter().flatten().count() as u32;
+        // 大 churn 时 full rebuild 是正确 oracle，不给低效 keyed 路径付
+        // side-table 全清 + 逐点调和的双重成本。
+        if plan.added + plan.removed >= target_live {
+            self.apply_desc(src)?;
+            return Ok(ReapplyStat {
+                matched_clean: 0,
+                updated: 0,
+                moved: 0,
+                added: source_live,
+                removed: target_live,
+                rederives: 1,
+                fallback_full: true,
+            });
+        }
+        let needed = target_live - plan.removed + plan.added;
+        if needed > N as u32 {
+            return Err(desc::AstError::TooSmall { need: needed as usize, got: N });
+        }
+        // a11y upsert 容量也必须先验：既有运行期条目不因 keyed 小改清空，
+        // source 新声明若需更多空槽，必须在修改 arena 前拒绝。
+        let mut free_a11y = self.a11y.iter().filter(|entry| entry.is_none()).count();
+        for existing in self.a11y.iter().flatten() {
+            let slot = (existing.node.0 & 0xFFFF) as usize;
+            if slot < N && plan.target_remove[slot] {
+                free_a11y += 1; // remove 阶段会连带清该子树 a11y
+            }
+        }
+        for entry in source_a11y.iter().flatten() {
+            let source_slot = (entry.node.0 & 0xFFFF) as usize;
+            let target_slot = plan.source_to_target[source_slot];
+            let existing_hit = if plan.source_add[source_slot] {
+                false
+            } else {
+                match self.nodes.get(target_slot as usize).and_then(|option| option.as_ref()) {
+                    Some(target_node) => {
+                        let target_id = pack_id(target_slot as usize, target_node.gen);
+                        self.a11y.iter().flatten().any(|existing| existing.node == target_id)
+                    }
+                    None => return Err(desc::AstError::Truncated),
+                }
+            };
+            if !existing_hit {
+                if free_a11y == 0 {
+                    return Err(desc::AstError::TooSmall {
+                        need: A11Y_MAX + 1,
+                        got: A11Y_MAX,
+                    });
+                }
+                free_a11y -= 1;
+            }
+        }
+
+        // Pass 2：先走既有 remove，复用全部侧表/代数/damage 生命周期。
+        for slot in 0..N {
+            if !plan.target_remove[slot] {
+                continue;
+            }
+            let Some(node) = self.nodes[slot].as_ref() else { continue };
+            if !node.alive {
+                continue;
+            }
+            let id = pack_id(slot, node.gen);
+            self.remove(id).map_err(|_| desc::AstError::Truncated)?;
+        }
+
+        // Pass 3：source 前序调和。matched 保持身份；added 走 add 单源。
+        self.reconcile_keyed_node(&source, source_root, target_root, &mut plan)?;
+
+        // Pass 4：source a11y 只 upsert，不整清。keyed re-apply 的职责是
+        // 保运行期侧表身份；widget/app 在树建立后登记的 a11y/sem 不能因
+        // 后续小改 AST 被抹掉。显式摘除仍走 take_a11y/take_sem。
+        for entry in source_a11y.iter().flatten() {
+            let source_slot = (entry.node.0 & 0xFFFF) as usize;
+            let target_slot = plan.source_to_target[source_slot] as usize;
+            let Some(target_node) = self.nodes.get(target_slot).and_then(|o| o.as_ref()) else {
+                return Err(desc::AstError::Truncated);
+            };
+            let target_id = pack_id(target_slot, target_node.gen);
+            let updated = A11yEntry {
+                node: target_id,
+                role: entry.role,
+                label: entry.label,
+            };
+            if let Some(slot) = self
+                .a11y
+                .iter_mut()
+                .find(|e| e.as_ref().is_some_and(|e| e.node == target_id))
+            {
+                *slot = Some(updated);
+            } else {
+                let Some(slot) = self.a11y.iter_mut().find(|e| e.is_none()) else {
+                    return Err(desc::AstError::TooSmall { need: A11Y_MAX + 1, got: A11Y_MAX });
+                };
+                *slot = Some(updated);
+            }
+        }
+
+        Ok(ReapplyStat {
+            matched_clean: plan.matched_clean,
+            updated: plan.updated,
+            moved: plan.moved,
+            added: plan.added,
+            removed: plan.removed,
+            rederives: 1,
+            fallback_full: false,
+        })
+    }
+
+    fn reconcile_keyed_node(
+        &mut self,
+        source: &[Option<Node>],
+        source_slot: u32,
+        parent_target: u32,
+        plan: &mut KeyPlan<N>,
+    ) -> Result<u32, desc::AstError> {
+        let Some(source_node) = source.get(source_slot as usize).and_then(|o| o.as_ref()) else {
+            return Err(desc::AstError::Truncated);
+        };
+        let is_add = plan.source_add[source_slot as usize];
+        let target_slot = if is_add {
+            let parent_id = match self.nodes.get(parent_target as usize).and_then(|o| o.as_ref()) {
+                Some(node) => pack_id(parent_target as usize, node.gen),
+                None => return Err(desc::AstError::Truncated),
+            };
+            let spec = desc::ViewSpec {
+                kind: source_node.kind,
+                key: source_node.key,
+                props: source_node.props,
+            };
+            let id = self
+                .add(parent_id, spec)
+                .map_err(|error| match error {
+                    UiError::NodeFull => desc::AstError::TooSmall { need: N + 1, got: N },
+                    UiError::BadParent => desc::AstError::BadParent,
+                    UiError::NodeBad if source_node.key != 0 => {
+                        desc::AstError::DuplicateKey { key: source_node.key }
+                    }
+                    _ => desc::AstError::UnknownProp { kind: source_node.kind, got: 0 },
+                })?;
+            let slot = (id.0 & 0xFFFF) as u32;
+            plan.source_to_target[source_slot as usize] = slot;
+            slot
+        } else {
+            plan.source_to_target[source_slot as usize]
+        };
+
+        if !is_add {
+            let id = match self.nodes.get(target_slot as usize).and_then(|o| o.as_ref()) {
+                Some(node) => pack_id(target_slot as usize, node.gen),
+                None => return Err(desc::AstError::Truncated),
+            };
+            if self.nodes[target_slot as usize].as_ref().map(|n| n.props)
+                != Some(source_node.props)
+            {
+                self.set_props(id, source_node.props).map_err(|error| match error {
+                    UiError::NodeBad => {
+                        desc::AstError::KeyKindMismatch { key: source_node.key }
+                    }
+                    _ => desc::AstError::UnknownProp { kind: source_node.kind, got: 0 },
+                })?;
+            }
+            if let Some(node) = self.nodes[target_slot as usize].as_mut() {
+                node.key = source_node.key;
+            }
+
+            // 先摘所有 matched 子，再按 source 序回链；unkeyed/新增子不
+            // 参与旧身份匹配。移动节点先收旧视觉界，回链后收新界。链式
+            // 走查同样不落 [u32; N] 子清单，保持 D29 每层小栈预算。
+            let mut child_cur = source_node.first_child;
+            let mut hops = 0usize;
+            while child_cur != NONE && hops <= N {
+                hops += 1;
+                let Some(child) = source.get(child_cur as usize).and_then(|o| o.as_ref()) else {
+                    return Err(desc::AstError::Truncated);
+                };
+                let next = child.next_sib;
+                let child_slot = child_cur;
+                if !plan.source_add[child_slot as usize] {
+                    let child_target = plan.source_to_target[child_slot as usize];
+                    if plan.source_moved[child_slot as usize] {
+                        let old_rect = self.abs_rect_of(child_target as usize);
+                        self.damage_rect(old_rect);
+                    }
+                    self.unlink(child_target as usize);
+                    // unlink 只摘邻接，不清被摘节点自身 next/prev；回链前
+                    // 必须归零，否则 link_child 的 tail 扫描会把旧 next 误
+                    // 当已在链尾，构造 self-cycle。
+                    if let Some(child) =
+                        self.nodes.get_mut(child_target as usize).and_then(|o| o.as_mut())
+                    {
+                        child.prev_sib = NONE;
+                        child.next_sib = NONE;
+                    }
+                }
+                child_cur = next;
+            }
+        }
+
+        let mut child_cur = source_node.first_child;
+        let mut hops = 0usize;
+        while child_cur != NONE && hops <= N {
+            hops += 1;
+            let Some(child) = source.get(child_cur as usize).and_then(|o| o.as_ref()) else {
+                return Err(desc::AstError::Truncated);
+            };
+            let next = child.next_sib;
+            let child_slot = child_cur;
+            let child_add = plan.source_add[child_slot as usize];
+            let child_target =
+                self.reconcile_keyed_node(source, child_slot, target_slot, plan)?;
+            if !child_add {
+                if let Some(child) =
+                    self.nodes.get_mut(child_target as usize).and_then(|o| o.as_mut())
+                {
+                    child.parent = target_slot;
+                }
+                self.link_child(target_slot as usize, child_target);
+                if plan.source_moved[child_slot as usize] {
+                    let new_rect = self.abs_rect_of(child_target as usize);
+                    self.damage_rect(new_rect);
+                    self.mark_ancestors_dirty(child_target);
+                }
+            }
+            child_cur = next;
+        }
+        Ok(target_slot)
     }
 
     // —— 依赖骨架（v1 记录不消费——失效仍视图级 Invalidate，裁决不跳步） ——

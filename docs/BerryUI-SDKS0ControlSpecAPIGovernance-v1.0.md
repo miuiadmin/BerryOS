@@ -141,6 +141,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::IconSource` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::ImageProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::InteractionState` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
+| `berry_ui::sdk::KEYED_DEPTH_MAX` | const | RUN-K1 | in-tree | experimental | `docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md` |
 | `berry_ui::sdk::KeyRoute` | type | GUI-T1 | in-tree | experimental | `docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md` |
 | `berry_ui::sdk::LayoutDumpEntry` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::LayoutStat` | type | L1 | in-tree | stable | `docs/BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md` |
@@ -155,6 +156,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::PanelProps` | type | F4 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::Props` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::RadiusToken` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
+| `berry_ui::sdk::ReapplyStat` | type | RUN-K1 | in-tree | experimental | `docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md` |
 | `berry_ui::sdk::RectI` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::RectProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::RowProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
@@ -166,6 +168,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::SEM_MAX` | const | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |
 | `berry_ui::sdk::SEM_STATE_CHECKED` | const | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |
 | `berry_ui::sdk::SEM_STATE_DISABLED` | const | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |
+| `berry_ui::sdk::SETTLE_DERIVE_MAX` | const | RUN-K1 | in-tree | experimental | `docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md` |
 | `berry_ui::sdk::Scaffold` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::ScrollView` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::SemEntry` | type | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |

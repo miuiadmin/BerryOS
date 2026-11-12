@@ -22,7 +22,8 @@
 //! 逐调用中继（真值源恒 guifbd——wmd 不持第二份 present 常量副本），
 //! 启动期一次缓存例外（`boot_getinfo`）。
 
-use crate::{close_all, now_ns, send_rep_handles, st_rep, trap};
+use super::table;
+use super::{close_all, now_ns, send_rep_handles, st_rep, trap};
 use berry_guiproto as gp;
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_handle_close, berry_handle_duplicate,
@@ -227,28 +228,23 @@ impl Compositor {
         Compositor { vmo, w, h, stride, bounce }
     }
 
-    /// 拷一个已裁剪矩形。src stride 由 surface 宽决定；dst stride 是全屏。
+    /// 拷一个已裁剪矩形。damage `r` 是 surface raw-local 坐标；窗口原点
+    /// `dst_xy` 平移后必须再对**全屏目标域**裁剪。旧实现把 raw-local r 直
+    /// 接按屏幕宽高裁，窗口越出右/下边时会把一行写穿到下一屏幕行。
     fn copy_rect(&mut self, src: Handle, src_stride: usize, dst_xy: (u32, u32),
                  r: gp::Rect) -> bool {
-        let x0 = r.x.min(self.w);
-        let y0 = r.y.min(self.h);
-        let x1 = r.x.saturating_add(r.w).min(self.w);
-        let y1 = r.y.saturating_add(r.h).min(self.h);
-        if x1 <= x0 || y1 <= y0 {
+        let Some(clip) = table::composite_clip(dst_xy, r, self.w, self.h) else {
             return true;
-        }
-        let row = (x1 - x0) as usize * 4;
+        };
+        let row = clip.dst.w as usize * 4;
         if row > self.bounce.len() {
             return false;
         }
-        for y in y0..y1 {
-            let dst_x = dst_xy.0.saturating_add(x0);
-            let dst_y = dst_xy.1.saturating_add(y);
-            if dst_x >= self.w || dst_y >= self.h {
-                return false;
-            }
-            let src_off = y as usize * src_stride + x0 as usize * 4;
-            let dst_off = dst_y as usize * self.stride + dst_x as usize * 4;
+        for row_index in 0..clip.dst.h {
+            let src_y = clip.src.y + row_index;
+            let dst_y = clip.dst.y + row_index;
+            let src_off = src_y as usize * src_stride + clip.src.x as usize * 4;
+            let dst_off = dst_y as usize * self.stride + clip.dst.x as usize * 4;
             if berry_vmo_read(src, self.bounce.as_mut_ptr(), src_off as u64, row) != 0
                 || berry_vmo_write(self.vmo, self.bounce.as_ptr(), dst_off as u64, row) != 0
             {

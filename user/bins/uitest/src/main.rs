@@ -1278,8 +1278,8 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     geometry_line(width, height).print(&room);
 
     let theme = Theme::light();
-    let ctx = WidgetContext::for_viewport(theme, width as u32, height as u32);
     let mut ui = Ui128::new(width as u32, height as u32);
+    let ctx = WidgetContext::for_ui(theme, &ui);
     ui.set_icon_source(&SOURCE);
     ui.set_font_source(&ROOM_FONT_SOURCE);
     let text_state = TextInputState::new(b"").unwrap_or_else(|_| berry_room::panic_exit(134));

@@ -25,9 +25,20 @@
 //! SET/DESTROY 为 ST_DENIED、野值已在 wire 层拒
 //! （guiproto parse 域执法——本表不做第二解析器）。
 
-use crate::{close_all, now_ns, send_rep, st_rep, trap};
 use berry_guiproto as gp;
 use berry_sys::Handle;
+
+/// RUN-K1 host harness 供给缝：WmTable 的状态机与策略留在 lib 面；时钟、
+/// channel send、close、诊断与 fatal trap 由 guest/host 分别注入。guest
+/// 实现委托原 serve I/O；host 实现为确定性 recorder，不造第二权威。
+pub trait WmIo {
+    fn now_ns(&self) -> u64;
+    fn send(&self, channel: Handle, reply: &[u8]);
+    fn status(&self, channel: Handle, status: u8);
+    fn close_handles(&self, handles: &[Handle]);
+    fn diag_wrap_clear(&self);
+    fn trap(&self) -> !;
+}
 
 /// 内部窗口项：申请几何（推导源）+ 有效几何（wire 回显面）分域携带——
 /// 表项只回显有效几何，重推导需要申请值在案。
@@ -87,6 +98,50 @@ fn clip_rect(c: (u32, u32, u32, u32), s: (u32, u32, u32, u32)) -> (u32, u32, u32
     best
 }
 
+/// RUN-K1 合成裁剪产物：目标全屏矩形与 surface raw-local 源子矩形。
+/// 两组坐标必须成对产生，禁止先裁 source 再平移到 destination。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompositeClip {
+    pub dst: gp::Rect,
+    pub src: gp::Rect,
+}
+
+/// 把 raw-local damage `rect` 平移到窗口原点 `dst_xy` 后裁到全屏。
+/// 返回 None 表示空交；右/下越界会同步缩短 source 子区间，防一行写穿
+/// 到下一屏幕行。
+pub fn composite_clip(
+    dst_xy: (u32, u32),
+    rect: gp::Rect,
+    screen_w: u32,
+    screen_h: u32,
+) -> Option<CompositeClip> {
+    let dst_x0 = (u64::from(dst_xy.0) + u64::from(rect.x)).min(u64::from(screen_w));
+    let dst_y0 = (u64::from(dst_xy.1) + u64::from(rect.y)).min(u64::from(screen_h));
+    let dst_x1 = (u64::from(dst_xy.0) + u64::from(rect.x) + u64::from(rect.w))
+        .min(u64::from(screen_w));
+    let dst_y1 = (u64::from(dst_xy.1) + u64::from(rect.y) + u64::from(rect.h))
+        .min(u64::from(screen_h));
+    if dst_x1 <= dst_x0 || dst_y1 <= dst_y0 {
+        return None;
+    }
+    let src_x = u32::try_from(dst_x0 - u64::from(dst_xy.0)).ok()?;
+    let src_y = u32::try_from(dst_y0 - u64::from(dst_xy.1)).ok()?;
+    Some(CompositeClip {
+        dst: gp::Rect {
+            x: dst_x0 as u32,
+            y: dst_y0 as u32,
+            w: (dst_x1 - dst_x0) as u32,
+            h: (dst_y1 - dst_y0) as u32,
+        },
+        src: gp::Rect {
+            x: src_x,
+            y: src_y,
+            w: (dst_x1 - dst_x0) as u32,
+            h: (dst_y1 - dst_y0) as u32,
+        },
+    })
+}
+
 pub struct WmTable {
     wins: [Win; gp::WM_WINDOWS_MAX],
     count: usize,
@@ -95,6 +150,7 @@ pub struct WmTable {
     next_id: u16,
     /// 单车位 TABLE_WAIT（应答通道 + 其 last_seen）。
     parked: Option<(Handle, u32)>,
+    io: &'static dyn WmIo,
     disp_w: u16,
     disp_h: u16,
 }
@@ -102,8 +158,8 @@ pub struct WmTable {
 impl WmTable {
     /// 空表初始化：version = 新纪元 counter 1（恒 ≥1）；epoch = 启动
     /// CNTVCT 派生 u8。
-    pub fn new(disp_w: u16, disp_h: u16) -> Self {
-        let epoch = (now_ns() & 0xFF) as u8;
+    pub fn new(io: &'static dyn WmIo, disp_w: u16, disp_h: u16) -> Self {
+        let epoch = (io.now_ns() & 0xFF) as u8;
         let blank = Win {
             id: 0,
             owner: 0,
@@ -125,6 +181,7 @@ impl WmTable {
             version: ((epoch as u32) << 24) | 1,
             next_id: 0,
             parked: None,
+            io,
             disp_w,
             disp_h,
         }
@@ -154,7 +211,7 @@ impl WmTable {
                     win.config = None;
                 }
             }
-            println!("WMCONFIGWRAP clear");
+            self.io.diag_wrap_clear();
         }
         // 本次表变更新生成的事件先以 serial=0 占位，这里统一落成新表版本；
         // 已存在的未 ack 旧事件不被无关 focus bump 改号。
@@ -238,8 +295,8 @@ impl WmTable {
     fn send_snapshot(&self, ch: Handle) {
         let mut out = [0u8; gp::WM_REP_MAX];
         match gp::encode_wm_snapshot_rep(&mut out, &self.snapshot()) {
-            Some(n) => send_rep(ch, &out[..n]),
-            None => trap(), // 表项值域由本表构造保证——防御面
+            Some(n) => self.io.send(ch, &out[..n]),
+            None => self.io.trap(), // 表项值域由本表构造保证——防御面
         }
     }
 
@@ -408,7 +465,7 @@ impl WmTable {
         };
         let mut out = [0u8; 12]; // = WM_GETINFO_REP_LEN（guiproto 私有——本地定容）
         let n = gp::encode_wm_getinfo_rep(&mut out, &rep);
-        send_rep(ch, &out[..n]);
+        self.io.send(ch, &out[..n]);
     }
 
     /// WM_CREATE：parent≠0 须在册（ST_NOENT）；表满 ST_FULL；新窗默认
@@ -419,7 +476,7 @@ impl WmTable {
         if !gp::authority::wm_create_layer_allowed(client_type, req.layer)
             || !gp::authority::wm_create_flags_allowed(client_type, req.flags)
         {
-            st_rep(ch, gp::ST_DENIED);
+            self.io.status(ch, gp::ST_DENIED);
             return;
         }
         // find() 保持权威：parent id 不连续时不得用下标冒充。
@@ -429,7 +486,7 @@ impl WmTable {
             match self.find(req.parent) {
                 Some(i) => Some(self.wins[i].owner),
                 None => {
-                    st_rep(ch, gp::ST_NOENT);
+                    self.io.status(ch, gp::ST_NOENT);
                     return;
                 }
             }
@@ -437,11 +494,11 @@ impl WmTable {
         // 拒绝路径不得消耗 alloc_id：父窗权限先以 prospective id=0 裁定
         //（非零 parent 不可能等于尚未分配的新 id），表满也先于 id 分配。
         if !gp::authority::wm_parent_allowed(req.parent, parent_owner, owner, 0) {
-            st_rep(ch, gp::ST_DENIED);
+            self.io.status(ch, gp::ST_DENIED);
             return;
         }
         if self.count >= gp::WM_WINDOWS_MAX {
-            st_rep(ch, gp::ST_FULL);
+            self.io.status(ch, gp::ST_FULL);
             return;
         }
         let id = self.alloc_id();
@@ -473,18 +530,18 @@ impl WmTable {
         self.bump();
         let mut out = [0u8; 8]; // = WM_CREATE_ACK_LEN（guiproto 私有——本地定容）
         let n = gp::encode_wm_create_ack(&mut out, id);
-        send_rep(ch, &out[..n]);
+        self.io.send(ch, &out[..n]);
     }
 
     /// WM_DESTROY：摘窗（表序移除保建序——hit-test 平局表序语义）；持
     /// 焦点则归还；系统窗摘除 = 解除避让（recompute）。
     fn destroy(&mut self, ch: Handle, owner: u16, id: u16) {
         let Some(i) = self.find(id) else {
-            st_rep(ch, gp::ST_NOENT);
+            self.io.status(ch, gp::ST_NOENT);
             return;
         };
         if self.wins[i].owner != owner {
-            st_rep(ch, gp::ST_DENIED);
+            self.io.status(ch, gp::ST_DENIED);
             return;
         }
         for j in i..self.count - 1 {
@@ -496,7 +553,7 @@ impl WmTable {
         }
         self.recompute();
         self.bump();
-        st_rep(ch, gp::ST_OK);
+        self.io.status(ch, gp::ST_OK);
     }
 
     /// WM_SET：masked-out 槽位不动（「编什么收什么」——wire 层不清零，
@@ -504,11 +561,11 @@ impl WmTable {
     /// 持焦则归还）；几何/Z 变更（含系统窗）触发重算。1B OK。
     fn set(&mut self, ch: Handle, owner: u16, req: gp::WmSetReq) {
         let Some(i) = self.find(req.window_id) else {
-            st_rep(ch, gp::ST_NOENT);
+            self.io.status(ch, gp::ST_NOENT);
             return;
         };
         if self.wins[i].owner != owner {
-            st_rep(ch, gp::ST_DENIED);
+            self.io.status(ch, gp::ST_DENIED);
             return;
         }
         let old_req = self.wins[i].req;
@@ -541,7 +598,7 @@ impl WmTable {
             self.mark_config(i, cause);
         }
         self.bump();
-        st_rep(ch, gp::ST_OK);
+        self.io.status(ch, gp::ST_OK);
     }
 
     /// WM_TABLE_GET：全表快照即答（无 version 门槛）。
@@ -569,13 +626,13 @@ impl WmTable {
         let Some(ev) = self.wins.iter().take(self.count).find_map(|w| {
             (w.owner == owner).then_some(w.config).flatten()
         }) else {
-            st_rep(ch, gp::ST_EAGAIN);
+            self.io.status(ch, gp::ST_EAGAIN);
             return;
         };
         let mut out = [0u8; 32]; // = WM_CONFIG_REP_LEN
         match gp::encode_wm_config_event_rep(&mut out, &ev) {
-            Some(n) => send_rep(ch, &out[..n]),
-            None => trap(), // 表内事件由 mark_config 构造——防御面
+            Some(n) => self.io.send(ch, &out[..n]),
+            None => self.io.trap(), // 表内事件由 mark_config 构造——防御面
         }
     }
 
@@ -583,20 +640,20 @@ impl WmTable {
     /// 后旧 ack 变 ST_DENIED；客户端必须重新 POLL 最新状态再 ACK。
     fn config_ack(&mut self, ch: Handle, owner: u16, req: gp::WmConfigAckReq) {
         let Some(i) = self.find(req.window_id) else {
-            st_rep(ch, gp::ST_NOENT);
+            self.io.status(ch, gp::ST_NOENT);
             return;
         };
         if self.wins[i].owner != owner {
-            st_rep(ch, gp::ST_DENIED);
+            self.io.status(ch, gp::ST_DENIED);
             return;
         }
         match &self.wins[i].config {
             Some(ev) if ev.serial == req.serial => {
                 self.wins[i].config = None;
                 self.wins[i].config_synced = true;
-                st_rep(ch, gp::ST_OK);
+                self.io.status(ch, gp::ST_OK);
             }
-            _ => st_rep(ch, gp::ST_DENIED),
+            _ => self.io.status(ch, gp::ST_DENIED),
         }
     }
 
@@ -621,39 +678,39 @@ impl WmTable {
         hs: &[Handle],
     ) {
         if !hs.is_empty() {
-            close_all(hs);
-            st_rep(ch, gp::ST_BAD);
+            self.io.close_handles(hs);
+            self.io.status(ch, gp::ST_BAD);
             return;
         }
         match msg.first() {
             Some(&gp::OP_WM_GETINFO) if gp::parse_wm_getinfo_req(msg).is_some() => self.getinfo(ch),
             Some(&gp::OP_WM_CREATE) => match gp::parse_wm_create_req(msg) {
                 Some(req) => self.create(ch, owner, client_type, req),
-                None => st_rep(ch, gp::ST_BAD),
+                None => self.io.status(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_DESTROY) => match gp::parse_wm_destroy_req(msg) {
                 Some(id) => self.destroy(ch, owner, id),
-                None => st_rep(ch, gp::ST_BAD),
+                None => self.io.status(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_SET) => match gp::parse_wm_set_req(msg) {
                 Some(req) => self.set(ch, owner, req),
-                None => st_rep(ch, gp::ST_BAD),
+                None => self.io.status(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_TABLE_GET) if gp::parse_wm_table_get_req(msg).is_some() => {
                 self.table_get(ch)
             }
             Some(&gp::OP_WM_TABLE_WAIT) => match gp::parse_wm_table_wait_req(msg) {
                 Some(last_seen) => self.wait(ch, last_seen),
-                None => st_rep(ch, gp::ST_BAD),
+                None => self.io.status(ch, gp::ST_BAD),
             },
             Some(&gp::OP_WM_CONFIG_POLL) if gp::parse_wm_config_poll_req(msg).is_some() => {
                 self.config_poll(ch, owner)
             }
             Some(&gp::OP_WM_CONFIG_ACK) => match gp::parse_wm_config_ack_req(msg) {
                 Some(req) => self.config_ack(ch, owner, req),
-                None => st_rep(ch, gp::ST_BAD),
+                None => self.io.status(ch, gp::ST_BAD),
             },
-            _ => st_rep(ch, gp::ST_BAD),
+            _ => self.io.status(ch, gp::ST_BAD),
         }
     }
 

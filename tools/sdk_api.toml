@@ -1229,3 +1229,39 @@ owner = "berry-ui"
 stability = "experimental"
 spec = "docs/BerryUI-LAYOUTL4BoxConstraintsIntrinsicBoundary-v1.0.md"
 breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ReapplyStat"
+kind = "type"
+module = "crate"
+since = "RUN-K1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SETTLE_DERIVE_MAX"
+kind = "const"
+module = "crate"
+since = "RUN-K1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::KEYED_DEPTH_MAX"
+kind = "const"
+module = "crate"
+since = "RUN-K1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md"
+breaking = []

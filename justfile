@@ -633,6 +633,9 @@ test-host:
     # left+bottom）入 host 台账，防新增测试只靠手跑静默腐烂。
     cargo test --manifest-path user/berry-room/Cargo.toml --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p gui-inputd --target {{host}}
+    # RUN-K1：gui-wmd host harness v1（WmTable 策略/焦点/R3 config/AVOID_SYS
+    # 矩阵；present relay 与 compositor 仍由 GUI8 真链覆盖）。
+    cargo test --manifest-path user/bins/gui-wmd/Cargo.toml --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 38 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板 + ID_MAX 绝对钉（berry-layout

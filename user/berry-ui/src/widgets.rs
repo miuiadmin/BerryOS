@@ -37,6 +37,14 @@ impl WidgetContext {
         Self::new(theme, theme.metrics_for_viewport(w, h))
     }
 
+    /// RUN-K1 UIContext seam：从 `Ui` 的权威 viewport 快照构造组件上下文，
+    /// 消除 app 侧 `open_window -> WidgetContext -> Ui::new` 的手抄宽高。
+    /// 本构造不读屏幕、设备档、SafeArea、系统主题或 R3 配置。
+    pub fn for_ui<const N: usize>(theme: Theme, ui: &Ui<N>) -> Self {
+        let (w, h) = ui.viewport();
+        Self::for_viewport(theme, w, h)
+    }
+
     fn spacing(&self, token: SpacingToken) -> u32 {
         self.metrics.spacing(token)
     }

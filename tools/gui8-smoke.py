@@ -2920,9 +2920,10 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
         # TCG 下 screendump 偶发早于呈现链完成：按 AppBar+surface 双锚
-        # 重拍到稳定帧，不做固定 sleep 假设。
+        # 重拍到稳定帧，不做固定 sleep 假设。多兄弟 QEMU 会话共享宿主时
+        # 15s 曾出现假超时；60s 是失败帽，健康路径仍第一时间退出。
         browser_shot = run_dir / "browser.ppm"
-        stable_deadline = time.monotonic() + 15.0
+        stable_deadline = time.monotonic() + 60.0
         while True:
             boot.qmp.screendump(browser_shot)
             appbar = ppm_pixel(browser_shot, 540, 20)

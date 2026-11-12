@@ -370,6 +370,12 @@ pub enum AstError {
     /// Grid 拒面：cols×rows < children（超格不容忍静默截断/溢排）。
     /// `children` = 不适配时的子数（builder 面即被拒的第 n+1 子计数）。
     GridNotFit { cols: u8, rows: u8, children: u32 },
+    /// RUN-K1：同父非零 key 重复。key 是 `(parent, key)` 身份域，重复即
+    /// 树身份歧义；不 last-wins、不按兄弟序隐式选择。
+    DuplicateKey { key: u64 },
+    /// RUN-K1：同父同 key 但 ViewKind 改变。key 的稳定身份不得跨控件种类
+    /// 复用；调和必须 loud reject 而非拆除重建。
+    KeyKindMismatch { key: u64 },
 }
 
 // ---------- TLV 格式常量（wire 值域——编解码双侧单源在此） ----------
@@ -1162,6 +1168,28 @@ fn build_node(
         let cells = gp.cols as u32 * gp.rows as u32;
         if cells < cc as u32 {
             return Err(AstError::GridNotFit { cols: gp.cols, rows: gp.rows, children: cc as u32 });
+        }
+    }
+    // RUN-K1 同父 key 唯一执法：build_node 按前序递归，先前子已入兄弟
+    // 链；此处只查非零 key，key=0 仍是无键透传面。
+    if let Some(parent) = parent {
+        if spec.key != 0 {
+            let mut cur = nodes
+                .get(parent as usize)
+                .and_then(|o| o.as_ref())
+                .map(|n| n.first_child)
+                .unwrap_or(u32::MAX);
+            let mut hops = 0usize;
+            while cur != u32::MAX && hops <= nodes.len() {
+                hops += 1;
+                let Some(n) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else {
+                    break;
+                };
+                if n.key == spec.key {
+                    return Err(AstError::DuplicateKey { key: spec.key });
+                }
+                cur = n.next_sib;
+            }
         }
     }
     // 槽分配（确定性前序）

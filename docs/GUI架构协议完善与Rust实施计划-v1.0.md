@@ -366,7 +366,7 @@ docs_guard / Curia strict 全绿
 
 ---
 
-### Phase A — RUN-K1 Keyed Re-Apply & Lifecycle Properties
+### Phase A — RUN-K1 Keyed Re-Apply & Lifecycle Properties（已落地）
 
 **为什么第一刀不是继续堆协议：**
 
@@ -812,7 +812,7 @@ channel/stability 治理收口
 
 ## §6 推荐近期执行窗口
 
-### 第一刀：RUN-K1
+### 第一刀：RUN-K1（已落地）
 
 理由：
 

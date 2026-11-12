@@ -22,10 +22,14 @@ license = "Apache-2.0"
 [workspace]
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
-berry-gfx = { path = "../../berry-gfx" }
 berry-sys = { path = "../../berry-sys" }
 berry-guiproto = { path = "../../berry-guiproto" }
+
+# guest 面依赖按目标门控：host test 不链接 berry-libc（libc 同名符号会劫
+# libSystem write）与字形/CRT0 供给。
+[target.'cfg(target_os = "linux")'.dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-gfx = { path = "../../berry-gfx" }
 
 [profile.release]
 opt-level = "z"
