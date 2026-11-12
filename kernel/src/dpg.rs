@@ -134,7 +134,7 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // 第一段（KL 外零锁快拒）：asid 反查——**hint-only**（G4-2 修批 P0-1
     // 面 b：注销面已落，锁外指针不保证仍活；本段零解引用零依赖——stale
     // 命中由第二段窗内重查吸收）。miss = 本 AS 无 demand 面，不付全谱窗。
-    let asid = hal::current_asid();
+    let asid = berry_sched::current_asid();
     if vmar::demand_root(asid).is_none() {
         return false;
     }
@@ -224,7 +224,7 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     if !matches!(esr & 0x3f, 4..=7) {
         return false; // 非翻译缺页——原杀链
     }
-    let asid = hal::current_asid();
+    let asid = berry_sched::current_asid();
     // stage-1 hint-only（同 [`probe`]——零解引用零依赖，miss 零锁即拒）。
     if vmar::demand_root(asid).is_none() {
         return false; // KL 外零锁快拒（rogue fault 不付全谱窗）

@@ -192,6 +192,7 @@ pub fn run(
     ui: &'static mut UiMain,
     mut desktop: Desktop,
     smoke: bool,
+    product: bool,
 ) -> ! {
     // —— present GETINFO（wmd 中继同端）：能力面轻断言（gfxdemo 同面）
     //    + 几何真值源（present 权威；与 wm 缓存一致性 = 内部不变量，
@@ -285,8 +286,14 @@ pub fn run(
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（自测基线）
     let mut launched = false; // LAUNCH ok 恰一次
     let mut spawn_ok: u32 = 0; // 真实 APP_SPAWN ok 回执计数（CLICK ok 恰一次）
+    let mut last_spawn_click_ns: u64 = 0; // APP_SPAWN 去抖基线
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
-    let mut st = Selftest::WaitFirst;
+    let mut st = if product {
+        // 产品桌面不跑 boot 期两轮合成 swipe：首帧后立即停在 page 0。
+        Selftest::Done
+    } else {
+        Selftest::WaitFirst
+    };
     // 段④：真实输入（inputd INPUT_POLL 阻塞批拉；hi==0 = 冻结相静默）。
     let mut hi = hi;
     let has_input = hi != 0; // 礼物在场（hi 后续可因输入面失效置 0——门仍真）
@@ -425,7 +432,13 @@ pub fn run(
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
             match m {
-                Msg::Click { node } => on_click(*node, &desktop, &mut spawn_ok, smoke),
+                Msg::Click { node } => {
+                    if t_now.saturating_sub(last_spawn_click_ns) < APP_SPAWN_DEBOUNCE_NS {
+                        continue;
+                    }
+                    last_spawn_click_ns = t_now;
+                    on_click(*node, &desktop, &mut spawn_ok, smoke)
+                }
                 _ => {
                     // pager.on_msg true = 翻页目标变更 → a11y 重挂当前页
                     //（幂等；Err = 容量违例 fail 收口）。
@@ -769,6 +782,9 @@ fn inject_swipe(ui: &mut UiMain, base: u64) {
     // 自然回 Idle，稳态不燃 CPU 不变）。
     ui.wake(base);
 }
+
+/// APP_SPAWN 去抖：真实鼠标在冷启动反馈延迟内连点不应排出一串进程。
+const APP_SPAWN_DEBOUNCE_NS: u64 = 500_000_000;
 
 /// CLICK 面（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆归本
 /// 格——最深叶命中面）→ 注册表条目 → `app_cli_h()==0`（冻结相 extras 恰

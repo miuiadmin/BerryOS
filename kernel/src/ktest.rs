@@ -2132,13 +2132,28 @@ fn test_fp() {
         // ② MAIN 侧装载自己的图样 → 两跳乒乓。
         fpcr_write(FPCR_MAIN);
         fpsr_write(FPSR_MAIN);
+        // Apple Silicon/HVF 的 AArch64 FPSR.NZCV 是 RAZ/WI（裸金属与 HVF 实测
+        // 一致；TCG 只是保留了软件写入值）。运行时探测能力，而不是把 CPU 型号
+        // 写死：NZCV 不 live 时仍完整验证 q/FPCR 与 FPSR 累积异常位，只屏蔽
+        // 这四个架构上可不实现的 legacy 比较 flag。
+        const FPSR_NZCV: u64 = 0xF000_0000;
+        let fpsr_main_expected = if fpsr_read() & FPSR_NZCV == 0 {
+            FPSR_MAIN & !FPSR_NZCV
+        } else {
+            FPSR_MAIN
+        };
+        let fpsr_other_expected = if fpsr_main_expected == FPSR_MAIN {
+            FP_FPSR_OTHER
+        } else {
+            FP_FPSR_OTHER & !FPSR_NZCV
+        };
         fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
         berry_hal_aarch64::task::context_switch(&raw mut FP_CTX_MAIN, &raw const FP_CTX_OTHER);
         // <- fp_ping_fn 切回 FP_CTX_MAIN 时续行于此。四面核验：
         fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
         assert!(fp_snap_eq(&FP_PAT_MAIN), "FP：MAIN 的 q0..q7/q30/q31 经两跳 switch 后串味");
         assert!(fpcr_read() == FPCR_MAIN, "FP：MAIN 的 FPCR 未恢复");
-        assert!(fpsr_read() == FPSR_MAIN, "FP：MAIN 的 FPSR 未恢复");
+        assert!(fpsr_read() == fpsr_main_expected, "FP：MAIN 的 FPSR 未恢复");
         // SAFETY: 同窗读 FP_CTX_OTHER（raw 指针取共享引用；unsafe 归外层块）。
         let o: &TaskContext = &*(&raw const FP_CTX_OTHER);
         let other_saved = o.fp[0] == FP_PAT_OTHER[0]
@@ -2152,7 +2167,7 @@ fn test_fp() {
             && o.fp[30] == FP_PAT_OTHER[8]
             && o.fp[31] == FP_PAT_OTHER[9]
             && o.fpcr == FP_FPCR_OTHER
-            && o.fpsr == FP_FPSR_OTHER;
+            && o.fpsr == fpsr_other_expected;
         assert!(other_saved, "FP：OTHER 的 FP 态未随切出保存进其上下文");
         // ③-a 本仓 mem* 整数版覆写正确性直验（含 memmove 重叠两向 + memcmp 符号面
         // + bcmp 0/非 0 面）。

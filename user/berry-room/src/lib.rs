@@ -401,6 +401,9 @@ pub struct AppRoom {
     /// 无 push config event，SYSTEM 窗在其后出现时此值可陈旧，直到下次
     /// 0x67 或未来的 R3 config 事件。
     occlusion: gp::insets::OcclusionSnapshot,
+    /// 最近一次光栅化 dirty 矩形（None = FULL）。submit 用它替代恒
+    /// FULL，避免一个 Switch/文本状态触发整屏三次拷贝。
+    last_dirty: Option<gp::Rect>,
     opened: bool,
 }
 
@@ -425,6 +428,20 @@ fn surface_grant_from_info(info: &gp::surface::SurfaceModeInfo) -> SurfaceGrant 
 
 /// raw/visible 双矩形 → persistent occlusion snapshot。right/bottom 用
 /// u32 差集，防 u16 原点+宽高越界回绕；派生值不落第二存储真值。
+/// damage → present flags/rects（None 或零面积 = FULL 保守面）。
+fn submit_damage(
+    dirty: Option<gp::Rect>,
+) -> (u8, [gp::Rect; gp::DAMAGE_MAX], usize) {
+    let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+    match dirty {
+        Some(rect) if rect.w > 0 && rect.h > 0 => {
+            rects[0] = rect;
+            (0, rects, 1)
+        }
+        _ => (gp::SUBMIT_F_DAMAGE_FULL, rects, 0),
+    }
+}
+
 fn occlusion_from_bounds(
     raw: (u16, u16, u16, u16),
     visible: (u16, u16, u16, u16),
@@ -506,6 +523,7 @@ impl AppRoom {
             frame_map_len: 0,
             surface: None,
             occlusion: gp::insets::OcclusionSnapshot::new([0; 4], [0; 4]),
+            last_dirty: None,
             opened: false,
         })
     }
@@ -771,6 +789,7 @@ impl AppRoom {
         self.frame_map_len = map_len;
         self.frame_vmo = frame_vmo;
         self.occlusion = occlusion;
+        self.last_dirty = None;
         self.opened = true;
         Ok((width, height))
     }
@@ -786,6 +805,16 @@ impl AppRoom {
     /// app 不接触 stride、frame 指针或像素循环；这是 Berry Room 的渲染
     /// 宿主面。返回 DisplayList 命令数。
     pub fn render_display_list(&mut self, dl: &DisplayList<'_>) -> RoomResult<usize> {
+        self.render_display_list_damaged(dl, None)
+    }
+
+    /// 按 embedder 提供的 dirty 矩形光栅化并记录；随后同名 `submit` 会
+    /// 把同一面转成 present damage。`None` = FULL/未知，保守整帧。
+    pub fn render_display_list_damaged(
+        &mut self,
+        dl: &DisplayList<'_>,
+        damage: Option<&gp::Rect>,
+    ) -> RoomResult<usize> {
         if !self.opened {
             return Err(RoomError::Window);
         }
@@ -796,11 +825,19 @@ impl AppRoom {
             TextureFormat::Rgbx,
         )
         .map_err(|_| RoomError::Geometry)?;
+        let dirty = damage.map(|r| {
+            let x = i32::try_from(r.x).unwrap_or(i32::MAX);
+            let y = i32::try_from(r.y).unwrap_or(i32::MAX);
+            let w = i32::try_from(r.w).unwrap_or(i32::MAX);
+            let h = i32::try_from(r.h).unwrap_or(i32::MAX);
+            berry_gfx::cmd::Rect::new(x, y, w, h)
+        });
         let frame = self.frame_mut()?;
-        let pass = PassDescriptor::new(LoadOp::Load, StoreOp::Store, None);
+        let pass = PassDescriptor::new(LoadOp::Load, StoreOp::Store, dirty);
         Queue::new()
             .submit(dl, frame, &desc, &pass)
             .map_err(|_| RoomError::Geometry)?;
+        self.last_dirty = damage.copied();
         Ok(dl.len())
     }
 
@@ -857,14 +894,15 @@ impl AppRoom {
         let mut request = [0u8; 256];
         let mut reply = [0u8; 256];
         let mut rhs = [0 as Handle; 8];
+        let (flags, rects, rect_count) = submit_damage(self.last_dirty);
         let submit = gp::PresentReq::Submit {
             surface_id: u32::from(self.window),
             buffer_id,
-            flags: gp::SUBMIT_F_DAMAGE_FULL,
+            flags,
             rate_hint: 0,
             target_present_ns: 0,
-            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
-            rect_count: 0,
+            rects,
+            rect_count,
         };
         let n = gp::encode_present_req(&mut request, &submit).ok_or(RoomError::Encode)?;
         let (n, _) = rpc(self.wm, &request[..n], &[alias], &mut reply, &mut rhs)?;
@@ -1039,7 +1077,38 @@ impl AppRoom {
 
 #[cfg(test)]
 mod tests {
-    use super::occlusion_from_bounds;
+    use super::{occlusion_from_bounds, submit_damage};
+    use berry_guiproto as gp;
+
+    #[test]
+    fn partial_damage_becomes_one_wire_rect() {
+        let (flags, rects, n) = super::submit_damage(Some(gp::Rect {
+            x: 12,
+            y: 34,
+            w: 56,
+            h: 78,
+        }));
+        assert_eq!(flags, 0);
+        assert_eq!(n, 1);
+        assert_eq!(
+            rects[0],
+            gp::Rect { x: 12, y: 34, w: 56, h: 78 }
+        );
+    }
+
+    #[test]
+    fn full_or_empty_damage_stays_conservative_full() {
+        for dirty in [
+            None,
+            Some(gp::Rect { x: 0, y: 0, w: 0, h: 10 }),
+            Some(gp::Rect { x: 0, y: 0, w: 10, h: 0 }),
+        ] {
+            let (flags, rects, n) = super::submit_damage(dirty);
+            assert_eq!(flags, gp::SUBMIT_F_DAMAGE_FULL);
+            assert_eq!(n, 0);
+            assert_eq!(rects[0], gp::Rect { x: 0, y: 0, w: 0, h: 0 });
+        }
+    }
 
     #[test]
     fn r2_occlusion_snapshot_matches_raw_bounds() {

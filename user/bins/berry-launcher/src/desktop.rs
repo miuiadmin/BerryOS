@@ -20,7 +20,7 @@
 //! - **裁决八（a11y OH phone 形 32/32）**：状态栏 4 件 ROLE_TEXT + 4 页
 //!   Grid 容器 ROLE_LIST + 当前页 20 格 ROLE_BUTTON + 4 个 Dock 位
 //!   ROLE_BUTTON = 32/32；翻页 take/set 重挂当前页（`rehang_a11y`）。
-//!   press_map v1 不做（视觉反馈归 W2 spawn 回执标记行）。
+//!   press_map 只装真实格位（label/icon → label；Dock 拼图 Icon 非 legal visual）。
 //! - **裁决 D（几何）**：屏幕几何全经 wm GETINFO 动态（`ui.viewport()`
 //!   ——Root/带高/Grid 高全派生），禁硬编 800×600；字号档/图标 px 等
 //!   字体面常量不属屏幕参数，不在此列。
@@ -39,7 +39,8 @@ use berry_ui::layout::CrossAlign;
 use berry_ui::theme::Density;
 use berry_ui::swipe::SwipePager;
 use berry_ui::{
-    NodeId, Props, TextBuf, UiError, UiMain, ViewKind, ViewSpec, ROLE_BUTTON, ROLE_TEXT,
+    NodeId, PRESS_MAP_MAX, Props, TextBuf, UiError, UiMain, ViewKind, ViewSpec,
+    ROLE_BUTTON, ROLE_TEXT,
 };
 
 use crate::icons;
@@ -390,27 +391,30 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     pager.attach(ui, content)?;
 
     // 布局 → 槽计划；dock 常驻 app 不重复进网格（OH SmartDock 语义）。
-    // 剔除 dock 后非 dock app 按原相对序**紧致重排**——否则默认 9 app
-    // 布局会在网格里留下 dock 取走的洞，不像 OH。
+    // 非 dock app 落 LAYOUT.JSN 显式格位；dock 过滤留下的洞保留为占位格。
     let mut plan: [[SlotPlan<'_>; SLOTS_PER_PAGE]; PAGES] =
         [[SlotPlan { label: PLACEHOLDER, icon: None, app: None }; SLOTS_PER_PAGE]; PAGES];
-    let mut cursor = 0usize;
     // 常态布局若含官方系统 app，则验收 APPDEMO/APPQUIET 不进官方桌面；
     // GUI8 canonical 双 app 布局仍全显示（冒烟/常态隔离点击面不变）。
+    // page/row/col 是用户可见语义：过滤 dock/test 后直接落显式格位，
+    // 不做跨页紧致重排（否则第二页应用会被静默搬回首页）。
     let official_present = layout
         .cells()
         .iter()
         .any(|c| !is_test_app(c.app_bytes()) && !is_dock_app(c.app_bytes()));
     for c in layout.cells() {
-        if cursor >= PAGES * SLOTS_PER_PAGE
+        let page = c.page as usize;
+        let row = c.row as usize;
+        let col = c.col as usize;
+        let slot = row.saturating_mul(GRID_COLS).saturating_add(col);
+        if page >= PAGES
+            || slot >= SLOTS_PER_PAGE
+            || plan[page][slot].app.is_some()
             || is_dock_app(c.app_bytes())
             || (official_present && is_test_app(c.app_bytes()))
         {
             continue;
         }
-        let page = cursor / SLOTS_PER_PAGE;
-        let slot = cursor % SLOTS_PER_PAGE;
-        cursor += 1;
         plan[page][slot] = match reg.iter().position(|e| e.id_bytes() == c.app_bytes()) {
             Some(i) => SlotPlan {
                 label: display_label(&reg[i], big),
@@ -612,4 +616,26 @@ pub fn rehang_a11y(ui: &mut UiMain, d: &mut Desktop, page: u8) -> Result<(), UiE
     }
     d.a11y_page = page;
     Ok(())
+}
+
+/// 为真实格位安装 press_map（label/icon 命中都把 label 换 pressed 底）。
+/// Dock slot 的 label_node 是 Icon visual，不进 legal map；点击/spawn 照常。
+pub fn install_press_feedback(ui: &mut UiMain, desktop: &Desktop) -> Result<(), UiError> {
+    let first = desktop.slots[0][0].label_node;
+    let mut entries = [(first, first); PRESS_MAP_MAX];
+    let mut n = 0usize;
+    for page in desktop.slots.iter() {
+        for slot in page.iter() {
+            if slot.app.is_none() {
+                continue;
+            }
+            entries[n] = (slot.label_node, slot.label_node);
+            n += 1;
+            if let Some(icon) = slot.icon {
+                entries[n] = (icon, slot.label_node);
+                n += 1;
+            }
+        }
+    }
+    ui.set_press_map(&entries[..n])
 }

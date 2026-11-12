@@ -39,7 +39,7 @@ const AP_MASK: u64 = 0b11 << 6;
 // ---- per-AS 页表自旋锁（S-4 4-2；SMP-S4 草案 §2 4-2①④ + §3.1）----
 
 /// 锁键 = ASID：写者（map/unmap/protect）持 `self.asid`，读者（syscall copy
-/// 链）持 `hal::current_asid()`（与 `current_ttbr0_pa` 同一 TTBR0 读点 = 同
+/// 链）持 `berry_sched::current_asid()`（与 `current_ttbr0_pa` 同一 TTBR0 读点 = 同
 /// 窗一致键——walk_leaf 无对象句柄，键控解析闭合此缺口）。定长 64KiB BSS
 /// 换 O(1) 无注册解析：8 位硬件域只用前 256 槽、16 位域满用（余槽死重零
 /// 成本——BSS 清零不占镜像）。子 Vmar 经共享 asid 天然共享同锁（同树同
@@ -101,7 +101,7 @@ fn pt_lock(asid: u16) -> PtGuard {
 /// 走查与 copy store 同窗（§A113 walk+copy 同窗铁律）。EL1 路（ktest 静态
 /// 缓冲）不取：高半直映无用户表。
 pub(crate) fn pt_lock_current() -> PtGuard {
-    pt_lock(hal::current_asid())
+    pt_lock(berry_sched::current_asid())
 }
 
 /// 映射权限（v1 三档；AP 编码见 `paging.rs`——Rw=00 仅 EL1 读写、Ro=10 只读、

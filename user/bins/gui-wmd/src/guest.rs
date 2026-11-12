@@ -63,6 +63,10 @@ const WMD_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 const FONT_GLYPH_BYTES: usize = 32 * 48;
 const FONT_VMO_LEN: usize = 0x24000;
 
+/// MOVE 低延迟帽：保留 4 条离散 MOVE（含合并承载条），足够速度环，
+/// 同时避免连续鼠标采样把 16 深队列排成回放动画。
+const MOVE_QUEUE_LATENCY_MAX: usize = 4;
+
 /// Phase 3 per-session 输入环（16 深；溢出 loud 计数，不覆盖旧事件）。
 struct InputQueue {
     events: [gp::PointerEvent; 16],
@@ -70,6 +74,7 @@ struct InputQueue {
     tail: usize,
     len: usize,
     dropped: u64,
+    coalesced: u64,
 }
 
 const fn zero_key_event() -> gp::KeyEvent {
@@ -133,11 +138,106 @@ impl InputQueue {
             tail: 0,
             len: 0,
             dropped: 0,
+            coalesced: 0,
         }
     }
 
+    /// 队列压力下合并同指针 MOVE：DOWN/UP/CANCEL 永不让位，最新位置保留；
+    /// 被压缩的只是 history 中较旧的真实采样（wire 本来就只容 3 个历史点）。
+    fn coalesce_move(&mut self, ev: gp::PointerEvent) -> bool {
+        debug_assert!(ev.phase == gp::PHASE_MOVE);
+        let cap = self.events.len();
+        let mut cursor = self.head;
+        let mut best = None;
+        for _ in 0..self.len {
+            let i = cursor;
+            cursor = (cursor + 1) % cap;
+            if self.events[i].phase == gp::PHASE_MOVE
+                && self.events[i].pointer_id == ev.pointer_id
+            {
+                best = Some(i);
+            }
+        }
+        let Some(i) = best else {
+            return false;
+        };
+
+        // 组成 oldest→newest 的真实采样序列，然后保留最新 3 个作为
+        // 新事件 history；header 保持 incoming MOVE（最新坐标/时间）。
+        let old = self.events[i];
+        let mut samples = [gp::Sample { timestamp_ns: 0, x: 0, y: 0 }; 8];
+        let mut n = 0usize;
+        for sample in old.history[..old.history_len].iter() {
+            samples[n] = *sample;
+            n += 1;
+        }
+        samples[n] = gp::Sample {
+            timestamp_ns: old.timestamp_ns,
+            x: old.x,
+            y: old.y,
+        };
+        n += 1;
+        for sample in ev.history[..ev.history_len].iter() {
+            samples[n] = *sample;
+            n += 1;
+        }
+        samples[n] = gp::Sample {
+            timestamp_ns: ev.timestamp_ns,
+            x: ev.x,
+            y: ev.y,
+        };
+        n += 1;
+
+        let start = n.saturating_sub(gp::INPUT_SAMPLES_MAX - 1);
+        let history_len = n - start;
+        let mut merged = ev;
+        merged.history =
+            [gp::Sample { timestamp_ns: 0, x: 0, y: 0 }; gp::INPUT_SAMPLES_MAX - 1];
+        merged.history[..history_len].copy_from_slice(&samples[start..n]);
+        merged.history_len = history_len;
+        self.events[i] = merged;
+        self.coalesced += 1;
+        true
+    }
+
+    fn push_control_evict_move(&mut self, ev: gp::PointerEvent) -> bool {
+        let cap = self.events.len();
+        let found = (0..self.len).find(|i| {
+            self.events[(self.head + i) % cap].phase == gp::PHASE_MOVE
+        });
+        let Some(found) = found else {
+            return false;
+        };
+        for k in found..self.len - 1 {
+            let src = (self.head + k + 1) % cap;
+            let dst = (self.head + k) % cap;
+            self.events[dst] = self.events[src];
+        }
+        self.events[(self.head + self.len - 1) % cap] = ev;
+        return true;
+    }
+
     fn push(&mut self, ev: gp::PointerEvent) -> bool {
+        // 保留少量 MOVE 供手势 referee 计算位移/速度；超过低延迟帽后
+        // 合并最新 MOVE，避免 1080p 拖动把下游帧循环压成移动回放动画。
+        if ev.phase == gp::PHASE_MOVE {
+            let cap = self.events.len();
+            let move_n = (0..self.len)
+                .filter(|i| {
+                    self.events[(self.head + i) % cap].phase == gp::PHASE_MOVE
+                })
+                .count();
+            if move_n >= MOVE_QUEUE_LATENCY_MAX && self.coalesce_move(ev) {
+                return true;
+            }
+        }
         if self.len == self.events.len() {
+            if ev.phase == gp::PHASE_MOVE && self.coalesce_move(ev) {
+                return true;
+            }
+            if ev.phase != gp::PHASE_MOVE && self.push_control_evict_move(ev) {
+                return true;
+            }
             self.dropped += 1;
             return false;
         }
@@ -471,10 +571,15 @@ impl WmSessions {
         };
         let sess = self.slots[i].as_mut().unwrap();
         if !sess.queue.push(out) {
-            eprintln!(
-                "WMIDROP bad sid={} window={} dropped={}",
-                sid, window, sess.queue.dropped
-            );
+            let dropped = sess.queue.dropped;
+            // 交互拖动会瞬间产生数百个 MOVE；每个溢出都同步写串口会把诊断
+            // 本身变成延迟源。首溢出 + 每 64 个累计溢出保留审计面。
+            if dropped == 1 || dropped % 64 == 0 {
+                eprintln!(
+                    "WMIDROP bad sid={} window={} dropped={}",
+                    sid, window, dropped
+                );
+            }
         } else if out.phase == gp::PHASE_DOWN {
             println!("WMROUTE ok sid={} window={}", sid, window);
         }
@@ -1047,7 +1152,7 @@ pub fn run() {
                     }
                 }
                 handled = true;
-                break;
+                continue;
             }
             if let Some((msg, hs)) = poll(session_ch) {
                 if msg.0.first() == Some(&gp::OP_INPUT_POLL) {
@@ -1068,7 +1173,7 @@ pub fn run() {
                     );
                 }
                 handled = true;
-                break;
+                continue;
             }
         }
         if handled {

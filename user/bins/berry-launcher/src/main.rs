@@ -270,6 +270,11 @@ fn wm_connect_client(
     (local, input_local)
 }
 
+/// argv[2] 可选 `product`：产品镜像跳过 boot 期合成 swipe 自测。
+fn product_mode_from_argv() -> bool {
+    std::env::args().nth(2).as_deref() == Some("product")
+}
+
 /// argv[1] 是 svcmgr 传入的 16 字符 hex SYSTEM seed。
 fn system_seed_from_argv() -> Option<u64> {
     let arg = std::env::args().nth(1)?;
@@ -819,6 +824,9 @@ fn main() {
         Ok(d) => d,
         Err(e) => fail(&format!("desktop build err={e:?}")),
     };
+    if let Err(e) = desktop::install_press_feedback(ui, &desktop) {
+        fail(&format!("desktop press feedback err={e:?}"));
+    }
     // 帧循环（W1 静默 park；LAUNCH ok/PAGE ok = W2 产物）。smoke = 段④
     // 两标记的唯一门（CLICK ok / launcher: click ready）；正常 boot 传
     // false = 点击照常 spawn、零新标记。
@@ -829,5 +837,6 @@ fn main() {
         ui,
         desktop,
         smoke,
+        product_mode_from_argv(),
     );
 }

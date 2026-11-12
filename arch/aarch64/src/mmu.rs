@@ -72,8 +72,11 @@ const TCR_EL1: u64 = (25 << 0) // T0SZ
     | (0b10 << 30) // TG1 = 4KiB
     | (0b000 << 32); // IPS = 32-bit PA（UART/GIC/RAM 全 < 4GiB）
 
-/// SCTLR_EL1 使能值：`M | C | I`（开 MMU + 数据/统一 cache + 指令 cache）。A=0（不查对齐）。
-const SCTLR_ENABLE: u64 = (1 << 0) | (1 << 2) | (1 << 12);
+/// SCTLR_EL1 使能值：`M | C | I | SPAN`（开 MMU + 数据/统一 cache + 指令
+/// cache；`SPAN=1` 让 EL0→EL1 异常不自动置 PSTATE.PAN——Apple Silicon/HVF
+/// 实现 PAN，未置位时 syscall copy_to_user 会被内核侧 PAN 拦成 D-abort。
+/// 无 PAN 的 cortex-a72/TCG 该位为 RES0，双形态同值）。A=0（不查对齐）。
+const SCTLR_ENABLE: u64 = (1 << 0) | (1 << 2) | (1 << 12) | (1 << 23);
 
 /// 建表 + 编程系统寄存器 + 开 MMU。
 ///

@@ -91,6 +91,11 @@ mod guest {
     /// 覆盖 GUI8 burst/人工形态并打丢事件证据；离散转移零丢的结构性根治
     /// 仍是 v2 IRQ 面（§5.2-5 注）。
     const SVC_TICK_NS: u64 = 100_000_000;
+    /// 交互活动期的设备收割节奏。GUI 桌面没有阻塞 inputd 的 legacy
+    /// INPUT_POLL 客户，若只靠 100ms 心跳，鼠标事件平均先等 50ms；活动后
+    /// 短窗改 2ms 轮询，静默 200ms 再回落空闲心跳（结构根治仍归 v2 IRQ）。
+    const INPUT_ACTIVE_TICK_NS: u64 = 2_000_000;
+    const INPUT_ACTIVE_WINDOW_NS: u64 = 200_000_000;
     /// 应答 send EBUSY 重臂帽：10s（vnet 同档）。
     const SEND_REARM_NS: u64 = 10_000_000_000;
     /// GUI-5：wmd 推送快照超龄帽（Q11-②——age 超此值视同缺席，旁注降级
@@ -316,8 +321,16 @@ mod guest {
         if size > out.len() {
             return None;
         }
-        for (off, byte) in out.iter_mut().enumerate().take(size) {
-            *byte = cfg_rd8(regs, vio::mmio::CONFIG + 8 + off);
+        // Apple HVF 对 SIMD/合并型 MMIO load 的 syndrome 不带 ISV，QEMU 11
+        // 会在 hvf_handle_exception 断言。union 区从 CONFIG+8 起 4 字节对齐，
+        // 显式按对齐 u32 读再拆 LE 字节，避开无 ISV 的字节读循环。
+        let mut off = 0usize;
+        while off < size {
+            let word = cfg_rd32(regs, vio::mmio::CONFIG + 8 + off);
+            let bytes = word.to_le_bytes();
+            let n = (size - off).min(4);
+            out[off..off + n].copy_from_slice(&bytes[..n]);
+            off += n;
         }
         Some(size)
     }
@@ -448,6 +461,11 @@ mod guest {
         unsafe { core::ptr::read_volatile((regs as *const u8).add(off)) }
     }
 
+    fn cfg_rd32(regs: *mut u32, off: usize) -> u32 {
+        // SAFETY: CONFIG+8 起 4 字节对齐；HVF 需要 GPR 宽存取的 ISV。
+        unsafe { core::ptr::read_volatile((regs as *const u32).add(off / 4)) }
+    }
+
     fn cfg_wr8(regs: *mut u32, off: usize, v: u8) {
         // SAFETY: 同上；单字节 volatile 写。
         unsafe { core::ptr::write_volatile((regs as *mut u8).add(off), v) }
@@ -464,8 +482,13 @@ mod guest {
             return None; // 恰长执法（§4.3——size 域撒谎早拒）
         }
         let mut buf = [0u8; 20];
-        for i in 0..20 {
-            buf[i] = cfg_rd8(regs, vio::mmio::CONFIG + 8 + i);
+        let mut off = 0usize;
+        while off < buf.len() {
+            let word = cfg_rd32(regs, vio::mmio::CONFIG + 8 + off);
+            let bytes = word.to_le_bytes();
+            let n = (buf.len() - off).min(4);
+            buf[off..off + n].copy_from_slice(&bytes[..n]);
+            off += n;
         }
         vio::input::parse_input_absinfo(&buf)
     }
@@ -576,7 +599,8 @@ mod guest {
     /// 达形态，vnet 同款「诊断与被测同源」纪律）→ 逐完成项读 8B 缓冲 →
     /// **ts_ns = dequeue 时刻打点**（规范无设备时间戳——Linux evdev 同款）
     /// → `raw_from_wire` → 泵 feed → 同 id 回填。无完成即返（非阻塞）。
-    fn harvest(d: &mut Dma, regs: *mut u32, pump: &mut PointerPump) {
+    fn harvest(d: &mut Dma, regs: *mut u32, pump: &mut PointerPump) -> usize {
+        let mut harvested = 0usize;
         loop {
             let mut u2 = [0u8; 2];
             if berry_vmo_read(d.vmo, u2.as_mut_ptr(), RING_PAGE + d.lay.used_off as u64 + 2, 2)
@@ -586,7 +610,7 @@ mod guest {
             }
             let idx = u16::from_le_bytes([u2[0], u2[1]]);
             if idx == d.harvested {
-                return;
+                return harvested;
             }
             let i = (d.harvested % QSIZE) as usize;
             let mut u8b = [0u8; 8];
@@ -619,13 +643,15 @@ mod guest {
             let ts = now();
             pump.feed(raw_from_wire(ts, wire_ev));
             d.harvested = d.harvested.wrapping_add(1);
+            harvested += 1;
             refill_event(d, regs, id as u16);
         }
     }
 
     /// P2：收割 virtio-keyboard eventq → KeyPump。DMA/used 契约与 tablet
     /// 同源；事件解释（KEY_* / BTN_* / repeat / modifiers）归 KeyPump。
-    fn harvest_keys(k: &mut Keyboard) {
+    fn harvest_keys(k: &mut Keyboard) -> usize {
+        let mut harvested = 0usize;
         loop {
             let mut u2 = [0u8; 2];
             if berry_vmo_read(
@@ -639,7 +665,7 @@ mod guest {
             }
             let idx = u16::from_le_bytes([u2[0], u2[1]]);
             if idx == k.d.harvested {
-                return;
+                return harvested;
             }
             let i = (k.d.harvested % QSIZE) as usize;
             let mut u8b = [0u8; 8];
@@ -674,6 +700,7 @@ mod guest {
             };
             k.pump.feed(raw_from_wire(now(), wire_ev));
             k.d.harvested = k.d.harvested.wrapping_add(1);
+            harvested += 1;
             refill_event(&mut k.d, k.regs, id as u16);
         }
     }
@@ -722,7 +749,7 @@ mod guest {
     /// owner 裁决（wmd 权威表才是路由源）；本函数与 legacy INPUT_POLL
     /// 共用泵唯一 drain 纪律——serve 单线程串行调用，不构成第二消费者。
     fn route_wmd(d: &mut Dma, regs: *mut u32, pump: &mut PointerPump, push: Handle) {
-        harvest(d, regs, pump);
+        let _ = harvest(d, regs, pump);
         let mut evs = [ZERO_PE; gp::INPUT_EVENTS_MAX];
         let k = pump.drain(&mut evs[..]);
         if k == 0 {
@@ -1036,9 +1063,9 @@ mod guest {
         let deadline = now() + POLL_BLOCK_CAP_NS;
         let mut evs = [ZERO_PE; gp::INPUT_EVENTS_MAX];
         loop {
-            harvest(d, regs, pump);
+            let _ = harvest(d, regs, pump);
             if let Some(k) = keyboard.as_deref_mut() {
-                harvest_keys(k);
+                let _ = harvest_keys(k);
             }
             let k = pump.drain(&mut evs[..max_events as usize]);
             if k > 0 {
@@ -1120,10 +1147,15 @@ mod guest {
         let mut drop_seen = 0u64;
         let mut key_drop_reported = false;
         let mut key_drop_seen = 0u64;
+        let mut input_active_until = 0u64;
         loop {
-            harvest(d, regs, pump); // 空闲期收割（tick 心跳的消费点）
+            let pointer_events = harvest(d, regs, pump); // tick 心跳的消费点
+            let mut key_events = 0usize;
             if let Some(k) = keyboard.as_deref_mut() {
-                harvest_keys(k);
+                key_events = harvest_keys(k);
+            }
+            if pointer_events + key_events != 0 {
+                input_active_until = now() + INPUT_ACTIVE_WINDOW_NS;
             }
             // 丢事件证据：启动打一次零基线；后续只在计数变化时打 bad 行。
             // GUI8 burst 相据此既可断言基线，也可抓 eventq/pump 溢出。
@@ -1253,11 +1285,16 @@ mod guest {
             let n = if push != 0 { 2 } else { 1 };
             let mut idx = usize::MAX;
             let mut obs = 0u64;
+            let tick_ns = if now() < input_active_until {
+                INPUT_ACTIVE_TICK_NS
+            } else {
+                SVC_TICK_NS
+            };
             let _ = berry_object_wait_many(
                 items.as_ptr(),
                 sigs.as_ptr(),
                 n,
-                now() + SVC_TICK_NS,
+                now() + tick_ns,
                 &mut idx,
                 &mut obs,
             );

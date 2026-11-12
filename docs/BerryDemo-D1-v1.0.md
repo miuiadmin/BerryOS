@@ -222,11 +222,11 @@ BERRYDEMOEXIT ok
 ## §8 预算
 
 ```text
-BERRYDEMO.bap 155,976B
-rootfs.cpio 34,109,896B
+BERRYDEMO.bap 156,728B
+rootfs.cpio 34,119,496B
 rootfs0     33,554,432B
-rootfs1       555,464B
-总量余量   100,107,832B
+rootfs1       565,064B
+总量余量   100,098,152B
 ```
 
 rootfs0 仍钉在 32MiB 帽；BERRYDEMO.bap 实体位于 vol0，挤出后的增量落在 rootfs1。
@@ -254,7 +254,7 @@ gui_guard / docs_guard / Curia strict
 git diff --check
 ```
 
-最终镜像：`out/berryos.img` SHA-256 = `aac6e4ffd81987dd8466b6c11df04e5e338d017b31e96f67582433f7a7a6581c`。
+最终镜像：`out/berryos.img` SHA-256 = `f250a1c0fc5cc73bf0c5e12e268255b18dedb31d61e361df2ff56fc59a6079ca`（2026-11-13 Mac Emulator HVF1 复验）。
 
 最终复跑结果：
 
@@ -278,7 +278,7 @@ git diff --check                         PASS
 smoke-image 字节对拍：
 
 ```text
-kfile = 4,772,024B
-init  = 34,109,896B
+kfile = 4,773,768B
+init  = 34,119,496B
 与宿主精确同数
 ```

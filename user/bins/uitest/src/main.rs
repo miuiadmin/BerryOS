@@ -327,7 +327,7 @@ impl AppModel {
             fail(room, "no damage");
         }
         let dl = encoder.finish();
-        let cmds = match room.render_display_list(&dl) {
+        let cmds = match room.render_display_list_damaged(&dl, outcome.damage.envelope().as_ref()) {
             Ok(cmds) => cmds,
             Err(e) => fail(room, e.as_str()),
         };

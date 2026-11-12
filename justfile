@@ -333,6 +333,7 @@ build-user:
     # app/<ID>.bap 整包条目（'a' < 'b' 排序在 bin/ 前；a-1 阶段 svcmgr
     # 主走查对未知名算术跳过 = 零消费、零行为变化——appd 消费随 a-2）。
     python3 ../tools/mkcpio.py ../rootfs.cpio \
+        probe.on=../tools/probe.on \
         app/APPDEMO.bap=userbins/app/APPDEMO.bap \
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         app/BERRYDEMO.bap=userbins/app/BERRYDEMO.bap \
@@ -677,6 +678,8 @@ test-host:
     # 拒面/陈卷清理）——rootfs 多卷产链（build-user --split 32）的编码
     # 单源执法，改 mkcpio 必跑。
     python3 tools/mkcpio.py --selftest-split
+    # Mac 产品镜像产链：probe.on 移除器守卫（缺 marker 幂等 + 重编码）。
+    python3 tools/cpio_filter.py --selftest
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
     python3 tools/mkimage.py --selftest
@@ -967,6 +970,17 @@ image: build build-boot
     test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
     test -f rootfs.cpio || { echo "rootfs.cpio 缺失——先 just build-user"; exit 1; }
     mkdir -p out
+    # Mac/桌面产品镜像先产：同一 rootfs，去掉 probe.on，svcmgr 跳过串行
+    # app boot-probe 批；APP_LIST/APP_SPAWN 与 1080×1920 产品形态不变。
+    python3 tools/cpio_filter.py rootfs.cpio rootfs-product.cpio \
+        --remove probe.on
+    python3 tools/mkimage.py out/berryos-desktop.img \
+        --efi {{BOOT_EFI}} \
+        --hello {{BOOT_DIR}}/hello.txt \
+        --kernel {{KERNEL}} \
+        --initrd rootfs-product.cpio \
+        --size-mib 96
+    # 验证主镜像最后产：mkimage 的同目录 manifest.txt 保留为验证镜像侧产物。
     python3 tools/mkimage.py {{IMAGE}} \
         --efi {{BOOT_EFI}} \
         --hello {{BOOT_DIR}}/hello.txt \
@@ -1005,20 +1019,44 @@ shell: berry-build
     HOST=$(rustc -vV | sed -n 's/^host: //p')
     exec tools/berry/cargo-target/$HOST/release/berry shell --image out/berryos.img
 
-# GUI 桌面预览：gui8 桌面镜像 + FAT12 数据盘（launcher 需要 BLK_OK 才拿
-# fs/app/input 三 gift）+ tablet。主分支 console 镜像走 just shell。
-desktop: berry-build
+# GUI 1080p 产品桌面：Mac Apple Silicon 直接 QEMU Cocoa + HVF 原生 CPU
+# 加速；其它平台回落 berry 设备壳。镜像缺省不降分辨率。
+desktop:
     #!/bin/sh
     set -e
-    # 16:9 HD 镜像优先；视觉基线/主镜像/旧预览件依次回退。
-    IMG=out/berryos-portrait.img
+    IMG=out/berryos-desktop.img
+    [ -f "$IMG" ] || IMG=out/berryos-portrait.img
     [ -f "$IMG" ] || IMG=out/berryos-hd.img
     [ -f "$IMG" ] || IMG=out/berryos-visual.img
     [ -f "$IMG" ] || IMG=out/berryos.img
-    [ -f "$IMG" ] || IMG=out/berryos-desktop.img
-    test -f "$IMG" || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
-    python3 tools/mkfat.py out/gui-data.img
-    printf 'BERRYOSVBLK!' | dd of=out/gui-data.img conv=notrunc status=none
+    [ -f "$IMG" ] || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
+    python3 tools/make_desktop_disk.py out/gui-data.img
+    # DSH/workspace 场景可能不可写 ~/.berry；设备壳运行目录显式落 /tmp。
+    export BERRY_HOME="${BERRY_HOME:-/tmp/berry-device-home}"
+    OS=$(uname -s); ARCH=$(uname -m)
+    if [ "$OS" = Darwin ] && [ "$ARCH" = arm64 ]; then
+        TMP=$(mktemp -d /tmp/berryos-desktop.XXXXXX)
+        trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+        truncate -s 64M "$TMP/vars.fd"
+        qemu-system-aarch64 \
+            -name "BerryOS 1080p HVF" \
+            -machine virt -cpu host -m 256M -accel hvf \
+            -display cocoa -no-reboot \
+            -serial file:"$TMP/serial.log" \
+            -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+            -drive if=pflash,format=raw,file="$TMP/vars.fd" \
+            -drive if=none,file="$IMG",format=raw,id=bb,snapshot=on \
+            -device qemu-xhci -device usb-storage,drive=bb \
+            -global virtio-mmio.force-legacy=false \
+            -drive if=none,id=drv0,format=raw,file=out/gui-data.img,cache.writeback=off \
+            -device virtio-blk-device,drive=drv0 \
+            -device virtio-tablet-device,id=tab0 \
+            -device virtio-keyboard-device,id=kbd0 \
+            -device ramfb \
+            -fw_cfg name=opt/berry/display,string=1080x1920@60
+        exit 0
+    fi
+    just berry-build
     HOST=$(rustc -vV | sed -n 's/^host: //p')
     # display fw_cfg 是 gui 位真值源：不传则 guifbd console 不静音、桌面被日志盖。
     BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile desktop --memory 256

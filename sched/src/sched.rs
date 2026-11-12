@@ -792,6 +792,15 @@ pub fn current_tag() -> usize {
     }
 }
 
+/// 当前任务 ASID（Task 元数据单源；0 = 无 AS / CURRENT 空窗）。Apple
+/// Silicon/HVF 下 TTBR0/CONTEXTIDR 的 ASID 读回不可靠，demand page 与 per-AS
+/// PT 锁必须从调度器元数据取，而不是反读 hypervisor 系统寄存器。
+pub fn current_asid() -> u16 {
+    // SAFETY: 只读；写点在切换原语锁窗，异常/系统调用语境当前任务稳定。
+    let cur = unsafe { current_task() };
+    if cur.is_null() { 0 } else { unsafe { (*cur).asid } }
+}
+
 /// 当前任务钉住的 Process 对象键（C-4b `process_terminate` 的自杀判别用）：
 /// `Task.pinned` 只读透传（写点 = [`try_spawn_user`] 装配期，F-E1 前移）。
 /// 0 = 无（内核任务 / boot 裸表用户进程 / ktest 期 CURRENT=null）——调用方

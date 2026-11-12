@@ -789,7 +789,7 @@ impl App {
             fail(room, "no damage");
         }
         let list = encoder.finish();
-        let commands = match room.render_display_list(&list) {
+        let commands = match room.render_display_list_damaged(&list, outcome.damage.envelope().as_ref()) {
             Ok(commands) => commands,
             Err(error) => fail(room, error.as_str()),
         };

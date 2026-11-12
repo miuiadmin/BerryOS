@@ -33,7 +33,7 @@ pub use intent::{
 };
 pub use runqueue::{linkable, Runqueue, Topo};
 pub use sched::{
-    block_current, current_pinned, current_tag, exit_current,
+    block_current, current_asid, current_pinned, current_tag, exit_current,
     exit_current_with, fast_wake_locked,
     find_single_waiter, find_single_waiter_locked, for_each_sleeper, freeze_by_pinned,
     freeze_by_thread, freeze_precheck_by_pinned, freeze_precheck_by_thread,

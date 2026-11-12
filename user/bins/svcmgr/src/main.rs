@@ -123,17 +123,21 @@ pub extern "C" fn _start(console: Handle) -> ! {
         trap(); // 交接件未入队 = A 半链断
     }
 
+    // 产品镜像无 `probe.on`：服务/桌面照常装配，验收探针族全部跳过。
+    let boot_probe = cpio_find(H_ROOTFS, b"probe.on").is_some();
+
     // ---- G-eco-c/d：rootfs VMO 消费（流式步进 → ELF 泵送 → rootfs 程序）----
     // 裸跑（just run / smoke 相）无 rootfs：get_size -EBADF → 静默跳过，
     // 上述 4-5b/4-6 契约零扰动；带 rootfs（just run-rootfs / smoke rootfs
     // 相）→ hello + stdhello 各自拉起（`ECO ok` 第 24 标记 / 子自打
     // `STD ok`、`STD err ok`——G-eco-d d-1c）。
-    run_rootfs_child(console);
+    run_rootfs_child(console, boot_probe);
 
     // ---- P6 A-8c：vnet 服务消费自验（`DNS ok addr=127.0.0.1`，rootfs 相
     // 第 18 标记）。此刻 vnet 预拉已久（即便自验未毕，请求入队深度 8，
     // serve() 起来即收）；裸跑 NET_A==0 静默跳过零扰动。----
-    dns_selftest(console);
+    if boot_probe {
+        dns_selftest(console);
 
     // ---- T-d：TCP 服务化消费自验（`TCPS ok echo=64`，rootfs 相第 20 标记）
     // ——netdproto 三 op OPEN/ROUNDTRIP/CLOSE 经 vnet 常驻服务走一轮回显
@@ -190,8 +194,9 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // G4-3 D/E 刀（bench.py --dpg 通道）：dpgb.on = D 首触延迟 p50/p99 /
     // dpge.on = E footprint 差分（soakmon pages= 心跳）——cpio 具名门同
     // dpgf.on 族，正装缺席静默零扰动。
-    dpg_bench(console);
-    dpg_foot(console);
+        dpg_bench(console);
+        dpg_foot(console);
+    }
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
     // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
@@ -528,7 +533,7 @@ const APP_ICON_PIXELS_MAX: u32 = 65536;
 /// `verify_hexyl`）+ best-effort reap。hello（10s 周期睡眠）/bsh（交互）
 /// 常驻不回收（句柄留存 = 有界泄漏，v1 政策）。
 /// 有 rootfs 而链断 = 打一行原因后跳过（可见降级，不静默吞）。
-fn run_rootfs_child(console: Handle) {
+fn run_rootfs_child(console: Handle, boot_probe: bool) {
     let mut cap = 0u64;
     if berry_vmo_get_size(H_ROOTFS, &mut cap) != 0 {
         return; // 裸跑：vmo=none → -EBADF，零扰动
@@ -955,7 +960,13 @@ fn run_rootfs_child(console: Handle) {
     //（GFX ok 归 gfxdemo 自打）；非零/Err 面 eco 行续走（失败隔离——标记
     // 缺失 = smoke FAIL 兜底）。**不 ps_reg**（thr 先例注记——瞬态验收件
     // 不入账，PS ok n= 零漂移）。
-    if wm_cli != 0 {
+    if wm_cli != 0 && !boot_probe {
+        // 产品桌面跳过 gfxdemo 验收件；WMD_CLI_DUP 已在 wmd Ok 路建好，
+        // launcher 继续用 dup 端。原 fresh wm_cli 无消费者，关闭防表滞留。
+        if berry_handle_close(wm_cli) != 0 {
+            trap();
+        }
+    } else if wm_cli != 0 {
         if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gfxdemo") {
             match spawn_rootfs_elf(
                 H_ROOTFS,
@@ -1233,7 +1244,12 @@ fn run_rootfs_child(console: Handle) {
     // 旗在此声明兼立（spawn Err 也不给 walk arm 双拉口——bsh_spawned
     // 同款纪律；恒真到 walk arm = 预拉必然先于 walk 执行）。
     let stdhello_spawned = true;
-    if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/stdhello") {
+    let stdhello_geom = if boot_probe {
+        cpio_find(H_ROOTFS, b"bin/stdhello")
+    } else {
+        None
+    };
+    if let Some((data_off, data_len)) = stdhello_geom {
         // d-3b 同款：feeder 泵 64B 确定性 pattern + EOF（read_to_end 残段
         // 缓冲面的活证）。
         const STDIN_DATA: [u8; 64] =
@@ -1303,7 +1319,7 @@ fn run_rootfs_child(console: Handle) {
     // 个（单活跃客户——fsproto 严格串行无请求号，交叠即混流；bsh arm 在
     // 本 arm 之后，其 fs 自验与本窗口零交叠）。fsmgr 未起（fs_a_h==0）→
     // 静默跳过（rootfs 相 fsmgr 链断本就该 FAIL——U1 缺失 loud）。
-    if fs_a_h != 0 && u1_selftest(console, fs_a_h) {
+    if boot_probe && fs_a_h != 0 && u1_selftest(console, fs_a_h) {
         send_retry(console, U1_OK.as_ptr(), U1_OK.len());
     }
     while pos < cap {
@@ -1318,7 +1334,7 @@ fn run_rootfs_child(console: Handle) {
                 let (name, data_off, data_len, next) = (s.name, s.data_off, s.data_len, s.next_off);
                 // 名字从步进窗借引用：下一轮 cpio_step 前用完（spawn 内的
                 // env 发送即消费点，之后只碰 ELF_WIN/PUMP_WIN）。
-                if name == "bin/hello" {
+                if boot_probe && name == "bin/hello" {
                     match spawn_rootfs_elf(
                         H_ROOTFS,
                         &SpawnSpec {
@@ -1355,7 +1371,7 @@ fn run_rootfs_child(console: Handle) {
                     if !stdhello_spawned {
                         eco_skip(b"stdhello not pre-pulled");
                     }
-                } else if name == "bin/hexyl" {
+                } else if boot_probe && name == "bin/hexyl" {
                     // d-3c：D4 路线①最终验证——上游 main.rs 逐字未动的生态
                     // 程序。argv 追加 `--color=never`（0.17 默认 Color=Always
                     // 会打 ANSI 码；plain 输出 = 宿主同版管道对照可逐字比）
@@ -1415,7 +1431,7 @@ fn run_rootfs_child(console: Handle) {
                     if berry_handle_close(out_s) != 0 {
                         trap();
                     }
-                } else if name == "bin/bsh" {
+                } else if boot_probe && name == "bin/bsh" {
                     // A-2：交互 shell bsh——**SDK-1a §1.2 起延后拉起**：本 arm
                     // 只记包内几何（data_off/data_len），spawn 整体挪到走查毕
                     // app 批之后的 `if let Some((off, len)) = bsh_geom` 段
@@ -1428,7 +1444,7 @@ fn run_rootfs_child(console: Handle) {
                     } else {
                         bsh_geom = Some((data_off, data_len));
                     }
-                } else if name == "bin/vprobe" {
+                } else if boot_probe && name == "bin/vprobe" {
                     // P6 A-2：virtio-mmio 探测（用户态驱动地基第一刀）——
                     // H_MMIO 经 `SpawnSpec::mmio_vmo` 映进子空间固定 VA
                     // （berry-exec `VIRTIO_MMIO_VA` 单源），子程序读规范头
@@ -1548,7 +1564,7 @@ fn run_rootfs_child(console: Handle) {
     // （appd fs 授能传 fs_a_h——此刻仍持，app 批窗口 app 为 fs_a 队列唯一
     // 活动客户端：app_launch 对 console=true 阻塞 reap、console=false
     // collect_eof+reap，任一时刻至多一个 app 存活发 fs RPC）。
-    if app_n > 0 {
+    if app_n > 0 && boot_probe {
         let mut ok = 0usize;
         // GUI-7：ui 面独立谓词（与拉起成败解耦——失败隔离两方向：ui 元数据
         // 坏不拦拉起、拉起坏不抹 ui 验证；Absent 不计入 decl）。
@@ -1625,7 +1641,7 @@ fn run_rootfs_child(console: Handle) {
     // 链）。`BSH ok` 由 bsh 自打（自驱自验：内部 `run hexyl` 收齐
     // 2156B——rootfs 相第 8 标记）；prompt/交互为化妆面。此刻拉起 =
     // app 批已收口，bsh 恢复 fs_a 队列唯一读者（下方 Ok 面关 fs_a_h）。
-    if let Some((off, len)) = bsh_geom {
+    if let Some((off, len)) = if boot_probe { bsh_geom } else { None } {
         let mut rootfs_dup = 0 as Handle;
         if berry_handle_duplicate(H_ROOTFS, RIGHT_READ, &mut rootfs_dup) != 0 {
             trap();
@@ -3183,9 +3199,8 @@ fn dpg_bench(console: Handle) {
     const _: () = assert!(b" n=32"[3] == b'0' + DPGB_PAGES as u8 / 10
         && b" n=32"[4] == b'0' + DPGB_PAGES as u8 % 10);
     let mut line = [0u8; 160];
-    let mut i = 0usize;
+    let mut i = 9usize;
     line[..9].copy_from_slice(b"DPGB p50=");
-    i = 9;
     i = append_u64_dec(&mut line, i, lat[DPGB_PAGES / 2]);
     line[i..i + 5].copy_from_slice(b" p99=");
     i += 5;
@@ -5070,6 +5085,12 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
         trap();
     }
     let system_seed_arg = seed_hex_arg(system_seed_value);
+    let product_boot = cpio_find(H_ROOTFS, b"probe.on").is_none();
+    let launcher_args: &[&[u8]] = if product_boot {
+        &[system_seed_arg.as_slice(), b"product"]
+    } else {
+        &[system_seed_arg.as_slice()]
+    };
     match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -5087,7 +5108,7 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             // 空须 stdin 槽在位——fsmgr/vnet 同款）。
             stdin_feed: Some(&[]),
             stdin_handle: None,
-            args: &[system_seed_arg.as_slice()],
+            args: launcher_args,
             extra_gifts: lgifts,
             mmio_vmo: None,
             mmio_va: 0,

@@ -323,11 +323,28 @@ pub fn submit_composite(
     let full = flags & gp::SUBMIT_F_DAMAGE_FULL != 0;
     let mut out_rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
     let mut out_n = 0usize;
+    let mut out_flags = flags;
     let ok = if full {
         out_n = 0;
         // FULL 也是 raw buffer-local 的整窗语义；实际拷贝前先收缩到
-        // visible 本地矩形，避免读/写持久遮挡区。
-        comp.copy_rect(src, src_stride, dst_xy, visible_local)
+        // visible 本地矩形，避免读/写持久遮挡区。下游同样只转发这个
+        // 已翻译可见矩形，禁止“窗口 FULL → 整屏 FULL”的放大。
+        if !comp.copy_rect(src, src_stride, dst_xy, visible_local) {
+            let _ = berry_handle_close(src);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        if visible_local.w > 0 && visible_local.h > 0 {
+            out_rects[0] = gp::Rect {
+                x: dst_xy.0.saturating_add(visible_local.x),
+                y: dst_xy.1.saturating_add(visible_local.y),
+                w: visible_local.w,
+                h: visible_local.h,
+            };
+            out_n = 1;
+            out_flags = 0;
+        }
+        true
     } else {
         let mut ok = true;
         for i in 0..rect_count {
@@ -361,7 +378,7 @@ pub fn submit_composite(
     let creq = gp::PresentReq::Submit {
         surface_id: 0,
         buffer_id: 0x57444D43,
-        flags,
+        flags: out_flags,
         rate_hint: msg.get(13).copied().unwrap_or(0),
         target_present_ns: u64::from_le_bytes(
             msg.get(16..24).unwrap_or(&[0; 8]).try_into().unwrap(),
