@@ -94,6 +94,12 @@ pub fn run() {
     // VER（版本覆盖硬化·内核面）：version VMO 内容断言（末位新号纪律——
     // ktest done 前；sched::init 前跑，瞬态 VMO 现读现验不留柄）。
     test_sysver();
+    // G5（§1.6-补）：boot-params 消费端纯函数面（末位新号纪律——ktest
+    // done 前；不触 timer/sched 静态注入面——真镜像注入已在 ktest 前的
+    // rootfs 装载段完成）。静默执法（G3-1a f4 先例：fail = panic 停机冒烟
+    // 自然红，零输出行保 boot 相逐行零漂移）；真装载链 QEMU 证据 =
+    // `bootparams ...` eco 行（notes 验证记录）。
+    test_bootparams();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -5458,6 +5464,155 @@ fn test_sysver() {
         "SYSVER：flags bit0 须 = debug_assertions"
     );
     berry_hal_aarch64::uart_puts(b"SYSVER ok\n");
+}
+
+/// G5（§1.6-补）：boot-params 消费端纯函数面——newc 定址查找 / TOML 子集
+/// 解析 / intent_default 装配注入三面（`kernel/src/bootparams.rs`）。静默
+/// 执法（fail = panic 停机冒烟自然红——G3-1a f4 先例，零输出行保 boot 相
+/// 逐行零漂移）；真装载链证据 = QEMU 带 params 镜像的 `bootparams ...`
+/// eco 行（验证记录见 notes 沿革）。不触 timer/sched 静态注入面——真镜像
+/// 的注入已在 ktest 前的 rootfs 装载段完成，此处 save/restore 不扰动。
+fn test_bootparams() {
+    use crate::bootparams::{self, Src};
+
+    /// 占位入口（纯函数面 Task 永不执行；halt 兜底——it_dummy 同款）。
+    extern "C" fn bp_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    // ---- 解析面：正例两键（§1.6-补投放面格式 v1：schema 头 + 键值对）。----
+    let ok = bootparams::parse(
+        b"schema = 1\nintent_default = \"interactive\"\nsched_slice_hz = 250\n",
+    );
+    assert_eq!(ok.slice_hz, Some(250), "BP：正例 slice_hz");
+    assert_eq!(ok.intent, Some(berry_sched::INTENT_INTERACTIVE), "BP：正例 intent");
+    assert!(ok.diag.is_none(), "BP：正例零诊断");
+
+    // intent 六档全词表（ADR #58——unspecified 也是合法声明值，≠ 件缺）。
+    for (word, code) in bootparams::INTENT_WORDS {
+        let mut c = alloc::vec::Vec::new();
+        c.extend_from_slice(b"schema = 1\nintent_default = \"");
+        c.extend_from_slice(word);
+        c.extend_from_slice(b"\"\n");
+        let o = bootparams::parse(&c);
+        assert_eq!(o.intent, Some(code), "BP：intent 词表档");
+        assert!(o.diag.is_none(), "BP：词表档零诊断");
+    }
+
+    // sched_slice_hz 域执法：[16,1024] 闭区间两端过、界外/坏值拒该键回
+    // 缺省 + loud 诊断（§1.6-4 域 [16,1024]——berry_assemble BOOT_PARAMS_SPEC
+    // 对读）。
+    for good in ["16", "1024"] {
+        let mut c = alloc::vec::Vec::new();
+        c.extend_from_slice(b"schema = 1\nsched_slice_hz = ");
+        c.extend_from_slice(good.as_bytes());
+        c.push(b'\n');
+        let o = bootparams::parse(&c);
+        assert_eq!(o.slice_hz, Some(good.parse().unwrap()), "BP：域界过");
+        assert!(o.diag.is_none(), "BP：域界零诊断");
+    }
+    for bad in ["15", "1025", "0", "999999", "abc", "-1"] {
+        let mut c = alloc::vec::Vec::new();
+        c.extend_from_slice(b"schema = 1\nsched_slice_hz = ");
+        c.extend_from_slice(bad.as_bytes());
+        c.push(b'\n');
+        let o = bootparams::parse(&c);
+        assert_eq!(o.slice_hz, None, "BP：坏值 {} 须拒", bad);
+        assert!(o.diag.is_some(), "BP：坏值 {} 须 loud", bad);
+    }
+
+    // schema 拒面：头缺失 / =2（未来版本）/ 坏值 → 全段弃（已拾键清空
+    // ——§1.6-4「超界即弃段用缺省」；防 v2 语义被 v1 内核误用）。
+    let no_schema = bootparams::parse(b"sched_slice_hz = 250\n");
+    assert!(no_schema.slice_hz.is_none() && no_schema.diag == Some("schema"), "BP：无 schema 全段弃");
+    let v2 = bootparams::parse(b"schema = 2\nsched_slice_hz = 250\n");
+    assert!(v2.slice_hz.is_none() && v2.diag == Some("schema"), "BP：schema=2 弃段");
+
+    // 未知键跳过不弃段（v1 内核跑 v2 镜像的向前兼容面——产线未知键硬拒
+    // 是 berry_assemble 执法，两侧宽严分工）+ 坏 intent 词拒该键。
+    let mixed = bootparams::parse(
+        b"schema = 1\nthermal_cap_c = 1\nsched_slice_hz = 250\nintent_default = \"turbo\"\n",
+    );
+    assert_eq!(mixed.slice_hz, Some(250), "BP：未知键不连坐");
+    assert_eq!(mixed.intent, None, "BP：六档外词须拒");
+    assert!(mixed.diag.is_some(), "BP：坏键须 loud");
+
+    // 容忍面：注释行/空行/CRLF（防御——现役产链 LF-only）。
+    let messy = bootparams::parse(b"# oem override\r\nschema = 1\r\nsched_slice_hz = 250\r\n");
+    assert_eq!(messy.slice_hz, Some(250), "BP：注释/CRLF 容忍");
+
+    // 行数帽（解析面有界——LINE_MAX 64 承 §1.6-4 count 帽）：超帽弃 + loud。
+    let mut many = alloc::vec::Vec::new();
+    many.extend_from_slice(b"schema = 1\nsched_slice_hz = 250\n");
+    for _ in 0..80 {
+        many.push(b'\n');
+    }
+    let capped = bootparams::parse(&many);
+    assert!(capped.diag == Some("lines"), "BP：行数帽执法");
+
+    // ---- 查找面：合成 newc 归档（mkcpio entry() 同构——110 头 + 名 +
+    // 双侧垫 4096；「单编码器纪律」第五消费点的钉板）。----
+    fn bp_hex8(v: usize, out: &mut [u8; 8]) {
+        for i in 0..8 {
+            let d = (v >> ((7 - i) * 4)) & 0xF;
+            out[i] = if d < 10 { b'0' + d as u8 } else { b'A' + (d as u8 - 10) };
+        }
+    }
+    fn bp_entry(name: &[u8], data: &[u8], ino: usize, out: &mut alloc::vec::Vec<u8>) {
+        let mut e = alloc::vec::Vec::new();
+        e.extend_from_slice(b"070701");
+        let mut f = [0u8; 8];
+        for v in [ino, 0o100755, 0, 0, 1, 0, data.len(), 0, 0, 0, 0, name.len() + 1, 0] {
+            bp_hex8(v, &mut f);
+            e.extend_from_slice(&f);
+        }
+        e.extend_from_slice(name);
+        e.push(0);
+        while e.len() % 4096 != 0 {
+            e.push(0);
+        }
+        e.extend_from_slice(data);
+        while e.len() % 4096 != 0 {
+            e.push(0);
+        }
+        out.extend_from_slice(&e);
+    }
+
+    let params_txt: &[u8] =
+        b"schema = 1\nsched_slice_hz = 250\nintent_default = \"interactive\"\n";
+    let mut arc = alloc::vec::Vec::new();
+    bp_entry(b"bin/aa", b"XX", 1, &mut arc);
+    bp_entry(b"etc/boot-params.toml", params_txt, 2, &mut arc);
+    bp_entry(b"zz", b"", 3, &mut arc);
+    bp_entry(b"TRAILER!!!", b"", 4, &mut arc);
+    let src = Src::Bytes(&arc);
+    // 全链 scan：命中 + 读回 + 解析两键。
+    let full = bootparams::scan(&src).expect("BP：scan 须命中定址件");
+    assert_eq!(full.slice_hz, Some(250), "BP：scan slice_hz");
+    assert_eq!(full.intent, Some(berry_sched::INTENT_INTERACTIVE), "BP：scan intent");
+    assert!(full.diag.is_none(), "BP：scan 零诊断");
+    // 定址精确性：他名缺席 / 数据区逐字节对账。
+    assert!(bootparams::find(&src, b"etc/other.toml").is_none(), "BP：他名不命中");
+    let (off, len) = bootparams::find(&src, b"etc/boot-params.toml").unwrap();
+    let mut back = alloc::vec![0u8; len];
+    assert!(src.read_at(off, &mut back), "BP：数据区读回");
+    assert_eq!(&back[..], params_txt, "BP：数据区对账");
+    // 空档（只有 TRAILER）= 件缺 → scan None（静默缺省态）。
+    let mut empty = alloc::vec::Vec::new();
+    bp_entry(b"TRAILER!!!", b"", 1, &mut empty);
+    assert!(bootparams::scan(&Src::Bytes(&empty)).is_none(), "BP：件缺 None");
+
+    // ---- 注入面：intent_default → Task 装配（declared/effective 双注入
+    // ——task.rs try_assemble 单点）。save/restore：boot 配置态（真镜像
+    // consume 可能已设）还原而非清零。----
+    let saved = berry_sched::intent_default();
+    berry_sched::set_intent_default(berry_sched::INTENT_INTERACTIVE);
+    let t = *berry_sched::Task::new_kernel(bp_dummy, 0, b"bp_k");
+    assert_eq!(t.intent_declared, berry_sched::INTENT_INTERACTIVE, "BP：declared 注入");
+    assert_eq!(t.intent_effective, berry_sched::INTENT_INTERACTIVE, "BP：effective 注入");
+    berry_sched::set_intent_default(saved);
+    let t2 = *berry_sched::Task::new_kernel(bp_dummy, 0, b"bp_k2");
+    assert_eq!(t2.intent_declared, saved, "BP：还原后回配置档");
 }
 
 /// sim-S3（PM-16 §4.4 步3）：深睡降级断言（run() 末位新号——ktest done 前；

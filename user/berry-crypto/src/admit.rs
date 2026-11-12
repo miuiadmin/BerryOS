@@ -24,9 +24,14 @@
 //! **恒执法（不随档位）**：①防剥离——per-app 记录在案的已签 id 再见
 //! 无 .sig = 拒载（全档同拒，剥离是攻击不是兼容态）；②水位——gen 回降
 //! 拒（[`crate::ledger::check_gen`] 单源）+ ver 回降拒
-//! （[`crate::ledger::check_ver`]）。**账本不可用（增量缺席）期间**：验签
-//! 照做，水位跳检 + 「回放防护未生效」诚实声明（`replay_guard = false`，
-//! §1.3.2/§1.4 RAM-only 降级——回放窗口重启后重开，诚实降级接受）。
+//! （[`crate::ledger::check_ver`]）；③lineage↔pk 绑定（G9，2026-11-12）
+//! ——在册 lineage 的零链信封 pk ∉ 该 lineage 锚集 = 同 lineage 换钥未
+//! 走轮换链仪式，拒（`key-swap`，全档同拒——「换钥走仪式不走 TOFU」，
+//! SDK-2 §二 :36-37 + §1.4「首见即锚，此后同 lineage 换钥走轮换链机器
+//! 裁决」；带链信封 = 仪式面，锚走链机器裁决不受影响）。**账本不可用
+//! （增量缺席）期间**：验签照做，水位跳检 + 「回放防护未生效」诚实声明
+//! （`replay_guard = false`，§1.3.2/§1.4 RAM-only 降级——回放窗口重启
+//! 后重开，诚实降级接受）。
 
 use crate::ed25519;
 use crate::envelope::{
@@ -249,6 +254,11 @@ pub enum PolicyErr {
     /// 防剥离：per-app 记录在案的已签 id 再见无 .sig（全档恒拒——
     /// `stripped`）。
     Stripped,
+    /// 同 lineage 换钥未走仪式：在册 lineage 的零链信封 pk ∉ 该 lineage
+    /// 锚集（全档恒拒——`key-swap`，G9 2026-11-12；「换钥走仪式不走
+    /// TOFU」，仪式 = 信封轮换链〔BSIG-ROT 锚走链，SDK-2 §二 :36-37〕，
+    /// 拒因行带 lineage + 两 pk 前缀由 CLI 渲染——结构单源在本）。
+    KeySwap,
 }
 
 impl PolicyErr {
@@ -259,6 +269,7 @@ impl PolicyErr {
             PolicyErr::UnknownSrc => "unknown-src",
             PolicyErr::SideloadOff => "sideload",
             PolicyErr::Stripped => "stripped",
+            PolicyErr::KeySwap => "key-swap",
         }
     }
 }
@@ -416,7 +427,8 @@ fn top_verify(
 /// （账本：lineage 锚集/水位 + per-app 记录）→ 输出 = [`Verdict`]。
 ///
 /// 次序（护栏先于档位让步）：sideload 门 → 防剥离（恒）→ 无 .sig 档位
-/// 函数 → 验签序 → 未知 lineage 档位函数（TOFU/拒）→ 水位（恒，
+/// 函数 → 验签序（在册分支带 lineage↔pk 绑定执法：零链异 pk = 换钥未走
+/// 仪式拒，恒——G9）→ 未知 lineage 档位函数（TOFU/拒）→ 水位（恒，
 /// `replay_guard` 关 = 跳检诚实降级）→ 突变折叠（水位推进/锚学习/
 /// per-app upsert）。
 pub fn admit(ctx: &AdmitCtx, ledger: &TrustLedger, face: &LoadFace<'_>) -> Verdict {
@@ -444,6 +456,17 @@ pub fn admit(ctx: &AdmitCtx, ledger: &TrustLedger, face: &LoadFace<'_>) -> Verdi
             let ok = match verify_signed(entry.anchors(), face.lineage, &face.bap_digest, &face.manifest_digest, sig)
             {
                 Ok(o) => o,
+                // ④b G9 lineage↔pk 绑定执法（恒执法 ③，2026-11-12）：
+                // `KeyMismatch` 仅产自「零链 ∧ 信封 pk ∉ 任一锚」
+                // （verify_signed 单源分派——带链不见证走 RotSigBad）＝
+                // 同 lineage 换钥未走轮换链仪式 → 策略族拒（全档）。
+                // **推断落位**：任务书「验签过后查 pk ∈ 锚」按零链面收口
+                // ——带链到达钥是仪式本体（SDK-2 §二 :36「同 lineage 验链
+                // 自动通过」+ §三 :61-62 重叠双签窗 + ⑥ 锚学习），逐字
+                // 「pk ∈ 锚才过」会连仪式一起拒，与母法矛盾故不取。
+                Err(Reason::Sig(SigErr::KeyMismatch)) => {
+                    return Verdict::Reject(Reason::Policy(PolicyErr::KeySwap));
+                }
                 Err(r) => return Verdict::Reject(r),
             };
             // ⑤ 水位恒执法（§三 :63 ②；增量缺席 = 跳检 + 诚实声明面）。
@@ -769,11 +792,13 @@ mod tests {
             admit(&ctx, &led, &face(Some(&sig), DEV_LIN)),
             Verdict::Reject(Reason::Sig(SigErr::LineageEcho))
         );
-        // 换钥（零链、错钥）→ KeyMismatch。
+        // 换钥（零链、错钥）→ KeySwap（G9 绑定执法：在册 lineage 异 pk
+        // 由信封族 KeyMismatch 升策略族拒——admit 决策序单点映射；信封族
+        // 原语义〔换锚 = KeyMismatch〕钉板在 test 10 verify_signed 直调）。
         let sig2 = envelope(&[sk2], LIN, 1, &[0xA1; DIGEST_LEN], &[0xB2; DIGEST_LEN]);
         assert_eq!(
             admit(&ctx, &led, &face(Some(&sig2), LIN)),
-            Verdict::Reject(Reason::Sig(SigErr::KeyMismatch))
+            Verdict::Reject(Reason::Policy(PolicyErr::KeySwap))
         );
         // 断链：sk1→sk2 带链信封、node 0 rot_sig 篡改 → RotSigBad。
         let mut broken = sig_rot(&sk1, &sk2);
@@ -974,6 +999,7 @@ mod tests {
         assert_eq!(Reason::Policy(PolicyErr::UnknownSrc).word(), "unknown-src");
         assert_eq!(Reason::Policy(PolicyErr::SideloadOff).word(), "sideload");
         assert_eq!(Reason::Policy(PolicyErr::Stripped).word(), "stripped");
+        assert_eq!(Reason::Policy(PolicyErr::KeySwap).word(), "key-swap");
         assert_eq!(Reason::Sig(SigErr::TopSigBad).word(), "top-sig-bad");
         assert_eq!(Reason::Sig(SigErr::KeyMismatch).word(), "key-mismatch");
         assert_eq!(Reason::Sig(SigErr::LineageEcho).word(), "lineage-echo");
@@ -1011,5 +1037,69 @@ mod tests {
         let n = SigEnvelopeV1::parse(&rot).unwrap().encode(&mut head).unwrap();
         assert!(verify_signed(&one, LIN, &[0xA1; DIGEST_LEN], &[0xB2; DIGEST_LEN], &rot).is_ok());
         let _ = (head, n);
+    }
+
+    // 11. G9 lineage↔pk 绑定执法（2026-11-12，38 号 §4 G9 行）：首见锚落 /
+    //     同 pk 复见过 / 同 lineage 零链异 pk 全档拒（换钥走仪式不走
+    //     TOFU）/ 换钥带链（仪式）对照过 / 账本缺 lineage 各档（dev TOFU
+    //     首见装、open/locked unknown-src 拒——§1.3.2 表原文：open 不
+    //     TOFU）。
+    #[test]
+    fn g9_lineage_pk_binding() {
+        let sk1 = tkey(0x11);
+        let sk2 = tkey(0x22);
+        let pk1 = pk_of(&sk1);
+        let pk2 = pk_of(&sk2);
+        let boot = ledger_with(&[lin("official", &[anchor(pk_of(&tkey(0x33)), AnchorType::System)], 1)], &[]);
+        let dev = AdmitCtx { policy: Policy::Dev, replay_guard: true };
+        // (a) 首见锚落：dev TOFU 首见 dev-lin → tofu 锚 pk1 入账本。
+        let sig1 = envelope(&[sk1], DEV_LIN, 2, &[0xA1; DIGEST_LEN], &[0xB2; DIGEST_LEN]);
+        let nl1 = match admit(&dev, &boot, &face(Some(&sig1), DEV_LIN)) {
+            Verdict::Mutate { ledger: nl, .. } => nl,
+            v => panic!("TOFU 首见应 Mutate：{v:?}"),
+        };
+        let e = nl1.find_lineage(DEV_LIN).expect("首见锚落");
+        assert_eq!((e.anchors_len, e.anchors()[0].pk, e.anchors()[0].ty), (1, pk1, AnchorType::Tofu));
+        // (b) 同 pk 复见过：零链 pk1 再见 → Mutate(Verified)（水位等值幂等）。
+        assert!(matches!(
+            admit(&dev, &nl1, &face(Some(&sig1), DEV_LIN)),
+            Verdict::Mutate { note: Note::Verified { gen: 2 }, .. }
+        ));
+        // (c) 同 lineage 异 pk 拒（全档）：零链 pk2 未走仪式 → KeySwap。
+        let sig2 = envelope(&[sk2], DEV_LIN, 2, &[0xA1; DIGEST_LEN], &[0xB2; DIGEST_LEN]);
+        for p in [Policy::Dev, Policy::ProductOpen, Policy::ProductLocked] {
+            let ctx = AdmitCtx { policy: p, replay_guard: true };
+            assert_eq!(
+                admit(&ctx, &nl1, &face(Some(&sig2), DEV_LIN)),
+                Verdict::Reject(Reason::Policy(PolicyErr::KeySwap)),
+                "同 lineage 换钥未走仪式 = 全档拒（{p:?}）"
+            );
+        }
+        // (d) 仪式对照：同换钥带轮换链（pk1→pk2 BSIG-ROT）→ 过 + 到达钥
+        //     入锚集（重叠双签窗——「换钥走仪式」正路保持畅通）。
+        let sig_rot = envelope(&[sk1, sk2], DEV_LIN, 3, &[0xA1; DIGEST_LEN], &[0xB2; DIGEST_LEN]);
+        match admit(&dev, &nl1, &face(Some(&sig_rot), DEV_LIN)) {
+            Verdict::Mutate { ledger: nl, .. } => {
+                let e = nl.find_lineage(DEV_LIN).unwrap();
+                assert!(e.anchors().iter().any(|a| a.pk == pk2), "链到达钥入锚集");
+            }
+            v => panic!("换钥走链（仪式）应 Mutate：{v:?}"),
+        }
+        // (e) 账本缺 lineage 各档：dev TOFU 首见装；open/locked
+        //     unknown-src 拒（TOFU 行为 = 档位函数，§1.3.2 表）。
+        let fresh: &[u8] = b"fresh-lin";
+        let sig_f = envelope(&[sk2], fresh, 1, &[0xA1; DIGEST_LEN], &[0xB2; DIGEST_LEN]);
+        assert!(matches!(
+            admit(&dev, &boot, &face(Some(&sig_f), fresh)),
+            Verdict::Mutate { note: Note::TofuFirstSeen { gen: 1 }, .. }
+        ));
+        for p in [Policy::ProductOpen, Policy::ProductLocked] {
+            let ctx = AdmitCtx { policy: p, replay_guard: true };
+            assert_eq!(
+                admit(&ctx, &boot, &face(Some(&sig_f), fresh)),
+                Verdict::Reject(Reason::Policy(PolicyErr::UnknownSrc)),
+                "账本缺 lineage @ {p:?}"
+            );
+        }
     }
 }

@@ -23,7 +23,16 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// 时间片频率（每秒切片数）。10Hz → 每 100ms 一 tick（slice=6.25M cycles @62.5MHz）。
 /// 调小→切片长（切换少、开销低）；调大→更公平但切换多。Step 6 demo 以此驱动抢占。
+/// G5（§1.6-补）起这是**缺省值**——产品镜像可经 boot-params
+/// `sched_slice_hz` 覆盖（[`set_slice_hz`]；override 语义 = §1.6-3
+/// 「缺省归上游编译期常量」）。
 pub const SLICE_HZ: u64 = 10;
+
+/// G5（§1.6-补）：产品级 slice 频率覆盖（boot-params `sched_slice_hz`，
+/// 域 [16,1024] 执法归解析端 kernel/src/bootparams.rs）。0 = 缺席（用
+/// 编译期缺省 [`SLICE_HZ`]——空 params 镜像零漂移）。boot 单线程写、
+/// [`init`] 单点消费。
+static mut SLICE_HZ_OVR: u64 = 0;
 
 static mut FREQ: u64 = 0;
 static mut SLICE: u64 = 0;
@@ -57,7 +66,10 @@ static NS_SHIFT: AtomicU32 = AtomicU32::new(0);
 /// 写模块静态 + 系统寄存器；EL1、单核启动期、仅一次。
 pub unsafe fn init() -> u64 {
     FREQ = read_cntfrq();
-    SLICE = FREQ / SLICE_HZ;
+    // G5：boot-params 覆盖在位则换算基准改用之（单源算式
+    // slice_cycles_for_hz——缺省 SLICE_HZ 路同式）。
+    let hz = if SLICE_HZ_OVR != 0 { SLICE_HZ_OVR } else { SLICE_HZ };
+    SLICE = slice_cycles_for_hz(hz);
     // 下一代优化 #1：tick→ns 倒数乘-移对预计算（init 一次除法换热路径零
     // 除法）。写序 shift→mul：mul!=0 是快路有效性哨兵（单核启动期无并发
     // 读，纯防御序）；频率 0/超 1GHz → (0,0) → ticks_to_ns 恒走精确慢路。
@@ -297,6 +309,30 @@ const _: () = {
 pub fn slice_cycles() -> u64 {
     // SAFETY: 单核顺序读；init 先于一切调度路径。
     unsafe { SLICE }
+}
+
+/// 换算给定 slice 频率的时间片周期数（`cntfrq / hz`——§1.6-补
+/// `sched_slice_hz` 消费动作「slice_cycles = FREQ / sched_slice_hz」的
+/// 单源算式：[`init`] 的 SLICE 与 bootparams eco 行共用，防两处除式漂移）。
+/// `hz != 0` 前置归调用方（bootparams 解析域 [16,1024]；缺省
+/// [`SLICE_HZ`]）。FREQ 已缓存用缓存（init 后同值），否则现读寄存器
+///（eco 行在 init 前打的 boot 语境）。
+pub fn slice_cycles_for_hz(hz: u64) -> u64 {
+    // SAFETY: FREQ 只读；boot 单写者（init），此后恒定。
+    let f = unsafe { FREQ };
+    (if f != 0 { f } else { read_cntfrq() }) / hz
+}
+
+/// 设置时间片频率覆盖（G5 boot-params 消费端专用——kernel/src/
+/// bootparams.rs `apply_and_report` 唯一调用点）。`hz == 0` 忽略（=
+/// 缺席）；域执法 [16,1024] 归解析端。
+///
+/// # Safety
+/// boot 单线程、[`init`] 之前调用（init 消费覆盖值换算 SLICE）。
+pub unsafe fn set_slice_hz(hz: u64) {
+    if hz != 0 {
+        SLICE_HZ_OVR = hz;
+    }
 }
 
 fn read_cntfrq() -> u64 {

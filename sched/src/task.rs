@@ -357,6 +357,12 @@ impl Task {
         asid: u16,
         proc_tag: usize,
     ) -> Option<Box<Task>> {
+        // G5（§1.6-补）：intent_default 产品级缺省——boot-params 在位则
+        // 新任务出生即带声明档（declared/effective 同置——`spawn_intent`
+        // :1105 先例；推断注：设计表只指名 intent_declared，effective
+        // 随置是「出生档 = 自身声明」语义的一致化，非设计明文）。缺席 =
+        // UNSPECIFIED 现役零漂移。
+        let idefault = crate::intent::intent_default();
         try_box(Task {
             ctx,
             kstack: Some(kstack),
@@ -381,8 +387,8 @@ impl Task {
             duration_hint_ns: 0,
             epp: EppHint::Efficiency,
             preempt_threshold: 0,
-            intent_declared: 0,
-            intent_effective: 0,
+            intent_declared: idefault,
+            intent_effective: idefault,
             intent_hop: 0,
             intent_since: 0,
             intent_acc: 0,

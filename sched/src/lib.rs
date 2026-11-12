@@ -44,9 +44,10 @@ pub use hdr::{
     HDR_MAX_VALUE, HDR_NR_CPU, HDR_OCTAVES, HDR_OVERFLOW, HDR_SUB, HDR_SUB_BITS,
 };
 pub use intent::{
-    intent_valid, settle, snapshot, MsgIntent, SettleOut, SnapOut, INTENT_BACKGROUND,
-    INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS, INTENT_HOP_MAX, INTENT_INTERACTIVE,
-    INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED, INTENT_UTILITY,
+    intent_default, intent_valid, set_intent_default, settle, snapshot, MsgIntent, SettleOut,
+    SnapOut, INTENT_BACKGROUND, INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS, INTENT_HOP_MAX,
+    INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED,
+    INTENT_UTILITY,
 };
 pub use runqueue::{linkable, Runqueue, Topo};
 pub use util::{

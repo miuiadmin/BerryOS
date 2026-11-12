@@ -36,7 +36,9 @@ static mut LAST_VCT: u64 = 0;
 /// 时间片授予量自 2b-4 起不再用本 crate 常量（原 `RR_QUANTUM` tick 数退役）：
 /// grant = `hal::timer::slice_cycles()`（= FREQ/SLICE_HZ，随探测频率换算——
 /// DVFS 改频后重新换算即可，时间片实际时长不随频率漂移；LiteOS-M
-/// `OsSchedTimeConvertFreq` 式）。
+/// `OsSchedTimeConvertFreq` 式。G5 起分母可经 boot-params
+/// `sched_slice_hz` 产品级覆盖——缺省编译期常量 SLICE_HZ 不变，见
+/// `hal timer::set_slice_hz`）。
 ///
 /// **4-3a 起 pick 按 `prio_effective` 出选**（`调度器设计.md` §3.6「调度决策
 /// 一律看 effective」的 v1 兑现——PI 捐赠与 AI 权重微调的共同消费点）：单圈

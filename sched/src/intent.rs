@@ -22,6 +22,7 @@
 
 use crate::task::Task;
 use berry_intface::IntentState;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 // ---- 编码冻结 + 三道帽（单源 = berry-intface；此处 re-export 供
 // kernel/ktest 既有消费面零改动）----
@@ -31,6 +32,27 @@ pub use berry_intface::{
     INTENT_CHAIN_BUDGET_NS, INTENT_HOP_BUDGET_NS, INTENT_HOP_MAX, INTENT_INTERACTIVE,
     INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED, INTENT_UTILITY,
 };
+
+// ---- G5（§1.6-补）：intent_default——新任务缺省 intent 的产品级覆盖 ----
+
+/// 新任务 declared/effective 的产品级缺省档（boot-params
+/// `intent_default`——kernel/src/bootparams.rs 消费注入）。缺省
+/// [`INTENT_UNSPECIFIED`] = 现役行为零漂移（空 params 镜像逐位不变；
+/// §1.6-补「现役 0x00=UNSPECIFIED……改缺省 = 调度域行为变更」的落体：
+/// 变更只在产品显式声明时发生）。原子 Relaxed：boot 单写者 + 之后
+/// 任务装配点多核只读（免 unsafe 面——hal timer NS_MUL 同款纪律）。
+static INTENT_DEFAULT: AtomicU8 = AtomicU8::new(INTENT_UNSPECIFIED);
+
+/// 设置新任务缺省 intent（boot 早期、首个 spawn 前；编码域执法归调用
+/// 方——词表映射在 bootparams::parse）。
+pub fn set_intent_default(code: u8) {
+    INTENT_DEFAULT.store(code, Ordering::Relaxed);
+}
+
+/// 读新任务缺省 intent（`Task` 装配点消费——task.rs `try_assemble`）。
+pub fn intent_default() -> u8 {
+    INTENT_DEFAULT.load(Ordering::Relaxed)
+}
 
 /// `Task` intent 五字段 → 纯值域投影（W3-Q13：判定律只读这五个数）。
 #[inline]

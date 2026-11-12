@@ -43,6 +43,9 @@
 //!   （`[[lineage]]` 节键闭集 + V4 四占位恒空 + 可选 `[[app]]` 五键）
 //!   各数行示例——lib `admit::parse_policy`/`ledger.rs` 头注例样单源的
 //!   摘要（改 schema 须同笔改 banner），不再靠试错或读 p3sim.py。
+//!   G9（2026-11-12）lineage↔pk 绑定执法拒因行：`key-swap` 行附
+//!   `lineage=` + 两 pk 前缀（`env-pk=`/`anchor-pk=`——结构单源 = lib
+//!   `PolicyErr::KeySwap`，本 CLI 只渲染拒因可见面）。
 //!
 //! ## 覆盖域合同（P0-2 验签合同①②③的消费实现）
 //!
@@ -103,7 +106,7 @@ mod cli {
         top_message, ChainNode, SigEnvelopeV1, ALG_ED25519_SHA512_256, CHAIN_NODES_MAX,
         ENVELOPE_MAX, LINEAGE_MAX, SIG_LEN, TOP_MSG_MAX,
     };
-    use berry_crypto::admit::{self, AdmitCtx, LoadFace, Note, Verdict};
+    use berry_crypto::admit::{self, AdmitCtx, LoadFace, Note, PolicyErr, Reason, Verdict};
     use berry_crypto::ledger::{AppSource, TrustLedger, LEDGER_SRC_MAX as EMIT_BUF};
     use berry_crypto::sha512::digest256;
 
@@ -847,6 +850,26 @@ mod cli {
         let r2 = run_admit(&pol_dev, &out_s, &d_tofu, &[], false)?;
         leg(r2.allows == 1 && r2.lines.iter().any(|l| l.contains("allow verified lineage=p3-other")),
             "admit-tofu 二次装载 verified（首见即锚后）", &mut fails);
+        // G9（2026-11-12）lineage↔pk 绑定执法：同 lineage 零链异 pk 拒
+        // （换钥走仪式不走 TOFU）+ 拒因行带 lineage/两 pk 前缀——dev/
+        // locked 两档钉 CLI 面（open 同路，全档穷举在 lib 测试 11）。
+        let sk_b_p = dir.join("b.sk");
+        let pk_b_p = dir.join("b.pk");
+        cmd_keygen(ps(&sk_b_p), ps(&pk_b_p))?;
+        let sk_b = read_exact32(ps(&sk_b_p), "selftest-admit")?;
+        let pk_b = read_exact32(ps(&pk_b_p), "selftest-admit")?;
+        let sig_ks = sign_envelope(&sk_b, &bap, mf, 3)?;
+        let d_ks = setup(dir, "apps-keyswap", &[("P3ADMIT.bap", bap.clone()), ("P3ADMIT.bap.sig", sig_ks.clone())]);
+        for (name, p) in [("dev", &pol_dev), ("locked", &pol_lock)] {
+            let r = run_admit(p, &led, &d_ks, &[], false)?;
+            leg(r.allows == 0
+                && r.lines.iter().any(|l| l.contains("reject eco: app P3ADMIT key-swap")
+                    && l.contains("lineage=p3-selftest")
+                    && l.contains(&format!("env-pk={}", hex(&pk_b[..4])))
+                    && l.contains(&format!("anchor-pk={}", hex(&pk[..4])))),
+                &format!("admit-key-swap-{name} 同 lineage 异 pk 拒 + lineage/两 pk 前缀可见"),
+                &mut fails);
+        }
         // DoD 5 后半：未知 lineage 带签——open/locked unknown-src 拒。
         for (name, p) in [("open", &pol_open), ("locked", &pol_lock)] {
             let r = run_admit(p, &led, &d_tofu, &[], false)?;
@@ -1094,7 +1117,26 @@ mod cli {
                 }
                 Verdict::Reject(r) => {
                     rejects += 1; // 拒载不连坐（失败隔离——继续下一件）
-                    lines.push(format!("admit: {id} reject eco: app {id} {}", r.word()));
+                    let mut line = format!("admit: {id} reject eco: app {id} {}", r.word());
+                    // G9 拒因可见性：换钥拒行附 lineage + 两 pk 前缀
+                    // （信封当前钥 vs 该 lineage 首锚——结构单源 = lib
+                    // KeySwap，本行只渲染；env pk 经信封单解释器 parse，
+                    // 锚经折叠中账本 find_lineage，无第二语义源）。
+                    if r == Reason::Policy(PolicyErr::KeySwap) {
+                        if let (Some(s), Some(ent)) =
+                            (sig.as_deref(), cur.find_lineage(lineage.as_bytes()))
+                        {
+                            if let Ok(env) = SigEnvelopeV1::parse(s) {
+                                let _ = write!(
+                                    line,
+                                    " lineage={lineage} env-pk={} anchor-pk={}（同 lineage 换钥：零链且 pk ∉ 锚集——换钥走轮换链仪式，不走 TOFU）",
+                                    hex(&env.pk[..4]),
+                                    hex(&ent.anchors()[0].pk[..4])
+                                );
+                            }
+                        }
+                    }
+                    lines.push(line);
                 }
             }
         }
