@@ -192,6 +192,56 @@ fn draw_tooltip(buf: &mut [u32], width: u32, height: u32, hover: usize) {
     draw_text(buf, width, height, x + 5, y + 3, text);
 }
 
+/// Base window-open factor per panel class, in logical-point terms.
+///
+/// Tall panels (>1200) open smaller because they are clamped by screen height
+/// anyway; everything else opens at 0.9 of the panel's logical size. The old
+/// 0.8/0.55 constants were physical-pixel semantics (audit 01 §2.1): on a 2x
+/// screen they halved the window, so 0.9 replaces 0.8 now that sizes below are
+/// logical. Integer scale modes pass their factor through unchanged.
+fn base_window_factor(scale: ScaleMode, panel_h: u32) -> f64 {
+    match scale {
+        ScaleMode::Integer(n) => n as f64,
+        ScaleMode::Fit => {
+            if panel_h > 1200 {
+                0.55
+            } else {
+                0.9
+            }
+        }
+    }
+}
+
+/// Default window size in LOGICAL points (audit 01 修法 a).
+///
+/// The panel size is scaled by `base_factor` and clamped so the window keeps
+/// within 0.9 of the monitor, measured in logical points (`monitor` is
+/// physical pixels + scale_factor; None = no monitor, base factor used raw).
+/// Factor floor 0.2 and size floor 320x240 are unchanged, now in logical
+/// points. Callers hand the result to `with_inner_size(LogicalSize)`, so the
+/// OS multiplies by scale_factor: same numbers on 1x screens, double the
+/// window area on 2x screens compared with the old physical-pixel math.
+fn default_window_size(
+    panel_w: u32,
+    panel_h: u32,
+    base_factor: f64,
+    monitor: Option<(u32, u32, f64)>,
+) -> (u32, u32) {
+    let mut factor = base_factor;
+    if let Some((mon_w, mon_h, scale_factor)) = monitor {
+        let sf = if scale_factor > 0.0 { scale_factor } else { 1.0 };
+        let screen_w = mon_w as f64 / sf;
+        let screen_h = mon_h as f64 / sf;
+        factor = factor
+            .min(screen_w * 0.9 / panel_w.max(1) as f64)
+            .min(screen_h * 0.9 / panel_h.max(1) as f64)
+            .max(0.2);
+    }
+    let w = (panel_w as f64 * factor).round().max(320.0) as u32;
+    let h = (panel_h as f64 * factor).round().max(240.0) as u32;
+    (w, h)
+}
+
 pub fn run(args: ShellArgs) -> Result<()> {
     let profile = crate::profile::get(&args.profile)?;
     let image = args.image.clone();
@@ -747,28 +797,24 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let mut factor = match self.scale {
-            ScaleMode::Integer(n) => n as f64,
-            ScaleMode::Fit => {
-                if self.profile.panel_h > 1200 {
-                    0.55
-                } else {
-                    0.8
-                }
-            }
-        };
-        if let Some(m) = event_loop.primary_monitor() {
+        let factor = base_window_factor(self.scale, self.profile.panel_h);
+        let monitor = event_loop.primary_monitor().map(|m| {
             let s = m.size();
-            let max_w = s.width as f64 * 0.9 / self.profile.panel_w as f64;
-            let max_h = s.height as f64 * 0.9 / self.profile.panel_h as f64;
-            factor = factor.min(max_w).min(max_h).max(0.2);
-        }
-        let w = (self.profile.panel_w as f64 * factor).round().max(320.0) as u32;
-        let h = (self.profile.panel_h as f64 * factor).round().max(240.0) as u32;
+            (s.width, s.height, m.scale_factor())
+        });
+        // Logical points, not physical pixels: `with_inner_size(LogicalSize)`
+        // lets the OS apply the DPI factor, so HiDPI screens no longer halve
+        // the window (audit 01 §2.1: 216x384 logical on a 2x MBP before).
+        let (w, h) = default_window_size(
+            self.profile.panel_w,
+            self.profile.panel_h,
+            factor,
+            monitor,
+        );
         let attrs = Window::default_attributes()
             .with_title(&self.title)
-            .with_inner_size(winit::dpi::PhysicalSize::new(w, h))
-            .with_min_inner_size(winit::dpi::PhysicalSize::new(320, 240))
+            .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(320, 240))
             .with_resizable(true);
         let Ok(window) = event_loop.create_window(attrs) else {
             eprintln!("berry: failed to create window");
@@ -947,5 +993,75 @@ mod toolbar_tests {
             .flat_map(|y| (bx as usize..(bx + bw) as usize).map(move |x| (x, y)))
             .any(|(x, y)| buf[y * w + x] == 0x00E8_ECF0);
         assert!(text_px);
+    }
+}
+
+#[cfg(test)]
+mod default_size_tests {
+    use super::*;
+
+    // 16" MBP main screen, measured 2026-11-13 (audit 01 §2.1):
+    // 3456x2234 physical @ 2.0 = 1728x1117 logical points.
+    const MBP: (u32, u32, f64) = (3456, 2234, 2.0);
+
+    #[test]
+    fn hidpi_desktop_window_is_logical_not_physical() {
+        // Old physical-pixel math: 540x960 x 0.8 = 432x768 *physical* =
+        // 216x384 logical on this screen (audit 01 §2.1). Logical terms with
+        // base 0.9: 486x864 logical, satisfying the audit acceptance of
+        // ">= 480 logical points wide".
+        let (w, h) = default_window_size(540, 960, 0.9, Some(MBP));
+        assert_eq!((w, h), (486, 864));
+        assert!(w >= 480, "desktop window {w} logical pt < 480");
+        // winit semantics check: the OS turns this into 972x1728 device px.
+        let phys = winit::dpi::LogicalSize::new(w as f64, h as f64).to_physical(2.0);
+        assert_eq!((phys.width, phys.height), (972.0, 1728.0));
+    }
+
+    #[test]
+    fn hidpi_phone_window_clamped_to_screen() {
+        // phone panel 1080x2250, base 0.55: the 0.9-screen clamp binds via
+        // height (0.9*1117/2250 = 0.4468) -> 483x1005 logical
+        // (audit 01 §3a estimates "约 460x958").
+        let (w, h) = default_window_size(1080, 2250, 0.55, Some(MBP));
+        assert_eq!((w, h), (483, 1005));
+        assert!(w >= 460 && h >= 950);
+        assert!(h as f64 <= 0.9 * (2234.0 / 2.0) + 0.5);
+    }
+
+    #[test]
+    fn one_x_screen_clamp_unchanged() {
+        // On 1x screens logical == physical, so the clamp behaves exactly as
+        // the old math; base 0.9 binds only when the screen is big enough.
+        let (w, h) = default_window_size(540, 960, 0.9, Some((1920, 1080, 1.0)));
+        assert_eq!((w, h), (486, 864)); // clamp 0.9*1080/960 = 1.0125 > 0.9
+        let (w, h) = default_window_size(540, 960, 0.9, Some((1366, 768, 1.0)));
+        assert_eq!((w, h), (389, 691)); // clamp 0.9*768/960 = 0.72 binds
+    }
+
+    #[test]
+    fn integer_scale_passes_through_then_clamps() {
+        assert_eq!(default_window_size(540, 960, 1.0, None), (540, 960));
+        assert_eq!(default_window_size(540, 960, 2.0, None), (1080, 1920));
+        // The 0.9-screen clamp also applies to integer bases (as before);
+        // 0.9*1117/960 = 1.047 -> 565x1005 logical on the MBP.
+        assert_eq!(default_window_size(540, 960, 2.0, Some(MBP)), (565, 1005));
+    }
+
+    #[test]
+    fn size_and_factor_floors() {
+        // Tiny panel: factor 0.9 -> 270x180, floored to 320x240 logical.
+        assert_eq!(default_window_size(300, 200, 0.9, Some((800, 600, 1.0))), (320, 240));
+        // Tiny screen: clamp 0.9*360/2250 = 0.144 -> factor floor 0.2
+        // -> 216x450, width floored to 320.
+        assert_eq!(default_window_size(1080, 2250, 0.55, Some((480, 360, 1.0))), (320, 450));
+    }
+
+    #[test]
+    fn no_monitor_and_base_factors() {
+        assert_eq!(default_window_size(540, 960, 0.9, None), (486, 864));
+        assert_eq!(base_window_factor(ScaleMode::Fit, 960), 0.9);
+        assert_eq!(base_window_factor(ScaleMode::Fit, 2250), 0.55);
+        assert_eq!(base_window_factor(ScaleMode::Integer(2), 2250), 2.0);
     }
 }
