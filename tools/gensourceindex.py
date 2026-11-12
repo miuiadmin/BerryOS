@@ -16,6 +16,16 @@
                                       #   --sign-key 在席 = 索引真签（64B
                                       #   ed25519 裸签名 → flags.signed=1）；
                                       #   缺席 = unsigned 诚实降级（兼容）
+  gensourceindex.py --preset <product.toml> [--rootfs-manifest <toml>]
+                    [--user-dir <dir>] --out-dir <dir> --source-pk <pk-file>
+                                      # G16 双源对账件（38 号 §4：同一 app
+                                      #   集合 OEM 三写漂移的收口）：app 条目
+                                      #   直接派生自 product.toml preset
+                                      #   （berry_assemble load_product +
+                                      #   resolve_entries 复用——override 路径
+                                      #   替换同语义，零第二解析器），消
+                                      #   「源索引条目表」自持面；基座表仍
+                                      #   经 --rootfs-manifest 供路径解析
   gensourceindex.py --verify <source-index.tlv> [--prev <source-index.tlv>]
                                       # 结构/八字段/单调/签名验证（signed =
                                       #   berry-sign verify-raw 真验签；同
@@ -92,6 +102,15 @@ manifest)」如实核）：app 条目表单源 = rootfs-manifest.toml（V13 数�
 ——该支线核为空集，索引输入不取自彼。索引条目 = 表内 `app/*.bap` 条目
 （`selftest/*.bap` = 测试夹具不进官方源索引——如实注）；path 相对
 user/ 目录（表头注契约 rootfs-manifest.toml :10–12）。
+
+G16 单源派生（--preset，38 号 §4 双源漂移收口）：演练实咬 = 同一 5-app
+集合三写（product.toml preset / 源索引条目表 acme-apps.toml / rootfs
+条目表——后者已收敛一处，gensourceindex 侧仍独立自持）——本模式把
+源索引条目**直接派生自 product.toml**（preset 集 ⊕ override 路径替换，
+经 berry_assemble load_product + resolve_entries 全量复验与解析，
+零第二产品解析器；berry_assemble 亦惰性 import 本文件——双向函数级
+导入无模块环），「源索引条目表」自持面就此消解；拒面 = berry_assemble
+Reject 全谱转 die（产品清单坏/条目不在基座/构建树缺席等，文案原样透传）。
 
 两件套消费链：本工具产 <out-dir>/{source-index.tlv,source-keys.txt} →
 mkimage --source-instance <dir> 挂入镜像 FAT /SOURCE/（路径推断——v1.2
@@ -630,6 +649,35 @@ def load_app_entries(manifest_path: str, user_dir: str) -> list:
     return out
 
 
+def load_preset_entries(product_path: str, base_manifest: str,
+                        user_dir: str) -> list:
+    """G16 单源派生（--preset）：product.toml → app/*.bap 条目。
+
+    解析/复验全量复用 berry_assemble（load_product 结构+产物面执法 ⊕
+    resolve_entries 终表解析——preset 筛选、override 路径替换、构建树
+    存在性、launcher 终表对账一身；零第二产品解析器），本函数只做
+    app/ 前缀过滤 + 绝对/相对路径归一。拒面 = berry_assemble Reject
+    → die（文案原样透传，前缀 --preset 标注）。返回 [(name, local)]，
+    条目集 ≡ 产品终表 app 集（preset ⊕ override——与 rootfs 条目表
+    同源，双源自持消解）。"""
+    import berry_assemble  # 惰性导入（彼方亦函数级 import 本文件——无环）
+    try:
+        prod = berry_assemble.load_product(product_path)
+        items, _ = berry_assemble.resolve_entries(prod, base_manifest, user_dir)
+    except berry_assemble.Reject as e:
+        die(f"--preset 产品解析拒：{e}")
+    apps = []
+    for item in items:
+        name, _, path = item.partition("=")
+        if name.startswith("app/") and name.endswith(".bap"):
+            local = path if os.path.isabs(path) else os.path.join(user_dir, path)
+            apps.append((name, local))
+    if not apps:
+        die(f"{product_path} 终表无 app/*.bap 条目（preset 空——官方源"
+            "索引对象缺席）")
+    return apps
+
+
 def build_entry(name: str, local: str, last_rev: int,
                 harden: bool = True) -> Entry:
     """单条目装配：.bap 读入 → manifest 单源解析 → .sig 见证提取
@@ -673,9 +721,12 @@ def build_entry(name: str, local: str, last_rev: int,
 
 def do_generate(args) -> int:
     last_rev = platform_level()
-    entries = [build_entry(name, local, last_rev)
-               for name, local in load_app_entries(args.rootfs_manifest,
-                                                   args.user_dir)]
+    if getattr(args, "preset", None):   # G16 单源派生：product.toml preset
+        pairs = load_preset_entries(args.preset, args.rootfs_manifest,
+                                    args.user_dir)
+    else:
+        pairs = load_app_entries(args.rootfs_manifest, args.user_dir)
+    entries = [build_entry(name, local, last_rev) for name, local in pairs]
     try:
         with open(args.source_pk, "rb") as f:
             pk = f.read()
@@ -715,6 +766,10 @@ def do_generate(args) -> int:
     print(f"gensourceindex: {ipath} {len(index_bytes)}B entries={len(entries)}"
           f" index_version={args.index_version} witnessed={n_wit}"
           f" last_revision={last_rev}")
+    if getattr(args, "preset", None):
+        print(f"gensourceindex: 条目单源派生（G16）: --preset {args.preset}"
+              f"（preset ⊕ override = 产品终表 app 集——「源索引条目表」"
+              f"自持面消解，38 号 §4）")
     print(f"gensourceindex: {kpath} {len(keys_bytes)}B source_id="
           f"{args.source_id} sig_state={'signed' if signed else 'unsigned'}")
     if signed:
@@ -1120,6 +1175,78 @@ def selftest() -> int:
                 == (len(keys_signed), keys_signed),
                 "镜像内对拍（真签名两件套——尺寸+内容字节）")
 
+    # ⑫ G16 单源派生（--preset）：product.toml preset ⊕ override → app 条目
+    #     集（berry_assemble load_product + resolve_entries 复用——零第二
+    #     产品解析器；38 号 §4 双源漂移场景的收口面）；拒面 = Reject 透传。
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="gsi-preset-") as td:
+        base = os.path.join(td, "base.toml")
+        with open(base, "w", encoding="utf-8") as f:
+            f.write("version = 1\n\n[entries]\n"
+                    '"app/A.bap" = "userbins/app/A.bap"\n'
+                    '"app/B.bap" = "userbins/app/B.bap"\n'
+                    '"bin/bsh" = "cargo-target/release/bsh"\n')
+        user = os.path.join(td, "user")
+        for rel in ("userbins/app/A.bap", "userbins/app/B.bap",
+                    "cargo-target/release/bsh"):
+            p = os.path.join(user, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(b"stub")
+        prod_dir = os.path.join(td, "prod")
+        os.makedirs(os.path.join(prod_dir, "oem"), exist_ok=True)
+        with open(os.path.join(prod_dir, "oem", "A.bap"), "wb") as f:
+            f.write(b"OEM-A-stub")
+        PRODUCT = ("schema = 1\n\n[product]\n"
+                   'name    = "oem-x"\nvendor  = "oem"\n'
+                   'board   = "qemu-virt"\n\n[platform]\n'
+                   'arch          = "aarch64"\n'
+                   'feature_level = "rich"\n'
+                   'build_type    = "eng"\nsideload      = false\n\n'
+                   "[platform.boot]\n"
+                   'kernel = "KERNEL.ELF@sha256:e3b0c44298fc1c149afbf4c8996'
+                   "fb92427ae41e4649b934ca495991b7852b855\"\n\n"
+                   "[platform.storage]\n"
+                   "image_size_mib      = 96\n"
+                   "rootfs_split_mib    = 32\n"
+                   'min_power_atomicity = "p0"\n\n'
+                   "[product.apps]\n"
+                   'preset = ["app/A.bap"]\n\n'
+                   "[product.apps.override]\n"
+                   'A = "oem/A.bap"\n\n'
+                   "[product.defaults]\n"
+                   'launcher = "bin/bsh"\n')
+
+        def write_product(text, name):
+            p = os.path.join(prod_dir, name)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(text)
+            return p
+
+        p_ovr = write_product(PRODUCT, "p.toml")
+        got = load_preset_entries(p_ovr, base, user)
+        leg(got == [("app/A.bap", os.path.join(prod_dir, "oem", "A.bap"))],
+            "--preset 派生（preset 单条 + override 绝对路径——基座 B 不进）")
+        p_two = write_product(PRODUCT.replace(
+            'preset = ["app/A.bap"]', 'preset = ["app/A.bap", "app/B.bap"]').
+            replace('[product.apps.override]\nA = "oem/A.bap"\n\n', ""),
+            "p2.toml")
+        got2 = dict(load_preset_entries(p_two, base, user))
+        leg(sorted(got2) == ["app/A.bap", "app/B.bap"]
+            and got2["app/B.bap"] == os.path.join(user, "userbins", "app",
+                                                 "B.bap"),
+            "--preset 派生（双 preset 无 override——基座相对路径归一）")
+        leg_die("--preset 拒面透传（preset 不在基座表）", "--preset 产品解析拒",
+                lambda: load_preset_entries(write_product(
+                    PRODUCT.replace('preset = ["app/A.bap"]',
+                                    'preset = ["app/C.bap"]'), "bad.toml"),
+                    base, user))
+        leg_die("--preset 空 preset（终表无 app 条目）", "preset 空",
+                lambda: load_preset_entries(write_product(
+                    PRODUCT.replace('preset = ["app/A.bap"]', "preset = []").
+                    replace('[product.apps.override]\nA = "oem/A.bap"\n\n',
+                            ""), "empty.toml"), base, user))
+
     if bad:
         print(f"gensourceindex: selftest FAIL x{bad}")
         return 1
@@ -1134,7 +1261,8 @@ def main() -> int:
                     "source-index.tlv 八字段索引 + source-keys.txt 源钥清单）")
     ap.add_argument("--rootfs-manifest", default=DEFAULT_MANIFEST,
                     help=f"rootfs app 条目表（默认 {DEFAULT_MANIFEST}；"
-                         "app/*.bap 条目进索引，selftest/* 夹具不计）")
+                         "app/*.bap 条目进索引，selftest/* 夹具不计；"
+                         "--preset 在席时改任基座表供路径解析）")
     ap.add_argument("--user-dir", default=DEFAULT_USER_DIR,
                     help="条目 path 相对基准（默认 <repo>/user——表头注契约）")
     ap.add_argument("--out-dir", help="两件套输出目录")
@@ -1150,6 +1278,12 @@ def main() -> int:
     ap.add_argument("--index-version", type=int, default=1,
                     help="索引级单调版本号（默认 1；--prev 在席则回降拒）")
     ap.add_argument("--prev", help="前代 source-index.tlv（单调水位对账）")
+    ap.add_argument("--preset", metavar="PRODUCT.TOML",
+                    help="G16 单源派生：app 条目直接派生自 product.toml"
+                         "（berry_assemble load_product + resolve_entries"
+                         " 复用——preset ⊕ override 终表 app 集），消"
+                         "「源索引条目表」自持；--rootfs-manifest 改任"
+                         "基座表")
     ap.add_argument("--verify", help="验证既有 source-index.tlv（结构/八字段"
                                      "/单调/签名验证（signed = 真验签）/"
                                      "两件套对拍）")
@@ -1165,7 +1299,7 @@ def main() -> int:
     if args.gen_keys:
         return do_gen_keys(args.gen_keys[0], args.gen_keys[1])
     if args.verify:
-        if args.out_dir or args.source_pk or args.sign_key:
+        if args.out_dir or args.source_pk or args.sign_key or args.preset:
             ap.error("--verify 独占（不与生成面混用）")
         return do_verify(args)
     if args.sign_key and not args.source_pk:

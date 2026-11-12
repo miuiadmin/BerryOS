@@ -50,8 +50,9 @@ import sys
 # 垫料粒度（X-3c）：头+名与数据都垫到 4096——条目长恒页倍数 → 每条
 # data_off 页对齐，0x23 pager_supply_mapped 的 delta 页对齐门（delta %
 # PAGE != 0 → EINVAL）在产链侧直接兑现，berry-exec congruent 检查无需
-# 自垫。消费端同口径四点：berry-loader cpio_walk/cpio_step + mkapp
-# _cpio_entries + 本文件（单编码器纪律的伴生义务——改此值四点同步）。
+# 自垫。消费端同口径五点：berry-loader cpio_walk/cpio_step + mkapp
+# _cpio_entries + kernel bootparams + 本文件（单编码器纪律的伴生义务——
+# 改此值五点同步）。
 CPIO_PAD = 4096
 
 

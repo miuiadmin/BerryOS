@@ -134,7 +134,8 @@ impl<'a> Iterator for CpioIter<'a> {
         // 全 u64 checked 几何：header → 名（垫页）→ 数据（垫页）→ 下条。
         // X-3c：垫 4096 = data_off 恒页对齐（0x23 pager_supply_mapped 的
         // delta 页对齐门在产链侧兑现）——与 tools/mkcpio.py entry()、
-        // mkapp._cpio_entries 同口径四点一动（单编码器纪律伴生义务）。
+        // mkapp._cpio_entries + kernel bootparams 同口径五点一动（单
+        // 编码器纪律伴生义务）。
         let name_off = (self.pos + CPIO_HDR) as u64;
         let data_off = name_off
             .checked_add(namesize)
@@ -364,7 +365,7 @@ pub fn cpio_step(window: &[u8], pos: u64, archive_len: u64) -> Result<StepOutcom
         return Err(LoadError::BadField);
     }
     let name_off = pos.checked_add(CPIO_HDR as u64).ok_or(LoadError::Truncated)?;
-    // 垫页几何（X-3c，与 cpio_walk/mkcpio/mkapp 四点同口径）：
+    // 垫页几何（X-3c，与 cpio_walk/mkcpio/mkapp/bootparams 五点同口径）：
     // data_off 恒页对齐——demand 装载 delta 门的产链兑现面。
     let data_off = name_off
         .checked_add(namesize)

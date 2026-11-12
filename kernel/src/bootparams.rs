@@ -156,7 +156,7 @@ pub(crate) fn find(src: &Src<'_>, target: &[u8]) -> Option<(usize, usize)> {
             return None;
         }
         // 几何（mkcpio entry() 垫 4096 契约——「单编码器纪律」第五消费点，
-        // 改垫粒度四点同步注记见 mkcpio.py CPIO_PAD）：header → 名（垫页）
+        // 改垫粒度五点同步注记见 mkcpio.py CPIO_PAD）：header → 名（垫页）
         // → 数据（垫页）→ 下条。全 checked（恶意巨值兜住）。
         let name_off = pos + HDR as u64;
         let data_off = (name_off + namesize).checked_add(4095)? & !4095;

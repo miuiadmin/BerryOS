@@ -20,6 +20,17 @@ r"""berry_assemble——产品配置层组装器 v0（V13 实施刀，ADR #82「
                                             #   N = 产品声明的平台代次——装配
                                             #   反回滚门：N > 平台 level（读
                                             #   tools/abi.toml 单源）即拒
+  berry_assemble.py --emit <product.toml> --out-dir <dir> [--platform-revision N]
+                                             # 计划（同 --dry-run）⊕ 最小产件：
+                                             #   [platform.boot.params] 非空 →
+                                             #   <dir>/etc/boot-params.toml 实件
+                                             #   （G5 产品链最后一毫米——42 号
+                                             #   risks「产品链接线后需一次端到端
+                                             #   复验」的投放件；mkcpio 消费形 =
+                                             #   产件行给出的 etc/boot-params.toml
+                                             #   =<abs> 整条 name=path）。locale
+                                             #   等余投放件仍归全产线（读者未在册
+                                             #   ——最小刀不预产）
   berry_assemble.py --sample                 # 打印内置样例 product.toml（体验起点）
   berry_assemble.py --selftest               # 自检：合成基准全谱（正例 + 拒面逐型；
                                              #   零构建依赖、零仓外写入）
@@ -87,11 +98,15 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     先例同款；正式落册归 #83/设计文档升版）。
   - 步④-G5（boot.params 投放）：[platform.boot.params] 非空 → 计划面产
     etc/boot-params.toml 条目（etc/locale.toml 投放先例同款「投放面最小」
-    ——条目名+内容定形进计划，生成件归全产线步⑥；格式 = schema=1 头 +
-    键值对，词表 v1 两键直映 BOOT_PARAMS_SPEC）。消费设计 = 设计文档
-    §1.6-补（内核启动序列早期 cpio 查找 → sched_slice_hz 换算
-    slice_cycles / intent_default 新任务缺省 intent；内核实施窗 = 调度
-    lane 收工后——sched/kernel 系并行 lane 占用件，本刀零内核改动）。
+    ——条目名+内容定形进计划；**--emit 模式 = 最小产件面**：同清单复验后
+    实写 <out-dir>/etc/boot-params.toml，格式 = schema=1 头 + 键值对，
+    词表 v1 两键直映 BOOT_PARAMS_SPEC，读者 = 内核 bootparams 消费端
+    〔kernel/src/bootparams.rs，TOML 子集：u32 裸值 / intent 带引号〕
+    ——镜像全产线步⑥（locale 等余投放件 + just 配方接线）仍归 V13
+    后续刀）。消费设计 = 设计文档 §1.6-补（内核启动序列早期 cpio 查找 →
+    sched_slice_hz 换算 slice_cycles / intent_default 新任务缺省 intent
+    ——内核消费端已落〔42 号 §1 七靴验证〕，--emit 补齐工具投放件后
+    产品链贯通）。
   - 不做（如实记）：步②余量（V6 组装半——非构建产物无 [blob] 声明=拒；V8
     fallback 回退引用必填——归后续刀）、步⑤conformance 门
     （P5 随 #84）、步⑥⑧⑨⑩产件与对账（镜像全产线）、just 配方 assemble
@@ -942,10 +957,10 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
             f"berry-assemble: boot-params 条目（步④·G5 投放面最小）: "
             f"{BOOT_PARAMS_ENTRY} ← [platform.boot.params] {kv}（格式 = "
             f"schema=1 头 + 键值对、键序 = 字典序；override 语义——缺省归"
-            f"上游〔§1.6〕；生成件归全产线；读者 = 内核启动序列早期 cpio"
-            f" 查找〔§1.6-补：sched_slice_hz 换算 slice_cycles / "
-            f"intent_default 新任务缺省 intent——内核实施窗 = 调度 lane"
-            f" 收工后〕）")
+            f"上游〔§1.6〕；产件面 = --emit 模式（最小产件，非全产线）；"
+            f"读者 = 内核启动序列早期 cpio 查找〔§1.6-补：sched_slice_hz"
+            f" 换算 slice_cycles / intent_default 新任务缺省 intent——消费端"
+            f" 已落〔kernel/src/bootparams.rs〕〕）")
     if prod.locale:
         kv = " ".join(f"{k}={prod.locale[k]!r}" for k in sorted(prod.locale))
         lines.append(
@@ -953,8 +968,8 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
             f" ← [product.defaults.locale] {kv}（生成件归全产线；读者 = "
             f"设置应用 v2 转正刀〔应用规范 §15.3〕——完整 i18n 运行时"
             f"〔berry-intl〕未立项，键组是预埋不是功能承诺，§1.5）")
-    lines.append("berry-assemble: dry-run 完——v0 不产件（镜像全产线与 just 配方 "
-                 "assemble 归 V13 后续刀/主会话收口）")
+    lines.append("berry-assemble: 计划完——产件面 = --emit（boot-params 最小产件）；"
+                 "镜像全产线与 just 配方 assemble 归 V13 后续刀/主会话收口）")
     return lines
 
 
@@ -1000,6 +1015,55 @@ def do_dry_run(path: str, pr: int, base_manifest: str, user_dir: str) -> None:
     user_disp = os.path.relpath(user_dir)
     for line in build_plan(prod, items, n_base, pr, level, user_disp):
         print(line)
+
+
+def serialize_boot_params(prod: Product) -> bytes:
+    """[platform.boot.params] → etc/boot-params.toml 字节（G5 产件面的
+    单一序列化点）。格式合同 = 内核消费端 `kernel/src/bootparams.rs`
+    `parse`（TOML 子集对读）：`schema = 1` 头 + `key = value` 行，键序 =
+    字典序（确定性——同清单同字节），u32 裸数字 / intent 带引号字面量；
+    空行/`#` 注释内核侧容忍但本序列化器不产（最小面）。值域已在
+    load_product 词表执法（BOOT_PARAMS_SPEC）——此处纯直映零再裁。"""
+    lines = ["schema = 1"]
+    for key in sorted(prod.params):
+        val = prod.params[key]
+        if isinstance(val, str):        # intent 六档（带引号形）
+            lines.append(f'{key} = "{val}"')
+        else:                           # u32（裸数字形）
+            lines.append(f"{key} = {val}")
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def do_emit(path: str, out_dir: str, pr: int,
+            base_manifest: str, user_dir: str) -> None:
+    """--emit 最小产件面（G5 产品链最后一毫米——42 号 risks「产品链接线
+    后需一次端到端复验」的投放件）：复走 --dry-run 全量复验（装配门 +
+    结构/产物面）后实写 <out-dir>/etc/boot-params.toml。
+
+    消费形态（mkcpio 条目形，stdout 末行给出）：把产件以
+    `etc/boot-params.toml=<abs>` 整条 name=path 并入 rootfs 条目集——
+    与 override/trust 条目同形（mkcpio CLI 现役语义，无第二映射）。
+    空 params = 零产件零目录（缺省零扰动合同——内核侧件缺静默缺省的
+    投放面配套）。locale 等余投放件不在此产（读者未在册——最小刀，
+    全产线归 V13 后续刀）。"""
+    pr = validate_platform_revision(pr)
+    level = _platform_level()
+    prod, items, n_base = _validate_all(path, base_manifest, user_dir)
+    user_disp = os.path.relpath(user_dir)
+    for line in build_plan(prod, items, n_base, pr, level, user_disp):
+        print(line)
+    if not prod.params:
+        print("berry-assemble: emit 空 params 零产件（缺省零扰动——"
+              "不产 etc/boot-params.toml，内核侧静默缺省态）")
+        return
+    dest = os.path.join(out_dir, BOOT_PARAMS_ENTRY)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    blob = serialize_boot_params(prod)
+    with open(dest, "wb") as f:
+        f.write(blob)
+    print(f"berry-assemble: 产件 {dest} {len(blob)}B（G5 实件投放——"
+          f"mkcpio 条目形：{BOOT_PARAMS_ENTRY}={dest}；读者 = 内核 "
+          f"bootparams 消费端〔cpio 定址查找 → eco: bootparams …〕）")
 
 
 # ---- 内置样例（设计文档 §1.2 顶层形状裁剪至 v0 键集；--sample 产出）----
@@ -1612,6 +1676,30 @@ def selftest() -> int:
         leg(prod.params == {} and not any(BOOT_PARAMS_ENTRY in ln
                                           for ln in plan),
             "空 params 零投放（缺省向后兼容）")
+        # G5 产件面（--emit）：序列化黄金字节（内核 bootparams parse 合同：
+        # schema=1 头 + 键值对、字典序、u32 裸值/intent 带引号）+ do_emit
+        # 实写/空 params 零产件——产品链最后一毫米的自检钉。
+        leg(serialize_boot_params(ppar)
+            == b'schema = 1\nintent_default = "interactive"\n'
+               b"sched_slice_hz = 64\n",
+            "serialize 黄金字节（字典序 + u32 裸值/intent 带引号——内核"
+            "TOML 子集合同对读）")
+        emit_dir = os.path.join(td, "emit-out")
+        import io
+        import contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            do_emit(write_prod(PARAMS_OK, "g5e.toml"), emit_dir, level,
+                    base_path, user)
+        emit_path = os.path.join(emit_dir, BOOT_PARAMS_ENTRY)
+        leg(os.path.isfile(emit_path)
+            and open(emit_path, "rb").read()
+            == serialize_boot_params(ppar),
+            "do_emit 实写 <out>/etc/boot-params.toml（内容 = 序列化字节）")
+        emit_empty = os.path.join(td, "emit-empty")
+        with contextlib.redirect_stdout(io.StringIO()):
+            do_emit(good, emit_empty, level, base_path, user)
+        leg(not os.path.exists(emit_empty),
+            "do_emit 空 params 零产件零目录（缺省零扰动）")
 
         # ---- G4：两段式（lite=结构面；文件在席对账归全量面）----
         lite_text = (SELFTEST_PRODUCT
@@ -1733,6 +1821,7 @@ def main() -> int:
     pr = 0
     mode = None
     path = None
+    out_dir = None
     i = 0
     while i < len(args):
         if args[i] == "--platform-revision":
@@ -1747,11 +1836,15 @@ def main() -> int:
                 return 2
             i += 2
             continue
-        if args[i] in ("--check", "--check-lite", "--dry-run") \
+        if args[i] == "--out-dir" and i + 1 < len(args):
+            out_dir = args[i + 1]
+            i += 2
+            continue
+        if args[i] in ("--check", "--check-lite", "--dry-run", "--emit") \
                 and i + 1 < len(args):
             if mode is not None:
                 sys.stderr.write("berry-assemble: --check/--check-lite/"
-                                 "--dry-run 互斥（单模式）\n")
+                                 "--dry-run/--emit 互斥（单模式）\n")
                 return 2
             mode, path = args[i], args[i + 1]
             i += 2
@@ -1779,6 +1872,21 @@ def main() -> int:
             sys.stderr.write(f"berry-assemble: {e}\n")
             return 1
         return 0
+    if mode == "--emit":         # G5 最小产件面（--out-dir 必随）
+        if not out_dir:
+            sys.stderr.write("berry-assemble: --emit 需 --out-dir <dir>"
+                             "（产件落点——etc/boot-params.toml 所在）\n")
+            return 2
+        try:
+            do_emit(path, out_dir, pr, DEFAULT_BASE, DEFAULT_USER_DIR)
+        except Reject as e:
+            sys.stderr.write(f"berry-assemble: {e}\n")
+            return 1
+        return 0
+    if out_dir is not None:
+        sys.stderr.write("berry-assemble: --out-dir 只随 --emit（计划面模式"
+                         "不产件）\n")
+        return 2
     sys.stderr.write(__doc__)
     return 2
 

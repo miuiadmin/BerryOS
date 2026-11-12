@@ -1178,7 +1178,8 @@ def _cpio_entries(blob: bytes) -> list[tuple[bytes, bytes]]:
     guest 内——宿主侧无第二实现可借，本函数对读 mkcpio.entry 的编码
     几何：magic 070701 + 13 × hex8，filesize = 域[6]、namesize = 域[11]，
     名起 off+110 不含 NUL，头+名垫页、数据垫页（X-3c：垫 4096，与
-    berry-loader cpio_walk/cpio_step 同口径四点一动），TRAILER!!! 终止）。
+    berry-loader cpio_walk/cpio_step + kernel bootparams 同口径五点
+    一动），TRAILER!!! 终止）。
     越界/坏魔数 = Reject（敌意包 loud，不静默截断）。"""
     out: list[tuple[bytes, bytes]] = []
     off = 0
