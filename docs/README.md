@@ -13,7 +13,7 @@
 | 轻量计划 / 工作提案（**不进版本化制度**的：步骤清单、立项对齐、agent 工作计划） | [`.agents/plans/`](../.agents/plans/)（3 行头块） |
 | 决策因果（为什么、否决了什么） | [`.agents/notes/`](../.agents/notes/)（两行头块） |
 | 可复用干法 / 技能 / 操作手册 | [`.agents/skills/`](../.agents/skills/) |
-| 本目录知识文档的冷历史 | 按既有制度：原地冻结或 `docs/归档/`（索引维护规则 5；不走 `.agents/archive/`） |
+| 本目录知识文档的冷历史 | 按既有制度：原地冻结或 `docs/归档/`（索引维护规则 6；不走 `.agents/archive/`） |
 | `.agents/` 内文档的冷历史 | [`.agents/archive/`](../.agents/archive/)（归档四步，永不删除） |
 
 ## 约定
