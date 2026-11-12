@@ -1,6 +1,8 @@
 [package]
 name = "netprobe"
-version = "0.1.0"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 22 件同批同值）。升版 = 逐 crate 手同步。
+version = "0.2.0"
 edition = "2021"
 
 # 独立小工作区（stdhello 先例）：musl target + berry-ld RUSTFLAGS 与
