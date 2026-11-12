@@ -45,6 +45,8 @@
 | 35 | `35-实施轮十复核.md` | 轮十复核:索引签名真硬(sign-raw RFC 向量钉板/E2E 真签名链/向后兼容);**P3 装载期复核独立重放真信封(APP ok n=9)补齐实现者缺口**;尺寸墙实测确认(128KiB 帽 vs 余量 1 页 vs berry-crypto +1772B);P0 惯用位 berry-sign 陈旧(主会话已重建)/P1 易失证据已转正 34 号 | ✅ 2026-11-11 |
 | 36 | `36-实施轮十一复核.md` | 轮十一复核:申报数字全复现(berry-verify 26729B/svcmgr 守卫 +1004B≤1KB 红线/独立进程性坐实);**QEMU 三态全绿**(惰性零扰动/真签 9×sig ok/篡改 dev 降级不拒载在机实证);P2a=§1.3.2 偏差(静默惰性 vs loud——主会话已注记设计档)/P2b=帽措辞修正(ELF_MAP_MAX 16MiB 路更宽);超线终裁=接受+红线重钉 32KB(主会话) | ✅ 2026-11-11 |
 | 37 | `37-实施轮十二复核.md` | 轮十二复核:**boot 验签字节级坐实**(四腿 QEMU——VBS ok 行 meas/sig 与 host 双对拍逐位一致/篡改 BAD 降级/半装 half/默认零扰动)+smoke-image **84/84 官方终跑 PASS**;Tier 2 机械性程序化对拍零漂+静态对账 2/2 零缺口;P2a=mkimage/mkapp /tmp scratch 硬编码(主会话已修——发现序收紧惯用位);**半提交态变体 B**(kernel 半被并行道吸收+Hoff ace 半在树=HEAD 构建红)主会话同窗闭合 | ✅ 2026-11-11 |
+| 38 | `38-OEM演练实弹报告.md` | **OEM 模拟演练实弹**(终极验收):模拟 acme 走完全链——product.toml(preset 5/9+priv_grants issued_by=acme+branding+source)→berry_assemble 校验/组装→acme 钥 keygen→mkapp 重打包签名→acme 官方源索引(signed/witnessed 5/5)→host admit 双档→定制 rootfs(62 条目+.sig 伴生)→acme-rich.img 全参(PR/静态源/KERNEL.SIG/TRUSTPK)→**QEMU boot 绿 84/84+sig verified+VBS ok 逐位一致+5×装载守卫 sig ok**;**实测 515s 全链(admit 一次成型≈135s 出镜像)**;「组装不 fork」纯度实证(git 零 M);缺口清单 G1-G16(P0×3/P1×9/P2×4)+参照物 tools/drill/acme/product.toml | ✅ 2026-11-11 |
+| 39 | `39-实施轮十三复核.md` | 轮十三复核:八步证据链完整高密度可复现(6/8 步实弹复现字节级恒等;boot 终点腿重跑 PASS);wall-clock T 标记独证;G1-G16 锚核无虚报;T2 映射 9 例腿粒度判定与代码对拍成立(「7 腿缺口 1 harness 件 0 协议变更」最小性坐实);瑕疵 7 条全轻微 | ✅ 2026-11-11 |
 
 ## 核心结论（供快速引用）
 

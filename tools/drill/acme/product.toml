@@ -1,0 +1,54 @@
+# product.toml —— OEM「acme」演练参照物（38 号 OEM 演练实弹）
+# 头注：本文件 = 厂商定制化 38 号演练的入仓参照物副本；演练原件 = /tmp/drill/acme/product.toml
+# （逐字节同文）。相对路径基准（branding/ 与 [product.source].instance）按 product.toml
+# 所在目录解析——在仓内本位跑 berry_assemble 需同目录资产（assets/、sourceinst/ 演练时
+# 在 /tmp/drill/acme/ 下）。平台侧零源码改动（组装不 fork：只投放数据与自有件）。
+
+schema = 1
+
+[product]                         # —— 自由面：产品定义 ——
+name    = "acme-rich"             # 镜像命名 out/acme-rich.img
+vendor  = "acme"                  # 集成者 lineage（1..=16B [a-z0-9-]）
+board   = "qemu-virt"             # v0 板表单值
+
+[platform]                        # —— 合同面：平台档位 ——
+arch          = "aarch64"
+feature_level = "rich"
+build_type    = "userdebug"
+sideload      = false
+
+[platform.boot]
+kernel = "KERNEL.ELF@sha256:a19b039187b5964d791b13a065a2b4b3eff00d3d1b4f9140dbf8da8756e35d0d"
+
+[platform.boot.params]            # Q2 override 语义（缺省归上游；v0 只验词表不透传）
+sched_slice_hz = 64               # 词表 v1 最小集 u32 [16,1024]
+intent_default = "interactive"    # ADR #58 六档词表
+
+[platform.storage]
+image_size_mib      = 96          # [48,1024]
+rootfs_split_mib    = 32          # [8,64]
+min_power_atomicity = "p0"        # v1 只 p0 可组
+
+[product.apps]                    # —— 预装集：基座表 9 app 取 5 ——
+preset = [
+  "app/SETTINGS.bap",
+  "app/FILES.bap",
+  "app/PHOTOS.bap",
+  "app/CAMERA.bap",
+  "app/BROWSER.bap",
+]
+
+[product.apps.priv_grants]        # —— 特权白名单（只授 preset 预装件）——
+issued_by = "acme"                # 签发者 lineage（白名单「谁预置谁负责」）
+SETTINGS = ["console", "fs"]      # 能力键 ⊆ [caps] 闭集 console/fs/net
+BROWSER  = ["net"]
+
+[product.branding]                # —— 品牌资源路径（相对本文件目录）——
+wallpaper = "assets/wallpaper.byi"
+icon_mask = "assets/mask.byi"
+
+[product.defaults]
+launcher = "bin/berry-launcher"   # Q13 过渡值：v1 bin/ 路径合法
+
+[product.source]                  # —— 官方源静态实例（SDK-2 P2 步⑦½）——
+instance = "sourceinst"           # gensourceindex 两件套（acme 官方源）
