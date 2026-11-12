@@ -1150,14 +1150,55 @@ pub fn intent_settle_current(m: crate::intent::MsgIntent, opt_out: bool,
     intent_settle_current_ext(m, opt_out, now_ns).map(|(out, _, _)| out)
 }
 
+/// P0-3（ASID 代数消费）：per-CPU **激活代数表**——`LAST_ACT_GEN[cpu][asid]`
+/// 记本核上次激活该 ASID 号时的全局回卷代数快照（源 = `tlbshoot::roll_gen`，
+/// 回卷时 bump、单调只升）。回切同号时代数未变 ⇒ 该号在本核 TLB 的项全为
+/// 有效项 ⇒ `activate_if_changed` 免 `tlbi_aside1is`+`dsb ish`；代数变（回卷
+/// 过——同号将复用给新 AS）⇒ 走原档按号失效。IPC ping-pong 每往返 ≥2 次
+/// 异 AS 切换的「双方 TLB 永冷」问题由此收口（旧路径无条件失效）。
+///
+/// **编码**：槽存 `roll_gen() + 1`（u32），**0 = 未激活哨兵**——恰与 BSS 零
+/// 初始化同值，512KiB 表留在 `.bss (NOLOAD)`（零文件膨胀、boot 统一清零）；
+/// 首次激活恒 mismatch → 仍做 tlbi（单核行为不变）。`roll_gen` 自身绕回
+/// u32::MAX 时 `wrapping_add(1)` 归 0 = 哨兵 → 恒走 tlbi 档（保守退化，
+/// 永不误跳）。
+///
+/// **宽度**：u32（与 `ROLL_GEN` 同宽——u16 编码在 65536 次回卷后静默撞号 =
+/// 回卷后漏失效的隐性洞）。尺寸 65536 = 16 位 ASID 上界（8 位 HW 只用低
+/// 256 项）；2 = v1 双核形态（与 `tlbshoot::MAX_CORES` 同界，扩核须同扩）。
+/// 512KiB 抬 `__kernel_end`（帧分配器下界），128MiB RAM 下可忽略。
+///
+/// **并发面**：行按核独占——本核只在切换临界区（IRQ 屏蔽窗）读写自己的行，
+/// 无跨核访问 ⇒ Relaxed 足够（程序序即真实序；A12 原子化纪律同款）。
+static LAST_ACT_GEN: [[AtomicU32; 65536]; 2] =
+    [const { [const { AtomicU32::new(0) }; 65536] }; 2];
+
 /// 2b-2：任务地址空间激活——`ttbr0`/`asid` **变化才**写 TTBR0+CONTEXTIDR+`tlbi`
 /// （`内存管理设计.md` §5.1：switch 必带按号失效；同 AS 连续切换零额外开销）。
 /// 调用点：三个切换位（yield/exit/IRQ 抢占）在 `CURRENT = next` 之后、
 /// `context_switch` 之前——先换表再切栈，全程高半执行，无低半依赖。
+///
+/// P0-3（ASID 代数消费）：`tlbi_aside1is` 不再无条件——同号**回切**且回卷
+/// 代数未变时免失效（见 [`LAST_ACT_GEN`]），异号首切/回卷后仍走原档。
 #[inline]
 unsafe fn activate_if_changed(prev: *mut Task, next: *mut Task) {
     if (*prev).ttbr0 != (*next).ttbr0 || (*prev).asid != (*next).asid {
-        hal::activate_aspace((*next).ttbr0, (*next).asid);
+        // P0-3：激活代数对账。cur = 当前回卷代数 +1（编码见 LAST_ACT_GEN 注）；
+        // rec == cur ⇔ 本核上次激活该号以来无回卷 ⇒ 该号在本核 TLB 的项全为
+        // 有效项（改叶路径 unmap/protect/supply 自带按号失效+广播；同号复用
+        // 只经回卷，回卷路径自带全量失效且代数前进）⇒ 免 tlbi_aside1is+dsb。
+        // rec != cur（首切哨兵 / 回卷过）⇒ 走原档（含 tlbi，防同号旧映射残留
+        // ——§5.1 坑「TLB」）+ 记新代。
+        let asid = (*next).asid;
+        let cur = hal::tlbshoot::roll_gen().wrapping_add(1);
+        let slot = &LAST_ACT_GEN[hal::smp::cpu_id()][asid as usize];
+        let rec = slot.load(Ordering::Relaxed);
+        if rec != 0 && rec == cur {
+            hal::activate_aspace_keep_tlb((*next).ttbr0, asid);
+        } else {
+            hal::activate_aspace((*next).ttbr0, asid);
+            slot.store(cur, Ordering::Relaxed);
+        }
     }
 }
 

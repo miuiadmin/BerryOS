@@ -116,6 +116,18 @@ pub fn activate_aspace(ttbr0_pa: usize, asid: u16) {
     unsafe { mmu::activate_ttbr0(ttbr0_pa, asid) };
 }
 
+/// P0-3（ASID 代数消费）：激活任务地址空间——**免失效档**。寄存器写入
+/// （TTBR0/CONTEXTIDR）与 [`activate_aspace`] 同源，跳过 `tlbi aside1is`+
+/// `dsb ish`。调用方合同：本核上次激活该 ASID 以来回卷代数未变（读
+/// `tlbshoot::roll_gen` 对账，由调度器 `activate_if_changed` 的 per-CPU
+/// 激活代数表执法）——该号在本核 TLB 的项全为有效项。代数变（回卷过）
+/// 须走 [`activate_aspace`] 原档。`ttbr0_pa == 0` = 无 AS → 内核空表，同上。
+pub fn activate_aspace_keep_tlb(ttbr0_pa: usize, asid: u16) {
+    // SAFETY: EL1、切换临界区（IRQ 屏蔽）内调用；免失效正确性由调用方
+    // 代数对账合同保证（见函数文档）。
+    unsafe { mmu::activate_ttbr0_keep_tlb(ttbr0_pa, asid) };
+}
+
 /// 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何
 /// 访问必然 fault（ktest 期望故障正向断言）。回退开关见 `mmu::RETIRE_IDENTITY`。
 pub fn retire_low_half() {

@@ -212,6 +212,15 @@ pub(crate) unsafe fn tlbi_aside1(asid: u16) {
 /// 只做寄存器操作，**不负责页表内容屏障**——填表方须在调用前 `dsb ish`
 /// （见内核 `aspace` 模块）。
 pub(crate) unsafe fn activate_ttbr0(ttbr0_pa: usize, asid: u16) {
+    activate_ttbr0_regs(ttbr0_pa, asid);
+    // 同号旧映射失效。
+    tlbi_aside1(asid);
+}
+
+/// 激活的**寄存器面**（P0-3 抽出件）：TTBR0 ← 表+ASID + CONTEXTIDR.PROCID，
+/// **不做任何 TLB 失效**——与 [`activate_ttbr0`] 共用，另经
+/// `activate_ttbr0_keep_tlb` 对调度器开放（激活代数消费的免失效档）。
+unsafe fn activate_ttbr0_regs(ttbr0_pa: usize, asid: u16) {
     let table = if ttbr0_pa == 0 {
         (&raw const NULL_L1) as usize - KERNEL_VA_BASE
     } else {
@@ -227,8 +236,15 @@ pub(crate) unsafe fn activate_ttbr0(ttbr0_pa: usize, asid: u16) {
         in(reg) (asid as u64) << 13,
         options(nostack, preserves_flags)
     );
-    // 同号旧映射失效。
-    tlbi_aside1(asid);
+}
+
+/// 激活任务地址空间（**免失效档**）：寄存器面同 [`activate_ttbr0`]，但跳过
+/// `tlbi aside1is`+`dsb ish`。调用方合同（P0-3 激活代数消费律）：本核上次
+/// 激活该 ASID 以来**回卷代数未变**——该号在本核 TLB 里的项全为有效项
+///（改叶路径自带按号失效 + 广播；同号复用只经回卷，回卷路径自带全量失效
+/// 且使代数前进）。违约 = 同号旧映射可能残留（§5.1 坑「TLB」）。
+pub(crate) unsafe fn activate_ttbr0_keep_tlb(ttbr0_pa: usize, asid: u16) {
+    activate_ttbr0_regs(ttbr0_pa, asid);
 }
 
 /// 读当前 TTBR0_EL1 的表基 PA（bits[47:12]，ASID 位剔除；无 AS 时 = 内核空表
