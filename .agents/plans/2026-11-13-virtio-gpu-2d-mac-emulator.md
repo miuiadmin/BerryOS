@@ -22,8 +22,7 @@ HVF1 已把 Mac 产品桌面固定在 1080×1920、修复 HVF 内核差异并接
 
 ## 未完成事项
 
-- [ ] Phase 0：AAVMF/Cocoa/槽位/吞吐 spike 尚未执行。
-- [ ] Phase 1：virtio-gpu codec 与测试尚未实现。
+- [ ] Phase 0：AAVMF GOP 已初步实测（vgpu-only 返回 1080×1920 mode 但 fb=0，vgpu+ramfb 正常启动）；Cocoa 双 console、槽位与吞吐仍待测。
 - [ ] Phase 2：`vgpud` 与 svcmgr 装配尚未实现。
 - [ ] Phase 3：guifbd backend 化、present/HDI 激活与全量回归尚未实现。
 - [ ] Phase 4：berry-gfx 双后端像素共识尚未实现。

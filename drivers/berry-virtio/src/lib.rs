@@ -18,6 +18,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod gpu;
 pub mod input;
 
 /// split 描述符表项：addr u64 + len u32 + flags u16 + next u16 = 16B（规范 §2.6.1）。
@@ -235,6 +236,8 @@ pub mod mmio {
     /// virtio-input 设备 ID（规范 §5.8；GUI-4 段①起 gui-inputd 扫窗按
     /// 设备类匹配——同窗多设备类各占一槽，勿假设槽号）。
     pub const DEVICE_ID_INPUT: u32 = 18;
+    /// virtio-gpu 设备 ID（规范 §5.10；vgpud 扫窗匹配面）。
+    pub const DEVICE_ID_GPU: u32 = 16;
 }
 
 /// 编 virtio-blk 请求头（type/reserved/sector → 16B）。
