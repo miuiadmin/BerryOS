@@ -258,6 +258,15 @@ pub struct Task {
     /// rt_probe 的 wake_vct 读点同族。0 = 无在途戳）。
     pub wake_vct: Cell<u64>,
 
+    // ---- P2-1 同键兄弟链（`sched::KEY_HEADS` 键桶链；与 SLEEPQ 双挂）----
+    /// 同键链上一个等待者（非环形双向——同 `sleep_prev`/`sleep_next` 形制；
+    /// 维护收口在 `SleepQueue::insert_sorted`/`unlink` 两机械面，见
+    /// `sched.rs` KEY_HEADS 块注）。真对象键等待者入队时接线、离队时摘线；
+    /// 纯睡（0）/WAIT_ANY 哨兵不入链（两字段恒 `None`）。
+    pub(crate) key_prev: Cell<Option<NonNull<Task>>>,
+    /// 同键链下一个等待者（同上）。
+    pub(crate) key_next: Cell<Option<NonNull<Task>>>,
+
 }
 
 impl Task {
@@ -402,6 +411,8 @@ impl Task {
             wait_since: 0,
             wakeup: Cell::new(WakeReason::Pending),
             wake_vct: Cell::new(0),
+            key_prev: Cell::new(None),
+            key_next: Cell::new(None),
         })
     }
 }

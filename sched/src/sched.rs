@@ -16,7 +16,7 @@ use crate::task::{
 };
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
-use core::ptr::{addr_of_mut, NonNull};
+use core::ptr::{addr_of, addr_of_mut, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
@@ -276,6 +276,8 @@ static mut IDLE_TASK: Task = Task {
     wait_since: 0,
     wakeup: core::cell::Cell::new(crate::task::WakeReason::Pending),
     wake_vct: core::cell::Cell::new(0),
+    key_prev: core::cell::Cell::new(None),
+    key_next: core::cell::Cell::new(None),
 };
 
 /// IDLE 判定（v1.3 §7 util 记账门）：`t` 是否 CPU0 idle 上下文
@@ -1901,6 +1903,11 @@ pub use berry_wqmatch::WAIT_ANY;
 /// （等待者通常个位数，O(n) 无忧）。§2.1「等待队列按优先级」语义随 4-3 在唤醒
 /// 选择侧兑现（遍历选优），队列改 prio 序留优化。
 ///
+/// P2-1 起 Task 另挂**同键兄弟链**（`key_prev`/`key_next`——见 [`KEY_HEADS`]）
+/// ——非「每对象 waitq」的全双挂：deadline 主序仍是本队（超时扫描不变），
+/// 同键链只把匹配扫描面缩到同桶等待者，接线/摘线收口在本类型两机械面
+/// （`insert_sorted`/`unlink`——与成员变更同点，无双挂漂移面）。
+///
 /// **非环形**双向链表（与 runqueue 的环形不同）：单元素时 head==tail==该任务、
 /// 其 prev/next 均 `None`——与「不在队上」无法靠链接字段区分，故 [`SleepQueue::unlink`]
 /// **不做幂等**（调用方契约：只在确知在队时摘——三个调用点都满足）。
@@ -2011,6 +2018,55 @@ fn wait_count_sub(obj: usize) {
 fn wait_gate_clear(obj: usize) -> bool {
     WAIT_ANY_WAITERS.load(Ordering::Relaxed) == 0
         && WAIT_HASH[wait_bucket(obj)].count.load(Ordering::Relaxed) == 0
+}
+
+// ---- per-key 同键兄弟链（P2-1：有等待者的同键链扫描——O(同桶) 替全扫）----
+//
+// 路线图 P2-1 瓶颈：P1 wait_gate 只免「无等待者」的全扫；「有等待者」时
+// wake_matching/find_single_waiter 仍扫全 SLEEPQ——N 任务并发睡眠（多数
+// 睡别的键）时每次唤醒成本随全体睡眠者线性涨。本链给 Task 加同键兄弟
+// 链接（`key_prev`/`key_next`——与 SLEEPQ **双挂**）：真对象键（wait_obj
+// ∉ {0 纯睡, WAIT_ANY 哨兵}）的睡眠者入 SLEEPQ 的同时挂入键桶链，匹配
+// 扫描改走同键链——扫描面从「全体睡眠者」缩到「同桶睡眠者」（冲突桶
+// 异键者由 [`berry_wqmatch::matches_wake`] 谓词键门拒——只许假阳性、
+// 语义零漂移，P1 粗计数同论证）。
+//
+// 链维护收口在 [`SleepQueue::insert_sorted`]/[`SleepQueue::unlink`] 两
+// 函数（SLEEPQ 成员变更仅有两机械面——与 P1/P2 计数同点同纪律），接线
+// 摘线天然成对，无第三写点可漏。**WAIT_ANY 哨兵不入链**（设计定谳）：
+// 哨兵命中任意 obj 的唤醒，单键链罩不住——留全局 SLEEPQ，由
+// [`WAIT_ANY_WAITERS`] 非零时的全扫兜底（v1 哨兵个位数，冷路径）；纯睡
+//（0）永不匹配任何唤醒，同不入链。
+//
+// **键链序 = SLEEPQ 序的同键投影**：插链比较器与 SLEEPQ 逐字相同
+//（deadline 升序、相等插尾）→ 同键链遍历序与旧全扫的命中序一致，唤醒
+// 顺序（入 runqueue 序）零漂移。
+//
+// 键桶号复用 [`wait_bucket`]（计数桶与链桶同号：[`WAIT_HASH`] 桶非零
+// ⟺ 对应链非空——同点维护的同桶对应律）。KEY_HEADS 持裸指针非原子面
+//（链表接线），static mut 形态入册 writable_globals（同 SLEEPQ）；读写
+// 点全在 SQ 锁窗内（单核屏蔽窗无竞态；SMP 实验态锁交接即可见性边界
+// ——WAIT_HASH 同论证）。
+
+/// 键桶数（与 P1 [`WAIT_BUCKETS`] 同数钉死——桶号复用 `wait_bucket`）。
+const KEY_BUCKETS: usize = 64;
+const _: () = assert!(KEY_BUCKETS == WAIT_BUCKETS, "键链桶数须与计数桶对齐");
+
+/// 桶空初值（const 具名件——数组重复表达式免 Copy 的稳定形；P1
+/// `ZERO_WAIT_BUCKET` 同款）。
+const NIL_KEY_HEAD: Cell<Option<NonNull<Task>>> = Cell::new(None);
+
+/// per-key 链表头表（桶 → 该桶首个等待者）。非环形双向链（同 SLEEPQ
+/// 形制——单元素链成员 prev/next 均 `None`，「不在链上」无法靠链接字段
+/// 区分，摘除不幂等、由两机械面的调用方契约罩住）。
+static mut KEY_HEADS: [Cell<Option<NonNull<Task>>>; KEY_BUCKETS] =
+    [NIL_KEY_HEAD; KEY_BUCKETS];
+
+/// 真键判据：入同键链的键形（0 纯睡 / WAIT_ANY 哨兵不入——见块注）。
+/// 与 [`wait_count_add`]/[`wait_count_sub`] 的真键分账分支逐字对称。
+#[inline]
+fn key_chainable(obj: usize) -> bool {
+    obj != 0 && obj != WAIT_ANY
 }
 
 // ---- P2 PI 重推门控计数（消费者 = kernel/src/pi.rs 全图重推入口）----
@@ -2157,6 +2213,14 @@ impl SleepQueue {
             || (*t).sleep_next.get().is_some()
             || self.head.get() == Some(task);
         assert!(!in_q, "sleepq insert: task already in queue");
+        // P2-1 键链在队执法（同上 SLEEPQ 面）：对可入链键形，重复插入同样
+        // 覆盖写 key_prev/key_next 扬链——判据并上「桶头 == 自己」补单元素
+        // 链盲区（非环形链表，同上）；桶号按此刻 wait_obj（入队调用方先定键）。
+        let in_kc = key_chainable((*t).wait_obj)
+            && ((*t).key_prev.get().is_some()
+                || (*t).key_next.get().is_some()
+                || (&*addr_of!(KEY_HEADS))[wait_bucket((*t).wait_obj)].get() == Some(task));
+        assert!(!in_kc, "key chain insert: task already in chain");
         // P1 等待计数：入队 +1——**先于接线**（见 wait_count_add 注释；与
         // unlink 尾部 -1 对称成窗：窗口期桶只多不少 → 门控只假阳性不漏醒）。
         wait_count_add((*t).wait_obj);
@@ -2199,6 +2263,33 @@ impl SleepQueue {
             self.tail.set(Some(task));
         }
         self.len.set(self.len.get() + 1);
+        // P2-1 同键链接线：真键等待者挂键桶链（哨兵/纯睡不入——见 KEY_HEADS
+        // 块注）。比较器与上方 SLEEPQ 接线逐字相同（deadline 升序、相等插尾
+        // → 同 deadline FIFO）——键链序 = SLEEPQ 序的同键投影，唤醒顺序与
+        // 旧全扫零漂移。
+        if key_chainable((*t).wait_obj) {
+            let head = &(&*addr_of!(KEY_HEADS))[wait_bucket((*t).wait_obj)];
+            // 从头找第一个 `deadline > 新者` 的节点，插它前面；全不大于则
+            // 插尾（到尾 next=None 自然落尾——无尾指针，桶内 O(同桶)）。
+            let mut cur = head.get();
+            let mut prev: Option<NonNull<Task>> = None;
+            while let Some(c) = cur {
+                if (*c.as_ptr()).wait_deadline > (*t).wait_deadline {
+                    break; // c 是第一个更远者 → 插 c 前
+                }
+                prev = Some(c);
+                cur = (*c.as_ptr()).key_next.get();
+            }
+            (*t).key_prev.set(prev);
+            (*t).key_next.set(cur);
+            match prev {
+                Some(p) => (*p.as_ptr()).key_next.set(Some(task)),
+                None => head.set(Some(task)), // 空桶/新头
+            }
+            if let Some(n) = cur {
+                (*n.as_ptr()).key_prev.set(Some(task));
+            }
+        }
     }
 
     /// O(1) 双向摘除。**不幂等**（非环形链表无法廉价判在队，见类型注释）——
@@ -2223,6 +2314,24 @@ impl SleepQueue {
         (*t).sleep_prev.set(None);
         (*t).sleep_next.set(None);
         self.len.set(self.len.get() - 1);
+        // P2-1 同键链摘除：真键在队者恒在链上（insert_sorted 接线对称）。
+        // 桶号按此刻 wait_obj——字段在入出两点间无写者（P1 计数同论证），
+        // 睡眠多轮换键者每轮 block_current 先重写 wait_obj 再入队，逐轮
+        // 配对。非环形摘除不幂等（同上 SLEEPQ 契约——调用方确知在队）。
+        if key_chainable((*t).wait_obj) {
+            let heads = &*addr_of!(KEY_HEADS);
+            let kprev = (*t).key_prev.get();
+            let knext = (*t).key_next.get();
+            match kprev {
+                Some(p) => (*p.as_ptr()).key_next.set(knext),
+                None => heads[wait_bucket((*t).wait_obj)].set(knext),
+            }
+            if let Some(n) = knext {
+                (*n.as_ptr()).key_prev.set(kprev);
+            }
+            (*t).key_prev.set(None);
+            (*t).key_next.set(None);
+        }
         // P1 等待计数：离队 -1——**后于摘线**（wait_obj 此刻仍是入睡时键——
         // 链接字段清空不影响它；与 insert_sorted 入口 +1 对称）。
         wait_count_sub((*t).wait_obj);
@@ -2401,7 +2510,10 @@ unsafe fn wake_one_inner(t: NonNull<Task>) {
 ///
 /// **P1 门控**（per-key 等待计数）：入口先查 [`wait_gate_clear`]——该键
 /// 桶 + 哨兵计数双零 ⇒ 队上必无匹配者，O(1) 返回免全扫（无等待者的
-/// send/signal 常见场景）；非零（含哈希冲突假阳性）走原有全扫，语义不变。
+/// send/signal 常见场景）；非零（含哈希冲突假阳性）进入扫描，语义不变。
+/// **P2-1**（扫描面）：无哨兵时只扫同键链（[`KEY_HEADS`] 键桶——有等待
+/// 者的 O(同桶) 替全 SLEEPQ 扫描）；有哨兵退全扫兜底（见
+/// [`wake_matching_locked`]）。
 pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
     if obj == 0 {
         return 0;
@@ -2421,7 +2533,10 @@ pub fn wake_matching(obj: usize, set_signals: u64) -> usize {
 /// 等形——slice 1-3 先例同纪律）。
 ///
 /// P1 门控在本版入口（SQ 锁窗内——计数读写点同窗）：[`wait_gate_clear`]
-/// 双零即 O(1) 返回 0，免全扫与 PI 钩子发射（队未动）。
+/// 双零即 O(1) 返回 0，免全扫与 PI 钩子发射（队未动）。**P2-1**：门开后
+/// 无哨兵（[`WAIT_ANY_WAITERS`] == 0）→ 非哨兵匹配者的键门唯一形是
+/// 「obj 相等」，全在键桶链上——只扫同键链（O(同桶) 替 O(全体睡眠者)）；
+/// 有哨兵 → 哨兵可命中任意 obj，退全 SLEEPQ 扫描兜底（原路径逐字保留）。
 #[inline]
 pub fn wake_matching_locked(obj: usize, set_signals: u64) -> usize {
     if obj == 0 {
@@ -2436,22 +2551,46 @@ pub fn wake_matching_locked(obj: usize, set_signals: u64) -> usize {
         return 0; // 无等待者——队未动，PI 钩子（note_sleepq_changed）免发
     }
     let mut n = 0;
-    // SAFETY: 调用方持窗（屏蔽窗等价）；SLEEPQ 单核顺序访问；遍历中摘除的
-    // 节点仍有效（调度器拥有其 Box）。
+    // SAFETY: 调用方持窗（屏蔽窗等价）；SLEEPQ/KEY_HEADS 单核顺序访问；
+    // 遍历中摘除的节点仍有效（调度器拥有其 Box）。
     unsafe {
-        let mut cur = sleepq().head.get();
-        while let Some(c) = cur {
-            let t = c.as_ptr();
-            cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
-            // W3-Q2：谓词单源 berry_wqmatch::matches_wake（键门+位门；
-            // b-1 广播不变量 host 钉板面）。手写内联逻辑与此逐字等价。
-            let d = berry_wqmatch::WaiterDesc {
-                key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
-                wait_signals: (*t).wait_signals,
-            };
-            if berry_wqmatch::matches_wake(&d, obj, set_signals) {
-                wake_one_inner(c);
-                n += 1;
+        if WAIT_ANY_WAITERS.load(Ordering::Relaxed) == 0 {
+            // P2-1 主路径：无哨兵 → 匹配集全在键桶链（真键等待者入队即挂
+            // 链——KEY_HEADS 块注；冲突桶异键者被谓词键门拒）。摘除走
+            // wake_one_inner（SLEEPQ + 键链在 SleepQueue::unlink 同点双摘）。
+            let mut cur = (&*addr_of!(KEY_HEADS))[wait_bucket(obj)].get();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).key_next.get(); // 先存 next 再摘（unlink 清键链字段）
+                // W3-Q2：谓词单源 berry_wqmatch::matches_wake（键门+位门；
+                // b-1 广播不变量 host 钉板面）。手写内联逻辑与此逐字等价。
+                let d = berry_wqmatch::WaiterDesc {
+                    key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
+                    wait_signals: (*t).wait_signals,
+                };
+                if berry_wqmatch::matches_wake(&d, obj, set_signals) {
+                    wake_one_inner(c);
+                    n += 1;
+                }
+            }
+        } else {
+            // P2-1 哨兵兜底：哨兵在队（可命中任意 obj 的唤醒，单键链罩不
+            // 住）→ 全 SLEEPQ 扫描，P2-1 前原路径逐字保留（哨兵个位数，
+            // 冷路径；纯睡者谓词键门恒 false 不误摘）。
+            let mut cur = sleepq().head.get();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).sleep_next.get(); // 先存 next 再摘（unlink 清链接字段）
+                // W3-Q2：谓词单源 berry_wqmatch::matches_wake（键门+位门；
+                // b-1 广播不变量 host 钉板面）。手写内联逻辑与此逐字等价。
+                let d = berry_wqmatch::WaiterDesc {
+                    key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
+                    wait_signals: (*t).wait_signals,
+                };
+                if berry_wqmatch::matches_wake(&d, obj, set_signals) {
+                    wake_one_inner(c);
+                    n += 1;
+                }
             }
         }
     }
@@ -2487,7 +2626,10 @@ pub fn find_single_waiter(obj: usize, signals: u64) -> Option<NonNull<Task>> {
 
 /// [`find_single_waiter`] 的持窗版：**须已持 SLEEPQ 锁**（`sq_lock`）且整段
 /// 使用窗内完成（同窗配对 `sq_unlock` / [`fast_wake_locked`]）——义务④
-/// fastpath 的 find 臂。谓词语义与自持窗版一字不差。
+/// fastpath 的 find 臂。谓词语义与自持窗版一字不差。**P2-1**：无哨兵时
+/// 匹配者资格判只扫同键链（[`KEY_HEADS`] 键桶——O(同桶) 替全 SLEEPQ
+/// 扫描）；有哨兵（[`WAIT_ANY_WAITERS`] 非零）退全扫（哨兵不入同键链，
+/// 位相交挡门判须见全体哨兵——原路径逐字保留）。
 pub fn find_single_waiter_locked(obj: usize, signals: u64) -> Option<NonNull<Task>> {
     if obj == 0 || signals == 0 {
         return None;
@@ -2495,28 +2637,53 @@ pub fn find_single_waiter_locked(obj: usize, signals: u64) -> Option<NonNull<Tas
     let mut found: Option<NonNull<Task>> = None;
     // SAFETY: IRQ 屏蔽窗（调用方契约）；只读遍历、不摘除。
     unsafe {
-        let mut cur = sleepq().head.get();
-        while let Some(c) = cur {
-            let t = c.as_ptr();
-            cur = (*t).sleep_next.get();
-            // W3-Q2：资格判单源 berry_wqmatch（哨兵位相交挡门 + 多匹配者
-            // 挡门 + b-2 LB 修正「位不相交哨兵不挡」——host 钉板面）。
-            // 与 berry_wqmatch::single_waiter 的循环逐字同构（那边返回
-            // 下标、这边持有指针）。
-            let d = berry_wqmatch::WaiterDesc {
-                key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
-                wait_signals: (*t).wait_signals,
-            };
-            if d.key == berry_wqmatch::WaitKey::Any
-                && (d.wait_signals & signals) != 0
-            {
-                return None; // 位相交哨兵在唤醒集内：唤醒集不可约 → slowpath
-            }
-            if berry_wqmatch::matches_wake(&d, obj, signals) {
-                if found.is_some() {
-                    return None; // 多匹配者 → slowpath（wake_matching 全摘）
+        if WAIT_ANY_WAITERS.load(Ordering::Relaxed) == 0 {
+            // P2-1 主路径：无哨兵 → 哨兵挡门恒空，非哨兵匹配者（键门唯一
+            // 形 obj 相等）全在键桶链上——资格判缩到同键链扫描（冲突桶
+            // 异键者被谓词键门拒）。
+            let mut cur = (&*addr_of!(KEY_HEADS))[wait_bucket(obj)].get();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).key_next.get();
+                // W3-Q2：资格判单源 berry_wqmatch（多匹配者挡门——host
+                // 钉板面）；与全扫支逐字同构。
+                let d = berry_wqmatch::WaiterDesc {
+                    key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
+                    wait_signals: (*t).wait_signals,
+                };
+                if berry_wqmatch::matches_wake(&d, obj, signals) {
+                    if found.is_some() {
+                        return None; // 多匹配者 → slowpath（wake_matching 全摘）
+                    }
+                    found = Some(c);
                 }
-                found = Some(c);
+            }
+        } else {
+            // P2-1 哨兵兜底：哨兵在队 → 全 SLEEPQ 扫描（原路径逐字保留
+            // ——位相交哨兵挡门须见全体哨兵，同键链罩不住）。
+            let mut cur = sleepq().head.get();
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).sleep_next.get();
+                // W3-Q2：资格判单源 berry_wqmatch（哨兵位相交挡门 + 多匹配者
+                // 挡门 + b-2 LB 修正「位不相交哨兵不挡」——host 钉板面）。
+                // 与 berry_wqmatch::single_waiter 的循环逐字同构（那边返回
+                // 下标、这边持有指针）。
+                let d = berry_wqmatch::WaiterDesc {
+                    key: berry_wqmatch::WaitKey::from_raw((*t).wait_obj),
+                    wait_signals: (*t).wait_signals,
+                };
+                if d.key == berry_wqmatch::WaitKey::Any
+                    && (d.wait_signals & signals) != 0
+                {
+                    return None; // 位相交哨兵在唤醒集内：唤醒集不可约 → slowpath
+                }
+                if berry_wqmatch::matches_wake(&d, obj, signals) {
+                    if found.is_some() {
+                        return None; // 多匹配者 → slowpath（wake_matching 全摘）
+                    }
+                    found = Some(c);
+                }
             }
         }
     }
