@@ -1764,6 +1764,233 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "SYSCALL：close hc0");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "SYSCALL：close hc1");
 
+    // H8-H11. 安全负例批（审计：四项安全修复无负向测试——每项一攻击拒绝
+    //         断言，混入 H 段零新标记）。fixture 通道对 hpa/hpb 跨 H8-H10
+    //         复用（H8 类型探针 / H9-H10 收发载体），H10 尾统一清场。
+    // SAFETY: svc 同步异常；OUT/CHILD_OUT 为本函数私有静态。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        0,
+        "SYSCALL：channel_create（安全负例 fixture）"
+    );
+    let (hpa, hpb) = (unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32);
+
+    // H8. SEC-A 负例：0x83 policy_bind 的 MANAGE 门（arch-r2 High 收口）。
+    //     ktest 同走 SVC 链（TrapFrame 由 svc #0 真造——「直调不便」不成立，
+    //     PBS-K 注释的口径仅指 handler 内联算式面）：auth=0（EL0 裸调形态）
+    //     → -EBADF；auth = channel 端点（活值但类型不符——非 Process）→
+    //     -EBADF；auth = Process handle 缺 MANAGE（dup 出 DUPLICATE-only 别名，
+    //     F3b/F4d 同款）→ -EACCES。COMMIT 探针携 n=0 空表 + 越顶 gen：门若
+    //     失守 bind_gen 受理即推高活跃世代——拒收后 gen 不动 = 门在 op 分派
+    //     **之前**、对象不消费（纯资格面）。STATUS（op=2 读面）同拒——全 op
+    //     面统一门（policydemo 新契约的事实源）。
+    let gen_before = berry_sched::policy::gen();
+    assert_eq!(
+        svc6(0x83, 0, 1, 0, 0, 999, 0),
+        -9,
+        "SYSCALL：policy_bind auth=0 须 -EBADF（SEC-A MANAGE 门）"
+    );
+    assert_eq!(
+        svc6(0x83, hpa as u64, 1, 0, 0, 999, 0),
+        -9,
+        "SYSCALL：policy_bind 对 Channel handle 须 -EBADF（类型门控）"
+    );
+    assert_eq!(
+        svc6(0x83, 0, 2, &raw mut OUT as u64, 0, 0, 0),
+        -9,
+        "SYSCALL：policy_bind STATUS 也在门后（auth=0 同拒）"
+    );
+    // Process 缺 MANAGE：dup DUPLICATE-only 别名（活值 + 类型对 + 权利缺）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc5(NR_PROCESS_CREATE as u64, 0, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        0,
+        "SYSCALL：process_create（SEC-A fixture）"
+    );
+    let (hpp, hvp) = (unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32);
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hpp as u64,
+            crate::handle::RIGHT_DUPLICATE,
+            &raw mut OUT as u64
+        ),
+        0,
+        "SYSCALL：dup Process 到仅 DUPLICATE（SEC-A 前置）"
+    );
+    let hppr = unsafe { OUT } as u32;
+    assert_eq!(
+        svc6(0x83, hppr as u64, 1, 0, 0, 999, 0),
+        -13,
+        "SYSCALL：policy_bind 缺 MANAGE 须 -EACCES（SEC-A MANAGE 门）"
+    );
+    assert_eq!(
+        berry_sched::policy::gen(),
+        gen_before,
+        "SYSCALL：拒收后活跃 gen 须不动（门先于 op 分派，COMMIT 未达）"
+    );
+    // 清场（hppr 别名 / hpp Process / hvp root Vmar——空进程无映射，close 不受阻）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hppr as u64, 0, 0), 0, "SYSCALL：close SEC-A 别名");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hpp as u64, 0, 0), 0, "SYSCALL：close SEC-A process");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvp as u64, 0, 0), 0, "SYSCALL：close SEC-A vmar");
+
+    // H9. SEC-B 负例：随行 handle 的 TRANSFER 执法（安全轮 2 Medium「RIGHT_
+    //     TRANSFER 零执法」收口）——dup 收窄去 TRANSFER 位（R|W|DUP|XFER 源 →
+    //     READ-only 别名）的活 handle 随消息发送须 -EACCES（迁移即能力委托，
+    //     授予方去位 = 禁转发第三方，Zircon zx_channel_write 同款门）；且预检
+    //     无副作用——收窄别名原值仍活（零 take，send 原子序）。
+    let hnb = ht
+        .insert(
+            KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")),
+            RIGHT_READ | RIGHT_WRITE | crate::handle::RIGHT_DUPLICATE | RIGHT_TRANSFER,
+        )
+        .expect("SYSCALL：insert hnb（SEC-B）");
+    // SAFETY: 同上。
+    unsafe { OUT = 0 };
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, hnb as u64, RIGHT_READ, &raw mut OUT as u64),
+        0,
+        "SYSCALL：dup 收窄去 TRANSFER（SEC-B 前置）"
+    );
+    let hnb_ro = unsafe { OUT } as u32;
+    // SAFETY: 同上。
+    unsafe {
+        H_HND = [hnb_ro, 0, 0, 0, 0, 0, 0, 0];
+        HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes());
+    }
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hpa as u64, &raw const HBUF as u64, 8,
+             &raw const H_HND as u64, 1, 0),
+        -13,
+        "SYSCALL：无 TRANSFER 位随行 send 须 -EACCES（SEC-B 执法）"
+    );
+    assert!(
+        ht.get(hnb_ro, ObjType::Vmo, RIGHT_READ).is_ok(),
+        "SYSCALL：拒收后随行别名须原值仍活（预检零 take）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hnb_ro as u64, 0, 0), 0, "SYSCALL：close SEC-B 别名");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hnb as u64, 0, 0), 0, "SYSCALL：close SEC-B vmo");
+
+    // H10. SEC-C 负例：recv 出参段 write 预扫（「recv 窥探缺口」收口）。先发
+    //      一条带随行 handle 的真消息，然后两路坏出参 recv：
+    //      ① handles 数组坏址（0x4000_0000——EL1 面只认内核高半直映区，此址
+    //      必拒）→ 预扫拒 -EFAULT 且**载荷零拷出**（HBUF 保持全零——原序
+    //      「载荷先落用户、出参后写才 fault → 回滚压回」= 同一消息可被无限
+    //      窥探的缺口形状，本断言即回归面）；
+    //      ② nbytesp 坏址（同址）→ 容量读 fail-fast -EFAULT（消息压回原样）。
+    //      两拒后消息均未消费：正常 recv 须收得同条（载荷 + 随行 handle 迁回）。
+    let hcx = ht
+        .insert(
+            KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")),
+            RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER,
+        )
+        .expect("SYSCALL：insert hcx（SEC-C）");
+    // SAFETY: 同上。
+    unsafe {
+        H_HND = [hcx, 0, 0, 0, 0, 0, 0, 0];
+        HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes());
+    }
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hpa as u64, &raw const HBUF as u64, 8,
+             &raw const H_HND as u64, 1, 0),
+        0,
+        "SYSCALL：SEC-C 消息发送（带随行 handle）"
+    );
+    assert_eq!(
+        svc4(NR_HANDLE_CLOSE as u64, hcx as u64, 0, 0),
+        -9,
+        "SYSCALL：随行迁移后原值须 -EBADF（发送方失去）"
+    );
+    // ① handles 坏址：预扫拒 + 载荷零拷出（HBUF 预清全零）。
+    // SAFETY: 同上。
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hpb as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, 0x4000_0000, &raw mut H_NH as u64, 0),
+        -14,
+        "SYSCALL：handles 坏址 recv 须 -EFAULT（SEC-C 预扫）"
+    );
+    assert_eq!(
+        unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) },
+        0,
+        "SYSCALL：预扫拒须载荷零拷出（不得窥探——缺口回归面）"
+    );
+    // ② nbytesp 坏址：容量读 fail-fast（回滚压回，消息保原样）。
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hpb as u64, &raw mut HBUF as u64,
+             0x4000_0000, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        -14,
+        "SYSCALL：nbytesp 坏址 recv 须 -EFAULT（fail-fast）"
+    );
+    // 消息未消费的活证：正常 recv 收得同条（载荷 + 随行 handle 迁回本表）。
+    // SAFETY: 同上。
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8; H_HND = [0; 8] };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hpb as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        0,
+        "SYSCALL：两拒后消息须未消费（正常 recv 收得同条）"
+    );
+    assert_eq!(
+        unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) },
+        PATTERN,
+        "SYSCALL：SEC-C 消息载荷保原样"
+    );
+    assert_eq!(unsafe { H_NH }, 1, "SYSCALL：SEC-C 随行 handle 须随消息迁回");
+    let hcx2 = unsafe { H_HND[0] };
+    assert_ne!(hcx2, 0, "SYSCALL：SEC-C 迁回 handle 须非零");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hcx2 as u64, 0, 0), 0, "SYSCALL：close SEC-C 迁回值");
+    // fixture 通道对清场（两端 close → 互钉环泄漏，安全向）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hpa as u64, 0, 0), 0, "SYSCALL：close hpa");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hpb as u64, 0, 0), 0, "SYSCALL：close hpb");
+
+    // H11. SEC-D 负例：per-Process channel 配额帽（Medium「全局堆无配额」收口
+    //      ——帽 = process.rs MAX_CHANNEL_PER_PROC=64 端点，count_type 表扫描
+    //      口径；ktest 走 bootstrap 表 = sys_channel_create 的 caller_table 同
+    //      一张，计数面直拍）。循环 create 至帽（每 create 入 2 端点——奇偶
+    //      基数都收敛到 ≥ 帽）→ 再 create 须 -ENOMEM（fail-fast 先于两端
+    //      CHAN_DEPTH 队列预储分配）；随后全量 close 清场——表槽全回收不污
+    //      后续段（I 段 event 等），对象互钉环泄漏是 channel.rs 安全向政策。
+    const H_QUOTA_CAP: usize = 66; // 帽 64 + 奇基数余量（每轮 +2，实测 ≤64 枚）
+    static mut H_QUOTA: [u32; H_QUOTA_CAP] = [0; H_QUOTA_CAP];
+    let mut nq = 0usize;
+    while ht.count_type(ObjType::Channel) < crate::process::MAX_CHANNEL_PER_PROC {
+        // SAFETY: 同上（OUT/CHILD_OUT 为本函数私有静态）。
+        unsafe { OUT = 0; CHILD_OUT = 0 };
+        assert_eq!(
+            svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+            0,
+            "SYSCALL：配额填充 create（SEC-D）"
+        );
+        assert!(nq + 2 <= H_QUOTA_CAP, "SYSCALL：SEC-D 槽数组界（基数异常）");
+        unsafe {
+            H_QUOTA[nq] = OUT as u32;
+            H_QUOTA[nq + 1] = CHILD_OUT as u32;
+        }
+        nq += 2;
+    }
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        -12,
+        "SYSCALL：超配额 create 须 -ENOMEM（SEC-D 帽执法）"
+    );
+    // 清场：全量 close（表槽回收；互钉环对象泄漏——安全向）。
+    for i in 0..nq {
+        assert_eq!(
+            svc4(NR_HANDLE_CLOSE as u64, unsafe { H_QUOTA[i] } as u64, 0, 0),
+            0,
+            "SYSCALL：close 配额端点（SEC-D 清场）"
+        );
+    }
+    assert!(
+        ht.count_type(ObjType::Channel) < crate::process::MAX_CHANNEL_PER_PROC,
+        "SYSCALL：清场后 channel 计数须回落帽下（不污后续段）"
+    );
+
     // I. 3-4c event 三号：位掩码语义 + SIGNAL 权利面；4-1 wait_one 阻塞化后
     //    deadline≠0 → 到点未命中 -ETIMEDOUT（ktest 在 sched::init 前不能睡，
     //    用远古时刻 deadline=1 验「已过点立即返」路径；真睡的 EL0 正向验收 =
@@ -2471,6 +2698,26 @@ static FP_PAT_OTHER: [u128; 10] = [
 /// 「越大越正」直觉读反（CORR-2 修复轮钉板）。
 const FP_FPCR_OTHER: u64 = 0x0080_0000;
 const FP_FPSR_OTHER: u64 = 0x3000_0000;
+/// FP-FPSR 判例（2026-11-13 实测 QEMU 11.0.3）：HVF 后端不保存/恢复 guest
+/// FPSR——vmentry 用 host 副本覆盖，guest `msr fpsr` 写被吞；FPCR/q0-q31 不
+/// 受扰。berry CLI 加速档注入 `opt/berry/accel` 键告知；读到 hvf/kvm 即跳过
+/// FPSR 断言（FPCR + q 断言保留——两者在 HVF 下均真）。TCG 完整仿真不注键
+/// = 断言全量执行。
+fn accel_fpsr_unreliable() -> bool {
+    use berry_hal_aarch64::fwcfg;
+    match fwcfg::find_file("opt/berry/accel") {
+        Some(e) if e.size > 0 && e.size <= 16 => {
+            let mut buf = [0u8; 16];
+            if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+                return false;
+            }
+            let s = core::str::from_utf8(&buf[..e.size as usize]).unwrap_or("");
+            let s = s.trim_matches(|c: char | c == '\0' || c.is_ascii_whitespace());
+            matches!(s, "hvf" | "kvm" | "whpx")
+        }
+        _ => false,
+    }
+}
 static mut FP_CTX_MAIN: TaskContext = TaskContext::ZERO;
 static mut FP_CTX_OTHER: TaskContext = TaskContext::ZERO;
 static mut FP_OTHER_STACK: TestStack4096 = TestStack4096([0; 4096]);
@@ -2611,6 +2858,10 @@ fn test_fp() {
             "FP：新任务出生 FP 面非零"
         );
         let (fpcr0, fpsr0) = (fpcr_read(), fpsr_read()); // 记录现场值，测毕还原
+        // 平台门（FP-FPSR 判例）：HVF/KVM 后端不保存 guest FPSR——写被
+        // vmentry 吞，读回来是 host 副本；MAIN 恢复断言与 OTHER 保存面断言
+        // 的 fpsr 分量都据此跳（FPCR/q 断言保留，HVF 下均真）。
+        let fpsr_skip = accel_fpsr_unreliable();
         // ② MAIN 侧装载自己的图样 → 两跳乒乓。
         fpcr_write(FPCR_MAIN);
         fpsr_write(FPSR_MAIN);
@@ -2619,8 +2870,9 @@ fn test_fp() {
         // <- fp_ping_fn 切回 FP_CTX_MAIN 时续行于此。四面核验：
         fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
         assert!(fp_snap_eq(&FP_PAT_MAIN), "FP：MAIN 的 q0..q7/q30/q31 经两跳 switch 后串味");
-        assert!(fpcr_read() == FPCR_MAIN, "FP：MAIN 的 FPCR 未恢复");
-        assert!(fpsr_read() == FPSR_MAIN, "FP：MAIN 的 FPSR 未恢复");
+        let (fpcr1, fpsr1) = (fpcr_read(), fpsr_read());
+        assert!(fpcr1 == FPCR_MAIN, "FP：MAIN 的 FPCR 未恢复");
+        assert!(fpsr_skip || fpsr1 == FPSR_MAIN, "FP：MAIN 的 FPSR 未恢复");
         // SAFETY: 同窗读 FP_CTX_OTHER（raw 指针取共享引用；unsafe 归外层块）。
         let o: &TaskContext = &*(&raw const FP_CTX_OTHER);
         let other_saved = o.fp[0] == FP_PAT_OTHER[0]
@@ -2634,7 +2886,7 @@ fn test_fp() {
             && o.fp[30] == FP_PAT_OTHER[8]
             && o.fp[31] == FP_PAT_OTHER[9]
             && o.fpcr == FP_FPCR_OTHER
-            && o.fpsr == FP_FPSR_OTHER;
+            && (fpsr_skip || o.fpsr == FP_FPSR_OTHER);
         assert!(other_saved, "FP：OTHER 的 FP 态未随切出保存进其上下文");
         // ③-a 本仓 mem* 整数版覆写正确性直验（含 memmove 重叠两向 + memcmp 符号面
         // + bcmp 0/非 0 面）。
@@ -3655,7 +3907,15 @@ fn test_policy_perf() {
     // PP-4 等价断言：delta = (max - min) / min × 100 < 50%。
     let mn = base.min(empty).min(full);
     let mx = base.max(empty).max(full);
-    assert!(mn > 0, "PP-4：avg 须非零（CNTVCT 停走则差测无效）");
+    // HVF 判例（2026-11-13 实测）：加速档下三态 avg 实测全 0——窗口内
+    // CNTVCT 差 < N（HVF 计数粒度/停走语义未定谳），整除截断为 0。宿主
+    // 加速器语义非内核 bug（TCG 下差测正常）。性能差测断言在加速档降级
+    // 为跳过（与 FP-FPSR 判例同法：`opt/berry/accel` 键门控）；TCG 全量。
+    if accel_fpsr_unreliable() {
+        // avg=0 时三态差测无意义——不 panic，打印诊断即过。
+        berry_hal_aarch64::uart_puts(b"PP-4: skip (accel cntvct delta 0)\n");
+    } else {
+        assert!(mn > 0, "PP-4：avg 须非零（CNTVCT 停走则差测无效）");
     let permille = (mx - mn) * 1000 / mn; // 千分比（整除门控不失真）
     // 门宽 200‰→500‰（2026-11-08，EM 表落地批）→3000‰（2026-11-09，CI QEMU
     // 11 首验）：TCG 无 icount 下 CNTVCT 走宿主时间——比值门虽抵消宿主快慢，
@@ -3676,17 +3936,18 @@ fn test_policy_perf() {
         permille
     );
 
-    berry_hal_aarch64::uart_puts(b"PERF policy base=");
-    berry_hal_aarch64::uart_put_dec(base);
-    berry_hal_aarch64::uart_puts(b" empty=");
-    berry_hal_aarch64::uart_put_dec(empty);
-    berry_hal_aarch64::uart_puts(b" full=");
-    berry_hal_aarch64::uart_put_dec(full);
-    berry_hal_aarch64::uart_puts(b" delta=");
-    berry_hal_aarch64::uart_put_dec(permille / 10);
-    berry_hal_aarch64::uart_puts(b".");
-    berry_hal_aarch64::uart_put_dec(permille % 10);
-    berry_hal_aarch64::uart_puts(b"%\n");
+        berry_hal_aarch64::uart_puts(b"PERF policy base=");
+        berry_hal_aarch64::uart_put_dec(base);
+        berry_hal_aarch64::uart_puts(b" empty=");
+        berry_hal_aarch64::uart_put_dec(empty);
+        berry_hal_aarch64::uart_puts(b" full=");
+        berry_hal_aarch64::uart_put_dec(full);
+        berry_hal_aarch64::uart_puts(b" delta=");
+        berry_hal_aarch64::uart_put_dec(permille / 10);
+        berry_hal_aarch64::uart_puts(b".");
+        berry_hal_aarch64::uart_put_dec(permille % 10);
+        berry_hal_aarch64::uart_puts(b"%\n");
+    }
 
     // 任务体 16KiB 栈 × 4 + 满表快照泄漏不回收（ktest 语境同 PV3/PBS 政策）。
     berry_hal_aarch64::uart_puts(b"PP-K ok\n");

@@ -17,6 +17,10 @@ use crate::{uart_put_dec, uart_putc, uart_puts};
 const PSCI_VERSION_FNID: u64 = 0x8400_0000;
 const PSCI_FEATURES_FNID: u64 = 0x8400_000A;
 const PSCI_SYSTEM_SUSPEND_FNID: u64 = 0x8400_000C;
+/// PSCI SYSTEM_OFF（0.2 起强制函数——无 PSCI_FEATURES 查询面；QEMU
+/// TCG/KVM 实现均受理：`research/PM-10-无真机电源验证-v1.0.md` §1.6
+/// 实读 ps ci.c——TCG 走 `qemu_system_shutdown_request`）。
+const PSCI_SYSTEM_OFF_FNID: u64 = 0x8400_0008;
 /// PSCI_VERSION 最小有效值（PSCI 1.0 = 0x00010000；-1 = NOT_SUPPORTED 按符
 /// 号语义天然排除——`ver >= 最小值` 即「有效」判）。
 const PSCI_VERSION_MIN: u32 = 0x0001_0000;
@@ -25,9 +29,21 @@ const PSCI_VERSION_MIN: u32 = 0x0001_0000;
 /// request_deep_sleep 降级门的消费面）。
 static PSCI_SUSPEND_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
+/// **conduit 活性**缓存（probe 尾单写点）：PSCI_VERSION 有效（≥1.0）即
+/// 活——SYSTEM_OFF 的能力判据（0.2 起强制函数，不查 FEATURES；比
+/// SYSTEM_SUSPEND 的三档现实表宽——TCG 的 susp=0 但 SYSTEM_OFF 在）。
+/// 消费面：[`off_supported`] / [`system_off_hvc`] 门。
+static PSCI_CONDUIT_ALIVE: AtomicBool = AtomicBool::new(false);
+
 /// 深睡能力读面（probe 缓存；未 probe / 门住路恒 false）。
 pub fn suspend_supported() -> bool {
     PSCI_SUSPEND_SUPPORTED.load(Ordering::Relaxed)
+}
+
+/// SYSTEM_OFF 能力读面（probe 缓存：conduit 活 = PSCI_VERSION 有效；
+/// EFI/非 EL1 门住路与 TCG 无 PSCI 路恒 false——调用方诚实降级）。
+pub fn off_supported() -> bool {
+    PSCI_CONDUIT_ALIVE.load(Ordering::Relaxed)
 }
 
 /// 读 boot asm 钉存的入口 EL（`smp.rs` 同款私有 helper 复制：高半 `.bss`
@@ -85,6 +101,7 @@ fn put_hex32_upper(v: u32) {
 /// 打印走与相邻 boot 行同款 UART 路径（`BerryOS boot` 同期窗口）。
 pub fn probe(efi_boot: bool) {
     let mut supported = false;
+    let mut alive = false;
     if efi_boot {
         uart_puts(b"PSCI susp=0 (EFI handoff)\n");
     } else if boot_el() != 1 {
@@ -96,6 +113,7 @@ pub fn probe(efi_boot: bool) {
         // 对 -1 做符号扩展还是零扩展（0xFFFFFFFF 一律 NOT_SUPPORTED）。
         let ver = hvc_call(PSCI_VERSION_FNID, 0) as u32;
         if ver != u32::MAX && ver >= PSCI_VERSION_MIN {
+            alive = true; // conduit 活证（SYSTEM_OFF 门开——0.2 起强制）
             // 正向对照：conduit 活证（PSCI 1.x 在席）——版本号诊断行。
             uart_puts(b"PSCI version 0x");
             put_hex32_upper(ver);
@@ -112,6 +130,7 @@ pub fn probe(efi_boot: bool) {
         }
     }
     PSCI_SUSPEND_SUPPORTED.store(supported, Ordering::Relaxed);
+    PSCI_CONDUIT_ALIVE.store(alive, Ordering::Relaxed);
 }
 
 /// SYSTEM_SUSPEND HVC（0x8400000C，x0 装 fnid；**x1=0 = NULL re-entry**：规范要求返 INVALID_PARAMETERS(-3)，实现行为不可假设。SMCCC
@@ -121,4 +140,26 @@ pub fn probe(efi_boot: bool) {
 /// 时核验目标 hypervisor 接受度并同步 FEATURES 查询键）。
 pub fn system_suspend_hvc() -> i64 {
     hvc_call(PSCI_SYSTEM_SUSPEND_FNID, 0)
+}
+
+/// SYSTEM_OFF HVC（0x84000008——0.2 起强制函数；x1 无参数义恒 0）。
+/// SMCCC 语义：成功 = 整机下电**不归**，返回（任何值）= 失败（固件
+/// 拒收；PSCI 无错码面——按 NOT_SUPPORTED 处理）。
+///
+/// 门（[`off_supported`]）：conduit 死（EFI/非 EL1/无 PSCI——probe 缓存
+/// 恒 false）**不发 HVC**，返 -1 = NOT_SUPPORTED——调用方（syscall
+/// `power_off` → berryctl/launcher 关机键）诚实降级。
+///
+/// 调用窗纪律：boot probe / ktest 窗之外，本函数从 SVC handler（EL1、
+/// IRQ 屏蔽窗内）进入——与 [`system_suspend_hvc`] 的 ktest 直调窗同族
+/// （单核静默假设不成立于 SMP：HVC 本身 per-CPU 自安全、全 clobber 声明
+/// 齐全；诊断行走 UART 与他核打印理论竞态，v1 关机期单发接受——如实注）。
+/// QEMU 受理面（TCG `qemu_system_shutdown_request` / KVM shutdown 事件）
+/// = 整机退出，两核竞发 = 两次 shutdown 请求幂等无害。
+pub fn system_off_hvc() -> i64 {
+    if !off_supported() {
+        return -1; // NOT_SUPPORTED（conduit 死——不发 HVC）
+    }
+    uart_puts(b"PSCI SYSTEM_OFF\n");
+    hvc_call(PSCI_SYSTEM_OFF_FNID, 0)
 }

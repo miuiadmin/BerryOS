@@ -708,3 +708,15 @@ pub extern "C" fn berry_signal_send(process: Handle, sig: u32) -> Status {
 pub extern "C" fn berry_signal_take(pending: *mut u64) -> Status {
     unsafe { sys(nr::SIGNAL_TAKE, pending as usize, 0, 0, 0, 0, 0) }
 }
+
+// —— 电源（桌面UX刀D——guest 内关机最小闭环，审计 02 号 M3）——
+
+/// 整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC）。成功 = **不归**（整机
+/// 退出——QEMU 走 `qemu_system_shutdown_request`）；返回 0 结构性不可达；
+/// 非 0（-ENOTSUP）= conduit 死（EFI handoff / 非 EL1 / 无 PSCI——内核
+/// probe 缓存门）或固件拒收——调用方诚实降级（launcher 提示 / berryctl
+/// 退 1）。零参数零出参；v1 无门控（单用户仿真系统，门控随 I3 刀）。
+#[no_mangle]
+pub extern "C" fn berry_power_off() -> Status {
+    unsafe { sys(nr::POWER_OFF, 0, 0, 0, 0, 0, 0) }
+}

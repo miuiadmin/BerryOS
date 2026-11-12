@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见
 //! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=37 / nr_defined=41 /
-//! nr_registered=40 / nr_ceiling=45（口径与内核侧头注同源同值）。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=38 / nr_defined=42 /
+//! nr_registered=41 / nr_ceiling=45（口径与内核侧头注同源同值）。
 
 use crate::{Handle, Rights, Status, Time};
 
@@ -66,8 +66,10 @@ pub const CHAN_OPT_NO_INTENT: u32 = 1 << 0;
 /// 门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
 /// 其余位保留（非 0 尾 → -EINVAL，options 纪律）。
 pub const VMO_OPT_DEMAND: u32 = 1 << 0;
-/// `clock_read` 的 clock_id：v1 只有单调钟（壁钟留 v2）。
+/// `clock_read` 的 clock_id：单调钟（`berry_time_t` = 纳秒）。
 pub const CLOCK_MONOTONIC: u32 = 0;
+/// `clock_read` 的 clock_id：壁钟（宿主注入 epoch；未注入 → -ENOTSUP）。
+pub const CLOCK_REALTIME: u32 = 1;
 
 // ---- 错误码（G2 冻结面；`berry_status_t` = i32，0 = Ok）----
 /// EBADF：坏 handle / 类型不符 / 代号过期。
@@ -179,6 +181,8 @@ pub(crate) mod nr {
     pub(crate) const SIGNAL_SEND: usize = 0x86;
     /// A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
     pub(crate) const SIGNAL_TAKE: usize = 0x87;
+    /// 桌面UX刀D add-only 加号（2026-11-14，先例 0x86/0x87）：v1 无门控——单用户仿真系统无能力框架，消费面 launcher 关机键（二击 3s 窗确认）+ berryctl power 子命令；门控与优雅关机序（服务停摆/数据 flush）随 I3 关机流程正规化刀（审计 02 号 §6.2）。probe 缓存门保证无 PSCI 路诚实 -ENOTSUP 不盲发 HVC。
+    pub(crate) const POWER_OFF: usize = 0x88;
 }
 
 // ---- 宽度冻结断言（abi.toml [types]；G2 冻结面的机器执法）----

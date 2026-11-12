@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=37（v1 在册）/
-//! nr_defined=41（v1+1.1 常量层）/ nr_registered=40（已挂派发）/
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=38（v1 在册）/
+//! nr_defined=42（v1+1.1 常量层）/ nr_registered=41（已挂派发）/
 //! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
@@ -17,7 +17,7 @@ use crate::handle::Rights;
 #[allow(dead_code)]
 pub const BERRY_PLATFORM_LEVEL: u32 = 1;
 
-// ---- syscall 号（ABI §4 编号表；v1 37 号在册、36 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 38 号在册、37 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -95,10 +95,14 @@ pub const NR_BERRY_ATTEST: usize = 0x85;
 pub const NR_SIGNAL_SEND: usize = 0x86;
 /// A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
 pub const NR_SIGNAL_TAKE: usize = 0x87;
+/// 桌面UX刀D add-only 加号（2026-11-14，先例 0x86/0x87）：v1 无门控——单用户仿真系统无能力框架，消费面 launcher 关机键（二击 3s 窗确认）+ berryctl power 子命令；门控与优雅关机序（服务停摆/数据 flush）随 I3 关机流程正规化刀（审计 02 号 §6.2）。probe 缓存门保证无 PSCI 路诚实 -ENOTSUP 不盲发 HVC。
+pub const NR_POWER_OFF: usize = 0x88;
 
 // ---- clock id（ABI §8.3 `berry_clock_id_t`）----
-/// `clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。
+/// `clock_read` 的 clock_id：单调钟（`berry_time_t` = 纳秒；CNTVCT 换算）。
 pub const CLOCK_MONOTONIC: u64 = 0;
+/// `clock_read` 的 clock_id：壁钟（宿主 fw_cfg `opt/berry/rtc` epoch 注入面，内核 `rtc.rs`；缺席/畸形注入 → -ENOTSUP）。
+pub const CLOCK_REALTIME: u64 = 1;
 
 // ---- options 位（ABI §8「options 纪律」：未知位一律 -EINVAL）----
 /// `channel_create` options bit0（4-3c，五件套之 4）：intent opt-out——置位通道

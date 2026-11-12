@@ -247,6 +247,22 @@ pub fn spawn_image(
         cmd.arg("-fw_cfg")
             .arg(format!("name=opt/berry/display,string={mode}"));
     }
+    // 平台自识键（FP-FPSR 判例 2026-11-13）：硬件加速档告知 guest 加速器
+    // 类型。QEMU HVF 后端不保存/恢复 guest FPSR（vmentry 用 host 副本覆盖
+    // ——msr fpsr 被吞，实测 11.0.3）；KVM 同族风险。TCG 完整仿真不注。
+    // guest ktest 据此跳过 FPSR 恢复/保存断言（FPCR/q 断言保留）。
+    if accel != Accel::Tcg {
+        cmd.arg("-fw_cfg")
+            .arg(format!("name=opt/berry/accel,string={}", accel.as_arg()));
+    }
+    // 波一刀 B（状态栏可信化）：宿主当下 epoch 秒注入（fw_cfg 具名 string，
+    // display 先例同形）——内核 boot 期消费（kernel/src/rtc.rs）供
+    // CLOCK_REALTIME。UTC 口径（本地时区换算挂账波二）；读取失败 = 不注
+    // 入，内核面降级 -ENOTSUP（launcher 静态占位钟）。
+    if let Ok(epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        cmd.arg("-fw_cfg")
+            .arg(format!("name=opt/berry/rtc,string={}", epoch.as_secs()));
+    }
     log_stdio(&mut cmd, log)?;
     cmd.spawn().map_err(|e| {
         BerryError::device(format!("spawn qemu: {e}")).with_hint("check BERRY_QEMU / PATH")

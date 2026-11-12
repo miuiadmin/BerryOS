@@ -22,6 +22,7 @@ type berry_time uint64
 #   BERRY_PLATFORM_LEVEL = 1
 # clock id:
 #   CLOCK_MONOTONIC = 0
+#   CLOCK_REALTIME = 1
 # options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:
 #   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)（scope: channel_create）
 #   VMO_OPT_DEMAND = 1 << 0  (0x1)（scope: vmo_create）
@@ -62,7 +63,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 37 号、已实现 36；
+# ---- syscall 入口（§4 编号表全量在册；v1 38 号、已实现 37；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -239,3 +240,8 @@ signal_send(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x87 signal_take（v1）——原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）
 #   note: A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
 signal_take(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）
+# 0x88 power_off（v1）——整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC conduit——QEMU TCG/KVM 均受理 `qemu_system_shutdown_request`，PM-10 §1.6 实读）。成功 = 不归（整机退出）；返回 -ENOTSUP = conduit 死（EFI handoff / 非 EL1 入口 / 无 PSCI——`off_supported` probe 缓存门）或固件拒收。零参数零出参。
+#   note: 桌面UX刀D add-only 加号（2026-11-14，先例 0x86/0x87）：v1 无门控——单用户仿真系统无能力框架，消费面 launcher 关机键（二击 3s 窗确认）+ berryctl power 子命令；门控与优雅关机序（服务停摆/数据 flush）随 I3 关机流程正规化刀（审计 02 号 §6.2）。probe 缓存门保证无 PSCI 路诚实 -ENOTSUP 不盲发 HVC。
+power_off(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
