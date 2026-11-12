@@ -1,67 +1,25 @@
-# docs/ — 知识、契约与外部事实
+# docs/ — 知识与事实根（Curia）
 
-本目录收录三类内容：仓外系统的登记与定义、面向所有读者的现行标准、以及面向人的说明与附件。**自由知识当前版即唯一真相**——改了直接改，历史在 git；**现行标准**用 `Type: standard`，带 `Status:` 与 `Version:`，过时按取代链退役。
+本目录是 BerryOS 的知识与事实根：设计规格、域规则、判例库、路线图、索引与沿革。**当前版即唯一真相**——改了直接改，历史在 git。
 
-## 两种文档
+## 新写文档放哪（裁决表）
 
-标题后的头块里没有 `Type:` 的是自由知识：外部事实、接入说明、架构导览、FAQ、演示手册。它没有状态机，当前文件就是现行版。
+| 写什么 | 家 |
+|---|---|
+| 设计/实施/规划/调研/验收类知识文档——含在途设计草案（BerryOS 版本化制度 `名-v主.次.md`，细则见 [索引](索引.md)）；**存量主题**演进原地改，同主题不另建 `.agents/plans/` 副本（一主题一现行承载点） | 本目录 |
+| **新模块**总体设计（2.3 固定形态：`Type: spec` + `Version: MAJOR.MINOR.PATCH` 头块、免日期前缀、`ls .agents/plans/*/design.md` 即全模块索引） | [`.agents/plans/`](../.agents/plans/) 下 `<模块>/design.md` |
+| **新的跨模块现行标准**（写作排版/编码约定/UI/API 契约这类需「现行第几版」的；2.4 起固定形态：`Type: standard` + `Status: current/historical/superseded` + `Version:`，取代链执法；存量版本化文档不批量转，下次实质修改时再补） | 本目录 |
+| 调研报告 | 根 `research/`（存量纳管根；等价 `.agents/research/` 的角色，不进默认扫描面） |
+| 轻量计划 / 工作提案（**不进版本化制度**的：步骤清单、立项对齐、agent 工作计划） | [`.agents/plans/`](../.agents/plans/)（3 行头块） |
+| 决策因果（为什么、否决了什么） | [`.agents/notes/`](../.agents/notes/)（两行头块） |
+| 可复用干法 / 技能 / 操作手册 | [`.agents/skills/`](../.agents/skills/) |
+| 本目录知识文档的冷历史 | 按既有制度：原地冻结或 `docs/归档/`（索引维护规则 5；不走 `.agents/archive/`） |
+| `.agents/` 内文档的冷历史 | [`.agents/archive/`](../.agents/archive/)（归档四步，永不删除） |
 
-标题后的头块里有 `Type: standard` 的是现行标准：设计规范、UI 设计系统、API/数据契约、编码约定、写作与排版约定——需要回答「现行第几版」的文档。格式与生命周期见[规范全文](../.agents/README.md)的「docs 标准」节。
+## 约定
 
-```markdown
-# <主题>（v<MAJOR.MINOR>）
-
-Type: standard
-Status: current
-Updated: yyyy-mm-dd
-Version: 1.2.0
-```
-
-`Status` 取 `current`（现行）、`historical`（仅保留给存量或参考）、`superseded`（被取代，必须带 `Superseded-by:` 相对链接）。`Version` 是这份标准自己的契约版本：MAJOR 不兼容、MINOR 兼容新增、PATCH 澄清改字。
-
-## 现有标准升格
-
-已有自由知识要升成标准时，先跑只读候选清单：
-
-```bash
-node .agents/tools/check-docs.mjs --suggest-standards
-```
-
-它按文件名与头块线索列出候选并给出建议头块，**不写文件**。是否升格由人裁决：确认它需要回答「现行第几版」后，手工补 `Type: standard`、`Status:`、`Updated:`、`Version:` 四行；同主题只留一个 `current` 载体，旧的翻 `historical` 或 `superseded`。不批量转换。
-
-工作区体检用 `--health`：只读报告载荷、桥、`AGENTS.md` 合并态与 docs 标准/候选计数，正常退出 0，不改文件。
-
-## 放什么，不放什么
-
-放这里：外部系统登记、字段映射、端点、协议；现行设计标准与契约（含写作与排版约定）；面向人的使用说明、接入指南、FAQ；图片、图表、HTML 原型、PDF、JSON schema 等附件。
-
-不放这里：计划、提案、路线图 → [`.agents/plans/`](../.agents/plans/)；调研、证据、复盘 → [`.agents/research/`](../.agents/research/)；决策因果、ADR → [`.agents/notes/`](../.agents/notes/)；可复用流程、runbook、skill → [`.agents/skills/`](../.agents/skills/)；模块总体设计 → `.agents/plans/<模块>/design.md`。
-
-## 命名
-
-自由知识与标准都用主题名，不加日期前缀——身份是主题，不是落笔时点；主题段用 kebab-case 或纯中文名。
-
-标准可以带版本后缀，如 `设计规范v1.2.md`、`design-standard-v2.md`；文件名里的版本是人读标签，头块 `Version:` 是权威；文件名版本必须是头块版本的前缀（`v1.2` 对 `1.2.0`）。升 MINOR/PATCH 时不必改文件名，只改头块。
-
-`design.md` 是模块设计文档的固定名，不要用来命名标准。
-
-## 生命周期与归档
-
-标准默认原地改、`Version` 递增、`Updated:` 改今天，历史在 git；只有大版本线必须共存、主题被拆分/改名/整体重做时，才新建一份并让旧的翻 `superseded` 或 `historical`。
-
-冷历史可移入可选的 `docs/archive/`（如果创建）：带类型头块的标准加 `Archived: yyyy-mm-dd` 行，自由知识原样移入。永不删除。只有顶层的 `docs/archive/` 享受归档机器豁免；其他名字或嵌套的 `archive/`（如 `docs/<主题>/archive/`）按普通主题目录处理，不强制迁移。
-
-## 检索与附件
-
-目录即索引，不建 `INDEX.md`；检索配方见[规范全文](../.agents/README.md)的「链接与检索」：
-
-```bash
-# 列出标准的状态与版本
-rg -l '^Type: standard$' docs/ | while read -r f; do
-  printf '%s\t' "$f"; head -12 "$f" | awk '/^(Status|Version|Updated):/{printf "%s ", $0} END{print ""}'
-done
-```
-
-附件与被机器消费的文件不参与生命周期，不要求 Markdown 头块；检查器只扫 `.md`。
-
-引用一律相对 Markdown 链接；指向 `.agents/` 时写 `../.agents/…`。
+- 存量只读纳管（2026-11-06 采用 Curia 起）：既有文档的命名与结构保持原样，规则不回溯；下次实质修改时自然对齐。
+- 判例与笔记分工：踩坑执法类判例仍走雷册三处一动（域文件瘦行 + [雷册](雷册-判例库.md)全文 + 判例索引）；决策因果类（选型/否决/权衡）走 `.agents/notes/`——同一变更两类都涉及时各写各的、互链。
+- 存量知识文档（版本化 `名-v主.次.md`）无头块、无状态机 = 自由知识，当前版即唯一真相；现行标准例外——`Type: standard` 带头块与轻量状态机（2.4 起，形态见[规范「docs 标准」节](../.agents/README.md)）。不写计划与决策因果——那些归 `.agents/` 的家（规范全文见 [`.agents/README.md`](../.agents/README.md)）。
+- 引用一律相对 Markdown 链接；指向 `.agents/` 时写 `../.agents/…`；`索引.md` 是本目录既有详表（维护合同），Curia 的「禁全局 INDEX」不回溯于它。
+- 自检：`node .agents/tools/check-docs.mjs`（默认面 = 本目录 + `.agents/`）；提交把关加 `--strict`。
