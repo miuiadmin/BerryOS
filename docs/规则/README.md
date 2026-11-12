@@ -37,7 +37,7 @@
 | 引导/EFI/镜像/装载器 | `规则/12-引导与镜像.md` | 装载序 |
 | 引入参考/加依赖（本仓 Apache-2.0，ADR #37） | `规则/13-工作流程与协议.md` | 协议洁净 |
 | 写文档/定归属/决策笔记 | `docs/README.md`（归属裁决表）· `.agents/README.md`（Curia 规范全文） | 归属 |
-| GUI / UI 框架 / 普通·专业·游戏实时 app / Native Shell | `规则/14-GUI与UI框架.md` · `docs/BerryOS命名体系-v1.1.md` · `docs/GUI框架地基路线-v1.18.md` · `docs/GUI里程碑规划-2026-10-v1.0.md` | 地基优先与分层边界 |
+| GUI / UI 框架 / 普通·专业·游戏实时 app / Native Shell | `规则/14-GUI与UI框架.md` · `docs/BerryOS命名体系-v1.1.md` · `docs/GUI框架地基路线-v1.19.md` · `docs/GUI里程碑规划-2026-10-v1.0.md` | 地基优先与分层边界 |
 | AI 调度接口 | `docs/AI调度设计-v1.0.md` | 护栏 |
 
 ## 命令速览
@@ -63,7 +63,7 @@
 
 - **总纲与路线**：`docs/架构决策.md` · `docs/架构综合纲领.md`（排除 8 问）· `docs/路线图-v1.0.md`（现行刀序）· `docs/优化议程-v1.0.md`。
 - **内核核心**：`docs/能力模型设计-v1.0.md` · `docs/IPC设计-v1.0.md` · `docs/内存管理设计-v1.0.md` · `docs/系统调用ABI设计-v1.0.md`（abi.toml 单源）· `docs/调度器设计-v1.0.md` · `docs/AI调度设计-v1.0.md` · `docs/可观测性设计-v1.0.md` · `docs/安全与硬件隔离设计-v1.0.md`（挂 v2）。
-- **服务与生态**：`docs/文件系统设计-v1.0.md` · `docs/驱动模型设计-v1.0.md` · `docs/shell设计-v1.0.md` · `docs/应用模型设计-v1.0.md` · `docs/GUI框架地基路线-v1.18.md` · `docs/GUI里程碑规划-2026-10-v1.0.md` · 挂 v2 四份：`docs/存储布局与沙箱设计-v1.0.md` / `docs/兼容子系统设计-v1.0.md` / `docs/更新与OTA设计-v1.0.md` / `docs/AI工程面设计-v1.0.md`。
+- **服务与生态**：`docs/文件系统设计-v1.0.md` · `docs/驱动模型设计-v1.0.md` · `docs/shell设计-v1.0.md` · `docs/应用模型设计-v1.0.md` · `docs/GUI框架地基路线-v1.19.md` · `docs/GUI里程碑规划-2026-10-v1.0.md` · 挂 v2 四份：`docs/存储布局与沙箱设计-v1.0.md` / `docs/兼容子系统设计-v1.0.md` / `docs/更新与OTA设计-v1.0.md` / `docs/AI工程面设计-v1.0.md`。
 - **验证与流程**：`docs/测试策略-v1.0.md` · `docs/开发体验.md`。
 - **在途拆解**（现势 → `docs/路线图-v1.0.md`）：`docs/VM里程碑设计草案-v1.0.md` · `docs/SMP设计草案-v1.0.md` · `SMP-S2实施设计草案-v1.0.md` · `SMP-S3实施设计草案-v1.0.md` · M-ECO A 系草案 ×7（`容量工程前置-A1设计草案-v1.0.md`+`事件循环A2..A7设计草案.md`）· `事件循环A7-{2,3}实施设计草案.md` · `事件循环A7-4信号面实施设计草案-v1.0.md`。
 - **演进与归档**（时点记录，勿当现状引用）：`docs/阶段沿革.md`（新进展追加末尾，勿回写本文件）· `docs/Phase4收官盘点.md` / `docs/P6收官盘点.md` · `docs/战役复盘-2026-10.md` · 审查报告 ×2 · `docs/战略裁决-2026-10-15.md`。

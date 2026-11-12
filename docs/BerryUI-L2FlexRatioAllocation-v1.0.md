@@ -5,7 +5,7 @@
 > 定位：GUI-14 L1 后的第一片 flex 基础。只做固定主轴 Row/Col 的剩余
 > 空间比例分配；不重写 constraint-aware measure，不改 Node/AST/wire，
 > 不做 wrap、shrink、basis、min/max 或嵌套 flex 协商。
-> 执行序权威 = [GUI框架地基路线-v1.18.md](GUI框架地基路线-v1.18.md)。
+> 执行序权威 = [GUI框架地基路线-v1.19.md](GUI框架地基路线-v1.19.md)。
 
 ## §1 背景
 

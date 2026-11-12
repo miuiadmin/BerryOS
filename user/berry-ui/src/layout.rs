@@ -53,6 +53,110 @@ pub enum Constraints {
     Infinite,
 }
 
+/// LAYOUT-L4 四元组约束。`min <= max` 是结构不变量；非法构造 loud
+/// 拒，不做静默 normalize。字段私有，消费面只经代数方法。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoxConstraints {
+    min_w: u32,
+    max_w: u32,
+    min_h: u32,
+    max_h: u32,
+}
+
+impl BoxConstraints {
+    /// 构造约束盒；任一轴 min > max 返回 [`crate::UiError::NodeBad`]。
+    pub fn new(
+        min_w: u32,
+        max_w: u32,
+        min_h: u32,
+        max_h: u32,
+    ) -> Result<Self, crate::UiError> {
+        if min_w > max_w || min_h > max_h {
+            return Err(crate::UiError::NodeBad);
+        }
+        Ok(Self { min_w, max_w, min_h, max_h })
+    }
+
+    pub const fn tight(w: u32, h: u32) -> Self {
+        Self { min_w: w, max_w: w, min_h: h, max_h: h }
+    }
+
+    pub const fn loose(max_w: u32, max_h: u32) -> Self {
+        Self { min_w: 0, max_w, min_h: 0, max_h }
+    }
+
+    pub const fn infinite() -> Self {
+        Self { min_w: 0, max_w: u32::MAX, min_h: 0, max_h: u32::MAX }
+    }
+
+    pub const fn min(&self) -> (u32, u32) {
+        (self.min_w, self.min_h)
+    }
+
+    pub const fn max(&self) -> (u32, u32) {
+        (self.max_w, self.max_h)
+    }
+
+    pub const fn is_tight(&self) -> bool {
+        self.min_w == self.max_w && self.min_h == self.max_h
+    }
+
+    pub const fn is_infinite(&self) -> bool {
+        self.max_w == u32::MAX && self.max_h == u32::MAX
+    }
+
+    /// sizes up：把 intrinsic extent 独立夹入四元组。
+    pub const fn fit(&self, w: u32, h: u32) -> (u32, u32) {
+        (
+            if w < self.min_w {
+                self.min_w
+            } else if w > self.max_w {
+                self.max_w
+            } else {
+                w
+            },
+            if h < self.min_h {
+                self.min_h
+            } else if h > self.max_h {
+                self.max_h
+            } else {
+                h
+            },
+        )
+    }
+
+    /// constraints down：扣除 padding/gap/固定占位。min 下折 0，max 饱和减。
+    pub const fn deflate(&self, w: u32, h: u32) -> Self {
+        Self {
+            min_w: self.min_w.saturating_sub(w),
+            max_w: self.max_w.saturating_sub(w),
+            min_h: self.min_h.saturating_sub(h),
+            max_h: self.max_h.saturating_sub(h),
+        }
+    }
+
+    /// 两盒相交；空盒返 None。
+    pub fn intersect(&self, other: Self) -> Option<Self> {
+        let min_w = self.min_w.max(other.min_w);
+        let max_w = self.max_w.min(other.max_w);
+        let min_h = self.min_h.max(other.min_h);
+        let max_h = self.max_h.min(other.max_h);
+        (min_w <= max_w && min_h <= max_h).then(|| Self { min_w, max_w, min_h, max_h })
+    }
+}
+
+impl Constraints {
+    /// L1 四档 → L4 四元组构造糖；damage clip 仍单独持真实 viewport。
+    pub(crate) fn to_box(self, vp_w: u32, vp_h: u32) -> BoxConstraints {
+        match self {
+            Self::Viewport => BoxConstraints::tight(vp_w, vp_h),
+            Self::Tight { w, h } => BoxConstraints::tight(w, h),
+            Self::Loose { w, h } => BoxConstraints::loose(w, h),
+            Self::Infinite => BoxConstraints::infinite(),
+        }
+    }
+}
+
 /// 走查/位图容量：`2 * MAX_NODES` 常量表达式（D10 单源——MAX_NODES=512
 /// 契约的两倍余量）；超帽（病态巨 arena）退化全量保守重排（见 relayout
 /// 头注）。
@@ -84,7 +188,7 @@ pub(crate) fn relayout(
     freed: &[u32],
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
-    cs: Constraints,
+    cs: BoxConstraints,
     flex: &[Option<FlexEntry>],
 ) -> LayoutStat {
     let _ = freed;
@@ -129,18 +233,12 @@ pub(crate) fn relayout(
 
     // ③ 摆放（前序）：force ∨ 自身重测 → 重摆 + 新旧界 damage
     let vp_rect = RectI::new(0, 0, u32_to_i32_sat(vp_w), u32_to_i32_sat(vp_h));
-    // Root 播种盒：Viewport/Tight 直接取约束；Loose 的 clamp 已在
-    // intrinsic Root 臂完成，Infinite 取子包络——两处同源，保 meas==placed。
-    let (root_w, root_h) = match cs {
-        Constraints::Viewport => (vp_w, vp_h),
-        Constraints::Tight { w, h } => (w, h),
-        Constraints::Loose { .. } | Constraints::Infinite => {
-            nodes[root as usize]
-                .as_ref()
-                .map(|n| (n.meas_w, n.meas_h))
-                .unwrap_or((0, 0))
-        }
-    };
+    // Root 播种盒：四元组已在 intrinsic Root 臂 fit；Tight/min=max
+    // 自然覆盖子包络，Loose/Infinite 取 clamp 后包络。meas==placed 同源。
+    let (root_w, root_h) = nodes[root as usize]
+        .as_ref()
+        .map(|n| (n.meas_w, n.meas_h))
+        .unwrap_or((0, 0));
     let mut placed = 0u32;
     place(
         nodes,
@@ -179,7 +277,7 @@ fn measure(
     slot: u32,
     vp_w: u32,
     vp_h: u32,
-    cs: Constraints,
+    cs: BoxConstraints,
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
     mctx: &mut MeasCtx,
@@ -265,24 +363,20 @@ fn intrinsic(
     idx: usize,
     vp_w: u32,
     vp_h: u32,
-    cs: Constraints,
+    cs: BoxConstraints,
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
 ) -> (u32, u32) {
+    let _ = (vp_w, vp_h);
     let n = match nodes[idx].as_ref() {
         Some(n) => n,
         None => return (0, 0),
     };
     match &n.props {
-        Props::Root => match cs {
-            Constraints::Viewport => (vp_w, vp_h),
-            Constraints::Tight { w, h } => (w, h),
-            Constraints::Loose { w, h } => {
-                let (ew, eh) = child_extent(nodes, n.first_child);
-                (w.min(ew), h.min(eh))
-            }
-            Constraints::Infinite => child_extent(nodes, n.first_child),
-        },
+        Props::Root => {
+            let (ew, eh) = child_extent(nodes, n.first_child);
+            cs.fit(ew, eh)
+        }
         // Clip 内在尺寸随子内容（作为 Col/Row 子时的主轴请求）；终值
         // 仍吃父 avail，port = 自身布局 bounds。
         Props::Clip(p) => {

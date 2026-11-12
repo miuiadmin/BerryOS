@@ -18,8 +18,8 @@ use berry_room::{
     SurfaceRequest, SYSTEM_FONT_ATLAS,
 };
 use berry_ui::sdk::{
-    ColorScheme, focus_key_intent, ime_overlap_px, key_route, slot_variant, FocusDir, FocusOp,
-    KeyRoute,
+    BoxConstraints, ColorScheme, focus_key_intent, ime_overlap_px, key_route, slot_variant,
+    FocusDir, FocusOp, KeyRoute,
     SlotVariant, Button, Card, EmptyState, FontSource, InteractionState, ListDetail,
     ListDetailSpec, ListItem, Msg, RectI, Scaffold, ScrollView, Switch, TextInputKind,
     a11y_region_roundtrip, A11yRegion, TextInputKeyOp, TextInputState, TextVariant,
@@ -612,6 +612,68 @@ impl AppModel {
         line.push(b" selected=");
         line.color(self.ctx.theme.state(InteractionState::Selected).background);
         line.push(b"\n");
+        line.print(room);
+    }
+
+    fn print_l4(&mut self, room: &AppRoom) {
+        let root = self.ui.root();
+        let (vp_w, vp_h) = self.ui.viewport();
+
+        self.ui.set_viewport(vp_w, vp_h);
+        let Some(tight_stat) = self.ui.layout_box(BoxConstraints::tight(800, 1200)).ok() else {
+            fail(room, "L4 tight box");
+        };
+        let Some(tight) = self.ui.bounds(root).ok() else {
+            fail(room, "L4 tight bounds");
+        };
+
+        self.ui.set_viewport(vp_w, vp_h);
+        let Some(loose_stat) = self.ui.layout_box(BoxConstraints::loose(700, 900)).ok() else {
+            fail(room, "L4 loose box");
+        };
+        let Some(loose) = self.ui.bounds(root).ok() else {
+            fail(room, "L4 loose bounds");
+        };
+
+        self.ui.set_viewport(vp_w, vp_h);
+        let Some(infinite_stat) = self.ui.layout_box(BoxConstraints::infinite()).ok() else {
+            fail(room, "L4 infinite box");
+        };
+        let Some(infinite) = self.ui.bounds(root).ok() else {
+            fail(room, "L4 infinite bounds");
+        };
+
+        let Some(noop) = self.ui.layout_box(BoxConstraints::infinite()).ok() else {
+            fail(room, "L4 noop box");
+        };
+        self.ui.set_viewport(vp_w, vp_h);
+        let _restored = self.ui.layout();
+
+        let mut line = Line::new(b"UITESTL4 ok tight=");
+        line.rect(tight);
+        line.push(b" loose=");
+        line.rect(loose);
+        line.push(b" inf=");
+        line.rect(infinite);
+        line.push(b" single=");
+        line.push_u32(tight_stat.measured);
+        line.push(b",");
+        line.push_u32(loose_stat.measured);
+        line.push(b",");
+        line.push_u32(infinite_stat.measured);
+        line.push(b" noop=");
+        line.push_u32(noop.measured);
+        line.push(b",");
+        line.push_u32(noop.placed);
+        line.push(b"\n");
+        if noop.measured != 0 || noop.placed != 0 {
+            fail(room, "L4 noop boundary");
+        }
+        if tight_stat.measured != loose_stat.measured
+            || loose_stat.measured != infinite_stat.measured
+        {
+            fail(room, "L4 single measure boundary");
+        }
         line.print(room);
     }
 
@@ -1248,6 +1310,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     app.print_hit(&room);
     app.print_data(&mut room);
     app.print_token(&mut room);
+    app.print_l4(&mut room);
     app.print_sem(&mut room);
     app.print_adaptive(&room);
     app.render(&mut room);

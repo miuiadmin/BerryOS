@@ -1855,8 +1855,8 @@ impl<const N: usize> Ui<N> {
     /// 几何变更/set_viewport 制造 dirty。render_frame 发起的 relayout 请求
     /// 仍为 Viewport；净树不自动恢复上次 layout_with 约束。
     pub fn layout_with(&mut self, cs: layout::Constraints) -> layout::LayoutStat {
-        // 脏子树重排；新界进 damage（freed = 当前空闲槽清单——removal 面
-        // 的陈旧缓存跳过依据）。GUI-6 D28：tm/icons 从供给槽取传。
+        let bc = cs.to_box(self.vp_w, self.vp_h);
+        debug_assert!(bc.min().0 <= bc.max().0 && bc.min().1 <= bc.max().1);
         layout::relayout(
             &mut self.nodes,
             self.vp_w,
@@ -1865,9 +1865,31 @@ impl<const N: usize> Ui<N> {
             &self.free_stack[..self.free_count],
             self.tm,
             self.icons,
-            cs,
+            bc,
             &self.flex,
         )
+    }
+
+    /// LAYOUT-L4 四元组布局。与 `layout_with` 同为 pull-based 一次性面；
+    /// 不保存约束，净树 no-op，damage clip 恒真实 viewport。
+    pub fn layout_box(
+        &mut self,
+        bc: layout::BoxConstraints,
+    ) -> Result<layout::LayoutStat, UiError> {
+        if bc.min().0 > bc.max().0 || bc.min().1 > bc.max().1 {
+            return Err(UiError::NodeBad);
+        }
+        Ok(layout::relayout(
+            &mut self.nodes,
+            self.vp_w,
+            self.vp_h,
+            &mut self.damage,
+            &self.free_stack[..self.free_count],
+            self.tm,
+            self.icons,
+            bc,
+            &self.flex,
+        ))
     }
 
     pub fn damage(&self) -> &damage::DamageSet {
@@ -2089,7 +2111,7 @@ impl<const N: usize> Ui<N> {
             &self.free_stack[..self.free_count],
             self.tm,
             self.icons,
-            layout::Constraints::Viewport,
+            layout::Constraints::Viewport.to_box(self.vp_w, self.vp_h),
             &self.flex,
         );
         let drew = !self.damage.is_empty(); // 无 damage 不提交（对齐条 6）

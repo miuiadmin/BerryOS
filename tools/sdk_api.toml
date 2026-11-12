@@ -1217,3 +1217,15 @@ owner = "berry-ui"
 stability = "experimental"
 spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
 breaking = []
+
+[[item]]
+id = "berry_ui::sdk::BoxConstraints"
+kind = "type"
+module = "layout"
+since = "LAYOUT-L4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL4BoxConstraintsIntrinsicBoundary-v1.0.md"
+breaking = []

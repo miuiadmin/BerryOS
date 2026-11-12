@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-11
 >
-> 定位：SDK-S0 的现行规格。执行序权威 = [GUI框架地基路线-v1.18.md](GUI框架地基路线-v1.18.md)。本文把 GUI-15 的官方源研究结论落成两件事：BerryUI 控件规格模板、BerryUI SDK API 账本与机器门禁。
+> 定位：SDK-S0 的现行规格。执行序权威 = [GUI框架地基路线-v1.19.md](GUI框架地基路线-v1.19.md)。本文把 GUI-15 的官方源研究结论落成两件事：BerryUI 控件规格模板、BerryUI SDK API 账本与机器门禁。
 >
 > 范围：`berry_ui::sdk` facade 与 BerryUI 控件规格流程。不修改 berry-ui 运行时行为，不新增 guest payload。
 
@@ -114,6 +114,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::A11yRegion` | type | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |
 | `berry_ui::sdk::AppBar` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::Axis` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
+| `berry_ui::sdk::BoxConstraints` | type | LAYOUT-L4 | in-tree | experimental | `docs/BerryUI-LAYOUTL4BoxConstraintsIntrinsicBoundary-v1.0.md` |
 | `berry_ui::sdk::Button` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::Card` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::CircleProps` | type | GUI-6 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |

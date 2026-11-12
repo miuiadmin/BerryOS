@@ -1,6 +1,6 @@
 # GUI 框架地基路线
 
-> 版本：**1.18**｜2026-11-12
+> 版本：**1.19**｜2026-11-12
 >
 > 定位：GUI 线**执行序的现行权威**。本路线不取代 [GUI里程碑规划-2026-10-v1.0.md](GUI里程碑规划-2026-10-v1.0.md) 的目标形态、协议语义与长期架构裁决；它约束其后的实施顺序——先把 UI 地基夯实，再继续堆应用界面。任何 GUI 应用、UI SDK、桌面壳或视觉改动与本路线冲突时，先改本路线或停止该改动。
 
@@ -126,6 +126,7 @@ BerryUI 是默认声明式工具包，不是特权或强制渲染器。三条合
 | **GUI-T1 TextField Foundation Before IME（已落地）** | `TextInputState`、UTF-8 selection/caret、硬件编辑命令、change/submit/selection 事件、text focus 与最小文本视觉 | 焦点在 TextField 时 Enter/Space 先由文本状态机消费，Tab/Shift+Tab 走 C1 导航；input type 只 add-only 映射 P0 purpose，避让消费 R2 `insets::Ime`；host + UITEST/GUI8 真键链、AST/预算全绿；软键盘/IME Host/FormMetrics/Route/Back/富文本/clipboard/autofill 全拒 |
 | **SEM-A1 Semantic Tree Sidecar（已落地）** | runtime-only SemEntry overlay 与 P0 A11yRegion 投影：role/label/value/state/actions/text range/bounds/parent、clip 可见性过滤与 merge-descendants | 不改 ViewKind/Props/Msg/AST/wire；动作/状态/角色词表单源转发 P0 已知域，未知 loud 拒；TextField value/selection 与 Button/Switch/ListItem 语义由 widget 同步；host + UITEST/GUI8 快照真链全绿；screen reader 服务、语义事件外发、action dispatch、SEM-A2 全后置 |
 | **DESIGN-D2 Design Token Pair Contract（已落地）** | Berry Design token 代数升级：paired bg/fg、light/dark/high-contrast scheme matrix、WCAG 对比度机器夹具、非线性格式塔 text-scale ladder、effective-pixel/quarter-vp grid 策略与主题切换 damage 语义 | 不改 ViewKind/Props/Msg/AST/wire；不复制 Material HCT，只借对比度思想；新增视觉面禁止孤立 background；三 scheme active text pair ≥4.5:1，Disabled 显式 inactive 豁免；text scale 只走离散 FontSize 档不线性乘布局；dark/high-contrast 不要求本刀迁移五 app golden；R3 config event 零新增通道 |
+| **LAYOUT-L4 Box Constraints & Intrinsic Boundary（已落地）** | 四元组 `min_w/max_w/min_h/max_h` 布局约束代数、Root intrinsic clamp、约束交/收缩/fit 纯函数与 L1 四档兼容糖；把 L2 flex share 与 L3 pane slot 表达为 constraints 纯函数 | 不重写布局引擎、不把 constraints 下放到每个节点、不新增 ViewKind/Props/Msg/AST/wire；旧 L1 四档与 GUI8 布局字节零漂；净树约束调用仍 documented no-op；测量调用不得高于现有单遍缓存基线；damage 仍裁真实 viewport |
 
 F2 不是重写 `berry-ui` 的许可状。先按 [GUI-3实施设计草案-v1.1.md](GUI-3实施设计草案-v1.1.md)、GUI-6 的既有契约与现有实现对齐；缺口先列清单，再小步补齐。
 

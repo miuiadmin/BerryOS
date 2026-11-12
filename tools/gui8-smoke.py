@@ -1437,6 +1437,10 @@ TOKEN_LINE = (
     "text_primary=1b2540 text_secondary=4f5d75 success=008b6f "
     "warning=fb8c00 danger=d02f3d selected=d6e4ff"
 )
+LAYOUT_L4_LINE = (
+    "UITESTL4 ok tight=0,0,800,1200 loose=0,0,700,900 "
+    "inf=0,0,1080,1920 single=41,41,41 noop=0,0"
+)
 TOKEN_KEYS = (
     "background", "surface", "surface_variant", "outline", "primary",
     "on_primary", "text_primary", "text_secondary", "success", "warning",
@@ -1673,6 +1677,9 @@ def verify_uitest_normal(
     )
     _require_exact_count(
         text, TOKEN_LINE, 2, "normal DESIGN-D2 token dump", log_path
+    )
+    _require_exact_count(
+        text, LAYOUT_L4_LINE, 2, "normal LAYOUT-L4 constrained boundary", log_path
     )
     _require_exact_count(
         text,
@@ -4707,6 +4714,7 @@ def self_test(args) -> int:
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=860 a11y=9\n"
             f"{TOKEN_LINE}\n"
+            f"{LAYOUT_L4_LINE}\n"
             "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
@@ -4743,6 +4751,7 @@ def self_test(args) -> int:
             "UITESTHIT ok node=button x=540 y=156\n"
             "UITESTAST ok bytes=860 a11y=9\n"
             f"{TOKEN_LINE}\n"
+            f"{LAYOUT_L4_LINE}\n"
             "UITESTSEM ok n=9 codec=9 btn=1.3.1 sw=4.3.1 li=5.3.1 tf=2.9.1\n"
             "UITESTADAPT ok v=2 basis=1056 list=12,623,348,120 "
             "detail=372,623,696,120\n"
@@ -5011,6 +5020,34 @@ def self_test(args) -> int:
             "DESIGN-D2 primary 色值造假",
             lambda: verify_uitest_normal(
                 fake_u.replace("primary=0074e0", "primary=0074e1"), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L4 marker 缺失",
+            lambda: verify_uitest_normal(
+                fake_u.replace(f"{LAYOUT_L4_LINE}\n", "", 1), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L4 loose 边界造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("loose=0,0,700,900", "loose=0,0,700,901"), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L4 noop 短路造假",
+            lambda: verify_uitest_normal(
+                fake_u.replace("noop=0,0", "noop=1,1"), snap_u, 1
+            ),
+        )
+        expect_error(
+            "LAYOUT-L4 marker 重复",
+            lambda: verify_uitest_normal(
+                fake_u.replace(
+                    f"{LAYOUT_L4_LINE}\n",
+                    f"{LAYOUT_L4_LINE}\n{LAYOUT_L4_LINE}\n", 1,
+                ),
+                snap_u, 1,
             ),
         )
         expect_error(

@@ -92,7 +92,7 @@ Final image SHA-256:
 
 - `docs/BerryDesign-D2TokenPairContract-v1.0.md`
 - `docs/BerryDesign-F3主题与基元-v1.0.md`
-- `docs/GUI框架地基路线-v1.18.md`
+- `docs/GUI框架地基路线-v1.19.md`
 - `docs/架构决策.md` ADR #82
 - `tools/design_tokens.toml`
 - `tools/design_ledger.py`

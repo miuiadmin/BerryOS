@@ -5,7 +5,7 @@
 > 定位：GUI-14 C1/D7 的第一实现刀。窗口激活/键盘路由仍归 gui-wmd；
 > 本刀只在 BerryUI 树内建立 component focus、1D Tab 顺序与激活语义。
 > 不做 FormMetrics、SafeArea、2D D-pad、FocusGroup/Restorer 或 Route 栈。
-> 执行序权威 = [GUI框架地基路线-v1.18.md](GUI框架地基路线-v1.18.md)。
+> 执行序权威 = [GUI框架地基路线-v1.19.md](GUI框架地基路线-v1.19.md)。
 
 ## §1 背景
 

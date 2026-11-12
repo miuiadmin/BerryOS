@@ -12,7 +12,7 @@ pub use crate::desc::{
     TextStyle, ViewKind, ViewSpec,
 };
 pub use crate::diagnostic::{HitDumpEntry, LayoutDumpEntry};
-pub use crate::layout::{Constraints, CrossAlign, LayoutStat};
+pub use crate::layout::{BoxConstraints, Constraints, CrossAlign, LayoutStat};
 pub use crate::metrics::{
     EmptyIconSource, FontSource, IconSource, MonospaceTextMetrics, TextMetrics,
 };

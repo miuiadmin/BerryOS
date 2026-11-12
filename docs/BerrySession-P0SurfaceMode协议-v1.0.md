@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-08
 >
-> 定位：GUI P0 的 UI 形态与 Surface Mode 协议规格。执行序权威 = [GUI框架地基路线-v1.18.md](GUI框架地基路线-v1.18.md)；多形态裁决 = ADR #67 与 [GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md)。本文冻结 `berry-guiproto::surface` 的词表、wire 布局、不变量与 host 测试；P1 已按本协议完成 escape 授权与生产接线，见 [BerrySession-P1SurfaceMode生产接线-v1.0.md](BerrySession-P1SurfaceMode生产接线-v1.0.md)。
+> 定位：GUI P0 的 UI 形态与 Surface Mode 协议规格。执行序权威 = [GUI框架地基路线-v1.19.md](GUI框架地基路线-v1.19.md)；多形态裁决 = ADR #67 与 [GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md)。本文冻结 `berry-guiproto::surface` 的词表、wire 布局、不变量与 host 测试；P1 已按本协议完成 escape 授权与生产接线，见 [BerrySession-P1SurfaceMode生产接线-v1.0.md](BerrySession-P1SurfaceMode生产接线-v1.0.md)。
 
 ## §1 一个契约，三条路径
 
