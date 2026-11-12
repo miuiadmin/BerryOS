@@ -109,6 +109,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vgpud"
+version = "0.1.0"
+dependencies = [
+ "berry-exec",
+ "berry-guiproto",
+ "berry-libc",
+ "berry-sys",
+ "berry-virtio",
+]
+
+[[package]]
 name = "vnet"
 version = "0.1.0"
 dependencies = [

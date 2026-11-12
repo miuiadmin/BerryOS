@@ -140,6 +140,11 @@ build-user:
     CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path ../drivers/bins/gui-inputd/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # GPU：vgpud（virtio-gpu 2D 显示后端——display info/create/attach/
+    # scanout/transfer/flush + present SUBMIT damage/flush）。
+    CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path ../drivers/bins/vgpud/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     # app-0（ADR #43/#44）：demo 双 app（appdemo console=true / appquiet
     # console=false——能力授予/缺席两半活证）no_std 同链 → staging 组装
     # {manifest.toml, bin/<名>} → mkapp 门禁五道产 .bap（cpio(newc) 包 =
@@ -387,6 +392,7 @@ build-user:
         bin/vblk=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vblk \
         bin/vnet=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vnet \
         bin/vprobe=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vprobe \
+        bin/vgpud=../drivers/cargo-target/aarch64-unknown-linux-musl/release/vgpud \
         bin/wc=bins/uu/cargo-target/aarch64-unknown-linux-musl/release/wc \
         bin/which=cargo-target/aarch64-unknown-linux-musl/release/which \
         --split 32
@@ -1052,6 +1058,7 @@ desktop:
             -device virtio-blk-device,drive=drv0 \
             -device virtio-tablet-device,id=tab0 \
             -device virtio-keyboard-device,id=kbd0 \
+            -device virtio-gpu-device,id=vgpu0,xres=1080,yres=1920 \
             -device ramfb \
             -fw_cfg name=opt/berry/display,string=1080x1920@60
         exit 0

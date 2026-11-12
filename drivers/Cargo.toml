@@ -8,7 +8,7 @@
 # host 测试见 test-host）——config 的 target 钉值只防 host 默认意外。
 # GUI-4 段① 起新增 bins/gui-inputd（virtio-input 输入服务，设计 =
 # docs/GUI-4实施设计草案.md；host 单测 + musl 双面 crate）。
-members = ["berry-virtio", "bins/vprobe", "bins/vblk", "bins/vnet", "bins/gui-inputd"]
+members = ["berry-virtio", "bins/vprobe", "bins/vblk", "bins/vnet", "bins/gui-inputd", "bins/vgpud"]
 resolver = "2"
 
 # 与迁移前各 bin 自带 [profile.release]（standalone 工作区根时生效）逐值

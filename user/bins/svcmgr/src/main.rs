@@ -669,6 +669,63 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             }
         }
     }
+    // ---- GPU：vgpud 显示后端预拉（产品相；验证 TCG 拓扑不挂设备）----
+    // vgpud 成功走完 display info/create/attach/scanout/transfer/flush 后发
+    // ready；svcmgr 才把 present/hdi 客户端端交给 gui-wmd。设备缺席/自验
+    // 失败 = ready 超时，关闭客户端端并回落 guifbd/ramfb（后端选择在服务
+    // 端点装配层，不改 present 协议、不抬 handle 帽）。
+    let mut vgpu_present_cli: Handle = 0;
+    let mut vgpu_hdi_cli: Handle = 0;
+    if !boot_probe {
+        if berry_vmo_get_size(H_MMIO, &mut msz) == 0 {
+            if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vgpud") {
+                let (p_cli, p_srv) = channel_pair();
+                let (h_cli, h_srv) = channel_pair();
+                match spawn_rootfs_elf(
+                    H_ROOTFS,
+                    &SpawnSpec {
+                        name: b"bin/vgpud",
+                        data_off,
+                        data_len,
+                        stdout: console,
+                        stack_pages: 16,
+                        stdin_feed: Some(&[]),
+                        stdin_handle: None,
+                        args: &[],
+                        extra_gifts: &[p_srv, h_srv],
+                        mmio_vmo: Some(H_MMIO),
+                        mmio_va: VIRTIO_MMIO_VA,
+                        intent: 0,
+                    },
+                ) {
+                    Ok(_child) => {
+                        ps_reg(b"vgpud", psp::STATE_ALIVE, 0); // 常驻不 reap（vblk 同款）
+                        if vgpu_ready(p_cli) {
+                            vgpu_present_cli = p_cli;
+                            vgpu_hdi_cli = h_cli;
+                        } else {
+                            // vgpud 已 park/自陷且服务端端在其表内；本侧关
+                            // 客户端端即呈现链无读者，下方回落 guifbd。
+                            if berry_handle_close(p_cli) != 0
+                                || berry_handle_close(h_cli) != 0
+                            {
+                                trap();
+                            }
+                        }
+                    }
+                    Err(()) => {
+                        ps_reg(b"vgpud", psp::STATE_SPAWNFAIL, 0);
+                        for h in [p_srv, p_cli, h_srv, h_cli] {
+                            if berry_handle_close(h) != 0 {
+                                trap();
+                            }
+                        }
+                        eco_skip(b"vgpud spawn");
+                    }
+                }
+            }
+        }
+    }
     // ---- GUI-1：guifbd（framebuffer 显示服务）预拉起 ----
     // EFI-GOP 路（run-efi/smoke-image）：boot 把 fb 窗包 MMIO VMO 插第 5
     // 插（H_FB）+ 几何 info VMO 第 6 插（H_FBINFO）；`-kernel` 主路零插表
@@ -690,9 +747,11 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 消费）；客户端端存函数局部变量（fresh 端非 dup）——GUI-5 起交紧随
     // 本 arm 的 gui-wmd 预拉 arm 换手迁移（ADR #61 端点换手；原直递
     // gfxdemo 形已退役）。0 = guifbd 未起 → wmd/gfxdemo arm 静默跳过。
-    let mut present_cli: Handle = 0;
-    let mut hdi_cli: Handle = 0;
-    if berry_vmo_get_size(H_FB, &mut msz) != 0 {
+    let mut present_cli: Handle = vgpu_present_cli;
+    let mut hdi_cli: Handle = vgpu_hdi_cli;
+    if present_cli != 0 {
+        // vgpu 后端已接管 present/hdi；guifbd/ramfb 保持验证与回退路径。
+    } else if berry_vmo_get_size(H_FB, &mut msz) != 0 {
         eco_skip(b"fb absent");
     } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/guifbd") {
         // 两对 (本端, 交接端)：客户端端本表留（下方 gfxdemo arm 消费），
@@ -3980,6 +4039,27 @@ fn wait(h: Handle, signals: u64) {
 }
 
 /// now = clock_read（失败自陷）。
+/// 等待 vgpud 后端 ready（1B `V`）。设备缺席时 vgpud park，本等待到帽
+/// 即回落 guifbd；真实设备路径在启动毫秒级到达。
+fn vgpu_ready(h: Handle) -> bool {
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + 3_000_000_000, &mut obs) != 0 {
+        return false;
+    }
+    let mut buf = [0u8; 1];
+    let mut nb = buf.len();
+    let mut hh = [0 as Handle; 1];
+    let mut nh = hh.len();
+    if berry_channel_recv(h, buf.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh) != 0
+        || nh != 0
+        || nb != 1
+        || buf[0] != b'V'
+    {
+        return false;
+    }
+    true
+}
+
 fn now() -> u64 {
     let mut t = 0u64;
     if berry_clock_read(CLOCK_MONOTONIC, &mut t) != 0 {

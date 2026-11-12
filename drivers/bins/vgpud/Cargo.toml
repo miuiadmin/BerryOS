@@ -1,0 +1,19 @@
+[package]
+name = "vgpud"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# vgpud —— virtio-gpu 2D 用户态显示驱动第一刀（GPU Phase 2）。
+#
+# 形态沿用 vblk/vnet/gui-inputd：musl target + berry-libc shim + berry-ld；
+# MMIO 窗经 SpawnSpec::mmio_vmo 映入。Phase 2 只建立真实 ctrlq 命令链：
+# GET_DISPLAY_INFO → RESOURCE_CREATE_2D(1080×1920 BGRX) → ATTACH_BACKING →
+# SET_SCANOUT → TRANSFER_TO_HOST_2D → RESOURCE_FLUSH，自验打 `VGPU ok`。
+# present/hdi backend 接线归 Phase 3；本进程自验后 park，不伪造显示加速。
+[dependencies]
+berry-libc = { path = "../../../user/berry-libc" }
+berry-sys = { path = "../../../user/berry-sys" }
+berry-exec = { path = "../../../user/berry-exec" }
+berry-guiproto = { path = "../../../user/berry-guiproto" }
+berry-virtio = { path = "../../berry-virtio" }

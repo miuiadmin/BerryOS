@@ -2,7 +2,7 @@
 
 > 版本：**1.0**｜2026-11-13
 >
-> 定位：Mac Apple Silicon 上 BerryOS 交互模拟器的现行体验规格。分辨率裁决 = 初始 **1080×1920@60**，不提供降分辨率默认值；验收确定性仍归 TCG/GUI8，交互性能归 HVF。
+> 定位：Mac Apple Silicon 上 BerryOS 交互模拟器的 HVF/CPU、产品快启动、输入与 damage 基线；显示后端现状由 [BerryMacEmulator-GPU1-v1.0.md](BerryMacEmulator-GPU1-v1.0.md) 接管。分辨率裁决 = 初始 **1080×1920@60**，不提供降分辨率默认值；验收确定性仍归 TCG/GUI8，交互性能归 HVF。
 >
 > 相关决策：[架构决策.md](架构决策.md) ADR #90；应用级桌面演示规格 = [BerryDemo-D1-v1.0.md](BerryDemo-D1-v1.0.md)；历史设备壳架构 = [Berry设备平台-CLI-first设计-v1.0.md](Berry设备平台-CLI-first设计-v1.0.md)。
 
@@ -121,7 +121,7 @@ EDK2 → BerryBoot handoff         eco: fb absent（无 GOP framebuffer）
 -device virtio-gpu-device        QEMU 可提供，BerryOS guest 驱动未实现
 ```
 
-因此现行显示路径仍为 guest CPU BerryGFX 光栅 + ramfb + QEMU Cocoa 宿主呈现；damage 合并只减少拷贝与无效重绘。可用的下一条 GPU 路线是自建 virtio-gpu 2D guest driver 或 Berry Mac Device Shell 的 Metal/共享环 DisplayList 呈现器，二者都必须另立规格与 ADR，不得用 `apple-gfx-pci` 空设备冒充 GPU 加速。
+HVF1 时点显示路径仍为 guest CPU BerryGFX 光栅 + ramfb + QEMU Cocoa 宿主呈现；该现状由 [BerryMacEmulator-GPU1-v1.0.md](BerryMacEmulator-GPU1-v1.0.md) 的 vgpud/virtio-gpu 2D 后端接管。`apple-gfx-pci` 仍不可用，禁以空设备冒充 GPU 加速。
 
 ## §8 不变量
 
