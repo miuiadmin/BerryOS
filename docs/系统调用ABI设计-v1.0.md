@@ -27,80 +27,81 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 ## 4. syscall 编号表（草案，分阶段）
 
 > "阶段"列对照 `架构决策.md` #20：v1=单核+抢占点+无 demand paging。
+> "执法起始"列 = 该 syscall **现行权利门控集**开始执法的日期（`tools/abi.toml` `enforced_since` 单源生成，路线图 P1-4）；`—` = 无权利门（零 handle / need=0 几何惯例）或未标注。
 
 <!-- @gen:syscalls begin -->
-| 号 | syscall | 说明 | 阶段 |
-|----|---------|------|------|
-| **handle / 通用对象** ||||
-| 0x01 | `handle_close` | 关闭 handle | v1 |
-| 0x02 | `handle_duplicate` | 复制（权限 ⊆ 原） | v1 |
-| 0x03 | `handle_replace` | 原子替换 handle 槽 | v1 |
-| 0x04 | `object_wait_one` | 等单个对象上的信号 | v1 |
-| 0x05 | `object_wait_many` | 等多个对象 | v1 |
-| 0x06 | `object_signal` | 泛型置/清信号（Event/Interrupt/Job） | v1 |
-| 0x07 | `object_get_info` | 查询对象信息（topic 分派） | v2 |
-| **内存 / VMO / Vmar** ||||
-| 0x11 | `vmo_create` | 建内存对象 | v1 |
-| 0x12 | `vmo_commit` | 提交物理页（eager VMO 面直接分配；demand VMO 供给链自 commit——G4-1 起） | v1 |
-| 0x13 | `vmo_decommit` | 归还页 | v1 |
-| 0x14 | `vmo_read` | 内核中介读（非映射访问） | v1 |
-| 0x15 | `vmo_write` | 内核中介写 | v1 |
-| 0x16 | `vmar_map` | VMO 映射进区间 | v1 |
-| 0x17 | `vmar_unmap` | 解除映射 | v1 |
-| 0x18 | `vmar_protect` | 改权限 | v1 |
-| 0x19 | `vmar_allocate` | 建子区间 | v1 |
-| 0x1A | `vmo_get_size` | 查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长） | v1 |
-| 0x1B | `vmo_get_phys` | 查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽） | v1 |
-| **pager** ||||
-| 0x21 | `pager_supply_pages` | 用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移） | v1 |
-| 0x22 | `pager_op_range` | 脏页/换出通知 | v3 |
-| 0x23 | `pager_supply_mapped` | 用户态 pager 给 demand VMO 供给一页（delta 恒等选源）：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ delta（源页偏移 = demand 页偏移 + delta，congruent ELF 段装载形） | v1 |
-| 0x24 | `pager_supply_mapped_table` | 用户态 pager 批供：入参 tbl（PagerWindow{dv:u32, sv:u32, delta:i64} 16B/项 repr(C) 数组）+ n（∈[1,32]）——多窗一次收货，rc = count-wins：>0 = 供给成功页数（部分成功部分计、不回滚），0 供才报 errno | v1 |
-| **进程 / 线程** ||||
-| 0x31 | `process_create` | 建进程 + 出 root Vmar（双出参；job v1 恒 0） | v1 |
-| 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 |
-| 0x33 | `process_exit` | 退出 | v1 |
-| 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 |
-| 0x35 | `thread_start` | 投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形） | v1 |
-| 0x36 | `thread_exit` | 线程退出 | v1 |
-| 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 |
-| 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 |
-| 0x39 | `thread_set_deadline` | 设截止期（软实时） | v2 |
-| 0x3A | `process_get_exit_code` | 查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查） | v1 |
-| 0x3B | `process_terminate` | 外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。 | v1 |
-| **调度 1.1（S0–S3 ABI）** ||||
-| 0x3C | `sched_setattr` | 声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；目标 Thread 覆盖 / Process 默认；size 超界且尾部非零 → -E2BIG | 1.1 |
-| 0x3D | `sched_getattr` | 查询 effective 调度属性（Thread = Process 默认 ∪ Thread 覆盖；declared/source 走 telemetry；size 前向兼容） | 1.1 |
-| 0x3E | `process_suspend` | 冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token) | 1.1 |
-| 0x3F | `thread_yield` | 主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0 | 1.1 |
-| **异常** ||||
-| 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 |
-| **IPC / event / futex** ||||
-| 0x51 | `channel_create` | 建端点对 | v1 |
-| 0x52 | `channel_send` | 发消息 + handle 迁移 | v1 |
-| 0x53 | `channel_recv` | 收消息 | v1 |
-| 0x54 | `event_create` | 建事件对象 | v1 |
-| 0x55 | `futex_wait` | 用户态同步（pthread 基础） | v2 |
-| 0x56 | `futex_wake` | 唤醒等待者 | v2 |
-| **时间 / 定时器** ||||
-| 0x61 | `clock_read` | 读单调/壁钟 | v1 |
-| 0x62 | `timer_create` | 建定时器对象 | v2 |
-| 0x63 | `timer_set` | 设定时刻 | v2 |
-| **设备**（因"用户态为主+关键暂留"留内核） ||||
-| 0x71 | `interrupt_create` | 建 IRQ 对象 | v2 |
-| 0x72 | `bind_irq` | IRQ → signal 一个 Event | v2 |
-| 0x73 | `map_device_memory` | Resource → 设备 MMIO 的 VMO | v2 |
-| **命名空间**（路径式） ||||
-| 0x81 | `namespace_open` | `open("/svc/fs")` → handle | v3 |
-| 0x82 | `namespace_mount` | 服务把 channel 挂到路径 | v3 |
-| **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`） ||||
-| 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 |
-| 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 |
-| **安全 / 远程证明**（预留） ||||
-| 0x85 | `berry_attest` | 远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法） | v1 |
-| **信号**（POSIX 兼容——libc 协同式投递，A7-4） ||||
-| 0x86 | `signal_send` | 向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配 | v1 |
-| 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 |
+| 号 | syscall | 说明 | 阶段 | 执法起始 |
+|----|---------|------|------|----------|
+| **handle / 通用对象** |||||
+| 0x01 | `handle_close` | 关闭 handle | v1 | — |
+| 0x02 | `handle_duplicate` | 复制（权限 ⊆ 原） | v1 | — |
+| 0x03 | `handle_replace` | 原子替换 handle 槽 | v1 | — |
+| 0x04 | `object_wait_one` | 等单个对象上的信号 | v1 | — |
+| 0x05 | `object_wait_many` | 等多个对象 | v1 | — |
+| 0x06 | `object_signal` | 泛型置/清信号（Event/Interrupt/Job） | v1 | 2026-10-16 |
+| 0x07 | `object_get_info` | 查询对象信息（topic 分派） | v2 | — |
+| **内存 / VMO / Vmar** |||||
+| 0x11 | `vmo_create` | 建内存对象 | v1 | — |
+| 0x12 | `vmo_commit` | 提交物理页（eager VMO 面直接分配；demand VMO 供给链自 commit——G4-1 起） | v1 | 2026-10-15 |
+| 0x13 | `vmo_decommit` | 归还页 | v1 | 2026-10-15 |
+| 0x14 | `vmo_read` | 内核中介读（非映射访问） | v1 | 2026-10-15 |
+| 0x15 | `vmo_write` | 内核中介写 | v1 | 2026-10-15 |
+| 0x16 | `vmar_map` | VMO 映射进区间 | v1 | 2026-10-16 |
+| 0x17 | `vmar_unmap` | 解除映射 | v1 | 2026-10-15 |
+| 0x18 | `vmar_protect` | 改权限 | v1 | 2026-10-15 |
+| 0x19 | `vmar_allocate` | 建子区间 | v1 | 2026-10-15 |
+| 0x1A | `vmo_get_size` | 查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长） | v1 | — |
+| 0x1B | `vmo_get_phys` | 查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽） | v1 | 2026-11-12 |
+| **pager** |||||
+| 0x21 | `pager_supply_pages` | 用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移） | v1 | 2026-11-06 |
+| 0x22 | `pager_op_range` | 脏页/换出通知 | v3 | — |
+| 0x23 | `pager_supply_mapped` | 用户态 pager 给 demand VMO 供给一页（delta 恒等选源）：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ delta（源页偏移 = demand 页偏移 + delta，congruent ELF 段装载形） | v1 | 2026-11-07 |
+| 0x24 | `pager_supply_mapped_table` | 用户态 pager 批供：入参 tbl（PagerWindow{dv:u32, sv:u32, delta:i64} 16B/项 repr(C) 数组）+ n（∈[1,32]）——多窗一次收货，rc = count-wins：>0 = 供给成功页数（部分成功部分计、不回滚），0 供才报 errno | v1 | 2026-11-08 |
+| **进程 / 线程** |||||
+| 0x31 | `process_create` | 建进程 + 出 root Vmar（双出参；job v1 恒 0） | v1 | — |
+| 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 | 2026-10-15 |
+| 0x33 | `process_exit` | 退出 | v1 | — |
+| 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 | 2026-10-15 |
+| 0x35 | `thread_start` | 投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形） | v1 | 2026-10-28 |
+| 0x36 | `thread_exit` | 线程退出 | v1 | — |
+| 0x37 | `thread_sleep` | 睡到 deadline（nanosleep 等价） | v1 | — |
+| 0x38 | `thread_set_priority` | 设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）** | v2 | — |
+| 0x39 | `thread_set_deadline` | 设截止期（软实时） | v2 | — |
+| 0x3A | `process_get_exit_code` | 查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查） | v1 | — |
+| 0x3B | `process_terminate` | 外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。 | v1 | 2026-10-28 |
+| **调度 1.1（S0–S3 ABI）** |||||
+| 0x3C | `sched_setattr` | 声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；目标 Thread 覆盖 / Process 默认；size 超界且尾部非零 → -E2BIG | 1.1 | 2026-11-06 |
+| 0x3D | `sched_getattr` | 查询 effective 调度属性（Thread = Process 默认 ∪ Thread 覆盖；declared/source 走 telemetry；size 前向兼容） | 1.1 | 2026-11-06 |
+| 0x3E | `process_suspend` | 冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token) | 1.1 | 2026-11-06 |
+| 0x3F | `thread_yield` | 主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0 | 1.1 | — |
+| **异常** |||||
+| 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 | — |
+| **IPC / event / futex** |||||
+| 0x51 | `channel_create` | 建端点对 | v1 | — |
+| 0x52 | `channel_send` | 发消息 + handle 迁移 | v1 | 2026-11-11 |
+| 0x53 | `channel_recv` | 收消息 | v1 | 2026-10-16 |
+| 0x54 | `event_create` | 建事件对象 | v1 | — |
+| 0x55 | `futex_wait` | 用户态同步（pthread 基础） | v2 | — |
+| 0x56 | `futex_wake` | 唤醒等待者 | v2 | — |
+| **时间 / 定时器** |||||
+| 0x61 | `clock_read` | 读单调/壁钟 | v1 | — |
+| 0x62 | `timer_create` | 建定时器对象 | v2 | — |
+| 0x63 | `timer_set` | 设定时刻 | v2 | — |
+| **设备**（因"用户态为主+关键暂留"留内核） |||||
+| 0x71 | `interrupt_create` | 建 IRQ 对象 | v2 | — |
+| 0x72 | `bind_irq` | IRQ → signal 一个 Event | v2 | — |
+| 0x73 | `map_device_memory` | Resource → 设备 MMIO 的 VMO | v2 | — |
+| **命名空间**（路径式） |||||
+| 0x81 | `namespace_open` | `open("/svc/fs")` → handle | v3 | — |
+| 0x82 | `namespace_mount` | 服务把 channel 挂到路径 | v3 | — |
+| **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`） |||||
+| 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 | 2026-11-11 |
+| 0x84 | `telemetry_open` | 打开遥测环（只读） | v3 | — |
+| **安全 / 远程证明**（预留） |||||
+| 0x85 | `berry_attest` | 远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法） | v1 | — |
+| **信号**（POSIX 兼容——libc 协同式投递，A7-4） |||||
+| 0x86 | `signal_send` | 向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配 | v1 | 2026-10-31 |
+| 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 | — |
 <!-- @gen:syscalls end -->
 
 **计数**：v1 37 号在册 / 36 已实现（0x85 `berry_attest` 远程证明预留位在册未实现——恒 `-ENOTSUP`，SEC-01 件 11；0x86/0x87 `signal_send`/`signal_take` 已随 A7-4 落地实现——门 C 裁定 A add-only，2026-10；0x21 `pager_supply_pages` v2 号激活——G4-2，2026-11；0x23 `pager_supply_mapped` 已随 X-3b 挂派发翻真——G4-4 门 C 裁 A add-only，2026-11；0x24 `pager_supply_mapped_table` 批供表批——X-6 刀① add-only，2026-11）；**1.1 增 4（0x3C–0x3F；0x3C/0x3D/0x3F 已随 S1 收口；0x3E 进程全冻 + SINGLE_THREAD/FREEZE_READY 已随 S3-b 收口，四号 `implemented=true`）**；v2 增 11；v3 增 5（namespace + 策略注入/遥测）；**总数 57**（41 在册 = 37 v1 + 4 个 1.1 实现；再 + v2 11 + v3 5；add-only 逐刀扩号已越过「~30–45」预算带——冻结纪律不变，见 §8.5）。

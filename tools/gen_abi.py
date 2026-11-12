@@ -29,6 +29,11 @@
 elf2flat/mkcpio/size.py --assert-flip 的房子风格；不用 build.rs 运行时生成
 （berry-sys 无 build.rs；rerun-if-changed 漏列 = 静默旧字节，G-eco-b 教训）。
 
+执法台账（路线图 P1-4）：abi.toml syscall 行 enforced_since（TOML 裸日期）
+= 现行权利门控集执法起始日——文档 §4 表「执法起始」列；live + 涉 handle +
+缺登记且不在 NO_GATE_SYSCALLS 白名单 → WARN（建议性，abi-check 不红；
+selftest 钉在册零 WARN）。
+
 环境要求：Python ≥3.11（stdlib tomllib；macOS CLT 自带 /usr/bin/python3 是
 3.9 跑不了——交互 PATH 的 brew python 不受影响，版本不足时给出干净 FAIL）。
 
@@ -37,6 +42,7 @@ elf2flat/mkcpio/size.py --assert-flip 的房子风格；不用 build.rs 运行�
 """
 
 import argparse
+import datetime
 import re
 import sys
 
@@ -162,6 +168,13 @@ def validate(d: dict) -> dict:
                    "（ADR #11 号面帽——回收/合并后再加号）")
     if nr_registered > nr_defined:
         raise Fail(f"abi.toml: nr_registered={nr_registered} > nr_defined={nr_defined}（口径反常）")
+    # enforced_since（路线图 P1-4 安全执法台账）：只收 TOML 裸日期（tomllib →
+    # datetime.date）——格式错在 TOML 层即炸；引号字符串显式拒（留给消费面猜
+    # 就是漂移面）。
+    for s in rows:
+        if "enforced_since" in s and not isinstance(s["enforced_since"], datetime.date):
+            raise Fail(f"abi.toml: syscall {s['name']} enforced_since 应为 TOML 裸日期"
+                       "（如 2026-11-12；引号字符串不收）")
     for sec in ("clock", "option", "right", "signal", "errno", "wakesrc"):
         names = [e["name"] for e in d[sec]]
         if len(set(names)) != len(names):
@@ -215,6 +228,56 @@ def four_tuple(d: dict) -> tuple:
     defined = const_rows(d)
     registered = [s for s in defined if s.get("implemented", True)]
     return (d["meta"]["nr_total"], len(defined), len(registered), d["meta"]["nr_ceiling"])
+
+
+# ------------------------------------------------ enforced_since 执法台账（P1-4）
+
+# 在册**无权利门**白名单（live 面）：涉 handle 但设计上不设权利门的 syscall。
+# 这是新 syscall 的绊网：要么带 enforced_since（有门控即登记），要么经评审进
+# 本单（无门控正当）——两者皆无 = WARN（防再产裸面，R2 安全审计建议）。
+# abi.toml 无逐 syscall 参数表（§8.3 原型层 v2 挂账），「涉 handle」只能在此
+# 单源裁决；新加零 handle 号须同步进单（理由随行注记）。
+NO_GATE_SYSCALLS = {
+    "handle_close",           # 表槽收口：close 不需权利（Zircon 同形）
+    "handle_duplicate",       # ⊆ 派生约束在席；RIGHT_DUPLICATE 位执法 = P3-1 挂账
+    "handle_replace",         # 槽位原子换：类型门无权利门
+    "object_wait_one",        # 等待不需权利（12 位 rights 表无 WAIT）
+    "object_wait_many",       # 同上
+    "vmo_create",             # 创建面：产物授位 READ|WRITE|MAP|DUPLICATE 在册
+    "vmo_get_size",           # 对象几何非内容：need=0 惯例
+    "process_create",         # v1 无父 handle（job 恒 0）；设防 = P3-2 挂账
+    "process_exit",           # 当前进程自退：零 handle
+    "process_get_exit_code",  # 对象几何非内容：need=0 惯例
+    "thread_exit",            # 当前线程自退：零 handle
+    "thread_sleep",           # 零 handle
+    "thread_yield",           # 零 handle（等价内核 yield_now）
+    "channel_create",         # 创建面：产物授位 SEND|RECV|DUPLICATE|TRANSFER 在册
+    "event_create",           # 创建面：产物授位 SIGNAL|DUPLICATE|TRANSFER 在册
+    "clock_read",             # 零 handle（单调钟全局面）
+    "signal_take",            # 当前进程 pending 自面：零 handle
+}
+
+
+def row_live(s: dict) -> bool:
+    """是否已挂派发（live）：显式 implemented 覆盖一切；缺省 = v1/1.1 在册即
+    实现（const 层契约——v2/v3 行不缺省实现；0x83 类「v3 但字面量挂派发」的
+    例外行自带 enforced_since，不依赖本判定入台账）。"""
+    if "implemented" in s:
+        return bool(s["implemented"])
+    return s["stage"] in ("v1", "1.1")
+
+
+def enforcement_warnings(d: dict) -> list:
+    """执法台账 WARN（P1-4）：live + 无 enforced_since + 不在无门白名单 → 疑似
+    涉 handle 忘加能力门控。建议性（不 FAIL——abi-check 照 PASS）；WARN 消面
+    二选一：补门控并登记 enforced_since，或评审进 NO_GATE_SYSCALLS 显式豁免。"""
+    out = []
+    for s in all_rows(d):
+        if not row_live(s) or "enforced_since" in s or s["name"] in NO_GATE_SYSCALLS:
+            continue
+        out.append(f"0x{s['num']:02X} {s['name']}：implemented 且疑似涉 handle，缺"
+                   " enforced_since（补门控并登记执法起始日，或评审进 NO_GATE_SYSCALLS 豁免单）")
+    return out
 
 
 # ---------------------------------------------------------------- Rust 生成
@@ -421,18 +484,21 @@ def gen_arch_rs(d: dict) -> str:
 # §4 表头 + 分隔行——HTML 注释 marker 独占一行是 GFM 的 HTML block、会按
 # 「另一块级结构开始处」断表：marker 对只能**包整表**放表外，故表头也归生成
 # 物（对抗审查 [3]/[8] 修——marker 夹在分隔行与表体间 = 整表渲染塌成竖线文本）。
+# 「执法起始」列（P1-4 台账面）= enforced_since 裸日期；缺登记（无门/未标注）
+# 出「—」。
 DOC_TABLE_HEADER = [
-    "| 号 | syscall | 说明 | 阶段 |",
-    "|----|---------|------|------|",
+    "| 号 | syscall | 说明 | 阶段 | 执法起始 |",
+    "|----|---------|------|------|----------|",
 ]
 
 
 def doc_syscall_table(d: dict) -> str:
     L = list(DOC_TABLE_HEADER)
     for g in d["group"]:
-        L.append(f"| {g['title']} ||||")
+        L.append(f"| {g['title']} |||||")
         for s in g["syscall"]:
-            L.append(f"| 0x{s['num']:02X} | `{s['name']}` | {s['desc']} | {s['stage']} |")
+            es = str(s["enforced_since"]) if "enforced_since" in s else "—"
+            L.append(f"| 0x{s['num']:02X} | `{s['name']}` | {s['desc']} | {s['stage']} | {es} |")
     return "\n".join(L)
 
 
@@ -786,6 +852,15 @@ stage = "v1"
     expect_fail("validate 拒 name 重复", lambda: validate(mut(right=[
         {"name": "READ", "expr": "1 << 0"}, {"name": "READ", "expr": "1 << 1"}])),
         "name 重复")
+    # enforced_since（P1-4 台账）：裸日期收、字符串拒
+    check("validate 收裸日期 enforced_since", (lambda: (
+        validate(_tl.loads(base_toml.replace(
+            'desc = "d"\nstage = "v1"',
+            'desc = "d"\nstage = "v1"\nenforced_since = 2026-01-01'))), True)[1])())
+    expect_fail("validate 拒字符串 enforced_since", lambda: validate(_tl.loads(
+        base_toml.replace('desc = "d"\nstage = "v1"',
+                          'desc = "d"\nstage = "v1"\nenforced_since = "2026-01-01"'))),
+        "裸日期")
 
     # --- 5. 行筛选三分口径：v1_rows/const_rows/all_rows（v1+1.1 常量层 /
     #     全量表 / v1 在册） ---
@@ -807,6 +882,31 @@ stage = "v1"
     ]}]}
     check("four_tuple 四口径", four_tuple(ft) == (1, 4, 2, 45),
           f"got {four_tuple(ft)}")
+
+    # --- 6.5 执法台账（P1-4）：row_live 三态 + WARN 绊网（恰响「live + 缺
+    #      登记 + 未豁免」行；白名单/已登记/非 live 全静默）+ 在册零 WARN 钉板
+    #      （台账随本刀收口为零——新 syscall 裸面 = selftest 红，评审判走
+    #      enforced_since 或 NO_GATE_SYSCALLS 二门之一）---
+    check("row_live 缺省看 stage（v1/1.1 真、v2/v3 假）",
+          row_live({"stage": "v1"}) and row_live({"stage": "1.1"})
+          and not row_live({"stage": "v2"}) and not row_live({"stage": "v3"}))
+    check("row_live 显式 implemented 覆盖一切",
+          row_live({"stage": "v3", "implemented": True})
+          and not row_live({"stage": "v1", "implemented": False}))
+    led = {"group": [{"title": "g", "syscall": [
+        {"num": 0x01, "name": "a", "desc": "d", "stage": "v1"},           # 响：缺登记未豁免
+        {"num": 0x02, "name": "clock_read", "desc": "d", "stage": "v1"},  # 静：白名单
+        {"num": 0x03, "name": "c", "desc": "d", "stage": "v1",
+         "enforced_since": datetime.date(2026, 11, 12)},                  # 静：已登记
+        {"num": 0x04, "name": "e", "desc": "d", "stage": "v2"},           # 静：非 live
+        {"num": 0x05, "name": "f", "desc": "d", "stage": "v1",
+         "implemented": False},                                           # 静：显式未实现
+    ]}]}
+    ws = enforcement_warnings(led)
+    check("台账 WARN 恰响缺登记行", len(ws) == 1 and ws[0].startswith("0x01 a"),
+          f"got {ws}")
+    check("在册台账零 WARN（登记 24 + 豁免单收口）",
+          enforcement_warnings(load()) == [])
 
     # --- 7. syz 投影：syz_int 宽度映射 + 拒面、syz_val 同形不重复、
     #     stage 标记四态 ---
@@ -839,6 +939,8 @@ stage = "v1"
           and "\nX\n" not in patched and "\nY\n" not in patched and "v1 计数 = 1" in patched)
     check("patch_doc 表头契约在席", DOC_TABLE_HEADER[0] in patched
           and DOC_TABLE_HEADER[1] in patched)
+    check("patch_doc 执法起始列在席（缺登记行出「—」）",
+          "执法起始" in patched and "| — |" in patched)
     check("patch_doc platform C 行在席", "#define BERRY_PLATFORM_LEVEL" in patched)
     expect_fail("patch_doc 拒重复 marker 对", lambda: patch_doc(
         doc_ok.replace("<!-- @gen:syscalls begin -->",
@@ -979,6 +1081,10 @@ def main() -> int:
         return selftest()
     try:
         d = load()
+        # 执法台账 WARN（P1-4）：建议性——不 FAIL（abi-check 照 PASS），但
+        # selftest 钉「在册台账零 WARN」；消面 = 补 enforced_since 或进豁免单。
+        for w in enforcement_warnings(d):
+            print(f"abi-gen: WARN——enforced_since 台账：{w}", file=sys.stderr)
         k, u, doc, syz, arch = build_all(d)
         if args.check:
             targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz), (ARCH_RS, arch)]

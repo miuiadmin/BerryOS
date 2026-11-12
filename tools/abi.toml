@@ -313,6 +313,11 @@ desc = "EFAULT：用户缓冲不可访问（未映射/只读页要写/越出用�
 # ---- §4 编号表（全 57 行：v1 37 + 1.1 4 + v2 11 + v3 5；title 含 **粗体** 原样）----
 # implemented = false ⇒ 在册未实现（内核回落 -ENOTSUP；berry-sys 侧常量照发、
 # 无 wrapper——生成器对无消费者常量豁免 dead_code，wrapper 随 §8.3 原型层 v2 挂账）。
+# enforced_since（路线图 P1-4，2026-11-12）= 该 syscall **现行权利门控集**开始
+# 执法的日期（TOML 裸日期；取最近一次门控变更的落地日，如 channel_send 记
+# arch-r2 补 TRANSFER 而非 3-4b 首门）。缺省 ⇒ 未执法或未标注——gen_abi.py 对
+# 「已实现 + 涉 handle + 无此列」行产 WARN（安全执法台账：防新 syscall 忘加
+# 能力门控再产裸面——R2 安全审计建议，沿革 §第二轮架构研究）。
 
 [[group]]
 title = "**handle / 通用对象**"
@@ -348,6 +353,7 @@ num = 0x06
 name = "object_signal"
 desc = '泛型置/清信号（Event/Interrupt/Job）'
 stage = "v1"
+enforced_since = 2026-10-16  # RIGHT_SIGNAL 门（3-4c，c8148c9e）
 note = '3-4c 落地：v1 仅 Event 可 signal（thread/process 信号面随后续步）。'
 [[group.syscall]]
 num = 0x07
@@ -367,41 +373,49 @@ num = 0x12
 name = "vmo_commit"
 desc = '提交物理页（eager VMO 面直接分配；demand VMO 供给链自 commit——G4-1 起）'
 stage = "v1"
+enforced_since = 2026-10-15  # RIGHT_WRITE 门（3-2 全量门控，5c022729）
 [[group.syscall]]
 num = 0x13
 name = "vmo_decommit"
 desc = '归还页'
 stage = "v1"
+enforced_since = 2026-10-15  # RIGHT_WRITE 门（3-2，5c022729）
 [[group.syscall]]
 num = 0x14
 name = "vmo_read"
 desc = '内核中介读（非映射访问）'
 stage = "v1"
+enforced_since = 2026-10-15  # RIGHT_READ 门（3-2，5c022729）
 [[group.syscall]]
 num = 0x15
 name = "vmo_write"
 desc = '内核中介写'
 stage = "v1"
+enforced_since = 2026-10-15  # RIGHT_WRITE 门（3-2，5c022729）
 [[group.syscall]]
 num = 0x16
 name = "vmar_map"
 desc = 'VMO 映射进区间'
 stage = "v1"
+enforced_since = 2026-10-16  # Vmar RIGHT_MAP + Vmo MAP|READ|WRITE（3b3 M6 补 READ 防 dup 收紧逃逸，5dbbcb77；首门 3-2 5c022729）
 [[group.syscall]]
 num = 0x17
 name = "vmar_unmap"
 desc = '解除映射'
 stage = "v1"
+enforced_since = 2026-10-15  # RIGHT_MAP 门（3-2，5c022729）
 [[group.syscall]]
 num = 0x18
 name = "vmar_protect"
 desc = '改权限'
 stage = "v1"
+enforced_since = 2026-10-15  # RIGHT_MANAGE 门（3-2，5c022729）
 [[group.syscall]]
 num = 0x19
 name = "vmar_allocate"
 desc = '建子区间'
 stage = "v1"
+enforced_since = 2026-10-15  # RIGHT_MANAGE 门（3-2，5c022729）
 [[group.syscall]]
 num = 0x1A
 name = "vmo_get_size"
@@ -414,6 +428,7 @@ num = 0x1B
 name = "vmo_get_phys"
 desc = '查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽）'
 stage = "v1"
+enforced_since = 2026-11-12  # RIGHT_READ 门（arch-r2 M4：need 0→READ 拒零权利观察者，26aa34ba；desc 几何惯例句为门控加强前旧文，语义以本列为准）
 note = 'P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。'
 
 [[group]]
@@ -423,6 +438,7 @@ num = 0x21
 name = "pager_supply_pages"
 desc = '用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移）'
 stage = "v1"
+enforced_since = 2026-11-06  # 目标 RIGHT_SET_POLICY + 源 RIGHT_READ 双门（G4-2，4319cb0b）
 note = '''G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
 裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
 pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款）+ 唤 faulter。
@@ -438,6 +454,7 @@ num = 0x23
 name = "pager_supply_mapped"
 desc = '用户态 pager 给 demand VMO 供给一页（delta 恒等选源）：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ delta（源页偏移 = demand 页偏移 + delta，congruent ELF 段装载形）'
 stage = "v1"
+enforced_since = 2026-11-07  # 同 0x21 共路双门 SET_POLICY+READ（X-3b，cef4caad）
 note = '''X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
 多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
 2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
@@ -448,6 +465,7 @@ num = 0x24
 name = "pager_supply_mapped_table"
 desc = '用户态 pager 批供：入参 tbl（PagerWindow{dv:u32, sv:u32, delta:i64} 16B/项 repr(C) 数组）+ n（∈[1,32]）——多窗一次收货，rc = count-wins：>0 = 供给成功页数（部分成功部分计、不回滚），0 供才报 errno'
 stage = "v1"
+enforced_since = 2026-11-08  # 同 0x21 逐窗双门 SET_POLICY+READ（X-6 刀①，e774406e）
 note = '''X-6 刀①（批供提速）表批形，冻结裁决 2026-11-08（设计稿
 `X6批供提速设计-v1.0.md` §7 主裁③「全套照提案冻」）：号 0x24 / N=32
 三源镜像（EREQ_SLOTS / PAGER_SLOTS / 表帽）/ count-in-x0 / PagerWindow
@@ -468,6 +486,7 @@ num = 0x32
 name = "process_start"
 desc = '启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值）'
 stage = "v1"
+enforced_since = 2026-10-15  # Process RIGHT_MANAGE 门（3-3，91fb5893）
 [[group.syscall]]
 num = 0x33
 name = "process_exit"
@@ -479,11 +498,13 @@ num = 0x34
 name = "thread_create"
 desc = '建线程（未启动，入口随 process_start）'
 stage = "v1"
+enforced_since = 2026-10-15  # 父 Process RIGHT_MANAGE 门（3-3，91fb5893）
 [[group.syscall]]
 num = 0x35
 name = "thread_start"
 desc = '投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形）'
 stage = "v1"
+enforced_since = 2026-10-28  # Thread RIGHT_MANAGE 门（T-1，bf460904）
 note = 'T-1 落地：门控 Thread MANAGE；所属 Process 须已 start 且 Alive（否则 -EBADSTATE）；线程入口不得返回（返回 = fault 杀兜底）——pthread/线程库的内核地基。'
 [[group.syscall]]
 num = 0x36
@@ -517,6 +538,7 @@ num = 0x3B
 name = "process_terminate"
 desc = '外部终止进程：`code` 落为该进程退出码；目标走与自退出同一收口（TERMINATED 唤醒 / 子表 drain / 任务摘队入 REAPQ），不开第二退出面。门控 Process **MANAGE**；自杀 → -EBADSTATE（退自己走 process_exit）；已退 → -EBADSTATE。'
 stage = "v1"
+enforced_since = 2026-10-28  # Process RIGHT_MANAGE 门（C-4b 入册即门控，e501bc86）
 note = 'C-4b（Ctrl-C/kill 面）落地：VM 草案 R5 预批的唯一扩号。bsh Ctrl-C 杀前台子进程、`kill <pid>` 的内核原语；未 start 的进程可终止（收口免任务面）。'
 
 [[group]]
@@ -527,6 +549,7 @@ name = "sched_setattr"
 desc = '声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；目标 Thread 覆盖 / Process 默认；size 超界且尾部非零 → -E2BIG'
 stage = "1.1"
 implemented = true
+enforced_since = 2026-11-06  # Thread 覆盖/Process 默认双臂 RIGHT_SET_POLICY（S1，6bca1bd2）
 note = 'S1 收口：56B attr 解析/校验/存储（Thread 覆盖 + Process 默认）已落；S2/S5 消费随后续刀。'
 [[group.syscall]]
 num = 0x3D
@@ -534,6 +557,7 @@ name = "sched_getattr"
 desc = '查询 effective 调度属性（Thread = Process 默认 ∪ Thread 覆盖；declared/source 走 telemetry；size 前向兼容）'
 stage = "1.1"
 implemented = true
+enforced_since = 2026-11-06  # Thread/Process RIGHT_INSPECT（S1，6bca1bd2）
 note = 'S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。'
 [[group.syscall]]
 num = 0x3E
@@ -541,6 +565,7 @@ name = "process_suspend"
 desc = '冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token)'
 stage = "1.1"
 implemented = true
+enforced_since = 2026-11-06  # Process/Thread(SINGLE_THREAD) RIGHT_MANAGE（S3-a，c58b5293）
 note = 'S3-b 收口：进程全冻 + Thread SINGLE_THREAD（FREEZE_READY 自证、末 token thaw 自动清位）均落。'
 [[group.syscall]]
 num = 0x3F
@@ -570,11 +595,13 @@ num = 0x52
 name = "channel_send"
 desc = '发消息 + handle 迁移'
 stage = "v1"
+enforced_since = 2026-11-11  # RIGHT_SEND + 随行 handle RIGHT_TRANSFER（arch-r2 M2 补 TRANSFER，2abcfed2；SEND 首门 3-4b 830e7fb9）
 [[group.syscall]]
 num = 0x53
 name = "channel_recv"
 desc = '收消息'
 stage = "v1"
+enforced_since = 2026-10-16  # RIGHT_RECV 门（3-4b，830e7fb9）
 [[group.syscall]]
 num = 0x54
 name = "event_create"
@@ -648,6 +675,7 @@ num = 0x83
 name = "policy_bind"
 desc = '注册 AI 策略注入通道（共享环，SET_POLICY）'
 stage = "v3"
+enforced_since = 2026-11-11  # auth Process RIGHT_MANAGE 三门控（arch-r2 H1 补门，55e08b1e——EL0 裸调全拒）
 [[group.syscall]]
 num = 0x84
 name = "telemetry_open"
@@ -672,6 +700,7 @@ name = "signal_send"
 desc = '向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配'
 stage = "v1"
 implemented = true
+enforced_since = 2026-10-31  # h≠0 Process RIGHT_MANAGE（A7-4 段②，0fe30aa2）
 note = 'A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案-v1.0.md` §3.1。'
 [[group.syscall]]
 num = 0x87
