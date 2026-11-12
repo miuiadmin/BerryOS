@@ -7,7 +7,7 @@
 # 平像程序），test 构建放开 std 跑默认 harness——家族既有形态。
 [package]
 name = "berry-manifest"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "BerryOS app manifest v0: pure parser for .bap manifests (app-0, ADR #43/#44)"
 license = "Apache-2.0"

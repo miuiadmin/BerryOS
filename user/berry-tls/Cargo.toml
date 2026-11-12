@@ -1,6 +1,6 @@
 [package]
 name = "berry-tls"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
 # T-1 §1（docs/T-1实施设计草案.md 裁决三）：TLS 拷贝式放置纯函数 crate

@@ -1,6 +1,6 @@
 [package]
 name = "berry-winplan"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # X-5 demand 装载窗规划纯函数 crate：`demand_plan_wins`（三色窗几何 +

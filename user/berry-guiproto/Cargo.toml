@@ -1,6 +1,6 @@
 [package]
 name = "berry-guiproto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # GUI-4 段①（docs/GUI-4实施设计草案.md §3）：GUI wire 协议纯函数 crate，
 # `berry-fsproto`/`berry-psproto`/`berry-netdproto` 先例（「解析器即产品」）

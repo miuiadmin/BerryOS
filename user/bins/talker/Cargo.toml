@@ -1,6 +1,6 @@
 [package]
 name = "talker"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # G-eco-b 编译子程序：talker（4-6 A 半第二服务换轨）。凭交接件里的
 # [console 别名, t2] 与 echo2 直接往返 DEMO_REQ，首圈验回显打 `DEMO ok`

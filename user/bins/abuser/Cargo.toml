@@ -1,6 +1,6 @@
 [package]
 name = "abuser"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # G-eco-a 首个编译用户程序：替换 kernel/src/user.rs 的 abuser asm 模板。
 # 契约逐字保留（对齐原 global_asm 块）：节流 → close 垃圾 handle 必须

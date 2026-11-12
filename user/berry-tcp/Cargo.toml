@@ -1,6 +1,6 @@
 [package]
 name = "berry-tcp"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # T-c 起已接线进 user/ workspace members + vnet deps（path 依赖）+ justfile

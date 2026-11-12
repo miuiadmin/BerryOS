@@ -1,6 +1,6 @@
 [package]
 name = "berry-spawngeo"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # spawn 几何前置门纯函数 crate：`spawn_geometry`（ELF 映幅帽 ELF_MAP_MAX /

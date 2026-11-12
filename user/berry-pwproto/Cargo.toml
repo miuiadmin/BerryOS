@@ -1,6 +1,6 @@
 [package]
 name = "berry-pwproto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
 # sim-S1（docs/sim设备通道与契约设计-v1.0.md；PM-16 §4.1 契约、PM-17 §3.2

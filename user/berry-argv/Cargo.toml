@@ -1,6 +1,6 @@
 [package]
 name = "berry-argv"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # A-2/d-3a argv blob 组装律纯函数 crate：`argv_blob`（192B env 块 blob 的

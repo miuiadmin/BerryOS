@@ -1,6 +1,6 @@
 [package]
 name = "berry-sys"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
 # ABI 合约源：docs/系统调用ABI设计.md §8.3（原型）+ §8.4（Rust FFI 镜像）。

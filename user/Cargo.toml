@@ -129,6 +129,15 @@ members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winpl
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 resolver = "2"
 
+# 版本治理迁移步骤 1（docs/全局版本号治理方案-v1.0.md）：用户态统一
+# 版本单源——member 经 `version.workspace = true` 继承，升版只改本处。
+# 例外：hexyl（上游 0.17.0）/uu 家族（上游 =0.12.0 锁步）住各自独立
+# workspace，不属 members、不继承。edition 暂列于此备后续继承刀，本刀
+# 仅迁移 version。
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+
 # 用户程序平像：体积优先（单页墙由 tools/elf2flat.py --max 执法）。
 [profile.release]
 opt-level = "z"

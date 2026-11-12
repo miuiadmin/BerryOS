@@ -299,8 +299,10 @@ static UNAME_MACHINE: [c_char; 8] = *b"aarch64\0";
 // 值源同 rootfs `.berryver` 烙印 semver 段——单源 = 根 Cargo.toml
 // `[workspace.package].version`（tools/mkcpio.py `_berryver_sources` :326
 // 同文件现取）。本 crate 住 user/ 独立 workspace，无根版本常量可继承
-// （自身 CARGO_PKG_VERSION = crate 版本 0.1.0，非系统版本，不可用），经
-// BERRY_UNAME_RELEASE 烙印注入；未注入时回退根 workspace 现值。**手工
+// （自身 CARGO_PKG_VERSION = crate 版本——user workspace 继承，现
+// 0.2.0，与根版本两源、非系统版本不可用；版本治理步骤 1 起两 workspace
+// 同值仍属巧合对齐非单源），经 BERRY_UNAME_RELEASE 烙印注入；未注入时
+// 回退根 workspace 现值。**手工
 // 镜像义务**：根 workspace 升版时回退值随 .berryver 同笔更新（VER 哨兵
 // 三元组 = VMO × .berryver，不含 uname 面，无机器执法——缺口登记
 // ADR #83 v1.1 §6.3）。

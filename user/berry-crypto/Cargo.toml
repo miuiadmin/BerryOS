@@ -14,7 +14,7 @@
 # 消费 tools/mkapp.py --sign-key/--verify-key）。
 [package]
 name = "berry-crypto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "BerryOS SDK-2 signing chain (P0-2): self-hosted ed25519+SHA-512 primitives + .sig envelope TLV v1 + trust ledger TOML + RFC 8032 & Wycheproof vector gates (strict)"
 license = "Apache-2.0"

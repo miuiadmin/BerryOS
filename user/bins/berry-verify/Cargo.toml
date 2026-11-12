@@ -1,6 +1,6 @@
 [package]
 name = "berry-verify"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # P3 案 c 最小形态（ADR #77；docs/设备侧验签与账本落盘设计-v1.0.md §1.3
 # 装载期/§1.3.3 验签序）：装载期验签**助手进程**——尺寸墙终裁（34 号

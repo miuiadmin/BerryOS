@@ -1,6 +1,6 @@
 [package]
 name = "echo"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # G-eco-b 编译子程序：echo 服务（原 svcmgr asm 模板内嵌 echo 段换轨）。
 # 由 svcmgr 运行期拉起（2 页 VMO：镜像首页 + 零栈页）；recv → 原样回显，

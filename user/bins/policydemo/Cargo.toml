@@ -1,6 +1,6 @@
 [package]
 name = "policydemo"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # S6 消费面 demo：berry_policy_bind(0x83) 首个用户态消费者——
 # STATUS(op=2) 对账自身策略键 → 真实键 1 条表（weight=32）提交 +
