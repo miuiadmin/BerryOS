@@ -11,6 +11,13 @@
 members = ["berry-virtio", "bins/vprobe", "bins/vblk", "bins/vnet", "bins/gui-inputd"]
 resolver = "2"
 
+# L-SYS 统一（版本治理规则/14 + 步骤 1 先例 = user/Cargo.toml 同款）：
+# 全仓 workspace（根/user/drivers）版本同值——member 一律 version.workspace
+# = true 继承，升版只改本根一处（bootloader/ 两小 workspace 无 [workspace.package]
+# 段，member 走字面版本同值）。
+[workspace.package]
+version = "0.2.0"
+
 # 与迁移前各 bin 自带 [profile.release]（standalone 工作区根时生效）逐值
 # 相同——workspace 化后非根 profile 失效（cargo 只认工作区根），集中到本
 # 根 = 产物零漂移（rootfs.cpio 迁移前后逐字节对拍验收）。

@@ -1,6 +1,6 @@
 [package]
 name = "vnet"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # P6 A-7：virtio-net 用户态驱动（ARP/ICMP ping 通自验）。

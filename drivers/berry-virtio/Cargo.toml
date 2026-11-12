@@ -1,6 +1,6 @@
 [package]
 name = "berry-virtio"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # P6 A-3（docs/文件系统设计.md §6 P6 后续的块设备刀）：virtio 1.x split
 # virtqueue 布局/编解码纯函数 crate，`berry-loader`/`berry-fsproto` 先例

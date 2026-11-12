@@ -1,6 +1,6 @@
 [package]
 name = "vblk"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # P6 A-3：virtio-blk 用户态块设备驱动（真设备 IO 第一刀——`docs/文件系统

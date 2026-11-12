@@ -1,6 +1,8 @@
 [package]
 name = "berry-efi"
-version = "0.1.0"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（被 berrydump 跨工作区 path
+# 依赖，字面值零歧义；版本治理规则/14）。
+version = "0.2.0"
 edition = "2021"
 description = "EFI 结构最小面（V-0a）——no_std + host 可测：表头/偏移/UTF-16 纯函数"
 license = "Apache-2.0"
