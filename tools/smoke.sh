@@ -626,7 +626,7 @@ QEMU_PID=$!
 # （manifest.id ↔ 文件名、manifest.entry ↔ 包内条目名）→ spawn_rootfs_elf
 #（console=true 直打 / false 私有对端 + EOF 收集）→ reap 真码 0——**全部
 # 槽全过才打**（任一降级 = `eco: app <id> <why>` 行 + 标记缺失 loud）——
-# rootfs 相第 21 标记（确定性状态谓词：n ≤ APP_SLOTS=9 单位数字；裸跑
+# rootfs 相第 21 标记（确定性状态谓词：n ≤ APP_SLOTS=10 两位零填充；裸跑
 # app_n==0 零扰动）。
 # DIR ok n= = **RAM 目录树 v2 五 op 全链**（C-0 刀 4）：bsh dir_selftest
 # 自驱——MKDIR `bdir` → 多段 PUT/GET（`bdir/n.bin` 64B 逐字节全等）→

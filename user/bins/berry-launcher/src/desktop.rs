@@ -123,6 +123,7 @@ const ZH_LABELS: &[(&[u8], &[u8])] = &[
     (b"CONTACTS", "通讯录".as_bytes()),
     (b"MMS", "信息".as_bytes()),
     (b"BROWSER", "浏览器".as_bytes()),
+    (b"CONTROLS", "控件".as_bytes()),
 ];
 
 /// 显示 label 单源：phone 大屏取官方中文短名，小屏/未知 app 取 manifest。

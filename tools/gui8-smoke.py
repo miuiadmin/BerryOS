@@ -36,7 +36,7 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
   - 宿主侧 sha256 前后相等 = 数据盘零重写；LAYOUT.JSN 仍为 canonical。
 - `--normal-boot`（常态隔离 + BerryUI app，可选）：同一镜像/tablet/
   数据盘拓扑但 **不造 `GUI8.SMK`**，display 1080×1920。BROWSER 首格 +
-  六个 BerryUI app 真实 APP_SPAWN：Browser/Settings/Files/Photos/Contacts/
+  七个 BerryUI app 真实 APP_SPAWN：Browser/Controls/Settings/Files/Photos/Contacts/
   UITEST 分别完成窗口/帧、状态或数据链、layout-driven 点击、截图像素检查与
   返回销毁。
   `CLICK`/`LAYOUTW`/`LAYOUT`/`launcher: click ready` 仍零打印——证明
@@ -81,7 +81,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # —— 被断言的 launcher 标记（段④ 合并后由 launcher println 单行打出）——
 MARK_BERRYBOOT = "BERRYBOOT ok"
 MARK_ROOTFS = "ROOTFS ok src=handoff"
-MARK_APP_N9 = "APP ok n=9"
+MARK_APP_COUNT = "APP ok n=10"
 MARK_APP_DEMO_UP = "app APPDEMO up"
 MARK_APP_DEMO_FS = "app APPDEMO fs ok 23"
 MARK_APP_QUIET_UP = "app APPQUIET up"
@@ -208,6 +208,14 @@ MARK_CONTACTS_BACK = "CONTACTSBACK ok"
 MARK_CONTACTS_PROBE = "CONTACTSPROBE ok"
 MARK_CONTACTS_DESTROY = "CONTACTSDESTROY ok"
 MARK_CONTACTS_EXIT = "CONTACTSEXIT ok"
+MARK_CONTROLS_UP = "CONTROLS up"
+MARK_CONTROLS_WIN = "CONTROLSWIN ok"
+MARK_CONTROLS_FRAME = "CONTROLSFRAME ok"
+MARK_CONTROLS_PAGE = "CONTROLPAGE ok page="
+MARK_CONTROLS_SWITCH = "CONTROLSSWITCH ok checked=1"
+MARK_CONTROLS_PROBE = "CONTROLSPROBE ok"
+MARK_CONTROLS_DESTROY = "CONTROLSDESTROY ok"
+MARK_CONTROLS_EXIT = "CONTROLSEXIT ok"
 MARK_UITEST_UP = "UITEST up"
 MARK_UITEST_ROOM = "UITESTROOM ok"
 MARK_UITEST_WIN = "UITESTWIN ok w="
@@ -1243,12 +1251,13 @@ def verify_normal_boot(
     files_before: int,
     photos_before: int,
     contacts_before: int,
+    controls_before: int,
     demo_before: int,
     log_path: Path | None = None,
 ) -> None:
-    """常态隔离 + 六个 BerryUI app 验收。
+    """常态隔离 + 七个 BerryUI app 验收。
 
-    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；六个 app 都
+    冒烟标记 CLICK/SWIPE/LAYOUTW/LAYOUT/click ready 仍全零；七个 app 都
     必须完成第二个真实进程生命周期。Settings 要求两次状态重绘；Files 要求
     READDIR/STAT/GET；Photos 要求 5000B 图像数据；Contacts 要求 4 条真实
     记录、详情/收藏/返回三次重绘；Browser/Photos 要求 layout-driven 点击。
@@ -1310,6 +1319,27 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_BROWSER_BACK, 1, "normal Browser back", log_path)
     _require_exact_count(text, MARK_BROWSER_DESTROY, browser_before + 1, "normal Browser", log_path)
     _require_exact_count(text, MARK_BROWSER_EXIT, browser_before + 1, "normal Browser", log_path)
+
+    _require_exact_count(text, MARK_CONTROLS_UP, controls_before + 1, "normal Controls", log_path)
+    _require_exact_count(text, MARK_CONTROLS_WIN, controls_before + 1, "normal Controls", log_path)
+    _require_exact_count(
+        text, "CONTROLSLAYOUT ok", controls_before + 3,
+        "normal Controls layout", log_path,
+    )
+    _require_exact_count(
+        text, "CONTROLSRENDER ok seq=", controls_before + 4,
+        "normal Controls render", log_path,
+    )
+    _require_exact_count(
+        text, MARK_CONTROLS_FRAME, controls_before + 4,
+        "normal Controls", log_path,
+    )
+    _require_exact_count(text, MARK_CONTROLS_PAGE, 2, "normal Controls pages", log_path)
+    _require_exact_count(text, MARK_CONTROLS_SWITCH, 1, "normal Controls switch", log_path)
+    _require_exact_count(text, "CONTROLSHIT ok node=", 4, "normal Controls hits", log_path)
+    _require_exact_count(text, "CONTROLSBACK ok", 1, "normal Controls back", log_path)
+    _require_exact_count(text, MARK_CONTROLS_DESTROY, controls_before + 1, "normal Controls", log_path)
+    _require_exact_count(text, MARK_CONTROLS_EXIT, controls_before + 1, "normal Controls", log_path)
 
     _require_exact_count(text, MARK_SETTINGS_UP, settings_before + 1, "normal Settings", log_path)
     _require_exact_count(text, MARK_SETTINGS_WIN, settings_before + 1, "normal Settings", log_path)
@@ -1413,6 +1443,10 @@ def verify_normal_boot(
         )
     if text.find(MARK_BROWSER_BACK) < snapshot_pos:
         raise SmokeError("normal Browser: BACK 早于快照", log_path)
+    if text.find(MARK_CONTROLS_SWITCH) < snapshot_pos:
+        raise SmokeError("normal Controls: SWITCH 早于快照", log_path)
+    if text.rfind(MARK_CONTROLS_EXIT) < snapshot_pos:
+        raise SmokeError("normal Controls: EXIT 不在快照后", log_path)
     if text.find(MARK_SETTINGS_TOGGLE1) < snapshot_pos:
         raise SmokeError("normal Settings: TOGGLE1 早于快照", log_path)
     if text.find(MARK_SETTINGS_BACK) < snapshot_pos:
@@ -1607,6 +1641,10 @@ CONTACTS_LAYOUT_RE = re.compile(
 )
 BROWSER_LAYOUT_RE = re.compile(
     r"BROWSERLAYOUT ok back=(-?\d+),(-?\d+),(\d+),(\d+)"
+)
+CONTROLS_LAYOUT_RE = re.compile(
+    r"CONTROLSLAYOUT ok page=(\d+) back=(-?\d+),(-?\d+),(\d+),(\d+)"
+    r"(?: target=(-?\d+),(-?\d+),(\d+),(\d+))?"
 )
 PHOTOS_LAYOUT_RE = re.compile(
     r"PHOTOSLAYOUT ok mode=(\d+) back=(-?\d+),(-?\d+),(\d+),(\d+) "
@@ -2179,31 +2217,34 @@ def preflight(args) -> None:
 
 def _boot_base_markers() -> list[str]:
     return [
-        MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N9,
-        MARK_WM_CONN1, MARK_WM_CONN2, MARK_WM_DENIED, MARK_WM_SURFACE_DENIED, MARK_WM_ORPHAN, MARK_WM_2FRAME,
-        MARK_WM_DAMAGE_CLIP, MARK_WM_RAW_BUFFER_BAD,
-        MARK_WM_CONFIG_SUBMIT_DENY, MARK_WM_CONFIG_SURFACE_DENY,
-        MARK_WM_CONFIG_FOREIGN_ACK, MARK_WM_CONFIG_NOOP_EMPTY,
-        MARK_WM_CONFIG_HIDE, MARK_WM_CONFIG_SHOW,
-        MARK_WM_DEAD1, MARK_WM_DEAD2, MARK_WM_CLEAN, MARK_WM_CONN3,
-        MARK_WM_CONN4, MARK_BROWSER_UP, MARK_BROWSER_WIN, MARK_BROWSER_FRAME,
+        MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_COUNT,
+        MARK_WM_CONN1, MARK_WM_CONN2, MARK_WM_DENIED, MARK_WM_SURFACE_DENIED,
+        MARK_WM_ORPHAN, MARK_WM_2FRAME, MARK_WM_DAMAGE_CLIP,
+        MARK_WM_RAW_BUFFER_BAD, MARK_WM_CONFIG_SUBMIT_DENY,
+        MARK_WM_CONFIG_SURFACE_DENY, MARK_WM_CONFIG_FOREIGN_ACK,
+        MARK_WM_CONFIG_NOOP_EMPTY, MARK_WM_CONFIG_HIDE, MARK_WM_CONFIG_SHOW,
+        MARK_WM_DEAD1, MARK_WM_DEAD2, MARK_WM_CLEAN,
+        MARK_WM_CONN3, MARK_BROWSER_UP, MARK_BROWSER_WIN, MARK_BROWSER_FRAME,
         MARK_BROWSER_PROBE, MARK_BROWSER_DESTROY, MARK_BROWSER_EXIT,
-        MARK_WM_CONN5, MARK_SETTINGS_UP, MARK_SETTINGS_WIN,
-        MARK_SETTINGS_FRAME, MARK_SETTINGS_GEOM, MARK_SETTINGS_PROBE,
-        MARK_SETTINGS_DESTROY, MARK_SETTINGS_EXIT,
+        MARK_WM_CONN4, MARK_CONTACTS_UP, MARK_CONTACTS_WIN,
+        MARK_CONTACTS_LIST, MARK_CONTACTS_FRAME, MARK_CONTACTS_PROBE,
+        MARK_CONTACTS_DESTROY, MARK_CONTACTS_EXIT,
+        MARK_WM_CONN5, MARK_CONTROLS_UP, MARK_CONTROLS_WIN,
+        MARK_CONTROLS_FRAME, MARK_CONTROLS_PROBE, MARK_CONTROLS_DESTROY,
+        MARK_CONTROLS_EXIT,
         MARK_WM_CONN6, MARK_FILES_UP, MARK_FILES_WIN, MARK_FILES_LIST,
         MARK_FILES_SEL, MARK_FILES_FRAME, MARK_FILES_PROBE,
         MARK_FILES_DESTROY, MARK_FILES_EXIT,
-        MARK_WM_CONN7, MARK_PHOTOS_UP, MARK_PHOTOS_WIN,
-        MARK_PHOTOS_LIST, MARK_PHOTOS_DATA, MARK_PHOTOS_FRAME,
-        MARK_PHOTOS_PROBE, MARK_PHOTOS_DESTROY, MARK_PHOTOS_EXIT,
-        MARK_WM_CONN8, MARK_CONTACTS_UP, MARK_CONTACTS_WIN,
-        MARK_CONTACTS_LIST, MARK_CONTACTS_FRAME,
-        MARK_CONTACTS_PROBE, MARK_CONTACTS_DESTROY, MARK_CONTACTS_EXIT,
-        MARK_WM_CONN9, MARK_UITEST_UP, MARK_UITEST_ROOM,
-        MARK_UITEST_WIN, MARK_UITEST_FRAME, MARK_UITEST_PROBE,
-        MARK_UITEST_DESTROY, MARK_UITEST_EXIT,
-        MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH, MARK_PAGE,
+        MARK_WM_CONN7, MARK_PHOTOS_UP, MARK_PHOTOS_WIN, MARK_PHOTOS_LIST,
+        MARK_PHOTOS_DATA, MARK_PHOTOS_FRAME, MARK_PHOTOS_PROBE,
+        MARK_PHOTOS_DESTROY, MARK_PHOTOS_EXIT,
+        MARK_WM_CONN8, MARK_SETTINGS_UP, MARK_SETTINGS_WIN,
+        MARK_SETTINGS_FRAME, MARK_SETTINGS_GEOM, MARK_SETTINGS_PROBE,
+        MARK_SETTINGS_DESTROY, MARK_SETTINGS_EXIT,
+        MARK_WM_CONN9, MARK_UITEST_UP, MARK_UITEST_ROOM, MARK_UITEST_WIN,
+        MARK_UITEST_FRAME, MARK_UITEST_PROBE, MARK_UITEST_DESTROY,
+        MARK_UITEST_EXIT, MARK_CJK_PROBE, MARK_INPUT_DROPS_OK, MARK_LAUNCH,
+        MARK_PAGE,
     ]
 
 
@@ -2655,7 +2696,7 @@ def run_dual_boot(args) -> int:
                 f"want=({rcx - rx},{rcy - ry})",
                 boot_a.log_path,
             )
-        owner_marker = f"WMROUTE ok sid=10 window={rw_id}"
+        owner_marker = f"WMROUTE ok sid=11 window={rw_id}"
         if owner_marker not in boot_a.log.text:
             raise SmokeError(f"boot A APP route 缺 {owner_marker!r}", boot_a.log_path)
 
@@ -2818,7 +2859,8 @@ def run_normal_boot(args) -> int:
             b'{"schema":1,"cells":[{"app":"BROWSER","page":0,"row":0,"col":0},'
             b'{"app":"FILES","page":0,"row":0,"col":1},'
             b'{"app":"UITEST","page":0,"row":0,"col":2},'
-            b'{"app":"SETTINGS","page":0,"row":0,"col":3},'
+            b'{"app":"CONTROLS","page":0,"row":0,"col":3},'
+            b'{"app":"SETTINGS","page":0,"row":1,"col":0},'
             b'{"app":"APPDEMO","page":1,"row":0,"col":0}]}'
         )
         Fat12Volume(disk).add_file(LAYOUT_NAME11, native_layout)
@@ -2854,8 +2896,9 @@ def run_normal_boot(args) -> int:
         files_before = boot.log.text.count(MARK_FILES_UP)
         photos_before = boot.log.text.count(MARK_PHOTOS_UP)
         contacts_before = boot.log.text.count(MARK_CONTACTS_UP)
+        controls_before = boot.log.text.count(MARK_CONTROLS_UP)
         uitest_before = boot.log.text.count(MARK_UITEST_UP)
-        if browser_before < 1 or settings_before < 1 or files_before < 1 or photos_before < 1 or contacts_before < 1 or uitest_before < 1:
+        if browser_before < 1 or settings_before < 1 or files_before < 1 or photos_before < 1 or contacts_before < 1 or controls_before < 1 or uitest_before < 1:
             raise MissingMarkers(
                 "normal boot", "Browser boot-probe BROWSER up", 1, boot.log_path
             )
@@ -2874,7 +2917,8 @@ def run_normal_boot(args) -> int:
             )
         log(
             "normal-boot: display 1080x1920 product portrait；"
-            "BROWSER/FILES/UITEST 首行 (156/412/668,282)，"
+            "BROWSER/FILES/UITEST/CONTROLS 首行 "
+            "(156/412/668/924,282)，"
             "CONTACTS/PHOTOS/SETTINGS dock (164/415/665,1668)"
         )
 
@@ -3002,6 +3046,161 @@ def run_normal_boot(args) -> int:
             raise MissingMarkers(
                 "normal Browser back",
                 f"{MARK_BROWSER_BACK} + 新 {MARK_BROWSER_EXIT}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        # —— Controls Demo：真实控件橱窗 → 页面切换 → Switch → 返回。 ——
+        time.sleep(1.0)
+        log("normal-controls: QMP 点击 CONTROLS 首行第四格（真实 APP_SPAWN）")
+        boot.qmp.click(924, 282, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_CONTROLS_UP) > controls_before
+                and t.count(MARK_CONTROLS_FRAME) > controls_before
+                and "CONTROLSLAYOUT ok page=0" in t,
+                f"runtime {MARK_CONTROLS_UP} + {MARK_CONTROLS_FRAME} + layout",
+                args.click_timeout,
+                "normal Controls launch",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Controls launch",
+                f"新增 {MARK_CONTROLS_UP} + {MARK_CONTROLS_FRAME}",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        controls_open = latest_named_rect(
+            CONTROLS_LAYOUT_RE, 0, "extra", boot.log.text, snapshot_pos
+        )
+        controls_open_click = rect_center(controls_open)
+        log(
+            f"normal-controls: QMP 点击 Buttons ListItem "
+            f"({controls_open_click[0]},{controls_open_click[1]})"
+        )
+        boot.qmp.click(controls_open_click[0], controls_open_click[1], w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: f"{MARK_CONTROLS_PAGE}1" in t
+                and "CONTROLSLAYOUT ok page=1" in t,
+                f"{MARK_CONTROLS_PAGE}1 + Controls page layout",
+                args.click_timeout,
+                "normal Controls page",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Controls page",
+                f"{MARK_CONTROLS_PAGE}1 + page=1 layout",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        controls_switch = latest_named_rect(
+            CONTROLS_LAYOUT_RE, 1, "extra", boot.log.text, snapshot_pos
+        )
+        controls_switch_click = rect_center(controls_switch)
+        log(
+            f"normal-controls: QMP 点击 Switch "
+            f"({controls_switch_click[0]},{controls_switch_click[1]})"
+        )
+        boot.qmp.click(controls_switch_click[0], controls_switch_click[1], w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: MARK_CONTROLS_SWITCH in t
+                and t.count(MARK_CONTROLS_FRAME) > controls_before + 2,
+                f"{MARK_CONTROLS_SWITCH} + 重绘帧",
+                args.click_timeout,
+                "normal Controls switch",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Controls switch",
+                f"{MARK_CONTROLS_SWITCH} + redraw",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        controls_shot = run_dir / "controls.ppm"
+        boot.qmp.screendump(controls_shot)
+        assert_pixel_close(
+            ppm_pixel(controls_shot, 540, 20), theme["primary"],
+            "Controls AppBar", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(controls_shot, 540, 600), theme["surface"],
+            "Controls surface", boot.log_path,
+        )
+        assert_pixel_close(
+            ppm_pixel(
+                controls_shot,
+                controls_switch_click[0],
+                controls_switch_click[1],
+            ),
+            theme["selected"],
+            "Controls Switch Selected",
+            boot.log_path,
+        )
+        assert_color_count(
+            controls_shot, (20, 90, 900, 500), 128,
+            "Controls 系统 A8 文本", boot.log_path,
+        )
+        log(
+            "normal-controls: BerryUI 像素/色数锚 ok"
+            "（AppBar/surface/Switch/A8）"
+        )
+
+        controls_page_back = latest_named_rect(
+            CONTROLS_LAYOUT_RE, 1, "back", boot.log.text, snapshot_pos
+        )
+        controls_back_click = rect_center(controls_page_back)
+        log(
+            f"normal-controls: QMP 点击 Controls Back "
+            f"({controls_back_click[0]},{controls_back_click[1]})"
+        )
+        boot.qmp.click(controls_back_click[0], controls_back_click[1], w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: f"{MARK_CONTROLS_PAGE}0" in t
+                and "CONTROLSLAYOUT ok page=0" in t,
+                f"{MARK_CONTROLS_PAGE}0 + Home layout",
+                args.click_timeout,
+                "normal Controls home",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Controls home",
+                f"{MARK_CONTROLS_PAGE}0 + page=0 layout",
+                args.click_timeout,
+                boot.log_path,
+            ) from None
+
+        controls_exit = latest_named_rect(
+            CONTROLS_LAYOUT_RE, 0, "back", boot.log.text, snapshot_pos
+        )
+        controls_exit_click = rect_center(controls_exit)
+        log(
+            f"normal-controls: QMP 点击 Home Exit "
+            f"({controls_exit_click[0]},{controls_exit_click[1]})"
+        )
+        boot.qmp.click(controls_exit_click[0], controls_exit_click[1], w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: "CONTROLSBACK ok" in t
+                and t.count(MARK_CONTROLS_EXIT) > controls_before,
+                "CONTROLSBACK ok + 新 CONTROLSEXIT ok",
+                args.click_timeout,
+                "normal Controls exit",
+            )
+        except MissingMarkers:
+            raise MissingMarkers(
+                "normal Controls exit",
+                "CONTROLSBACK ok + 新 CONTROLSEXIT ok",
                 args.click_timeout,
                 boot.log_path,
             ) from None
@@ -3717,13 +3916,13 @@ def run_normal_boot(args) -> int:
         watcher.poll()
         verify_normal_boot(
             watcher.text, snapshot_pos, browser_before, settings_before,
-            files_before, photos_before, contacts_before, demo_before,
-            log_path,
+            files_before, photos_before, contacts_before, controls_before,
+            demo_before, log_path,
         )
         verify_uitest_normal(watcher.text, snapshot_pos, uitest_before, log_path)
         verify_data_disk(disk, expect_smoke=False)
         log(
-            "normal-gui: Settings/Files/Contacts/Browser/Photos/UITEST 六个"
+            "normal-gui: Browser/Controls/Settings/Files/Photos/Contacts/UITEST 七个"
             " BerryUI app 均以独立进程完成真实 WM 窗口/帧、状态/fs/图像/联系人记录"
             "与销毁全链；"
             "CLICK/LAYOUTW/LAYOUT/click ready 全零"
@@ -3731,7 +3930,7 @@ def run_normal_boot(args) -> int:
 
         success = True
         log(
-            "PASS（--normal-boot）：六个 BerryUI app 真链 + "
+            "PASS（--normal-boot）：七个 BerryUI app 真链 + "
             "哨兵缺席冒烟标记隔离成立"
         )
         return 0
@@ -3778,7 +3977,7 @@ def dry_run(args) -> int:
             markers = [
                 MARK_BERRYBOOT,
                 MARK_ROOTFS,
-                MARK_APP_N9,
+                MARK_APP_COUNT,
                 MARK_LAUNCH,
                 MARK_PAGE,
                 MARK_APP_DEMO_UP,
@@ -3807,7 +4006,7 @@ def dry_run(args) -> int:
                     [
                         MARK_BERRYBOOT,
                         MARK_ROOTFS,
-                        MARK_APP_N9,
+                        MARK_APP_COUNT,
                         MARK_LAUNCH,
                         MARK_PAGE,
                         MARK_APP_DEMO_UP,
@@ -3822,7 +4021,7 @@ def dry_run(args) -> int:
                     [
                         MARK_BERRYBOOT,
                         MARK_ROOTFS,
-                        MARK_APP_N9,
+                        MARK_APP_COUNT,
                         MARK_LAUNCH,
                         MARK_PAGE,
                         "LAYOUT ok n=2",
@@ -4449,6 +4648,37 @@ def self_test(args) -> int:
             f"{MARK_CONTACTS_DESTROY}\n{MARK_CONTACTS_EXIT}\n"
         )
 
+        controls_boot = (
+            f"{MARK_CONTROLS_UP}\n{MARK_CONTROLS_WIN}\n"
+            "CONTROLSLAYOUT ok page=0 back=12,72,1056,60 target=12,204,1056,60\n"
+            "CONTROLSRENDER ok seq=1 cmds=24\n"
+            f"{MARK_CONTROLS_FRAME}\n{MARK_CONTROLS_PROBE}\n"
+            f"{MARK_CONTROLS_DESTROY}\n{MARK_CONTROLS_EXIT}\n"
+        )
+        controls_runtime = (
+            f"{MARK_CONTROLS_UP}\n{MARK_CONTROLS_WIN}\n"
+            "CONTROLSLAYOUT ok page=0 back=12,72,1056,60 target=12,204,1056,60\n"
+            "CONTROLSRENDER ok seq=1 cmds=24\n"
+            f"{MARK_CONTROLS_FRAME}\n"
+            "CONTROLSHIT ok node=nav x=540 y=234\n"
+            f"{MARK_CONTROLS_PAGE}1\n"
+            "CONTROLSLAYOUT ok page=1 back=12,528,1056,60 target=12,168,216,72\n"
+            "CONTROLSRENDER ok seq=2 cmds=28\n"
+            f"{MARK_CONTROLS_FRAME}\n"
+            "CONTROLSHIT ok node=switch x=120 y=204\n"
+            f"{MARK_CONTROLS_SWITCH}\n"
+            "CONTROLSRENDER ok seq=3 cmds=28\n"
+            f"{MARK_CONTROLS_FRAME}\n"
+            "CONTROLSHIT ok node=back x=540 y=558\n"
+            f"{MARK_CONTROLS_PAGE}0\n"
+            "CONTROLSLAYOUT ok page=0 back=12,900,1056,60 target=12,204,1056,60\n"
+            "CONTROLSRENDER ok seq=4 cmds=24\n"
+            f"{MARK_CONTROLS_FRAME}\n"
+            "CONTROLSHIT ok node=exit x=540 y=930\n"
+            "CONTROLSBACK ok\n"
+            f"{MARK_CONTROLS_DESTROY}\n{MARK_CONTROLS_EXIT}\n"
+        )
+
         fake_n = (
             f"{MARK_WM_SYSTEM_AUTH} id=3\n"
             f"{MARK_WM_SYSTEM_CLIENT_DENIED}\n"
@@ -4470,7 +4700,7 @@ def self_test(args) -> int:
             f"{MARK_WM_CONFIG_SHOW}\n"
             f"{MARK_WM_FOCUS_SKIP} reason=no-pointer\n"
             f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-            f"{photos_boot}{contacts_boot}"
+            f"{photos_boot}{contacts_boot}{controls_boot}"
         )
         snap_n = len(fake_n)
         fake_n += (
@@ -4483,42 +4713,42 @@ def self_test(args) -> int:
             "INPUTKEYDROPS ok n=0\n"
             f"{browser_runtime}{MARK_WM_ROUTE_DESKTOP}\n"
             f"{settings_runtime}{files_runtime}{photos_runtime}"
-            f"{contacts_runtime}"
+            f"{contacts_runtime}{controls_runtime}"
         )
-        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1)
+        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1, 1, 1)
         expect_error(
             "常态缺 R1 SYSTEM 身份正例",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_WM_SYSTEM_AUTH} id=3\n", "", 1),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态缺 R1 错 seed 拒绝",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_WM_SYSTEM_SEED_DENIED}\n", "", 1),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态缺 R1 role 伪装拒绝",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_WM_ROLE_MASQUERADE_DENIED}\n", "", 1),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态缺 R1 全局 surface 拒绝",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_WM_GLOBAL_DENIED}\n", "", 1),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态缺 R2 damage clip",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_WM_DAMAGE_CLIP}\n", "", 1),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         r2_fake = "\n".join([
@@ -4568,7 +4798,7 @@ def self_test(args) -> int:
             "R3 stale ack 重复",
             lambda: _verify_r3_config(r3_fake + MARK_WM_CONFIG_STALE + "\n", "self-test"),
         )
-        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1)
+        verify_normal_boot(fake_n, snap_n, 1, 1, 1, 1, 1, 1, 1, 1)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),
             (MARK_LAYOUTW + "\n", "LAYOUTW"),
@@ -4579,50 +4809,50 @@ def self_test(args) -> int:
             expect_error(
                 f"常态隔离出现 {label}",
                 lambda n=needle: verify_normal_boot(
-                    fake_n + n, snap_n, 1, 1, 1, 1, 1, 1
+                    fake_n + n, snap_n, 1, 1, 1, 1, 1, 1, 1
                 ),
             )
         expect_error(
             "常态 Browser 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{contacts_boot}{settings_runtime}"
+                f"{photos_boot}{contacts_boot}{controls_boot}{settings_runtime}"
                 f"{files_runtime}{photos_runtime}{contacts_runtime}",
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{photos_boot}{contacts_boot}{controls_boot}{browser_boot}"
                 f"{MARK_BROWSER_BACK}\n{files_runtime}{photos_runtime}"
                 f"{contacts_runtime}",
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Settings 缺第二重绘帧",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_SETTINGS_FRAME}\n", "", 2),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Files 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{photos_boot}{contacts_boot}{controls_boot}{browser_boot}"
                 f"{MARK_BROWSER_BACK}\n{settings_runtime}{photos_runtime}"
                 f"{contacts_runtime}",
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Files 缺真实 GET",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_FILES_READ}28\n", ""),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
@@ -4636,24 +4866,24 @@ def self_test(args) -> int:
                     "FILESRENDER ok seq=2 cmds=18\n",
                     1,
                 ),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Photos 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{photos_boot}{contacts_boot}{controls_boot}{browser_boot}"
                 f"{MARK_BROWSER_BACK}\n{settings_runtime}{files_runtime}"
                 f"{contacts_runtime}",
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Photos 缺真实 5000B 图",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_PHOTOS_DATA}\n", "", 2),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
@@ -4663,24 +4893,24 @@ def self_test(args) -> int:
                     f"{MARK_PHOTOS_VIEW}\n{MARK_PHOTOS_FRAME}\n",
                     f"{MARK_PHOTOS_VIEW}\n", 1,
                 ),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Contacts 无第二进程",
             lambda: verify_normal_boot(
                 f"{MARK_APP_DEMO_UP}\n{browser_boot}{settings_boot}{files_boot}"
-                f"{photos_boot}{contacts_boot}{browser_boot}"
+                f"{photos_boot}{contacts_boot}{controls_boot}{browser_boot}"
                 f"{MARK_BROWSER_BACK}\n{settings_runtime}{files_runtime}"
                 f"{photos_runtime}",
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 Contacts 缺真实记录",
             lambda: verify_normal_boot(
                 fake_n.replace(f"{MARK_CONTACTS_READ}\n", ""),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
@@ -4690,18 +4920,18 @@ def self_test(args) -> int:
                     f"{MARK_CONTACTS_FAV}\n{MARK_CONTACTS_FRAME}\n",
                     f"{MARK_CONTACTS_FAV}\n", 1,
                 ),
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         expect_error(
             "常态 GUI app 误 spawn APPDEMO",
             lambda: verify_normal_boot(
                 fake_n + MARK_APP_DEMO_UP + "\n",
-                snap_n, 1, 1, 1, 1, 1, 1,
+                snap_n, 1, 1, 1, 1, 1, 1, 1,
             ),
         )
         log(
-            "self-test: 常态 GUI app 断言 ok（六 BerryUI app 状态与数据链、"
+            "self-test: 常态 GUI app 断言 ok（七 BerryUI app 状态与数据链、"
             "layout/render/hit、重绘与销毁；冒烟标记全零）"
         )
 

@@ -71,9 +71,10 @@ use berry_ui::UiMain;
 #[used]
 static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
-/// RPC 收侧 READABLE 帽（gfxdemo 10s A6-a 形态；launcher 120s：首启要等
-/// svcmgr 跑完 boot 自验进稳态 app serve，10s 会把 APP_LIST 误判成超时）。
-const RPC_CAP_NS: u64 = 300 * 1_000_000_000;
+/// RPC 收侧 READABLE 帽（gfxdemo 10s A6-a 形态；launcher 600s：首启要等
+/// svcmgr 跑完 boot 自验进稳态 app serve。CONTROLS 把真实 GUI app 数抬到
+/// 7 后，TCG 全 app boot 批可超过旧 300s 帽；真机仍远低于该值）。
+const RPC_CAP_NS: u64 = 600 * 1_000_000_000;
 
 /// 诊断 + park 收口（gfxdemo `fail` 的 park 形——launcher 常驻不被 reap，
 /// exit 码无消费者；park = stdout EOF + 10s 周期睡眠，guifbd 自验后
@@ -163,14 +164,14 @@ fn rpc_recv(ch: Handle, rep: &mut [u8; 256], rhs: &mut [Handle; 8]) -> (usize, u
         }
         let mut obs = 0u64;
         if berry_object_wait_one(ch, SIGNAL_READABLE, now() + RPC_CAP_NS, &mut obs) != 0 {
-            fail("rpc reply timeout 10s");
+            fail("rpc reply timeout 600s");
         }
     }
 }
 
 /// 严格串行 RPC 单趟（一请求一应答；gfxdemo `rpc` 同形——wm/present 域
-/// 消费面）。发送侧：-EBUSY → 阻塞等 WRITABLE（10s 帽重臂）。收侧：空
-/// 队 -EAGAIN → 阻塞等 READABLE（`RPC_CAP_NS` 帽）。返回 `(应答长,
+/// 消费面）。发送侧：-EBUSY → 阻塞等 WRITABLE（RPC_CAP_NS 帽重臂）。收侧：
+/// 空队 -EAGAIN → 阻塞等 READABLE（`RPC_CAP_NS` 帽）。返回 `(应答长,
 /// 随行 handle 数)`。
 fn rpc(
     ch: Handle,

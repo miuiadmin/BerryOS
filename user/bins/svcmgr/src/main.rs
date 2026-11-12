@@ -1586,25 +1586,26 @@ fn run_rootfs_child(console: Handle) {
             }
         }
         if ok == app_n {
-            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 单
-            // 位数字——抬 APP_SLOTS ≥ 10 前先扩带参宽度（b'0'+ok 会溢出
-            // ASCII 数字域；TCPS_PATTERN 定值钉板同款编译期拦）。
-            const _: () = assert!(APP_SLOTS < 10, "APP ok n= 单数字位形态");
-            let mut line = [0u8; 11];
+            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 恒
+            // 两位零填充（TCPS_PATTERN 定值钉板同款编译期拦）。
+            const _: () = assert!(APP_SLOTS < 100, "APP ok n= 2 位形态");
+            let mut line = [0u8; 12];
             line[..9].copy_from_slice(b"APP ok n=");
-            line[9] = b'0' + ok as u8;
-            line[10] = b'\n';
+            line[9] = b'0' + (ok / 10) as u8;
+            line[10] = b'0' + (ok % 10) as u8;
+            line[11] = b'\n';
             send_retry(console, line.as_ptr(), line.len());
         }
         if ui_decl > 0 && ui_ok == ui_decl {
             // GUI-7（rootfs 相 45→46）：`APPUI ok n=`——ui 面全验过才打
             // （任一 Bad = 标记缺失 = smoke FAIL，`APP ok` 同款确定性状态
-            // 谓词）。13B 行、n 单数字——APP_SLOTS < 10 双钉板。
-            const _: () = assert!(APP_SLOTS < 10, "APPUI ok n= 单数字位形态");
-            let mut line = [0u8; 13];
+            // 谓词）。14B 行、n 恒两位零填充——APP_SLOTS < 100 双钉板。
+            const _: () = assert!(APP_SLOTS < 100, "APPUI ok n= 2 位形态");
+            let mut line = [0u8; 14];
             line[..11].copy_from_slice(b"APPUI ok n=");
-            line[11] = b'0' + ui_ok as u8;
-            line[12] = b'\n';
+            line[11] = b'0' + (ui_ok / 10) as u8;
+            line[12] = b'0' + (ui_ok % 10) as u8;
+            line[13] = b'\n';
             send_retry(console, line.as_ptr(), line.len());
         }
     }

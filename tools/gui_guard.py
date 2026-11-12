@@ -26,6 +26,7 @@ import tomllib
 from pathlib import Path
 
 KNOWN_GUI_APPS = {
+    "CONTROLS",
     "SETTINGS",
     "FILES",
     "CONTACTS",
@@ -344,7 +345,8 @@ def scan_root(root: Path) -> tuple[list[str], list[str]]:
 def make_fixture(root: Path, *, valid: bool = True) -> None:
     for name, app_id in (
         ("settings", "SETTINGS"), ("files", "FILES"), ("contacts", "CONTACTS"),
-        ("browser", "BROWSER"), ("photos", "PHOTOS"), ("uitest", "UITEST"),
+        ("browser", "BROWSER"), ("photos", "PHOTOS"), ("controls", "CONTROLS"),
+        ("uitest", "UITEST"),
     ):
         app = root / "user" / "bins" / name
         (app / "src").mkdir(parents=True)

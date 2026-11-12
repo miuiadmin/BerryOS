@@ -162,6 +162,8 @@ build-user:
         --target aarch64-unknown-none
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/contacts/Cargo.toml \
         --target aarch64-unknown-none
+    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/controls/Cargo.toml \
+        --target aarch64-unknown-none
     # GUI F1：uitest 只消费 berry-room，不写像素/WM RPC/VMO。
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/uitest/Cargo.toml \
         --target aarch64-unknown-none
@@ -282,6 +284,13 @@ build-user:
     cp -R bins/appstub/apps/SETTINGS/icons userbins/app-stage/SETTINGS/
     cp -R bins/appstub/apps/SETTINGS/views userbins/app-stage/SETTINGS/
     python3 ../tools/mkapp.py userbins/app/SETTINGS.bap userbins/app-stage/SETTINGS
+    # Controls BerryUI Rich Controls Demo：真实控件橱窗与产品面 demo。
+    mkdir -p userbins/app-stage/CONTROLS/bin
+    cp bins/controls/manifest.toml userbins/app-stage/CONTROLS/
+    cp cargo-target/aarch64-unknown-none/release/controls userbins/app-stage/CONTROLS/bin/controls
+    cp -R bins/controls/icons userbins/app-stage/CONTROLS/
+    cp -R bins/controls/views userbins/app-stage/CONTROLS/
+    python3 ../tools/mkapp.py userbins/app/CONTROLS.bap userbins/app-stage/CONTROLS
     # Files BerryUI app：独立 ELF + 官方图标/views 组包。
     mkdir -p userbins/app-stage/FILES/bin
     cp bins/files/manifest.toml userbins/app-stage/FILES/
@@ -328,6 +337,7 @@ build-user:
         app/APPQUIET.bap=userbins/app/APPQUIET.bap \
         app/BROWSER.bap=userbins/app/BROWSER.bap \
         app/CONTACTS.bap=userbins/app/CONTACTS.bap \
+        app/CONTROLS.bap=userbins/app/CONTROLS.bap \
         app/MMS.bap=userbins/app/MMS.bap \
         app/FILES.bap=userbins/app/FILES.bap \
         app/PHOTOS.bap=userbins/app/PHOTOS.bap \
