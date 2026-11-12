@@ -4,6 +4,7 @@
 # groups: boot, arch, page-table, scheduler, ipc, telemetry, other
 
 arch/aarch64/src/fwcfg.rs::RAMFB_CFG	arch
+arch/aarch64/src/kern_lock.rs::NAME_HOOK	scheduler
 arch/aarch64/src/kern_lock.rs::PREEMPT_ENVELOPE	scheduler
 arch/aarch64/src/kern_lock.rs::SVC_WINDOW	scheduler
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE	arch
@@ -65,3 +66,4 @@ sched/src/sched.rs::SLEEPQ_HOOK	scheduler
 sched/src/sched.rs::SWITCH_HOOK	scheduler
 sched/src/sched.rs::TOPO	scheduler
 sched/src/sched.rs::WAKE_HOOK	scheduler
+sched/src/spin.rs::SPIN_BARK	scheduler
