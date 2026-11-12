@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /**
- * check-docs.mjs —— Curia 2.4 文档自检（纯 node 标准库、零依赖、Node ≥ 18、不联网、不执行文档内代码）。
- * 权威：Curia 2.4 规范「配套脚本规格」与「豁免清单」——编码预检 + 3 组检查（报告组号 0 至 3）、退出码 0/1/2、
+ * check-docs.mjs —— Curia 2.5 文档自检（纯 node 标准库、零依赖、Node ≥ 18、不联网、不执行文档内代码）。
+ * 权威：Curia 2.5 规范「配套脚本规格」与「豁免清单」——编码预检 + 3 组检查（报告组号 0 至 3）、退出码 0/1/2、
  * 目录级与组级豁免、诚实条款（空集必红、根锚点缺失必红、只证明机械子集、不读 git、异常非零）。用法：
- *   node .agents/tools/check-docs.mjs [--strict] [--exclude <路径或 glob>]… [路径…]
+ *   node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--exclude <路径或 glob>]… [路径…]
  *   报告模式列发现不失败（0）；--strict 任一发现即 1；
  *   2 = 无法完成检查：扫描面为空、路径不存在、根锚点缺失、内部错误——两种模式都不得返回 0。
+ *   诊断模式：--health 体检载荷、桥与规范覆盖，--suggest-standards 列出 docs 标准候选；
+ *   两者只读、不写文件、--strict 无效，正常一律退出 0（根锚点缺失或内部错误才 2）。
  * 锚点：工作区根 = 调用时的工作目录，该目录须自身含 `.agents/` 或 `docs/` 目录——两者皆无时默认调用退出码 2，
  *   不自脚本位置、不向父目录上溯（上溯会命中 `~/.agents` 一类无关祖先）；脚本文件位置不限，一律以调用目录为基准。
  *   结构判定以根下 `.agents/` 目录为锚；显式路径的面内无 `.agents/` 子树时结构组不执行，stderr 注明、汇总行自带标注；
@@ -19,8 +21,10 @@
  *   仅 POSIX 实测：Windows 未实测、路径大小写不做归一（绝对 --exclude 按逐字前缀比较）。
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** 工作区根：调用时的工作目录，须自身含 `.agents/` 或 `docs/` 目录；否则 null（默认调用下即根锚点缺失）。不做上溯——上溯会命中 `~/.agents` 一类无关祖先。 */
 const ROOT = (() => {
@@ -60,6 +64,18 @@ const TYPED_HOMES = new Set(['plans', 'research', 'skills']); // `.agents/` 下 
 const HOMES = ['plans', 'research', 'notes', 'skills', 'archive']; // `.agents/` 下五个家——结构组「有没有结构可判」的判据
 const NOTE_STATUSES = new Set(['proposed', 'implemented', 'rejected']);
 const INDEX_NAMES = new Set(['README.md', 'AGENTS.md']); // 目录说明文件不进类型化面
+const PAYLOAD = [ // 完整安装的 14 项载荷；GLOSSARY.md 为推荐项，其余为必需项
+  ['AGENTS.md', '必需'], ['.agents/README.md', '必需'], ['.agents/GLOSSARY.md', '推荐'],
+  ['.agents/notes/AGENTS.md', '必需'], ['.agents/notes/README.md', '必需'],
+  ['.agents/plans/README.md', '必需'], ['.agents/research/README.md', '必需'],
+  ['.agents/skills/README.md', '必需'], ['.agents/skills/write-doc/SKILL.md', '必需'],
+  ['.agents/skills/write-note/SKILL.md', '必需'], ['.agents/skills/prose-standard/SKILL.md', '必需'],
+  ['.agents/archive/README.md', '必需'], ['.agents/tools/check-docs.mjs', '必需'],
+  ['docs/README.md', '必需'],
+];
+const STANDARD_NAME_RE = /规范|标准|design|spec|contract|契约|约定|指南|规则|边界|宪章|API|协议/i; // 候选线索：文件名像标准
+const UPDATED_LINE_RE = /^(?:>\s*)?(?:Updated|Verified):/, VERSION_LINE_RE = /^(?:>\s*)?Version:/; // 候选线索：前 20 行像头块
+const AGENTS_SECTIONS = ['通用规则', '桥', '结构速览']; // 合并态要求的三节（须为 H2）
 const MD_RE = /\.[mM][dD]$/, DATE_RE = /^\d{4}-\d{2}-\d{2}$/, DATED_NAME_RE = /^\d{4}-\d{2}-\d{2}-/; // 扩展名大小写不敏感
 const CJK_DIR_RE = /^[\u4e00-\u9fa5][\u4e00-\u9fa50-9]*$/; // 目录名另一种合法形态：纯中文（可续数字，不含空格与标点）
 const KEBAB_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/, SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/, FIELD_RE = /^\s*([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/;
@@ -108,14 +124,16 @@ function isExcluded(entry, excludes) {
   });
 }
 
-const USAGE = '用法：node .agents/tools/check-docs.mjs [--strict] [--exclude <路径或 glob>]… [路径…]';
+const USAGE = '用法：node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--exclude <路径或 glob>]… [路径…]\n  --health / --suggest-standards 是只读诊断，不接受路径参数；先 cd 到工作区根。';
 class UsageError extends Error {}
 
 function parseArgs(argv) {
-  const opts = { strict: false, excludes: [], paths: [], help: false };
+  const opts = { strict: false, health: false, suggestStandards: false, excludes: [], paths: [], help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i], v = argv[i + 1];
     if (a === '--strict') opts.strict = true;
+    else if (a === '--health') opts.health = true;
+    else if (a === '--suggest-standards') opts.suggestStandards = true;
     else if (a === '--exclude') {
       if (!v) throw new UsageError(`${a} 缺参数`);
       i++;
@@ -508,6 +526,180 @@ function checkDirNames(dirs, out) {
   return n;
 }
 
+/** 根锚点缺失的统一报错（默认调用与诊断模式同一口径）。 */
+function reportRootAnchorMissing() {
+  console.error(`根锚点缺失：调用目录 ${process.cwd()} 自身既不含 \`.agents/\` 也不含 \`docs/\` 目录；默认调用与诊断模式一律退出码 2，不静默降级、不向父目录上溯（先 cd 到工作区根，或显式传路径只跑编码预检与链接组）`);
+  return 2;
+}
+
+/** 检查器自身信息：从文件头找 Curia X.Y，sha256 前 8 位，实际行数（末尾换行不额外计一行）。 */
+function selfInfo() {
+  const self = fileURLToPath(import.meta.url);
+  let buf; try { buf = readFileSync(self); } catch { return 'Curia ？，sha256 ？，？ 行'; }
+  const text = buf.toString('utf8').replace(/\r\n?/g, '\n');
+  const m = /Curia\s+(\d+\.\d+)/.exec(text.split('\n').slice(0, 10).join('\n'));
+  const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
+  const lines = text.split('\n');
+  const count = text.endsWith('\n') ? lines.length - 1 : lines.length;
+  return `${m ? `Curia ${m[1]}` : 'Curia ？'}，sha256 ${hash}，${count} 行`;
+}
+
+/** 桥状态：符号链接看目标是否在（skills 还须是目录）；CLAUDE.md 真实文件看前 20 行是否指向 AGENTS.md。 */
+function bridgeState(rel, kind) {
+  const abs = join(ROOT, rel);
+  let st; try { st = lstatSync(abs); } catch { return 'missing'; }
+  if (st.isSymbolicLink()) {
+    let target; try { target = readlinkSync(abs); } catch { return 'symlink-broken'; }
+    const resolved = resolve(dirname(abs), target);
+    if (!existsSync(resolved)) return 'symlink-broken';
+    const expected = kind === 'claude-md' ? join(ROOT, 'AGENTS.md') : join(ROOT, '.agents', 'skills');
+    if (!existsSync(expected)) return 'symlink-other';
+    try {
+      if (realpathSync(resolved) === realpathSync(expected) && (kind === 'skills' ? isDir(resolved) : !isDir(resolved))) return 'symlink-ok';
+    } catch {}
+    return 'symlink-other';
+  }
+  if (kind === 'claude-md') {
+    if (!st.isFile()) return 'other';
+    const { lines } = readLines(abs);
+    return lines.slice(0, 20).join('\n').includes('AGENTS.md') ? 'real-file-pointer' : 'real-file';
+  }
+  return st.isDirectory() ? 'real-dir' : 'other';
+}
+
+/** 载荷盘点：返回「present/14 齐全」或「present/14；缺：…（必需/推荐）」；检查器搬出 .agents/tools/ 时不算缺，只注明运行位置。 */
+function payloadReport() {
+  const missing = [], notes = [];
+  const self = fileURLToPath(import.meta.url);
+  for (const [p, kind] of PAYLOAD) {
+    if (existsSync(join(ROOT, p))) continue;
+    if (p === '.agents/tools/check-docs.mjs' && existsSync(self)) {
+      const selfRel = relative(ROOT, self).split(sep).join('/');
+      notes.push(`检查器在 ${selfRel} 运行（位置不限），.agents/tools/ 下无副本`);
+      continue;
+    }
+    missing.push(`${p}（${kind}）`);
+  }
+  const present = PAYLOAD.length - missing.length;
+  const base = missing.length ? `载荷：${present}/${PAYLOAD.length}；缺：${missing.join('、')}` : `载荷：${present}/${PAYLOAD.length} 齐全`;
+  return notes.length ? `${base}；注：${notes.join('；')}` : base;
+}
+
+/** 根 AGENTS.md 的合并态：merged（规则 + 三节 H2）/ partial（缺节或降为 H3）/ not-merged。 */
+function agentsState() {
+  const abs = join(ROOT, 'AGENTS.md');
+  if (!existsSync(abs)) return 'not-merged（AGENTS.md 不存在）';
+  let lines; try { ({ lines } = readLines(abs)); } catch { return 'not-merged（无法读取）'; }
+  if (!lines.some((l) => l.includes('一事实一归属'))) return 'not-merged（未含「一事实一归属」）';
+  const { fenced } = analyze(lines);
+  const h2 = new Set(), h3 = new Set();
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue;
+    const m2 = /^##(?!#)\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+    const m3 = /^###(?!#)\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+    if (m2) h2.add(m2[1].trim()); else if (m3) h3.add(m3[1].trim());
+  }
+  const hit = (set, name) => [...set].some((h) => h === name || h.startsWith(`${name} `) || h.startsWith(`${name}（`) || h.startsWith(`${name}(`));
+  const reasons = [];
+  for (const name of AGENTS_SECTIONS) {
+    if (hit(h2, name)) continue;
+    reasons.push(hit(h3, name) ? `${name} 为 H3` : `缺：${name}`);
+  }
+  return reasons.length ? `partial（${reasons.join('；')}）` : 'merged（规则与三节齐全）';
+}
+
+/** docs/ 下带 Type: standard 头块的文件数（README/AGENTS 入口不算标准）。 */
+function standardCount(excludes) {
+  const docsDir = join(ROOT, 'docs');
+  if (!isDir(docsDir)) return 0;
+  const { files } = collect([docsDir], excludes);
+  return files.filter((f) => !INDEX_NAMES.has(basename(f.abs)) && readTypedHeader(f.abs)?.type === 'standard').length;
+}
+
+/** docs/ 标准候选：文件名像标准、前 20 行像头块（Updated/Verified/Version），且尚未带 Type: standard。 */
+function standardCandidates(excludes) {
+  const docsDir = join(ROOT, 'docs');
+  if (!isDir(docsDir)) return null;
+  const { files } = collect([docsDir], excludes);
+  const out = [];
+  for (const f of files) {
+    const base = basename(f.abs);
+    if (INDEX_NAMES.has(base)) continue;
+    if (readTypedHeader(f.abs)?.type === 'standard') continue;
+    const { lines, bad } = readLines(f.abs);
+    if (bad) continue;
+    const reasons = [];
+    if (STANDARD_NAME_RE.test(base)) reasons.push('文件名含标准类关键词');
+    const head = lines.slice(0, 20);
+    if (head.some((l) => UPDATED_LINE_RE.test(l))) reasons.push('前 20 行含 Updated:/Verified:');
+    if (head.some((l) => VERSION_LINE_RE.test(l))) reasons.push('前 20 行含 Version:');
+    if (!reasons.length) continue;
+    const docsRel = relative(docsDir, f.abs).split(sep).join('/');
+    if (docsRel === 'archive' || docsRel.startsWith('archive/')) reasons.push('位于 docs/archive/，先确认是否仍属现行');
+    out.push({ abs: f.abs, rel: f.rel, lines, reasons });
+  }
+  return out;
+}
+
+/** 候选的建议头块：保留原标题文本（无标题用「主题」），其余字段给人确认后补。 */
+function firstHeadingText(lines) {
+  const { fenced } = analyze(lines);
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue;
+    const m = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+    if (m) return m[1].trim();
+  }
+  return '主题';
+}
+
+function todayStr() {
+  const d = new Date(), p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** --health：只读体检载荷、桥、AGENTS.md 与 docs 覆盖；任何缺项都只报告，不失败。 */
+function runHealth(opts) {
+  if (ROOT === null) return reportRootAnchorMissing();
+  console.log(`工作区健康：${process.cwd()}（只读诊断，不修改文件）`);
+  const agentsDir = join(ROOT, '.agents'), docsDir = join(ROOT, 'docs'), readme = join(agentsDir, 'README.md');
+  let spec = '未安装';
+  if (existsSync(readme)) { try { const first = readLines(readme).lines.find((l) => l.trim() !== ''); if (first) spec = first.trim(); } catch {} }
+  console.log(`规范：${spec}`);
+  console.log(`检查器：${selfInfo()}`);
+  if (!isDir(agentsDir)) {
+    console.log('.agents/ 不存在：跳过载荷、桥与 AGENTS.md 检查');
+  } else {
+    console.log(payloadReport());
+    console.log(`桥：CLAUDE.md=${bridgeState('CLAUDE.md', 'claude-md')}；.claude/skills=${bridgeState('.claude/skills', 'skills')}；.codex/skills=${bridgeState('.codex/skills', 'skills')}`);
+    console.log(`AGENTS.md：${agentsState()}`);
+  }
+  if (!isDir(docsDir)) console.log('docs/ 不存在：标准 0 篇、候选 0 篇');
+  else console.log(`docs 标准：${standardCount(opts.excludes)} 篇；候选 ${standardCandidates(opts.excludes).length} 篇（用 --suggest-standards 查看）`);
+  return 0;
+}
+
+/** --suggest-standards：只读列出 docs 标准候选与建议头块，绝不写文件。 */
+function runSuggestStandards(opts) {
+  if (ROOT === null) return reportRootAnchorMissing();
+  if (!isDir(join(ROOT, 'docs'))) { console.log('docs/ 不存在：无候选。'); return 0; }
+  console.log('docs 标准候选（只读提示，不修改文件；确认后手动补头块）：');
+  const candidates = standardCandidates(opts.excludes);
+  if (!candidates.length) { console.log('未发现 docs 标准候选。'); return 0; }
+  const today = todayStr();
+  for (const c of candidates) {
+    console.log('');
+    console.log(c.rel);
+    console.log(`候选理由：${c.reasons.join('；')}`);
+    console.log('建议头块（人工确认）：');
+    console.log(`# ${firstHeadingText(c.lines)}`);
+    console.log('Type: standard');
+    console.log('Status: current');
+    console.log(`Updated: ${today}`);
+    console.log('Version: 1.0.0');
+  }
+  return 0;
+}
+
 function main(argv) {
   let opts;
   try { opts = parseArgs(argv); } catch (e) {
@@ -515,16 +707,23 @@ function main(argv) {
     throw e;
   }
   if (opts.help) { console.log(USAGE); return 0; }
+  if (opts.health || opts.suggestStandards) {
+    if (opts.paths.length) {
+      console.error(`用法错误：--health / --suggest-standards 不接受路径参数；先 cd 到工作区根\n${USAGE}`);
+      return 2;
+    }
+    let rc = 0;
+    if (opts.health) rc = runHealth(opts); // 只读诊断：--strict 无效，正常一律 0
+    if (rc === 0 && opts.suggestStandards) rc = runSuggestStandards(opts);
+    return rc;
+  }
   const explicit = opts.paths.length > 0;
   let roots;
   if (explicit) {
     roots = opts.paths.map((p) => resolve(p));
     for (const [i, r] of roots.entries()) if (!existsSync(r)) { console.error(`路径不存在：${opts.paths[i]}`); return 2; }
   } else {
-    if (ROOT === null) {
-      console.error(`根锚点缺失：调用目录 ${process.cwd()} 自身既不含 \`.agents/\` 也不含 \`docs/\` 目录；默认调用一律退出码 2，不静默降级、不向父目录上溯（先 cd 到工作区根，或显式传路径只跑编码预检与链接组）`);
-      return 2;
-    }
+    if (ROOT === null) return reportRootAnchorMissing();
     roots = [join(ROOT, '.agents'), join(ROOT, 'docs')].filter(isDir);
   }
   const defaultFace = roots.map((p) => `${basename(p)}/`).join(' + ');
@@ -557,7 +756,12 @@ function main(argv) {
   checkDirNames(dirs, out);
   out.sort((x, y) => (x.rel < y.rel ? -1 : x.rel > y.rel ? 1 : x.line - y.line || x.group - y.group));
   for (const x of out) console.log(`[组 ${x.group} · ${GROUP_NAMES[x.group]}] ${x.line > 0 ? `${x.rel}:${x.line}` : `${x.rel}/`} — ${x.msg}`);
-  console.log(`检查 ${files.length} 篇 / 告警 ${out.length} 条${structNote ? `（${structNote}）` : ''}`);
+  const groupCounts = [0, 0, 0, 0];
+  for (const x of out) groupCounts[x.group]++;
+  const summary = out.length
+    ? `检查 ${files.length} 篇 / 告警 ${out.length} 条（组 0 ${groupCounts[0]}、组 1 ${groupCounts[1]}、组 2 ${groupCounts[2]}、组 3 ${groupCounts[3]}）`
+    : `检查 ${files.length} 篇 / 告警 0 条`;
+  console.log(`${summary}${structNote ? `（${structNote}）` : ''}`);
   if (out.length && opts.strict) { console.error(`✗ --strict：${out.length} 条告警`); return 1; }
   return 0;
 }

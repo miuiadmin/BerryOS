@@ -12,8 +12,6 @@ description: 在 Curia .agents 工作区新建或修改文档的完整流程—�
 1. **定家**：按四句口诀——为什么 → `notes/`（走 [write-note](../write-note/SKILL.md)）；没做的 → `plans/`；做完的 → `research/`；可复用的干法 → `skills/`；外部事实 → 根 `docs/` 的自由知识；现行标准与契约 → 根 `docs/`（`Type: standard`，带 `Version:`）；冷历史 → `archive/`（docs 标准可走可选的 `docs/archive/`）。
 2. **定型**：同一家里类型互斥，判据查[规范全文](../../README.md)的「10 类文档」表（每类的家与建议节都在表里，不要背表）。两组最常混的：`survey` 会过时、`reference` 持续维护；`spec` 做完仍是权威（`done` 不退役）、`plan` 做完就是历史。新增一组：还没定稿的标准走 `plans/` 的 proposal/spec；已经生效、别人要遵守、需要「现行第几版」的才进 `docs/` 的 `standard`。
 
-> **BerryOS 特记（定家门口诀的本地修正）**：本仓 `docs/` 装的是**项目知识文档**（设计/实施/规划/调研/验收，版本化 `名-v主.次.md`、无头块 = 自由知识）——不止「外部事实」，存量设计规格**不走 10 类**（不批量补 `Type: standard`）；调研报告的家 = 根 `research/`（非 `.agents/research/`）。新的跨模块现行标准（需「现行第几版」）才走 `Type: standard`。写前先查归属裁决表：`docs/README.md`。
-
 ## 流程
 
 1. **建档**：按[规范全文](../../README.md)「规范格式（骨架）」手抄骨架、定文件名（日期型带 `yyyy-mm-dd-` 前缀；`skill` 与 `runbook` 的 topic 是目录名，须 kebab-case）。
@@ -28,6 +26,16 @@ description: 在 Curia .agents 工作区新建或修改文档的完整流程—�
 
 - 想做的：不承诺的意图落成 `draft` 的 proposal；做完的计划翻 `done`，事实与因果分家互链。
 - 过时了：优先状态翻转（`superseded` / `done` / `historical`）；冷历史走[归档四步](../../archive/README.md)——移动、`Archived:` 行、重写自身相对链接、修入链。**永不删除。**
+
+## 标准升格
+
+考虑把 `docs/` 已有知识升成 `standard` 时，先跑只读候选清单：
+
+```bash
+node .agents/tools/check-docs.mjs --suggest-standards
+```
+
+它按文件名与头块线索给建议，不写文件。升格与否由人确认——需要回答「现行第几版」才升；确认后手工补 `Type: standard` / `Status:` / `Updated:` / `Version:`，检查器不自动改写。同主题只留一个 `current` 载体，旧的翻 `historical` 或 `superseded`。
 
 ## 改类型系统本身
 
