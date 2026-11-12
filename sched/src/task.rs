@@ -199,12 +199,14 @@ pub struct Task {
     /// v1 无 IPC/继承，恒等于 `prio_base`；P4 channel 落地后开始分叉。
     pub prio_effective: i32,
     /// PI 捐赠暂存（4-3b，`IPC设计.md` §2.1 QNX 发送者语义）：睡眠者等 channel
-    /// 派生位（READABLE/WRITABLE）时，其有效优先级**捐赠给持有 peer 端点且正
-    /// 阻塞的任务**——本字段记受捐额。合成公式（[`crate::sched::refresh_effective`]）
+    /// 派生位（READABLE/WRITABLE）时，其有效优先级**捐赠给持有 peer 端点且
+    /// 带解锁 right 的任务（SLEEPQ 在队或本核 RQ 在环）**——本字段记受捐额。
+    /// 合成公式（[`crate::sched::refresh_effective`]）
     /// ：`prio_effective = max(prio_base + 策略权重, pi_inherited)`。
-    /// **冻结语义**：全图重推只清/算 SLEEPQ 在队者；受捐者被唤醒离队时**冻结
-    /// 当前值随行**（boost 带进 runqueue——「server 处理消息期间持有」的 v1
-    /// 形态），下次入睡被重推清零回落（=「reply 即回退」的无 reply 等价物）。
+    /// **冻结语义（形 B 后）**：全图重推清/算 SLEEPQ 在队者 + 本核 RQ 在环者；
+    /// P2 门闭窗（无 donor 可能且无待清睡眠者 boost）无重推 ⇒ 环上 boost
+    /// 冻结随行（「server 处理消息期间持有」的 v1 形态），门开或任务自身
+    /// 入睡时被重推清零回落（=「reply 即回退」的无 reply 等价物）。
     pub pi_inherited: i32,
     /// 预期运行时长 hint（纳秒；0 = 未指定）——AI 调度慢/快循环切分词汇
     /// （`AI调度设计.md`）。

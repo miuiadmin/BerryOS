@@ -6272,8 +6272,10 @@ fn test_pi() {
     assert_eq!(s0.prio_effective, 32, "PI：J0 server eff 须 32");
     assert_eq!(c0.pi_inherited, 0, "PI：J0 client（不持 peer）不受捐");
 
-    // J6. 冻结随行 + 解除回落（复用 J0 的对象）：离队（= 唤醒，重推只清在队
-    //     者）→ boost 冻结随行；重入队（= 下次入睡）且 donor 已退场 → 清零回落。
+    // J6. 冻结随行 + 解除回落（复用 J0 的对象）：离队且**不上环**（两界外
+    //     ——重推全域 = SLEEPQ 在队 ∪ 本核在环）→ boost 冻结随行；重入队
+    //     （= 下次入睡）且 donor 已退场 → 清零回落。真唤醒路径（离队即入
+    //     环）的环上重算面由 J8 盖。
     sleepq_unlink(s0);
     crate::pi::recompute();
     assert_eq!(s0.pi_inherited, 32, "PI：J6 离队冻结：boost 随行不清");
@@ -6412,6 +6414,62 @@ fn test_pi() {
     sleepq_unlink(d7);
     sleepq_unlink(k7);
     sleepq_unlink(u7);
+
+    // J8. PI 形 B（runnable 受捐盲区收口——R3 残留最大风险）：holder 私有表
+    //     持 endS:RECV 且在**本核 RQ 环上**（runnable——不睡）。client(36)
+    //     睡 endC:WRITABLE → 重推须把 36 落到环上持有者（pi + eff 双断言；
+    //     形 B 前只扫 SLEEPQ，boost 永不落到 runnable 持有者 = Mars
+    //     Pathfinder 无界反转）。随后 donor 退场 + 门保持开（g8 等错向
+    //     right 的派生位——J1 同款无边形，①非零）→ 重推清零环上 stale
+    //     boost（冻结语义收敛为「门闭窗冻结」）。
+    let ht8 = priv_table();
+    let c8e = chan_end(ktbl, RIGHT_SEND);
+    let s8e = chan_end(ht8, RIGHT_RECV);
+    pair_up(c8e, s8e);
+    let mut h8 = Task::new_kernel(pi_dummy, 0, b"j8_run");
+    h8.prio_base = 0;
+    h8.prio_effective = 0;
+    h8.proc_tag = ht8;
+    let h8: &'static mut Task = Box::leak(h8);
+    berry_sched::rq_insert_kt(h8);
+    let c8 = sleeper(b"j8_cli", 36, c8e, SIGNAL_WRITABLE, 0);
+    let ht9 = priv_table();
+    let c9e = chan_end(ktbl, RIGHT_SEND);
+    let s9e = chan_end(ht9, RIGHT_SEND); // 错向 right（J1 同款）——g8 无边但保持门开
+    pair_up(c9e, s9e);
+    let g8 = sleeper(b"j8_gate", 40, c9e, SIGNAL_WRITABLE, 0);
+    crate::pi::recompute();
+    assert_eq!(h8.pi_inherited, 36, "PI：J8 环上持有者须受捐 36（形 B 盲区收口）");
+    assert_eq!(h8.prio_effective, 36, "PI：J8 环上持有者 eff 须 36（pick 可见面）");
+    assert_eq!(c8.pi_inherited, 0, "PI：J8 donor（共享表不持 endS）不受捐");
+    sleepq_unlink(c8); // donor 退场；g8 仍在队（派生位等待者）→ 门保持开
+    crate::pi::recompute();
+    assert_eq!(h8.pi_inherited, 0, "PI：J8 边消失 → 环上 stale boost 须清零");
+    assert_eq!(h8.prio_effective, 0, "PI：J8 环上 eff 须回落 base");
+    sleepq_unlink(g8);
+    berry_sched::rq_unlink_kt(h8);
+
+    // J8b. 形 B 共享表护栏负向：peer 端点落共享表（ktbl）、受捐候选是
+    //     runnable 的 proc_tag=0 任务 → **不捐**（「视作持有一切」粗粒度
+    //     对环上是 4-5a 式 boost 喷洒——fa 对 smoke 实证：pong(32) 一睡、
+    //     全环喷 32 塌掉直切契约与 G1.5 时序）；同一 donation 边对共享表
+    //     **睡眠者**照捐（J7 语义不变——同块正反断言钉住边界）。
+    let mut r8 = Task::new_kernel(pi_dummy, 0, b"j8b_run");
+    r8.prio_base = 0;
+    r8.prio_effective = 0; // proc_tag=0（共享表）——护栏面
+    let r8: &'static mut Task = Box::leak(r8);
+    berry_sched::rq_insert_kt(r8);
+    let c10e = chan_end(ktbl, RIGHT_SEND);
+    let s10e = chan_end(ktbl, RIGHT_RECV); // peer 落共享表
+    pair_up(c10e, s10e);
+    let c10 = sleeper(b"j8b_cli", 30, c10e, SIGNAL_WRITABLE, 0);
+    let k10 = sleeper(b"j8b_k", 0, 0, 0, 0); // 共享表睡眠者——J7 正向对照
+    crate::pi::recompute();
+    assert_eq!(r8.pi_inherited, 0, "PI：J8b 共享表 runnable 不受捐（喷洒护栏）");
+    assert_eq!(k10.pi_inherited, 30, "PI：J8b 共享表睡眠者受捐（J7 语义不变）");
+    sleepq_unlink(c10);
+    sleepq_unlink(k10);
+    berry_sched::rq_unlink_kt(r8);
 
     // 清场：SLEEPQ 还给 boot（真睡眠者按 deadline 升序入队——脏节点会破坏
     // 超时扫描早停）。任务体/私有表 leak 不回收（ktest 语境同 spawn 政策）。

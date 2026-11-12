@@ -11,25 +11,35 @@
 //!   哨兵）且请求位含内核派生位（READABLE/WRITABLE）的睡眠者：
 //!   等 WRITABLE（对端队列满，等腾位）→ 解锁动作 = 有人 **recv peer**；
 //!   等 READABLE（本端队列空，等消息）→ 解锁动作 = 有人 **send peer**。
-//! - **受捐方** = 同在 SLEEPQ、其 handle 表**持有 peer 端点且带对应解锁
-//!   right**（RECV / SEND）的任务——多持有者全捐（任一可解锁）。Event 等待
-//!   不构成边（无 peer 结构、signal 方多方——v2 再议）。
+//! - **受捐方** = 持有 peer 端点且带对应解锁 right（RECV / SEND）的任务
+//!   ——**SLEEPQ 在队者，或本核 RQ 在环且持有面可识别（`proc_tag != 0`）
+//!   者**（形 B 前只扫 SLEEPQ = runnable 受捐盲区：高优 donor 阻塞时低优
+//!   持有者已在 RUNQUEUE，boost 永远落不到持有者头上——教科书 Mars
+//!   Pathfinder 无界反转；R3 实时分析定性为最大残留风险，本形收口）——
+//!   多持有者全捐（任一可解锁）。共享表（`proc_tag==0`）runnable 者不作
+//!   受捐方（「视作持有一切」粗粒度对环上是 4-5a 式喷洒——fa 对实证；
+//!   睡眠者面 J7 语义不变）。Event 等待不构成边（无 peer 结构、signal 方
+//!   多方——v2 再议）。
 //!
 //! **全图重推、零增量簿记**（对 QNX 式「链解除」的取舍）：每次 SLEEPQ 变更
 //! （block 睡下后 / wake 摘队后，经 `set_sleepq_hook` 注入）+ handle close
-//! 后，从零推导整张捐赠图——清零在队者受捐额 → 不动点迭代传播（每轮一跳）
-//! → 刷 effective。无解除遗漏、无 stale boost；代价是每次事件 O(睡眠者² ×
-//! 表槽) 的重算，v1 睡眠者个位数可忽略（SMP/规模扩大时换增量簿记）。
+//! 后，从零推导整张捐赠图——清零在队者与本核在环者的受捐额 → 不动点迭代
+//! 传播（每轮一跳）→ 刷 effective。无解除遗漏、无 stale boost；代价是每次
+//! 事件 O(睡眠者 × (睡眠者+环上者) × 表槽) 的重算，v1 睡眠者个位数可忽略
+//! （SMP/规模扩大时换增量簿记）。
 //! **P2 门控**（常态免付）：重推要产生任何改动，必要条件 = 队上有 donor
 //! 可能（等派生位者，[`recompute_locked`] 入口门）或有待清 boost——双零
 //! 时整体跳过（计数维护/不变式见 `sched.rs` P2 块注释；真有捐赠边的场景
 //! 计数必非零，门恒放行）。
 //!
-//! **冻结语义**（「server 处理消息期间持有」的 v1 形态）：重推只清/算
-//! **在队者**；受捐方被唤醒离队时冻结当前 `pi_inherited` 随行——boost 带进
-//! runqueue（4-3a 起 pick 看 effective，下一轮出选自然优先），下次入睡被
-//! 重推清零回落（=「reply 即回退」的无 reply 等价物，见 §2.1 intent 五件套
-//! 之 1）。长跑不睡者 boost 挂着——QNX 语义本就如此，v1 接受。
+//! **冻结语义（形 B 后）**（「server 处理消息期间持有」的 v1 形态）：重推
+//! 清/算 **SLEEPQ 在队者 + 本核 RQ 在环者**——受捐方被唤醒离队入环后由
+//! 后续重推**继续重算**（资源已就绪的边自然消失、仍被等资源的边保真重
+//! 推导）；环上 boost 只在 **P2 门闭窗**（双零跳过）内冻结随行，门开或
+//! 任务自身入睡时清零回落（=「reply 即回退」的无 reply 等价物，见 §2.1
+//! intent 五件套之 1）。长跑不睡且门常闭者 boost 挂着——QNX 语义本就
+//! 如此，v1 接受。**SMP 残留**：RQ 扫描只罩本核环——对核环上的持有者
+//! 收口需远核 RQ 锁（SQ→双 RQ 升序序合法，v2 议）。
 //!
 //! **链式有界**：不动点迭代轮帽 [`PI_MAX_HOPS`]（8）= 阻塞链深上限的执法点
 //! ——每轮传播一跳，8 轮到不了的链尾按已达 boost 处理，**不 panic**（syscall
@@ -83,12 +93,25 @@ fn recompute_locked() {
     // 侧在 SLEEPQ 两机械面精确维护（不变式与安全性论证 → sched.rs P2
     // 块注释）；本入口恒在 SQ 窗内发射（五发射点 + 自持窗手动面），读
     // 写点同窗无竞态。门常开方向的劣化 = 性能损失非正确性损失。
+    // **门对形 B 的覆盖**：环上受捐的必要条件仍是「队上有 donor 可能」
+    //（①非零 ⇒ 传播趟能到环上持有者）；②只数睡眠者 = 环上 stale boost
+    // 的冻结面（门闭 ⇒ 冻结随行，任务入睡时经 pi_count_add 重开——
+    // 语义见模块注「冻结语义（形 B 后）」）。
     if !berry_sched::pi_recompute_needed() {
         return;
     }
-    // 第一趟：清零**在队者**的受捐额（冻结语义——已离队的 runnable 者不动，
-    // boost 随行到下次入睡/退出）。纯 Task 字段写，不触表——窗内不包。
+    // 形 B：RQ 窗先行——受捐盲区收口（runnable 持有者进重推全域）。锁序
+    // = 终态七层冻结序升序前缀 SQ（已持）→ RQ →（KL 子窗）；KL 子窗必须
+    // 晚开早闭（KL 取用点一律结构先取 KL 后取）。SVC 窗入口已预取结构位
+    // 的发射面（wait/send 族 / thread_sleep / kill 全谱）位感知退化免物理
+    // 取放——热路径零新增锁活动；IRQ/tick 与 ktest/boot 窗真取（无同核
+    // 重入，论证 → sched.rs `pi_rq_lock` 注）。
+    let rq_phys = berry_sched::pi_rq_lock();
+    // 第一趟：清零**在队者 + 本核在环者**的受捐额（形 B 前 runnable 者
+    // 只能冻结尾趟值——盲区半边即此）。纯 Task 字段写，不触表——KL 窗
+    // 外合法。
     berry_sched::for_each_sleeper(|t| t.pi_inherited = 0);
+    berry_sched::for_each_runnable(|t| t.pi_inherited = 0);
 
     // 不动点迭代：每轮沿边传播一跳。`Cell` 规避嵌套闭包的可变捕获冲突。
     // 3-1b：整段包 KL 子窗——内层 `holder_table` 反查读 bootstrap 表，
@@ -121,6 +144,31 @@ fn recompute_locked() {
                     changed.set(true);
                 }
             });
+            // 形 B：本核 RQ 受捐扫描（与 SLEEPQ 受捐同形——判定同一
+            // `holder_has`）。donor 所等资源的 peer 端点持有者可能正
+            // runnable（高优 client 阻塞、低优 server 在环等 CPU——
+            // Mars Pathfinder 形态）：boost 只有写进环上持有者的
+            // pi_inherited 并经尾趟刷进 prio_effective，pick 才看得见。
+            // 钩子发射点与入睡摘环序保证 SLEEPQ/RQ 任务集此刻不相交
+            //（block 先摘环后发钩 / wake 先入环后发钩）——无双访。
+            // **共享表护栏（形 B 边界）**：`proc_tag==0`（内核侧共享表——
+            // 「视作持有表内一切」的 v1 粗粒度）的 runnable 者不作受捐方
+            // ——粗粒度对睡眠者无害（J7 面，4-3b 起语义不变），对环上是
+            // 4-5a 式 boost 喷洒：任一 donor 入睡即全环抬升（fa 对实证
+            // ——pong(32) 一睡、共享表全环任务喷到 32：矩阵优先级塌平
+            // G1.5 超时 + ping 升 32 塌掉 32>16 直切契约）。受捐方须
+            // 真实可识别（proc_tag≠0 = EL0 进程表/spawn_with_tag 私有表
+            // ——生产 client/server 拓扑即此形）。
+            berry_sched::for_each_runnable(|cand| {
+                if cand.proc_tag == 0 {
+                    return; // 共享表 runnable：不可识别持有面——不捐（喷洒护栏）
+                }
+                let Some(ht) = holder_table(cand) else { return };
+                if ht.holder_has(peer, need) && d_eff > cand.pi_inherited {
+                    cand.pi_inherited = d_eff;
+                    changed.set(true);
+                }
+            });
         });
         if !changed.get() {
             break; // 不动点：再无传播
@@ -130,10 +178,14 @@ fn recompute_locked() {
         berry_hal_aarch64::kern_lock::kern_release();
     }
 
-    // 尾趟：刷在队者 effective（runnable 者保持冻结值）。公式与 pick 侧
-    // policy::apply 同一：max(base + 策略权重, pi_inherited)。纯字段算术
-    // 不触表——窗内不包。顺带重数 pi≠0 在队者个数回写门控计数乙（P2 第
-    // 三收口点：重推是队上 pi_inherited 唯一写者，写尾即精确对账）。
+    // 尾趟：刷在队者 + 本核在环者 effective。环上者同刷——boost 只有落进
+    // prio_effective 才被 pick/try_preempt 消费（形 B 的行为出口即此；公式
+    // 与 pick 侧 policy::apply 同一：max(base + 策略权重, pi_inherited)，
+    // weight_of 免锁读——RQ 窗内合法）。纯字段算术不触表。顺带重数 pi≠0
+    // 在队者个数回写门控计数乙（P2 第三收口点：重推是在队者 pi_inherited
+    // 唯一写者，写尾即精确对账；**环上受捐者不进计数**——计数语义 = 睡眠
+    // 者清零面，环上 boost 的清零由「donor 在队 ⇒ ①非零 ⇒ 门开」罩住，
+    // 门闭冻结随行经 pi_count_add 于入睡时重新入账，口径闭环）。
     let boosted = Cell::new(0u32);
     berry_sched::for_each_sleeper(|t| {
         berry_sched::refresh_effective(t);
@@ -141,7 +193,10 @@ fn recompute_locked() {
             boosted.set(boosted.get() + 1);
         }
     });
+    berry_sched::for_each_runnable(|t| berry_sched::refresh_effective(t));
     berry_sched::pi_boost_recount(boosted.get());
+    // RQ 窗闭（后于 KL 子窗——开窗序的严格逆）。
+    berry_sched::pi_rq_unlock(rq_phys);
 }
 
 /// donor 的捐赠边（机械壳——资格判定单源 `berry_piface::donor_edge`）：

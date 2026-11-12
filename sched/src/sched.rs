@@ -2830,10 +2830,80 @@ pub fn for_each_sleeper(mut f: impl FnMut(&mut Task)) {
     }
 }
 
+/// PI 重推 RQ 窗（4-3b PI 形 B——runnable 受捐盲区收口）：位感知取**本核**
+/// runqueue 锁，返回 `phys` 配对 [`pi_rq_unlock`]。
+///
+/// 调用契约 = `kernel/src/pi.rs::recompute_locked` 语境：**SQ 锁已持 + IRQ
+/// 屏蔽窗内**。锁序 = 终态七层冻结序（SQ>队列>REAPQ>表，KL 最内）的升序
+/// 前缀 SQ→RQ（`klock_release_switch` 注 / arch `kern_lock` SVC 类注）；
+/// **KL 子窗（表读面）必须晚于本窗开启、早于本窗闭合**——KL 取用点一律
+/// 结构先取 KL 后取（kern_lock.rs `SVC_CLASS_SQ_RQ` 注），持 RQ 取 KL 合法
+/// （升序），持 KL 取 RQ 违序（本窗永不制造）。SVC 窗入口已预取结构位的
+/// 发射面（wait/send 族 0x2E / thread_sleep 0x0E / kill 全谱——入口恒持
+/// 完整 SQ+RQ0+RQ1）经位感知退化免物理取放——热路径零新增锁活动；
+/// IRQ/tick 与 ktest/boot 窗真取（RQ 窗恒 IRQ 屏蔽 ⇒ 被打断者必不在 RQ
+/// 窗内，无同核重入；KL 子窗的 `kl_held` 同核退化另兜「打断 KL 持有者」
+/// 形态）。窗内禁切换（recompute 无切点——切点前必放纪律自动满足）。
+pub fn pi_rq_lock() -> bool {
+    // SAFETY: 契约如上（SQ 窗内 IRQ 已屏蔽；本核号分诊）。
+    unsafe { rq_lock() }
+}
+
+/// 配对 [`pi_rq_lock`]（`phys=false` 退化窗不触——物理持有归外层，语义同
+/// [`sq_unlock`]/`rq_unlock_of`] 的退化跳过）。
+pub fn pi_rq_unlock(phys: bool) {
+    // SAFETY: 同上。
+    unsafe { rq_unlock(phys) }
+}
+
+/// 遍历**本核** runqueue 环上全部 runnable 任务（head → 一圈；
+/// `lazy_unthrottle_deadlines` 同款环形走查——Running 常驻环（cur-in-ring）、
+/// IDLE 恒不在环，环成员 = 全体本核 runnable）。**调用契约**：
+/// [`pi_rq_lock`] 窗内（环结构稳定）；回调中不得改动 `rq_prev`/`rq_next`
+/// （遍历中接线会扬环）、不得出/入环、不得 block/wake（同
+/// [`for_each_sleeper`] 契约面）——只读字段或写 `pi_inherited`/`prio_*`
+/// 等非链接字段安全（PI 重推的用法）。SMP 残留：只罩**本核**环（对核环
+/// 持有者收口需远核 RQ 锁，v2 议）。
+pub fn for_each_runnable(mut f: impl FnMut(&mut Task)) {
+    // SAFETY: 契约如上；调用方持本核 RQ 锁（走查期间无并发出/入环）；
+    // 环上任务均调度器拥有（pick_next 扫描同款不变式）。
+    unsafe {
+        let head = rq().head();
+        let mut cur = head;
+        while let Some(c) = cur {
+            let t = &mut *c.as_ptr();
+            cur = t.rq_next.get(); // 先存 next 再交回调（回调只写非链接字段）
+            f(t);
+            if cur == head {
+                break; // 环回起点 → 一圈完成
+            }
+        }
+    }
+}
+
+/// 把 `t` 链到本核 runqueue 环尾。**ktest 手搭 runnable 者专用**（生产路径
+/// 一律走 class enqueue/`enqueue_with_kick`——本函数不置 Ready、不路由）。
+/// 契约同 `Runqueue::link_back`：IRQ 屏蔽窗内、`t` 不在任何环上（链接字段
+/// 均 `None`）且地址稳定（ktest `Box::leak`）；len/Σvruntime/DL_ON_RING
+/// 三账本经结构原语层入账——ring_check 金丝雀对账不漂移。
+pub fn rq_insert_kt(t: &mut Task) {
+    // SAFETY: 契约如上；ktest 单核屏蔽窗（sched::init 前，环空零争用）。
+    unsafe { rq().link_back(core::ptr::NonNull::from(t)) };
+}
+
+/// 把 `t` 摘出本核 runqueue 环（ktest 清理专用；不在环上幂等返回——同
+/// `sleepq_unlink` 的清面定位）。账本出账同经结构原语层，与插入配对。
+pub fn rq_unlink_kt(t: &mut Task) {
+    // SAFETY: 同上。
+    unsafe { rq().unlink(core::ptr::NonNull::from(t)) };
+}
+
 /// 重算 `t` 的有效优先级（4-3b 统一合成公式）：
 /// `prio_effective = max(prio_base + 策略权重, pi_inherited)`——与 pick 侧
-/// [`crate::policy::apply`] 同公式（两写入者不互踩）。冻结语义见
-/// [`Task::pi_inherited`]：只对 SLEEPQ 在队者调用，runnable 者保持冻结值。
+/// [`crate::policy::apply`] 同公式（两写入者不互踩）。调用面 = PI 重推尾趟
+/// （SLEEPQ 在队者 + 本核在环者——形 B 起环上也刷，boost 落进 effective
+/// 才被 pick 消费）；runnable 者的 P2 门闭窗无重推 = 冻结值随行（见
+/// [`Task::pi_inherited`]）。
 pub fn refresh_effective(t: &mut Task) {
     let w = crate::policy::weight_of(t);
     t.prio_effective = (t.prio_base + w).max(t.pi_inherited);
