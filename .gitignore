@@ -76,8 +76,11 @@
 # python 脚本字节码缓存（size.py 被工具链调用时产生）
 __pycache__/
 
-# Claude Code 会话/工作树目录（本地工具产物，不入库）
-.claude/
+# Claude Code 会话/工作树目录（本地工具产物，不入库）——例外：Curia 三桥之一的
+# .claude/skills 符号链接入库（.codex/skills 与 CLAUDE.md 两桥已在库，见 init.mjs:40 契约）；
+# 父目录被排除时 git 不下钻，须用 .claude/* + ! 取反惯用法，单写 !.claude/skills 无效
+.claude/*
+!.claude/skills
 
 # loopx MCP 注册（含本机绝对路径，机器绑定）
 /.mcp.json
