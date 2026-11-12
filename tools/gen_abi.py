@@ -239,7 +239,6 @@ def four_tuple(d: dict) -> tuple:
 # 单源裁决；新加零 handle 号须同步进单（理由随行注记）。
 NO_GATE_SYSCALLS = {
     "handle_close",           # 表槽收口：close 不需权利（Zircon 同形）
-    "handle_duplicate",       # ⊆ 派生约束在席；RIGHT_DUPLICATE 位执法 = P3-1 挂账
     "handle_replace",         # 槽位原子换：类型门无权利门
     "object_wait_one",        # 等待不需权利（12 位 rights 表无 WAIT）
     "object_wait_many",       # 同上
@@ -255,6 +254,8 @@ NO_GATE_SYSCALLS = {
     "event_create",           # 创建面：产物授位 SIGNAL|DUPLICATE|TRANSFER 在册
     "clock_read",             # 零 handle（单调钟全局面）
     "signal_take",            # 当前进程 pending 自面：零 handle
+    "power_off",              # 零 handle（整机下电全局动作——v1 单用户仿真系统
+                              # 无能力框架；门控随 I3 关机流程正规化刀）
 }
 
 
@@ -905,7 +906,7 @@ stage = "v1"
     ws = enforcement_warnings(led)
     check("台账 WARN 恰响缺登记行", len(ws) == 1 and ws[0].startswith("0x01 a"),
           f"got {ws}")
-    check("在册台账零 WARN（登记 24 + 豁免单收口）",
+    check("在册台账零 WARN（登记 25 + 豁免单收口；P3-1 已登记除名）",
           enforcement_warnings(load()) == [])
 
     # --- 7. syz 投影：syz_int 宽度映射 + 拒面、syz_val 同形不重复、
@@ -993,7 +994,7 @@ stage = "v1"
            if not p.exists() or p.read_text("utf-8") != want]
     check("在册五产物逐字节 oracle", not bad, f"漂移: {bad}")
     nt, nd, nr, nc = four_tuple(real)
-    check("在册四元组口径", (nt, nd, nr, nc) == (37, 41, 40, 45),
+    check("在册四元组口径", (nt, nd, nr, nc) == (38, 42, 41, 45),
           f"got {(nt, nd, nr, nc)}")
     check("在册 wakesrc 空闲段活算", next_free_wakesrc(
         {w["name"]: eval_expr(w["expr"]) for w in real["wakesrc"]}) == 0x08)

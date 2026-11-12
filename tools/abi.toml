@@ -30,12 +30,13 @@ level = 1             # 初值 1 = 首个冻结面起点（v1 37 号在册面）
 
 [meta]
 stage = "v1"
-nr_total = 37        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+nr_total = 38        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号；含 0x23
                      # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号；含 0x24
-                     # pager_supply_mapped_table——X-6 刀① 批供表批加号）
-implemented = 36     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+                     # pager_supply_mapped_table——X-6 刀① 批供表批加号；含
+                     # 0x88 power_off——桌面UX刀D add-only 加号）
+implemented = 37     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
                      # G4-2 0x21 pager_supply_pages v2 号激活 + G4-4 X-3b
                      # 0x23 pager_supply_mapped 挂派发翻真 + X-6 刀①
                      # 0x24 pager_supply_mapped_table 挂派发；
@@ -103,8 +104,19 @@ invalid_handle = 0   # BERRY_HANDLE_INVALID / INVALID_HANDLE
 [[clock]]
 name = "MONOTONIC"
 expr = "0"
-desc = '`clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。'
-desc_user = '`clock_read` 的 clock_id：v1 只有单调钟（壁钟留 v2）。'
+desc = '`clock_read` 的 clock_id：单调钟（`berry_time_t` = 纳秒；CNTVCT 换算）。'
+desc_user = '`clock_read` 的 clock_id：单调钟（`berry_time_t` = 纳秒）。'
+
+# 波一刀 B（状态栏可信化）：壁钟 id。原「壁钟留 v2」提前落地——零新号、
+# 既有 0x61 syscall 的 id 域扩展（v1 契约 add-only：id 0 行为逐位不变）。
+# 真值源 = 宿主 berry 启动期 fw_cfg `opt/berry/rtc` 注入的 epoch 秒
+# （内核 rtc.rs boot 消费 + MONOTONIC 锚差算）；注入缺席（如 -kernel 冒烟
+# 拓扑）→ -ENOTSUP，用户态降级静态占位（launcher 12:00）。
+[[clock]]
+name = "REALTIME"
+expr = "1"
+desc = '`clock_read` 的 clock_id：壁钟（宿主 fw_cfg `opt/berry/rtc` epoch 注入面，内核 `rtc.rs`；缺席/畸形注入 → -ENOTSUP）。'
+desc_user = '`clock_read` 的 clock_id：壁钟（宿主注入 epoch；未注入 → -ENOTSUP）。'
 
 [[option]]
 name = "CHAN_OPT_NO_INTENT"
@@ -331,6 +343,7 @@ num = 0x02
 name = "handle_duplicate"
 desc = '复制（权限 ⊆ 原）'
 stage = "v1"
+enforced_since = 2026-11-13  # RIGHT_DUPLICATE 门（P3-1，f44c2ba8）
 [[group.syscall]]
 num = 0x03
 name = "handle_replace"
@@ -709,3 +722,13 @@ desc = '原子取走当前进程 pending 集（swap(0) 语义——取后内核�
 stage = "v1"
 implemented = true
 note = 'A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。'
+
+[[group]]
+title = "**电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）"
+[[group.syscall]]
+num = 0x88
+name = "power_off"
+desc = '整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC conduit——QEMU TCG/KVM 均受理 `qemu_system_shutdown_request`，PM-10 §1.6 实读）。成功 = 不归（整机退出）；返回 -ENOTSUP = conduit 死（EFI handoff / 非 EL1 入口 / 无 PSCI——`off_supported` probe 缓存门）或固件拒收。零参数零出参。'
+stage = "v1"
+implemented = true
+note = '桌面UX刀D add-only 加号（2026-11-14，先例 0x86/0x87）：v1 无门控——单用户仿真系统无能力框架，消费面 launcher 关机键（二击 3s 窗确认）+ berryctl power 子命令；门控与优雅关机序（服务停摆/数据 flush）随 I3 关机流程正规化刀（审计 02 号 §6.2）。probe 缓存门保证无 PSCI 路诚实 -ENOTSUP 不盲发 HVC。'

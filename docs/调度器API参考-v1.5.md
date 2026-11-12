@@ -1,7 +1,7 @@
 # 调度器 API 参考
 
-> 版本：v1.4（2026-11-11 升版：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**136 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e/HEAD）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 版本：v1.5（2026-11-13 升版：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**143 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
@@ -202,6 +202,21 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 
 ### `for_each_sleeper(mut f: impl FnMut(&mut Task))`
 > sched | 遍历全局 SLEEPQ 上所有睡眠者（head → tail）；契约：IRQ 屏蔽窗内。
+
+### `pi_rq_lock() -> bool`
+> sched | PI 重推 RQ 窗（4-3b PI 形 B——runnable 受捐盲区收口，42a794e0）：位感知取本核 runqueue 锁，返回 `phys` 配对 `pi_rq_unlock`（契约：SQ 锁已持 + IRQ 屏蔽窗内；KL 子窗须晚于本窗开启、早于本窗闭合——升序锁序唯一保证）。
+
+### `pi_rq_unlock(phys: bool)`
+> sched | 配对 `pi_rq_lock`（`phys=false` 退化窗不触——物理持有归外层，同 `sq_unlock` 的退化跳过语义）。
+
+### `for_each_runnable(mut f: impl FnMut(&mut Task))`
+> sched | 遍历本核 runqueue 环上全部 runnable 任务（head → 一圈）；契约：`pi_rq_lock` 窗内 + 回调不动 `rq_prev`/`rq_next`、不出入环不 block/wake（形 B 三趟重推并进本面；SMP 残留：只罩本核环）。
+
+### `rq_insert_kt(t: &mut Task)`
+> sched | 把 `t` 链到本核 runqueue 环尾（ktest 手搭 runnable 专用；生产路径走 class enqueue/`enqueue_with_kick`——本函数不置 Ready、不路由；len/Σvruntime/DL_ON_RING 三账本经结构原语层入账）。
+
+### `rq_unlink_kt(t: &mut Task)`
+> sched | 把 `t` 摘出本核 runqueue 环（ktest 清理专用；不在环上幂等返回；账本出账同经结构原语层，与插入配对）。
 
 ### `refresh_effective(t: &mut Task)`
 > sched | 重算 `t` 的有效优先级（4-3b 统一合成公式）。
@@ -526,10 +541,16 @@ HDR 直方图（897 桶对数尺）+ per-CPU 切换/唤醒延迟双路 + 跨核�
 
 ## 八、intent（intent.rs）
 
-intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧结算。
+intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧结算 + 新任务缺省档产品级覆盖（G5 boot-params）。
 
 ### `intent_valid(v: u8) -> bool`
 > intent | intent 值合法域（0x00–0x05；入口治理随声明入口 syscall 落地，判别先冻结）。W3-Q13 起判定律单源 `berry_intface::intent_valid`，intent.rs 转为 `pub use` re-export（`berry_sched::intent_valid` 调用路径不变）——本地 pub fn 计数 3→2。
+
+### `set_intent_default(code: u8)`
+> intent | 设置新任务缺省 intent（boot 早期、首个 spawn 前；编码域执法归调用方——词表映射在 bootparams::parse）。G5（§1.6-补，345739e1）`intent_default` boot-param 消费注入面。
+
+### `intent_default() -> u8`
+> intent | 读新任务缺省 intent（`Task` 装配点消费——task.rs `try_assemble`）；缺省 `INTENT_UNSPECIFIED` = 现役行为零漂移（产品显式声明才发生变更）。
 
 ### `snapshot(t: &Task, now_ns: u64) -> (MsgIntent, SnapOut)`
 > intent | send 侧快照：发送者 `intent_effective` 打包进消息头（fastpath 增量 = 一次读 + 一次原子加）。
@@ -574,15 +595,15 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 
 | 文件 | pub fn | 归组 |
 |------|--------|------|
-| sched.rs | 73 | 一、调度核心 |
+| sched.rs | 78 | 一、调度核心 |
 | policy.rs | 15 | 二、策略服务 |
 | band.rs | 7 | 三、层级预算 |
 | em.rs + util.rs | 6 + 7 | 四、EAS 能效 |
 | hdr.rs | 8（+`pub use` re-export 族：`bucket_of`/`bucket_upper`/`rank_of`/`Hdr`·`CpuHdr` 全方法单源 `berry_hdrface`） | 五、测量 |
 | task.rs | 5 | 六、任务 |
 | runqueue.rs | 7 | 七、环形队列 |
-| intent.rs | 2（+`pub use` re-export 族：`intent_valid` 单源 `berry_intface`） | 八、intent |
+| intent.rs | 4（+`pub use` re-export 族：`intent_valid` 单源 `berry_intface`；G5 前 2） | 八、intent |
 | spin.rs | 4 | 附 |
 | class.rs | 2（+trait 5 法） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **136** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
+| **合计** | **143** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
