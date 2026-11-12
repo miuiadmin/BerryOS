@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""docs_guard.py —— 入口规则架构执法器（2026-11-01 入口整改起）。
+"""docs_guard.py —— docs/ 结构与 Curia 桥契约执法器。
 
-四层结构执法：CLAUDE.md（@import 指针）→ AGENTS.md（≤200 行单源）→ docs/规则/（域规则）
-→ docs/雷册-判例库.md（判例全文）。用法：
+形态基线（2026-11-12 终裁起）：Curia 面 1:1 纯上游 2.5.0——AGENTS.md/CLAUDE.md/
+docs/README.md 取上游模板形态；本工具守 docs/ 结构不变量与上游桥契约，不守
+AGENTS.md 内容（内容随上游整目录对拍演进，本地不编辑）。用法：
 
     python3 tools/docs_guard.py            # 全门禁（exit 0 = 过，非 0 = 拒 + 逐条 stderr）
     python3 tools/docs_guard.py --quiet    # 只打 FAIL/WARN 行
 
 门禁：
-  G1  AGENTS.md 行数帽 ≤200。
-  G2  AGENTS.md 行长：>100 字符 WARN、>120 字符 FAIL。
+  G1  AGENTS.md 行数帽 ≤200（防本地膨胀；上游模板现 45 行）。
   G3  探针串在位（外部工具依赖的口径串，防误删）：
-      AGENTS.md   6 串（清单单源 = 下方 PROBES 表，勿在此逐列——两处必漂）
+      AGENTS.md   1 串（Curia 契约锚 .agents/README.md——规格指针必须在位）
       规则/01     外层包安全 API / FPSIMD
       规则/03     copy_out_u32
       规则/08     SLICE_HZ/2
@@ -20,10 +20,12 @@
       规则/13     排除 8 问 / Apache-2.0
   G4  锚点可解析：docs/规则/*.md 行尾 `→ 雷册 §A…` 的每个编号（支持 §A62 / §A62-65 /
       §A38/39/47 / §A10+§A11+§A100 四形态），雷册须有对应 `### §A…` 节标题（B 同理）。
-  G5  CLAUDE.md 含裸行 `@AGENTS.md`（导入语法必须裸行，反引号/围栏包裹即静默不导入）。
-  G6  AGENTS.md 总字符预算：>3000 警、>3400 拒（注入预算；行长帽管不住
-      「行没超但每行都塞满」的密度回归——真正该守的是字符/token，不是行数）。
-  G7  CLAUDE.md 字符预算 ≤600（指针文件，防有人把正文抄回指针）。
+  G5  CLAUDE.md 桥契约：为指向 AGENTS.md 的符号链接（上游 2.5 形态；旧 @import
+      裸行指针形态随 2026-11-12 纯 1:1 终裁废弃）。
+  G6  AGENTS.md 总字符预算：>3000 警、>3400 拒（防本地膨胀注入）。
+  G7  技能双桥契约：.claude/skills 与 .codex/skills 均为指向 ../.agents/skills
+      的符号链接（上游三桥契约的另两桥；替代旧 CLAUDE.md 指针字符帽——链接
+      形态天然无正文可抄）。
   G8  迁出目标文件在位：docs/命令速览.md / docs/规则/README.md（AGENTS 外链
       不能指向空气；G3 只查探针串，不查文件本体）。
   G10 索引三不变量（docs/索引.md 单次读入一遍扫，2026-11-08 审计漂移机器根治）：
@@ -31,6 +33,8 @@
       ② 头部「主索引：N 份文档」== Σ各区标注；③ 表行登记 .md 集 ==
       docs/ 根实存 .md 集（除索引自身；规则/ 枢纽行链指 规则/README.md 不计缺登）。
       未登 / 死链 / 标实不符 / 重复登记各报清单。G9 留空（并行刀占号风险）。
+  G2 已撤（2026-11-12）：AGENTS.md 行长纪律随旧 BerryOS 单源形态移除——模板
+      归上游所有，本地不编辑，行长执法无对象。
 """
 import re
 import sys
@@ -50,9 +54,6 @@ INDEX_HUB_EXEMPT = "规则/README.md"
 AGENTS_MAX_LINES = 200
 AGENTS_MAX_CHARS = 3400
 AGENTS_WARN_CHARS = 3000
-CLAUDE_MAX_CHARS = 600
-LINE_WARN = 100
-LINE_FAIL = 120
 
 # `--quiet` 只打 FAIL/WARN（docstring 承诺面；CI/本地手跑同口径）。
 QUIET = "--quiet" in sys.argv[1:]
@@ -64,14 +65,7 @@ def ok(msg: str) -> None:
 
 
 PROBES = {
-    AGENTS: [
-        "外层包安全 API",
-        "SLICE_HZ/2",
-        "docs/规则/",
-        "docs/雷册-判例库.md",
-        "docs/命令速览.md",
-        "docs/规则/README.md",
-    ],
+    AGENTS: [".agents/README.md"],
     RULES / "01-内核编码.md": ["外层包安全 API", "FPSIMD"],
     RULES / "03-系统调用.md": ["copy_out_u32"],
     RULES / "08-QEMU与仿真.md": ["SLICE_HZ/2"],
@@ -106,15 +100,6 @@ def gate_g1_agents_lines() -> None:
         fail(f"G1 AGENTS.md {n} 行 > 帽 {AGENTS_MAX_LINES}")
     else:
         ok(f"G1 ok  AGENTS.md {n}/{AGENTS_MAX_LINES} 行")
-
-
-def gate_g2_line_len() -> None:
-    for i, line in enumerate(AGENTS.read_text(encoding="utf-8").splitlines(), 1):
-        w = len(line)
-        if w > LINE_FAIL:
-            fail(f"G2 AGENTS.md:{i} 行长 {w} > {LINE_FAIL} 拒")
-        elif w > LINE_WARN:
-            warn(f"G2 AGENTS.md:{i} 行长 {w} > {LINE_WARN} 警")
 
 
 def gate_g3_probes() -> None:
@@ -190,14 +175,18 @@ def gate_g6_agents_chars() -> None:
         ok(f"G6 ok  AGENTS.md {n}/{AGENTS_MAX_CHARS} 字符（警线 {AGENTS_WARN_CHARS}）")
 
 
-def gate_g7_claude_chars() -> None:
-    if not CLAUDE.exists():
-        return  # G5 已报缺文件，避免二次 traceback
-    n = len(CLAUDE.read_text(encoding="utf-8"))
-    if n > CLAUDE_MAX_CHARS:
-        fail(f"G7 CLAUDE.md {n} 字符 > 帽 {CLAUDE_MAX_CHARS}（指针文件勿抄正文）")
-    else:
-        ok(f"G7 ok  CLAUDE.md {n}/{CLAUDE_MAX_CHARS} 字符")
+SKILL_BRIDGES = [ROOT / ".claude" / "skills", ROOT / ".codex" / "skills"]
+
+
+def gate_g7_skill_bridges() -> None:
+    for bridge in SKILL_BRIDGES:
+        rel = bridge.relative_to(ROOT)
+        if not bridge.exists():
+            fail(f"G7 技能桥缺失: {rel}（上游契约须为 → ../.agents/skills 符号链接）")
+        elif not bridge.is_symlink() or str(bridge.readlink()) != "../.agents/skills":
+            fail(f"G7 技能桥 {rel} 非指向 ../.agents/skills 的符号链接")
+        else:
+            ok(f"G7 ok  技能桥 {rel} → ../.agents/skills")
 
 
 def gate_g8_moved_docs() -> None:
@@ -266,27 +255,26 @@ def gate_g10_index_invariants() -> None:
            f"docs 根 {len(actual)} 份 .md 全登（枢纽行豁免）")
 
 
-def gate_g5_claude_import() -> None:
+def gate_g5_claude_bridge() -> None:
     if not CLAUDE.exists():
-        fail("G5 CLAUDE.md 缺失——指针文件是 @import 链的绑定对")
+        fail("G5 CLAUDE.md 缺失——上游桥契约要求在位")
         return
-    if not any(l.strip() == "@AGENTS.md" for l in CLAUDE.read_text(encoding="utf-8").splitlines()):
-        fail("G5 CLAUDE.md 无裸行 `@AGENTS.md`（导入语法必须裸行，反引号/围栏包裹即静默不导入）")
+    if not CLAUDE.is_symlink() or str(CLAUDE.readlink()) != "AGENTS.md":
+        fail("G5 CLAUDE.md 非指向 AGENTS.md 的符号链接（上游 2.5 桥契约；旧 @import 指针形态已随纯 1:1 终裁废弃）")
     else:
-        ok("G5 ok  CLAUDE.md @import 裸行在位")
+        ok("G5 ok  CLAUDE.md → AGENTS.md 符号链接桥在位")
 
 
 def main() -> int:
     if not AGENTS.exists():
         print("AGENTS.md 缺失", file=sys.stderr)
         return 2
-    gate_g5_claude_import()
+    gate_g5_claude_bridge()
     gate_g1_agents_lines()
-    gate_g2_line_len()
     gate_g3_probes()
     gate_g4_anchors()
     gate_g6_agents_chars()
-    gate_g7_claude_chars()
+    gate_g7_skill_bridges()
     gate_g8_moved_docs()
     gate_g10_index_invariants()
     for w in warns:
