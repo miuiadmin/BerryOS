@@ -694,12 +694,20 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         pressure_partial_cross,
     );
 
-    ktest::run();
+    // P0-4（路线图-v1.1）：生产模式跳过开发工具 ktest/bench——fw_cfg 具名键
+    // `opt/berry/noktest` 在位才跳过（rt/rwake 门控同款「机制不是自律」，
+    // 极性反转：缺席 = 默认全跑，smoke/boot 相逐行零漂移；EFI 路无 fw_cfg
+    // 具名文件 = 天然缺席）。ktest/bench 相互独立（bench 只借此处「timer/
+    // sched init 前干净窗」的时序位置，无数据依赖；AM-2b 接线在本块之前
+    // 不受影响）→ 合并一门跳过，生产 boot 减秒级。
+    if berry_hal_aarch64::fwcfg::find_file(NOKTEST_PROBE_NAME).is_none() {
+        ktest::run();
 
-    // B-0（基准与压力测试设计 §4）：内核微基准 + churn 泄漏金丝雀——ktest 后、
-    // timer/sched init 前的干净窗口（单线程 IRQ 屏蔽零调度噪声）。每次 boot
-    // 都跑：金丝雀属「主干永远绿」红线，BENCH 行供 smoke/bench.py 收割。
-    bench::run();
+        // B-0（基准与压力测试设计 §4）：内核微基准 + churn 泄漏金丝雀——ktest 后、
+        // timer/sched init 前的干净窗口（单线程 IRQ 屏蔽零调度噪声）。门内每次
+        // boot 都跑：金丝雀属「主干永远绿」红线，BENCH 行供 smoke/bench.py 收割。
+        bench::run();
+    }
 
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
@@ -4222,6 +4230,11 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
 /// 维护」纪律）。独立键、不与 rt 同 boot 混发：两基准同 prio 8 并跑互相
 /// 加噪（bench 单通道纪律——bench.py --rt 通道拒绝混跑同因）。
 const RWAKE_PROBE_NAME: &str = "opt/berry/rwake";
+
+/// P0-4 生产模式开关的 fw_cfg 具名项名（在位 = 跳过 ktest/bench——手跑/生产
+/// 专递 `-fw_cfg name=opt/berry/noktest,string=1`；RT/SOAK_PROBE_NAME 同款
+/// 「两侧对读维护」纪律，极性反转：缺席 = 默认全跑 = smoke 零漂移）。
+const NOKTEST_PROBE_NAME: &str = "opt/berry/noktest";
 
 /// rwake 样本轮数（任务书定值 64；间隔 = CNTFRQ/100 ≈ 10ms）。`BENCHRWAKE
 /// n=` 收割面与此镜像（n = record_wake_lat 实收非零样本数 ≤ 64——lat==0
