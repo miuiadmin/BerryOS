@@ -28,6 +28,7 @@ P1 之后用户仍会看到 1080×1920 桌面横滑一顿一顿。已有 `deskto
 - BerryUI 全套、berry host 18/18、`just check`、产品 Recents e2e、`smoke-image` 147/147、GUI8 vgpu `--only-a` 全绿；1080×1920、HVF、virtio-gpu 与 Berry Room 边界不变。
 - 本轮产品 `VGPUPERF` 仍可见整窗 `area=2,073,600`、约 107～175ms、真实横滑帧数仍为 1。结论必须写成“P2 地基与量化边界”，不能宣称 60fps、连续动画或多帧横滑已解决。
 - 下一步优先验证 QEMU 2D `SET_SCANOUT` 非零子矩形行为；若可用，走显示服务内部宽 resource/host-side pan，把每帧 8.3MiB transfer 降到 chrome 小矩形。否则做双缓冲/异步 present 流水线。
+- 后续实测（未改变产品代码）：QEMU 11.0.3/HVF 对 2×2 resource 的 `SET_SCANOUT(x=1,y=0,w=1,h=2)` 返回 `0x1205` invalid parameter，`(0,0,2,2)` 正常。当前 QEMU 2D 后端不能作为 host-side pan 基础。
 
 ## Related
 

@@ -257,7 +257,9 @@ def run_arm(
         if vgpu:
             qmp.default_console = "vgpu0"
 
-        time.sleep(0.3)
+        # Product launcher boot selftest can space VGPUPERF frames widely on a
+        # loaded host; wait it out before attributing new lines to user swipe.
+        time.sleep(5.0 if vgpu else 0.3)
         if vgpu:
             swipe_before = count_marker(serial, "VGPUPERF ")
             launcher_swipe_s, launcher_swipe_frames, launcher_swipe_submit_us = (

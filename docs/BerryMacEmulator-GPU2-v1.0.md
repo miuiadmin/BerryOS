@@ -199,6 +199,8 @@ calibration:    真实 launcher 横滑帧数/时长/submit + rects/area/union
 
 2026-11-14 本机产品样本仍出现整窗 `area=2,073,600`、`last_us≈107k～175k`、launcher 横滑新帧数 1。结论是：guest 光栅/宿主解码减载正确，但 QEMU 2D 整窗 DMA transfer 仍是主导瓶颈。下一刀必须先验证 `SET_SCANOUT` 非零子矩形；可用则做显示服务内部宽 resource/host-side pan，不可用则转向双缓冲异步 present 流水线。
 
+随后在 QEMU 11.0.3 / HVF 上用 2×2 probe resource 实测：`SET_SCANOUT(x=1,y=0,w=1,h=2)` 返回控制响应 `0x1205`（invalid parameter），同一 resource 的 `(0,0,2,2)` 正常。当前后端的 host-side pan 路线已被实测排除；滑动后续方向收敛为 wmd 双 composition buffer + present 异步流水线/早回 token，或宿主直接消费 shared composition。
+
 ## §8 Mac 呈现路径设计
 
 当前路径：
