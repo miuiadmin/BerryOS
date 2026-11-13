@@ -1,6 +1,6 @@
 {
   "pick": {
-    "cycles": 26,
+    "cycles": 22,
     "n": 1000
   },
   "freeze": {
@@ -12,10 +12,10 @@
     "n": 1000
   },
   "policy": {
-    "base": 6,
+    "base": 7,
     "empty": 6,
-    "full": 10,
-    "delta_pct": 66.6
+    "full": 9,
+    "delta_pct": 50.0
   },
   "fairness": {
     "spread": 0,
@@ -32,8 +32,8 @@
     "rate_pct": 50.0
   },
   "wake": {
-    "p50": 63,
-    "p99": 63,
+    "p50": 62,
+    "p99": 62,
     "n": 128
   }
 }
