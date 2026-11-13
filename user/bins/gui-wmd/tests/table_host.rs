@@ -368,3 +368,29 @@ fn system_navigation_back_home_and_task_own_app_visibility() {
     assert!(changed.visible);
     assert_eq!(config_ack(&mut t, 1, changed.window_id, changed.serial), gp::ST_OK);
 }
+
+#[test]
+fn system_recents_lists_and_selects_app_owners() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let mut t = table();
+    let a = create(&mut t, 1, gp::WM_CLIENT_APP, gp::WM_LAYER_APP, 0, 0, 0, 100, 100);
+    let b = create(&mut t, 2, gp::WM_CLIENT_APP, gp::WM_LAYER_APP, 0, 110, 0, 100, 100);
+    for (owner, id) in [(1, a), (2, b)] {
+        let event = config_poll(&mut t, owner);
+        assert_eq!(config_ack(&mut t, owner, id, event.serial), gp::ST_OK);
+    }
+
+    let recents = t.recents_owners();
+    assert_eq!(recents.count, 2);
+    assert_eq!(&recents.owners[..recents.count], &[1, 2]);
+
+    assert_eq!(t.task_select(1), Some(1));
+    assert_eq!(t.focused(), Some((1, a)));
+    assert!(t.surface_geometry(1, a).is_some());
+    assert!(t.surface_geometry(2, b).is_none());
+
+    let recents = t.recents_owners();
+    assert_eq!(recents.count, 2, "hidden owner remains a recoverable recent task");
+    assert_eq!(t.task_select(2), Some(2));
+    assert_eq!(t.focused(), Some((2, b)));
+}

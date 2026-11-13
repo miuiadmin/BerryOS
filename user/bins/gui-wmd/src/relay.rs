@@ -348,11 +348,11 @@ pub fn submit_composite(
     comp: &mut Compositor,
     msg: &[u8],
     hs: &[Handle],
-) {
+) -> bool {
     if hs.len() != 1 {
         close_all(hs);
         st_rep(ch, gp::ST_BAD);
-        return;
+        return false;
     }
     let src = hs[0];
     let Some(gp::PresentReq::Submit { surface_id, flags, rects, rect_count, .. }) =
@@ -360,7 +360,7 @@ pub fn submit_composite(
     else {
         let _ = berry_handle_close(src);
         st_rep(ch, gp::ST_BAD);
-        return;
+        return false;
     };
 
     // R2 双几何合约：raw 是客户端 buffer/stride 基准；visible 是遮挡后
@@ -370,7 +370,7 @@ pub fn submit_composite(
         if client_type != gp::WM_CLIENT_SYSTEM {
             let _ = berry_handle_close(src);
             st_rep(ch, gp::ST_DENIED);
-            return;
+            return false;
         }
         let dims = (comp.w as u16, comp.h as u16);
         gp::authority::SurfaceGeometry::new(
@@ -384,7 +384,7 @@ pub fn submit_composite(
     let Some(geometry) = geometry else {
         let _ = berry_handle_close(src);
         st_rep(ch, gp::ST_DENIED);
-        return;
+        return false;
     };
     let (raw_x, raw_y, raw_w, raw_h) = geometry.raw_bounds();
     let dst_xy = (u32::from(raw_x), u32::from(raw_y));
@@ -398,7 +398,7 @@ pub fn submit_composite(
     {
         let _ = berry_handle_close(src);
         st_rep(ch, gp::ST_BAD);
-        return;
+        return false;
     }
 
     // 第一个通过几何/尺寸硬门的真实 SUBMIT 已到达：这是 boot surface 即将
@@ -420,7 +420,7 @@ pub fn submit_composite(
         if !comp.copy_rect(src, src_stride, dst_xy, visible_local) {
             let _ = berry_handle_close(src);
             st_rep(ch, gp::ST_BAD);
-            return;
+            return false;
         }
         if visible_local.w > 0 && visible_local.h > 0 {
             out_rects[0] = gp::Rect {
@@ -456,7 +456,7 @@ pub fn submit_composite(
     let _ = berry_handle_close(src);
     if !ok || (!full && out_n == 0) {
         st_rep(ch, gp::ST_BAD);
-        return;
+        return false;
     }
 
     let mut alias: Handle = 0;
@@ -483,7 +483,9 @@ pub fn submit_composite(
         boot_progress_complete_once(cli);
     }
     let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
+    let ok = rep.first() == Some(&gp::ST_OK);
     send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
+    ok
 }
 
 /// present 域内部 RPC（wmd 自产 SUBMIT 用）：send 即 take alias；应答

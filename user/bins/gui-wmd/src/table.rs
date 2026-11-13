@@ -703,6 +703,28 @@ impl WmTable {
                 Some(last_seen) => self.wait(ch, last_seen),
                 None => self.io.status(ch, gp::ST_BAD),
             },
+            Some(&gp::OP_WM_TASK_SELECT) => match gp::parse_wm_task_select_req(msg) {
+                Some(req)
+                    if client_type == gp::WM_CLIENT_SYSTEM
+                        && self.task_select(req.owner).is_some() =>
+                {
+                    self.io.status(ch, gp::ST_OK)
+                }
+                Some(_) => self.io.status(ch, gp::ST_DENIED),
+                None => self.io.status(ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_RECENTS_GET)
+                if client_type == gp::WM_CLIENT_SYSTEM
+                    && gp::parse_wm_recents_get_req(msg).is_some() =>
+            {
+                let recents = self.recents_owners();
+                let mut out = [0u8; gp::WM_RECENTS_REP_HEAD + gp::WM_WINDOWS_MAX * 2];
+                match gp::encode_wm_recent_owners_rep(&mut out, &recents) {
+                    Some(n) => self.io.send(ch, &out[..n]),
+                    None => self.io.trap(),
+                }
+            }
+            Some(&gp::OP_WM_RECENTS_GET) => self.io.status(ch, gp::ST_DENIED),
             Some(&gp::OP_WM_CONFIG_POLL) if gp::parse_wm_config_poll_req(msg).is_some() => {
                 self.config_poll(ch, owner)
             }
@@ -853,6 +875,57 @@ impl WmTable {
         let focus_changed = self.focus != focus_before;
         self.change_complete(changed || focus_changed);
         Some(next)
+    }
+
+    /// SYSTEM Recents owner 列表（表序去重；包含隐藏 owner——隐藏正是
+    /// recents 可恢复的真实状态，不代表任务不存在）。
+    pub fn recents_owners(&self) -> gp::WmRecentOwners {
+        let mut out = gp::WmRecentOwners {
+            owners: [0; gp::WM_WINDOWS_MAX],
+            count: 0,
+        };
+        for i in 0..self.count {
+            if self.wins[i].layer != gp::WM_LAYER_APP {
+                continue;
+            }
+            let owner = self.wins[i].owner;
+            if !out.owners[..out.count].contains(&owner) {
+                out.owners[out.count] = owner;
+                out.count += 1;
+            }
+        }
+        out
+    }
+
+    /// SYSTEM Recents 选择 owner：显示并聚焦该 owner，隐藏其他 APP owner。
+    /// 选中 owner 的窗口抬到当前 APP 层最高 Z；SYSTEM 层仍在其上。
+    pub fn task_select(&mut self, owner: u16) -> Option<u16> {
+        let indexes = self.app_owner_indexes(owner);
+        if indexes.first() == Some(&usize::MAX) {
+            return None;
+        }
+        let mut changed = false;
+        let mut max_z = 0u8;
+        for win in self.wins.iter().take(self.count) {
+            if win.layer == gp::WM_LAYER_APP {
+                max_z = max_z.max(win.z);
+            }
+        }
+        for i in 0..self.count {
+            if self.wins[i].layer != gp::WM_LAYER_APP {
+                continue;
+            }
+            let selected = self.wins[i].owner == owner;
+            changed |= self.set_visible(i, selected);
+            if selected && self.wins[i].z != max_z {
+                self.wins[i].z = max_z;
+            }
+        }
+        if !self.focus_owner(owner) {
+            changed = true;
+        }
+        self.change_complete(changed);
+        Some(owner)
     }
 
     /// session 死亡清理：一次性摘除该 owner 全部窗口。返回清理数。

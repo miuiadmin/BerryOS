@@ -275,6 +275,8 @@ struct WmSession {
     escape: bool,
     /// P1：逐窗口 Surface Mode；None = 未显式协商的 Retained。
     surface_modes: [Option<gp::surface::SurfaceModeInfo>; gp::WM_WINDOWS_MAX],
+    /// 本 session 首个成功合成 frame 是否已通知 SYSTEM 嵌入器。
+    frame_notified: bool,
 }
 
 /// P1 surface 状态使 session 增大；wmd 主栈 8 页。16KiB 结构帽先炸编译，
@@ -465,6 +467,7 @@ impl WmSessions {
             keys: KeyQueue::new(),
             escape,
             surface_modes: [None; gp::WM_WINDOWS_MAX],
+            frame_notified: false,
         });
         let mut out = [0u8; 8];
         let n = match gp::encode_wm_connect_rep(&mut out, id) {
@@ -492,18 +495,36 @@ impl WmSessions {
 
     /// WM 权威可见性已变化时唤醒 SYSTEM 嵌入器并请求全屏重绘。事件使用
     /// CANCEL + SYSTEM_INVALIDATE，不进入普通 hit/referee 语义。
-    fn invalidate_system_surface(&mut self) {
+    fn invalidate_system_surface(&mut self, action: u32) {
         let Some(i) = self.system_slot() else {
             return;
         };
         let mut ev = zero_event();
         ev.flags = gp::PE_FL_SYNTHESIZED | gp::PE_FL_SYSTEM_INVALIDATE;
+        ev.x = action;
         let sess = self.slots[i].as_mut().expect("system slot checked");
         let sid = sess.id;
         if sess.queue.push(ev) {
             println!("WMNAVINVAL ok sid={sid}");
         } else {
             eprintln!("WMNAVINVAL drop sid={sid} dropped={}", sess.queue.dropped);
+        }
+    }
+
+    /// APP owner 第一个成功合成 frame 已到达；用于 SYSTEM launcher 清除真实
+    /// Opening 状态。x 携带 owner id，事件本体不参与普通 hit/referee。
+    fn notify_system_app_frame(&mut self, owner: u16) {
+        let Some(i) = self.system_slot() else {
+            return;
+        };
+        let mut ev = zero_event();
+        ev.flags = gp::PE_FL_SYNTHESIZED | gp::PE_FL_SYSTEM_APP_FRAME;
+        ev.x = u32::from(owner);
+        let sess = self.slots[i].as_mut().expect("system slot checked");
+        if sess.queue.push(ev) {
+            println!("WMAPPFRAME ok owner={owner}");
+        } else {
+            eprintln!("WMAPPFRAME drop owner={owner} dropped={}", sess.queue.dropped);
         }
     }
 
@@ -616,17 +637,21 @@ impl WmSessions {
                 return;
             }
             let version_before = table.version();
-            let (name, owner) = if ev.code == gp::KEY_SYSTEM_BACK {
-                ("back", table.navigation_back())
+            let (name, action, owner) = if ev.code == gp::KEY_SYSTEM_BACK {
+                let owner = table.navigation_back();
+                ("back", gp::SYSTEM_NAV_ACTION_BACK, owner)
             } else if ev.code == gp::KEY_SYSTEM_HOME {
                 let count = table.navigation_home();
-                ("home", Some(count as u16))
+                ("home", gp::SYSTEM_NAV_ACTION_HOME, Some(count as u16))
             } else {
-                ("task", table.navigation_task())
+                // Recents 是系统 UI，不先抢走 APP 状态；launcher 收到 TASK
+                // action 后以 SYSTEM overlay 显示权威 owner 列表。
+                let owner = table.recents_owners().count.min(u16::MAX as usize) as u16;
+                ("task", gp::SYSTEM_NAV_ACTION_TASK, Some(owner))
             };
             println!("WMNAV ok {name} owner={}", owner.unwrap_or(0));
-            if table.version() != version_before {
-                self.invalidate_system_surface();
+            if table.version() != version_before || ev.code == gp::KEY_SYSTEM_TASK {
+                self.invalidate_system_surface(action);
             }
             return;
         }
@@ -818,6 +843,7 @@ impl table::WmIo for GuestTableIo {
 }
 
 static SYSTEM_UI_PROGRESS_READY: AtomicBool = AtomicBool::new(false);
+static SYSTEM_APP_FRAME_OWNER: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
 
 static GUEST_TABLE_IO: GuestTableIo = GuestTableIo;
 
@@ -1005,7 +1031,7 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
         Some(&gp::OP_SUBMIT) => {
             let owner = sess.id;
             let client_type = sess.client_type;
-            relay::submit_composite(
+            let submitted = relay::submit_composite(
                 ch,
                 present_cli,
                 owner,
@@ -1015,6 +1041,13 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
                 msg,
                 hs,
             );
+            if submitted
+                && client_type == gp::WM_CLIENT_APP
+                && !sess.frame_notified
+            {
+                sess.frame_notified = true;
+                SYSTEM_APP_FRAME_OWNER.store(owner, Ordering::Relaxed);
+            }
         }
         Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
@@ -1215,6 +1248,10 @@ pub fn run() {
                         &mut table, present_cli, hdi_cli, &mut compositor,
                         slot, &msg.0[..msg.1], &hs.0[..hs.1],
                     );
+                    let frame_owner = SYSTEM_APP_FRAME_OWNER.swap(0, Ordering::Relaxed);
+                    if frame_owner != 0 {
+                        sessions.notify_system_app_frame(frame_owner);
+                    }
                 }
                 handled = true;
                 continue;

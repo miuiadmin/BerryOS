@@ -81,7 +81,7 @@ use berry_ui::frame::VoteBallot;
 use berry_ui::hit::PtrEvent;
 use berry_ui::{Msg, NodeId, UiMain};
 
-use crate::desktop::{self, Desktop};
+use crate::desktop::{self, Desktop, RECENTS_LABEL_MAX};
 use crate::icons;
 use crate::{close_h, enc_req, expect_ok, fail, now, rpc};
 
@@ -291,6 +291,13 @@ pub fn run(
     let mut pending_spawn_frame = 0u64; // Opening 呈现序
     let mut launching_node: Option<NodeId> = None; // 持续 pressed 视觉
     let mut launch_toast_deadline = 0u64;
+    let mut launching_label: Option<desktop::RecentsLabel> = None;
+    let mut owner_labels = [OwnerLabel {
+        owner: 0,
+        label: decimal_app_label(0),
+    }; OWNER_LABELS_MAX];
+    let mut recents_open = false;
+    let mut recents_win: u16 = 0;
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
     let mut st = if product {
         // 产品桌面不跑 boot 期两轮合成 swipe：首帧后立即停在 page 0。
@@ -356,11 +363,16 @@ pub fn run(
                             eprintln!("launcher: input events n={}", view.count());
                             input_logged = true;
                         }
-                        let mut system_invalidate = false;
+                        let mut nav_action: Option<u32> = None;
+                        let mut app_frame_owner: Option<u16> = None;
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
+                                if ev.flags & gp::PE_FL_SYSTEM_APP_FRAME != 0 {
+                                    app_frame_owner = Some(ev.x as u16);
+                                    continue;
+                                }
                                 if ev.flags & gp::PE_FL_SYSTEM_INVALIDATE != 0 {
-                                    system_invalidate = true;
+                                    nav_action = Some(ev.x);
                                     continue;
                                 }
                                 let pe = PtrEvent::from_wire(
@@ -377,8 +389,71 @@ pub fn run(
                                 }
                             }
                         }
-                        if system_invalidate {
-                            ui.invalidate_full();
+                        if let Some(owner) = app_frame_owner {
+                            if let Some(node) = launching_node.take() {
+                                ui.release_press(node);
+                            }
+                            if let Err(e) = desktop::set_launch_toast(ui, &desktop, false) {
+                                fail(&format!("launch toast hide err={e:?}"));
+                            }
+                            launch_toast_deadline = 0;
+                            if let Some(label) = launching_label.take() {
+                                remember_owner_label(&mut owner_labels, owner, label);
+                            }
+                        }
+                        match nav_action {
+                            Some(gp::SYSTEM_NAV_ACTION_TASK) => {
+                                if recents_win == 0 {
+                                    let (vp_w, vp_h) = ui.viewport();
+                                    if let Some(id) = create_recents_window(hw, vp_w, vp_h) {
+                                        recents_win = id;
+                                    }
+                                }
+                                if recents_win != 0
+                                    && set_recents_window_visible(hw, recents_win, true)
+                                {
+                                    if let Some(owners) = fetch_recent_owners(hw) {
+                                        let labels = recents_labels(&owners, &owner_labels);
+                                        if let Err(e) = desktop::set_recents_visible(
+                                            ui,
+                                            &mut desktop,
+                                            true,
+                                            &labels,
+                                            owners.count,
+                                        ) {
+                                            fail(&format!("recents show err={e:?}"));
+                                        }
+                                        recents_open = true;
+                                        for (card, owner) in desktop
+                                            .recents_cards
+                                            .iter_mut()
+                                            .zip(owners.owners[..owners.count].iter())
+                                        {
+                                            card.owner = Some(*owner);
+                                        }
+                                        ui.invalidate_full();
+                                    }
+                                }
+                            }
+                            Some(_) => {
+                                if recents_win != 0 {
+                                    let _ = set_recents_window_visible(hw, recents_win, false);
+                                }
+                                if recents_open {
+                                    if let Err(e) = desktop::set_recents_visible(
+                                        ui,
+                                        &mut desktop,
+                                        false,
+                                        &[],
+                                        0,
+                                    ) {
+                                        fail(&format!("recents hide err={e:?}"));
+                                    }
+                                    recents_open = false;
+                                }
+                                ui.invalidate_full();
+                            }
+                            None => {}
                         }
                         ui.wake(now());
                     }
@@ -456,10 +531,30 @@ pub fn run(
         for m in msgs.iter() {
             match m {
                 Msg::Click { node } => {
+                    if recents_open {
+                        if let Some(index) = recents_card_index(*node, &desktop) {
+                            if let Some(owner) = desktop.recents_cards[index].owner {
+                                let _ = select_recent_owner(hw, owner);
+                            }
+                        }
+                        if recents_win != 0 {
+                            let _ = set_recents_window_visible(hw, recents_win, false);
+                        }
+                        if let Err(e) =
+                            desktop::set_recents_visible(ui, &mut desktop, false, &[], 0)
+                        {
+                            fail(&format!("recents hide err={e:?}"));
+                        }
+                        recents_open = false;
+                        // 保留 app 下层合成帧：丢掉 overlay 隐藏 damage，不重画 surface0。
+                        let _ = ui.drain_damage();
+                        continue;
+                    }
                     if t_now.saturating_sub(last_spawn_click_ns) < APP_SPAWN_DEBOUNCE_NS {
                         continue;
                     }
                     last_spawn_click_ns = t_now;
+                    launching_label = spawn_label(*node, &desktop);
                     if !click_can_spawn(*node, &desktop) {
                         continue;
                     }
@@ -537,7 +632,7 @@ pub fn run(
                 (0u8, dmg.rects, dmg.count as usize)
             };
             let sreq = gp::PresentReq::Submit {
-                surface_id: 0,
+                surface_id: u32::from(if recents_open { recents_win } else { 0 }),
                 buffer_id: buf_id,
                 flags,
                 rate_hint: out.rate_hint_hz,
@@ -628,6 +723,7 @@ pub fn run(
                 if let Some(node) = launching_node.take() {
                     ui.release_press(node);
                 }
+                launching_label = None;
                 if let Err(e) = desktop::set_launch_toast(ui, &desktop, false) {
                     fail(&format!("launch toast hide err={e:?}"));
                 }
@@ -850,6 +946,172 @@ const APP_SPAWN_DEBOUNCE_NS: u64 = 500_000_000;
 /// Opening 反馈最长保留时间。它只隐藏诊断，不宣布启动成功；真实成功由
 /// app 首帧覆盖，失败由 APP_SPAWN ack 立即清除。
 const LAUNCH_TOAST_NS: u64 = 8_000_000_000;
+
+/// owner → 真实 app label 的运行期小表（首个 APP frame 到达时绑定）。
+#[derive(Clone, Copy)]
+struct OwnerLabel {
+    owner: u16,
+    label: desktop::RecentsLabel,
+}
+
+const OWNER_LABELS_MAX: usize = 8;
+
+fn remember_owner_label(
+    table: &mut [OwnerLabel; OWNER_LABELS_MAX],
+    owner: u16,
+    label: desktop::RecentsLabel,
+) {
+    if let Some(slot) = table.iter_mut().find(|e| e.owner == owner) {
+        slot.label = label;
+        return;
+    }
+    if let Some(empty) = table.iter_mut().find(|e| e.owner == 0) {
+        *empty = OwnerLabel { owner, label };
+    }
+}
+
+fn decimal_app_label(owner: u16) -> desktop::RecentsLabel {
+    let mut bytes = [b'0'; RECENTS_LABEL_MAX];
+    bytes[..4].copy_from_slice(b"App ");
+    let mut value = owner;
+    let mut digits = [0u8; 5];
+    let mut n = 0;
+    loop {
+        digits[n] = b'0' + (value % 10) as u8;
+        value /= 10;
+        n += 1;
+        if value == 0 {
+            break;
+        }
+    }
+    let mut len = 4;
+    while n > 0 {
+        n -= 1;
+        bytes[len] = digits[n];
+        len += 1;
+    }
+    desktop::RecentsLabel { bytes, len }
+}
+
+fn recents_labels(
+    owners: &gp::WmRecentOwners,
+    labels: &[OwnerLabel; OWNER_LABELS_MAX],
+) -> [desktop::RecentsLabel; desktop::RECENTS_MAX] {
+    let mut out = [decimal_app_label(0); desktop::RECENTS_MAX];
+    for (dst, owner) in out
+        .iter_mut()
+        .zip(owners.owners[..owners.count].iter())
+        .take(desktop::RECENTS_MAX)
+    {
+        *dst = labels
+            .iter()
+            .find(|e| e.owner == *owner)
+            .map(|e| e.label)
+            .unwrap_or_else(|| decimal_app_label(*owner));
+    }
+    out
+}
+
+fn create_recents_window(hw: Handle, vp_w: u32, vp_h: u32) -> Option<u16> {
+    let mut req = [0u8; 64];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let create = gp::WmCreateReq {
+        layer: gp::WM_LAYER_SYSTEM,
+        flags: 0,
+        parent: 0,
+        group: 0,
+        x: 0,
+        y: 0,
+        w: vp_w.min(u16::MAX as u32) as u16,
+        h: vp_h.min(u16::MAX as u32) as u16,
+    };
+    let m = enc_req(gp::encode_wm_create_req(&mut req, &create));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let id = gp::parse_wm_create_ack(&rep[..n])?;
+    let m = enc_req(Some(gp::encode_wm_config_poll_req(&mut req)));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let event = match gp::parse_wm_config_event_rep(&rep[..n]) {
+        Some(Ok(event)) if event.window_id == id => event,
+        _ => return None,
+    };
+    let ack = gp::WmConfigAckReq {
+        window_id: id,
+        serial: event.serial,
+    };
+    let m = enc_req(gp::encode_wm_config_ack_req(&mut req, &ack));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    if rep[..n].first() == Some(&gp::ST_OK) {
+        println!("WMRECENTS ok id={id}");
+        Some(id)
+    } else {
+        None
+    }
+}
+
+fn set_recents_window_visible(hw: Handle, id: u16, visible: bool) -> bool {
+    let mut req = [0u8; 64];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let set = gp::WmSetReq {
+        mask: gp::WM_SET_F_VIS,
+        window_id: id,
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+        vis: if visible { gp::WM_VIS_SHOW } else { gp::WM_VIS_HIDE },
+        z: 0,
+    };
+    let m = enc_req(gp::encode_wm_set_req(&mut req, &set));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    rep[..n].first() == Some(&gp::ST_OK)
+}
+
+fn fetch_recent_owners(hw: Handle) -> Option<gp::WmRecentOwners> {
+    let mut req = [0u8; 64];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = enc_req(gp::encode_wm_recents_get_req(&mut req));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_wm_recent_owners_rep(&rep[..n]) {
+        Some(Ok(owners)) => Some(owners),
+        _ => None,
+    }
+}
+
+fn select_recent_owner(hw: Handle, owner: u16) -> bool {
+    let mut req = [0u8; 64];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let select = gp::WmTaskSelectReq { owner };
+    let m = enc_req(gp::encode_wm_task_select_req(&mut req, &select));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let ok = rep[..n].first() == Some(&gp::ST_OK);
+    if ok {
+        println!("WMTASKSEL ok owner={owner}");
+    }
+    ok
+}
+
+fn recents_card_index(node: NodeId, desktop: &Desktop) -> Option<usize> {
+    desktop
+        .recents_cards
+        .iter()
+        .position(|card| card.panel == node || card.label == node)
+}
+
+fn spawn_label(node: NodeId, desktop: &Desktop) -> Option<desktop::RecentsLabel> {
+    let slot = desktop
+        .slots
+        .iter()
+        .flatten()
+        .chain(desktop.dock.iter())
+        .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node))?;
+    let idx = slot.app?;
+    let entry = icons::registry().get(idx)?;
+    Some(desktop::RecentsLabel::new(entry.label_bytes()))
+}
 
 /// 点击是否真的会走 APP_SPAWN（壁纸/空格/占位/冻结 app 通道均不显示假反馈）。
 fn click_can_spawn(node: NodeId, desktop: &Desktop) -> bool {

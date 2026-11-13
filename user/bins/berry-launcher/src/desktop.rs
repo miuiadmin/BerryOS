@@ -33,7 +33,8 @@ use berry_gfx::cmd::Color;
 use berry_gfx::font::FontSize;
 use berry_layout::{CELL_MAX, PAGE_MAX};
 use berry_ui::desc::{
-    ColProps, GridProps, IconProps, PadProps, RowProps, TextProps, TextStyle,
+    ColProps, GridProps, IconProps, PadProps, PanelProps, RectProps, RowProps, TextProps,
+    TextStyle,
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::theme::Density;
@@ -143,6 +144,11 @@ fn display_label(e: &crate::icons::AppEntry, big: bool) -> &[u8] {
 const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
 const ICON_FG: Color = Color { r: 230, g: 230, b: 235 };
+const RECENTS_BG: Color = Color { r: 18, g: 22, b: 28 };
+const RECENTS_CARD_BG: Color = Color { r: 36, g: 44, b: 54 };
+const RECENTS_MUTED: Color = Color { r: 170, g: 180, b: 190 };
+pub const RECENTS_MAX: usize = 4;
+pub const RECENTS_LABEL_MAX: usize = 64;
 
 /// 一格桌面的建树产物（W2 帧循环消费面）。
 #[derive(Clone, Copy)]
@@ -159,6 +165,33 @@ pub struct Slot {
     label_buf: TextBuf,
 }
 
+/// SYSTEM Recents 卡片节点 + 运行时 owner 绑定。
+pub struct RecentsCard {
+    pub panel: NodeId,
+    pub label: NodeId,
+    pub owner: Option<u16>,
+}
+
+/// Recents 文本载荷（定长拷贝，避免 frameloop 持注册表引用）。
+#[derive(Clone, Copy)]
+pub struct RecentsLabel {
+    pub bytes: [u8; RECENTS_LABEL_MAX],
+    pub len: usize,
+}
+
+impl RecentsLabel {
+    pub fn new(bytes: &[u8]) -> Self {
+        let n = bytes.len().min(RECENTS_LABEL_MAX);
+        let mut out = [0; RECENTS_LABEL_MAX];
+        out[..n].copy_from_slice(&bytes[..n]);
+        Self { bytes: out, len: n }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
 /// 桌面静态面句柄（`build` 产物——W2 frameloop 消费）。
 pub struct Desktop {
     /// 分页控制器（翻页状态机 + track offset 唯一写者）。
@@ -169,6 +202,12 @@ pub struct Desktop {
     pub dock: [Slot; DOCK_SLOTS],
     /// 系统启动反馈（空文本 = 隐藏；真实 APP_SPAWN 请求后显示）。
     pub launch_toast: NodeId,
+    /// SYSTEM Recents 全屏 scrim / 中央面板（隐藏时整体移出视口）。
+    pub recents_scrim: NodeId,
+    pub recents_panel: NodeId,
+    pub recents_title: NodeId,
+    pub recents_empty: NodeId,
+    pub recents_cards: [RecentsCard; RECENTS_MAX],
     /// a11y 当前挂载页（`u8::MAX` 哨兵 = 未挂——build 尾经 rehang(0) 初挂）。
     a11y_page: u8,
 }
@@ -609,13 +648,95 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         -((OH_DOCK_H * OH_DENSITY + 36) as i32),
     )?;
 
+    // SYSTEM Recents overlay：root 后插于 content 之上；隐藏时整体移出视口。
+    let recents_scrim = ui.add(
+        root,
+        ViewSpec {
+            kind: ViewKind::Rect,
+            key: 0,
+            props: Props::Rect(RectProps {
+                bg: RECENTS_BG,
+                w: Some(vp_w),
+                h: Some(vp_h),
+            }),
+        },
+    )?;
+    let recents_w = (vp_w.saturating_sub(96)).min(960).max(320);
+    let recents_panel = ui.add(
+        root,
+        ViewSpec {
+            kind: ViewKind::Col,
+            key: 0,
+            props: Props::Col(ColProps {
+                gap: 24,
+                w: Some(recents_w),
+                h: Some(vp_h.saturating_sub(560)),
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    let recents_title = ui.add(
+        recents_panel,
+        text_spec(
+            b"Recent tasks",
+            TEXT_FG,
+            if big { FontSize::S32x48 } else { FontSize::S16x32 },
+        )?,
+    )?;
+    ui.set_a11y(recents_title, ROLE_TEXT, b"Recent tasks")?;
+    let recents_empty = ui.add(
+        recents_panel,
+        text_spec(
+            b"No recent apps",
+            RECENTS_MUTED,
+            if big { FontSize::S32x48 } else { FontSize::S16x32 },
+        )?,
+    )?;
+    ui.set_a11y(recents_empty, ROLE_TEXT, b"No recent apps")?;
+    let mut recents_cards = Vec::with_capacity(RECENTS_MAX);
+    for _ in 0..RECENTS_MAX {
+        let panel = ui.add(
+            recents_panel,
+            ViewSpec {
+                kind: ViewKind::Panel,
+                key: 0,
+                props: Props::Panel(PanelProps {
+                    bg: RECENTS_CARD_BG,
+                    w: Some(recents_w),
+                    h: Some(if big { 180 } else { 96 }),
+                    padding: if big { 28 } else { 14 },
+                    gap: 12,
+                    radius: if big { 24 } else { 12 },
+                }),
+            },
+        )?;
+        let label = ui.add(
+            panel,
+            text_spec(
+                b"",
+                TEXT_FG,
+                if big { FontSize::S32x48 } else { FontSize::S16x32 },
+            )?,
+        )?;
+        ui.set_a11y(panel, ROLE_BUTTON, b"Recent task")?;
+        recents_cards.push(RecentsCard { panel, label, owner: None });
+    }
+    let recents_cards: [RecentsCard; RECENTS_MAX] =
+        recents_cards.try_into().ok().expect("recents 恰四卡");
+
     let mut d = Desktop {
         pager,
         slots,
         dock,
         launch_toast,
+        recents_scrim,
+        recents_panel,
+        recents_title,
+        recents_empty,
+        recents_cards,
         a11y_page: u8::MAX,
     };
+    set_recents_visible(ui, &mut d, false, &[], 0)?;
     rehang_a11y(ui, &mut d, 0)?;
     Ok(d)
 }
@@ -635,6 +756,67 @@ pub fn rehang_a11y(ui: &mut UiMain, d: &mut Desktop, page: u8) -> Result<(), UiE
         ui.set_a11y(s.cell, ROLE_BUTTON, s.label_buf.as_bytes())?;
     }
     d.a11y_page = page;
+    Ok(())
+}
+
+/// 显示/隐藏 SYSTEM Recents。隐藏整体移出视口；显示时最多四张 owner 卡。
+pub fn set_recents_visible(
+    ui: &mut UiMain,
+    desktop: &mut Desktop,
+    visible: bool,
+    labels: &[RecentsLabel],
+    count: usize,
+) -> Result<(), UiError> {
+    let (vp_w, vp_h) = ui.viewport();
+    let panel_w = (vp_w.saturating_sub(96)).min(960).max(320);
+    let panel_h = vp_h.saturating_sub(560);
+    if visible {
+        ui.set_offset(desktop.recents_scrim, 0, 0)?;
+        ui.set_offset(
+            desktop.recents_panel,
+            ((vp_w.saturating_sub(panel_w)) / 2) as i32,
+            240.min(vp_h.saturating_sub(panel_h).max(0)) as i32,
+        )?;
+    } else {
+        ui.set_offset(desktop.recents_scrim, 0, vp_h as i32)?;
+        ui.set_offset(desktop.recents_panel, 0, vp_h as i32)?;
+    }
+    if visible {
+        // Recents 是系统模态：先摘当前页 12 个网格 a11y 挂载，再挂任务卡，
+        // 保持 32 槽语义而不是扩容或顶格失败。
+        if (desktop.a11y_page as usize) < PAGES {
+            for slot in &desktop.slots[desktop.a11y_page as usize] {
+                ui.take_a11y(slot.cell);
+            }
+            desktop.a11y_page = u8::MAX;
+        }
+        ui.set_a11y(desktop.recents_title, ROLE_TEXT, b"Recent tasks")?;
+    } else {
+        ui.take_a11y(desktop.recents_title);
+        ui.take_a11y(desktop.recents_empty);
+    }
+    let n = count.min(RECENTS_MAX);
+    for (i, card) in desktop.recents_cards.iter_mut().enumerate() {
+        let shown = visible && i < n;
+        ui.set_offset(card.panel, 0, if shown { 0 } else { vp_h as i32 })?;
+        card.owner = None;
+        if !visible {
+            ui.take_a11y(card.panel);
+        }
+    }
+    for (i, card) in desktop.recents_cards.iter_mut().enumerate().take(n) {
+        let label = labels.get(i).map(RecentsLabel::as_slice).unwrap_or(b"App");
+        ui.set_text(card.label, label)?;
+        ui.set_a11y(card.panel, ROLE_BUTTON, label)?;
+    }
+    let empty_label: &[u8] = if visible && n == 0 { b"No recent apps" } else { b"" };
+    ui.set_text(desktop.recents_empty, empty_label)?;
+    if visible && n == 0 {
+        ui.set_a11y(desktop.recents_empty, ROLE_TEXT, empty_label)?;
+    }
+    if !visible && desktop.a11y_page == u8::MAX {
+        rehang_a11y(ui, desktop, desktop.pager.page())?;
+    }
     Ok(())
 }
 

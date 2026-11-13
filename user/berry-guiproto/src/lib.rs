@@ -143,6 +143,10 @@ pub const OP_WM_SYSTEM_SEED: u8 = 0x69;
 pub const OP_WM_CONFIG_POLL: u8 = 0x6A;
 /// R3：确认已消费的 config event serial（错/旧 serial 拒绝）。
 pub const OP_WM_CONFIG_ACK: u8 = 0x6B;
+/// SYSTEM Recents：选择要恢复焦点的 APP owner（请求 6B；应答 1B）。
+pub const OP_WM_TASK_SELECT: u8 = 0x6C;
+/// SYSTEM Recents：拉最近 APP owner 列表（请求 4B；应答 4+2N 字节）。
+pub const OP_WM_RECENTS_GET: u8 = 0x6D;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
@@ -260,6 +264,15 @@ pub const PE_FL_SYNTHESIZED: u8 = 1 << 1;
 /// PointerEvent flags：SYSTEM 导航改变了 WM 可见性，SYSTEM 嵌入器必须
 /// 全屏重绘以清除被隐藏 app 的旧像素。事件本体是 CANCEL，不参与命中。
 pub const PE_FL_SYSTEM_INVALIDATE: u8 = 1 << 2;
+/// PointerEvent flags：APP owner 第一次真实 frame 已合成。事件本体是
+/// CANCEL，x 携带 owner id；只发给 SYSTEM 嵌入器。
+pub const PE_FL_SYSTEM_APP_FRAME: u8 = 1 << 3;
+/// SYSTEM 导航 action：BACK。
+pub const SYSTEM_NAV_ACTION_BACK: u32 = 1;
+/// SYSTEM 导航 action：HOME。
+pub const SYSTEM_NAV_ACTION_HOME: u32 = 2;
+/// SYSTEM 导航 action：TASK / Recents。
+pub const SYSTEM_NAV_ACTION_TASK: u32 = 3;
 
 /// 左键（位域）。
 pub const BUTTON_L: u8 = 1 << 0;
@@ -485,7 +498,7 @@ const fn phase_known(p: u8) -> bool {
 }
 
 const fn pe_flags_known(f: u8) -> bool {
-    f & !(PE_FL_RESAMPLED | PE_FL_SYNTHESIZED | PE_FL_SYSTEM_INVALIDATE) == 0
+    f & !(PE_FL_RESAMPLED | PE_FL_SYNTHESIZED | PE_FL_SYSTEM_INVALIDATE | PE_FL_SYSTEM_APP_FRAME) == 0
 }
 
 const fn buttons_known(b: u8) -> bool {
@@ -2279,6 +2292,106 @@ pub fn parse_wm_connect_rep(buf: &[u8]) -> Option<u16> {
     }
     let id = le16(buf, 2)?;
     (id != 0).then_some(id)
+}
+
+/// SYSTEM Recents owner 选择请求。owner 0 非法；只有 SYSTEM session 可发。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmTaskSelectReq {
+    pub owner: u16,
+}
+
+const WM_TASK_SELECT_REQ_LEN: usize = 6;
+const WM_RECENTS_GET_REQ_LEN: usize = 4;
+pub const WM_RECENTS_REP_HEAD: usize = 4;
+
+/// SYSTEM Recents owner 列表（表序去重；owner 数与本响应同源 WmTable）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WmRecentOwners {
+    pub owners: [u16; WM_WINDOWS_MAX],
+    pub count: usize,
+}
+
+pub fn encode_wm_task_select_req(out: &mut [u8], req: &WmTaskSelectReq) -> Option<usize> {
+    let m = out.get_mut(..WM_TASK_SELECT_REQ_LEN)?;
+    m[0] = OP_WM_TASK_SELECT;
+    m[1] = 0;
+    m[2] = 0;
+    m[3] = 0;
+    m[4..6].copy_from_slice(&req.owner.to_le_bytes());
+    Some(WM_TASK_SELECT_REQ_LEN)
+}
+
+pub fn parse_wm_task_select_req(buf: &[u8]) -> Option<WmTaskSelectReq> {
+    if buf.len() != WM_TASK_SELECT_REQ_LEN
+        || buf[0] != OP_WM_TASK_SELECT
+        || buf[1..4] != [0, 0, 0]
+    {
+        return None;
+    }
+    let owner = u16::from_le_bytes([buf[4], buf[5]]);
+    (owner != 0).then_some(WmTaskSelectReq { owner })
+}
+
+pub fn encode_wm_recents_get_req(out: &mut [u8]) -> Option<usize> {
+    let m = out.get_mut(..WM_RECENTS_GET_REQ_LEN)?;
+    m[0] = OP_WM_RECENTS_GET;
+    m[1] = 0;
+    m[2] = 0;
+    m[3] = 0;
+    Some(WM_RECENTS_GET_REQ_LEN)
+}
+
+pub fn parse_wm_recents_get_req(buf: &[u8]) -> Option<()> {
+    (buf.len() == WM_RECENTS_GET_REQ_LEN
+        && buf[0] == OP_WM_RECENTS_GET
+        && buf[1..4] == [0, 0, 0])
+        .then_some(())
+}
+
+pub fn encode_wm_recent_owners_rep(
+    out: &mut [u8],
+    recents: &WmRecentOwners,
+) -> Option<usize> {
+    if recents.count > WM_WINDOWS_MAX {
+        return None;
+    }
+    let total = WM_RECENTS_REP_HEAD + recents.count * 2;
+    let m = out.get_mut(..total)?;
+    m[0] = ST_OK;
+    m[1] = recents.count as u8;
+    m[2] = 0;
+    m[3] = 0;
+    for (i, owner) in recents.owners.iter().take(recents.count).enumerate() {
+        let off = WM_RECENTS_REP_HEAD + i * 2;
+        m[off..off + 2].copy_from_slice(&owner.to_le_bytes());
+    }
+    Some(total)
+}
+
+pub fn parse_wm_recent_owners_rep(buf: &[u8]) -> Option<Result<WmRecentOwners, u8>> {
+    let st = *buf.first()?;
+    if !st_known(st) {
+        return None;
+    }
+    if buf.len() == 1 {
+        return (st != ST_OK).then_some(Err(st));
+    }
+    if st != ST_OK {
+        return None;
+    }
+    let count = *buf.get(1)? as usize;
+    if count > WM_WINDOWS_MAX
+        || buf.len() != WM_RECENTS_REP_HEAD + count * 2
+        || buf.get(2..4)? != [0, 0]
+    {
+        return None;
+    }
+    let mut owners = [0u16; WM_WINDOWS_MAX];
+    for (i, slot) in owners.iter_mut().take(count).enumerate() {
+        let off = WM_RECENTS_REP_HEAD + i * 2;
+        *slot = u16::from_le_bytes([buf[off], *buf.get(off + 1)?]);
+    }
+    Some(Ok(WmRecentOwners { owners, count }))
 }
 
 /// 窗口表项（快照 16B 定宽，Q5）。x/y/w/h = **有效几何域**——避让裁剪后的
@@ -4278,5 +4391,55 @@ mod tests {
         let hidden = WmEntry { id: 8, flags: 0, ..high };
         assert_eq!(wm_hit_test(&[hidden, low], 400, 300), Some(1));
         assert_eq!(wm_hit_test(&[hidden], 400, 300), None);
+    }
+}
+
+#[cfg(test)]
+mod recents_tests {
+    use super::*;
+
+    #[test]
+    fn task_select_and_recent_owners_roundtrip() {
+        let mut b = [0u8; 64];
+        let req = WmTaskSelectReq { owner: 0x0304 };
+        let n = encode_wm_task_select_req(&mut b, &req).unwrap();
+        assert_eq!(&b[..n], &[OP_WM_TASK_SELECT, 0, 0, 0, 0x04, 0x03]);
+        assert_eq!(parse_wm_task_select_req(&b[..n]), Some(req));
+        let n = encode_wm_recents_get_req(&mut b).unwrap();
+        assert_eq!(&b[..n], &[OP_WM_RECENTS_GET, 0, 0, 0]);
+        assert_eq!(parse_wm_recents_get_req(&b[..n]), Some(()));
+        let mut owners = [0u16; WM_WINDOWS_MAX];
+        owners[0] = 2;
+        owners[1] = 5;
+        let recents = WmRecentOwners { owners, count: 2 };
+        let n = encode_wm_recent_owners_rep(&mut b, &recents).unwrap();
+        assert_eq!(&b[..n], &[ST_OK, 2, 0, 0, 2, 0, 5, 0]);
+        assert_eq!(parse_wm_recent_owners_rep(&b[..n]), Some(Ok(recents)));
+    }
+
+    #[test]
+    fn task_select_and_recent_owners_reject_matrix() {
+        let mut b = [0u8; 64];
+        let n = encode_wm_task_select_req(&mut b, &WmTaskSelectReq { owner: 1 }).unwrap();
+        let mut bad = b.to_vec();
+        bad[1] = 1;
+        assert_eq!(parse_wm_task_select_req(&bad[..n]), None);
+        bad[1] = 0;
+        bad[4] = 0;
+        bad[5] = 0;
+        assert_eq!(parse_wm_task_select_req(&bad[..n]), None);
+        assert_eq!(parse_wm_task_select_req(&bad[..n - 1]), None);
+        let mut owners = [0u16; WM_WINDOWS_MAX];
+        owners[0] = 1;
+        let recents = WmRecentOwners { owners, count: 1 };
+        let n = encode_wm_recent_owners_rep(&mut b, &recents).unwrap();
+        let mut bad = b.to_vec();
+        bad.truncate(n - 1);
+        assert_eq!(parse_wm_recent_owners_rep(&bad), None);
+        bad = b.to_vec();
+        bad.push(0);
+        assert_eq!(parse_wm_recent_owners_rep(&bad), None);
+        bad = vec![ST_EAGAIN];
+        assert_eq!(parse_wm_recent_owners_rep(&bad), Some(Err(ST_EAGAIN)));
     }
 }
