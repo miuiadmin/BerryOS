@@ -1074,31 +1074,33 @@ desktop:
     [ -f "$IMG" ] || IMG=out/berryos.img
     [ -f "$IMG" ] || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
     python3 tools/make_desktop_disk.py out/gui-data.img
+    # 产品桌面是单窗口资源：重复 just desktop 只会制造多份 QEMU/HVF
+    # 占内存并让用户误判卡死。锁归产品入口；berry attach 仍可多设备调试。
+    LOCK=/tmp/berryos-desktop.lock
+    if mkdir "$LOCK" 2>/dev/null; then
+        printf '%s\n' "$$" > "$LOCK/pid"
+        trap 'rm -rf "$TMP" "$LOCK"' EXIT HUP INT TERM
+    else
+        OLD=$(cat "$LOCK/pid" 2>/dev/null || true)
+        if [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; then
+            echo "BerryOS desktop already running (pid $OLD); close it before starting another."
+            exit 1
+        fi
+        rm -rf "$LOCK"
+        mkdir "$LOCK"
+        printf '%s\n' "$$" > "$LOCK/pid"
+        trap 'rm -rf "$TMP" "$LOCK"' EXIT HUP INT TERM
+    fi
     # DSH/workspace 场景可能不可写 ~/.berry；设备壳运行目录显式落 /tmp。
     export BERRY_HOME="${BERRY_HOME:-/tmp/berry-device-home}"
     OS=$(uname -s); ARCH=$(uname -m)
     if [ "$OS" = Darwin ] && [ "$ARCH" = arm64 ]; then
-        TMP=$(mktemp -d /tmp/berryos-desktop.XXXXXX)
-        trap 'rm -rf "$TMP"' EXIT HUP INT TERM
-        truncate -s 64M "$TMP/vars.fd"
-        qemu-system-aarch64 \
-            -name "BerryOS 1080p HVF" \
-            -machine virt -cpu host -m 256M -accel hvf \
-            -display cocoa -no-reboot \
-            -serial file:"$TMP/serial.log" \
-            -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd \
-            -drive if=pflash,format=raw,file="$TMP/vars.fd" \
-            -drive if=none,file="$IMG",format=raw,id=bb,snapshot=on \
-            -device qemu-xhci -device usb-storage,drive=bb \
-            -global virtio-mmio.force-legacy=false \
-            -drive if=none,id=drv0,format=raw,file=out/gui-data.img,cache.writeback=off \
-            -device virtio-blk-device,drive=drv0 \
-            -device virtio-tablet-device,id=tab0 \
-            -device virtio-keyboard-device,id=kbd0 \
-            -device virtio-gpu-device,id=vgpu0,xres=1080,yres=1920 \
-            -device ramfb \
-            -fw_cfg name=opt/berry/display,string=1080x1920@60
-        exit 0
+        just berry-build
+        HOST=$(rustc -vV | sed -n 's/^host: //p')
+        # Product shell = native winit window + large system toolbar; QEMU
+        # still uses HVF and the real virtio-gpu primary console.
+        BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell \
+            --image "$IMG" --profile desktop --accel hvf --memory 256
     fi
     just berry-build
     HOST=$(rustc -vV | sed -n 's/^host: //p')

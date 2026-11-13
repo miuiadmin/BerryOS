@@ -328,3 +328,43 @@ fn host_matrix_pins_compositor_destination_clipping() {
 
     assert!(composite_clip((800, 0), gp::Rect { x: 0, y: 0, w: 10, h: 10 }, 800, 600).is_none());
 }
+
+#[test]
+fn system_navigation_back_home_and_task_own_app_visibility() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let mut t = table();
+    let a = create(&mut t, 1, gp::WM_CLIENT_APP, gp::WM_LAYER_APP, 0, 0, 0, 100, 100);
+    let b = create(&mut t, 2, gp::WM_CLIENT_APP, gp::WM_LAYER_APP, 0, 110, 0, 100, 100);
+    let c = create(&mut t, 3, gp::WM_CLIENT_APP, gp::WM_LAYER_APP, 0, 220, 0, 100, 100);
+    assert_eq!(t.focused(), Some((3, c)));
+    for (owner, id) in [(1, a), (2, b), (3, c)] {
+        let event = config_poll(&mut t, owner);
+        assert_eq!(config_ack(&mut t, owner, id, event.serial), gp::ST_OK);
+    }
+
+    assert_eq!(t.navigation_back(), Some(3));
+    assert_eq!(t.focused(), None);
+    assert!(t.surface_geometry(3, c).is_none());
+
+    assert_eq!(t.navigation_home(), 3);
+    assert_eq!(t.navigation_task(), Some(1));
+    assert_eq!(t.focused(), Some((1, a)));
+    assert_eq!(t.navigation_task(), Some(2));
+    assert_eq!(t.focused(), Some((2, b)));
+    let shown = config_poll(&mut t, 2);
+    assert!(shown.visible);
+    assert_eq!(config_ack(&mut t, 2, shown.window_id, shown.serial), gp::ST_OK);
+    assert!(t.surface_geometry(1, a).is_none());
+    assert!(t.surface_geometry(2, b).is_some());
+
+    assert_eq!(t.navigation_home(), 3);
+    assert_eq!(t.focused(), None);
+    assert!(t.surface_geometry(2, b).is_none());
+
+    assert_eq!(t.navigation_task(), Some(1));
+    assert_eq!(t.focused(), Some((1, a)));
+    let changed = config_poll(&mut t, 1);
+    assert_eq!(changed.cause, gp::WM_CONFIG_CAUSE_VISIBILITY);
+    assert!(changed.visible);
+    assert_eq!(config_ack(&mut t, 1, changed.window_id, changed.serial), gp::ST_OK);
+}

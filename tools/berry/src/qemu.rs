@@ -130,6 +130,14 @@ fn read_version(path: &Path) -> String {
         .to_string()
 }
 
+
+/// Parse the display-mode prefix accepted by the guest kernel (`WxH[@Hz]`).
+fn render_geometry(mode: &str) -> Option<(u32, u32)> {
+    let head = mode.split('@').next()?;
+    let (w, h) = head.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
+
 fn machine_args(
     cmd: &mut Command,
     accel: Accel,
@@ -243,6 +251,13 @@ pub fn spawn_image(
         // P2：keyboard 追加在后，保持 tablet 的倒序 virtio-mmio 槽位不变。
         cmd.arg("-device").arg("virtio-tablet-device");
         cmd.arg("-device").arg("virtio-keyboard-device");
+    }
+    if let Some((w, h)) = display_mode.and_then(render_geometry) {
+        // Product shell keeps the real GPU2 console primary and ramfb as the
+        // firmware/fallback surface. VNC selects the first QEMU console.
+        cmd.arg("-device").arg(format!(
+            "virtio-gpu-device,id=vgpu0,xres={w},yres={h}"
+        ));
     }
     cmd.arg("-device").arg("ramfb");
     if let Some(mode) = display_mode {
@@ -392,4 +407,17 @@ pub fn wait_for_path(path: &Path, timeout: Duration) -> Result<()> {
         "timed out waiting for {}",
         path.display()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_geometry;
+
+    #[test]
+    fn render_geometry_parses_guest_display_mode() {
+        assert_eq!(render_geometry("1080x1920@60"), Some((1080, 1920)));
+        assert_eq!(render_geometry("800x600"), Some((800, 600)));
+        assert_eq!(render_geometry("bad"), None);
+        assert_eq!(render_geometry("1080x"), None);
+    }
 }

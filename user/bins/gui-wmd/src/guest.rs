@@ -591,7 +591,22 @@ impl WmSessions {
 
     /// P2：键盘事件按权威 focus 窗路由；只有该窗的 0x67 合约声明
     /// INPUT_CLASS_KEYBOARD 才入队。默认 Retained 无显式合约 = fail closed。
-    fn route_key(&mut self, table: &table::WmTable, ev: &gp::KeyEvent) {
+    fn route_key(&mut self, table: &mut table::WmTable, ev: &gp::KeyEvent) {
+        if matches!(ev.code, gp::KEY_SYSTEM_BACK | gp::KEY_SYSTEM_HOME | gp::KEY_SYSTEM_TASK) {
+            if ev.action != gp::KEY_ACTION_DOWN {
+                return;
+            }
+            let (name, owner) = if ev.code == gp::KEY_SYSTEM_BACK {
+                ("back", table.navigation_back())
+            } else if ev.code == gp::KEY_SYSTEM_HOME {
+                let count = table.navigation_home();
+                ("home", Some(count as u16))
+            } else {
+                ("task", table.navigation_task())
+            };
+            println!("WMNAV ok {name} owner={}", owner.unwrap_or(0));
+            return;
+        }
         let Some((sid, window)) = table.focused() else {
             println!("WMKEYDROP bad sid=0 window=0 reason=focus code={}", ev.code);
             return;

@@ -221,6 +221,25 @@ impl Device {
         self.qmp.lock().unwrap().system_reset()
     }
 
+    /// Inject a Linux key event through QMP rather than the VNC console path.
+    /// VNC remains frame/input compatibility, but system navigation must use
+    /// the same deterministic QMP event stream as GUI8.
+    pub fn send_linux_key(&mut self, code: u16, down: bool) -> Result<()> {
+        self.qmp.lock().unwrap().execute(
+            "input-send-event",
+            serde_json::json!({
+                "events": [{
+                    "type": "key",
+                    "data": {
+                        "down": down,
+                        "key": {"type": "number", "data": code}
+                    }
+                }]
+            }),
+        )?;
+        Ok(())
+    }
+
     pub fn run_path(&self) -> &std::path::Path {
         self.run.path()
     }

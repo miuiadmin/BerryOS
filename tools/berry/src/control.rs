@@ -421,21 +421,66 @@ fn dispatch(
         }
         "key" => {
             let code = args.get("code").and_then(Value::as_str).unwrap_or("");
-            let ks = crate::commands::qcode_to_keysym(code)
-                .ok_or_else(|| BerryError::new(2, format!("unknown key '{code}'")))?;
-            let mut v = VncInput::connect(vnc)?;
-            v.key(ks, true)?;
-            v.key(ks, false)?;
-            Ok(json!({"key": code}))
+            let linux = match code {
+                "f1" => 59u16,
+                "f2" => 60,
+                "f3" => 61,
+                _ => 0,
+            };
+            if linux == 0 {
+                return Err(BerryError::new(2, format!("unknown system key '{code}'")));
+            }
+            let mut q = qmp.lock().unwrap();
+            for down in [true, false] {
+                q.execute(
+                    "input-send-event",
+                    json!({
+                        "events": [{
+                            "type": "key",
+                            "data": {
+                                "down": down,
+                                "key": {"type": "number", "data": linux}
+                            }
+                        }]
+                    }),
+                )?;
+                if down {
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+            }
+            Ok(json!({"key": code, "source": "qmp"}))
         }
         "tap" => {
-            let x = args.get("x").and_then(Value::as_u64).unwrap_or(0) as u16;
-            let y = args.get("y").and_then(Value::as_u64).unwrap_or(0) as u16;
-            let mut v = VncInput::connect(vnc)?;
-            v.pointer(x, y, 1)?;
-            std::thread::sleep(Duration::from_millis(30));
-            v.pointer(x, y, 0)?;
-            Ok(json!({"x":x,"y":y}))
+            let x = args.get("x").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let y = args.get("y").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let (vw, vh) = VncInput::connect(vnc)?.size();
+            let ax = ((x * 32767) / vw.max(1)) as u16;
+            let ay = ((y * 32767) / vh.max(1)) as u16;
+            let mut q = qmp.lock().unwrap();
+            q.execute(
+                "input-send-event",
+                json!({"events":[
+                    {"type":"abs","data":{"axis":"x","value":ax}},
+                    {"type":"abs","data":{"axis":"y","value":ay}}
+                ]}),
+            )?;
+            std::thread::sleep(Duration::from_millis(80));
+            q.execute(
+                "input-send-event",
+                json!({"events":[
+                    {"type":"btn","data":{"down":true,"button":"left"}},
+                    {"type":"abs","data":{"axis":"x","value":ax}},
+                    {"type":"abs","data":{"axis":"y","value":ay}}
+                ]}),
+            )?;
+            std::thread::sleep(Duration::from_millis(120));
+            q.execute(
+                "input-send-event",
+                json!({"events":[
+                    {"type":"btn","data":{"down":false,"button":"left"}}
+                ]}),
+            )?;
+            Ok(json!({"x":x,"y":y,"source":"qmp"}))
         }
         "swipe" => {
             let x1 = args.get("x1").and_then(Value::as_u64).unwrap_or(0) as u16;

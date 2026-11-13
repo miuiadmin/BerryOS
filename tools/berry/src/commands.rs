@@ -342,6 +342,7 @@ pub fn input(args: InputArgs) -> Result<()> {
                     .with_hint("qcode: ret/esc/tab/backspace/spc/left/up/right/down or one ASCII char")
             })?;
             vnc.key(ks, true)?;
+            std::thread::sleep(Duration::from_millis(80));
             vnc.key(ks, false)?;
         }
         InputAction::Text(text) => {
@@ -395,6 +396,9 @@ pub(crate) fn qcode_to_keysym(q: &str) -> Option<u32> {
         "right" => 0xff53,
         "down" => 0xff54,
         "delete" => 0xffff,
+        "f1" => 0xffbe,
+        "f2" => 0xffbf,
+        "f3" => 0xffc0,
         "home" => 0xff50,
         "end" => 0xff57,
         "minus" => 0x2d,

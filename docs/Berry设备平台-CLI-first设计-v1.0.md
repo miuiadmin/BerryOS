@@ -411,7 +411,7 @@ berry device stop --run "$RUN"
 │      客机帧（480×1000）      │  ← fit/整数缩放，letterbox
 │                             │
 ├─────────────────────────────┤
-│ [SHOT] [RES] [BOOT] [OFF] [FULL] │  ← 48px 原生快捷栏（5 键）
+│ [BACK] [HOME] [TASK] [SHOT] [RES] [BOOT] [OFF] [FULL] │  ← 72px 原生系统工具栏（8 键，按钮高 56px）
 └─────────────────────────────┘
 ```
 
@@ -427,8 +427,8 @@ berry device stop --run "$RUN"
   → 重新连新 run 的 VNC，窗口自动重附着；无需手动 `shell --attach`。
 - **540×1200 预览件已落（历史 C2 验收）**：GUI-8 全桌面 + 540 内核曾产
   `out/berry-desktop-540x1200.png`，证明 host 窗口/RES/profile 链可用。
-- **2026-11-13 起产品入口为 1080×1920 HVF + virtio-gpu**：`just desktop` 在 Apple Silicon 直用 QEMU Cocoa、`out/berryos-desktop.img` 与 vgpud/virtio-gpu 显示后端（ramfb 回退；规格见 [BerryMacEmulator-GPU2-v1.0.md](BerryMacEmulator-GPU2-v1.0.md)）；
-  berry host 窗口仍承担 profile/attach/control 面试验收。
+- **2026-11-13 起产品入口为 1080×1920 HVF + virtio-gpu**：`just desktop` 在 Apple Silicon 使用 berry 原生窗口与 72px 系统工具栏，QEMU 拓扑仍为 vgpud/virtio-gpu 主显示 + ramfb 回退（见 [BerryMacEmulator-GPU2-v1.0.md](BerryMacEmulator-GPU2-v1.0.md)）。
+- **System Nav C2i 已落**：工具栏前三位为 `BACK` / `HOME` / `TASK`，分别注入 F1/F2/F3 并由 gui-wmd 执行系统级 BACK/HOME/TASK；产品入口带 `/tmp/berryos-desktop.lock` 单窗口守门，陈旧 pid lock 自动回收。
 - **C2f 已落（交互）**：按钮 hover 高亮 + 顶部 tooltip（SCREENSHOT/PROFILE/REBOOT/POWER/FULLSCREEN）。
 - **C2g 已落**：`restart_profile` 改「先起新 host 再停旧 host」——新 host 失败则旧 host
   原样保留（天然回滚）；成功后旧 run 按 `keep` 清理（`keep=false` 删目录）。
@@ -465,7 +465,7 @@ berry device stop --run "$RUN"
 ### 9.3 动作表 = 单一事实源
 
 ```rust
-enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
+enum UiAction { Back, Home, Task, Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 ```
 
 - GUI 按钮 → `ControlClient::shortcut(action)`

@@ -56,6 +56,124 @@ pub fn span(start: u16, end: u16, done: u64, total: u64) -> Option<u16> {
     Some(value as u16)
 }
 
+/// 进度数字专用高分辨率几何单元（1MiB 级 EFI 早期路径无字体服务）。
+const DIGIT_W: usize = 28;
+const DIGIT_H: usize = 54;
+const DIGIT_GAP: usize = 10;
+const PCT_W: usize = 40;
+const PERCENT_W: usize = 3 * DIGIT_W + 2 * DIGIT_GAP + PCT_W;
+const PERCENT_H: usize = 56;
+
+#[derive(Clone, Copy)]
+enum Shape {
+    H { x0: usize, x1: usize, y0: usize, y1: usize },
+    V { x: usize, y0: usize, y1: usize },
+    Circle { cx: usize, cy: usize, r: usize },
+    Slash { sum: usize },
+}
+
+fn digit_shapes(d: u8) -> [Shape; 7] {
+    const T: (usize, usize) = (1, 27);
+    const M: (usize, usize) = (1, 27);
+    const B: (usize, usize) = (1, 27);
+    const L: usize = 0;
+    const R: usize = 23;
+    let h = |v: (usize, usize), y: usize| Shape::H { x0: v.0, x1: v.1, y0: y, y1: y + 5 };
+    let v = |x: usize, y0: usize, y1: usize| Shape::V { x, y0, y1 };
+    let blank = Shape::H { x0: 0, x1: 0, y0: 0, y1: 0 };
+    let mut out = [blank; 7];
+    let push = |out: &mut [Shape; 7], shape: Shape| {
+        for slot in out.iter_mut() {
+            if matches!(*slot, Shape::H { x0: 0, x1: 0, y0: 0, y1: 0 }) {
+                *slot = shape;
+                break;
+            }
+        }
+    };
+    match d {
+        0 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, h(B, 49));
+            push(&mut out, v(L, 1, 49));
+            push(&mut out, v(R, 1, 49));
+        }
+        1 => {
+            push(&mut out, v(R, 1, 49));
+            push(&mut out, h((14, 27), 1));
+        }
+        2 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, v(R, 1, 25));
+            push(&mut out, h(M, 25));
+            push(&mut out, v(L, 25, 49));
+            push(&mut out, h(B, 49));
+        }
+        3 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, v(R, 1, 49));
+            push(&mut out, h(M, 25));
+            push(&mut out, h(B, 49));
+        }
+        4 => {
+            push(&mut out, v(L, 1, 25));
+            push(&mut out, h(M, 25));
+            push(&mut out, v(R, 1, 49));
+        }
+        5 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, v(L, 1, 25));
+            push(&mut out, h(M, 25));
+            push(&mut out, v(R, 25, 49));
+            push(&mut out, h(B, 49));
+        }
+        6 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, v(L, 1, 49));
+            push(&mut out, h(M, 25));
+            push(&mut out, v(R, 25, 49));
+            push(&mut out, h(B, 49));
+        }
+        7 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, v(R, 1, 49));
+        }
+        8 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, h(M, 25));
+            push(&mut out, h(B, 49));
+            push(&mut out, v(L, 1, 49));
+            push(&mut out, v(R, 1, 49));
+        }
+        9 => {
+            push(&mut out, h(T, 1));
+            push(&mut out, v(L, 1, 25));
+            push(&mut out, h(M, 25));
+            push(&mut out, v(R, 1, 49));
+            push(&mut out, h(B, 49));
+        }
+        _ => {}
+    }
+    out
+}
+
+fn shape_hit(shape: Shape, sx: usize, sy: usize) -> bool {
+    match shape {
+        Shape::H { x0, x1, y0, y1 } => sx >= x0 * 4 && sx < x1 * 4 && sy >= y0 * 4 && sy < y1 * 4,
+        Shape::V { x, y0, y1 } => sx >= x * 4 && sx < (x + 5) * 4 && sy >= y0 * 4 && sy < y1 * 4,
+        Shape::Circle { cx, cy, r } => {
+            let dx = sx.saturating_sub(cx * 4);
+            let dy = sy.saturating_sub(cy * 4);
+            dx * dx + dy * dy < (r * 4) * (r * 4)
+        }
+        Shape::Slash { sum } => {
+            let target = sum * 4;
+            let value = sx as i32 + sy as i32;
+            let target = target as i32;
+            (value - target).abs() <= 10
+        }
+    }
+}
+
 /// Layout used by both the initial paint and incremental updates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Layout {
@@ -68,7 +186,7 @@ pub struct Layout {
     pub bar_h: usize,
     pub percent_x: usize,
     pub percent_y: usize,
-    pub percent_scale: usize,
+    pub percent_w: usize,
     pub stage_x: usize,
     pub stage_y: usize,
     pub stage_scale: usize,
@@ -100,6 +218,7 @@ pub fn layout(width: usize, height: usize) -> Option<Layout> {
         min(6, max(2, width / 150))
     };
     let small_scale = max(2, logo_scale / 2);
+    let percent_h = PERCENT_H;
     let logo_w = text_width("BerryOS", logo_scale)?;
     let logo_h = text_height(logo_scale)?;
     let logo_x = (width - logo_w) / 2;
@@ -110,11 +229,9 @@ pub fn layout(width: usize, height: usize) -> Option<Layout> {
     let bar_h = if portrait { max(14, height / 96) } else { max(10, height / 50) };
     let bar_y = if portrait { height * 68 / 100 } else { height * 72 / 100 };
 
-    let percent = "100%";
-    let percent_w = text_width(percent, small_scale)?;
-    let percent_h = text_height(small_scale)?;
+    let percent_w = PERCENT_W;
     let percent_x = (width - percent_w) / 2;
-    let percent_y = bar_y + bar_h + percent_h;
+    let percent_y = bar_y + bar_h + 12;
 
     // Reserve using the longest current label rather than the incoming one;
     // updates can then erase the worst-case text block without geometry drift.
@@ -145,7 +262,7 @@ pub fn layout(width: usize, height: usize) -> Option<Layout> {
         bar_h,
         percent_x,
         percent_y,
-        percent_scale: small_scale,
+        percent_w,
         stage_x,
         stage_y,
         stage_scale,
@@ -307,19 +424,78 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    fn blend_px(&mut self, x: usize, y: usize, fg: (u8, u8, u8), bg: (u8, u8, u8), cov: u8) {
+        if cov == 0 {
+            return;
+        }
+        let a = u16::from(cov);
+        let b = u16::from(16u8.saturating_sub(cov));
+        let mix = |c: u8, d: u8| ((u16::from(c) * a + u16::from(d) * b) / 16) as u8;
+        self.put_px(x, y, (mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2)));
+    }
+
+    fn draw_digit(&mut self, d: u8, x: usize, y: usize) {
+        let shapes = digit_shapes(d);
+        for py in 0..DIGIT_H {
+            for px in 0..DIGIT_W {
+                let mut cov = 0u8;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let sample_x = (px * 4 + sx) + 2;
+                        let sample_y = (py * 4 + sy) + 2;
+                        if shapes.iter().any(|&shape| shape_hit(shape, sample_x, sample_y)) {
+                            cov += 1;
+                        }
+                    }
+                }
+                if cov != 0 {
+                    self.blend_px(x + px, y + py, FG, BG, cov);
+                }
+            }
+        }
+    }
+
+    fn draw_percent_sign(&mut self, x: usize, y: usize) {
+        for py in 0..DIGIT_H {
+            for px in 0..PCT_W {
+                let mut cov = 0u8;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let sample_x = (px * 4 + sx) + 2;
+                        let sample_y = (py * 4 + sy) + 2;
+                        let circles = [
+                            Shape::Circle { cx: 8, cy: 11, r: 6 },
+                            Shape::Circle { cx: 31, cy: 43, r: 6 },
+                            Shape::Slash { sum: 50 },
+                        ];
+                        if circles.iter().any(|&shape| shape_hit(shape, sample_x, sample_y)) {
+                            cov += 1;
+                        }
+                    }
+                }
+                if cov != 0 {
+                    self.blend_px(x + px, y + py, FG, BG, cov);
+                }
+            }
+        }
+    }
+
     fn percent_text(&mut self, permille: u16) {
         let percent = permille / 10;
-        let mut buf = [b'0'; 4];
-        buf[0] = b'0' + (percent / 10) as u8;
-        buf[1] = b'0' + (percent % 10) as u8;
-        buf[2] = b'%';
-        // 0..99 用三位（00%..99%）；100% 用完整四位，终态不丢百分号。
-        let n = if percent == 100 { 4 } else { 3 };
-        let text = core::str::from_utf8(&buf[..n]).unwrap_or("0%");
-        let l = self.layout;
-        let w = text_width(text, l.percent_scale).unwrap_or(0);
-        let x = self.width.saturating_sub(w) / 2;
-        self.text(text, x, l.percent_y, l.percent_scale, FG, BG);
+        let (digits, d0, d1, d2) = if percent == 100 {
+            (3, Some(1u8), Some(0u8), Some(0u8))
+        } else {
+            (2, Some((percent / 10) as u8), Some((percent % 10) as u8), None)
+        };
+        let width = digits * DIGIT_W + (digits - 1) * DIGIT_GAP + PCT_W;
+        let x = self.width.saturating_sub(width) / 2;
+        let y = self.layout.percent_y;
+        let mut cx = x;
+        for d in [d0, d1, d2].into_iter().flatten() {
+            self.draw_digit(d, cx, y);
+            cx += DIGIT_W + DIGIT_GAP;
+        }
+        self.draw_percent_sign(cx, y);
     }
 
     fn stage_text(&mut self, stage: Stage) {
@@ -402,6 +578,38 @@ mod tests {
         let g = layout(800, 600).unwrap();
         assert_eq!(g.bar_w, 560);
         assert!(g.bar_y + g.bar_h < 600);
+    }
+
+    #[test]
+    fn percent_digits_are_anti_aliased_native_geometry() {
+        let w = 800;
+        let h = 600;
+        let stride = w * 4;
+        let mut fb = vec![0u8; stride * h];
+        let l = layout(w, h).unwrap();
+        {
+            let mut r = Renderer::new(&mut fb, w, h, stride, 1).unwrap();
+            r.initialize(Stage::Kernel, 1000);
+        }
+        let fmt = berry_fbcon::render::PixelFormat::from_raw(1).unwrap();
+        let fg_px = fmt.pack(FG.0, FG.1, FG.2);
+        let bg_px = fmt.pack(BG.0, BG.1, BG.2);
+        let mut fg = 0usize;
+        let mut intermediate = 0usize;
+        for y in l.percent_y..(l.percent_y + PERCENT_H).min(h) {
+            for x in (l.percent_x.saturating_sub(40))..(l.percent_x + l.percent_w + 40).min(w) {
+                let px = u32::from_le_bytes(
+                    fb[(y * stride + x * 4)..].get(..4).unwrap().try_into().unwrap(),
+                );
+                if px == fg_px {
+                    fg += 1;
+                } else if px != bg_px {
+                    intermediate += 1;
+                }
+            }
+        }
+        assert!(fg > 100, "large digits absent");
+        assert!(intermediate > 100, "anti-aliased coverage absent");
     }
 
     #[test]

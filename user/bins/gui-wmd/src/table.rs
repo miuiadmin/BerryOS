@@ -714,6 +714,145 @@ impl WmTable {
         }
     }
 
+    fn set_visible(&mut self, i: usize, vis: bool) -> bool {
+        if i >= self.count || self.wins[i].vis == vis {
+            return false;
+        }
+        self.wins[i].vis = vis;
+        self.mark_config(i, gp::WM_CONFIG_CAUSE_VISIBILITY);
+        true
+    }
+
+    fn change_complete(&mut self, changed: bool) -> bool {
+        if !changed {
+            return false;
+        }
+        if let Some((_, id)) = self.focused() {
+            let focus_hidden = self
+                .find(id)
+                .is_none_or(|i| !self.wins[i].vis || self.wins[i].layer != gp::WM_LAYER_APP);
+            if focus_hidden {
+                self.focus = None;
+            }
+        }
+        self.recompute();
+        self.bump();
+        true
+    }
+
+    fn app_owner_indexes(&self, owner: u16) -> [usize; gp::WM_WINDOWS_MAX] {
+        let mut out = [usize::MAX; gp::WM_WINDOWS_MAX];
+        let mut n = 0usize;
+        for i in 0..self.count {
+            if self.wins[i].layer == gp::WM_LAYER_APP && self.wins[i].owner == owner {
+                out[n] = i;
+                n += 1;
+            }
+        }
+        out
+    }
+
+    fn set_owner_visibility(&mut self, owner: u16, vis: bool) -> bool {
+        let indexes = self.app_owner_indexes(owner);
+        let mut changed = false;
+        for &i in indexes.iter() {
+            if i == usize::MAX {
+                break;
+            }
+            changed |= self.set_visible(i, vis);
+        }
+        changed
+    }
+
+    fn focus_owner(&mut self, owner: u16) -> bool {
+        let indexes = self.app_owner_indexes(owner);
+        let Some(i) = indexes.iter().copied().find(|&i| i != usize::MAX) else {
+            return false;
+        };
+        self.focus = Some(self.wins[i].id);
+        true
+    }
+
+    /// System BACK (v1): hide the focused app owner and expose the desktop or
+    /// the next visible app. Apps with internal navigation still receive their
+    /// own keys first in a later revision; this is the global fallback.
+    pub fn navigation_back(&mut self) -> Option<u16> {
+        let owner = self.focused()?.0;
+        if !self.set_owner_visibility(owner, false) {
+            return None;
+        }
+        self.change_complete(true);
+        Some(owner)
+    }
+
+    /// System HOME: hide every APP-layer owner. The desktop compositor's
+    /// surface_id=0 is not a WM window and remains visible by construction.
+    pub fn navigation_home(&mut self) -> usize {
+        let mut owners = [0u16; gp::WM_WINDOWS_MAX];
+        let mut n = 0usize;
+        for i in 0..self.count {
+            if self.wins[i].layer != gp::WM_LAYER_APP {
+                continue;
+            }
+            let owner = self.wins[i].owner;
+            if !owners[..n].contains(&owner) {
+                owners[n] = owner;
+                n += 1;
+            }
+        }
+        let mut changed = false;
+        for &owner in owners[..n].iter() {
+            changed |= self.set_owner_visibility(owner, false);
+        }
+        self.change_complete(changed);
+        n
+    }
+
+    /// System TASK: cycle to the next APP owner, hide other app owners, and
+    /// focus that owner's first window. This is the deterministic v1 task
+    /// switcher; a visual recents overlay can consume the same authority later.
+    pub fn navigation_task(&mut self) -> Option<u16> {
+        let mut owners = [0u16; gp::WM_WINDOWS_MAX];
+        let mut n = 0usize;
+        for i in 0..self.count {
+            if self.wins[i].layer != gp::WM_LAYER_APP {
+                continue;
+            }
+            let owner = self.wins[i].owner;
+            if !owners[..n].contains(&owner) {
+                owners[n] = owner;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        let current = self.focused().map(|(owner, _)| owner).or_else(|| {
+            owners[..n]
+                .iter()
+                .copied()
+                .find(|&owner| {
+                    self.app_owner_indexes(owner)
+                        .iter()
+                        .any(|&i| i != usize::MAX && self.wins[i].vis)
+                })
+        });
+        let next = match current {
+            Some(cur) => {
+                let pos = owners[..n].iter().position(|&o| o == cur)?;
+                owners[(pos + 1) % n]
+            }
+            None => owners[0],
+        };
+        let mut changed = false;
+        for &owner in owners[..n].iter() {
+            changed |= self.set_owner_visibility(owner, owner == next);
+        }
+        self.focus_owner(next);
+        self.change_complete(changed || true);
+        Some(next)
+    }
+
     /// session 死亡清理：一次性摘除该 owner 全部窗口。返回清理数。
     pub fn destroy_owned(&mut self, owner: u16) -> usize {
         let mut removed = 0usize;

@@ -241,6 +241,12 @@ pub const KEY_MOD_SHIFT: u8 = 1 << 0;
 pub const KEY_MOD_CTRL: u8 = 1 << 1;
 /// 键盘修饰位：Alt。
 pub const KEY_MOD_ALT: u8 = 1 << 2;
+/// BOOT-P1/system nav：host toolbar F1 → BACK。Linux evdev KEY_F1。
+pub const KEY_SYSTEM_BACK: u16 = 59;
+/// BOOT-P1/system nav：host toolbar F2 → HOME。Linux evdev KEY_F2。
+pub const KEY_SYSTEM_HOME: u16 = 60;
+/// BOOT-P1/system nav：host toolbar F3 → TASK。Linux evdev KEY_F3。
+pub const KEY_SYSTEM_TASK: u16 = 61;
 /// 键盘修饰位：Super。
 pub const KEY_MOD_SUPER: u8 = 1 << 3;
 /// v1 已定义键盘修饰位全集。

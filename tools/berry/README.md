@@ -77,7 +77,8 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 | --- | --- | --- |
 | 截图 | **`berry screenshot`（已落）** / `shot`（临时设备） | 截图按钮 / `Cmd+S` |
 | 输入 | `berry input key/tap/swipe/text`（VNC attach，已落） | 客机触摸/键盘 |
-| 重启/关机 | **`berry power reboot/off`（C1a）** / `berry shortcut`（C2b） | BOOT/OFF 按钮（C2a） |
+| 返回/桌面/多任务 | `berry input key f1/f2/f3` | BACK/HOME/TASK 大键（gui-wmd 系统导航） |
+| 重启/关机 | **`berry power reboot/off`（C1a）** / `berry shortcut`（C2b） | BOOT/OFF 大键（C2a） |
 | 分辨率 | **`berry display set <profile> --restart`（C2c）** | **RES 菜单（C2d host / C2e attach）** |
 | 全屏 | — | `F` / `FULL` 按钮 |
 | 审计 | `berry events/logs`（C1/C2） | 同一事件流，`source=ui/cli` |
@@ -132,7 +133,7 @@ C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异�
 - `berry input`/`berry screenshot` 走 VNC 多客户端 attach；QMP 由 host broker 独占，
   `power reboot/off`、`display set` 已落（C1a/C2c）；host 自动重启已落（--restart-on-crash）；
 只剩 Windows 实机/打包。
-- 窗口快捷栏 C2d 已落 5 键：`SHOT`/`RES`/`BOOT`/`OFF`/`FULL`（鼠标/触摸）；
+- 窗口系统工具栏已落 8 大键：`BACK`/`HOME`/`TASK`/`SHOT`/`RES`/`BOOT`/`OFF`/`FULL`（72px 栏 / 56px 按钮）；
   `OFF` 需 3s 内二次点击；`RES` 打开 profile 菜单，host 窗口内停旧/起新 profile。
 - C2b 已落：`berry shortcut screenshot|reboot|power`、`berry display list/set`（记录
   next-profile）、`berry events`（JSONL）。
