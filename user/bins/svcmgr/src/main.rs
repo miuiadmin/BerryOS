@@ -1815,7 +1815,12 @@ fn run_rootfs_child(console: Handle) {
                             mmio_vmo: None,
                             mmio_va: 0,
                             intent: 0,
-                            force_eager: false,
+                            // eager 止血带（X-6 批供 0x24 楔死待裁期间）：
+                            // hexyl 84 页 demand 装载实测 11.4s（≈6 页/s 吞吐
+                            // 墙），eager 全幅预拷 ~336KiB+128KiB 栈瞬完（R2
+                            // 注册方案「即回 eager 时代 10s 即完」）。瞬态足迹
+                            // <0.5MiB 且终验后即 reap——128MiB 预算内零险。
+                            force_eager: true,
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -5377,7 +5382,12 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
-            force_eager: false,
+            // eager 止血带（X-6 批供 0x24 楔死待裁期间）：U1 批 9 子全走本
+            // 函数，demand 逐页供给实测整批 ~120s（6 页/s 墙）；uu 镜像
+            // ~200KiB/子且 spawn→EOF→reap 严格串行 = 任一时刻至多一子存活，
+            // eager 瞬态足迹 ~330KiB——128MiB 预算内零险（X-5 常驻豁免同款
+            // 面；uu 非长命常驻，槽位/pager 键竞速反而净减）。
+            force_eager: true,
         },
     ) {
         Ok(c) => c,
