@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 27 | 30630 | 2087 | 6.81% |
+| kernel/ | 27 | 30623 | 2087 | 6.82% |
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 14 | 7532 | 1652 | 21.93% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7311 | 1048 | 14.33% |
-| **合计** | 71 | 47841 | 4791 | **10.01%** |
+| **合计** | 71 | 47834 | 4791 | **10.02%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37721，unsafe 非空行 4083，密度 10.82%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37714，unsafe 非空行 4083，密度 10.83%（生产面口径）
 - 分类计数：页表 63 | 上下文切换 33 | MMIO 160 | 分配器 13 | 硬件原子 0 | 其它 764
 - 类型计数：block 891 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -900,9 +900,9 @@
 | kernel/src/vmar.rs | 816 | block | 页表 | unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() }; if e0 |
 | kernel/src/vmar.rs | 821 | block | 页表 | unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() }; if e1 |
 | kernel/src/vmar.rs | 826 | block | 页表 | unsafe { l3.add((va >> 12) & IDX_MASK).read_volatile() }; (leaf |
-| kernel/src/vmo.rs | 178 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( phys_to_virt(pa + off) |
-| kernel/src/vmo.rs | 201 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( data.as_ptr().add(pos - |
-| kernel/src/vmo.rs | 288 | block | 其它 | unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, |
+| kernel/src/vmo.rs | 175 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( phys_to_virt(pa + off) |
+| kernel/src/vmo.rs | 194 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( data.as_ptr().add(done) |
+| kernel/src/vmo.rs | 281 | block | 其它 | unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, |
 | mm/src/memmap.rs | 119 | fn | 其它 | unsafe fn desc_at(pa: u64, desc_size: u32, i: usize) -> &'static |
 | mm/src/memmap.rs | 122 | block | 其它 | unsafe { &*(crate::va::phys_to_virt(p) as *const EfiMemdesc) } } |
 | sched/src/band.rs | 90 | block | 其它 | unsafe { &raw mut BANDS[band as usize] }) } /// 带成员桥接：读 Task 的 i |
