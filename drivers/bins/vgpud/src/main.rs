@@ -1153,7 +1153,8 @@ impl PresentSrv {
                 self.w as usize,
                 self.h as usize,
                 (self.w as usize) * 4,
-                1,
+                // XRGB8888 byte order; raw 0 maps to Rgbx.pack.
+                0,
                 self.boot_permille,
                 self.boot_stage,
             )
@@ -1173,7 +1174,8 @@ impl PresentSrv {
                 self.w as usize,
                 self.h as usize,
                 (self.w as usize) * 4,
-                1,
+                // XRGB8888 byte order; raw 0 maps to Rgbx.pack.
+                0,
             )
             .map(|mut r| {
                 r.initialize(stage, permille);
@@ -1205,7 +1207,7 @@ impl PresentSrv {
             self.w as usize,
             self.h as usize,
         ) {
-            let bottom = (l.stage_y + 16 * l.stage_scale).min(self.h as usize);
+            let bottom = (l.bar_y + l.bar_h).min(self.h as usize);
             let y = l.bar_y.min(bottom);
             vio::gpu::GpuRect {
                 x: 0,

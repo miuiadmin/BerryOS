@@ -90,33 +90,23 @@ BOOTPROG ok display 1080x1920
 1080×1920 原生布局：
 
 ```text
-背景 #080E18
-BerryOS 标题
-进度条 756×20 @ y=1305
-28×54 专用抗锯齿数字与 `%`
-阶段文本
+背景 #000000
+BerryOS 白色标题
+白色进度条 756×20 @ y=1305
+无百分比 / 无阶段文字
 ```
 
-百分比不是 8×16 点阵放大字：0–9 与 `%` 由专用几何段（横/竖/圆/斜线）构成，每像素 4×4 supersampling 生成 16 级覆盖度并与背景混合。host 测试钉住高分辨率字形与抗锯齿中间色，终态显示完整 `100%`。
+视觉裁决对齐 macOS：启动面只保留白色标志与白色进度条。百分比与阶段文字不参与首屏；`Stage` 仍是协议真值，不再转成模糊文本。
 
 主色：
 
 ```text
-#0074E0
+背景 #000000
+标志 / 进度填充 #FFFFFF（纯白）
+进度槽 #3A3A3C
 ```
 
-阶段文案：
-
-```text
-Starting display
-Verifying boot disk
-Loading kernel
-Loading system
-Preparing BerryOS
-Starting BerryOS
-```
-
-渲染器初始化清完整 native framebuffer；后续更新只画新增进度条段和两个小文本区，不整屏重画。视觉截图已验证 0%、滚动中与 100% 状态。
+像素通道修正：QEMU ramfb/vgpu 面是 little-endian XRGB8888（内存 B,G,R,X）。渲染器统一用 `PixelFormat::Rgbx.pack` 的 raw=0 写入，禁止把 RGB 蓝误写成橙。host 测试直接钉住白色填充内存三字节与进度条下方黑场，防止百分比/文字回归。
 
 ## §5 vgpu 主显示进度与交接
 
@@ -163,16 +153,16 @@ RESOURCE_FLUSH
 VGPUBOOT ok stage=<stage> permille=<permille> rect=<WxH>@<Y>
 ```
 
-首帧整面 `1080×1920@0`；后续 renderer 只改底部进度区（含更高数字区），当前布局 damage 为：
+首帧整面 `1080×1920@0`；后续 renderer 只改白色进度条本身，当前布局 damage 为：
 
 ```text
-1080×152@1305
+1080×20@1305
 ```
 
 GUI8 800×600 后续条带为：
 
 ```text
-800×140@432
+800×12@432
 ```
 
 最终实测序列：
@@ -186,7 +176,7 @@ stage=5 permille=1000
 LAUNCH ok
 ```
 
-显式 `device=vgpu0` 截图验证 70% 中间进度面、100% 终态序列与随后的桌面首帧；默认 QEMU console 与 vgpu0 逐字节一致。首帧后的条带 damage 把三次系统阶段更新的传输面从整面 8.3MiB 降到约 0.75MiB。
+显式 `device=vgpu0` 截图验证 70% 白色中间进度面、100% 终态序列与随后的桌面首帧；ramfb 与 vgpu0 的进度面像素一致。首帧后的条带 damage 从整面 8.3MiB 降到 86.4KiB，且不再携带文字区。
 
 ## §6 回归与守门
 

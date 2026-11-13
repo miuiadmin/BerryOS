@@ -512,7 +512,9 @@ impl ProgressRuntime {
                 self.facts.width as usize,
                 self.facts.height as usize,
                 self.facts.stride as usize,
-                self.facts.format,
+                // QEMU ramfb fmt=1 is little-endian XRGB8888. berry-fbcon's
+                // raw value 0 (Rgbx.pack) writes the correct B,G,R,X bytes.
+                0,
             ) else {
                 return false;
             };
@@ -527,7 +529,8 @@ impl ProgressRuntime {
             self.facts.width as usize,
             self.facts.height as usize,
             self.facts.stride as usize,
-            self.facts.format,
+            // Same XRGB8888 correction as the first paint.
+            0,
             self.prev_permille,
             self.prev_stage,
         ) else {
