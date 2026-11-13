@@ -676,7 +676,8 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 端点装配层，不改 present 协议、不抬 handle 帽）。
     let mut vgpu_present_cli: Handle = 0;
     let mut vgpu_hdi_cli: Handle = 0;
-    if !boot_probe {
+    let gpuhdi_on = cpio_find(H_ROOTFS, b"gpuhdi.on").is_some();
+    if !boot_probe || gpuhdi_on {
         if berry_vmo_get_size(H_MMIO, &mut msz) == 0 {
             if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vgpud") {
                 let (p_cli, p_srv) = channel_pair();
@@ -702,7 +703,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                         ps_reg(b"vgpud", psp::STATE_ALIVE, 0); // 常驻不 reap（vblk 同款）
                         if vgpu_ready(p_cli)
                             && (cpio_find(H_ROOTFS, b"gpuhdi.on").is_none()
-                                || vgpu_hdi_selftest(h_cli, console))
+                                || vgpu_hdi_selftest(h_cli, p_cli, console))
                         {
                             vgpu_present_cli = p_cli;
                             vgpu_hdi_cli = h_cli;
@@ -4085,12 +4086,33 @@ fn gpu_hdi_rpc(
 /// vgpud HDI 四 op 真链自验：REG_VBLANK(1) → VBLANK_WAIT → PREPARE →
 /// COMMIT fence → REG_VBLANK(0)。只在 `gpuhdi.on` 诊断 rootfs 中启用；
 /// 产品/验证镜像零调用零标记。full-size VMO 是 PREPARE 几何门的真值。
-fn vgpu_hdi_selftest(h: Handle, console: Handle) -> bool {
-    const W: u32 = 1080;
-    const H: u32 = 1920;
-    const STRIDE: u32 = W * 4;
-    const LEN: u64 = STRIDE as u64 * H as u64;
+fn vgpu_hdi_selftest(h: Handle, present: Handle, console: Handle) -> bool {
     const SIG: u64 = gp::HDI_USER_SIGNAL;
+    // 几何来自 present GETINFO：产品为 1080×1920，GUI8 共识拓扑可为
+    // 800×600；HDI 自验不得把产品分辨率写死成全局假设。
+    let mut req = [0u8; 32];
+    let mut rep = [0u8; 32];
+    let mut rhs = [0 as Handle; 2];
+    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::Getinfo) {
+        Some(n) => n,
+        None => return false,
+    };
+    let Some((nb, nh)) = gpu_hdi_rpc(present, &req[..n], &[], &mut rep, &mut rhs)
+    else {
+        return false;
+    };
+    let Some(info) = gp::parse_getinfo_rep(&rep[..nb]) else {
+        return false;
+    };
+    if nh != 0 || info.display_w == 0 || info.display_h == 0 {
+        return false;
+    }
+    let width = info.display_w;
+    let height = info.display_h;
+    let stride = width.saturating_mul(4);
+    // VMO size 面按 4KiB 向上取整：800×600×4 = 468.75 页，非整页长度
+    // 会被 VMO 创建面拒绝；PREPARE 几何门只要求 ≥ 线性帧长。
+    let len = ((stride as u64 * height as u64) + 4095) & !4095;
 
     let mut req = [0u8; 32];
     let mut rep = [0u8; 32];
@@ -4120,9 +4142,9 @@ fn vgpu_hdi_selftest(h: Handle, console: Handle) -> bool {
 
     let mut vmo = 0 as Handle;
     let mut alias = 0 as Handle;
-    if berry_vmo_create(LEN, 0, &mut vmo) != 0
+    if berry_vmo_create(len, 0, &mut vmo) != 0
         || vmo == 0
-        || berry_vmo_commit(vmo, 0, LEN) != 0
+        || berry_vmo_commit(vmo, 0, len) != 0
         || berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0
         || alias == 0
     {
@@ -4132,9 +4154,9 @@ fn vgpu_hdi_selftest(h: Handle, console: Handle) -> bool {
     }
     let preq = gp::PrepareReq {
         flags: 0,
-        width: W,
-        height: H,
-        stride: STRIDE,
+        width: width,
+        height: height,
+        stride: stride,
         format: gp::FMT_XRGB8888,
     };
     let n = gp::encode_prepare_req(&mut req, &preq);
@@ -4177,7 +4199,8 @@ fn vgpu_hdi_selftest(h: Handle, console: Handle) -> bool {
         None => false,
     };
     signaled && off_ok && {
-        send_retry(console, b"VGPUHDI ok vblank=1 fence=1\n".as_ptr(), 28);
+        let done = b"VGPUHDI ok vblank=1 fence=1 presented=1\n";
+        send_retry(console, done.as_ptr(), done.len());
         true
     }
 }

@@ -994,6 +994,27 @@ image: build build-boot
         --initrd rootfs.cpio \
         --size-mib 96
 
+# GPU2 共识镜像：验证 rootfs（保留 probe.on）+ gpuhdi.on，TCG GUI8
+# --vgpu 拓扑由此挂 virtio-gpu；正式验证镜像 berryos.img 仍无 marker。
+gpu2-vgpu-image: image
+    #!/bin/sh
+    set -e
+    python3 tools/cpio_filter.py rootfs.cpio rootfs-vgpu.cpio \
+        --add gpuhdi.on=tools/gpuhdi.on
+    python3 tools/mkimage.py out/berryos-vgpu.img \
+        --efi {{BOOT_EFI}} \
+        --hello {{BOOT_DIR}}/hello.txt \
+        --kernel {{KERNEL}} \
+        --initrd rootfs-vgpu.cpio \
+        --size-mib 96
+
+# GPU2 Mac 双臂性能标定：同产品镜像同动作比较 vgpu/ramfb；绝对值只落
+# out/desktop-calib.{json,md}，不做跨机器 CI 阈值。
+gpu2-desktop-calib: image
+    python3 tools/desktop-calib.py \
+        --image out/berryos-desktop.img \
+        --code /opt/homebrew/share/qemu/edk2-aarch64-code.fd
+
 # GPU2 诊断镜像：产品 rootfs + gpuhdi.on，只激活 vgpud HDI 四 op 自验。
 # 产品/验证正式镜像不含 marker；失败时 svcmgr 回落 guifbd/ramfb。
 gpu2-hdi-image: image

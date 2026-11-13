@@ -472,6 +472,9 @@ class QmpClient:
         # 不传 device：QMP 的 device= 是 QemuConsole 查找键（不是输入设备
         # 选择器）；本拓扑只有 unbound 的 virtio-tablet，广播即它。
         self.device = None
+        # 多 console 拓扑（virtio-gpu + ramfb）默认截 ramfb；Boot 在
+        # --vgpu 模式把它切到 vgpu0，保证像素锚落在被测后端。
+        self.default_console: str | None = None
         last: Exception | None = None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -525,7 +528,10 @@ class QmpClient:
 
     def screendump(self, path: Path):
         """QEMU PPM 截图（native shell 像素反 mock 面）。"""
-        return self.execute("screendump", {"filename": str(path)})
+        args = {"filename": str(path)}
+        if self.default_console is not None:
+            args["device"] = self.default_console
+        return self.execute("screendump", args)
 
     def input_send(self, events):
         # 省 device 键 = 广播到 unbound handler 链（QEMU ui/input.c:
@@ -2037,6 +2043,15 @@ def qemu_command(
         # 零漂移；QMP key 事件必须省 device 键广播注入。
         "-device",
         "virtio-keyboard-device,id=kbd0",
+    ]
+    if args.vgpu:
+        render_w, render_h = display.split("@", 1)[0].split("x", 1)
+        cmd += [
+            "-device",
+            "virtio-gpu-device,id=vgpu0,"
+            f"xres={int(render_w)},yres={int(render_h)}",
+        ]
+    cmd += [
         "-device",
         "ramfb",
         "-fw_cfg",
@@ -2138,6 +2153,8 @@ class Boot:
         if self.qmp is not None:
             return
         self.qmp = QmpClient(self.sock_path)
+        if getattr(self.args, "vgpu", False):
+            self.qmp.default_console = "vgpu0"
 
     def stop(self) -> None:
         quit_sent = False
@@ -2274,7 +2291,10 @@ def _wait_boot_batch(boot: Boot, timeout: float) -> None:
     Contacts 数据源分拓扑：GUI8 哨兵盘无 CONTACTS.TXT → LOCAL；
     normal 盘写入 CONTACTS.TXT → READ。二者必居其一，不能同时缺席。
     """
-    boot.wait_markers(_boot_base_markers(), timeout)
+    markers = _boot_base_markers()
+    if getattr(boot.args, "vgpu", False):
+        markers += ["VGPU ok", "VGPUHDI ok vblank=1 fence=1"]
+    boot.wait_markers(markers, timeout)
     if not boot.wait_any(
         [MARK_CONTACTS_LOCAL, MARK_CONTACTS_READ], timeout
     ):
@@ -2392,6 +2412,11 @@ def run_dual_boot(args) -> int:
         # ---------------- Boot A ----------------
         boot_a = Boot("A", args, run_dir, disk, "a")
         boot_a.start()
+        if args.vgpu:
+            boot_a.wait_markers(
+                ["VGPU ok", "VGPUHDI ok vblank=1 fence=1"],
+                args.boot_a_timeout,
+            )
 
         # —— P3 click-to-focus：gfxdemo 双半屏窗口先声明 Retained+Keyboard，
         #    GUI8 用真实 QMP 点击左窗+KEY_A、右窗+KEY_A。guest 只在收到
@@ -5677,7 +5702,14 @@ def parse_args(argv=None):
             "  GUI8_KEEP=1 just gui8-smoke\n"
         ),
     )
-    ap.add_argument("--image", default="out/berryos.img", help="EFI 系统盘（默认 %(default)s）")
+    ap.add_argument(
+        "--image",
+        help="EFI 系统盘（默认 ramfb=out/berryos.img，--vgpu=out/berryos-vgpu.img）",
+    )
+    ap.add_argument(
+        "--vgpu", action="store_true",
+        help="soft↔vgpu 共识拓扑：挂 virtio-gpu 并断言 VGPU/VGPUHDI 标记",
+    )
     ap.add_argument(
         "--code",
         default=os.environ.get("AAVMF_CODE", DEFAULT_CODE),
@@ -5730,6 +5762,8 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.image is None:
+        args.image = "out/berryos-vgpu.img" if args.vgpu else "out/berryos.img"
     try:
         if args.self_test:
             return self_test(args)
