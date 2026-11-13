@@ -616,3 +616,95 @@ fn grid_container_walk_emits_children_only() {
     assert_eq!(rep.culled, 0);
     assert!(matches!(dl.iter().next(), Some(Cmd::FillRect { .. })));
 }
+
+// ---------- 痛点⑥：HD 档比例排布渲染对拍（03 号 §1.3-3） ----------
+//
+// 同一文本 'Browser Settings'（HD 32×48 档）渲染对照：
+// - 渲染层推进由图集 `advance` 决定（**与供件无关**——旧等宽推进
+//   `x[i] = i×32`（总视觉宽 512px）在 HD 档被比例推进取代：Σ advance
+//   总宽 269px，末字形 x=253——03 号 §1.1 实测重现实证。等宽渲染序列
+//   以手算向量留档对照）。
+// - 测量层由供件决定：Monospace bounds 512（失配形态——未换装面记录）
+//   vs Proportional bounds 269（配套换装——消费点切换面）。
+// - 三档点阵对照：S8x16 同文本渲染 x[i] = i×8（等宽推进零漂移钉板）。
+
+/// 从 DisplayList 抽 DrawGlyphRun 的 (ch, x) 序列。
+fn glyph_positions(dl: &berry_gfx::cmd::DisplayList) -> Vec<(u8, i32)> {
+    let mut out = Vec::new();
+    for cmd in dl.iter() {
+        if let Cmd::DrawGlyphRun { run } = cmd {
+            for g in run.glyphs {
+                out.push((g.ch, g.x));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn hd_proportional_glyph_positions_vs_monospace() {
+    static PROP: berry_ui::metrics::ProportionalTextMetrics = berry_ui::metrics::ProportionalTextMetrics;
+    static MONO: berry_ui::metrics::MonospaceTextMetrics = berry_ui::metrics::MonospaceTextMetrics;
+
+    let render = |tm: &'static dyn berry_ui::metrics::TextMetrics,
+                  scale: FontSize|
+     -> (RectI, Vec<(u8, i32)>) {
+        let mut ui = UiMain::new(640, 64);
+        ui.set_text_metrics(tm);
+        let root = ui.root();
+        let t = ui
+            .add(
+                root,
+                ViewSpec {
+                    kind: ViewKind::Text,
+                    key: 0,
+                    props: Props::Text(TextProps {
+                        style: TextStyle { fg: FG, bg: None, scale },
+                        text: TextBuf::new(b"Browser Settings").unwrap(),
+                    }),
+                },
+            )
+            .unwrap();
+        ui.layout();
+        let b = ui.bounds(t).unwrap();
+        ui.drain_damage();
+        ui.wake(0);
+        let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+        let mut enc = CommandEncoder::new();
+        ui.paint(&mut scr, &mut enc);
+        let dl = enc.finish();
+        (b, glyph_positions(&dl))
+    };
+
+    // —— HD 双供件：渲染层同序列（比例推进——供件只影响测量）——
+    let (bm, gm) = render(&MONO, FontSize::S32x48);
+    let (bp, gp) = render(&PROP, FontSize::S32x48);
+    assert_eq!(bm, RectI::new(0, 0, 512, 48), "Monospace bounds = 16×32（等宽测量——旧值留档）");
+    assert_eq!(bp, RectI::new(0, 0, 269, 48), "Proportional bounds = Σ advance = 269（配套换装）");
+    assert_eq!(gm, gp, "渲染层与供件无关——HD 档恒比例推进");
+    assert_eq!(gp.len(), 16);
+
+    // 比例推进逐位钉板：独立重推（公共 trait 口）Σ advance。
+    let atlas = FontSize::S32x48.atlas();
+    let mut x = 0i32;
+    for (i, &(ch, gx)) in gp.iter().enumerate() {
+        assert_eq!(ch, b"Browser Settings"[i], "字节序");
+        assert_eq!(gx, x, "比例推进 x = Σ advance（{i}）");
+        x += atlas.advance(ch) as i32;
+    }
+    assert_eq!(x, 269, "Σ advance = 269");
+    assert_eq!(gp.last().unwrap().1, 253, "末字形 x = 269 - advance('s')=16");
+
+    // 旧等宽渲染形态手算留档（旧代码 `i × cell_w`——重实现对照）：
+    // 总宽差 512-269=243 = 痛点⑥「膨胀 1.90 倍」的消除面。
+    let legacy: Vec<i32> = (0..16).map(|i| (i * 32) as i32).collect();
+    let now: Vec<i32> = gp.iter().map(|&(_, gx)| gx).collect();
+    assert_ne!(now, legacy, "HD 渲染不再是等宽推进");
+    assert_eq!(legacy.last().unwrap() - now.last().unwrap(), 480 - 253);
+
+    // —— 三档点阵对照：等宽推进零漂移（x[i] = i×cell_w——现役行为钉板）——
+    let (_, g8) = render(&MONO, FontSize::S8x16);
+    for (i, &(_, gx)) in g8.iter().enumerate() {
+        assert_eq!(gx, (i * 8) as i32, "S8x16 等宽推进零漂移（{i}）");
+    }
+}

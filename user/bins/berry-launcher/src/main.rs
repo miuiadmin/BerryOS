@@ -61,7 +61,7 @@ use berry_sys::{
     berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
     CLOCK_REALTIME, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
-use berry_ui::UiMain;
+use berry_ui::{ProportionalTextMetrics, UiMain};
 
 // 链接种子（fsmgr/guifbd 同款）：rlib/LTO 按需保留——无引用则 berry-libc
 // 的 crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -250,6 +250,12 @@ fn main() {
     let ui: &'static mut UiMain =
         Box::leak(Box::new(UiMain::new(info.disp_w as u32, info.disp_h as u32)));
     ui.set_icon_source(icons::icon_source());
+    // 比例文本供件（痛点⑥根修·消费点切换，03 号 §1.3-3）：HD 档
+    //（big 模式状态栏/格 label S32x48）内在测量与渲染同走真实 advance
+    //（「12:00」等串宽从 len×32 等宽值 → Σadvance 比例值）；三档点阵
+    // 下与 Monospace 逐值恒等（advance 缺省 = cell_w）——零漂移面。
+    static TEXT_METRICS: ProportionalTextMetrics = ProportionalTextMetrics;
+    ui.set_text_metrics(&TEXT_METRICS);
     // —— 波一刀 B（状态栏可信化）：真时钟首摆——宿主 berry 经 fw_cfg
     //    `opt/berry/rtc` 注入 epoch（内核 rtc.rs 消费），此处单取
     //    CLOCK_REALTIME 换算 "HH:MM"（UTC 口径）。注入缺席（-ENOTSUP，

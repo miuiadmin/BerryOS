@@ -130,6 +130,16 @@ pub trait GlyphAtlas {
     fn cell(&self) -> GlyphCell {
         GlyphCell { w: self.cell_w(), h: self.cell_h() }
     }
+    /// 单字形水平推进量（像素）——排布面逐字形累计的载荷源。缺省 =
+    /// `cell_w()`：三档点阵（genfbfont 自绘等宽 art）的等宽语义**逐字节
+    /// 零漂移**（现役消费点不覆写即行为不变）；比例字体档（HD）覆写读
+    /// 烘焙 advance 表（`font_data_hd::ADVANCE_HD`，痛点⑥根修 03 号
+    /// §1.3-2）。位图几何不受影响——字形仍居中在字格内，只改推进量。
+    /// 域外字节（glyph 侧 `None`）同样返 `cell_w()`（等宽缺省——空格
+    /// 语义的推进与三档一致）。
+    fn advance(&self, _ch: u8) -> u32 {
+        self.cell_w() as u32
+    }
     /// 取字形位图。域外/缺字形返 `None`。
     fn glyph(&self, ch: u8) -> Option<GlyphBits<'_>>;
 }
@@ -288,6 +298,16 @@ impl GlyphAtlas for FontAtlas32x48 {
     fn cell_h(&self) -> usize {
         font_data_hd::CELL_H
     }
+    /// 比例推进：读 `ADVANCE_HD` 烘焙表（Noto Sans CJK 真实 advance；
+    /// 「i」9px vs 字格 32px——等宽占格观感劣化的根修，03 号 §1.1）。
+    /// 域外回退 `cell_w()`（trait 缺省同语义——与 glyph None 空格语义
+    /// 成对：位图缺位画不出，推进不放大）。
+    fn advance(&self, ch: u8) -> u32 {
+        usize::from(ch)
+            .checked_sub(32)
+            .and_then(|i| font_data_hd::ADVANCE_HD.get(i))
+            .map_or(font_data_hd::CELL_W as u32, |&a| u32::from(a))
+    }
     fn glyph(&self, ch: u8) -> Option<GlyphBits<'static>> {
         let i = usize::from(ch).checked_sub(32)?;
         let g = font_data_hd::FONT_HD.get(i)?;
@@ -366,6 +386,47 @@ mod tests {
             assert_eq!((a.cell_w(), a.cell_h()), (w, h), "atlas() 档位一致");
             assert!(a.glyph(b'#').is_some());
         }
+    }
+
+    // —— advance 载荷（痛点⑥根修 03 号 §1.3-2）：三档缺省零漂移 + HD 读表 ——
+    #[test]
+    fn advance_default_and_hd_table() {
+        // 三档点阵：缺省实现 = cell_w()——全 256 字节面零例外（现役消费
+        // 点不覆写行为不变的钉板；含域外字节同样回 cell_w）。
+        for (atlas, cw) in [
+            (&FontAtlas8x16 as &dyn GlyphAtlas, 8u32),
+            (&FontAtlas16x32 as &dyn GlyphAtlas, 16),
+            (&FontAtlas24x48 as &dyn GlyphAtlas, 24),
+        ] {
+            for ch in 0u8..=255 {
+                assert_eq!(atlas.advance(ch), cw, "等宽档 advance 须恒 cell_w ch={ch}");
+            }
+        }
+        // HD 档：真实比例 advance（03 号 §1.1 表 = genhdfont 黄金锚同源）。
+        let hd = FontAtlas32x48;
+        for (ch, want) in [('i', 9u32), ('I', 10), ('r', 13), ('s', 16), ('e', 19),
+                           ('B', 22), ('W', 30), ('m', 31), (' ', 8)] {
+            assert_eq!(hd.advance(ch as u8), want, "{ch} advance");
+        }
+        // 全表值域 1..=CELL_W + 索引对齐（advance 表与 FONT_HD 同序：抽验
+        // '@'=32 整格宽、'%'=31——值域极值在席）。
+        for i in 0usize..95 {
+            let a = hd.advance((32 + i) as u8);
+            assert!((1..=32).contains(&a), "advance 越域 i={i} a={a}");
+        }
+        assert_eq!(hd.advance(b'@'), 32);
+        assert_eq!(hd.advance(b'%'), 31);
+        // 域外：回 cell_w（与 glyph None 空格语义成对）。
+        for ch in [0u8, 9, 31, 127, 0x80, 0xFF] {
+            assert_eq!(hd.advance(ch), 32, "HD 域外回 cell_w ch={ch:#x}");
+        }
+        // 'Browser Settings' 累计对拍：等宽 16×32=512px vs 比例 269px
+        //（03 号 §1.1 实测重现实证——排布面对拍的事实源）。
+        let w: u32 = "Browser Settings".bytes().map(|b| hd.advance(b)).sum();
+        assert_eq!(w, 269, "'Browser Settings' 比例累计宽");
+        // trait 缺省口经 dyn 面可达（FontSize::atlas() 消费同路）。
+        assert_eq!(FontSize::S32x48.atlas().advance(b'i'), 9);
+        assert_eq!(FontSize::S8x16.atlas().advance(b'i'), 8);
     }
 
     // —— GlyphCell 契约口：trait 缺省实现与 FontSize 档位面同几何 ——

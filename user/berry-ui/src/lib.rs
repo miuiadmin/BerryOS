@@ -47,7 +47,7 @@ pub mod telemetry;
 
 // 扁平面 re-export：门面签名里不限定模块路径的名字（§6 用法对齐）。
 pub use desc::{AstError, Axis, Msg, MsgBuf, NodeId, Props, TextBuf, ViewKind, ViewSpec};
-pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, TextMetrics};
+pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, ProportionalTextMetrics, TextMetrics};
 
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
 use berry_guiproto::{FRAME_DISCARDED, FRAME_PRESENTED, PHASE_MOVE};
@@ -897,16 +897,32 @@ impl<const N: usize> Ui<N> {
         // → TEXT|BG 纯 PAINT；变长 → TEXT|BG|W|H（内在变 = GEOM 追加）
         // → apply_change 单源分派。A 面现状体下方 cfg(not) 块逐字保持
         // （无旧值比较——同文全量 relayout 浪费保留，§10 诚实基线）。
+        // 比例供件改造（痛点⑥ 03 号 §1.2-4 架构注记收口）：等长不再
+        // 蕴含等宽（"iii"≠"WWW"）——等长分支经度量缝比对内在宽，等宽才
+        // 走纯 PAINT；Monospace/三档点阵下等长 ⇒ 宽恒等（advance 缺省 =
+        // cell_w），判据退化为 v1 行为零漂移（R2-8 钉板不松）。
         #[cfg(feature = "s7")]
         {
             let old = match self.nodes[idx].as_ref().map(|n| &n.props) {
-                Some(Props::Text(tp)) => tp.text,
+                Some(Props::Text(tp)) => (tp.text, tp.style.scale),
                 _ => return Err(UiError::NodeBad), // unreachable（is_text 已验）——loud 防御
             };
-            let m = if old.as_bytes() == buf.as_bytes() {
+            let m = if old.0.as_bytes() == buf.as_bytes() {
                 mask::ChangeMask::NONE // 同文：零操作（D2）
-            } else if old.len == buf.len {
-                mask::ChangeMask::TEXT.union(mask::ChangeMask::BG) // 等长换文：纯 PAINT
+            } else if old.0.len == buf.len {
+                // 等长换文：内在宽比对（比例供件下等长可不等宽——宽变
+                // 即 GEOM 追加重测；等宽供件下恒等 = v1 纯 PAINT 原状）。
+                let sc = crate::desc::scale_to_u8(old.1);
+                let same_w = self.tm.measure(old.0.as_bytes(), sc)
+                    == self.tm.measure(buf.as_bytes(), sc);
+                if same_w {
+                    mask::ChangeMask::TEXT.union(mask::ChangeMask::BG) // 等长等宽：纯 PAINT
+                } else {
+                    mask::ChangeMask::TEXT
+                        .union(mask::ChangeMask::BG)
+                        .union(mask::ChangeMask::W)
+                        .union(mask::ChangeMask::H) // 等长不等宽：内在变 → GEOM
+                }
             } else {
                 mask::ChangeMask::TEXT
                     .union(mask::ChangeMask::BG)

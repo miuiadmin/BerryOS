@@ -361,17 +361,25 @@ fn emit_node<'a>(
             let take = (p.text.len as usize).min(rest.len());
             if take > 0 {
                 if let Some(piece) = take_scratch(rest, take) {
-                    let cw = p.style.scale.cell_w() as i64;
+                    // 逐字形累计推进（痛点⑥根修 03 号 §1.3-3）：推进量经
+                    // GlyphAtlas::advance——三档点阵缺省 = cell_w()，与旧
+                    // `i * cw` 等宽推进逐值恒等（零漂移）；HD 档覆写读
+                    // ADVANCE_HD 比例表（「i」9px 而非 32px——观感劣化
+                    // 根因消除）。测量面配套 = ProportionalTextMetrics
+                    //（metrics.rs，布局/渲染同源）。
+                    let atlas = p.style.scale.atlas();
+                    let mut x = b.x as i64;
                     for i in 0..take {
                         piece[i] = GlyphPos {
                             ch: p.text.bytes[i],
-                            x: i64_to_i32_sat(b.x as i64 + i as i64 * cw),
+                            x: i64_to_i32_sat(x),
                             y: b.y,
                         };
+                        x += atlas.advance(p.text.bytes[i]) as i64;
                     }
                     let glyphs: &'a [GlyphPos] = piece; // 冻结为共享——run 引用钉调用方缓冲
                     let run = GlyphRun {
-                        atlas: p.style.scale.atlas(),
+                        atlas,
                         glyphs,
                         fg: p.style.fg,
                         bg: p.style.bg,
