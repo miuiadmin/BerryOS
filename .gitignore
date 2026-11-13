@@ -110,6 +110,7 @@ smoke-wt-*/
 
 # W3 lane 本地独立构建缓存（干净复现纪律——不与共享 ~/.cargo-target 互染）
 /.cargo-w3/
+/.target-*/
 
 # SDK-2 dev 签发密钥对（just sign-user → berry-sign keygen 产物；纪律 =
 # tools/testkeys/README.md——钥本体永不入仓，README 入仓）

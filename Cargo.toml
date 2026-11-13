@@ -2,6 +2,7 @@
 members = [
     "arch/aarch64",
     "bandface",
+    "billface",
     "chanface",
     "dpgface",
     "dtbface",
