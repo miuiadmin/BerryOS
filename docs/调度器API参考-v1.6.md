@@ -1,6 +1,6 @@
 # 调度器 API 参考
 
-> 版本：v1.5（2026-11-13 升版：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**143 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
+> 版本：v1.6（2026-11-13 升版：P2-2 退出异步化〔工作树，hash 随提交回填〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**144 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
 > 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
@@ -140,8 +140,11 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 ### `set_exit_hook(f: unsafe extern "C" fn(pinned: usize, thread_key: usize, code: i32))`
 > sched | 注册任务退出钩子（`内核` crate 语义层 boot 期调用）。
 
+### `set_reap_post_hook(f: fn())`
+> sched | 注册 REAP 后处理钩子（kernel 语义层 boot 期调用，EXIT_HOOK 同模式；P2-2 退出异步化——pending ht-drain 队列排水入口）。
+
 ### `reap_drain()`
-> sched | 回收退出任务的 Task Box + 内核栈（16KiB/个；idle_loop 稳态与 ktest 尾调）。
+> sched | 回收退出任务的 Task Box + 内核栈（16KiB/个；idle_loop 稳态与 yield 切回尾调）。P2-2 起尾部（REAPQ 锁窗外）追调 [`REAP 后处理钩子`](#set_reap_post_hookf-fn)（未注册空过）。
 
 ### `switches() -> u64`
 > sched | 总切换数（含 park 事件；金丝雀 `switches=` 行口径）。
@@ -595,7 +598,7 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 
 | 文件 | pub fn | 归组 |
 |------|--------|------|
-| sched.rs | 78 | 一、调度核心 |
+| sched.rs | 79 | 一、调度核心 |
 | policy.rs | 15 | 二、策略服务 |
 | band.rs | 7 | 三、层级预算 |
 | em.rs + util.rs | 6 + 7 | 四、EAS 能效 |
@@ -606,4 +609,4 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 | spin.rs | 4 | 附 |
 | class.rs | 2（+trait 5 法） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **143** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
+| **合计** | **144** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.6：P2-2 退出异步化 +1 fn〔`set_reap_post_hook`，safe 非 const〕后 144——v1.5 的 143 为退出异步化前时点；v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |

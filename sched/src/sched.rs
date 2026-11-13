@@ -1376,7 +1376,8 @@ unsafe fn assert_exit_hook_windows_closed() {
 
 /// exit/kill 共用尾部：当前任务出 runqueue + 切到下一个（或 idle），永不回到它。
 /// Plan B v0.5 扩两刀：①退出前调**任务退出钩子**（`内核` crate 注册——Process
-/// Exited 落账 + TERMINATED 唤醒 + drain 子表 + release 运行钉住；未注册/
+/// Exited 落账 + TERMINATED 唤醒 + 钉住引用移交 HT_DRAINQ（P2-2：drain 子表
+/// 的 O(表) 重活由 REAP 排水点异步完成，退出窗只剩 O(1) 簿记）；未注册/
 /// pinned=0 空转）；②cur 的 Task Box + 16KiB 内核栈压 **REAPQ**（退出即泄漏
 /// 不可接受——bsh `run` 子进程无界；真正释放在其它上下文的 [`reap_drain`]，
 /// 此刻还在 cur 栈上跑，不能自己拆自己的栈）。
@@ -1444,7 +1445,7 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
     activate_if_changed(cur, next_ptr);
     note_switch(cur, next_ptr, SwitchKind::Exit);
     // S-2 E0（草案 3.2 边界②收口点）：`-> !` 唯一放锁点——EXIT_HOOK（Process
-    // 落账/wake_matching/drain）至本行全在锁窗内；放锁后仅剩 context_switch
+    // 落账/wake_matching/HT_DRAINQ 移交）至本行全在锁窗内；放锁后仅剩 context_switch
     // 纯 asm（§3.4「放锁后零共享触达」）。SVC 路径位=1 放锁；内核任务直调
     // （exit_current/disable_irq 前无锁）位=0 幂等跳过。切走后 cur 永不回来
     //（位随 Task Box 进 REAPQ 废弃）。
@@ -1470,6 +1471,25 @@ static mut EXIT_HOOK: Option<unsafe extern "C" fn(pinned: usize, thread_key: usi
 pub fn set_exit_hook(f: unsafe extern "C" fn(pinned: usize, thread_key: usize, code: i32)) {
     // SAFETY: boot 单线程注册；此后只读。
     unsafe { EXIT_HOOK = Some(f) };
+}
+
+/// REAP 后处理钩子槽（P2-2 退出异步化）：[`reap_drain`] 尾部（REAPQ 锁窗外）
+/// 调用。注册者 = `内核` crate boot 期（`syscall::install`——sched 不依赖
+/// kernel，EXIT_HOOK 同款反转注入）。用途：kernel 侧 pending ht-drain 队列
+/// （末线程退出钩子只 O(1) 移交 Process 钉住引用，`ht.drain()` 的 O(表) 清理
+/// 移到本异步半场——见 kernel/src/process.rs HT_DRAINQ 块）。
+///
+/// 调用语境 = [`reap_drain`] 的全部调用点（CPU0 `idle_loop` 稳态两臂 +
+/// `yield_now` 切回尾）：恒 CPU0、IRQ 屏蔽、RQ/SQ/REAPQ 结构锁已放；KL
+/// 或在身（SVC 0x3F 续行窗）或不在（idle）——钩子内经 `kl_held` 门自管取放。
+/// 未注册（ktest/boot 早期窗、纯 sched 消费者）静默空过。
+static mut REAP_POST_HOOK: Option<fn()> = None;
+
+/// 注册 REAP 后处理钩子（kernel 语义层 boot 期调用，EXIT_HOOK 同模式；
+/// 签名 `fn()`——无参无返，队列在 kernel 侧自治）。
+pub fn set_reap_post_hook(f: fn()) {
+    // SAFETY: boot 单线程注册；此后只读。
+    unsafe { REAP_POST_HOOK = Some(f) };
 }
 
 /// 待回收任务队列。**cap 256（SMP 第三虫修复，沿革 189）**：单核旧值 32
@@ -1554,6 +1574,14 @@ pub fn reap_drain() {
             reapq_release();
         }
     }
+    // P2-2 退出异步化：REAP 排水尾钩子（REAPQ 锁窗外、本函数所有调用点共用
+    // ——CPU0 idle/yield 语境）。kernel 侧 pending ht-drain 队列在此排水：
+    // 退出钩子把末线程 Process 收口的 O(表) drain 移交到本半场，退出切换窗
+    // 只剩 O(1) 簿记。未注册（ktest/boot 早期窗）静默空过；钩子内 KL 取放
+    // 自管（kl_held 门——idle 臂不在身取、SVC yield 续行臂在身退化跳过）。
+    if let Some(f) = unsafe { REAP_POST_HOOK } {
+        f();
+    }
 }
 
 /// C-4b `process_terminate` / T-1 `process_exit`：按钉住键（Process ObjRef
@@ -1563,9 +1591,9 @@ pub fn reap_drain() {
 /// 目标不是 CURRENT：无切换位，收尾是 REAPQ 而非 `context_switch`。返回
 /// `(首杀任务名, 总杀数)`（观测打印用）；`None` = 无任务持该键（未 start 的
 /// 进程——调用方只做 Process 侧收口）。**每任务走一次钩子**：末任务钩子完成
-/// Process 收口（mark_exited + 码 + TERMINATED + drain + release 运行钉住）
-/// ——terminate 不再做 started 路径的 Process 侧收口（防 drain 双跑/refs
-/// 打穿）。
+/// Process 收口（mark_exited + 码 + TERMINATED + HT_DRAINQ 移交——drain/
+/// release 由 REAP 排水点异步收口，P2-2）——terminate 不再做 started 路径的
+/// Process 侧收口（防 drain 双跑/refs 打穿）。
 ///
 /// **外层重扫循环（T-1）**：钩子内 `wake_matching(TERMINATED)` 会摘 SLEEPQ
 /// 匹配者入环（join 等待者被唤醒），不得持游标跨轮——每轮从 SLEEPQ 头 /

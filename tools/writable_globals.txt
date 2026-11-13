@@ -26,6 +26,7 @@ arch/aarch64/src/smp.rs::SMP_SEC_REPORT	scheduler
 arch/aarch64/src/syscall.rs::SYSCALLS	boot
 arch/aarch64/src/timer.rs::FREQ	scheduler
 arch/aarch64/src/timer.rs::SLICE	scheduler
+arch/aarch64/src/timer.rs::SLICE_HZ_OVR	arch
 arch/aarch64/src/uart.rs::RX_NOTIFY	arch
 arch/aarch64/src/uart.rs::RX_RING	arch
 arch/aarch64/src/uart.rs::UART1_NOTIFY	arch
@@ -55,6 +56,9 @@ kernel/src/mm.rs::FRAME_BMAPS	page-table
 kernel/src/mm.rs::FRAME_FREE	page-table
 kernel/src/mm.rs::FRAME_ORDER	page-table
 kernel/src/mm.rs::FRAME_SUMS	page-table
+kernel/src/process.rs::HT_DRAINQ	scheduler
+kernel/src/process.rs::HT_DRAINQ_LEN	scheduler
+kernel/src/process.rs::HT_DRAINQ_WARNED	scheduler
 kernel/src/syscall.rs::BOOTSTRAP_HT	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry
 kernel/src/telemetry.rs::SWITCH_RINGS	telemetry
@@ -67,17 +71,17 @@ sched/src/policy.rs::SNAPS	scheduler
 sched/src/sched.rs::CURRENT	scheduler
 sched/src/sched.rs::EXIT_HOOK	scheduler
 sched/src/sched.rs::IDLE_TASK	scheduler
+sched/src/sched.rs::KEY_HEADS	scheduler
 sched/src/sched.rs::KLOCK_OPS	scheduler
 sched/src/sched.rs::LB_MATCH	scheduler
 sched/src/sched.rs::PER_CPU_RQ	scheduler
 sched/src/sched.rs::REAPQ	scheduler
 sched/src/sched.rs::REAPQ_LEN	scheduler
 sched/src/sched.rs::REAPQ_WARNED	scheduler
+sched/src/sched.rs::REAP_POST_HOOK	scheduler
 sched/src/sched.rs::SLEEPQ	scheduler
 sched/src/sched.rs::SLEEPQ_HOOK	scheduler
 sched/src/sched.rs::SWITCH_HOOK	scheduler
 sched/src/sched.rs::TOPO	scheduler
 sched/src/sched.rs::WAKE_HOOK	scheduler
 sched/src/spin.rs::SPIN_BARK	scheduler
-
-arch/aarch64/src/timer.rs::SLICE_HZ_OVR	arch

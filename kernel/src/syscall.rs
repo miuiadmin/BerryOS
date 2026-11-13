@@ -19,8 +19,9 @@
 //! 能力门控——**权限在 handle 不在对象**。未注册槽由 HAL 默认返
 //! `-ENOTSUP`。**任务退出钩子**（Plan B → T-1 线程版）：任一任务
 //! 退出（含 fault 杀，码 0）经 [`task_exit_hook`] 做 Thread 簿记（join 唤醒）+
-//! 活线程计数——末线程再 Process 收口（Exited + 唤醒 TERMINATED + drain 子表
-//! + release 双钉住）——见下方 hook 注释。
+//! 活线程计数——末线程再 Process 收口（Exited + 唤醒 TERMINATED 同步 +
+//! drain 子表异步移交 HT_DRAINQ + release 双钉住——P2-2）——见下方 hook
+//! 注释。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
@@ -1833,12 +1834,16 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
 ///   join 等待者 → release 对应 start 的 Thread 钉住（此后 Thread 生死
 ///   交还 handle 引用计数）。`thread_key == 0` 仅剩防御面（pinned!=0 的任务
 ///   现恒有 thread_key；修复前首线程不钉 = join 结构性死等）。
-/// - ②`live_threads -= 1`：**减到 0 = 末线程**才做 Process 收口 = 原四步
-///   （`mark_exited` 首因保码 → `wake_matching(pinned, TERMINATED)` →
-///   `ht.drain()`）；**非末线程绝不 `mark_exited`、绝不 drain**（K1 教训
-///   线程版——共享表上活兄弟的 handle 不能被先退线程扬掉）。
-/// - ③release Process 运行钉住（**最后**：此后 Process 生死交还 handle 引用
-///   计数；release 前 drain 防 Process 已 drop 还触其 `ht`）。
+/// - ②`live_threads -= 1`：**减到 0 = 末线程**才做 Process 收口 = 前两步
+///   同步（`mark_exited` 首因保码 → `wake_matching(pinned, TERMINATED)`）
+///   + 第三步 **drain 异步移交**（P2-2：钉住引用 push 进 HT_DRAINQ——
+///   O(表) 清理不在 IRQ 屏蔽的切换窗内做，由 REAP 排水点
+///   [`crate::process::ht_drain_flush`] 完成）；**非末线程绝不
+///   `mark_exited`、绝不 drain/移交**（K1 教训线程版——共享表上活兄弟的
+///   handle 不能被先退线程扬掉）。
+/// - ③Process 运行钉住引用**所有权移交 HT_DRAINQ**（队列独占持有——
+///   flush 侧 `drain → release` 序收口，drain 先于 Process Drop 的安全序
+///   不变、只是迟到；此后本钩子不再触 obj）。
 ///
 /// plain `-= 1` 无下溢检查的不变量：`pinned != 0` ⟺ 该任务入过账（
 /// `process_start`/`thread_start` 成功尾与 retain/pinned 写同点成对）——
@@ -1864,17 +1869,26 @@ unsafe extern "C" fn task_exit_hook(pinned: usize, thread_key: usize, code: i32)
         let Some(proc) = r.obj.as_process_mut() else { return }; // 防御面（不可达）
         proc.live_threads -= 1;
         if proc.live_threads == 0 {
-            // 末线程：Process 收口（原 Plan B 四步——首因保码）。
+            // 末线程：Process 收口（首因保码 + 唤醒——两步同步保留：join/
+            // TERMINATED 等待者不因异步化延迟醒来）。
             if proc.mark_exited() {
                 proc.exit_code = code;
                 // 唤醒等本 Process TERMINATED 的睡眠者（匹配键 = ObjRef 地址，
                 // 同 Event/Channel 面；SLEEPQ 钩子自动触发 PI 重推）。
                 berry_sched::wake_matching(pinned, SIGNAL_TERMINATED);
             }
-            proc.ht.drain();
+            // P2-2 退出异步化：drain 不在切换窗内做——运行钉住引用移交
+            // HT_DRAINQ（O(1)），O(表) drain + release 由 REAP 排水点异步
+            // 收口（`process.rs` HT_DRAINQ 块；满队同步回退 = 旧路径原样）。
+            // 安全序不变：drain 先于 Process Drop（队列持引用）；唤醒已在
+            // 上方同步完成。
+            // SAFETY: pinned 引用所有权移交（flush 侧 drain 后 release 成
+            // 对）；此后不再触 obj。
+            crate::process::defer_ht_drain(NonNull::new_unchecked(obj));
+        } else {
+            // SAFETY: 与 process_start 的 retain 成对；此后不再触 obj。
+            ObjRef::release(NonNull::new_unchecked(obj));
         }
-        // SAFETY: 与 process_start 的 retain 成对；此后不再触 obj。
-        ObjRef::release(NonNull::new_unchecked(obj));
     }
 }
 
@@ -1882,8 +1896,8 @@ unsafe extern "C" fn task_exit_hook(pinned: usize, thread_key: usize, code: i32)
 /// **整个进程**——先静默杀光兄弟线程（`kill_all_tasks_by_pinned(p, 0)`——
 /// 兄弟 code 传 0（诚实语义：非主动退出无自有码，同 fault 杀口径），打印
 /// 上移调用方、process_exit 路静默），再 `exit_current_with(code)` 退自己
-/// （自己走钩子 = 末线程收口：mark_exited + 码 + TERMINATED + drain +
-/// release）。当前任务非 Process 任务（`current_pinned()==0`——内核任务/
+/// （自己走钩子 = 末线程收口：mark_exited + 码 + TERMINATED 同步 +
+/// HT_DRAINQ 移交——drain/release 由 REAP 排水点异步，P2-2）。当前任务非 Process 任务（`current_pinned()==0`——内核任务/
 /// boot 裸表用户进程，ktest 禁测 0x33 会杀 ktest）= 只退任务自身，合法面
 /// （Zircon thread_exit 同义兜底）。**ABI `-> !`**：实现永不返回（切走即不
 /// 再回来）——HAL 派发回写 x0 的路径天然不可达（`exit_current_with` 内部
@@ -1952,7 +1966,8 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
 /// - **已 start**：[`berry_sched::kill_all_tasks_by_pinned`] 群杀（T-1 起进程
 ///   可多线程——外层重扫循环消化「钩子内 `wake_matching` 搬 SLEEPQ」的队形
 ///   变化），逐任务走与自退出同一退出钩子（末任务钩子完成 Process 收口：
-///   mark_exited + 码 + TERMINATED 唤醒 + drain 子表 + release 运行钉住）
+///   mark_exited + 码 + TERMINATED 唤醒同步 + HT_DRAINQ 移交——drain/
+///   release 由 REAP 排水点异步收口，P2-2）
 ///   + 摘队 + REAPQ；观测打一行 `TERM: killed '<名>'`（n>1 追加 ` x<n>`
 ///   ——非 smoke 标记）。**terminate 不再做 started 路径的 Process 侧收口**
 ///   （末任务钩子已做——重做 = drain 双跑/refs 打穿）。
@@ -3888,8 +3903,10 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// **S6-b 加 policy_bind(0x83，v3 号提前实现最小 COMMIT 面——v1 号面之外
 /// 首个真注册的 v3 号，ABI §4 在册同名单源）**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
-/// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住；T-1 分序版：Thread
-/// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）。
+/// Exited 落账 + TERMINATED 唤醒 + drain/release 异步移交；T-1 分序版：Thread
+/// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）与
+/// **REAP 后处理钩子**（P2-2：pending ht-drain 队列在 CPU0 idle/yield 排水
+/// 点排空——见 [`crate::process::ht_drain_flush`]）。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
     // S-3c c-2c slice 2b：第三参 = SVC 入口锁类位集（`kern_lock::SVC_CLASS_*`，
@@ -3902,6 +3919,9 @@ pub fn install() {
         SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
+    // P2-2 退出异步化：REAP 排水尾钩子——CPU0 idle/yield 点排空 pending
+    // ht-drain 队列（退出钩子的异步半场；注册先于 sched::init/首个任务）。
+    berry_sched::set_reap_post_hook(crate::process::ht_drain_flush);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);
