@@ -141,6 +141,12 @@ fn mmio_table_invariants() {
     assert_eq!(MAGIC_VAL, u32::from_le_bytes(*b"virt"));
     assert_eq!(VERSION_MODERN, 2);
     assert_eq!(DEVICE_ID_BLOCK, 2);
+    // B1-c：GPU 设备 ID 行 = uapi VIRTIO_ID_GPU（单源 berry-gpuproto，跨
+    // crate 等值断言防两侧漂移）；input/net 同族互异。
+    assert_eq!(DEVICE_ID_GPU, 16);
+    assert_eq!(DEVICE_ID_GPU, berry_gpuproto::DEVICE_ID_GPU);
+    assert_ne!(DEVICE_ID_GPU, DEVICE_ID_BLOCK);
+    assert_ne!(DEVICE_ID_GPU, DEVICE_ID_INPUT);
     // 表驱动不变量：全部偏移 4 对齐、互异、且落在规范寄存器空间 [0, 0x100)。
     let offs = [
         MAGIC, VERSION, DEVICE_ID, VENDOR_ID, DEV_FEAT, DEV_FEAT_SEL, DRV_FEAT,
@@ -164,4 +170,19 @@ fn mmio_table_invariants() {
 /// 测试挂具：写 LE u16（复用被测的私有 put 不诚实——独立拼字节）。
 fn put_u16pub(buf: &mut [u8], off: usize, v: u16) {
     buf[off..off + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+#[test]
+fn b1c_indirect_feature_pins() {
+    // B1-c 两源钉板：DESC_F_INDIRECT=4（规范 §2.6.1 描述符 flags 第三位）
+    // 与 VIRTIO_F_INDIRECT_DESC=28（规范 §6 页 0 位序——存掩码值 1<<28，
+    // 与 DEV_FEAT 寄存器读数同构）。左 = crate 常量，右 = 规范字面值。
+    use berry_virtio::{DESC_F_INDIRECT, DESC_F_NEXT, DESC_F_WRITE, FEAT_INDIRECT_DESC};
+    assert_eq!(DESC_F_NEXT, 1);
+    assert_eq!(DESC_F_WRITE, 2);
+    assert_eq!(DESC_F_INDIRECT, 4);
+    assert_eq!(FEAT_INDIRECT_DESC, 1 << 28);
+    assert_eq!(FEAT_INDIRECT_DESC, 0x1000_0000);
+    // 与页 1 VERSION_1 分页互不污染（DRV_FEAT_SEL 0/1 两写面的取值域）。
+    assert_eq!(FEAT_INDIRECT_DESC & berry_virtio::FEAT_VERSION_1, 0);
 }

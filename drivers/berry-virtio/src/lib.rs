@@ -31,13 +31,23 @@ pub const USED_HDR: usize = 4;
 pub const USED_ENT: usize = 8;
 
 /// 描述符 flags：NEXT(1) = 链有下家；WRITE(2) = device-write（读方向缓冲/
-/// 状态字节）；INDIRECT(4) 留 v2。
+/// 状态字节）；INDIRECT(4) = 本描述符指向一张间接描述符表（表项即 DESC
+/// 布局连续排布，链在表内续——规范 §2.6.5.1）。B1-c（显示与加速体系 02 号
+/// §3.2 坑①）首启用：ATTACH_BACKING 的 mem_entry 表随行可达 8KB 级，超单页
+/// virtqueue 的 desc 槽预算，间接表把链挪出 ring 页（首消费者 guifbd vgpu
+/// 后端；vblk/vnet 直链面零漂移）。
 pub const DESC_F_NEXT: u16 = 1;
 pub const DESC_F_WRITE: u16 = 2;
+pub const DESC_F_INDIRECT: u16 = 4;
 
 /// 传输层特性位（规范 §6）：页 1（bit 32 起）——VERSION_1 必收（现代 v2
 /// 传输层的协商下限；驱动不收 = 设备可不置 FEATURES_OK）。
 pub const FEAT_VERSION_1: u32 = 1 << 0; // 页 1 的 bit0 = 全局 bit 32
+
+/// VIRTIO_F_INDIRECT_DESC（规范 §6 页 0 bit28 = 全局 bit 28）：协商后描述
+/// 笔可置 [`DESC_F_INDIRECT`]。QEMU virtio 设备侧 `indirect_desc` 默认 on
+/// （05 号 S1 实录 §2.1 读数）；B1-c 起协商消费（guifbd vgpu 后端控制队列）。
+pub const FEAT_INDIRECT_DESC: u32 = 1 << 28;
 
 /// 设备状态位（规范 §2.1）：复位恒 0 起，ACK → DRIVER → FEATURES_OK（回读
 /// 验设备未撤）→ 建队列 → DRIVER_OK（此后设备可用）。
@@ -235,6 +245,11 @@ pub mod mmio {
     /// virtio-input 设备 ID（规范 §5.8；GUI-4 段①起 gui-inputd 扫窗按
     /// 设备类匹配——同窗多设备类各占一槽，勿假设槽号）。
     pub const DEVICE_ID_INPUT: u32 = 18;
+    /// virtio-gpu 设备 ID（uapi `virtio_ids.h` VIRTIO_ID_GPU=16；02 号 §3.1
+    /// 指定落点。数值单源 = berry-gpuproto `DEVICE_ID_GPU`（uapi 两源断言
+    /// 冻结）——本行跨 crate 引常量不复制，消费面：guifbd vgpu 后端扫窗
+    /// （B1-b）/ vprobe 白名单认领。
+    pub const DEVICE_ID_GPU: u32 = berry_gpuproto::DEVICE_ID_GPU;
 }
 
 /// 编 virtio-blk 请求头（type/reserved/sector → 16B）。

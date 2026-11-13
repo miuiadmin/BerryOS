@@ -45,7 +45,7 @@ use berry_sys::{
 // 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
 use berry_exec::{
     channel_pair, cpio_find, set_demand_hooks, spawn_rootfs_elf, ChildHandles, EagerGuard,
-    SpawnSpec, FB_VA, VIRTIO_MMIO_VA,
+    SpawnSpec, FB_VA, VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA,
 };
 // P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
@@ -1093,6 +1093,9 @@ fn run_rootfs_child(console: Handle) {
     // 消费）；客户端端存函数局部变量（fresh 端非 dup）——GUI-5 起交紧随
     // 本 arm 的 gui-wmd 预拉 arm 换手迁移（ADR #61 端点换手；原直递
     // gfxdemo 形已退役）。0 = guifbd 未起 → wmd/gfxdemo arm 静默跳过。
+    // B1-b+c（02 号 §3.2/§7）：vgpu 交接对第三对 (fbx_a, fbx_b)——stdin
+    // 面承载（spawn 后子读 1 字节 = 窗后映射完成的序保证；旧 guifbd 不读
+    // stdin → 字节滞队无害，版本混布安全）。
     let mut present_cli: Handle = 0;
     let mut hdi_cli: Handle = 0;
     if berry_vmo_get_size(H_FB, &mut msz) != 0 {
@@ -1102,6 +1105,7 @@ fn run_rootfs_child(console: Handle) {
         // 服务端端随 env 块迁移（fs_b/net_b 先例同款交接端形态）。
         let (p_cli, present_srv) = channel_pair();
         let (h_cli, hdi_srv) = channel_pair();
+        let (fbx_a, fbx_b) = channel_pair();
         match spawn_rootfs_elf(
             H_ROOTFS,
             &SpawnSpec {
@@ -1110,8 +1114,8 @@ fn run_rootfs_child(console: Handle) {
                 data_len,
                 stdout: console,
                 stack_pages: 8,
-                stdin_feed: Some(&[]),
-                stdin_handle: None,
+                stdin_feed: None,
+                stdin_handle: Some(fbx_b), // B1-b+c：交接对读端（被 send take 迁入）
                 args: &[],
                 extra_gifts: &[H_FBINFO, H_FBPIPE, present_srv, hdi_srv],
                 mmio_vmo: Some(H_FB),
@@ -1126,25 +1130,42 @@ fn run_rootfs_child(console: Handle) {
                 // 标志——NET_A/INPUT_A 的 0 值跳过同款）。
                 present_cli = p_cli;
                 hdi_cli = h_cli;
+                // —— B1-b+c：vgpu 交接窗后映射 + 单字节交接 ——`mmio_vmo`
+                // 单窗槽恒归 fb 窗（ramfb 红线：现役路径零漂移），virtio 窗
+                // 走父侧第二映射：boot 授能 H_MMIO（R|W|MAP）经子 root
+                // Vmar（`ChildHandles::hv`——常驻不 reap 句柄长存）映进子
+                // 空间 VIRTIO_MMIO_VA；完成后经交接对发 'w'，无窗/失败发
+                // 'n'（子缺省安全落 Ramfb——字节面合同 = guifbd lib
+                // `HANDOFF_VGPU/HANDOFF_NONE` 单源镜像）。
+                let mut va = VIRTIO_MMIO_VA as usize;
+                let ok = berry_vmar_map(
+                    _child.hv,
+                    0,
+                    H_MMIO,
+                    0,
+                    &mut va,
+                    VIRTIO_MMIO_SLOTS * VIRTIO_MMIO_STRIDE,
+                    RIGHT_READ | RIGHT_WRITE,
+                ) == 0
+                    && va == VIRTIO_MMIO_VA as usize;
+                let tag = if ok { b"w" } else { b"n" };
+                if berry_channel_send(fbx_a, tag.as_ptr(), 1, core::ptr::null(), 0) != 0 {
+                    // 交接失败：子读 stdin 10s 帽超时 → EOF 化 → Ramfb
+                    // （缺省安全）；单行诊断非标记。
+                    eco_skip(b"fb handoff");
+                }
             }
             Err(()) => {
                 // Err 全在 env send 前——H_FBINFO/H_FBPIPE 未被 take 仍在
                 // 表（boot 插入原值，非本段新建）；与 H_FB 同留表（有界 2
                 // 槽，v1 常驻泄漏政策——close 止损对 boot 插入值无回收价
-                // 值）。段③ 四 fresh 端同样未被 take，显式回收防表槽泄漏
-                // （vnet Err 路先例形态）。
+                // 值）。段③ 四 fresh 端 + B1-b+c 交接对同样未被 take，显式
+                // 回收防表槽泄漏（vnet Err 路先例形态）。
                 ps_reg(b"guifbd", psp::STATE_SPAWNFAIL, 0);
-                if berry_handle_close(present_srv) != 0 {
-                    trap();
-                }
-                if berry_handle_close(p_cli) != 0 {
-                    trap();
-                }
-                if berry_handle_close(hdi_srv) != 0 {
-                    trap();
-                }
-                if berry_handle_close(h_cli) != 0 {
-                    trap();
+                for h in [present_srv, p_cli, hdi_srv, h_cli, fbx_a, fbx_b] {
+                    if berry_handle_close(h) != 0 {
+                        trap();
+                    }
                 }
                 eco_skip(b"guifbd spawn");
             }

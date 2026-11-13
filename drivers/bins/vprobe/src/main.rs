@@ -21,8 +21,10 @@
 //!   （smoke/run-rootfs 挂 `-device virtio-blk-device`）；did=1（net）
 //!   A-7 起合法同席（`-device virtio-net-device`，vnet 自认领）；did=18
 //!   （input）GUI-4 段② 起合法同席（`-device virtio-tablet-device`，
-//!   gui-inputd 按类扫槽自认领——A-7 net 同款演化）；其它 did = 挂载面
-//!   漂移，loud trap（未知设备类无消费者，静默漏检更糟）
+//!   gui-inputd 按类扫槽自认领——A-7 net 同款演化）；did=16（gpu）B1 起
+//!   合法同席（`-device virtio-gpu-device`，guifbd vgpu 后端自认领——
+//!   S1 实录 §6-1 的白名单前置项）；其它 did = 挂载面漂移，loud trap
+//!   （未知设备类无消费者，静默漏检更糟）
 //! - VendorID@+0x00C 只打印不断言（0x554D4551 "QEMU" 是仿真器特有值——
 //!   真机/其它仿真器合法取值不同，断言它 = 把 QEMU 特例焊进标记）
 //!
@@ -49,6 +51,13 @@ const VIRTIO_DEV_NET: u32 = 1;
 /// DeviceID = 18（input 设备——GUI-4 段② 起合法同席，gui-inputd 自认领：
 /// virtio-tablet/-keyboard 均此 did，ID 表区分靠设备 vq 拓扑非槽头）。
 const VIRTIO_DEV_INPUT: u32 = 18;
+/// DeviceID = 16（gpu 设备——B1 起合法同席，guifbd vgpu 后端扫窗自认领：
+/// 02 号 §3.1 指定 `lib.rs :230-237 增一行`；数值单源 = berry-gpuproto
+/// `DEVICE_ID_GPU`〔uapi 两源断言冻结〕，此处按本文件本地常量惯例镜像
+/// 〔magic/version/did 四常量同款〕，berry-virtio `mmio::DEVICE_ID_GPU`
+/// 等值钉板互证）。S1 实录 §2.2：未白名时挂 gpu 即 `VIRTIO ok` 缺席 =
+/// smoke FAIL loud。
+const VIRTIO_DEV_GPU: u32 = 16;
 
 fn main() {
     // SAFETY: 窗口经 spawn 映射（Device-nGnRnE + SH_NONE——设备访问不可
@@ -86,6 +95,9 @@ fn main() {
             } else if device_id == VIRTIO_DEV_INPUT {
                 // GUI-4 段② 起合法同席（gui-inputd 按类扫槽自认领）——
                 // net 同款：健康面由消费者自己的标记（INPUT ok）承接。
+            } else if device_id == VIRTIO_DEV_GPU {
+                // B1 起合法同席（guifbd vgpu 后端按类扫槽自认领）——健康面
+                // 由 guifbd 自己的标记（`FB ok vgpu`）承接。
             } else {
                 println!("vprobe: slot {} did={}（未知设备类）", slot, device_id);
                 trap();

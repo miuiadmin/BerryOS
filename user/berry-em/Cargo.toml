@@ -1,0 +1,30 @@
+[package]
+name = "berry-em"
+# B1 批副刀（CP-09 EAS 前置·host 纯面）：字面版本不走 workspace 继承（独立
+# 小工作区，版本治理规则/14；user 族同批同值——slackface/berry-power 同批
+# 0.2.0）。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+# 调度彻底计划 CP-09 前置件（docs/调度彻底计划-v1.0.md:105「能量比较单源
+# host 钉板」＋:70 裁四「判定律先 host 钉板后进内核」）：EM 形状已单源
+# berry-emface（W3-Q14）而能量算法「留 M2/真机」（docs/调度器设计-v1.1.md:346
+# 零算法；01 号 §2.4 EM 有产无消）——本件补消侧第一块纯面：容量查询 +
+# EAS 式 energy_diff 选核打分最简形 + QEMU virt 第一张假想表（单核/双核
+# 对称，数值推断标注）。形态照 user 族独立小工作区例（空 [workspace]
+# escape 根 workspace，不入 user/Cargo.toml members——sched/emface 域
+# owner 在途零碰，接线归 CP-09 接线窗）。
+description = "BerryOS energy-model first tables (QEMU virt) + EAS energy-diff minimal pure face: CP-09 prerequisite, host-testable, no_std"
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+name = "berry_em"
+path = "src/lib.rs"
+
+[dependencies]
+# EM 表形状执法/极值读面/overutil 阈值律单源（W3-Q14）——本件经 path 依赖
+# 单源消费，零第二实现（一事实一归属；berry-power 消费 emface 同例，见
+# user/bins/berry-power/Cargo.toml [dependencies]）。不走 slackface 零依赖
+# 镜像路线：path 依赖可通时镜像 = 自造第二事实源。
+berry-emface = { path = "../../emface" }
