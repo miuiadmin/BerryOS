@@ -1,0 +1,39 @@
+[package]
+name = "berry-power"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 件同批同值）。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# 调度彻底计划裁九落件（docs/调度彻底计划-v1.0.md §3 裁九/§4.1 CP-08/
+# §4.2 CP-10）：berry-power 电源中枢服务本体骨架——「调度-PM 契约空转」
+# 三大接缝之二的服务侧收口（research/调度彻底计划/01-调度现状全景与在途
+# 线收编.md §2.4「berry-power 服务本体未建」；立法三件 ADR #66/#67/#68
+# 已齐而消费侧缺位）。双面 crate（gui-inputd 先例）：lib = 纯函数核
+# （频率帽聚合点/充电限流票仲裁/util EWMA 消费位/pwproto 帧会话机，host
+# 单测全盖）；bin = main 循环骨架（常驻/svcmgr 挂接/真实通道全留窗注释，
+# 见 src/main.rs 头注窗表）。
+#
+# 形态：simbattery/berry-launcher 同形独立小工作区（空 [workspace] escape
+# 根 workspace，不入 user/Cargo.toml members）。**未接线面如实注**：
+# justfile build-user/rootfs 装配/svcmgr 服务表均未挂本件（svcmgr/壳族 =
+# owner 占用零碰，任务纪律；挂接刀随 CP-08/CP-10 窗）——musl 链真实产线
+# 接线前，本件只以 host `cargo test` 验证。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+# 契约单源：sim 三设备快照协议（帧/ACK/流式解码——ADR #68 ③ SDK 面零新
+# syscall 的协议载体，sim-S1 冻结）。
+berry-pwproto = { path = "../../berry-pwproto" }
+# EWMA 折叠数学单源（α=1/8 移位、0..=1024 尺度、窗常量——sched/src/util.rs
+# 生产侧同源消费；本件消费侧零第二实现，W3-Q14 纪律）。
+berry-emface = { path = "../../../emface" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
