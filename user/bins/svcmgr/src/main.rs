@@ -955,10 +955,11 @@ fn run_rootfs_child(console: Handle) {
     // A-5 起 fsmgr 的 FAT 层要 blk 服务端端（env gift[3]），而 fsmgr 预拉在
     // 主走查前 ⇒ vblk 必须更早。迁出主走查（arm 退役，条目自然跳过）。
     // 拓扑：channel_pair 得 (blk_a, blk_b)——blk_b 随 env 块 gift[2] 迁入
-    // vblk（libc `gift2_h()`，每进程 env 块独立）；本表暂持 blk_a，自验门
-    // （blk_selftest——BLKD ok 第 14 标记）过了才作为 `blk_cli` 交给下方
-    // fsmgr 预拉段（take 迁移进 fsmgr 表 = env gift[3]，libc `blk_h()`）
-    // ——此后 fsmgr 是 vblk 唯一 client，串行 RPC 无回复抢答面。
+    // vblk（libc `gift2_h()`，每进程 env 块独立）；本表暂持 blk_a 落
+    // `blk_cli`——P1-1 自验门后置：spawn 即返不阻塞，blk_selftest（BLKD
+    // ok 第 14 标记）挪到 GUI 链后的后置收割点统一执行，过门 blk_cli 才
+    // 被下方 fsmgr 预拉段 take 迁移（进 fsmgr 表 = env gift[3]，libc
+    // `blk_h()`）——此后 fsmgr 是 vblk 唯一 client，串行 RPC 无回复抢答面。
     // 缺席/失败 = blk_cli=0 → fsmgr gift 三元（RAM-only 降级，fat.rs init
     // 对 blk_h()==0 静默 None）。
     let mut blk_cli: Handle = 0;
@@ -993,24 +994,12 @@ fn run_rootfs_child(console: Handle) {
                 // 帽对「不退出的服务」必超时返 Err、回收链零执行（未确认退
                 // 出绝不 unmap/close）；child 的 ht/hv/hp/vmo 留表即留命
                 // （表槽有界 = 服务生命周期）。
-                match blk_selftest(blk_a) {
-                    Ok(()) => {
-                        send_retry(console, BLKD_OK.as_ptr(), BLKD_OK.len());
-                        blk_cli = blk_a; // 端点留给 fsmgr（下方预拉段交付）
-                        // 数据盘在位旗（GUI-8 R1 判别器 v2）：真 virtio-blk
-                        // 应答写读 LBA5 过才达此（EFI 冻结相 usb-storage
-                        // 非 vblk 域，自验即拒 eco: blkd write → 恒 0）。
-                        BLK_OK.store(1, Ordering::Relaxed);
-                    }
-                    Err(why) => {
-                        eco_skip(why);
-                        // 未交付即无人持有服务端——close 止损（vblk 进程经
-                        // pair 互钉常活，BLKD 标记已缺 = smoke FAIL 兜底）。
-                        if berry_handle_close(blk_a) != 0 {
-                            trap();
-                        }
-                    }
-                }
+                // P1-1：spawn 即返（非阻塞），自验门后置——blk_a 先落
+                // blk_cli 暂持，阻塞 RPC（blk_selftest）挪到下方 gfxdemo
+                // reap 后、fsmgr 预拉段前的「后置收割点」统一执行（vblk
+                // boot 与 vnet/guifbd 及整条 GUI 链并行，收割时早已在服
+                // 务，60s 帽只是兜底）。
+                blk_cli = blk_a;
             }
             Err(()) => {
                 // Err 全在 env send 前——blk_b 未被 take，两新鲜端显式
@@ -1023,6 +1012,63 @@ fn run_rootfs_child(console: Handle) {
                     trap();
                 }
                 eco_skip(b"vblk spawn");
+            }
+        }
+    }
+    // ---- P6 A-8b：vnet（常驻网络服务）预拉起——vblk 后（P1-1 无依赖并行预拉位）----
+    // A-7 时 vnet 在主走查 arm 拉起（瞬态探针：`NET ok` 自打后 exit(0) +
+    // svcmgr 阻塞 reap 回收）；A-8b 起自验毕转 serve() 常驻（berry-netdproto
+    // DNS_QUERY RPC）⇒ 改预拉（主走查 arm 退役，条目自然跳过）。P1-1：
+    // vnet 与 vblk/guifbd 无相互依赖，自旧位（fsmgr 后）前移紧随 vblk
+    // arm——三条 spawn 连发后才进 GUI 链/阻塞收割点，boot 期全程并行
+    // （NET_A 消费者〔DNS 自验/bsh evs〕全在主走查后，前置零竞速面）。拓扑：
+    // channel_pair 得 (net_a, net_b)——net_b 随 env 块 gift[2] 迁入 vnet
+    // （libc `gift2_h()`）；net_a 留本表存 NET_A（A-8c 起作 DNS 自验
+    // client）。窗口缺席 → vblk 同款可见降级不 spawn；常驻子不 reap
+    // （vblk A-4 同款：wait TERMINATED 30s 帽必超时空烧）。
+    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+        eco_skip(b"mmio absent");
+    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vnet") {
+        let (net_a, net_b) = channel_pair();
+        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
+        // dummy（空 feeder + 立即 EOF；vnet 服务永不读 stdin，vblk/fsmgr
+        // 同款）。
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/vnet",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                args: &[],
+                extra_gifts: &[net_b],
+                mmio_vmo: Some(H_MMIO),
+                mmio_va: VIRTIO_MMIO_VA,
+                intent: 0,
+                force_eager: true,
+            },
+        ) {
+            Ok(_child) => {
+                ps_reg(b"vnet", psp::STATE_ALIVE, 0); // 拉起即常驻（自验门成败都活——serve 常驻）
+                // 常驻不 reap。`NET ok` 标记仍由 vnet 自打（自验在 serve()
+                // 前，rootfs 相第 17 标记零扰动）；DNS ok（A-8c）起本端
+                // 转 client 消费。
+                NET_A.store(net_a, Ordering::Relaxed);
+            }
+            Err(()) => {
+                ps_reg(b"vnet", psp::STATE_SPAWNFAIL, 0);
+                // Err 全在 env send 前——net_b 未被 take，两新鲜端显式回收
+                // 防表槽泄漏（vblk 同款）。
+                if berry_handle_close(net_b) != 0 {
+                    trap();
+                }
+                if berry_handle_close(net_a) != 0 {
+                    trap();
+                }
+                eco_skip(b"net spawn");
             }
         }
     }
@@ -1244,6 +1290,93 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
+    // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet 输入服务）。门控同 vnet
+    // 两道：H_MMIO 在席（EFI/裸拓扑缺席 → eco_skip(b"mmio absent") 静默
+    // 零扰动）+ cpio_find(H_ROOTFS, b"bin/gui-inputd")。
+    // P1-1：inputd 无 fs/net/blk 依赖（不吃 fb 几何——gift 面 = in_b +
+    // 可选 wmd push 端），自旧位（fsmgr/vnet 后）前移到 wmd arm 后、
+    // gfxdemo 阻塞 reap 前——push_b 接线依赖保序（WMD_PUSH_B wmd Ok 路
+    // 存值），spawn 仍先于两大阻塞收割点发出（与 vblk/vnet/guifbd 并行
+    // boot）。
+    //
+    // intent 注记（台账 6，v1 可达面）：input 域 channel 由本表 channel_pair()
+    // 创建、**options=0**——不设 CHAN_OPT_NO_INTENT，消息借入链（4-3c：收端按
+    // 每消息重导 eff = min(declared, msg_intent)）有意保持激活 = GUI 规划 GUI-4
+    // 行「intent INTERACTIVE」的 v1 唯一可达形态。UNSPECIFIED(0x00) 顶档语义下
+    // 借入恒不抑制（4-3c 数值序）；svcmgr/bsh 自身 declared 不变——内核侧
+    // berry_intent 自申报 = 另刀。ADR #42 / 段① §9-6。
+    //
+    // 常驻不 reap（A74：reap 首步 wait 30s 帽必超时）；stdin 哑喂 Some(&[])；
+    // recv 容量按「协议定值 1 op + 富余」判面（段① serve() 已落，本刀零改）。
+    // GUI-5：extras 追加 wmd 推送客户端端（WMD_PUSH_B——wmd arm Ok 路存
+    // 值；0 = wmd 未起 → extras 仍单枚，inputd 现行为逐字节保留）。失败面
+    // = close(in_b) + close(in_a)（+ push_b 在席时第三枚）+ eco_skip——bsh
+    // inputpoll 面静默降级（input_h()==0 → "input: absent"）。
+    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+        eco_skip(b"mmio absent");
+    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gui-inputd") {
+        let (in_a, in_b) = channel_pair();
+        // GUI-5 推送端追加（fsmgr fgifts 条件切片同款）：WMD_PUSH_B 非 0 =
+        // wmd 已起，extras 次位随行 push_b（inputd 侧 libc `wm_push_h()`）。
+        let push_b = WMD_PUSH_B.load(Ordering::Relaxed);
+        let mut igifts = [in_b, 0 as Handle];
+        let igifts: &[Handle] = if push_b != 0 {
+            igifts[1] = push_b;
+            &igifts
+        } else {
+            &igifts[..1]
+        };
+        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
+        // dummy（空 feeder + 立即 EOF；inputd 服务永不读 stdin，vnet 同款）。
+        match spawn_rootfs_elf(
+            H_ROOTFS,
+            &SpawnSpec {
+                name: b"bin/gui-inputd",
+                data_off,
+                data_len,
+                stdout: console,
+                stack_pages: 8,
+                stdin_feed: Some(&[]),
+                stdin_handle: None,
+                args: &[],
+                extra_gifts: igifts,
+                mmio_vmo: Some(H_MMIO),
+                mmio_va: VIRTIO_MMIO_VA,
+                intent: 0,
+                force_eager: true,
+            },
+        ) {
+            Ok(_child) => {
+                ps_reg(b"inputd", psp::STATE_ALIVE, 0); // 拉起即常驻（boot 自验门成败都活——serve 常驻）
+                // 常驻不 reap。`INPUT ok` 标记由 boot 期 input_selftest 打
+                // （SUBSCRIBE RPC 走本端 in_a——net_a 转 client 同款）；
+                // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
+                // inputd 自打。
+                INPUT_A.store(in_a, Ordering::Relaxed);
+                // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
+                // （fsmgr blk_cli 同款；已迁值不可 close）。
+                WMD_PUSH_B.store(0, Ordering::Relaxed);
+            }
+            Err(()) => {
+                ps_reg(b"inputd", psp::STATE_SPAWNFAIL, 0);
+                // Err 全在 env send 前——in_b/push_b 未被 take，新鲜端显式
+                // 回收防表槽泄漏（vnet 同款；push_b = wmd push 服务端端的
+                // 对端，close = 服务端端成孤儿——但 spawn 已败，wmd 推送链
+                // 已断，留表无保活意义）。
+                if berry_handle_close(in_b) != 0 {
+                    trap();
+                }
+                if berry_handle_close(in_a) != 0 {
+                    trap();
+                }
+                if push_b != 0 && berry_handle_close(push_b) != 0 {
+                    trap();
+                }
+                WMD_PUSH_B.store(0, Ordering::Relaxed);
+                eco_skip(b"inputd spawn");
+            }
+        }
+    }
     // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——紧随 wmd arm ----
     // 门 = wmd spawn Ok（wm_cli != 0——客户端端仅 Ok 路落值，兼作标志）
     // ∧ cpio_find(H_ROOTFS, b"bin/gfxdemo")。rootfs 相 guifbd 门已跳
@@ -1320,6 +1453,34 @@ fn run_rootfs_child(console: Handle) {
             // arm Err 路同款；常驻 svcmgr 表零终身滞留物）。
             if berry_handle_close(wm_cli) != 0 {
                 trap();
+            }
+        }
+    }
+    // ---- P1-1：vblk 自验门后置收割点（blk_selftest——BLKD ok 第 14 标记）----
+    // 无依赖预拉（vblk/vnet/guifbd + wmd/inputd 接线链）的 spawn 已全部
+    // 发出、gfxdemo 阻塞 reap 已过——此刻 vblk 与整条 GUI 链并行 boot 已
+    // 久，自验 RPC 通常即刻应答（60s 帽只兜整体挂死）。过门 → `BLKD ok` +
+    // BLK_OK 置位，blk_cli 交下方 fsmgr 预拉段（take 迁移 = env gift[3]）
+    // ——此后 fsmgr 是 vblk 唯一 client，串行 RPC 无回复抢答面（A-5 语义
+    // 零漂：fsmgr 仍只见「已过门」端点，boot 序不变）。未过门 → close 止
+    // 损 + blk_cli=0 → fsmgr gift 三元（RAM-only 降级）。
+    if blk_cli != 0 {
+        match blk_selftest(blk_cli) {
+            Ok(()) => {
+                send_retry(console, BLKD_OK.as_ptr(), BLKD_OK.len());
+                // 数据盘在位旗（GUI-8 R1 判别器 v2）：真 virtio-blk 应答写读
+                // LBA5 过才达此（EFI 冻结相 usb-storage 非 vblk 域，自验即
+                // 拒 eco: blkd write → 恒 0）。
+                BLK_OK.store(1, Ordering::Relaxed);
+            }
+            Err(why) => {
+                eco_skip(why);
+                // 未交付即无人持有服务端——close 止损（vblk 进程经 pair 互钉
+                // 常活，BLKD 标记已缺 = smoke FAIL 兜底）。
+                if berry_handle_close(blk_cli) != 0 {
+                    trap();
+                }
+                blk_cli = 0;
             }
         }
     }
@@ -1402,142 +1563,6 @@ fn run_rootfs_child(console: Handle) {
                 }
                 blk_cli = 0;
                 eco_skip(b"fs spawn");
-            }
-        }
-    }
-    // ---- P6 A-8b：vnet（常驻网络服务）预拉起——fsmgr 之后、主走查前 ----
-    // A-7 时 vnet 在主走查 arm 拉起（瞬态探针：`NET ok` 自打后 exit(0) +
-    // svcmgr 阻塞 reap 回收）；A-8b 起自验毕转 serve() 常驻（berry-netdproto
-    // DNS_QUERY RPC）⇒ 改预拉（主走查 arm 退役，条目自然跳过）。拓扑：
-    // channel_pair 得 (net_a, net_b)——net_b 随 env 块 gift[2] 迁入 vnet
-    // （libc `gift2_h()`）；net_a 留本表存 NET_A（A-8c 起作 DNS 自验
-    // client）。窗口缺席 → vblk 同款可见降级不 spawn；常驻子不 reap
-    // （vblk A-4 同款：wait TERMINATED 30s 帽必超时空烧）。
-    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
-        eco_skip(b"mmio absent");
-    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vnet") {
-        let (net_a, net_b) = channel_pair();
-        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
-        // dummy（空 feeder + 立即 EOF；vnet 服务永不读 stdin，vblk/fsmgr
-        // 同款）。
-        match spawn_rootfs_elf(
-            H_ROOTFS,
-            &SpawnSpec {
-                name: b"bin/vnet",
-                data_off,
-                data_len,
-                stdout: console,
-                stack_pages: 8,
-                stdin_feed: Some(&[]),
-                stdin_handle: None,
-                args: &[],
-                extra_gifts: &[net_b],
-                mmio_vmo: Some(H_MMIO),
-                mmio_va: VIRTIO_MMIO_VA,
-                intent: 0,
-                force_eager: true,
-            },
-        ) {
-            Ok(_child) => {
-                ps_reg(b"vnet", psp::STATE_ALIVE, 0); // 拉起即常驻（自验门成败都活——serve 常驻）
-                // 常驻不 reap。`NET ok` 标记仍由 vnet 自打（自验在 serve()
-                // 前，rootfs 相第 17 标记零扰动）；DNS ok（A-8c）起本端
-                // 转 client 消费。
-                NET_A.store(net_a, Ordering::Relaxed);
-            }
-            Err(()) => {
-                ps_reg(b"vnet", psp::STATE_SPAWNFAIL, 0);
-                // Err 全在 env send 前——net_b 未被 take，两新鲜端显式回收
-                // 防表槽泄漏（vblk 同款）。
-                if berry_handle_close(net_b) != 0 {
-                    trap();
-                }
-                if berry_handle_close(net_a) != 0 {
-                    trap();
-                }
-                eco_skip(b"net spawn");
-            }
-        }
-    }
-    // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet 输入服务）。门控同 vnet
-    // 两道：H_MMIO 在席（EFI/裸拓扑缺席 → eco_skip(b"mmio absent") 静默
-    // 零扰动）+ cpio_find(H_ROOTFS, b"bin/gui-inputd")。
-    //
-    // intent 注记（台账 6，v1 可达面）：input 域 channel 由本表 channel_pair()
-    // 创建、**options=0**——不设 CHAN_OPT_NO_INTENT，消息借入链（4-3c：收端按
-    // 每消息重导 eff = min(declared, msg_intent)）有意保持激活 = GUI 规划 GUI-4
-    // 行「intent INTERACTIVE」的 v1 唯一可达形态。UNSPECIFIED(0x00) 顶档语义下
-    // 借入恒不抑制（4-3c 数值序）；svcmgr/bsh 自身 declared 不变——内核侧
-    // berry_intent 自申报 = 另刀。ADR #42 / 段① §9-6。
-    //
-    // 常驻不 reap（A74：reap 首步 wait 30s 帽必超时）；stdin 哑喂 Some(&[])；
-    // recv 容量按「协议定值 1 op + 富余」判面（段① serve() 已落，本刀零改）。
-    // GUI-5：extras 追加 wmd 推送客户端端（WMD_PUSH_B——wmd arm Ok 路存
-    // 值；0 = wmd 未起 → extras 仍单枚，inputd 现行为逐字节保留）。失败面
-    // = close(in_b) + close(in_a)（+ push_b 在席时第三枚）+ eco_skip——bsh
-    // inputpoll 面静默降级（input_h()==0 → "input: absent"）。
-    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
-        eco_skip(b"mmio absent");
-    } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gui-inputd") {
-        let (in_a, in_b) = channel_pair();
-        // GUI-5 推送端追加（fsmgr fgifts 条件切片同款）：WMD_PUSH_B 非 0 =
-        // wmd 已起，extras 次位随行 push_b（inputd 侧 libc `wm_push_h()`）。
-        let push_b = WMD_PUSH_B.load(Ordering::Relaxed);
-        let mut igifts = [in_b, 0 as Handle];
-        let igifts: &[Handle] = if push_b != 0 {
-            igifts[1] = push_b;
-            &igifts
-        } else {
-            &igifts[..1]
-        };
-        // stdin 面：gift[2] 前要求 gift[1] 在位（berry-exec assert）——占位
-        // dummy（空 feeder + 立即 EOF；inputd 服务永不读 stdin，vnet 同款）。
-        match spawn_rootfs_elf(
-            H_ROOTFS,
-            &SpawnSpec {
-                name: b"bin/gui-inputd",
-                data_off,
-                data_len,
-                stdout: console,
-                stack_pages: 8,
-                stdin_feed: Some(&[]),
-                stdin_handle: None,
-                args: &[],
-                extra_gifts: igifts,
-                mmio_vmo: Some(H_MMIO),
-                mmio_va: VIRTIO_MMIO_VA,
-                intent: 0,
-                force_eager: true,
-            },
-        ) {
-            Ok(_child) => {
-                ps_reg(b"inputd", psp::STATE_ALIVE, 0); // 拉起即常驻（boot 自验门成败都活——serve 常驻）
-                // 常驻不 reap。`INPUT ok` 标记由 boot 期 input_selftest 打
-                // （SUBSCRIBE RPC 走本端 in_a——net_a 转 client 同款）；
-                // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
-                // inputd 自打。
-                INPUT_A.store(in_a, Ordering::Relaxed);
-                // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
-                // （fsmgr blk_cli 同款；已迁值不可 close）。
-                WMD_PUSH_B.store(0, Ordering::Relaxed);
-            }
-            Err(()) => {
-                ps_reg(b"inputd", psp::STATE_SPAWNFAIL, 0);
-                // Err 全在 env send 前——in_b/push_b 未被 take，新鲜端显式
-                // 回收防表槽泄漏（vnet 同款；push_b = wmd push 服务端端的
-                // 对端，close = 服务端端成孤儿——但 spawn 已败，wmd 推送链
-                // 已断，留表无保活意义）。
-                if berry_handle_close(in_b) != 0 {
-                    trap();
-                }
-                if berry_handle_close(in_a) != 0 {
-                    trap();
-                }
-                if push_b != 0 && berry_handle_close(push_b) != 0 {
-                    trap();
-                }
-                WMD_PUSH_B.store(0, Ordering::Relaxed);
-                eco_skip(b"inputd spawn");
             }
         }
     }
@@ -4762,7 +4787,8 @@ const BLKD_OK: &[u8] = b"BLKD ok n=512\n";
 
 /// BLKD 应答帽：60s（vblk 启动自验在服务循环**之前**——boot 期在途可达
 /// 数秒；超帽 = 降级行 + 标记缺失 = smoke FAIL，不重发[请求可能仍在途，
-/// 重发 = 重复写]）。
+/// 重发 = 重复写]。P1-1 后置收割点：自验 RPC 发起点在 GUI 链后，vblk
+/// 通常早已在服务、在途窗收缩——帽值不动，只兜整体挂死）。
 const BLKD_REPLY_CAP: u64 = 60 * 1_000_000_000;
 
 /// BLKD 自验扇区（LBA5——避开 justfile/smoke 落盘印章 LBA0 与 vblk 启动
