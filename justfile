@@ -731,6 +731,10 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-lifecycle --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
+    # 刀 3 B1-a：berry-gpuproto（virtio-gpu 2D 协议纯函数面——九命令/头/
+    # 响应/event/config 编解码 + uapi 常量两源钉板，02 号 §3.1/§3.2；
+    # 传输接线归 B1-c）。
+    cargo test --manifest-path user/Cargo.toml -p berry-gpuproto --target {{host}}
     python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin
     # V-2：FAT16 双宽基准同位守卫（--check-fixture16——一卷一宽双 fixture，
     # 漂移即 FAIL 带 --fixture16 重产提示）。

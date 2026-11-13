@@ -79,6 +79,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-gpuproto"
+version = "0.2.0"
+
+[[package]]
 name = "berry-guiproto"
 version = "0.2.0"
 dependencies = [
