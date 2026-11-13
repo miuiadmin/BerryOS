@@ -161,6 +161,9 @@ pub fn wakesrc_row_shape_ok() -> bool {
         && WAKESRC_FIELD_ORDER[8] == "X"
 }
 
+// ---- W3-Q81：环读面（双流 vct 归并/帽律）分模块——见 ringmerge.rs ----
+pub mod ringmerge;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 27 | 30630 | 2087 | 6.81% |
+| kernel/ | 27 | 30603 | 2087 | 6.82% |
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 14 | 7582 | 1657 | 21.85% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7311 | 1048 | 14.33% |
-| **合计** | 71 | 47891 | 4796 | **10.01%** |
+| **合计** | 71 | 47864 | 4796 | **10.02%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37771，unsafe 非空行 4088，密度 10.82%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37744，unsafe 非空行 4088，密度 10.83%（生产面口径）
 - 分类计数：页表 63 | 上下文切换 33 | MMIO 160 | 分配器 13 | 硬件原子 0 | 其它 768
 - 类型计数：block 895 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -853,15 +853,15 @@
 | kernel/src/telemetry.rs | 113 | fn | 其它 | unsafe fn ring_write(rec: SwitchRec) { let cpu = cpu_id().min(NC |
 | kernel/src/telemetry.rs | 141 | block | 其它 | unsafe { ring_write(rec) } } /// 注册切换钩子（`rust_main` 在 `berry_sch |
 | kernel/src/telemetry.rs | 183 | block | 其它 | unsafe { &(*core::ptr::addr_of!(SWITCH_RINGS))[cpu] }; loop { le |
-| kernel/src/telemetry.rs | 213 | block | 其它 | unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total }; (t a |
-| kernel/src/telemetry.rs | 220 | block | 其它 | unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total } } /// |
-| kernel/src/telemetry.rs | 354 | fn | 其它 | unsafe fn wake_ring_write(rec: WakeRec) { let cpu = cpu_id().min |
-| kernel/src/telemetry.rs | 424 | block | 其它 | unsafe { wake_ring_write(rec) } // R-0 增量直方图：延迟 = 唤醒时刻 − 入睡时刻（原始 |
-| kernel/src/telemetry.rs | 672 | block | 其它 | unsafe { &(*core::ptr::addr_of!(WAKE_RINGS))[cpu] }; loop { let |
-| kernel/src/telemetry.rs | 700 | block | 其它 | unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total }; (t as |
-| kernel/src/telemetry.rs | 706 | block | 其它 | unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total } } /// 唤 |
-| kernel/src/telemetry.rs | 980 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(PRESSURE_OUTLET) = Some(outlet |
-| kernel/src/telemetry.rs | 1016 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_OUTLET) } { f(); } } } // |
+| kernel/src/telemetry.rs | 215 | block | 其它 | unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total }; berr |
+| kernel/src/telemetry.rs | 222 | block | 其它 | unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total } } /// |
+| kernel/src/telemetry.rs | 341 | fn | 其它 | unsafe fn wake_ring_write(rec: WakeRec) { let cpu = cpu_id().min |
+| kernel/src/telemetry.rs | 411 | block | 其它 | unsafe { wake_ring_write(rec) } // R-0 增量直方图：延迟 = 唤醒时刻 − 入睡时刻（原始 |
+| kernel/src/telemetry.rs | 659 | block | 其它 | unsafe { &(*core::ptr::addr_of!(WAKE_RINGS))[cpu] }; loop { let |
+| kernel/src/telemetry.rs | 687 | block | 其它 | unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total } } /// 唤 |
+| kernel/src/telemetry.rs | 694 | block | 其它 | unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total } } /// 唤 |
+| kernel/src/telemetry.rs | 953 | block | 其它 | unsafe { *core::ptr::addr_of_mut!(PRESSURE_OUTLET) = Some(outlet |
+| kernel/src/telemetry.rs | 989 | block | 其它 | unsafe { *core::ptr::addr_of!(PRESSURE_OUTLET) } { f(); } } } // |
 | kernel/src/user.rs | 1613 | fn | 其它 | unsafe fn blob(start: *const u8, end: *const u8) -> &'static [u8 |
 | kernel/src/user.rs | 1620 | block | 其它 | unsafe { blob(&__user_good, &__user_good_end) } } /// rogue_ptr |
 | kernel/src/user.rs | 1626 | block | 其它 | unsafe { blob(&__user_rogue_ptr, &__user_rogue_ptr_end) } } /// |
