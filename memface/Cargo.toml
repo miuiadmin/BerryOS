@@ -1,0 +1,8 @@
+[package]
+name = "berry-memface"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+description = "mem* 整数版语义纯面：memset/memcpy/memmove/memcmp/bcmp 块尾算法模型（W3-Q80）"
+
+[dependencies]

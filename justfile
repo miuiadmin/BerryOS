@@ -662,6 +662,11 @@ test-host:
     # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
     # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。
     cargo test -p berry-vmoledger --target {{host}}
+    # W3-Q80：berry-memface（mem* 整数版语义模型——块切分几何/方向
+    # 分治/LE 首异定位/广播字 + 三模型对拍（memset/memcpy/memmove/
+    # memcmp 块算法 vs 逐字节参考全量一致），host 8 测；kernel mem.rs
+    # no_mangle 符号壳消费单源）。
+    cargo test -p berry-memface --target {{host}}
     # W3-Q17：berry-vslotface（Vmar 槽位/区间判定律纯函数面——三查判序
     # 对齐→界→重叠错误码优先级/半开重叠谓词/精确查找 kind 收 Mapped|Demand
     # 与 Mapped-only 分流/探针命中闭开域钉板，host 12 测；check_slot/

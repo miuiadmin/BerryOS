@@ -1,6 +1,5 @@
 [workspace]
 exclude = ["user/berry-em"]
-members = ["arch/aarch64","bandface","chanface","dpgface","dtbface","emface","evface","frzface","hdlface","hdrface","heapface","hofface","intface","iprofile","itally","kernel","lkface","mm","piface","polface","rootface","ringface","safeck","sched","sliceface","susface","telface","trapface","utrace","vmoledger","vslotface","wqmatch"]
 members = [
     "arch/aarch64",
     "bandface",
@@ -22,7 +21,6 @@ members = [
     "mm",
     "piface",
     "polface",
-    "psface",
     "rootface",
     "ringface",
     "safeck",
@@ -35,8 +33,11 @@ members = [
     "vmoledger",
     "vslotface",
     "wqmatch",
+    "psface",
     "fwcfgface",
-    "wakeface",]
+    "wakeface",
+    "memface",
+]
 resolver = "2"
 
 [workspace.package]
