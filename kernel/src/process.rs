@@ -70,6 +70,21 @@ pub const MAX_CHANNEL_PER_PROC: usize = 64;
 /// 封顶，不另设帽）。
 pub const MAX_THREADS_PER_PROC: usize = 16;
 
+/// P3-3：单表（单父）在册 **Process** handle 上限 = per-parent spawn 配额
+/// ——防进程炸弹（单 EL0 循环 `process_create` 占满全局 `PROCESS_MAX` 表、
+/// 阻止其他服务拉起；全局 64 帽是**系统级**总账，本帽是**单父**分账）。
+/// 记账面同族前帽：`count_type(Process)` 表扫描（`sys_process_create` 执法
+/// ——非 Process sidecar 计数器，否决理由见上块〔迁移失配/UAF/EL1 无宿主〕
+/// ——故**无退出递减面**：扫描派生随 close/take/drain/迁移天然配平）。
+/// 「子」的口径 = 本表在册 Process handle：含自进程柄（berry-exec env 块
+/// dup 入表）与经 channel 迁入的他人进程柄——同 VMO/Channel 帽的在册语义，
+/// 换取零新增记账状态。svcmgr 正当多子：诊断实测稳态仅 ≈5-7（自柄 1 +
+/// echo×2/talker 泄漏柄 3 + 瞬态；app 批 9 子串行 spawn→reap 即关柄），
+/// dpgf 满配 15 子并发（dpgsoak 变体面）叠加后峰值 ≈20-22——16 会在波中
+/// 途拒造，帽定 24（24 < 64 全局帽仍留 2.6× 反垄断余量：单父至多吃系统
+/// 进程表的 3/8）。
+pub const MAX_CHILDREN_PER_PROC: usize = 24;
+
 /// 进程生命周期（Plan B v0.5）：Alive → Exited 单向；Exited 后 wait 面
 /// `SIGNAL_TERMINATED` 置位、句柄仍可 wait/close（对象钉住纪律保活）。
 #[derive(Clone, Copy, PartialEq, Eq)]

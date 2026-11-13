@@ -1459,6 +1459,14 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // P3-3：per-parent spawn 配额——防进程炸弹（全局 64 帽前置的单父分账：
+    // 无它则单 EL0 循环 create 即占满全局表、阻止其他服务拉起）。记账 =
+    // 本表在册 Process handle 数（`count_type` 扫描——VMO/Channel 帽同款，
+    // 随 close/take/drain/迁移天然配平、无退出递减面；sidecar 否决理由与
+    // 帽值余量论证见 `process.rs` `MAX_CHILDREN_PER_PROC` 注）。
+    if t.count_type(ObjType::Process) >= crate::process::MAX_CHILDREN_PER_PROC {
+        return ERR_NO_MEMORY as i64; // 与全局帽同错误面
+    }
     // 活进程帽（复盘雷 4）：无退出路径 + 创建权未设防 → 循环 create 的
     // 帧/Box 永不释放——超帽拒 -ENOMEM（`PROCESS_MAX` 见 process.rs）。
     if crate::process::process_live() >= crate::process::PROCESS_MAX {
